@@ -148,7 +148,9 @@ taskforce-new/
   src/ ...                 Next.js (서버 API + 내부 웹)
   supabase/ ...            DB 스키마
   apple/
-    Taskforce.xcodeproj    iOS · macOS 멀티플랫폼 앱
+    project.yml            Xcode 프로젝트 정의 (XcodeGen). xcodeproj는 여기서 생성한다
+    Taskforce.xcodeproj    iOS · macOS 멀티플랫폼 앱 (생성물)
+    Config/                xcconfig: 번들 ID · App Group, Secrets.xcconfig(커밋 안 함)
     Taskforce/             공통 SwiftUI 화면
     TaskforceiOS/          iOS 전용 (위젯 등)
     TaskforceMac/          macOS 전용 (메뉴 막대, 단축키)
@@ -164,11 +166,20 @@ taskforce-new/
 
 ## 6. 준비물 (사용자가 직접)
 
-- [ ] Apple Developer Program 가입 (연간 유료)
-- [ ] 번들 ID 정하기 (예: `com.<회사>.taskforce`)와 App Group ID (`group.com.<회사>.taskforce`)
-- [ ] Sign in with Apple 설정: Apple Developer에서 Services ID · 키 발급 → Supabase → Authentication → Providers → Apple에 등록
+- [x] Apple Developer Program 가입 (연간 유료) — Team ID `U9DWQKQFMW`
+- [x] 번들 ID 확정 (도메인 `taskforcelabs.dev` 기준). App Store에 올린 뒤에는 바꿀 수 없다.
+
+  | 용도 | 값 |
+  |---|---|
+  | 앱 본체 (iOS · macOS 공통) | `dev.taskforcelabs.taskforce` |
+  | 공유 확장 (Phase A2) | `dev.taskforcelabs.taskforce.share` |
+  | App Group · 공유 Keychain 접근 그룹 | `group.dev.taskforcelabs.taskforce` |
+
+  App ID와 App Group은 Xcode 자동 서명이 개발자 계정에 등록한다 (Phase A0에서 등록됨). 값은 `apple/Config/Base.xcconfig` 한 곳에 있다.
+- [ ] Sign in with Apple 설정: Supabase → Authentication → Sign In / Providers → Apple을 켜고 **Client IDs**에 `dev.taskforcelabs.taskforce`를 넣는다.
+  앱 안 로그인만 쓰면 Services ID · `.p8` 키는 필요 없다 (웹에 Apple 로그인을 붙일 때 추가).
 - [ ] 푸시 알림용 APNs 키 발급 (Phase 3)
-- [ ] 최소 지원 OS 버전 결정 (추천: 직전 메이저 버전까지 지원)
+- [x] 최소 지원 OS: iOS 18 · macOS 15 (직전 메이저 버전까지)
 
 ---
 
