@@ -19,6 +19,11 @@ export type JsonCompletionRequest<T extends z.ZodType> = {
   schema: T;
   /** 최신 Claude 모델처럼 temperature를 받지 않는 모델이 있어 지정할 때만 보낸다. */
   temperature?: number;
+  /**
+   * 출력 토큰 상한. 지정하지 않으면 OpenRouter가 모델 최대치만큼 비용을 미리 잡아,
+   * 키에 사용 한도가 있으면 잔액이 남아 있어도 402로 거절된다.
+   */
+  maxTokens?: number;
 };
 
 export type JsonCompletion<T> = {
@@ -72,6 +77,7 @@ export async function completeJson<T extends z.ZodType>(
     body: JSON.stringify({
       model: config.model,
       ...(request.temperature === undefined ? {} : { temperature: request.temperature }),
+      max_tokens: request.maxTokens ?? 4096,
       messages: [
         { role: "system", content: request.system },
         { role: "user", content: request.user },

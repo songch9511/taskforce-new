@@ -17,6 +17,7 @@
 ```bash
 npm run eval                  # 라벨 검사 + 추출 채점 (.env.local의 OPENROUTER_API_KEY, LLM_MODEL 사용)
 npm run eval -- --case <id>   # 한 케이스만
+npm run eval -- --no-judge    # Jev 없이 추출 · 기계 검증만
 npm run eval -- --labels      # 라벨 검사만 (키가 없으면 CI도 여기까지만)
 ```
 
@@ -25,6 +26,9 @@ npm run eval -- --labels      # 라벨 검사만 (키가 없으면 CI도 여기�
 - 오탐은 사유별로 셉니다: 함정 문장의 사유, 같은 정답을 두 번 뽑은 `DUPLICATE`, 라벨에 없는 문장 `UNLABELED`.
   `UNLABELED`가 많으면 라벨이 빠졌는지 먼저 확인합니다.
 - Phase 1은 원문이 하나인 케이스만 채점합니다. 여러 원문이 이어지는 케이스(예: `friday-to-monday`)는 Phase 2 매칭에서 채점합니다.
+- 단계별로 채점합니다: 추출만 → 기계 검증(인용 실재 확인 · 기한 재계산) → Jev 통과(자동+확인) → Jev 자동 반영만.
+- Jev는 따로 한 번 더 봅니다. 정답 Action과 함정 문장을 그대로 후보로 만들어 묻고, 질문별 사람 라벨 일치율,
+  라벨 종류별 자동/확인/기각 분포, 확률 구간별 실제 비율(보정 표)을 출력합니다. 임계값은 `src/lib/pipeline/judge.config.ts`.
 - 결과는 `evals/results/`에 JSON으로 남습니다 (커밋하지 않음). 프롬프트를 바꾸면 `src/lib/ai/prompts/extract.ts`의 버전을 올리고 전후 숫자를 PR에 적습니다.
 
 ### 기록
@@ -32,3 +36,4 @@ npm run eval -- --labels      # 라벨 검사만 (키가 없으면 CI도 여기�
 | 날짜 | 모델 · 프롬프트 | 케이스 | precision | recall | 담당 | 기한 | 비고 |
 |---|---|---|---|---|---|---|---|
 | 2026-09-25 | claude-sonnet-5 · extract-v1 | 합성 20 | 94.9% | 94.9% | 100% | 100% | 누락 2는 `unknown` 담당(팀원이 "저희 쪽에서" 약속), 오탐은 TENTATIVE 1 · DUPLICATE 1 |
+| 2026-09-25 | + 기계 검증 + jev-1.13 · judge-v1, 자동 ≥ 0.8 | 합성 20 | 자동+확인 92.1% · 자동만 96.9% | 89.7% · 79.5% | 100% | 100% | 추출만 92.5%/94.9% (모델 출력이 달라 첫 줄과 차이). Jev 라벨 일치율 95~100%, 정답 39개 중 자동 31 · 확인 4 · 기각 4, 함정 60개 중 자동 0 |

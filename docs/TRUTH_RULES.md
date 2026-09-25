@@ -90,6 +90,8 @@ Jev의 확률은 보정을 목표로 학습되어 있어서 **"P(내 약속) < 0
 
 #### 판정 결과 처리 (임계값은 골든셋으로 조정)
 
+아래 표는 초기값입니다. 현재 값과 조정 근거는 `src/lib/pipeline/judge.config.ts`에 있습니다 (자동 반영 기준 0.85 → 0.8).
+
 | 조건 | 처리 |
 |---|---|
 | `is_my_commitment` ≥ 0.85, `is_actionable` ≥ 0.85, `already_done` < 0.3, `certainty=firm` | 자동 반영 |

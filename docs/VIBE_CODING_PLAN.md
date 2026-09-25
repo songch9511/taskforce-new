@@ -37,9 +37,9 @@ Apple 트랙은 Xcode 빌드가 필요하므로 **Mac의 Claude Code**에서 진
 
 완료 기준: `npm run dev`, `npm run test` 동작 / 마이그레이션 적용 / 로그인(Supabase Auth, 매직링크)
 
-## Phase 1 — 골든셋 + 추출 엔진 (가장 중요, 2~4일) — 1·2 완료, 3·4 남음
+## Phase 1 — 골든셋 + 추출 엔진 (가장 중요, 2~4일) — 1·2·3 완료, 4 남음
 
-진행 상황: 합성 골든셋 20건과 추출기 · 채점(`npm run eval`)까지 완료. 실제 원문 골든셋은 아직 없음 (결과 기록은 `evals/golden/README.md`).
+진행 상황: 합성 골든셋 20건, 추출기 · 채점(`npm run eval`), 기계적 검증 · Jev 판정까지 완료. 실제 원문 골든셋은 아직 없음 (결과 기록은 `evals/golden/README.md`).
 
 1. `evals/golden/`에 실제 원문 + 기대 Action을 JSON으로 라벨링 (직접 20건 이상).
    각 케이스: 원문, 기대 Action 목록(제목·담당·기한·근거 인용), 추출하면 안 되는 함정(참고 정보, 남의 할 일).

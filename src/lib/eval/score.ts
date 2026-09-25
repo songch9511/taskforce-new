@@ -1,3 +1,5 @@
+import { normalizeForMatch, quoteInText } from "@/lib/pipeline/text";
+
 import type { GoldenCase } from "./golden";
 
 // 추출 결과를 골든셋 정답과 비교해 채점한다. 후보와 정답은 "인용 구절이 겹치는가"로 짝짓는다.
@@ -38,16 +40,6 @@ export type Totals = {
   ownerAccuracy: number | null;
   dueAccuracy: number | null;
 };
-
-// 공백 · 문장부호 · 기호를 지우고 비교한다.
-export function normalizeForMatch(text: string): string {
-  return text.toLowerCase().replace(/[\s\p{P}\p{S}]/gu, "");
-}
-
-export function quoteInText(quote: string, text: string): boolean {
-  const q = normalizeForMatch(quote);
-  return q.length > 0 && normalizeForMatch(text).includes(q);
-}
 
 // 한쪽이 다른 쪽을 포함하거나, 가장 긴 공통 구간이 짧은 쪽의 60% 이상(최소 6자)이면 같은 구절로 본다.
 export function quotesOverlap(a: string, b: string): boolean {

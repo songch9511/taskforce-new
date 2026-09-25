@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 
 import type { GoldenCase } from "./golden";
-import { normalizeForMatch, quotesOverlap, scoreCase, totals, type ScoredCandidate } from "./score";
+import { normalizeForMatch } from "@/lib/pipeline/text";
+
+import { quotesOverlap, scoreCase, totals, type ScoredCandidate } from "./score";
 
 const golden: GoldenCase = {
   id: "c1",
