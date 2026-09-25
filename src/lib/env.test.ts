@@ -25,4 +25,13 @@ describe("parsePublicEnv", () => {
       }),
     ).toThrow(/NEXT_PUBLIC_SUPABASE_URL/);
   });
+
+  it("대시보드 주소를 넣으면 API 주소를 쓰라고 알려준다", () => {
+    expect(() =>
+      parsePublicEnv({
+        NEXT_PUBLIC_SUPABASE_URL: "https://supabase.com/dashboard/project/abc",
+        NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: "key",
+      }),
+    ).toThrow(/supabase\.co/);
+  });
 });

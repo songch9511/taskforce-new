@@ -5,6 +5,8 @@ import { z } from "zod";
 
 import { createClient } from "@/lib/supabase/server";
 
+import { magicLinkErrorMessage } from "./errors";
+
 export type LoginState =
   | { status: "idle" }
   | { status: "sent"; email: string }
@@ -31,11 +33,13 @@ export async function sendMagicLink(_prev: LoginState, formData: FormData): Prom
   });
 
   if (error) {
-    return {
-      status: "error",
-      message: "로그인 링크를 보내지 못했습니다. 잠시 후 다시 시도해 주세요.",
-      email: input,
-    };
+    // 원인 파악용 로그. 오류 문구에 섞일 수 있는 이메일 주소는 가린다.
+    console.error("[login] signInWithOtp 실패", {
+      code: error.code,
+      status: error.status,
+      message: error.message.replaceAll(parsed.data, "<email>"),
+    });
+    return { status: "error", message: magicLinkErrorMessage(error), email: input };
   }
 
   return { status: "sent", email: parsed.data };
