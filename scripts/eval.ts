@@ -90,7 +90,7 @@ function printDetails(score: CaseScore) {
 
 const sourceOf = (golden: GoldenCase): JudgeSource & { occurred_at: string } => {
   const s = golden.sources[0];
-  return { text: s.text, kind: s.kind, occurredAt: new Date(s.occurred_at), occurred_at: s.occurred_at };
+  return { text: s.text, kind: s.kind, occurredAt: new Date(s.occurred_at), occurred_at: s.occurred_at, participants: s.participants };
 };
 
 type CaseRun = {
@@ -148,7 +148,7 @@ async function main() {
   let jevCost = 0;
   const errors: string[] = [];
   const judge = (candidate: { title: string; quote: string; due_text: string | null }, golden: GoldenCase) =>
-    judgeCandidate(candidate, sourceOf(golden), golden.user.name, (request) => decide(jev!, request)).then((result) => {
+    judgeCandidate(candidate, sourceOf(golden), golden.user, (request) => decide(jev!, request)).then((result) => {
       jevCost += result.cost ?? 0;
       return result;
     });
@@ -158,7 +158,13 @@ async function main() {
     const source = sourceOf(golden);
     try {
       const extracted = await extractCandidates(
-        { text: source.text, kind: golden.sources[0].kind, occurredAt: source.occurredAt, userName: golden.user.name },
+        {
+          text: source.text,
+          kind: golden.sources[0].kind,
+          occurredAt: source.occurredAt,
+          identity: golden.user,
+          participants: source.participants,
+        },
         (request) => completeJson(llm, request),
       );
       llmCost += extracted.usage?.cost ?? 0;
