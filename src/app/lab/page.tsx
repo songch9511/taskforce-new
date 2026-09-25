@@ -9,6 +9,7 @@ import type { VerifiedCandidate } from "@/lib/pipeline/verify";
 import { createClient } from "@/lib/supabase/server";
 
 import { AutoRefresh } from "./auto-refresh";
+import { ConnectionsPanel, type ConnectionRow } from "./connections-panel";
 import { LabForm } from "./lab-form";
 import { ProfileForm } from "./profile-form";
 
@@ -17,6 +18,9 @@ import { ProfileForm } from "./profile-form";
 type SourceRow = {
   id: string;
   kind: string;
+  title: string | null;
+  connection_id: string | null;
+  external_url: string | null;
   raw_text: string;
   occurred_at: string;
   created_at: string;
@@ -45,17 +49,23 @@ const DECISION_ORDER: JudgeLogRow["decision"][] = ["auto", "confirm", "reject"];
 
 const pct = (p: number) => `${Math.round(p * 100)}%`;
 
-export default async function LabPage({ searchParams }: { searchParams: Promise<{ source?: string }> }) {
+export default async function LabPage({ searchParams }: { searchParams: Promise<{ source?: string; notion?: string }> }) {
   const user = await requireUser();
-  const { source: selectedId } = await searchParams;
+  const { source: selectedId, notion: notionStatus } = await searchParams;
   const supabase = await createClient();
 
   const { data: profileRow } = await supabase.from("profiles").select("display_name, aliases, emails").maybeSingle();
   const profile = profileSchema.safeParse(profileRow).data ?? EMPTY_PROFILE;
 
+  const { data: connections } = await supabase
+    .from("connections")
+    .select("id, provider, display_name, status, last_synced_at, last_error")
+    .order("created_at")
+    .returns<ConnectionRow[]>();
+
   const { data: recent } = await supabase
     .from("sources")
-    .select("id, kind, raw_text, occurred_at, created_at, processing_status, processing_summary, processing_error")
+    .select("id, kind, title, connection_id, external_url, raw_text, occurred_at, created_at, processing_status, processing_summary, processing_error")
     .order("created_at", { ascending: false })
     .limit(10)
     .returns<SourceRow[]>();
@@ -63,7 +73,7 @@ export default async function LabPage({ searchParams }: { searchParams: Promise<
   const { data: selected } = selectedId
     ? await supabase
         .from("sources")
-        .select("id, kind, raw_text, occurred_at, created_at, processing_status, processing_summary, processing_error")
+        .select("id, kind, title, connection_id, external_url, raw_text, occurred_at, created_at, processing_status, processing_summary, processing_error")
         .eq("id", selectedId)
         .returns<SourceRow[]>()
         .maybeSingle<SourceRow>()
@@ -97,6 +107,19 @@ export default async function LabPage({ searchParams }: { searchParams: Promise<
 
       <Card>
         <CardHeader>
+          <CardTitle>연동</CardTitle>
+          <CardDescription>
+            연결한 서비스에서 원문을 자동으로 가져옵니다. Notion은 권한 화면에서 고른 페이지 · 데이터베이스만 읽고, 고친 지 30분이 지난
+            페이지부터 가져옵니다.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <ConnectionsPanel connections={connections ?? []} notionStatus={notionStatus} />
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
           <CardTitle>원문 속 나</CardTitle>
           <CardDescription>
             추출기가 원문에서 나를 알아보는 데 씁니다. 받아쓰기가 이름을 틀리게 적는다면 그 이름을 다른 이름에 넣으세요.
@@ -115,7 +138,8 @@ export default async function LabPage({ searchParams }: { searchParams: Promise<
               {running && <AutoRefresh />}
             </CardTitle>
             <CardDescription>
-              {selected.kind} · 작성 {new Date(selected.occurred_at).toLocaleString("ko-KR", { timeZone: "Asia/Seoul" })}
+              {selected.title && <>{selected.title} · </>}
+              {selected.connection_id ? "연동" : "직접 입력"} · {selected.kind} · 작성 {new Date(selected.occurred_at).toLocaleString("ko-KR", { timeZone: "Asia/Seoul" })}
               {selected.processing_summary && <> · {summaryText(selected.processing_summary)}</>}
             </CardDescription>
           </CardHeader>
@@ -174,6 +198,11 @@ export default async function LabPage({ searchParams }: { searchParams: Promise<
                 </table>
               </div>
             )}
+            {selected.external_url && (
+              <a href={selected.external_url} target="_blank" rel="noreferrer" className="text-sm underline">
+                원본 열기
+              </a>
+            )}
             <details>
               <summary className="text-muted-foreground cursor-pointer text-sm">원문 보기</summary>
               <pre className="bg-muted mt-2 max-h-96 overflow-auto rounded-md p-3 text-xs whitespace-pre-wrap">{selected.raw_text}</pre>
@@ -192,7 +221,8 @@ export default async function LabPage({ searchParams }: { searchParams: Promise<
               {recent.map((source) => (
                 <li key={source.id}>
                   <Link href={`/lab?source=${source.id}`} className="hover:underline">
-                    {new Date(source.created_at).toLocaleString("ko-KR", { timeZone: "Asia/Seoul" })} · {source.kind} ·{" "}
+                    {new Date(source.created_at).toLocaleString("ko-KR", { timeZone: "Asia/Seoul" })} ·{" "}
+                    {source.connection_id ? "연동" : "직접"} · {source.title ?? source.kind} ·{" "}
                     {STATUS_LABELS[source.processing_status]}
                     {source.processing_summary && <> · {summaryText(source.processing_summary)}</>}
                   </Link>

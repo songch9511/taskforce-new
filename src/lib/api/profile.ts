@@ -8,6 +8,15 @@ export const EMPTY_PROFILE: Profile = { display_name: null, aliases: [], emails:
 
 type AuthUser = { name: string; email: string | null };
 
+/** 계정 정보에서 기본 이름을 고른다: Apple · Google이 준 이름 → 이메일 앞부분 */
+export function accountDisplayName(metadata: Record<string, unknown> | undefined, email: string | null): string {
+  for (const key of ["full_name", "name"]) {
+    const value = metadata?.[key];
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return email?.split("@")[0] ?? "나";
+}
+
 /**
  * 파이프라인에 넘길 사용자 정보. 이름은 요청 → 프로필 → 계정 순서로 고른다.
  * 요청에서 이름을 바꿨으면 프로필 이름도 별칭으로 남겨 둔다.

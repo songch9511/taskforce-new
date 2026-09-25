@@ -28,7 +28,7 @@ cp .env.example .env.local
 2. **Project Settings → API Keys**에서 Project URL과 Publishable key를 `.env.local`에 넣습니다.
 3. 스키마를 적용합니다. 둘 중 하나를 고르세요.
    - SQL Editor에 `supabase/migrations/`의 파일을 **이름 순서대로** 하나씩 붙여넣고 실행
-     (`20260925000000_init.sql` → `20260926000000_source_processing.sql` → `20260927000000_profiles_participants.sql` → …)
+     (`20260925000000_init.sql` → `20260926000000_source_processing.sql` → `20260927000000_profiles_participants.sql` → `20260928000000_connections.sql` → …)
    - 또는 Supabase CLI: `npx supabase link --project-ref <프로젝트 ref>` 후 `npx supabase db push`
 4. **Authentication → URL Configuration**
    - Site URL: `http://localhost:3000`
@@ -42,6 +42,8 @@ npm run dev
 
 http://localhost:3000 에 접속하면 로그인 화면이 나옵니다. 이메일로 받은 링크를 **같은 브라우저에서** 열면 로그인됩니다.
 Supabase 기본 메일 발송은 시간당 횟수 제한이 있으니, 베타 테스터를 받기 전에 Authentication → SMTP Settings에서 자체 SMTP를 연결하세요.
+
+Notion 등 연동을 쓰려면 [`docs/INTEGRATIONS.md`](docs/INTEGRATIONS.md)의 "Notion 연결 만들기"를 따라 `.env.local`을 더 채웁니다.
 
 ## 명령어
 

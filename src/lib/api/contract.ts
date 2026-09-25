@@ -58,7 +58,7 @@ export const profileSchema = z.object({
 });
 export type Profile = z.infer<typeof profileSchema>;
 
-export const apiErrorCodeSchema = z.enum(["unauthorized", "invalid_request", "internal_error"]);
+export const apiErrorCodeSchema = z.enum(["unauthorized", "invalid_request", "rate_limited", "internal_error"]);
 
 export const apiErrorSchema = z.object({
   error: z.object({ code: apiErrorCodeSchema, message: z.string() }),

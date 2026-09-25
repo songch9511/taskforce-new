@@ -40,6 +40,8 @@ describe("초기 마이그레이션", () => {
       "action_events",
       "actions",
       "claims",
+      "connection_secrets",
+      "connections",
       "evidence",
       "judge_logs",
       "metric_events",

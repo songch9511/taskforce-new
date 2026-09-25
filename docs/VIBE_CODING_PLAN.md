@@ -154,9 +154,10 @@ Apple 트랙은 Xcode 빌드가 필요하므로 **Mac의 Claude Code**에서 진
 
 ---
 
-## Phase 6 — 연동 (베타 반응을 본 뒤)
+## Phase 6 — 연동 (Notion 먼저 진행 중)
 
-우선순위 제안: 회의록(Notion/Google Meet 등 AI 회의록 도구) → Gmail → Slack.
+순서: **Notion ✅** → Phase 2 매칭 → Gmail(+Calendar) → GitHub → Slack. 설계와 설정 방법은 [`INTEGRATIONS.md`](INTEGRATIONS.md).
+사용자는 원문을 직접 넣지 않으므로, 엔진이 어느 정도 검증된 뒤(Phase 1) 계획보다 앞당겼다.
 각 연동은 "Source를 만들어 파이프라인에 넣는 어댑터"일 뿐이어야 한다. 파이프라인은 건드리지 않는다.
 
 ---

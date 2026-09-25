@@ -19,7 +19,7 @@ export async function POST(request: Request) {
     schedule: (context, sourceId, source, userName) => {
       after(async () => {
         const identity = resolveIdentity(await loadProfile(context).catch(() => null), context.user, userName);
-        await processSource(context.supabase, sourceId, {
+        await processSource(context.supabase, { id: sourceId, userId: context.user.id }, {
           text: source.raw_text,
           kind: source.kind,
           occurredAt: new Date(source.occurred_at),

@@ -8,6 +8,7 @@ import type { Participants, UserIdentity } from "./identity";
 // Source 텍스트 → Action 후보. LLM 호출은 인자로 받아 eval과 테스트에서 그대로 돌린다.
 
 export const sourceKindSchema = z.enum(["meeting", "message", "email", "doc", "note"]);
+export type SourceKind = z.infer<typeof sourceKindSchema>;
 
 export type ExtractInput = {
   text: string;

@@ -2,6 +2,7 @@ import "server-only";
 
 import { createClient as createSupabaseClient, type SupabaseClient } from "@supabase/supabase-js";
 
+import { accountDisplayName } from "@/lib/api/profile";
 import { publicEnv } from "@/lib/env";
 import { createClient as createCookieClient } from "@/lib/supabase/server";
 
@@ -37,13 +38,5 @@ export async function authenticateRequest(request: Request): Promise<ApiContext 
 
   const claims = data.claims;
   const email = typeof claims.email === "string" ? claims.email : null;
-  return { user: { id: claims.sub, email, name: displayName(claims.user_metadata, email) }, supabase };
-}
-
-function displayName(metadata: Record<string, unknown> | undefined, email: string | null): string {
-  for (const key of ["full_name", "name"]) {
-    const value = metadata?.[key];
-    if (typeof value === "string" && value.trim()) return value.trim();
-  }
-  return email?.split("@")[0] ?? "나";
+  return { user: { id: claims.sub, email, name: accountDisplayName(claims.user_metadata, email) }, supabase };
 }
