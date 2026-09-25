@@ -10,6 +10,11 @@ export function isPublicPath(pathname: string): boolean {
   return PUBLIC_PATHS.some((path) => pathname === path || pathname.startsWith(`${path}/`));
 }
 
+// API는 앱이 Bearer 토큰으로 부르므로 쿠키가 없다고 /login으로 보내지 않는다. 인증은 각 Route Handler가 한다.
+export function isApiPath(pathname: string): boolean {
+  return pathname === "/api" || pathname.startsWith("/api/");
+}
+
 // 세션 쿠키를 갱신하고, 로그인하지 않은 사용자를 /login으로 보낸다.
 // 여기서는 쿠키 기반의 낙관적 확인만 한다. 데이터 보호는 RLS와 src/lib/auth.ts가 맡는다.
 export async function updateSession(request: NextRequest) {
@@ -40,7 +45,7 @@ export async function updateSession(request: NextRequest) {
   const { data } = await supabase.auth.getClaims();
   const signedIn = Boolean(data?.claims);
 
-  if (!signedIn && !isPublicPath(request.nextUrl.pathname)) {
+  if (!signedIn && !isPublicPath(request.nextUrl.pathname) && !isApiPath(request.nextUrl.pathname)) {
     const url = request.nextUrl.clone();
     url.pathname = "/login";
     url.search = "";

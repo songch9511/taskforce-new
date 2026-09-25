@@ -115,7 +115,7 @@ Server Action은 웹 폼 전용이라 Swift 앱에서 부를 수 없다.
 
 | 메서드 · 경로 | 용도 | 단계 |
 |---|---|---|
-| `POST /api/v1/sources` | 원문 전송 (텍스트 · 파일) | 1 |
+| `POST /api/v1/sources` | 원문 전송 (텍스트). 202 + `source_id`, 처리 상태는 `sources.processing_status` | 1 ✅ |
 | `PATCH /api/v1/actions/:id` | 사용자 수정 (`user_edited` 이벤트) | 3 |
 | `DELETE /api/v1/actions/:id` | 사용자 삭제 (`user_deleted` 이벤트, 실제로는 `dropped` 처리) | 3 |
 | `POST /api/v1/actions/:id/confirm` | 확인 요청 확정 (`user_confirmed`) | 3 |

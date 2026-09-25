@@ -36,6 +36,8 @@ export class LlmError extends Error {
   constructor(
     message: string,
     readonly detail?: unknown,
+    /** 모델 출력 형식 문제라 다시 물으면 나을 수 있는 오류 */
+    readonly retryable = false,
   ) {
     super(message);
     this.name = "LlmError";
@@ -66,7 +68,23 @@ export function llmConfigFromEnv(env: Record<string, string | undefined> = proce
   return { apiKey, model };
 }
 
+/** 응답 형식이 깨졌을 때 다시 시도하는 횟수. 같은 모델도 공급자에 따라 가끔 JSON이 아닌 답을 준다. */
+const FORMAT_RETRIES = 1;
+
 export async function completeJson<T extends z.ZodType>(
+  config: LlmConfig,
+  request: JsonCompletionRequest<T>,
+): Promise<JsonCompletion<z.infer<T>>> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await completeJsonOnce(config, request);
+    } catch (error) {
+      if (!(error instanceof LlmError) || !error.retryable || attempt >= FORMAT_RETRIES) throw error;
+    }
+  }
+}
+
+async function completeJsonOnce<T extends z.ZodType>(
   config: LlmConfig,
   request: JsonCompletionRequest<T>,
 ): Promise<JsonCompletion<z.infer<T>>> {
@@ -101,17 +119,19 @@ export async function completeJson<T extends z.ZodType>(
   if (!parsed.success) throw new LlmError("OpenRouter 응답 형식이 예상과 다릅니다", parsed.error.issues);
 
   const choice = parsed.data.choices[0];
-  if (!choice.message.content) throw new LlmError(`빈 응답 (finish_reason: ${choice.finish_reason ?? "?"})`);
+  if (!choice.message.content) {
+    throw new LlmError(`빈 응답 (finish_reason: ${choice.finish_reason ?? "?"})`, undefined, true);
+  }
 
   let json: unknown;
   try {
     json = JSON.parse(choice.message.content);
   } catch {
-    throw new LlmError(`JSON이 아닌 응답 (finish_reason: ${choice.finish_reason ?? "?"})`);
+    throw new LlmError(`JSON이 아닌 응답 (finish_reason: ${choice.finish_reason ?? "?"})`, undefined, true);
   }
 
   const data = request.schema.safeParse(json);
-  if (!data.success) throw new LlmError("응답이 스키마와 맞지 않습니다", data.error.issues);
+  if (!data.success) throw new LlmError("응답이 스키마와 맞지 않습니다", data.error.issues, true);
 
   return { data: data.data, model: parsed.data.model, usage: parsed.data.usage };
 }
