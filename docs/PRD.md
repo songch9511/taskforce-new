@@ -51,6 +51,9 @@ Action        id, user_id, title, scope_summary, owner(me|other|unknown), counte
               due_at, due_confidence, owner_confidence, status(open|done|dropped),
               needs_confirmation, embedding, created_at, updated_at
 Evidence      id, action_id, source_id, quote, role(created|updated|completed)
+Claim         id, action_id, field(due|scope|owner|status), value, source_id, quote, occurred_at,
+              speaker_role(me|counterpart|third_party), certainty(firm|tentative),
+              directness(first_hand|reported), audience(shared|private), state(active|superseded|disputed)
 ActionEvent   id, action_id, type(created|due_changed|scope_changed|merged|completed|
               user_edited|user_deleted|user_confirmed), before, after, source_id, actor(ai|user)
 MetricEvent   id, user_id, type(app_opened|action_started|handoff_used), action_id, at
@@ -63,13 +66,19 @@ Source 입력
   → ① 후보 추출 (LLM, 구조화 출력)
        - 사용자가 맡았거나 약속한 것만. 참고 정보·남의 할 일은 제외
        - 각 후보: title, owner, counterpart, due(원문 표현 + 정규화 날짜), 신뢰도, 근거 인용
-  → ② 매칭 (임베딩으로 열린 Action top-k 검색 → LLM 판정)
+  → ② 기계적 검증 (인용 실재 확인, 날짜 재계산, 스키마 검증)
+  → ③ Judge AI (후보별 반대 검증: accept | reject | uncertain)
+  → ④ 매칭 (임베딩으로 열린 Action top-k 검색 → LLM 판정)
        - new | update(기한/범위 변경) | duplicate | complete
-  → ③ 반영 정책
+       - update는 Action을 직접 고치지 않고 필드별 Claim으로 저장
+  → ⑤ 진실 판정 (코드, 규칙 기반) → Action 현재 값 계산
+  → ⑥ 반영 정책
        - 신뢰도 높음 → 자동 반영 + ActionEvent 기록
        - 담당/기한 신뢰도 낮음 → 확인 큐
-  → ④ "지금 할 일" 랭킹 (기한 임박, 외부와의 약속, 방치 기간)
+  → ⑦ "지금 할 일" 랭킹 (기한 임박, 외부와의 약속, 방치 기간)
 ```
+
+Judge AI와 진실 판정 규칙의 상세는 [`TRUTH_RULES.md`](TRUTH_RULES.md)를 보세요.
 
 ## 6. 성공 지표 (베타)
 

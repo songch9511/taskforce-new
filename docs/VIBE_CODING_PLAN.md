@@ -37,6 +37,13 @@ LLM 품질은 측정 장치 없이는 "느낌"으로만 판단하게 된다.
 > '사용자가 맡았거나 약속한 것'만 추출하고 참고 정보와 타인의 할 일은 제외해.
 > 그리고 `npm run eval`이 evals/golden 전체를 돌려 precision, recall, 담당 정확도, 기한 정확도를 표로 출력하게 해."
 
+3. 검증 단계 추가 (`docs/TRUTH_RULES.md` 1장)
+
+> 프롬프트:
+> "docs/TRUTH_RULES.md 1장을 읽어. 추출 뒤에 ① 인용 실재 확인·날짜 재계산 같은 기계적 검증과
+> ② 후보별로 반대 검증하는 Judge AI(`src/lib/pipeline/judge.ts`)를 추가해. Judge에는 추출기의 추론을 넘기지 마.
+> eval에 Judge 적용 전후의 precision/recall 비교와, Judge 자체의 사람 라벨 일치율을 추가해."
+
 완료 기준: eval 표가 출력되고, **프롬프트를 고칠 때마다 숫자로 개선/퇴보를 확인**할 수 있음.
 목표 예시: precision ≥ 0.9 (틀린 Action이 섞이는 게 누락보다 신뢰를 더 깎는다).
 
@@ -45,11 +52,12 @@ LLM 품질은 측정 장치 없이는 "느낌"으로만 판단하게 된다.
 "금요일 약속 → 월요일로 변경" 시나리오가 여기서 풀린다.
 
 > 프롬프트:
-> "`src/lib/pipeline/match.ts`를 만들어. 새 후보마다 pgvector로 열린 Action top-5를 찾고,
-> LLM이 new / update / duplicate / complete 중 하나로 판정하게 해. update면 무엇이 바뀌었는지(before/after)를 반환.
+> "docs/TRUTH_RULES.md 2장을 읽어. `src/lib/pipeline/match.ts`를 만들어. 새 후보마다 pgvector로 열린 Action top-5를 찾고,
+> LLM이 new / update / duplicate / complete 중 하나로 판정하게 해. update는 Action을 직접 고치지 말고 필드별 Claim으로 저장해.
+> 그다음 `src/lib/pipeline/resolve.ts`에 규칙 0~6을 구현한 순수 함수 `resolve(claims)`를 만들고, 규칙마다 단위 테스트를 작성해.
 > 골든셋에 '여러 원문이 순서대로 들어오는' 시퀀스 케이스를 추가하고 eval에 병합 정확도를 넣어."
 
-완료 기준: PRD 2장 핵심 시나리오 1~2가 eval 케이스로 통과.
+완료 기준: PRD 2장 핵심 시나리오 1~2와 TRUTH_RULES.md의 9/22~9/24 표가 테스트로 통과.
 
 ## Phase 3 — 반영 정책 + 확인 큐 + 지금 할 일 화면 (2~3일)
 
