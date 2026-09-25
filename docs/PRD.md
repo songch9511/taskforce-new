@@ -67,7 +67,7 @@ Source 입력
        - 사용자가 맡았거나 약속한 것만. 참고 정보·남의 할 일은 제외
        - 각 후보: title, owner, counterpart, due(원문 표현 + 정규화 날짜), 신뢰도, 근거 인용
   → ② 기계적 검증 (인용 실재 확인, 날짜 재계산, 스키마 검증)
-  → ③ Judge AI (후보별 반대 검증: accept | reject | uncertain)
+  → ③ Jev 판정 (후보별 검증 확률 + Claim 속성 분류)
   → ④ 매칭 (임베딩으로 열린 Action top-k 검색 → LLM 판정)
        - new | update(기한/범위 변경) | duplicate | complete
        - update는 Action을 직접 고치지 않고 필드별 Claim으로 저장
@@ -78,7 +78,7 @@ Source 입력
   → ⑦ "지금 할 일" 랭킹 (기한 임박, 외부와의 약속, 방치 기간)
 ```
 
-Judge AI와 진실 판정 규칙의 상세는 [`TRUTH_RULES.md`](TRUTH_RULES.md)를 보세요.
+Jev 판정과 진실 판정 규칙의 상세는 [`TRUTH_RULES.md`](TRUTH_RULES.md)를 보세요.
 
 ## 6. 성공 지표 (베타)
 

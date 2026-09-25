@@ -2,7 +2,7 @@
 
 두 가지를 다룹니다.
 
-1. **Judge AI**: 추출된 Action 후보를 독립적으로 검증해 오탐을 줄이는 단계
+1. **Judge AI (Jev)**: 추출된 Action 후보를 독립적으로 검증해 오탐을 줄이는 단계
 2. **진실 판정 기준**: 여러 소스가 서로 다른 말을 할 때 무엇을 사실로 볼지 정하는 규칙
 
 핵심 설계 원칙은 하나입니다.
@@ -14,12 +14,12 @@ LLM이 최종 값을 바로 정하면 틀려도 이유를 알 수 없고, 같은
 
 ---
 
-## 1. Judge AI (검증 단계)
+## 1. Judge AI: Jev (검증 단계)
 
 ### 파이프라인 위치
 
 ```
-Source → ① 추출기(Extractor) → ② 기계적 검증 → ③ Judge AI → ④ 매칭 → ⑤ 진실 판정(코드) → 반영
+Source → ① 추출기(Extractor) → ② 기계적 검증 → ③ Jev 판정 → ④ 매칭 → ⑤ 진실 판정(코드) → 반영
 ```
 
 ### ② 기계적 검증 (LLM 없이, 먼저)
@@ -30,31 +30,90 @@ Source → ① 추출기(Extractor) → ② 기계적 검증 → ③ Judge AI �
 - **날짜 정합성**: "금요일"을 정규화한 날짜가 원문 작성 시점(`occurred_at`) 기준으로 맞는지 코드로 다시 계산합니다.
 - **스키마 검증**: zod 검증에 실패하면 폐기합니다.
 
-### ③ Judge AI 설계
+### ③ Judge: Jev (TypeSafe System One 모델)
 
-| 항목 | 규칙 |
-|---|---|
-| 입력 | 후보 1개 + 인용 주변 원문 구간만 넣습니다. 추출기의 추론 과정은 **보여주지 않습니다**(추출기 논리에 끌려가지 않게). |
-| 역할 | "이 후보를 기각할 이유를 찾아라"는 반대 검증 역할로 둡니다. |
-| 체크리스트 | ① 사용자 본인이 맡았거나 약속했는가 ② 실제 행동인가(참고 정보·의견·아이디어가 아닌가) ③ 확정인가, 검토·가능성 수준인가 ④ 이미 끝난 일이 아닌가 ⑤ 기한·담당이 인용에 근거하는가 |
-| 출력 | `accept` / `reject` / `uncertain` + 필드별 판정 + 기각 사유 코드 (예: `NOT_MY_ACTION`, `INFO_ONLY`, `TENTATIVE`, `ALREADY_DONE`) |
-| 모델 | 추출기와 다른 프롬프트로 돌립니다. 가능하면 다른 모델을 써서 같은 실수를 공유하지 않게 합니다. |
+Judge에는 [Jev](https://typesafe.ai/blog/introducing-system-one-models-and-jev)를 씁니다.
+Jev는 글을 생성하지 않는 **판정 전용 모델**입니다. 상태(`state`)와 타입이 정해진 질문(`questions`)을 보내면
+**보정된(calibrated) 확률**만 돌려줍니다. 그래서 역할을 이렇게 나눕니다.
 
-### 판정 결과 처리
-
-| 추출기 | Judge | 처리 |
+| 일 | 모델 | 이유 |
 |---|---|---|
-| 확신 | accept | 자동 반영 |
-| 확신 | uncertain | 확인 요청 목록으로 보냄 |
-| 불확실 | accept | 확인 요청 목록으로 보냄 |
-| 아무거나 | reject | 반영 안 함. 단, 기각 로그는 남깁니다(누락 분석용) |
+| Claim 추출 (제목, 인용, 날짜 표현 생성) | 생성형 LLM | 글을 만들어야 하는 일. Jev는 못 합니다 |
+| 추출 결과 검증, 속성 분류, 매칭 판정 | **Jev** | 정해진 선택지 중 고르기 + 확률이 필요한 일 |
+
+LLM이 스스로 매기는 "확신도"는 잘 보정되어 있지 않습니다.
+Jev의 확률은 보정을 목표로 학습되어 있어서 **"P(내 약속) < 0.8이면 확인 요청"** 같은 임계값을 그대로 걸 수 있습니다.
+이것이 Jev를 쓰는 핵심 이유입니다.
+
+#### API
+
+- 엔드포인트: `POST https://openrouter.ai/api/alpha/decisions` (OpenRouter Decisions API, **chat completions와 다름**. 채팅 SDK로는 호출 불가)
+- 인증: `Authorization: Bearer $OPENROUTER_API_KEY`
+- 모델: `typesafe/jev-1.13` (eval 재현성을 위해 `~latest` 대신 **버전 고정**)
+- 요청: `{ "model", "state", "questions" }`. `state`에는 문자열, JSON 객체, 텍스트 배열을 넣을 수 있습니다.
+- 질문 타입과 응답:
+  - `noul` → `{"type":"noul","noul":0.93}` (예일 확률)
+  - `choice` → `{"type":"choice","choice":"key","confidence":…,"probabilities":{…}}`
+  - `score` → `{"type":"score","score":1.4,"probabilities":{…}}` (순서 있는 척도, 소수값 가능)
+- 비용: 입력 토큰만 과금되고 출력은 무료입니다. 후보 하나에 질문 여러 개를 **한 번에** 묻습니다.
+
+#### 후보 검증 요청 (후보 1개당 1회 호출)
+
+`state`에는 후보와 인용 주변 원문만 넣습니다. 추출기의 추론은 넣지 않습니다.
+
+```jsonc
+{
+  "model": "typesafe/jev-1.13",
+  "state": {
+    "user": "<사용자 이름>",
+    "candidate": { "title": "제안서 발송", "due_text": "금요일까지", "quote": "금요일까지 제안서 보내드릴게요" },
+    "context": "…인용 앞뒤 원문 구간…",
+    "source": { "kind": "meeting", "occurred_at": "2026-09-22" }
+  },
+  "questions": {
+    "is_my_commitment": { "type": "noul", "instructions": "Did the user personally commit to or get assigned this action?" },
+    "is_actionable":    { "type": "noul", "instructions": "Is this a concrete action, not reference info, an opinion, or an idea?" },
+    "already_done":     { "type": "noul", "instructions": "Does the context show this action is already completed?" },
+    "certainty": { "type": "choice", "instructions": "How firm is the commitment?",
+      "criteria": { "firm": "Explicit promise or assignment", "tentative": "Maybe, considering, possibly", "none": "No commitment" } },
+    "speaker_role": { "type": "choice", "instructions": "Who made the statement in the quote?",
+      "criteria": { "me": "The user", "counterpart": "The person the action is for", "third_party": "Someone else" } },
+    "directness": { "type": "choice", "instructions": "Is the statement first-hand or reported?",
+      "criteria": { "first_hand": "Speaker states it directly", "reported": "Relays what someone else said" } },
+    "audience": { "type": "choice", "instructions": "Was this said to the counterpart or a private note?",
+      "criteria": { "shared": "Communicated to the counterpart", "private": "User's own note or internal" } }
+  }
+}
+```
+
+`certainty`, `speaker_role`, `directness`, `audience`는 2장 진실 판정 규칙의 입력(Claim 속성)으로 그대로 씁니다.
+
+#### 판정 결과 처리 (임계값은 골든셋으로 조정)
+
+| 조건 | 처리 |
+|---|---|
+| `is_my_commitment` ≥ 0.85, `is_actionable` ≥ 0.85, `already_done` < 0.3, `certainty=firm` | 자동 반영 |
+| 위 확률 중 하나라도 0.4~0.85 구간, 또는 `certainty=tentative` | 확인 요청 목록 |
+| `is_my_commitment` < 0.4 또는 `is_actionable` < 0.4 또는 `certainty=none` | 반영 안 함. 기각 로그는 남깁니다 (누락 분석용) |
+
+기각 사유는 어느 질문의 확률이 낮았는지로 코드가 만듭니다 (`NOT_MY_ACTION`, `INFO_ONLY`, `TENTATIVE`, `ALREADY_DONE`).
+Jev는 설명 문장을 주지 않으므로, 사용자에게 보여줄 이유는 이 사유 코드와 원문 인용으로 구성합니다.
+
+#### Jev를 더 쓸 수 있는 곳
+
+| 위치 | 질문 | 효과 |
+|---|---|---|
+| 추출 전 사전 필터 | `noul`: "이 메시지 조각에 약속·할당이 있는가?" | 약속 없는 잡담·공지는 비싼 LLM 추출을 건너뜀 |
+| 매칭 판정 | `choice`: new / update / duplicate / complete (state에 후보와 기존 Action을 함께) | 병합 오판을 확률로 관리 |
+| "지금 할 일" 랭킹 | `score`: 긴급도 척도 | 규칙 기반 정렬의 보조 신호 |
 
 ### 주의할 점
 
-- **Judge도 틀립니다.** 골든셋으로 Judge 자체를 평가해야 합니다. 사람 라벨과의 일치율, 그리고 "Judge가 기각했는데 사실은 맞던 것"(누락 증가)을 함께 봅니다.
-- **오탐이 줄어든 만큼 누락이 늘 수 있습니다.** eval에서 precision과 recall을 항상 같이 보고, Judge 적용 전후를 비교합니다.
-- **비용**: Judge는 원문 전체가 아니라 후보 단위로만 돌리므로 추가 비용이 제한적입니다.
-- **사용자 피드백을 되먹임합니다.** 사용자가 삭제한 Action은 기각 사유와 함께 골든셋 후보로 쌓아 Judge 체크리스트를 개선합니다(PRD 지표 1과 직결).
+- **한국어 성능을 먼저 확인합니다.** 공개 예시는 대부분 영어입니다. 골든셋(한국어 회의록·메시지)에서 Jev 확률과 사람 라벨의 일치율, 보정 정도(예: 0.8이라고 한 것 중 실제로 80%가 맞는지)를 측정한 뒤 임계값을 정합니다. 질문 `instructions`는 영어로 쓰고 `state`는 원문 그대로 두는 방식과 둘 다 한국어로 쓰는 방식을 비교합니다.
+- **Decisions API는 alpha입니다.** 요청 형식이 바뀔 수 있으니 호출은 `src/lib/ai/jev.ts` 한 파일에 감싸고, 응답은 zod로 검증합니다.
+- **Judge도 틀립니다.** "Jev가 기각했는데 사실은 맞던 것"(누락 증가)을 함께 봅니다. eval에서 precision과 recall을 항상 같이 보고 Jev 적용 전후를 비교합니다.
+- **사용자 피드백을 되먹임합니다.** 사용자가 삭제한 Action은 골든셋 후보로 쌓아 질문 문구와 임계값을 개선합니다 (PRD 지표 1과 직결).
+- **데이터 경로**: 원문 일부가 OpenRouter와 TypeSafe를 거칩니다. 베타 테스터 동의서에 명시합니다.
 
 ---
 

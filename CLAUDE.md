@@ -19,13 +19,16 @@ AI 코딩 에이전트가 이 저장소에서 작업할 때 반드시 지켜야 
 
 - Next.js (App Router) + TypeScript (strict) + Tailwind + shadcn/ui
 - Supabase: Postgres, Auth, pgvector (Action 매칭용 임베딩)
-- LLM: Anthropic Claude API — 추출·매칭은 tool use / 구조화 출력(JSON 스키마)으로만 받는다. 자유 텍스트를 파싱하지 않는다.
+- AI 호출은 모두 OpenRouter 키 하나로 한다 (`OPENROUTER_API_KEY`, `.env.local`에만 두고 절대 커밋하지 않는다).
+  - 생성형 LLM (Claim 추출): OpenRouter chat completions. 구조화 출력(JSON 스키마)으로만 받는다. 자유 텍스트를 파싱하지 않는다. 모델 id는 환경변수로.
+  - Jev (검증·분류·매칭 판정): OpenRouter Decisions API `POST /api/alpha/decisions`, 모델 `typesafe/jev-1.13` 고정. 상세는 `docs/TRUTH_RULES.md` 1장.
+  - 글 생성이 필요 없는 판정(예/아니오, 선택지 고르기, 척도)은 LLM이 아니라 Jev로 한다.
 - 스키마 검증: zod
 - 테스트: Vitest (단위), 추출 품질은 `evals/`의 골든셋으로 평가
 
 ## 코드 규칙
 
-- LLM 호출은 `src/lib/ai/` 안에서만 한다. 프롬프트는 `src/lib/ai/prompts/`에 버전 관리되는 파일로 둔다.
+- AI 호출은 `src/lib/ai/` 안에서만 한다 (`llm.ts`, `jev.ts`). 외부 응답은 모두 zod로 검증한다. 프롬프트는 `src/lib/ai/prompts/`에 버전 관리되는 파일로 둔다.
 - 추출 파이프라인(`src/lib/pipeline/`)은 UI·DB와 분리된 순수 함수로 작성해 eval 스크립트에서 그대로 돌릴 수 있게 한다.
 - 프롬프트나 파이프라인을 바꿨으면 `npm run eval`을 돌리고 결과(precision / recall / 담당·기한 정확도)를 PR에 적는다.
 - 사용자 데이터(회의록 원문 등)를 로그에 평문으로 남기지 않는다.
