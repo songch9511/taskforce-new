@@ -17,7 +17,7 @@ LLM 품질은 측정 장치 없이는 "느낌"으로만 판단하게 된다.
 
 ---
 
-## Phase 0 — 뼈대 (반나절)
+## Phase 0 — 뼈대 (반나절) ✅ 완료
 
 > 프롬프트:
 > "CLAUDE.md와 docs/PRD.md를 읽어. Next.js(App Router, TS strict) + Tailwind + shadcn/ui + Supabase로 프로젝트를 초기화하고,

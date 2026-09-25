@@ -1,3 +1,5 @@
+@AGENTS.md
+
 # Taskforce — AI 프로젝트 매니저
 
 AI 코딩 에이전트가 이 저장소에서 작업할 때 반드시 지켜야 할 규칙입니다.
@@ -17,8 +19,12 @@ AI 코딩 에이전트가 이 저장소에서 작업할 때 반드시 지켜야 
 
 ## 기술 스택
 
-- Next.js (App Router) + TypeScript (strict) + Tailwind + shadcn/ui
-- Supabase: Postgres, Auth, pgvector (Action 매칭용 임베딩)
+- Next.js 16 (App Router) + TypeScript (strict) + Tailwind v4 + shadcn/ui
+  - Next.js 16에서는 middleware가 `src/proxy.ts`로 바뀌었고 `cookies()`, `params`, `searchParams`가 비동기다. 모르는 API는 `node_modules/next/dist/docs/`를 먼저 읽는다.
+- Supabase: Postgres, Auth(이메일 매직 링크), pgvector (Action 매칭용 임베딩)
+  - 스키마 변경은 `supabase/migrations/`에 새 파일로 추가한다. 기존 마이그레이션 파일은 고치지 않는다.
+  - 새 테이블은 `user_id` + RLS(`owner_all` 정책) + 부모와의 `(id, user_id)` 복합 외래키 패턴을 따르고, `tests/db/`에 RLS 테스트를 추가한다.
+  - 서버에서 사용자를 확인할 때는 `requireUser()`(`src/lib/auth.ts`)를 쓴다. proxy의 확인만 믿지 않는다.
 - AI 호출은 모두 OpenRouter 키 하나로 한다 (`OPENROUTER_API_KEY`, `.env.local`에만 두고 절대 커밋하지 않는다).
   - 생성형 LLM (Claim 추출): OpenRouter chat completions. 구조화 출력(JSON 스키마)으로만 받는다. 자유 텍스트를 파싱하지 않는다. 모델 id는 환경변수로.
   - Jev (검증·분류·매칭 판정): OpenRouter Decisions API `POST /api/alpha/decisions`, 모델 `typesafe/jev-1.13` 고정. 상세는 `docs/TRUTH_RULES.md` 1장.
@@ -36,8 +42,12 @@ AI 코딩 에이전트가 이 저장소에서 작업할 때 반드시 지켜야 
 ## 명령어
 
 ```bash
-npm run dev      # 로컬 개발 서버
-npm run test     # 단위 테스트
-npm run eval     # 골든셋으로 추출 품질 평가
+npm run dev        # 로컬 개발 서버
 npm run lint
+npm run typecheck  # 라우트 타입 생성 후 tsc
+npm run test       # 단위 테스트 + DB 마이그레이션·RLS 테스트 (PGlite)
+npm run eval       # 골든셋으로 추출 품질 평가
+npm run build
 ```
+
+커밋 전에 lint, typecheck, test, eval을 모두 통과시킨다 (CI와 같은 순서).
