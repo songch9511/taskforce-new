@@ -1,4 +1,10 @@
-import { createSourceRequestSchema, type ApiError, type CreateSourceRequest, type CreateSourceResponse } from "./contract";
+import {
+  createSourceRequestSchema,
+  type ApiError,
+  type CreateSourceRequest,
+  type CreateSourceResponse,
+  type ParticipantsInput,
+} from "./contract";
 
 // POST /api/v1/sources 처리. 인증 · 저장 · 백그라운드 실행을 인자로 받아 Route Handler 밖에서 테스트한다.
 
@@ -8,6 +14,7 @@ export type NewSource = {
   occurred_at: string;
   title: string | null;
   external_url: string | null;
+  participants: ParticipantsInput | null;
 };
 
 export type CreateSourceDeps<User> = {
@@ -43,6 +50,7 @@ export async function handleCreateSource<User>(request: Request, deps: CreateSou
     occurred_at: request_.occurred_at ?? (deps.now?.() ?? new Date()).toISOString(),
     title: request_.title ?? null,
     external_url: request_.external_url ?? null,
+    participants: request_.participants ?? null,
   };
 
   let sourceId: string;

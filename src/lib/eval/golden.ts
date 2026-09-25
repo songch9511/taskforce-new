@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { participantsSchema } from "@/lib/api/contract";
+
 // 골든셋 케이스 형식. 한 케이스는 "시간 순서대로 들어오는 원문 묶음"과
 // 그 결과로 남아야 하는 Action, 뽑으면 안 되는 문장을 담는다.
 
@@ -10,6 +12,7 @@ export const goldenSourceSchema = z.object({
   kind: z.enum(["meeting", "message", "email", "doc", "note"]),
   occurred_at: z.iso.datetime({ offset: true }),
   text: z.string().min(1),
+  participants: participantsSchema.optional(),
 });
 
 export const expectedActionSchema = z.object({
@@ -29,7 +32,11 @@ export const goldenCaseSchema = z.object({
   description: z.string().min(1),
   // real: 실제 사용자 원문(익명화), synthetic: 개발용으로 지어낸 원문. eval은 둘을 나눠 보고한다.
   origin: z.enum(["real", "synthetic"]).default("real"),
-  user: z.object({ name: z.string().min(1) }),
+  user: z.object({
+    name: z.string().min(1),
+    aliases: z.array(z.string().min(1)).default([]),
+    emails: z.array(z.email()).default([]),
+  }),
   sources: z.array(goldenSourceSchema).min(1),
   expected_actions: z.array(expectedActionSchema),
   must_not_extract: z

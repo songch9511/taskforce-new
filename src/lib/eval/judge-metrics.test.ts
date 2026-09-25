@@ -9,7 +9,7 @@ const golden: GoldenCase = {
   id: "c1",
   origin: "synthetic",
   description: "테스트",
-  user: { name: "나" },
+  user: { name: "나", aliases: [], emails: [] },
   sources: [{ id: "s1", kind: "meeting", occurred_at: "2025-09-22T10:00:00+09:00", text: "가나다 라마바 사아자 차카타 파하" }],
   expected_actions: [
     { title: "A", owner: "me", status: "open", evidence: [{ source: "s1", quote: "가나다" }] },

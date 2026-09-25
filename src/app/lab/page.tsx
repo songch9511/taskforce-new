@@ -1,6 +1,8 @@
 import Link from "next/link";
 
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { EMPTY_PROFILE } from "@/lib/api/profile";
+import { profileSchema } from "@/lib/api/contract";
 import { requireUser } from "@/lib/auth";
 import type { JudgeSignals, RejectReason } from "@/lib/pipeline/judge";
 import type { VerifiedCandidate } from "@/lib/pipeline/verify";
@@ -8,6 +10,7 @@ import { createClient } from "@/lib/supabase/server";
 
 import { AutoRefresh } from "./auto-refresh";
 import { LabForm } from "./lab-form";
+import { ProfileForm } from "./profile-form";
 
 // 내부 시험대: 원문을 넣고 추출 → 기계 검증 → Jev 판정 결과를 표로 본다. 사용자용 화면이 아니다.
 
@@ -47,6 +50,9 @@ export default async function LabPage({ searchParams }: { searchParams: Promise<
   const { source: selectedId } = await searchParams;
   const supabase = await createClient();
 
+  const { data: profileRow } = await supabase.from("profiles").select("display_name, aliases, emails").maybeSingle();
+  const profile = profileSchema.safeParse(profileRow).data ?? EMPTY_PROFILE;
+
   const { data: recent } = await supabase
     .from("sources")
     .select("id, kind, raw_text, occurred_at, created_at, processing_status, processing_summary, processing_error")
@@ -85,7 +91,19 @@ export default async function LabPage({ searchParams }: { searchParams: Promise<
           <CardDescription>POST /api/v1/sources로 보내고, 추출 · 검증 · Jev 판정 결과를 아래에 보여줍니다.</CardDescription>
         </CardHeader>
         <CardContent>
-          <LabForm defaultUserName={user.email?.split("@")[0] ?? ""} />
+          <LabForm />
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>원문 속 나</CardTitle>
+          <CardDescription>
+            추출기가 원문에서 나를 알아보는 데 씁니다. 받아쓰기가 이름을 틀리게 적는다면 그 이름을 다른 이름에 넣으세요.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <ProfileForm profile={profile} />
         </CardContent>
       </Card>
 
@@ -117,6 +135,7 @@ export default async function LabPage({ searchParams }: { searchParams: Promise<
                     <tr>
                       <th className="py-2 pr-3 font-medium">판정</th>
                       <th className="py-2 pr-3 font-medium">할 일 · 근거 인용</th>
+                      <th className="py-2 pr-3 font-medium">담당</th>
                       <th className="py-2 pr-3 font-medium">기한</th>
                       <th className="py-2 pr-3 font-medium">내 약속</th>
                       <th className="py-2 pr-3 font-medium">할 일임</th>
@@ -135,6 +154,7 @@ export default async function LabPage({ searchParams }: { searchParams: Promise<
                             <div className="font-medium">{log.candidate.title}</div>
                             <div className="text-muted-foreground">“{log.candidate.quote}”</div>
                           </td>
+                          <td className="py-2 pr-3 whitespace-nowrap">{log.candidate.owner === "me" ? "나" : "확인 필요"}</td>
                           <td className="py-2 pr-3 whitespace-nowrap">
                             {log.candidate.due ?? "—"}
                             {log.candidate.due_text && <div className="text-muted-foreground">{log.candidate.due_text}</div>}

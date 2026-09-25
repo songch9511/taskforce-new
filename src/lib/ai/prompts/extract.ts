@@ -1,6 +1,8 @@
+import { describeIdentity, findNameVariants, type Participants, type UserIdentity } from "@/lib/pipeline/identity";
+
 // Action 후보 추출 프롬프트. 문구를 바꾸면 버전을 올리고 `npm run eval` 결과를 PR에 적는다.
 
-export const EXTRACT_PROMPT_VERSION = "extract-v1";
+export const EXTRACT_PROMPT_VERSION = "extract-v2";
 
 export const EXTRACT_SYSTEM_PROMPT = `당신은 회의록·메시지·메일·메모에서 "사용자 본인이 해야 할 일"만 골라내는 추출기입니다.
 
@@ -17,6 +19,13 @@ export const EXTRACT_SYSTEM_PROMPT = `당신은 회의록·메시지·메일·�
 - 확정되지 않은 일: "시간 되면 볼게요", "검토해볼게요", "계약되면 준비할게요", "~하면 좋을 것 같아요", 사용자가 거절한 요청
 - 이미 끝난 일: "어제 보내드렸어요", "방금 공유했습니다"
 - 대화 중에 다른 사람에게 다시 넘어간 일
+
+## 누가 사용자인가
+- "사용자의 다른 이름"에 있는 이름도 사용자입니다. 세 글자 이름은 성을 빼고 불릴 수 있습니다.
+- 메일에서 사용자가 보낸 사람이면 본문의 "제가 ~할게요"는 사용자의 약속입니다.
+- 사용자가 유일한 받는 사람이면 본문의 "~해주세요"는 사용자에게 한 요청입니다.
+- 사용자가 참조로만 받았다면 본문의 요청은 대개 받는 사람의 일입니다. 사용자 이름이 직접 나올 때만 추출합니다.
+- "이름 주의"에 적힌 이름에 걸린 일은 사용자의 일일 수 있습니다. 추출하되 owner를 "unknown"으로 둡니다.
 
 같은 일이 원문에 여러 번 나오면 후보 하나로 합칩니다.
 애매하면 추출하지 마세요. 틀린 할 일이 섞이는 것이 하나 놓치는 것보다 더 나쁩니다.
@@ -41,7 +50,8 @@ export const EXTRACT_SYSTEM_PROMPT = `당신은 회의록·메시지·메일·�
 - "25일까지": 이번 달 25일 (이미 지났으면 다음 달 25일)`;
 
 export type ExtractPromptInput = {
-  userName: string;
+  identity: UserIdentity;
+  participants?: Participants;
   kind: string;
   occurredAt: Date;
   text: string;
@@ -75,7 +85,8 @@ export function calendarAround(occurredAt: Date): string {
 
 export function buildExtractUserPrompt(input: ExtractPromptInput): string {
   const { iso, weekday } = kstDate(input.occurredAt);
-  return `사용자 이름: ${input.userName}
+  const variants = findNameVariants(input.text, input.identity, input.participants);
+  return `${describeIdentity(input.identity, input.participants, variants)}
 원문 종류: ${input.kind}
 작성 시점: ${iso} (${weekday})
 

@@ -9,7 +9,7 @@ const base: GoldenCase = {
   id: "t",
   description: "테스트",
   origin: "synthetic",
-  user: { name: "나" },
+  user: { name: "나", aliases: [], emails: [] },
   sources: [
     { id: "s1", kind: "meeting", occurred_at: "2025-09-22T10:00:00+09:00", text: "금요일까지  제안서 보내드릴게요" },
   ],

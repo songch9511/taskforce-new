@@ -33,9 +33,28 @@ describe("handleCreateSource", () => {
     expect(response.status).toBe(202);
     expect(await response.json()).toEqual({ source_id: "11111111-1111-4111-8111-111111111111", status: "pending" });
     expect(inserted).toEqual([
-      { kind: "meeting", raw_text: "금요일까지 보내드릴게요", occurred_at: "2026-09-25T01:00:00.000Z", title: null, external_url: null },
+      {
+        kind: "meeting",
+        raw_text: "금요일까지 보내드릴게요",
+        occurred_at: "2026-09-25T01:00:00.000Z",
+        title: null,
+        external_url: null,
+        participants: null,
+      },
     ]);
     expect(scheduled).toEqual([{ sourceId: "11111111-1111-4111-8111-111111111111", userName: "도윤" }]);
+  });
+
+  it("관련자를 함께 저장한다", async () => {
+    const { deps, inserted } = setup();
+    const participants = { from: { name: "김대표", email: "ceo@x.com" }, cc: [{ email: "me@x.com" }] };
+    await handleCreateSource(post({ kind: "email", text: "제안서 부탁드려요", participants }), deps);
+    expect(inserted[0].participants).toEqual(participants);
+  });
+
+  it("이름도 이메일도 없는 관련자는 400", async () => {
+    const { deps } = setup();
+    expect((await handleCreateSource(post({ kind: "email", text: "x", participants: { to: [{}] } }), deps)).status).toBe(400);
   });
 
   it("로그인하지 않았으면 401", async () => {

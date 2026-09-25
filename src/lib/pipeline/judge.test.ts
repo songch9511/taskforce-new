@@ -75,9 +75,9 @@ describe("parseJudgeAnswers", () => {
 
 describe("buildJudgeState", () => {
   it("추출기의 추론 없이 후보와 인용 주변 원문만 넣는다", () => {
-    const state = buildJudgeState(candidate, source, "나");
+    const state = buildJudgeState(candidate, source, { name: "나", aliases: ["Me"], emails: ["me@x.com"] });
     expect(state).toEqual({
-      user: "나",
+      user: { name: "나", aliases: ["Me"], position: "unknown" },
       candidate,
       context: source.text,
       source: { kind: "meeting", occurred_at: "2025-09-22" },
@@ -92,8 +92,20 @@ describe("judgeCandidate", () => {
       calls.push(request);
       return { model: "typesafe/jev-test", answers, usage: { input_tokens: 10, cost: 0.00001 } };
     };
-    const result = await judgeCandidate(candidate, source, "나", decide);
+    const result = await judgeCandidate(candidate, source, { name: "나", aliases: [], emails: [] }, decide);
     expect(calls).toHaveLength(1);
-    expect(result).toMatchObject({ decision: "auto", model: "typesafe/jev-test", cost: 0.00001, promptVersion: "judge-v1" });
+    expect(result).toMatchObject({ decision: "auto", model: "typesafe/jev-test", cost: 0.00001, promptVersion: expect.stringMatching(/^judge-v\d+$/) });
+  });
+});
+
+describe("buildJudgeState의 사용자 정보", () => {
+  it("메일에서의 위치와 받아쓰기 오타 후보를 넣고 이메일 주소는 넣지 않는다", () => {
+    const state = buildJudgeState(
+      { title: "UX 기획", quote: "도연님 - UX 기획 진행", due_text: null },
+      { ...source, text: "- [ ] 도연님 - UX 기획 진행", participants: { from: { email: "boss@x.com" }, cc: [{ email: "d@x.com" }] } },
+      { name: "도윤", aliases: [], emails: ["d@x.com"] },
+    );
+    expect(state.user).toEqual({ name: "도윤", aliases: [], position: "cc_only", possibly_misspelled_as: ["도연"] });
+    expect(JSON.stringify(state)).not.toContain("d@x.com");
   });
 });

@@ -1,0 +1,58 @@
+{
+  "id": "email-sole-recipient-request",
+  "origin": "synthetic",
+  "description": "사용자(한지우)가 유일한 받는 사람인 메일. 본문에 이름 없이 '~해주실 수 있을까요'로 요청한다. 사용자에게 한 요청이라 할 일이 되어야 하고, 보낸 사람이 하겠다는 일은 제외한다.",
+  "user": {
+    "name": "한지우",
+    "aliases": [],
+    "emails": [
+      "jiwoo@brightlane.kr"
+    ]
+  },
+  "sources": [
+    {
+      "id": "mail-1014",
+      "kind": "email",
+      "occurred_at": "2026-10-14T16:10:00+09:00",
+      "participants": {
+        "from": {
+          "name": "오세린",
+          "email": "serin@hanbit-pay.com"
+        },
+        "to": [
+          {
+            "email": "jiwoo@brightlane.kr"
+          }
+        ]
+      },
+      "text": "제목: 파트너 계약서 검토 요청\n\n안녕하세요,\n첨부한 파트너 계약서 초안 검토 후 금요일까지 의견 주실 수 있을까요?\n수수료 조항은 저희 법무팀이 다음 주에 한 번 더 정리해서 보내드리겠습니다.\n참고로 계약 시작일은 11월 1일입니다.\n\n오세린 드림"
+    }
+  ],
+  "expected_actions": [
+    {
+      "title": "파트너 계약서 초안 검토 후 의견 전달",
+      "owner": "me",
+      "counterpart": "오세린",
+      "due": "2026-10-16",
+      "status": "open",
+      "evidence": [
+        {
+          "source": "mail-1014",
+          "quote": "파트너 계약서 초안 검토 후 금요일까지 의견 주실 수 있을까요"
+        }
+      ]
+    }
+  ],
+  "must_not_extract": [
+    {
+      "source": "mail-1014",
+      "quote": "수수료 조항은 저희 법무팀이 다음 주에 한 번 더 정리해서 보내드리겠습니다",
+      "reason": "NOT_MY_ACTION"
+    },
+    {
+      "source": "mail-1014",
+      "quote": "계약 시작일은 11월 1일입니다",
+      "reason": "INFO_ONLY"
+    }
+  ]
+}

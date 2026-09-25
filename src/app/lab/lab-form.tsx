@@ -6,7 +6,8 @@ import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { apiErrorSchema, createSourceResponseSchema, sourceKindSchema } from "@/lib/api/contract";
+import { apiErrorSchema, createSourceResponseSchema, sourceKindSchema, type ParticipantsInput } from "@/lib/api/contract";
+import { parsePeople } from "@/lib/api/people";
 
 const KIND_LABELS: Record<string, string> = { meeting: "회의록", message: "메시지", email: "메일", doc: "문서", note: "메모" };
 
@@ -19,12 +20,24 @@ function toOffsetIso(local: string): string {
   return `${local.length === 16 ? `${local}:00` : local}${sign}${pad(offset / 60)}:${pad(offset % 60)}`;
 }
 
+function participantsFrom(form: FormData): ParticipantsInput | undefined {
+  const people = (key: string) => parsePeople(String(form.get(key) ?? ""));
+  const participants: ParticipantsInput = {
+    from: people("from")[0],
+    to: people("to"),
+    cc: people("cc"),
+    attendees: people("attendees"),
+  };
+  const filled = Object.entries(participants).filter(([, value]) => (Array.isArray(value) ? value.length > 0 : value));
+  return filled.length > 0 ? Object.fromEntries(filled) : undefined;
+}
+
 function nowLocal(): string {
   const date = new Date();
   return new Date(date.getTime() - date.getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
 }
 
-export function LabForm({ defaultUserName }: { defaultUserName: string }) {
+export function LabForm() {
   const router = useRouter();
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -44,6 +57,7 @@ export function LabForm({ defaultUserName }: { defaultUserName: string }) {
           text: form.get("text"),
           occurred_at: toOffsetIso(String(form.get("occurred_at"))),
           user_name: String(form.get("user_name") ?? "").trim() || undefined,
+          participants: participantsFrom(form),
         }),
       });
       const json: unknown = await response.json();
@@ -79,10 +93,28 @@ export function LabForm({ defaultUserName }: { defaultUserName: string }) {
           <Input id="occurred_at" name="occurred_at" type="datetime-local" defaultValue={nowLocal()} required />
         </div>
         <div className="flex flex-col gap-2">
-          <Label htmlFor="user_name">원문 속 내 이름</Label>
-          <Input id="user_name" name="user_name" defaultValue={defaultUserName} placeholder="예: 나, 도윤" />
+          <Label htmlFor="user_name">이 원문 속 내 이름</Label>
+          <Input id="user_name" name="user_name" placeholder="비우면 프로필 이름" />
         </div>
       </div>
+      <details className="flex flex-col gap-2">
+        <summary className="text-muted-foreground cursor-pointer text-sm">
+          관련자 (선택) · &quot;이름 &lt;이메일&gt;&quot;을 쉼표로
+        </summary>
+        <div className="mt-2 grid gap-4 sm:grid-cols-2">
+          {[
+            ["from", "보낸 사람", "김대표 <ceo@x.com>"],
+            ["to", "받는 사람", "나 <me@x.com>"],
+            ["cc", "참조", ""],
+            ["attendees", "참석자", "태오, 준서, 나"],
+          ].map(([name, label, placeholder]) => (
+            <div key={name} className="flex flex-col gap-2">
+              <Label htmlFor={name}>{label}</Label>
+              <Input id={name} name={name} placeholder={placeholder} />
+            </div>
+          ))}
+        </div>
+      </details>
       <div className="flex flex-col gap-2">
         <Label htmlFor="text">원문</Label>
         <textarea

@@ -9,7 +9,7 @@ const golden: GoldenCase = {
   id: "c1",
   origin: "synthetic",
   description: "테스트",
-  user: { name: "나" },
+  user: { name: "나", aliases: [], emails: [] },
   sources: [
     {
       id: "s1",

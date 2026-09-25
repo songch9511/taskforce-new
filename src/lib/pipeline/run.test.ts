@@ -10,7 +10,7 @@ const input = {
   text: "김대표: 제안서 보고 싶어요.\n나: 네, 금요일까지 제안서 보내드릴게요.\n김대표: 견적서는 박팀장이 드릴게요.",
   kind: "meeting" as const,
   occurredAt: new Date("2025-09-22T10:00:00+09:00"),
-  userName: "나",
+  identity: { name: "나", aliases: [], emails: [] },
 };
 
 const raw = (quote: string, due: string | null = null) => ({

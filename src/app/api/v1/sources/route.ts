@@ -1,6 +1,8 @@
 import { after } from "next/server";
 
 import { authenticateRequest } from "@/lib/api/auth";
+import { resolveIdentity } from "@/lib/api/profile";
+import { loadProfile } from "@/lib/api/profile-store";
 import { handleCreateSource } from "@/lib/api/sources";
 import { processSource } from "@/lib/sources/process";
 
@@ -14,15 +16,17 @@ export async function POST(request: Request) {
       const { data } = await supabase.from("sources").insert(source).select("id").single().throwOnError();
       return data.id as string;
     },
-    schedule: ({ supabase, user }, sourceId, source, userName) => {
-      after(() =>
-        processSource(supabase, sourceId, {
+    schedule: (context, sourceId, source, userName) => {
+      after(async () => {
+        const identity = resolveIdentity(await loadProfile(context).catch(() => null), context.user, userName);
+        await processSource(context.supabase, sourceId, {
           text: source.raw_text,
           kind: source.kind,
           occurredAt: new Date(source.occurred_at),
-          userName: userName ?? user.name,
-        }),
-      );
+          identity,
+          participants: source.participants ?? undefined,
+        });
+      });
     },
   });
 }

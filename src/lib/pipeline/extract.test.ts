@@ -8,7 +8,7 @@ const input = {
   text: "나: 금요일까지 제안서 보내드릴게요.",
   kind: "meeting" as const,
   occurredAt: new Date("2025-09-22T10:00:00+09:00"),
-  userName: "나",
+  identity: { name: "나", aliases: [], emails: [] },
 };
 
 function fakeComplete(candidates: unknown[]): CompleteJson {
@@ -80,7 +80,22 @@ describe("추출 프롬프트", () => {
   it("사용자 이름 · 작성 시점 · 원문을 담는다", () => {
     const prompt = buildExtractUserPrompt(input);
     expect(prompt).toContain("사용자 이름: 나");
+    expect(prompt).toContain("사용자의 위치: 알 수 없음");
     expect(prompt).toContain("작성 시점: 2025-09-22 (월)");
     expect(prompt).toContain(input.text);
+  });
+});
+
+describe("추출 프롬프트의 사용자 정보", () => {
+  it("관련자와 이름 주의를 담는다", () => {
+    const prompt = buildExtractUserPrompt({
+      ...input,
+      text: "- [ ] 도연님 - UX 기획 진행",
+      identity: { name: "도윤", aliases: ["Doyun"], emails: ["d@x.com"] },
+      participants: { attendees: [{ name: "태오" }, { email: "d@x.com" }] },
+    });
+    expect(prompt).toContain("사용자의 다른 이름: Doyun");
+    expect(prompt).toContain("사용자의 위치: 참석자");
+    expect(prompt).toContain("'도연'");
   });
 });

@@ -2,6 +2,7 @@ import type { JevDecision, JevQuestion } from "@/lib/ai/jev";
 import { kstDate } from "@/lib/ai/prompts/extract";
 import { JUDGE_PROMPT_VERSION, JUDGE_QUESTIONS } from "@/lib/ai/prompts/judge";
 
+import { findNameVariants, userPosition, type Participants, type UserIdentity } from "./identity";
 import { JUDGE_THRESHOLDS, type JudgeThresholds } from "./judge.config";
 import { quoteContext } from "./text";
 
@@ -13,7 +14,7 @@ export type JudgeDecision = "auto" | "confirm" | "reject";
 
 export type JudgeCandidate = { title: string; quote: string; due_text: string | null };
 
-export type JudgeSource = { text: string; kind: string; occurredAt: Date };
+export type JudgeSource = { text: string; kind: string; occurredAt: Date; participants?: Participants };
 
 type Choice<K extends string> = { choice: K; probabilities: Partial<Record<K, number>> };
 
@@ -43,10 +44,19 @@ export type JudgeResult = JudgeOutcome & {
 
 export type Decide = (request: { state: unknown; questions: Record<string, JevQuestion> }) => Promise<JevDecision>;
 
-/** Jev에 보낼 state. 추출기의 추론(rationale)은 넣지 않고, 후보와 인용 주변 원문만 넣는다. */
-export function buildJudgeState(candidate: JudgeCandidate, source: JudgeSource, userName: string) {
+/**
+ * Jev에 보낼 state. 추출기의 추론(rationale)은 넣지 않고, 후보와 인용 주변 원문, 사용자가 누구인지만 넣는다.
+ * 이메일 주소는 넣지 않는다 (사용자의 위치로 충분하다).
+ */
+export function buildJudgeState(candidate: JudgeCandidate, source: JudgeSource, identity: UserIdentity) {
+  const variants = findNameVariants(source.text, identity, source.participants);
   return {
-    user: userName,
+    user: {
+      name: identity.name,
+      aliases: identity.aliases,
+      position: userPosition(identity, source.participants),
+      ...(variants.length > 0 ? { possibly_misspelled_as: variants } : {}),
+    },
     candidate: { title: candidate.title, due_text: candidate.due_text, quote: candidate.quote },
     context: quoteContext(source.text, candidate.quote) ?? candidate.quote,
     source: { kind: source.kind, occurred_at: kstDate(source.occurredAt).iso },
@@ -96,11 +106,11 @@ export function decideOutcome(signals: JudgeSignals, thresholds: JudgeThresholds
 export async function judgeCandidate(
   candidate: JudgeCandidate,
   source: JudgeSource,
-  userName: string,
+  identity: UserIdentity,
   decide: Decide,
   thresholds: JudgeThresholds = JUDGE_THRESHOLDS,
 ): Promise<JudgeResult> {
-  const response = await decide({ state: buildJudgeState(candidate, source, userName), questions: JUDGE_QUESTIONS });
+  const response = await decide({ state: buildJudgeState(candidate, source, identity), questions: JUDGE_QUESTIONS });
   const signals = parseJudgeAnswers(response.answers);
   return {
     ...decideOutcome(signals, thresholds),

@@ -1,9 +1,13 @@
 {
-  "id": "real-shape-weekly-asr-name",
+  "id": "real-shape-weekly-with-alias",
   "origin": "real",
-  "description": "실제 주간 회의록(Notion AI 요약, 익명화). 받아쓰기가 사용자 이름 '도윤'을 '도연'으로 잘못 적었고 별칭은 등록되지 않았다. 코드가 '도연'을 오타 후보로 찾아, 사용자의 할 일은 담당 '확인 필요(unknown)'로 뽑혀야 한다. '3D 에디터 검토'와 '팀 전체' 항목은 담당이 모호해 라벨하지 않았다.",
+  "description": "real-shape-weekly-asr-name과 같은 회의록. 사용자가 받아쓰기 오류 '도연'을 별칭으로 등록한 뒤라 사용자의 할 일이 담당 '나(me)'로 뽑혀야 한다.",
   "user": {
-    "name": "도윤"
+    "name": "도윤",
+    "aliases": [
+      "도연"
+    ],
+    "emails": []
   },
   "sources": [
     {
@@ -16,7 +20,7 @@
   "expected_actions": [
     {
       "title": "스펙 기반 생성 UX 기획",
-      "owner": "unknown",
+      "owner": "me",
       "status": "open",
       "evidence": [
         {

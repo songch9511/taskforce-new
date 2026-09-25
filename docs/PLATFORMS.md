@@ -115,7 +115,8 @@ Server Action은 웹 폼 전용이라 Swift 앱에서 부를 수 없다.
 
 | 메서드 · 경로 | 용도 | 단계 |
 |---|---|---|
-| `POST /api/v1/sources` | 원문 전송 (텍스트). 202 + `source_id`, 처리 상태는 `sources.processing_status` | 1 ✅ |
+| `POST /api/v1/sources` | 원문 전송 (텍스트 + 관련자 `participants`). 202 + `source_id`, 처리 상태는 `sources.processing_status` | 1 ✅ |
+| `GET` · `PUT /api/v1/profile` | 원문 속 사용자 정보: 기본 이름 · 별칭 · 이메일 | 1 ✅ |
 | `PATCH /api/v1/actions/:id` | 사용자 수정 (`user_edited` 이벤트) | 3 |
 | `DELETE /api/v1/actions/:id` | 사용자 삭제 (`user_deleted` 이벤트, 실제로는 `dropped` 처리) | 3 |
 | `POST /api/v1/actions/:id/confirm` | 확인 요청 확정 (`user_confirmed`) | 3 |
@@ -135,6 +136,9 @@ Server Action은 웹 폼 전용이라 Swift 앱에서 부를 수 없다.
 | 이메일 링크 | 지금 방식 유지 | 쓰지 않음 (앱으로 돌아오는 링크 처리가 번거로움) |
 
 - 이메일 6자리 코드를 쓰려면 Supabase → Authentication → Email Templates의 Magic Link 템플릿에 `{{ .Token }}`을 넣어야 한다. 웹 링크 로그인과 함께 쓰려면 링크와 코드를 둘 다 넣는다.
+- 원문에서 "누가 나인가"는 원문 종류마다 단서가 다르다. 메일 · 캘린더는 주소(`participants`)로 확실히 찾고,
+  받아쓰기 회의록은 이름 문자열뿐이라 프로필의 별칭과 코드의 오타 후보 탐지(한 글자 차이 → '확인 필요')를 쓴다.
+  앱은 메일 · 캘린더 원문을 보낼 때 보낸 사람 · 받는 사람 · 참조 · 참석자를 함께 보낸다.
 - 공유 확장과 위젯은 앱 본체와 로그인 세션을 공유해야 하므로, 세션을 **App Group + 공유 Keychain 접근 그룹**에 저장한다.
 
 ---

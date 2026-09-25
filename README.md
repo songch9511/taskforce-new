@@ -28,7 +28,7 @@ cp .env.example .env.local
 2. **Project Settings → API Keys**에서 Project URL과 Publishable key를 `.env.local`에 넣습니다.
 3. 스키마를 적용합니다. 둘 중 하나를 고르세요.
    - SQL Editor에 `supabase/migrations/`의 파일을 **이름 순서대로** 하나씩 붙여넣고 실행
-     (`20260925000000_init.sql` → `20260926000000_source_processing.sql` → …)
+     (`20260925000000_init.sql` → `20260926000000_source_processing.sql` → `20260927000000_profiles_participants.sql` → …)
    - 또는 Supabase CLI: `npx supabase link --project-ref <프로젝트 ref>` 후 `npx supabase db push`
 4. **Authentication → URL Configuration**
    - Site URL: `http://localhost:3000`
