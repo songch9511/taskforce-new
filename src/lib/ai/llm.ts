@@ -77,7 +77,7 @@ export async function completeJson<T extends z.ZodType>(
     body: JSON.stringify({
       model: config.model,
       ...(request.temperature === undefined ? {} : { temperature: request.temperature }),
-      max_tokens: request.maxTokens ?? 4096,
+      max_tokens: request.maxTokens ?? 8192,
       messages: [
         { role: "system", content: request.system },
         { role: "user", content: request.user },
@@ -86,8 +86,8 @@ export async function completeJson<T extends z.ZodType>(
         type: "json_schema",
         json_schema: { name: request.schemaName, strict: true, schema: z.toJSONSchema(request.schema) },
       },
-      // 구조화 출력을 지원하는 공급자에게만 보낸다.
-      provider: { require_parameters: true },
+      // 구조화 출력을 지원하고, 사용자 원문을 저장 · 학습에 쓰지 않는 공급자에게만 보낸다.
+      provider: { require_parameters: true, data_collection: "deny" },
     }),
   });
 
