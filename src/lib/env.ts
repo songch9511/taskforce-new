@@ -3,8 +3,9 @@ import { z } from "zod";
 const publicEnvSchema = z.object({
   NEXT_PUBLIC_SUPABASE_URL: z
     .url()
-    .refine((url) => !URL.parse(url)?.pathname.startsWith("/dashboard"), {
-      message: "대시보드 주소가 아니라 API 주소(https://<프로젝트 ref>.supabase.co)를 넣어야 합니다",
+    .refine((url) => (URL.parse(url)?.pathname ?? "/") === "/", {
+      message:
+        "경로 없이 프로젝트 주소만 넣어야 합니다 (예: https://<프로젝트 ref>.supabase.co). /rest/v1/ 이나 대시보드 주소는 안 됩니다",
     }),
   NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: z.string().min(1),
 });

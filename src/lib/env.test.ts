@@ -32,6 +32,24 @@ describe("parsePublicEnv", () => {
         NEXT_PUBLIC_SUPABASE_URL: "https://supabase.com/dashboard/project/abc",
         NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: "key",
       }),
-    ).toThrow(/supabase\.co/);
+    ).toThrow(/경로 없이/);
+  });
+
+  it("/rest/v1/ 같은 경로가 붙으면 거부한다", () => {
+    expect(() =>
+      parsePublicEnv({
+        NEXT_PUBLIC_SUPABASE_URL: "https://abc.supabase.co/rest/v1/",
+        NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: "key",
+      }),
+    ).toThrow(/경로 없이/);
+  });
+
+  it("끝에 슬래시만 있는 주소는 허용한다", () => {
+    expect(() =>
+      parsePublicEnv({
+        NEXT_PUBLIC_SUPABASE_URL: "https://abc.supabase.co/",
+        NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: "key",
+      }),
+    ).not.toThrow();
   });
 });
