@@ -3,7 +3,7 @@
 # Taskforce — AI 프로젝트 매니저
 
 AI 코딩 에이전트가 이 저장소에서 작업할 때 반드시 지켜야 할 규칙입니다.
-제품 배경은 `docs/PRD.md`, 구조는 `docs/ARCHITECTURE.md`, 단계별 개발 계획은 `docs/VIBE_CODING_PLAN.md`를 보세요.
+제품 배경은 `docs/PRD.md`, 구조는 `docs/ARCHITECTURE.md`, 플랫폼 전략은 `docs/PLATFORMS.md`, 단계별 개발 계획은 `docs/VIBE_CODING_PLAN.md`를 보세요.
 
 ## 제품 원칙 (코드보다 우선)
 
@@ -17,6 +17,14 @@ AI 코딩 에이전트가 이 저장소에서 작업할 때 반드시 지켜야 
    Action 필드 값은 `docs/TRUTH_RULES.md`의 규칙을 구현한 순수 함수로만 계산한다. Claim은 지우지 않는다.
 6. **측정할 수 없으면 출시하지 않는다.** 사용자의 수정·삭제, 착수 시간, 재방문은 모두 이벤트로 남긴다 (`docs/PRD.md` 성공 지표).
 
+## 플랫폼
+
+- 사용자용 앱은 **iOS · macOS 네이티브**(SwiftUI, `apple/`)다. Next.js는 서버 API와 내부 도구(시험대 · eval · 지표)만 담당한다. 웹에 사용자용 화면을 만들지 않는다.
+- 추출 · 판정 · 진실 판정 · 랭킹은 서버에만 둔다. Swift 앱에 같은 로직을 다시 구현하지 않는다.
+- 앱이 부를 서버 로직은 Server Action이 아니라 `src/app/api/v1/` Route Handler로 만든다. 인증은 `Authorization: Bearer` 토큰과 웹 쿠키 둘 다 받는다.
+- API 요청·응답 스키마는 `src/lib/api/contract.ts`에 zod로 둔다. 호환이 깨지는 변경은 새 버전 경로(`/api/v2`)로 낸다.
+- 앱은 읽기를 Supabase에서 직접(RLS), 쓰기를 서버 API로만 한다. 모든 쓰기는 이벤트를 남긴다.
+
 ## 기술 스택
 
 - Next.js 16 (App Router) + TypeScript (strict) + Tailwind v4 + shadcn/ui
@@ -29,6 +37,9 @@ AI 코딩 에이전트가 이 저장소에서 작업할 때 반드시 지켜야 
   - 생성형 LLM (Claim 추출): OpenRouter chat completions. 구조화 출력(JSON 스키마)으로만 받는다. 자유 텍스트를 파싱하지 않는다. 모델 id는 환경변수로.
   - Jev (검증·분류·매칭 판정): OpenRouter Decisions API `POST /api/alpha/decisions`, 모델 `typesafe/jev-1.13` 고정. 상세는 `docs/TRUTH_RULES.md` 1장.
   - 글 생성이 필요 없는 판정(예/아니오, 선택지 고르기, 척도)은 LLM이 아니라 Jev로 한다.
+- Apple 앱: SwiftUI 멀티플랫폼 + Swift Concurrency, 공유 로직은 `apple/Packages/TaskforceKit`, Supabase는 `supabase-swift`
+  - 로그인은 Sign in with Apple(보조: 이메일 6자리 코드). 세션은 App Group 공유 Keychain에 저장한다 (공유 확장 · 위젯과 공유).
+  - Supabase URL · 키는 xcconfig로 빼고 커밋하지 않는다.
 - 스키마 검증: zod
 - 테스트: Vitest (단위), 추출 품질은 `evals/`의 골든셋으로 평가
 

@@ -2,8 +2,11 @@
 
 AI 프로젝트 매니저 — 회의록·메시지·메일에서 내가 약속한 Action을 자동으로 추적하고, 맥락과 함께 "지금 할 일"을 보여줍니다.
 
+사용자용 앱은 iOS · macOS 네이티브이고, 이 저장소의 Next.js는 서버 API와 내부 도구(시험대 · eval · 지표)입니다.
+
 - [PRD](docs/PRD.md)
 - [시스템 아키텍처](docs/ARCHITECTURE.md)
+- [플랫폼 전략: iOS · macOS](docs/PLATFORMS.md)
 - [오탐 방지와 진실 판정 기준](docs/TRUTH_RULES.md)
 - [바이브코딩 플랜](docs/VIBE_CODING_PLAN.md)
 - [에이전트 작업 규칙](CLAUDE.md)

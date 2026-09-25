@@ -26,27 +26,40 @@
 
 ## 3. 범위
 
+### 플랫폼
+
+- 사용자용 앱: **iOS + macOS 네이티브** (SwiftUI). 웹은 서버 API와 내부 도구(시험대 · eval · 지표)로만 쓴다.
+- 상세는 [`PLATFORMS.md`](PLATFORMS.md).
+
 ### MVP (베타)
-- 원문 입력: 붙여넣기 / 파일 업로드 (연동 없이)
+- 원문 입력 (외부 서비스 연동 없이)
+  - iOS: 공유 시트로 보내기
+  - macOS: 메뉴 막대 앱 · 단축키로 클립보드 보내기 · 공유 메뉴
+  - 붙여넣기 / 파일 업로드
 - Action 추출 + 기존 Action과 매칭(신규·갱신·중복·완료)
 - 확인 큐 (담당·기한 불확실 항목)
 - "지금 할 일" 뷰 + Action 상세(근거·변경 이력)
 - AI 핸드오프 (복사 가능한 컨텍스트 번들)
 - 지표 이벤트 로깅
+- 알림: 확인 요청 발생, 기한 임박
+- 로그인: Sign in with Apple (보조: 이메일 코드)
 
 ### 이후
+- iOS 위젯 · 잠금화면 위젯, Siri · 단축어 (App Intents)
 - 연동: Gmail, Google Calendar/회의록(Notion·Google Meet 등), Slack
 - MCP 서버: Claude 등 AI 도구가 내 Action과 맥락을 직접 조회
 - 완료 자동 감지 (예: "보냈습니다" 메일 → 완료 처리)
 
 ### 하지 않는 것
 - 팀 협업/권한/칸반 보드 — 개인의 "제2의 뇌"가 먼저
+- 사용자용 웹 앱, Android · Windows 앱
+- 미팅 녹음 · 받아쓰기 (AI 회의록 도구 연동으로 대신)
 - 수동 할 일 작성 중심 UX
 
 ## 4. 데이터 모델 (초안)
 
 ```
-Source        id, user_id, kind(meeting|message|email|doc), title, raw_text, occurred_at, external_url
+Source        id, user_id, kind(meeting|message|email|doc|note), title, raw_text, occurred_at, external_url
 Action        id, user_id, title, scope_summary, owner(me|other|unknown), counterpart,
               due_at, due_confidence, owner_confidence, status(open|done|dropped),
               needs_confirmation, embedding, created_at, updated_at

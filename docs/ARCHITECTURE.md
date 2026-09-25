@@ -1,6 +1,6 @@
 # Taskforce 시스템 아키텍처
 
-관련 문서: [PRD](PRD.md) · [오탐 방지와 진실 판정 기준](TRUTH_RULES.md) · [바이브코딩 플랜](VIBE_CODING_PLAN.md)
+관련 문서: [PRD](PRD.md) · [플랫폼 전략](PLATFORMS.md) · [오탐 방지와 진실 판정 기준](TRUTH_RULES.md) · [바이브코딩 플랜](VIBE_CODING_PLAN.md)
 
 ## 간단 버전
 
@@ -29,16 +29,22 @@
 flowchart LR
     subgraph IN["입력 소스"]
         direction TB
-        P["붙여넣기 / 업로드<br/>(MVP)"]
+        SH["공유 시트 · 메뉴 막대 · 단축키<br/>(MVP)"]
         G["Gmail"]
         C["캘린더·회의록<br/>(Notion, Meet 등)"]
         S["Slack"]
     end
 
-    subgraph APP["Taskforce (Next.js on Vercel)"]
+    subgraph CLIENT["사용자 앱"]
         direction TB
-        UI["웹 UI<br/>지금 할 일 · 확인 요청 · Action 상세"]
-        API["서버 API<br/>(Route Handlers / Server Actions)"]
+        APPS["iOS · macOS 앱 (SwiftUI)<br/>지금 할 일 · 확인 요청 · Action 상세"]
+        LAB["웹 (내부용)<br/>시험대 · eval · 지표"]
+    end
+
+    subgraph APP["Taskforce 서버 (Next.js on Vercel)"]
+        direction TB
+        API["서버 API /api/v1<br/>(Route Handlers)"]
+        PUSH["알림 발송 (APNs)"]
         ADP["소스 어댑터<br/>원문 → Source로 정규화"]
         Q["작업 큐<br/>(비동기 파이프라인 실행)"]
         PIPE["처리 파이프라인<br/>src/lib/pipeline"]
@@ -62,10 +68,13 @@ flowchart LR
 
     EXT["외부 AI 도구<br/>(Claude 등)"]
 
-    P --> UI
+    SH --> APPS
     G & C & S --> ADP
-    UI <--> API
+    APPS -- "쓰기" --> API
+    APPS -. "읽기 (RLS) · Realtime" .-> PG
+    LAB --> API
     API --> ADP
+    PIPE --> PUSH --> APPS
     ADP --> Q --> PIPE
     PIPE <--> LLM
     PIPE <--> JEV
@@ -80,6 +89,8 @@ flowchart LR
 
 | 구성 요소 | 역할 | 비고 |
 |---|---|---|
+| iOS · macOS 앱 | 사용자용 화면, 원문 입력(공유 시트 · 메뉴 막대), 알림 | 상세는 [PLATFORMS.md](PLATFORMS.md) |
+| 서버 API | 앱과 웹이 부르는 쓰기 경로. 모든 쓰기에서 이벤트 기록 | Bearer 토큰 · 쿠키 둘 다 지원 |
 | 소스 어댑터 | 채널별 원문을 공통 `Source`(원문, 발언 시점, 출처 링크)로 변환 | 연동이 늘어도 파이프라인은 그대로 |
 | 작업 큐 | 입력을 받자마자 응답하고, 추출은 백그라운드에서 실행 | 예: Inngest, Supabase Queues |
 | 처리 파이프라인 | 추출 → 검증 → 매칭 → Claim 저장 | UI·DB와 분리된 순수 함수라 eval에서 그대로 실행 |
