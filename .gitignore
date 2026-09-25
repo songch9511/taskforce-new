@@ -40,3 +40,6 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 !.env.example
+
+# eval 실행 결과 (로컬 비교용)
+/evals/results/

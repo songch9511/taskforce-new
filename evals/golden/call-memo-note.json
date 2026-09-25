@@ -1,0 +1,61 @@
+{
+  "id": "call-memo-note",
+  "origin": "synthetic",
+  "description": "고객 통화 직후 사용자가 남긴 짧은 메모. '~하기'로 끝나는 내 할 일 두 개를 뽑고, 상대 쪽 일정·이미 보낸 링크·'나중에 제안해볼까?'는 제외한다.",
+  "user": {
+    "name": "나"
+  },
+  "sources": [
+    {
+      "id": "note-1117",
+      "kind": "note",
+      "occurred_at": "2026-11-17T19:30:00+09:00",
+      "text": "오늘 그린필드 송대표 통화 메모\n- 견적 너무 높다고 함 → 옵션 B로 다시 견적 내서 목요일까지 보내기\n- 그쪽에서 PO는 다음 주에 발행 예정\n- 송대표 휴가 11/24~27\n- 레퍼런스 사이트 링크는 통화 중에 카톡으로 보냄\n- 유지보수 계약도 관심 있어 보임. 나중에 제안해볼까?\n- 내일 팀이랑 옵션 B 범위 먼저 확인"
+    }
+  ],
+  "expected_actions": [
+    {
+      "title": "송대표에게 옵션 B 견적 재발송",
+      "owner": "me",
+      "counterpart": "송대표",
+      "due": "2026-11-19",
+      "status": "open",
+      "evidence": [
+        {
+          "source": "note-1117",
+          "quote": "옵션 B로 다시 견적 내서 목요일까지 보내기"
+        }
+      ]
+    },
+    {
+      "title": "팀과 옵션 B 범위 확인",
+      "owner": "me",
+      "counterpart": "팀",
+      "due": "2026-11-18",
+      "status": "open",
+      "evidence": [
+        {
+          "source": "note-1117",
+          "quote": "내일 팀이랑 옵션 B 범위 먼저 확인"
+        }
+      ]
+    }
+  ],
+  "must_not_extract": [
+    {
+      "source": "note-1117",
+      "quote": "그쪽에서 PO는 다음 주에 발행 예정",
+      "reason": "NOT_MY_ACTION"
+    },
+    {
+      "source": "note-1117",
+      "quote": "레퍼런스 사이트 링크는 통화 중에 카톡으로 보냄",
+      "reason": "ALREADY_DONE"
+    },
+    {
+      "source": "note-1117",
+      "quote": "유지보수 계약도 관심 있어 보임. 나중에 제안해볼까?",
+      "reason": "TENTATIVE"
+    }
+  ]
+}

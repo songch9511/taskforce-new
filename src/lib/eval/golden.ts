@@ -27,6 +27,8 @@ export const expectedActionSchema = z.object({
 export const goldenCaseSchema = z.object({
   id: z.string().min(1),
   description: z.string().min(1),
+  // real: 실제 사용자 원문(익명화), synthetic: 개발용으로 지어낸 원문. eval은 둘을 나눠 보고한다.
+  origin: z.enum(["real", "synthetic"]).default("real"),
   user: z.object({ name: z.string().min(1) }),
   sources: z.array(goldenSourceSchema).min(1),
   expected_actions: z.array(expectedActionSchema),

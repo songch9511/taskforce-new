@@ -1,0 +1,64 @@
+{
+  "id": "manager-requests-accepted",
+  "origin": "synthetic",
+  "description": "대표가 DM으로 요청하고 사용자 임채원이 '넵 알겠습니다'로 수락하거나 기한을 직접 제시한다. '이번 달 말까지'와 '다음 주 월요일까지'를 풀어야 한다. '급한 건 아니에요'에 '여유 생기면 볼게요'로 답한 요청은 제외한다.",
+  "user": {
+    "name": "임채원"
+  },
+  "sources": [
+    {
+      "id": "slack-dm-1119",
+      "kind": "message",
+      "occurred_at": "2026-11-19T14:00:00+09:00",
+      "text": "권대표: 채원님, 이번 달 말까지 12월 워크숍 장소 3곳 후보 좀 추려주세요\n임채원: 넵 알겠습니다!\n권대표: 그리고 신규 입사자 온보딩 자료 업데이트도요. 다음 주 수요일에 두 분 입사하세요\n임채원: 온보딩 자료는 다음 주 월요일까지 업데이트해둘게요\n권대표: 좋아요. 아 법인 차량 보험 갱신은 제가 직접 처리했어요\n권대표: 연말 선물 리스트는 혹시 가능하면 한번 봐줘요. 급한 건 아니에요\n임채원: 네 여유 생기면 볼게요"
+    }
+  ],
+  "expected_actions": [
+    {
+      "title": "12월 워크숍 장소 후보 3곳 추려 권대표에게 전달",
+      "owner": "me",
+      "counterpart": "권대표",
+      "due": "2026-11-30",
+      "status": "open",
+      "evidence": [
+        {
+          "source": "slack-dm-1119",
+          "quote": "이번 달 말까지 12월 워크숍 장소 3곳 후보 좀 추려주세요"
+        },
+        {
+          "source": "slack-dm-1119",
+          "quote": "넵 알겠습니다!"
+        }
+      ]
+    },
+    {
+      "title": "신규 입사자 온보딩 자료 업데이트",
+      "owner": "me",
+      "due": "2026-11-23",
+      "status": "open",
+      "evidence": [
+        {
+          "source": "slack-dm-1119",
+          "quote": "온보딩 자료는 다음 주 월요일까지 업데이트해둘게요"
+        }
+      ]
+    }
+  ],
+  "must_not_extract": [
+    {
+      "source": "slack-dm-1119",
+      "quote": "법인 차량 보험 갱신은 제가 직접 처리했어요",
+      "reason": "ALREADY_DONE"
+    },
+    {
+      "source": "slack-dm-1119",
+      "quote": "네 여유 생기면 볼게요",
+      "reason": "TENTATIVE"
+    },
+    {
+      "source": "slack-dm-1119",
+      "quote": "다음 주 수요일에 두 분 입사하세요",
+      "reason": "INFO_ONLY"
+    }
+  ]
+}

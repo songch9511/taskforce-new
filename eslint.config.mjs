@@ -12,6 +12,8 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Apple 앱 빌드 산출물 (Swift 패키지 체크아웃에 TS 예제가 들어 있음)
+    "apple/**",
   ]),
 ]);
 

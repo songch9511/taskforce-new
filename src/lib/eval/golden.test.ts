@@ -8,15 +8,16 @@ import { findLabelErrors, goldenCaseSchema, type GoldenCase } from "./golden";
 const base: GoldenCase = {
   id: "t",
   description: "테스트",
+  origin: "synthetic",
   user: { name: "나" },
   sources: [
-    { id: "s1", kind: "meeting", occurred_at: "2026-09-22T10:00:00+09:00", text: "금요일까지  제안서 보내드릴게요" },
+    { id: "s1", kind: "meeting", occurred_at: "2025-09-22T10:00:00+09:00", text: "금요일까지  제안서 보내드릴게요" },
   ],
   expected_actions: [
     {
       title: "제안서 발송",
       owner: "me",
-      due: "2026-09-26",
+      due: "2025-09-26",
       status: "open",
       evidence: [{ source: "s1", quote: "금요일까지 제안서 보내드릴게요" }],
     },
