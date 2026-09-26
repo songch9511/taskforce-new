@@ -34,8 +34,8 @@ describe("연동 (20260928000000_connections)", () => {
 
   it("토큰은 본인도 읽을 수 없다", async () => {
     await asUser(db, ALICE, async () => {
-      const { rows } = await db.query(`select * from public.connection_secrets`);
-      expect(rows).toHaveLength(0);
+      // 권한 자체가 없다 (RLS 이전에 막힘)
+      await expect(db.query(`select * from public.connection_secrets`)).rejects.toThrow(/permission denied/);
     });
   });
 

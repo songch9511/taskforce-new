@@ -17,6 +17,8 @@ export type Claim = {
   directness: "first_hand" | "reported";
   audience: "shared" | "private";
   channel: SourceKind;
+  /** user: 사용자가 앱에서 직접 고친 값. 그 시점까지의 어떤 발언보다 우선한다 (이후의 유효한 발언은 다시 바꿀 수 있다). */
+  origin?: "source" | "user";
 };
 
 /** 규칙 번호 (TRUTH_RULES 2장) */
@@ -51,12 +53,14 @@ export type Resolution = {
 const CHANNEL_RANK: Record<SourceKind, number> = { email: 3, doc: 3, message: 2, note: 2, meeting: 1 };
 
 const byTime = (a: Claim, b: Claim) => a.occurredAt.getTime() - b.occurredAt.getTime();
-const isStrong = (c: Claim) => c.certainty === "firm" && c.directness === "first_hand";
+const isUser = (c: Claim) => c.origin === "user";
+const isStrong = (c: Claim) => isUser(c) || (c.certainty === "firm" && c.directness === "first_hand");
 
 type Authority = "apply" | "needs_confirmation" | "reject";
 
 /** 규칙 0: 이 사람이 이 필드를 이렇게 바꿀 권한이 있는가 */
 function authority(field: ClaimField, current: string | null, next: Claim, confirmedBy: Claim[]): Authority {
+  if (isUser(next)) return "apply";
   if (next.speakerRole === "third_party") return "needs_confirmation";
   switch (field) {
     case "due": {
@@ -105,8 +109,8 @@ export function resolveField(field: ClaimField, claims: Claim[]): Resolution {
   };
   if (all.length === 0) return empty;
 
-  const shared = all.filter((c) => isStrong(c) && c.audience === "shared");
-  const privateStrong = all.filter((c) => isStrong(c) && c.audience === "private");
+  const shared = all.filter((c) => isStrong(c) && (c.audience === "shared" || isUser(c)));
+  const privateStrong = all.filter((c) => isStrong(c) && c.audience === "private" && !isUser(c));
   const reported = all.filter((c) => c.directness === "reported");
   const tentative = all.filter((c) => c.certainty === "tentative" && c.directness === "first_hand");
 
@@ -157,7 +161,7 @@ export function resolveField(field: ClaimField, claims: Claim[]): Resolution {
     // 앞서 확인 대기로 둔 발언도 "양쪽이 말했는가"를 볼 때는 센다.
     const decision = authority(field, winner.value, next, basis.slice(0, i));
     if (decision === "apply") {
-      rules.add(0).add(4);
+      if (!isUser(next)) rules.add(0).add(4);
       result.superseded.push(winner.id);
       winner = next;
     } else if (decision === "needs_confirmation") {
@@ -195,14 +199,24 @@ export function resolveField(field: ClaimField, claims: Claim[]): Resolution {
 
   // 확인 대기였던 발언이 나중에 같은 값으로 확정됐다면 더 이상 물을 필요가 없다. (규칙 6 동점은 그대로 묻는다)
   const valueOf = (id: string) => all.find((c) => c.id === id)?.value;
-  const stillPending = [...new Set(result.pending)].filter((id) => rules.has(6) || valueOf(id) !== winner.value);
+  // 사용자가 그 뒤에 직접 정했거나 확인했으면(사용자 Claim) 그 전의 확인 대기는 더 묻지 않는다.
+  const lastUserAt = Math.max(-Infinity, ...all.filter(isUser).map((c) => c.occurredAt.getTime()));
+  const occurredOf = (id: string) => all.find((c) => c.id === id)!.occurredAt.getTime();
+  const stillPending = [...new Set(result.pending)].filter(
+    (id) => occurredOf(id) > lastUserAt && (rules.has(6) || valueOf(id) !== winner.value),
+  );
   const finalRules = [...rules].sort((a, b) => a - b);
+  const reason = isUser(winner)
+    ? "사용자가 직접 정함"
+    : finalRules.length
+      ? `규칙 ${finalRules.join(" + ")}: ${finalRules.map((r) => RULE_TEXT[r]).join(", ")}`
+      : "처음 합의된 값";
   return {
     ...result,
     value: winner.value,
     winningClaimId: winner.id,
     rules: finalRules,
-    reason: finalRules.length ? `규칙 ${finalRules.join(" + ")}: ${finalRules.map((r) => RULE_TEXT[r]).join(", ")}` : "처음 합의된 값",
+    reason,
     pending: stillPending,
     needsConfirmation: stillPending.length > 0,
   };

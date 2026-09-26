@@ -153,3 +153,31 @@ describe("resolveAction", () => {
     expect(state.owner).toMatchObject({ value: null, reason: "근거 없음" });
   });
 });
+
+describe("사용자가 직접 고친 값", () => {
+  it("그 시점까지의 발언보다 우선하고, 이유를 남긴다", () => {
+    const promise = claim({ value: "2025-09-26", occurredAt: at("22") });
+    const edit = claim({ value: "2025-10-01", occurredAt: at("23"), origin: "user", channel: "note" });
+    expect(resolveField("due", [promise, edit])).toMatchObject({ value: "2025-10-01", winningClaimId: edit.id, reason: "사용자가 직접 정함", superseded: [promise.id] });
+  });
+
+  it("그 뒤 요청자의 유효한 변경은 다시 반영된다", () => {
+    const edit = claim({ value: "2025-10-01", occurredAt: at("23"), origin: "user", channel: "note" });
+    const extension = claim({ value: "2025-10-03", occurredAt: at("24"), speakerRole: "counterpart" });
+    expect(resolveField("due", [edit, extension]).value).toBe("2025-10-03");
+  });
+
+  it("사용자가 지운(취소한) 일은 상대 확인 없이도 취소된다", () => {
+    const open = claim({ field: "status", value: "open", occurredAt: at("22") });
+    const deleted = claim({ field: "status", value: "dropped", occurredAt: at("23"), origin: "user" });
+    expect(resolveField("status", [open, deleted])).toMatchObject({ value: "dropped", needsConfirmation: false });
+  });
+
+  it("사용자가 확인한 뒤에는 그 전의 확인 대기를 다시 묻지 않는다", () => {
+    const first = claim({ value: "2025-09-26", occurredAt: at("22") });
+    const hearsay = claim({ value: "2025-09-29", occurredAt: at("23"), directness: "reported", speakerRole: "third_party" });
+    expect(resolveField("due", [first, hearsay]).needsConfirmation).toBe(true);
+    const confirmed = claim({ value: "2025-09-26", occurredAt: at("23", "18:00"), origin: "user" });
+    expect(resolveField("due", [first, hearsay, confirmed])).toMatchObject({ value: "2025-09-26", needsConfirmation: false, pending: [] });
+  });
+});

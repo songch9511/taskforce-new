@@ -8,6 +8,9 @@ import type { JudgeSignals, RejectReason } from "@/lib/pipeline/judge";
 import type { VerifiedCandidate } from "@/lib/pipeline/verify";
 import { createClient } from "@/lib/supabase/server";
 
+import { nowList } from "@/lib/actions/service";
+
+import { ActionsPanel } from "./actions-panel";
 import { AutoRefresh } from "./auto-refresh";
 import { ConnectionsPanel, type ConnectionRow } from "./connections-panel";
 import { LabForm } from "./lab-form";
@@ -57,6 +60,8 @@ export default async function LabPage({ searchParams }: { searchParams: Promise<
   const { data: profileRow } = await supabase.from("profiles").select("display_name, aliases, emails").maybeSingle();
   const profile = profileSchema.safeParse(profileRow).data ?? EMPTY_PROFILE;
 
+  const ranked = await nowList(supabase).catch(() => ({ now: [], confirmations: [] }));
+
   const { data: connections } = await supabase
     .from("connections")
     .select("id, provider, display_name, status, last_synced_at, last_error")
@@ -94,6 +99,16 @@ export default async function LabPage({ searchParams }: { searchParams: Promise<
         <h1 className="text-2xl font-bold">시험대</h1>
         <span className="text-muted-foreground text-sm">내부용 · {user.email}</span>
       </div>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>지금 할 일</CardTitle>
+          <CardDescription>GET /api/v1/now와 같은 순서. 버튼은 확인 · 착수 · 삭제 API를 부릅니다.</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <ActionsPanel now={ranked.now} confirmations={ranked.confirmations} />
+        </CardContent>
+      </Card>
 
       <Card>
         <CardHeader>

@@ -71,7 +71,7 @@ Apple 트랙은 Xcode 빌드가 필요하므로 **Mac의 Claude Code**에서 진
 완료 기준: eval 표가 출력되고, **프롬프트를 고칠 때마다 숫자로 개선/퇴보를 확인**할 수 있음.
 목표 예시: precision ≥ 0.9 (틀린 Action이 섞이는 게 누락보다 신뢰를 더 깎는다).
 
-## Phase 2 — 매칭·병합 (2~3일) — 엔진 완료, DB 반영은 Phase 3
+## Phase 2 — 매칭·병합 (2~3일) ✅ 완료
 
 진행 상황: `resolve.ts`(규칙 0~6, 단위 테스트), `match.ts`(임베딩 상위 5개 + Jev 관계 판정), `merge.ts`(Claim 누적 · 메모리 저장소),
 시퀀스 골든셋 10건과 병합 정확도 채점까지 완료. 매칭 판정은 CLAUDE.md 규칙대로 LLM이 아니라 Jev(choice)로 한다.
@@ -87,7 +87,14 @@ Action · Claim을 DB에 쓰는 저장소(`ActionStore`의 Supabase 구현)와 �
 
 완료 기준: PRD 2장 핵심 시나리오 1~2와 TRUTH_RULES.md의 9/22~9/24 표가 테스트로 통과.
 
-## Phase 3 — 반영 정책 + 쓰기 API + 알림 발송 (2~3일)
+## Phase 3 — 반영 정책 + 쓰기 API + 알림 발송 (2~3일) ✅ 완료
+
+진행 상황: 원문 처리 끝에 `mergeJudged`가 Supabase 저장소(`src/lib/actions/db-store.ts`)로 Action · Claim · 근거 · 이벤트를 쓴다.
+actions 행은 Claim에서 `resolveAction`으로 다시 계산한 캐시이고(`src/lib/actions/project.ts`), 모든 쓰기는 SQL 함수 `write_action`으로
+한 트랜잭션에 버전 확인과 함께 들어간다(겹치면 다시 읽고 재시도). 사용자 수정 · 확정도 `origin: "user"` Claim으로 남아 규칙 0~6이 그대로 판정한다.
+"지금 할 일"은 `src/lib/actions/rank.ts`, 알림은 `src/lib/notify/`(확인 요청 즉시, 기한 임박은 매일 09:00 cron).
+남은 숙제: 연동 원문의 "한 번만 넣기" 규칙 완화(바뀐 페이지 다시 넣기), 서버 인스턴스 사이 병합 잠금(지금은 인스턴스 안에서만 사용자별 직렬화).
+
 
 > 프롬프트:
 > "docs/PLATFORMS.md 2~3장을 읽어. 파이프라인 결과를 DB에 반영하는 `apply.ts`를 만들어. 신뢰도 임계값 이상은 자동 반영하고 ActionEvent를 남기고,

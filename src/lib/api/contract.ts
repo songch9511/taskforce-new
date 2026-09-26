@@ -58,7 +58,69 @@ export const profileSchema = z.object({
 });
 export type Profile = z.infer<typeof profileSchema>;
 
-export const apiErrorCodeSchema = z.enum(["unauthorized", "invalid_request", "rate_limited", "internal_error"]);
+// ─── Action (Phase 3) ─────────────────────────────────────
+// 읽기는 앱이 Supabase에서 직접(RLS) 한다. 여기 있는 것은 서버 계산이 필요한 읽기(지금 할 일 순서)와 모든 쓰기다.
+
+export const actionOwnerSchema = z.enum(["me", "other", "unknown"]);
+export const actionStatusSchema = z.enum(["open", "done", "dropped"]);
+
+export const actionSummarySchema = z.object({
+  id: z.uuid(),
+  title: z.string(),
+  owner: actionOwnerSchema,
+  status: actionStatusSchema,
+  due_date: z.iso.date().nullable(),
+  counterpart: z.string().nullable(),
+  needs_confirmation: z.boolean(),
+  /** 확인 요청 이유 (예: "담당 확인", "기한 확인", "병합 확인 (55%)") */
+  confirm_reasons: z.array(z.string()),
+  started_at: z.string().nullable(),
+  last_activity_at: z.string(),
+});
+export type ActionSummary = z.infer<typeof actionSummarySchema>;
+
+export const rankedActionSchema = actionSummarySchema.extend({
+  score: z.number(),
+  reasons: z.array(z.enum(["overdue", "due_today", "due_soon", "external", "neglected", "started"])),
+  days_until_due: z.number().nullable(),
+});
+
+// GET /api/v1/now
+export const nowResponseSchema = z.object({
+  now: z.array(rankedActionSchema),
+  confirmations: z.array(rankedActionSchema),
+});
+export type NowResponse = z.infer<typeof nowResponseSchema>;
+
+// PATCH /api/v1/actions/:id — 사용자 수정. 바뀐 필드마다 user_edited 이벤트가 남는다 (지표 1).
+export const editActionRequestSchema = z
+  .object({
+    title: z.string().trim().min(1).max(200).optional(),
+    due_date: z.iso.date().nullable().optional(),
+    status: z.enum(["open", "done"]).optional(),
+    owner: z.enum(["me", "other"]).optional(),
+  })
+  .refine((body) => Object.keys(body).length > 0, { message: "바꿀 필드가 하나는 있어야 합니다" });
+export type EditActionRequest = z.infer<typeof editActionRequestSchema>;
+
+// PATCH · DELETE · confirm · start 응답
+export const actionResponseSchema = z.object({ action: actionSummarySchema });
+
+// POST /api/v1/metric-events
+export const metricEventRequestSchema = z.object({
+  type: z.enum(["app_opened", "handoff_used"]),
+  action_id: z.uuid().optional(),
+});
+
+// POST /api/v1/devices — 알림용 기기 토큰 (APNs)
+export const deviceRequestSchema = z.object({
+  token: z.string().regex(/^[0-9a-fA-F]{32,200}$/, "APNs 기기 토큰(16진수)"),
+  platform: z.enum(["ios", "macos"]),
+  environment: z.enum(["sandbox", "production"]).default("production"),
+  app_version: z.string().max(40).optional(),
+});
+
+export const apiErrorCodeSchema = z.enum(["unauthorized", "invalid_request", "not_found", "conflict", "rate_limited", "internal_error"]);
 
 export const apiErrorSchema = z.object({
   error: z.object({ code: apiErrorCodeSchema, message: z.string() }),

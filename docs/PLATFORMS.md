@@ -117,13 +117,16 @@ Server Action은 웹 폼 전용이라 Swift 앱에서 부를 수 없다.
 |---|---|---|
 | `POST /api/v1/sources` | 원문 전송 (텍스트 + 관련자 `participants`). 202 + `source_id`, 처리 상태는 `sources.processing_status` | 1 ✅ |
 | `GET` · `PUT /api/v1/profile` | 원문 속 사용자 정보: 기본 이름 · 별칭 · 이메일 | 1 ✅ |
-| `PATCH /api/v1/actions/:id` | 사용자 수정 (`user_edited` 이벤트) | 3 |
-| `DELETE /api/v1/actions/:id` | 사용자 삭제 (`user_deleted` 이벤트, 실제로는 `dropped` 처리) | 3 |
-| `POST /api/v1/actions/:id/confirm` | 확인 요청 확정 (`user_confirmed`) | 3 |
-| `POST /api/v1/actions/:id/start` | 착수 (`action_started`) | 3 |
+| `GET /api/v1/now` | "지금 할 일" 순서 + 확인 큐 | 3 ✅ |
+| `PATCH /api/v1/actions/:id` | 사용자 수정 (`user_edited` 이벤트). 동시 수정이 겹치면 409 `conflict` | 3 ✅ |
+| `DELETE /api/v1/actions/:id` | 사용자 삭제 (`user_deleted` 이벤트, 실제로는 `dropped` 처리) | 3 ✅ |
+| `POST /api/v1/actions/:id/confirm` | 확인 요청 확정 (`user_confirmed`) | 3 ✅ |
+| `POST /api/v1/actions/:id/start` | 착수 (`user_started` 이벤트 + `action_started` 지표) | 3 ✅ |
 | `POST /api/v1/actions/:id/handoff` | AI 핸드오프 문서 생성 (`handoff_used`) | 4 |
-| `POST /api/v1/metric-events` | `app_opened` 등 | 3 |
-| `POST /api/v1/devices` | 알림용 기기 토큰 등록 | 3 |
+| `POST /api/v1/metric-events` | 앱이 직접 남기는 지표 (`app_opened`, `handoff_used`). 나머지 지표는 서버만 쓴다 | 3 ✅ |
+| `POST` · `DELETE /api/v1/devices` | 알림용 기기 토큰 등록 · 해제 (로그아웃 때 DELETE). 토큰은 마지막 로그인 계정에 속하고, 사용자당 10대 | 3 ✅ |
+
+알림(APNs)에는 할 일 제목을 싣지 않는다. `mutable-content: 1`과 `action_id`만 보내고, 앱의 Notification Service Extension이 로그인 세션으로 제목을 받아 채운다 (Phase A3).
 
 ---
 

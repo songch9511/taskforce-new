@@ -24,8 +24,8 @@ export type TrackedAction = {
 };
 
 export interface ActionStore {
-  /** 아직 끝나지 않은(열린) Action */
-  openActions(): Promise<TrackedAction[]>;
+  /** 이 임베딩과 비슷한 열린 Action (최대 5개, 비슷한 순). DB에서는 pgvector로 찾는다. */
+  shortlist(vector: number[]): Promise<OpenAction[]>;
   create(action: Omit<TrackedAction, "id">): Promise<TrackedAction>;
   append(actionId: string, update: { claims: Claim[]; evidence: Evidence; confirmReason?: string }): Promise<void>;
 }
@@ -39,11 +39,12 @@ export class InMemoryActionStore implements ActionStore {
     return this.actions;
   }
 
-  async openActions(): Promise<TrackedAction[]> {
-    return this.actions.filter((a) => {
+  async shortlist(vector: number[]): Promise<OpenAction[]> {
+    const open = this.actions.filter((a) => {
       const status = resolveAction(a.claims).status.value;
       return status !== "done" && status !== "dropped";
     });
+    return shortlistActions(vector, open.map(toOpenAction));
   }
 
   async create(action: Omit<TrackedAction, "id">): Promise<TrackedAction> {
@@ -59,6 +60,17 @@ export class InMemoryActionStore implements ActionStore {
     action.evidence.push(update.evidence);
     if (update.confirmReason) action.confirmReasons.push(update.confirmReason);
   }
+}
+
+export function toOpenAction(a: TrackedAction): OpenAction {
+  return {
+    id: a.id,
+    title: a.title,
+    counterpart: a.counterpart,
+    due: resolveAction(a.claims).due.value,
+    latestQuote: a.evidence.at(-1)?.quote ?? null,
+    embedding: a.embedding,
+  };
 }
 
 export type MergeSource = { id: string; text: string; kind: SourceKind; occurredAt: Date };
@@ -141,16 +153,7 @@ export async function mergeJudged(
     }
 
     const [vector] = await deps.embed([embedText(candidate.title, candidate.quote)]);
-    const open = await store.openActions();
-    const openViews: OpenAction[] = open.map((a) => ({
-      id: a.id,
-      title: a.title,
-      counterpart: a.counterpart,
-      due: resolveAction(a.claims).due.value,
-      latestQuote: a.evidence.at(-1)?.quote ?? null,
-      embedding: a.embedding,
-    }));
-    const match = await matchCandidate(candidate, source, identity, shortlistActions(vector, openViews), deps.decide);
+    const match = await matchCandidate(candidate, source, identity, await store.shortlist(vector), deps.decide);
     outcomes.push({ quote: candidate.quote, signal: candidate.signal, relation: match.relation, actionId: match.actionId, confidence: match.confidence });
     if (match.relation === "unmatched") continue;
 

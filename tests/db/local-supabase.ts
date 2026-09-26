@@ -16,25 +16,29 @@ const SUPABASE_STUB = `
   $$;
   create role anon nologin;
   create role authenticated nologin;
+  create role service_role nologin bypassrls;
   grant usage on schema auth, extensions to anon, authenticated;
 `;
 
-// Supabase는 public 스키마 테이블에 기본 권한을 준다. 실제 접근 제어는 RLS가 한다.
+// Supabase는 public 스키마에 새로 만드는 테이블 · 함수에 기본 권한을 준다(default privileges). 실제 접근 제어는 RLS가 한다.
+// 테이블을 만들 때 권한이 붙으므로, 마이그레이션 안의 revoke가 실제처럼 효과를 낸다.
 const SUPABASE_DEFAULT_GRANTS = `
-  grant usage on schema public to anon, authenticated;
-  grant all on all tables in schema public to anon, authenticated;
+  grant usage on schema public to anon, authenticated, service_role;
+  alter default privileges in schema public grant all on tables to anon, authenticated, service_role;
+  alter default privileges in schema public grant all on sequences to anon, authenticated, service_role;
+  alter default privileges in schema public grant execute on functions to anon, authenticated, service_role;
 `;
 
 export async function createLocalSupabase(): Promise<PGlite> {
   const db = new PGlite({ extensions: { vector } });
   await db.exec(SUPABASE_STUB);
+  await db.exec(SUPABASE_DEFAULT_GRANTS);
 
   const files = (await readdir(MIGRATIONS_DIR)).filter((f) => f.endsWith(".sql")).sort();
   for (const file of files) {
     await db.exec(await readFile(path.join(MIGRATIONS_DIR, file), "utf8"));
   }
 
-  await db.exec(SUPABASE_DEFAULT_GRANTS);
   return db;
 }
 
