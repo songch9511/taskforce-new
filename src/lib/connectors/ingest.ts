@@ -20,6 +20,9 @@ export type IngestOptions = {
 
 export const DEFAULT_INGEST_OPTIONS: Omit<IngestOptions, "now"> = { settleMinutes: 30, maxItems: 20, minTextLength: 30 };
 
+/** 동시에 처리하는 항목 수. 느린 항목 하나가 나머지를 붙잡지 않게 하되, 모델 · Notion 속도 제한은 넘지 않게 작게 둔다. */
+const CONCURRENCY = 3;
+
 export type IngestDeps = {
   /** 이 연결에서 이미 넣은 외부 id 목록 */
   ingestedIds: (connection: Connection, externalIds: string[]) => Promise<Set<string>>;
@@ -70,18 +73,28 @@ export async function ingestItems(
   result.skipped.overLimit = Math.max(0, fresh.length - options.maxItems);
 
   const batch = fresh.slice(0, options.maxItems);
-  for (const [index, item] of batch.entries()) {
-    if (options.deadline && Date.now() > options.deadline) {
-      result.notReached = batch.slice(index).map((i) => i.externalId);
-      break;
+  const created = new Array<string | null>(batch.length).fill(null);
+  const notReached = new Set<number>();
+  let next = 0;
+  const worker = async () => {
+    while (next < batch.length) {
+      const index = next++;
+      if (options.deadline && Date.now() > options.deadline) {
+        notReached.add(index);
+        continue;
+      }
+      const sourceId = await deps.insertSource(connection, batch[index]);
+      if (!sourceId) {
+        result.skipped.alreadyIngested++;
+        continue;
+      }
+      created[index] = sourceId;
+      await deps.process(connection, sourceId, batch[index]);
     }
-    const sourceId = await deps.insertSource(connection, item);
-    if (!sourceId) {
-      result.skipped.alreadyIngested++;
-      continue;
-    }
-    result.created.push(sourceId);
-    await deps.process(connection, sourceId, item);
-  }
+  };
+  await Promise.all(Array.from({ length: Math.min(CONCURRENCY, batch.length) }, worker));
+
+  result.created = created.filter((id): id is string => id !== null);
+  result.notReached = batch.filter((_, index) => notReached.has(index)).map((item) => item.externalId);
   return result;
 }

@@ -9,6 +9,7 @@ export type LlmConfig = {
   apiKey: string;
   model: string;
   fetch?: typeof fetch;
+  timeoutMs?: number;
 };
 
 export type JsonCompletionRequest<T extends z.ZodType> = {
@@ -68,8 +69,11 @@ export function llmConfigFromEnv(env: Record<string, string | undefined> = proce
   return { apiKey, model };
 }
 
-/** 응답 형식이 깨졌을 때 다시 시도하는 횟수. 같은 모델도 공급자에 따라 가끔 JSON이 아닌 답을 준다. */
+/** 응답 형식이 깨졌거나 시간 안에 답이 없을 때 다시 시도하는 횟수. 같은 모델도 공급자에 따라 가끔 멈추거나 JSON이 아닌 답을 준다. */
 const FORMAT_RETRIES = 1;
+
+/** 한 번 호출의 응답 시간 한도. 넘기면 끊고 다시 시도한다 (실제 원문에서 5분 넘게 멈춘 경우가 있었다). */
+export const LLM_TIMEOUT_MS = 90_000;
 
 export async function completeJson<T extends z.ZodType>(
   config: LlmConfig,
@@ -89,25 +93,34 @@ async function completeJsonOnce<T extends z.ZodType>(
   request: JsonCompletionRequest<T>,
 ): Promise<JsonCompletion<z.infer<T>>> {
   const doFetch = config.fetch ?? fetch;
-  const response = await doFetch(OPENROUTER_CHAT_URL, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${config.apiKey}`, "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model: config.model,
-      ...(request.temperature === undefined ? {} : { temperature: request.temperature }),
-      max_tokens: request.maxTokens ?? 8192,
-      messages: [
-        { role: "system", content: request.system },
-        { role: "user", content: request.user },
-      ],
-      response_format: {
-        type: "json_schema",
-        json_schema: { name: request.schemaName, strict: true, schema: z.toJSONSchema(request.schema) },
-      },
-      // 구조화 출력을 지원하고, 사용자 원문을 저장 · 학습에 쓰지 않는 공급자에게만 보낸다.
-      provider: { require_parameters: true, data_collection: "deny" },
-    }),
-  });
+  let response: Response;
+  try {
+    response = await doFetch(OPENROUTER_CHAT_URL, {
+      signal: AbortSignal.timeout(config.timeoutMs ?? LLM_TIMEOUT_MS),
+      method: "POST",
+      headers: { Authorization: `Bearer ${config.apiKey}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: config.model,
+        ...(request.temperature === undefined ? {} : { temperature: request.temperature }),
+        max_tokens: request.maxTokens ?? 8192,
+        messages: [
+          { role: "system", content: request.system },
+          { role: "user", content: request.user },
+        ],
+        response_format: {
+          type: "json_schema",
+          json_schema: { name: request.schemaName, strict: true, schema: z.toJSONSchema(request.schema) },
+        },
+        // 구조화 출력을 지원하고, 사용자 원문을 저장 · 학습에 쓰지 않는 공급자에게만 보낸다.
+        provider: { require_parameters: true, data_collection: "deny" },
+      }),
+    });
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "TimeoutError") {
+      throw new LlmError(`응답 시간 초과 (${Math.round((config.timeoutMs ?? LLM_TIMEOUT_MS) / 1000)}초)`, undefined, true);
+    }
+    throw error;
+  }
 
   if (!response.ok) {
     // 응답 본문에는 원문이 들어 있지 않지만, 길이를 제한해 로그가 커지지 않게 한다.

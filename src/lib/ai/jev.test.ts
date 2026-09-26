@@ -26,6 +26,29 @@ describe("decide", () => {
     expect((c.requests[0].headers as Record<string, string>).Authorization).toBe("Bearer key");
   });
 
+  it("시간 초과는 한 번 다시 묻고, 또 넘기면 JevError", async () => {
+    let calls = 0;
+    const flaky: JevConfig = {
+      apiKey: "key",
+      model: "m",
+      fetch: (async () => {
+        if (calls++ === 0) throw new DOMException("timed out", "TimeoutError");
+        return new Response(JSON.stringify({ model: "m", answers: { ok: { type: "noul", noul: 0.5 } } }));
+      }) as typeof fetch,
+    };
+    expect((await decide(flaky, { state: {}, questions })).answers.ok).toEqual({ type: "noul", noul: 0.5 });
+    expect(calls).toBe(2);
+
+    const stuck: JevConfig = {
+      apiKey: "key",
+      model: "m",
+      fetch: (async () => {
+        throw new DOMException("timed out", "TimeoutError");
+      }) as typeof fetch,
+    };
+    await expect(decide(stuck, { state: {}, questions })).rejects.toThrow(/시간 초과/);
+  });
+
   it("HTTP 오류는 JevError", async () => {
     await expect(decide(config("nope", 500), { state: {}, questions })).rejects.toBeInstanceOf(JevError);
   });

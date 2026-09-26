@@ -10,7 +10,11 @@ export type JevConfig = {
   /** 버전 고정 (예: typesafe/jev-1.13) */
   model: string;
   fetch?: typeof fetch;
+  /** 판정은 짧아야 한다. 넘기면 끊는다. */
+  timeoutMs?: number;
 };
+
+export const JEV_TIMEOUT_MS = 30_000;
 
 export type JevQuestion =
   | { type: "noul"; instructions: string }
@@ -65,11 +69,29 @@ export async function decide(
   request: { state: unknown; questions: Record<string, JevQuestion> },
 ): Promise<JevDecision> {
   const doFetch = config.fetch ?? fetch;
-  const response = await doFetch(OPENROUTER_DECISIONS_URL, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${config.apiKey}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ model: config.model, state: request.state, questions: request.questions }),
-  });
+  const send = () =>
+    doFetch(OPENROUTER_DECISIONS_URL, {
+      signal: AbortSignal.timeout(config.timeoutMs ?? JEV_TIMEOUT_MS),
+      method: "POST",
+      headers: { Authorization: `Bearer ${config.apiKey}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ model: config.model, state: request.state, questions: request.questions }),
+    });
+
+  // 판정은 보통 1~2초지만 가끔 멈춘다. 시간 초과는 한 번만 다시 묻는다.
+  let response: Response;
+  try {
+    response = await send();
+  } catch (error) {
+    if (!(error instanceof DOMException && error.name === "TimeoutError")) throw error;
+    try {
+      response = await send();
+    } catch (retryError) {
+      if (retryError instanceof DOMException && retryError.name === "TimeoutError") {
+        throw new JevError(`Decisions API 응답 시간 초과 (${Math.round((config.timeoutMs ?? JEV_TIMEOUT_MS) / 1000)}초)`);
+      }
+      throw retryError;
+    }
+  }
 
   if (!response.ok) {
     throw new JevError(`Decisions API 요청 실패 (${response.status})`, (await response.text()).slice(0, 500));

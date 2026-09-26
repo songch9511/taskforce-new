@@ -49,6 +49,20 @@ describe("completeJson", () => {
     expect(c.bodies).toHaveLength(2);
   });
 
+  it("시간 안에 답이 없으면 한 번 다시 묻는다", async () => {
+    let calls = 0;
+    const c: LlmConfig = {
+      apiKey: "key",
+      model: "test/model",
+      fetch: (async () => {
+        if (calls++ === 0) throw new DOMException("timed out", "TimeoutError");
+        return new Response(JSON.stringify({ model: "m", choices: [{ message: { content: '{"ok":true}' } }] }));
+      }) as typeof fetch,
+    };
+    expect((await completeJson(c, request)).data).toEqual({ ok: true });
+    expect(calls).toBe(2);
+  });
+
   it("HTTP 오류는 다시 묻지 않는다", async () => {
     const c = config(['{"ok":true}'], 402);
     await expect(completeJson(c, request)).rejects.toBeInstanceOf(LlmError);
