@@ -1,0 +1,47 @@
+{
+  "id": "same-action-mentioned-twice",
+  "origin": "synthetic",
+  "description": "Slack DM에서 JD 초안 약속이 처음과 끝에 두 번 나온다. 하나의 Action으로 합치고 근거 인용 두 개를 붙인다. 상대의 할 일과 이미 올린 템플릿은 제외한다.",
+  "user": {
+    "name": "나"
+  },
+  "sources": [
+    {
+      "id": "slack-dm-1027",
+      "kind": "message",
+      "occurred_at": "2026-10-27T17:00:00+09:00",
+      "text": "오지훈: 혹시 오늘 회의에서 말한 채용 JD 초안 언제쯤 받을 수 있을까요?\n나: 아 JD 초안 내일 오전까지 드릴게요\n오지훈: 좋아요. 백엔드 포지션이랑 PM 포지션 둘 다요\n나: 넵 둘 다 정리할게요\n오지훈: 그리고 헤드헌터 미팅은 제가 목요일로 잡아둘게요\n나: 감사해요. 아 그리고 레퍼런스 체크 템플릿은 어제 노션에 올려놨어요\n오지훈: 확인했어요 👍\n나: JD는 내일 오전 중으로 꼭 보낼게요!"
+    }
+  ],
+  "expected_actions": [
+    {
+      "title": "오지훈에게 백엔드·PM 채용 JD 초안 전달",
+      "owner": "me",
+      "counterpart": "오지훈",
+      "due": "2026-10-28",
+      "status": "open",
+      "evidence": [
+        {
+          "source": "slack-dm-1027",
+          "quote": "JD 초안 내일 오전까지 드릴게요"
+        },
+        {
+          "source": "slack-dm-1027",
+          "quote": "JD는 내일 오전 중으로 꼭 보낼게요"
+        }
+      ]
+    }
+  ],
+  "must_not_extract": [
+    {
+      "source": "slack-dm-1027",
+      "quote": "헤드헌터 미팅은 제가 목요일로 잡아둘게요",
+      "reason": "NOT_MY_ACTION"
+    },
+    {
+      "source": "slack-dm-1027",
+      "quote": "레퍼런스 체크 템플릿은 어제 노션에 올려놨어요",
+      "reason": "ALREADY_DONE"
+    }
+  ]
+}

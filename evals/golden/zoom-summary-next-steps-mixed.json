@@ -1,0 +1,60 @@
+{
+  "id": "zoom-summary-next-steps-mixed",
+  "origin": "synthetic",
+  "description": "Zoom AI 요약(영어 섹션 제목, 한영 혼용). 'Next steps'에서 한도경이 담당인 항목만 뽑고, 다른 담당자 항목과 '검토/추후 논의' 요약 문장은 제외한다.",
+  "user": {
+    "name": "한도경"
+  },
+  "sources": [
+    {
+      "id": "zoom-1116",
+      "kind": "meeting",
+      "occurred_at": "2026-11-16T11:30:00+09:00",
+      "text": "Meeting summary: Q4 GTM 전략 회의\nQuick recap\n팀은 Q4 enterprise 세일즈 파이프라인과 신규 pricing tier 도입을 논의했습니다. 한도경은 기존 SMB 고객 churn 방어가 우선이라고 강조했고, 엘리엇 김은 enterprise 딜 2건이 이번 달 클로징 가능하다고 공유했습니다.\n\nNext steps\n- 한도경: enterprise pricing 1-pager 작성 후 팀 공유 (금요일까지)\n- 한도경: churn 위험 고객 top 20 리스트 CS팀과 리뷰\n- 엘리엇 김: 파란마켓 딜 security review 대응\n- 노수빈: 11월 웨비나 등록 페이지 오픈 (11/18)\n\nSummary\nPricing tier\n- 현재 Pro 플랜 대비 30% 높은 Enterprise tier 신설 검토\n- 연간 계약 시 15% 할인 옵션은 추후 논의\nPipeline\n- 파란마켓, 오르빗헬스 두 건이 negotiation 단계"
+    }
+  ],
+  "expected_actions": [
+    {
+      "title": "enterprise pricing 1-pager 작성 후 팀 공유",
+      "owner": "me",
+      "counterpart": "팀",
+      "due": "2026-11-20",
+      "status": "open",
+      "evidence": [
+        {
+          "source": "zoom-1116",
+          "quote": "한도경: enterprise pricing 1-pager 작성 후 팀 공유 (금요일까지)"
+        }
+      ]
+    },
+    {
+      "title": "CS팀과 churn 위험 고객 top 20 리스트 리뷰",
+      "owner": "me",
+      "counterpart": "CS팀",
+      "status": "open",
+      "evidence": [
+        {
+          "source": "zoom-1116",
+          "quote": "한도경: churn 위험 고객 top 20 리스트 CS팀과 리뷰"
+        }
+      ]
+    }
+  ],
+  "must_not_extract": [
+    {
+      "source": "zoom-1116",
+      "quote": "엘리엇 김: 파란마켓 딜 security review 대응",
+      "reason": "NOT_MY_ACTION"
+    },
+    {
+      "source": "zoom-1116",
+      "quote": "노수빈: 11월 웨비나 등록 페이지 오픈 (11/18)",
+      "reason": "NOT_MY_ACTION"
+    },
+    {
+      "source": "zoom-1116",
+      "quote": "연간 계약 시 15% 할인 옵션은 추후 논의",
+      "reason": "TENTATIVE"
+    }
+  ]
+}

@@ -1,0 +1,39 @@
+{
+  "id": "zero-actions-group-announcement",
+  "origin": "synthetic",
+  "description": "액셀러레이터 단톡방 공지와 잡담. 일정 변경 공지, 운영진의 할 일, 이미 제출한 자료, '시간 되면'뿐이라 뽑을 Action이 하나도 없다.",
+  "user": {
+    "name": "나"
+  },
+  "sources": [
+    {
+      "id": "kakao-1021",
+      "kind": "message",
+      "occurred_at": "2026-10-21T13:20:00+09:00",
+      "text": "[스파크업 3기 단톡방]\n운영매니저 이지은: 공지드립니다. 다음 주 목요일 데모데이 리허설은 오후 2시로 변경되었습니다.\n운영매니저 이지은: 발표 순서는 오늘 저녁에 제가 공유드릴게요.\n강민석: 혹시 주차 지원 되나요?\n운영매니저 이지은: 네 2시간 무료 주차 가능합니다\n나: 감사합니다! 저희는 지난주에 발표자료 제출 완료했어요\n강민석: 리허설 끝나고 다 같이 저녁 먹으면 좋겠네요 ㅎㅎ\n나: 좋아요 시간 되면 저도 갈게요"
+    }
+  ],
+  "expected_actions": [],
+  "must_not_extract": [
+    {
+      "source": "kakao-1021",
+      "quote": "다음 주 목요일 데모데이 리허설은 오후 2시로 변경되었습니다",
+      "reason": "INFO_ONLY"
+    },
+    {
+      "source": "kakao-1021",
+      "quote": "발표 순서는 오늘 저녁에 제가 공유드릴게요",
+      "reason": "NOT_MY_ACTION"
+    },
+    {
+      "source": "kakao-1021",
+      "quote": "저희는 지난주에 발표자료 제출 완료했어요",
+      "reason": "ALREADY_DONE"
+    },
+    {
+      "source": "kakao-1021",
+      "quote": "좋아요 시간 되면 저도 갈게요",
+      "reason": "TENTATIVE"
+    }
+  ]
+}

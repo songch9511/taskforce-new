@@ -1,0 +1,76 @@
+{
+  "id": "meeting-english-alias",
+  "origin": "synthetic",
+  "description": "사용자(송지후)가 회의록에서 영문 이름 Jay로 불린다. 별칭 Jay의 할 일만 사용자의 것이다.",
+  "user": {
+    "name": "송지후",
+    "aliases": [
+      "Jay"
+    ],
+    "emails": []
+  },
+  "sources": [
+    {
+      "id": "sync-1012",
+      "kind": "meeting",
+      "occurred_at": "2026-10-12T15:00:00+09:00",
+      "participants": {
+        "attendees": [
+          {
+            "name": "Jay"
+          },
+          {
+            "name": "Mina"
+          },
+          {
+            "name": "도현"
+          }
+        ]
+      },
+      "text": "## Weekly Sync\n- Jay: 온보딩 퍼널 대시보드 수요일까지 업데이트\n- Mina: 앱스토어 스크린샷 교체\n- 도현: 결제 오류 로그 분석, 금요일 공유\n- Jay가 다음 주 월요일 투자사 미팅 자료 초안 준비\n- 신규 요금제 출시는 11월로 연기됨"
+    }
+  ],
+  "expected_actions": [
+    {
+      "title": "온보딩 퍼널 대시보드 업데이트",
+      "owner": "me",
+      "due": "2026-10-14",
+      "status": "open",
+      "evidence": [
+        {
+          "source": "sync-1012",
+          "quote": "Jay: 온보딩 퍼널 대시보드 수요일까지 업데이트"
+        }
+      ]
+    },
+    {
+      "title": "투자사 미팅 자료 초안 준비",
+      "owner": "me",
+      "status": "open",
+      "evidence": [
+        {
+          "source": "sync-1012",
+          "quote": "Jay가 다음 주 월요일 투자사 미팅 자료 초안 준비"
+        }
+      ],
+      "due": "2026-10-19"
+    }
+  ],
+  "must_not_extract": [
+    {
+      "source": "sync-1012",
+      "quote": "Mina: 앱스토어 스크린샷 교체",
+      "reason": "NOT_MY_ACTION"
+    },
+    {
+      "source": "sync-1012",
+      "quote": "도현: 결제 오류 로그 분석, 금요일 공유",
+      "reason": "NOT_MY_ACTION"
+    },
+    {
+      "source": "sync-1012",
+      "quote": "신규 요금제 출시는 11월로 연기됨",
+      "reason": "INFO_ONLY"
+    }
+  ]
+}
