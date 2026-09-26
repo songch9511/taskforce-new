@@ -33,6 +33,7 @@ function result(overrides: Partial<JudgeSignals>, decision: JudgeResult["decisio
       is_actionable: 0.9,
       already_done: 0.1,
       certainty: { choice: "firm", probabilities: {} },
+      statement_certainty: { choice: "firm", probabilities: {} },
       speaker_role: { choice: "me", probabilities: {} },
       directness: { choice: "first_hand", probabilities: {} },
       audience: { choice: "shared", probabilities: {} },

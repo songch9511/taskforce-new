@@ -71,7 +71,11 @@ Apple 트랙은 Xcode 빌드가 필요하므로 **Mac의 Claude Code**에서 진
 완료 기준: eval 표가 출력되고, **프롬프트를 고칠 때마다 숫자로 개선/퇴보를 확인**할 수 있음.
 목표 예시: precision ≥ 0.9 (틀린 Action이 섞이는 게 누락보다 신뢰를 더 깎는다).
 
-## Phase 2 — 매칭·병합 (2~3일)
+## Phase 2 — 매칭·병합 (2~3일) — 엔진 완료, DB 반영은 Phase 3
+
+진행 상황: `resolve.ts`(규칙 0~6, 단위 테스트), `match.ts`(임베딩 상위 5개 + Jev 관계 판정), `merge.ts`(Claim 누적 · 메모리 저장소),
+시퀀스 골든셋 10건과 병합 정확도 채점까지 완료. 매칭 판정은 CLAUDE.md 규칙대로 LLM이 아니라 Jev(choice)로 한다.
+Action · Claim을 DB에 쓰는 저장소(`ActionStore`의 Supabase 구현)와 연동 원문의 "한 번만 넣기" 규칙 완화는 Phase 3에서.
 
 "금요일 약속 → 월요일로 변경" 시나리오가 여기서 풀린다.
 

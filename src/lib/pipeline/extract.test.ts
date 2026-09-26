@@ -16,6 +16,7 @@ function fakeComplete(candidates: unknown[]): CompleteJson {
 }
 
 const raw = {
+  signal: "commitment",
   rationale: "사용자가 약속함",
   title: " 제안서 발송 ",
   quote: "금요일까지 제안서 보내드릴게요",
@@ -34,6 +35,7 @@ describe("extractCandidates", () => {
     expect(result.promptVersion).toMatch(/^extract-v\d+$/);
     expect(result.candidates).toEqual([
       {
+        signal: "commitment",
         rationale: "사용자가 약속함",
         title: "제안서 발송",
         quote: "금요일까지 제안서 보내드릴게요",

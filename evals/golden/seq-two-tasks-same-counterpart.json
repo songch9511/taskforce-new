@@ -1,0 +1,66 @@
+{
+  "id": "seq-two-tasks-same-counterpart",
+  "origin": "synthetic",
+  "description": "같은 상대(정하윤)에게 회의에서 견적서, 다음 날 Slack에서 레퍼런스 자료를 약속한다. 상대가 같아도 서로 다른 일이므로 Action 두 개로 남아야 한다(병합 금지).",
+  "user": {
+    "name": "강도현",
+    "aliases": [
+      "도현"
+    ],
+    "emails": []
+  },
+  "sources": [
+    {
+      "id": "meeting-1012",
+      "kind": "meeting",
+      "occurred_at": "2026-10-12T15:00:00+09:00",
+      "text": "참석: 강도현, 정하윤(모아헬스 운영팀장)\n정하윤: 예약 시스템 개편 비용이 대략 어느 정도일지 알고 싶어요.\n강도현: 견적서는 수요일까지 보내드릴게요.\n정하윤: 네, 내부 예산 회의가 다음 주 화요일이라 그 전에만 받으면 돼요.\n정하윤: 현재 시스템 사용 현황은 저희 쪽에서 정리해서 공유드릴게요."
+    },
+    {
+      "id": "slack-1013",
+      "kind": "message",
+      "occurred_at": "2026-10-13T10:40:00+09:00",
+      "text": "강도현: 하윤님, 어제 미팅 감사했습니다.\n강도현: 그리고 비슷한 업종 레퍼런스 자료도 금요일까지 추려서 드릴게요. 병원·클리닉 예약 사례 위주로 보겠습니다.\n정하윤: 오 좋아요, 감사합니다!"
+    }
+  ],
+  "expected_actions": [
+    {
+      "title": "정하윤에게 예약 시스템 개편 견적서 발송",
+      "owner": "me",
+      "counterpart": "정하윤",
+      "due": "2026-10-14",
+      "status": "open",
+      "evidence": [
+        {
+          "source": "meeting-1012",
+          "quote": "견적서는 수요일까지 보내드릴게요"
+        }
+      ]
+    },
+    {
+      "title": "정하윤에게 유사 업종 레퍼런스 자료 전달",
+      "owner": "me",
+      "counterpart": "정하윤",
+      "due": "2026-10-16",
+      "status": "open",
+      "evidence": [
+        {
+          "source": "slack-1013",
+          "quote": "비슷한 업종 레퍼런스 자료도 금요일까지 추려서 드릴게요"
+        }
+      ]
+    }
+  ],
+  "must_not_extract": [
+    {
+      "source": "meeting-1012",
+      "quote": "내부 예산 회의가 다음 주 화요일이라",
+      "reason": "INFO_ONLY"
+    },
+    {
+      "source": "meeting-1012",
+      "quote": "현재 시스템 사용 현황은 저희 쪽에서 정리해서 공유드릴게요",
+      "reason": "NOT_MY_ACTION"
+    }
+  ]
+}

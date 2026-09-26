@@ -1,0 +1,81 @@
+{
+  "id": "seq-delivered-done",
+  "origin": "synthetic",
+  "description": "회의에서 금요일까지 보내기로 한 제안서를 사용자가 목요일 메일로 보냈다. 전달이 원문으로 확인되므로 완료(규칙 0).",
+  "user": {
+    "name": "윤서진",
+    "aliases": [],
+    "emails": [
+      "seojin@northpeak.kr"
+    ]
+  },
+  "sources": [
+    {
+      "id": "meeting-0928",
+      "kind": "meeting",
+      "occurred_at": "2026-09-28T10:00:00+09:00",
+      "participants": {
+        "attendees": [
+          {
+            "name": "윤서진",
+            "email": "seojin@northpeak.kr"
+          },
+          {
+            "name": "조현우",
+            "email": "hyunwoo@greenbakery.co.kr"
+          }
+        ]
+      },
+      "text": "참석: 윤서진, 조현우(그린베이커리 대표)\n조현우: 매장 확장 컨설팅 범위를 제안서로 한번 받아보고 싶습니다.\n윤서진: 네, 금요일까지 제안서 보내드릴게요.\n조현우: 좋습니다. 저희는 다음 달부터 판교 2호점 공사가 시작돼요.\n조현우: 매장별 매출 자료는 제가 내일 메일로 보내드릴게요."
+    },
+    {
+      "id": "mail-1001",
+      "kind": "email",
+      "occurred_at": "2026-10-01T16:20:00+09:00",
+      "participants": {
+        "from": {
+          "name": "윤서진",
+          "email": "seojin@northpeak.kr"
+        },
+        "to": [
+          {
+            "name": "조현우",
+            "email": "hyunwoo@greenbakery.co.kr"
+          }
+        ]
+      },
+      "text": "제목: 그린베이커리 매장 확장 컨설팅 제안서\n\n조현우 대표님, 안녕하세요.\n월요일 미팅에서 말씀드린 제안서 보내드렸습니다. 첨부 파일 확인 부탁드립니다.\n궁금하신 점은 편하게 회신 주세요.\n\n윤서진 드림"
+    }
+  ],
+  "expected_actions": [
+    {
+      "title": "조현우 대표에게 매장 확장 컨설팅 제안서 발송",
+      "owner": "me",
+      "counterpart": "조현우",
+      "due": "2026-10-02",
+      "status": "done",
+      "evidence": [
+        {
+          "source": "meeting-0928",
+          "quote": "금요일까지 제안서 보내드릴게요"
+        },
+        {
+          "source": "mail-1001",
+          "quote": "말씀드린 제안서 보내드렸습니다"
+        }
+      ]
+    }
+  ],
+  "must_not_extract": [
+    {
+      "source": "meeting-0928",
+      "quote": "다음 달부터 판교 2호점 공사가 시작돼요",
+      "reason": "INFO_ONLY"
+    },
+    {
+      "source": "meeting-0928",
+      "quote": "매장별 매출 자료는 제가 내일 메일로 보내드릴게요",
+      "reason": "NOT_MY_ACTION"
+    }
+  ]
+}

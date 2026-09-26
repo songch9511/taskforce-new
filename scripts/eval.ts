@@ -8,6 +8,7 @@ import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { parseArgs } from "node:util";
 
+import { embed, embedConfigFromEnv } from "../src/lib/ai/embed";
 import { decide, jevConfigFromEnv } from "../src/lib/ai/jev";
 import { completeJson, llmConfigFromEnv } from "../src/lib/ai/llm";
 import { EXTRACT_PROMPT_VERSION } from "../src/lib/ai/prompts/extract";
@@ -15,8 +16,12 @@ import { JUDGE_PROMPT_VERSION } from "../src/lib/ai/prompts/judge";
 import { findLabelErrors, goldenCaseSchema, type GoldenCase } from "../src/lib/eval/golden";
 import { agreement, calibration, decisionTable, labeledItems, type JudgedItem } from "../src/lib/eval/judge-metrics";
 import { scoreCase, totals, type CaseScore, type ScoredCandidate, type Totals } from "../src/lib/eval/score";
+import { scoreSequence, sequenceTotals, type FinalAction, type SequenceScore } from "../src/lib/eval/sequence-score";
 import { extractCandidates, type ActionCandidate } from "../src/lib/pipeline/extract";
 import { judgeCandidate, type JudgeResult, type JudgeSource } from "../src/lib/pipeline/judge";
+import { InMemoryActionStore, mergeJudged, type MergeOutcome } from "../src/lib/pipeline/merge";
+import { resolveAction } from "../src/lib/pipeline/resolve";
+import { runPipeline } from "../src/lib/pipeline/run";
 import { JUDGE_THRESHOLDS } from "../src/lib/pipeline/judge.config";
 import { verifyCandidates, type VerifiedCandidate } from "../src/lib/pipeline/verify";
 
@@ -129,19 +134,21 @@ async function main() {
   const useJudge = !values["no-judge"];
   const jev = useJudge ? jevConfigFromEnv() : null;
 
-  // Phase 1은 원문 하나짜리 케이스만 채점한다. 여러 원문이 이어지는 케이스는 Phase 2(매칭)에서 채점한다.
+  // 원문 하나짜리 케이스는 추출 품질을, 여러 원문이 이어지는 케이스는 매칭 · 병합 품질을 본다 (시퀀스는 Jev가 필요).
   const selected = cases.filter((c) => !values.case || c.id === values.case);
   const single = selected.filter((c) => c.sources.length === 1);
-  const skipped = selected.length - single.length;
-  if (single.length === 0) {
-    console.error(values.case ? `원문 하나짜리 케이스 ${values.case}가 없습니다.` : "채점할 케이스가 없습니다.");
+  const sequences = selected.filter((c) => c.sources.length > 1);
+  if (selected.length === 0) {
+    console.error(values.case ? `케이스 ${values.case}가 없습니다.` : "채점할 케이스가 없습니다.");
     process.exit(1);
   }
 
   console.log(
     `추출 ${llm.model} · ${EXTRACT_PROMPT_VERSION}` +
       (jev ? ` / 판정 ${jev.model} · ${JUDGE_PROMPT_VERSION}` : "") +
-      ` · ${single.length}건 채점${skipped ? ` (시퀀스 ${skipped}건은 Phase 2)` : ""}\n`,
+      ` · 원문 하나 ${single.length}건` +
+      (sequences.length ? ` · 시퀀스 ${sequences.length}건${jev ? "" : " (Jev가 없어 건너뜀)"}` : "") +
+      "\n",
   );
 
   let llmCost = 0;
@@ -180,13 +187,21 @@ async function main() {
   });
   const done = runs.filter((r): r is CaseRun => r !== null);
 
+  // 원문 하나 채점은 새 약속(commitment)만 본다. 변화 발언(update · completion · cancellation)은 시퀀스 채점에서 본다.
+  const commitments = <T extends { signal: string }>(items: T[]) => items.filter((c) => c.signal === "commitment");
   const stages: { label: string; pick: (run: CaseRun) => ScoredCandidate[] }[] = [
-    { label: "추출만", pick: (r) => r.extracted },
-    { label: "+ 기계 검증", pick: (r) => r.verified },
+    { label: "추출만", pick: (r) => commitments(r.extracted) },
+    { label: "+ 기계 검증", pick: (r) => commitments(r.verified) },
     ...(jev
       ? [
-          { label: "+ Jev (자동+확인)", pick: (r: CaseRun) => r.judged!.filter((j) => j.result.decision !== "reject").map((j) => j.candidate) },
-          { label: "+ Jev (자동만)", pick: (r: CaseRun) => r.judged!.filter((j) => j.result.decision === "auto").map((j) => j.candidate) },
+          {
+            label: "+ Jev (자동+확인)",
+            pick: (r: CaseRun) => commitments(r.judged!.filter((j) => j.result.decision !== "reject").map((j) => j.candidate)),
+          },
+          {
+            label: "+ Jev (자동만)",
+            pick: (r: CaseRun) => commitments(r.judged!.filter((j) => j.result.decision === "auto").map((j) => j.candidate)),
+          },
         ]
       : []),
   ];
@@ -205,7 +220,7 @@ async function main() {
 
   if (jev) {
     const rejectedGood = done.flatMap((r) =>
-      r.judged!.filter((j) => j.result.decision === "reject" && scoreCase(r.golden, [j.candidate]).truePositives > 0)
+      r.judged!.filter((j) => j.candidate.signal === "commitment" && j.result.decision === "reject" && scoreCase(r.golden, [j.candidate]).truePositives > 0)
         .map((j) => `    ${r.golden.id}: "${j.candidate.quote}" (${j.result.reasons.join(", ")})`),
     );
     if (rejectedGood.length > 0) console.log(`\nJev가 기각했지만 정답이었던 것\n${rejectedGood.join("\n")}`);
@@ -262,7 +277,65 @@ async function main() {
     }
   }
 
-  console.log(`\n비용 약 $${(llmCost + jevCost).toFixed(3)} (추출 $${llmCost.toFixed(3)} · Jev $${jevCost.toFixed(4)})`);
+  // 3) 시퀀스: 원문을 시간순으로 파이프라인 + 병합에 넣고, 남은 Action을 정답과 비교한다.
+  type SequenceRun = { golden: GoldenCase; score: SequenceScore; finals: FinalAction[]; outcomes: (MergeOutcome & { source: string })[] };
+  let sequenceRuns: SequenceRun[] = [];
+  let sequenceCost = 0;
+  if (jev && sequences.length > 0) {
+    const embedConfig = embedConfigFromEnv();
+    const runsOrNull = await mapLimit(sequences, LLM_CONCURRENCY, async (golden): Promise<SequenceRun | null> => {
+      try {
+        const store = new InMemoryActionStore();
+        let claimSeq = 0;
+        const mergeDeps = {
+          embed: async (texts: string[]) => (await embed(embedConfig, texts)).vectors,
+          decide: (request: Parameters<typeof decide>[1]) => decide(jev, request),
+          newId: () => `c${++claimSeq}`,
+        };
+        const outcomes: SequenceRun["outcomes"] = [];
+        for (const s of [...golden.sources].sort((a, b) => a.occurred_at.localeCompare(b.occurred_at))) {
+          const occurredAt = new Date(s.occurred_at);
+          const result = await runPipeline(
+            { text: s.text, kind: s.kind, occurredAt, identity: golden.user, participants: s.participants },
+            { complete: (request) => completeJson(llm, request), decide: (request) => decide(jev, request) },
+          );
+          sequenceCost += result.summary.cost;
+          const merged = await mergeJudged(store, result.judged, { id: s.id, text: s.text, kind: s.kind, occurredAt }, golden.user, mergeDeps);
+          outcomes.push(...merged.map((o) => ({ ...o, source: s.id })));
+        }
+        const finals: FinalAction[] = store.all().map((a) => {
+          const state = resolveAction(a.claims);
+          return { id: a.id, title: a.title, quotes: a.evidence.map((e) => e.quote), due: state.due.value, status: state.status.value, owner: state.owner.value };
+        });
+        return { golden, score: scoreSequence(golden, finals), finals, outcomes };
+      } catch (error) {
+        errors.push(`${golden.id} 시퀀스: ${error instanceof Error ? error.message : String(error)}`);
+        return null;
+      }
+    });
+    sequenceRuns = runsOrNull.filter((r): r is SequenceRun => r !== null);
+
+    console.log("\n시퀀스 (여러 원문 → 매칭 · 병합 · 진실 판정)");
+    for (const { score, finals } of sequenceRuns) {
+      console.log(`  ${score.caseId.padEnd(36)} 맞음 ${score.correct}/${score.expected} · Action ${finals.length}개`);
+      const lines = [
+        ...score.splits.map((x) => `    갈라짐 ${x.title} (Action ${x.actions}개)`),
+        ...score.overMerged.map((x) => `    잘못 합침 ${x.title}`),
+        ...score.misses.map((x) => `    누락 ${x.title}`),
+        ...score.extras.map((x) => `    오탐[${x.kind}] ${x.title}`),
+        ...score.fieldErrors.map((x) => `    ${x.field} 틀림 ${x.title}: 정답 ${x.expected ?? "없음"} / 결과 ${x.actual ?? "없음"}`),
+      ];
+      if (lines.length) console.log(lines.join("\n"));
+    }
+    const t = sequenceTotals(sequenceRuns.map((r) => r.score));
+    console.log(
+      `\n병합 정확도 ${pct(t.accuracy)} (${t.correct}/${t.expected}) · 갈라짐 ${t.splits} · 잘못 합침 ${t.overMerged} · 누락 ${t.misses} · 오탐 ${t.extras} · 필드 오류 ${t.fieldErrors}`,
+    );
+  }
+
+  console.log(
+    `\n비용 약 $${(llmCost + jevCost + sequenceCost).toFixed(3)} (추출 $${llmCost.toFixed(3)} · Jev $${jevCost.toFixed(4)} · 시퀀스 $${sequenceCost.toFixed(3)})`,
+  );
 
   // 결과를 남겨 프롬프트 · 임계값을 바꾼 전후를 비교한다 (evals/results는 커밋하지 않음).
   await mkdir(RESULTS_DIR, { recursive: true });
@@ -277,6 +350,7 @@ async function main() {
         thresholds: jev ? JUDGE_THRESHOLDS : null,
         stages: stageTotals,
         judgeAgreement: jev ? agreement(judgedItems) : null,
+        sequences: sequenceRuns.map((r) => ({ id: r.golden.id, score: r.score, finals: r.finals, outcomes: r.outcomes })),
         cases: done.map((r) => ({ id: r.golden.id, origin: r.golden.origin, extracted: r.extracted, judged: r.judged ?? r.verified })),
         judgedLabels: judgedItems.map((j) => ({ caseId: j.caseId, kind: j.kind, quote: j.candidate.quote, labels: j.labels, result: j.result })),
         errors,

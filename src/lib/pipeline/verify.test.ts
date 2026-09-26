@@ -9,6 +9,7 @@ const source = {
 };
 
 const candidate = (extra: Partial<ActionCandidate>): ActionCandidate => ({
+  signal: "commitment",
   title: "제안서 발송",
   quote: "금요일까지 제안서 보내드릴게요",
   owner: "me",

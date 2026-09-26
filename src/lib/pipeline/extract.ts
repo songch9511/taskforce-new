@@ -24,6 +24,7 @@ export type ExtractInput = {
 export const extractResponseSchema = z.object({
   candidates: z.array(
     z.object({
+      signal: z.enum(["commitment", "update", "completion", "cancellation"]),
       rationale: z.string(),
       title: z.string(),
       quote: z.string(),
@@ -37,7 +38,11 @@ export const extractResponseSchema = z.object({
   ),
 });
 
+/** commitment: 새 약속 · 할당(또는 다시 말함). 나머지는 기존 약속의 변화로, 매칭에서만 쓴다. */
+export type CandidateSignal = "commitment" | "update" | "completion" | "cancellation";
+
 export type ActionCandidate = {
+  signal: CandidateSignal;
   title: string;
   quote: string;
   owner: "me" | "unknown";
@@ -70,6 +75,7 @@ export async function extractCandidates(input: ExtractInput, complete: CompleteJ
     .map((c) => {
       const due = isIsoDate(c.due) ? c.due : null;
       return {
+        signal: c.signal,
         title: c.title.trim(),
         quote: c.quote.trim(),
         owner: c.owner,

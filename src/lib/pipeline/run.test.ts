@@ -14,6 +14,7 @@ const input = {
 };
 
 const raw = (quote: string, due: string | null = null) => ({
+  signal: "commitment",
   rationale: "",
   title: quote,
   quote,
@@ -43,6 +44,7 @@ function answers(my: number): JevDecision["answers"] {
     is_actionable: { type: "noul", noul: 0.95 },
     already_done: { type: "noul", noul: 0.05 },
     certainty: { type: "choice", choice: "firm", probabilities: {} },
+    statement_certainty: { type: "choice", choice: "firm", probabilities: {} },
     speaker_role: { type: "choice", choice: "me", probabilities: {} },
     directness: { type: "choice", choice: "first_hand", probabilities: {} },
     audience: { type: "choice", choice: "shared", probabilities: {} },

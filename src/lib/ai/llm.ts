@@ -83,7 +83,12 @@ export async function completeJson<T extends z.ZodType>(
     try {
       return await completeJsonOnce(config, request);
     } catch (error) {
-      if (!(error instanceof LlmError) || !error.retryable || attempt >= FORMAT_RETRIES) throw error;
+      // 응답 본문을 읽는 도중에도 시간 초과가 날 수 있다.
+      const timedOut = error instanceof DOMException && error.name === "TimeoutError";
+      const retryable = timedOut || (error instanceof LlmError && error.retryable);
+      if (!retryable || attempt >= FORMAT_RETRIES) {
+        throw timedOut ? new LlmError(`응답 시간 초과 (${Math.round((config.timeoutMs ?? LLM_TIMEOUT_MS) / 1000)}초)`) : error;
+      }
     }
   }
 }

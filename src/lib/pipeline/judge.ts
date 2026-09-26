@@ -12,7 +12,7 @@ import { quoteContext } from "./text";
 export type RejectReason = "NOT_MY_ACTION" | "INFO_ONLY" | "TENTATIVE" | "ALREADY_DONE";
 export type JudgeDecision = "auto" | "confirm" | "reject";
 
-export type JudgeCandidate = { title: string; quote: string; due_text: string | null };
+export type JudgeCandidate = { title: string; quote: string; due_text: string | null; counterpart?: string | null };
 
 export type JudgeSource = { text: string; kind: string; occurredAt: Date; participants?: Participants };
 
@@ -24,6 +24,8 @@ export type JudgeSignals = {
   is_actionable: number;
   already_done: number;
   certainty: Choice<"firm" | "tentative" | "none">;
+  /** 인용 발언 자체의 확정도 (Claim의 certainty로 쓴다) */
+  statement_certainty: Choice<"firm" | "tentative">;
   speaker_role: Choice<"me" | "counterpart" | "third_party">;
   directness: Choice<"first_hand" | "reported">;
   audience: Choice<"shared" | "private">;
@@ -57,7 +59,13 @@ export function buildJudgeState(candidate: JudgeCandidate, source: JudgeSource, 
       position: userPosition(identity, source.participants),
       ...(variants.length > 0 ? { possibly_misspelled_as: variants } : {}),
     },
-    candidate: { title: candidate.title, due_text: candidate.due_text, quote: candidate.quote },
+    candidate: {
+      title: candidate.title,
+      due_text: candidate.due_text,
+      quote: candidate.quote,
+      // 상대가 누구인지 알려야 "누가 말했나(speaker_role)"를 요청한 쪽 · 제3자로 가를 수 있다.
+      ...(candidate.counterpart ? { counterpart: candidate.counterpart } : {}),
+    },
     context: quoteContext(source.text, candidate.quote) ?? candidate.quote,
     source: { kind: source.kind, occurred_at: kstDate(source.occurredAt).iso },
   };
@@ -80,6 +88,7 @@ export function parseJudgeAnswers(answers: JevDecision["answers"]): JudgeSignals
     is_actionable: noul("is_actionable"),
     already_done: noul("already_done"),
     certainty: choice("certainty", ["firm", "tentative", "none"]),
+    statement_certainty: choice("statement_certainty", ["firm", "tentative"]),
     speaker_role: choice("speaker_role", ["me", "counterpart", "third_party"]),
     directness: choice("directness", ["first_hand", "reported"]),
     audience: choice("audience", ["shared", "private"]),

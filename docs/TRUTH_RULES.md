@@ -189,6 +189,12 @@ Claim  id, action_id, field(due|scope|owner|status), value,
 - **판정 이유를 저장합니다.** 예: "규칙 0 + 4: 요청자가 9/24에 기한 연장 수락". 사용자가 "왜 월요일이지?"라고 물을 때 바로 답할 수 있어야 합니다.
 - **판정 함수는 순수 함수입니다.** `resolve(claims) → { value, winningClaimId, rule, needsConfirmation }` 형태로 만들고, 위 규칙마다 단위 테스트를 둡니다.
 
+### 구현
+
+- `src/lib/pipeline/resolve.ts`: `resolveField(field, claims)` / `resolveAction(claims)`. 규칙마다 `resolve.test.ts`에 테스트가 있다.
+- Claim 속성(누가 · 확정도 · 직접 · 공유)은 Jev 판정(`speaker_role`, `statement_certainty`, `directness`, `audience`)에서 온다.
+- `src/lib/pipeline/merge.ts`: 새 후보를 기존 Action에 Claim으로 붙인다. 매칭(`match.ts`)은 임베딩(`EMBEDDING_MODEL`, 기본 `openai/text-embedding-3-small`)으로 비슷한 열린 Action을 5개까지 추리고 Jev에게 new / 같은 일의 반복 · 변경 · 완료 · 취소를 묻는다. 관계 확신이 0.6 미만이면 병합을 확인받는다.
+
 ### 핵심 시나리오에 적용
 
 | 시점 | 원문 | Claim | 결과 |
