@@ -1,0 +1,132 @@
+# 베타 go live: 남은 일
+
+관련 문서: [연동](INTEGRATIONS.md) · [플랫폼](PLATFORMS.md) · [바이브코딩 플랜](VIBE_CODING_PLAN.md) · [PRD](PRD.md)
+
+작성: 2026-09-27. 브랜드 스코핑(문구 · 개인정보 처리방침 · 아이콘 · 강조색)을 마친 뒤, 외부 테스터를 받기 전에 남은 일을 정리한다.
+
+## 결정: 원문은 자동 연동으로 받는다
+
+- 공유 시트 · 붙여넣기는 **go live 조건이 아니다.** 메시지를 볼 때마다 "Taskforce로 보내야지"를 기억해야 한다면, 그것도 대상 사용자에게 없는 관리 여력을 요구하는 일이다.
+  이 판단은 [INTEGRATIONS.md](INTEGRATIONS.md)의 "사용자는 원문을 직접 넣지 않는다"와 같다.
+- go live 조건은 **테스터가 앱에서 Notion을 직접 연결할 수 있는 것**이다. 서버 쪽 Notion 연동은 이미 동작하지만, 연결 화면은 내부용 `/lab`에만 있다. 지금 테스터가 앱을 설치하면 원문을 넣을 방법이 없어서 빈 화면만 보게 된다.
+- 카카오톡은 개인 채팅을 읽는 공개 API가 없어 자동 연동이 불가능하다. 이 공백이 실제로 문제인지는 6장의 기준으로 판단한다.
+
+## 요약
+
+| # | 할 일 | 종류 | go live 조건 |
+|---|---|---|---|
+| 1 | 앱에서 Notion 연결 | 코드 (서버 + 앱) | **필수** |
+| 2 | 서버 배포 | 인프라 · 설정 | **필수** |
+| 3 | 자동 동기화 주기 | 인프라 | 해결 (Vercel Pro) · 배포 뒤 확인만 |
+| 4 | PRD · 계획 문서와 문구 정리 | 문서 | 권장 |
+| 5 | Slack 연동 | 코드 | go live 다음 |
+| 6 | 공유 시트 · 붙여넣기 | 코드 | 보류 |
+
+---
+
+## 1. 앱에서 Notion 연결
+
+### 문제: 지금 연결 흐름은 웹 로그인에만 맞춰져 있다
+
+- `GET /api/connectors/notion/start`([route.ts](../src/app/api/connectors/notion/start/route.ts))와 `callback`([route.ts](../src/app/api/connectors/notion/callback/route.ts))은 `authenticateRequest`로 사용자를 확인한다. `state`는 httpOnly 쿠키에 담는다.
+- 앱은 `ASWebAuthenticationSession`으로 브라우저를 띄우게 된다. 이 브라우저에는 웹 로그인 쿠키가 없고, `Authorization` 헤더도 붙일 수 없다. 그래서 start는 `/login`으로 튕기고, callback에서도 사용자를 알 수 없다.
+- callback이 끝나면 `/lab?notion=...`으로 돌아가는데, 앱으로 돌아오는 경로가 없다.
+
+### 서버 변경
+
+1. **연결 시작 API (새 Route Handler):** `POST /api/v1/connections/notion/start`
+   - 인증: 다른 v1 라우트와 같다(`Authorization: Bearer` 또는 쿠키).
+   - 응답: `{ url }`, 즉 Notion 권한 화면 주소. 스키마는 `src/lib/api/contract.ts`에 zod로 둔다.
+   - `state`: 쿠키 대신 서명된 값을 쓴다. 내용은 `{ userId, nonce, exp(10분), return: "app" }`이고, HMAC-SHA256으로 서명한다. 서명 키는 새 환경변수(예: `OAUTH_STATE_SECRET`, 서버 전용)로 둔다.
+2. **callback이 두 흐름을 모두 받는다.**
+   - 쿠키 `state`가 있으면 지금처럼 웹(`/lab`) 흐름으로 처리한다.
+   - 서명된 `state`면 서명(timing-safe 비교)과 만료를 확인하고, 사용자는 `state` 안의 `userId`로 정한다. 이 경우 세션이 없어도 된다.
+   - 같은 `state`를 두 번 쓰지 못하게 `nonce`를 한 번만 쓰는 것을 권장한다. 예: 서버만 쓰는 작은 테이블. 새 테이블이면 `supabase/migrations/`에 새 파일로 추가하고, `tests/db/`에 테스트를 둔다.
+   - 끝나면 `taskforce://connections/notion?status=<값>`으로 보낸다. `<값>`은 지금 `/lab`에 쓰는 것과 같다: `connected`, `connected_empty`, `connected_no_meetings`, `denied`, `error`, `invalid_state`.
+3. **첫 동기화를 바로 시작한다.** 연결 직후 한 번 동기화해 최근 14일의 회의록을 가져온다. 그래야 테스터가 연결하자마자 결과를 본다. 서버에서 바로 시작하거나, 앱이 돌아온 뒤 `POST /api/v1/connections/sync`를 부른다.
+4. **로그:** `state`, `code`, 토큰은 로그에 남기지 않는다. 지금처럼 오류 메시지만 남긴다.
+
+### 앱 변경
+
+1. **연결 화면:** 계정 메뉴의 "로그아웃" · "계정 삭제" 옆에 "연결"을 둔다.
+   - 목록은 `connections`를 RLS로 직접 읽는다. 보여줄 것은 서비스 이름, 워크스페이스 이름(`display_name`), 상태, 마지막 동기화 시각이다.
+   - 버튼 세 개:
+     - **Notion 연결:** 1-1의 API로 주소를 받아 `ASWebAuthenticationSession`(callback scheme `taskforce`)으로 연다.
+     - **지금 동기화:** `POST /api/v1/connections/sync`를 부른다. 429면 "방금 동기화했어요. 1분 뒤에 다시 해 주세요"를 보여준다.
+     - **연결 끊기:** `DELETE /api/v1/connections/:id`를 부른다.
+2. **돌아온 뒤 보여줄 말 (쉬운 말):**
+
+   | status | 문구 |
+   |---|---|
+   | `connected` | Notion을 연결했어요. 최근 2주의 회의록을 가져오는 중이에요. |
+   | `connected_empty` | Notion에서 고른 페이지가 없어요. 회의록 데이터베이스를 골라 다시 연결해 주세요. |
+   | `connected_no_meetings` | 회의록 데이터베이스가 빠져 있어요. 다시 연결할 때 함께 골라 주세요. |
+   | `denied` | 연결을 취소했어요. |
+   | `error`, `invalid_state` | 연결하지 못했어요. 다시 시도해 주세요. |
+
+3. **연결이 끊긴 데이터베이스 경고:** `settings.health.unreachable`이 있으면 "전에 읽던 데이터베이스를 더 이상 읽을 수 없어요. 다시 연결할 때 체크해 주세요"를 띄운다. 다시 연결할 때 선택이 빠지면 원문이 조용히 끊기기 때문이다([INTEGRATIONS.md](INTEGRATIONS.md) Notion 절).
+4. **"지금 할 일"의 빈 화면:**
+   - 연결이 없을 때: "Notion을 연결하면 회의록에서 내가 약속한 일을 찾아 드려요." 문구와 **연결** 버튼을 보여준다.
+   - 연결은 됐는데 아직 할 일이 없을 때: "회의록은 마지막으로 고친 뒤 30분이 지나면 가져와요."([ingest 규칙](INTEGRATIONS.md))
+5. **연결 전 안내 한 줄:** "회의록 데이터베이스를 직접 골라 주세요. 링크된 보기가 아니라 원본을 골라야 해요." Notion 권한 화면에서 가장 많이 틀리는 두 가지다([INTEGRATIONS.md](INTEGRATIONS.md) Notion 절).
+6. 데이터베이스별 "가져오지 않음" 설정(`GET/PUT /api/v1/connections/:id/data-sources`)을 앱에 옮기는 일은 go live 뒤로 미룬다.
+
+### 측정 (원칙 6)
+
+- 설치에서 첫 결과까지의 흐름(연결 완료 → 첫 Action 생성)을 보려면 연결 완료를 이벤트로 남겨야 한다. 예: `metric_events`에 `connection_created`를 추가한다. 필수는 아니지만, 베타에서 이탈이 어디서 생기는지 볼 수 있다.
+
+### 확인 방법
+
+- 단위 테스트:
+  - 서명된 `state`: 정상, 서명 변조, 만료, 재사용, 다른 사용자 id의 경우를 각각 확인한다.
+  - callback: 쿠키 흐름(웹)과 서명 흐름(앱)을 모두 확인한다.
+- 실제 기기: TestFlight 빌드로 연결 → 앱으로 돌아옴 → 연결 목록에 보임 → 동기화 → "지금 할 일"에 Action이 생기는지 확인한다. 이어서 연결을 끊으면 목록에서 사라지는지 확인한다.
+- `/lab`의 기존 웹 연결도 그대로 되는지 확인한다.
+
+---
+
+## 2. 서버 배포
+
+지금 앱의 `API_BASE_URL`은 `http://localhost:3000`이다(`apple/Config/Secrets.xcconfig`). 외부 테스터를 받으려면 다음이 필요하다.
+
+- Vercel에 서버를 배포한다. 리전은 `vercel.json`에 `syd1`로 이미 지정되어 있어 Supabase(ap-southeast-2)와 같다. 도메인 예: `api.taskforcelabs.dev`.
+- `.env.example`의 서버 환경변수를 모두 Vercel에 넣는다. 특히 `SUPABASE_SERVICE_ROLE_KEY`, `CONNECTOR_TOKEN_KEY`, `CRON_SECRET`, `NOTION_*`, `APNS_*`가 필요하고, 1장을 구현하면 `OAUTH_STATE_SECRET`도 추가한다.
+- Notion 연결 설정에 운영 callback 주소를 Redirect URI로 등록하고, `NOTION_REDIRECT_URI`도 같게 맞춘다.
+- Supabase Auth의 Site URL과 Redirect URLs를 운영 주소로 바꾼다.
+- 릴리스 빌드의 `API_BASE_URL`을 운영 주소로 바꾼다.
+- 배포 뒤 테스트 계정으로 **계정 삭제**(`DELETE /api/v1/account`)를 한 번 실행해 본다. 실제 Supabase에서는 아직 확인하지 않았다.
+
+## 3. 자동 동기화 주기
+
+- `vercel.json`은 `/api/cron/sync`를 15분마다, `/api/cron/reminders`를 하루 1회 부른다.
+- Vercel 계정(songch9511s-projects)이 **Pro 요금제라 설정 그대로 15분 주기로 돈다**(2026-09-27 사용자 확인). Hobby의 "cron 하루 1회" 제한은 해당하지 않는다.
+- 남은 확인은 두 가지다.
+  - 배포한 프로젝트가 Pro 팀(songch9511s-projects) 아래에 있는지 확인한다. 개인 Hobby 범위에 만들면 제한이 다시 걸린다.
+  - 배포 뒤 Vercel의 Cron Jobs 기록에서 `/api/cron/sync`가 15분마다 성공하는지 확인한다. `CRON_SECRET`이 빠지면 401로 실패한다.
+
+## 4. 문서와 문구 정리 (코드 아님)
+
+- [PRD.md](PRD.md) 3장 MVP는 "원문 입력 (외부 서비스 연동 없이): 공유 시트 · 붙여넣기"로 되어 있어, 이 문서의 결정과 어긋난다. "Notion 연동(앱에서 연결)"으로 고친다.
+- [VIBE_CODING_PLAN.md](VIBE_CODING_PLAN.md)의 Phase A2(원문 입력)도 1장의 "앱에서 Notion 연결"로 바꾸거나, 보류로 표시한다.
+- 스토어 설명과 TestFlight의 "테스트할 내용"에서 공유 시트 문장을 Notion 연결 기준으로 바꾼다(문구 초안에 반영함).
+- 연동이 늘 때마다 개인정보 처리방침의 "수집하는 정보"와 "처리 위탁"을 함께 고친다.
+
+## 5. 다음: Slack 연동 (go live 다음)
+
+PRD 핵심 시나리오 2("월요일에 받아도 괜찮아요" → 기한 갱신)는 메시지에서 일어난다. 회의록만으로는 이 시나리오를 자동으로 증명할 수 없다. 연동 순서는 [INTEGRATIONS.md](INTEGRATIONS.md) "다음 연동"을 따른다(Slack → Google Calendar → Gmail).
+
+구현 전에 정할 것:
+
+- **읽는 범위:** 사용자가 속한 DM, 그룹 DM, 채널 중 어디까지 읽을지. 사용자 토큰의 `*:history` 범위를 쓴다.
+- **원문 단위:** 메시지 한 줄에는 맥락이 부족하다. 스레드 단위로 묶을지, 대화별로 일정 시간 단위로 묶을지 정한다. Notion의 "30분 안정화"처럼 대화가 멈춘 뒤에 넣는 규칙도 정한다.
+- **관련자:** Slack 사용자 id를 이름으로 바꿔 `participants`에 넣는다. 화자를 알 수 있어서, Notion 전사로는 풀 수 없던 담당 판정이 쉬워진다.
+- **배포:** 다른 워크스페이스에 설치하려면 Slack 앱의 공개 배포를 켜야 한다. 워크스페이스 관리자의 승인이 필요할 수 있다.
+- **개인정보:** Slack 원문에는 다른 사람의 메시지가 들어 있다. 처리방침에 Slack을 추가하고, 테스터에게 무엇을 읽는지 연결 화면에서 먼저 알린다.
+
+## 6. 보류: 공유 시트 · 붙여넣기
+
+- go live 조건이 아니다. 자동 연동이 기본이다.
+- 유일하게 자동으로 받을 수 없는 채널이 카카오톡이다. 공유 시트를 다시 검토할 때는 다음 두 가지를 본다.
+  - 주간 질문 "Taskforce 밖에 따로 적어둔 할 일이 있나요?"의 '예' 비율(지표 5)이 높게 유지되는가.
+  - 테스터 인터뷰에서 놓친 약속이 주로 카카오톡에서 나왔는가.
+- 둘 다 그렇다면 공유 시트를 카카오톡 전용 보조 입구로 추가한다. 이때도 메인 흐름은 자동 연동이다.
