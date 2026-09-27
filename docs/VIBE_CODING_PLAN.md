@@ -152,7 +152,7 @@ actions 행은 Claim에서 `resolveAction`으로 다시 계산한 캐시이고(`
 
 완료 기준: iPhone 시뮬레이터와 Mac에서 로그인 후 빈 화면이 뜸.
 
-### Phase A1 — 화면 (2~3일, Phase 3 이후)
+### Phase A1 — 화면 (2~3일, Phase 3 이후) ✅ 완료
 
 > 프롬프트:
 > "TaskforceKit에 `src/lib/api/contract.ts`와 같은 모양의 Swift 모델과 API 클라이언트를 만들어.
@@ -166,7 +166,8 @@ actions 행은 Claim에서 `resolveAction`으로 다시 계산한 캐시이고(`
 주간 질문(`GET /api/v1/now`의 `weekly_check`, `POST /api/v1/weekly-check`, `WEEKLY_CHECK_ENABLED`), `actions` Realtime publication, 지표 4 · 5 계산과 `/admin/metrics` 표시, `/lab`의 신고 폼.
 앱 쪽 완료 — TaskforceKit(모델 · API 클라이언트 · RLS 읽기 · Realtime 구독 하나 · 변경 이력 문장 · 원문 줄 선택 → 원문 그대로의 인용),
 지금 탭(주간 질문 · 확인 요청 · 지금 할 일), Action 상세(근거 · 변경 이력 · AI에게 넘기기), 고치기 시트, 원문 탭(줄을 눌러 빠진 할 일 신고), app_opened(백그라운드에서 돌아올 때만).
-남은 숙제: 실제 DB에 마이그레이션을 적용한 뒤 완료 기준(시험대에 넣은 원문이 앱에 바로 뜸)과 누락 신고 · 주간 질문을 실제 데이터로 확인.
+실제 DB 확인(2026-09-27, iPhone 시뮬레이터 + 로컬 서버): 원문을 처리하자 앱을 건드리지 않아도 지금 할 일에 새 Action이 떴다(Realtime). 확정 · 상세의 근거와 이력 · 원문 줄 선택 신고("추가했어요", 같은 줄 다시 신고는 "이미 있는 할 일") · `user_reported_missing`(원인 `not_extracted`) · app_opened가 DB에 남았다.
+남은 숙제: 주간 질문은 첫 원문 뒤 7일이 지나야 떠서 실제 데이터로는 아직 못 봤다(단위 테스트만). 프로필(이름 · 별칭)이 빈 계정에서는 "나: …" 발언도 Jev가 '내 일 아님'으로 보고 확인 요청으로 보냈다 — 첫 실행 때 프로필을 받는 흐름이 필요하다.
 
 ### Phase A2 — 원문 입력 (2일)
 

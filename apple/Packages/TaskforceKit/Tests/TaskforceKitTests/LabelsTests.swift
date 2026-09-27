@@ -8,6 +8,13 @@ struct LabelsTests {
         #expect(RankReason.allCases.filter(\.isUrgent) == [.overdue, .dueToday])
     }
 
+    @Test func confirmReasonsNeverShowInternalCodes() {
+        #expect(ConfirmReasonText.userFacing(["판정 확인: NOT_MY_ACTION", "담당 확인"]) == ["내가 맡은 일인지 확실하지 않아요"])
+        #expect(ConfirmReasonText.userFacing(["판정 확인: TENTATIVE, INFO_ONLY"]) == ["확정된 약속이 아닐 수 있어요", "할 일인지 확실하지 않아요"])
+        #expect(ConfirmReasonText.userFacing(["병합 확인 (55%)", "기한 확인"]) == ["비슷한 할 일과 같은 일인지 확실하지 않아요", "기한이 확실하지 않아요"])
+        #expect(ConfirmReasonText.userFacing(["판정 확인: SOMETHING_NEW", "새 이유"]) == ["확인이 필요해요"])
+    }
+
     @Test func ownerLabels() {
         #expect(ActionOwner.allCases.map(\.label) == ["나", "다른 사람", "미정"])
     }

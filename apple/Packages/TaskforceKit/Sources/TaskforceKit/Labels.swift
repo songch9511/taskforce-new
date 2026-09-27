@@ -20,6 +20,43 @@ extension RankReason {
     }
 }
 
+/// 서버가 남긴 확인 이유("판정 확인: NOT_MY_ACTION", "병합 확인 (55%)" 등)를 사용자가 읽을 말로.
+/// 서버의 핸드오프 번들(src/lib/actions/handoff.ts)과 같은 뜻으로 옮기고, 모르는 이유는 내부 코드를 보이지 않게 뭉뚱그린다.
+public enum ConfirmReasonText {
+    private static let judge: [String: String] = [
+        "NOT_MY_ACTION": "내가 맡은 일인지 확실하지 않아요",
+        "INFO_ONLY": "할 일인지 확실하지 않아요",
+        "TENTATIVE": "확정된 약속이 아닐 수 있어요",
+        "ALREADY_DONE": "이미 끝났을 수 있어요",
+    ]
+    private static let derived: [String: String] = [
+        "담당 확인": "내가 맡은 일인지 확실하지 않아요",
+        "기한 확인": "기한이 확실하지 않아요",
+        "내용 확인": "할 일 내용이 확실하지 않아요",
+        "상태 확인": "끝났는지 확실하지 않아요",
+    ]
+    static let fallback = "확인이 필요해요"
+
+    public static func userFacing(_ reasons: [String]) -> [String] {
+        var lines: [String] = []
+        for reason in reasons {
+            if let text = derived[reason] {
+                lines.append(text)
+            } else if reason.hasPrefix("판정 확인:") {
+                let codes = reason.dropFirst("판정 확인:".count).split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+                let texts = codes.compactMap { judge[$0] }
+                lines.append(contentsOf: texts.isEmpty ? [fallback] : texts)
+            } else if reason.hasPrefix("병합 확인") {
+                lines.append("비슷한 할 일과 같은 일인지 확실하지 않아요")
+            } else {
+                lines.append(fallback)
+            }
+        }
+        var seen = Set<String>()
+        return lines.filter { seen.insert($0).inserted }
+    }
+}
+
 extension ActionOwner {
     public var label: String {
         switch self {

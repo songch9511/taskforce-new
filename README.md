@@ -30,6 +30,7 @@ cp .env.example .env.local
    - SQL Editor에 `supabase/migrations/`의 파일을 **이름 순서대로** 하나씩 붙여넣고 실행
      (`20260925000000_init.sql` → `20260926000000_source_processing.sql` → `20260927000000_profiles_participants.sql` → `20260928000000_connections.sql` → …)
    - 또는 Supabase CLI: `npx supabase link --project-ref <프로젝트 ref>` 후 `npx supabase db push`
+   - 이미 SQL Editor로 적용해 온 프로젝트는 원격에 마이그레이션 기록이 없어 `db push`가 처음 파일부터 다시 실행하려 합니다. 새 파일만 `npx supabase db query --linked -f supabase/migrations/<파일>`로 적용하세요.
 4. **Authentication → URL Configuration**
    - Site URL: `http://localhost:3000`
    - Redirect URLs에 `http://localhost:3000/auth/confirm` 추가 (배포 후에는 배포 주소도 추가)

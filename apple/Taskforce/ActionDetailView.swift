@@ -177,7 +177,7 @@ struct ActionDetailView: View {
 
             if action.needsConfirmation || !action.confirmReasons.isEmpty {
                 Section("확인이 필요해요") {
-                    ForEach(action.confirmReasons, id: \.self) { reason in
+                    ForEach(ConfirmReasonText.userFacing(action.confirmReasons), id: \.self) { reason in
                         Label(reason, systemImage: "questionmark.circle")
                             .foregroundStyle(.orange)
                     }

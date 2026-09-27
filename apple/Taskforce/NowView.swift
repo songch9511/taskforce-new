@@ -277,7 +277,7 @@ struct ConfirmationRow: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(action.title)
                     if !action.confirmReasons.isEmpty {
-                        Text(action.confirmReasons.joined(separator: " · "))
+                        Text(ConfirmReasonText.userFacing(action.confirmReasons).joined(separator: " · "))
                             .font(.caption)
                             .foregroundStyle(.orange)
                     }
