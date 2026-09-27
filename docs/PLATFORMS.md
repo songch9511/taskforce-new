@@ -117,12 +117,14 @@ Server Action은 웹 폼 전용이라 Swift 앱에서 부를 수 없다.
 |---|---|---|
 | `POST /api/v1/sources` | 원문 전송 (텍스트 + 관련자 `participants`). 202 + `source_id`, 처리 상태는 `sources.processing_status` | 1 ✅ |
 | `GET` · `PUT /api/v1/profile` | 원문 속 사용자 정보: 기본 이름 · 별칭 · 이메일 | 1 ✅ |
-| `GET /api/v1/now` | "지금 할 일" 순서 + 확인 큐 | 3 ✅ |
+| `GET /api/v1/now` | "지금 할 일" 순서 + 확인 큐 + 이번 주 주간 질문(`weekly_check: { week_start } \| null`, 물을 때가 아니면 null) | 3 ✅ · A1 ✅ |
 | `PATCH /api/v1/actions/:id` | 사용자 수정 (`user_edited` 이벤트). 동시 수정이 겹치면 409 `conflict` | 3 ✅ |
 | `DELETE /api/v1/actions/:id` | 사용자 삭제 (`user_deleted` 이벤트, 실제로는 `dropped` 처리) | 3 ✅ |
 | `POST /api/v1/actions/:id/confirm` | 확인 요청 확정 (`user_confirmed`) | 3 ✅ |
 | `POST /api/v1/actions/:id/start` | 착수 (`user_started` 이벤트 + `action_started` 지표) | 3 ✅ |
 | `POST /api/v1/actions/:id/handoff` | AI에게 넘기기: 합의된 내용 · 불확실한 것 · 근거 원문(인용 앞뒤 줄 포함)을 묶은 마크다운. 서버가 `handoff_used` 지표를 남긴다 | 4 ✅ |
+| `POST /api/v1/sources/:id/missing` | 빠진 할 일 신고 `{ quote }` (원문에 실제로 있는 구절). 동기 처리 → `{ status: created \| already_tracked, action, stage }`. 새 Action이면 `user_reported_missing` 이벤트(지표 4)와 놓친 단계(`processing_failed` · `not_extracted` · `judge_rejected` · `merge_absorbed`)를 남긴다. 이 원문의 같은 구절이 이미 근거인 Action(끝냈거나 지운 것도)이면 모델을 부르지 않고 `already_tracked`. 다른 사람 담당 Action과는 합치지 않고, 확신이 낮은 병합은 새 Action으로 만든다. 할 일 DB 항목 · 원문에 없는 구절은 400, 사용자별 10분에 10번을 넘으면 429 | A1 ✅ |
+| `POST /api/v1/weekly-check` | 주간 질문 응답 `{ week_start, answer: yes \| no \| skipped }` → 204 (지표 5). 이번 주 · 바로 전 주만 받고 같은 주는 덮어쓴다(`answered_at` 갱신). 월요일에 지난주 카드에 답하면 이번 주 답으로 본다. 주간 질문이 꺼져 있으면 400 | A1 ✅ |
 | `POST /api/v1/metric-events` | 앱이 직접 남기는 지표 (`app_opened`). `action_started` · `handoff_used`는 해당 API가 서버에서 남긴다 | 3 ✅ |
 | `POST` · `DELETE /api/v1/devices` | 알림용 기기 토큰 등록 · 해제 (로그아웃 때 DELETE). 토큰은 마지막 로그인 계정에 속하고, 사용자당 10대 | 3 ✅ |
 

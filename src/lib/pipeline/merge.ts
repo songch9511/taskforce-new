@@ -63,13 +63,17 @@ export class InMemoryActionStore implements ActionStore {
 }
 
 export function toOpenAction(a: TrackedAction): OpenAction {
+  const state = resolveAction(a.claims);
+  const owner = state.owner.value;
   return {
     id: a.id,
     title: a.title,
     counterpart: a.counterpart,
-    due: resolveAction(a.claims).due.value,
+    due: state.due.value,
     latestQuote: a.evidence.at(-1)?.quote ?? null,
     embedding: a.embedding,
+    // actions.owner와 같은 규칙: 나 · 모름 말고는 다른 사람
+    owner: owner === "me" ? "me" : owner === null || owner === "unknown" ? "unknown" : "other",
   };
 }
 

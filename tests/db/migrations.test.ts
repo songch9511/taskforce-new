@@ -49,8 +49,10 @@ describe("초기 마이그레이션", () => {
       "evidence",
       "judge_logs",
       "metric_events",
+      "missing_reports",
       "profiles",
       "sources",
+      "weekly_checks",
     ]);
   });
 

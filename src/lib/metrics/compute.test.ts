@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { kstWeek, missed, misjudgment, retention, timeToStart, type ActionEventRow, type MetricEventRow } from "./compute";
+import { kstWeek, missed, misjudgment, retention, shadowList, timeToStart, type ActionEventRow, type MetricEventRow, type WeeklyCheckRow } from "./compute";
 
 const period = { from: new Date("2026-09-21T00:00:00Z"), to: new Date("2026-09-28T00:00:00Z") };
 
@@ -152,10 +152,48 @@ describe("retention (지표 3)", () => {
   });
 });
 
+const noStages = { processing_failed: 0, not_extracted: 0, judge_rejected: 0, merge_absorbed: 0, unknown: 0 };
+
 describe("missed (지표 4)", () => {
   it("누락 신고 기능 전에는 측정 전", () => {
     const m = misjudgment([created("a")], period);
-    expect(missed([], m, period, false)).toEqual({ reported: 0, rate: null, available: false });
-    expect(missed([ev("r", "user_reported_missing", "2026-09-23T00:00:00Z")], m, period, true)).toEqual({ reported: 1, rate: 0.5, available: true });
+    expect(missed([], m, period, false)).toEqual({ reported: 0, rate: null, available: false, byStage: noStages });
+    expect(missed([ev("r", "user_reported_missing", "2026-09-23T00:00:00Z")], m, period, true)).toEqual({
+      reported: 1,
+      rate: 0.5,
+      available: true,
+      byStage: { ...noStages, unknown: 1 },
+    });
+  });
+
+  it("신고로 생긴 Action은 지표 1의 AI 생성에서 빼고, 놓친 단계별로 센다", () => {
+    const reported = (id: string, stage: string) => [
+      created(id),
+      ev(id, "user_reported_missing", "2026-09-22T01:00:00Z", { after: { stage } }),
+      // 신고로 생긴 Action을 사용자가 고쳐도 AI 오판이 아니다
+      ev(id, "user_edited", "2026-09-23T00:00:00Z", { after: { title: true } }),
+    ];
+    const events = [created("a"), ...reported("r1", "not_extracted"), ...reported("r2", "judge_rejected"), ...reported("r3", "not_extracted")];
+    const m = misjudgment(events, period);
+    expect(m).toMatchObject({ aiCreated: 1, corrected: 0 });
+    expect(missed(events, m, period, true)).toEqual({ reported: 3, rate: 0.75, available: true, byStage: { ...noStages, not_extracted: 2, judge_rejected: 1 } });
+  });
+});
+
+describe("shadowList (지표 5)", () => {
+  const check = (answer: WeeklyCheckRow["answer"], at = "2026-09-23T00:00:00Z"): WeeklyCheckRow => ({ userId: "u1", weekStart: "2026-09-21", answer, at });
+
+  it("있다 / (있다 + 없다). 건너뛰기는 응답 수에만 들어간다", () => {
+    expect(shadowList([check("yes"), check("no"), check("no"), check("no"), check("skipped")], period)).toEqual({
+      responses: 5,
+      yes: 1,
+      no: 3,
+      skipped: 1,
+      rate: 0.25,
+    });
+  });
+
+  it("기간 밖 응답은 빼고, 있다 · 없다가 없으면 측정 전", () => {
+    expect(shadowList([check("yes", "2026-09-01T00:00:00Z"), check("skipped")], period)).toEqual({ responses: 1, yes: 0, no: 0, skipped: 1, rate: null });
   });
 });

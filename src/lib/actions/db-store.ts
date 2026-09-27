@@ -41,7 +41,7 @@ export async function writeAction(admin: SupabaseClient, userId: string, actionI
       p_action: write.action,
       p_claims: write.claims.map((c) => claimToRow(c, userId, actionId, write.evidence)),
       p_evidence: write.evidence.role ? [{ source_id: write.evidence.sourceId, quote: write.evidence.quote, role: write.evidence.role }] : [],
-      p_events: write.events.map((e) => ({ type: e.type, before: e.before, after: e.after, rule: e.rule, actor: write.actor, source_id: write.evidence.sourceId })),
+      p_events: write.events.map((e) => ({ type: e.type, before: e.before, after: e.after, rule: e.rule, actor: e.actor ?? write.actor, source_id: write.evidence.sourceId })),
     })
     .throwOnError();
   return data === true;
@@ -83,6 +83,8 @@ export class SupabaseActionStore implements ActionStore {
   constructor(
     private readonly admin: SupabaseClient,
     private readonly userId: string,
+    /** 새 Action을 만들 때 같은 트랜잭션에 더 남길 이벤트 (누락 신고의 user_reported_missing) */
+    private readonly options: { createEvents?: EventDraft[] } = {},
   ) {}
 
   async shortlist(vector: number[]): Promise<OpenAction[]> {
@@ -94,13 +96,13 @@ export class SupabaseActionStore implements ActionStore {
     if (ids.length === 0) return [];
 
     const [{ data: actions }, { data: evidence }] = await Promise.all([
-      this.admin.from("actions").select("id, title, counterpart, due_date").eq("user_id", this.userId).in("id", ids).throwOnError(),
+      this.admin.from("actions").select("id, title, counterpart, due_date, owner").eq("user_id", this.userId).in("id", ids).throwOnError(),
       this.admin.from("evidence").select("action_id, quote, created_at").eq("user_id", this.userId).in("action_id", ids).order("created_at").throwOnError(),
     ]);
     const latest = new Map((evidence ?? []).map((e) => [e.action_id as string, e.quote as string]));
     return ids.flatMap((id) => {
       const a = (actions ?? []).find((row) => row.id === id);
-      return a ? [{ id, title: a.title, counterpart: a.counterpart, due: a.due_date, latestQuote: latest.get(id) ?? null, embedding: null }] : [];
+      return a ? [{ id, title: a.title, counterpart: a.counterpart, due: a.due_date, latestQuote: latest.get(id) ?? null, embedding: null, owner: a.owner }] : [];
     });
   }
 
@@ -113,7 +115,7 @@ export class SupabaseActionStore implements ActionStore {
       action: { ...actionRowValues(projected), counterpart: action.counterpart, embedding: action.embedding ? toPgVector(action.embedding) : null },
       claims: action.claims,
       evidence: first,
-      events: changeEvents(null, projected, first.role),
+      events: [...changeEvents(null, projected, first.role), ...(this.options.createEvents ?? [])],
       actor: "ai",
     });
     if (projected.needs_confirmation) this.needsConfirmation.add(id);

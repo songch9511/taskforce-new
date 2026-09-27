@@ -60,7 +60,7 @@ export function projectAction(fallbackTitle: string, claims: Claim[], storedReas
 }
 
 export type AiEventType = "created" | "due_changed" | "scope_changed" | "owner_changed" | "merged" | "completed" | "dropped" | "reopened";
-export type UserEventType = "user_edited" | "user_deleted" | "user_confirmed" | "user_started";
+export type UserEventType = "user_edited" | "user_deleted" | "user_confirmed" | "user_started" | "user_reported_missing";
 
 export type EventDraft = {
   type: AiEventType | UserEventType;
@@ -68,6 +68,8 @@ export type EventDraft = {
   after: Record<string, unknown> | null;
   /** 적용된 판정 규칙 (예: "rule0+rule4") */
   rule: string | null;
+  /** 이 이벤트만 쓰기 전체와 다른 주체일 때 (예: AI가 만든 Action에 붙는 사용자의 누락 신고) */
+  actor?: "ai" | "user";
 };
 
 const ruleText = (r: FieldResolution) =>

@@ -18,6 +18,8 @@ export type OpenAction = {
   /** 가장 최근 근거 인용 */
   latestQuote: string | null;
   embedding: number[] | null;
+  /** 담당 (actions.owner와 같은 값). 누락 신고는 다른 사람 담당 Action과 합치지 않는다 */
+  owner?: "me" | "other" | "unknown";
 };
 
 export type MatchRelation = "new" | "duplicate" | "update" | "complete" | "cancel" | "unmatched";

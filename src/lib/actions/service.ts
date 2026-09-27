@@ -37,7 +37,7 @@ async function applyUserChanges(
   userId: string,
   actionId: string,
   changes: (current: ReturnType<typeof projectAction>) => UserChange[],
-  event: Exclude<UserEventType, "user_started">,
+  event: Exclude<UserEventType, "user_started" | "user_reported_missing">,
   options: { clearReasons?: boolean } = {},
 ): Promise<ActionSummary> {
   await retryOnConflict(async () => {

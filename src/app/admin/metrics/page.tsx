@@ -3,7 +3,7 @@ import { notFound } from "next/navigation";
 
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { requireUser } from "@/lib/auth";
-import type { ErrorField } from "@/lib/metrics/compute";
+import type { ErrorField, MissedMetric } from "@/lib/metrics/compute";
 import { isAdmin, loadMetrics } from "@/lib/metrics/load";
 import { createAdminClient } from "@/lib/supabase/admin";
 
@@ -12,6 +12,13 @@ import { createAdminClient } from "@/lib/supabase/admin";
 
 const PERIODS = [7, 28, 90] as const;
 const FIELD_LABELS: Record<ErrorField, string> = { title: "내용", due: "기한", owner: "담당", status: "상태", deleted: "삭제" };
+const MISS_STAGE_LABELS: Record<keyof MissedMetric["byStage"], string> = {
+  not_extracted: "추출 안 됨 (검증 탈락 포함)",
+  judge_rejected: "Jev가 기각",
+  merge_absorbed: "병합에서 다른 Action에 합쳐짐",
+  processing_failed: "원문 처리 실패 · 미완료",
+  unknown: "단계 기록 없음",
+};
 
 const pct = (value: number | null) => (value === null ? "—" : `${Math.round(value * 1000) / 10}%`);
 const num = (value: number | null, unit = "") => (value === null ? "—" : `${Math.round(value * 10) / 10}${unit}`);
@@ -24,7 +31,7 @@ export default async function MetricsPage({ searchParams }: { searchParams: Prom
   const days = PERIODS.find((d) => String(d) === daysParam) ?? 28;
   const to = new Date();
   const report = await loadMetrics(createAdminClient(), { from: new Date(to.getTime() - days * 86_400_000), to });
-  const { misjudgment: m, start, retention, missed } = report;
+  const { misjudgment: m, start, retention, missed, shadowList: shadow } = report;
   // 피벗 판단은 자동 반영이 틀린 비율로 한다 (PRD 6장). 구분이 생기기 전 기록뿐이면 전체 비율을 보여준다.
   const auto = m.byConfirmation.auto;
   const headline = auto.created > 0 ? { label: "자동 반영", rate: auto.corrected / auto.created } : { label: "전체 · 구분 전 기록 포함", rate: m.rate };
@@ -151,16 +158,34 @@ export default async function MetricsPage({ searchParams }: { searchParams: Prom
         <CardHeader>
           <CardTitle>4. AI 누락률 {missed.available ? pct(missed.rate) : "측정 전"}</CardTitle>
           <CardDescription>
-            신고된 누락 / (AI 생성 + 신고된 누락). 실제 누락의 하한입니다. 원문 구절로 누락을 신고하는 기능이 아직 없어 측정 전입니다 (지금은 골든셋 eval의 재현율로 봅니다).
+            신고된 누락 {missed.reported}개 / (AI 생성 {m.aiCreated}개 + 신고된 누락). 사용자가 원문 구절을 골라 신고한 것만 세므로 실제 누락의 하한입니다. 이미 있던 할
+            일로 합쳐진 신고는 세지 않고, 신고로 생긴 Action은 지표 1에서 뺐습니다.
           </CardDescription>
         </CardHeader>
+        <CardContent className="text-sm">
+          <h3 className="mb-1 font-medium">원래 처리에서 놓친 단계</h3>
+          <ul className="space-y-0.5">
+            {(Object.keys(MISS_STAGE_LABELS) as (keyof MissedMetric["byStage"])[]).map((stage) => (
+              <li key={stage} className="flex justify-between">
+                <span>{MISS_STAGE_LABELS[stage]}</span>
+                <span>{missed.byStage[stage]}개</span>
+              </li>
+            ))}
+          </ul>
+        </CardContent>
       </Card>
 
       <Card>
         <CardHeader>
-          <CardTitle>5. 그림자 목록 비율 — 측정 전</CardTitle>
-          <CardDescription>주간 질문 &quot;Taskforce 밖에 따로 적어둔 할 일이 있나요?&quot;는 Apple 앱에서 묻습니다.</CardDescription>
+          <CardTitle>5. 그림자 목록 비율 {pct(shadow.rate)}</CardTitle>
+          <CardDescription>
+            주간 질문 &quot;Taskforce 밖에 따로 적어둔 할 일이 있나요?&quot;에 &quot;있어요&quot; / (&quot;있어요&quot; + &quot;없어요&quot;). 낮을수록 Taskforce 하나로 충분하다는
+            뜻입니다. 응답 {shadow.responses}번 (있어요 {shadow.yes} · 없어요 {shadow.no} · 건너뜀 {shadow.skipped}).
+          </CardDescription>
         </CardHeader>
+        {shadow.responses === 0 && (
+          <CardContent className="text-muted-foreground text-sm">아직 응답이 없습니다. 첫 원문을 넣고 7일이 지난 사용자에게 Apple 앱이 주마다 묻습니다.</CardContent>
+        )}
       </Card>
     </main>
   );

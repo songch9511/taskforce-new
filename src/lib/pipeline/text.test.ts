@@ -35,4 +35,18 @@ describe("quoteContext", () => {
   it("없는 인용은 null", () => {
     expect(quoteContext(text, "없는 말")).toBeNull();
   });
+
+  it("10줄보다 길게 걸친 인용은 maxSpan을 늘렸을 때만 찾는다 (기본 동작은 그대로)", () => {
+    // 짧은 줄 15개에 걸친 인용 + 앞뒤 한 줄씩
+    const span = Array.from({ length: 15 }, (_, i) => `줄${i + 1}`);
+    const long = ["앞", "", ...span, "뒤"].join("\n");
+    const quote = span.join("\n");
+    expect(quoteInText(quote, long)).toBe(true);
+    expect(quoteContext(long, quote, 1)).toBeNull();
+    expect(quoteContext(long, quote, 1, 1500, Infinity)).toBe(["", ...span, "뒤"].join("\n"));
+    expect(quoteContext(long, quote, 1, 1500, 13)).toBeNull();
+    // 10줄 안의 인용은 늘려도 같은 결과
+    expect(quoteContext(text, "금요일까지 제안서 보내드릴게요", 1, 1500, Infinity)).toBe(quoteContext(text, "금요일까지 제안서 보내드릴게요", 1));
+    expect(quoteContext(long, "없는 말", 1, 1500, Infinity)).toBeNull();
+  });
 });

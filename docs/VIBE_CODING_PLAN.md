@@ -128,7 +128,8 @@ actions 행은 Claim에서 `resolveAction`으로 다시 계산한 캐시이고(`
 지표 1은 필드별(내용 · 기한 · 담당 · 상태 · 삭제) · 단계별(추출 / 매칭 · 갱신) · 만들 때 자동 반영이었는지 확인 요청이었는지로 나눈다.
 완료 처리는 오판이 아니고(AI가 끝냈다고 본 일을 다시 여는 것은 오판), 할 일 DB에서 속성으로 가져온 Action은 AI 판단이 아니라서 뺀다. 시험용 원문("[E2E 테스트]")도 뺀다.
 실제 데이터(2026-09-27, 최근 28일): AI 생성 5 · 할 일 DB 29 · 오판 1(확인 요청에 "아니에요", 추출 단계) · 활동 사용자 1.
-남은 숙제: 지표 2는 Apple 앱이 app_opened를 보내기 시작해야 채워진다(Phase A1). 지표 4는 누락 신고 기능(PRD 6장)을, 지표 5는 앱의 주간 질문을 만든 뒤.
+지표 4 · 5의 계산과 서버 API는 Phase A1 서버 쪽에서 붙였다: 누락 신고(`POST /api/v1/sources/:id/missing`, `user_reported_missing` 이벤트, 놓친 단계별 수)와 주간 질문(`weekly_checks`, "있다 / (있다 + 없다)"). 신고로 생긴 Action은 지표 1의 AI 생성에서 뺀다.
+남은 숙제: 지표 2 · 4 · 5는 Apple 앱(Phase A1)이 app_opened · 누락 신고 · 주간 질문 응답을 보내기 시작해야 실제 숫자가 쌓인다 (지금은 /lab의 신고 폼으로만 확인).
 
 > 프롬프트:
 > "PRD 6장의 세 지표를 계산하는 관리자용 `/admin/metrics` 페이지를 만들어.
@@ -160,6 +161,10 @@ actions 행은 Claim에서 `resolveAction`으로 다시 계산한 캐시이고(`
 > 앱이 열릴 때 app_opened 이벤트를 보내."
 
 완료 기준: 웹 시험대에 원문을 넣으면 iPhone과 Mac 앱에 새 Action이 바로 뜸.
+
+진행 상황: 서버 쪽 완료 — 빠진 할 일 신고 `POST /api/v1/sources/:id/missing`(구절 하나를 새 프롬프트 `missing-v1`로 후보로 만들고 보통 병합으로 반영, 원인 단계 판정 `classifyMiss`),
+주간 질문(`GET /api/v1/now`의 `weekly_check`, `POST /api/v1/weekly-check`, `WEEKLY_CHECK_ENABLED`), `actions` Realtime publication, 지표 4 · 5 계산과 `/admin/metrics` 표시, `/lab`의 신고 폼.
+앱 화면(TaskforceKit 모델 · API 클라이언트 · 지금 · 상세 · 원문 탭)은 진행 중.
 
 ### Phase A2 — 원문 입력 (2일)
 

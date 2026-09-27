@@ -14,6 +14,7 @@ import { ActionsPanel } from "./actions-panel";
 import { AutoRefresh } from "./auto-refresh";
 import { ConnectionsPanel, type ConnectionRow } from "./connections-panel";
 import { LabForm } from "./lab-form";
+import { MissingReportForm } from "./missing-report-form";
 import { ProfileForm } from "./profile-form";
 
 // 내부 시험대: 원문을 넣고 추출 → 기계 검증 → Jev 판정 결과를 표로 본다. 사용자용 화면이 아니다.
@@ -240,6 +241,7 @@ export default async function LabPage({ searchParams }: { searchParams: Promise<
               <summary className="text-muted-foreground cursor-pointer text-sm">원문 보기</summary>
               <pre className="bg-muted mt-2 max-h-96 overflow-auto rounded-md p-3 text-xs whitespace-pre-wrap">{selected.raw_text}</pre>
             </details>
+            {selected.kind !== "task" && <MissingReportForm sourceId={selected.id} />}
           </CardContent>
         </Card>
       )}

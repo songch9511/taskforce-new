@@ -92,17 +92,17 @@ export async function extractCandidates(input: ExtractInput, complete: CompleteJ
   return { candidates, promptVersion: EXTRACT_PROMPT_VERSION, model: result.model, usage: result.usage };
 }
 
-function isIsoDate(value: string | null): value is string {
+export function isIsoDate(value: string | null): value is string {
   if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
   const date = new Date(`${value}T00:00:00Z`);
   return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === value;
 }
 
-function clamp01(value: number): number {
+export function clamp01(value: number): number {
   return Number.isFinite(value) ? Math.min(1, Math.max(0, value)) : 0;
 }
 
-function blankToNull(value: string | null): string | null {
+export function blankToNull(value: string | null): string | null {
   const trimmed = value?.trim();
   return trimmed ? trimmed : null;
 }

@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import { sourceKindSchema } from "@/lib/pipeline/extract";
+import { MISS_STAGES } from "@/lib/pipeline/missing";
 
 // 앱 · 웹이 부르는 /api/v1 요청 · 응답 형식. Swift 모델(TaskforceKit)은 이 파일을 기준으로 맞춘다.
 // 호환이 깨지는 변경은 /api/v2로 낸다 (docs/PLATFORMS.md 3장).
@@ -85,12 +86,45 @@ export const rankedActionSchema = actionSummarySchema.extend({
   days_until_due: z.number().nullable(),
 });
 
+// 주간 질문 "Taskforce 밖에 따로 적어둔 할 일이 있나요?" (지표 5). week_start: 그 주 월요일 (한국 시간)
+export const weeklyCheckPromptSchema = z.object({ week_start: z.iso.date() });
+
 // GET /api/v1/now
 export const nowResponseSchema = z.object({
   now: z.array(rankedActionSchema),
   confirmations: z.array(rankedActionSchema),
+  /** 이번 주에 물어볼 주간 질문. 물을 때가 아니면 null (필드는 항상 있다) */
+  weekly_check: weeklyCheckPromptSchema.nullable(),
 });
 export type NowResponse = z.infer<typeof nowResponseSchema>;
+
+// POST /api/v1/weekly-check — 주간 질문 응답. 이번 주(또는 바로 전 주)만 받고, 같은 주에 다시 답하면 덮어쓴다. 204
+// 주간 질문이 꺼져 있으면(WEEKLY_CHECK_ENABLED=false) 400 invalid_request.
+export const weeklyCheckAnswerSchema = z.enum(["yes", "no", "skipped"]);
+export const weeklyCheckRequestSchema = z.object({ week_start: z.iso.date(), answer: weeklyCheckAnswerSchema });
+export type WeeklyCheckRequest = z.infer<typeof weeklyCheckRequestSchema>;
+
+// POST /api/v1/sources/:id/missing — 빠진 할 일 신고. 사용자가 원문 구절을 골라 "여기 내 할 일이 있다"고 알려준다 (지표 4).
+// 구절은 원문에 실제로 있어야 한다 (공백 · 문장부호 차이는 무시). 처리는 동기(수 초)로 하고 결과를 바로 돌려준다.
+// 사용자별로 10분에 10번까지 (넘으면 429 rate_limited, Retry-After 헤더).
+export const missingReportRequestSchema = z.object({ quote: z.string().trim().min(1).max(2000) });
+export type MissingReportRequest = z.infer<typeof missingReportRequestSchema>;
+
+/** 파이프라인의 어느 단계에서 빠졌나: 처리 실패 / 추출 안 됨(검증 탈락 포함) / Jev 기각 / 다른 Action에 합쳐짐 */
+export const missStageSchema = z.enum(MISS_STAGES);
+
+export const missingReportResponseSchema = z.object({
+  /**
+   * created: 새 Action을 만듦.
+   * already_tracked: 이미 있는 Action (신고로 세지 않는다). 이 원문의 같은 구절이 이미 근거인 Action이면 상태와 상관없이
+   * (끝냈거나 지운 것도) 그대로 돌려주고, 아니면 확실히 같은 열린 Action에 근거만 더한다.
+   */
+  status: z.enum(["created", "already_tracked"]),
+  action: actionSummarySchema,
+  /** already_tracked면 null */
+  stage: missStageSchema.nullable(),
+});
+export type MissingReportResponse = z.infer<typeof missingReportResponseSchema>;
 
 // PATCH /api/v1/actions/:id — 사용자 수정. 바뀐 필드마다 user_edited 이벤트가 남는다 (지표 1).
 export const editActionRequestSchema = z

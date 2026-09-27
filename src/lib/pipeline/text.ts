@@ -25,27 +25,48 @@ export function quoteInText(quote: string, text: string): boolean {
   return true;
 }
 
+/** 기본으로 인용 하나가 걸칠 수 있다고 보는 줄 수 (시작 줄에서 끝 줄까지의 거리) */
+const QUOTE_SPAN_LINES = 10;
+
 /**
  * 인용이 들어 있는 줄 앞뒤로 `radius`줄을 잘라 돌려준다. Judge에는 원문 전체가 아니라 이 구간만 보낸다.
  * 인용을 못 찾으면 null.
+ * @param maxSpan 인용이 걸칠 수 있는 줄 수 (기본 10). 누락 신고처럼 사용자가 긴 범위를 고를 수 있으면 늘린다.
  */
-export function quoteContext(text: string, quote: string, radius = 4, maxChars = 1500): string | null {
+export function quoteContext(text: string, quote: string, radius = 4, maxChars = 1500, maxSpan = QUOTE_SPAN_LINES): string | null {
   // 조각으로 나뉜 인용은 첫 조각 주변을 보여준다.
   const q = quoteFragments(quote)[0];
   if (!q) return null;
   const lines = text.split("\n");
   const normalized = lines.map(normalizeForMatch);
+  const around = (start: number, end: number) => {
+    const context = lines.slice(Math.max(0, start - radius), Math.min(lines.length, end + radius + 1)).join("\n");
+    return context.length > maxChars ? aroundQuote(context, q, maxChars) : context;
+  };
 
   // 인용이 여러 줄에 걸칠 수 있다. 인용이 끝나는 줄을 먼저 찾고, 그 줄에서 거꾸로 가장 가까운 시작 줄을 찾는다.
+  const span = Math.min(maxSpan, QUOTE_SPAN_LINES);
   for (let end = 0; end < lines.length; end++) {
-    for (let start = end; start >= Math.max(0, end - 10); start--) {
-      if (normalized.slice(start, end + 1).join("").includes(q)) {
-        const context = lines.slice(Math.max(0, start - radius), Math.min(lines.length, end + radius + 1)).join("\n");
-        return context.length > maxChars ? aroundQuote(context, q, maxChars) : context;
-      }
+    for (let start = end; start >= Math.max(0, end - span); start--) {
+      if (normalized.slice(start, end + 1).join("").includes(q)) return around(start, end);
     }
   }
-  return null;
+  if (maxSpan <= QUOTE_SPAN_LINES) return null;
+
+  // 더 긴 인용: 줄을 이어 붙인 문자열에서 첫 위치를 찾아, 그 첫 글자와 끝 글자가 들어 있는 줄로 되돌린다.
+  // (위의 줄 단위 탐색을 긴 범위로 돌리면 원문 길이의 제곱보다 느려진다)
+  const offsets: number[] = [];
+  let offset = 0;
+  for (const line of normalized) {
+    offsets.push(offset);
+    offset += line.length;
+  }
+  const at = normalized.join("").indexOf(q);
+  if (at < 0) return null;
+  const lineOf = (pos: number) => normalized.findIndex((line, i) => offsets[i] <= pos && pos < offsets[i] + line.length);
+  const start = lineOf(at);
+  const end = lineOf(at + q.length - 1);
+  return end - start <= maxSpan ? around(start, end) : null;
 }
 
 /**

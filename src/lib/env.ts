@@ -30,3 +30,8 @@ export function publicEnv(): PublicEnv {
     NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY,
   });
 }
+
+/** 주간 질문(지표 5)을 묻는가 (WEEKLY_CHECK_ENABLED, 서버 전용). 기본은 켜짐이고, 베타가 끝나면 "false"로 끈다. */
+export function weeklyCheckEnabled(env: Record<string, string | undefined> = process.env): boolean {
+  return !["false", "0", "off"].includes((env.WEEKLY_CHECK_ENABLED ?? "").trim().toLowerCase());
+}

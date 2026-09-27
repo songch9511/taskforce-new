@@ -3,19 +3,33 @@ import "server-only";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 import { SupabaseActionStore, SupabaseTaskLinks } from "@/lib/actions/db-store";
+import { SUMMARY_COLUMNS } from "@/lib/actions/service";
 import { embed, embedConfigFromEnv, EmbedError } from "@/lib/ai/embed";
 import { decide, jevConfigFromEnv, JevError } from "@/lib/ai/jev";
 import { completeJson, llmConfigFromEnv, LlmError } from "@/lib/ai/llm";
+import type { ActionSummary, MissingReportResponse } from "@/lib/api/contract";
+import { MISSING_REPORT_LIMIT, rateLimitedUntil, RateLimitedError } from "@/lib/api/rate-limit";
 import type { ExtractInput } from "@/lib/pipeline/extract";
 import type { UserIdentity } from "@/lib/pipeline/identity";
 import { mergeJudged, type MergeDeps } from "@/lib/pipeline/merge";
 import { mergeTask, type TaskInput } from "@/lib/pipeline/merge-task";
+import {
+  classifyMiss,
+  extractMissing,
+  reportMatchDecide,
+  reportStore,
+  trackedByEvidence,
+  type MissingInput,
+  type MissLog,
+  type SourceEvidence,
+} from "@/lib/pipeline/missing";
 import { runPipeline, type PipelineDeps } from "@/lib/pipeline/run";
 import { notifyConfirmations } from "@/lib/notify/service";
 
 // 저장된 원문 하나를 끝까지 처리한다 (POST /api/v1/sources · 연동 동기화가 부른다):
 // 추출 → 검증 → Jev 판정(judge_logs) → 기존 Action과 매칭 · 병합(actions · claims · evidence · action_events).
 // Action 쓰기는 서버만 할 수 있으므로 service role 클라이언트로 부르고, 모든 쓰기에 user_id를 넣는다.
+// 빠진 할 일 신고(reportMissing, POST /api/v1/sources/:id/missing)도 같은 병합 · 사용자 잠금을 쓴다.
 
 export type ProcessDeps = PipelineDeps & Pick<MergeDeps, "embed">;
 
@@ -177,4 +191,96 @@ export async function processTaskSource(
     );
     return { needsConfirmation: [] };
   }
+}
+
+/**
+ * 빠진 할 일 신고 (POST /api/v1/sources/:id/missing). 원문이 사용자의 것인지 · 구절이 원문에 있는지는 부르는 쪽이
+ * 사용자 권한(RLS)으로 먼저 확인한다. 여기서는 service role로 쓰고 모든 쿼리를 user_id로 좁힌다.
+ * 0. 이 원문에서 이미 Action의 근거로 쓰인 구절과 겹치면 그 Action(끝냈거나 지운 것도)을 already_tracked로 돌려준다.
+ *    모델을 부르지 않고 신고로 세지 않는다 (trackedByEvidence)
+ * 1. 사용자별 시도 횟수를 넘었으면 RateLimitedError (모델을 부르기 전에 시도를 남긴다)
+ * 2. 원래 처리의 판정 기록(judge_logs)으로 어느 단계가 놓쳤는지 가른다 (classifyMiss)
+ * 3. 구절 하나를 후보로 만들고(extractMissing) 보통 원문과 같은 병합(mergeJudged)으로 반영한다.
+ *    다른 사람 담당 Action과는 합치지 않고(reportStore), 확신이 낮은 병합은 새 일로 본다(reportMatchDecide)
+ * 4. 새 Action이면 created와 같은 트랜잭션에 user_reported_missing(actor user, after { stage, source_id })을 남긴다.
+ *    이미 있는 Action(확실한 반복 · 변경)이면 근거만 더하고 already_tracked — 신고로 세지 않는다.
+ * 병합이 기존 Action의 완료 · 취소로 보는 경우는 reportMatchDecide가 같은 일의 반복으로 바꾼다 (신고로 할 일을 끝내지 않는다).
+ * commitment 후보는 unmatched가 되지 않으므로, Action을 못 얻으면 오류로 본다.
+ */
+export async function reportMissing(
+  admin: SupabaseClient,
+  source: { id: string; userId: string; processingStatus: string },
+  input: MissingInput,
+  deps: ProcessDeps = processDepsFromEnv(),
+  now = new Date(),
+): Promise<MissingReportResponse> {
+  const summaryOf = async (actionId: string) => {
+    const { data } = await admin.from("actions").select(SUMMARY_COLUMNS).eq("user_id", source.userId).eq("id", actionId).single().throwOnError();
+    return data as ActionSummary;
+  };
+
+  const tracked = await trackedAction(admin, source, input.quote);
+  if (tracked) return { status: "already_tracked", action: await summaryOf(tracked), stage: null };
+
+  const { data: attempts } = await admin
+    .from("missing_reports")
+    .select("created_at")
+    .eq("user_id", source.userId)
+    .gte("created_at", new Date(now.getTime() - MISSING_REPORT_LIMIT.windowMs).toISOString())
+    .throwOnError();
+  const retryAt = rateLimitedUntil(((attempts ?? []) as { created_at: string }[]).map((a) => a.created_at), now, MISSING_REPORT_LIMIT);
+  if (retryAt) throw new RateLimitedError(retryAt);
+  await admin.from("missing_reports").insert({ user_id: source.userId }).throwOnError();
+
+  const { data: logs } = await admin
+    .from("judge_logs")
+    .select("candidate, decision")
+    .eq("user_id", source.userId)
+    .eq("source_id", source.id)
+    .throwOnError();
+  const stage = classifyMiss({
+    processingStatus: source.processingStatus,
+    logs: ((logs ?? []) as { candidate: { quote?: unknown } | null; decision: MissLog["decision"] }[]).map((log) => ({
+      quote: typeof log.candidate?.quote === "string" ? log.candidate.quote : "",
+      decision: log.decision,
+    })),
+    quote: input.quote,
+  });
+
+  const { judged } = await extractMissing(input, deps);
+  const store = new SupabaseActionStore(admin, source.userId, {
+    createEvents: [{ type: "user_reported_missing", before: null, after: { stage, source_id: source.id }, rule: null, actor: "user" }],
+  });
+  const [outcome] = await withUserLock(source.userId, () =>
+    mergeJudged(reportStore(store), [judged], { id: source.id, text: input.text, kind: input.kind, occurredAt: input.occurredAt }, input.identity, {
+      embed: deps.embed,
+      decide: reportMatchDecide(deps.decide),
+      newId: () => crypto.randomUUID(),
+    }),
+  );
+  if (!outcome?.actionId) throw new Error(`누락 신고를 반영하지 못했습니다 (${outcome?.relation ?? "결과 없음"})`);
+
+  const action = await summaryOf(outcome.actionId);
+  return outcome.relation === "new" ? { status: "created", action, stage } : { status: "already_tracked", action, stage: null };
+}
+
+/** 이 원문의 근거 중 신고한 구절과 겹치는 것의 Action (상태와 상관없이, 다른 사람 담당은 빼고) */
+async function trackedAction(admin: SupabaseClient, source: { id: string; userId: string }, quote: string): Promise<string | null> {
+  const { data: evidence } = await admin
+    .from("evidence")
+    .select("action_id, quote")
+    .eq("user_id", source.userId)
+    .eq("source_id", source.id)
+    .order("created_at")
+    .throwOnError();
+  const rows = (evidence ?? []) as { action_id: string; quote: string }[];
+  if (rows.length === 0) return null;
+  const ids = [...new Set(rows.map((e) => e.action_id))];
+
+  const { data: actions } = await admin.from("actions").select("id, owner").eq("user_id", source.userId).in("id", ids).throwOnError();
+  const owners = new Map(((actions ?? []) as { id: string; owner: SourceEvidence["owner"] }[]).map((a) => [a.id, a.owner]));
+  return trackedByEvidence(
+    rows.flatMap((e) => (owners.has(e.action_id) ? [{ actionId: e.action_id, quote: e.quote, owner: owners.get(e.action_id)! }] : [])),
+    quote,
+  );
 }
