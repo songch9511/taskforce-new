@@ -164,7 +164,9 @@ actions 행은 Claim에서 `resolveAction`으로 다시 계산한 캐시이고(`
 
 진행 상황: 서버 쪽 완료 — 빠진 할 일 신고 `POST /api/v1/sources/:id/missing`(구절 하나를 새 프롬프트 `missing-v1`로 후보로 만들고 보통 병합으로 반영, 원인 단계 판정 `classifyMiss`),
 주간 질문(`GET /api/v1/now`의 `weekly_check`, `POST /api/v1/weekly-check`, `WEEKLY_CHECK_ENABLED`), `actions` Realtime publication, 지표 4 · 5 계산과 `/admin/metrics` 표시, `/lab`의 신고 폼.
-앱 화면(TaskforceKit 모델 · API 클라이언트 · 지금 · 상세 · 원문 탭)은 진행 중.
+앱 쪽 완료 — TaskforceKit(모델 · API 클라이언트 · RLS 읽기 · Realtime 구독 하나 · 변경 이력 문장 · 원문 줄 선택 → 원문 그대로의 인용),
+지금 탭(주간 질문 · 확인 요청 · 지금 할 일), Action 상세(근거 · 변경 이력 · AI에게 넘기기), 고치기 시트, 원문 탭(줄을 눌러 빠진 할 일 신고), app_opened(백그라운드에서 돌아올 때만).
+남은 숙제: 실제 DB에 마이그레이션을 적용한 뒤 완료 기준(시험대에 넣은 원문이 앱에 바로 뜸)과 누락 신고 · 주간 질문을 실제 데이터로 확인.
 
 ### Phase A2 — 원문 입력 (2일)
 
