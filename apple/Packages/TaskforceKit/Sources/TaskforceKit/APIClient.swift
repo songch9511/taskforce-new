@@ -115,6 +115,12 @@ public struct APIClient: Sendable {
         try await sendNoContent(.post, "weekly-check", body: WeeklyCheckRequest(weekStart: weekStart, answer: answer))
     }
 
+    /// 계정 삭제 (서버가 원문 · 할 일 · 변경 이력을 모두 지운다. 되돌릴 수 없다).
+    /// 성공하면 `SessionStore.accountDeleted()`로 이 기기에 저장된 세션을 지운다.
+    public func deleteAccount() async throws {
+        try await sendNoContent(.delete, "account")
+    }
+
     /// 앱이 앞으로 나올 때마다 한 번 (지표 2 · 3)
     public func appOpened() async throws {
         try await sendNoContent(.post, "metric-events", body: MetricEventRequest(type: "app_opened"))

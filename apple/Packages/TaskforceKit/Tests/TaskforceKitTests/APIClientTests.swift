@@ -116,6 +116,14 @@ struct APIClientTests {
         ])
     }
 
+    @Test func deleteAccountSendsDelete() async throws {
+        try await client(body: #"{"deleted":true}"#).deleteAccount()
+        let request = try #require(last)
+        #expect(request.method == "DELETE")
+        #expect(request.url.path == "/api/v1/account")
+        #expect(request.headers["Authorization"] == "Bearer token-123")
+    }
+
     @Test func handoff() async throws {
         let response = try await client(body: Fixtures.handoff).handoff(id: Fixtures.actionID)
         #expect(response.title == "투자 자료 보내기")

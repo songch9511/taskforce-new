@@ -60,6 +60,13 @@ public final class SessionStore {
         errorMessage = message
     }
 
+    /// 계정을 지운 뒤: 서버에는 더 이상 세션이 없으니 이 기기의 세션만 지운다 (공유 Keychain에서도 지워진다).
+    /// supabase-swift는 저장된 세션을 먼저 지우고 `signedOut`을 보낸 뒤 서버에 알리므로, 그 요청이 실패해도 로그아웃된다.
+    public func accountDeleted() async {
+        errorMessage = nil
+        try? await auth.signOut(scope: .local)
+    }
+
     public func signOut() async {
         errorMessage = nil
         do {

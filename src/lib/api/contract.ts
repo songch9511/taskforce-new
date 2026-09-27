@@ -225,6 +225,12 @@ export const deviceRequestSchema = z.object({
   app_version: z.string().max(40).optional(),
 });
 
+// DELETE /api/v1/account — 계정 삭제 (App Store 5.1.1(v)). 본문 없음.
+// 로그인 계정을 지우면 원문 · 할 일 · Claim · 근거 · 변경 이력 · 지표 · 프로필 · 연결(토큰) · 기기가 DB에서 함께 지워진다 (on delete cascade).
+// 되돌릴 수 없다. 이미 지워진 계정이면 그대로 성공으로 답한다 (재시도해도 안전).
+export const deleteAccountResponseSchema = z.object({ deleted: z.literal(true) });
+export type DeleteAccountResponse = z.infer<typeof deleteAccountResponseSchema>;
+
 export const apiErrorCodeSchema = z.enum(["unauthorized", "invalid_request", "not_found", "conflict", "rate_limited", "internal_error"]);
 
 export const apiErrorSchema = z.object({

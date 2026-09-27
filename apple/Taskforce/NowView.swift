@@ -9,6 +9,7 @@ final class NowModel {
     private(set) var loading = false
     private(set) var loadError: String?
     private(set) var busy: Set<UUID> = []
+    private(set) var deletingAccount = false
     var message: String?
     /// 고치기 시트가 닫힌 뒤에 보여줄 안내 (닫히는 중에 띄운 알림은 iOS가 버릴 수 있다)
     private var messageAfterSheet: String?
@@ -74,6 +75,20 @@ final class NowModel {
         await load()
     }
 
+    /// 계정 삭제. 성공하면 true (세션 정리는 부르는 쪽이 한다), 실패하면 안내를 띄운다.
+    func deleteAccount() async -> Bool {
+        deletingAccount = true
+        defer { deletingAccount = false }
+        do {
+            try await services.api.deleteAccount()
+            return true
+        } catch {
+            let detail = (error as? APIError)?.userMessage ?? error.localizedDescription
+            message = "계정을 삭제하지 못했어요. \(detail)"
+            return false
+        }
+    }
+
     private func act(_ id: UUID, _ call: (APIClient) async throws -> ActionSummary) async {
         busy.insert(id)
         defer { busy.remove(id) }
@@ -94,6 +109,7 @@ struct NowView: View {
     @Environment(ActionChangeFeed.self) private var changes
     @State private var model: NowModel
     @State private var editing: EditTarget?
+    @State private var confirmingAccountDeletion = false
 
     init(services: AppServices, email: String?) {
         self.services = services
@@ -114,6 +130,16 @@ struct NowView: View {
                     EditActionSheet(target: target) { edit in await model.save(target.id, edit) }
                 }
                 .messageAlert($model.message)
+                .confirmationDialog("계정을 삭제할까요?", isPresented: $confirmingAccountDeletion, titleVisibility: .visible) {
+                    Button("계정 삭제", role: .destructive) {
+                        Task {
+                            if await model.deleteAccount() { await session.accountDeleted() }
+                        }
+                    }
+                    Button("취소", role: .cancel) {}
+                } message: {
+                    Text("계정을 삭제하면 보낸 원문, 할 일, 변경 이력이 모두 지워지고 되돌릴 수 없어요.")
+                }
         }
     }
 
@@ -228,6 +254,10 @@ struct NowView: View {
                 Button("로그아웃", role: .destructive) {
                     Task { await session.signOut() }
                 }
+                Button("계정 삭제", role: .destructive) {
+                    confirmingAccountDeletion = true
+                }
+                .disabled(model.deletingAccount)
             } label: {
                 Label("계정", systemImage: "person.crop.circle")
             }
