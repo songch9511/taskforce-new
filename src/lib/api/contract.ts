@@ -112,6 +112,55 @@ export const metricEventRequestSchema = z.object({
   action_id: z.uuid().optional(),
 });
 
+// 연동: 데이터베이스(Notion 데이터 소스)마다 역할과 속성 매핑 (connections.settings.dataSources[id], docs/INTEGRATIONS.md)
+export const taskStatusSchema = actionStatusSchema;
+export const taskPropertyMapSchema = z.object({
+  /** 속성 id */
+  title: z.string().min(1),
+  assignee: z.string().min(1),
+  due: z.string().min(1).nullable(),
+  status: z.object({ id: z.string().min(1), type: z.enum(["status", "checkbox"]) }),
+});
+export type TaskPropertyMap = z.infer<typeof taskPropertyMapSchema>;
+
+export const dataSourceSettingSchema = z.object({
+  /** tasks: 속성을 그대로 Claim으로, text: 글 원문으로 읽음(회의록 · 문서), ignore: 가져오지 않음. 예전 이름 meetings는 text로 읽는다 */
+  role: z.preprocess((role) => (role === "meetings" ? "text" : role), z.enum(["tasks", "text", "ignore"])),
+  title: z.string().max(200).nullable(),
+  props: taskPropertyMapSchema.optional(),
+  /** 상태 옵션 id(체크박스는 "true" · "false") → open · done · dropped */
+  statusMap: z.record(z.string(), taskStatusSchema).optional(),
+  /** 사용자가 확인한 시각. 확인 전에는 할 일로 처리하지 않는다 */
+  confirmedAt: z.string().optional(),
+  /** 처음 켤 때 열린 할 일을 한 번 가져온 시각 */
+  backfilledAt: z.string().optional(),
+});
+export type DataSourceSetting = z.infer<typeof dataSourceSettingSchema>;
+
+export const connectionSettingsSchema = z.looseObject({
+  dataSources: z.record(z.string(), dataSourceSettingSchema).optional(),
+});
+
+// GET /api/v1/connections/:id/data-sources — 공유된 데이터베이스와 역할 (확인 전이면 제안값)
+export const dataSourceSummarySchema = z.object({
+  id: z.string(),
+  title: z.string().nullable(),
+  setting: dataSourceSettingSchema,
+  confirmed: z.boolean(),
+  /** false: 설정은 저장돼 있지만 연결에서 더 이상 읽을 수 없음 (Notion에서 공유가 빠짐) */
+  reachable: z.boolean(),
+  properties: z.array(z.object({ id: z.string(), name: z.string(), type: z.string() })),
+  /** 상태 속성의 옵션 (propertyId: 어느 상태 속성의 옵션인지) */
+  statusOptions: z.array(z.object({ propertyId: z.string(), id: z.string(), name: z.string(), group: z.string().nullable() })),
+});
+export type DataSourceSummary = z.infer<typeof dataSourceSummarySchema>;
+export const dataSourcesResponseSchema = z.object({ dataSources: z.array(dataSourceSummarySchema) });
+
+// PUT /api/v1/connections/:id/data-sources/:dataSourceId — 역할 · 매핑 확인 (confirmedAt은 서버가 넣는다)
+export const saveDataSourceRequestSchema = dataSourceSettingSchema
+  .omit({ confirmedAt: true, backfilledAt: true, title: true })
+  .refine((s) => s.role !== "tasks" || s.props, { message: "할 일 DB에는 속성 매핑이 필요합니다.", path: ["props"] });
+
 // POST /api/v1/devices — 알림용 기기 토큰 (APNs)
 export const deviceRequestSchema = z.object({
   token: z.string().regex(/^[0-9a-fA-F]{32,200}$/, "APNs 기기 토큰(16진수)"),

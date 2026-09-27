@@ -2,10 +2,10 @@ import "server-only";
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 
-import { activeConnections, claimConnection, ingestDeps, loadToken, recordSync, saveToken } from "../store";
+import { activeConnections, claimConnection, ingestDeps, loadToken, markBackfilled, recordSync, saveToken, taskDeps } from "../store";
 import type { Connection } from "../types";
 
-import { notionClient, NotionError, refreshToken, type NotionOAuthConfig, type NotionToken } from "./api";
+import { notionClient, NotionError, refreshToken, type NotionClient, type NotionOAuthConfig, type NotionToken } from "./api";
 import { DEFAULT_NOTION_SYNC, syncNotion, type NotionSyncResult } from "./sync";
 
 // Notion 연결을 실제로 동기화한다: 토큰을 풀고, 만료됐으면 갱신하고, 결과와 커서를 남긴다.
@@ -18,6 +18,19 @@ export function notionOAuthConfig(): NotionOAuthConfig {
     throw new Error("NOTION_CLIENT_ID · NOTION_CLIENT_SECRET · NOTION_REDIRECT_URI가 필요합니다. .env.example을 보세요.");
   }
   return { clientId, clientSecret, redirectUri };
+}
+
+/** 연결의 토큰으로 Notion을 부른다. 토큰이 만료됐으면(401) 한 번 갱신해서 다시 부른다. */
+export async function withNotionClient<T>(admin: SupabaseClient, connectionId: string, call: (client: NotionClient) => Promise<T>): Promise<T> {
+  let token = await loadToken<NotionToken>(admin, connectionId);
+  try {
+    return await call(notionClient(token.access_token));
+  } catch (error) {
+    if (!(error instanceof NotionError && error.status === 401 && token.refresh_token)) throw error;
+    token = { ...token, ...(await refreshToken(notionOAuthConfig(), token.refresh_token)) };
+    await saveToken(admin, connectionId, token);
+    return call(notionClient(token.access_token));
+  }
 }
 
 export type ConnectionSyncOutcome =
@@ -44,21 +57,16 @@ export async function syncNotionConnection(
     return { connectionId: connection.id, ok: false, error: "이미 동기화 중입니다.", revoked: false, busy: true };
   }
 
-  let token = await loadToken<NotionToken>(admin, connection.id);
-  const run = () =>
-    syncNotion(connection, notionClient(token.access_token), ingestDeps(admin), { now, deadline: options.deadline, ...DEFAULT_NOTION_SYNC });
+  const run = (client: NotionClient) =>
+    syncNotion(connection, client, { ...ingestDeps(admin), tasks: taskDeps(admin) }, {
+      now,
+      deadline: options.deadline,
+      ...DEFAULT_NOTION_SYNC,
+    });
 
   try {
-    let result: NotionSyncResult;
-    try {
-      result = await run();
-    } catch (error) {
-      // 토큰이 만료됐으면 한 번 갱신해서 다시 시도한다.
-      if (!(error instanceof NotionError && error.status === 401 && token.refresh_token)) throw error;
-      token = { ...token, ...(await refreshToken(notionOAuthConfig(), token.refresh_token)) };
-      await saveToken(admin, connection.id, token);
-      result = await run();
-    }
+    const result = await withNotionClient(admin, connection.id, run);
+    await markBackfilled(admin, connection, result.backfilled);
     await recordSync(admin, connection, { cursor: result.cursor });
     return { connectionId: connection.id, ok: true, result };
   } catch (error) {

@@ -5,6 +5,9 @@ import type { SourceKind } from "./extract";
 
 export type ClaimField = "due" | "scope" | "owner" | "status";
 
+/** 원문 종류 + 구조화된 할 일(task) */
+export type ClaimChannel = SourceKind | "task";
+
 export type Claim = {
   id: string;
   field: ClaimField;
@@ -16,9 +19,12 @@ export type Claim = {
   certainty: "firm" | "tentative";
   directness: "first_hand" | "reported";
   audience: "shared" | "private";
-  channel: SourceKind;
-  /** user: 사용자가 앱에서 직접 고친 값. 그 시점까지의 어떤 발언보다 우선한다 (이후의 유효한 발언은 다시 바꿀 수 있다). */
-  origin?: "source" | "user";
+  channel: ClaimChannel;
+  /**
+   * user: 사용자가 앱에서 직접 고친 값. 그 시점까지의 어떤 발언보다 우선한다 (이후의 유효한 발언은 다시 바꿀 수 있다).
+   * tracker: 사용자가 할 일 도구(Notion 할 일 DB 등)에서 직접 고친 값. 판정에서는 user와 같고, AI 오판으로 세지 않는다.
+   */
+  origin?: "source" | "user" | "tracker";
 };
 
 /** 규칙 번호 (TRUTH_RULES 2장) */
@@ -49,11 +55,12 @@ export type Resolution = {
   risks: Risk[];
 };
 
-// 규칙 5: 서면 확인 > 채팅 > 회의록(음성인식 오류 가능)
-const CHANNEL_RANK: Record<SourceKind, number> = { email: 3, doc: 3, message: 2, note: 2, meeting: 1 };
+// 규칙 5: 서면 기록(메일 · 문서 · 할 일 DB) > 채팅 > 회의록(음성인식 오류 가능)
+const CHANNEL_RANK: Record<ClaimChannel, number> = { email: 3, doc: 3, task: 3, message: 2, note: 2, meeting: 1 };
 
 const byTime = (a: Claim, b: Claim) => a.occurredAt.getTime() - b.occurredAt.getTime();
-const isUser = (c: Claim) => c.origin === "user";
+/** 사용자가 직접 정한 값 (앱 또는 할 일 도구) */
+const isUser = (c: Claim) => c.origin === "user" || c.origin === "tracker";
 const isStrong = (c: Claim) => isUser(c) || (c.certainty === "firm" && c.directness === "first_hand");
 
 type Authority = "apply" | "needs_confirmation" | "reject";
@@ -83,6 +90,9 @@ function authority(field: ClaimField, current: string | null, next: Claim, confi
       return next.speakerRole === "counterpart" ? "apply" : "needs_confirmation";
   }
 }
+
+export const USER_REASON = "사용자가 직접 정함";
+export const TRACKER_REASON = "사용자가 할 일 도구에서 정함";
 
 const RULE_TEXT: Record<RuleId, string> = {
   0: "결정권",
@@ -207,7 +217,9 @@ export function resolveField(field: ClaimField, claims: Claim[]): Resolution {
   );
   const finalRules = [...rules].sort((a, b) => a - b);
   const reason = isUser(winner)
-    ? "사용자가 직접 정함"
+    ? winner.origin === "tracker"
+      ? TRACKER_REASON
+      : USER_REASON
     : finalRules.length
       ? `규칙 ${finalRules.join(" + ")}: ${finalRules.map((r) => RULE_TEXT[r]).join(", ")}`
       : "처음 합의된 값";

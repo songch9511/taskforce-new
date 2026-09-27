@@ -1,5 +1,4 @@
-import type { SourceKind } from "@/lib/pipeline/extract";
-import type { Claim } from "@/lib/pipeline/resolve";
+import type { Claim, ClaimChannel } from "@/lib/pipeline/resolve";
 
 import type { ProjectedAction } from "./project";
 
@@ -14,8 +13,8 @@ export type ClaimRow = {
   certainty: Claim["certainty"];
   directness: Claim["directness"];
   audience: Claim["audience"];
-  origin: "source" | "user";
-  channel: SourceKind | null;
+  origin: NonNullable<Claim["origin"]>;
+  channel: ClaimChannel | null;
 };
 
 export const CLAIM_COLUMNS = "id, field, value, occurred_at, speaker_role, certainty, directness, audience, origin, channel";

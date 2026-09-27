@@ -50,6 +50,22 @@ const STATUS_LABELS: Record<SourceRow["processing_status"], string> = {
 const DECISION_LABELS: Record<JudgeLogRow["decision"], string> = { auto: "자동 반영", confirm: "확인 요청", reject: "기각" };
 const DECISION_ORDER: JudgeLogRow["decision"][] = ["auto", "confirm", "reject"];
 
+// 같은 사유 코드라도 기각이면 "그래서 버렸다", 확인 요청이면 "그래서 묻는다"라는 뜻이다 (judge.ts decideOutcome).
+const REASON_LABELS: Record<Exclude<JudgeLogRow["decision"], "auto">, Record<RejectReason, string>> = {
+  reject: { NOT_MY_ACTION: "내 일 아님", INFO_ONLY: "할 일 아님", TENTATIVE: "약속 없음", ALREADY_DONE: "이미 끝남" },
+  confirm: {
+    NOT_MY_ACTION: "담당 불확실",
+    INFO_ONLY: "할 일인지 불확실",
+    TENTATIVE: "잠정적 약속",
+    ALREADY_DONE: "끝났을 수 있음",
+  },
+};
+
+function reasonText(decision: JudgeLogRow["decision"], reasons: RejectReason[]): string {
+  if (decision === "auto" || reasons.length === 0) return "—";
+  return reasons.map((r) => REASON_LABELS[decision][r]).join(", ");
+}
+
 const pct = (p: number) => `${Math.round(p * 100)}%`;
 
 export default async function LabPage({ searchParams }: { searchParams: Promise<{ source?: string; notion?: string }> }) {
@@ -205,7 +221,9 @@ export default async function LabPage({ searchParams }: { searchParams: Promise<
                           <td className="py-2 pr-3">{pct(signals.is_actionable)}</td>
                           <td className="py-2 pr-3">{pct(signals.already_done)}</td>
                           <td className="py-2 pr-3">{signals.certainty.choice}</td>
-                          <td className="py-2">{reasons.join(", ") || "—"}</td>
+                          <td className="py-2 whitespace-nowrap" title={reasons.join(", ") || undefined}>
+                            {reasonText(log.decision, reasons)}
+                          </td>
                         </tr>
                       );
                     })}
@@ -251,7 +269,25 @@ export default async function LabPage({ searchParams }: { searchParams: Promise<
   );
 }
 
+const TASK_RELATION_LABELS: Record<string, string> = {
+  new: "새 Action",
+  linked: "이어진 Action에 반영",
+  skipped: "반영 안 함",
+  duplicate: "기존 Action에 합침",
+  update: "기존 Action에 합침",
+  complete: "기존 Action에 합침",
+  cancel: "기존 Action에 합침",
+};
+const FIELD_LABELS: Record<string, string> = { scope: "제목", owner: "담당", due: "기한", status: "상태" };
+
 function summaryText(summary: Record<string, unknown>): string {
+  // 구조화된 할 일(할 일 DB)은 LLM 추출을 거치지 않는다: 어떻게 반영됐는지만 보여준다.
+  if (summary.structured === true) {
+    const relation = TASK_RELATION_LABELS[String(summary.relation)] ?? String(summary.relation ?? "");
+    const changes = Array.isArray(summary.changes) ? summary.changes.map((f) => FIELD_LABELS[String(f)] ?? String(f)) : [];
+    const who = summary.edited_by_user === true ? "내가 고침" : "다른 사람이 고침";
+    return `할 일 DB · ${relation}${changes.length ? ` (${changes.join(" · ")})` : ""} · ${who}`;
+  }
   const n = (key: string) => (typeof summary[key] === "number" ? (summary[key] as number) : 0);
   const cost = typeof summary.cost === "number" ? ` · $${summary.cost.toFixed(4)}` : "";
   return `추출 ${n("extracted")} · 자동 ${n("auto")} · 확인 ${n("confirm")} · 기각 ${n("reject")} · 환각 ${n("dropped")}${cost}`;

@@ -135,7 +135,7 @@ export type MergeOutcome = {
   confidence: number;
 };
 
-const embedText = (title: string, quote: string) => `${title}\n${quote}`;
+export const embedText = (title: string, quote: string) => `${title}\n${quote}`;
 
 export async function mergeJudged(
   store: ActionStore,

@@ -1,10 +1,11 @@
 import { describe, expect, it } from "vitest";
 
 import type { IngestDeps } from "../ingest";
+import type { TaskItem } from "../tasks-ingest";
 import type { Connection } from "../types";
 
-import type { NotionClient, NotionPage } from "./api";
-import { syncNotion } from "./sync";
+import { NotionError, type NotionClient, type NotionPage } from "./api";
+import { syncNotion, type NotionTaskDeps } from "./sync";
 
 const now = new Date("2026-09-25T12:00:00.000Z");
 const minutesAgo = (m: number) => new Date(now.getTime() - m * 60_000).toISOString();
@@ -22,8 +23,9 @@ const page = (id: string, editedMinutesAgo: number, extra: Partial<NotionPage> =
 
 const MD = "<meeting-notes><summary>\n- [ ] 태오: 금요일까지 도면 역설계 결과 공유\n</summary></meeting-notes>";
 
-function fakeClient(pages: NotionPage[][]) {
+function fakeClient(pages: NotionPage[][], dataSourcePages: NotionPage[] = [], options: { dataSourceFails?: boolean } = {}) {
   const markdownCalls: string[] = [];
+  const queryCalls: { id: string; filter: unknown }[] = [];
   const client: NotionClient = {
     searchPages: async (cursor) => {
       const index = cursor ? Number(cursor) : 0;
@@ -33,9 +35,35 @@ function fakeClient(pages: NotionPage[][]) {
       markdownCalls.push(id);
       return { markdown: MD, truncated: false };
     },
-    user: async () => null,
+    user: async (id) => ({ object: "user", id, name: id === "me" ? "청혁" : "Chan", person: { email: id === "me" ? "me@x.com" : "chan@x.com" } }),
+    searchDataSources: async () => [],
+    dataSource: async (id) => {
+      if (options.dataSourceFails) throw new NotionError("Notion API 요청 실패 (404 object_not_found)", 404, "object_not_found");
+      return {
+        object: "data_source",
+        id,
+        properties: {
+          Status: {
+            id: "st",
+            name: "Status",
+            type: "status",
+            status: {
+              options: [
+                { id: "o1", name: "Not started" },
+                { id: "o5", name: "Done" },
+              ],
+              groups: [],
+            },
+          },
+        },
+      };
+    },
+    queryDataSource: async (id, _cursor, filter) => {
+      queryCalls.push({ id, filter });
+      return { pages: dataSourcePages, nextCursor: null };
+    },
   };
-  return { client, markdownCalls };
+  return { client, markdownCalls, queryCalls };
 }
 
 function fakeIngest(already: string[] = []) {
@@ -105,5 +133,105 @@ describe("syncNotion 시간 한도", () => {
     expect(markdownCalls).toEqual([]);
     expect(created).toEqual([]);
     expect(result.cursor.after).toBe(new Date(new Date(minutesAgo(50)).getTime() - 1).toISOString());
+  });
+});
+
+describe("syncNotion 할 일 DB", () => {
+  const settings = (backfilledAt?: string) => ({
+    dataSources: {
+      "ds-action": {
+        role: "tasks",
+        title: "Action",
+        props: { title: "title", assignee: "own", due: null, status: { id: "st", type: "status" } },
+        statusMap: { o1: "open", o5: "done" },
+        confirmedAt: "2026-09-20T00:00:00Z",
+        ...(backfilledAt ? { backfilledAt } : {}),
+      },
+    },
+  });
+  const taskPage = (id: string, editedMinutesAgo: number, owner: "me" | "chan" = "me"): NotionPage =>
+    page(id, editedMinutesAgo, {
+      parent: { type: "data_source_id", data_source_id: "ds-action" },
+      last_edited_by: { id: "me" },
+      properties: {
+        Name: { id: "title", type: "title", title: [{ plain_text: `할 일 ${id}` }] },
+        Own: { id: "own", type: "people", people: [{ object: "user", id: owner, name: owner, person: { email: `${owner}@x.com` } }] },
+        Status: { id: "st", type: "status", status: { id: "o1", name: "Not started" } },
+      },
+    });
+
+  function fakeTasks() {
+    const processed: TaskItem[] = [];
+    const tasks: NotionTaskDeps = {
+      identity: async () => ({ name: "청혁", aliases: [], emails: ["me@x.com"] }),
+      taskStates: async () => new Map(),
+      insertTaskSource: async (_c, item) => `task-${item.externalId}`,
+      processTask: async (_c, _s, item) => void processed.push(item),
+      pendingTasks: async () => [],
+    };
+    return { tasks, processed };
+  }
+
+  it("확인한 할 일 DB의 페이지는 본문을 받지 않고 속성으로 넣는다", async () => {
+    const { client, markdownCalls } = fakeClient([[taskPage("t1", 40), page("meeting", 60)]]);
+    const { tasks, processed } = fakeTasks();
+    const conn = { ...connection(minutesAgo(200)), settings: settings("2026-09-20T00:00:00Z") };
+    const result = await syncNotion(conn, client, { ...fakeIngest().deps, tasks }, options);
+
+    expect(markdownCalls).toEqual(["meeting"]);
+    expect(processed.map((i) => [i.externalId, i.snapshot.owner, i.editedByUser])).toEqual([["t1", "me", true]]);
+    // 글 원문으로 들어왔던 같은 페이지 버전과 겹치지 않게 할 일 버전은 task:를 붙인다 (실제 동기화에서 발견).
+    expect(processed[0].externalVersion).toBe(`task:${minutesAgo(40)}`);
+    expect(result.created).toEqual(["src-meeting", "task-t1"]);
+    expect(result.backfilled).toEqual([]);
+  });
+
+  it("처음 켠 할 일 DB는 한 번 전체를 훑어 커서 이전의 열린 할 일도 가져온다", async () => {
+    const { client, queryCalls } = fakeClient([[]], [taskPage("old", 60 * 24 * 30), taskPage("theirs", 60 * 24 * 30, "chan")]);
+    const { tasks, processed } = fakeTasks();
+    const conn = { ...connection(minutesAgo(200)), settings: settings() };
+    const result = await syncNotion(conn, client, { ...fakeIngest().deps, tasks }, options);
+
+    // 끝난 할 일은 받지 않는다 (상태 이름으로 거른다)
+    expect(queryCalls).toEqual([{ id: "ds-action", filter: { and: [{ property: "st", status: { does_not_equal: "Done" } }] } }]);
+    expect(processed.map((i) => i.externalId)).toEqual(["old"]);
+    expect(result.backfilled).toEqual([{ dataSourceId: "ds-action", confirmedAt: "2026-09-20T00:00:00Z" }]);
+  });
+
+  it("공유가 끊긴 할 일 DB 하나 때문에 동기화 전체가 멈추지 않는다", async () => {
+    const { client, markdownCalls } = fakeClient([[page("meeting", 60)]], [], { dataSourceFails: true });
+    const { tasks } = fakeTasks();
+    const conn = { ...connection(minutesAgo(200)), settings: settings() };
+    const result = await syncNotion(conn, client, { ...fakeIngest().deps, tasks }, options);
+    expect(markdownCalls).toEqual(["meeting"]);
+    expect(result.backfilled).toEqual([]);
+  });
+
+  it("가져오지 않음으로 확인한 DB의 페이지는 건너뛴다", async () => {
+    const ignored = page("goal", 60, { parent: { type: "data_source_id", data_source_id: "ds-goal" } });
+    const { client, markdownCalls } = fakeClient([[ignored, page("meeting", 70)]]);
+    const conn = {
+      ...connection(minutesAgo(200)),
+      settings: { dataSources: { "ds-goal": { role: "ignore", title: "Goal", confirmedAt: "2026-09-20T00:00:00Z" } } },
+    };
+    await syncNotion(conn, client, fakeIngest().deps, options);
+    expect(markdownCalls).toEqual(["meeting"]);
+  });
+
+  it("막 고친 할 일 페이지는 커서를 그 앞에 둔다", async () => {
+    const { client } = fakeClient([[taskPage("t1", 2)]]);
+    const conn = { ...connection(minutesAgo(200)), settings: settings("2026-09-20T00:00:00Z") };
+    const result = await syncNotion(conn, client, { ...fakeIngest().deps, tasks: fakeTasks().tasks }, options);
+    expect(result.tasks?.skipped.settling).toBe(1);
+    expect(result.cursor.after).toBe(new Date(new Date(minutesAgo(2)).getTime() - 1).toISOString());
+  });
+
+  it("확인하지 않은 할 일 DB는 지금처럼 글 원문으로 읽는다", async () => {
+    const { client, markdownCalls } = fakeClient([[taskPage("t1", 40)]]);
+    const unconfirmed = { dataSources: { "ds-action": { ...settings().dataSources["ds-action"], confirmedAt: undefined } } };
+    const { tasks, processed } = fakeTasks();
+    await syncNotion({ ...connection(minutesAgo(200)), settings: unconfirmed }, client, { ...fakeIngest().deps, tasks }, options);
+    expect(markdownCalls).toEqual(["t1"]);
+    expect(processed).toEqual([]);
   });
 });

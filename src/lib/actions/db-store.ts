@@ -6,6 +6,8 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 
 import { MATCH_THRESHOLDS, type OpenAction } from "@/lib/pipeline/match";
 import type { ActionStore, Evidence, TrackedAction } from "@/lib/pipeline/merge";
+import type { LinkedAction, TaskLinkStore } from "@/lib/pipeline/merge-task";
+import { USER_REASON } from "@/lib/pipeline/resolve";
 import type { Claim } from "@/lib/pipeline/resolve";
 
 import { changeEvents, projectAction, type EventDraft } from "./project";
@@ -139,5 +141,60 @@ export class SupabaseActionStore implements ActionStore {
       if (after.needs_confirmation && !row.needs_confirmation) this.needsConfirmation.add(actionId);
       return true;
     });
+  }
+}
+
+/** 외부 할 일 ↔ Action 연결 (action_links). 연결마다 범위를 좁힌다. */
+export class SupabaseTaskLinks implements TaskLinkStore {
+  constructor(
+    private readonly admin: SupabaseClient,
+    private readonly userId: string,
+    private readonly connectionId: string,
+  ) {}
+
+  async linkedAction(externalId: string): Promise<LinkedAction | null> {
+    const { data: link } = await this.admin
+      .from("action_links")
+      .select("action_id")
+      .eq("user_id", this.userId)
+      .eq("connection_id", this.connectionId)
+      .eq("external_id", externalId)
+      .maybeSingle()
+      .throwOnError();
+    if (!link) return null;
+    const { data: action } = await this.admin
+      .from("actions")
+      .select("status, resolution")
+      .eq("user_id", this.userId)
+      .eq("id", link.action_id)
+      .single()
+      .throwOnError();
+    const status = action.status as LinkedAction["status"];
+    const reason = (action.resolution as { status?: { reason?: string } } | null)?.status?.reason;
+    return { actionId: link.action_id as string, status, deletedByUser: status === "dropped" && reason === USER_REASON };
+  }
+
+  async actionCreatedFrom(sourceId: string): Promise<string | null> {
+    const { data } = await this.admin
+      .from("evidence")
+      .select("action_id")
+      .eq("user_id", this.userId)
+      .eq("source_id", sourceId)
+      .eq("role", "created")
+      .limit(1)
+      .maybeSingle()
+      .throwOnError();
+    return (data?.action_id as string | undefined) ?? null;
+  }
+
+  async link(externalId: string, actionId: string): Promise<void> {
+    // 이미 이어져 있으면 그대로 둔다 (처음 연결이 이긴다).
+    await this.admin
+      .from("action_links")
+      .upsert(
+        { user_id: this.userId, connection_id: this.connectionId, external_id: externalId, action_id: actionId },
+        { onConflict: "connection_id,external_id", ignoreDuplicates: true },
+      )
+      .throwOnError();
   }
 }

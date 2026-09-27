@@ -41,7 +41,13 @@ async function main() {
   const admin = createAdminClient();
 
   const sources = await readAll<SourceRow>((from, to) => {
-    let query = admin.from("sources").select("id, user_id, kind, raw_text, occurred_at, participants").order("occurred_at").order("id");
+    // 구조화된 할 일(kind = task)은 LLM으로 다시 읽지 않는다. 실패한 버전은 동기화가 다시 처리한다 (connectors/tasks-ingest.ts).
+    let query = admin
+      .from("sources")
+      .select("id, user_id, kind, raw_text, occurred_at, participants")
+      .neq("kind", "task")
+      .order("occurred_at")
+      .order("id");
     if (values.source) query = query.eq("id", values.source);
     return query.range(from, to);
   });

@@ -193,6 +193,9 @@ Claim  id, action_id, field(due|scope|owner|status), value,
 
 - `src/lib/pipeline/resolve.ts`: `resolveField(field, claims)` / `resolveAction(claims)`. 규칙마다 `resolve.test.ts`에 테스트가 있다.
 - Claim 속성(누가 · 확정도 · 직접 · 공유)은 Jev 판정(`speaker_role`, `statement_certainty`, `directness`, `audience`)에서 온다.
+- 사용자가 직접 정한 값은 규칙 0을 거치지 않는다: 앱에서 고친 값(`origin: user`)과 할 일 도구(Notion 할 일 DB 등)에서 사용자가 고친 값(`origin: tracker`).
+  규칙 0은 대화 속 약속의 권한을 가리려고 만든 것이라, 사용자가 자기 할 일 기록을 직접 고친 것까지 막으면 할 일 도구와 값이 어긋난다.
+  `tracker`는 원문(속성 스냅샷)과 인용이 있고, AI 오판(PRD 지표 1)으로 세지 않는다. 할 일 도구에서 다른 사람이 고친 값은 `counterpart` 발언으로 본다 ([INTEGRATIONS.md](INTEGRATIONS.md) "Notion 할 일 DB").
 - `src/lib/pipeline/merge.ts`: 새 후보를 기존 Action에 Claim으로 붙인다. 매칭(`match.ts`)은 임베딩(`EMBEDDING_MODEL`, 기본 `openai/text-embedding-3-small`)으로 비슷한 열린 Action을 5개까지 추리고 Jev에게 new / 같은 일의 반복 · 변경 · 완료 · 취소를 묻는다. 관계 확신이 0.6 미만이면 병합을 확인받는다.
 
 ### 핵심 시나리오에 적용

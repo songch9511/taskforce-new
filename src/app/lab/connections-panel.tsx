@@ -5,6 +5,8 @@ import { useState } from "react";
 
 import { Button } from "@/components/ui/button";
 
+import { DataSourcesPanel } from "./data-sources-panel";
+
 export type ConnectionRow = {
   id: string;
   provider: string;
@@ -17,7 +19,8 @@ export type ConnectionRow = {
 const STATUS_LABELS: Record<ConnectionRow["status"], string> = { active: "연결됨", error: "오류", revoked: "권한 끊김" };
 
 const CALLBACK_MESSAGES: Record<string, string> = {
-  connected: "Notion을 연결했습니다. '지금 동기화'를 누르면 최근 2주 회의록을 가져옵니다.",
+  connected:
+    "Notion을 연결했습니다. '지금 동기화'를 누르면 최근 2주 회의록을 가져옵니다. 페이지를 고를 때 팀스페이스 최상위 페이지처럼 상위 페이지 하나를 고르면 그 아래 데이터베이스가 모두 함께 공유됩니다.",
   denied: "Notion 연결을 취소했습니다.",
   invalid_state: "연결 요청이 만료됐거나 올바르지 않습니다. 다시 시도해 주세요.",
   error: "Notion 연결에 실패했습니다. 서버 로그를 확인해 주세요.",
@@ -86,6 +89,11 @@ export function ConnectionsPanel({ connections, notionStatus }: { connections: C
               <Button variant="ghost" size="sm" disabled={pending !== null} onClick={() => disconnect(c.id)}>
                 끊기
               </Button>
+              {c.provider === "notion" && c.status !== "revoked" && (
+                <div className="w-full">
+                  <DataSourcesPanel connectionId={c.id} />
+                </div>
+              )}
             </li>
           ))}
         </ul>

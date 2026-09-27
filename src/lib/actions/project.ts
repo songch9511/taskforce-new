@@ -1,5 +1,5 @@
 import type { EvidenceRole } from "@/lib/pipeline/merge";
-import { resolveAction, type Claim, type ClaimField, type Resolution } from "@/lib/pipeline/resolve";
+import { resolveAction, TRACKER_REASON, USER_REASON, type Claim, type ClaimField, type Resolution } from "@/lib/pipeline/resolve";
 
 // Claim들을 판정해 actions 행에 저장할 값을 만들고, 바뀐 필드마다 ActionEvent를 만든다 (순수 함수).
 // actions 행은 계산 결과를 캐시한 것일 뿐이고, 진실의 원천은 claims다.
@@ -71,7 +71,13 @@ export type EventDraft = {
 };
 
 const ruleText = (r: FieldResolution) =>
-  r.reason === "사용자가 직접 정함" ? "user" : r.rules.length ? r.rules.map((n) => `rule${n}`).join("+") : null;
+  r.reason === USER_REASON
+    ? "user"
+    : r.reason === TRACKER_REASON
+      ? "tracker"
+      : r.rules.length
+        ? r.rules.map((n) => `rule${n}`).join("+")
+        : null;
 
 /** 저장된 값(before)과 새 판정(after)을 비교해 AI가 바꾼 것마다 이벤트를 만든다. */
 export function changeEvents(before: ProjectedAction | null, after: ProjectedAction, evidenceRole: EvidenceRole): EventDraft[] {

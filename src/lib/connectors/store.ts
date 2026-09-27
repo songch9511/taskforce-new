@@ -2,12 +2,16 @@ import "server-only";
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 
-import { profileSchema } from "@/lib/api/contract";
+import { connectionSettingsSchema, profileSchema } from "@/lib/api/contract";
 import { accountDisplayName, resolveIdentity } from "@/lib/api/profile";
-import { processSource } from "@/lib/sources/process";
+import type { UserIdentity } from "@/lib/pipeline/identity";
+import { renderSnapshot, type TaskSnapshot } from "@/lib/pipeline/structured";
+import { processSource, processTaskSource } from "@/lib/sources/process";
 
 import { decryptSecret, encryptSecret, parseTokenKey } from "./crypto";
 import type { IngestDeps } from "./ingest";
+import type { Backfilled, NotionTaskDeps } from "./notion/sync";
+import type { TaskItem, TaskState } from "./tasks-ingest";
 import type { Connection, Provider } from "./types";
 
 // 연결 · 토큰 · 연동 원문을 DB에 읽고 쓴다. 모두 service role 클라이언트로 부르며, 쿼리마다 user_id · connection_id로 범위를 좁힌다.
@@ -168,15 +172,7 @@ export function ingestDeps(admin: SupabaseClient): IngestDeps {
     },
 
     process: async (connection, sourceId, item) => {
-      const [{ data: profileRow }, { data: account }] = await Promise.all([
-        admin.from("profiles").select("display_name, aliases, emails").eq("user_id", connection.userId).maybeSingle(),
-        admin.auth.admin.getUserById(connection.userId),
-      ]);
-      const email = account.user?.email ?? null;
-      const identity = resolveIdentity(profileSchema.safeParse(profileRow).data ?? null, {
-        name: accountDisplayName(account.user?.user_metadata, email),
-        email,
-      });
+      const identity = await loadIdentity(admin, connection.userId);
       await processSource(admin, { id: sourceId, userId: connection.userId }, {
         text: item.text,
         kind: item.kind,
@@ -186,4 +182,171 @@ export function ingestDeps(admin: SupabaseClient): IngestDeps {
       });
     },
   };
+}
+
+/** 사용자 프로필(이름 · 별칭 · 이메일)과 계정으로 "원문 속 나"를 정한다. */
+export async function loadIdentity(admin: SupabaseClient, userId: string): Promise<UserIdentity> {
+  const [{ data: profileRow }, { data: account }] = await Promise.all([
+    admin.from("profiles").select("display_name, aliases, emails").eq("user_id", userId).maybeSingle(),
+    admin.auth.admin.getUserById(userId),
+  ]);
+  const email = account.user?.email ?? null;
+  return resolveIdentity(profileSchema.safeParse(profileRow).data ?? null, {
+    name: accountDisplayName(account.user?.user_metadata, email),
+    email,
+  });
+}
+
+/** 이보다 오래 "처리 중"인 할 일 원문은 중간에 죽은 실행으로 보고 다시 처리한다. */
+const TASK_PROCESSING_STALE_MINUTES = 10;
+/** 처리를 마치지 못한 할 일은 이 기간 안에서만 다시 처리한다. 한 번에 이만큼씩 */
+const TASK_RETRY_DAYS = 3;
+const TASK_RETRY_BATCH = 20;
+/** 상태 함수 한 번에 넘기는 항목 수 (결과 행 수 한도 1,000 아래로: 항목마다 최대 2행) */
+const TASK_STATE_CHUNK = 200;
+
+/** sources.structured (kind = task) */
+type StoredTask = { snapshot: TaskSnapshot; editedByUser: boolean };
+
+type TaskStateRow = {
+  external_id: string;
+  source_id: string;
+  external_version: string;
+  structured: StoredTask;
+  processing_status: "pending" | "processing" | "done" | "failed";
+  started_at: string;
+  linked: boolean;
+};
+
+/** 항목마다 비교 기준(마지막으로 처리를 마친 버전)과 다시 처리할 버전 */
+async function taskStates(admin: SupabaseClient, connection: Connection, externalIds: string[]): Promise<Map<string, TaskState>> {
+  const states = new Map<string, TaskState>();
+  const staleBefore = Date.now() - TASK_PROCESSING_STALE_MINUTES * 60_000;
+  for (let i = 0; i < externalIds.length; i += TASK_STATE_CHUNK) {
+    const { data } = await admin
+      .rpc("task_source_states", {
+        p_user_id: connection.userId,
+        p_connection_id: connection.id,
+        p_external_ids: externalIds.slice(i, i + TASK_STATE_CHUNK),
+      })
+      .throwOnError();
+    for (const row of (data ?? []) as TaskStateRow[]) {
+      const state = states.get(row.external_id) ?? { linked: row.linked };
+      if (row.processing_status === "done") {
+        state.done = { version: row.external_version, snapshot: row.structured.snapshot };
+      } else if (row.processing_status === "failed" || new Date(row.started_at).getTime() < staleBefore) {
+        state.retry = { sourceId: row.source_id, version: row.external_version };
+      } else {
+        state.inFlight = true;
+      }
+      states.set(row.external_id, state);
+    }
+  }
+  // 처리를 마친 버전보다 오래된 실패는 다시 처리하지 않는다 (그 뒤 버전이 이미 반영됐다).
+  for (const state of states.values()) {
+    if (state.retry && state.done && state.retry.version <= state.done.version) delete state.retry;
+  }
+  return states;
+}
+
+/** 구조화된 할 일(할 일 DB)을 원문으로 저장하고 처리한다. */
+export function taskDeps(admin: SupabaseClient): NotionTaskDeps {
+  return {
+    identity: (connection) => loadIdentity(admin, connection.userId),
+
+    taskStates: (connection, externalIds) => taskStates(admin, connection, externalIds),
+
+    pendingTasks: async (connection) => {
+      const since = new Date(Date.now() - TASK_RETRY_DAYS * 86_400_000).toISOString();
+      const { data } = await admin
+        .from("sources")
+        .select("id, external_id, external_version, structured, occurred_at, external_url")
+        .eq("user_id", connection.userId)
+        .eq("connection_id", connection.id)
+        .eq("kind", "task")
+        .neq("processing_status", "done")
+        .gte("created_at", since)
+        .order("occurred_at")
+        .limit(TASK_RETRY_BATCH)
+        .throwOnError();
+      const rows = (data ?? []) as { id: string; external_id: string; external_version: string; structured: StoredTask; occurred_at: string; external_url: string | null }[];
+      if (rows.length === 0) return [];
+      // 항목마다 다시 처리할 버전(가장 최근의 실패 · 멈춤, 처리를 마친 버전보다 새것)만 고른다.
+      const states = await taskStates(admin, connection, [...new Set(rows.map((r) => r.external_id))]);
+      return rows.flatMap((row) => {
+        const state = states.get(row.external_id);
+        if (state?.retry?.sourceId !== row.id) return [];
+        const item: TaskItem = {
+          externalId: row.external_id,
+          externalVersion: row.external_version,
+          snapshot: row.structured.snapshot,
+          editedByUser: row.structured.editedByUser,
+          lastEditedAt: new Date(row.occurred_at),
+          externalUrl: row.external_url,
+        };
+        return [{ sourceId: row.id, item, prev: state.linked ? (state.done?.snapshot ?? null) : null }];
+      });
+    },
+
+    insertTaskSource: async (connection, item) => {
+      const { data, error } = await admin
+        .from("sources")
+        .insert({
+          user_id: connection.userId,
+          connection_id: connection.id,
+          external_id: item.externalId,
+          external_version: item.externalVersion,
+          kind: "task",
+          title: item.snapshot.title,
+          raw_text: renderSnapshot(item.snapshot),
+          structured: { snapshot: item.snapshot, editedByUser: item.editedByUser } satisfies StoredTask,
+          occurred_at: item.lastEditedAt.toISOString(),
+          external_url: item.externalUrl,
+        })
+        .select("id")
+        .single();
+      if (error?.code === "23505") return null; // 동시에 같은 버전을 넣음
+      if (error) throw new Error(`원문 저장 실패: ${error.message}`);
+      return data.id as string;
+    },
+
+    processTask: async (connection, sourceId, item, prev) => {
+      await processTaskSource(
+        admin,
+        { id: sourceId, userId: connection.userId, connectionId: connection.id },
+        {
+          externalId: item.externalId,
+          snapshot: item.snapshot,
+          prev,
+          edit: { editedByUser: item.editedByUser, occurredAt: item.lastEditedAt },
+          identity: await loadIdentity(admin, connection.userId),
+        },
+      );
+    },
+  };
+}
+
+/**
+ * 할 일 DB를 처음 훑었다고 남긴다. 그 사이 사용자가 설정을 다시 확인했으면(confirmedAt이 다르면) 새 설정으로는 아직 훑지 않았으므로 남기지 않는다.
+ * 지금 값을 다시 읽어 그 항목만 고친다.
+ */
+export async function markBackfilled(admin: SupabaseClient, connection: Connection, done: Backfilled[], now = new Date()): Promise<void> {
+  if (done.length === 0) return;
+  const { data } = await admin.from("connections").select("settings").eq("id", connection.id).eq("user_id", connection.userId).single().throwOnError();
+  const settings = connectionSettingsSchema.parse(data.settings ?? {});
+  const dataSources = { ...(settings.dataSources ?? {}) };
+  let changed = false;
+  for (const { dataSourceId, confirmedAt } of done) {
+    const current = dataSources[dataSourceId];
+    if (current?.role !== "tasks" || current.confirmedAt !== confirmedAt) continue;
+    dataSources[dataSourceId] = { ...current, backfilledAt: now.toISOString() };
+    changed = true;
+  }
+  if (!changed) return;
+  await admin
+    .from("connections")
+    .update({ settings: { ...settings, dataSources } })
+    .eq("id", connection.id)
+    .eq("user_id", connection.userId)
+    .throwOnError();
 }

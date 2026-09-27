@@ -181,3 +181,26 @@ describe("사용자가 직접 고친 값", () => {
     expect(resolveField("due", [first, hearsay, confirmed])).toMatchObject({ value: "2025-09-26", needsConfirmation: false, pending: [] });
   });
 });
+
+describe("할 일 도구에서 사용자가 고친 값 (origin: tracker)", () => {
+  it("내가 기한을 늦춰도 반영된다: 대화 속 약속이었다면 규칙 0으로 막혔을 변경", () => {
+    const assigned = claim({ value: "2025-09-26", occurredAt: at("22"), speakerRole: "counterpart", channel: "task" });
+    const selfExtension = claim({ value: "2025-09-30", occurredAt: at("23"), channel: "task" });
+    expect(resolveField("due", [assigned, selfExtension])).toMatchObject({ value: "2025-09-26", risks: [{ kind: "unauthorized_change" }] });
+
+    const tracked = { ...selfExtension, origin: "tracker" as const };
+    expect(resolveField("due", [assigned, tracked])).toMatchObject({ value: "2025-09-30", reason: "사용자가 할 일 도구에서 정함", risks: [] });
+  });
+
+  it("내가 고친 제목은 확인 없이 반영된다", () => {
+    const first = claim({ field: "scope", value: "UI 시안 공유", occurredAt: at("22"), speakerRole: "counterpart", channel: "task" });
+    const renamed = claim({ field: "scope", value: "UI 레이아웃 시안 공유", occurredAt: at("23"), channel: "task", origin: "tracker" });
+    expect(resolveField("scope", [first, renamed])).toMatchObject({ value: "UI 레이아웃 시안 공유", needsConfirmation: false });
+  });
+
+  it("다른 사람이 담당을 바꾸면 여전히 확인을 받는다 (넘기는 쪽 · 받는 쪽)", () => {
+    const mine = claim({ field: "owner", value: "me", occurredAt: at("22"), speakerRole: "counterpart", channel: "task" });
+    const reassigned = claim({ field: "owner", value: "other", occurredAt: at("23"), speakerRole: "counterpart", channel: "task" });
+    expect(resolveField("owner", [mine, reassigned])).toMatchObject({ value: "me", needsConfirmation: true, pending: [reassigned.id] });
+  });
+});

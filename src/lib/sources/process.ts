@@ -2,12 +2,14 @@ import "server-only";
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 
-import { SupabaseActionStore } from "@/lib/actions/db-store";
+import { SupabaseActionStore, SupabaseTaskLinks } from "@/lib/actions/db-store";
 import { embed, embedConfigFromEnv, EmbedError } from "@/lib/ai/embed";
 import { decide, jevConfigFromEnv, JevError } from "@/lib/ai/jev";
 import { completeJson, llmConfigFromEnv, LlmError } from "@/lib/ai/llm";
 import type { ExtractInput } from "@/lib/pipeline/extract";
+import type { UserIdentity } from "@/lib/pipeline/identity";
 import { mergeJudged, type MergeDeps } from "@/lib/pipeline/merge";
+import { mergeTask, type TaskInput } from "@/lib/pipeline/merge-task";
 import { runPipeline, type PipelineDeps } from "@/lib/pipeline/run";
 import { notifyConfirmations } from "@/lib/notify/service";
 
@@ -116,6 +118,60 @@ export async function processSource(
   } catch (error) {
     // 서버 로그에는 원인을, 사용자에게는 원문 · 내부 정보가 없는 문구만 남긴다.
     console.error(`원문 처리 실패 (${sourceId}):`, error instanceof Error ? error.message : error);
+    await scoped(
+      admin.from("sources").update({ processing_status: "failed", processed_at: new Date().toISOString(), processing_error: userFacingError(error) }),
+    );
+    return { needsConfirmation: [] };
+  }
+}
+
+/**
+ * 구조화된 할 일(Notion 할 일 DB 등) 원문 하나를 처리한다. LLM 추출 · Jev 판정 없이 속성 스냅샷을 Claim으로 옮긴다.
+ * 처음 보는 할 일만 기존 Action과 매칭(임베딩 + Jev)하고, 이후 버전은 action_links로 바로 붙인다.
+ */
+export async function processTaskSource(
+  admin: SupabaseClient,
+  source: { id: string; userId: string; connectionId: string },
+  task: TaskInput & { identity: UserIdentity },
+  deps: Pick<ProcessDeps, "embed" | "decide"> = processDepsFromEnv(),
+): Promise<ProcessResult> {
+  const scoped = <T extends { eq: (column: string, value: string) => T }>(query: T) => query.eq("id", source.id).eq("user_id", source.userId);
+  // 시작 시각을 남긴다: 중간에 멈춘 처리를 가려 다시 처리한다 (connectors/tasks-ingest.ts).
+  await scoped(
+    admin.from("sources").update({ processing_status: "processing", processing_summary: { started_at: new Date().toISOString() } }),
+  ).throwOnError();
+
+  try {
+    const store = new SupabaseActionStore(admin, source.userId);
+    const links = new SupabaseTaskLinks(admin, source.userId, source.connectionId);
+    const outcome = await withUserLock(source.userId, () =>
+      mergeTask(store, links, task, { id: source.id, occurredAt: task.edit.occurredAt }, task.identity, {
+        embed: deps.embed,
+        decide: deps.decide,
+        newId: () => crypto.randomUUID(),
+      }),
+    );
+
+    await scoped(
+      admin.from("sources").update({
+        processing_status: "done",
+        processed_at: new Date().toISOString(),
+        processing_error: null,
+        processing_summary: {
+          structured: true,
+          relation: outcome.relation,
+          changes: outcome.changes,
+          edited_by_user: task.edit.editedByUser,
+        },
+      }),
+    ).throwOnError();
+    const needsConfirmation = [...store.needsConfirmation];
+    await notifyConfirmations(admin, source.userId, needsConfirmation).catch((error) =>
+      console.error("확인 요청 알림 실패:", error instanceof Error ? error.message : error),
+    );
+    return { needsConfirmation };
+  } catch (error) {
+    console.error(`할 일 처리 실패 (${source.id}):`, error instanceof Error ? error.message : error);
     await scoped(
       admin.from("sources").update({ processing_status: "failed", processed_at: new Date().toISOString(), processing_error: userFacingError(error) }),
     );

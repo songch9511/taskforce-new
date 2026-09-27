@@ -40,6 +40,7 @@ describe("초기 마이그레이션", () => {
     );
     expect(rows.map((r) => r.table_name)).toEqual([
       "action_events",
+      "action_links",
       "actions",
       "claims",
       "connection_secrets",

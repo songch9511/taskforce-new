@@ -47,6 +47,9 @@ export function mentionedUserIds(markdown: string): string[] {
   return [...new Set([...markdown.matchAll(/<mention-user\b[^>]*url="user:\/\/([^"]+)"/g)].map((m) => m[1]))];
 }
 
+/** Notion 주소만 원본 링크로 남긴다 */
+export const safeNotionUrl = (url: string) => (/^https:\/\/([a-z0-9-]+\.)*notion\.(so|site|com)\//i.test(url) ? url : null);
+
 export function isMeetingPage(markdown: string, title: string | null): boolean {
   return /<meeting-notes\b/.test(markdown) || /meeting|sync|1:1|회의|미팅|싱크/i.test(title ?? "");
 }
@@ -68,7 +71,7 @@ export function pageToItem(page: NotionPage, markdown: string, users: NotionUser
     text: (title ? `# ${title}\n\n${body}` : body).slice(0, MAX_SOURCE_TEXT),
     occurredAt: pageOccurredAt(page),
     lastEditedAt: new Date(page.last_edited_time),
-    externalUrl: /^https:\/\/([a-z0-9-]+\.)*notion\.(so|site|com)\//i.test(page.url) ? page.url : null,
+    externalUrl: safeNotionUrl(page.url),
     ...(attendees.length > 0 ? { participants: { attendees: attendees.slice(0, 200) } } : {}),
   };
 }
