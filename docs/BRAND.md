@@ -141,3 +141,56 @@ Figma의 Stress test 페이지에서 긴 글, 빠진 값, 320pt 폭, 큰 글자�
 - 가장 작은 iPhone(320×568)에서는 Review card 두 장이면 할 일 목록이 화면 밖으로 밀려난다. 그래서 카드는 한 번에 한 장만 보여 준다.
 - 한글이 단어 중간에서 줄바꿈되지 않는지 실제 기기에서 확인한다 (Figma는 글자 단위로 줄바꿈한다).
 - 출처 로고 타일은 큰 글자에서 함께 커져야 한다 (`@ScaledMetric`).
+
+## 웹사이트 (2026-09-27, 첫 안)
+
+taskforcelabs.dev 첫 화면을 한 페이지로 만든다. 메뉴는 없다. 사이트는 영어로 만든다. Figma의 Website 페이지에 데스크톱(1440)과 모바일(390) 화면이 있다.
+UI 다듬기는 보류 중이다. 제품 화면이 구현되면 다시 채운다.
+
+### 구조
+
+| # | 섹션 | 바탕 | 내용 |
+|---|---|---|---|
+| 0 | Nav | 흰색 | 로고 가로형만 |
+| 1 | Hero | 흰색 | 헤드라인 + 부제 + CTA + 요건 한 줄 + 제품 화면(유리 재질 Mac 런처와 iPhone. 모바일은 iPhone만) |
+| 2 | Context | `#F5F5F7` | 맥락 한 문단 |
+| 3 | Proof | 검정 (다크 모드) | 주장 3개. 칸마다 실제 부품을 넣는다. 그 아래 개인정보 한 줄과 Privacy 링크 |
+| 4 | CTA | 흰색 | 같은 CTA를 한 번 더 |
+| 5 | Footer | `#F5F5F7` | 마크 · © 2026 Taskforce Labs · Privacy · Contact |
+
+바탕색이 바뀌는 것이 섹션 구분이다. 구분선을 따로 긋지 않는다. Accent는 Privacy 링크 한 곳에만 쓰고, 버튼은 Ink 캡슐이다.
+
+### 문구
+
+| 자리 | 문구 |
+|---|---|
+| 헤드라인 | Never miss what you promised. |
+| 부제 | The Real AI Manager for founders and consultants in back-to-back meetings. Taskforce finds what you committed to in your meeting notes, then organizes and tracks it for you. |
+| CTA | Join the TestFlight beta |
+| 요건 | iPhone · Mac · Notion |
+| 맥락 | After a meeting, your to-dos are scattered across the notes. Connect Notion, and Taskforce reads each new meeting note, picks out only what you said you'd do, and adds it to your list with a due date. When a later meeting moves a deadline, it updates the task instead of adding a new one. Every task carries the exact line it came from. |
+| 주장 1 | Every task shows the line it came from. (Evidence 부품) |
+| 주장 2 | Changes update the task. No duplicates. (Sources group 부품) |
+| 주장 3 | Asks only when it isn't sure. (Review card 부품) |
+| 개인정보 | AI calls go only to providers that keep no data. Your data stays in Sydney, and deleting your account deletes it right away. |
+| 마지막 CTA | Start with your next meeting. |
+
+- 헤드라인과 부제를 합치면 핵심 메시지(go live 판)와 같은 내용이다. 헤드라인은 "왜 중요한가", 부제는 "누구를 위해 · 무엇을"을 맡는다.
+- "Real AI Manager"를 쓰는 자리라서, 그 근거(주장 3개)를 같은 페이지의 Proof 섹션에 둔다.
+- 요건 한 줄("iPhone · Mac · Notion")은 캡션을 줄이는 원칙의 예외다. go live 때 원문은 Notion으로만 들어오므로, Notion이 없는 사람이 설치했다가 빈 화면을 보는 일을 막는다.
+- 연동이 늘면 부제와 맥락의 "meeting notes"를 함께 넓힌다(위 [지금 쓰는 판](#지금-쓰는-판-go-live-2026-09-27) 규칙).
+- 개인정보 한 줄은 개인정보 처리방침에 이미 적은 약속만 쓴다. 방침이 바뀌면 이 줄도 고친다.
+
+### CTA와 측정
+
+- 동작은 하나다: TestFlight 공개 링크.
+- 대기 명단(이메일 받기)은 쓰지 않는다. 개인정보 처리방침에 없는 수집이라서다.
+- 사이트에는 분석 도구와 쿠키를 넣지 않는다(개인정보 처리방침의 약속). 유입은 App Store Connect의 공개 링크 설치 수로 본다.
+
+### 공개 전에 할 일
+
+- 사이트는 go live와 같은 날 연다. 앱에서 Notion 연결과 서버 배포가 끝나기 전에 CTA를 열면, 설치한 사람이 원문을 넣을 방법이 없다([GO_LIVE.md](GO_LIVE.md) 1 · 2장).
+- TestFlight 외부 테스트 심사를 통과해 공개 링크를 받는다.
+- Contact 주소를 정한다. 지금 확인된 주소는 `privacy@taskforcelabs.dev`뿐이다.
+- 제품 화면을 실제 앱 스크린샷으로 바꾼다. 지금은 Figma 부품으로 만든 목업이다.
+- 신뢰 요소(초기 성과, 만드는 과정)는 제품을 만든 뒤 다시 정한다. 그때 실제 회의로 돌린 평가 수치를 쓴다.
