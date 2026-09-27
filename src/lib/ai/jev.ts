@@ -74,7 +74,13 @@ export async function decide(
       signal: AbortSignal.timeout(config.timeoutMs ?? JEV_TIMEOUT_MS),
       method: "POST",
       headers: { Authorization: `Bearer ${config.apiKey}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ model: config.model, state: request.state, questions: request.questions }),
+      // 원문을 저장 · 학습에 쓰지 않는(ZDR) 공급자에게만 보낸다 (llm.ts · embed.ts와 같은 조건).
+      body: JSON.stringify({
+        model: config.model,
+        state: request.state,
+        questions: request.questions,
+        provider: { data_collection: "deny", zdr: true },
+      }),
     });
 
   // 판정은 보통 1~2초지만 가끔 멈춘다. 시간 초과는 한 번만 다시 묻는다.

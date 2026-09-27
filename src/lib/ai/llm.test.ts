@@ -32,7 +32,7 @@ describe("completeJson", () => {
       model: "test/model",
       max_tokens: 8192,
       response_format: { type: "json_schema", json_schema: { name: "t", strict: true } },
-      provider: { require_parameters: true, data_collection: "deny" },
+      provider: { require_parameters: true, data_collection: "deny", zdr: true },
     });
     expect(c.bodies[0]).not.toHaveProperty("temperature");
   });

@@ -22,7 +22,7 @@ describe("embed", () => {
     const c = config({ data: [{ index: 1, embedding: vec(2) }, { index: 0, embedding: vec(1) }] });
     const { vectors } = await embed(c, ["a", "b"]);
     expect(vectors.map((v) => v[0])).toEqual([1, 2]);
-    expect(c.sent[0]).toMatchObject({ model: "m", input: ["a", "b"], provider: { data_collection: "deny" } });
+    expect(c.sent[0]).toMatchObject({ model: "m", input: ["a", "b"], provider: { data_collection: "deny", zdr: true } });
   });
 
   it("차원이 다르면 오류", async () => {

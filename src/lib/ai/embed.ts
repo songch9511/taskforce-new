@@ -32,7 +32,7 @@ export async function embed(config: EmbedConfig, texts: string[]): Promise<{ vec
     signal: AbortSignal.timeout(config.timeoutMs ?? 30_000),
     method: "POST",
     headers: { Authorization: `Bearer ${config.apiKey}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ model: config.model, input: texts, provider: { data_collection: "deny" } }),
+    body: JSON.stringify({ model: config.model, input: texts, provider: { data_collection: "deny", zdr: true } }),
   });
   if (!response.ok) throw new EmbedError(`임베딩 요청 실패 (${response.status})`);
 

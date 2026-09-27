@@ -22,7 +22,12 @@ describe("decide", () => {
     const c = config({ model: "typesafe/jev-1.13-x", answers: { ok: { type: "noul", noul: 0.7 } } });
     const result = await decide(c, { state: { a: 1 }, questions });
     expect(result.answers.ok).toEqual({ type: "noul", noul: 0.7 });
-    expect(JSON.parse(c.requests[0].body as string)).toEqual({ model: "typesafe/jev-1.13", state: { a: 1 }, questions });
+    expect(JSON.parse(c.requests[0].body as string)).toEqual({
+      model: "typesafe/jev-1.13",
+      state: { a: 1 },
+      questions,
+      provider: { data_collection: "deny", zdr: true },
+    });
     expect((c.requests[0].headers as Record<string, string>).Authorization).toBe("Bearer key");
   });
 

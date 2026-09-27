@@ -116,8 +116,8 @@ async function completeJsonOnce<T extends z.ZodType>(
           type: "json_schema",
           json_schema: { name: request.schemaName, strict: true, schema: z.toJSONSchema(request.schema) },
         },
-        // 구조화 출력을 지원하고, 사용자 원문을 저장 · 학습에 쓰지 않는 공급자에게만 보낸다.
-        provider: { require_parameters: true, data_collection: "deny" },
+        // 구조화 출력을 지원하고, 사용자 원문을 저장 · 학습에 쓰지 않는(ZDR) 공급자에게만 보낸다.
+        provider: { require_parameters: true, data_collection: "deny", zdr: true },
       }),
     });
   } catch (error) {
