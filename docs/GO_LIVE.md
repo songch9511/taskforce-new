@@ -1,6 +1,7 @@
 # 베타 go live: 남은 일
 
 관련 문서: [연동](INTEGRATIONS.md) · [플랫폼](PLATFORMS.md) · [바이브코딩 플랜](VIBE_CODING_PLAN.md) · [PRD](PRD.md)
+관련 문서 (go live 준비): [런북 · 체크리스트](go-live/runbook.md) · [Google 심사](go-live/google-verification.md) · [Slack 앱](go-live/slack-app.md) · [App Store](go-live/app-store.md) · [처리방침 · 약관](legal/README.md)
 
 작성: 2026-09-27. 브랜드 스코핑(문구 · 개인정보 처리방침 · 아이콘 · 강조색)을 마친 뒤, 외부 테스터를 받기 전에 남은 일을 정리한다.
 
@@ -175,3 +176,18 @@ Calendar · Gmail · Meet 전사를 **Google 연결 한 번**으로 받는다. �
 - 누르면 `metric_events`에 서비스 이름과 함께 남긴다(새 이벤트 종류, 예: `connection_requested`). 한 사람이 같은 서비스를 여러 번 눌러도 한 번으로 센다.
 - `/admin/metrics`에 서비스별 요청 수를 보이고, 2단계 연동은 이 순서대로 붙인다.
 - 원해요를 누른 사람에게 따로 연락하지 않는다(처리방침에 없는 연락이다). 연동이 붙으면 앱 안에서 알린다.
+
+## 9. go live 준비 문서 (2026-09-27)
+
+이 문서의 할 일을 실제로 하는 방법과 값은 아래에 있다. 무엇이 남았는지는 런북의 **GO LIVE 체크리스트**(담당: 사용자 / 코드, 끝난 기준, 먼저 필요한 것)를 기준으로 본다.
+
+| 문서 | 내용 |
+|---|---|
+| [go-live/runbook.md](go-live/runbook.md) | 서버 배포(Vercel Pro · `api.taskforcelabs.dev`), 환경변수 전체, 서비스별 redirect 주소, Supabase Auth · 마이그레이션, cron · 웹사이트 배포, **GO LIVE 체크리스트** |
+| [go-live/google-verification.md](go-live/google-verification.md) | Google 프로젝트 둘(Calendar · Meet 정식 / Gmail 테스트 → 제한 심사 + CASA), 동의 화면 값, 범위별 필요성 문안, 시연 영상 대본, 심사 fixture, CASA 준비 |
+| [go-live/slack-app.md](go-live/slack-app.md) | Slack 앱 매니페스트(사용자 토큰 + Events API), 권한을 고른 이유, 공개 배포, 2025-05 속도 제한, Slack 약관 · 보관 검토 |
+| [go-live/app-store.md](go-live/app-store.md) | TestFlight 외부 테스트 정보, 심사 메모와 데모 계정, 개인정보 라벨, 외부 AI 동의 화면(5.1.2(i)), 계정 삭제 · Sign in with Apple 토큰 폐기 |
+| [legal/README.md](legal/README.md) | 처리방침 · 약관 원본과 게시 규칙, 구현 대조표, 결정할 것, 법률 검토 항목 |
+| [legal/privacy.ko.md](legal/privacy.ko.md) · [privacy.en.md](legal/privacy.en.md) | 개인정보 처리방침 (1단계 연동 기준) |
+| [legal/terms.ko.md](legal/terms.ko.md) · [terms.en.md](legal/terms.en.md) | 이용약관 (베타) |
+| [legal/connector-addenda.md](legal/connector-addenda.md) | 2단계 연동을 붙일 때 처리방침에 넣을 절 |
