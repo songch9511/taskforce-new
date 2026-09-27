@@ -190,7 +190,7 @@ actions 행은 Claim에서 `resolveAction`으로 다시 계산한 캐시이고(`
 
 ## Phase 6 — 연동 (Notion 먼저 진행 중)
 
-순서: **Notion ✅** → Phase 2 매칭 → Gmail(+Calendar) → GitHub → Slack. 설계와 설정 방법은 [`INTEGRATIONS.md`](INTEGRATIONS.md).
+1단계(go live 조건): **Notion ✅** · Slack · Google(Calendar · Gmail · Meet 전사). 2단계(수요 순서): Microsoft 365 · Zoom · GitHub · Linear · Jira. 정의는 [`GO_LIVE.md`](GO_LIVE.md), 설계와 설정 방법은 [`INTEGRATIONS.md`](INTEGRATIONS.md).
 사용자는 원문을 직접 넣지 않으므로, 엔진이 어느 정도 검증된 뒤(Phase 1) 계획보다 앞당겼다.
 각 연동은 "Source를 만들어 파이프라인에 넣는 어댑터"일 뿐이어야 한다. 파이프라인은 건드리지 않는다.
 

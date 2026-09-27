@@ -11,11 +11,9 @@
 
 ### 지금 쓰는 판 (go live, 2026-09-27)
 
-위 문장은 연동이 모두 붙은 완성형이다. go live 때 자동으로 들어오는 원문은 Notion 회의록뿐이라, 지금은 지킬 수 있는 범위로 줄인 판을 쓴다.
+go live 조건이 1단계 연동(Notion · Google · Slack)으로 바뀌어(2026-09-27, [GO_LIVE.md](GO_LIVE.md) "go live의 정의"), go live 때부터 회의록 · 메시지 · 메일이 모두 들어온다. 그래서 **위 완성형 문장을 그대로 쓴다.** 줄인 판("회의록에서")은 쓰지 않는다.
 
-> Taskforce는 Real AI Manager로서 회의록에서 내가 맡은 일을 찾아 알아서 정리하고 관리해주는 앱으로, 미팅이 많은 창업자와 컨설턴트가 직접 관리하지 않아도 약속한 일을 놓치지 않게 해 줍니다.
-
-연동이 붙을 때마다 넓힌다: Slack이 붙으면 "회의록·메시지에서", Gmail이 붙으면 "회의록·메시지·메일에서"로 바꾼다 ([GO_LIVE.md](GO_LIVE.md) 5장).
+go live 전에 1단계 중 하나라도 빠지면, 빠진 원문 종류를 문장에서 덜어낸다(새 약속을 더하지 않는다는 규칙과 같다).
 
 ### 이름표: 자리에 따라 둘을 나눠 쓴다
 
@@ -47,7 +45,7 @@ App Store 설명에는 "Real"을 쓰지 않는다. 확인할 수 없는 비교 �
 | 쓰지 않는 표현 | 이유 |
 |---|---|
 | 할 일을 "실행해 준다", "대신 처리한다" | 앱은 실행하지 않는다. "AI에게 넘기기"는 맥락을 묶어 줄 뿐이다 |
-| 아직 붙지 않은 원문을 "자동으로 가져온다" | 원문은 자동 연동으로 받는다 ([GO_LIVE.md](GO_LIVE.md)). 다만 go live 때 자동으로 들어오는 것은 Notion 회의록뿐이다. 메시지는 Slack, 메일은 Gmail 연동이 붙은 뒤에 말한다. 공유 시트 · 붙여넣기는 보류라 안내하지 않는다 |
+| 아직 붙지 않은 원문을 "자동으로 가져온다" | 원문은 자동 연동으로 받는다 ([GO_LIVE.md](GO_LIVE.md)). go live 때 자동으로 들어오는 것은 1단계 연동(Notion 회의록 · Slack 메시지 · Gmail 메일 · Google 일정 · Meet 전사)이다. 2단계 연동(Microsoft 365 · Zoom · GitHub · Linear · Jira)은 붙기 전에 말하지 않는다. 공유 시트 · 붙여넣기는 보류라 안내하지 않는다 |
 | 다맥락, Action, Claim, Evidence, 추출 | 내부 용어다. 사용자에게는 "맡은 일", "약속", "원문"으로 말한다 |
 | Real AI "Manger" | 오타. "manger"는 구유라는 뜻이다. 항상 "Manager"로 쓴다 |
 
@@ -56,7 +54,7 @@ App Store 설명에는 "Real"을 쓰지 않는다. 확인할 수 없는 비교 �
 "Real AI Manager"는 다른 AI 도구와 비교하는 주장이라 근거와 함께 써야 한다. 지금 제품으로 보여줄 수 있는 근거:
 
 - 모든 할 일에 원문 인용이 붙는다 (제품 원칙 2).
-- 기한·범위가 바뀐 원문이 오면 새 할 일을 만들지 않고 기존 것을 갱신한다 (핵심 시나리오 2). go live 때는 다음 회의록으로 보여준다. 메시지로 바뀌는 장면은 Slack 연동 뒤에 쓴다.
+- 기한·범위가 바뀐 원문이 오면 새 할 일을 만들지 않고 기존 것을 갱신한다 (핵심 시나리오 2). go live 때부터 Slack 메시지로 기한이 바뀌는 장면(PRD 핵심 시나리오 2)을 그대로 보여 줄 수 있다.
 - 불확실한 담당·기한만 묻고, 확실한 건 조용히 반영한다 (제품 원칙 3).
 
 ## 비주얼 키트 (2026-09-27)
@@ -165,9 +163,9 @@ UI 다듬기는 보류 중이다. 제품 화면이 구현되면 다시 채운다
 | 자리 | 문구 |
 |---|---|
 | 헤드라인 | Never miss what you promised. |
-| 부제 | The Real AI Manager for founders and consultants in back-to-back meetings. Taskforce finds what you committed to in your meeting notes, then organizes and tracks it for you. |
+| 부제 | The Real AI Manager for founders and consultants in back-to-back meetings. Taskforce finds what you committed to in your meeting notes, Slack, and email, then organizes and tracks it for you. |
 | CTA | Join the TestFlight beta |
-| 요건 | iPhone · Mac · Notion |
+| 요건 | iPhone · Mac + Notion · Google · Slack 로고 |
 | 맥락 | After a meeting, your to-dos are scattered across the notes. Connect Notion, and Taskforce reads each new meeting note, picks out only what you said you'd do, and adds it to your list with a due date. When a later meeting moves a deadline, it updates the task instead of adding a new one. Every task carries the exact line it came from. |
 | 주장 1 | Every task shows the line it came from. (Evidence 부품) |
 | 주장 2 | Changes update the task. No duplicates. (Sources group 부품) |
@@ -177,7 +175,8 @@ UI 다듬기는 보류 중이다. 제품 화면이 구현되면 다시 채운다
 
 - 헤드라인과 부제를 합치면 핵심 메시지(go live 판)와 같은 내용이다. 헤드라인은 "왜 중요한가", 부제는 "누구를 위해 · 무엇을"을 맡는다.
 - "Real AI Manager"를 쓰는 자리라서, 그 근거(주장 3개)를 같은 페이지의 Proof 섹션에 둔다.
-- 요건 한 줄("iPhone · Mac · Notion")은 캡션을 줄이는 원칙의 예외다. go live 때 원문은 Notion으로만 들어오므로, Notion이 없는 사람이 설치했다가 빈 화면을 보는 일을 막는다.
+- 요건 한 줄은 캡션을 줄이는 원칙의 예외다. 1단계 연동(Notion · Google · Slack)을 하나도 쓰지 않는 사람이 설치했다가 빈 화면을 보는 일을 막는다. 서비스는 로고로 보여 준다(UI 문구 규칙).
+- **맥락 문단은 아직 Notion 기준이다.** go live 전에 회의록 · Slack · 메일을 아우르도록 다시 쓴다(카피 작업).
 - 연동이 늘면 부제와 맥락의 "meeting notes"를 함께 넓힌다(위 [지금 쓰는 판](#지금-쓰는-판-go-live-2026-09-27) 규칙).
 - 개인정보 한 줄은 개인정보 처리방침에 이미 적은 약속만 쓴다. 방침이 바뀌면 이 줄도 고친다.
 

@@ -32,10 +32,9 @@
 - 상세는 [`PLATFORMS.md`](PLATFORMS.md).
 
 ### MVP (베타)
-- 원문 입력 (외부 서비스 연동 없이)
-  - iOS: 공유 시트로 보내기
-  - macOS: 메뉴 막대 앱 · 단축키로 클립보드 보내기 · 공유 메뉴
-  - 붙여넣기 / 파일 업로드
+- 원문 입력: 자동 연동 (앱의 연결 화면에서 사용자가 직접 연결, [GO_LIVE.md](GO_LIVE.md))
+  - 1단계 (go live 조건): Notion, Google(Calendar · Gmail · Meet 전사), Slack
+  - 2단계 자리: Microsoft 365 · Zoom · GitHub · Linear · Jira는 연결 화면에 보이고 "원해요"로 수요를 모은다
 - Action 추출 + 기존 Action과 매칭(신규·갱신·중복·완료)
 - 확인 큐 (담당·기한 불확실 항목)
 - "지금 할 일" 뷰 + Action 상세(근거·변경 이력)
@@ -47,7 +46,8 @@
 
 ### 이후
 - iOS 위젯 · 잠금화면 위젯, Siri · 단축어 (App Intents)
-- 연동: Gmail, Google Calendar/회의록(Notion·Google Meet 등), Slack
+- 2단계 연동: "원해요" 요청이 많은 순서대로
+- 공유 시트 · 붙여넣기: 자동 연동이 안 되는 카카오톡용 보조 입구로만 검토 ([GO_LIVE.md](GO_LIVE.md) 7장)
 - MCP 서버: Claude 등 AI 도구가 내 Action과 맥락을 직접 조회
 - 완료 자동 감지 (예: "보냈습니다" 메일 → 완료 처리)
 

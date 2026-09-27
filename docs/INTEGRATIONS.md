@@ -287,11 +287,14 @@ type DataSourceSetting = {
 
 ## 다음 연동
 
-순서(2026-09-27 조정): **Slack** → Google Calendar → Gmail → Meet 전사(선택) → GitHub. Apple 입력(공유 시트 · 단축어 · 미리 알림)은 Apple 트랙에서 한다.
+두 단계로 나눈다(2026-09-27 확정, [GO_LIVE.md](GO_LIVE.md) "go live의 정의").
 
-- **Slack 먼저**: 회의 뒤의 "제가 할게요 · 월요일에 받아도 돼요"(PRD 핵심 시나리오 2의 기한 변경)가 오가는 곳이다. 팀 문화도 Slack에서 서로 챙긴다.
-- **Calendar 다음**: 읽기 권한이 가볍고, 회의 참석자와 "같은 회의"를 잇는 열쇠를 준다(Notion 회의록에는 참석자가 없다).
-- **Gmail은 그 뒤**: 메일 읽기는 Google 제한 범위라 심사 부담이 크다. 외부 고객과의 약속이 많아지면 올린다.
+- **1단계 = go live 조건**: **Slack** · **Google**(Calendar · Gmail · Meet 전사를 연결 한 번으로). Notion과 함께 회의 → 메시지 → 메일을 모두 덮는다.
+  - Slack: 회의 뒤의 "제가 할게요 · 월요일에 받아도 돼요"(PRD 핵심 시나리오 2의 기한 변경)가 오가는 곳이다. 팀 문화도 Slack에서 서로 챙긴다.
+  - Calendar: 읽기 권한이 가볍고, 회의 참석자와 "같은 회의"를 잇는 열쇠를 준다(Notion 회의록에는 참석자가 없다).
+  - Gmail: 메일 읽기는 Google 제한 범위라 심사 부담이 크다. 심사 · 테스트 상태의 제약은 [GO_LIVE.md](GO_LIVE.md) 6장.
+- **2단계 = 수요 순서**: Microsoft 365(Outlook · 일정 · Teams) · Zoom · GitHub · Linear · Jira. 연결 화면의 "원해요" 수로 순서를 정한다.
+- Apple 입력(공유 시트 · 단축어 · 미리 알림)은 보류다(카카오톡 보조 입구로만 검토).
 
 | 서비스 | 가져올 것 | 주의 |
 |---|---|---|
