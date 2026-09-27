@@ -80,7 +80,7 @@ export default async function LabPage({ searchParams }: { searchParams: Promise<
 
   const { data: connections } = await supabase
     .from("connections")
-    .select("id, provider, display_name, status, last_synced_at, last_error")
+    .select("id, provider, display_name, status, last_synced_at, last_error, settings")
     .order("created_at")
     .returns<ConnectionRow[]>();
 

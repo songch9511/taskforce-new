@@ -5,7 +5,7 @@ import { connectionSettingsSchema, type DataSourceSetting, type DataSourceSummar
 
 import { dataSourceTitle, NotionError, type NotionDataSource } from "./api";
 import { withNotionClient } from "./run";
-import { defaultStatusMap, suggestSetting, validateSetting, type SaveDataSourceRequest } from "./tasks";
+import { defaultStatusMap, isMeetingSource, suggestSetting, validateSetting, type SaveDataSourceRequest } from "./tasks";
 
 // 연결에 공유된 Notion 데이터베이스의 역할(할 일 · 회의 · 무시)과 속성 매핑을 보여주고 확인받는다.
 // 추정은 제안일 뿐이고, 사용자가 확인한 설정만 동기화에 쓴다 (docs/INTEGRATIONS.md "Notion 할 일 DB").
@@ -45,7 +45,7 @@ function summarize(ds: NotionDataSource, saved: DataSourceSetting | undefined): 
   return {
     id: ds.id,
     title: dataSourceTitle(ds),
-    setting: saved ?? suggestSetting(ds),
+    setting: saved?.confirmedAt ? saved : { ...suggestSetting(ds), ...(saved?.seenAt ? { seenAt: saved.seenAt } : {}) },
     confirmed: Boolean(saved?.confirmedAt),
     reachable: true,
     properties,
@@ -67,7 +67,7 @@ function canonical(value: unknown): string {
 
 /** 공유되지 않았거나 없는 데이터베이스만 null. 권한 끊김 · 네트워크 오류는 그대로 올린다. */
 const notFoundAsNull = (error: unknown) => {
-  if (error instanceof NotionError && (error.status === 404 || error.status === 400)) return null;
+  if (error instanceof NotionError && (error.status === 404 || error.status === 400 || error.status === 403)) return null;
   throw error;
 };
 
@@ -152,4 +152,28 @@ export async function saveDataSource(
     .eq("user_id", userId)
     .throwOnError();
   return summarize(ds, setting);
+}
+
+/** 연결 직후 점검 결과: 읽을 수 있는 것이 없음 / 회의록 DB가 안 보임 / 괜찮음 */
+export type NotionCoverage = "empty" | "no_meetings" | "ok";
+
+/**
+ * 연결(다시 연결 포함) 직후: 이 토큰으로 무엇을 읽을 수 있는지 점검한다.
+ * - 다시 연결할 때 선택 화면에서 아무것도 고르지 않고 끝내면, 전에 읽던 것까지 모두 끊긴다 (2026-09-27 실제로 겪음).
+ * - 핵심 원문인 회의록 DB가 안 보이면 알려준다 (팀스페이스 맨 위 DB · 링크된 보기는 따로 골라야 한다).
+ * 검색은 방금 공유한 것을 늦게 보여주기도 하므로, 전에 설정해 둔 DB는 직접 읽어 본다.
+ */
+export async function notionCoverage(admin: SupabaseClient, userId: string, connectionId: string): Promise<NotionCoverage> {
+  const settings = await loadSettings(admin, userId, connectionId);
+  return withNotionClient(admin, connectionId, async (client) => {
+    const readable = [...(await client.searchDataSources())];
+    for (const [id, setting] of Object.entries(settings.dataSources ?? {})) {
+      if (setting.role === "ignore" || readable.some((ds) => ds.id === id)) continue;
+      const ds = await client.dataSource(id).catch(notFoundAsNull);
+      if (ds) readable.push(ds);
+    }
+    if (readable.length === 0 && (await client.searchPages()).pages.length === 0) return "empty";
+    const meetingIds = new Set(Object.entries(settings.dataSources ?? {}).filter(([, s]) => s.confirmedAt && s.role === "text").map(([id]) => id));
+    return readable.some((ds) => isMeetingSource(ds) || meetingIds.has(ds.id)) ? "ok" : "no_meetings";
+  });
 }

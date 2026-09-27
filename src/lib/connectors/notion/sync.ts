@@ -5,9 +5,11 @@ import { DEFAULT_INGEST_OPTIONS, ingestItems, type IngestDeps, type IngestResult
 import { DEFAULT_TASK_INGEST, ingestTaskItems, type TaskIngestDeps, type TaskIngestResult, type TaskItem } from "../tasks-ingest";
 import type { Connection, IngestItem } from "../types";
 
-import type { NotionClient, NotionPage, NotionUser } from "./api";
+import { kstDate } from "@/lib/ai/prompts/extract";
+
+import { dataSourceTitle, NotionError, type NotionClient, type NotionPage, type NotionUser } from "./api";
 import { mentionedUserIds, pagePeople, pageToItem, safeNotionUrl } from "./map";
-import { isActiveTaskSource, isIgnoredSource, openTasksFilter, pageSnapshot, toPerson } from "./tasks";
+import { isActiveTaskSource, isIgnoredSource, openTasksFilter, pageSnapshot, suggestSetting, toPerson } from "./tasks";
 
 // Notion 연결 하나를 동기화한다: 연결에 공유된 페이지 중 커서 이후에 고친 것을 찾아 원문으로 넣는다.
 // 본문(markdown)을 받기 전에 "안정됐는지 · 이미 넣었는지"를 먼저 걸러 Notion 요청 수를 아낀다.
@@ -17,6 +19,12 @@ export type NotionTaskDeps = TaskIngestDeps & { identity: (connection: Connectio
 
 /** 할 일 DB를 처음 켤 때 한 번에 훑는 최대 쪽 수 (한 쪽 100개). 다 못 훑으면 다음 동기화에서 처음부터 다시 훑는다 */
 const BACKFILL_MAX_PAGES = 20;
+/** 처음 켤 때 가져오는 열린 할 일: 이 기간 안에 고친 것만 (그보다 오래 손대지 않은 일은 방치된 것일 때가 많다) */
+const BACKFILL_EDITED_WITHIN_DAYS = 60;
+
+/** 처음 본 DB (저장된 설정 없음): 공유가 나중에 끊기면 알아차리도록 연결 설정에 남긴다 */
+export type SeenDataSource = { id: string; title: string | null; role: DataSourceSetting["role"] };
+export type UnreachableDataSource = { id: string; title: string | null };
 
 /** 처음 훑기를 마친 할 일 DB와, 그때 쓴 설정의 확인 시각 (그 사이 사용자가 설정을 바꿨으면 표시하지 않는다) */
 export type Backfilled = { dataSourceId: string; confirmedAt: string };
@@ -44,6 +52,12 @@ export type NotionSyncResult = IngestResult & {
   tasks?: TaskIngestResult;
   /** 이번에 처음 훑기를 마친 할 일 DB (연결 설정에 backfilledAt을 남긴다) */
   backfilled: Backfilled[];
+  /** 이번에 처음 본 DB (공유된 DB 중 설정이 없는 것) */
+  seen: SeenDataSource[];
+  /** 새로 공유된 · 공유가 되돌아온 DB가 있어 최근 기간을 다시 훑었는가 */
+  rewound: boolean;
+  /** 전에 읽던(설정이 있는) DB 중 지금 읽을 수 없는 것: Notion에서 공유가 빠졌다. 이번에 끝까지 확인하지 못했으면 null(지난 결과를 둔다) */
+  unreachable: UnreachableDataSource[] | null;
 };
 
 export async function syncNotion(
@@ -52,15 +66,35 @@ export async function syncNotion(
   ingest: IngestDeps & { tasks?: NotionTaskDeps },
   options: NotionSyncOptions,
 ): Promise<NotionSyncResult> {
-  const dataSources = connectionSettingsSchema.safeParse(connection.settings).data?.dataSources ?? {};
+  const settings = connectionSettingsSchema.safeParse(connection.settings).data;
+  const dataSources = settings?.dataSources ?? {};
   const settingOf = (page: NotionPage) => (page.parent.data_source_id ? dataSources[page.parent.data_source_id] : undefined);
   const taskSettingOf = (page: NotionPage) => {
     const setting = settingOf(page);
     return isActiveTaskSource(setting) ? setting : undefined;
   };
 
+  // 공유된 DB 목록: 처음 보는 DB를 남기고(나중에 공유가 끊기면 알아차리려고), 전에 읽던 DB가 빠졌는지 본다.
+  // 이 확인이 실패해도(속도 제한 등) 동기화는 계속한다.
+  const visible = await client
+    .searchDataSources()
+    .then((list) => new Map(list.map((ds) => [ds.id, ds])))
+    .catch((error) => {
+      console.error("Notion 데이터베이스 목록 실패:", error instanceof Error ? error.message : error);
+      return null;
+    });
+  const seen: SeenDataSource[] = [...(visible?.values() ?? [])]
+    .filter((ds) => !dataSources[ds.id])
+    .map((ds) => ({ id: ds.id, title: dataSourceTitle(ds), role: suggestSetting(ds).role }));
+  const recovered = (settings?.health?.unreachable ?? []).some((d) => visible?.has(d.id));
+
   const cursor = connection.syncCursor as NotionCursor | null;
-  const after = cursor?.after ? new Date(cursor.after) : new Date(options.now.getTime() - options.lookbackDays * 86_400_000);
+  const lookback = new Date(options.now.getTime() - options.lookbackDays * 86_400_000);
+  let after = cursor?.after ? new Date(cursor.after) : lookback;
+  // 새로 공유됐거나 공유가 되돌아온 DB가 있으면 이번만 최근 기간을 다시 훑는다: 공유되지 않은 동안에도 커서는 지나갔으므로
+  // 그 사이 고친 페이지(예: 끊겨 있던 동안의 회의록)를 놓치지 않게. 이미 넣은 페이지는 ingestedIds로 걸러진다.
+  const rewound = (seen.length > 0 || recovered) && after > lookback;
+  if (rewound) after = lookback;
   const settledBefore = options.now.getTime() - options.settleMinutes * 60_000;
 
   // 1) 최근 수정순으로 훑다가 커서보다 오래된 페이지가 나오면 멈춘다.
@@ -77,8 +111,12 @@ export async function syncNotion(
   } while (next);
 
   const taskPages = ingest.tasks ? scanned.filter((p) => taskSettingOf(p)) : [];
-  // "가져오지 않음"으로 확인한 DB의 페이지는 건너뛴다.
+
+  // "가져오지 않음"으로 확인한 DB의 페이지는 건너뛴다. 확인 전 DB는 글 원문으로 읽는다
+  // (보류하면 이름으로 회의록 DB를 못 알아본 경우 핵심 원문이 조용히 끊기고, 커서가 지나가 되살릴 수 없다).
   const textPages = scanned.filter((p) => !taskPages.includes(p) && !isIgnoredSource(settingOf(p)));
+
+
 
   // 2) 막 고친 페이지는 다음에, 이미 넣은 페이지는 건너뛴다. 오래된 것부터 상한만큼.
   const settling = textPages.filter((p) => new Date(p.last_edited_time).getTime() > settledBefore);
@@ -129,15 +167,41 @@ export async function syncNotion(
   const oldestDeferred = deferred.reduce<string | null>((min, p) => (min === null || p.last_edited_time < min ? p.last_edited_time : min), null);
   const nextAfter = oldestDeferred ? new Date(new Date(oldestDeferred).getTime() - 1).toISOString() : newest;
 
+  // 5) 전에 읽던 DB 중 지금 읽을 수 없는 것 (가져오지 않음으로 둔 것은 빼고).
+  //    끝까지 확인하지 못했으면(시간 한도 · 일시적인 오류) null: 경고가 깜빡이지 않게 지난 결과를 둔다.
+  let unreachable: UnreachableDataSource[] | null = visible ? [] : null;
+  for (const [id, setting] of Object.entries(dataSources)) {
+    if (!unreachable || !visible) break;
+    if (setting.role === "ignore" || visible.has(id)) continue;
+    if (options.deadline && Date.now() > options.deadline) {
+      unreachable = null;
+      break;
+    }
+    const ds = await client.dataSource(id).catch(unshared);
+    if (ds === undefined) unreachable = null;
+    else if (ds === null) unreachable.push({ id, title: setting.title });
+  }
+
   return {
     ...result,
     created: [...result.created, ...(taskRun.result?.created ?? [])],
     tasks: taskRun.result,
     backfilled: taskRun.backfilled,
+    seen,
+    rewound,
+    unreachable,
     skipped: { ...result.skipped, settling: settling.length, overLimit: fresh.length - chosen.length, alreadyIngested: result.skipped.alreadyIngested + already.size },
     scanned: scanned.length,
     cursor: { after: nextAfter < after.toISOString() ? after.toISOString() : nextAfter },
   };
+}
+
+/** 공유되지 않았거나 없는 DB는 null, 그 밖의 오류(속도 제한 · 서버 오류)는 undefined(이번엔 모름). 권한 끊김(401)은 그대로 올린다. */
+function unshared(error: unknown): null | undefined {
+  if (error instanceof NotionError && error.status === 401) throw error;
+  if (error instanceof NotionError && (error.status === 404 || error.status === 400 || error.status === 403)) return null;
+  console.error("Notion 데이터베이스 확인 실패:", error instanceof Error ? error.message : error);
+  return undefined;
 }
 
 /**
@@ -163,8 +227,9 @@ async function syncTasks(
     if (!isActiveTaskSource(setting) || setting.backfilledAt) continue;
     if (options.deadline && Date.now() > options.deadline) break;
     try {
-      // 열린 할 일만 받는다: 처음 보는 할 일은 열린 것만 넣는다.
-      const filter = openTasksFilter(setting, await client.dataSource(id));
+      // 열린 할 일만 받는다: 처음 보는 할 일은 열린 것만 넣는다. 오래 손대지 않은 것은 빼고.
+      const editedSince = new Date(options.now.getTime() - BACKFILL_EDITED_WITHIN_DAYS * 86_400_000);
+      const filter = openTasksFilter(setting, await client.dataSource(id), { editedSince, today: kstDate(options.now).iso });
       let cursor: string | undefined;
       let exhausted = false;
       for (let n = 0; n < BACKFILL_MAX_PAGES; n++) {

@@ -4,7 +4,7 @@ import type { IngestDeps } from "../ingest";
 import type { TaskItem } from "../tasks-ingest";
 import type { Connection } from "../types";
 
-import { NotionError, type NotionClient, type NotionPage } from "./api";
+import { NotionError, type NotionClient, type NotionDataSource, type NotionPage } from "./api";
 import { syncNotion, type NotionTaskDeps } from "./sync";
 
 const now = new Date("2026-09-25T12:00:00.000Z");
@@ -23,7 +23,11 @@ const page = (id: string, editedMinutesAgo: number, extra: Partial<NotionPage> =
 
 const MD = "<meeting-notes><summary>\n- [ ] 태오: 금요일까지 도면 역설계 결과 공유\n</summary></meeting-notes>";
 
-function fakeClient(pages: NotionPage[][], dataSourcePages: NotionPage[] = [], options: { dataSourceFails?: boolean } = {}) {
+function fakeClient(
+  pages: NotionPage[][],
+  dataSourcePages: NotionPage[] = [],
+  options: { dataSourceFails?: boolean; visible?: NotionDataSource[]; unshared?: string[] } = {},
+) {
   const markdownCalls: string[] = [];
   const queryCalls: { id: string; filter: unknown }[] = [];
   const client: NotionClient = {
@@ -36,9 +40,9 @@ function fakeClient(pages: NotionPage[][], dataSourcePages: NotionPage[] = [], o
       return { markdown: MD, truncated: false };
     },
     user: async (id) => ({ object: "user", id, name: id === "me" ? "청혁" : "Chan", person: { email: id === "me" ? "me@x.com" : "chan@x.com" } }),
-    searchDataSources: async () => [],
+    searchDataSources: async () => options.visible ?? [],
     dataSource: async (id) => {
-      if (options.dataSourceFails) throw new NotionError("Notion API 요청 실패 (404 object_not_found)", 404, "object_not_found");
+      if (options.dataSourceFails || options.unshared?.includes(id)) throw new NotionError("Notion API 요청 실패 (404 object_not_found)", 404, "object_not_found");
       return {
         object: "data_source",
         id,
@@ -193,7 +197,18 @@ describe("syncNotion 할 일 DB", () => {
     const result = await syncNotion(conn, client, { ...fakeIngest().deps, tasks }, options);
 
     // 끝난 할 일은 받지 않는다 (상태 이름으로 거른다)
-    expect(queryCalls).toEqual([{ id: "ds-action", filter: { and: [{ property: "st", status: { does_not_equal: "Done" } }] } }]);
+    // 60일 넘게 손대지 않은 열린 할 일도 받지 않는다 (방치된 일)
+    expect(queryCalls).toEqual([
+      {
+        id: "ds-action",
+        filter: {
+          and: [
+            { property: "st", status: { does_not_equal: "Done" } },
+            { timestamp: "last_edited_time", last_edited_time: { on_or_after: "2026-07-27T12:00:00.000Z" } },
+          ],
+        },
+      },
+    ]);
     expect(processed.map((i) => i.externalId)).toEqual(["old"]);
     expect(result.backfilled).toEqual([{ dataSourceId: "ds-action", confirmedAt: "2026-09-20T00:00:00Z" }]);
   });
@@ -233,5 +248,80 @@ describe("syncNotion 할 일 DB", () => {
     await syncNotion({ ...connection(minutesAgo(200)), settings: unconfirmed }, client, { ...fakeIngest().deps, tasks }, options);
     expect(markdownCalls).toEqual(["t1"]);
     expect(processed).toEqual([]);
+  });
+});
+
+describe("syncNotion: 확인 전 DB와 공유 상태", () => {
+  const ds = (id: string, title: string): NotionDataSource => ({ object: "data_source", id, title: [{ plain_text: title }], properties: {} });
+  const inDb = (id: string, dataSourceId: string, minutes: number) => page(id, minutes, { parent: { type: "data_source_id", data_source_id: dataSourceId } });
+
+  it("확인 전 DB도 글 원문으로 읽고(이름으로 회의록을 못 알아봐도 끊기지 않게), 처음 본 DB는 알려준다", async () => {
+    const { client, markdownCalls } = fakeClient([[inDb("m1", "ds-weekly", 40), inDb("g1", "ds-goal", 50), page("loose", 60)]], [], {
+      visible: [ds("ds-weekly", "Weekly"), ds("ds-goal", "Goal")],
+    });
+    const conn = { ...connection(minutesAgo(200)), settings: { dataSources: { "ds-goal": { role: "text", title: "Goal", seenAt: "2026-09-20T00:00:00Z" } } } };
+    const result = await syncNotion(conn, client, fakeIngest().deps, { ...options, maxItems: 5 });
+    expect(markdownCalls.sort()).toEqual(["g1", "loose", "m1"]);
+    // 이미 남긴 DB는 다시 알리지 않는다
+    expect(result.seen).toEqual([{ id: "ds-weekly", title: "Weekly", role: "text" }]);
+  });
+
+  it("새로 공유된 DB가 있으면 이번만 최근 기간을 다시 훑는다 (공유가 끊겨 있던 동안의 회의록을 놓치지 않게)", async () => {
+    const old = inDb("m-old", "ds-meeting", 60 * 24 * 3); // 커서보다 오래됐지만 14일 안
+    const known = { ...connection(minutesAgo(60)), settings: { dataSources: { "ds-meeting": { role: "text", title: "Meeting", seenAt: "2026-09-20T00:00:00Z" } } } };
+
+    const first = fakeClient([[old]], [], { visible: [ds("ds-meeting", "Meeting")] });
+    const rewound = await syncNotion(connection(minutesAgo(60)), first.client, fakeIngest().deps, options);
+    expect(rewound.rewound).toBe(true);
+    expect(first.markdownCalls).toEqual(["m-old"]);
+
+    // 이미 아는 DB뿐이면 커서대로
+    const second = fakeClient([[old]], [], { visible: [ds("ds-meeting", "Meeting")] });
+    const normal = await syncNotion(known, second.client, fakeIngest().deps, options);
+    expect(normal.rewound).toBe(false);
+    expect(second.markdownCalls).toEqual([]);
+
+    // 공유가 끊겼다가 되돌아온 DB도 다시 훑는다
+    const recovered = { ...known, settings: { ...known.settings, health: { unreachable: [{ id: "ds-meeting", title: "Meeting" }], checkedAt: "2026-09-26T00:00:00Z" } } };
+    const third = fakeClient([[old]], [], { visible: [ds("ds-meeting", "Meeting")] });
+    expect((await syncNotion(recovered, third.client, fakeIngest().deps, options)).rewound).toBe(true);
+    expect(third.markdownCalls).toEqual(["m-old"]);
+  });
+
+  it("데이터베이스 목록을 못 받아도 동기화는 계속하고, 공유 상태는 이번엔 판단하지 않는다", async () => {
+    const { client, markdownCalls } = fakeClient([[page("loose", 60)]]);
+    client.searchDataSources = async () => {
+      throw new NotionError("Notion API 요청 실패 (502)", 502, "bad_gateway");
+    };
+    const conn = { ...connection(minutesAgo(200)), settings: { dataSources: { "ds-old": { role: "text", title: "Old", seenAt: "2026-09-20T00:00:00Z" } } } };
+    const result = await syncNotion(conn, client, fakeIngest().deps, options);
+    expect(markdownCalls).toEqual(["loose"]);
+    expect(result.unreachable).toBeNull();
+  });
+
+  it("일시적인 오류로 DB를 확인하지 못하면 끊겼다고 하지 않는다 (지난 결과를 둔다)", async () => {
+    const { client } = fakeClient([[]], [], { visible: [] });
+    client.dataSource = async () => {
+      throw new NotionError("Notion API 요청 실패 (429)", 429, "rate_limited");
+    };
+    const conn = { ...connection(minutesAgo(200)), settings: { dataSources: { "ds-old": { role: "text", title: "Old", seenAt: "2026-09-20T00:00:00Z" } } } };
+    const result = await syncNotion(conn, client, fakeIngest().deps, options);
+    expect(result.unreachable).toBeNull();
+  });
+
+  it("전에 읽던 DB의 공유가 끊기면 알려준다 (가져오지 않음으로 둔 DB는 빼고)", async () => {
+    const { client } = fakeClient([[]], [], { visible: [ds("ds-meeting", "Meeting")], unshared: ["ds-old", "ds-ignored"] });
+    const conn = {
+      ...connection(minutesAgo(200)),
+      settings: {
+        dataSources: {
+          "ds-meeting": { role: "text", title: "Meeting", seenAt: "2026-09-20T00:00:00Z" },
+          "ds-old": { role: "text", title: "Old meetings", seenAt: "2026-09-20T00:00:00Z" },
+          "ds-ignored": { role: "ignore", title: "Goal", confirmedAt: "2026-09-20T00:00:00Z" },
+        },
+      },
+    };
+    const result = await syncNotion(conn, client, fakeIngest().deps, options);
+    expect(result.unreachable).toEqual([{ id: "ds-old", title: "Old meetings" }]);
   });
 });

@@ -15,7 +15,7 @@ const DUE_NAME = /기한|마감|due|deadline|date|날짜|일정/i;
 const STATUS_NAME = /상태|status|진행/i;
 const CHECKBOX_DONE_NAME = /done|완료|complete/i;
 const ATTENDEE_NAME = /attendee|참석/i;
-const MEETING_TITLE = /meeting|회의|미팅|sync|1:1/i;
+const MEETING_TITLE = /meeting|회의|미팅|\bsync\b|1:1|1on1|stand-?up|스탠드업|데일리|스크럼|회고|retro/i;
 const TASK_TITLE = /action|task|to-?do|할 ?일|액션|업무|이슈|issue/i;
 /** Complete 그룹에 있어도 완료가 아니라 취소로 보는 상태 이름 (예: Cancelled, Archived) */
 const DROPPED_NAME = /cancel|취소|won'?t|archiv|보관|drop|중단|폐기/i;
@@ -56,6 +56,12 @@ export function defaultStatusMap(property: NotionSchemaProperty): Record<string,
   return map;
 }
 
+/** 회의록 DB로 보이는가: 참석자 속성이 있거나 이름이 회의 같다. */
+export function isMeetingSource(ds: NotionDataSource): boolean {
+  const hasAttendees = Object.values(ds.properties).some((p) => p.type === "people" && ATTENDEE_NAME.test(p.name));
+  return hasAttendees || MEETING_TITLE.test(dataSourceTitle(ds) ?? "");
+}
+
 /**
  * DB 역할 제안. 회의 DB에도 Owner · Status · Date가 흔해서 속성 타입만으로는 할 일 DB라고 하지 않는다:
  * 참석자 속성이나 회의 이름이 아니고, 할 일 속성이 있고, 이름도 할 일 같으면 tasks. 나머지는 지금처럼 글 원문(text).
@@ -63,8 +69,7 @@ export function defaultStatusMap(property: NotionSchemaProperty): Record<string,
 export function suggestSetting(ds: NotionDataSource): DataSourceSetting {
   const title = dataSourceTitle(ds);
   const props = detectProps(ds);
-  const hasAttendees = Object.values(ds.properties).some((p) => p.type === "people" && ATTENDEE_NAME.test(p.name));
-  const isMeeting = hasAttendees || MEETING_TITLE.test(title ?? "");
+  const isMeeting = isMeetingSource(ds);
   const role = !isMeeting && props && TASK_TITLE.test(title ?? "") ? "tasks" : "text";
   const statusProperty = props && Object.values(ds.properties).find((p) => p.id === props.status.id);
   return {
@@ -154,17 +159,31 @@ export function validateSetting(ds: NotionDataSource, request: SaveDataSourceReq
  * 처음 켤 때 훑을 페이지를 열린 할 일로 줄이는 Notion 쿼리 필터. 처음 보는 할 일은 열린 것만 넣으므로(tasks-ingest.ts)
  * 끝난 · 취소된 할 일은 받을 필요가 없다. 상태 필터는 옵션 이름으로 건다.
  */
-export function openTasksFilter(setting: DataSourceSetting & { props: TaskPropertyMap }, ds: NotionDataSource): unknown {
+export function openTasksFilter(
+  setting: DataSourceSetting & { props: TaskPropertyMap },
+  ds: NotionDataSource,
+  recent?: { editedSince: Date; today: string },
+): unknown {
   const { id, type } = setting.props.status;
+  const conditions: unknown[] = [];
   if (type === "checkbox") {
     const open = (["true", "false"] as const).filter((key) => (setting.statusMap?.[key] ?? (key === "true" ? "done" : "open")) === "open");
-    return open.length === 1 ? { property: id, checkbox: { equals: open[0] === "true" } } : undefined;
+    if (open.length === 1) conditions.push({ property: id, checkbox: { equals: open[0] === "true" } });
+  } else {
+    const options = Object.values(ds.properties).find((p) => p.id === id)?.status?.options ?? [];
+    const closed = options.filter((o) => {
+      const mapped = setting.statusMap?.[o.id];
+      return mapped === "done" || mapped === "dropped";
+    });
+    conditions.push(...closed.map((o) => ({ property: id, status: { does_not_equal: o.name } })));
   }
-  const options = Object.values(ds.properties).find((p) => p.id === id)?.status?.options ?? [];
-  const closed = options.filter((o) => {
-    const mapped = setting.statusMap?.[o.id];
-    return mapped === "done" || mapped === "dropped";
-  });
-  if (closed.length === 0) return undefined;
-  return { and: closed.map((o) => ({ property: id, status: { does_not_equal: o.name } })) };
+  // 오래 손대지 않은 열린 할 일은 방치된 것일 때가 많다: 처음 가져올 때 "지금 할 일" 맨 위를 묵은 일로 채우지 않는다.
+  // 단 기한이 아직 오지 않은 일은 손대지 않았어도 살아 있는 약속이라 가져온다. 나중에 다시 고친 일은 동기화로 들어온다.
+  if (recent) {
+    const edited = { timestamp: "last_edited_time", last_edited_time: { on_or_after: recent.editedSince.toISOString() } };
+    const dueType = setting.props.due ? Object.values(ds.properties).find((p) => p.id === setting.props.due)?.type : undefined;
+    conditions.push(dueType === "date" ? { or: [edited, { property: setting.props.due, date: { on_or_after: recent.today } }] } : edited);
+  }
+  if (conditions.length === 0) return undefined;
+  return conditions.length === 1 ? conditions[0] : { and: conditions };
 }

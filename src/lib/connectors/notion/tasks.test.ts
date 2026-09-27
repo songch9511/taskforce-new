@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { connectionSettingsSchema, type DataSourceSetting, type TaskPropertyMap } from "@/lib/api/contract";
 
 import type { NotionDataSource, NotionPage } from "./api";
-import { defaultStatusMap, detectProps, dueDate, isActiveTaskSource, openTasksFilter, pageSnapshot, suggestSetting, validateSetting } from "./tasks";
+import { defaultStatusMap, detectProps, dueDate, isActiveTaskSource, isMeetingSource, openTasksFilter, pageSnapshot, suggestSetting, validateSetting } from "./tasks";
 
 // 실제 워크스페이스에서 본 모양을 줄인 것: 할 일 DB(Action), 회의 DB(Owner · Status · Date가 함께 있음), 목표 DB
 const statusProp = (id: string, name: string, groups: [string, [string, string][]][]) => ({
@@ -166,6 +166,25 @@ describe("openTasksFilter", () => {
         { property: "st", status: { does_not_equal: "Archived" } },
       ],
     });
+  });
+
+  it("처음 가져올 때: 최근 60일 안에 고쳤거나 기한이 아직 안 온 열린 할 일만", () => {
+    const props = detectProps(ACTION_DB)!;
+    const recent = { editedSince: new Date("2026-07-27T12:00:00.000Z"), today: "2026-09-25" };
+    const filter = openTasksFilter({ ...suggestSetting(ACTION_DB), props }, ACTION_DB, recent) as { and: unknown[] };
+    const edited = { timestamp: "last_edited_time", last_edited_time: { on_or_after: "2026-07-27T12:00:00.000Z" } };
+    expect(filter.and.at(-1)).toEqual(props.due ? { or: [edited, { property: props.due, date: { on_or_after: "2026-09-25" } }] } : edited);
+    // 기한 속성이 없으면 고친 시각만 본다
+    const noDue = openTasksFilter({ ...suggestSetting(ACTION_DB), props: { ...props, due: null } }, ACTION_DB, recent) as { and: unknown[] };
+    expect(noDue.and.at(-1)).toEqual(edited);
+  });
+
+  it("회의록 DB 이름: 흔한 회의 이름은 알아보고, Async 같은 단어에는 걸리지 않는다", () => {
+    const named = (title: string): NotionDataSource => ({ object: "data_source", id: "x", title: [{ plain_text: title }], properties: {} });
+    for (const title of ["Meeting", "주간 회의", "미팅노트", "Weekly sync", "1on1", "Daily Standup", "스크럼", "회고"]) {
+      expect(isMeetingSource(named(title)), title).toBe(true);
+    }
+    for (const title of ["Async tasks", "Action Items", "Goal"]) expect(isMeetingSource(named(title)), title).toBe(false);
   });
 
   it("체크박스는 매핑에서 open인 값만 (뒤집힌 매핑도 따른다)", () => {

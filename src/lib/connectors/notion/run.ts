@@ -2,7 +2,7 @@ import "server-only";
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 
-import { activeConnections, claimConnection, ingestDeps, loadToken, markBackfilled, recordSync, saveToken, taskDeps } from "../store";
+import { activeConnections, claimConnection, ingestDeps, loadToken, markBackfilled, recordNotionHealth, recordSync, saveToken, taskDeps } from "../store";
 import type { Connection } from "../types";
 
 import { notionClient, NotionError, refreshToken, type NotionClient, type NotionOAuthConfig, type NotionToken } from "./api";
@@ -67,6 +67,10 @@ export async function syncNotionConnection(
   try {
     const result = await withNotionClient(admin, connection.id, run);
     await markBackfilled(admin, connection, result.backfilled);
+    // 상태 기록이 실패해도 이미 넣은 원문 · 커서는 남긴다.
+    await recordNotionHealth(admin, connection, result).catch((error) =>
+      console.error(`Notion 연결 상태 기록 실패 (${connection.id}):`, error instanceof Error ? error.message : error),
+    );
     await recordSync(admin, connection, { cursor: result.cursor });
     return { connectionId: connection.id, ok: true, result };
   } catch (error) {

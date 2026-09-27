@@ -14,21 +14,56 @@ export type ConnectionRow = {
   status: "active" | "error" | "revoked";
   last_synced_at: string | null;
   last_error: string | null;
+  settings?: { health?: { unreachable: { id: string; title: string | null }[] } } | null;
 };
 
 const STATUS_LABELS: Record<ConnectionRow["status"], string> = { active: "연결됨", error: "오류", revoked: "권한 끊김" };
 
 const CALLBACK_MESSAGES: Record<string, string> = {
-  connected:
-    "Notion을 연결했습니다. '지금 동기화'를 누르면 최근 2주 회의록을 가져옵니다. 페이지를 고를 때 팀스페이스 최상위 페이지처럼 상위 페이지 하나를 고르면 그 아래 데이터베이스가 모두 함께 공유됩니다.",
+  connected: "Notion을 연결했습니다. '지금 동기화'를 누르면 최근 2주 회의록을 가져옵니다. 아래 '데이터베이스 역할 설정'에서 할 일 데이터베이스를 확인해 주세요.",
+  connected_no_meetings:
+    "Notion을 연결했지만 회의록 데이터베이스가 보이지 않습니다. 회의록이 Taskforce의 가장 중요한 원문입니다. 'Notion 다시 연결 · 페이지 추가'에서 회의록 데이터베이스를 검색해 체크해 주세요 (방금 골랐다면 반영에 몇 분 걸릴 수 있습니다).",
+  connected_empty:
+    "Notion을 연결했지만 지금 읽을 수 있는 페이지 · 데이터베이스가 없습니다. 다시 연결할 때는 선택 화면에서 읽을 곳을 다시 체크해야 합니다 (전에 고른 것도 이번 선택에 없으면 끊깁니다). 'Notion 다시 연결 · 페이지 추가'에서 회의록 · 할 일 데이터베이스를 고르세요. 방금 골랐다면 반영에 몇 분 걸릴 수 있습니다.",
   denied: "Notion 연결을 취소했습니다.",
   invalid_state: "연결 요청이 만료됐거나 올바르지 않습니다. 다시 시도해 주세요.",
   error: "Notion 연결에 실패했습니다. 서버 로그를 확인해 주세요.",
 };
 
+/** 권한 화면에 들어가기 전에 보여준다: 한 번에 제대로 고르게 (다른 Notion 연동 도구들이 겪는 "DB가 안 보여요"를 줄인다) */
+function ConnectChecklist({ reconnect }: { reconnect: boolean }) {
+  return (
+    <div className="bg-muted flex flex-col gap-2 rounded-md p-3 text-sm">
+      <p className="font-medium">Notion 권한 화면에서 이렇게 골라 주세요</p>
+      <ol className="list-decimal space-y-1 pl-5">
+        <li>
+          <b>회의록 데이터베이스</b> (예: Meeting) — 가장 중요한 원문입니다.
+        </li>
+        <li>
+          <b>할 일 데이터베이스</b> (예: Action Items, Action) — 이미 적힌 일과 중복을 만들지 않고, 완료를 따라갑니다.
+        </li>
+        <li>
+          팀스페이스 <b>맨 위에 있는 데이터베이스</b>는 그 자체를 검색해 체크하세요. 상위 페이지를 골라도 포함되지 않습니다.
+        </li>
+        <li>
+          회의록 안의 &apos;링크된 보기&apos;(예: View of Action Items)는 <b>원본 데이터베이스</b>를 골라야 읽힙니다.
+        </li>
+        {reconnect && (
+          <li>
+            다시 연결할 때는 <b>이미 체크된 항목을 해제하지 마세요</b>. 이번 선택에 없는 것은 전에 읽던 것이라도 끊깁니다.
+          </li>
+        )}
+      </ol>
+      <p className="text-muted-foreground">워크스페이스 전체를 고를 필요는 없습니다. 목표 · 투표처럼 약속이 나오지 않는 곳은 고르지 않아도 됩니다.</p>
+    </div>
+  );
+}
+
 export function ConnectionsPanel({ connections, notionStatus }: { connections: ConnectionRow[]; notionStatus?: string }) {
   const router = useRouter();
   const [pending, setPending] = useState<string | null>(null);
+  const [showChecklist, setShowChecklist] = useState(false);
+  const hasNotion = connections.some((c) => c.provider === "notion");
   const [message, setMessage] = useState<string | null>(notionStatus ? (CALLBACK_MESSAGES[notionStatus] ?? null) : null);
 
   async function syncNow() {
@@ -85,6 +120,13 @@ export function ConnectionsPanel({ connections, notionStatus }: { connections: C
                   </span>
                 )}
                 {c.last_error && <div className="text-destructive">{c.last_error}</div>}
+                {(c.settings?.health?.unreachable.length ?? 0) > 0 && (
+                  <div className="text-destructive">
+                    읽을 수 없게 된 데이터베이스: {c.settings!.health!.unreachable.map((d) => d.title ?? "제목 없음").join(", ")}. 여기서 나오는 원문이 들어오지
+                    않습니다. Notion에서 그 데이터베이스를 열고 ••• → 연결 → Taskforce를 추가하거나, &apos;Notion 다시 연결 · 페이지 추가&apos;에서 다시 체크해
+                    주세요.
+                  </div>
+                )}
               </div>
               <Button variant="ghost" size="sm" disabled={pending !== null} onClick={() => disconnect(c.id)}>
                 끊기
@@ -98,17 +140,33 @@ export function ConnectionsPanel({ connections, notionStatus }: { connections: C
           ))}
         </ul>
       )}
+      {showChecklist && <ConnectChecklist reconnect={hasNotion} />}
       <div className="flex flex-wrap items-center gap-3">
-        <Button asChild variant="outline">
-          <a href="/api/connectors/notion/start">{connections.some((c) => c.provider === "notion") ? "Notion 다시 연결 · 페이지 추가" : "Notion 연결"}</a>
-        </Button>
+        {showChecklist ? (
+          <>
+            <Button asChild>
+              <a href="/api/connectors/notion/start">확인했어요 · Notion으로 이동</a>
+            </Button>
+            <Button variant="ghost" onClick={() => setShowChecklist(false)}>
+              취소
+            </Button>
+          </>
+        ) : (
+          <Button variant="outline" onClick={() => setShowChecklist(true)}>
+            {hasNotion ? "Notion 다시 연결 · 페이지 추가" : "Notion 연결"}
+          </Button>
+        )}
         {connections.length > 0 && (
           <Button onClick={syncNow} disabled={pending !== null}>
             {pending === "sync" ? "동기화 중…" : "지금 동기화"}
           </Button>
         )}
       </div>
-      {message && <p className="text-muted-foreground text-sm">{message}</p>}
+      {message && (
+        <p className={`text-sm ${message === CALLBACK_MESSAGES.connected_empty || message === CALLBACK_MESSAGES.connected_no_meetings ? "text-destructive" : "text-muted-foreground"}`}>
+          {message}
+        </p>
+      )}
     </div>
   );
 }

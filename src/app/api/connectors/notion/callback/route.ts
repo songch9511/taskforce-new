@@ -5,6 +5,7 @@ import { NextResponse } from "next/server";
 
 import { authenticateRequest } from "@/lib/api/auth";
 import { exchangeCode } from "@/lib/connectors/notion/api";
+import { notionCoverage } from "@/lib/connectors/notion/data-sources";
 import { notionOAuthConfig } from "@/lib/connectors/notion/run";
 import { saveConnection } from "@/lib/connectors/store";
 import { createAdminClient } from "@/lib/supabase/admin";
@@ -32,14 +33,17 @@ export async function GET(request: Request) {
 
   try {
     const token = await exchangeCode(notionOAuthConfig(), code);
-    await saveConnection(createAdminClient(), {
+    const admin = createAdminClient();
+    const connectionId = await saveConnection(admin, {
       userId: context.user.id,
       provider: "notion",
       externalAccountId: token.workspace_id,
       displayName: token.workspace_name ?? null,
       token,
     });
-    return back("connected");
+    // 선택 화면에서 아무것도 고르지 않았거나 회의록 DB가 빠졌으면 바로 알린다 (점검이 실패해도 연결은 된 것으로 둔다).
+    const coverage = await notionCoverage(admin, context.user.id, connectionId).catch(() => "ok" as const);
+    return back(coverage === "empty" ? "connected_empty" : coverage === "no_meetings" ? "connected_no_meetings" : "connected");
   } catch (error) {
     console.error("Notion 연결 실패:", error instanceof Error ? error.message : error);
     return back("error");

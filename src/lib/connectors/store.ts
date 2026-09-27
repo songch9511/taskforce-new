@@ -10,7 +10,7 @@ import { processSource, processTaskSource } from "@/lib/sources/process";
 
 import { decryptSecret, encryptSecret, parseTokenKey } from "./crypto";
 import type { IngestDeps } from "./ingest";
-import type { Backfilled, NotionTaskDeps } from "./notion/sync";
+import type { Backfilled, NotionTaskDeps, SeenDataSource, UnreachableDataSource } from "./notion/sync";
 import type { TaskItem, TaskState } from "./tasks-ingest";
 import type { Connection, Provider } from "./types";
 
@@ -346,6 +346,34 @@ export async function markBackfilled(admin: SupabaseClient, connection: Connecti
   await admin
     .from("connections")
     .update({ settings: { ...settings, dataSources } })
+    .eq("id", connection.id)
+    .eq("user_id", connection.userId)
+    .throwOnError();
+}
+
+/**
+ * 동기화가 본 연결 상태를 남긴다: 처음 본 DB(확인 전, seenAt)와 전에 읽던 DB 중 지금 읽을 수 없는 것(health.unreachable).
+ * 공유가 조용히 끊기면 원문이 들어오지 않아도 알 수 없으므로, 앱 · /lab이 이 값으로 경고를 띄운다.
+ */
+export async function recordNotionHealth(
+  admin: SupabaseClient,
+  connection: Connection,
+  report: { seen: SeenDataSource[]; unreachable: UnreachableDataSource[] | null },
+  now = new Date(),
+): Promise<void> {
+  const { data } = await admin.from("connections").select("settings").eq("id", connection.id).eq("user_id", connection.userId).single().throwOnError();
+  const settings = connectionSettingsSchema.parse(data.settings ?? {});
+  const dataSources = { ...(settings.dataSources ?? {}) };
+  const added = report.seen.filter(({ id }) => !dataSources[id]);
+  for (const { id, title, role } of added) dataSources[id] = { role, title: title?.slice(0, 200) ?? null, seenAt: now.toISOString() };
+  // 바뀐 것이 있을 때만 쓴다: 설정 전체를 다시 쓰므로, 매 동기화마다 쓰면 그 사이 /lab에서 저장한 설정을 덮을 수 있다.
+  // 끝까지 확인하지 못한 동기화(null)는 지난 결과를 그대로 둔다.
+  const key = (list: UnreachableDataSource[]) => list.map((d) => d.id).sort().join(",");
+  const health = report.unreachable ? { unreachable: report.unreachable, checkedAt: now.toISOString() } : settings.health;
+  if (added.length === 0 && (!report.unreachable || key(settings.health?.unreachable ?? []) === key(report.unreachable))) return;
+  await admin
+    .from("connections")
+    .update({ settings: { ...settings, dataSources, ...(health ? { health } : {}) } })
     .eq("id", connection.id)
     .eq("user_id", connection.userId)
     .throwOnError();

@@ -135,7 +135,11 @@ export type TaskPropertyMap = z.infer<typeof taskPropertyMapSchema>;
 export const dataSourceSettingSchema = z.object({
   /** tasks: 속성을 그대로 Claim으로, text: 글 원문으로 읽음(회의록 · 문서), ignore: 가져오지 않음. 예전 이름 meetings는 text로 읽는다 */
   role: z.preprocess((role) => (role === "meetings" ? "text" : role), z.enum(["tasks", "text", "ignore"])),
-  title: z.string().max(200).nullable(),
+  // 긴 제목 하나 때문에 연결 설정 전체를 못 읽는 일이 없게, 읽을 때도 자른다.
+  title: z
+    .string()
+    .transform((title) => title.slice(0, 200))
+    .nullable(),
   props: taskPropertyMapSchema.optional(),
   /** 상태 옵션 id(체크박스는 "true" · "false") → open · done · dropped */
   statusMap: z.record(z.string(), taskStatusSchema).optional(),
@@ -143,11 +147,20 @@ export const dataSourceSettingSchema = z.object({
   confirmedAt: z.string().optional(),
   /** 처음 켤 때 열린 할 일을 한 번 가져온 시각 */
   backfilledAt: z.string().optional(),
+  /** 동기화가 처음 이 DB를 본 시각 (확인 전). 나중에 공유가 끊기면 알아차리고, 새로 공유된 DB를 다시 훑는 기준이 된다 */
+  seenAt: z.string().optional(),
 });
 export type DataSourceSetting = z.infer<typeof dataSourceSettingSchema>;
 
 export const connectionSettingsSchema = z.looseObject({
   dataSources: z.record(z.string(), dataSourceSettingSchema).optional(),
+  /** 마지막 동기화가 확인한 연결 상태: 전에 읽던 DB 중 지금 읽을 수 없는 것 (공유가 끊김) */
+  health: z
+    .object({
+      unreachable: z.array(z.object({ id: z.string(), title: z.string().nullable() })),
+      checkedAt: z.string(),
+    })
+    .optional(),
 });
 
 // GET /api/v1/connections/:id/data-sources — 공유된 데이터베이스와 역할 (확인 전이면 제안값)
@@ -167,7 +180,7 @@ export const dataSourcesResponseSchema = z.object({ dataSources: z.array(dataSou
 
 // PUT /api/v1/connections/:id/data-sources/:dataSourceId — 역할 · 매핑 확인 (confirmedAt은 서버가 넣는다)
 export const saveDataSourceRequestSchema = dataSourceSettingSchema
-  .omit({ confirmedAt: true, backfilledAt: true, title: true })
+  .omit({ confirmedAt: true, backfilledAt: true, seenAt: true, title: true })
   .refine((s) => s.role !== "tasks" || s.props, { message: "할 일 DB에는 속성 매핑이 필요합니다.", path: ["props"] });
 
 // POST /api/v1/devices — 알림용 기기 토큰 (APNs)
