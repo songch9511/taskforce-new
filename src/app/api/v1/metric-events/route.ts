@@ -2,7 +2,7 @@ import { authenticateRequest } from "@/lib/api/auth";
 import { metricEventRequestSchema } from "@/lib/api/contract";
 import { errorResponse, parseBody, unauthorized } from "@/lib/api/respond";
 
-// 지표 이벤트 (app_opened · handoff_used). action_started는 POST /actions/:id/start가 남긴다.
+// 앱이 직접 남기는 지표 (app_opened). action_started · handoff_used는 해당 API(start · handoff)가 서버에서 남긴다.
 export async function POST(request: Request) {
   const context = await authenticateRequest(request);
   if (!context) return unauthorized();

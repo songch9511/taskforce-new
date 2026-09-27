@@ -4,9 +4,12 @@ import { randomUUID } from "node:crypto";
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 
-import type { ActionSummary, EditActionRequest } from "@/lib/api/contract";
+import type { ActionSummary, EditActionRequest, HandoffResponse } from "@/lib/api/contract";
 
 import { loadClaims, loadStoredRow, retryOnConflict, writeAction } from "./db-store";
+import { quoteContext } from "@/lib/pipeline/text";
+
+import { buildHandoff, HANDOFF_LIMITS, type HandoffEvidence, type HandoffInput, type HandoffUserEdit } from "./handoff";
 import { changeEvents, projectAction, type EventDraft, type UserEventType } from "./project";
 import { rankNow, type RankInput } from "./rank";
 import { actionRowValues, storedReasons } from "./rows";
@@ -71,7 +74,8 @@ export function editAction(admin: SupabaseClient, userId: string, actionId: stri
 
 /** 삭제는 실제로 지우지 않고 취소(dropped)로 둔다. 근거와 이력은 남는다. */
 export function deleteAction(admin: SupabaseClient, userId: string, actionId: string) {
-  return applyUserChanges(admin, userId, actionId, () => [{ field: "status", value: "dropped" }], "user_deleted");
+  // 확인 요청에 "아니에요"로 답한 것이기도 하다: 남아 있던 확인 이유를 지운다.
+  return applyUserChanges(admin, userId, actionId, () => [{ field: "status", value: "dropped" }], "user_deleted", { clearReasons: true });
 }
 
 export function confirmAction(admin: SupabaseClient, userId: string, actionId: string) {
@@ -90,4 +94,58 @@ export async function startAction(admin: SupabaseClient, userId: string, actionI
 export async function nowList(client: SupabaseClient, now = new Date()) {
   const { data } = await client.from("actions").select(SUMMARY_COLUMNS).eq("status", "open").throwOnError();
   return rankNow((data ?? []) as (ActionSummary & RankInput)[], now);
+}
+
+/**
+ * AI에게 넘기기: 사용자 권한(RLS)으로 Action · 근거 · 원문 정보를 읽어 문서를 만들고, 서버가 handoff_used 지표를 남긴다 (지표 2).
+ * 원문 전체가 아니라 근거 인용만 담는다.
+ */
+export async function handoffAction(client: SupabaseClient, admin: SupabaseClient, userId: string, actionId: string): Promise<HandoffResponse> {
+  const { data: action } = await client
+    .from("actions")
+    .select("title, owner, status, due_date, counterpart, confirm_reasons, resolution")
+    .eq("id", actionId)
+    .maybeSingle()
+    .throwOnError();
+  if (!action) throw new ActionNotFoundError();
+
+  const [{ data: evidence, count: evidenceCount }, { data: edits }] = await Promise.all([
+    // 최근 근거만 읽는다 (근거가 많아도 문서 · 요청 크기가 커지지 않게)
+    client
+      .from("evidence")
+      .select("quote, role, source_id", { count: "exact" })
+      .eq("action_id", actionId)
+      .order("created_at", { ascending: false })
+      .limit(HANDOFF_LIMITS.evidence)
+      .throwOnError(),
+    client.from("claims").select("field, value, occurred_at").eq("action_id", actionId).eq("origin", "user").throwOnError(),
+  ]);
+  const evidenceRows = (evidence ?? []) as { quote: string; role: HandoffEvidence["role"]; source_id: string }[];
+  const sourceIds = [...new Set(evidenceRows.map((e) => e.source_id))];
+  const { data: sources } = sourceIds.length
+    ? await client.from("sources").select("id, kind, title, raw_text, occurred_at, external_url").in("id", sourceIds).throwOnError()
+    : { data: [] };
+  type SourceRow = { id: string; kind: string; title: string | null; raw_text: string; occurred_at: string; external_url: string | null };
+  const sourceById = new Map(((sources ?? []) as SourceRow[]).map((s) => [s.id, s]));
+
+  const input: HandoffInput = {
+    action: action as HandoffInput["action"],
+    evidence: evidenceRows.flatMap((e) => {
+      const s = sourceById.get(e.source_id);
+      if (!s) return [];
+      const context = quoteContext(s.raw_text, e.quote, HANDOFF_LIMITS.contextLines, HANDOFF_LIMITS.quoteChars);
+      return [{ quote: e.quote, context, role: e.role, source: { kind: s.kind, title: s.title, occurredAt: s.occurred_at, url: s.external_url } }];
+    }),
+    olderEvidence: Math.max(0, (evidenceCount ?? 0) - evidenceRows.length),
+    userEdits: ((edits ?? []) as { field: HandoffUserEdit["field"]; value: string | null; occurred_at: string }[]).map((c) => ({
+      field: c.field,
+      value: c.value,
+      occurredAt: c.occurred_at,
+    })),
+  };
+  const markdown = buildHandoff(input);
+
+  // 지표 2(착수 시간): app_opened → 첫 action_started / handoff_used
+  await admin.from("metric_events").insert({ user_id: userId, type: "handoff_used", action_id: actionId }).throwOnError();
+  return { action_id: actionId, title: input.action.title, markdown };
 }

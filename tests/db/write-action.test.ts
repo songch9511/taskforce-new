@@ -117,10 +117,11 @@ describe("지표 이벤트 (클라이언트 쓰기 제한)", () => {
     });
   });
 
-  it("app_opened는 남길 수 있고 action_started는 서버만", async () => {
+  it("app_opened는 남길 수 있고 action_started · handoff_used는 서버만", async () => {
     await asUser(db, ALICE, async () => {
       await db.query(`insert into public.metric_events (type) values ('app_opened')`);
       await expect(db.query(`insert into public.metric_events (type) values ('action_started')`)).rejects.toThrow(/row-level security/);
+      await expect(db.query(`insert into public.metric_events (type) values ('handoff_used')`)).rejects.toThrow(/row-level security/);
       const deleted = await db.query(`delete from public.metric_events`).then((r) => r.affectedRows ?? 0, () => "blocked");
       expect(deleted === "blocked" || deleted === 0).toBe(true);
     });

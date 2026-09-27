@@ -122,8 +122,8 @@ Server Action은 웹 폼 전용이라 Swift 앱에서 부를 수 없다.
 | `DELETE /api/v1/actions/:id` | 사용자 삭제 (`user_deleted` 이벤트, 실제로는 `dropped` 처리) | 3 ✅ |
 | `POST /api/v1/actions/:id/confirm` | 확인 요청 확정 (`user_confirmed`) | 3 ✅ |
 | `POST /api/v1/actions/:id/start` | 착수 (`user_started` 이벤트 + `action_started` 지표) | 3 ✅ |
-| `POST /api/v1/actions/:id/handoff` | AI 핸드오프 문서 생성 (`handoff_used`) | 4 |
-| `POST /api/v1/metric-events` | 앱이 직접 남기는 지표 (`app_opened`, `handoff_used`). 나머지 지표는 서버만 쓴다 | 3 ✅ |
+| `POST /api/v1/actions/:id/handoff` | AI에게 넘기기: 합의된 내용 · 불확실한 것 · 근거 원문(인용 앞뒤 줄 포함)을 묶은 마크다운. 서버가 `handoff_used` 지표를 남긴다 | 4 ✅ |
+| `POST /api/v1/metric-events` | 앱이 직접 남기는 지표 (`app_opened`). `action_started` · `handoff_used`는 해당 API가 서버에서 남긴다 | 3 ✅ |
 | `POST` · `DELETE /api/v1/devices` | 알림용 기기 토큰 등록 · 해제 (로그아웃 때 DELETE). 토큰은 마지막 로그인 계정에 속하고, 사용자당 10대 | 3 ✅ |
 
 알림(APNs)에는 할 일 제목을 싣지 않는다. `mutable-content: 1`과 `action_id`만 보내고, 앱의 Notification Service Extension이 로그인 세션으로 제목을 받아 채운다 (Phase A3).

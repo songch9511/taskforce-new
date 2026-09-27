@@ -106,9 +106,18 @@ export type EditActionRequest = z.infer<typeof editActionRequestSchema>;
 // PATCH · DELETE · confirm · start 응답
 export const actionResponseSchema = z.object({ action: actionSummarySchema });
 
-// POST /api/v1/metric-events
+// POST /api/v1/actions/:id/handoff — "AI에게 넘기기": 맥락 · 근거 인용을 묶은 마크다운. 서버가 handoff_used 지표를 남긴다.
+export const handoffResponseSchema = z.object({
+  action_id: z.uuid(),
+  title: z.string(),
+  /** 그대로 복사해 AI 도구에 붙여 넣는 문서 */
+  markdown: z.string(),
+});
+export type HandoffResponse = z.infer<typeof handoffResponseSchema>;
+
+// POST /api/v1/metric-events — 앱이 직접 남기는 지표. action_started · handoff_used는 해당 API가 서버에서 남긴다 (중복 집계 방지).
 export const metricEventRequestSchema = z.object({
-  type: z.enum(["app_opened", "handoff_used"]),
+  type: z.enum(["app_opened"]),
   action_id: z.uuid().optional(),
 });
 

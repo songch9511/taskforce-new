@@ -41,9 +41,31 @@ export function quoteContext(text: string, quote: string, radius = 4, maxChars =
     for (let start = end; start >= Math.max(0, end - 10); start--) {
       if (normalized.slice(start, end + 1).join("").includes(q)) {
         const context = lines.slice(Math.max(0, start - radius), Math.min(lines.length, end + radius + 1)).join("\n");
-        return context.length > maxChars ? context.slice(0, maxChars) : context;
+        return context.length > maxChars ? aroundQuote(context, q, maxChars) : context;
       }
     }
   }
   return null;
+}
+
+/**
+ * 긴 대목(예: 줄바꿈 없는 긴 문단)을 자를 때 인용이 잘려 나가지 않게 인용 위치를 기준으로 자른다.
+ * 앞쪽(누가 무엇을 요청했는지)을 조금 더 남긴다: 인용이 앞에서 1/3 지점에 오게.
+ */
+function aroundQuote(context: string, normalizedQuote: string, maxChars: number): string {
+  // 정규화한 문자열의 위치 → 원래 문자열의 위치
+  const original: number[] = [];
+  let normalized = "";
+  for (let i = 0; i < context.length; ) {
+    const ch = String.fromCodePoint(context.codePointAt(i)!);
+    const n = normalizeForMatch(ch);
+    for (let k = 0; k < n.length; k++) original.push(i);
+    normalized += n;
+    i += ch.length;
+  }
+  const at = normalized.indexOf(normalizedQuote);
+  const quoteStart = at < 0 ? 0 : original[at];
+  const start = Math.max(0, Math.min(quoteStart - Math.floor(maxChars / 3), context.length - maxChars));
+  const end = Math.min(context.length, start + maxChars);
+  return `${start > 0 ? "…" : ""}${context.slice(start, end)}${end < context.length ? "…" : ""}`;
 }
