@@ -56,6 +56,8 @@ describe("changeEvents", () => {
 
   it("처음이면 created", () => {
     expect(changeEvents(null, before, "created").map((e) => e.type)).toEqual(["created"]);
+    // 만들 때 확인 요청이었는지 남긴다 (지표 1: 자동 반영 / 확인 요청 구분)
+    expect(changeEvents(null, before, "created")[0].after).toHaveProperty("needs_confirmation", before.needs_confirmation);
   });
 
   it("요청자의 연장은 규칙과 함께 due_changed", () => {

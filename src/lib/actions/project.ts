@@ -82,7 +82,9 @@ const ruleText = (r: FieldResolution) =>
 /** 저장된 값(before)과 새 판정(after)을 비교해 AI가 바꾼 것마다 이벤트를 만든다. */
 export function changeEvents(before: ProjectedAction | null, after: ProjectedAction, evidenceRole: EvidenceRole): EventDraft[] {
   if (!before) {
-    return [{ type: "created", before: null, after: { title: after.title, due: after.due_date, owner: after.owner, status: after.status }, rule: null }];
+    // needs_confirmation: 만들 때 확인 요청이었는지. 지표 1에서 자동 반영이 틀린 것과 물어본 것에 "아니에요"한 것을 나눈다.
+    const values = { title: after.title, due: after.due_date, owner: after.owner, status: after.status, needs_confirmation: after.needs_confirmation };
+    return [{ type: "created", before: null, after: values, rule: null }];
   }
   const events: EventDraft[] = [];
   if (before.due_date !== after.due_date) {
