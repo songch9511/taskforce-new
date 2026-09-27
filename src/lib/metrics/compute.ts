@@ -62,17 +62,22 @@ const inPeriod = (at: string, period: Period) => {
   return t >= period.from.getTime() && t < period.to.getTime();
 };
 
-/** 사용자 수정 이벤트에서 바뀐 필드. 완료로 바꾼 것은 일을 끝낸 것이지 AI가 틀린 것이 아니므로 빼고, AI가 끝냈다고 본 일을 다시 여는 것은 넣는다. */
-function correctedFields(event: ActionEventRow): ErrorField[] {
+/**
+ * 사용자 수정 이벤트에서 AI가 틀린 필드. 상태는 AI가 끝냈다고(완료 · 취소) 본 일을 사용자가 다시 연 경우만 넣는다:
+ * 완료로 바꾼 것은 일을 끝낸 것이고, 자기가 잘못 눌러 완료한 것을 되돌린 것도 AI의 잘못이 아니다.
+ */
+function correctedFields(event: ActionEventRow, earlier: ActionEventRow[]): ErrorField[] {
   if (event.type === "user_deleted") return ["deleted"];
   if (event.type !== "user_edited") return [];
   const fields: ErrorField[] = [];
-  const before = event.before ?? {};
   const after = event.after ?? {};
   if ("title" in after) fields.push("title");
   if ("due" in after) fields.push("due");
   if ("owner" in after) fields.push("owner");
-  if ("status" in after && !(after.status === "done" && before.status === "open")) fields.push("status");
+  if (after.status === "open") {
+    const lastStatus = [...earlier].reverse().find((e) => e.type === "completed" || e.type === "dropped" || (e.after ?? {}).status !== undefined);
+    if (lastStatus?.actor === "ai" && (lastStatus.type === "completed" || lastStatus.type === "dropped")) fields.push("status");
+  }
   return fields;
 }
 
@@ -109,7 +114,7 @@ export function misjudgment(events: ActionEventRow[], period: Period): Misjudgme
     const fields = new Set<ErrorField>();
     const stages = new Set<ErrorStage>();
     sorted.forEach((event, index) => {
-      for (const field of correctedFields(event)) {
+      for (const field of correctedFields(event, sorted.slice(0, index))) {
         fields.add(field);
         if (field === "deleted") {
           // 지운 일은 애초에 만들지 말았어야 한 것으로 본다 (추출 단계)
@@ -194,15 +199,15 @@ export function kstWeek(at: string): string {
   return kst.toISOString().slice(0, 10);
 }
 
+export type Activity = { userId: string; at: string };
+
 /**
  * 활동: 앱 열기 · 착수 · 넘기기(지표 이벤트)와 사용자의 Action 쓰기(수정 · 삭제 · 확인 · 착수).
  * 베타 초기에는 앱 대신 시험대로 쓰기도 해서 쓰기도 활동으로 본다.
+ * activity는 사용자의 처음 활동부터 전부여야 한다 (기간으로 자르면 오래 쓴 사용자가 새 사용자로 보인다).
+ * 아직 끝나지 않은 이번 주는 N주 뒤 판단에 쓰지 않는다.
  */
-export function retention(metricEvents: MetricEventRow[], actionEvents: ActionEventRow[], weeks = 4): RetentionMetric {
-  const activity = [
-    ...metricEvents.map((e) => ({ userId: e.userId, at: e.at })),
-    ...actionEvents.filter((e) => e.actor === "user").map((e) => ({ userId: e.userId, at: e.at })),
-  ];
+export function retention(activity: Activity[], now: Date, weeks = 4): RetentionMetric {
   const weeksByUser = new Map<string, Set<string>>();
   for (const { userId, at } of activity) weeksByUser.set(userId, (weeksByUser.get(userId) ?? new Set()).add(kstWeek(at)));
 
@@ -211,10 +216,10 @@ export function retention(metricEvents: MetricEventRow[], actionEvents: ActionEv
   const weeklyActive = [...counts].sort(([a], [b]) => a.localeCompare(b)).map(([week, users]) => ({ week, users }));
 
   const addWeeks = (week: string, n: number) => new Date(Date.parse(`${week}T00:00:00Z`) + n * 7 * 86_400_000).toISOString().slice(0, 10);
-  const latest = weeklyActive.at(-1)?.week;
+  const lastComplete = addWeeks(kstWeek(now.toISOString()), -1);
   const retentionRates = Array.from({ length: weeks + 1 }, (_, n) => {
-    // N주 뒤가 아직 오지 않은 사용자는 분모에서 뺀다
-    const eligible = [...weeksByUser.values()].filter((set) => latest && addWeeks([...set].sort()[0], n) <= latest);
+    // N주 뒤가 아직 끝나지 않은 사용자는 분모에서 뺀다 (첫 주는 진행 중이어도 센다)
+    const eligible = [...weeksByUser.values()].filter((set) => n === 0 || addWeeks([...set].sort()[0], n) <= lastComplete);
     if (eligible.length === 0) return null;
     return eligible.filter((set) => set.has(addWeeks([...set].sort()[0], n))).length / eligible.length;
   });

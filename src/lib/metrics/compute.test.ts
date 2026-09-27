@@ -34,11 +34,12 @@ describe("misjudgment (지표 1)", () => {
     expect(m.byField).toMatchObject({ due: 1, deleted: 1, title: 0 });
   });
 
-  it("완료로 바꾼 것은 오판이 아니다. AI가 끝냈다고 본 일을 다시 여는 것은 오판이다", () => {
+  it("완료로 바꾼 것 · 자기가 완료한 것을 되돌린 것은 오판이 아니다. AI가 끝냈다고 본 일을 다시 여는 것은 오판이다", () => {
     const m = misjudgment(
       [
         created("done"),
         ev("done", "user_edited", "2026-09-23T00:00:00Z", { before: { status: "open" }, after: { status: "done" } }),
+        ev("done", "user_edited", "2026-09-23T01:00:00Z", { before: { status: "done" }, after: { status: "open" } }),
         created("reopen"),
         ev("reopen", "completed", "2026-09-23T00:00:00Z", { before: { status: "open" }, after: { status: "done" } }),
         ev("reopen", "user_edited", "2026-09-24T00:00:00Z", { before: { status: "done" }, after: { status: "open" } }),
@@ -128,10 +129,10 @@ describe("retention (지표 3)", () => {
   });
 
   it("첫 활동 주 기준 N주 뒤 활동 비율 (아직 오지 않은 주는 분모에서 뺀다)", () => {
-    const opened = (userId: string, at: string): MetricEventRow => ({ userId, type: "app_opened", actionId: null, at });
+    const opened = (userId: string, at: string) => ({ userId, at });
     const r = retention(
-      [opened("u1", "2026-09-08T01:00:00Z"), opened("u1", "2026-09-22T01:00:00Z"), opened("u2", "2026-09-15T01:00:00Z")],
-      [ev("x", "user_confirmed", "2026-09-16T01:00:00Z", { userId: "u2" })],
+      [opened("u1", "2026-09-08T01:00:00Z"), opened("u1", "2026-09-22T01:00:00Z"), opened("u2", "2026-09-15T01:00:00Z"), opened("u2", "2026-09-16T01:00:00Z")],
+      new Date("2026-09-29T00:00:00Z"), // 9/28 주가 진행 중 → 마지막으로 끝난 주는 9/21
       2,
     );
     expect(r.cohortSize).toBe(2);
@@ -142,6 +143,12 @@ describe("retention (지표 3)", () => {
     ]);
     // 1주 뒤: u1(9/14 활동 없음) · u2(9/21 활동 없음) → 0 / 2. 2주 뒤: u1만 대상(9/21 활동) → 1 / 1
     expect(r.retention).toEqual([1, 0, 1]);
+  });
+
+  it("진행 중인 주는 N주 뒤 판단에 쓰지 않는다 (기간으로 잘린 활동이 아니라 처음 활동부터 본다)", () => {
+    const r = retention([{ userId: "u1", at: "2026-09-08T01:00:00Z" }, { userId: "u2", at: "2026-09-15T01:00:00Z" }], new Date("2026-09-23T00:00:00Z"), 1);
+    // 이번 주(9/21) 진행 중 → 1주 뒤는 u1(9/14)만 대상, 활동 없음
+    expect(r.retention).toEqual([1, 0]);
   });
 });
 

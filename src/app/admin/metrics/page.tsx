@@ -25,6 +25,9 @@ export default async function MetricsPage({ searchParams }: { searchParams: Prom
   const to = new Date();
   const report = await loadMetrics(createAdminClient(), { from: new Date(to.getTime() - days * 86_400_000), to });
   const { misjudgment: m, start, retention, missed } = report;
+  // 피벗 판단은 자동 반영이 틀린 비율로 한다 (PRD 6장). 구분이 생기기 전 기록뿐이면 전체 비율을 보여준다.
+  const auto = m.byConfirmation.auto;
+  const headline = auto.created > 0 ? { label: "자동 반영", rate: auto.corrected / auto.created } : { label: "전체 · 구분 전 기록 포함", rate: m.rate };
 
   return (
     <main className="mx-auto flex max-w-4xl flex-col gap-6 p-6">
@@ -45,9 +48,11 @@ export default async function MetricsPage({ searchParams }: { searchParams: Prom
 
       <Card>
         <CardHeader>
-          <CardTitle>1. AI 오판율 {pct(m.rate)}</CardTitle>
+          <CardTitle>
+            1. AI 오판율 {pct(headline.rate)} <span className="text-muted-foreground text-sm font-normal">({headline.label})</span>
+          </CardTitle>
           <CardDescription>
-            AI가 원문에서 만든 Action {m.aiCreated}개 중 사용자가 고치거나 지운 것 {m.corrected}개. 완료 처리는 오판이 아닙니다. 할 일 DB에서 가져온 {m.imported}개는
+            AI가 원문에서 만든 Action {m.aiCreated}개 중 사용자가 고치거나 지운 것 {m.corrected}개 (전체 {pct(m.rate)}). 완료 처리는 오판이 아닙니다. 할 일 DB에서 가져온 {m.imported}개는
             AI 판단이 아니라서 뺐습니다.
           </CardDescription>
         </CardHeader>
@@ -117,7 +122,10 @@ export default async function MetricsPage({ searchParams }: { searchParams: Prom
       <Card>
         <CardHeader>
           <CardTitle>3. 리텐션</CardTitle>
-          <CardDescription>첫 활동 주부터 N주 뒤에도 활동한 사용자 비율 (활동: 앱 열기 · 착수 · 수정 · 확인). 사용자 {retention.cohortSize}명.</CardDescription>
+          <CardDescription>
+            처음 활동한 주부터 N주 뒤에도 활동한 사용자 비율 (활동: 앱 열기 · 착수 · 수정 · 확인, 한국 시간 월요일 기준 주). 진행 중인 이번 주는 N주 뒤 판단에서 뺍니다.
+            사용자 {retention.cohortSize}명.
+          </CardDescription>
         </CardHeader>
         <CardContent className="grid gap-4 text-sm sm:grid-cols-2">
           <ul className="space-y-0.5">
