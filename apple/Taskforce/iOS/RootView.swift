@@ -33,6 +33,14 @@ struct RootView: View {
                 }
             }
         }
+        // 알림: 허용돼 있으면 로그인한 사용자로 기기 토큰을 보낸다 (로그아웃이면 멈춘다)
+        .onChange(of: session.state, initial: true) { _, state in
+            switch state {
+            case .signedIn(let userID, _): PushCenter.shared.follow(userID: userID, services: services)
+            case .signedOut: PushCenter.shared.follow(userID: nil, services: nil)
+            case .loading: break
+            }
+        }
     }
 }
 
@@ -53,11 +61,15 @@ private struct SignedInRoot: View {
         self.userID = userID
         self.email = email
         let now = NowStore(services: services)
+        let account = AccountStore(services: services)
         #if DEBUG
-        if SampleData.isEnabled { now.useSampleData() }
+        if SampleData.isEnabled {
+            now.useSampleData()
+            account.useSampleData(connections: SampleData.connections)
+        }
         #endif
         _now = State(initialValue: now)
-        _account = State(initialValue: AccountStore(services: services))
+        _account = State(initialValue: account)
     }
 
     var body: some View {

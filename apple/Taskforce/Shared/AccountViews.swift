@@ -23,7 +23,8 @@ struct ConnectionsView: View {
                         state: account.state(for: provider),
                         comingSoon: account.comingSoon.contains(provider),
                         connecting: account.connecting == provider,
-                        syncing: account.syncing,
+                        syncing: account.isSyncing(provider),
+                        sending: account.syncing,
                         onConnect: { connect(provider) },
                         onSync: { Task { await account.sync() } },
                         onDisconnect: { disconnecting = $0 }
@@ -51,6 +52,11 @@ struct ConnectionsView: View {
         .formStyle(.grouped)
         .navigationTitle("Connections")
         .task { await account.load() }
+        // 동기화 중인 동안 몇 초마다 다시 읽는다 (이 화면이 보이는 동안만)
+        .task(id: account.anySyncing) {
+            guard account.anySyncing else { return }
+            await account.followSync()
+        }
         .confirmationDialog(
             ConnectionProvider.google.displayName,
             isPresented: $confirmingGoogle,
@@ -101,7 +107,10 @@ private struct ConnectionRow: View {
     let state: ConnectionState
     let comingSoon: Bool
     let connecting: Bool
+    /// 서버가 이 연결을 동기화하는 중 (또는 연결 · Sync Now 직후)
     let syncing: Bool
+    /// Sync Now 요청을 보내는 중
+    let sending: Bool
     let onConnect: () -> Void
     let onSync: () -> Void
     let onDisconnect: (ConnectionRecord) -> Void
@@ -114,30 +123,21 @@ private struct ConnectionRow: View {
             VStack(alignment: .leading, spacing: TFSpace.xxs) {
                 Text(provider.displayName)
                     .foregroundStyle(TFColor.textPrimary)
-                if let status {
-                    Text(status.text)
-                        .font(TFFont.footnote)
-                        .foregroundStyle(status.alert ? TFColor.statusOverdue : TFColor.textSecondary)
-                        .lineLimit(2)
+                if let status = state.statusLine(for: provider, syncing: syncing, comingSoon: comingSoon) {
+                    HStack(spacing: TFSpace.xs) {
+                        if status.showsProgress {
+                            ProgressView()
+                                .controlSize(.mini)
+                        }
+                        Text(status.text)
+                            .lineLimit(2)
+                    }
+                    .font(TFFont.footnote)
+                    .foregroundStyle(status.isAlert ? TFColor.statusOverdue : TFColor.textSecondary)
                 }
             }
             Spacer(minLength: TFSpace.sm)
             trailing
-        }
-    }
-
-    private var status: (text: String, alert: Bool)? {
-        if comingSoon, !state.isConnected { return ("Coming soon", false) }
-        switch state {
-        case .notConnected:
-            return provider.note.map { ($0, false) }
-        case .connected(let record):
-            let synced = record.lastSyncedAt.map { "Synced \(WhenText.relative($0))" } ?? "Connected"
-            return ([record.displayName, synced].compactMap { $0 }.joined(separator: " · "), false)
-        case .syncFailed:
-            return ("Last sync failed", true)
-        case .needsReconnect:
-            return ("Reconnect to keep syncing", true)
         }
     }
 
@@ -157,11 +157,12 @@ private struct ConnectionRow: View {
                     .buttonStyle(.bordered)
             case .connected(let record), .syncFailed(let record):
                 Menu {
+                    // 동기화 중에 눌러도 된다: 서버가 429로 답하면 오류 없이 "Syncing…" 그대로
                     Button("Sync Now", action: onSync)
-                        .disabled(syncing)
+                        .disabled(sending)
                     Button("Disconnect", role: .destructive) { onDisconnect(record) }
                 } label: {
-                    Image(systemName: syncing ? "arrow.triangle.2.circlepath" : "ellipsis.circle")
+                    Image(systemName: "ellipsis.circle")
                         .foregroundStyle(TFColor.textSecondary)
                 }
                 .menuStyle(.borderlessButton)

@@ -1,0 +1,6 @@
+// Release 빌드(TestFlight · App Store)만. Base(+ Secrets)를 그대로 쓰고 서버 주소만 운영 서버로 고정한다.
+// Debug는 Secrets.xcconfig의 API_BASE_URL(로컬 서버 등)을 그대로 쓴다. Supabase URL · 키는 두 설정 모두 Secrets에서 온다.
+// xcconfig에서 "//"는 주석이라 URL의 "//"를 "/$()/"로 적는다.
+#include "Base.xcconfig"
+
+API_BASE_URL = https:/$()/api.taskforcelabs.dev

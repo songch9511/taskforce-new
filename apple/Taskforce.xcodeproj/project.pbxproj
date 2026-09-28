@@ -11,6 +11,7 @@
 		03921D74809B28972F7A6762 /* LauncherPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = D29FF94F9BE621AF3A6095B4 /* LauncherPanel.swift */; };
 		2DF2F905D563F3DF432CF8B7 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = DE37FA5998D1A9FB0C6A9AF2 /* Assets.xcassets */; };
 		31373BB6936E3F2AC9DB6243 /* SignIn.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB26C2543E88F763B3553D02 /* SignIn.swift */; };
+		3498CC69345186E53C0CC66E /* PushCenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7439B64C561B831037F0D2E2 /* PushCenter.swift */; };
 		463B3B9643F7288FE0FDD9B7 /* AccountDeletion.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8F35BE01B9CE310854A11A47 /* AccountDeletion.swift */; };
 		497A72C80C3F5A62742FA119 /* TaskforceApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2DD246DFD55D3C8EB54CDCF0 /* TaskforceApp.swift */; };
 		51DD873085D1961D40AC7681 /* TaskforceUI in Frameworks */ = {isa = PBXBuildFile; productRef = 80B175BF4CA400FA877FD5AF /* TaskforceUI */; };
@@ -25,6 +26,7 @@
 		BFA4251C2205BD1639A1ECB9 /* AccountSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1BBB26ECA12CD6A87E74BA4A /* AccountSheet.swift */; };
 		C503B55F9B1BE9972DE63908 /* LauncherView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 89F1ED15CD31CFD73551EE92 /* LauncherView.swift */; };
 		D872654C1DF62819BA31E385 /* NowStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0C3F69D6A673231631FB11C /* NowStore.swift */; };
+		E185BE8D099E7CD4FF8F72D1 /* IOSAppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 430F30EA2339CCCFF7AAF2D4 /* IOSAppDelegate.swift */; };
 		E2E22004841EC931D746713B /* AccountStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9E5447C917C7443CACB72BD8 /* AccountStore.swift */; };
 		EA68509AE7950D6476FCBBB3 /* HomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2044DBA924AC241979F1353D /* HomeView.swift */; };
 		EE5266EC7D5700427BFCFD8F /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D9F39726A86DE99A44B6BE7 /* RootView.swift */; };
@@ -32,6 +34,7 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		010DF3CB9AFFABF74B07F0F2 /* Release.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Release.xcconfig; sourceTree = "<group>"; };
 		1ADEC50CCCD6DD9A67EAA50B /* Base.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Base.xcconfig; sourceTree = "<group>"; };
 		1BBB26ECA12CD6A87E74BA4A /* AccountSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccountSheet.swift; sourceTree = "<group>"; };
 		1FCAEE30F5C476D81D71E869 /* Taskforce-macOS.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = "Taskforce-macOS.entitlements"; sourceTree = "<group>"; };
@@ -40,9 +43,11 @@
 		292A40762BBF5BFBB1023D7A /* Taskforce-iOS.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = "Taskforce-iOS.entitlements"; sourceTree = "<group>"; };
 		2D9F39726A86DE99A44B6BE7 /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
 		2DD246DFD55D3C8EB54CDCF0 /* TaskforceApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TaskforceApp.swift; sourceTree = "<group>"; };
+		430F30EA2339CCCFF7AAF2D4 /* IOSAppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IOSAppDelegate.swift; sourceTree = "<group>"; };
 		524FC1544A0E35537AE10E50 /* LauncherSnapshot.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LauncherSnapshot.swift; sourceTree = "<group>"; };
 		599D903AD6A4CA63031CAE4D /* SampleData.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SampleData.swift; sourceTree = "<group>"; };
 		6EE4BF508E321D0E6BBC09B1 /* LauncherModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LauncherModel.swift; sourceTree = "<group>"; };
+		7439B64C561B831037F0D2E2 /* PushCenter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PushCenter.swift; sourceTree = "<group>"; };
 		854A74CC3784F0337B1287DB /* NewTaskSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NewTaskSheet.swift; sourceTree = "<group>"; };
 		89F1ED15CD31CFD73551EE92 /* LauncherView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LauncherView.swift; sourceTree = "<group>"; };
 		8F35BE01B9CE310854A11A47 /* AccountDeletion.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccountDeletion.swift; sourceTree = "<group>"; };
@@ -128,6 +133,7 @@
 				9E2BFF6EF4C37CFDCEBD88DB /* AccountViews.swift */,
 				9B61143ECDB3A70FF32355F0 /* AppEnvironment.swift */,
 				F0C3F69D6A673231631FB11C /* NowStore.swift */,
+				7439B64C561B831037F0D2E2 /* PushCenter.swift */,
 				599D903AD6A4CA63031CAE4D /* SampleData.swift */,
 				AB26C2543E88F763B3553D02 /* SignIn.swift */,
 			);
@@ -138,6 +144,7 @@
 			isa = PBXGroup;
 			children = (
 				1ADEC50CCCD6DD9A67EAA50B /* Base.xcconfig */,
+				010DF3CB9AFFABF74B07F0F2 /* Release.xcconfig */,
 			);
 			path = Config;
 			sourceTree = "<group>";
@@ -147,6 +154,7 @@
 			children = (
 				1BBB26ECA12CD6A87E74BA4A /* AccountSheet.swift */,
 				2044DBA924AC241979F1353D /* HomeView.swift */,
+				430F30EA2339CCCFF7AAF2D4 /* IOSAppDelegate.swift */,
 				854A74CC3784F0337B1287DB /* NewTaskSheet.swift */,
 				2D9F39726A86DE99A44B6BE7 /* RootView.swift */,
 			);
@@ -245,6 +253,7 @@
 				025F33A82A421DE1FC6CC896 /* AppEnvironment.swift in Sources */,
 				EA68509AE7950D6476FCBBB3 /* HomeView.swift in Sources */,
 				BDD2EC4FA6C9D0C3A53DD751 /* HotKeyCenter.swift in Sources */,
+				E185BE8D099E7CD4FF8F72D1 /* IOSAppDelegate.swift in Sources */,
 				EF810C02C820D340DC1EB4F7 /* LauncherModel.swift in Sources */,
 				03921D74809B28972F7A6762 /* LauncherPanel.swift in Sources */,
 				578284CEF0A8A1DD0672CB7E /* LauncherSnapshot.swift in Sources */,
@@ -253,6 +262,7 @@
 				68DFF761D14327138E4CB5F4 /* MacSettingsView.swift in Sources */,
 				6271B456853052DD6DF1D2F3 /* NewTaskSheet.swift in Sources */,
 				D872654C1DF62819BA31E385 /* NowStore.swift in Sources */,
+				3498CC69345186E53C0CC66E /* PushCenter.swift in Sources */,
 				EE5266EC7D5700427BFCFD8F /* RootView.swift in Sources */,
 				5AADF7819C0656F5D1C3C1C1 /* SampleData.swift in Sources */,
 				31373BB6936E3F2AC9DB6243 /* SignIn.swift in Sources */,
@@ -265,7 +275,7 @@
 /* Begin XCBuildConfiguration section */
 		1C2DC0F5723F1BC552B07C3F /* Release */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = 1ADEC50CCCD6DD9A67EAA50B /* Base.xcconfig */;
+			baseConfigurationReference = 010DF3CB9AFFABF74B07F0F2 /* Release.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;

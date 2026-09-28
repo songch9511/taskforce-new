@@ -6,6 +6,8 @@ import TaskforceUI
 struct TaskforceApp: App {
     #if os(macOS)
     @NSApplicationDelegateAdaptor(MacAppDelegate.self) private var appDelegate
+    #else
+    @UIApplicationDelegateAdaptor(IOSAppDelegate.self) private var appDelegate
     #endif
 
     var body: some Scene {

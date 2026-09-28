@@ -6,6 +6,8 @@ import TaskforceKit
 /// 구역마다 하나 이상: Review 3 · In Progress 1 · To Do 2 · Done Today 1. To Do · In Progress · Done 옮기기도 서버 없이 반영된다.
 enum SampleData {
     static var isEnabled: Bool { ProcessInfo.processInfo.arguments.contains("-TFSampleData") }
+    /// 첫 동기화 화면 (`-TFSampleData -TFSampleSyncing`): 할 일 없이 Notion이 동기화 중
+    static var isSyncing: Bool { ProcessInfo.processInfo.arguments.contains("-TFSampleSyncing") }
 
     static let reviewID = UUID(uuidString: "5A000000-0000-4000-8000-000000000001")!
     /// 로그인 없이 견본 화면을 띄울 때 쓰는 사용자 id (iPhone)
@@ -27,6 +29,17 @@ enum SampleData {
             ],
             weeklyCheck: nil
         )
+    }
+
+    /// 연결: Notion 하나 (첫 동기화 화면이면 동기화 중)
+    static var connections: [ConnectionRecord] {
+        let now = Date()
+        return [
+            ConnectionRecord(
+                id: id(90), provider: ConnectionProvider.notion.rawValue, displayName: "Acme", status: .active,
+                lastSyncedAt: isSyncing ? now : now.addingTimeInterval(-600), lastError: nil, syncStartedAt: isSyncing ? now : nil
+            ),
+        ]
     }
 
     /// 오늘 끝낸 할 일
@@ -92,7 +105,11 @@ extension NowStore {
     /// 견본으로 채운다 (이후 `load()`는 서버를 부르지 않는다)
     func useSampleData() {
         sampleMode = true
-        applySample(SampleData.now, doneToday: SampleData.doneToday, evidence: SampleData.evidence)
+        if SampleData.isSyncing {
+            applySample(NowResponse(now: [], confirmations: [], weeklyCheck: nil), doneToday: [], evidence: [:])
+        } else {
+            applySample(SampleData.now, doneToday: SampleData.doneToday, evidence: SampleData.evidence)
+        }
     }
 
     /// 견본에서 직접 추가 (`add(title:due:)`, 서버를 부르지 않는다)

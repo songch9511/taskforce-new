@@ -98,6 +98,31 @@ struct APIClientGoLiveTests {
         #expect(try json(requests.last?.body) == ["question": "투자 자료 언제까지?"] as NSDictionary)
     }
 
+    @Test func syncWaitsForTheServerAndBusyIsNotAnError() async throws {
+        let api = client(status: 429, body: #"{"error":{"code":"rate_limited","message":"이미 동기화 중이거나 방금 동기화했습니다."}}"#)
+        do {
+            try await api.syncConnections()
+            Issue.record("오류가 나야 함")
+        } catch let error as APIError {
+            #expect(SyncNowFailure.classify(error) == .alreadySyncing)
+        }
+        // 서버가 끝날 때까지(최대 4분) 답하지 않아 기본 60초에 끊기지 않게
+        #expect(requests.last?.timeout == 300)
+        #expect(requests.last?.url.path == "/api/v1/connections/sync")
+    }
+
+    @Test func registersAndUnregistersDevice() async throws {
+        let api = client(status: 204, body: "")
+        let registration = DeviceRegistration(token: "a1b2c3d4e5f60718293a4b5c6d7e8f90", platform: .ios, environment: .sandbox, appVersion: "0.1.0 (1)")
+        try await api.registerDevice(registration)
+        try await api.unregisterDevice(token: registration.token)
+        #expect(requests.map { "\($0.method) \($0.url.path)" } == ["POST /api/v1/devices", "DELETE /api/v1/devices"])
+        #expect(try json(requests[0].body) == [
+            "token": "a1b2c3d4e5f60718293a4b5c6d7e8f90", "platform": "ios", "environment": "sandbox", "app_version": "0.1.0 (1)",
+        ] as NSDictionary)
+        #expect(try json(requests[1].body) == ["token": "a1b2c3d4e5f60718293a4b5c6d7e8f90"] as NSDictionary)
+    }
+
     @Test func consentRequiredIsConflict() async throws {
         let api = client(status: 409, body: #"{"error":{"code":"conflict","message":"동의가 필요합니다"}}"#)
         do {

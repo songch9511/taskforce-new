@@ -73,23 +73,30 @@ public struct ConnectionRecord: Decodable, Sendable, Hashable, Identifiable {
     public let status: ConnectionStatus?
     public let lastSyncedAt: Date?
     public let lastError: String?
+    /// 서버가 동기화하는 동안의 잠금 (시작 시각). 끝나면 비운다 (`ConnectionSync`)
+    public let syncStartedAt: Date?
 
-    public static let columns = "id, provider, display_name, status, last_synced_at, last_error"
+    public static let columns = "id, provider, display_name, status, last_synced_at, last_error, sync_started_at"
 
     enum CodingKeys: String, CodingKey {
         case id, provider, status
         case displayName = "display_name"
         case lastSyncedAt = "last_synced_at"
         case lastError = "last_error"
+        case syncStartedAt = "sync_started_at"
     }
 
-    public init(id: UUID, provider: String, displayName: String?, status: ConnectionStatus?, lastSyncedAt: Date?, lastError: String?) {
+    public init(
+        id: UUID, provider: String, displayName: String?, status: ConnectionStatus?, lastSyncedAt: Date?, lastError: String?,
+        syncStartedAt: Date? = nil
+    ) {
         self.id = id
         self.provider = provider
         self.displayName = displayName
         self.status = status
         self.lastSyncedAt = lastSyncedAt
         self.lastError = lastError
+        self.syncStartedAt = syncStartedAt
     }
 
     public init(from decoder: Decoder) throws {
@@ -100,6 +107,7 @@ public struct ConnectionRecord: Decodable, Sendable, Hashable, Identifiable {
         status = (try? c.decodeIfPresent(String.self, forKey: .status)).flatMap { $0.flatMap(ConnectionStatus.init(rawValue:)) }
         lastSyncedAt = try c.decodeIfPresent(Date.self, forKey: .lastSyncedAt)
         lastError = try c.decodeIfPresent(String.self, forKey: .lastError)
+        syncStartedAt = try c.decodeIfPresent(Date.self, forKey: .syncStartedAt)
     }
 }
 
@@ -131,6 +139,97 @@ public enum ConnectionState: Equatable, Sendable {
         if let record = latest(.error) { return .syncFailed(record) }
         if let record = latest(.reauth) ?? latest(.revoked) { return .needsReconnect(record) }
         return .notConnected
+    }
+
+    /// 연결 목록 한 줄의 상태. 동기화 중이면 "Syncing…" (작은 진행 표시와 함께)
+    public func statusLine(for provider: ConnectionProvider, syncing: Bool, comingSoon: Bool, now: Date = Date()) -> ConnectionStatusLine? {
+        if comingSoon, !isConnected { return ConnectionStatusLine("Coming soon") }
+        switch self {
+        case .notConnected:
+            return provider.note.map { ConnectionStatusLine($0) }
+        case .needsReconnect:
+            return ConnectionStatusLine("Reconnect to keep syncing", isAlert: true)
+        case .connected, .syncFailed:
+            if syncing { return ConnectionStatusLine(ConnectionSync.label, showsProgress: true) }
+            guard case .connected(let record) = self else { return ConnectionStatusLine("Last sync failed", isAlert: true) }
+            let synced = record.lastSyncedAt.map { "Synced \(WhenText.relative($0, now: now))" } ?? "Connected"
+            return ConnectionStatusLine([record.displayName, synced].compactMap { $0 }.joined(separator: " · "))
+        }
+    }
+}
+
+public struct ConnectionStatusLine: Equatable, Sendable {
+    public let text: String
+    /// 빨강 (다시 연결 · 실패)
+    public let isAlert: Bool
+    /// 글자 앞 작은 진행 표시 (동기화 중)
+    public let showsProgress: Bool
+
+    public init(_ text: String, isAlert: Bool = false, showsProgress: Bool = false) {
+        self.text = text
+        self.isAlert = isAlert
+        self.showsProgress = showsProgress
+    }
+}
+
+/// 동기화 진행 표시 (C11 첫 동기화 경험). 서버 잠금(`sync_started_at`)이 기준이고,
+/// 연결 직후 · Sync Now 직후 서버 잠금이 보이기 전까지는 앱이 먼저 "Syncing…"을 보여 준다 (`requestedAt`).
+public enum ConnectionSync {
+    public static let label = "Syncing…"
+    /// 서버 잠금이 이보다 오래되면 중간에 죽은 실행으로 본다 (서버 `SYNC_LEASE_MINUTES`와 같다)
+    public static let leaseTimeout: TimeInterval = 10 * 60
+    /// 앱이 먼저 보여 주는 "Syncing…"의 최대 시간 (서버 잠금이 끝내 보이지 않으면 거둔다)
+    public static let optimisticWindow: TimeInterval = 90
+    /// 기기와 서버의 시계 차이
+    static let clockTolerance: TimeInterval = 10
+    /// 동기화 중일 때 연결을 다시 읽는 간격 (화면이 보이는 동안만)
+    public static let pollInterval: Duration = .seconds(6)
+
+    /// 서버가 이 연결을 지금 동기화하는 중인지
+    public static func isLeased(_ record: ConnectionRecord, at now: Date) -> Bool {
+        guard let started = record.syncStartedAt else { return false }
+        return now.timeIntervalSince(started) < leaseTimeout
+    }
+
+    /// "Syncing…"을 보여 줄지. `requestedAt`: 이 서비스를 연결했거나 Sync Now를 누른 때 (앱 시계)
+    public static func isSyncing(_ record: ConnectionRecord, requestedAt: Date?, at now: Date) -> Bool {
+        if isLeased(record, at: now) { return true }
+        guard let requestedAt, now.timeIntervalSince(requestedAt) < optimisticWindow else { return false }
+        // 기다리기 시작한 뒤에 끝난 동기화가 있으면 끝남
+        guard let last = record.lastSyncedAt else { return true }
+        return last < requestedAt.addingTimeInterval(-clockTolerance)
+    }
+
+    /// 연결 중 하나라도 동기화 중인지 (빈 목록의 "Syncing…" 한 줄 · 다시 읽기를 이어 갈지)
+    public static func anySyncing(_ records: [ConnectionRecord], requested: [String: Date], at now: Date) -> Bool {
+        records.contains { isSyncing($0, requestedAt: requested[$0.provider], at: now) }
+    }
+
+    /// 연결을 새로 읽은 뒤 남길 앱 표시: 서버 잠금이 보였거나(그다음은 서버가 정한다) 동기화가 끝났거나 시간이 지난 것은 거둔다
+    public static func pending(_ requested: [String: Date], after records: [ConnectionRecord], at now: Date) -> [String: Date] {
+        requested.filter { provider, since in
+            let mine = records.filter { $0.provider == provider }
+            if mine.contains(where: { isLeased($0, at: now) }) { return false }
+            return mine.contains { isSyncing($0, requestedAt: since, at: now) }
+                || (mine.isEmpty && now.timeIntervalSince(since) < optimisticWindow)
+        }
+    }
+}
+
+/// `POST /connections/sync`(Sync Now)가 실패했을 때 할 일
+public enum SyncNowFailure: Equatable, Sendable {
+    /// 이미 동기화 중이거나 방금 동기화함 (429 rate_limited): 오류가 아니다. 연결을 다시 읽어 "Syncing…" · "Synced just now"로 보여 준다
+    case alreadySyncing
+    /// 외부 AI 처리 동의가 먼저 필요함 (409 conflict)
+    case consentRequired
+    case failed(String)
+
+    public static func classify(_ error: APIError) -> SyncNowFailure {
+        switch error {
+        case .server(_, .rateLimited, _), .unexpectedStatus(429): .alreadySyncing
+        case .server(_, .conflict, _): .consentRequired
+        default: .failed(error.userMessage)
+        }
     }
 }
 
