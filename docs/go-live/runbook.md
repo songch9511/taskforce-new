@@ -191,15 +191,15 @@ union all select 'profiles', count(*) from public.profiles where user_id = '<id>
 
 | # | 항목 | 담당 | 끝난 기준 | 먼저 필요한 것 |
 |---|---|---|---|---|
-| I1 | Vercel 프로젝트 (Pro 팀 `songch9511s-projects`) | 사용자 | Production 배포 성공, 리전 `syd1` | — |
-| I2 | 환경변수 전부 (2장 표) | 사용자 | 표의 모든 값이 Production에 있음, 재배포 | 각 키 발급(I6~I9, L3, L5, L7) |
-| I3 | 도메인 `api.taskforcelabs.dev` | 사용자 | 인증 없는 요청에 401 | I1 |
+| I1 | Vercel 프로젝트 (Pro 팀 `songch9511s-projects`) | 사용자 ✅ (2026-09-28) | Production 배포 성공, 리전 `syd1` | — |
+| I2 | 환경변수 전부 (2장 표) | 사용자 ✅ 1차 (2026-09-28, Google · Slack 값은 L3 · L5 · L7 뒤) | 표의 모든 값이 Production에 있음, 재배포 | 각 키 발급(I6~I9, L3, L5, L7) |
+| I3 | 도메인 `api.taskforcelabs.dev` | 사용자 ✅ (2026-09-28) | 인증 없는 요청에 401 | I1 |
 | I4 | 운영 DB 마이그레이션 적용 | 코드(명령 준비) → **사용자**(승인 · 실행) | 4장 읽기 쿼리로 새 테이블 확인 | C1, C3~C5의 마이그레이션 |
-| I5 | Supabase Auth URL · Apple 제공자 | 사용자 | 운영 서버로 앱 로그인 성공 | I3 |
-| I6 | Notion 연결 설정에 운영 redirect 추가 | 사용자 | 앱에서 Notion 연결 → 앱으로 복귀 → 동기화 | I3, C1 |
-| I7 | APNs 키 | 사용자 | TestFlight 기기에서 알림 수신 | I2 |
-| I8 | Sign in with Apple 키 | 사용자 | `APPLE_*` 4개가 env에 있음 | — |
-| I9 | OpenRouter 운영 키 · 로깅 꺼짐 · 사용 한도 | 사용자 | 설정 화면에서 확인 | — |
+| I5 | Supabase Auth URL · Apple 제공자 | 사용자 ✅ 설정 (2026-09-28, 운영 서버로 앱 로그인 확인 남음) | 운영 서버로 앱 로그인 성공 | I3 |
+| I6 | Notion 연결 설정에 운영 redirect 추가 | 사용자 ✅ 설정 (2026-09-28, 앱에서 연결 확인 남음) | 앱에서 Notion 연결 → 앱으로 복귀 → 동기화 | I3, C1 |
+| I7 | APNs 키 | 사용자 ✅ 키 · env (2026-09-28, PR #4 배포 뒤 기기 수신 확인 남음) | TestFlight 기기에서 알림 수신 | I2 |
+| I8 | Sign in with Apple 키 | 사용자 ✅ (2026-09-28) | `APPLE_*` 4개가 env에 있음 | — |
+| I9 | OpenRouter 운영 키 · 로깅 꺼짐 · 사용 한도 | 사용자 ✅ (2026-09-28: 한도 $10, 계정 Privacy에서 ZDR 필수 · 학습 엔드포인트 모두 끔. 키는 아직 로컬과 하나를 같이 쓴다 → 출시 직전 운영 키 분리. 키 만료 2027-03-24) | 설정 화면에서 확인 | — |
 | I10 | Supabase Free · 백업 없음 확인 | 사용자 | Billing · Backups 화면 확인 (4장) | — |
 | I11 | Cron 동작 | 사용자 | `/api/cron/sync` 15분마다 200, `/api/cron/reminders` 09:00 KST 200, `/api/cron/retention` 03:30 KST 200 | I1, I2 |
 | I12 | 운영 계정 2단계 인증 (Vercel · Supabase · GitHub · Google · Apple · Slack · Notion · OpenRouter) | 사용자 | 모두 켜짐 (처리방침 9장 약속) | — |

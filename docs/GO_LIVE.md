@@ -47,6 +47,7 @@ App Store 정식 출시가 아니다. "Notion만 연결할 수 있다"로는 go 
 - 앱(C6): iPhone 한 화면(Review 카드 · In Progress / To Do / Done Today · + 직접 추가), Mac ⌥Space 런처(검색 · 물어보기 · 직접 추가 · ⌘K 상태 · 지우기), 연결 · AI 동의 · 계정 메뉴, Liquid Glass(iOS 26 · macOS 26, 이전 OS는 기존 재질).
 - 서버: 연결 틀 · 동의(C1), 계정 삭제 시 Apple 토큰 폐기(C2), 물어보기(C3), 공급자 고정(C7), 직접 추가(`POST /api/v1/actions`), 작업 상태(`POST /api/v1/actions/:id/progress`), 내가 쓴 Notion 문서 판정(`written_by_me`), Notion 할 일 DB 자동 확인.
 - 실제 DB에 `20261008` ~ `20261010` 마이그레이션 적용.
+- 운영 서버 설정(I1 ~ I3 · I5 ~ I9): Vercel 배포 · `api.taskforcelabs.dev` · 환경변수(Google · Slack 제외) · Supabase Auth URL · Notion 운영 redirect · APNs · Sign in with Apple 키 · OpenRouter 한도와 계정 ZDR. 알림 서버 코드는 PR #4가 배포되면 켜진다.
 
 **진행 순서**
 
