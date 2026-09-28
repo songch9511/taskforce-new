@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { NotionPage } from "./api";
-import { mentionedUserIds, pageOccurredAt, pageToItem } from "./map";
+import { mentionedUserIds, pageOccurredAt, pageToItem, pageWrittenByMe } from "./map";
 
 const person = (id: string, name: string, email?: string) => ({ object: "user" as const, id, name, type: "person", person: email ? { email } : {} });
 
@@ -35,12 +35,34 @@ describe("pageToItem", () => {
       lastEditedAt: new Date("2026-09-08T05:43:00.000Z"),
       externalUrl: "https://www.notion.so/p1",
       participants: { attendees: [{ name: "도윤", email: "doyun@x.com" }, { name: "태오" }] },
+      writtenByMe: null,
     });
   });
 
   it("회의 표시가 없는 페이지는 문서로 본다", () => {
     const doc = { ...page, properties: { Name: { type: "title", title: [{ plain_text: "SFT 스펙" }] } } };
     expect(pageToItem(doc, "본문", []).kind).toBe("doc");
+  });
+});
+
+describe("pageWrittenByMe", () => {
+  const doc = { ...page, created_by: { id: "me" }, properties: { Name: { type: "title", title: [{ plain_text: "사이트 개편 계획" }] } } };
+
+  it("문서를 만든 사람이 연결한 사람이면 true, 다른 사람이면 false", () => {
+    expect(pageToItem(doc, "- 도메인 설정 바꾸기", [], "me").writtenByMe).toBe(true);
+    expect(pageToItem({ ...doc, created_by: { id: "someone" } }, "- 도메인 설정 바꾸기", [], "me").writtenByMe).toBe(false);
+  });
+
+  it("회의록은 사용자가 만들었어도 다른 사람의 말이 담기므로 모름(null)", () => {
+    const meeting = { ...page, created_by: { id: "me" } };
+    expect(pageToItem(meeting, markdown, [], "me")).toMatchObject({ kind: "meeting", writtenByMe: null });
+    expect(pageWrittenByMe(meeting, "meeting", "me")).toBeNull();
+  });
+
+  it("연결한 사람이나 만든 사람을 모르면 null", () => {
+    expect(pageToItem(doc, "본문", []).writtenByMe).toBeNull();
+    expect(pageWrittenByMe(doc, "doc", null)).toBeNull();
+    expect(pageWrittenByMe({ ...doc, created_by: undefined }, "doc", "me")).toBeNull();
   });
 });
 

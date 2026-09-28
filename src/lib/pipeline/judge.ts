@@ -1,6 +1,6 @@
 import type { JevDecision, JevQuestion } from "@/lib/ai/jev";
 import { kstDate } from "@/lib/ai/prompts/extract";
-import { JUDGE_PROMPT_VERSION, JUDGE_QUESTIONS } from "@/lib/ai/prompts/judge";
+import { JUDGE_PROMPT_VERSION, JUDGE_QUESTIONS, WRITTEN_BY_ME_PROMPT_VERSION, WRITTEN_BY_ME_QUESTIONS } from "@/lib/ai/prompts/judge";
 
 import { findNameVariants, userPosition, type Participants, type UserIdentity } from "./identity";
 import { JUDGE_THRESHOLDS, type JudgeThresholds } from "./judge.config";
@@ -14,7 +14,14 @@ export type JudgeDecision = "auto" | "confirm" | "reject";
 
 export type JudgeCandidate = { title: string; quote: string; due_text: string | null; counterpart?: string | null };
 
-export type JudgeSource = { text: string; kind: string; occurredAt: Date; participants?: Participants };
+export type JudgeSource = {
+  text: string;
+  kind: string;
+  occurredAt: Date;
+  participants?: Participants;
+  /** 사용자가 직접 쓴 원문인가 (sources.written_by_me). true일 때만 판정에 넘긴다 */
+  writtenByMe?: boolean | null;
+};
 
 type Choice<K extends string> = { choice: K; probabilities: Partial<Record<K, number>> };
 
@@ -67,7 +74,13 @@ export function buildJudgeState(candidate: JudgeCandidate, source: JudgeSource, 
       ...(candidate.counterpart ? { counterpart: candidate.counterpart } : {}),
     },
     context: quoteContext(source.text, candidate.quote) ?? candidate.quote,
-    source: { kind: source.kind, occurred_at: kstDate(source.occurredAt).iso },
+    source: {
+      kind: source.kind,
+      occurred_at: kstDate(source.occurredAt).iso,
+      // 사용자가 쓴 문서에 적은 할 일은 약속 · 요청 말투가 없어도 사용자가 정한 일이다 (WRITTEN_BY_ME_QUESTIONS).
+      // 모르거나(null) 다른 사람이 쓴 문서(false)는 넘기지 않는다: 작성자 정보가 없던 때와 같은 기준으로 판정한다.
+      ...(source.writtenByMe === true ? { written_by_me: true } : {}),
+    },
   };
 }
 
@@ -119,12 +132,16 @@ export async function judgeCandidate(
   decide: Decide,
   thresholds: JudgeThresholds = JUDGE_THRESHOLDS,
 ): Promise<JudgeResult> {
-  const response = await decide({ state: buildJudgeState(candidate, source, identity), questions: JUDGE_QUESTIONS });
+  // 사용자가 직접 쓴 문서만 그에 맞춘 질문으로 묻는다. 작성자를 모르면 전과 같은 질문 (느슨해지지 않게).
+  // 남기는 버전도 질문 묶음마다 다르다 (judge_logs에서 어느 질문으로 물었는지 가른다).
+  const self = source.writtenByMe === true;
+  const questions = self ? WRITTEN_BY_ME_QUESTIONS : JUDGE_QUESTIONS;
+  const response = await decide({ state: buildJudgeState(candidate, source, identity), questions });
   const signals = parseJudgeAnswers(response.answers);
   return {
     ...decideOutcome(signals, thresholds),
     signals,
-    promptVersion: JUDGE_PROMPT_VERSION,
+    promptVersion: self ? WRITTEN_BY_ME_PROMPT_VERSION : JUDGE_PROMPT_VERSION,
     model: response.model,
     cost: response.usage?.cost,
   };

@@ -60,6 +60,7 @@ struct ActionHistoryTests {
         #expect(sentence(event("user_confirmed", actor: .user)) == "맞다고 확인함")
         #expect(sentence(event("user_started", actor: .user)) == "시작함")
         #expect(sentence(event("user_reported_missing", actor: .user)) == "빠진 할 일로 신고해 추가함")
+        #expect(sentence(event("user_created", actor: .user)) == "직접 추가함")
     }
 
     @Test func attachesClosestEvidenceFromSameSource() {

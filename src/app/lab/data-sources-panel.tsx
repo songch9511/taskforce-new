@@ -47,9 +47,9 @@ export function DataSourcesPanel({ connectionId }: { connectionId: string }) {
   return (
     <div className="flex flex-col gap-3">
       <p className="text-muted-foreground text-sm">
-        할 일 DB로 확인한 데이터베이스는 담당 · 기한 · 상태 속성을 그대로 Action에 반영합니다 (LLM을 쓰지 않음). &quot;가져오지 않음&quot;으로 확인한
-        데이터베이스는 건너뜁니다. 확인하기 전에는 글 원문으로 읽습니다. 목표 · 투표처럼 약속이 나오지 않는 데이터베이스는 &quot;가져오지 않음&quot;으로 두면
-        LLM으로 읽지 않습니다.
+        할 일 DB로 확인한 데이터베이스는 담당 · 기한 · 상태 속성을 그대로 Action에 반영합니다 (LLM을 쓰지 않음). 할 일 DB로 보이고 속성이 분명하면
+        동기화가 자동으로 확인합니다. &quot;가져오지 않음&quot;으로 확인한 데이터베이스는 건너뜁니다. 확인하기 전에는 글 원문으로 읽습니다. 목표 · 투표처럼
+        약속이 나오지 않는 데이터베이스는 &quot;가져오지 않음&quot;으로 두면 LLM으로 읽지 않습니다.
       </p>
       {items.length === 0 && <p className="text-muted-foreground text-sm">연결에 공유된 데이터베이스가 없습니다.</p>}
       {items.map((item) => (
@@ -137,7 +137,10 @@ function DataSourceRow({ connectionId, item, onSaved }: { connectionId: string; 
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="text-sm">
           <span className="font-medium">{item.title ?? "(제목 없음)"}</span>
-          <span className="text-muted-foreground"> · {item.confirmed ? "확인됨" : "제안 (확인 전에는 글 원문으로 읽음)"}</span>
+          <span className="text-muted-foreground">
+            {" "}
+            · {item.confirmed ? (item.setting.confirmedBy === "auto" ? "자동 확인됨" : "확인됨") : "제안 (확인 전에는 글 원문으로 읽음)"}
+          </span>
           {!item.reachable && (
             <div className="text-destructive">
               읽을 수 없습니다. 위의 &quot;Notion 다시 연결 · 페이지 추가&quot;에서 이 데이터베이스(팀스페이스 맨 위에 있으면 데이터베이스 자체)나 이

@@ -1,30 +1,28 @@
 import { describe, expect, it } from "vitest";
 
-import { MISSING_REPORT_LIMIT, rateLimitedUntil } from "./rate-limit";
+import { ACTION_CREATE_LIMIT, ASK_LIMIT, CONNECTION_START_LIMIT, MISSING_REPORT_LIMIT, retryAfterSeconds } from "./rate-limit";
 
-const now = new Date("2026-09-27T03:00:00Z");
-const minutesAgo = (m: number) => new Date(now.getTime() - m * 60_000).toISOString();
-const limit = { max: 3, windowMs: 10 * 60_000 };
+// 세기 · 기록 자체는 DB 함수(take_rate_limit)가 한다: tests/db/rate-limits.test.ts
 
-describe("rateLimitedUntil", () => {
-  it("창 안의 시도가 한도보다 적으면 허용한다", () => {
-    expect(rateLimitedUntil([], now, limit)).toBeNull();
-    expect(rateLimitedUntil([minutesAgo(1), minutesAgo(2)], now, limit)).toBeNull();
+describe("retryAfterSeconds", () => {
+  const now = new Date("2026-09-27T03:00:00Z");
+
+  it("다시 할 수 있는 시각까지 남은 초를 올림한다", () => {
+    expect(retryAfterSeconds(new Date(now.getTime() + 300_000), now)).toBe(300);
+    expect(retryAfterSeconds(new Date(now.getTime() + 1_200), now)).toBe(2);
   });
 
-  it("창 밖의 시도는 세지 않는다", () => {
-    expect(rateLimitedUntil([minutesAgo(1), minutesAgo(2), minutesAgo(10), minutesAgo(30)], now, limit)).toBeNull();
+  it("이미 지났거나 바로면 1초", () => {
+    expect(retryAfterSeconds(now, now)).toBe(1);
+    expect(retryAfterSeconds(new Date(now.getTime() - 5_000), now)).toBe(1);
   });
+});
 
-  it("한도에 찼으면 가장 오래된 시도가 창 밖으로 나가는 시각을 돌려준다 (순서와 상관없이)", () => {
-    expect(rateLimitedUntil([minutesAgo(1), minutesAgo(7), minutesAgo(4)], now, limit)).toEqual(new Date(now.getTime() + 3 * 60_000));
-    // 한도를 넘게 쌓여 있으면 한도 아래로 내려갈 때까지
-    expect(rateLimitedUntil([minutesAgo(1), minutesAgo(2), minutesAgo(3), minutesAgo(9)], now, limit)).toEqual(new Date(now.getTime() + 7 * 60_000));
-  });
-
-  it("누락 신고는 10분에 10번까지", () => {
-    const nine = Array.from({ length: 9 }, (_, i) => minutesAgo(i));
-    expect(rateLimitedUntil(nine, now, MISSING_REPORT_LIMIT)).toBeNull();
-    expect(rateLimitedUntil([...nine, minutesAgo(9.5)], now, MISSING_REPORT_LIMIT)).not.toBeNull();
+describe("한도", () => {
+  it("누락 신고 10분 10번 · 물어보기 10분 20번 · 연결 시작 10분 10번 · 직접 추가 10분 30번", () => {
+    expect(MISSING_REPORT_LIMIT).toEqual({ max: 10, windowMs: 600_000 });
+    expect(ASK_LIMIT).toEqual({ max: 20, windowMs: 600_000 });
+    expect(CONNECTION_START_LIMIT).toEqual({ max: 10, windowMs: 600_000 });
+    expect(ACTION_CREATE_LIMIT).toEqual({ max: 30, windowMs: 600_000 });
   });
 });

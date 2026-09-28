@@ -6,7 +6,7 @@ import type { Decide } from "./judge";
 import { InMemoryActionStore, type MergeDeps } from "./merge";
 import { InMemoryTaskLinks, mergeTask, type TaskInput } from "./merge-task";
 import { resolveAction } from "./resolve";
-import type { TaskSnapshot } from "./structured";
+import { snapshotChanges, taskClaims, type TaskSnapshot } from "./structured";
 
 const identity = { name: "청혁", aliases: [], emails: [] };
 const vector = () => {
@@ -172,6 +172,74 @@ describe("mergeTask", () => {
 
     const state = resolveAction(store.all()[0].claims);
     expect([state.status.value, state.due.value]).toEqual(["open", "2026-10-20"]);
+  });
+
+  describe("할 일 DB로 확인되기 전에 같은 페이지가 글 원문으로 들어와 Action이 생긴 경우", () => {
+    /** 글 원문(doc) d1이 page-1에서 만든 Action. 제목이 달라 매칭으로는 확신이 낮다 */
+    const fromDoc = async (store: InMemoryActionStore, links: InMemoryTaskLinks, sourceId = "d1", externalId = "page-1") => {
+      links.textSources.set(sourceId, externalId);
+      return store.create({
+        title: "레이아웃 시안 공유",
+        counterpart: null,
+        embedding: vector(),
+        claims: [],
+        evidence: [{ sourceId, quote: "UI 레이아웃 이미지 보내기", role: "created" }],
+        confirmReasons: [],
+      });
+    };
+
+    it("매칭 · 중복 확인 없이 그 Action에 잇고 할 일 값을 붙인다", async () => {
+      const store = new InMemoryActionStore();
+      const links = new InMemoryTaskLinks(() => store.all());
+      const doc = await fromDoc(store, links);
+      const { d, calls } = deps("same_restated", 0.5); // 매칭했다면 확신이 낮아 새 Action + 중복 확인
+      const outcome = await mergeTask(store, links, task(snap(), null, "22"), { id: "s1", occurredAt: at("22") }, identity, d);
+
+      expect(outcome).toMatchObject({ relation: "duplicate", actionId: doc.id, changes: ["scope", "owner", "due", "status"] });
+      expect(calls.decide).toBe(0);
+      expect(store.all()).toHaveLength(1);
+      expect(doc.confirmReasons).toEqual([]);
+      expect(links.links.get("page-1")).toBe(doc.id);
+      expect(doc.evidence.at(-1)).toMatchObject({ sourceId: "s1", role: "duplicate" });
+      expect(resolveAction(doc.claims).due.value).toBe("2026-09-30");
+
+      // 이후 버전은 연결로 바로 붙는다
+      const done = snap({ status: "done", statusLabel: "Done" });
+      expect((await mergeTask(store, links, task(done, snap(), "25"), { id: "s2", occurredAt: at("25") }, identity, d)).relation).toBe("linked");
+      expect(resolveAction(doc.claims).status.value).toBe("done");
+    });
+
+    it("사용자가 앱에서 지운 Action이면 잇기만 하고 되살리지 않는다", async () => {
+      const store = new InMemoryActionStore();
+      const links = new InMemoryTaskLinks(() => store.all());
+      const doc = await fromDoc(store, links);
+      const [status] = taskClaims(snapshotChanges(null, snap()).filter((c) => c.field === "status"), { editedByUser: false, occurredAt: at("21") }, () => "st");
+      doc.claims.push({ ...status, value: "dropped", origin: "user" });
+      const before = doc.claims.length;
+
+      const outcome = await mergeTask(store, links, task(snap(), null, "22"), { id: "s1", occurredAt: at("22") }, identity, deps().d);
+      expect(outcome).toMatchObject({ relation: "duplicate", actionId: doc.id, changes: [] });
+      expect(doc.claims).toHaveLength(before);
+      expect(resolveAction(doc.claims).status.value).toBe("dropped");
+      expect(links.links.get("page-1")).toBe(doc.id);
+    });
+
+    it("그 페이지에서 Action이 여럿 나왔거나 다른 페이지면 지금처럼 매칭한다", async () => {
+      const store = new InMemoryActionStore();
+      const links = new InMemoryTaskLinks(() => store.all());
+      await fromDoc(store, links, "d1", "page-other");
+      const first = deps();
+      expect((await mergeTask(store, links, task(snap(), null, "22"), { id: "s1", occurredAt: at("22") }, identity, first.d)).relation).toBe("new");
+      expect(first.calls.decide).toBeGreaterThan(0);
+
+      const two = new InMemoryActionStore();
+      const twoLinks = new InMemoryTaskLinks(() => two.all());
+      await fromDoc(two, twoLinks, "d1");
+      await two.create({ title: "다른 할 일", counterpart: null, embedding: null, claims: [], evidence: [{ sourceId: "d1", quote: "다른 줄", role: "created" }], confirmReasons: [] });
+      const second = deps();
+      await mergeTask(two, twoLinks, task(snap(), null, "22"), { id: "s1", occurredAt: at("22") }, identity, second.d);
+      expect(second.calls.decide).toBeGreaterThan(0);
+    });
   });
 
   it("Action을 만든 뒤 연결 직전에 멈췄던 원문을 다시 처리하면 새로 만들지 않고 그 Action에 잇는다", async () => {

@@ -27,23 +27,26 @@
 - 로그인, "지금 할 일", Action 상세(합의 범위 · 근거 인용 · 변경 이력), 확인 요청, AI에게 넘기기
 - 사용자의 수정 · 삭제 · 확정 · 착수는 모두 서버 API로 보내 이벤트로 남긴다 (PRD 지표 1, 2)
 
-### iOS: "이동 중에 받아보고, 바로 넘기기"
+### iOS: 화면 한 장 (go live 모양, 2026-09-27 결정 — VIBE_CODING_PLAN.md Phase A1 대체)
 
 | 기능 | 역할 | 단계 |
 |---|---|---|
-| 공유 확장 (Share Extension) | 메일·메시지·메모·Safari 등 어느 앱에서든 "공유 → Taskforce"로 원문 전송 | MVP |
+| 한 화면 | 위에 Review 카드(한 번에 하나, 확인 · 수정) + 아래 Now 목록(체크 동그라미로 완료) | MVP |
+| 계정 시트 | Connections(연결 · 연결 끊기), AI processing consent(동의 · 철회), Privacy Policy · Terms 링크, Sign out, Delete account(Apple로 다시 인증해 Sign in with Apple 토큰을 폐기한 뒤 삭제) | MVP |
 | 알림 | 확인 요청이 생겼을 때, 기한이 임박했을 때 | MVP |
-| 위젯 · 잠금화면 위젯 | 앱을 열지 않아도 "지금 할 일" 1~3개 | 베타 후반 |
-| App Intents (Siri · 단축어) | "오늘 할 일 뭐야?", 단축어로 원문 보내기 | 이후 |
+| 공유 확장 · 위젯 · App Intents | go live 뒤로 미룬다(7장 "하지 않는 것") | 이후 |
 
-### macOS: "미팅 중에 옆에 두기"
+### macOS: 메뉴 막대 런처 (go live 모양, 2026-09-27 결정)
+
+전역 단축키 **⌥Space**로 여는 메뉴 막대 팝업 하나가 전부다(별도 창 · Dock 앱이 아니다).
 
 | 기능 | 역할 | 단계 |
 |---|---|---|
-| 메뉴 막대 앱 (MenuBarExtra) | 메뉴 막대에서 "지금 할 일"과 확인 요청을 바로 확인 | MVP |
-| 전역 단축키 → 클립보드 보내기 | 회의록·메시지를 복사한 뒤 단축키 한 번으로 전송 | MVP |
-| 공유 확장 · 서비스 메뉴 | 선택한 텍스트나 파일을 Taskforce로 보내기 | MVP |
-| 드래그 앤 드롭 | 회의록 파일(.txt, .md, .pdf)을 창에 끌어다 놓기 | 베타 후반 |
+| Search | "지금 할 일" · 지난 할 일을 찾기 | MVP |
+| Ask | 물어보기(`POST /api/v1/ask`)를 팝업 안에서 바로 | MVP |
+| Hand off | 선택한 할 일을 AI에게 넘기기(핸드오프 마크다운) | MVP |
+| Send as source | 클립보드 · 선택한 텍스트를 원문으로 전송 | MVP |
+| ⌘K | 그 밖의 명령(연결, 계정, 설정 등) 팔레트 | MVP |
 | 알림 | iOS와 같음 | MVP |
 
 ### 웹 (내부용)
@@ -118,6 +121,7 @@ Server Action은 웹 폼 전용이라 Swift 앱에서 부를 수 없다.
 | `POST /api/v1/sources` | 원문 전송 (텍스트 + 관련자 `participants`). 202 + `source_id`, 처리 상태는 `sources.processing_status` | 1 ✅ |
 | `GET` · `PUT /api/v1/profile` | 원문 속 사용자 정보: 기본 이름 · 별칭 · 이메일 | 1 ✅ |
 | `GET /api/v1/now` | "지금 할 일" 순서 + 확인 큐 + 이번 주 주간 질문(`weekly_check: { week_start } \| null`, 물을 때가 아니면 null) | 3 ✅ · A1 ✅ |
+| `POST /api/v1/actions` | 직접 추가 (Mac 런처) `{ title, due_date?, source_id?, quote? }` → 201 `{ action, status: "created" }`. 고른 구절이 그 원문에서 이미 Action의 근거면(누락 신고와 같은 확인) 그 Action을 그대로 200 `{ action, status: "already_tracked" }`(제목 · 기한은 반영하지 않고 횟수 제한에 세지 않는다). 값은 사용자 Claim, 확인 요청 없음, `user_created` 이벤트(지표 4). `source_id` · `quote`는 함께 보내고 구절은 원문에 실제로 있어야 한다(근거 `created`). 없거나 남의 원문 404, 할 일 DB 항목 · 원문에 없는 구절 400, 사용자별 10분에 30번을 넘으면 429. 외부 AI 처리에 동의했으면 매칭용 임베딩을 만든다 (못 만들었으면 다음 원문 처리가 매칭 전에 채운다) | go live · 서버 ✅ |
 | `PATCH /api/v1/actions/:id` | 사용자 수정 (`user_edited` 이벤트). 동시 수정이 겹치면 409 `conflict` | 3 ✅ |
 | `DELETE /api/v1/actions/:id` | 사용자 삭제 (`user_deleted` 이벤트, 실제로는 `dropped` 처리) | 3 ✅ |
 | `POST /api/v1/actions/:id/confirm` | 확인 요청 확정 (`user_confirmed`) | 3 ✅ |

@@ -1,7 +1,7 @@
 import type { EditActionRequest } from "@/lib/api/contract";
 import type { Claim, ClaimField } from "@/lib/pipeline/resolve";
 
-import type { ProjectedAction } from "./project";
+import { changeEvents, projectAction, type EventDraft, type ProjectedAction } from "./project";
 
 // 사용자가 앱에서 고친 값 → Claim (origin: user). 원문이 없고, 판정에서 그 시점까지의 발언보다 우선한다.
 
@@ -43,4 +43,24 @@ export function userClaims(changes: UserChange[], now: Date, newId: () => string
     channel: "note",
     origin: "user",
   }));
+}
+
+/**
+ * 직접 추가 (POST /api/v1/actions): 사용자가 적은 제목 · 기한과, 사용자가 추가했으니 담당은 나 · 상태는 열림.
+ * 값은 모두 사용자 Claim에서 판정한다 (원칙 5). 사용자 Claim만 있으니 확인 요청은 생기지 않는다.
+ * AI가 만든 것이 아니므로 created 대신 user_created 하나를 남긴다 (지표 1의 분모에 넣지 않고 지표 4로 센다).
+ * after에는 created와 같은 값에 관련 원문(source_id, 없으면 null)을 더한다.
+ */
+export function userCreatedAction(input: { title: string; dueDate: string | null; sourceId: string | null }, now: Date, newId: () => string) {
+  const changes: UserChange[] = [
+    { field: "scope", value: input.title },
+    { field: "owner", value: "me" },
+    { field: "status", value: "open" },
+    ...(input.dueDate ? [{ field: "due" as const, value: input.dueDate }] : []),
+  ];
+  const claims = userClaims(changes, now, newId);
+  const projected = projectAction(input.title, claims);
+  const [created] = changeEvents(null, projected, "created");
+  const event: EventDraft = { ...created, type: "user_created", after: { ...created.after, source_id: input.sourceId }, rule: "user" };
+  return { claims, projected, event };
 }

@@ -122,6 +122,16 @@ struct APIClientTests {
         #expect(request.method == "DELETE")
         #expect(request.url.path == "/api/v1/account")
         #expect(request.headers["Authorization"] == "Bearer token-123")
+        // Apple 확인을 취소했으면 본문 없이 (서버는 토큰 폐기 없이 지운다)
+        #expect(request.body == nil || request.body?.isEmpty == true)
+    }
+
+    @Test func deleteAccountSendsAppleAuthorizationCode() async throws {
+        try await client(body: #"{"deleted":true}"#).deleteAccount(authorizationCode: "c0de.apple")
+        let request = try #require(last)
+        #expect(request.method == "DELETE")
+        #expect(request.headers["Content-Type"] == "application/json")
+        #expect(try json(request.body) as NSDictionary == ["apple_authorization_code": "c0de.apple"] as NSDictionary)
     }
 
     @Test func handoff() async throws {
@@ -137,6 +147,59 @@ struct APIClientTests {
         #expect(request.method == "POST")
         #expect(request.url.path == "/api/v1/sources/22222222-2222-4222-8222-222222222222/missing")
         #expect(try json(request.body) as NSDictionary == ["quote": "자료 금요일까지"] as NSDictionary)
+    }
+
+    @Test func createActionWithoutDueOrSource() async throws {
+        let result = try await client(status: 201, body: #"{"action":\#(Fixtures.actionSummary),"status":"created"}"#)
+            .createAction(title: "Send deck to Mina")
+        #expect(result.action.id == Fixtures.actionID)
+        #expect(result.status == .created)
+        let request = try #require(last)
+        #expect(request.method == "POST")
+        #expect(request.url.path == "/api/v1/actions")
+        #expect(request.headers["Authorization"] == "Bearer token-123")
+        #expect(request.headers["Content-Type"] == "application/json")
+        // 기한 없음은 null, 원문을 고르지 않았으면 source_id · quote 키가 없다
+        #expect(try json(request.body) as NSDictionary == ["title": "Send deck to Mina", "due_date": NSNull()] as NSDictionary)
+    }
+
+    @Test func createActionWithDueAndSourceQuote() async throws {
+        _ = try await client(status: 201, body: #"{"action":\#(Fixtures.actionSummary)}"#).createAction(
+            title: "투자 자료 보내기", dueDate: LocalDate("2026-10-02")!, sourceID: Fixtures.sourceID, quote: "자료 금요일까지"
+        )
+        let request = try #require(last)
+        #expect(try json(request.body) as NSDictionary == [
+            "title": "투자 자료 보내기",
+            "due_date": "2026-10-02",
+            "source_id": "22222222-2222-4222-8222-222222222222",
+            "quote": "자료 금요일까지",
+        ] as NSDictionary)
+    }
+
+    @Test func createActionAlreadyTrackedReturnsExistingAction() async throws {
+        let result = try await client(status: 200, body: #"{"action":\#(Fixtures.actionSummary),"status":"already_tracked"}"#)
+            .createAction(title: "투자 자료 보내기", sourceID: Fixtures.sourceID, quote: "자료 금요일까지")
+        #expect(result.status == .alreadyTracked)
+        #expect(result.action.id == Fixtures.actionID)
+    }
+
+    /// status가 없는 옛 서버 · 모르는 값은 추가된 것으로 본다
+    @Test(arguments: [#"{"action":\#(Fixtures.actionSummary)}"#, #"{"action":\#(Fixtures.actionSummary),"status":"merged"}"#])
+    func createActionMissingOrUnknownStatusIsCreated(_ body: String) async throws {
+        let result = try await client(status: 201, body: body).createAction(title: "Send deck to Mina")
+        #expect(result.status == .created)
+        #expect(result.action.id == Fixtures.actionID)
+    }
+
+    @Test func createActionMissingSourceIsNotFound() async throws {
+        let api = client(status: 404, body: #"{"error":{"code":"not_found","message":"원문이 없습니다."}}"#)
+        do {
+            _ = try await api.createAction(title: "a", sourceID: Fixtures.sourceID, quote: "b")
+            Issue.record("오류가 나야 함")
+        } catch let error as APIError {
+            #expect(error == .server(status: 404, code: .notFound, message: "원문이 없습니다."))
+            #expect(error.userMessage == "Not found. It may have been removed.")
+        }
     }
 
     @Test func weeklyCheckAndAppOpenedAccept204() async throws {
@@ -223,7 +286,7 @@ struct APIClientTests {
             Issue.record("오류가 나야 함")
         } catch let error as APIError {
             #expect(error == .server(status: 429, code: .rateLimited, message: "Too many reports"))
-            #expect(error.userMessage == "요청이 너무 많아요. 잠시 뒤에 다시 해 주세요.")
+            #expect(error.userMessage == "Too many requests. Try again in a moment.")
         }
     }
 

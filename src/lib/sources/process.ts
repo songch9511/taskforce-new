@@ -8,7 +8,11 @@ import { embed, embedConfigFromEnv, EmbedError } from "@/lib/ai/embed";
 import { decide, jevConfigFromEnv, JevError } from "@/lib/ai/jev";
 import { completeJson, llmConfigFromEnv, LlmError } from "@/lib/ai/llm";
 import type { ActionSummary, MissingReportResponse } from "@/lib/api/contract";
-import { MISSING_REPORT_LIMIT, rateLimitedUntil, RateLimitedError } from "@/lib/api/rate-limit";
+import { MISSING_REPORT_LIMIT, RateLimitedError } from "@/lib/api/rate-limit";
+import { takeRateLimit } from "@/lib/api/rate-limit-store";
+import { assertConsent, CONSENT_WITHDRAWN_MESSAGE, ConsentRequiredError, withConsentGate } from "@/lib/consent/gate";
+import { consentCheck } from "@/lib/consent/store";
+import { backfillEmbeddings } from "@/lib/pipeline/backfill-embeddings";
 import type { ExtractInput } from "@/lib/pipeline/extract";
 import type { UserIdentity } from "@/lib/pipeline/identity";
 import { mergeJudged, type MergeDeps } from "@/lib/pipeline/merge";
@@ -30,6 +34,9 @@ import { notifyConfirmations } from "@/lib/notify/service";
 // 추출 → 검증 → Jev 판정(judge_logs) → 기존 Action과 매칭 · 병합(actions · claims · evidence · action_events).
 // Action 쓰기는 서버만 할 수 있으므로 service role 클라이언트로 부르고, 모든 쓰기에 user_id를 넣는다.
 // 빠진 할 일 신고(reportMissing, POST /api/v1/sources/:id/missing)도 같은 병합 · 사용자 잠금을 쓴다.
+// 세 함수 모두 모델 호출(LLM · Jev · 임베딩) 직전마다 외부 AI 처리 동의를 다시 확인한다 (withConsentGate).
+// 매칭 전에는 임베딩이 없는 열린 Action(직접 추가할 때 못 만든 것)을 몇 개씩 채운다 (backfillEmbeddings, 실패해도 처리는 계속).
+// 도중에 철회하면 ConsentRequiredError를 던진다: 원문은 failed로 남기고, 부르는 쪽(동기화 · 스크립트)은 남은 항목을 멈춘다.
 
 export type ProcessDeps = PipelineDeps & Pick<MergeDeps, "embed">;
 
@@ -61,6 +68,7 @@ function withUserLock<T>(userId: string, task: () => Promise<T>): Promise<T> {
 
 /** 사용자에게 보여도 되는 오류만 그대로 두고, DB 오류 등은 일반 문구로 바꾼다 (자세한 내용은 서버 로그). */
 function userFacingError(error: unknown): string {
+  if (error instanceof ConsentRequiredError) return CONSENT_WITHDRAWN_MESSAGE;
   if (error instanceof LlmError || error instanceof JevError || error instanceof EmbedError) return error.message.slice(0, 300);
   return "처리 중 오류가 발생했습니다.";
 }
@@ -78,10 +86,13 @@ export async function processSource(
 ): Promise<ProcessResult> {
   const sourceId = source.id;
   const scoped = <T extends { eq: (column: string, value: string) => T }>(query: T) => query.eq("id", sourceId).eq("user_id", source.userId);
+  const check = consentCheck(admin, source.userId);
+  const ai = withConsentGate(deps, check);
   await scoped(admin.from("sources").update({ processing_status: "processing" })).throwOnError();
 
   try {
-    const result = await runPipeline(input, deps);
+    await assertConsent(check);
+    const result = await runPipeline(input, ai);
 
     if (result.judged.length > 0) {
       await admin
@@ -101,15 +112,16 @@ export async function processSource(
 
     // 기존 Action과 맞춰 보고 반영한다.
     const store = new SupabaseActionStore(admin, source.userId);
-    const outcomes = await withUserLock(source.userId, () =>
-      mergeJudged(
+    const outcomes = await withUserLock(source.userId, async () => {
+      await backfillEmbeddings(store, ai.embed);
+      return mergeJudged(
         store,
         result.judged,
         { id: sourceId, text: input.text, kind: input.kind, occurredAt: input.occurredAt },
         input.identity,
-        { embed: deps.embed, decide: deps.decide, newId: () => crypto.randomUUID() },
-      ),
-    );
+        { embed: ai.embed, decide: ai.decide, newId: () => crypto.randomUUID() },
+      );
+    });
     const count = (relation: string) => outcomes.filter((o) => o.relation === relation).length;
 
     await scoped(
@@ -135,6 +147,7 @@ export async function processSource(
     await scoped(
       admin.from("sources").update({ processing_status: "failed", processed_at: new Date().toISOString(), processing_error: userFacingError(error) }),
     );
+    if (error instanceof ConsentRequiredError) throw error;
     return { needsConfirmation: [] };
   }
 }
@@ -150,21 +163,25 @@ export async function processTaskSource(
   deps: Pick<ProcessDeps, "embed" | "decide"> = processDepsFromEnv(),
 ): Promise<ProcessResult> {
   const scoped = <T extends { eq: (column: string, value: string) => T }>(query: T) => query.eq("id", source.id).eq("user_id", source.userId);
+  const check = consentCheck(admin, source.userId);
+  const ai = withConsentGate(deps, check);
   // 시작 시각을 남긴다: 중간에 멈춘 처리를 가려 다시 처리한다 (connectors/tasks-ingest.ts).
   await scoped(
     admin.from("sources").update({ processing_status: "processing", processing_summary: { started_at: new Date().toISOString() } }),
   ).throwOnError();
 
   try {
+    await assertConsent(check);
     const store = new SupabaseActionStore(admin, source.userId);
     const links = new SupabaseTaskLinks(admin, source.userId, source.connectionId);
-    const outcome = await withUserLock(source.userId, () =>
-      mergeTask(store, links, task, { id: source.id, occurredAt: task.edit.occurredAt }, task.identity, {
-        embed: deps.embed,
-        decide: deps.decide,
+    const outcome = await withUserLock(source.userId, async () => {
+      await backfillEmbeddings(store, ai.embed);
+      return mergeTask(store, links, task, { id: source.id, occurredAt: task.edit.occurredAt }, task.identity, {
+        embed: ai.embed,
+        decide: ai.decide,
         newId: () => crypto.randomUUID(),
-      }),
-    );
+      });
+    });
 
     await scoped(
       admin.from("sources").update({
@@ -189,6 +206,8 @@ export async function processTaskSource(
     await scoped(
       admin.from("sources").update({ processing_status: "failed", processed_at: new Date().toISOString(), processing_error: userFacingError(error) }),
     );
+    // 처리를 마치지 못한 할 일은 동의한 뒤 동기화가 다시 처리한다 (pendingTasks).
+    if (error instanceof ConsentRequiredError) throw error;
     return { needsConfirmation: [] };
   }
 }
@@ -198,7 +217,7 @@ export async function processTaskSource(
  * 사용자 권한(RLS)으로 먼저 확인한다. 여기서는 service role로 쓰고 모든 쿼리를 user_id로 좁힌다.
  * 0. 이 원문에서 이미 Action의 근거로 쓰인 구절과 겹치면 그 Action(끝냈거나 지운 것도)을 already_tracked로 돌려준다.
  *    모델을 부르지 않고 신고로 세지 않는다 (trackedByEvidence)
- * 1. 사용자별 시도 횟수를 넘었으면 RateLimitedError (모델을 부르기 전에 시도를 남긴다)
+ * 1. 사용자별 시도 횟수를 넘었으면 RateLimitedError (모델을 부르기 전에 시도를 남긴다. 세기와 남기기는 한 트랜잭션: take_rate_limit)
  * 2. 원래 처리의 판정 기록(judge_logs)으로 어느 단계가 놓쳤는지 가른다 (classifyMiss)
  * 3. 구절 하나를 후보로 만들고(extractMissing) 보통 원문과 같은 병합(mergeJudged)으로 반영한다.
  *    다른 사람 담당 Action과는 합치지 않고(reportStore), 확신이 낮은 병합은 새 일로 본다(reportMatchDecide)
@@ -212,25 +231,13 @@ export async function reportMissing(
   source: { id: string; userId: string; processingStatus: string },
   input: MissingInput,
   deps: ProcessDeps = processDepsFromEnv(),
-  now = new Date(),
 ): Promise<MissingReportResponse> {
-  const summaryOf = async (actionId: string) => {
-    const { data } = await admin.from("actions").select(SUMMARY_COLUMNS).eq("user_id", source.userId).eq("id", actionId).single().throwOnError();
-    return data as ActionSummary;
-  };
+  const tracked = await trackedActionSummary(admin, source, input.quote);
+  if (tracked) return { status: "already_tracked", action: tracked, stage: null };
 
-  const tracked = await trackedAction(admin, source, input.quote);
-  if (tracked) return { status: "already_tracked", action: await summaryOf(tracked), stage: null };
-
-  const { data: attempts } = await admin
-    .from("missing_reports")
-    .select("created_at")
-    .eq("user_id", source.userId)
-    .gte("created_at", new Date(now.getTime() - MISSING_REPORT_LIMIT.windowMs).toISOString())
-    .throwOnError();
-  const retryAt = rateLimitedUntil(((attempts ?? []) as { created_at: string }[]).map((a) => a.created_at), now, MISSING_REPORT_LIMIT);
+  const retryAt = await takeRateLimit(admin, source.userId, "missing_report", MISSING_REPORT_LIMIT);
   if (retryAt) throw new RateLimitedError(retryAt);
-  await admin.from("missing_reports").insert({ user_id: source.userId }).throwOnError();
+  const ai = withConsentGate(deps, consentCheck(admin, source.userId));
 
   const { data: logs } = await admin
     .from("judge_logs")
@@ -247,24 +254,39 @@ export async function reportMissing(
     quote: input.quote,
   });
 
-  const { judged } = await extractMissing(input, deps);
+  const { judged } = await extractMissing(input, ai);
   const store = new SupabaseActionStore(admin, source.userId, {
     createEvents: [{ type: "user_reported_missing", before: null, after: { stage, source_id: source.id }, rule: null, actor: "user" }],
   });
-  const [outcome] = await withUserLock(source.userId, () =>
-    mergeJudged(reportStore(store), [judged], { id: source.id, text: input.text, kind: input.kind, occurredAt: input.occurredAt }, input.identity, {
-      embed: deps.embed,
-      decide: reportMatchDecide(deps.decide),
+  const [outcome] = await withUserLock(source.userId, async () => {
+    await backfillEmbeddings(store, ai.embed);
+    return mergeJudged(reportStore(store), [judged], { id: source.id, text: input.text, kind: input.kind, occurredAt: input.occurredAt }, input.identity, {
+      embed: ai.embed,
+      decide: reportMatchDecide(ai.decide),
       newId: () => crypto.randomUUID(),
-    }),
-  );
+    });
+  });
   if (!outcome?.actionId) throw new Error(`누락 신고를 반영하지 못했습니다 (${outcome?.relation ?? "결과 없음"})`);
 
-  const action = await summaryOf(outcome.actionId);
+  const action = await actionSummary(admin, source.userId, outcome.actionId);
   return outcome.relation === "new" ? { status: "created", action, stage } : { status: "already_tracked", action, stage: null };
 }
 
-/** 이 원문의 근거 중 신고한 구절과 겹치는 것의 Action (상태와 상관없이, 다른 사람 담당은 빼고) */
+async function actionSummary(admin: SupabaseClient, userId: string, actionId: string): Promise<ActionSummary> {
+  const { data } = await admin.from("actions").select(SUMMARY_COLUMNS).eq("user_id", userId).eq("id", actionId).single().throwOnError();
+  return data as ActionSummary;
+}
+
+/**
+ * 이 원문에서 구절이 이미 근거인 Action의 요약 (없으면 null). 누락 신고와 직접 추가(POST /api/v1/actions)가 같이 쓴다.
+ * 원문이 사용자의 것인지는 부르는 쪽이 사용자 권한(RLS)으로 먼저 확인한다. 모델을 부르지 않는다.
+ */
+export async function trackedActionSummary(admin: SupabaseClient, source: { id: string; userId: string }, quote: string): Promise<ActionSummary | null> {
+  const tracked = await trackedAction(admin, source, quote);
+  return tracked ? actionSummary(admin, source.userId, tracked) : null;
+}
+
+/** 이 원문의 근거 중 구절과 겹치는 것의 Action (상태와 상관없이, 다른 사람 담당은 빼고) */
 async function trackedAction(admin: SupabaseClient, source: { id: string; userId: string }, quote: string): Promise<string | null> {
   const { data: evidence } = await admin
     .from("evidence")

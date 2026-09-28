@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  createActionResponseSchema,
   createSourceRequestSchema,
   MAX_SOURCE_TEXT,
   missingReportRequestSchema,
@@ -59,6 +60,13 @@ describe("missingReportResponseSchema", () => {
     expect(missingReportResponseSchema.safeParse({ status: "created", action, stage: "not_extracted" }).success).toBe(true);
     expect(missingReportResponseSchema.safeParse({ status: "already_tracked", action, stage: null }).success).toBe(true);
     expect(missingReportResponseSchema.safeParse({ status: "created", action, stage: "extract" }).success).toBe(false);
+  });
+
+  it("직접 추가 응답은 action과 status(created · already_tracked)", () => {
+    expect(createActionResponseSchema.safeParse({ action, status: "created" }).success).toBe(true);
+    expect(createActionResponseSchema.safeParse({ action, status: "already_tracked" }).success).toBe(true);
+    expect(createActionResponseSchema.safeParse({ action }).success).toBe(false);
+    expect(createActionResponseSchema.safeParse({ action, status: "duplicate" }).success).toBe(false);
   });
 });
 

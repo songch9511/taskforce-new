@@ -28,23 +28,24 @@ public enum APIError: Error, Equatable, Sendable, CustomStringConvertible {
         return false
     }
 
-    /// 화면에 보여줄 한 줄
+    /// 외부 AI 처리 동의가 먼저 필요함 (`POST /sources` · `/ask` · 연결 시작의 409)
+    public var isConsentRequired: Bool { isConflict }
+
+    /// 화면에 보여줄 한 줄 (화면 틀은 영어, docs/BRAND.md "UI 문구"). 서버의 한국어 설명은 보이지 않는다.
     public var userMessage: String {
         switch self {
         case .server(_, .conflict, _):
-            "그사이 다른 곳에서 바뀌었어요. 새로 불러왔으니 다시 확인해 주세요."
+            "This changed somewhere else. It's been refreshed."
         case .server(_, .unauthorized, _), .notSignedIn:
-            "로그인이 필요해요. 다시 로그인해 주세요."
+            "Sign in again to continue."
         case .server(_, .rateLimited, _):
-            "요청이 너무 많아요. 잠시 뒤에 다시 해 주세요."
+            "Too many requests. Try again in a moment."
         case .server(_, .notFound, _):
-            "찾을 수 없어요. 이미 지워졌을 수 있어요."
-        case .server(_, _, let message) where !message.isEmpty:
-            message
+            "Not found. It may have been removed."
         case .server, .unexpectedStatus, .decoding:
-            "서버에서 문제가 생겼어요. 잠시 뒤에 다시 해 주세요."
+            "Something went wrong. Try again in a moment."
         case .transport:
-            "서버에 연결하지 못했어요. 네트워크를 확인해 주세요."
+            "Can't reach the server. Check your connection."
         }
     }
 
@@ -111,14 +112,27 @@ public struct APIClient: Sendable {
         try await send(.post, "sources/\(sourceID.lowercased)/missing", body: MissingReportRequest(quote: quote))
     }
 
+    /// 직접 추가 (Mac 런처 "Add “…”"). 기한이 없으면 `due_date: null`.
+    /// 원문을 골랐으면 `sourceID`와 `quote`(원문에 그대로 있는 구절, `SourceText.quote`)를 함께 보낸다. 404 = 원문 없음.
+    /// 그 구절이 이미 근거인 할 일이 있으면 서버가 그 할 일을 그대로 돌려준다 (200 `already_tracked`).
+    public func createAction(
+        title: String, dueDate: LocalDate? = nil, sourceID: UUID? = nil, quote: String? = nil
+    ) async throws -> CreateActionResponse {
+        let body = CreateActionRequest(title: title, dueDate: dueDate, sourceID: sourceID, quote: quote)
+        return try await send(.post, "actions", body: body)
+    }
+
     public func answerWeeklyCheck(weekStart: LocalDate, answer: WeeklyCheckAnswer) async throws {
         try await sendNoContent(.post, "weekly-check", body: WeeklyCheckRequest(weekStart: weekStart, answer: answer))
     }
 
     /// 계정 삭제 (서버가 원문 · 할 일 · 변경 이력을 모두 지운다. 되돌릴 수 없다).
+    /// `authorizationCode`: 삭제 직전 Sign in with Apple로 새로 받은 authorization code. 있으면 서버가 Apple 토큰을 폐기한다
+    /// (App Store 5.1.1(v)). 사용자가 Apple 확인을 취소했으면 nil로 보내고, 서버는 폐기 없이 지운다.
     /// 성공하면 `SessionStore.accountDeleted()`로 이 기기에 저장된 세션을 지운다.
-    public func deleteAccount() async throws {
-        try await sendNoContent(.delete, "account")
+    public func deleteAccount(authorizationCode: String? = nil) async throws {
+        let body = authorizationCode.map(DeleteAccountRequest.init(appleAuthorizationCode:))
+        try await sendNoContent(.delete, "account", body: body)
     }
 
     /// 앱이 앞으로 나올 때마다 한 번 (지표 2 · 3)
@@ -126,10 +140,76 @@ public struct APIClient: Sendable {
         try await sendNoContent(.post, "metric-events", body: MetricEventRequest(type: "app_opened"))
     }
 
+    // MARK: 프로필 · 동의
+
+    public func profile() async throws -> Profile {
+        try await send(.get, "profile")
+    }
+
+    /// 이름 · 별칭 · 이메일을 통째로 바꾼다 (동의는 `/consent`로만)
+    public func saveProfile(_ profile: Profile) async throws -> Profile {
+        try await send(.put, "profile", body: profile)
+    }
+
+    /// 외부 AI 처리 동의 (App Store 5.1.2(i)). 동의 전에는 서버가 연동 원문을 AI로 보내지 않는다.
+    public func giveAIConsent() async throws {
+        try await sendNoContent(.post, "consent", body: ConsentRequest())
+    }
+
+    /// 동의 철회: 서버가 이후 원문을 AI로 보내지 않는다
+    public func withdrawAIConsent() async throws {
+        try await sendNoContent(.delete, "consent")
+    }
+
+    // MARK: 연동
+
+    /// OAuth 시작 주소. `ASWebAuthenticationSession`으로 열고 `taskforce://connections/{provider}?status=…`로 돌아온다.
+    /// 400 invalid_request = 아직 준비되지 않은 서비스, 409 conflict = 동의가 먼저 필요함 (`ConnectionStartFailure`).
+    public func startConnection(_ provider: ConnectionProvider) async throws -> URL {
+        let response: StartConnectionResponse = try await send(.post, "connections/\(provider.rawValue)/start")
+        return response.url
+    }
+
+    /// OAuth 콜백의 handoff id로 연결을 마친다. 서버는 연결을 시작한 사용자(이 토큰)일 때만 잇는다.
+    /// 404 not_found = 만료됐거나 내 것이 아님, 409 conflict = 동의가 먼저 필요함 (`ConnectionCompleteFailure`).
+    public func completeConnection(_ provider: ConnectionProvider, handoff: String) async throws -> ConnectionCallback.Status {
+        let response: CompleteConnectionResponse = try await send(
+            .post, "connections/\(provider.rawValue)/complete", body: CompleteConnectionRequest(handoff: handoff)
+        )
+        return response.status
+    }
+
+    /// 2단계 서비스 "Want this" (다시 눌러도 그대로)
+    public func requestConnection(_ provider: ConnectionProvider) async throws {
+        try await sendNoContent(.post, "connection-requests", body: ConnectionRequestBody(provider: provider.rawValue))
+    }
+
+    /// 지금 동기화 (서버가 막 동기화했으면 429)
+    public func syncConnections() async throws {
+        try await sendNoContent(.post, "connections/sync")
+    }
+
+    /// 연결 끊기. 이미 들어온 원문과 할 일은 남는다.
+    public func disconnect(connectionID: UUID) async throws {
+        try await sendNoContent(.delete, "connections/\(connectionID.lowercased)")
+    }
+
+    // MARK: 원문 · 물어보기
+
+    /// 원문 보내기. 서버가 받은 뒤 뒤에서 읽는다 (202). 동의 전이면 409.
+    public func createSource(_ request: CreateSourceRequest) async throws -> CreateSourceResponse {
+        try await send(.post, "sources", body: request)
+    }
+
+    /// 내 할 일에 대해 묻기. 근거 인용과 함께 답한다. 동의 전이면 409, 너무 자주 물으면 429.
+    public func ask(_ question: String) async throws -> AskResponse {
+        try await send(.post, "ask", body: AskRequest(question: question))
+    }
+
     // MARK: 요청
 
     enum Method: String {
-        case get = "GET", post = "POST", patch = "PATCH", delete = "DELETE"
+        case get = "GET", post = "POST", put = "PUT", patch = "PATCH", delete = "DELETE"
     }
 
     func makeRequest(_ method: Method, _ path: String, body: (any Encodable)?, token: String) throws -> URLRequest {
@@ -219,6 +299,32 @@ struct MissingReportRequest: Encodable {
     let quote: String
 }
 
+/// POST /api/v1/actions 본문. `source_id` · `quote`는 원문을 골랐을 때만 넣는다.
+struct CreateActionRequest: Encodable {
+    let title: String
+    let dueDate: LocalDate?
+    let sourceID: UUID?
+    let quote: String?
+
+    enum CodingKeys: String, CodingKey {
+        case title, quote
+        case dueDate = "due_date"
+        case sourceID = "source_id"
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(title, forKey: .title)
+        if let dueDate {
+            try c.encode(dueDate, forKey: .dueDate)
+        } else {
+            try c.encodeNil(forKey: .dueDate)
+        }
+        try c.encodeIfPresent(sourceID?.lowercased, forKey: .sourceID)
+        try c.encodeIfPresent(quote, forKey: .quote)
+    }
+}
+
 struct WeeklyCheckRequest: Encodable {
     let weekStart: LocalDate
     let answer: WeeklyCheckAnswer
@@ -226,6 +332,15 @@ struct WeeklyCheckRequest: Encodable {
     enum CodingKeys: String, CodingKey {
         case answer
         case weekStart = "week_start"
+    }
+}
+
+/// DELETE /api/v1/account 본문 (contract.ts `deleteAccountRequestSchema`)
+struct DeleteAccountRequest: Encodable {
+    let appleAuthorizationCode: String
+
+    enum CodingKeys: String, CodingKey {
+        case appleAuthorizationCode = "apple_authorization_code"
     }
 }
 

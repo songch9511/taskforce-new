@@ -1,0 +1,76 @@
+{
+  "id": "doc-self-written-todos",
+  "origin": "synthetic",
+  "description": "사용자가 직접 쓴 Notion 기획 문서(written_by_me). 약속 · 요청 말투가 없어도 '다음 단계'에 적은 할 일은 내가 정한 할 일이다. 다른 사람을 담당으로 적은 항목, 완료 체크, 아이디어, 참고 정보는 제외한다. doc-others-todos와 본문이 같다.",
+  "user": {
+    "name": "정유나"
+  },
+  "sources": [
+    {
+      "id": "doc-1012-mine",
+      "kind": "doc",
+      "occurred_at": "2026-10-12T21:00:00+09:00",
+      "written_by_me": true,
+      "text": "# 포트폴리오 사이트 개편\n\n## 목표\n- 문의 전환율 올리기 (지금 월 2~3건)\n\n## 다음 단계\n- 도메인 연결 설정 바꾸기\n- 수요일까지 케이스 스터디 3개 정리\n- 사진작가 윤서 님께 프로필 촬영 일정 문의\n- 시안 디자인은 민재 님이 10/20까지 전달\n- [x] 레퍼런스 사이트 10개 모으기\n\n## 아이디어\n- 뉴스레터 구독 버튼도 붙이면 좋을 듯\n\n## 참고\n- 호스팅 요금 월 12,000원, 11/1 자동 갱신"
+    }
+  ],
+  "expected_actions": [
+    {
+      "title": "포트폴리오 사이트 도메인 연결 설정 변경",
+      "owner": "me",
+      "status": "open",
+      "evidence": [
+        {
+          "source": "doc-1012-mine",
+          "quote": "도메인 연결 설정 바꾸기"
+        }
+      ]
+    },
+    {
+      "title": "케이스 스터디 3개 정리",
+      "owner": "me",
+      "due": "2026-10-14",
+      "status": "open",
+      "evidence": [
+        {
+          "source": "doc-1012-mine",
+          "quote": "수요일까지 케이스 스터디 3개 정리"
+        }
+      ]
+    },
+    {
+      "title": "사진작가 윤서에게 프로필 촬영 일정 문의",
+      "owner": "me",
+      "counterpart": "윤서",
+      "status": "open",
+      "evidence": [
+        {
+          "source": "doc-1012-mine",
+          "quote": "사진작가 윤서 님께 프로필 촬영 일정 문의"
+        }
+      ]
+    }
+  ],
+  "must_not_extract": [
+    {
+      "source": "doc-1012-mine",
+      "quote": "시안 디자인은 민재 님이 10/20까지 전달",
+      "reason": "NOT_MY_ACTION"
+    },
+    {
+      "source": "doc-1012-mine",
+      "quote": "[x] 레퍼런스 사이트 10개 모으기",
+      "reason": "ALREADY_DONE"
+    },
+    {
+      "source": "doc-1012-mine",
+      "quote": "뉴스레터 구독 버튼도 붙이면 좋을 듯",
+      "reason": "TENTATIVE"
+    },
+    {
+      "source": "doc-1012-mine",
+      "quote": "호스팅 요금 월 12,000원, 11/1 자동 갱신",
+      "reason": "INFO_ONLY"
+    }
+  ]
+}

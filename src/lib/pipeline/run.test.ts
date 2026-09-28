@@ -77,3 +77,16 @@ describe("runPipeline", () => {
     expect(result.summary.cost).toBeCloseTo(0.0012);
   });
 });
+
+describe("runPipeline의 작성자", () => {
+  it("사용자가 쓴 원문이면 판정 state에 written_by_me를 넘긴다", async () => {
+    const states: unknown[] = [];
+    const recording: Decide = async (request) => {
+      states.push(request.state);
+      return decide(request);
+    };
+    await runPipeline({ ...input, writtenByMe: true }, { complete, decide: recording });
+    expect(states).toHaveLength(2);
+    expect(states.every((s) => (s as { source: { written_by_me?: boolean } }).source.written_by_me === true)).toBe(true);
+  });
+});

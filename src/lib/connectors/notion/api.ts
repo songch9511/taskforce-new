@@ -70,6 +70,34 @@ export function refreshToken(config: NotionOAuthConfig, refresh: string): Promis
   return tokenRequest(config, { grant_type: "refresh_token", refresh_token: refresh });
 }
 
+/** 이미 폐기됐거나 무효인 토큰이라는 Notion 오류 (그 밖의 400 · 401은 폐기에 실패한 것으로 본다) */
+const ALREADY_REVOKED_CODES = new Set(["invalid_grant", "invalid_token", "unauthorized"]);
+
+/**
+ * Notion 쪽 권한도 거둔다 (POST /v1/oauth/revoke). 계정 삭제 때 부른다.
+ * 토큰이 이미 폐기 · 무효라는 오류(400 · 401 + invalid_grant · invalid_token · unauthorized)만 성공으로 보고,
+ * 요청 형식 오류(validation_error 등)나 서버 오류는 던진다 (조용히 성공으로 넘기면 폐기되지 않은 토큰이 남는다).
+ */
+export async function revokeToken(config: NotionOAuthConfig, accessToken: string): Promise<void> {
+  const response = await (config.fetch ?? fetch)(`${NOTION_API}/v1/oauth/revoke`, {
+    signal: AbortSignal.timeout(10_000),
+    method: "POST",
+    headers: {
+      Authorization: `Basic ${Buffer.from(`${config.clientId}:${config.clientSecret}`).toString("base64")}`,
+      "Content-Type": "application/json",
+      "Notion-Version": NOTION_VERSION,
+    },
+    body: JSON.stringify({ token: accessToken }),
+  });
+  if (response.ok) return;
+  const code = await response
+    .json()
+    .then((body: unknown) => (typeof (body as { code?: unknown })?.code === "string" ? (body as { code: string }).code : undefined))
+    .catch(() => undefined);
+  if ((response.status === 400 || response.status === 401) && code && ALREADY_REVOKED_CODES.has(code)) return;
+  throw new NotionError(`Notion 토큰 폐기 실패 (${response.status}${code ? ` ${code}` : ""})`, response.status, code);
+}
+
 // ─── 읽기 ─────────────────────────────────────────────────
 
 const userSchema = z.looseObject({
@@ -80,6 +108,13 @@ const userSchema = z.looseObject({
   person: z.object({ email: z.string().nullish() }).nullish(),
 });
 export type NotionUser = z.infer<typeof userSchema>;
+
+/** GET /v1/users/me: 토큰의 봇 사용자. 사용자가 연결한 통합이면 bot.owner.user가 연결한 사람이다 */
+const botUserSchema = z.looseObject({
+  bot: z
+    .looseObject({ owner: z.looseObject({ type: z.string(), user: z.looseObject({ id: z.string() }).nullish() }).nullish() })
+    .nullish(),
+});
 
 const propertySchema = z.looseObject({
   id: z.string().optional(),
@@ -154,7 +189,11 @@ export type NotionClient = {
   /** 최근에 고친 페이지부터 한 쪽씩 */
   searchPages: (cursor?: string) => Promise<{ pages: NotionPage[]; nextCursor: string | null }>;
   pageMarkdown: (pageId: string) => Promise<{ markdown: string; truncated: boolean }>;
+  /** 페이지 하나 (만든 사람 등 속성). 공유가 빠졌거나 지워졌으면 null */
+  page: (pageId: string) => Promise<NotionPage | null>;
   user: (userId: string) => Promise<NotionUser | null>;
+  /** 이 연결을 만든 사람의 Notion user id (봇 주인). 워크스페이스가 주인인 봇이면 null */
+  botOwnerId: () => Promise<string | null>;
   /** 연결에 공유된 데이터베이스(데이터 소스) 목록 */
   searchDataSources: () => Promise<NotionDataSource[]>;
   dataSource: (dataSourceId: string) => Promise<NotionDataSource>;
@@ -247,6 +286,15 @@ export function notionClient(accessToken: string, options: { fetch?: NotionFetch
       return { markdown: body.markdown, truncated: body.truncated ?? false };
     },
 
+    async page(pageId) {
+      try {
+        return pageSchema.parse(await call(`/v1/pages/${encodeURIComponent(pageId)}`, { method: "GET" }));
+      } catch (error) {
+        if (error instanceof NotionError && (error.status === 403 || error.status === 404)) return null;
+        throw error;
+      }
+    },
+
     async user(userId) {
       try {
         return userSchema.parse(await call(`/v1/users/${encodeURIComponent(userId)}`, { method: "GET" }));
@@ -255,6 +303,11 @@ export function notionClient(accessToken: string, options: { fetch?: NotionFetch
         if (error instanceof NotionError && (error.status === 403 || error.status === 404)) return null;
         throw error;
       }
+    },
+
+    async botOwnerId() {
+      const me = botUserSchema.parse(await call("/v1/users/me", { method: "GET" }));
+      return me.bot?.owner?.type === "user" ? (me.bot.owner.user?.id ?? null) : null;
     },
   };
 }
