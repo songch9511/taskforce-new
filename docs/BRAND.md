@@ -114,7 +114,7 @@ App Store 설명에는 "Real"을 쓰지 않는다. 확인할 수 없는 비교 �
 |---|---|
 | Review · Confirm · Dismiss | 맞나요? · 맞아요 · 아니에요 |
 | Sources 2 · Open | 근거 2 · 열기 · 외 2곳 |
-| Now · Search · Actions | 지금 할 일 · 할 일 찾기, 내 약속 물어보기… · 동작 |
+| In Progress · To Do · Done Today · Search · Actions | 지금 할 일 · 할 일 찾기, 내 약속 물어보기… · 동작 |
 | Today · Yesterday 18:00 · Sep 22 | 오늘 마감 · 어제 18:00 지남 · 9월 22일 |
 
 - 필요 없는 부제, 캡션, 설명 문장을 붙이지 않는다. 아이콘 · 값 · 위치가 이미 보여 주는 것은 글로 다시 쓰지 않는다.
@@ -125,7 +125,8 @@ App Store 설명에는 "Real"을 쓰지 않는다. 확인할 수 없는 비교 �
 
 | 부품 | 규칙 |
 |---|---|
-| Task row (iPhone) | 체크 원 + 제목 + 기한. 기한 지남은 기한 글자만 빨강. 완료는 검정 체크 + 회색 글자(취소선 없음). 상대 이름은 기본으로 끈다 |
+| Task status | 할 일 행 왼쪽의 상태 표시(iPhone · Mac 공용): ○ To Do(border/control) · ◐ In Progress(잉크 반 채움) · ✓ Done(잉크 원 + 흰 체크) · 점선 원 Review. 잉크만 쓰고 accent는 쓰지 않는다. 누르면 완료 · 다시 열기(Review는 누를 수 없음) |
+| Task row (iPhone) | 상태 표시 + 제목 + 기한. 기한 지남은 기한 글자만 빨강. 완료는 검정 체크 + 회색 글자(취소선 없음). 상대 이름은 기본으로 끈다 |
 | Review card (iPhone) | 제목 + 확인할 값 + 근거 1줄 + Confirm / Dismiss 캡슐. 목록 위에 한 번에 한 장만 보인다("Review  1 / 3"). 인용은 3줄까지 |
 | Evidence | 출처 로고 + 원문 인용 + "날짜 · 문서". 날짜는 항상 보이고 문서 이름만 …로 줄인다. 출처가 여럿이면 맨 앞 로고는 인용의 출처 하나, 나머지는 줄 끝에 작게 겹친다 |
 | Sources group (Mac) | 겹친 로고 + "Sources N" 제목 아래에 근거를 줄마다 두고 Open을 붙인다 |

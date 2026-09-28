@@ -31,7 +31,7 @@
 
 | 기능 | 역할 | 단계 |
 |---|---|---|
-| 한 화면 | 위에 Review 카드(한 번에 하나, 확인 · 수정) + 아래 Now 목록(체크 동그라미로 완료) | MVP |
+| 한 화면 | 위에 Review 카드(한 번에 하나, 확인 · 수정) + 아래 In Progress · To Do · Done Today 목록(상태 표시를 눌러 완료 · 다시 열기, To Do는 밀어서 Start · Complete) | MVP |
 | 계정 시트 | Connections(연결 · 연결 끊기), AI processing consent(동의 · 철회), Privacy Policy · Terms 링크, Sign out, Delete account(Apple로 다시 인증해 Sign in with Apple 토큰을 폐기한 뒤 삭제) | MVP |
 | 알림 | 확인 요청이 생겼을 때, 기한이 임박했을 때 | MVP |
 | 공유 확장 · 위젯 · App Intents | go live 뒤로 미룬다(7장 "하지 않는 것") | 이후 |

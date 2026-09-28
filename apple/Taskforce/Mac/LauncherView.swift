@@ -3,7 +3,8 @@ import SwiftUI
 import TaskforceKit
 import TaskforceUI
 
-/// 런처 창 내용 (Figma 5:57): 입력창 "Search" · 구역 · 행 · 아래 "Actions ⌘K".
+/// 런처 창 내용 (Figma 5:57): 입력창 "Search" · 구역(Review · In Progress · To Do · Done Today · Commands) · 행 · 아래 "Actions ⌘K".
+/// 할 일 행 왼쪽은 상태 표시(`TaskStatusMark`): 누르면 완료 · 다시 열기 (Review는 누를 수 없음).
 /// ⌘K 패널 · 펼침 · Ask 답 · 원문 고르기처럼 Figma에 없는 화면은 같은 부품(Launcher row · Keycap · Sources 묶음)과 토큰으로만 구성한다.
 struct LauncherRootView: View {
     @Bindable var model: LauncherModel
@@ -182,15 +183,24 @@ struct LauncherRootView: View {
                 title: action.title,
                 accessory: action.dueDate.map { DueText.accessory($0, today: today) },
                 urgent: DueText.isUrgent(due: action.dueDate, reasons: [], today: today),
-                selected: selected
+                selected: selected,
+                leading: .status(.review)
             )
         case .task(let ranked):
             LauncherRow(
                 title: ranked.action.title,
                 accessory: ranked.action.dueDate.map { DueText.accessory($0, today: today) },
                 urgent: DueText.isUrgent(due: ranked.action.dueDate, reasons: ranked.reasons, today: today),
-                selected: selected
-            )
+                selected: selected,
+                leading: .status(TaskStatusMark.State(TaskGroup.open(ranked.action)))
+            ) {
+                model.toggle(item)
+            }
+        case .done(let action):
+            // 끝낸 할 일은 기한을 보이지 않는다 (지남 · 오늘 빨강이 뜻이 없다)
+            LauncherRow(title: action.title, selected: selected, dimmed: true, leading: .status(.done)) {
+                model.toggle(item)
+            }
         case .command(let command):
             LauncherRow(title: command.title, selected: selected, leading: .symbol(command.symbolName))
         case .ask(let question):
@@ -240,11 +250,14 @@ struct LauncherRootView: View {
     @ViewBuilder
     private func detail(_ target: LauncherModel.Target) -> some View {
         let action = target.action
+        let done = target.group == .doneToday
         LauncherRow(
             title: action.title,
-            accessory: action.dueDate.map { DueText.accessory($0, today: today) },
-            urgent: DueText.isUrgent(due: action.dueDate, reasons: [], today: today),
-            selected: true
+            accessory: done ? nil : action.dueDate.map { DueText.accessory($0, today: today) },
+            urgent: !done && DueText.isUrgent(due: action.dueDate, reasons: [], today: today),
+            selected: true,
+            dimmed: done,
+            leading: .status(TaskStatusMark.State(target.group))
         )
         Group {
             if let digest = model.now?.evidence[action.id] {
@@ -438,6 +451,14 @@ struct LauncherRootView: View {
                     .foregroundStyle(model.selectedQuote == nil ? TFColor.textSecondary.opacity(0.5) : TFColor.textSecondary)
                 Keycap("⌘↩")
             case .list, .detail:
+                // 완료한 뒤 잠시 되돌리기
+                if model.canUndo {
+                    Text("Undo")
+                        .font(TFFont.footnote)
+                        .foregroundStyle(TFColor.textSecondary)
+                    Keycap("⌘Z")
+                        .padding(.trailing, TFSpace.sm)
+                }
                 // 할 일 행이 아니면 (명령 · Add 등) ⌘K가 할 일이 없어 흐리게
                 Text("Actions")
                     .font(TFFont.footnote)

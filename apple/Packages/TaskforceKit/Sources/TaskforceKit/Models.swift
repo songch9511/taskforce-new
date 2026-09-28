@@ -34,6 +34,10 @@ public struct ActionSummary: Codable, Sendable, Hashable, Identifiable {
     public let startedAt: Date?
     public let lastActivityAt: Date
 
+    /// `actions` 행에서 읽을 열 (Supabase 직접 읽기, 서버 `SUMMARY_COLUMNS`와 같다)
+    public static let columns =
+        "id, title, owner, status, due_date, counterpart, needs_confirmation, confirm_reasons, started_at, last_activity_at"
+
     enum CodingKeys: String, CodingKey {
         case id, title, owner, status, counterpart
         case dueDate = "due_date"

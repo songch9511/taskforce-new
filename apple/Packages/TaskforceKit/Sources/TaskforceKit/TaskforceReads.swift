@@ -53,6 +53,18 @@ public struct TaskforceReads: Sendable {
         )
     }
 
+    /// 오늘 끝낸 할 일 (Done Today): `since`(기기 시간대의 오늘 0시) 뒤에 바뀐 완료 행, 최근 것이 위.
+    /// 다른 사람 몫은 GET /now 목록에 보인 적이 없어 뺀다.
+    public func doneToday(since start: Date, limit: Int = 10) async throws -> [ActionSummary] {
+        try await rows(
+            supabase.from("actions").select(ActionSummary.columns)
+                .eq("status", value: ActionStatus.done.rawValue)
+                .neq("owner", value: ActionOwner.other.rawValue)
+                .gte("updated_at", value: start.ISO8601Format())
+                .order("updated_at", ascending: false).limit(limit)
+        )
+    }
+
     /// 최근 원문. 할 일 도구 스냅샷(`task`)은 읽을 글이 아니라 뺀다.
     public func recentSources(limit: Int = 50) async throws -> [SourceSummary] {
         try await rows(

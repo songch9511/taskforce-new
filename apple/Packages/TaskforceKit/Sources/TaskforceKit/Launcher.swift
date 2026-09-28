@@ -54,7 +54,10 @@ public enum LauncherCommand: String, CaseIterable, Sendable, Hashable {
 public enum LauncherItem: Hashable, Sendable, Identifiable {
     /// 확인 요청 (Confirm · Dismiss)
     case review(ActionSummary)
+    /// 열린 할 일 (In Progress · To Do, `TaskGroup.open`)
     case task(RankedAction)
+    /// 오늘 끝낸 할 일 (Reopen)
+    case done(ActionSummary)
     case command(LauncherCommand)
     case ask(String)
     case handoff(ActionSummary)
@@ -71,6 +74,7 @@ public enum LauncherItem: Hashable, Sendable, Identifiable {
         switch self {
         case .review(let action): "review-\(action.id)"
         case .task(let ranked): "task-\(ranked.id)"
+        case .done(let action): "done-\(action.id)"
         case .command(let command): "command-\(command.rawValue)"
         case .ask: "ask"
         case .handoff(let action): "handoff-\(action.id)"
@@ -85,15 +89,25 @@ public enum LauncherItem: Hashable, Sendable, Identifiable {
     /// 할 일 행이면 그 할 일 (⌘K 동작 · 펼침의 대상)
     public var action: ActionSummary? {
         switch self {
-        case .review(let action), .handoff(let action): action
+        case .review(let action), .handoff(let action), .done(let action): action
         case .task(let ranked): ranked.action
+        default: nil
+        }
+    }
+
+    /// 할 일 행의 구역 (왼쪽 상태 표시). 할 일 행이 아니면 nil (Hand off 행도 nil)
+    public var group: TaskGroup? {
+        switch self {
+        case .review: .review
+        case .task(let ranked): TaskGroup.open(ranked.action)
+        case .done: .doneToday
         default: nil
         }
     }
 }
 
 public struct LauncherSection: Hashable, Sendable, Identifiable {
-    /// "Review" · "Now" · "Commands". nil이면 제목 없이
+    /// "Review" · "In Progress" · "To Do" · "Done Today" · "Commands". nil이면 제목 없이
     public let title: String?
     public let items: [LauncherItem]
 
@@ -109,9 +123,11 @@ public enum LauncherContent {
     /// `POST /api/v1/ask` 질문 최대 길이 (UTF-16, zod max)
     public static let askMaxLength = 500
 
+    /// 구역은 `TaskBoard.sections` (Review · In Progress · To Do · Done Today). 내 변경을 얹은 목록을 넘긴다.
+    /// 찾는 중에는 네 구역을 모두 거르고, Done Today는 Ask · Add 아래에 둔다 (맞는 열린 할 일이 없으면 Add가 맨 위라 ↩ 한 번으로 시작).
     /// `needsConsent`: 동의 전이면 빈 입력창 맨 위에 "Allow AI processing" 한 줄 (목록을 막지 않는다)
     public static func sections(
-        for mode: LauncherInput.Mode, now: NowResponse?, signedIn: Bool, needsConsent: Bool = false
+        for mode: LauncherInput.Mode, now: NowResponse?, doneToday: [ActionSummary] = [], signedIn: Bool, needsConsent: Bool = false
     ) -> [LauncherSection] {
         guard signedIn else {
             return [
@@ -119,41 +135,50 @@ public enum LauncherContent {
                 LauncherSection(title: "Commands", items: [.command(.quit)]),
             ].filter { !$0.items.isEmpty }
         }
-        let reviews = now?.confirmations ?? []
-        let tasks = now?.now ?? []
+        let board = TaskBoard(now: now, doneToday: doneToday)
         var sections: [LauncherSection]
         switch mode {
         case .empty:
-            sections = [
-                LauncherSection(title: nil, items: needsConsent ? [.allowAI] : []),
-                LauncherSection(title: "Review", items: reviews.map(LauncherItem.review)),
-                LauncherSection(title: "Now", items: tasks.map(LauncherItem.task)),
-                LauncherSection(title: "Commands", items: LauncherCommand.allCases.map(LauncherItem.command)),
-            ]
+            let tasks = board.sections()
+            sections = [LauncherSection(title: nil, items: needsConsent ? [.allowAI] : [])]
+                + taskSections(tasks, includingDone: true)
+                + [LauncherSection(title: "Commands", items: LauncherCommand.allCases.map(LauncherItem.command))]
         case .query(let query):
-            let matchingReviews = reviews.filter { TaskFilter.matches($0, query: query) }
-            let matchingTasks = tasks.filter { TaskFilter.matches($0.action, query: query) }
-            let top = matchingTasks.first?.action ?? matchingReviews.first
+            let tasks = board.sections(matching: query)
+            // 맞는 열린 할 일 중 맨 위 (보이는 순서: In Progress → To Do → Review)
+            let top = tasks.inProgress.first?.action ?? tasks.toDo.first?.action ?? tasks.review.first
             var assist: [LauncherItem] = [.ask(query)]
             if let top {
                 assist.append(.handoff(top))
             } else if let title = LauncherAdd.title(for: mode, now: now, signedIn: signedIn) {
-                // 맞는 할 일이 없으면 추가가 맨 위 (↩ 한 번으로 시작)
+                // 맞는 열린 할 일이 없으면 추가가 맨 위 (↩ 한 번으로 시작). 끝낸 할 일은 보지 않는다.
                 assist.insert(.addAction(title), at: 0)
             }
             let commands = LauncherCommand.allCases.filter { TaskFilter.matches(text: $0.title, query: query) }
-            sections = [
-                LauncherSection(title: "Review", items: matchingReviews.map(LauncherItem.review)),
-                LauncherSection(title: "Now", items: matchingTasks.map(LauncherItem.task)),
-                LauncherSection(title: nil, items: assist),
-                LauncherSection(title: "Commands", items: commands.map(LauncherItem.command)),
-            ]
+            sections = taskSections(tasks, includingDone: false)
+                + [
+                    LauncherSection(title: nil, items: assist),
+                    LauncherSection(title: TaskGroup.doneToday.title, items: tasks.doneToday.map(LauncherItem.done)),
+                    LauncherSection(title: "Commands", items: commands.map(LauncherItem.command)),
+                ]
         case .paste(let text):
             // 물어보기는 500자까지 받는다 (contract.ts `askRequestSchema`)
             let ask: [LauncherItem] = text.utf16.count <= askMaxLength ? [.ask(text)] : []
             sections = [LauncherSection(title: nil, items: [.sendAsSource(text)] + ask)]
         }
         return sections.filter { !$0.items.isEmpty }
+    }
+
+    private static func taskSections(_ tasks: TaskSections, includingDone: Bool) -> [LauncherSection] {
+        var sections = [
+            LauncherSection(title: TaskGroup.review.title, items: tasks.review.map(LauncherItem.review)),
+            LauncherSection(title: TaskGroup.inProgress.title, items: tasks.inProgress.map(LauncherItem.task)),
+            LauncherSection(title: TaskGroup.toDo.title, items: tasks.toDo.map(LauncherItem.task)),
+        ]
+        if includingDone {
+            sections.append(LauncherSection(title: TaskGroup.doneToday.title, items: tasks.doneToday.map(LauncherItem.done)))
+        }
+        return sections
     }
 
     /// 선택 이동. 끝에서 멈춘다 (돌아가지 않는다).
@@ -163,7 +188,8 @@ public enum LauncherContent {
     }
 }
 
-/// 직접 추가 ("Add “…”"). 짧은 한 줄을 찾았는데 Review · Now에 맞는 할 일이 없을 때만 보인다.
+/// 직접 추가 ("Add “…”"). 짧은 한 줄을 찾았는데 열린 할 일(Review · In Progress · To Do)에 맞는 것이 없을 때만 보인다.
+/// 오늘 끝낸 할 일(Done Today)은 보지 않는다.
 /// 빈칸 · 붙여 넣은 원문(길거나 여러 줄) · 로그아웃이면 보이지 않는다. 목록을 아직 못 읽었으면 이미 있는 할 일인지 모르니 보이지 않는다.
 public enum LauncherAdd {
     /// 서버 제목 최대 길이 (UTF-16, zod max)
@@ -177,8 +203,8 @@ public enum LauncherAdd {
         return title.isEmpty ? nil : title
     }
 
-    /// 그 말과 맞는 열린 할 일 (`TaskFilter`): Review 먼저, 그다음 Now, 받은 순서 그대로. 같은 할 일은 한 번만.
-    /// iPhone New Task의 "In Now" 힌트 (추가는 막지 않는다). 빈칸이거나 목록을 아직 못 읽었으면 없음.
+    /// 그 말과 맞는 열린 할 일 (`TaskFilter`): Review 먼저, 그다음 GET /now 목록(In Progress · To Do), 받은 순서 그대로. 같은 할 일은 한 번만.
+    /// iPhone New Task의 "Existing" 힌트 (추가는 막지 않는다). 빈칸이거나 목록을 아직 못 읽었으면 없음.
     public static func existing(matching text: String, in now: NowResponse?) -> [ActionSummary] {
         let query = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let now, !query.isEmpty else { return [] }

@@ -4,7 +4,7 @@ import TaskforceKit
 import TaskforceUI
 
 /// 직접 추가 (오른쪽 위 "+"): 제목 + 기한. 원문 없이 `POST /actions` (`NowStore.add`).
-/// 쓰는 동안 Review · Now에서 맞는 할 일을 "In Now"로 보여 줘 중복을 피하게 한다 (추가는 막지 않는다).
+/// 쓰는 동안 열린 할 일(Review · In Progress · To Do)에서 맞는 것을 "Existing"으로 보여 줘 중복을 피하게 한다 (추가는 막지 않는다).
 /// Figma에 없는 화면이라 Apple 기본 부품(Form)과 Taskforce 토큰으로만 구성한다.
 struct NewTaskSheet: View {
     /// 추가된 뒤, 시트를 닫기 직전
@@ -44,7 +44,7 @@ struct NewTaskSheet: View {
                         .disabled(saving)
                 }
                 if !duplicates.isEmpty {
-                    Section("In Now") {
+                    Section("Existing") {
                         ForEach(duplicates) { duplicateRow($0) }
                     }
                 }
@@ -77,7 +77,7 @@ struct NewTaskSheet: View {
             .messageAlert($store.addError)
         }
         .presentationDetents([.medium, .large], selection: $detent)
-        // 중간 높이의 기본 시트 배경은 반투명이라 뒤의 Now 목록 글자가 제목 칸에 비친다
+        // 중간 높이의 기본 시트 배경은 반투명이라 뒤의 목록 글자가 제목 칸에 비친다
         .presentationBackground(TFColor.bgCanvas)
         .interactiveDismissDisabled(saving)
         .onAppear { titleFocused = true }
@@ -91,9 +91,9 @@ struct NewTaskSheet: View {
 
     private var today: LocalDate { DueDateFormat.today() }
 
-    /// 맞는 열린 할 일 (Done으로 보이는 중인 것은 빼고 세 개까지)
+    /// 맞는 열린 할 일 세 개까지 (방금 완료한 것은 빼고 · 끝낸 할 일은 보지 않는다)
     private var duplicates: [ActionSummary] {
-        Array(LauncherAdd.existing(matching: title, in: store.response).filter { !store.completed.contains($0.id) }.prefix(3))
+        Array(LauncherAdd.existing(matching: title, in: store.board.now).prefix(3))
     }
 
     private var dueDate: LocalDate? {
@@ -137,7 +137,7 @@ struct NewTaskSheet: View {
         }
     }
 
-    // MARK: In Now
+    // MARK: Existing
 
     private func duplicateRow(_ action: ActionSummary) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: TFSpace.md) {

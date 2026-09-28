@@ -6,38 +6,42 @@ public enum TaskRowState: Sendable {
     case open, overdue, done
 }
 
-/// Task row (Figma 4:34, iPhone): 체크 원 + 제목 + "due · counterpart".
-/// 기한 지남은 기한 글자만 빨강, 완료는 검정 원 + 회색 글자(취소선 없음). 구분선은 글자 시작점부터 (List가 긋는다).
+/// Task row (Figma 4:34, iPhone): 상태 표시(`TaskStatusMark`) + 제목 + "due · counterpart".
+/// 기한 지남은 기한 글자만 빨강, 완료는 검정 체크 원 + 회색 글자(취소선 없음). 착수한 할 일은 반 채운 원. 구분선은 글자 시작점부터 (List가 긋는다).
+/// 상태 표시를 누르면 `onToggle` (열린 할 일은 완료, 완료는 다시 열기).
 public struct TaskRow<Detail: View>: View {
     public typealias State = TaskRowState
 
     let title: String
     let meta: TaskMetaLine
     let state: State
+    let inProgress: Bool
     let onToggle: () -> Void
     let detail: Detail
 
     @ScaledMetric(relativeTo: .body) private var checkSize: CGFloat = 22
     @ScaledMetric(relativeTo: .body) private var checkTop: CGFloat = 13
 
-    public init(title: String, meta: TaskMetaLine, state: State, onToggle: @escaping () -> Void, @ViewBuilder detail: () -> Detail) {
+    /// `inProgress`: 착수한 열린 할 일 (완료면 무시)
+    public init(
+        title: String, meta: TaskMetaLine, state: State, inProgress: Bool = false, onToggle: @escaping () -> Void,
+        @ViewBuilder detail: () -> Detail
+    ) {
         self.title = title
         self.meta = meta
         self.state = state
+        self.inProgress = inProgress
         self.onToggle = onToggle
         self.detail = detail()
     }
 
+    private var mark: TaskStatusMark.State {
+        state == .done ? .done : (inProgress ? .inProgress : .toDo)
+    }
+
     public var body: some View {
         HStack(alignment: .top, spacing: TFSpace.md) {
-            Button(action: onToggle) {
-                CheckCircle(done: state == .done, size: checkSize)
-                    .padding(.top, checkTop)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel(state == .done ? "Completed" : "Complete")
-            .accessibilityAddTraits(state == .done ? .isSelected : [])
+            TaskStatusMark(mark, size: checkSize, tapInsets: EdgeInsets(top: checkTop, leading: 0, bottom: 0, trailing: 0), action: onToggle)
 
             VStack(alignment: .leading, spacing: TFSpace.xxs) {
                 Text(title)
@@ -81,34 +85,15 @@ public struct TaskRow<Detail: View>: View {
 }
 
 extension TaskRow where Detail == EmptyView {
-    public init(title: String, meta: TaskMetaLine, state: State, onToggle: @escaping () -> Void) {
-        self.init(title: title, meta: meta, state: state, onToggle: onToggle) { EmptyView() }
-    }
-}
-
-/// 22pt 체크 원: 1.5pt border/control, 완료는 fill/inverse + 체크 (text/inverse)
-struct CheckCircle: View {
-    let done: Bool
-    let size: CGFloat
-
-    var body: some View {
-        ZStack {
-            if done {
-                Circle().fill(TFColor.fillInverse)
-                Image(systemName: "checkmark")
-                    .font(.system(size: size * 0.5, weight: .semibold))
-                    .foregroundStyle(TFColor.textInverse)
-            } else {
-                Circle().strokeBorder(TFColor.borderControl, lineWidth: 1.5)
-            }
-        }
-        .frame(width: size, height: size)
+    public init(title: String, meta: TaskMetaLine, state: State, inProgress: Bool = false, onToggle: @escaping () -> Void) {
+        self.init(title: title, meta: meta, state: state, inProgress: inProgress, onToggle: onToggle) { EmptyView() }
     }
 }
 
 #Preview("Task row") {
     List {
         TaskRow(title: "제안서 보내기", meta: TaskMetaLine(due: "Mon"), state: .open) {}
+        TaskRow(title: "투자사 IR 자료 업데이트", meta: TaskMetaLine(due: "Thu"), state: .open, inProgress: true) {}
         TaskRow(title: "계약서 검토 의견 전달", meta: TaskMetaLine(due: "Yesterday", counterpart: "김대표", showCounterpart: true), state: .overdue) {}
         TaskRow(title: "제안서 보내기", meta: TaskMetaLine(due: "Mon"), state: .done) {}
         TaskRow(title: "기한이 없는 할 일 제목이 아주 길어서 두 줄로 넘어가는 경우 한글 단어 단위 줄바꿈을 확인합니다", meta: TaskMetaLine(due: nil), state: .open) {}

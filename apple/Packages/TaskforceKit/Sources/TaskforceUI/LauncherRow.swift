@@ -3,10 +3,11 @@ import TaskforceKit
 
 /// Launcher row (Figma 5:52, Mac): 제목 + 오른쪽에 기한 하나. 기한 지남 · 오늘은 빨강 (L2).
 /// 선택 행만 bg/selected + return 키캡. 부제는 기본으로 끈다 (L4). 높이 40.
+/// 오늘 끝낸 할 일(`dimmed`)은 제목을 text/secondary로 흐리게 (취소선 없음).
 public struct LauncherRow: View {
     public enum Leading: Sendable, Equatable {
-        /// 할 일: 16pt 원 (선택되면 border/accent)
-        case circle
+        /// 할 일: 16pt 상태 표시 (`TaskStatusMark`)
+        case status(TaskStatusMark.State)
         /// 명령 · 묻기 등: SF Symbol (Figma에 없는 행이라 같은 크기 · 색으로 구성)
         case symbol(String)
         /// 원문 고르기: 출처 로고 (Source icon S)
@@ -18,22 +19,29 @@ public struct LauncherRow: View {
     let accessory: String?
     let urgent: Bool
     let selected: Bool
+    let dimmed: Bool
     let leading: Leading
+    let onMark: (() -> Void)?
 
+    /// `onMark`: 상태 표시를 누르면 (To Do · In Progress는 완료, Done은 다시 열기)
     public init(
         title: String,
         subtitle: String? = nil,
         accessory: String? = nil,
         urgent: Bool = false,
         selected: Bool = false,
-        leading: Leading = .circle
+        dimmed: Bool = false,
+        leading: Leading = .status(.toDo),
+        onMark: (() -> Void)? = nil
     ) {
         self.title = title
         self.subtitle = subtitle
         self.accessory = accessory
         self.urgent = urgent
         self.selected = selected
+        self.dimmed = dimmed
         self.leading = leading
+        self.onMark = onMark
     }
 
     public var body: some View {
@@ -43,7 +51,7 @@ public struct LauncherRow: View {
             TitleSubtitleLayout(maxTitleWidth: 400, spacing: TFSpace.sm) {
                 Text(title)
                     .font(TFFont.callout)
-                    .foregroundStyle(TFColor.textPrimary)
+                    .foregroundStyle(dimmed ? TFColor.textSecondary : TFColor.textPrimary)
                     .lineLimit(1)
                     .truncationMode(.tail)
                 if let subtitle {
@@ -78,8 +86,8 @@ public struct LauncherRow: View {
     @ViewBuilder
     private var leadingView: some View {
         switch leading {
-        case .circle:
-            Circle().strokeBorder(selected ? TFColor.borderAccent : TFColor.borderControl, lineWidth: 1.5)
+        case .status(let state):
+            TaskStatusMark(state, size: 16, action: onMark)
         case .symbol(let name):
             Image(systemName: name)
                 .font(.system(size: 13, weight: .semibold))
@@ -126,7 +134,7 @@ struct TitleSubtitleLayout: Layout {
     }
 }
 
-/// 런처의 구역 제목 ("Review" · "Now" · "Commands")
+/// 런처의 구역 제목 ("Review" · "In Progress" · "To Do" · "Done Today" · "Commands")
 public struct LauncherSectionLabel: View {
     let title: String
 
@@ -147,15 +155,20 @@ public struct LauncherSectionLabel: View {
 
 #Preview("Launcher row") {
     VStack(spacing: 0) {
-        LauncherSectionLabel("Now")
-        LauncherRow(title: "제안서 보내기", accessory: "Today", urgent: true, selected: true)
-        LauncherRow(title: "계약서 검토 의견 전달", accessory: "Wed")
-        LauncherRow(title: "투자사 IR 자료 업데이트", accessory: "Overdue", urgent: true)
+        LauncherSectionLabel("Review")
+        LauncherRow(title: "법무팀에 계약서 초안 전달", accessory: "Fri", leading: .status(.review))
+        LauncherSectionLabel("In Progress")
+        LauncherRow(title: "투자사 IR 자료 업데이트", accessory: "Overdue", urgent: true, leading: .status(.inProgress)) {}
+        LauncherSectionLabel("To Do")
+        LauncherRow(title: "제안서 보내기", accessory: "Today", urgent: true, selected: true) {}
+        LauncherRow(title: "계약서 검토 의견 전달", accessory: "Wed") {}
         LauncherRow(
             title: "An extremely long launcher row title that keeps going and going well past four hundred points wide",
             subtitle: "Sequoia · Weekly sync",
             accessory: "Sep 30"
         )
+        LauncherSectionLabel("Done Today")
+        LauncherRow(title: "주간 회의록 정리", dimmed: true, leading: .status(.done)) {}
         LauncherSectionLabel("Commands")
         LauncherRow(title: "Send clipboard as source", leading: .symbol("doc.on.clipboard"))
         LauncherRow(title: "Ask “when is the IR deck due?”", selected: true, leading: .symbol("sparkle"))

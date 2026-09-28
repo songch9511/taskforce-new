@@ -3,6 +3,7 @@ import Foundation
 import TaskforceKit
 
 /// 디자인 비교용 견본 (Debug 빌드, 실행 인자 `-TFSampleData`). Figma 9:529 · 5:57과 같은 문구로 화면을 채우고 서버는 부르지 않는다.
+/// 구역마다 하나 이상: Review 3 · In Progress 1 · To Do 2 · Done Today 1. 완료 · 착수 · 다시 열기도 서버 없이 옮겨진다.
 enum SampleData {
     static var isEnabled: Bool { ProcessInfo.processInfo.arguments.contains("-TFSampleData") }
 
@@ -16,7 +17,7 @@ enum SampleData {
         return NowResponse(
             now: [
                 ranked(2, "계약서 검토 의견 전달", due: today.adding(days: -1), reasons: [.overdue], counterpart: "김대표"),
-                ranked(3, "투자사 IR 자료 업데이트", due: today.adding(days: 3), reasons: [.dueSoon]),
+                ranked(3, "투자사 IR 자료 업데이트", due: today.adding(days: 3), reasons: [.dueSoon, .started], startedAt: Date(timeIntervalSinceNow: -3_600)),
                 ranked(4, "채용 공고 문구 확인", due: today.adding(days: 10), reasons: []),
             ],
             confirmations: [
@@ -26,6 +27,11 @@ enum SampleData {
             ],
             weeklyCheck: nil
         )
+    }
+
+    /// 오늘 끝낸 할 일
+    static var doneToday: [ActionSummary] {
+        [summary(id(5), "주간 회의록 정리", due: DueDateFormat.today(), needsConfirmation: false, status: .done)]
     }
 
     static var evidence: [UUID: EvidenceDigest] {
@@ -61,16 +67,22 @@ enum SampleData {
         UUID(uuidString: String(format: "5A000000-0000-4000-8000-%012d", n))!
     }
 
-    private static func summary(_ id: UUID, _ title: String, due: LocalDate?, needsConfirmation: Bool, counterpart: String? = nil) -> ActionSummary {
+    private static func summary(
+        _ id: UUID, _ title: String, due: LocalDate?, needsConfirmation: Bool, counterpart: String? = nil,
+        status: ActionStatus = .open, startedAt: Date? = nil
+    ) -> ActionSummary {
         ActionSummary(
-            id: id, title: title, owner: .me, status: .open, dueDate: due, counterpart: counterpart,
-            needsConfirmation: needsConfirmation, confirmReasons: needsConfirmation ? ["기한 확인"] : [], startedAt: nil, lastActivityAt: Date()
+            id: id, title: title, owner: .me, status: status, dueDate: due, counterpart: counterpart,
+            needsConfirmation: needsConfirmation, confirmReasons: needsConfirmation ? ["기한 확인"] : [], startedAt: startedAt,
+            lastActivityAt: Date()
         )
     }
 
-    private static func ranked(_ n: Int, _ title: String, due: LocalDate?, reasons: [RankReason], counterpart: String? = nil) -> RankedAction {
+    private static func ranked(
+        _ n: Int, _ title: String, due: LocalDate?, reasons: [RankReason], counterpart: String? = nil, startedAt: Date? = nil
+    ) -> RankedAction {
         RankedAction(
-            action: summary(id(n), title, due: due, needsConfirmation: false, counterpart: counterpart),
+            action: summary(id(n), title, due: due, needsConfirmation: false, counterpart: counterpart, startedAt: startedAt),
             score: Double(100 - n), reasons: reasons, daysUntilDue: nil
         )
     }
@@ -80,12 +92,12 @@ extension NowStore {
     /// 견본으로 채운다 (이후 `load()`는 서버를 부르지 않는다)
     func useSampleData() {
         sampleMode = true
-        applySample(SampleData.now, evidence: SampleData.evidence)
+        applySample(SampleData.now, doneToday: SampleData.doneToday, evidence: SampleData.evidence)
     }
 
     /// 견본에서 직접 추가 (`add(title:due:)`, 서버를 부르지 않는다)
     func addSample(title: String, due: LocalDate?) {
-        applySample(SampleData.adding(title, due: due, to: response), evidence: evidence)
+        applySample(SampleData.adding(title, due: due, to: response), doneToday: doneToday, evidence: evidence)
     }
 }
 #endif

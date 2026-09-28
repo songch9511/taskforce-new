@@ -54,10 +54,11 @@ Mac은 `--show-launcher -TFSampleData -TFSnapshot <폴더>`로 실행하면 런�
 ### iPhone — 한 화면 (Figma 9:529 · Website 17:962)
 
 - 로그인: Sign in with Apple, 그 아래 눈에 덜 띄게 "Sign in with email"(App Store 심사 계정용, 가입 화면 없음). Mac 런처의 "Sign in with email" 행은 설정 창의 같은 로그인 화면을 연다.
-- "Review 1 / N" + Review card 한 장(Confirm = `POST confirm`, Dismiss = `DELETE`) → "Now" + Task row 목록. 순서는 서버가 정한 그대로.
-- 체크 = 완료(`PATCH status done`, 먼저 Done으로 보이고 `/now`를 다시 불러 뺀다). 행을 누르면 근거 한 줄만 펼치고, 인용을 누르면 원문을 연다.
+- "Review 1 / N" + Review card 한 장(Confirm = `POST confirm`, Dismiss = `DELETE`) → In Progress · To Do · Done Today 구역의 Task row 목록(빈 구역은 숨김). 구역 안 순서는 서버가 정한 그대로(`TaskBoard`).
+- 왼쪽 상태 표시(`TaskStatusMark`: ○ To Do · ◐ In Progress · ✓ Done)를 누르면 완료(`PATCH status done`) · 다시 열기(`PATCH status open`). 서버를 기다리지 않고 곧바로 Done Today · 열린 목록으로 옮기고, 쓰기가 끝나면 두 목록을 다시 읽는다.
+- To Do 행을 오른쪽으로 밀면 Start(`POST start`, → In Progress), 왼쪽으로 밀면 Complete. 행을 누르면 근거 한 줄만 펼치고, 인용을 누르면 원문을 연다.
 - 오른쪽 위 "+" = New Task 시트(`NowStore.add`, 원문 없이 `POST /actions`): 제목(200자까지) · Due(None · Today · Tomorrow · Date…) · Cancel / Add.
-  쓰는 동안 Review · Now에서 맞는 할 일을 "In Now"로 세 개까지 보여 준다(`LauncherAdd.existing`, 런처 찾기와 같은 거르기). 추가는 막지 않는다. 추가되면 닫고 `/now`를 다시 부른다.
+  쓰는 동안 열린 할 일(Review · In Progress · To Do)에서 맞는 것을 "Existing"으로 세 개까지 보여 준다(`LauncherAdd.existing`, 런처 찾기와 같은 거르기). 추가는 막지 않는다. 추가되면 닫고 `/now`를 다시 부른다.
 - 오른쪽 위 계정 시트: Profile(이름 · 다른 이름, 비어 있으면 처음 한 번 묻는다) · Connections · AI processing(외부 AI 처리 동의) · Sign Out · Delete Account(Apple 재확인 → 토큰 폐기) · Privacy Policy · Terms of Use.
 - 연결이 없고 할 일도 없으면 로고 네 개 + "Connect" 한 줄. 권한이 끊긴 연결이 있으면 목록 위에 Reconnect 줄.
 
@@ -66,11 +67,14 @@ Mac은 `--show-launcher -TFSampleData -TFSnapshot <폴더>`로 실행하면 런�
 - Dock 아이콘 없음(`LSUIElement`, macOS만). 메뉴 막대의 로고 마크: Open Launcher · Settings… · Quit.
 - 전역 단축키 ⌥Space(Carbon `RegisterEventHotKey`, 샌드박스 안에서 동작). Settings → Shortcut에서 바꾼다(UserDefaults).
 - 런처: 폭 696 · 모서리 26 · `NSVisualEffectView` 유리 재질, 화면 가운데 위쪽. esc · 다른 곳 클릭 · 동작 완료로 닫힌다.
-  - 빈칸 → Review · Now · Commands(Send clipboard as source · Report missing action · Connections · Settings · Quit)
-  - 짧은 글 → Now를 앱에서 거른 결과(순서 계산 아님) + Ask “…” + Hand off “첫 결과” to AI
-    - Review · Now에 맞는 할 일이 없으면 맨 위에 Add “…”(`POST /actions`, 제목 200자까지): ↩ → 기한(맨 위 No due date) → 원문(맨 위 No source, 아래는 빠진 할 일 신고와 같은 최근 원문) → 원문을 골랐으면 줄 고르기 후 ⌘↩ → "Added". esc는 한 단계 뒤로
+  - 빈칸 → Review · In Progress · To Do · Done Today(흐리게) · Commands(Send clipboard as source · Report missing action · Connections · Settings · Quit). 빈 구역은 숨김
+  - 짧은 글 → 네 구역을 앱에서 거른 결과(순서 계산 아님) + Ask “…” + Hand off “첫 결과” to AI, 그 아래 거른 Done Today
+    - 열린 할 일(Review · In Progress · To Do)에 맞는 것이 없으면 맨 위에 Add “…”(Done Today는 보지 않는다)(`POST /actions`, 제목 200자까지): ↩ → 기한(맨 위 No due date) → 원문(맨 위 No source, 아래는 빠진 할 일 신고와 같은 최근 원문) → 원문을 골랐으면 줄 고르기 후 ⌘↩ → "Added". esc는 한 단계 뒤로
   - 200자가 넘거나 여러 줄 → Send as source(`POST /sources`, 여러 줄은 note · 한 줄은 message, 제목은 첫 줄) + Ask
-  - 키: ↑↓ 고르기 · ↩ 실행(Review는 Confirm, 할 일은 ⌘K 패널) · ⌘K 동작(Complete · Start · Hand off to AI · Open source · Edit due, Review는 Confirm · Dismiss) · Tab/→ 펼침(Sources 묶음) · ⌘⌫ Review Dismiss · esc 뒤로/닫기
+  - 키: ↑↓ 고르기 · ↩ 실행(Review는 Confirm, 할 일은 ⌘K 패널) · ⌘K 동작 · Tab/→ 펼침(Sources 묶음) · ⌘⌫ Review Dismiss · esc 뒤로/닫기
+    - ⌘K: To Do = Complete · Start · Hand off to AI · Open source · Edit due, In Progress = Start 없이 같음, Done Today = Reopen · Open source, Review = Confirm · Dismiss · Hand off to AI · Open source · Edit due
+  - 행 왼쪽 상태 표시(Review는 점선 원, 누를 수 없음)를 누르면 완료 · 다시 열기. Complete · Start · Reopen은 런처를 닫지 않고 그 행을 옮긴 구역에서 고른 채 둔다.
+    완료 뒤 5초 동안 아래에 "Undo ⌘Z"(⌘Z = 다시 열기)
   - `app_opened`는 런처가 뜰 때 30분에 한 번(`LauncherOpenThrottle`).
 - 설정 창(SwiftUI Settings 장면): Account · Connections · AI processing · Shortcut. iPhone과 같은 연결 · 동의 화면을 쓴다.
 
@@ -88,17 +92,17 @@ Mac은 `--show-launcher -TFSampleData -TFSnapshot <폴더>`로 실행하면 런�
 ## 구조
 
 - `Taskforce/` — 앱
-  - `Shared/` — 두 플랫폼 공용: `NowStore`(지금 할 일 · 근거 · 쓰기), `AccountStore`(연결 · 동의 · 프로필), 연결 · 동의 · 프로필 화면, 로그인, 계정 삭제
+  - `Shared/` — 두 플랫폼 공용: `NowStore`(지금 할 일 · 오늘 끝낸 할 일 · 근거 · 쓰기, 완료 · 착수 · 다시 열기는 먼저 옮겨 보여 줌), `AccountStore`(연결 · 동의 · 프로필), 연결 · 동의 · 프로필 화면, 로그인, 계정 삭제
   - `iOS/` — 한 화면(`HomeView`) · 계정 시트 · New Task 시트
   - `Mac/` — 앱 델리게이트 · 메뉴 막대 · 단축키 · 런처 패널/모델/화면 · 설정 창
 - `Packages/TaskforceKit/`
   - `TaskforceKit` — 화면 없는 공유 코드
     - `APIClient`: 서버 `/api/v1` (모든 쓰기). `Authorization: Bearer <Supabase access token>`. 화면용 오류 문구는 영어
-    - `TaskforceReads`: Supabase 직접 읽기 (RLS, 읽기 전용) — 할 일 상세 · 근거 · 원문 · 연결 · 원해요
+    - `TaskforceReads`: Supabase 직접 읽기 (RLS, 읽기 전용) — 할 일 상세 · 근거 · 원문 · 연결 · 원해요 · 오늘 끝낸 할 일(`status = done`, 기기 시간대 오늘 0시 뒤 `updated_at`, 최근 것부터 10개, 다른 사람 몫 제외)
     - `ActionChanges`: `actions` Realtime 구독. "바뀜" 신호로만 쓰고 지금 할 일은 항상 `/now`를 다시 불러온다 (로그인해 있는 동안 구독 하나: `ActionChangeFeed`)
     - `Models` · `AccountModels` · `Connections`: `src/lib/api/contract.ts`와 같은 모양 (새 필드는 없어도 읽는다)
-    - 순수 규칙(테스트로 고정): 런처 입력 모드 · 구역 · 거르기 · 붙여 넣은 원문 · 직접 추가 제목 · 이미 있는 할 일(`Launcher`), 영어 기한 · 시점 표기 · Task row 메타(`DisplayText`), 서비스 추정 · Source stack 접기(`SourceService`), 근거 고르기(`EvidenceDigest`), 연결 상태 · 콜백 · 시작 실패 분류(`Connections`), 단축키(`HotKeyShortcut`), `app_opened`(`AppOpenTracker` · `LauncherOpenThrottle`), 원문 줄 고르기(`SourceText` · `LineSelection`)
-  - `TaskforceUI` — Figma 토큰(Asset Catalog 색 세트, 이름 = Figma 변수 · 간격 · 모서리 · 글자)과 부품(Task row · Review card · Evidence · Sources group · Source icon/stack · Launcher row · Keycap · 캡슐 버튼), 부품마다 `#Preview`
+    - 순수 규칙(테스트로 고정): 목록 구역 · 먼저 보여 주는 내 변경(`TaskSections`), 런처 입력 모드 · 구역 · 거르기 · 붙여 넣은 원문 · 직접 추가 제목 · 이미 있는 할 일(`Launcher`), 영어 기한 · 시점 표기 · Task row 메타(`DisplayText`), 서비스 추정 · Source stack 접기(`SourceService`), 근거 고르기(`EvidenceDigest`), 연결 상태 · 콜백 · 시작 실패 분류(`Connections`), 단축키(`HotKeyShortcut`), `app_opened`(`AppOpenTracker` · `LauncherOpenThrottle`), 원문 줄 고르기(`SourceText` · `LineSelection`)
+  - `TaskforceUI` — Figma 토큰(Asset Catalog 색 세트, 이름 = Figma 변수 · 간격 · 모서리 · 글자)과 부품(Task status · Task row · Review card · Evidence · Sources group · Source icon/stack · Launcher row · Keycap · 캡슐 버튼), 부품마다 `#Preview`
     - 서비스 로고는 Figma Source icon(Simple Icons 단색)의 글리프만 template 이미지로 두고, 타일은 토큰으로 그린다
 - 순서 계산 · 판정은 서버에만 있다. 앱은 받은 순서를 그대로 보여준다.
 - 로그인 세션은 App Group 공유 Keychain(데이터 보호 Keychain)에 저장되어, Phase A2의 공유 확장이 같은 세션을 읽습니다.

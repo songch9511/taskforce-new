@@ -30,13 +30,15 @@ struct LauncherTests {
 
     // MARK: 구역
 
-    @Test func emptyShowsReviewNowCommandsInServerOrder() {
+    @Test func emptyShowsReviewInProgressToDoCommands() {
         let sections = LauncherContent.sections(for: .empty, now: now, signedIn: true)
-        #expect(sections.map(\.title) == ["Review", "Now", "Commands"])
+        #expect(sections.map(\.title) == ["Review", "In Progress", "To Do", "Commands"])
         #expect(sections[0].items.map(\.id) == ["review-44444444-4444-4444-8444-444444444444"])
-        // 서버가 준 순서 그대로
-        #expect(sections[1].items.compactMap(\.action?.title) == ["투자 자료 보내기", "계약서 검토"])
-        #expect(sections[2].items == LauncherCommand.allCases.map(LauncherItem.command))
+        // 착수한 것은 In Progress, 나머지는 To Do
+        #expect(sections[1].items.compactMap(\.action?.title) == ["투자 자료 보내기"])
+        #expect(sections[2].items.compactMap(\.action?.title) == ["계약서 검토"])
+        #expect(sections[3].items == LauncherCommand.allCases.map(LauncherItem.command))
+        #expect(sections.flatMap(\.items).compactMap(\.group) == [.review, .inProgress, .toDo])
     }
 
     @Test func emptySectionsAreDropped() {
@@ -46,7 +48,7 @@ struct LauncherTests {
 
     @Test func queryFiltersTasksThenAskThenHandoffTopMatch() {
         let sections = LauncherContent.sections(for: .query("자료"), now: now, signedIn: true)
-        #expect(sections.map(\.title) == ["Now", nil])
+        #expect(sections.map(\.title) == ["In Progress", nil])
         #expect(sections[0].items.compactMap(\.action?.title) == ["투자 자료 보내기"])
         guard case .ask("자료") = sections[1].items[0] else {
             Issue.record("Ask가 있어야 함")
@@ -158,7 +160,7 @@ struct LauncherTests {
     @Test func missingConsentAddsAllowRowOnTopWithoutHidingTheList() {
         let sections = LauncherContent.sections(for: .empty, now: now, signedIn: true, needsConsent: true)
         #expect(sections.first?.items == [.allowAI])
-        #expect(sections.map(\.title) == [nil, "Review", "Now", "Commands"])
+        #expect(sections.map(\.title) == [nil, "Review", "In Progress", "To Do", "Commands"])
         // 찾는 중에는 끼어들지 않는다
         #expect(!LauncherContent.sections(for: .query("자료"), now: now, signedIn: true, needsConsent: true).flatMap(\.items).contains(.allowAI))
     }

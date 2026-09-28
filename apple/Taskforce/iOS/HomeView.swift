@@ -3,8 +3,9 @@ import SwiftUI
 import TaskforceKit
 import TaskforceUI
 
-/// iPhone 한 화면 (Figma 9:529 · Website 17:962): "Review 1 / N" + 카드 한 장 → "Now" + Task row 목록.
-/// 순서는 서버가 정한 그대로 보여 준다. 행을 누르면 근거 한 줄만 펼친다.
+/// iPhone 한 화면 (Figma 9:529 · Website 17:962): "Review 1 / N" + 카드 한 장 → In Progress · To Do · Done Today의 Task row 목록.
+/// 순서는 서버가 정한 그대로 보여 준다 (구역 나누기는 `TaskBoard`). 행을 누르면 근거 한 줄만 펼친다.
+/// 왼쪽 상태 표시를 누르면 완료(→ Done Today) · 다시 열기. To Do 행은 밀어서 Start(→ In Progress) · Complete.
 struct HomeView: View {
     let userID: UUID
     let email: String?
@@ -13,6 +14,7 @@ struct HomeView: View {
     @Environment(AccountStore.self) private var account
     @Environment(ActionChangeFeed.self) private var changes
     @Environment(\.openURL) private var openURL
+    @Environment(\.colorScheme) private var colorScheme
     @State private var expanded: UUID?
     @State private var accountRoute: AccountRoute?
     @State private var addingTask = false
@@ -99,13 +101,16 @@ struct HomeView: View {
     }
 
     private var isEmpty: Bool {
-        store.tasks.isEmpty && store.confirmations.isEmpty && store.response?.weeklyCheck == nil
+        store.sections.isEmpty && store.response?.weeklyCheck == nil
     }
 
     private var today: LocalDate { DueDateFormat.today() }
 
     private var list: some View {
-        List {
+        let sections = store.sections
+        // 비어 있지 않은 구역 (Review 카드 아래로)
+        let groups = [TaskGroup.inProgress, .toDo, .doneToday].filter { !sections.actions(in: $0).isEmpty }
+        return List {
             if let error = store.loadError {
                 Text(error)
                     .font(TFFont.footnote)
@@ -114,17 +119,17 @@ struct HomeView: View {
             }
             reconnectBanner
             consentBanner
-            if let first = store.confirmations.first {
-                reviewHeader(count: store.confirmations.count)
+            if let first = sections.review.first {
+                reviewHeader(count: sections.review.count)
                 reviewCard(first)
             }
-            if !store.tasks.isEmpty {
-                Text("Now")
+            ForEach(groups, id: \.self) { group in
+                Text(group.title)
                     .font(TFFont.headline)
                     .foregroundStyle(TFColor.textPrimary)
-                    .plainRow(top: store.confirmations.isEmpty ? TFSpace.sm : 0, bottom: TFSpace.md)
-                ForEach(Array(store.tasks.enumerated()), id: \.element.id) { index, ranked in
-                    taskRow(ranked)
+                    .plainRow(top: group == groups.first ? (sections.review.isEmpty ? TFSpace.sm : 0) : TFSpace.xl, bottom: TFSpace.md)
+                ForEach(Array(sections.actions(in: group).enumerated()), id: \.element.id) { index, action in
+                    taskRow(action, group: group)
                         .listRowInsets(EdgeInsets(top: 0, leading: TFSpace.lg, bottom: 0, trailing: 0))
                         .listRowBackground(TFColor.bgCanvas)
                         .listRowSeparatorTint(TFColor.borderDefault)
@@ -177,20 +182,24 @@ struct HomeView: View {
         .plainRow(top: 0, bottom: TFSpace.xl + TFSpace.xs)
     }
 
-    // MARK: Now
+    // MARK: In Progress · To Do · Done Today
 
-    private func taskRow(_ ranked: RankedAction) -> some View {
-        let action = ranked.action
-        let done = store.completed.contains(action.id)
-        let state: TaskRowState = done ? .done : (action.dueDate.map { DueText.isOverdue($0, today: today) } == true ? .overdue : .open)
+    /// 행이 다른 구역으로 옮겨 갈 때
+    private static let move = Animation.snappy(duration: 0.25)
+
+    private func taskRow(_ action: ActionSummary, group: TaskGroup) -> some View {
+        let done = group == .doneToday
+        let overdue = action.dueDate.map { DueText.isOverdue($0, today: today) } == true
+        let state: TaskRowState = done ? .done : (overdue ? .overdue : .open)
         return TaskRow(
             title: action.title,
             meta: TaskMetaLine(due: action.dueDate.map { DueText.short($0, today: today) }, counterpart: action.counterpart),
             state: state,
+            inProgress: group == .inProgress,
             onToggle: {
-                guard !store.busy.contains(action.id) else { return }
-                Task {
-                    if done { await store.reopen(action.id) } else { await store.complete(action.id) }
+                // 완료는 Done Today로, 다시 열면 열린 목록으로 옮겨 간다
+                withAnimation(Self.move) {
+                    if done { store.reopen(action.id) } else { store.complete(action.id) }
                 }
             }
         ) {
@@ -206,6 +215,23 @@ struct HomeView: View {
         .accessibilityAction(named: expanded == action.id ? "Hide source" : "Show source") {
             expanded = expanded == action.id ? nil : action.id
         }
+        .swipeActions(edge: .leading, allowsFullSwipe: true) {
+            if group == .toDo {
+                Button("Start") { withAnimation(Self.move) { _ = store.start(action.id) } }
+                    .tint(swipeTint)
+            }
+        }
+        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+            if group == .toDo {
+                Button("Complete") { withAnimation(Self.move) { _ = store.complete(action.id) } }
+                    .tint(swipeTint)
+            }
+        }
+    }
+
+    /// 밀어서 나오는 버튼: 글자가 늘 흰색이라 바탕은 두 모드 모두 어두워야 한다 (강조색은 쓰지 않는다)
+    private var swipeTint: Color {
+        colorScheme == .dark ? TFColor.fillSecondary : TFColor.fillInverse
     }
 
     @ViewBuilder
