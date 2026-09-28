@@ -4,11 +4,11 @@ import TaskforceKit
 /// Task status (Figma "Task status": To Do · In Progress · Done · Review): 할 일 행 왼쪽의 상태 표시. iPhone Task row · Mac Launcher row 공용.
 /// 모두 잉크(fill/inverse)와 border/control로만 그린다 (accent는 선택된 런처 행에만 쓴다).
 /// - To Do: border/control 테두리 원
-/// - In Progress: 잉크 테두리 + 왼쪽 반 채움
+/// - In Progress: 잉크로 채운 원 (체크 없음)
 /// - Done: 잉크로 채운 원 + 흰 체크
 /// - Review: border/control 점선 원 (누를 수 없음)
 ///
-/// `action`을 주면 누를 수 있다: To Do · In Progress는 완료, Done은 다시 열기. Review는 `action`이 있어도 누를 수 없다.
+/// `action`을 주면 누를 수 있다: To Do · In Progress는 Done으로, Done은 끝내기 전 상태로 (`WorkState.toggled`). Review는 `action`이 있어도 누를 수 없다.
 /// `tapInsets`: 표시 둘레의 여백. 누르는 영역에 들어간다 (iPhone Task row는 제목 첫 줄에 맞춘 위 여백까지 누를 수 있다).
 public struct TaskStatusMark: View {
     public enum State: String, CaseIterable, Sendable, Hashable {
@@ -53,8 +53,8 @@ public struct TaskStatusMark: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .accessibilityLabel(state == .done ? "Reopen" : "Complete")
-            .accessibilityValue(state.label)
+            .accessibilityLabel(state.label)
+            .accessibilityHint(state == .done ? "Reopens" : "Marks as Done")
             .accessibilityAddTraits(state == .done ? .isSelected : [])
         } else {
             mark
@@ -71,13 +71,11 @@ public struct TaskStatusMark: View {
             case .toDo:
                 Circle().strokeBorder(TFColor.borderControl, lineWidth: lineWidth)
             case .inProgress:
-                Circle().strokeBorder(TFColor.fillInverse, lineWidth: lineWidth)
-                Circle()
-                    .fill(TFColor.fillInverse)
-                    .padding(max(3, size * 0.18))
-                    .mask(alignment: .leading) {
-                        Rectangle().frame(width: size / 2)
-                    }
+                // 검은 테두리 + 안쪽 원 (To Do 회색 테두리 → 진행 중 → 완료 채움으로 점점 짙어진다)
+                ZStack {
+                    Circle().strokeBorder(TFColor.fillInverse, lineWidth: lineWidth)
+                    Circle().fill(TFColor.fillInverse).frame(width: size * 0.5, height: size * 0.5)
+                }
             case .done:
                 Circle().fill(TFColor.fillInverse)
                 Image(systemName: "checkmark")

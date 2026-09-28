@@ -3,7 +3,7 @@ import Foundation
 import TaskforceKit
 
 /// 디자인 비교용 견본 (Debug 빌드, 실행 인자 `-TFSampleData`). Figma 9:529 · 5:57과 같은 문구로 화면을 채우고 서버는 부르지 않는다.
-/// 구역마다 하나 이상: Review 3 · In Progress 1 · To Do 2 · Done Today 1. 완료 · 착수 · 다시 열기도 서버 없이 옮겨진다.
+/// 구역마다 하나 이상: Review 3 · In Progress 1 · To Do 2 · Done Today 1. To Do · In Progress · Done 옮기기도 서버 없이 반영된다.
 enum SampleData {
     static var isEnabled: Bool { ProcessInfo.processInfo.arguments.contains("-TFSampleData") }
 

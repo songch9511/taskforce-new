@@ -4,6 +4,8 @@ import TaskforceKit
 /// Launcher row (Figma 5:52, Mac): 제목 + 오른쪽에 기한 하나. 기한 지남 · 오늘은 빨강 (L2).
 /// 선택 행만 bg/selected + return 키캡. 부제는 기본으로 끈다 (L4). 높이 40.
 /// 오늘 끝낸 할 일(`dimmed`)은 제목을 text/secondary로 흐리게 (취소선 없음).
+/// `checked`: 고르는 목록의 지금 값 (⌘K Status의 지금 상태). 오른쪽에 체크, 골라도 return 키캡은 없다 (↩가 할 일이 없다).
+/// `shortcut`: 그 줄의 단축키 (⌘K Delete의 "⌘⌫"). 늘 보이는 키캡, 고르면 그 오른쪽에 return 키캡.
 public struct LauncherRow: View {
     public enum Leading: Sendable, Equatable {
         /// 할 일: 16pt 상태 표시 (`TaskStatusMark`)
@@ -20,6 +22,8 @@ public struct LauncherRow: View {
     let urgent: Bool
     let selected: Bool
     let dimmed: Bool
+    let checked: Bool
+    let shortcut: String?
     let leading: Leading
     let onMark: (() -> Void)?
 
@@ -31,6 +35,8 @@ public struct LauncherRow: View {
         urgent: Bool = false,
         selected: Bool = false,
         dimmed: Bool = false,
+        checked: Bool = false,
+        shortcut: String? = nil,
         leading: Leading = .status(.toDo),
         onMark: (() -> Void)? = nil
     ) {
@@ -40,6 +46,8 @@ public struct LauncherRow: View {
         self.urgent = urgent
         self.selected = selected
         self.dimmed = dimmed
+        self.checked = checked
+        self.shortcut = shortcut
         self.leading = leading
         self.onMark = onMark
     }
@@ -71,7 +79,15 @@ public struct LauncherRow: View {
                     .frame(maxWidth: 160, alignment: .trailing)
                     .fixedSize()
             }
-            if selected {
+            if let shortcut {
+                Keycap(shortcut)
+            }
+            if checked {
+                Image(systemName: "checkmark")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(TFColor.textSecondary)
+                    .frame(minWidth: 20, minHeight: 20)
+            } else if selected {
                 Keycap(systemImage: "return")
             }
         }
@@ -80,7 +96,7 @@ public struct LauncherRow: View {
         .background(selected ? TFColor.bgSelected : .clear, in: RoundedRectangle(cornerRadius: TFRadius.md, style: .continuous))
         .contentShape(Rectangle())
         .accessibilityElement(children: .combine)
-        .accessibilityAddTraits(selected ? .isSelected : [])
+        .accessibilityAddTraits(selected || checked ? .isSelected : [])
     }
 
     @ViewBuilder
@@ -169,6 +185,13 @@ public struct LauncherSectionLabel: View {
         )
         LauncherSectionLabel("Done Today")
         LauncherRow(title: "주간 회의록 정리", dimmed: true, leading: .status(.done)) {}
+        LauncherSectionLabel("Status")
+        LauncherRow(title: "To Do", leading: .status(.toDo))
+        LauncherRow(title: "In Progress", selected: true, checked: true, leading: .status(.inProgress))
+        LauncherRow(title: "Done", leading: .status(.done))
+        LauncherSectionLabel("Actions")
+        LauncherRow(title: "Open source", leading: .symbol("arrow.up.right.square"))
+        LauncherRow(title: "Delete", selected: true, shortcut: "⌘⌫", leading: .symbol("trash"))
         LauncherSectionLabel("Commands")
         LauncherRow(title: "Send clipboard as source", leading: .symbol("doc.on.clipboard"))
         LauncherRow(title: "Ask “when is the IR deck due?”", selected: true, leading: .symbol("sparkle"))

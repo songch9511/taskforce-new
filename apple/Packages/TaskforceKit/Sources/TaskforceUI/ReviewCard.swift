@@ -32,6 +32,7 @@ public struct CapsuleButtonStyle: ButtonStyle {
 
 /// Review card (Figma 5:6, iPhone): 제목 + 확인할 값 + 근거 1줄 + Confirm / Dismiss.
 /// 설명 문장 · 이유 캡션은 두지 않는다 (C1). 한 번에 한 장만 (S1).
+/// 목록 위에 떠 있는 면이라 iOS 26부터 유리(`TFGlassCard`, Confirm은 잉크 유리 · Dismiss는 유리). 그 전은 bg/surface + 캡슐 버튼.
 public struct ReviewCard<Evidence: View>: View {
     let title: String
     let value: String?
@@ -72,17 +73,19 @@ public struct ReviewCard<Evidence: View>: View {
                 }
             }
             evidence
-            HStack(spacing: TFSpace.sm) {
-                Button("Confirm", action: onConfirm)
-                    .buttonStyle(CapsuleButtonStyle(.primary))
-                Button("Dismiss", action: onDismiss)
-                    .buttonStyle(CapsuleButtonStyle(.secondary))
+            TFGlassGroup {
+                HStack(spacing: TFSpace.sm) {
+                    Button("Confirm", action: onConfirm)
+                        .buttonStyle(TFGlassButtonStyle(.primary))
+                    Button("Dismiss", action: onDismiss)
+                        .buttonStyle(TFGlassButtonStyle(.secondary))
+                }
             }
             .disabled(busy)
         }
         .padding(TFSpace.lg)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(TFColor.bgSurface, in: RoundedRectangle(cornerRadius: TFRadius.lg, style: .continuous))
+        .tfGlassCard(cornerRadius: TFRadius.lg)
     }
 }
 

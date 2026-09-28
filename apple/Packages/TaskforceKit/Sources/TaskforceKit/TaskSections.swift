@@ -27,21 +27,154 @@ public enum TaskGroup: String, CaseIterable, Sendable, Hashable {
     public static func open(_ action: ActionSummary) -> TaskGroup {
         action.startedAt == nil ? .toDo : .inProgress
     }
+
+    /// Delete를 보이는 구역 (In Progress · To Do · Done Today). Review는 Dismiss가 그 자리다.
+    public var isDeletable: Bool { self != .review }
 }
 
-/// 서버 응답을 기다리지 않고 먼저 보여 주는 내 변경. 쓰기가 끝난 뒤 다시 읽은 목록이 반영되면 지운다 (`NowStore`).
-public enum TaskChange: Sendable, Hashable {
-    /// Start → In Progress (서버 순서 그대로의 자리)
-    case started(at: Date)
-    /// Complete → Done Today 맨 위
-    case completed(ActionSummary, at: Date)
-    /// Reopen → 열린 목록 끝 (다시 읽으면 서버 순서로)
-    case reopened(ActionSummary, at: Date)
+/// 할 일의 진행 상태: 구역 In Progress · To Do · Done Today와 같은 이름. `POST /actions/:id/progress`의 `state` (contract.ts `actionProgressStateSchema`).
+public enum WorkState: String, Codable, CaseIterable, Sendable, Hashable {
+    case toDo = "to_do"
+    case inProgress = "in_progress"
+    case done
 
-    public var at: Date {
+    /// 화면에 쓰는 이름 (구역 이름과 같다. Done Today는 "Done")
+    public var title: String {
         switch self {
-        case .started(let at), .completed(_, let at), .reopened(_, let at): at
+        case .toDo: "To Do"
+        case .inProgress: "In Progress"
+        case .done: "Done"
         }
+    }
+
+    /// 그 구역에 있는 할 일의 상태. Review는 확인 전이라 없다.
+    public init?(_ group: TaskGroup) {
+        switch group {
+        case .review: return nil
+        case .inProgress: self = .inProgress
+        case .toDo: self = .toDo
+        case .doneToday: self = .done
+        }
+    }
+
+    /// 이 상태로 옮기면 놓이는 구역
+    public var group: TaskGroup {
+        switch self {
+        case .toDo: .toDo
+        case .inProgress: .inProgress
+        case .done: .doneToday
+        }
+    }
+
+    /// 상태 표시를 눌렀을 때 갈 상태: 열린 할 일은 Done, 끝낸 할 일은 끝내기 전 상태.
+    /// 끝내기 전 상태는 이 기기에서 끝낼 때 기억해 둔 것(`remembered`), 없으면 착수 시각이 있을 때 In Progress, 그것도 없으면 To Do.
+    public static func toggled(from current: WorkState, _ action: ActionSummary, remembered: WorkState? = nil) -> WorkState {
+        guard current == .done else { return .done }
+        if let remembered, remembered != .done { return remembered }
+        return action.startedAt == nil ? .toDo : .inProgress
+    }
+}
+
+/// 서버 응답을 기다리지 않고 먼저 보여 주는 내 변경 (To Do · In Progress · Done으로 옮김 · 삭제).
+/// 쓰기가 끝난 뒤 다시 읽은 목록이 반영되면 지운다 (`NowStore`).
+/// - Done: Done Today 맨 위
+/// - In Progress: 열린 목록의 서버 순서 자리 (착수 시각은 서버 값을 둔다). 열린 목록에 없으면 (다시 열기 · 되살리기) 끝에
+/// - To Do: 착수 시각을 지운다. 자리는 In Progress와 같다
+/// - 삭제 (`deleting`): 어느 목록에도 두지 않는다
+public struct TaskChange: Sendable, Hashable {
+    /// 옮기기 전 값 (열린 목록 · 끝낸 목록에 없으면 이 값으로 끼운다)
+    public let action: ActionSummary
+    /// 옮길 상태. 삭제면 nil
+    public let state: WorkState?
+    public let at: Date
+
+    public init(_ action: ActionSummary, to state: WorkState, at: Date) {
+        self.init(action: action, state: state, at: at)
+    }
+
+    private init(action: ActionSummary, state: WorkState?, at: Date) {
+        self.action = action
+        self.state = state
+        self.at = at
+    }
+
+    /// 삭제 (`DELETE /actions/:id`, 서버는 취소로 두고 이력을 남긴다)
+    public static func deleting(_ action: ActionSummary, at: Date) -> TaskChange {
+        TaskChange(action: action, state: nil, at: at)
+    }
+
+    /// 옮긴 뒤 착수 시각: To Do는 없음, In Progress는 있던 값(없으면 옮긴 시각)
+    func startedAt(keeping current: Date?) -> Date? {
+        switch state {
+        case .toDo: nil
+        case .inProgress: current ?? at
+        case .done, nil: current
+        }
+    }
+}
+
+/// 잠시 되돌릴 수 있는 방금 한 변경 (Mac "Undo ⌘Z" · iPhone "Deleted  Undo"): 그 할 일의 바꾸기 전 값과 상태
+public struct TaskUndo: Sendable, Hashable {
+    public enum Change: Sendable, Hashable {
+        /// 진행 상태를 옮김 → 그 전 상태로 옮긴다 (`POST progress`)
+        case moved
+        /// 삭제함 → 지우기 전 구역으로 되살린다 (`restoreEdit`)
+        case deleted
+    }
+
+    public let action: ActionSummary
+    /// 바꾸기 전 상태
+    public let state: WorkState
+    public let change: Change
+
+    public init(_ action: ActionSummary, was state: WorkState, change: Change) {
+        self.action = action
+        self.state = state
+        self.change = change
+    }
+
+    /// 삭제 되돌리기의 서버 쓰기 (`PATCH /actions/:id`): Done Today였으면 done, 아니면 open.
+    /// 삭제는 착수 시각을 지우지 않아서, 착수했던 할 일은 다시 열면 In Progress로 돌아온다 (`TaskGroup.open`).
+    public var restoreEdit: ActionEdit {
+        ActionEdit(status: state == .done ? .done : .open)
+    }
+
+    /// 먼저 보여 줄 되살리기: 지우기 전 구역 (열린 할 일은 그 구역 끝, Done은 Done Today 맨 위. 다시 읽으면 서버 자리로)
+    public func restoring(at date: Date) -> TaskChange {
+        TaskChange(action, to: state, at: date)
+    }
+}
+
+/// 되돌리기를 잠시(`window`) 둔다. 새로 두면 전 것은 사라지고, 시간이 다 되어 거둘 때는 그때 둔 것일 때만 거둔다
+/// (그사이 새로 둔 되돌리기를 지우지 않게).
+public struct UndoOffer: Sendable, Hashable {
+    /// 되돌리기를 보여 주는 시간
+    public static let window: Duration = .seconds(5)
+
+    public private(set) var pending: TaskUndo?
+    /// 둘 때마다 오른다 (`expire`에 넘긴다)
+    public private(set) var serial = 0
+
+    public init() {}
+
+    public mutating func offer(_ undo: TaskUndo) {
+        pending = undo
+        serial += 1
+    }
+
+    /// 시간이 다 됨: 그 번호가 아직 지금 것이면 거둔다
+    public mutating func expire(_ serial: Int) {
+        if serial == self.serial { pending = nil }
+    }
+
+    /// 되돌리기: 꺼내고 비운다 (한 번만)
+    public mutating func take() -> TaskUndo? {
+        defer { pending = nil }
+        return pending
+    }
+
+    public mutating func clear() {
+        pending = nil
     }
 }
 
@@ -63,20 +196,28 @@ public struct TaskBoard: Sendable, Hashable {
         var reviews = now.confirmations
         var done = doneToday
         for (id, change) in changes.sorted(by: { $0.value.at < $1.value.at }) {
-            switch change {
-            case .started(let at):
-                if let index = open.firstIndex(where: { $0.id == id }), open[index].action.startedAt == nil {
-                    open[index] = open[index].replacing(action: open[index].action.replacing(startedAt: at))
-                }
-            case .completed(let action, _):
+            guard let state = change.state else {
                 open.removeAll { $0.id == id }
                 reviews.removeAll { $0.id == id }
                 done.removeAll { $0.id == id }
-                done.insert(action.replacing(status: .done), at: 0)
-            case .reopened(let action, _):
+                continue
+            }
+            switch state {
+            case .done:
+                open.removeAll { $0.id == id }
+                reviews.removeAll { $0.id == id }
                 done.removeAll { $0.id == id }
-                if !open.contains(where: { $0.id == id }), !reviews.contains(where: { $0.id == id }) {
-                    open.append(RankedAction(action: action.replacing(status: .open), score: 0, reasons: [], daysUntilDue: nil))
+                done.insert(change.action.replacing(status: .done, startedAt: change.action.startedAt), at: 0)
+            case .toDo, .inProgress:
+                done.removeAll { $0.id == id }
+                if let index = open.firstIndex(where: { $0.id == id }) {
+                    let current = open[index].action
+                    open[index] = open[index].replacing(
+                        action: current.replacing(status: .open, startedAt: change.startedAt(keeping: current.startedAt))
+                    )
+                } else if !reviews.contains(where: { $0.id == id }) {
+                    let action = change.action.replacing(status: .open, startedAt: change.startedAt(keeping: change.action.startedAt))
+                    open.append(RankedAction(action: action, score: 0, reasons: [], daysUntilDue: nil))
                 }
             }
         }
@@ -138,10 +279,10 @@ public struct TaskSections: Sendable, Hashable {
 
 extension ActionSummary {
     /// 서버 응답을 기다리지 않고 보여 줄 값 (`TaskBoard.applying`)
-    func replacing(status: ActionStatus? = nil, startedAt: Date? = nil) -> ActionSummary {
+    func replacing(status: ActionStatus, startedAt: Date?) -> ActionSummary {
         ActionSummary(
-            id: id, title: title, owner: owner, status: status ?? self.status, dueDate: dueDate, counterpart: counterpart,
-            needsConfirmation: needsConfirmation, confirmReasons: confirmReasons, startedAt: startedAt ?? self.startedAt,
+            id: id, title: title, owner: owner, status: status, dueDate: dueDate, counterpart: counterpart,
+            needsConfirmation: needsConfirmation, confirmReasons: confirmReasons, startedAt: startedAt,
             lastActivityAt: lastActivityAt
         )
     }

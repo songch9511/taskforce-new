@@ -181,7 +181,18 @@ export const createActionResponseSchema = z.object({
 });
 export type CreateActionResponse = z.infer<typeof createActionResponseSchema>;
 
-// PATCH · DELETE · confirm · start 응답
+// POST /api/v1/actions/:id/progress — 작업 상태 (할 일 · 진행 중 · 완료). 200 { action } (actionResponseSchema).
+// to_do: 열림 + 착수 전. 완료였으면 다시 열고(PATCH status open과 같은 user_edited), 착수했었으면 착수를 되돌린다(user_unstarted).
+// in_progress: 열림 + 착수. 완료였으면 다시 열고, 착수 전이면 착수한다(start와 같은 user_started · action_started).
+// done: 완료 (PATCH status done과 같은 user_edited). 착수 시각은 그대로 둔다.
+// 상태 · 착수 시각은 한 트랜잭션으로 바뀐다. 이미 그 상태면 아무것도 쓰지 않고 그대로 돌려준다.
+// 오류: 400 invalid_request(본문) · 404 not_found(없거나 남의 것 · 취소된 Action) · 409 conflict(동시 수정이 계속 겹침).
+export const actionProgressStateSchema = z.enum(["to_do", "in_progress", "done"]);
+export type ActionProgressState = z.infer<typeof actionProgressStateSchema>;
+export const actionProgressRequestSchema = z.object({ state: actionProgressStateSchema });
+export type ActionProgressRequest = z.infer<typeof actionProgressRequestSchema>;
+
+// PATCH · DELETE · confirm · start · progress 응답
 export const actionResponseSchema = z.object({ action: actionSummarySchema });
 
 // POST /api/v1/actions/:id/handoff — "AI에게 넘기기": 맥락 · 근거 인용을 묶은 마크다운. 서버가 handoff_used 지표를 남긴다.

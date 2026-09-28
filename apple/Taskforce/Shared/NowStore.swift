@@ -3,7 +3,7 @@ import Observation
 import TaskforceKit
 
 /// 지금 할 일 + 확인 요청 + 오늘 끝낸 할 일. 순서 · 이유는 서버가 정하고, 무엇이 바뀌든 `/now`와 Done Today를 다시 불러온다.
-/// 완료 · 착수 · 다시 열기는 서버 응답을 기다리지 않고 먼저 옮겨 보여 준다 (`TaskBoard.applying`).
+/// 진행 상태(To Do · In Progress · Done) 바꾸기 · 삭제 · 되살리기는 서버 응답을 기다리지 않고 먼저 보여 준다 (`TaskBoard.applying`).
 /// iPhone 화면과 Mac 런처가 같은 것을 쓴다.
 @MainActor
 @Observable
@@ -20,6 +20,8 @@ final class NowStore {
     private var changeCount = 0
     /// 할 일마다 쓰기를 차례로 보낸다 (완료 직후 Undo처럼 겹쳐도 보낸 순서대로)
     private var writes: [UUID: (token: Int, task: Task<Void, Never>)] = [:]
+    /// 이 기기에서 Done으로 옮긴 할 일의 그 전 상태. ✓를 누르면 그리로 되돌린다.
+    private var stateBeforeDone: [UUID: WorkState] = [:]
     /// 할 일마다 읽어 둔 근거 (Supabase 직접 읽기)
     private(set) var evidence: [UUID: EvidenceDigest] = [:]
     /// 근거를 읽지 못한 할 일 (계속 "읽는 중"으로 두지 않게)
@@ -49,7 +51,7 @@ final class NowStore {
         loaded = true
     }
 
-    /// 견본: 서버 없이 완료 · 착수 · 다시 열기를 바로 목록에 반영한다
+    /// 견본: 서버 없이 진행 상태 바꾸기를 바로 목록에 반영한다
     private func commitSample() {
         let board = self.board
         response = board.now
@@ -76,6 +78,7 @@ final class NowStore {
         busy = []
         pending = [:]
         writes = [:]
+        stateBeforeDone = [:]
         evidence = [:]
         evidenceFailed = []
     }
@@ -117,26 +120,48 @@ final class NowStore {
         }
     }
 
-    /// 완료 (PATCH status done): 곧바로 Done Today 맨 위로 옮겨 보여 준다. To Do · In Progress만.
+    /// 진행 상태 바꾸기 (`POST progress`): 곧바로 그 구역으로 옮겨 보여 준다 (Done은 Done Today 맨 위).
+    /// In Progress · To Do · Done Today의 할 일만 (Review는 확인이 먼저). 지금 상태와 같으면 아무것도 하지 않는다.
     /// 돌려받은 작업은 서버에 쓰고 목록을 다시 읽을 때까지 (실패하면 제자리로 돌리고 `message`).
     @discardableResult
-    func complete(_ id: UUID) -> Task<Void, Never>? {
-        guard let found = sections.find(id), found.group == .toDo || found.group == .inProgress else { return nil }
-        return write(id, .completed(found.action, at: Date())) { try await $0.editAction(id: id, ActionEdit(status: .done)) }
+    func move(_ id: UUID, to state: WorkState) -> Task<Void, Never>? {
+        guard let found = sections.find(id), let current = WorkState(found.group), current != state else { return nil }
+        stateBeforeDone[id] = state == .done ? current : nil
+        return write(id, TaskChange(found.action, to: state, at: Date())) { try await $0.setProgress(id, state: state) }
     }
 
-    /// 다시 열기 (PATCH status open): Done Today에서 열린 목록으로. Done Today만.
-    @discardableResult
-    func reopen(_ id: UUID) -> Task<Void, Never>? {
-        guard let found = sections.find(id), found.group == .doneToday else { return nil }
-        return write(id, .reopened(found.action, at: Date())) { try await $0.editAction(id: id, ActionEdit(status: .open)) }
+    /// 지금 상태 (Review · 목록에 없음은 nil)
+    func state(of id: UUID) -> WorkState? {
+        sections.find(id).flatMap { WorkState($0.group) }
     }
 
-    /// 착수 (POST start): 곧바로 In Progress로. To Do만.
+    /// 상태 표시를 누르면 갈 상태: 열린 할 일은 Done, 끝낸 할 일은 끝내기 전 상태 (`WorkState.toggled`)
+    func toggleTarget(_ id: UUID) -> WorkState? {
+        guard let found = sections.find(id), let current = WorkState(found.group) else { return nil }
+        return WorkState.toggled(from: current, found.action, remembered: stateBeforeDone[id])
+    }
+
+    /// 상태 표시를 누름
     @discardableResult
-    func start(_ id: UUID) -> Task<Void, Never>? {
-        guard sections.find(id)?.group == .toDo else { return nil }
-        return write(id, .started(at: Date())) { try await $0.startAction(id: id) }
+    func toggle(_ id: UUID) -> Task<Void, Never>? {
+        guard let target = toggleTarget(id) else { return nil }
+        return move(id, to: target)
+    }
+
+    /// 삭제 (`DELETE /actions/:id`, 서버는 취소로 두고 이력을 남긴다): 곧바로 목록에서 뺀다.
+    /// In Progress · To Do · Done Today의 할 일만 (Review는 Dismiss). 되살릴 값과 쓰기 작업을 돌려준다 (실패하면 제자리로 돌리고 `message`).
+    func delete(_ id: UUID) -> (undo: TaskUndo, write: Task<Void, Never>)? {
+        guard let found = sections.find(id), found.group.isDeletable, let state = WorkState(found.group) else { return nil }
+        let task = write(id, .deleting(found.action, at: Date())) { try await $0.deleteAction(id: id) }
+        return (TaskUndo(found.action, was: state, change: .deleted), task)
+    }
+
+    /// 삭제 되돌리기 (`PATCH /actions/:id` status): 지우기 전 구역으로 곧바로 되살린다 (`TaskUndo.restoreEdit`)
+    @discardableResult
+    func restore(_ undo: TaskUndo) -> Task<Void, Never> {
+        let id = undo.action.id
+        let edit = undo.restoreEdit
+        return write(id, undo.restoring(at: Date())) { try await $0.editAction(id: id, edit) }
     }
 
     private func write(

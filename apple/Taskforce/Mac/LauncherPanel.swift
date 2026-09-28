@@ -10,11 +10,17 @@ final class LauncherPanel: NSPanel {
     override var canBecomeMain: Bool { false }
 }
 
-/// ⌥Space 런처 창 (Figma 5:57 · 5:90): 폭 696, 모서리 26, 시스템 유리 재질, 높이는 내용에 맞춘다.
+/// ⌥Space 런처 창 (Figma 5:57 · 5:90): 폭 696, 모서리 26, 높이는 내용에 맞춘다.
+/// 바탕은 macOS 26부터 Liquid Glass(`NSGlassEffectView`), 그 전은 시스템 유리 재질(`NSVisualEffectView` popover).
 /// 화면 가운데 위쪽 1/3에 뜨고, esc · 다른 곳 클릭(포커스 잃음) · 동작 완료로 닫힌다.
 @MainActor
 final class LauncherPanelController: NSObject, NSWindowDelegate {
     static let width: CGFloat = 696
+
+    /// 창 바탕이 Liquid Glass인지 (유리는 제 테두리를 그려서 따로 긋지 않는다)
+    static var usesGlass: Bool {
+        if #available(macOS 26.0, *) { true } else { false }
+    }
 
     let model: LauncherModel
     private let panel: LauncherPanel
@@ -46,25 +52,35 @@ final class LauncherPanelController: NSObject, NSWindowDelegate {
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient, .ignoresCycle]
         panel.delegate = self
 
-        let effect = NSVisualEffectView()
-        effect.material = .popover
-        effect.blendingMode = .behindWindow
-        effect.state = .active
-        effect.maskImage = Self.roundedMask(radius: TFRadius.xl)
-
-        panel.contentView = effect
-        // macOS 14부터 뷰는 기본으로 제 영역 밖을 자르지 않는다: 크기가 잠깐 어긋나도 내용이 유리 밖으로 새지 않게
-        effect.clipsToBounds = true
-
         let hosting = NSHostingView(
             rootView: LauncherRootView(model: model) { [weak self] height in self?.resize(height: height) }
         )
         // 창 크기는 이 컨트롤러가 정한다 (내용 높이를 받아서)
         hosting.sizingOptions = []
-        // 제약 대신 autoresizing: 창 크기가 바뀌는 즉시 내용도 같은 크기가 된다 (제약은 다음 레이아웃 차례까지 옛 크기로 남는다)
-        hosting.frame = effect.bounds
-        hosting.autoresizingMask = [.width, .height]
-        effect.addSubview(hosting)
+
+        let background: NSView
+        if #available(macOS 26.0, *) {
+            // Liquid Glass: 내용은 유리의 contentView로 (유리가 제약으로 같은 크기에 맞춘다. setFrame(display: true)의 레이아웃에서 바로 맞춰진다)
+            let glass = NSGlassEffectView()
+            glass.style = .regular
+            glass.cornerRadius = TFRadius.xl
+            glass.contentView = hosting
+            background = glass
+        } else {
+            let effect = NSVisualEffectView()
+            effect.material = .popover
+            effect.blendingMode = .behindWindow
+            effect.state = .active
+            effect.maskImage = Self.roundedMask(radius: TFRadius.xl)
+            // 제약 대신 autoresizing: 창 크기가 바뀌는 즉시 내용도 같은 크기가 된다 (제약은 다음 레이아웃 차례까지 옛 크기로 남는다)
+            hosting.frame = effect.bounds
+            hosting.autoresizingMask = [.width, .height]
+            effect.addSubview(hosting)
+            background = effect
+        }
+        panel.contentView = background
+        // macOS 14부터 뷰는 기본으로 제 영역 밖을 자르지 않는다: 크기가 잠깐 어긋나도 내용이 유리 밖으로 새지 않게
+        background.clipsToBounds = true
 
         model.close = { [weak self] in self?.hide() }
         model.presentationAnchor = { [weak self] in self?.panel }

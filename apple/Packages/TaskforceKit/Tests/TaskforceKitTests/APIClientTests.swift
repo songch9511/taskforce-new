@@ -116,6 +116,27 @@ struct APIClientTests {
         ])
     }
 
+    @Test func setProgressPostsTheState() async throws {
+        let api = client(body: #"{"action":\#(Fixtures.actionSummary)}"#)
+        for state in WorkState.allCases {
+            let action = try await api.setProgress(Fixtures.actionID, state: state)
+            #expect(action.id == Fixtures.actionID)
+        }
+        let requests = StubProtocol.requests(host: host)
+        #expect(requests.map { "\($0.method) \($0.url.path)" } == Array(
+            repeating: "POST /api/v1/actions/11111111-1111-4111-8111-111111111111/progress", count: 3
+        ))
+        #expect(requests.map { $0.headers["Content-Type"] } == Array(repeating: "application/json", count: 3))
+        #expect(try requests.map { try json($0.body)["state"] as? String } == ["to_do", "in_progress", "done"])
+    }
+
+    @Test func setProgressSurfacesServerErrors() async throws {
+        let api = client(status: 404, body: #"{"error":{"code":"not_found","message":"없음"}}"#)
+        await #expect(throws: APIError.server(status: 404, code: .notFound, message: "없음")) {
+            try await api.setProgress(Fixtures.actionID, state: .done)
+        }
+    }
+
     @Test func deleteAccountSendsDelete() async throws {
         try await client(body: #"{"deleted":true}"#).deleteAccount()
         let request = try #require(last)

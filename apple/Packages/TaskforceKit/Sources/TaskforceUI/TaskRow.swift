@@ -7,8 +7,8 @@ public enum TaskRowState: Sendable {
 }
 
 /// Task row (Figma 4:34, iPhone): 상태 표시(`TaskStatusMark`) + 제목 + "due · counterpart".
-/// 기한 지남은 기한 글자만 빨강, 완료는 검정 체크 원 + 회색 글자(취소선 없음). 착수한 할 일은 반 채운 원. 구분선은 글자 시작점부터 (List가 긋는다).
-/// 상태 표시를 누르면 `onToggle` (열린 할 일은 완료, 완료는 다시 열기).
+/// 기한 지남은 기한 글자만 빨강, 완료는 검정 체크 원 + 회색 글자(취소선 없음). 착수한 할 일은 체크 없이 채운 원. 구분선은 글자 시작점부터 (List가 긋는다).
+/// 상태 표시를 누르면 `onToggle` (열린 할 일은 Done으로, 끝낸 할 일은 끝내기 전 상태로).
 public struct TaskRow<Detail: View>: View {
     public typealias State = TaskRowState
 

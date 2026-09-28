@@ -4,7 +4,7 @@ import TaskforceKit
 import TaskforceUI
 
 /// 런처 창 내용 (Figma 5:57): 입력창 "Search" · 구역(Review · In Progress · To Do · Done Today · Commands) · 행 · 아래 "Actions ⌘K".
-/// 할 일 행 왼쪽은 상태 표시(`TaskStatusMark`): 누르면 완료 · 다시 열기 (Review는 누를 수 없음).
+/// 할 일 행 왼쪽은 상태 표시(`TaskStatusMark`): ○ · ●를 누르면 Done, ✓는 끝내기 전 상태로 (Review는 누를 수 없음).
 /// ⌘K 패널 · 펼침 · Ask 답 · 원문 고르기처럼 Figma에 없는 화면은 같은 부품(Launcher row · Keycap · Sources 묶음)과 토큰으로만 구성한다.
 struct LauncherRootView: View {
     @Bindable var model: LauncherModel
@@ -25,10 +25,13 @@ struct LauncherRootView: View {
         .padding(TFSpace.sm)
         .frame(width: LauncherPanelController.width)
         .fixedSize(horizontal: false, vertical: true)
-        .overlay(
-            RoundedRectangle(cornerRadius: TFRadius.xl, style: .continuous)
-                .strokeBorder(TFColor.borderDefault, lineWidth: 1)
-        )
+        .overlay {
+            // 유리 재질(macOS 15)에만 창 테두리. Liquid Glass는 제 가장자리를 그린다
+            if !LauncherPanelController.usesGlass {
+                RoundedRectangle(cornerRadius: TFRadius.xl, style: .continuous)
+                    .strokeBorder(TFColor.borderDefault, lineWidth: 1)
+            }
+        }
         .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { onHeightChange($0) }
         // 창이 새 높이로 바뀌기 전 잠깐 동안에도 입력창은 창 위쪽에 붙어 있게 (창은 위 모서리를 고정하고 늘고 준다)
         .frame(maxHeight: .infinity, alignment: .top)
@@ -231,17 +234,39 @@ struct LauncherRootView: View {
 
     // MARK: ⌘K 동작
 
+    /// 할 일 제목 아래 Status(To Do · In Progress · Done, 지금 상태에 체크) · Actions(맨 아래 Delete ⌘⌫). Review는 제목 아래 한 묶음.
     @ViewBuilder
     private func actionRows(_ target: LauncherModel.Target) -> some View {
         LauncherSectionLabel(target.action.title)
-        let entries = model.actionEntries(for: target)
-        ForEach(Array(entries.enumerated()), id: \.element) { index, entry in
-            LauncherRow(title: entry.title, selected: index == model.selection, leading: .symbol(entry.symbolName))
-                .id(index)
-                .onTapGesture {
-                    model.selection = index
-                    model.perform(entry, on: target)
-                }
+        let groups = model.actionGroups(for: target)
+        let offsets = groups.indices.map { groups[..<$0].reduce(0) { $0 + $1.entries.count } }
+        let current = WorkState(target.group)
+        ForEach(Array(groups.enumerated()), id: \.offset) { groupIndex, group in
+            if let title = group.title {
+                LauncherSectionLabel(title)
+            }
+            ForEach(Array(group.entries.enumerated()), id: \.element) { entryIndex, entry in
+                let index = offsets[groupIndex] + entryIndex
+                actionRow(entry, current: current, selected: index == model.selection)
+                    .id(index)
+                    .onTapGesture {
+                        model.selection = index
+                        model.perform(entry, on: target)
+                    }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func actionRow(_ entry: LauncherModel.ActionEntry, current: WorkState?, selected: Bool) -> some View {
+        switch entry {
+        case .state(let state):
+            LauncherRow(
+                title: entry.title, selected: selected, checked: state == current,
+                leading: .status(TaskStatusMark.State(state.group))
+            )
+        default:
+            LauncherRow(title: entry.title, selected: selected, shortcut: entry.shortcut, leading: .symbol(entry.symbolName ?? "circle"))
         }
     }
 
@@ -451,7 +476,7 @@ struct LauncherRootView: View {
                     .foregroundStyle(model.selectedQuote == nil ? TFColor.textSecondary.opacity(0.5) : TFColor.textSecondary)
                 Keycap("⌘↩")
             case .list, .detail:
-                // 완료한 뒤 잠시 되돌리기
+                // 진행 상태를 바꾸거나 지운 뒤 잠시 되돌리기
                 if model.canUndo {
                     Text("Undo")
                         .font(TFFont.footnote)

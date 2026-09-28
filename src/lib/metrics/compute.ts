@@ -4,7 +4,8 @@ import type { MissStage } from "@/lib/pipeline/missing";
 //
 // 1 AI 오판율   (사용자가 수정 · 삭제한 AI 생성 Action) / (AI 생성 Action). 필드별 · 단계별(추출 / 매칭 · 갱신)로 나눈다.
 //               누락 신고 · 직접 추가로 생긴 Action은 AI가 스스로 만든 것이 아니므로 뺀다.
-// 2 착수 시간   app_opened → 첫 action_started / handoff_used
+// 2 착수 시간   app_opened → 첫 action_started / handoff_used. action_started는 Action마다 처음 한 번만 착수로 본다
+//               (착수를 되돌렸다가 다시 시작하거나 착수를 다시 눌러도 새 착수가 아니다)
 // 3 리텐션      첫 활동 주부터 N주 뒤에도 활동했는가
 // 4 AI 누락률   (신고된 누락 + 직접 추가) / (AI 생성 + 신고된 누락 + 직접 추가). 신고(user_reported_missing)는 놓친 단계별로도 센다.
 //               직접 추가(user_created)는 추출이 놓친 할 일을 사용자가 적은 것으로 본다 (원문을 고르지 않으면 단계를 알 수 없다)
@@ -69,9 +70,17 @@ const inPeriod = (at: string, period: Period) => {
 /**
  * 사용자 수정 이벤트에서 AI가 틀린 필드. 상태는 AI가 끝냈다고(완료 · 취소) 본 일을 사용자가 다시 연 경우만 넣는다:
  * 완료로 바꾼 것은 일을 끝낸 것이고, 자기가 잘못 눌러 완료한 것을 되돌린 것도 AI의 잘못이 아니다.
+ * 착수 · 착수 되돌리기(user_started · user_unstarted, 작업 상태)는 사용자의 진행 기록이라 오판이 아니다.
+ * 삭제는 AI가 만들지 말았어야 한 일로 세되, 끝낸 일을 치운 것과 지운 뒤 되살린 것은 뺀다.
  */
-function correctedFields(event: ActionEventRow, earlier: ActionEventRow[]): ErrorField[] {
-  if (event.type === "user_deleted") return ["deleted"];
+function correctedFields(event: ActionEventRow, earlier: ActionEventRow[], later: ActionEventRow[]): ErrorField[] {
+  if (event.type === "user_deleted") {
+    // 끝낸 일을 치운 것은 AI가 틀린 게 아니다
+    if ((event.before ?? {}).status === "done") return [];
+    // 지운 뒤 사용자가 되살렸으면(되돌리기 · 마음을 바꿈) 지운 것으로 세지 않는다
+    const restored = later.some((e) => e.type === "user_edited" && e.actor === "user" && ["open", "done"].includes(String((e.after ?? {}).status)));
+    return restored ? [] : ["deleted"];
+  }
   if (event.type !== "user_edited") return [];
   const fields: ErrorField[] = [];
   const after = event.after ?? {};
@@ -120,7 +129,7 @@ export function misjudgment(events: ActionEventRow[], period: Period): Misjudgme
     const fields = new Set<ErrorField>();
     const stages = new Set<ErrorStage>();
     sorted.forEach((event, index) => {
-      for (const field of correctedFields(event, sorted.slice(0, index))) {
+      for (const field of correctedFields(event, sorted.slice(0, index), sorted.slice(index + 1))) {
         fields.add(field);
         if (field === "deleted") {
           // 지운 일은 애초에 만들지 말았어야 한 것으로 본다 (추출 단계)
@@ -157,9 +166,27 @@ export type StartMetric = {
 /** 앱을 연 뒤 이 시간 안의 첫 착수만 그 열기의 착수로 본다 */
 const START_WINDOW_MINUTES = 60;
 
+/**
+ * Action마다 처음 action_started만 착수로 본다. 진행 중 → 할 일(user_unstarted)로 되돌렸다가 다시 시작하면 start_action이
+ * action_started를 또 남기지만 그 Action의 첫 착수는 아니다. events는 처음부터 전부여야 한다 (load.ts는 기간으로 자르지 않는다).
+ * Action이 없는(action_id null) 착수는 하나씩 센다.
+ */
+function firstStarts(events: MetricEventRow[]): Set<MetricEventRow> {
+  const first = new Set<MetricEventRow>();
+  const seen = new Set<string>();
+  for (const event of [...events].sort((a, b) => a.at.localeCompare(b.at))) {
+    if (event.type !== "action_started") continue;
+    if (event.actionId !== null && seen.has(event.actionId)) continue;
+    if (event.actionId !== null) seen.add(event.actionId);
+    first.add(event);
+  }
+  return first;
+}
+
 export function timeToStart(events: MetricEventRow[], period: Period): StartMetric {
   const byUser = new Map<string, MetricEventRow[]>();
   for (const event of events) byUser.set(event.userId, [...(byUser.get(event.userId) ?? []), event]);
+  const starts = firstStarts(events);
 
   let opens = 0;
   const minutes: number[] = [];
@@ -172,7 +199,7 @@ export function timeToStart(events: MetricEventRow[], period: Period): StartMetr
       // 다음에 다시 열기 전까지의 첫 착수
       for (const next of sorted.slice(index + 1)) {
         if (next.type === "app_opened") break;
-        if (next.type !== "action_started" && next.type !== "handoff_used") continue;
+        if (next.type !== "handoff_used" && !starts.has(next)) continue;
         const gap = (Date.parse(next.at) - openedAt) / 60_000;
         if (gap <= START_WINDOW_MINUTES) minutes.push(gap);
         break;

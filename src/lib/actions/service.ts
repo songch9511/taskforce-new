@@ -4,18 +4,19 @@ import { randomUUID } from "node:crypto";
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 
-import type { ActionSummary, EditActionRequest, HandoffResponse } from "@/lib/api/contract";
+import type { ActionProgressState, ActionSummary, EditActionRequest, HandoffResponse } from "@/lib/api/contract";
 
-import { loadClaims, loadStoredRow, retryOnConflict, writeAction } from "./db-store";
+import { loadClaims, loadStoredRow, retryOnConflict, writeAction, writeProgress, type ActionWrite, type StoredRow } from "./db-store";
 import { quoteContext } from "@/lib/pipeline/text";
 
 import { buildHandoff, HANDOFF_LIMITS, type HandoffEvidence, type HandoffInput, type HandoffUserEdit } from "./handoff";
+import { isNoop, progressPlan } from "./progress";
 import { changeEvents, projectAction, type EventDraft, type UserEventType } from "./project";
 import { rankNow, type RankInput } from "./rank";
 import { actionRowValues, storedReasons, toPgVector } from "./rows";
 import { confirmChanges, editChanges, userClaims, userCreatedAction, type UserChange } from "./user-claims";
 
-// 사용자의 쓰기 (수정 · 삭제 · 확인 · 착수). 모두 service role로 쓰고 user_id로 범위를 좁힌다.
+// 사용자의 쓰기 (수정 · 삭제 · 확인 · 착수 · 작업 상태). 모두 service role로 쓰고 user_id로 범위를 좁힌다.
 // 사용자가 바꾼 값도 Claim(origin: user)으로 남기고, 바뀐 필드마다 이벤트를 남긴다 (지표 1: AI 오판율).
 
 export class ActionNotFoundError extends Error {
@@ -32,37 +33,52 @@ async function summary(admin: SupabaseClient, userId: string, actionId: string):
   return data as ActionSummary;
 }
 
+type UserWriteEvent = Exclude<UserEventType, "user_started" | "user_unstarted" | "user_reported_missing" | "user_created">;
+
+/** 사용자가 바꾼 값 → 사용자 Claim · 다시 판정한 행 · 바뀐 필드마다 이벤트 (write_action에 넘길 쓰기) */
+async function userChangeWrite(
+  admin: SupabaseClient,
+  userId: string,
+  actionId: string,
+  row: StoredRow,
+  changes: (current: ReturnType<typeof projectAction>) => UserChange[],
+  event: UserWriteEvent,
+  options: { clearReasons?: boolean } = {},
+): Promise<ActionWrite> {
+  const claims = await loadClaims(admin, userId, actionId);
+  const kept = storedReasons(row.confirm_reasons);
+  const before = projectAction(row.title, claims, kept);
+  const added = userClaims(changes(before), new Date(), randomUUID);
+  const after = projectAction(row.title, [...claims, ...added], options.clearReasons ? [] : kept);
+
+  // 필드별로 무엇이 바뀌었는지 남긴다. 확인은 바뀐 게 없어도 한 번 남긴다.
+  const events: EventDraft[] =
+    event === "user_confirmed"
+      ? [{ type: "user_confirmed", before: { confirm_reasons: before.confirm_reasons }, after: { confirm_reasons: after.confirm_reasons }, rule: "user" }]
+      : changeEvents(before, after, "updated").map((e) => ({ ...e, type: event, rule: "user" }));
+
+  return {
+    expectedVersion: row.version,
+    action: actionRowValues(after),
+    claims: added,
+    evidence: { sourceId: null, quote: null },
+    events,
+    actor: "user",
+  };
+}
+
 async function applyUserChanges(
   admin: SupabaseClient,
   userId: string,
   actionId: string,
   changes: (current: ReturnType<typeof projectAction>) => UserChange[],
-  event: Exclude<UserEventType, "user_started" | "user_reported_missing" | "user_created">,
+  event: UserWriteEvent,
   options: { clearReasons?: boolean } = {},
 ): Promise<ActionSummary> {
   await retryOnConflict(async () => {
     const row = await loadStoredRow(admin, userId, actionId);
     if (!row) throw new ActionNotFoundError();
-    const claims = await loadClaims(admin, userId, actionId);
-    const kept = storedReasons(row.confirm_reasons);
-    const before = projectAction(row.title, claims, kept);
-    const added = userClaims(changes(before), new Date(), randomUUID);
-    const after = projectAction(row.title, [...claims, ...added], options.clearReasons ? [] : kept);
-
-    // 필드별로 무엇이 바뀌었는지 남긴다. 확인은 바뀐 게 없어도 한 번 남긴다.
-    const events: EventDraft[] =
-      event === "user_confirmed"
-        ? [{ type: "user_confirmed", before: { confirm_reasons: before.confirm_reasons }, after: { confirm_reasons: after.confirm_reasons }, rule: "user" }]
-        : changeEvents(before, after, "updated").map((e) => ({ ...e, type: event, rule: "user" }));
-
-    const written = await writeAction(admin, userId, actionId, {
-      expectedVersion: row.version,
-      action: actionRowValues(after),
-      claims: added,
-      evidence: { sourceId: null, quote: null },
-      events,
-      actor: "user",
-    });
+    const written = await writeAction(admin, userId, actionId, await userChangeWrite(admin, userId, actionId, row, changes, event, options));
     return written ? true : null;
   });
   return summary(admin, userId, actionId);
@@ -114,6 +130,29 @@ export async function startAction(admin: SupabaseClient, userId: string, actionI
   const { error } = await admin.rpc("start_action", { p_user_id: userId, p_action_id: actionId });
   if (error?.code === "P0002") throw new ActionNotFoundError();
   if (error) throw error;
+  return summary(admin, userId, actionId);
+}
+
+/**
+ * 작업 상태 (POST /api/v1/actions/:id/progress): 할 일 · 진행 중 · 완료.
+ * 상태(열림 · 완료)는 PATCH status와 같은 사용자 Claim · user_edited 이벤트로, 착수 시각은 start_action(user_started · action_started)
+ * 또는 user_unstarted로 바꾼다. 둘을 DB 함수 set_action_progress가 한 트랜잭션으로 써서 "다시 열렸지만 착수는 안 된" 반쪽 상태가 남지 않는다.
+ * 이미 그 상태면 아무것도 쓰지 않는다. 취소된(dropped) Action은 작업 상태가 없으므로 없는 것으로 본다.
+ */
+export async function setActionProgress(admin: SupabaseClient, userId: string, actionId: string, target: ActionProgressState): Promise<ActionSummary> {
+  await retryOnConflict(async () => {
+    const row = await loadStoredRow(admin, userId, actionId);
+    if (!row || row.status === "dropped") throw new ActionNotFoundError();
+    const plan = progressPlan({ status: row.status, started_at: row.started_at }, target);
+    if (isNoop(plan)) return true;
+    const status = plan.status;
+    const statusWrite = status ? await userChangeWrite(admin, userId, actionId, row, () => [{ field: "status", value: status }], "user_edited") : null;
+    const written = await writeProgress(admin, userId, actionId, row.version, statusWrite, plan.started).catch((error) => {
+      // 그 사이 없어졌거나 착수할 수 없는 상태가 됨 (start_action과 같은 P0002)
+      throw error?.code === "P0002" ? new ActionNotFoundError() : error;
+    });
+    return written ? true : null;
+  });
   return summary(admin, userId, actionId);
 }
 
