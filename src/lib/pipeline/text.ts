@@ -69,21 +69,48 @@ export function quoteContext(text: string, quote: string, radius = 4, maxChars =
   return end - start <= maxSpan ? around(start, end) : null;
 }
 
+/** 정규화한 문자열과, 그 글자마다 원래 문자열에서의 시작 · 끝 위치 (글자 하나가 정규화로 여러 글자가 될 수 있다) */
+function normalizedWithOffsets(text: string): { normalized: string; start: number[]; end: number[] } {
+  const start: number[] = [];
+  const end: number[] = [];
+  let normalized = "";
+  for (let i = 0; i < text.length; ) {
+    const ch = String.fromCodePoint(text.codePointAt(i)!);
+    const n = normalizeForMatch(ch);
+    for (let k = 0; k < n.length; k++) {
+      start.push(i);
+      end.push(i + ch.length);
+    }
+    normalized += n;
+    i += ch.length;
+  }
+  return { normalized, start, end };
+}
+
+/**
+ * 인용이 원문에 이어진 한 덩어리로 있으면 그 원문 구간(첫 글자 ~ 마지막 글자, 원문 그대로)을 돌려준다. 없으면 null.
+ * 공백 · 문장부호 · 기호 · 대소문자 차이는 무시하지만, 떨어진 구절을 "..."로 이어 붙인 인용은 받지 않는다 (quoteInText와 다른 점).
+ * 돌려주는 quote는 모델이 쓴 문자열이 아니라 원문에서 잘라 낸 것이라, 화면에 그대로 보여도 원문과 한 글자도 다르지 않다.
+ * 같은 구절이 여러 번 나오면 첫 번째.
+ */
+export function findQuoteSpan(text: string, quote: string): { start: number; end: number; quote: string } | null {
+  const needle = normalizeForMatch(quote);
+  if (needle.length === 0 || !normalizeForMatch(text).includes(needle)) return null;
+  const { normalized, start, end } = normalizedWithOffsets(text);
+  const at = normalized.indexOf(needle);
+  if (at < 0) return null;
+  const from = start[at];
+  const to = end[at + needle.length - 1];
+  return { start: from, end: to, quote: text.slice(from, to) };
+}
+
 /**
  * 긴 대목(예: 줄바꿈 없는 긴 문단)을 자를 때 인용이 잘려 나가지 않게 인용 위치를 기준으로 자른다.
  * 앞쪽(누가 무엇을 요청했는지)을 조금 더 남긴다: 인용이 앞에서 1/3 지점에 오게.
  */
 function aroundQuote(context: string, normalizedQuote: string, maxChars: number): string {
   // 정규화한 문자열의 위치 → 원래 문자열의 위치
-  const original: number[] = [];
-  let normalized = "";
-  for (let i = 0; i < context.length; ) {
-    const ch = String.fromCodePoint(context.codePointAt(i)!);
-    const n = normalizeForMatch(ch);
-    for (let k = 0; k < n.length; k++) original.push(i);
-    normalized += n;
-    i += ch.length;
-  }
+  const { normalized, start: original } = normalizedWithOffsets(context);
   const at = normalized.indexOf(normalizedQuote);
   const quoteStart = at < 0 ? 0 : original[at];
   const start = Math.max(0, Math.min(quoteStart - Math.floor(maxChars / 3), context.length - maxChars));

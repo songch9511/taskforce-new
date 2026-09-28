@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import type { Profile } from "./contract";
+import type { Profile, ProfileInput } from "./contract";
 import { handleGetProfile, handlePutProfile, resolveIdentity, type ProfileDeps } from "./profile";
 
 const auth = { name: "doyun", email: "Doyun@Example.com" };
@@ -11,7 +11,7 @@ describe("resolveIdentity", () => {
   });
 
   it("프로필 이름 · 별칭 · 이메일을 쓴다", () => {
-    const profile: Profile = { display_name: "도윤", aliases: ["도연", "Doyun"], emails: ["d@work.com"] };
+    const profile: ProfileInput = { display_name: "도윤", aliases: ["도연", "Doyun"], emails: ["d@work.com"] };
     expect(resolveIdentity(profile, auth)).toEqual({
       name: "도윤",
       aliases: ["도연", "Doyun"],
@@ -20,7 +20,7 @@ describe("resolveIdentity", () => {
   });
 
   it("요청에서 이름을 바꾸면 원래 이름은 별칭으로 남는다", () => {
-    const profile: Profile = { display_name: "도윤", aliases: ["도연"], emails: [] };
+    const profile: ProfileInput = { display_name: "도윤", aliases: ["도연"], emails: [] };
     expect(resolveIdentity(profile, auth, "나").aliases).toEqual(["도윤", "도연"]);
     expect(resolveIdentity(profile, auth, "도윤").aliases).toEqual(["도연"]);
   });
@@ -29,12 +29,13 @@ describe("resolveIdentity", () => {
 type User = { id: string };
 
 function deps(user: User | null, stored: Profile | null = null) {
-  const saved: Profile[] = [];
+  const saved: ProfileInput[] = [];
   const d: ProfileDeps<User> = {
     authenticate: async () => user,
     load: async () => stored,
     save: async (_user, profile) => {
       saved.push(profile);
+      return { ...profile, ai_consent_at: stored?.ai_consent_at ?? null };
     },
   };
   return { d, saved };
@@ -45,7 +46,18 @@ const put = (body: unknown) => new Request("http://localhost/api/v1/profile", { 
 describe("profile API", () => {
   it("프로필이 없으면 빈 값을 돌려준다", async () => {
     const response = await handleGetProfile(new Request("http://localhost/api/v1/profile"), deps({ id: "u" }).d);
-    expect(await response.json()).toEqual({ display_name: null, aliases: [], emails: [] });
+    expect(await response.json()).toEqual({ display_name: null, aliases: [], emails: [], ai_consent_at: null });
+  });
+
+  it("동의 시각을 함께 돌려주고, PUT 본문의 동의 시각은 저장하지 않는다", async () => {
+    const stored: Profile = { display_name: "도윤", aliases: [], emails: [], ai_consent_at: "2026-09-27T01:00:00+00:00" };
+    const got = await handleGetProfile(new Request("http://localhost/api/v1/profile"), deps({ id: "u" }, stored).d);
+    expect((await got.json()).ai_consent_at).toBe("2026-09-27T01:00:00+00:00");
+
+    const { d, saved } = deps({ id: "u" }, stored);
+    const response = await handlePutProfile(put({ display_name: "도윤", aliases: [], emails: [], ai_consent_at: "2030-01-01T00:00:00Z" }), d);
+    expect(saved).toEqual([{ display_name: "도윤", aliases: [], emails: [] }]);
+    expect(await response.json()).toEqual({ display_name: "도윤", aliases: [], emails: [], ai_consent_at: "2026-09-27T01:00:00+00:00" });
   });
 
   it("저장할 때 중복과 대소문자를 정리한다", async () => {

@@ -1,0 +1,37 @@
+{
+  "id": "en-question-ko-source",
+  "description": "영어 질문 · 한국어 원문. 답은 영어로, 인용은 한국어 원문 그대로여야 한다. 다른 사람 담당(아이콘 시안)을 내 일로 말하지 않는다",
+  "origin": "synthetic",
+  "asked_at": "2026-09-23T09:00:00+09:00",
+  "question": "What do I owe the design team this week?",
+  "sources": [
+    {
+      "id": "s1",
+      "kind": "meeting",
+      "title": "디자인 리뷰",
+      "occurred_at": "2026-09-22T16:00:00+09:00",
+      "text": "디자인팀 서연: 온보딩 화면 문구는 언제 받을 수 있을까요?\n도윤: 수요일까지 온보딩 문구 정리해서 드릴게요.\n서연: 아이콘 시안은 저희가 목요일에 공유할게요."
+    }
+  ],
+  "actions": [
+    {
+      "id": "a1",
+      "title": "디자인팀에 온보딩 문구 전달",
+      "status": "open",
+      "owner": "me",
+      "due_date": "2026-09-23",
+      "counterpart": "서연",
+      "quotes": [{ "source": "s1", "quote": "수요일까지 온보딩 문구 정리해서 드릴게요" }]
+    },
+    {
+      "id": "a2",
+      "title": "아이콘 시안 공유",
+      "status": "open",
+      "owner": "other",
+      "due_date": "2026-09-24",
+      "counterpart": "서연",
+      "quotes": [{ "source": "s1", "quote": "아이콘 시안은 저희가 목요일에 공유할게요" }]
+    }
+  ],
+  "expect": { "unknown": false, "cite_sources": ["s1"], "answer_contains_any": ["onboarding"] }
+}

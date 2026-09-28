@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { decide, JevError, type JevConfig } from "./jev";
+import { decide, jevConfigFromEnv, JevError, type JevConfig } from "./jev";
 
 function config(body: unknown, status = 200): JevConfig & { requests: RequestInit[] } {
   const requests: RequestInit[] = [];
@@ -29,6 +29,20 @@ describe("decide", () => {
       provider: { data_collection: "deny", zdr: true },
     });
     expect((c.requests[0].headers as Record<string, string>).Authorization).toBe("Bearer key");
+  });
+
+  it("공급자를 TypeSafe로 고정해 보낸다 (환경변수 JEV_PROVIDERS, 비우면 typesafe)", async () => {
+    const cfg = jevConfigFromEnv({ OPENROUTER_API_KEY: "k", JEV_MODEL: "typesafe/jev-1.13" });
+    expect(cfg.providers).toEqual(["typesafe"]);
+    const c = { ...config({ model: "m", answers: { ok: { type: "noul", noul: 0.5 } } }), providers: cfg.providers };
+    await decide(c, { state: {}, questions });
+    expect(JSON.parse(c.requests[0].body as string).provider).toEqual({
+      data_collection: "deny",
+      zdr: true,
+      only: ["typesafe"],
+      order: ["typesafe"],
+      allow_fallbacks: false,
+    });
   });
 
   it("시간 초과는 한 번 다시 묻고, 또 넘기면 JevError", async () => {

@@ -3,6 +3,7 @@ import "server-only";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 import {
+  connections,
   misjudgment,
   missed,
   retention,
@@ -18,7 +19,7 @@ import {
 // 관리자 지표: 모든 사용자의 이벤트를 service role로 읽어 숫자만 만든다.
 // 이벤트의 before · after에는 할 일 제목 · 기한 값이 들어 있지만, 읽자마자 "어느 필드가 바뀌었나"와 상태 값만 남기고 버린다.
 // 원문 · 인용은 읽지 않고, 원문 제목은 시험용 원문을 가려낼 때만 서버 쿼리 조건으로 쓴다.
-// 주간 질문(weekly_checks)은 답(있다 · 없다 · 건너뜀)만 읽는다.
+// 주간 질문(weekly_checks)은 답(있다 · 없다 · 건너뜀)만, 연동 요청(connection_requests)은 서비스 이름만 읽는다.
 
 /** 관리자 이메일 (ADMIN_EMAILS, 쉼표로 구분). 비어 있으면 아무도 관리자가 아니다 */
 export function isAdmin(email: string | null): boolean {
@@ -123,9 +124,15 @@ export async function loadMetrics(admin: SupabaseClient, period: Period) {
     .filter((e) => !e.action_id || !testActions.has(e.action_id))
     .map((e) => ({ userId: e.user_id, type: e.type, actionId: e.action_id, at: e.at }));
   const activity: Activity[] = [
-    ...metrics.map((e) => ({ userId: e.userId, at: e.at })),
+    // 연결 완료는 활동(앱 열기 · 착수 · 수정 · 확인)에 넣지 않는다 (리텐션 정의를 바꾸지 않게)
+    ...metrics.filter((e) => e.type !== "connection_created").map((e) => ({ userId: e.userId, at: e.at })),
     ...userWrites.filter((e) => !testActions.has(e.action_id)).map((e) => ({ userId: e.user_id, at: e.created_at })),
   ];
+
+  // 2단계 연동 "원해요": 서비스 이름만 읽는다
+  const connectionRequests = await readAll<{ provider: string }>((from, to) =>
+    admin.from("connection_requests").select("provider").order("created_at").order("id").range(from, to),
+  );
 
   const misjudged = misjudgment(rows, period);
   return {
@@ -136,6 +143,7 @@ export async function loadMetrics(admin: SupabaseClient, period: Period) {
     retention: retention(activity, period.to, RETENTION_WEEKS),
     // 누락 신고(POST /api/v1/sources/:id/missing, Phase A1)
     missed: missed(rows, misjudged, period, true),
+    connections: connections(metrics, connectionRequests, period),
     shadowList: shadowList(
       weeklyChecks.map((c) => ({ userId: c.user_id, weekStart: c.week_start, answer: c.answer, at: c.answered_at })),
       period,

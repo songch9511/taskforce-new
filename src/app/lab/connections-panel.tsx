@@ -11,13 +11,13 @@ export type ConnectionRow = {
   id: string;
   provider: string;
   display_name: string | null;
-  status: "active" | "error" | "revoked";
+  status: "active" | "error" | "revoked" | "reauth";
   last_synced_at: string | null;
   last_error: string | null;
   settings?: { health?: { unreachable: { id: string; title: string | null }[] } } | null;
 };
 
-const STATUS_LABELS: Record<ConnectionRow["status"], string> = { active: "연결됨", error: "오류", revoked: "권한 끊김" };
+const STATUS_LABELS: Record<ConnectionRow["status"], string> = { active: "연결됨", error: "오류", revoked: "권한 끊김", reauth: "다시 연결 필요" };
 
 const CALLBACK_MESSAGES: Record<string, string> = {
   connected: "Notion을 연결했습니다. '지금 동기화'를 누르면 최근 2주 회의록을 가져옵니다. 아래 '데이터베이스 역할 설정'에서 할 일 데이터베이스를 확인해 주세요.",
@@ -28,6 +28,7 @@ const CALLBACK_MESSAGES: Record<string, string> = {
   denied: "Notion 연결을 취소했습니다.",
   invalid_state: "연결 요청이 만료됐거나 올바르지 않습니다. 다시 시도해 주세요.",
   error: "Notion 연결에 실패했습니다. 서버 로그를 확인해 주세요.",
+  consent_required: "연결하기 전에 위의 '외부 AI 처리 동의'를 먼저 해 주세요. 연결하면 곧바로 원문을 가져와 처리합니다.",
 };
 
 /** 권한 화면에 들어가기 전에 보여준다: 한 번에 제대로 고르게 (다른 Notion 연동 도구들이 겪는 "DB가 안 보여요"를 줄인다) */

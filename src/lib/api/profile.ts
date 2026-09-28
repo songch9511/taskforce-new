@@ -1,10 +1,10 @@
 import type { UserIdentity } from "@/lib/pipeline/identity";
 
-import { profileSchema, type ApiError, type Profile } from "./contract";
+import { profileInputSchema, type ApiError, type Profile, type ProfileInput } from "./contract";
 
 // GET · PUT /api/v1/profile 처리와, 프로필 · 로그인 정보 · 요청을 합쳐 "원문 속 사용자"를 만드는 규칙.
 
-export const EMPTY_PROFILE: Profile = { display_name: null, aliases: [], emails: [] };
+export const EMPTY_PROFILE: Profile = { display_name: null, aliases: [], emails: [], ai_consent_at: null };
 
 type AuthUser = { name: string; email: string | null };
 
@@ -21,7 +21,7 @@ export function accountDisplayName(metadata: Record<string, unknown> | undefined
  * 파이프라인에 넘길 사용자 정보. 이름은 요청 → 프로필 → 계정 순서로 고른다.
  * 요청에서 이름을 바꿨으면 프로필 이름도 별칭으로 남겨 둔다.
  */
-export function resolveIdentity(profile: Profile | null, auth: AuthUser, requestName?: string): UserIdentity {
+export function resolveIdentity(profile: ProfileInput | null, auth: AuthUser, requestName?: string): UserIdentity {
   const p = profile ?? EMPTY_PROFILE;
   const baseName = p.display_name ?? auth.name;
   const name = requestName ?? baseName;
@@ -37,7 +37,8 @@ function unique(values: string[]): string[] {
 export type ProfileDeps<User> = {
   authenticate: (request: Request) => Promise<User | null>;
   load: (user: User) => Promise<Profile | null>;
-  save: (user: User, profile: Profile) => Promise<void>;
+  /** 이름 · 별칭 · 이메일만 쓰고(동의 시각은 /api/v1/consent만 바꾼다), 저장된 프로필을 돌려준다 */
+  save: (user: User, profile: ProfileInput) => Promise<Profile>;
 };
 
 export async function handleGetProfile<User>(request: Request, deps: ProfileDeps<User>): Promise<Response> {
@@ -56,24 +57,23 @@ export async function handlePutProfile<User>(request: Request, deps: ProfileDeps
   } catch {
     return errorResponse(400, "invalid_request", "JSON 본문이 필요합니다.");
   }
-  const parsed = profileSchema.safeParse(body);
+  const parsed = profileInputSchema.safeParse(body);
   if (!parsed.success) {
     const fields = [...new Set(parsed.error.issues.map((issue) => issue.path.join(".") || "(본문)"))];
     return errorResponse(400, "invalid_request", `잘못된 필드: ${fields.join(", ")}`);
   }
 
-  const profile: Profile = {
+  const profile: ProfileInput = {
     display_name: parsed.data.display_name,
     aliases: unique(parsed.data.aliases),
     emails: unique(parsed.data.emails.map((e) => e.toLowerCase())),
   };
   try {
-    await deps.save(user, profile);
+    return Response.json(await deps.save(user, profile));
   } catch (error) {
     console.error("프로필 저장 실패:", error instanceof Error ? error.message : error);
     return errorResponse(500, "internal_error", "프로필을 저장하지 못했습니다.");
   }
-  return Response.json(profile);
 }
 
 function errorResponse(status: number, code: ApiError["error"]["code"], message: string): Response {

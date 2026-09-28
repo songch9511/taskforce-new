@@ -4,11 +4,16 @@ import { handleCreateSource, type CreateSourceDeps, type NewSource } from "./sou
 
 type User = { id: string };
 
-function setup(user: User | null = { id: "u1" }, insert: () => Promise<string> = async () => "11111111-1111-4111-8111-111111111111") {
+function setup(
+  user: User | null = { id: "u1" },
+  insert: () => Promise<string> = async () => "11111111-1111-4111-8111-111111111111",
+  consent = true,
+) {
   const inserted: NewSource[] = [];
   const scheduled: { sourceId: string; userName?: string }[] = [];
   const deps: CreateSourceDeps<User> = {
     authenticate: async () => user,
+    hasConsent: async () => consent,
     insertSource: async (_user, source) => {
       inserted.push(source);
       return insert();
@@ -55,6 +60,15 @@ describe("handleCreateSource", () => {
   it("이름도 이메일도 없는 관련자는 400", async () => {
     const { deps } = setup();
     expect((await handleCreateSource(post({ kind: "email", text: "x", participants: { to: [{}] } }), deps)).status).toBe(400);
+  });
+
+  it("외부 AI 처리 동의 전이면 409이고 저장 · 처리하지 않는다", async () => {
+    const { deps, inserted, scheduled } = setup({ id: "u1" }, undefined, false);
+    const response = await handleCreateSource(post({ kind: "note", text: "금요일까지 보내드릴게요" }), deps);
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({ error: { code: "conflict", message: "외부 AI 처리 동의가 필요해요." } });
+    expect(inserted).toEqual([]);
+    expect(scheduled).toEqual([]);
   });
 
   it("로그인하지 않았으면 401", async () => {

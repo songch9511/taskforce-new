@@ -43,3 +43,6 @@ next-env.d.ts
 
 # eval 실행 결과 (로컬 비교용)
 /evals/results/
+
+# Supabase CLI 로컬 상태 (프로젝트 ref · 풀러 주소)
+supabase/.temp/

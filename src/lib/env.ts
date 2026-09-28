@@ -35,3 +35,18 @@ export function publicEnv(): PublicEnv {
 export function weeklyCheckEnabled(env: Record<string, string | undefined> = process.env): boolean {
   return !["false", "0", "off"].includes((env.WEEKLY_CHECK_ENABLED ?? "").trim().toLowerCase());
 }
+
+/** 서명된 OAuth state를 만들고 확인할 때 쓰는 키의 최소 길이 (openssl rand -hex 32는 64자) */
+const MIN_OAUTH_STATE_SECRET = 32;
+
+/**
+ * 앱의 OAuth 연결(서명된 state, HMAC-SHA256)에 쓰는 비밀값 (OAUTH_STATE_SECRET, 서버 전용).
+ * 없거나 짧으면 던진다: 약한 키로 서명한 state는 다른 사람 계정에 연결을 끼워 넣는 데 쓰일 수 있다.
+ */
+export function oauthStateSecret(env: Record<string, string | undefined> = process.env): string {
+  const secret = env.OAUTH_STATE_SECRET?.trim() ?? "";
+  if (secret.length < MIN_OAUTH_STATE_SECRET) {
+    throw new Error(`OAUTH_STATE_SECRET이 없거나 ${MIN_OAUTH_STATE_SECRET}자보다 짧습니다. openssl rand -hex 32로 만들어 .env.local에 넣으세요.`);
+  }
+  return secret;
+}

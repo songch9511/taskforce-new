@@ -67,4 +67,27 @@ describe("ingestItems 시간 한도", () => {
     expect(processed).toEqual([]);
     expect(result.notReached).toEqual(["a", "b"]);
   });
+
+  it("한 항목의 처리가 던지면(동의 철회 등) 남은 항목은 시작하지 않고 그 오류를 던진다", async () => {
+    const inserted: string[] = [];
+    const processed: string[] = [];
+    const withdrawn = new Error("외부 AI 처리 동의가 없어 처리하지 않았어요.");
+    const d: IngestDeps = {
+      ingestedIds: async () => new Set(),
+      insertSource: async (_c, i) => {
+        inserted.push(i.externalId);
+        return `src-${i.externalId}`;
+      },
+      process: async (_c, sourceId) => {
+        if (sourceId === "src-a") throw withdrawn;
+        processed.push(sourceId);
+      },
+    };
+    const items = Array.from({ length: 8 }, (_, i) => item(String.fromCharCode(97 + i), 200 - i));
+    await expect(ingestItems(connection, items, d, { ...options, maxItems: 8 })).rejects.toBe(withdrawn);
+    // 동시에 시작한 항목(최대 3개)까지만 넣고, 그 뒤 항목은 저장조차 하지 않는다
+    expect(inserted.length).toBeLessThanOrEqual(3);
+    expect(inserted).toContain("a");
+    expect(processed).not.toContain("src-h");
+  });
 });

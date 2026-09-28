@@ -1,0 +1,77 @@
+#if DEBUG
+import Foundation
+import TaskforceKit
+
+/// 디자인 비교용 견본 (Debug 빌드, 실행 인자 `-TFSampleData`). Figma 9:529 · 5:57과 같은 문구로 화면을 채우고 서버는 부르지 않는다.
+enum SampleData {
+    static var isEnabled: Bool { ProcessInfo.processInfo.arguments.contains("-TFSampleData") }
+
+    static let reviewID = UUID(uuidString: "5A000000-0000-4000-8000-000000000001")!
+
+    static var now: NowResponse {
+        let today = DueDateFormat.today()
+        let review = summary(reviewID, "법무팀에 계약서 초안 전달", due: today.adding(days: 4), needsConfirmation: true)
+        return NowResponse(
+            now: [
+                ranked(2, "계약서 검토 의견 전달", due: today.adding(days: -1), reasons: [.overdue], counterpart: "김대표"),
+                ranked(3, "투자사 IR 자료 업데이트", due: today.adding(days: 3), reasons: [.dueSoon]),
+                ranked(4, "채용 공고 문구 확인", due: today.adding(days: 10), reasons: []),
+            ],
+            confirmations: [
+                review,
+                summary(UUID(), "견적서 회신", due: nil, needsConfirmation: true),
+                summary(UUID(), "월간 보고서 초안", due: today.adding(days: 6), needsConfirmation: true),
+            ],
+            weeklyCheck: nil
+        )
+    }
+
+    static var evidence: [UUID: EvidenceDigest] {
+        let day: TimeInterval = 86_400
+        return [
+            reviewID: EvidenceDigest(lines: [
+                EvidenceLine(
+                    id: UUID(), quote: "초안은 그쪽에서 법무팀에 넘겨 주시면 될 것 같아요", sourceID: UUID(), sourceTitle: "박이사 미팅 회의록",
+                    occurredAt: Date(timeIntervalSinceNow: -4 * day), externalURL: URL(string: "https://www.notion.so/sample"), service: .notion
+                ),
+            ]),
+            id(2): EvidenceDigest(lines: [
+                EvidenceLine(
+                    id: UUID(), quote: "금요일까지 검토 의견 보내드릴게요", sourceID: UUID(), sourceTitle: "김대표 미팅 회의록",
+                    occurredAt: Date(timeIntervalSinceNow: -6 * day), externalURL: URL(string: "https://www.notion.so/sample"), service: .notion
+                ),
+                EvidenceLine(
+                    id: UUID(), quote: "의견은 토요일까지 주셔도 괜찮아요", sourceID: UUID(), sourceTitle: "#sales · 김대표",
+                    occurredAt: Date(timeIntervalSinceNow: -3 * day), externalURL: URL(string: "https://acme.slack.com/sample"), service: .slack
+                ),
+            ]),
+        ]
+    }
+
+    private static func id(_ n: Int) -> UUID {
+        UUID(uuidString: String(format: "5A000000-0000-4000-8000-%012d", n))!
+    }
+
+    private static func summary(_ id: UUID, _ title: String, due: LocalDate?, needsConfirmation: Bool, counterpart: String? = nil) -> ActionSummary {
+        ActionSummary(
+            id: id, title: title, owner: .me, status: .open, dueDate: due, counterpart: counterpart,
+            needsConfirmation: needsConfirmation, confirmReasons: needsConfirmation ? ["기한 확인"] : [], startedAt: nil, lastActivityAt: Date()
+        )
+    }
+
+    private static func ranked(_ n: Int, _ title: String, due: LocalDate?, reasons: [RankReason], counterpart: String? = nil) -> RankedAction {
+        RankedAction(
+            action: summary(id(n), title, due: due, needsConfirmation: false, counterpart: counterpart),
+            score: Double(100 - n), reasons: reasons, daysUntilDue: nil
+        )
+    }
+}
+
+extension NowStore {
+    /// 견본으로 채운다 (이후 `load()`는 서버를 부르지 않는다)
+    func useSampleData() {
+        sampleMode = true
+        applySample(SampleData.now, evidence: SampleData.evidence)
+    }
+}
+#endif

@@ -169,6 +169,8 @@ actions 행은 Claim에서 `resolveAction`으로 다시 계산한 캐시이고(`
 실제 DB 확인(2026-09-27, iPhone 시뮬레이터 + 로컬 서버): 원문을 처리하자 앱을 건드리지 않아도 지금 할 일에 새 Action이 떴다(Realtime). 확정 · 상세의 근거와 이력 · 원문 줄 선택 신고("추가했어요", 같은 줄 다시 신고는 "이미 있는 할 일") · `user_reported_missing`(원인 `not_extracted`) · app_opened가 DB에 남았다.
 남은 숙제: 주간 질문은 첫 원문 뒤 7일이 지나야 떠서 실제 데이터로는 아직 못 봤다(단위 테스트만). 프로필(이름 · 별칭)이 빈 계정에서는 "나: …" 발언도 Jev가 '내 일 아님'으로 보고 확인 요청으로 보냈다 — 첫 실행 때 프로필을 받는 흐름이 필요하다.
 
+**대체됨 (2026-09-27).** 위 다중 화면 구성은 go live 모양(`PLATFORMS.md`)으로 다시 만드는 중이다: iPhone은 Review 카드 + Now 목록 화면 한 장 + 계정 시트(Connections · AI 동의 · Privacy/Terms · Sign out · Delete account)로, macOS는 별도 창 없이 ⌥Space 메뉴 막대 런처(Search · Ask · Hand off · Send as source · ⌘K)로 바뀐다. 옛 다중 화면 Swift 파일(`ActionDetailView` · `NowView` · `RootView` · `SignInView` · `SourcesView` 등)은 지웠고, 이 런처 · 목록 재구성이 끝나야 A1이 다시 완료 상태가 된다. 진행 중.
+
 ### Phase A2 — 원문 입력 (2일)
 
 > 프롬프트:

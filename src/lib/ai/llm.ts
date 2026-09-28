@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { DEFAULT_LLM_PROVIDERS, parseProviders, providerRouting } from "./providers";
+
 // 생성형 LLM 호출 (OpenRouter chat completions). 구조화 출력(JSON 스키마)으로만 받고 zod로 검증한다.
 // eval 스크립트에서도 그대로 쓰도록 server-only를 걸지 않고, 설정은 인자로 받는다.
 
@@ -8,6 +10,8 @@ const OPENROUTER_CHAT_URL = "https://openrouter.ai/api/v1/chat/completions";
 export type LlmConfig = {
   apiKey: string;
   model: string;
+  /** 보낼 공급자 (OpenRouter slug, 이 순서로만). providers.ts */
+  providers?: string[];
   fetch?: typeof fetch;
   timeoutMs?: number;
 };
@@ -66,7 +70,7 @@ export function llmConfigFromEnv(env: Record<string, string | undefined> = proce
   if (!apiKey || !model) {
     throw new LlmError("OPENROUTER_API_KEY와 LLM_MODEL이 필요합니다. .env.example을 참고해 .env.local을 채우세요.");
   }
-  return { apiKey, model };
+  return { apiKey, model, providers: parseProviders(env.LLM_PROVIDERS, DEFAULT_LLM_PROVIDERS) };
 }
 
 /** 응답 형식이 깨졌거나 시간 안에 답이 없을 때 다시 시도하는 횟수. 같은 모델도 공급자에 따라 가끔 멈추거나 JSON이 아닌 답을 준다. */
@@ -116,8 +120,8 @@ async function completeJsonOnce<T extends z.ZodType>(
           type: "json_schema",
           json_schema: { name: request.schemaName, strict: true, schema: z.toJSONSchema(request.schema) },
         },
-        // 구조화 출력을 지원하고, 사용자 원문을 저장 · 학습에 쓰지 않는(ZDR) 공급자에게만 보낸다.
-        provider: { require_parameters: true, data_collection: "deny", zdr: true },
+        // 구조화 출력을 지원하고, 사용자 원문을 저장 · 학습에 쓰지 않는(ZDR) 미국 공급자(고정 목록)에게만 보낸다.
+        provider: { require_parameters: true, ...providerRouting(config.providers) },
       }),
     });
   } catch (error) {

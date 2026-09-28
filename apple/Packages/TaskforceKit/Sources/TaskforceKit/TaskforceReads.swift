@@ -73,6 +73,18 @@ public struct TaskforceReads: Sendable {
         return SourceDetail(source: source, evidence: try await evidenceRows)
     }
 
+    /// 내 연결 (토큰은 서버에만 있고 여기서는 상태만 읽는다)
+    public func connections() async throws -> [ConnectionRecord] {
+        try await rows(supabase.from("connections").select(ConnectionRecord.columns).order("created_at", ascending: true))
+    }
+
+    /// 내가 "Want this"를 누른 2단계 서비스
+    public func connectionRequests() async throws -> Set<ConnectionProvider> {
+        struct Row: Decodable { let provider: String }
+        let result: [Row] = try await rows(supabase.from("connection_requests").select("provider"))
+        return Set(result.compactMap { ConnectionProvider(rawValue: $0.provider) })
+    }
+
     /// 응답 본문을 앱의 디코더(마이크로초 시각 · 날짜)로 읽는다.
     private func rows<T: Decodable>(_ builder: PostgrestTransformBuilder) async throws -> [T] {
         let data = try await builder.execute().data

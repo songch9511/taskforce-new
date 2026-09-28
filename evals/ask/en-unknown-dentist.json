@@ -1,0 +1,27 @@
+{
+  "id": "en-unknown-dentist",
+  "description": "Nothing in the sources is about the question. The answer must be unknown with no citations",
+  "origin": "synthetic",
+  "asked_at": "2026-09-24T20:00:00+09:00",
+  "question": "What time is my dentist appointment tomorrow?",
+  "sources": [
+    {
+      "id": "s1",
+      "kind": "message",
+      "occurred_at": "2026-09-24T11:00:00+09:00",
+      "text": "Alex: Can you review the new pricing page copy before Friday?\nDoyun: Yes, I'll review the pricing copy by Friday morning."
+    }
+  ],
+  "actions": [
+    {
+      "id": "a1",
+      "title": "Review pricing page copy for Alex",
+      "status": "open",
+      "owner": "me",
+      "due_date": "2026-09-26",
+      "counterpart": "Alex",
+      "quotes": [{ "source": "s1", "quote": "I'll review the pricing copy by Friday morning" }]
+    }
+  ],
+  "expect": { "unknown": true }
+}

@@ -26,8 +26,11 @@ export type TaskItem = {
 };
 
 export type TaskState = {
-  /** 마지막으로 처리를 마친 버전 (비교 기준). 없으면 아직 반영된 적 없는 할 일 */
-  done?: { version: string; snapshot: TaskSnapshot };
+  /**
+   * 마지막으로 처리를 마친 버전 (비교 기준). 없으면 아직 반영된 적 없는 할 일.
+   * snapshot이 null이면 보관 기간(90일)이 지나 원문(structured)이 비워진 버전 — 값을 비교할 수 없어 바뀐 것으로 본다.
+   */
+  done?: { version: string; snapshot: TaskSnapshot | null };
   /** 처리를 마치지 못한(실패했거나 멈춘) 가장 최근 버전. 같은 버전이 다시 오면 이 원문을 다시 처리한다 */
   retry?: { sourceId: string; version: string };
   /** 지금 처리 중인 버전이 있다 (다른 실행). 이번에는 건너뛴다 */
@@ -92,7 +95,7 @@ export async function ingestTaskItems(
       return false;
     }
     if (state?.retry?.version === item.externalVersion) return true;
-    if (state?.done && (state.done.version === item.externalVersion || sameForClaims(state.done.snapshot, item.snapshot))) {
+    if (state?.done && (state.done.version === item.externalVersion || (state.done.snapshot && sameForClaims(state.done.snapshot, item.snapshot)))) {
       result.skipped.unchanged++;
       return false;
     }
