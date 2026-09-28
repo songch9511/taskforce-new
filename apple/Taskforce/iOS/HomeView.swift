@@ -5,7 +5,11 @@ import TaskforceUI
 
 /// iPhone 한 화면 (Figma 9:529 · Website 17:962): "Review 1 / N" + 카드 한 장 → In Progress · To Do · Done Today의 Task row 목록.
 /// 순서는 서버가 정한 그대로 보여 준다 (구역 나누기는 `TaskBoard`). 행을 누르면 근거 한 줄만 펼친다.
-/// 왼쪽 상태 표시를 누르면 완료(→ Done Today) · 다시 열기. To Do 행은 밀어서 Start(→ In Progress) · Complete.
+/// 상태는 To Do · In Progress · Done 세 이름으로만 옮긴다 (`NowStore.move`):
+/// - 왼쪽 상태 표시: ○ · ● → Done, ✓ → 끝내기 전 상태
+/// - 밀기: To Do는 오른쪽 In Progress · 왼쪽 Done, In Progress는 오른쪽 To Do · 왼쪽 Done, Done Today는 오른쪽 To Do
+/// - 길게 누르기: 세 상태 (지금 상태에 체크)
+/// 삭제: 왼쪽으로 밀기(Done 옆, 끝까지 밀면 Done) · 길게 누르기 맨 아래. 지운 뒤 5초 동안 아래에 "Deleted  Undo" (`NowStore.delete` · `restore`)
 struct HomeView: View {
     let userID: UUID
     let email: String?
@@ -20,6 +24,10 @@ struct HomeView: View {
     @State private var addingTask = false
     /// 직접 추가가 끝날 때마다 늘린다 (가벼운 햅틱)
     @State private var addedTasks = 0
+    /// 방금 지운 할 일: 잠시 아래에 "Deleted  Undo" (`UndoOffer`)
+    @State private var undo = UndoOffer()
+    /// 지울 때마다 늘린다 (가벼운 햅틱)
+    @State private var deletions = 0
     @State private var promptingProfile = false
     /// 동의 전인데 연결이 있으면 로그인 뒤 한 번 (목록은 그대로 보인다)
     @State private var promptingConsent = false
@@ -30,6 +38,7 @@ struct HomeView: View {
         NavigationStack {
             content
                 .background(TFColor.bgCanvas)
+                .overlay(alignment: .bottom) { undoBar }
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
                     ToolbarItem(placement: .topBarTrailing) {
@@ -64,6 +73,15 @@ struct HomeView: View {
             NewTaskSheet { addedTasks += 1 }
         }
         .sensoryFeedback(.impact(weight: .light), trigger: addedTasks)
+        .sensoryFeedback(.impact(weight: .light), trigger: deletions)
+        .task(id: undo.serial) {
+            // 5초 뒤 거둔다 (그사이 새로 지우면 새로 센다)
+            guard undo.pending != nil else { return }
+            let serial = undo.serial
+            try? await Task.sleep(for: UndoOffer.window)
+            guard !Task.isCancelled else { return }
+            withAnimation(Self.move) { undo.expire(serial) }
+        }
         .sheet(isPresented: $promptingProfile, onDismiss: promptConsentIfNeeded) {
             NavigationStack {
                 ProfileForm(dismissOnSave: true)
@@ -184,7 +202,7 @@ struct HomeView: View {
 
     // MARK: In Progress · To Do · Done Today
 
-    /// 행이 다른 구역으로 옮겨 갈 때
+    /// 행이 다른 구역으로 옮겨 갈 때 · 지울 때 · Undo 막대
     private static let move = Animation.snappy(duration: 0.25)
 
     private func taskRow(_ action: ActionSummary, group: TaskGroup) -> some View {
@@ -197,10 +215,8 @@ struct HomeView: View {
             state: state,
             inProgress: group == .inProgress,
             onToggle: {
-                // 완료는 Done Today로, 다시 열면 열린 목록으로 옮겨 간다
-                withAnimation(Self.move) {
-                    if done { store.reopen(action.id) } else { store.complete(action.id) }
-                }
+                // ○ · ●는 Done Today로, ✓는 끝내기 전 구역으로 옮겨 간다
+                withAnimation(Self.move) { _ = store.toggle(action.id) }
             }
         ) {
             expandedEvidence(for: action.id)
@@ -216,16 +232,107 @@ struct HomeView: View {
             expanded = expanded == action.id ? nil : action.id
         }
         .swipeActions(edge: .leading, allowsFullSwipe: true) {
-            if group == .toDo {
-                Button("Start") { withAnimation(Self.move) { _ = store.start(action.id) } }
-                    .tint(swipeTint)
+            if let state = Self.swipeStates(group).leading { swipeButton(action.id, to: state) }
+        }
+        // 끝까지 밀면 Done (첫 버튼). Done이 없는 Done Today는 끝까지 밀어도 지우지 않는다
+        .swipeActions(edge: .trailing, allowsFullSwipe: Self.swipeStates(group).trailing != nil) {
+            if let state = Self.swipeStates(group).trailing { swipeButton(action.id, to: state) }
+            if group.isDeletable {
+                Button("Delete", role: .destructive) { delete(action.id) }
             }
         }
-        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-            if group == .toDo {
-                Button("Complete") { withAnimation(Self.move) { _ = store.complete(action.id) } }
-                    .tint(swipeTint)
+        .contextMenu {
+            if let current = WorkState(group) {
+                Picker("Status", selection: Binding(get: { current }, set: { move(action.id, to: $0) })) {
+                    ForEach(WorkState.allCases, id: \.self) { state in
+                        Label(state.title, systemImage: Self.symbolName(state)).tag(state)
+                    }
+                }
+                .pickerStyle(.inline)
             }
+            if group.isDeletable {
+                Divider()
+                Button("Delete", systemImage: "trash", role: .destructive) { delete(action.id) }
+            }
+        }
+    }
+
+    private func move(_ id: UUID, to state: WorkState) {
+        withAnimation(Self.move) { _ = store.move(id, to: state) }
+    }
+
+    // MARK: 삭제 · Undo
+
+    /// 곧바로 목록에서 빼고 5초 동안 Undo. 지우지 못하면 행이 제자리로 돌아오고 알림이 뜨므로 Undo를 거둔다.
+    private func delete(_ id: UUID) {
+        guard let deleted = withAnimation(Self.move, { store.delete(id) }) else { return }
+        withAnimation(Self.move) { undo.offer(deleted.undo) }
+        deletions += 1
+        Task {
+            await deleted.write.value
+            if undo.pending?.action.id == id, store.sections.find(id) != nil {
+                withAnimation(Self.move) { undo.clear() }
+            }
+        }
+    }
+
+    /// Undo: 지우기 전 구역으로 곧바로 되살린다
+    private func restoreDeleted() {
+        withAnimation(Self.move) {
+            guard let pending = undo.take() else { return }
+            store.restore(pending)
+        }
+    }
+
+    /// 지운 뒤 아래에 뜨는 막대: iOS 26은 유리 캡슐, 그 전은 material 캡슐 (`tfGlassCapsule`)
+    @ViewBuilder
+    private var undoBar: some View {
+        if undo.pending != nil {
+            HStack(spacing: 0) {
+                Text("Deleted")
+                    .foregroundStyle(TFColor.textPrimary)
+                    .padding(.leading, TFSpace.lg + TFSpace.xs)
+                Button(action: restoreDeleted) {
+                    Text("Undo")
+                        .fontWeight(.semibold)
+                        .foregroundStyle(TFColor.textPrimary)
+                        .padding(.leading, TFSpace.xl)
+                        .padding(.trailing, TFSpace.lg + TFSpace.xs)
+                        .frame(minHeight: 44)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+            .font(TFFont.callout)
+            .lineLimit(1)
+            .fixedSize()
+            .tfGlassCapsule()
+            .padding(.bottom, TFSpace.sm)
+            .transition(.move(edge: .bottom).combined(with: .opacity))
+        }
+    }
+
+    /// 밀어서 옮길 상태: 오른쪽으로 밀면(leading) 옆 상태, 왼쪽으로 밀면(trailing) Done
+    private static func swipeStates(_ group: TaskGroup) -> (leading: WorkState?, trailing: WorkState?) {
+        switch group {
+        case .toDo: (.inProgress, .done)
+        case .inProgress: (.toDo, .done)
+        case .doneToday: (.toDo, nil)
+        case .review: (nil, nil)
+        }
+    }
+
+    private func swipeButton(_ id: UUID, to state: WorkState) -> some View {
+        Button(state.title) { move(id, to: state) }
+            .tint(swipeTint)
+    }
+
+    /// 길게 누르기 메뉴의 아이콘: 상태 표시와 같은 모양 (메뉴에는 SF Symbol만 그려진다)
+    private static func symbolName(_ state: WorkState) -> String {
+        switch state {
+        case .toDo: "circle"
+        case .inProgress: "circle.fill"
+        case .done: "checkmark.circle.fill"
         }
     }
 

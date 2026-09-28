@@ -103,7 +103,8 @@ App Store 설명에는 "Real"을 쓰지 않는다. 확인할 수 없는 비교 �
 - **모서리**: 네 가지만 쓴다. 칩 5 · 행 8 · 카드 18 · 창 26, 버튼은 캡슐.
 - **간격**: 4pt 단위.
 - **그림자**: 카드 · 버튼 · 글자에는 쓰지 않는다. 창 그림자는 macOS가 그린다.
-- **Mac 런처**: 반투명 유리 재질(`NSVisualEffectView`). 밝은 바탕화면과 어두운 바탕화면 위에서 글자 대비를 확인한다.
+- **Mac 런처**: 반투명 유리 재질. macOS 26부터 Liquid Glass(`NSGlassEffectView`), 그 전은 `NSVisualEffectView`. 밝은 바탕화면과 어두운 바탕화면 위에서 글자 대비를 확인한다.
+- **Liquid Glass (iOS 26 · macOS 26)**: 내용 위에 떠 있는 면과 컨트롤(런처 창 · Review card · 툴바 버튼 · 시트)에만 쓴다. 할 일 행 같은 내용은 평평하게 둔다. 유리 위 주 버튼은 잉크 유리(accent 아님). 유리 자체의 그림자는 시스템이 그린다.
 - **구분선**: iOS 목록처럼 글자 시작점부터 긋는다.
 
 ### UI 문구
@@ -125,7 +126,7 @@ App Store 설명에는 "Real"을 쓰지 않는다. 확인할 수 없는 비교 �
 
 | 부품 | 규칙 |
 |---|---|
-| Task status | 할 일 행 왼쪽의 상태 표시(iPhone · Mac 공용): ○ To Do(border/control) · ◐ In Progress(잉크 반 채움) · ✓ Done(잉크 원 + 흰 체크) · 점선 원 Review. 잉크만 쓰고 accent는 쓰지 않는다. 누르면 완료 · 다시 열기(Review는 누를 수 없음) |
+| Task status | 할 일 행 왼쪽의 상태 표시(iPhone · Mac 공용): ○ To Do(border/control) · ◉ In Progress(잉크 테두리 + 안쪽 잉크 원) · ✓ Done(잉크 원 + 흰 체크) · 점선 원 Review. 잉크만 쓰고 accent는 쓰지 않는다. ○ · ◉를 누르면 Done, ✓는 끝내기 전 상태로(Review는 누를 수 없음). 상태를 옮기는 동작 이름은 To Do · In Progress · Done 세 가지뿐이다 |
 | Task row (iPhone) | 상태 표시 + 제목 + 기한. 기한 지남은 기한 글자만 빨강. 완료는 검정 체크 + 회색 글자(취소선 없음). 상대 이름은 기본으로 끈다 |
 | Review card (iPhone) | 제목 + 확인할 값 + 근거 1줄 + Confirm / Dismiss 캡슐. 목록 위에 한 번에 한 장만 보인다("Review  1 / 3"). 인용은 3줄까지 |
 | Evidence | 출처 로고 + 원문 인용 + "날짜 · 문서". 날짜는 항상 보이고 문서 이름만 …로 줄인다. 출처가 여럿이면 맨 앞 로고는 인용의 출처 하나, 나머지는 줄 끝에 작게 겹친다 |

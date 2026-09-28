@@ -31,7 +31,7 @@
 
 | 기능 | 역할 | 단계 |
 |---|---|---|
-| 한 화면 | 위에 Review 카드(한 번에 하나, 확인 · 수정) + 아래 In Progress · To Do · Done Today 목록(상태 표시를 눌러 완료 · 다시 열기, To Do는 밀어서 Start · Complete) | MVP |
+| 한 화면 | 위에 Review 카드(한 번에 하나, 확인 · 수정) + 아래 In Progress · To Do · Done Today 목록(상태 이름 To Do · In Progress · Done으로만 옮긴다: 상태 표시 누르기 · 밀기 · 길게 누르기. 삭제는 왼쪽 밀기 · 길게 누르기의 Delete, 5초 Undo) | MVP |
 | 계정 시트 | Connections(연결 · 연결 끊기), AI processing consent(동의 · 철회), Privacy Policy · Terms 링크, Sign out, Delete account(Apple로 다시 인증해 Sign in with Apple 토큰을 폐기한 뒤 삭제) | MVP |
 | 알림 | 확인 요청이 생겼을 때, 기한이 임박했을 때 | MVP |
 | 공유 확장 · 위젯 · App Intents | go live 뒤로 미룬다(7장 "하지 않는 것") | 이후 |
@@ -126,6 +126,7 @@ Server Action은 웹 폼 전용이라 Swift 앱에서 부를 수 없다.
 | `DELETE /api/v1/actions/:id` | 사용자 삭제 (`user_deleted` 이벤트, 실제로는 `dropped` 처리) | 3 ✅ |
 | `POST /api/v1/actions/:id/confirm` | 확인 요청 확정 (`user_confirmed`) | 3 ✅ |
 | `POST /api/v1/actions/:id/start` | 착수 (`user_started` 이벤트 + `action_started` 지표) | 3 ✅ |
+| `POST /api/v1/actions/:id/progress` | 작업 상태 `{ state: to_do \| in_progress \| done }` → 200 `{ action }`. 할 일 = 열림 + 착수 전, 진행 중 = 열림 + 착수, 완료 = done. 완료에서 돌아오면 다시 열고(PATCH status open과 같은 `user_edited`), 진행 중은 착수(`/start`와 같은 `user_started` + `action_started`), 할 일은 착수를 되돌린다(`user_unstarted`, 첫 착수 이벤트 · 지표는 남는다). 완료는 PATCH status done과 같고 착수 시각은 그대로 둔다. 상태와 착수 시각은 한 트랜잭션(`set_action_progress`)으로 바뀌고, 이미 그 상태면 쓰지 않고 그대로 돌려준다. 잘못된 본문 400, 없거나 남의 것 · 취소된 Action 404, 동시 수정이 계속 겹치면 409 | 서버 ✅ |
 | `POST /api/v1/actions/:id/handoff` | AI에게 넘기기: 합의된 내용 · 불확실한 것 · 근거 원문(인용 앞뒤 줄 포함)을 묶은 마크다운. 서버가 `handoff_used` 지표를 남긴다 | 4 ✅ |
 | `POST /api/v1/sources/:id/missing` | 빠진 할 일 신고 `{ quote }` (원문에 실제로 있는 구절). 동기 처리 → `{ status: created \| already_tracked, action, stage }`. 새 Action이면 `user_reported_missing` 이벤트(지표 4)와 놓친 단계(`processing_failed` · `not_extracted` · `judge_rejected` · `merge_absorbed`)를 남긴다. 이 원문의 같은 구절이 이미 근거인 Action(끝냈거나 지운 것도)이면 모델을 부르지 않고 `already_tracked`. 다른 사람 담당 Action과는 합치지 않고, 확신이 낮은 병합은 새 Action으로 만든다. 할 일 DB 항목 · 원문에 없는 구절은 400, 사용자별 10분에 10번을 넘으면 429 | A1 ✅ |
 | `POST /api/v1/weekly-check` | 주간 질문 응답 `{ week_start, answer: yes \| no \| skipped }` → 204 (지표 5). 이번 주 · 바로 전 주만 받고 같은 주는 덮어쓴다(`answered_at` 갱신). 월요일에 지난주 카드에 답하면 이번 주 답으로 본다. 주간 질문이 꺼져 있으면 400 | A1 ✅ |

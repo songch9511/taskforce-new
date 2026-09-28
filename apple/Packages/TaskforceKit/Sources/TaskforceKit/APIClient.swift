@@ -103,6 +103,12 @@ public struct APIClient: Sendable {
         return response.action
     }
 
+    /// 진행 상태 바꾸기: To Do (착수 전으로) · In Progress (착수) · Done (완료). 끝낸 할 일을 To Do · In Progress로 옮기면 다시 연다.
+    public func setProgress(_ id: UUID, state: WorkState) async throws -> ActionSummary {
+        let response: ActionResponse = try await send(.post, "actions/\(id.lowercased)/progress", body: ProgressRequest(state: state))
+        return response.action
+    }
+
     public func handoff(id: UUID) async throws -> HandoffResponse {
         try await send(.post, "actions/\(id.lowercased)/handoff")
     }
@@ -293,6 +299,11 @@ public struct APIClient: Sendable {
         default: .internalError
         }
     }
+}
+
+/// POST /api/v1/actions/:id/progress 본문
+struct ProgressRequest: Encodable {
+    let state: WorkState
 }
 
 struct MissingReportRequest: Encodable {

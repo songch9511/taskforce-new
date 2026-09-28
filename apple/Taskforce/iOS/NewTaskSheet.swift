@@ -43,10 +43,12 @@ struct NewTaskSheet: View {
                         .onSubmit(add)
                         .disabled(saving)
                 }
+                .listRowBackground(TFColor.bgElevated)
                 if !duplicates.isEmpty {
                     Section("Existing") {
                         ForEach(duplicates) { duplicateRow($0) }
                     }
+                    .listRowBackground(TFColor.bgElevated)
                 }
                 Section("Due") {
                     dueChoices
@@ -56,6 +58,7 @@ struct NewTaskSheet: View {
                             .labelsHidden()
                     }
                 }
+                .listRowBackground(TFColor.bgElevated)
                 .disabled(saving)
             }
             .navigationTitle("New Task")
@@ -77,8 +80,7 @@ struct NewTaskSheet: View {
             .messageAlert($store.addError)
         }
         .presentationDetents([.medium, .large], selection: $detent)
-        // 중간 높이의 기본 시트 배경은 반투명이라 뒤의 목록 글자가 제목 칸에 비친다
-        .presentationBackground(TFColor.bgCanvas)
+        .modifier(SheetBackground())
         .interactiveDismissDisabled(saving)
         .onAppear { titleFocused = true }
         // 서버 제목 최대 길이(UTF-16)를 넘게 쓰지 못하게
@@ -167,6 +169,17 @@ struct NewTaskSheet: View {
             guard added else { return }
             onAdded()
             dismiss()
+        }
+    }
+}
+
+/// 시트 바탕: iOS 26은 시스템 유리 시트 그대로, 그 전은 bg/canvas
+private struct SheetBackground: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(iOS 26.0, *) {
+            content
+        } else {
+            content.presentationBackground(TFColor.bgCanvas)
         }
     }
 }

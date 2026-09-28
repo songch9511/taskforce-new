@@ -38,34 +38,46 @@ final class LauncherModel {
         case consentNeeded
     }
 
-    enum ActionEntry: Hashable, CaseIterable {
-        case confirm, dismiss, complete, start, reopen, handoff, openSource, editDue
+    enum ActionEntry: Hashable {
+        /// 진행 상태로 옮기기 (To Do · In Progress · Done). 왼쪽은 상태 표시
+        case state(WorkState)
+        case confirm, dismiss, handoff, openSource, editDue, delete
 
         var title: String {
             switch self {
+            case .state(let state): state.title
             case .confirm: "Confirm"
             case .dismiss: "Dismiss"
-            case .complete: "Complete"
-            case .start: "Start"
-            case .reopen: "Reopen"
             case .handoff: "Hand off to AI"
             case .openSource: "Open source"
             case .editDue: "Edit due"
+            case .delete: "Delete"
             }
         }
 
-        var symbolName: String {
+        /// 상태 줄은 nil (상태 표시를 그린다)
+        var symbolName: String? {
             switch self {
+            case .state: nil
             case .confirm: "checkmark"
             case .dismiss: "xmark"
-            case .complete: "checkmark.circle"
-            case .start: "play"
-            case .reopen: "arrow.uturn.backward"
             case .handoff: "paperplane"
             case .openSource: "arrow.up.right.square"
             case .editDue: "calendar"
+            case .delete: "trash"
             }
         }
+
+        /// 줄 오른쪽에 보이는 단축키
+        var shortcut: String? {
+            self == .delete ? "⌘⌫" : nil
+        }
+    }
+
+    /// ⌘K 패널의 묶음 ("Status" · "Actions"). Review는 제목 없이 한 묶음
+    struct ActionGroup: Equatable {
+        let title: String?
+        let entries: [ActionEntry]
     }
 
     typealias DueChoice = LauncherDue.Choice
@@ -119,11 +131,9 @@ final class LauncherModel {
     private var submission: Int?
     /// 목록이 바뀌어도 같은 행을 가리키게 (Realtime · 다시 불러오기)
     private var selectedID: String?
-    /// 방금 완료한 할 일: 잠시 ⌘Z로 되돌린다 (아래 "Undo ⌘Z")
-    private(set) var undoID: UUID?
+    /// 방금 옮기거나 지운 할 일: 잠시 ⌘Z로 그 전 상태로 되돌린다 (아래 "Undo ⌘Z")
+    private(set) var undoOffer = UndoOffer()
     private var undoTimer: Task<Void, Never>?
-    /// 완료 뒤 Undo를 보여 주는 시간
-    private static let undoWindow: Duration = .seconds(5)
     private var lastUserID: UUID?
     /// 최근 원문을 다 읽었는지 (빈 목록과 읽는 중을 나눈다)
     private(set) var sourcesLoaded = false
@@ -209,17 +219,34 @@ final class LauncherModel {
         }
     }
 
-    func actionEntries(for target: Target) -> [ActionEntry] {
+    /// ⌘K 패널: Review는 Confirm · Dismiss · …, 나머지는 Status(To Do · In Progress · Done, 지금 상태에 체크) + Actions(맨 아래 Delete)
+    func actionGroups(for target: Target) -> [ActionGroup] {
+        let status = ActionGroup(title: "Status", entries: WorkState.allCases.map(ActionEntry.state))
         switch target.group {
-        case .review: [.confirm, .dismiss, .handoff, .openSource, .editDue]
-        case .toDo: [.complete, .start, .handoff, .openSource, .editDue]
-        case .inProgress: [.complete, .handoff, .openSource, .editDue]
-        case .doneToday: [.reopen, .openSource]
+        case .review: return [ActionGroup(title: nil, entries: [.confirm, .dismiss, .handoff, .openSource, .editDue])]
+        case .toDo, .inProgress: return [status, ActionGroup(title: "Actions", entries: [.handoff, .openSource, .editDue, .delete])]
+        case .doneToday: return [status, ActionGroup(title: "Actions", entries: [.openSource, .delete])]
         }
     }
 
-    /// 방금 완료한 할 일을 ⌘Z로 되돌릴 수 있는지 (목록에서만)
-    var canUndo: Bool { screen == .list && undoID != nil }
+    /// ↑↓로 고르는 순서 (묶음을 이어서)
+    func actionEntries(for target: Target) -> [ActionEntry] {
+        actionGroups(for: target).flatMap(\.entries)
+    }
+
+    /// ⌘K를 열면 먼저 고르는 줄: 다음 상태 (To Do → In Progress → Done, Done → 끝내기 전 상태). Review는 Confirm
+    private func initialActionIndex(for target: Target) -> Int {
+        guard let current = WorkState(target.group) else { return 0 }
+        let next: WorkState = switch current {
+        case .toDo: .inProgress
+        case .inProgress: .done
+        case .done: now?.toggleTarget(target.action.id) ?? .toDo
+        }
+        return actionEntries(for: target).firstIndex(of: .state(next)) ?? 0
+    }
+
+    /// 방금 옮기거나 지운 할 일을 ⌘Z로 되돌릴 수 있는지 (목록에서만)
+    var canUndo: Bool { screen == .list && undoOffer.pending != nil }
 
     /// 지금 화면에서 ↑↓로 고르는 줄 수
     var rowCount: Int {
@@ -327,13 +354,29 @@ final class LauncherModel {
             undo()
             return true
         case kVK_Delete where command:
-            // 입력이 있으면 ⌘⌫는 줄 지우기
-            guard screen == .list, text.isEmpty, case .review(let action) = selectedItem else { return false }
-            perform(.dismiss, on: Target(action: action, group: .review))
+            guard let (entry, target) = deleteShortcut else { return false }
+            perform(entry, on: target)
             return true
         default:
             return false
         }
+    }
+
+    /// ⌘⌫: 목록에서 고른 할 일 행 · ⌘K 패널의 할 일. Review는 Dismiss, 나머지(In Progress · To Do · Done Today)는 Delete
+    private var deleteShortcut: (ActionEntry, Target)? {
+        let target: Target?
+        switch screen {
+        case .list:
+            // 입력이 있으면 ⌘⌫는 줄 지우기. Hand off 행은 할 일 행이 아니다
+            guard text.isEmpty, let item = selectedItem, item.group != nil else { return nil }
+            target = self.target(for: item)
+        case .actions(let actionsTarget):
+            target = actionsTarget
+        default:
+            return nil
+        }
+        guard let target else { return nil }
+        return (target.group.isDeletable ? .delete : .dismiss, target)
     }
 
     private func caretAtEnd(in window: NSWindow?) -> Bool {
@@ -437,7 +480,7 @@ final class LauncherModel {
 
     private func openActions(_ target: Target) {
         screen = .actions(target)
-        selection = 0
+        selection = initialActionIndex(for: target)
     }
 
     /// esc: 한 단계 뒤로, 목록이면 입력을 지우고, 비어 있으면 닫는다
@@ -541,81 +584,96 @@ final class LauncherModel {
         guard let now else { return }
         let id = target.action.id
         switch entry {
+        case .state(let state):
+            // 지금 상태 줄은 체크만 (↩가 할 일이 없다)
+            guard state != WorkState(target.group) else { return }
+            setState(target.action, to: state)
         case .confirm: finish("Confirmed") { await now.confirm(id) }
         case .dismiss: finish("Dismissed") { await now.dismiss(id) }
-        case .complete: complete(target.action)
-        case .start: start(target.action)
-        case .reopen: reopen(target.action)
         case .handoff: finish("Copied") { _ = await now.handoff(id) }
         case .openSource: openSource(target.action)
         case .editDue:
             screen = .editDue(target)
             selection = 0
             pickedDate = target.action.dueDate.map(Self.pickerDate) ?? Date()
+        case .delete: delete(target.action)
         }
     }
 
-    // MARK: 완료 · 착수 · 다시 열기 (런처를 닫지 않는다)
+    // MARK: 진행 상태 (런처를 닫지 않는다)
 
-    /// 할 일 행 왼쪽 상태 표시를 누름: To Do · In Progress는 완료, Done Today는 다시 열기
+    /// 할 일 행 왼쪽 상태 표시를 누름: ○ · ●는 Done, ✓는 끝내기 전 상태 (`WorkState.toggled`)
     func toggle(_ item: LauncherItem) {
-        switch item {
-        case .task(let ranked): complete(ranked.action)
-        case .done(let action): reopen(action)
-        default: break
-        }
+        guard let action = item.action, item.group != .review, let state = now?.toggleTarget(action.id) else { return }
+        setState(action, to: state)
     }
 
-    /// 완료: 그 행을 Done Today로 옮겨 ✓로 고른 채 두고, 잠시 ⌘Z로 되돌린다
-    func complete(_ action: ActionSummary) {
+    /// To Do · In Progress · Done으로 옮김: 그 행을 옮긴 구역에서 고른 채 두고, 잠시 ⌘Z로 그 전 상태로 되돌린다
+    func setState(_ action: ActionSummary, to state: WorkState, undoable: Bool = true) {
         guard let now else { return }
-        let write = now.complete(action.id)
+        let previous = now.state(of: action.id)
+        let write = now.move(action.id, to: state)
         selectRow(of: action.id)
         guard let write else { return }
-        offerUndo(action.id)
+        if undoable, let previous {
+            offerUndo(TaskUndo(action, was: previous, change: .moved))
+        } else {
+            clearUndo()
+        }
         report(write)
     }
 
-    /// 착수: 그 행을 곧바로 In Progress로 옮겨 고른 채 둔다
-    func start(_ action: ActionSummary) {
+    /// 삭제 (⌘K Delete · ⌘⌫): 런처를 닫지 않고 그 행을 빼고 같은 자리의 다음 행을 고른다. 잠시 ⌘Z로 되살린다.
+    func delete(_ action: ActionSummary) {
         guard let now else { return }
-        let write = now.start(action.id)
-        selectRow(of: action.id)
-        if let write { report(write) }
+        let row = items.firstIndex { $0.group != nil && $0.action?.id == action.id }
+        guard let deleted = now.delete(action.id) else { return }
+        closeTimer?.cancel()
+        screen = .list
+        selection = row ?? 0
+        selectedID = nil
+        reconcileSelection()
+        offerUndo(deleted.undo)
+        report(deleted.write)
     }
 
-    /// 다시 열기 (Done Today의 Reopen · ⌘Z): 열린 목록으로 옮겨 고른 채 둔다
-    func reopen(_ action: ActionSummary) {
-        guard let now else { return }
-        let write = now.reopen(action.id)
-        if undoID == action.id { clearUndo() }
-        selectRow(of: action.id)
-        if let write { report(write) }
-    }
-
-    /// ⌘Z: 방금 완료한 할 일을 다시 연다
+    /// ⌘Z: 방금 옮긴 할 일을 그 전 상태로, 지운 할 일은 지우기 전 구역으로
     func undo() {
-        guard canUndo, let id = undoID, let found = now?.sections.find(id), found.group == .doneToday else {
+        guard canUndo, let undo = undoOffer.take() else {
             clearUndo()
             return
         }
-        reopen(found.action)
+        switch undo.change {
+        case .moved:
+            guard let found = now?.sections.find(undo.action.id) else {
+                clearUndo()
+                return
+            }
+            setState(found.action, to: undo.state, undoable: false)
+        case .deleted:
+            guard let now else { return }
+            let write = now.restore(undo)
+            selectRow(of: undo.action.id)
+            clearUndo()
+            report(write)
+        }
     }
 
-    private func offerUndo(_ id: UUID) {
-        undoID = id
+    private func offerUndo(_ undo: TaskUndo) {
+        undoOffer.offer(undo)
+        let serial = undoOffer.serial
         undoTimer?.cancel()
         undoTimer = Task {
-            try? await Task.sleep(for: Self.undoWindow)
-            guard !Task.isCancelled, undoID == id else { return }
-            undoID = nil
+            try? await Task.sleep(for: UndoOffer.window)
+            guard !Task.isCancelled else { return }
+            undoOffer.expire(serial)
         }
     }
 
     private func clearUndo() {
         undoTimer?.cancel()
         undoTimer = nil
-        undoID = nil
+        undoOffer.clear()
     }
 
     /// 목록으로 돌아가 그 할 일의 행(옮겨 간 구역)을 고른다
