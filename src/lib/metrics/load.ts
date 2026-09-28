@@ -89,7 +89,8 @@ export async function loadMetrics(admin: SupabaseClient, period: Period) {
       .order("id")
       .range(from, to),
   );
-  // 리텐션은 사용자의 처음 활동부터 본다 (기간으로 자르면 오래 쓴 사용자가 새 사용자로 보인다)
+  // 리텐션은 사용자의 처음 활동부터 본다 (기간으로 자르면 오래 쓴 사용자가 새 사용자로 보인다).
+  // 착수 시간도 Action마다 처음 착수만 세므로 처음부터 읽는다.
   const metricEvents = await readAll<{ user_id: string; type: string; action_id: string | null; at: string }>((from, to) =>
     admin.from("metric_events").select("user_id, type, action_id, at").order("at").order("id").range(from, to),
   );

@@ -45,6 +45,23 @@ describe("misjudgment (지표 1)", () => {
     expect(m.byField).toMatchObject({ due: 1, deleted: 1, title: 0 });
   });
 
+  it("끝낸 일을 지운 것 · 지운 뒤 되살린 것(되돌리기)은 삭제 오판으로 세지 않는다", () => {
+    const m = misjudgment(
+      [
+        created("done-cleanup"),
+        ev("done-cleanup", "user_deleted", "2026-09-23T00:00:00Z", { before: { status: "done" }, after: { status: "dropped" } }),
+        created("undone"),
+        ev("undone", "user_deleted", "2026-09-23T00:00:00Z", { before: { status: "open" }, after: { status: "dropped" } }),
+        ev("undone", "user_edited", "2026-09-23T00:00:04Z", { before: { status: "dropped" }, after: { status: "open" } }),
+        created("gone"),
+        ev("gone", "user_deleted", "2026-09-23T00:00:00Z", { before: { status: "open" }, after: { status: "dropped" } }),
+      ],
+      period,
+    );
+    expect(m).toMatchObject({ aiCreated: 3, corrected: 1 });
+    expect(m.byField).toMatchObject({ deleted: 1, status: 0 });
+  });
+
   it("완료로 바꾼 것 · 자기가 완료한 것을 되돌린 것은 오판이 아니다. AI가 끝냈다고 본 일을 다시 여는 것은 오판이다", () => {
     const m = misjudgment(
       [
@@ -106,6 +123,31 @@ describe("misjudgment (지표 1)", () => {
   it("AI 생성이 없으면 비율은 없음", () => {
     expect(misjudgment([], period).rate).toBeNull();
   });
+
+  it("작업 상태: 착수 · 착수 되돌리기와 자기가 완료한 것을 다시 여는 것은 오판이 아니다. AI가 끝냈다고 본 일을 다시 열면 오판이다", () => {
+    // load.ts는 before · after에서 started_at을 버린다 (빈 객체). 한 트랜잭션의 이벤트는 시각이 같다.
+    const m = misjudgment(
+      [
+        created("started"),
+        ev("started", "user_started", "2026-09-23T00:00:00Z", { after: {} }),
+        ev("started", "user_unstarted", "2026-09-23T01:00:00Z", { before: {}, after: {} }),
+        ev("started", "user_started", "2026-09-23T02:00:00Z", { after: {} }),
+        created("own"),
+        ev("own", "user_started", "2026-09-23T00:00:00Z", { after: {} }),
+        ev("own", "user_edited", "2026-09-23T01:00:00Z", { before: { status: "open" }, after: { status: "done" } }),
+        // 완료 → 할 일: 다시 열기 + 착수 되돌리기
+        ev("own", "user_unstarted", "2026-09-23T02:00:00Z", { before: {}, after: {} }),
+        ev("own", "user_edited", "2026-09-23T02:00:00Z", { before: { status: "done" }, after: { status: "open" } }),
+        created("ai"),
+        ev("ai", "completed", "2026-09-23T00:00:00Z", { before: { status: "open" }, after: { status: "done" } }),
+        // 완료 → 진행 중: 다시 열기 + 착수
+        ev("ai", "user_started", "2026-09-24T00:00:00Z", { after: {} }),
+        ev("ai", "user_edited", "2026-09-24T00:00:00Z", { before: { status: "done" }, after: { status: "open" } }),
+      ],
+      period,
+    );
+    expect(m).toMatchObject({ aiCreated: 3, corrected: 1, byField: { status: 1, title: 0, due: 0, owner: 0, deleted: 0 }, byStage: { extract: 0, update: 1 } });
+  });
 });
 
 describe("timeToStart (지표 2)", () => {
@@ -130,6 +172,26 @@ describe("timeToStart (지표 2)", () => {
 
   it("연 적이 없으면 비율 · 시간은 없음", () => {
     expect(timeToStart([], period)).toEqual({ opens: 0, startedRate: null, medianMinutes: null });
+  });
+
+  it("Action마다 처음 착수만 센다: 착수를 되돌렸다가 다시 시작해도 새 착수가 아니다 (기간 전의 첫 착수도 본다)", () => {
+    const started = (actionId: string, at: string): MetricEventRow => ({ userId: "u1", type: "action_started", actionId, at });
+    const m = timeToStart(
+      [
+        started("old", "2026-09-10T00:05:00Z"), // 기간 전 첫 착수
+        me("app_opened", "2026-09-22T00:00:00Z"),
+        started("a1", "2026-09-22T00:10:00Z"),
+        me("app_opened", "2026-09-23T00:00:00Z"),
+        started("a1", "2026-09-23T00:05:00Z"), // 할 일로 되돌렸다가 다시 시작
+        started("a2", "2026-09-23T00:20:00Z"),
+        me("app_opened", "2026-09-24T00:00:00Z"),
+        started("a1", "2026-09-24T00:05:00Z"),
+        me("app_opened", "2026-09-25T00:00:00Z"),
+        started("old", "2026-09-25T00:05:00Z"),
+      ],
+      period,
+    );
+    expect(m).toEqual({ opens: 4, startedRate: 0.5, medianMinutes: 15 });
   });
 });
 

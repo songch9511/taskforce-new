@@ -11,7 +11,7 @@ import type { LinkedAction, TaskLinkStore } from "@/lib/pipeline/merge-task";
 import { USER_REASON } from "@/lib/pipeline/resolve";
 import type { Claim } from "@/lib/pipeline/resolve";
 
-import { changeEvents, projectAction, type EventDraft } from "./project";
+import { changeEvents, projectAction, type ActionStatus, type EventDraft } from "./project";
 import { actionRowValues, CLAIM_COLUMNS, claimFromRow, claimToRow, storedReasons, toPgVector, type ClaimRow } from "./rows";
 
 // Phase 2 병합 결과를 DB에 쓴다 (service role). 쿼리마다 user_id로 범위를 좁힌다.
@@ -32,19 +32,42 @@ export type ActionWrite = {
   actor: "ai" | "user";
 };
 
+/** write_action · set_action_progress에 넘기는 인자 */
+function writeParams(userId: string, actionId: string, write: ActionWrite) {
+  return {
+    p_user_id: userId,
+    p_action_id: actionId,
+    p_expected_version: write.expectedVersion,
+    p_action: write.action,
+    p_claims: write.claims.map((c) => claimToRow(c, userId, actionId, write.evidence)),
+    p_evidence: write.evidence.role ? [{ source_id: write.evidence.sourceId, quote: write.evidence.quote, role: write.evidence.role }] : [],
+    p_events: write.events.map((e) => ({ type: e.type, before: e.before, after: e.after, rule: e.rule, actor: e.actor ?? write.actor, source_id: write.evidence.sourceId })),
+  };
+}
+
 /** Action 행 · Claim · 근거 · 이벤트를 한 트랜잭션으로 쓴다 (DB 함수 write_action). 버전이 어긋나면 false. */
 export async function writeAction(admin: SupabaseClient, userId: string, actionId: string, write: ActionWrite): Promise<boolean> {
-  const { data } = await admin
-    .rpc("write_action", {
-      p_user_id: userId,
-      p_action_id: actionId,
-      p_expected_version: write.expectedVersion,
-      p_action: write.action,
-      p_claims: write.claims.map((c) => claimToRow(c, userId, actionId, write.evidence)),
-      p_evidence: write.evidence.role ? [{ source_id: write.evidence.sourceId, quote: write.evidence.quote, role: write.evidence.role }] : [],
-      p_events: write.events.map((e) => ({ type: e.type, before: e.before, after: e.after, rule: e.rule, actor: e.actor ?? write.actor, source_id: write.evidence.sourceId })),
-    })
-    .throwOnError();
+  const { data } = await admin.rpc("write_action", writeParams(userId, actionId, write)).throwOnError();
+  return data === true;
+}
+
+/**
+ * 작업 상태 바꾸기를 한 트랜잭션으로 쓴다 (DB 함수 set_action_progress): 상태 쓰기(write_action과 같은 것, null이면 상태는 그대로)
+ * 뒤에 착수 시각을 바꾼다. started: true 착수(start_action) · false 착수 되돌리기(user_unstarted) · null 그대로.
+ * 버전이 어긋나면(그 사이 누가 썼으면) 아무것도 쓰지 않고 false.
+ */
+export async function writeProgress(
+  admin: SupabaseClient,
+  userId: string,
+  actionId: string,
+  expectedVersion: number,
+  statusWrite: ActionWrite | null,
+  started: boolean | null,
+): Promise<boolean> {
+  const status = statusWrite
+    ? writeParams(userId, actionId, statusWrite)
+    : { p_user_id: userId, p_action_id: actionId, p_action: null, p_claims: [], p_evidence: [], p_events: [] };
+  const { data } = await admin.rpc("set_action_progress", { ...status, p_expected_version: expectedVersion, p_started: started }).throwOnError();
   return data === true;
 }
 
@@ -64,12 +87,19 @@ export async function retryOnConflict<T>(attempt: () => Promise<T | null>): Prom
   throw new WriteConflictError();
 }
 
-type StoredRow = { title: string; confirm_reasons: string[]; needs_confirmation: boolean; version: number };
+export type StoredRow = {
+  title: string;
+  confirm_reasons: string[];
+  needs_confirmation: boolean;
+  version: number;
+  status: ActionStatus;
+  started_at: string | null;
+};
 
 export async function loadStoredRow(admin: SupabaseClient, userId: string, actionId: string): Promise<StoredRow | null> {
   const { data } = await admin
     .from("actions")
-    .select("title, confirm_reasons, needs_confirmation, version")
+    .select("title, confirm_reasons, needs_confirmation, version, status, started_at")
     .eq("user_id", userId)
     .eq("id", actionId)
     .maybeSingle()
