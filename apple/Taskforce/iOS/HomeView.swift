@@ -15,6 +15,9 @@ struct HomeView: View {
     @Environment(\.openURL) private var openURL
     @State private var expanded: UUID?
     @State private var accountRoute: AccountRoute?
+    @State private var addingTask = false
+    /// 직접 추가가 끝날 때마다 늘린다 (가벼운 햅틱)
+    @State private var addedTasks = 0
     @State private var promptingProfile = false
     /// 동의 전인데 연결이 있으면 로그인 뒤 한 번 (목록은 그대로 보인다)
     @State private var promptingConsent = false
@@ -27,6 +30,14 @@ struct HomeView: View {
                 .background(TFColor.bgCanvas)
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button {
+                            addingTask = true
+                        } label: {
+                            Image(systemName: "plus")
+                        }
+                        .accessibilityLabel("New Task")
+                    }
                     ToolbarItem(placement: .topBarTrailing) {
                         Button {
                             accountRoute = .home
@@ -47,6 +58,10 @@ struct HomeView: View {
         .sheet(item: $accountRoute) { route in
             AccountSheet(email: email, initialRoute: route)
         }
+        .sheet(isPresented: $addingTask) {
+            NewTaskSheet { addedTasks += 1 }
+        }
+        .sensoryFeedback(.impact(weight: .light), trigger: addedTasks)
         .sheet(isPresented: $promptingProfile, onDismiss: promptConsentIfNeeded) {
             NavigationStack {
                 ProfileForm(dismissOnSave: true)

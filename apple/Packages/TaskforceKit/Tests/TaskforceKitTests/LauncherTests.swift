@@ -92,6 +92,28 @@ struct LauncherTests {
         ])
     }
 
+    @Test func existingListsReviewThenNowMatchesInServerOrder() {
+        #expect(LauncherAdd.existing(matching: "서", in: now).map(\.title) == ["견적서 회신", "계약서 검토"])
+        #expect(LauncherAdd.existing(matching: " 자료 ", in: now).map(\.title) == ["투자 자료 보내기"])
+        // 상대 이름도 맞는 것으로 본다 (런처 찾기와 같다)
+        #expect(LauncherAdd.existing(matching: "김대표", in: now).map(\.title) == ["투자 자료 보내기"])
+    }
+
+    @Test func existingIsEmptyForBlankUnmatchedOrUnloaded() {
+        #expect(LauncherAdd.existing(matching: "", in: now).isEmpty)
+        #expect(LauncherAdd.existing(matching: "  \n", in: now).isEmpty)
+        #expect(LauncherAdd.existing(matching: "없는말", in: now).isEmpty)
+        #expect(LauncherAdd.existing(matching: "자료", in: nil).isEmpty)
+    }
+
+    @Test func existingListsAnActionOnce() {
+        let review = now.confirmations[0]
+        let both = NowResponse(
+            now: [RankedAction(action: review, score: 1, reasons: [], daysUntilDue: nil)], confirmations: [review], weeklyCheck: nil
+        )
+        #expect(LauncherAdd.existing(matching: review.title, in: both) == [review])
+    }
+
     @Test func addTitleIsCappedAt200UTF16WithoutSplittingCharacters() {
         let exactly = String(repeating: "a", count: LauncherAdd.maxTitleLength)
         #expect(addTitle(exactly) == exactly)

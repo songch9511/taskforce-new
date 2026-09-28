@@ -7,6 +7,8 @@ enum SampleData {
     static var isEnabled: Bool { ProcessInfo.processInfo.arguments.contains("-TFSampleData") }
 
     static let reviewID = UUID(uuidString: "5A000000-0000-4000-8000-000000000001")!
+    /// 로그인 없이 견본 화면을 띄울 때 쓰는 사용자 id (iPhone)
+    static let userID = UUID(uuidString: "5A000000-0000-4000-8000-0000000000FF")!
 
     static var now: NowResponse {
         let today = DueDateFormat.today()
@@ -48,6 +50,13 @@ enum SampleData {
         ]
     }
 
+    /// 직접 추가: 서버 없이 Now 끝에 붙인다
+    static func adding(_ title: String, due: LocalDate?, to response: NowResponse?) -> NowResponse {
+        let base = response ?? now
+        let added = RankedAction(action: summary(UUID(), title, due: due, needsConfirmation: false), score: 0, reasons: [], daysUntilDue: nil)
+        return NowResponse(now: base.now + [added], confirmations: base.confirmations, weeklyCheck: base.weeklyCheck)
+    }
+
     private static func id(_ n: Int) -> UUID {
         UUID(uuidString: String(format: "5A000000-0000-4000-8000-%012d", n))!
     }
@@ -72,6 +81,11 @@ extension NowStore {
     func useSampleData() {
         sampleMode = true
         applySample(SampleData.now, evidence: SampleData.evidence)
+    }
+
+    /// 견본에서 직접 추가 (`add(title:due:)`, 서버를 부르지 않는다)
+    func addSample(title: String, due: LocalDate?) {
+        applySample(SampleData.adding(title, due: due, to: response), evidence: evidence)
     }
 }
 #endif

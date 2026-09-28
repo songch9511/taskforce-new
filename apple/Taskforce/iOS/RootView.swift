@@ -15,7 +15,16 @@ struct RootView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .background(TFColor.bgCanvas)
             case .signedOut:
+                #if DEBUG
+                // 견본 모드는 로그인 없이 견본 화면을 보여 준다 (시뮬레이터에 Apple ID가 없어도 화면을 확인할 수 있게)
+                if SampleData.isEnabled, let services {
+                    SignedInRoot(services: services, userID: SampleData.userID, email: nil)
+                } else {
+                    SignInView()
+                }
+                #else
                 SignInView()
+                #endif
             case .signedIn(let userID, let email):
                 if let services {
                     SignedInRoot(services: services, userID: userID, email: email)
@@ -57,16 +66,28 @@ private struct SignedInRoot: View {
             .environment(changes)
             .environment(account)
             // 로그인해 있는 동안 Realtime 구독 하나. 로그아웃 · 계정 전환으로 이 화면이 사라지면 끝난다.
-            .task { await changes.follow(services: services, userID: userID) }
+            .task {
+                guard !isSample else { return }
+                await changes.follow(services: services, userID: userID)
+            }
             // 지표 2 · 3: 로그인한 화면이 처음 나타날 때와 백그라운드에서 돌아올 때 한 번
             .onChange(of: scenePhase, initial: true) { _, phase in
-                guard appOpen.update(AppOpenTracker.Phase(phase)) else { return }
+                guard !isSample, appOpen.update(AppOpenTracker.Phase(phase)) else { return }
                 Task { try? await services.api.appOpened() }
             }
             // ASWebAuthenticationSession이 주소를 바로 돌려주지만, 앱 밖에서 열린 경우를 위해
             .onOpenURL { url in
                 Task { await account.handleCallback(url) }
             }
+    }
+
+    /// 견본 모드에서는 서버를 부르지 않는다 (Realtime · app_opened)
+    private var isSample: Bool {
+        #if DEBUG
+        SampleData.isEnabled
+        #else
+        false
+        #endif
     }
 }
 #endif

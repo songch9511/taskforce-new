@@ -172,11 +172,19 @@ public enum LauncherAdd {
     /// 추가할 제목. 보이지 않으면 nil
     public static func title(for mode: LauncherInput.Mode, now: NowResponse?, signedIn: Bool) -> String? {
         guard signedIn, let now, case .query(let query) = mode else { return nil }
-        let matched = now.confirmations.contains { TaskFilter.matches($0, query: query) }
-            || now.now.contains { TaskFilter.matches($0.action, query: query) }
-        guard !matched else { return nil }
+        guard existing(matching: query, in: now).isEmpty else { return nil }
         let title = capped(query)
         return title.isEmpty ? nil : title
+    }
+
+    /// 그 말과 맞는 열린 할 일 (`TaskFilter`): Review 먼저, 그다음 Now, 받은 순서 그대로. 같은 할 일은 한 번만.
+    /// iPhone New Task의 "In Now" 힌트 (추가는 막지 않는다). 빈칸이거나 목록을 아직 못 읽었으면 없음.
+    public static func existing(matching text: String, in now: NowResponse?) -> [ActionSummary] {
+        let query = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let now, !query.isEmpty else { return [] }
+        var seen = Set<UUID>()
+        return (now.confirmations + now.now.map(\.action))
+            .filter { TaskFilter.matches($0, query: query) && seen.insert($0.id).inserted }
     }
 
     /// 앞뒤 공백을 빼고 `maxTitleLength`(UTF-16)까지. 글자를 중간에서 자르지 않는다.

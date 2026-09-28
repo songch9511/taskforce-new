@@ -56,6 +56,8 @@ Mac은 `--show-launcher -TFSampleData -TFSnapshot <폴더>`로 실행하면 런�
 - 로그인: Sign in with Apple, 그 아래 눈에 덜 띄게 "Sign in with email"(App Store 심사 계정용, 가입 화면 없음). Mac 런처의 "Sign in with email" 행은 설정 창의 같은 로그인 화면을 연다.
 - "Review 1 / N" + Review card 한 장(Confirm = `POST confirm`, Dismiss = `DELETE`) → "Now" + Task row 목록. 순서는 서버가 정한 그대로.
 - 체크 = 완료(`PATCH status done`, 먼저 Done으로 보이고 `/now`를 다시 불러 뺀다). 행을 누르면 근거 한 줄만 펼치고, 인용을 누르면 원문을 연다.
+- 오른쪽 위 "+" = New Task 시트(`NowStore.add`, 원문 없이 `POST /actions`): 제목(200자까지) · Due(None · Today · Tomorrow · Date…) · Cancel / Add.
+  쓰는 동안 Review · Now에서 맞는 할 일을 "In Now"로 세 개까지 보여 준다(`LauncherAdd.existing`, 런처 찾기와 같은 거르기). 추가는 막지 않는다. 추가되면 닫고 `/now`를 다시 부른다.
 - 오른쪽 위 계정 시트: Profile(이름 · 다른 이름, 비어 있으면 처음 한 번 묻는다) · Connections · AI processing(외부 AI 처리 동의) · Sign Out · Delete Account(Apple 재확인 → 토큰 폐기) · Privacy Policy · Terms of Use.
 - 연결이 없고 할 일도 없으면 로고 네 개 + "Connect" 한 줄. 권한이 끊긴 연결이 있으면 목록 위에 Reconnect 줄.
 
@@ -87,7 +89,7 @@ Mac은 `--show-launcher -TFSampleData -TFSnapshot <폴더>`로 실행하면 런�
 
 - `Taskforce/` — 앱
   - `Shared/` — 두 플랫폼 공용: `NowStore`(지금 할 일 · 근거 · 쓰기), `AccountStore`(연결 · 동의 · 프로필), 연결 · 동의 · 프로필 화면, 로그인, 계정 삭제
-  - `iOS/` — 한 화면(`HomeView`) · 계정 시트
+  - `iOS/` — 한 화면(`HomeView`) · 계정 시트 · New Task 시트
   - `Mac/` — 앱 델리게이트 · 메뉴 막대 · 단축키 · 런처 패널/모델/화면 · 설정 창
 - `Packages/TaskforceKit/`
   - `TaskforceKit` — 화면 없는 공유 코드
@@ -95,7 +97,7 @@ Mac은 `--show-launcher -TFSampleData -TFSnapshot <폴더>`로 실행하면 런�
     - `TaskforceReads`: Supabase 직접 읽기 (RLS, 읽기 전용) — 할 일 상세 · 근거 · 원문 · 연결 · 원해요
     - `ActionChanges`: `actions` Realtime 구독. "바뀜" 신호로만 쓰고 지금 할 일은 항상 `/now`를 다시 불러온다 (로그인해 있는 동안 구독 하나: `ActionChangeFeed`)
     - `Models` · `AccountModels` · `Connections`: `src/lib/api/contract.ts`와 같은 모양 (새 필드는 없어도 읽는다)
-    - 순수 규칙(테스트로 고정): 런처 입력 모드 · 구역 · 거르기 · 붙여 넣은 원문 · 직접 추가 제목(`Launcher`), 영어 기한 · 시점 표기 · Task row 메타(`DisplayText`), 서비스 추정 · Source stack 접기(`SourceService`), 근거 고르기(`EvidenceDigest`), 연결 상태 · 콜백 · 시작 실패 분류(`Connections`), 단축키(`HotKeyShortcut`), `app_opened`(`AppOpenTracker` · `LauncherOpenThrottle`), 원문 줄 고르기(`SourceText` · `LineSelection`)
+    - 순수 규칙(테스트로 고정): 런처 입력 모드 · 구역 · 거르기 · 붙여 넣은 원문 · 직접 추가 제목 · 이미 있는 할 일(`Launcher`), 영어 기한 · 시점 표기 · Task row 메타(`DisplayText`), 서비스 추정 · Source stack 접기(`SourceService`), 근거 고르기(`EvidenceDigest`), 연결 상태 · 콜백 · 시작 실패 분류(`Connections`), 단축키(`HotKeyShortcut`), `app_opened`(`AppOpenTracker` · `LauncherOpenThrottle`), 원문 줄 고르기(`SourceText` · `LineSelection`)
   - `TaskforceUI` — Figma 토큰(Asset Catalog 색 세트, 이름 = Figma 변수 · 간격 · 모서리 · 글자)과 부품(Task row · Review card · Evidence · Sources group · Source icon/stack · Launcher row · Keycap · 캡슐 버튼), 부품마다 `#Preview`
     - 서비스 로고는 Figma Source icon(Simple Icons 단색)의 글리프만 template 이미지로 두고, 타일은 토큰으로 그린다
 - 순서 계산 · 판정은 서버에만 있다. 앱은 받은 순서를 그대로 보여준다.

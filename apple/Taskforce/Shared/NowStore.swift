@@ -19,6 +19,8 @@ final class NowStore {
     /// 근거를 읽지 못한 할 일 (계속 "읽는 중"으로 두지 않게)
     private(set) var evidenceFailed: Set<UUID> = []
     var message: String?
+    /// 직접 추가 실패 문구. iPhone New Task 시트가 자기 알림으로 보여 준다 (시트가 떠 있는 동안 홈 화면 알림은 뜨지 않는다).
+    var addError: String?
 
     /// 겹쳐 부른 불러오기 중 마지막 것만 반영한다 (늦게 온 옛 응답이 새 응답을 덮지 않게)
     private var loadSequence = 0
@@ -111,6 +113,28 @@ final class NowStore {
 
     func setDue(_ id: UUID, _ due: LocalDate?) async {
         await act(id) { try await $0.editAction(id: id, ActionEdit(due: due.map(ActionEdit.DueChange.set) ?? .clear)) }
+    }
+
+    /// 직접 추가 (iPhone New Task): 원문 없이 제목 · 기한만 `POST /actions` 한 뒤 `/now`를 다시 불러 새 할 일이 보이게 한다.
+    /// `already_tracked`(원문 없이는 나오지 않는다)도 추가된 것으로 본다. 실패하면 `addError`에 문구를 두고 false.
+    func add(title: String, due: LocalDate?) async -> Bool {
+        let title = LauncherAdd.capped(title)
+        guard !title.isEmpty else { return false }
+        #if DEBUG
+        if sampleMode {
+            try? await Task.sleep(for: .milliseconds(400))
+            addSample(title: title, due: due)
+            return true
+        }
+        #endif
+        do {
+            _ = try await services.api.createAction(title: title, dueDate: due)
+        } catch {
+            addError = error.userMessage
+            return false
+        }
+        await load()
+        return true
     }
 
     /// 주간 질문 (PRD 지표 5: 그림자 목록)
