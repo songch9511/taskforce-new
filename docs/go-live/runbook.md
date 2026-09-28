@@ -115,7 +115,8 @@ Supabase → Organization → Billing에서 프로젝트가 **Free**이고 백�
 
 ## 5. Apple
 
-- **릴리스 `API_BASE_URL`:** `apple/Config/Secrets.xcconfig`(커밋 안 함)에 `API_BASE_URL = https:/$()/api.taskforcelabs.dev`. 아카이브 전에 이 값인지 확인한다. 로컬 서버 값으로 TestFlight에 올리면 테스터가 아무것도 못 한다.
+- **릴리스 `API_BASE_URL`:** Release 구성은 커밋된 `apple/Config/Release.xcconfig`가 `API_BASE_URL = https:/$()/api.taskforcelabs.dev`로 정한다(Debug는 `Secrets.xcconfig`의 로컬 주소). 아카이브한 앱의 Info.plist `APIBaseURL`이 운영 주소인지 확인한다. 로컬 서버 값으로 TestFlight에 올리면 테스터가 아무것도 못 한다.
+- **Push Notifications 기능:** App ID `dev.taskforcelabs.taskforce`에 Push Notifications를 켠다. 앱 권한 파일에 `aps-environment`가 있어서, 켜기 전에는 서명 빌드의 프로필 발급이 실패한다.
 - **APNs 키:** Apple Developer → Keys → + → Apple Push Notifications service → `.p8` → `APNS_KEY_ID` · `APNS_PRIVATE_KEY`.
 - **Sign in with Apple 키:** `app-store.md` 6장 1번 → `APPLE_*`.
 - **URL scheme:** `taskforce`가 `apple/Taskforce/Info.plist`에 등록되어 있다. OAuth 복귀(`taskforce://connections/{provider}?handoff=<id>`, `src/lib/connectors/callback.ts`)가 이걸로 앱에 돌아온다. callback은 code를 암호화한 완료 대기(handoff, 2분)로 남기고 이 주소로 보낼 뿐이고, 앱이 그 `handoff`로 `POST /api/v1/connections/{provider}/complete`(Bearer 토큰)를 불러야 연결이 끝난다(시작한 사용자만, 한 번만). 릴리스 빌드에서도 URL scheme이 빠지지 않았는지 확인한다.
@@ -207,15 +208,18 @@ union all select 'profiles', count(*) from public.profiles where user_id = '<id>
 
 | # | 항목 | 담당 | 끝난 기준 | 먼저 필요한 것 |
 |---|---|---|---|---|
-| C1 | 연결 틀 · 서명된 state · 동의 API · 연결 요청 · 계정 삭제 시 연동 토큰 폐기 (트랙 2-1) | 코드 | 단위 · RLS 테스트 통과 (state 정상 · 변조 · 만료 · 재사용 · 다른 사용자, 동의 없으면 처리 안 함) | — |
-| C2 | 계정 삭제 시 Sign in with Apple 토큰 폐기 (서버는 `src/lib/apple/sign-in.ts`로 구현됨, 앱이 삭제 전에 authorization code를 보내는 일이 남음) | 코드 | 앱이 `apple_authorization_code`를 보내는 테스트 통과, 실기기에서 Apple ID 목록에서 사라짐 (`app-store.md` 6장) | I8 |
-| C3 | 물어보기 `POST /api/v1/ask` (트랙 2-2) | 코드 | 인용 기계 검증 · 근거 없으면 "모른다" 테스트, ask 골든셋 eval | C1 |
+| C1 | 연결 틀 · 서명된 state · 동의 API · 연결 요청 · 계정 삭제 시 연동 토큰 폐기 (트랙 2-1) | 코드 ✅ (2026-09-28) | 단위 · RLS 테스트 통과 (state 정상 · 변조 · 만료 · 재사용 · 다른 사용자, 동의 없으면 처리 안 함) | — |
+| C2 | 계정 삭제 시 Sign in with Apple 토큰 폐기 (서버는 `src/lib/apple/sign-in.ts`로 구현됨, 앱이 삭제 전에 authorization code를 보내는 일이 남음) | 코드 ✅ 코드 (실기기 확인 남음) | 앱이 `apple_authorization_code`를 보내는 테스트 통과, 실기기에서 Apple ID 목록에서 사라짐 (`app-store.md` 6장) | I8 |
+| C3 | 물어보기 `POST /api/v1/ask` (트랙 2-2) | 코드 ✅ | 인용 기계 검증 · 근거 없으면 "모른다" 테스트, ask 골든셋 eval | C1 |
 | C4 | Google 연동: Calendar · Meet 전사 · Gmail (트랙 2-3) | 코드 | 메일 · Meet 골든셋 eval 기록, `invalid_grant` → `reauth` + 재연결 안내, 처리방침 3장 Google · Gmail 문장과 구현 값 일치 | C1 |
 | C5 | Slack 연동: OAuth + Events API (트랙 2-4) | 코드 | 서명 검증 · 버리는 규칙 테스트, Slack 골든셋(핵심 시나리오 2) eval, 권한이 처리방침 3장과 일치 | C1 |
-| C6 | 앱: iPhone 한 화면 · Mac 런처 · 연결 · AI 동의 화면 · 계정 메뉴(Connections · AI data · Privacy Policy · Sign out · Delete account) · 데모 로그인 (트랙 3) | 코드 | 시뮬레이터 · Mac E2E: 로그인 → 동의 → Notion 연결(앱 복귀) → 할 일 → 체크 · Review 확정 | C1, 데모 로그인 결정 |
+| C6 | 앱: iPhone 한 화면 · Mac 런처 · 연결 · AI 동의 화면 · 계정 메뉴(Connections · AI data · Privacy Policy · Sign out · Delete account) · 데모 로그인 (트랙 3) | 코드 ✅ (Mac E2E 2026-09-28, 로컬 서버) | 시뮬레이터 · Mac E2E: 로그인 → 동의 → Notion 연결(앱 복귀) → 할 일 → 체크 · Review 확정 | C1, 데모 로그인 결정 |
 | C7 | 모델 공급자 고정 (`provider.only`) | 코드 ✅ (`src/lib/ai/providers.ts`) | 처리방침 7장 표에 공급자 · 국가를 적음(`docs/legal/README.md` 결정 1, 해결됨). 남은 것: TypeSafe 소재지 서면 확인 | — |
-| C8 | 보안 헤더 (`next.config.ts`) | 코드 | HSTS · CSP 등 응답 헤더 확인 | — (CASA 준비에도 필요) |
-| C9 | 전체 검증 | 코드 | `npm run lint && npm run typecheck && npm run test && npm run eval` 통과, 숫자를 커밋에 기록. `swift test` 통과, iOS · macOS 빌드 경고 0 | C1~C8 |
+| C8 | 보안 헤더 (`next.config.ts`) | 코드 ✅ | HSTS · CSP 등 응답 헤더 확인. 모든 응답에 HSTS(2년, 하위 도메인) · nosniff · Referrer-Policy · X-Frame-Options DENY · Permissions-Policy · COOP를 붙이고, CSP는 화면이 `default-src 'self'`(Next 인라인 스크립트 때문에 `'unsafe-inline'` 허용) · API가 `default-src 'none'`이며 X-Powered-By는 끔 (`tests/next-config-headers.test.ts`) | — (CASA 준비에도 필요) |
+| C10 | 앱 알림: 권한 요청 · 기기 토큰 등록(`POST /api/v1/devices`) · 알림을 누르면 해당 할 일로 (Phase A3) | 코드 ✅ (App ID Push 기능 · APNs 키 뒤 실기기 확인 남음) | TestFlight 기기에서 확인 요청 알림 수신 → 눌러서 앱이 열림 | I7 |
+| C11 | 첫 동기화 경험: 연결 직후 진행 표시("Syncing…"), 동기화 중 Sync Now 안내, 끝나면 목록 갱신 | 코드 ✅ | 새 계정으로 Notion 연결 → 진행 표시 → 몇 분 뒤 할 일이 뜸, 중간에 Sync Now를 눌러도 오류가 아닌 안내 | C1 |
+| C12 | CI에 Swift 테스트 · iOS · macOS 빌드 추가 | 코드 ✅ | PR마다 `swift test`와 두 빌드가 돈다 (macOS 러너) | — |
+| C9 | 전체 검증 | 코드 | `npm run lint && npm run typecheck && npm run test && npm run eval` 통과, 숫자를 커밋에 기록. `swift test` 통과, iOS · macOS 빌드 경고 0 | C1~C8 · C10~C12 |
 
 ### 4) 문서 · 게시
 
