@@ -1,0 +1,63 @@
+{
+  "id": "seq-slack-relayed-extension",
+  "description": "안전장치(규칙 3): 회의에서 남궁현에게 금요일까지 보내기로 한 견적 비교표를, 요청자가 아닌 동료 서하린이 DM으로 '남궁현 님이 다음 주 화요일도 괜찮다고 하셨어요'라고 전한다. 전언은 기한을 바꾸지 못하므로 금요일 유지.",
+  "origin": "synthetic",
+  "tags": [
+    "slack"
+  ],
+  "user": {
+    "name": "윤지호",
+    "aliases": [],
+    "emails": []
+  },
+  "sources": [
+    {
+      "id": "meeting-1005",
+      "kind": "meeting",
+      "occurred_at": "2026-10-05T10:30:00+09:00",
+      "text": "참석: 남궁현, 윤지호\n남궁현: 공급사별 견적을 한 장으로 비교해 보고 싶어요.\n윤지호: 네, 금요일까지 견적 비교표 만들어서 보내드릴게요.",
+      "participants": {
+        "attendees": [
+          {
+            "name": "남궁현"
+          },
+          {
+            "name": "윤지호"
+          }
+        ]
+      }
+    },
+    {
+      "id": "slack-1007",
+      "kind": "message",
+      "occurred_at": "2026-10-07T15:40:00+09:00",
+      "text": "[DM · 서하린]\n서하린: 아까 남궁현 님이랑 통화했는데 견적 비교표는 다음 주 화요일에 받아도 된다고 하셨어요\n윤지호: 오 그래요? 알려줘서 고마워요",
+      "participants": {
+        "attendees": [
+          {
+            "name": "서하린"
+          },
+          {
+            "name": "윤지호"
+          }
+        ]
+      }
+    }
+  ],
+  "expected_actions": [
+    {
+      "title": "남궁현에게 견적 비교표 발송",
+      "owner": "me",
+      "counterpart": "남궁현",
+      "due": "2026-10-09",
+      "status": "open",
+      "evidence": [
+        {
+          "source": "meeting-1005",
+          "quote": "금요일까지 견적 비교표 만들어서 보내드릴게요"
+        }
+      ]
+    }
+  ],
+  "must_not_extract": []
+}

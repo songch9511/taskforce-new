@@ -5,7 +5,7 @@ import { EMBEDDING_DIMENSIONS } from "@/lib/ai/embed";
 import type { ActionCandidate } from "./extract";
 import type { Decide, JudgeResult, JudgeSignals } from "./judge";
 import { decideMatch, shortlistActions, type OpenAction } from "./match";
-import { InMemoryActionStore, mergeJudged, type MergeDeps, type MergeSource } from "./merge";
+import { InMemoryActionStore, mergeJudged, withSpeakerFromLabel, type MergeDeps, type MergeSource } from "./merge";
 import { resolveAction } from "./resolve";
 import type { JudgedCandidate } from "./run";
 import type { VerifiedCandidate } from "./verify";
@@ -215,5 +215,71 @@ describe("matching", () => {
       "commitment",
     );
     expect(none.relation).toBe("new");
+  });
+});
+
+describe("withSpeakerFromLabel — 이름표와 요청자로 화자 역할 정하기", () => {
+  const me = { name: "윤지호", aliases: [], emails: [] };
+  const reported: JudgeSignals = { ...signals({ speaker: "third_party" }), directness: { choice: "reported", probabilities: {} } };
+
+  it("요청자 본인의 취소면 counterpart · 직접 발언 (이유로 남의 말을 붙여도)", () => {
+    const out = withSpeakerFromLabel(reported, "박지훈", "박지훈", me, "cancellation");
+    expect(out.speaker_role.choice).toBe("counterpart");
+    expect(out.directness.choice).toBe("first_hand");
+  });
+
+  it("요청자 본인의 연장 · 변경은 counterpart지만 전언 여부는 Jev 답 그대로 (윗사람의 결정을 전할 수 있다)", () => {
+    const out = withSpeakerFromLabel(reported, "박지훈", "박지훈", me, "update");
+    expect(out.speaker_role.choice).toBe("counterpart");
+    expect(out.directness.choice).toBe("reported");
+  });
+
+  it("요청자가 아닌 사람의 말이면 third_party, 전언 여부는 Jev 답 그대로", () => {
+    const out = withSpeakerFromLabel({ ...reported, speaker_role: { choice: "counterpart", probabilities: {} } }, "서하린", "남궁현", me);
+    expect(out.speaker_role.choice).toBe("third_party");
+    expect(out.directness.choice).toBe("reported");
+  });
+
+  it("사용자 본인의 줄이면 me, 이름표나 요청자를 모르면 Jev 답 그대로", () => {
+    expect(withSpeakerFromLabel(reported, "윤지호", "박지훈", me).speaker_role.choice).toBe("me");
+    expect(withSpeakerFromLabel(reported, undefined, "박지훈", me)).toBe(reported);
+    expect(withSpeakerFromLabel(reported, "박지훈", null, me)).toBe(reported);
+  });
+});
+
+describe("mergeJudged — 요청자 이름표로 취소 · 연장 권한 가리기", () => {
+  const me = { name: "윤지호", aliases: [], emails: [] };
+  const at = (day: number) => new Date(`2026-10-0${day}T10:00:00+09:00`);
+  // 기존 Action이 있으면 취소로 답하는 가짜 매칭 Jev
+  const cancelDecide: Decide = async (request) => {
+    const existing = (request.state as { existing: { key: string }[] }).existing;
+    const [relation, target] = existing.length > 0 ? ["same_cancelled", existing[0].key] : ["new", "none"];
+    return {
+      model: "jev-test",
+      answers: {
+        relation: { type: "choice", choice: relation, probabilities: { [relation]: 0.95 } },
+        target: { type: "choice", choice: target, probabilities: { [target]: 0.95 } },
+      },
+    };
+  };
+  const deps = (): MergeDeps => {
+    let n = 0;
+    return { embed: async (texts) => texts.map(topicVector), decide: cancelDecide, newId: () => `c${++n}` };
+  };
+
+  it("요청자가 직접 취소하면 이유가 전언이어도 dropped, 다른 사람이 전하면 그대로 open", async () => {
+    for (const [speaker, expected] of [["박지훈", "dropped"], ["서하린", "open"]] as const) {
+      const store = new InMemoryActionStore();
+      const d = deps();
+      await mergeJudged(store, [judged({ quote: "금요일까지 제안서 보내드릴게요", signal: "commitment", counterpart: "박지훈", due: "2026-10-09" })],
+        { id: "s1", text: "윤지호: 금요일까지 제안서 보내드릴게요", kind: "message", occurredAt: at(5) }, me,
+        d);
+      const cancel: JudgedCandidate = {
+        ...judged({ quote: "제안서는 안 하셔도 돼요", signal: "cancellation" }, { ...signals({ speaker: "third_party" }), directness: { choice: "reported", probabilities: {} } }, "reject"),
+      };
+      cancel.judge.speaker = speaker;
+      await mergeJudged(store, [cancel], { id: "s2", text: `${speaker}: 제안서는 안 하셔도 돼요! 대표님이 이미 받으셨대요`, kind: "message", occurredAt: at(7) }, me, d);
+      expect(resolveAction(store.all()[0].claims).status.value, speaker).toBe(expected);
+    }
   });
 });

@@ -60,6 +60,7 @@ Jev의 확률은 보정을 목표로 학습되어 있어서 **"P(내 약속) < 0
 #### 후보 검증 요청 (후보 1개당 1회 호출)
 
 `state`에는 후보와 인용 주변 원문만 넣습니다. 추출기의 추론은 넣지 않습니다.
+인용 줄에 화자 이름표("박지훈: …", "[신예린] …")가 있으면 코드가 읽어 `candidate.quote_speaker`로 넣습니다(judge-v5, `quoteSpeaker`). 사용자 · 관련자의 이름이거나 원문에서 두 번 이상 화자 표로 쓰인 사람 이름 모양만 받고("제목: …" · "참고: …" 같은 머리글, 메일 주소는 빼고), 이름표 없이 이어지는 줄은 그 메시지 첫 줄의 화자로 봅니다. 같은 구절이 여러 사람의 줄에 있거나 인용이 여러 사람의 줄에 걸치면 넣지 않습니다: 화자를 잘못 알려 주면 규칙 0이 요청한 쪽의 말로 보고 확인 없이 반영할 수 있어서입니다. `speaker_role`은 이 이름을 보고 답합니다. 이 이름표는 판정 결과(`JudgeResult.speaker`)와 판정 기록(`jev_answers.quote_speaker`)에도 남아, 병합이 Claim의 화자 역할을 코드로 정하는 데 씁니다(2장 "구현"). 추출기는 취소(cancellation)의 인용에서 뒤에 붙은 이유("~이미 했대요")를 빼되, 남의 허락 · 결정을 전하는 말은 빼지 않습니다(extract-v5). 짧은 메시지에서 뒤에 붙은 이유("대표님이 이미 받으셨대요")를 보고 발언 전체를 남의 말로 보던 문제(Slack 골든셋 F2) 때문에 더했습니다.
 
 ```jsonc
 {
@@ -100,7 +101,7 @@ Jev의 확률은 보정을 목표로 학습되어 있어서 **"P(내 약속) < 0
 - 규칙: `written_by_me` 문서에 사용자가 자기 할 일 · 계획 · 다음 단계로 적은 항목은 사용자가 정한 일입니다 → `is_my_commitment` 예, `certainty=firm`.
   다른 사람을 하는 사람으로 적었거나 완료 표시가 있으면 아닙니다. 아이디어 · 바람("~하면 좋을 듯")은 그대로 `tentative`입니다.
 - `true`일 때만 Jev `state`에 `source.written_by_me: true`를 넣고, 두 질문(`is_my_commitment`, `certainty`의 `firm` 기준)의 문구를 이 규칙으로 바꾼
-  질문 묶음(`WRITTEN_BY_ME_QUESTIONS`)을 보냅니다. `false` · `null`이면 judge-v3와 같은 `state` · 질문을 보내 작성자를 모르는 원문은 느슨해지지 않습니다.
+  질문 묶음(`WRITTEN_BY_ME_QUESTIONS`)을 보냅니다. `false` · `null`이면 `written_by_me` 없이 공통 질문(`JUDGE_QUESTIONS`)을 보내 작성자를 모르는 원문은 느슨해지지 않습니다. (judge-v5부터는 두 경우 모두 `candidate.quote_speaker`가 붙을 수 있습니다, 위 "후보 검증 요청".)
   (조건문을 공통 질문에 넣어 보니 작성자 정보가 없는 원문의 `is_my_commitment`도 올라가, 다른 사람이 쓴 같은 문서의 할 일이 자동 반영됐습니다.)
 - 아래 판정 결과 처리(임계값 · 기각 규칙)는 그대로입니다.
 - 이 값이 생기기 전에 들어온 Notion 문서는 `scripts/reprocess-sources.ts --notion-authors <user id>`로 작성자를 채우고 다시 처리합니다.
@@ -114,6 +115,7 @@ Jev의 확률은 보정을 목표로 학습되어 있어서 **"P(내 약속) < 0
 | `is_my_commitment` ≥ 0.85, `is_actionable` ≥ 0.85, `already_done` < 0.3, `certainty=firm` | 자동 반영 |
 | 위 확률 중 하나라도 0.4~0.85 구간, 또는 `certainty=tentative` | 확인 요청 목록 |
 | `is_my_commitment` < 0.4 또는 `is_actionable` < 0.4 또는 `certainty=none` | 반영 안 함. 기각 로그는 남깁니다 (누락 분석용) |
+| 위 기각 중 사유가 `is_my_commitment` < 0.4 **하나뿐**이고, 인용이 속한 메시지가 사용자를 `@이름`으로 직접 부름 | 확인 요청까지만 (코드 규칙, `decideOutcome`의 `addressedToUser`, 임계값 설정과 상관없이 자동 반영은 없음, 판정 기록 `jev_answers.rule = addressed_request`). 아직 수락하지 않은 직접 요청, 특히 무엇을 가리키는지 원문에 없는 요청("@지호 이거 금요일까지 될까요?")이 조용히 사라지지 않게 한다 (원칙 3, Slack 골든셋 F3, 2026-09-28 결정) |
 
 기각 사유는 어느 질문의 확률이 낮았는지로 코드가 만듭니다 (`NOT_MY_ACTION`, `INFO_ONLY`, `TENTATIVE`, `ALREADY_DONE`).
 Jev는 설명 문장을 주지 않으므로, 사용자에게 보여줄 이유는 이 사유 코드와 원문 인용으로 구성합니다.
@@ -211,7 +213,11 @@ Claim  id, action_id, field(due|scope|owner|status), value,
 ### 구현
 
 - `src/lib/pipeline/resolve.ts`: `resolveField(field, claims)` / `resolveAction(claims)`. 규칙마다 `resolve.test.ts`에 테스트가 있다.
-- Claim 속성(누가 · 확정도 · 직접 · 공유)은 Jev 판정(`speaker_role`, `statement_certainty`, `directness`, `audience`)에서 온다.
+- Claim 속성(누가 · 확정도 · 직접 · 공유)은 Jev 판정(`speaker_role`, `statement_certainty`, `directness`, `audience`)에서 온다. 단 누가 말했는지는 원문이 정하는 사실이라(원칙 5), 인용 줄의 이름표를 알면 병합이 **붙일 Action의 요청자**(새 Action이면 후보의 상대)와 비교해 코드로 정한다(`withSpeakerFromLabel`, `speakerRole`):
+  - 이름표가 사용자(이름 · 별칭 · 성을 뺀 이름) → `me`. 단 요청자와 같은 이름이면 정하지 않는다.
+  - 요청자와 같은 사람 → `counterpart`. 같은 사람은 호칭(님 · 씨)을 뗀 이름이 같거나 전체 이름 뒤에 직함만 붙은 경우("김민수" = "김민수 대표")뿐이다. 요청자 본인의 **취소**는 `first_hand`로 정한다: 취소는 요청자의 결정이라 이유로 남의 말을 붙여도("안 하셔도 돼요! 대표님이 이미 받으셨대요") 규칙 3의 "본인의 발언"이다. Jev는 뒤의 이유를 보고 전언으로 답하는 일이 잦았다(Slack 골든셋 F2). 연장 · 변경은 요청자가 윗사람의 결정을 전할 수도 있어("팀장님이 다음 주도 된대요") 전언 여부를 Jev 답 그대로 둔다.
+  - 요청자와 이름표가 둘 다 전체 이름(한글 3~4자 · 두 단어 이상 영문)이고 분명히 다르면 → `third_party`. 대화 상대라도 요청자가 아니면 남의 허락을 전하는 사람이라 규칙 0이 연장 · 취소를 막는다(`seq-slack-relayed-extension`).
+  - 이름표나 요청자를 모르거나, "김대표" · "민수" · 한글/영문처럼 비교할 수 없는 모양이면 Jev 답 그대로.
 - 사용자가 직접 정한 값은 규칙 0을 거치지 않는다: 앱에서 고친 값(`origin: user`)과 할 일 도구(Notion 할 일 DB 등)에서 사용자가 고친 값(`origin: tracker`).
   규칙 0은 대화 속 약속의 권한을 가리려고 만든 것이라, 사용자가 자기 할 일 기록을 직접 고친 것까지 막으면 할 일 도구와 값이 어긋난다.
   `tracker`는 원문(속성 스냅샷)과 인용이 있고, AI 오판(PRD 지표 1)으로 세지 않는다. 할 일 도구에서 다른 사람이 고친 값은 `counterpart` 발언으로 본다 ([INTEGRATIONS.md](INTEGRATIONS.md) "Notion 할 일 DB").

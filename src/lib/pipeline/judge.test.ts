@@ -60,6 +60,30 @@ describe("decideOutcome", () => {
     expect(decideOutcome({ ...firm, already_done: 0.9 })).toEqual({ decision: "reject", reasons: ["ALREADY_DONE"] });
   });
 
+  it("@이름으로 부른 요청은 '내 약속 아님' 하나로는 기각하지 않고 확인 요청", () => {
+    const pending = { ...firm, is_my_commitment: 0.3 };
+    expect(decideOutcome(pending)).toEqual({ decision: "reject", reasons: ["NOT_MY_ACTION"] });
+    expect(decideOutcome(pending, undefined, { addressedToUser: true })).toEqual({
+      decision: "confirm",
+      reasons: ["NOT_MY_ACTION"],
+      rule: "addressed_request",
+    });
+    // 다른 기각 사유가 함께 있으면 그대로 기각
+    expect(decideOutcome({ ...pending, is_actionable: 0.2 }, undefined, { addressedToUser: true })).toEqual({
+      decision: "reject",
+      reasons: ["NOT_MY_ACTION", "INFO_ONLY"],
+    });
+    expect(decideOutcome({ ...pending, certainty: { choice: "none", probabilities: {} } }, undefined, { addressedToUser: true }).decision).toBe("reject");
+    expect(decideOutcome({ ...pending, already_done: 0.9 }, undefined, { addressedToUser: true }).decision).toBe("reject");
+  });
+
+  it("@이름 규칙은 기각이 아닌 판정을 바꾸지 않고, 임계값이 뒤집혀도 자동 반영하지 않는다", () => {
+    expect(decideOutcome({ ...firm, is_my_commitment: 0.6 }, undefined, { addressedToUser: true })).toEqual({ decision: "confirm", reasons: ["NOT_MY_ACTION"] });
+    expect(decideOutcome(firm, undefined, { addressedToUser: true })).toEqual({ decision: "auto", reasons: [] });
+    const inverted = { accept: 0.3, reject: 0.5, doneAcceptBelow: 0.3, doneRejectAt: 0.7 };
+    expect(decideOutcome({ ...firm, is_my_commitment: 0.4 }, inverted, { addressedToUser: true }).decision).toBe("confirm");
+  });
+
   it("임계값은 설정으로 바꿀 수 있다", () => {
     const loose = { accept: 0.5, reject: 0.1, doneAcceptBelow: 0.5, doneRejectAt: 0.9 };
     expect(decideOutcome({ ...firm, is_my_commitment: 0.6 }, loose).decision).toBe("auto");
@@ -77,14 +101,19 @@ describe("parseJudgeAnswers", () => {
 });
 
 describe("buildJudgeState", () => {
-  it("추출기의 추론 없이 후보와 인용 주변 원문만 넣는다", () => {
+  it("추출기의 추론 없이 후보와 인용 주변 원문, 인용 줄의 화자만 넣는다", () => {
     const state = buildJudgeState(candidate, source, { name: "나", aliases: ["Me"], emails: ["me@x.com"] });
     expect(state).toEqual({
       user: { name: "나", aliases: ["Me"], position: "unknown" },
-      candidate,
+      candidate: { ...candidate, quote_speaker: "나" },
       context: source.text,
       source: { kind: "meeting", occurred_at: "2025-09-22" },
     });
+  });
+
+  it("화자 표를 믿을 수 없으면 quote_speaker를 넣지 않는다", () => {
+    const mail = { ...source, kind: "email", text: "제목: 제안서 일정\n금요일까지 제안서 보내드릴게요." };
+    expect(buildJudgeState(candidate, mail, { name: "나", aliases: [], emails: [] }).candidate).toEqual(candidate);
   });
 });
 
@@ -138,6 +167,35 @@ describe("judgeCandidate", () => {
     const result = await judgeCandidate(candidate, source, { name: "나", aliases: [], emails: [] }, decide);
     expect(calls).toHaveLength(1);
     expect(result).toMatchObject({ decision: "auto", model: "typesafe/jev-test", cost: 0.00001, promptVersion: expect.stringMatching(/^judge-v\d+$/) });
+  });
+
+  it("인용 줄의 화자 이름표를 결과에 넘기고, Jev의 화자 답은 바꾸지 않는다 (역할은 병합에서 정한다)", async () => {
+    const decide: Decide = async () => ({
+      model: "m",
+      answers: { ...answers, speaker_role: { type: "choice", choice: "third_party", probabilities: { third_party: 0.6 } } },
+    });
+    const dm = {
+      ...source,
+      kind: "message",
+      text: "[DM · 박지훈]\n박지훈: 경쟁사 가격표 건은 안 하셔도 돼요!\n송청혁: 넵",
+      participants: { attendees: [{ name: "박지훈" }, { name: "송청혁" }] },
+    };
+    const cancel = { title: "경쟁사 가격표 정리", quote: "경쟁사 가격표 건은 안 하셔도 돼요", due_text: null, counterpart: "박지훈" };
+    const result = await judgeCandidate(cancel, dm, { name: "송청혁", aliases: [], emails: [] }, decide);
+    expect(result.speaker).toBe("박지훈");
+    expect(result.signals.speaker_role.choice).toBe("third_party");
+    const unlabeled = await judgeCandidate(cancel, { ...dm, text: "경쟁사 가격표 건은 안 하셔도 돼요!" }, { name: "송청혁", aliases: [], emails: [] }, decide);
+    expect(unlabeled.speaker).toBeUndefined();
+  });
+
+  it("인용 줄이 사용자를 @이름으로 부르면 확인 요청 규칙을 적용한다", async () => {
+    const decide: Decide = async () => ({ model: "m", answers: { ...answers, is_my_commitment: { type: "noul", noul: 0.3 } } });
+    const mention = { ...source, text: "[#sales · 스레드 중간부터]\n최유나: @윤지호 이거 금요일까지 될까요?" };
+    const ask = { title: "최유나가 물은 건 처리", quote: "이거 금요일까지 될까요?", due_text: "금요일까지" };
+    const identity = { name: "윤지호", aliases: [], emails: [] };
+    expect((await judgeCandidate(ask, mention, identity, decide)).decision).toBe("confirm");
+    const other = { ...mention, text: "최유나: @박지훈 이거 금요일까지 될까요?" };
+    expect((await judgeCandidate(ask, other, identity, decide)).decision).toBe("reject");
   });
 });
 

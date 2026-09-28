@@ -6,9 +6,10 @@ import type { JevQuestion } from "@/lib/ai/jev";
 /**
  * 판정 질문 전체(JUDGE_QUESTIONS · WRITTEN_BY_ME_QUESTIONS)의 버전. 어느 쪽 문구를 바꿔도 올린다 (eval 결과 파일 이름 · 요약에 쓴다).
  * 판정 한 건에 남기는 버전(judge_logs.model_version, JudgeResult.promptVersion)은 어느 질문 묶음으로 물었는지까지 가른다:
- * JUDGE_QUESTIONS는 이 값 그대로("judge-v4", 질문은 judge-v3과 같다), WRITTEN_BY_ME_QUESTIONS는 WRITTEN_BY_ME_PROMPT_VERSION("judge-v4-self").
+ * JUDGE_QUESTIONS는 이 값 그대로("judge-v5"), WRITTEN_BY_ME_QUESTIONS는 WRITTEN_BY_ME_PROMPT_VERSION("judge-v5-self").
+ * judge-v5: speaker_role이 코드가 읽은 인용 줄의 화자(state.candidate.quote_speaker)를 보고, directness는 이유만 전해 들은 말이면 직접 발언으로 본다 (Slack 골든셋 F2).
  */
-export const JUDGE_PROMPT_VERSION = "judge-v4";
+export const JUDGE_PROMPT_VERSION = "judge-v5";
 export const WRITTEN_BY_ME_PROMPT_VERSION = `${JUDGE_PROMPT_VERSION}-self`;
 
 export const JUDGE_QUESTIONS = {
@@ -45,7 +46,8 @@ export const JUDGE_QUESTIONS = {
   },
   speaker_role: {
     type: "choice",
-    instructions: "Who made the statement in the quote?",
+    instructions:
+      "Who made the statement in the quote? state.candidate.quote_speaker, when given, is the name label on the quoted line, i.e. the person who said it: compare it with state.user.name / state.user.aliases and state.candidate.counterpart.",
     criteria: {
       me: "The user",
       counterpart: "The person the action is for (state.candidate.counterpart when given), who asked for it",
@@ -55,7 +57,7 @@ export const JUDGE_QUESTIONS = {
   directness: {
     type: "choice",
     instructions:
-      "Does the speaker of the quote say it in their own voice, or pass on what another person said? Giving a reason that involves others (e.g. '대표님이 하자고 하셔서요') is still first-hand.",
+      "Does the speaker of the quote decide it in their own voice, or pass on what another person decided or said? Read the quote's whole message in the context. Relaying someone else's decision or permission (e.g. '팀장님이 다음 주도 된다고 하셨어요') is reported, even if the quote leaves out who said it. A decision the speaker makes themselves is first-hand, even when its reason involves others (e.g. '대표님이 하자고 하셔서요', or '샘플은 안 보내셔도 됩니다, 본사에서 이미 확보했다고 하네요').",
     criteria: {
       first_hand: "The speaker states it themselves",
       reported: "The speaker relays another person's words, e.g. '민수님이 월요일도 괜찮대요'",
