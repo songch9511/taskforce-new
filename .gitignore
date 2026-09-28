@@ -46,3 +46,7 @@ next-env.d.ts
 
 # Supabase CLI 로컬 상태 (프로젝트 ref · 풀러 주소)
 supabase/.temp/
+
+# Apple 비밀 키(.p8) — 절대 커밋하지 않는다
+apple_secret/
+*.p8
