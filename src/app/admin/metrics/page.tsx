@@ -20,6 +20,8 @@ const MISS_STAGE_LABELS: Record<keyof MissedMetric["byStage"], string> = {
   unknown: "단계 기록 없음",
 };
 
+const PROVIDER_LABELS: Record<string, string> = { microsoft: "Microsoft 365", zoom: "Zoom", github: "GitHub", linear: "Linear", jira: "Jira" };
+
 const pct = (value: number | null) => (value === null ? "—" : `${Math.round(value * 1000) / 10}%`);
 const num = (value: number | null, unit = "") => (value === null ? "—" : `${Math.round(value * 10) / 10}${unit}`);
 
@@ -31,7 +33,7 @@ export default async function MetricsPage({ searchParams }: { searchParams: Prom
   const days = PERIODS.find((d) => String(d) === daysParam) ?? 28;
   const to = new Date();
   const report = await loadMetrics(createAdminClient(), { from: new Date(to.getTime() - days * 86_400_000), to });
-  const { misjudgment: m, start, retention, missed, shadowList: shadow } = report;
+  const { misjudgment: m, start, retention, missed, shadowList: shadow, connections } = report;
   // 피벗 판단은 자동 반영이 틀린 비율로 한다 (PRD 6장). 구분이 생기기 전 기록뿐이면 전체 비율을 보여준다.
   const auto = m.byConfirmation.auto;
   const headline = auto.created > 0 ? { label: "자동 반영", rate: auto.corrected / auto.created } : { label: "전체 · 구분 전 기록 포함", rate: m.rate };
@@ -158,8 +160,8 @@ export default async function MetricsPage({ searchParams }: { searchParams: Prom
         <CardHeader>
           <CardTitle>4. AI 누락률 {missed.available ? pct(missed.rate) : "측정 전"}</CardTitle>
           <CardDescription>
-            신고된 누락 {missed.reported}개 / (AI 생성 {m.aiCreated}개 + 신고된 누락). 사용자가 원문 구절을 골라 신고한 것만 세므로 실제 누락의 하한입니다. 이미 있던 할
-            일로 합쳐진 신고는 세지 않고, 신고로 생긴 Action은 지표 1에서 뺐습니다.
+            (신고된 누락 {missed.reported}개 + 직접 추가 {missed.added}개) / (AI 생성 {m.aiCreated}개 + 신고된 누락 + 직접 추가). 사용자가 알려준 것만 세므로 실제
+            누락의 하한입니다. 이미 있던 할 일로 합쳐진 신고는 세지 않고, 신고 · 직접 추가로 생긴 Action은 지표 1에서 뺐습니다.
           </CardDescription>
         </CardHeader>
         <CardContent className="text-sm">
@@ -186,6 +188,30 @@ export default async function MetricsPage({ searchParams }: { searchParams: Prom
         {shadow.responses === 0 && (
           <CardContent className="text-muted-foreground text-sm">아직 응답이 없습니다. 첫 원문을 넣고 7일이 지난 사용자에게 Apple 앱이 주마다 묻습니다.</CardContent>
         )}
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>연결 · 2단계 연동 요청</CardTitle>
+          <CardDescription>
+            기간 안에 연결을 마친 수 {connections.created}번 (사용자 {connections.users}명). 아래는 2단계 연동의 &quot;원해요&quot; 수 (전체 기간, 사용자마다 한 번)로,
+            많은 순서로 붙입니다 (원칙 6).
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="text-sm">
+          {connections.requests.length === 0 ? (
+            <p className="text-muted-foreground">아직 요청이 없습니다.</p>
+          ) : (
+            <ul className="space-y-0.5">
+              {connections.requests.map((r) => (
+                <li key={r.provider} className="flex justify-between">
+                  <span>{PROVIDER_LABELS[r.provider] ?? r.provider}</span>
+                  <span>{r.count}명</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </CardContent>
       </Card>
     </main>
   );

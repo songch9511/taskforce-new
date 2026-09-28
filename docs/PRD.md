@@ -41,6 +41,7 @@
 - AI 핸드오프 (복사 가능한 컨텍스트 번들)
 - 지표 이벤트 로깅
 - 누락 신고 (Source 상세에서 원문 구절 선택)
+- 직접 추가 (Mac 런처: 제목 → 찾는 할 일이 없으면 추가 → 기한 · 관련 원문 구절은 선택 / iPhone: + → 제목 · 기한, Now에 비슷한 할 일이 있으면 함께 보여 준다). 보조 입구이고, 추출이 놓친 신호로 잰다 (지표 4)
 - 알림: 확인 요청 발생, 기한 임박
 - 로그인: Sign in with Apple (보조: 이메일 코드)
 
@@ -69,7 +70,7 @@ Claim         id, action_id, field(due|scope|owner|status), value, source_id, qu
               speaker_role(me|counterpart|third_party), certainty(firm|tentative),
               directness(first_hand|reported), audience(shared|private), state(active|superseded|disputed)
 ActionEvent   id, action_id, type(created|due_changed|scope_changed|merged|completed|
-              user_edited|user_deleted|user_confirmed|user_reported_missing), before, after, source_id, actor(ai|user)
+              user_edited|user_deleted|user_confirmed|user_reported_missing|user_created), before, after, source_id, actor(ai|user)
 MetricEvent   id, user_id, type(app_opened|action_started|handoff_used), action_id, at
 ```
 
@@ -101,11 +102,11 @@ Jev 판정과 진실 판정 규칙의 상세는 [`TRUTH_RULES.md`](TRUTH_RULES.m
 | 1 | **AI 오판율** | (사용자가 수정·삭제한 AI 생성 Action) / (AI 생성 Action) | 높으면 AI PM 접근 자체를 재검토 → 피벗 기준 |
 | 2 | 착수 시간 | app_opened → 첫 action_started / handoff_used | 복기 비용이 사라졌는지 |
 | 3 | 리텐션 | N주 후 주간 활성 여부 | 계속 쓸 가치가 있는지 |
-| 4 | **AI 누락률** | (사용자가 신고한 누락 Action) / (AI 생성 Action + 신고한 누락 Action) | 높으면 사용자가 목록을 믿지 못함 → 지표 1과 함께 피벗 기준 |
+| 4 | **AI 누락률** | (신고한 누락 Action + 직접 추가한 Action) / (AI 생성 Action + 신고한 누락 Action + 직접 추가한 Action) | 높으면 사용자가 목록을 믿지 못함 → 지표 1과 함께 피벗 기준 |
 | 5 | 그림자 목록 비율 | 주간 질문 "Taskforce 밖에 따로 적어둔 할 일이 있나요?"의 '예' 응답 / ('예' + '아니요' 응답). 건너뛰기는 비율에서 빼고 응답 수로 따로 본다 | Taskforce가 기존 목록을 대체했는지, 목록이 하나 더 늘었을 뿐인지 |
 
 지표 1은 필드 단위로도 쪼개 본다 (제목/기한/담당/삭제). 어느 단계(추출 vs 매칭)가 틀렸는지 알아야 고칠 수 있다.
-계산 기준 (`src/lib/metrics/compute.ts`): 사용자가 완료로 바꾼 것은 오판이 아니다(AI가 끝냈다고 본 일을 다시 여는 것은 오판). 할 일 DB에서 속성으로 가져온 Action은 AI 판단이 아니라서 분모에서 뺀다.
+계산 기준 (`src/lib/metrics/compute.ts`): 사용자가 완료로 바꾼 것은 오판이 아니다(AI가 끝냈다고 본 일을 다시 여는 것은 오판). 할 일 DB에서 속성으로 가져온 Action, 누락 신고 · 직접 추가로 생긴 Action은 AI 판단이 아니라서 분모에서 뺀다.
 만들 때 바로 반영한 것과 확인 요청으로 물은 것을 나눠 본다: 피벗 판단은 자동 반영이 틀린 비율로 하고, 확인 요청에 "아니에요"는 확인 부담(원칙 3)으로 본다.
 
 ### 왜 누락을 따로 재는가
@@ -118,6 +119,8 @@ Jev 판정과 진실 판정 규칙의 상세는 [`TRUTH_RULES.md`](TRUTH_RULES.m
 
 - **누락 신고**: Source 상세에서 원문 구절을 골라 "이 할 일이 빠졌어요"를 누른다. 구절이 곧 근거가 되므로 원칙 1·2를 지킨다 (빈 폼으로 할 일을 적는 흐름이 아니다).
   신고된 구절은 일반 파이프라인(매칭 → Claim → resolve)을 그대로 거치고 `ActionEvent(type=user_reported_missing, actor=user)`로 남는다.
+- **직접 추가**: Mac 런처에서 찾는 할 일이 없을 때 제목으로 추가한다 (기한 · 관련 원문 구절은 선택). iPhone은 +로 제목 · 기한만 받는다. 값은 사용자 Claim(origin `user`)에서 계산하고, 확인 요청 없이 `ActionEvent(type=user_created, actor=user)`로 남는다.
+  사용자가 목록 밖의 할 일을 적었다는 것은 추출이 놓쳤다는 뜻이므로 지표 4의 누락으로 센다. 원문을 고르지 않으면 놓친 단계는 알 수 없다.
 - **원인 분석**: 신고 건마다 어느 단계에서 빠졌는지 분류한다 — 사전 필터에서 건너뜀 / 추출 안 됨 / 기계적 검증 탈락 / Jev 기각(`JudgeLog`) / 매칭에서 duplicate로 잘못 흡수. 지표 1처럼 단계별로 봐야 고칠 수 있다.
 - **그림자 목록 질문**: 주 1회, 앱을 연 사용자에게만 묻는다. 확인 요청이 늘어나는 비용(원칙 3)을 고려해 베타 기간에만 둔다.
 - **오프라인 재현율**: 골든셋 eval의 recall은 계속 본다. 누락 신고로 들어온 구절은 (사용자 동의 하에, 개인정보를 지운 뒤) 골든셋 후보로 쌓는다.

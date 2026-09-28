@@ -22,12 +22,13 @@ public struct AppConfig: Equatable, Sendable {
 
         public var description: String {
             switch self {
+            // 개발자가 보는 설정 오류지만 화면에 뜨므로 영어로 (docs/BRAND.md "UI 문구")
             case .missing(let key):
-                "\(key) 값이 없습니다. apple/Config/Secrets.example.xcconfig를 복사해 Secrets.xcconfig를 채우세요."
+                "\(key) is missing. Copy apple/Config/Secrets.example.xcconfig to Secrets.xcconfig and fill it in."
             case .invalidURL(let key, let value) where key == Key.apiBaseURL:
-                "APIBaseURL이 잘못되었습니다 (\(value)). 경로 없이 https://<서버 주소> 또는 http://localhost:3000 형태여야 합니다."
+                "APIBaseURL is invalid (\(value)). Use https://<server> or http://localhost:3000 with no path."
             case .invalidURL(_, let value):
-                "SupabaseURL이 잘못되었습니다 (\(value)). 경로 없이 https://<프로젝트 ref>.supabase.co 형태여야 합니다."
+                "SupabaseURL is invalid (\(value)). Use https://<project ref>.supabase.co with no path."
             }
         }
     }

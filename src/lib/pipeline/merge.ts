@@ -140,6 +140,8 @@ export type MergeOutcome = {
 };
 
 export const embedText = (title: string, quote: string) => `${title}\n${quote}`;
+/** 이미 있는 Action의 매칭용 글: 근거 구절이 있으면 후보와 같은 형식(제목 + 구절), 없으면 제목만 (직접 추가 · 임베딩 채우기) */
+export const actionEmbedText = (title: string, quote: string | null) => (quote ? embedText(title, quote) : title);
 
 export async function mergeJudged(
   store: ActionStore,

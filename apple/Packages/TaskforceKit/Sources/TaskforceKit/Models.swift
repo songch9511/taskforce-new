@@ -34,6 +34,10 @@ public struct ActionSummary: Codable, Sendable, Hashable, Identifiable {
     public let startedAt: Date?
     public let lastActivityAt: Date
 
+    /// `actions` 행에서 읽을 열 (Supabase 직접 읽기, 서버 `SUMMARY_COLUMNS`와 같다)
+    public static let columns =
+        "id, title, owner, status, due_date, counterpart, needs_confirmation, confirm_reasons, started_at, last_activity_at"
+
     enum CodingKeys: String, CodingKey {
         case id, title, owner, status, counterpart
         case dueDate = "due_date"
@@ -191,6 +195,35 @@ public struct ActionEdit: Encodable, Sendable, Equatable {
 
 struct ActionResponse: Decodable {
     let action: ActionSummary
+}
+
+/// POST /api/v1/actions 결과 (201 created · 200 already_tracked)
+public struct CreateActionResponse: Decodable, Sendable, Hashable {
+    public enum Status: String, Sendable {
+        /// 새 할 일로 추가함
+        case created
+        /// 고른 구절이 이미 근거인 할 일이 있어 그 할 일을 그대로 돌려줌
+        case alreadyTracked = "already_tracked"
+    }
+
+    public let action: ActionSummary
+    public let status: Status
+
+    enum CodingKeys: String, CodingKey {
+        case action, status
+    }
+
+    public init(action: ActionSummary, status: Status) {
+        self.action = action
+        self.status = status
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        action = try c.decode(ActionSummary.self, forKey: .action)
+        // status가 없는 옛 서버 · 모르는 값은 추가된 것으로 본다
+        status = (try? c.decodeIfPresent(String.self, forKey: .status)).flatMap { $0.flatMap(Status.init(rawValue:)) } ?? .created
+    }
 }
 
 /// POST /api/v1/actions/:id/handoff

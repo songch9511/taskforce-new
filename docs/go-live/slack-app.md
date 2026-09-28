@@ -145,10 +145,10 @@ Slack API 약관(2025-10-10 시행, <https://slack.com/terms-of-service/api>)에
 - **영구 사본 금지:** "Data Access API and Real-Time Search API" 절에 "you may not create persistent copies, archives, indexes, or long-term data stores of other organizations' API Data"가 있다. 이 문장이 그 두 API에만 걸리는지, 모든 API 데이터에 걸리는지 문맥상 분명하지 않다.
 - **상업 배포:** "users could pay fees for your product"이면 Commercial Distribution이고 별도 계약(대부분 Marketplace)이 필요하다. 베타는 무료지만 유료화하면 해당한다.
 
-Taskforce가 지금 하는 것: 남긴 메시지를 원문(`sources.raw_text`)과 근거 인용(`evidence.quote`, `claims.quote`)으로 **계정 삭제 때까지** 보관한다(처리방침 5장).
+Taskforce가 지금 하는 것: 남긴 메시지를 원문(`sources.raw_text`)으로 **저장 후 90일**, 근거 인용(`evidence.quote`, `claims.quote`)으로는 **계정 삭제 때까지** 보관한다(결정 2, 2026-09-27 해결, 처리방침 5장 · `src/lib/retention.ts`).
 
 **검토할 것 (docs/legal/README.md 법률 검토 2번):**
-1. 원문 보관 기간 상한을 둘지(예: 원문 본문 90일 뒤 삭제, 인용은 할 일이 있는 동안). 결정 2와 같다.
+1. ~~원문 보관 기간 상한을 둘지~~ **해결됨**: 원문 본문 90일 뒤 삭제, 인용은 할 일이 있는 동안(결정 2).
 2. "설치하는 조직의 명시적 허락"을 사용자 토큰 설치로 충족하는지, 워크스페이스 관리자의 승인 절차가 필요한지.
 3. Slack에서 지운 메시지(`message_deleted`)를 이미 넣은 원문 · 인용에서도 지울지.
 4. 유료화 전에 Marketplace 계약이 필요한지.

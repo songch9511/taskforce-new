@@ -8,7 +8,8 @@ import { withNotionClient } from "./run";
 import { defaultStatusMap, isMeetingSource, suggestSetting, validateSetting, type SaveDataSourceRequest } from "./tasks";
 
 // 연결에 공유된 Notion 데이터베이스의 역할(할 일 · 회의 · 무시)과 속성 매핑을 보여주고 확인받는다.
-// 추정은 제안일 뿐이고, 사용자가 확인한 설정만 동기화에 쓴다 (docs/INTEGRATIONS.md "Notion 할 일 DB").
+// 추정은 제안일 뿐이고, 확인한 설정만 동기화에 쓴다 (docs/INTEGRATIONS.md "Notion 할 일 DB"). 매핑이 분명한 할 일 DB는
+// 동기화가 자동 확인한다(confirmedBy: auto). 사용자가 여기서 저장하면 사용자 확인으로 바뀐다.
 
 export class DataSourceError extends Error {
   constructor(

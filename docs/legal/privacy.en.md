@@ -101,7 +101,7 @@ When you disconnect (app → Connections → Disconnect), the service's access t
 - **How Calendar is used:** events are not used as sources of tasks. We use them to attach attendees to the meeting notes (Notion) and Meet transcripts from the same time, which helps decide whose task something is. The attached event title, time, and attendees are stored as the people involved in that meeting source.
 - **What we read from Meet:** your Google Meet conference records and transcripts (speaker name, what was said, time). Google provides transcript entries through its API for only 30 days after a meeting ends, so we import them within that window.
 - **What we store:** the transcript text with speaker names, the meeting title and time, attendees.
-- **Access:** `calendar.events.readonly` (read events) and `meetings.space.readonly` (read Meet conference information and transcripts). We never create or change events or meetings.
+- **Access:** `calendar.events.owned.readonly` (read events on calendars you own) and `meetings.space.readonly` (read Meet conference information and transcripts). We never create or change events or meetings.
 
 ### Gmail
 
@@ -120,8 +120,8 @@ When you disconnect (app → Connections → Disconnect), the service's access t
 
 > **Legal review required (remove this box before publishing)** — storing Slack source text
 >
-> The Slack API Terms require data from other organizations to be used and retained only to the "minimum necessary" and require explicit authorization from the installing organization. For some APIs they also prohibit persistent copies or archives. Taskforce keeps evidence quotes and source text until account deletion (section 5).
-> Decide whether a retention cap (for example, source text for 90 days and quotes while the task exists) and a workspace admin approval step are needed. See `docs/go-live/slack-app.md`.
+> The Slack API Terms require data from other organizations to be used and retained only to the "minimum necessary" and require explicit authorization from the installing organization. For some APIs they also prohibit persistent copies or archives. Taskforce deletes source text 90 days after it is stored and keeps evidence quotes while the task exists (section 5, decided 2026-09-27).
+> Remaining: decide whether a workspace admin approval step is also needed. See `docs/go-live/slack-app.md`.
 
 ## 4. What we send to external AI
 
@@ -155,8 +155,9 @@ Taskforce uses external AI models to find tasks in source text, decide whether a
 |---|---|
 | Account, profile, sign-in sessions | Until you delete your account |
 | Connections and access tokens | Until you disconnect or delete your account |
-| Source text from connected services | Until you delete your account (remains after you disconnect) |
-| Tasks, evidence quotes, change history, AI judgment records, embeddings | Until you delete your account. A task you delete in the app disappears from your list but is kept in a "deleted" state so we can calculate the error rate |
+| Source text from connected services (body text) | **90 days after it is stored.** After 90 days we delete only the body text; the row, title, original link, people involved, and processing result remain until you delete your account (they remain after you disconnect) |
+| Jev judgment records (including candidate quotes) | 90 days after they are stored |
+| Tasks, evidence quotes, change history, embeddings | Until you delete your account. Evidence quotes remain even after the source body text is deleted. A task you delete in the app disappears from your list but is kept in a "deleted" state so we can calculate the error rate |
 | Usage records | Until you delete your account |
 | Push device tokens | Until you sign out, Apple reports the token invalid, or you delete your account |
 | Server request records (Vercel) | 1 day |
@@ -170,6 +171,7 @@ No law currently requires us to keep any of this information longer. If one does
 
 - **Account deletion:** app → Account → Delete account. When the server deletes your authentication account, rows in every table linked to it (profile, connections and tokens, source text, tasks, evidence, history, judgment records, usage records, device tokens) are deleted in the same request.
   When you delete your account, we also ask Apple to revoke your Sign in with Apple tokens and ask each connected service to revoke its tokens.
+- **Automatic deletion of source text:** a job runs daily and deletes the body text of source text stored 90 days ago, and deletes Jev judgment records stored 90 days ago.
 - **No backups:** we keep no database backups, so deleted data cannot be recovered and does not linger in a backup. If we start keeping backups, we will add their retention period to this policy first.
 - **Logs:** server and database request records are deleted automatically by each provider after the periods above. These records do not contain source text.
 - Electronic files are deleted so they cannot be recovered. We do not create paper records.
@@ -202,7 +204,9 @@ Our server and database are outside Korea. All transfers happen over the network
 | Vercel Inc. (privacy@vercel.com, 440 N Barranca Ave #4133, Covina, CA 91723, USA) | Australia (Sydney, server execution), USA (request records and management systems) | Everything that passes through the server (section 1), server request records | Server operation, website hosting | While the request is processed; request records 1 day |
 | Supabase Pte. Ltd. (privacy@supabase.com) | Australia (Sydney, AWS ap-southeast-2) | All items in section 1 except support email | Data storage, sign-in and authentication | Until account deletion; request records 1 day |
 | OpenRouter, Inc. (privacy@openrouter.ai) | USA | What we send (section 4) | Routing AI requests | Not stored (only while the request is processed) |
-| {{Model providers — fill in the pinned list before publishing. For example: source analysis {{provider}}, judgment TypeSafe, embeddings Microsoft Corporation (Azure)}} | {{country}} | What we send (section 4) | Running AI models | Not stored (Zero Data Retention) |
+| Together AI, Inc. · Fireworks AI, Inc. · DeepInfra, Inc. · BaseTen, Inc. (through OpenRouter, finding tasks in source text) {{contact to be confirmed}} | USA (based on headquarters; the providers do not publish where the request is actually processed) | What we send (section 4) | Running AI models (source analysis) | Not stored (Zero Data Retention) |
+| Microsoft Corporation (Azure, through OpenRouter, embeddings) {{contact to be confirmed}} | USA (based on headquarters) | The part of what we send (section 4) used to find similar tasks (titles and evidence quotes of new candidates and existing tasks) | Running AI models (embeddings) | Not stored (Zero Data Retention) |
+| TypeSafe (through OpenRouter, judgment) {{contact to be confirmed}} | USA (OpenRouter lists no country; public sources place it in San Francisco. **To confirm: get written confirmation of TypeSafe's location**) | What we send (section 4) | Running AI models (judgment) | Not stored (Zero Data Retention) |
 | Apple Inc. (One Apple Park Way, Cupertino, CA 95014, USA · apple.com/legal/privacy/contact) | USA | Push device token, notification content (task identifier and a generic phrase such as "Review needed"; task titles are never included) | Delivering push notifications | Under Apple's policy |
 | Google LLC (1600 Amphitheatre Parkway, Mountain View, CA 94043, USA) | USA and other countries where Google has data centers | Email address and content of support email | Receiving and storing support email | 90 days after the request is closed |
 

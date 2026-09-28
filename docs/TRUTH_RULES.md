@@ -88,6 +88,23 @@ Jev의 확률은 보정을 목표로 학습되어 있어서 **"P(내 약속) < 0
 
 `certainty`, `speaker_role`, `directness`, `audience`는 2장 진실 판정 규칙의 입력(Claim 속성)으로 그대로 씁니다.
 
+#### 사용자가 직접 쓴 문서 (`written_by_me`, judge-v4)
+
+질문은 대화를 전제로 합니다("명시적 약속 · 수락한 할당 · 사용자에게 한 요청"). 사용자가 자기 문서에 적어 둔 할 일 · 다음 단계에는
+약속도 요청도 없어서 judge-v3까지는 `certainty=none`으로 기각됐습니다.
+
+- `sources.written_by_me`: 원문을 사용자가 직접 썼는가. `true` / `false` / `null`(모름).
+  - Notion 글 원문(kind `doc`): 페이지를 만든 사람(`created_by`)이 연결한 사람이면 `true`, 다른 사람이면 `false`.
+    연결한 사람의 Notion user id는 봇 주인(`GET /v1/users/me`의 `bot.owner.user.id`)으로 알아내 연결 설정(`settings.notionUserId`)에 남깁니다.
+  - 회의록(kind `meeting`)은 사용자가 만들었어도 다른 사람의 말이 담기므로 `null`. 연결한 사람 · 만든 사람을 모르면 `null`. 그 밖의 원문(직접 입력 등)도 아직 `null`.
+- 규칙: `written_by_me` 문서에 사용자가 자기 할 일 · 계획 · 다음 단계로 적은 항목은 사용자가 정한 일입니다 → `is_my_commitment` 예, `certainty=firm`.
+  다른 사람을 하는 사람으로 적었거나 완료 표시가 있으면 아닙니다. 아이디어 · 바람("~하면 좋을 듯")은 그대로 `tentative`입니다.
+- `true`일 때만 Jev `state`에 `source.written_by_me: true`를 넣고, 두 질문(`is_my_commitment`, `certainty`의 `firm` 기준)의 문구를 이 규칙으로 바꾼
+  질문 묶음(`WRITTEN_BY_ME_QUESTIONS`)을 보냅니다. `false` · `null`이면 judge-v3와 같은 `state` · 질문을 보내 작성자를 모르는 원문은 느슨해지지 않습니다.
+  (조건문을 공통 질문에 넣어 보니 작성자 정보가 없는 원문의 `is_my_commitment`도 올라가, 다른 사람이 쓴 같은 문서의 할 일이 자동 반영됐습니다.)
+- 아래 판정 결과 처리(임계값 · 기각 규칙)는 그대로입니다.
+- 이 값이 생기기 전에 들어온 Notion 문서는 `scripts/reprocess-sources.ts --notion-authors <user id>`로 작성자를 채우고 다시 처리합니다.
+
 #### 판정 결과 처리 (임계값은 골든셋으로 조정)
 
 아래 표는 초기값입니다. 현재 값과 조정 근거는 `src/lib/pipeline/judge.config.ts`에 있습니다 (자동 반영 기준 0.85 → 0.8).
@@ -100,6 +117,8 @@ Jev의 확률은 보정을 목표로 학습되어 있어서 **"P(내 약속) < 0
 
 기각 사유는 어느 질문의 확률이 낮았는지로 코드가 만듭니다 (`NOT_MY_ACTION`, `INFO_ONLY`, `TENTATIVE`, `ALREADY_DONE`).
 Jev는 설명 문장을 주지 않으므로, 사용자에게 보여줄 이유는 이 사유 코드와 원문 인용으로 구성합니다.
+
+사용자가 직접 추가한 Action(`user_created`)은 추출 · Jev 판정을 거치지 않습니다. 필드 값은 origin `user` Claim에서 계산하고, 원문 없이 추가했으면 근거(Evidence)가 없을 수 있습니다.
 
 #### Jev를 더 쓸 수 있는 곳
 

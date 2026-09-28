@@ -2,15 +2,25 @@ import "server-only";
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 
-import { connectionSettingsSchema, profileSchema } from "@/lib/api/contract";
+import { connectionSettingsSchema, profileInputSchema } from "@/lib/api/contract";
 import { accountDisplayName, resolveIdentity } from "@/lib/api/profile";
+import { ConsentRequiredError } from "@/lib/consent/gate";
 import type { UserIdentity } from "@/lib/pipeline/identity";
 import { renderSnapshot, type TaskSnapshot } from "@/lib/pipeline/structured";
 import { processSource, processTaskSource } from "@/lib/sources/process";
 
 import { decryptSecret, encryptSecret, parseTokenKey } from "./crypto";
 import type { IngestDeps } from "./ingest";
-import type { Backfilled, NotionTaskDeps, SeenDataSource, UnreachableDataSource } from "./notion/sync";
+import {
+  settingsWithoutNotionUserId,
+  type AutoConfirmed,
+  type AutoConfirmReverted,
+  type Backfilled,
+  type NotionTaskDeps,
+  type SeenDataSource,
+  type UnreachableDataSource,
+} from "./notion/sync";
+import type { OAuthStatePayload } from "./oauth-state";
 import type { TaskItem, TaskState } from "./tasks-ingest";
 import type { Connection, Provider } from "./types";
 
@@ -35,7 +45,7 @@ export async function saveConnection(
       },
       { onConflict: "user_id,provider,external_account_id" },
     )
-    .select("id")
+    .select("id, settings")
     .single()
     .throwOnError();
 
@@ -43,6 +53,10 @@ export async function saveConnection(
     .from("connection_secrets")
     .upsert({ connection_id: data.id, sealed_token: encryptSecret(JSON.stringify(input.token), tokenKey()), updated_at: new Date().toISOString() })
     .throwOnError();
+
+  // 다시 연결: 연결한 사람이 바뀌었을 수 있으므로 남겨 둔 Notion user id를 지운다 (다음 동기화가 새 토큰으로 다시 알아낸다).
+  const settings = settingsWithoutNotionUserId(data.settings as Record<string, unknown> | null);
+  if (settings) await admin.from("connections").update({ settings }).eq("id", data.id).eq("user_id", input.userId).throwOnError();
   return data.id as string;
 }
 
@@ -73,19 +87,14 @@ type ConnectionRow = {
   sync_cursor: Record<string, unknown> | null;
 };
 
-/** 동기화할 연결. userId를 주면 그 사용자 것만 (수동 동기화) */
-export async function activeConnections(admin: SupabaseClient, provider: Provider, userId?: string): Promise<Connection[]> {
-  let query = admin
-    .from("connections")
-    .select("id, user_id, provider, settings, sync_cursor, last_synced_at")
-    .eq("provider", provider)
-    .in("status", ["active", "error"]);
-  if (userId) query = query.eq("user_id", userId);
-  const { data } = await query
-    .order("last_synced_at", { ascending: true, nullsFirst: true })
-    .returns<ConnectionRow[]>()
-    .throwOnError();
-  return (data ?? []).map((row) => ({
+/**
+ * 동기화할 연결 (연결 오래 안 한 순서). userId를 주면 그 사용자 것만 (수동 동기화). reauth · revoked는 다시 연결할 때까지 돌리지 않는다.
+ * 외부 AI 처리에 동의하지 않은 사용자의 연결은 쿼리에서 빠진다 (syncable_connections, 20261003000000).
+ */
+export async function activeConnections(admin: SupabaseClient, providers: Provider[], userId?: string): Promise<Connection[]> {
+  if (providers.length === 0) return [];
+  const { data } = await admin.rpc("syncable_connections", { p_providers: providers, p_user_id: userId ?? null }).throwOnError();
+  return ((data ?? []) as ConnectionRow[]).map((row) => ({
     id: row.id,
     userId: row.user_id,
     provider: row.provider,
@@ -93,6 +102,96 @@ export async function activeConnections(admin: SupabaseClient, provider: Provide
     syncCursor: row.sync_cursor,
     lastSyncedAt: row.last_synced_at ? new Date(row.last_synced_at) : null,
   }));
+}
+
+/** 앱 OAuth 시작: 서명된 state의 nonce를 남긴다. 그 사용자의 만료된 nonce는 함께 치운다. */
+export async function saveOAuthNonce(admin: SupabaseClient, payload: OAuthStatePayload, now = new Date()): Promise<void> {
+  await admin.from("oauth_nonces").delete().eq("user_id", payload.userId).lt("expires_at", now.toISOString()).throwOnError();
+  await admin
+    .from("oauth_nonces")
+    .insert({ nonce: payload.nonce, user_id: payload.userId, provider: payload.provider, expires_at: new Date(payload.exp * 1000).toISOString() })
+    .throwOnError();
+}
+
+/** 앱 OAuth 완료 대기 (handoff): 시작한 사용자가 앱에서 2분 안에 한 번만 완료할 수 있다 */
+export const OAUTH_HANDOFF_TTL_MS = 2 * 60_000;
+
+/** callback: code를 암호화해 두고 handoff id를 돌려준다. id는 32바이트 난수(base64url)라 추측할 수 없다. */
+export async function saveOAuthHandoff(
+  admin: SupabaseClient,
+  input: { id: string; userId: string; provider: Provider; code: string },
+  now = new Date(),
+): Promise<void> {
+  await admin
+    .from("oauth_handoffs")
+    .insert({
+      id: input.id,
+      user_id: input.userId,
+      provider: input.provider,
+      sealed_code: encryptSecret(input.code, tokenKey()),
+      expires_at: new Date(now.getTime() + OAUTH_HANDOFF_TTL_MS).toISOString(),
+    })
+    .throwOnError();
+}
+
+/**
+ * 완료: id · 로그인한 사용자 · 서비스가 모두 맞고 만료 전인 handoff를 지우며 code를 꺼낸다 (한 번만, 한 문장이라 동시에 두 번 꺼낼 수 없다).
+ * 없거나 다른 사용자 것이면 null.
+ */
+export async function consumeOAuthHandoff(
+  admin: SupabaseClient,
+  input: { id: string; userId: string; provider: Provider },
+  now = new Date(),
+): Promise<string | null> {
+  const { data } = await admin
+    .from("oauth_handoffs")
+    .delete()
+    .eq("id", input.id)
+    .eq("user_id", input.userId)
+    .eq("provider", input.provider)
+    .gt("expires_at", now.toISOString())
+    .select("sealed_code")
+    .throwOnError();
+  const row = (data ?? [])[0] as { sealed_code: string } | undefined;
+  return row ? decryptSecret(row.sealed_code, tokenKey()) : null;
+}
+
+/** 만료된 nonce · handoff를 모두 지운다 (주기 동기화 cron). 지운 수 */
+export async function sweepExpiredOAuth(admin: SupabaseClient, now = new Date()): Promise<{ nonces: number; handoffs: number }> {
+  const at = now.toISOString();
+  const [{ count: nonces }, { count: handoffs }] = await Promise.all([
+    admin.from("oauth_nonces").delete({ count: "exact" }).lt("expires_at", at).throwOnError(),
+    admin.from("oauth_handoffs").delete({ count: "exact" }).lt("expires_at", at).throwOnError(),
+  ]);
+  return { nonces: nonces ?? 0, handoffs: handoffs ?? 0 };
+}
+
+/** callback: nonce를 지우며 확인한다 (한 번만 쓴다). 사용자 · 서비스가 다르거나 만료됐으면 false. */
+export async function consumeOAuthNonce(admin: SupabaseClient, payload: OAuthStatePayload, now = new Date()): Promise<boolean> {
+  const { data } = await admin
+    .from("oauth_nonces")
+    .delete()
+    .eq("nonce", payload.nonce)
+    .eq("user_id", payload.userId)
+    .eq("provider", payload.provider)
+    .gt("expires_at", now.toISOString())
+    .select("nonce")
+    .throwOnError();
+  return (data?.length ?? 0) > 0;
+}
+
+/** 연결 완료 지표 (설치 → 연결 → 첫 Action 흐름). 서버만 남긴다. */
+export async function recordConnectionCreated(admin: SupabaseClient, userId: string): Promise<void> {
+  await admin.from("metric_events").insert({ user_id: userId, type: "connection_created" }).throwOnError();
+}
+
+/** 계정 삭제 전 폐기할 연동 토큰: 사용자의 모든 연결과 풀어 둔 토큰 (풀지 못한 것은 null) */
+export async function userConnectionTokens(admin: SupabaseClient, userId: string): Promise<{ connectionId: string; provider: Provider; token: unknown }[]> {
+  const { data } = await admin.from("connections").select("id, provider").eq("user_id", userId).throwOnError();
+  const rows = (data ?? []) as { id: string; provider: Provider }[];
+  return Promise.all(
+    rows.map(async (row) => ({ connectionId: row.id, provider: row.provider, token: await loadToken(admin, row.id).catch(() => null) })),
+  );
 }
 
 /** 이 시간보다 오래 잡힌 잠금은 중간에 죽은 실행으로 보고 풀어 준다. */
@@ -163,6 +262,7 @@ export function ingestDeps(admin: SupabaseClient): IngestDeps {
           occurred_at: item.occurredAt.toISOString(),
           external_url: item.externalUrl,
           participants: item.participants ?? null,
+          written_by_me: item.writtenByMe ?? null,
         })
         .select("id")
         .single();
@@ -173,15 +273,34 @@ export function ingestDeps(admin: SupabaseClient): IngestDeps {
 
     process: async (connection, sourceId, item) => {
       const identity = await loadIdentity(admin, connection.userId);
-      await processSource(admin, { id: sourceId, userId: connection.userId }, {
-        text: item.text,
-        kind: item.kind,
-        occurredAt: item.occurredAt,
-        identity,
-        participants: item.participants,
-      });
+      try {
+        await processSource(admin, { id: sourceId, userId: connection.userId }, {
+          text: item.text,
+          kind: item.kind,
+          occurredAt: item.occurredAt,
+          identity,
+          participants: item.participants,
+          writtenByMe: item.writtenByMe,
+        });
+      } catch (error) {
+        // 동의를 철회해 처리하지 못한 원문은, 아직 아무 Action의 근거도 되지 않았으면 지운다:
+        // 다시 동의하면 다음 동기화가 같은 항목을 새로 가져와 처리한다 (남겨 두면 "이미 넣은 항목"으로 건너뛴다).
+        if (error instanceof ConsentRequiredError) await forgetUnprocessedSource(admin, connection, sourceId);
+        throw error;
+      }
     },
   };
+}
+
+async function forgetUnprocessedSource(admin: SupabaseClient, connection: Connection, sourceId: string): Promise<void> {
+  const { count } = await admin
+    .from("evidence")
+    .select("id", { count: "exact", head: true })
+    .eq("user_id", connection.userId)
+    .eq("source_id", sourceId)
+    .throwOnError();
+  if ((count ?? 0) > 0) return;
+  await admin.from("sources").delete().eq("id", sourceId).eq("user_id", connection.userId).throwOnError();
 }
 
 /** 사용자 프로필(이름 · 별칭 · 이메일)과 계정으로 "원문 속 나"를 정한다. */
@@ -191,7 +310,7 @@ export async function loadIdentity(admin: SupabaseClient, userId: string): Promi
     admin.auth.admin.getUserById(userId),
   ]);
   const email = account.user?.email ?? null;
-  return resolveIdentity(profileSchema.safeParse(profileRow).data ?? null, {
+  return resolveIdentity(profileInputSchema.safeParse(profileRow).data ?? null, {
     name: accountDisplayName(account.user?.user_metadata, email),
     email,
   });
@@ -212,7 +331,8 @@ type TaskStateRow = {
   external_id: string;
   source_id: string;
   external_version: string;
-  structured: StoredTask;
+  /** 보관 기간(90일)이 지나 원문이 비워졌으면 null (purge_expired_source_text) */
+  structured: StoredTask | null;
   processing_status: "pending" | "processing" | "done" | "failed";
   started_at: string;
   linked: boolean;
@@ -233,7 +353,7 @@ async function taskStates(admin: SupabaseClient, connection: Connection, externa
     for (const row of (data ?? []) as TaskStateRow[]) {
       const state = states.get(row.external_id) ?? { linked: row.linked };
       if (row.processing_status === "done") {
-        state.done = { version: row.external_version, snapshot: row.structured.snapshot };
+        state.done = { version: row.external_version, snapshot: row.structured?.snapshot ?? null };
       } else if (row.processing_status === "failed" || new Date(row.started_at).getTime() < staleBefore) {
         state.retry = { sourceId: row.source_id, version: row.external_version };
       } else {
@@ -354,26 +474,40 @@ export async function markBackfilled(admin: SupabaseClient, connection: Connecti
 /**
  * 동기화가 본 연결 상태를 남긴다: 처음 본 DB(확인 전, seenAt)와 전에 읽던 DB 중 지금 읽을 수 없는 것(health.unreachable).
  * 공유가 조용히 끊기면 원문이 들어오지 않아도 알 수 없으므로, 앱 · /lab이 이 값으로 경고를 띄운다.
+ * 연결한 사람의 Notion user id(notionUserId)를 처음 알아냈으면 함께 남겨, 다음 동기화부터 다시 묻지 않는다.
+ * 자동 확인한 할 일 DB(autoConfirmed)와 자동 확인을 되돌린 DB(reverted)도 남긴다. markBackfilled보다 먼저 불러야 처음 훑기 표시가 이 확인 시각과 맞는다.
  */
 export async function recordNotionHealth(
   admin: SupabaseClient,
   connection: Connection,
-  report: { seen: SeenDataSource[]; unreachable: UnreachableDataSource[] | null },
+  report: {
+    seen: SeenDataSource[];
+    unreachable: UnreachableDataSource[] | null;
+    notionUserId?: string | null;
+    autoConfirmed?: AutoConfirmed[];
+    reverted?: AutoConfirmReverted[];
+  },
   now = new Date(),
 ): Promise<void> {
   const { data } = await admin.from("connections").select("settings").eq("id", connection.id).eq("user_id", connection.userId).single().throwOnError();
   const settings = connectionSettingsSchema.parse(data.settings ?? {});
   const dataSources = { ...(settings.dataSources ?? {}) };
+  // 동기화는 확인 전 DB와 자동 확인한 DB(매핑이 바뀌어 다시 확인 · 되돌림)만 바꾼다.
+  // 그 사이 사용자가 확인한 DB(가져오지 않음 · 글 원문 포함)는 덮지 않는다.
+  const confirmed = (report.autoConfirmed ?? []).filter(({ id }) => !dataSources[id]?.confirmedAt || dataSources[id]?.confirmedBy === "auto");
+  const reverted = (report.reverted ?? []).filter(({ id }) => dataSources[id]?.confirmedBy === "auto");
+  for (const { id, setting } of [...confirmed, ...reverted]) dataSources[id] = setting;
   const added = report.seen.filter(({ id }) => !dataSources[id]);
   for (const { id, title, role } of added) dataSources[id] = { role, title: title?.slice(0, 200) ?? null, seenAt: now.toISOString() };
+  const notionUserId = report.notionUserId && report.notionUserId !== settings.notionUserId ? report.notionUserId : null;
   // 바뀐 것이 있을 때만 쓴다: 설정 전체를 다시 쓰므로, 매 동기화마다 쓰면 그 사이 /lab에서 저장한 설정을 덮을 수 있다.
   // 끝까지 확인하지 못한 동기화(null)는 지난 결과를 그대로 둔다.
   const key = (list: UnreachableDataSource[]) => list.map((d) => d.id).sort().join(",");
   const health = report.unreachable ? { unreachable: report.unreachable, checkedAt: now.toISOString() } : settings.health;
-  if (added.length === 0 && (!report.unreachable || key(settings.health?.unreachable ?? []) === key(report.unreachable))) return;
+  if (added.length === 0 && confirmed.length === 0 && reverted.length === 0 && !notionUserId && (!report.unreachable || key(settings.health?.unreachable ?? []) === key(report.unreachable))) return;
   await admin
     .from("connections")
-    .update({ settings: { ...settings, dataSources, ...(health ? { health } : {}) } })
+    .update({ settings: { ...settings, dataSources, ...(health ? { health } : {}), ...(notionUserId ? { notionUserId } : {}) } })
     .eq("id", connection.id)
     .eq("user_id", connection.userId)
     .throwOnError();

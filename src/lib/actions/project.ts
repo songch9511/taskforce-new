@@ -60,7 +60,7 @@ export function projectAction(fallbackTitle: string, claims: Claim[], storedReas
 }
 
 export type AiEventType = "created" | "due_changed" | "scope_changed" | "owner_changed" | "merged" | "completed" | "dropped" | "reopened";
-export type UserEventType = "user_edited" | "user_deleted" | "user_confirmed" | "user_started" | "user_reported_missing";
+export type UserEventType = "user_edited" | "user_deleted" | "user_confirmed" | "user_started" | "user_reported_missing" | "user_created";
 
 export type EventDraft = {
   type: AiEventType | UserEventType;

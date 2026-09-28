@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 
+import type { EmbeddingBackfillStore, UnembeddedAction } from "@/lib/pipeline/backfill-embeddings";
 import { MATCH_THRESHOLDS, type OpenAction } from "@/lib/pipeline/match";
 import type { ActionStore, Evidence, TrackedAction } from "@/lib/pipeline/merge";
 import type { LinkedAction, TaskLinkStore } from "@/lib/pipeline/merge-task";
@@ -76,7 +77,7 @@ export async function loadStoredRow(admin: SupabaseClient, userId: string, actio
   return data as StoredRow | null;
 }
 
-export class SupabaseActionStore implements ActionStore {
+export class SupabaseActionStore implements ActionStore, EmbeddingBackfillStore {
   /** 이번 처리에서 확인 요청이 새로 생긴 Action (알림용) */
   readonly needsConfirmation = new Set<string>();
 
@@ -144,6 +145,42 @@ export class SupabaseActionStore implements ActionStore {
       return true;
     });
   }
+
+  async unembedded(limit: number): Promise<UnembeddedAction[]> {
+    const { data: actions } = await this.admin
+      .from("actions")
+      .select("id, title")
+      .eq("user_id", this.userId)
+      .eq("status", "open")
+      .is("embedding", null)
+      .order("created_at")
+      .limit(limit)
+      .throwOnError();
+    const rows = (actions ?? []) as { id: string; title: string }[];
+    if (rows.length === 0) return [];
+    const { data: evidence } = await this.admin
+      .from("evidence")
+      .select("action_id, quote")
+      .eq("user_id", this.userId)
+      .eq("role", "created")
+      .in("action_id", rows.map((r) => r.id))
+      .order("created_at")
+      .throwOnError();
+    const quotes = new Map<string, string>();
+    for (const e of (evidence ?? []) as { action_id: string; quote: string }[]) if (!quotes.has(e.action_id)) quotes.set(e.action_id, e.quote);
+    return rows.map((r) => ({ id: r.id, title: r.title, quote: quotes.get(r.id) ?? null }));
+  }
+
+  /** 매칭용 내부 값이라 버전 · 이벤트 없이 쓴다 (사용자에게 보이는 필드가 아니다). 그 사이 채워졌으면 두고 간다. */
+  async saveEmbedding(actionId: string, vector: number[]): Promise<void> {
+    await this.admin
+      .from("actions")
+      .update({ embedding: toPgVector(vector) })
+      .eq("user_id", this.userId)
+      .eq("id", actionId)
+      .is("embedding", null)
+      .throwOnError();
+  }
 }
 
 /** 외부 할 일 ↔ Action 연결 (action_links). 연결마다 범위를 좁힌다. */
@@ -163,17 +200,36 @@ export class SupabaseTaskLinks implements TaskLinkStore {
       .eq("external_id", externalId)
       .maybeSingle()
       .throwOnError();
-    if (!link) return null;
+    return link ? this.state(link.action_id as string) : null;
+  }
+
+  async actionFromTextSource(externalId: string): Promise<LinkedAction | null> {
+    const { data: sources } = await this.admin
+      .from("sources")
+      .select("id")
+      .eq("user_id", this.userId)
+      .eq("connection_id", this.connectionId)
+      .eq("external_id", externalId)
+      .neq("kind", "task")
+      .throwOnError();
+    const sourceIds = ((sources ?? []) as { id: string }[]).map((s) => s.id);
+    if (sourceIds.length === 0) return null;
+    const { data: evidence } = await this.admin.from("evidence").select("action_id").eq("user_id", this.userId).in("source_id", sourceIds).throwOnError();
+    const actionIds = [...new Set(((evidence ?? []) as { action_id: string }[]).map((e) => e.action_id))];
+    return actionIds.length === 1 ? this.state(actionIds[0]) : null;
+  }
+
+  private async state(actionId: string): Promise<LinkedAction> {
     const { data: action } = await this.admin
       .from("actions")
       .select("status, resolution")
       .eq("user_id", this.userId)
-      .eq("id", link.action_id)
+      .eq("id", actionId)
       .single()
       .throwOnError();
     const status = action.status as LinkedAction["status"];
     const reason = (action.resolution as { status?: { reason?: string } } | null)?.status?.reason;
-    return { actionId: link.action_id as string, status, deletedByUser: status === "dropped" && reason === USER_REASON };
+    return { actionId, status, deletedByUser: status === "dropped" && reason === USER_REASON };
   }
 
   async actionCreatedFrom(sourceId: string): Promise<string | null> {

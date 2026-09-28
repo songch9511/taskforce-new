@@ -1,0 +1,38 @@
+{
+  "id": "en-invoice-done",
+  "description": "English question about a finished action. The answer should say it was sent and cite the email",
+  "origin": "synthetic",
+  "asked_at": "2026-09-25T15:00:00+09:00",
+  "question": "Did I already send the invoice to Mina?",
+  "sources": [
+    {
+      "id": "s1",
+      "kind": "email",
+      "title": "September invoice",
+      "occurred_at": "2026-09-23T17:40:00+09:00",
+      "text": "From: Doyun\nTo: Mina Park\nSubject: September invoice\n\nHi Mina,\nI've attached the September invoice as promised. Let me know if anything looks off.\n\nBest,\nDoyun"
+    },
+    {
+      "id": "s2",
+      "kind": "meeting",
+      "title": "Monthly sync with Mina",
+      "occurred_at": "2026-09-19T10:00:00+09:00",
+      "text": "Mina: Could you send over the September invoice next week?\nDoyun: Sure, I'll send the invoice by Wednesday."
+    }
+  ],
+  "actions": [
+    {
+      "id": "a1",
+      "title": "Send September invoice to Mina",
+      "status": "done",
+      "owner": "me",
+      "due_date": "2026-09-24",
+      "counterpart": "Mina",
+      "quotes": [
+        { "source": "s1", "quote": "I've attached the September invoice as promised" },
+        { "source": "s2", "quote": "I'll send the invoice by Wednesday" }
+      ]
+    }
+  ],
+  "expect": { "unknown": false, "cite_sources": ["s1"], "answer_contains_any": ["yes", "sent", "attached"] }
+}

@@ -7,6 +7,7 @@ import { renderSnapshot, snapshotChanges, taskClaims, type SnapshotChange, type 
 // 구조화된 할 일 병합 (docs/INTEGRATIONS.md "Notion 할 일 DB").
 // 처음 보는 할 일은 기존 열린 Action과 매칭한다(회의에서 이미 생긴 같은 일일 수 있다). 결과를 연결해 두고,
 // 이후 버전은 매칭 없이 그 Action에 바뀐 필드만 Claim으로 붙인다.
+// 같은 페이지가 할 일로 확인되기 전에 글 원문으로 들어와 Action이 생겼으면 매칭 없이 그 Action에 잇는다.
 
 export type LinkedAction = {
   actionId: string;
@@ -21,15 +22,33 @@ export interface TaskLinkStore {
   link(externalId: string, actionId: string): Promise<void>;
   /** 이 원문으로 만든 Action (근거 역할 created) */
   actionCreatedFrom(sourceId: string): Promise<string | null>;
+  /**
+   * 같은 외부 항목(페이지)이 할 일로 확인되기 전에 글 원문으로 들어와 근거가 된 Action (역할 상관없이, 상태 상관없이).
+   * 그런 Action이 딱 하나일 때만 돌려준다. 없거나 여럿이면(본문에서 할 일이 여럿 나옴) null.
+   */
+  actionFromTextSource(externalId: string): Promise<LinkedAction | null>;
 }
 
 export class InMemoryTaskLinks implements TaskLinkStore {
   readonly links = new Map<string, string>();
+  /** 글 원문 id → 외부 id (할 일로 확인되기 전에 같은 페이지를 글 원문으로 넣은 것) */
+  readonly textSources = new Map<string, string>();
   constructor(private readonly actions: () => TrackedAction[] = () => []) {}
 
   async linkedAction(externalId: string): Promise<LinkedAction | null> {
     const actionId = this.links.get(externalId);
-    if (!actionId) return null;
+    return actionId ? this.state(actionId) : null;
+  }
+
+  async actionFromTextSource(externalId: string): Promise<LinkedAction | null> {
+    const sourceIds = new Set([...this.textSources].filter(([, id]) => id === externalId).map(([sourceId]) => sourceId));
+    const actionIds = this.actions()
+      .filter((a) => a.evidence.some((e) => sourceIds.has(e.sourceId)))
+      .map((a) => a.id);
+    return actionIds.length === 1 ? this.state(actionIds[0]) : null;
+  }
+
+  private state(actionId: string): LinkedAction {
     const action = this.actions().find((a) => a.id === actionId);
     const status = action ? resolveAction(action.claims).status : null;
     const value = (status?.value ?? "open") as LinkedAction["status"];
@@ -99,6 +118,17 @@ export async function mergeTask(
   const changes = snapshotChanges(null, snapshot);
   const claims = taskClaims(changes, task.edit, deps.newId);
   const text = renderSnapshot(snapshot);
+  const fields = changes.map((c) => c.field);
+
+  // 할 일 DB로 확인되기 전에 같은 페이지가 글 원문으로 들어와 Action이 생겼으면 그 Action에 잇는다: 매칭 · 중복 확인 없이 (같은 페이지다).
+  // 사용자가 앱에서 지운 Action이면 잇기만 하고 값을 붙이지 않는다 (되살리지 않는다).
+  const earlier = await links.actionFromTextSource(task.externalId);
+  if (earlier) {
+    if (!earlier.deletedByUser) await store.append(earlier.actionId, { claims, evidence: { sourceId: source.id, quote: text, role: "duplicate" } });
+    await links.link(task.externalId, earlier.actionId);
+    return { relation: "duplicate", actionId: earlier.actionId, changes: earlier.deletedByUser ? [] : fields, confidence: 1 };
+  }
+
   const [vector] = await deps.embed([embedText(snapshot.title, text)]);
   const shortlist = await store.shortlist(vector);
   const match = await matchCandidate(
@@ -108,7 +138,6 @@ export async function mergeTask(
     shortlist,
     deps.decide,
   );
-  const fields = changes.map((c) => c.field);
 
   // 같은 일이 이미 있다 (예: 회의록에서 생긴 Action): 할 일 DB의 값을 Claim으로 더하고 이어 둔다.
   if (match.relation !== "new" && match.actionId && !match.needsConfirmation) {

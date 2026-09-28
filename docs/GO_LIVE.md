@@ -65,6 +65,8 @@ App Store 정식 출시가 아니다. "Notion만 연결할 수 있다"로는 go 
 3. **첫 동기화를 바로 시작한다.** 연결 직후 한 번 동기화해 최근 14일의 회의록을 가져온다. 그래야 테스터가 연결하자마자 결과를 본다. 서버에서 바로 시작하거나, 앱이 돌아온 뒤 `POST /api/v1/connections/sync`를 부른다.
 4. **로그:** `state`, `code`, 토큰은 로그에 남기지 않는다. 지금처럼 오류 메시지만 남긴다.
 
+**구현 결과 (2026-09-27, 위 계획과 달라진 점).** 시작 API는 서비스마다 만들지 않고 `POST /api/v1/connections/{provider}/start` 하나로 모든 연동이 같이 쓴다. callback은 서명된 `state`(앱)와 쿠키 `state`(웹) 두 흐름을 그대로 받지만, 앱 흐름에서는 바로 `status=<값>`으로 돌려보내지 않는다: code를 암호화한 **완료 대기(handoff, `oauth_handoffs`, 2분 유효)** 로 남기고 `taskforce://connections/{provider}?handoff=<id>`로 보낸 뒤, 앱이 그 `handoff`로 **`POST /api/v1/connections/{provider}/complete`** 를 Bearer 토큰과 함께 불러야 연결이 끝난다(시작한 사용자만, 한 번만 쓸 수 있음, 성공하면 응답 뒤 첫 동기화 실행). 연결 시작에는 속도 제한(10분에 10번, `rate_limit_events` · `take_rate_limit`)이 붙었다.
+
 ### 앱 변경
 
 1. **연결 화면:** 계정 메뉴의 "로그아웃" · "계정 삭제" 옆에 "연결"을 둔다.
@@ -73,15 +75,15 @@ App Store 정식 출시가 아니다. "Notion만 연결할 수 있다"로는 go 
      - **Notion 연결:** 1-1의 API로 주소를 받아 `ASWebAuthenticationSession`(callback scheme `taskforce`)으로 연다.
      - **지금 동기화:** `POST /api/v1/connections/sync`를 부른다. 429면 "방금 동기화했어요. 1분 뒤에 다시 해 주세요"를 보여준다.
      - **연결 끊기:** `DELETE /api/v1/connections/:id`를 부른다.
-2. **돌아온 뒤 보여줄 말 (쉬운 말):**
+2. **돌아온 뒤 보여줄 말 (쉬운 말).** 앱이 `?handoff=<id>`로 돌아오면 `POST /api/v1/connections/notion/complete {handoff}`를 불러 아래 `status`를 받는다. 권한 화면 단계에서 실패하면 `complete`를 부르지 않고 곧바로 `?status=denied|error|invalid_state`로 돌아온다.
 
-   | status | 문구 |
-   |---|---|
-   | `connected` | Notion을 연결했어요. 최근 2주의 회의록을 가져오는 중이에요. |
-   | `connected_empty` | Notion에서 고른 페이지가 없어요. 회의록 데이터베이스를 골라 다시 연결해 주세요. |
-   | `connected_no_meetings` | 회의록 데이터베이스가 빠져 있어요. 다시 연결할 때 함께 골라 주세요. |
-   | `denied` | 연결을 취소했어요. |
-   | `error`, `invalid_state` | 연결하지 못했어요. 다시 시도해 주세요. |
+   | status | 언제 | 문구 |
+   |---|---|---|
+   | `connected` | `complete` 응답 | Notion을 연결했어요. 최근 2주의 회의록을 가져오는 중이에요. |
+   | `connected_empty` | `complete` 응답 | Notion에서 고른 페이지가 없어요. 회의록 데이터베이스를 골라 다시 연결해 주세요. |
+   | `connected_no_meetings` | `complete` 응답 | 회의록 데이터베이스가 빠져 있어요. 다시 연결할 때 함께 골라 주세요. |
+   | `denied` | 돌아온 URL의 `status` | 연결을 취소했어요. |
+   | `error`, `invalid_state` | 돌아온 URL의 `status`, 또는 `complete`의 404/409/502 | 연결하지 못했어요. 다시 시도해 주세요. |
 
 3. **연결이 끊긴 데이터베이스 경고:** `settings.health.unreachable`이 있으면 "전에 읽던 데이터베이스를 더 이상 읽을 수 없어요. 다시 연결할 때 체크해 주세요"를 띄운다. 다시 연결할 때 선택이 빠지면 원문이 조용히 끊기기 때문이다([INTEGRATIONS.md](INTEGRATIONS.md) Notion 절).
 4. **"지금 할 일"의 빈 화면:**

@@ -1,5 +1,5 @@
 // 골든셋으로 추출 품질을 평가한다: npm run eval
-//   npm run eval                  라벨 검사 + (키가 있으면) 추출 → 기계 검증 → Jev 판정 채점
+//   npm run eval                  라벨 검사 + (키가 있으면) 추출 → 기계 검증 → Jev 판정 채점 + 물어보기(evals/ask) 채점
 //   npm run eval -- --case <id>   한 케이스만
 //   npm run eval -- --no-judge    Jev 없이 추출 · 기계 검증만
 //   npm run eval -- --labels      라벨 검사만 (CI처럼 키가 없을 때와 같음)
@@ -11,12 +11,15 @@ import { parseArgs } from "node:util";
 import { embed, embedConfigFromEnv } from "../src/lib/ai/embed";
 import { decide, jevConfigFromEnv } from "../src/lib/ai/jev";
 import { completeJson, llmConfigFromEnv } from "../src/lib/ai/llm";
+import { ASK_PROMPT_VERSION } from "../src/lib/ai/prompts/ask";
 import { EXTRACT_PROMPT_VERSION } from "../src/lib/ai/prompts/extract";
 import { JUDGE_PROMPT_VERSION } from "../src/lib/ai/prompts/judge";
+import { askCaseSchema, askContextOf, findAskLabelErrors, scoreAskCase, type AskCase, type AskScore } from "../src/lib/eval/ask-golden";
 import { findLabelErrors, goldenCaseSchema, type GoldenCase } from "../src/lib/eval/golden";
 import { agreement, calibration, decisionTable, labeledItems, type JudgedItem } from "../src/lib/eval/judge-metrics";
 import { scoreCase, totals, type CaseScore, type ScoredCandidate, type Totals } from "../src/lib/eval/score";
 import { scoreSequence, sequenceTotals, type FinalAction, type SequenceScore } from "../src/lib/eval/sequence-score";
+import { answerQuestion, type AskResult } from "../src/lib/pipeline/ask";
 import { extractCandidates, type ActionCandidate } from "../src/lib/pipeline/extract";
 import { judgeCandidate, type JudgeResult, type JudgeSource } from "../src/lib/pipeline/judge";
 import { InMemoryActionStore, mergeJudged, type MergeOutcome } from "../src/lib/pipeline/merge";
@@ -27,6 +30,7 @@ import { verifyCandidates, type VerifiedCandidate } from "../src/lib/pipeline/ve
 
 const ROOT = path.resolve(import.meta.dirname, "..");
 const GOLDEN_DIR = path.join(ROOT, "evals/golden");
+const ASK_DIR = path.join(ROOT, "evals/ask");
 const RESULTS_DIR = path.join(ROOT, "evals/results");
 const LLM_CONCURRENCY = 4;
 const JEV_CONCURRENCY = 8;
@@ -47,6 +51,29 @@ async function loadGolden(): Promise<{ cases: GoldenCase[]; failed: number }> {
     if (errors.length > 0) {
       failed++;
       console.error(`✗ ${file}: 라벨 오류\n${errors.map((e) => `  - ${e}`).join("\n")}`);
+      continue;
+    }
+    cases.push(parsed.data);
+  }
+  return { cases, failed };
+}
+
+/** 물어보기 골든셋 (evals/ask): 형식 · 라벨 검사 */
+async function loadAskCases(): Promise<{ cases: AskCase[]; failed: number }> {
+  const files = (await readdir(ASK_DIR).catch(() => [] as string[])).filter((f) => f.endsWith(".json")).sort();
+  const cases: AskCase[] = [];
+  let failed = 0;
+  for (const file of files) {
+    const parsed = askCaseSchema.safeParse(JSON.parse(await readFile(path.join(ASK_DIR, file), "utf8")));
+    if (!parsed.success) {
+      failed++;
+      console.error(`✗ ask/${file}: 형식 오류\n${parsed.error.issues.map((i) => `  - ${i.path.join(".")}: ${i.message}`).join("\n")}`);
+      continue;
+    }
+    const errors = findAskLabelErrors(parsed.data);
+    if (errors.length > 0) {
+      failed++;
+      console.error(`✗ ask/${file}: 라벨 오류\n${errors.map((e) => `  - ${e}`).join("\n")}`);
       continue;
     }
     cases.push(parsed.data);
@@ -95,7 +122,14 @@ function printDetails(score: CaseScore) {
 
 const sourceOf = (golden: GoldenCase): JudgeSource & { occurred_at: string } => {
   const s = golden.sources[0];
-  return { text: s.text, kind: s.kind, occurredAt: new Date(s.occurred_at), occurred_at: s.occurred_at, participants: s.participants };
+  return {
+    text: s.text,
+    kind: s.kind,
+    occurredAt: new Date(s.occurred_at),
+    occurred_at: s.occurred_at,
+    participants: s.participants,
+    writtenByMe: s.written_by_me,
+  };
 };
 
 type CaseRun = {
@@ -115,8 +149,11 @@ async function main() {
   const actions = cases.reduce((n, c) => n + c.expected_actions.length, 0);
   const negatives = cases.reduce((n, c) => n + c.must_not_extract.length, 0);
   console.log(`골든셋 ${cases.length + failed}건 · 기대 Action ${actions}개 · 뽑으면 안 되는 문장 ${negatives}개`);
-  if (failed > 0) {
-    console.error(`${failed}건에 오류가 있습니다.`);
+  const ask = await loadAskCases();
+  const answerable = ask.cases.filter((c) => !c.expect.unknown).length;
+  console.log(`물어보기 골든셋 ${ask.cases.length + ask.failed}건 · 답할 수 있는 질문 ${answerable}개 · 원문에 답이 없는 질문 ${ask.cases.length - answerable}개`);
+  if (failed + ask.failed > 0) {
+    console.error(`${failed + ask.failed}건에 오류가 있습니다.`);
     process.exit(1);
   }
   if (values.labels) return;
@@ -138,7 +175,8 @@ async function main() {
   const selected = cases.filter((c) => !values.case || c.id === values.case);
   const single = selected.filter((c) => c.sources.length === 1);
   const sequences = selected.filter((c) => c.sources.length > 1);
-  if (selected.length === 0) {
+  const askSelected = ask.cases.filter((c) => !values.case || c.id === values.case);
+  if (selected.length === 0 && askSelected.length === 0) {
     console.error(values.case ? `케이스 ${values.case}가 없습니다.` : "채점할 케이스가 없습니다.");
     process.exit(1);
   }
@@ -171,6 +209,7 @@ async function main() {
           occurredAt: source.occurredAt,
           identity: golden.user,
           participants: source.participants,
+          writtenByMe: source.writtenByMe,
         },
         (request) => completeJson(llm, request),
       );
@@ -296,7 +335,7 @@ async function main() {
         for (const s of [...golden.sources].sort((a, b) => a.occurred_at.localeCompare(b.occurred_at))) {
           const occurredAt = new Date(s.occurred_at);
           const result = await runPipeline(
-            { text: s.text, kind: s.kind, occurredAt, identity: golden.user, participants: s.participants },
+            { text: s.text, kind: s.kind, occurredAt, identity: golden.user, participants: s.participants, writtenByMe: s.written_by_me },
             { complete: (request) => completeJson(llm, request), decide: (request) => decide(jev, request) },
           );
           sequenceCost += result.summary.cost;
@@ -333,8 +372,55 @@ async function main() {
     );
   }
 
+  // 4) 물어보기: 케이스의 Action · 원문을 검색 결과로 주고(검색 자체는 DB 테스트가 본다) 답 · 인용 검증 · 모름을 채점한다.
+  let askCost = 0;
+  const askRuns = (
+    await mapLimit(askSelected, LLM_CONCURRENCY, async (golden): Promise<{ golden: AskCase; result: AskResult; score: AskScore } | null> => {
+      try {
+        const result = await answerQuestion(
+          golden.question,
+          {
+            embed: async (texts) => texts.map(() => []),
+            retrieve: async () => askContextOf(golden),
+            complete: (request) => completeJson(llm, request),
+          },
+          new Date(golden.asked_at),
+        );
+        askCost += result.summary.cost;
+        return { golden, result, score: scoreAskCase(golden, result) };
+      } catch (error) {
+        errors.push(`${golden.id} 물어보기: ${error instanceof Error ? error.message : String(error)}`);
+        return null;
+      }
+    })
+  ).filter((r): r is { golden: AskCase; result: AskResult; score: AskScore } => r !== null);
+  if (askRuns.length > 0) {
+    console.log(`\n물어보기 (${ASK_PROMPT_VERSION})`);
+    for (const { golden, result, score } of askRuns) {
+      const expected = golden.expect.unknown ? "모름" : "답함";
+      const got = result.unknown ? "모름" : `답함 · 인용 ${score.citations}`;
+      const notes = [
+        score.unknownCorrect ? null : "모름 판정 틀림",
+        score.citedExpected === false ? "기대 원문 인용 없음" : null,
+        score.answerContains === false ? "답에 기대한 말 없음" : null,
+        score.answerExcludes === false ? "답에 들어가면 안 되는 말 있음" : null,
+        score.dropped > 0 ? `가짜 인용 폐기 ${score.dropped}` : null,
+      ].filter(Boolean);
+      console.log(`  ${score.pass ? "✓" : "✗"} ${golden.id.padEnd(28)} 기대 ${expected} / 결과 ${got}${notes.length ? ` (${notes.join(", ")})` : ""}`);
+    }
+    const passed = askRuns.filter((r) => r.score.pass).length;
+    const answerableRuns = askRuns.filter((r) => !r.golden.expect.unknown);
+    const unknownRuns = askRuns.filter((r) => r.golden.expect.unknown);
+    const rate = (n: number, d: number) => `${pct(d ? n / d : null)} (${n}/${d})`;
+    console.log(
+      `통과 ${rate(passed, askRuns.length)} · 답할 수 있는 질문에 검증된 인용으로 답함 ${rate(answerableRuns.filter((r) => !r.result.unknown && r.score.citedExpected).length, answerableRuns.length)}` +
+        ` · 답이 없는 질문에 모른다고 함 ${rate(unknownRuns.filter((r) => r.result.unknown).length, unknownRuns.length)}` +
+        ` · 가짜 인용 폐기 ${askRuns.reduce((n, r) => n + r.score.dropped, 0)}건`,
+    );
+  }
+
   console.log(
-    `\n비용 약 $${(llmCost + jevCost + sequenceCost).toFixed(3)} (추출 $${llmCost.toFixed(3)} · Jev $${jevCost.toFixed(4)} · 시퀀스 $${sequenceCost.toFixed(3)})`,
+    `\n비용 약 $${(llmCost + jevCost + sequenceCost + askCost).toFixed(3)} (추출 $${llmCost.toFixed(3)} · Jev $${jevCost.toFixed(4)} · 시퀀스 $${sequenceCost.toFixed(3)} · 물어보기 $${askCost.toFixed(3)})`,
   );
 
   // 결과를 남겨 프롬프트 · 임계값을 바꾼 전후를 비교한다 (evals/results는 커밋하지 않음).
@@ -346,13 +432,14 @@ async function main() {
       {
         at: new Date().toISOString(),
         models: { extract: llm.model, judge: jev?.model ?? null },
-        promptVersions: { extract: EXTRACT_PROMPT_VERSION, judge: jev ? JUDGE_PROMPT_VERSION : null },
+        promptVersions: { extract: EXTRACT_PROMPT_VERSION, judge: jev ? JUDGE_PROMPT_VERSION : null, ask: ASK_PROMPT_VERSION },
         thresholds: jev ? JUDGE_THRESHOLDS : null,
         stages: stageTotals,
         judgeAgreement: jev ? agreement(judgedItems) : null,
         sequences: sequenceRuns.map((r) => ({ id: r.golden.id, score: r.score, finals: r.finals, outcomes: r.outcomes })),
         cases: done.map((r) => ({ id: r.golden.id, origin: r.golden.origin, extracted: r.extracted, judged: r.judged ?? r.verified })),
         judgedLabels: judgedItems.map((j) => ({ caseId: j.caseId, kind: j.kind, quote: j.candidate.quote, labels: j.labels, result: j.result })),
+        ask: askRuns.map((r) => ({ id: r.golden.id, score: r.score, answer: r.result.answer, unknown: r.result.unknown, citations: r.result.citations })),
         errors,
       },
       null,

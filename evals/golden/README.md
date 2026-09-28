@@ -8,6 +8,7 @@
 - `user`: 원문 속 사용자. `name`, `aliases`(다른 호칭 · 받아쓰기가 틀리는 이름), `emails`.
 - `sources[].participants`: 메일의 `from` · `to` · `cc`, 회의의 `attendees` (`{ name?, email? }`). 사용자가 보낸 사람인지 참조인지로 판단이 달라진다.
 - `sources`: 시간 순서대로 들어오는 원문. `occurred_at`은 발언 시점입니다.
+- `sources[].written_by_me`: 사용자가 직접 쓴 원문인가 (`sources.written_by_me`, 없으면 모름). `true`면 판정에 넘깁니다 (docs/TRUTH_RULES.md 1장).
 - `expected_actions`: 모든 원문을 처리한 뒤 남아야 하는 Action. `evidence`의 `quote`는 원문 그대로 적습니다.
 - `must_not_extract`: 뽑으면 오탐인 문장과 이유 (`NOT_MY_ACTION`, `INFO_ONLY`, `TENTATIVE`, `ALREADY_DONE`).
 

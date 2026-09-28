@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { DEFAULT_JEV_PROVIDERS, parseProviders, providerRouting } from "./providers";
+
 // Jev 판정 호출 (OpenRouter Decisions API, docs/TRUTH_RULES.md 1장). chat completions와 다른 API라 fetch로 직접 부른다.
 // Decisions API는 alpha라 요청 · 응답 형식이 바뀔 수 있다. 호출은 이 파일에만 두고 응답은 zod로 검증한다.
 
@@ -9,6 +11,8 @@ export type JevConfig = {
   apiKey: string;
   /** 버전 고정 (예: typesafe/jev-1.13) */
   model: string;
+  /** 보낼 공급자 (OpenRouter slug, 이 순서로만). providers.ts */
+  providers?: string[];
   fetch?: typeof fetch;
   /** 판정은 짧아야 한다. 넘기면 끊는다. */
   timeoutMs?: number;
@@ -61,7 +65,7 @@ export function jevConfigFromEnv(env: Record<string, string | undefined> = proce
   if (!apiKey || !model) {
     throw new JevError("OPENROUTER_API_KEY와 JEV_MODEL이 필요합니다. .env.example을 참고해 .env.local을 채우세요.");
   }
-  return { apiKey, model };
+  return { apiKey, model, providers: parseProviders(env.JEV_PROVIDERS, DEFAULT_JEV_PROVIDERS) };
 }
 
 export async function decide(
@@ -74,12 +78,12 @@ export async function decide(
       signal: AbortSignal.timeout(config.timeoutMs ?? JEV_TIMEOUT_MS),
       method: "POST",
       headers: { Authorization: `Bearer ${config.apiKey}`, "Content-Type": "application/json" },
-      // 원문을 저장 · 학습에 쓰지 않는(ZDR) 공급자에게만 보낸다 (llm.ts · embed.ts와 같은 조건).
+      // 원문을 저장 · 학습에 쓰지 않는(ZDR) 고정 공급자에게만 보낸다 (llm.ts · embed.ts와 같은 조건, providers.ts).
       body: JSON.stringify({
         model: config.model,
         state: request.state,
         questions: request.questions,
-        provider: { data_collection: "deny", zdr: true },
+        provider: providerRouting(config.providers),
       }),
     });
 

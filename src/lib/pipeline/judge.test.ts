@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { JevDecision } from "@/lib/ai/jev";
+import { JUDGE_PROMPT_VERSION, JUDGE_QUESTIONS, WRITTEN_BY_ME_PROMPT_VERSION, WRITTEN_BY_ME_QUESTIONS } from "@/lib/ai/prompts/judge";
 
 import { buildJudgeState, decideOutcome, judgeCandidate, parseJudgeAnswers, type Decide, type JudgeSignals } from "./judge";
 
@@ -84,6 +85,46 @@ describe("buildJudgeState", () => {
       context: source.text,
       source: { kind: "meeting", occurred_at: "2025-09-22" },
     });
+  });
+});
+
+describe("buildJudgeState의 작성자", () => {
+  const identity = { name: "나", aliases: [], emails: [] };
+  const doc = { text: "## 다음 단계\n- 도메인 연결 설정 바꾸기", kind: "doc", occurredAt: new Date("2026-10-12T21:00:00+09:00") };
+  const todo = { title: "도메인 연결 설정 변경", quote: "도메인 연결 설정 바꾸기", due_text: null };
+
+  it("사용자가 직접 쓴 원문이면 source.written_by_me를 넘긴다", () => {
+    expect(buildJudgeState(todo, { ...doc, writtenByMe: true }, identity).source).toEqual({
+      kind: "doc",
+      occurred_at: "2026-10-12",
+      written_by_me: true,
+    });
+  });
+
+  it("다른 사람이 썼거나(false) 모르면(null · 없음) 넘기지 않는다", () => {
+    for (const writtenByMe of [false, null, undefined]) {
+      expect(buildJudgeState(todo, { ...doc, writtenByMe }, identity).source).toEqual({ kind: "doc", occurred_at: "2026-10-12" });
+    }
+  });
+
+  it("사용자가 쓴 문서만 그에 맞춘 질문으로 묻고, 작성자를 모르면 전과 같은 질문을 보낸다", async () => {
+    const sent: unknown[] = [];
+    const versions: string[] = [];
+    const decide: Decide = async (request) => {
+      sent.push(request.questions);
+      return { model: "typesafe/jev-test", answers };
+    };
+    for (const writtenByMe of [true, false, null]) versions.push((await judgeCandidate(todo, { ...doc, writtenByMe }, identity, decide)).promptVersion);
+    expect(sent).toEqual([WRITTEN_BY_ME_QUESTIONS, JUDGE_QUESTIONS, JUDGE_QUESTIONS]);
+    // judge_logs에서 어느 질문 묶음으로 물었는지 가를 수 있게 버전도 다르다.
+    expect(versions).toEqual([WRITTEN_BY_ME_PROMPT_VERSION, JUDGE_PROMPT_VERSION, JUDGE_PROMPT_VERSION]);
+    expect(WRITTEN_BY_ME_PROMPT_VERSION).toBe(`${JUDGE_PROMPT_VERSION}-self`);
+    // 다른 것은 두 질문뿐이고, 공통 질문에는 작성자 조건이 없다.
+    const changed = Object.keys(JUDGE_QUESTIONS).filter(
+      (key) => JSON.stringify(JUDGE_QUESTIONS[key as keyof typeof JUDGE_QUESTIONS]) !== JSON.stringify(WRITTEN_BY_ME_QUESTIONS[key as keyof typeof JUDGE_QUESTIONS]),
+    );
+    expect(changed).toEqual(["is_my_commitment", "certainty"]);
+    expect(JSON.stringify(JUDGE_QUESTIONS)).not.toContain("written_by_me");
   });
 });
 

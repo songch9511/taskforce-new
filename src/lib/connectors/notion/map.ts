@@ -54,10 +54,20 @@ export function isMeetingPage(markdown: string, title: string | null): boolean {
   return /<meeting-notes\b/.test(markdown) || /meeting|sync|1:1|회의|미팅|싱크/i.test(title ?? "");
 }
 
-export function pageToItem(page: NotionPage, markdown: string, users: NotionUser[]): IngestItem {
+/**
+ * 사용자가 직접 쓴 페이지인가: 만든 사람이 연결한 사람(ownerUserId)이면 true, 다른 사람이면 false.
+ * 회의록(사용자가 만들었어도 다른 사람의 말이 담긴다)이거나 연결한 사람 · 만든 사람을 모르면 null(모름).
+ */
+export function pageWrittenByMe(page: NotionPage, kind: IngestItem["kind"], ownerUserId: string | null): boolean | null {
+  if (kind === "meeting" || !ownerUserId || !page.created_by?.id) return null;
+  return page.created_by.id === ownerUserId;
+}
+
+export function pageToItem(page: NotionPage, markdown: string, users: NotionUser[], ownerUserId: string | null = null): IngestItem {
   const names: UserNames = Object.fromEntries(users.filter((u) => u.name).map((u) => [u.id, u.name as string]));
   const title = pageTitle(page);
   const body = cleanNotionMarkdown(markdown, names);
+  const kind = isMeetingPage(markdown, title) ? "meeting" : "doc";
   const attendees = pagePeople(page)
     .map((u) => ({ ...(u.name ? { name: u.name } : {}), ...(u.person?.email ? { email: u.person.email } : {}) }))
     .filter((p) => p.name || p.email);
@@ -66,12 +76,13 @@ export function pageToItem(page: NotionPage, markdown: string, users: NotionUser
   return {
     externalId: page.id,
     externalVersion: page.last_edited_time,
-    kind: isMeetingPage(markdown, title) ? "meeting" : "doc",
+    kind,
     title: title?.slice(0, 200) ?? null,
     text: (title ? `# ${title}\n\n${body}` : body).slice(0, MAX_SOURCE_TEXT),
     occurredAt: pageOccurredAt(page),
     lastEditedAt: new Date(page.last_edited_time),
     externalUrl: safeNotionUrl(page.url),
     ...(attendees.length > 0 ? { participants: { attendees: attendees.slice(0, 200) } } : {}),
+    writtenByMe: pageWrittenByMe(page, kind, ownerUserId),
   };
 }

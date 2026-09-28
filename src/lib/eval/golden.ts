@@ -13,6 +13,8 @@ export const goldenSourceSchema = z.object({
   occurred_at: z.iso.datetime({ offset: true }),
   text: z.string().min(1),
   participants: participantsSchema.optional(),
+  /** 원문을 사용자가 직접 썼나 (sources.written_by_me). 없으면 모름 */
+  written_by_me: z.boolean().optional(),
 });
 
 export const expectedActionSchema = z.object({

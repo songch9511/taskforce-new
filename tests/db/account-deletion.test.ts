@@ -15,13 +15,17 @@ const USER_TABLES = [
   "action_links",
   "actions",
   "claims",
+  "connection_requests",
   "connections",
   "devices",
   "evidence",
   "judge_logs",
   "metric_events",
   "missing_reports",
+  "oauth_handoffs",
+  "oauth_nonces",
   "profiles",
+  "rate_limit_events",
   "sources",
   "weekly_checks",
 ];
@@ -74,6 +78,16 @@ async function seed(userId: string, tokenHex: string) {
   ]);
   await db.query(`insert into public.weekly_checks (user_id, week_start, answer) values ($1, '2026-09-21', 'no')`, [userId]);
   await db.query(`insert into public.missing_reports (user_id) values ($1)`, [userId]);
+  await db.query(`insert into public.rate_limit_events (user_id, kind) values ($1, 'ask')`, [userId]);
+  await db.query(`insert into public.connection_requests (user_id, provider) values ($1, 'zoom')`, [userId]);
+  await db.query(`insert into public.oauth_nonces (nonce, user_id, provider, expires_at) values ($1, $2, 'notion', now())`, [
+    `nonce-${userId}`,
+    userId,
+  ]);
+  await db.query(
+    `insert into public.oauth_handoffs (id, user_id, provider, sealed_code, expires_at) values ($1, $2, 'notion', 'v1.x.y.z', now())`,
+    [`handoff-${userId}`, userId],
+  );
   return connectionId;
 }
 

@@ -20,7 +20,7 @@
 
 | | A. **Taskforce** (정식) | B. **Taskforce Gmail beta** |
 |---|---|---|
-| 범위 | `openid` · `email` (비민감, 아래 결정) · `https://www.googleapis.com/auth/calendar.events.readonly` (민감) · `https://www.googleapis.com/auth/meetings.space.readonly` (민감) | `openid` · `email` (비민감) · `https://www.googleapis.com/auth/gmail.readonly` (**제한**) |
+| 범위 | `openid` · `email` (비민감, 아래 결정) · `https://www.googleapis.com/auth/calendar.events.owned.readonly` (민감, 아래 결정) · `https://www.googleapis.com/auth/meetings.space.readonly` (민감) | `openid` · `email` (비민감) · `https://www.googleapis.com/auth/gmail.readonly` (**제한**) |
 | 앱의 연결 | `google` (Calendar + Meet 전사) | `gmail` |
 | 게시 상태 | In production + 브랜드 · 민감 범위 심사 | **Testing**으로 시작 → 제한 범위 심사 + CASA를 함께 진행 → 통과하면 In production |
 | 심사 기간 (Google FAQ 추정치) | 브랜드 2~3 영업일, 민감 범위 10 영업일 | 제한 범위 약 6주 + CASA. 전체 2~3개월로 잡는다 |
@@ -38,11 +38,11 @@ redirect 경로는 서버의 연결 틀(`src/lib/connectors/callback.ts`, `/api/
 - 빼면 Calendar 기본 캘린더 id로 이메일을 짐작해야 하고, Gmail은 `users.getProfile`로 받을 수 있다. 어느 쪽이든 앱에 쓰는 범위를 적은 그대로 콘솔에 등록한다.
 - 참고: 테스트 상태의 7일 만료는 요청 범위가 이름 · 이메일 · 프로필뿐일 때만 예외다. B는 `gmail.readonly`가 있어 7일 만료가 적용된다.
 
-### 결정: `calendar.events.readonly` 대신 `calendar.events.owned.readonly`
+### 결정: `calendar.events.readonly` 대신 `calendar.events.owned.readonly` (2026-09-27 확정)
 
 - Google은 "필요한 가장 좁은 범위"를 요구하고, 심사에서 더 좁은 범위로 안 되는 이유를 묻는다.
 - `calendar.events.owned.readonly`("See the events on Google calendars you own")는 이용자가 소유한 캘린더의 일정만 읽는다. 다른 사람이 보낸 초대도 이용자 기본 캘린더(소유)에 사본으로 들어오므로, **기본 캘린더만 쓴다면 이 범위로 충분할 가능성이 높다.**
-- 권장: 트랙 2-3 구현 때 `owned.readonly`로 먼저 시험한다. 초대받은 회의가 모두 보이면 그 범위로 등록한다. 팀 공용 캘린더처럼 소유하지 않은 캘린더가 꼭 필요하면 `events.readonly`로 두고 아래 필요성 문안의 "narrower scope" 문장을 쓴다. 콘솔에서 두 범위의 등급(민감)을 확인한다.
+- **범위는 `calendar.events.owned.readonly`로 확정했다.** 트랙 2-3 구현 때 초대받은 회의가 모두 보이는지로 다시 확인한다. 팀 공용 캘린더처럼 소유하지 않은 캘린더가 꼭 필요하다고 밝혀지면 그때 `events.readonly`로 바꾸고 이 절 · 아래 필요성 문안 · 처리방침 3장의 권한 이름을 함께 고친다.
 
 ### 결정: 옛 프로젝트
 
@@ -141,7 +141,7 @@ AI 데이터 동의 화면(첫 연결 전 한 번)은 `docs/go-live/app-store.md
 | OAuth client | Web application `Taskforce server` | Web application `Taskforce Gmail server` |
 | Authorized JavaScript origins | 없음 (서버에서 교환) | 없음 |
 | Authorized redirect URIs | `https://api.taskforcelabs.dev/api/connectors/google/callback` | `https://api.taskforcelabs.dev/api/connectors/gmail/callback` |
-| Data access (scopes) | `openid`, `email`, `…/calendar.events.readonly`(또는 `owned.readonly`), `…/meetings.space.readonly` | `openid`, `email`, `…/gmail.readonly` |
+| Data access (scopes) | `openid`, `email`, `…/calendar.events.owned.readonly`, `…/meetings.space.readonly` | `openid`, `email`, `…/gmail.readonly` |
 
 - 권한 요청 주소에는 `access_type=offline`(갱신 토큰), `prompt=consent`(재연결 때 갱신 토큰을 다시 받기), `include_granted_scopes=false`를 쓴다. B는 테스트 상태에서 7일마다 갱신 토큰이 만료되므로 `invalid_grant`를 받으면 연결 상태를 `reauth`로 바꾸고 앱이 재연결을 안내한다(마이그레이션 `20261003000000`의 `reauth` 상태).
 - client secret · 토큰 · 인증 코드는 문서 · 영상 · 로그에 넣지 않는다. client ID는 공개 값이다.
@@ -164,16 +164,14 @@ Data handling: Google data is read by the Taskforce server (Vercel, Sydney regio
 Taskforce uses the account's email address for two user-facing purposes: (1) to show which Google account is connected on the Connections screen, and (2) to recognize the user among meeting attendees and email recipients, so that tasks the user committed to are separated from tasks that belong to other people.
 ```
 
-### A. `https://www.googleapis.com/auth/calendar.events.readonly` (민감)
+### A. `https://www.googleapis.com/auth/calendar.events.owned.readonly` (민감)
 
 ```
 Taskforce reads events on the user's calendars (title, start and end time, organizer, attendees, and the Google Meet conference ID) to connect all sources that belong to the same meeting. Meeting notes from other tools (for example Notion AI notes) often have no attendee list and no speakers, so Taskforce cannot tell whose task an action item is. By matching the calendar event at the same time, Taskforce attaches the attendees to the meeting note and to the Meet transcript, groups them under one meeting in the task's "Sources", and uses the attendee list to decide whether a task is the user's or someone else's. The user sees this in the app as the meeting title and time on each task's evidence and as correctly assigned tasks instead of a review request.
 
 Events are read only; Taskforce never creates, edits, deletes, or responds to events. Event descriptions and attachments are not read.
 
-Narrower scopes are insufficient: calendar.freebusy returns no titles or attendees, and calendar.calendarlist.readonly returns no events. [Use one of the two sentences below.]
-(A) We request calendar.events.owned.readonly because all meetings the user attends, including invitations from others, appear on the user's own primary calendar.
-(B) calendar.events.owned.readonly is insufficient because users rely on shared team calendars they do not own to hold the meetings they attend.
+Narrower scopes are insufficient: calendar.freebusy returns no titles or attendees, and calendar.calendarlist.readonly returns no events. We request calendar.events.owned.readonly, not the broader calendar.events.readonly, because all meetings the user attends, including invitations from others, appear on the user's own primary calendar.
 ```
 
 ### A. `https://www.googleapis.com/auth/meetings.space.readonly` (민감)
@@ -213,7 +211,7 @@ Google 요구 사항(제한 범위 심사 문서): OAuth 권한 화면을 **영�
 - macOS 언어와 Google 계정 언어를 영어로 둔다. 3~5분.
 - YouTube에 **일부 공개(Unlisted)**로 올리고, 로그인하지 않은 브라우저에서 열리는지 확인한다.
 
-**주소창에 client ID 보이기.** 앱의 연결은 `ASWebAuthenticationSession`으로 권한 화면을 연다. 이 창이 전체 주소를 보여 주지 않으면, 녹화는 Mac의 **기본 브라우저(Chrome)**에서 권한 화면을 여는 흐름으로 한다: 앱 → Connect → Chrome이 열리고 → 권한 → `taskforce://connections/google?status=connected`로 앱이 다시 열린다. Chrome에서 주소창을 눌러 전체 주소를 펼치고 `client_id=…apps.googleusercontent.com`이 읽히게 확대한다. 이 흐름이 앱에서 되는지 트랙 3-4 구현 때 확인한다(코드 확인 필요).
+**주소창에 client ID 보이기.** 앱의 연결은 `ASWebAuthenticationSession`으로 권한 화면을 연다. 이 창이 전체 주소를 보여 주지 않으면, 녹화는 Mac의 **기본 브라우저(Chrome)**에서 권한 화면을 여는 흐름으로 한다: 앱 → Connect → Chrome이 열리고 → 권한 → `taskforce://connections/google?handoff=<id>`로 앱이 다시 열리고, 앱이 곧바로 `POST /api/v1/connections/google/complete`를 불러 Connected가 된다(GO_LIVE.md 1장). Chrome에서 주소창을 눌러 전체 주소를 펼치고 `client_id=…apps.googleusercontent.com`이 읽히게 확대한다. 이 흐름이 앱에서 되는지 트랙 3-4 구현 때 확인한다(코드 확인 필요).
 
 **앱에서 범위의 쓰임이 보여야 한다.** Calendar의 쓰임(같은 회의 잇기 · 참석자로 담당 판정)이 화면에 보이지 않으면 심사에서 "기능이 없다"고 본다. 할 일을 펼쳤을 때 근거 줄에 일정 제목 · 시각이 보이고, Sources에 회의록과 Meet 전사가 한 회의로 묶여야 한다(트랙 2-3 · 3-2 요구 사항).
 
@@ -331,7 +329,7 @@ Meet REST API의 회의 기록 목록은 **이용자가 주최한 회의**만 �
 | 암호화 | 전송 TLS(Vercel HTTPS), 토큰 AES-256-GCM(`src/lib/connectors/crypto.ts`, `CONNECTOR_TOKEN_KEY`), Supabase 저장 시 암호화 | **키 교체 절차** 문서(암호문의 `v1` 접두사로 새 키 버전 추가 → 재암호화 → 옛 키 폐기) |
 | 비밀값 | `.env.local` 커밋 안 함, Vercel env | Vercel env를 Sensitive로 표시, 접근자 목록 |
 | 입력 검증 | `src/lib/api/contract.ts` zod, 원문 한도(20만 자 · 제목 200자 · 관련자 200명) | — |
-| 속도 제한 | `src/lib/api/rate-limit.ts`, `missing_reports` · `ask_requests` | — |
+| 속도 제한 | `src/lib/api/rate-limit.ts`, `missing_reports`(누락 신고) · `rate_limit_events` + `take_rate_limit`(물어보기 · 연결 시작, 마이그레이션 20261005000000) | — |
 | 로그 | 원문 · 토큰을 남기지 않는 규칙, Vercel 1일 보관, 로그 드레인 없음 | 로그 샘플(가린 것)로 증명 |
 | 보안 헤더 | 없음 (`next.config.ts`가 비어 있다, 2026-09-27) | HSTS · CSP · X-Frame-Options · Referrer-Policy 추가 (코드) |
 | 스캔 | 없음 | SAST(예: Semgrep), 의존성(`npm audit`, `osv-scanner`), DAST(OWASP ZAP으로 Preview 배포 인증 스캔). **평가기관이 받는 도구 · 형식을 먼저 묻는다** |

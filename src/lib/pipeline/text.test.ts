@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { quoteContext, quoteInText } from "./text";
+import { findQuoteSpan, quoteContext, quoteInText } from "./text";
 
 const text = ["a: 1", "b: 2", "c: 3", "나: 금요일까지 제안서", "보내드릴게요.", "d: 4", "e: 5"].join("\n");
 
@@ -48,5 +48,37 @@ describe("quoteContext", () => {
     // 10줄 안의 인용은 늘려도 같은 결과
     expect(quoteContext(text, "금요일까지 제안서 보내드릴게요", 1, 1500, Infinity)).toBe(quoteContext(text, "금요일까지 제안서 보내드릴게요", 1));
     expect(quoteContext(long, "없는 말", 1, 1500, Infinity)).toBeNull();
+  });
+});
+
+describe("findQuoteSpan", () => {
+  it("공백 · 문장부호 · 대소문자 차이를 무시하고, 원문에 있는 그대로의 구간을 돌려준다", () => {
+    const span = findQuoteSpan(text, "금요일까지  제안서 보내드릴게요!");
+    expect(span).toEqual({ start: text.indexOf("금요일"), end: text.indexOf("보내드릴게요") + "보내드릴게요".length, quote: "금요일까지 제안서\n보내드릴게요" });
+    expect(text.slice(span!.start, span!.end)).toBe(span!.quote);
+    expect(findQuoteSpan("Please SEND the deck by Friday.", "send the deck")?.quote).toBe("SEND the deck");
+  });
+
+  it("모델이 바꾼 글자가 아니라 원문의 글자를 돌려준다 (따옴표 · 말줄임표 모양 등)", () => {
+    const source = "박팀장: “견적서는 월요일에 받아도 괜찮아요…”";
+    expect(findQuoteSpan(source, '"견적서는 월요일에 받아도 괜찮아요..."')?.quote).toBe("견적서는 월요일에 받아도 괜찮아요");
+  });
+
+  it("떨어진 구절을 '...'로 이어 붙인 인용은 받지 않는다 (quoteInText는 받는다)", () => {
+    const stitched = "b: 2 ... 금요일까지 제안서";
+    expect(quoteInText(stitched, text)).toBe(true);
+    expect(findQuoteSpan(text, stitched)).toBeNull();
+  });
+
+  it("원문에 없거나 비어 있으면 null", () => {
+    expect(findQuoteSpan(text, "월요일까지")).toBeNull();
+    expect(findQuoteSpan(text, " ... ")).toBeNull();
+    expect(findQuoteSpan("", "금요일")).toBeNull();
+  });
+
+  it("정규화로 길이가 바뀌는 글자(İ → i̇)가 있어도 위치가 맞는다", () => {
+    const source = "İstanbul: 금요일까지 보낼게요";
+    expect(findQuoteSpan(source, "금요일까지 보낼게요")?.quote).toBe("금요일까지 보낼게요");
+    expect(findQuoteSpan(source, "İSTANBUL 금요일")?.quote).toBe("İstanbul: 금요일");
   });
 });

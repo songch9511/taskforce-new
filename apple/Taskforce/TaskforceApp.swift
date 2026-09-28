@@ -1,13 +1,17 @@
 import SwiftUI
 import TaskforceKit
+import TaskforceUI
 
 @main
 struct TaskforceApp: App {
-    @State private var startup = Startup.make()
+    #if os(macOS)
+    @NSApplicationDelegateAdaptor(MacAppDelegate.self) private var appDelegate
+    #endif
 
     var body: some Scene {
+        #if os(iOS)
         WindowGroup {
-            switch startup {
+            switch AppRuntime.startup {
             case .ready(let session, let services):
                 RootView()
                     .environment(session)
@@ -17,6 +21,42 @@ struct TaskforceApp: App {
                 ConfigErrorView(message: message)
             }
         }
+        #else
+        // 에이전트 앱: Dock · 창 없이 메뉴 막대 아이콘 + ⌥Space 런처 (MacAppDelegate)
+        MenuBarExtra {
+            MenuBarMenu()
+        } label: {
+            MenuBarLabel()
+        }
+        Settings {
+            switch AppRuntime.startup {
+            case .ready(let session, let services):
+                MacSettingsView()
+                    .environment(session)
+                    .environment(\.services, services)
+                    .environment(AppRuntime.account(services: services))
+            case .misconfigured(let message):
+                ConfigErrorView(message: message)
+                    .frame(width: 420, height: 240)
+            }
+        }
+        #endif
+    }
+}
+
+/// 앱 전체에서 하나만 두는 것들: 설정 · 로그인 상태 · 서비스. Mac은 SwiftUI 장면 밖(런처 패널)에서도 같은 것을 쓴다.
+@MainActor
+enum AppRuntime {
+    static let startup = Startup.make()
+
+    private static var accountStore: AccountStore?
+
+    /// 연결 · 동의 · 프로필 상태 (iPhone 시트와 Mac 설정 창이 같은 것을 본다)
+    static func account(services: AppServices) -> AccountStore {
+        if let accountStore { return accountStore }
+        let store = AccountStore(services: services)
+        accountStore = store
+        return store
     }
 }
 
@@ -42,7 +82,7 @@ struct ConfigErrorView: View {
     let message: String
 
     var body: some View {
-        ContentUnavailableView("설정이 필요합니다", systemImage: "wrench.and.screwdriver", description: Text(message))
+        ContentUnavailableView("Setup needed", systemImage: "wrench.and.screwdriver", description: Text(message))
             .padding()
     }
 }

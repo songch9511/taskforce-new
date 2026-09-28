@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { authorizeUrl, exchangeCode, notionClient, NotionError, NOTION_VERSION } from "./api";
+import { authorizeUrl, exchangeCode, notionClient, NotionError, NOTION_VERSION, revokeToken } from "./api";
 
 type Call = { url: string; init: RequestInit };
 
@@ -45,6 +45,25 @@ describe("Notion OAuth", () => {
     expect((calls[0].init.headers as Record<string, string>).Authorization).toBe(`Basic ${Buffer.from("cid:sec").toString("base64")}`);
     expect(JSON.parse(calls[0].init.body as string)).toEqual({ grant_type: "authorization_code", code: "code1", redirect_uri: "https://x.dev/cb" });
   });
+
+  it("토큰을 Basic 인증으로 폐기한다 (계정 삭제)", async () => {
+    const { fetch, calls } = fakeFetch([{ body: { request_id: "r1" } }]);
+    await revokeToken({ clientId: "cid", clientSecret: "sec", redirectUri: "https://x.dev/cb", fetch }, "tok");
+    expect(calls[0].url).toBe("https://api.notion.com/v1/oauth/revoke");
+    expect(calls[0].init.method).toBe("POST");
+    expect((calls[0].init.headers as Record<string, string>).Authorization).toBe(`Basic ${Buffer.from("cid:sec").toString("base64")}`);
+    expect(JSON.parse(calls[0].init.body as string)).toEqual({ token: "tok" });
+  });
+
+  it("이미 폐기 · 무효인 토큰이라는 오류만 성공으로 보고, 다른 400 · 서버 오류는 던진다", async () => {
+    const config = { clientId: "cid", clientSecret: "sec", redirectUri: "https://x.dev/cb" };
+    const revoke = (status: number, body?: unknown) => revokeToken({ ...config, fetch: fakeFetch([{ status, body }]).fetch }, "tok");
+    await expect(revoke(400, { object: "error", code: "invalid_grant" })).resolves.toBeUndefined();
+    await expect(revoke(401, { object: "error", code: "unauthorized" })).resolves.toBeUndefined();
+    await expect(revoke(400, { object: "error", code: "validation_error" })).rejects.toMatchObject({ status: 400, code: "validation_error" });
+    await expect(revoke(400, {})).rejects.toThrow(NotionError);
+    await expect(revoke(500)).rejects.toThrow(NotionError);
+  });
 });
 
 describe("notionClient", () => {
@@ -77,5 +96,21 @@ describe("notionClient", () => {
   it("사용자 정보 권한이 없으면 사용자는 null", async () => {
     const { fetch } = fakeFetch([{ status: 403, body: { code: "restricted_resource" } }]);
     expect(await notionClient("tok", { fetch }).user("u1")).toBeNull();
+  });
+
+  it("봇 주인이 사람이면 그 사람의 id, 워크스페이스면 null (GET /v1/users/me)", async () => {
+    const owned = fakeFetch([{ body: { object: "user", id: "bot1", type: "bot", bot: { owner: { type: "user", user: { object: "user", id: "u-me" } } } } }]);
+    expect(await notionClient("tok", { fetch: owned.fetch }).botOwnerId()).toBe("u-me");
+    expect(owned.calls[0].url).toBe("https://api.notion.com/v1/users/me");
+
+    const workspace = fakeFetch([{ body: { object: "user", id: "bot1", type: "bot", bot: { owner: { type: "workspace", workspace: true } } } }]);
+    expect(await notionClient("tok", { fetch: workspace.fetch }).botOwnerId()).toBeNull();
+  });
+
+  it("페이지 하나를 읽고, 공유가 빠졌으면 null", async () => {
+    const { fetch } = fakeFetch([{ body: { ...page, created_by: { object: "user", id: "u-me" } } }, { status: 404, body: { code: "object_not_found" } }]);
+    const client = notionClient("tok", { fetch });
+    expect((await client.page("p1"))?.created_by?.id).toBe("u-me");
+    expect(await client.page("gone")).toBeNull();
   });
 });

@@ -33,7 +33,7 @@ export async function runPipeline(input: ExtractInput, deps: PipelineDeps): Prom
   const extracted = await extractCandidates(input, deps.complete);
   const verified = verifyCandidates(extracted.candidates, { text: input.text, occurredAt: input.occurredAt });
 
-  const source = { text: input.text, kind: input.kind, occurredAt: input.occurredAt, participants: input.participants };
+  const source = { text: input.text, kind: input.kind, occurredAt: input.occurredAt, participants: input.participants, writtenByMe: input.writtenByMe };
   const judged = await Promise.all(
     verified.kept.map(async (candidate) => ({
       candidate,

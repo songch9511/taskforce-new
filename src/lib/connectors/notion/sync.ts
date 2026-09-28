@@ -1,5 +1,5 @@
 import { connectionSettingsSchema, type DataSourceSetting } from "@/lib/api/contract";
-import { isUser, type UserIdentity } from "@/lib/pipeline/identity";
+import type { UserIdentity } from "@/lib/pipeline/identity";
 
 import { DEFAULT_INGEST_OPTIONS, ingestItems, type IngestDeps, type IngestResult } from "../ingest";
 import { DEFAULT_TASK_INGEST, ingestTaskItems, type TaskIngestDeps, type TaskIngestResult, type TaskItem } from "../tasks-ingest";
@@ -9,11 +9,20 @@ import { kstDate } from "@/lib/ai/prompts/extract";
 
 import { dataSourceTitle, NotionError, type NotionClient, type NotionPage, type NotionUser } from "./api";
 import { mentionedUserIds, pagePeople, pageToItem, safeNotionUrl } from "./map";
-import { isActiveTaskSource, isIgnoredSource, openTasksFilter, pageSnapshot, suggestSetting, toPerson } from "./tasks";
+import {
+  autoConfirmSetting,
+  isActiveTaskSource,
+  isIgnoredSource,
+  isNotionUserMe,
+  openTasksFilter,
+  pageSnapshot,
+  recheckAutoConfirmed,
+  suggestSetting,
+} from "./tasks";
 
 // Notion 연결 하나를 동기화한다: 연결에 공유된 페이지 중 커서 이후에 고친 것을 찾아 원문으로 넣는다.
 // 본문(markdown)을 받기 전에 "안정됐는지 · 이미 넣었는지"를 먼저 걸러 Notion 요청 수를 아낀다.
-// 사용자가 확인한 할 일 DB의 페이지는 글 원문이 아니라 구조화된 할 일로 넣는다 (본문을 받지 않고 속성만 쓴다).
+// 확인한 할 일 DB(사용자 확인 또는 자동 확인)의 페이지는 글 원문이 아니라 구조화된 할 일로 넣는다 (본문을 받지 않고 속성만 쓴다).
 
 export type NotionTaskDeps = TaskIngestDeps & { identity: (connection: Connection) => Promise<UserIdentity> };
 
@@ -25,6 +34,10 @@ const BACKFILL_EDITED_WITHIN_DAYS = 60;
 /** 처음 본 DB (저장된 설정 없음): 공유가 나중에 끊기면 알아차리도록 연결 설정에 남긴다 */
 export type SeenDataSource = { id: string; title: string | null; role: DataSourceSetting["role"] };
 export type UnreachableDataSource = { id: string; title: string | null };
+/** 이번 동기화가 할 일 DB로 자동 확인한 DB와 그 설정 (연결 설정에 남긴다, recordNotionHealth) */
+export type AutoConfirmed = { id: string; setting: DataSourceSetting };
+/** 이번 동기화가 자동 확인을 되돌린 DB와 되돌린 확인 전 설정 (지금 규칙으로는 자동 확인할 수 없다. 연결 설정에 남긴다, recordNotionHealth) */
+export type AutoConfirmReverted = { id: string; setting: DataSourceSetting };
 
 /** 처음 훑기를 마친 할 일 DB와, 그때 쓴 설정의 확인 시각 (그 사이 사용자가 설정을 바꿨으면 표시하지 않는다) */
 export type Backfilled = { dataSourceId: string; confirmedAt: string };
@@ -54,11 +67,47 @@ export type NotionSyncResult = IngestResult & {
   backfilled: Backfilled[];
   /** 이번에 처음 본 DB (공유된 DB 중 설정이 없는 것) */
   seen: SeenDataSource[];
+  /** 이번에 자동 확인한 할 일 DB (이번 동기화부터 할 일 경로로 읽었다). 매핑이 바뀌어 다시 자동 확인한 DB도 */
+  autoConfirmed: AutoConfirmed[];
+  /** 이번에 자동 확인을 되돌린 DB (지금 규칙으로는 맞지 않음. 이번 동기화부터 확인 전 DB처럼 글 원문으로 읽었다) */
+  reverted: AutoConfirmReverted[];
   /** 새로 공유된 · 공유가 되돌아온 DB가 있어 최근 기간을 다시 훑었는가 */
   rewound: boolean;
   /** 전에 읽던(설정이 있는) DB 중 지금 읽을 수 없는 것: Notion에서 공유가 빠졌다. 이번에 끝까지 확인하지 못했으면 null(지난 결과를 둔다) */
   unreachable: UnreachableDataSource[] | null;
+  /** 연결한 사람의 Notion user id (모르면 null). 연결 설정에 없던 값이면 설정에 남긴다 (recordNotionHealth) */
+  notionUserId: string | null;
 };
+
+/** 연결 설정에 남겨 둔, 연결한 사람의 Notion user id */
+export const savedNotionUserId = (connection: Connection): string | null =>
+  typeof connection.settings.notionUserId === "string" ? connection.settings.notionUserId : null;
+
+/**
+ * OAuth로 연결을 (다시) 저장할 때의 설정: 남겨 둔 notionUserId를 뺀다. 같은 워크스페이스를 다른 Notion 계정으로 다시 연결하면
+ * 연결 행은 그대로라, 옛 값이 남으면 그 사람이 쓴 문서가 written_by_me = true가 된다. 다음 동기화가 새 토큰의 봇 주인으로 다시 알아낸다.
+ * 뺄 것이 없으면 null (쓰지 않는다).
+ */
+export function settingsWithoutNotionUserId(settings: Record<string, unknown> | null): Record<string, unknown> | null {
+  if (!settings || !("notionUserId" in settings)) return null;
+  const rest = { ...settings };
+  delete rest.notionUserId;
+  return rest;
+}
+
+/**
+ * 연결한 사람의 Notion user id: 설정에 없으면 봇 주인(GET /v1/users/me)으로 알아낸다. 페이지를 사용자가 직접 썼는지 가르는 데 쓴다.
+ * 알 수 없으면(권한 · 일시적인 오류) null로 두고 동기화는 계속한다 (작성자를 모름). 권한 끊김(401)은 그대로 올린다.
+ */
+async function connectedUserId(connection: Connection, client: NotionClient): Promise<string | null> {
+  const saved = savedNotionUserId(connection);
+  if (saved) return saved;
+  return client.botOwnerId().catch((error) => {
+    if (error instanceof NotionError && error.status === 401) throw error;
+    console.error("Notion 연결한 사람 확인 실패:", error instanceof Error ? error.message : error);
+    return null;
+  });
+}
 
 export async function syncNotion(
   connection: Connection,
@@ -66,8 +115,13 @@ export async function syncNotion(
   ingest: IngestDeps & { tasks?: NotionTaskDeps },
   options: NotionSyncOptions,
 ): Promise<NotionSyncResult> {
-  const settings = connectionSettingsSchema.safeParse(connection.settings).data;
-  const dataSources = settings?.dataSources ?? {};
+  const parsed = connectionSettingsSchema.safeParse(connection.settings);
+  // 설정을 읽지 못하면 사용자가 정한 역할(가져오지 않음 · 글 원문)을 모르므로 이번에는 자동 확인하지 않는다 (설정 내용은 로그에 남기지 않는다).
+  if (!parsed.success) {
+    console.error(`Notion 연결 설정을 읽지 못해 이번 동기화는 할 일 DB를 자동 확인하지 않습니다 (${connection.id}): 문제 ${parsed.error.issues.length}개`);
+  }
+  const settings = parsed.data;
+  const dataSources = { ...(settings?.dataSources ?? {}) };
   const settingOf = (page: NotionPage) => (page.parent.data_source_id ? dataSources[page.parent.data_source_id] : undefined);
   const taskSettingOf = (page: NotionPage) => {
     const setting = settingOf(page);
@@ -87,6 +141,26 @@ export async function syncNotion(
     .filter((ds) => !dataSources[ds.id])
     .map((ds) => ({ id: ds.id, title: dataSourceTitle(ds), role: suggestSetting(ds).role }));
   const recovered = (settings?.health?.unreachable ?? []).some((d) => visible?.has(d.id));
+
+  // 할 일 DB로 보이고 담당 · 상태 · 기한 속성이 분명한 DB는 사용자 확인 없이 확인한다 (앱에 확인 화면이 없다).
+  // 이번 동기화부터 할 일 경로로 읽어(처음 훑기 포함) 같은 페이지를 글 원문으로 또 넣지 않는다. 사용자가 확인한 설정은 건드리지 않는다.
+  // 이미 자동 확인한 DB는 지금 규칙 · 지금 스키마로 다시 본다: 규칙을 좁히기 전에 자동 확인된 DB가 계속 남의 할 일을 만들지 않게.
+  // 더는 맞지 않으면 확인 전으로 되돌려 이번 동기화부터 할 일 경로로 읽지 않는다(처음 훑기도 하지 않는다).
+  const autoConfirmed: AutoConfirmed[] = [];
+  const reverted: AutoConfirmReverted[] = [];
+  for (const ds of ingest.tasks && parsed.success ? (visible?.values() ?? []) : []) {
+    const saved = dataSources[ds.id];
+    if (saved?.confirmedBy === "auto") {
+      const next = recheckAutoConfirmed(ds, saved, options.now);
+      if (next?.confirmedBy === "auto") autoConfirmed.push({ id: ds.id, setting: next });
+      else if (next) reverted.push({ id: ds.id, setting: next });
+      continue;
+    }
+    const setting = autoConfirmSetting(ds, saved, options.now);
+    if (setting) autoConfirmed.push({ id: ds.id, setting });
+  }
+  for (const { id, setting } of [...autoConfirmed, ...reverted]) dataSources[id] = setting;
+  if (reverted.length > 0) console.warn(`Notion 할 일 DB 자동 확인을 되돌렸습니다 (${connection.id}): ${reverted.length}개`);
 
   const cursor = connection.syncCursor as NotionCursor | null;
   const lookback = new Date(options.now.getTime() - options.lookbackDays * 86_400_000);
@@ -128,7 +202,10 @@ export async function syncNotion(
   const chosen = fresh.slice(0, options.maxItems);
   const deferred = [...settling, ...fresh.slice(options.maxItems)];
 
-  // 3) 고른 페이지만 본문과 사람 이름을 받아 원문으로 만든다.
+  // 3) 고른 페이지만 본문과 사람 이름을 받아 원문으로 만든다. 만든 사람이 연결한 사람이면 사용자가 직접 쓴 문서다.
+  //    할 일도 담당 · 고친 사람이 연결한 사람이면 사용자다. 넣을 것이 없으면 봇 주인을 묻지 않는다.
+  const taskWork = Boolean(ingest.tasks) && (taskPages.length > 0 || Object.values(dataSources).some((s) => isActiveTaskSource(s) && !s.backfilledAt));
+  const notionUserId = chosen.length > 0 || taskWork ? await connectedUserId(connection, client) : savedNotionUserId(connection);
   const users = new Map<string, NotionUser>();
   const items: IngestItem[] = [];
   for (const page of chosen) {
@@ -141,7 +218,7 @@ export async function syncNotion(
         if (user) users.set(id, user);
       }
     }
-    items.push(pageToItem(page, markdown, [...users.values()]));
+    items.push(pageToItem(page, markdown, [...users.values()], notionUserId));
   }
 
   const result = await ingestItems(connection, items, ingest, {
@@ -154,7 +231,7 @@ export async function syncNotion(
 
   // 3-1) 할 일 DB: 속성만으로 스냅샷을 만들어 넣는다.
   const taskRun = ingest.tasks
-    ? await syncTasks(connection, client, ingest.tasks, dataSources, taskPages, users, options)
+    ? await syncTasks(connection, client, ingest.tasks, dataSources, taskPages, users, notionUserId, options)
     : { result: undefined, backfilled: [] as Backfilled[] };
   if (taskRun.result) deferred.push(...taskPages.filter((p) => taskRun.result!.deferred.includes(p.id)));
 
@@ -188,8 +265,11 @@ export async function syncNotion(
     tasks: taskRun.result,
     backfilled: taskRun.backfilled,
     seen,
+    autoConfirmed,
+    reverted,
     rewound,
     unreachable,
+    notionUserId,
     skipped: { ...result.skipped, settling: settling.length, overLimit: fresh.length - chosen.length, alreadyIngested: result.skipped.alreadyIngested + already.size },
     scanned: scanned.length,
     cursor: { after: nextAfter < after.toISOString() ? after.toISOString() : nextAfter },
@@ -218,6 +298,7 @@ async function syncTasks(
   dataSources: Record<string, DataSourceSetting>,
   scannedTaskPages: NotionPage[],
   users: Map<string, NotionUser>,
+  notionUserId: string | null,
   options: NotionSyncOptions,
 ): Promise<{ result: TaskIngestResult | undefined; backfilled: Backfilled[] }> {
   const pages = new Map(scannedTaskPages.map((p) => [p.id, p]));
@@ -256,23 +337,24 @@ async function syncTasks(
   if (pages.size === 0 && !hasTaskSources) return { result: undefined, backfilled };
 
   const identity = await deps.identity(connection);
-  // 마지막으로 고친 사람은 id만 온다. 사용자인지 알려면 사람 정보(이메일)가 필요하다.
+  // 마지막으로 고친 사람은 id만 온다. 연결한 사람이 아니면 사람 정보로 사용자인지 가린다 (isNotionUserMe: 연결한 사람을 알면 이메일만).
   const editedByUser = async (page: NotionPage) => {
     const id = page.last_edited_by?.id;
     if (!id) return false;
+    if (id === notionUserId) return true;
     if (!users.has(id)) {
       const user = await client.user(id);
       if (user) users.set(id, user);
     }
     const user = users.get(id);
-    return user ? isUser(toPerson(user), identity) : false;
+    return user ? isNotionUserMe(user, identity, notionUserId) : false;
   };
 
   const items: TaskItem[] = [];
   for (const page of pages.values()) {
     const setting = dataSources[page.parent.data_source_id ?? ""];
     if (!isActiveTaskSource(setting)) continue;
-    const snapshot = pageSnapshot(page, setting, identity);
+    const snapshot = pageSnapshot(page, setting, identity, notionUserId);
     if (!snapshot) continue;
     items.push({
       externalId: page.id,

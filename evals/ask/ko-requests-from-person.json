@@ -1,0 +1,58 @@
+{
+  "id": "ko-requests-from-person",
+  "description": "한 사람이 여러 원문(메시지 · 메일)으로 부탁한 일을 모아 답한다. 관계없는 회의의 할 일은 넣지 않는다",
+  "origin": "synthetic",
+  "asked_at": "2026-09-24T18:00:00+09:00",
+  "question": "이번 주에 이과장이 나한테 부탁한 거 뭐 있었지?",
+  "sources": [
+    {
+      "id": "s1",
+      "kind": "message",
+      "occurred_at": "2026-09-22T10:10:00+09:00",
+      "text": "이과장: 도윤님, 계약서 초안 검토 부탁드려요. 수요일 오후까지면 좋겠어요.\n도윤: 네 수요일 오후까지 검토해서 코멘트 드릴게요."
+    },
+    {
+      "id": "s2",
+      "kind": "email",
+      "title": "출장 경비 정산",
+      "occurred_at": "2026-09-23T09:30:00+09:00",
+      "text": "From: 이과장\nTo: 도윤\nSubject: 출장 경비 정산\n\n도윤님, 지난 출장 경비 영수증을 금요일까지 올려 주세요.\n\n이과장 드림"
+    },
+    {
+      "id": "s3",
+      "kind": "meeting",
+      "title": "주간 회의",
+      "occurred_at": "2026-09-22T09:00:00+09:00",
+      "text": "주간 회의\n지수: 채용 공고는 제가 다음 주에 올릴게요.\n도윤: 좋아요."
+    }
+  ],
+  "actions": [
+    {
+      "id": "a1",
+      "title": "계약서 초안 검토 코멘트",
+      "status": "open",
+      "owner": "me",
+      "due_date": "2026-09-23",
+      "counterpart": "이과장",
+      "quotes": [{ "source": "s1", "quote": "수요일 오후까지 검토해서 코멘트 드릴게요" }]
+    },
+    {
+      "id": "a2",
+      "title": "출장 경비 영수증 업로드",
+      "status": "open",
+      "owner": "me",
+      "due_date": "2026-09-25",
+      "counterpart": "이과장",
+      "quotes": [{ "source": "s2", "quote": "지난 출장 경비 영수증을 금요일까지 올려 주세요" }]
+    },
+    {
+      "id": "a3",
+      "title": "채용 공고 게시",
+      "status": "open",
+      "owner": "other",
+      "counterpart": "지수",
+      "quotes": [{ "source": "s3", "quote": "채용 공고는 제가 다음 주에 올릴게요" }]
+    }
+  ],
+  "expect": { "unknown": false, "cite_sources": ["s1", "s2"], "answer_contains_any": ["계약서", "영수증"] }
+}

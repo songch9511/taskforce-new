@@ -2,7 +2,8 @@
 name: Taskforce
 options:
   bundleIdPrefix: dev.taskforcelabs
-  developmentLanguage: ko
+  # 화면 틀은 영어 (docs/BRAND.md "UI 문구"). 시스템 부품(알림 버튼 · Apple 로그인 버튼)도 같은 언어로 맞춘다.
+  developmentLanguage: en
   deploymentTarget:
     iOS: "18.0"
     macOS: "15.0"
@@ -28,6 +29,9 @@ targets:
       - path: Taskforce
     dependencies:
       - package: TaskforceKit
+        product: TaskforceKit
+      - package: TaskforceKit
+        product: TaskforceUI
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: $(APP_BUNDLE_ID)
@@ -42,6 +46,8 @@ targets:
         TARGETED_DEVICE_FAMILY: "1,2"
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        # Mac은 에이전트 앱(Dock 없음, 메뉴 막대 + ⌥Space 런처). iOS에는 붙이지 않는다.
+        "INFOPLIST_KEY_LSUIElement[sdk=macosx*]": YES
         CODE_SIGN_ENTITLEMENTS: Taskforce/Taskforce-iOS.entitlements
         "CODE_SIGN_ENTITLEMENTS[sdk=macosx*]": Taskforce/Taskforce-macOS.entitlements
         ENABLE_HARDENED_RUNTIME: YES

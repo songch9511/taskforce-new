@@ -12,8 +12,8 @@ import { quoteContext } from "@/lib/pipeline/text";
 import { buildHandoff, HANDOFF_LIMITS, type HandoffEvidence, type HandoffInput, type HandoffUserEdit } from "./handoff";
 import { changeEvents, projectAction, type EventDraft, type UserEventType } from "./project";
 import { rankNow, type RankInput } from "./rank";
-import { actionRowValues, storedReasons } from "./rows";
-import { confirmChanges, editChanges, userClaims, type UserChange } from "./user-claims";
+import { actionRowValues, storedReasons, toPgVector } from "./rows";
+import { confirmChanges, editChanges, userClaims, userCreatedAction, type UserChange } from "./user-claims";
 
 // 사용자의 쓰기 (수정 · 삭제 · 확인 · 착수). 모두 service role로 쓰고 user_id로 범위를 좁힌다.
 // 사용자가 바꾼 값도 Claim(origin: user)으로 남기고, 바뀐 필드마다 이벤트를 남긴다 (지표 1: AI 오판율).
@@ -37,7 +37,7 @@ async function applyUserChanges(
   userId: string,
   actionId: string,
   changes: (current: ReturnType<typeof projectAction>) => UserChange[],
-  event: Exclude<UserEventType, "user_started" | "user_reported_missing">,
+  event: Exclude<UserEventType, "user_started" | "user_reported_missing" | "user_created">,
   options: { clearReasons?: boolean } = {},
 ): Promise<ActionSummary> {
   await retryOnConflict(async () => {
@@ -82,6 +82,33 @@ export function confirmAction(admin: SupabaseClient, userId: string, actionId: s
   return applyUserChanges(admin, userId, actionId, confirmChanges, "user_confirmed", { clearReasons: true });
 }
 
+export type NewUserAction = {
+  title: string;
+  dueDate: string | null;
+  /** 관련 원문과 그 구절 (사용자 권한으로 본인 원문인지 · 구절이 원문에 있는지 먼저 확인한다) */
+  source: { id: string; quote: string } | null;
+  /** 매칭용 임베딩 (외부 AI 처리 동의 전이면 null, api/create-action.ts) */
+  embedding: number[] | null;
+};
+
+/**
+ * 직접 추가 (POST /api/v1/actions): Action 행 · 사용자 Claim · 근거(원문을 골랐을 때만, created) · user_created 이벤트를
+ * 한 트랜잭션(write_action)으로 쓴다. 매칭 없이 새 Action을 만든다 (앱이 먼저 찾아보고 없을 때만 추가한다).
+ */
+export async function createUserAction(admin: SupabaseClient, userId: string, input: NewUserAction): Promise<ActionSummary> {
+  const id = randomUUID();
+  const { claims, projected, event } = userCreatedAction({ title: input.title, dueDate: input.dueDate, sourceId: input.source?.id ?? null }, new Date(), randomUUID);
+  await writeAction(admin, userId, id, {
+    expectedVersion: null,
+    action: { ...actionRowValues(projected), counterpart: null, embedding: input.embedding ? toPgVector(input.embedding) : null },
+    claims,
+    evidence: input.source ? { sourceId: input.source.id, quote: input.source.quote, role: "created" } : { sourceId: null, quote: null },
+    events: [event],
+    actor: "user",
+  });
+  return summary(admin, userId, id);
+}
+
 /** 착수: 시각 · 이벤트 · 지표를 DB 함수 start_action이 한 트랜잭션으로 쓴다. 열린 Action만. */
 export async function startAction(admin: SupabaseClient, userId: string, actionId: string): Promise<ActionSummary> {
   const { error } = await admin.rpc("start_action", { p_user_id: userId, p_action_id: actionId });
@@ -123,9 +150,17 @@ export async function handoffAction(client: SupabaseClient, admin: SupabaseClien
   const evidenceRows = (evidence ?? []) as { quote: string; role: HandoffEvidence["role"]; source_id: string }[];
   const sourceIds = [...new Set(evidenceRows.map((e) => e.source_id))];
   const { data: sources } = sourceIds.length
-    ? await client.from("sources").select("id, kind, title, raw_text, occurred_at, external_url").in("id", sourceIds).throwOnError()
+    ? await client.from("sources").select("id, kind, title, raw_text, raw_text_purged_at, occurred_at, external_url").in("id", sourceIds).throwOnError()
     : { data: [] };
-  type SourceRow = { id: string; kind: string; title: string | null; raw_text: string; occurred_at: string; external_url: string | null };
+  type SourceRow = {
+    id: string;
+    kind: string;
+    title: string | null;
+    raw_text: string;
+    raw_text_purged_at: string | null;
+    occurred_at: string;
+    external_url: string | null;
+  };
   const sourceById = new Map(((sources ?? []) as SourceRow[]).map((s) => [s.id, s]));
 
   const input: HandoffInput = {
@@ -133,7 +168,8 @@ export async function handoffAction(client: SupabaseClient, admin: SupabaseClien
     evidence: evidenceRows.flatMap((e) => {
       const s = sourceById.get(e.source_id);
       if (!s) return [];
-      const context = quoteContext(s.raw_text, e.quote, HANDOFF_LIMITS.contextLines, HANDOFF_LIMITS.quoteChars);
+      // 보관 기간(90일)이 지나 원문 글이 지워졌으면 앞뒤 줄 없이 저장된 근거 인용만 옮긴다.
+      const context = s.raw_text_purged_at ? null : quoteContext(s.raw_text, e.quote, HANDOFF_LIMITS.contextLines, HANDOFF_LIMITS.quoteChars);
       return [{ quote: e.quote, context, role: e.role, source: { kind: s.kind, title: s.title, occurredAt: s.occurred_at, url: s.external_url } }];
     }),
     olderEvidence: Math.max(0, (evidenceCount ?? 0) - evidenceRows.length),

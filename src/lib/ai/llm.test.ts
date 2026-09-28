@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 
-import { completeJson, LlmError, type LlmConfig } from "./llm";
+import { completeJson, llmConfigFromEnv, LlmError, type LlmConfig } from "./llm";
 
 const schema = z.object({ ok: z.boolean() });
 const request = { system: "s", user: "u", schemaName: "t", schema };
@@ -35,6 +35,24 @@ describe("completeJson", () => {
       provider: { require_parameters: true, data_collection: "deny", zdr: true },
     });
     expect(c.bodies[0]).not.toHaveProperty("temperature");
+  });
+
+  it("공급자를 고정하면 그 목록만, 그 순서로, 넘어가지 않게 보낸다", async () => {
+    const c = { ...config(['{"ok":true}']), providers: ["together", "fireworks"] };
+    await completeJson(c, request);
+    expect((c.bodies[0] as { provider: unknown }).provider).toEqual({
+      require_parameters: true,
+      data_collection: "deny",
+      zdr: true,
+      only: ["together", "fireworks"],
+      order: ["together", "fireworks"],
+      allow_fallbacks: false,
+    });
+  });
+
+  it("환경변수 LLM_PROVIDERS로 목록을 바꾸고, 비우면 기본 미국 ZDR 목록", () => {
+    expect(llmConfigFromEnv({ OPENROUTER_API_KEY: "k", LLM_MODEL: "m", LLM_PROVIDERS: "deepinfra" }).providers).toEqual(["deepinfra"]);
+    expect(llmConfigFromEnv({ OPENROUTER_API_KEY: "k", LLM_MODEL: "m" }).providers).toEqual(["together", "fireworks", "deepinfra", "baseten"]);
   });
 
   it("JSON이 아닌 답은 한 번 다시 묻는다", async () => {

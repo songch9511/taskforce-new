@@ -2,10 +2,24 @@ import "server-only";
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 
-import { activeConnections, claimConnection, ingestDeps, loadToken, markBackfilled, recordNotionHealth, recordSync, saveToken, taskDeps } from "../store";
-import type { Connection } from "../types";
+import { CONSENT_WITHDRAWN_MESSAGE, ConsentRequiredError } from "@/lib/consent/gate";
 
-import { notionClient, NotionError, refreshToken, type NotionClient, type NotionOAuthConfig, type NotionToken } from "./api";
+import { claimConnection, ingestDeps, loadToken, markBackfilled, recordNotionHealth, recordSync, saveConnection, saveToken, taskDeps } from "../store";
+import type { Connection, Connector } from "../types";
+
+import {
+  authorizeUrl,
+  exchangeCode,
+  notionClient,
+  NotionError,
+  notionTokenSchema,
+  refreshToken,
+  revokeToken,
+  type NotionClient,
+  type NotionOAuthConfig,
+  type NotionToken,
+} from "./api";
+import { notionCoverage } from "./data-sources";
 import { DEFAULT_NOTION_SYNC, syncNotion, type NotionSyncResult } from "./sync";
 
 // Notion 연결을 실제로 동기화한다: 토큰을 풀고, 만료됐으면 갱신하고, 결과와 커서를 남긴다.
@@ -66,14 +80,21 @@ export async function syncNotionConnection(
 
   try {
     const result = await withNotionClient(admin, connection.id, run);
-    await markBackfilled(admin, connection, result.backfilled);
-    // 상태 기록이 실패해도 이미 넣은 원문 · 커서는 남긴다.
+    // 상태 기록이 실패해도 이미 넣은 원문 · 커서는 남긴다. 자동 확인한 할 일 DB도 여기서 남기므로 처음 훑기 표시보다 먼저 한다
+    // (실패하면 처음 훑기도 표시되지 않아 다음 동기화가 다시 확인하고 다시 훑는다).
     await recordNotionHealth(admin, connection, result).catch((error) =>
       console.error(`Notion 연결 상태 기록 실패 (${connection.id}):`, error instanceof Error ? error.message : error),
     );
+    await markBackfilled(admin, connection, result.backfilled);
     await recordSync(admin, connection, { cursor: result.cursor });
     return { connectionId: connection.id, ok: true, result };
   } catch (error) {
+    // 동기화 도중 외부 AI 처리 동의를 철회함: 남은 항목은 처리하지 않았다. 연결 오류가 아니므로 오류로 남기지 않고,
+    // 커서도 옮기지 않아 다시 동의하면 이어서 가져온다.
+    if (error instanceof ConsentRequiredError) {
+      await recordSync(admin, connection, {});
+      return { connectionId: connection.id, ok: false, error: CONSENT_WITHDRAWN_MESSAGE, revoked: false };
+    }
     const { message, revoked } = userFacingError(error);
     console.error(`Notion 동기화 실패 (${connection.id}):`, error instanceof Error ? error.message : error);
     await recordSync(admin, connection, { error: message, revoked });
@@ -81,21 +102,26 @@ export async function syncNotionConnection(
   }
 }
 
-/** 활성 Notion 연결을 오래 안 한 순서로 돌린다. 실행 시간 한도(deadline)를 넘기면 남은 연결은 다음 차례로 미룬다. */
-export async function syncAllNotion(
-  admin: SupabaseClient,
-  options: { userId?: string; deadline?: number; minIntervalMs?: number } = {},
-) {
-  const outcomes: ConnectionSyncOutcome[] = [];
-  for (const connection of await activeConnections(admin, "notion", options.userId)) {
-    // 수동 동기화를 연달아 누르지 못하게 한다.
-    const since = connection.lastSyncedAt ? Date.now() - connection.lastSyncedAt.getTime() : Infinity;
-    if (options.minIntervalMs && since < options.minIntervalMs) {
-      outcomes.push({ connectionId: connection.id, ok: false, error: "방금 동기화했습니다. 잠시 뒤 다시 시도해 주세요.", revoked: false, busy: true });
-      continue;
-    }
-    if (options.deadline && Date.now() > options.deadline) break;
-    outcomes.push(await syncNotionConnection(admin, connection, { deadline: options.deadline }));
-  }
-  return outcomes;
-}
+/** 연결 틀(registry.ts)에 내놓는 Notion 연동 */
+export const notionConnector: Connector = {
+  provider: "notion",
+  authorizeUrl: (state) => authorizeUrl(notionOAuthConfig(), state),
+  connect: async (admin, userId, code) => {
+    const token = await exchangeCode(notionOAuthConfig(), code);
+    const connectionId = await saveConnection(admin, {
+      userId,
+      provider: "notion",
+      externalAccountId: token.workspace_id,
+      displayName: token.workspace_name ?? null,
+      token,
+    });
+    // 선택 화면에서 아무것도 고르지 않았거나 회의록 DB가 빠졌으면 바로 알린다 (점검이 실패해도 연결은 된 것으로 둔다).
+    const coverage = await notionCoverage(admin, userId, connectionId).catch(() => "ok" as const);
+    return coverage === "empty" ? "connected_empty" : coverage === "no_meetings" ? "connected_no_meetings" : "connected";
+  },
+  sync: (admin, connection, options) => syncNotionConnection(admin, connection, options),
+  revokeToken: async (token) => {
+    const parsed = notionTokenSchema.safeParse(token);
+    if (parsed.success) await revokeToken(notionOAuthConfig(), parsed.data.access_token);
+  },
+};

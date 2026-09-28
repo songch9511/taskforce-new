@@ -8,15 +8,23 @@ import type { TaskSnapshot, TaskStatus } from "@/lib/pipeline/structured";
 import { dataSourceTitle, type NotionDataSource, type NotionPage, type NotionSchemaProperty, type NotionUser } from "./api";
 
 // Notion 할 일 DB (docs/INTEGRATIONS.md "Notion 할 일 DB"): 어느 DB가 할 일 DB인지 추정하고, 페이지 속성을 스냅샷으로 바꾼다.
-// 추정은 제안일 뿐이다. 사용자가 /lab에서 확인한 DB만 할 일로 처리한다. 모두 순수 함수다.
+// 추정은 제안일 뿐이다. 확인한 DB만 할 일로 처리한다: 사용자가 /lab에서 확인했거나, 매핑이 분명해 동기화가 자동 확인한 DB
+// (autoConfirmSetting, 동기화마다 지금 규칙으로 다시 본다: recheckAutoConfirmed). 모두 순수 함수다.
 
-const ASSIGNEE_NAME = /담당|assignee|owner|책임/i;
+const ASSIGNEE_NAME = /담당|assign|owner|책임/i;
 const DUE_NAME = /기한|마감|due|deadline|date|날짜|일정/i;
 const STATUS_NAME = /상태|status|진행/i;
 const CHECKBOX_DONE_NAME = /done|완료|complete/i;
 const ATTENDEE_NAME = /attendee|참석/i;
 const MEETING_TITLE = /meeting|회의|미팅|\bsync\b|1:1|1on1|stand-?up|스탠드업|데일리|스크럼|회고|retro/i;
 const TASK_TITLE = /action|task|to-?do|할 ?일|액션|업무|이슈|issue/i;
+/**
+ * 자동 확인에 쓰는 할 일 DB 이름 (TASK_TITLE보다 좁다). 영어는 단어로만 맞춘다: Transactions · Customer Interactions · Satisfaction은 아니다.
+ * 리액션도 아니다.
+ */
+const TASK_TITLE_STRICT = /\b(?:actions?|tasks?|to-?dos?|issues?)(?:\s*items?)?\b|할 ?일|(?<!리)액션|업무|이슈/i;
+/** 할 일 같은 말이 있어도 기록 · 문서 DB로 보이는 이름 (업무일지 · 업무 로그 · Task log · 업무 매뉴얼): 자동 확인하지 않는다 */
+const RECORD_TITLE = /일지|일기|로그|매뉴얼|가이드|위키|\blogs?\b|journal|diary|wiki|guide|manual/i;
 /** Complete 그룹에 있어도 완료가 아니라 취소로 보는 상태 이름 (예: Cancelled, Archived) */
 const DROPPED_NAME = /cancel|취소|won'?t|archiv|보관|drop|중단|폐기/i;
 
@@ -39,6 +47,118 @@ export function detectProps(ds: NotionDataSource): TaskPropertyMap | null {
     assignee: assignee.id,
     due: due?.id ?? null,
     status: { id: status.id, type: status.type as "status" | "checkbox" },
+  };
+}
+
+/** 담당으로 쓰지 않는 사람 속성 이름 (참석자 · 요청자 · 검토자 · 참조 · 작성자 등) */
+const NOT_ASSIGNEE_NAME = /attendee|참석|요청|request|review|검토|참조|\bcc\b|report|작성|creat|생성|멘션|mention|watch|follow|구독/i;
+/** 기한으로 쓰지 않는 날짜 속성 이름 (시작 · 만든 · 고친 날짜) */
+const NOT_DUE_NAME = /start|begin|시작|착수|creat|생성|작성|등록|edit|수정|updat/i;
+/** 끝낸 날짜로 보이는 이름 (완료일 · 완료 일시 · Completed at · Done date · Closed): 기한으로 쓰지 않는다 */
+const DONE_DATE_NAME = /complet|완료|finish|closed|done|resolved/i;
+/** 끝낼 예정 · 목표 날짜 (완료 예정일 · 완료 목표일 · Target completion): 끝낸 날짜가 아니라 기한 후보다 */
+const PLANNED_NAME = /예정|목표|target|plan|expect|estimat|기한|마감|due|deadline/i;
+const isNotDueName = (name: string) => NOT_DUE_NAME.test(name) || (DONE_DATE_NAME.test(name) && !PLANNED_NAME.test(name));
+/** 날짜 속성이 여럿일 때 기한으로 고르는 이름 (DUE_NAME보다 좁다: Start date · 날짜 같은 이름은 고르지 않는다) */
+const DUE_STRONG_NAME = /기한|마감|due|deadline/i;
+
+/** 후보가 없으면 null, 하나면 그것, 여럿이면 이름이 맞는 것이 딱 하나일 때 그것. 그래도 못 고르면 undefined (애매함) */
+function onlyOne(candidates: NotionSchemaProperty[], name: RegExp): NotionSchemaProperty | null | undefined {
+  if (candidates.length <= 1) return candidates[0] ?? null;
+  const named = candidates.filter((p) => name.test(p.name));
+  return named.length === 1 ? named[0] : undefined;
+}
+
+/**
+ * 사용자 확인 없이 쓸 수 있을 만큼 분명한 속성 매핑. 하나라도 애매하면 null (docs/INTEGRATIONS.md "자동 확인").
+ * - 담당: 이름이 담당 · Assignee · Assign · Owner · 책임인 사람 속성(참석자 · 요청자 · 검토자 등으로 보이는 것은 빼고)이 딱 하나.
+ *   사람 속성이 하나뿐이어도 이름이 담당 같지 않으면(참여자 · Participants · Approver · Team) 고르지 않는다.
+ * - 상태: 상태 속성 + 이름이 상태 같은 선택 속성 + 이름이 완료 같은 체크박스 중 하나뿐이거나, 여럿이면 이름이 상태 · Status · 진행인 것이 딱 하나.
+ *   고른 것이 선택 속성이면 null (할 일로 읽을 수 없다). 상태 속성이면 열린 옵션과 완료 · 취소 옵션이 모두 있어야 한다
+ *   (완료를 가를 수 없으면 끝난 할 일까지 열린 할 일로 들어온다).
+ * - 기한: 시작 · 만든 · 고친 날짜와 끝낸 날짜(완료일 · Completed at, 완료 예정일 · Target completion 같은 예정 · 목표 날짜는 빼지 않음)를 뺀
+ *   날짜 속성이 하나면 그것, 여럿이면 이름이 기한 · 마감 · Due · Deadline인 것이 딱 하나. 날짜 속성이 아예 없으면 기한 없음.
+ *   날짜 속성이 있는데 모두 빠졌으면(시작일뿐 등) 애매하다: 기한이 어디 있는지 모른다.
+ */
+export function unambiguousProps(ds: NotionDataSource): { props: TaskPropertyMap; statusMap: Record<string, TaskStatus> } | null {
+  const props = Object.values(ds.properties);
+  const titles = props.filter((p) => p.type === "title");
+  const assignees = props.filter((p) => p.type === "people" && ASSIGNEE_NAME.test(p.name) && !NOT_ASSIGNEE_NAME.test(p.name));
+  const status = onlyOne(
+    props.filter(
+      (p) => p.type === "status" || (p.type === "select" && STATUS_NAME.test(p.name)) || (p.type === "checkbox" && CHECKBOX_DONE_NAME.test(p.name)),
+    ),
+    STATUS_NAME,
+  );
+  const dates = props.filter((p) => p.type === "date");
+  const dueCandidates = dates.filter((p) => !isNotDueName(p.name));
+  const due = dates.length > 0 && dueCandidates.length === 0 ? undefined : onlyOne(dueCandidates, DUE_STRONG_NAME);
+  if (titles.length !== 1 || assignees.length !== 1 || !status || due === undefined) return null;
+  const assignee = assignees[0];
+  if (status.type !== "status" && status.type !== "checkbox") return null;
+  const statusMap = defaultStatusMap(status);
+  const values = Object.values(statusMap);
+  if (!values.includes("open") || !values.some((v) => v === "done" || v === "dropped")) return null;
+  return {
+    props: { title: titles[0].id, assignee: assignee.id, due: due?.id ?? null, status: { id: status.id, type: status.type } },
+    statusMap,
+  };
+}
+
+/**
+ * 동기화가 스스로 확인하는 할 일 DB 설정 (confirmedBy: auto). 할 일 DB로 제안되고(suggestSetting) 이름이 분명히 할 일 DB이고
+ * (TASK_TITLE_STRICT, 기록 · 문서 DB 이름이 아님) 매핑이 분명할 때만(unambiguousProps).
+ * suggestSetting은 /lab 확인 화면의 기본값일 뿐이라 느슨하게 둔다 (사용자가 확인하기 전에는 할 일로 읽지 않는다).
+ * 사용자가 확인한 설정은 역할 · 매핑과 상관없이(가져오지 않음 · 글 원문 포함) 건드리지 않는다. 사용자는 /lab(이후 앱)에서 바꿀 수 있다.
+ */
+export function autoConfirmSetting(ds: NotionDataSource, saved: DataSourceSetting | undefined, now: Date): DataSourceSetting | null {
+  if (saved?.confirmedAt || suggestSetting(ds).role !== "tasks") return null;
+  const title = dataSourceTitle(ds) ?? "";
+  if (!TASK_TITLE_STRICT.test(title) || RECORD_TITLE.test(title)) return null;
+  const mapping = unambiguousProps(ds);
+  if (!mapping) return null;
+  return {
+    role: "tasks",
+    title: dataSourceTitle(ds),
+    props: mapping.props,
+    statusMap: mapping.statusMap,
+    confirmedAt: now.toISOString(),
+    confirmedBy: "auto",
+    ...(saved?.seenAt ? { seenAt: saved.seenAt } : {}),
+  };
+}
+
+/** 같은 매핑인가 (속성 id · 타입, 상태 매핑). 저장된 값은 jsonb라 키 순서가 바뀌어 올 수 있어 값으로 비교한다. */
+function sameMapping(a: DataSourceSetting, b: DataSourceSetting): boolean {
+  const [pa, pb] = [a.props, b.props];
+  const [ma, mb] = [a.statusMap ?? {}, b.statusMap ?? {}];
+  return (
+    pa?.title === pb?.title &&
+    pa?.assignee === pb?.assignee &&
+    pa?.due === pb?.due &&
+    pa?.status.id === pb?.status.id &&
+    pa?.status.type === pb?.status.type &&
+    Object.keys(ma).length === Object.keys(mb).length &&
+    Object.entries(ma).every(([key, value]) => mb[key] === value)
+  );
+}
+
+/**
+ * 자동 확인한 설정(confirmedBy: auto)을 지금 규칙 · 지금 스키마로 다시 본다 (동기화마다). 규칙을 좁히기 전에 자동 확인된 DB
+ * (예: 담당 속성 이름이 "Person"인 회의 액션 아이템 목록)가 계속 할 일로 읽혀 남의 일을 만들지 않게. 바꿀 것이 없으면 null:
+ * 자동 확인이 아니거나(사용자 확인 · 확인 전은 건드리지 않는다), 아직 맞고 매핑도 같다.
+ * - 아직 맞는데 매핑이 바뀌었으면 새 자동 확인 설정 (새 confirmedAt이라 새 매핑으로 처음 훑기를 다시 한다. /lab에서 매핑을 바꿀 때와 같다).
+ * - 더는 맞지 않으면 자동 확인이 없었을 때의 확인 전 설정 (처음 본 DB로 남기는 모양: 제안 역할 · 이름 · 처음 본 시각).
+ *   매핑 · backfilledAt은 남기지 않는다: 나중에 다시 맞게 되면 새로 자동 확인하고 처음 훑기도 다시 한다.
+ */
+export function recheckAutoConfirmed(ds: NotionDataSource, saved: DataSourceSetting | undefined, now: Date): DataSourceSetting | null {
+  if (saved?.confirmedBy !== "auto") return null;
+  const next = autoConfirmSetting(ds, { role: saved.role, title: saved.title, ...(saved.seenAt ? { seenAt: saved.seenAt } : {}) }, now);
+  if (next) return sameMapping(next, saved) ? null : next;
+  return {
+    role: suggestSetting(ds).role,
+    title: dataSourceTitle(ds)?.slice(0, 200) ?? null,
+    seenAt: saved.seenAt ?? saved.confirmedAt ?? now.toISOString(),
   };
 }
 
@@ -100,8 +220,28 @@ export function dueDate(date: { start: string; end?: string | null } | null | un
 
 export const toPerson = (u: NotionUser): Person => ({ ...(u.name ? { name: u.name } : {}), ...(u.person?.email ? { email: u.person.email } : {}) });
 
-/** 페이지 한 버전 → 스냅샷. 제목이 비었으면 null */
-export function pageSnapshot(page: NotionPage, setting: DataSourceSetting & { props: TaskPropertyMap }, identity: UserIdentity): TaskSnapshot | null {
+/**
+ * Notion 사람이 사용자인가 (할 일의 담당 · 마지막으로 고친 사람).
+ * 연결한 사람의 Notion user id(notionUserId, 봇 주인)를 알면: 그 id이거나, 다른 id면 이메일이 프로필과 맞을 때만 (이름 · 별칭은 보지 않는다:
+ * 같은 이름의 팀원을 사용자로 보면 남의 할 일이 내 할 일이 되고 그 수정이 사용자 권한(tracker)이 된다).
+ * 모르면 프로필과 맞는지(isUser: 이메일 · 이름 · 별칭)로 본다.
+ */
+export function isNotionUserMe(u: NotionUser, identity: UserIdentity, notionUserId: string | null): boolean {
+  if (notionUserId === null) return isUser(toPerson(u), identity);
+  if (u.id === notionUserId) return true;
+  return u.person?.email ? isUser({ email: u.person.email }, identity) : false;
+}
+
+/**
+ * 페이지 한 버전 → 스냅샷. 제목이 비었으면 null.
+ * 담당에 사용자(isNotionUserMe: 연결한 사람의 Notion user id, 이메일, 연결한 사람을 모를 때만 이름 · 별칭)가 있으면 내 할 일.
+ */
+export function pageSnapshot(
+  page: NotionPage,
+  setting: DataSourceSetting & { props: TaskPropertyMap },
+  identity: UserIdentity,
+  notionUserId: string | null = null,
+): TaskSnapshot | null {
   const { props } = setting;
   const title = byId(page, props.title)
     ?.title?.map((t) => t.plain_text)
@@ -110,7 +250,7 @@ export function pageSnapshot(page: NotionPage, setting: DataSourceSetting & { pr
   if (!title) return null;
 
   const people = byId(page, props.assignee)?.people ?? [];
-  const owner = people.some((u) => isUser(toPerson(u), identity)) ? "me" : people.length > 0 ? "other" : "unknown";
+  const owner = people.some((u) => isNotionUserMe(u, identity, notionUserId)) ? "me" : people.length > 0 ? "other" : "unknown";
 
   const statusProperty = byId(page, props.status.id);
   let status: TaskStatus = "open";

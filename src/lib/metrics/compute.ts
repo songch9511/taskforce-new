@@ -3,10 +3,11 @@ import type { MissStage } from "@/lib/pipeline/missing";
 // PRD 6장 성공 지표를 이벤트에서 계산한다 (순수 함수). 불러오기는 load.ts, 화면은 /admin/metrics.
 //
 // 1 AI 오판율   (사용자가 수정 · 삭제한 AI 생성 Action) / (AI 생성 Action). 필드별 · 단계별(추출 / 매칭 · 갱신)로 나눈다.
-//               누락 신고로 생긴 Action은 AI가 스스로 만든 것이 아니므로 뺀다.
+//               누락 신고 · 직접 추가로 생긴 Action은 AI가 스스로 만든 것이 아니므로 뺀다.
 // 2 착수 시간   app_opened → 첫 action_started / handoff_used
 // 3 리텐션      첫 활동 주부터 N주 뒤에도 활동했는가
-// 4 AI 누락률   (신고된 누락) / (AI 생성 + 신고된 누락). 신고(user_reported_missing)를 놓친 단계별로도 센다
+// 4 AI 누락률   (신고된 누락 + 직접 추가) / (AI 생성 + 신고된 누락 + 직접 추가). 신고(user_reported_missing)는 놓친 단계별로도 센다.
+//               직접 추가(user_created)는 추출이 놓친 할 일을 사용자가 적은 것으로 본다 (원문을 고르지 않으면 단계를 알 수 없다)
 // 5 그림자 목록  주간 질문 "Taskforce 밖에 따로 적어둔 할 일이 있나요?"에 "있다" / ("있다" + "없다"). 건너뛰기는 응답 수에만 넣는다
 
 export type ActionEventRow = {
@@ -104,8 +105,8 @@ export function misjudgment(events: ActionEventRow[], period: Period): Misjudgme
     const created = sorted.find((e) => e.type === "created" && e.actor === "ai");
     // 이 기간에 만들어진 Action만 센다. 고친 것은 기간이 지나서여도 센다 (고침은 만든 뒤에 온다).
     if (!created || !inPeriod(created.at, period)) continue;
-    // 누락 신고로 생긴 Action은 사용자가 알려준 것이다 (지표 4에서 센다)
-    if (sorted.some((e) => e.type === "user_reported_missing")) continue;
+    // 누락 신고 · 직접 추가로 생긴 Action은 사용자가 알려준 것이다 (지표 4에서 센다)
+    if (sorted.some((e) => e.type === "user_reported_missing" || e.type === "user_created")) continue;
     if (created.sourceKind === "task") {
       result.imported++;
       continue;
@@ -232,25 +233,29 @@ export function retention(activity: Activity[], now: Date, weeks = 4): Retention
 }
 
 export type MissedMetric = {
+  /** 누락 신고 (원문 구절을 골라 신고, user_reported_missing) */
   reported: number;
+  /** 직접 추가 (user_created) */
+  added: number;
   rate: number | null;
   available: boolean;
   /** 원래 처리에서 놓친 단계별 신고 수 (단계 기록이 없으면 unknown) */
   byStage: Record<MissStage | "unknown", number>;
 };
 
-/** 누락 신고가 아직 없으면(기능 전) 측정 전으로 둔다. 신고는 실제 누락의 하한이다. */
+/** 누락 신고가 아직 없으면(기능 전) 측정 전으로 둔다. 신고 · 직접 추가는 실제 누락의 하한이다. */
 export function missed(events: ActionEventRow[], misjudged: MisjudgmentMetric, period: Period, reportingAvailable: boolean): MissedMetric {
   const reports = events.filter((e) => e.type === "user_reported_missing" && inPeriod(e.at, period));
+  const added = events.filter((e) => e.type === "user_created" && inPeriod(e.at, period)).length;
   const byStage: MissedMetric["byStage"] = { processing_failed: 0, not_extracted: 0, judge_rejected: 0, merge_absorbed: 0, unknown: 0 };
   for (const report of reports) {
     const stage = report.after?.stage;
     byStage[typeof stage === "string" && stage in byStage ? (stage as MissStage) : "unknown"]++;
   }
   const reported = reports.length;
-  if (!reportingAvailable) return { reported, rate: null, available: false, byStage };
-  const total = misjudged.aiCreated + reported;
-  return { reported, rate: total > 0 ? reported / total : null, available: true, byStage };
+  if (!reportingAvailable) return { reported, added, rate: null, available: false, byStage };
+  const total = misjudged.aiCreated + reported + added;
+  return { reported, added, rate: total > 0 ? (reported + added) / total : null, available: true, byStage };
 }
 
 export type WeeklyCheckRow = {
@@ -278,4 +283,25 @@ export function shadowList(checks: WeeklyCheckRow[], period: Period): ShadowList
   const yes = count("yes");
   const no = count("no");
   return { responses: inRange.length, yes, no, skipped: count("skipped"), rate: yes + no > 0 ? yes / (yes + no) : null };
+}
+
+export type ConnectionsMetric = {
+  /** 기간 안에 연결을 마친 수 (connection_created) */
+  created: number;
+  /** 연결을 마친 사용자 수 */
+  users: number;
+  /** 2단계 연동 "원해요" (전체 기간, 사용자 · 서비스마다 하나): 많은 순서 */
+  requests: { provider: string; count: number }[];
+};
+
+/** 연결: 연결 완료 이벤트와 2단계 연동 요청 수 (원칙 6: 요청이 많은 순서로 붙인다) */
+export function connections(events: MetricEventRow[], requests: { provider: string }[], period: Period): ConnectionsMetric {
+  const created = events.filter((e) => e.type === "connection_created" && inPeriod(e.at, period));
+  const counts = new Map<string, number>();
+  for (const { provider } of requests) counts.set(provider, (counts.get(provider) ?? 0) + 1);
+  return {
+    created: created.length,
+    users: new Set(created.map((e) => e.userId)).size,
+    requests: [...counts].map(([provider, count]) => ({ provider, count })).sort((a, b) => b.count - a.count || a.provider.localeCompare(b.provider)),
+  };
 }

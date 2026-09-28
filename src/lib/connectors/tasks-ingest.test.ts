@@ -69,6 +69,13 @@ describe("ingestTaskItems", () => {
     expect(result.skipped.unchanged).toBe(1);
   });
 
+  it("보관 기간이 지나 스냅샷이 비워졌으면(null) 값을 비교하지 않고 바뀐 것으로 보아 처리한다", async () => {
+    const { deps, processed } = fakeDeps({ page: { done: { version: "v1", snapshot: null }, linked: true } });
+    const result = await ingestTaskItems(connection, [item("page", 30, snap({ owner: "other" }))], deps, options);
+    expect(processed).toEqual([{ id: "page", sourceId: "src-page", prev: null }]);
+    expect(result.skipped.unchanged).toBe(0);
+  });
+
   it("오래된 변경부터, 상한을 넘은 것은 다음으로 미룬다", async () => {
     const { deps, processed } = fakeDeps();
     const result = await ingestTaskItems(connection, [item("a", 10), item("b", 30), item("c", 20)], deps, { ...options, maxItems: 2 });

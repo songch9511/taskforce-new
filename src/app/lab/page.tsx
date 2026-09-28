@@ -6,6 +6,7 @@ import { profileSchema } from "@/lib/api/contract";
 import { requireUser } from "@/lib/auth";
 import type { JudgeSignals, RejectReason } from "@/lib/pipeline/judge";
 import type { VerifiedCandidate } from "@/lib/pipeline/verify";
+import { PURGED_SOURCE_MESSAGE } from "@/lib/retention";
 import { createClient } from "@/lib/supabase/server";
 
 import { nowList } from "@/lib/actions/service";
@@ -13,6 +14,7 @@ import { nowList } from "@/lib/actions/service";
 import { ActionsPanel } from "./actions-panel";
 import { AutoRefresh } from "./auto-refresh";
 import { ConnectionsPanel, type ConnectionRow } from "./connections-panel";
+import { ConsentPanel } from "./consent-panel";
 import { LabForm } from "./lab-form";
 import { MissingReportForm } from "./missing-report-form";
 import { ProfileForm } from "./profile-form";
@@ -26,6 +28,7 @@ type SourceRow = {
   connection_id: string | null;
   external_url: string | null;
   raw_text: string;
+  raw_text_purged_at: string | null;
   occurred_at: string;
   created_at: string;
   processing_status: "pending" | "processing" | "done" | "failed";
@@ -74,7 +77,7 @@ export default async function LabPage({ searchParams }: { searchParams: Promise<
   const { source: selectedId, notion: notionStatus } = await searchParams;
   const supabase = await createClient();
 
-  const { data: profileRow } = await supabase.from("profiles").select("display_name, aliases, emails").maybeSingle();
+  const { data: profileRow } = await supabase.from("profiles").select("display_name, aliases, emails, ai_consent_at").maybeSingle();
   const profile = profileSchema.safeParse(profileRow).data ?? EMPTY_PROFILE;
 
   const ranked = await nowList(supabase).catch(() => ({ now: [], confirmations: [] }));
@@ -87,7 +90,9 @@ export default async function LabPage({ searchParams }: { searchParams: Promise<
 
   const { data: recent } = await supabase
     .from("sources")
-    .select("id, kind, title, connection_id, external_url, raw_text, occurred_at, created_at, processing_status, processing_summary, processing_error")
+    .select(
+      "id, kind, title, connection_id, external_url, raw_text, raw_text_purged_at, occurred_at, created_at, processing_status, processing_summary, processing_error",
+    )
     .order("created_at", { ascending: false })
     .limit(10)
     .returns<SourceRow[]>();
@@ -95,7 +100,9 @@ export default async function LabPage({ searchParams }: { searchParams: Promise<
   const { data: selected } = selectedId
     ? await supabase
         .from("sources")
-        .select("id, kind, title, connection_id, external_url, raw_text, occurred_at, created_at, processing_status, processing_summary, processing_error")
+        .select(
+          "id, kind, title, connection_id, external_url, raw_text, raw_text_purged_at, occurred_at, created_at, processing_status, processing_summary, processing_error",
+        )
         .eq("id", selectedId)
         .returns<SourceRow[]>()
         .maybeSingle<SourceRow>()
@@ -124,6 +131,16 @@ export default async function LabPage({ searchParams }: { searchParams: Promise<
         </CardHeader>
         <CardContent>
           <ActionsPanel now={ranked.now} confirmations={ranked.confirmations} />
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>외부 AI 처리 동의</CardTitle>
+          <CardDescription>원문을 OpenRouter를 거쳐 모델 공급자(추출 · 판정 · 임베딩)로 보내는 데 대한 동의입니다 (App Store 5.1.2(i)).</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <ConsentPanel consentedAt={profile.ai_consent_at} />
         </CardContent>
       </Card>
 
@@ -237,11 +254,15 @@ export default async function LabPage({ searchParams }: { searchParams: Promise<
                 원본 열기
               </a>
             )}
-            <details>
-              <summary className="text-muted-foreground cursor-pointer text-sm">원문 보기</summary>
-              <pre className="bg-muted mt-2 max-h-96 overflow-auto rounded-md p-3 text-xs whitespace-pre-wrap">{selected.raw_text}</pre>
-            </details>
-            {selected.kind !== "task" && <MissingReportForm sourceId={selected.id} />}
+            {selected.raw_text_purged_at ? (
+              <p className="text-muted-foreground text-sm">{PURGED_SOURCE_MESSAGE} 근거 인용은 할 일에 남아 있습니다.</p>
+            ) : (
+              <details>
+                <summary className="text-muted-foreground cursor-pointer text-sm">원문 보기</summary>
+                <pre className="bg-muted mt-2 max-h-96 overflow-auto rounded-md p-3 text-xs whitespace-pre-wrap">{selected.raw_text}</pre>
+              </details>
+            )}
+            {selected.kind !== "task" && !selected.raw_text_purged_at && <MissingReportForm sourceId={selected.id} />}
           </CardContent>
         </Card>
       )}

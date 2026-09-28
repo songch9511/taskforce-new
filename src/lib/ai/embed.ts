@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { DEFAULT_EMBED_PROVIDERS, parseProviders, providerRouting } from "./providers";
+
 // 임베딩 (OpenRouter embeddings). 새 후보와 비슷한 열린 Action을 찾는 데 쓴다 (docs/TRUTH_RULES.md, Phase 2 매칭).
 // 차원은 DB의 actions.embedding(1536)과 맞아야 한다.
 
@@ -7,7 +9,8 @@ const OPENROUTER_EMBEDDINGS_URL = "https://openrouter.ai/api/v1/embeddings";
 export const DEFAULT_EMBEDDING_MODEL = "openai/text-embedding-3-small";
 export const EMBEDDING_DIMENSIONS = 1536;
 
-export type EmbedConfig = { apiKey: string; model: string; fetch?: typeof fetch; timeoutMs?: number };
+/** providers: 보낼 공급자 (OpenRouter slug, 이 순서로만). providers.ts */
+export type EmbedConfig = { apiKey: string; model: string; providers?: string[]; fetch?: typeof fetch; timeoutMs?: number };
 
 export class EmbedError extends Error {
   constructor(message: string) {
@@ -23,7 +26,11 @@ const embeddingResponseSchema = z.object({
 
 export function embedConfigFromEnv(env: Record<string, string | undefined> = process.env): EmbedConfig {
   if (!env.OPENROUTER_API_KEY) throw new EmbedError("OPENROUTER_API_KEY가 필요합니다.");
-  return { apiKey: env.OPENROUTER_API_KEY, model: env.EMBEDDING_MODEL || DEFAULT_EMBEDDING_MODEL };
+  return {
+    apiKey: env.OPENROUTER_API_KEY,
+    model: env.EMBEDDING_MODEL || DEFAULT_EMBEDDING_MODEL,
+    providers: parseProviders(env.EMBED_PROVIDERS, DEFAULT_EMBED_PROVIDERS),
+  };
 }
 
 export async function embed(config: EmbedConfig, texts: string[]): Promise<{ vectors: number[][]; cost?: number }> {
@@ -32,7 +39,7 @@ export async function embed(config: EmbedConfig, texts: string[]): Promise<{ vec
     signal: AbortSignal.timeout(config.timeoutMs ?? 30_000),
     method: "POST",
     headers: { Authorization: `Bearer ${config.apiKey}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ model: config.model, input: texts, provider: { data_collection: "deny", zdr: true } }),
+    body: JSON.stringify({ model: config.model, input: texts, provider: providerRouting(config.providers) }),
   });
   if (!response.ok) throw new EmbedError(`임베딩 요청 실패 (${response.status})`);
 

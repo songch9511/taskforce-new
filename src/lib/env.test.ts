@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { parsePublicEnv } from "./env";
+import { oauthStateSecret, parsePublicEnv } from "./env";
 
 describe("parsePublicEnv", () => {
   it("올바른 값이면 그대로 돌려준다", () => {
@@ -51,5 +51,15 @@ describe("parsePublicEnv", () => {
         NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: "key",
       }),
     ).not.toThrow();
+  });
+});
+
+describe("oauthStateSecret", () => {
+  it("32자 이상이면 앞뒤 공백을 빼고 돌려준다", () => {
+    expect(oauthStateSecret({ OAUTH_STATE_SECRET: ` ${"a".repeat(64)} ` })).toBe("a".repeat(64));
+  });
+
+  it.each([[undefined], [""], ["short-secret"]])("없거나 짧으면 던진다 (%s)", (value) => {
+    expect(() => oauthStateSecret({ OAUTH_STATE_SECRET: value })).toThrow(/OAUTH_STATE_SECRET/);
   });
 });

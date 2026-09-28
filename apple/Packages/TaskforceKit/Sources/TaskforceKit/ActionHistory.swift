@@ -76,6 +76,8 @@ public enum ActionHistory {
             return "시작함"
         case "user_reported_missing":
             return "빠진 할 일로 신고해 추가함"
+        case "user_created":
+            return "직접 추가함"
         default:
             return "변경됨"
         }

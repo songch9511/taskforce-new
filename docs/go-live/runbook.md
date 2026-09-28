@@ -39,6 +39,7 @@
 | `LLM_MODEL` | `z-ai/glm-5.3-flash` (지금 `.env.local`, eval 기준) | 바꾸면 eval을 다시 돌린다 |
 | `JEV_MODEL` | `typesafe/jev-1.13` | 버전 고정 |
 | `EMBEDDING_MODEL` | 비움 → `openai/text-embedding-3-small` | 1536차원이어야 한다 |
+| `LLM_PROVIDERS` · `EMBED_PROVIDERS` · `JEV_PROVIDERS` | 비움 (선택) → 기본값 `src/lib/ai/providers.ts`: LLM `together,fireworks,deepinfra,baseten` · 임베딩 `azure` · Jev `typesafe` | ZDR · 학습 금지 공급자 고정 목록(쉼표 구분). 처리방침 7장 표와 맞춘다(`docs/legal/README.md` 결정 1) |
 | `CONNECTOR_TOKEN_KEY` | `openssl rand -base64 32` | **운영 DB에 이미 저장된 연결 토큰을 암호화한 키와 같아야 한다.** 로컬 `.env.local` 값으로 운영 DB에 연결을 만들었다면 같은 값을 넣고, 새 키를 쓰면 기존 연결은 다시 연결해야 한다 |
 | `CRON_SECRET` | `openssl rand -hex 32` | Vercel Cron이 `Authorization: Bearer`로 보낸다. 없으면 cron이 401 |
 | `OAUTH_STATE_SECRET` | `openssl rand -hex 32` | 32자 이상(`env.ts`의 `oauthStateSecret`) |
@@ -70,7 +71,7 @@
 | Gmail | 프로젝트 B → Clients → `Taskforce Gmail server` | `https://api.taskforcelabs.dev/api/connectors/gmail/callback` | Taskforce dev 프로젝트에 `…/gmail/callback` |
 | Slack OAuth | Slack 앱 → OAuth & Permissions → Redirect URLs | `https://api.taskforcelabs.dev/api/connectors/slack/callback` | Taskforce dev 앱(터널 주소) |
 | Slack 이벤트 | Slack 앱 → Event Subscriptions → Request URL | `https://api.taskforcelabs.dev/api/connectors/slack/events` | Taskforce dev 앱(터널 주소) |
-| 앱 복귀 | 앱 `Info.plist` URL scheme | `taskforce://connections/{provider}?status=…` | 같음 |
+| 앱 복귀 | 앱 `Info.plist` URL scheme | `taskforce://connections/{provider}?handoff=<id>` (앱이 받으면 `POST /api/v1/connections/{provider}/complete`로 마무리) | 같음 |
 
 Google · Slack 경로는 연결 틀(`src/lib/connectors/callback.ts`)의 `/api/connectors/{provider}/callback`을 따른 것이다. 트랙 2-3 · 2-4가 경로를 바꾸면 이 표 · 콘솔 · 매니페스트를 같이 고친다.
 
@@ -82,10 +83,13 @@ Google · Slack 경로는 연결 틀(`src/lib/connectors/callback.ts`)의 `/api/
 
 ```bash
 # 먼저 읽기로 상태 확인 (예: 새 테이블이 있는지)
-npx supabase db query --linked "select to_regclass('public.oauth_nonces'), to_regclass('public.ask_requests')"
+npx supabase db query --linked "select to_regclass('public.oauth_handoffs'), to_regclass('public.rate_limit_events'), to_regclass('public.review_accounts')"
 # 없으면 파일 순서대로 하나씩
 npx supabase db query --linked -f supabase/migrations/20261003000000_go_live_connections_consent.sql
 npx supabase db query --linked -f supabase/migrations/20261004000000_ask.sql
+npx supabase db query --linked -f supabase/migrations/20261005000000_atomic_rate_limits.sql
+npx supabase db query --linked -f supabase/migrations/20261006000000_source_text_retention.sql
+npx supabase db query --linked -f supabase/migrations/20261007000000_review_account_signup_hook.sql
 # 트랙 2-3 · 2-4가 더한 파일도 같은 방식으로
 ```
 
@@ -98,9 +102,12 @@ Supabase → Authentication:
 | URL Configuration → Site URL | `https://api.taskforcelabs.dev` |
 | Redirect URLs | `https://api.taskforcelabs.dev/auth/confirm`, `http://localhost:3000/auth/confirm` |
 | Sign In / Providers → Apple | 켬, Client IDs `dev.taskforcelabs.taskforce` (앱 안 로그인만이면 Services ID · Secret 불필요, PLATFORMS.md 6장) |
-| Providers → Email | 웹 관리 화면의 링크 로그인용으로 켬. 데모 계정 비밀번호 로그인을 쓰면(`app-store.md` 3장 A) 비밀번호 로그인 켬 · 새 가입 끔 |
+| Providers → Email | 웹 관리 화면의 링크 로그인용 + App Store 심사용 비밀번호 로그인으로 켬. 새 가입은 막지 않는다 — 허용 목록은 아래 Hooks가 대신 막는다 |
+| Hooks → Before User Created | Postgres function `public.hook_before_user_created` → **Enable** (마이그레이션 `20261007000000_review_account_signup_hook.sql`). `provider = email`로 가입하는 주소가 `review_accounts`에 없으면 403으로 거절한다. Apple 가입에는 영향 없다(`docs/go-live/app-store.md` 3장) |
 | Email Templates → Magic Link | 앱에 이메일 6자리 코드를 붙이면 `{{ .Token }}` 추가 (PLATFORMS.md 4장) |
 | SMTP | 지금은 Supabase 기본 메일(한도가 낮음, 운영자 로그인용으로만 충분). 이용자에게 이메일 로그인을 열면 자체 SMTP를 붙이고 처리방침 7장에 수탁자를 더한다(`docs/legal/README.md` 결정 3) |
+
+심사 계정 만들기(위 Hook을 켠 뒤): `REVIEW_ACCOUNT_EMAIL=review@taskforcelabs.dev REVIEW_ACCOUNT_PASSWORD=… npx tsx --conditions react-server scripts/create-review-account.ts --yes`(운영 DB 키로, `docs/go-live/app-store.md` 3장).
 
 ### 요금제 · 백업 확인
 
@@ -111,23 +118,24 @@ Supabase → Organization → Billing에서 프로젝트가 **Free**이고 백�
 - **릴리스 `API_BASE_URL`:** `apple/Config/Secrets.xcconfig`(커밋 안 함)에 `API_BASE_URL = https:/$()/api.taskforcelabs.dev`. 아카이브 전에 이 값인지 확인한다. 로컬 서버 값으로 TestFlight에 올리면 테스터가 아무것도 못 한다.
 - **APNs 키:** Apple Developer → Keys → + → Apple Push Notifications service → `.p8` → `APNS_KEY_ID` · `APNS_PRIVATE_KEY`.
 - **Sign in with Apple 키:** `app-store.md` 6장 1번 → `APPLE_*`.
-- **URL scheme:** `taskforce`가 `apple/Taskforce/Info.plist`에 등록되어 있다. OAuth 복귀(`taskforce://connections/{provider}?status=…`, `src/lib/connectors/callback.ts`)가 이걸로 앱에 돌아온다. 릴리스 빌드에서도 빠지지 않았는지 확인한다.
+- **URL scheme:** `taskforce`가 `apple/Taskforce/Info.plist`에 등록되어 있다. OAuth 복귀(`taskforce://connections/{provider}?handoff=<id>`, `src/lib/connectors/callback.ts`)가 이걸로 앱에 돌아온다. callback은 code를 암호화한 완료 대기(handoff, 2분)로 남기고 이 주소로 보낼 뿐이고, 앱이 그 `handoff`로 `POST /api/v1/connections/{provider}/complete`(Bearer 토큰)를 불러야 연결이 끝난다(시작한 사용자만, 한 번만). 릴리스 빌드에서도 URL scheme이 빠지지 않았는지 확인한다.
 
 ## 6. Cron 확인
 
-`vercel.json`: `/api/cron/sync` 15분마다, `/api/cron/reminders` 매일 00:00 UTC(한국 09:00).
+`vercel.json`: `/api/cron/sync` 15분마다, `/api/cron/reminders` 매일 00:00 UTC(한국 09:00), `/api/cron/retention` 매일 18:30 UTC(한국 03:30, 원문 90일 보관 정리 · `src/lib/retention.ts`).
 
-1. 배포 뒤 Vercel → 프로젝트 → Settings → Cron Jobs에 두 개가 보이는지.
+1. 배포 뒤 Vercel → 프로젝트 → Settings → Cron Jobs에 세 개가 보이는지.
 2. Logs에서 `/api/cron/sync`가 15분마다 200인지. 401이면 `CRON_SECRET`이 없거나 다르다.
 3. 다음 날 09:00 KST에 `/api/cron/reminders`가 200인지(기한 임박 알림).
-4. 동의하지 않은 사용자의 연결은 동기화에서 건너뛴다(`registry.ts`의 `withoutConsent`). 테스트 계정으로 동의 전 · 후를 한 번씩 본다.
+4. 다음 날 03:30 KST에 `/api/cron/retention`이 200이고 `{ sources_purged, judge_logs_deleted }`를 돌려주는지(처리방침 5장 "90일" 약속).
+5. 동의하지 않은 사용자의 연결은 동기화에서 건너뛴다(`registry.ts`의 `withoutConsent`). 테스트 계정으로 동의 전 · 후를 한 번씩 본다.
 
 ## 7. 웹사이트 배포
 
-대상: `Side Kick/apps/website`(Next 16, `[lang]` 라우팅), 계획 1-2.
+대상: Side Kick 저장소 `apps/website`(Next 16, `[lang]` 라우팅). 새 사이트는 브랜치 **`website/taskforce-new`**에 이미 만들어져 있고 **아직 배포하지 않았다**(2026-09-27).
 
-1. Side Kick 저장소에서 새 브랜치. BRAND.md 원페이지 + `/[lang]/privacy` · `/[lang]/terms`가 **이 저장소의 `docs/legal/*.md`를 렌더**한다(복사본을 따로 고치지 않는다).
-2. 이전 제품 페이지(download · pricing · account · beta · login · updates · help)는 홈으로 리디렉트.
+1. `/privacy` · `/terms`는 `/en/privacy` · `/en/terms`로 리디렉트한다. 법률 markdown은 실시간 렌더가 아니라 **`apps/website/scripts/sync-legal.mjs`가 이 저장소의 `docs/legal/*.md`를 복사**해 둔다(원본은 여전히 `docs/legal/`, 고칠 때마다 스크립트를 다시 돌려 동기화한다).
+2. 이전 제품 페이지(download · pricing · account · beta · login · updates · help)는 홈으로 리디렉트. **예외: 이전 Mac 앱이 아직 `/en/login` · `/en/account`를 쓰고 있어, 이 배포를 올리면 그 링크가 끊긴다.** 이전 제품을 은퇴시킬지(안내 후 링크를 유지하거나 이전 앱에 새 배포 안내를 넣는 등)를 배포 전에 정한다. 이전 OAuth 브로커(`/api/connections/*`)는 이번 배포에서도 그대로 둔다.
 3. 홈 푸터: Privacy · Contact(`privacy@taskforcelabs.dev`). 홈에 Google Limited Use 문장 한 줄.
 4. 분석 도구 · 쿠키 없음 확인: `curl -sI https://www.taskforcelabs.dev | grep -i set-cookie`가 비어야 하고, 페이지에 분석 스크립트가 없어야 한다.
 5. `npm run build && npm test` → Preview 배포에서 확인 → **사용자 승인 뒤** Production.
@@ -168,7 +176,7 @@ union all select 'profiles', count(*) from public.profiles where user_id = '<id>
 
 | # | 항목 | 담당 | 끝난 기준 | 먼저 필요한 것 |
 |---|---|---|---|---|
-| L1 | 웹사이트 교체 배포 (처리방침 · 약관 포함) | 코드(사이트 준비) → **사용자**(배포 승인) | `www.taskforcelabs.dev/en/privacy`에 새 방침, 홈에서 링크, 쿠키 · 분석 없음 | W1, W2 |
+| L1 | 웹사이트 교체 배포 (처리방침 · 약관 포함, 브랜치 `website/taskforce-new`) | 코드(사이트 준비, 끝남) → **사용자**(이전 제품 은퇴 결정 · 배포 승인) | `www.taskforcelabs.dev/en/privacy`에 새 방침, 홈에서 링크, 쿠키 · 분석 없음. 이전 Mac 앱의 `/en/login` · `/en/account` 링크가 끊기는 것을 감수하거나 먼저 처리 | W1, W2 |
 | L2 | Search Console 도메인 인증 | 사용자 | Search Console에 `taskforcelabs.dev` "확인됨" | Google Workspace Owner 계정 |
 | L3 | Google 프로젝트 A 설정 + 브랜드 심사 | 사용자 | "Brand verified" | L1, L2 |
 | L4 | Google 프로젝트 A 민감 범위 심사 제출 (Calendar · Meet) | 사용자 | 제출 확인 메일 → 통과 (추정 10 영업일) | L3, C4, 영상 A (`google-verification.md` 5장) |
@@ -192,7 +200,7 @@ union all select 'profiles', count(*) from public.profiles where user_id = '<id>
 | I8 | Sign in with Apple 키 | 사용자 | `APPLE_*` 4개가 env에 있음 | — |
 | I9 | OpenRouter 운영 키 · 로깅 꺼짐 · 사용 한도 | 사용자 | 설정 화면에서 확인 | — |
 | I10 | Supabase Free · 백업 없음 확인 | 사용자 | Billing · Backups 화면 확인 (4장) | — |
-| I11 | Cron 동작 | 사용자 | `/api/cron/sync` 15분마다 200, `/api/cron/reminders` 09:00 KST 200 | I1, I2 |
+| I11 | Cron 동작 | 사용자 | `/api/cron/sync` 15분마다 200, `/api/cron/reminders` 09:00 KST 200, `/api/cron/retention` 03:30 KST 200 | I1, I2 |
 | I12 | 운영 계정 2단계 인증 (Vercel · Supabase · GitHub · Google · Apple · Slack · Notion · OpenRouter) | 사용자 | 모두 켜짐 (처리방침 9장 약속) | — |
 
 ### 3) 코드
@@ -205,7 +213,7 @@ union all select 'profiles', count(*) from public.profiles where user_id = '<id>
 | C4 | Google 연동: Calendar · Meet 전사 · Gmail (트랙 2-3) | 코드 | 메일 · Meet 골든셋 eval 기록, `invalid_grant` → `reauth` + 재연결 안내, 처리방침 3장 Google · Gmail 문장과 구현 값 일치 | C1 |
 | C5 | Slack 연동: OAuth + Events API (트랙 2-4) | 코드 | 서명 검증 · 버리는 규칙 테스트, Slack 골든셋(핵심 시나리오 2) eval, 권한이 처리방침 3장과 일치 | C1 |
 | C6 | 앱: iPhone 한 화면 · Mac 런처 · 연결 · AI 동의 화면 · 계정 메뉴(Connections · AI data · Privacy Policy · Sign out · Delete account) · 데모 로그인 (트랙 3) | 코드 | 시뮬레이터 · Mac E2E: 로그인 → 동의 → Notion 연결(앱 복귀) → 할 일 → 체크 · Review 확정 | C1, 데모 로그인 결정 |
-| C7 | 모델 공급자 고정 (`provider.only`) | **사용자**(결정) → 코드 | 처리방침 7장 표에 공급자 · 국가를 적을 수 있음, eval 통과 | `docs/legal/README.md` 결정 1 |
+| C7 | 모델 공급자 고정 (`provider.only`) | 코드 ✅ (`src/lib/ai/providers.ts`) | 처리방침 7장 표에 공급자 · 국가를 적음(`docs/legal/README.md` 결정 1, 해결됨). 남은 것: TypeSafe 소재지 서면 확인 | — |
 | C8 | 보안 헤더 (`next.config.ts`) | 코드 | HSTS · CSP 등 응답 헤더 확인 | — (CASA 준비에도 필요) |
 | C9 | 전체 검증 | 코드 | `npm run lint && npm run typecheck && npm run test && npm run eval` 통과, 숫자를 커밋에 기록. `swift test` 통과, iOS · macOS 빌드 경고 0 | C1~C8 |
 

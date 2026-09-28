@@ -81,17 +81,23 @@ Feedback: privacy@taskforcelabs.dev or the TestFlight screenshot feedback.
 
 ## 3. 심사원 정보와 데모 계정
 
-### 결정: 데모 계정으로 어떻게 로그인하나
+### 결정: 데모 계정으로 어떻게 로그인하나 — 해결됨 (2026-09-27)
 
 지금 앱은 Sign in with Apple만 있다. 심사원이 자기 Apple ID로 로그인하면 빈 계정이 되어 기능을 볼 수 없고, 이메일 6자리 코드는 심사원이 받을 수 없다.
 
+검토했던 안:
+
 | 안 | 방법 | 장단점 |
 |---|---|---|
-| **A (권장)** | 로그인 화면에 작은 "Sign in with email" → 이메일 + 비밀번호. Supabase Email 제공자의 비밀번호 로그인을 켜고, **새 가입은 막고** 미리 만든 계정만 들어오게 한다 | 만료 없는 계정. 코드 필요(앱 로그인 화면 + 세션 저장은 기존과 같음). 보조 로그인(이메일 코드)을 나중에 붙일 때 같은 자리를 쓴다 |
+| **A (채택)** | 로그인 화면에 작은 "Sign in with email" → 이메일 + 비밀번호. **허용 목록(`review_accounts`)에 있는 주소만** 이메일로 가입할 수 있게 한다 | 만료 없는 계정. Apple 가입에는 영향을 주지 않는다(전체 이메일 가입을 막지 않아도 된다) |
 | B | 심사원이 자기 Apple ID로 로그인 → 심사 메모의 절차대로 직접 Notion 등을 연결 | 코드 없음. 심사원이 연결할 계정이 없어 빈 화면 → 2.1(불완전한 앱) 거절 위험 |
 | C | 심사 메모에 데모 Apple ID와 비밀번호 | Apple이 권하지 않는다. 2단계 인증 코드 문제 |
 
-A로 하면 데모 계정: `review@taskforcelabs.dev` / 비밀번호는 비밀번호 관리자에만 두고 App Store Connect 칸에만 넣는다. 이 계정은 Google 심사 계정과 같은 주소를 쓴다(`google-verification.md` 6장).
+**구현 (A):** Supabase Auth의 **Before User Created** 훅으로 `public.hook_before_user_created`(마이그레이션 `20261007000000_review_account_signup_hook.sql`)를 켠다. 이 함수는 `provider = email`로 새로 가입하는 요청 중 `review_accounts` 표에 없는 주소를 403으로 거절한다. Apple 가입과 이미 있는 사용자는 그대로 통과한다. 대시보드 설정 · env는 `runbook.md` 4장.
+
+데모 계정은 `scripts/create-review-account.ts`가 만든다: `REVIEW_ACCOUNT_EMAIL` · `REVIEW_ACCOUNT_PASSWORD`로 실행하면 (1) 그 주소를 `review_accounts`에 넣고, (2) 이메일 확인을 마친 사용자로 만들거나 비밀번호만 바꾸고, (3) 프로필 이름을 정하고 AI 처리에 동의한 상태로 두고, (4) "[Review] …" 합성 원문을 보통 파이프라인으로 처리해 근거가 붙은 할 일을 만든다(다시 실행해도 안전, `--reseed`로 다시 만들 수 있음).
+
+데모 계정: `review@taskforcelabs.dev` / 비밀번호는 비밀번호 관리자에만 두고 App Store Connect 칸에만 넣는다. 이 계정은 Google 심사 계정과 같은 주소를 쓴다(`google-verification.md` 6장).
 
 ### 데모 계정 준비 (연결을 건너뛰어도 기능이 보이게)
 
@@ -102,6 +108,8 @@ A로 하면 데모 계정: `review@taskforcelabs.dev` / 비밀번호는 비밀�
 3. fixture(가상 회의록 · 메시지 · 메일, `google-verification.md` 6장)가 동기화되어 Now에 할 일 3~5개, Review 카드 1장, 끝낸 할 일 1개가 있게 한다. 연동이 아직 붙지 않은 원문 종류는 `POST /api/v1/sources`로 같은 가상 원문을 넣어 채운다.
 4. 심사 기간에는 데모 계정의 데이터를 지우거나 동기화를 끄지 않는다. 심사원이 계정을 지우면(계정 삭제 시험) 다시 만든다 → 제출 전에 재생성 절차를 한 번 연습한다.
 5. 지표: 데모 계정의 이벤트는 지표에서 뺀다(지금 `[E2E 테스트]` 원문을 빼는 것과 같은 방식, 코드).
+
+`scripts/create-review-account.ts`가 1 · 3(프로필 · AI 동의 · "[Review] …" 합성 원문 처리)을 대신한다. 2(Notion · Google · Slack 실제 연결)는 Google 심사 영상 · 실기기 확인에 필요해 수동으로 한다.
 
 ### Beta App Review Information
 
@@ -144,7 +152,7 @@ App Store Connect → 앱 → App Privacy. 모든 항목: **Linked to the user =
 | Identifiers → Device ID | 아니오 (판단) | — | APNs 기기 토큰은 앱 설치마다 다른 알림 전달용 값이라 Apple 정의("advertising identifier, or other device-level ID")에 해당하지 않는다고 본다. 보수적으로 가려면 "예 · App Functionality" |
 | Diagnostics | 아니오 | — | 충돌 · 성능 수집 SDK가 없다. 서버 요청 기록은 1일 보관하고 콘텐츠를 담지 않는다 |
 | Contacts | 아니오 | — | 주소록을 읽지 않는다. 원문 속 사람 이름은 User Content에 포함 |
-| Search History | 아니오 | — | 런처 검색은 기기 안에서 거른다. 물어보기 질문은 서버가 처리만 하고 저장하지 않는다(`ask_requests`에는 시각만) |
+| Search History | 아니오 | — | 런처 검색은 기기 안에서 거른다. 물어보기 질문은 서버가 처리만 하고 저장하지 않는다(속도 제한만 `rate_limit_events`에 시각으로 남음, 질문 · 답 내용은 없음) |
 | Location · Health · Financial · Sensitive Info · Browsing History · Purchases · Other Data | 아니오 | — | 수집하지 않는다 |
 
 - 처리방침이 바뀌어 수집 항목이 늘면 이 표도 함께 고친다. 새 SDK를 넣기 전에 라벨과 처리방침을 먼저 본다.
@@ -222,7 +230,7 @@ You'll confirm with Apple so we can remove Taskforce from your Apple ID.
 
 ## 7. 사용자가 누르는 순서
 
-1. **데모 계정 방식 결정** — 3장 A/B/C 중 하나. A면 Supabase → Authentication → Providers → Email: 켜기, "Allow new users to sign up"은 끄기(Apple 가입에는 영향 없는지 확인), `review@taskforcelabs.dev` 사용자를 대시보드에서 만든다.
+1. **데모 계정 만들기** — Supabase 대시보드 → Authentication → Hooks → **Before User Created** → Postgres function `public.hook_before_user_created` → Enable(runbook 4장). 그 뒤 `REVIEW_ACCOUNT_EMAIL=review@taskforcelabs.dev REVIEW_ACCOUNT_PASSWORD=… npx tsx --conditions react-server scripts/create-review-account.ts --yes`로 계정을 만든다(3장).
 2. **SIWA 키 발급** — 6장 1번 → 비밀번호 관리자 → Vercel env 4개(runbook).
 3. **앱 빌드 조건 확인** — 1장 표의 코드 항목이 모두 끝났는지. 특히 동의 화면 · 철회 · 앱 안 처리방침 링크 · SIWA 폐기 · 릴리스 `API_BASE_URL = https://api.taskforcelabs.dev`.
 4. **데모 계정 채우기** — 3장 "데모 계정 준비" 1~5.

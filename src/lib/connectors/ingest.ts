@@ -7,6 +7,7 @@ import type { Connection, IngestItem } from "./types";
 // - 한 항목은 한 번만 넣는다: 이미 넣은 항목이 나중에 고쳐져도 지금은 다시 넣지 않는다.
 //   다시 넣으면 같은 약속이 두 번 생기므로, 기존 할 일과 맞춰 보는 Phase 2(매칭) 이후에 바뀐 부분만 넣는다.
 // - 너무 짧은 항목(빈 페이지 등)은 넣지 않는다.
+// - 한 항목의 처리가 던지면(예: 도중에 외부 AI 처리 동의를 철회함) 남은 항목은 시작하지 않고, 진행 중인 것만 기다린 뒤 그 오류를 던진다.
 
 export type IngestOptions = {
   now: Date;
@@ -75,24 +76,30 @@ export async function ingestItems(
   const batch = fresh.slice(0, options.maxItems);
   const created = new Array<string | null>(batch.length).fill(null);
   const notReached = new Set<number>();
+  const failures: unknown[] = [];
   let next = 0;
   const worker = async () => {
-    while (next < batch.length) {
+    while (next < batch.length && failures.length === 0) {
       const index = next++;
       if (options.deadline && Date.now() > options.deadline) {
         notReached.add(index);
         continue;
       }
-      const sourceId = await deps.insertSource(connection, batch[index]);
-      if (!sourceId) {
-        result.skipped.alreadyIngested++;
-        continue;
+      try {
+        const sourceId = await deps.insertSource(connection, batch[index]);
+        if (!sourceId) {
+          result.skipped.alreadyIngested++;
+          continue;
+        }
+        created[index] = sourceId;
+        await deps.process(connection, sourceId, batch[index]);
+      } catch (error) {
+        failures.push(error);
       }
-      created[index] = sourceId;
-      await deps.process(connection, sourceId, batch[index]);
     }
   };
   await Promise.all(Array.from({ length: Math.min(CONCURRENCY, batch.length) }, worker));
+  if (failures.length > 0) throw failures[0];
 
   result.created = created.filter((id): id is string => id !== null);
   result.notReached = batch.filter((_, index) => notReached.has(index)).map((item) => item.externalId);

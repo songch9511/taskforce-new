@@ -17,6 +17,8 @@ export type ExtractInput = {
   identity: UserIdentity;
   /** 메일의 보낸 사람 · 받는 사람 · 참조, 회의 참석자 */
   participants?: Participants;
+  /** 사용자가 직접 쓴 원문인가 (sources.written_by_me). 모르면 null · 없음 */
+  writtenByMe?: boolean | null;
 };
 
 // 모델에게 주는 응답 스키마. 공급자마다 JSON 스키마 지원 범위가 달라 형식 제약(날짜 패턴, 범위)은 넣지 않고

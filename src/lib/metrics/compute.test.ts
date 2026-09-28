@@ -1,6 +1,17 @@
 import { describe, expect, it } from "vitest";
 
-import { kstWeek, missed, misjudgment, retention, shadowList, timeToStart, type ActionEventRow, type MetricEventRow, type WeeklyCheckRow } from "./compute";
+import {
+  connections,
+  kstWeek,
+  missed,
+  misjudgment,
+  retention,
+  shadowList,
+  timeToStart,
+  type ActionEventRow,
+  type MetricEventRow,
+  type WeeklyCheckRow,
+} from "./compute";
 
 const period = { from: new Date("2026-09-21T00:00:00Z"), to: new Date("2026-09-28T00:00:00Z") };
 
@@ -157,9 +168,10 @@ const noStages = { processing_failed: 0, not_extracted: 0, judge_rejected: 0, me
 describe("missed (지표 4)", () => {
   it("누락 신고 기능 전에는 측정 전", () => {
     const m = misjudgment([created("a")], period);
-    expect(missed([], m, period, false)).toEqual({ reported: 0, rate: null, available: false, byStage: noStages });
+    expect(missed([], m, period, false)).toEqual({ reported: 0, added: 0, rate: null, available: false, byStage: noStages });
     expect(missed([ev("r", "user_reported_missing", "2026-09-23T00:00:00Z")], m, period, true)).toEqual({
       reported: 1,
+      added: 0,
       rate: 0.5,
       available: true,
       byStage: { ...noStages, unknown: 1 },
@@ -176,7 +188,21 @@ describe("missed (지표 4)", () => {
     const events = [created("a"), ...reported("r1", "not_extracted"), ...reported("r2", "judge_rejected"), ...reported("r3", "not_extracted")];
     const m = misjudgment(events, period);
     expect(m).toMatchObject({ aiCreated: 1, corrected: 0 });
-    expect(missed(events, m, period, true)).toEqual({ reported: 3, rate: 0.75, available: true, byStage: { ...noStages, not_extracted: 2, judge_rejected: 1 } });
+    expect(missed(events, m, period, true)).toEqual({ reported: 3, added: 0, rate: 0.75, available: true, byStage: { ...noStages, not_extracted: 2, judge_rejected: 1 } });
+  });
+
+  it("직접 추가한 Action은 지표 1에서 빼고 지표 4의 누락으로 센다 (단계는 모름이 아니라 따로 센다)", () => {
+    const added = (id: string, at = "2026-09-22T01:00:00Z") => [
+      ev(id, "user_created", at, { after: { title: true, due: true, owner: true, status: "open", needs_confirmation: false } }),
+      // 직접 추가한 Action을 나중 원문이 갱신하고 사용자가 고쳐도 AI 오판이 아니다
+      ev(id, "due_changed", "2026-09-23T00:00:00Z", { after: { due: true } }),
+      ev(id, "user_edited", "2026-09-24T00:00:00Z", { after: { due: true } }),
+    ];
+    const events = [created("a"), created("b"), ...added("u1"), ...added("u2"), ...added("old", "2026-09-10T00:00:00Z")];
+    const m = misjudgment(events, period);
+    expect(m).toMatchObject({ aiCreated: 2, corrected: 0 });
+    // (신고 0 + 직접 추가 2) / (AI 생성 2 + 0 + 2). 기간 밖의 추가는 세지 않는다
+    expect(missed(events, m, period, true)).toEqual({ reported: 0, added: 2, rate: 0.5, available: true, byStage: noStages });
   });
 });
 
@@ -195,5 +221,28 @@ describe("shadowList (지표 5)", () => {
 
   it("기간 밖 응답은 빼고, 있다 · 없다가 없으면 측정 전", () => {
     expect(shadowList([check("yes", "2026-09-01T00:00:00Z"), check("skipped")], period)).toEqual({ responses: 1, yes: 0, no: 0, skipped: 1, rate: null });
+  });
+});
+
+describe("connections (연결 · 2단계 연동 요청)", () => {
+  const period = { from: new Date("2026-09-01T00:00:00Z"), to: new Date("2026-09-30T00:00:00Z") };
+  it("기간 안의 연결 완료 수 · 사용자 수와, 서비스별 요청 수를 많은 순서로 센다", () => {
+    const events: MetricEventRow[] = [
+      { userId: "a", type: "connection_created", actionId: null, at: "2026-09-10T00:00:00Z" },
+      { userId: "a", type: "connection_created", actionId: null, at: "2026-09-11T00:00:00Z" },
+      { userId: "b", type: "connection_created", actionId: null, at: "2026-09-12T00:00:00Z" },
+      { userId: "c", type: "connection_created", actionId: null, at: "2026-08-01T00:00:00Z" },
+      { userId: "a", type: "app_opened", actionId: null, at: "2026-09-10T00:00:00Z" },
+    ];
+    const requests = [{ provider: "zoom" }, { provider: "linear" }, { provider: "zoom" }, { provider: "jira" }];
+    expect(connections(events, requests, period)).toEqual({
+      created: 3,
+      users: 2,
+      requests: [
+        { provider: "zoom", count: 2 },
+        { provider: "jira", count: 1 },
+        { provider: "linear", count: 1 },
+      ],
+    });
   });
 });

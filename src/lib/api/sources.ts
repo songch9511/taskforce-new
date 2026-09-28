@@ -1,3 +1,4 @@
+import { consentRequired } from "./consent";
 import {
   createSourceRequestSchema,
   type ApiError,
@@ -19,6 +20,8 @@ export type NewSource = {
 
 export type CreateSourceDeps<User> = {
   authenticate: (request: Request) => Promise<User | null>;
+  /** 외부 AI 처리에 동의했는가. 동의 전이면 원문을 저장하지 않고 409 (저장하면 곧바로 모델에 보내므로) */
+  hasConsent: (user: User) => Promise<boolean>;
   insertSource: (user: User, source: NewSource) => Promise<string>;
   /** 202를 돌려준 뒤 파이프라인을 돌린다 (Next.js after) */
   schedule: (user: User, sourceId: string, source: NewSource, userName: string | undefined) => void;
@@ -28,6 +31,7 @@ export type CreateSourceDeps<User> = {
 export async function handleCreateSource<User>(request: Request, deps: CreateSourceDeps<User>): Promise<Response> {
   const user = await deps.authenticate(request);
   if (!user) return errorResponse(401, "unauthorized", "로그인이 필요합니다.");
+  if (!(await deps.hasConsent(user))) return consentRequired();
 
   let body: unknown;
   try {
