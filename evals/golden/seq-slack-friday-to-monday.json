@@ -1,0 +1,78 @@
+{
+  "id": "seq-slack-friday-to-monday",
+  "description": "PRD 핵심 시나리오 2를 Slack 어댑터 형식으로: 회의에서 금요일로 약속한 제안서 기한이 상대의 DM으로 월요일이 된다. 새 할 일 없이 기존 할 일의 기한만 바뀐다.",
+  "origin": "synthetic",
+  "tags": [
+    "slack"
+  ],
+  "user": {
+    "name": "윤지호",
+    "aliases": [],
+    "emails": []
+  },
+  "sources": [
+    {
+      "id": "meeting-1005",
+      "kind": "meeting",
+      "occurred_at": "2026-10-05T10:00:00+09:00",
+      "text": "참석: 김대표, 윤지호\n김대표: 다음 주 투자 미팅 전에 제안서를 한번 보고 싶어요.\n윤지호: 네, 금요일까지 제안서 보내드릴게요.\n김대표: 견적서는 저희 쪽 박팀장이 따로 정리해서 드릴게요.",
+      "participants": {
+        "attendees": [
+          {
+            "name": "김대표"
+          },
+          {
+            "name": "윤지호"
+          }
+        ]
+      }
+    },
+    {
+      "id": "slack-1007",
+      "kind": "message",
+      "occurred_at": "2026-10-07T14:30:00+09:00",
+      "text": "[DM · 김대표]\n김대표: 제안서는 월요일에 받아도 괜찮아요. 투자 미팅이 화요일로 밀렸어요.\n윤지호: 넵 알겠습니다!",
+      "participants": {
+        "attendees": [
+          {
+            "name": "김대표"
+          },
+          {
+            "name": "윤지호"
+          }
+        ]
+      }
+    }
+  ],
+  "expected_actions": [
+    {
+      "title": "김대표에게 제안서 발송",
+      "owner": "me",
+      "counterpart": "김대표",
+      "due": "2026-10-12",
+      "status": "open",
+      "evidence": [
+        {
+          "source": "meeting-1005",
+          "quote": "금요일까지 제안서 보내드릴게요"
+        },
+        {
+          "source": "slack-1007",
+          "quote": "제안서는 월요일에 받아도 괜찮아요"
+        }
+      ]
+    }
+  ],
+  "must_not_extract": [
+    {
+      "source": "meeting-1005",
+      "quote": "견적서는 저희 쪽 박팀장이 따로 정리해서 드릴게요",
+      "reason": "NOT_MY_ACTION"
+    },
+    {
+      "source": "slack-1007",
+      "quote": "투자 미팅이 화요일로 밀렸어요",
+      "reason": "INFO_ONLY"
+    }
+  ]
+}

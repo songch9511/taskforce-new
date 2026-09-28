@@ -53,6 +53,11 @@ describe("labeledItems", () => {
       ["ALREADY_DONE", { already_done: true }],
     ]);
   });
+
+  it("확인 요청이 맞는 정답은 REVIEW로, 내 약속 · 확정 여부는 채점하지 않는다", () => {
+    const review: GoldenCase = { ...golden, expected_actions: [{ ...golden.expected_actions[0], needs_review: true }], must_not_extract: [] };
+    expect(labeledItems(review).map((i) => [i.kind, i.labels])).toEqual([["REVIEW", { is_actionable: true, already_done: false }]]);
+  });
 });
 
 describe("Jev 지표", () => {

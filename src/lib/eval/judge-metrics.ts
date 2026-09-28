@@ -5,7 +5,8 @@ import type { GoldenCase } from "./golden";
 // Jev가 사람 라벨과 얼마나 맞는지 본다. 추출기가 뽑은 후보만으로는 오탐이 적어 부정 라벨이 모자라므로,
 // 골든셋의 정답 Action(긍정)과 함정 문장(부정)을 그대로 후보로 만들어 Jev에 묻는다.
 
-export type LabelKind = "ACTION" | "NOT_MY_ACTION" | "INFO_ONLY" | "TENTATIVE" | "ALREADY_DONE";
+/** REVIEW: 확인 요청으로 가야 맞는 정답 (needs_review) */
+export type LabelKind = "ACTION" | "REVIEW" | "NOT_MY_ACTION" | "INFO_ONLY" | "TENTATIVE" | "ALREADY_DONE";
 
 /** 질문별 사람 라벨. 라벨로 알 수 없는 질문은 비워 둔다. */
 export type HumanLabels = {
@@ -26,11 +27,11 @@ export type LabeledItem = {
 export function labeledItems(golden: GoldenCase): LabeledItem[] {
   const positives: LabeledItem[] = golden.expected_actions.map((action) => ({
     caseId: golden.id,
-    kind: "ACTION",
+    kind: action.needs_review ? "REVIEW" : "ACTION",
     candidate: { title: action.title, quote: action.evidence[0].quote, due_text: null },
     labels: {
-      // 담당이 unknown인 정답은 "내 약속인가"를 사람도 확정하지 못한 것이라 채점하지 않는다.
-      ...(action.owner === "me" ? { is_my_commitment: true, firm: true } : {}),
+      // 담당이 unknown인 정답과 확인 요청이 맞는 정답은 "내 약속인가 · 확정인가"를 사람도 정하지 못한 것이라 채점하지 않는다.
+      ...(action.owner === "me" && !action.needs_review ? { is_my_commitment: true, firm: true } : {}),
       is_actionable: true,
       already_done: false,
     },
@@ -101,7 +102,7 @@ export function calibration(
 
 /** 라벨 종류별로 자동 반영 / 확인 요청 / 기각이 몇 건씩 나왔는지 */
 export function decisionTable(items: JudgedItem[]): Record<LabelKind, Record<JudgeDecision, number>> {
-  const kinds: LabelKind[] = ["ACTION", "NOT_MY_ACTION", "INFO_ONLY", "TENTATIVE", "ALREADY_DONE"];
+  const kinds: LabelKind[] = ["ACTION", "REVIEW", "NOT_MY_ACTION", "INFO_ONLY", "TENTATIVE", "ALREADY_DONE"];
   const table = Object.fromEntries(kinds.map((k) => [k, { auto: 0, confirm: 0, reject: 0 }])) as Record<
     LabelKind,
     Record<JudgeDecision, number>

@@ -1,0 +1,47 @@
+{
+  "id": "slack-mpim-others-commit",
+  "description": "그룹 DM에서 다른 사람들끼리 한 약속. 사용자는 고마움만 표시했으므로 할 일이 없다.",
+  "origin": "synthetic",
+  "tags": [
+    "slack"
+  ],
+  "user": {
+    "name": "윤지호",
+    "aliases": [],
+    "emails": []
+  },
+  "sources": [
+    {
+      "id": "slack-1006",
+      "kind": "message",
+      "occurred_at": "2026-10-06T21:00:00+09:00",
+      "text": "[그룹 DM]\n박지훈: 내일 데모 리허설 자료는 제가 오늘 밤까지 만들게요\n최유나: 그럼 저는 고객 명단 정리해서 내일 오전에 공유할게요\n윤지호: 좋아요 두 분 감사합니다!",
+      "participants": {
+        "attendees": [
+          {
+            "name": "박지훈"
+          },
+          {
+            "name": "최유나"
+          },
+          {
+            "name": "윤지호"
+          }
+        ]
+      }
+    }
+  ],
+  "expected_actions": [],
+  "must_not_extract": [
+    {
+      "source": "slack-1006",
+      "quote": "데모 리허설 자료는 제가 오늘 밤까지 만들게요",
+      "reason": "NOT_MY_ACTION"
+    },
+    {
+      "source": "slack-1006",
+      "quote": "고객 명단 정리해서 내일 오전에 공유할게요",
+      "reason": "NOT_MY_ACTION"
+    }
+  ]
+}

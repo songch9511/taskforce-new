@@ -1,6 +1,7 @@
 // 골든셋으로 추출 품질을 평가한다: npm run eval
 //   npm run eval                  라벨 검사 + (키가 있으면) 추출 → 기계 검증 → Jev 판정 채점 + 물어보기(evals/ask) 채점
 //   npm run eval -- --case <id>   한 케이스만
+//   npm run eval -- --tag slack   태그가 붙은 케이스만 (물어보기는 건너뜀)
 //   npm run eval -- --no-judge    Jev 없이 추출 · 기계 검증만
 //   npm run eval -- --labels      라벨 검사만 (CI처럼 키가 없을 때와 같음)
 // 키(OPENROUTER_API_KEY, LLM_MODEL, JEV_MODEL)는 환경변수나 .env.local에서 읽는다.
@@ -142,7 +143,7 @@ type CaseRun = {
 
 async function main() {
   const { values } = parseArgs({
-    options: { case: { type: "string" }, labels: { type: "boolean" }, "no-judge": { type: "boolean" } },
+    options: { case: { type: "string" }, tag: { type: "string" }, labels: { type: "boolean" }, "no-judge": { type: "boolean" } },
   });
 
   const { cases, failed } = await loadGolden();
@@ -172,12 +173,22 @@ async function main() {
   const jev = useJudge ? jevConfigFromEnv() : null;
 
   // 원문 하나짜리 케이스는 추출 품질을, 여러 원문이 이어지는 케이스는 매칭 · 병합 품질을 본다 (시퀀스는 Jev가 필요).
-  const selected = cases.filter((c) => !values.case || c.id === values.case);
+  const selected = cases.filter((c) => (!values.case || c.id === values.case) && (!values.tag || c.tags?.includes(values.tag)));
   const single = selected.filter((c) => c.sources.length === 1);
   const sequences = selected.filter((c) => c.sources.length > 1);
-  const askSelected = ask.cases.filter((c) => !values.case || c.id === values.case);
+  // 물어보기 케이스에는 태그가 없다: --tag를 주면 건너뛴다.
+  const askSelected = values.tag ? [] : ask.cases.filter((c) => !values.case || c.id === values.case);
   if (selected.length === 0 && askSelected.length === 0) {
-    console.error(values.case ? `케이스 ${values.case}가 없습니다.` : "채점할 케이스가 없습니다.");
+    const caseExists = values.case && [...cases, ...ask.cases].some((c) => c.id === values.case);
+    console.error(
+      values.case && !caseExists
+        ? `케이스 ${values.case}가 없습니다.`
+        : values.tag
+          ? values.case
+            ? `케이스 ${values.case}에 태그 ${values.tag}가 없습니다.`
+            : `태그 ${values.tag}가 붙은 케이스가 없습니다.`
+          : "채점할 케이스가 없습니다.",
+    );
     process.exit(1);
   }
 
@@ -228,7 +239,8 @@ async function main() {
 
   // 원문 하나 채점은 새 약속(commitment)만 본다. 변화 발언(update · completion · cancellation)은 시퀀스 채점에서 본다.
   const commitments = <T extends { signal: string }>(items: T[]) => items.filter((c) => c.signal === "commitment");
-  const stages: { label: string; pick: (run: CaseRun) => ScoredCandidate[] }[] = [
+  // autoOnly: "자동만" 단계는 확인 요청이 맞는 정답(needs_review)을 다르게 센다 (score.ts).
+  const stages: { label: string; pick: (run: CaseRun) => ScoredCandidate[]; autoOnly?: boolean }[] = [
     { label: "추출만", pick: (r) => commitments(r.extracted) },
     { label: "+ 기계 검증", pick: (r) => commitments(r.verified) },
     ...(jev
@@ -240,6 +252,7 @@ async function main() {
           {
             label: "+ Jev (자동만)",
             pick: (r: CaseRun) => commitments(r.judged!.filter((j) => j.result.decision === "auto").map((j) => j.candidate)),
+            autoOnly: true,
           },
         ]
       : []),
@@ -273,8 +286,9 @@ async function main() {
   const header = ["단계".padEnd(16), "precision", "recall", "담당", "기한", "맞음/오탐/누락", "환각"].join("  ");
   console.log(`\n${header}`);
   const stageTotals = stages.map((stage) => {
-    const t = totals(done.map((r) => scoreCase(r.golden, stage.pick(r))));
+    const t = totals(done.map((r) => scoreCase(r.golden, stage.pick(r), { autoOnly: stage.autoOnly })));
     console.log(summaryRow(stage.label, t));
+    if (t.falsePositivesByKind.REVIEW_EXPECTED > 0) console.log(`  └ 확인 요청이 맞는데 자동 반영 ${t.falsePositivesByKind.REVIEW_EXPECTED}건`);
     return { stage: stage.label, totals: t };
   });
   if (new Set(done.map((r) => r.golden.origin)).size > 1) {
@@ -282,6 +296,12 @@ async function main() {
       const subset = done.filter((r) => r.golden.origin === origin);
       console.log(summaryRow(`${origin === "real" ? "실제" : "합성"} 원문`, totals(subset.map((r) => scoreCase(r.golden, finalStage.pick(r))))));
     }
+  }
+  // 원문 종류 묶음별 (예: #slack). 회의록 숫자와 섞지 않고 따로 본다.
+  const tagsOf = (items: { golden: GoldenCase }[]) => [...new Set(items.flatMap((r) => r.golden.tags ?? []))].sort();
+  for (const tag of tagsOf(done)) {
+    const subset = done.filter((r) => r.golden.tags?.includes(tag));
+    console.log(summaryRow(`#${tag}`, totals(subset.map((r) => scoreCase(r.golden, finalStage.pick(r))))));
   }
 
   // 2) Jev를 사람 라벨과 비교: 정답 Action과 함정 문장을 그대로 후보로 만들어 묻는다.
@@ -366,10 +386,14 @@ async function main() {
       ];
       if (lines.length) console.log(lines.join("\n"));
     }
-    const t = sequenceTotals(sequenceRuns.map((r) => r.score));
-    console.log(
-      `\n병합 정확도 ${pct(t.accuracy)} (${t.correct}/${t.expected}) · 갈라짐 ${t.splits} · 잘못 합침 ${t.overMerged} · 누락 ${t.misses} · 오탐 ${t.extras} · 필드 오류 ${t.fieldErrors}`,
-    );
+    const mergeLine = (label: string, runs: SequenceRun[]) => {
+      const t = sequenceTotals(runs.map((r) => r.score));
+      return `${label} ${pct(t.accuracy)} (${t.correct}/${t.expected}) · 갈라짐 ${t.splits} · 잘못 합침 ${t.overMerged} · 누락 ${t.misses} · 오탐 ${t.extras} · 필드 오류 ${t.fieldErrors}`;
+    };
+    console.log(`\n${mergeLine("병합 정확도", sequenceRuns)}`);
+    for (const tag of tagsOf(sequenceRuns)) {
+      console.log(`  ${mergeLine(`#${tag}`, sequenceRuns.filter((r) => r.golden.tags?.includes(tag)))}`);
+    }
   }
 
   // 4) 물어보기: 케이스의 Action · 원문을 검색 결과로 주고(검색 자체는 DB 테스트가 본다) 답 · 인용 검증 · 모름을 채점한다.
@@ -436,8 +460,9 @@ async function main() {
         thresholds: jev ? JUDGE_THRESHOLDS : null,
         stages: stageTotals,
         judgeAgreement: jev ? agreement(judgedItems) : null,
-        sequences: sequenceRuns.map((r) => ({ id: r.golden.id, score: r.score, finals: r.finals, outcomes: r.outcomes })),
-        cases: done.map((r) => ({ id: r.golden.id, origin: r.golden.origin, extracted: r.extracted, judged: r.judged ?? r.verified })),
+        tag: values.tag ?? null,
+        sequences: sequenceRuns.map((r) => ({ id: r.golden.id, tags: r.golden.tags ?? [], score: r.score, finals: r.finals, outcomes: r.outcomes })),
+        cases: done.map((r) => ({ id: r.golden.id, origin: r.golden.origin, tags: r.golden.tags ?? [], extracted: r.extracted, judged: r.judged ?? r.verified })),
         judgedLabels: judgedItems.map((j) => ({ caseId: j.caseId, kind: j.kind, quote: j.candidate.quote, labels: j.labels, result: j.result })),
         ask: askRuns.map((r) => ({ id: r.golden.id, score: r.score, answer: r.result.answer, unknown: r.result.unknown, citations: r.result.citations })),
         errors,

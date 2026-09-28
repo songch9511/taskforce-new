@@ -1,0 +1,85 @@
+{
+  "id": "seq-slack-thread-late-reply",
+  "description": "채널 스레드를 원문으로 넣은 뒤 이틀 뒤 같은 스레드에 기한을 늦추는 답글이 달린다. 다음 묶음([스레드 이어서])이 새 할 일 없이 기존 할 일의 기한을 바꿔야 한다.",
+  "origin": "synthetic",
+  "tags": [
+    "slack"
+  ],
+  "user": {
+    "name": "윤지호",
+    "aliases": [],
+    "emails": []
+  },
+  "sources": [
+    {
+      "id": "slack-1005",
+      "kind": "message",
+      "occurred_at": "2026-10-05T15:00:00+09:00",
+      "text": "[#launch]\n박지훈: 런칭 체크리스트 최종본은 누가 정리할까요?\n윤지호: 제가 목요일까지 정리해서 올릴게요\n최유나: 좋아요. 보도자료는 제가 수요일에 공유할게요",
+      "participants": {
+        "attendees": [
+          {
+            "name": "박지훈"
+          },
+          {
+            "name": "윤지호"
+          },
+          {
+            "name": "최유나"
+          }
+        ]
+      }
+    },
+    {
+      "id": "slack-1007",
+      "kind": "message",
+      "occurred_at": "2026-10-07T09:30:00+09:00",
+      "text": "[#launch · 스레드 이어서]\n박지훈: @윤지호 체크리스트는 금요일 오전까지만 주셔도 돼요. QA가 하루 밀렸어요\n윤지호: 넵 그럼 금요일 오전에 올릴게요",
+      "participants": {
+        "attendees": [
+          {
+            "name": "박지훈"
+          },
+          {
+            "name": "윤지호"
+          }
+        ]
+      }
+    }
+  ],
+  "expected_actions": [
+    {
+      "title": "런칭 체크리스트 최종본 정리해 올리기",
+      "owner": "me",
+      "counterpart": "박지훈",
+      "due": "2026-10-09",
+      "status": "open",
+      "evidence": [
+        {
+          "source": "slack-1005",
+          "quote": "제가 목요일까지 정리해서 올릴게요"
+        },
+        {
+          "source": "slack-1007",
+          "quote": "체크리스트는 금요일 오전까지만 주셔도 돼요"
+        },
+        {
+          "source": "slack-1007",
+          "quote": "그럼 금요일 오전에 올릴게요"
+        }
+      ]
+    }
+  ],
+  "must_not_extract": [
+    {
+      "source": "slack-1005",
+      "quote": "보도자료는 제가 수요일에 공유할게요",
+      "reason": "NOT_MY_ACTION"
+    },
+    {
+      "source": "slack-1007",
+      "quote": "QA가 하루 밀렸어요",
+      "reason": "INFO_ONLY"
+    }
+  ]
+}
