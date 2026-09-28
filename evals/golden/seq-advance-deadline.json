@@ -1,0 +1,81 @@
+{
+  "id": "seq-advance-deadline",
+  "origin": "synthetic",
+  "description": "회의에서 목요일까지로 약속한 온보딩 가이드 초안을 사용자가 다음 날 메일로 수요일까지 먼저 주겠다고 당긴다. 기한 당기기는 사용자 혼자 가능하므로 수요일(규칙 0, 4).",
+  "user": {
+    "name": "이준호",
+    "aliases": [],
+    "emails": [
+      "junho@loopworks.io"
+    ]
+  },
+  "sources": [
+    {
+      "id": "meeting-1026",
+      "kind": "meeting",
+      "occurred_at": "2026-10-26T11:00:00+09:00",
+      "participants": {
+        "attendees": [
+          {
+            "name": "이준호",
+            "email": "junho@loopworks.io"
+          },
+          {
+            "name": "문가은",
+            "email": "gaeun@stepup.kr"
+          }
+        ]
+      },
+      "text": "참석: 이준호, 문가은(스텝업 HR 매니저)\n문가은: 다음 달 신규 입사자가 12명이라 온보딩 가이드가 필요해요.\n이준호: 목요일까지 온보딩 가이드 초안 보내드릴게요.\n문가은: 좋습니다. 입사자 명단은 저희가 금요일에 확정해요."
+    },
+    {
+      "id": "mail-1027",
+      "kind": "email",
+      "occurred_at": "2026-10-27T09:10:00+09:00",
+      "participants": {
+        "from": {
+          "name": "이준호",
+          "email": "junho@loopworks.io"
+        },
+        "to": [
+          {
+            "name": "문가은",
+            "email": "gaeun@stepup.kr"
+          }
+        ]
+      },
+      "text": "제목: 온보딩 가이드 일정 관련\n\n가은님, 안녕하세요.\n어제 논의한 온보딩 가이드 초안은 수요일까지 먼저 드릴게요. 목요일 팀 회의 전에 한 번 보실 수 있게요.\n\n이준호 드림"
+    }
+  ],
+  "expected_actions": [
+    {
+      "title": "문가은에게 온보딩 가이드 초안 전달",
+      "owner": "me",
+      "counterpart": "문가은",
+      "due": "2026-10-28",
+      "status": "open",
+      "evidence": [
+        {
+          "source": "meeting-1026",
+          "quote": "목요일까지 온보딩 가이드 초안 보내드릴게요"
+        },
+        {
+          "source": "mail-1027",
+          "quote": "온보딩 가이드 초안은 수요일까지 먼저 드릴게요"
+        }
+      ]
+    }
+  ],
+  "must_not_extract": [
+    {
+      "source": "meeting-1026",
+      "quote": "다음 달 신규 입사자가 12명이라",
+      "reason": "INFO_ONLY"
+    },
+    {
+      "source": "meeting-1026",
+      "quote": "입사자 명단은 저희가 금요일에 확정해요",
+      "reason": "NOT_MY_ACTION"
+    }
+  ]
+}

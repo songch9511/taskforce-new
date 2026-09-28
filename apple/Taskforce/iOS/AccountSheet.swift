@@ -1,0 +1,100 @@
+#if os(iOS)
+import SwiftUI
+import TaskforceKit
+import TaskforceUI
+
+enum AccountRoute: Hashable, Identifiable {
+    case home, profile, connections, consent
+
+    var id: Self { self }
+}
+
+/// 계정 메뉴 시트: Profile · Connections · AI processing · Sign Out · Delete Account
+struct AccountSheet: View {
+    let email: String?
+    let initialRoute: AccountRoute
+
+    @Environment(SessionStore.self) private var session
+    @Environment(AccountStore.self) private var account
+    @Environment(\.services) private var services
+    @Environment(\.dismiss) private var dismiss
+    @State private var path: [AccountRoute] = []
+    @State private var confirmingDelete = false
+    @State private var deleting = false
+    @State private var message: String?
+
+    var body: some View {
+        NavigationStack(path: $path) {
+            Form {
+                Section {
+                    NavigationLink(value: AccountRoute.profile) {
+                        LabeledContent("Profile", value: account.profile?.displayName ?? "")
+                    }
+                    NavigationLink(value: AccountRoute.connections) {
+                        LabeledContent("Connections", value: connectedSummary)
+                    }
+                    NavigationLink(value: AccountRoute.consent) {
+                        LabeledContent("AI processing", value: account.hasConsent ? "On" : "Off")
+                    }
+                }
+                Section {
+                    if let email {
+                        LabeledContent("Apple ID", value: email)
+                    }
+                    Button("Sign Out") {
+                        Task { await session.signOut() }
+                    }
+                    Button("Delete Account", role: .destructive) {
+                        confirmingDelete = true
+                    }
+                    .disabled(deleting)
+                }
+                Section {
+                    Link("Privacy Policy", destination: LegalLinks.privacy)
+                    Link("Terms of Use", destination: LegalLinks.terms)
+                }
+            }
+            .navigationTitle("Account")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+            .navigationDestination(for: AccountRoute.self) { route in
+                switch route {
+                case .home: EmptyView()
+                case .profile: ProfileForm()
+                case .connections: ConnectionsView()
+                case .consent: ConsentSettingsView()
+                }
+            }
+            .task { await account.load() }
+            .confirmationDialog("Delete your account?", isPresented: $confirmingDelete, titleVisibility: .visible) {
+                Button("Delete Account", role: .destructive) { deleteAccount() }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("Your sources, tasks, and history are deleted right away. This can't be undone.")
+            }
+            .messageAlert($message)
+        }
+        .onAppear {
+            if initialRoute != .home, path.isEmpty { path = [initialRoute] }
+        }
+    }
+
+    private var connectedSummary: String {
+        let count = ConnectionProvider.stageOne.filter { account.state(for: $0).isConnected }.count
+        return count == 0 ? "" : "\(count)"
+    }
+
+    private func deleteAccount() {
+        guard let services else { return }
+        deleting = true
+        Task {
+            message = await AccountDeletion.delete(services: services, session: session)
+            deleting = false
+        }
+    }
+}
+#endif

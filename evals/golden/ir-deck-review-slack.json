@@ -1,0 +1,60 @@
+{
+  "id": "ir-deck-review-slack",
+  "origin": "synthetic",
+  "description": "영어 용어(IR deck, PR 리뷰, financial model)가 섞인 Slack 채널. 사용자 이서준의 약속 두 개만 뽑고, 동료의 할 일·공지·미룬 요청은 제외한다.",
+  "user": {
+    "name": "이서준"
+  },
+  "sources": [
+    {
+      "id": "slack-1006",
+      "kind": "message",
+      "occurred_at": "2026-10-06T10:15:00+09:00",
+      "text": "[#fundraising]\n박지훈: 서준님 IR deck v3 올렸어요. 이번 주 금요일 VC 미팅 전에 한 번 리뷰 부탁드려요\n이서준: 넵 목요일까지 리뷰하고 코멘트 남길게요\n박지훈: 감사합니다! financial model 시트는 제가 오늘 밤에 업데이트할게요\n최유나: 참고로 미팅 장소는 역삼 위워크 8층으로 바뀌었습니다\n이서준: 그리고 PR 리뷰 밀린 거 오늘 중으로 다 볼게요 🙏\n최유나: 서준님 혹시 데모 영상도 새로 찍어주실 수 있어요?\n이서준: 데모 영상은 이번 주는 좀 어렵겠어요. 다음 스프린트 때 봐요\n박지훈: ok 그럼 데모는 기존 거 쓰죠"
+    }
+  ],
+  "expected_actions": [
+    {
+      "title": "IR deck v3 리뷰 후 코멘트",
+      "owner": "me",
+      "counterpart": "박지훈",
+      "due": "2026-10-08",
+      "status": "open",
+      "evidence": [
+        {
+          "source": "slack-1006",
+          "quote": "넵 목요일까지 리뷰하고 코멘트 남길게요"
+        }
+      ]
+    },
+    {
+      "title": "밀린 PR 리뷰",
+      "owner": "me",
+      "due": "2026-10-06",
+      "status": "open",
+      "evidence": [
+        {
+          "source": "slack-1006",
+          "quote": "PR 리뷰 밀린 거 오늘 중으로 다 볼게요"
+        }
+      ]
+    }
+  ],
+  "must_not_extract": [
+    {
+      "source": "slack-1006",
+      "quote": "financial model 시트는 제가 오늘 밤에 업데이트할게요",
+      "reason": "NOT_MY_ACTION"
+    },
+    {
+      "source": "slack-1006",
+      "quote": "미팅 장소는 역삼 위워크 8층으로 바뀌었습니다",
+      "reason": "INFO_ONLY"
+    },
+    {
+      "source": "slack-1006",
+      "quote": "데모 영상은 이번 주는 좀 어렵겠어요. 다음 스프린트 때 봐요",
+      "reason": "TENTATIVE"
+    }
+  ]
+}

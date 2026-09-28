@@ -1,0 +1,36 @@
+{
+  "id": "ko-proposal-due",
+  "description": "회의에서 한 약속의 기한을 묻는다. 다른 사람 담당 할 일과 섞이지 않아야 한다",
+  "origin": "synthetic",
+  "asked_at": "2026-09-24T10:00:00+09:00",
+  "question": "김대표님께 제안서 언제까지 보내기로 했지?",
+  "sources": [
+    {
+      "id": "s1",
+      "kind": "meeting",
+      "title": "파트너사 주간 미팅",
+      "occurred_at": "2026-09-22T14:00:00+09:00",
+      "text": "참석: 김대표, 도윤, 이과장\n김대표: 다음 분기 협업 제안서는 언제쯤 볼 수 있을까요?\n도윤: 금요일까지 제안서 보내드릴게요.\n김대표: 좋습니다. 가격표도 같이 부탁드려요.\n이과장: 가격표는 제가 정리해서 도윤님께 넘길게요."
+    }
+  ],
+  "actions": [
+    {
+      "id": "a1",
+      "title": "김대표에게 협업 제안서 발송",
+      "status": "open",
+      "owner": "me",
+      "due_date": "2026-09-26",
+      "counterpart": "김대표",
+      "quotes": [{ "source": "s1", "quote": "금요일까지 제안서 보내드릴게요" }]
+    },
+    {
+      "id": "a2",
+      "title": "가격표 정리",
+      "status": "open",
+      "owner": "other",
+      "counterpart": "이과장",
+      "quotes": [{ "source": "s1", "quote": "가격표는 제가 정리해서 도윤님께 넘길게요" }]
+    }
+  ],
+  "expect": { "unknown": false, "cite_sources": ["s1"], "answer_contains_any": ["금요일", "26"] }
+}

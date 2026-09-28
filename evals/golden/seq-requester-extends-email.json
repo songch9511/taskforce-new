@@ -1,0 +1,81 @@
+{
+  "id": "seq-requester-extends-email",
+  "origin": "synthetic",
+  "description": "사용자가 메일로 25일까지 검증 결과를 주겠다고 했고, 요청자가 이후 메일로 30일까지 주셔도 된다고 연장한다. 요청자의 연장이므로 30일(규칙 0, 4).",
+  "user": {
+    "name": "한소율",
+    "aliases": [],
+    "emails": [
+      "soyul@clearledger.kr"
+    ]
+  },
+  "sources": [
+    {
+      "id": "mail-1116",
+      "kind": "email",
+      "occurred_at": "2026-11-16T10:30:00+09:00",
+      "participants": {
+        "from": {
+          "name": "한소율",
+          "email": "soyul@clearledger.kr"
+        },
+        "to": [
+          {
+            "name": "배성훈",
+            "email": "sunghoon@daon-mart.com"
+          }
+        ]
+      },
+      "text": "제목: RE: 10월 정산 데이터 검증 요청\n\n배성훈 실장님, 안녕하세요.\n요청하신 정산 데이터 검증 결과는 25일까지 보내드리겠습니다.\n검증 범위는 10월 한 달 거래분으로 진행하겠습니다.\n\n한소율 드림"
+    },
+    {
+      "id": "mail-1119",
+      "kind": "email",
+      "occurred_at": "2026-11-19T17:00:00+09:00",
+      "participants": {
+        "from": {
+          "name": "배성훈",
+          "email": "sunghoon@daon-mart.com"
+        },
+        "to": [
+          {
+            "name": "한소율",
+            "email": "soyul@clearledger.kr"
+          }
+        ]
+      },
+      "text": "제목: RE: RE: 10월 정산 데이터 검증 요청\n\n소율님, 회계 감사 일정이 다음 달로 밀려서요.\n검증 결과는 30일까지 주셔도 괜찮습니다.\n누락된 11월 첫 주 거래 내역은 저희 재무팀에서 내일 보내드릴 예정입니다.\n\n배성훈 드림"
+    }
+  ],
+  "expected_actions": [
+    {
+      "title": "배성훈 실장에게 10월 정산 데이터 검증 결과 발송",
+      "owner": "me",
+      "counterpart": "배성훈",
+      "due": "2026-11-30",
+      "status": "open",
+      "evidence": [
+        {
+          "source": "mail-1116",
+          "quote": "요청하신 정산 데이터 검증 결과는 25일까지 보내드리겠습니다"
+        },
+        {
+          "source": "mail-1119",
+          "quote": "검증 결과는 30일까지 주셔도 괜찮습니다"
+        }
+      ]
+    }
+  ],
+  "must_not_extract": [
+    {
+      "source": "mail-1119",
+      "quote": "회계 감사 일정이 다음 달로 밀려서요",
+      "reason": "INFO_ONLY"
+    },
+    {
+      "source": "mail-1119",
+      "quote": "누락된 11월 첫 주 거래 내역은 저희 재무팀에서 내일 보내드릴 예정입니다",
+      "reason": "NOT_MY_ACTION"
+    }
+  ]
+}

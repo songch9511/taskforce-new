@@ -1,0 +1,55 @@
+{
+  "id": "seq-requester-cancels",
+  "origin": "synthetic",
+  "description": "회의에서 수요일까지 주기로 한 경쟁사 UX 분석을 요청자가 다음 날 메시지로 취소한다. 취소는 요청자 권한이므로 dropped(규칙 0, 4).",
+  "user": {
+    "name": "나",
+    "aliases": [],
+    "emails": []
+  },
+  "sources": [
+    {
+      "id": "meeting-1109",
+      "kind": "meeting",
+      "occurred_at": "2026-11-09T10:00:00+09:00",
+      "text": "한예린: 이번 리뉴얼에서 경쟁사 앱들이 온보딩을 어떻게 하는지 보고 싶어요.\n나: 수요일까지 경쟁사 앱 UX 분석 자료 정리해서 드릴게요.\n한예린: 네, 디자인팀은 이번 주 목요일부터 와이어프레임 작업 들어가요."
+    },
+    {
+      "id": "kakao-1110",
+      "kind": "message",
+      "occurred_at": "2026-11-10T15:45:00+09:00",
+      "text": "한예린: 어제 말씀드린 경쟁사 UX 분석은 안 하셔도 될 것 같아요, 방향이 바뀌었어요.\n한예린: 대표님이 기존 앱 개선보다 B2B 대시보드를 먼저 하자고 하셔서요.\n나: 아 넵 알겠습니다!"
+    }
+  ],
+  "expected_actions": [
+    {
+      "title": "한예린에게 경쟁사 앱 UX 분석 자료 전달",
+      "owner": "me",
+      "counterpart": "한예린",
+      "due": "2026-11-11",
+      "status": "dropped",
+      "evidence": [
+        {
+          "source": "meeting-1109",
+          "quote": "수요일까지 경쟁사 앱 UX 분석 자료 정리해서 드릴게요"
+        },
+        {
+          "source": "kakao-1110",
+          "quote": "경쟁사 UX 분석은 안 하셔도 될 것 같아요, 방향이 바뀌었어요"
+        }
+      ]
+    }
+  ],
+  "must_not_extract": [
+    {
+      "source": "meeting-1109",
+      "quote": "디자인팀은 이번 주 목요일부터 와이어프레임 작업 들어가요",
+      "reason": "NOT_MY_ACTION"
+    },
+    {
+      "source": "kakao-1110",
+      "quote": "기존 앱 개선보다 B2B 대시보드를 먼저 하자고 하셔서요",
+      "reason": "INFO_ONLY"
+    }
+  ]
+}

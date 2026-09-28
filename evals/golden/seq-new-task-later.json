@@ -1,0 +1,69 @@
+{
+  "id": "seq-new-task-later",
+  "origin": "synthetic",
+  "description": "회의에서 오지훈에게 계약서 초안을 약속하고, 다음 날 Slack에서 다른 사람(배수아)에게 무관한 새 일을 약속한다. 두 Action 모두 열려 있고 기한은 각자.",
+  "user": {
+    "name": "나",
+    "aliases": [],
+    "emails": []
+  },
+  "sources": [
+    {
+      "id": "meeting-1123",
+      "kind": "meeting",
+      "occurred_at": "2026-11-23T14:00:00+09:00",
+      "text": "오지훈: 파일럿을 12월부터 시작하려면 계약서가 먼저 있어야 해요.\n나: 금요일까지 파일럿 계약서 초안 보내드릴게요.\n오지훈: 네, 법무 검토는 저희 쪽에서 따로 진행할게요.\n오지훈: 파일럿 대상 매장은 강남 3곳으로 정해졌어요."
+    },
+    {
+      "id": "slack-1124",
+      "kind": "message",
+      "occurred_at": "2026-11-24T10:05:00+09:00",
+      "text": "#hiring\n배수아: 백엔드 채용 공고 문구 한번 봐주실 수 있을까요?\n나: 수아님, 채용 공고 문구는 목요일까지 검토해서 드릴게요.\n배수아: 감사해요! 공고는 다음 주 월요일에 올릴 예정이에요."
+    }
+  ],
+  "expected_actions": [
+    {
+      "title": "오지훈에게 파일럿 계약서 초안 발송",
+      "owner": "me",
+      "counterpart": "오지훈",
+      "due": "2026-11-27",
+      "status": "open",
+      "evidence": [
+        {
+          "source": "meeting-1123",
+          "quote": "금요일까지 파일럿 계약서 초안 보내드릴게요"
+        }
+      ]
+    },
+    {
+      "title": "배수아에게 백엔드 채용 공고 문구 검토 전달",
+      "owner": "me",
+      "counterpart": "배수아",
+      "due": "2026-11-26",
+      "status": "open",
+      "evidence": [
+        {
+          "source": "slack-1124",
+          "quote": "채용 공고 문구는 목요일까지 검토해서 드릴게요"
+        }
+      ]
+    }
+  ],
+  "must_not_extract": [
+    {
+      "source": "meeting-1123",
+      "quote": "법무 검토는 저희 쪽에서 따로 진행할게요",
+      "reason": "NOT_MY_ACTION"
+    },
+    {
+      "source": "meeting-1123",
+      "quote": "파일럿 대상 매장은 강남 3곳으로 정해졌어요",
+      "reason": "INFO_ONLY"
+    },
+    {
+      "source": "slack-1124",
+      "quote": "공고는 다음 주 월요일에 올릴 예정이에요",
+      "reason": "NOT_MY_ACTION"
+    }
+  ]
+}

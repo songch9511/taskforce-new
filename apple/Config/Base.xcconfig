@@ -1,0 +1,6 @@
+// 모든 타깃 공통. 비밀 값은 Secrets.xcconfig(커밋하지 않음)에서 가져온다.
+#include? "Secrets.xcconfig"
+
+BUNDLE_ID_PREFIX = dev.taskforcelabs
+APP_BUNDLE_ID = $(BUNDLE_ID_PREFIX).taskforce
+APP_GROUP_ID = group.$(APP_BUNDLE_ID)

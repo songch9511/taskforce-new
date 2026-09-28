@@ -1,0 +1,67 @@
+{
+  "id": "email-user-sender-quoted",
+  "origin": "synthetic",
+  "description": "사용자(한지우)가 보낸 답장. 본문의 '제가 ~드리겠습니다'는 사용자의 약속이고, 아래 인용된 상대의 옛 메일 속 약속은 상대의 일이다.",
+  "user": {
+    "name": "한지우",
+    "aliases": [],
+    "emails": [
+      "jiwoo@brightlane.kr"
+    ]
+  },
+  "sources": [
+    {
+      "id": "mail-1015",
+      "kind": "email",
+      "occurred_at": "2026-10-15T11:00:00+09:00",
+      "participants": {
+        "from": {
+          "name": "한지우",
+          "email": "jiwoo@brightlane.kr"
+        },
+        "to": [
+          {
+            "name": "오세린",
+            "email": "serin@hanbit-pay.com"
+          }
+        ]
+      },
+      "text": "제목: RE: 파트너 계약서 검토 요청\n\n세린님, 검토 의견은 내일 오전까지 정리해서 드리겠습니다.\n그리고 다음 주 월요일까지 저희 쪽 담당자 연락처도 공유드릴게요.\n\n한지우 드림\n\n-----Original Message-----\n보낸 사람: 오세린\n수수료 조항은 저희 법무팀이 다음 주에 한 번 더 정리해서 보내드리겠습니다."
+    }
+  ],
+  "expected_actions": [
+    {
+      "title": "오세린에게 계약서 검토 의견 전달",
+      "owner": "me",
+      "counterpart": "오세린",
+      "due": "2026-10-16",
+      "status": "open",
+      "evidence": [
+        {
+          "source": "mail-1015",
+          "quote": "검토 의견은 내일 오전까지 정리해서 드리겠습니다"
+        }
+      ]
+    },
+    {
+      "title": "오세린에게 담당자 연락처 공유",
+      "owner": "me",
+      "counterpart": "오세린",
+      "due": "2026-10-19",
+      "status": "open",
+      "evidence": [
+        {
+          "source": "mail-1015",
+          "quote": "다음 주 월요일까지 저희 쪽 담당자 연락처도 공유드릴게요"
+        }
+      ]
+    }
+  ],
+  "must_not_extract": [
+    {
+      "source": "mail-1015",
+      "quote": "수수료 조항은 저희 법무팀이 다음 주에 한 번 더 정리해서 보내드리겠습니다",
+      "reason": "NOT_MY_ACTION"
+    }
+  ]
+}

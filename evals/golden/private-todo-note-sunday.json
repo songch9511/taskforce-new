@@ -1,0 +1,79 @@
+{
+  "id": "private-todo-note-sunday",
+  "origin": "synthetic",
+  "description": "일요일 밤에 쓴 사용자의 개인 할 일 메모. 체크 안 된 항목은 모두 내 Action이고, 일요일 기준 '화요일까지'·'금요일까지'는 다음 주로 풀린다. 완료 체크, 바람, 일정 메모는 제외한다.",
+  "user": {
+    "name": "나"
+  },
+  "sources": [
+    {
+      "id": "note-1018",
+      "kind": "note",
+      "occurred_at": "2026-10-18T22:40:00+09:00",
+      "text": "이번 주 할 일\n- [ ] 세무사님께 3분기 부가세 자료 보내기 (화요일까지)\n- [ ] 한결디자인 잔금 입금 확인\n- [x] 홈페이지 도메인 갱신\n- [ ] 금요일까지 워크숍 발표자료 초안\n- [ ] 엄마 생신 선물 주문\n- 요즘 아침 루틴 너무 무너짐. 운동 다시 시작하면 좋겠다\n메모: 11/3 치과 예약 오후 2시"
+    }
+  ],
+  "expected_actions": [
+    {
+      "title": "세무사에게 3분기 부가세 자료 발송",
+      "owner": "me",
+      "counterpart": "세무사",
+      "due": "2026-10-20",
+      "status": "open",
+      "evidence": [
+        {
+          "source": "note-1018",
+          "quote": "세무사님께 3분기 부가세 자료 보내기 (화요일까지)"
+        }
+      ]
+    },
+    {
+      "title": "한결디자인 잔금 입금 확인",
+      "owner": "me",
+      "counterpart": "한결디자인",
+      "status": "open",
+      "evidence": [
+        {
+          "source": "note-1018",
+          "quote": "한결디자인 잔금 입금 확인"
+        }
+      ]
+    },
+    {
+      "title": "워크숍 발표자료 초안 작성",
+      "owner": "me",
+      "due": "2026-10-23",
+      "status": "open",
+      "evidence": [
+        {
+          "source": "note-1018",
+          "quote": "금요일까지 워크숍 발표자료 초안"
+        }
+      ]
+    },
+    {
+      "title": "엄마 생신 선물 주문",
+      "owner": "me",
+      "counterpart": "엄마",
+      "status": "open",
+      "evidence": [
+        {
+          "source": "note-1018",
+          "quote": "엄마 생신 선물 주문"
+        }
+      ]
+    }
+  ],
+  "must_not_extract": [
+    {
+      "source": "note-1018",
+      "quote": "[x] 홈페이지 도메인 갱신",
+      "reason": "ALREADY_DONE"
+    },
+    {
+      "source": "note-1018",
+      "quote": "운동 다시 시작하면 좋겠다",
+      "reason": "TENTATIVE"
+    }
+  ]
+}

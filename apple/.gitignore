@@ -1,0 +1,9 @@
+# Supabase URL · 키 (커밋하지 않음)
+Config/Secrets.xcconfig
+
+xcuserdata/
+DerivedData/
+build/
+.build/
+.swiftpm/
+.omc/

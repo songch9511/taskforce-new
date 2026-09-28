@@ -1,0 +1,56 @@
+{
+  "id": "seq-unilateral-postpone",
+  "origin": "synthetic",
+  "description": "회의에서 금요일로 약속한 보고서를 사용자가 목요일에 '월요일까지 드려도 될까요?'라고 묻지만 상대의 답이 없다. 연장은 요청자만 수락할 수 있으므로 기한은 금요일 유지(규칙 0, 2).",
+  "user": {
+    "name": "나",
+    "aliases": [],
+    "emails": []
+  },
+  "sources": [
+    {
+      "id": "meeting-1019",
+      "kind": "meeting",
+      "occurred_at": "2026-10-19T09:30:00+09:00",
+      "text": "임채원: 반려동물 용품 구독 시장 규모를 이사회 전에 파악하고 싶어요.\n나: 금요일까지 시장조사 보고서 드릴게요.\n임채원: 네, 이사회는 다음 달 첫째 주예요.\n임채원: 기존 고객 설문 데이터는 제가 오늘 오후에 공유 폴더에 올려 둘게요."
+    },
+    {
+      "id": "slack-1022",
+      "kind": "message",
+      "occurred_at": "2026-10-22T18:05:00+09:00",
+      "text": "나: 채원님, 설문 데이터 분석이 생각보다 길어지고 있어서요.\n나: 혹시 시장조사 보고서는 월요일까지 드려도 될까요?"
+    }
+  ],
+  "expected_actions": [
+    {
+      "title": "임채원에게 반려동물 구독 시장조사 보고서 전달",
+      "owner": "me",
+      "counterpart": "임채원",
+      "due": "2026-10-23",
+      "status": "open",
+      "evidence": [
+        {
+          "source": "meeting-1019",
+          "quote": "금요일까지 시장조사 보고서 드릴게요"
+        }
+      ]
+    }
+  ],
+  "must_not_extract": [
+    {
+      "source": "meeting-1019",
+      "quote": "이사회는 다음 달 첫째 주예요",
+      "reason": "INFO_ONLY"
+    },
+    {
+      "source": "meeting-1019",
+      "quote": "기존 고객 설문 데이터는 제가 오늘 오후에 공유 폴더에 올려 둘게요",
+      "reason": "NOT_MY_ACTION"
+    },
+    {
+      "source": "slack-1022",
+      "quote": "설문 데이터 분석이 생각보다 길어지고 있어서요",
+      "reason": "INFO_ONLY"
+    }
+  ]
+}

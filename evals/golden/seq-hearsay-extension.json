@@ -1,0 +1,51 @@
+{
+  "id": "seq-hearsay-extension",
+  "origin": "synthetic",
+  "description": "회의에서 최민수에게 금요일까지 비교표를 약속했고, 이후 팀원이 '민수님이 월요일도 괜찮대요'라고 전한다. 전언은 기한을 바꾸지 못하므로 금요일 유지(규칙 3).",
+  "user": {
+    "name": "나",
+    "aliases": [],
+    "emails": []
+  },
+  "sources": [
+    {
+      "id": "meeting-1102",
+      "kind": "meeting",
+      "occurred_at": "2026-11-02T16:00:00+09:00",
+      "text": "최민수: 경쟁사 가격 정책을 한눈에 볼 수 있으면 좋겠어요.\n나: 금요일까지 가격 정책 비교표 보내드릴게요.\n최민수: 감사합니다. 저희는 다음 주에 요금제 개편안을 확정할 예정이에요."
+    },
+    {
+      "id": "slack-1104",
+      "kind": "message",
+      "occurred_at": "2026-11-04T13:20:00+09:00",
+      "text": "#team-internal\n박지은: 아까 민수님이랑 통화했는데, 민수님이 비교표는 다음 주 월요일도 괜찮대요.\n박지은: 저는 경쟁사 요금 페이지 캡처를 오늘 중으로 폴더에 모아 둘게요.\n나: 오 알겠어요, 고마워요."
+    }
+  ],
+  "expected_actions": [
+    {
+      "title": "최민수에게 경쟁사 가격 정책 비교표 발송",
+      "owner": "me",
+      "counterpart": "최민수",
+      "due": "2026-11-06",
+      "status": "open",
+      "evidence": [
+        {
+          "source": "meeting-1102",
+          "quote": "금요일까지 가격 정책 비교표 보내드릴게요"
+        }
+      ]
+    }
+  ],
+  "must_not_extract": [
+    {
+      "source": "meeting-1102",
+      "quote": "다음 주에 요금제 개편안을 확정할 예정이에요",
+      "reason": "INFO_ONLY"
+    },
+    {
+      "source": "slack-1104",
+      "quote": "저는 경쟁사 요금 페이지 캡처를 오늘 중으로 폴더에 모아 둘게요",
+      "reason": "NOT_MY_ACTION"
+    }
+  ]
+}
