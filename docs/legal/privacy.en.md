@@ -63,7 +63,7 @@ This policy explains what we process, why, where, and for how long, and how you 
 | Purpose | Information | Ground |
 |---|---|---|
 | Identify you, keep you signed in, delete your account | Account, automatically generated | Performance of our agreement with you (PIPA Art. 15(1)(4)) |
-| Find the work you committed to, merge it with existing tasks, and apply changes to due dates and scope | Connections, source text, derived information, profile | Performance of our agreement. Sending to external AI also requires your in-app consent (section 4) For other people's information inside your sources, see "Other people's information inside your sources" below |
+| Find the work you committed to, merge it with existing tasks, and apply changes to due dates and scope | Connections, source text, derived information, profile | Performance of our agreement. Sending to external AI also requires your in-app consent (section 4). For other people's information inside your sources, see "Other people's information inside your sources" below |
 | Send review requests and due-date notifications | Device and notifications | Performance of our agreement |
 | Measure whether the service works (share of tasks the AI got wrong, share of missed tasks, return visits) | Usage records | Our legitimate interest in improving the service (PIPA Art. 15(1)(6)). Not used to profile you for advertising |
 | Fix errors and prevent abuse and security incidents | Automatically generated | Our legitimate interest; legal obligations |
