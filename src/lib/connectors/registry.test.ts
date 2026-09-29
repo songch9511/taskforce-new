@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { connectorFor, slackWebConnector, tokenRevokerFor } from "./registry";
+import { connectorFor, slackWebConnector, syncConnections, tokenRevokerFor } from "./registry";
 
 vi.mock("server-only", () => ({}));
 
@@ -25,5 +25,19 @@ describe("Slack 연결 열기", () => {
     vi.stubEnv("ADMIN_EMAILS", "");
     expect(connectorFor("slack")?.provider).toBe("slack");
     expect(slackWebConnector("tester@example.com")?.provider).toBe("slack");
+  });
+
+  it("닫혀 있어도 이미 있는 Slack 연결(운영자 시험)은 동기화한다", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("SLACK_CONNECT_ENABLED", "");
+    const providers: unknown[] = [];
+    const admin = {
+      rpc: (_name: string, args: { p_providers: unknown[] }) => {
+        providers.push(...args.p_providers);
+        return { throwOnError: async () => ({ data: [] }) };
+      },
+    };
+    await syncConnections(admin as never);
+    expect(providers).toContain("slack");
   });
 });

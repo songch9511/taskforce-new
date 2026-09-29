@@ -63,7 +63,7 @@ This policy explains what we process, why, where, and for how long, and how you 
 | Purpose | Information | Ground |
 |---|---|---|
 | Identify you, keep you signed in, delete your account | Account, automatically generated | Performance of our agreement with you (PIPA Art. 15(1)(4)) |
-| Find the work you committed to, merge it with existing tasks, and apply changes to due dates and scope | Connections, source text, derived information, profile | Performance of our agreement. Sending to external AI also requires your in-app consent (section 4) |
+| Find the work you committed to, merge it with existing tasks, and apply changes to due dates and scope | Connections, source text, derived information, profile | Performance of our agreement. Sending to external AI also requires your in-app consent (section 4) For other people's information inside your sources, see "Other people's information inside your sources" below |
 | Send review requests and due-date notifications | Device and notifications | Performance of our agreement |
 | Measure whether the service works (share of tasks the AI got wrong, share of missed tasks, return visits) | Usage records | Our legitimate interest in improving the service (PIPA Art. 15(1)(6)). Not used to profile you for advertising |
 | Fix errors and prevent abuse and security incidents | Automatically generated | Our legitimate interest; legal obligations |
@@ -71,16 +71,13 @@ This policy explains what we process, why, where, and for how long, and how you 
 
 We do not use information beyond these purposes. If a purpose changes, we will tell you in advance and ask for consent again where the law requires it.
 
-> **Legal review required (remove this box before publishing)** — other people's information inside your sources
->
-> The email, notes, and messages you connect contain names, email addresses, and statements of people other than you (email senders, meeting attendees, Slack conversation partners, transcript speakers). We do not get consent from these people directly.
-> This draft explains the processing as performance of our agreement with you and legitimate interest, but the following is unresolved:
-> - The ground under PIPA: whether Art. 15(1)(6) (legitimate interest that "clearly overrides" the data subject's rights) applies, or whether we can be treated as your processor.
-> - PIPA Art. 20 (notice of the source of information collected from someone other than the data subject): whether handling such requests through the contact in section 13 is sufficient.
-> - Under the GDPR: a legitimate interest assessment for Art. 6(1)(f) and the exemption relied on for Art. 14 notices.
-> - Whether sending these people's information to external AI (section 4) is lawful.
->
-> **Have Korean privacy counsel review this before finalizing this section.**
+### Other people's information inside your sources
+
+The email, notes, and messages you connect contain names, email addresses, and statements of people other than you (email senders, meeting attendees, Slack conversation partners, transcript speakers). We use this information only to find the work you are responsible for and to show who a commitment was made with. We do not analyze these people separately or build profiles of them.
+
+- **Legal ground:** our legitimate interest (Personal Information Protection Act, Art. 15(1)(6)). It is finding your own commitments in work sources that you chose to connect, and the processing is limited to that purpose.
+- **Minimization:** source body text is deleted 90 days after it is stored. The people involved (names and email addresses), titles, and evidence quotes remain with your tasks until you delete your account (section 5; anything from Slack is deleted when you disconnect). Anything sent to external AI goes only to providers that keep no data (section 4).
+- **Their rights:** a person whose information appears in your sources can ask privacy@taskforcelabs.dev where we got it, why we process it, and about their right to stop the processing (Art. 20 of the same Act), and can ask us to stop processing or delete it. We act on such requests without delay, and where the law allows us to refuse, we will say why.
 
 ## 3. What we do with each connected service
 
@@ -118,12 +115,6 @@ When you disconnect (app → Connections → Disconnect), the service's access t
 - **Access:** user-token conversation read scopes (`im:history`, `mpim:history`, `channels:history`, `groups:history`), conversation info (`im:read`, `mpim:read`, `channels:read`, `groups:read`, to know channel names and who a DM is with), and user names (`users:read`). We install no bot, and we never send or edit messages.
 - **When you disconnect or remove the app:** when you disconnect in the app, we ask Slack to revoke the token; when you remove the Taskforce app or revoke its access in Slack, we delete the stored token. In both cases we immediately delete the body text, title, and people involved of the Slack source text, the quote text of claims, Jev judgment records, queued messages, tracked threads, and name information, and each evidence quote is replaced by a removal note. If Slack fails to tell us the app was removed, a daily token check deletes the same data within a day. What remains: tasks (title, due date, status, counterpart), change history, the embedding used to find similar tasks (a numeric vector), and original links. If you removed the app in Slack, the connection record (workspace name, address and identifiers, and your Slack user ID) remains in a "revoked" state until you disconnect it in the app.
 - **Commitments:** we do not use data received from Slack to train any AI model, including large language models (LLMs); we do not use one workspace's data for another workspace or a third party; and we do not bulk-export it.
-
-> **Legal review required (remove this box before publishing)** — storing Slack source text
->
-> The Slack API Terms require data from other organizations to be used and retained only to the "minimum necessary" and require explicit authorization from the installing organization. For some APIs they also prohibit persistent copies or archives. The Slack Developer Policy requires deleting all associated data within 14 business days after an app is removed.
-> Taskforce deletes source text 90 days after it is stored, and when you disconnect or remove the app it immediately deletes Slack source text, evidence quotes, and queued messages. Task titles, counterpart names, original links, change history, and embeddings remain (decided 2026-09-28, `docs/go-live/slack-integration.md` D3).
-> To review: whether what remains counts as "associated data", and whether a workspace admin approval step is also needed. See `docs/go-live/slack-app.md`.
 
 ## 4. What we send to external AI
 
@@ -210,9 +201,9 @@ Our server and database are outside Korea. All transfers happen over the network
 | Vercel Inc. (privacy@vercel.com, 440 N Barranca Ave #4133, Covina, CA 91723, USA) | Australia (Sydney, server execution), USA (request records and management systems) | Everything that passes through the server (section 1), server request records | Server operation, website hosting | While the request is processed; request records 1 day |
 | Supabase Pte. Ltd. (privacy@supabase.com) | Australia (Sydney, AWS ap-southeast-2) | All items in section 1 except support email | Data storage, sign-in and authentication | Until account deletion; request records 1 day |
 | OpenRouter, Inc. (privacy@openrouter.ai) | USA | What we send (section 4) | Routing AI requests | Not stored (only while the request is processed) |
-| Together AI, Inc. · Fireworks AI, Inc. · DeepInfra, Inc. · BaseTen, Inc. (through OpenRouter, finding tasks in source text) {{contact to be confirmed}} | USA (based on headquarters; the providers do not publish where the request is actually processed) | What we send (section 4) | Running AI models (source analysis) | Not stored (Zero Data Retention) |
-| Microsoft Corporation (Azure, through OpenRouter, embeddings) {{contact to be confirmed}} | USA (based on headquarters) | The part of what we send (section 4) used to find similar tasks (titles and evidence quotes of new candidates and existing tasks) | Running AI models (embeddings) | Not stored (Zero Data Retention) |
-| TypeSafe (through OpenRouter, judgment) {{contact to be confirmed}} | USA (OpenRouter lists no country; public sources place it in San Francisco. **To confirm: get written confirmation of TypeSafe's location**) | What we send (section 4) | Running AI models (judgment) | Not stored (Zero Data Retention) |
+| Together AI, Inc. (privacy@together.ai) · Fireworks AI, Inc. (privacy@fireworks.ai) · Deep Infra Inc. (policy@deepinfra.com, 2625 Middlefield Road #460, Palo Alto, CA 94306, USA) · Baseten Labs, Inc. (privacy@baseten.co, 560 Davis St., Suite 250, San Francisco, CA 94111, USA) (through OpenRouter, finding tasks in source text) | USA (based on headquarters; the providers do not publish where the request is actually processed) | What we send (section 4) | Running AI models (source analysis) | Not stored (Zero Data Retention) |
+| Microsoft Corporation (Azure, through OpenRouter, embeddings; privacy contact: go.microsoft.com/fwlink/?linkid=2126612, One Microsoft Way, Redmond, WA 98052, USA) | USA (based on headquarters) | The part of what we send (section 4) used to find similar tasks (titles and evidence quotes of new candidates and existing tasks) | Running AI models (embeddings) | Not stored (Zero Data Retention) |
+| TypeSafe AI, Inc. (through OpenRouter, judgment; privacy@typesafe.ai, 255 California St, Suite 1300, San Francisco, CA, USA) | USA (address in TypeSafe's terms of use) | What we send (section 4) | Running AI models (judgment) | Not stored (Zero Data Retention) |
 | Apple Inc. (One Apple Park Way, Cupertino, CA 95014, USA · apple.com/legal/privacy/contact) | USA | Push device token, notification content (task identifier and a generic phrase such as "Review needed"; task titles are never included) | Delivering push notifications | Under Apple's policy |
 | Google LLC (1600 Amphitheatre Parkway, Mountain View, CA 94043, USA) | USA and other countries where Google has data centers | Email address and content of support email | Receiving and storing support email | 90 days after the request is closed |
 
@@ -278,7 +269,7 @@ We ask you to confirm owners and due dates we are unsure of, and every task the 
 |---|---|
 | Privacy officer | Cheonghyeok Song (Representative) |
 | Email | privacy@taskforcelabs.dev |
-| Phone | {{phone number — decide before publishing}} |
+| Phone | We take requests by email (privacy@taskforcelabs.dev) |
 | Operator | 태스크포스 (sole proprietorship, business registration number 687-30-01972) |
 | Address | 262-20, Galma-dong, Seo-gu, Daejeon, Republic of Korea |
 
@@ -311,7 +302,7 @@ Specifically:
 
 ## 16. Users in the EU and UK
 
-If the EU or UK General Data Protection Regulation (GDPR, UK GDPR) applies to you:
+The beta is not offered to people who live in the European Economic Area (EEA, including the European Union) or the United Kingdom (Terms of Use, section 4.3). We do not advertise there, and the app is not made available in those App Store regions. If the EU or UK General Data Protection Regulation (GDPR, UK GDPR) still applies to you:
 
 - **Controller:** 태스크포스 (Republic of Korea), privacy@taskforcelabs.dev. We have not appointed a Data Protection Officer.
 - **Legal bases:** providing the service: performance of a contract (Art. 6(1)(b)); sending to external AI: consent (Art. 6(1)(a)) and performance of a contract; service metrics, security, and processing other people's information in your sources: legitimate interests (Art. 6(1)(f)). Our legitimate interest is finding your own commitments in the work sources you connect, and we use the information for nothing else.
