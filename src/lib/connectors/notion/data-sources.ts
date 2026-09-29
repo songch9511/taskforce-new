@@ -3,7 +3,7 @@ import "server-only";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { connectionSettingsSchema, type DataSourceSetting, type DataSourceSummary } from "@/lib/api/contract";
 
-import { dataSourceTitle, NotionError, type NotionDataSource } from "./api";
+import { dataSourceTitle, NotionError, NotionOAuthError, type NotionDataSource } from "./api";
 import { withNotionClient } from "./run";
 import { defaultStatusMap, isMeetingSource, suggestSetting, validateSetting, type SaveDataSourceRequest } from "./tasks";
 
@@ -66,9 +66,11 @@ function canonical(value: unknown): string {
   return JSON.stringify(value ?? null);
 }
 
-/** 공유되지 않았거나 없는 데이터베이스만 null. 권한 끊김 · 네트워크 오류는 그대로 올린다. */
+/** 공유되지 않았거나 없는 데이터베이스만 null. 권한 끊김 · 토큰 갱신 거절(연결 만료) · 네트워크 오류는 그대로 올린다. */
 const notFoundAsNull = (error: unknown) => {
-  if (error instanceof NotionError && (error.status === 404 || error.status === 400 || error.status === 403)) return null;
+  if (error instanceof NotionError && !(error instanceof NotionOAuthError) && (error.status === 404 || error.status === 400 || error.status === 403)) {
+    return null;
+  }
   throw error;
 };
 

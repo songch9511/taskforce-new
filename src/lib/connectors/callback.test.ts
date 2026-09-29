@@ -14,6 +14,7 @@ function setup(
   options: {
     session?: { id: string } | null;
     cookie?: { state: string; userId: string } | null;
+    consent?: boolean;
     nonces?: string[];
     connect?: () => Promise<ConnectedStatus>;
     saveHandoff?: () => Promise<void>;
@@ -30,6 +31,7 @@ function setup(
     now: () => NOW,
     cookieState: async () => options.cookie ?? null,
     authenticate: async () => options.session ?? null,
+    hasConsent: async () => options.consent ?? true,
     consumeNonce: async (payload: OAuthStatePayload) => nonces.delete(`${payload.userId}:${payload.nonce}`),
     connect: async (userId, code) => {
       connected.push({ userId, code });
@@ -153,6 +155,14 @@ describe("OAuth callback — 웹 흐름 (쿠키 state, /lab)", () => {
     expect(response.headers.get("set-cookie")).toMatch(/^notion_oauth_state=; Path=\/api\/connectors\/notion; Max-Age=0/);
     expect(connected).toEqual([{ userId: ALICE, code: "c" }]);
     expect(after).toEqual([ALICE]);
+  });
+
+  it("시작한 뒤 외부 AI 처리 동의를 철회했으면 연결하지 않고 consent_required", async () => {
+    const { deps, connected, after } = setup({ session: { id: ALICE }, cookie: { state: cookieState, userId: ALICE }, consent: false });
+    const response = await handleOAuthCallback(callback({ state: cookieState, code: "c" }), deps);
+    expect(response.headers.get("location")).toBe("http://localhost:3000/lab?notion=consent_required");
+    expect(connected).toEqual([]);
+    expect(after).toEqual([]);
   });
 
   it("로그인하지 않았으면 /login으로 보낸다", async () => {

@@ -1,5 +1,4 @@
-import { timingSafeEqual } from "node:crypto";
-
+import { cronAuthorized, cronUnauthorized } from "@/lib/api/cron";
 import { syncConnections } from "@/lib/connectors/registry";
 import { sweepExpiredOAuth } from "@/lib/connectors/store";
 import { createAdminClient } from "@/lib/supabase/admin";
@@ -8,11 +7,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 export const maxDuration = 300;
 
 export async function GET(request: Request) {
-  const secret = Buffer.from(process.env.CRON_SECRET ?? "");
-  const given = Buffer.from(request.headers.get("authorization")?.replace(/^Bearer\s+/i, "") ?? "");
-  if (secret.length === 0 || given.length !== secret.length || !timingSafeEqual(given, secret)) {
-    return Response.json({ error: { code: "unauthorized", message: "cron 인증 실패" } }, { status: 401 });
-  }
+  if (!cronAuthorized(request)) return cronUnauthorized();
 
   const admin = createAdminClient();
   // 만료된 OAuth nonce · 완료 대기(handoff, 암호화된 code)를 모든 사용자에서 치운다. 실패해도 동기화는 한다.

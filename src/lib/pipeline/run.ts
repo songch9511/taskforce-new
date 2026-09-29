@@ -6,7 +6,7 @@ import { judgeCandidate, type Decide, type JudgeResult } from "./judge";
 import { verifyCandidates, type VerifiedCandidate } from "./verify";
 
 // 원문 하나를 파이프라인 끝까지 돌린다: ① 추출 → ② 기계적 검증 → ③ Jev 판정.
-// DB와 분리된 함수라 API · eval · 테스트에서 같은 코드를 쓴다. (④ 매칭 · ⑤ 진실 판정은 Phase 2)
+// DB와 분리된 함수라 API · eval · 테스트에서 같은 코드를 쓴다. 매칭 · 진실 판정은 그 뒤 merge.ts mergeJudged가 한다.
 
 export type PipelineDeps = { complete: CompleteJson; decide: Decide };
 

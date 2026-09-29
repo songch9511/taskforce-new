@@ -24,6 +24,8 @@ export type OAuthCallbackDeps = {
   cookieState: () => Promise<{ state: string; userId: string } | null>;
   /** 웹 흐름: 로그인한 사용자 */
   authenticate: () => Promise<{ id: string } | null>;
+  /** 웹 흐름: 로그인한 사용자가 외부 AI 처리에 동의했나 (시작한 뒤 철회했을 수 있다. 앱 흐름은 complete가 확인한다) */
+  hasConsent: () => Promise<boolean>;
   /** 웹 흐름: code → 토큰 → 암호화 저장 */
   connect: (userId: string, code: string) => Promise<ConnectedStatus>;
   /** 웹 흐름: 연결된 뒤 할 일 (지표). 응답을 막지 않도록 부르는 쪽이 after()로 미룬다 */
@@ -99,6 +101,13 @@ export async function handleOAuthCallback(request: Request, deps: OAuthCallbackD
   // 시작한 계정까지 묶어, 그 사이 다른 계정으로 바꿔 로그인해도 연결이 엉뚱한 계정에 붙지 않게 한다.
   if (!stateOk || cookie?.userId !== user.id) return back("invalid_state");
   if (!code) return back(failedStatus());
+  // 연결하면 곧바로 원문을 가져와 처리하므로 연결 직전에 동의를 다시 본다
+  const consented = await deps.hasConsent().catch((error) => {
+    console.error(`${deps.provider} 동의 확인 실패:`, error instanceof Error ? error.message : error);
+    return null;
+  });
+  if (consented === null) return back("error");
+  if (!consented) return back("consent_required");
   let status: ConnectedStatus;
   try {
     status = await deps.connect(user.id, code);

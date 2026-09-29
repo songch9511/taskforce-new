@@ -1,5 +1,5 @@
 import type { GoldenCase } from "./golden";
-import { quotesOverlap } from "./score";
+import { labelQuotesOverlap } from "./score";
 
 // 시퀀스 채점 (Phase 2): 여러 원문을 순서대로 처리한 뒤 남은 Action이 정답과 맞는지 본다.
 // Action과 정답은 근거 인용이 겹치는지로 짝짓는다. 한 정답에 Action이 여럿이면 병합 실패(split),
@@ -28,7 +28,7 @@ export type SequenceScore = {
 
 export function scoreSequence(golden: GoldenCase, finals: FinalAction[]): SequenceScore {
   const score: SequenceScore = { caseId: golden.id, expected: golden.expected_actions.length, correct: 0, splits: [], overMerged: [], misses: [], extras: [], fieldErrors: [] };
-  const matchesOf = (quotes: string[]) => (action: FinalAction) => action.quotes.some((q) => quotes.some((e) => quotesOverlap(e, q)));
+  const matchesOf = (quotes: string[]) => (action: FinalAction) => action.quotes.some((q) => quotes.some((e) => labelQuotesOverlap(e, q)));
 
   const claimed = new Map<string, number>();
   const matchedPerExpected = golden.expected_actions.map((expected) => {
@@ -63,7 +63,7 @@ export function scoreSequence(golden: GoldenCase, finals: FinalAction[]): Sequen
 
   for (const action of finals) {
     if (claimed.has(action.id)) continue;
-    const trap = golden.must_not_extract.find((t) => action.quotes.some((q) => quotesOverlap(t.quote, q)));
+    const trap = golden.must_not_extract.find((t) => action.quotes.some((q) => labelQuotesOverlap(t.quote, q)));
     score.extras.push({ title: action.title, kind: trap?.reason ?? "UNLABELED" });
   }
   return score;

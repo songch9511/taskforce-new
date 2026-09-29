@@ -1,7 +1,8 @@
 import { cookies } from "next/headers";
 import { after } from "next/server";
 
-import { authenticateRequest } from "@/lib/api/auth";
+import { authenticateRequest, type ApiContext } from "@/lib/api/auth";
+import { hasAiConsent } from "@/lib/api/profile-store";
 import { handleOAuthCallback, oauthCookie } from "@/lib/connectors/callback";
 import { afterConnected, connectorFor } from "@/lib/connectors/registry";
 import { consumeOAuthNonce, saveOAuthHandoff } from "@/lib/connectors/store";
@@ -15,6 +16,7 @@ export const maxDuration = 60;
 
 export async function GET(request: Request) {
   const admin = createAdminClient();
+  let context: ApiContext | null = null;
   return handleOAuthCallback(request, {
     provider: "notion",
     stateSecret: () => oauthStateSecret(),
@@ -22,7 +24,11 @@ export async function GET(request: Request) {
       const [state = "", userId = ""] = ((await cookies()).get(oauthCookie("notion").name)?.value ?? "").split(".");
       return state ? { state, userId } : null;
     },
-    authenticate: async () => (await authenticateRequest(request))?.user ?? null,
+    authenticate: async () => {
+      context = await authenticateRequest(request);
+      return context?.user ?? null;
+    },
+    hasConsent: async () => (context ? hasAiConsent(context) : false),
     connect: (userId, code) => connectorFor("notion")!.connect(admin, userId, code),
     onConnected: (userId) => after(() => afterConnected(admin, userId, "notion", { firstSync: false })),
     consumeNonce: (payload) => consumeOAuthNonce(admin, payload),

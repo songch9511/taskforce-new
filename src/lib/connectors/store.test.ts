@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { DataSourceSetting } from "@/lib/api/contract";
 
-import { recordNotionHealth, recordSync } from "./store";
+import { ingestDeps, recordNotionHealth, recordSync } from "./store";
 import type { Connection } from "./types";
 
 vi.mock("server-only", () => ({}));
@@ -118,8 +118,10 @@ describe("recordNotionHealth: 자동 확인 다시 보기", () => {
 });
 
 describe("recordSync: 동기화 결과를 연결 상태로", () => {
-  /** update 값과 조건만 기록하는 가짜 service role 클라이언트 */
-  function fakeSyncAdmin() {
+  const claimedAt = new Date("2026-09-29T00:00:00.000Z");
+
+  /** update 값과 조건을 기록하는 가짜 service role 클라이언트. matched: 조건에 맞는 행이 있는가 */
+  function fakeSyncAdmin(matched = true) {
     const updates: Record<string, unknown>[] = [];
     const conditions: string[] = [];
     const q = {
@@ -128,8 +130,12 @@ describe("recordSync: 동기화 결과를 연결 상태로", () => {
         conditions.push(`${column} <> ${value}`);
         return q;
       },
+      lte: (column: string, value: string) => {
+        conditions.push(`${column} <= ${value}`);
+        return q;
+      },
       select: () => q,
-      throwOnError: async () => ({ data: [{ id: "c1" }] }),
+      throwOnError: async () => ({ data: matched ? [{ id: "c1" }] : [] }),
     };
     const admin = {
       from: () => ({
@@ -142,10 +148,70 @@ describe("recordSync: 동기화 결과를 연결 상태로", () => {
     return { admin, updates, conditions };
   }
 
-  it("갱신 토큰이 거절돼 다시 연결해야 하면 reauth로 남긴다. 끊긴 연결(revoked)은 덮지 않는다", async () => {
+  it("갱신 토큰이 거절돼 다시 연결해야 하면 reauth로 남긴다. 끊긴 연결(revoked) · 동기화 뒤에 다시 연결한 연결은 덮지 않는다", async () => {
     const { admin, updates, conditions } = fakeSyncAdmin();
-    await recordSync(admin, connection, { error: "Notion 연결이 만료됐습니다. 다시 연결해 주세요.", reauth: true });
+    await recordSync(admin, connection, { claimedAt, error: "Notion 연결이 만료됐습니다. 다시 연결해 주세요.", reauth: true });
     expect(updates[0]).toMatchObject({ status: "reauth", last_error: "Notion 연결이 만료됐습니다. 다시 연결해 주세요.", sync_started_at: null });
-    expect(conditions).toEqual(["status <> revoked"]);
+    expect(conditions).toEqual(["connected_at <= 2026-09-29T00:00:00.000Z", "status <> revoked"]);
+  });
+
+  it("동기화를 시작한 뒤 다시 연결했으면(connected_at이 뒤) 새 연결 상태를 덮지 않고 잠금만 푼다", async () => {
+    const { admin, updates } = fakeSyncAdmin(false);
+    await recordSync(admin, connection, { claimedAt, error: "Notion 요청 실패 (503)" });
+    expect(updates).toHaveLength(2);
+    expect(updates[1]).toEqual({ sync_started_at: null });
+  });
+
+  it("끊긴 것으로 남기려 했는데 그 사이 다시 연결했으면 끊지 않고 잠금만 푼다", async () => {
+    const { admin, updates, conditions } = fakeSyncAdmin(false);
+    await recordSync(admin, connection, { claimedAt, error: "Slack 연결이 끊겼습니다.", revoked: true });
+    expect(updates[0]).toMatchObject({ status: "revoked" });
+    expect(conditions).toEqual(["connected_at <= 2026-09-29T00:00:00.000Z"]);
+    expect(updates[1]).toEqual({ sync_started_at: null });
+  });
+});
+
+describe("ingestDeps.ingestedIds: 이미 넣은 원문", () => {
+  type Row = { user_id: string; connection_id: string | null; external_id: string };
+
+  /** sources 행을 eq · in · or(eq · is.null)로 거르는 가짜 service role 클라이언트 */
+  function fakeSources(rows: Row[]) {
+    return {
+      from: () => {
+        let result = rows;
+        const q = {
+          select: () => q,
+          eq: (column: keyof Row, value: string) => {
+            result = result.filter((row) => row[column] === value);
+            return q;
+          },
+          in: (column: keyof Row, values: string[]) => {
+            result = result.filter((row) => values.includes(row[column] as string));
+            return q;
+          },
+          or: (filters: string) => {
+            const tests = filters.split(",").map((filter) => {
+              const [column, op, value] = filter.split(".") as [keyof Row, string, string];
+              return (row: Row) => (op === "is" && value === "null" ? row[column] === null : row[column] === value);
+            });
+            result = result.filter((row) => tests.some((test) => test(row)));
+            return q;
+          },
+          throwOnError: async () => ({ data: result }),
+        };
+        return q;
+      },
+    } as unknown as SupabaseClient;
+  }
+
+  it("끊었다가 다시 연결해도(연결이 비워진 원문) 같은 페이지를 다시 넣지 않는다. 남의 원문 · 다른 연결의 원문은 보지 않는다", async () => {
+    const admin = fakeSources([
+      { user_id: "u1", connection_id: "c1", external_id: "p1" },
+      { user_id: "u1", connection_id: null, external_id: "p2" },
+      { user_id: "u1", connection_id: "c-other", external_id: "p3" },
+      { user_id: "u2", connection_id: null, external_id: "p4" },
+    ]);
+    const ids = await ingestDeps(admin).ingestedIds(connection, ["p1", "p2", "p3", "p4", "p5"]);
+    expect([...ids].sort()).toEqual(["p1", "p2"]);
   });
 });

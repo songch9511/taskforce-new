@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { GoldenCase } from "./golden";
 import { normalizeForMatch } from "@/lib/pipeline/text";
 
-import { quotesOverlap, scoreCase, totals, type ScoredCandidate } from "./score";
+import { labelQuotesOverlap, scoreCase, totals, type ScoredCandidate } from "./score";
 
 const golden: GoldenCase = {
   id: "c1",
@@ -48,18 +48,18 @@ const candidate = (quote: string, extra: Partial<ScoredCandidate> = {}): ScoredC
   ...extra,
 });
 
-describe("quotesOverlap", () => {
+describe("labelQuotesOverlap", () => {
   it("공백과 문장부호 차이를 무시한다", () => {
     expect(normalizeForMatch("네, 금요일까지!")).toBe("네금요일까지");
-    expect(quotesOverlap("금요일까지 제안서 보내드릴게요.", "금요일까지제안서 보내드릴게요")).toBe(true);
+    expect(labelQuotesOverlap("금요일까지 제안서 보내드릴게요.", "금요일까지제안서 보내드릴게요")).toBe(true);
   });
 
   it("한쪽이 다른 쪽을 포함하면 같은 구절이다", () => {
-    expect(quotesOverlap("네, 금요일까지 제안서 보내드릴게요", "제안서 보내드릴게요")).toBe(true);
+    expect(labelQuotesOverlap("네, 금요일까지 제안서 보내드릴게요", "제안서 보내드릴게요")).toBe(true);
   });
 
   it("공통 구간이 짧으면 다른 구절이다", () => {
-    expect(quotesOverlap("금요일까지 제안서 보내드릴게요", "견적서는 박팀장이 드릴게요")).toBe(false);
+    expect(labelQuotesOverlap("금요일까지 제안서 보내드릴게요", "견적서는 박팀장이 드릴게요")).toBe(false);
   });
 });
 

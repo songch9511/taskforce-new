@@ -45,6 +45,8 @@ const tokenEndpoint = (status: number, body: unknown) =>
     "fetch",
     vi.fn(async () => new Response(JSON.stringify(body), { status })),
   );
+/** recordSync에 넘기는 값: 동기화를 시작한 시각(claimedAt)과 함께 */
+const recorded = (update: object) => ({ ...update, claimedAt: expect.any(Date) });
 const invalidGrant = { object: "error", status: 400, code: "invalid_grant", message: "Invalid refresh token." };
 const usedTokens = () => vi.mocked(syncNotion).mock.calls.map(([, client]) => (client as unknown as { accessToken: string }).accessToken);
 
@@ -90,11 +92,11 @@ describe("syncNotionConnection: 토큰 갱신이 실패하면", () => {
     const outcome = await sync();
 
     expect(outcome.ok).toBe(false);
-    expect(recordSync).toHaveBeenCalledWith(admin, connection, {
+    expect(recordSync).toHaveBeenCalledWith(admin, connection, recorded({
       error: "Notion 연결이 만료됐습니다. 다시 연결해 주세요.",
       revoked: false,
       reauth: true,
-    });
+    }));
     expect(saveToken).not.toHaveBeenCalled();
     // 처음 읽기 + 동시 갱신 확인 두 번 (바로 한 번, 기다렸다 한 번)
     expect(loadToken).toHaveBeenCalledTimes(3);
@@ -111,7 +113,7 @@ describe("syncNotionConnection: 토큰 갱신이 실패하면", () => {
 
     expect(outcome.ok).toBe(true);
     expect(usedTokens()).toEqual(["expired", "fresh"]);
-    expect(recordSync).toHaveBeenCalledWith(admin, connection, { cursor: synced.cursor });
+    expect(recordSync).toHaveBeenCalledWith(admin, connection, recorded({ cursor: synced.cursor }));
   });
 
   it("invalid_grant가 아닌 거절(400)은 다시 연결 필요로 보지 않는다", async () => {
@@ -120,7 +122,7 @@ describe("syncNotionConnection: 토큰 갱신이 실패하면", () => {
 
     await sync();
 
-    expect(recordSync).toHaveBeenCalledWith(admin, connection, { error: "Notion 요청 실패 (400)", revoked: false, reauth: false });
+    expect(recordSync).toHaveBeenCalledWith(admin, connection, recorded({ error: "Notion 요청 실패 (400)", revoked: false, reauth: false }));
   });
 
   it("다른 요청이 먼저 갱신해 저장했으면(갱신 토큰이 바뀜) 저장된 새 토큰으로 이어 가고 연결은 그대로 둔다", async () => {
@@ -131,7 +133,7 @@ describe("syncNotionConnection: 토큰 갱신이 실패하면", () => {
 
     expect(outcome.ok).toBe(true);
     expect(usedTokens()).toEqual(["expired", "fresh"]);
-    expect(recordSync).toHaveBeenCalledWith(admin, connection, { cursor: synced.cursor });
+    expect(recordSync).toHaveBeenCalledWith(admin, connection, recorded({ cursor: synced.cursor }));
   });
 
   it("갱신 요청이 서버 오류면 잠깐 문제로 보고 error로 남긴다 (다음 동기화가 다시 시도한다)", async () => {
@@ -140,7 +142,7 @@ describe("syncNotionConnection: 토큰 갱신이 실패하면", () => {
 
     await sync();
 
-    expect(recordSync).toHaveBeenCalledWith(admin, connection, { error: "Notion 요청 실패 (503)", revoked: false, reauth: false });
+    expect(recordSync).toHaveBeenCalledWith(admin, connection, recorded({ error: "Notion 요청 실패 (503)", revoked: false, reauth: false }));
   });
 
   it("갱신 요청 자체가 401이면(우리 쪽 client id · secret 문제일 수 있다) 권한이 끊긴 것으로 보지 않고 error로 남긴다", async () => {
@@ -149,7 +151,7 @@ describe("syncNotionConnection: 토큰 갱신이 실패하면", () => {
 
     await sync();
 
-    expect(recordSync).toHaveBeenCalledWith(admin, connection, { error: "Notion 요청 실패 (401)", revoked: false, reauth: false });
+    expect(recordSync).toHaveBeenCalledWith(admin, connection, recorded({ error: "Notion 요청 실패 (401)", revoked: false, reauth: false }));
     expect(usedTokens()).toEqual(["expired"]);
     expect(saveToken).not.toHaveBeenCalled();
   });
@@ -161,11 +163,11 @@ describe("syncNotionConnection: 토큰 갱신이 실패하면", () => {
     await sync();
 
     expect(usedTokens()).toEqual(["expired", "expired-too"]);
-    expect(recordSync).toHaveBeenCalledWith(admin, connection, {
+    expect(recordSync).toHaveBeenCalledWith(admin, connection, recorded({
       error: "Notion 연결 권한이 끊겼습니다. 다시 연결해 주세요.",
       revoked: true,
       reauth: false,
-    });
+    }));
   });
 
   it("갱신 토큰 없이 401이면 권한이 끊긴 것(revoked)으로 남긴다", async () => {
@@ -173,11 +175,11 @@ describe("syncNotionConnection: 토큰 갱신이 실패하면", () => {
 
     await sync();
 
-    expect(recordSync).toHaveBeenCalledWith(admin, connection, {
+    expect(recordSync).toHaveBeenCalledWith(admin, connection, recorded({
       error: "Notion 연결 권한이 끊겼습니다. 다시 연결해 주세요.",
       revoked: true,
       reauth: false,
-    });
+    }));
   });
 
   it("갱신에 성공하면 새 토큰을 저장하고 이어 간다", async () => {

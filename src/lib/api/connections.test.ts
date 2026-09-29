@@ -253,6 +253,7 @@ describe("POST /api/v1/connections/{provider}/complete", () => {
       stateSecret: () => SECRET,
       cookieState: async () => null,
       authenticate: async () => null,
+      hasConsent: async () => true,
       connect: async () => {
         throw new Error("앱 흐름에서는 callback이 연결하지 않는다");
       },

@@ -41,6 +41,8 @@ export async function DELETE(request: Request) {
   if (!context) return unauthorized();
   const body = await parseBody(request, z.object({ token: deviceRequestSchema.shape.token }));
   if ("error" in body) return body.error;
-  await createAdminClient().from("devices").delete().eq("user_id", context.user.id).eq("token", body.data.token.toLowerCase());
+  const { error } = await createAdminClient().from("devices").delete().eq("user_id", context.user.id).eq("token", body.data.token.toLowerCase());
+  // 실패를 204로 숨기면 로그아웃한 기기로 알림이 계속 간다 (앱은 결과와 상관없이 로그아웃한다)
+  if (error) return errorResponse(500, "internal_error", "기기를 해제하지 못했습니다.");
   return new Response(null, { status: 204 });
 }

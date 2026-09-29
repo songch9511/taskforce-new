@@ -115,18 +115,18 @@ export async function syncNotionConnection(
       console.error(`Notion 연결 상태 기록 실패 (${connection.id}):`, error instanceof Error ? error.message : error),
     );
     await markBackfilled(admin, connection, result.backfilled);
-    await recordSync(admin, connection, { cursor: result.cursor });
+    await recordSync(admin, connection, { claimedAt: now, cursor: result.cursor });
     return { connectionId: connection.id, ok: true, result };
   } catch (error) {
     // 동기화 도중 외부 AI 처리 동의를 철회함: 남은 항목은 처리하지 않았다. 연결 오류가 아니므로 오류로 남기지 않고,
     // 커서도 옮기지 않아 다시 동의하면 이어서 가져온다.
     if (error instanceof ConsentRequiredError) {
-      await recordSync(admin, connection, {});
+      await recordSync(admin, connection, { claimedAt: now });
       return { connectionId: connection.id, ok: false, error: CONSENT_WITHDRAWN_MESSAGE, revoked: false };
     }
     const { message, revoked, reauth } = userFacingError(error);
     console.error(`Notion 동기화 실패 (${connection.id}):`, error instanceof Error ? error.message : error);
-    await recordSync(admin, connection, { error: message, revoked, reauth });
+    await recordSync(admin, connection, { claimedAt: now, error: message, revoked, reauth });
     return { connectionId: connection.id, ok: false, error: message, revoked };
   }
 }

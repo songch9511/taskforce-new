@@ -304,6 +304,8 @@ export const connectionSummarySchema = z.object({
   last_synced_at: z.string().nullable(),
   /** 사용자에게 보여줄 짧은 오류 */
   last_error: z.string().nullable(),
+  /** 서버가 동기화하는 동안의 잠금(시작 시각), 끝나면 null. 앱의 "Syncing…" 근거 */
+  sync_started_at: z.string().nullable(),
   settings: connectionSettingsSchema,
 });
 export type ConnectionSummary = z.infer<typeof connectionSummarySchema>;
