@@ -13,7 +13,7 @@
 | 리전 | `syd1` (`vercel.json`) | 설정됨 |
 | API 도메인 | `api.taskforcelabs.dev` | DNS는 Vercel을 가리키지만 붙은 프로젝트가 없어 404 |
 | DB · 인증 | Supabase 프로젝트 `Taskforce-new` (ref `tirtdojsahotjfgdsryi`, Vercel 연동 조직), 시드니 `ap-southeast-2` | 운영 중. 마이그레이션 기록이 비어 있음(4장) |
-| 웹사이트 | `www.taskforcelabs.dev` (apex는 www로 308), `Side Kick/apps/website`의 별도 Vercel 프로젝트 | 이전 제품(Side Kick, iad1 · Codex) 기준 내용 |
+| 웹사이트 | `www.taskforcelabs.dev` (apex는 www로 308), `Side Kick/apps/website`의 별도 Vercel 프로젝트 | 이전 제품(Side Kick, iad1 · Codex) 기준 내용 → 2026-09-29 새 사이트로 교체(7장) |
 | DNS | Vercel DNS (`ns1/ns2.vercel-dns.com`), 메일 MX는 Google Workspace | TXT 없음(Search Console 미인증) |
 | 앱 | `dev.taskforcelabs.taskforce`, Team `U9DWQKQFMW` | `API_BASE_URL`이 로컬 |
 
@@ -138,15 +138,17 @@ Supabase → Organization → Billing에서 프로젝트가 **Free**이고 백�
 
 ## 7. 웹사이트 배포
 
-대상: Side Kick 저장소 `apps/website`(Next 16, `[lang]` 라우팅). 새 사이트는 브랜치 **`website/taskforce-new`**에 이미 만들어져 있고 **아직 배포하지 않았다**(2026-09-27).
+대상: Side Kick 저장소 `apps/website`(Next 16, `[lang]` 라우팅). **2026-09-29 배포함**: songch9511/taskforce #18(새 사이트 · 처리방침 · 약관, 시행일 2026-09-29) · #19(푸터 문의 주소).
+
+배포 방법(2026-09-29 확인): Vercel `taskforce-website`는 GitHub `songch9511/taskforce`의 `main`에 Git 연동돼 있다(Root Directory `apps/website`). `main`에 병합하면 Production, 다른 브랜치는 Preview다. 저장소는 **squash 병합만** 허용한다. **커밋 작성자 이메일이 GitHub 계정에 연결돼 있지 않으면 Vercel이 배포를 막는다**(`BLOCKED`, "couldn't find a Git account for the commit author"). 이 맥에는 `git config user.email`이 없어 `…@Danielui-MacBookAir.local`이 들어가므로, 브랜치 커밋은 GitHub noreply 주소(`67100803+songch9511@users.noreply.github.com`)로 만든다. GitHub에서 병합한 커밋은 괜찮다. Side Kick 저장소의 GitHub Actions는 결제 문제로 job이 시작되지 않는다(2026-09-16부터). 같은 명령을 로컬에서 돌려 확인한다.
 
 1. `/privacy` · `/terms`는 `/en/privacy` · `/en/terms`로 리디렉트한다. 법률 markdown은 실시간 렌더가 아니라 **`apps/website/scripts/sync-legal.mjs`가 이 저장소의 `docs/legal/*.md`를 복사**해 둔다(원본은 여전히 `docs/legal/`, 고칠 때마다 스크립트를 다시 돌려 동기화한다).
-2. 이전 제품 페이지(download · pricing · account · beta · login · updates · help)는 홈으로 리디렉트. **예외: 이전 Mac 앱이 아직 `/en/login` · `/en/account`를 쓰고 있어, 이 배포를 올리면 그 링크가 끊긴다.** 이전 제품을 은퇴시킬지(안내 후 링크를 유지하거나 이전 앱에 새 배포 안내를 넣는 등)를 배포 전에 정한다. 이전 OAuth 브로커(`/api/connections/*`)는 이번 배포에서도 그대로 둔다.
-3. 홈 푸터: Privacy · Contact(`privacy@taskforcelabs.dev`). 홈에 Google Limited Use 문장 한 줄.
+2. 이전 제품 페이지(download · pricing · account · beta · login · updates · help)는 홈으로 리디렉트. 이전 Mac 앱의 `/en/login` · `/en/account` 링크도 홈으로 간다. 이용자가 운영자뿐이라 감수했다(2026-09-29 결정). 이전 OAuth 브로커(`/api/connections/*`)는 그대로 둔다.
+3. 홈 푸터: Privacy · 문의 주소(`privacy@taskforcelabs.dev`를 링크 글자로, 2026-09-29. "Contact" mailto는 메일 앱이 없는 브라우저에서 반응이 없었다). 홈에 Google Limited Use 문장 한 줄. Privacy 링크는 동의 화면과 같은 `https://www.taskforcelabs.dev/en/privacy`.
 4. 분석 도구 · 쿠키 없음 확인: `curl -sI https://www.taskforcelabs.dev | grep -i set-cookie`가 비어야 하고, 페이지에 분석 스크립트가 없어야 한다.
 5. `npm run build && npm test` → Preview 배포에서 확인 → **사용자 승인 뒤** Production.
 6. 끝: `https://www.taskforcelabs.dev/en/privacy`에 새 처리방침이 보이고, `docs/legal/README.md`의 게시 규칙(자리표시자 · 상자 없음)을 지킨다.
-7. TestFlight CTA 링크는 go live 날 넣는다(체크리스트 G2). 그 전에는 CTA를 숨기거나 "Coming soon"으로 둔다.
+7. TestFlight CTA 링크는 go live 날 넣는다(체크리스트 G2): Vercel `taskforce-website` Production에 `TESTFLIGHT_URL` → 재배포(빌드 때 읽는다). 그 전에는 두 CTA 자리에 링크 없는 "Coming soon"이 나온다(2026-09-29).
 
 ## 8. 배포 뒤 확인 (한 번씩)
 
@@ -232,11 +234,11 @@ union all select 'slack_people', count(*) from public.slack_people where user_id
 
 | # | 항목 | 담당 | 끝난 기준 | 먼저 필요한 것 |
 |---|---|---|---|---|
-| L1 | 웹사이트 교체 배포 (처리방침 · 약관 포함, 브랜치 `website/taskforce-new`) | 코드(사이트 준비, 끝남) → **사용자**(이전 제품 은퇴 결정 · 배포 승인) | `www.taskforcelabs.dev/en/privacy`에 새 방침, 홈에서 링크, 쿠키 · 분석 없음. 이전 Mac 앱의 `/en/login` · `/en/account` 링크가 끊기는 것을 감수하거나 먼저 처리 | W1, W2 |
+| L1 | 웹사이트 교체 배포 (처리방침 · 약관 포함, 브랜치 `website/taskforce-new`) | 사용자 ✅ (2026-09-29, songch9511/taskforce #18 · #19. 이전 앱 링크는 감수, 배포 뒤 확인 7장 · `check-seo.mjs` 통과) | `www.taskforcelabs.dev/en/privacy`에 새 방침, 홈에서 링크, 쿠키 · 분석 없음. 이전 Mac 앱의 `/en/login` · `/en/account` 링크가 끊기는 것을 감수하거나 먼저 처리 | W1, W2 |
 | L2 | Search Console 도메인 인증 | 사용자 ✅ (2026-09-28, `daniel@taskforcelabs.dev`) | Search Console에 `taskforcelabs.dev` "확인됨" | Google Workspace Owner 계정 |
-| L3 | Google 프로젝트 A 설정 + 브랜드 심사 | 사용자 | "Brand verified" | L1, L2 |
+| L3 | Google 프로젝트 A 설정 + 브랜드 심사 | 사용자 ✅ (2026-09-29, `taskforce-510108` In production, 브랜딩 자동 인증 · 게시. 범위는 `openid` · `email`만, 민감 범위는 L4에서) | "Brand verified" | L1, L2 |
 | L4 | Google 프로젝트 A 민감 범위 심사 제출 (Calendar · Meet) | 사용자 | 제출 확인 메일 → 통과 (추정 10 영업일) | L3, C4, 영상 A (`google-verification.md` 5장) |
-| L5 | Google 프로젝트 B Testing + 테스트 사용자 등록 (Gmail) | 사용자 | 등록한 테스터가 Gmail 연결 성공 | L1, C4, I3 |
+| L5 | Google 프로젝트 B Testing + 테스트 사용자 등록 (Gmail) | 사용자 · 진행 중 (2026-09-29: `taskforce-gmail-beta` Testing, 범위 3개, 클라이언트 · `GMAIL_*` env, 테스트 사용자 등록 끝. 연결 성공은 C4 배포 뒤) | 등록한 테스터가 Gmail 연결 성공 | L1, C4, I3 |
 | L6 | Google 프로젝트 B 제한 범위 심사 + CASA | 사용자 (평가기관 계약 · 결제 포함) | 심사 통과 · LOA. **go live 조건 아님** (Testing으로 go live, 통과 뒤 7일 재연결 해제) | L5, 영상 B, Google의 CASA 요청 |
 | L7 | Slack 앱 생성 · 이벤트 URL 확인 · 공개 배포 | 사용자 ✅ (2026-09-29, `A0C584MQJV7`, 공개 배포 켬) | "Public distribution is active", 다른 워크스페이스에서 설치 성공(남음) | I3, C5 (`slack-app.md` 9장) |
 | L8 | TestFlight 외부 테스트 심사 | 사용자 | 베타 앱 심사 통과 | C6, C2, I1~I5, 데모 계정 (`app-store.md` 7장) |
@@ -247,7 +249,7 @@ union all select 'slack_people', count(*) from public.slack_people where user_id
 | # | 항목 | 담당 | 끝난 기준 | 먼저 필요한 것 |
 |---|---|---|---|---|
 | I1 | Vercel 프로젝트 (Pro 팀 `songch9511s-projects`) | 사용자 ✅ (2026-09-28) | Production 배포 성공, 리전 `syd1` | — |
-| I2 | 환경변수 전부 (2장 표) | 사용자 ✅ 1차 (2026-09-28, Google · Slack 값은 L3 · L5 · L7 뒤) | 표의 모든 값이 Production에 있음, 재배포 | 각 키 발급(I6~I9, L3, L5, L7) |
+| I2 | 환경변수 전부 (2장 표) | 사용자 ✅ 1차 (2026-09-28, Google · Slack 값은 L3 · L5 · L7 뒤). 2026-09-29 `GOOGLE_*` · `GMAIL_*` 추가(C4 배포 때 반영) | 표의 모든 값이 Production에 있음, 재배포 | 각 키 발급(I6~I9, L3, L5, L7) |
 | I3 | 도메인 `api.taskforcelabs.dev` | 사용자 ✅ (2026-09-28) | 인증 없는 요청에 401 | I1 |
 | I4 | 운영 DB 마이그레이션 적용 | 코드(명령 준비) → **사용자**(승인 · 실행) | 4장 읽기 쿼리로 새 테이블 확인 | C1, C3~C5의 마이그레이션 |
 | I5 | Supabase Auth URL · Apple 제공자 | 사용자 ✅ 설정 (2026-09-28, 운영 서버로 앱 로그인 확인 남음) | 운영 서버로 앱 로그인 성공 | I3 |
@@ -255,7 +257,7 @@ union all select 'slack_people', count(*) from public.slack_people where user_id
 | I7 | APNs 키 | 사용자 ✅ 키 · env (2026-09-28, PR #4 배포 뒤 기기 수신 확인 남음) | TestFlight 기기에서 알림 수신 | I2 |
 | I8 | Sign in with Apple 키 | 사용자 ✅ (2026-09-28) | `APPLE_*` 4개가 env에 있음 | — |
 | I9 | OpenRouter 운영 키 · 로깅 꺼짐 · 사용 한도 | 사용자 ✅ (2026-09-28: 한도 $10, 계정 Privacy에서 ZDR 필수 · 학습 엔드포인트 모두 끔. 키는 아직 로컬과 하나를 같이 쓴다 → 출시 직전 운영 키 분리. 키 만료 2027-03-24) | 설정 화면에서 확인 | — |
-| I10 | Supabase Free · 백업 없음 확인 | 사용자 | Billing · Backups 화면 확인 (4장) | — |
+| I10 | Supabase Free · 백업 없음 확인 | 사용자 ✅ (2026-09-29, 처리방침 게시 전 확인) | Billing · Backups 화면 확인 (4장) | — |
 | I11 | Cron 동작 | 사용자 | `/api/cron/sync` 15분마다 200, `/api/cron/reminders` 09:00 KST 200, `/api/cron/retention` 03:30 KST 200 | I1, I2 |
 | I12 | 운영 계정 2단계 인증 (Vercel · Supabase · GitHub · Google · Apple · Slack · Notion · OpenRouter) | 사용자 | 모두 켜짐 (처리방침 9장 약속) | — |
 
@@ -280,9 +282,9 @@ union all select 'slack_people', count(*) from public.slack_people where user_id
 
 | # | 항목 | 담당 | 끝난 기준 | 먼저 필요한 것 |
 |---|---|---|---|---|
-| W1 | 웹사이트 코드 (원페이지 + 처리방침 · 약관 렌더) | 코드 | Side Kick 사이트 `npm run build && npm test`, Preview에서 확인 | — |
-| W2 | 처리방침 · 약관 확정 | 사용자 | 자리표시자(시행일) 채움, 자체 검토 결정 반영(전화 · 모델 공급자 연락처는 채움), `docs/legal/README.md` 구현 대조표의 게시 조건 모두 끝 | C1~C7, L9(자체 검토) |
-| W3 | 웹사이트 맥락 문단을 회의록 · Slack · 메일로 넓히기 | 사용자(카피) | BRAND.md "맥락 문단은 아직 Notion 기준" 해소 | — |
+| W1 | 웹사이트 코드 (원페이지 + 처리방침 · 약관 렌더) | 코드 ✅ (2026-09-29, 테스트 29개 · build · Preview 확인) | Side Kick 사이트 `npm run build && npm test`, Preview에서 확인 | — |
+| W2 | 처리방침 · 약관 확정 | 사용자 ✅ (2026-09-29 게시, 시행일 2026-09-29. Google 줄은 C4 전 게시 예외, `docs/legal/README.md` "게시 기록") | 자리표시자(시행일) 채움, 자체 검토 결정 반영(전화 · 모델 공급자 연락처는 채움), `docs/legal/README.md` 구현 대조표의 게시 조건 모두 끝 | C1~C7, L9(자체 검토) |
+| W3 | 웹사이트 맥락 문단을 회의록 · Slack · 메일로 넓히기 | 사용자(카피) ✅ (2026-09-29, BRAND.md · 사이트) | BRAND.md "맥락 문단은 아직 Notion 기준" 해소 | — |
 | W4 | 스토어 · TestFlight 문구 | 사용자 | `app-store.md` 2장 값 입력 | — |
 
 ### 5) go live 당일
