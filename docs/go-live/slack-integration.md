@@ -99,7 +99,7 @@ cron 15분 · Sync Now · 연결 직후 ──▶ syncConnections ──▶ slac
 | 외부 id · 버전 | `externalId = {열쇠}:{묶음 첫 ts}`, `externalVersion = {묶음 마지막 ts}`. 연동 공통 규칙은 "한 항목은 한 번만 넣는다"(`ingest.ts`)라서, 넣은 뒤 같은 스레드에 달린 답글은 새 첫 ts의 **다음 묶음**이 된다. unique 인덱스 `(connection_id, external_id, external_version)`와도 맞다 |
 | 종류 · 제목 | `kind = message`, `writtenByMe = null`(메시지는 한 사람이 쓴 문서가 아니다). 제목: `Slack · DM with 김민지` · `Slack · Group DM` · `Slack · #fundraising` |
 | 본문 형식 | 아래. 골든셋(4장)과 글자까지 같게 한다 |
-| 관련자 | DM: 상대와 이용자. 그룹 DM · 채널: 묶음에서 글을 쓴 사람 + 언급된 사람(구성원 목록 `conversations.members`는 부르지 않는다). 모두 `attendees`로 넣는다. DM을 `from`(상대) · `to`(이용자)로 넣어 `sole_recipient`가 되게 하는 방식은 PR 1 eval에서 나아지지 않았다(요청자 취소 실패는 그대로, 끊긴 답장이 2번 중 1번 누락, 2026-09-28) |
+| 관련자 | DM: 상대와 이용자. 그룹 DM · 채널: 묶음에서 글을 쓴 사람 + 언급된 사람(구성원 목록 `conversations.members`는 부르지 않는다). **언급된 사람을 꼭 넣는다**: 판정이 "@Daniel Kim"처럼 사용자 별칭("Daniel")으로 시작하는 다른 사람을 관련자 이름으로 가린다(TRUTH_RULES 1장). 모두 `attendees`로 넣는다. DM을 `from`(상대) · `to`(이용자)로 넣어 `sole_recipient`가 되게 하는 방식은 PR 1 eval에서 나아지지 않았다(요청자 취소 실패는 그대로, 끊긴 답장이 2번 중 1번 누락, 2026-09-28) |
 | 시각 | `occurredAt` = 묶음 첫 메시지. 자정 · 3시간 상한 덕분에 "오늘 · 내일"이 맞게 계산된다 |
 | 원본 링크 | `{teamUrl}archives/{channel}/p{ts에서 점 뺀 값}` (스레드 답글이면 `?thread_ts=…&cid=…`). `chat.getPermalink`를 부르지 않아도 된다 |
 | 이름 | 처음 보는 Slack id만 `users.info`(분당 100회 이상), 대화 이름 · DM 상대는 `conversations.info`(D7). 7일 캐시 |
@@ -222,8 +222,8 @@ F3는 "확인 요청으로 보낸다"로 정했다(2026-09-28). 고친 곳:
 
 | # | 고친 곳 | 결과 |
 |---|---|---|
-| F1 | 추출 프롬프트 extract-v5: 앞선 약속의 기한을 상대가 늦춰 주고 사용자가 받으면 update 하나로, 인용은 상대의 말에서 | `seq-slack-thread-late-reply` 0/3 → 맞음 |
-| F2 | 코드가 인용 줄의 화자 이름표를 읽고(`quoteSpeaker`), 병합이 붙일 할 일의 요청자와 비교해 화자 역할을 정한다(`withSpeakerFromLabel`): 요청자 본인이면 상대 · 직접 발언, 요청자가 아닌 사람이면 제3자. extract-v5는 취소 인용에서 뒤에 붙은 이유를 빼되 남의 허락을 전하는 말은 남긴다. judge-v5 `speaker_role` · `directness` 문구. 요청자가 아닌 사람이 허락을 전하는 연장은 안전장치 케이스 `seq-slack-relayed-extension`이 지킨다 | `seq-slack-requester-cancels` 0/4 → 4/4, 확인용 `seq-slack-heldout-cancel-hearsay` 4/4, 안전장치 2/2 |
+| F1 | 추출 프롬프트 extract-v5: 앞선 약속의 기한을 상대가 늦춰 주고 사용자가 받으면 update 하나로, 인용은 상대의 말에서 | `seq-slack-thread-late-reply` 0/3 → 8/9 (추출기가 가끔 내 답만 뽑는다. 프롬프트로 고친 것이라 남는 흔들림) |
+| F2 | 코드가 인용 줄의 화자 이름표를 읽고(`quoteSpeaker`), 병합이 붙일 할 일의 요청자와 비교해 화자 역할을 정한다(`withSpeakerFromLabel`): 요청자 본인이면 상대 · 직접 발언, 요청자가 아닌 사람이면 제3자. extract-v5는 취소 인용에서 뒤에 붙은 이유를 빼되 남의 허락을 전하는 말은 남긴다. judge-v5 `speaker_role` · `directness` 문구. 요청자가 아닌 사람이 허락을 전하는 연장은 안전장치 케이스 `seq-slack-relayed-extension`이 지킨다 | `seq-slack-requester-cancels` 0/4 → 9/9, 확인용 `seq-slack-heldout-cancel-hearsay` 9/9, 안전장치 `seq-slack-relayed-extension` 4/4 |
 | F3 | extract-v5: `@이름`으로 부른 기한 있는 요청은 대상을 몰라도 뽑음. 코드 규칙: 인용이 속한 메시지가 사용자를 `@이름`으로 부르고 기각 사유가 "내 약속 아님" 하나면 확인 요청까지만(`decideOutcome`, 판정 기록 `rule`, TRUTH_RULES 1장 표) | `slack-channel-mid-thread` 누락 → 확인 요청(자동 반영 아님) |
 
 프롬프트 예시는 골든셋 문장 · 이름과 겹치지 않게 썼다. 고친 것이 이 케이스들에만 맞춘 것이 아닌지 보려고 표현과 이름을 바꾼 **확인용 케이스 3건**(`tags: ["slack", "slack-heldout"]`: 기한 연장 수락 · 전해 들은 이유가 붙은 취소 · 첫 글 없는 `@이름` 요청)을, 화자 규칙이 규칙 3을 뚫지 않는지 보려고 **안전장치 케이스** `seq-slack-relayed-extension`(요청자가 아닌 동료가 DM으로 "○○ 님이 화요일도 된다고 하셨어요"를 전함 → 기한 유지)을 더했다. 코드 검토에서 처음 방식("1:1 대화의 상대는 요청자")이 이 경우를 자동 반영으로 뚫는 것이 드러나, 화자 역할을 판정 단계가 아니라 **병합 단계에서 붙일 할 일의 요청자와 비교해** 정하도록 바꿨다.
@@ -231,7 +231,7 @@ F3는 "확인 요청으로 보낸다"로 정했다(2026-09-28). 고친 곳:
 | 항목 | PR 1 기준 | PR 1b 뒤 (전체 eval 두 번) |
 |---|---|---|
 | Slack 원문 하나 (자동+확인) | 100% · 85.7% | 100% · 100% (8/8, 확인용 포함) |
-| Slack 병합 정확도 | 60% (3/5) | **100% (8/8)**, 확인용 2/2 · 안전장치 포함 |
+| Slack 병합 정확도 | 60% (3/5) | **100% (8/8)**, 확인용 2/2 · 안전장치 포함. 최종 방식으로 돈 9번을 케이스별로 세면 스레드 답글(F1)만 8/9, 나머지 모두 9/9 |
 | 회의록 · 메일 병합 | 12/12 | 12/12 |
 | 회의록 · 메일 원문 하나 | 맞음 45 · 오탐 4 · 누락 3 | 같은 수준 (실행마다 오탐 · 누락 ±1) |
 | 함정 문장 자동 반영 | 0 | 0 |
@@ -239,6 +239,7 @@ F3는 "확인 요청으로 보낸다"로 정했다(2026-09-28). 고친 곳:
 남은 것:
 - `freelance-client-recap-email`의 "계약서 사본도 한 부 보내주실 수 있을까요?"(사용자 혼자 받은 메일의 요청, 아직 수락 전)는 Jev의 "내 약속" 확률이 기각선(0.4) 근처(0.33~0.41)라 실행마다 확인 요청과 기각을 오간다. 이번 변경 때문이 아니다. F3 규칙을 "혼자 받은 메일의 요청"으로 넓히면 확인 요청으로 고정되지만 확인 요청 수가 늘어서(원칙 3), Google 연동(Gmail) 골든셋을 만들 때 함께 정한다.
 - 화자 이름표는 Slack · 메신저 형식("이름: 글")에서만 읽힌다. 이름표가 없는 메일 본문은 전과 같이 Jev 답을 쓴다.
+- 이름 겹침: 사용자 별칭이 이름만("Daniel")이어도 "@Daniel Kim" · "@daniel.kim"은 사용자가 아니다(가장 긴 이름으로 읽기, 2026-09-29). 추출 · Jev도 같은 채널의 "Jiho Park"을 별칭 "Jiho"인 사용자로 헷갈리지 않았다(`slack-namesake-other-person` 3/3). 별칭은 가능하면 이름만이 아니라 전체 이름("Daniel Song")으로 적는 것이 안전하다.
 
 ### 어댑터 단위 테스트 (eval 아님, PR 2 · 3)
 

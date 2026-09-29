@@ -162,7 +162,7 @@ export async function judgeCandidate(
   const signals = parseJudgeAnswers(response.answers);
   const speaker = quoteSpeaker(source.text, candidate.quote, identity, source.participants);
   return {
-    ...decideOutcome(signals, thresholds, { addressedToUser: addressedToUser(source.text, candidate.quote, identity) }),
+    ...decideOutcome(signals, thresholds, { addressedToUser: addressedToUser(source.text, candidate.quote, identity, source.participants) }),
     signals,
     ...(speaker ? { speaker } : {}),
     promptVersion: self ? WRITTEN_BY_ME_PROMPT_VERSION : JUDGE_PROMPT_VERSION,

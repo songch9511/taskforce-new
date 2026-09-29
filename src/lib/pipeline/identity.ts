@@ -139,16 +139,47 @@ export function quoteSpeaker(text: string, quote: string, identity: UserIdentity
 
 const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
-/** "@이름" 언급: 앞은 글자 · 메일 주소가 아니고, 뒤는 다른 글자로 이어지지 않는다 ("@지호연", "a@daniel.kr" 제외). 뒤에 님 · 씨는 붙어도 된다 */
-function mentionPattern(identity: UserIdentity): RegExp | null {
-  const forms = [identity.name, ...identity.aliases].flatMap((raw) => {
+// 영문 이름만 적은 별칭("Daniel") 뒤에 와도 성이 아닌 단어. 이 밖의 영문 단어가 이어지면 다른 사람의 성으로 본다 ("@Daniel Kim")
+const NOT_SURNAMES = new Set(["can", "could", "would", "will", "please", "pls", "are", "is", "do", "does", "did", "thanks", "thank", "hi", "hey", "i", "we", "you", "the", "this", "that", "just", "fyi", "quick", "any", "when", "what", "how", "where", "why", "let", "lets", "sorry", "also", "and", "or", "re"]);
+
+/** `after`가 `name`으로 시작하면 그 길이 (대소문자 · 단어 사이 공백 무시, 뒤에 님 · 씨는 붙어도 된다). 다른 글자로 이어지면("@지호연", "@daniel.kim") null */
+function nameAt(after: string, name: string): number | null {
+  const words = name.trim().split(/\s+/).map(escapeRegExp).join("\\s+");
+  const match = after.match(new RegExp(`^(?:${words})(?:님|씨)?(?![\\p{L}\\p{N}])(?![._-][\\p{L}\\p{N}])`, "iu"));
+  return match ? match[0].length : null;
+}
+
+/**
+ * 한 줄이 사용자를 @이름으로 부르는가. "@" 뒤를 사용자 이름 · 별칭 · 성을 뺀 이름과 관련자 이름 중 **가장 긴 이름**으로 읽는다:
+ * 관련자에 "Daniel Kim"이 있으면 "@Daniel Kim"은 별칭이 "Daniel"인 사용자가 아니다. 관련자 목록이 없어도,
+ * 이름만 적은 영문 별칭 뒤에 다른 영문 단어가 이어지면 다른 사람의 성으로 보고 사용자로 읽지 않는다.
+ * 메일 주소("a@daniel.kr")는 언급이 아니다. 애매하면 사용자가 아니라고 본다 (틀리면 남의 요청이 내 확인 요청으로 뜬다).
+ */
+function mentionsUser(line: string, identity: UserIdentity, participants?: Participants): boolean {
+  const userForms = [identity.name, ...identity.aliases].flatMap((raw) => {
     const name = raw.trim();
     if (!name) return [];
     return /^[가-힣]{3}$/.test(name) ? [name, name.slice(1)] : [name];
   });
-  if (forms.length === 0) return null;
-  const alternatives = forms.map((form) => form.split(/\s+/).map(escapeRegExp).join("\\s+")).join("|");
-  return new RegExp(`(?<![\\p{L}\\p{N}._%+-])@\\s?(?:${alternatives})(?:님|씨)?(?![\\p{L}\\p{N}])`, "iu");
+  if (userForms.length === 0) return false;
+  const others = [participants?.from, ...(participants?.to ?? []), ...(participants?.cc ?? []), ...(participants?.attendees ?? [])]
+    .filter((p): p is Person => Boolean(p?.name?.trim()) && !isUser(p!, identity))
+    .map((p) => p.name!.trim());
+  const names = [...userForms.map((name) => ({ name, me: true })), ...others.map((name) => ({ name, me: false }))].sort(
+    (a, b) => normalizeName(b.name).length - normalizeName(a.name).length,
+  );
+
+  for (const at of line.matchAll(/(?<![\p{L}\p{N}._%+-])@\s?/gu)) {
+    const after = line.slice(at.index! + at[0].length);
+    const hit = names.map((n) => ({ ...n, length: nameAt(after, n.name) })).find((n) => n.length !== null);
+    if (!hit?.me) continue;
+    if (/^[a-z]+$/i.test(hit.name)) {
+      const next = after.slice(hit.length!).match(/^\s+([a-z]+)\b/i);
+      if (next && !NOT_SURNAMES.has(next[1].toLowerCase())) continue;
+    }
+    return true;
+  }
+  return false;
 }
 
 /**
@@ -188,16 +219,14 @@ function samePerson(a: string, b: string): boolean {
 }
 
 /** 인용이 속한 메시지가 사용자를 @이름으로 직접 부르는가 (Slack 언급 · "@지호 이거 될까요?"). 여러 줄 메시지면 첫 줄부터 본다 */
-export function addressedToUser(text: string, quote: string, identity: UserIdentity): boolean {
-  const pattern = mentionPattern(identity);
-  if (!pattern) return false;
+export function addressedToUser(text: string, quote: string, identity: UserIdentity, participants?: Participants): boolean {
   const lines = text.split("\n");
   const checked = new Set<number>();
   for (const index of quoteLineIndexes(text, quote)) {
     const start = messageStart(lines, index) ?? index;
     for (let i = start; i <= index; i++) checked.add(i);
   }
-  return [...checked].some((i) => pattern.test(lines[i]));
+  return [...checked].some((i) => mentionsUser(lines[i], identity, participants));
 }
 
 function oneSyllableApart(a: string, b: string): boolean {

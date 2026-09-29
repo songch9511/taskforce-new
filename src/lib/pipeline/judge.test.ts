@@ -196,6 +196,10 @@ describe("judgeCandidate", () => {
     expect((await judgeCandidate(ask, mention, identity, decide)).decision).toBe("confirm");
     const other = { ...mention, text: "최유나: @박지훈 이거 금요일까지 될까요?" };
     expect((await judgeCandidate(ask, other, identity, decide)).decision).toBe("reject");
+    // 별칭이 이름만("Jiho")이어도 같은 이름으로 시작하는 다른 사람을 부른 요청은 기각 그대로
+    const jiho = { name: "윤지호", aliases: ["Jiho"], emails: [] };
+    const namesake = { ...mention, text: "최유나: @Jiho Park 이거 금요일까지 될까요?", participants: { attendees: [{ name: "최유나" }, { name: "Jiho Park" }] } };
+    expect((await judgeCandidate(ask, namesake, jiho, decide)).decision).toBe("reject");
   });
 });
 

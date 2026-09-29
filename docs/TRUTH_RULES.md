@@ -115,7 +115,7 @@ Jev의 확률은 보정을 목표로 학습되어 있어서 **"P(내 약속) < 0
 | `is_my_commitment` ≥ 0.85, `is_actionable` ≥ 0.85, `already_done` < 0.3, `certainty=firm` | 자동 반영 |
 | 위 확률 중 하나라도 0.4~0.85 구간, 또는 `certainty=tentative` | 확인 요청 목록 |
 | `is_my_commitment` < 0.4 또는 `is_actionable` < 0.4 또는 `certainty=none` | 반영 안 함. 기각 로그는 남깁니다 (누락 분석용) |
-| 위 기각 중 사유가 `is_my_commitment` < 0.4 **하나뿐**이고, 인용이 속한 메시지가 사용자를 `@이름`으로 직접 부름 | 확인 요청까지만 (코드 규칙, `decideOutcome`의 `addressedToUser`, 임계값 설정과 상관없이 자동 반영은 없음, 판정 기록 `jev_answers.rule = addressed_request`). 아직 수락하지 않은 직접 요청, 특히 무엇을 가리키는지 원문에 없는 요청("@지호 이거 금요일까지 될까요?")이 조용히 사라지지 않게 한다 (원칙 3, Slack 골든셋 F3, 2026-09-28 결정) |
+| 위 기각 중 사유가 `is_my_commitment` < 0.4 **하나뿐**이고, 인용이 속한 메시지가 사용자를 `@이름`으로 직접 부름 | 확인 요청까지만 (코드 규칙, `decideOutcome`의 `addressedToUser`, 임계값 설정과 상관없이 자동 반영은 없음, 판정 기록 `jev_answers.rule = addressed_request`). `@` 뒤는 사용자 이름 · 별칭 · 관련자 이름 중 **가장 긴 이름**으로 읽는다: 관련자에 "Daniel Kim"이 있으면 "@Daniel Kim"은 별칭이 "Daniel"인 사용자가 아니다. 관련자 목록이 없어도 이름만 적은 영문 별칭 뒤에 다른 영문 단어가 이어지면("@Daniel Kim", "@daniel.kim") 다른 사람으로 본다. 애매하면 사용자가 아니다 (남의 요청이 내 확인 요청으로 뜨지 않게, 골든셋 `slack-namesake-other-person`). 아직 수락하지 않은 직접 요청, 특히 무엇을 가리키는지 원문에 없는 요청("@지호 이거 금요일까지 될까요?")이 조용히 사라지지 않게 한다 (원칙 3, Slack 골든셋 F3, 2026-09-28 결정) |
 
 기각 사유는 어느 질문의 확률이 낮았는지로 코드가 만듭니다 (`NOT_MY_ACTION`, `INFO_ONLY`, `TENTATIVE`, `ALREADY_DONE`).
 Jev는 설명 문장을 주지 않으므로, 사용자에게 보여줄 이유는 이 사유 코드와 원문 인용으로 구성합니다.

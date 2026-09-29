@@ -141,6 +141,28 @@ describe("addressedToUser", () => {
     expect(addressedToUser("Alex: @Daniel, can you?", "can you", me)).toBe(true);
   });
 
+  it("같은 이름으로 시작하는 다른 사람은 내가 아니다 (@Daniel Kim ≠ 별칭 Daniel)", () => {
+    for (const line of ["Alex: @Daniel Kim 이거 금요일까지 될까요?", "Alex: @daniel kim 이거 될까요?", "Alex: @daniel.kim 이거 될까요?", "Alex: @Daniel Kim님 이거 될까요?"]) {
+      expect(addressedToUser(line, "이거", me), line).toBe(false);
+    }
+    // 이름만 부르거나 뒤에 문장이 이어지면 나
+    expect(addressedToUser("Alex: @Daniel 이거 금요일까지 될까요?", "이거", me)).toBe(true);
+    expect(addressedToUser("Alex: @Daniel can you check this by Friday?", "can you check", me)).toBe(true);
+  });
+
+  it("관련자에 같은 이름으로 시작하는 사람이 있으면 가장 긴 이름으로 읽는다", () => {
+    const people = { attendees: [{ name: "Alex" }, { name: "Daniel Kim" }, { name: "송청혁" }] };
+    expect(addressedToUser("Alex: @Daniel Kim can you check?", "can you check", me, people)).toBe(false);
+    expect(addressedToUser("Alex: @Daniel can you check?", "can you check", me, people)).toBe(true);
+  });
+
+  it("별칭이 전체 이름이면 그 이름만 나다", () => {
+    const daniel = { name: "송청혁", aliases: ["Daniel Song"], emails: [] };
+    expect(addressedToUser("Alex: @Daniel Song 이거 될까요?", "이거", daniel)).toBe(true);
+    expect(addressedToUser("Alex: @Daniel Kim 이거 될까요?", "이거", daniel)).toBe(false);
+    expect(addressedToUser("Alex: @Daniel 이거 될까요?", "이거", daniel)).toBe(false);
+  });
+
   it("여러 줄 메시지면 첫 줄의 언급도 본다", () => {
     const multi = ["최유나: @송청혁", "이거 금요일까지 될까요?", "박지훈: 저도 궁금해요"].join("\n");
     expect(addressedToUser(multi, "이거 금요일까지 될까요", me)).toBe(true);
