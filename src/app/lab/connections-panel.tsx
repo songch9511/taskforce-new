@@ -35,6 +35,7 @@ const SLACK_CALLBACK_MESSAGES: Record<string, string> = {
   connected:
     "Slack을 연결했습니다. 지금부터 오는 DM · 그룹 DM과, 나를 부르거나 내가 쓴 채널 글(그 스레드 포함)을 받습니다. 과거 메시지는 가져오지 않습니다. 대화가 30분 멈추면 동기화(15분마다 · '지금 동기화')가 원문으로 넣습니다.",
   denied: "Slack 연결을 취소했습니다.",
+  unavailable: "Slack 연결은 아직 운영자만 시험할 수 있습니다 (SLACK_CONNECT_ENABLED · ADMIN_EMAILS).",
   invalid_state: CALLBACK_MESSAGES.invalid_state,
   error: "Slack 연결에 실패했습니다. 서버 로그를 확인해 주세요.",
   consent_required: CALLBACK_MESSAGES.consent_required,
