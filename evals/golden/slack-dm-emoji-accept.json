@@ -1,0 +1,47 @@
+{
+  "id": "slack-dm-emoji-accept",
+  "description": "요청에 이모지 하나(:+1:)로만 수락한다. 할 일의 근거는 요청 문장에 있다.",
+  "origin": "synthetic",
+  "tags": [
+    "slack"
+  ],
+  "user": {
+    "name": "윤지호",
+    "aliases": [],
+    "emails": []
+  },
+  "sources": [
+    {
+      "id": "slack-1005",
+      "kind": "message",
+      "occurred_at": "2026-10-05T11:05:00+09:00",
+      "text": "[DM · 최유나]\n최유나: 지호님 금요일까지 고객 인터뷰 요약본 부탁드려도 될까요?\n윤지호: :+1:",
+      "participants": {
+        "attendees": [
+          {
+            "name": "최유나"
+          },
+          {
+            "name": "윤지호"
+          }
+        ]
+      }
+    }
+  ],
+  "expected_actions": [
+    {
+      "title": "최유나에게 고객 인터뷰 요약본 전달",
+      "owner": "me",
+      "counterpart": "최유나",
+      "due": "2026-10-09",
+      "status": "open",
+      "evidence": [
+        {
+          "source": "slack-1005",
+          "quote": "금요일까지 고객 인터뷰 요약본 부탁드려도 될까요"
+        }
+      ]
+    }
+  ],
+  "must_not_extract": []
+}

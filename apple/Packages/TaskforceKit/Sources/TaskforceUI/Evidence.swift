@@ -76,9 +76,10 @@ public struct EvidenceView: View {
 
     @ViewBuilder
     private var quoteText: some View {
-        let text = Text("“\(quote)”")
+        let removed = RemovedQuote.isRemoved(quote)
+        let text = Text(removed ? RemovedQuote.label : "“\(quote)”")
             .font(TFFont.callout)
-            .foregroundStyle(TFColor.textPrimary)
+            .foregroundStyle(removed ? TFColor.textSecondary : TFColor.textPrimary)
             .lineLimit(quoteLineLimit)
             .multilineTextAlignment(.leading)
             .frame(maxWidth: .infinity, alignment: .leading)

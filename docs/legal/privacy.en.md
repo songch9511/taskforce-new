@@ -86,7 +86,7 @@ We do not use information beyond these purposes. If a purpose changes, we will t
 
 You connect each service yourself in the app's Connections screen and can disconnect at any time. We only **read** from connected services. We never send email or change events, documents, or messages.
 
-When you disconnect (app → Connections → Disconnect), the service's access token is deleted immediately and we stop reading from it. **Source text already imported, and tasks created from it, remain.** To delete everything, delete your account (section 5).
+When you disconnect (app → Connections → Disconnect), the service's access token is deleted immediately, we ask the service to revoke it, and we stop reading from it. For Notion and Google, **source text already imported, and tasks created from it, remain.** Slack is different: when you disconnect or remove the app in Slack, **we delete the text we got from Slack right away and keep only your tasks** (see Slack below). To delete everything, delete your account (section 5).
 
 ### Notion
 
@@ -113,15 +113,17 @@ When you disconnect (app → Connections → Disconnect), the service's access t
 ### Slack
 
 - **How we receive messages:** through the Slack Events API, Slack sends our server messages posted in conversations you belong to. We never bulk-download conversation history.
-- **What we keep:** direct messages with you, group DMs you are in, messages that mention you, and messages you wrote and their threads. **Channel messages that match none of these are discarded on arrival and never stored.**
-- **What we store:** the kept messages grouped by conversation or thread, sender names, times, original links. When a task is created, the message line it came from (the evidence quote). Your Slack workspace name and identifier, and the Slack user identifiers and display names of you and the people you talk with. Retention follows section 5 (until you delete your account).
-- **Access:** user-token conversation read scopes (`im:history`, `mpim:history`, `channels:history`, `groups:history`) and user names (`users:read`). We never send or edit messages.
+- **What we keep:** direct messages with you, group DMs you are in, and channel messages that mention you or that you wrote, plus messages in threads you wrote in or were mentioned in. **Channel messages that match none of these are discarded on arrival and never stored.** We do not fetch messages posted before you connected.
+- **What we store:** kept messages wait in a queue; once a conversation has been quiet for 30 minutes we group them by conversation or thread and store them as source text, and once processing finishes we clear the text in the queue. Source text includes the grouped messages, sender names, times, and original links. When a task is created, the message line it came from (the evidence quote). Your Slack workspace name, address, and identifier; the Slack user identifiers and names of you and the people you talk with; and conversation names (channel names and who a DM is with). Source body text is deleted 90 days after it is stored (section 5).
+- **Access:** user-token conversation read scopes (`im:history`, `mpim:history`, `channels:history`, `groups:history`), conversation info (`im:read`, `mpim:read`, `channels:read`, `groups:read`, to know channel names and who a DM is with), and user names (`users:read`). We install no bot, and we never send or edit messages.
+- **When you disconnect or remove the app:** when you disconnect in the app, we ask Slack to revoke the token; when you remove the Taskforce app or revoke its access in Slack, we delete the stored token. In both cases we immediately delete the body text, title, and people involved of the Slack source text, the quote text of claims, Jev judgment records, queued messages, tracked threads, and name information, and each evidence quote is replaced by a removal note. If Slack fails to tell us the app was removed, a daily token check deletes the same data within a day. What remains: tasks (title, due date, status, counterpart), change history, the embedding used to find similar tasks (a numeric vector), and original links. If you removed the app in Slack, the connection record (workspace name, address and identifiers, and your Slack user ID) remains in a "revoked" state until you disconnect it in the app.
 - **Commitments:** we do not use data received from Slack to train any AI model, including large language models (LLMs); we do not use one workspace's data for another workspace or a third party; and we do not bulk-export it.
 
 > **Legal review required (remove this box before publishing)** — storing Slack source text
 >
-> The Slack API Terms require data from other organizations to be used and retained only to the "minimum necessary" and require explicit authorization from the installing organization. For some APIs they also prohibit persistent copies or archives. Taskforce deletes source text 90 days after it is stored and keeps evidence quotes while the task exists (section 5, decided 2026-09-27).
-> Remaining: decide whether a workspace admin approval step is also needed. See `docs/go-live/slack-app.md`.
+> The Slack API Terms require data from other organizations to be used and retained only to the "minimum necessary" and require explicit authorization from the installing organization. For some APIs they also prohibit persistent copies or archives. The Slack Developer Policy requires deleting all associated data within 14 business days after an app is removed.
+> Taskforce deletes source text 90 days after it is stored, and when you disconnect or remove the app it immediately deletes Slack source text, evidence quotes, and queued messages. Task titles, counterpart names, original links, change history, and embeddings remain (decided 2026-09-28, `docs/go-live/slack-integration.md` D3).
+> To review: whether what remains counts as "associated data", and whether a workspace admin approval step is also needed. See `docs/go-live/slack-app.md`.
 
 ## 4. What we send to external AI
 
@@ -155,9 +157,12 @@ Taskforce uses external AI models to find tasks in source text, decide whether a
 |---|---|
 | Account, profile, sign-in sessions | Until you delete your account |
 | Connections and access tokens | Until you disconnect or delete your account |
-| Source text from connected services (body text) | **90 days after it is stored.** After 90 days we delete only the body text; the row, title, original link, people involved, and processing result remain until you delete your account (they remain after you disconnect) |
-| Jev judgment records (including candidate quotes) | 90 days after they are stored |
-| Tasks, evidence quotes, change history, embeddings | Until you delete your account. Evidence quotes remain even after the source body text is deleted. A task you delete in the app disappears from your list but is kept in a "deleted" state so we can calculate the error rate |
+| Source text from connected services (body text) | **90 days after it is stored.** After 90 days we delete only the body text; the row, title, original link, people involved, and processing result remain until you delete your account (they remain after you disconnect). **For Slack, when you disconnect or remove the app,** we delete the body text, title, and people involved right away |
+| Jev judgment records (including candidate quotes) | 90 days after they are stored. For Slack source text, right away when you disconnect or remove the app |
+| Tasks, evidence quotes, change history, embeddings | Until you delete your account. Evidence quotes remain even after the source body text is deleted, except that evidence quotes from Slack are deleted when you disconnect or remove the app (the tasks and embeddings remain). A task you delete in the app disappears from your list but is kept in a "deleted" state so we can calculate the error rate |
+| Queued Slack messages (before grouping into source text) | 3 days after they arrive. Once grouped into source text and processed, the text is cleared, and only a marker (conversation, message, and sender identifiers) is kept until 3 days after arrival so the same message is not received twice. Right away when you disconnect or remove the app |
+| Tracked Slack threads (identifiers of threads you wrote in or were mentioned in) | 14 days after the last activity. Right away when you disconnect or remove the app |
+| Slack name information (user and conversation names) | Until you disconnect or remove the app (a name older than 7 days is re-read when it is needed again) |
 | Usage records | Until you delete your account |
 | Push device tokens | Until you sign out, Apple reports the token invalid, or you delete your account |
 | Server request records (Vercel) | 1 day |
@@ -171,7 +176,8 @@ No law currently requires us to keep any of this information longer. If one does
 
 - **Account deletion:** app → Account → Delete account. When the server deletes your authentication account, rows in every table linked to it (profile, connections and tokens, source text, tasks, evidence, history, judgment records, usage records, device tokens) are deleted in the same request.
   When you delete your account, we also ask Apple to revoke your Sign in with Apple tokens and ask each connected service to revoke its tokens.
-- **Automatic deletion of source text:** a job runs daily and deletes the body text of source text stored 90 days ago, and deletes Jev judgment records stored 90 days ago.
+- **Automatic deletion of source text:** a job runs daily and deletes the body text of source text stored 90 days ago, and deletes Jev judgment records stored 90 days ago. The same job deletes queued Slack messages that arrived 3 days ago and Slack threads with no activity for 14 days.
+- **Disconnecting or removing Slack:** when you disconnect Slack in the app or remove the app (or revoke its access) in Slack, we delete that connection's Slack source body text, titles, and people involved, evidence quotes, claim quote text, Jev judgment records, queued messages, tracked threads, and name information at once (Slack in section 3). A daily check of Slack tokens runs the same deletion within a day even if we were not told the app was removed.
 - **No backups:** we keep no database backups, so deleted data cannot be recovered and does not linger in a backup. If we start keeping backups, we will add their retention period to this policy first.
 - **Logs:** server and database request records are deleted automatically by each provider after the periods above. These records do not contain source text.
 - Electronic files are deleted so they cannot be recovered. We do not create paper records.
@@ -252,7 +258,7 @@ You can ask to access, correct, delete, or stop the processing of your personal 
 | See your tasks and evidence | Directly in the app |
 | Change your name, aliases, or email addresses | App → Account → Profile |
 | Edit or delete a task | Directly in the app |
-| Disconnect a service | App → Connections → Disconnect. You can also remove access in each service (Google: myaccount.google.com/connections; Notion: Settings → Connections; Slack: your workspace's app management) |
+| Disconnect a service | App → Connections → Disconnect. You can also remove access in each service (Google: myaccount.google.com/connections; Notion: Settings → Connections; Slack: your workspace's app management). For Slack, disconnecting also deletes the text we got from Slack (your tasks remain) |
 | Withdraw consent to AI transfer | App → Account → AI data |
 | Delete all your data | App → Account → Delete account |
 | Any other access, correction, deletion, or restriction request | Email privacy@taskforcelabs.dev |
@@ -264,7 +270,7 @@ You can ask to access, correct, delete, or stop the processing of your personal 
 ## 12. Automated decisions
 
 Taskforce uses AI to find tasks, due dates, and owners in your sources and builds your list from them. This helps you organize your own work; it is not a decision that significantly affects your rights or obligations.
-We ask you to confirm owners and due dates we are unsure of, and every task carries the quote it came from. You can correct or delete any result at any time and ask us to explain how it was produced.
+We ask you to confirm owners and due dates we are unsure of, and every task the AI creates carries the quote it came from (except quotes deleted when Slack is disconnected, section 3). You can correct or delete any result at any time and ask us to explain how it was produced.
 
 ## 13. Privacy officer
 

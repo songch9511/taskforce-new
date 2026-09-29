@@ -1,0 +1,48 @@
+{
+  "id": "slack-channel-mid-thread",
+  "description": "스레드 첫 글이 버려져(나와 무관한 채널 글) 중간부터 들어온 원문(D2). '이거'가 무엇인지 원문에 없으므로 자동 반영이 아니라 확인 요청으로 가야 맞다.",
+  "origin": "synthetic",
+  "tags": [
+    "slack"
+  ],
+  "user": {
+    "name": "윤지호",
+    "aliases": [],
+    "emails": []
+  },
+  "sources": [
+    {
+      "id": "slack-1007",
+      "kind": "message",
+      "occurred_at": "2026-10-07T16:45:00+09:00",
+      "text": "[#sales · 스레드 중간부터]\n최유나: @윤지호 이거 금요일까지 될까요? 고객사에서 다시 물어보네요",
+      "participants": {
+        "attendees": [
+          {
+            "name": "최유나"
+          },
+          {
+            "name": "윤지호"
+          }
+        ]
+      }
+    }
+  ],
+  "expected_actions": [
+    {
+      "title": "최유나가 물은 건을 금요일까지 처리할 수 있는지 답하기",
+      "owner": "me",
+      "counterpart": "최유나",
+      "due": "2026-10-09",
+      "status": "open",
+      "needs_review": true,
+      "evidence": [
+        {
+          "source": "slack-1007",
+          "quote": "이거 금요일까지 될까요?"
+        }
+      ]
+    }
+  ],
+  "must_not_extract": []
+}

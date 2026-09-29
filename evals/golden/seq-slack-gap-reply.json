@@ -1,0 +1,73 @@
+{
+  "id": "seq-slack-gap-reply",
+  "description": "요청과 수락 사이가 30분 넘게 벌어져 두 원문으로 나뉜다(D1). 두 번째 원문에는 앞 대화 없이 수락 한 줄만 있다(D1-b의 (가)). 요청 원문만으로 할 일이 잡히고, 수락이 새 할 일을 만들지 않아야 한다.",
+  "origin": "synthetic",
+  "tags": [
+    "slack"
+  ],
+  "user": {
+    "name": "윤지호",
+    "aliases": [],
+    "emails": []
+  },
+  "sources": [
+    {
+      "id": "slack-1006a",
+      "kind": "message",
+      "occurred_at": "2026-10-06T10:12:00+09:00",
+      "text": "[DM · 최유나]\n최유나: 지호님, 금요일까지 견적서 한 번만 정리해서 보내주실 수 있을까요?\n최유나: 고객사 미팅이 다음 주 월요일이라서요",
+      "participants": {
+        "attendees": [
+          {
+            "name": "최유나"
+          },
+          {
+            "name": "윤지호"
+          }
+        ]
+      }
+    },
+    {
+      "id": "slack-1006b",
+      "kind": "message",
+      "occurred_at": "2026-10-06T11:20:00+09:00",
+      "text": "[DM · 최유나]\n윤지호: 넵 가능합니다 :+1:",
+      "participants": {
+        "attendees": [
+          {
+            "name": "최유나"
+          },
+          {
+            "name": "윤지호"
+          }
+        ]
+      }
+    }
+  ],
+  "expected_actions": [
+    {
+      "title": "최유나에게 견적서 정리해 발송",
+      "owner": "me",
+      "counterpart": "최유나",
+      "due": "2026-10-09",
+      "status": "open",
+      "evidence": [
+        {
+          "source": "slack-1006a",
+          "quote": "금요일까지 견적서 한 번만 정리해서 보내주실 수 있을까요"
+        },
+        {
+          "source": "slack-1006b",
+          "quote": "넵 가능합니다"
+        }
+      ]
+    }
+  ],
+  "must_not_extract": [
+    {
+      "source": "slack-1006a",
+      "quote": "고객사 미팅이 다음 주 월요일이라서요",
+      "reason": "INFO_ONLY"
+    }
+  ]
+}

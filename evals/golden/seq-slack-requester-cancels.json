@@ -1,0 +1,73 @@
+{
+  "id": "seq-slack-requester-cancels",
+  "description": "DM으로 받은 요청을 수락했는데 요청자가 사흘 뒤 DM으로 취소한다. 취소는 요청자 권한이므로 dropped(규칙 0, 4).",
+  "origin": "synthetic",
+  "tags": [
+    "slack"
+  ],
+  "user": {
+    "name": "윤지호",
+    "aliases": [],
+    "emails": []
+  },
+  "sources": [
+    {
+      "id": "slack-1005",
+      "kind": "message",
+      "occurred_at": "2026-10-05T09:40:00+09:00",
+      "text": "[DM · 박지훈]\n박지훈: 지호님 다음 주 화요일까지 경쟁사 가격표 정리 부탁드려요\n윤지호: 넵 다음 주 화요일까지 정리할게요",
+      "participants": {
+        "attendees": [
+          {
+            "name": "박지훈"
+          },
+          {
+            "name": "윤지호"
+          }
+        ]
+      }
+    },
+    {
+      "id": "slack-1008",
+      "kind": "message",
+      "occurred_at": "2026-10-08T15:20:00+09:00",
+      "text": "[DM · 박지훈]\n박지훈: 아 경쟁사 가격표 건은 안 하셔도 돼요! 대표님이 이미 받으셨대요\n윤지호: 넵 알겠습니다",
+      "participants": {
+        "attendees": [
+          {
+            "name": "박지훈"
+          },
+          {
+            "name": "윤지호"
+          }
+        ]
+      }
+    }
+  ],
+  "expected_actions": [
+    {
+      "title": "박지훈에게 경쟁사 가격표 정리해 전달",
+      "owner": "me",
+      "counterpart": "박지훈",
+      "due": "2026-10-13",
+      "status": "dropped",
+      "evidence": [
+        {
+          "source": "slack-1005",
+          "quote": "다음 주 화요일까지 정리할게요"
+        },
+        {
+          "source": "slack-1008",
+          "quote": "경쟁사 가격표 건은 안 하셔도 돼요"
+        }
+      ]
+    }
+  ],
+  "must_not_extract": [
+    {
+      "source": "slack-1008",
+      "quote": "대표님이 이미 받으셨대요",
+      "reason": "INFO_ONLY"
+    }
+  ]
+}

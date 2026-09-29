@@ -23,6 +23,9 @@ export const expectedActionSchema = z.object({
   counterpart: z.string().optional(),
   due: z.iso.date().optional(),
   status: z.enum(["open", "done", "dropped"]).default("open"),
+  // 확인 요청으로 가야 맞는 Action (예: 무엇을 할지 원문에 없는 요청). "자동+확인" 단계에서는 보통 정답이고,
+  // "자동만" 단계에서는 자동 반영되면 오탐(REVIEW_EXPECTED)이며 빠져도 누락이 아니다. 원문 하나 채점에만 쓴다.
+  needs_review: z.boolean().optional(),
   // 이 Action의 근거가 되어야 하는 원문 인용 (source id + 원문 그대로의 구절)
   evidence: z
     .array(z.object({ source: z.string().min(1), quote: z.string().min(1) }))
@@ -34,6 +37,8 @@ export const goldenCaseSchema = z.object({
   description: z.string().min(1),
   // real: 실제 사용자 원문(익명화), synthetic: 개발용으로 지어낸 원문. eval은 둘을 나눠 보고한다.
   origin: z.enum(["real", "synthetic"]).default("real"),
+  // 원문 종류 묶음 (예: "slack"). `npm run eval -- --tag slack`으로 골라 돌리고, 묶음별 줄을 따로 출력한다.
+  tags: z.array(z.string().min(1)).optional(),
   user: z.object({
     name: z.string().min(1),
     aliases: z.array(z.string().min(1)).default([]),
@@ -62,6 +67,11 @@ export function findLabelErrors(golden: GoldenCase): string[] {
     ...golden.expected_actions.flatMap((a) => a.evidence.map((e) => ({ ...e, where: a.title }))),
     ...golden.must_not_extract.map((n) => ({ ...n, where: "must_not_extract" })),
   ];
+
+  // needs_review는 원문 하나 채점("자동만" 단계)에서만 쓴다. 시퀀스 채점은 이 칸을 보지 않는다.
+  if (golden.sources.length > 1 && golden.expected_actions.some((a) => a.needs_review)) {
+    errors.push("needs_review는 원문 하나 케이스에만 쓸 수 있습니다");
+  }
 
   for (const { source, quote, where } of quotes) {
     const found = sources.get(source);

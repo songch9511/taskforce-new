@@ -15,7 +15,7 @@ export async function POST(request: Request) {
   return handleCreateAction(request, {
     authenticate: authenticateRequest,
     loadSource: async ({ supabase }, sourceId) => {
-      const { data } = await supabase.from("sources").select("kind, raw_text, raw_text_purged_at").eq("id", sourceId).maybeSingle().throwOnError();
+      const { data } = await supabase.from("sources").select("kind, raw_text, raw_text_purged_at, raw_text_purge_reason").eq("id", sourceId).maybeSingle().throwOnError();
       return data as RelatedSource | null;
     },
     // 원문이 본인 것인지는 loadSource(RLS)가 먼저 확인했다.

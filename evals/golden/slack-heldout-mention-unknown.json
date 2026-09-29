@@ -1,0 +1,49 @@
+{
+  "id": "slack-heldout-mention-unknown",
+  "description": "확인용(F3): 첫 글 없이 들어온 스레드에서 나를 @이름으로 부르며 '그 건'을 목요일 오전까지 확인해 달라고 한다. 무엇인지 원문에 없으므로 확인 요청으로 가야 맞다.",
+  "origin": "synthetic",
+  "tags": [
+    "slack",
+    "slack-heldout"
+  ],
+  "user": {
+    "name": "윤지호",
+    "aliases": [],
+    "emails": []
+  },
+  "sources": [
+    {
+      "id": "slack-1005",
+      "kind": "message",
+      "occurred_at": "2026-10-05T14:20:00+09:00",
+      "text": "[#ops · 스레드 중간부터]\n백소윤: @윤지호 그 건 목요일 오전까지 확인 부탁드려도 될까요? 고객사 회신이 급해서요",
+      "participants": {
+        "attendees": [
+          {
+            "name": "백소윤"
+          },
+          {
+            "name": "윤지호"
+          }
+        ]
+      }
+    }
+  ],
+  "expected_actions": [
+    {
+      "title": "백소윤이 부탁한 건 목요일 오전까지 확인",
+      "owner": "me",
+      "counterpart": "백소윤",
+      "due": "2026-10-08",
+      "status": "open",
+      "needs_review": true,
+      "evidence": [
+        {
+          "source": "slack-1005",
+          "quote": "그 건 목요일 오전까지 확인 부탁드려도 될까요?"
+        }
+      ]
+    }
+  ],
+  "must_not_extract": []
+}

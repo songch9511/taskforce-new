@@ -1,0 +1,64 @@
+{
+  "id": "slack-channel-mention-thread",
+  "description": "채널에서 나를 언급한 검토 요청, 다른 사람이 덧붙인 기한, 내 수락이 한 스레드에 있다.",
+  "origin": "synthetic",
+  "tags": [
+    "slack"
+  ],
+  "user": {
+    "name": "윤지호",
+    "aliases": [],
+    "emails": []
+  },
+  "sources": [
+    {
+      "id": "slack-1005",
+      "kind": "message",
+      "occurred_at": "2026-10-05T11:30:00+09:00",
+      "text": "[#ops]\n박지훈: @윤지호 배포 체크리스트 한 번 검토 부탁드려요\n최유나: 참고로 배포는 목요일 저녁이라 수요일까지 봐주시면 좋아요\n윤지호: 넵 수요일까지 보고 코멘트 남길게요",
+      "participants": {
+        "attendees": [
+          {
+            "name": "박지훈"
+          },
+          {
+            "name": "최유나"
+          },
+          {
+            "name": "윤지호"
+          }
+        ]
+      }
+    }
+  ],
+  "expected_actions": [
+    {
+      "title": "배포 체크리스트 검토 후 코멘트",
+      "owner": "me",
+      "counterpart": "박지훈",
+      "due": "2026-10-07",
+      "status": "open",
+      "evidence": [
+        {
+          "source": "slack-1005",
+          "quote": "수요일까지 보고 코멘트 남길게요"
+        },
+        {
+          "source": "slack-1005",
+          "quote": "배포 체크리스트 한 번 검토 부탁드려요"
+        },
+        {
+          "source": "slack-1005",
+          "quote": "수요일까지 봐주시면 좋아요"
+        }
+      ]
+    }
+  ],
+  "must_not_extract": [
+    {
+      "source": "slack-1005",
+      "quote": "배포는 목요일 저녁이라",
+      "reason": "INFO_ONLY"
+    }
+  ]
+}
