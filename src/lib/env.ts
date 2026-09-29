@@ -76,7 +76,20 @@ export function slackAppToken(env: Record<string, string | undefined> = process.
  * 닫혀 있어도 이미 있는 연결의 토큰 폐기 · 이벤트 받기는 그대로 한다.
  */
 export function slackConnectEnabled(env: Record<string, string | undefined> = process.env): boolean {
-  const flag = env.SLACK_CONNECT_ENABLED?.trim();
+  return connectFlag(env, "SLACK_CONNECT_ENABLED");
+}
+
+/**
+ * 앱에 Gmail 연결을 여는가 (GMAIL_CONNECT_ENABLED = "true"). Slack과 같은 모양: 운영은 처리방침 3장 Gmail 절 · 앱 문구
+ * (docs/go-live/google-integration.md PR 4 · 5)를 맞춘 뒤에 켠다. 설정하지 않았으면 개발 서버에서만 연다.
+ * 닫혀 있어도 이미 있는 연결의 동기화 · 토큰 폐기는 그대로 한다.
+ */
+export function gmailConnectEnabled(env: Record<string, string | undefined> = process.env): boolean {
+  return connectFlag(env, "GMAIL_CONNECT_ENABLED");
+}
+
+function connectFlag(env: Record<string, string | undefined>, name: string): boolean {
+  const flag = env[name]?.trim();
   if (flag) return flag === "true";
   return env.NODE_ENV === "development";
 }

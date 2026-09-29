@@ -98,9 +98,13 @@ export async function replaceJudgeLogs(admin: SupabaseClient, source: { id: stri
   if (rows.length > 0) await admin.from("judge_logs").insert(rows).throwOnError();
 }
 
+/**
+ * 원문 하나를 처리한다. source.notify가 false면 확인 요청 알림을 보내지 않는다 (확인 요청 자체는 만든다):
+ * 연결 전 시각의 원문을 한꺼번에 가져올 때(Gmail 첫 14일 · 다시 연결 뒤 이어 가져오기) 원문마다 알림이 가지 않게 (원칙 3).
+ */
 export async function processSource(
   admin: SupabaseClient,
-  source: { id: string; userId: string },
+  source: { id: string; userId: string; notify?: boolean },
   input: ExtractInput,
   deps: ProcessDeps = processDepsFromEnv(),
 ): Promise<ProcessResult> {
@@ -159,9 +163,11 @@ export async function processSource(
     ).throwOnError();
     const needsConfirmation = [...store.needsConfirmation];
     // 알림 실패는 처리 결과에 영향을 주지 않는다.
-    await notifyConfirmations(admin, source.userId, needsConfirmation).catch((error) =>
-      console.error("확인 요청 알림 실패:", error instanceof Error ? error.message : error),
-    );
+    if (source.notify !== false) {
+      await notifyConfirmations(admin, source.userId, needsConfirmation).catch((error) =>
+        console.error("확인 요청 알림 실패:", error instanceof Error ? error.message : error),
+      );
+    }
     return { needsConfirmation };
   } catch (error) {
     // 서버 로그에는 원인을, 사용자에게는 원문 · 내부 정보가 없는 문구만 남긴다.

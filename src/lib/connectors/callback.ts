@@ -1,6 +1,6 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
 
-import type { ConnectionAppCallbackError, ConnectionCallbackStatus, ConnectProvider } from "@/lib/api/contract";
+import { isConnected, type ConnectionAppCallbackError, type ConnectionCallbackStatus, type ConnectProvider } from "@/lib/api/contract";
 
 import { isSignedOAuthState, verifyOAuthState, type OAuthStatePayload } from "./oauth-state";
 import type { ConnectedStatus } from "./types";
@@ -115,6 +115,6 @@ export async function handleOAuthCallback(request: Request, deps: OAuthCallbackD
     console.error(`${deps.provider} 연결 실패:`, error instanceof Error ? error.message : error);
     return back("error");
   }
-  deps.onConnected(user.id);
+  if (isConnected(status)) deps.onConnected(user.id);
   return back(status);
 }

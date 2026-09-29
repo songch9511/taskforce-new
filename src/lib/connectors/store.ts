@@ -247,21 +247,31 @@ export async function recordSync(
   }
 }
 
-/** 연동 원문을 저장하고, 사용자 프로필로 "원문 속 나"를 정해 파이프라인을 돌린다. */
-export function ingestDeps(admin: SupabaseClient): IngestDeps {
+/** "이미 넣음"을 한 번에 묻는 외부 id 수 */
+const INGESTED_IDS_CHUNK = 150;
+
+/**
+ * 연동 원문을 저장하고, 사용자 프로필로 "원문 속 나"를 정해 파이프라인을 돌린다.
+ * notifyFrom을 주면 그보다 앞 시각의 원문(연결 전 메일을 한꺼번에 가져옴)은 확인 요청 알림을 보내지 않는다 (Gmail, 2-2).
+ */
+export function ingestDeps(admin: SupabaseClient, options: { notifyFrom?: Date | null } = {}): IngestDeps {
   return {
     ingestedIds: async (connection, externalIds) => {
-      if (externalIds.length === 0) return new Set();
-      // 연결을 끊으면 원문의 connection_id가 비고, 다시 연결하면 새 연결이 된다. 비워진 이 사용자의 원문도 이미 넣은 것으로 본다:
-      // 최근 14일을 다시 넣어 같은 원문을 두 번 처리하지 않게 (external_id는 서비스의 전역 id)
-      const { data } = await admin
-        .from("sources")
-        .select("external_id")
-        .eq("user_id", connection.userId)
-        .or(`connection_id.eq.${connection.id},connection_id.is.null`)
-        .in("external_id", externalIds)
-        .throwOnError();
-      return new Set((data ?? []).map((row) => row.external_id as string));
+      const found = new Set<string>();
+      // 요청 주소가 길어지지 않게 나눠 묻는다 (Gmail은 한 창에 id가 수백 · 수천 개)
+      for (let i = 0; i < externalIds.length; i += INGESTED_IDS_CHUNK) {
+        // 연결을 끊으면 원문의 connection_id가 비고, 다시 연결하면 새 연결이 된다. 비워진 이 사용자의 원문도 이미 넣은 것으로 본다:
+        // 최근 14일을 다시 넣어 같은 원문을 두 번 처리하지 않게 (external_id는 서비스의 전역 id)
+        const { data } = await admin
+          .from("sources")
+          .select("external_id")
+          .eq("user_id", connection.userId)
+          .or(`connection_id.eq.${connection.id},connection_id.is.null`)
+          .in("external_id", externalIds.slice(i, i + INGESTED_IDS_CHUNK))
+          .throwOnError();
+        for (const row of data ?? []) found.add(row.external_id as string);
+      }
+      return found;
     },
 
     insertSource: async (connection, item) => {
@@ -290,7 +300,8 @@ export function ingestDeps(admin: SupabaseClient): IngestDeps {
     process: async (connection, sourceId, item) => {
       const identity = await loadIdentity(admin, connection.userId);
       try {
-        await processSource(admin, { id: sourceId, userId: connection.userId }, {
+        const notify = !options.notifyFrom || item.occurredAt >= options.notifyFrom;
+        await processSource(admin, { id: sourceId, userId: connection.userId, notify }, {
           text: item.text,
           kind: item.kind,
           occurredAt: item.occurredAt,
@@ -319,17 +330,70 @@ async function forgetUnprocessedSource(admin: SupabaseClient, connection: Connec
   await admin.from("sources").delete().eq("id", sourceId).eq("user_id", connection.userId).throwOnError();
 }
 
-/** 사용자 프로필(이름 · 별칭 · 이메일)과 계정으로 "원문 속 나"를 정한다. */
+/**
+ * 사용자 프로필(이름 · 별칭 · 이메일)과 계정으로 "원문 속 나"를 정한다.
+ * 연결한 Google 계정 주소(google · gmail 연결의 settings.email)도 사용자 주소로 본다: 로그인 주소와 다른 회사 Gmail이어도
+ * "보낸 사람 = 나"를 알아본다.
+ */
 export async function loadIdentity(admin: SupabaseClient, userId: string): Promise<UserIdentity> {
-  const [{ data: profileRow }, { data: account }] = await Promise.all([
+  const [{ data: profileRow }, { data: account }, { data: googleRows }] = await Promise.all([
     admin.from("profiles").select("display_name, aliases, emails").eq("user_id", userId).maybeSingle(),
     admin.auth.admin.getUserById(userId),
+    admin.from("connections").select("settings").eq("user_id", userId).in("provider", ["google", "gmail"]),
   ]);
   const email = account.user?.email ?? null;
-  return resolveIdentity(profileInputSchema.safeParse(profileRow).data ?? null, {
+  const identity = resolveIdentity(profileInputSchema.safeParse(profileRow).data ?? null, {
     name: accountDisplayName(account.user?.user_metadata, email),
     email,
   });
+  const googleEmails = ((googleRows ?? []) as { settings: { email?: unknown } | null }[]).flatMap(({ settings }) =>
+    typeof settings?.email === "string" ? [settings.email.trim().toLowerCase()] : [],
+  );
+  return { ...identity, emails: [...new Set([...identity.emails, ...googleEmails])] };
+}
+
+/** 연결을 (다시) 맺은 시각. 없으면 null */
+export async function connectedAt(admin: SupabaseClient, connection: Connection): Promise<Date | null> {
+  const { data } = await admin
+    .from("connections")
+    .select("connected_at")
+    .eq("id", connection.id)
+    .eq("user_id", connection.userId)
+    .maybeSingle<{ connected_at: string }>()
+    .throwOnError();
+  return data ? new Date(data.connected_at) : null;
+}
+
+/**
+ * 연결 설정을 지금 값에서 고친다 (update가 null이면 쓰지 않는다). 설정 전체를 다시 쓰므로 바꿀 때만 부른다.
+ * 연결 정보(Google 계정 · 범위)와 동기화 통계(stats)처럼 나머지 값은 그대로 둬야 하는 곳에서 쓴다.
+ */
+export async function updateConnectionSettings(
+  admin: SupabaseClient,
+  connection: { id: string; userId: string },
+  update: (settings: Record<string, unknown>) => Record<string, unknown> | null,
+): Promise<void> {
+  const { data } = await admin.from("connections").select("settings").eq("id", connection.id).eq("user_id", connection.userId).single().throwOnError();
+  const next = update((data.settings as Record<string, unknown> | null) ?? {});
+  if (!next) return;
+  await admin.from("connections").update({ settings: next }).eq("id", connection.id).eq("user_id", connection.userId).throwOnError();
+}
+
+/** 같은 서비스의 다른 연결 (다른 계정으로 다시 연결했을 때 끊을 옛 연결)과 풀어 둔 토큰 (풀지 못했으면 null) */
+export async function otherConnections(
+  admin: SupabaseClient,
+  userId: string,
+  provider: Provider,
+  keepId: string,
+): Promise<{ id: string; token: unknown }[]> {
+  const { data } = await admin.from("connections").select("id").eq("user_id", userId).eq("provider", provider).neq("id", keepId).throwOnError();
+  return Promise.all(((data ?? []) as { id: string }[]).map(async ({ id }) => ({ id, token: await loadToken(admin, id).catch(() => null) })));
+}
+
+/** 연결을 끊는다 (DELETE /api/v1/connections/:id와 같은 RPC: Slack이면 Slack 글자도 지운다). 없었으면 false */
+export async function disconnectConnection(admin: SupabaseClient, userId: string, connectionId: string): Promise<boolean> {
+  const { data } = await admin.rpc("disconnect_connection", { p_user_id: userId, p_connection_id: connectionId }).throwOnError();
+  return data === true;
 }
 
 /** 이보다 오래 "처리 중"인 할 일 원문은 중간에 죽은 실행으로 보고 다시 처리한다. */

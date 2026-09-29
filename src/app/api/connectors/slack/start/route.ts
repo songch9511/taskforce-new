@@ -5,7 +5,7 @@ import { NextResponse } from "next/server";
 import { authenticateRequest } from "@/lib/api/auth";
 import { hasAiConsent } from "@/lib/api/profile-store";
 import { oauthCookie } from "@/lib/connectors/callback";
-import { slackWebConnector } from "@/lib/connectors/registry";
+import { webConnector } from "@/lib/connectors/registry";
 import { slackAuthorizeUrl } from "@/lib/connectors/slack/client";
 import { slackOAuthConfig } from "@/lib/connectors/slack/run";
 
@@ -15,7 +15,7 @@ import { slackOAuthConfig } from "@/lib/connectors/slack/run";
 export async function GET(request: Request) {
   const context = await authenticateRequest(request);
   if (!context) return NextResponse.redirect(new URL("/login", request.url));
-  if (!slackWebConnector(context.user.email)) return NextResponse.redirect(new URL("/lab?slack=unavailable", request.url));
+  if (!webConnector("slack", context.user.email)) return NextResponse.redirect(new URL("/lab?slack=unavailable", request.url));
   if (!(await hasAiConsent(context))) return NextResponse.redirect(new URL("/lab?slack=consent_required", request.url));
 
   const state = randomBytes(24).toString("base64url");
