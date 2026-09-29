@@ -317,6 +317,9 @@ function summaryText(summary: Record<string, unknown>): string {
     return `할 일 DB · ${relation}${changes.length ? ` (${changes.join(" · ")})` : ""} · ${who}`;
   }
   const n = (key: string) => (typeof summary[key] === "number" ? (summary[key] as number) : 0);
+  // 처리 중 · 실패한 원문의 기록은 몇 번째 시도인지뿐이다 (실패하면 재처리 cron이 다시 한다, lib/sources/retry.ts)
+  if (!("extracted" in summary) && typeof summary.attempt === "number") return `${summary.attempt}번째 시도`;
   const cost = typeof summary.cost === "number" ? ` · $${summary.cost.toFixed(4)}` : "";
-  return `추출 ${n("extracted")} · 자동 ${n("auto")} · 확인 ${n("confirm")} · 기각 ${n("reject")} · 환각 ${n("dropped")}${cost}`;
+  const retried = n("attempt") > 1 ? ` · ${n("attempt")}번째 시도` : "";
+  return `추출 ${n("extracted")} · 자동 ${n("auto")} · 확인 ${n("confirm")} · 기각 ${n("reject")} · 환각 ${n("dropped")}${cost}${retried}`;
 }

@@ -210,7 +210,7 @@ Taskforce는 원문에서 할 일을 찾고, 기존 할 일과 같은지 판단�
 | Vercel Inc. (privacy@vercel.com, 440 N Barranca Ave #4133, Covina, CA 91723, USA) | 호주(시드니, 서버 실행), 미국(요청 기록 · 관리 시스템) | 서버를 거치는 모든 정보(1장), 서버 요청 기록 | 서버 운영, 웹사이트 호스팅 | 요청을 처리하는 동안. 요청 기록 1일 |
 | Supabase Pte. Ltd. (privacy@supabase.com) | 호주 (시드니, AWS ap-southeast-2) | 1장의 모든 항목(문의 제외) | 데이터 저장, 로그인 · 인증 | 계정 삭제 때까지. 요청 기록 1일 |
 | OpenRouter, Inc. (privacy@openrouter.ai) | 미국 | 4장의 보내는 정보 | AI 요청 전달 | 저장하지 않음 (요청을 처리하는 동안만) |
-| Together AI, Inc. · Fireworks AI, Inc. · DeepInfra, Inc. · BaseTen, Inc. (OpenRouter를 통해, 원문에서 할 일 찾기) {{연락처 확인 필요}} | 미국 (본사 기준. 실제로 요청을 처리하는 데이터센터 위치는 각 사가 공개하지 않는다) | 4장의 보내는 정보 | AI 모델 실행 (원문 분석) | 저장하지 않음 (Zero Data Retention) |
+| Together AI, Inc. · Fireworks AI, Inc. · DeepInfra, Inc. (OpenRouter를 통해, 원문에서 할 일 찾기) {{연락처 확인 필요}} | 미국 (본사 기준. 실제로 요청을 처리하는 데이터센터 위치는 각 사가 공개하지 않는다) | 4장의 보내는 정보 | AI 모델 실행 (원문 분석) | 저장하지 않음 (Zero Data Retention) |
 | Microsoft Corporation (Azure, OpenRouter를 통해, 임베딩) {{연락처 확인 필요}} | 미국 (본사 기준) | 4장의 보내는 정보 중 비슷한 할 일을 찾는 데 쓰는 것(새 후보와 기존 할 일의 제목 · 근거 인용) | AI 모델 실행 (임베딩) | 저장하지 않음 (Zero Data Retention) |
 | TypeSafe (OpenRouter를 통해, 판정) {{연락처 확인 필요}} | 미국 (OpenRouter에 소재국 표기 없음. 공개 자료 기준 샌프란시스코. **확인 필요: TypeSafe 소재지 서면 확인**) | 4장의 보내는 정보 | AI 모델 실행 (판정) | 저장하지 않음 (Zero Data Retention) |
 | Apple Inc. (One Apple Park Way, Cupertino, CA 95014, USA · apple.com/legal/privacy/contact) | 미국 | 알림 기기 토큰, 알림 내용(할 일 식별자와 "확인이 필요해요" 같은 일반 문구. 할 일 제목은 싣지 않음) | 푸시 알림 전달 | Apple의 정책에 따름 |

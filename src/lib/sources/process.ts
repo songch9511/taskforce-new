@@ -24,6 +24,7 @@ import {
   reportMatchDecide,
   reportStore,
   trackedByEvidence,
+  unappliedCandidates,
   type MissingInput,
   type MissLog,
   type SourceEvidence,
@@ -31,13 +32,13 @@ import {
 import { runPipeline, type PipelineDeps } from "@/lib/pipeline/run";
 import { notifyConfirmations } from "@/lib/notify/service";
 
-// 저장된 원문 하나를 끝까지 처리한다 (POST /api/v1/sources · 연동 동기화가 부른다):
+// 저장된 원문 하나를 끝까지 처리한다 (POST /api/v1/sources · 연동 동기화 · 재처리 cron이 부른다):
 // 추출 → 검증 → Jev 판정(judge_logs) → 기존 Action과 매칭 · 병합(actions · claims · evidence · action_events).
 // Action 쓰기는 서버만 할 수 있으므로 service role 클라이언트로 부르고, 모든 쓰기에 user_id를 넣는다.
 // 빠진 할 일 신고(reportMissing, POST /api/v1/sources/:id/missing)도 같은 병합 · 사용자 잠금을 쓴다.
 // 세 함수 모두 모델 호출(LLM · Jev · 임베딩) 직전마다 외부 AI 처리 동의를 다시 확인한다 (withConsentGate).
 // 매칭 전에는 임베딩이 없는 열린 Action(직접 추가할 때 못 만든 것)을 몇 개씩 채운다 (backfillEmbeddings, 실패해도 처리는 계속).
-// 도중에 철회하면 ConsentRequiredError를 던진다: 원문은 failed로 남기고, 부르는 쪽(동기화 · 스크립트)은 남은 항목을 멈춘다.
+// 도중에 철회하면 ConsentRequiredError를 던진다: 원문은 failed로 남기고, 부르는 쪽(동기화 · 스크립트 · 재처리 cron)은 남은 항목을 멈춘다.
 
 export type ProcessDeps = PipelineDeps & Pick<MergeDeps, "embed">;
 
@@ -71,10 +72,23 @@ function withUserLock<T>(userId: string, task: () => Promise<T>): Promise<T> {
 function userFacingError(error: unknown): string {
   if (error instanceof ConsentRequiredError) return CONSENT_WITHDRAWN_MESSAGE;
   if (error instanceof LlmError || error instanceof JevError || error instanceof EmbedError) return error.message.slice(0, 300);
-  return "처리 중 오류가 발생했습니다.";
+  return PROCESSING_FAILED_MESSAGE;
+}
+
+/** 원인을 사용자에게 보일 수 없는 처리 실패 문구 (처리 중에 멈춘 채 다시 처리할 횟수를 다 쓴 원문에도 쓴다, retry.ts) */
+export const PROCESSING_FAILED_MESSAGE = "처리 중 오류가 발생했습니다.";
+
+/** 한 원문을 처리해 보는 최대 횟수 (첫 처리 포함). 넘으면 cron이 더 다시 처리하지 않는다 (retry.ts) */
+export const RETRY_MAX_ATTEMPTS = 3;
+
+/** 실패 기록 (processing_summary): 몇 번째 시도였고 다시 해 볼 만한지. 동의 철회 · 마지막 시도는 다시 하지 않는다 */
+export function failureSummary(error: unknown, attempt: number, now = new Date()): { attempt: number; retryable: boolean; failed_at: string } {
+  return { attempt, retryable: !(error instanceof ConsentRequiredError) && attempt < RETRY_MAX_ATTEMPTS, failed_at: now.toISOString() };
 }
 
 export type ProcessResult = {
+  /** 끝까지 처리했는가 (아니면 원문은 failed로 남는다) */
+  ok: boolean;
   /** 이번 처리로 확인 요청이 새로 생긴 Action (알림용) */
   needsConfirmation: string[];
 };
@@ -100,7 +114,11 @@ export async function replaceJudgeLogs(admin: SupabaseClient, source: { id: stri
 
 export async function processSource(
   admin: SupabaseClient,
-  source: { id: string; userId: string },
+  /**
+   * attempt: 몇 번째 처리인가 (처음 1, cron이 다시 처리하면 2 · 3).
+   * retry: 재처리 cron이 다시 처리한다 (대기에 멈춘 원문은 attempt 1이어도 다시 처리다, lib/sources/retry.ts)
+   */
+  source: { id: string; userId: string; attempt?: number; retry?: boolean },
   input: ExtractInput,
   deps: ProcessDeps = processDepsFromEnv(),
 ): Promise<ProcessResult> {
@@ -108,7 +126,11 @@ export async function processSource(
   const scoped = <T extends { eq: (column: string, value: string) => T }>(query: T) => query.eq("id", sourceId).eq("user_id", source.userId);
   const check = consentCheck(admin, source.userId);
   const ai = withConsentGate(deps, check);
-  await scoped(admin.from("sources").update({ processing_status: "processing" })).throwOnError();
+  const attempt = source.attempt ?? 1;
+  // 시작 시각을 남겨, 처리 도중 함수가 끊겨 멈춘 원문을 cron이 알아보고 다시 처리한다 (retry.ts)
+  await scoped(
+    admin.from("sources").update({ processing_status: "processing", processing_summary: { attempt, started_at: new Date().toISOString() } }),
+  ).throwOnError();
 
   try {
     await assertConsent(check);
@@ -134,11 +156,16 @@ export async function processSource(
 
     // 기존 Action과 맞춰 보고 반영한다.
     const store = new SupabaseActionStore(admin, source.userId);
+    let alreadyApplied = 0;
     const outcomes = await withUserLock(source.userId, async () => {
       await backfillEmbeddings(store, ai.embed);
+      // 다시 처리할 때는 이 원문에서 이미 근거로 쓰인 구절과 겹치는 후보를 빼고 병합한다: 앞선 시도가 병합 도중에 실패 · 중단됐거나
+      // 그 사이 누락 신고 · 직접 추가로 붙은 구절에 근거 · Claim이 두 번 붙지 않게.
+      const judged = source.retry ? unappliedCandidates(result.judged, await sourceEvidenceQuotes(admin, source)) : result.judged;
+      alreadyApplied = result.judged.length - judged.length;
       return mergeJudged(
         store,
-        result.judged,
+        judged,
         { id: sourceId, text: input.text, kind: input.kind, occurredAt: input.occurredAt },
         input.identity,
         { embed: ai.embed, decide: ai.decide, newId: () => crypto.randomUUID() },
@@ -153,7 +180,16 @@ export async function processSource(
         processing_error: null,
         processing_summary: {
           ...result.summary,
-          merge: { new: count("new"), updated: count("update"), duplicate: count("duplicate"), completed: count("complete"), cancelled: count("cancel") },
+          attempt,
+          merge: {
+            new: count("new"),
+            updated: count("update"),
+            duplicate: count("duplicate"),
+            completed: count("complete"),
+            cancelled: count("cancel"),
+            // 다시 처리할 때 이미 반영된 것으로 보고 병합 전에 뺀 후보
+            ...(source.retry ? { already_applied: alreadyApplied } : {}),
+          },
         },
       }),
     ).throwOnError();
@@ -162,16 +198,27 @@ export async function processSource(
     await notifyConfirmations(admin, source.userId, needsConfirmation).catch((error) =>
       console.error("확인 요청 알림 실패:", error instanceof Error ? error.message : error),
     );
-    return { needsConfirmation };
+    return { ok: true, needsConfirmation };
   } catch (error) {
     // 서버 로그에는 원인을, 사용자에게는 원문 · 내부 정보가 없는 문구만 남긴다.
     console.error(`원문 처리 실패 (${sourceId}):`, error instanceof Error ? error.message : error);
     await scoped(
-      admin.from("sources").update({ processing_status: "failed", processed_at: new Date().toISOString(), processing_error: userFacingError(error) }),
+      admin.from("sources").update({
+        processing_status: "failed",
+        processed_at: new Date().toISOString(),
+        processing_error: userFacingError(error),
+        processing_summary: failureSummary(error, attempt),
+      }),
     );
     if (error instanceof ConsentRequiredError) throw error;
-    return { needsConfirmation: [] };
+    return { ok: false, needsConfirmation: [] };
   }
+}
+
+/** 이 원문에서 Action의 근거로 쓰인 구절 전부 (담당 · 상태와 상관없이) */
+async function sourceEvidenceQuotes(admin: SupabaseClient, source: { id: string; userId: string }): Promise<string[]> {
+  const { data } = await admin.from("evidence").select("quote").eq("user_id", source.userId).eq("source_id", source.id).throwOnError();
+  return ((data ?? []) as { quote: string | null }[]).flatMap((e) => (e.quote ? [e.quote] : []));
 }
 
 /**
@@ -222,7 +269,7 @@ export async function processTaskSource(
     await notifyConfirmations(admin, source.userId, needsConfirmation).catch((error) =>
       console.error("확인 요청 알림 실패:", error instanceof Error ? error.message : error),
     );
-    return { needsConfirmation };
+    return { ok: true, needsConfirmation };
   } catch (error) {
     console.error(`할 일 처리 실패 (${source.id}):`, error instanceof Error ? error.message : error);
     await scoped(
@@ -230,7 +277,7 @@ export async function processTaskSource(
     );
     // 처리를 마치지 못한 할 일은 동의한 뒤 동기화가 다시 처리한다 (pendingTasks).
     if (error instanceof ConsentRequiredError) throw error;
-    return { needsConfirmation: [] };
+    return { ok: false, needsConfirmation: [] };
   }
 }
 

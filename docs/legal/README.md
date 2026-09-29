@@ -57,7 +57,7 @@
 ## 결정 필요
 
 1. ~~**모델 공급자 고정.**~~ **해결됨 (2026-09-27).** `src/lib/ai/providers.ts`가 모든 AI 요청에 `only` · `order` · `allow_fallbacks: false`를 붙여 아래 목록 밖으로 나가지 않는다(목록이 모두 막히면 요청은 실패한다, 다른 공급자로 새지 않는다):
-   - 원문 분석 `LLM_MODEL=z-ai/glm-5.3-flash`: Together · Fireworks · DeepInfra · BaseTen(모두 ZDR, 본사 미국).
+   - 원문 분석 `LLM_MODEL=z-ai/glm-5.3-flash`: Fireworks · Together · DeepInfra(모두 ZDR, 본사 미국). BaseTen은 이 모델 제공자에서 빠져 2026-09-29에 목록에서 뺐다(웹사이트에 게시된 처리방침도 다음 배포 때 함께 고친다).
    - 임베딩 `openai/text-embedding-3-small`: Azure(Microsoft, 본사 미국) 한 곳.
    - 판정 `JEV_MODEL=typesafe/jev-1.13`: TypeSafe 한 곳. OpenRouter에 본사 국가 표기가 없고, 공개 자료 기준으로는 미국 샌프란시스코다. **확인 필요: TypeSafe 소재지 서면 확인** (게시 전에 TypeSafe에 직접 묻거나 서면 자료로 확인한다).
    - 목록은 환경변수(`LLM_PROVIDERS` · `EMBED_PROVIDERS` · `JEV_PROVIDERS`)로 바꿀 수 있다. 처리방침 7장 표는 위 목록 · 국가를 그대로 옮긴다.

@@ -39,7 +39,7 @@
 | `LLM_MODEL` | `z-ai/glm-5.3-flash` (지금 `.env.local`, eval 기준) | 바꾸면 eval을 다시 돌린다 |
 | `JEV_MODEL` | `typesafe/jev-1.13` | 버전 고정 |
 | `EMBEDDING_MODEL` | 비움 → `openai/text-embedding-3-small` | 1536차원이어야 한다 |
-| `LLM_PROVIDERS` · `EMBED_PROVIDERS` · `JEV_PROVIDERS` | 비움 (선택) → 기본값 `src/lib/ai/providers.ts`: LLM `together,fireworks,deepinfra,baseten` · 임베딩 `azure` · Jev `typesafe` | ZDR · 학습 금지 공급자 고정 목록(쉼표 구분). 처리방침 7장 표와 맞춘다(`docs/legal/README.md` 결정 1) |
+| `LLM_PROVIDERS` · `EMBED_PROVIDERS` · `JEV_PROVIDERS` | 비움 (선택) → 기본값 `src/lib/ai/providers.ts`: LLM `fireworks,together,deepinfra` · 임베딩 `azure` · Jev `typesafe` | ZDR · 학습 금지 공급자 고정 목록(쉼표 구분). 처리방침 7장 표와 맞춘다(`docs/legal/README.md` 결정 1) |
 | `CONNECTOR_TOKEN_KEY` | `openssl rand -base64 32` | **운영 DB에 이미 저장된 연결 토큰을 암호화한 키와 같아야 한다.** 로컬 `.env.local` 값으로 운영 DB에 연결을 만들었다면 같은 값을 넣고, 새 키를 쓰면 기존 연결은 다시 연결해야 한다 |
 | `CRON_SECRET` | `openssl rand -hex 32` | Vercel Cron이 `Authorization: Bearer`로 보낸다. 없으면 cron이 401 |
 | `OAUTH_STATE_SECRET` | `openssl rand -hex 32` | 32자 이상(`env.ts`의 `oauthStateSecret`) |
@@ -128,13 +128,14 @@ Supabase → Organization → Billing에서 프로젝트가 **Free**이고 백�
 
 ## 6. Cron 확인
 
-`vercel.json`: `/api/cron/sync` 15분마다, `/api/cron/reminders` 매일 00:00 UTC(한국 09:00), `/api/cron/retention` 매일 18:30 UTC(한국 03:30, 원문 90일 보관 정리 · `src/lib/retention.ts`).
+`vercel.json`: `/api/cron/sync` 15분마다, `/api/cron/retry-sources` 매시 7분 · 37분(실패 · 멈춘 글 원문 다시 처리, 하루 안에 들어온 원문만 첫 처리 포함 3번까지), `/api/cron/reminders` 매일 00:00 UTC(한국 09:00), `/api/cron/retention` 매일 18:30 UTC(한국 03:30, 원문 90일 보관 정리 · `src/lib/retention.ts`).
 
-1. 배포 뒤 Vercel → 프로젝트 → Settings → Cron Jobs에 세 개가 보이는지.
+1. 배포 뒤 Vercel → 프로젝트 → Settings → Cron Jobs에 네 개가 보이는지.
 2. Logs에서 `/api/cron/sync`가 15분마다 200인지. 401이면 `CRON_SECRET`이 없거나 다르다.
 3. 다음 날 09:00 KST에 `/api/cron/reminders`가 200인지(기한 임박 알림).
 4. 다음 날 03:30 KST에 `/api/cron/retention`이 200이고 `{ sources_purged, judge_logs_deleted }`를 돌려주는지(처리방침 5장 "90일" 약속).
-5. 동의하지 않은 사용자의 연결은 동기화에서 건너뛴다(`registry.ts`의 `withoutConsent`). 테스트 계정으로 동의 전 · 후를 한 번씩 본다.
+5. `/api/cron/retry-sources`가 30분마다 200이고 `{ due, retried, failed, gaveUp, skippedForTime }`를 돌려주는지. `failed`나 `gaveUp`이 자주 0보다 크면 추출 실패가 잦다는 뜻이다(모델 · 공급자 확인). 이 cron은 들어온 지 하루가 넘은 원문은 다시 처리하지 않는다: 배포 전에 `processing_status`가 `failed` · `processing` · `pending`인 글 원문(kind task 제외)을 세어 보고, 살릴 것만 `scripts/reprocess-sources.ts --source <id>`로 하나씩 처리한다. 옵션 없이 돌리면 근거가 없는 모든 원문(할 일이 없어 끝난 원문 포함)을 다시 처리하므로 쓰지 않는다.
+6. 동의하지 않은 사용자의 연결은 동기화에서 건너뛴다(`registry.ts`의 `withoutConsent`). 테스트 계정으로 동의 전 · 후를 한 번씩 본다.
 
 ## 7. 웹사이트 배포
 
@@ -242,7 +243,7 @@ union all select 'slack_people', count(*) from public.slack_people where user_id
 | I8 | Sign in with Apple 키 | 사용자 ✅ (2026-09-28) | `APPLE_*` 4개가 env에 있음 | — |
 | I9 | OpenRouter 운영 키 · 로깅 꺼짐 · 사용 한도 | 사용자 ✅ (2026-09-28: 한도 $10, 계정 Privacy에서 ZDR 필수 · 학습 엔드포인트 모두 끔. 키는 아직 로컬과 하나를 같이 쓴다 → 출시 직전 운영 키 분리. 키 만료 2027-03-24) | 설정 화면에서 확인 | — |
 | I10 | Supabase Free · 백업 없음 확인 | 사용자 | Billing · Backups 화면 확인 (4장) | — |
-| I11 | Cron 동작 | 사용자 | `/api/cron/sync` 15분마다 200, `/api/cron/reminders` 09:00 KST 200, `/api/cron/retention` 03:30 KST 200 | I1, I2 |
+| I11 | Cron 동작 | 사용자 | `/api/cron/sync` 15분마다 200, `/api/cron/retry-sources` 매시 7분 · 37분 200, `/api/cron/reminders` 09:00 KST 200, `/api/cron/retention` 03:30 KST 200 | I1, I2 |
 | I12 | 운영 계정 2단계 인증 (Vercel · Supabase · GitHub · Google · Apple · Slack · Notion · OpenRouter) | 사용자 | 모두 켜짐 (처리방침 9장 약속) | — |
 
 ### 3) 코드
