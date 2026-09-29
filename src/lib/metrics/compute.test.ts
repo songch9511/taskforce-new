@@ -296,11 +296,14 @@ describe("connections (연결 · 2단계 연동 요청)", () => {
       { userId: "b", type: "connection_created", actionId: null, at: "2026-09-12T00:00:00Z" },
       { userId: "c", type: "connection_created", actionId: null, at: "2026-08-01T00:00:00Z" },
       { userId: "a", type: "app_opened", actionId: null, at: "2026-09-10T00:00:00Z" },
+      { userId: "a", type: "reconnect_notified", actionId: null, at: "2026-09-13T00:00:00Z" },
+      { userId: "b", type: "reconnect_notified", actionId: null, at: "2026-08-02T00:00:00Z" },
     ];
     const requests = [{ provider: "zoom" }, { provider: "linear" }, { provider: "zoom" }, { provider: "jira" }];
     expect(connections(events, requests, period)).toEqual({
       created: 3,
       users: 2,
+      reconnectNotified: 1,
       requests: [
         { provider: "zoom", count: 2 },
         { provider: "jira", count: 1 },

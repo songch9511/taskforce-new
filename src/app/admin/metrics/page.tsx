@@ -207,7 +207,7 @@ export default async function MetricsPage({ searchParams }: { searchParams: Prom
         <CardHeader>
           <CardTitle>연결 · 2단계 연동 요청</CardTitle>
           <CardDescription>
-            기간 안에 연결을 마친 수 {connections.created}번 (사용자 {connections.users}명). 아래는 2단계 연동의 &quot;원해요&quot; 수 (전체 기간, 사용자마다 한 번)로,
+            기간 안에 연결을 마친 수 {connections.created}번 (사용자 {connections.users}명), 다시 연결 알림을 보낸 수 {connections.reconnectNotified}번. 아래는 2단계 연동의 &quot;원해요&quot; 수 (전체 기간, 사용자마다 한 번)로,
             많은 순서로 붙입니다 (원칙 6).
           </CardDescription>
         </CardHeader>

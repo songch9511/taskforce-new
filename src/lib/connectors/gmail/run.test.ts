@@ -2,6 +2,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { CONSENT_WITHDRAWN_MESSAGE, ConsentRequiredError } from "@/lib/consent/gate";
+import { notifyReconnect } from "@/lib/notify/service";
 
 import {
   claimConnection,
@@ -22,6 +23,7 @@ import { gmailConnector, syncGmailConnection } from "./run";
 import { DEFAULT_GMAIL_SYNC, syncGmail, type GmailSyncResult } from "./sync";
 
 vi.mock("server-only", () => ({}));
+vi.mock("@/lib/notify/service", () => ({ notifyReconnect: vi.fn() }));
 vi.mock("../store", () => ({
   claimConnection: vi.fn(),
   connectedAt: vi.fn(),
@@ -110,7 +112,8 @@ beforeEach(() => {
   vi.mocked(loadIdentity).mockResolvedValue({ name: "Me", aliases: [], emails: ["login@example.com", "me@company.dev"] });
   vi.mocked(loadToken).mockResolvedValue(stored());
   vi.mocked(otherConnections).mockResolvedValue([]);
-  vi.mocked(recordSync).mockResolvedValue();
+  vi.mocked(recordSync).mockResolvedValue(false);
+  vi.mocked(notifyReconnect).mockResolvedValue(1);
   vi.mocked(saveConnection).mockResolvedValue("conn-new");
   vi.mocked(saveToken).mockResolvedValue();
   vi.mocked(updateConnectionSettings).mockResolvedValue();
@@ -305,6 +308,52 @@ describe("syncGmailConnection", () => {
     expect(recordSync).toHaveBeenCalledWith(admin, connection, { claimedAt: expect.any(Date), error: "Gmail 연결이 만료됐습니다. 다시 연결해 주세요.", reauth: true });
     expect(outcome).toEqual({ connectionId: "c1", ok: false, error: "Gmail 연결이 만료됐습니다. 다시 연결해 주세요.", revoked: false });
     expect(saveToken).not.toHaveBeenCalled();
+  });
+
+  it("reauth로 바꾼 동기화(recordSync가 true)에서만 재연결 알림 한 번", async () => {
+    stubGoogle({ token: () => json({ error: "invalid_grant" }, 400) });
+    vi.mocked(loadToken).mockResolvedValue(stored({ expires_at: Date.now() - 1_000 }));
+    vi.mocked(recordSync).mockResolvedValue(true);
+
+    await syncGmailConnection(admin, connection, { now: NOW });
+
+    expect(notifyReconnect).toHaveBeenCalledTimes(1);
+    expect(notifyReconnect).toHaveBeenCalledWith(admin, "u1", "gmail");
+  });
+
+  it("이미 reauth였거나 그 사이 다시 연결해 recordSync가 false면 알림을 보내지 않는다", async () => {
+    stubGoogle({ token: () => json({ error: "invalid_grant" }, 400) });
+    vi.mocked(loadToken).mockResolvedValue(stored({ expires_at: Date.now() - 1_000 }));
+    vi.mocked(recordSync).mockResolvedValue(false);
+
+    const outcome = await syncGmailConnection(admin, connection, { now: NOW });
+
+    expect(outcome.ok).toBe(false);
+    expect(notifyReconnect).not.toHaveBeenCalled();
+  });
+
+  it("알림이 실패해도 동기화 결과는 그대로 reauth다 (오류 로그만)", async () => {
+    stubGoogle({ token: () => json({ error: "invalid_grant" }, 400) });
+    vi.mocked(loadToken).mockResolvedValue(stored({ expires_at: Date.now() - 1_000 }));
+    vi.mocked(recordSync).mockResolvedValue(true);
+    vi.mocked(notifyReconnect).mockRejectedValue(new Error("APNs down"));
+
+    const outcome = await syncGmailConnection(admin, connection, { now: NOW });
+
+    expect(outcome).toEqual({ connectionId: "c1", ok: false, error: "Gmail 연결이 만료됐습니다. 다시 연결해 주세요.", revoked: false });
+    expect(console.error).toHaveBeenCalledWith("Gmail 재연결 알림 실패 (c1):", "APNs down");
+  });
+
+  it("reauth가 아닌 실패(설정 문제 · API 오류)와 성공한 동기화는 알림을 보내지 않는다", async () => {
+    stubGoogle({ token: () => json({ error: "invalid_client" }, 401) });
+    vi.mocked(loadToken).mockResolvedValue(stored({ expires_at: Date.now() - 1_000 }));
+    await syncGmailConnection(admin, connection, { now: NOW });
+
+    vi.mocked(loadToken).mockResolvedValue(stored());
+    stubGoogle();
+    await syncGmailConnection(admin, connection, { now: NOW });
+
+    expect(notifyReconnect).not.toHaveBeenCalled();
   });
 
   it("갱신 토큰 없이 만료됐어도 reauth", async () => {

@@ -152,6 +152,18 @@ describe("지표 이벤트 connection_created", () => {
   });
 });
 
+describe("지표 이벤트 reconnect_notified (20261015000000_metric_events_reconnect_notified)", () => {
+  it("서버는 남길 수 있고, 클라이언트는 남길 수 없다. 모르는 종류는 여전히 막는다", async () => {
+    await db.query(`insert into public.metric_events (user_id, type) values ($1, 'reconnect_notified')`, [ALICE]);
+    await expect(db.query(`insert into public.metric_events (user_id, type) values ($1, 'reconnect_sent')`, [ALICE])).rejects.toThrow(/check/);
+    await asUser(db, ALICE, async () => {
+      expect(await attempt(`insert into public.metric_events (type) values ('reconnect_notified')`)).toBe("blocked");
+    });
+    // 이전 종류는 그대로 받는다
+    await db.query(`insert into public.metric_events (user_id, type) values ($1, 'connection_created')`, [ALICE]);
+  });
+});
+
 describe("외부 AI 처리 동의 (profiles.ai_consent_at)", () => {
   it("클라이언트는 프로필은 고칠 수 있지만 동의 시각은 쓸 수 없다", async () => {
     await asUser(db, BOB, async () => {

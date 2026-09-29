@@ -219,13 +219,15 @@ export async function claimConnection(admin: SupabaseClient, connection: Connect
 /**
  * 동기화 결과를 연결 상태로 남긴다. revoked: 서비스 쪽에서 권한이 끊김, reauth: 토큰을 더 갱신할 수 없음(갱신 토큰 만료 · 거절).
  * 둘 다 다시 연결할 때까지 동기화하지 않는다 (syncable_connections). 다시 연결하면 saveConnection이 active로 되돌린다.
+ * 돌려주는 값: 이 호출이 연결을 reauth로 바꿨는가. 이미 reauth였거나 · 끊겼거나 · 그 사이 다시 연결했으면 false.
+ * 알림 한 번(재연결 안내)은 이 값이 true일 때만 보낸다 (docs/go-live/google-integration.md G9).
  */
 export async function recordSync(
   admin: SupabaseClient,
   connection: Connection,
   /** claimedAt: 이 동기화가 잠금을 잡은 시각 (claimConnection의 now) */
   update: { claimedAt: Date; cursor?: Record<string, unknown>; error?: string | null; revoked?: boolean; reauth?: boolean },
-): Promise<void> {
+): Promise<boolean> {
   let query = admin
     .from("connections")
     .update({
@@ -241,10 +243,15 @@ export async function recordSync(
     .lte("connected_at", update.claimedAt.toISOString());
   // 동기화 도중 끊긴 연결(Slack 앱 해제 · 토큰 오류, revoked)은 되살리지 않는다: 잠금만 푼다
   if (!update.revoked) query = query.neq("status", "revoked");
+  // 이미 reauth인 연결에 reauth를 또 적지 않는다: 한 문장의 조건이라 "바꿨는가"가 같은 순간에 정해진다 (알림이 두 번 가지 않게)
+  const toReauth = !update.revoked && Boolean(update.reauth);
+  if (toReauth) query = query.neq("status", "reauth");
   const { data } = await query.select("id").throwOnError();
-  if ((data?.length ?? 0) === 0) {
+  const matched = (data?.length ?? 0) > 0;
+  if (!matched) {
     await admin.from("connections").update({ sync_started_at: null }).eq("id", connection.id).eq("user_id", connection.userId).throwOnError();
   }
+  return matched && toReauth;
 }
 
 /** "이미 넣음"을 한 번에 묻는 외부 id 수 */

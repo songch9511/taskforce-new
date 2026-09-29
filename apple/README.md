@@ -107,7 +107,7 @@ Mac은 `--show-launcher -TFSampleData -TFSnapshot <폴더>`로 실행하면 런�
   동기화 중인 연결이 있으면 보이는 화면(iPhone 홈 · 계정 시트의 Connections · Mac 설정 · 떠 있는 런처)이 6초마다 연결을 다시 읽고, 끝나면 `NowStore.load()`로 새 할 일을 불러온다(Realtime `actions` 신호도 그대로).
   Sync Now는 서버가 끝날 때까지(최대 4분) 답하지 않아 요청 시간을 5분으로 둔다. 429 rate_limited(이미 동기화 중 · 방금 동기화)는 오류가 아니다: 연결을 다시 읽어 "Syncing…" 또는 "Synced just now"를 보여 준다(`SyncNowFailure`). 409는 동의 화면.
 - 알림 기기 등록(C10, `PushCenter`): 허용돼 있으면 실행 · 로그인마다 토큰을 다시 받아 `POST /api/v1/devices {token, platform, environment, app_version}`. environment는 서명 프로필의 aps-environment(개발 서명 = sandbox, TestFlight · App Store = production), 프로필이 없으면 Debug = sandbox · Release = production(`PushEnvironment`). Sign Out 전에 `DELETE /api/v1/devices {token}`.
-  알림 내용의 `kind`(confirmation · due) · `action_id`(`action_ids`)로 열 곳을 정한다(`NotificationTarget`, 서버 `src/lib/notify/apns.ts`).
+  알림 내용의 `kind`(confirmation · due · reconnect) · `action_id`(`action_ids`)로 열 곳을 정한다(`NotificationTarget`, 서버 `src/lib/notify/apns.ts`). `reconnect`(연결이 만료돼 다시 연결해야 함)는 할 일 없이 연결 화면을 연다: iPhone은 계정 시트의 Connections, Mac은 설정의 Connections 탭. 모르는 `kind`는 앱만 연다.
 
 ## 구조
 

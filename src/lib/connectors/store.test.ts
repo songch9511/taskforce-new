@@ -151,18 +151,85 @@ describe("recordSync: 동기화 결과를 연결 상태로", () => {
     return { admin, updates, conditions };
   }
 
-  it("갱신 토큰이 거절돼 다시 연결해야 하면 reauth로 남긴다. 끊긴 연결(revoked) · 동기화 뒤에 다시 연결한 연결은 덮지 않는다", async () => {
+  it("갱신 토큰이 거절돼 다시 연결해야 하면 reauth로 남기고 true(바꿨음)를 돌려준다. 끊긴 연결(revoked) · 이미 reauth인 연결 · 동기화 뒤에 다시 연결한 연결은 덮지 않는다", async () => {
     const { admin, updates, conditions } = fakeSyncAdmin();
-    await recordSync(admin, connection, { claimedAt, error: "Notion 연결이 만료됐습니다. 다시 연결해 주세요.", reauth: true });
+    const changed = await recordSync(admin, connection, { claimedAt, error: "Notion 연결이 만료됐습니다. 다시 연결해 주세요.", reauth: true });
+    expect(changed).toBe(true);
     expect(updates[0]).toMatchObject({ status: "reauth", last_error: "Notion 연결이 만료됐습니다. 다시 연결해 주세요.", sync_started_at: null });
-    expect(conditions).toEqual(["connected_at <= 2026-09-29T00:00:00.000Z", "status <> revoked"]);
+    expect(conditions).toEqual(["connected_at <= 2026-09-29T00:00:00.000Z", "status <> revoked", "status <> reauth"]);
   });
 
-  it("동기화를 시작한 뒤 다시 연결했으면(connected_at이 뒤) 새 연결 상태를 덮지 않고 잠금만 푼다", async () => {
+  it("이미 reauth인 연결에 reauth를 또 적으면(조건에 맞는 행 없음) false: 잠금만 풀고 알림 대상이 아니다", async () => {
     const { admin, updates } = fakeSyncAdmin(false);
-    await recordSync(admin, connection, { claimedAt, error: "Notion 요청 실패 (503)" });
+    const changed = await recordSync(admin, connection, { claimedAt, error: "Gmail 연결이 만료됐습니다. 다시 연결해 주세요.", reauth: true });
+    expect(changed).toBe(false);
     expect(updates).toHaveLength(2);
     expect(updates[1]).toEqual({ sync_started_at: null });
+  });
+
+  /** 연결 행 하나의 상태 · connected_at을 두고 eq · neq · lte 조건을 실제로 적용하는 가짜 service role 클라이언트 */
+  function statefulAdmin(row: { status: string; connected_at: string; sync_started_at: string | null }) {
+    const admin = {
+      from: () => ({
+        update: (values: Record<string, unknown>) => {
+          const filters: ((r: typeof row) => boolean)[] = [];
+          const q = {
+            eq: () => q,
+            neq: (column: keyof typeof row, value: string) => (filters.push((r) => r[column] !== value), q),
+            lte: (column: keyof typeof row, value: string) => (filters.push((r) => (r[column] as string) <= value), q),
+            select: () => q,
+            throwOnError: async () => {
+              if (!filters.every((f) => f(row))) return { data: [] };
+              Object.assign(row, values);
+              return { data: [{ id: "c1" }] };
+            },
+          };
+          return q;
+        },
+      }),
+    } as unknown as SupabaseClient;
+    return admin;
+  }
+
+  it("재연결 알림 한 번: active → reauth로 바꾼 첫 동기화만 true, 같은 reauth를 또 적으면 false", async () => {
+    const row = { status: "active", connected_at: "2026-09-28T00:00:00.000Z", sync_started_at: claimedAt.toISOString() };
+    const admin = statefulAdmin(row);
+    const reauth = { claimedAt, error: "Gmail 연결이 만료됐습니다. 다시 연결해 주세요.", reauth: true };
+    expect(await recordSync(admin, connection, reauth)).toBe(true);
+    expect(row).toMatchObject({ status: "reauth", sync_started_at: null });
+    expect(await recordSync(admin, connection, reauth)).toBe(false);
+    expect(row.status).toBe("reauth");
+  });
+
+  it("재연결 알림 없음: 동기화 도중 다시 연결했으면(connected_at이 잠금 시각보다 뒤) false이고 새 연결은 그대로", async () => {
+    const row = { status: "active", connected_at: "2026-09-29T00:00:30.000Z", sync_started_at: claimedAt.toISOString() };
+    const admin = statefulAdmin(row);
+    expect(await recordSync(admin, connection, { claimedAt, error: "Gmail 연결이 만료됐습니다. 다시 연결해 주세요.", reauth: true })).toBe(false);
+    expect(row).toMatchObject({ status: "active", sync_started_at: null });
+  });
+
+  it("재연결 알림 없음: 이미 끊긴(revoked) 연결은 reauth로 바꾸지 않는다", async () => {
+    const row = { status: "revoked", connected_at: "2026-09-28T00:00:00.000Z", sync_started_at: claimedAt.toISOString() };
+    const admin = statefulAdmin(row);
+    expect(await recordSync(admin, connection, { claimedAt, error: "Notion 연결이 만료됐습니다. 다시 연결해 주세요.", reauth: true })).toBe(false);
+    expect(row.status).toBe("revoked");
+  });
+
+  it("reauth가 아닌 기록은 행을 바꿔도 false다 (알림은 reauth로 바뀔 때만)", async () => {
+    const { admin, conditions } = fakeSyncAdmin();
+    expect(await recordSync(admin, connection, { claimedAt, error: "Notion 요청 실패 (503)" })).toBe(false);
+    expect(await recordSync(admin, connection, { claimedAt, error: "Slack 연결이 끊겼습니다.", revoked: true })).toBe(false);
+    // "이미 reauth가 아님" 조건은 reauth를 적을 때만 붙는다
+    expect(conditions).not.toContain("status <> reauth");
+  });
+
+  it("동기화를 시작한 뒤 다시 연결했으면(connected_at이 뒤) 새 연결 상태를 덮지 않고 잠금만 푼다. reauth였어도 false", async () => {
+    const { admin, updates } = fakeSyncAdmin(false);
+    expect(await recordSync(admin, connection, { claimedAt, error: "Notion 요청 실패 (503)" })).toBe(false);
+    expect(updates).toHaveLength(2);
+    expect(updates[1]).toEqual({ sync_started_at: null });
+    const reauth = fakeSyncAdmin(false);
+    expect(await recordSync(reauth.admin, connection, { claimedAt, error: "Gmail 연결이 만료됐습니다. 다시 연결해 주세요.", reauth: true })).toBe(false);
   });
 
   it("끊긴 것으로 남기려 했는데 그 사이 다시 연결했으면 끊지 않고 잠금만 푼다", async () => {

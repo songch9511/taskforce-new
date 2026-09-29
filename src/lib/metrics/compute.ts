@@ -317,11 +317,13 @@ export type ConnectionsMetric = {
   created: number;
   /** 연결을 마친 사용자 수 */
   users: number;
+  /** 기간 안에 보낸 재연결 알림 수 (reconnect_notified). 뒤이은 연결 완료와 견주어 알림이 다시 연결로 이어졌는지 본다 */
+  reconnectNotified: number;
   /** 2단계 연동 "원해요" (전체 기간, 사용자 · 서비스마다 하나): 많은 순서 */
   requests: { provider: string; count: number }[];
 };
 
-/** 연결: 연결 완료 이벤트와 2단계 연동 요청 수 (원칙 6: 요청이 많은 순서로 붙인다) */
+/** 연결: 연결 완료 · 재연결 알림 이벤트와 2단계 연동 요청 수 (원칙 6: 요청이 많은 순서로 붙인다) */
 export function connections(events: MetricEventRow[], requests: { provider: string }[], period: Period): ConnectionsMetric {
   const created = events.filter((e) => e.type === "connection_created" && inPeriod(e.at, period));
   const counts = new Map<string, number>();
@@ -329,6 +331,7 @@ export function connections(events: MetricEventRow[], requests: { provider: stri
   return {
     created: created.length,
     users: new Set(created.map((e) => e.userId)).size,
+    reconnectNotified: events.filter((e) => e.type === "reconnect_notified" && inPeriod(e.at, period)).length,
     requests: [...counts].map(([provider, count]) => ({ provider, count })).sort((a, b) => b.count - a.count || a.provider.localeCompare(b.provider)),
   };
 }

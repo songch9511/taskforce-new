@@ -1,6 +1,8 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { notifyReconnect } from "@/lib/notify/service";
+
 import { claimConnection, loadToken, markBackfilled, recordNotionHealth, recordSync, saveToken } from "../store";
 import type { Connection } from "../types";
 
@@ -9,6 +11,7 @@ import { syncNotionConnection } from "./run";
 import { syncNotion, type NotionSyncResult } from "./sync";
 
 vi.mock("server-only", () => ({}));
+vi.mock("@/lib/notify/service", () => ({ notifyReconnect: vi.fn() }));
 vi.mock("../store", () => ({
   claimConnection: vi.fn(),
   ingestDeps: vi.fn(() => ({})),
@@ -71,7 +74,8 @@ beforeEach(() => {
   vi.stubEnv("NOTION_CLIENT_SECRET", "secret");
   vi.stubEnv("NOTION_REDIRECT_URI", "https://api.example.dev/cb");
   vi.mocked(claimConnection).mockResolvedValue(true);
-  vi.mocked(recordSync).mockResolvedValue();
+  vi.mocked(recordSync).mockResolvedValue(false);
+  vi.mocked(notifyReconnect).mockResolvedValue(1);
   vi.mocked(recordNotionHealth).mockResolvedValue();
   vi.mocked(markBackfilled).mockResolvedValue();
   vi.mocked(saveToken).mockResolvedValue();
@@ -100,6 +104,30 @@ describe("syncNotionConnection: 토큰 갱신이 실패하면", () => {
     expect(saveToken).not.toHaveBeenCalled();
     // 처음 읽기 + 동시 갱신 확인 두 번 (바로 한 번, 기다렸다 한 번)
     expect(loadToken).toHaveBeenCalledTimes(3);
+  });
+
+  it("reauth로 바꾼 동기화(recordSync가 true)에서만 재연결 알림 한 번, 알림이 실패해도 결과는 그대로", async () => {
+    vi.mocked(loadToken).mockResolvedValue(token("expired", "r1"));
+    tokenEndpoint(400, invalidGrant);
+    vi.mocked(recordSync).mockResolvedValue(true);
+    vi.mocked(notifyReconnect).mockRejectedValue(new Error("APNs down"));
+    vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const outcome = await sync();
+
+    expect(notifyReconnect).toHaveBeenCalledTimes(1);
+    expect(notifyReconnect).toHaveBeenCalledWith(admin, "u1", "notion");
+    expect(outcome).toEqual({ connectionId: "c1", ok: false, error: "Notion 연결이 만료됐습니다. 다시 연결해 주세요.", revoked: false });
+  });
+
+  it("이미 reauth였거나 그 사이 다시 연결해 recordSync가 false면 알림을 보내지 않는다", async () => {
+    vi.mocked(loadToken).mockResolvedValue(token("expired", "r1"));
+    tokenEndpoint(400, invalidGrant);
+    vi.mocked(recordSync).mockResolvedValue(false);
+
+    await sync();
+
+    expect(notifyReconnect).not.toHaveBeenCalled();
   });
 
   it("같은 순간에 겹쳐 먼저 갱신한 쪽이 아직 저장하지 못했으면, 기다렸다 다시 읽은 새 토큰으로 이어 간다", async () => {
@@ -168,6 +196,8 @@ describe("syncNotionConnection: 토큰 갱신이 실패하면", () => {
       revoked: true,
       reauth: false,
     }));
+    // 끊긴 것(revoked)은 재연결 알림 대상이 아니다
+    expect(notifyReconnect).not.toHaveBeenCalled();
   });
 
   it("갱신 토큰 없이 401이면 권한이 끊긴 것(revoked)으로 남긴다", async () => {

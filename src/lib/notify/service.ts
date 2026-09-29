@@ -2,7 +2,9 @@ import "server-only";
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 
-import { apnsConfigFromEnv, confirmationPayload, duePayload, sendPush, type ApnsConfig, type ApnsPayload } from "./apns";
+import type { Provider } from "@/lib/connectors/types";
+
+import { apnsConfigFromEnv, confirmationPayload, duePayload, reconnectPayload, sendPush, type ApnsConfig, type ApnsPayload } from "./apns";
 
 // 누가 어떤 알림을 받을지 정하고 보낸다. APNs 키가 없으면 아무것도 하지 않는다 (Phase A3에서 키 발급).
 
@@ -42,6 +44,24 @@ export async function notifyConfirmations(admin: SupabaseClient, userId: string,
 
   // 한 원문에서 확인 요청이 여럿 생겨도 알림은 하나 (가장 먼저 생긴 것으로 연다)
   return pushToUser(admin, config, devices, confirmationPayload({ id: actionIds[0] }));
+}
+
+/** 재연결 알림에 쓰는 서비스 이름 (앱 연결 화면과 같다) */
+const SERVICE_NAMES: Record<Provider, string> = { notion: "Notion", google: "Google", gmail: "Gmail", slack: "Slack", github: "GitHub" };
+
+/**
+ * 연결이 reauth로 바뀌었을 때 (recordSync가 true를 돌려준 동기화에서만 부른다, G9): 알림 한 번.
+ * 누르면 앱이 연결 화면을 연다. 실제로 보냈으면 지표 이벤트 reconnect_notified를 남긴다 (원칙 6). 보낸 기기 수
+ */
+export async function notifyReconnect(admin: SupabaseClient, userId: string, provider: Provider): Promise<number> {
+  const config = apnsConfigFromEnv();
+  if (!config) return 0;
+  const devices = await devicesOf(admin, [userId]);
+  if (devices.length === 0) return 0;
+
+  const sent = await pushToUser(admin, config, devices, reconnectPayload(SERVICE_NAMES[provider]));
+  if (sent > 0) await admin.from("metric_events").insert({ user_id: userId, type: "reconnect_notified" }).throwOnError();
+  return sent;
 }
 
 const kstDate = (date: Date) => new Date(date.getTime() + 9 * 3_600_000).toISOString().slice(0, 10);

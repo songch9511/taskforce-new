@@ -3,6 +3,7 @@ import "server-only";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 import { CONSENT_WITHDRAWN_MESSAGE, ConsentRequiredError } from "@/lib/consent/gate";
+import { notifyReconnect } from "@/lib/notify/service";
 
 import { claimConnection, ingestDeps, loadToken, markBackfilled, recordNotionHealth, recordSync, saveConnection, saveToken, taskDeps } from "../store";
 import type { Connection, Connector } from "../types";
@@ -126,7 +127,13 @@ export async function syncNotionConnection(
     }
     const { message, revoked, reauth } = userFacingError(error);
     console.error(`Notion 동기화 실패 (${connection.id}):`, error instanceof Error ? error.message : error);
-    await recordSync(admin, connection, { claimedAt: now, error: message, revoked, reauth });
+    const changed = await recordSync(admin, connection, { claimedAt: now, error: message, revoked, reauth });
+    // 상태를 실제로 reauth로 바꾼 동기화에서만 알림 한 번 (Gmail과 같다, google-integration.md G9). 알림이 실패해도 동기화 결과는 그대로다
+    if (changed) {
+      await notifyReconnect(admin, connection.userId, "notion").catch((notifyError) =>
+        console.error(`Notion 재연결 알림 실패 (${connection.id}):`, notifyError instanceof Error ? notifyError.message : notifyError),
+      );
+    }
     return { connectionId: connection.id, ok: false, error: message, revoked };
   }
 }

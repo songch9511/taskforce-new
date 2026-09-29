@@ -34,14 +34,22 @@ public enum ConnectionProvider: String, CaseIterable, Sendable, Codable, Hashabl
         }
     }
 
-    /// 연결 전에 보여 주는 "읽는 것". 비어 있으면 확인 없이 바로 권한 화면으로 간다
+    /// 연결 전에 보여 주는 "읽는 것". 비어 있으면 확인 없이 바로 권한 화면으로 간다.
+    /// Google · Gmail은 Google이 요구하는 앱 안 공개라 docs/go-live/google-verification.md 2-4의 문구를 그대로 쓴다.
     public var readsBeforeConnecting: [String] {
         switch self {
         case .google:
             [
-                "Calendar: event titles, times, and attendees",
+                "Calendar: event titles, times, attendees",
+                // G2 시험 결과에 맞춰 고친다 (참석한 회의를 못 읽으면 "meetings you host"): google-integration.md 3장
                 "Meet: transcripts of meetings you attend",
-                "Read-only. Taskforce never changes or sends anything.",
+                "Read-only. Sent to AI only after your consent. Never used for training.",
+            ]
+        case .gmail:
+            [
+                "Email you sent or received. Newsletters and promotions are skipped.",
+                "Read-only. Sent to AI only after your consent. Never used for training.",
+                "Beta: reconnect every 7 days.",
             ]
         case .slack:
             [
@@ -268,6 +276,10 @@ public struct ConnectionCallback: Equatable, Sendable {
         case connectedEmpty
         /// 연결됐지만 가져올 회의가 없음 (Google)
         case connectedNoMeetings
+        /// 연결됐지만 권한 화면에서 일부 권한의 체크를 뺌: 되는 쪽만 동기화한다 (Google, 서버 G10 `connected_partial`)
+        case connectedPartial
+        /// 권한 화면에서 필요한 권한의 체크를 빼서 연결하지 않음 (Gmail, 서버 G10 `missing_scope`)
+        case missingScope
         /// 사용자가 허용하지 않음
         case denied
         case error
@@ -280,6 +292,8 @@ public struct ConnectionCallback: Equatable, Sendable {
             case "connected": self = .connected
             case "connected_empty": self = .connectedEmpty
             case "connected_no_meetings": self = .connectedNoMeetings
+            case "connected_partial": self = .connectedPartial
+            case "missing_scope": self = .missingScope
             case "denied": self = .denied
             case "error": self = .error
             case "invalid_state": self = .invalidState
@@ -293,7 +307,7 @@ public struct ConnectionCallback: Equatable, Sendable {
 
         public var isConnected: Bool {
             switch self {
-            case .connected, .connectedEmpty, .connectedNoMeetings: true
+            case .connected, .connectedEmpty, .connectedNoMeetings, .connectedPartial: true
             default: false
             }
         }
@@ -304,6 +318,8 @@ public struct ConnectionCallback: Equatable, Sendable {
             case .connected, .denied: nil
             case .connectedEmpty: "Connected. Share pages with Taskforce in Notion to start."
             case .connectedNoMeetings: "Connected. No meetings to read yet."
+            case .connectedPartial: "Connected. Some access is off."
+            case .missingScope: "Allow access to connect."
             case .error, .unknown: "Couldn't connect. Try again."
             case .invalidState: "The link expired. Try again."
             }

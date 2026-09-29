@@ -127,8 +127,8 @@ export async function loadMetrics(admin: SupabaseClient, period: Period) {
     .filter((e) => !e.action_id || !testActions.has(e.action_id))
     .map((e) => ({ userId: e.user_id, type: e.type, actionId: e.action_id, at: e.at }));
   const activity: Activity[] = [
-    // 연결 완료는 활동(앱 열기 · 착수 · 수정 · 확인)에 넣지 않는다 (리텐션 정의를 바꾸지 않게)
-    ...metrics.filter((e) => e.type !== "connection_created").map((e) => ({ userId: e.userId, at: e.at })),
+    // 연결 완료 · 재연결 알림은 서버가 남기는 이벤트라 활동(앱 열기 · 착수 · 수정 · 확인)에 넣지 않는다 (리텐션 정의를 바꾸지 않게)
+    ...metrics.filter((e) => e.type !== "connection_created" && e.type !== "reconnect_notified").map((e) => ({ userId: e.userId, at: e.at })),
     ...userWrites.filter((e) => !testActions.has(e.action_id)).map((e) => ({ userId: e.user_id, at: e.created_at })),
   ];
 
