@@ -3,7 +3,8 @@
 # Taskforce — AI 프로젝트 매니저
 
 AI 코딩 에이전트가 이 저장소에서 작업할 때 반드시 지켜야 할 규칙입니다.
-제품 배경은 `docs/PRD.md`, 구조는 `docs/ARCHITECTURE.md`, 플랫폼 전략은 `docs/PLATFORMS.md`, 단계별 개발 계획은 `docs/VIBE_CODING_PLAN.md`를 보세요.
+제품 배경은 `docs/PRD.md`, 구조는 `docs/ARCHITECTURE.md`, 플랫폼 전략은 `docs/PLATFORMS.md`, 단계별 개발 계획은 `docs/VIBE_CODING_PLAN.md`,
+기능별 코드 위치와 거쳐야 하는 정식 구현은 `docs/FEATURE_MAP.md`를 보세요.
 
 ## 제품 원칙 (코드보다 우선)
 

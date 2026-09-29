@@ -165,12 +165,14 @@ taskforce-new/
     project.yml            Xcode 프로젝트 정의 (XcodeGen). xcodeproj는 여기서 생성한다
     Taskforce.xcodeproj    iOS · macOS 멀티플랫폼 앱 (생성물)
     Config/                xcconfig: 번들 ID · App Group, Secrets.xcconfig(커밋 안 함)
-    Taskforce/             공통 SwiftUI 화면
-    TaskforceiOS/          iOS 전용 (위젯 등)
-    TaskforceMac/          macOS 전용 (메뉴 막대, 단축키)
-    ShareExtension/        공유 확장
-    Packages/TaskforceKit/ 공유 Swift 패키지: 모델, API 클라이언트, 인증, 캐시
+    Taskforce/             앱 타깃 하나 (iOS · macOS)
+      Shared/              두 플랫폼 공용 화면 · 상태 (NowStore, AccountStore, 로그인, 연결 · 동의, 알림)
+      iOS/                 iOS 전용 (한 화면, 계정 시트, New Task)
+      Mac/                 macOS 전용 (메뉴 막대, ⌥Space 런처, 단축키, 설정)
+    Packages/TaskforceKit/ 공유 Swift 패키지: TaskforceKit(모델, API 클라이언트, 인증, 순수 규칙) · TaskforceUI(토큰, 부품)
 ```
+
+공유 확장 · 위젯 타깃은 아직 없다 (Phase A2 보류). 파일별 위치는 [피처맵](FEATURE_MAP.md) 3-5장.
 
 - Swift 코드는 SwiftUI + Swift Concurrency(async/await), Supabase는 공식 `supabase-swift` 패키지를 쓴다.
 - `TaskforceKit`에는 화면이 없고, 단위 테스트가 가능한 코드만 둔다.
