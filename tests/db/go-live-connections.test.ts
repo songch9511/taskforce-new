@@ -243,6 +243,7 @@ describe("동기화할 연결 (syncable_connections)", () => {
        values ($1, 'notion', 'c-active', 'active', now() - interval '1 hour'),
               ($1, 'notion', 'c-error', 'error', null),
               ($1, 'notion', 'c-revoked', 'revoked', null),
+              ($1, 'notion', 'c-reauth', 'reauth', null),
               ($1, 'slack', 'c-slack', 'active', null)`,
       [CAROL],
     );
@@ -259,7 +260,7 @@ describe("동기화할 연결 (syncable_connections)", () => {
     expect((await syncable()).rows).toEqual([]);
   });
 
-  it("동의하면 active · error 연결을 오래 안 한 순서로 고른다 (revoked · 다른 서비스는 빼고)", async () => {
+  it("동의하면 active · error 연결을 오래 안 한 순서로 고른다 (revoked · reauth · 다른 서비스는 빼고)", async () => {
     await db.query(`update public.profiles set ai_consent_at = now() where user_id = $1`, [CAROL]);
     expect((await syncable()).rows.map((r) => r.external_account_id)).toEqual(["c-error", "c-active"]);
     // 사용자를 주지 않으면(cron) 동의한 모든 사용자

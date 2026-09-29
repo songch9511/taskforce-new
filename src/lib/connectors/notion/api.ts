@@ -56,7 +56,10 @@ async function tokenRequest(config: NotionOAuthConfig, body: Record<string, stri
     },
     body: JSON.stringify(body),
   });
-  if (!response.ok) throw new NotionError(`Notion 토큰 요청 실패 (${response.status})`, response.status);
+  if (!response.ok) {
+    const code = await errorCode(response);
+    throw new NotionError(`Notion 토큰 요청 실패 (${response.status}${code ? ` ${code}` : ""})`, response.status, code);
+  }
   const parsed = notionTokenSchema.safeParse(await response.json());
   if (!parsed.success) throw new NotionError("Notion 토큰 응답 형식이 예상과 다릅니다", 502);
   return parsed.data;
@@ -66,8 +69,17 @@ export function exchangeCode(config: NotionOAuthConfig, code: string): Promise<N
   return tokenRequest(config, { grant_type: "authorization_code", code, redirect_uri: config.redirectUri });
 }
 
+/** 갱신할 때마다 갱신 토큰도 바뀐다. 갱신 토큰이 만료 · 무효면 400 invalid_grant (처음 승인 뒤 180일, 30일 동안 갱신 없음, 권한 취소) */
 export function refreshToken(config: NotionOAuthConfig, refresh: string): Promise<NotionToken> {
   return tokenRequest(config, { grant_type: "refresh_token", refresh_token: refresh });
+}
+
+/** Notion 오류 응답의 code (`{ object: "error", status, code, message }`). 본문이 없거나 형식이 다르면 undefined */
+async function errorCode(response: Response): Promise<string | undefined> {
+  return response
+    .json()
+    .then((body: unknown) => (typeof (body as { code?: unknown })?.code === "string" ? (body as { code: string }).code : undefined))
+    .catch(() => undefined);
 }
 
 /** 이미 폐기됐거나 무효인 토큰이라는 Notion 오류 (그 밖의 400 · 401은 폐기에 실패한 것으로 본다) */
@@ -90,10 +102,7 @@ export async function revokeToken(config: NotionOAuthConfig, accessToken: string
     body: JSON.stringify({ token: accessToken }),
   });
   if (response.ok) return;
-  const code = await response
-    .json()
-    .then((body: unknown) => (typeof (body as { code?: unknown })?.code === "string" ? (body as { code: string }).code : undefined))
-    .catch(() => undefined);
+  const code = await errorCode(response);
   if ((response.status === 400 || response.status === 401) && code && ALREADY_REVOKED_CODES.has(code)) return;
   throw new NotionError(`Notion 토큰 폐기 실패 (${response.status}${code ? ` ${code}` : ""})`, response.status, code);
 }
