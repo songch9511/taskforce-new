@@ -46,12 +46,16 @@ export async function notifyConfirmations(admin: SupabaseClient, userId: string,
   return pushToUser(admin, config, devices, confirmationPayload({ id: actionIds[0] }));
 }
 
-/** 재연결 알림에 쓰는 서비스 이름 (앱 연결 화면과 같다) */
+/**
+ * 재연결 알림에 쓰는 서비스 이름. notion · gmail · slack은 앱 연결 화면의 이름과 같다.
+ * google은 앱에 "Google Calendar & Meet"으로 보이는데 여기서는 "Google"이다: google 연동을 붙이는 PR 4b에서 문구를 정한다.
+ */
 const SERVICE_NAMES: Record<Provider, string> = { notion: "Notion", google: "Google", gmail: "Gmail", slack: "Slack", github: "GitHub" };
 
 /**
  * 연결이 reauth로 바뀌었을 때 (recordSync가 true를 돌려준 동기화에서만 부른다, G9): 알림 한 번.
- * 누르면 앱이 연결 화면을 연다. 실제로 보냈으면 지표 이벤트 reconnect_notified를 남긴다 (원칙 6). 보낸 기기 수
+ * 누르면 앱이 연결 화면을 연다. 기기에 실제로 갔으면 지표 이벤트 reconnect_notified를 남긴다 (원칙 6).
+ * 만료 자체는 recordSync가 connection_reauth로 센다. 지표 기록이 실패해도 알림은 간 것이다: 오류 로그만 남기고 보낸 기기 수를 돌려준다.
  */
 export async function notifyReconnect(admin: SupabaseClient, userId: string, provider: Provider): Promise<number> {
   const config = apnsConfigFromEnv();
@@ -60,7 +64,13 @@ export async function notifyReconnect(admin: SupabaseClient, userId: string, pro
   if (devices.length === 0) return 0;
 
   const sent = await pushToUser(admin, config, devices, reconnectPayload(SERVICE_NAMES[provider]));
-  if (sent > 0) await admin.from("metric_events").insert({ user_id: userId, type: "reconnect_notified" }).throwOnError();
+  if (sent > 0) {
+    try {
+      await admin.from("metric_events").insert({ user_id: userId, type: "reconnect_notified", provider }).throwOnError();
+    } catch (error) {
+      console.error(`재연결 알림 지표 기록 실패 (${provider}):`, error instanceof Error ? error.message : error);
+    }
+  }
   return sent;
 }
 

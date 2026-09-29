@@ -129,7 +129,7 @@ export async function syncNotionConnection(
     console.error(`Notion 동기화 실패 (${connection.id}):`, error instanceof Error ? error.message : error);
     const changed = await recordSync(admin, connection, { claimedAt: now, error: message, revoked, reauth });
     // 상태를 실제로 reauth로 바꾼 동기화에서만 알림 한 번 (Gmail과 같다, google-integration.md G9). 알림이 실패해도 동기화 결과는 그대로다
-    if (changed) {
+    if (reauth && changed) {
       await notifyReconnect(admin, connection.userId, "notion").catch((notifyError) =>
         console.error(`Notion 재연결 알림 실패 (${connection.id}):`, notifyError instanceof Error ? notifyError.message : notifyError),
       );

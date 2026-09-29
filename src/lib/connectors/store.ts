@@ -182,9 +182,9 @@ export async function consumeOAuthNonce(admin: SupabaseClient, payload: OAuthSta
   return (data?.length ?? 0) > 0;
 }
 
-/** 연결 완료 지표 (설치 → 연결 → 첫 Action 흐름). 서버만 남긴다. */
-export async function recordConnectionCreated(admin: SupabaseClient, userId: string): Promise<void> {
-  await admin.from("metric_events").insert({ user_id: userId, type: "connection_created" }).throwOnError();
+/** 연결 완료 지표 (설치 → 연결 → 첫 Action 흐름). 서버만 남긴다. provider로 재연결 알림(connection_reauth · reconnect_notified)과 서비스별로 맞춘다. */
+export async function recordConnectionCreated(admin: SupabaseClient, userId: string, provider: Provider): Promise<void> {
+  await admin.from("metric_events").insert({ user_id: userId, type: "connection_created", provider }).throwOnError();
 }
 
 /** 계정 삭제 전 폐기할 연동 토큰: 사용자의 모든 연결과 풀어 둔 토큰 (풀지 못한 것은 null) */
@@ -219,8 +219,12 @@ export async function claimConnection(admin: SupabaseClient, connection: Connect
 /**
  * 동기화 결과를 연결 상태로 남긴다. revoked: 서비스 쪽에서 권한이 끊김, reauth: 토큰을 더 갱신할 수 없음(갱신 토큰 만료 · 거절).
  * 둘 다 다시 연결할 때까지 동기화하지 않는다 (syncable_connections). 다시 연결하면 saveConnection이 active로 되돌린다.
- * 돌려주는 값: 이 호출이 연결을 reauth로 바꿨는가. 이미 reauth였거나 · 끊겼거나 · 그 사이 다시 연결했으면 false.
+ * 돌려주는 값: 이 호출이 연결을 reauth로 바꿨는가. 이미 reauth였거나 · 끊겼거나(revoked) · 그 사이 다시 연결했으면 false.
+ * 바꿨으면 지표 이벤트 connection_reauth를 남긴다(알림이 갔는지와 상관없이 만료를 센다, 실패해도 동기화에는 영향 없다).
  * 알림 한 번(재연결 안내)은 이 값이 true일 때만 보낸다 (docs/go-live/google-integration.md G9).
+ *
+ * 불변식: reauth가 아닌 기록(active · error)은 reauth 연결을 덮어쓰지 않는다. reauth 연결은 syncable_connections가 고르지 않아 새 동기화가 시작되지 않고,
+ * 같은 연결의 동기화는 겹치지 않는다(claimConnection 잠금 SYNC_LEASE_MINUTES = 10분 > 함수 최대 실행 300초). reauth로 바꾸는 곳은 이 함수뿐이다.
  */
 export async function recordSync(
   admin: SupabaseClient,
@@ -251,7 +255,18 @@ export async function recordSync(
   if (!matched) {
     await admin.from("connections").update({ sync_started_at: null }).eq("id", connection.id).eq("user_id", connection.userId).throwOnError();
   }
-  return matched && toReauth;
+  const changed = matched && toReauth;
+  if (changed) await recordConnectionReauth(admin, connection);
+  return changed;
+}
+
+/** 연결이 reauth로 바뀐 것을 지표로 남긴다 (원칙 6). 기록이 실패해도 동기화 · 알림은 그대로다: 오류 로그만 (연결 id · 서비스뿐) */
+async function recordConnectionReauth(admin: SupabaseClient, connection: Connection): Promise<void> {
+  try {
+    await admin.from("metric_events").insert({ user_id: connection.userId, type: "connection_reauth", provider: connection.provider }).throwOnError();
+  } catch (error) {
+    console.error(`재연결 필요 지표 기록 실패 (${connection.provider} ${connection.id}):`, error instanceof Error ? error.message : error);
+  }
 }
 
 /** "이미 넣음"을 한 번에 묻는 외부 id 수 */

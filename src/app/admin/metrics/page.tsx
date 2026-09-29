@@ -20,7 +20,17 @@ const MISS_STAGE_LABELS: Record<keyof MissedMetric["byStage"], string> = {
   unknown: "단계 기록 없음",
 };
 
-const PROVIDER_LABELS: Record<string, string> = { microsoft: "Microsoft 365", zoom: "Zoom", github: "GitHub", linear: "Linear", jira: "Jira" };
+const PROVIDER_LABELS: Record<string, string> = {
+  notion: "Notion",
+  google: "Google",
+  gmail: "Gmail",
+  slack: "Slack",
+  microsoft: "Microsoft 365",
+  zoom: "Zoom",
+  github: "GitHub",
+  linear: "Linear",
+  jira: "Jira",
+};
 /** Gmail 거르기 이유 코드 (lib/connectors/gmail/filter.ts, google-integration.md 2-6 거르기 규칙 번호) */
 const GMAIL_COUNT_LABELS: [string, string][] = [
   ["ingested", "새 원문"],
@@ -207,11 +217,27 @@ export default async function MetricsPage({ searchParams }: { searchParams: Prom
         <CardHeader>
           <CardTitle>연결 · 2단계 연동 요청</CardTitle>
           <CardDescription>
-            기간 안에 연결을 마친 수 {connections.created}번 (사용자 {connections.users}명), 다시 연결 알림을 보낸 수 {connections.reconnectNotified}번. 아래는 2단계 연동의 &quot;원해요&quot; 수 (전체 기간, 사용자마다 한 번)로,
-            많은 순서로 붙입니다 (원칙 6).
+            기간 안에 연결을 마친 수 {connections.created}번 (사용자 {connections.users}명). 연결이 만료돼 다시 연결이 필요해진 수 {connections.expired}번 중
+            알림이 기기에 간 수 {connections.notified}번 (알림 수가 적으면 기기가 없거나 알림을 받지 못한 만료가 있습니다). 아래는 2단계 연동의
+            &quot;원해요&quot; 수 (전체 기간, 사용자마다 한 번)로, 많은 순서로 붙입니다 (원칙 6).
           </CardDescription>
         </CardHeader>
-        <CardContent className="text-sm">
+        <CardContent className="space-y-3 text-sm">
+          {connections.reconnect.length > 0 && (
+            <div>
+              <p className="text-muted-foreground mb-1">서비스별 재연결 (만료 · 알림 · 연결 완료)</p>
+              <ul className="space-y-0.5">
+                {connections.reconnect.map((r) => (
+                  <li key={r.provider} className="flex justify-between">
+                    <span>{PROVIDER_LABELS[r.provider] ?? r.provider}</span>
+                    <span>
+                      만료 {r.expired}번 · 알림 {r.notified}번 · 연결 완료 {r.created}번
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
           {connections.requests.length === 0 ? (
             <p className="text-muted-foreground">아직 요청이 없습니다.</p>
           ) : (

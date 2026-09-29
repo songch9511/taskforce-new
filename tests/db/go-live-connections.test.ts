@@ -152,15 +152,41 @@ describe("지표 이벤트 connection_created", () => {
   });
 });
 
-describe("지표 이벤트 reconnect_notified (20261015000000_metric_events_reconnect_notified)", () => {
-  it("서버는 남길 수 있고, 클라이언트는 남길 수 없다. 모르는 종류는 여전히 막는다", async () => {
-    await db.query(`insert into public.metric_events (user_id, type) values ($1, 'reconnect_notified')`, [ALICE]);
+describe("지표 이벤트 connection_reauth · reconnect_notified · provider (20261015000000_metric_events_reauth_provider)", () => {
+  it("서버는 서비스와 함께 남길 수 있다. 서비스는 비워도(이전 connection_created) 되고, 모르는 서비스 · 종류는 막는다", async () => {
+    await db.query(`insert into public.metric_events (user_id, type, provider) values ($1, 'connection_reauth', 'gmail')`, [ALICE]);
+    await db.query(`insert into public.metric_events (user_id, type, provider) values ($1, 'reconnect_notified', 'notion')`, [ALICE]);
+    await db.query(`insert into public.metric_events (user_id, type, provider) values ($1, 'connection_created', 'gmail')`, [ALICE]);
+    // 이전 종류는 그대로 받는다 (provider 없이)
+    for (const type of ["connection_created", "app_opened", "action_started", "handoff_used"]) {
+      await db.query(`insert into public.metric_events (user_id, type) values ($1, $2)`, [ALICE, type]);
+    }
+    const { rows } = await db.query<{ type: string; provider: string | null }>(
+      `select type, provider from public.metric_events where user_id = $1 and type in ('connection_reauth', 'reconnect_notified') order by type`,
+      [ALICE],
+    );
+    expect(rows).toEqual([
+      { type: "connection_reauth", provider: "gmail" },
+      { type: "reconnect_notified", provider: "notion" },
+    ]);
+    await expect(db.query(`insert into public.metric_events (user_id, type, provider) values ($1, 'connection_reauth', 'zoom')`, [ALICE])).rejects.toThrow(/check/);
     await expect(db.query(`insert into public.metric_events (user_id, type) values ($1, 'reconnect_sent')`, [ALICE])).rejects.toThrow(/check/);
+  });
+
+  it("클라이언트는 새 이벤트도, provider도 남길 수 없다. app_opened는 그대로 된다", async () => {
     await asUser(db, ALICE, async () => {
+      expect(await attempt(`insert into public.metric_events (type) values ('connection_reauth')`)).toBe("blocked");
       expect(await attempt(`insert into public.metric_events (type) values ('reconnect_notified')`)).toBe("blocked");
+      // provider는 열 단위 insert 권한(type, action_id) 밖이다
+      expect(await attempt(`insert into public.metric_events (type, provider) values ('app_opened', 'gmail')`)).toBe("blocked");
+      expect(await attempt(`insert into public.metric_events (type) values ('app_opened')`)).toBe(1);
+      // 서버가 남긴 provider는 자기 행을 읽을 때 보인다
+      const { rows } = await db.query<{ provider: string | null }>(`select provider from public.metric_events where type = 'connection_reauth'`);
+      expect(rows.map((r) => r.provider)).toEqual(["gmail"]);
     });
-    // 이전 종류는 그대로 받는다
-    await db.query(`insert into public.metric_events (user_id, type) values ($1, 'connection_created')`, [ALICE]);
+    await asUser(db, BOB, async () => {
+      expect((await db.query(`select 1 from public.metric_events where type = 'connection_reauth'`)).rows).toEqual([]);
+    });
   });
 });
 

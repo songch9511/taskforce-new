@@ -13,7 +13,7 @@ const config = {} as ApnsConfig;
 const device = { id: "d1", user_id: "u1", token: "a".repeat(64), environment: "sandbox" as const };
 
 /** devices 조회 · 삭제와 metric_events 삽입을 기록하는 가짜 service role 클라이언트 */
-function fakeAdmin(devices: (typeof device)[]) {
+function fakeAdmin(devices: (typeof device)[], insertError: Error | null = null) {
   const inserted: { table: string; row: unknown }[] = [];
   const deleted: string[] = [];
   const admin = {
@@ -22,6 +22,7 @@ function fakeAdmin(devices: (typeof device)[]) {
       delete: () => ({ eq: (_column: string, id: string) => ({ eq: async () => void deleted.push(id) }) }),
       insert: (row: unknown) => ({
         throwOnError: async () => {
+          if (insertError) throw insertError;
           inserted.push({ table, row });
         },
       }),
@@ -49,7 +50,20 @@ describe("notifyReconnect", () => {
       aps: { alert: { title: "Connections", body: "Reconnect Gmail to keep syncing." }, sound: "default", "thread-id": "connections" },
       kind: "reconnect",
     });
-    expect(inserted).toEqual([{ table: "metric_events", row: { user_id: "u1", type: "reconnect_notified" } }]);
+    expect(inserted).toEqual([{ table: "metric_events", row: { user_id: "u1", type: "reconnect_notified", provider: "gmail" } }]);
+  });
+
+  it("지표 이벤트에는 알림을 보낸 서비스가 담긴다", async () => {
+    const { admin, inserted } = fakeAdmin([device]);
+    await notifyReconnect(admin, "u1", "notion");
+    expect(inserted).toEqual([{ table: "metric_events", row: { user_id: "u1", type: "reconnect_notified", provider: "notion" } }]);
+  });
+
+  it("지표 기록이 실패해도 알림은 간 것이다: 보낸 기기 수를 돌려주고, 알림 실패가 아니라 지표 기록 실패로 로그를 남긴다", async () => {
+    const { admin } = fakeAdmin([device], new Error("check constraint"));
+    expect(await notifyReconnect(admin, "u1", "gmail")).toBe(1);
+    expect(console.error).toHaveBeenCalledTimes(1);
+    expect(console.error).toHaveBeenCalledWith("재연결 알림 지표 기록 실패 (gmail):", "check constraint");
   });
 
   it("Notion도 같은 문구에 서비스 이름만 바뀐다", async () => {

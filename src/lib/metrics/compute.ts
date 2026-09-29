@@ -23,7 +23,8 @@ export type ActionEventRow = {
   sourceKind: string | null;
 };
 
-export type MetricEventRow = { userId: string; type: string; actionId: string | null; at: string };
+/** provider: 연결 이벤트(connection_created · connection_reauth · reconnect_notified)의 서비스. 그 밖의 이벤트, 열이 생기기 전의 connection_created는 없다 */
+export type MetricEventRow = { userId: string; type: string; actionId: string | null; at: string; provider?: string | null };
 
 export type Period = { from: Date; to: Date };
 
@@ -234,6 +235,14 @@ export function kstWeek(at: string): string {
 
 export type Activity = { userId: string; at: string };
 
+/** 서버가 남기는 연결 이벤트: 사용자의 활동이 아니다 (연결 완료 · 연결 만료 · 재연결 알림) */
+const SERVER_CONNECTION_EVENTS = new Set(["connection_created", "connection_reauth", "reconnect_notified"]);
+
+/** 지표 이벤트 중 사용자의 활동(앱 열기 · 착수 · 넘기기 등). 서버 연결 이벤트는 넣지 않는다: 리텐션 정의를 바꾸지 않게 */
+export function metricActivity(events: MetricEventRow[]): Activity[] {
+  return events.filter((e) => !SERVER_CONNECTION_EVENTS.has(e.type)).map((e) => ({ userId: e.userId, at: e.at }));
+}
+
 /**
  * 활동: 앱 열기 · 착수 · 넘기기(지표 이벤트)와 사용자의 Action 쓰기(수정 · 삭제 · 확인 · 착수).
  * 베타 초기에는 앱 대신 시험대로 쓰기도 해서 쓰기도 활동으로 본다.
@@ -312,26 +321,55 @@ export function shadowList(checks: WeeklyCheckRow[], period: Period): ShadowList
   return { responses: inRange.length, yes, no, skipped: count("skipped"), rate: yes + no > 0 ? yes / (yes + no) : null };
 }
 
+/** 서비스 하나의 재연결 안내 (기간 안) */
+export type ReconnectMetric = {
+  provider: string;
+  /** 연결이 reauth로 바뀐 수 (connection_reauth): 알림이 갔는지와 상관없이 센다 */
+  expired: number;
+  /** 그중 알림이 기기에 실제로 간 수 (reconnect_notified): 만료보다 적으면 기기가 없거나 알림을 받지 못한 만료가 있다 */
+  notified: number;
+  /** 연결을 마친 수 (connection_created): 만료 뒤 다시 연결했는지 견준다 */
+  created: number;
+};
+
 export type ConnectionsMetric = {
   /** 기간 안에 연결을 마친 수 (connection_created) */
   created: number;
   /** 연결을 마친 사용자 수 */
   users: number;
-  /** 기간 안에 보낸 재연결 알림 수 (reconnect_notified). 뒤이은 연결 완료와 견주어 알림이 다시 연결로 이어졌는지 본다 */
-  reconnectNotified: number;
+  /** 기간 안에 연결이 reauth로 바뀐 수 (connection_reauth) */
+  expired: number;
+  /** 기간 안에 재연결 알림이 기기에 간 수 (reconnect_notified) */
+  notified: number;
+  /** 서비스별 재연결 안내: 만료나 알림이 있는 서비스만, 만료가 많은 순 */
+  reconnect: ReconnectMetric[];
   /** 2단계 연동 "원해요" (전체 기간, 사용자 · 서비스마다 하나): 많은 순서 */
   requests: { provider: string; count: number }[];
 };
 
-/** 연결: 연결 완료 · 재연결 알림 이벤트와 2단계 연동 요청 수 (원칙 6: 요청이 많은 순서로 붙인다) */
+/** 연결: 연결 완료 · 만료 · 재연결 알림 이벤트와 2단계 연동 요청 수 (원칙 6: 요청이 많은 순서로 붙인다) */
 export function connections(events: MetricEventRow[], requests: { provider: string }[], period: Period): ConnectionsMetric {
-  const created = events.filter((e) => e.type === "connection_created" && inPeriod(e.at, period));
+  const inRange = events.filter((e) => inPeriod(e.at, period));
+  const created = inRange.filter((e) => e.type === "connection_created");
+  const expired = inRange.filter((e) => e.type === "connection_reauth");
+  const notified = inRange.filter((e) => e.type === "reconnect_notified");
   const counts = new Map<string, number>();
   for (const { provider } of requests) counts.set(provider, (counts.get(provider) ?? 0) + 1);
+  const withProvider = (list: MetricEventRow[], provider: string) => list.filter((e) => e.provider === provider).length;
+  const providers = new Set([...expired, ...notified].map((e) => e.provider).filter((p): p is string => Boolean(p)));
   return {
     created: created.length,
     users: new Set(created.map((e) => e.userId)).size,
-    reconnectNotified: events.filter((e) => e.type === "reconnect_notified" && inPeriod(e.at, period)).length,
+    expired: expired.length,
+    notified: notified.length,
+    reconnect: [...providers]
+      .map((provider) => ({
+        provider,
+        expired: withProvider(expired, provider),
+        notified: withProvider(notified, provider),
+        created: withProvider(created, provider),
+      }))
+      .sort((a, b) => b.expired - a.expired || a.provider.localeCompare(b.provider)),
     requests: [...counts].map(([provider, count]) => ({ provider, count })).sort((a, b) => b.count - a.count || a.provider.localeCompare(b.provider)),
   };
 }

@@ -196,7 +196,20 @@ describe("syncNotionConnection: 토큰 갱신이 실패하면", () => {
       revoked: true,
       reauth: false,
     }));
-    // 끊긴 것(revoked)은 재연결 알림 대상이 아니다
+  });
+
+  it("끊긴 것(revoked)이나 일시적 오류는 recordSync가 true를 돌려주는 상황에서도 재연결 알림 대상이 아니다 (reauth일 때만)", async () => {
+    vi.mocked(recordSync).mockResolvedValue(true);
+    vi.mocked(loadToken).mockResolvedValue(token("expired", "r1"));
+    tokenEndpoint(200, token("expired-too", "r2"));
+    await sync();
+    expect(recordSync).toHaveBeenLastCalledWith(admin, connection, recorded({ error: "Notion 연결 권한이 끊겼습니다. 다시 연결해 주세요.", revoked: true, reauth: false }));
+
+    vi.mocked(syncNotion).mockRejectedValue(new NotionError("Notion API 요청 실패 (503)", 503, "service_unavailable"));
+    vi.mocked(loadToken).mockResolvedValue(token("fresh", "r1"));
+    await sync();
+    expect(recordSync).toHaveBeenLastCalledWith(admin, connection, recorded({ error: "Notion 요청 실패 (503)", revoked: false, reauth: false }));
+
     expect(notifyReconnect).not.toHaveBeenCalled();
   });
 

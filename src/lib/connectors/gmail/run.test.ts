@@ -344,15 +344,25 @@ describe("syncGmailConnection", () => {
     expect(console.error).toHaveBeenCalledWith("Gmail 재연결 알림 실패 (c1):", "APNs down");
   });
 
-  it("reauth가 아닌 실패(설정 문제 · API 오류)와 성공한 동기화는 알림을 보내지 않는다", async () => {
+  it("reauth가 아닌 실패(설정 문제 · API 오류)와 성공한 동기화는 recordSync가 true를 돌려주는 상황에서도 알림을 보내지 않는다", async () => {
+    // true여도 알림이 안 가는 것은 reauth 분기에서만 부르기 때문이다 (기본 목(false)이면 이 검사는 아무것도 증명하지 못한다)
+    vi.mocked(recordSync).mockResolvedValue(true);
+
     stubGoogle({ token: () => json({ error: "invalid_client" }, 401) });
     vi.mocked(loadToken).mockResolvedValue(stored({ expires_at: Date.now() - 1_000 }));
     await syncGmailConnection(admin, connection, { now: NOW });
+    expect(recordSync).toHaveBeenLastCalledWith(admin, connection, { claimedAt: NOW, error: "Google 토큰 요청 실패 (invalid_client)" });
 
+    stubGoogle({ gmail: () => json({ error: { code: 403, message: "insufficient" } }, 403) });
     vi.mocked(loadToken).mockResolvedValue(stored());
+    await syncGmailConnection(admin, connection, { now: NOW });
+    expect(recordSync).toHaveBeenLastCalledWith(admin, connection, { claimedAt: NOW, error: "Gmail 요청 실패 (403)" });
+
     stubGoogle();
     await syncGmailConnection(admin, connection, { now: NOW });
+    expect(recordSync).toHaveBeenLastCalledWith(admin, connection, { claimedAt: NOW, cursor: synced.cursor, error: null });
 
+    expect(recordSync).toHaveBeenCalledTimes(3);
     expect(notifyReconnect).not.toHaveBeenCalled();
   });
 
