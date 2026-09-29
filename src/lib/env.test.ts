@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { oauthStateSecret, parsePublicEnv } from "./env";
+import { oauthStateSecret, parsePublicEnv, slackAppToken, slackSigningSecret } from "./env";
 
 describe("parsePublicEnv", () => {
   it("올바른 값이면 그대로 돌려준다", () => {
@@ -61,5 +61,18 @@ describe("oauthStateSecret", () => {
 
   it.each([[undefined], [""], ["short-secret"]])("없거나 짧으면 던진다 (%s)", (value) => {
     expect(() => oauthStateSecret({ OAUTH_STATE_SECRET: value })).toThrow(/OAUTH_STATE_SECRET/);
+  });
+});
+
+describe("Slack 비밀값", () => {
+  it("서명 키가 없으면 던진다 (서명 없이 받으면 가짜 메시지가 들어온다)", () => {
+    expect(slackSigningSecret({ SLACK_SIGNING_SECRET: " abc " })).toBe("abc");
+    expect(() => slackSigningSecret({})).toThrow(/SLACK_SIGNING_SECRET/);
+  });
+
+  it("앱 수준 토큰은 xapp-로 시작할 때만 쓴다", () => {
+    expect(slackAppToken({ SLACK_APP_TOKEN: "xapp-1-A-1-x" })).toBe("xapp-1-A-1-x");
+    expect(slackAppToken({ SLACK_APP_TOKEN: "xoxp-1" })).toBeNull();
+    expect(slackAppToken({})).toBeNull();
   });
 });

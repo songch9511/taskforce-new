@@ -50,3 +50,22 @@ export function oauthStateSecret(env: Record<string, string | undefined> = proce
   }
   return secret;
 }
+
+/**
+ * Slack이 보낸 요청의 서명을 확인하는 키 (SLACK_SIGNING_SECRET, 서버 전용). Slack 앱 → Basic Information → App Credentials.
+ * 없으면 던진다: 서명을 확인하지 않고 받으면 누구나 가짜 메시지를 이용자의 원문으로 넣을 수 있다.
+ */
+export function slackSigningSecret(env: Record<string, string | undefined> = process.env): string {
+  const secret = env.SLACK_SIGNING_SECRET?.trim() ?? "";
+  if (!secret) throw new Error("SLACK_SIGNING_SECRET이 없습니다. Slack 앱의 Basic Information → Signing Secret을 .env.local에 넣으세요.");
+  return secret;
+}
+
+/**
+ * 앱 수준 토큰 (SLACK_APP_TOKEN, xapp-, 권한 authorizations:read). 한 워크스페이스에 Taskforce 이용자가 둘 이상일 때
+ * 이벤트를 볼 수 있는 이용자를 모두 찾는 데만 쓴다(apps.event.authorizations.list, slack-integration.md D4). 없으면 null.
+ */
+export function slackAppToken(env: Record<string, string | undefined> = process.env): string | null {
+  const token = env.SLACK_APP_TOKEN?.trim() ?? "";
+  return token.startsWith("xapp-") ? token : null;
+}

@@ -20,7 +20,7 @@
 
 ## 2. 앱 매니페스트
 
-api.slack.com/apps → **Create New App** → **From a manifest** → 개발 워크스페이스 선택 → 아래 YAML을 붙여 넣는다.
+api.slack.com/apps → **Create New App** → **From a manifest** → 개발 워크스페이스 선택 → 아래 매니페스트를 붙여 넣는다. **JSON 탭을 권한다**: YAML은 복사하며 들여쓰기가 깨지면 권한이 0개로 읽힌다(2026-09-29 dev 앱). 아래 YAML과 같은 내용을 JSON으로 바꿔 넣으면 된다.
 
 ```yaml
 _metadata:
@@ -60,6 +60,10 @@ settings:
       - message.mpim
       - message.channels
       - message.groups
+    # 앱 해제 알림. 봇이 없어도 구독된다(필요 권한 none, 2026-09-29 dev 앱에서 확인). 받으면 연결을 끊고 Slack 데이터를 지운다
+    bot_events:
+      - app_uninstalled
+      - tokens_revoked
   interactivity:
     is_enabled: false
   org_deploy_enabled: false
@@ -174,7 +178,7 @@ Marketplace에 올리면 대화 기록 API 제한이 풀리고 설치 경고가 
 ## 9. 사용자가 누르는 순서
 
 1. **서버 배포 확인** — `https://api.taskforcelabs.dev`가 떠 있다(runbook). 끝: `/api/connectors/slack/events`가 배포되어 있다(트랙 2-4).
-2. **앱 만들기** — api.slack.com/apps → Create New App → From a manifest → 개발 워크스페이스(예: Dimension) → 2장 YAML → Create. 이벤트 URL 확인이 실패하면 `event_subscriptions`를 빼고 만든 뒤 6번에서 켠다.
+2. **앱 만들기** — api.slack.com/apps → Create New App → From a manifest → 개발 워크스페이스(예: Dimension) → 2장 YAML → Create. 이벤트 URL 확인이 실패하면 `event_subscriptions`를 빼고 만든 뒤 6번에서 켠다. "Create and Install"이 "Installation was not completed"로 끝나도 앱은 만들어져 있다 — 같은 버튼을 다시 누르지 말고(앱이 또 생긴다) 앱의 **Install App**에서 설치한다(2026-09-29 dev 앱).
 3. **아이콘** — Basic Information → Display Information → App icon 업로드.
 4. **비밀값** — Basic Information → App Credentials의 Client ID · Client Secret · Signing Secret을 비밀번호 관리자에 적고 Vercel env `SLACK_CLIENT_ID` · `SLACK_CLIENT_SECRET` · `SLACK_SIGNING_SECRET`에 넣는다 → 재배포.
 5. **(필요하면) 앱 수준 토큰** — 3-3을 구현하면 Basic Information → App-Level Tokens → Generate(`authorizations:read`) → `SLACK_APP_TOKEN`.

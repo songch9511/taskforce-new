@@ -90,6 +90,8 @@ npx supabase db query --linked -f supabase/migrations/20261004000000_ask.sql
 npx supabase db query --linked -f supabase/migrations/20261005000000_atomic_rate_limits.sql
 npx supabase db query --linked -f supabase/migrations/20261006000000_source_text_retention.sql
 npx supabase db query --linked -f supabase/migrations/20261007000000_review_account_signup_hook.sql
+npx supabase db query --linked -f supabase/migrations/20261011000000_slack.sql   # Slack 표 · connected_at (2026-09-29 적용함). 이 파일을 쓰는 코드보다 먼저 적용한다
+npx supabase db query --linked -f supabase/migrations/20261012000000_slack_tombstones_revoke.sql   # 지움 표시 · 앱 해제 함수
 # 트랙 2-3 · 2-4가 더한 파일도 같은 방식으로
 ```
 

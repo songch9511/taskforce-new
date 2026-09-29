@@ -42,6 +42,8 @@ export async function saveConnection(
         display_name: input.displayName,
         status: "active",
         last_error: null,
+        // 다시 연결한 시각: 늦게 온 Slack 앱 해제 이벤트가 새 연결을 끊지 않게 한다 (slack/receive.ts)
+        connected_at: new Date().toISOString(),
       },
       { onConflict: "user_id,provider,external_account_id" },
     )

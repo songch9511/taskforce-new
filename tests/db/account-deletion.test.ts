@@ -26,6 +26,9 @@ const USER_TABLES = [
   "oauth_nonces",
   "profiles",
   "rate_limit_events",
+  "slack_messages",
+  "slack_people",
+  "slack_threads",
   "sources",
   "weekly_checks",
 ];
@@ -88,6 +91,16 @@ async function seed(userId: string, tokenHex: string) {
     `insert into public.oauth_handoffs (id, user_id, provider, sealed_code, expires_at) values ($1, $2, 'notion', 'v1.x.y.z', now())`,
     [`handoff-${userId}`, userId],
   );
+  const slack = await one(
+    `insert into public.connections (user_id, provider, external_account_id) values ($1, 'slack', 'T1:U1') returning id`,
+    [userId],
+  );
+  await db.query(
+    `insert into public.slack_messages (user_id, connection_id, channel_id, channel_type, ts, sender_id, text) values ($1, $2, 'D1', 'im', '1.0', 'U2', 'x')`,
+    [userId, slack],
+  );
+  await db.query(`insert into public.slack_threads (connection_id, user_id, channel_id, thread_ts) values ($1, $2, 'C1', '1.0')`, [slack, userId]);
+  await db.query(`insert into public.slack_people (connection_id, user_id, slack_id, kind, name) values ($1, $2, 'U2', 'user', 'x')`, [slack, userId]);
   return connectionId;
 }
 
