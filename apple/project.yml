@@ -10,7 +10,8 @@ options:
   createIntermediateGroups: true
 configFiles:
   Debug: Config/Base.xcconfig
-  Release: Config/Base.xcconfig
+  # 릴리스(TestFlight)는 운영 서버 주소로 고정한다 (Release.xcconfig가 Base를 불러온 뒤 API_BASE_URL만 바꾼다)
+  Release: Config/Release.xcconfig
 settings:
   base:
     SWIFT_VERSION: "6.0"

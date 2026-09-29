@@ -169,9 +169,11 @@ actions 행은 Claim에서 `resolveAction`으로 다시 계산한 캐시이고(`
 실제 DB 확인(2026-09-27, iPhone 시뮬레이터 + 로컬 서버): 원문을 처리하자 앱을 건드리지 않아도 지금 할 일에 새 Action이 떴다(Realtime). 확정 · 상세의 근거와 이력 · 원문 줄 선택 신고("추가했어요", 같은 줄 다시 신고는 "이미 있는 할 일") · `user_reported_missing`(원인 `not_extracted`) · app_opened가 DB에 남았다.
 남은 숙제: 주간 질문은 첫 원문 뒤 7일이 지나야 떠서 실제 데이터로는 아직 못 봤다(단위 테스트만). 프로필(이름 · 별칭)이 빈 계정에서는 "나: …" 발언도 Jev가 '내 일 아님'으로 보고 확인 요청으로 보냈다 — 첫 실행 때 프로필을 받는 흐름이 필요하다.
 
-**대체됨 (2026-09-27).** 위 다중 화면 구성은 go live 모양(`PLATFORMS.md`)으로 다시 만드는 중이다: iPhone은 Review 카드 + Now 목록 화면 한 장 + 계정 시트(Connections · AI 동의 · Privacy/Terms · Sign out · Delete account)로, macOS는 별도 창 없이 ⌥Space 메뉴 막대 런처(Search · Ask · Hand off · Send as source · ⌘K)로 바뀐다. 옛 다중 화면 Swift 파일(`ActionDetailView` · `NowView` · `RootView` · `SignInView` · `SourcesView` 등)은 지웠고, 이 런처 · 목록 재구성이 끝나야 A1이 다시 완료 상태가 된다. 진행 중.
+**대체됨 (2026-09-27).** 위 다중 화면 구성은 go live 모양(`PLATFORMS.md`)으로 다시 만드는 중이다: iPhone은 Review 카드 + Now 목록 화면 한 장 + 계정 시트(Connections · AI 동의 · Privacy/Terms · Sign out · Delete account)로, macOS는 별도 창 없이 ⌥Space 메뉴 막대 런처(Search · Ask · Hand off · Send as source · ⌘K)로 바뀐다. 옛 다중 화면 Swift 파일(`ActionDetailView` · `NowView` · `RootView` · `SignInView` · `SourcesView` 등)은 지웠고, 이 런처 · 목록 재구성이 끝나야 A1이 다시 완료 상태가 된다. **끝남 (2026-09-28)**: iPhone 한 화면(Review 카드 · In Progress / To Do / Done Today · + 직접 추가 · 밀기와 길게 누르기로 상태 바꾸기 · 지우기), Mac 런처(검색 · 물어보기 · 직접 추가 · ⌘K Status · Delete · ⌘Z 되돌리기), Liquid Glass. 로컬 서버로 Mac E2E 확인.
 
-### Phase A2 — 원문 입력 (2일)
+### Phase A2 — 원문 입력 (2일) — 보류
+
+> **보류 (2026-09-27).** 원문은 자동 연동으로 받는다([GO_LIVE.md](GO_LIVE.md) "결정"). 공유 시트는 카카오톡 공백이 실제 문제로 확인될 때 다시 본다. Mac 런처의 "Send clipboard as source"는 이미 있다.
 
 > 프롬프트:
 > "iOS·macOS 공유 확장을 만들어 텍스트·URL·파일을 `POST /api/v1/sources`로 보내. 세션은 App Group Keychain에서 읽어.
@@ -179,7 +181,9 @@ actions 행은 Claim에서 `resolveAction`으로 다시 계산한 캐시이고(`
 
 완료 기준: 메일 앱에서 공유 → Taskforce, Mac에서 복사 후 단축키로 원문이 들어가 Action이 생김.
 
-### Phase A3 — 알림 (1일)
+### Phase A3 — 알림 (1일) — go live 전 필요 (런북 C10)
+
+> 서버(`POST /api/v1/devices`, `/api/cron/reminders`)는 있고, 앱의 권한 요청 · 기기 등록 · 알림 눌러 열기가 남았다.
 
 > 프롬프트:
 > "앱에서 알림 권한을 받고 기기 토큰을 `POST /api/v1/devices`로 등록해. 알림을 누르면 해당 Action 상세로 이동하게 해."
@@ -190,9 +194,9 @@ actions 행은 Claim에서 `resolveAction`으로 다시 계산한 캐시이고(`
 
 ---
 
-## Phase 6 — 연동 (Notion 먼저 진행 중)
+## Phase 6 — 연동 (Notion 끝남 · Slack → Google 순서)
 
-1단계(go live 조건): **Notion ✅** · Slack · Google(Calendar · Gmail · Meet 전사). 2단계(수요 순서): Microsoft 365 · Zoom · GitHub · Linear · Jira. 정의는 [`GO_LIVE.md`](GO_LIVE.md), 설계와 설정 방법은 [`INTEGRATIONS.md`](INTEGRATIONS.md).
+1단계(go live 조건): **Notion ✅**(할 일 DB 자동 확인 · 내가 쓴 문서 판정 포함) · Slack(다음) · Google(Calendar · Gmail · Meet 전사, Google 심사와 함께). 순서와 기간은 [GO_LIVE.md](GO_LIVE.md) "현재 상태와 진행 순서". 2단계(수요 순서): Microsoft 365 · Zoom · GitHub · Linear · Jira. 정의는 [`GO_LIVE.md`](GO_LIVE.md), 설계와 설정 방법은 [`INTEGRATIONS.md`](INTEGRATIONS.md).
 사용자는 원문을 직접 넣지 않으므로, 엔진이 어느 정도 검증된 뒤(Phase 1) 계획보다 앞당겼다.
 각 연동은 "Source를 만들어 파이프라인에 넣는 어댑터"일 뿐이어야 한다. 파이프라인은 건드리지 않는다.
 

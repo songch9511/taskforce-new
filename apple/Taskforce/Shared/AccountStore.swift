@@ -14,7 +14,14 @@ final class AccountStore {
     /// 서버에 아직 없는 서비스 (연결 시작이 400 invalid_request)
     private(set) var comingSoon: Set<ConnectionProvider> = []
     private(set) var connecting: ConnectionProvider?
+    /// Sync Now 요청을 보내는 중 (서버는 끝날 때까지 답하지 않는다)
     private(set) var syncing = false
+    /// 연결 직후 · Sync Now 직후 서버 잠금이 보이기 전까지 먼저 "Syncing…"을 보여 줄 서비스 (provider → 누른 때, `ConnectionSync`)
+    private(set) var syncRequests: [String: Date] = [:]
+    /// 연결을 마지막으로 읽은 때. 동기화 중인지는 이 시각으로 판단한다 (다시 읽을 때마다 화면이 새로 판단한다)
+    private(set) var connectionsReadAt = Date()
+    /// 동기화 중이던 연결이 끝날 때마다 오른다: 화면이 지금 할 일을 다시 불러온다
+    private(set) var syncFinished = 0
     private(set) var loaded = false
     var message: String?
     /// 동의 화면을 띄울지 (연결 · 원문 보내기 · 물어보기 전에)
@@ -34,12 +41,34 @@ final class AccountStore {
         self.services = services
     }
 
+    #if DEBUG
+    /// 디자인 비교용 견본 (`SampleData`): 서버를 부르지 않는다
+    private(set) var sampleMode = false
+
+    func useSampleData(connections: [ConnectionRecord]) {
+        sampleMode = true
+        apply(connections)
+        loaded = true
+    }
+    #endif
+
     func state(for provider: ConnectionProvider) -> ConnectionState {
         ConnectionState.state(for: provider, in: connections)
     }
 
     var hasConnections: Bool {
         ConnectionProvider.stageOne.contains { state(for: $0).isConnected }
+    }
+
+    /// 이 서비스 줄에 "Syncing…"을 보여 줄지
+    func isSyncing(_ provider: ConnectionProvider) -> Bool {
+        guard let record = state(for: provider).record else { return false }
+        return ConnectionSync.isSyncing(record, requestedAt: syncRequests[record.provider], at: connectionsReadAt)
+    }
+
+    /// 연결 중 하나라도 동기화 중인지 (빈 목록의 "Syncing…" · 다시 읽기)
+    var anySyncing: Bool {
+        ConnectionSync.anySyncing(connections, requested: syncRequests, at: connectionsReadAt)
     }
 
     /// 동의가 필요한지: 서버가 동의 필드를 알려 주는데 아직 없으면
@@ -59,6 +88,9 @@ final class AccountStore {
     var hasConsent: Bool { consentGiven || profile?.hasAIConsent == true }
 
     func load() async {
+        #if DEBUG
+        if sampleMode { return }
+        #endif
         let generation = generation
         async let profileValue = try? services.api.profile()
         async let connectionsValue = try? services.reads.connections()
@@ -67,7 +99,7 @@ final class AccountStore {
         let (profile, connections, requests) = await (profileValue, connectionsValue, requestsValue)
         guard generation == self.generation else { return }
         if let profile { self.profile = profile }
-        if let connections { self.connections = connections }
+        if let connections { apply(connections) }
         if let requests { requested = requests }
         loaded = true
     }
@@ -79,6 +111,7 @@ final class AccountStore {
         resumeProvider = nil
         profile = nil
         connections = []
+        syncRequests = [:]
         requested = []
         comingSoon = []
         loaded = false
@@ -88,9 +121,38 @@ final class AccountStore {
     }
 
     func reloadConnections() async {
-        if let value = try? await services.reads.connections() {
-            connections = value
+        #if DEBUG
+        if sampleMode { return }
+        #endif
+        let generation = generation
+        guard let value = try? await services.reads.connections(), generation == self.generation else { return }
+        apply(value)
+    }
+
+    /// 새로 읽은 연결: 서버 잠금이 보이거나 끝난 서비스의 앱 표시는 거두고, 동기화가 끝났으면 `syncFinished`
+    private func apply(_ records: [ConnectionRecord]) {
+        let wasSyncing = anySyncing
+        let now = Date()
+        connections = records
+        connectionsReadAt = now
+        syncRequests = ConnectionSync.pending(syncRequests, after: records, at: now)
+        if wasSyncing, !anySyncing { syncFinished += 1 }
+    }
+
+    /// 동기화 중인 연결이 있는 동안 몇 초마다 연결을 다시 읽는다. 보이는 화면의 `.task`에서 부른다 (화면이 사라지면 멈춘다).
+    func followSync() async {
+        while anySyncing, !Task.isCancelled {
+            try? await Task.sleep(for: ConnectionSync.pollInterval)
+            guard !Task.isCancelled else { return }
+            // 두 화면이 함께 보이면 (iPhone 홈 + 계정 시트) 한쪽만 읽는다
+            if Date().timeIntervalSince(connectionsReadAt) >= 3 { await reloadConnections() }
         }
+    }
+
+    /// 서버가 동기화를 시작할 서비스: 잠금이 보일 때까지 먼저 "Syncing…"
+    private func expectSync(_ providers: [String]) {
+        let now = Date()
+        for provider in providers { syncRequests[provider] = now }
     }
 
     // MARK: 연결
@@ -142,7 +204,7 @@ final class AccountStore {
         guard let callback = ConnectionCallback.parse(url) else { return }
         switch callback.outcome {
         case .status(let status):
-            await finishConnection(status)
+            await finishConnection(status, provider: callback.provider)
         case .handoff(let id):
             guard let provider = callback.provider else {
                 message = ConnectionCompleteFailure.retryMessage
@@ -155,7 +217,7 @@ final class AccountStore {
     private func complete(_ provider: ConnectionProvider, handoff: String) async {
         do {
             let status = try await services.api.completeConnection(provider, handoff: handoff)
-            await finishConnection(status)
+            await finishConnection(status, provider: provider)
         } catch let error as APIError {
             switch ConnectionCompleteFailure.classify(error) {
             case .consentRequired:
@@ -169,8 +231,10 @@ final class AccountStore {
         }
     }
 
-    private func finishConnection(_ status: ConnectionCallback.Status) async {
+    private func finishConnection(_ status: ConnectionCallback.Status, provider: ConnectionProvider?) async {
         if let text = status.message { message = text }
+        // 서버가 연결하며 첫 동기화를 뒤에서 시작한다 (몇 분 걸린다): 잠금이 보이기 전에도 곧바로 "Syncing…"
+        if status.isConnected, let provider { expectSync([provider.rawValue]) }
         await reloadConnections()
         if status.isConnected {
             // 서버가 연결하며 동기화를 시작하지만, 바로 한 번 더 부르면 첫 할 일이 빨리 채워진다 (막 동기화했으면 429라 조용히 넘긴다)
@@ -191,21 +255,39 @@ final class AccountStore {
         }
     }
 
+    /// Sync Now: 서버는 붙은 연결을 모두 동기화하고 끝나면 답한다 (최대 4분). 그동안 줄마다 "Syncing…".
+    /// 이미 동기화 중이거나 방금 끝났으면(429) 오류가 아니다: 다시 읽은 연결이 "Syncing…" · "Synced just now"를 보여 준다.
     func sync() async {
+        guard !syncing else { return }
         syncing = true
         defer { syncing = false }
+        expectSync(connections.filter { $0.status == .active || $0.status == .error }.map(\.provider))
+        let failure: SyncNowFailure?
         do {
             try await services.api.syncConnections()
+            failure = nil
+        } catch is CancellationError {
+            failure = nil
         } catch let error as APIError {
-            if case .server(_, .rateLimited, _) = error {
-                message = "Synced a moment ago."
-            } else {
-                message = error.userMessage
-            }
+            failure = SyncNowFailure.classify(error)
         } catch {
-            message = error.userMessage
+            failure = .failed(error.userMessage)
         }
+        // 서버가 답했으면 앱 표시는 거두고 서버 상태(잠금 · 마지막 동기화)를 따른다
+        syncRequests = [:]
+        let finished = syncFinished
         await reloadConnections()
+        switch failure {
+        case nil:
+            if syncFinished == finished { syncFinished += 1 }
+        case .alreadySyncing:
+            break
+        case .consentRequired:
+            showsConsent = true
+        case .failed(let text):
+            // 연결이 끊겼어도 서버가 아직 동기화 중이면 오류 대신 진행 표시
+            if !anySyncing { message = text }
+        }
     }
 
     func disconnect(_ record: ConnectionRecord) async {

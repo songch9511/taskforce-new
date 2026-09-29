@@ -190,14 +190,30 @@ public struct APIClient: Sendable {
         try await sendNoContent(.post, "connection-requests", body: ConnectionRequestBody(provider: provider.rawValue))
     }
 
-    /// 지금 동기화 (서버가 막 동기화했으면 429)
+    /// 지금 동기화. 서버는 끝날 때까지(최대 4분) 답하지 않아 기다리는 시간을 서버 한도(5분)에 맞춘다.
+    /// 이미 동기화 중이거나 방금 동기화했으면 429 rate_limited (`SyncNowFailure.alreadySyncing`), 동의 전이면 409.
     public func syncConnections() async throws {
-        try await sendNoContent(.post, "connections/sync")
+        try await sendNoContent(.post, "connections/sync", timeout: Self.syncTimeout)
     }
+
+    /// `POST /connections/sync`의 기다리는 시간 (서버 `maxDuration = 300`)
+    static let syncTimeout: TimeInterval = 300
 
     /// 연결 끊기. 이미 들어온 원문과 할 일은 남는다.
     public func disconnect(connectionID: UUID) async throws {
         try await sendNoContent(.delete, "connections/\(connectionID.lowercased)")
+    }
+
+    // MARK: 알림
+
+    /// 알림용 기기 토큰 등록 (APNs). 실행 · 로그인마다 불러도 된다: 같은 토큰은 마지막 로그인 계정으로 옮겨 간다.
+    public func registerDevice(_ registration: DeviceRegistration) async throws {
+        try await sendNoContent(.post, "devices", body: registration)
+    }
+
+    /// 로그아웃 전에: 이 기기로 더는 알림을 보내지 않는다
+    public func unregisterDevice(token: String) async throws {
+        try await sendNoContent(.delete, "devices", body: DeviceToken(token: token))
     }
 
     // MARK: 원문 · 물어보기
@@ -218,11 +234,12 @@ public struct APIClient: Sendable {
         case get = "GET", post = "POST", put = "PUT", patch = "PATCH", delete = "DELETE"
     }
 
-    func makeRequest(_ method: Method, _ path: String, body: (any Encodable)?, token: String) throws -> URLRequest {
+    func makeRequest(_ method: Method, _ path: String, body: (any Encodable)?, token: String, timeout: TimeInterval? = nil) throws -> URLRequest {
         var url = baseURL.appending(path: "api/v1")
         url.append(path: path)
         var request = URLRequest(url: url)
         request.httpMethod = method.rawValue
+        if let timeout { request.timeoutInterval = timeout }
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         if let body {
@@ -232,7 +249,7 @@ public struct APIClient: Sendable {
         return request
     }
 
-    private func perform(_ method: Method, _ path: String, body: (any Encodable)?) async throws -> (Data, HTTPURLResponse) {
+    private func perform(_ method: Method, _ path: String, body: (any Encodable)?, timeout: TimeInterval? = nil) async throws -> (Data, HTTPURLResponse) {
         let accessToken: String
         do {
             accessToken = try await token()
@@ -247,7 +264,7 @@ public struct APIClient: Sendable {
         } catch {
             throw APIError.notSignedIn
         }
-        let request = try makeRequest(method, path, body: body, token: accessToken)
+        let request = try makeRequest(method, path, body: body, token: accessToken, timeout: timeout)
         let data: Data
         let response: URLResponse
         do {
@@ -270,8 +287,8 @@ public struct APIClient: Sendable {
         }
     }
 
-    private func sendNoContent(_ method: Method, _ path: String, body: (any Encodable)? = nil) async throws {
-        _ = try await perform(method, path, body: body)
+    private func sendNoContent(_ method: Method, _ path: String, body: (any Encodable)? = nil, timeout: TimeInterval? = nil) async throws {
+        _ = try await perform(method, path, body: body, timeout: timeout)
     }
 
     static func error(status: Int, data: Data) -> APIError {
@@ -353,6 +370,11 @@ struct DeleteAccountRequest: Encodable {
     enum CodingKeys: String, CodingKey {
         case appleAuthorizationCode = "apple_authorization_code"
     }
+}
+
+/// DELETE /api/v1/devices 본문
+struct DeviceToken: Encodable {
+    let token: String
 }
 
 struct MetricEventRequest: Encodable {

@@ -135,6 +135,10 @@ final class LauncherModel {
     private(set) var undoOffer = UndoOffer()
     private var undoTimer: Task<Void, Never>?
     private var lastUserID: UUID?
+    /// 런처가 떠 있는지 (연결 동기화를 다시 읽는 것은 떠 있는 동안만)
+    private(set) var isShown = false
+    /// 누른 알림의 할 일: 목록에 보이면 그 행을 고른다 (`focus(actionID:)`)
+    private var pendingFocus: UUID?
     /// 최근 원문을 다 읽었는지 (빈 목록과 읽는 중을 나눈다)
     private(set) var sourcesLoaded = false
     private let signInFlow = AppleSignInFlow()
@@ -146,7 +150,10 @@ final class LauncherModel {
         self.account = account
         let now = NowStore(services: services)
         #if DEBUG
-        if SampleData.isEnabled { now.useSampleData() }
+        if SampleData.isEnabled {
+            now.useSampleData()
+            account.useSampleData(connections: SampleData.connections)
+        }
         #endif
         self.now = now
         configurationError = nil
@@ -185,6 +192,12 @@ final class LauncherModel {
     }
 
     var items: [LauncherItem] { sections.flatMap(\.items) }
+
+    /// 할 일이 하나도 없는데 연결이 동기화 중이면 목록 맨 위에 "Syncing…" 한 줄 (빈 입력창일 때만)
+    var showsSyncing: Bool {
+        guard isSignedIn, inputMode == .empty, account?.anySyncing == true else { return false }
+        return !items.contains { $0.group != nil }
+    }
 
     var selectedItem: LauncherItem? {
         let items = items
@@ -263,6 +276,7 @@ final class LauncherModel {
     // MARK: 열고 닫기
 
     func prepareForShow() {
+        isShown = true
         closeTimer?.cancel()
         clearUndo()
         focusRequest += 1
@@ -273,15 +287,30 @@ final class LauncherModel {
         screen = .list
         selection = 0
         selectedID = nil
+        pendingFocus = nil
         guard isSignedIn, let now else { return }
         Task { await now.load() }
-        // 동의 · 연결 상태 (동의 전인데 연결이 있으면 맨 위에 "Allow AI processing")
-        if let account { Task { await account.load() } }
+        // 동의 · 연결 상태 (동의 전인데 연결이 있으면 맨 위에 "Allow AI processing").
+        // 연결이 있으면 알림 권한을 한 번 묻는다 (첫 실행 · 연결 전에는 묻지 않는다)
+        if let account {
+            Task {
+                await account.load()
+                await PushCenter.shared.requestIfNeeded(hasConnections: account.hasConnections)
+            }
+        }
     }
 
     func didHide() {
+        isShown = false
         closeTimer?.cancel()
         suspendsAutoClose = false
+    }
+
+    /// 누른 알림: 그 할 일(Review · 할 일 행)을 고른다. 아직 목록에 없으면 다시 읽은 목록이 오면 고른다
+    func focus(actionID: UUID) {
+        guard screen == .list else { return }
+        pendingFocus = actionID
+        reconcileSelection()
     }
 
     func reportAppOpened() {
@@ -403,7 +432,11 @@ final class LauncherModel {
     func reconcileSelection() {
         guard screen == .list else { return }
         let items = items
-        if let selectedID, let index = items.firstIndex(where: { $0.id == selectedID }) {
+        if let pendingFocus, let index = items.firstIndex(where: { $0.group != nil && $0.action?.id == pendingFocus }) {
+            self.pendingFocus = nil
+            selection = index
+            selectedID = items[index].id
+        } else if let selectedID, let index = items.firstIndex(where: { $0.id == selectedID }) {
             selection = index
         } else {
             selection = LauncherContent.move(selection, by: 0, count: items.count)

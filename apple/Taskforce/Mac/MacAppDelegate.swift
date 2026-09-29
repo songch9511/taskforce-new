@@ -19,6 +19,8 @@ final class MacAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // 알림을 눌러 앱이 열린 경우도 받을 수 있게 가장 먼저
+        PushCenter.shared.install()
         let model: LauncherModel
         switch AppRuntime.startup {
         case .ready(let session, let services):
@@ -33,6 +35,9 @@ final class MacAppDelegate: NSObject, NSApplicationDelegate {
         if case .ready(let session, _) = AppRuntime.startup {
             follow(session, model: model)
         }
+        // 누른 알림: 런처를 열고 그 할 일을 고른다
+        PushCenter.shared.onOpen = { [weak self] target in self?.openNotification(target) }
+        if let target = PushCenter.shared.take() { openNotification(target) }
 
         hotKeys.onPress = { [weak launcher] in launcher?.toggle() }
         hotKeys.install()
@@ -63,9 +68,27 @@ final class MacAppDelegate: NSObject, NSApplicationDelegate {
             Task { @MainActor in
                 guard let self, let model else { return }
                 model.sessionChanged()
+                // 알림: 허용돼 있으면 로그인한 사용자로 기기 토큰을 보낸다
+                PushCenter.shared.follow(userID: model.signedInUserID, services: model.services)
                 self.follow(session, model: model)
             }
         }
+    }
+
+    // MARK: 알림
+
+    func application(_ application: NSApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
+        PushCenter.shared.didRegister(deviceToken: deviceToken)
+    }
+
+    func application(_ application: NSApplication, didFailToRegisterForRemoteNotificationsWithError error: Error) {
+        // 알림 기능이 없는 서명 (App ID에 Push Notifications가 꺼져 있음 등): 알림 없이 쓴다
+    }
+
+    private func openNotification(_ target: NotificationTarget) {
+        guard let launcher else { return }
+        launcher.show()
+        if let id = target.actionID { launcher.model.focus(actionID: id) }
     }
 
     /// 설정에서 단축키를 바꿀 때. 다른 앱이 쓰는 조합이면 false.

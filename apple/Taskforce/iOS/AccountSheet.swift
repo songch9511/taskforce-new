@@ -42,7 +42,11 @@ struct AccountSheet: View {
                         LabeledContent("Apple ID", value: email)
                     }
                     Button("Sign Out") {
-                        Task { await session.signOut() }
+                        Task {
+                            // 세션이 남아 있을 때 이 기기를 알림에서 뺀다
+                            await PushCenter.shared.unregister()
+                            await session.signOut()
+                        }
                     }
                     Button("Delete Account", role: .destructive) {
                         confirmingDelete = true

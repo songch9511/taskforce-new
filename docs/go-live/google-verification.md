@@ -75,7 +75,7 @@ Google 브랜드 심사는 홈페이지가 떠 있어야 시작된다. 요구 �
 
 ### 2-2. Search Console 도메인 인증
 
-`taskforcelabs.dev`의 DNS는 Vercel DNS(`ns1.vercel-dns.com`)이고, 2026-09-27 기준 TXT 레코드가 없다. 즉 Search Console 도메인 인증이 아직 안 됐다.
+`taskforcelabs.dev`의 DNS는 Vercel DNS(`ns1.vercel-dns.com`)다. **2026-09-28 끝남:** Workspace 가입 때 넣은 `google-site-verification` TXT로 `daniel@taskforcelabs.dev`가 Search Console 도메인 속성 소유자로 자동 확인됐다. 이 TXT를 지우면 확인이 풀린다. 아래는 다른 계정을 소유자로 더할 때의 순서다.
 
 1. 두 프로젝트의 **Owner 또는 Editor인 Google 계정**으로 <https://search.google.com/search-console> 에 로그인한다.
 2. 속성 추가 → **도메인** → `taskforcelabs.dev` → 표시되는 `google-site-verification=…` 값을 복사한다.
@@ -84,6 +84,13 @@ Google 브랜드 심사는 홈페이지가 떠 있어야 시작된다. 요구 �
 5. 콘솔의 Branding → Authorized domains에 `taskforcelabs.dev`를 넣는다(하위 도메인 `api.` · `www.` 포함).
 
 ### 2-3. 어느 Google 계정으로 만들까
+
+**2026-09-28 결정 · 만듦:** taskforcelabs.dev Google Workspace **Business Standard**(Flexible 월간, 14일 체험으로 시작). 이전에 있던 MX(`smtp.google.com`)는 Vercel DNS 프리셋만 들어간 것이고 Workspace는 없었다(`privacy@`로 오는 메일이 반송되던 상태).
+- 관리자 · 프로젝트 Owner: `daniel@taskforcelabs.dev`
+- `privacy@taskforcelabs.dev`: Google **그룹**(라이선스 없음). 소유자 `daniel@`, 외부에서 게시 가능, 대화는 구성원만 보기, 초대된 사용자만 참여. 동의 화면 지원 이메일 · 개발자 연락처로 쓴다.
+- `review@taskforcelabs.dev`: 아직 만들지 않음(두 번째 라이선스). C4가 끝나 영상 A를 찍기 전에 만든다(6장).
+- DNS(Vercel): 루트 TXT `google-site-verification=…` · SPF `v=spf1 include:_spf.google.com ~all`, `google._domainkey` DKIM(2048). 관리 콘솔 DKIM 상태 "인증 중". DMARC는 아직 없음.
+- Starter를 고르지 않은 이유: Meet 전사가 Business Standard 이상에만 있다(영상 A · `meetings.space.readonly`).
 
 - 동의 화면의 **사용자 지원 이메일**은 로그인한 계정의 주소나 그 계정이 관리하는 Google 그룹만 고를 수 있다. `privacy@taskforcelabs.dev`를 지원 이메일로 쓰려면:
   - 권장: Google Workspace(taskforcelabs.dev) 계정으로 프로젝트를 만들고, 지원 이메일에 `privacy@taskforcelabs.dev`(그 계정 또는 그 계정이 관리하는 그룹)를 고른다.
@@ -266,7 +273,7 @@ Google 요구 사항(제한 범위 심사 문서): OAuth 권한 화면을 **영�
 
 | 계정 | 쓰임 | 비고 |
 |---|---|---|
-| `review@taskforcelabs.dev` (Workspace) | 심사 · 시연의 "나" (Alex) | Meet 전사는 **Business Standard 이상** Workspace에서만 생긴다. taskforcelabs.dev의 Workspace 요금제를 확인하고, 아니면 이 계정만 올리거나 Workspace Individual로 대체한다. 비밀번호는 비밀번호 관리자에만 둔다 |
+| `review@taskforcelabs.dev` (Workspace) | 심사 · 시연의 "나" (Alex) | Meet 전사는 **Business Standard 이상** Workspace에서만 생긴다. taskforcelabs.dev Workspace는 Business Standard다(2-3). 비밀번호는 비밀번호 관리자에만 둔다 |
 | `jordan.review@…` (두 번째 계정, 가상 인물 Jordan) | 회의 참석 · 메일 상대 | 다른 도메인이면 "외부와의 약속" 시나리오가 된다 |
 | Taskforce 계정 (위 review 주소로 로그인) | 앱 | App Store 심사용 데모 계정과 같게 쓸 수 있다(`app-store.md`) |
 

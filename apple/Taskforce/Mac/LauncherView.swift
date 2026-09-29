@@ -48,6 +48,14 @@ struct LauncherRootView: View {
         .onChange(of: model.changes.revision) {
             Task { await model.now?.load() }
         }
+        // 연결이 동기화 중이면 런처가 떠 있는 동안 몇 초마다 연결을 다시 읽고, 끝나면 지금 할 일을 다시 불러온다
+        .task(id: model.isShown && model.account?.anySyncing == true) {
+            guard model.isShown, let account = model.account, account.anySyncing else { return }
+            await account.followSync()
+        }
+        .onChange(of: model.account?.syncFinished) {
+            Task { await model.now?.load() }
+        }
     }
 
     // MARK: 입력창
@@ -140,6 +148,10 @@ struct LauncherRootView: View {
         } else {
             let sections = model.sections
             let offsets = Self.offsets(sections)
+            // 첫 동기화 (몇 분 걸린다): 할 일이 들어오면 사라진다
+            if model.showsSyncing {
+                statusRow(ConnectionSync.label, symbol: nil)
+            }
             ForEach(Array(sections.enumerated()), id: \.element.id) { sectionIndex, section in
                 if let title = section.title {
                     LauncherSectionLabel(title)

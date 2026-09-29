@@ -19,7 +19,12 @@ struct HomeView: View {
     @Environment(ActionChangeFeed.self) private var changes
     @Environment(\.openURL) private var openURL
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.scenePhase) private var scenePhase
     @State private var expanded: UUID?
+    /// 누른 알림의 할 일: 그 행을 잠시 칠한다 (Review면 그 카드를 먼저 보인다)
+    @State private var highlighted: UUID?
+    @State private var reviewFocus: UUID?
+    @State private var scrollTarget: UUID?
     @State private var accountRoute: AccountRoute?
     @State private var addingTask = false
     /// 직접 추가가 끝날 때마다 늘린다 (가벼운 햅틱)
@@ -61,6 +66,21 @@ struct HomeView: View {
         }
         // 나타날 때마다, 그리고 Realtime 신호가 올 때마다
         .task(id: changes.revision) { await store.load() }
+        // 연결이 동기화 중이면 앞에 있는 동안 몇 초마다 연결을 다시 읽고, 끝나면 지금 할 일을 다시 불러온다
+        .task(id: account.anySyncing && scenePhase == .active) {
+            guard account.anySyncing, scenePhase == .active else { return }
+            await account.followSync()
+        }
+        .onChange(of: account.syncFinished) { Task { await store.load() } }
+        // 알림 권한: 연결이 생긴 뒤 다른 시트가 없을 때 한 번 (첫 실행에는 묻지 않는다)
+        .onChange(of: readyForPushPrompt, initial: true) { _, ready in
+            guard ready else { return }
+            Task { await PushCenter.shared.requestIfNeeded(hasConnections: account.hasConnections) }
+        }
+        // 누른 알림: 그 할 일로
+        .onChange(of: PushCenter.shared.target, initial: true) { _, target in
+            if target != nil { openNotification() }
+        }
         .task {
             await account.load()
             promptProfileIfNeeded()
@@ -111,10 +131,18 @@ struct HomeView: View {
             .padding(TFSpace.xl)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
-            list
-                .overlay {
-                    if isEmpty { emptyState }
-                }
+            ScrollViewReader { proxy in
+                list
+                    .overlay {
+                        if isEmpty { emptyState }
+                    }
+                    // 누른 알림의 할 일로
+                    .onChange(of: scrollTarget) { _, id in
+                        guard let id else { return }
+                        scrollTarget = nil
+                        withAnimation { proxy.scrollTo(id, anchor: .center) }
+                    }
+            }
         }
     }
 
@@ -137,7 +165,8 @@ struct HomeView: View {
             }
             reconnectBanner
             consentBanner
-            if let first = sections.review.first {
+            // 누른 알림의 확인 요청이면 그 카드를 먼저
+            if let first = sections.review.first(where: { $0.id == reviewFocus }) ?? sections.review.first {
                 reviewHeader(count: sections.review.count)
                 reviewCard(first)
             }
@@ -148,8 +177,9 @@ struct HomeView: View {
                     .plainRow(top: group == groups.first ? (sections.review.isEmpty ? TFSpace.sm : 0) : TFSpace.xl, bottom: TFSpace.md)
                 ForEach(Array(sections.actions(in: group).enumerated()), id: \.element.id) { index, action in
                     taskRow(action, group: group)
+                        .id(action.id)
                         .listRowInsets(EdgeInsets(top: 0, leading: TFSpace.lg, bottom: 0, trailing: 0))
-                        .listRowBackground(TFColor.bgCanvas)
+                        .listRowBackground(highlighted == action.id ? TFColor.bgSurface : TFColor.bgCanvas)
                         .listRowSeparatorTint(TFColor.borderDefault)
                         .listRowSeparator(index == 0 ? .hidden : .automatic, edges: .top)
                 }
@@ -441,10 +471,47 @@ struct HomeView: View {
                     .frame(maxWidth: 220)
             }
             .padding(TFSpace.xl)
+        } else if account.loaded, account.anySyncing {
+            // 첫 동기화 (몇 분 걸린다): 할 일이 들어오면 이 줄 대신 목록이 보인다
+            HStack(spacing: TFSpace.sm) {
+                ProgressView()
+                    .controlSize(.small)
+                Text(ConnectionSync.label)
+            }
+            .font(TFFont.callout)
+            .foregroundStyle(TFColor.textSecondary)
         } else if account.loaded {
             Text("All caught up")
                 .font(TFFont.callout)
                 .foregroundStyle(TFColor.textSecondary)
+        }
+    }
+
+    // MARK: 알림
+
+    /// 알림 권한을 물어도 되는 때: 연결이 있고 다른 시트가 떠 있지 않음
+    private var readyForPushPrompt: Bool {
+        account.loaded && account.hasConnections && accountRoute == nil && !addingTask && !promptingProfile && !promptingConsent
+    }
+
+    /// 누른 알림: 떠 있는 시트를 닫고 목록을 다시 읽은 뒤 그 할 일로 (Review면 그 카드를 먼저, 할 일이면 그 행을 잠시 칠한다)
+    private func openNotification() {
+        guard let target = PushCenter.shared.take() else { return }
+        accountRoute = nil
+        addingTask = false
+        Task {
+            await store.load()
+            guard let id = target.actionID, let found = store.sections.find(id) else { return }
+            if found.group == .review {
+                reviewFocus = id
+            } else {
+                highlighted = id
+            }
+            scrollTarget = id
+            try? await Task.sleep(for: .seconds(2))
+            withAnimation(.easeOut(duration: 0.6)) {
+                if highlighted == id { highlighted = nil }
+            }
         }
     }
 

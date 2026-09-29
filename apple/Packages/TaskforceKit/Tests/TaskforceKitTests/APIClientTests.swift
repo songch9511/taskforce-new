@@ -10,6 +10,7 @@ final class StubProtocol: URLProtocol {
         let url: URL
         let headers: [String: String]
         let body: Data?
+        let timeout: TimeInterval
     }
 
     struct Reply: Sendable {
@@ -36,7 +37,8 @@ final class StubProtocol: URLProtocol {
             method: request.httpMethod ?? "GET",
             url: request.url!,
             headers: request.allHTTPHeaderFields ?? [:],
-            body: request.httpBody ?? request.httpBodyStream.map(Self.read)
+            body: request.httpBody ?? request.httpBodyStream.map(Self.read),
+            timeout: request.timeoutInterval
         )
         let reply = Self.state.withLock { state -> Reply? in
             state.requests[host, default: []].append(recorded)
