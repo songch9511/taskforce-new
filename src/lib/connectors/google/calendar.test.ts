@@ -185,10 +185,35 @@ describe("pickMeetingEvent: Meet 전사 (회의 코드)", () => {
     expect(pick).toEqual({ result: "ambiguous" });
   });
 
-  it("코드가 같은 일정이 없으면 잇지 않는다. 사용자 혼자인 일정은 고르지 않는다", () => {
+  it("코드가 같은 일정이 없으면 잇지 않는다", () => {
     expect(pickMeetingEvent([meet("a", "abc-defg-hij", "2026-09-30T01:00:00Z")], target("zzz-zzzz-zzz", "2026-09-30T01:00:00Z"))).toEqual({ result: "none" });
+    expect(pickMeetingEvent([], target("abc-defg-hij", "2026-09-30T01:00:00Z"))).toEqual({ result: "none" });
+  });
+
+  // 사용자 결정 2026-09-30: 회의 코드로 잇는 전사는 같은 회의가 확실하므로 혼자인 일정도 잇는다 (짐작으로 잇는 Notion 쪽은 아래에서 계속 뺀다)
+  it("코드가 같으면 참석자가 사용자 한 명뿐인 일정도 잇는다 (참석자 없음 · 회의실만 있는 일정 포함)", () => {
+    const soloSelf = event("solo-self", { attendees: [{ email: "alex@lumenfield.example", self: true }], conferenceData: { conferenceId: "abc-defg-hij" } });
+    expect(pickMeetingEvent([soloSelf], target("abc-defg-hij", "2026-09-30T01:00:00Z"))).toMatchObject({ result: "attached", event: { id: "solo-self" } });
+
+    const noAttendees = event("no-attendees", { attendees: undefined, conferenceData: { conferenceId: "abc-defg-hij" } });
+    expect(pickMeetingEvent([noAttendees], target("abc-defg-hij", "2026-09-30T01:00:00Z"))).toMatchObject({ result: "attached", event: { id: "no-attendees" } });
+
+    const roomOnly = event("room-only", {
+      attendees: [{ email: "alex@lumenfield.example", self: true }, { email: "room@resource.calendar.google.com", resource: true }],
+      conferenceData: { conferenceId: "abc-defg-hij" },
+    });
+    expect(pickMeetingEvent([roomOnly], target("abc-defg-hij", "2026-09-30T01:00:00Z"))).toMatchObject({ result: "attached", event: { id: "room-only" } });
+  });
+
+  it("코드가 같은 일정이 혼자인 것과 여럿인 것으로 둘이면 시작 시각이 가까운 쪽을 고른다 (혼자인 일정을 먼저 빼지 않는다)", () => {
+    const soloNear = event("near", { start: { dateTime: "2026-09-30T01:00:00Z" }, end: { dateTime: "2026-09-30T02:00:00Z" }, attendees: [{ email: "alex@lumenfield.example", self: true }], conferenceData: { conferenceId: "abc-defg-hij" } });
+    const groupFar = meet("far", "abc-defg-hij", "2026-10-02T01:00:00Z");
+    expect(pickMeetingEvent([groupFar, soloNear], target("abc-defg-hij", "2026-09-30T01:01:00Z"))).toMatchObject({ result: "attached", event: { id: "near" } });
+  });
+
+  it("같은 혼자인 일정이라도 코드가 다르면 잇지 않는다", () => {
     const solo = event("solo", { attendees: [{ email: "alex@lumenfield.example", self: true }], conferenceData: { conferenceId: "abc-defg-hij" } });
-    expect(pickMeetingEvent([solo], target("abc-defg-hij", "2026-09-30T01:00:00Z"))).toEqual({ result: "none" });
+    expect(pickMeetingEvent([solo], target("zzz-zzzz-zzz", "2026-09-30T01:00:00Z"))).toEqual({ result: "none" });
   });
 });
 
@@ -245,7 +270,7 @@ describe("pickMeetingEvent: Notion 회의록 (시각 + 제목, 애매하면 잇�
     expect(pickMeetingEvent([], target("2026-09-30T10:05:00+09:00", "Proposal review — Acme"))).toEqual({ result: "none" });
   });
 
-  it("사용자 혼자인 일정(작업 시간)은 고르지 않는다", () => {
+  it("사용자 혼자인 일정(작업 시간)은 고르지 않는다: 시각 · 제목으로 짐작하는 길에만 적용한다 (회의 코드로 잇는 Meet 전사는 예외, 위)", () => {
     const work = at("work", "Proposal review — Acme", "2026-09-30T10:00:00+09:00", "2026-09-30T11:00:00+09:00", { attendees: [{ email: "alex@lumenfield.example", self: true }] });
     const alone = at("alone", "Proposal review — Acme", "2026-09-30T10:00:00+09:00", "2026-09-30T11:00:00+09:00", { attendees: undefined });
     expect(pickMeetingEvent([work, alone], target("2026-09-30T10:05:00+09:00", "Proposal review — Acme"))).toEqual({ result: "none" });
@@ -315,6 +340,21 @@ describe("lookupMeetingEvent", () => {
         attendees: [{ name: "Alex Kim", email: "alex@lumenfield.example" }, { name: "Jordan Lee", email: "jordan@harborline.example" }],
       },
     });
+  });
+
+  it("혼자인 일정: 회의 코드로 찾는 Meet 전사에는 붙고(관련자는 사용자만), 시각 · 제목으로 찾는 Notion 회의록에는 붙지 않는다", async () => {
+    const solo = event("solo", {
+      summary: "Proposal review — Acme",
+      attendees: [{ email: "alex@lumenfield.example", displayName: "Alex Song", self: true }],
+      conferenceData: { conferenceId: "abc-defg-hij" },
+    });
+    const { client } = fakeClient([solo]);
+
+    const meet = await lookupMeetingEvent(client, { kind: "meet", meetingCode: "abc-defg-hij", start: new Date("2026-09-30T01:00:30Z") }, ME);
+    expect(meet).toMatchObject({ result: "attached", event: { calendarEventId: "solo", title: "Proposal review — Acme", attendees: [{ name: "Alex Kim", email: "alex@lumenfield.example" }] } });
+
+    const notion = await lookupMeetingEvent(client, { kind: "notion", day: "2026-09-30", createdAt: new Date("2026-09-30T10:05:00+09:00"), title: "Proposal review — Acme" }, ME);
+    expect(notion).toEqual({ result: "none" });
   });
 
   it("못 고르면 애매 · 없음만 돌려주고, 조회가 실패하면 던진다", async () => {

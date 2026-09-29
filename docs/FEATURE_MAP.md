@@ -235,6 +235,7 @@ Slack이 이 순서로 붙었다 (`lib/connectors/slack/`).
 | 3 | Slack을 끊기 전에 제목 · 인용으로 만든 할 일 임베딩(`actions.embedding`)은 끊은 뒤에도 남는다 | `purge_slack_sources`는 임베딩을 건드리지 않는다. [slack-integration.md](go-live/slack-integration.md) L9 법률 검토 질문에 적었다 | 결정 대기 |
 | 4 | 동작이 다른 비슷한 코드는 의도된 차이로 두었다 (합치면 추출 결과 · eval 숫자가 바뀐다): 인용 겹침 비교(`labelQuotesOverlap` eval 채점 · `reportedQuoteOverlaps` 누락 신고), 확신이 낮은 병합(경로별 처리는 `MATCH_THRESHOLDS.confirmBelow` 주석), 사용자 이름 펼치기(`userNameForms` · `mentionsUser`는 띄어 쓴 이름에서 다르다) | 각 파일 주석 | 확인 |
 | 5 | Slack 토큰 매일 확인은 연결을 정해진 순서 없이(DB가 돌려주는 순서로) 본다. 20초 안에 다 못 도는 규모(연결 수백 개)가 되면 확인하지 못하는 연결이 생긴다 | `lib/connectors/slack/run.ts` `checkSlackConnectionTokens`, `health.ts` | 추정 (지금 규모에선 문제없음) |
+| 6 | `connections.settings`는 읽고 고쳐 다시 쓰는 두 번의 요청으로 갱신한다(`updateConnectionSettings`: 한 번 읽고 통째로 다시 쓴다). 같은 연결의 설정을 동시에 쓰는 둘이 있으면 늦게 쓴 쪽이 먼저 쓴 쪽의 변경을 되돌린다. 설정을 쓰는 곳: 동기화가 세는 통계(`settings.stats`, Gmail · google 동기화, Notion 회의록에 일정을 이은 결과를 google 연결에 세는 `notion/run.ts`), 연결(다시 연결)이 남기는 계정 · 범위(`withAccount`), Notion의 DB 설정. 겹치면 다시 연결한 범위(`scopes`)·계정(`googleUserId`)이 옛 값으로 돌아가거나 통계 한 번분이 사라질 수 있다. 창은 두 요청 사이라 아주 좁지만 cron과 Sync Now · 연결 완료가 겹치면 일어날 수 있다. **고치는 방법:** 통계는 SQL 함수로 합치고(원자적 병합 RPC, 새 마이그레이션) 연결 정보는 그 함수를 거치게 한다. 사용자 결정(2026-09-30): **PR 3(#30)에 넣지 않고 따로 낸다** | `lib/connectors/store.ts` `updateConnectionSettings`, `google/run.ts` · `gmail/run.ts` · `notion/run.ts`의 `withStats`/`withAccount` 호출 | 추정 (코드로 읽었고 겹치는 실행은 재현하지 않았다) · 결정 대기: 별도 PR |
 
 ## 8. 기록 위치와 갱신 기준
 

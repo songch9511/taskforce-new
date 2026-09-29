@@ -158,7 +158,11 @@ export type LookupTarget =
 
 export type MeetingPick = { result: "attached"; event: CalendarEvent } | { result: "ambiguous" } | { result: "none" };
 
-/** 사용자 말고 다른 참석자가 있는 일정인가: 혼자 잡은 작업 시간은 회의가 아니다 */
+/**
+ * 사용자 말고 다른 참석자가 있는 일정인가: 혼자 잡은 작업 시간은 회의가 아니다.
+ * 시각 · 제목으로 짐작해 잇는 Notion 회의록에만 적용한다. 회의 코드가 같은 Meet 전사는 같은 회의가 확실하므로 혼자인 일정이어도 잇는다
+ * (사용자 결정 2026-09-30, google-integration.md 2-4).
+ */
 const hasOtherAttendees = (event: CalendarEvent) => event.attendees.some((a) => !a.self && !a.resource);
 
 /** 공백 · 기호 · 대소문자를 뺀 제목 */
@@ -175,19 +179,21 @@ function titleMatches(eventTitle: string | null, pageTitle: string | null): bool
 /**
  * 같은 회의의 일정을 고른다 (순수 함수, G4: 애매하면 잇지 않는다).
  * - Meet 전사: 일정의 회의 코드가 같은 것. 같은 코드가 여럿(같은 회의 공간의 반복 일정)이면 시작 시각이 가장 가까운 하나, 같은 거리면 애매.
+ *   코드로 이으므로 참석자가 사용자 한 명뿐인 일정도 잇는다.
  * - Notion 회의록: (가) 페이지를 만든 시각이 일정 [시작 − 15분, 끝 + 15분] 안, (나) 제목이 같거나 한쪽이 다른 쪽을 포함.
  *   (가)(나) 모두 맞는 일정 → (가)만 맞는 일정 → (나)만 맞는 일정 순으로 보고, 처음으로 비지 않은 단계에서 딱 하나면 그것, 둘 이상이면 애매.
+ *   짐작으로 잇는 길이라 참석자가 사용자 한 명뿐인 일정(혼자 잡은 작업 시간)은 후보에서 뺀다.
  */
 export function pickMeetingEvent(events: CalendarEvent[], target: LookupTarget): MeetingPick {
-  const candidates = events.filter(hasOtherAttendees);
   if (target.kind === "meet") {
     const distance = (event: CalendarEvent) => Math.abs(event.start.getTime() - target.start.getTime());
-    const same = candidates.filter((event) => sameMeetingCode(event.conferenceId ?? undefined, target.meetingCode)).sort((a, b) => distance(a) - distance(b));
+    const same = events.filter((event) => sameMeetingCode(event.conferenceId ?? undefined, target.meetingCode)).sort((a, b) => distance(a) - distance(b));
     if (same.length === 0) return { result: "none" };
     if (same.length > 1 && distance(same[0]) === distance(same[1])) return { result: "ambiguous" };
     return { result: "attached", event: same[0] };
   }
 
+  const candidates = events.filter(hasOtherAttendees);
   const created = target.createdAt.getTime();
   const timeMatches = (event: CalendarEvent) => created >= event.start.getTime() - CREATED_MARGIN_MS && created <= event.end.getTime() + CREATED_MARGIN_MS;
   const tiers = [

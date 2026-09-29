@@ -113,7 +113,7 @@ Google 프로젝트 · 범위 · 동의 화면 · 심사는 [google-verification
 ### 2-4. Calendar: 같은 회의 찾기 (G3 · G4)
 
 `findMeetingEvent(admin, userId, 찾을 것)`은 Notion 회의록과 Meet 전사가 같이 부른다. 찾을 것은 Meet이면 `{ meetingCode, start }`, Notion이면 `{ day, createdAt, title }`(`day` = 회의 날짜 속성의 한국 날짜, 없으면 페이지를 만든 날).
-**구현 이름 (PR 3):** 순수 고르기 `pickMeetingEvent` · 조회 `lookupMeetingEvent`(`calendar.ts`) — Meet 동기화(`sync.ts`)는 자기 토큰의 클라이언트로 바로 부르고, Notion 쪽은 `googleCalendarLookup`(`lookup.ts`)이 1번(사용자의 google 연결 찾기)을 하고 조회 함수를 만들어 `notion/run.ts`가 `syncNotion`에 넘긴다. 아래 4의 "참석자가 사용자 한 명뿐인 일정" 규칙은 Meet 전사에도 그대로 적용한다(계획을 글자 그대로). 한 글자 제목이 모든 제목에 포함되지 않도록 제목 비교는 두 글자 이상일 때만 한다.
+**구현 이름 (PR 3):** 순수 고르기 `pickMeetingEvent` · 조회 `lookupMeetingEvent`(`calendar.ts`) — Meet 동기화(`sync.ts`)는 자기 토큰의 클라이언트로 바로 부르고, Notion 쪽은 `googleCalendarLookup`(`lookup.ts`)이 1번(사용자의 google 연결 찾기)을 하고 조회 함수를 만들어 `notion/run.ts`가 `syncNotion`에 넘긴다. 아래 4의 "참석자가 사용자 한 명뿐인 일정" 규칙은 Notion 회의록(짐작으로 잇는 길)에만 적용하고, 회의 코드로 잇는 Meet 전사는 예외다(사용자 결정 2026-09-30, 아래 4). 한 글자 제목이 모든 제목에 포함되지 않도록 제목 비교는 두 글자 이상일 때만 한다.
 
 1. 이 사용자의 `google` 연결 중 상태가 `active` · `error`이고 설정 `scopes`에 Calendar가 있는 것. 없으면 `null`.
 2. `withGoogleAccess`로 `GET /calendar/v3/calendars/primary/events`: Notion은 그 **한국 날짜 하루**(00:00 ~ 24:00 KST — 날짜만 있는 속성은 0시로 읽혀서 앞뒤 몇 시간으로는 회의를 놓친다, `notion/map.ts` `pageOccurredAt`), Meet은 `start − 3시간 ~ start + 3시간`, `singleEvents=true`, `orderBy=startTime`, `maxResults=50`, `fields=items(id,status,eventType,summary,start,end,organizer(email,displayName,self),attendees(email,displayName,self,organizer,resource,responseStatus),conferenceData(conferenceId,conferenceSolution/key/type))`. **설명 · 첨부 · 위치는 `fields`에 넣지 않는다**(처리방침 3장 "일정 설명과 첨부 파일은 읽지 않습니다").
@@ -121,7 +121,7 @@ Google 프로젝트 · 범위 · 동의 화면 · 심사는 [google-verification
 4. 고르기 (순수 함수 `pickMeetingEvent`):
    - **Meet 전사**: 일정의 `conferenceData.conferenceId`가 Meet 회의 코드와 같은 것(같은 회의 공간이 반복 일정이면 시각이 가장 가까운 하나). 없으면 잇지 않는다. 두 값은 같은 모양(`aaa-bbbb-ccc`)이지만 Google 문서가 같은 값이라고 적지는 않았다(9장) → PR 3에서 dev 회의로 확인한다.
    - **Notion 회의록**: 그 날의 일정에서 (가) 페이지를 만든 시각(`created_time`, Notion AI 회의록은 회의를 시작할 때 만들어진다)이 일정 `[시작 − 15분, 끝 + 15분]` 안이고, (나) 제목이 같거나(공백 · 기호 · 대소문자 무시) 한쪽이 다른 쪽을 포함한다. (가)와 (나)를 모두 맞는 일정이 하나면 그것, 없으면 (가)만 맞는 일정이 딱 하나면 그것, 그것도 없으면 (나)만 맞는 일정이 그날 딱 하나면 그것. 나머지는 잇지 않는다(G4).
-   - 참석자가 사용자 한 명뿐인 일정은 고르지 않는다(혼자 잡은 작업 시간).
+   - 참석자가 사용자 한 명뿐인 일정은 고르지 않는다(혼자 잡은 작업 시간). **단 회의 코드로 잇는 Meet 전사는 예외 — 사용자 결정 2026-09-30:** 코드가 같으면(`sameMeetingCode`) 같은 회의가 확실하므로 혼자인 일정(참석자 없음 · 회의실만 있는 일정 포함)도 잇는다. 이 규칙은 시각 · 제목으로 짐작하는 Notion 회의록에만 남는다. 구현: `pickMeetingEvent`의 Meet 갈래는 후보를 거르지 않고, Notion 갈래만 `hasOtherAttendees`로 거른다. 시험: `calendar.test.ts`(코드가 같은 혼자인 일정은 붙고, 같은 혼자인 일정이 Notion 회의록에는 안 붙음 — 순수 함수와 `lookupMeetingEvent` 양쪽), `sync.test.ts`(혼자인 일정에 전사가 붙음).
 5. 붙이기: 원문의 `participants.attendees`에 일정 참석자를 합친다(이메일로, 없으면 이름으로 중복 제거, 200명 상한). 사용자는 연결한 Google 주소로 들어간다. `sources.meeting`에 `{ calendar_event_id, title, start, end }`(2-7).
 6. 실패(토큰 · 네트워크 · 429)는 `null`로 넘긴다. 연결 상태는 바꾸지 않는다(`google` 동기화가 스스로 `reauth` · `error`를 남긴다).
 
@@ -216,7 +216,7 @@ On Mon, Oct 5, 2026 at 9:30 AM Jordan Lee <jordan@…> wrote:
 - 그 밖에 **지표 이벤트 종류 둘과 열 하나**(PR 4a): `metric_events.type`의 `connection_reauth` · `reconnect_notified`, 열 `provider`(2-2). 새 표는 없다. 마이그레이션 `20261015000000_metric_events_reauth_provider.sql`은 이 이벤트를 남기는 서버 코드를 배포하기 **전에** 적용한다(먼저 배포하면 새 이벤트와 `connection_created` 기록이 실패하고(오류 로그, 동기화 · 알림 영향 없음) `/admin/metrics`가 열리지 않는다). 이전에 남긴 `connection_created`의 `provider`는 null이다.
 - 새 표가 없으므로 `tests/db/`에는 새 열이 `authenticated`에게 자기 행만 보이는지(기존 `sources` RLS) 한 줄을 더하고, `tests/db/migrations.test.ts`에 열이 있는지 더한다.
 - **PR 3 ✅ (2026-09-29):** `supabase/migrations/20261016000000_sources_meeting.sql` — `sources.meeting jsonb`(null 가능) + 모양 검사 `sources_meeting_shape`(객체, `calendar_event_id` · `start` · `end`는 문자열, `title`은 문자열 또는 null). 검사에서 없는 키는 `jsonb_typeof`가 null이라 check가 그냥 통과해 버려서 `coalesce(…, false)`로 막았다(DB 테스트가 잡았다). `tests/db/sources-meeting.test.ts`(모양 · RLS · 90일 본문 삭제에 남음 · 연결 끊기에 남음 · 계정 삭제로 지워짐)와 `migrations.test.ts`의 열 · RLS 한 건. **운영 DB에는 적용하지 않았다.**
-- 운영 DB 적용은 사용자 승인 뒤 `npx supabase db query --linked -f <file>`로 새 파일 하나만(`supabase db push` 금지, 런북 4장). 코드는 일정이 붙은 원문만 `meeting` 열을 보내므로 적용 전에 배포해도 다른 원문은 저장된다. 열이 없는데 일정이 붙은 원문을 저장하려 하면(PostgREST `PGRST204` · Postgres `42703`) 일정 없이 다시 넣고 로그를 남긴다 — 그러지 않으면 저장 실패가 `ingestItems`의 배치를 멈춰 Notion 동기화가 매번 같은 자리에서 막힌다(독립 검토가 짚음). 이 경우 그 원문은 일정 연결(근거 줄의 일정 제목)을 잃으므로, 운영에서 google 연결을 처음 만들기 전에 적용하는 것이 여전히 순서다. `/admin/metrics`의 "일정이 붙은 비율"은 열이 없으면 0으로 보인다(오류는 로그에만).
+- 운영 DB 적용은 사용자 승인 뒤 `npx supabase db query --linked -f <file>`로 새 파일 하나만(`supabase db push` 금지, 런북 4장). 코드는 일정이 붙은 원문만 `meeting` 열을 보내므로 적용 전에 배포해도 다른 원문은 저장된다. 열이 없는데 일정이 붙은 원문을 저장하려 하면(PostgREST `PGRST204` · Postgres `42703`) 일정 없이 다시 넣고 로그를 남긴다 — 그러지 않으면 저장 실패가 `ingestItems`의 배치를 멈춰 Notion 동기화가 매번 같은 자리에서 막힌다(독립 검토가 짚음). 이 경우 그 원문은 일정 연결(근거 줄의 일정 제목)을 잃으므로 적용이 코드보다 먼저여야 한다. **결정 2026-09-30:** `db query --linked`는 운영 프로젝트를 가리키므로, 이 마이그레이션(`20261016000000`)은 **#30을 병합하기 직전에 운영 DB에 적용한다**(사용자 승인 뒤, U5). dev 확인은 병합 뒤 로컬 서버로 한다. `/admin/metrics`의 "일정이 붙은 비율"은 열이 없으면 0으로 보인다(오류는 로그에만).
 - G11 결과에 따라 연결 끊기 때 지울 것이 생기면 이 표에 더한다.
 
 ### 2-8. 끊기 · 계정 삭제 · 토큰
@@ -377,7 +377,7 @@ PR 2(Gmail)를 먼저 하는 이유: 프로젝트 B는 Testing이라 콘솔 설�
 | U2 | **Taskforce dev** Google 프로젝트: Testing, 테스트 사용자에 시험 계정 둘, redirect `http://localhost:3000/api/connectors/{google,gmail}/callback`. **운영처럼 둘로 나누기를 권장한다**: dev A(Calendar API · Meet REST API, `openid` · `email` · Calendar · Meet 범위, redirect `…/google/callback`) → `.env.local`의 `GOOGLE_*`, dev B(Gmail API, `openid` · `email` · `gmail.readonly`, redirect `…/gmail/callback`) → `GMAIL_*`. 토큰 폐기는 **프로젝트 단위**로 모든 범위를 거두므로(9장), 한 프로젝트에 둘을 두면 Gmail을 끊을 때 `google` 연결도 끊겨 끊기 · 폐기 시험이 틀린다. 하나로 한다면 폐기 시험을 따로 한다. client secret은 사용자가 `.env.local`에 **직접** 넣는다 | PR 2 전(dev B), PR 3 전(dev A) | [google-verification.md](google-verification.md) 9장 10번. 콘솔 설정은 이 세션이 하지 않는다 |
 | U3 | 시험 계정 둘: Meet 전사가 되는 Workspace(Business Standard 이상, taskforcelabs.dev) 계정 하나(나)와 두 번째 계정(상대). Meet 회의 **둘**을 실제로 전사한다: 내가 주최한 회의 하나, **상대가 주최하고 내가 참석한** 회의 하나(G2 ②). 메일 fixture를 주고받는다 | PR 3 전(메일은 PR 2 전) | 심사 fixture(google-verification.md 6장)와 같은 계정 · 데이터를 쓰면 두 번 만들지 않는다. 같은 회사 · 다른 회사 상대가 모두 되면 더 좋다 |
 | U4 | G13 실제 원문 고르기(본인 Gmail 스레드 · Meet 전사 각 5건, Meet 전사가 없으면 Notion AI 회의록 + 일정 참석자) | PR 1b 전 | 익명화는 로컬에서, 원문은 커밋하지 않는다 |
-| U5 | 운영 마이그레이션 적용 승인(`sources.meeting`) · Vercel env(`GOOGLE_*` · `GMAIL_*` · 여는 플래그) | PR 3 · 5 뒤 | 운영 DB · env는 매번 확인받는다 |
+| U5 | 운영 마이그레이션 적용 승인(`sources.meeting`) · Vercel env(`GOOGLE_*` · `GMAIL_*` · 여는 플래그) | 마이그레이션은 **#30 병합 직전**(결정 2026-09-30), env는 PR 3 · 5 뒤 | 운영 DB · env는 매번 확인받는다 |
 
 ## 8. 끝난 기준 (체크리스트 C4)
 
@@ -451,13 +451,13 @@ Google 공식 문서(대부분 2026-04 ~ 2026-09 갱신)의 원문으로 확인�
 | 참가자 종류 | `signedinUser`(`user` = `users/{user}` + `displayName`) · `anonymousUser`(`displayName`) · `phoneUser`(`displayName` = 일부 가려진 전화번호) 중 하나 | `meet.ts` `MeetParticipant.kind` |
 | 회의 공간 | `spaces.get`은 `spaces/{space}`(서버가 준 id) 또는 `spaces/{meetingCode}`(대소문자 무시)를 받고, 범위 `meetings.space.readonly`로 된다. 응답에 `meetingCode` · `meetingUri` | `meet.ts` `meetingCode` (403 · 404면 null) |
 
-### PR 3 dev에서 확인할 것 (사용자가 시험 회의 둘을 녹음한 뒤)
+### PR 3 dev에서 확인할 것 (#30 병합 뒤 로컬 서버로, 시험 회의 둘을 녹음한 뒤)
 
 **왜 남았나.** PR 3은 코드 · 단위 테스트 · DB 테스트까지 끝냈고(2026-09-29), 아래 넷은 Google 문서에 없거나 문서끼리 달라 dev 회의로만 답이 나온다. 넷 모두 `src/lib/connectors/google/unverified.ts`에 이름 붙은 상수 · 함수 하나로 모아 두었으므로, 결과가 다르면 그 자리 한 줄만 바꾼다(다른 코드는 이 파일을 거쳐서만 가정을 쓴다). 지금 값은 계획대로다(G5는 1차 규칙만, `profile` 범위는 더하지 않았다).
 
 **준비 (7장 U2 · U3).**
 - dev 프로젝트 A(Testing): Calendar API · Google Meet REST API 켜기, `.env.local`에 `GOOGLE_CLIENT_ID` · `GOOGLE_CLIENT_SECRET` · `GOOGLE_REDIRECT_URI=http://localhost:3000/api/connectors/google/callback`. 콘솔 설정은 사용자가 한다.
-- 확인에 쓰는 DB에 `supabase/migrations/20261016000000_sources_meeting.sql` 적용(`npx supabase db query --linked -f …`, `db push` 금지). **먼저 `--linked`가 가리키는 프로젝트가 dev 확인에 쓰는 DB인지 확인한다** — 운영 프로젝트와 같다면 이 적용은 운영 DB 적용이므로 U5의 승인 절차를 따른다. 이 PR은 어느 DB에도 적용하지 않았다.
+- **DB (결정 2026-09-30):** `npx supabase db query --linked`는 **운영 프로젝트**를 가리킨다. 마이그레이션 `supabase/migrations/20261016000000_sources_meeting.sql`은 **#30을 병합하기 직전에 운영 DB에 적용한다**(`db query --linked -f …`, `db push` 금지, 사용자 승인 뒤, 7장 U5). dev 확인은 **병합 뒤 로컬 서버**(`npm run dev`)로 하므로 확인 준비에 따로 적용할 단계는 없다. 이 PR은 어느 DB에도 적용하지 않았다.
 - 시험 계정 둘(Workspace Business Standard 이상): **나(A)** · **상대(B)**. Calendar 일정에서 Meet 링크를 만들어 회의를 잡는다. B의 Meet 표시 이름이 A의 **프로필 이름 · 별칭**과 같으면(PR 2 dev처럼 둘 다 "Daniel Song"이고 프로필 이름이나 별칭이 그것이면) B의 줄이 `Daniel Song (2)`로 나온다 — 정상이다(A를 참가자에서 찾았을 때만 별칭까지 막는다). 구분하려면 B의 표시 이름을 바꾼다.
 - 회의 **M1**: A가 주최, B 초대, 전사 켬. A가 "I'll send the revised proposal to B by Friday." 같은 약속을 말한다. 회의 **M2**: **B가 주최, A가 초대받아 참석**, B가 전사를 켠다(A는 전사 권한이 없는 것이 정상). 두 회의가 끝나고 전사 파일이 생길 때까지 몇 분 기다린다. 가능하면 M1과 같은 시간에 A의 Notion AI 회의록도 만든다(4-b).
 - A로 `/lab` → "Google 연결" → 네 범위 모두 허용 → 연결 결과 `connected`. 그다음 "지금 동기화". 결과는 DB `connections.settings.stats.counts`(A의 google 연결)와 `/admin/metrics` "Google 회의" 카드에서 본다.
@@ -475,6 +475,11 @@ Google 공식 문서(대부분 2026-04 ~ 2026-09 갱신)의 원문으로 확인�
 - (c) 연결 화면에서 Calendar 또는 Meet 체크를 하나 빼고 허용: 결과 `connected_partial`, `settings.scopes`가 받은 범위만, 동기화가 받은 쪽만 한다. 둘 다 빼면 `missing_scope`이고 Google 계정의 "타사 앱"에 남지 않는다.
 - (d) 연결 끊기 · 계정 삭제 뒤 Google 계정의 "타사 앱" 목록에서 Taskforce가 사라지는지, 원문 · 일정은 남는지(G11).
 - 결과는 이 표 아래에 날짜와 함께 적고, 처리방침 3장 · 앱 Meet 줄(PR 4 · 5)을 그대로 맞춘다. 8장의 해당 칸도 체크한다.
+
+**PR 3에서 남긴 알려진 문제 · 결정 (2026-09-30):**
+- **`connections.settings` 읽고 고쳐 쓰기 경쟁 — 별도 PR로 고친다(PR 3에 넣지 않음, 사용자 결정).** google · Gmail 동기화가 세는 통계, Notion 동기화가 google 연결에 세는 일정 잇기 결과(`notion_link_*`), 연결(다시 연결)이 남기는 `scopes` · `googleUserId`가 모두 `updateConnectionSettings`(한 번 읽고 통째로 다시 쓴다)를 지난다. 겹치면 다시 연결한 범위가 옛 값으로 돌아가거나 통계가 사라질 수 있다. 고치는 방법은 원자적 병합 RPC(새 마이그레이션)이고, [FEATURE_MAP.md](../FEATURE_MAP.md) 7장 6번에 적었다.
+- **참석자가 사용자 한 명뿐인 일정:** 회의 코드로 잇는 Meet 전사는 예외로 잇는다 (2-4 4, 결정 2026-09-30).
+- **마이그레이션 적용 대상:** `db query --linked`는 운영 프로젝트다. `sources.meeting` 마이그레이션은 #30 병합 직전에 운영 DB에 적용하고, dev 확인은 병합 뒤 로컬 서버로 한다 (위 준비, 2-7).
 
 ### 출처
 

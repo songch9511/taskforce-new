@@ -287,6 +287,18 @@ describe("syncGoogleMeet: 같은 회의의 일정 (G3)", () => {
     expect(result.counts).toEqual({ meet_transcripts: 1, meet_link_attached: 1 });
   });
 
+  it("참석자가 사용자 한 명뿐인 일정도 회의 코드가 같으면 붙는다 (코드로 잇는 전사는 예외, 2026-09-30 결정)", async () => {
+    const solo = calendarEvent("solo", { attendees: [{ email: "alex@lumenfield.example", name: "Alex Song", self: true, resource: false }] });
+    const { deps, inserted } = fakeDeps();
+    const result = await syncGoogleMeet(connection(), input(setup(), { calendar: fakeCalendar([solo]), listAttended: false }), deps, options());
+    expect(inserted[0]).toMatchObject({
+      title: "Proposal review — Acme",
+      meeting: { calendar_event_id: "solo" },
+      participants: { attendees: [{ name: "Alex Kim", email: "alex@lumenfield.example" }, { name: "Jordan Lee" }] },
+    });
+    expect(result.counts).toEqual({ meet_transcripts: 1, meet_link_attached: 1 });
+  });
+
   it("일정이 없으면 없음 · 코드가 다르면 없음, 일정 조회가 실패하면 일정 없이 넣고 실패로 센다", async () => {
     const none = await syncGoogleMeet(connection(), input(setup(), { calendar: fakeCalendar([calendarEvent("evt-1", { conferenceId: "zzz-zzzz-zzz" })]), listAttended: false }), fakeDeps().deps, options());
     expect(none.counts).toEqual({ meet_transcripts: 1, meet_link_none: 1 });
