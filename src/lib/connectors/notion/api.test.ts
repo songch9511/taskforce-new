@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { authorizeUrl, exchangeCode, notionClient, NotionError, NOTION_VERSION, refreshToken, revokeToken } from "./api";
+import { authorizeUrl, exchangeCode, notionClient, NotionError, NotionOAuthError, NOTION_VERSION, refreshToken, revokeToken } from "./api";
 
 type Call = { url: string; init: RequestInit };
 
@@ -50,11 +50,15 @@ describe("Notion OAuth", () => {
     const config = { clientId: "cid", clientSecret: "sec", redirectUri: "https://x.dev/cb" };
     const refresh = (status: number, body?: unknown) => refreshToken({ ...config, fetch: fakeFetch([{ status, body }]).fetch }, "ref");
     await expect(refresh(400, { object: "error", status: 400, code: "invalid_grant", message: "Invalid refresh token." })).rejects.toMatchObject({
-      name: "NotionError",
+      name: "NotionOAuthError",
       status: 400,
       code: "invalid_grant",
     });
     await expect(refresh(503)).rejects.toMatchObject({ status: 503, code: undefined });
+    // 토큰 발급 창구의 거절은 API 호출 오류와 구분한다 (401이어도 사용자 권한이 끊긴 것이 아니다)
+    const unauthorized = await refresh(401, { object: "error", status: 401, code: "unauthorized" }).catch((error: unknown) => error);
+    expect(unauthorized).toBeInstanceOf(NotionOAuthError);
+    expect(unauthorized).toBeInstanceOf(NotionError);
   });
 
   it("토큰을 Basic 인증으로 폐기한다 (계정 삭제)", async () => {
