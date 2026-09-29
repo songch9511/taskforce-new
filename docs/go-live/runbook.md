@@ -267,7 +267,7 @@ union all select 'slack_people', count(*) from public.slack_people where user_id
 | # | 항목 | 담당 | 끝난 기준 | 먼저 필요한 것 |
 |---|---|---|---|---|
 | W1 | 웹사이트 코드 (원페이지 + 처리방침 · 약관 렌더) | 코드 | Side Kick 사이트 `npm run build && npm test`, Preview에서 확인 | — |
-| W2 | 처리방침 · 약관 확정 | 사용자 | 자리표시자(시행일 · EU · 영국 대리인) 채움, 자체 검토 결정 반영(전화 · 모델 공급자 연락처는 채움), `docs/legal/README.md` 구현 대조표의 게시 조건 모두 끝 | C1~C7, L9(자체 검토) |
+| W2 | 처리방침 · 약관 확정 | 사용자 | 자리표시자(시행일) 채움, 자체 검토 결정 반영(전화 · 모델 공급자 연락처는 채움), `docs/legal/README.md` 구현 대조표의 게시 조건 모두 끝 | C1~C7, L9(자체 검토) |
 | W3 | 웹사이트 맥락 문단을 회의록 · Slack · 메일로 넓히기 | 사용자(카피) | BRAND.md "맥락 문단은 아직 Notion 기준" 해소 | — |
 | W4 | 스토어 · TestFlight 문구 | 사용자 | `app-store.md` 2장 값 입력 | — |
 

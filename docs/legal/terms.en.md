@@ -26,8 +26,9 @@ These terms set out how you may use the Taskforce app (iOS and macOS) and its se
 
 1. You create an account with Sign in with Apple or your email address.
 2. You must be at least 14 years old to use the Service.
-3. Keep your account and devices secure. Tell us right away if you learn your account has been used without permission.
-4. You can delete your account at any time in app → Account → Delete account. Deletion removes your stored data immediately and cannot be undone.
+3. The beta is not offered to people who live in the European Economic Area (EEA, including the European Union) or the United Kingdom. Please do not sign up from these regions.
+4. Keep your account and devices secure. Tell us right away if you learn your account has been used without permission.
+5. You can delete your account at any time in app → Account → Delete account. Deletion removes your stored data immediately and cannot be undone.
 
 ## 5. Connections and permissions
 

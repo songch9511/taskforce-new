@@ -302,9 +302,7 @@ Specifically:
 
 ## 16. Users in the EU and UK
 
-If the EU or UK General Data Protection Regulation (GDPR, UK GDPR) applies to you:
-
-- **EU and UK representative:** {{EU/UK representative — name and contact once appointed; delete this line if the service is not offered in the EU and UK}}
+The beta is not offered to people who live in the European Economic Area (EEA, including the European Union) or the United Kingdom (Terms of Use, section 4.3). We do not advertise there, and the app is not made available in those App Store regions. If the EU or UK General Data Protection Regulation (GDPR, UK GDPR) still applies to you:
 
 - **Controller:** 태스크포스 (Republic of Korea), privacy@taskforcelabs.dev. We have not appointed a Data Protection Officer.
 - **Legal bases:** providing the service: performance of a contract (Art. 6(1)(b)); sending to external AI: consent (Art. 6(1)(a)) and performance of a contract; service metrics, security, and processing other people's information in your sources: legitimate interests (Art. 6(1)(f)). Our legitimate interest is finding your own commitments in the work sources you connect, and we use the information for nothing else.
