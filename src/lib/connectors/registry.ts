@@ -5,6 +5,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type { ConnectProvider } from "@/lib/api/contract";
 import { hasConsentFor } from "@/lib/consent/store";
 import { slackConnectEnabled } from "@/lib/env";
+import { isAdmin } from "@/lib/metrics/load";
 
 import { notionConnector } from "./notion/run";
 import { slackConnector } from "./slack/run";
@@ -23,6 +24,14 @@ const opened = (provider: ConnectProvider) => provider !== "slack" || slackConne
 /** 아직 붙이지 않았거나 열지 않은 서비스면 null (앱에는 보이지만 연결은 안 된다) */
 export function connectorFor(provider: ConnectProvider): Connector | null {
   return opened(provider) ? (CONNECTORS[provider] ?? null) : null;
+}
+
+/**
+ * 웹(/lab, 내부 시험)에서 Slack을 연결할 수 있는 연동. 앱에 연결을 열었거나(SLACK_CONNECT_ENABLED), 연 전이라도 운영자(ADMIN_EMAILS)면
+ * 운영에서 끝까지 시험할 수 있게 연다. 그 밖의 사용자는 null (앱에 열기 전에 /lab으로 우회해 연결하지 못하게).
+ */
+export function slackWebConnector(email: string | null | undefined): Connector | null {
+  return connectorFor("slack") ?? (isAdmin(email ?? null) ? slackConnector : null);
 }
 
 /** 서비스 쪽 토큰 폐기 (연결 끊기). 연결을 열지 않은 서비스라도 이미 있는 연결의 토큰은 폐기한다 */

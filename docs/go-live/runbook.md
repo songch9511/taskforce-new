@@ -94,7 +94,7 @@ npx supabase db query --linked -f supabase/migrations/20261007000000_review_acco
 npx supabase db query --linked -f supabase/migrations/20261011000000_slack.sql   # Slack 표 · connected_at (2026-09-29 적용함). 이 파일을 쓰는 코드보다 먼저 적용한다
 npx supabase db query --linked -f supabase/migrations/20261012000000_slack_tombstones_revoke.sql   # 지움 표시 · 앱 해제 함수 (2026-09-29 적용함)
 npx supabase db query --linked -f supabase/migrations/20261013000000_slack_sync.sql   # Slack 원문 넣기 · 연결 끊기(D3) · 대기 데이터 정리 함수 (2026-09-29 적용함). 코드 배포 전에
-npx supabase db query --linked -f supabase/migrations/20261014000000_connections_server_delete.sql   # 앱의 연결 직접 삭제 정책 지우기. 서버 권한 끊기 코드를 배포한 **뒤에**
+npx supabase db query --linked -f supabase/migrations/20261014000000_connections_server_delete.sql   # 앱의 연결 직접 삭제 정책 지우기. 서버 권한 끊기 코드를 배포한 **뒤에** (2026-09-29 배포 뒤 적용함)
 # 트랙 2-3 · 2-4가 더한 파일도 같은 방식으로
 ```
 
@@ -173,9 +173,10 @@ union all select 'profiles', count(*) from public.profiles where user_id = '<id>
 
 ### Slack 켜기 (순서대로, [slack-integration.md](slack-integration.md) 8장의 남은 칸)
 
-1. **배포** — Slack PR 2~4(#8 · #9 · PR 4)를 배포한다. 마이그레이션 `20261011` · `20261012` · `20261013`은 운영 DB에 이미 적용했다(2026-09-29).
-2. **배포 바로 뒤** `20261014000000_connections_server_delete.sql` 적용(4장). 확인: `select count(*) from pg_policies where tablename = 'connections' and policyname = 'owner_delete'`가 0, 앱에서 Notion 연결 끊기가 된다.
-3. **운영 Slack 앱(L7)** — [slack-app.md](slack-app.md) 9장. Vercel env `SLACK_CLIENT_ID`(숫자.숫자) · `SLACK_CLIENT_SECRET` · `SLACK_SIGNING_SECRET` · `SLACK_REDIRECT_URI`(필요하면 `SLACK_APP_TOKEN`) → 재배포 → 이벤트 URL "Verified".
+1. ✅ **배포** (2026-09-29) — Slack PR #4~#10을 main에 병합해 배포했다. 마이그레이션 `20261011` · `20261012` · `20261013`은 그 전에 적용했다.
+2. ✅ **배포 바로 뒤** `20261014000000_connections_server_delete.sql` 적용(2026-09-29). 확인: `connections`의 정책이 `owner_select`만 남음.
+3. ✅ **운영 Slack 앱(L7)** (2026-09-29) — taskforcelabs 워크스페이스의 **Taskforce**(App ID `A0C584MQJV7`). Vercel env `SLACK_CLIENT_ID`(숫자.숫자, 앱의 Basic Information에서) · `SLACK_CLIENT_SECRET` · `SLACK_SIGNING_SECRET` · `SLACK_REDIRECT_URI` → 재배포 → 이벤트 URL "Verified". 남은 것: 앱 아이콘, 공개 배포(운영 확인 뒤).
+   - 운영 확인은 앱에 열기 전에 **운영자만**(`ADMIN_EMAILS`) 웹 /lab의 "Slack 연결"로 한다. 그 밖의 사용자는 `/lab?slack=unavailable`.
 4. **처리방침 게시(W2)와 PR 4 앱 빌드(Slack 확인 창 · 끊기 문구)가 TestFlight에 나간 뒤** `SLACK_CONNECT_ENABLED=true` → 재배포. 앱의 Slack 줄이 "Coming soon"에서 Connect로 바뀐다. 예전 빌드는 확인 창 없이 연결되고 끊기 문구가 옛것이라, 켜기 전에 테스터가 새 빌드를 받게 한다.
 5. **확인**
 
