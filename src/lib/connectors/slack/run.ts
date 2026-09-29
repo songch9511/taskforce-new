@@ -19,6 +19,7 @@ import {
   slackUserName,
   type SlackOAuthConfig,
 } from "./client";
+import { checkSlackTokens, type SlackHealthDeps, type SlackTokenCheckResult } from "./health";
 import { revokeSlackConnections, saveSlackSettings, slackSyncDeps } from "./store";
 import { DEFAULT_SLACK_SYNC, slackSettingsSchema, syncSlack, type SlackNameApi } from "./sync";
 
@@ -87,6 +88,33 @@ export async function syncSlackConnection(
     await recordSync(admin, connection, { error: message });
     return { connectionId: connection.id, ok: false, error: message, revoked: false };
   }
+}
+
+/** 매일: 끊기지 않은 Slack 연결의 토큰이 살아 있는지 확인하고, 죽었으면 앱 해제와 같게 끊는다 (health.ts) */
+export async function checkSlackConnectionTokens(admin: SupabaseClient, options: { now?: Date; deadline?: number } = {}): Promise<SlackTokenCheckResult> {
+  const now = options.now ?? new Date();
+  const deps: SlackHealthDeps = {
+    connections: async () => {
+      const { data } = await admin.from("connections").select("id, settings").eq("provider", "slack").in("status", ["active", "error"]).throwOnError();
+      return ((data ?? []) as { id: string; settings: unknown }[]).flatMap((row) => {
+        const settings = slackSettingsSchema.safeParse(row.settings);
+        return settings.success ? [{ id: row.id, teamId: settings.data.teamId, slackUserId: settings.data.slackUserId }] : [];
+      });
+    },
+    tokenAlive: async (connection) => {
+      const token = slackTokenSchema.parse(await loadToken(admin, connection.id));
+      try {
+        await slackAuthTest(token.access_token);
+        return true;
+      } catch (error) {
+        if (isSlackAuthError(error)) return false;
+        throw error;
+      }
+    },
+    // 확인한 시각 전에 연결한 것만 끊는다 (그 사이 다시 연결했으면 그대로)
+    revoke: (connection) => revokeSlackConnections(admin, connection.teamId, [connection.slackUserId], now),
+  };
+  return checkSlackTokens(deps, { deadline: options.deadline });
 }
 
 /** 연결 틀(registry.ts)에 내놓는 Slack 연동 */

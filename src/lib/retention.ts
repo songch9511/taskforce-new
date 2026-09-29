@@ -3,11 +3,16 @@
 // 지우는 것: sources.raw_text(빈 문자열로, raw_text_purged_at에 시각) · judge_logs(후보 구절이 들어 있음).
 // 남기는 것: 원문 행 · 제목 · 링크 · 관련자 · 처리 결과, 근거 인용(evidence) · Claim · 할 일.
 // 글이 지워진 뒤: AI에게 넘기기와 물어보기는 저장된 근거 구절로 대신하고, 누락 신고는 400으로 거절한다.
+// 예외: Slack 연결을 끊거나 앱을 지우면 Slack 원문은 제목 · 관련자까지, 근거 인용은 SLACK_DISCONNECTED_QUOTE로 바로 바꾼다
+// (purge_slack_sources, 20261013000000, docs/go-live/slack-integration.md D3).
 
 export const RAW_TEXT_RETENTION_DAYS = 90;
 
 export const PURGED_SOURCE_MESSAGE = "원문이 보관 기간(90일)이 지나 지워졌어요.";
 export const DISCONNECTED_SOURCE_MESSAGE = "Slack 연결을 끊어 원문을 지웠어요.";
+
+/** Slack 연결을 끊거나 앱을 지우면 근거 인용 자리에 남는 글 (purge_slack_sources). 인용이 아니므로 AI에게 넘기기 · 물어보기에 넣지 않는다 */
+export const SLACK_DISCONNECTED_QUOTE = "Slack 연결을 끊어 지웠어요";
 
 /** 지운 원문을 고르거나 신고할 때의 안내 (sources.raw_text_purge_reason: disconnected = Slack 연결 끊기 · 앱 제거, 그 밖 = 90일) */
 export const purgedSourceMessage = (reason: string | null | undefined) => (reason === "disconnected" ? DISCONNECTED_SOURCE_MESSAGE : PURGED_SOURCE_MESSAGE);
