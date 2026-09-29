@@ -1,0 +1,69 @@
+{
+  "id": "gmail-group-mail-internal",
+  "description": "회사 그룹 주소(제품팀)로 온 메일. 받는 사람 칸에 사용자가 없고(그룹 주소뿐) 본문에서 사용자를 이름(가은님)으로 불러 요청한다 → 내 할 일. G7에서 같은 회사 그룹 메일을 남긴 것이 실제로 쓸모 있는지 본다. 보낸 사람의 '제가 ~하겠습니다'와 다른 동료의 일은 뽑지 않는다.",
+  "origin": "synthetic",
+  "tags": [
+    "gmail"
+  ],
+  "user": {
+    "name": "문가은",
+    "aliases": [
+      "Gaeun"
+    ],
+    "emails": [
+      "gaeun@lumenfield.example"
+    ]
+  },
+  "sources": [
+    {
+      "id": "gmail-1015",
+      "kind": "email",
+      "occurred_at": "2026-10-15T10:20:00+09:00",
+      "participants": {
+        "from": {
+          "name": "하승우",
+          "email": "seungwoo@lumenfield.example"
+        },
+        "to": [
+          {
+            "name": "제품팀",
+            "email": "product@lumenfield.example"
+          }
+        ]
+      },
+      "text": "제목: 다음 주 출시 체크리스트 담당 정리\n\n안녕하세요, 제품팀 여러분.\n다음 주 출시 체크리스트 담당을 정리했습니다.\n\n- QA 최종 점검은 제가 화요일까지 마무리하겠습니다.\n- 가은님, 요금제 페이지 문구 수정을 수요일까지 부탁드려요.\n- 릴리스 노트는 지민님이 준비해 주시기로 했습니다.\n\n출시 리뷰는 목요일 오후 3시입니다.\n\n하승우 드림"
+    }
+  ],
+  "expected_actions": [
+    {
+      "title": "요금제 페이지 문구 수정",
+      "owner": "me",
+      "counterpart": "하승우",
+      "due": "2026-10-21",
+      "status": "open",
+      "evidence": [
+        {
+          "source": "gmail-1015",
+          "quote": "가은님, 요금제 페이지 문구 수정을 수요일까지 부탁드려요"
+        }
+      ]
+    }
+  ],
+  "must_not_extract": [
+    {
+      "source": "gmail-1015",
+      "quote": "QA 최종 점검은 제가 화요일까지 마무리하겠습니다",
+      "reason": "NOT_MY_ACTION"
+    },
+    {
+      "source": "gmail-1015",
+      "quote": "릴리스 노트는 지민님이 준비해 주시기로 했습니다",
+      "reason": "NOT_MY_ACTION"
+    },
+    {
+      "source": "gmail-1015",
+      "quote": "출시 리뷰는 목요일 오후 3시입니다",
+      "reason": "INFO_ONLY"
+    }
+  ]
+}

@@ -15,6 +15,7 @@ import { completeJson, llmConfigFromEnv } from "../src/lib/ai/llm";
 import { ASK_PROMPT_VERSION } from "../src/lib/ai/prompts/ask";
 import { EXTRACT_PROMPT_VERSION } from "../src/lib/ai/prompts/extract";
 import { JUDGE_PROMPT_VERSION } from "../src/lib/ai/prompts/judge";
+import { projectAction } from "../src/lib/actions/project";
 import { askCaseSchema, askContextOf, findAskLabelErrors, scoreAskCase, type AskCase, type AskScore } from "../src/lib/eval/ask-golden";
 import { findLabelErrors, goldenCaseSchema, type GoldenCase } from "../src/lib/eval/golden";
 import { agreement, calibration, decisionTable, labeledItems, type JudgedItem } from "../src/lib/eval/judge-metrics";
@@ -364,7 +365,17 @@ async function main() {
         }
         const finals: FinalAction[] = store.all().map((a) => {
           const state = resolveAction(a.claims);
-          return { id: a.id, title: a.title, quotes: a.evidence.map((e) => e.quote), due: state.due.value, status: state.status.value, owner: state.owner.value };
+          // 확인 요청 여부는 앱과 같은 계산(projectAction: 저장된 판정 · 병합 이유 + 담당 · 필드 확인)으로 본다.
+          const { confirm_reasons } = projectAction(a.title, a.claims, a.confirmReasons);
+          return {
+            id: a.id,
+            title: a.title,
+            quotes: a.evidence.map((e) => e.quote),
+            due: state.due.value,
+            status: state.status.value,
+            owner: state.owner.value,
+            confirmReasons: confirm_reasons,
+          };
         });
         return { golden, score: scoreSequence(golden, finals), finals, outcomes };
       } catch (error) {
@@ -381,14 +392,18 @@ async function main() {
         ...score.splits.map((x) => `    갈라짐 ${x.title} (Action ${x.actions}개)`),
         ...score.overMerged.map((x) => `    잘못 합침 ${x.title}`),
         ...score.misses.map((x) => `    누락 ${x.title}`),
-        ...score.extras.map((x) => `    오탐[${x.kind}] ${x.title}`),
+        ...score.extras.map((x) => `    오탐[${x.kind}]${x.pending ? "(확인 요청)" : "(자동)"} ${x.title}`),
         ...score.fieldErrors.map((x) => `    ${x.field} 틀림 ${x.title}: 정답 ${x.expected ?? "없음"} / 결과 ${x.actual ?? "없음"}`),
+        ...score.pendingReview.map((x) => `    확인 요청 남음 ${x.title} (${x.reasons.join(", ")})`),
       ];
       if (lines.length) console.log(lines.join("\n"));
     }
     const mergeLine = (label: string, runs: SequenceRun[]) => {
       const t = sequenceTotals(runs.map((r) => r.score));
-      return `${label} ${pct(t.accuracy)} (${t.correct}/${t.expected}) · 갈라짐 ${t.splits} · 잘못 합침 ${t.overMerged} · 누락 ${t.misses} · 오탐 ${t.extras} · 필드 오류 ${t.fieldErrors}`;
+      return (
+        `${label} ${pct(t.accuracy)} (${t.correct}/${t.expected}) · 갈라짐 ${t.splits} · 잘못 합침 ${t.overMerged} · 누락 ${t.misses}` +
+        ` · 오탐 ${t.extras}(자동 ${t.extrasAuto}) · 필드 오류 ${t.fieldErrors} · 확인 요청 남음 ${t.pendingReview}`
+      );
     };
     console.log(`\n${mergeLine("병합 정확도", sequenceRuns)}`);
     for (const tag of tagsOf(sequenceRuns)) {

@@ -1,0 +1,50 @@
+{
+  "id": "gmail-info-only",
+  "description": "심사 fixture 2. 사용자 혼자 받은 정보 전달 메일(\"No action needed.\"). 아무것도 뽑지 않는다.",
+  "origin": "synthetic",
+  "tags": [
+    "gmail"
+  ],
+  "user": {
+    "name": "Alex Kim",
+    "aliases": [
+      "Alex"
+    ],
+    "emails": [
+      "alex@lumenfield.example"
+    ]
+  },
+  "sources": [
+    {
+      "id": "gmail-1005",
+      "kind": "email",
+      "occurred_at": "2026-10-05T09:10:00+09:00",
+      "participants": {
+        "from": {
+          "name": "Jordan Lee",
+          "email": "jordan@harborline.example"
+        },
+        "to": [
+          {
+            "name": "Alex Kim",
+            "email": "alex@lumenfield.example"
+          }
+        ]
+      },
+      "text": "제목: Office hours\n\nHi Alex,\n\nOffice hours are unchanged this week. No action needed.\nWe're still on Tuesdays and Thursdays, 2–4 PM, in Room 3B.\n\nJordan"
+    }
+  ],
+  "expected_actions": [],
+  "must_not_extract": [
+    {
+      "source": "gmail-1005",
+      "quote": "Office hours are unchanged this week",
+      "reason": "INFO_ONLY"
+    },
+    {
+      "source": "gmail-1005",
+      "quote": "We're still on Tuesdays and Thursdays, 2–4 PM, in Room 3B",
+      "reason": "INFO_ONLY"
+    }
+  ]
+}

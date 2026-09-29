@@ -1,0 +1,96 @@
+{
+  "id": "seq-meet-others-item",
+  "description": "Notion 요약의 담당 없는 액션 아이템 둘이 전사에서 다른 사람(Maya · Sam)이 맡은 일로 드러난다. 사용자의 할 일은 없고, 확인 요청도 남지 않아야 한다. 사용자의 \"once they're in\"은 조건부라 할 일이 아니다.",
+  "origin": "synthetic",
+  "tags": [
+    "meet"
+  ],
+  "user": {
+    "name": "Alex Kim",
+    "aliases": [
+      "Alex"
+    ],
+    "emails": [
+      "alex@lumenfield.example"
+    ]
+  },
+  "sources": [
+    {
+      "id": "notion-1006",
+      "kind": "meeting",
+      "occurred_at": "2026-10-06T14:00:00+09:00",
+      "participants": {
+        "attendees": [
+          {
+            "name": "Alex Kim",
+            "email": "alex@lumenfield.example"
+          },
+          {
+            "name": "Maya Chen",
+            "email": "maya@lumenfield.example"
+          },
+          {
+            "name": "Sam Rivera",
+            "email": "sam@lumenfield.example"
+          }
+        ]
+      },
+      "text": "# Onboarding flow sync\n\nMeeting 2026-10-06\n\n[AI 요약]\n    ### Summary\n    - The team agreed to cut the signup form down to three fields.\n    - Usability test results will be reviewed at the next sync.\n    ### Action items\n    - [ ] Share usability test results (Thursday)\n    - [ ] Update signup form copy\n\n[메모]\n\n[녹음 전사]"
+    },
+    {
+      "id": "meet-1006",
+      "kind": "meeting",
+      "occurred_at": "2026-10-06T14:00:40+09:00",
+      "participants": {
+        "attendees": [
+          {
+            "name": "Alex Kim",
+            "email": "alex@lumenfield.example"
+          },
+          {
+            "name": "Maya Chen",
+            "email": "maya@lumenfield.example"
+          },
+          {
+            "name": "Sam Rivera",
+            "email": "sam@lumenfield.example"
+          }
+        ]
+      },
+      "text": "[Google Meet · Onboarding flow sync]\nMaya Chen: So we're cutting the signup form down to three fields. I'll share the usability test results by Thursday.\nAlex Kim: Great, thanks. I'll take a look once they're in.\nSam Rivera: And I'm already updating the signup form copy, so that one's covered.\nMaya Chen: Perfect. Let's go through everything at next week's sync."
+    }
+  ],
+  "expected_actions": [],
+  "must_not_extract": [
+    {
+      "source": "notion-1006",
+      "quote": "Share usability test results (Thursday)",
+      "reason": "NOT_MY_ACTION"
+    },
+    {
+      "source": "notion-1006",
+      "quote": "Update signup form copy",
+      "reason": "NOT_MY_ACTION"
+    },
+    {
+      "source": "notion-1006",
+      "quote": "The team agreed to cut the signup form down to three fields.",
+      "reason": "INFO_ONLY"
+    },
+    {
+      "source": "meet-1006",
+      "quote": "I'll share the usability test results by Thursday.",
+      "reason": "NOT_MY_ACTION"
+    },
+    {
+      "source": "meet-1006",
+      "quote": "I'm already updating the signup form copy",
+      "reason": "NOT_MY_ACTION"
+    },
+    {
+      "source": "meet-1006",
+      "quote": "I'll take a look once they're in.",
+      "reason": "TENTATIVE"
+    }
+  ]
+}

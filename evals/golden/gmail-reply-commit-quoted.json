@@ -1,0 +1,63 @@
+{
+  "id": "gmail-reply-commit-quoted",
+  "description": "심사 fixture 1. 사용자(Alex Kim)가 보낸 짧은 답장 \"Sure, I'll send it by Monday.\"와 Gmail식 인용(On … wrote: · >) 속 상대의 요청. 답장의 약속 하나만 할 일이 되고(기한은 인용 속 요청이 아니라 답장의 Monday), 인용 속 요청을 따로 뽑지 않는다. 인용 속 상대 쪽 일(재무팀 서명)은 뽑지 않는다.",
+  "origin": "synthetic",
+  "tags": [
+    "gmail"
+  ],
+  "user": {
+    "name": "Alex Kim",
+    "aliases": [
+      "Alex"
+    ],
+    "emails": [
+      "alex@lumenfield.example"
+    ]
+  },
+  "sources": [
+    {
+      "id": "gmail-1001b",
+      "kind": "email",
+      "occurred_at": "2026-10-01T17:05:00+09:00",
+      "participants": {
+        "from": {
+          "name": "Alex Kim",
+          "email": "alex@lumenfield.example"
+        },
+        "to": [
+          {
+            "name": "Jordan Lee",
+            "email": "jordan@harborline.example"
+          }
+        ]
+      },
+      "text": "제목: Re: Signed contract\n\nSure, I'll send it by Monday.\n\nAlex\n\nOn Thu, Oct 1, 2026 at 4:12 PM Jordan Lee <jordan@harborline.example> wrote:\n\n> Hi Alex,\n>\n> Could you send the signed contract by Monday?\n> Our finance team will countersign it on Tuesday.\n>\n> Thanks,\n> Jordan"
+    }
+  ],
+  "expected_actions": [
+    {
+      "title": "Jordan Lee에게 서명한 계약서 발송",
+      "owner": "me",
+      "counterpart": "Jordan Lee",
+      "due": "2026-10-05",
+      "status": "open",
+      "evidence": [
+        {
+          "source": "gmail-1001b",
+          "quote": "Sure, I'll send it by Monday."
+        },
+        {
+          "source": "gmail-1001b",
+          "quote": "Could you send the signed contract by Monday?"
+        }
+      ]
+    }
+  ],
+  "must_not_extract": [
+    {
+      "source": "gmail-1001b",
+      "quote": "Our finance team will countersign it on Tuesday",
+      "reason": "NOT_MY_ACTION"
+    }
+  ]
+}

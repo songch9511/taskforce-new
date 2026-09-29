@@ -33,8 +33,8 @@ Google 프로젝트 · 범위 · 동의 화면 · 심사는 [google-verification
 | G9 | 7일 재연결 안내 | 앱 연결 줄은 이미 "Reconnect to keep syncing"(빨강)과 "Beta · Reconnect every 7 days"가 있다. 더할 것: **`reauth`로 바뀌는 순간 알림 한 번**("Reconnect Gmail to keep syncing."), 누르면 연결 화면. "한 번"은 상태를 실제로 바꾼 동기화만 보내는 것으로 지킨다(2-3). 만료 전 미리 알림은 하지 않는다 | 처리방침 3장 Gmail 절이 "연결이 만료되면 앱과 알림으로 알려 드립니다"라고 약속한다. 끊긴 동안의 메일은 G8로 되찾으므로 미리 알릴 만큼 급하지 않다(알림 수 = 관리 비용, 원칙 3) | 만료 하루 전 알림: 7일마다 알림 두 번이 된다 |
 | G10 | 권한 화면에서 일부 범위만 허용 | Google 권한 화면은 범위마다 체크를 뺄 수 있다(9장). 토큰 응답의 `scope`로 **받은 범위만 쓴다**: `google`은 Calendar만 · Meet만 허용해도 연결하고(되는 쪽만 동기화, 설정에 `scopes` 기록) 연결 결과를 새 값 `connected_partial`로, 둘 다 없거나 Gmail에 `gmail.readonly`가 없으면 연결하지 않고 받은 토큰을 바로 폐기한 뒤 새 값 `missing_scope`로 알린다. 앱 문구는 PR 4(예: "Connected. Some access is off." · "Allow access to connect.") | 체크를 뺀 이용자를 조용히 실패시키지 않는다(지금 틀로는 502 → "Couldn't connect. Try again."만 보인다, `connections.ts`). 쓸 수 없는 토큰을 남기지 않는다. 연결 결과 값은 응답에만 더하는 것이라 옛 앱은 `unknown` → 같은 오류 문구로 보인다 | 모든 범위를 요구하고 하나라도 빠지면 실패: 이용자가 이유를 모른다 |
 | G11 | 연결을 끊을 때 Google 데이터 | **지금 처리방침 그대로:** 토큰을 폐기하고, 이미 가져온 원문 · 할 일은 남긴다(원문 본문은 90일 규칙). 모두 지우려면 계정 삭제 | Google 정책(API 서비스 사용자 데이터 정책 · Workspace 사용자 데이터 정책)에서 "끊으면 지워라"는 규칙이나 기한은 찾지 못했다. 요구하는 것은 "삭제 요청을 따르고, 지우는 방법을 안내하라"다(9장). Slack D3 같은 예외를 만들지 않으면 원칙 2 · 5가 그대로다. 다만 Google API 약관의 "영구 사본을 만들지 말 것"과 근거 인용을 계정 삭제까지 두는 것이 맞는지는 L9 법률 검토에 더한다 | Slack처럼 끊으면 Google 원문 · 인용을 지운다: 정책이 요구하지 않고, 근거 없는 할 일이 늘어난다 |
-| G12 | 여러 이야기 사이에 묻힌 메일 요청(혼자 받음, 아직 수락 전) | **골든셋 PR에서 eval로 정한다.** 요청만 있는 메일은 이미 할 일이 된다(`email-sole-recipient-request`). 통화 정리 메일 끝의 "계약서 사본도 한 부 보내주실 수 있을까요?" 같은 요청은 Jev "내 약속" 확률이 기각선(0.4) 근처라 실행마다 확인 요청과 기각을 오간다(`freelance-client-recap-email`, slack-integration.md 4장 "남은 것"). F3 규칙(`@이름` 요청은 확인 요청까지)을 "사용자가 유일한 받는 사람인 메일의 요청"으로 넓힐지, 골든셋의 확인 요청 수 · 누락 수를 보고 정한다 | 메일은 외부와의 약속이 오가는 곳이라 조용히 사라지는 요청이 많으면 가치가 떨어진다. 넓히면 확인 요청이 는다(원칙 3) | — |
-| G13 | 실제 원문 골든셋 | 본인 Gmail 스레드 · Meet 전사를 각 5건 이상 **로컬에서 익명화**해 넣는다(원문은 커밋하지 않음) | 합성 예시만으로는 실제 문체 · 메일 앱의 인용 모양 · 받아쓰기 오류를 모른다(Slack D6과 같음) | 합성만: go live 뒤 실제 정확도를 모른다 |
+| G12 | 여러 이야기 사이에 묻힌 메일 요청(혼자 받음, 아직 수락 전) | ✅ **확인 요청으로 보낸다**(PR 1 eval 뒤 결정, 4장 "기준 점수" E5): F3 규칙을 "사용자가 유일한 받는 사람인 메일의 요청"으로 넓혀, 기각 사유가 "내 약속 아님" 하나면 확인 요청까지(자동 반영은 안 함). PR 1b에서 구현한다. 처음 권장: **골든셋 PR에서 eval로 정한다.** 요청만 있는 메일은 이미 할 일이 된다(`email-sole-recipient-request`). 통화 정리 메일 끝의 "계약서 사본도 한 부 보내주실 수 있을까요?" 같은 요청은 Jev "내 약속" 확률이 기각선(0.4) 근처라 실행마다 확인 요청과 기각을 오간다(`freelance-client-recap-email`, slack-integration.md 4장 "남은 것"). F3 규칙(`@이름` 요청은 확인 요청까지)을 "사용자가 유일한 받는 사람인 메일의 요청"으로 넓힐지, 골든셋의 확인 요청 수 · 누락 수를 보고 정한다 | 메일은 외부와의 약속이 오가는 곳이라 조용히 사라지는 요청이 많으면 가치가 떨어진다. 넓히면 확인 요청이 는다(원칙 3) | — |
+| G13 | 실제 원문 골든셋 | 본인 Gmail 스레드 · Meet 전사를 각 5건 이상 **로컬에서 익명화**해 넣는다(원문은 커밋하지 않음). ✅ **PR 1b 전에** 넣고 1b의 고침 전후 숫자를 같이 본다(2026-09-29). Meet 전사가 거의 없으면 Notion AI 회의록 + 같은 회의 일정 참석자로 대신한다 | 합성 예시만으로는 실제 문체 · 메일 앱의 인용 모양 · 받아쓰기 오류를 모른다(Slack D6과 같음) | 합성만: go live 뒤 실제 정확도를 모른다 |
 
 ## 2. 서버 설계
 
@@ -175,6 +175,7 @@ Sure, I'll send it by Monday.
 Alex
 
 On Mon, Oct 5, 2026 at 9:30 AM Jordan Lee <jordan@…> wrote:
+
 > Could you send the signed contract by Monday?
 ```
 
@@ -218,7 +219,7 @@ UI 문구는 짧은 영어 라벨 규칙을 따른다. 설명 줄은 위 줄들�
 
 ## 4. 골든셋 · eval
 
-**코드보다 먼저 만든다**(Slack PR 1과 같은 방식). 본문은 2-5 · 2-6 형식과 글자까지 같게 쓰고 관련자를 채운다. 파일 이름은 `evals/golden/gmail-*.json` · `seq-gmail-*.json` · `meet-*.json` · `seq-meet-*.json`, `tags: ["gmail"]` · `["meet"]`. 모두 합성이고 실제 원문은 G13으로 더한다.
+**코드보다 먼저 만든다**(Slack PR 1과 같은 방식). 본문은 2-5 · 2-6 형식과 글자까지 같게 쓰고 관련자를 채운다. 파일 이름은 `evals/golden/gmail-*.json` · `seq-gmail-*.json` · `meet-*.json` · `seq-meet-*.json` · `seq-notion-after-meet.json` · `notion-summary-*.json`, `tags: ["gmail"]` · `["meet"]`. 모두 합성이고 실제 원문은 G13으로 더한다. 형식은 `evals/golden/README.md` "Gmail · Meet 케이스"(PR 1).
 
 **Gmail (`--tag gmail`)**
 
@@ -230,7 +231,7 @@ UI 문구는 짧은 영어 라벨 규칙을 따른다. 설명 줄은 위 줄들�
 | `seq-gmail-extend-in-thread` | 요청 · 내 약속 → 상대 "Wednesday works too, no rush." → 새 할 일 없이 기한 수요일 (fixture 5, 규칙 0) |
 | `seq-gmail-request-then-reply` | 상대 요청(혼자 받음)과 두 시간 뒤 내 수락이 **따로 들어옴** → 할 일 하나, 남은 확인 요청 없음 (G6 · G12) |
 | `gmail-request-in-recap-ko` | 한국어 회의 정리 메일(혼자 받음): 상대 쪽 할 일 · 이미 끝난 일 사이에 "견적서 수정본도 목요일까지 부탁드려도 될까요?" (아직 수락 전) → G12를 정하는 케이스(`needs_review`). 기존 `email-sole-recipient-request`(요청만 있는 메일 → 할 일)와 문장이 겹치지 않게 |
-| `seq-gmail-quoted-stale-deadline` | 요청 "by Monday" → 상대 "Wednesday works" → 내 "Thanks!" 답장(앞 두 통을 인용) → 기한 **수요일 그대로**, 인용 속 "by Monday"가 새 Claim이 되지 않음 (G6 위험) |
+| `seq-gmail-quoted-stale-deadline` | 요청 "by Monday" → 내 답장 "Sure, I'll send … by Monday." → 상대 "Wednesday works" → 월요일에 내 "Thanks!" 답장(앞 세 통을 인용) → 기한 **수요일 그대로**, 인용 속 "by Monday"가 새 Claim이 되지 않음 (G6 위험). 내 약속을 인용에 넣은 이유: 기한을 당기는 것은 나 혼자도 되므로(규칙 0) 인용 속 **내** 옛 약속이 다시 뽑힐 때 가장 위험하다 |
 | `gmail-group-mail-internal` | 회사 그룹 주소로 온 메일에서 사용자를 이름으로 부른 요청 → 내 할 일 (G7에서 남긴 메일이 실제로 쓸모 있는지) |
 | `gmail-forwarded-with-note` | 사용자가 전달하며 "Could you take this by Friday, Sam?"를 붙임 → 내 할 일 아님, 전달된 원문 속 약속도 아님 |
 | `gmail-long-quoted-history` | 다섯 통이 인용으로 이어진 답장, 새로 쓴 곳엔 "감사합니다" 한 줄 → 없음 (인용 속 옛 약속을 새로 뽑지 않음) |
@@ -238,15 +239,15 @@ UI 문구는 짧은 영어 라벨 규칙을 따른다. 설명 줄은 위 줄들�
 | `seq-gmail-done` | 내 약속 → 내 메일 "Attached the signed contract." → 완료 |
 | `gmail-mixed-language` | 영어 메일에 한국어 답장 |
 
-**Meet (`--tag meet`)** — 형식은 2-5를 정한 뒤 확정한다.
+**Meet (`--tag meet`)**
 
 | 케이스 | 보는 것 |
 |---|---|
 | `meet-speaker-commit` | 전사에서 내가 한 약속 + 상대가 한 약속("I'll book the follow-up call") → 내 것만 (심사 fixture) |
 | `seq-meet-after-notion` | **핵심.** Notion AI 요약(발화자 없음, 담당 없는 액션 아이템 "Send revised proposal (Friday)", 일정 참석자 붙음) → 같은 회의 Meet 전사 → 할 일 하나, 담당 나, 확인 요청 없음, 근거 둘 |
 | `seq-notion-after-meet` | 같은 두 원문을 반대 순서로 → 같은 결과 (회의록이 새 할 일 · 확인 요청을 만들지 않음) |
-| `seq-meet-others-item` | Notion 액션 아이템 "Book follow-up call" + 전사에서 상대가 말함 → 내 할 일 아님, 확인 요청도 남지 않음 |
-| `meet-korean-transcript` | 한국어 회의 전사(Meet 전사는 한국어를 지원한다, 9장), 받아쓰기 오류 · 영문 표시 이름(`Daniel Song`)과 한국어 발화가 섞임 |
+| `seq-meet-others-item` | Notion의 담당 없는 액션 아이템 둘("Share usability test results (Thursday)" · "Update signup form copy") + 전사에서 다른 참석자가 맡음 → 내 할 일 아님, 확인 요청도 남지 않음 |
+| `meet-korean-transcript` | 한국어 회의 전사(Meet 전사는 한국어를 지원한다, 9장), 받아쓰기 오류(전환율 → 전화율, 사용자 이름 한 글자) · 다른 참석자의 영문 표시 이름(`Minjun Park`)과 한국어 발화가 섞임 |
 | `notion-summary-names-attendees` | 전사 없이 Notion 요약만, 액션 아이템이 "태오: …" · "Alex: …"처럼 이름으로 담당을 적고 일정 참석자가 붙음 → 사용자 이름(별칭)의 일만 내 할 일. **사용자 회사의 가장 흔한 모양**(G2) |
 | `meet-long-transcript` | 40분 분량, 약속 여럿 · 잡담 · 조건부 약속 |
 | `notion-summary-with-attendees` | 전사 없이 Notion 요약만, 일정 참석자 두 명(나 · 상대) → 확인 요청(`needs_review`) — 지금과 같은지(참석자를 붙여도 확인 요청 수가 늘지 않는지) |
@@ -254,7 +255,48 @@ UI 문구는 짧은 영어 라벨 규칙을 따른다. 설명 줄은 위 줄들�
 
 - 기준(제안): 추출 precision · recall 0.9 이상, 시퀀스 병합 정확도 100%, 함정 자동 반영 0. 못 미치면 원인을 적고 PR 1b에서 고친다.
 - 결과는 `evals/golden/README.md` 기록 표에 "Gmail" · "Meet" 줄로 따로 적는다. README의 케이스 형식 절에 "Gmail · Meet 케이스"를 더한다.
-- `seq-meet-after-notion`이 틀리면 매칭 후보에 "같은 회의" 표시를 넣을지(골든셋 형식에 `meeting` 칸을 더하는 것부터) PR 1b에서 본다. 지금 파이프라인은 같은 회의인지 모른다.
+- `seq-meet-after-notion`이 틀리면 매칭 후보에 "같은 회의" 표시를 넣을지(골든셋 형식에 `meeting` 칸을 더하는 것부터) PR 1b에서 본다. 지금 파이프라인은 같은 회의인지 모른다. → PR 1 결과: 표시 없이도 하나로 합쳐졌다(아래 "기준 점수"). 남은 것은 확인 요청(E4)이다.
+
+### 기준 점수 (PR 1, 2026-09-29)
+
+`npm run eval -- --tag gmail` 5번 · `--tag meet` 3번 + 전체 `npm run eval` 4번, glm-5.3-flash · extract-v5 + judge-v5 + match-v1. 파이프라인 · 프롬프트는 바꾸지 않았다. 아래 숫자는 끝까지 돈 실행을 모두 합친 것이다(Gmail 9번 · Meet 7번, 시간 초과로 빠진 케이스는 그 실행에서 뺌). `seq-gmail-quoted-stale-deadline`은 첫 실행 뒤 내 약속 메일을 더해 지금 모양이 됐고(위 표), 병합 숫자는 지금 모양으로 돈 4번만 센다.
+
+eval에 하나를 더했다: 시퀀스 끝에 **확인 요청이 남은 열린 Action**(앱과 같은 `projectAction` 계산)과 오탐의 자동 반영 · 확인 요청 구분. 위 표의 "확인 요청 없음"을 재려고.
+
+| 항목 | Gmail | Meet | 기준(제안) |
+|---|---|---|---|
+| 원문 하나 precision · recall (자동+확인) | 85.3% · 80.6% (29/34 · 29/36) | 87.5% · 100% (42/48 · 42/42) | 0.9 · 0.9 — 미달 |
+| 원문 하나 precision · recall (자동만) | 87.1% · 100% (27/31) | 100% · 100% (35/35) | — |
+| 담당 · 기한 정확도 | 100% · 100% | 83.3% · 100% | — |
+| 시퀀스 병합 정확도 | **95.0% (38/40)** | 100% (20/20) | 100% — Gmail 미달 |
+| 함정 자동 반영 | **4**(원문 하나, E1) + 기한 되돌림 2(시퀀스, E2) | 0 | 0 — Gmail 미달 |
+| 시퀀스 끝 확인 요청 남음 | 21 / 시퀀스 40번 (E3) | 13 / 27번 (E4 · 조건부 발언) | "확인 요청 없음" 케이스는 0 |
+| Jev 사람 라벨 일치율 (실행마다 같음) | 내 약속 13/13 · 할 일 11/12 · 이미 함 5/8 · 확정 5/5 | 16/16 · 11/13 · 8/8 · 10/10 | — |
+| 비용 (태그 한 번) | 약 $0.016~0.024 | 약 $0.018 | — |
+
+잘 된 것:
+- 심사 fixture 1 · 5(`gmail-reply-commit-quoted` · `seq-gmail-extend-in-thread`)와 영상 A의 Meet fixture(`meet-speaker-commit`)는 기한 · 담당이 매번 맞았다.
+- 영어 요일 기한(목요일의 "by Monday" → 다음 월요일, 금요일의 "Wednesday" → 다음 수요일)도 매번 맞았다. `dates.ts`는 한국어만 다시 계산하므로 모델 값 그대로다.
+- 참조 · 전달 · 정보 메일에서는 한 건도 뽑지 않았다. 그룹 메일에서 이름으로 부른 요청은 9/9 자동 반영, 한영 섞인 답장은 9/9.
+- 핵심 시나리오 2를 메일로(`seq-gmail-meeting-then-email`), 회의 → 메일 연장(`seq-meet-then-email-extension`), 완료(`seq-gmail-done`)가 모두 맞았다.
+- **같은 회의의 Notion 회의록과 Meet 전사는 지금 매칭으로도 하나로 합쳐진다**(duplicate 0.99~1.00, 순서를 바꿔도 같음). 담당도 "나"로 맞았다.
+- 긴 전사(`meet-long-transcript`, 약속 셋 · 함정 열하나)는 끝까지 돈 5번 모두 3/3, 함정 0.
+- 일정 참석자를 붙여도 확인 요청 수가 늘지 않았다: `notion-summary-with-attendees`에서 참석자를 뺀 같은 원문(시험용, 커밋 안 함)도 3번 모두 확인 요청 1건. 담당 없는 액션 아이템을 추출기가 `me`로 적는 것은 참석자가 있을 때 7/7, 없을 때 2/3으로, 3번뿐이라 차이라고 보기 어렵다.
+
+틀린 것 (Claim · 판정을 직접 확인했다):
+
+| # | 케이스 (재현) | 무엇이 일어났나 | 고칠 곳 (PR 1b) |
+|---|---|---|---|
+| E1 | `gmail-long-quoted-history` (끝까지 돈 6번 중 4번) | 인용 속 옛 약속 "네, 수정 시안은 목요일까지 드리겠습니다."(이미 보낸 일)를 새 메일의 시각으로 뽑고 Jev가 **자동 반영**한다(0.87~0.91). 이미 끝난 일이 새 할 일이 된다 | 2-6의 `quotedHistoryStart(text)`(`lib/pipeline/text.ts`) + 기계 검증 규칙: 메일 원문에서 인용 시작 뒤에만 있는 구절을 인용한 후보는 버린다 |
+| E2 | `seq-gmail-quoted-stale-deadline` (지금 모양 4번 중 2번), `seq-gmail-extend-in-thread` (조짐) | **G6 위험이 실제로 났다.** 월요일 "Thanks" 메일이 인용한 내 옛 약속 "…by Monday."가 그 메일의 시각에 **내 확정 발언**으로 다시 뽑혀, 기한이 수요일에서 월요일로 되돌아갔다("기한 확인"도 남음). 기한을 당기는 것은 나 혼자도 되므로 규칙 0이 막지 않는다. 다른 실행에서도 상대 메일이 인용한 내 약속이 자주 다시 뽑혔다. 같은 메일의 연장 Claim보다 앞에 붙어서 겨우 비껴갔을 뿐이다(순서가 바뀌면 규칙 6 동점 → 확인 요청) | E1과 같은 규칙. 옛 메일의 말은 그 메일이 들어올 때 이미 Claim이 됐다 |
+| E3 | `seq-gmail-request-then-reply` 8/9 · `seq-gmail-extend-in-thread` 9/9 · `seq-gmail-quoted-stale-deadline` 4/4, 기존 `seq-slack-gap-reply`도 | 요청 메일(혼자 받음)의 요청은 Jev가 확인 요청으로 보낸다(0.5~0.8, "판정 확인: NOT_MY_ACTION"). 그 내용 · 담당 · 상태 Claim은 요청자의 미확정 발언이다. 뒤에 온 **내 수락 메일은 duplicate로 붙어 기한 Claim만 더하므로**(`candidateClaims`) "판정 확인 · 내용 · 담당 · 상태 확인"이 끝까지 남는다. 기한 · 담당 값은 맞다. 메일은 요청과 수락이 늘 다른 원문으로 들어와서(G6) 가장 흔한 모양이다 | 병합: 사용자의 확정 약속(me · firm · first_hand)이 기존 Action에 duplicate · update로 붙으면 내용 · 담당 · 상태 Claim도 더하고, 판정 단계의 "판정 확인" 이유를 푼다(규칙 0 "양쪽이 말했는가") |
+| E4 | `seq-meet-after-notion` 7/7 | Notion 요약의 담당 없는 액션 아이템을 추출기가 `me`로 뽑고 Jev가 확인 요청(0.4 근처)으로 보낸다. 같은 회의 Meet 전사의 내 약속이 duplicate로 붙어도 저장된 "판정 확인"이 남는다. 순서를 바꾸면(`seq-notion-after-meet`) 남지 않는다 | E3과 같은 고침 |
+| E5 | `gmail-request-in-recap-ko` 9번 중 7번 기각 · 기존 `freelance-client-recap-email` 4/4 기각 | G12. 정리 메일 속 요청은 Jev "내 약속" 0.27~0.40, 대부분 기각선(0.4) 아래라 조용히 사라진다. 요청만 있는 메일(`email-sole-recipient-request`)은 0.49~0.62로 확인 요청이 된다 | **G12 결정(✅): 확인 요청으로.** `decideOutcome`의 F3 규칙(`addressedToUser`)을 "사용자가 유일한 받는 사람인 메일의 후보"로 넓힌다. 기각 사유가 "내 약속 아님" 하나면 확인 요청까지. 저장된 판정 결과에 이 규칙을 대 보면(추정, 아직 구현 전) 골든셋에서 실행마다 누락 2가 확인 요청 2가 되고, 틀린 확인 요청은 생기지 않는다(혼자 받은 메일의 추출 후보 기준. 사람 라벨로 물으면 인용 속 옛 약속 1건이 더 걸리지만 E1이 먼저 버린다) |
+| E6 | `gmail-long-quoted-history` 3/9 · `seq-gmail-quoted-stale-deadline` 2/9 · `meet-long-transcript` 2/7 · `gmail-forwarded-with-note` 1/9 · `meet-korean-transcript` 1/7 · `seq-meet-then-email-extension` 1/7 | 추출 응답이 90초 시간 초과된다. 인용이 겹겹인 메일은 664자인데도 자주 걸린다(글 길이가 아니라 모델의 추론이 길어짐). 같은 날 기존 케이스도 1~2번씩 걸려 전체 eval 4번 모두 호출 실패로 끝났다(짧은 케이스 포함, 공급자 응답이 느렸다). 한 번 다시 시도한 뒤에도 넘으면 원문은 `failed`가 된다(`llm.ts` · `process.ts`) | E1은 후보만 버리고 추출 입력은 그대로라 이것을 줄이지 못한다. 추출 입력에서 두 단계 넘는 깊은 인용을 줄일지 E1과 함께 보고, `failed` 원문을 다시 처리하는 길을 확인한다 |
+
+고치지 않고 지켜볼 것:
+- `notion-summary-with-attendees`: 담당 없는 액션 아이템(참석자 둘)을 추출기가 `me`로 뽑는다(정답 `unknown`, 7/7). 확인 요청으로 가서 자동 반영은 되지 않는다.
+- 조건부 발언이 확인 요청으로 간다: `meet-korean-transcript` "예산은 제가 팀장님이랑 먼저 얘기해 보고 말씀드릴게요" 6/6, `seq-meet-others-item` "I'll take a look once they're in" 6/7, `gmail-mixed-language` 1/9. 자동 반영은 0이지만 확인 요청 수를 늘린다(원칙 3). 추출 프롬프트에 조건부 예시를 더할지는 E1~E5를 고친 뒤 전체 숫자를 보고 정한다.
 
 ### 어댑터 단위 테스트 (eval 아님)
 
@@ -289,7 +331,7 @@ UI 문구는 짧은 영어 라벨 규칙을 따른다. 설명 줄은 위 줄들�
 |---|---|---|---|
 | 0 | 이 계획 문서 | 1장 결정 | — |
 | 1 | 골든셋(4장 표) + 지금 파이프라인으로 기준 점수, G12 비교 | `npm run eval` 기록에 Gmail · Meet 줄. 파이프라인 코드 변경 없음 | 1~2일 |
-| 1b | (필요하면) 파이프라인 보완 | Gmail · Meet 병합 정확도 100%, 전체 eval에서 회의록 · Slack 숫자가 떨어지지 않음 | 1~2일 |
+| 1b | 파이프라인 보완(4장 "기준 점수" E1~E5: 인용 속 구절 버리기 · 수락이 확인 요청을 풀기 · G12 규칙) + G13 실제 원문 | Gmail · Meet 병합 정확도 100%, 함정 자동 반영 0, 위 표의 "확인 요청 없음" 케이스에 확인 요청이 남지 않음, 전체 eval에서 회의록 · Slack 숫자가 떨어지지 않음 | 1~2일 |
 | 2 | Google OAuth 공통 + **Gmail** 연결 · 거르기 · 넣기 · `reauth` · 폐기 + `loadIdentity` 주소 + callback · lab 시작 + 여는 플래그 | 단위 테스트. dev 프로젝트로: 연결 → 동기화 → fixture 1 · 5가 할 일 · 기한 갱신으로, 뉴스레터는 DB에 없음, 권한을 거두면 다음 동기화에서 `reauth` | 3일 |
 | 3 | **google** 연결: Calendar 조회 · 회의 잇기 · Meet 전사 넣기 + Notion 회의록에 일정 붙이기(`enrich`) + `sources.meeting` 마이그레이션 | 단위 · DB 테스트. dev Workspace로: Meet 회의 → 전사가 발화자 이름표와 함께 원문으로, 같은 회의 Notion 회의록에 참석자 · 일정, 둘이 할 일 하나로 | 3~4일 |
 | 4 | 재연결 알림(G9) + 앱: Gmail 연결 전 안내 · Meet 줄 · 알림 눌러 연결 화면 · 근거 줄 일정 제목 · Sources 한 회의 묶기 | `swift test` · iOS · macOS 빌드. 시뮬레이터에서 Gmail 확인 창 · `reauth` 줄 · 알림 | 2일 |
@@ -305,7 +347,7 @@ PR 2(Gmail)를 먼저 하는 이유: 프로젝트 B는 Testing이라 콘솔 설�
 | U1 | 1장 결정 (G1 · G2 · G11은 확인 결과와 함께 묻는다) | PR 1 전 | |
 | U2 | **Taskforce dev** Google 프로젝트: Testing, 테스트 사용자에 시험 계정 둘, redirect `http://localhost:3000/api/connectors/{google,gmail}/callback`. **운영처럼 둘로 나누기를 권장한다**: dev A(Calendar API · Meet REST API, `openid` · `email` · Calendar · Meet 범위, redirect `…/google/callback`) → `.env.local`의 `GOOGLE_*`, dev B(Gmail API, `openid` · `email` · `gmail.readonly`, redirect `…/gmail/callback`) → `GMAIL_*`. 토큰 폐기는 **프로젝트 단위**로 모든 범위를 거두므로(9장), 한 프로젝트에 둘을 두면 Gmail을 끊을 때 `google` 연결도 끊겨 끊기 · 폐기 시험이 틀린다. 하나로 한다면 폐기 시험을 따로 한다. client secret은 사용자가 `.env.local`에 **직접** 넣는다 | PR 2 전(dev B), PR 3 전(dev A) | [google-verification.md](google-verification.md) 9장 10번. 콘솔 설정은 이 세션이 하지 않는다 |
 | U3 | 시험 계정 둘: Meet 전사가 되는 Workspace(Business Standard 이상, taskforcelabs.dev) 계정 하나(나)와 두 번째 계정(상대). Meet 회의 **둘**을 실제로 전사한다: 내가 주최한 회의 하나, **상대가 주최하고 내가 참석한** 회의 하나(G2 ②). 메일 fixture를 주고받는다 | PR 3 전(메일은 PR 2 전) | 심사 fixture(google-verification.md 6장)와 같은 계정 · 데이터를 쓰면 두 번 만들지 않는다. 같은 회사 · 다른 회사 상대가 모두 되면 더 좋다 |
-| U4 | G13 실제 원문 고르기(본인 Gmail 스레드 · Meet 전사 각 5건) | PR 1 중 | 익명화는 로컬에서, 원문은 커밋하지 않는다 |
+| U4 | G13 실제 원문 고르기(본인 Gmail 스레드 · Meet 전사 각 5건, Meet 전사가 없으면 Notion AI 회의록 + 일정 참석자) | PR 1b 전 | 익명화는 로컬에서, 원문은 커밋하지 않는다 |
 | U5 | 운영 마이그레이션 적용 승인(`sources.meeting`) · Vercel env(`GOOGLE_*` · `GMAIL_*` · 여는 플래그) | PR 3 · 5 뒤 | 운영 DB · env는 매번 확인받는다 |
 
 ## 8. 끝난 기준 (체크리스트 C4)
