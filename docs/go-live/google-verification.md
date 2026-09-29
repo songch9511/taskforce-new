@@ -199,11 +199,11 @@ A와 같은 문안을 쓰고 "meeting attendees and email recipients"를 "email 
 ### B. `https://www.googleapis.com/auth/gmail.readonly` (제한)
 
 ```
-Taskforce reads email threads the user sent or received (subject, sender, recipients, CC, date, and body) to find commitments the user made or accepted by email, such as "I'll send the signed contract by Monday", and to apply later changes such as "Wednesday works too", which updates the due date of the existing task instead of creating a duplicate. Each task shows the email quote it came from and links to the original thread in Gmail.
+Taskforce reads emails the user sent or received (subject, sender, recipients, CC, date, and body) to find commitments the user made or accepted by email, such as "I'll send the signed contract by Monday", and to apply later changes such as "Wednesday works too", which updates the due date of the existing task instead of creating a duplicate. Each task shows the email quote it came from and links to the original thread in Gmail.
 
-The message body is required: commitments and deadline changes are written in the body, so metadata alone (gmail.metadata) cannot determine whether a message contains a task for the user. Taskforce needs no permission to send, modify, delete, or label email. Newsletters, promotions, and automated notifications (unsubscribe header or Promotions category) are filtered out and not stored. Spam, trash, and attachments are not read.
+The message body is required: commitments and deadline changes are written in the body, so metadata alone (gmail.metadata) cannot determine whether a message contains a task for the user. Taskforce needs no permission to send, modify, delete, or label email. Newsletters, promotions, and automated notifications are filtered out and not stored: mail in the Promotions or Social category is excluded from the message list, and mail with an auto-submitted, bulk, unsubscribe, or mailing-list header, mail from a no-reply address, and calendar invitations are identified from their headers alone, without fetching the body (mailing-list mail from the user's own company domain is kept because it is real work correspondence, and mail the user sent is kept unless it is auto-submitted). Spam, trash, drafts, chats, and attachments are not read.
 
-Data flow: the Taskforce server (Vercel, Sydney) reads Gmail through the Gmail API and stores the remaining threads in Taskforce's database (Supabase, Sydney, no backups). To find tasks, the text is sent to third-party AI models through OpenRouter, only after explicit in-app consent and only to zero-data-retention providers; it is never used to train any AI model. Deleting the account deletes all stored Gmail data immediately and revokes the Google token.
+Data flow: the Taskforce server (Vercel, Sydney) reads Gmail through the Gmail API and stores the remaining emails, one record per email with the body cut at 20,000 characters, in Taskforce's database (Supabase, Sydney, no backups). To find tasks, the text is sent to third-party AI models through OpenRouter, only after explicit in-app consent and only to zero-data-retention providers; it is never used to train any AI model. Deleting the account deletes all stored Gmail data immediately and revokes the Google token.
 ```
 
 ---
@@ -355,7 +355,7 @@ Hello,
 
 We are preparing Taskforce, an AI project manager for iPhone and Mac, for Google's restricted-scope verification with https://www.googleapis.com/auth/gmail.readonly.
 
-Architecture: a Next.js server on Vercel (Sydney region) reads Gmail through the Gmail API and stores filtered email threads in a Supabase Postgres database (Sydney region, row-level security, no backups). OAuth tokens are encrypted with AES-256-GCM. To find tasks, text is sent to third-party AI models through OpenRouter with zero-data-retention routing, after explicit in-app consent. The iOS/macOS apps read from the database under row-level security and write through the server API.
+Architecture: a Next.js server on Vercel (Sydney region) reads Gmail through the Gmail API and stores the emails that remain after filtering in a Supabase Postgres database (Sydney region, row-level security, no backups). OAuth tokens are encrypted with AES-256-GCM. To find tasks, text is sent to third-party AI models through OpenRouter with zero-data-retention routing, after explicit in-app consent. The iOS/macOS apps read from the database under row-level security and write through the server API.
 
 Once Google confirms the required assurance level, could you tell us:
 - the scope of the assessment (server, database, apps, AI routing) and the evidence you need,

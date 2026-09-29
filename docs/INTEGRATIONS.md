@@ -24,7 +24,7 @@
 
 | 방법 | 소스 | 비고 |
 |---|---|---|
-| 서버 OAuth (주기 동기화) | Notion, Slack (구현). Gmail, Calendar, Meet 전사 (1단계, 아직 없음) | 아래 구조. GitHub 등 2단계 연동은 아직 "원해요"만 받는다([다음 연동](#다음-연동)) |
+| 서버 OAuth (주기 동기화) | Notion, Slack, Gmail (구현). Calendar, Meet 전사 (1단계, 아직 없음) | 아래 구조. GitHub 등 2단계 연동은 아직 "원해요"만 받는다([다음 연동](#다음-연동)) |
 | 기기 안 (Apple 앱이 전달) | 미리 알림(EventKit), Apple 메모 (아직 없음) | Apple 메모는 공개 API가 없다. 공유 시트와 단축어(App Intents)의 "Taskforce로 보내기"로 받을 계획이다 (둘 다 아직 없음) |
 | 범용 입구 | 메일 전달 주소, 붙여넣기 | 연동이 없는 소스를 대신한다 |
 
@@ -330,7 +330,7 @@ type DataSourceSetting = {
 
 두 단계로 나눈다(2026-09-27 확정, [GO_LIVE.md](GO_LIVE.md) "go live의 정의").
 
-- **1단계 = go live 조건**: **Slack** · **Google**(Calendar · Gmail · Meet 전사를 연결 한 번으로). Notion과 함께 회의 → 메시지 → 메일을 모두 덮는다.
+- **1단계 = go live 조건**: **Slack** · **Google**(Calendar · Meet 전사)과 **Gmail**. Google 쪽 연결은 둘이다: `google`(Calendar · Meet, 정식 심사)과 `gmail`(제한 범위라 프로젝트를 나눔, [google-verification.md](go-live/google-verification.md) 1장). Notion과 함께 회의 → 메시지 → 메일을 모두 덮는다.
   - Slack: 회의 뒤의 "제가 할게요 · 월요일에 받아도 돼요"(PRD 핵심 시나리오 2의 기한 변경)가 오가는 곳이다. 팀 문화도 Slack에서 서로 챙긴다.
   - Calendar: 읽기 권한이 가볍고, 회의 참석자와 "같은 회의"를 잇는 열쇠를 준다(Notion 회의록에는 참석자가 없다).
   - Gmail: 메일 읽기는 Google 제한 범위라 심사 부담이 크다. 심사 · 테스트 상태의 제약은 [GO_LIVE.md](GO_LIVE.md) 6장.
@@ -341,7 +341,8 @@ type DataSourceSetting = {
 |---|---|---|
 | Notion 할 일 DB | 담당 · 기한 · 상태 속성과 그 변화 | 구현됨 (위 설계) |
 | Slack | 나에게 온 DM, 나를 언급한 글, 내가 쓴 약속 | 사전 필터 없이 1자부터 받는다(`minTextLength: 1`). 글이 많고 짧아 사전 필터는 비용 · 품질을 보고 정한다. 비공개 배포 앱의 조회 속도 제한 확인 필요 |
-| Gmail (+ Calendar) | 내가 보내거나 받은 스레드, 회의 참석자 | 메일 읽기 권한은 Google 심사 대상(테스트 사용자 100명까지는 심사 없이 가능). 같은 Workspace 안에서만 쓰는 내부 앱이면 심사를 피할 수 있는지 확인 필요. 뉴스레터 · 알림 메일 거르기. **Calendar 이벤트는 같은 회의의 원문(Notion 회의록 · Meet 전사)을 잇는 열쇠**로도 쓴다 |
+| Gmail | 내가 보내거나 받은 메일 (한 통이 원문 하나) | **구현됨** (2026-09-29, `src/lib/connectors/gmail/`. 운영에서는 `GMAIL_CONNECT_ENABLED`를 켜기 전까지 새 연결이 닫혀 있다). 프로모션 · 소셜 분류, 자동 발송 · 대량 발송 · 수신 거부 · 메일링 리스트 머리글(같은 회사 도메인의 그룹 메일은 남김), no-reply 주소, 일정 초대는 거르고, 거른 메일은 머리글만 읽어 본문을 받지 않는다. 첫 동기화는 14일, 다시 연결하면 마지막 동기화부터(최대 30일). 메일 읽기는 Google 제한 범위라 정식 공개에는 심사 · CASA가 필요하고, 그 전에는 Testing(테스트 사용자 100명까지, 7일마다 재연결). 규칙 전체는 [google-integration.md](go-live/google-integration.md) 2-6 |
+| Calendar | 회의 참석자 | 아직 없음 (google-integration.md PR 3). **Calendar 이벤트는 같은 회의의 원문(Notion 회의록 · Meet 전사)을 잇는 열쇠**로 쓴다 |
 | Meet 전사 (선택) | 회의 전사 | 발화마다 화자 이름이 있어 Notion AI 요약의 담당자 없는 액션 아이템을 정할 수 있다. 전사를 켜지 않는 회의가 많아 있으면 가져오는 방식으로 둔다 |
 | GitHub | 나에게 배정된 이슈, 리뷰 요청, 나를 언급한 댓글 | 배정 · 리뷰 요청은 구조화된 할 일 형태 |
 
