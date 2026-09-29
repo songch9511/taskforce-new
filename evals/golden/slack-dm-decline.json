@@ -1,0 +1,44 @@
+{
+  "id": "slack-dm-decline",
+  "description": "요청을 거절하고 '여유 생기면 다시 말씀드릴게요'로 미룬다. 거절한 요청은 할 일이 아니고, 조건부로 다시 말하겠다는 것도 약속이 아니다.",
+  "origin": "synthetic",
+  "tags": [
+    "slack"
+  ],
+  "user": {
+    "name": "윤지호",
+    "aliases": [],
+    "emails": []
+  },
+  "sources": [
+    {
+      "id": "slack-1006",
+      "kind": "message",
+      "occurred_at": "2026-10-06T16:20:00+09:00",
+      "text": "[DM · 박지훈]\n박지훈: 지호님 이번 주 안에 투자자 업데이트 메일 초안 봐주실 수 있어요?\n윤지호: 이번 주는 IR 준비 때문에 어렵겠어요 ㅠ\n윤지호: 다음 주에 여유 생기면 다시 말씀드릴게요",
+      "participants": {
+        "attendees": [
+          {
+            "name": "박지훈"
+          },
+          {
+            "name": "윤지호"
+          }
+        ]
+      }
+    }
+  ],
+  "expected_actions": [],
+  "must_not_extract": [
+    {
+      "source": "slack-1006",
+      "quote": "이번 주 안에 투자자 업데이트 메일 초안 봐주실 수 있어요",
+      "reason": "NOT_MY_ACTION"
+    },
+    {
+      "source": "slack-1006",
+      "quote": "다음 주에 여유 생기면 다시 말씀드릴게요",
+      "reason": "TENTATIVE"
+    }
+  ]
+}

@@ -34,7 +34,7 @@ public enum ConnectionProvider: String, CaseIterable, Sendable, Codable, Hashabl
         }
     }
 
-    /// 연결 전에 보여 주는 "읽는 것" (Google만, 세 줄)
+    /// 연결 전에 보여 주는 "읽는 것". 비어 있으면 확인 없이 바로 권한 화면으로 간다
     public var readsBeforeConnecting: [String] {
         switch self {
         case .google:
@@ -43,8 +43,29 @@ public enum ConnectionProvider: String, CaseIterable, Sendable, Codable, Hashabl
                 "Meet: transcripts of meetings you attend",
                 "Read-only. Taskforce never changes or sends anything.",
             ]
+        case .slack:
+            [
+                "DMs and group DMs",
+                "Channel threads you write in or are mentioned in",
+                "New messages only. Taskforce never sends anything.",
+            ]
         default: []
         }
+    }
+
+    /// 연결 끊기 확인 문구. Slack은 끊으면 Taskforce에 있던 Slack 글을 지운다 (docs/go-live/slack-integration.md D3)
+    public var disconnectNote: String {
+        switch self {
+        case .slack: "Slack messages are removed from Taskforce. Tasks stay."
+        default: Self.defaultDisconnectNote
+        }
+    }
+
+    public static let defaultDisconnectNote = "Tasks already found stay."
+
+    /// `connections.provider` 값으로 (모르는 서비스는 기본 문구)
+    public static func disconnectNote(for provider: String) -> String {
+        ConnectionProvider(rawValue: provider)?.disconnectNote ?? defaultDisconnectNote
     }
 
     /// Figma Source icon이 있는 서비스

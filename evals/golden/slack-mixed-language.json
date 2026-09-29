@@ -1,0 +1,57 @@
+{
+  "id": "slack-mixed-language",
+  "description": "영어 · 한국어가 섞인 채널 스레드. 내 약속 하나만 뽑고 동료의 공유 약속은 뺀다.",
+  "origin": "synthetic",
+  "tags": [
+    "slack"
+  ],
+  "user": {
+    "name": "윤지호",
+    "aliases": [],
+    "emails": []
+  },
+  "sources": [
+    {
+      "id": "slack-1006",
+      "kind": "message",
+      "occurred_at": "2026-10-06T10:00:00+09:00",
+      "text": "[#growth]\nAlex Kim: @윤지호 Q4 OKR draft 이번 주 금요일까지 review 가능할까요?\n윤지호: Sure, 목요일까지 comments 남길게요\nAlex Kim: Thanks! pricing page A/B test 결과는 제가 월요일에 공유할게요",
+      "participants": {
+        "attendees": [
+          {
+            "name": "Alex Kim"
+          },
+          {
+            "name": "윤지호"
+          }
+        ]
+      }
+    }
+  ],
+  "expected_actions": [
+    {
+      "title": "Alex Kim의 Q4 OKR 초안 리뷰 후 코멘트",
+      "owner": "me",
+      "counterpart": "Alex Kim",
+      "due": "2026-10-08",
+      "status": "open",
+      "evidence": [
+        {
+          "source": "slack-1006",
+          "quote": "목요일까지 comments 남길게요"
+        },
+        {
+          "source": "slack-1006",
+          "quote": "Q4 OKR draft 이번 주 금요일까지 review 가능할까요?"
+        }
+      ]
+    }
+  ],
+  "must_not_extract": [
+    {
+      "source": "slack-1006",
+      "quote": "pricing page A/B test 결과는 제가 월요일에 공유할게요",
+      "reason": "NOT_MY_ACTION"
+    }
+  ]
+}

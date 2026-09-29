@@ -102,7 +102,12 @@ export async function processSource(
             user_id: source.userId,
             source_id: sourceId,
             candidate,
-            jev_answers: { signals: judge.signals, reasons: judge.reasons },
+            jev_answers: {
+              signals: judge.signals,
+              reasons: judge.reasons,
+              ...(judge.rule ? { rule: judge.rule } : {}),
+              ...(judge.speaker ? { quote_speaker: judge.speaker } : {}),
+            },
             decision: judge.decision,
             model_version: `${judge.model}@${judge.promptVersion}`,
           })),

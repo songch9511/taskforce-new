@@ -142,7 +142,7 @@ export async function extractMissing(input: MissingInput, deps: PipelineDeps): P
 
   return {
     // 사용자가 할 일이라고 했으므로 결정은 auto. Claim 속성(judge.signals)은 Jev 답을 그대로 쓴다.
-    judged: { candidate: verified, judge: { ...judge, decision: "auto", reasons: [] } },
+    judged: { candidate: verified, judge: { ...judge, decision: "auto", reasons: [], rule: undefined } },
     summary: {
       models: { missing: result.model, judge: judge.model },
       promptVersions: { missing: MISSING_PROMPT_VERSION, judge: JUDGE_PROMPT_VERSION },

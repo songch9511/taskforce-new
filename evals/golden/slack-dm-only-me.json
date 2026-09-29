@@ -1,0 +1,53 @@
+{
+  "id": "slack-dm-only-me",
+  "description": "내가 쓴 줄만 있는 DM. 누구에게 한 약속인지는 머리줄의 DM 상대로만 알 수 있다(D7).",
+  "origin": "synthetic",
+  "tags": [
+    "slack"
+  ],
+  "user": {
+    "name": "윤지호",
+    "aliases": [],
+    "emails": []
+  },
+  "sources": [
+    {
+      "id": "slack-1005",
+      "kind": "message",
+      "occurred_at": "2026-10-05T18:30:00+09:00",
+      "text": "[DM · 김대표]\n윤지호: 대표님 말씀하신 IR 자료는 금요일까지 정리해서 공유드릴게요\n윤지호: 혹시 추가로 필요한 거 있으시면 말씀 주세요",
+      "participants": {
+        "attendees": [
+          {
+            "name": "김대표"
+          },
+          {
+            "name": "윤지호"
+          }
+        ]
+      }
+    }
+  ],
+  "expected_actions": [
+    {
+      "title": "김대표에게 IR 자료 정리해 공유",
+      "owner": "me",
+      "counterpart": "김대표",
+      "due": "2026-10-09",
+      "status": "open",
+      "evidence": [
+        {
+          "source": "slack-1005",
+          "quote": "IR 자료는 금요일까지 정리해서 공유드릴게요"
+        }
+      ]
+    }
+  ],
+  "must_not_extract": [
+    {
+      "source": "slack-1005",
+      "quote": "혹시 추가로 필요한 거 있으시면 말씀 주세요",
+      "reason": "INFO_ONLY"
+    }
+  ]
+}

@@ -1,0 +1,78 @@
+{
+  "id": "seq-slack-heldout-cancel-hearsay",
+  "description": "확인용(F2): 요청자가 DM으로 맡긴 번역 검수를 사흘 뒤 직접 취소하면서, 이유로 전해 들은 말을 붙인다. 취소는 요청자 본인의 말이므로 dropped.",
+  "origin": "synthetic",
+  "tags": [
+    "slack",
+    "slack-heldout"
+  ],
+  "user": {
+    "name": "윤지호",
+    "aliases": [],
+    "emails": []
+  },
+  "sources": [
+    {
+      "id": "slack-1005",
+      "kind": "message",
+      "occurred_at": "2026-10-05T16:00:00+09:00",
+      "text": "[DM · 류건우]\n류건우: 지호님 이번 주 금요일까지 번역 검수 한 번만 부탁드릴게요\n윤지호: 네 금요일까지 볼게요",
+      "participants": {
+        "attendees": [
+          {
+            "name": "류건우"
+          },
+          {
+            "name": "윤지호"
+          }
+        ]
+      }
+    },
+    {
+      "id": "slack-1008",
+      "kind": "message",
+      "occurred_at": "2026-10-08T10:30:00+09:00",
+      "text": "[DM · 류건우]\n류건우: 번역 검수는 진행 안 하셔도 될 것 같아요! 외주사에서 이미 끝냈다고 들었어요\n윤지호: 아 네 알겠습니다",
+      "participants": {
+        "attendees": [
+          {
+            "name": "류건우"
+          },
+          {
+            "name": "윤지호"
+          }
+        ]
+      }
+    }
+  ],
+  "expected_actions": [
+    {
+      "title": "류건우의 번역 검수",
+      "owner": "me",
+      "counterpart": "류건우",
+      "due": "2026-10-09",
+      "status": "dropped",
+      "evidence": [
+        {
+          "source": "slack-1005",
+          "quote": "네 금요일까지 볼게요"
+        },
+        {
+          "source": "slack-1005",
+          "quote": "금요일까지 번역 검수 한 번만 부탁드릴게요"
+        },
+        {
+          "source": "slack-1008",
+          "quote": "번역 검수는 진행 안 하셔도 될 것 같아요"
+        }
+      ]
+    }
+  ],
+  "must_not_extract": [
+    {
+      "source": "slack-1008",
+      "quote": "외주사에서 이미 끝냈다고 들었어요",
+      "reason": "INFO_ONLY"
+    }
+  ]
+}

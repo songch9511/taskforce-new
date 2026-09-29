@@ -1,0 +1,62 @@
+{
+  "id": "slack-dm-tentative",
+  "description": "급하지 않은 부탁에 '시간 되면 볼게요'로 답한 것은 할 일이 아니고, 같은 대화에서 확정한 약속만 할 일이다.",
+  "origin": "synthetic",
+  "tags": [
+    "slack"
+  ],
+  "user": {
+    "name": "윤지호",
+    "aliases": [],
+    "emails": []
+  },
+  "sources": [
+    {
+      "id": "slack-1007",
+      "kind": "message",
+      "occurred_at": "2026-10-07T13:10:00+09:00",
+      "text": "[DM · 이도윤]\n이도윤: 혹시 시간 되시면 저희 랜딩페이지 카피 한번 봐주실래요? 급한 건 아니에요\n윤지호: 네 시간 되면 볼게요!\n이도윤: 그리고 내일 미팅 장소 링크 보내주실 수 있나요?\n윤지호: 네 오늘 저녁에 보내드릴게요",
+      "participants": {
+        "attendees": [
+          {
+            "name": "이도윤"
+          },
+          {
+            "name": "윤지호"
+          }
+        ]
+      }
+    }
+  ],
+  "expected_actions": [
+    {
+      "title": "이도윤에게 내일 미팅 장소 링크 전달",
+      "owner": "me",
+      "counterpart": "이도윤",
+      "due": "2026-10-07",
+      "status": "open",
+      "evidence": [
+        {
+          "source": "slack-1007",
+          "quote": "네 오늘 저녁에 보내드릴게요"
+        },
+        {
+          "source": "slack-1007",
+          "quote": "내일 미팅 장소 링크 보내주실 수 있나요"
+        }
+      ]
+    }
+  ],
+  "must_not_extract": [
+    {
+      "source": "slack-1007",
+      "quote": "네 시간 되면 볼게요",
+      "reason": "TENTATIVE"
+    },
+    {
+      "source": "slack-1007",
+      "quote": "혹시 시간 되시면 저희 랜딩페이지 카피 한번 봐주실래요",
+      "reason": "TENTATIVE"
+    }
+  ]
+}

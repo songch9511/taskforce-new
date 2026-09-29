@@ -1,0 +1,67 @@
+{
+  "id": "seq-slack-done",
+  "description": "DM으로 수요일까지 보내기로 한 레퍼런스 자료를 수요일에 보냈다고 DM으로 알린다. 전달이 원문으로 확인되므로 완료(규칙 0).",
+  "origin": "synthetic",
+  "tags": [
+    "slack"
+  ],
+  "user": {
+    "name": "윤지호",
+    "aliases": [],
+    "emails": []
+  },
+  "sources": [
+    {
+      "id": "slack-1005",
+      "kind": "message",
+      "occurred_at": "2026-10-05T14:00:00+09:00",
+      "text": "[DM · 김대표]\n김대표: 지난번 말씀하신 레퍼런스 자료 부탁드려요\n윤지호: 네 수요일까지 정리해서 보내드릴게요",
+      "participants": {
+        "attendees": [
+          {
+            "name": "김대표"
+          },
+          {
+            "name": "윤지호"
+          }
+        ]
+      }
+    },
+    {
+      "id": "slack-1007",
+      "kind": "message",
+      "occurred_at": "2026-10-07T17:10:00+09:00",
+      "text": "[DM · 김대표]\n윤지호: 대표님 레퍼런스 자료 방금 메일로 보내드렸어요\n김대표: 확인했습니다 감사해요!",
+      "participants": {
+        "attendees": [
+          {
+            "name": "김대표"
+          },
+          {
+            "name": "윤지호"
+          }
+        ]
+      }
+    }
+  ],
+  "expected_actions": [
+    {
+      "title": "김대표에게 레퍼런스 자료 발송",
+      "owner": "me",
+      "counterpart": "김대표",
+      "due": "2026-10-07",
+      "status": "done",
+      "evidence": [
+        {
+          "source": "slack-1005",
+          "quote": "수요일까지 정리해서 보내드릴게요"
+        },
+        {
+          "source": "slack-1007",
+          "quote": "레퍼런스 자료 방금 메일로 보내드렸어요"
+        }
+      ]
+    }
+  ],
+  "must_not_extract": []
+}

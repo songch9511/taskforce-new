@@ -12,7 +12,20 @@ export type ScoredCandidate = {
   due: string | null;
 };
 
-export type FalsePositiveKind = "NOT_MY_ACTION" | "INFO_ONLY" | "TENTATIVE" | "ALREADY_DONE" | "DUPLICATE" | "UNLABELED";
+export type FalsePositiveKind =
+  | "NOT_MY_ACTION"
+  | "INFO_ONLY"
+  | "TENTATIVE"
+  | "ALREADY_DONE"
+  | "DUPLICATE"
+  | "UNLABELED"
+  /** 확인 요청으로 가야 할 Action(needs_review)이 자동 반영됨 */
+  | "REVIEW_EXPECTED";
+
+export type ScoreOptions = {
+  /** "자동 반영만" 단계: needs_review 정답은 뽑히면 오탐, 빠지면 누락이 아니다 */
+  autoOnly?: boolean;
+};
 
 export type CaseScore = {
   caseId: string;
@@ -67,9 +80,12 @@ function longestCommonSubstring(a: string, b: string): number {
   return best;
 }
 
-export function scoreCase(golden: GoldenCase, candidates: ScoredCandidate[]): CaseScore {
+export function scoreCase(golden: GoldenCase, candidates: ScoredCandidate[], options: ScoreOptions = {}): CaseScore {
   const sourceText = golden.sources.map((s) => s.text).join("\n");
   const matched = new Set<number>();
+  const expected = golden.expected_actions.map((action, index) => ({ action, index }));
+  const reviewOnly = options.autoOnly ? expected.filter(({ action }) => action.needs_review) : [];
+  const scored = options.autoOnly ? expected.filter(({ action }) => !action.needs_review) : expected;
   const score: CaseScore = {
     caseId: golden.id,
     truePositives: 0,
@@ -84,9 +100,8 @@ export function scoreCase(golden: GoldenCase, candidates: ScoredCandidate[]): Ca
   for (const candidate of candidates) {
     if (!quoteInText(candidate.quote, sourceText)) score.hallucinated.push(candidate);
 
-    const hits = golden.expected_actions
-      .map((action, index) => ({ action, index }))
-      .filter(({ action }) => action.evidence.some((e) => quotesOverlap(e.quote, candidate.quote)));
+    const overlaps = ({ action }: (typeof expected)[number]) => action.evidence.some((e) => quotesOverlap(e.quote, candidate.quote));
+    const hits = scored.filter(overlaps);
     const free = hits.find(({ index }) => !matched.has(index));
 
     if (free) {
@@ -111,13 +126,18 @@ export function scoreCase(golden: GoldenCase, candidates: ScoredCandidate[]): Ca
       continue;
     }
 
+    if (reviewOnly.some(overlaps)) {
+      score.falsePositives.push({ candidate, kind: "REVIEW_EXPECTED" });
+      continue;
+    }
+
     const trap = golden.must_not_extract.find((n) => quotesOverlap(n.quote, candidate.quote));
     score.falsePositives.push({ candidate, kind: trap ? trap.reason : "UNLABELED" });
   }
 
-  golden.expected_actions.forEach((action, index) => {
+  for (const { action, index } of scored) {
     if (!matched.has(index)) score.misses.push({ title: action.title, quote: action.evidence[0].quote });
-  });
+  }
 
   return score;
 }
@@ -130,6 +150,7 @@ export function totals(scores: CaseScore[]): Totals {
     ALREADY_DONE: 0,
     DUPLICATE: 0,
     UNLABELED: 0,
+    REVIEW_EXPECTED: 0,
   };
   let tp = 0;
   let fp = 0;

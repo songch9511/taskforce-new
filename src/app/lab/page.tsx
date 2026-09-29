@@ -6,7 +6,7 @@ import { profileSchema } from "@/lib/api/contract";
 import { requireUser } from "@/lib/auth";
 import type { JudgeSignals, RejectReason } from "@/lib/pipeline/judge";
 import type { VerifiedCandidate } from "@/lib/pipeline/verify";
-import { PURGED_SOURCE_MESSAGE } from "@/lib/retention";
+import { DISCONNECTED_SOURCE_MESSAGE, PURGED_SOURCE_MESSAGE } from "@/lib/retention";
 import { createClient } from "@/lib/supabase/server";
 
 import { nowList } from "@/lib/actions/service";
@@ -29,6 +29,7 @@ type SourceRow = {
   external_url: string | null;
   raw_text: string;
   raw_text_purged_at: string | null;
+  raw_text_purge_reason: string | null;
   occurred_at: string;
   created_at: string;
   processing_status: "pending" | "processing" | "done" | "failed";
@@ -72,9 +73,9 @@ function reasonText(decision: JudgeLogRow["decision"], reasons: RejectReason[]):
 
 const pct = (p: number) => `${Math.round(p * 100)}%`;
 
-export default async function LabPage({ searchParams }: { searchParams: Promise<{ source?: string; notion?: string }> }) {
+export default async function LabPage({ searchParams }: { searchParams: Promise<{ source?: string; notion?: string; slack?: string }> }) {
   const user = await requireUser();
-  const { source: selectedId, notion: notionStatus } = await searchParams;
+  const { source: selectedId, notion: notionStatus, slack: slackStatus } = await searchParams;
   const supabase = await createClient();
 
   const { data: profileRow } = await supabase.from("profiles").select("display_name, aliases, emails, ai_consent_at").maybeSingle();
@@ -91,7 +92,7 @@ export default async function LabPage({ searchParams }: { searchParams: Promise<
   const { data: recent } = await supabase
     .from("sources")
     .select(
-      "id, kind, title, connection_id, external_url, raw_text, raw_text_purged_at, occurred_at, created_at, processing_status, processing_summary, processing_error",
+      "id, kind, title, connection_id, external_url, raw_text, raw_text_purged_at, raw_text_purge_reason, occurred_at, created_at, processing_status, processing_summary, processing_error",
     )
     .order("created_at", { ascending: false })
     .limit(10)
@@ -101,7 +102,7 @@ export default async function LabPage({ searchParams }: { searchParams: Promise<
     ? await supabase
         .from("sources")
         .select(
-          "id, kind, title, connection_id, external_url, raw_text, raw_text_purged_at, occurred_at, created_at, processing_status, processing_summary, processing_error",
+          "id, kind, title, connection_id, external_url, raw_text, raw_text_purged_at, raw_text_purge_reason, occurred_at, created_at, processing_status, processing_summary, processing_error",
         )
         .eq("id", selectedId)
         .returns<SourceRow[]>()
@@ -163,7 +164,7 @@ export default async function LabPage({ searchParams }: { searchParams: Promise<
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <ConnectionsPanel connections={connections ?? []} notionStatus={notionStatus} />
+          <ConnectionsPanel connections={connections ?? []} notionStatus={notionStatus} slackStatus={slackStatus} />
         </CardContent>
       </Card>
 
@@ -255,7 +256,11 @@ export default async function LabPage({ searchParams }: { searchParams: Promise<
               </a>
             )}
             {selected.raw_text_purged_at ? (
-              <p className="text-muted-foreground text-sm">{PURGED_SOURCE_MESSAGE} 근거 인용은 할 일에 남아 있습니다.</p>
+              <p className="text-muted-foreground text-sm">
+                {selected.raw_text_purge_reason === "disconnected"
+                  ? `${DISCONNECTED_SOURCE_MESSAGE} 근거 인용도 지웠고, 할 일은 남아 있습니다.`
+                  : `${PURGED_SOURCE_MESSAGE} 근거 인용은 할 일에 남아 있습니다.`}
+              </p>
             ) : (
               <details>
                 <summary className="text-muted-foreground cursor-pointer text-sm">원문 보기</summary>

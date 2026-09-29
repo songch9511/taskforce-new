@@ -94,6 +94,51 @@ describe("scoreCase", () => {
     expect(score.truePositives).toBe(1);
     expect(score.falsePositives.map((f) => f.kind)).toEqual(["DUPLICATE"]);
   });
+
+  describe("확인 요청이 맞는 정답 (needs_review)", () => {
+    const reviewGolden: GoldenCase = {
+      ...golden,
+      expected_actions: [golden.expected_actions[0], { ...golden.expected_actions[1], needs_review: true }],
+    };
+
+    it("자동+확인 단계에서는 보통 정답이다", () => {
+      const score = scoreCase(reviewGolden, [candidate("회의록은 제가 오늘 정리할게요", { due: "2025-09-22" })]);
+      expect(score.truePositives).toBe(1);
+      expect(score.misses.map((m) => m.title)).toEqual(["제안서 발송"]);
+    });
+
+    it("자동만 단계에서는 뽑히면 오탐이고, 빠져도 누락이 아니다", () => {
+      const picked = scoreCase(reviewGolden, [candidate("회의록은 제가 오늘 정리할게요")], { autoOnly: true });
+      expect(picked.truePositives).toBe(0);
+      expect(picked.falsePositives.map((f) => f.kind)).toEqual(["REVIEW_EXPECTED"]);
+
+      const skipped = scoreCase(reviewGolden, [candidate("금요일까지 제안서 보내드릴게요", { due: "2025-09-26" })], { autoOnly: true });
+      expect(skipped.truePositives).toBe(1);
+      expect(skipped.misses).toEqual([]);
+      expect(skipped.falsePositives).toEqual([]);
+    });
+
+    it("이미 짝지어진 정답과도 겹치면 확인 요청 오탐이 아니라 중복이다", () => {
+      const overlapping: GoldenCase = {
+        ...reviewGolden,
+        expected_actions: [
+          reviewGolden.expected_actions[0],
+          { ...reviewGolden.expected_actions[1], evidence: [{ source: "s1", quote: "금요일까지 제안서 보내드릴게요" }] },
+        ],
+      };
+      const score = scoreCase(
+        overlapping,
+        [candidate("금요일까지 제안서 보내드릴게요", { due: "2025-09-26" }), candidate("금요일까지 제안서 보내드릴게요", { due: "2025-09-26" })],
+        { autoOnly: true },
+      );
+      expect(score.falsePositives.map((f) => f.kind)).toEqual(["DUPLICATE"]);
+    });
+
+    it("totals가 확인 요청 오탐을 사유별로 센다", () => {
+      const picked = scoreCase(reviewGolden, [candidate("회의록은 제가 오늘 정리할게요")], { autoOnly: true });
+      expect(totals([picked]).falsePositivesByKind.REVIEW_EXPECTED).toBe(1);
+    });
+  });
 });
 
 describe("totals", () => {

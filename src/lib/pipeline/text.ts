@@ -25,6 +25,35 @@ export function quoteInText(quote: string, text: string): boolean {
   return true;
 }
 
+/**
+ * 인용이 들어 있는 줄 번호들 (오름차순). "..."로 이은 인용은 조각마다 본다.
+ * 조각이 한 줄 안에 있으면 그 조각이 나오는 줄을 모두(같은 구절이 여러 줄에 있으면 여러 개), 여러 줄에 걸치면 걸친 줄 모두.
+ * 화자를 읽을 때 쓴다: 줄이 여럿이고 화자가 다르면 누가 말했는지 모른다.
+ */
+export function quoteLineIndexes(text: string, quote: string): number[] {
+  const lines = text.split("\n");
+  const normalized = lines.map(normalizeForMatch);
+  const found = new Set<number>();
+  for (const fragment of quoteFragments(quote)) {
+    const within = normalized.flatMap((line, i) => (line.includes(fragment) ? [i] : []));
+    if (within.length > 0) {
+      within.forEach((i) => found.add(i));
+      continue;
+    }
+    // 여러 줄에 걸친 조각: 정규화한 줄들을 이어 붙인 문자열에서 조각이 덮는 줄 모두 (화자가 다른 줄에 걸치면 알아야 한다)
+    const at = normalized.join("").indexOf(fragment);
+    if (at < 0) continue;
+    const end = at + fragment.length;
+    let offset = 0;
+    for (let i = 0; i < lines.length; i++) {
+      const next = offset + normalized[i].length;
+      if (normalized[i].length > 0 && at < next && end > offset) found.add(i);
+      offset = next;
+    }
+  }
+  return [...found].sort((a, b) => a - b);
+}
+
 /** 기본으로 인용 하나가 걸칠 수 있다고 보는 줄 수 (시작 줄에서 끝 줄까지의 거리) */
 const QUOTE_SPAN_LINES = 10;
 

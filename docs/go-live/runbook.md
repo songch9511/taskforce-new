@@ -49,8 +49,9 @@
 | `GMAIL_CLIENT_ID` · `GMAIL_CLIENT_SECRET` | Google 프로젝트 B 클라이언트 (9장 8번) | 새 값 |
 | `GOOGLE_REDIRECT_URI` · `GMAIL_REDIRECT_URI` | `https://api.taskforcelabs.dev/api/connectors/google/callback` · `…/gmail/callback` | 코드가 Notion처럼 env로 받으면 넣는다 |
 | `SLACK_CLIENT_ID` · `SLACK_CLIENT_SECRET` · `SLACK_SIGNING_SECRET` | api.slack.com/apps → Taskforce → Basic Information (`slack-app.md` 9장 4번) | 새 값 |
-| `SLACK_REDIRECT_URI` | `https://api.taskforcelabs.dev/api/connectors/slack/callback` | 코드가 env로 받으면 |
-| `SLACK_APP_TOKEN` | App-Level Token `xapp-…` (`authorizations:read`) | `slack-app.md` 3-3을 구현할 때만 |
+| `SLACK_REDIRECT_URI` | `https://api.taskforcelabs.dev/api/connectors/slack/callback` | 연결(OAuth) callback. Slack 앱의 Redirect URL과 글자까지 같아야 한다 |
+| `SLACK_APP_TOKEN` | App-Level Token `xapp-…` (`authorizations:read`) | 한 워크스페이스에 이용자가 둘 이상일 때(D4). 없으면 이벤트가 이름을 댄 이용자만 받는다 |
+| `SLACK_CONNECT_ENABLED` | `true` | 앱에 Slack 연결을 연다. 처리방침 · 앱 문구(slack-integration.md PR 4)를 배포할 때 켠다. 그 전에는 비워 둔다 |
 | `APPLE_TEAM_ID` | `U9DWQKQFMW` | Sign in with Apple 토큰 폐기 (`app-store.md` 6장) |
 | `APPLE_KEY_ID` · `APPLE_PRIVATE_KEY` | Apple Developer → Keys → Sign in with Apple 키(.p8). 줄바꿈은 `\n` | APNs 키와 같은 키여도 되지만(`.env.example`) 따로 두기를 권장. 비우면 폐기를 건너뛰고 삭제는 계속 |
 | `APPLE_CLIENT_ID` | 비움 → `dev.taskforcelabs.taskforce` | |
@@ -90,6 +91,10 @@ npx supabase db query --linked -f supabase/migrations/20261004000000_ask.sql
 npx supabase db query --linked -f supabase/migrations/20261005000000_atomic_rate_limits.sql
 npx supabase db query --linked -f supabase/migrations/20261006000000_source_text_retention.sql
 npx supabase db query --linked -f supabase/migrations/20261007000000_review_account_signup_hook.sql
+npx supabase db query --linked -f supabase/migrations/20261011000000_slack.sql   # Slack 표 · connected_at (2026-09-29 적용함). 이 파일을 쓰는 코드보다 먼저 적용한다
+npx supabase db query --linked -f supabase/migrations/20261012000000_slack_tombstones_revoke.sql   # 지움 표시 · 앱 해제 함수 (2026-09-29 적용함)
+npx supabase db query --linked -f supabase/migrations/20261013000000_slack_sync.sql   # Slack 원문 넣기 · 연결 끊기(D3) · 대기 데이터 정리 함수 (2026-09-29 적용함). 코드 배포 전에
+npx supabase db query --linked -f supabase/migrations/20261014000000_connections_server_delete.sql   # 앱의 연결 직접 삭제 정책 지우기. 서버 권한 끊기 코드를 배포한 **뒤에**
 # 트랙 2-3 · 2-4가 더한 파일도 같은 방식으로
 ```
 
@@ -166,6 +171,41 @@ union all select 'connections', count(*) from public.connections where user_id =
 union all select 'profiles', count(*) from public.profiles where user_id = '<id>';
 ```
 
+### Slack 켜기 (순서대로, [slack-integration.md](slack-integration.md) 8장의 남은 칸)
+
+1. **배포** — Slack PR 2~4(#8 · #9 · PR 4)를 배포한다. 마이그레이션 `20261011` · `20261012` · `20261013`은 운영 DB에 이미 적용했다(2026-09-29).
+2. **배포 바로 뒤** `20261014000000_connections_server_delete.sql` 적용(4장). 확인: `select count(*) from pg_policies where tablename = 'connections' and policyname = 'owner_delete'`가 0, 앱에서 Notion 연결 끊기가 된다.
+3. **운영 Slack 앱(L7)** — [slack-app.md](slack-app.md) 9장. Vercel env `SLACK_CLIENT_ID`(숫자.숫자) · `SLACK_CLIENT_SECRET` · `SLACK_SIGNING_SECRET` · `SLACK_REDIRECT_URI`(필요하면 `SLACK_APP_TOKEN`) → 재배포 → 이벤트 URL "Verified".
+4. **처리방침 게시(W2)와 PR 4 앱 빌드(Slack 확인 창 · 끊기 문구)가 TestFlight에 나간 뒤** `SLACK_CONNECT_ENABLED=true` → 재배포. 앱의 Slack 줄이 "Coming soon"에서 Connect로 바뀐다. 예전 빌드는 확인 창 없이 연결되고 끊기 문구가 옛것이라, 켜기 전에 테스터가 새 빌드를 받게 한다.
+5. **확인**
+
+| 확인 | 방법 | 기대 |
+|---|---|---|
+| 연결 | 앱 → Connect Slack → 확인 창 세 줄 → 권한 화면 | 권한 9개, 봇 없음, 앱으로 돌아와 `connected` |
+| 할 일 | 다른 계정이 DM "금요일까지 보내 주실 수 있을까요?" + 내 "넵" | 대화가 30분 멈추고 다음 동기화(15분마다) 뒤 할 일, 근거에 Slack 인용 |
+| 버림 | 나를 부르지 않은 채널 글 | `slack_messages` · `sources`에 없음 |
+| 끊기 | 앱 → Disconnect (확인 창 "Slack messages are removed from Taskforce. Tasks stay.") | Slack 워크스페이스의 앱 관리에서 사라짐, 아래 SQL이 모두 0, 할 일 그대로, 근거 자리에 "Removed when Slack was disconnected" |
+| Slack에서 앱 제거 | 다시 연결한 뒤 Slack 쪽(워크스페이스 앱 관리)에서 Taskforce 제거 | 연결이 `revoked`(앱에 Reconnect · Disconnect), 아래 SQL이 모두 0. 앱에서 Disconnect하면 연결 행도 사라짐 |
+| 두 이용자 | 같은 워크스페이스의 Taskforce 계정 둘이 연결 → 한 명이 Slack에서 권한을 거둠 | 그 사람만 `revoked`(`tokens_revoked`), 다른 사람은 그대로. 마지막 한 명까지 거두면 `app_uninstalled` |
+| 로그 | Vercel Logs의 `/api/connectors/slack/events` · 동기화 요청 | 메시지 본문 · 이름 · 토큰 없음 |
+| 정리 · 토큰 확인 | `/api/cron/retention` 응답 | `slack_messages_deleted` · `slack_threads_deleted` · `slack_sources_repurged` · `slack_tokens_checked` · `slack_tokens_revoked` 칸이 있고, 연결된 Slack 수만큼 `slack_tokens_checked` |
+
+Slack 글자가 남았는지 확인하는 SQL(시험 계정 id로, 읽기만, 그 계정에 Slack 연결이 없을 때 모두 0이어야 한다). 첫 줄은 D3가 빠뜨린 Slack 원문을 잡는다(Slack 링크인데 지운 표시가 없음):
+```sql
+select 'unpurged slack source' t, count(*) from public.sources where user_id = '<id>'
+  and external_url like 'https://%.slack.com/%' and raw_text_purge_reason is distinct from 'disconnected'
+union all select 'source text', count(*) from public.sources where user_id = '<id>' and raw_text_purge_reason = 'disconnected' and (raw_text <> '' or participants is not null)
+union all select 'evidence', count(*) from public.evidence e join public.sources s on s.id = e.source_id
+  where s.user_id = '<id>' and s.raw_text_purge_reason = 'disconnected' and e.quote <> 'Slack 연결을 끊어 지웠어요'
+union all select 'claims', count(*) from public.claims c join public.sources s on s.id = c.source_id
+  where s.user_id = '<id>' and s.raw_text_purge_reason = 'disconnected' and (c.quote <> '' or c.value_text is not null or c.speaker is not null)
+union all select 'judge_logs', count(*) from public.judge_logs j join public.sources s on s.id = j.source_id
+  where s.user_id = '<id>' and s.raw_text_purge_reason = 'disconnected'
+union all select 'slack_messages', count(*) from public.slack_messages where user_id = '<id>'
+union all select 'slack_threads', count(*) from public.slack_threads where user_id = '<id>'
+union all select 'slack_people', count(*) from public.slack_people where user_id = '<id>';
+```
+
 ---
 
 ## GO LIVE 체크리스트
@@ -212,7 +252,7 @@ union all select 'profiles', count(*) from public.profiles where user_id = '<id>
 | C2 | 계정 삭제 시 Sign in with Apple 토큰 폐기 (서버는 `src/lib/apple/sign-in.ts`로 구현됨, 앱이 삭제 전에 authorization code를 보내는 일이 남음) | 코드 ✅ 코드 (실기기 확인 남음) | 앱이 `apple_authorization_code`를 보내는 테스트 통과, 실기기에서 Apple ID 목록에서 사라짐 (`app-store.md` 6장) | I8 |
 | C3 | 물어보기 `POST /api/v1/ask` (트랙 2-2) | 코드 ✅ | 인용 기계 검증 · 근거 없으면 "모른다" 테스트, ask 골든셋 eval | C1 |
 | C4 | Google 연동: Calendar · Meet 전사 · Gmail (트랙 2-3) | 코드 | 메일 · Meet 골든셋 eval 기록, `invalid_grant` → `reauth` + 재연결 안내, 처리방침 3장 Google · Gmail 문장과 구현 값 일치 | C1 |
-| C5 | Slack 연동: OAuth + Events API (트랙 2-4) | 코드 | 서명 검증 · 버리는 규칙 테스트, Slack 골든셋(핵심 시나리오 2) eval, 권한이 처리방침 3장과 일치 | C1 |
+| C5 | Slack 연동: OAuth + Events API (트랙 2-4, 계획 [slack-integration.md](slack-integration.md)) | 코드 ✅ (2026-09-29, PR 1~4. dev 워크스페이스에서 시나리오 2 · 연결 끊기 확인) | 서명 검증 · 버리는 규칙 테스트, Slack 골든셋(핵심 시나리오 2) eval, 권한이 처리방침 3장과 일치. 운영에서 남은 확인은 아래 "Slack 켜기" | C1 |
 | C6 | 앱: iPhone 한 화면 · Mac 런처 · 연결 · AI 동의 화면 · 계정 메뉴(Connections · AI data · Privacy Policy · Sign out · Delete account) · 데모 로그인 (트랙 3) | 코드 ✅ (Mac E2E 2026-09-28, 로컬 서버) | 시뮬레이터 · Mac E2E: 로그인 → 동의 → Notion 연결(앱 복귀) → 할 일 → 체크 · Review 확정 | C1, 데모 로그인 결정 |
 | C7 | 모델 공급자 고정 (`provider.only`) | 코드 ✅ (`src/lib/ai/providers.ts`) | 처리방침 7장 표에 공급자 · 국가를 적음(`docs/legal/README.md` 결정 1, 해결됨). 남은 것: TypeSafe 소재지 서면 확인 | — |
 | C8 | 보안 헤더 (`next.config.ts`) | 코드 ✅ | HSTS · CSP 등 응답 헤더 확인. 모든 응답에 HSTS(2년, 하위 도메인) · nosniff · Referrer-Policy · X-Frame-Options DENY · Permissions-Policy · COOP를 붙이고, CSP는 화면이 `default-src 'self'`(Next 인라인 스크립트 때문에 `'unsafe-inline'` 허용) · API가 `default-src 'none'`이며 X-Powered-By는 끔 (`tests/next-config-headers.test.ts`) | — (CASA 준비에도 필요) |

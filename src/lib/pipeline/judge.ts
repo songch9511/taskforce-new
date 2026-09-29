@@ -2,7 +2,7 @@ import type { JevDecision, JevQuestion } from "@/lib/ai/jev";
 import { kstDate } from "@/lib/ai/prompts/extract";
 import { JUDGE_PROMPT_VERSION, JUDGE_QUESTIONS, WRITTEN_BY_ME_PROMPT_VERSION, WRITTEN_BY_ME_QUESTIONS } from "@/lib/ai/prompts/judge";
 
-import { findNameVariants, userPosition, type Participants, type UserIdentity } from "./identity";
+import { addressedToUser, findNameVariants, quoteSpeaker, userPosition, type Participants, type UserIdentity } from "./identity";
 import { JUDGE_THRESHOLDS, type JudgeThresholds } from "./judge.config";
 import { quoteContext } from "./text";
 
@@ -42,10 +42,15 @@ export type JudgeOutcome = {
   decision: JudgeDecision;
   /** reject면 기각 사유, confirm이면 확인이 필요한 이유 */
   reasons: RejectReason[];
+  /** 확률 표가 아니라 코드 규칙으로 정한 판정. addressed_request: @이름으로 부른 요청이라 기각 대신 확인 요청 */
+  rule?: "addressed_request";
 };
+
 
 export type JudgeResult = JudgeOutcome & {
   signals: JudgeSignals;
+  /** 인용 줄의 화자 이름표 (코드가 원문에서 읽은 값, quoteSpeaker). 병합이 붙일 Action의 요청자와 비교해 화자 역할을 정한다 */
+  speaker?: string;
   promptVersion: string;
   model: string;
   cost?: number;
@@ -59,6 +64,7 @@ export type Decide = (request: { state: unknown; questions: Record<string, JevQu
  */
 export function buildJudgeState(candidate: JudgeCandidate, source: JudgeSource, identity: UserIdentity) {
   const variants = findNameVariants(source.text, identity, source.participants);
+  const speaker = quoteSpeaker(source.text, candidate.quote, identity, source.participants);
   return {
     user: {
       name: identity.name,
@@ -72,6 +78,8 @@ export function buildJudgeState(candidate: JudgeCandidate, source: JudgeSource, 
       quote: candidate.quote,
       // 상대가 누구인지 알려야 "누가 말했나(speaker_role)"를 요청한 쪽 · 제3자로 가를 수 있다.
       ...(candidate.counterpart ? { counterpart: candidate.counterpart } : {}),
+      // 인용 줄의 화자 이름표 ("박지훈: …"). 코드가 원문에서 읽은 값이라 추측보다 확실하다 (judge-v5).
+      ...(speaker ? { quote_speaker: speaker } : {}),
     },
     context: quoteContext(source.text, candidate.quote) ?? candidate.quote,
     source: {
@@ -108,20 +116,34 @@ export function parseJudgeAnswers(answers: JevDecision["answers"]): JudgeSignals
   };
 }
 
+export type DecideContext = {
+  /** 인용 줄이 사용자를 @이름으로 직접 부른다 (addressedToUser) */
+  addressedToUser?: boolean;
+};
+
 /** 확률을 임계값과 비교해 자동 반영 / 확인 요청 / 기각을 정한다 (docs/TRUTH_RULES.md 1장 표). */
-export function decideOutcome(signals: JudgeSignals, thresholds: JudgeThresholds = JUDGE_THRESHOLDS): JudgeOutcome {
+export function decideOutcome(
+  signals: JudgeSignals,
+  thresholds: JudgeThresholds = JUDGE_THRESHOLDS,
+  context: DecideContext = {},
+): JudgeOutcome {
   const rejects: RejectReason[] = [];
   if (signals.is_my_commitment < thresholds.reject) rejects.push("NOT_MY_ACTION");
   if (signals.is_actionable < thresholds.reject) rejects.push("INFO_ONLY");
   if (signals.certainty.choice === "none") rejects.push("TENTATIVE");
   if (signals.already_done >= thresholds.doneRejectAt) rejects.push("ALREADY_DONE");
-  if (rejects.length > 0) return { decision: "reject", reasons: rejects };
+  // 사용자를 @이름으로 직접 부른 요청은 아직 수락하지 않았다는 이유("내 약속 아님") 하나로는 버리지 않고 묻는다 (원칙 3).
+  // 무엇을 가리키는지 원문에 없는 요청("@지호 이거 금요일까지 될까요?")이 조용히 사라지지 않게 한다. 다른 사유가 함께 있으면 그대로 기각.
+  const pendingRequest = context.addressedToUser === true && rejects.length === 1 && rejects[0] === "NOT_MY_ACTION";
+  if (rejects.length > 0 && !pendingRequest) return { decision: "reject", reasons: rejects };
 
   const doubts: RejectReason[] = [];
   if (signals.is_my_commitment < thresholds.accept) doubts.push("NOT_MY_ACTION");
   if (signals.is_actionable < thresholds.accept) doubts.push("INFO_ONLY");
   if (signals.certainty.choice !== "firm") doubts.push("TENTATIVE");
   if (signals.already_done >= thresholds.doneAcceptBelow) doubts.push("ALREADY_DONE");
+  // 규칙으로 살린 요청은 임계값 설정과 상관없이 확인 요청까지만 간다 (자동 반영하지 않는다).
+  if (pendingRequest) return { decision: "confirm", reasons: [...new Set<RejectReason>(["NOT_MY_ACTION", ...doubts])], rule: "addressed_request" };
   return doubts.length > 0 ? { decision: "confirm", reasons: doubts } : { decision: "auto", reasons: [] };
 }
 
@@ -138,9 +160,11 @@ export async function judgeCandidate(
   const questions = self ? WRITTEN_BY_ME_QUESTIONS : JUDGE_QUESTIONS;
   const response = await decide({ state: buildJudgeState(candidate, source, identity), questions });
   const signals = parseJudgeAnswers(response.answers);
+  const speaker = quoteSpeaker(source.text, candidate.quote, identity, source.participants);
   return {
-    ...decideOutcome(signals, thresholds),
+    ...decideOutcome(signals, thresholds, { addressedToUser: addressedToUser(source.text, candidate.quote, identity, source.participants) }),
     signals,
+    ...(speaker ? { speaker } : {}),
     promptVersion: self ? WRITTEN_BY_ME_PROMPT_VERSION : JUDGE_PROMPT_VERSION,
     model: response.model,
     cost: response.usage?.cost,

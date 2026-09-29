@@ -12,15 +12,15 @@
 | 받는 방식 | **Events API**. 대화 기록 API(`conversations.history` · `replies`)로 주기 조회하지 않는다(4장 속도 제한) |
 | 받는 이벤트 | `message.im` · `message.mpim` · `message.channels` · `message.groups` (사용자 이벤트) |
 | 남기는 메시지 | 이용자와의 DM, 그룹 DM, 이용자를 언급한 메시지, 이용자가 쓴 메시지와 그 스레드. **나머지는 받는 즉시 버린다** |
-| 권한 | `im:history` · `mpim:history` · `channels:history` · `groups:history` · `users:read` (모두 user scope) |
+| 권한 | `im:history` · `mpim:history` · `channels:history` · `groups:history` · `users:read` + 대화 이름 `im:read` · `mpim:read` · `channels:read` · `groups:read` (모두 user scope, 9개. 대화 이름 4개는 2026-09-28 결정, [slack-integration.md](slack-integration.md) D7) |
 | redirect URL | `https://api.taskforcelabs.dev/api/connectors/slack/callback` |
 | 이벤트 URL | `https://api.taskforcelabs.dev/api/connectors/slack/events` |
-| 배포 | 공개 배포(Public Distribution)를 켠 **비Marketplace 앱**으로 시작. Marketplace는 설치 워크스페이스가 10곳을 넘고 법률 검토(7장)가 끝난 뒤 |
+| 배포 | 공개 배포(Public Distribution)를 켠 **비Marketplace 앱**으로 시작. Marketplace는 설치 워크스페이스가 10곳을 넘고 법률 검토(7장)가 끝난 뒤. 단, 사용자 토큰 `*:history`는 Marketplace 승인이 어렵다(8장, 2026-09-28 확인) |
 | 서버 환경변수 | `SLACK_CLIENT_ID` · `SLACK_CLIENT_SECRET` · `SLACK_SIGNING_SECRET` (+ 3-3의 `SLACK_APP_TOKEN`이 필요하면) |
 
 ## 2. 앱 매니페스트
 
-api.slack.com/apps → **Create New App** → **From a manifest** → 개발 워크스페이스 선택 → 아래 YAML을 붙여 넣는다.
+api.slack.com/apps → **Create New App** → **From a manifest** → 개발 워크스페이스 선택 → 아래 매니페스트를 붙여 넣는다. **JSON 탭을 권한다**: YAML은 복사하며 들여쓰기가 깨지면 권한이 0개로 읽힌다(2026-09-29 dev 앱). 아래 YAML과 같은 내용을 JSON으로 바꿔 넣으면 된다.
 
 ```yaml
 _metadata:
@@ -48,6 +48,10 @@ oauth_config:
       - channels:history
       - groups:history
       - users:read
+      - im:read
+      - mpim:read
+      - channels:read
+      - groups:read
 settings:
   event_subscriptions:
     request_url: https://api.taskforcelabs.dev/api/connectors/slack/events
@@ -56,6 +60,10 @@ settings:
       - message.mpim
       - message.channels
       - message.groups
+    # 앱 해제 알림. 봇이 없어도 구독된다(필요 권한 none, 2026-09-29 dev 앱에서 확인). 받으면 연결을 끊고 Slack 데이터를 지운다
+    bot_events:
+      - app_uninstalled
+      - tokens_revoked
   interactivity:
     is_enabled: false
   org_deploy_enabled: false
@@ -79,11 +87,13 @@ settings:
 | `channels:history` | 이용자가 속한 공개 채널(`message.channels`) | 채널에서 이용자를 언급한 요청, 이용자가 채널에 쓴 약속("제가 할게요") |
 | `groups:history` | 이용자가 속한 비공개 채널(`message.groups`) | 위와 같음. 팀 논의는 비공개 채널에서 많이 한다 |
 | `users:read` | 사용자 id → 이름 | 메시지의 `U…` id를 이름으로 바꿔 `participants`에 넣는다. 담당 판정에 쓴다 |
+| `im:read` · `mpim:read` | DM · 그룹 DM의 상대 (`conversations.info`) | 메시지 이벤트에는 대화 id만 있다. 내가 쓴 줄만 있는 DM에서도 **누구와의 약속인지**(상대) 알려면 필요하다 (2026-09-28 추가, D7) |
+| `channels:read` · `groups:read` | 채널 이름 | 원문 머리줄 · 제목의 `#fundraising`. 채널 이름이 주제를 알려 추출을 돕는다 (2026-09-28 추가, D7) |
 
 **넣지 않은 것과 이유:**
 - `chat:write` 등 쓰기 권한: 앱은 읽기만 한다.
 - `users:read.email`: 이메일로 Google 쪽 참석자와 사람을 맞출 수 있지만, 베타에서는 이름으로 충분한지 먼저 본다. 필요해지면 처리방침 3장과 함께 더한다.
-- `channels:read` · `groups:read` · `im:read` · `mpim:read`: 대화 이름을 받으려면 필요하다. 원문 제목을 "Slack · DM with Jordan"처럼 사람 이름으로 만들면 없어도 된다. 채널 이름이 꼭 필요해지면 더한다.
+- ~~`channels:read` · `groups:read` · `im:read` · `mpim:read`~~: **더했다 (2026-09-28, D7).** 이 권한 없이는 DM 상대가 글을 쓰기 전까지 상대를 모르고, 채널 이름도 모른다.
 - `search:read`: 과거 메시지를 검색해 오는 것은 이벤트 방식의 목적(쌓아 두지 않기)과 맞지 않는다.
 - 봇 권한 `app_mentions:read`와 이벤트 `app_mention`: 이 이벤트는 **Taskforce 봇**이 언급됐을 때만 온다. 이용자가 언급된 메시지는 `message.channels` · `message.groups`에서 `<@이용자id>`로 찾는다. 그래서 봇을 두지 않는다.
 
@@ -122,7 +132,7 @@ Slack은 2025-05-29에 **Marketplace에 올리지 않고 배포하는 상업용 
 
 ## 5. OAuth 흐름 (서버 구현 참고)
 
-- 권한 요청: `https://slack.com/oauth/v2/authorize?client_id=…&user_scope=im:history,mpim:history,channels:history,groups:history,users:read&redirect_uri=https://api.taskforcelabs.dev/api/connectors/slack/callback&state=<서명된 state>`. 봇 권한이 없으므로 `scope=`는 비운다.
+- 권한 요청: `https://slack.com/oauth/v2/authorize?client_id=…&user_scope=im:history,mpim:history,channels:history,groups:history,users:read,im:read,mpim:read,channels:read,groups:read&redirect_uri=https://api.taskforcelabs.dev/api/connectors/slack/callback&state=<서명된 state>`. 봇 권한이 없으므로 `scope=`는 비운다.
 - callback에서 `oauth.v2.access`로 교환 → `authed_user.access_token`(사용자 토큰), `authed_user.id`, `team.id` · `team.name`. 연결은 `external_account_id = team.id:authed_user.id`, `display_name = team.name`으로 저장하고 토큰은 `connection_secrets`에 암호화한다(기존 `saveConnection`).
 - 연결 끊기 · 계정 삭제 때 `auth.revoke`로 토큰을 폐기한다(`registry.ts`의 `revokeToken`).
 - 워크스페이스가 앱 승인을 요구하면(관리자 설정) 이용자는 "요청"만 보내고 관리자가 승인해야 설치된다. 연결 실패 문구에 이 경우를 넣는다.
@@ -144,11 +154,15 @@ Slack API 약관(2025-10-10 시행, <https://slack.com/terms-of-service/api>)에
 - **대량 내보내기 · 다른 조직을 위한 사용 금지.**
 - **영구 사본 금지:** "Data Access API and Real-Time Search API" 절에 "you may not create persistent copies, archives, indexes, or long-term data stores of other organizations' API Data"가 있다. 이 문장이 그 두 API에만 걸리는지, 모든 API 데이터에 걸리는지 문맥상 분명하지 않다.
 - **상업 배포:** "users could pay fees for your product"이면 Commercial Distribution이고 별도 계약(대부분 Marketplace)이 필요하다. 베타는 무료지만 유료화하면 해당한다.
+- **앱을 지우면 14 영업일 안에 삭제 (2026-09-28 확인):** Slack 개발자 정책(2024-12-10 시행)은 "When a User deletes your Application … you must delete all associated Data within 14 business days"라고 한다. 지금 처리방침 5장의 "연결을 끊어도 원문이 남는다"는 Slack에 맞지 않는다 → [slack-integration.md](slack-integration.md) D3.
 
-Taskforce가 지금 하는 것: 남긴 메시지를 원문(`sources.raw_text`)으로 **저장 후 90일**, 근거 인용(`evidence.quote`, `claims.quote`)으로는 **계정 삭제 때까지** 보관한다(결정 2, 2026-09-27 해결, 처리방침 5장 · `src/lib/retention.ts`).
+Taskforce가 하는 것 (2026-09-29 구현, [slack-integration.md](slack-integration.md) "PR 3 구현"):
+- 받은 메시지는 대기 표에 **최대 3일**, 원문으로 묶으면 대기 행의 본문을 바로 비운다.
+- 원문(`sources.raw_text`)은 **저장 후 90일**, 근거 인용(`evidence.quote`, `claims.quote`)은 할 일이 있는 동안 보관한다(결정 2, 처리방침 5장).
+- **연결을 끊거나 앱을 지우면(또는 권한을 거두면) 바로** Slack 원문 본문 · 관련자 · 근거 인용 · Claim 글자 · 판정 기록 · 대기 · 추적 · 이름 데이터를 지운다. 할 일 · 기한 · 상태 · 원본 링크는 남긴다(D3). 14 영업일보다 빠르다.
 
 **검토할 것 (docs/legal/README.md 법률 검토 2번):**
-1. ~~원문 보관 기간 상한을 둘지~~ **해결됨**: 원문 본문 90일 뒤 삭제, 인용은 할 일이 있는 동안(결정 2).
+1. ~~원문 보관 기간 상한을 둘지~~ **해결됨**: 원문 본문 90일 뒤 삭제, 인용은 할 일이 있는 동안(결정 2), 연결을 끊거나 앱을 지우면 바로(D3). 남는 항목(할 일 제목 · 상대 이름 · 원본 링크)이 "associated Data"에 들어가는지는 법률 검토에 묻는다.
 2. "설치하는 조직의 명시적 허락"을 사용자 토큰 설치로 충족하는지, 워크스페이스 관리자의 승인 절차가 필요한지.
 3. Slack에서 지운 메시지(`message_deleted`)를 이미 넣은 원문 · 인용에서도 지울지.
 4. 유료화 전에 Marketplace 계약이 필요한지.
@@ -158,6 +172,7 @@ Taskforce가 지금 하는 것: 남긴 메시지를 원문(`sources.raw_text`)�
 Marketplace에 올리면 대화 기록 API 제한이 풀리고 설치 경고가 줄지만, 요구 사항이 있다(docs.slack.dev Marketplace 가이드라인).
 
 - **설치 수:** 활성 워크스페이스 10곳 미만 · 주간 활성 사용자 10명 미만인 앱은 올릴 수 없다.
+- **사용자 토큰 대화 권한 (2026-09-28 확인):** 가이드라인은 `*:history` 권한을 심화 심사하고, 실시간 검색 · MCP 서버 같은 쓰임이 없는 사용자 토큰 `*:history`는 "승인하기 어렵다"고 적는다. 기능 심사는 새 앱 최대 10주다. 비Marketplace 공개 배포는 Slack이 파일럿 · 시험용으로 둔다. 베타는 이대로 가되 **정식 출시 전에 Slack 경로를 다시 정한다**([slack-integration.md](slack-integration.md) 9장).
 - **AI:** Slack 데이터로 LLM을 학습하지 않는다. Agent/Assistant UI 앱에는 "DO not store any Slack data you obtain. Store metadata instead and pull in data in real time if needed, i.e. zero-copy" 규칙이 있다. Taskforce는 Agent UI 앱이 아니지만, 원문 · 인용을 저장하는 설계가 심사에서 문제가 될 수 있다 → **7장 법률 검토와 함께 판단**.
 - **처리방침:** 수집하는 데이터, 쓰임, 보관 기간, 열람 · 이동 · 삭제 요청 방법, 연락처를 적어야 한다 → `docs/legal/privacy.en.md`가 이미 다룬다.
 - **지원:** 연락 방법을 두고 2 영업일 안에 답한다. 지원을 받으려고 계정을 더 만들게 하지 않는다.
@@ -166,12 +181,12 @@ Marketplace에 올리면 대화 기록 API 제한이 풀리고 설치 경고가 
 ## 9. 사용자가 누르는 순서
 
 1. **서버 배포 확인** — `https://api.taskforcelabs.dev`가 떠 있다(runbook). 끝: `/api/connectors/slack/events`가 배포되어 있다(트랙 2-4).
-2. **앱 만들기** — api.slack.com/apps → Create New App → From a manifest → 개발 워크스페이스(예: Dimension) → 2장 YAML → Create. 이벤트 URL 확인이 실패하면 `event_subscriptions`를 빼고 만든 뒤 6번에서 켠다.
+2. **앱 만들기** — api.slack.com/apps → Create New App → From a manifest → 개발 워크스페이스(예: Dimension) → 2장 매니페스트를 **JSON 탭**에 넣는다(YAML은 채팅 · 메모에서 복사하며 들여쓰기가 깨져 권한이 0개로 읽힌 적이 있다) → Create. 이벤트 URL 확인이 실패하면 `event_subscriptions`를 빼고 만든 뒤 6번에서 켠다. "Create and Install"이 "Installation was not completed"로 끝나도 앱은 만들어져 있다 — 같은 버튼을 다시 누르지 말고(앱이 또 생긴다) 앱의 **Install App**에서 설치한다(2026-09-29 dev 앱).
 3. **아이콘** — Basic Information → Display Information → App icon 업로드.
-4. **비밀값** — Basic Information → App Credentials의 Client ID · Client Secret · Signing Secret을 비밀번호 관리자에 적고 Vercel env `SLACK_CLIENT_ID` · `SLACK_CLIENT_SECRET` · `SLACK_SIGNING_SECRET`에 넣는다 → 재배포.
-5. **(필요하면) 앱 수준 토큰** — 3-3을 구현하면 Basic Information → App-Level Tokens → Generate(`authorizations:read`) → `SLACK_APP_TOKEN`.
-6. **이벤트 URL 확인** — Event Subscriptions → Enable → Request URL에 이벤트 URL → "Verified". Subscribe to events on behalf of users에 네 이벤트가 있는지 확인 → Save.
-7. **자기 워크스페이스에서 시험** — 앱에서 Slack 연결 → 권한 화면에 다섯 권한 → Allow → 앱으로 돌아옴. DM으로 "금요일까지 보낼게요" → 대화가 멈춘 뒤 할 일이 생기는지 확인.
+4. **비밀값** — Basic Information → App Credentials의 **Client ID(숫자.숫자 모양, 앱 ID `A…`가 아니다)** · Client Secret · Signing Secret을 비밀번호 관리자에 적고 Vercel env `SLACK_CLIENT_ID` · `SLACK_CLIENT_SECRET` · `SLACK_SIGNING_SECRET`에 넣는다. `SLACK_REDIRECT_URI`는 OAuth & Permissions의 Redirect URL과 글자까지 같게 → 재배포.
+5. **앱 수준 토큰** — 같은 워크스페이스에 Taskforce 이용자가 둘 이상일 수 있으면 Basic Information → App-Level Tokens → Generate(`authorizations:read`) → `SLACK_APP_TOKEN`. 없으면 이벤트가 이름을 댄 이용자만 받는다(`slack-integration.md` D4).
+6. **이벤트 URL 확인** — Event Subscriptions → Enable → Request URL에 이벤트 URL → "Verified". Subscribe to events on behalf of users에 네 메시지 이벤트, Subscribe to bot events에 `app_uninstalled` · `tokens_revoked`가 있는지 확인 → Save. **서버에 PR 3(동기화 · 정리)이 배포된 뒤에 켠다** — 그 전에는 받은 메시지가 정리 없이 쌓인다.
+7. **자기 워크스페이스에서 시험** — 앱에서 Slack 연결(`SLACK_CONNECT_ENABLED=true`가 있어야 Connect가 보인다) → 권한 화면에 아홉 권한 → Allow → 앱으로 돌아옴. 다른 계정의 DM "금요일까지 보낼게요" → 대화가 30분 멈추고 다음 동기화(15분마다) 뒤 할 일이 생기는지 확인. 앱에서 끊으면 Install App 화면 · 앱 목록에서 사라지는지 확인.
 8. **공개 배포** — 6장 순서. 끝: Manage Distribution에 "Public distribution is active".
 9. **다른 워크스페이스에서 시험** — 테스터 한 명의 워크스페이스에서 설치. 관리자 승인이 필요한 곳인지 기록한다.
 10. **처리방침 확인** — 앱이 실제로 요청하는 권한이 처리방침 3장 목록과 같은지 확인한다.

@@ -45,6 +45,13 @@ describe("findLabelErrors", () => {
     };
     expect(findLabelErrors(golden)).toEqual([expect.stringContaining("없는 source")]);
   });
+
+  it("needs_review는 원문 하나 케이스에만 쓸 수 있다", () => {
+    const single = { ...base, expected_actions: [{ ...base.expected_actions[0], needs_review: true }] };
+    expect(findLabelErrors(single)).toEqual([]);
+    const sequence = { ...single, sources: [...base.sources, { ...base.sources[0], id: "s2" }] };
+    expect(findLabelErrors(sequence)).toEqual([expect.stringContaining("원문 하나 케이스에만")]);
+  });
 });
 
 describe("evals/golden", () => {
