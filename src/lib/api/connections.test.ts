@@ -6,9 +6,11 @@ import type { ConnectedStatus } from "@/lib/connectors/types";
 
 import {
   handleConnectionComplete,
+  handleConnectionDelete,
   handleConnectionRequest,
   handleConnectionStart,
   type ConnectionCompleteDeps,
+  type ConnectionDeleteDeps,
   type ConnectionStartDeps,
 } from "./connections";
 import { handleGiveConsent, handleWithdrawConsent, type ConsentDeps } from "./consent";
@@ -338,5 +340,57 @@ describe("POST · DELETE /api/v1/consent", () => {
     expect((await handleGiveConsent(post("http://localhost/api/v1/consent", { ai_processing: true }), deps)).status).toBe(401);
     expect((await handleWithdrawConsent(new Request("http://localhost/api/v1/consent", { method: "DELETE" }), deps)).status).toBe(401);
     expect(saved).toEqual([]);
+  });
+});
+
+describe("DELETE /api/v1/connections/:id", () => {
+  const ID = "00000000-0000-4000-8000-0000000000c1";
+  const del = () => new Request(`http://localhost/api/v1/connections/${ID}`, { method: "DELETE" });
+
+  function deleteDeps(options: { user?: User | null; connection?: { provider: "slack" | "notion"; token: unknown } | null; revokeFails?: boolean } = {}) {
+    const log: string[] = [];
+    const deps: ConnectionDeleteDeps<User> = {
+      authenticate: async () => (options.user === undefined ? ALICE : options.user),
+      load: async (user, id) => (user.id === ALICE.id && id === ID ? (options.connection === undefined ? { provider: "slack", token: { access_token: "xoxp-1" } } : options.connection) : null),
+      revoker: (provider) =>
+        provider === "slack" || provider === "notion"
+          ? async () => {
+              log.push(`revoke:${provider}`);
+              if (options.revokeFails) throw new Error("slack down");
+            }
+          : null,
+      disconnect: async (user, id) => {
+        log.push(`disconnect:${id}`);
+        return user.id === ALICE.id;
+      },
+    };
+    return { deps, log };
+  }
+
+  it("서비스 쪽 토큰을 폐기한 뒤 (Slack이면 글자를 지우고) 연결을 지운다", async () => {
+    const { deps, log } = deleteDeps();
+    expect((await handleConnectionDelete(del(), ID, deps)).status).toBe(204);
+    expect(log).toEqual(["revoke:slack", `disconnect:${ID}`]);
+  });
+
+  it("토큰 폐기가 실패해도 끊기는 계속한다. 풀지 못한 토큰은 폐기하지 않는다", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const failing = deleteDeps({ revokeFails: true });
+    expect((await handleConnectionDelete(del(), ID, failing.deps)).status).toBe(204);
+    expect(failing.log).toEqual(["revoke:slack", `disconnect:${ID}`]);
+    const noToken = deleteDeps({ connection: { provider: "notion", token: null } });
+    expect((await handleConnectionDelete(del(), ID, noToken.deps)).status).toBe(204);
+    expect(noToken.log).toEqual([`disconnect:${ID}`]);
+    error.mockRestore();
+  });
+
+  it("로그인 없이 401, 남의 연결 · 없는 연결 · id가 uuid가 아니면 404 (토큰도 건드리지 않는다)", async () => {
+    expect((await handleConnectionDelete(del(), ID, deleteDeps({ user: null }).deps)).status).toBe(401);
+    const other = deleteDeps({ user: BOB });
+    const response = await handleConnectionDelete(del(), ID, other.deps);
+    expect(response.status).toBe(404);
+    expect((await errorOf(response)).code).toBe("not_found");
+    expect(other.log).toEqual([]);
+    expect((await handleConnectionDelete(del(), "not-a-uuid", deleteDeps().deps)).status).toBe(404);
   });
 });

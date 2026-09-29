@@ -221,7 +221,7 @@ export async function recordSync(
   connection: Connection,
   update: { cursor?: Record<string, unknown>; error?: string | null; revoked?: boolean },
 ): Promise<void> {
-  await admin
+  let query = admin
     .from("connections")
     .update({
       ...(update.cursor ? { sync_cursor: update.cursor } : {}),
@@ -231,8 +231,13 @@ export async function recordSync(
       status: update.revoked ? "revoked" : update.error ? "error" : "active",
     })
     .eq("id", connection.id)
-    .eq("user_id", connection.userId)
-    .throwOnError();
+    .eq("user_id", connection.userId);
+  // 동기화 도중 끊긴 연결(Slack 앱 해제 · 토큰 오류, revoked)은 되살리지 않는다: 잠금만 푼다
+  if (!update.revoked) query = query.neq("status", "revoked");
+  const { data } = await query.select("id").throwOnError();
+  if (!update.revoked && (data?.length ?? 0) === 0) {
+    await admin.from("connections").update({ sync_started_at: null }).eq("id", connection.id).eq("user_id", connection.userId).throwOnError();
+  }
 }
 
 /** 연동 원문을 저장하고, 사용자 프로필로 "원문 속 나"를 정해 파이프라인을 돌린다. */

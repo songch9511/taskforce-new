@@ -4,23 +4,33 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 
 import type { ConnectProvider } from "@/lib/api/contract";
 import { hasConsentFor } from "@/lib/consent/store";
+import { slackConnectEnabled } from "@/lib/env";
 
 import { notionConnector } from "./notion/run";
+import { slackConnector } from "./slack/run";
 import { activeConnections, recordConnectionCreated, userConnectionTokens } from "./store";
 import { syncEach, type SyncAllResult } from "./sync-all";
 import type { Connector } from "./types";
 
 // 연결 틀: 연동마다 연결 시작 · callback · 동기화 · 토큰 폐기를 한곳에서 찾는다 (docs/GO_LIVE.md 1장).
-// Google(google · gmail) · Slack은 Connector를 구현해 여기에 더하면 앱 연결 화면 · 주기 동기화 · 계정 삭제에 그대로 붙는다.
+// Google(google · gmail)은 Connector를 구현해 여기에 더하면 앱 연결 화면 · 주기 동기화 · 계정 삭제 · 연결 끊기에 그대로 붙는다.
 
-const CONNECTORS: { [P in ConnectProvider]?: Connector } = { notion: notionConnector };
+const CONNECTORS: { [P in ConnectProvider]?: Connector } = { notion: notionConnector, slack: slackConnector };
 
-/** 아직 붙이지 않은 서비스면 null (앱에는 보이지만 연결은 안 된다) */
+/** 앱에 연결을 연 서비스인가. Slack은 처리방침 · 앱 문구를 맞출 때까지 운영에서 닫아 둔다 (SLACK_CONNECT_ENABLED) */
+const opened = (provider: ConnectProvider) => provider !== "slack" || slackConnectEnabled();
+
+/** 아직 붙이지 않았거나 열지 않은 서비스면 null (앱에는 보이지만 연결은 안 된다) */
 export function connectorFor(provider: ConnectProvider): Connector | null {
-  return CONNECTORS[provider] ?? null;
+  return opened(provider) ? (CONNECTORS[provider] ?? null) : null;
 }
 
-const implementedProviders = () => Object.keys(CONNECTORS) as ConnectProvider[];
+/** 서비스 쪽 토큰 폐기 (연결 끊기). 연결을 열지 않은 서비스라도 이미 있는 연결의 토큰은 폐기한다 */
+export function tokenRevokerFor(provider: ConnectProvider): ((token: unknown) => Promise<void>) | null {
+  return CONNECTORS[provider]?.revokeToken ?? null;
+}
+
+const implementedProviders = () => (Object.keys(CONNECTORS) as ConnectProvider[]).filter(opened);
 
 /**
  * 붙인 모든 연동의 활성 연결을 오래 안 한 순서로 돌린다 (규칙은 sync-all.ts).
@@ -31,7 +41,7 @@ export function syncConnections(
   admin: SupabaseClient,
   options: { userId?: string; deadline?: number; minIntervalMs?: number; providers?: ConnectProvider[] } = {},
 ): Promise<SyncAllResult> {
-  const providers = (options.providers ?? implementedProviders()).filter((p) => CONNECTORS[p]);
+  const providers = (options.providers ?? implementedProviders()).filter((p) => CONNECTORS[p] && opened(p));
   return syncEach(
     {
       connections: () => activeConnections(admin, providers, options.userId),

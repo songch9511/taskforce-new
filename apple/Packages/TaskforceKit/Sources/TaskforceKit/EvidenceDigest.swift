@@ -1,5 +1,14 @@
 import Foundation
 
+/// Slack 연결을 끊거나 앱을 지우면 서버가 근거 인용을 이 글로 바꾼다 (purge_slack_sources, docs/go-live/slack-integration.md D3).
+/// 누가 한 말이 아니므로 인용 부호 없이 이 앱의 문구로 보여 준다.
+public enum RemovedQuote {
+    public static let slackDisconnected = "Slack 연결을 끊어 지웠어요"
+    public static let label = "Removed when Slack was disconnected"
+
+    public static func isRemoved(_ quote: String) -> Bool { quote == slackDisconnected }
+}
+
 /// 근거 한 줄에 필요한 것: 인용 + 원문 (+ 서비스)
 public struct EvidenceLine: Sendable, Hashable, Identifiable {
     public let id: UUID
@@ -68,8 +77,8 @@ public struct EvidenceDigest: Sendable, Hashable {
 
     public var isEmpty: Bool { lines.isEmpty }
 
-    /// 맨 앞에 보여 줄 근거: 가장 최근 것 (지금 상태를 만든 말)
-    public var lead: EvidenceLine? { lines.last }
+    /// 맨 앞에 보여 줄 근거: 가장 최근 것 (지금 상태를 만든 말). Slack 연결을 끊어 지운 인용보다 남아 있는 인용을 먼저
+    public var lead: EvidenceLine? { lines.last { !RemovedQuote.isRemoved($0.quote) } ?? lines.last }
 
     /// 맨 앞 근거의 원문을 뺀 나머지 원문의 서비스 (처음 들어온 순서, 원문마다 하나)
     public var otherSources: [SourceService] {

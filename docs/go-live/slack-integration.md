@@ -3,7 +3,7 @@
 관련 문서: [go live](../GO_LIVE.md) "현재 상태와 진행 순서" 3 · [런북 체크리스트 C5](runbook.md#go-live-체크리스트) · [Slack 앱 설정](slack-app.md) · [처리방침 3장 Slack](../legal/privacy.ko.md) · [진실 판정 규칙](../TRUTH_RULES.md)
 
 작성: 2026-09-28. [GO_LIVE.md](../GO_LIVE.md) 진행 순서 3(체크리스트 C5, 다른 문서의 "트랙 2-4")을 코드로 옮기기 전에 **정할 것 · 만들 것 · 끝난 기준**을 적는다.
-Slack 앱 설정과 권한을 고른 이유는 [slack-app.md](slack-app.md)가 기준이다. 이 문서는 서버 · 앱 · eval 쪽이다. **코드는 아직 쓰지 않았다.** 초안을 코드와 대조해 검토했고(2026-09-28), 지적 15건을 반영했다.
+Slack 앱 설정과 권한을 고른 이유는 [slack-app.md](slack-app.md)가 기준이다. 이 문서는 서버 · 앱 · eval 쪽이다. 초안을 코드와 대조해 검토했고(2026-09-28), 지적 15건을 반영했다. PR 1 · 1b · 2 · 3을 구현했다(6장). 구현하며 정한 것은 4장 "PR 2 확인" · "PR 3 구현"에 적었다.
 
 ## 0. 한눈에
 
@@ -131,7 +131,7 @@ cron 15분 · Sync Now · 연결 직후 ──▶ syncConnections ──▶ slac
 | `slack_people` (이름 캐시) | `connection_id` · `user_id` · `slack_id`(사람 또는 대화) · `kind` · `name` · `fetched_at`. PK `(connection_id, slack_id)` | 연결 끊기, 계정 삭제 |
 | `connections.connected_at` | `saveConnection`이 연결 · 다시 연결 때마다 적는다. 늦게 온 `tokens_revoked`가 새 연결을 지우지 않게 하는 기준(2-4) | — |
 | `sources.raw_text_purge_reason` | `retention`(90일) · `disconnected`(D3). 앱 · 서버의 "90일이 지나 본문을 지웠어요" 문구는 `raw_text_purged_at`만 보고 나온다(`create-action.ts` · `sources/[id]/missing` · `service.ts`) — 이유에 따라 문구를 가른다 | — |
-| `connections`의 `owner_delete` 정책 삭제 (**PR 3**, 별도 마이그레이션) | 지금은 앱이 Supabase로 연결 행을 **직접** 지울 수 있다(`20260928000000_connections.sql`). 그러면 토큰 폐기와 D3를 건너뛰고 `sources.connection_id`가 `null`이 된다. 앱은 이미 API로 끊는다(`APIClient.swift`의 `disconnect`). 단, 지금의 끊기 라우트가 이 정책으로 지우므로(이용자 권한) **라우트를 서버 권한으로 바꾸는 PR 3에서 함께** 지우고, 이 정책에 기대는 `tests/db/connections.test.ts`의 "연결을 끊으면 토큰은 지워지고 원문은 남는다"도 그때 고친다 | — |
+| `connections`의 `owner_delete` 정책 삭제 (**PR 3**, 별도 마이그레이션 `20261014000000`, 배포 **뒤에** 적용) | 지금은 앱이 Supabase로 연결 행을 **직접** 지울 수 있다(`20260928000000_connections.sql`). 그러면 토큰 폐기와 D3를 건너뛰고 `sources.connection_id`가 `null`이 된다. 앱은 이미 API로 끊는다(`APIClient.swift`의 `disconnect`). 단, 지금의 끊기 라우트가 이 정책으로 지우므로(이용자 권한) **라우트를 서버 권한으로 바꾸는 PR 3에서 함께** 지우고, 이 정책에 기대는 `tests/db/connections.test.ts`의 "연결을 끊으면 토큰은 지워지고 원문은 남는다"도 그때 고친다 | — |
 
 `tests/db/`: 새 표를 `authenticated`가 읽지도 쓰지도 못하는지, 이용자가 `connections` 행을 직접 지우지 못하는지, 연결 · 계정을 지우면 함께 지워지는지.
 
@@ -166,6 +166,13 @@ cron 15분 · Sync Now · 연결 직후 ──▶ syncConnections ──▶ slac
 | 원문 서비스 표시 | 이미 `slack.com` 링크를 Slack으로 알아본다(`SourceService.swift`). 확인만 |
 
 UI 문구는 짧은 영어 라벨 규칙을 따른다. 설명 줄은 위 두 문장만 둔다.
+
+**PR 4에서 함 (2026-09-29):**
+- 확인 창을 서비스를 받는 창으로 바꿨다(`AccountViews.swift`의 `confirming`, Google · Slack이 쓴다). Slack의 `readsBeforeConnecting`은 Google처럼 세 줄: "DMs and group DMs" · "Channel threads you write in or are mentioned in" · "New messages only. Taskforce never sends anything."
+- 끊기 문구는 `ConnectionProvider.disconnectNote(for:)`. Slack은 "Slack messages are removed from Taskforce. Tasks stay." — 위 표의 "are deleted"는 Slack에서 메시지를 지운다고 읽힐 수 있어 바꿨다(PR 4 검토).
+- 끊긴 연결(`needsReconnect`, Slack에서 앱을 지워 `revoked`로 남은 것)에도 Disconnect를 둔다. 처리방침이 "앱에서 끊으면 연결 기록이 지워진다"고 약속한다.
+- 서버가 끊으며 바꾼 근거 인용("Slack 연결을 끊어 지웠어요")은 인용 부호 없이 "Removed when Slack was disconnected"로 보인다(`RemovedQuote`, `EvidenceView`). 맨 앞 근거는 남아 있는 인용을 먼저 고른다(`EvidenceDigest.lead`). 서버도 이 자리 표시를 AI에게 넘기기 · 물어보기에 넣지 않는다(`SLACK_DISCONNECTED_QUOTE`).
+- `SourceService`는 `slack.com` 링크를 이미 Slack으로 알아본다(확인만).
 
 ## 4. 골든셋 · eval
 
@@ -263,13 +270,64 @@ F3는 "확인 요청으로 보낸다"로 정했다(2026-09-28). 고친 곳:
 
 보안 검토(2026-09-29)로 고친 것: 지운 메시지는 행을 지우지 않고 표시만 남긴다(`deleted_at`, 늦게 온 재전송이 다시 넣지 못하게. DM만 행이 없어도 표시 행을 만든다) · 앱 해제는 DB 함수 하나(`revoke_slack_connections`)로 한 트랜잭션에서, 팀 id가 정확히 같고 이벤트 시각 전에 연결한 것만, `reauth`까지 · 팀 id는 영문 대문자 · 숫자만 받는다 · 설치 조회(D4)는 이 메시지와 관계있을 수 있는 다른 연결이 있을 때만, 0.7초 · 2쪽 · 연결별 처리는 동시에 · 채널 글을 고쳐 나와 무관해지면 지움 표시 · 서명 헤더가 없거나 1MB를 넘으면 본문을 읽기 전에 거절. 마이그레이션 `20261012000000_slack_tombstones_revoke.sql`.
 
-PR 3에 넘기는 것: 동기화는 `deleted_at`이 있는 대기 행을 원문에 넣지 않는다 · 대기 행 3일 · 추적 스레드 14일 정리(retention cron) · `app_uninstalled`가 한 이용자만 앱을 지워도 오는지 두 이용자로 확인(Slack 문서는 마지막 토큰이 거둬졌을 때라고 한다) · **운영 Slack 앱(L7)의 이벤트 URL은 PR 3(정리 · 동기화)을 배포한 뒤에 켠다** (그 전에는 남의 DM 글이 정리 기한 없이 쌓인다).
+PR 3에 넘기는 것(PR 3에서 함, 아래 "PR 3 구현"): 동기화는 `deleted_at`이 있는 대기 행을 원문에 넣지 않는다 · 대기 행 3일 · 추적 스레드 14일 정리(retention cron) · `app_uninstalled`가 한 이용자만 앱을 지워도 오는지 두 이용자로 확인(Slack 문서는 마지막 토큰이 거둬졌을 때라고 한다. 한 이용자로는 확인함, 두 이용자는 PR 4 전체 검증에서) · **운영 Slack 앱(L7)의 이벤트 URL은 PR 3(정리 · 동기화)을 배포한 뒤에 켠다** (그 전에는 남의 DM 글이 정리 기한 없이 쌓인다).
+
+### PR 3 구현 (2026-09-29)
+
+| 부분 | 파일 | 하는 일 |
+|---|---|---|
+| 연결 | `slack/run.ts` `connect` | `oauth.v2.access` → `auth.test`(워크스페이스 주소) → `saveConnection`(`팀:사용자`, 토큰 암호화) → 설정 `{ slackUserId, teamId, teamUrl }` |
+| 동기화 | `slack/sync.ts` · `bucket.ts` | 대기 행 → 이름(`users.info` · `conversations.info`, 7일 캐시) → 묶기(2-5) → `slack_ingest_source`(원문 저장 + 읽은 행 표시, 한 트랜잭션) → 파이프라인 → 대기 행 본문 비움 |
+| 끊기 | `DELETE /api/v1/connections/:id` → `handleConnectionDelete` | 서비스 쪽 토큰 폐기(`auth.revoke`) → `disconnect_connection`(Slack이면 `purge_slack_data` = D3, 그다음 연결 행 삭제, 한 트랜잭션). Notion도 끊을 때 토큰이 폐기된다 |
+| 앱 해제 | `revoke_slack_connections`(새 버전) | 토큰 삭제 + D3 + `revoked`. 동기화 중 토큰 오류(`token_revoked` · `invalid_auth` · `account_inactive`)도 같은 함수로 |
+| 정리 | `/api/cron/retention` → `purge_slack_buffers` | 받은 지 3일 지난 대기 행(넣은 행 · 못 넣은 행 · 지움 표시), 활동 14일 지난 추적 스레드, D3 원문에 남은 글자(안전망) |
+| 연결 틀 | `registry.ts` | `slack: slackConnector`. 앱의 Connect가 열리고, cron · Sync Now · 계정 삭제 때 토큰 폐기가 이어진다 |
+
+구현하며 정한 것:
+- **이름은 실명(`real_name`)을 먼저** 쓴다. 회의록 · 메일의 이름과 맞아야 담당 · 상대를 알아본다. 실명이 비었으면 표시 이름. Slack이 알려 주지 않는 id(지운 사용자 등)는 "알 수 없는 사용자"로 쓰고 빈 이름으로 캐시해 7일 동안 다시 묻지 않는다. 토큰 · 속도 제한 오류는 동기화를 멈추고 다음 동기화에서 다시 한다(대기 행은 3일 남는다).
+- **같은 묶음 외부 id가 다시 나오면**(동시 동기화) 넣지도 표시하지도 않는다. 넣은 쪽이 자기 행을 이미 표시했으므로, 남은 행(늦게 온 메시지)은 첫 ts가 달라 다음 동기화에 새 묶음이 된다. 대기 행이 같은 열쇠에 묶여 멈추는 일은 없다(표시는 원문을 지울 때만 풀린다).
+- **읽은 뒤 Slack에서 지운 메시지**가 묶음에 있으면 넣지 않는다: 넣기 함수가 고른 행을 잠그고 지움 표시를 확인한다. 다음 동기화가 지운 글 없이 다시 묶는다.
+- **첫 글 없는 채널 스레드**: 첫 묶음 외부 id(`t:{대화}:{첫 글}:{첫 글}`)가 있으면 `스레드 이어서`, 없으면 `스레드 중간부터`. DM · 그룹 DM의 스레드는 늘 `이어서`(모든 글을 남기므로 첫 글은 본 대화 원문에 있다).
+- **글 없는 메시지**(파일만)는 줄로 쓰지 않는다. 묶음이 다 비면 넣지 않고 3일 정리로 지운다.
+- **본문 형식 테스트**는 골든셋 파일을 직접 읽어 글자까지 비교한다(`bucket.test.ts`: DM · 내 줄만 있는 DM · 채널 언급 스레드 · 중간부터 스레드 · 그룹 DM).
+- **끊기의 토큰 폐기가 실패해도**(Slack 장애) 끊기 · D3는 계속한다. 우리 쪽 토큰은 연결과 함께 지워지고 데이터 지우기가 더 급하다. 로그만 남긴다.
+- **`owner_delete` 삭제는 별도 파일 `20261014000000`**: 운영 서버의 지금 코드가 이 정책으로(사용자 권한) 끊는다. DB가 하나라 먼저 적용하면 새 코드를 배포하기 전까지 앱의 연결 끊기가 404가 된다. 배포 뒤에 적용한다(런북).
+- **지운 원문 안내**: 원문을 고르거나 누락 신고하면 이유에 따라 "Slack 연결을 끊어 원문을 지웠어요." 또는 90일 문구(`purgedSourceMessage`). 앱 화면 문구는 PR 4.
+- **웹 /lab(내부 도구)**: Slack 연결 버튼과 끊기 확인 문구(시험용). 앱의 연결은 기존 `start` · `complete` 흐름 그대로.
+- **운영에서는 Slack 연결을 닫아 둔다**(`SLACK_CONNECT_ENABLED`, 비우면 개발 서버에서만 열림). 연결 틀에 올리면 앱의 "Coming soon"이 바로 Connect가 되는데, 처리방침 · 앱 문구(PR 4)가 아직 옛 내용이다. PR 4를 배포하며 `true`로 켠다. 닫혀 있어도 이미 있는 연결의 토큰 폐기 · 이벤트 받기는 한다.
+
+코드 리뷰(2026-09-29)로 고친 것:
+- **동기화 도중의 끊기 · 앱 해제**(높음): 끊긴(revoked) · 지운 연결에는 원문을 넣지 않는다(연결 행 잠금). 이미 처리 중이던 원문은 처리가 끝난 뒤 D3로 지워졌는지 보고 다시 지운다(`slack_repurge_if_disconnected`, 처리 뒤 늘 부른다). `recordSync`가 끊긴 연결을 `active`로 되살리지 않는다(Notion도 같다). 매일 정리가 D3 원문에 남은 글자를 다시 지운다(안전망).
+- **이름 캐시**: Slack이 "그런 id 없음"이라고 할 때만 빈 이름으로 7일 캐시한다. 일시 오류(장애 · 속도 제한)는 동기화를 멈추고, 그때까지 찾은 이름은 남긴다.
+- **동기화 중 토큰 오류인데 그 사이 다시 연결했으면** 새 연결을 끊지 않는다.
+- **받을 때 ts 모양 확인**(숫자.숫자): 잘못된 ts 하나가 연결의 동기화를 3일 동안 막지 않게.
+- D3가 쓰는 `evidence(source_id)` · `claims(source_id)` 인덱스.
+
+dev 워크스페이스 확인 (2026-09-29, Taskforce dev 앱 · 로컬 서버 · 운영 DB, 마이그레이션 `20261013000000` 적용 뒤):
+
+| 시험 | 기대 | 결과 |
+|---|---|---|
+| 연결 (앱 흐름: start → 권한 화면 → callback → 완료 대기 → complete) | 사용자 권한 9개, 연결 `active`, 토큰 암호화, 설정에 Slack id · 팀 · 주소 | ✅ (완료 단계는 앱 대신 같은 서버 함수로 불렀다) |
+| 첫 동기화 (PR 2 시험 메시지 3개) | DM 한 묶음 · 채널 스레드 한 묶음, 행 표시 · 본문 비움 | ✅ 원문 2건 `[DM · 상대]` · `[#채널]`, 대기 0 |
+| 30분 전 동기화 | 넣지 않음 | ✅ `settling 1` |
+| **핵심 시나리오 2**: 회의록 "금요일까지 제안서" → 두 번째 계정 DM "제안서는 월요일에 받아도 괜찮아요" | 새 할 일 없이 기한 10-02 → 10-05, 이력에 Slack 인용 | ✅ 병합 `updated 1 · new 0`, 기한 변경 `rule0+rule4`, 근거에 DM 인용 |
+| 원본 링크 | 그 DM 메시지 | ✅ 링크의 대화가 그 DM(브라우저에서는 Slack이 데스크톱 앱을 먼저 연다) |
+| **연결 끊기** (`DELETE /api/v1/connections/:id`, 앱과 같은 API) | Slack 앱 목록에서 사라짐, D3 표 전부 | ✅ 204. dev 앱의 Install App 화면이 "Install to …"로 돌아감(토큰 폐기). 원문 3건 본문 · 관련자 빈 값 · 제목 `Slack` · `disconnected`, 근거 인용 2건 모두 "Slack 연결을 끊어 지웠어요", Claim 5행은 남고 글자 0, 판정 기록 0, 대기 · 추적 · 이름 · 토큰 행 0. 할 일 기한(10-05) · 상태 그대로 |
+| 끊은 뒤 Slack이 보낸 이벤트 | 받고 버림 | ✅ `tokens_revoked` · `app_uninstalled` 둘 다 200(끊을 연결 없음). 이용자가 한 명뿐일 때 마지막 토큰을 폐기하면 `app_uninstalled`도 온다 |
+
+만들며 알게 된 것: `SLACK_CLIENT_ID`에 앱 ID(`A…`)를 넣으면 권한 화면이 "Invalid client_id"로 멈춘다(Client ID는 숫자.숫자, `.env.example`에 적음). 로컬 로그인 링크는 `localhost:3000`만 허용돼 있어 3100 서버는 이메일 링크로 로그인할 수 없다.
+
+남긴 낮은 위험(재검토 2026-09-29, 승인): 3일 넘은 대기 행을 넣는 동기화와 매일 정리가 같은 행을 반대 순서로 잠그면 Postgres가 한쪽을 멈춘다(다음 동기화 · 다음 날 정리가 다시 한다). 고치려면 정리 쿼리에 `for update skip locked`를 더하는 마이그레이션. 속도 제한의 `Retry-After`는 기다리지 않는다(찾은 이름은 남기므로 다음 동기화가 이어서 찾는다).
+
+L9 법률 검토에 물을 것(D3 범위): 원문 행의 링크 · 외부 id(워크스페이스 주소 · 채널 id · 메시지 ts), 끊긴 연결 행의 워크스페이스 이름 · 주소, Claim 값 · 할 일 제목 · 상대 이름 · 이력(`action_events`)은 남는다. 끊은 뒤 근거 자리에 남는 "Slack 연결을 끊어 지웠어요"가 매칭 후보의 최근 인용으로 쓰일 수 있다(해가 없는지 1주 사용에서 본다).
 
 ### 어댑터 단위 테스트 (eval 아님, PR 2 · 3)
 
 - 서명 정상 · 변조 · 5분 초과, 버리는 규칙 표 전부, 봇 · 시스템 하위 유형, 고침 · 지움, 넣은 뒤 재전송, 동기화 도중 도착한 메시지가 남는지, 묶음 자르기(30분 · 자정 · 3시간 · 100개), 넣은 뒤 답글이 다음 묶음이 되는지, 본문 형식(본인 이름 · 언급 · 링크), `error` 연결이 이벤트를 받는지, 한 워크스페이스 두 이용자, `app_uninstalled` · 늦게 온 `tokens_revoked`, D3 표의 모든 칸.
 
 ## 5. 문서 · 처리방침 맞추기
+
+**PR 4에서 아래를 모두 고쳤다 (2026-09-29).** 법률 검토 상자는 남겼다(게시 규칙 1: 검토가 끝나면 지운다).
 
 같은 PR에서 한국어 · 영어를 함께 고친다(`docs/legal/README.md` 게시 규칙 3 · 4). 아래 줄 번호는 `privacy.ko.md` 기준(2026-09-28)이다. `privacy.en.md`는 같은 절의 대응 문장을 고친다(줄 번호는 조금 다르다).
 
@@ -297,8 +355,8 @@ PR 3에 넘기는 것: 동기화는 `deleted_at`이 있는 대기 행을 원문�
 | 1 | 골든셋(4장 표) + eval 묶음별 표 · "확인 요청이면 맞음" + 지금 파이프라인으로 기준 점수, D1-b · 관련자 모양 비교 | `npm run eval` 기록에 Slack 줄. 파이프라인 코드 변경 없음. **끝남 (2026-09-28)**: 4장 "기준 점수" | 1~2일 |
 | 1b | 파이프라인 보완: F1(추출 프롬프트) · F2(Jev 판정 입력 또는 프롬프트), F3 결정 | Slack 병합 정확도 100%, 전체 eval에서 회의록 · 메일 숫자가 떨어지지 않음. **끝남 (2026-09-28)**: 4장 "PR 1b 뒤" | 1~2일 |
 | 2 | 마이그레이션(새 표 · `connected_at` · `raw_text_purge_reason`) + 이벤트 받기(서명 · 가르기 · 대기 저장 · 재전송 · 앱 해제) | 단위 · RLS 테스트. dev 앱 이벤트 URL "Verified", 채널 잡담은 DB에 없고 DM은 `slack_messages`에 있음. **끝남 (2026-09-29)**: 아래 "PR 2 확인" | 2일 |
-| 3 | 연결 · 묶기 · 넣기 · 이름 · 연결 끊기 라우트(서버 권한 · 토큰 폐기 · D3) + `owner_delete` 정책 삭제 + registry + retention | dev 워크스페이스에서 시나리오 2가 45분 안에 기존 할 일의 기한 변경으로 나타남. 앱에서 끊으면 Slack 앱 목록에서도 사라짐 | 2~3일 |
-| 4 | 앱 문구(확인 창 일반화 · 끊기 문구) + 처리방침 · 문서 맞추기 + 전체 검증 | 8장 전부. 런북 C5 ✅ | 1~2일 |
+| 3 | 연결 · 묶기 · 넣기 · 이름 · 연결 끊기 라우트(서버 권한 · 토큰 폐기 · D3) + `owner_delete` 정책 삭제 + registry + retention | dev 워크스페이스에서 시나리오 2가 45분 안에 기존 할 일의 기한 변경으로 나타남. 앱에서 끊으면 Slack 앱 목록에서도 사라짐. **끝남 (2026-09-29)**: 4장 "PR 3 구현" | 2~3일 |
+| 4 | 앱 문구(확인 창 일반화 · 끊기 문구) + 처리방침 · 문서 맞추기 + 전체 검증 | 8장 전부. 런북 C5 ✅. **코드 · 문서 끝남 (2026-09-29)**: 운영에서만 확인할 수 있는 칸(8장)은 go live 순서(런북)에서 | 1~2일 |
 
 PR 1은 운영 서버 배포와 무관하게 지금 시작할 수 있다. PR 2부터는 7장의 dev 앱이 있어야 한다.
 
@@ -315,13 +373,16 @@ PR 1은 운영 서버 배포와 무관하게 지금 시작할 수 있다. PR 2�
 
 ## 8. 끝난 기준 (체크리스트 C5)
 
-- [ ] `npm run lint && npm run typecheck && npm run test && npm run eval` 통과, Slack 골든셋 숫자가 README 기록 표에 있음
-- [ ] dev 워크스페이스: 회의록 "금요일까지 제안서" → 두 번째 계정의 DM "월요일에 받아도 괜찮아요" → **새 할 일 없이** 기존 할 일의 기한이 월요일, 이력에 Slack 인용, 링크가 그 메시지를 연다
-- [ ] 나를 언급하지 않은 채널 글은 `slack_messages` · `sources` 어디에도 없음 (읽기 SQL)
-- [ ] 앱에서 연결 끊기 → Slack 앱 목록에서 사라짐(`auth.revoke`). 그 연결의 대기 · 추적 · 이름 행 0건, 원문 본문 · 관련자 빈 값, 근거 인용 · Claim 인용 · `value_text`에 Slack 글자 없음, 판정 기록 0건 (읽기 SQL, 지우기 전에 원문 id를 먼저 적어 둔다)
-- [ ] Slack에서 앱 제거 → 그 워크스페이스의 연결이 모두 `revoked`, 같은 데이터 0건
-- [ ] Vercel 로그에 메시지 본문 · 이름 · 토큰 없음
-- [ ] 앱이 요청하는 권한 9개가 처리방침 3장 목록과 같음, 3장 · 5장 · 11장 문장이 구현과 같음
+2026-09-29 상태. dev 워크스페이스 · 로컬 서버 · 운영 DB로 확인한 것은 ✅, 운영 서버 · 운영 Slack 앱이 있어야 볼 수 있는 것은 go live 순서(런북 "Slack 켜기")에서 확인한다.
+
+- [x] `npm run lint && npm run typecheck && npm run test && npm run eval` 통과, Slack 골든셋 숫자가 README 기록 표에 있음 (PR 1 · 1b 기록, PR 4에서 `--tag slack` 다시 돌림)
+- [x] dev 워크스페이스: 회의록 "금요일까지 제안서" → 두 번째 계정의 DM "월요일에 받아도 괜찮아요" → **새 할 일 없이** 기존 할 일의 기한이 월요일, 이력에 Slack 인용, 링크가 그 메시지를 연다 (PR 3)
+- [x] 나를 언급하지 않은 채널 글은 `slack_messages` · `sources` 어디에도 없음 (PR 2 · 3)
+- [x] 앱에서 연결 끊기 → Slack 앱 목록에서 사라짐(`auth.revoke`). 그 연결의 대기 · 추적 · 이름 행 0건, 원문 본문 · 관련자 빈 값, 근거 인용 · Claim 인용 · `value_text`에 Slack 글자 없음, 판정 기록 0건 (PR 3, 앱과 같은 API로)
+- [ ] Slack에서 앱 제거 → 그 워크스페이스의 연결이 모두 `revoked`, 같은 데이터 0건. 이벤트 처리 · DB 함수는 테스트와 dev에서 확인(끊은 뒤 온 `app_uninstalled` · `tokens_revoked` 200), **연결된 상태에서 Slack 쪽으로 지우는 시험과 두 이용자 시험은 go live 순서에서**
+- [ ] Vercel 로그에 메시지 본문 · 이름 · 토큰 없음 (운영 배포 뒤)
+- [x] 앱이 요청하는 권한 9개가 처리방침 3장 목록과 같음(`SLACK_USER_SCOPES`), 3장 · 5장 · 11장 · 12장 문장이 구현과 같음 (PR 4, 한국어 · 영어. 검토에서 과장 · 빠진 것 — 앱 제거 때 토큰 폐기 요청, 임베딩이 남음, 대기 본문을 비우는 때, 이름 새로 읽기, 12장 "모든 할 일에 인용" — 을 고쳤다)
+- [x] Slack에서 앱을 지웠다는 이벤트를 놓쳐도 하루 안에 지움: 매일 `/api/cron/retention`이 끊기지 않은 Slack 연결마다 `auth.test`를 불러, 토큰을 쓸 수 없으면 앱 해제와 같게 끊는다(`slack/health.ts`, PR 4)
 
 ## 9. 위험과 확인한 사실 (2026-09-28)
 

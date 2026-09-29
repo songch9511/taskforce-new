@@ -3,6 +3,9 @@ import { z } from "zod";
 // Slack Events API로 받은 요청의 모양과, 메시지 하나를 남길지 버릴지 가르는 규칙 (docs/go-live/slack-app.md 3-2,
 // docs/go-live/slack-integration.md 2-4). 순수 함수: DB는 receive.ts가 부른다.
 
+/** Slack 메시지 ts ("1727678400.000100"). 숫자가 아니면 묶기 · 시각 계산이 깨지므로 받을 때 거른다 */
+const slackTs = z.string().regex(/^\d{1,12}\.\d{1,9}$/);
+
 export const slackMessageEventSchema = z.object({
   type: z.literal("message"),
   channel: z.string().min(1),
@@ -10,8 +13,8 @@ export const slackMessageEventSchema = z.object({
   channel_type: z.enum(["im", "mpim", "channel", "group"]).optional(),
   user: z.string().optional(),
   text: z.string().optional(),
-  ts: z.string().min(1),
-  thread_ts: z.string().optional(),
+  ts: slackTs,
+  thread_ts: slackTs.optional(),
   subtype: z.string().optional(),
   bot_id: z.string().optional(),
   /** message_changed: 고친 뒤의 메시지 */
@@ -19,14 +22,14 @@ export const slackMessageEventSchema = z.object({
     .object({
       user: z.string().optional(),
       text: z.string().optional(),
-      ts: z.string().min(1),
-      thread_ts: z.string().optional(),
+      ts: slackTs,
+      thread_ts: slackTs.optional(),
       bot_id: z.string().optional(),
       edited: z.object({ ts: z.string() }).optional(),
     })
     .optional(),
   /** message_deleted: 지운 메시지의 ts */
-  deleted_ts: z.string().optional(),
+  deleted_ts: slackTs.optional(),
 });
 
 export type SlackMessageEvent = z.infer<typeof slackMessageEventSchema>;
