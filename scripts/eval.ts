@@ -122,7 +122,7 @@ function printDetails(score: CaseScore) {
   if (lines.length > 0) console.log(`  ${score.caseId}\n${lines.join("\n")}`);
 }
 
-const sourceOf = (golden: GoldenCase): JudgeSource & { occurred_at: string } => {
+const sourceOf = (golden: GoldenCase): JudgeSource & { occurred_at: string; fromConnector?: boolean } => {
   const s = golden.sources[0];
   return {
     text: s.text,
@@ -131,6 +131,7 @@ const sourceOf = (golden: GoldenCase): JudgeSource & { occurred_at: string } => 
     occurred_at: s.occurred_at,
     participants: s.participants,
     writtenByMe: s.written_by_me,
+    fromConnector: s.from_connector,
   };
 };
 
@@ -356,7 +357,7 @@ async function main() {
         for (const s of [...golden.sources].sort((a, b) => a.occurred_at.localeCompare(b.occurred_at))) {
           const occurredAt = new Date(s.occurred_at);
           const result = await runPipeline(
-            { text: s.text, kind: s.kind, occurredAt, identity: golden.user, participants: s.participants, writtenByMe: s.written_by_me },
+            { text: s.text, kind: s.kind, occurredAt, identity: golden.user, participants: s.participants, writtenByMe: s.written_by_me, fromConnector: s.from_connector },
             { complete: (request) => completeJson(llm, request), decide: (request) => decide(jev, request) },
           );
           sequenceCost += result.summary.cost;

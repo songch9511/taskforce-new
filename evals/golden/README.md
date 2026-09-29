@@ -31,7 +31,8 @@
 - **Meet 전사**: 첫 줄 `[Google Meet · 일정 제목]`, 그다음 줄은 `이름: 글`입니다. 사용자 줄은 Meet 표시 이름이 아니라 **Taskforce 프로필 이름**(`user.name`)으로 씁니다. 같은 화자의 이어진 항목은 한 줄로 합치고, 시각은 넣지 않습니다. `participants.attendees`는 일정 참석자와 Meet 참가자를 합친 것이고, 사용자는 프로필 이름 + 연결한 주소로 한 번만 넣습니다.
 - **Notion 회의록 + 일정 참석자**(2-4): Notion 어댑터(`pageToItem`)와 같게 `# 제목`과 정리한 본문(`[AI 요약]` · `[메모]` · `[녹음 전사]`)을 쓰고, `participants.attendees`에 같은 회의의 Calendar 참석자를 넣습니다.
 - 같은 회의의 Notion 회의록과 Meet 전사는 `occurred_at`을 40초 차이로 두어 들어오는 순서를 정합니다(`seq-meet-after-notion` · `seq-notion-after-meet`).
-- 메일의 인용된 옛 메일 안에만 있는 구절은 기계 검증(`verify.ts`, `quotedHistoryStart`)이 버립니다(PR 1b). 그래서 메일 정답 Action의 `evidence` 중 **하나 이상은 새로 쓴 글(인용 위)의 구절**이어야 하고, 인용 속 구절만 근거로 적으면 정답을 스스로 버리게 됩니다(`golden.test.ts`가 검사). 인용 속에 있는 근거를 함께 적는 것은 괜찮습니다: 채점은 근거 하나만 겹쳐도 짝짓습니다(`gmail-mixed-language`).
+- `sources[].from_connector`: 연결(Gmail 등)로 가져온 원문인가. 없으면 사용자가 직접 붙여 넣은 원문이다. `gmail` · `meet` 태그 케이스의 메일 원문에는 `true`를 붙입니다(어댑터가 만들 원문이라 운영과 같은 길을 타게).
+- 연결로 가져온 메일(`from_connector: true`)의 인용된 옛 메일 안에만 있는 구절은 기계 검증(`verify.ts`, `quotedHistoryStart`)이 버립니다(PR 1b, 직접 붙여 넣은 메일에는 쓰지 않음, 2026-09-30). 그래서 그런 메일 정답 Action의 `evidence` 중 **하나 이상은 새로 쓴 글(인용 위)의 구절**이어야 하고, 인용 속 구절만 근거로 적으면 정답을 스스로 버리게 됩니다(`golden.test.ts`가 검사). 인용 속에 있는 근거를 함께 적는 것은 괜찮습니다: 채점은 근거 하나만 겹쳐도 짝짓습니다(`gmail-mixed-language`).
 - 사람 · 회사는 지어낸 이름이고 주소는 `.example` 도메인입니다. 실제 원문(본인 Gmail · Meet 전사, 로컬에서 익명화)은 G13으로 더합니다.
 
 인용이 원문에 없거나 없는 source를 가리키면 `npm run eval`과 `npm run test`가 실패합니다.

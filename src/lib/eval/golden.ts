@@ -15,6 +15,11 @@ export const goldenSourceSchema = z.object({
   participants: participantsSchema.optional(),
   /** 원문을 사용자가 직접 썼나 (sources.written_by_me). 없으면 모름 */
   written_by_me: z.boolean().optional(),
+  /**
+   * 연결(Gmail 등)로 가져온 원문인가. 없으면 사용자가 직접 붙여 넣은 원문이다. 연결로 가져온 메일만 인용된 옛 메일 속 후보를 버린다
+   * (pipeline/verify.ts, ExtractInput.fromConnector). Gmail 어댑터가 만들 원문과 같은 모양의 케이스(`gmail` · `meet` 태그)의 메일에 붙인다.
+   */
+  from_connector: z.boolean().optional(),
 });
 
 export const expectedActionSchema = z.object({

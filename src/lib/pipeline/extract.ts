@@ -19,6 +19,12 @@ export type ExtractInput = {
   participants?: Participants;
   /** 사용자가 직접 쓴 원문인가 (sources.written_by_me). 모르면 null · 없음 */
   writtenByMe?: boolean | null;
+  /**
+   * 연결(Gmail 등)로 가져온 원문인가. 연결로 가져온 메일은 스레드의 앞선 메일이 각각 따로 원문으로 들어오므로, 인용된 옛 메일 안의 후보는
+   * 그 메일이 들어올 때 이미 Claim이 됐다(verify.ts). 사용자가 직접 붙여 넣은 메일(false · 없음)은 옛 메일이 따로 들어온 적이 없어
+   * 인용 속 약속도 뽑는다. 원문 글이 아니라 어디서 왔는지로 정한다 (sources.external_id가 있으면 연결로 가져온 것).
+   */
+  fromConnector?: boolean;
 };
 
 // 모델에게 주는 응답 스키마. 공급자마다 JSON 스키마 지원 범위가 달라 형식 제약(날짜 패턴, 범위)은 넣지 않고
