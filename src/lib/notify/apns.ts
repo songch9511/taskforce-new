@@ -101,6 +101,7 @@ export async function sendPush(config: ApnsConfig, device: ApnsDevice, payload: 
 // ─── 알림 내용 ───────────────────────────────────────────
 // 할 일 제목(회의록 · 메시지에서 나온 내용)은 잠금 화면에 싣지 않는다: 앱 화면과 같은 짧은 영어 문구와 action_id만 보낸다.
 // mutable-content는 앱에 알림 확장(Notification Service Extension)을 붙여 로그인 세션으로 제목을 채울 때를 위해 남긴다 (아직 없다).
+// 재연결 알림은 서비스 이름뿐이라 action_id 없이 kind만 보낸다: 앱은 kind "reconnect"를 연결 화면으로 연다 (PushNotifications.swift).
 
 export function confirmationPayload(action: { id: string }): ApnsPayload {
   return {
@@ -120,5 +121,13 @@ export function duePayload(actions: { id: string; due_date: string }[], today: s
     action_id: first.id,
     action_ids: actions.slice(0, 20).map((a) => a.id),
     kind: "due",
+  };
+}
+
+/** 연결이 reauth로 바뀐 순간 한 번: service는 사용자에게 보이는 서비스 이름 ("Gmail") */
+export function reconnectPayload(service: string): ApnsPayload {
+  return {
+    aps: { alert: { title: "Connections", body: `Reconnect ${service} to keep syncing.` }, sound: "default", "thread-id": "connections" },
+    kind: "reconnect",
   };
 }

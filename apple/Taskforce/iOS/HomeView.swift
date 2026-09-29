@@ -494,11 +494,16 @@ struct HomeView: View {
         account.loaded && account.hasConnections && accountRoute == nil && !addingTask && !promptingProfile && !promptingConsent
     }
 
-    /// 누른 알림: 떠 있는 시트를 닫고 목록을 다시 읽은 뒤 그 할 일로 (Review면 그 카드를 먼저, 할 일이면 그 행을 잠시 칠한다)
+    /// 누른 알림: 떠 있는 시트를 닫고 목록을 다시 읽은 뒤 그 할 일로 (Review면 그 카드를 먼저, 할 일이면 그 행을 잠시 칠한다).
+    /// 재연결 알림은 할 일이 아니라 연결 화면으로 간다.
     private func openNotification() {
         guard let target = PushCenter.shared.take() else { return }
-        accountRoute = nil
         addingTask = false
+        if target.kind == .reconnect {
+            accountRoute = .connections
+            return
+        }
+        accountRoute = nil
         Task {
             await store.load()
             guard let id = target.actionID, let found = store.sections.find(id) else { return }
