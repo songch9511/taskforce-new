@@ -166,9 +166,9 @@ UI 다듬기는 보류 중이다. 제품 화면이 구현되면 다시 채운다
 |---|---|
 | 헤드라인 | Never miss what you promised. |
 | 부제 | The Real AI Manager for founders and consultants in back-to-back meetings. Taskforce finds what you committed to in your meeting notes, Slack, and email, then organizes and tracks it for you. |
-| CTA | Join the TestFlight beta |
+| CTA | Join the TestFlight beta (공개 링크가 생기기 전에는 링크 없는 "Coming soon") |
 | 요건 | iPhone · Mac + Notion · Google · Slack 로고 |
-| 맥락 | After a meeting, your to-dos are scattered across the notes. Connect Notion, and Taskforce reads each new meeting note, picks out only what you said you'd do, and adds it to your list with a due date. When a later meeting moves a deadline, it updates the task instead of adding a new one. Every task carries the exact line it came from. |
+| 맥락 | Your to-dos end up scattered across meeting notes, Slack, and email. Connect Notion, Google, and Slack, and Taskforce reads each new meeting note, message, and email, picks out only what you said you'd do, and adds it to your list with a due date. When a later message moves a deadline, it updates the task instead of adding a new one. Every task carries the exact line it came from. |
 | 주장 1 | Every task shows the line it came from. (Evidence 부품) |
 | 주장 2 | Changes update the task. No duplicates. (Sources group 부품) |
 | 주장 3 | Asks only when it isn't sure. (Review card 부품) |
@@ -178,19 +178,19 @@ UI 다듬기는 보류 중이다. 제품 화면이 구현되면 다시 채운다
 - 헤드라인과 부제를 합치면 핵심 메시지(go live 판)와 같은 내용이다. 헤드라인은 "왜 중요한가", 부제는 "누구를 위해 · 무엇을"을 맡는다.
 - "Real AI Manager"를 쓰는 자리라서, 그 근거(주장 3개)를 같은 페이지의 Proof 섹션에 둔다.
 - 요건 한 줄은 캡션을 줄이는 원칙의 예외다. 1단계 연동(Notion · Google · Slack)을 하나도 쓰지 않는 사람이 설치했다가 빈 화면을 보는 일을 막는다. 서비스는 로고로 보여 준다(UI 문구 규칙).
-- **맥락 문단은 아직 Notion 기준이다.** go live 전에 회의록 · Slack · 메일을 아우르도록 다시 쓴다(카피 작업).
+- 맥락 문단은 1단계 연동(회의록 · Slack · 메일)을 모두 아우르게 다시 썼다(2026-09-29, W3). 1단계 중 하나가 go live 전에 빠지면 그 원문 종류를 덜어낸다.
 - 연동이 늘면 부제와 맥락의 "meeting notes"를 함께 넓힌다(위 [지금 쓰는 판](#지금-쓰는-판-go-live-2026-09-27) 규칙).
 - 개인정보 한 줄은 개인정보 처리방침에 이미 적은 약속만 쓴다. 방침이 바뀌면 이 줄도 고친다.
 
 ### CTA와 측정
 
 - 동작은 하나다: TestFlight 공개 링크.
-- 대기 명단(이메일 받기)은 쓰지 않는다. 개인정보 처리방침에 없는 수집이라서다.
+- 대기 명단(이메일 받기)은 쓰지 않는다. 개인정보 처리방침에 없는 수집이라서다. 필요해지면 처리방침 개정(수집 항목 · 목적 · 보관 기간 · 발송 수탁자)과 함께 붙인다(2026-09-29 논의, L1 · L3 뒤).
 - 사이트에는 분석 도구와 쿠키를 넣지 않는다(개인정보 처리방침의 약속). 유입은 App Store Connect의 공개 링크 설치 수로 본다.
 
 ### 공개 전에 할 일
 
-- 사이트는 go live와 같은 날 연다. 앱에서 Notion 연결과 서버 배포가 끝나기 전에 CTA를 열면, 설치한 사람이 원문을 넣을 방법이 없다([GO_LIVE.md](GO_LIVE.md) 1 · 2장).
+- 사이트는 처리방침 게시와 Google 브랜드 심사를 위해 go live 전에 연다(2026-09-29 결정). CTA는 TestFlight 공개 링크가 생길 때까지 링크 없는 "Coming soon"이고, 링크는 go live 날 넣는다(runbook G2). 앱에서 연결과 서버 배포가 끝나기 전에 설치 링크를 열면 설치한 사람이 원문을 넣을 방법이 없다([GO_LIVE.md](GO_LIVE.md) 1 · 2장).
 - TestFlight 외부 테스트 심사를 통과해 공개 링크를 받는다.
 - Contact 주소를 정한다. 지금 확인된 주소는 `privacy@taskforcelabs.dev`뿐이다.
 - 제품 화면을 실제 앱 스크린샷으로 바꾼다. 지금은 Figma 부품으로 만든 목업이다.
