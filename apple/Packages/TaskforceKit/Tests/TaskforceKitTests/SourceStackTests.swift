@@ -8,6 +8,8 @@ struct SourceStackTests {
         ("https://acme.notion.site/abc", .doc, .notion),
         ("https://acme.slack.com/archives/C1/p123", .message, .slack),
         ("https://mail.google.com/mail/u/0/#inbox/abc", .email, .gmail),
+        // 서버가 Gmail 원문에 붙이는 링크 (lib/connectors/gmail/message.ts gmailThreadUrl)
+        ("https://mail.google.com/mail/?authuser=me%40company.dev#all/18c2f0a1b2c3d4e5", .email, .gmail),
         ("https://meet.google.com/abc-defg-hij", .meeting, .googleMeet),
         ("https://docs.google.com/document/d/abc", .meeting, .googleMeet),
         ("https://docs.google.com/document/d/abc", .doc, .manual(.doc)),

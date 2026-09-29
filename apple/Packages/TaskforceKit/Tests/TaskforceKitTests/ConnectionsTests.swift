@@ -19,6 +19,8 @@ struct ConnectionsTests {
         ("connected", ConnectionCallback.Status.connected, true),
         ("connected_empty", .connectedEmpty, true),
         ("connected_no_meetings", .connectedNoMeetings, true),
+        ("connected_partial", .connectedPartial, true),
+        ("missing_scope", .missingScope, false),
         ("denied", .denied, false),
         ("error", .error, false),
         ("invalid_state", .invalidState, false),
@@ -37,6 +39,14 @@ struct ConnectionsTests {
         #expect(ConnectionCallback.Status.invalidState.message == "The link expired. Try again.")
         #expect(ConnectionCallback.Status.error.message == "Couldn't connect. Try again.")
         #expect(ConnectionCallback.Status.connectedEmpty.message?.hasPrefix("Connected.") == true)
+    }
+
+    /// 권한 화면에서 체크를 뺀 결과 (google-integration.md G10). 모르는 값은 그대로 일반 오류 문구
+    @Test func partialAndMissingScopeMessages() {
+        #expect(ConnectionCallback.Status.connectedPartial.message == "Connected. Some access is off.")
+        #expect(ConnectionCallback.Status.missingScope.message == "Allow access to connect.")
+        #expect(ConnectionCallback.Status(raw: "scope_of_the_future").message == "Couldn't connect. Try again.")
+        #expect(ConnectionCallback.Status(raw: "").message == "Couldn't connect. Try again.")
     }
 
     @Test func ignoresOtherURLs() {
@@ -192,6 +202,25 @@ struct ConnectionsTests {
         #expect(ConnectionProvider.gmail.note == "Beta · Reconnect every 7 days")
         #expect(ConnectionProvider.google.readsBeforeConnecting.count == 3)
         #expect(ConnectionProvider.stageTwo.allSatisfy { $0.logo == nil })
+    }
+
+    /// Google · Gmail: Google이 요구하는 앱 안 공개 (google-verification.md 2-4). Gmail은 확인 없이 권한 화면으로 가지 않는다
+    @Test func googleAndGmailDisclosureCopy() {
+        #expect(ConnectionProvider.gmail.readsBeforeConnecting == [
+            "Email you sent or received. Newsletters and promotions are skipped.",
+            "Read-only. Sent to AI only after your consent. Never used for training.",
+            "Beta: reconnect every 7 days.",
+        ])
+        // Meet 줄은 G2 시험 결과(PR 4b)에 맞춰 고친다: 그때까지 그대로
+        #expect(ConnectionProvider.google.readsBeforeConnecting == [
+            "Calendar: event titles, times, attendees",
+            "Meet: transcripts of meetings you attend",
+            "Read-only. Sent to AI only after your consent. Never used for training.",
+        ])
+        // 두 곳 모두 "AI로 보내는 것은 동의 뒤, 학습에 쓰지 않음"을 밝힌다
+        for provider in [ConnectionProvider.google, .gmail] {
+            #expect(provider.readsBeforeConnecting.contains("Read-only. Sent to AI only after your consent. Never used for training."))
+        }
     }
 
     /// Slack: 연결 전에 무엇을 받는지 알리고, 끊으면 Slack 글이 지워진다고 알린다 (slack-integration.md 3장 · D3)

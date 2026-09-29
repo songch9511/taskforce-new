@@ -98,6 +98,9 @@ public struct NotificationTarget: Equatable, Sendable {
         case confirmation
         /// 오늘 · 내일 마감: 할 일 행
         case due
+        /// 연결이 만료돼 다시 연결해야 함 (Gmail 7일 등): 연결 화면. 할 일 정보는 없다
+        case reconnect
+        /// 모르는 종류 (새 서버의 새 알림): 앱만 연다
         case other
     }
 

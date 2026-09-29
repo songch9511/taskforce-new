@@ -48,7 +48,9 @@
 | `NOTION_REDIRECT_URI` | `https://api.taskforcelabs.dev/api/connectors/notion/callback` | Notion 설정의 Redirect URI와 글자까지 같게 |
 | `GOOGLE_CLIENT_ID` · `GOOGLE_CLIENT_SECRET` | Google 프로젝트 A 클라이언트 (`google-verification.md` 9장 6번) | 새 값 |
 | `GMAIL_CLIENT_ID` · `GMAIL_CLIENT_SECRET` | Google 프로젝트 B 클라이언트 (9장 8번) | 새 값 |
-| `GOOGLE_REDIRECT_URI` · `GMAIL_REDIRECT_URI` | `https://api.taskforcelabs.dev/api/connectors/google/callback` · `…/gmail/callback` | 코드가 Notion처럼 env로 받으면 넣는다 |
+| `GMAIL_REDIRECT_URI` | `https://api.taskforcelabs.dev/api/connectors/gmail/callback` | 코드가 env로 받는다(`gmail/run.ts` `gmailOAuthConfig`. `GMAIL_CLIENT_ID` · `GMAIL_CLIENT_SECRET`과 함께 하나라도 없으면 연결 시작이 오류). 프로젝트 B 클라이언트의 Authorized redirect URI와 글자까지 같게 |
+| `GMAIL_CONNECT_ENABLED` | `true` | 앱에 Gmail 연결을 연다(`lib/env.ts` `gmailConnectEnabled`). 처리방침 3장 Gmail 절의 재게시(`docs/legal/README.md` "게시 대기")와 재연결 알림 · 앱의 Gmail 확인 창(google-integration.md PR 4a, #27)이 나간 뒤에 켠다. #27을 배포하기 전에 마이그레이션 `20261015000000_metric_events_reauth_provider.sql`을 운영 DB에 적용한다. 그 전에는 비워 둔다: 비우면 운영에서는 닫혀 있고 운영자(`ADMIN_EMAILS`)만 웹 /lab에서 연결해 시험할 수 있다 |
+| `GOOGLE_REDIRECT_URI` | `https://api.taskforcelabs.dev/api/connectors/google/callback` | google 연결(Calendar · Meet, google-integration.md PR 3)이 붙어야 코드가 읽는다. 지금은 읽지 않는다. 여는 플래그 `GOOGLE_CONNECT_ENABLED`도 그때 생긴다 |
 | `SLACK_CLIENT_ID` · `SLACK_CLIENT_SECRET` · `SLACK_SIGNING_SECRET` | api.slack.com/apps → Taskforce → Basic Information (`slack-app.md` 9장 4번) | 새 값 |
 | `SLACK_REDIRECT_URI` | `https://api.taskforcelabs.dev/api/connectors/slack/callback` | 연결(OAuth) callback. Slack 앱의 Redirect URL과 글자까지 같아야 한다 |
 | `SLACK_APP_TOKEN` | App-Level Token `xapp-…` (`authorizations:read`) | 한 워크스페이스에 이용자가 둘 이상일 때(D4). 없으면 이벤트가 이름을 댄 이용자만 받는다 |
@@ -144,7 +146,7 @@ Supabase → Organization → Billing에서 프로젝트가 **Free**이고 백�
 
 배포 방법(2026-09-29 확인): Vercel `taskforce-website`는 GitHub `songch9511/taskforce`의 `main`에 Git 연동돼 있다(Root Directory `apps/website`). `main`에 병합하면 Production, 다른 브랜치는 Preview다. 저장소는 **squash 병합만** 허용한다. **커밋 작성자 이메일이 GitHub 계정에 연결돼 있지 않으면 Vercel이 배포를 막는다**(`BLOCKED`, "couldn't find a Git account for the commit author"). 이 맥에는 `git config user.email`이 없어 `…@Danielui-MacBookAir.local`이 들어가므로, 브랜치 커밋은 GitHub noreply 주소(`67100803+songch9511@users.noreply.github.com`)로 만든다. GitHub에서 병합한 커밋은 괜찮다. Side Kick 저장소의 GitHub Actions는 결제 문제로 job이 시작되지 않는다(2026-09-16부터). 같은 명령을 로컬에서 돌려 확인한다.
 
-1. `/privacy` · `/terms`는 `/en/privacy` · `/en/terms`로 리디렉트한다. 법률 markdown은 실시간 렌더가 아니라 **`apps/website/scripts/sync-legal.mjs`가 이 저장소의 `docs/legal/*.md`를 복사**해 둔다(원본은 여전히 `docs/legal/`, 고칠 때마다 스크립트를 다시 돌려 동기화한다).
+1. `/privacy` · `/terms`는 `/en/privacy` · `/en/terms`로 리디렉트한다. 법률 markdown은 실시간 렌더가 아니라 **`apps/website/scripts/sync-legal.mjs`가 이 저장소의 `docs/legal/`에서 네 파일(`privacy.{ko,en}.md` · `terms.{ko,en}.md`)을 복사**해 둔다(원본은 여전히 `docs/legal/`, 고칠 때마다 스크립트를 다시 돌려 동기화한다).
 2. 이전 제품 페이지(download · pricing · account · beta · login · updates · help)는 홈으로 리디렉트. 이전 Mac 앱의 `/en/login` · `/en/account` 링크도 홈으로 간다. 이용자가 운영자뿐이라 감수했다(2026-09-29 결정). 이전 OAuth 브로커(`/api/connections/*`)는 그대로 둔다.
 3. 홈 푸터: Privacy · 문의 주소(`privacy@taskforcelabs.dev`를 링크 글자로, 2026-09-29. "Contact" mailto는 메일 앱이 없는 브라우저에서 반응이 없었다). 홈에 Google Limited Use 문장 한 줄. Privacy 링크는 동의 화면과 같은 `https://www.taskforcelabs.dev/en/privacy`.
 4. 분석 도구 · 쿠키 없음 확인: `curl -sI https://www.taskforcelabs.dev | grep -i set-cookie`가 비어야 하고, 페이지에 분석 스크립트가 없어야 한다.
@@ -270,7 +272,7 @@ union all select 'slack_people', count(*) from public.slack_people where user_id
 | C1 | 연결 틀 · 서명된 state · 동의 API · 연결 요청 · 계정 삭제 시 연동 토큰 폐기 (트랙 2-1) | 코드 ✅ (2026-09-28) | 단위 · RLS 테스트 통과 (state 정상 · 변조 · 만료 · 재사용 · 다른 사용자, 동의 없으면 처리 안 함) | — |
 | C2 | 계정 삭제 시 Sign in with Apple 토큰 폐기 (서버는 `src/lib/apple/sign-in.ts`로 구현됨, 앱이 삭제 전에 authorization code를 보내는 일이 남음) | 코드 ✅ 코드 (실기기 확인 남음) | 앱이 `apple_authorization_code`를 보내는 테스트 통과, 실기기에서 Apple ID 목록에서 사라짐 (`app-store.md` 6장) | I8 |
 | C3 | 물어보기 `POST /api/v1/ask` (트랙 2-2) | 코드 ✅ | 인용 기계 검증 · 근거 없으면 "모른다" 테스트, ask 골든셋 eval | C1 |
-| C4 | Google 연동: Calendar · Meet 전사 · Gmail (트랙 2-3, 계획 [google-integration.md](google-integration.md)) | 코드 | 메일 · Meet 골든셋 eval 기록, `invalid_grant` → `reauth` + 재연결 안내, 처리방침 3장 Google · Gmail 문장과 구현 값 일치 | C1 |
+| C4 | Google 연동: Calendar · Meet 전사 · Gmail (트랙 2-3, 계획 [google-integration.md](google-integration.md)) | 코드 · Gmail 부분 진행 (2026-09-29: 연결 · 거르기 · `reauth` · 토큰 폐기 PR #25, 처리방침 3장 Gmail 문장을 구현에 맞춤 PR 5a — 웹사이트 재게시와 `GMAIL_CONNECT_ENABLED`는 남음. 재연결 알림 · Gmail 확인 창 · 연결 결과 문구는 PR 4a(#27, 코드 있음 · 배포 전), Meet 줄 · 근거 줄 일정 제목은 PR 4b, Calendar · Meet 연결과 그 처리방침 문장은 PR 3 · 5b) | 메일 · Meet 골든셋 eval 기록, `invalid_grant` → `reauth` + 재연결 안내, 처리방침 3장 Google · Gmail 문장과 구현 값 일치 | C1 |
 | C5 | Slack 연동: OAuth + Events API (트랙 2-4, 계획 [slack-integration.md](slack-integration.md)) | 코드 ✅ (2026-09-29, PR 1~4. dev 워크스페이스에서 시나리오 2 · 연결 끊기 확인) | 서명 검증 · 버리는 규칙 테스트, Slack 골든셋(핵심 시나리오 2) eval, 권한이 처리방침 3장과 일치. 운영에서 남은 확인은 아래 "Slack 켜기" | C1 |
 | C6 | 앱: iPhone 한 화면 · Mac 런처 · 연결 · AI 동의 화면 · 계정 메뉴(Connections · AI data · Privacy Policy · Sign out · Delete account) · 데모 로그인 (트랙 3) | 코드 ✅ (Mac E2E 2026-09-28, 로컬 서버) | 시뮬레이터 · Mac E2E: 로그인 → 동의 → Notion 연결(앱 복귀) → 할 일 → 체크 · Review 확정 | C1, 데모 로그인 결정 |
 | C7 | 모델 공급자 고정 (`provider.only`) | 코드 ✅ (`src/lib/ai/providers.ts`) | 처리방침 7장 표에 공급자 · 국가를 적음(`docs/legal/README.md` 결정 1, 해결됨). 남은 것: TypeSafe 소재지 서면 확인 | — |

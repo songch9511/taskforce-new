@@ -157,7 +157,7 @@ extension PushCenter: UNUserNotificationCenterDelegate {
         completionHandler([.banner, .list, .sound])
     }
 
-    /// 알림을 누름: 그 할 일로 간다
+    /// 알림을 누름: 그 할 일로 간다 (재연결 알림은 연결 화면으로, 화면이 `target.kind`로 가른다)
     nonisolated func userNotificationCenter(
         _ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse,
         withCompletionHandler completionHandler: @escaping () -> Void

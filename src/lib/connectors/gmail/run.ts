@@ -3,6 +3,7 @@ import "server-only";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 import { CONSENT_WITHDRAWN_MESSAGE, ConsentRequiredError } from "@/lib/consent/gate";
+import { notifyReconnect } from "@/lib/notify/service";
 
 import {
   claimConnection,
@@ -101,7 +102,9 @@ export async function syncGmailConnection(
     }
     // 갱신 토큰 만료 (테스트 상태 7일 · 이용자가 Google 계정에서 접근을 거둠 등): 다시 연결할 때까지 동기화하지 않는다
     if (error instanceof GoogleReauthError) {
-      await recordSync(admin, connection, { claimedAt: now, error: REAUTH_MESSAGE, reauth: true });
+      const changed = await recordSync(admin, connection, { claimedAt: now, error: REAUTH_MESSAGE, reauth: true });
+      // 상태를 실제로 reauth로 바꾼 동기화에서만 알림 한 번 (G9). 알림이 실패해도 동기화 결과는 그대로다
+      if (changed) await notifyReconnect(admin, connection.userId, "gmail").catch(logError(`Gmail 재연결 알림 실패 (${connection.id})`));
       return { connectionId: connection.id, ok: false, error: REAUTH_MESSAGE, revoked: false };
     }
     const message = userFacingError(error);
