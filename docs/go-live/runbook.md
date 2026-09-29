@@ -226,7 +226,7 @@ union all select 'slack_people', count(*) from public.slack_people where user_id
 | L6 | Google 프로젝트 B 제한 범위 심사 + CASA | 사용자 (평가기관 계약 · 결제 포함) | 심사 통과 · LOA. **go live 조건 아님** (Testing으로 go live, 통과 뒤 7일 재연결 해제) | L5, 영상 B, Google의 CASA 요청 |
 | L7 | Slack 앱 생성 · 이벤트 URL 확인 · 공개 배포 | 사용자 | "Public distribution is active", 다른 워크스페이스에서 설치 성공 | I3, C5 (`slack-app.md` 9장) |
 | L8 | TestFlight 외부 테스트 심사 | 사용자 | 베타 앱 심사 통과 | C6, C2, I1~I5, 데모 계정 (`app-store.md` 7장) |
-| L9 | 법률 검토 (국내 개인정보 변호사) | 사용자 | `docs/legal/README.md` 검토 항목에 답을 받고 처리방침의 "법률 검토 필요" 상자를 지울 수 있음 | W2 초안 |
+| L9 | 법률 검토 → **자체 검토로 대신** ([self-review.md](../legal/self-review.md)) | 사용자 ✅ (2026-09-29 결정표) | 결정표대로 문안을 고치고 상자를 지움. 변호사 검토는 유료화 · Marketplace · Google 민감 범위 심사 전 | W2 초안 |
 
 ### 2) 인프라 · 계정 설정
 
@@ -267,7 +267,7 @@ union all select 'slack_people', count(*) from public.slack_people where user_id
 | # | 항목 | 담당 | 끝난 기준 | 먼저 필요한 것 |
 |---|---|---|---|---|
 | W1 | 웹사이트 코드 (원페이지 + 처리방침 · 약관 렌더) | 코드 | Side Kick 사이트 `npm run build && npm test`, Preview에서 확인 | — |
-| W2 | 처리방침 · 약관 확정 | 사용자 | 자리표시자(시행일 · 전화번호 · 모델 공급자) 채움, 법률 검토 상자 지움, `docs/legal/README.md` 구현 대조표의 게시 조건 모두 끝 | C1~C7, L9 |
+| W2 | 처리방침 · 약관 확정 | 사용자 | 자리표시자(시행일 · EU · 영국 대리인) 채움, 자체 검토 결정 반영(전화 · 모델 공급자 연락처는 채움), `docs/legal/README.md` 구현 대조표의 게시 조건 모두 끝 | C1~C7, L9(자체 검토) |
 | W3 | 웹사이트 맥락 문단을 회의록 · Slack · 메일로 넓히기 | 사용자(카피) | BRAND.md "맥락 문단은 아직 Notion 기준" 해소 | — |
 | W4 | 스토어 · TestFlight 문구 | 사용자 | `app-store.md` 2장 값 입력 | — |
 

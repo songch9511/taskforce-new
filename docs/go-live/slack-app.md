@@ -145,7 +145,7 @@ Slack은 2025-05-29에 **Marketplace에 올리지 않고 배포하는 상업용 
 4. Marketplace에는 올리지 않는다(아래 7장). 비Marketplace 배포라 대화 기록 API는 4장의 제한을 받지만, 이벤트 방식이라 영향이 없다.
 5. 설치한 워크스페이스 수는 Manage Distribution에서 본다(Marketplace 기준 10곳을 넘는지).
 
-## 7. Slack 약관과 보관: 법률 검토 필요
+## 7. Slack 약관과 보관 (자체 검토: docs/legal/self-review.md 2번)
 
 Slack API 약관(2025-10-10 시행, <https://slack.com/terms-of-service/api>)에서 Taskforce와 관계있는 조항:
 
