@@ -21,6 +21,8 @@ const MAX_TITLE = 200;
 /** 화자 이름표 한도: 이보다 길면 identity.ts의 이름표 읽기(quoteSpeaker)가 이름표로 보지 않는다 */
 const MAX_LABEL = 30;
 const KST_OFFSET_MS = 9 * 3_600_000;
+/** 머리줄을 뺀 본문(화자: 말)이 이보다 짧으면 전사가 빈 것으로 본다 (머리줄만으로 넘지 않게 여기서 잰다) */
+export const MIN_TRANSCRIPT_CHARS = 30;
 
 /** `2026-10-05 10:00` (한국 시간) */
 export function kstMinute(date: Date): string {
@@ -86,7 +88,7 @@ export function participantLabels(participants: MeetParticipant[], me: Transcrip
   return new Map(participants.map((p) => [p.name, { ...byPerson.get(personOf(p))!, person: personOf(p) }]));
 }
 
-/** 전사 → 원문. 전사 항목이 없으면 null */
+/** 전사 → 원문. 전사 항목이 없거나 본문(머리줄 제외)이 MIN_TRANSCRIPT_CHARS보다 짧으면 null */
 export function transcriptToItem(input: TranscriptInput): IngestItem | null {
   const { record, transcript, entries, participants, event, me } = input;
   const labels = participantLabels(participants, me);
@@ -106,14 +108,15 @@ export function transcriptToItem(input: TranscriptInput): IngestItem | null {
     }
     lines.push({ speaker: known?.label ?? UNKNOWN_PARTICIPANT, texts: [text], person });
   }
-  if (lines.length === 0) return null;
+  const speech = lines.map((line) => `${line.speaker}: ${line.texts.join(" ")}`).join("\n");
+  if (speech.length < MIN_TRANSCRIPT_CHARS) return null;
 
   const startedAt = transcript.startTime ?? record.startTime;
   const endedAt = transcript.endTime ?? record.endTime;
   // 제목: 일정 제목, 없으면 "Google Meet · 2026-10-05 10:00". 머리줄의 [ ]가 깨지지 않게 ] · 줄바꿈은 뺀다
   const eventTitle = event?.title?.replace(/[\]\r\n]+/g, " ").replace(/\s+/g, " ").trim() || null;
   const heading = eventTitle ?? kstMinute(startedAt);
-  const body = [`[Google Meet · ${heading}]`, ...lines.map((line) => `${line.speaker}: ${line.texts.join(" ")}`)].join("\n");
+  const body = `[Google Meet · ${heading}]\n${speech}`;
 
   // 관련자: 사용자(프로필 이름 + 연결한 주소)가 한 번, 일정 참석자, Meet 참가자(이름이 같으면 합침)
   const meetPeople: Person[] = [];

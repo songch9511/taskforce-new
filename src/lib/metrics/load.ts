@@ -2,6 +2,8 @@ import "server-only";
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 
+import { grantedFeatures } from "@/lib/connectors/google/run";
+
 import {
   connections,
   gmailFiltering,
@@ -144,8 +146,14 @@ export async function loadMetrics(admin: SupabaseClient, period: Period) {
     admin.from("connections").select("stats:settings->stats").eq("provider", "gmail").order("id").range(from, to),
   );
 
-  const googleStats = await readAll<{ stats: unknown }>((from, to) =>
-    admin.from("connections").select("stats:settings->stats").eq("provider", "google").order("id").range(from, to),
+  const googleStats = await readAll<{ user_id: string; stats: unknown; scopes: unknown }>((from, to) =>
+    admin.from("connections").select("user_id, stats:settings->stats, scopes:settings->scopes").eq("provider", "google").order("id").range(from, to),
+  );
+  // Calendar를 허용한 google 연결이 있는 사용자: 그 사용자의 Notion 회의록만 "일정이 붙은 비율"의 분모에 든다
+  const calendarUsers = new Set(
+    googleStats
+      .filter((row) => Array.isArray(row.scopes) && grantedFeatures(row.scopes.filter((scope): scope is string => typeof scope === "string")).calendar)
+      .map((row) => row.user_id),
   );
   // 회의 원문에 일정이 붙은 비율: 기간 안에 들어온 회의 원문의 외부 id와 붙은 일정 id만 읽는다 (sources.meeting은 마이그레이션 20261016000000 뒤에 있다)
   const meetingRows = await readAll<{ user_id: string; external_id: string | null; calendar_event_id: string | null }>((from, to) =>
@@ -174,7 +182,7 @@ export async function loadMetrics(admin: SupabaseClient, period: Period) {
     connections: connections(metrics, connectionRequests, period),
     gmail: gmailFiltering(gmailStats.map((row) => row.stats)),
     google: googleActivity(googleStats.map((row) => row.stats)),
-    meetingLinkage: meetingLinkage(meetingRows),
+    meetingLinkage: meetingLinkage(meetingRows, calendarUsers),
     shadowList: shadowList(
       weeklyChecks.map((c) => ({ userId: c.user_id, weekStart: c.week_start, answer: c.answer, at: c.answered_at })),
       period,

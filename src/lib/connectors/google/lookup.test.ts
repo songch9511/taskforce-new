@@ -98,7 +98,7 @@ describe("googleCalendarLookup: 만들 수 있는가", () => {
 });
 
 describe("googleCalendarLookup: 조회", () => {
-  const target = { day: "2026-09-30", createdAt: new Date("2026-09-30T10:05:00+09:00"), title: "Proposal review — Acme" };
+  const target = { day: "2026-09-30", createdAt: new Date("2026-09-30T10:05:00+09:00"), title: "Proposal review — Acme", createdByUser: true };
 
   it("Calendar를 허용한 연결이면 연결 id와 조회 함수를 돌려주고, 그 연결의 토큰으로 그 한국 날짜의 일정을 읽는다", async () => {
     const urls: { url: string; auth?: string }[] = [];

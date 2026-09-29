@@ -49,6 +49,8 @@ function fakeMeet(setup: {
   /** 회의 코드 → 그 코드로 찾은 회의 기록 (참석한 회의) */
   byCode?: Record<string, ConferenceRecord[] | "denied" | "rate" | "error">;
   transcripts?: Record<string, Transcript[]>;
+  /** 전사 → 전사 항목 (기본 ENTRIES) */
+  entries?: Record<string, TranscriptEntry[]>;
   codes?: Record<string, string | null>;
   listTranscriptsFails?: (recordName: string) => Error | undefined;
   listEntriesFails?: (transcriptName: string) => Error | undefined;
@@ -80,7 +82,7 @@ function fakeMeet(setup: {
       calls.push(`entries:${name}`);
       const failure = setup.listEntriesFails?.(name);
       if (failure) throw failure;
-      return ENTRIES;
+      return setup.entries?.[name] ?? ENTRIES;
     }),
     listParticipants: vi.fn(async (name: string) => {
       calls.push(`participants:${name}`);
@@ -370,7 +372,8 @@ describe("syncGoogleMeet: 참석한 회의 (G2 ②)", () => {
     const codeQueries = meet.calls.filter((c) => c.includes("space.meeting_code"));
     expect(codeQueries).toEqual([`records:space.meeting_code = "abc-defg-hij" AND start_time>="2026-10-04T10:00:00.000Z"`]);
     expect(inserted.map((i) => i.externalId)).toEqual(["conferenceRecords/a1/transcripts/t1"]);
-    expect(result.counts).toMatchObject({ meet_transcripts: 1, meet_transcripts_attended: 1, meet_attended_codes: 1, meet_link_attached: 1 });
+    // 일정이 끝난 지 3시간이 안 됐으면 회의 코드 조회를 마친 것으로 세지 않는다 (다음에도 조회한다)
+    expect(result.counts).toEqual({ meet_transcripts: 1, meet_transcripts_attended: 1, meet_link_attached: 1 });
     // 일정 목록은 커서 하루 앞부터 지금까지를 한 쪽 250건으로 읽고, 제목 · 참석자 이메일은 받지 않는다 (회의 코드만 쓴다)
     expect(calendar.list).toHaveBeenCalledWith({
       timeMin: new Date("2026-09-20T12:00:00.000Z"),
@@ -395,12 +398,16 @@ describe("syncGoogleMeet: 참석한 회의 (G2 ②)", () => {
   it("참석자에게 회의 기록을 안 주면(403) 못 본 것으로 세고 넘어간다: 동기화는 실패하지 않는다", async () => {
     const meet = setup({ "abc-defg-hij": "denied" });
     const result = await syncGoogleMeet(connection(), input(meet, { calendar: fakeCalendar([calendarEvent("guest")]) }), fakeDeps().deps, options());
-    expect(result.counts).toEqual({ meet_attended_codes: 1, meet_attended_denied: 1 });
+    // 참석자에게 안 주는 자료는 다시 해도 같으므로 바로 결정한다 (일정이 아직 끝나지 않았어도)
+    expect(result.counts).toEqual({ meet_attended_denied: 1 });
     expect(cursorAfter(result)).toBe("2026-10-05T11:30:00.000Z");
   });
 
-  it("빈 목록이면 회의 코드 조회만 세고 넘어간다", async () => {
-    const result = await syncGoogleMeet(connection(), input(setup({}), { calendar: fakeCalendar([calendarEvent("guest")]) }), fakeDeps().deps, options());
+  it("빈 목록이면 끝난 지 3시간이 지난 일정만 조회를 마친 것으로 센다", async () => {
+    const recent = await syncGoogleMeet(connection(), input(setup({}), { calendar: fakeCalendar([calendarEvent("guest")]) }), fakeDeps().deps, options());
+    expect(recent.counts).toEqual({});
+    const settled = calendarEvent("old", { start: new Date("2026-10-05T07:00:00Z"), end: new Date("2026-10-05T08:00:00Z") });
+    const result = await syncGoogleMeet(connection(), input(setup({}), { calendar: fakeCalendar([settled]) }), fakeDeps().deps, options());
     expect(result.counts).toEqual({ meet_attended_codes: 1 });
   });
 
@@ -482,9 +489,9 @@ describe("syncGoogleMeet: 멈추는 경우", () => {
     expect(cursorAfter(result)).toBe(records[1].endTime.toISOString());
   });
 
-  it("전사를 나열하지 못하는 그 밖의 오류(서버 오류)는 올린다: 연결이 error가 되고 커서는 그대로", async () => {
-    const rec = record("c1", 3);
-    const meet = fakeMeet({ hosted: [rec], listTranscriptsFails: () => new GoogleApiError("Meet 요청 실패 (500)", 500) });
+  it("회의 기록 목록(주최한 회의)이 서버 오류면 올린다: 연결이 error가 되고 커서는 그대로", async () => {
+    const meet = fakeMeet({ hosted: [record("c1", 3)] });
+    vi.mocked(meet.listRecords).mockRejectedValueOnce(new GoogleApiError("Meet 요청 실패 (500)", 500));
     await expect(syncGoogleMeet(connection(), input(meet), fakeDeps().deps, options())).rejects.toMatchObject({ status: 500 });
   });
 
@@ -638,26 +645,78 @@ describe("syncGoogleMeet: 참석한 회의 찾기가 실패해도 주최한 회�
 
   it.each([
     ["Calendar 5xx", () => new GoogleApiError("Calendar 요청 실패 (503)", 503)],
-    ["Calendar 403 (API를 켜지 않음)", () => new GoogleApiError("Calendar 요청 실패 (403 accessNotConfigured)", 403, "accessNotConfigured")],
     ["네트워크 오류", () => new TypeError("fetch failed")],
-  ])("일정 목록 실패(%s): ① 주최한 회의는 넣고, 실패로 세고, 커서는 그 앞(다음에 다시 찾음)에 둔다", async (_name, failure) => {
+  ])("일정 목록 실패(%s): ① 주최한 회의는 넣고, 실패로 세고, 커서는 그 앞(다음에 다시 찾음)에 둔다: 붙잡는 시간은 처음 실패한 때부터 6시간까지", async (_name, failure) => {
+    const { deps, inserted } = fakeDeps();
+    let broken = true;
+    const calendar = fakeCalendar([], () => (broken ? failure() : undefined));
+    const first = await syncGoogleMeet(connection({ after: "2026-10-04T00:00:00.000Z" }), input(setup(), { calendar }), deps, options());
+    expect(inserted).toHaveLength(1);
+    expect(first.counts).toMatchObject({ meet_transcripts: 1, meet_attended_failed: 1 });
+    expect(cursorAfter(first)).toBe("2026-10-04T00:00:00.000Z");
+    expect(first.cursor!.fails).toEqual({ "l:events": { n: 1, first: NOW.getTime(), until: NOW.getTime() + 6 * HOUR } });
+    expect(first.rateLimited).toBe(false);
+    // 6시간 안에는 계속 붙잡는다
+    const held = await syncGoogleMeet(connection(first.cursor), input(setup(), { calendar }), deps, options({ now: new Date(NOW.getTime() + 5 * HOUR) }));
+    expect(cursorAfter(held)).toBe("2026-10-04T00:00:00.000Z");
+    // 처음 실패한 지 6시간이 지나면 그만 붙잡는다 (① 주최한 회의는 그대로 진행)
+    const released = await syncGoogleMeet(connection(held.cursor), input(setup(), { calendar }), deps, options({ now: new Date(NOW.getTime() + 6 * HOUR) }));
+    expect(released.counts).toEqual({ meet_attended_failed: 1 });
+    expect(cursorAfter(released)).toBe("2026-10-05T17:30:00.000Z");
+    // 다시 성공하면 실패 기록을 지운다
+    broken = false;
+    const recovered = await syncGoogleMeet(connection(released.cursor), input(setup(), { calendar }), deps, options({ now: new Date(NOW.getTime() + 7 * HOUR) }));
+    expect(recovered.cursor!.fails).toEqual({});
+  });
+
+  it.each([
+    ["Calendar 403 (API를 켜지 않음)", () => new GoogleApiError("Calendar 요청 실패 (403 accessNotConfigured)", 403, "accessNotConfigured")],
+    ["Calendar 400", () => new GoogleApiError("Calendar 요청 실패 (400 invalid)", 400, "invalid")],
+    ["Calendar 404", () => new GoogleApiError("Calendar 요청 실패 (404)", 404)],
+  ])("일정 목록이 400번대 오류(%s)면 다시 해도 같다: ① 주최한 회의는 넣고, 실패로 세되 커서를 붙잡지 않는다", async (_name, failure) => {
     const { deps, inserted } = fakeDeps();
     const result = await syncGoogleMeet(connection({ after: "2026-10-04T00:00:00.000Z" }), input(setup(), { calendar: fakeCalendar([], () => failure()) }), deps, options());
     expect(inserted).toHaveLength(1);
     expect(result.counts).toMatchObject({ meet_transcripts: 1, meet_attended_failed: 1 });
-    expect(cursorAfter(result)).toBe("2026-10-04T00:00:00.000Z");
+    expect(cursorAfter(result)).toBe("2026-10-05T11:30:00.000Z");
     expect(result.rateLimited).toBe(false);
   });
 
-  it("회의 코드 하나의 조회가 서버 오류여도 나머지 코드는 조회하고 그 일정은 다음에 다시 본다", async () => {
+  it("일정 목록이 429(속도 제한)면 멈추고 커서를 옮기지 않는다: 400번대여도 영구 실패로 보지 않는다", async () => {
+    const result = await syncGoogleMeet(
+      connection({ after: "2026-10-04T00:00:00.000Z" }),
+      input(setup(), { calendar: fakeCalendar([], () => new GoogleApiError("Calendar 요청 실패 (429)", 429, "rateLimitExceeded")) }),
+      fakeDeps().deps,
+      options(),
+    );
+    expect(result.rateLimited).toBe(true);
+    expect(cursorAfter(result)).toBe("2026-10-04T00:00:00.000Z");
+  });
+
+  it("회의 코드 하나의 조회가 서버 오류여도 나머지 코드는 조회하고 그 일정은 다음에 다시 본다 (실패로 세지 않고 미룬다)", async () => {
     const events = [calendarEvent("bad", { conferenceId: "bad-code-one", start: new Date("2026-10-05T07:00:00Z") }), calendarEvent("ok", { conferenceId: "abc-defg-hij" })];
     const attended = record("a1", 2);
     const meet = fakeMeet({ hosted: [], byCode: { "bad-code-one": "error", "abc-defg-hij": [attended] }, transcripts: { [attended.name]: [transcriptOf(attended)] } });
     const { deps, inserted } = fakeDeps();
     const result = await syncGoogleMeet(connection(), input(meet, { calendar: fakeCalendar(events) }), deps, options());
     expect(inserted).toHaveLength(1);
-    expect(result.counts).toMatchObject({ meet_attended_codes: 2, meet_attended_failed: 1, meet_transcripts_attended: 1 });
+    expect(result.counts).toEqual({ meet_transcripts: 1, meet_transcripts_attended: 1, meet_link_attached: 1 });
     expect(cursorAfter(result)).toBe("2026-10-05T07:00:00.000Z");
+  });
+
+  it("회의 코드 조회가 400번대 오류면(400) 바로 실패로 결정하고 다시 조회하지 않는다", async () => {
+    const meet = setup();
+    vi.mocked(meet.listRecords).mockImplementation(async (filter: string) => {
+      if (filter.includes("space.meeting_code")) throw new GoogleApiError("Meet 요청 실패 (400)", 400, "INVALID_ARGUMENT");
+      return [];
+    });
+    const calendar = fakeCalendar([calendarEvent("guest")]);
+    const first = await syncGoogleMeet(connection(), input(meet, { calendar }), fakeDeps().deps, options());
+    expect(first.counts.meet_attended_failed).toBe(1);
+    expect(cursorAfter(first)).toBe("2026-10-05T11:30:00.000Z");
+    const second = await syncGoogleMeet(connection(first.cursor), input(meet, { calendar }), fakeDeps().deps, options());
+    expect(second.counts.meet_attended_failed).toBeUndefined();
+    expect(vi.mocked(meet.listRecords).mock.calls.filter(([filter]) => filter.includes("space.meeting_code"))).toHaveLength(1);
   });
 
   it("일정을 다 읽지 못했으면(다음 쪽이 남음) 읽은 마지막 일정 시작에, 읽은 일정이 없으면 커서에 둔다", async () => {
@@ -708,9 +767,421 @@ describe("syncGoogleMeet: 넣지 못한 전사의 개수", () => {
   });
 });
 
+// 독립 검토(2026-09-30, PR #30 @64cf47f)에서 찾은 것들의 회귀 시험
+const at = (hhmm: string, day = "05") => new Date(`2026-10-${day}T${hhmm}:00Z`);
+const codeQueries = (meet: FakeMeet) => meet.calls.filter((c) => c.includes("space.meeting_code")).length;
+const entriesCalls = (meet: FakeMeet, id: string) => meet.calls.filter((c) => c === `entries:conferenceRecords/${id}/transcripts/t1`).length;
+const transcriptCalls = (meet: FakeMeet, id: string) => meet.calls.filter((c) => c === `transcripts:conferenceRecords/${id}`).length;
+const sum = (list: Record<string, number | undefined>[]) =>
+  list.reduce<Record<string, number>>((all, counts) => {
+    for (const [key, value] of Object.entries(counts)) all[key] = (all[key] ?? 0) + (value ?? 0);
+    return all;
+  }, {});
+const DAY = 24 * HOUR;
+const server503 = () => new GoogleApiError("Meet 요청 실패 (503)", 503, "UNAVAILABLE");
+
+describe("syncGoogleMeet: Calendar 오류가 Meet 커서를 멈추지 않는다", () => {
+  beforeEach(() => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  it("Calendar 목록이 403 accessNotConfigured여도 주최한 회의 200건을 동기화마다 20건씩 끝까지 넣는다 (커서가 멈춰 150건 뒤가 굶지 않는다)", async () => {
+    const records = Array.from({ length: 200 }, (_, i) => record(`h${i}`, 300 - i));
+    const transcripts = Object.fromEntries(records.map((r) => [r.name, [transcriptOf(r)]]));
+    const meet = fakeMeet({ hosted: records, transcripts });
+    const calendar = fakeCalendar([], () => new GoogleApiError("Calendar 요청 실패 (403 accessNotConfigured)", 403, "accessNotConfigured"));
+    const { deps, inserted } = fakeDeps();
+
+    let cursor: Connection["syncCursor"] = null;
+    const totals: number[] = [];
+    for (let n = 0; n < 12; n++) {
+      const result = await syncGoogleMeet(connection(cursor), input(meet, { calendar }), deps, options());
+      // 첫 동기화부터 커서는 다음 회의 기록의 끝으로 나아간다 (다음 동기화가 넣은 20건을 다시 나열하지 않는다)
+      if (n === 0) expect(cursorAfter(result)).toBe(records[20].endTime.toISOString());
+      // 실패는 동기화마다 센다 (반복되면 Calendar 설정 문제다)
+      expect(result.counts.meet_attended_failed).toBe(1);
+      cursor = result.cursor;
+      totals.push(inserted.length);
+    }
+    expect(totals.slice(0, 5)).toEqual([20, 40, 60, 80, 100]);
+    expect(inserted).toHaveLength(200);
+    expect((cursor as { after: string }).after).toBe("2026-10-05T11:30:00.000Z");
+  });
+
+  it("커서가 앞의 미룬 전사에 머물러도 그 뒤 기록 200건을 끝까지 넣는다: 결정한 기록(r:)은 나열 상한(150건)에 쓰지 않는다", async () => {
+    // 첫 기록(5시간 전에 끝남)의 전사 항목이 계속 서버 오류(미룸)라 커서가 그 끝에 머문다 (6시간 상한 안)
+    const pinned = record("pinned", 5);
+    const rest = Array.from({ length: 200 }, (_, i) => record(`r${i}`, 4.9 - i / 100));
+    const all = [pinned, ...rest];
+    const meet = fakeMeet({
+      hosted: all,
+      transcripts: Object.fromEntries(all.map((r) => [r.name, [transcriptOf(r)]])),
+      listEntriesFails: (name) => (name.includes("pinned") ? server503() : undefined),
+    });
+    const { deps, inserted } = fakeDeps();
+    let cursor: Connection["syncCursor"] = null;
+    for (let n = 0; n < 12; n++) cursor = (await syncGoogleMeet(connection(cursor), input(meet), deps, options())).cursor;
+    expect(inserted).toHaveLength(200);
+    expect((cursor as { after: string }).after).toBe(pinned.endTime.toISOString());
+  });
+});
+
+describe("syncGoogleMeet: 같은 결정을 동기화마다 다시 세지 않는다 (커서가 앞의 미룬 전사에 머물러도)", () => {
+  beforeEach(() => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  /** 커서를 붙잡는 미룬 전사(pinned) 하나 뒤에, 넣지 않기로 결정하는 기록들 */
+  function pinnedSetup() {
+    const pinned = record("pinned", 4); // 08:00 끝: 전사 항목이 계속 서버 오류
+    const abandoned = record("abandoned", 3); // 09:00 끝: STARTED로 2시간 넘게 남음
+    const short = record("short", 2.5); // 09:30 끝: 전사 항목이 너무 짧음
+    const hidden = record("hidden", 2); // 10:00 끝: 전사 목록을 볼 수 없음
+    const denied = record("denied", 1.5); // 10:30 끝: 전사 항목을 볼 수 없음
+    const all = [pinned, abandoned, short, hidden, denied];
+    const forbidden = () => new GoogleApiError("Meet 요청 실패 (403 PERMISSION_DENIED)", 403, "PERMISSION_DENIED");
+    const meet = fakeMeet({
+      hosted: all,
+      transcripts: {
+        [pinned.name]: [transcriptOf(pinned)],
+        [abandoned.name]: [transcriptOf(abandoned, "STARTED")],
+        [short.name]: [transcriptOf(short)],
+        [denied.name]: [transcriptOf(denied)],
+      },
+      entries: { [`${short.name}/transcripts/t1`]: [{ participant: "p2", text: "Hi.", startTime: new Date("2026-10-05T09:00:10Z") }] },
+      listTranscriptsFails: (name) => (name === hidden.name ? forbidden() : undefined),
+      listEntriesFails: (name) => (name.includes("pinned") ? server503() : name.includes("denied") ? forbidden() : undefined),
+    });
+    return { meet, pinned };
+  }
+
+  it("포기한 전사 · 짧은 전사 · 볼 수 없는 자료는 한 번만 세고 다시 부르지 않는다", async () => {
+    const { meet, pinned } = pinnedSetup();
+    const { deps } = fakeDeps();
+    let cursor: Connection["syncCursor"] = null;
+    const all: Record<string, number | undefined>[] = [];
+    for (let n = 0; n < 3; n++) {
+      const result = await syncGoogleMeet(connection(cursor), input(meet), deps, options());
+      expect(cursorAfter(result)).toBe(pinned.endTime.toISOString());
+      cursor = result.cursor;
+      all.push(result.counts);
+    }
+    // 세 번 돌아도 결정마다 한 번
+    expect(sum(all)).toEqual({ meet_transcripts_abandoned: 1, meet_transcripts_short: 1, meet_artifacts_denied: 2 });
+    // 결정한 기록은 다시 나열하지 않고, 결정한 전사는 항목을 다시 받지 않는다. 미룬 전사만 매번 다시 본다
+    expect(transcriptCalls(meet, "abandoned")).toBe(1);
+    expect(transcriptCalls(meet, "hidden")).toBe(1);
+    expect(entriesCalls(meet, "short")).toBe(1);
+    expect(entriesCalls(meet, "denied")).toBe(1);
+    expect(transcriptCalls(meet, "pinned")).toBe(3);
+    expect(entriesCalls(meet, "pinned")).toBe(3);
+  });
+
+  it("결정 표시(seen)는 커서가 지나가면 지우고, maxSeen을 넘으면 최근 것만 남긴다", async () => {
+    const { meet } = pinnedSetup();
+    const first = await syncGoogleMeet(connection(), input(meet), fakeDeps().deps, options());
+    expect(Object.keys(first.cursor!.seen).sort()).toEqual(
+      [
+        "r:conferenceRecords/abandoned",
+        "r:conferenceRecords/denied",
+        "r:conferenceRecords/hidden",
+        "r:conferenceRecords/short",
+        "t:conferenceRecords/abandoned/transcripts/t1",
+        "t:conferenceRecords/denied/transcripts/t1",
+        "t:conferenceRecords/short/transcripts/t1",
+      ].sort(),
+    );
+    const capped = await syncGoogleMeet(connection(), input(meet), fakeDeps().deps, options({ maxSeen: 2 }));
+    expect(Object.keys(capped.cursor!.seen)).toHaveLength(2);
+
+    // 미룬 전사가 읽히면 커서가 이 기록들을 지나가고 표시는 사라진다
+    meet.listEntries = vi.fn(async () => ENTRIES);
+    const later = await syncGoogleMeet(connection(first.cursor), input(meet), fakeDeps().deps, options({ now: at("13:00") }));
+    expect(cursorAfter(later)).toBe("2026-10-05T12:30:00.000Z");
+    expect(later.cursor!.seen).toEqual({});
+    expect(later.cursor!.fails).toEqual({});
+  });
+
+  const settledEvent = () => calendarEvent("guest", { start: at("07:00"), end: at("08:00") });
+  const attendedRecord = (): ConferenceRecord => ({ name: "conferenceRecords/a1", startTime: at("07:00"), endTime: at("08:10"), space: "spaces/a1" });
+
+  it("참석한 회의 코드 조회를 마친 일정(끝난 지 3시간 뒤)은 다시 조회하지 않고 한 번만 센다", async () => {
+    const rec = attendedRecord();
+    const meet = fakeMeet({ byCode: { "abc-defg-hij": [rec] }, transcripts: { [rec.name]: [transcriptOf(rec)] } });
+    const calendar = fakeCalendar([settledEvent()]);
+    const { deps, inserted } = fakeDeps();
+
+    const first = await syncGoogleMeet(connection(), input(meet, { calendar }), deps, options());
+    expect(first.counts).toMatchObject({ meet_transcripts: 1, meet_transcripts_attended: 1, meet_attended_codes: 1 });
+    expect(Object.keys(first.cursor!.seen)).toEqual(["e:guest"]);
+
+    const second = await syncGoogleMeet(connection(first.cursor), input(meet, { calendar }), deps, options());
+    const third = await syncGoogleMeet(connection(second.cursor), input(meet, { calendar }), deps, options());
+    expect(second.counts).toEqual({});
+    expect(third.counts).toEqual({});
+    expect(inserted).toHaveLength(1);
+    expect(codeQueries(meet)).toBe(1);
+    // 일정 목록은 그래도 읽는다 (새 일정을 찾으려고): 동기화마다 한 번 (코드 모양만 받는 필드)
+    expect(calendar.list.mock.calls.filter(([range]) => range.fields === CALENDAR_CODE_FIELDS)).toHaveLength(3);
+  });
+
+  it("끝난 지 3시간이 안 된 일정은 동기화마다 다시 조회하고, 3시간이 지나면 조회를 마치고 한 번 센다", async () => {
+    const meet = fakeMeet({ byCode: { "abc-defg-hij": [] } });
+    const calendar = fakeCalendar([calendarEvent("guest")]); // 10:00~11:00
+    const { deps } = fakeDeps();
+    let cursor: Connection["syncCursor"] = null;
+    const run = async (hhmm: string) => {
+      const result = await syncGoogleMeet(connection(cursor), input(meet, { calendar }), deps, options({ now: at(hhmm) }));
+      cursor = result.cursor;
+      return result.counts;
+    };
+    expect(await run("12:00")).toEqual({});
+    expect(await run("12:10")).toEqual({});
+    expect(await run("13:59")).toEqual({});
+    expect(codeQueries(meet)).toBe(3);
+    expect(await run("14:00")).toEqual({ meet_attended_codes: 1 });
+    expect(await run("14:10")).toEqual({});
+    expect(codeQueries(meet)).toBe(4);
+  });
+
+  it("찾은 회의 기록을 아직 결정하지 못했으면(전사 파일을 기다림) 일정 조회를 마친 것으로 보지 않는다: 다음에 다시 찾아 넣는다", async () => {
+    const rec: ConferenceRecord = { name: "conferenceRecords/a1", startTime: at("10:30"), endTime: at("11:00"), space: "spaces/a1" };
+    const transcripts: Record<string, Transcript[]> = { [rec.name]: [transcriptOf(rec, "ENDED")] };
+    const meet = fakeMeet({ byCode: { "abc-defg-hij": [rec] }, transcripts });
+    const calendar = fakeCalendar([calendarEvent("guest", { start: at("05:00"), end: at("06:00") })]);
+    const { deps, inserted } = fakeDeps();
+
+    const first = await syncGoogleMeet(connection(), input(meet, { calendar }), deps, options());
+    expect(inserted).toEqual([]);
+    expect(first.counts).toEqual({});
+    expect(cursorAfter(first)).toBe(rec.endTime.toISOString());
+
+    // 2시간이 지나 ENDED 전사도 넣는다. 일정 조회는 한 번 더 했고 이제 마친다
+    const second = await syncGoogleMeet(connection(first.cursor), input(meet, { calendar }), deps, options({ now: at("13:30") }));
+    expect(inserted).toHaveLength(1);
+    expect(second.counts).toMatchObject({ meet_transcripts: 1, meet_transcripts_attended: 1, meet_attended_codes: 1 });
+    expect(codeQueries(meet)).toBe(2);
+
+    const third = await syncGoogleMeet(connection(second.cursor), input(meet, { calendar }), deps, options({ now: at("13:40") }));
+    expect(third.counts).toEqual({});
+    expect(codeQueries(meet)).toBe(2);
+  });
+
+  it("참석자에게 회의 기록을 안 주는 일정(403)은 한 번만 세고 다시 조회하지 않는다", async () => {
+    const meet = fakeMeet({ byCode: { "abc-defg-hij": "denied" } });
+    const calendar = fakeCalendar([calendarEvent("guest")]);
+    const { deps } = fakeDeps();
+    const first = await syncGoogleMeet(connection(), input(meet, { calendar }), deps, options());
+    const second = await syncGoogleMeet(connection(first.cursor), input(meet, { calendar }), deps, options());
+    expect(first.counts).toEqual({ meet_attended_denied: 1 });
+    expect(second.counts).toEqual({});
+    expect(codeQueries(meet)).toBe(1);
+  });
+
+  it("서버 오류로 미룬 회의 코드 조회는 처음 실패한 지 6시간이 지나면 실패로 한 번 세고 그만둔다", async () => {
+    const meet = fakeMeet({ byCode: { "abc-defg-hij": "error" } });
+    const calendar = fakeCalendar([calendarEvent("old", { start: at("03:00"), end: at("04:00") })]);
+    const { deps } = fakeDeps();
+    // 처음 실패: 세지 않고 커서를 그 일정의 시작에 붙잡는다
+    const first = await syncGoogleMeet(connection(), input(meet, { calendar }), deps, options());
+    expect(first.counts).toEqual({});
+    expect(cursorAfter(first)).toBe(at("03:00").toISOString());
+    expect(first.cursor!.fails).toEqual({ "e:old": { n: 1, first: NOW.getTime(), until: at("04:00").getTime() + DAY } });
+    // 6시간 뒤에도 실패하면 결정한다
+    const second = await syncGoogleMeet(connection(first.cursor), input(meet, { calendar }), deps, options({ now: at("18:00") }));
+    expect(second.counts).toEqual({ meet_attended_failed: 1 });
+    expect(cursorAfter(second)).toBe("2026-10-05T17:30:00.000Z");
+    // 그 뒤로는 조회하지 않고 다시 세지 않는다
+    const third = await syncGoogleMeet(connection(second.cursor), input(meet, { calendar }), deps, options({ now: at("18:10") }));
+    expect(third.counts).toEqual({});
+    expect(codeQueries(meet)).toBe(2);
+  });
+});
+
+describe("syncGoogleMeet: 서버 오류 · 네트워크 오류로 읽지 못한 전사", () => {
+  beforeEach(() => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  const failing = (...ids: string[]) => (name: string) => (ids.some((id) => name.includes(`/${id}/`)) ? server503() : undefined);
+  const twoRecords = (badHoursAgo: number, failsFor: string[] = ["bad"]) => {
+    const bad = record("bad", badHoursAgo);
+    const good = record("good", 1);
+    const meet = fakeMeet({
+      hosted: [bad, good],
+      transcripts: { [bad.name]: [transcriptOf(bad)], [good.name]: [transcriptOf(good)] },
+      listEntriesFails: failing(...failsFor),
+    });
+    return { bad, good, meet };
+  };
+
+  it("전사 하나의 항목을 읽지 못해도 동기화는 실패하지 않는다: 다른 전사는 넣고 그 전사는 커서를 붙잡아 다음에 다시 본다", async () => {
+    const { bad, meet } = twoRecords(3);
+    const { deps, inserted } = fakeDeps();
+    const result = await syncGoogleMeet(connection(), input(meet), deps, options());
+    expect(inserted.map((i) => i.externalId)).toEqual(["conferenceRecords/good/transcripts/t1"]);
+    expect(result.counts).toEqual({ meet_transcripts: 1 });
+    expect(cursorAfter(result)).toBe(bad.endTime.toISOString());
+    expect(result.cursor!.fails).toEqual({ "t:conferenceRecords/bad/transcripts/t1": { n: 1, first: NOW.getTime(), until: bad.endTime.getTime() } });
+    expect(vi.mocked(console.error).mock.calls.flat().join(" ")).toContain("503");
+  });
+
+  it("같은 전사가 여러 동기화에서 반복해 실패하고(3번 · 1시간) 파일 기다림(2시간)이 지났으면 읽지 못한 것으로 결정하고 넘어간다", async () => {
+    const { bad, meet } = twoRecords(3); // 09:00 끝
+    const { deps } = fakeDeps();
+    let cursor: Connection["syncCursor"] = null;
+    const run = async (hhmm: string) => {
+      const result = await syncGoogleMeet(connection(cursor), input(meet), deps, options({ now: at(hhmm) }));
+      cursor = result.cursor;
+      return result;
+    };
+    const first = await run("12:00");
+    const second = await run("12:30");
+    expect(first.counts.meet_transcripts_failed).toBeUndefined();
+    expect(second.counts.meet_transcripts_failed).toBeUndefined();
+    expect(cursorAfter(second)).toBe(bad.endTime.toISOString());
+    // 세 번째 실패: 처음 실패(12:00)에서 1시간이 지났다 → 결정한다
+    const third = await run("13:00");
+    expect(third.counts).toEqual({ meet_transcripts_failed: 1 });
+    expect(cursorAfter(third)).toBe("2026-10-05T12:30:00.000Z");
+    expect(third.cursor!.fails).toEqual({});
+    // 그 뒤로는 다시 부르지 않고 다시 세지 않는다
+    const fourth = await run("13:30");
+    expect(fourth.counts).toEqual({});
+    expect(entriesCalls(meet, "bad")).toBe(3);
+  });
+
+  it("파일 기다림(2시간) 안의 전사는 여러 번 실패해도 결정하지 않는다: 기다림이 지난 뒤 결정한다", async () => {
+    const bad = record("bad", 0.5); // 11:30 끝
+    const meet = fakeMeet({ hosted: [bad], transcripts: { [bad.name]: [transcriptOf(bad)] }, listEntriesFails: failing("bad") });
+    const { deps } = fakeDeps();
+    let cursor: Connection["syncCursor"] = null;
+    const run = async (hhmm: string) => {
+      const result = await syncGoogleMeet(connection(cursor), input(meet), deps, options({ now: at(hhmm) }));
+      cursor = result.cursor;
+      return result.counts;
+    };
+    expect(await run("12:00")).toEqual({});
+    expect(await run("12:30")).toEqual({});
+    expect(await run("13:00")).toEqual({}); // 세 번째, 처음 실패에서 1시간, 그러나 끝난 지 1시간 30분
+    expect(await run("13:30")).toEqual({ meet_transcripts_failed: 1 });
+  });
+
+  it("실패한 전사가 둘 이상이고 항목 읽기가 하나도 성공하지 못하면 장애로 보아 횟수를 세지 않는다: 처음 실패한 지 6시간이 지나서야 결정한다", async () => {
+    const one = record("one", 3); // 09:00 끝
+    const two = record("two", 2.9);
+    const meet = fakeMeet({
+      hosted: [one, two],
+      transcripts: { [one.name]: [transcriptOf(one)], [two.name]: [transcriptOf(two)] },
+      listEntriesFails: failing("one", "two"),
+    });
+    const { deps } = fakeDeps();
+    let cursor: Connection["syncCursor"] = null;
+    const run = async (hhmm: string) => {
+      const result = await syncGoogleMeet(connection(cursor), input(meet), deps, options({ now: at(hhmm) }));
+      cursor = result.cursor;
+      return result;
+    };
+    for (const hhmm of ["12:00", "13:00", "14:00", "17:59"]) {
+      const result = await run(hhmm);
+      expect(result.counts).toEqual({});
+      expect(cursorAfter(result)).toBe(one.endTime.toISOString());
+      // 횟수는 세지 않고(n: 0) 처음 실패한 시각만 남긴다
+      expect(Object.values(result.cursor!.fails).map((failure) => [failure.n, failure.first])).toEqual([
+        [0, at("12:00").getTime()],
+        [0, at("12:00").getTime()],
+      ]);
+    }
+    // 18:00: 처음 실패(12:00)에서 6시간이 지났다
+    const late = await run("18:00");
+    expect(late.counts).toEqual({ meet_transcripts_failed: 2 });
+    expect(cursorAfter(late)).toBe("2026-10-05T17:30:00.000Z");
+  });
+
+  it("처음 실패한 지 6시간이 지난 전사는 횟수와 상관없이 읽지 못한 것으로 결정한다 (커서를 6시간 넘게 붙잡지 않는다)", async () => {
+    const { deps } = fakeDeps();
+    const { bad, meet } = twoRecords(3);
+    const cursor = {
+      after: "2026-10-05T04:00:00.000Z",
+      seen: {},
+      fails: { [`t:${bad.name}/transcripts/t1`]: { n: 1, first: NOW.getTime() - 7 * HOUR, until: bad.endTime.getTime() } },
+    };
+    const result = await syncGoogleMeet(connection(cursor), input(meet), deps, options());
+    expect(result.counts).toEqual({ meet_transcripts: 1, meet_transcripts_failed: 1 });
+    expect(cursorAfter(result)).toBe("2026-10-05T11:30:00.000Z");
+  });
+
+  it("오래 전에 끝난 전사(첫 동기화의 14일치)가 한 번 실패해도 바로 포기하지 않는다: 처음 실패한 때부터 센다", async () => {
+    const { deps } = fakeDeps();
+    const { meet } = twoRecords(24 * 10);
+    const result = await syncGoogleMeet(connection(), input(meet), deps, options());
+    expect(result.counts).toEqual({ meet_transcripts: 1 });
+    expect(Object.keys(result.cursor!.fails)).toEqual(["t:conferenceRecords/bad/transcripts/t1"]);
+  });
+
+  it("다시 해도 같은 요청 오류(400)는 바로 읽지 못한 것으로 결정하고 다시 부르지 않는다", async () => {
+    const bad = record("bad", 3);
+    const meet = fakeMeet({
+      hosted: [bad],
+      transcripts: { [bad.name]: [transcriptOf(bad)] },
+      listEntriesFails: () => new GoogleApiError("Meet 요청 실패 (400)", 400, "INVALID_ARGUMENT"),
+    });
+    const { deps } = fakeDeps();
+    const first = await syncGoogleMeet(connection(), input(meet), deps, options());
+    expect(first.counts).toEqual({ meet_transcripts_failed: 1 });
+    expect(cursorAfter(first)).toBe("2026-10-05T11:30:00.000Z");
+    const second = await syncGoogleMeet(connection(first.cursor), input(meet), deps, options());
+    expect(second.counts).toEqual({});
+    expect(entriesCalls(meet, "bad")).toBe(1);
+  });
+
+  it("전사 목록(listTranscripts)이 서버 오류여도 동기화는 실패하지 않는다: 그 기록은 다음에 다시 보고 다른 기록은 계속 본다", async () => {
+    const bad = record("bad", 3);
+    const good = record("good", 2);
+    const meet = fakeMeet({
+      hosted: [bad, good],
+      transcripts: { [good.name]: [transcriptOf(good)] },
+      listTranscriptsFails: (name) => (name === bad.name ? server503() : undefined),
+    });
+    const { deps, inserted } = fakeDeps();
+    const result = await syncGoogleMeet(connection(), input(meet), deps, options());
+    expect(inserted).toHaveLength(1);
+    expect(cursorAfter(result)).toBe(bad.endTime.toISOString());
+    expect(result.cursor!.fails).toEqual({ [`r:${bad.name}`]: { n: 1, first: NOW.getTime(), until: bad.endTime.getTime() } });
+  });
+});
+
+describe("syncGoogleMeet: 이미 넣은 전사 묻기", () => {
+  it("나열한 전사의 id를 회의 기록마다가 아니라 한 번에 묻는다 (이어 넣을 원문을 확인하는 ingestItems의 한 번이 더 있다)", async () => {
+    const records = [record("c1", 6), record("c2", 5), record("c3", 4)];
+    const transcripts = Object.fromEntries(records.map((r) => [r.name, [transcriptOf(r)]]));
+    const { deps, inserted } = fakeDeps();
+    await syncGoogleMeet(connection(), input(fakeMeet({ hosted: records, transcripts })), deps, options());
+    const calls = vi.mocked(deps.ingestedIds).mock.calls;
+    expect(calls).toHaveLength(2);
+    expect(calls[0][1]).toEqual(records.map((r) => `${r.name}/transcripts/t1`));
+    expect(inserted).toHaveLength(3);
+  });
+
+  it("전사가 없는 기록만 있으면 묻지 않는다", async () => {
+    const { deps } = fakeDeps();
+    await syncGoogleMeet(connection(), input(fakeMeet({ hosted: [record("n1", 3), record("n2", 2)] })), deps, options());
+    expect(deps.ingestedIds).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(deps.ingestedIds).mock.calls[0][1]).toEqual([]);
+  });
+});
+
 describe("parseGoogleCursor · 예산", () => {
   it("커서 형식이 다르면 null (첫 동기화처럼)", () => {
-    expect(parseGoogleCursor({ after: "2026-10-05T00:00:00.000Z" })).toEqual({ after: "2026-10-05T00:00:00.000Z" });
+    expect(parseGoogleCursor({ after: "2026-10-05T00:00:00.000Z" })).toEqual({ after: "2026-10-05T00:00:00.000Z", seen: {}, fails: {} });
+    expect(parseGoogleCursor({ after: "2026-10-05T00:00:00.000Z", seen: { "r:x": 5 }, fails: { "t:y": { n: 1, first: 2, until: 3 } } })).toEqual({
+      after: "2026-10-05T00:00:00.000Z",
+      seen: { "r:x": 5 },
+      fails: { "t:y": { n: 1, first: 2, until: 3 } },
+    });
     expect(parseGoogleCursor({ after: "yesterday" })).toBeNull();
     expect(parseGoogleCursor(null)).toBeNull();
   });

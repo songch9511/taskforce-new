@@ -245,7 +245,13 @@ export async function syncNotion(
     const startedAt = Date.now();
     try {
       const found = await withTimeout(
-        ingest.meetingEvent({ day: kstDate(item.occurredAt).iso, createdAt: new Date(page.created_time), title: item.title }),
+        ingest.meetingEvent({
+          day: kstDate(item.occurredAt).iso,
+          createdAt: new Date(page.created_time),
+          title: item.title,
+          // 시각만으로 일정을 고르는 것은 사용자가 만든 페이지에서만: 다른 사람이 같은 시각에 만든 페이지에 사용자의 일정을 붙이지 않는다
+          createdByUser: Boolean(notionUserId && page.created_by?.id === notionUserId),
+        }),
         options.meetingEventTimeoutMs ?? MEETING_EVENT_TIMEOUT_MS,
       );
       links[found.result]++;

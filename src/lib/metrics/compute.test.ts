@@ -394,7 +394,7 @@ describe("meetingLinkage: 회의 원문에 일정이 붙은 비율", () => {
       { user_id: "u1", external_id: "conferenceRecords/c2/transcripts/t1", calendar_event_id: null },
       { user_id: "u1", external_id: null, calendar_event_id: null },
     ];
-    expect(meetingLinkage(rows)).toEqual({ notion: { total: 3, linked: 2, withTranscript: 1 }, meet: { total: 2, linked: 1 } });
+    expect(meetingLinkage(rows, new Set(["u1"]))).toEqual({ notion: { total: 3, linked: 2, withTranscript: 1 }, meet: { total: 2, linked: 1 } });
   });
 
   it("같은 일정 id라도 다른 사용자의 Meet 전사는 같은 회의로 세지 않는다 (같은 회의에 초대된 사람마다 자기 캘린더에 사본이 있다)", () => {
@@ -402,10 +402,23 @@ describe("meetingLinkage: 회의 원문에 일정이 붙은 비율", () => {
       { user_id: "u1", external_id: "notion-page-1", calendar_event_id: "evt-1" },
       { user_id: "u2", external_id: "conferenceRecords/c1/transcripts/t1", calendar_event_id: "evt-1" },
     ];
-    expect(meetingLinkage(rows)).toEqual({ notion: { total: 1, linked: 1, withTranscript: 0 }, meet: { total: 1, linked: 1 } });
+    expect(meetingLinkage(rows, new Set(["u1", "u2"]))).toEqual({ notion: { total: 1, linked: 1, withTranscript: 0 }, meet: { total: 1, linked: 1 } });
   });
 
   it("원문이 없으면 모두 0", () => {
-    expect(meetingLinkage([])).toEqual({ notion: { total: 0, linked: 0, withTranscript: 0 }, meet: { total: 0, linked: 0 } });
+    expect(meetingLinkage([], new Set())).toEqual({ notion: { total: 0, linked: 0, withTranscript: 0 }, meet: { total: 0, linked: 0 } });
+  });
+
+  it("Notion 회의록은 Calendar를 허용한 google 연결이 있는 사용자의 것만 센다: 그 밖의 사용자(연결 없음 · Meet만)의 회의록은 일정이 붙을 수 없어 분모에 넣지 않는다", () => {
+    const rows = [
+      { user_id: "u1", external_id: "notion-page-1", calendar_event_id: "evt-1" },
+      { user_id: "u1", external_id: "notion-page-2", calendar_event_id: null },
+      { user_id: "u-no-google", external_id: "notion-page-3", calendar_event_id: null },
+      { user_id: "u-meet-only", external_id: "notion-page-4", calendar_event_id: null },
+      { user_id: "u-meet-only", external_id: "conferenceRecords/c1/transcripts/t1", calendar_event_id: null },
+    ];
+    // Meet 전사는 Meet만 허용한 사용자의 것도 센다 (전사 자체는 일정 없이도 들어온다)
+    expect(meetingLinkage(rows, new Set(["u1"]))).toEqual({ notion: { total: 2, linked: 1, withTranscript: 0 }, meet: { total: 1, linked: 0 } });
+    expect(meetingLinkage(rows, new Set()).notion).toEqual({ total: 0, linked: 0, withTranscript: 0 });
   });
 });

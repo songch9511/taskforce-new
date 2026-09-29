@@ -51,9 +51,10 @@ const GOOGLE_COUNT_LABELS: [string, string][] = [
   ["meet_transcripts_attended", "  그중 참석한 회의만 목록으로 찾은 것 (G2 ②)"],
   ["meet_transcripts_abandoned", "포기한 전사 (2시간 넘게 파일 없음)"],
   ["meet_transcripts_short", "넣지 않은 전사 (항목 없음 · 너무 짧음)"],
-  ["meet_attended_codes", "참석한 회의 코드 조회"],
+  ["meet_transcripts_failed", "읽지 못해 포기한 전사 (반복된 서버 오류 · 400번대)"],
+  ["meet_attended_codes", "참석한 회의 코드 조회를 마친 일정"],
   ["meet_attended_denied", "  그중 회의 기록을 못 봄 (403 · 404)"],
-  ["meet_attended_failed", "참석한 회의 찾기 실패 (일정 목록 · 코드 조회)"],
+  ["meet_attended_failed", "참석한 회의 찾기 실패 (일정 목록은 동기화마다 · 코드 조회는 일정마다)"],
   ["meet_artifacts_denied", "전사 목록 · 항목을 못 봄 (403 · 404)"],
   ["meet_link_attached", "Meet 전사 ↔ 일정: 붙음"],
   ["meet_link_ambiguous", "Meet 전사 ↔ 일정: 애매"],
@@ -323,7 +324,7 @@ export default async function MetricsPage({ searchParams }: { searchParams: Prom
             <p className="font-medium">회의 원문에 일정이 붙은 비율 (최근 {days}일에 들어온 원문)</p>
             <ul className="space-y-0.5">
               <li className="flex justify-between">
-                <span>Notion 회의록에 일정이 붙음</span>
+                <span>Notion 회의록에 일정이 붙음 (Calendar를 허용한 사용자)</span>
                 <span>
                   {linkage.notion.linked} / {linkage.notion.total}
                 </span>

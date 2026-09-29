@@ -12,8 +12,11 @@ import { googleAccess } from "./token";
 // Notion 회의록에 붙일 Calendar 일정 조회 (G3 · G4, docs/go-live/google-integration.md 2-2 notion/sync.ts · 2-4).
 // 사용자의 google 연결이 Calendar를 허용했을 때만 만든다. 만들지 못하면 null: Notion 동기화는 일정 없이 그대로 돈다.
 
-/** 찾을 Notion 회의록: 회의 날짜(한국 날짜, 없으면 페이지를 만든 날) · 페이지를 만든 시각 · 제목 */
-export type NotionMeetingTarget = { day: string; createdAt: Date; title: string | null };
+/**
+ * 찾을 Notion 회의록: 회의 날짜(한국 날짜, 없으면 페이지를 만든 날) · 페이지를 만든 시각 · 제목 · 만든 사람이 연결한 사용자인가.
+ * 만든 사람이 사용자가 아니거나 모르면 제목이 맞지 않는 일정은 잇지 않는다 (calendar.ts `pickMeetingEvent`)
+ */
+export type NotionMeetingTarget = { day: string; createdAt: Date; title: string | null; createdByUser: boolean };
 
 /** 조회가 실패하면 던진다 (토큰 만료 · 네트워크 · 속도 제한): 부르는 쪽(notion/sync.ts)이 그 동기화의 남은 페이지를 붙이지 않는다 */
 export type MeetingEventLookup = (target: NotionMeetingTarget) => Promise<MeetingLookup>;

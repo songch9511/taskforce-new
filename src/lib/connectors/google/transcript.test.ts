@@ -147,6 +147,17 @@ describe("transcriptToItem: 원문 필드", () => {
     expect(transcriptToItem(input({ entries: [entry(1, "   \n ")], participants: [signedin(1, "Daniel Song", `users/${ME_SUB}`)] }))).toBeNull();
   });
 
+  it("머리줄을 뺀 본문이 30자보다 짧으면 null이다: 머리줄만으로 최소 길이를 넘지 않는다", () => {
+    const participants = [signedin(1, "Daniel Song", `users/${ME_SUB}`)];
+    // "Alex Kim: Hello." = 16자. 머리줄(`[Google Meet · Proposal review — Acme]`)을 더하면 30자를 넘지만 본문만으로는 짧다
+    const short = input({ entries: [entry(1, "Hello.")], participants });
+    expect(transcriptToItem({ ...short, event: base().event })).toBeNull();
+    expect(transcriptToItem(short)).toBeNull();
+    // 화자 이름표를 더해 30자부터 넣는다 ("Alex Kim: " 10자 + 말 20자)
+    expect(transcriptToItem(input({ entries: [entry(1, "Twenty characters ok")], participants }))).not.toBeNull();
+    expect(transcriptToItem(input({ entries: [entry(1, "Nineteen characters")], participants }))).toBeNull();
+  });
+
   it("원문 한도(20만 자)에서 자른다", () => {
     const item = transcriptToItem(input({ entries: [entry(1, "가".repeat(MAX_SOURCE_TEXT + 500))], participants: [signedin(1, "Daniel Song", `users/${ME_SUB}`)] }))!;
     expect(item.text.length).toBeLessThanOrEqual(MAX_SOURCE_TEXT);
@@ -157,12 +168,12 @@ describe("transcriptToItem: 이름표", () => {
   it("사용자 줄은 Meet 표시 이름이 아니라 프로필 이름이다 (G5: 로그인 참가자의 users/{id}가 연결한 계정의 sub)", () => {
     const item = transcriptToItem(
       input({
-        entries: [entry(1, "제가 정리해서 공유드릴게요.")],
+        entries: [entry(1, "제가 정리해서 이번 주 금요일까지 공유드릴게요.")],
         participants: [signedin(1, "Daniel Song", `users/${ME_SUB}`)],
         me: { ...ME, name: "송창훈" },
       }),
     )!;
-    expect(item.text).toBe("[Google Meet · 2026-09-30 10:00]\n송창훈: 제가 정리해서 공유드릴게요.");
+    expect(item.text).toBe("[Google Meet · 2026-09-30 10:00]\n송창훈: 제가 정리해서 이번 주 금요일까지 공유드릴게요.");
     expect(item.participants).toEqual({ attendees: [{ name: "송창훈", email: "alex@lumenfield.example" }] });
   });
 
@@ -233,8 +244,8 @@ describe("transcriptToItem: 이름표", () => {
   });
 
   it("참가자 목록에 없는 화자는 '참가자'로 적는다", () => {
-    const item = transcriptToItem(input({ participants: [signedin(1, "Daniel Song", `users/${ME_SUB}`)], entries: [entry(9, "Hello there everyone.")] }))!;
-    expect(item.text.split("\n")[1]).toBe("참가자: Hello there everyone.");
+    const item = transcriptToItem(input({ participants: [signedin(1, "Daniel Song", `users/${ME_SUB}`)], entries: [entry(9, "Hello there everyone, thanks for joining.")] }))!;
+    expect(item.text.split("\n")[1]).toBe("참가자: Hello there everyone, thanks for joining.");
   });
 
   it("G5 가정이 틀리면(참가자 id가 sub와 다르면) 사용자를 못 알아본다: 이름표는 Meet 표시 이름 그대로", () => {

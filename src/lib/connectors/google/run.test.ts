@@ -63,7 +63,7 @@ const synced: GoogleSyncResult = {
   created: ["src-1"],
   scanned: 2,
   skipped: { alreadyIngested: 0 },
-  cursor: { after: "2026-10-05T11:30:00.000Z" },
+  cursor: { after: "2026-10-05T11:30:00.000Z", seen: {}, fails: {} },
   counts: { meet_transcripts: 1, meet_link_attached: 1 },
   rateLimited: false,
 };

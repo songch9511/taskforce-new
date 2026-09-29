@@ -99,9 +99,13 @@ describe("calendarClient: 요청", () => {
       expect(fields, forbidden).not.toContain(forbidden);
       expect(CALENDAR_EVENT_FIELDS, forbidden).not.toContain(forbidden);
     }
-    // 받는 것은 계획 2-4의 목록 그대로다
+    // 쓰지 않는 값은 받지 않는다: 주최자는 self만(이메일 · 이름 없음), 참석자의 주최자 표시 없음 (독립 검토 2026-09-30)
+    expect(CALENDAR_EVENT_FIELDS).toContain("organizer(self)");
+    expect(CALENDAR_EVENT_FIELDS).not.toContain("organizer(email");
+    expect(CALENDAR_EVENT_FIELDS).not.toMatch(/attendees\([^)]*organizer/);
+    // 받는 것은 계획 2-4의 목록에서 위 두 가지를 뺀 것이다
     expect(CALENDAR_EVENT_FIELDS).toBe(
-      "items(id,status,eventType,summary,start,end,organizer(email,displayName,self),attendees(email,displayName,self,organizer,resource,responseStatus),conferenceData(conferenceId,conferenceSolution/key/type))",
+      "items(id,status,eventType,summary,start,end,organizer(self),attendees(email,displayName,self,resource,responseStatus),conferenceData(conferenceId,conferenceSolution/key/type))",
     );
     expect(fields).toBe(`nextPageToken,${CALENDAR_EVENT_FIELDS}`);
   });
@@ -222,7 +226,7 @@ describe("pickMeetingEvent: Notion 회의록 (시각 + 제목, 애매하면 잇�
   const at = (id: string, title: string, start: string, end: string, extra: Partial<RawEvent> = {}) =>
     event(id, { summary: title, start: { dateTime: start }, end: { dateTime: end }, ...extra });
   const standup = at("standup", "Proposal review — Acme", "2026-09-30T10:00:00+09:00", "2026-09-30T11:00:00+09:00");
-  const target = (createdAt: string, title: string | null) => ({ kind: "notion" as const, day: "2026-09-30", createdAt: new Date(createdAt), title });
+  const target = (createdAt: string, title: string | null, createdByUser = true) => ({ kind: "notion" as const, day: "2026-09-30", createdAt: new Date(createdAt), title, createdByUser });
 
   it("(가)(나) 모두: 만든 시각이 일정 안이고 제목이 같다 (공백 · 기호 · 대소문자 무시)", () => {
     expect(pickMeetingEvent([standup], target("2026-09-30T10:05:00+09:00", "proposal review - acme"))).toMatchObject({ result: "attached", event: { id: "standup" } });
@@ -244,6 +248,17 @@ describe("pickMeetingEvent: Notion 회의록 (시각 + 제목, 애매하면 잇�
   it("(가)(나)를 모두 맞는 일정이 없으면 (가)만 맞는 일정이 딱 하나일 때 그것", () => {
     expect(pickMeetingEvent([standup], target("2026-09-30T10:05:00+09:00", "Untitled"))).toMatchObject({ result: "attached", event: { id: "standup" } });
     expect(pickMeetingEvent([standup], target("2026-09-30T10:05:00+09:00", null))).toMatchObject({ result: "attached" });
+  });
+
+  it("만든 사람이 사용자가 아니면(다른 사람이 만들었거나 모르면) 시각만 맞는 일정은 잇지 않는다: 제목이 맞는 길은 그대로", () => {
+    // 같은 시각에 다른 사람이 만든 페이지에 사용자의 일정을 붙이지 않는다
+    expect(pickMeetingEvent([standup], target("2026-09-30T10:05:00+09:00", "Untitled", false))).toEqual({ result: "none" });
+    expect(pickMeetingEvent([standup], target("2026-09-30T10:05:00+09:00", null, false))).toEqual({ result: "none" });
+    // 제목이 맞으면 (가)(나) 모두든 (나)만이든 만든 사람과 상관없이 잇는다
+    expect(pickMeetingEvent([standup], target("2026-09-30T10:05:00+09:00", "Proposal review — Acme", false))).toMatchObject({ result: "attached", event: { id: "standup" } });
+    expect(pickMeetingEvent([standup], target("2026-09-30T15:00:00+09:00", "Proposal review — Acme", false))).toMatchObject({ result: "attached", event: { id: "standup" } });
+    // 사용자가 만든 페이지는 (가)만 맞아도 이어진다
+    expect(pickMeetingEvent([standup], target("2026-09-30T10:05:00+09:00", "Untitled", true))).toMatchObject({ result: "attached" });
   });
 
   it("(가)만 맞는 일정이 둘이면 애매하다 (같은 시각에 겹친 두 회의)", () => {
@@ -311,7 +326,7 @@ describe("eventPeople: 관련자", () => {
 
 describe("lookupWindow", () => {
   it("Notion은 그 한국 날짜 하루, Meet은 전사 시작 앞뒤 3시간", () => {
-    const day = lookupWindow({ kind: "notion", day: "2026-09-30", createdAt: new Date(), title: null });
+    const day = lookupWindow({ kind: "notion", day: "2026-09-30", createdAt: new Date(), title: null, createdByUser: true });
     expect(day.timeMin.toISOString()).toBe("2026-09-29T15:00:00.000Z");
     expect(day.timeMax.toISOString()).toBe("2026-09-30T15:00:00.000Z");
     const meet = lookupWindow({ kind: "meet", meetingCode: "abc-defg-hij", start: new Date("2026-09-30T01:00:00Z") });
@@ -328,7 +343,7 @@ describe("lookupMeetingEvent", () => {
 
   it("창 안의 일정 한 쪽(50건)을 읽고 고른 일정의 제목 · 시각 · 관련자를 돌려준다", async () => {
     const { client, list } = fakeClient([event("standup", { summary: "Proposal review — Acme" })]);
-    const found = await lookupMeetingEvent(client, { kind: "notion", day: "2026-09-30", createdAt: new Date("2026-09-30T10:05:00+09:00"), title: "Proposal review — Acme" }, ME);
+    const found = await lookupMeetingEvent(client, { kind: "notion", day: "2026-09-30", createdAt: new Date("2026-09-30T10:05:00+09:00"), title: "Proposal review — Acme", createdByUser: true }, ME);
     expect(list).toHaveBeenCalledWith({ timeMin: new Date("2026-09-29T15:00:00.000Z"), timeMax: new Date("2026-09-30T15:00:00.000Z"), maxResults: 50 });
     expect(found).toEqual({
       result: "attached",
@@ -353,13 +368,13 @@ describe("lookupMeetingEvent", () => {
     const meet = await lookupMeetingEvent(client, { kind: "meet", meetingCode: "abc-defg-hij", start: new Date("2026-09-30T01:00:30Z") }, ME);
     expect(meet).toMatchObject({ result: "attached", event: { calendarEventId: "solo", title: "Proposal review — Acme", attendees: [{ name: "Alex Kim", email: "alex@lumenfield.example" }] } });
 
-    const notion = await lookupMeetingEvent(client, { kind: "notion", day: "2026-09-30", createdAt: new Date("2026-09-30T10:05:00+09:00"), title: "Proposal review — Acme" }, ME);
+    const notion = await lookupMeetingEvent(client, { kind: "notion", day: "2026-09-30", createdAt: new Date("2026-09-30T10:05:00+09:00"), title: "Proposal review — Acme", createdByUser: true }, ME);
     expect(notion).toEqual({ result: "none" });
   });
 
   it("못 고르면 애매 · 없음만 돌려주고, 조회가 실패하면 던진다", async () => {
-    expect(await lookupMeetingEvent(fakeClient([]).client, { kind: "notion", day: "2026-09-30", createdAt: new Date(), title: null }, ME)).toEqual({ result: "none" });
+    expect(await lookupMeetingEvent(fakeClient([]).client, { kind: "notion", day: "2026-09-30", createdAt: new Date(), title: null, createdByUser: true }, ME)).toEqual({ result: "none" });
     const failing = { list: vi.fn(async () => Promise.reject(new Error("boom"))) };
-    await expect(lookupMeetingEvent(failing, { kind: "notion", day: "2026-09-30", createdAt: new Date(), title: null }, ME)).rejects.toThrow("boom");
+    await expect(lookupMeetingEvent(failing, { kind: "notion", day: "2026-09-30", createdAt: new Date(), title: null, createdByUser: true }, ME)).rejects.toThrow("boom");
   });
 });

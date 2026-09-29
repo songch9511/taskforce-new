@@ -415,8 +415,12 @@ const isMeetTranscript = (externalId: string) => externalId.startsWith("conferen
 /**
  * 회의 원문에 일정이 붙은 비율 (원칙 6, google-integration.md 8장). 원문 글자는 읽지 않고 외부 id와 붙은 일정 id만 본다.
  * 직접 입력한 회의 원문(외부 id 없음)은 세지 않는다.
+ * Notion 회의록은 Calendar를 허용한 google 연결이 있는 사용자(calendarUsers)의 것만 센다: 그 밖의 사용자의 회의록은 일정이 붙을 수 없어 비율을 깎는다.
  */
-export function meetingLinkage(rows: { user_id: string; external_id: string | null; calendar_event_id: string | null }[]): MeetingLinkageMetric {
+export function meetingLinkage(
+  rows: { user_id: string; external_id: string | null; calendar_event_id: string | null }[],
+  calendarUsers: ReadonlySet<string>,
+): MeetingLinkageMetric {
   const metric: MeetingLinkageMetric = { notion: { total: 0, linked: 0, withTranscript: 0 }, meet: { total: 0, linked: 0 } };
   // 같은 일정 id가 다른 사용자의 캘린더에도 있으므로(같은 회의 초대) 사용자마다 따로 본다
   const eventKey = (row: { user_id: string; calendar_event_id: string | null }) => `${row.user_id}:${row.calendar_event_id}`;
@@ -427,6 +431,7 @@ export function meetingLinkage(rows: { user_id: string; external_id: string | nu
       metric.meet.total++;
       if (row.calendar_event_id) metric.meet.linked++;
     } else {
+      if (!calendarUsers.has(row.user_id)) continue;
       metric.notion.total++;
       if (row.calendar_event_id) {
         metric.notion.linked++;

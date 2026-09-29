@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
+import type { MeetingEventLookup } from "../google/lookup";
 import type { IngestDeps } from "../ingest";
 import type { TaskItem } from "../tasks-ingest";
 import type { Connection, IngestItem } from "../types";
@@ -708,9 +709,21 @@ describe("syncNotion: 회의록에 Calendar 일정 붙이기", () => {
       ],
     });
     expect(items[0].meeting).toEqual({ calendar_event_id: "evt-1", title: "Proposal review — Acme", start: EVENT.start, end: EVENT.end });
-    // 찾을 것: 회의 날짜(한국 날짜) · 페이지를 만든 시각 · 제목
-    expect(meetingEvent).toHaveBeenCalledWith({ day: "2026-09-25", createdAt: new Date(minutesAgo(120)), title: "Proposal review a" });
+    // 찾을 것: 회의 날짜(한국 날짜) · 페이지를 만든 시각 · 제목 · 만든 사람이 연결한 사용자인가 (연결한 Notion 계정을 알아내지 못했으면 아니다)
+    expect(meetingEvent).toHaveBeenCalledWith({ day: "2026-09-25", createdAt: new Date(minutesAgo(120)), title: "Proposal review a", createdByUser: false });
     expect(result.meetingLinks).toEqual({ attached: 1, ambiguous: 0, none: 0, failed: 0 });
+  });
+
+  it("페이지를 만든 사람이 연결한 Notion 계정이면 createdByUser, 다른 사람이거나 모르면 아니다 (시각만으로 일정을 고르는 길의 조건)", async () => {
+    const created = (id: string, by?: string) => ({ ...meeting(id), ...(by ? { created_by: { id: by } } : {}) });
+    const { client } = fakeClient([[created("mine", "notion-me"), created("theirs", "notion-other"), created("unknown")]], [], { owner: "notion-me" });
+    const { deps } = capture();
+    const meetingEvent = vi.fn<MeetingEventLookup>(async () => ({ result: "none" }));
+
+    await syncNotion(connection(minutesAgo(200)), client, { ...deps, meetingEvent }, { ...options, maxItems: 3 });
+
+    const createdByUser = Object.fromEntries(meetingEvent.mock.calls.map(([target]) => [target.title, target.createdByUser]));
+    expect(createdByUser).toEqual({ "Proposal review mine": true, "Proposal review theirs": false, "Proposal review unknown": false });
   });
 
   it("일정이 없으면 Notion 관련자 그대로, 애매해도 잇지 않는다: 결과만 센다", async () => {

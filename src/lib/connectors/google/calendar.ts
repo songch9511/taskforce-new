@@ -16,10 +16,11 @@ const EVENTS_URL = "https://www.googleapis.com/calendar/v3/calendars/primary/eve
 
 /**
  * 받을 필드. **설명(description) · 첨부(attachments) · 위치(location) · 링크는 넣지 않는다** (처리방침 3장 "일정 설명과 첨부 파일은 읽지 않습니다").
- * 참석자는 이메일 · 이름 · 응답 상태만, 화상 회의는 회의 코드와 종류만 받는다.
+ * 참석자는 이메일 · 이름 · 응답 상태만, 주최자는 "내가 주최했는가"(self)만, 화상 회의는 회의 코드와 종류만 받는다.
+ * 주최자의 이메일 · 이름과 참석자의 주최자 표시(`organizer`)는 쓰지 않으므로 받지 않는다 (독립 검토 2026-09-30, 데이터 최소화).
  */
 export const CALENDAR_EVENT_FIELDS =
-  "items(id,status,eventType,summary,start,end,organizer(email,displayName,self),attendees(email,displayName,self,organizer,resource,responseStatus),conferenceData(conferenceId,conferenceSolution/key/type))";
+  "items(id,status,eventType,summary,start,end,organizer(self),attendees(email,displayName,self,resource,responseStatus),conferenceData(conferenceId,conferenceSolution/key/type))";
 
 /**
  * 참석한 회의의 회의 코드만 모을 때(G2 ②)의 필드: 제목 · 참석자 이메일 · 이름은 받지 않는다 (코드만 쓰고 저장하지 않는다, G3 데이터 최소화).
@@ -151,10 +152,13 @@ export function calendarClient(access: GoogleAccess): CalendarClient {
   };
 }
 
-/** 찾을 회의: Meet 전사는 회의 코드와 시작 시각, Notion 회의록은 회의 날짜(한국 날짜) · 페이지를 만든 시각 · 제목 */
+/**
+ * 찾을 회의: Meet 전사는 회의 코드와 시작 시각, Notion 회의록은 회의 날짜(한국 날짜) · 페이지를 만든 시각 · 제목 ·
+ * 만든 사람이 연결한 사용자인가(createdByUser: 페이지의 `created_by`가 사용자의 Notion id일 때만 true, 모르면 false)
+ */
 export type LookupTarget =
   | { kind: "meet"; meetingCode: string; start: Date }
-  | { kind: "notion"; day: string; createdAt: Date; title: string | null };
+  | { kind: "notion"; day: string; createdAt: Date; title: string | null; createdByUser: boolean };
 
 export type MeetingPick = { result: "attached"; event: CalendarEvent } | { result: "ambiguous" } | { result: "none" };
 
@@ -183,6 +187,9 @@ function titleMatches(eventTitle: string | null, pageTitle: string | null): bool
  * - Notion 회의록: (가) 페이지를 만든 시각이 일정 [시작 − 15분, 끝 + 15분] 안, (나) 제목이 같거나 한쪽이 다른 쪽을 포함.
  *   (가)(나) 모두 맞는 일정 → (가)만 맞는 일정 → (나)만 맞는 일정 순으로 보고, 처음으로 비지 않은 단계에서 딱 하나면 그것, 둘 이상이면 애매.
  *   짐작으로 잇는 길이라 참석자가 사용자 한 명뿐인 일정(혼자 잡은 작업 시간)은 후보에서 뺀다.
+ *   **(가)만 맞는 단계(제목은 안 맞고 시각만 맞음)는 페이지를 만든 사람이 연결한 사용자일 때만 쓴다** (독립 검토 2026-09-30):
+ *   여러 사람이 함께 쓰는 회의록 DB에서 동료가 만든 회의록의 생성 시각이 마침 사용자의 다른 회의와 겹치면, 그 회의를 동료의 회의록에 붙여
+ *   관련자가 틀리고 사용자가 "참석자"로 읽히는 문제(G4가 피하려는 것)가 생긴다. 제목이 맞는 단계는 만든 사람과 상관없이 그대로다.
  */
 export function pickMeetingEvent(events: CalendarEvent[], target: LookupTarget): MeetingPick {
   if (target.kind === "meet") {
@@ -198,7 +205,7 @@ export function pickMeetingEvent(events: CalendarEvent[], target: LookupTarget):
   const timeMatches = (event: CalendarEvent) => created >= event.start.getTime() - CREATED_MARGIN_MS && created <= event.end.getTime() + CREATED_MARGIN_MS;
   const tiers = [
     candidates.filter((e) => timeMatches(e) && titleMatches(e.title, target.title)),
-    candidates.filter((e) => timeMatches(e) && !titleMatches(e.title, target.title)),
+    target.createdByUser ? candidates.filter((e) => timeMatches(e) && !titleMatches(e.title, target.title)) : [],
     candidates.filter((e) => !timeMatches(e) && titleMatches(e.title, target.title)),
   ];
   for (const tier of tiers) {
