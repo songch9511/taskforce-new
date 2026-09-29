@@ -145,7 +145,7 @@ App Store Connect → 앱 → App Privacy. 모든 항목: **Linked to the user =
 |---|---|---|---|
 | Contact Info → **Name** | 예 | App Functionality | 이용자가 입력한 표시 이름 · 별칭 |
 | Contact Info → **Email Address** | 예 | App Functionality | 로그인 이메일(Apple 전달 주소 포함), 프로필의 추가 이메일 |
-| User Content → **Emails or Text Messages** | 예 | App Functionality | Gmail 스레드, Slack 메시지 (제목 · 보낸 사람 · 받는 사람 · 본문) |
+| User Content → **Emails or Text Messages** | 예 | App Functionality | Gmail 메일, Slack 메시지 (제목 · 보낸 사람 · 받는 사람 · 본문) |
 | User Content → **Other User Content** | 예 | App Functionality | Notion 회의록 · 문서 · 할 일 DB 항목, Meet 전사, 일정 제목 · 참석자, 할 일 · 근거 인용, 주간 질문 응답 |
 | Identifiers → **User ID** | 예 | App Functionality | 계정 id, Apple 사용자 식별자, 연결한 서비스의 워크스페이스 · 계정 id |
 | Usage Data → **Product Interaction** | 예 | Analytics, App Functionality | 앱 열기, 착수 · 완료 · 수정 · 삭제 · 확인, "Hand off to AI" 사용 |
