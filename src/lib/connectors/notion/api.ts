@@ -17,6 +17,17 @@ export class NotionError extends Error {
   }
 }
 
+/**
+ * 토큰 발급 창구(POST /v1/oauth/token)의 거절. API 호출의 401(권한 끊김)과 다르다:
+ * 갱신 토큰 만료 · 거절은 400 invalid_grant, 401은 우리 쪽 client id · secret 문제다.
+ */
+export class NotionOAuthError extends NotionError {
+  constructor(message: string, status: number, code?: string) {
+    super(message, status, code);
+    this.name = "NotionOAuthError";
+  }
+}
+
 export type NotionFetch = typeof fetch;
 type Sleep = (ms: number) => Promise<void>;
 const defaultSleep: Sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -58,10 +69,10 @@ async function tokenRequest(config: NotionOAuthConfig, body: Record<string, stri
   });
   if (!response.ok) {
     const code = await errorCode(response);
-    throw new NotionError(`Notion 토큰 요청 실패 (${response.status}${code ? ` ${code}` : ""})`, response.status, code);
+    throw new NotionOAuthError(`Notion 토큰 요청 실패 (${response.status}${code ? ` ${code}` : ""})`, response.status, code);
   }
   const parsed = notionTokenSchema.safeParse(await response.json());
-  if (!parsed.success) throw new NotionError("Notion 토큰 응답 형식이 예상과 다릅니다", 502);
+  if (!parsed.success) throw new NotionOAuthError("Notion 토큰 응답 형식이 예상과 다릅니다", 502);
   return parsed.data;
 }
 

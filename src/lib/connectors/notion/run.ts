@@ -12,6 +12,7 @@ import {
   exchangeCode,
   notionClient,
   NotionError,
+  NotionOAuthError,
   notionTokenSchema,
   refreshToken,
   revokeToken,
@@ -35,7 +36,7 @@ export function notionOAuthConfig(): NotionOAuthConfig {
 }
 
 /** 갱신 토큰이 만료 · 거절됨: 다시 연결해야 한다 (같은 갱신을 다시 시도하지 않는다) */
-const isInvalidGrant = (error: unknown) => error instanceof NotionError && error.code === "invalid_grant";
+const isInvalidGrant = (error: unknown) => error instanceof NotionOAuthError && error.code === "invalid_grant";
 
 /** 동시에 갱신했을 때 먼저 갱신한 쪽이 새 토큰을 저장할 때까지 기다리는 시간 */
 const REFRESH_RACE_WAIT_MS = 1_000;
@@ -80,7 +81,8 @@ export type ConnectionSyncOutcome =
 /** 사용자에게 보여줄 오류와 연결 상태. 자세한 내용은 서버 로그에만 남긴다. */
 function userFacingError(error: unknown): { message: string; revoked: boolean; reauth: boolean } {
   if (isInvalidGrant(error)) return { message: "Notion 연결이 만료됐습니다. 다시 연결해 주세요.", revoked: false, reauth: true };
-  if (error instanceof NotionError && error.status === 401) {
+  // API 호출의 401만 권한이 끊긴 것이다. 토큰 발급 창구의 401은 우리 쪽 설정 문제라 error로 남기고, 설정을 고치면 다음 동기화가 이어 간다
+  if (error instanceof NotionError && !(error instanceof NotionOAuthError) && error.status === 401) {
     return { message: "Notion 연결 권한이 끊겼습니다. 다시 연결해 주세요.", revoked: true, reauth: false };
   }
   if (error instanceof NotionError) return { message: `Notion 요청 실패 (${error.status})`, revoked: false, reauth: false };

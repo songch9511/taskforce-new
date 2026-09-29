@@ -73,9 +73,9 @@ beforeEach(() => {
   vi.mocked(recordNotionHealth).mockResolvedValue();
   vi.mocked(markBackfilled).mockResolvedValue();
   vi.mocked(saveToken).mockResolvedValue();
-  // 만료된 액세스 토큰은 401, 그 밖의 토큰으로는 동기화된다
+  // 만료된 액세스 토큰("expired…")은 401, 그 밖의 토큰으로는 동기화된다
   vi.mocked(syncNotion).mockImplementation(async (_connection, client) => {
-    if ((client as unknown as { accessToken: string }).accessToken === "expired") {
+    if ((client as unknown as { accessToken: string }).accessToken.startsWith("expired")) {
       throw new NotionError("Notion API 요청 실패 (401 unauthorized)", 401, "unauthorized");
     }
     return synced;
@@ -141,6 +141,31 @@ describe("syncNotionConnection: 토큰 갱신이 실패하면", () => {
     await sync();
 
     expect(recordSync).toHaveBeenCalledWith(admin, connection, { error: "Notion 요청 실패 (503)", revoked: false, reauth: false });
+  });
+
+  it("갱신 요청 자체가 401이면(우리 쪽 client id · secret 문제일 수 있다) 권한이 끊긴 것으로 보지 않고 error로 남긴다", async () => {
+    vi.mocked(loadToken).mockResolvedValue(token("expired", "r1"));
+    tokenEndpoint(401, { object: "error", status: 401, code: "unauthorized", message: "API token is invalid." });
+
+    await sync();
+
+    expect(recordSync).toHaveBeenCalledWith(admin, connection, { error: "Notion 요청 실패 (401)", revoked: false, reauth: false });
+    expect(usedTokens()).toEqual(["expired"]);
+    expect(saveToken).not.toHaveBeenCalled();
+  });
+
+  it("갱신한 토큰으로도 401이면 권한이 끊긴 것(revoked)으로 남긴다", async () => {
+    vi.mocked(loadToken).mockResolvedValue(token("expired", "r1"));
+    tokenEndpoint(200, token("expired-too", "r2"));
+
+    await sync();
+
+    expect(usedTokens()).toEqual(["expired", "expired-too"]);
+    expect(recordSync).toHaveBeenCalledWith(admin, connection, {
+      error: "Notion 연결 권한이 끊겼습니다. 다시 연결해 주세요.",
+      revoked: true,
+      reauth: false,
+    });
   });
 
   it("갱신 토큰 없이 401이면 권한이 끊긴 것(revoked)으로 남긴다", async () => {
