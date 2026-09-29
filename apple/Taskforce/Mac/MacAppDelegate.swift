@@ -86,6 +86,11 @@ final class MacAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func openNotification(_ target: NotificationTarget) {
+        // 재연결 알림: 설정의 연결 탭 (런처의 할 일이 아니다)
+        if target.kind == .reconnect {
+            SettingsOpener.open(.connections)
+            return
+        }
         guard let launcher else { return }
         launcher.show()
         if let id = target.actionID { launcher.model.focus(actionID: id) }

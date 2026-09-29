@@ -2,6 +2,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { CONSENT_WITHDRAWN_MESSAGE, ConsentRequiredError } from "@/lib/consent/gate";
+import { notifyReconnect } from "@/lib/notify/service";
 
 import {
   claimConnection,
@@ -23,6 +24,7 @@ import { DEFAULT_GOOGLE_SYNC, syncGoogleMeet, type GoogleSyncResult } from "./sy
 import { GoogleApiError } from "./token";
 
 vi.mock("server-only", () => ({}));
+vi.mock("@/lib/notify/service", () => ({ notifyReconnect: vi.fn() }));
 vi.mock("../store", () => ({
   claimConnection: vi.fn(),
   connectedAt: vi.fn(),
@@ -115,7 +117,9 @@ beforeEach(() => {
   vi.mocked(loadIdentity).mockResolvedValue({ name: "송창훈", aliases: ["Daniel Song"], emails: ["login@example.com", "me@company.dev"] });
   vi.mocked(loadToken).mockResolvedValue(stored());
   vi.mocked(otherConnections).mockResolvedValue([]);
-  vi.mocked(recordSync).mockResolvedValue();
+  // recordSync는 이 호출이 연결을 reauth로 바꿨는지 돌려준다 (PR 4a). 기본은 바꾸지 않음
+  vi.mocked(recordSync).mockResolvedValue(false);
+  vi.mocked(notifyReconnect).mockResolvedValue(1);
   vi.mocked(saveConnection).mockResolvedValue("conn-new");
   vi.mocked(saveToken).mockResolvedValue();
   vi.mocked(updateConnectionSettings).mockResolvedValue();
@@ -370,6 +374,75 @@ describe("syncGoogleConnection", () => {
     expect(recordSync).toHaveBeenCalledWith(admin, connection, { claimedAt: NOW, error: "Google 연결이 만료됐습니다. 다시 연결해 주세요.", reauth: true });
     expect(outcome).toEqual({ connectionId: "g1", ok: false, error: "Google 연결이 만료됐습니다. 다시 연결해 주세요.", revoked: false });
     expect(saveToken).not.toHaveBeenCalled();
+  });
+
+  describe("재연결 알림 (G9, PR 4a와 같은 두 줄)", () => {
+    /** 갱신 토큰이 거절되는 동기화 (Meet 요청에서 토큰을 읽는다) */
+    function expiredSync(scopes: string[] = ALL_SCOPES) {
+      stubGoogle({ token: () => json({ error: "invalid_grant" }, 400) });
+      vi.mocked(loadToken).mockResolvedValue(stored({ expires_at: Date.now() - 1_000 }));
+      vi.mocked(syncGoogleMeet).mockImplementation(async (_c, input) => {
+        await input.meetApi.listTranscripts("conferenceRecords/x");
+        return synced;
+      });
+      return syncGoogleConnection(admin, { ...connection, settings: { ...settings, scopes } }, { now: NOW });
+    }
+
+    it("reauth로 바꾼 동기화(recordSync가 true)에서만 알림 한 번: 서비스는 google", async () => {
+      vi.mocked(recordSync).mockResolvedValue(true);
+      await expiredSync();
+      expect(notifyReconnect).toHaveBeenCalledTimes(1);
+      expect(notifyReconnect).toHaveBeenCalledWith(admin, "u1", "google");
+    });
+
+    it("Calendar만 허용한 연결의 reauth도 같다 (토큰 확인 요청에서 잡힌다)", async () => {
+      vi.mocked(recordSync).mockResolvedValue(true);
+      await expiredSync(["openid", CALENDAR]);
+      expect(syncGoogleMeet).not.toHaveBeenCalled();
+      expect(notifyReconnect).toHaveBeenCalledWith(admin, "u1", "google");
+    });
+
+    it("이미 reauth였거나 그 사이 다시 연결해 recordSync가 false면 알림을 보내지 않는다", async () => {
+      vi.mocked(recordSync).mockResolvedValue(false);
+      const outcome = await expiredSync();
+      expect(outcome.ok).toBe(false);
+      expect(notifyReconnect).not.toHaveBeenCalled();
+    });
+
+    it("알림이 실패해도 동기화 결과는 그대로 reauth다 (오류 로그만, 토큰 없이)", async () => {
+      vi.mocked(recordSync).mockResolvedValue(true);
+      vi.mocked(notifyReconnect).mockRejectedValue(new Error("APNs down"));
+      const outcome = await expiredSync();
+      expect(outcome).toEqual({ connectionId: "g1", ok: false, error: "Google 연결이 만료됐습니다. 다시 연결해 주세요.", revoked: false });
+      expect(console.error).toHaveBeenCalledWith("Google 재연결 알림 실패 (g1):", "APNs down");
+    });
+
+    it("reauth가 아닌 실패(설정 문제 · API 오류)와 성공한 동기화는 recordSync가 true를 돌려주는 상황에서도 알림을 보내지 않는다", async () => {
+      // true여도 알림이 안 가는 것은 reauth 분기에서만 부르기 때문이다 (기본 목(false)이면 이 검사는 아무것도 증명하지 못한다)
+      vi.mocked(recordSync).mockResolvedValue(true);
+
+      stubGoogle({ token: () => json({ error: "invalid_client" }, 401) });
+      vi.mocked(loadToken).mockResolvedValue(stored({ expires_at: Date.now() - 1_000 }));
+      vi.mocked(syncGoogleMeet).mockImplementation(async (_c, input) => {
+        await input.meetApi.listTranscripts("conferenceRecords/x");
+        return synced;
+      });
+      await syncGoogleConnection(admin, connection, { now: NOW });
+      expect(recordSync).toHaveBeenLastCalledWith(admin, connection, { claimedAt: NOW, error: "Google 토큰 요청 실패 (invalid_client)" });
+
+      vi.mocked(syncGoogleMeet).mockRejectedValue(new GoogleApiError("Meet 요청 실패 (403)", 403, "PERMISSION_DENIED"));
+      await syncGoogleConnection(admin, connection, { now: NOW });
+      expect(recordSync).toHaveBeenLastCalledWith(admin, connection, { claimedAt: NOW, error: "Google 요청 실패 (403)" });
+
+      vi.mocked(syncGoogleMeet).mockResolvedValue(synced);
+      stubGoogle();
+      vi.mocked(loadToken).mockResolvedValue(stored());
+      await syncGoogleConnection(admin, connection, { now: NOW });
+      expect(recordSync).toHaveBeenLastCalledWith(admin, connection, { claimedAt: NOW, cursor: synced.cursor, error: null });
+
+      expect(recordSync).toHaveBeenCalledTimes(3);
+      expect(notifyReconnect).not.toHaveBeenCalled();
+    });
   });
 
   it("토큰 창구가 401 invalid_client면(우리 쪽 설정) error로만 남긴다: reauth · revoked가 아니다", async () => {

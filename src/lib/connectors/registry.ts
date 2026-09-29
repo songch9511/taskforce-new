@@ -82,7 +82,7 @@ export function syncConnections(
  * 웹(/lab) 연결은 지표만 남긴다 ('지금 동기화'로 돌린다).
  */
 export async function afterConnected(admin: SupabaseClient, userId: string, provider: ConnectProvider, options: { firstSync: boolean }): Promise<void> {
-  await recordConnectionCreated(admin, userId).catch((error) =>
+  await recordConnectionCreated(admin, userId, provider).catch((error) =>
     console.error("연결 지표 기록 실패:", error instanceof Error ? error.message : error),
   );
   if (!options.firstSync) return;

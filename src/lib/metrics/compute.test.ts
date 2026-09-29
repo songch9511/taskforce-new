@@ -6,6 +6,7 @@ import {
   googleActivity,
   kstWeek,
   meetingLinkage,
+  metricActivity,
   missed,
   misjudgment,
   retention,
@@ -289,6 +290,22 @@ describe("shadowList (지표 5)", () => {
   });
 });
 
+describe("metricActivity: 리텐션의 활동", () => {
+  it("서버가 남기는 연결 이벤트(연결 완료 · 만료 · 재연결 알림)는 활동이 아니다", () => {
+    const events: MetricEventRow[] = [
+      { userId: "a", type: "app_opened", actionId: null, at: "2026-09-10T00:00:00Z" },
+      { userId: "a", type: "action_started", actionId: "x", at: "2026-09-10T01:00:00Z" },
+      { userId: "a", type: "connection_created", actionId: null, at: "2026-09-11T00:00:00Z", provider: "gmail" },
+      { userId: "a", type: "connection_reauth", actionId: null, at: "2026-09-12T00:00:00Z", provider: "gmail" },
+      { userId: "a", type: "reconnect_notified", actionId: null, at: "2026-09-12T00:00:01Z", provider: "gmail" },
+    ];
+    expect(metricActivity(events)).toEqual([
+      { userId: "a", at: "2026-09-10T00:00:00Z" },
+      { userId: "a", at: "2026-09-10T01:00:00Z" },
+    ]);
+  });
+});
+
 describe("connections (연결 · 2단계 연동 요청)", () => {
   const period = { from: new Date("2026-09-01T00:00:00Z"), to: new Date("2026-09-30T00:00:00Z") };
   it("기간 안의 연결 완료 수 · 사용자 수와, 서비스별 요청 수를 많은 순서로 센다", () => {
@@ -303,12 +320,41 @@ describe("connections (연결 · 2단계 연동 요청)", () => {
     expect(connections(events, requests, period)).toEqual({
       created: 3,
       users: 2,
+      expired: 0,
+      notified: 0,
+      reconnect: [],
       requests: [
         { provider: "zoom", count: 2 },
         { provider: "jira", count: 1 },
         { provider: "linear", count: 1 },
       ],
     });
+  });
+
+  it("만료(connection_reauth)와 알림(reconnect_notified)을 서비스별로 세고, 알림이 못 간 만료가 드러난다", () => {
+    const e = (type: string, at: string, provider: string | null, userId = "a"): MetricEventRow => ({ userId, type, actionId: null, at, provider });
+    const events: MetricEventRow[] = [
+      // Gmail: 만료 3번 중 알림은 2번, 이후 다시 연결 1번
+      e("connection_reauth", "2026-09-10T00:00:00Z", "gmail"),
+      e("reconnect_notified", "2026-09-10T00:00:01Z", "gmail"),
+      e("connection_created", "2026-09-10T05:00:00Z", "gmail"),
+      e("connection_reauth", "2026-09-17T00:00:00Z", "gmail"),
+      e("reconnect_notified", "2026-09-17T00:00:01Z", "gmail"),
+      e("connection_reauth", "2026-09-18T00:00:00Z", "gmail", "b"),
+      // Notion: 만료 1번, 알림 없음(기기 없음)
+      e("connection_reauth", "2026-09-11T00:00:00Z", "notion"),
+      // 기간 밖
+      e("connection_reauth", "2026-08-01T00:00:00Z", "gmail"),
+      e("reconnect_notified", "2026-08-01T00:00:01Z", "gmail"),
+      // 옛 connection_created(provider 없음)는 합계에만 들어가고 서비스별 표에는 없다
+      e("connection_created", "2026-09-05T00:00:00Z", null),
+    ];
+    const result = connections(events, [], period);
+    expect(result).toMatchObject({ created: 2, users: 1, expired: 4, notified: 2 });
+    expect(result.reconnect).toEqual([
+      { provider: "gmail", expired: 3, notified: 2, created: 1 },
+      { provider: "notion", expired: 1, notified: 0, created: 0 },
+    ]);
   });
 });
 

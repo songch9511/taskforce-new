@@ -3,6 +3,7 @@ import "server-only";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 import { CONSENT_WITHDRAWN_MESSAGE, ConsentRequiredError } from "@/lib/consent/gate";
+import { notifyReconnect } from "@/lib/notify/service";
 
 import {
   claimConnection,
@@ -131,7 +132,10 @@ export async function syncGoogleConnection(
     }
     // 갱신 토큰 만료 (이용자가 Google 계정에서 접근을 거둠 등): 다시 연결할 때까지 동기화하지 않는다
     if (error instanceof GoogleReauthError) {
-      await recordSync(admin, connection, { claimedAt: now, error: REAUTH_MESSAGE, reauth: true });
+      const changed = await recordSync(admin, connection, { claimedAt: now, error: REAUTH_MESSAGE, reauth: true });
+      // 상태를 실제로 reauth로 바꾼 동기화에서만 알림 한 번 (G9). 알림이 실패해도 동기화 결과는 그대로다.
+      // 문구는 서버 SERVICE_NAMES.google("Google")이다: 앱의 "Google Calendar & Meet"과 맞추는 것은 PR 4b가 정한다
+      if (changed) await notifyReconnect(admin, connection.userId, "google").catch(logError(`Google 재연결 알림 실패 (${connection.id})`));
       return { connectionId: connection.id, ok: false, error: REAUTH_MESSAGE, revoked: false };
     }
     // 예산을 다 썼다면 여기까지 온 것은 예상 밖이다(동기화 본체가 잡는다). 일반 오류로 남긴다

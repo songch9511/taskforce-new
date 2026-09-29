@@ -7,6 +7,7 @@ import {
   gmailFiltering,
   googleActivity,
   meetingLinkage,
+  metricActivity,
   misjudgment,
   missed,
   retention,
@@ -95,8 +96,8 @@ export async function loadMetrics(admin: SupabaseClient, period: Period) {
   );
   // 리텐션은 사용자의 처음 활동부터 본다 (기간으로 자르면 오래 쓴 사용자가 새 사용자로 보인다).
   // 착수 시간도 Action마다 처음 착수만 세므로 처음부터 읽는다.
-  const metricEvents = await readAll<{ user_id: string; type: string; action_id: string | null; at: string }>((from, to) =>
-    admin.from("metric_events").select("user_id, type, action_id, at").order("at").order("id").range(from, to),
+  const metricEvents = await readAll<{ user_id: string; type: string; action_id: string | null; at: string; provider: string | null }>((from, to) =>
+    admin.from("metric_events").select("user_id, type, action_id, at, provider").order("at").order("id").range(from, to),
   );
   const weeklyChecks = await readAll<{ user_id: string; week_start: string; answer: WeeklyCheckRow["answer"]; answered_at: string }>((from, to) =>
     admin.from("weekly_checks").select("user_id, week_start, answer, answered_at").gte("answered_at", since).order("answered_at").order("id").range(from, to),
@@ -127,10 +128,10 @@ export async function loadMetrics(admin: SupabaseClient, period: Period) {
     }));
   const metrics: MetricEventRow[] = metricEvents
     .filter((e) => !e.action_id || !testActions.has(e.action_id))
-    .map((e) => ({ userId: e.user_id, type: e.type, actionId: e.action_id, at: e.at }));
+    .map((e) => ({ userId: e.user_id, type: e.type, actionId: e.action_id, at: e.at, provider: e.provider }));
   const activity: Activity[] = [
-    // 연결 완료는 활동(앱 열기 · 착수 · 수정 · 확인)에 넣지 않는다 (리텐션 정의를 바꾸지 않게)
-    ...metrics.filter((e) => e.type !== "connection_created").map((e) => ({ userId: e.userId, at: e.at })),
+    // 연결 완료 · 만료 · 재연결 알림은 서버가 남기는 이벤트라 활동(앱 열기 · 착수 · 수정 · 확인)에 넣지 않는다 (리텐션 정의를 바꾸지 않게)
+    ...metricActivity(metrics),
     ...userWrites.filter((e) => !testActions.has(e.action_id)).map((e) => ({ userId: e.user_id, at: e.created_at })),
   ];
 

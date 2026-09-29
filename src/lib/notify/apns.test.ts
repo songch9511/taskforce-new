@@ -2,7 +2,7 @@ import { generateKeyPairSync, verify } from "node:crypto";
 
 import { describe, expect, it } from "vitest";
 
-import { apnsConfigFromEnv, confirmationPayload, duePayload, providerToken, sendPush, type ApnsConfig, type Transport } from "./apns";
+import { apnsConfigFromEnv, confirmationPayload, duePayload, providerToken, reconnectPayload, sendPush, type ApnsConfig, type Transport } from "./apns";
 
 const { privateKey, publicKey } = generateKeyPairSync("ec", { namedCurve: "P-256" });
 const config: ApnsConfig = { keyId: "ABC123DEFG", teamId: "U9DWQKQFMW", key: privateKey, bundleId: "dev.taskforcelabs.taskforce" };
@@ -83,5 +83,14 @@ describe("duePayload", () => {
       "2026-09-26",
     );
     expect(p.aps.alert).toEqual({ title: "Due tomorrow", body: "2 tasks" });
+  });
+});
+
+describe("reconnectPayload", () => {
+  it("서비스 이름만 든 짧은 영어 문구와 kind reconnect (앱이 연결 화면을 연다). 할 일 정보는 없다", () => {
+    const p = reconnectPayload("Gmail");
+    expect(p.aps.alert).toEqual({ title: "Connections", body: "Reconnect Gmail to keep syncing." });
+    expect(p).toMatchObject({ kind: "reconnect" });
+    expect(p).not.toHaveProperty("action_id");
   });
 });
