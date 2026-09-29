@@ -35,6 +35,26 @@ const GMAIL_COUNT_LABELS: [string, string][] = [
   ["calendar", "⑧ 일정 초대"],
 ];
 
+/** Google(Calendar · Meet) 연결 개수 (lib/connectors/google, google-integration.md 2-5 · 8장). 글자 · 주소 없이 개수만 쌓는다 */
+const GOOGLE_COUNT_LABELS: [string, string][] = [
+  ["meet_transcripts", "Meet 전사 (새 원문)"],
+  ["meet_transcripts_attended", "  그중 참석한 회의만 목록으로 찾은 것 (G2 ②)"],
+  ["meet_transcripts_abandoned", "포기한 전사 (2시간 넘게 파일 없음)"],
+  ["meet_transcripts_short", "넣지 않은 전사 (항목 없음 · 너무 짧음)"],
+  ["meet_attended_codes", "참석한 회의 코드 조회"],
+  ["meet_attended_denied", "  그중 회의 기록을 못 봄 (403 · 404)"],
+  ["meet_attended_failed", "참석한 회의 찾기 실패 (일정 목록 · 코드 조회)"],
+  ["meet_artifacts_denied", "전사 목록 · 항목을 못 봄 (403 · 404)"],
+  ["meet_link_attached", "Meet 전사 ↔ 일정: 붙음"],
+  ["meet_link_ambiguous", "Meet 전사 ↔ 일정: 애매"],
+  ["meet_link_none", "Meet 전사 ↔ 일정: 없음"],
+  ["meet_link_failed", "Meet 전사 ↔ 일정: 조회 실패"],
+  ["notion_link_attached", "Notion 회의록 ↔ 일정: 붙음"],
+  ["notion_link_ambiguous", "Notion 회의록 ↔ 일정: 애매"],
+  ["notion_link_none", "Notion 회의록 ↔ 일정: 없음"],
+  ["notion_link_failed", "Notion 회의록 ↔ 일정: 조회 실패"],
+];
+
 const pct = (value: number | null) => (value === null ? "—" : `${Math.round(value * 1000) / 10}%`);
 const num = (value: number | null, unit = "") => (value === null ? "—" : `${Math.round(value * 10) / 10}${unit}`);
 
@@ -46,7 +66,7 @@ export default async function MetricsPage({ searchParams }: { searchParams: Prom
   const days = PERIODS.find((d) => String(d) === daysParam) ?? 28;
   const to = new Date();
   const report = await loadMetrics(createAdminClient(), { from: new Date(to.getTime() - days * 86_400_000), to });
-  const { misjudgment: m, start, retention, missed, shadowList: shadow, connections, gmail } = report;
+  const { misjudgment: m, start, retention, missed, shadowList: shadow, connections, gmail, google, meetingLinkage: linkage } = report;
   // 피벗 판단은 자동 반영이 틀린 비율로 한다 (PRD 6장). 구분이 생기기 전 기록뿐이면 전체 비율을 보여준다.
   const auto = m.byConfirmation.auto;
   const headline = auto.created > 0 ? { label: "자동 반영", rate: auto.corrected / auto.created } : { label: "전체 · 구분 전 기록 포함", rate: m.rate };
@@ -249,6 +269,53 @@ export default async function MetricsPage({ searchParams }: { searchParams: Prom
               ))}
             </ul>
           )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Google 회의 (Calendar · Meet)</CardTitle>
+          <CardDescription>
+            google 연결 {google.connections}개가 첫 동기화부터 센 개수 (전체 기간). 일정 자체는 저장하지 않아 붙은 결과만 셉니다. 개수는 연결 설정에 있어,
+            연결을 끊거나 다른 계정으로 바꾸면 그 연결의 개수는 빠집니다.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3 text-sm">
+          {google.connections === 0 ? (
+            <p className="text-muted-foreground">아직 동기화한 google 연결이 없습니다.</p>
+          ) : (
+            <ul className="space-y-0.5">
+              {GOOGLE_COUNT_LABELS.map(([key, label]) => (
+                <li key={key} className="flex justify-between">
+                  <span className="whitespace-pre">{label}</span>
+                  <span>{google.counts[key] ?? 0}건</span>
+                </li>
+              ))}
+            </ul>
+          )}
+          <div>
+            <p className="font-medium">회의 원문에 일정이 붙은 비율 (최근 {days}일에 들어온 원문)</p>
+            <ul className="space-y-0.5">
+              <li className="flex justify-between">
+                <span>Notion 회의록에 일정이 붙음</span>
+                <span>
+                  {linkage.notion.linked} / {linkage.notion.total}
+                </span>
+              </li>
+              <li className="flex justify-between">
+                <span className="pl-4">그중 같은 일정에 Meet 전사도 있음</span>
+                <span>
+                  {linkage.notion.withTranscript} / {linkage.notion.linked}
+                </span>
+              </li>
+              <li className="flex justify-between">
+                <span>Meet 전사에 일정이 붙음</span>
+                <span>
+                  {linkage.meet.linked} / {linkage.meet.total}
+                </span>
+              </li>
+            </ul>
+          </div>
         </CardContent>
       </Card>
     </main>

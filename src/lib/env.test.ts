@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { gmailConnectEnabled, oauthStateSecret, parsePublicEnv, slackAppToken, slackConnectEnabled, slackSigningSecret } from "./env";
+import { gmailConnectEnabled, googleConnectEnabled, oauthStateSecret, parsePublicEnv, slackAppToken, slackConnectEnabled, slackSigningSecret } from "./env";
 
 describe("parsePublicEnv", () => {
   it("올바른 값이면 그대로 돌려준다", () => {
@@ -99,5 +99,21 @@ describe("gmailConnectEnabled", () => {
   it("Slack 플래그를 보지 않는다", () => {
     expect(gmailConnectEnabled({ SLACK_CONNECT_ENABLED: "true", NODE_ENV: "production" })).toBe(false);
     expect(slackConnectEnabled({ GMAIL_CONNECT_ENABLED: "true", NODE_ENV: "production" })).toBe(false);
+  });
+});
+
+describe("googleConnectEnabled", () => {
+  it("설정하면 그 값대로, 설정하지 않았으면 개발 서버에서만 연다", () => {
+    expect(googleConnectEnabled({ GOOGLE_CONNECT_ENABLED: "true", NODE_ENV: "production" })).toBe(true);
+    expect(googleConnectEnabled({ GOOGLE_CONNECT_ENABLED: " true ", NODE_ENV: "production" })).toBe(true);
+    expect(googleConnectEnabled({ GOOGLE_CONNECT_ENABLED: "false", NODE_ENV: "development" })).toBe(false);
+    expect(googleConnectEnabled({ GOOGLE_CONNECT_ENABLED: "", NODE_ENV: "production" })).toBe(false);
+    expect(googleConnectEnabled({ NODE_ENV: "production" })).toBe(false);
+    expect(googleConnectEnabled({ NODE_ENV: "development" })).toBe(true);
+  });
+
+  it("Gmail · Slack 플래그를 보지 않는다", () => {
+    expect(googleConnectEnabled({ GMAIL_CONNECT_ENABLED: "true", SLACK_CONNECT_ENABLED: "true", NODE_ENV: "production" })).toBe(false);
+    expect(gmailConnectEnabled({ GOOGLE_CONNECT_ENABLED: "true", NODE_ENV: "production" })).toBe(false);
   });
 });

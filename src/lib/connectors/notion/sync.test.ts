@@ -656,3 +656,166 @@ describe("syncNotion: 사용자가 쓴 문서", () => {
     expect(result.notionUserId).toBe("notion-new");
   });
 });
+
+// 회의록에 같은 회의의 Calendar 일정 붙이기 (google-integration.md 2-2 notion/sync.ts · 2-4 · G3 · G4)
+describe("syncNotion: 회의록에 Calendar 일정 붙이기", () => {
+  const capture = () => {
+    const items: IngestItem[] = [];
+    const deps: IngestDeps = {
+      ingestedIds: async () => new Set(),
+      insertSource: async (_c, item) => {
+        items.push(item);
+        return `src-${item.externalId}`;
+      },
+      process: async () => undefined,
+    };
+    return { deps, items };
+  };
+  const byId = (items: IngestItem[]) => Object.fromEntries(items.map((i) => [i.externalId, i]));
+  /** 회의 날짜 속성이 없는 회의록: 날짜는 페이지를 만든 날(한국 시간) */
+  const meeting = (id: string, editedMinutesAgo = 60) =>
+    page(id, editedMinutesAgo, {
+      properties: {
+        Name: { type: "title", title: [{ plain_text: `Proposal review ${id}` }] },
+        Attendees: { type: "people", people: [{ object: "user", id: `u-${id}`, name: "Jordan Lee", person: { email: "jordan@harborline.example" } }] },
+      },
+    });
+  const EVENT = {
+    calendarEventId: "evt-1",
+    title: "Proposal review — Acme",
+    start: "2026-09-25T02:00:00.000Z",
+    end: "2026-09-25T03:00:00.000Z",
+    attendees: [
+      { name: "Alex Kim", email: "alex@lumenfield.example" },
+      { name: "Jordan Lee", email: "jordan@harborline.example" },
+      { name: "Noah Patel", email: "noah@lumenfield.example" },
+    ],
+  };
+  const attached = { result: "attached" as const, event: EVENT };
+
+  it("일정을 찾으면 관련자에 일정 참석자를 합치고(이메일이 같은 사람은 하나로) meeting을 붙인다", async () => {
+    const { client } = fakeClient([[meeting("a")]]);
+    const { deps, items } = capture();
+    const meetingEvent = vi.fn(async () => attached);
+
+    const result = await syncNotion(connection(minutesAgo(200)), client, { ...deps, meetingEvent }, options);
+
+    expect(items[0].participants).toEqual({
+      attendees: [
+        { name: "Alex Kim", email: "alex@lumenfield.example" },
+        { name: "Jordan Lee", email: "jordan@harborline.example" },
+        { name: "Noah Patel", email: "noah@lumenfield.example" },
+      ],
+    });
+    expect(items[0].meeting).toEqual({ calendar_event_id: "evt-1", title: "Proposal review — Acme", start: EVENT.start, end: EVENT.end });
+    // 찾을 것: 회의 날짜(한국 날짜) · 페이지를 만든 시각 · 제목
+    expect(meetingEvent).toHaveBeenCalledWith({ day: "2026-09-25", createdAt: new Date(minutesAgo(120)), title: "Proposal review a" });
+    expect(result.meetingLinks).toEqual({ attached: 1, ambiguous: 0, none: 0, failed: 0 });
+  });
+
+  it("일정이 없으면 Notion 관련자 그대로, 애매해도 잇지 않는다: 결과만 센다", async () => {
+    const { client } = fakeClient([[meeting("a", 60), meeting("b", 70), meeting("c", 80)]]);
+    const { deps, items } = capture();
+    const answers = [{ result: "none" as const }, { result: "ambiguous" as const }, attached];
+    const meetingEvent = vi.fn(async () => answers.shift()!);
+
+    const result = await syncNotion(connection(minutesAgo(200)), client, { ...deps, meetingEvent }, { ...options, maxItems: 3 });
+
+    const found = byId(items);
+    // 오래된 것부터 넣는다: c(80분 전) → b → a
+    expect(meetingEvent).toHaveBeenCalledTimes(3);
+    expect(found.c.meeting).toBeUndefined();
+    expect(found.c.participants).toEqual({ attendees: [{ name: "Jordan Lee", email: "jordan@harborline.example" }] });
+    expect(found.b.meeting).toBeUndefined();
+    expect(found.a.meeting?.calendar_event_id).toBe("evt-1");
+    expect(result.meetingLinks).toEqual({ attached: 1, ambiguous: 1, none: 1, failed: 0 });
+  });
+
+  it("Notion 사람 속성이 없는 회의록도 일정 참석자만으로 관련자가 생긴다", async () => {
+    const { client } = fakeClient([[page("bare", 60)]]);
+    const { deps, items } = capture();
+    await syncNotion(connection(minutesAgo(200)), client, { ...deps, meetingEvent: async () => attached }, options);
+    expect(items[0].participants?.attendees).toEqual(EVENT.attendees);
+  });
+
+  it("조회 함수를 주지 않으면(google 연결 없음) 부르지 않고 결과도 없다", async () => {
+    const { client } = fakeClient([[meeting("a")]]);
+    const { deps, items } = capture();
+    const result = await syncNotion(connection(minutesAgo(200)), client, deps, options);
+    expect(items[0].meeting).toBeUndefined();
+    expect(result.meetingLinks).toBeUndefined();
+  });
+
+  it("회의록이 아닌 글(doc)에는 붙이지 않는다", async () => {
+    const memo = page("memo", 60, { properties: { Name: { type: "title", title: [{ plain_text: "사이트 개편 메모" }] } } });
+    const { client } = fakeClient([[memo]], [], { markdown: "## 다음 단계\n- 도메인 연결 설정 바꾸기\n- 수요일까지 케이스 스터디 정리" });
+    const { deps, items } = capture();
+    const meetingEvent = vi.fn(async () => attached);
+    const result = await syncNotion(connection(minutesAgo(200)), client, { ...deps, meetingEvent }, options);
+    expect(items[0].kind).toBe("doc");
+    expect(meetingEvent).not.toHaveBeenCalled();
+    expect(result.meetingLinks).toEqual({ attached: 0, ambiguous: 0, none: 0, failed: 0 });
+  });
+
+  it("Google이 한 번 실패하면 남은 회의록에는 붙이지 않고 그대로 넣는다: Notion 동기화를 막지 않는다", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const { client } = fakeClient([[meeting("a", 60), meeting("b", 70), meeting("c", 80)]]);
+    const { deps, items } = capture();
+    const meetingEvent = vi.fn(async () => {
+      throw new Error("Calendar 요청 실패 (503)");
+    });
+
+    const result = await syncNotion(connection(minutesAgo(200)), client, { ...deps, meetingEvent }, { ...options, maxItems: 3 });
+
+    expect(meetingEvent).toHaveBeenCalledTimes(1);
+    expect(items).toHaveLength(3);
+    expect(items.every((i) => i.meeting === undefined)).toBe(true);
+    expect(result.meetingLinks).toEqual({ attached: 0, ambiguous: 0, none: 0, failed: 1 });
+    expect(result.created).toHaveLength(3);
+    vi.restoreAllMocks();
+  });
+
+  it("조회 한 번이 제한(기본 5초)을 넘으면 실패로 보고 그 동기화의 나머지는 붙이지 않는다", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const { client } = fakeClient([[meeting("a", 60), meeting("b", 70)]]);
+    const { deps, items } = capture();
+    const meetingEvent = vi.fn(() => new Promise<never>(() => {}));
+
+    const result = await syncNotion(connection(minutesAgo(200)), client, { ...deps, meetingEvent }, { ...options, meetingEventTimeoutMs: 20 });
+
+    expect(meetingEvent).toHaveBeenCalledTimes(1);
+    expect(items).toHaveLength(2);
+    expect(result.meetingLinks?.failed).toBe(1);
+    expect(JSON.stringify(vi.mocked(console.error).mock.calls)).toMatch(/시간 초과/);
+    vi.restoreAllMocks();
+  });
+
+  it("조회 시간의 합계에도 상한이 있다 (기본 15초): 한 번이 5초 안이라도 회의록이 많으면 남은 회의록에는 붙이지 않는다", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const { client } = fakeClient([[meeting("a", 60), meeting("b", 70), meeting("c", 80), meeting("d", 90)]]);
+    const { deps, items } = capture();
+    const meetingEvent = vi.fn(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      return attached;
+    });
+
+    const result = await syncNotion(connection(minutesAgo(200)), client, { ...deps, meetingEvent }, { ...options, maxItems: 4, meetingEventTotalMs: 40 });
+
+    // 25ms + 25ms = 50ms > 40ms → 두 번 조회한 뒤 멈춘다. 실패가 아니므로 failed는 세지 않는다
+    expect(meetingEvent).toHaveBeenCalledTimes(2);
+    expect(items).toHaveLength(4);
+    expect(items.filter((i) => i.meeting).length).toBe(2);
+    expect(result.meetingLinks).toEqual({ attached: 2, ambiguous: 0, none: 0, failed: 0 });
+    expect(JSON.stringify(vi.mocked(console.error).mock.calls)).toContain("시간 상한");
+    vi.restoreAllMocks();
+  });
+
+  it("실패를 로그에 남길 때 오류 메시지만 남긴다 (일정 제목 · 참석자 없음)", async () => {
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { client } = fakeClient([[meeting("a")]]);
+    await syncNotion(connection(minutesAgo(200)), client, { ...capture().deps, meetingEvent: async () => Promise.reject(new Error("Calendar 요청 실패 (403 rateLimitExceeded)")) }, options);
+    expect(JSON.stringify(spy.mock.calls)).toContain("Calendar 요청 실패 (403 rateLimitExceeded)");
+    expect(JSON.stringify(spy.mock.calls)).not.toMatch(/Jordan|harborline|Proposal/);
+    vi.restoreAllMocks();
+  });
+});

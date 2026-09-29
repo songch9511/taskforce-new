@@ -183,6 +183,17 @@ describe("POST /api/v1/connections/{provider}/complete", () => {
     expect(store.rows.has(HANDOFF)).toBe(false);
   });
 
+  it("일부 권한만 허용해 연결했으면(connected_partial) 200 {status: connected_partial}이고 첫 동기화를 맡긴다 (google, G10)", async () => {
+    const { deps, store, connected, after } = completeDeps({ connect: async () => "connected_partial" });
+    const google = { ...deps, implemented: (provider: string) => provider === "google" };
+    store.save({ id: HANDOFF, userId: ALICE.id, provider: "google", code: "code-1" });
+    const response = await handleConnectionComplete(post("http://localhost/api/v1/connections/google/complete", { handoff: HANDOFF }), "google", google);
+    expect(response.status).toBe(200);
+    expect(connectionCompleteResponseSchema.parse(await response.json())).toEqual({ status: "connected_partial" });
+    expect(connected).toEqual([{ userId: ALICE.id, code: "code-1" }]);
+    expect(after).toEqual([ALICE.id]);
+  });
+
   it("공격자가 시작한 연결의 handoff를 다른 사용자가 완료하면 404이고 연결이 생기지 않는다", async () => {
     const { deps, store, connected, after } = completeDeps();
     store.save({ id: HANDOFF, userId: BOB.id, provider: "notion", code: "victim-code" });

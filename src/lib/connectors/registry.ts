@@ -4,10 +4,11 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 
 import type { ConnectProvider } from "@/lib/api/contract";
 import { hasConsentFor } from "@/lib/consent/store";
-import { gmailConnectEnabled, slackConnectEnabled } from "@/lib/env";
+import { gmailConnectEnabled, googleConnectEnabled, slackConnectEnabled } from "@/lib/env";
 import { isAdmin } from "@/lib/metrics/load";
 
 import { gmailConnector } from "./gmail/run";
+import { googleConnector } from "./google/run";
 import { notionConnector } from "./notion/run";
 import { slackConnector } from "./slack/run";
 import { activeConnections, recordConnectionCreated, userConnectionTokens } from "./store";
@@ -15,16 +16,22 @@ import { syncEach, type SyncAllResult } from "./sync-all";
 import type { Connector } from "./types";
 
 // 연결 틀: 연동마다 연결 시작 · callback · 동기화 · 토큰 폐기를 한곳에서 찾는다 (docs/GO_LIVE.md 1장).
-// Google Calendar · Meet(google)도 Connector를 구현해 여기에 더하면 앱 연결 화면 · 주기 동기화 · 계정 삭제 · 연결 끊기에 그대로 붙는다.
+// 새 연동은 Connector를 구현해 여기에 더하면 앱 연결 화면 · 주기 동기화 · 계정 삭제 · 연결 끊기에 그대로 붙는다.
 
-const CONNECTORS: { [P in ConnectProvider]?: Connector } = { notion: notionConnector, slack: slackConnector, gmail: gmailConnector };
+const CONNECTORS: { [P in ConnectProvider]?: Connector } = { notion: notionConnector, slack: slackConnector, gmail: gmailConnector, google: googleConnector };
 
 /**
- * 앱에 연결을 연 서비스인가. Slack · Gmail은 처리방침 · 앱 문구를 맞출 때까지 운영에서 닫아 둔다
- * (SLACK_CONNECT_ENABLED · GMAIL_CONNECT_ENABLED)
+ * 앱에 연결을 연 서비스인가. Slack · Gmail · Google(Calendar · Meet)은 처리방침 · 앱 문구를 맞출 때까지 운영에서 닫아 둔다
+ * (SLACK_CONNECT_ENABLED · GMAIL_CONNECT_ENABLED · GOOGLE_CONNECT_ENABLED)
  */
 const opened = (provider: ConnectProvider) =>
-  provider === "slack" ? slackConnectEnabled() : provider === "gmail" ? gmailConnectEnabled() : true;
+  provider === "slack"
+    ? slackConnectEnabled()
+    : provider === "gmail"
+      ? gmailConnectEnabled()
+      : provider === "google"
+        ? googleConnectEnabled()
+        : true;
 
 /** 아직 붙이지 않았거나 열지 않은 서비스면 null (앱에는 보이지만 연결은 안 된다) */
 export function connectorFor(provider: ConnectProvider): Connector | null {
@@ -45,7 +52,7 @@ export function tokenRevokerFor(provider: ConnectProvider): ((token: unknown) =>
 }
 
 /**
- * 동기화할 연동: 붙인 연동 모두. 연결을 열지 않은 서비스(Slack · Gmail, 여는 플래그 전)라도 이미 있는 연결(운영자 시험)은 돌린다.
+ * 동기화할 연동: 붙인 연동 모두. 연결을 열지 않은 서비스(Slack · Gmail · Google, 여는 플래그 전)라도 이미 있는 연결(운영자 시험)은 돌린다.
  * 닫는 것은 새 연결뿐이다 (connectorFor · webConnector)
  */
 const implementedProviders = () => Object.keys(CONNECTORS) as ConnectProvider[];

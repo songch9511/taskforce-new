@@ -275,26 +275,34 @@ export function ingestDeps(admin: SupabaseClient, options: { notifyFrom?: Date |
     },
 
     insertSource: async (connection, item) => {
-      const { data, error } = await admin
+      const row: Record<string, unknown> = {
+        user_id: connection.userId,
+        connection_id: connection.id,
+        external_id: item.externalId,
+        external_version: item.externalVersion,
+        kind: item.kind,
+        title: item.title,
+        raw_text: item.text,
+        occurred_at: item.occurredAt.toISOString(),
+        external_url: item.externalUrl,
+        participants: item.participants ?? null,
+        written_by_me: item.writtenByMe ?? null,
+      };
+      // 일정이 붙은 원문만 meeting 열을 보낸다: 마이그레이션(20261016000000_sources_meeting)을 적용하기 전에 배포해도 다른 원문의 저장은 그대로 된다
+      let { data, error } = await admin
         .from("sources")
-        .insert({
-          user_id: connection.userId,
-          connection_id: connection.id,
-          external_id: item.externalId,
-          external_version: item.externalVersion,
-          kind: item.kind,
-          title: item.title,
-          raw_text: item.text,
-          occurred_at: item.occurredAt.toISOString(),
-          external_url: item.externalUrl,
-          participants: item.participants ?? null,
-          written_by_me: item.writtenByMe ?? null,
-        })
+        .insert(item.meeting ? { ...row, meeting: item.meeting } : row)
         .select("id")
         .single();
+      // 그래도 열이 아직 없으면(PostgREST PGRST204 · Postgres 42703) 일정 없이 다시 넣는다: 일정 붙이기가 Notion 동기화를 막지 않게.
+      // 그 원문은 일정 연결(근거 줄의 일정 제목)을 잃는다. 원인은 마이그레이션 미적용이므로 로그에 남긴다 (원문은 남기지 않는다)
+      if (item.meeting && (error?.code === "PGRST204" || error?.code === "42703")) {
+        console.error("sources.meeting 열이 없어 일정 없이 저장합니다. 마이그레이션 20261016000000_sources_meeting을 적용하세요.");
+        ({ data, error } = await admin.from("sources").insert(row).select("id").single());
+      }
       if (error?.code === "23505") return null; // 동시에 같은 항목을 넣음
       if (error) throw new Error(`원문 저장 실패: ${error.message}`);
-      return data.id as string;
+      return (data as { id: string }).id;
     },
 
     process: async (connection, sourceId, item) => {

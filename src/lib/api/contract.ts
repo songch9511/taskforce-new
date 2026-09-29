@@ -323,10 +323,11 @@ export type ConnectionStartResponse = z.infer<typeof connectionStartResponseSche
 
 /**
  * 권한 화면을 마쳤을 때의 결과. connected_empty: 고른 페이지가 없음, connected_no_meetings: 회의록 DB가 빠짐 (Notion).
- * missing_scope: 권한 화면에서 필요한 권한의 체크를 빼서 연결하지 않았음 (Gmail. 받은 토큰은 바로 폐기한다, google-integration.md G10).
+ * connected_partial: 권한 화면에서 일부 권한의 체크를 빼서 받은 것만으로 연결했음 (Google. Calendar만 · Meet만, 받은 범위는 연결 설정 scopes).
+ * missing_scope: 권한 화면에서 필요한 권한의 체크를 빼서 연결하지 않았음 (Gmail · Google. 받은 토큰은 바로 폐기한다, google-integration.md G10).
  * 이 값을 모르는 옛 앱은 연결 실패 문구를 보인다.
  */
-export const connectedStatusSchema = z.enum(["connected", "connected_empty", "connected_no_meetings", "missing_scope"]);
+export const connectedStatusSchema = z.enum(["connected", "connected_partial", "connected_empty", "connected_no_meetings", "missing_scope"]);
 export type ConnectedStatusValue = z.infer<typeof connectedStatusSchema>;
 /** 연결이 생기지 않은 결과 (연결 지표 · 첫 동기화를 하지 않는다) */
 export const isConnected = (status: ConnectedStatusValue) => status !== "missing_scope";

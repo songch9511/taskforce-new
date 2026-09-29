@@ -5,6 +5,8 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import {
   connections,
   gmailFiltering,
+  googleActivity,
+  meetingLinkage,
   misjudgment,
   missed,
   retention,
@@ -21,7 +23,7 @@ import {
 // 이벤트의 before · after에는 할 일 제목 · 기한 값이 들어 있지만, 읽자마자 "어느 필드가 바뀌었나"와 상태 값만 남기고 버린다.
 // 원문 · 인용은 읽지 않고, 원문 제목은 시험용 원문을 가려낼 때만 서버 쿼리 조건으로 쓴다.
 // 주간 질문(weekly_checks)은 답(있다 · 없다 · 건너뜀)만, 연동 요청(connection_requests)은 서비스 이름만 읽는다.
-// Gmail 연결은 설정 중 거르기 개수(settings.stats)만 읽는다 (주소 · 계정은 읽지 않는다).
+// Gmail · Google 연결은 설정 중 개수(settings.stats)만 읽는다 (주소 · 계정은 읽지 않는다). 회의 원문은 외부 id와 붙은 일정 id만 읽는다.
 
 /** 관리자 이메일 (ADMIN_EMAILS, 쉼표로 구분). 비어 있으면 아무도 관리자가 아니다 */
 export function isAdmin(email: string | null): boolean {
@@ -141,6 +143,24 @@ export async function loadMetrics(admin: SupabaseClient, period: Period) {
     admin.from("connections").select("stats:settings->stats").eq("provider", "gmail").order("id").range(from, to),
   );
 
+  const googleStats = await readAll<{ stats: unknown }>((from, to) =>
+    admin.from("connections").select("stats:settings->stats").eq("provider", "google").order("id").range(from, to),
+  );
+  // 회의 원문에 일정이 붙은 비율: 기간 안에 들어온 회의 원문의 외부 id와 붙은 일정 id만 읽는다 (sources.meeting은 마이그레이션 20261016000000 뒤에 있다)
+  const meetingRows = await readAll<{ user_id: string; external_id: string | null; calendar_event_id: string | null }>((from, to) =>
+    admin
+      .from("sources")
+      .select("user_id, external_id, calendar_event_id:meeting->>calendar_event_id")
+      .eq("kind", "meeting")
+      .gte("created_at", since)
+      .order("created_at")
+      .order("id")
+      .range(from, to),
+  ).catch((error) => {
+    console.error("회의 원문 일정 지표 읽기 실패:", error instanceof Error ? error.message : error);
+    return [];
+  });
+
   const misjudged = misjudgment(rows, period);
   return {
     period,
@@ -152,6 +172,8 @@ export async function loadMetrics(admin: SupabaseClient, period: Period) {
     missed: missed(rows, misjudged, period, true),
     connections: connections(metrics, connectionRequests, period),
     gmail: gmailFiltering(gmailStats.map((row) => row.stats)),
+    google: googleActivity(googleStats.map((row) => row.stats)),
+    meetingLinkage: meetingLinkage(meetingRows),
     shadowList: shadowList(
       weeklyChecks.map((c) => ({ userId: c.user_id, weekStart: c.week_start, answer: c.answer, at: c.answered_at })),
       period,

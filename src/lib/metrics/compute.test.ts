@@ -3,7 +3,9 @@ import { describe, expect, it } from "vitest";
 import {
   connections,
   gmailFiltering,
+  googleActivity,
   kstWeek,
+  meetingLinkage,
   missed,
   misjudgment,
   retention,
@@ -319,5 +321,45 @@ describe("gmailFiltering: Gmail 거르기 개수", () => {
       { since: "2026-09-30T00:00:00Z" },
     ];
     expect(gmailFiltering(stats)).toEqual({ connections: 2, counts: { ingested: 3, sent: 2, inbound: 5, mailing_list: 8, no_reply: 2 } });
+  });
+});
+
+describe("googleActivity: Google(Calendar · Meet) 연결의 개수", () => {
+  it("전사 수 · 일정 잇기 결과를 연결마다 더한다 (Gmail 거르기와 같은 모양)", () => {
+    const stats = [
+      { since: "2026-10-01T00:00:00Z", counts: { meet_transcripts: 2, meet_link_attached: 1, meet_link_none: 1, notion_link_attached: 3 } },
+      { since: "2026-10-02T00:00:00Z", counts: { meet_transcripts: 1, notion_link_ambiguous: 2, notion_link_attached: 1 } },
+      null,
+    ];
+    expect(googleActivity(stats)).toEqual({
+      connections: 2,
+      counts: { meet_transcripts: 3, meet_link_attached: 1, meet_link_none: 1, notion_link_attached: 4, notion_link_ambiguous: 2 },
+    });
+  });
+});
+
+describe("meetingLinkage: 회의 원문에 일정이 붙은 비율", () => {
+  it("Notion 회의록과 Meet 전사를 외부 id로 가르고, 붙은 일정과 그 일정에 Meet 전사도 있는 것을 센다", () => {
+    const rows = [
+      { user_id: "u1", external_id: "notion-page-1", calendar_event_id: "evt-1" },
+      { user_id: "u1", external_id: "notion-page-2", calendar_event_id: "evt-2" },
+      { user_id: "u1", external_id: "notion-page-3", calendar_event_id: null },
+      { user_id: "u1", external_id: "conferenceRecords/c1/transcripts/t1", calendar_event_id: "evt-1" },
+      { user_id: "u1", external_id: "conferenceRecords/c2/transcripts/t1", calendar_event_id: null },
+      { user_id: "u1", external_id: null, calendar_event_id: null },
+    ];
+    expect(meetingLinkage(rows)).toEqual({ notion: { total: 3, linked: 2, withTranscript: 1 }, meet: { total: 2, linked: 1 } });
+  });
+
+  it("같은 일정 id라도 다른 사용자의 Meet 전사는 같은 회의로 세지 않는다 (같은 회의에 초대된 사람마다 자기 캘린더에 사본이 있다)", () => {
+    const rows = [
+      { user_id: "u1", external_id: "notion-page-1", calendar_event_id: "evt-1" },
+      { user_id: "u2", external_id: "conferenceRecords/c1/transcripts/t1", calendar_event_id: "evt-1" },
+    ];
+    expect(meetingLinkage(rows)).toEqual({ notion: { total: 1, linked: 1, withTranscript: 0 }, meet: { total: 1, linked: 1 } });
+  });
+
+  it("원문이 없으면 모두 0", () => {
+    expect(meetingLinkage([])).toEqual({ notion: { total: 0, linked: 0, withTranscript: 0 }, meet: { total: 0, linked: 0 } });
   });
 });

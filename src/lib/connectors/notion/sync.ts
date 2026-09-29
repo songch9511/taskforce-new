@@ -7,6 +7,9 @@ import type { Connection, IngestItem } from "../types";
 
 import { kstDate } from "@/lib/ai/prompts/extract";
 
+import { mergeAttendees } from "../google/attendees";
+import type { MeetingEventLookup } from "../google/lookup";
+
 import { dataSourceTitle, NotionError, type NotionClient, type NotionPage, type NotionUser } from "./api";
 import { mentionedUserIds, pagePeople, pageToItem, safeNotionUrl } from "./map";
 import {
@@ -25,6 +28,25 @@ import {
 // 확인한 할 일 DB(사용자 확인 또는 자동 확인)의 페이지는 글 원문이 아니라 구조화된 할 일로 넣는다 (본문을 받지 않고 속성만 쓴다).
 
 export type NotionTaskDeps = TaskIngestDeps & { identity: (connection: Connection) => Promise<UserIdentity> };
+
+/**
+ * 같은 회의의 Calendar 일정 조회 (Google 연결이 Calendar를 허용했을 때만 준다, google-integration.md 2-2 · 2-4).
+ * 조회가 한 번 5초를 넘거나 실패하면 그 동기화의 남은 회의록에는 붙이지 않고 그대로 넣는다: Notion 동기화를 막지 않는다.
+ */
+const MEETING_EVENT_TIMEOUT_MS = 5_000;
+/** 한 동기화에서 일정 조회에 쓸 수 있는 시간 합계 (넘으면 남은 회의록에는 붙이지 않는다) */
+const MEETING_EVENT_TOTAL_MS = 15_000;
+
+/** 이번 동기화에서 회의록에 일정을 잇는 시도의 결과 (연결 설정 stats에 세어 넣는다) */
+export type MeetingLinkCounts = { attached: number; ambiguous: number; none: number; failed: number };
+
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`시간 초과 (${ms}ms)`)), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
 
 /** 할 일 DB를 처음 켤 때 한 번에 훑는 최대 쪽 수 (한 쪽 100개). 다 못 훑으면 다음 동기화에서 처음부터 다시 훑는다 */
 const BACKFILL_MAX_PAGES = 20;
@@ -54,6 +76,10 @@ export type NotionSyncOptions = {
   maxItems: number;
   minTextLength: number;
   deadline?: number;
+  /** 일정 조회 한 번의 제한 (기본 5초) */
+  meetingEventTimeoutMs?: number;
+  /** 한 동기화의 일정 조회 시간 합계 제한 (기본 15초) */
+  meetingEventTotalMs?: number;
 };
 
 export const DEFAULT_NOTION_SYNC: Omit<NotionSyncOptions, "now"> = { lookbackDays: 14, maxScan: 300, ...DEFAULT_INGEST_OPTIONS };
@@ -77,6 +103,8 @@ export type NotionSyncResult = IngestResult & {
   unreachable: UnreachableDataSource[] | null;
   /** 연결한 사람의 Notion user id (모르면 null). 연결 설정에 없던 값이면 설정에 남긴다 (recordNotionHealth) */
   notionUserId: string | null;
+  /** 회의록에 일정을 이은 결과 (일정 조회를 줬을 때만) */
+  meetingLinks?: MeetingLinkCounts;
 };
 
 /** 연결 설정에 남겨 둔, 연결한 사람의 Notion user id */
@@ -112,7 +140,7 @@ async function connectedUserId(connection: Connection, client: NotionClient): Pr
 export async function syncNotion(
   connection: Connection,
   client: NotionClient,
-  ingest: IngestDeps & { tasks?: NotionTaskDeps },
+  ingest: IngestDeps & { tasks?: NotionTaskDeps; meetingEvent?: MeetingEventLookup },
   options: NotionSyncOptions,
 ): Promise<NotionSyncResult> {
   const parsed = connectionSettingsSchema.safeParse(connection.settings);
@@ -208,6 +236,40 @@ export async function syncNotion(
   const notionUserId = chosen.length > 0 || taskWork ? await connectedUserId(connection, client) : savedNotionUserId(connection);
   const users = new Map<string, NotionUser>();
   const items: IngestItem[] = [];
+  const links: MeetingLinkCounts = { attached: 0, ambiguous: 0, none: 0, failed: 0 };
+  let linking = Boolean(ingest.meetingEvent);
+  /** 회의록이면 같은 회의의 일정을 붙인다: 관련자에 일정 참석자를 합치고 sources.meeting에 일정 제목 · 시각을 남긴다. 한 번 실패하면 남은 페이지는 붙이지 않는다 */
+  let linkingSpentMs = 0;
+  const withMeetingEvent = async (page: NotionPage, item: IngestItem): Promise<IngestItem> => {
+    if (!linking || !ingest.meetingEvent || item.kind !== "meeting") return item;
+    const startedAt = Date.now();
+    try {
+      const found = await withTimeout(
+        ingest.meetingEvent({ day: kstDate(item.occurredAt).iso, createdAt: new Date(page.created_time), title: item.title }),
+        options.meetingEventTimeoutMs ?? MEETING_EVENT_TIMEOUT_MS,
+      );
+      links[found.result]++;
+      if (found.result !== "attached") return item;
+      const { event } = found;
+      return {
+        ...item,
+        participants: { ...item.participants, attendees: mergeAttendees(event.attendees, item.participants?.attendees ?? []) },
+        meeting: { calendar_event_id: event.calendarEventId, title: event.title, start: event.start, end: event.end },
+      };
+    } catch (error) {
+      linking = false;
+      links.failed++;
+      console.error("Google 일정 조회 실패 (남은 회의록은 일정 없이 넣습니다):", error instanceof Error ? error.message : error);
+      return item;
+    } finally {
+      // 조회 한 번은 5초 안이라도 회의록이 20건이면 100초가 된다: 한 동기화의 조회 시간에도 상한을 둔다 (공유하는 cron 시간 예산을 Google이 다 쓰지 않게)
+      linkingSpentMs += Date.now() - startedAt;
+      if (linking && linkingSpentMs > (options.meetingEventTotalMs ?? MEETING_EVENT_TOTAL_MS)) {
+        linking = false;
+        console.error("Google 일정 조회가 이번 동기화의 시간 상한을 넘어 남은 회의록은 일정 없이 넣습니다.");
+      }
+    }
+  };
   for (const page of chosen) {
     if (options.deadline && Date.now() > options.deadline) break;
     const { markdown } = await client.pageMarkdown(page.id);
@@ -218,7 +280,7 @@ export async function syncNotion(
         if (user) users.set(id, user);
       }
     }
-    items.push(pageToItem(page, markdown, [...users.values()], notionUserId));
+    items.push(await withMeetingEvent(page, pageToItem(page, markdown, [...users.values()], notionUserId)));
   }
 
   const result = await ingestItems(connection, items, ingest, {
@@ -270,6 +332,7 @@ export async function syncNotion(
     rewound,
     unreachable,
     notionUserId,
+    ...(ingest.meetingEvent ? { meetingLinks: links } : {}),
     skipped: { ...result.skipped, settling: settling.length, overLimit: fresh.length - chosen.length, alreadyIngested: result.skipped.alreadyIngested + already.size },
     scanned: scanned.length,
     cursor: { after: nextAfter < after.toISOString() ? after.toISOString() : nextAfter },
