@@ -39,7 +39,11 @@ export function tokenRevokerFor(provider: ConnectProvider): ((token: unknown) =>
   return CONNECTORS[provider]?.revokeToken ?? null;
 }
 
-const implementedProviders = () => (Object.keys(CONNECTORS) as ConnectProvider[]).filter(opened);
+/**
+ * 동기화할 연동: 붙인 연동 모두. 연결을 열지 않은 서비스(Slack, SLACK_CONNECT_ENABLED 전)라도 이미 있는 연결(운영자 시험)은 돌린다.
+ * 닫는 것은 새 연결뿐이다 (connectorFor · slackWebConnector)
+ */
+const implementedProviders = () => Object.keys(CONNECTORS) as ConnectProvider[];
 
 /**
  * 붙인 모든 연동의 활성 연결을 오래 안 한 순서로 돌린다 (규칙은 sync-all.ts).
@@ -50,7 +54,7 @@ export function syncConnections(
   admin: SupabaseClient,
   options: { userId?: string; deadline?: number; minIntervalMs?: number; providers?: ConnectProvider[] } = {},
 ): Promise<SyncAllResult> {
-  const providers = (options.providers ?? implementedProviders()).filter((p) => CONNECTORS[p] && opened(p));
+  const providers = (options.providers ?? implementedProviders()).filter((p) => CONNECTORS[p]);
   return syncEach(
     {
       connections: () => activeConnections(admin, providers, options.userId),
