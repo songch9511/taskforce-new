@@ -40,6 +40,7 @@
 | `JEV_MODEL` | `typesafe/jev-1.13` | 버전 고정 |
 | `EMBEDDING_MODEL` | 비움 → `openai/text-embedding-3-small` | 1536차원이어야 한다 |
 | `LLM_PROVIDERS` · `EMBED_PROVIDERS` · `JEV_PROVIDERS` | 비움 (선택) → 기본값 `src/lib/ai/providers.ts`: LLM `fireworks,together,deepinfra` · 임베딩 `azure` · Jev `typesafe` | ZDR · 학습 금지 공급자 고정 목록(쉼표 구분). 처리방침 7장 표와 맞춘다(`docs/legal/README.md` 결정 1) |
+| `LLM_OVERRUN_REASONING_EFFORT` | 비움 → `high` | 추출이 출력 · 시간 한도를 넘기면 다시 물을 때 거는 추론량 제한(`low` · `medium` · `high` · `off`). `LLM_MODEL`을 바꾸면 eval로 다시 정한다 (`src/lib/ai/llm.ts` `OVERRUN_RETRY_REASONING`) |
 | `CONNECTOR_TOKEN_KEY` | `openssl rand -base64 32` | **운영 DB에 이미 저장된 연결 토큰을 암호화한 키와 같아야 한다.** 로컬 `.env.local` 값으로 운영 DB에 연결을 만들었다면 같은 값을 넣고, 새 키를 쓰면 기존 연결은 다시 연결해야 한다 |
 | `CRON_SECRET` | `openssl rand -hex 32` | Vercel Cron이 `Authorization: Bearer`로 보낸다. 없으면 cron이 401 |
 | `OAUTH_STATE_SECRET` | `openssl rand -hex 32` | 32자 이상(`env.ts`의 `oauthStateSecret`) |
