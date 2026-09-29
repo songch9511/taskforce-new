@@ -31,8 +31,14 @@ export function quoteInText(quote: string, text: string): boolean {
  */
 export function anyQuoteFragmentInText(quote: string, text: string): boolean {
   const haystack = normalizeForMatch(text);
-  return quoteFragments(quote).some((fragment) => haystack.includes(fragment));
+  const fragments = quoteFragments(quote);
+  // "네" 같은 짧은 조각은 어느 글에나 우연히 들어 있으니 조각이 모두 짧을 때만 센다 (누락 신고 reportedQuoteOverlaps의 MIN_CONTAINED_LENGTH와 같은 이유)
+  const long = fragments.filter((fragment) => [...fragment].length >= MIN_FRAGMENT_LENGTH);
+  return (long.length > 0 ? long : fragments).some((fragment) => haystack.includes(fragment));
 }
+
+/** anyQuoteFragmentInText에서 새 글에 있다고 셀 조각의 최소 길이 (정규화한 글자 수) */
+const MIN_FRAGMENT_LENGTH = 4;
 
 /**
  * 인용이 들어 있는 줄 번호들 (오름차순). "..."로 이은 인용은 조각마다 본다.
@@ -159,7 +165,7 @@ function aroundQuote(context: string, normalizedQuote: string, maxChars: number)
 // ── 메일에 인용된 옛 메일 ──
 
 // 메일 앱이 인용 앞에 붙이는 머리줄: "On Mon, Oct 5, 2026 at 9:30 AM Jordan Lee <j@x.com> wrote:" (두 줄로 꺾인 것도), 한국어 Gmail "…님이 작성:".
-// 글 속 문장("On Tuesday at 3pm the client wrote:")과 가르려고 날짜(숫자)와 메일 주소(@)가 모두 있는 줄만 받는다.
+// 글 속 문장("On Tuesday at 3pm the client wrote:")과 가르려고 숫자(날짜 · 시각)와 메일 주소(@)가 모두 있는 줄만 받는다.
 const ATTRIBUTION = /^(?:On\b.*\bwrote:|.*님이 작성:)$/i;
 const isAttribution = (line: string) => line.length <= 300 && line.includes("@") && /\d/.test(line) && ATTRIBUTION.test(line);
 // 주소가 다음 줄로 꺾인 머리줄의 첫 줄 ("On … Morgan Tate" + "<m@x.com> wrote:" · "wrote:"): 문장으로 끝나지 않고, 다음 줄이 짧은 꼬리일 때만 이어 본다
@@ -167,14 +173,40 @@ const isWrappedAttribution = (line: string, next: string) =>
   /^On\b/i.test(line) && !/[.!?]$/.test(line) && next.length <= 100 && !isAttribution(next) && isAttribution(`${line} ${next}`);
 // Outlook 계열: "-----Original Message-----" · "-----원본 메시지-----"
 const ORIGINAL_MESSAGE = /^\s*-{2,}\s*(?:Original Message|원본\s*메시지)\s*-{2,}\s*$/i;
-// Outlook 계열의 머리 묶음: 빈 줄(또는 밑줄 구분선) 뒤에 보낸 사람 줄, 바로 이어서 다른 머리 줄 둘 이상 ("From: 10:00" + "To: 11:00" 같은 글과 가른다)
+// Outlook 계열의 머리 묶음: `From:` 줄 뒤에 날짜 머리(Sent · Date …)와 제목 머리(Subject · 제목)가 함께 이어진다.
+// 둘 다 있어야 받는다: "From: ICN / To: SFO / Date: Oct 12" 같은 일정 · 배송 정보를 옛 메일로 잘못 보지 않게
 const FROM_HEADER = /^\s*(?:From|보낸\s*사람)\s*:/i;
-const NEXT_HEADER = /^\s*(?:Sent|Date|To|Cc|Subject|보낸\s*(?:날짜|시간)|날짜|받는\s*사람|참조|제목)\s*:/i;
+const DATE_HEADER = /^\s*(?:Sent|Date|보낸\s*(?:날짜|시간)|날짜)\s*:/i;
+const SUBJECT_HEADER = /^\s*(?:Subject|제목)\s*:/i;
+const OTHER_HEADER = /^\s*(?:To|Cc|받는\s*사람|참조)\s*:/i;
 const SEPARATOR = /^\s*[_-]{5,}\s*$/;
-// 전달한 메일("제목: Fwd: …" · "전달: …", 앞에 Re:가 붙어도): 전달된 내용은 이미 들어온 옛 메일이 아니라 새로 받은 글이다
-const FORWARD_SUBJECT = /^제목:\s*(?:(?:re|답장|회신)\s*:\s*)*(?:fwd?|전달|전송)\s*:/i;
+// 전달한 메일("제목: Fwd: …" · "전달: …"): 붙은 내용은 이미 들어온 옛 메일이 아니라 전달받은 새 글이다.
+// 가장 바깥 접두어가 전달일 때만 본다: "Re: Fwd: …"는 전달된 메일에 답한 것이라 그 아래 인용은 옛 메일이다
+const FORWARD_SUBJECT = /^제목:\s*(?:fwd?|전달|전송)\s*:/i;
 
 type LineKind = "blank" | "quoted" | "attribution" | "other";
+
+/** `From:` 줄 바로 뒤(빈 줄 전, 다섯 줄까지)에 날짜 머리와 제목 머리가 모두 이어지는가 */
+function isHeaderBlock(lines: string[], from: number): boolean {
+  if (!FROM_HEADER.test(lines[from])) return false;
+  let date = false;
+  let subject = false;
+  for (let k = from + 1; k <= from + 5 && k < lines.length; k++) {
+    if (lines[k].trim() === "") break;
+    if (DATE_HEADER.test(lines[k])) date = true;
+    else if (SUBJECT_HEADER.test(lines[k])) subject = true;
+    else if (!OTHER_HEADER.test(lines[k])) break;
+  }
+  return date && subject;
+}
+
+/**
+ * 그 줄 위에 새로 쓴 글이 있는가 (제목 줄 · 빈 줄 · 구분선 말고). 없으면 메일 전체가 인용이거나 자기 머리 묶음으로 시작하는 글이라,
+ * `>` 표시 없는 인용 표시(머리 묶음 · Original Message · 표시 없는 머리줄)를 옛 메일의 시작으로 믿지 않는다.
+ */
+function hasNewTextAbove(lines: string[], index: number): boolean {
+  return lines.slice(0, index).some((line, i) => line.trim() !== "" && !SEPARATOR.test(line) && !(i === 0 && /^제목:/.test(line.trim())));
+}
 
 /**
  * 메일 본문에서 이전 메일을 인용한 부분(옛 메일 이력)이 시작하는 위치 (글자 순서). 인용이 없으면 null.
@@ -182,17 +214,17 @@ type LineKind = "blank" | "quoted" | "attribution" | "other";
  * 새 메일의 시각으로 다시 뽑으면 이미 끝난 일이 새 할 일이 되고 늦춘 기한이 되돌아간다 (verify.ts, google-integration.md 2-6).
  * 찾는 모양 (가장 앞선 것):
  * - 끝까지 `>`로 시작하는 줄 · 위의 머리줄("On … wrote:" · "…님이 작성:") · 빈 줄뿐인 꼬리: 답장 아래에 옛 메일이 통째로 붙은 모양.
- * - 머리줄 바로 뒤에 `>` 없이 옛 메일이 이어지는 모양.
+ * - 머리줄 바로 뒤에 `>` 없이 옛 메일이 한 덩어리로 이어지는 모양 (뒤에 빈 줄로 나뉜 다른 글이 이어지면 아래에 답을 적은 것일 수 있어 뺀다).
  * - `-----Original Message-----` · `-----원본 메시지-----`.
- * - 빈 줄 뒤에 `From:`/`보낸 사람:` 줄과 바로 이어지는 다른 머리 줄 둘 이상(`Sent:` · `To:` · `Subject:` …).
- * 머리줄은 날짜와 메일 주소가 있는 줄만 받는다. 전달한 메일("Fwd:" · "전달:" 제목)은 인용이 없는 것으로 본다.
+ * - `From:`/`보낸 사람:` 줄에 날짜 머리(`Sent:` · `Date:` …)와 제목 머리(`Subject:` · `제목:`)가 이어지는 머리 묶음 (앞에 빈 줄 · 밑줄 구분선).
+ * `>` 표시 없는 위 세 모양은 그 위에 새로 쓴 글이 있을 때만 받는다 (글 없이 머리 묶음으로 시작하는 메일 전체를 옛 메일로 보지 않게).
+ * 머리줄은 숫자(날짜 · 시각)와 메일 주소가 있는 줄만 받는다. 전달한 메일(제목이 "Fwd:" · "전달:"로 시작)은 인용이 없는 것으로 본다.
  * 답장 위쪽의 새 글은 포함하지 않는다: "Sure, I'll send it by Monday."처럼 짧아도 인용 위에 있으면 그대로 남는다.
  * 인용 사이사이에 답을 적은 메일(인용 뒤에 새 글이 이어짐)은 끝에 인용 묶음이 따로 있을 때만 그 묶음부터, 없으면 null이다:
  * 애매하면 새 글로 본다 (인용으로 잘못 보면 진짜 약속을 조용히 버린다).
  */
 export function quotedHistoryStart(text: string): number | null {
   const lines = text.split("\n");
-  // 전달한 메일은 붙은 내용이 옛 메일 이력이 아니라 전달받은 글이다: 아무것도 인용으로 보지 않는다
   if (FORWARD_SUBJECT.test(lines[0].trim())) return null;
   const offsets: number[] = [];
   let offset = 0;
@@ -224,17 +256,23 @@ export function quotedHistoryStart(text: string): number | null {
     if (kinds[i] !== "blank") consider(i);
   }
 
+  // 빈 줄 뒤에 다른 글이 더 이어지는가 (한 덩어리가 아니면 옛 메일 뒤에 새로 쓴 답일 수 있다)
+  const blockFollows = (from: number) => {
+    const blank = kinds.findIndex((kind, j) => j > from && kind === "blank");
+    return blank >= 0 && kinds.slice(blank).some((kind) => kind !== "blank");
+  };
+
   for (let i = 0; i < lines.length; i++) {
-    if (attributionStarts.has(i)) {
-      // 머리줄 뒤에 인용 표시(>) 없이 글이 이어지면 옛 메일 본문이다
+    if (attributionStarts.has(i) && hasNewTextAbove(lines, i)) {
+      // 머리줄 뒤에 인용 표시(>) 없이 옛 메일 본문이 한 덩어리로 이어지면 머리줄부터 옛 메일이다
       let next = i + 1;
       while (next < lines.length && (kinds[next] === "attribution" || kinds[next] === "blank")) next++;
-      if (next < lines.length && kinds[next] === "other") consider(i);
+      if (next < lines.length && kinds[next] === "other" && !blockFollows(next)) consider(i);
     }
-    if (ORIGINAL_MESSAGE.test(lines[i])) consider(i);
-    if (i > 0 && FROM_HEADER.test(lines[i]) && i + 2 < lines.length && NEXT_HEADER.test(lines[i + 1]) && NEXT_HEADER.test(lines[i + 2])) {
-      if (lines[i - 1].trim() === "") consider(i);
-      else if (SEPARATOR.test(lines[i - 1])) consider(i - 1);
+    if (ORIGINAL_MESSAGE.test(lines[i]) && hasNewTextAbove(lines, i)) consider(i);
+    if (i > 0 && isHeaderBlock(lines, i)) {
+      const from = lines[i - 1].trim() === "" ? i : SEPARATOR.test(lines[i - 1]) ? i - 1 : -1;
+      if (from >= 0 && hasNewTextAbove(lines, from)) consider(from);
     }
   }
 

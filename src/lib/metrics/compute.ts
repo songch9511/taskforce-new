@@ -124,7 +124,10 @@ export function misjudgment(events: ActionEventRow[], period: Period): Misjudgme
     result.aiCreated++;
     result.confirmed += sorted.filter((e) => e.type === "user_confirmed").length;
     const asked = created.after?.needs_confirmation;
-    const bucket = result.byConfirmation[asked === true ? "asked" : asked === false ? "auto" : "unknown"];
+    // 물어서 만들었어도 AI가 나중 원문(사용자의 확정 약속)으로 물음을 풀었으면 사용자에게는 자동으로 반영된 것이다:
+    // 그 뒤 고치면 자동 반영의 오판으로 센다 (withClearedConfirmation이 남기는 merged 이벤트)
+    const cleared = sorted.some((e) => e.actor === "ai" && e.type === "merged" && e.before?.needs_confirmation === true && e.after?.needs_confirmation === false);
+    const bucket = result.byConfirmation[asked === true && !cleared ? "asked" : asked === true || asked === false ? "auto" : "unknown"];
     bucket.created++;
 
     const fields = new Set<ErrorField>();
@@ -283,7 +286,7 @@ export type MissedMetric = {
 export function missed(events: ActionEventRow[], misjudged: MisjudgmentMetric, period: Period, reportingAvailable: boolean): MissedMetric {
   const reports = events.filter((e) => e.type === "user_reported_missing" && inPeriod(e.at, period));
   const added = events.filter((e) => e.type === "user_created" && inPeriod(e.at, period)).length;
-  const byStage: MissedMetric["byStage"] = { processing_failed: 0, not_extracted: 0, judge_rejected: 0, merge_absorbed: 0, unknown: 0 };
+  const byStage: MissedMetric["byStage"] = { processing_failed: 0, not_extracted: 0, quoted_history: 0, judge_rejected: 0, merge_absorbed: 0, unknown: 0 };
   for (const report of reports) {
     const stage = report.after?.stage;
     byStage[typeof stage === "string" && stage in byStage ? (stage as MissStage) : "unknown"]++;

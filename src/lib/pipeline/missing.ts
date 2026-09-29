@@ -18,10 +18,14 @@ import { verifyCandidates } from "./verify";
 // - 기한은 verifyCandidates가 코드로 다시 계산한다.
 // - classifyMiss는 원래 처리에서 어느 단계가 이 할 일을 놓쳤는지 가른다 (지표 4를 단계별로 본다).
 
-export const MISS_STAGES = ["processing_failed", "not_extracted", "judge_rejected", "merge_absorbed"] as const;
+export const MISS_STAGES = ["processing_failed", "not_extracted", "quoted_history", "judge_rejected", "merge_absorbed"] as const;
+
+/** judge_logs.jev_answers.dropped: 연결 메일의 인용된 옛 메일에만 있어 기계 검증이 버린 후보 (pipeline/run.ts droppedQuotedHistory) */
+export const QUOTED_HISTORY_DROP = "QUOTED_HISTORY";
 /**
  * processing_failed: 원문 처리가 끝나지 않음(실패 · 아직 처리 중)
  * not_extracted:     겹치는 후보가 없음 (추출기가 못 뽑았거나, 뽑았지만 인용 검증에서 탈락)
+ * quoted_history:    겹치는 후보가 연결 메일의 인용된 옛 메일에만 있어 기계 검증이 버림 (앱 응답에는 not_extracted로 보인다, process.ts)
  * judge_rejected:    겹치는 후보를 Jev가 기각
  * merge_absorbed:    겹치는 후보가 통과했지만 병합에서 다른 Action에 합쳐지거나 버려짐
  */
@@ -64,17 +68,19 @@ export function reportedQuoteOverlaps(a: string, b: string): boolean {
   return total > 0 && (2 * shared) / total >= MISS_OVERLAP_THRESHOLD;
 }
 
-export type MissLog = { quote: string; decision: JudgeDecision };
+export type MissLog = { quote: string; decision: JudgeDecision; /** 판정 전에 기계 검증이 버린 후보면 그 이유 */ dropped?: typeof QUOTED_HISTORY_DROP };
 
 /**
  * 신고한 구절이 원래 처리의 어느 단계에서 빠졌는지 (순수 함수).
- * 겹치는 후보가 여럿이면 가장 멀리 간 단계를 쓴다: 통과한 후보가 있으면 merge_absorbed, 기각만 있으면 judge_rejected.
+ * 겹치는 후보가 여럿이면 가장 멀리 간 단계를 쓴다: 통과한 후보가 있으면 merge_absorbed, Jev가 기각한 것이 있으면 judge_rejected,
+ * 기계 검증이 인용된 옛 메일 속이라 버린 것뿐이면 quoted_history.
  */
 export function classifyMiss(input: { processingStatus: string; logs: MissLog[]; quote: string }): MissStage {
   if (input.processingStatus !== "done") return "processing_failed";
   const overlapping = input.logs.filter((log) => reportedQuoteOverlaps(log.quote, input.quote));
   if (overlapping.length === 0) return "not_extracted";
-  return overlapping.some((log) => log.decision !== "reject") ? "merge_absorbed" : "judge_rejected";
+  if (overlapping.some((log) => log.decision !== "reject")) return "merge_absorbed";
+  return overlapping.some((log) => !log.dropped) ? "judge_rejected" : "quoted_history";
 }
 
 // 모델에게 주는 응답 스키마: 후보 하나. 인용 · 담당 · 신호는 코드가 정하므로 묻지 않는다.

@@ -1,7 +1,9 @@
 import type { SourceKind } from "./extract";
 import { speakerRole, type UserIdentity } from "./identity";
 import type { Decide, JudgeDecision, JudgeSignals } from "./judge";
-import { matchCandidate, shortlistActions, type MatchRelation, type MatchResult, type OpenAction } from "./match";
+import { storedReasons } from "@/lib/actions/rows";
+
+import { MATCH_THRESHOLDS, matchCandidate, shortlistActions, type MatchRelation, type MatchResult, type OpenAction } from "./match";
 import { resolveAction, type Claim } from "./resolve";
 import type { JudgedCandidate } from "./run";
 import type { VerifiedCandidate } from "./verify";
@@ -60,7 +62,8 @@ export class InMemoryActionStore implements ActionStore {
   }
 
   async create(action: Omit<TrackedAction, "id">): Promise<TrackedAction> {
-    const created = { ...action, id: `a${++this.seq}` };
+    // DB 저장소와 같게 판정 · 병합 단계가 남긴 이유만 둔다: 담당 · 기한 · 내용 · 상태 확인은 Claim에서 다시 계산한다 (projectAction)
+    const created = { ...action, confirmReasons: storedReasons(action.confirmReasons), id: `a${++this.seq}` };
     this.actions.push(created);
     return created;
   }
@@ -123,17 +126,19 @@ export const isUserFirmCommitment = (signals: JudgeSignals) =>
  * 사용자의 확정 약속이 기존 Action에 같은 일의 반복 · 변경으로 붙는가. 그렇다면 붙는 Action을, 아니면 null (docs/TRUTH_RULES.md 규칙 0 "양쪽이 말했는가").
  * 요청자의 요청("~해 주실 수 있을까요?")은 추정 발언이라 Action의 내용 · 담당 · 상태가 "확정되지 않은 말뿐"으로 남는다.
  * 사용자가 "네, 목요일까지 드리겠습니다"로 받아들이면 양쪽이 말한 것이 되어 남은 확인이 풀린다.
- * 붙이는 것이 애매하면(병합 확인) 풀지 않는다: 다른 일에 잘못 붙었을 수 있다.
+ * 붙이는 것이 애매하면 풀지 않는다: 다른 일에 잘못 붙었을 수 있다. 병합 확인(확신 0.6 미만)뿐 아니라
+ * `MATCH_THRESHOLDS.settleAtLeast`(0.8) 미만도 그렇다 (붙이기만 하고 그 Action의 확인은 그대로 둔다).
  * 사용자의 발언 자체가 판정을 통과(자동 반영)해야 한다: Jev가 그 발언을 확인 요청이나 기각으로 보냈으면(약속으로 보기 어렵거나 이미 했다고 보면) 풀지 않는다.
  */
 export function settlingCommitment(
   candidate: Pick<VerifiedCandidate, "signal">,
   signals: JudgeSignals,
   decision: JudgeDecision,
-  match: Pick<MatchResult, "relation" | "needsConfirmation">,
+  match: Pick<MatchResult, "relation" | "needsConfirmation" | "confidence">,
   target: OpenAction | undefined,
 ): OpenAction | null {
-  if (!target || decision !== "auto" || match.needsConfirmation || (match.relation !== "duplicate" && match.relation !== "update")) return null;
+  if (!target || decision !== "auto" || match.needsConfirmation || match.confidence < MATCH_THRESHOLDS.settleAtLeast) return null;
+  if (match.relation !== "duplicate" && match.relation !== "update") return null;
   if (candidate.signal !== "commitment" && candidate.signal !== "update") return null;
   return isUserFirmCommitment(signals) ? target : null;
 }
@@ -143,6 +148,7 @@ export function settlingCommitment(
  * @param settles 후보가 사용자의 확정 약속으로 붙는 기존 Action (settlingCommitment). 있으면 같은 일의 반복 · 변경이라도
  *   내용 · 담당 · 상태 Claim을 함께 더한다: 요청자의 추정 발언뿐이던 이 필드들이 사용자의 확정 발언으로 정해진다.
  *   내용은 Action의 지금 제목 그대로 받아들인다(글이 다른 표현으로 내용 확인을 새로 만들지 않게). 담당은 다른 사람 담당이 아닐 때만.
+ *   내용 Claim은 같은 일의 **반복**(duplicate)일 때만 더한다: 변경(update)은 무엇을 바꾸는 발언이라 지금 제목을 받아들인 것이 아니다.
  */
 export function candidateClaims(
   candidate: VerifiedCandidate,
@@ -175,7 +181,7 @@ export function candidateClaims(
       return [
         ...(settles
           ? [
-              claim("scope", settles.title),
+              ...(relation === "duplicate" ? [claim("scope", settles.title)] : []),
               ...(candidate.owner === "me" && settles.owner !== "other" ? [claim("owner", "me")] : []),
               claim("status", "open"),
             ]

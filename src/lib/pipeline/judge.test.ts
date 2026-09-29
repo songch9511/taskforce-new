@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { JevDecision } from "@/lib/ai/jev";
 import { JUDGE_PROMPT_VERSION, JUDGE_QUESTIONS, WRITTEN_BY_ME_PROMPT_VERSION, WRITTEN_BY_ME_QUESTIONS } from "@/lib/ai/prompts/judge";
 
-import { buildJudgeState, decideOutcome, judgeCandidate, parseJudgeAnswers, type Decide, type JudgeSignals } from "./judge";
+import { buildJudgeState, decideOutcome, judgeCandidate, parseJudgeAnswers, SOLE_RECIPIENT_MIN_MINE, type Decide, type JudgeSignals } from "./judge";
 
 const firm: JudgeSignals = {
   is_my_commitment: 0.95,
@@ -265,6 +265,13 @@ describe("decideOutcome — 유일한 받는 사람 메일 규칙", () => {
     expect(decideOutcome({ ...firm, is_my_commitment: 0.6 }, undefined, { soleRecipient: true })).toEqual({ decision: "confirm", reasons: ["NOT_MY_ACTION"] });
     const inverted = { accept: 0.3, reject: 0.5, doneAcceptBelow: 0.3, doneRejectAt: 0.7 };
     expect(decideOutcome({ ...firm, is_my_commitment: 0.4 }, inverted, { soleRecipient: true }).decision).toBe("confirm");
+  });
+
+  it("내 약속 확률이 너무 낮은 후보(남의 일을 추출한 것)는 살리지 않는다. 경계는 SOLE_RECIPIENT_MIN_MINE, @이름 규칙에는 하한이 없다", () => {
+    expect(SOLE_RECIPIENT_MIN_MINE).toBe(0.2);
+    expect(decideOutcome({ ...firm, is_my_commitment: 0.19 }, undefined, { soleRecipient: true })).toEqual({ decision: "reject", reasons: ["NOT_MY_ACTION"] });
+    expect(decideOutcome({ ...firm, is_my_commitment: 0.2 }, undefined, { soleRecipient: true })).toMatchObject({ decision: "confirm", rule: "sole_recipient_request" });
+    expect(decideOutcome({ ...firm, is_my_commitment: 0.05 }, undefined, { addressedToUser: true })).toMatchObject({ decision: "confirm", rule: "addressed_request" });
   });
 
   it("둘 다 해당하면 @이름 규칙으로 기록한다", () => {

@@ -14,6 +14,7 @@ const PERIODS = [7, 28, 90] as const;
 const FIELD_LABELS: Record<ErrorField, string> = { title: "내용", due: "기한", owner: "담당", status: "상태", deleted: "삭제" };
 const MISS_STAGE_LABELS: Record<keyof MissedMetric["byStage"], string> = {
   not_extracted: "추출 안 됨 (검증 탈락 포함)",
+  quoted_history: "연결 메일의 인용된 옛 메일 속이라 버림",
   judge_rejected: "Jev가 기각",
   merge_absorbed: "병합에서 다른 Action에 합쳐짐",
   processing_failed: "원문 처리 실패 · 미완료",

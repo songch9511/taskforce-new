@@ -12,7 +12,7 @@ import { USER_REASON } from "@/lib/pipeline/resolve";
 import type { Claim } from "@/lib/pipeline/resolve";
 import { SLACK_DISCONNECTED_QUOTE } from "@/lib/retention";
 
-import { changeEvents, projectAction, type ActionStatus, type EventDraft } from "./project";
+import { changeEvents, projectAction, withClearedConfirmation, type ActionStatus, type EventDraft } from "./project";
 import { actionRowValues, CLAIM_COLUMNS, claimFromRow, claimToRow, storedReasons, toPgVector, type ClaimRow } from "./rows";
 
 // Phase 2 병합 결과를 DB에 쓴다 (service role). 쿼리마다 user_id로 범위를 좁힌다.
@@ -172,7 +172,7 @@ export class SupabaseActionStore implements ActionStore, EmbeddingBackfillStore 
         action: actionRowValues(after),
         claims: update.claims,
         evidence: update.evidence,
-        events: changeEvents(before, after, update.evidence.role),
+        events: withClearedConfirmation(changeEvents(before, after, update.evidence.role), before, after),
         actor: "ai",
       });
       if (!written) return null;

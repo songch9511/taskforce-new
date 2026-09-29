@@ -153,6 +153,23 @@ describe("SupabaseActionStore.append: 사용자의 확정 약속이 붙으면 �
     expect(writes[0].p_claims as unknown[]).toHaveLength(3);
   });
 
+  it("풀린 확인 요청은 merged 이벤트에 전후(needs_confirmation · confirm_reasons)를 싣는다. 판정 확인을 안 풀면 계산되는 이유만 풀리고 확인은 남는다", async () => {
+    const { admin, writes } = appendAdmin(["판정 확인: NOT_MY_ACTION"]);
+    await new SupabaseActionStore(admin, USER).append("a1", { claims: firmClaims(), evidence, clearJudgeReasons: true });
+    const events = writes[0].p_events as { type: string; before: unknown; after: unknown; actor: string }[];
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      type: "merged",
+      actor: "ai",
+      // 앞의 이유에는 Claim에서 계산되는 확인(추정 발언뿐이던 내용 · 담당 · 상태)도 들어 있다
+      before: { needs_confirmation: true, confirm_reasons: ["판정 확인: NOT_MY_ACTION", "내용 확인", "담당 확인", "상태 확인"] },
+      after: { needs_confirmation: false, confirm_reasons: [] },
+    });
+    const kept = appendAdmin(["판정 확인: NOT_MY_ACTION"]);
+    await new SupabaseActionStore(kept.admin, USER).append("a1", { claims: firmClaims(), evidence });
+    expect((kept.writes[0].p_events as { after: unknown }[])[0].after).toEqual({ needs_confirmation: true, confirm_reasons: ["판정 확인: NOT_MY_ACTION"] });
+  });
+
   it("판정 확인 하나뿐이었으면 확인 요청이 없어진다", async () => {
     const { admin, writes } = appendAdmin(["판정 확인: NOT_MY_ACTION"]);
     await new SupabaseActionStore(admin, USER).append("a1", { claims: firmClaims(), evidence, clearJudgeReasons: true });

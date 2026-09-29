@@ -186,7 +186,9 @@ describe("mergeJudged", () => {
       identity,
       deps(),
     );
-    expect(store.all()[0].confirmReasons).toEqual(["판정 확인: ", "담당 확인"]);
+    // 저장하는 것은 판정 단계의 이유뿐이다. 담당 확인은 Claim에서 다시 계산한다 (DB 저장소와 같게)
+    expect(store.all()[0].confirmReasons).toEqual(["판정 확인: "]);
+    expect(projectAction(store.all()[0].title, store.all()[0].claims, store.all()[0].confirmReasons).confirm_reasons).toEqual(["판정 확인: ", "담당 확인"]);
   });
 });
 
@@ -338,14 +340,17 @@ describe("mergeJudged — 사용자의 확정 약속이 붙으면 남은 확인�
     expect(action.evidence.map((e) => e.role)).toEqual(["created", "duplicate"]);
   });
 
-  it("담당 확인 같은 다른 이유는 남긴다", async () => {
+  it("계산되는 이유(담당 확인 등)는 저장하지 않고 Claim으로 다시 정해진다", async () => {
     const store = new InMemoryActionStore();
     const d = deps();
     const unowned = withReasons(judged({ signal: "commitment", title: "제안서 공유", quote: "제안서는 저희 쪽에서 드릴게요", owner: "unknown" }, requestSignals, "confirm"), ["NOT_MY_ACTION"]);
     await mergeJudged(store, [unowned], source("s1", "email", "2025-09-22T10:00:00+09:00"), me, d);
-    expect(store.all()[0].confirmReasons).toEqual(["판정 확인: NOT_MY_ACTION", "담당 확인"]);
+    expect(store.all()[0].confirmReasons).toEqual(["판정 확인: NOT_MY_ACTION"]);
+    expect(reasons(store)).toContain("담당 확인");
     await mergeJudged(store, [accept()], source("s2", "email", "2025-09-22T12:00:00+09:00"), me, d);
-    expect(store.all()[0].confirmReasons).toEqual(["담당 확인"]);
+    // 사용자가 내가 하겠다고 확정했으니 담당도 정해진다
+    expect(store.all()[0].confirmReasons).toEqual([]);
+    expect(reasons(store)).toEqual([]);
   });
 
   it("사용자의 발언이라도 확정적이지 않거나(추정) 요청자의 발언이면 풀지 않는다", async () => {
@@ -355,6 +360,25 @@ describe("mergeJudged — 사용자의 확정 약속이 붙으면 남은 확인�
       expect(store.all()[0].confirmReasons, JSON.stringify(over)).toEqual(["판정 확인: NOT_MY_ACTION"]);
       expect(reasons(store), JSON.stringify(over)).toContain("내용 확인");
     }
+  });
+
+  it("같은 일이라는 확신이 0.6~0.8이면 붙이기만 하고(병합 확인 없음) 확인은 풀지 않는다. 더하는 Claim도 기한뿐이다", async () => {
+    const { store } = await requestStore();
+    const fairly: Decide = async (req) => {
+      const key = (req.state as { existing: { key: string }[] }).existing[0].key;
+      return {
+        model: "jev-test",
+        answers: {
+          relation: { type: "choice", choice: "same_restated", probabilities: { same_restated: 0.7 } },
+          target: { type: "choice", choice: key, probabilities: { [key]: 0.9 } },
+        },
+      };
+    };
+    let n = 0;
+    await mergeJudged(store, [accept()], source("s2", "email", "2025-09-22T12:00:00+09:00"), me, { embed: async (t) => t.map(topicVector), decide: fairly, newId: () => `x${++n}` });
+    expect(store.all()[0].confirmReasons).toEqual(["판정 확인: NOT_MY_ACTION"]);
+    expect(store.all()[0].claims.filter((c) => c.id.startsWith("x")).map((c) => c.field)).toEqual(["due"]);
+    expect(store.all()[0].evidence.map((e) => e.role)).toEqual(["created", "duplicate"]);
   });
 
   it("병합이 애매하면(같은 일이라는 확신이 낮으면) 풀지 않고 병합 확인을 더한다. 더하는 Claim도 기한뿐이다", async () => {
@@ -407,7 +431,12 @@ describe("mergeJudged — 사용자의 확정 약속이 붙으면 남은 확인�
 describe("settlingCommitment · candidateClaims", () => {
   const target: OpenAction = { id: "a1", title: "제안서 발송", counterpart: "김대표", due: null, latestQuote: null, embedding: null, owner: "me" };
   const candidate = (over: Partial<VerifiedCandidate> = {}) => judged({ signal: "commitment", quote: "네 제안서 드릴게요", due: "2025-09-26", ...over }).candidate;
-  const match = (over: { relation?: "duplicate" | "update" | "new" | "complete"; needsConfirmation?: boolean } = {}) => ({ relation: "duplicate" as const, needsConfirmation: false, ...over });
+  const match = (over: { relation?: "duplicate" | "update" | "new" | "complete"; needsConfirmation?: boolean; confidence?: number } = {}) => ({
+    relation: "duplicate" as const,
+    needsConfirmation: false,
+    confidence: 0.9,
+    ...over,
+  });
   let n = 0;
   const newId = () => `c${++n}`;
   const src: MergeSource = { id: "s", text: "", kind: "email", occurredAt: new Date("2025-09-22T10:00:00+09:00") };
@@ -424,6 +453,9 @@ describe("settlingCommitment · candidateClaims", () => {
     expect(settlingCommitment(candidate({ signal: "update" }), signals(), "auto", match({ relation: "update" }), target)).toBe(target);
     expect(settlingCommitment(candidate(), signals(), "auto", match(), undefined)).toBeNull();
     expect(settlingCommitment(candidate(), signals(), "auto", match({ needsConfirmation: true }), target)).toBeNull();
+    // 확신이 0.8 미만이면 붙이더라도 풀지 않는다 (경계 0.8은 푼다)
+    expect(settlingCommitment(candidate(), signals(), "auto", match({ confidence: 0.79 }), target)).toBeNull();
+    expect(settlingCommitment(candidate(), signals(), "auto", match({ confidence: 0.8 }), target)).toBe(target);
     expect(settlingCommitment(candidate(), signals(), "auto", match({ relation: "new" }), target)).toBeNull();
     expect(settlingCommitment(candidate(), signals(), "auto", match({ relation: "complete" }), target)).toBeNull();
     expect(settlingCommitment(candidate({ signal: "completion" }), signals(), "auto", match(), target)).toBeNull();
@@ -439,6 +471,8 @@ describe("settlingCommitment · candidateClaims", () => {
     const fields = (settles: OpenAction | null, c = candidate()) => candidateClaims(c, signals(), src, "duplicate", newId, settles).map((claim) => [claim.field, claim.value]);
     expect(fields(null)).toEqual([["due", "2025-09-26"]]);
     expect(fields(target)).toEqual([["scope", "제안서 발송"], ["owner", "me"], ["status", "open"], ["due", "2025-09-26"]]);
+    // 변경(update)은 지금 제목을 받아들인 것이 아니라 내용 Claim은 더하지 않는다
+    expect(candidateClaims(candidate({ signal: "update" }), signals(), src, "update", newId, target).map((claim) => [claim.field, claim.value])).toEqual([["owner", "me"], ["status", "open"], ["due", "2025-09-26"]]);
     expect(fields(target, candidate({ due: null }))).toEqual([["scope", "제안서 발송"], ["owner", "me"], ["status", "open"]]);
   });
 

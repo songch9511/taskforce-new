@@ -305,4 +305,14 @@ describe("classifyMiss", () => {
     ];
     expect(classifyMiss({ processingStatus: "done", logs, quote })).toBe("merge_absorbed");
   });
+
+  it("겹치는 후보를 기계 검증이 연결 메일의 인용된 옛 메일 속이라 버렸으면 quoted_history", () => {
+    const dropped = { quote: "네, 금요일까지 견적서 정리해서 드릴게요.", decision: "reject" as const, dropped: "QUOTED_HISTORY" as const };
+    expect(classifyMiss({ processingStatus: "done", logs: [dropped], quote })).toBe("quoted_history");
+    // Jev가 기각한 후보가 같이 있으면 더 멀리 간 judge_rejected, 통과한 후보가 있으면 merge_absorbed
+    expect(classifyMiss({ processingStatus: "done", logs: [dropped, { quote: "견적서 정리해서 드릴게요", decision: "reject" }], quote })).toBe("judge_rejected");
+    expect(classifyMiss({ processingStatus: "done", logs: [dropped, { quote, decision: "auto" }], quote })).toBe("merge_absorbed");
+    // 겹치지 않는 버려진 후보는 not_extracted 그대로
+    expect(classifyMiss({ processingStatus: "done", logs: [{ ...dropped, quote: "다음 주에 미팅 잡을게요" }], quote })).toBe("not_extracted");
+  });
 });

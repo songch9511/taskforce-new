@@ -93,6 +93,19 @@ describe("verifyCandidates", () => {
       expect(verifyCandidates([onlyOld], source).dropped.map((d) => d.reason)).toEqual(["QUOTED_HISTORY"]);
     });
 
+    it('"..."로 이은 인용의 짧은 조각("네")이 새 글에 우연히 있다고 인용된 옛 메일의 말을 남기지 않는다', () => {
+      const korean = {
+        text: "제목: Re: 계약서\n\n네, 확인했습니다.\n\n2026년 10월 12일 (월) 오전 9:00, 오세린 <serin@x.example>님이 작성:\n\n> 금요일까지 계약서 보내드릴게요.",
+        occurredAt: new Date("2026-10-12T10:00:00+09:00"),
+        kind: "email",
+        fromConnector: true,
+      };
+      const stitched = commitment("네 ... 금요일까지 계약서 보내드릴게요");
+      expect(verifyCandidates([stitched], korean).dropped.map((d) => d.reason)).toEqual(["QUOTED_HISTORY"]);
+      // 조각이 모두 짧으면 짧은 조각으로 본다
+      expect(verifyCandidates([commitment("네 ... 확인")], korean).kept).toHaveLength(1);
+    });
+
     it("원문에 없는 인용은 이유가 그대로 QUOTE_NOT_FOUND", () => {
       const result = verifyCandidates([commitment("I will never appear")], mail("Thanks!"));
       expect(result.dropped.map((d) => d.reason)).toEqual(["QUOTE_NOT_FOUND"]);

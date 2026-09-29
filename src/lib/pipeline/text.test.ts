@@ -145,7 +145,7 @@ describe("quotedHistoryStart", () => {
     expect(fresh(en)).toBe("Sure.\n\n");
     const ko = ["네, 확인했습니다.", "", "보낸 사람: 오세린", "보낸 날짜: 2026년 10월 5일", "받는 사람: 한지우", "제목: 계약서", "", "월요일까지 부탁드립니다."].join("\n");
     expect(fresh(ko)).toBe("네, 확인했습니다.\n\n");
-    const outlookLine = ["Sure.", "", "________________________________", "From: Jordan Lee", "Sent: Monday", "To: Alex Kim", "", "Please send it by Monday."].join("\n");
+    const outlookLine = ["Sure.", "", "________________________________", "From: Jordan Lee", "Sent: Monday", "To: Alex Kim", "Subject: Contract", "", "Please send it by Monday."].join("\n");
     expect(fresh(outlookLine)).toBe("Sure.\n\n");
   });
 
@@ -197,9 +197,39 @@ describe("quotedHistoryStart", () => {
     const outlookForward = ["제목: FW: 계약서 검토", "", "________________________________", "From: Jordan Lee", "Sent: Monday", "To: Alex Kim", "Subject: Contract", "", "Please send it by Monday."].join("\n");
     expect(quotedHistoryStart(outlookForward)).toBeNull();
     expect(quotedHistoryStart(outlookForward.replace("FW:", "전달:"))).toBeNull();
-    expect(quotedHistoryStart(["제목: Re: Fwd: Contract", "", "OK.", "", "> old"].join("\n"))).toBeNull();
-    // 전달이 아닌 답장이면 같은 모양이 인용이다
+    // 가장 바깥 접두어가 전달일 때만: 전달된 메일에 답한 "Re: Fwd:"는 아래 인용이 옛 메일이다
+    expect(quotedHistoryStart(["제목: Fwd: Re: Contract", "", "OK.", "", "> old"].join("\n"))).toBeNull();
+    expect(quotedHistoryStart(["제목: Re: Fwd: Contract", "", "OK.", "", "> old"].join("\n"))).not.toBeNull();
     expect(quotedHistoryStart(["제목: Re: Contract", "", "OK.", "", "> old"].join("\n"))).not.toBeNull();
+  });
+
+  it("From:/보낸 사람: 줄이 있어도 날짜 머리와 제목 머리가 함께 이어지지 않으면 새 글이다 (배송 · 일정 정보)", () => {
+    // 영어 일정: 제목 머리가 없다
+    expect(quotedHistoryStart(["Flight details:", "", "From: ICN", "To: SFO", "Date: Oct 12", "", "I'll book the hotel by Monday."].join("\n"))).toBeNull();
+    // 한국어 배송 정보: 제목 머리가 없다
+    expect(quotedHistoryStart(["배송 정보입니다.", "", "보낸 사람: 새벽로지스 물류센터", "받는 사람: 한지우", "날짜: 10월 12일", "", "제가 금요일까지 송장 보내드릴게요."].join("\n"))).toBeNull();
+    // 날짜 머리만 있고 제목 머리가 없어도 마찬가지, 반대로 제목 머리만 있어도
+    expect(quotedHistoryStart(["Hi,", "", "From: Jordan", "Sent: Monday", "", "Will do."].join("\n"))).toBeNull();
+    expect(quotedHistoryStart(["Hi,", "", "From: Jordan", "Subject: Deck", "", "Will do."].join("\n"))).toBeNull();
+  });
+
+  it("글 없이 자기 머리 묶음으로 시작하는 메일은 통째로 옛 메일로 보지 않는다 (위에 새로 쓴 글이 있을 때만)", () => {
+    const englishHeader = ["제목: Contract", "", "From: Jordan Lee", "Sent: Monday, October 5, 2026", "To: Alex Kim", "Subject: Contract", "", "I will send the signed copy by Friday."].join("\n");
+    expect(quotedHistoryStart(englishHeader)).toBeNull();
+    const koreanHeader = ["제목: 계약서", "", "보낸 사람: 오세린", "보낸 날짜: 2026년 10월 5일", "받는 사람: 한지우", "제목: 계약서", "", "금요일까지 보내드리겠습니다."].join("\n");
+    expect(quotedHistoryStart(koreanHeader)).toBeNull();
+    // Original Message로 시작해도 마찬가지
+    expect(quotedHistoryStart(["제목: RE: 계약서", "", "-----Original Message-----", "From: Jordan", "Please send it by Monday."].join("\n"))).toBeNull();
+    // 위에 새 글이 있으면 인용이다
+    expect(quotedHistoryStart(["제목: RE: 계약서", "", "Will do.", "", "-----Original Message-----", "From: Jordan", "Please send it by Monday."].join("\n"))).not.toBeNull();
+  });
+
+  it("머리줄 뒤에 `>` 없는 글이 빈 줄로 나뉜 덩어리로 이어지면 아래에 답을 적은 것일 수 있어 새 글로 본다", () => {
+    const bottomPost = ["Hi Jordan,", "", "On Mon, Oct 5, 2026 at 9:30 AM Jordan Lee <j@x.example> wrote:", "Could you send the deck?", "", "Yes, I will send it by Friday."].join("\n");
+    expect(quotedHistoryStart(bottomPost)).toBeNull();
+    // 한 덩어리로 끝나면 옛 메일이다
+    const oneBlock = ["Hi Jordan,", "", "On Mon, Oct 5, 2026 at 9:30 AM Jordan Lee <j@x.example> wrote:", "Could you send the deck?", "Thanks."].join("\n");
+    expect(fresh(oneBlock)).toBe("Hi Jordan,\n\n");
   });
 
   it("줄바꿈이 CRLF여도 위치가 원문 기준이다", () => {

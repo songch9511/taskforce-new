@@ -110,6 +110,9 @@ describe("runPipeline의 메일 인용", () => {
     expect(result.judged.map((j) => j.candidate.quote)).toEqual(["금요일까지 제안서 보내드릴게요"]);
     // 원문에 없는 인용 하나 + 인용된 옛 메일에만 있는 후보 하나
     expect(result.droppedCount).toBe(2);
+    // 이유별 개수와 기록용 후보 (인용이 원문에 없는 후보는 기록에 남기지 않는다)
+    expect(result.summary.droppedByReason).toEqual({ quoteNotFound: 1, quotedHistory: 1 });
+    expect(result.droppedQuotedHistory.map((c) => c.quote)).toEqual(["견적서는 박팀장이 드릴게요"]);
     expect(asked).toBe(1);
   });
 
@@ -117,6 +120,8 @@ describe("runPipeline의 메일 인용", () => {
     const result = await runPipeline({ ...mail, fromConnector: false }, { complete, decide });
     expect(result.judged.map((j) => j.candidate.quote)).toEqual(["금요일까지 제안서 보내드릴게요", "견적서는 박팀장이 드릴게요"]);
     expect(result.droppedCount).toBe(1);
+    expect(result.droppedQuotedHistory).toEqual([]);
+    expect(result.summary.droppedByReason).toEqual({ quoteNotFound: 1, quotedHistory: 0 });
   });
 
   it("같은 원문이라도 메일이 아니면 이 규칙을 쓰지 않는다", async () => {

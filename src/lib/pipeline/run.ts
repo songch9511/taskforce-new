@@ -1,7 +1,7 @@
 import { EXTRACT_PROMPT_VERSION } from "@/lib/ai/prompts/extract";
 import { JUDGE_PROMPT_VERSION } from "@/lib/ai/prompts/judge";
 
-import { extractCandidates, type CompleteJson, type ExtractInput } from "./extract";
+import { extractCandidates, type ActionCandidate, type CompleteJson, type ExtractInput } from "./extract";
 import { judgeCandidate, type Decide, type JudgeResult } from "./judge";
 import { verifyCandidates, type VerifiedCandidate } from "./verify";
 
@@ -16,9 +16,16 @@ export type PipelineResult = {
   judged: JudgedCandidate[];
   /** 인용이 원문에 없거나 연결로 가져온 메일의 인용된 옛 메일에만 있어 버린 후보 수 */
   droppedCount: number;
+  /**
+   * 연결로 가져온 메일의 인용된 옛 메일에만 있어 기계 검증이 버린 후보. 처리 기록(judge_logs)에 남겨, 사용자가 신고한 누락이
+   * 이 규칙 때문인지 가른다 (missing.ts classifyMiss의 quoted_history). 인용이 원문에 없는 후보(환각)는 남기지 않는다
+   */
+  droppedQuotedHistory: ActionCandidate[];
   summary: {
     extracted: number;
     dropped: number;
+    /** 버린 후보를 이유별로: 인용이 원문에 없음(환각) / 연결 메일의 인용된 옛 메일에만 있음 */
+    droppedByReason: { quoteNotFound: number; quotedHistory: number };
     auto: number;
     confirm: number;
     reject: number;
@@ -41,15 +48,18 @@ export async function runPipeline(input: ExtractInput, deps: PipelineDeps): Prom
     })),
   );
 
+  const quotedHistory = verified.dropped.filter((d) => d.reason === "QUOTED_HISTORY");
   const count = (decision: JudgeResult["decision"]) => judged.filter((j) => j.judge.decision === decision).length;
   const cost = (extracted.usage?.cost ?? 0) + judged.reduce((sum, j) => sum + (j.judge.cost ?? 0), 0);
 
   return {
     judged,
     droppedCount: verified.dropped.length,
+    droppedQuotedHistory: quotedHistory.map((d) => d.candidate),
     summary: {
       extracted: extracted.candidates.length,
       dropped: verified.dropped.length,
+      droppedByReason: { quoteNotFound: verified.dropped.length - quotedHistory.length, quotedHistory: quotedHistory.length },
       auto: count("auto"),
       confirm: count("confirm"),
       reject: count("reject"),

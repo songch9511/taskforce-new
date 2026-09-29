@@ -122,6 +122,26 @@ describe("misjudgment (지표 1)", () => {
     expect(m.byConfirmation).toEqual({ auto: { created: 1, corrected: 1 }, asked: { created: 1, corrected: 1 }, unknown: { created: 1, corrected: 0 } });
   });
 
+  it("물어서 만들었어도 AI가 나중 원문으로 물음을 풀었으면 자동으로 센다 (그 뒤에 고치면 자동 반영의 오판)", () => {
+    const cleared = ev("cleared", "merged", "2026-09-22T05:00:00Z", {
+      before: { needs_confirmation: true, confirm_reasons: ["판정 확인: NOT_MY_ACTION"] },
+      after: { needs_confirmation: false, confirm_reasons: [] },
+    });
+    const m = misjudgment(
+      [
+        ev("cleared", "created", "2026-09-22T01:00:00Z", { after: { needs_confirmation: true } }),
+        cleared,
+        ev("cleared", "user_edited", "2026-09-23T00:00:00Z", { after: { due: "2026-09-29" } }),
+        // 일부만 풀렸거나(아직 확인이 남음) 풀림이 없는 병합은 그대로 asked
+        ev("partly", "created", "2026-09-22T01:00:00Z", { after: { needs_confirmation: true } }),
+        ev("partly", "merged", "2026-09-22T05:00:00Z", { before: { needs_confirmation: true }, after: { needs_confirmation: true } }),
+        ev("partly", "user_deleted", "2026-09-23T00:00:00Z"),
+      ],
+      period,
+    );
+    expect(m.byConfirmation).toEqual({ auto: { created: 1, corrected: 1 }, asked: { created: 1, corrected: 1 }, unknown: { created: 0, corrected: 0 } });
+  });
+
   it("AI 생성이 없으면 비율은 없음", () => {
     expect(misjudgment([], period).rate).toBeNull();
   });
@@ -227,7 +247,7 @@ describe("retention (지표 3)", () => {
   });
 });
 
-const noStages = { processing_failed: 0, not_extracted: 0, judge_rejected: 0, merge_absorbed: 0, unknown: 0 };
+const noStages = { processing_failed: 0, not_extracted: 0, quoted_history: 0, judge_rejected: 0, merge_absorbed: 0, unknown: 0 };
 
 describe("missed (지표 4)", () => {
   it("누락 신고 기능 전에는 측정 전", () => {
@@ -249,10 +269,11 @@ describe("missed (지표 4)", () => {
       // 신고로 생긴 Action을 사용자가 고쳐도 AI 오판이 아니다
       ev(id, "user_edited", "2026-09-23T00:00:00Z", { after: { title: true } }),
     ];
-    const events = [created("a"), ...reported("r1", "not_extracted"), ...reported("r2", "judge_rejected"), ...reported("r3", "not_extracted")];
+    const events = [created("a"), ...reported("r1", "not_extracted"), ...reported("r2", "judge_rejected"), ...reported("r3", "not_extracted"), ...reported("r4", "quoted_history")];
     const m = misjudgment(events, period);
     expect(m).toMatchObject({ aiCreated: 1, corrected: 0 });
-    expect(missed(events, m, period, true)).toEqual({ reported: 3, added: 0, rate: 0.75, available: true, byStage: { ...noStages, not_extracted: 2, judge_rejected: 1 } });
+    // 연결 메일의 인용된 옛 메일 속이라 버린 것(quoted_history)은 따로 센다
+    expect(missed(events, m, period, true)).toEqual({ reported: 4, added: 0, rate: 0.8, available: true, byStage: { ...noStages, not_extracted: 2, judge_rejected: 1, quoted_history: 1 } });
   });
 
   it("직접 추가한 Action은 지표 1에서 빼고 지표 4의 누락으로 센다 (단계는 모름이 아니라 따로 센다)", () => {

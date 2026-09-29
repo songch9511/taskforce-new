@@ -119,6 +119,14 @@ export function parseJudgeAnswers(answers: JevDecision["answers"]): JudgeSignals
   };
 }
 
+/**
+ * 유일한 받는 사람 메일 규칙(sole_recipient_request)이 확인 요청으로 살리는 후보의 최소 `is_my_commitment`.
+ * 이 아래는 사용자에게 한 요청이 아니라 남의 일 · 남의 말을 추출한 것에 가까워 기각 그대로 둔다: 골든셋 보정 표에서 0.0~0.2 구간의
+ * 실제 내 약속 비율이 0/57이다. 개인화된 영업 메일("Open to a 15-min call Tuesday?")이 요청처럼 보여도 아는 사이인지는 파이프라인이 모르므로
+ * (주소가 회사 도메인이 아닌 외부 거래처가 이 규칙의 주된 대상이다) 확률 아래쪽만 자른다. @이름 규칙(addressed_request)에는 쓰지 않는다: 이름을 직접 불렀다.
+ */
+export const SOLE_RECIPIENT_MIN_MINE = 0.2;
+
 export type DecideContext = {
   /** 인용 줄이 사용자를 @이름으로 직접 부른다 (addressedToUser) */
   addressedToUser?: boolean;
@@ -140,7 +148,8 @@ export function decideOutcome(
   // 사용자를 @이름으로 직접 부른 요청, 사용자가 유일한 받는 사람인 메일의 요청은 아직 수락하지 않았다는 이유("내 약속 아님") 하나로는
   // 버리지 않고 묻는다 (원칙 3). 무엇을 가리키는지 원문에 없는 요청("@지호 이거 금요일까지 될까요?")이나 여러 이야기 사이에 묻힌
   // 메일 요청("계약서 사본도 한 부 보내주실 수 있을까요?")이 조용히 사라지지 않게 한다. 다른 사유가 함께 있으면 그대로 기각.
-  const pendingRule = context.addressedToUser === true ? "addressed_request" : context.soleRecipient === true ? "sole_recipient_request" : null;
+  const soleRecipient = context.soleRecipient === true && signals.is_my_commitment >= SOLE_RECIPIENT_MIN_MINE;
+  const pendingRule = context.addressedToUser === true ? "addressed_request" : soleRecipient ? "sole_recipient_request" : null;
   const pendingRequest = pendingRule !== null && rejects.length === 1 && rejects[0] === "NOT_MY_ACTION";
   if (rejects.length > 0 && !pendingRequest) return { decision: "reject", reasons: rejects };
 
