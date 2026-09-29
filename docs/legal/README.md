@@ -32,7 +32,7 @@
 
 **함께 나가는 변경.** 웹사이트의 `scripts/sync-legal.mjs`는 이 폴더의 `privacy.{ko,en}.md` · `terms.{ko,en}.md` 네 파일을 그대로 복사한다([runbook.md](../go-live/runbook.md) 7장). 그래서 열려 있는 #24(수탁자 표에서 BaseTen 삭제)의 문안과 아래 Gmail 문안은 같이 게시된다. **한 번의 새 버전 · 하나의 시행일로 함께 게시한다.** #24가 병합되면 그 PR이 자기 몫 행을 아래 표에 더한다.
 
-**규칙 2의 예외 (베타 1.0과 같은 것).** 이 재게시에도 코드보다 앞선 문장이 남는다: 3장이 약속하는 재연결 푸시 알림(google-integration.md PR 4, 진행 중)과 3장 Google(Calendar · Meet) 문장(미구현)이다. 지금은 그 문장이 적용되는 사람이 없다: google 연결은 `CONNECTORS`에 없어 아무도 연결할 수 없고(`src/lib/connectors/registry.ts:20`), 재연결 푸시는 연결이 `reauth`가 된 Gmail에만 해당하는데 `GMAIL_CONNECT_ENABLED`를 켜기 전에는 일반 이용자의 새 Gmail 연결이 닫혀 있다(`src/lib/env.ts:90-94`, 운영자의 /lab 시험 연결은 예외 `registry.ts:38-40`). 3장의 "앱과 알림으로 알려 드립니다" 문장은 그대로 둔다. **대신 `GMAIL_CONNECT_ENABLED`는 푸시가 나간 뒤에 켠다.**
+**규칙 2의 예외 (베타 1.0과 같은 것).** 이 재게시에도 코드보다 앞선 문장이 남는다: 3장이 약속하는 재연결 푸시 알림(google-integration.md PR 4, 진행 중)과 3장 Google(Calendar · Meet) 문장(미구현)이다. 지금은 그 문장이 적용되는 사람이 없다: google 연결은 `CONNECTORS`에 없어 아무도 연결할 수 없고(`src/lib/connectors/registry.ts:20`), 재연결 푸시는 연결이 `reauth`가 된 Gmail에만 해당하는데 `GMAIL_CONNECT_ENABLED`를 켜기 전에는 일반 이용자의 새 Gmail 연결이 닫혀 있다(`src/lib/env.ts:91-95`, 운영자의 /lab 시험 연결은 예외 `registry.ts:38-40`). 3장의 "앱과 알림으로 알려 드립니다" 문장은 그대로 둔다. **대신 `GMAIL_CONNECT_ENABLED`는 푸시가 나간 뒤에 켠다.**
 
 | 고친 곳 | 내용 | 게시할 때 할 일 |
 |---|---|---|

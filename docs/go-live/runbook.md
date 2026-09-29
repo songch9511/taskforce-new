@@ -144,7 +144,7 @@ Supabase → Organization → Billing에서 프로젝트가 **Free**이고 백�
 
 배포 방법(2026-09-29 확인): Vercel `taskforce-website`는 GitHub `songch9511/taskforce`의 `main`에 Git 연동돼 있다(Root Directory `apps/website`). `main`에 병합하면 Production, 다른 브랜치는 Preview다. 저장소는 **squash 병합만** 허용한다. **커밋 작성자 이메일이 GitHub 계정에 연결돼 있지 않으면 Vercel이 배포를 막는다**(`BLOCKED`, "couldn't find a Git account for the commit author"). 이 맥에는 `git config user.email`이 없어 `…@Danielui-MacBookAir.local`이 들어가므로, 브랜치 커밋은 GitHub noreply 주소(`67100803+songch9511@users.noreply.github.com`)로 만든다. GitHub에서 병합한 커밋은 괜찮다. Side Kick 저장소의 GitHub Actions는 결제 문제로 job이 시작되지 않는다(2026-09-16부터). 같은 명령을 로컬에서 돌려 확인한다.
 
-1. `/privacy` · `/terms`는 `/en/privacy` · `/en/terms`로 리디렉트한다. 법률 markdown은 실시간 렌더가 아니라 **`apps/website/scripts/sync-legal.mjs`가 이 저장소의 `docs/legal/*.md`를 복사**해 둔다(원본은 여전히 `docs/legal/`, 고칠 때마다 스크립트를 다시 돌려 동기화한다).
+1. `/privacy` · `/terms`는 `/en/privacy` · `/en/terms`로 리디렉트한다. 법률 markdown은 실시간 렌더가 아니라 **`apps/website/scripts/sync-legal.mjs`가 이 저장소의 `docs/legal/`에서 네 파일(`privacy.{ko,en}.md` · `terms.{ko,en}.md`)을 복사**해 둔다(원본은 여전히 `docs/legal/`, 고칠 때마다 스크립트를 다시 돌려 동기화한다).
 2. 이전 제품 페이지(download · pricing · account · beta · login · updates · help)는 홈으로 리디렉트. 이전 Mac 앱의 `/en/login` · `/en/account` 링크도 홈으로 간다. 이용자가 운영자뿐이라 감수했다(2026-09-29 결정). 이전 OAuth 브로커(`/api/connections/*`)는 그대로 둔다.
 3. 홈 푸터: Privacy · 문의 주소(`privacy@taskforcelabs.dev`를 링크 글자로, 2026-09-29. "Contact" mailto는 메일 앱이 없는 브라우저에서 반응이 없었다). 홈에 Google Limited Use 문장 한 줄. Privacy 링크는 동의 화면과 같은 `https://www.taskforcelabs.dev/en/privacy`.
 4. 분석 도구 · 쿠키 없음 확인: `curl -sI https://www.taskforcelabs.dev | grep -i set-cookie`가 비어야 하고, 페이지에 분석 스크립트가 없어야 한다.
