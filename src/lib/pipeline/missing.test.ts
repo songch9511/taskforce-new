@@ -6,7 +6,7 @@ import type { JevDecision } from "@/lib/ai/jev";
 import type { CompleteJson } from "./extract";
 import type { Decide } from "./judge";
 import { InMemoryActionStore, mergeJudged } from "./merge";
-import { classifyMiss, extractMissing, quotesOverlap, reportMatchDecide, reportStore, trackedByEvidence } from "./missing";
+import { classifyMiss, extractMissing, reportedQuoteOverlaps, reportMatchDecide, reportStore, trackedByEvidence } from "./missing";
 import { resolveAction } from "./resolve";
 
 const text = "김대표: 견적서도 같이 받을 수 있을까요?\n나: 네, 금요일까지 견적서 정리해서 드릴게요.\n김대표: 좋아요.";
@@ -250,7 +250,7 @@ describe("reportMatchDecide", () => {
   });
 });
 
-describe("quotesOverlap", () => {
+describe("reportedQuoteOverlaps", () => {
   it.each([
     ["금요일까지 견적서 드릴게요", "금요일까지 견적서 드릴게요.", true],
     ["견적서 정리해서 드릴게요", "네, 금요일까지 견적서 정리해서 드릴게요", true], // 한쪽이 다른 쪽에 들어 있음
@@ -259,7 +259,7 @@ describe("quotesOverlap", () => {
     ["다음 주에 미팅 잡을게요", "금요일까지 견적서 드릴게요", false],
     ["", "금요일까지", false],
   ])("%s ↔ %s → %s", (a, b, expected) => {
-    expect(quotesOverlap(a, b)).toBe(expected);
+    expect(reportedQuoteOverlaps(a, b)).toBe(expected);
   });
 });
 

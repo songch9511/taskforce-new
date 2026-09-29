@@ -2,7 +2,7 @@ import Auth
 import Foundation
 import Security
 
-/// 로그인 세션을 App Group 공유 Keychain에 저장한다. 공유 확장 · 위젯이 같은 세션을 읽는다.
+/// 로그인 세션을 App Group 공유 Keychain에 저장한다. 공유 확장 · 위젯을 붙이면 같은 세션을 읽는다 (아직 없음).
 ///
 /// macOS에서도 iOS와 같은 방식(데이터 보호 Keychain)을 써야 App Group 접근 그룹이 동작하므로
 /// supabase-swift의 기본 `KeychainLocalStorage` 대신 직접 구현한다.

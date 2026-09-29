@@ -1,7 +1,8 @@
 import { cookies } from "next/headers";
 import { after } from "next/server";
 
-import { authenticateRequest } from "@/lib/api/auth";
+import { authenticateRequest, type ApiContext } from "@/lib/api/auth";
+import { hasAiConsent } from "@/lib/api/profile-store";
 import { handleOAuthCallback, oauthCookie } from "@/lib/connectors/callback";
 import { afterConnected, slackWebConnector } from "@/lib/connectors/registry";
 import { consumeOAuthNonce, saveOAuthHandoff } from "@/lib/connectors/store";
@@ -16,7 +17,7 @@ export const maxDuration = 60;
 export async function GET(request: Request) {
   const admin = createAdminClient();
   // 웹 흐름에서 연결할 수 있는 사용자인가 (앱에 연 뒤, 또는 그 전의 운영자). 앱 흐름은 여기서 연결하지 않는다(complete가 확인한다)
-  let email: string | null = null;
+  let context: ApiContext | null = null;
   return handleOAuthCallback(request, {
     provider: "slack",
     stateSecret: () => oauthStateSecret(),
@@ -25,12 +26,12 @@ export async function GET(request: Request) {
       return state ? { state, userId } : null;
     },
     authenticate: async () => {
-      const user = (await authenticateRequest(request))?.user ?? null;
-      email = user?.email ?? null;
-      return user;
+      context = await authenticateRequest(request);
+      return context?.user ?? null;
     },
+    hasConsent: async () => (context ? hasAiConsent(context) : false),
     connect: (userId, code) => {
-      const connector = slackWebConnector(email);
+      const connector = slackWebConnector(context?.user.email ?? null);
       if (!connector) throw new Error("Slack 연결을 아직 열지 않았습니다 (SLACK_CONNECT_ENABLED).");
       return connector.connect(admin, userId, code);
     },

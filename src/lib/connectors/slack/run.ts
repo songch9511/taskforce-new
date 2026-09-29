@@ -62,12 +62,12 @@ export async function syncSlackConnection(
 
   try {
     const result = await syncSlack(connection, api, slackSyncDeps(admin), { now, deadline: options.deadline, ...DEFAULT_SLACK_SYNC });
-    await recordSync(admin, connection, {});
+    await recordSync(admin, connection, { claimedAt: now });
     return { connectionId: connection.id, ok: true, result };
   } catch (error) {
     // 동기화 도중 외부 AI 처리 동의를 철회함: 연결 오류가 아니다. 처리하지 못한 묶음의 대기 행은 남아 다시 동의하면 넣는다
     if (error instanceof ConsentRequiredError) {
-      await recordSync(admin, connection, {});
+      await recordSync(admin, connection, { claimedAt: now });
       return { connectionId: connection.id, ok: false, error: CONSENT_WITHDRAWN_MESSAGE, revoked: false };
     }
     // Slack에서 앱을 지웠거나 권한을 거뒀는데 이벤트를 받지 못했다: 앱 해제와 같게 끊고 Slack에서 온 글자를 지운다 (D3)
@@ -76,16 +76,16 @@ export async function syncSlackConnection(
       // 동기화 도중 다시 연결했으면(connected_at이 지금보다 뒤) 함수가 건드리지 않는다: 새 토큰이 있는 연결을 끊지 않는다
       const revoked = settings.success ? (await revokeSlackConnections(admin, settings.data.teamId, [settings.data.slackUserId], now)) > 0 : true;
       if (revoked) {
-        await recordSync(admin, connection, { error: REVOKED_MESSAGE, revoked: true });
+        await recordSync(admin, connection, { claimedAt: now, error: REVOKED_MESSAGE, revoked: true });
         return { connectionId: connection.id, ok: false, error: REVOKED_MESSAGE, revoked: true };
       }
       // 이미 끊겼거나(앱 해제 이벤트가 먼저 처리함) 그 사이 다시 연결했다. recordSync는 끊긴 연결을 되살리지 않는다
-      await recordSync(admin, connection, {});
+      await recordSync(admin, connection, { claimedAt: now });
       return { connectionId: connection.id, ok: false, error: REVOKED_MESSAGE, revoked: false };
     }
     const message = userFacingError(error);
     console.error(`Slack 동기화 실패 (${connection.id}):`, error instanceof Error ? error.message : error);
-    await recordSync(admin, connection, { error: message });
+    await recordSync(admin, connection, { claimedAt: now, error: message });
     return { connectionId: connection.id, ok: false, error: message, revoked: false };
   }
 }

@@ -25,6 +25,14 @@ export type UserPosition = "sender" | "sole_recipient" | "recipient" | "cc_only"
 const normalizeEmail = (email: string) => email.trim().toLowerCase();
 const normalizeName = (name: string) => name.replace(/\s+/g, "").toLowerCase();
 
+/** 원문의 관련자 모두: 보낸 사람 · 받는 사람 · 참조 · 참석자 (빈 칸은 undefined) */
+const everyone = (participants: Participants | undefined): (Person | undefined)[] => [
+  participants?.from,
+  ...(participants?.to ?? []),
+  ...(participants?.cc ?? []),
+  ...(participants?.attendees ?? []),
+];
+
 /** 사용자를 가리키는 이름 형태: 이름, 별칭, 세 글자 한글 이름의 성을 뺀 부분 */
 export function userNameForms(identity: UserIdentity): string[] {
   const forms = new Set<string>();
@@ -65,7 +73,7 @@ const NAME_LIKE = /(?<![가-힣])([가-힣]{2,4}?)(?=\s*(?:님|씨|:|\s[-–]\s)
 export function findNameVariants(text: string, identity: UserIdentity, participants?: Participants): string[] {
   const forms = userNameForms(identity);
   const others = new Set(
-    [participants?.from, ...(participants?.to ?? []), ...(participants?.cc ?? []), ...(participants?.attendees ?? [])]
+    everyone(participants)
       .filter((p): p is Person => Boolean(p?.name) && !isUser(p, identity))
       .flatMap((p) => {
         const name = normalizeName(p.name!);
@@ -131,7 +139,7 @@ export function quoteSpeaker(text: string, quote: string, identity: UserIdentity
   if (labels.size !== 1) return null;
   const [label] = labels;
   if (isUser({ name: label }, identity)) return label;
-  const known = [participants?.from, ...(participants?.to ?? []), ...(participants?.cc ?? []), ...(participants?.attendees ?? [])];
+  const known = everyone(participants);
   if (known.some((p) => p?.name && normalizeName(p.name) === normalizeName(label))) return label;
   const uses = lines.filter((line) => speakerLabel(line) === label).length;
   return uses >= 2 && nameLike(label) ? label : null;
@@ -156,13 +164,15 @@ function nameAt(after: string, name: string): number | null {
  * 메일 주소("a@daniel.kr")는 언급이 아니다. 애매하면 사용자가 아니라고 본다 (틀리면 남의 요청이 내 확인 요청으로 뜬다).
  */
 function mentionsUser(line: string, identity: UserIdentity, participants?: Participants): boolean {
+  // userNameForms와 달리 원래 글자(공백 · 대소문자 그대로)를 쓴다: nameAt이 원문과 맞춰 보며 둘을 직접 무시한다.
+  // 그래서 "김 도윤"처럼 띄어 쓴 이름은 성을 뺀 형태를 만들지 않는다 (userNameForms는 공백을 지운 뒤 만든다).
   const userForms = [identity.name, ...identity.aliases].flatMap((raw) => {
     const name = raw.trim();
     if (!name) return [];
     return /^[가-힣]{3}$/.test(name) ? [name, name.slice(1)] : [name];
   });
   if (userForms.length === 0) return false;
-  const others = [participants?.from, ...(participants?.to ?? []), ...(participants?.cc ?? []), ...(participants?.attendees ?? [])]
+  const others = everyone(participants)
     .filter((p): p is Person => Boolean(p?.name?.trim()) && !isUser(p!, identity))
     .map((p) => p.name!.trim());
   const names = [...userForms.map((name) => ({ name, me: true })), ...others.map((name) => ({ name, me: false }))].sort(

@@ -2,7 +2,7 @@ import Foundation
 import Supabase
 
 public enum TaskforceClient {
-    /// 앱 · 공유 확장이 같은 설정으로 만드는 Supabase 클라이언트. 세션은 App Group Keychain에 저장된다.
+    /// 앱이 만드는 Supabase 클라이언트. 세션은 App Group Keychain에 저장해, 공유 확장 · 위젯을 붙이면 같은 설정으로 같은 세션을 읽는다 (아직 없음).
     public static func makeSupabase(config: AppConfig) -> SupabaseClient {
         SupabaseClient(
             supabaseURL: config.supabaseURL,

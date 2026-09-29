@@ -2,7 +2,7 @@
 
 관련 문서: [플랫폼](PLATFORMS.md) · [바이브코딩 플랜](VIBE_CODING_PLAN.md) · [진실 판정](TRUTH_RULES.md)
 
-사용자는 원문을 직접 넣지 않는다. Notion · Gmail · Slack · GitHub에서 원문을 가져와 지금의 파이프라인(추출 → 검증 → Jev)에 넣는다.
+사용자는 원문을 직접 넣지 않는다. Notion · Gmail · Slack에서 원문을 가져와 지금의 파이프라인(추출 → 검증 → Jev)에 넣는다.
 `/lab`의 직접 입력은 엔진을 시험하는 용도다.
 
 ## 구조
@@ -24,8 +24,8 @@
 
 | 방법 | 소스 | 비고 |
 |---|---|---|
-| 서버 OAuth (주기 동기화) | Notion, Gmail, Calendar, Slack, GitHub, Meet 전사 | 아래 구조 |
-| 기기 안 (Apple 앱이 전달) | 미리 알림(EventKit), Apple 메모 | Apple 메모는 공개 API가 없다. 공유 시트(MVP)와 단축어(App Intents)의 "Taskforce로 보내기"로 받는다 |
+| 서버 OAuth (주기 동기화) | Notion, Slack (구현). Gmail, Calendar, Meet 전사 (1단계, 아직 없음) | 아래 구조. GitHub 등 2단계 연동은 아직 "원해요"만 받는다([다음 연동](#다음-연동)) |
+| 기기 안 (Apple 앱이 전달) | 미리 알림(EventKit), Apple 메모 (아직 없음) | Apple 메모는 공개 API가 없다. 공유 시트와 단축어(App Intents)의 "Taskforce로 보내기"로 받을 계획이다 (둘 다 아직 없음) |
 | 범용 입구 | 메일 전달 주소, 붙여넣기 | 연동이 없는 소스를 대신한다 |
 
 ### 서버 연동
@@ -43,7 +43,7 @@
 - **수동 동기화**: `POST /api/v1/connections/sync` (로그인한 사용자의 연결만, 연결마다 1분에 한 번). 연결 끊기: `DELETE /api/v1/connections/:id`.
 - **동시 실행 방지**: 동기화 전에 연결을 잡는다(`sync_started_at`, 10분 뒤 자동으로 풀림). cron과 수동 동기화가 같은 연결을 겹쳐 돌리지 않고, 실행 시간 한도에 가까워지면 남은 항목은 다음 차례로 미룬다.
 - **한도**: 연동 원문도 직접 입력과 같은 한도(본문 20만 자, 제목 200자, 관련자 200명)를 따른다. 사용자에게는 짧은 오류만 보이고 자세한 내용은 서버 로그에만 남는다.
-- **남은 일**: 연결을 끊을 때 우리 쪽 토큰만 지운다. Notion 쪽 권한도 함께 거두는 호출(토큰 폐기 API)은 문서 확인 후 붙인다. 그 전까지는 사용자가 Notion 설정 → 연결에서 직접 해제할 수 있다.
+- **토큰 폐기**: 연결 끊기(`DELETE /api/v1/connections/:id`) · 계정 삭제 모두 서비스 쪽 토큰도 폐기한다 (Notion · Slack, `src/lib/connectors/registry.ts`의 `tokenRevokerFor` · `revokeConnectorTokens`). 폐기가 실패해도 끊기 · 삭제는 계속하고, 우리 쪽 토큰은 연결과 함께 지운다.
 
 ### 넣는 규칙 (`src/lib/connectors/ingest.ts`)
 
@@ -340,7 +340,7 @@ type DataSourceSetting = {
 | 서비스 | 가져올 것 | 주의 |
 |---|---|---|
 | Notion 할 일 DB | 담당 · 기한 · 상태 속성과 그 변화 | 구현됨 (위 설계) |
-| Slack | 나에게 온 DM, 나를 언급한 글, 내가 쓴 약속 | 글이 많고 짧아 Jev 사전 필터가 필요. 비공개 배포 앱의 조회 속도 제한 확인 필요 |
+| Slack | 나에게 온 DM, 나를 언급한 글, 내가 쓴 약속 | 사전 필터 없이 1자부터 받는다(`minTextLength: 1`). 글이 많고 짧아 사전 필터는 비용 · 품질을 보고 정한다. 비공개 배포 앱의 조회 속도 제한 확인 필요 |
 | Gmail (+ Calendar) | 내가 보내거나 받은 스레드, 회의 참석자 | 메일 읽기 권한은 Google 심사 대상(테스트 사용자 100명까지는 심사 없이 가능). 같은 Workspace 안에서만 쓰는 내부 앱이면 심사를 피할 수 있는지 확인 필요. 뉴스레터 · 알림 메일 거르기. **Calendar 이벤트는 같은 회의의 원문(Notion 회의록 · Meet 전사)을 잇는 열쇠**로도 쓴다 |
 | Meet 전사 (선택) | 회의 전사 | 발화마다 화자 이름이 있어 Notion AI 요약의 담당자 없는 액션 아이템을 정할 수 있다. 전사를 켜지 않는 회의가 많아 있으면 가져오는 방식으로 둔다 |
 | GitHub | 나에게 배정된 이슈, 리뷰 요청, 나를 언급한 댓글 | 배정 · 리뷰 요청은 구조화된 할 일 형태 |

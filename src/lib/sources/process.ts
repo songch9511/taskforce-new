@@ -15,6 +15,7 @@ import { consentCheck } from "@/lib/consent/store";
 import { backfillEmbeddings } from "@/lib/pipeline/backfill-embeddings";
 import type { ExtractInput } from "@/lib/pipeline/extract";
 import type { UserIdentity } from "@/lib/pipeline/identity";
+import type { JudgeResult } from "@/lib/pipeline/judge";
 import { mergeJudged, type MergeDeps } from "@/lib/pipeline/merge";
 import { mergeTask, type TaskInput } from "@/lib/pipeline/merge-task";
 import {
@@ -78,6 +79,25 @@ export type ProcessResult = {
   needsConfirmation: string[];
 };
 
+/** judge_logs 한 행 (후보 하나의 판정) */
+export type JudgeLogRow = {
+  user_id: string;
+  source_id: string;
+  candidate: unknown;
+  jev_answers: Record<string, unknown>;
+  decision: JudgeResult["decision"];
+  model_version: string;
+};
+
+/**
+ * 이 원문의 판정 기록을 이번 처리 결과로 바꾼다. 다시 처리해도(scripts/reprocess-sources.ts) 쌓이지 않아,
+ * 누락 신고의 놓친 단계 분류(classifyMiss)와 /lab이 마지막 처리만 본다.
+ */
+export async function replaceJudgeLogs(admin: SupabaseClient, source: { id: string; userId: string }, rows: JudgeLogRow[]): Promise<void> {
+  await admin.from("judge_logs").delete().eq("user_id", source.userId).eq("source_id", source.id).throwOnError();
+  if (rows.length > 0) await admin.from("judge_logs").insert(rows).throwOnError();
+}
+
 export async function processSource(
   admin: SupabaseClient,
   source: { id: string; userId: string },
@@ -94,26 +114,23 @@ export async function processSource(
     await assertConsent(check);
     const result = await runPipeline(input, ai);
 
-    if (result.judged.length > 0) {
-      await admin
-        .from("judge_logs")
-        .insert(
-          result.judged.map(({ candidate, judge }) => ({
-            user_id: source.userId,
-            source_id: sourceId,
-            candidate,
-            jev_answers: {
-              signals: judge.signals,
-              reasons: judge.reasons,
-              ...(judge.rule ? { rule: judge.rule } : {}),
-              ...(judge.speaker ? { quote_speaker: judge.speaker } : {}),
-            },
-            decision: judge.decision,
-            model_version: `${judge.model}@${judge.promptVersion}`,
-          })),
-        )
-        .throwOnError();
-    }
+    await replaceJudgeLogs(
+      admin,
+      source,
+      result.judged.map(({ candidate, judge }) => ({
+        user_id: source.userId,
+        source_id: sourceId,
+        candidate,
+        jev_answers: {
+          signals: judge.signals,
+          reasons: judge.reasons,
+          ...(judge.rule ? { rule: judge.rule } : {}),
+          ...(judge.speaker ? { quote_speaker: judge.speaker } : {}),
+        },
+        decision: judge.decision,
+        model_version: `${judge.model}@${judge.promptVersion}`,
+      })),
+    );
 
     // 기존 Action과 맞춰 보고 반영한다.
     const store = new SupabaseActionStore(admin, source.userId);

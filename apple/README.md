@@ -125,4 +125,4 @@ Mac은 `--show-launcher -TFSampleData -TFSnapshot <폴더>`로 실행하면 런�
   - `TaskforceUI` — Figma 토큰(Asset Catalog 색 세트, 이름 = Figma 변수 · 간격 · 모서리 · 글자)과 부품(Task status · Task row · Review card · Evidence · Sources group · Source icon/stack · Launcher row · Keycap · 캡슐 버튼 · 유리 카드/버튼/묶음), 부품마다 `#Preview`
     - 서비스 로고는 Figma Source icon(Simple Icons 단색)의 글리프만 template 이미지로 두고, 타일은 토큰으로 그린다
 - 순서 계산 · 판정은 서버에만 있다. 앱은 받은 순서를 그대로 보여준다.
-- 로그인 세션은 App Group 공유 Keychain(데이터 보호 Keychain)에 저장되어, Phase A2의 공유 확장이 같은 세션을 읽습니다.
+- 로그인 세션은 App Group 공유 Keychain(데이터 보호 Keychain)에 저장한다. 공유 확장 · 위젯(Phase A2)을 붙이면 같은 세션을 읽을 수 있다(아직 없음).

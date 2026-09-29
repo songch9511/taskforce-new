@@ -30,7 +30,7 @@ export interface ActionStore {
   append(actionId: string, update: { claims: Claim[]; evidence: Evidence; confirmReason?: string }): Promise<void>;
 }
 
-/** eval · 테스트용. Phase 3에서 같은 인터페이스로 DB 저장소를 붙인다. */
+/** eval · 테스트용. 운영은 같은 인터페이스의 DB 저장소(lib/actions/db-store.ts SupabaseActionStore)를 쓴다. */
 export class InMemoryActionStore implements ActionStore {
   private readonly actions: TrackedAction[] = [];
   private seq = 0;
