@@ -151,11 +151,19 @@ const isRateLimited = (error: unknown) =>
 const isNotVisible = (error: unknown) => error instanceof GoogleApiError && (error.status === 403 || error.status === 404) && !isRateLimited(error);
 
 /**
- * 다시 해도 같은 결과인 요청 오류: 400번대(속도 제한 429 · 시간 초과 408은 제외). 403 · 404(볼 수 없음)도 여기 든다.
+ * 다시 해도 같은 결과인 요청 오류: 400번대(속도 제한 429 · 시간 초과 408 · 토큰 401은 제외). 403 · 404(볼 수 없음)도 여기 든다.
  * Calendar API를 켜지 않았거나(accessNotConfigured) 권한이 없으면 몇 번을 다시 해도 같으므로 커서를 붙잡지 않는다.
+ * 401은 토큰 창구가 한 번 갱신해 다시 불러도 나온 것이지만 Google 쪽 일시 문제일 수 있어 일시 오류로 본다(6시간 상한이 붙잡는 시간을 막는다).
+ * 토큰이 정말 거둬졌으면 갱신이 실패해 GoogleReauthError가 되므로 여기까지 오지 않는다. 409(충돌)는 다시 해도 같은 것으로 본다.
  */
 const isPermanent = (error: unknown) =>
-  error instanceof GoogleApiError && error.status >= 400 && error.status < 500 && error.status !== 408 && error.status !== 429 && !isRateLimited(error);
+  error instanceof GoogleApiError &&
+  error.status >= 400 &&
+  error.status < 500 &&
+  error.status !== 401 &&
+  error.status !== 408 &&
+  error.status !== 429 &&
+  !isRateLimited(error);
 
 /** 일부러 잡지 않고 올리는 오류: 토큰 만료(연결을 reauth로), 속도 제한 · 요청 예산(여기서 멈춘다) */
 const isFatal = (error: unknown) => error instanceof GoogleReauthError || error instanceof MeetBudgetExhausted || isRateLimited(error);
@@ -279,6 +287,7 @@ export async function syncGoogleMeet(
     try {
       const transcripts = await input.meetApi.listTranscripts(record.name);
       readsOk.list++;
+      fails.delete(recordKey(record));
       return transcripts;
     } catch (error) {
       if (isFatal(error)) throw error;
@@ -370,6 +379,7 @@ export async function syncGoogleMeet(
       try {
         [entries, participants] = await Promise.all([input.meetApi.listEntries(transcript.name), input.meetApi.listParticipants(found.record.name)]);
         readsOk.entries++;
+        fails.delete(transcriptKey(transcript));
       } catch (error) {
         if (isFatal(error)) throw error;
         if (isNotVisible(error)) {
@@ -407,8 +417,9 @@ export async function syncGoogleMeet(
   // 일시 오류로 읽지 못한 것: 다시 시도하되 계속 안 되면 읽지 못한 것으로 결정한다
   // - 처음 실패한 지 holdCapMs가 지났으면 결정한다 (커서를 더는 붙잡지 않는다)
   // - 같은 것이 여러 동기화에서 반복해 실패하고(failureTries) 처음 센 실패에서 failureSpanMs가 지났으면(파일 기다림 뒤) 그것 하나가 문제인 것으로 보고 결정한다.
-  //   이번 동기화에서 같은 종류의 Meet 읽기가 하나도 성공하지 못했고 실패가 둘 이상이면 Google 장애로 보아 횟수를 세지 않는다
-  const outageOf = (kind: ReadKind) => failures.filter((failure) => failure.kind === kind).length >= 2 && readsOk[kind] === 0;
+  //   같은 종류의 다른 Meet 읽기가 이번 동기화에서 하나라도 성공했을 때만 센다: 하나도 성공하지 못했으면(대기 전사가 하나뿐인 흔한 경우 포함) 그것 하나의 문제인지
+  //   Google 장애인지 알 수 없으므로 횟수를 세지 않고 6시간 상한(holdCapMs)만 적용한다 (장애 때 멀쩡한 전사를 포기하지 않게)
+  const outageOf = (kind: ReadKind) => readsOk[kind] === 0;
   for (const { kind, key, found } of failures) {
     const outage = outageOf(kind);
     const endedAt = found.record.endTime.getTime();
@@ -453,9 +464,11 @@ export async function syncGoogleMeet(
     if (link) count(`meet_link_${link}`);
   }
 
-  // 전사를 모두 결정한 회의 기록은 다시 나열하지 않는다 (전사가 없는 기록은 표시하지 않는다: 커서가 지나갈 때까지 목록에 다시 나올 수 있다)
+  // 전사를 모두 결정한 회의 기록은 다시 나열하지 않는다. 전사가 없는 기록은 끝난 지 파일 기다림(fileWaitMs)이 지난 뒤에 표시한다:
+  // 그 전에는 커서가 지나갈 때까지 목록에 다시 나올 수 있다. 표시하지 않으면 커서가 앞의 미룬 전사에 머무는 동안 나열 상한(150건)을 매번 쓴다
   for (const { found, transcripts } of listedRecords) {
-    if (transcripts.length > 0 && !heldNames.has(found.record.name)) seen.set(recordKey(found.record), found.record.endTime.getTime());
+    const waited = now - found.record.endTime.getTime() >= options.fileWaitMs;
+    if ((transcripts.length > 0 || waited) && !heldNames.has(found.record.name)) seen.set(recordKey(found.record), found.record.endTime.getTime());
   }
   // 회의 코드 조회를 마친 참석 일정: 그 코드의 회의 기록을 모두 결정했고, 일정이 끝난 지 attendedSettleMs가 지났으면 다시 조회하지 않는다
   for (const { events, names } of attendedLookups) {
