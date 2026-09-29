@@ -4,11 +4,13 @@
 // 목록에 있는 공급자가 모두 내려가면 요청은 실패한다 (다른 나라 · 다른 공급자로 새지 않게 일부러 닫힌 쪽으로 둔다).
 // 목록은 환경변수로 바꿀 수 있다 (쉼표로 구분한 OpenRouter 공급자 slug). 모델을 바꾸면 그 모델을 서비스하는 공급자로 목록도 바꾼다.
 // 고른 근거 (2026-09-27, OpenRouter /api/v1/models/{model}/endpoints · /api/v1/endpoints/zdr · /api/v1/providers):
-// - LLM z-ai/glm-5.3-flash: Together · Fireworks · DeepInfra · BaseTen — 모두 ZDR 목록에 있고 본사 US, 구조화 출력(structured_outputs) 지원
+// - LLM z-ai/glm-5.3-flash: Fireworks · Together · DeepInfra — 모두 ZDR 목록에 있고 본사 US, 구조화 출력(structured_outputs) 지원
+//   순서 (2026-09-29 측정): Fireworks가 가장 빠르다(초당 약 140토큰, Together는 19~85토큰이라 90초 제한에 자주 걸림).
+//   DeepInfra는 기본으로 추론하지 않아 빠르지만 결과가 다를 수 있어 마지막에 둔다. BaseTen은 이 모델 제공자 목록에서 빠졌다.
 // - 임베딩 openai/text-embedding-3-small: Azure — ZDR 목록에 있는 유일한 공급자 (OpenAI 직접은 ZDR 목록에 없음), 본사 US
 // - Jev typesafe/jev-1.13: TypeSafe — 유일한 공급자, ZDR 목록에 있음 (OpenRouter에 본사 국가 표기 없음, 공개 자료상 미국 샌프란시스코)
 
-export const DEFAULT_LLM_PROVIDERS = ["together", "fireworks", "deepinfra", "baseten"];
+export const DEFAULT_LLM_PROVIDERS = ["fireworks", "together", "deepinfra"];
 export const DEFAULT_EMBED_PROVIDERS = ["azure"];
 export const DEFAULT_JEV_PROVIDERS = ["typesafe"];
 

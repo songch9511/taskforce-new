@@ -7,8 +7,9 @@ import { handleCreateSource } from "@/lib/api/sources";
 import { processSource } from "@/lib/sources/process";
 import { createAdminClient } from "@/lib/supabase/admin";
 
-// 파이프라인(추출 → 검증 → Jev)이 응답 뒤에 돌 시간을 준다.
-export const maxDuration = 120;
+// 파이프라인(추출 → 검증 → Jev)이 응답 뒤에 돌 시간을 준다. 추출은 90초 제한에 한 번 다시 시도하므로 최악 3분을 넘길 수 있다.
+// 그래도 끊기면 원문이 "처리 중"에 남고 /api/cron/retry-sources가 다시 처리한다.
+export const maxDuration = 300;
 
 export async function POST(request: Request) {
   return handleCreateSource(request, {
