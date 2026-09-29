@@ -14,7 +14,7 @@ App Store 정식 출시가 아니다. "Notion만 연결할 수 있다"로는 go 
 | 단계 | 연동 | go live와의 관계 |
 |---|---|---|
 | **1단계** | Notion · **Google**(Calendar · Gmail · Meet 전사를 연결 한 번으로) · **Slack** | **go live 조건.** 회의에서 약속 → 메시지로 기한 변경 → 메일로 확인까지 PRD 핵심 시나리오를 모두 덮는다 |
-| **2단계** | Microsoft 365(Outlook · 일정 · Teams를 연결 한 번으로) · Zoom · GitHub · Linear · Jira | go live 때 연결 화면에 **보이지만 아직 연결은 안 된다.** 누르면 "원해요"를 이벤트로 남기고, 테스터 수요가 많은 순서로 붙인다 (원칙 6) |
+| **2단계** | Microsoft 365(Outlook · 일정 · Teams를 연결 한 번으로) · Zoom · GitHub · Linear · Jira | go live 때 연결 화면에 **보이지만 아직 연결은 안 된다.** 누르면 "원해요"를 `connection_requests`에 남기고, 테스터 수요가 많은 순서로 붙인다 (원칙 6) |
 
 1단계 연동마다 go live 전에 끝낼 것: 앱 연결 화면 · 서버 동기화 · 개인정보 처리방침의 "수집하는 정보"와 "처리 위탁" · **그 원문 종류의 골든셋과 eval**(메일 · Slack 메시지는 회의록과 문체가 달라 정확도를 따로 잰다).
 
@@ -64,9 +64,9 @@ go live 날짜는 코드보다 **Google 심사(L3 · L4)** 에 묶인다. 2'를 
 
 **직접 써 보며 드러난 것 (2와 함께 처리)**
 - 추출 품질의 기준이 합성 예시뿐이다. 실제 워크스페이스에서는 남이 쓴 문서 · 제각각인 할 일 DB · 태그 없는 회의록이 많았다. 1주 사용 데이터로 익명화한 골든셋을 더한다 (원문은 사용자 동의 아래 로컬에서만 가공).
-- 첫 동기화가 연결 뒤 4분 넘게 걸리는데 진행 표시가 없고, 그 사이 Sync Now는 "이미 동기화 중"만 보인다. 테스터가 가장 먼저 겪는 화면이다 (C11).
+- 첫 동기화가 연결 뒤 4분 넘게 걸리는데 진행 표시가 없고, 그 사이 Sync Now는 "이미 동기화 중"만 보인다. 테스터가 가장 먼저 겪는 화면이다 (C11). ✅ 끝남: "Syncing…" 진행 표시, 동기화 중 Sync Now는 오류 대신 안내.
 - 확인 요청(Review) 수가 늘면 그 자체가 관리 비용이다(원칙 3). 1주 사용에서 하루 몇 건인지 본다.
-- CI는 서버만 검사한다. Swift 테스트 · 빌드를 CI에 더한다 (C12).
+- CI는 서버만 검사한다. Swift 테스트 · 빌드를 CI에 더한다 (C12). ✅ 끝남: PR마다 `swift test`와 iOS · macOS 빌드.
 - 내부 도구 웹 로그인(매직 링크)은 링크를 요청한 브라우저에서 열어야 한다(PKCE). 운영자 안내에 적는다.
 
 ---
@@ -86,16 +86,16 @@ go live 날짜는 코드보다 **Google 심사(L3 · L4)** 에 묶인다. 2'를 
 1. **연결 시작 API (새 Route Handler):** `POST /api/v1/connections/notion/start`
    - 인증: 다른 v1 라우트와 같다(`Authorization: Bearer` 또는 쿠키).
    - 응답: `{ url }`, 즉 Notion 권한 화면 주소. 스키마는 `src/lib/api/contract.ts`에 zod로 둔다.
-   - `state`: 쿠키 대신 서명된 값을 쓴다. 내용은 `{ userId, nonce, exp(10분), return: "app" }`이고, HMAC-SHA256으로 서명한다. 서명 키는 새 환경변수(예: `OAUTH_STATE_SECRET`, 서버 전용)로 둔다.
+   - `state`: 쿠키 대신 서명된 값을 쓴다. 내용은 `{ userId, provider, nonce, exp(10분) }`이고, HMAC-SHA256으로 서명한다. 서명 키는 `OAUTH_STATE_SECRET`(서버 전용, 32자 이상)이다.
 2. **callback이 두 흐름을 모두 받는다.**
    - 쿠키 `state`가 있으면 지금처럼 웹(`/lab`) 흐름으로 처리한다.
    - 서명된 `state`면 서명(timing-safe 비교)과 만료를 확인하고, 사용자는 `state` 안의 `userId`로 정한다. 이 경우 세션이 없어도 된다.
-   - 같은 `state`를 두 번 쓰지 못하게 `nonce`를 한 번만 쓰는 것을 권장한다. 예: 서버만 쓰는 작은 테이블. 새 테이블이면 `supabase/migrations/`에 새 파일로 추가하고, `tests/db/`에 테스트를 둔다.
-   - 끝나면 `taskforce://connections/notion?status=<값>`으로 보낸다. `<값>`은 지금 `/lab`에 쓰는 것과 같다: `connected`, `connected_empty`, `connected_no_meetings`, `denied`, `error`, `invalid_state`.
-3. **첫 동기화를 바로 시작한다.** 연결 직후 한 번 동기화해 최근 14일의 회의록을 가져온다. 그래야 테스터가 연결하자마자 결과를 본다. 서버에서 바로 시작하거나, 앱이 돌아온 뒤 `POST /api/v1/connections/sync`를 부른다.
+   - 같은 `state`를 두 번 쓰지 못하게 `nonce`를 한 번만 쓴다 (서버만 쓰는 `oauth_nonces` 표, `tests/db/go-live-connections.test.ts`).
+   - 끝나면 code를 완료 대기(handoff)로 남기고 `taskforce://connections/notion?handoff=<id>`로 보낸다. 앱이 `POST /api/v1/connections/notion/complete {handoff}`로 연결을 마치고 `status`(`connected`, `connected_empty`, `connected_no_meetings`)를 받는다. 권한 화면 단계의 실패는 바로 `?status=denied|error|invalid_state`로 보낸다 (아래 "구현 결과").
+3. **첫 동기화를 바로 시작한다.** 연결 직후 한 번 동기화해 최근 14일의 회의록을 가져온다. 그래야 테스터가 연결하자마자 결과를 본다. 서버가 `complete` 응답 뒤(`after()`) 바로 시작한다.
 4. **로그:** `state`, `code`, 토큰은 로그에 남기지 않는다. 지금처럼 오류 메시지만 남긴다.
 
-**구현 결과 (2026-09-27, 위 계획과 달라진 점).** 시작 API는 서비스마다 만들지 않고 `POST /api/v1/connections/{provider}/start` 하나로 모든 연동이 같이 쓴다. callback은 서명된 `state`(앱)와 쿠키 `state`(웹) 두 흐름을 그대로 받지만, 앱 흐름에서는 바로 `status=<값>`으로 돌려보내지 않는다: code를 암호화한 **완료 대기(handoff, `oauth_handoffs`, 2분 유효)** 로 남기고 `taskforce://connections/{provider}?handoff=<id>`로 보낸 뒤, 앱이 그 `handoff`로 **`POST /api/v1/connections/{provider}/complete`** 를 Bearer 토큰과 함께 불러야 연결이 끝난다(시작한 사용자만, 한 번만 쓸 수 있음, 성공하면 응답 뒤 첫 동기화 실행). 연결 시작에는 속도 제한(10분에 10번, `rate_limit_events` · `take_rate_limit`)이 붙었다.
+**구현 결과 (2026-09-27, 처음 계획과 달라진 점. 위 본문은 2026-09-29에 이에 맞췄다).** 시작 API는 서비스마다 만들지 않고 `POST /api/v1/connections/{provider}/start` 하나로 모든 연동이 같이 쓴다. callback은 서명된 `state`(앱)와 쿠키 `state`(웹) 두 흐름을 그대로 받지만, 앱 흐름에서는 바로 `status=<값>`으로 돌려보내지 않는다: code를 암호화한 **완료 대기(handoff, `oauth_handoffs`, 2분 유효)** 로 남기고 `taskforce://connections/{provider}?handoff=<id>`로 보낸 뒤, 앱이 그 `handoff`로 **`POST /api/v1/connections/{provider}/complete`** 를 Bearer 토큰과 함께 불러야 연결이 끝난다(시작한 사용자만, 한 번만 쓸 수 있음, 성공하면 응답 뒤 첫 동기화 실행). 연결 시작에는 속도 제한(10분에 10번, `rate_limit_events` · `take_rate_limit`)이 붙었다.
 
 ### 앱 변경
 
@@ -141,7 +141,7 @@ go live 날짜는 코드보다 **Google 심사(L3 · L4)** 에 묶인다. 2'를 
 지금 앱의 `API_BASE_URL`은 `http://localhost:3000`이다(`apple/Config/Secrets.xcconfig`). 외부 테스터를 받으려면 다음이 필요하다.
 
 - Vercel에 서버를 배포한다. 리전은 `vercel.json`에 `syd1`로 이미 지정되어 있어 Supabase(ap-southeast-2)와 같다. 도메인 예: `api.taskforcelabs.dev`.
-- `.env.example`의 서버 환경변수를 모두 Vercel에 넣는다. 특히 `SUPABASE_SERVICE_ROLE_KEY`, `CONNECTOR_TOKEN_KEY`, `CRON_SECRET`, `NOTION_*`, `APNS_*`가 필요하고, 1장을 구현하면 `OAUTH_STATE_SECRET`도 추가한다.
+- `.env.example`의 서버 환경변수를 모두 Vercel에 넣는다. 특히 `SUPABASE_SERVICE_ROLE_KEY`, `CONNECTOR_TOKEN_KEY`, `CRON_SECRET`, `NOTION_*`, `APNS_*`, `OAUTH_STATE_SECRET`가 필요하다 (`OAUTH_STATE_SECRET`이 없거나 32자보다 짧으면 앱 연결이 실패한다, `src/lib/env.ts`).
 - Notion 연결 설정에 운영 callback 주소를 Redirect URI로 등록하고, `NOTION_REDIRECT_URI`도 같게 맞춘다.
 - Supabase Auth의 Site URL과 Redirect URLs를 운영 주소로 바꾼다.
 - 릴리스 빌드의 `API_BASE_URL`을 운영 주소로 바꾼다.
@@ -205,7 +205,7 @@ Calendar · Gmail · Meet 전사를 **Google 연결 한 번**으로 받는다. �
 ## 8. 2단계 연동 자리와 "원해요"
 
 - 연결 화면에 2단계 연동(Microsoft 365 · Zoom · GitHub · Linear · Jira)을 로고로 보여 주고, 연결 버튼 대신 "원해요"를 둔다.
-- 누르면 `metric_events`에 서비스 이름과 함께 남긴다(새 이벤트 종류, 예: `connection_requested`). 한 사람이 같은 서비스를 여러 번 눌러도 한 번으로 센다.
+- 누르면 `connection_requests` 표에 남긴다(`POST /api/v1/connection-requests`, 사용자 · 서비스마다 한 행). 한 사람이 같은 서비스를 여러 번 눌러도 한 번으로 센다.
 - `/admin/metrics`에 서비스별 요청 수를 보이고, 2단계 연동은 이 순서대로 붙인다.
 - 원해요를 누른 사람에게 따로 연락하지 않는다(처리방침에 없는 연락이다). 연동이 붙으면 앱 안에서 알린다.
 
@@ -224,3 +224,13 @@ Calendar · Gmail · Meet 전사를 **Google 연결 한 번**으로 받는다. �
 | [legal/privacy.ko.md](legal/privacy.ko.md) · [privacy.en.md](legal/privacy.en.md) | 개인정보 처리방침 (1단계 연동 기준) |
 | [legal/terms.ko.md](legal/terms.ko.md) · [terms.en.md](legal/terms.en.md) | 이용약관 (베타) |
 | [legal/connector-addenda.md](legal/connector-addenda.md) | 2단계 연동을 붙일 때 처리방침에 넣을 절 |
+
+## 10. 남은 일 (go live 조건 아님)
+
+2026-09-29 피처맵 정리([FEATURE_MAP.md](FEATURE_MAP.md) 6장)에서 옮겼다. 문서에 있다고 적었지만 코드에는 아직 없는 것이다.
+
+- **Jev 사전 필터**: 추출 전에 약속이 없는 조각을 건너뛴다. 지금은 원문을 모두 추출로 보내고, Slack도 1자부터 받는다(`minTextLength: 1`). Slack 비용 · 품질을 보고 정한다 ([ARCHITECTURE.md](ARCHITECTURE.md) 2장).
+- **알림 확장**(Notification Service Extension): 로그인 세션으로 할 일 제목을 받아 잠금 화면 알림에 채운다. 지금은 서버의 짧은 영어 문구("Review" · "Due today" · "Due tomorrow")만 보인다 ([PLATFORMS.md](PLATFORMS.md) 3장).
+- **iPhone AI에게 넘기기 · 할 일 상세(변경 이력)**: 넘기기는 Mac 런처에만 있다. 두 앱 모두 상세 화면 없이 근거 펼치기만 있다 ([PLATFORMS.md](PLATFORMS.md) 1장).
+- **공유 확장 · 위젯** (Phase A2): 타깃이 없다. 세션은 App Group 공유 Keychain에 있어 붙이면 같은 세션을 읽는다 ([PRD.md](PRD.md) "이후").
+- **이메일 6자리 코드 로그인**: 앱에는 Sign in with Apple과 심사 계정용 이메일 · 비밀번호만 있다 ([PLATFORMS.md](PLATFORMS.md) 4장).

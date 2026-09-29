@@ -61,7 +61,7 @@ cron 15분 · Sync Now · 연결 직후 ──▶ syncConnections ──▶ slac
 | `src/app/api/connectors/slack/callback/route.ts` | 공용 `handleOAuthCallback`에 넘긴다 (Notion callback과 같은 모양) | — |
 | `src/app/api/connectors/slack/events/route.ts` | 이벤트 받기(2-4). 서명 확인 전에 본문을 문자열로 먼저 읽는다(`await request.text()`) | route 테스트 |
 | `src/app/api/v1/connections/[id]/route.ts` | 연결 끊기를 서버 권한으로: 토큰 폐기 → (Slack) D3 → 행 삭제 (2-7) | route 테스트 |
-| `src/lib/retention.ts` · `/api/cron/retention` | 새 정리 RPC 호출: 넣은 지 3일 지난 대기 행, 활동 14일 지난 추적 스레드 | DB 테스트 |
+| `src/lib/retention.ts` · `/api/cron/retention` | 새 정리 RPC 호출: 받은 지(`received_at`) 3일 지난 대기 행(넣었는지와 관계없이), 활동 14일 지난 추적 스레드 | DB 테스트 |
 | `src/lib/connectors/registry.ts` | `CONNECTORS`에 `slack: slackConnector` 한 줄. 이것으로 앱의 연결 시작 · 완료 · 동기화 · 계정 삭제 때 토큰 폐기가 이어진다 | 기존 |
 | `src/lib/env.ts` · `.env.example` | `SLACK_CLIENT_ID` · `SLACK_CLIENT_SECRET` · `SLACK_SIGNING_SECRET` · `SLACK_REDIRECT_URI` · `SLACK_APP_TOKEN`(D4) | 기존 env 테스트 |
 | `scripts/eval.ts` · `src/lib/eval/golden.ts` | 케이스 묶음(태그 또는 id 앞머리) 필터 · 묶음별 표, "확인 요청이면 맞음" 표시(4장) | 기존 eval 테스트 |
@@ -84,7 +84,7 @@ cron 15분 · Sync Now · 연결 직후 ──▶ syncConnections ──▶ slac
 | `url_verification` | `challenge`를 그대로 돌려준다 |
 | 받을 연결 찾기 | `team_id`와 `authorizations[].user_id`로 `provider = slack`, `external_account_id = team:user`, **`status`가 `active` 또는 `error`**인 연결을 찾는다. `recordSync`는 동기화가 한 번 실패해도 `error`로 바꾸고(`store.ts`), `error` 연결도 동기화는 계속된다. `active`만 받으면 일시 오류 동안의 메시지가 영영 사라진다(과거를 다시 가져올 방법이 없다). `revoked`만 뺀다. 이벤트의 `authorizations`에 없는 연결이 그 워크스페이스에 있으면 D4. 동의(`ai_consent_at`)가 없는 이용자는 저장하지 않는다 |
 | 가르기 (연결마다) | DM(`im`) · 그룹 DM(`mpim`): 모두 남김. 채널(`channel` · `group`): 본문에 `<@이용자id>`가 있거나, 보낸 사람이 이용자거나, **추적 중인 스레드**의 답글일 때만. 이용자가 쓰거나 언급된 글이 스레드 첫 글이거나 스레드 안이면 그 스레드를 추적에 올린다(처리방침 3장 문장을 여기에 맞춘다, 5장). 봇 · 시스템 하위 유형(`bot_message` · `channel_join` · `channel_leave` 등)은 버린다 |
-| 저장 · 재전송 | 보통 메시지는 `slack_messages`에 `(connection_id, channel_id, ts)`로 넣되 **이미 있으면 아무것도 하지 않는다.** 행은 원문으로 넣은 뒤에도 3일 동안 표시만 남기므로(2-6), Slack이 늦게 다시 보낸 이벤트(`X-Slack-Retry-Num`, Delayed Events)가 이미 넣은 메시지를 다시 넣거나 고친 글을 옛 글로 덮지 않는다 |
+| 저장 · 재전송 | 보통 메시지는 `slack_messages`에 `(connection_id, channel_id, ts)`로 넣되 **이미 있으면 아무것도 하지 않는다.** 행은 원문으로 넣은 뒤에도 받은 지 3일까지 표시만 남기므로(2-6), Slack이 늦게 다시 보낸 이벤트(`X-Slack-Retry-Num`, Delayed Events)가 이미 넣은 메시지를 다시 넣거나 고친 글을 옛 글로 덮지 않는다 |
 | 고침 · 지움 | `message_changed`: 아직 넣지 않은 행이면 본문을 바꾼다. `message_deleted`: 아직 넣지 않은 행이면 지운다. 이미 원문으로 넣었으면 그대로 둔다(본문은 90일 뒤 지움, slack-app.md 7장 검토 3) |
 | 답 | 저장까지 동기로 하고 200. 저장이 실패하면 5xx로 답해 Slack이 다시 보내게 한다. 받을 연결이 없는 이벤트 · 버린 이벤트도 200 (60분 동안 95% 넘게 실패하면 Slack이 구독을 끈다) |
 | 앱 해제 | `tokens_revoked`: 이벤트에 든 사용자 id의 연결만. `app_uninstalled`: **그 워크스페이스의 모든 Taskforce 연결.** 두 이벤트는 순서 없이 온다. 연결의 `connected_at`이 이벤트 시각(`event_time`)보다 뒤면(그 사이 다시 연결) 건드리지 않는다. `created_at`은 다시 연결해도 그대로이고(`saveConnection`이 기존 행을 고친다), `updated_at`은 동기화마다 바뀌어서 둘 다 쓸 수 없다 → 새 열(2-6). 해당 연결은 `revoked`로 바꾸고 D3대로 지운다 |
@@ -126,7 +126,7 @@ cron 15분 · Sync Now · 연결 직후 ──▶ syncConnections ──▶ slac
 
 | 표 · 변경 | 내용 | 지워지는 때 |
 |---|---|---|
-| `slack_messages` (대기 메시지) | `connection_id` · `user_id` · `channel_id` · `channel_type`(im/mpim/channel/group) · `ts` · `thread_ts` · `sender_id` · `text` · `edited_at` · `received_at` · `source_id`(넣은 원문. `sources` 외래키 `on delete set null`, 처리가 끝나면 `text`를 비움). unique `(connection_id, channel_id, ts)` | 넣은 지 3일(재전송 막기용 표시), 안 넣은 행도 3일(안전장치) — retention cron. 연결 끊기 · 계정 삭제 |
+| `slack_messages` (대기 메시지) | `connection_id` · `user_id` · `channel_id` · `channel_type`(im/mpim/channel/group) · `ts` · `thread_ts` · `sender_id` · `text` · `edited_at` · `received_at` · `source_id`(넣은 원문. `sources` 외래키 `on delete set null`, 처리가 끝나면 `text`를 비움). unique `(connection_id, channel_id, ts)` | 받은 지(`received_at`) 3일 — 넣은 행(재전송 막기용 표시) · 안 넣은 행(안전장치) 모두 — retention cron. 연결 끊기 · 계정 삭제 |
 | `slack_threads` (추적 스레드) | `connection_id` · `user_id` · `channel_id` · `thread_ts` · `last_activity_at`. PK `(connection_id, channel_id, thread_ts)` | 마지막 활동 14일 뒤(retention cron), 연결 끊기, 계정 삭제 |
 | `slack_people` (이름 캐시) | `connection_id` · `user_id` · `slack_id`(사람 또는 대화) · `kind` · `name` · `fetched_at`. PK `(connection_id, slack_id)` | 연결 끊기, 계정 삭제 |
 | `connections.connected_at` | `saveConnection`이 연결 · 다시 연결 때마다 적는다. 늦게 온 `tokens_revoked`가 새 연결을 지우지 않게 하는 기준(2-4) | — |

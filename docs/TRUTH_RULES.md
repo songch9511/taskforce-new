@@ -28,7 +28,7 @@ Source → ① 추출기(Extractor) → ② 기계적 검증 → ③ Jev 판정 
 
 - **인용 실재 확인**: 후보의 `quote`가 원문에 실제로 있는지 문자열로 대조합니다(공백·문장부호 정규화 후). 없으면 환각이므로 즉시 폐기합니다.
 - **날짜 정합성**: "금요일"을 정규화한 날짜가 원문 작성 시점(`occurred_at`) 기준으로 맞는지 코드로 다시 계산합니다.
-- **스키마 검증**: zod 검증에 실패하면 폐기합니다.
+- **스키마 검증**: 후보마다가 아니라 추출 호출에서 합니다. LLM 응답 전체를 zod로 검증하고, 형식 오류(JSON이 아님 · 스키마 불일치)나 시간 초과면 한 번 다시 부릅니다(`src/lib/ai/llm.ts`). 그래도 실패하면 원문을 `failed`로 둡니다(`src/lib/sources/process.ts`).
 
 ### ③ Judge: Jev (TypeSafe System One 모델)
 
@@ -60,7 +60,7 @@ Jev의 확률은 보정을 목표로 학습되어 있어서 **"P(내 약속) < 0
 #### 후보 검증 요청 (후보 1개당 1회 호출)
 
 `state`에는 후보와 인용 주변 원문만 넣습니다. 추출기의 추론은 넣지 않습니다.
-인용 줄에 화자 이름표("박지훈: …", "[신예린] …")가 있으면 코드가 읽어 `candidate.quote_speaker`로 넣습니다(judge-v5, `quoteSpeaker`). 사용자 · 관련자의 이름이거나 원문에서 두 번 이상 화자 표로 쓰인 사람 이름 모양만 받고("제목: …" · "참고: …" 같은 머리글, 메일 주소는 빼고), 이름표 없이 이어지는 줄은 그 메시지 첫 줄의 화자로 봅니다. 같은 구절이 여러 사람의 줄에 있거나 인용이 여러 사람의 줄에 걸치면 넣지 않습니다: 화자를 잘못 알려 주면 규칙 0이 요청한 쪽의 말로 보고 확인 없이 반영할 수 있어서입니다. `speaker_role`은 이 이름을 보고 답합니다. 이 이름표는 판정 결과(`JudgeResult.speaker`)와 판정 기록(`jev_answers.quote_speaker`)에도 남아, 병합이 Claim의 화자 역할을 코드로 정하는 데 씁니다(2장 "구현"). 추출기는 취소(cancellation)의 인용에서 뒤에 붙은 이유("~이미 했대요")를 빼되, 남의 허락 · 결정을 전하는 말은 빼지 않습니다(extract-v5). 짧은 메시지에서 뒤에 붙은 이유("대표님이 이미 받으셨대요")를 보고 발언 전체를 남의 말로 보던 문제(Slack 골든셋 F2) 때문에 더했습니다.
+인용 줄에 화자 이름표("박지훈: …", "[신예린] …")가 있으면 코드가 읽어 `candidate.quote_speaker`로 넣습니다(judge-v5, `quoteSpeaker`). 사용자 · 관련자의 이름이거나 원문에서 두 번 이상 화자 표로 쓰인 사람 이름 모양만 받고("제목: …" · "참고: …" 같은 머리글, 메일 주소는 빼고), 이름표 없이 이어지는 줄은 그 메시지 첫 줄의 화자로 봅니다. 같은 구절이 여러 사람의 줄에 있거나 인용이 여러 사람의 줄에 걸치면 넣지 않습니다: 화자를 잘못 알려 주면 규칙 0이 요청한 쪽의 말로 보고 확인 없이 반영할 수 있어서입니다. `speaker_role`은 이 이름을 보고 답합니다. 이 이름표는 판정 결과(`JudgeResult.speaker`)에 남아, 병합이 Claim의 화자 역할을 코드로 정하는 데 씁니다(2장 "구현"). 판정 기록(`jev_answers.quote_speaker`)에도 적지만 분석용이고, 읽는 코드는 없습니다. 추출기는 취소(cancellation)의 인용에서 뒤에 붙은 이유("~이미 했대요")를 빼되, 남의 허락 · 결정을 전하는 말은 빼지 않습니다(extract-v5). 짧은 메시지에서 뒤에 붙은 이유("대표님이 이미 받으셨대요")를 보고 발언 전체를 남의 말로 보던 문제(Slack 골든셋 F2) 때문에 더했습니다.
 
 ```jsonc
 {
@@ -108,12 +108,12 @@ Jev의 확률은 보정을 목표로 학습되어 있어서 **"P(내 약속) < 0
 
 #### 판정 결과 처리 (임계값은 골든셋으로 조정)
 
-아래 표는 초기값입니다. 현재 값과 조정 근거는 `src/lib/pipeline/judge.config.ts`에 있습니다 (자동 반영 기준 0.85 → 0.8).
+아래 표는 현재 값입니다. 값과 조정 근거는 `src/lib/pipeline/judge.config.ts`에 있습니다 (자동 반영 기준 초기값 0.85 → 0.8).
 
 | 조건 | 처리 |
 |---|---|
-| `is_my_commitment` ≥ 0.85, `is_actionable` ≥ 0.85, `already_done` < 0.3, `certainty=firm` | 자동 반영 |
-| 위 확률 중 하나라도 0.4~0.85 구간, 또는 `certainty=tentative` | 확인 요청 목록 |
+| `is_my_commitment` ≥ 0.8, `is_actionable` ≥ 0.8, `already_done` < 0.3, `certainty=firm` | 자동 반영 |
+| 위 확률 중 하나라도 0.4~0.8 구간, 또는 `certainty=tentative` | 확인 요청 목록 |
 | `is_my_commitment` < 0.4 또는 `is_actionable` < 0.4 또는 `certainty=none` | 반영 안 함. 기각 로그는 남깁니다 (누락 분석용) |
 | 위 기각 중 사유가 `is_my_commitment` < 0.4 **하나뿐**이고, 인용이 속한 메시지가 사용자를 `@이름`으로 직접 부름 | 확인 요청까지만 (코드 규칙, `decideOutcome`의 `addressedToUser`, 임계값 설정과 상관없이 자동 반영은 없음, 판정 기록 `jev_answers.rule = addressed_request`). `@` 뒤는 사용자 이름 · 별칭 · 관련자 이름 중 **가장 긴 이름**으로 읽는다: 관련자에 "Daniel Kim"이 있으면 "@Daniel Kim"은 별칭이 "Daniel"인 사용자가 아니다. 관련자 목록이 없어도 이름만 적은 영문 별칭 뒤에 다른 영문 단어가 이어지면("@Daniel Kim", "@daniel.kim") 다른 사람으로 본다. 애매하면 사용자가 아니다 (남의 요청이 내 확인 요청으로 뜨지 않게, 골든셋 `slack-namesake-other-person`). 아직 수락하지 않은 직접 요청, 특히 무엇을 가리키는지 원문에 없는 요청("@지호 이거 금요일까지 될까요?")이 조용히 사라지지 않게 한다 (원칙 3, Slack 골든셋 F3, 2026-09-28 결정) |
 
@@ -127,8 +127,9 @@ Jev는 설명 문장을 주지 않으므로, 사용자에게 보여줄 이유는
 | 위치 | 질문 | 효과 |
 |---|---|---|
 | 추출 전 사전 필터 | `noul`: "이 메시지 조각에 약속·할당이 있는가?" | 약속 없는 잡담·공지는 비싼 LLM 추출을 건너뜀 |
-| 매칭 판정 | `choice`: new / update / duplicate / complete (state에 후보와 기존 Action을 함께) | 병합 오판을 확률로 관리 |
 | "지금 할 일" 랭킹 | `score`: 긴급도 척도 | 규칙 기반 정렬의 보조 신호 |
+
+매칭 판정(new · 같은 일의 반복 · 변경 · 완료 · 취소)은 이미 Jev `choice`로 합니다 (`lib/pipeline/match.ts`, [ARCHITECTURE.md](ARCHITECTURE.md) 2장).
 
 ### 주의할 점
 
@@ -156,6 +157,8 @@ Claim  id, action_id, field(due|scope|owner|status), value,
        audience(shared|private),               -- 상대에게 한 말 vs 내 메모
        state(active|superseded|disputed)
 ```
+
+`state` 컬럼은 스키마에만 있고 쓰는 코드가 없습니다. 어느 Claim이 졌는지(superseded)는 저장하지 않고 `resolve()`가 판정할 때마다 계산합니다(`src/lib/pipeline/resolve.ts`).
 
 ### 판정 규칙 (위에서부터 순서대로 적용)
 
@@ -206,7 +209,7 @@ Claim  id, action_id, field(due|scope|owner|status), value,
 
 ### 공통 원칙
 
-- **아무 Claim도 지우지 않습니다.** 진 Claim은 `superseded`로 남겨 Action 상세의 변경 이력에 보여줍니다.
+- **아무 Claim도 지우지 않습니다.** 진 Claim도 남겨 두고, 어느 Claim이 졌는지는 `resolve()`가 판정할 때마다 계산합니다. 바뀐 값은 `action_events`에 남고, 변경 이력 화면은 아직 없습니다 ([남은 일](GO_LIVE.md#10-남은-일-go-live-조건-아님)).
 - **판정 이유를 저장합니다.** 예: "규칙 0 + 4: 요청자가 9/24에 기한 연장 수락". 사용자가 "왜 월요일이지?"라고 물을 때 바로 답할 수 있어야 합니다.
 - **판정 함수는 순수 함수입니다.** `resolve(claims) → { value, winningClaimId, rule, needsConfirmation }` 형태로 만들고, 위 규칙마다 단위 테스트를 둡니다.
 
