@@ -57,7 +57,7 @@ App Store 정식 출시가 아니다. "Notion만 연결할 수 있다"로는 go 
 | 2 | 서버 배포 + TestFlight 내부 빌드 → **1주 직접 써 보기** (자동 동기화 · iPhone 실기기 · 지표 1~5 첫 숫자) | I1 ~ I12 | 사용자(계정 · 키) + 코드(명령 · 확인) | 1주 |
 | 2' | 오래 걸리는 외부 일정 바로 시작: Search Console → Google 브랜드 심사 → Calendar · Meet 민감 범위 심사, Slack 앱 · 공개 배포, 법률 자체 검토(docs/legal/self-review.md, 2026-09-29) | L2 ~ L4 · L7 · L9 | 사용자 | 2~4주 (기다림) |
 | 3 | Slack 연동 (PRD 핵심 시나리오 2, Slack 골든셋 · eval). 계획: [go-live/slack-integration.md](go-live/slack-integration.md) | C5 | 코드 | 1~2주 |
-| 4 | Google 연동 (Calendar · Meet 전사 · Gmail은 테스트 상태로, 7일 재연결 안내) | C4 · L5 | 코드 | 2~3주 |
+| 4 | Google 연동 (Calendar · Meet 전사 · Gmail은 테스트 상태로, 7일 재연결 안내). 계획: [go-live/google-integration.md](go-live/google-integration.md) | C4 · L5 | 코드 | 2~3주 |
 | 5 | 마무리: 전체 검증, TestFlight 외부 심사, 웹사이트 교체, 새 계정으로 끝까지 확인 → 공개 링크 | C9 · L8 · L1 · G1 ~ G4 | 사용자 + 코드 | 1주 |
 
 go live 날짜는 코드보다 **Google 심사(L3 · L4)** 에 묶인다. 2'를 1과 같은 주에 시작한다.
@@ -219,6 +219,7 @@ Calendar · Gmail · Meet 전사를 **Google 연결 한 번**으로 받는다. �
 | [go-live/google-verification.md](go-live/google-verification.md) | Google 프로젝트 둘(Calendar · Meet 정식 / Gmail 테스트 → 제한 심사 + CASA), 동의 화면 값, 범위별 필요성 문안, 시연 영상 대본, 심사 fixture, CASA 준비 |
 | [go-live/slack-app.md](go-live/slack-app.md) | Slack 앱 매니페스트(사용자 토큰 + Events API), 권한을 고른 이유, 공개 배포, 2025-05 속도 제한, Slack 약관 · 보관 검토 |
 | [go-live/slack-integration.md](go-live/slack-integration.md) | Slack 연동 구현 계획(C5): 정할 것 D1~D6, 이벤트 받기 · 묶기 · 넣기, 새 표, 골든셋, PR 순서, 끝난 기준 |
+| [go-live/google-integration.md](go-live/google-integration.md) | Google 연동 구현 계획(C4): 정할 것 G1~G13(Meet 전사 경로 · Calendar 잇기 · Gmail 거르기), OAuth · `reauth`, 골든셋, PR 순서, 끝난 기준 |
 | [go-live/app-store.md](go-live/app-store.md) | TestFlight 외부 테스트 정보, 심사 메모와 데모 계정, 개인정보 라벨, 외부 AI 동의 화면(5.1.2(i)), 계정 삭제 · Sign in with Apple 토큰 폐기 |
 | [legal/README.md](legal/README.md) | 처리방침 · 약관 원본과 게시 규칙, 구현 대조표, 결정할 것, 법률 검토 항목 |
 | [legal/privacy.ko.md](legal/privacy.ko.md) · [privacy.en.md](legal/privacy.en.md) | 개인정보 처리방침 (1단계 연동 기준) |
