@@ -6,7 +6,7 @@ import type { JevDecision } from "@/lib/ai/jev";
 import type { CompleteJson } from "./extract";
 import type { Decide } from "./judge";
 import { InMemoryActionStore, mergeJudged } from "./merge";
-import { classifyMiss, extractMissing, reportedQuoteOverlaps, reportMatchDecide, reportStore, trackedByEvidence } from "./missing";
+import { classifyMiss, extractMissing, reportedQuoteOverlaps, reportMatchDecide, reportStore, trackedByEvidence, unappliedCandidates } from "./missing";
 import { resolveAction } from "./resolve";
 
 const text = "김대표: 견적서도 같이 받을 수 있을까요?\n나: 네, 금요일까지 견적서 정리해서 드릴게요.\n김대표: 좋아요.";
@@ -219,6 +219,25 @@ describe("trackedByEvidence", () => {
     expect(trackedByEvidence([{ actionId: "a1", quote: "다음 주에 미팅 잡을게요", owner: "me" }], quote)).toBeNull();
     expect(trackedByEvidence([{ actionId: "a2", quote, owner: "other" }], quote)).toBeNull();
     expect(trackedByEvidence([{ actionId: "a2", quote: null, owner: "me" }], quote)).toBeNull();
+  });
+});
+
+describe("unappliedCandidates: 다시 처리할 때 이미 반영된 후보 빼기", () => {
+  const judged = (quote: string) => ({ candidate: { quote } });
+
+  it("이 원문의 근거 구절과 겹치는 후보는 빼고 나머지만 병합한다", () => {
+    const candidates = [judged("금요일까지 견적서 정리해서 드릴게요"), judged("다음 주에 미팅 잡을게요")];
+    expect(unappliedCandidates(candidates, ["네, 금요일까지 견적서 정리해서 드릴게요."])).toEqual([judged("다음 주에 미팅 잡을게요")]);
+  });
+
+  it("근거가 없으면 그대로", () => {
+    const candidates = [judged("금요일까지 견적서 정리해서 드릴게요")];
+    expect(unappliedCandidates(candidates, [])).toEqual(candidates);
+  });
+
+  it("긴 근거 구절 안에 든 다른 후보도 뺀다 (다시 처리할 때만 쓰는 대가)", () => {
+    const paragraph = "금요일까지 견적서 정리해서 드릴게요. 다음 주에 미팅 잡을게요.";
+    expect(unappliedCandidates([judged("다음 주에 미팅 잡을게요")], [paragraph])).toEqual([]);
   });
 });
 

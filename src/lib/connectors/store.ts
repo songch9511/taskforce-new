@@ -383,7 +383,7 @@ export async function loadIdentity(admin: SupabaseClient, userId: string): Promi
 }
 
 /** 연결을 (다시) 맺은 시각. 없으면 null */
-export async function connectedAt(admin: SupabaseClient, connection: Connection): Promise<Date | null> {
+export async function connectedAt(admin: SupabaseClient, connection: Pick<Connection, "id" | "userId">): Promise<Date | null> {
   const { data } = await admin
     .from("connections")
     .select("connected_at")

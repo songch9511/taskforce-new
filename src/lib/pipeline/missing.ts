@@ -203,3 +203,13 @@ export type SourceEvidence = { actionId: string; quote: string | null; owner: "m
 export function trackedByEvidence(evidence: SourceEvidence[], quote: string): string | null {
   return evidence.find((e) => e.owner !== "other" && e.quote !== null && reportedQuoteOverlaps(e.quote, quote))?.actionId ?? null;
 }
+
+/**
+ * 원문을 다시 처리할 때 병합할 후보 (순수 함수): 이 원문에서 이미 근거로 쓰인 구절과 겹치는 후보는 뺀다 (lib/sources/process.ts).
+ * 누락 신고와 같은 겹침 기준을 쓰고, 담당과 상관없이 본다 (다른 사람 담당 Action의 근거도 두 번 붙이지 않는다).
+ * 한 구절이 다른 구절을 품으면 겹친다고 보므로, 긴 근거 구절(직접 추가 때 고른 문단 등) 안의 다른 후보도 빠진다.
+ * 다시 처리할 때만 쓰고, 근거가 두 번 붙는 것보다 낫다고 보고 받아들인다.
+ */
+export function unappliedCandidates<T extends { candidate: { quote: string } }>(judged: T[], appliedQuotes: string[]): T[] {
+  return judged.filter(({ candidate }) => !appliedQuotes.some((quote) => reportedQuoteOverlaps(quote, candidate.quote)));
+}
