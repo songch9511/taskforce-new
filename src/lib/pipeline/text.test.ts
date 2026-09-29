@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { findQuoteSpan, quoteContext, quoteInText, quoteLineIndexes } from "./text";
+import { findQuoteSpan, quotedHistoryStart, quoteContext, quoteInText, quoteLineIndexes } from "./text";
 
 const text = ["a: 1", "b: 2", "c: 3", "나: 금요일까지 제안서", "보내드릴게요.", "d: 4", "e: 5"].join("\n");
 
@@ -94,5 +94,116 @@ describe("quoteLineIndexes", () => {
     const chat = ["박지훈: 넵 확인했어요", "", "윤지호: 넵 월요일에 드릴게요"].join("\n");
     expect(quoteLineIndexes(chat, "넵")).toEqual([0, 2]);
     expect(quoteLineIndexes(chat, "확인했어요 ... 월요일에 드릴게요")).toEqual([0, 2]);
+  });
+});
+
+describe("quotedHistoryStart", () => {
+  /** 인용 시작 위치 앞의 글 (새로 쓴 부분) */
+  const fresh = (mail: string) => {
+    const at = quotedHistoryStart(mail);
+    return at === null ? null : mail.slice(0, at);
+  };
+
+  it("Gmail식 답장: `On … wrote:` 머리줄부터 인용이다. 짧은 답은 그대로 남는다", () => {
+    const mail = [
+      "제목: RE: Signed contract",
+      "",
+      "Sure, I'll send it by Monday.",
+      "",
+      "Alex",
+      "",
+      "On Mon, Oct 5, 2026 at 9:30 AM Jordan Lee <jordan@harborline.example> wrote:",
+      "",
+      "> Could you send the signed contract by Monday?",
+    ].join("\n");
+    expect(fresh(mail)).toBe("제목: RE: Signed contract\n\nSure, I'll send it by Monday.\n\nAlex\n\n");
+  });
+
+  it("두 줄로 꺾인 머리줄, 한국어 Gmail의 `…님이 작성:`, Apple Mail식(머리줄도 `>`)도 찾는다", () => {
+    const wrapped = ["Thanks!", "", "On Thu, Oct 8, 2026 at 3:20 PM Morgan Tate <morgan@quillstone.example>", "wrote:", "", "> Hi Alex"].join("\n");
+    expect(fresh(wrapped)).toBe("Thanks!\n\n");
+    const korean = ["감사합니다!", "", "2026년 10월 14일 (수) 오후 2:05, 문가은 <gaeun@lumenfield.example>님이 작성:", "", "> 배너 시안 보냈습니다."].join("\n");
+    expect(fresh(korean)).toBe("감사합니다!\n\n");
+    const apple = ["OK, will do.", "", "> On Oct 5, 2026, at 9:30 AM, Jordan Lee <j@harborline.example> wrote:", ">", "> Can you send it?"].join("\n");
+    expect(fresh(apple)).toBe("OK, will do.\n\n");
+  });
+
+  it("겹겹이 인용된 스레드도 가장 위 인용부터", () => {
+    const mail = ["Thanks!", "", "On Fri, Oct 9, 2026 at 11:05 AM A <a@x.example> wrote:", "", "> Wednesday works.", ">", "> On Thu, Oct 8, 2026 at 4:05 PM B <b@x.example> wrote:", ">", ">> by Monday"].join("\n");
+    expect(fresh(mail)).toBe("Thanks!\n\n");
+  });
+
+  it("-----Original Message----- · -----원본 메시지-----부터는 `>` 없이도 인용이다", () => {
+    const en = ["Will do.", "", "-----Original Message-----", "From: Jordan Lee", "Please send it by Monday."].join("\n");
+    expect(fresh(en)).toBe("Will do.\n\n");
+    const ko = ["제목: RE: 계약서", "", "내일까지 드리겠습니다.", "", "-----원본 메시지-----", "보낸 사람: 오세린", "다음 주에 정리해서 보내드리겠습니다."].join("\n");
+    expect(fresh(ko)).toBe("제목: RE: 계약서\n\n내일까지 드리겠습니다.\n\n");
+  });
+
+  it("빈 줄 뒤에 `From:`/`보낸 사람:` 줄과 바로 이어지는 머리 줄이 있으면 인용이다", () => {
+    const en = ["Sure.", "", "From: Jordan Lee <j@harborline.example>", "Sent: Monday, October 5, 2026 9:30 AM", "To: Alex Kim", "Subject: Contract", "", "Please send it by Monday."].join("\n");
+    expect(fresh(en)).toBe("Sure.\n\n");
+    const ko = ["네, 확인했습니다.", "", "보낸 사람: 오세린", "보낸 날짜: 2026년 10월 5일", "받는 사람: 한지우", "제목: 계약서", "", "월요일까지 부탁드립니다."].join("\n");
+    expect(fresh(ko)).toBe("네, 확인했습니다.\n\n");
+    const outlookLine = ["Sure.", "", "________________________________", "From: Jordan Lee", "Sent: Monday", "To: Alex Kim", "", "Please send it by Monday."].join("\n");
+    expect(fresh(outlookLine)).toBe("Sure.\n\n");
+  });
+
+  it("머리 묶음이 아닌 것은 인용으로 보지 않는다 (제목 바로 아래 머리 줄 · 전달 메일 · 본문 속 From:)", () => {
+    // 제목 줄 바로 아래(빈 줄 없음)의 보낸사람 · 받는사람 머리는 이 메일 자신의 머리다
+    expect(quotedHistoryStart(["제목: RE: 자료", "보낸사람: 최민호", "받는사람: 서지원", "날짜: 2026년 10월 14일", "", "금요일까지 드리겠습니다."].join("\n"))).toBeNull();
+    // Gmail 전달: `From:` 앞이 빈 줄이 아니라 전달 표시 줄
+    expect(quotedHistoryStart(["Could you take this by Friday, Sam?", "", "---------- Forwarded message ---------", "From: Casey <c@x.example>", "Date: Mon, Oct 12", "Subject: Invoice", "", "Hi Alex"].join("\n"))).toBeNull();
+    // 빈 줄 뒤의 From:이라도 바로 이어지는 머리 줄이 없으면 본문이다
+    expect(quotedHistoryStart(["Hi,", "", "From: my side we can start Monday.", "", "Thanks"].join("\n"))).toBeNull();
+  });
+
+  it("인용이 없으면 null. 문장이 우연히 wrote:로 끝나는 것은 머리줄이 아니다", () => {
+    expect(quotedHistoryStart("제목: 안녕\n\nSure, I'll send it by Monday.")).toBeNull();
+    expect(quotedHistoryStart("")).toBeNull();
+    expect(quotedHistoryStart(["On the call yesterday Priya wrote:", "please keep this confidential"].join("\n"))).toBeNull();
+  });
+
+  it("머리줄 뒤에 `>` 없이 옛 메일이 이어져도 머리줄부터 인용이다", () => {
+    const mail = ["Sure.", "", "On Mon, Oct 5, 2026 at 9:30 AM Jordan Lee <j@harborline.example> wrote:", "Could you send it by Monday?"].join("\n");
+    expect(fresh(mail)).toBe("Sure.\n\n");
+  });
+
+  it("인용 사이사이에 답을 적었으면(인용 뒤에 새 글) 그 답을 인용으로 보지 않는다", () => {
+    const inline = ["On Mon, Oct 5, 2026 at 9:30 AM Jordan Lee <j@harborline.example> wrote:", "", "> 1. Can you send the deck?", "Yes, by Tuesday.", "", "> 2. And the budget?", "I'll send it by Friday."].join("\n");
+    expect(quotedHistoryStart(inline)).toBeNull();
+    // 답 뒤에 통째로 붙은 인용 묶음이 따로 있으면 그 묶음부터
+    const withTail = [inline, "", "On Sun, Oct 4, 2026 at 8:00 AM Jordan Lee <j@harborline.example> wrote:", "", "> older mail"].join("\n");
+    expect(withTail.slice(quotedHistoryStart(withTail)!)).toBe("On Sun, Oct 4, 2026 at 8:00 AM Jordan Lee <j@harborline.example> wrote:\n\n> older mail");
+  });
+
+  it("인용 뒤에 서명 같은 새 글이 붙으면 애매하니 인용으로 보지 않는다", () => {
+    expect(quotedHistoryStart(["Sure.", "", "> old", "", "--", "Alex"].join("\n"))).toBeNull();
+  });
+
+  it("머리줄로 보이는 글 속 문장은 인용이 아니다 (첫 줄이 'On …'인 새 글 · 주소 없는 문장 · 시각표)", () => {
+    // 내 글 "On it, …" 바로 아래 진짜 머리줄이 와도 내 글을 머리줄 앞부분으로 잇지 않는다
+    const mail = ["제목: Re: Deck", "", "On it, I will send the deck by Friday.", "On Mon, Oct 5, 2026 at 9:30 AM Jordan <j@x.example> wrote:", "> Can you send the deck?"].join("\n");
+    expect(fresh(mail)).toBe("제목: Re: Deck\n\nOn it, I will send the deck by Friday.\n");
+    // 주소 없이 날짜만 있는 문장
+    expect(quotedHistoryStart(["On Tuesday at 3pm the client wrote:", '"We need the deck."', "", "I will prepare the deck by Thursday."].join("\n"))).toBeNull();
+    expect(quotedHistoryStart(["on 10/7 the vendor wrote:", "", "I will call back by Friday."].join("\n"))).toBeNull();
+    // From: / To: 두 줄뿐인 시각표 · 일정
+    expect(quotedHistoryStart(["Can we meet?", "", "From: 10:00", "To: 11:00", "", "I will book the room by Monday."].join("\n"))).toBeNull();
+    expect(quotedHistoryStart(["Flight:", "", "From: ICN", "To: SFO", "", "I will send the itinerary by Monday."].join("\n"))).toBeNull();
+  });
+
+  it("전달한 메일(제목이 Fwd: · FW: · 전달:)은 붙은 내용이 옛 메일 이력이 아니라 전달받은 글이라 인용이 없는 것으로 본다", () => {
+    const outlookForward = ["제목: FW: 계약서 검토", "", "________________________________", "From: Jordan Lee", "Sent: Monday", "To: Alex Kim", "Subject: Contract", "", "Please send it by Monday."].join("\n");
+    expect(quotedHistoryStart(outlookForward)).toBeNull();
+    expect(quotedHistoryStart(outlookForward.replace("FW:", "전달:"))).toBeNull();
+    expect(quotedHistoryStart(["제목: Re: Fwd: Contract", "", "OK.", "", "> old"].join("\n"))).toBeNull();
+    // 전달이 아닌 답장이면 같은 모양이 인용이다
+    expect(quotedHistoryStart(["제목: Re: Contract", "", "OK.", "", "> old"].join("\n"))).not.toBeNull();
+  });
+
+  it("줄바꿈이 CRLF여도 위치가 원문 기준이다", () => {
+    const mail = "Sure.\r\n\r\nOn Mon, Oct 5, 2026 at 9:30 AM Jordan <j@x.example> wrote:\r\n\r\n> Could you?";
+    expect(mail.slice(quotedHistoryStart(mail)!).startsWith("On Mon")).toBe(true);
   });
 });

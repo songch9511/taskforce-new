@@ -14,7 +14,7 @@ export type JudgedCandidate = { candidate: VerifiedCandidate; judge: JudgeResult
 
 export type PipelineResult = {
   judged: JudgedCandidate[];
-  /** 원문에 없는 인용이라 버린 후보 수 */
+  /** 인용이 원문에 없거나 메일의 인용된 옛 메일에만 있어 버린 후보 수 */
   droppedCount: number;
   summary: {
     extracted: number;
@@ -31,7 +31,7 @@ export type PipelineResult = {
 
 export async function runPipeline(input: ExtractInput, deps: PipelineDeps): Promise<PipelineResult> {
   const extracted = await extractCandidates(input, deps.complete);
-  const verified = verifyCandidates(extracted.candidates, { text: input.text, occurredAt: input.occurredAt });
+  const verified = verifyCandidates(extracted.candidates, { text: input.text, occurredAt: input.occurredAt, kind: input.kind });
 
   const source = { text: input.text, kind: input.kind, occurredAt: input.occurredAt, participants: input.participants, writtenByMe: input.writtenByMe };
   const judged = await Promise.all(

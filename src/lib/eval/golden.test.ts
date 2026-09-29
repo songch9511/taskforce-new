@@ -3,6 +3,8 @@ import path from "node:path";
 
 import { describe, expect, it } from "vitest";
 
+import { quotedHistoryStart, quoteInText } from "@/lib/pipeline/text";
+
 import { findLabelErrors, goldenCaseSchema, type GoldenCase } from "./golden";
 
 const base: GoldenCase = {
@@ -109,5 +111,28 @@ describe("evals/golden", () => {
         }
       }
     }
+  });
+
+  // 기계 검증(verify.ts)은 메일에서 인용된 옛 메일에만 있는 구절을 버린다. 정답 Action의 근거 구절이 모두 그 안에 있으면 정답을 스스로 버리게 된다.
+  // (근거 중 일부가 인용 속에 있는 것은 괜찮다: 채점은 근거 중 하나만 겹쳐도 짝지으므로 새로 쓴 글의 구절만 뽑아도 정답이다)
+  it("정답 Action마다 근거 구절 하나 이상은 인용된 옛 메일 밖(새로 쓴 글)에 있다", async () => {
+    const dir = path.resolve(import.meta.dirname, "../../../evals/golden");
+    const files = (await readdir(dir)).filter((f) => f.endsWith(".json"));
+    let checked = 0;
+    for (const file of files) {
+      const golden = goldenCaseSchema.parse(JSON.parse(await readFile(path.join(dir, file), "utf8")));
+      const freshText = new Map(
+        golden.sources.map((source) => {
+          const at = source.kind === "email" ? quotedHistoryStart(source.text) : null;
+          return [source.id, at === null ? source.text : source.text.slice(0, at)] as const;
+        }),
+      );
+      for (const action of golden.expected_actions) {
+        const reachable = action.evidence.some((e) => quoteInText(e.quote, freshText.get(e.source) ?? ""));
+        expect(reachable, `${golden.id}: ${action.title}`).toBe(true);
+        checked++;
+      }
+    }
+    expect(checked).toBeGreaterThan(0);
   });
 });

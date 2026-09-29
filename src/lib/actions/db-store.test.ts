@@ -1,6 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { describe, expect, it, vi } from "vitest";
 
+import type { Claim } from "@/lib/pipeline/resolve";
 import { SLACK_DISCONNECTED_QUOTE } from "@/lib/retention";
 
 import { SupabaseActionStore } from "./db-store";
@@ -82,5 +83,99 @@ describe("SupabaseActionStore.unembedded: 임베딩을 채울 때 쓰는 인용"
       { id: KEPT, title: "견적서 보내기", quote: "금요일까지 견적서 보내드릴게요" },
       { id: REMOVED, title: "계약서 검토", quote: null },
     ]);
+  });
+});
+
+describe("SupabaseActionStore.append: 사용자의 확정 약속이 붙으면 판정 확인 이유를 푼다 (E3 · E4)", () => {
+  const CLAIM = (id: string, field: string, value: string) => ({
+    id,
+    field,
+    value,
+    occurred_at: "2026-10-06T01:30:00Z",
+    speaker_role: "counterpart",
+    certainty: "tentative",
+    directness: "first_hand",
+    audience: "shared",
+    origin: "source",
+    channel: "email",
+  });
+
+  /** 저장된 Action 행과 Claim을 돌려주고, write_action에 넘긴 인자를 모으는 가짜 service role 클라이언트 */
+  function appendAdmin(storedReasons: string[]) {
+    const writes: Record<string, unknown>[] = [];
+    const rows: Record<string, unknown> = {
+      actions: { title: "견적서 정리", confirm_reasons: storedReasons, needs_confirmation: true, version: 3, status: "open", started_at: null },
+      claims: [CLAIM("c1", "scope", "견적서 정리"), CLAIM("c2", "owner", "me"), CLAIM("c3", "status", "open")],
+    };
+    const admin = {
+      from: (table: string) => {
+        const q = {
+          select: () => q,
+          eq: () => q,
+          returns: () => q,
+          maybeSingle: () => q,
+          throwOnError: async () => ({ data: rows[table] }),
+        };
+        return q;
+      },
+      rpc: (_fn: string, params: Record<string, unknown>) => ({
+        throwOnError: async () => {
+          writes.push(params);
+          return { data: true };
+        },
+      }),
+    } as unknown as SupabaseClient;
+    return { admin, writes };
+  }
+
+  const firmClaims = (): Claim[] =>
+    (["scope", "owner", "status"] as const).map((field, i) => ({
+      id: `n${i}`,
+      field,
+      value: field === "owner" ? "me" : field === "status" ? "open" : "견적서 정리",
+      occurredAt: new Date("2026-10-06T03:40:00Z"),
+      speakerRole: "me",
+      certainty: "firm",
+      directness: "first_hand",
+      audience: "shared",
+      channel: "email",
+    }));
+  const evidence = { sourceId: "s2", quote: "네, 목요일까지 드리겠습니다", role: "duplicate" as const };
+  const written = (writes: Record<string, unknown>[]) => writes[0].p_action as { confirm_reasons: string[]; needs_confirmation: boolean };
+
+  it("clearJudgeReasons면 판정 확인만 빼고 병합 확인 같은 다른 이유는 남긴다. 내용 · 담당 · 상태 확인은 Claim에서 다시 계산한다", async () => {
+    const { admin, writes } = appendAdmin(["판정 확인: NOT_MY_ACTION", "병합 확인 (55%)", "내용 확인", "담당 확인", "상태 확인"]);
+    await new SupabaseActionStore(admin, USER).append("a1", { claims: firmClaims(), evidence, clearJudgeReasons: true });
+    expect(writes).toHaveLength(1);
+    expect(written(writes).confirm_reasons).toEqual(["병합 확인 (55%)"]);
+    expect(written(writes).needs_confirmation).toBe(true);
+    // Claim은 지우지 않고 더한다
+    expect(writes[0].p_claims as unknown[]).toHaveLength(3);
+  });
+
+  it("판정 확인 하나뿐이었으면 확인 요청이 없어진다", async () => {
+    const { admin, writes } = appendAdmin(["판정 확인: NOT_MY_ACTION"]);
+    await new SupabaseActionStore(admin, USER).append("a1", { claims: firmClaims(), evidence, clearJudgeReasons: true });
+    expect(written(writes)).toMatchObject({ confirm_reasons: [], needs_confirmation: false });
+  });
+
+  it("같은 처리에서 만든 확인 요청이 풀리면 확인 요청 알림 대상에서 뺀다. 아직 확인이 남으면 그대로 둔다", async () => {
+    const solved = appendAdmin(["판정 확인: NOT_MY_ACTION"]);
+    const store = new SupabaseActionStore(solved.admin, USER);
+    store.needsConfirmation.add("a1");
+    await store.append("a1", { claims: firmClaims(), evidence, clearJudgeReasons: true });
+    expect(store.needsConfirmation.has("a1")).toBe(false);
+
+    const remaining = appendAdmin(["판정 확인: NOT_MY_ACTION", "병합 확인 (55%)"]);
+    const other = new SupabaseActionStore(remaining.admin, USER);
+    other.needsConfirmation.add("a1");
+    await other.append("a1", { claims: firmClaims(), evidence, clearJudgeReasons: true });
+    expect(other.needsConfirmation.has("a1")).toBe(true);
+  });
+
+  it("clearJudgeReasons가 없으면 판정 확인을 그대로 둔다", async () => {
+    const { admin, writes } = appendAdmin(["판정 확인: NOT_MY_ACTION"]);
+    await new SupabaseActionStore(admin, USER).append("a1", { claims: firmClaims(), evidence });
+    expect(written(writes).confirm_reasons).toEqual(["판정 확인: NOT_MY_ACTION"]);
   });
 });

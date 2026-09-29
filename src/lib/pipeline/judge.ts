@@ -42,8 +42,11 @@ export type JudgeOutcome = {
   decision: JudgeDecision;
   /** reject면 기각 사유, confirm이면 확인이 필요한 이유 */
   reasons: RejectReason[];
-  /** 확률 표가 아니라 코드 규칙으로 정한 판정. addressed_request: @이름으로 부른 요청이라 기각 대신 확인 요청 */
-  rule?: "addressed_request";
+  /**
+   * 확률 표가 아니라 코드 규칙으로 정한 판정. 둘 다 아직 수락하지 않은 요청이라 기각 대신 확인 요청으로 보낸다.
+   * addressed_request: 사용자를 @이름으로 불렀다. sole_recipient_request: 사용자가 유일한 받는 사람인 메일이다.
+   */
+  rule?: "addressed_request" | "sole_recipient_request";
 };
 
 
@@ -119,6 +122,8 @@ export function parseJudgeAnswers(answers: JevDecision["answers"]): JudgeSignals
 export type DecideContext = {
   /** 인용 줄이 사용자를 @이름으로 직접 부른다 (addressedToUser) */
   addressedToUser?: boolean;
+  /** 사용자가 유일한 받는 사람인 메일의 후보다 (kind email + userPosition sole_recipient) */
+  soleRecipient?: boolean;
 };
 
 /** 확률을 임계값과 비교해 자동 반영 / 확인 요청 / 기각을 정한다 (docs/TRUTH_RULES.md 1장 표). */
@@ -132,9 +137,11 @@ export function decideOutcome(
   if (signals.is_actionable < thresholds.reject) rejects.push("INFO_ONLY");
   if (signals.certainty.choice === "none") rejects.push("TENTATIVE");
   if (signals.already_done >= thresholds.doneRejectAt) rejects.push("ALREADY_DONE");
-  // 사용자를 @이름으로 직접 부른 요청은 아직 수락하지 않았다는 이유("내 약속 아님") 하나로는 버리지 않고 묻는다 (원칙 3).
-  // 무엇을 가리키는지 원문에 없는 요청("@지호 이거 금요일까지 될까요?")이 조용히 사라지지 않게 한다. 다른 사유가 함께 있으면 그대로 기각.
-  const pendingRequest = context.addressedToUser === true && rejects.length === 1 && rejects[0] === "NOT_MY_ACTION";
+  // 사용자를 @이름으로 직접 부른 요청, 사용자가 유일한 받는 사람인 메일의 요청은 아직 수락하지 않았다는 이유("내 약속 아님") 하나로는
+  // 버리지 않고 묻는다 (원칙 3). 무엇을 가리키는지 원문에 없는 요청("@지호 이거 금요일까지 될까요?")이나 여러 이야기 사이에 묻힌
+  // 메일 요청("계약서 사본도 한 부 보내주실 수 있을까요?")이 조용히 사라지지 않게 한다. 다른 사유가 함께 있으면 그대로 기각.
+  const pendingRule = context.addressedToUser === true ? "addressed_request" : context.soleRecipient === true ? "sole_recipient_request" : null;
+  const pendingRequest = pendingRule !== null && rejects.length === 1 && rejects[0] === "NOT_MY_ACTION";
   if (rejects.length > 0 && !pendingRequest) return { decision: "reject", reasons: rejects };
 
   const doubts: RejectReason[] = [];
@@ -143,7 +150,7 @@ export function decideOutcome(
   if (signals.certainty.choice !== "firm") doubts.push("TENTATIVE");
   if (signals.already_done >= thresholds.doneAcceptBelow) doubts.push("ALREADY_DONE");
   // 규칙으로 살린 요청은 임계값 설정과 상관없이 확인 요청까지만 간다 (자동 반영하지 않는다).
-  if (pendingRequest) return { decision: "confirm", reasons: [...new Set<RejectReason>(["NOT_MY_ACTION", ...doubts])], rule: "addressed_request" };
+  if (pendingRequest) return { decision: "confirm", reasons: [...new Set<RejectReason>(["NOT_MY_ACTION", ...doubts])], rule: pendingRule };
   return doubts.length > 0 ? { decision: "confirm", reasons: doubts } : { decision: "auto", reasons: [] };
 }
 
@@ -162,7 +169,10 @@ export async function judgeCandidate(
   const signals = parseJudgeAnswers(response.answers);
   const speaker = quoteSpeaker(source.text, candidate.quote, identity, source.participants);
   return {
-    ...decideOutcome(signals, thresholds, { addressedToUser: addressedToUser(source.text, candidate.quote, identity, source.participants) }),
+    ...decideOutcome(signals, thresholds, {
+      addressedToUser: addressedToUser(source.text, candidate.quote, identity, source.participants),
+      soleRecipient: source.kind === "email" && userPosition(identity, source.participants) === "sole_recipient",
+    }),
     signals,
     ...(speaker ? { speaker } : {}),
     promptVersion: self ? WRITTEN_BY_ME_PROMPT_VERSION : JUDGE_PROMPT_VERSION,

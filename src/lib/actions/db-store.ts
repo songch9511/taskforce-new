@@ -6,7 +6,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 
 import type { EmbeddingBackfillStore, UnembeddedAction } from "@/lib/pipeline/backfill-embeddings";
 import { MATCH_THRESHOLDS, type OpenAction } from "@/lib/pipeline/match";
-import type { ActionStore, Evidence, TrackedAction } from "@/lib/pipeline/merge";
+import { withoutJudgeReasons, type ActionStore, type AppendUpdate, type Evidence, type TrackedAction } from "@/lib/pipeline/merge";
 import type { LinkedAction, TaskLinkStore } from "@/lib/pipeline/merge-task";
 import { USER_REASON } from "@/lib/pipeline/resolve";
 import type { Claim } from "@/lib/pipeline/resolve";
@@ -157,14 +157,15 @@ export class SupabaseActionStore implements ActionStore, EmbeddingBackfillStore 
     return { ...action, id };
   }
 
-  async append(actionId: string, update: { claims: Claim[]; evidence: Evidence; confirmReason?: string }): Promise<void> {
+  async append(actionId: string, update: AppendUpdate): Promise<void> {
     await retryOnConflict(async () => {
       const row = await loadStoredRow(this.admin, this.userId, actionId);
       if (!row) throw new Error(`없는 Action: ${actionId}`);
       const existing = await loadClaims(this.admin, this.userId, actionId);
       const kept = storedReasons(row.confirm_reasons);
       const before = projectAction(row.title, existing, kept);
-      const after = projectAction(row.title, [...existing, ...update.claims], update.confirmReason ? [...kept, update.confirmReason] : kept);
+      const stays = update.clearJudgeReasons ? withoutJudgeReasons(kept) : kept;
+      const after = projectAction(row.title, [...existing, ...update.claims], update.confirmReason ? [...stays, update.confirmReason] : stays);
 
       const written = await writeAction(this.admin, this.userId, actionId, {
         expectedVersion: row.version,
@@ -176,6 +177,8 @@ export class SupabaseActionStore implements ActionStore, EmbeddingBackfillStore 
       });
       if (!written) return null;
       if (after.needs_confirmation && !row.needs_confirmation) this.needsConfirmation.add(actionId);
+      // 같은 처리에서 만든 확인 요청이 이번 붙임(사용자의 확정 약속)으로 풀렸으면 알림 대상에서 뺀다
+      if (!after.needs_confirmation) this.needsConfirmation.delete(actionId);
       return true;
     });
   }

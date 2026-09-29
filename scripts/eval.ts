@@ -138,7 +138,7 @@ type CaseRun = {
   golden: GoldenCase;
   extracted: ActionCandidate[];
   verified: VerifiedCandidate[];
-  dropped: number;
+  dropped: ReturnType<typeof verifyCandidates>["dropped"];
   judged: { candidate: VerifiedCandidate; result: JudgeResult }[] | null;
 };
 
@@ -230,7 +230,7 @@ async function main() {
       const judged = jev
         ? await Promise.all(verified.kept.map(async (candidate) => ({ candidate, result: await judge(candidate, golden) })))
         : null;
-      return { golden, extracted: extracted.candidates, verified: verified.kept, dropped: verified.dropped.length, judged };
+      return { golden, extracted: extracted.candidates, verified: verified.kept, dropped: verified.dropped, judged };
     } catch (error) {
       errors.push(`${golden.id}: ${error instanceof Error ? error.message : String(error)}`);
       return null;
@@ -280,8 +280,8 @@ async function main() {
   }
 
   const corrected = done.flatMap((r) => r.verified.filter((c) => c.due_check === "corrected"));
-  const dropped = done.reduce((n, r) => n + r.dropped, 0);
-  console.log(`\n기계 검증: 환각 인용 폐기 ${dropped}건 · 기한 코드 보정 ${corrected.length}건`);
+  const droppedBy = (reason: "QUOTE_NOT_FOUND" | "QUOTED_HISTORY") => done.reduce((n, r) => n + r.dropped.filter((d) => d.reason === reason).length, 0);
+  console.log(`\n기계 검증: 환각 인용 폐기 ${droppedBy("QUOTE_NOT_FOUND")}건 · 인용된 옛 메일 속 후보 폐기 ${droppedBy("QUOTED_HISTORY")}건 · 기한 코드 보정 ${corrected.length}건`);
   corrected.forEach((c) => console.log(`    "${c.due_text}": 모델 ${c.model_due ?? "없음"} → 코드 ${c.due}`));
 
   const header = ["단계".padEnd(16), "precision", "recall", "담당", "기한", "맞음/오탐/누락", "환각"].join("  ");
