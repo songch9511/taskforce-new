@@ -148,7 +148,7 @@ export function ConnectionsPanel({ connections, notionStatus, slackStatus }: { c
               <Button variant="ghost" size="sm" disabled={pending !== null} onClick={() => disconnect(c.id, c.provider)}>
                 끊기
               </Button>
-              {c.provider === "notion" && c.status !== "revoked" && (
+              {c.provider === "notion" && c.status !== "revoked" && c.status !== "reauth" && (
                 <div className="w-full">
                   <DataSourcesPanel connectionId={c.id} />
                 </div>

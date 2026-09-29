@@ -34,6 +34,22 @@ export function notionOAuthConfig(): NotionOAuthConfig {
   return { clientId, clientSecret, redirectUri };
 }
 
+/** 갱신 토큰이 만료 · 거절됨: 다시 연결해야 한다 (같은 갱신을 다시 시도하지 않는다) */
+const isInvalidGrant = (error: unknown) => error instanceof NotionError && error.code === "invalid_grant";
+
+/** 동시에 갱신했을 때 먼저 갱신한 쪽이 새 토큰을 저장할 때까지 기다리는 시간 */
+const REFRESH_RACE_WAIT_MS = 1_000;
+
+/** 다른 요청이 먼저 갱신해 저장한 토큰. 같은 순간에 겹쳤으면 저장이 끝나도록 한 번 기다렸다 다시 읽는다. 없으면 null (정말 만료됨) */
+async function tokenRefreshedElsewhere(admin: SupabaseClient, connectionId: string, used: string): Promise<NotionToken | null> {
+  for (const wait of [0, REFRESH_RACE_WAIT_MS]) {
+    if (wait) await new Promise((resolve) => setTimeout(resolve, wait));
+    const saved = await loadToken<NotionToken>(admin, connectionId);
+    if (saved.refresh_token !== used) return saved;
+  }
+  return null;
+}
+
 /** 연결의 토큰으로 Notion을 부른다. 토큰이 만료됐으면(401) 한 번 갱신해서 다시 부른다. */
 export async function withNotionClient<T>(admin: SupabaseClient, connectionId: string, call: (client: NotionClient) => Promise<T>): Promise<T> {
   let token = await loadToken<NotionToken>(admin, connectionId);
@@ -41,7 +57,17 @@ export async function withNotionClient<T>(admin: SupabaseClient, connectionId: s
     return await call(notionClient(token.access_token));
   } catch (error) {
     if (!(error instanceof NotionError && error.status === 401 && token.refresh_token)) throw error;
-    token = { ...token, ...(await refreshToken(notionOAuthConfig(), token.refresh_token)) };
+    const used = token.refresh_token;
+    try {
+      token = { ...token, ...(await refreshToken(notionOAuthConfig(), used)) };
+    } catch (refreshError) {
+      // Notion은 갱신할 때마다 갱신 토큰을 바꾼다. 다른 요청(/lab 할 일 DB 설정 · 스크립트)이 먼저 갱신해 저장했으면
+      // 이 갱신 토큰은 거절된다: 연결이 만료된 것이 아니므로 저장된 새 토큰으로 이어 간다.
+      if (!isInvalidGrant(refreshError)) throw refreshError;
+      const saved = await tokenRefreshedElsewhere(admin, connectionId, used);
+      if (!saved) throw refreshError;
+      return call(notionClient(saved.access_token));
+    }
     await saveToken(admin, connectionId, token);
     return call(notionClient(token.access_token));
   }
@@ -51,13 +77,14 @@ export type ConnectionSyncOutcome =
   | { connectionId: string; ok: true; result: NotionSyncResult }
   | { connectionId: string; ok: false; error: string; revoked: boolean; busy?: boolean };
 
-/** 사용자에게 보여줄 오류. 자세한 내용은 서버 로그에만 남긴다. */
-function userFacingError(error: unknown): { message: string; revoked: boolean } {
+/** 사용자에게 보여줄 오류와 연결 상태. 자세한 내용은 서버 로그에만 남긴다. */
+function userFacingError(error: unknown): { message: string; revoked: boolean; reauth: boolean } {
+  if (isInvalidGrant(error)) return { message: "Notion 연결이 만료됐습니다. 다시 연결해 주세요.", revoked: false, reauth: true };
   if (error instanceof NotionError && error.status === 401) {
-    return { message: "Notion 연결 권한이 끊겼습니다. 다시 연결해 주세요.", revoked: true };
+    return { message: "Notion 연결 권한이 끊겼습니다. 다시 연결해 주세요.", revoked: true, reauth: false };
   }
-  if (error instanceof NotionError) return { message: `Notion 요청 실패 (${error.status})`, revoked: false };
-  return { message: "동기화 중 오류가 발생했습니다.", revoked: false };
+  if (error instanceof NotionError) return { message: `Notion 요청 실패 (${error.status})`, revoked: false, reauth: false };
+  return { message: "동기화 중 오류가 발생했습니다.", revoked: false, reauth: false };
 }
 
 export async function syncNotionConnection(
@@ -95,9 +122,9 @@ export async function syncNotionConnection(
       await recordSync(admin, connection, {});
       return { connectionId: connection.id, ok: false, error: CONSENT_WITHDRAWN_MESSAGE, revoked: false };
     }
-    const { message, revoked } = userFacingError(error);
+    const { message, revoked, reauth } = userFacingError(error);
     console.error(`Notion 동기화 실패 (${connection.id}):`, error instanceof Error ? error.message : error);
-    await recordSync(admin, connection, { error: message, revoked });
+    await recordSync(admin, connection, { error: message, revoked, reauth });
     return { connectionId: connection.id, ok: false, error: message, revoked };
   }
 }

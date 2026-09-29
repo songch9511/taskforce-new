@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { authorizeUrl, exchangeCode, notionClient, NotionError, NOTION_VERSION, revokeToken } from "./api";
+import { authorizeUrl, exchangeCode, notionClient, NotionError, NOTION_VERSION, refreshToken, revokeToken } from "./api";
 
 type Call = { url: string; init: RequestInit };
 
@@ -44,6 +44,17 @@ describe("Notion OAuth", () => {
     expect(token).toMatchObject({ access_token: "tok", workspace_id: "w" });
     expect((calls[0].init.headers as Record<string, string>).Authorization).toBe(`Basic ${Buffer.from("cid:sec").toString("base64")}`);
     expect(JSON.parse(calls[0].init.body as string)).toEqual({ grant_type: "authorization_code", code: "code1", redirect_uri: "https://x.dev/cb" });
+  });
+
+  it("갱신이 거절되면 Notion 오류 코드를 담아 던진다 (invalid_grant면 다시 연결해야 한다)", async () => {
+    const config = { clientId: "cid", clientSecret: "sec", redirectUri: "https://x.dev/cb" };
+    const refresh = (status: number, body?: unknown) => refreshToken({ ...config, fetch: fakeFetch([{ status, body }]).fetch }, "ref");
+    await expect(refresh(400, { object: "error", status: 400, code: "invalid_grant", message: "Invalid refresh token." })).rejects.toMatchObject({
+      name: "NotionError",
+      status: 400,
+      code: "invalid_grant",
+    });
+    await expect(refresh(503)).rejects.toMatchObject({ status: 503, code: undefined });
   });
 
   it("토큰을 Basic 인증으로 폐기한다 (계정 삭제)", async () => {

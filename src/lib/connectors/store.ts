@@ -216,10 +216,14 @@ export async function claimConnection(admin: SupabaseClient, connection: Connect
   return (data?.length ?? 0) > 0;
 }
 
+/**
+ * 동기화 결과를 연결 상태로 남긴다. revoked: 서비스 쪽에서 권한이 끊김, reauth: 토큰을 더 갱신할 수 없음(갱신 토큰 만료 · 거절).
+ * 둘 다 다시 연결할 때까지 동기화하지 않는다 (syncable_connections). 다시 연결하면 saveConnection이 active로 되돌린다.
+ */
 export async function recordSync(
   admin: SupabaseClient,
   connection: Connection,
-  update: { cursor?: Record<string, unknown>; error?: string | null; revoked?: boolean },
+  update: { cursor?: Record<string, unknown>; error?: string | null; revoked?: boolean; reauth?: boolean },
 ): Promise<void> {
   let query = admin
     .from("connections")
@@ -228,7 +232,7 @@ export async function recordSync(
       last_synced_at: new Date().toISOString(),
       last_error: update.error ?? null,
       sync_started_at: null,
-      status: update.revoked ? "revoked" : update.error ? "error" : "active",
+      status: update.revoked ? "revoked" : update.reauth ? "reauth" : update.error ? "error" : "active",
     })
     .eq("id", connection.id)
     .eq("user_id", connection.userId);

@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { DataSourceSetting } from "@/lib/api/contract";
 
-import { recordNotionHealth } from "./store";
+import { recordNotionHealth, recordSync } from "./store";
 import type { Connection } from "./types";
 
 vi.mock("server-only", () => ({}));
@@ -114,5 +114,38 @@ describe("recordNotionHealth: 자동 확인 다시 보기", () => {
     await recordNotionHealth(admin, connection, { seen: [], unreachable: null, notionUserId: "notion-me", autoConfirmed: [{ id: "ds-a", setting: auto("Action") }] }, now);
     expect(writes).toHaveLength(1);
     expect((writes[0].dataSources as Record<string, unknown>)["ds-a"]).toEqual(auto("Action"));
+  });
+});
+
+describe("recordSync: 동기화 결과를 연결 상태로", () => {
+  /** update 값과 조건만 기록하는 가짜 service role 클라이언트 */
+  function fakeSyncAdmin() {
+    const updates: Record<string, unknown>[] = [];
+    const conditions: string[] = [];
+    const q = {
+      eq: () => q,
+      neq: (column: string, value: string) => {
+        conditions.push(`${column} <> ${value}`);
+        return q;
+      },
+      select: () => q,
+      throwOnError: async () => ({ data: [{ id: "c1" }] }),
+    };
+    const admin = {
+      from: () => ({
+        update: (values: Record<string, unknown>) => {
+          updates.push(values);
+          return q;
+        },
+      }),
+    } as unknown as SupabaseClient;
+    return { admin, updates, conditions };
+  }
+
+  it("갱신 토큰이 거절돼 다시 연결해야 하면 reauth로 남긴다. 끊긴 연결(revoked)은 덮지 않는다", async () => {
+    const { admin, updates, conditions } = fakeSyncAdmin();
+    await recordSync(admin, connection, { error: "Notion 연결이 만료됐습니다. 다시 연결해 주세요.", reauth: true });
+    expect(updates[0]).toMatchObject({ status: "reauth", last_error: "Notion 연결이 만료됐습니다. 다시 연결해 주세요.", sync_started_at: null });
+    expect(conditions).toEqual(["status <> revoked"]);
   });
 });
