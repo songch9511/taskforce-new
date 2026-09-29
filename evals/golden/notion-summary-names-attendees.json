@@ -1,0 +1,81 @@
+{
+  "id": "notion-summary-names-attendees",
+  "description": "사용자 회사에서 가장 흔한 모양(G2): Meet 전사 없이 Notion AI 요약만 있고, 액션 아이템이 \"태오: …\" · \"Daon: …\" · \"Alex: …\"처럼 이름으로 담당을 적는다. 일정 참석자(2-4)가 붙어 있다. 사용자 별칭(Daon)의 일만 내 할 일이고, 다른 참석자 Alex Morgan의 일은 아니다.",
+  "origin": "synthetic",
+  "tags": [
+    "meet"
+  ],
+  "user": {
+    "name": "정다온",
+    "aliases": [
+      "Daon"
+    ],
+    "emails": [
+      "daon@lumenfield.example"
+    ]
+  },
+  "sources": [
+    {
+      "id": "notion-1019w",
+      "kind": "meeting",
+      "occurred_at": "2026-10-19T10:00:00+09:00",
+      "participants": {
+        "attendees": [
+          {
+            "name": "정다온",
+            "email": "daon@lumenfield.example"
+          },
+          {
+            "name": "이태오",
+            "email": "taeo@lumenfield.example"
+          },
+          {
+            "name": "박수빈",
+            "email": "subin@lumenfield.example"
+          },
+          {
+            "name": "Alex Morgan",
+            "email": "alex.morgan@lumenfield.example"
+          }
+        ]
+      },
+      "text": "# 주간 제품 회의\n\nMeeting 2026-10-19\n\n[AI 요약]\n    ### 요약\n    - 결제 모듈 교체는 11월 중순 배포를 목표로 진행\n    - 고객 인터뷰에서 온보딩 단계 이탈이 가장 많다는 의견이 반복됨\n    ### 액션 아이템\n    - [ ] 태오: 결제 모듈 교체 일정표 수요일까지 공유\n    - [ ] Daon: 온보딩 개선안 초안 금요일까지 작성\n    - [ ] 수빈: 고객 인터뷰 녹취 정리\n    - [ ] Alex: 11월 배포 체크리스트 업데이트\n\n[메모]\n\n[녹음 전사]"
+    }
+  ],
+  "expected_actions": [
+    {
+      "title": "온보딩 개선안 초안 작성",
+      "owner": "me",
+      "due": "2026-10-23",
+      "status": "open",
+      "evidence": [
+        {
+          "source": "notion-1019w",
+          "quote": "온보딩 개선안 초안 금요일까지 작성"
+        }
+      ]
+    }
+  ],
+  "must_not_extract": [
+    {
+      "source": "notion-1019w",
+      "quote": "태오: 결제 모듈 교체 일정표 수요일까지 공유",
+      "reason": "NOT_MY_ACTION"
+    },
+    {
+      "source": "notion-1019w",
+      "quote": "수빈: 고객 인터뷰 녹취 정리",
+      "reason": "NOT_MY_ACTION"
+    },
+    {
+      "source": "notion-1019w",
+      "quote": "Alex: 11월 배포 체크리스트 업데이트",
+      "reason": "NOT_MY_ACTION"
+    },
+    {
+      "source": "notion-1019w",
+      "quote": "결제 모듈 교체는 11월 중순 배포를 목표로 진행",
+      "reason": "INFO_ONLY"
+    }
+  ]
+}

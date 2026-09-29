@@ -1,0 +1,61 @@
+{
+  "id": "gmail-cc-for-awareness",
+  "description": "심사 fixture 3. 사용자는 참조로만 받았고, 본문의 요청은 받는 사람(Sam)의 일이다. 본문에 사용자 이름(Alex)이 나오지만 '참고로 넣었다'는 말이라 할 일이 아니다.",
+  "origin": "synthetic",
+  "tags": [
+    "gmail"
+  ],
+  "user": {
+    "name": "Alex Kim",
+    "aliases": [
+      "Alex"
+    ],
+    "emails": [
+      "alex@lumenfield.example"
+    ]
+  },
+  "sources": [
+    {
+      "id": "gmail-1006",
+      "kind": "email",
+      "occurred_at": "2026-10-06T11:30:00+09:00",
+      "participants": {
+        "from": {
+          "name": "Jordan Lee",
+          "email": "jordan@harborline.example"
+        },
+        "to": [
+          {
+            "name": "Sam Rivera",
+            "email": "sam@lumenfield.example"
+          }
+        ],
+        "cc": [
+          {
+            "name": "Alex Kim",
+            "email": "alex@lumenfield.example"
+          }
+        ]
+      },
+      "text": "제목: Banner update\n\nHi Sam,\n\nSam, please update the banner by Thursday. Alex is copied for awareness.\nThe new tagline is in the brand doc we shared last week.\n\nThanks,\nJordan"
+    }
+  ],
+  "expected_actions": [],
+  "must_not_extract": [
+    {
+      "source": "gmail-1006",
+      "quote": "Sam, please update the banner by Thursday",
+      "reason": "NOT_MY_ACTION"
+    },
+    {
+      "source": "gmail-1006",
+      "quote": "Alex is copied for awareness",
+      "reason": "INFO_ONLY"
+    },
+    {
+      "source": "gmail-1006",
+      "quote": "The new tagline is in the brand doc we shared last week",
+      "reason": "INFO_ONLY"
+    }
+  ]
+}
