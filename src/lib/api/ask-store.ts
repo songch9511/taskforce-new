@@ -8,6 +8,7 @@ import { completeJson, llmConfigFromEnv } from "@/lib/ai/llm";
 import { withConsentGate } from "@/lib/consent/gate";
 import { consentCheck } from "@/lib/consent/store";
 import type { AskAction, AskContext, AskDeps, AskSource } from "@/lib/pipeline/ask";
+import { SLACK_DISCONNECTED_QUOTE } from "@/lib/retention";
 
 import { ASK_LIMIT } from "./rate-limit";
 import { takeRateLimit } from "./rate-limit-store";
@@ -64,7 +65,8 @@ export async function retrieveAskContext(admin: SupabaseClient, userId: string, 
   // 같은 원문의 같은 구절은 한 번만, 최근 것부터
   const quotes = new Map<string, { sourceId: string; quote: string; at: string }[]>();
   for (const row of [...((evidenceRows ?? []) as QuoteRow[]), ...((claimRows ?? []) as QuoteRow[])]) {
-    if (!row.source_id || !row.quote) continue;
+    // 빈 인용 · Slack 연결을 끊어 지운 인용 자리 표시는 근거가 아니다
+    if (!row.source_id || !row.quote || row.quote === SLACK_DISCONNECTED_QUOTE) continue;
     const list = quotes.get(row.action_id) ?? [];
     if (!list.some((q) => q.sourceId === row.source_id && q.quote === row.quote)) list.push({ sourceId: row.source_id, quote: row.quote, at: row.created_at });
     quotes.set(row.action_id, list);

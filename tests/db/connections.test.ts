@@ -70,10 +70,12 @@ describe("연동 (20260928000000_connections)", () => {
     ).rejects.toThrow(/foreign key/);
   });
 
-  it("연결을 끊으면 토큰은 지워지고 원문은 남는다", async () => {
+  it("앱은 연결을 직접 지울 수 없고, 서버가 끊으면 토큰은 지워지고 (Notion) 원문은 남는다", async () => {
+    // 끊기는 서버만 한다 (DELETE /api/v1/connections/:id → disconnect_connection, 20261013000000): 토큰 폐기 · Slack 글자 지우기를 건너뛰지 못하게
     await asUser(db, ALICE, async () => {
-      await db.query(`delete from public.connections where id = $1`, [aliceConnection]);
+      expect((await db.query(`delete from public.connections where id = $1 returning id`, [aliceConnection])).rows).toHaveLength(0);
     });
+    await db.query(`select public.disconnect_connection($1, $2)`, [ALICE, aliceConnection]);
     expect((await db.query(`select 1 from public.connection_secrets`)).rows).toHaveLength(0);
     const { rows } = await db.query<{ connection_id: string | null }>(`select connection_id from public.sources where external_id = 'page-1'`);
     expect(rows).toEqual([{ connection_id: null }]);
