@@ -1,0 +1,103 @@
+{
+  "id": "seq-gmail-extend-in-thread",
+  "description": "심사 fixture 1 → 5. 상대의 요청(혼자 받음) → 사용자의 답장 약속(Monday) → 같은 스레드에서 요청자가 \"Wednesday works too, no rush.\"(월요일 아침). 새 할 일 없이 기한만 수요일로(규칙 0 · 4). 메일마다 앞 메일을 인용한다(G6: 메일 한 통 = 원문 하나).",
+  "origin": "synthetic",
+  "tags": [
+    "gmail"
+  ],
+  "user": {
+    "name": "Alex Kim",
+    "aliases": [
+      "Alex"
+    ],
+    "emails": [
+      "alex@lumenfield.example"
+    ]
+  },
+  "sources": [
+    {
+      "id": "gmail-1001a",
+      "kind": "email",
+      "occurred_at": "2026-10-01T16:12:00+09:00",
+      "participants": {
+        "from": {
+          "name": "Jordan Lee",
+          "email": "jordan@harborline.example"
+        },
+        "to": [
+          {
+            "name": "Alex Kim",
+            "email": "alex@lumenfield.example"
+          }
+        ]
+      },
+      "text": "제목: Signed contract\n\nHi Alex,\n\nCould you send the signed contract by Monday?\nOur finance team will countersign it on Tuesday.\n\nThanks,\nJordan"
+    },
+    {
+      "id": "gmail-1001b",
+      "kind": "email",
+      "occurred_at": "2026-10-01T17:05:00+09:00",
+      "participants": {
+        "from": {
+          "name": "Alex Kim",
+          "email": "alex@lumenfield.example"
+        },
+        "to": [
+          {
+            "name": "Jordan Lee",
+            "email": "jordan@harborline.example"
+          }
+        ]
+      },
+      "text": "제목: Re: Signed contract\n\nSure, I'll send it by Monday.\n\nAlex\n\nOn Thu, Oct 1, 2026 at 4:12 PM Jordan Lee <jordan@harborline.example> wrote:\n\n> Hi Alex,\n>\n> Could you send the signed contract by Monday?\n> Our finance team will countersign it on Tuesday.\n>\n> Thanks,\n> Jordan"
+    },
+    {
+      "id": "gmail-1005c",
+      "kind": "email",
+      "occurred_at": "2026-10-05T09:40:00+09:00",
+      "participants": {
+        "from": {
+          "name": "Jordan Lee",
+          "email": "jordan@harborline.example"
+        },
+        "to": [
+          {
+            "name": "Alex Kim",
+            "email": "alex@lumenfield.example"
+          }
+        ]
+      },
+      "text": "제목: Re: Signed contract\n\nWednesday works too, no rush.\n\nJordan\n\nOn Thu, Oct 1, 2026 at 5:05 PM Alex Kim <alex@lumenfield.example> wrote:\n\n> Sure, I'll send it by Monday.\n>\n> Alex\n>\n> On Thu, Oct 1, 2026 at 4:12 PM Jordan Lee <jordan@harborline.example> wrote:\n>\n>> Hi Alex,\n>>\n>> Could you send the signed contract by Monday?\n>> Our finance team will countersign it on Tuesday.\n>>\n>> Thanks,\n>> Jordan"
+    }
+  ],
+  "expected_actions": [
+    {
+      "title": "Jordan Lee에게 서명한 계약서 발송",
+      "owner": "me",
+      "counterpart": "Jordan Lee",
+      "due": "2026-10-07",
+      "status": "open",
+      "evidence": [
+        {
+          "source": "gmail-1001a",
+          "quote": "Could you send the signed contract by Monday?"
+        },
+        {
+          "source": "gmail-1001b",
+          "quote": "Sure, I'll send it by Monday."
+        },
+        {
+          "source": "gmail-1005c",
+          "quote": "Wednesday works too, no rush."
+        }
+      ]
+    }
+  ],
+  "must_not_extract": [
+    {
+      "source": "gmail-1001a",
+      "quote": "Our finance team will countersign it on Tuesday",
+      "reason": "NOT_MY_ACTION"
+    }
+  ]
+}

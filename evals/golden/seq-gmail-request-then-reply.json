@@ -1,0 +1,81 @@
+{
+  "id": "seq-gmail-request-then-reply",
+  "description": "상대의 요청 메일(사용자 혼자 받음)과 두 시간 뒤 사용자의 수락 답장이 따로 들어온다(G6: 메일 한 통 = 원문 하나). 할 일 하나, 기한 목요일. 요청 메일에서 만든 할 일에 답장이 붙어야 하고 둘로 갈라지면 안 된다. 남은 확인 요청이 없는지도 본다(G12).",
+  "origin": "synthetic",
+  "tags": [
+    "gmail"
+  ],
+  "user": {
+    "name": "Alex Kim",
+    "aliases": [
+      "Alex"
+    ],
+    "emails": [
+      "alex@lumenfield.example"
+    ]
+  },
+  "sources": [
+    {
+      "id": "gmail-1006a",
+      "kind": "email",
+      "occurred_at": "2026-10-06T10:30:00+09:00",
+      "participants": {
+        "from": {
+          "name": "Priya Shah",
+          "email": "priya@corbel-partners.example"
+        },
+        "to": [
+          {
+            "name": "Alex Kim",
+            "email": "alex@lumenfield.example"
+          }
+        ]
+      },
+      "text": "제목: Q3 usage report\n\nHi Alex,\n\nCould you share the Q3 usage report with our team by Thursday?\nWe'd like to review it before the quarterly business review.\n\nBest,\nPriya"
+    },
+    {
+      "id": "gmail-1006b",
+      "kind": "email",
+      "occurred_at": "2026-10-06T12:40:00+09:00",
+      "participants": {
+        "from": {
+          "name": "Alex Kim",
+          "email": "alex@lumenfield.example"
+        },
+        "to": [
+          {
+            "name": "Priya Shah",
+            "email": "priya@corbel-partners.example"
+          }
+        ]
+      },
+      "text": "제목: Re: Q3 usage report\n\nHi Priya,\n\nYes, I'll have it to you by Thursday.\n\nAlex\n\nOn Tue, Oct 6, 2026 at 10:30 AM Priya Shah <priya@corbel-partners.example> wrote:\n\n> Hi Alex,\n>\n> Could you share the Q3 usage report with our team by Thursday?\n> We'd like to review it before the quarterly business review.\n>\n> Best,\n> Priya"
+    }
+  ],
+  "expected_actions": [
+    {
+      "title": "Priya Shah에게 3분기 사용량 보고서 공유",
+      "owner": "me",
+      "counterpart": "Priya Shah",
+      "due": "2026-10-08",
+      "status": "open",
+      "evidence": [
+        {
+          "source": "gmail-1006a",
+          "quote": "Could you share the Q3 usage report with our team by Thursday?"
+        },
+        {
+          "source": "gmail-1006b",
+          "quote": "Yes, I'll have it to you by Thursday."
+        }
+      ]
+    }
+  ],
+  "must_not_extract": [
+    {
+      "source": "gmail-1006a",
+      "quote": "We'd like to review it before the quarterly business review",
+      "reason": "INFO_ONLY"
+    }
+  ]
+}

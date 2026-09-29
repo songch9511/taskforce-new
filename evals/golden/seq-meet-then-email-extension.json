@@ -1,0 +1,99 @@
+{
+  "id": "seq-meet-then-email-extension",
+  "description": "Meet 전사에서 사용자가 수요일까지 약속 → 다음 날 요청자의 메일 \"Friday is fine for the implementation plan\" → 새 할 일 없이 기한만 금요일로(규칙 0 · 4). 회의에서 동료 · 상대가 한 약속은 뽑지 않는다.",
+  "origin": "synthetic",
+  "tags": [
+    "meet"
+  ],
+  "user": {
+    "name": "Alex Kim",
+    "aliases": [
+      "Alex"
+    ],
+    "emails": [
+      "alex@lumenfield.example"
+    ]
+  },
+  "sources": [
+    {
+      "id": "meet-1012k",
+      "kind": "meeting",
+      "occurred_at": "2026-10-12T16:00:00+09:00",
+      "participants": {
+        "attendees": [
+          {
+            "name": "Alex Kim",
+            "email": "alex@lumenfield.example"
+          },
+          {
+            "name": "Nina Alvarez",
+            "email": "nina@corbel-partners.example"
+          },
+          {
+            "name": "Noah Patel",
+            "email": "noah@lumenfield.example"
+          }
+        ]
+      },
+      "text": "[Google Meet · Implementation kickoff — Corbel]\nNina Alvarez: Thanks for joining, everyone. The main thing we need from your side is the implementation plan.\nAlex Kim: Sure. I'll send the implementation plan by Wednesday.\nNina Alvarez: Perfect. We'll share the SSO settings with your team tomorrow.\nNoah Patel: And I'll set up the staging environment this week."
+    },
+    {
+      "id": "gmail-1013n",
+      "kind": "email",
+      "occurred_at": "2026-10-13T10:05:00+09:00",
+      "participants": {
+        "from": {
+          "name": "Nina Alvarez",
+          "email": "nina@corbel-partners.example"
+        },
+        "to": [
+          {
+            "name": "Alex Kim",
+            "email": "alex@lumenfield.example"
+          }
+        ]
+      },
+      "text": "제목: Implementation plan timing\n\nHi Alex,\n\nOur steering meeting moved to next Tuesday, so Friday is fine for the implementation plan.\n\nBest,\nNina"
+    }
+  ],
+  "expected_actions": [
+    {
+      "title": "Nina Alvarez에게 구현 계획 발송",
+      "owner": "me",
+      "counterpart": "Nina Alvarez",
+      "due": "2026-10-16",
+      "status": "open",
+      "evidence": [
+        {
+          "source": "meet-1012k",
+          "quote": "I'll send the implementation plan by Wednesday."
+        },
+        {
+          "source": "meet-1012k",
+          "quote": "The main thing we need from your side is the implementation plan."
+        },
+        {
+          "source": "gmail-1013n",
+          "quote": "Friday is fine for the implementation plan"
+        }
+      ]
+    }
+  ],
+  "must_not_extract": [
+    {
+      "source": "meet-1012k",
+      "quote": "We'll share the SSO settings with your team tomorrow.",
+      "reason": "NOT_MY_ACTION"
+    },
+    {
+      "source": "meet-1012k",
+      "quote": "I'll set up the staging environment this week.",
+      "reason": "NOT_MY_ACTION"
+    },
+    {
+      "source": "gmail-1013n",
+      "quote": "Our steering meeting moved to next Tuesday",
+      "reason": "INFO_ONLY"
+    }
+  ]
+}

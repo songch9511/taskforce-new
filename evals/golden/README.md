@@ -23,6 +23,16 @@
 - `participants.attendees`에는 DM이면 상대와 사용자, 채널이면 묶음에서 글을 쓴 사람과 언급된 사람을 넣습니다.
 - 모두 합성입니다. 실제 Slack 원문(익명화)은 연동 뒤 1주 사용에서 더합니다(D6).
 
+### Gmail · Meet 케이스 (`tags: ["gmail"]` · `["meet"]`)
+
+`gmail-*` · `seq-gmail-*` 13건(`gmail`)과 `meet-*` · `seq-meet-*` · `seq-notion-after-meet` · `notion-summary-*` 9건(`meet`)은 Google 연동 어댑터가 만들 원문과 **글자까지 같은 형식**으로 씁니다(`docs/go-live/google-integration.md` 2-5 · 2-6, 케이스 표는 4장). 모양은 `src/lib/eval/golden.test.ts`가 검사합니다.
+
+- **Gmail**: 메일 한 통이 원문 하나입니다(G6). 첫 줄 `제목: …`, 빈 줄, 그다음 본문을 보낸 그대로 씁니다. 메일 앱이 붙인 이전 메일 인용은 지우지 않습니다(`On … wrote:` + `>` · `>>`, 한국어 Gmail의 `…님이 작성:`, 전달의 `---------- Forwarded message ---------`). 보낸 사람 · 받는 사람 줄은 본문에 넣지 않고 `participants`의 `from` · `to` · `cc`(`{ name, email }`)로 둡니다. `user.emails`에는 연결한 Gmail 주소를 넣습니다(`loadIdentity`). 회사 그룹 주소로 온 메일은 `to`에 그룹 주소만 있습니다.
+- **Meet 전사**: 첫 줄 `[Google Meet · 일정 제목]`, 그다음 줄은 `이름: 글`입니다. 사용자 줄은 Meet 표시 이름이 아니라 **Taskforce 프로필 이름**(`user.name`)으로 씁니다. 같은 화자의 이어진 항목은 한 줄로 합치고, 시각은 넣지 않습니다. `participants.attendees`는 일정 참석자와 Meet 참가자를 합친 것이고, 사용자는 프로필 이름 + 연결한 주소로 한 번만 넣습니다.
+- **Notion 회의록 + 일정 참석자**(2-4): Notion 어댑터(`pageToItem`)와 같게 `# 제목`과 정리한 본문(`[AI 요약]` · `[메모]` · `[녹음 전사]`)을 쓰고, `participants.attendees`에 같은 회의의 Calendar 참석자를 넣습니다.
+- 같은 회의의 Notion 회의록과 Meet 전사는 `occurred_at`을 40초 차이로 두어 들어오는 순서를 정합니다(`seq-meet-after-notion` · `seq-notion-after-meet`).
+- 사람 · 회사는 지어낸 이름이고 주소는 `.example` 도메인입니다. 실제 원문(본인 Gmail · Meet 전사, 로컬에서 익명화)은 G13으로 더합니다.
+
 인용이 원문에 없거나 없는 source를 가리키면 `npm run eval`과 `npm run test`가 실패합니다.
 실제 사용자 데이터를 커밋할 때는 이름·회사·금액 등을 반드시 바꿔 주세요.
 
@@ -43,6 +53,7 @@ npm run eval -- --labels      # 라벨 검사만 (키가 없으면 CI도 여기�
 - 원문 하나 케이스는 새 약속(`commitment`)만 채점합니다. 변화 발언(연장 · 완료 · 취소)은 시퀀스에서 봅니다.
 - **시퀀스**(원문이 여럿인 케이스, `seq-*` · `friday-to-monday`)는 원문을 시간순으로 추출 → 검증 → Jev → 매칭 · 병합에 넣고, 남은 Action을 `expected_actions`와 비교합니다.
   병합 정확도 = 정답 Action이 정확히 하나의 Action으로, 맞는 기한 · 상태 · 담당으로 남은 비율. 갈라짐(split) · 잘못 합침(over-merge) · 누락 · 오탐을 따로 셉니다. Jev가 필요합니다.
+  끝에 **확인 요청이 남은 열린 Action**도 셉니다(`확인 요청 남음`, 앱과 같은 `projectAction` 계산). 정답이 맞아도 확인 요청이 남으면 사용자가 한 번 더 눌러야 하고, 오탐은 자동 반영(`자동`)과 확인 요청을 나눠 봅니다.
 - 단계별로 채점합니다: 추출만 → 기계 검증(인용 실재 확인 · 기한 재계산) → Jev 통과(자동+확인) → Jev 자동 반영만.
 - Jev는 따로 한 번 더 봅니다. 정답 Action과 함정 문장을 그대로 후보로 만들어 묻고, 질문별 사람 라벨 일치율,
   라벨 종류별 자동/확인/기각 분포, 확률 구간별 실제 비율(보정 표)을 출력합니다. 임계값은 `src/lib/pipeline/judge.config.ts`.
@@ -62,3 +73,5 @@ npm run eval -- --labels      # 라벨 검사만 (키가 없으면 CI도 여기�
 | 2026-09-28 | glm-5.3-flash · extract-v4 + judge-v4 + match-v1 | **Slack 14** (원문 하나 9 + 시퀀스 5, `--tag slack`) | 추출 · 자동+확인 100% · 자동만 100% | 85.7% · 83.3~100% | 100% | 100% | 네 번 돌림(한 번은 시퀀스 하나가 모델 응답 시간 초과). Jev 라벨 일치율 100% (16개). 누락 1은 `slack-channel-mid-thread`(첫 글 없는 스레드의 "이거 금요일까지 될까요?", 추출 안 됨). **병합 정확도 60% (3/5)**: 요청자 취소에 전해 들은 이유가 붙으면 Jev가 화자를 제3자 · 전언으로 봐 확인 요청으로 빠짐(4/4), 상대가 기한을 늦춰 주고 내가 같은 원문에서 받으면 내 줄만 뽑혀 규칙 0이 막음(3/3). 원인과 다음 할 일은 `docs/go-live/slack-integration.md` 4장 |
 | 2026-09-29 | glm-5.3-flash · **extract-v5 + judge-v5** + match-v1, 이름표 화자(병합에서 요청자와 비교) · `@이름` 요청 확인 규칙 (Slack PR 1b) | 전체 57 (원문 하나 39 + 시퀀스 18, Slack 확인용 3 · 안전장치 1 포함) | 추출 89.8% · 자동+확인 92.9% · 자동만 97.9% | 96.4% · 94.5% · 88.7% | 100% | 100% | **병합 정확도 100% (20/20)**, 전체 두 번 · Slack 한 번 모두 100%. Slack 8/8(안전장치 `seq-slack-relayed-extension` 포함) · 확인용(`slack-heldout`, 표현을 바꾼 F1~F3) 2/2 · 원문 하나 8/8 + 1/1. 회의록 · 메일은 병합 12/12, 원문 하나는 기준 실행과 같은 수준(남은 누락 · 오탐은 전부터 있던 것). `freelance-client-recap-email`의 메일 요청은 기각선(0.4)에 걸친 경계 케이스라 실행마다 갈린다. 함정 자동 반영 0. 호출 실패 1건(Jev 520). 최종 방식으로 돈 9번을 케이스별로 세면 `seq-slack-thread-late-reply`만 8/9(추출기가 가끔 내 답만 뽑음). 이름 겹침 안전장치 `slack-namesake-other-person`(별칭 Jiho ≠ Jiho Park) 3/3 |
 | 2026-09-29 | glm-5.3-flash · extract-v5 + judge-v5 + match-v1 (Slack PR 4 전체 검증, 파이프라인은 1b와 같음) | **Slack 18** (원문 하나 10 + 시퀀스 8, `--tag slack`) | 추출 90.0% · 자동+확인 100% · 자동만 100% | 100% · 100% · 85.7% | 100% | 100% | **병합 정확도 100% (8/8)**, 확인용 2/2 · 원문 하나 확인용 1/1 · 이름 겹침 안전장치 1/1. Jev 라벨 일치율 100% (20개). 추출 오탐 1은 Jev가 걸렀다. 자동만 누락 1은 확인 요청으로 가는 `slack-channel-mid-thread`(설계대로). 비용 약 $0.023. 어댑터(`slack/bucket.ts`)가 만드는 본문이 골든셋과 글자까지 같은지는 단위 테스트가 본다 |
+| 2026-09-29 | glm-5.3-flash · extract-v5 + judge-v5 + match-v1 (Google PR 1 기준 점수, 파이프라인은 그대로) | **Gmail 13** (원문 하나 8 + 시퀀스 5, `--tag gmail`) | 자동+확인 85.3% · 자동만 87.1% | 80.6% · 100% | 100% | 100% | 끝까지 돈 9번(태그 5 · 전체 4)을 합친 값. **병합 정확도 95.0% (38/40)**: 월요일 "Thanks" 메일이 인용한 내 옛 약속("by Monday")이 다시 뽑혀 늦춘 기한이 되돌아감(`seq-gmail-quoted-stale-deadline` 4번 중 2번). **함정 자동 반영 4**: 인용 속 이미 끝난 약속이 새 할 일로(`gmail-long-quoted-history` 6번 중 4번). 누락은 정리 메일 속 요청의 기각(`gmail-request-in-recap-ko` 7/9, G12 → 확인 요청으로 결정). 시퀀스 끝 확인 요청 남음 21/40(요청 · 수락이 따로 들어오는 메일). 인용이 겹겹인 메일에서 90초 시간 초과가 잦다(3/9). 원인 · 고칠 곳은 `docs/go-live/google-integration.md` 4장 "기준 점수" |
+| 2026-09-29 | 위와 같음 | **Meet 9** (원문 하나 5 + 시퀀스 4, `--tag meet`, Notion 요약 + 일정 참석자 포함) | 자동+확인 87.5% · 자동만 100% | 100% · 100% | 83.3% | 100% | 끝까지 돈 7번(태그 3 · 전체 4). **병합 정확도 100% (20/20)**, 함정 자동 반영 0. 같은 회의의 Notion 회의록과 Meet 전사가 순서와 상관없이 하나로 합쳐짐. 담당 틀림은 모두 `notion-summary-with-attendees`(담당 없는 액션 아이템을 `me`로, 확인 요청이라 자동 반영 아님). 오탐은 조건부 발언의 확인 요청(`meet-korean-transcript` 6/6). 시퀀스 끝 확인 요청 남음 13/27: `seq-meet-after-notion` 7/7(Notion의 판정 확인이 Meet 약속 뒤에도 남음) · `seq-meet-others-item` 6/7(조건부 발언) |
