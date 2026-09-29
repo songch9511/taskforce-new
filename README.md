@@ -9,6 +9,7 @@ AI 프로젝트 매니저 — 회의록·메시지·메일에서 내가 약속�
 - [플랫폼 전략: iOS · macOS](docs/PLATFORMS.md)
 - [오탐 방지와 진실 판정 기준](docs/TRUTH_RULES.md)
 - [바이브코딩 플랜](docs/VIBE_CODING_PLAN.md)
+- [피처맵: 기능 → 코드](docs/FEATURE_MAP.md)
 - [에이전트 작업 규칙](CLAUDE.md)
 
 ## 로컬 실행
@@ -59,17 +60,31 @@ Notion 등 연동을 쓰려면 [`docs/INTEGRATIONS.md`](docs/INTEGRATIONS.md)의
 
 ## 구조
 
+기능별 코드 위치 · 거쳐야 하는 정식 구현 · 테스트는 [피처맵](docs/FEATURE_MAP.md)에 있습니다.
+
 ```
 src/
-  app/                 화면과 라우트 (login, auth/confirm, auth/signout, 지금 할 일)
+  app/
+    api/v1/            앱이 부르는 서버 API (Route Handler)
+    api/connectors/    OAuth callback (앱 · 웹 공용) · 웹(lab) 연결 시작 · Slack 이벤트
+    api/cron/          동기화 · 알림 · 원문 보존기간 (vercel.json)
+    lab/ admin/        내부 도구: 시험대 · 지표 대시보드
+    login/ auth/       웹 로그인 (이메일 링크)
   components/ui/       shadcn/ui 컴포넌트
   lib/
-    auth.ts            requireUser(): 서버에서 로그인 사용자 확인
+    pipeline/          추출 → 검증 → 판정 → 매칭 · 병합 → 진실 판정 (순수 함수)
+    sources/           원문 처리 (파이프라인 + DB)
+    actions/           Action 쓰기 · 지금 할 일 순서 · AI에게 넘기기
+    connectors/        연동: 연결 · 동기화 · Notion
+    ai/                LLM · Jev · 임베딩 호출 (여기서만)
+    api/               API 인증 · 계약(contract.ts) · 속도 제한
+    consent/ notify/ metrics/ apple/ supabase/ eval/
+    auth.ts            requireUser(): 화면에서 로그인 사용자 확인 (API는 api/auth.ts)
     env.ts             환경변수 검증
-    supabase/          브라우저·서버·proxy용 Supabase 클라이언트
-    eval/              골든셋 형식과 검증
   proxy.ts             세션 갱신 + 비로그인 사용자 리다이렉트 (Next.js 16의 middleware)
 supabase/migrations/   DB 스키마 (RLS 포함)
-evals/golden/          골든셋
-tests/db/              마이그레이션·RLS 테스트
+evals/                 골든셋 (golden/) · 물어보기 (ask/)
+tests/                 DB 마이그레이션 · RLS 테스트 (db/) · 보안 헤더
+scripts/               eval · 원문 재처리 · 심사용 계정
+apple/                 iOS · macOS 앱 (apple/README.md)
 ```
