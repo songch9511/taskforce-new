@@ -20,6 +20,12 @@
 4. 코드 · 인프라를 바꿀 때 아래 중 하나라도 바뀌면 이 폴더를 같은 PR에서 고친다: AI 호출 경로 · 모델 공급자, 호스팅 리전, Supabase 요금제(백업), 로그에 남기는 것, 새 연동 · 새 수집 항목, 분석 SDK.
 5. 웹사이트 첫 화면의 개인정보 한 줄("AI calls go only to providers that keep no data. Your data stays in Sydney, and deleting your account deletes it right away.")은 처리방침의 "한눈에 보기"와 같은 약속만 쓴다(BRAND.md).
 
+## 게시 기록
+
+| 날짜 | 판 | 내용 |
+|---|---|---|
+| 2026-09-29 | 베타 1.0 (시행일 2026-09-29) | 첫 게시(runbook L1 · W2). 자체 검토(#13) 반영. **규칙 2의 예외:** 구현 대조표의 Google 줄(Calendar · Meet · Gmail, 계정 삭제 · 연결 끊기 때 Google 토큰 폐기)은 아직 구현 전(C4)이지만, Google 브랜드 · 범위 심사가 게시된 처리방침을 먼저 요구해서 게시했다(사용자 결정). Google 연결은 C4 배포 전에는 열리지 않아 그 문장이 적용되는 처리는 아직 없다. **C4를 배포하기 전에 3장 Google 문장 · 이 표의 Google 줄을 구현과 다시 맞춘다.** Supabase Free · 백업 없음은 사용자가 확인했다 |
+
 ## 구현 대조표
 
 처리방침 문장이 기대는 코드 · 설정. "구현됨"은 2026-09-27에 코드로 확인한 것이다. 같은 날 다른 작업(트랙 2 · 3)이 코드를 계속 바꾸고 있어 "진행 중" · "코드 있음" 행은 **게시 직전에 다시 확인한다.**
@@ -28,8 +34,8 @@
 |---|---|---|---|
 | 모든 AI 요청은 ZDR · 학습 금지 공급자에게만 | `src/lib/ai/providers.ts`의 `providerRouting()` → 모든 요청에 `data_collection: "deny"` · `zdr: true`, `llm.ts` · `jev.ts` · `embed.ts`가 그대로 씀 | 구현됨 | — |
 | 모델 공급자와 국가를 7장 표에 적음 | `src/lib/ai/providers.ts`가 공급자를 고정한다: `provider: { only, order, allow_fallbacks: false }`로 아래 목록 밖으로 넘어가지 않는다(2026-09-27 [결정 1](#결정-필요), 해결됨) | 구현됨 | — |
-| OpenRouter 프롬프트 로깅 꺼짐 | OpenRouter 계정 설정 (코드 아님) | 확인 필요 | 사용자가 OpenRouter → Settings → Privacy에서 확인 |
-| 데이터는 시드니, 백업 없음 → 삭제 즉시 | `supabase/.temp/pooler-url`이 `aws-0-ap-southeast-2` (시드니). 요금제는 Free로 알려져 있으나 이 저장소에서 확인할 수 없다 | 확인 필요 | 사용자가 Supabase 대시보드에서 Free · 백업 없음을 확인. Pro로 올리면 7일 백업이 생겨 5장을 고친다 |
+| OpenRouter 프롬프트 로깅 꺼짐 | OpenRouter 계정 설정 (코드 아님) | 확인됨 (2026-09-28, runbook I9: ZDR 필수 · 학습 엔드포인트 끔) | — |
+| 데이터는 시드니, 백업 없음 → 삭제 즉시 | `supabase/.temp/pooler-url`이 `aws-0-ap-southeast-2` (시드니). 요금제는 Free로 알려져 있으나 이 저장소에서 확인할 수 없다 | 확인됨 (2026-09-29, 사용자) | Pro로 올리면 7일 백업이 생겨 5장을 고친다 |
 | 서버는 시드니 | `vercel.json`의 `"regions": ["syd1"]` | 구현됨 | 배포한 프로젝트에 설정이 적용됐는지 배포 뒤 확인(runbook) |
 | 서버 요청 기록 1일 | Vercel Pro 런타임 로그 보관 1일 (Observability Plus를 켜면 30일) | 요금제 사실 | Observability Plus · 로그 드레인을 켜지 않는다. 켜면 5장을 고친다 |
 | 데이터베이스 · 인증 기록 1일 | Supabase Free 로그 보관 1일 | 요금제 사실 | 위 요금제 확인과 같다 |
@@ -53,7 +59,7 @@
 | Slack: DM · 그룹 DM · 언급 · 내 메시지 · 그 스레드만 남기고 나머지는 받는 즉시 버림, 연결 전 메시지는 가져오지 않음, 권한 9개, 봇 없음 | `src/lib/connectors/slack/events.ts`(`classifySlackMessage`), `SLACK_USER_SCOPES`(`slack/client.ts`, 9개 = 3장 목록), 매니페스트(`docs/go-live/slack-app.md` 2장). 버린 채널 메시지가 DB에 없음을 dev 워크스페이스에서 확인(2026-09-29) | 구현됨 (2026-09-29 배포, 운영 Slack 앱 `A0C584MQJV7`) | `SLACK_CONNECT_ENABLED=true`(처리방침 게시 · Slack 문구가 든 새 앱 빌드 뒤) |
 | 앱 메뉴: 계정 → 프로필 · AI data · Privacy Policy · 계정 삭제, 연결 → 연결 끊기 (11장 표) | `apple/Taskforce/iOS/AccountSheet.swift` · `apple/Taskforce/Shared/AccountViews.swift`에 프로필 · 연결(연결 끊기) · AI 동의 · 계정 삭제가 있다(작업 중). **앱 안 처리방침 링크는 없다** | 진행 중 | 계정 메뉴에 Privacy Policy 링크(App Store 5.1.1(i)). 앱의 실제 메뉴 이름과 11장 표를 맞춘다 |
 | 물어보기에서 질문을 AI로 보냄 | `src/lib/pipeline/ask.ts` (질문 · 답은 저장하지 않는다). 속도 제한은 `rate_limit_events` · `take_rate_limit`(20261005000000, `ASK_LIMIT` 10분 20번)이 맡는다. `ask_requests` 표는 없다 | 구현됨 | — |
-| 문의 메일 90일 안 삭제 · 원문 열람 기록 · 운영 계정 2단계 인증 | 운영 규칙 (코드 아님) | 사용자 | 게시 전에 실제로 지킬 수 있는지 사용자가 확인. 열람 기록은 날짜 · 대상 · 이유 · 동의 여부를 적는 표 하나로 시작 |
+| 문의 메일 90일 안 삭제 · 원문 열람 기록 · 운영 계정 2단계 인증 | 운영 규칙 (코드 아님) | 사용자가 지키기로 함 (2026-09-29 게시) | 열람 기록은 날짜 · 대상 · 이유 · 동의 여부를 적는 표 하나로 시작([internal-plan.md](internal-plan.md)). 2단계 인증은 runbook I12 |
 
 ## 결정 필요
 

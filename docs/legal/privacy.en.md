@@ -2,7 +2,7 @@
 
 Taskforce (AI project manager) · Beta
 
-- Effective date: {{effective date — the day this is published, e.g. 2026-10-XX}}
+- Effective date: 2026-09-29
 - Version: Beta 1.0
 - 한국어: [개인정보 처리방침](privacy.ko.md) (the Korean version prevails if the two differ)
 
@@ -316,4 +316,4 @@ The beta is not offered to people who live in the European Economic Area (EEA, i
 - We announce changes in the app and on this page at least 7 days before they take effect. Changes that are less favorable to you, such as new items, purposes, or recipients, are announced 30 days in advance, and we ask for consent again where needed.
 - Previous versions remain available on this page.
 
-This policy takes effect on {{effective date}}.
+This policy takes effect on 2026-09-29.
