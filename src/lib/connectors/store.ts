@@ -223,7 +223,8 @@ export async function claimConnection(admin: SupabaseClient, connection: Connect
 export async function recordSync(
   admin: SupabaseClient,
   connection: Connection,
-  update: { cursor?: Record<string, unknown>; error?: string | null; revoked?: boolean; reauth?: boolean },
+  /** claimedAt: 이 동기화가 잠금을 잡은 시각 (claimConnection의 now) */
+  update: { claimedAt: Date; cursor?: Record<string, unknown>; error?: string | null; revoked?: boolean; reauth?: boolean },
 ): Promise<void> {
   let query = admin
     .from("connections")
@@ -235,11 +236,13 @@ export async function recordSync(
       status: update.revoked ? "revoked" : update.reauth ? "reauth" : update.error ? "error" : "active",
     })
     .eq("id", connection.id)
-    .eq("user_id", connection.userId);
+    .eq("user_id", connection.userId)
+    // 동기화 도중 다시 연결했으면(saveConnection이 connected_at을 새로 적음) 새 연결의 상태 · 커서를 덮지 않는다: 잠금만 푼다
+    .lte("connected_at", update.claimedAt.toISOString());
   // 동기화 도중 끊긴 연결(Slack 앱 해제 · 토큰 오류, revoked)은 되살리지 않는다: 잠금만 푼다
   if (!update.revoked) query = query.neq("status", "revoked");
   const { data } = await query.select("id").throwOnError();
-  if (!update.revoked && (data?.length ?? 0) === 0) {
+  if ((data?.length ?? 0) === 0) {
     await admin.from("connections").update({ sync_started_at: null }).eq("id", connection.id).eq("user_id", connection.userId).throwOnError();
   }
 }
@@ -249,11 +252,13 @@ export function ingestDeps(admin: SupabaseClient): IngestDeps {
   return {
     ingestedIds: async (connection, externalIds) => {
       if (externalIds.length === 0) return new Set();
+      // 연결을 끊으면 원문의 connection_id가 비고, 다시 연결하면 새 연결이 된다. 비워진 이 사용자의 원문도 이미 넣은 것으로 본다:
+      // 최근 14일을 다시 넣어 같은 원문을 두 번 처리하지 않게 (external_id는 서비스의 전역 id)
       const { data } = await admin
         .from("sources")
         .select("external_id")
         .eq("user_id", connection.userId)
-        .eq("connection_id", connection.id)
+        .or(`connection_id.eq.${connection.id},connection_id.is.null`)
         .in("external_id", externalIds)
         .throwOnError();
       return new Set((data ?? []).map((row) => row.external_id as string));

@@ -4,7 +4,7 @@
 
 기능마다 실제 코드 위치, 거쳐야 하는 정식 구현, 호출자, 테스트를 적는다. 왜 그렇게 만들었는지는 위 문서에 있고, 이 문서는 **어디에 있고 무엇을 거쳐야 하는지**만 다룬다.
 
-- 마지막 확인: 2026-09-29, `main` (커밋 `5f3efa1`).
+- 마지막 확인: 2026-09-29, `main`(`c11ee26`)에 이 문서의 PR들(#12 · #14 · #16 · #17 · 결함 정리)을 더한 코드.
 - 확인 범위: 서버(`src/` · `scripts/` · `supabase/` · `tests/`)와 Apple 앱(`apple/`)을 진입점 → 핵심 구현 → 저장까지 코드로 따라갔다. 적은 파일과 심볼은 모두 실제로 있다. 테스트는 이름만 적었고 이번에 돌리지 않았다.
 - 줄 번호는 적지 않는다(금방 낡는다). 파일과 심볼 이름으로 찾는다.
 - 줄임: `v1/` = `src/app/api/v1/`, `lib/` = `src/lib/`, `App/` = `apple/Taskforce/`, `Kit/` = `apple/Packages/TaskforceKit/Sources/TaskforceKit/`.
@@ -54,13 +54,14 @@ flowchart TD
 | AI 호출 | `lib/ai/llm.ts` `completeJson` · `lib/ai/jev.ts` `decide` · `lib/ai/embed.ts` `embed`, 공급자 고정 `lib/ai/providers.ts` `providerRouting` | OpenRouter 주소는 이 세 파일에만 있다. 모델을 부르기 전 동의 확인은 원문 처리 · 빠진 할 일 · 물어보기가 `lib/consent/gate.ts` `withConsentGate`, 직접 추가의 임베딩은 `handleCreateAction`이 한 번 확인한다 |
 | 원문 → 후보 | `lib/pipeline/run.ts` `runPipeline` (추출 → 기계 검증 → Jev) | API · eval · 재처리 스크립트가 같은 함수를 쓴다 |
 | 원문 속 화자 · 언급 | `lib/pipeline/identity.ts` `quoteSpeaker` · `speakerRole` · `addressedToUser` | 인용 줄 이름표를 확실히 읽고 역할을 가를 수 있으면 화자 역할은 코드가 정한다 (제품 원칙 5). 아니면 Jev 답을 쓴다. 새 연동은 원문을 머리줄 `[…]` + `이름: 글` 형식으로 만든다 (`evals/golden/README.md` "Slack 케이스") |
-| 원문 처리 (DB) | `lib/sources/process.ts` `processSource` · `processTaskSource` · `reportMissing` | 연동 · API · 스크립트 모두 여기로 들어온다. 병합 단계(임베딩 채우기 + 매칭 · 병합)만 사용자마다 `withUserLock`으로 한 번에 하나씩 돈다 (한 서버 인스턴스 안에서만 보장). 추출 · 판정은 잠금 밖이다 |
+| 원문 처리 (DB) | `lib/sources/process.ts` `processSource` · `processTaskSource` · `reportMissing` | 연동 · API · 스크립트 모두 여기로 들어온다. 판정 기록(`judge_logs`)은 처리할 때마다 `replaceJudgeLogs`로 바꾼다(쌓지 않는다). 병합 단계(임베딩 채우기 + 매칭 · 병합)만 사용자마다 `withUserLock`으로 한 번에 하나씩 돈다 (한 서버 인스턴스 안에서만 보장). 추출 · 판정은 잠금 밖이다 |
 | Action 필드 값 | `lib/pipeline/resolve.ts` `resolveAction` → `lib/actions/project.ts` `projectAction` | 필드 값은 이 둘로만 계산한다 (제품 원칙 5). 예외는 임베딩만 쓰는 `lib/actions/db-store.ts` `saveEmbedding` |
 | Action 쓰기 | `lib/actions/service.ts` → `lib/actions/db-store.ts` `writeAction` · `writeProgress` → RPC `write_action` · `set_action_progress` · `start_action` | 앱 역할의 직접 쓰기는 DB가 막는다 (`20260929000000_actions_server_writes.sql`). `v1/actions/[id]/**`는 `lib/api/action-routes.ts` `actionWriteRoute`를 거친다. 예외: Slack 연결 끊기 · 앱 제거는 SQL `purge_slack_sources`가 인용을 자리 표시로 바꾸고 Claim의 글자(`quote` · `value_text` · `speaker`)만 비운다. 판정 칸은 남아 필드 값은 그대로다 |
 | 지운 원문 · 인용 | `lib/retention.ts` `purgedSourceMessage` · `SLACK_DISCONNECTED_QUOTE` | 같은 자리 표시 글자가 SQL `purge_slack_sources`와 Swift `Kit/EvidenceDigest.swift` `RemovedQuote`에도 있어 셋이 같아야 한다. 인용을 모델 · 클립보드로 보내는 곳은 자리 표시를 뺀다 (`handoffAction` · `retrieveAskContext` · 매칭의 `SupabaseActionStore` `shortlist` · `unembedded`) |
 | 지금 할 일 순서 | `lib/actions/rank.ts` `rankNow` (`GET /api/v1/now`) | 앱은 받은 순서를 그대로 보여 준다 |
 | 속도 제한 | `lib/api/rate-limit-store.ts` `takeRateLimit` → RPC `take_rate_limit`. 한도 값은 `lib/api/rate-limit.ts` | 직접 추가 10분 30번 · 물어보기 20번 · 빠진 할 일 10번 · 연결 시작 10번 |
-| 연동 틀 · 동기화 | `lib/connectors/registry.ts` `syncConnections` · `connectorFor` · `tokenRevokerFor` · `revokeConnectorTokens` | cron · Sync Now · 첫 동기화가 모두 `syncConnections`를 쓴다. 연동은 `CONNECTORS`에 등록한다. 앱 시작 · 완료는 `connectorFor`, 동기화는 같은 `opened` 조건으로 연다 (Slack은 `SLACK_CONNECT_ENABLED`, 웹은 `slackWebConnector`). 토큰 폐기는 열지 않은 연동도 한다. 동기화 결과는 `lib/connectors/store.ts` `recordSync`로 남긴다: 권한이 끊기면 `revoked`, 갱신 토큰이 만료 · 거절되면 `reauth` (둘 다 다시 연결할 때까지 동기화하지 않는다) |
+| cron 요청 확인 | `lib/api/cron.ts` `cronAuthorized` · `cronUnauthorized` | `/api/cron/*`는 모두 이것으로 `Authorization: Bearer $CRON_SECRET`만 받는다 |
+| 연동 틀 · 동기화 | `lib/connectors/registry.ts` `syncConnections` · `connectorFor` · `tokenRevokerFor` · `revokeConnectorTokens` | cron · Sync Now · 첫 동기화가 모두 `syncConnections`를 쓴다. 연동은 `CONNECTORS`에 등록한다. 새 연결(앱 시작 · 완료)은 `connectorFor`가 연다 (Slack은 `SLACK_CONNECT_ENABLED`, 웹은 `slackWebConnector`). 동기화 · 토큰 폐기는 열지 않은 연동도 이미 있는 연결이면 한다 (#15). 동기화 결과는 `lib/connectors/store.ts` `recordSync`로 남긴다: 권한이 끊기면 `revoked`, 갱신 토큰이 만료 · 거절되면 `reauth` (둘 다 다시 연결할 때까지 동기화하지 않는다). 잠금을 잡은 시각(`claimedAt`)을 넘겨, 동기화 도중 다시 연결한 연결은 덮지 않는다 |
 | 연결 끊기 | `lib/api/connections.ts` `handleConnectionDelete` → RPC `disconnect_connection` | 앱 역할은 `connections`를 지울 수 없다 (`20261014000000_connections_server_delete.sql`). 서비스 쪽 토큰 폐기 → (Slack이면) 글자 지우기 → 행 삭제 순서다. 글자 지우기는 행을 지우기 전에 한다 (지우면 `sources.connection_id`가 null이 된다) |
 | OAuth state · 토큰 | `lib/connectors/oauth-state.ts` (HMAC, 10분) · `lib/connectors/crypto.ts` (AES-256-GCM) | 토큰은 `connection_secrets`에 암호화해서만 저장한다. 웹(lab) 시작은 provider마다 쿠키 state(`oauthCookie`), callback은 provider별 route가 `handleOAuthCallback` 하나를 부른다 |
 | 앱의 쓰기 · 읽기 | `Kit/APIClient.swift` (모든 쓰기) · `Kit/TaskforceReads.swift` (직접 읽기) | 앱 코드의 `supabase.from(...)`은 `TaskforceReads`에만 있고 읽기뿐이다 |
@@ -72,7 +73,7 @@ flowchart TD
 
 | 기능 | 진입점 | 정식 구현 → 저장 | 호출자 | 테스트 |
 |---|---|---|---|---|
-| 원문 넣기 → 할 일 | `v1/sources/route.ts` POST → `lib/api/sources.ts` `handleCreateSource` | 동의 없으면 409 → `sources` 저장 → 202 → `after()`에서 `processSource` → `runPipeline` → `judge_logs`(`jev_answers`에 `rule` · `quote_speaker`) → `backfillEmbeddings` → `mergeJudged` → `write_action` → 확인 요청 알림 `notifyConfirmations` | Mac 런처 "원문 보내기", lab 시험대, 연동 동기화(Notion, Slack `lib/connectors/slack/sync.ts` `syncSlack`. Slack은 처리 뒤 RPC `slack_repurge_if_disconnected`), `scripts/reprocess-sources.ts`, `scripts/create-review-account.ts` | `lib/api/sources.test.ts`, `lib/pipeline/{run,extract,verify,judge,dates,text,identity}.test.ts`, `tests/db/source-processing.test.ts` |
+| 원문 넣기 → 할 일 | `v1/sources/route.ts` POST → `lib/api/sources.ts` `handleCreateSource` | 동의 없으면 409 → `sources` 저장 → 202 → `after()`에서 `processSource` → `runPipeline` → `replaceJudgeLogs`(`judge_logs`를 이번 결과로 바꿈, `jev_answers`에 `rule` · `quote_speaker`) → `backfillEmbeddings` → `mergeJudged` → `write_action` → 확인 요청 알림 `notifyConfirmations` | Mac 런처 "원문 보내기", lab 시험대, 연동 동기화(Notion, Slack `lib/connectors/slack/sync.ts` `syncSlack`. Slack은 처리 뒤 RPC `slack_repurge_if_disconnected`), `scripts/reprocess-sources.ts`, `scripts/create-review-account.ts` | `lib/api/sources.test.ts`, `lib/sources/process.test.ts`, `lib/pipeline/{run,extract,verify,judge,dates,text,identity}.test.ts`, `tests/db/source-processing.test.ts` |
 | 인용 줄 화자 · @언급 읽기 | `lib/pipeline/identity.ts` `quoteSpeaker` · `addressedToUser` · `speakerRole` (줄 찾기 `lib/pipeline/text.ts` `quoteLineIndexes`) | `judgeCandidate`가 이름표를 Jev 입력(`quote_speaker`)으로 넣고 판정 결과의 `speaker`로 넘긴다. 사용자를 `@이름`으로 부른 요청이면 `decideOutcome` 규칙 `addressed_request` → `mergeJudged` `withSpeakerFromLabel`이 화자 역할을 정한다 → `judge_logs.jev_answers` | `processSource`, `reportMissing`, eval | `lib/pipeline/{identity,judge,merge,text}.test.ts`, 골든셋 `slack-namesake-other-person` · `seq-slack-relayed-extension` |
 | Notion 할 일 DB 항목 반영 (LLM 없음) | `lib/sources/process.ts` `processTaskSource` | `lib/pipeline/merge-task.ts` `mergeTask`. 이미 연결된 항목은 `lib/pipeline/structured.ts` `snapshotChanges` · `taskClaims`로 바뀐 필드만 Claim으로 만든다 (사용자가 고쳤으면 origin `tracker`, 다른 사람이 고쳤으면 `source` · counterpart) → `action_links` | Notion 동기화 `ingestTaskItems` | `lib/pipeline/{merge-task,structured}.test.ts`, `lib/connectors/tasks-ingest.test.ts`, `tests/db/structured-tasks.test.ts` |
 | 빠진 할 일 신고 | `v1/sources/[id]/missing/route.ts` POST → `reportMissing` | 지운 원문이면 400(`purgedSourceMessage`: 90일 · Slack 끊기) → 인용이 원문에 있는지 확인 → 이미 근거면 `trackedActionSummary`로 바로 답함(모델 안 부름) → 속도 제한 → `lib/pipeline/missing.ts` `classifyMiss`(놓친 단계) → 추출 · 판정 → `mergeJudged` → `user_reported_missing` | Mac 런처 "빠진 할 일 신고", lab | `lib/pipeline/missing.test.ts`, `tests/db/missing-weekly.test.ts`, `tests/db/rate-limits.test.ts` |
@@ -105,17 +106,17 @@ flowchart TD
 | 기능 | 진입점 | 정식 구현 → 저장 | 호출자 | 테스트 |
 |---|---|---|---|---|
 | 앱에서 연결 | `v1/connections/[id]/start/route.ts` → `lib/api/connections.ts` `handleConnectionStart` | 연결을 열지 않은 서비스면 400 → 동의 없으면 409 → 속도 제한 → `newOAuthState` + `oauth_nonces` → `{ url }` → 권한 화면 → `src/app/api/connectors/{notion,slack}/callback/route.ts` → `lib/connectors/callback.ts` `handleOAuthCallback`: 서명 확인 → code를 암호화해 `oauth_handoffs`(2분) → `taskforce://connections/{provider}?handoff=` → `v1/connections/[id]/complete/route.ts` `handleConnectionComplete` → `connector.connect` → `saveConnection` → `after()`에서 `afterConnected`(첫 동기화. Slack은 연결 뒤 메시지만 받아 첫 동기화에 넣을 것이 없다) | 앱 `AccountStore.connect` · `handleCallback` | `lib/connectors/{oauth-state,callback,registry}.test.ts`, `lib/api/connections.test.ts`, `tests/db/go-live-connections.test.ts`, `tests/db/rate-limits.test.ts` |
-| 웹(lab) Notion 연결 | `src/app/api/connectors/notion/start/route.ts` · `callback/route.ts` GET | 쿠키 state → `handleOAuthCallback`의 웹 분기 → `/lab?notion=` (첫 동기화 없음, 지표만) | `src/app/lab/connections-panel.tsx` | `lib/connectors/callback.test.ts` |
-| Slack 연결 열기 | `lib/env.ts` `slackConnectEnabled` (`SLACK_CONNECT_ENABLED`, 비우면 개발 서버만) | 닫혀 있으면 `connectorFor`가 null → 앱 start · complete 400("아직 연결할 수 없어요"), 동기화도 하지 않는다. 토큰 폐기 · 이벤트 받기는 닫혀 있어도 한다 | 앱 연결 · 동기화 · lab | `lib/connectors/registry.test.ts`, `lib/env.test.ts` |
-| 웹(lab) Slack 연결 | `src/app/api/connectors/slack/start/route.ts` · `callback/route.ts` GET | `slackWebConnector`(앱에 열었거나 `ADMIN_EMAILS` 운영자, 아니면 `/lab?slack=unavailable`) → 동의 → 쿠키 state → `handleOAuthCallback` → `slackConnector.connect`: `exchangeSlackCode`(사용자 토큰만) → `slackAuthTest` → `saveConnection` → `saveSlackSettings` | `src/app/lab/connections-panel.tsx` | `lib/connectors/{registry,slack/client}.test.ts` |
+| 웹(lab) Notion 연결 | `src/app/api/connectors/notion/start/route.ts` · `callback/route.ts` GET | 쿠키 state → `handleOAuthCallback`의 웹 분기(연결 직전에 동의를 다시 본다, 없으면 `consent_required`) → `/lab?notion=` (첫 동기화 없음, 지표만) | `src/app/lab/connections-panel.tsx` | `lib/connectors/callback.test.ts` |
+| Slack 연결 열기 | `lib/env.ts` `slackConnectEnabled` (`SLACK_CONNECT_ENABLED`, 비우면 개발 서버만) | 닫혀 있으면 `connectorFor`가 null → 앱 start · complete 400("아직 연결할 수 없어요"). 이미 있는 연결(운영자 시험)의 동기화 · 토큰 폐기 · 이벤트 받기는 닫혀 있어도 한다 | 앱 연결 · 동기화 · lab | `lib/connectors/registry.test.ts`, `lib/env.test.ts` |
+| 웹(lab) Slack 연결 | `src/app/api/connectors/slack/start/route.ts` · `callback/route.ts` GET | `slackWebConnector`(앱에 열었거나 `ADMIN_EMAILS` 운영자, 아니면 `/lab?slack=unavailable`) → 동의 → 쿠키 state → `handleOAuthCallback`(연결 직전에 동의를 다시 본다) → `slackConnector.connect`: `exchangeSlackCode`(사용자 토큰만) → `slackAuthTest` → `saveConnection` → `saveSlackSettings` | `src/app/lab/connections-panel.tsx` | `lib/connectors/{registry,slack/client}.test.ts` |
 | Slack 이벤트 받기 (Events API) | `src/app/api/connectors/slack/events/route.ts` POST (로그인 없음) | 서명 헤더가 없으면 401, 1MB를 넘으면 413 → `verifySlackSignature`(5분) → `lib/connectors/slack/events.ts` `slackEnvelopeSchema`(challenge 응답) → `lib/connectors/slack/receive.ts` `receiveSlackEvent`: 앱 제거 · 토큰 회수 이벤트면 연결을 revoked로. 메시지는 같은 팀 연결 · 동의 확인 → `classifySlackMessage`(남김 · 고침 · 지움 · 버림) → `lib/connectors/slack/store.ts` `slackReceiveDeps` → `slack_messages` · `slack_threads`. 서명 키가 없거나 처리에 실패하면 500 | Slack | `src/app/api/connectors/slack/events/route.test.ts`, `lib/connectors/slack/{verify,events,receive}.test.ts`, `tests/db/slack.test.ts` |
 | Slack 메시지 → 원문 | `lib/connectors/slack/run.ts` `syncSlackConnection` | `claimConnection` → `lib/connectors/slack/sync.ts` `syncSlack`: 대기 행 → 이름(`slack_people` 캐시) → `lib/connectors/slack/bucket.ts` `bucketSlackMessages`(대화 묶기) → `ingestItems`(30분 안정화 · 20건 · 1자 이상) → RPC `slack_ingest_source` → `processSource` → RPC `slack_repurge_if_disconnected` → `recordSync`. 토큰 오류면 `revokeSlackConnections`. 연결 전 메시지는 가져오지 않는다 | `syncConnections` | `lib/connectors/slack/{sync,bucket,client}.test.ts`, `tests/db/slack-sync.test.ts` |
 | Slack 글자 지우기 | RPC `disconnect_connection`(연결 끊기) · `revoke_slack_connections`(앱 제거 이벤트 · 동기화 토큰 오류 · 매일 토큰 확인) | `purge_slack_data` → `purge_slack_sources`: 원문 본문 · 관련자를 비우고(`sources.raw_text_purge_reason` = `disconnected`), 인용은 자리 표시로, Claim은 글자만 비우고, `judge_logs`와 대기 표를 지운다 | 연결 끊기, Slack 이벤트, 동기화, retention cron | `tests/db/{slack,slack-sync}.test.ts` |
-| Slack 토큰 매일 확인 | `src/app/api/cron/retention/route.ts` (정리가 끝난 뒤) | `lib/connectors/slack/run.ts` `checkSlackConnectionTokens` → `lib/connectors/slack/health.ts` `checkSlackTokens`: 연결마다 `slackAuthTest`. 토큰을 못 쓰면 `revokeSlackConnections` | Vercel Cron 매일 03:30 KST | `lib/connectors/slack/health.test.ts` |
+| Slack 토큰 매일 확인 | `src/app/api/cron/retention/route.ts` (정리가 끝난 뒤) | `lib/connectors/slack/run.ts` `checkSlackConnectionTokens` → `lib/connectors/slack/health.ts` `checkSlackTokens`: 연결마다 `slackAuthTest`. 토큰을 못 쓰면 `revokeSlackConnections`. 정리가 밀려도 cron이 20초(`SLACK_TOKEN_CHECK_MS`)를 떼어 둔다 | Vercel Cron 매일 03:30 KST | `lib/connectors/slack/health.test.ts`, `src/app/api/cron/retention/route.test.ts` |
 | Sync Now | `v1/connections/sync/route.ts` POST | 동의 → `syncConnections`(240초, 연결마다 1분 간격) → 모든 연결이 동기화 중이거나 1분 안에 다시 요청했으면 429 | 앱, lab | `lib/connectors/sync-all.test.ts` |
 | 자동 동기화 | `src/app/api/cron/sync/route.ts` (15분마다, `vercel.json`) | `CRON_SECRET` 확인 → 만료된 nonce · handoff 정리 → `syncConnections` → RPC `syncable_connections`(동의한 사용자, 오래 안 한 순) | Vercel Cron | `tests/db/go-live-connections.test.ts` |
-| Notion 회의록 가져오기 | `lib/connectors/notion/run.ts` `syncNotionConnection` | `claimConnection`(10분 잠금, `sync_started_at` = 앱의 "Syncing…" 근거) → `lib/connectors/notion/sync.ts` `syncNotion`(최근 14일) → `lib/connectors/ingest.ts` `ingestItems`(30분 안정화 · 한 번에 20건 · 30자 미만 제외) → `processSource` → `recordSync`. 토큰이 만료되면(401) `withNotionClient`가 한 번 갱신하고, 갱신 토큰이 거절되면(`invalid_grant`) 연결을 `reauth`로 남긴다 (다른 요청이 먼저 갱신했으면 저장된 새 토큰으로 이어 간다). 토큰 발급 창구의 다른 거절(`NotionOAuthError`, 401 = 우리 쪽 client 설정)은 `error`로 남긴다. `revoked`는 API 호출의 401만 | `syncConnections` | `lib/connectors/notion/{sync,map,markdown,api,run}.test.ts`, `lib/connectors/ingest.test.ts` |
-| Notion 할 일 DB 설정 | `v1/connections/[id]/data-sources/route.ts` GET · `[dataSourceId]/route.ts` PUT | `lib/connectors/notion/data-sources.ts` `listDataSources` · `saveDataSource` → `connections.settings`. 자동 확인은 동기화 중 `notion/sync.ts`가 한다 → `ingestTaskItems` → `processTaskSource` | lab만 (앱에는 아직 없다) | `lib/connectors/notion/tasks.test.ts`, `lib/connectors/{tasks-ingest,store}.test.ts`, `tests/db/structured-tasks.test.ts` |
+| Notion 회의록 가져오기 | `lib/connectors/notion/run.ts` `syncNotionConnection` | `claimConnection`(10분 잠금, `sync_started_at` = 앱의 "Syncing…" 근거) → `lib/connectors/notion/sync.ts` `syncNotion`(최근 14일) → `lib/connectors/ingest.ts` `ingestItems`(30분 안정화 · 한 번에 20건 · 30자 미만 제외, 이미 넣은 페이지는 끊었다 다시 연결해도 다시 넣지 않는다: `ingestDeps.ingestedIds`) → `processSource` → `recordSync`. 토큰이 만료되면(401) `withNotionClient`가 한 번 갱신하고, 갱신 토큰이 거절되면(`invalid_grant`) 연결을 `reauth`로 남긴다 (다른 요청이 먼저 갱신했으면 저장된 새 토큰으로 이어 간다). 토큰 발급 창구의 다른 거절(`NotionOAuthError`, 401 = 우리 쪽 client 설정)은 `error`로 남긴다. `revoked`는 API 호출의 401만 | `syncConnections` | `lib/connectors/notion/{sync,map,markdown,api,run}.test.ts`, `lib/connectors/ingest.test.ts` |
+| Notion 할 일 DB 설정 | `v1/connections/[id]/data-sources/route.ts` GET · `[dataSourceId]/route.ts` PUT | `lib/connectors/notion/data-sources.ts` `listDataSources` · `saveDataSource` → `connections.settings`. 자동 확인은 동기화 중 `notion/sync.ts`가 한다 → `ingestTaskItems` → `processTaskSource` | lab만 (앱에는 아직 없다) | `lib/connectors/notion/{tasks,data-sources}.test.ts`, `lib/connectors/{tasks-ingest,store}.test.ts`, `tests/db/structured-tasks.test.ts` |
 | 연결 끊기 | `v1/connections/[id]/route.ts` DELETE → `handleConnectionDelete` | UUID가 아니거나 남의 연결이면 404 → 서버 권한으로 토큰을 풀어 서비스 쪽 폐기 `tokenRevokerFor`(Notion · Slack, 실패해도 계속) → RPC `disconnect_connection`(한 트랜잭션: Slack이면 `purge_slack_data` → `connections` 삭제, `connection_secrets` 연쇄 삭제). Notion 원문은 남는다 | 앱(다시 연결이 필요한 연결 포함), lab | `lib/api/connections.test.ts`, `tests/db/{connections,slack-sync}.test.ts` |
 | 2단계 연동 "원해요" | `v1/connection-requests/route.ts` POST | `handleConnectionRequest` → `connection_requests` | 앱 연결 화면 | `lib/api/connections.test.ts`, `tests/db/go-live-connections.test.ts` |
 
@@ -126,9 +127,9 @@ flowchart TD
 | 계정 삭제 | `v1/account/route.ts` DELETE → `lib/api/account.ts` `handleDeleteAccount` | 연동 토큰 폐기 `revokeConnectorTokens`(Notion · Slack)와 Apple 토큰 폐기 `lib/apple/sign-in.ts` `revokeAppleSignIn`을 동시에(20초 한도) → `auth.admin.deleteUser` → 연쇄 삭제 (Slack 표 포함) | 앱 `AccountDeletion` | `lib/api/account.test.ts`, `lib/apple/sign-in.test.ts`, `tests/db/account-deletion.test.ts` |
 | AI 처리 동의 | `v1/consent/route.ts` POST · DELETE → `lib/api/consent.ts` | `lib/api/profile-store.ts` `saveAiConsent` → `profiles.ai_consent_at`. 적용하는 곳: API 409, `withConsentGate`, `lib/consent/store.ts` `hasConsentFor` | 앱, lab | `lib/api/connections.test.ts`, `lib/consent/gate.test.ts` |
 | 프로필 · 별칭 | `v1/profile/route.ts` GET · PUT → `lib/api/profile.ts` | `lib/api/profile-store.ts` (RLS). 원문 속 "나" 찾기는 `resolveIdentity` | 앱, lab | `lib/api/profile.test.ts`, `tests/db/profiles.test.ts` |
-| 알림 기기 등록 | `v1/devices/route.ts` POST · DELETE | route 안에서 `devices` upsert (사용자당 10대) | 앱 `PushCenter` | `tests/db/actions-server-writes.test.ts` |
-| 알림 발송 | 확인 요청: `lib/notify/service.ts` `notifyConfirmations`(원문 처리 뒤). 기한: `src/app/api/cron/reminders/route.ts` → `notifyDueSoon` | `lib/notify/apns.ts` `sendPush` (410 · 400 `BadDeviceToken`이면 기기 삭제). 할 일 제목 없이 `mutable-content`로 보낸다 | 원문 처리, Vercel Cron 매일 09:00 KST | `lib/notify/apns.test.ts` |
-| 원문 보존기간 | `src/app/api/cron/retention/route.ts` | `lib/retention.ts` `retentionCutoff`(90일) → RPC `purge_expired_source_text` 5000건씩 → RPC `purge_slack_buffers`(대기 메시지 받은 지 `SLACK_PENDING_RETENTION_DAYS`일, 추적 스레드 마지막 활동 뒤 `SLACK_THREAD_RETENTION_DAYS`일, 끊어 지운 원문에 남은 글자 다시 지우기) → Slack 토큰 매일 확인. 지운 이유는 `sources.raw_text_purge_reason`, 안내 문구는 `purgedSourceMessage` | Vercel Cron 매일 03:30 KST | `lib/retention.test.ts`, `tests/db/{retention,slack-sync}.test.ts`, `lib/connectors/slack/health.test.ts` |
+| 알림 기기 등록 | `v1/devices/route.ts` POST · DELETE | route 안에서 `devices` upsert (사용자당 10대). 해제(DELETE)가 실패하면 500 (앱은 결과와 상관없이 로그아웃한다) | 앱 `PushCenter` | `tests/db/actions-server-writes.test.ts` |
+| 알림 발송 | 확인 요청: `lib/notify/service.ts` `notifyConfirmations`(원문 처리 뒤). 기한: `src/app/api/cron/reminders/route.ts` → `notifyDueSoon` | `lib/notify/apns.ts` `sendPush` (410 · 400 `BadDeviceToken`이면 기기 삭제). 할 일 제목 없이 앱과 같은 짧은 영어 문구(확인 요청 "Review", 기한 "Due today" · "Due tomorrow" + 건수)와 `action_id`만 보낸다 | 원문 처리, Vercel Cron 매일 09:00 KST | `lib/notify/apns.test.ts` |
+| 원문 보존기간 | `src/app/api/cron/retention/route.ts` | `lib/retention.ts` `retentionCutoff`(90일) → RPC `purge_expired_source_text` 5000건씩 → RPC `purge_slack_buffers`(대기 메시지 받은 지 `SLACK_PENDING_RETENTION_DAYS`일, 추적 스레드 마지막 활동 뒤 `SLACK_THREAD_RETENTION_DAYS`일, 끊어 지운 원문에 남은 글자 다시 지우기) → Slack 토큰 매일 확인(정리는 20초를 남기고 멈춘다). 지운 이유는 `sources.raw_text_purge_reason`, 안내 문구는 `purgedSourceMessage` | Vercel Cron 매일 03:30 KST | `lib/retention.test.ts`, `src/app/api/cron/retention/route.test.ts`, `tests/db/{retention,slack-sync}.test.ts`, `lib/connectors/slack/health.test.ts` |
 | 지표 대시보드 | `src/app/admin/metrics/page.tsx` | `requireUser` + `lib/metrics/load.ts` `isAdmin`(`ADMIN_EMAILS`) → `loadMetrics` → `lib/metrics/compute.ts` 지표 1~5 · 연결 | 운영자 웹 | `lib/metrics/compute.test.ts` |
 | 시험대 | `src/app/lab/page.tsx` | 원문 붙여넣기 · 빠진 할 일 신고 · 연결(Notion · Slack) · 동의 · 할 일 DB 설정 · 프로필 · 할 일 목록. 지운 원문은 이유별로 안내한다 | 개발자 웹 | 없음 |
 | 보안 헤더 | `next.config.ts` `headers()` | 공통 헤더 + 화면 CSP, `/api/**`는 API용 CSP | 모든 응답 | `tests/next-config-headers.test.ts` |
@@ -174,15 +175,15 @@ flowchart TD
 | 화면 견본 | 실행 인자 `-TFSampleData` · `-TFSampleSyncing`, Mac `--show-launcher -TFSampleData -TFSnapshot <폴더>` | [apple/README.md](../apple/README.md) |
 | 운영 DB 마이그레이션 | `npx supabase db query --linked -f supabase/migrations/<파일>` | `db push`는 쓰지 않는다 (원격에 마이그레이션 기록이 없다). [런북](go-live/runbook.md) |
 
-**테스트가 없는 곳 (2026-09-29, `main`).**
+**테스트가 없는 곳 (2026-09-29).**
 - 서버:
-  - `lib/sources/process.ts`: `processSource` · `processTaskSource` · `reportMissing`을 직접 부르는 테스트가 없다.
+  - `lib/sources/process.ts`: `processSource` · `processTaskSource` · `reportMissing` 본체를 부르는 테스트가 없다 (판정 기록 교체 `replaceJudgeLogs`만 `process.test.ts`가 본다).
   - `lib/api/ask-store.ts` `retrieveAskContext`, `lib/actions/service.ts` `handoffAction`: 인용을 자리 표시로 바꾸는 SQL만 `tests/db/slack-sync.test.ts`가 보고, 이 둘이 자리 표시를 빼는 것은 테스트가 없다.
   - `lib/pipeline/match.ts`: 단독 테스트가 없고 `merge.test.ts`가 일부만 덮는다.
   - `lib/connectors/registry.ts`의 `syncConnections` · `afterConnected` · `revokeConnectorTokens` (`registry.test.ts`는 Slack 열기와 `tokenRevokerFor`만 본다).
-  - `lib/connectors/notion/data-sources.ts`, `lib/connectors/slack/run.ts` · `store.ts` (SQL 함수는 `tests/db/slack*.test.ts`가 본다).
-  - 연결 route들 (끊기는 `handleConnectionDelete`를 `lib/api/connections.test.ts`가, Slack events route는 `route.test.ts`가 본다), Slack start · callback route.
-  - `v1/now` · `metric-events` · `weekly-check` · `devices` route, cron route들, `lib/notify/service.ts`, `lib/api/auth.ts` `authenticateRequest`, `scripts/reprocess-sources.ts`.
+  - `lib/connectors/notion/data-sources.ts` (저장할 때의 오류 처리만 `data-sources.test.ts`가 본다), `lib/connectors/slack/run.ts` · `store.ts` (SQL 함수는 `tests/db/slack*.test.ts`가 본다).
+  - 연결 route들 (끊기는 `handleConnectionDelete`를 `lib/api/connections.test.ts`가, lab callback의 동의 확인은 `lib/connectors/callback.test.ts`가, Slack events route는 `route.test.ts`가 본다), Slack start · callback route.
+  - `v1/now` · `metric-events` · `weekly-check` · `devices` route, sync · reminders cron route (retention은 `route.test.ts`가 본다), `lib/notify/service.ts`, `lib/api/auth.ts` `authenticateRequest`, `scripts/reprocess-sources.ts`.
 - 앱: `TaskforceReads`, `ActionChanges`, `SharedKeychainStorage`, `TaskforceUI` 전체, 앱 타깃(`NowStore` · `AccountStore` · `LauncherModel` · `PushCenter`). CI는 앱 타깃을 빌드만 한다.
 
 ## 5. 새 연동(Google 등)을 붙이는 자리
@@ -194,7 +195,7 @@ Slack이 이 순서로 붙었다 (`lib/connectors/slack/`).
    - `connect`: `saveConnection`을 불러 토큰을 암호화해 저장한다.
    - `sync`: `claimConnection` · `recordSync`를 스스로 부른다(Notion은 `notion/run.ts`, Slack은 `slack/run.ts`). 글 원문은 `IngestItem` → `ingestItems`, 할 일 항목은 `TaskItem` → `ingestTaskItems`로 넘긴다. 갱신 토큰이 거절되면(OAuth `invalid_grant`, Google 테스트 상태 7일 만료 등) `recordSync(…, { reauth: true })`로 남긴다. 토큰 발급 창구의 401(우리 쪽 client 설정)은 권한 끊김(`revoked`)이 아니다.
    - (있으면) `revokeToken`: 연결 끊기 · 계정 삭제 때 부른다.
-2. `lib/connectors/registry.ts`의 `CONNECTORS`에 등록한다. 단계적으로 열려면 `opened`에 조건을 더한다 (Slack은 `SLACK_CONNECT_ENABLED`).
+2. `lib/connectors/registry.ts`의 `CONNECTORS`에 등록한다. 새 연결을 단계적으로 열려면 `opened`에 조건을 더한다 (Slack은 `SLACK_CONNECT_ENABLED`, 이미 있는 연결의 동기화는 막지 않는다).
 3. callback route를 provider마다 추가한다: `src/app/api/connectors/{notion,slack}/callback/route.ts`처럼 공통 callback은 아직 없다. 앱 흐름의 시작은 공통 `v1/connections/[id]/start/route.ts`가 맡는다. lab 웹 시작이 필요하면 start route도 더한다 (Slack 웹 시작은 `slackWebConnector`).
 4. 환경변수와 설정 함수를 더한다: `lib/env.ts`, `.env.example`. Notion은 `notion/run.ts` `notionOAuthConfig`, Slack은 `slack/run.ts` `slackOAuthConfig`가 OAuth 값을 읽고, Slack 서명 키 · 앱 토큰 · 열기 플래그만 `lib/env.ts`에 둔다.
 5. provider 이름으로 갈라지는 곳을 고친다.
@@ -207,56 +208,28 @@ Slack이 이 순서로 붙었다 (`lib/connectors/slack/`).
 6. 그 원문 종류의 골든셋과 eval(`tags`), 개인정보 처리방침 3장을 함께 고친다 ([GO_LIVE.md](GO_LIVE.md) 1단계 조건).
 7. 서비스가 이벤트를 보내 주거나 삭제 의무가 있으면 Slack처럼 더한다: 이벤트 route + 서명 확인, 대기 표(앱 역할 접근 없음), 삭제 RPC(`purge_*` · `revoke_*`, `disconnect_connection` 안에서 부름), `sources.raw_text_purge_reason`, `/api/cron/retention`의 정리 · 토큰 확인, 새 표를 `tests/db/{account-deletion,migrations}.test.ts`의 표 목록에, 자리 표시 인용을 넘기기 · 물어보기 · 매칭에서 빼기, Swift 연결 문구 · `RemovedQuote`.
 
-## 6. 문서와 코드가 다른 곳 (2026-09-29, `main` 기준)
+## 6. 문서와 코드가 다른 곳 (2026-09-29 정리)
 
-이번에 고친 것:
-- `README.md` "구조": 초기 상태에 머물러 있었다. 지금 구조로 바꾸고 이 문서를 연결했다.
-- `docs/PLATFORMS.md` 5장 저장소 구조: 없는 폴더 `TaskforceiOS/` · `TaskforceMac/` · `ShareExtension/`을 실제 구조(`Taskforce/` 안의 `Shared/` · `iOS/` · `Mac/`, 타깃 하나)로 바꿨다.
-- `CLAUDE.md` 문서 목록에 이 문서를 더했다.
+2026-09-29에 찾은 23곳과 정리하며 더 찾은 곳을 모두 고쳤다. 지금 알려진 불일치는 없다. 새로 찾으면 여기에 표로 적는다.
 
-남은 것. 설계 의도를 적은 문서라, 문서를 코드에 맞출지 코드를 문서에 맞출지 정해야 한다.
-
-| # | 문서 | 문서 내용 | 코드 |
-|---|---|---|---|
-| 1 | `CLAUDE.md` 기술 스택, `PLATFORMS.md` 3장 | 서버에서 사용자를 확인할 때는 `requireUser()` | `/api/v1`은 `authenticateRequest`. `requireUser`는 화면 전용 |
-| 2 | `PLATFORMS.md` 3장 API 표 | 엔드포인트 목록 | `/ask` · `/account` · `/consent` · `/connection-requests` · `/connections/*` 등 10개가 표에 없다 (계약은 `contract.ts`에 있다) |
-| 3 | `PLATFORMS.md` 2장 "읽기와 쓰기의 경로" | 지금 할 일은 앱이 Supabase에서 직접 읽는다 | `GET /api/v1/now` (순서 계산은 서버에서만) |
-| 4 | `PLATFORMS.md` 4장, `CLAUDE.md` | 보조 로그인은 이메일 6자리 코드 | 앱에는 심사 계정용 이메일 · 비밀번호만 있다. 허용 목록 밖 이메일 가입은 DB 훅이 막는다 (Supabase 대시보드에서 훅을 켠 경우) |
-| 5 | `PLATFORMS.md` 3장, `lib/notify/apns.ts` 주석 | 알림 확장(Notification Service Extension)이 제목을 채운다 | 확장 타깃이 없다. 서버 문구(한국어)가 그대로 보인다 (앱 화면은 영어) |
-| 6 | `PLATFORMS.md` 1장, `apple/README.md` 구조, `Kit/SharedKeychainStorage.swift` 주석 | 공통 기능에 Action 상세 · 변경 이력 · AI에게 넘기기. 공유 확장이 세션을 함께 읽는다 | iPhone에는 상세 · 넘기기가 없다. 공유 확장 · 위젯 타깃이 없다. 1장은 공유 확장을 7장으로 미룬다지만 7장에 그 항목이 없다 |
-| 7 | `PLATFORMS.md` 1장 웹(내부용) | eval 결과 화면, 지표 세 개 | eval은 CLI뿐이다. 대시보드는 지표 5개 + 연결 |
-| 8 | `ARCHITECTURE.md` 2장, `INTEGRATIONS.md` 다음 연동 표(Slack) | ① 사전 필터(Jev, P < 0.2면 건너뜀). Slack은 글이 짧아 사전 필터가 필요 | `runPipeline`은 추출 → 검증 → 판정뿐이다. 사전 필터가 없고, Slack 원문은 1자부터 받는다 (`TRUTH_RULES.md`는 "더 쓸 수 있는 곳"으로만 적었다) |
-| 9 | `ARCHITECTURE.md` 2장 | 자동 반영 0.85 | `JUDGE_THRESHOLDS.accept` 0.8 (이유는 파일 주석. `TRUTH_RULES.md` 1장은 이미 바뀐 값을 적었다) |
-| 10 | `ARCHITECTURE.md` 2장 | 애매한 후보는 사용자가 확정한 뒤 매칭, duplicate는 근거만 더함 | 바로 병합하고 "판정 확인"으로 표시한다. duplicate도 기한 Claim을 붙인다. `cancel` · `unmatched` 관계가 더 있다 |
-| 11 | `ARCHITECTURE.md` 2장 (② 추출 · ④ 검증) | 추출이 발언자를 내고, 발언자는 Jev가 정한다 | 추출 스키마에 발언자가 없다. 인용 줄 이름표를 알면 코드가 정하고(`quoteSpeaker` → 병합 `withSpeakerFromLabel`), 모르면 Jev가 정한다 |
-| 12 | `ARCHITECTURE.md` 1장 | 작업 큐는 Inngest나 Supabase Queues | Next.js `after()` |
-| 13 | `TRUTH_RULES.md` 1장 | zod를 통과하지 못한 후보는 버린다 | 응답 전체를 검증하고 한 번 다시 시도한다. 그래도 실패하면 원문을 `failed`로 둔다 |
-| 14 | `TRUTH_RULES.md` 1장 "후보 검증 요청" | 이름표가 판정 기록(`jev_answers.quote_speaker`)에 남아 병합이 쓴다 | 병합은 메모리의 판정 결과(`speaker`)를 쓴다. `quote_speaker`는 쓰기만 하고 읽는 코드가 없다 |
-| 15 | `TRUTH_RULES.md` 2장 | Claim `state`(active · superseded · disputed) | 컬럼은 있지만 쓰는 코드가 없다. superseded는 판정할 때 계산한다 |
-| 16 | `INTEGRATIONS.md` Notion "남은 일" | 연결을 끊으면 우리 쪽 토큰만 지운다, 폐기 API는 나중에 | 연결 끊기 · 계정 삭제 모두 서비스 쪽 토큰을 폐기한다 (Notion · Slack, `tokenRevokerFor`) |
-| 17 | `INTEGRATIONS.md` 머리말 · "가져오는 방법" | GitHub를 서버 OAuth 원문으로 | 2단계 "원해요"만 있다 |
-| 18 | `GO_LIVE.md` 1장 계획 본문 | state에 `return: "app"`, 바로 `status=`로 복귀 | state에 `provider`, handoff 흐름 (같은 장 "구현 결과"가 맞다) |
-| 19 | `GO_LIVE.md` "직접 써 보며 드러난 것" | 첫 동기화 진행 표시 없음, CI는 서버만 | 둘 다 끝났다 (런북 C11 · C12 ✅) |
-| 20 | `GO_LIVE.md` 8장 | "원해요"를 `metric_events`의 `connection_requested`로 | `connection_requests` 표 |
-| 21 | `evals/golden/README.md` | `slack-*` · `seq-slack-*` 17건 | 파일은 19개다 (원문 하나 11 + 시퀀스 8) |
-| 22 | `docs/go-live/slack-integration.md` 2-2 파일 표 · 2-6 데이터 표 | 대기 메시지는 넣은 지 3일 뒤 지운다 | 넣었는지와 관계없이 받은 시각(`received_at`)으로 3일 뒤 지운다 (`purge_slack_buffers`) |
-| 23 | 코드 주석 | `lib/pipeline/run.ts` "④ 매칭 · ⑤ 진실 판정은 Phase 2", `lib/pipeline/merge.ts` "Phase 3에서 DB 저장소를 붙인다" | 둘 다 이미 있다 |
+- 방향: 문서를 코드에 맞췄다. 문서에만 있던 기능(Jev 사전 필터, 알림 확장, iPhone AI에게 넘기기 · 할 일 상세, 공유 확장 · 위젯, 이메일 6자리 코드 로그인)은 [GO_LIVE.md 10장 남은 일](GO_LIVE.md#10-남은-일-go-live-조건-아님)로 옮겼다.
+- 앱의 표시 규칙(급함 표시 `DueText.isUrgent`, 오늘 끝낸 할 일)은 판정이 아니라 표시라 앱에 두고, `CLAUDE.md` 플랫폼 절에 예외로 적었다.
+- 영어 앱에 한국어로 뜨던 알림 문구는 서버 문구를 영어로 바꿨다 (`lib/notify/apns.ts`).
+- 고친 문서: `CLAUDE.md`, `README.md`, `docs/PLATFORMS.md`, `docs/ARCHITECTURE.md`, `docs/TRUTH_RULES.md`, `docs/INTEGRATIONS.md`, `docs/GO_LIVE.md`, `docs/go-live/slack-integration.md`, `evals/golden/README.md`, `apple/README.md`. 낡은 코드 주석: `lib/pipeline/run.ts` · `merge.ts`, `lib/notify/apns.ts`, `Kit/SharedKeychainStorage.swift` · `TaskforceClient.swift`.
 
 ## 7. 코드에서 본 확인 필요 사항
 
-코드는 고치지 않았다. "확인"은 코드를 직접 읽어 확인한 것이고, "추정"은 코드로 추론했지만 실행해 보지 않은 것이다. 커밋 `6a80ab5` 기준으로 적었던 "연결을 끊어도 토큰을 폐기하지 않는다"와 "연결 끊기에 UUID 검사가 없다"는 `main`에서 고쳐져 뺐다.
+"확인"은 코드를 직접 읽어 확인한 것이고, "추정"은 코드로 추론했지만 실행해 보지 않은 것이다.
+
+2026-09-29에 고친 것 (이 표에서 뺐다): 다시 연결하면 글 원문을 다시 넣던 것, lab callback이 동의를 다시 보지 않던 것, 다시 처리하면 `judge_logs`가 쌓이던 것, `DELETE /devices`가 오류를 숨기던 것, 계약에 `sync_started_at`이 없던 것, Slack 토큰 확인이 남은 시간만 쓰던 것, lab 할 일 DB 저장이 토큰 갱신 거절을 "없는 DB"로 읽던 것, 동기화 도중 다시 연결하면 늦은 기록이 새 연결 상태를 덮던 것, 동작이 같은 중복(cron 인증, 프로필 오류 응답, 관련자 목록, 자리 표시 글자는 `lib/retention.test.ts`가 SQL · Swift와 같은지 본다).
 
 | # | 내용 | 근거 | 상태 |
 |---|---|---|---|
-| 1 | 끊었다가 다시 연결하면 최근 14일 Notion 원문이 다시 들어올 수 있다 (Slack은 과거를 가져오지 않는다) | "한 번만 넣기"를 `connection_id`로 보는데, `disconnect_connection`이 행을 지우면 Notion 원문의 `sources.connection_id`가 null이 된다 | 추정 |
-| 2 | 웹(lab) callback은 연결 전에 동의를 다시 보지 않는다 (Notion · Slack 모두 시작 때만 본다) | `lib/connectors/callback.ts` 웹 분기 | 확인 |
-| 3 | 원문을 다시 처리하면 `judge_logs`가 쌓이고, 빠진 할 일 분류가 옛 기록까지 읽는다 | `processSource`는 `judge_logs`를 지우지 않고 추가만 한다 | 추정 |
-| 4 | `DELETE /api/v1/devices`는 DB 오류가 나도 204를 준다 | `v1/devices/route.ts` | 확인 |
-| 5 | 앱 계약 `connectionSummarySchema`에 `sync_started_at`이 없다 (앱은 이 값을 직접 읽는다) | `lib/api/contract.ts`, `Kit/Connections.swift` | 확인 |
-| 6 | 앱이 서버의 판단을 일부 흉내 낸다: 급함 표시 `DueText.isUrgent`, Done Today 조건 `TaskforceReads.doneToday` | 판정은 서버에만 둔다는 규칙 (`CLAUDE.md` 플랫폼) | 확인 (의도인지 정해야 함) |
-| 7 | 앱에서 쓰지 않는 코드: `APIClient.startAction`, `ActionHistory`, `ConfirmReasonText`(그래서 Review 카드에 확인 이유가 안 보인다), `src/lib/supabase/client.ts` | 호출하는 곳이 없다 | 확인 |
-| 8 | 같은 일을 하는 코드가 둘 이상이다: 인용 겹침 비교 두 가지(`lib/eval/score.ts` · `lib/pipeline/missing.ts`), 확신이 낮은 병합 처리 세 가지(`merge.ts` 붙이고 확인 · `merge-task.ts` 따로 만들고 확인 · `missing.ts` 새로 만듦), `lib/api/profile.ts`의 본문 파싱 · 오류 응답(`lib/api/respond.ts`와 중복), cron route 세 곳의 `CRON_SECRET` 확인, `identity.ts`의 관련자 이름 펼치기 세 번, 자리 표시 글자 세 곳(`lib/retention.ts` · SQL · Swift) | 각 파일 | 확인 (의도된 차이인지 정해야 함) |
-| 9 | Slack 토큰 매일 확인은 정리가 끝난 뒤 남은 시간(한도 + 5초)만 쓴다. 정리가 밀리면 그날은 일부만 확인한다 | `src/app/api/cron/retention/route.ts`의 `deadline + 5_000`, `lib/connectors/slack/health.ts` | 확인 |
+| 1 | Notion 할 일 DB 항목은 끊었다가 다시 연결하면 처음 보는 항목으로 다시 처리한다. 매칭으로 기존 할 일에 다시 이어지지만 항목마다 임베딩 · Jev를 한 번 더 부르고, 매칭이 빗나가면 할 일이 둘이 된다. 고치려면 DB 함수를 바꾸는 마이그레이션이 필요하다 | `task_source_states`(`20260930000000_structured_tasks.sql`)와 `action_links`가 연결 ID로 묶여 있다 (`lib/actions/db-store.ts` `SupabaseTaskLinks`) | 확인 (영향은 추정) |
+| 2 | 앱에서 쓰지 않는 코드: `APIClient.startAction`, `ActionHistory`, `ConfirmReasonText`(그래서 Review 카드에 확인 이유가 안 보인다), `src/lib/supabase/client.ts` | 호출하는 곳이 없다. 2026-09-29 결정으로 그대로 둔다 | 확인 |
+| 3 | Slack을 끊기 전에 제목 · 인용으로 만든 할 일 임베딩(`actions.embedding`)은 끊은 뒤에도 남는다 | `purge_slack_sources`는 임베딩을 건드리지 않는다. [slack-integration.md](go-live/slack-integration.md) L9 법률 검토 질문에 적었다 | 결정 대기 |
+| 4 | 동작이 다른 비슷한 코드는 의도된 차이로 두었다 (합치면 추출 결과 · eval 숫자가 바뀐다): 인용 겹침 비교(`labelQuotesOverlap` eval 채점 · `reportedQuoteOverlaps` 누락 신고), 확신이 낮은 병합(경로별 처리는 `MATCH_THRESHOLDS.confirmBelow` 주석), 사용자 이름 펼치기(`userNameForms` · `mentionsUser`는 띄어 쓴 이름에서 다르다) | 각 파일 주석 | 확인 |
+| 5 | Slack 토큰 매일 확인은 연결을 정해진 순서 없이(DB가 돌려주는 순서로) 본다. 20초 안에 다 못 도는 규모(연결 수백 개)가 되면 확인하지 못하는 연결이 생긴다 | `lib/connectors/slack/run.ts` `checkSlackConnectionTokens`, `health.ts` | 추정 (지금 규모에선 문제없음) |
 
 ## 8. 기록 위치와 갱신 기준
 

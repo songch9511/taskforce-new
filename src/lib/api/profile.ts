@@ -1,6 +1,7 @@
 import type { UserIdentity } from "@/lib/pipeline/identity";
 
-import { profileInputSchema, type ApiError, type Profile, type ProfileInput } from "./contract";
+import { profileInputSchema, type Profile, type ProfileInput } from "./contract";
+import { errorResponse, parseBody, unauthorized } from "./respond";
 
 // GET · PUT /api/v1/profile 처리와, 프로필 · 로그인 정보 · 요청을 합쳐 "원문 속 사용자"를 만드는 규칙.
 
@@ -43,30 +44,20 @@ export type ProfileDeps<User> = {
 
 export async function handleGetProfile<User>(request: Request, deps: ProfileDeps<User>): Promise<Response> {
   const user = await deps.authenticate(request);
-  if (!user) return errorResponse(401, "unauthorized", "로그인이 필요합니다.");
+  if (!user) return unauthorized();
   return Response.json((await deps.load(user)) ?? EMPTY_PROFILE);
 }
 
 export async function handlePutProfile<User>(request: Request, deps: ProfileDeps<User>): Promise<Response> {
   const user = await deps.authenticate(request);
-  if (!user) return errorResponse(401, "unauthorized", "로그인이 필요합니다.");
-
-  let body: unknown;
-  try {
-    body = await request.json();
-  } catch {
-    return errorResponse(400, "invalid_request", "JSON 본문이 필요합니다.");
-  }
-  const parsed = profileInputSchema.safeParse(body);
-  if (!parsed.success) {
-    const fields = [...new Set(parsed.error.issues.map((issue) => issue.path.join(".") || "(본문)"))];
-    return errorResponse(400, "invalid_request", `잘못된 필드: ${fields.join(", ")}`);
-  }
+  if (!user) return unauthorized();
+  const body = await parseBody(request, profileInputSchema);
+  if ("error" in body) return body.error;
 
   const profile: ProfileInput = {
-    display_name: parsed.data.display_name,
-    aliases: unique(parsed.data.aliases),
-    emails: unique(parsed.data.emails.map((e) => e.toLowerCase())),
+    display_name: body.data.display_name,
+    aliases: unique(body.data.aliases),
+    emails: unique(body.data.emails.map((e) => e.toLowerCase())),
   };
   try {
     return Response.json(await deps.save(user, profile));
@@ -74,8 +65,4 @@ export async function handlePutProfile<User>(request: Request, deps: ProfileDeps
     console.error("프로필 저장 실패:", error instanceof Error ? error.message : error);
     return errorResponse(500, "internal_error", "프로필을 저장하지 못했습니다.");
   }
-}
-
-function errorResponse(status: number, code: ApiError["error"]["code"], message: string): Response {
-  return Response.json({ error: { code, message } } satisfies ApiError, { status });
 }

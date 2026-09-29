@@ -47,7 +47,7 @@ describe("sendPush", () => {
     });
     expect(sent[0].headers.authorization).toMatch(/^bearer ey/);
     const body = JSON.parse(sent[0].body);
-    expect(body).toMatchObject({ aps: { alert: { title: "확인이 필요해요" }, "mutable-content": 1 }, action_id: "a1" });
+    expect(body).toMatchObject({ aps: { alert: { title: "Review", body: "New tasks to confirm" }, "mutable-content": 1 }, action_id: "a1" });
   });
 
   it("만료된 토큰(410)은 지울 대상으로 알려준다", async () => {
@@ -70,7 +70,18 @@ describe("duePayload", () => {
       ],
       "2026-09-26",
     );
-    expect(p.aps.alert).toEqual({ title: "오늘까지 1건", body: "지금 할 일을 확인해 주세요" });
+    expect(p.aps.alert).toEqual({ title: "Due today", body: "1 task" });
     expect(p).toMatchObject({ action_id: "a1", action_ids: ["a1", "a2"] });
+  });
+
+  it("오늘 마감이 없으면 내일 마감 건수를 보낸다 (앱 문구와 같은 영어)", () => {
+    const p = duePayload(
+      [
+        { id: "a1", due_date: "2026-09-27" },
+        { id: "a2", due_date: "2026-09-27" },
+      ],
+      "2026-09-26",
+    );
+    expect(p.aps.alert).toEqual({ title: "Due tomorrow", body: "2 tasks" });
   });
 });

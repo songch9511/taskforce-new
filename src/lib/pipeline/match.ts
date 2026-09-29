@@ -40,7 +40,11 @@ export const MATCH_THRESHOLDS = {
   /** 이보다 덜 비슷한 Action은 후보에서 뺀다 */
   minSimilarity: 0.3,
   shortlistSize: 5,
-  /** 이 미만이면 병합을 확인받는다 */
+  /**
+   * 이 미만이면 병합을 확인받는다. 확신이 낮을 때의 처리는 경로마다 다르다 (이유는 각 파일):
+   * 원문(merge.ts mergeJudged)은 붙이고 "병합 확인", Notion 할 일 DB(merge-task.ts)는 따로 만들고 "중복 확인",
+   * 누락 신고(missing.ts reportMatchDecide)는 새 Action으로 만든다.
+   */
   confirmBelow: 0.6,
 } as const;
 

@@ -55,7 +55,9 @@ export type Totals = {
 };
 
 // 한쪽이 다른 쪽을 포함하거나, 가장 긴 공통 구간이 짧은 쪽의 60% 이상(최소 6자)이면 같은 구절로 본다.
-export function quotesOverlap(a: string, b: string): boolean {
+// eval 채점 전용: 정답 라벨 · 함정 문장과 후보 인용을 짝짓는다. 운영의 누락 신고는 pipeline/missing.ts reportedQuoteOverlaps를 쓴다
+// (사용자가 고른 구절은 판정 기록과 글자 쌍으로 비교한다). 채점 기준을 바꾸면 전후 eval 숫자가 달라지므로 둘을 합치지 않는다.
+export function labelQuotesOverlap(a: string, b: string): boolean {
   const x = normalizeForMatch(a);
   const y = normalizeForMatch(b);
   if (!x || !y) return false;
@@ -100,7 +102,7 @@ export function scoreCase(golden: GoldenCase, candidates: ScoredCandidate[], opt
   for (const candidate of candidates) {
     if (!quoteInText(candidate.quote, sourceText)) score.hallucinated.push(candidate);
 
-    const overlaps = ({ action }: (typeof expected)[number]) => action.evidence.some((e) => quotesOverlap(e.quote, candidate.quote));
+    const overlaps = ({ action }: (typeof expected)[number]) => action.evidence.some((e) => labelQuotesOverlap(e.quote, candidate.quote));
     const hits = scored.filter(overlaps);
     const free = hits.find(({ index }) => !matched.has(index));
 
@@ -131,7 +133,7 @@ export function scoreCase(golden: GoldenCase, candidates: ScoredCandidate[], opt
       continue;
     }
 
-    const trap = golden.must_not_extract.find((n) => quotesOverlap(n.quote, candidate.quote));
+    const trap = golden.must_not_extract.find((n) => labelQuotesOverlap(n.quote, candidate.quote));
     score.falsePositives.push({ candidate, kind: trap ? trap.reason : "UNLABELED" });
   }
 

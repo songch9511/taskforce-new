@@ -1,5 +1,4 @@
-import { timingSafeEqual } from "node:crypto";
-
+import { cronAuthorized, cronUnauthorized } from "@/lib/api/cron";
 import { checkSlackConnectionTokens } from "@/lib/connectors/slack/run";
 import { retentionCutoff, SLACK_PENDING_RETENTION_DAYS, SLACK_THREAD_RETENTION_DAYS } from "@/lib/retention";
 import { createAdminClient } from "@/lib/supabase/admin";
@@ -14,22 +13,24 @@ export const maxDuration = 60;
 const PURGE_LIMIT = 5000;
 // maxDuration보다 조금 일찍 멈추고 남은 것은 다음 날 마저 지운다 (응답을 만들 시간을 남긴다).
 const TIME_BUDGET_MS = (maxDuration - 10) * 1000;
+// 그중 Slack 토큰 확인에 떼어 두는 시간: 정리가 밀린 날에도 토큰 확인은 돈다 (앱 해제 이벤트를 놓쳤을 때의 안전망, D3)
+const SLACK_TOKEN_CHECK_MS = 20_000;
+// 한도 직전에 시작한 Slack 호출이 끝날 시간 (slack/client.ts 호출 제한 10초)
+const SLACK_CALL_TIMEOUT_MS = 10_000;
 
 type PurgeCounts = { sources_purged: number; judge_logs_deleted: number; rate_limit_events_deleted: number; missing_reports_deleted: number };
 type SlackPurgeCounts = { messages_deleted: number; threads_deleted: number; sources_repurged: number };
 
 export async function GET(request: Request) {
-  const secret = Buffer.from(process.env.CRON_SECRET ?? "");
-  const given = Buffer.from(request.headers.get("authorization")?.replace(/^Bearer\s+/i, "") ?? "");
-  if (secret.length === 0 || given.length !== secret.length || !timingSafeEqual(given, secret)) {
-    return Response.json({ error: { code: "unauthorized", message: "cron 인증 실패" } }, { status: 401 });
-  }
+  if (!cronAuthorized(request)) return cronUnauthorized();
 
   const admin = createAdminClient();
   const now = new Date();
   const before = retentionCutoff(now).toISOString();
   const totals: PurgeCounts = { sources_purged: 0, judge_logs_deleted: 0, rate_limit_events_deleted: 0, missing_reports_deleted: 0 };
-  const deadline = Date.now() + TIME_BUDGET_MS;
+  const started = Date.now();
+  const tokenDeadline = started + TIME_BUDGET_MS - SLACK_CALL_TIMEOUT_MS;
+  const purgeDeadline = tokenDeadline - SLACK_TOKEN_CHECK_MS;
   let calls = 0;
   for (;;) {
     calls++;
@@ -39,7 +40,7 @@ export async function GET(request: Request) {
       .throwOnError();
     for (const key of Object.keys(totals) as (keyof PurgeCounts)[]) totals[key] += data[key];
     const moreLeft = Object.values(data).some((n) => n >= PURGE_LIMIT);
-    if (!moreLeft || Date.now() > deadline) break;
+    if (!moreLeft || Date.now() > purgeDeadline) break;
   }
 
   const slack: SlackPurgeCounts = { messages_deleted: 0, threads_deleted: 0, sources_repurged: 0 };
@@ -57,9 +58,9 @@ export async function GET(request: Request) {
     slack.threads_deleted += data.threads_deleted;
     slack.sources_repurged += data.sources_repurged;
     const moreLeft = Object.values(data).some((n) => n >= PURGE_LIMIT);
-    if (!moreLeft || Date.now() > deadline) break;
+    if (!moreLeft || Date.now() > purgeDeadline) break;
   }
-  const slackTokens = await checkSlackConnectionTokens(admin, { now, deadline: deadline + 5_000 }).catch((error) => {
+  const slackTokens = await checkSlackConnectionTokens(admin, { now, deadline: tokenDeadline }).catch((error) => {
     console.error("Slack 토큰 확인 실패:", error instanceof Error ? error.message : error);
     return null;
   });

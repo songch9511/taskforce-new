@@ -42,8 +42,11 @@ function bigrams(text: string): Map<string, number> {
   return counts;
 }
 
-/** 공백 · 문장부호를 무시하고, 한쪽이 다른 쪽에 들어 있거나 글자 쌍이 많이 겹치면 같은 대목으로 본다. */
-export function quotesOverlap(a: string, b: string): boolean {
+/**
+ * 공백 · 문장부호를 무시하고, 한쪽이 다른 쪽에 들어 있거나 글자 쌍이 많이 겹치면 같은 대목으로 본다.
+ * 누락 신고 전용: 사용자가 고른 구절을 판정 기록 · 근거 인용과 비교한다. eval 채점은 eval/score.ts labelQuotesOverlap을 쓴다.
+ */
+export function reportedQuoteOverlaps(a: string, b: string): boolean {
   const x = normalizeForMatch(a);
   const y = normalizeForMatch(b);
   if (!x || !y) return false;
@@ -69,7 +72,7 @@ export type MissLog = { quote: string; decision: JudgeDecision };
  */
 export function classifyMiss(input: { processingStatus: string; logs: MissLog[]; quote: string }): MissStage {
   if (input.processingStatus !== "done") return "processing_failed";
-  const overlapping = input.logs.filter((log) => quotesOverlap(log.quote, input.quote));
+  const overlapping = input.logs.filter((log) => reportedQuoteOverlaps(log.quote, input.quote));
   if (overlapping.length === 0) return "not_extracted";
   return overlapping.some((log) => log.decision !== "reject") ? "merge_absorbed" : "judge_rejected";
 }
@@ -198,5 +201,5 @@ export type SourceEvidence = { actionId: string; quote: string | null; owner: "m
  * 다른 사람 담당 Action은 빼고 본다 (reportStore와 같은 이유).
  */
 export function trackedByEvidence(evidence: SourceEvidence[], quote: string): string | null {
-  return evidence.find((e) => e.owner !== "other" && e.quote !== null && quotesOverlap(e.quote, quote))?.actionId ?? null;
+  return evidence.find((e) => e.owner !== "other" && e.quote !== null && reportedQuoteOverlaps(e.quote, quote))?.actionId ?? null;
 }

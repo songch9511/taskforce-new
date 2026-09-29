@@ -29,7 +29,7 @@
 flowchart LR
     subgraph IN["입력 소스"]
         direction TB
-        SH["공유 시트 · 메뉴 막대 · 단축키<br/>(MVP)"]
+        SH["Mac 런처 붙여넣기<br/>(공유 시트는 남은 일)"]
         G["Gmail"]
         C["캘린더·회의록<br/>(Notion, Meet 등)"]
         S["Slack"]
@@ -37,8 +37,8 @@ flowchart LR
 
     subgraph CLIENT["사용자 앱"]
         direction TB
-        APPS["iOS · macOS 앱 (SwiftUI)<br/>지금 할 일 · 확인 요청 · Action 상세"]
-        LAB["웹 (내부용)<br/>시험대 · eval · 지표"]
+        APPS["iOS · macOS 앱 (SwiftUI)<br/>지금 할 일 · 확인 요청 · 근거"]
+        LAB["웹 (내부용)<br/>시험대 · 지표"]
     end
 
     subgraph APP["Taskforce 서버 (Next.js on Vercel)"]
@@ -46,10 +46,10 @@ flowchart LR
         API["서버 API /api/v1<br/>(Route Handlers)"]
         PUSH["알림 발송 (APNs)"]
         ADP["소스 어댑터<br/>원문 → Source로 정규화"]
-        Q["작업 큐<br/>(비동기 파이프라인 실행)"]
+        Q["비동기 실행<br/>after() · Vercel Cron"]
         PIPE["처리 파이프라인<br/>src/lib/pipeline"]
         RES["진실 판정 resolve()<br/>순수 함수 · 규칙 기반"]
-        MCP["MCP 서버<br/>AI 핸드오프"]
+        MCP["MCP 서버 (계획)<br/>AI 핸드오프"]
     end
 
     subgraph DB["Supabase"]
@@ -89,10 +89,10 @@ flowchart LR
 
 | 구성 요소 | 역할 | 비고 |
 |---|---|---|
-| iOS · macOS 앱 | 사용자용 화면, 원문 입력(공유 시트 · 메뉴 막대), 알림 | 상세는 [PLATFORMS.md](PLATFORMS.md) |
+| iOS · macOS 앱 | 사용자용 화면, 원문 붙여넣기(Mac 런처), 알림 | 상세는 [PLATFORMS.md](PLATFORMS.md) |
 | 서버 API | 앱과 웹이 부르는 쓰기 경로. 모든 쓰기에서 이벤트 기록 | Bearer 토큰 · 쿠키 둘 다 지원 |
 | 소스 어댑터 | 채널별 원문을 공통 `Source`(원문, 발언 시점, 출처 링크)로 변환 | 연동이 늘어도 파이프라인은 그대로 |
-| 작업 큐 | 입력을 받자마자 응답하고, 추출은 백그라운드에서 실행 | 예: Inngest, Supabase Queues |
+| 작업 큐 | 입력을 받자마자 응답하고, 추출은 백그라운드에서 실행 | 별도 큐 없음. 원문 전송은 Next.js `after()`(`src/app/api/v1/sources/route.ts`), 연동 동기화는 Vercel Cron(`vercel.json`, 15분마다) |
 | 처리 파이프라인 | 추출 → 검증 → 매칭 → Claim 저장 | UI·DB와 분리된 순수 함수라 eval에서 그대로 실행 |
 | resolve() | Claim들로부터 Action의 현재 값을 계산 | LLM 없음, 단위 테스트로 고정 |
 | MCP 서버 | 외부 AI가 "내 Action과 맥락"을 조회 | 4단계 이후 |
@@ -105,46 +105,47 @@ flowchart LR
 
 ```mermaid
 flowchart TD
-    A([Source 입력]) --> F{"① 사전 필터 · Jev noul<br/>약속·할당이 있는가?"}
-    F -- "P < 0.2" --> SKIP([건너뜀<br/>잡담·공지])
-    F -- "P ≥ 0.2" --> X["② Claim 추출 · 생성형 LLM<br/>제목 · 인용 · 날짜 표현 · 발언자"]
+    A([Source 입력]) --> X["① Claim 추출 · 생성형 LLM<br/>신호 · 제목 · 인용 · 담당 · 상대 · 날짜 표현"]
 
-    X --> M{"③ 기계적 검증 · 코드<br/>인용이 원문에 있나?<br/>날짜 재계산 일치?<br/>스키마 통과?"}
-    M -- 실패 --> DROP1([폐기 · 환각])
-    M -- 통과 --> J{"④ Jev 검증<br/>내 약속? 실제 행동?<br/>이미 완료? 확정도?"}
+    X --> M{"② 기계적 검증 · 코드<br/>인용이 원문에 있나?<br/>날짜를 코드로 다시 계산"}
+    M -- "인용 없음" --> DROP1([폐기 · 환각])
+    M -- 통과 --> J{"③ Jev 검증<br/>내 약속? 실제 행동?<br/>이미 완료? 확정도? 발언 속성"}
 
-    J -- "낮음 (< 0.4)" --> DROP2([기각 · 로그만 남김<br/>누락 분석용])
-    J -- "애매함 (0.4 ~ 0.85)" --> CQ[[확인 요청 목록]]
-    J -- "높음 (≥ 0.85)" --> K["⑤ 후보 매칭<br/>임베딩으로 열린 Action top-5 검색"]
-    CQ -- 사용자 확정 --> K
+    J -- "기각: 내 약속 · 행동 < 0.4<br/>확정도 없음 · 이미 완료 ≥ 0.7" --> DROP2([기각 · 로그만 남김<br/>누락 분석용])
+    J -- "높음 (≥ 0.8) · 애매함 (0.4 ~ 0.8)<br/>변화 발언은 낮아도" --> K["④ 후보 매칭<br/>임베딩으로 열린 Action top-5 검색"]
 
-    K --> MJ{"⑥ Jev 매칭 판정 · choice"}
+    K --> MJ{"⑤ Jev 매칭 판정 · choice"}
     MJ -- new --> NEW["새 Action 생성"]
-    MJ -- "update / complete" --> CL["기존 Action에<br/>Claim 추가"]
-    MJ -- duplicate --> EV["근거(Evidence)만 추가"]
-    MJ -- 애매함 --> CQ
+    MJ -- "duplicate / update<br/>complete / cancel" --> CL["기존 Action에<br/>Claim · 근거 추가"]
+    MJ -- "unmatched<br/>이어질 Action 없는 변화 발언" --> DROP3([버림])
 
-    NEW --> CL
-    CL --> R["⑦ resolve() · 진실 판정<br/>규칙 0~6 적용"]
-    R -- 판정 불가 --> CQ
-    R -- 판정됨 --> ACT[("Action 현재 값 갱신<br/>+ ActionEvent 기록")]
-    EV --> ACT
-    ACT --> RANK["⑧ 지금 할 일 랭킹<br/>기한 임박 · 외부 약속 · 방치 기간"]
+    NEW --> R["⑥ resolve() · 진실 판정<br/>규칙 0~6 적용"]
+    CL --> R
+    R --> ACT[("Action 현재 값 갱신<br/>+ ActionEvent 기록")]
+    NEW -. "애매함이었으면 판정 확인<br/>담당이 내가 아니면 담당 확인" .-> CQ[["확인 요청 목록<br/>반영은 끝났고 확인 표시만"]]
+    CL -. "매칭 확신 < 0.6이면 병합 확인" .-> CQ
+    R -. 판정 불가 .-> CQ
+    ACT --> RANK["⑦ 지금 할 일 랭킹<br/>기한 임박 · 외부 약속 · 방치 기간"]
     RANK --> NOW([지금 할 일 화면])
 ```
 
 | 단계 | 누가 | 입력 → 출력 |
 |---|---|---|
-| ① 사전 필터 | Jev `noul` | 메시지 조각 → 약속이 있을 확률. 낮으면 비싼 추출을 건너뜀 |
-| ② 추출 | 생성형 LLM | 원문 → Claim 후보 목록 (구조화 출력) |
-| ③ 기계적 검증 | 코드 | 인용 실재·날짜·스키마 확인. 환각 제거 |
-| ④ 검증 | Jev `noul` + `choice` | 후보 → 확률 + Claim 속성(확정도, 발언자, 직접성, 공개 여부) |
-| ⑤ 매칭 | pgvector | 후보 → 비슷한 열린 Action top-5 |
-| ⑥ 매칭 판정 | Jev `choice` | 후보 + 기존 Action → new / update / duplicate / complete |
-| ⑦ 진실 판정 | 코드 `resolve()` | Claim 목록 → 필드 값 + 적용 규칙 |
-| ⑧ 랭킹 | 코드 (+ Jev `score` 보조) | 열린 Action → 지금 할 일 순서 |
+| ① 추출 | 생성형 LLM | 원문 → Claim 후보 목록 (구조화 출력). 발언자는 내지 않음. 응답 전체를 zod로 검증하고, 형식 오류면 한 번 다시 부름 |
+| ② 기계적 검증 | 코드 | 인용 실재 확인(없으면 환각으로 버림), 기한 표현을 코드로 다시 계산(다르면 코드 값으로) |
+| ③ 검증 | Jev `noul` + `choice` | 후보 → 확률 + Claim 속성(확정도, 발언자 역할, 직접성, 공개 여부). 발언자 역할은 인용 줄 이름표를 코드가 확실히 읽으면 병합에서 코드가 정하고(`quoteSpeaker` → `withSpeakerFromLabel`), 아니면 Jev `speaker_role` |
+| ④ 매칭 | pgvector | 후보 → 비슷한 열린 Action top-5 |
+| ⑤ 매칭 판정 | Jev `choice` | 후보 + 기존 Action → new / duplicate / update / complete / cancel. 새 약속이 아닌데 이어질 Action이 없으면 unmatched로 버림 |
+| ⑥ 진실 판정 | 코드 `resolve()` | Claim 목록 → 필드 값 + 적용 규칙 |
+| ⑦ 랭킹 | 코드 (`lib/actions/rank.ts`) | 열린 Action → 지금 할 일 순서 |
 
-확률 기준(0.2, 0.4, 0.85)은 출발값입니다. 한국어 골든셋으로 측정한 뒤 조정합니다.
+확률 기준(0.4, 0.8)은 `src/lib/pipeline/judge.config.ts`에 있습니다. 출발값 0.85는 합성 골든셋으로 측정한 뒤 0.8로 낮췄습니다. 매칭 확신 기준(0.6)은 `src/lib/pipeline/match.ts`의 `MATCH_THRESHOLDS`에 있습니다.
+
+애매한 후보도 사용자를 기다리지 않고 바로 매칭 · 병합합니다(`mergeJudged`). 대신 그 Action에 확인 이유(판정 확인 · 담당 확인 · 병합 확인 · `resolve()`가 정하지 못한 기한 확인 등)를 붙이고, 이유가 있는 Action은 지금 할 일이 아니라 확인 요청 목록(`needs_confirmation`)에 보입니다.
+새 약속(commitment)은 Jev가 기각하면 버리지만, 변화 발언(완료 · 변경 · 취소)은 "내 새 약속"이 아니라 기각되기 쉬워 매칭까지 보냅니다.
+관계별로 붙는 Claim: new = 범위 · 담당 · 상태 · 기한, duplicate · update = 기한(있으면), complete = 상태 done, cancel = 상태 dropped.
+
+추출 전 사전 필터(Jev `noul`로 약속이 없는 조각 건너뛰기)는 없습니다. 원문은 모두 추출로 갑니다. Slack 비용 · 품질을 보고 정할 남은 일입니다([GO_LIVE.md](GO_LIVE.md#10-남은-일-go-live-조건-아님)).
 
 ---
 
@@ -166,7 +167,7 @@ flowchart TD
     R3 -- 본인 발언 --> R4{"규칙 4<br/>남은 후보 중<br/>발언 시점이 가장 늦은 것?"}
     R4 -- 하나로 정해짐 --> WIN
     R4 -- 같은 시점 동점 --> R5{"규칙 5<br/>채널 신뢰도<br/>메일·문서 > 채팅 > 회의록"}
-    R5 -- 정해짐 --> WIN(["채택<br/>진 Claim은 superseded로 보관<br/>적용 규칙 기록"])
+    R5 -- 정해짐 --> WIN(["채택<br/>진 Claim도 지우지 않음<br/>적용 규칙 기록"])
     R5 -- 그래도 동점 --> ASK[["규칙 6<br/>두 인용을 나란히 보여주고<br/>사용자에게 확인"]]
 ```
 
@@ -187,7 +188,7 @@ sequenceDiagram
     Note over U,D: 9/22 회의
     U->>T: 회의록 붙여넣기<br/>"금요일까지 제안서 보내드릴게요"
     T->>L: Claim 추출
-    L-->>T: 제안서 발송 · due=금 · 발언자=나
+    L-->>T: 제안서 발송 · due=금 · 담당=나
     T->>J: 검증 질문
     J-->>T: 내 약속 0.97 · firm · shared
     T->>J: 매칭 판정 (열린 Action 없음)
@@ -234,7 +235,7 @@ erDiagram
 
     SOURCE {
         uuid id
-        text kind "meeting | message | email | doc"
+        text kind "meeting | message | email | doc | note | task"
         text raw_text
         timestamptz occurred_at "발언 시점"
         text external_url
@@ -244,7 +245,8 @@ erDiagram
         text title
         text scope_summary
         text owner "resolve 결과"
-        timestamptz due_at "resolve 결과"
+        date due_date "resolve 결과 (기한 날짜)"
+        timestamptz due_at "그날 끝"
         text status "open | done | dropped"
         bool needs_confirmation
         vector embedding
@@ -264,7 +266,7 @@ erDiagram
     EVIDENCE {
         uuid id
         text quote
-        text role "created | updated | completed"
+        text role "created | updated | completed | duplicate"
     }
     ACTION_EVENT {
         uuid id
@@ -301,7 +303,7 @@ flowchart LR
     subgraph USE["사용자 흐름"]
         direction TB
         O([앱 열기]) --> N["지금 할 일"]
-        N --> DT["Action 상세<br/>합의 범위 · 근거 인용 · 변경 이력"]
+        N --> DT["근거 펼치기<br/>근거 인용 · 원문"]
         DT --> HO["AI에게 넘기기"]
         DT --> DONE["완료 · 착수"]
         N --> CQ["확인 요청<br/>한 번에 확정 · 수정"]

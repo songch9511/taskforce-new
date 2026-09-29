@@ -99,12 +99,12 @@ export async function sendPush(config: ApnsConfig, device: ApnsDevice, payload: 
 }
 
 // ─── 알림 내용 ───────────────────────────────────────────
-// 할 일 제목(회의록 · 메시지에서 나온 내용)은 잠금 화면에 싣지 않는다. mutable-content로 보내
-// 앱의 알림 확장(Notification Service Extension)이 로그인 세션으로 제목을 받아와 채운다.
+// 할 일 제목(회의록 · 메시지에서 나온 내용)은 잠금 화면에 싣지 않는다: 앱 화면과 같은 짧은 영어 문구와 action_id만 보낸다.
+// mutable-content는 앱에 알림 확장(Notification Service Extension)을 붙여 로그인 세션으로 제목을 채울 때를 위해 남긴다 (아직 없다).
 
 export function confirmationPayload(action: { id: string }): ApnsPayload {
   return {
-    aps: { alert: { title: "확인이 필요해요", body: "새로 찾은 할 일을 확인해 주세요" }, sound: "default", "thread-id": "confirmations", "mutable-content": 1 },
+    aps: { alert: { title: "Review", body: "New tasks to confirm" }, sound: "default", "thread-id": "confirmations", "mutable-content": 1 },
     action_id: action.id,
     kind: "confirmation",
   };
@@ -113,9 +113,10 @@ export function confirmationPayload(action: { id: string }): ApnsPayload {
 export function duePayload(actions: { id: string; due_date: string }[], today: string): ApnsPayload {
   const dueToday = actions.filter((a) => a.due_date <= today);
   const first = dueToday[0] ?? actions[0];
-  const title = dueToday.length > 0 ? `오늘까지 ${dueToday.length}건` : `내일까지 ${actions.length}건`;
+  const count = dueToday.length > 0 ? dueToday.length : actions.length;
+  const title = dueToday.length > 0 ? "Due today" : "Due tomorrow";
   return {
-    aps: { alert: { title, body: "지금 할 일을 확인해 주세요" }, sound: "default", "thread-id": "due", "mutable-content": 1 },
+    aps: { alert: { title, body: `${count} ${count === 1 ? "task" : "tasks"}` }, sound: "default", "thread-id": "due", "mutable-content": 1 },
     action_id: first.id,
     action_ids: actions.slice(0, 20).map((a) => a.id),
     kind: "due",

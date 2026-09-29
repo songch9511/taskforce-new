@@ -16,7 +16,7 @@ AI 코딩 에이전트가 이 저장소에서 작업할 때 반드시 지켜야 
    예외: Slack 연결을 끊거나 Slack에서 앱을 지우면 Slack에서 온 원문 본문과 인용을 지운다(인용은 "Slack 연결을 끊어 지웠어요"). Slack 개발자 정책이다 (`docs/go-live/slack-integration.md` D3).
 3. **불확실하면 묻는다, 확실하면 조용히 반영한다.** 담당자나 기한의 신뢰도가 낮은 항목만 확인 큐로 보낸다.
    확인 요청이 많아지면 그 자체가 관리 비용이다 — 확인 요청 수를 늘리는 변경은 신중히.
-4. **중복을 만들지 않는다.** 새 후보는 항상 기존 열린 Action과 먼저 매칭(신규 / 갱신 / 중복 / 완료)한 뒤 반영한다.
+4. **중복을 만들지 않는다.** 새 후보는 항상 기존 열린 Action과 먼저 매칭(신규 / 갱신 / 중복 / 완료 / 취소)한 뒤 반영한다.
 5. **LLM은 Claim(누가 언제 무엇을 말했나)만 뽑고, 무엇이 사실인지는 코드가 정한다.**
    Action 필드 값은 `docs/TRUTH_RULES.md`의 규칙을 구현한 순수 함수로만 계산한다. Claim은 지우지 않는다(위 Slack 예외도 Claim 행과 값은 남기고 글자만 비운다).
 6. **측정할 수 없으면 출시하지 않는다.** 사용자의 수정·삭제, 착수 시간, 재방문은 모두 이벤트로 남긴다 (`docs/PRD.md` 성공 지표).
@@ -25,9 +25,10 @@ AI 코딩 에이전트가 이 저장소에서 작업할 때 반드시 지켜야 
 
 - 사용자용 앱은 **iOS · macOS 네이티브**(SwiftUI, `apple/`)다. Next.js는 서버 API와 내부 도구(시험대 · eval · 지표)만 담당한다. 웹에 사용자용 화면을 만들지 않는다.
 - 추출 · 판정 · 진실 판정 · 랭킹은 서버에만 둔다. Swift 앱에 같은 로직을 다시 구현하지 않는다.
+  - 표시 규칙은 예외로 앱이 정한다: 기한이 지났거나 오늘인 할 일을 빨강으로 보이는 것(`DueText.isUrgent`, 서버 이유가 없을 때 같은 기준)과 오늘 끝낸 할 일(기기 시간대의 오늘).
 - 앱이 부를 서버 로직은 Server Action이 아니라 `src/app/api/v1/` Route Handler로 만든다. 인증은 `Authorization: Bearer` 토큰과 웹 쿠키 둘 다 받는다.
 - API 요청·응답 스키마는 `src/lib/api/contract.ts`에 zod로 둔다. 호환이 깨지는 변경은 새 버전 경로(`/api/v2`)로 낸다.
-- 앱은 읽기를 Supabase에서 직접(RLS), 쓰기를 서버 API로만 한다. 모든 쓰기는 이벤트를 남긴다.
+- 앱은 읽기를 Supabase에서 직접(RLS), 쓰기를 서버 API로만 한다. 단 지금 할 일 순서는 `GET /api/v1/now`로 받는다(순서 계산은 서버에만). 모든 쓰기는 이벤트를 남긴다.
 
 ## 기술 스택
 
@@ -36,13 +37,13 @@ AI 코딩 에이전트가 이 저장소에서 작업할 때 반드시 지켜야 
 - Supabase: Postgres, Auth(이메일 매직 링크), pgvector (Action 매칭용 임베딩)
   - 스키마 변경은 `supabase/migrations/`에 새 파일로 추가한다. 기존 마이그레이션 파일은 고치지 않는다.
   - 새 테이블은 `user_id` + RLS(`owner_all` 정책) + 부모와의 `(id, user_id)` 복합 외래키 패턴을 따르고, `tests/db/`에 RLS 테스트를 추가한다.
-  - 서버에서 사용자를 확인할 때는 `requireUser()`(`src/lib/auth.ts`)를 쓴다. proxy의 확인만 믿지 않는다.
+  - 서버에서 사용자를 확인할 때 API Route Handler는 `authenticateRequest()`(`src/lib/api/auth.ts`: Bearer · 쿠키, 쿠키로 인증하는 쓰기는 CSRF 확인), 서버 화면은 `requireUser()`(`src/lib/auth.ts`)를 쓴다. proxy의 확인만 믿지 않는다.
 - AI 호출은 모두 OpenRouter 키 하나로 한다 (`OPENROUTER_API_KEY`, `.env.local`에만 두고 절대 커밋하지 않는다).
   - 생성형 LLM (Claim 추출): OpenRouter chat completions. 구조화 출력(JSON 스키마)으로만 받는다. 자유 텍스트를 파싱하지 않는다. 모델 id는 환경변수로.
   - Jev (검증·분류·매칭 판정): OpenRouter Decisions API `POST /api/alpha/decisions`, 모델 `typesafe/jev-1.13` 고정. 상세는 `docs/TRUTH_RULES.md` 1장.
   - 글 생성이 필요 없는 판정(예/아니오, 선택지 고르기, 척도)은 LLM이 아니라 Jev로 한다.
 - Apple 앱: SwiftUI 멀티플랫폼 + Swift Concurrency, 공유 로직은 `apple/Packages/TaskforceKit`, Supabase는 `supabase-swift`
-  - 로그인은 Sign in with Apple(보조: 이메일 6자리 코드). 세션은 App Group 공유 Keychain에 저장한다 (공유 확장 · 위젯과 공유).
+  - 로그인은 Sign in with Apple이다. 이메일 + 비밀번호는 App Store 심사 계정용으로만 둔다(허용 목록 밖 이메일 가입은 DB 훅이 막는다, Supabase 대시보드에서 훅을 켠 경우). 세션은 App Group 공유 Keychain에 저장한다 (공유 확장 · 위젯을 붙이면 같은 세션을 읽는다, 아직 없음).
   - Supabase URL · 키는 xcconfig로 빼고 커밋하지 않는다.
 - 스키마 검증: zod
 - 테스트: Vitest (단위), 추출 품질은 `evals/`의 골든셋으로 평가
