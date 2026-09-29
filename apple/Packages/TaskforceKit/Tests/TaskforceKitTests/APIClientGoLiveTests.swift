@@ -37,6 +37,16 @@ struct APIClientGoLiveTests {
         #expect(try json(request.body) == ["handoff": "h_123"] as NSDictionary)
     }
 
+    /// 서버가 권한 화면에서 뺀 체크를 알리는 결과 (G10): 앱이 받아서 문구로 보인다
+    @Test func completeConnectionReportsScopeResults() async throws {
+        let missing = try await client(body: #"{"status":"missing_scope"}"#).completeConnection(.gmail, handoff: "h_123")
+        #expect(missing == .missingScope)
+        #expect(!missing.isConnected)
+        let partial = try await client(body: #"{"status":"connected_partial"}"#).completeConnection(.google, handoff: "h_123")
+        #expect(partial == .connectedPartial)
+        #expect(partial.isConnected)
+    }
+
     @Test func completeConnectionExpiredIsRetry() async throws {
         let api = client(status: 404, body: #"{"error":{"code":"not_found","message":"없음"}}"#)
         do {

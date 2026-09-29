@@ -142,23 +142,30 @@ Figma의 Stress test 페이지에서 긴 글, 빠진 값, 320pt 폭, 큰 글자�
 - 한글이 단어 중간에서 줄바꿈되지 않는지 실제 기기에서 확인한다 (Figma는 글자 단위로 줄바꿈한다).
 - 출처 로고 타일은 큰 글자에서 함께 커져야 한다 (`@ScaledMetric`).
 
-## 웹사이트 (2026-09-27, 첫 안)
+## 웹사이트 (2026-09-29, slite.com 레이아웃)
 
-taskforcelabs.dev 첫 화면을 한 페이지로 만든다. 메뉴는 없다. 사이트는 영어로 만든다. Figma의 Website 페이지에 데스크톱(1440)과 모바일(390) 화면이 있다.
-UI 다듬기는 보류 중이다. 제품 화면이 구현되면 다시 채운다.
+taskforcelabs.dev 첫 화면을 한 페이지로 만든다. 사이트는 영어로 만든다.
+2026-09-29에 레이아웃을 [slite.com](https://slite.com/)을 따라 바꿨다(사용자 요청). 재질(크림 바탕 · 모래색 카드 · 모눈 패널 · 헤드라인 단어를 두르는 선)은 Slite를 따르고, 버튼(Ink 캡슐)과 글꼴(IBM Plex Sans KR)은 Taskforce 것을 쓴다. Slite의 오렌지는 쓰지 않는다.
+Slite에 있는 고객 로고 · 후기 · 가격 · 인증 배지 섹션은 만들지 않는다. 보여 줄 실제 근거가 없다. 섹션 위 작은 라벨(eyebrow)도 쓰지 않는다(UI 문구 규칙).
+첫 안(2026-09-27)은 Figma의 Website 페이지에 있다(흰 바탕, 검정 Proof 띠, 로고만 있는 Nav).
 
 ### 구조
 
 | # | 섹션 | 바탕 | 내용 |
 |---|---|---|---|
-| 0 | Nav | 흰색 | 로고 가로형만 |
-| 1 | Hero | 흰색 | 헤드라인 + 부제 + CTA + 요건 한 줄 + 제품 화면(유리 재질 Mac 런처와 iPhone. 모바일은 iPhone만) |
-| 2 | Context | `#F5F5F7` | 맥락 한 문단 |
-| 3 | Proof | 검정 (다크 모드) | 주장 3개. 칸마다 실제 부품을 넣는다. 그 아래 개인정보 한 줄과 Privacy 링크 |
-| 4 | CTA | 흰색 | 같은 CTA를 한 번 더 |
-| 5 | Footer | `#F5F5F7` | 마크 · © 2026 Taskforce Labs · Privacy · 문의 주소(`privacy@taskforcelabs.dev`) |
+| 0 | Nav | 크림 `#FCF9F4`, 위에 붙음 | 로고 · How it works · Privacy · 오른쪽에 CTA 캡슐 |
+| 1 | Hero | 크림 | 헤드라인("promised"를 두르는 선) + 부제 + CTA와 요건 한 줄 + 제품 장면: 회의록 창 위에 Mac 런처. 회의록의 약속 구절과 런처의 원문 인용에 같은 형광펜을 칠한다 |
+| 2 | How it works | 크림, 카드는 모래색 `#F5EDE2` | 섹션 제목 + 주장 3개 카드. 카드마다 실제 부품을 넣는다 |
+| 3 | Sources | 모눈 패널 | 마크 + 섹션 제목 + 맥락 두 문장(스크롤하면 줄마다 켜진다). 둘레에 Notion · Slack · Google 로고와, 그 원문에서 나올 만한 한 줄 |
+| 4 | Mac · iPhone | 크림, 카드는 모래색 | 섹션 제목 + 카드 2장. Mac: MacBook 화면의 메뉴 막대 아래 열린 런처와 option · space 키. iPhone: 실제 기기처럼 그린 iPhone(티타늄 테두리 · 다이내믹 아일랜드)에 앱의 한 화면(Review 카드 → In Progress · To Do · Done Today) |
+| 5 | Privacy | 크림 | 섹션 제목 + Privacy policy 링크 + 약속 4칸 |
+| 6 | CTA | 크림 | 같은 CTA를 한 번 더 |
+| 7 | Footer | 크림, 위에 헤어라인 | 로고 · Product(How it works) · Legal(Privacy · Terms) · Contact(`privacy@taskforcelabs.dev`) · © 2026 Taskforce Labs · Google 공개 문구 |
 
-바탕색이 바뀌는 것이 섹션 구분이다. 구분선을 따로 긋지 않는다. Accent는 Privacy 링크 한 곳에만 쓰고, 버튼은 Ink 캡슐이다.
+버튼은 Ink 캡슐이고, 보조 링크는 테두리만 있는 캡슐이다. Accent는 런처의 선택 행 한 곳에만 쓴다.
+글꼴 규칙의 웹사이트 예외: Slite처럼 제목을 500 굵기로 쓴다(히어로 68/76, 섹션 제목 44/52, 카드 제목 26/32, 본문 17/26). Mono는 규칙대로 날짜 · 숫자 · 단축키에만 쓴다.
+움직임은 apple.com처럼 스크롤에 붙는다(CSS scroll-driven animations, 자바스크립트 없음). 지원하지 않는 브라우저나 "동작 줄이기" 설정에서는 움직이지 않고 모두 보인다.
+제품 장면과 부품 속 할 일 · 이름 · 날짜는 예시다. 실제 앱 화면이 나오면 바꾼다.
 
 ### 문구
 
@@ -168,19 +175,27 @@ UI 다듬기는 보류 중이다. 제품 화면이 구현되면 다시 채운다
 | 부제 | The Real AI Manager for founders and consultants in back-to-back meetings. Taskforce finds what you committed to in your meeting notes, Slack, and email, then organizes and tracks it for you. |
 | CTA | Join the TestFlight beta (공개 링크가 생기기 전에는 링크 없는 "Coming soon") |
 | 요건 | iPhone · Mac + Notion · Google · Slack 로고 |
-| 맥락 | Your to-dos end up scattered across meeting notes, Slack, and email. Connect Notion, Google, and Slack, and Taskforce reads each new meeting note, message, and email, picks out only what you said you'd do, and adds it to your list with a due date. When a later message moves a deadline, it updates the task instead of adding a new one. Every task carries the exact line it came from. |
+| Nav | How it works · Privacy (둘 다 첫 화면 섹션으로 가는 앵커. 처리방침 링크는 Privacy 섹션과 푸터에 있다) |
+| How it works 제목 | A to-do list that keeps itself. |
+| Sources 제목 | Every promise, wherever you made it. |
+| Mac · iPhone 제목 | On your Mac. On your iPhone. |
+| Mac 카드 | ⌥ Space opens it over any app. |
+| iPhone 카드 | Review and check off on your iPhone. |
+| 맥락 | Connect Notion, Google, and Slack. Taskforce reads each new meeting note, message, and email, and adds only what you said you'd do. |
 | 주장 1 | Every task shows the line it came from. (Evidence 부품) |
 | 주장 2 | Changes update the task. No duplicates. (Sources group 부품) |
 | 주장 3 | Asks only when it isn't sure. (Review card 부품) |
-| 개인정보 | AI calls go only to providers that keep no data. Your data stays in Sydney, and deleting your account deletes it right away. |
+| Privacy 제목 | Where your data goes. |
+| Privacy 링크 | Privacy policy |
+| 개인정보 4칸 | AI calls go only to providers that keep no data. / Your data is stored in Sydney. / Deleting your account deletes your stored data right away. / This website has no analytics and no cookies. |
 | 마지막 CTA | Start with your next meeting. |
 
 - 헤드라인과 부제를 합치면 핵심 메시지(go live 판)와 같은 내용이다. 헤드라인은 "왜 중요한가", 부제는 "누구를 위해 · 무엇을"을 맡는다.
-- "Real AI Manager"를 쓰는 자리라서, 그 근거(주장 3개)를 같은 페이지의 Proof 섹션에 둔다.
+- "Real AI Manager"를 쓰는 자리라서, 그 근거(주장 3개)를 같은 페이지의 How it works 섹션에 둔다.
 - 요건 한 줄은 캡션을 줄이는 원칙의 예외다. 1단계 연동(Notion · Google · Slack)을 하나도 쓰지 않는 사람이 설치했다가 빈 화면을 보는 일을 막는다. 서비스는 로고로 보여 준다(UI 문구 규칙).
-- 맥락 문단은 1단계 연동(회의록 · Slack · 메일)을 모두 아우르게 다시 썼다(2026-09-29, W3). 1단계 중 하나가 go live 전에 빠지면 그 원문 종류를 덜어낸다.
+- 맥락 문단은 1단계 연동(회의록 · Slack · 메일)을 모두 아우르게 다시 썼다(2026-09-29, W3). 같은 날 How it works 카드와 겹치는 뒷부분(기한 갱신 · 원문 인용)을 덜어 두 문장으로 줄였다. 1단계 중 하나가 go live 전에 빠지면 그 원문 종류를 덜어낸다.
 - 연동이 늘면 부제와 맥락의 "meeting notes"를 함께 넓힌다(위 [지금 쓰는 판](#지금-쓰는-판-go-live-2026-09-27) 규칙).
-- 개인정보 한 줄은 개인정보 처리방침에 이미 적은 약속만 쓴다. 방침이 바뀌면 이 줄도 고친다.
+- 개인정보 4칸은 개인정보 처리방침 "At a glance"에 이미 적은 약속만, 방침과 같은 말로 쓴다("stays"가 아니라 "is stored": 원문은 외부 AI에도 간다). 방침이 바뀌면 이 칸도 고친다.
 - 푸터의 문의는 "Contact" 대신 주소 자체를 메일 링크로 보여 준다. 메일 앱이 없는 브라우저에서는 메일 링크를 눌러도 반응이 없어서, 주소를 보고 복사할 수 있게 한다(2026-09-29).
 
 ### CTA와 측정

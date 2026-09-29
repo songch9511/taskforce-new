@@ -85,6 +85,15 @@ struct PushNotificationsTests {
         #expect(listOnly.actionID == UUID(uuidString: "22222222-2222-4222-8222-222222222222"))
     }
 
+    @Test func reconnectPayloadOpensConnections() {
+        // src/lib/notify/apns.ts reconnectPayload: 할 일 정보 없이 kind만
+        let target = NotificationTarget(userInfo: [
+            "aps": ["alert": ["title": "Connections", "body": "Reconnect Gmail to keep syncing."]],
+            "kind": "reconnect",
+        ])
+        #expect(target == NotificationTarget(kind: .reconnect, actionID: nil))
+    }
+
     @Test func unknownPayloadJustOpensTheApp() {
         #expect(NotificationTarget(userInfo: [:]) == NotificationTarget(kind: .other, actionID: nil))
         #expect(NotificationTarget(userInfo: ["kind": "weekly", "action_id": "not-a-uuid"]) == NotificationTarget(kind: .other, actionID: nil))
