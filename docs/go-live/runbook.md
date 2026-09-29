@@ -178,7 +178,7 @@ union all select 'profiles', count(*) from public.profiles where user_id = '<id>
 3. ✅ **운영 Slack 앱(L7)** (2026-09-29) — taskforcelabs 워크스페이스의 **Taskforce**(App ID `A0C584MQJV7`). Vercel env `SLACK_CLIENT_ID`(숫자.숫자, 앱의 Basic Information에서) · `SLACK_CLIENT_SECRET` · `SLACK_SIGNING_SECRET` · `SLACK_REDIRECT_URI` → 재배포 → 이벤트 URL "Verified". 남은 것: 앱 아이콘, 공개 배포(운영 확인 뒤).
    - 운영 확인은 앱에 열기 전에 **운영자만**(`ADMIN_EMAILS`) 웹 /lab의 "Slack 연결"로 한다. 그 밖의 사용자는 `/lab?slack=unavailable`.
 4. **처리방침 게시(W2)와 PR 4 앱 빌드(Slack 확인 창 · 끊기 문구)가 TestFlight에 나간 뒤** `SLACK_CONNECT_ENABLED=true` → 재배포. 앱의 Slack 줄이 "Coming soon"에서 Connect로 바뀐다. 예전 빌드는 확인 창 없이 연결되고 끊기 문구가 옛것이라, 켜기 전에 테스터가 새 빌드를 받게 한다.
-5. **확인**
+5. **확인** — 운영자 연결로 2026-09-29에 했다(아래 "결과"). 남은 것: 두 이용자, 앱 빌드로 연결(확인 창 · 끊기 문구), 정리 cron 응답
 
 | 확인 | 방법 | 기대 |
 |---|---|---|
@@ -190,6 +190,20 @@ union all select 'profiles', count(*) from public.profiles where user_id = '<id>
 | 두 이용자 | 같은 워크스페이스의 Taskforce 계정 둘이 연결 → 한 명이 Slack에서 권한을 거둠 | 그 사람만 `revoked`(`tokens_revoked`), 다른 사람은 그대로. 마지막 한 명까지 거두면 `app_uninstalled` |
 | 로그 | Vercel Logs의 `/api/connectors/slack/events` · 동기화 요청 | 메시지 본문 · 이름 · 토큰 없음 |
 | 정리 · 토큰 확인 | `/api/cron/retention` 응답 | `slack_messages_deleted` · `slack_threads_deleted` · `slack_sources_repurged` · `slack_tokens_checked` · `slack_tokens_revoked` 칸이 있고, 연결된 Slack 수만큼 `slack_tokens_checked` |
+
+운영 확인 결과 (2026-09-29, 운영자 연결 · /lab · 운영 DB):
+
+| 확인 | 결과 |
+|---|---|
+| 연결 | ✅ 운영 앱 권한 화면(권한 9개, 봇 없음) → `/lab?slack=connected`. 운영자가 아니면 `/lab?slack=unavailable` |
+| 할 일 | ✅ 두 번째 계정 DM "견적서 목요일까지 보내 주실 수 있을까요?" + 내 "넵, 목요일까지 보내드릴게요" → "푸바오에게 견적 발송", 기한 10-01(목), 자동 반영, 근거 인용 |
+| 버림 | ✅ 나를 부르지 않은 채널 글은 `slack_messages`에 없음 |
+| 끊기 | ✅ 204, 원문 본문 · 관련자 · 인용 · Claim 글자 · 판정 기록 0, 할 일 기한 그대로. 끊은 직후 Slack 이벤트 2건(`tokens_revoked` · `app_uninstalled`) 200 |
+| Slack에서 권한 거둠 | ✅ 워크스페이스 앱 페이지 → Configuration → Your authorization → Revoke → 연결 `revoked`, 토큰 · 대기 데이터 0. 앱의 끊기로 연결 행도 지워짐 |
+| 로그 | ✅ Vercel Logs에서 메시지 글("견적") · 이름("푸바오")이 나오지 않음, 토큰 폐기 실패 없음 |
+| 두 이용자 | 남음 — 같은 워크스페이스의 두 번째 Taskforce 계정이 필요하다 |
+
+만들며 알게 된 것: 운영 `SLACK_CONNECT_ENABLED`가 꺼져 있으면 운영자 연결의 callback도 막혔고(#11로 고침), 동기화도 Slack을 빼고 돌았다(#15로 고침: 닫는 것은 새 연결뿐).
 
 Slack 글자가 남았는지 확인하는 SQL(시험 계정 id로, 읽기만, 그 계정에 Slack 연결이 없을 때 모두 0이어야 한다). 첫 줄은 D3가 빠뜨린 Slack 원문을 잡는다(Slack 링크인데 지운 표시가 없음):
 ```sql
@@ -224,7 +238,7 @@ union all select 'slack_people', count(*) from public.slack_people where user_id
 | L4 | Google 프로젝트 A 민감 범위 심사 제출 (Calendar · Meet) | 사용자 | 제출 확인 메일 → 통과 (추정 10 영업일) | L3, C4, 영상 A (`google-verification.md` 5장) |
 | L5 | Google 프로젝트 B Testing + 테스트 사용자 등록 (Gmail) | 사용자 | 등록한 테스터가 Gmail 연결 성공 | L1, C4, I3 |
 | L6 | Google 프로젝트 B 제한 범위 심사 + CASA | 사용자 (평가기관 계약 · 결제 포함) | 심사 통과 · LOA. **go live 조건 아님** (Testing으로 go live, 통과 뒤 7일 재연결 해제) | L5, 영상 B, Google의 CASA 요청 |
-| L7 | Slack 앱 생성 · 이벤트 URL 확인 · 공개 배포 | 사용자 | "Public distribution is active", 다른 워크스페이스에서 설치 성공 | I3, C5 (`slack-app.md` 9장) |
+| L7 | Slack 앱 생성 · 이벤트 URL 확인 · 공개 배포 | 사용자 ✅ (2026-09-29, `A0C584MQJV7`, 공개 배포 켬) | "Public distribution is active", 다른 워크스페이스에서 설치 성공(남음) | I3, C5 (`slack-app.md` 9장) |
 | L8 | TestFlight 외부 테스트 심사 | 사용자 | 베타 앱 심사 통과 | C6, C2, I1~I5, 데모 계정 (`app-store.md` 7장) |
 | L9 | 법률 검토 → **자체 검토로 대신** ([self-review.md](../legal/self-review.md)) | 사용자 ✅ (2026-09-29 결정표) | 결정표대로 문안을 고치고 상자를 지움. 변호사 검토는 유료화 · Marketplace · Google 민감 범위 심사 전 | W2 초안 |
 
