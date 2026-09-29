@@ -55,7 +55,7 @@ App Store 정식 출시가 아니다. "Notion만 연결할 수 있다"로는 go 
 |---|---|---|---|---|
 | 1 | 배포 전 코드: 보안 헤더, 첫 동기화 진행 표시 · Sync Now 안내, 앱 알림 등록(Phase A3) | C8 · C10 · C11 | 코드 | 2~3일 |
 | 2 | 서버 배포 + TestFlight 내부 빌드 → **1주 직접 써 보기** (자동 동기화 · iPhone 실기기 · 지표 1~5 첫 숫자) | I1 ~ I12 | 사용자(계정 · 키) + 코드(명령 · 확인) | 1주 |
-| 2' | 오래 걸리는 외부 일정 바로 시작: Search Console → Google 브랜드 심사 → Calendar · Meet 민감 범위 심사, Slack 앱 · 공개 배포, 법률 검토 의뢰 | L2 ~ L4 · L7 · L9 | 사용자 | 2~4주 (기다림) |
+| 2' | 오래 걸리는 외부 일정 바로 시작: Search Console → Google 브랜드 심사 → Calendar · Meet 민감 범위 심사, Slack 앱 · 공개 배포, 법률 자체 검토(docs/legal/self-review.md, 2026-09-29) | L2 ~ L4 · L7 · L9 | 사용자 | 2~4주 (기다림) |
 | 3 | Slack 연동 (PRD 핵심 시나리오 2, Slack 골든셋 · eval). 계획: [go-live/slack-integration.md](go-live/slack-integration.md) | C5 | 코드 | 1~2주 |
 | 4 | Google 연동 (Calendar · Meet 전사 · Gmail은 테스트 상태로, 7일 재연결 안내) | C4 · L5 | 코드 | 2~3주 |
 | 5 | 마무리: 전체 검증, TestFlight 외부 심사, 웹사이트 교체, 새 계정으로 끝까지 확인 → 공개 링크 | C9 · L8 · L1 · G1 ~ G4 | 사용자 + 코드 | 1주 |
