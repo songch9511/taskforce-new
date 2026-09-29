@@ -57,7 +57,7 @@ flowchart TD
 | 원문 처리 (DB) | `lib/sources/process.ts` `processSource` · `processTaskSource` · `reportMissing` | 연동 · API · 스크립트 모두 여기로 들어온다. 병합 단계(임베딩 채우기 + 매칭 · 병합)만 사용자마다 `withUserLock`으로 한 번에 하나씩 돈다 (한 서버 인스턴스 안에서만 보장). 추출 · 판정은 잠금 밖이다 |
 | Action 필드 값 | `lib/pipeline/resolve.ts` `resolveAction` → `lib/actions/project.ts` `projectAction` | 필드 값은 이 둘로만 계산한다 (제품 원칙 5). 예외는 임베딩만 쓰는 `lib/actions/db-store.ts` `saveEmbedding` |
 | Action 쓰기 | `lib/actions/service.ts` → `lib/actions/db-store.ts` `writeAction` · `writeProgress` → RPC `write_action` · `set_action_progress` · `start_action` | 앱 역할의 직접 쓰기는 DB가 막는다 (`20260929000000_actions_server_writes.sql`). `v1/actions/[id]/**`는 `lib/api/action-routes.ts` `actionWriteRoute`를 거친다. 예외: Slack 연결 끊기 · 앱 제거는 SQL `purge_slack_sources`가 인용을 자리 표시로 바꾸고 Claim의 글자(`quote` · `value_text` · `speaker`)만 비운다. 판정 칸은 남아 필드 값은 그대로다 |
-| 지운 원문 · 인용 | `lib/retention.ts` `purgedSourceMessage` · `SLACK_DISCONNECTED_QUOTE` | 같은 자리 표시 글자가 SQL `purge_slack_sources`와 Swift `Kit/EvidenceDigest.swift` `RemovedQuote`에도 있어 셋이 같아야 한다. 인용을 모델 · 클립보드로 보내는 곳은 자리 표시를 뺀다 (`handoffAction` · `retrieveAskContext`, 빠진 곳은 7장 10) |
+| 지운 원문 · 인용 | `lib/retention.ts` `purgedSourceMessage` · `SLACK_DISCONNECTED_QUOTE` | 같은 자리 표시 글자가 SQL `purge_slack_sources`와 Swift `Kit/EvidenceDigest.swift` `RemovedQuote`에도 있어 셋이 같아야 한다. 인용을 모델 · 클립보드로 보내는 곳은 자리 표시를 뺀다 (`handoffAction` · `retrieveAskContext` · 매칭의 `SupabaseActionStore` `shortlist` · `unembedded`) |
 | 지금 할 일 순서 | `lib/actions/rank.ts` `rankNow` (`GET /api/v1/now`) | 앱은 받은 순서를 그대로 보여 준다 |
 | 속도 제한 | `lib/api/rate-limit-store.ts` `takeRateLimit` → RPC `take_rate_limit`. 한도 값은 `lib/api/rate-limit.ts` | 직접 추가 10분 30번 · 물어보기 20번 · 빠진 할 일 10번 · 연결 시작 10번 |
 | 연동 틀 · 동기화 | `lib/connectors/registry.ts` `syncConnections` · `connectorFor` · `tokenRevokerFor` · `revokeConnectorTokens` | cron · Sync Now · 첫 동기화가 모두 `syncConnections`를 쓴다. 연동은 `CONNECTORS`에 등록한다. 앱 시작 · 완료는 `connectorFor`, 동기화는 같은 `opened` 조건으로 연다 (Slack은 `SLACK_CONNECT_ENABLED`, 웹은 `slackWebConnector`). 토큰 폐기는 열지 않은 연동도 한다 |
@@ -205,7 +205,7 @@ Slack이 이 순서로 붙었다 (`lib/connectors/slack/`).
    - Swift `Kit/Connections.swift` (서버가 400을 주면 "Coming soon"으로 보인다. 연결 전 · 끊기 안내 문구도 여기에 있다)
    - `scripts/reprocess-sources.ts` (`--notion-authors`는 Notion 연결만 읽는다)
 6. 그 원문 종류의 골든셋과 eval(`tags`), 개인정보 처리방침 3장을 함께 고친다 ([GO_LIVE.md](GO_LIVE.md) 1단계 조건).
-7. 서비스가 이벤트를 보내 주거나 삭제 의무가 있으면 Slack처럼 더한다: 이벤트 route + 서명 확인, 대기 표(앱 역할 접근 없음), 삭제 RPC(`purge_*` · `revoke_*`, `disconnect_connection` 안에서 부름), `sources.raw_text_purge_reason`, `/api/cron/retention`의 정리 · 토큰 확인, 새 표를 `tests/db/{account-deletion,migrations}.test.ts`의 표 목록에, 자리 표시 인용을 넘기기 · 물어보기에서 빼기(매칭은 Slack도 아직 빼지 못했다, 7장 10), Swift 연결 문구 · `RemovedQuote`.
+7. 서비스가 이벤트를 보내 주거나 삭제 의무가 있으면 Slack처럼 더한다: 이벤트 route + 서명 확인, 대기 표(앱 역할 접근 없음), 삭제 RPC(`purge_*` · `revoke_*`, `disconnect_connection` 안에서 부름), `sources.raw_text_purge_reason`, `/api/cron/retention`의 정리 · 토큰 확인, 새 표를 `tests/db/{account-deletion,migrations}.test.ts`의 표 목록에, 자리 표시 인용을 넘기기 · 물어보기 · 매칭에서 빼기, Swift 연결 문구 · `RemovedQuote`.
 
 ## 6. 문서와 코드가 다른 곳 (2026-09-29, `main` 기준)
 
@@ -257,8 +257,7 @@ Slack이 이 순서로 붙었다 (`lib/connectors/slack/`).
 | 7 | 앱이 서버의 판단을 일부 흉내 낸다: 급함 표시 `DueText.isUrgent`, Done Today 조건 `TaskforceReads.doneToday` | 판정은 서버에만 둔다는 규칙 (`CLAUDE.md` 플랫폼) | 확인 (의도인지 정해야 함) |
 | 8 | 앱에서 쓰지 않는 코드: `APIClient.startAction`, `ActionHistory`, `ConfirmReasonText`(그래서 Review 카드에 확인 이유가 안 보인다), `src/lib/supabase/client.ts` | 호출하는 곳이 없다 | 확인 |
 | 9 | 같은 일을 하는 코드가 둘 이상이다: 인용 겹침 비교 두 가지(`lib/eval/score.ts` · `lib/pipeline/missing.ts`), 확신이 낮은 병합 처리 세 가지(`merge.ts` 붙이고 확인 · `merge-task.ts` 따로 만들고 확인 · `missing.ts` 새로 만듦), `lib/api/profile.ts`의 본문 파싱 · 오류 응답(`lib/api/respond.ts`와 중복), cron route 세 곳의 `CRON_SECRET` 확인, `identity.ts`의 관련자 이름 펼치기 세 번, 자리 표시 글자 세 곳(`lib/retention.ts` · SQL · Swift) | 각 파일 | 확인 (의도된 차이인지 정해야 함) |
-| 10 | Slack을 끊은 뒤에도 열린 할 일의 매칭에 자리 표시 글자가 인용으로 들어간다 | `lib/actions/db-store.ts` `shortlist`가 최근 인용을 그대로 넘기고 `lib/pipeline/match.ts`가 Jev `latest_quote`로 보낸다. 넘기기 · 물어보기와 달리 거르지 않는다. 매칭 품질에 주는 영향은 추정 | 확인 |
-| 11 | Slack 토큰 매일 확인은 정리가 끝난 뒤 남은 시간(한도 + 5초)만 쓴다. 정리가 밀리면 그날은 일부만 확인한다 | `src/app/api/cron/retention/route.ts`의 `deadline + 5_000`, `lib/connectors/slack/health.ts` | 확인 |
+| 10 | Slack 토큰 매일 확인은 정리가 끝난 뒤 남은 시간(한도 + 5초)만 쓴다. 정리가 밀리면 그날은 일부만 확인한다 | `src/app/api/cron/retention/route.ts`의 `deadline + 5_000`, `lib/connectors/slack/health.ts` | 확인 |
 
 ## 8. 기록 위치와 갱신 기준
 

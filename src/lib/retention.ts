@@ -11,7 +11,7 @@ export const RAW_TEXT_RETENTION_DAYS = 90;
 export const PURGED_SOURCE_MESSAGE = "원문이 보관 기간(90일)이 지나 지워졌어요.";
 export const DISCONNECTED_SOURCE_MESSAGE = "Slack 연결을 끊어 원문을 지웠어요.";
 
-/** Slack 연결을 끊거나 앱을 지우면 근거 인용 자리에 남는 글 (purge_slack_sources). 인용이 아니므로 AI에게 넘기기 · 물어보기에 넣지 않는다 */
+/** Slack 연결을 끊거나 앱을 지우면 근거 인용 자리에 남는 글 (purge_slack_sources). 인용이 아니므로 AI에게 넘기기 · 물어보기 · 매칭(shortlist · 임베딩)에 넣지 않는다 */
 export const SLACK_DISCONNECTED_QUOTE = "Slack 연결을 끊어 지웠어요";
 
 /** 지운 원문을 고르거나 신고할 때의 안내 (sources.raw_text_purge_reason: disconnected = Slack 연결 끊기 · 앱 제거, 그 밖 = 90일) */

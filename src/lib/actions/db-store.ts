@@ -10,6 +10,7 @@ import type { ActionStore, Evidence, TrackedAction } from "@/lib/pipeline/merge"
 import type { LinkedAction, TaskLinkStore } from "@/lib/pipeline/merge-task";
 import { USER_REASON } from "@/lib/pipeline/resolve";
 import type { Claim } from "@/lib/pipeline/resolve";
+import { SLACK_DISCONNECTED_QUOTE } from "@/lib/retention";
 
 import { changeEvents, projectAction, type ActionStatus, type EventDraft } from "./project";
 import { actionRowValues, CLAIM_COLUMNS, claimFromRow, claimToRow, storedReasons, toPgVector, type ClaimRow } from "./rows";
@@ -130,7 +131,10 @@ export class SupabaseActionStore implements ActionStore, EmbeddingBackfillStore 
       this.admin.from("actions").select("id, title, counterpart, due_date, owner").eq("user_id", this.userId).in("id", ids).throwOnError(),
       this.admin.from("evidence").select("action_id, quote, created_at").eq("user_id", this.userId).in("action_id", ids).order("created_at").throwOnError(),
     ]);
-    const latest = new Map((evidence ?? []).map((e) => [e.action_id as string, e.quote as string]));
+    // 빈 인용 · Slack 연결을 끊어 지운 인용 자리 표시는 근거가 아니다 (latest_quote에는 그 전 인용을 넘긴다)
+    const latest = new Map(
+      (evidence ?? []).filter((e) => e.quote && e.quote !== SLACK_DISCONNECTED_QUOTE).map((e) => [e.action_id as string, e.quote as string]),
+    );
     return ids.flatMap((id) => {
       const a = (actions ?? []).find((row) => row.id === id);
       return a ? [{ id, title: a.title, counterpart: a.counterpart, due: a.due_date, latestQuote: latest.get(id) ?? null, embedding: null, owner: a.owner }] : [];
@@ -197,7 +201,10 @@ export class SupabaseActionStore implements ActionStore, EmbeddingBackfillStore 
       .order("created_at")
       .throwOnError();
     const quotes = new Map<string, string>();
-    for (const e of (evidence ?? []) as { action_id: string; quote: string }[]) if (!quotes.has(e.action_id)) quotes.set(e.action_id, e.quote);
+    // Slack 연결을 끊어 지운 인용 자리 표시는 임베딩에 넣지 않는다 (제목만으로 만든다)
+    for (const e of (evidence ?? []) as { action_id: string; quote: string }[]) {
+      if (!quotes.has(e.action_id) && e.quote !== SLACK_DISCONNECTED_QUOTE) quotes.set(e.action_id, e.quote);
+    }
     return rows.map((r) => ({ id: r.id, title: r.title, quote: quotes.get(r.id) ?? null }));
   }
 

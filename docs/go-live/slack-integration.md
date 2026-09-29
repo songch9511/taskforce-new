@@ -171,7 +171,7 @@ UI 문구는 짧은 영어 라벨 규칙을 따른다. 설명 줄은 위 두 문
 - 확인 창을 서비스를 받는 창으로 바꿨다(`AccountViews.swift`의 `confirming`, Google · Slack이 쓴다). Slack의 `readsBeforeConnecting`은 Google처럼 세 줄: "DMs and group DMs" · "Channel threads you write in or are mentioned in" · "New messages only. Taskforce never sends anything."
 - 끊기 문구는 `ConnectionProvider.disconnectNote(for:)`. Slack은 "Slack messages are removed from Taskforce. Tasks stay." — 위 표의 "are deleted"는 Slack에서 메시지를 지운다고 읽힐 수 있어 바꿨다(PR 4 검토).
 - 끊긴 연결(`needsReconnect`, Slack에서 앱을 지워 `revoked`로 남은 것)에도 Disconnect를 둔다. 처리방침이 "앱에서 끊으면 연결 기록이 지워진다"고 약속한다.
-- 서버가 끊으며 바꾼 근거 인용("Slack 연결을 끊어 지웠어요")은 인용 부호 없이 "Removed when Slack was disconnected"로 보인다(`RemovedQuote`, `EvidenceView`). 맨 앞 근거는 남아 있는 인용을 먼저 고른다(`EvidenceDigest.lead`). 서버도 이 자리 표시를 AI에게 넘기기 · 물어보기에 넣지 않는다(`SLACK_DISCONNECTED_QUOTE`).
+- 서버가 끊으며 바꾼 근거 인용("Slack 연결을 끊어 지웠어요")은 인용 부호 없이 "Removed when Slack was disconnected"로 보인다(`RemovedQuote`, `EvidenceView`). 맨 앞 근거는 남아 있는 인용을 먼저 고른다(`EvidenceDigest.lead`). 서버도 이 자리 표시를 AI에게 넘기기 · 물어보기 · 매칭(`SupabaseActionStore` `shortlist` · `unembedded`)에 넣지 않는다(`SLACK_DISCONNECTED_QUOTE`).
 - `SourceService`는 `slack.com` 링크를 이미 Slack으로 알아본다(확인만).
 
 ## 4. 골든셋 · eval
@@ -319,7 +319,7 @@ dev 워크스페이스 확인 (2026-09-29, Taskforce dev 앱 · 로컬 서버 ·
 
 남긴 낮은 위험(재검토 2026-09-29, 승인): 3일 넘은 대기 행을 넣는 동기화와 매일 정리가 같은 행을 반대 순서로 잠그면 Postgres가 한쪽을 멈춘다(다음 동기화 · 다음 날 정리가 다시 한다). 고치려면 정리 쿼리에 `for update skip locked`를 더하는 마이그레이션. 속도 제한의 `Retry-After`는 기다리지 않는다(찾은 이름은 남기므로 다음 동기화가 이어서 찾는다).
 
-L9 법률 검토에 물을 것(D3 범위): 원문 행의 링크 · 외부 id(워크스페이스 주소 · 채널 id · 메시지 ts), 끊긴 연결 행의 워크스페이스 이름 · 주소, Claim 값 · 할 일 제목 · 상대 이름 · 이력(`action_events`)은 남는다. 끊은 뒤 근거 자리에 남는 "Slack 연결을 끊어 지웠어요"가 매칭 후보의 최근 인용으로 쓰일 수 있다(해가 없는지 1주 사용에서 본다).
+L9 법률 검토에 물을 것(D3 범위): 원문 행의 링크 · 외부 id(워크스페이스 주소 · 채널 id · 메시지 ts), 끊긴 연결 행의 워크스페이스 이름 · 주소, Claim 값 · 할 일 제목 · 상대 이름 · 이력(`action_events`)은 남는다. 끊은 뒤 근거 자리에 남는 "Slack 연결을 끊어 지웠어요"는 매칭에 쓰지 않는다. 끊기 전에 제목 · 인용으로 만든 할 일 임베딩(`actions.embedding`)은 남는다.
 
 ### 어댑터 단위 테스트 (eval 아님, PR 2 · 3)
 
