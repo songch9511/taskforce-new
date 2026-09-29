@@ -14,11 +14,17 @@
 
 ## 게시 규칙
 
-1. `{{…}}` 자리표시자를 모두 채우고, "법률 검토 필요" 상자를 지운 뒤에만 게시한다. 상자는 검토가 끝났다는 표시가 아니라 **검토할 곳의 표시**다.
+1. `{{…}}` 자리표시자를 모두 채운 뒤에만 게시한다. 베타는 변호사 검토 대신 **자체 검토**([self-review.md](self-review.md))로 게시한다(2026-09-29 결정): 쟁점마다 결정과 남는 위험을 그 문서에 적고, 처리방침의 "법률 검토 필요" 상자는 결정대로 문안을 고친 뒤 지운다. 유료화 · 베타 대상 확대 · Marketplace · Google 민감 범위 심사 전에는 변호사 검토를 한 번 받는다.
 2. 아래 [구현 대조표](#구현-대조표)에서 "게시 조건"이 끝나지 않은 문장이 있으면 게시하지 않는다. 처리방침이 코드보다 앞서면 방침이 거짓이 된다.
 3. 한국어와 영어의 내용을 항상 같게 고친다. 두 판이 다르면 한국어가 우선한다(각 문서 머리에 적음).
 4. 코드 · 인프라를 바꿀 때 아래 중 하나라도 바뀌면 이 폴더를 같은 PR에서 고친다: AI 호출 경로 · 모델 공급자, 호스팅 리전, Supabase 요금제(백업), 로그에 남기는 것, 새 연동 · 새 수집 항목, 분석 SDK.
 5. 웹사이트 첫 화면의 개인정보 한 줄("AI calls go only to providers that keep no data. Your data stays in Sydney, and deleting your account deletes it right away.")은 처리방침의 "한눈에 보기"와 같은 약속만 쓴다(BRAND.md).
+
+## 게시 기록
+
+| 날짜 | 판 | 내용 |
+|---|---|---|
+| 2026-09-29 | 베타 1.0 (시행일 2026-09-29) | 첫 게시(runbook L1 · W2). 자체 검토(#13) 반영. **규칙 2의 예외:** 구현 대조표의 Google 줄(Calendar · Meet · Gmail, 계정 삭제 · 연결 끊기 때 Google 토큰 폐기)은 아직 구현 전(C4)이지만, Google 브랜드 · 범위 심사가 게시된 처리방침을 먼저 요구해서 게시했다(사용자 결정). Google 연결은 C4 배포 전에는 열리지 않아 그 문장이 적용되는 처리는 아직 없다. **C4를 배포하기 전에 3장 Google 문장 · 이 표의 Google 줄을 구현과 다시 맞춘다.** Supabase Free · 백업 없음은 사용자가 확인했다 |
 
 ## 구현 대조표
 
@@ -28,8 +34,8 @@
 |---|---|---|---|
 | 모든 AI 요청은 ZDR · 학습 금지 공급자에게만 | `src/lib/ai/providers.ts`의 `providerRouting()` → 모든 요청에 `data_collection: "deny"` · `zdr: true`, `llm.ts` · `jev.ts` · `embed.ts`가 그대로 씀 | 구현됨 | — |
 | 모델 공급자와 국가를 7장 표에 적음 | `src/lib/ai/providers.ts`가 공급자를 고정한다: `provider: { only, order, allow_fallbacks: false }`로 아래 목록 밖으로 넘어가지 않는다(2026-09-27 [결정 1](#결정-필요), 해결됨) | 구현됨 | — |
-| OpenRouter 프롬프트 로깅 꺼짐 | OpenRouter 계정 설정 (코드 아님) | 확인 필요 | 사용자가 OpenRouter → Settings → Privacy에서 확인 |
-| 데이터는 시드니, 백업 없음 → 삭제 즉시 | `supabase/.temp/pooler-url`이 `aws-0-ap-southeast-2` (시드니). 요금제는 Free로 알려져 있으나 이 저장소에서 확인할 수 없다 | 확인 필요 | 사용자가 Supabase 대시보드에서 Free · 백업 없음을 확인. Pro로 올리면 7일 백업이 생겨 5장을 고친다 |
+| OpenRouter 프롬프트 로깅 꺼짐 | OpenRouter 계정 설정 (코드 아님) | 확인됨 (2026-09-28, runbook I9: ZDR 필수 · 학습 엔드포인트 끔) | — |
+| 데이터는 시드니, 백업 없음 → 삭제 즉시 | `supabase/.temp/pooler-url`이 `aws-0-ap-southeast-2` (시드니). 요금제는 Free로 알려져 있으나 이 저장소에서 확인할 수 없다 | 확인됨 (2026-09-29, 사용자) | Pro로 올리면 7일 백업이 생겨 5장을 고친다 |
 | 서버는 시드니 | `vercel.json`의 `"regions": ["syd1"]` | 구현됨 | 배포한 프로젝트에 설정이 적용됐는지 배포 뒤 확인(runbook) |
 | 서버 요청 기록 1일 | Vercel Pro 런타임 로그 보관 1일 (Observability Plus를 켜면 30일) | 요금제 사실 | Observability Plus · 로그 드레인을 켜지 않는다. 켜면 5장을 고친다 |
 | 데이터베이스 · 인증 기록 1일 | Supabase Free 로그 보관 1일 | 요금제 사실 | 위 요금제 확인과 같다 |
@@ -38,9 +44,10 @@
 | 계정 삭제 시 Sign in with Apple 토큰 폐기 | 서버: `src/lib/apple/sign-in.ts`(client secret JWT → `/auth/token` → `/auth/revoke`), `DELETE /api/v1/account`가 삭제 전에 부름, 본문 `apple_authorization_code`(선택). **앱은 아직 code를 보내지 않아(`APIClient.deleteAccount()` 본문 없음) 지금은 폐기가 항상 건너뛰어진다** | 진행 중 (앱 남음) | 앱이 삭제 확인 때 Sign in with Apple을 한 번 더 받아 code를 보냄 + `APPLE_*` env (`docs/go-live/app-store.md` 6장) |
 | 계정 삭제 시 연결 서비스 토큰 폐기 | `src/lib/connectors/registry.ts`의 `revokeConnectorTokens`: Notion `POST /v1/oauth/revoke`, Slack `auth.revoke`(`slackConnector.revokeToken`, 2026-09-29) | 진행 중 (Google 남음) | Google(`oauth2.googleapis.com/revoke`)까지 붙은 뒤 |
 | 동의 전에는 연결 원문을 AI로 보내지 않음 · 철회 가능 | `supabase/migrations/20261003000000_go_live_connections_consent.sql`의 `profiles.ai_consent_at`, `src/lib/api/consent.ts`(POST · DELETE `/api/v1/consent`, 동의 없으면 409), 연결 시작 · 동기화 · 원문 보내기 · 물어보기가 동의를 확인, `registry.ts`가 동의 없는 사용자의 연결을 건너뜀. 앱: `apple/Taskforce/Shared/AccountViews.swift`의 동의 · 철회 화면 | 코드 있음 (작업 중, 배포 전) | 서버 배포 + 운영 DB 마이그레이션 + 앱 빌드. 동의 화면 문구가 처리방침 4장 · `app-store.md` 5장과 같은지 확인. **결정 (go live 전):** go live 전에 앱을 써본 이용자도 새 버전에서 앱 안 동의 화면을 한 번 통과해야 한다 — 서버가 계정을 나누거나 새 API 버전을 만들지 않고, 지금 v1의 동의 확인(409)이 그대로 그 화면을 띄운다 |
-| 연결 끊기 → 토큰 즉시 삭제 · 서비스에 폐기 요청, Notion · Google 원문 · 할 일은 남음 | `DELETE /api/v1/connections/:id` → `handleConnectionDelete`(`src/lib/api/connections.ts`): 서버 권한으로 서비스 토큰 폐기(`Connector.revokeToken`: Notion · Slack. **Google 연동은 `revokeToken`을 구현해야 3장 문장이 맞다**) → `disconnect_connection`(연결 행 삭제, `connection_secrets` cascade, `sources.connection_id`는 `on delete set null`). 앱이 연결 행을 직접 지우는 정책은 `20261014000000`에서 지운다 | 코드 있음 (배포 전) | 서버 배포 뒤 `20261014000000` 적용(runbook) |
-| Slack: 연결 끊기 · 앱 제거 → Slack 원문 본문 · 관련자 · 근거 인용 · 판정 기록 · 대기 데이터 즉시 삭제, 할 일 · 원본 링크는 남음 (3장 · 5장 · 11장) | `purge_slack_data` · `purge_slack_sources`(마이그레이션 20261013000000): `disconnect_connection` · `revoke_slack_connections`(`app_uninstalled` · `tokens_revoked` · 동기화 중 토큰 오류 · 매일 토큰 확인 `slack/health.ts`)가 부른다. 처리 도중 끊긴 원문은 `slack_repurge_if_disconnected`, 매일 `purge_slack_buffers`가 다시 지운다. `tests/db/slack-sync.test.ts`. dev 워크스페이스에서 확인(2026-09-29, `slack-integration.md` "PR 3 구현") | 구현됨 (배포 전) | 서버 배포. L9 법률 검토(아래 2번) |
-| Slack 대기 메시지 3일 · 추적 스레드 14일 · 이름 정보는 연결을 끊을 때까지 (5장) | `src/lib/retention.ts`(`SLACK_PENDING_RETENTION_DAYS` · `SLACK_THREAD_RETENTION_DAYS`), `/api/cron/retention` → `purge_slack_buffers`. 원문으로 묶으면 대기 행 본문을 바로 비운다(`slack/sync.ts`) | 구현됨 (배포 전) | 배포 뒤 cron 확인 |
+| 연결 끊기 → 토큰 즉시 삭제 · 서비스에 폐기 요청, Notion · Google 원문 · 할 일은 남음 | `DELETE /api/v1/connections/:id` → `handleConnectionDelete`(`src/lib/api/connections.ts`): 서버 권한으로 서비스 토큰 폐기(`Connector.revokeToken`: Notion · Slack. **Google 연동은 `revokeToken`을 구현해야 3장 문장이 맞다**) → `disconnect_connection`(연결 행 삭제, `connection_secrets` cascade, `sources.connection_id`는 `on delete set null`). 앱이 연결 행을 직접 지우는 정책은 `20261014000000`에서 지운다 | 구현됨 (2026-09-29 배포, `20261014000000` 적용) | — |
+| Slack: 연결 끊기 · 앱 제거 → Slack 원문 본문 · 관련자 · 근거 인용 · 판정 기록 · 대기 데이터 즉시 삭제, 할 일 · 원본 링크는 남음 (3장 · 5장 · 11장) | `purge_slack_data` · `purge_slack_sources`(마이그레이션 20261013000000): `disconnect_connection` · `revoke_slack_connections`(`app_uninstalled` · `tokens_revoked` · 동기화 중 토큰 오류 · 매일 토큰 확인 `slack/health.ts`)가 부른다. 처리 도중 끊긴 원문은 `slack_repurge_if_disconnected`, 매일 `purge_slack_buffers`가 다시 지운다. `tests/db/slack-sync.test.ts`. dev 워크스페이스에서 확인(2026-09-29, `slack-integration.md` "PR 3 구현") | 구현됨 (2026-09-29 배포, 운영에서 확인) | 자체 검토([self-review.md](self-review.md) 2번) |
+| Slack 대기 메시지 3일 · 추적 스레드 14일 · 이름 정보는 연결을 끊을 때까지 (5장) | `src/lib/retention.ts`(`SLACK_PENDING_RETENTION_DAYS` · `SLACK_THREAD_RETENTION_DAYS`), `/api/cron/retention` → `purge_slack_buffers`. 원문으로 묶으면 대기 행 본문을 바로 비운다(`slack/sync.ts`) | 구현됨 (2026-09-29 배포) | cron 확인(runbook I11) |
+| 원문 속 다른 사람의 출처 문의 · 처리정지 · 삭제 요구에 응함 (2장) | 수동 절차 [internal-plan.md](internal-plan.md) 6장 | 운영 규칙 | 요청이 잦아지면 서버 기능 |
 | 앱에서 지운 할 일은 "지움" 상태로 남음 | `DELETE /api/v1/actions/:id`가 `dropped` + `user_deleted` 이벤트 | 구현됨 | — |
 | 서버 기록에 원문 · 토큰 · 코드 없음 | 모든 `console.error`가 오류 메시지와 id만 남긴다. `processing_summary` · `processing_error` · `last_error`에 원문을 넣지 않는다(마이그레이션 주석) | 구현됨 (규칙) | 새 코드도 같은 규칙. 로그 드레인 없음 |
 | 잠금 화면 알림에 할 일 제목 없음 | `src/lib/notify/apns.ts`: 일반 문구 + `mutable-content: 1` + `action_id` | 구현됨 | 앱의 Notification Service Extension |
@@ -49,26 +56,26 @@
 | Google Calendar: 제목 · 시각 · 주최자 · 참석자 · Meet 식별자만, 설명 · 첨부 제외 | 없음. 범위는 `calendar.events.owned.readonly`로 정했다(2026-09-27, `google-verification.md` 1장) | **미구현** (트랙 2-3) | 구현이 이 필드만 요청하는지, 그리고 실제로 `calendar.events.owned.readonly`를 쓰는지 확인(`fields=` 파라미터) |
 | Meet 전사: 30일 안에 가져옴 | 없음 | **미구현** (트랙 2-3) | Meet API 목록은 주최한 회의만 돌려준다. 참석만 한 회의를 못 가져오면 3장에 "내가 주최한 회의"라고 적는다 |
 | Gmail: 뉴스레터 · 프로모션 · 알림 거름, 스팸 · 휴지통 · 첨부 제외, 7일 재연결 안내 | 없음 | **미구현** (트랙 2-3) | 구현 값과 3장 문장을 맞춘다. 첫 동기화 기간을 정하면 3장에 적는다 |
-| Slack: DM · 그룹 DM · 언급 · 내 메시지 · 그 스레드만 남기고 나머지는 받는 즉시 버림, 연결 전 메시지는 가져오지 않음, 권한 9개, 봇 없음 | `src/lib/connectors/slack/events.ts`(`classifySlackMessage`), `SLACK_USER_SCOPES`(`slack/client.ts`, 9개 = 3장 목록), 매니페스트(`docs/go-live/slack-app.md` 2장). 버린 채널 메시지가 DB에 없음을 dev 워크스페이스에서 확인(2026-09-29) | 구현됨 (배포 전) | 서버 배포 + 운영 Slack 앱(L7) + `SLACK_CONNECT_ENABLED=true`(앱에 연결을 연다) |
+| Slack: DM · 그룹 DM · 언급 · 내 메시지 · 그 스레드만 남기고 나머지는 받는 즉시 버림, 연결 전 메시지는 가져오지 않음, 권한 9개, 봇 없음 | `src/lib/connectors/slack/events.ts`(`classifySlackMessage`), `SLACK_USER_SCOPES`(`slack/client.ts`, 9개 = 3장 목록), 매니페스트(`docs/go-live/slack-app.md` 2장). 버린 채널 메시지가 DB에 없음을 dev 워크스페이스에서 확인(2026-09-29) | 구현됨 (2026-09-29 배포, 운영 Slack 앱 `A0C584MQJV7`) | `SLACK_CONNECT_ENABLED=true`(처리방침 게시 · Slack 문구가 든 새 앱 빌드 뒤) |
 | 앱 메뉴: 계정 → 프로필 · AI data · Privacy Policy · 계정 삭제, 연결 → 연결 끊기 (11장 표) | `apple/Taskforce/iOS/AccountSheet.swift` · `apple/Taskforce/Shared/AccountViews.swift`에 프로필 · 연결(연결 끊기) · AI 동의 · 계정 삭제가 있다(작업 중). **앱 안 처리방침 링크는 없다** | 진행 중 | 계정 메뉴에 Privacy Policy 링크(App Store 5.1.1(i)). 앱의 실제 메뉴 이름과 11장 표를 맞춘다 |
 | 물어보기에서 질문을 AI로 보냄 | `src/lib/pipeline/ask.ts` (질문 · 답은 저장하지 않는다). 속도 제한은 `rate_limit_events` · `take_rate_limit`(20261005000000, `ASK_LIMIT` 10분 20번)이 맡는다. `ask_requests` 표는 없다 | 구현됨 | — |
-| 문의 메일 90일 안 삭제 · 원문 열람 기록 · 운영 계정 2단계 인증 | 운영 규칙 (코드 아님) | 사용자 | 게시 전에 실제로 지킬 수 있는지 사용자가 확인. 열람 기록은 날짜 · 대상 · 이유 · 동의 여부를 적는 표 하나로 시작 |
+| 문의 메일 90일 안 삭제 · 원문 열람 기록 · 운영 계정 2단계 인증 | 운영 규칙 (코드 아님) | 사용자가 지키기로 함 (2026-09-29 게시) | 열람 기록은 날짜 · 대상 · 이유 · 동의 여부를 적는 표 하나로 시작([internal-plan.md](internal-plan.md)). 2단계 인증은 runbook I12 |
 
 ## 결정 필요
 
 1. ~~**모델 공급자 고정.**~~ **해결됨 (2026-09-27).** `src/lib/ai/providers.ts`가 모든 AI 요청에 `only` · `order` · `allow_fallbacks: false`를 붙여 아래 목록 밖으로 나가지 않는다(목록이 모두 막히면 요청은 실패한다, 다른 공급자로 새지 않는다):
    - 원문 분석 `LLM_MODEL=z-ai/glm-5.3-flash`: Together · Fireworks · DeepInfra · BaseTen(모두 ZDR, 본사 미국).
    - 임베딩 `openai/text-embedding-3-small`: Azure(Microsoft, 본사 미국) 한 곳.
-   - 판정 `JEV_MODEL=typesafe/jev-1.13`: TypeSafe 한 곳. OpenRouter에 본사 국가 표기가 없고, 공개 자료 기준으로는 미국 샌프란시스코다. **확인 필요: TypeSafe 소재지 서면 확인** (게시 전에 TypeSafe에 직접 묻거나 서면 자료로 확인한다).
+   - 판정 `JEV_MODEL=typesafe/jev-1.13`: TypeSafe 한 곳. OpenRouter에 본사 국가 표기가 없고, 공개 자료 기준으로는 미국 샌프란시스코다. **해결됨 (2026-09-29):** TypeSafe AI, Inc., 255 California St, Suite 1300, San Francisco(TypeSafe 이용약관), 개인정보 문의 privacy@typesafe.ai. 처리방침 7장에 적었다.
    - 목록은 환경변수(`LLM_PROVIDERS` · `EMBED_PROVIDERS` · `JEV_PROVIDERS`)로 바꿀 수 있다. 처리방침 7장 표는 위 목록 · 국가를 그대로 옮긴다.
-2. ~~**연동 원문 보관 기간.**~~ **해결됨 (2026-09-27).** 원문 본문(`sources.raw_text`)은 저장 뒤 90일이 지나면 지우고(`raw_text_purged_at` 기록), 근거 인용 · 원본 링크 · 할 일은 함께 남는다. (Slack은 연결을 끊거나 앱을 지우면 근거 인용까지 바로 지운다, 2026-09-28 D3) Jev 판정 기록(`judge_logs`, 후보 구절 포함)도 90일 뒤 지운다. 매일 `/api/cron/retention`이 `purge_expired_source_text`를 부른다(`src/lib/retention.ts`, 마이그레이션 20261006000000). 5장 표와 3장 Slack 상자를 고쳤다.
+2. ~~**연동 원문 보관 기간.**~~ **해결됨 (2026-09-27).** 원문 본문(`sources.raw_text`)은 저장 뒤 90일이 지나면 지우고(`raw_text_purged_at` 기록), 근거 인용 · 원본 링크 · 할 일은 함께 남는다. (Slack은 연결을 끊거나 앱을 지우면 근거 인용까지 바로 지운다, 2026-09-28 D3) Jev 판정 기록(`judge_logs`, 후보 구절 포함)도 90일 뒤 지운다. 매일 `/api/cron/retention`이 `purge_expired_source_text`를 부른다(`src/lib/retention.ts`, 마이그레이션 20261006000000). 5장 표와 3장 Slack 상자를 고쳤다(상자는 2026-09-29 자체 검토로 지웠다).
 3. **이메일 로그인.** PRD · PLATFORMS는 이메일 6자리 코드를 보조 로그인으로 두지만 지금 앱은 Sign in with Apple만 있다. 이메일 로그인을 열면 Supabase 기본 메일 발송(한도가 낮고 운영용이 아님)을 쓸지, 자체 SMTP(예: Resend)를 붙일지 정한다. 자체 SMTP를 붙이면 처리방침 7장에 수탁자를 더한다. App Store 심사용 데모 계정도 여기에 걸려 있다(`docs/go-live/app-store.md`).
-4. **개인정보 보호책임자 전화번호** (13장). 법은 "전화번호 등 연락처"를 요구한다. 이메일만 둘지 정한다.
+4. ~~**개인정보 보호책임자 전화번호** (13장).~~ **해결됨 (2026-09-29):** 이메일만 둔다(13장 "이메일로 받습니다").
 5. **문의 주소.** 확인된 주소는 `privacy@taskforcelabs.dev`뿐이다(Google Workspace MX, 2026-09-27 `dig` 확인). TestFlight 피드백 · Google 지원 이메일 · Slack 지원에 같은 주소를 쓸지, `support@` 별칭을 만들지 정한다.
 
 ## 법률 검토 항목 (국내 개인정보 전문 변호사)
 
-게시 전에 한 번에 검토받는다. 1 · 2는 처리방침 본문에 "법률 검토 필요" 상자로 표시했다.
+베타는 [self-review.md](self-review.md)의 결정표로 자체 검토했다(2026-09-29). 아래 목록은 나중에 변호사 검토를 받을 때의 질문 목록으로 남긴다.
 
 1. **원문 속 제3자의 개인정보.** 메일 보낸 사람 · 회의 참석자 · Slack 대화 상대 · 발화자의 정보를 동의 없이 처리하는 근거(개인정보 보호법 제15조제1항제6호 정당한 이익 또는 수탁 구조), 제20조 수집 출처 통지, 외부 AI 전송의 적법성, GDPR 제6조제1항(f) · 제14조.
 2. **Slack.** API 약관의 "설치하는 조직의 명시적 허락", 최소 보관, 일부 API의 영구 사본 금지가 근거 인용 · 원문 보관과 맞는지. 베타가 무료여도 나중에 유료 기능이 생기면 "Commercial Distribution"(Marketplace 계약 필요)에 해당하는지. Slack 개발자 정책의 "앱을 지우면 관련 데이터를 14 영업일 안에 모두 삭제"에 맞춰, 연결을 끊으면 Slack 원문 본문을 지우고 근거 인용을 바꾸되 할 일은 남기는 방식(`docs/go-live/slack-integration.md` D3)으로 충분한지. 남는 것: 할 일 제목 · 상대 이름 · Claim 값 · 변경 이력 · 임베딩(제목과 당시 인용으로 만든 벡터) · 원본 링크(워크스페이스 주소 · 채널 id · 메시지 ts), Slack에서 앱을 지운 경우 끊긴 연결 기록(워크스페이스 이름 · 주소 · 식별자, 이용자의 Slack 식별자).

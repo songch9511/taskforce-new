@@ -1,0 +1,68 @@
+{
+  "id": "gmail-mixed-language",
+  "description": "영어 메일에 사용자가 한국어(영어 단어 섞임)로 답장. 인용 머리줄은 한국어 Gmail 모양. 답장의 확정 약속(deck, 금요일)만 뽑고, 승인 조건이 붙은 약속과 인용 속 상대의 약속은 뺀다.",
+  "origin": "synthetic",
+  "tags": [
+    "gmail"
+  ],
+  "user": {
+    "name": "문가은",
+    "aliases": [
+      "Gaeun"
+    ],
+    "emails": [
+      "gaeun@lumenfield.example"
+    ]
+  },
+  "sources": [
+    {
+      "id": "gmail-1013m",
+      "kind": "email",
+      "occurred_at": "2026-10-13T11:20:00+09:00",
+      "participants": {
+        "from": {
+          "name": "문가은",
+          "email": "gaeun@lumenfield.example"
+        },
+        "to": [
+          {
+            "name": "Grace Cho",
+            "email": "grace@tidewell.example"
+          }
+        ]
+      },
+      "text": "제목: Re: Partnership deck + pricing sheet\n\nGrace님 안녕하세요,\nupdated deck은 금요일까지 보내드릴게요.\npricing sheet은 finance 팀 승인 나면 바로 공유드리겠습니다.\n\n문가은 드림\n\n2026년 10월 13일 (화) 오전 9:05, Grace Cho <grace@tidewell.example>님이 작성:\n\n> Hi Gaeun,\n>\n> Thanks for the call yesterday. Could you send over the updated partnership deck and the pricing sheet this week?\n> I'll share our integration timeline by Wednesday.\n>\n> Best,\n> Grace"
+    }
+  ],
+  "expected_actions": [
+    {
+      "title": "Grace Cho에게 업데이트한 파트너십 deck 발송",
+      "owner": "me",
+      "counterpart": "Grace Cho",
+      "due": "2026-10-16",
+      "status": "open",
+      "evidence": [
+        {
+          "source": "gmail-1013m",
+          "quote": "updated deck은 금요일까지 보내드릴게요"
+        },
+        {
+          "source": "gmail-1013m",
+          "quote": "send over the updated partnership deck"
+        }
+      ]
+    }
+  ],
+  "must_not_extract": [
+    {
+      "source": "gmail-1013m",
+      "quote": "pricing sheet은 finance 팀 승인 나면 바로 공유드리겠습니다",
+      "reason": "TENTATIVE"
+    },
+    {
+      "source": "gmail-1013m",
+      "quote": "I'll share our integration timeline by Wednesday",
+      "reason": "NOT_MY_ACTION"
+    }
+  ]
+}

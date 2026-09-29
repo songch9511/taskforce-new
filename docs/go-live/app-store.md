@@ -237,6 +237,7 @@ You'll confirm with Apple so we can remove Taskforce from your Apple ID.
 5. **App Privacy 입력** — 4장 표 그대로. Publish.
 6. **빌드 업로드** — Xcode → Product → Archive(iOS · macOS 각각) → Distribute → App Store Connect.
 7. **Test Information 입력** — 2장 값, 3장 Beta App Review Information.
+7-1. **배포 국가** — App Store Connect → 앱 → Pricing and Availability → App Availability → **유럽경제지역(EU 27개국 · 아이슬란드 · 리히텐슈타인 · 노르웨이)과 영국을 뺀다**(처리방침 16장, `docs/legal/self-review.md` 5번). TestFlight 공개 링크는 이 설정과 상관없이 어디서나 열린다(Apple: TestFlight에는 국가 제한이 없다) — 그 지역에는 링크를 알리지 않는다.
 8. **외부 그룹 · 제출** — TestFlight → External Testing → `Public beta` 그룹 → 빌드 추가 → Submit for Review. 끝: 심사 통과 메일.
 9. **공개 링크** — 그룹 → Public Link → Enable, 테스터 한도 100. 이 링크가 웹사이트 CTA("Join the TestFlight beta")에 들어간다(BRAND.md). **서버 배포 · 1단계 연동이 끝나기 전에는 웹사이트에 걸지 않는다.**
 10. **Gmail 초대 처리** — 테스터가 보낸 Google 주소를 프로젝트 B의 Test users에 넣는다(`google-verification.md` 9장 9번).

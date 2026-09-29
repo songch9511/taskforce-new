@@ -127,6 +127,7 @@ AI 데이터 동의 화면(첫 연결 전 한 번)은 `docs/go-live/app-store.md
 
 - 앱 아이콘의 마크(검정 바탕 `#000000` 위 흰 두 획, BRAND.md)를 정사각형 PNG로 준비한다. 콘솔 안내: **120×120px 권장, 1MB 이하, PNG/JPG/BMP**. Google 로고를 흉내 내지 않는다.
 - 로고를 올리면 브랜드 심사가 필요하다. 로고 없이 이름만으로도 심사는 가능하지만, 동의 화면의 신뢰도를 위해 올린다.
+- 2026-09-29 올린 파일: `apple/Taskforce/Assets.xcassets/AppIcon.appiconset/icon-ios-1024.png`를 120×120으로 줄인 PNG(2.4KB, A · B 공통).
 
 ---
 
@@ -378,7 +379,7 @@ D는 웹사이트 · 처리방침이 공개된 날이다.
 | 시점 | A. Taskforce | B. Taskforce Gmail beta |
 |---|---|---|
 | D | Search Console 인증, 프로젝트 · 클라이언트 · 동의 화면 설정, 브랜드 심사 시작 | 프로젝트 · 클라이언트 설정, Testing, 테스트 사용자 등록 → **베타 테스터가 바로 연결 가능 (7일 재연결)** |
-| D+3 영업일 | 브랜드 심사 끝 (추정 2~3 영업일) | — |
+| D+3 영업일 | 브랜드 심사 끝 (추정 2~3 영업일). **실제: D 당일 자동 인증**(2026-09-29, 민감 범위 없이 제출) | — |
 | 트랙 2-3 구현 뒤 | 영상 A 녹화 → 민감 범위 심사 제출 | 영상 B 녹화 → 제한 범위 심사 제출 |
 | 제출 + 10 영업일 | 민감 범위 심사 끝 (추정) → In production | Google의 CASA 요청 메일 → 평가기관 계약 |
 | 제출 + 6주~3개월 | — | 제한 범위 심사 · CASA 끝 → In production, 7일 재연결 끝 |
@@ -386,6 +387,7 @@ D는 웹사이트 · 처리방침이 공개된 날이다.
 
 - Google의 추정 기간은 보장이 아니고, 답을 늦게 하면 늘어난다(Google FAQ). 심사 메일에는 그날 답한다.
 - go live가 A의 심사보다 먼저 오면, A도 Testing으로 열고 테스터를 테스트 사용자로 등록한다(이때는 A도 7일 만료가 걸린다). In production으로 두고 심사 전 상태로 열면 "확인되지 않은 앱" 경고와 신규 사용자 수 제한이 붙는다.
+- **A는 2026-09-29부터 In production이다**(비민감 범위만, 브랜딩 인증). Calendar · Meet 범위를 Data access에 넣고 C4가 그 범위를 요청하기 시작하면, L4 통과 전까지 위 경고 · 제한이 붙는다. 그때 go live가 L4보다 먼저면 Audience의 "테스트로 돌아가기"로 A를 Testing으로 돌린다.
 
 ---
 
@@ -393,16 +395,16 @@ D는 웹사이트 · 처리방침이 공개된 날이다.
 
 코드로 대신할 수 없는 일이다. 각 단계의 "끝" 조건을 채우면 다음으로 간다.
 
-1. **웹사이트 게시 승인** — 계획 1-2의 새 사이트를 배포한다. 끝: `https://www.taskforcelabs.dev/en/privacy`에 새 처리방침(Limited Use 두 문장 포함)이 보이고 홈 푸터에서 링크된다.
+1. ✅ (2026-09-29) **웹사이트 게시 승인** — 계획 1-2의 새 사이트를 배포한다. 끝: `https://www.taskforcelabs.dev/en/privacy`에 새 처리방침(Limited Use 두 문장 포함)이 보이고 홈 푸터에서 링크된다.
 2. **Workspace 계정 정하기** — 프로젝트 Owner로 쓸 taskforcelabs.dev 계정을 정하고 2단계 인증을 켠다. `privacy@`를 그 계정의 주소나 관리 그룹으로 둔다. 끝: 그 계정으로 console.cloud.google.com에 로그인된다.
 3. **Search Console** — 2-2 순서대로 TXT를 넣고 확인. 끝: Search Console에 `taskforcelabs.dev` 도메인 속성이 "확인됨".
-4. **프로젝트 A 만들기** — console.cloud.google.com → 프로젝트 선택 → 새 프로젝트 → 이름 `Taskforce`. APIs & Services → Library에서 **Google Calendar API**, **Google Meet REST API**를 켠다.
-5. **A 동의 화면** — Google Auth Platform → Branding: 3장 표의 값 입력 · 로고 업로드. Audience: External. Data access → Add or remove scopes: `openid`, `email`, Calendar 범위(1장 결정), `meetings.space.readonly`. 끝: Branding에 경고 없음.
-6. **A 클라이언트** — Clients → Create client → Web application → 이름 `Taskforce server` → redirect URI 추가 → 만들기. client ID · secret을 비밀번호 관리자에 적고 Vercel env `GOOGLE_CLIENT_ID` · `GOOGLE_CLIENT_SECRET`에 넣는다(runbook).
-7. **A 브랜드 심사** — Branding 또는 Verification Center에서 브랜드 심사 제출. 끝: "Brand verified" 메일.
-8. **프로젝트 B 만들기** — 새 프로젝트 `Taskforce Gmail beta` → **Gmail API** 켜기 → Branding(같은 값) → Audience: External, **Testing 유지** → Data access: `openid`, `email`, `gmail.readonly` → Clients: `Taskforce Gmail server`, redirect URI → Vercel env `GMAIL_CLIENT_ID` · `GMAIL_CLIENT_SECRET`.
-9. **B 테스트 사용자** — Audience → Test users → 베타 테스터의 Google 주소를 한 명씩 추가(100명까지). 테스터에게 "Gmail은 7일마다 다시 연결"을 미리 알린다. 끝: 테스트 사용자가 연결에 성공한다.
-10. **Taskforce dev 프로젝트 (선택)** — 로컬 개발용, Testing, localhost redirect. 값은 `.env.local`에만.
+4. ✅ (2026-09-29, `taskforce-510108`) **프로젝트 A 만들기** — console.cloud.google.com → 프로젝트 선택 → 새 프로젝트 → 이름 `Taskforce`. APIs & Services → Library에서 **Google Calendar API**, **Google Meet REST API**를 켠다.
+5. ✅ (2026-09-29) **A 동의 화면** — Google Auth Platform → Branding: 3장 표의 값 입력 · 로고 업로드. Audience: External. Data access → Add or remove scopes: `openid`, `email`. **Calendar 범위(1장 결정)와 `meetings.space.readonly`는 13단계(L4) 직전에 넣는다.** 브랜드 심사는 범위 심사와 따로이고 먼저이며("You must have a published branding status before you can request verification for data access"), 민감 범위가 있으면 제출에 필요성 문안 · 영상이 필요하다. 끝: Branding에 경고 없음.
+6. ✅ (2026-09-29) **A 클라이언트** — Clients → Create client → Web application → 이름 `Taskforce server` → redirect URI 추가 → 만들기. client ID · secret을 비밀번호 관리자에 적고 Vercel env `GOOGLE_CLIENT_ID` · `GOOGLE_CLIENT_SECRET`에 넣는다(runbook).
+7. ✅ (2026-09-29) **A 브랜드 심사** — Audience → **앱 게시**(In production) → Branding 오른쪽 위 ⓘ "인증 상태" 패널 → **브랜딩 확인**(자동 검사, 몇 분) → **브랜딩 게시**(인증 뒤 7일 안). 끝: 인증 센터에 "브랜딩이 인증되었으며 사용자에게 표시되고 있습니다".
+8. ✅ (2026-09-29, `taskforce-gmail-beta`) **프로젝트 B 만들기** — 새 프로젝트 `Taskforce Gmail beta` → **Gmail API** 켜기 → Branding(같은 값) → Audience: External, **Testing 유지** → Data access: `openid`, `email`, `gmail.readonly` → Clients: `Taskforce Gmail server`, redirect URI → Vercel env `GMAIL_CLIENT_ID` · `GMAIL_CLIENT_SECRET`.
+9. 진행 중 (2026-09-29 등록, 연결 확인은 C4 뒤) **B 테스트 사용자** — Audience → Test users → 베타 테스터의 Google 주소를 한 명씩 추가(100명까지). 테스터에게 "Gmail은 7일마다 다시 연결"을 미리 알린다. 끝: 테스트 사용자가 연결에 성공한다.
+10. 만듦 (2026-09-29, `Taskforce dev` `studied-source-510109-i1` · `Taskforce dev Gmail` `taskforce-dev-gmail`, Testing 유지) **Taskforce dev 프로젝트 (선택)** — 로컬 개발용, Testing, localhost redirect. 값은 `.env.local`에만.
 11. **fixture 만들기** — 6장 계정 · 일정 · Meet 녹음 · Notion 페이지 · 메일을 실제로 만든다.
 12. **영상 A 녹화 · 업로드** — 5장 대본, Unlisted. 끝: 합격 확인 6개 체크.
 13. **A 민감 범위 제출** — Verification Center → Submit for verification → 4장 문안 붙여 넣기, 영상 URL, 앱 설명. 끝: 제출 확인 메일.

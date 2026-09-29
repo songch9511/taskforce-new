@@ -1,0 +1,60 @@
+{
+  "id": "gmail-long-quoted-history",
+  "description": "다섯 통이 인용으로 이어진 답장. 새로 쓴 곳은 \"감사합니다!\" 한 줄뿐이다. 인용 속 옛 요청 · 약속(이미 끝남) · 상대 쪽 일을 새 메일의 시각으로 다시 뽑지 않는다(G6 위험). 인용 머리줄은 한국어 Gmail 모양(\"…님이 작성:\").",
+  "origin": "synthetic",
+  "tags": [
+    "gmail"
+  ],
+  "user": {
+    "name": "문가은",
+    "aliases": [
+      "Gaeun"
+    ],
+    "emails": [
+      "gaeun@lumenfield.example"
+    ]
+  },
+  "sources": [
+    {
+      "id": "gmail-1014",
+      "kind": "email",
+      "occurred_at": "2026-10-14T16:20:00+09:00",
+      "participants": {
+        "from": {
+          "name": "차도현",
+          "email": "dohyun@saebyeok-logis.example"
+        },
+        "to": [
+          {
+            "name": "문가은",
+            "email": "gaeun@lumenfield.example"
+          }
+        ]
+      },
+      "text": "제목: Re: 11월 프로모션 배너 시안\n\n감사합니다!\n\n2026년 10월 14일 (수) 오후 2:05, 문가은 <gaeun@lumenfield.example>님이 작성:\n\n> 도현님, 수정한 배너 시안 방금 보내드렸습니다. 확인 부탁드립니다.\n>\n> 2026년 10월 13일 (화) 오전 10:12, 차도현 <dohyun@saebyeok-logis.example>님이 작성:\n>\n>> 가은님, 금요일에 주셔도 괜찮습니다. 천천히 주세요.\n>>\n>> 2026년 10월 12일 (월) 오후 6:30, 문가은 <gaeun@lumenfield.example>님이 작성:\n>>\n>>> 네, 수정 시안은 목요일까지 드리겠습니다.\n>>>\n>>> 2026년 10월 12일 (월) 오후 4:48, 차도현 <dohyun@saebyeok-logis.example>님이 작성:\n>>>\n>>>> 가은님, 배너 문구를 '최대 30% 할인'으로 바꾼 시안을 목요일까지 받을 수 있을까요?\n>>>> 이미지 파일은 저희 디자인팀에서 내일 따로 보내드리겠습니다.\n>>>>\n>>>> 2026년 10월 9일 (금) 오후 3:30, 문가은 <gaeun@lumenfield.example>님이 작성:\n>>>>\n>>>>> 도현님, 11월 프로모션 배너 시안 1차 보내드립니다.\n>>>>> 의견 주시면 다음 주에 반영하겠습니다."
+    }
+  ],
+  "expected_actions": [],
+  "must_not_extract": [
+    {
+      "source": "gmail-1014",
+      "quote": "배너 문구를 '최대 30% 할인'으로 바꾼 시안을 목요일까지 받을 수 있을까요?",
+      "reason": "ALREADY_DONE"
+    },
+    {
+      "source": "gmail-1014",
+      "quote": "수정 시안은 목요일까지 드리겠습니다",
+      "reason": "ALREADY_DONE"
+    },
+    {
+      "source": "gmail-1014",
+      "quote": "의견 주시면 다음 주에 반영하겠습니다",
+      "reason": "ALREADY_DONE"
+    },
+    {
+      "source": "gmail-1014",
+      "quote": "이미지 파일은 저희 디자인팀에서 내일 따로 보내드리겠습니다",
+      "reason": "NOT_MY_ACTION"
+    }
+  ]
+}

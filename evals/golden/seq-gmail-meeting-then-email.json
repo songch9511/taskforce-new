@@ -1,0 +1,96 @@
+{
+  "id": "seq-gmail-meeting-then-email",
+  "description": "핵심 시나리오 2를 메일로: Notion 회의록(일정 참석자가 붙음, 2-4)의 액션 아이템 \"가은: 금요일까지 … 제안서 전달\" → 이틀 뒤 요청자의 메일 \"제안서는 다음 주 월요일에 받아도 괜찮습니다\". 새 할 일 없이 기한만 월요일로(규칙 0 · 4).",
+  "origin": "synthetic",
+  "tags": [
+    "gmail"
+  ],
+  "user": {
+    "name": "문가은",
+    "aliases": [
+      "Gaeun"
+    ],
+    "emails": [
+      "gaeun@lumenfield.example"
+    ]
+  },
+  "sources": [
+    {
+      "id": "notion-1019",
+      "kind": "meeting",
+      "occurred_at": "2026-10-19T14:00:00+09:00",
+      "participants": {
+        "attendees": [
+          {
+            "name": "문가은",
+            "email": "gaeun@lumenfield.example"
+          },
+          {
+            "name": "차도현",
+            "email": "dohyun@saebyeok-logis.example"
+          }
+        ]
+      },
+      "text": "# 새벽물류 자동화 미팅\n\nMeeting 2026-10-19\n\n[AI 요약]\n    ### 요약\n    - 새벽물류는 입고 검수 자동화를 1순위로 보고 있음\n    - 예산은 내년 1분기에 집행 예정\n    ### 액션 아이템\n    - [ ] 가은: 금요일까지 차도현 이사님께 물류 자동화 제안서 전달\n    - [ ] 도현: 현재 입고 프로세스 문서 공유\n\n[메모]\n\n[녹음 전사]"
+    },
+    {
+      "id": "gmail-1021",
+      "kind": "email",
+      "occurred_at": "2026-10-21T09:30:00+09:00",
+      "participants": {
+        "from": {
+          "name": "차도현",
+          "email": "dohyun@saebyeok-logis.example"
+        },
+        "to": [
+          {
+            "name": "문가은",
+            "email": "gaeun@lumenfield.example"
+          }
+        ]
+      },
+      "text": "제목: 물류 자동화 제안서 일정\n\n가은님, 안녕하세요.\n내부 검토 회의가 다음 주로 밀려서요, 제안서는 다음 주 월요일에 받아도 괜찮습니다.\n입고 프로세스 문서는 오늘 오후에 보내드리겠습니다.\n\n차도현 드림"
+    }
+  ],
+  "expected_actions": [
+    {
+      "title": "차도현 이사에게 물류 자동화 제안서 전달",
+      "owner": "me",
+      "counterpart": "차도현",
+      "due": "2026-10-26",
+      "status": "open",
+      "evidence": [
+        {
+          "source": "notion-1019",
+          "quote": "금요일까지 차도현 이사님께 물류 자동화 제안서 전달"
+        },
+        {
+          "source": "gmail-1021",
+          "quote": "제안서는 다음 주 월요일에 받아도 괜찮습니다"
+        }
+      ]
+    }
+  ],
+  "must_not_extract": [
+    {
+      "source": "notion-1019",
+      "quote": "도현: 현재 입고 프로세스 문서 공유",
+      "reason": "NOT_MY_ACTION"
+    },
+    {
+      "source": "notion-1019",
+      "quote": "예산은 내년 1분기에 집행 예정",
+      "reason": "INFO_ONLY"
+    },
+    {
+      "source": "gmail-1021",
+      "quote": "입고 프로세스 문서는 오늘 오후에 보내드리겠습니다",
+      "reason": "NOT_MY_ACTION"
+    },
+    {
+      "source": "gmail-1021",
+      "quote": "내부 검토 회의가 다음 주로 밀려서요",
+      "reason": "INFO_ONLY"
+    }
+  ]
+}
