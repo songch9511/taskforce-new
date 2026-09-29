@@ -13,7 +13,7 @@ App Store 정식 출시가 아니다. "Notion만 연결할 수 있다"로는 go 
 
 | 단계 | 연동 | go live와의 관계 |
 |---|---|---|
-| **1단계** | Notion · **Google**(Calendar · Gmail · Meet 전사를 연결 한 번으로) · **Slack** | **go live 조건.** 회의에서 약속 → 메시지로 기한 변경 → 메일로 확인까지 PRD 핵심 시나리오를 모두 덮는다 |
+| **1단계** | Notion · **Google**(Calendar · Meet 전사) · **Gmail** · **Slack** (Google 쪽 연결은 `google` · `gmail` 둘) | **go live 조건.** 회의에서 약속 → 메시지로 기한 변경 → 메일로 확인까지 PRD 핵심 시나리오를 모두 덮는다 |
 | **2단계** | Microsoft 365(Outlook · 일정 · Teams를 연결 한 번으로) · Zoom · GitHub · Linear · Jira | go live 때 연결 화면에 **보이지만 아직 연결은 안 된다.** 누르면 "원해요"를 `connection_requests`에 남기고, 테스터 수요가 많은 순서로 붙인다 (원칙 6) |
 
 1단계 연동마다 go live 전에 끝낼 것: 앱 연결 화면 · 서버 동기화 · 개인정보 처리방침의 "수집하는 정보"와 "처리 위탁" · **그 원문 종류의 골든셋과 eval**(메일 · Slack 메시지는 회의록과 문체가 달라 정확도를 따로 잰다).
@@ -177,12 +177,12 @@ PRD 핵심 시나리오 2("월요일에 받아도 괜찮아요" → 기한 갱�
 
 ## 6. Google 연동 (go live 조건)
 
-Calendar · Gmail · Meet 전사를 **Google 연결 한 번**으로 받는다. 연결 화면에서는 무엇을 읽는지 세 줄로 먼저 보여 준다.
+Calendar · Meet 전사는 `google` 연결, Gmail은 `gmail` 연결로 **따로** 받는다(Gmail은 제한 범위라 Google 프로젝트를 나눈다, [google-verification.md](go-live/google-verification.md) 1장). 연결 화면에서는 무엇을 읽는지 연결마다 먼저 보여 준다.
 
 | 서비스 | 가져올 것 | 쓰임 |
 |---|---|---|
 | Calendar | 내 일정의 제목 · 시각 · 참석자 | 원문이 아니라 **같은 회의를 잇는 열쇠**. Notion 회의록 · Meet 전사에 참석자를 붙여 담당 판정을 돕는다 |
-| Gmail | 내가 보내거나 받은 스레드 | 외부와의 약속 · 기한 변경. 뉴스레터 · 알림 메일은 거른다 |
+| Gmail | 내가 보내거나 받은 메일 (한 통이 원문 하나) | 외부와의 약속 · 기한 변경. 뉴스레터 · 알림 메일은 거른다 |
 | Meet 전사 | 발화자 이름이 있는 전사 | Notion 회의록에 없는 "누가 말했나"로 담당을 정한다 ([INTEGRATIONS.md](INTEGRATIONS.md) Notion 절) |
 
 **go live 일정을 가장 크게 좌우하는 것은 Google 심사다. 코드보다 먼저 시작한다.**
