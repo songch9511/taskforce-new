@@ -1,0 +1,65 @@
+{
+  "id": "gmail-forwarded-with-note",
+  "description": "사용자가 받은 메일을 동료(Sam)에게 전달하며 \"Could you take this by Friday, Sam?\"를 붙였다(Gmail 전달 머리 묶음). 전달하며 넘긴 일이라 내 할 일이 아니고, 전달된 원문 속 요청 · 약속도 이 원문에서 뽑지 않는다. 고객은 Alex에게 요청했지만 Alex가 이 메일로 Sam에게 넘겼으므로(추출 프롬프트의 '사용자가 다른 사람에게 넘긴 일'), 원래 요청은 그 요청 메일이 들어올 때 따로 판단한다.",
+  "origin": "synthetic",
+  "tags": [
+    "gmail"
+  ],
+  "user": {
+    "name": "Alex Kim",
+    "aliases": [
+      "Alex"
+    ],
+    "emails": [
+      "alex@lumenfield.example"
+    ]
+  },
+  "sources": [
+    {
+      "id": "gmail-1012f",
+      "kind": "email",
+      "occurred_at": "2026-10-12T13:30:00+09:00",
+      "participants": {
+        "from": {
+          "name": "Alex Kim",
+          "email": "alex@lumenfield.example"
+        },
+        "to": [
+          {
+            "name": "Sam Rivera",
+            "email": "sam@lumenfield.example"
+          }
+        ]
+      },
+      "text": "제목: Fwd: Invoice discrepancy — September\n\nCould you take this by Friday, Sam? Loop me in if you need the contract terms.\n\nAlex\n\n---------- Forwarded message ---------\nFrom: Casey Nolan <casey@brightforge.example>\nDate: Mon, Oct 12, 2026 at 11:02 AM\nSubject: Invoice discrepancy — September\nTo: Alex Kim <alex@lumenfield.example>\n\n\nHi Alex,\n\nThe September invoice shows 42 seats, but we only had 38 active users.\nCould you check and send a corrected invoice by Friday?\nI'll send over our updated PO number tomorrow.\n\nThanks,\nCasey"
+    }
+  ],
+  "expected_actions": [],
+  "must_not_extract": [
+    {
+      "source": "gmail-1012f",
+      "quote": "Could you take this by Friday, Sam?",
+      "reason": "NOT_MY_ACTION"
+    },
+    {
+      "source": "gmail-1012f",
+      "quote": "Loop me in if you need the contract terms",
+      "reason": "TENTATIVE"
+    },
+    {
+      "source": "gmail-1012f",
+      "quote": "Could you check and send a corrected invoice by Friday?",
+      "reason": "NOT_MY_ACTION"
+    },
+    {
+      "source": "gmail-1012f",
+      "quote": "I'll send over our updated PO number tomorrow",
+      "reason": "NOT_MY_ACTION"
+    },
+    {
+      "source": "gmail-1012f",
+      "quote": "The September invoice shows 42 seats, but we only had 38 active users",
+      "reason": "INFO_ONLY"
+    }
+  ]
+}

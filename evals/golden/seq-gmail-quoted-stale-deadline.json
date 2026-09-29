@@ -1,0 +1,126 @@
+{
+  "id": "seq-gmail-quoted-stale-deadline",
+  "description": "G6 위험. 요청 \"by Monday\"(목) → 사용자의 답장 \"Sure, I'll send the completed questionnaire by Monday.\"(목) → 요청자가 금요일에 \"Wednesday works\"로 늦춰 줌 → 월요일 아침 사용자의 \"Thanks\" 답장이 앞 세 통을 인용한다. 기한은 수요일 그대로여야 한다. 인용 속 사용자의 옛 약속(\"by Monday\")이 새 메일의 시각(월요일)에 사용자의 확정 발언으로 다시 뽑히면, 기한을 당기는 것은 사용자 혼자 할 수 있어서(규칙 0) 규칙 4(나중 발언)가 늦춘 기한을 월요일로 되돌린다.",
+  "origin": "synthetic",
+  "tags": [
+    "gmail"
+  ],
+  "user": {
+    "name": "Alex Kim",
+    "aliases": [
+      "Alex"
+    ],
+    "emails": [
+      "alex@lumenfield.example"
+    ]
+  },
+  "sources": [
+    {
+      "id": "gmail-1008",
+      "kind": "email",
+      "occurred_at": "2026-10-08T15:20:00+09:00",
+      "participants": {
+        "from": {
+          "name": "Morgan Tate",
+          "email": "morgan@quillstone.example"
+        },
+        "to": [
+          {
+            "name": "Alex Kim",
+            "email": "alex@lumenfield.example"
+          }
+        ]
+      },
+      "text": "제목: Security questionnaire\n\nHi Alex,\n\nCould you send the completed security questionnaire by Monday?\nOur procurement review starts that week.\n\nThanks,\nMorgan"
+    },
+    {
+      "id": "gmail-1008r",
+      "kind": "email",
+      "occurred_at": "2026-10-08T16:05:00+09:00",
+      "participants": {
+        "from": {
+          "name": "Alex Kim",
+          "email": "alex@lumenfield.example"
+        },
+        "to": [
+          {
+            "name": "Morgan Tate",
+            "email": "morgan@quillstone.example"
+          }
+        ]
+      },
+      "text": "제목: Re: Security questionnaire\n\nSure, I'll send the completed questionnaire by Monday.\n\nAlex\n\nOn Thu, Oct 8, 2026 at 3:20 PM Morgan Tate <morgan@quillstone.example> wrote:\n\n> Hi Alex,\n>\n> Could you send the completed security questionnaire by Monday?\n> Our procurement review starts that week.\n>\n> Thanks,\n> Morgan"
+    },
+    {
+      "id": "gmail-1009",
+      "kind": "email",
+      "occurred_at": "2026-10-09T11:05:00+09:00",
+      "participants": {
+        "from": {
+          "name": "Morgan Tate",
+          "email": "morgan@quillstone.example"
+        },
+        "to": [
+          {
+            "name": "Alex Kim",
+            "email": "alex@lumenfield.example"
+          }
+        ]
+      },
+      "text": "제목: Re: Security questionnaire\n\nHi Alex,\n\nQuick update: our review meeting moved, so Wednesday works for the questionnaire.\n\nMorgan\n\nOn Thu, Oct 8, 2026 at 4:05 PM Alex Kim <alex@lumenfield.example> wrote:\n\n> Sure, I'll send the completed questionnaire by Monday.\n>\n> Alex\n>\n> On Thu, Oct 8, 2026 at 3:20 PM Morgan Tate <morgan@quillstone.example> wrote:\n>\n>> Hi Alex,\n>>\n>> Could you send the completed security questionnaire by Monday?\n>> Our procurement review starts that week.\n>>\n>> Thanks,\n>> Morgan"
+    },
+    {
+      "id": "gmail-1012",
+      "kind": "email",
+      "occurred_at": "2026-10-12T09:15:00+09:00",
+      "participants": {
+        "from": {
+          "name": "Alex Kim",
+          "email": "alex@lumenfield.example"
+        },
+        "to": [
+          {
+            "name": "Morgan Tate",
+            "email": "morgan@quillstone.example"
+          }
+        ]
+      },
+      "text": "제목: Re: Security questionnaire\n\nThanks, Morgan! That helps a lot.\n\nAlex\n\nOn Fri, Oct 9, 2026 at 11:05 AM Morgan Tate <morgan@quillstone.example> wrote:\n\n> Hi Alex,\n>\n> Quick update: our review meeting moved, so Wednesday works for the questionnaire.\n>\n> Morgan\n>\n> On Thu, Oct 8, 2026 at 4:05 PM Alex Kim <alex@lumenfield.example> wrote:\n>\n>> Sure, I'll send the completed questionnaire by Monday.\n>>\n>> Alex\n>>\n>> On Thu, Oct 8, 2026 at 3:20 PM Morgan Tate <morgan@quillstone.example> wrote:\n>>\n>>> Hi Alex,\n>>>\n>>> Could you send the completed security questionnaire by Monday?\n>>> Our procurement review starts that week.\n>>>\n>>> Thanks,\n>>> Morgan"
+    }
+  ],
+  "expected_actions": [
+    {
+      "title": "Morgan Tate에게 보안 질문지 작성해 발송",
+      "owner": "me",
+      "counterpart": "Morgan Tate",
+      "due": "2026-10-14",
+      "status": "open",
+      "evidence": [
+        {
+          "source": "gmail-1008",
+          "quote": "Could you send the completed security questionnaire by Monday?"
+        },
+        {
+          "source": "gmail-1008r",
+          "quote": "Sure, I'll send the completed questionnaire by Monday."
+        },
+        {
+          "source": "gmail-1009",
+          "quote": "Wednesday works for the questionnaire"
+        }
+      ]
+    }
+  ],
+  "must_not_extract": [
+    {
+      "source": "gmail-1008",
+      "quote": "Our procurement review starts that week",
+      "reason": "INFO_ONLY"
+    },
+    {
+      "source": "gmail-1009",
+      "quote": "our review meeting moved",
+      "reason": "INFO_ONLY"
+    }
+  ]
+}

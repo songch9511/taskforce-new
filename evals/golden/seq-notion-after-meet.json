@@ -1,0 +1,95 @@
+{
+  "id": "seq-notion-after-meet",
+  "description": "seq-meet-after-notion과 같은 두 원문을 반대 순서로(Meet 전사가 먼저). 같은 결과여야 한다: 뒤에 온 Notion 회의록이 새 할 일이나 담당 확인 요청을 만들지 않는다.",
+  "origin": "synthetic",
+  "tags": [
+    "meet"
+  ],
+  "user": {
+    "name": "Alex Kim",
+    "aliases": [
+      "Alex"
+    ],
+    "emails": [
+      "alex@lumenfield.example"
+    ]
+  },
+  "sources": [
+    {
+      "id": "meet-0930",
+      "kind": "meeting",
+      "occurred_at": "2026-09-30T10:00:00+09:00",
+      "participants": {
+        "attendees": [
+          {
+            "name": "Alex Kim",
+            "email": "alex@lumenfield.example"
+          },
+          {
+            "name": "Jordan Lee",
+            "email": "jordan@harborline.example"
+          }
+        ]
+      },
+      "text": "[Google Meet · Proposal review — Acme]\nJordan Lee: Thanks for the draft. Could you revise the pricing section?\nAlex Kim: Sure. I'll send the revised proposal to Jordan by Friday.\nJordan Lee: Great. I'll book the follow-up call next week."
+    },
+    {
+      "id": "notion-0930",
+      "kind": "meeting",
+      "occurred_at": "2026-09-30T10:00:40+09:00",
+      "participants": {
+        "attendees": [
+          {
+            "name": "Alex Kim",
+            "email": "alex@lumenfield.example"
+          },
+          {
+            "name": "Jordan Lee",
+            "email": "jordan@harborline.example"
+          }
+        ]
+      },
+      "text": "# Proposal review — Acme\n\nMeeting 2026-09-30\n\n[AI 요약]\n    ### Summary\n    - Jordan reviewed the draft proposal and asked for changes to the pricing section.\n    - A follow-up call will be scheduled after the revision.\n    ### Action items\n    - [ ] Send revised proposal (Friday)\n    - [ ] Book follow-up call\n\n[메모]\n\n[녹음 전사]"
+    }
+  ],
+  "expected_actions": [
+    {
+      "title": "Jordan Lee에게 수정한 제안서 발송",
+      "owner": "me",
+      "counterpart": "Jordan Lee",
+      "due": "2026-10-02",
+      "status": "open",
+      "evidence": [
+        {
+          "source": "notion-0930",
+          "quote": "Send revised proposal (Friday)"
+        },
+        {
+          "source": "meet-0930",
+          "quote": "I'll send the revised proposal to Jordan by Friday."
+        },
+        {
+          "source": "meet-0930",
+          "quote": "Could you revise the pricing section?"
+        }
+      ]
+    }
+  ],
+  "must_not_extract": [
+    {
+      "source": "notion-0930",
+      "quote": "Book follow-up call",
+      "reason": "NOT_MY_ACTION"
+    },
+    {
+      "source": "notion-0930",
+      "quote": "A follow-up call will be scheduled after the revision.",
+      "reason": "INFO_ONLY"
+    },
+    {
+      "source": "meet-0930",
+      "quote": "I'll book the follow-up call next week.",
+      "reason": "NOT_MY_ACTION"
+    }
+  ]
+}

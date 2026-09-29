@@ -1,0 +1,90 @@
+{
+  "id": "seq-gmail-done",
+  "description": "사용자가 답장으로 약속(\"I'll send the signed contract by Thursday\") → 이틀 뒤 같은 스레드에 사용자가 \"Attached the signed contract.\"를 보냄(앞 메일 인용) → 할 일 하나가 완료로. 첨부 파일은 읽지 않으므로 본문의 전달 문장이 근거다.",
+  "origin": "synthetic",
+  "tags": [
+    "gmail"
+  ],
+  "user": {
+    "name": "Alex Kim",
+    "aliases": [
+      "Alex"
+    ],
+    "emails": [
+      "alex@lumenfield.example"
+    ]
+  },
+  "sources": [
+    {
+      "id": "gmail-1006p",
+      "kind": "email",
+      "occurred_at": "2026-10-06T11:00:00+09:00",
+      "participants": {
+        "from": {
+          "name": "Alex Kim",
+          "email": "alex@lumenfield.example"
+        },
+        "to": [
+          {
+            "name": "Riley Brooks",
+            "email": "riley@pinegate.example"
+          }
+        ]
+      },
+      "text": "제목: Re: Signed contract\n\nHi Riley,\n\nSure — I'll send the signed contract by Thursday.\n\nAlex\n\nOn Tue, Oct 6, 2026 at 9:14 AM Riley Brooks <riley@pinegate.example> wrote:\n\n> Hi Alex,\n>\n> Could you send the signed contract by Thursday? We'd like to start onboarding next week.\n>\n> Thanks,\n> Riley"
+    },
+    {
+      "id": "gmail-1008d",
+      "kind": "email",
+      "occurred_at": "2026-10-08T16:30:00+09:00",
+      "participants": {
+        "from": {
+          "name": "Alex Kim",
+          "email": "alex@lumenfield.example"
+        },
+        "to": [
+          {
+            "name": "Riley Brooks",
+            "email": "riley@pinegate.example"
+          }
+        ]
+      },
+      "text": "제목: Re: Signed contract\n\nHi Riley,\n\nAttached the signed contract. Let me know if anything else is needed for onboarding.\n\nAlex\n\nOn Tue, Oct 6, 2026 at 11:00 AM Alex Kim <alex@lumenfield.example> wrote:\n\n> Hi Riley,\n>\n> Sure — I'll send the signed contract by Thursday.\n>\n> Alex\n>\n> On Tue, Oct 6, 2026 at 9:14 AM Riley Brooks <riley@pinegate.example> wrote:\n>\n>> Hi Alex,\n>>\n>> Could you send the signed contract by Thursday? We'd like to start onboarding next week.\n>>\n>> Thanks,\n>> Riley"
+    }
+  ],
+  "expected_actions": [
+    {
+      "title": "Riley Brooks에게 서명한 계약서 발송",
+      "owner": "me",
+      "counterpart": "Riley Brooks",
+      "due": "2026-10-08",
+      "status": "done",
+      "evidence": [
+        {
+          "source": "gmail-1006p",
+          "quote": "I'll send the signed contract by Thursday"
+        },
+        {
+          "source": "gmail-1006p",
+          "quote": "Could you send the signed contract by Thursday?"
+        },
+        {
+          "source": "gmail-1008d",
+          "quote": "Attached the signed contract."
+        }
+      ]
+    }
+  ],
+  "must_not_extract": [
+    {
+      "source": "gmail-1006p",
+      "quote": "We'd like to start onboarding next week",
+      "reason": "INFO_ONLY"
+    },
+    {
+      "source": "gmail-1008d",
+      "quote": "Let me know if anything else is needed for onboarding",
+      "reason": "TENTATIVE"
+    }
+  ]
+}

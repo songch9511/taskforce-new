@@ -41,7 +41,18 @@ const SLACK_CALLBACK_MESSAGES: Record<string, string> = {
   consent_required: CALLBACK_MESSAGES.consent_required,
 };
 
-const PROVIDER_LABELS: Record<string, string> = { notion: "Notion", slack: "Slack" };
+const GMAIL_CALLBACK_MESSAGES: Record<string, string> = {
+  connected:
+    "Gmail을 연결했습니다. '지금 동기화'를 누르면 최근 2주 메일을 오래된 것부터 가져옵니다 (한 번에 머리글 200통 · 넣기 20통). 뉴스레터 · 프로모션 · 자동 알림은 머리글만 보고 거르며 본문을 받지 않습니다. 테스트 상태라 7일마다 다시 연결해야 합니다.",
+  missing_scope: "Gmail 권한 화면에서 'Gmail 메일 보기' 체크가 빠져 연결하지 않았습니다. 다시 연결할 때 체크해 주세요.",
+  denied: "Gmail 연결을 취소했습니다.",
+  unavailable: "Gmail 연결은 아직 운영자만 시험할 수 있습니다 (GMAIL_CONNECT_ENABLED · ADMIN_EMAILS).",
+  invalid_state: CALLBACK_MESSAGES.invalid_state,
+  error: "Gmail 연결에 실패했습니다. 서버 로그를 확인해 주세요. '관리자가 차단' 오류였다면 Workspace 관리 콘솔 → 보안 → API 제어에서 이 앱을 허용해야 합니다.",
+  consent_required: CALLBACK_MESSAGES.consent_required,
+};
+
+const PROVIDER_LABELS: Record<string, string> = { notion: "Notion", slack: "Slack", gmail: "Gmail" };
 
 /** 권한 화면에 들어가기 전에 보여준다: 한 번에 제대로 고르게 (다른 Notion 연동 도구들이 겪는 "DB가 안 보여요"를 줄인다) */
 function ConnectChecklist({ reconnect }: { reconnect: boolean }) {
@@ -72,13 +83,29 @@ function ConnectChecklist({ reconnect }: { reconnect: boolean }) {
   );
 }
 
-export function ConnectionsPanel({ connections, notionStatus, slackStatus }: { connections: ConnectionRow[]; notionStatus?: string; slackStatus?: string }) {
+export function ConnectionsPanel({
+  connections,
+  notionStatus,
+  slackStatus,
+  gmailStatus,
+}: {
+  connections: ConnectionRow[];
+  notionStatus?: string;
+  slackStatus?: string;
+  gmailStatus?: string;
+}) {
   const router = useRouter();
   const [pending, setPending] = useState<string | null>(null);
   const [showChecklist, setShowChecklist] = useState(false);
   const hasNotion = connections.some((c) => c.provider === "notion");
   const [message, setMessage] = useState<string | null>(
-    notionStatus ? (CALLBACK_MESSAGES[notionStatus] ?? null) : slackStatus ? (SLACK_CALLBACK_MESSAGES[slackStatus] ?? null) : null,
+    notionStatus
+      ? (CALLBACK_MESSAGES[notionStatus] ?? null)
+      : slackStatus
+        ? (SLACK_CALLBACK_MESSAGES[slackStatus] ?? null)
+        : gmailStatus
+          ? (GMAIL_CALLBACK_MESSAGES[gmailStatus] ?? null)
+          : null,
   );
 
   async function syncNow() {
@@ -176,6 +203,9 @@ export function ConnectionsPanel({ connections, notionStatus, slackStatus }: { c
         <Button variant="outline" asChild>
           <a href="/api/connectors/slack/start">{connections.some((c) => c.provider === "slack") ? "Slack 다시 연결" : "Slack 연결"}</a>
         </Button>
+        <Button variant="outline" asChild>
+          <a href="/api/connectors/gmail/start">{connections.some((c) => c.provider === "gmail") ? "Gmail 다시 연결" : "Gmail 연결"}</a>
+        </Button>
         {connections.length > 0 && (
           <Button onClick={syncNow} disabled={pending !== null}>
             {pending === "sync" ? "동기화 중…" : "지금 동기화"}
@@ -183,7 +213,9 @@ export function ConnectionsPanel({ connections, notionStatus, slackStatus }: { c
         )}
       </div>
       {message && (
-        <p className={`text-sm ${message === CALLBACK_MESSAGES.connected_empty || message === CALLBACK_MESSAGES.connected_no_meetings ? "text-destructive" : "text-muted-foreground"}`}>
+        <p
+          className={`text-sm ${[CALLBACK_MESSAGES.connected_empty, CALLBACK_MESSAGES.connected_no_meetings, GMAIL_CALLBACK_MESSAGES.missing_scope].includes(message) ? "text-destructive" : "text-muted-foreground"}`}
+        >
           {message}
         </p>
       )}

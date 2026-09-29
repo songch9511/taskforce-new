@@ -1,0 +1,159 @@
+{
+  "id": "meet-long-transcript",
+  "description": "긴 Meet 전사(영어, 넷, 잡담 포함). 사용자의 확정 약속 셋(타임라인 수요일, 교육 초대 오늘, 경영진 요약 23일)만 뽑는다. 동료 · 상대의 약속, 이미 한 일(보안 질문지), 조건부 약속(DPA · 대시보드), 참고 정보는 뺀다. 실제 40분 회의는 이보다 훨씬 길다(G13 실제 원문으로 보완).",
+  "origin": "synthetic",
+  "tags": [
+    "meet"
+  ],
+  "user": {
+    "name": "Alex Kim",
+    "aliases": [
+      "Alex"
+    ],
+    "emails": [
+      "alex@lumenfield.example"
+    ]
+  },
+  "sources": [
+    {
+      "id": "meet-1012",
+      "kind": "meeting",
+      "occurred_at": "2026-10-12T10:00:00+09:00",
+      "participants": {
+        "attendees": [
+          {
+            "name": "Alex Kim",
+            "email": "alex@lumenfield.example"
+          },
+          {
+            "name": "Riley Brooks",
+            "email": "riley@pinegate.example"
+          },
+          {
+            "name": "Emma Walsh",
+            "email": "emma@pinegate.example"
+          },
+          {
+            "name": "Noah Patel",
+            "email": "noah@lumenfield.example"
+          }
+        ]
+      },
+      "text": "[Google Meet · Q4 rollout planning — Pinegate]\nRiley Brooks: Hey, can everyone hear me? I think Emma is dialing in from the warehouse today.\nEmma Walsh: Yep, I'm here. Sorry, it's a bit noisy on my end, they're moving pallets right behind me.\nAlex Kim: No worries, we can hear you fine. How was the offsite last week?\nRiley Brooks: Long, but good. Two days of workshops. We finally agreed on the Q4 priorities, which is part of why I wanted this call.\nNoah Patel: Did you end up doing the escape room thing? I remember you were dreading it.\nRiley Brooks: We did. We did not escape. Let's not talk about it.\nAlex Kim: Ha. Okay, so the agenda I had was the rollout timeline, the pilot group, training, and then open issues. Anything you want to add?\nRiley Brooks: That covers it. Maybe the exec update at the end, if we have time.\nAlex Kim: Sounds good. Let's start with the timeline. Right now we're on track for the pilot on November 2. The main dependency is still SSO.\nNoah Patel: Right. On our side, SSO is basically ready. We just need the metadata file from your IT team and a maintenance window to flip it on.\nEmma Walsh: I'll confirm the maintenance window with our IT team and get you that file.\nNoah Patel: Great. Ideally the window is a weekday evening. Weekends are harder for us to staff.\nEmma Walsh: Noted. IT usually prefers Tuesday or Wednesday nights anyway.\nRiley Brooks: Alex, the pilot date moved twice already, so our leadership is a bit nervous. Can you send us an updated rollout timeline that reflects November 2?\nAlex Kim: Yes. I'll send the updated rollout timeline by Wednesday.\nRiley Brooks: Perfect. Please include the SSO cutover and the training dates in it.\nAlex Kim: Will do, both will be in there.\nRiley Brooks: Okay, pilot group. We'll send you the list of pilot users by Tuesday.\nAlex Kim: That works. How many people are we talking about?\nRiley Brooks: Probably around forty. Mostly support, a handful from finance, and two people from sales ops who asked to be included.\nNoah Patel: Forty is fine. The sandbox can handle that easily. If it grows past a hundred, just give us a heads-up.\nEmma Walsh: Quick note on finance. Our fiscal year closes in March, so they'll be slammed from February on.\nAlex Kim: Good to know. Then we should aim to have finance fully onboarded before the end of January.\nRiley Brooks: Agreed. Let's keep that in mind for the second wave.\nNoah Patel: Speaking of waves, are we still planning the second wave for early December, or is that moving too?\nRiley Brooks: Early December is still the plan, but it depends on how the pilot goes. We won't decide until mid-November.\nAlex Kim: Makes sense. On training, I'll get a calendar invite out for the support team training session today.\nRiley Brooks: Great. Can it be a morning session? Our support team starts at seven and they're fried by the afternoon.\nAlex Kim: Sure, I'll make it a morning slot. Nine o'clock your time?\nRiley Brooks: Nine is perfect.\nEmma Walsh: Should the warehouse leads join the training too, or is that a separate session?\nAlex Kim: Separate would be better. The warehouse flow is different enough. We can figure that out once the pilot list is in.\nEmma Walsh: Okay. Also, I think someone mentioned a security questionnaire last time?\nAlex Kim: Yes, I already sent the security questionnaire last week. It went to your procurement inbox.\nEmma Walsh: Oh, then it's probably sitting in the queue. I'll chase procurement.\nRiley Brooks: Procurement is two people right now, so that tracks.\nNoah Patel: Before we move on, did the new reporting dashboard load okay for everyone last week? We pushed a fix on Thursday.\nRiley Brooks: It's faster, yes. Which brings me to open issues. The CSV export has been timing out for some of our bigger reports.\nNoah Patel: Yeah, we reproduced it. It's a query timeout on large date ranges. I'll fix the CSV export bug by Friday.\nRiley Brooks: Thank you. That one has been annoying the finance folks, and we don't want them grumpy before the pilot.\nEmma Walsh: Is there a workaround in the meantime?\nNoah Patel: Splitting the export into one month at a time works. It's clunky, but it works.\nEmma Walsh: Clunky is fine for a week.\nAlex Kim: And about the data processing agreement. If legal signs off on the DPA this week, we can start the SSO config the same week.\nRiley Brooks: I'll nudge legal. No promises though, they're swamped with the renewal season.\nNoah Patel: If it slips, we can still do everything except the production cutover, so it's not blocking the sandbox.\nRiley Brooks: Good. By the way, did anyone else get snow over the weekend? It was wild up here.\nEmma Walsh: We got a little. The trucks were two hours late on Monday.\nNoah Patel: Not here, just rain. Very jealous.\nAlex Kim: Same, only rain. Okay, anything else on your side before the exec update?\nRiley Brooks: Yes, the exec update. Could you also share a one-page summary for our execs by the 23rd? Just the plan, the pilot, and the top risks.\nAlex Kim: Yes, I'll put that together by the 23rd.\nRiley Brooks: Amazing. Keep it short, they won't read past the first page.\nEmma Walsh: Maybe add a line about the warehouse rollout? Our VP of operations will ask.\nAlex Kim: Good idea, I'll mention it as a later phase.\nRiley Brooks: And maybe think about whether a dashboard walkthrough would help them. No need to commit now.\nAlex Kim: I'll think about it and maybe bring a rough draft to the next call if there's time.\nNoah Patel: I can help with screenshots if we go that way.\nRiley Brooks: Great. Same time next week?\nAlex Kim: Same time next week works. Thanks, everyone."
+    }
+  ],
+  "expected_actions": [
+    {
+      "title": "Riley Brooks에게 업데이트한 롤아웃 타임라인 발송",
+      "owner": "me",
+      "counterpart": "Riley Brooks",
+      "due": "2026-10-14",
+      "status": "open",
+      "evidence": [
+        {
+          "source": "meet-1012",
+          "quote": "I'll send the updated rollout timeline by Wednesday."
+        },
+        {
+          "source": "meet-1012",
+          "quote": "Will do, both will be in there."
+        }
+      ]
+    },
+    {
+      "title": "지원팀 교육 세션 캘린더 초대 발송",
+      "owner": "me",
+      "counterpart": "Riley Brooks",
+      "due": "2026-10-12",
+      "status": "open",
+      "evidence": [
+        {
+          "source": "meet-1012",
+          "quote": "I'll get a calendar invite out for the support team training session today."
+        },
+        {
+          "source": "meet-1012",
+          "quote": "Sure, I'll make it a morning slot."
+        }
+      ]
+    },
+    {
+      "title": "경영진용 한 장 요약 공유",
+      "owner": "me",
+      "counterpart": "Riley Brooks",
+      "due": "2026-10-23",
+      "status": "open",
+      "evidence": [
+        {
+          "source": "meet-1012",
+          "quote": "Yes, I'll put that together by the 23rd."
+        },
+        {
+          "source": "meet-1012",
+          "quote": "Could you also share a one-page summary for our execs by the 23rd?"
+        },
+        {
+          "source": "meet-1012",
+          "quote": "Good idea, I'll mention it as a later phase."
+        }
+      ]
+    }
+  ],
+  "must_not_extract": [
+    {
+      "source": "meet-1012",
+      "quote": "I'll confirm the maintenance window with our IT team and get you that file.",
+      "reason": "NOT_MY_ACTION"
+    },
+    {
+      "source": "meet-1012",
+      "quote": "We'll send you the list of pilot users by Tuesday.",
+      "reason": "NOT_MY_ACTION"
+    },
+    {
+      "source": "meet-1012",
+      "quote": "I'll fix the CSV export bug by Friday.",
+      "reason": "NOT_MY_ACTION"
+    },
+    {
+      "source": "meet-1012",
+      "quote": "I'll chase procurement.",
+      "reason": "NOT_MY_ACTION"
+    },
+    {
+      "source": "meet-1012",
+      "quote": "I'll nudge legal.",
+      "reason": "NOT_MY_ACTION"
+    },
+    {
+      "source": "meet-1012",
+      "quote": "I already sent the security questionnaire last week.",
+      "reason": "ALREADY_DONE"
+    },
+    {
+      "source": "meet-1012",
+      "quote": "If legal signs off on the DPA this week, we can start the SSO config the same week.",
+      "reason": "TENTATIVE"
+    },
+    {
+      "source": "meet-1012",
+      "quote": "I'll think about it and maybe bring a rough draft to the next call if there's time.",
+      "reason": "TENTATIVE"
+    },
+    {
+      "source": "meet-1012",
+      "quote": "Our fiscal year closes in March",
+      "reason": "INFO_ONLY"
+    },
+    {
+      "source": "meet-1012",
+      "quote": "we're on track for the pilot on November 2",
+      "reason": "INFO_ONLY"
+    },
+    {
+      "source": "meet-1012",
+      "quote": "we should aim to have finance fully onboarded before the end of January",
+      "reason": "TENTATIVE"
+    }
+  ]
+}

@@ -1,0 +1,80 @@
+{
+  "id": "meet-korean-transcript",
+  "description": "한국어 Meet 전사. 다른 참석자는 영문 표시 이름(Minjun Park · Sua Lee)으로 한국어를 말하고, 사용자 줄은 프로필 이름(서하린)이다. 받아쓰기 오류(전환율 → 전화율, AB → 에이비, 하린 → 하림)가 섞여 있다. 사용자의 확정 약속 하나만 뽑고, 받아쓰기가 틀린 이름으로 온 요청에는 사용자가 확답하지 않았다.",
+  "origin": "synthetic",
+  "tags": [
+    "meet"
+  ],
+  "user": {
+    "name": "서하린",
+    "aliases": [],
+    "emails": [
+      "harin@lumenfield.example"
+    ]
+  },
+  "sources": [
+    {
+      "id": "meet-1014",
+      "kind": "meeting",
+      "occurred_at": "2026-10-14T15:00:00+09:00",
+      "participants": {
+        "attendees": [
+          {
+            "name": "서하린",
+            "email": "harin@lumenfield.example"
+          },
+          {
+            "name": "Minjun Park",
+            "email": "minjun@lumenfield.example"
+          },
+          {
+            "name": "Sua Lee",
+            "email": "sua@lumenfield.example"
+          }
+        ]
+      },
+      "text": "[Google Meet · 4분기 마케팅 리뷰]\nMinjun Park: 네 그럼 시작할게요. 지난달 캠페인 전화율이 생각보다 낮게 나왔어요.\n서하린: 네 저도 봤어요. 랜딩 페이지에서 이탈이 제일 컸던 것 같아요.\nMinjun Park: 그래서 랜딩 페이지 에이비 테스트 결과를 정리해서 다음 주 화요일까지 공유해 주실 수 있을까요?\n서하린: 네 제가 화요일까지 정리해서 공유드릴게요.\nSua Lee: 광고 소재는 제가 이번 주 금요일까지 새로 뽑아 볼게요.\nMinjun Park: 좋아요. 그리고 하림님 예산 재배분안도 같이 봐 주시면 좋겠어요.\n서하린: 예산은 제가 팀장님이랑 먼저 얘기해 보고 말씀드릴게요.\nMinjun Park: 네 그럼 다음 리뷰는 11월 첫째 주에 하죠."
+    }
+  ],
+  "expected_actions": [
+    {
+      "title": "Minjun Park에게 랜딩 페이지 AB 테스트 결과 정리해 공유",
+      "owner": "me",
+      "counterpart": "Minjun Park",
+      "due": "2026-10-20",
+      "status": "open",
+      "evidence": [
+        {
+          "source": "meet-1014",
+          "quote": "제가 화요일까지 정리해서 공유드릴게요"
+        },
+        {
+          "source": "meet-1014",
+          "quote": "랜딩 페이지 에이비 테스트 결과를 정리해서 다음 주 화요일까지 공유해 주실 수 있을까요?"
+        }
+      ]
+    }
+  ],
+  "must_not_extract": [
+    {
+      "source": "meet-1014",
+      "quote": "광고 소재는 제가 이번 주 금요일까지 새로 뽑아 볼게요",
+      "reason": "NOT_MY_ACTION"
+    },
+    {
+      "source": "meet-1014",
+      "quote": "예산 재배분안도 같이 봐 주시면 좋겠어요",
+      "reason": "TENTATIVE"
+    },
+    {
+      "source": "meet-1014",
+      "quote": "예산은 제가 팀장님이랑 먼저 얘기해 보고 말씀드릴게요",
+      "reason": "TENTATIVE"
+    },
+    {
+      "source": "meet-1014",
+      "quote": "다음 리뷰는 11월 첫째 주에 하죠",
+      "reason": "INFO_ONLY"
+    }
+  ]
+}

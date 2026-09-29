@@ -28,7 +28,15 @@ const golden: GoldenCase = {
   must_not_extract: [{ source: "s1", quote: "참고로 사무실 이전", reason: "INFO_ONLY" }],
 };
 
-const action = (id: string, quotes: string[], due: string | null, status = "open", owner = "me"): FinalAction => ({ id, title: id, quotes, due, status, owner });
+const action = (id: string, quotes: string[], due: string | null, status = "open", owner = "me", confirmReasons: string[] = []): FinalAction => ({
+  id,
+  title: id,
+  quotes,
+  due,
+  status,
+  owner,
+  confirmReasons,
+});
 
 describe("scoreSequence", () => {
   it("정답마다 Action 하나, 필드가 맞으면 정답", () => {
@@ -36,7 +44,7 @@ describe("scoreSequence", () => {
       action("a1", ["금요일까지 제안서 보내드릴게요", "제안서는 월요일에 받아도 괜찮아요"], "2025-09-29"),
       action("a2", ["견적서는 수요일까지 드릴게요"], "2025-09-24"),
     ]);
-    expect(s).toMatchObject({ correct: 2, splits: [], misses: [], extras: [], fieldErrors: [] });
+    expect(s).toMatchObject({ correct: 2, splits: [], misses: [], extras: [], fieldErrors: [], pendingReview: [] });
   });
 
   it("같은 약속이 둘로 갈라지면 split, 기한이 안 바뀌었으면 필드 오류", () => {
@@ -56,7 +64,33 @@ describe("scoreSequence", () => {
       action("a9", ["참고로 사무실 이전"], null),
     ]);
     expect(s.overMerged.map((o) => o.title)).toEqual(["제안서 발송", "견적서 발송"]);
-    expect(s.extras).toEqual([{ title: "a9", kind: "INFO_ONLY" }]);
+    expect(s.extras).toEqual([{ title: "a9", kind: "INFO_ONLY", pending: false, dropped: false }]);
+  });
+
+  it("확인 요청이 남은 열린 Action을 따로 센다: 맞은 정답이어도, 오탐이면 자동 반영이 아님", () => {
+    const s = scoreSequence(golden, [
+      action("a1", ["금요일까지 제안서 보내드릴게요", "제안서는 월요일에 받아도 괜찮아요"], "2025-09-29", "open", "me", ["담당 확인"]),
+      action("a2", ["견적서는 수요일까지 드릴게요"], "2025-09-24", "done", "me", ["판정 확인: TENTATIVE"]),
+      action("a9", ["참고로 사무실 이전"], null, "open", "unknown", ["담당 확인"]),
+    ]);
+    expect(s.correct).toBe(1);
+    expect(s.pendingReview).toEqual([
+      { title: "a1", reasons: ["담당 확인"] },
+      { title: "a9", reasons: ["담당 확인"] },
+    ]);
+    expect(s.extras).toEqual([{ title: "a9", kind: "INFO_ONLY", pending: true, dropped: false }]);
+    expect(sequenceTotals([s])).toMatchObject({ pendingReview: 2, extras: 1, extrasAuto: 0 });
+  });
+
+  it("확인 이유가 없는 열린 오탐은 자동 반영, 취소된 오탐 · 이유 칸이 없는 Action은 확인 요청이 아님", () => {
+    const noReasons: FinalAction = { id: "a1", title: "a1", quotes: ["금요일까지 제안서 보내드릴게요", "제안서는 월요일에 받아도 괜찮아요"], due: "2025-09-29", status: "open", owner: "me" };
+    const s = scoreSequence(golden, [noReasons, action("a8", ["참고로 사무실 이전"], null), action("a9", ["참고로 사무실 이전"], null, "dropped")]);
+    expect(s.pendingReview).toEqual([]);
+    expect(s.extras.map((x) => [x.title, x.pending, x.dropped])).toEqual([
+      ["a8", false, false],
+      ["a9", false, true],
+    ]);
+    expect(sequenceTotals([s])).toMatchObject({ extras: 2, extrasAuto: 1, pendingReview: 0 });
   });
 
   it("합계와 병합 정확도", () => {

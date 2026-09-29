@@ -29,10 +29,12 @@ describe("GET /api/cron/retry-sources", () => {
   it("실행 한도(300초) 안에서 응답할 시간을 남기고, 한 건은 최악 200초로 잡는다", async () => {
     const before = Date.now();
     const response = await cron();
+    const after = Date.now();
     expect(response.status).toBe(200);
     const [, options] = vi.mocked(retryStalledSources).mock.calls[0];
     expect(options.itemBudgetMs).toBe(200_000);
-    expect(options.deadline - before).toBeGreaterThanOrEqual(270_000);
-    expect(options.deadline - before).toBeLessThanOrEqual(280_000);
+    // 시작 시각 + 280초 (300초 한도에서 응답할 20초를 뺀다)
+    expect(options.deadline).toBeGreaterThanOrEqual(before + 280_000);
+    expect(options.deadline).toBeLessThanOrEqual(after + 280_000);
   });
 });

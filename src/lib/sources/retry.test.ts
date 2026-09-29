@@ -3,11 +3,13 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { CONSENT_WITHDRAWN_MESSAGE, ConsentRequiredError } from "@/lib/consent/gate";
 
+import { connectedAt } from "@/lib/connectors/store";
+
 import { processSource } from "./process";
 import { RETRY_WINDOW_MS, retryDeps, retryPlan, retryStalledSources, type RetryCandidate, type RetryDeps } from "./retry";
 
 vi.mock("server-only", () => ({}));
-vi.mock("@/lib/connectors/store", () => ({ loadIdentity: vi.fn() }));
+vi.mock("@/lib/connectors/store", () => ({ connectedAt: vi.fn(), loadIdentity: vi.fn() }));
 vi.mock("./process", async (importOriginal) => ({ ...(await importOriginal<typeof import("./process")>()), processSource: vi.fn() }));
 
 // 추출이 실패했거나(모델 시간 초과 · 출력 한도 등) 처리 도중 함수가 끊겨 "처리 중"에 멈춘 글 원문을 cron이 다시 처리한다.
@@ -19,6 +21,7 @@ const minutesAgo = (m: number) => new Date(NOW.getTime() - m * 60_000).toISOStri
 const row = (over: Partial<RetryCandidate> = {}): RetryCandidate => ({
   id: "s1",
   user_id: "u1",
+  connection_id: null,
   kind: "message",
   raw_text: "금요일까지 보낼게요",
   occurred_at: minutesAgo(120),
@@ -269,13 +272,28 @@ describe("retryDeps: DB 조건", () => {
     expect(queries[0]).toContain("eq processing_status processing");
   });
 
+  it("처리: 연결 전 시각의 연동 원문은 알림 없이 처리한다 (동기화가 한꺼번에 가져온 옛 원문)", async () => {
+    const { admin } = fakeAdmin();
+    const deps = retryDeps(admin);
+    const identity = { name: "나", aliases: [], emails: [] };
+    vi.mocked(connectedAt).mockResolvedValue(new Date(minutesAgo(90)));
+    vi.mocked(processSource).mockResolvedValue({ ok: true, needsConfirmation: [] });
+
+    await deps.process(row({ connection_id: "c1", occurred_at: minutesAgo(120) }), identity, 2);
+    await deps.process(row({ id: "s2", connection_id: "c1", occurred_at: minutesAgo(30) }), identity, 2);
+    expect(vi.mocked(processSource).mock.calls.map(([, source]) => source.notify)).toEqual([false, true]);
+    // 연결 시각은 연결마다 한 번만 읽는다
+    expect(connectedAt).toHaveBeenCalledTimes(1);
+    expect(connectedAt).toHaveBeenCalledWith(admin, { id: "c1", userId: "u1" });
+  });
+
   it("처리: 다시 처리임과 시도 번호를 넘기고 결과를 돌려준다. 동의를 철회했으면 원문은 지우지 않는다 (다시 얻을 수 없다)", async () => {
     const { admin, queries } = fakeAdmin();
     const deps = retryDeps(admin);
     const identity = { name: "나", aliases: [], emails: [] };
     vi.mocked(processSource).mockResolvedValueOnce({ ok: false, needsConfirmation: [] });
     expect(await deps.process(row(), identity, 2)).toBe(false);
-    expect(vi.mocked(processSource).mock.calls[0][1]).toEqual({ id: "s1", userId: "u1", attempt: 2, retry: true });
+    expect(vi.mocked(processSource).mock.calls[0][1]).toEqual({ id: "s1", userId: "u1", attempt: 2, retry: true, notify: true });
 
     vi.mocked(processSource).mockRejectedValueOnce(new ConsentRequiredError());
     await expect(deps.process(row(), identity, 2)).rejects.toBeInstanceOf(ConsentRequiredError);

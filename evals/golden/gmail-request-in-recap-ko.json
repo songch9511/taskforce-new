@@ -1,0 +1,75 @@
+{
+  "id": "gmail-request-in-recap-ko",
+  "description": "G12를 정하는 케이스. 상대가 미팅 내용을 정리해 보낸 메일(사용자 혼자 받음): 확정된 일정 · 유지되는 조건 · 상대 쪽 할 일 · 이미 끝난 일 사이에 \"견적서 수정본도 목요일까지 부탁드려도 될까요?\"(아직 수락 전)가 묻혀 있다. 확인 요청으로 가면 맞다(needs_review). 조용히 기각되면 누락. 요청만 있는 메일(email-sole-recipient-request)과 문장이 겹치지 않게 썼다.",
+  "origin": "synthetic",
+  "tags": [
+    "gmail"
+  ],
+  "user": {
+    "name": "문가은",
+    "aliases": [
+      "Gaeun"
+    ],
+    "emails": [
+      "gaeun@lumenfield.example"
+    ]
+  },
+  "sources": [
+    {
+      "id": "gmail-1013",
+      "kind": "email",
+      "occurred_at": "2026-10-13T17:40:00+09:00",
+      "participants": {
+        "from": {
+          "name": "차도현",
+          "email": "dohyun@saebyeok-logis.example"
+        },
+        "to": [
+          {
+            "name": "문가은",
+            "email": "gaeun@lumenfield.example"
+          }
+        ]
+      },
+      "text": "제목: 10/13 미팅 내용 정리드립니다\n\n가은님, 안녕하세요.\n오늘 미팅 감사했습니다. 논의한 내용 간단히 정리드립니다.\n\n1. 창고 이전 일정은 11월 둘째 주로 확정했습니다.\n2. 기존 계약 조건은 이번 분기까지 그대로 유지하기로 했습니다.\n3. 현장 실사 일정은 저희 운영팀에서 다음 주 초에 따로 연락드릴 예정입니다.\n4. 요청하신 입고 데이터는 오늘 오전에 공유 폴더에 올려두었습니다.\n\n아, 그리고 견적서 수정본도 목요일까지 부탁드려도 될까요? 내부 보고가 금요일이라서요.\n\n감사합니다.\n차도현 드림"
+    }
+  ],
+  "expected_actions": [
+    {
+      "title": "차도현에게 견적서 수정본 전달",
+      "owner": "me",
+      "counterpart": "차도현",
+      "due": "2026-10-15",
+      "status": "open",
+      "needs_review": true,
+      "evidence": [
+        {
+          "source": "gmail-1013",
+          "quote": "견적서 수정본도 목요일까지 부탁드려도 될까요?"
+        }
+      ]
+    }
+  ],
+  "must_not_extract": [
+    {
+      "source": "gmail-1013",
+      "quote": "창고 이전 일정은 11월 둘째 주로 확정했습니다",
+      "reason": "INFO_ONLY"
+    },
+    {
+      "source": "gmail-1013",
+      "quote": "기존 계약 조건은 이번 분기까지 그대로 유지하기로 했습니다",
+      "reason": "INFO_ONLY"
+    },
+    {
+      "source": "gmail-1013",
+      "quote": "현장 실사 일정은 저희 운영팀에서 다음 주 초에 따로 연락드릴 예정입니다",
+      "reason": "NOT_MY_ACTION"
+    },
+    {
+      "source": "gmail-1013",
+      "quote": "요청하신 입고 데이터는 오늘 오전에 공유 폴더에 올려두었습니다",
+      "reason": "ALREADY_DONE"
+    }
+  ]
+}

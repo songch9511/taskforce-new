@@ -9,6 +9,7 @@ import {
   connectionRequestSchema,
   connectionStartRequestSchema,
   connectProviderSchema,
+  isConnected,
   type ConnectionCompleteResponse,
   type ConnectionRequest,
   type ConnectionStartResponse,
@@ -123,7 +124,7 @@ export async function handleConnectionComplete<User>(
     console.error(`${provider.data} 연결 실패:`, error instanceof Error ? error.message : error);
     return errorResponse(502, "internal_error", "서비스와 연결하지 못했어요. 다시 연결해 주세요.");
   }
-  deps.onConnected(user, provider.data);
+  if (isConnected(status)) deps.onConnected(user, provider.data);
   return Response.json({ status } satisfies ConnectionCompleteResponse);
 }
 

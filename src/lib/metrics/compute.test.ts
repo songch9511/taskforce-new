@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   connections,
+  gmailFiltering,
   kstWeek,
   missed,
   misjudgment,
@@ -306,5 +307,17 @@ describe("connections (연결 · 2단계 연동 요청)", () => {
         { provider: "linear", count: 1 },
       ],
     });
+  });
+});
+
+describe("gmailFiltering: Gmail 거르기 개수", () => {
+  it("연결마다 쌓은 이유 코드별 개수를 더하고, 통계가 없는 연결은 세지 않는다", () => {
+    const stats = [
+      { since: "2026-09-29T00:00:00Z", counts: { ingested: 3, sent: 2, inbound: 1, mailing_list: 7 } },
+      { since: "2026-09-30T00:00:00Z", counts: { inbound: 4, mailing_list: 1, no_reply: 2, broken: "x" } },
+      null,
+      { since: "2026-09-30T00:00:00Z" },
+    ];
+    expect(gmailFiltering(stats)).toEqual({ connections: 2, counts: { ingested: 3, sent: 2, inbound: 5, mailing_list: 8, no_reply: 2 } });
   });
 });

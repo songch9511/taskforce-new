@@ -12,6 +12,8 @@ export type FinalAction = {
   due: string | null;
   status: string | null;
   owner: string | null;
+  /** 앱에서 확인 요청으로 보일 이유 (projectAction의 confirm_reasons). 비었으면 확인 없이 반영된 Action */
+  confirmReasons?: string[];
 };
 
 export type SequenceScore = {
@@ -22,12 +24,26 @@ export type SequenceScore = {
   splits: { title: string; actions: number }[];
   overMerged: { title: string }[];
   misses: { title: string }[];
-  extras: { title: string; kind: string }[];
+  /** pending: 확인 요청으로 남음 (자동 반영이 아님). 취소(dropped)된 오탐은 사용자에게 보이지 않으므로 자동 반영으로 세지 않는다 */
+  extras: { title: string; kind: string; pending: boolean; dropped: boolean }[];
   fieldErrors: { title: string; field: "due" | "status" | "owner"; expected: string | null; actual: string | null }[];
+  /** 확인 요청이 남은 열린 Action (정답과 짝지어진 것 · 오탐 모두, 확인 요청인 오탐은 extras에도 들어 있다). 정답이 맞아도 확인 요청이 남으면 사용자가 한 번 더 눌러야 한다 */
+  pendingReview: { title: string; reasons: string[] }[];
 };
 
 export function scoreSequence(golden: GoldenCase, finals: FinalAction[]): SequenceScore {
-  const score: SequenceScore = { caseId: golden.id, expected: golden.expected_actions.length, correct: 0, splits: [], overMerged: [], misses: [], extras: [], fieldErrors: [] };
+  const score: SequenceScore = {
+    caseId: golden.id,
+    expected: golden.expected_actions.length,
+    correct: 0,
+    splits: [],
+    overMerged: [],
+    misses: [],
+    extras: [],
+    fieldErrors: [],
+    pendingReview: [],
+  };
+  const pending = (action: FinalAction) => (action.confirmReasons?.length ?? 0) > 0;
   const matchesOf = (quotes: string[]) => (action: FinalAction) => action.quotes.some((q) => quotes.some((e) => labelQuotesOverlap(e, q)));
 
   const claimed = new Map<string, number>();
@@ -64,7 +80,12 @@ export function scoreSequence(golden: GoldenCase, finals: FinalAction[]): Sequen
   for (const action of finals) {
     if (claimed.has(action.id)) continue;
     const trap = golden.must_not_extract.find((t) => action.quotes.some((q) => labelQuotesOverlap(t.quote, q)));
-    score.extras.push({ title: action.title, kind: trap?.reason ?? "UNLABELED" });
+    score.extras.push({ title: action.title, kind: trap?.reason ?? "UNLABELED", pending: pending(action), dropped: action.status === "dropped" });
+  }
+  for (const action of finals) {
+    if (pending(action) && action.status !== "done" && action.status !== "dropped") {
+      score.pendingReview.push({ title: action.title, reasons: action.confirmReasons! });
+    }
   }
   return score;
 }
@@ -83,6 +104,9 @@ export function sequenceTotals(scores: SequenceScore[]) {
     overMerged: sum((s) => s.overMerged.length),
     misses: sum((s) => s.misses.length),
     extras: sum((s) => s.extras.length),
+    /** 오탐 중 확인 없이 반영된 것 (함정 자동 반영) */
+    extrasAuto: sum((s) => s.extras.filter((x) => !x.pending && !x.dropped).length),
     fieldErrors: sum((s) => s.fieldErrors.length),
+    pendingReview: sum((s) => s.pendingReview.length),
   };
 }

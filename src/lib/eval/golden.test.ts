@@ -65,4 +65,49 @@ describe("evals/golden", () => {
       expect(findLabelErrors(golden), file).toEqual([]);
     }
   });
+
+  // docs/go-live/google-integration.md 2-5 · 2-6: Gmail · Meet 어댑터가 만들 본문과 같은 모양인지 (글자 비교는 어댑터 테스트가 한다)
+  it("Gmail · Meet 케이스는 어댑터 본문 형식을 따른다", async () => {
+    const dir = path.resolve(import.meta.dirname, "../../../evals/golden");
+    const files = (await readdir(dir)).filter((f) => f.endsWith(".json"));
+    const cases = await Promise.all(files.map(async (f) => goldenCaseSchema.parse(JSON.parse(await readFile(path.join(dir, f), "utf8")))));
+    const google = cases.filter((c) => c.tags?.some((t) => t === "gmail" || t === "meet"));
+    expect(google.length).toBeGreaterThan(0);
+
+    for (const golden of google) {
+      const userEmail = golden.user.emails[0];
+      for (const source of golden.sources) {
+        const where = `${golden.id}/${source.id}`;
+        const lines = source.text.split("\n");
+        if (source.kind === "email") {
+          // 제목 줄 + 빈 줄 + 본문. 보낸 사람 · 받는 사람은 본문이 아니라 participants로
+          expect(lines[0], where).toMatch(/^제목: \S/);
+          expect(lines[1], where).toBe("");
+          expect(source.participants?.from, where).toBeDefined();
+          expect(source.participants?.to?.length, where).toBeGreaterThan(0);
+          // 사용자는 연결한 주소로 보낸 사람 · 받는 사람 · 참조에 있다. 회사 그룹 주소(사용자와 같은 도메인)로만 받은 메일은 예외
+          const people = [source.participants?.from, ...(source.participants?.to ?? []), ...(source.participants?.cc ?? [])];
+          const domain = userEmail.split("@")[1];
+          const viaGroup = source.participants?.to?.every((p) => p.email?.endsWith(`@${domain}`) && p.email !== userEmail);
+          if (!viaGroup) expect(people.map((p) => p?.email), where).toContain(userEmail);
+        } else if (lines[0].startsWith("[Google Meet · ")) {
+          // 머리줄 + "이름: 글", 같은 화자의 이어진 항목은 한 줄로
+          expect(lines[0], where).toMatch(/^\[Google Meet · [^\]]+\]$/);
+          const speakers = lines.slice(1).map((line) => line.match(/^([^:]+): \S/)?.[1]);
+          expect(speakers, where).not.toContain(undefined);
+          expect(speakers, where).toContain(golden.user.name);
+          speakers.forEach((s, i) => expect(s === speakers[i - 1], `${where} 줄 ${i + 2}`).toBe(false));
+          // 사용자는 참석자에 프로필 이름 + 연결한 주소로 한 번만
+          const me = (source.participants?.attendees ?? []).filter((p) => p.email === userEmail || p.name === golden.user.name);
+          expect(me, where).toEqual([{ name: golden.user.name, email: userEmail }]);
+        } else {
+          // Notion 회의록 (pageToItem): "# 제목" + 정리한 본문, 일정 참석자가 붙음
+          expect(source.kind, where).toBe("meeting");
+          expect(lines[0], where).toMatch(/^# \S/);
+          expect(source.text, where).toContain("[AI 요약]");
+          expect(source.participants?.attendees?.length, where).toBeGreaterThan(1);
+        }
+      }
+    }
+  });
 });
