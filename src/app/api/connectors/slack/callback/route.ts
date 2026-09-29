@@ -4,7 +4,7 @@ import { after } from "next/server";
 import { authenticateRequest, type ApiContext } from "@/lib/api/auth";
 import { hasAiConsent } from "@/lib/api/profile-store";
 import { handleOAuthCallback, oauthCookie } from "@/lib/connectors/callback";
-import { afterConnected, slackWebConnector } from "@/lib/connectors/registry";
+import { afterConnected, webConnector } from "@/lib/connectors/registry";
 import { consumeOAuthNonce, saveOAuthHandoff } from "@/lib/connectors/store";
 import { oauthStateSecret } from "@/lib/env";
 import { createAdminClient } from "@/lib/supabase/admin";
@@ -31,7 +31,7 @@ export async function GET(request: Request) {
     },
     hasConsent: async () => (context ? hasAiConsent(context) : false),
     connect: (userId, code) => {
-      const connector = slackWebConnector(context?.user.email ?? null);
+      const connector = webConnector("slack", context?.user.email ?? null);
       if (!connector) throw new Error("Slack 연결을 아직 열지 않았습니다 (SLACK_CONNECT_ENABLED).");
       return connector.connect(admin, userId, code);
     },

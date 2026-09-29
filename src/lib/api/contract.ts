@@ -321,9 +321,15 @@ export const connectionStartRequestSchema = z.object({});
 export const connectionStartResponseSchema = z.object({ url: z.url() });
 export type ConnectionStartResponse = z.infer<typeof connectionStartResponseSchema>;
 
-/** 연결에 성공했을 때의 결과. connected_empty: 고른 페이지가 없음, connected_no_meetings: 회의록 DB가 빠짐 (Notion) */
-export const connectedStatusSchema = z.enum(["connected", "connected_empty", "connected_no_meetings"]);
+/**
+ * 권한 화면을 마쳤을 때의 결과. connected_empty: 고른 페이지가 없음, connected_no_meetings: 회의록 DB가 빠짐 (Notion).
+ * missing_scope: 권한 화면에서 필요한 권한의 체크를 빼서 연결하지 않았음 (Gmail. 받은 토큰은 바로 폐기한다, google-integration.md G10).
+ * 이 값을 모르는 옛 앱은 연결 실패 문구를 보인다.
+ */
+export const connectedStatusSchema = z.enum(["connected", "connected_empty", "connected_no_meetings", "missing_scope"]);
 export type ConnectedStatusValue = z.infer<typeof connectedStatusSchema>;
+/** 연결이 생기지 않은 결과 (연결 지표 · 첫 동기화를 하지 않는다) */
+export const isConnected = (status: ConnectedStatusValue) => status !== "missing_scope";
 
 /**
  * 앱 흐름에서 권한 화면이 실패로 돌아올 때 (taskforce://connections/{provider}?status=…).

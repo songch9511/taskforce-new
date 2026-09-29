@@ -144,9 +144,12 @@ async function main() {
   console.log(`원문 ${sources.length}건 중 처리 대상 ${targets.length}건 (동의하지 않은 사용자의 원문 ${candidates.length - targets.length}건 제외)`);
   if (values["dry-run"]) process.exit(0);
 
+  // 동기화와 같은 "원문 속 나" (연결한 Google 주소 포함, lib/connectors/store.ts loadIdentity)
   const identities = new Map<string, UserIdentity>();
   async function identityOf(userId: string) {
-    const identity = identities.get(userId) ?? (await loadIdentity(admin, userId));
+    const cached = identities.get(userId);
+    if (cached) return cached;
+    const identity = await loadIdentity(admin, userId);
     identities.set(userId, identity);
     return identity;
   }

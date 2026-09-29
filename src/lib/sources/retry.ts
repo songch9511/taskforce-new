@@ -3,7 +3,7 @@ import "server-only";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 import { CONSENT_WITHDRAWN_MESSAGE, ConsentRequiredError } from "@/lib/consent/gate";
-import { loadIdentity } from "@/lib/connectors/store";
+import { connectedAt, loadIdentity } from "@/lib/connectors/store";
 import type { ExtractInput } from "@/lib/pipeline/extract";
 import type { UserIdentity } from "@/lib/pipeline/identity";
 
@@ -27,6 +27,7 @@ export const RETRY_DELAYS_MS = [30 * 60_000, 3 * 3_600_000];
 export type RetryCandidate = {
   id: string;
   user_id: string;
+  connection_id: string | null;
   kind: ExtractInput["kind"];
   raw_text: string;
   occurred_at: string;
@@ -156,12 +157,22 @@ async function updateIfUnchanged(admin: SupabaseClient, row: RetryCandidate, val
 
 /** service role로 읽고 처리한다. 후보는 RETRY_WINDOW_MS 안에 들어온 것을 오래된 순서로 limit건 (나중 원문이 앞 원문의 약속을 바꾼다) */
 export function retryDeps(admin: SupabaseClient, limit = 50): RetryDeps {
+  const connectedAts = new Map<string, Promise<Date | null>>();
+  // 연결(다시 연결) 전 시각의 원문은 확인 요청 알림을 보내지 않는다: 동기화가 한꺼번에 가져온 옛 원문이
+  // 다시 처리되며 알림을 몰아 보내지 않게 (Gmail 동기화와 같은 기준, lib/connectors/gmail/run.ts)
+  const notifies = async (row: RetryCandidate) => {
+    if (!row.connection_id) return true;
+    const key = row.connection_id;
+    if (!connectedAts.has(key)) connectedAts.set(key, connectedAt(admin, { id: key, userId: row.user_id }));
+    const since = await connectedAts.get(key);
+    return !since || new Date(row.occurred_at) >= since;
+  };
   return {
     candidates: async (since) => {
       const { data } = await admin
         .from("sources")
         .select(
-          "id, user_id, kind, raw_text, occurred_at, participants, written_by_me, processing_status, processing_summary, processing_error, created_at",
+          "id, user_id, connection_id, kind, raw_text, occurred_at, participants, written_by_me, processing_status, processing_summary, processing_error, created_at",
         )
         .in("processing_status", ["pending", "processing", "failed"])
         .neq("kind", "task")
@@ -185,7 +196,8 @@ export function retryDeps(admin: SupabaseClient, limit = 50): RetryDeps {
     // 동의를 철회하면 원문은 failed로 남긴다. 동기화와 달리 지우지 않는다: 이때쯤이면 Slack 대기 메시지 본문은 비었고
     // Notion은 그 뒤에 고친 페이지만 다시 가져오므로, 지우면 원문을 다시 얻을 수 없다
     process: async (row, identity, attempt) => {
-      const { ok } = await processSource(admin, { id: row.id, userId: row.user_id, attempt, retry: true }, {
+      const notify = await notifies(row);
+      const { ok } = await processSource(admin, { id: row.id, userId: row.user_id, attempt, retry: true, notify }, {
         text: row.raw_text,
         kind: row.kind,
         occurredAt: new Date(row.occurred_at),

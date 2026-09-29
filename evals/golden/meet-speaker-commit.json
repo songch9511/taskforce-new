@@ -1,0 +1,63 @@
+{
+  "id": "meet-speaker-commit",
+  "description": "심사 fixture(영상 A). Meet 전사에서 사용자가 한 약속(\"I'll send the revised proposal to Jordan by Friday.\")만 내 할 일이고, 상대가 한 약속(\"I'll book the follow-up call next week.\")은 뽑지 않는다. 사용자 줄의 이름표는 Taskforce 프로필 이름(2-5).",
+  "origin": "synthetic",
+  "tags": [
+    "meet"
+  ],
+  "user": {
+    "name": "Alex Kim",
+    "aliases": [
+      "Alex"
+    ],
+    "emails": [
+      "alex@lumenfield.example"
+    ]
+  },
+  "sources": [
+    {
+      "id": "meet-0930",
+      "kind": "meeting",
+      "occurred_at": "2026-09-30T10:00:00+09:00",
+      "participants": {
+        "attendees": [
+          {
+            "name": "Alex Kim",
+            "email": "alex@lumenfield.example"
+          },
+          {
+            "name": "Jordan Lee",
+            "email": "jordan@harborline.example"
+          }
+        ]
+      },
+      "text": "[Google Meet · Proposal review — Acme]\nJordan Lee: Thanks for the draft. Could you revise the pricing section?\nAlex Kim: Sure. I'll send the revised proposal to Jordan by Friday.\nJordan Lee: Great. I'll book the follow-up call next week."
+    }
+  ],
+  "expected_actions": [
+    {
+      "title": "Jordan Lee에게 수정한 제안서 발송",
+      "owner": "me",
+      "counterpart": "Jordan Lee",
+      "due": "2026-10-02",
+      "status": "open",
+      "evidence": [
+        {
+          "source": "meet-0930",
+          "quote": "I'll send the revised proposal to Jordan by Friday."
+        },
+        {
+          "source": "meet-0930",
+          "quote": "Could you revise the pricing section?"
+        }
+      ]
+    }
+  ],
+  "must_not_extract": [
+    {
+      "source": "meet-0930",
+      "quote": "I'll book the follow-up call next week.",
+      "reason": "NOT_MY_ACTION"
+    }
+  ]
+}

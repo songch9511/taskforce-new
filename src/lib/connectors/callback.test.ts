@@ -188,3 +188,26 @@ describe("OAuth callback — 웹 흐름 (쿠키 state, /lab)", () => {
     expect([...mismatch.connected, ...switched.connected, ...noCookie.connected]).toEqual([]);
   });
 });
+
+// Gmail 권한 화면에서 Gmail 체크를 빼고 허용함 (G10): 연결이 생기지 않았으므로 연결 지표 · 첫 동기화(onConnected)를 부르지 않는다.
+describe("OAuth callback — 필요한 권한이 빠짐 (missing_scope)", () => {
+  const cookieState = "randomCookieState123";
+  const GMAIL_CALLBACK = "http://localhost:3000/api/connectors/gmail/callback";
+
+  it("웹 흐름: /lab?gmail=missing_scope로 돌아가고 onConnected를 부르지 않는다", async () => {
+    const { deps, connected, after } = setup({ session: { id: ALICE }, cookie: { state: cookieState, userId: ALICE }, connect: async () => "missing_scope" });
+    const gmail: OAuthCallbackDeps = { ...deps, provider: "gmail" };
+    const response = await handleOAuthCallback(new Request(`${GMAIL_CALLBACK}?${new URLSearchParams({ state: cookieState, code: "c" })}`), gmail);
+    expect(response.headers.get("location")).toBe("http://localhost:3000/lab?gmail=missing_scope");
+    expect(response.headers.get("set-cookie")).toMatch(/^gmail_oauth_state=; Path=\/api\/connectors\/gmail; Max-Age=0/);
+    expect(connected).toEqual([{ userId: ALICE, code: "c" }]);
+    expect(after).toEqual([]);
+  });
+
+  it("연결된 다른 상태(connected_empty 등)는 onConnected를 부른다", async () => {
+    const { deps, after } = setup({ session: { id: ALICE }, cookie: { state: cookieState, userId: ALICE }, connect: async () => "connected_empty" });
+    const response = await handleOAuthCallback(callback({ state: cookieState, code: "c" }), deps);
+    expect(response.headers.get("location")).toBe("http://localhost:3000/lab?notion=connected_empty");
+    expect(after).toEqual([ALICE]);
+  });
+});

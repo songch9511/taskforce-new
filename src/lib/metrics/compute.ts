@@ -332,3 +332,28 @@ export function connections(events: MetricEventRow[], requests: { provider: stri
     requests: [...counts].map(([provider, count]) => ({ provider, count })).sort((a, b) => b.count - a.count || a.provider.localeCompare(b.provider)),
   };
 }
+
+export type GmailFilterMetric = {
+  /** 통계가 있는 Gmail 연결 수 */
+  connections: number;
+  /** 이유 코드별 개수의 합 (ingested: 새 원문, sent · inbound: 남긴 메일, 그 밖: 거른 메일의 규칙) */
+  counts: Record<string, number>;
+};
+
+/**
+ * Gmail 거르기 (원칙 6): 연결마다 설정(stats.counts)에 쌓은 이유 코드별 개수를 더한다. 전체 기간(연결마다 첫 동기화부터).
+ * 거른 메일은 원문이 남지 않아 여기서만 센다 (docs/go-live/google-integration.md 8장).
+ */
+export function gmailFiltering(stats: unknown[]): GmailFilterMetric {
+  const counts: Record<string, number> = {};
+  let withStats = 0;
+  for (const entry of stats) {
+    const entryCounts = (entry as { counts?: unknown } | null)?.counts;
+    if (!entryCounts || typeof entryCounts !== "object") continue;
+    withStats++;
+    for (const [key, value] of Object.entries(entryCounts)) {
+      if (typeof value === "number" && Number.isFinite(value)) counts[key] = (counts[key] ?? 0) + value;
+    }
+  }
+  return { connections: withStats, counts };
+}
