@@ -11,7 +11,7 @@ Google 프로젝트 · 범위 · 동의 화면 · 심사는 [google-verification
 |---|---|
 | 목표 | 테스터가 앱에서 **Google**(Calendar · Meet 전사)과 **Gmail**을 연결하면, 그 뒤 ① 메일에서 약속 · 기한 변경이 할 일로 반영되고 ② Meet 전사의 발화자로 담당이 정해지며 ③ 같은 회의의 Notion 회의록에 일정 참석자가 붙는다. Gmail은 Testing 상태라 7일마다 끊기고, 앱과 알림이 재연결을 안내한다 |
 | 연결 둘 | `google` = 프로젝트 A(`openid` · `email` · `calendar.events.owned.readonly` · `meetings.space.readonly`, 정식 심사) · `gmail` = 프로젝트 B(`openid` · `email` · `gmail.readonly`, Testing). redirect `/api/connectors/{google,gmail}/callback`, env `GOOGLE_*` · `GMAIL_*` ([google-verification.md](google-verification.md) 1장) |
-| 기간 | 코드 2~3주 (PR 6개, 6장) |
+| 기간 | 코드 2~3주 (PR 7개, 6장. PR 5는 5a · 5b로 나눔) |
 | 시작 조건 | 1장 결정. 골든셋 PR은 지금 시작할 수 있다. 연결 PR부터는 **Taskforce dev** Google 프로젝트(Testing, localhost redirect, 운영처럼 둘로, 7장 U2)와 Meet 전사가 되는 Workspace 계정 둘(U3)이 필요하다 |
 | 끝난 기준 | 8장. 요약: 메일 · Meet 골든셋 eval 기록 · `invalid_grant` → `reauth` + 앱 · 알림 재연결 안내 · 처리방침 3장 Google · Gmail 문장과 구현 값(범위 · 거르기 · 저장 · 전송) 일치 · 끊기 · 계정 삭제 때 Google 토큰 폐기 |
 | 파이프라인 | **고치지 않는 것이 기본이다.** 두 연결 모두 "Source를 만들어 파이프라인에 넣는 어댑터"다. 추출 · 검증 · Jev · 매칭 · 진실 판정은 Notion · Slack과 같다. 골든셋 기준 점수가 낮으면 Slack PR 1b처럼 따로 고친다(6장 PR 1b) |
@@ -28,7 +28,7 @@ Google 프로젝트 · 범위 · 동의 화면 · 심사는 [google-verification
 | G4 | 회의록 ↔ 일정 잇기 | 2-4의 순수 함수 규칙. **애매하면 잇지 않는다**(후보가 둘 이상 같은 점수 · 시각도 제목도 맞지 않음) | 잘못 이으면 남의 회의 참석자가 붙어 담당 판정이 틀린다. 안 이으면 지금(참석자 없음)과 같다. 확인 요청은 만들지 않는다(원칙 3) | 제목 비슷함만으로 잇기: 매주 같은 이름의 회의에서 틀린다 |
 | G5 | 발화자 → 사용자 · 참석자 | 사용자 줄은 **코드가 확실히** 정한다(2-5): Meet 참가자의 `signedinUser.user`(`users/{id}`)가 연결한 계정의 `sub`와 같으면 그 줄의 이름표를 Taskforce 프로필 이름으로 쓴다(Slack과 같은 규칙). 다른 사람은 Meet 표시 이름 그대로, 참석자 목록에는 일정 참석자(이메일)와 Meet 참가자(이름)를 합쳐 넣는다. **두 id가 같은 값인지는 Google 문서에 없다(9장)** → PR 3 첫 작업으로 dev에서 확인하고, 다르면 범위 `profile`(비민감)을 더해 `id_token`의 Google 계정 이름을 Meet 표시 이름과 비교한다 | 사용자 알아보기는 이름 문자열로 한다(`identity.ts`). Meet 표시 이름(예: `Daniel Song`)이 프로필 이름(`송창훈`)과 다르면 "내가 한 말"을 못 알아본다. 계정 id 비교는 원칙 5(사실은 코드가)와 맞다 | 이름 비교만: 영문 · 한글 표기가 다르면 틀린다. People API로 참가자 이메일 찾기: 범위가 하나 더 늘고 "모든 참가자의 정보가 있지는 않다"(Meet 문서) |
 | G6 | Gmail 원문 하나의 단위와 넣는 때 | **메일 한 통 = 원문 하나.** 본문은 보낸 그대로(메일 앱이 붙인 이전 메일 인용 포함) 쓰고 2만 자에서 자른다. 안정화 시간 없이 다음 동기화에서 넣는다 | 메일은 한 통이 완결된 글이고, 기존 메일 골든셋도 한 통씩이다(`email-user-sender-quoted` · `investor-followup-email-quoted`는 인용된 옛 메일이 붙은 한 통에서 인용 속 남의 약속을 뽑지 않는지 본다). **위험:** 인용 속 옛 약속("by Monday")이 새 메일의 시각으로 다시 뽑히면 규칙 4(나중 발언)로 이미 늦춘 기한을 되돌릴 수 있다 → 골든셋 `seq-gmail-quoted-stale-deadline`으로 재고, 틀리면 PR 1b에서 코드 규칙(인용 부분에만 있는 구절은 후보로 쓰지 않음, 2-6). 보낸 사람 · 받는 사람 · 참조가 한 통마다 달라서 스레드로 묶으면 `sole_recipient` · `cc_only` 판정(`userPosition`)을 잃는다. 메일은 고쳐지지 않으므로 기다릴 이유가 없다 | 스레드를 Slack처럼 30분 묶음으로: 관련자가 `attendees`로 뭉개진다. 인용 걷어 내기: 메일 앱마다 모양이 달라(`On … wrote:` · `-----Original Message-----` · `-----원본 메시지-----`) 틀리면 짧은 답장("Sure, I'll send it by Monday.")의 대상이 사라진다 |
-| G7 | Gmail에서 거르는 메일 | 2-6 표. 요약: 스팸 · 휴지통 · 임시 보관 · 채팅은 목록에서 빼고, **머리글만 읽어** 프로모션 · 소셜 분류, 자동 발송(`Auto-Submitted`), 대량 발송(`Precedence: bulk · junk`), 수신 거부 · 메일링 리스트 머리글(`List-Unsubscribe` · `List-Id`, 단 **같은 회사 도메인의 그룹 메일은 남김**), no-reply류 보낸 주소, 일정 초대 메일을 거른다. **사용자가 보낸 메일(`SENT` 표시 — 보내는 주소 별칭도 포함)은 자동 발송이 아니면 늘 남긴다.** 거른 메일은 본문을 받지 않고 저장하지 않는다 | 처리방침 3장 "뉴스레터 · 광고 · 자동 알림 메일은 거르고 저장하지 않습니다"를 지키면서, 회사 Google 그룹 메일(`team@` 등)은 `List-Id` · `List-Unsubscribe`가 붙어도 실제 요청이 오가는 곳이라 남긴다. 머리글로 먼저 거르면 거른 메일의 본문은 서버로 오지도 않는다(데이터 최소화, CASA 설명이 쉬워진다) | "업데이트" 분류도 거른다: 거래처 메일 · 문서 공유 알림이 섞여 누락이 생긴다. 알림 메일은 위 머리글 규칙으로 대부분 걸린다 |
+| G7 | Gmail에서 거르는 메일 | 2-6 표. 요약: 스팸 · 휴지통 · 임시 보관 · 채팅 · 프로모션 · 소셜은 목록에서 빼고(라벨로 한 번 더 본다), **머리글만 읽어** 자동 발송(`Auto-Submitted`), 대량 발송(`Precedence: bulk · junk`), 수신 거부 · 메일링 리스트 머리글(`List-Unsubscribe` · `List-Id`, 단 **같은 회사 도메인의 그룹 메일은 남김**), no-reply류 보낸 주소, 일정 초대 메일을 거른다. **사용자가 보낸 메일(`SENT` 표시 — 보내는 주소 별칭도 포함)은 자동 발송이 아니면 늘 남긴다.** 거른 메일은 본문을 받지 않고 저장하지 않는다 | 처리방침 3장 "뉴스레터 · 광고 · 자동 알림 메일은 거르고 저장하지 않습니다"를 지키면서, 회사 Google 그룹 메일(`team@` 등)은 `List-Id` · `List-Unsubscribe`가 붙어도 실제 요청이 오가는 곳이라 남긴다. 머리글로 먼저 거르면 거른 메일의 본문은 서버로 오지도 않는다(데이터 최소화, CASA 설명이 쉬워진다) | "업데이트" 분류도 거른다: 거래처 메일 · 문서 공유 알림이 섞여 누락이 생긴다. 알림 메일은 위 머리글 규칙으로 대부분 걸린다 |
 | G8 | Gmail 첫 동기화 범위 · 다시 연결 뒤 빈틈 | ✅ **처음 14일**(Notion과 같다). 다시 연결하면 **마지막으로 동기화한 때부터**(최대 30일) 이어서 가져온다. 메일이 많으면 한 번에 다 하지 않고 15분마다 나눠 채운다(2-6 한도) | 7일마다 끊기는 동안 온 메일을 잃지 않는다. 커서가 시각이라 Gmail history id 만료("보통 1주, 드물게 몇 시간", 9장)와 상관없다. 이미 넣은 메일은 외부 id로 걸러진다. `messages.get`이 한 번에 20 단위이고 사용자당 분당 6,000 단위라 한 동기화에 머리글 200통까지만 읽는다 | 7일: 첫 결과가 빠르지만 그 앞 약속을 놓친다. 연결 뒤 메일만(Slack처럼): 첫 며칠이 빈다 |
 | G9 | 7일 재연결 안내 | 앱 연결 줄은 이미 "Reconnect to keep syncing"(빨강)과 "Beta · Reconnect every 7 days"가 있다. 더할 것: **`reauth`로 바뀌는 순간 알림 한 번**("Reconnect Gmail to keep syncing."), 누르면 연결 화면. "한 번"은 상태를 실제로 바꾼 동기화만 보내는 것으로 지킨다(2-3). 만료 전 미리 알림은 하지 않는다 | 처리방침 3장 Gmail 절이 "연결이 만료되면 앱과 알림으로 알려 드립니다"라고 약속한다. 끊긴 동안의 메일은 G8로 되찾으므로 미리 알릴 만큼 급하지 않다(알림 수 = 관리 비용, 원칙 3) | 만료 하루 전 알림: 7일마다 알림 두 번이 된다 |
 | G10 | 권한 화면에서 일부 범위만 허용 | Google 권한 화면은 범위마다 체크를 뺄 수 있다(9장). 토큰 응답의 `scope`로 **받은 범위만 쓴다**: `google`은 Calendar만 · Meet만 허용해도 연결하고(되는 쪽만 동기화, 설정에 `scopes` 기록) 연결 결과를 새 값 `connected_partial`로, 둘 다 없거나 Gmail에 `gmail.readonly`가 없으면 연결하지 않고 받은 토큰을 바로 폐기한 뒤 새 값 `missing_scope`로 알린다. 앱 문구는 PR 4(예: "Connected. Some access is off." · "Allow access to connect.") | 체크를 뺀 이용자를 조용히 실패시키지 않는다(지금 틀로는 502 → "Couldn't connect. Try again."만 보인다, `connections.ts`). 쓸 수 없는 토큰을 남기지 않는다. 폐기는 그 계정 · 프로젝트의 허용 전체를 거두므로, 이미 연결된 같은 계정의 Gmail 연결도 다음 동기화에서 `reauth`가 된다(PR 2 검토에서 확인, 다시 연결하면 된다). 연결 결과 값은 응답에만 더하는 것이라 옛 앱은 `unknown` → 같은 오류 문구로 보인다 | 모든 범위를 요구하고 하나라도 빠지면 실패: 이용자가 이유를 모른다 |
@@ -360,24 +360,27 @@ eval에 하나를 더했다: 시퀀스 끝에 **확인 요청이 남은 열린 A
 
 같은 PR에서 한국어 · 영어를 함께 고친다(`docs/legal/README.md` 게시 규칙 3 · 4). PR 5에서 하고, 앞 PR은 구현이 처리방침과 다르지 않게만 한다.
 
+**PR 5는 5a(Gmail)와 5b(Calendar · Meet)로 나눴다**(2026-09-29). Gmail 연결(PR 2)은 이미 병합됐고 운영에서는 처리방침이 구현과 같아질 때까지 새 연결이 닫혀 있다(`GMAIL_CONNECT_ENABLED`). PR 3(Calendar · Meet)은 시험 계정(U3)을 기다리므로 Gmail만 먼저 맞춘다. 아래 표와 "그 밖에"의 Gmail 몫이 5a(✅, 문서만), Google(Calendar · Meet)과 전체 검증 · 런북 C4 마무리가 5b다. 처리방침은 원본만 고쳤고 웹사이트 재게시 · 시행일은 사용자가 정한다(`docs/legal/README.md` "게시 대기").
+
 | 곳 | 지금 | 고칠 것 |
 |---|---|---|
-| 3장 Google "Calendar에서 읽는 것" | 제목 · 시각 · 주최자 · 참석자 · Meet 식별자, 설명 · 첨부 제외 | 구현(`fields`)과 같다. "회의 원문을 넣을 때 그 앞뒤 일정만 읽는다"를 한 줄 더한다(G3) |
-| 3장 Google "Meet 전사에서 읽는 것" | "이용자의 Google Meet 회의 기록과 전사" | G2 시험 결과: "이용자가 주최하거나 참석한 회의" 또는 "주최한 회의". 참석한 회의를 찾으려고 Calendar의 Meet 회의 코드를 읽는다는 것. 받는 필드(발화자 이름 · 발언 · 시각)는 지금 문장과 같다 |
-| 3장 Google "저장하는 것" | 전사 본문 · 회의 제목 · 시각 · 참석자 | 같은 회의의 Notion 회의록에도 일정 제목 · 시각 · 참석자를 붙인다(`sources.meeting`) |
-| 3장 Gmail "읽는 것" | "보내거나 받은 메일 스레드의 …", "수신 거부 머리글이 있거나 프로모션으로 분류된 메일은 거르고 저장하지 않습니다" | G7 규칙을 줄여서: 프로모션 · 소셜 분류, 자동 발송 · 대량 발송 · 수신 거부 · 메일링 리스트 머리글(같은 회사 그룹 메일은 제외), no-reply 주소, 일정 초대. **거른 메일은 머리글만 읽고 본문을 받지 않는다.** 첫 동기화 14일 · 다시 연결하면 마지막 동기화부터(최대 30일) |
-| 3장 Gmail "저장하는 것" | "거르고 남은 스레드의 본문, 제목, 관련자, 날짜, 원본 링크" | 스레드가 아니라 **메일 한 통씩**(G6), 본문 2만 자에서 자름 |
+| 3장 Google "Calendar에서 읽는 것" | 제목 · 시각 · 주최자 · 참석자 · Meet 식별자, 설명 · 첨부 제외 | **(5b)** 구현(`fields`)과 같다. "회의 원문을 넣을 때 그 앞뒤 일정만 읽는다"를 한 줄 더한다(G3) |
+| 3장 Google "Meet 전사에서 읽는 것" | "이용자의 Google Meet 회의 기록과 전사" | **(5b)** G2 시험 결과: "이용자가 주최하거나 참석한 회의" 또는 "주최한 회의". 참석한 회의를 찾으려고 Calendar의 Meet 회의 코드를 읽는다는 것. 받는 필드(발화자 이름 · 발언 · 시각)는 지금 문장과 같다 |
+| 3장 Google "저장하는 것" | 전사 본문 · 회의 제목 · 시각 · 참석자 | **(5b)** 같은 회의의 Notion 회의록에도 일정 제목 · 시각 · 참석자를 붙인다(`sources.meeting`) |
+| 3장 Gmail "읽는 것" | "보내거나 받은 메일 스레드의 …", "수신 거부 머리글이 있거나 프로모션으로 분류된 메일은 거르고 저장하지 않습니다" | **(5a ✅)** G7 규칙을 줄여서: 프로모션 · 소셜 분류, 자동 발송 · 대량 발송 · 수신 거부 · 메일링 리스트 머리글(같은 회사 그룹 메일은 제외), no-reply 주소, 일정 초대. **거른 메일은 머리글만 읽고 본문을 받지 않는다.** 첫 동기화 14일 · 다시 연결하면 마지막 동기화부터(최대 30일). 문장별 근거 코드는 `docs/legal/README.md` 구현 대조표 Gmail 줄 |
+| 3장 Gmail "저장하는 것" | "거르고 남은 스레드의 본문, 제목, 관련자, 날짜, 원본 링크" | **(5a ✅)** 스레드가 아니라 **메일 한 통씩**(G6), 본문 2만 자에서 자름 |
+| 3장 Gmail "권한" | "`gmail.readonly`(메일 읽기)"만 | **(5a ✅)** 코드가 요청하는 `openid` · `email`(`GMAIL_SCOPES`)을 더한다: 연결 키 · 표시 주소 · "원문 속 나". 3장 Google "권한"도 같은 두 범위가 빠져 있다 → **(5b)** |
 | 3장 연결 끊기 문단 | "Notion · Google에서 이미 가져온 원문과 할 일은 남습니다" | 그대로(G11) |
 | 5장 표 | Google 줄 없음(원문 90일 규칙에 포함) | 그대로. 새 표가 없다 |
 | 15장 Google user data | Limited Use 두 문장 · 전송은 기능 제공 · 동의 뒤에만 | 그대로. Workspace 정책의 전송 조건("사용자에게 보이는 기능을 위해, 동의를 받고")과 같다(9장) |
 
 그 밖에:
-- `docs/legal/README.md` 구현 대조표의 Google Calendar · Meet · Gmail · 토큰 폐기 줄을 구현 값으로 바꾼다. 법률 검토 항목에 "Google API 약관의 영구 사본 금지와 근거 인용 · 할 일 제목을 계정 삭제까지 두는 것"을 더한다(G11).
-- [google-verification.md](google-verification.md): 4장 범위 문안 — Meet(G2 시험 결과: "the user's meetings"의 범위), Calendar(같은 시각 · 같은 날의 일정, 참석한 Meet 회의 코드), **Gmail B**("stores the remaining threads" → 메일, "unsubscribe header or Promotions category" → G7 규칙과 같게, 같은 회사 그룹 메일은 남김). 6장 fixture 주최자, 1장 `calendar.events.owned.readonly` 확인 결과(초대받은 일정이 보이는지).
-- 런북 2장 표의 `GOOGLE_REDIRECT_URI` · `GMAIL_REDIRECT_URI`("코드가 env로 받으면" → 받는다) · 여는 플래그 둘, 체크리스트 C4.
-- [FEATURE_MAP.md](../FEATURE_MAP.md) 3-3 표에 Google · Gmail 줄, 5장 "새 연동을 붙이는 자리"에서 Google 예시.
-- [INTEGRATIONS.md](../INTEGRATIONS.md) 다음 연동 표의 Gmail · Meet 줄(구현됨)과 "Google(Calendar · Gmail · Meet 전사를 연결 한 번으로)" 문장.
-- [GO_LIVE.md](../GO_LIVE.md) 머리 표 · 6장의 "Google 연결 한 번으로"(연결은 `google` · `gmail` 둘이다, google-verification.md 1장) · Gmail "스레드"(G6).
+- `docs/legal/README.md` 구현 대조표의 Google Calendar · Meet · Gmail · 토큰 폐기 줄을 구현 값으로 바꾼다. 법률 검토 항목에 "Google API 약관의 영구 사본 금지와 근거 인용 · 할 일 제목을 계정 삭제까지 두는 것"을 더한다(G11). **5a ✅**: Gmail 줄 · Gmail 토큰 폐기 · 법률 검토 10번. Calendar · Meet 줄 · google 연결 토큰 폐기는 5b.
+- [google-verification.md](google-verification.md): 4장 범위 문안 — Meet(G2 시험 결과: "the user's meetings"의 범위), Calendar(같은 시각 · 같은 날의 일정, 참석한 Meet 회의 코드), **Gmail B**("stores the remaining threads" → 메일, "unsubscribe header or Promotions category" → G7 규칙과 같게, 같은 회사 그룹 메일은 남김). 6장 fixture 주최자, 1장 `calendar.events.owned.readonly` 확인 결과(초대받은 일정이 보이는지). **5a ✅**: Gmail B 문안(CASA 견적 요청 메일의 "email threads"도 같이). 나머지는 5b.
+- 런북 2장 표의 `GOOGLE_REDIRECT_URI` · `GMAIL_REDIRECT_URI`("코드가 env로 받으면" → 받는다) · 여는 플래그 둘, 체크리스트 C4. **5a ✅**: `GMAIL_REDIRECT_URI`(코드가 env로 받음, `gmail/run.ts`) · `GMAIL_CONNECT_ENABLED` · C4에 Gmail 진행 상태. `GOOGLE_REDIRECT_URI` · `GOOGLE_CONNECT_ENABLED`는 google 연결(PR 3)이 읽게 된 뒤 5b.
+- [FEATURE_MAP.md](../FEATURE_MAP.md) 3-3 표에 Google · Gmail 줄, 5장 "새 연동을 붙이는 자리"에서 Google 예시. (Gmail 몫은 PR 2가 했다. Google 줄은 PR 3.)
+- [INTEGRATIONS.md](../INTEGRATIONS.md) 다음 연동 표의 Gmail · Meet 줄(구현됨)과 "Google(Calendar · Gmail · Meet 전사를 연결 한 번으로)" 문장. **5a ✅**: Gmail 줄(구현됨) · 그 문장(연결은 둘) · Calendar 줄 분리. Meet 줄은 5b.
+- [GO_LIVE.md](../GO_LIVE.md) 머리 표 · 6장의 "Google 연결 한 번으로"(연결은 `google` · `gmail` 둘이다, google-verification.md 1장) · Gmail "스레드"(G6). **5a ✅** (`app-store.md` App Privacy 표의 "Gmail 스레드"도 "Gmail 메일"로).
 
 ## 6. 순서 (한 세션 = 한 PR)
 
@@ -389,7 +392,8 @@ eval에 하나를 더했다: 시퀀스 끝에 **확인 요청이 남은 열린 A
 | 2 | Google OAuth 공통 + **Gmail** 연결 · 거르기 · 넣기 · `reauth` · 폐기 + `loadIdentity` 주소 + callback · lab 시작 + 여는 플래그 | 단위 테스트. dev 프로젝트로: 연결 → 동기화 → fixture 1 · 5가 할 일 · 기한 갱신으로, 뉴스레터는 DB에 없음, 권한을 거두면 다음 동기화에서 `reauth` · **dev 확인 2026-09-29** (8장 · 9장 "PR 2 dev에서 확인") | 3일 |
 | 3 | **google** 연결: Calendar 조회 · 회의 잇기 · Meet 전사 넣기 + Notion 회의록에 일정 붙이기(`enrich`) + `sources.meeting` 마이그레이션 | 단위 · DB 테스트. dev Workspace로: Meet 회의 → 전사가 발화자 이름표와 함께 원문으로, 같은 회의 Notion 회의록에 참석자 · 일정, 둘이 할 일 하나로 | 3~4일 |
 | 4 | 재연결 알림(G9) + 앱: Gmail 연결 전 안내 · Meet 줄 · 알림 눌러 연결 화면 · 근거 줄 일정 제목 · Sources 한 회의 묶기 | `swift test` · iOS · macOS 빌드. 시뮬레이터에서 Gmail 확인 창 · `reauth` 줄 · 알림 | 2일 |
-| 5 | 처리방침 · 문서 맞추기(5장) + 전체 검증 + 런북 C4 | 8장 전부. 운영에서만 확인할 수 있는 칸은 go live 순서에서 | 1일 |
+| 5a | **Gmail** 처리방침 · 문서 맞추기(5장의 Gmail 몫). 문서만 · PR 3과 상관없이 먼저 · 2026-09-29 작성 | 처리방침 3장 Gmail 문장(한국어 · 영어)이 구현과 같고 문장마다 근거 코드가 `docs/legal/README.md` 대조표에 있음, 심사 문안 · 런북 · INTEGRATIONS · GO_LIVE가 같음. **남은 것은 사용자:** 웹사이트 재게시(시행일 · 버전을 정하고 17장대로 고지. 재연결 알림 문장이 코드보다 앞선 채로 나가므로 게시 규칙 2의 예외이고, `docs/legal/README.md` "게시 대기"에 적었다), 그 뒤 PR 4(재연결 알림 · Gmail 확인 창)가 나가면 `GMAIL_CONNECT_ENABLED` | 0.5일 |
+| 5b | **Calendar · Meet** 처리방침 · 문서 맞추기(5장의 Google 몫) + 전체 검증 + 런북 C4 마무리. PR 3 뒤 | 8장 전부. 운영에서만 확인할 수 있는 칸은 go live 순서에서 | 0.5일 |
 
 PR 2(Gmail)를 먼저 하는 이유: 프로젝트 B는 Testing이라 콘솔 설정 뒤 바로 쓸 수 있고(L5), 7일 만료(`reauth`)를 가장 먼저 겪는 연결이다. Meet은 Workspace 요금제 · 회의 녹음 fixture가 필요해 준비가 더 걸린다.
 **PR 2는 #16 · #17(Notion `reauth` · 토큰 창구 401)이 `main`에 병합된 뒤 시작한다**(`recordSync(…, { reauth: true })`를 쓴다). 두 PR은 #12(피처맵) → #14 위에 쌓여 있어 넷이 차례로 병합돼야 한다. PR 1(골든셋)은 기다리지 않는다.
@@ -416,7 +420,7 @@ PR 2(Gmail)를 먼저 하는 이유: 프로젝트 B는 Testing이라 콘솔 설�
 - [x] 첫 동기화(14일) · 다시 연결 뒤 이어 가져오기가 확인 요청 알림을 원문마다 보내지 않음 (PR 2, 2-2 `ingestDeps`: `connected_at` 전 시각의 원문은 `notify: false`. 단위 테스트)
 - [ ] Calendar 요청의 `fields`에 설명 · 첨부가 없음(테스트), 일정은 원문으로 저장되지 않음 (PR 3)
 - [ ] 앱에서 연결 끊기 · 계정 삭제 → Google 계정의 "타사 앱" 목록에서 Taskforce가 사라짐(토큰 폐기) (PR 2 · 3. PR 2 dev: `DELETE /api/v1/connections/:id` 204, 폐기 실패 로그 없음, 연결 행 삭제, Gmail 원문 10건은 `connection_id`만 비워져 남음(G11))
-- [ ] 앱이 요청하는 범위가 처리방침 3장 목록 · google-verification.md 1장과 같고, 3장 Google · Gmail 문장(거르기 · 저장 · 첫 동기화 · 재연결)이 구현과 같음 (PR 5, 한국어 · 영어)
+- [ ] 앱이 요청하는 범위가 처리방침 3장 목록 · google-verification.md 1장과 같고, 3장 Google · Gmail 문장(거르기 · 저장 · 첫 동기화 · 재연결)이 구현과 같음 (PR 5, 한국어 · 영어). **Gmail 몫 ✅ (PR 5a, 2026-09-29):** 범위 `openid` · `email` · `gmail.readonly`(`GMAIL_SCOPES`)가 3장(`openid` · `email`을 5a에서 더함) · 심사 문안 · google-verification.md 1장과 같고, 거르기 · 머리글만 읽기 · 메일 한 통씩 저장 · 본문 2만 자 · 첫 14일 · 재연결 30일이 구현과 같음(문장별 근거는 `docs/legal/README.md` 대조표). 웹사이트 재게시는 아직(`docs/legal/README.md` "게시 대기"). **Google(Calendar · Meet) 몫은 PR 5b**
 - [ ] Vercel 로그에 메일 본문 · 전사 · 토큰 · code 없음 (운영 배포 뒤)
 
 ## 9. 위험과 확인한 사실 (2026-09-29)
