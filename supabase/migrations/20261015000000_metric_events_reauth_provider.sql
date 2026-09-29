@@ -7,7 +7,7 @@
 --
 -- 클라이언트: 앱이 남길 수 있는 것은 app_opened뿐이다 (20261001000000 정책). provider는 열 단위 insert 권한(type, action_id)에 없어서
 -- 앱은 값을 넣을 수 없다 (서버 전용, 시각 · 사용자와 같다).
--- 적용 순서: 이 이벤트를 남기는 서버 코드를 배포하기 **전에** 적용한다. 먼저 배포하면 이벤트 기록만 실패한다(오류 로그, 동기화 · 알림에는 영향 없음).
+-- 적용 순서: 이 이벤트를 남기는 서버 코드를 배포하기 **전에** 적용한다. 먼저 배포하면 새 이벤트와 connection_created 기록이 실패하고(provider 열이 없어서. 오류 로그, 동기화 · 알림에는 영향 없음) /admin/metrics가 열리지 않는다(지표를 읽을 때 provider 열을 고른다, src/lib/metrics/load.ts).
 alter table public.metric_events add column provider text
   check (provider in ('notion', 'google', 'gmail', 'slack', 'github'));
 

@@ -197,7 +197,7 @@ On Mon, Oct 5, 2026 at 9:30 AM Jordan Lee <jordan@…> wrote:
 |---|---|---|
 | `sources.meeting` (jsonb, null 가능) | 회의 원문(Notion 회의록 · Meet 전사)에 붙인 일정: `{ calendar_event_id, title, start, end }`. 앱이 근거 줄에 "Sep 30 · Proposal review — Acme"를 보이고 Sources를 한 회의로 묶는 데 쓴다([google-verification.md](google-verification.md) 5장 영상 A). 앱은 기존 `sources` RLS 읽기로 본다 | 원문 행과 함께(계정 삭제). 90일 본문 삭제 때는 남는다(제목 · 관련자와 같은 취급) |
 
-- 그 밖에 **지표 이벤트 종류 둘과 열 하나**(PR 4a): `metric_events.type`의 `connection_reauth` · `reconnect_notified`, 열 `provider`(2-2). 새 표는 없다. 마이그레이션 `20261015000000_metric_events_reauth_provider.sql`은 이 이벤트를 남기는 서버 코드를 배포하기 **전에** 적용한다(먼저 배포하면 알림은 가지만 이벤트 기록만 실패한다). 이전에 남긴 `connection_created`의 `provider`는 null이다.
+- 그 밖에 **지표 이벤트 종류 둘과 열 하나**(PR 4a): `metric_events.type`의 `connection_reauth` · `reconnect_notified`, 열 `provider`(2-2). 새 표는 없다. 마이그레이션 `20261015000000_metric_events_reauth_provider.sql`은 이 이벤트를 남기는 서버 코드를 배포하기 **전에** 적용한다(먼저 배포하면 새 이벤트와 `connection_created` 기록이 실패하고(오류 로그, 동기화 · 알림 영향 없음) `/admin/metrics`가 열리지 않는다). 이전에 남긴 `connection_created`의 `provider`는 null이다.
 - 새 표가 없으므로 `tests/db/`에는 새 열이 `authenticated`에게 자기 행만 보이는지(기존 `sources` RLS) 한 줄을 더하고, `tests/db/migrations.test.ts`에 열이 있는지 더한다.
 - 운영 DB 적용은 사용자 승인 뒤 `npx supabase db query --linked -f <file>`로 새 파일 하나만(`supabase db push` 금지, 런북 4장).
 - G11 결과에 따라 연결 끊기 때 지울 것이 생기면 이 표에 더한다.
