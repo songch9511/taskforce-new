@@ -1,7 +1,7 @@
 import type { NewUserAction } from "@/lib/actions/service";
 import { actionEmbedText } from "@/lib/pipeline/merge";
 import { quoteInText } from "@/lib/pipeline/text";
-import { PURGED_SOURCE_MESSAGE } from "@/lib/retention";
+import { purgedSourceMessage } from "@/lib/retention";
 
 import { createActionRequestSchema, type ActionSummary, type CreateActionResponse } from "./contract";
 import { retryAfterSeconds } from "./rate-limit";
@@ -10,7 +10,7 @@ import { errorResponse, parseBody, unauthorized } from "./respond";
 // POST /api/v1/actions 처리 (직접 추가). 인증 · 원문 읽기 · 이미 있는 Action 찾기 · 횟수 제한 · 동의 확인 · 임베딩 · 쓰기를 인자로 받아
 // Route Handler 밖에서 테스트한다. 제목 · 구절은 로그에 남기지 않는다 (오류 메시지만).
 
-export type RelatedSource = { kind: string; raw_text: string; raw_text_purged_at: string | null };
+export type RelatedSource = { kind: string; raw_text: string; raw_text_purged_at: string | null; raw_text_purge_reason?: string | null };
 
 export type CreateActionDeps<User> = {
   authenticate: (request: Request) => Promise<User | null>;
@@ -41,7 +41,7 @@ export async function handleCreateAction<User>(request: Request, deps: CreateAct
       if (!row) return errorResponse(404, "not_found", "원문이 없습니다.");
       // 누락 신고(sources/[id]/missing)와 같은 확인. 할 일 DB 항목은 속성을 그대로 옮겨 이미 Action이 되므로 고를 수 없다.
       if (row.kind === "task") return errorResponse(400, "invalid_request", "할 일 DB에서 가져온 항목은 고를 수 없습니다.");
-      if (row.raw_text_purged_at) return errorResponse(400, "invalid_request", PURGED_SOURCE_MESSAGE);
+      if (row.raw_text_purged_at) return errorResponse(400, "invalid_request", purgedSourceMessage(row.raw_text_purge_reason));
       if (!quoteInText(source.quote, row.raw_text)) return errorResponse(400, "invalid_request", "원문에 없는 구절입니다.");
 
       // 이미 그 구절로 만든 Action이 있으면(끝냈거나 지운 것도) 새로 만들지 않고 그대로 돌려준다 (원칙 4).

@@ -49,8 +49,9 @@
 | `GMAIL_CLIENT_ID` · `GMAIL_CLIENT_SECRET` | Google 프로젝트 B 클라이언트 (9장 8번) | 새 값 |
 | `GOOGLE_REDIRECT_URI` · `GMAIL_REDIRECT_URI` | `https://api.taskforcelabs.dev/api/connectors/google/callback` · `…/gmail/callback` | 코드가 Notion처럼 env로 받으면 넣는다 |
 | `SLACK_CLIENT_ID` · `SLACK_CLIENT_SECRET` · `SLACK_SIGNING_SECRET` | api.slack.com/apps → Taskforce → Basic Information (`slack-app.md` 9장 4번) | 새 값 |
-| `SLACK_REDIRECT_URI` | `https://api.taskforcelabs.dev/api/connectors/slack/callback` | 코드가 env로 받으면 |
-| `SLACK_APP_TOKEN` | App-Level Token `xapp-…` (`authorizations:read`) | `slack-app.md` 3-3을 구현할 때만 |
+| `SLACK_REDIRECT_URI` | `https://api.taskforcelabs.dev/api/connectors/slack/callback` | 연결(OAuth) callback. Slack 앱의 Redirect URL과 글자까지 같아야 한다 |
+| `SLACK_APP_TOKEN` | App-Level Token `xapp-…` (`authorizations:read`) | 한 워크스페이스에 이용자가 둘 이상일 때(D4). 없으면 이벤트가 이름을 댄 이용자만 받는다 |
+| `SLACK_CONNECT_ENABLED` | `true` | 앱에 Slack 연결을 연다. 처리방침 · 앱 문구(slack-integration.md PR 4)를 배포할 때 켠다. 그 전에는 비워 둔다 |
 | `APPLE_TEAM_ID` | `U9DWQKQFMW` | Sign in with Apple 토큰 폐기 (`app-store.md` 6장) |
 | `APPLE_KEY_ID` · `APPLE_PRIVATE_KEY` | Apple Developer → Keys → Sign in with Apple 키(.p8). 줄바꿈은 `\n` | APNs 키와 같은 키여도 되지만(`.env.example`) 따로 두기를 권장. 비우면 폐기를 건너뛰고 삭제는 계속 |
 | `APPLE_CLIENT_ID` | 비움 → `dev.taskforcelabs.taskforce` | |
@@ -91,7 +92,9 @@ npx supabase db query --linked -f supabase/migrations/20261005000000_atomic_rate
 npx supabase db query --linked -f supabase/migrations/20261006000000_source_text_retention.sql
 npx supabase db query --linked -f supabase/migrations/20261007000000_review_account_signup_hook.sql
 npx supabase db query --linked -f supabase/migrations/20261011000000_slack.sql   # Slack 표 · connected_at (2026-09-29 적용함). 이 파일을 쓰는 코드보다 먼저 적용한다
-npx supabase db query --linked -f supabase/migrations/20261012000000_slack_tombstones_revoke.sql   # 지움 표시 · 앱 해제 함수
+npx supabase db query --linked -f supabase/migrations/20261012000000_slack_tombstones_revoke.sql   # 지움 표시 · 앱 해제 함수 (2026-09-29 적용함)
+npx supabase db query --linked -f supabase/migrations/20261013000000_slack_sync.sql   # Slack 원문 넣기 · 연결 끊기(D3) · 대기 데이터 정리 함수 (2026-09-29 적용함). 코드 배포 전에
+npx supabase db query --linked -f supabase/migrations/20261014000000_connections_server_delete.sql   # 앱의 연결 직접 삭제 정책 지우기. 서버 권한 끊기 코드를 배포한 **뒤에**
 # 트랙 2-3 · 2-4가 더한 파일도 같은 방식으로
 ```
 

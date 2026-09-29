@@ -12,7 +12,7 @@ import type { SourceKind } from "@/lib/pipeline/extract";
 import type { Participants } from "@/lib/pipeline/identity";
 import { QuoteNotInSourceError } from "@/lib/pipeline/missing";
 import { quoteInText } from "@/lib/pipeline/text";
-import { PURGED_SOURCE_MESSAGE } from "@/lib/retention";
+import { purgedSourceMessage } from "@/lib/retention";
 import { reportMissing } from "@/lib/sources/process";
 import { createAdminClient } from "@/lib/supabase/admin";
 
@@ -32,6 +32,7 @@ type SourceRow = {
   participants: Participants | null;
   processing_status: string;
   raw_text_purged_at: string | null;
+  raw_text_purge_reason: string | null;
 };
 
 
@@ -48,14 +49,14 @@ export async function POST(request: Request, { params }: Params) {
   // 본인 원문인지는 사용자 권한(RLS)으로 읽어 확인한다.
   const { data: source, error } = await context.supabase
     .from("sources")
-    .select("id, kind, raw_text, occurred_at, participants, processing_status, raw_text_purged_at")
+    .select("id, kind, raw_text, occurred_at, participants, processing_status, raw_text_purged_at, raw_text_purge_reason")
     .eq("id", id)
     .maybeSingle<SourceRow>();
   if (error) return errorResponse(500, "internal_error", "원문을 불러오지 못했습니다.");
   if (!source) return errorResponse(404, "not_found", "원문이 없습니다.");
   // 할 일 DB 항목은 속성을 그대로 옮기므로 빠질 구절이 없다.
   if (source.kind === "task") return errorResponse(400, "invalid_request", "할 일 DB에서 가져온 항목은 신고할 수 없습니다.");
-  if (source.raw_text_purged_at) return errorResponse(400, "invalid_request", PURGED_SOURCE_MESSAGE);
+  if (source.raw_text_purged_at) return errorResponse(400, "invalid_request", purgedSourceMessage(source.raw_text_purge_reason));
   if (!quoteInText(body.data.quote, source.raw_text)) return errorResponse(400, "invalid_request", "원문에 없는 구절입니다.");
 
   try {

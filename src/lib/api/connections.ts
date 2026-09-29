@@ -1,5 +1,7 @@
+import { z } from "zod";
+
 import type { OAuthStatePayload } from "@/lib/connectors/oauth-state";
-import type { ConnectedStatus } from "@/lib/connectors/types";
+import type { ConnectedStatus, Provider } from "@/lib/connectors/types";
 
 import { consentRequired } from "./consent";
 import {
@@ -15,8 +17,8 @@ import {
 import { retryAfterSeconds } from "./rate-limit";
 import { errorResponse, parseBody, unauthorized } from "./respond";
 
-// 연결 시작(POST /api/v1/connections/{provider}/start) · 연결 마치기(POST /api/v1/connections/{provider}/complete)와
-// 2단계 연동 "원해요"(POST /api/v1/connection-requests) 처리. 인증 · 동의 확인 · 저장을 인자로 받아 Route Handler 밖에서 테스트한다.
+// 연결 시작(POST /api/v1/connections/{provider}/start) · 연결 마치기(POST /api/v1/connections/{provider}/complete) ·
+// 연결 끊기(DELETE /api/v1/connections/:id)와 2단계 연동 "원해요"(POST /api/v1/connection-requests) 처리. 인증 · 동의 확인 · 저장을 인자로 받아 Route Handler 밖에서 테스트한다.
 
 export type ConnectionStartDeps<User> = {
   authenticate: (request: Request) => Promise<User | null>;
@@ -123,6 +125,43 @@ export async function handleConnectionComplete<User>(
   }
   deps.onConnected(user, provider.data);
   return Response.json({ status } satisfies ConnectionCompleteResponse);
+}
+
+export type ConnectionDeleteDeps<User> = {
+  authenticate: (request: Request) => Promise<User | null>;
+  /** 이 사용자의 연결과 풀어 둔 토큰 (연결이 없으면 null, 토큰을 풀지 못했으면 token null) */
+  load: (user: User, id: string) => Promise<{ provider: Provider; token: unknown } | null>;
+  /** 서비스 쪽 토큰 폐기 (연결 틀의 revokeToken). 폐기 API가 없는 연동은 null */
+  revoker: (provider: Provider) => ((token: unknown) => Promise<void>) | null;
+  /** Slack이면 Slack에서 온 글자를 지우고(D3) 연결 행을 지운다 (한 트랜잭션, disconnect_connection). 이 사용자의 연결이 없으면 false */
+  disconnect: (user: User, id: string) => Promise<boolean>;
+};
+
+/**
+ * 연결 끊기를 서버 권한으로: 서비스 쪽 토큰 폐기 → (Slack) Slack 글자 지우기 → 연결 행 삭제 (docs/go-live/slack-integration.md 2-7).
+ * 토큰 폐기가 실패해도(서비스 장애) 끊기는 계속한다: 우리 쪽 토큰은 연결과 함께 지워지고, 데이터 지우기가 더 중요하다.
+ * 남의 연결 · 없는 연결은 같은 404.
+ */
+export async function handleConnectionDelete<User>(request: Request, id: string, deps: ConnectionDeleteDeps<User>): Promise<Response> {
+  const user = await deps.authenticate(request);
+  if (!user) return unauthorized();
+  if (!z.uuid().safeParse(id).success) return errorResponse(404, "not_found", "연결이 없습니다.");
+
+  try {
+    const connection = await deps.load(user, id);
+    if (!connection) return errorResponse(404, "not_found", "연결이 없습니다.");
+    const revoke = connection.token === null ? null : deps.revoker(connection.provider);
+    if (revoke) {
+      await revoke(connection.token).catch((error) =>
+        console.error(`${connection.provider} 토큰 폐기 실패 (연결 끊기):`, error instanceof Error ? error.message : error),
+      );
+    }
+    if (!(await deps.disconnect(user, id))) return errorResponse(404, "not_found", "연결이 없습니다.");
+  } catch (error) {
+    console.error("연결 끊기 실패:", error instanceof Error ? error.message : error);
+    return errorResponse(500, "internal_error", "연결을 끊지 못했습니다.");
+  }
+  return new Response(null, { status: 204 });
 }
 
 export type ConnectionRequestDeps<User> = {

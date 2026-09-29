@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { classifySlackMessage, slackEnvelopeSchema, slackTsDate, type SlackMessageEvent } from "./events";
+import { classifySlackMessage, slackEnvelopeSchema, slackMessageEventSchema, slackTsDate, type SlackMessageEvent } from "./events";
 
 const ME = "U_ME";
 const msg = (over: Partial<SlackMessageEvent> = {}): SlackMessageEvent => ({
@@ -116,5 +116,14 @@ describe("slackEnvelopeSchema", () => {
       event: { type: "message", channel: "D1", ts: "1.0", extra: true },
     });
     expect(envelope.type === "event_callback" && envelope.event).toMatchObject({ type: "message", extra: true });
+  });
+});
+
+describe("slackMessageEventSchema", () => {
+  it("ts는 숫자.숫자만 받는다 (묶기 · 시각 계산이 깨지지 않게)", () => {
+    const base = { type: "message", channel: "D1" };
+    expect(slackMessageEventSchema.safeParse({ ...base, ts: "1727678400.000100" }).success).toBe(true);
+    for (const ts of ["abc", "1727678400", "", "1.2.3"]) expect(slackMessageEventSchema.safeParse({ ...base, ts }).success, ts).toBe(false);
+    expect(slackMessageEventSchema.safeParse({ ...base, ts: "1.0", thread_ts: "x" }).success).toBe(false);
   });
 });

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { oauthStateSecret, parsePublicEnv, slackAppToken, slackSigningSecret } from "./env";
+import { oauthStateSecret, parsePublicEnv, slackAppToken, slackConnectEnabled, slackSigningSecret } from "./env";
 
 describe("parsePublicEnv", () => {
   it("올바른 값이면 그대로 돌려준다", () => {
@@ -74,5 +74,14 @@ describe("Slack 비밀값", () => {
     expect(slackAppToken({ SLACK_APP_TOKEN: "xapp-1-A-1-x" })).toBe("xapp-1-A-1-x");
     expect(slackAppToken({ SLACK_APP_TOKEN: "xoxp-1" })).toBeNull();
     expect(slackAppToken({})).toBeNull();
+  });
+});
+
+describe("slackConnectEnabled", () => {
+  it("설정하면 그 값대로, 설정하지 않았으면 개발 서버에서만 연다", () => {
+    expect(slackConnectEnabled({ SLACK_CONNECT_ENABLED: "true", NODE_ENV: "production" })).toBe(true);
+    expect(slackConnectEnabled({ SLACK_CONNECT_ENABLED: "false", NODE_ENV: "development" })).toBe(false);
+    expect(slackConnectEnabled({ NODE_ENV: "production" })).toBe(false);
+    expect(slackConnectEnabled({ NODE_ENV: "development" })).toBe(true);
   });
 });

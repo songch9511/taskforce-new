@@ -69,3 +69,14 @@ export function slackAppToken(env: Record<string, string | undefined> = process.
   const token = env.SLACK_APP_TOKEN?.trim() ?? "";
   return token.startsWith("xapp-") ? token : null;
 }
+
+/**
+ * 앱에 Slack 연결을 여는가 (SLACK_CONNECT_ENABLED = "true"). 운영은 처리방침 · 앱 문구(slack-integration.md PR 4)를 맞춘 뒤에 켠다:
+ * 연동 틀에 올리면 앱의 "Coming soon"이 바로 Connect가 된다. 설정하지 않았으면 개발 서버에서만 연다.
+ * 닫혀 있어도 이미 있는 연결의 토큰 폐기 · 이벤트 받기는 그대로 한다.
+ */
+export function slackConnectEnabled(env: Record<string, string | undefined> = process.env): boolean {
+  const flag = env.SLACK_CONNECT_ENABLED?.trim();
+  if (flag) return flag === "true";
+  return env.NODE_ENV === "development";
+}
