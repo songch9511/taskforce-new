@@ -21,6 +21,19 @@ const MISS_STAGE_LABELS: Record<keyof MissedMetric["byStage"], string> = {
 };
 
 const PROVIDER_LABELS: Record<string, string> = { microsoft: "Microsoft 365", zoom: "Zoom", github: "GitHub", linear: "Linear", jira: "Jira" };
+/** Gmail 거르기 이유 코드 (lib/connectors/gmail/filter.ts, google-integration.md 2-6 거르기 규칙 번호) */
+const GMAIL_COUNT_LABELS: [string, string][] = [
+  ["ingested", "새 원문"],
+  ["sent", "남김 · 보낸 메일 (③)"],
+  ["inbound", "남김 · 받은 메일 (⑨)"],
+  ["excluded_label", "① 임시 보관 · 스팸 · 휴지통 · 채팅"],
+  ["auto_submitted", "② 자동 발송"],
+  ["category", "④ 프로모션 · 소셜"],
+  ["bulk", "⑤ 대량 발송"],
+  ["mailing_list", "⑥ 수신 거부 · 메일링 리스트"],
+  ["no_reply", "⑦ no-reply 주소"],
+  ["calendar", "⑧ 일정 초대"],
+];
 
 const pct = (value: number | null) => (value === null ? "—" : `${Math.round(value * 1000) / 10}%`);
 const num = (value: number | null, unit = "") => (value === null ? "—" : `${Math.round(value * 10) / 10}${unit}`);
@@ -33,7 +46,7 @@ export default async function MetricsPage({ searchParams }: { searchParams: Prom
   const days = PERIODS.find((d) => String(d) === daysParam) ?? 28;
   const to = new Date();
   const report = await loadMetrics(createAdminClient(), { from: new Date(to.getTime() - days * 86_400_000), to });
-  const { misjudgment: m, start, retention, missed, shadowList: shadow, connections } = report;
+  const { misjudgment: m, start, retention, missed, shadowList: shadow, connections, gmail } = report;
   // 피벗 판단은 자동 반영이 틀린 비율로 한다 (PRD 6장). 구분이 생기기 전 기록뿐이면 전체 비율을 보여준다.
   const auto = m.byConfirmation.auto;
   const headline = auto.created > 0 ? { label: "자동 반영", rate: auto.corrected / auto.created } : { label: "전체 · 구분 전 기록 포함", rate: m.rate };
@@ -207,6 +220,31 @@ export default async function MetricsPage({ searchParams }: { searchParams: Prom
                 <li key={r.provider} className="flex justify-between">
                   <span>{PROVIDER_LABELS[r.provider] ?? r.provider}</span>
                   <span>{r.count}명</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Gmail 거르기</CardTitle>
+          <CardDescription>
+            Gmail 연결 {gmail.connections}개가 첫 동기화부터 결정한 메일 수 (전체 기간). 거른 메일은 머리글만 읽고 원문을 남기지 않아 여기서만 셉니다. 남긴
+            메일 중 이미 넣은 것 · 넣기에 실패한 것이 있어 &quot;남김&quot;과 &quot;새 원문&quot;은 다를 수 있습니다. 개수는 연결 설정에 있어, 연결을 끊거나 다른
+            계정으로 바꾸면 그 연결의 개수는 빠집니다.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="text-sm">
+          {gmail.connections === 0 ? (
+            <p className="text-muted-foreground">아직 동기화한 Gmail 연결이 없습니다.</p>
+          ) : (
+            <ul className="space-y-0.5">
+              {GMAIL_COUNT_LABELS.map(([key, label]) => (
+                <li key={key} className="flex justify-between">
+                  <span>{label}</span>
+                  <span>{gmail.counts[key] ?? 0}통</span>
                 </li>
               ))}
             </ul>

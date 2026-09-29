@@ -17,14 +17,14 @@
 import { existsSync } from "node:fs";
 import { parseArgs } from "node:util";
 
-import { profileInputSchema } from "../src/lib/api/contract";
-import { accountDisplayName, resolveIdentity } from "../src/lib/api/profile";
 import { ConsentRequiredError } from "../src/lib/consent/gate";
 import { pageWrittenByMe } from "../src/lib/connectors/notion/map";
 import { withNotionClient } from "../src/lib/connectors/notion/run";
 import { savedNotionUserId } from "../src/lib/connectors/notion/sync";
+import { loadIdentity } from "../src/lib/connectors/store";
 import type { Connection } from "../src/lib/connectors/types";
 import type { ExtractInput } from "../src/lib/pipeline/extract";
+import type { UserIdentity } from "../src/lib/pipeline/identity";
 import { createAdminClient } from "../src/lib/supabase/admin";
 import { processSource } from "../src/lib/sources/process";
 
@@ -144,19 +144,12 @@ async function main() {
   console.log(`원문 ${sources.length}건 중 처리 대상 ${targets.length}건 (동의하지 않은 사용자의 원문 ${candidates.length - targets.length}건 제외)`);
   if (values["dry-run"]) process.exit(0);
 
-  const identities = new Map<string, ReturnType<typeof resolveIdentity>>();
+  // 동기화와 같은 "원문 속 나" (연결한 Google 주소 포함, lib/connectors/store.ts loadIdentity)
+  const identities = new Map<string, UserIdentity>();
   async function identityOf(userId: string) {
     const cached = identities.get(userId);
     if (cached) return cached;
-    const [{ data: profileRow }, { data: account }] = await Promise.all([
-      admin.from("profiles").select("display_name, aliases, emails").eq("user_id", userId).maybeSingle(),
-      admin.auth.admin.getUserById(userId),
-    ]);
-    const email = account.user?.email ?? null;
-    const identity = resolveIdentity(profileInputSchema.safeParse(profileRow).data ?? null, {
-      name: accountDisplayName(account.user?.user_metadata, email),
-      email,
-    });
+    const identity = await loadIdentity(admin, userId);
     identities.set(userId, identity);
     return identity;
   }

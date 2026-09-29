@@ -170,6 +170,19 @@ describe("POST /api/v1/connections/{provider}/complete", () => {
     expect(after).toEqual([ALICE.id]);
   });
 
+  it("필요한 권한이 빠져 연결하지 않았으면(missing_scope) 200 {status: missing_scope}이고 첫 동기화를 맡기지 않는다", async () => {
+    const { deps, store, connected, after } = completeDeps({ connect: async () => "missing_scope" });
+    const gmail = { ...deps, implemented: (provider: string) => provider === "gmail" };
+    store.save({ id: HANDOFF, userId: ALICE.id, provider: "gmail", code: "code-1" });
+    const response = await handleConnectionComplete(post("http://localhost/api/v1/connections/gmail/complete", { handoff: HANDOFF }), "gmail", gmail);
+    expect(response.status).toBe(200);
+    expect(connectionCompleteResponseSchema.parse(await response.json())).toEqual({ status: "missing_scope" });
+    expect(connected).toEqual([{ userId: ALICE.id, code: "code-1" }]);
+    expect(after).toEqual([]);
+    // handoff는 썼다: 다시 연결하려면 권한 화면부터
+    expect(store.rows.has(HANDOFF)).toBe(false);
+  });
+
   it("공격자가 시작한 연결의 handoff를 다른 사용자가 완료하면 404이고 연결이 생기지 않는다", async () => {
     const { deps, store, connected, after } = completeDeps();
     store.save({ id: HANDOFF, userId: BOB.id, provider: "notion", code: "victim-code" });

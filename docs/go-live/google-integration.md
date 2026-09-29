@@ -31,7 +31,7 @@ Google 프로젝트 · 범위 · 동의 화면 · 심사는 [google-verification
 | G7 | Gmail에서 거르는 메일 | 2-6 표. 요약: 스팸 · 휴지통 · 임시 보관 · 채팅은 목록에서 빼고, **머리글만 읽어** 프로모션 · 소셜 분류, 자동 발송(`Auto-Submitted`), 대량 발송(`Precedence: bulk · junk`), 수신 거부 · 메일링 리스트 머리글(`List-Unsubscribe` · `List-Id`, 단 **같은 회사 도메인의 그룹 메일은 남김**), no-reply류 보낸 주소, 일정 초대 메일을 거른다. **사용자가 보낸 메일(`SENT` 표시 — 보내는 주소 별칭도 포함)은 자동 발송이 아니면 늘 남긴다.** 거른 메일은 본문을 받지 않고 저장하지 않는다 | 처리방침 3장 "뉴스레터 · 광고 · 자동 알림 메일은 거르고 저장하지 않습니다"를 지키면서, 회사 Google 그룹 메일(`team@` 등)은 `List-Id` · `List-Unsubscribe`가 붙어도 실제 요청이 오가는 곳이라 남긴다. 머리글로 먼저 거르면 거른 메일의 본문은 서버로 오지도 않는다(데이터 최소화, CASA 설명이 쉬워진다) | "업데이트" 분류도 거른다: 거래처 메일 · 문서 공유 알림이 섞여 누락이 생긴다. 알림 메일은 위 머리글 규칙으로 대부분 걸린다 |
 | G8 | Gmail 첫 동기화 범위 · 다시 연결 뒤 빈틈 | ✅ **처음 14일**(Notion과 같다). 다시 연결하면 **마지막으로 동기화한 때부터**(최대 30일) 이어서 가져온다. 메일이 많으면 한 번에 다 하지 않고 15분마다 나눠 채운다(2-6 한도) | 7일마다 끊기는 동안 온 메일을 잃지 않는다. 커서가 시각이라 Gmail history id 만료("보통 1주, 드물게 몇 시간", 9장)와 상관없다. 이미 넣은 메일은 외부 id로 걸러진다. `messages.get`이 한 번에 20 단위이고 사용자당 분당 6,000 단위라 한 동기화에 머리글 200통까지만 읽는다 | 7일: 첫 결과가 빠르지만 그 앞 약속을 놓친다. 연결 뒤 메일만(Slack처럼): 첫 며칠이 빈다 |
 | G9 | 7일 재연결 안내 | 앱 연결 줄은 이미 "Reconnect to keep syncing"(빨강)과 "Beta · Reconnect every 7 days"가 있다. 더할 것: **`reauth`로 바뀌는 순간 알림 한 번**("Reconnect Gmail to keep syncing."), 누르면 연결 화면. "한 번"은 상태를 실제로 바꾼 동기화만 보내는 것으로 지킨다(2-3). 만료 전 미리 알림은 하지 않는다 | 처리방침 3장 Gmail 절이 "연결이 만료되면 앱과 알림으로 알려 드립니다"라고 약속한다. 끊긴 동안의 메일은 G8로 되찾으므로 미리 알릴 만큼 급하지 않다(알림 수 = 관리 비용, 원칙 3) | 만료 하루 전 알림: 7일마다 알림 두 번이 된다 |
-| G10 | 권한 화면에서 일부 범위만 허용 | Google 권한 화면은 범위마다 체크를 뺄 수 있다(9장). 토큰 응답의 `scope`로 **받은 범위만 쓴다**: `google`은 Calendar만 · Meet만 허용해도 연결하고(되는 쪽만 동기화, 설정에 `scopes` 기록) 연결 결과를 새 값 `connected_partial`로, 둘 다 없거나 Gmail에 `gmail.readonly`가 없으면 연결하지 않고 받은 토큰을 바로 폐기한 뒤 새 값 `missing_scope`로 알린다. 앱 문구는 PR 4(예: "Connected. Some access is off." · "Allow access to connect.") | 체크를 뺀 이용자를 조용히 실패시키지 않는다(지금 틀로는 502 → "Couldn't connect. Try again."만 보인다, `connections.ts`). 쓸 수 없는 토큰을 남기지 않는다. 연결 결과 값은 응답에만 더하는 것이라 옛 앱은 `unknown` → 같은 오류 문구로 보인다 | 모든 범위를 요구하고 하나라도 빠지면 실패: 이용자가 이유를 모른다 |
+| G10 | 권한 화면에서 일부 범위만 허용 | Google 권한 화면은 범위마다 체크를 뺄 수 있다(9장). 토큰 응답의 `scope`로 **받은 범위만 쓴다**: `google`은 Calendar만 · Meet만 허용해도 연결하고(되는 쪽만 동기화, 설정에 `scopes` 기록) 연결 결과를 새 값 `connected_partial`로, 둘 다 없거나 Gmail에 `gmail.readonly`가 없으면 연결하지 않고 받은 토큰을 바로 폐기한 뒤 새 값 `missing_scope`로 알린다. 앱 문구는 PR 4(예: "Connected. Some access is off." · "Allow access to connect.") | 체크를 뺀 이용자를 조용히 실패시키지 않는다(지금 틀로는 502 → "Couldn't connect. Try again."만 보인다, `connections.ts`). 쓸 수 없는 토큰을 남기지 않는다. 폐기는 그 계정 · 프로젝트의 허용 전체를 거두므로, 이미 연결된 같은 계정의 Gmail 연결도 다음 동기화에서 `reauth`가 된다(PR 2 검토에서 확인, 다시 연결하면 된다). 연결 결과 값은 응답에만 더하는 것이라 옛 앱은 `unknown` → 같은 오류 문구로 보인다 | 모든 범위를 요구하고 하나라도 빠지면 실패: 이용자가 이유를 모른다 |
 | G11 | 연결을 끊을 때 Google 데이터 | **지금 처리방침 그대로:** 토큰을 폐기하고, 이미 가져온 원문 · 할 일은 남긴다(원문 본문은 90일 규칙). 모두 지우려면 계정 삭제 | Google 정책(API 서비스 사용자 데이터 정책 · Workspace 사용자 데이터 정책)에서 "끊으면 지워라"는 규칙이나 기한은 찾지 못했다. 요구하는 것은 "삭제 요청을 따르고, 지우는 방법을 안내하라"다(9장). Slack D3 같은 예외를 만들지 않으면 원칙 2 · 5가 그대로다. 다만 Google API 약관의 "영구 사본을 만들지 말 것"과 근거 인용을 계정 삭제까지 두는 것이 맞는지는 L9 법률 검토에 더한다 | Slack처럼 끊으면 Google 원문 · 인용을 지운다: 정책이 요구하지 않고, 근거 없는 할 일이 늘어난다 |
 | G12 | 여러 이야기 사이에 묻힌 메일 요청(혼자 받음, 아직 수락 전) | ✅ **확인 요청으로 보낸다**(PR 1 eval 뒤 결정, 4장 "기준 점수" E5): F3 규칙을 "사용자가 유일한 받는 사람인 메일의 요청"으로 넓혀, 기각 사유가 "내 약속 아님" 하나면 확인 요청까지(자동 반영은 안 함). PR 1b에서 구현한다. 처음 권장: **골든셋 PR에서 eval로 정한다.** 요청만 있는 메일은 이미 할 일이 된다(`email-sole-recipient-request`). 통화 정리 메일 끝의 "계약서 사본도 한 부 보내주실 수 있을까요?" 같은 요청은 Jev "내 약속" 확률이 기각선(0.4) 근처라 실행마다 확인 요청과 기각을 오간다(`freelance-client-recap-email`, slack-integration.md 4장 "남은 것"). F3 규칙(`@이름` 요청은 확인 요청까지)을 "사용자가 유일한 받는 사람인 메일의 요청"으로 넓힐지, 골든셋의 확인 요청 수 · 누락 수를 보고 정한다 | 메일은 외부와의 약속이 오가는 곳이라 조용히 사라지는 요청이 많으면 가치가 떨어진다. 넓히면 확인 요청이 는다(원칙 3) | — |
 | G13 | 실제 원문 골든셋 | 본인 Gmail 스레드 · Meet 전사를 각 5건 이상 **로컬에서 익명화**해 넣는다(원문은 커밋하지 않음). ✅ **PR 1b 전에** 넣고 1b의 고침 전후 숫자를 같이 본다(2026-09-29). Meet 전사가 거의 없으면 Notion AI 회의록 + 같은 회의 일정 참석자로 대신한다 | 합성 예시만으로는 실제 문체 · 메일 앱의 인용 모양 · 받아쓰기 오류를 모른다(Slack D6과 같음) | 합성만: go live 뒤 실제 정확도를 모른다 |
@@ -62,27 +62,31 @@ Google 프로젝트 · 범위 · 동의 화면 · 심사는 [google-verification
 | 파일 | 할 일 | 테스트 |
 |---|---|---|
 | `src/lib/connectors/google/oauth.ts` | 두 연결이 같이 쓰는 OAuth: 권한 주소(`access_type=offline` · `prompt=consent` · `include_granted_scopes=false`), code 교환, 갱신, 폐기, `id_token`에서 `sub` · `email` 읽기, 받은 범위 확인. 토큰 창구의 오류 코드(`invalid_grant` 등)를 담는 `GoogleOAuthError`. 응답은 모두 zod | 가짜 fetch |
-| `src/lib/connectors/google/token.ts` | `withGoogleAccess(admin, connection, config, call)`: 저장된 토큰을 풀고, 만료 60초 전이면 갱신해 저장하고, API가 401이면 한 번 갱신해 다시 부른다. 갱신이 `invalid_grant`면 `GoogleReauthError` | 가짜 저장소 |
+| `src/lib/connectors/google/token.ts` | `googleAccess(store, config)`: 요청마다 저장된 토큰을 붙이고, 만료 60초 전이면 먼저 갱신해 저장하고, API가 401이면 한 번 갱신해 다시 부른다(같은 토큰으로 동시에 401을 받아도 갱신은 한 번). 갱신이 `invalid_grant`면(갱신 토큰이 없을 때도) `GoogleReauthError`. API 실패는 `GoogleApiError`(상태 · 이유 코드) | 가짜 저장소 |
+| `src/lib/connectors/google/settings.ts` | 연결 설정 `{ googleUserId, email, scopes, stats }`: 연결(다시 연결)한 계정 · 범위 남기기, 동기화마다 이유 코드별 개수 더하기(8장) (PR 2) | 순수 |
 | `src/lib/connectors/google/calendar.ts` | `events.list`(G3의 `fields`만) · 일정 거르기 · 회의 잇기 규칙(2-4, 순수 함수) · `findMeetingEvent`(Notion · Meet이 부른다) | 순수 + 가짜 fetch |
 | `src/lib/connectors/google/meet.ts` | Meet REST API: 회의 기록 · 전사 · 전사 항목 · 참가자 · 회의 공간(회의 코드). 응답은 zod | 가짜 fetch |
 | `src/lib/connectors/google/transcript.ts` | 전사 항목 + 참가자 + 일정 → `IngestItem` (2-5, 순수 함수) | 순수. 골든셋 파일과 글자까지 비교 |
 | `src/lib/connectors/google/run.ts` | `googleConnector`: `authorizeUrl` · `connect` · `sync` · `revokeToken` | 가짜 저장소 |
-| `src/lib/connectors/gmail/client.ts` | Gmail API: `users.messages.list`(q) · `users.messages.get`(`format=metadata` · `full`). 응답은 zod | 가짜 fetch |
+| `src/lib/connectors/gmail/client.ts` | Gmail API: `users.messages.list`(q) · `users.messages.get`(`format=metadata` · `full`). `fields`로 받을 필드를 좁힌다(머리글 읽기는 `snippet`도 받지 않는다). 응답은 zod | 가짜 fetch |
+| `src/lib/connectors/gmail/mime.ts` | 문자 집합(UTF-8 · EUC-KR · ISO-2022-KR 등) 풀기, 머리글의 RFC 2047 인코딩, 주소 목록(From · To · Cc) 읽기 (PR 2) | 순수 |
 | `src/lib/connectors/gmail/filter.ts` | 머리글 → 남김/버림 + 이유 (2-6, 순수 함수) | 순수. 거르기 표 전부 |
-| `src/lib/connectors/gmail/message.ts` | 메일 → `IngestItem`: MIME 부분 고르기, base64url · 문자 집합(UTF-8 · EUC-KR 등) 풀기, HTML → 글, 첨부 빼기, 머리줄, 2만 자 자르기 (2-6) | 순수. 골든셋 파일과 글자까지 비교 |
+| `src/lib/connectors/gmail/message.ts` | 메일 → `IngestItem`: MIME 부분 고르기, base64url 풀기, HTML → 글(인용은 `> `), 첨부 빼기, 머리줄, 2만 자 자르기 (2-6) | 순수. 골든셋 파일과 글자까지 비교 |
+| `src/lib/connectors/gmail/sync.ts` | 커서 · 하루 창 · 머리글 200통 · 본문 20통 · 429 멈춤 · `ingestItems` (2-6) (PR 2) | 가짜 클라이언트 |
 | `src/lib/connectors/gmail/run.ts` | `gmailConnector`: `authorizeUrl` · `connect` · `sync` · `revokeToken` | 가짜 저장소 |
 | `src/lib/connectors/types.ts` · `store.ts` `insertSource` | `IngestItem.meeting?`(붙인 일정) 하나를 더하고 `sources.meeting`에 저장한다(2-7) | 기존 + 1 |
 | `src/lib/connectors/notion/sync.ts` | 본문을 받을 페이지를 고른 뒤(안정화 · 이미 넣음 · 20건 상한을 이미 거른 뒤, 지금 코드의 3단계) `pageToItem` 다음에 `kind = meeting`이면 선택 의존성 `meetingEvent(page, item)` → `findMeetingEvent`(페이지 `created_time` · 회의 날짜 · 제목) → 참석자 합치기 · `meeting`. 한 번 5초 제한, 한 동기화에서 Google이 한 번 실패하면 남은 페이지는 붙이지 않고 넣는다(Notion 동기화를 막지 않는다). google 연결이 없으면 부르지 않는다 | 가짜 의존성 |
 | `src/lib/connectors/store.ts` `loadIdentity` | 사용자 이메일에 **연결한 Google 계정 주소**(두 연결의 `settings.email`)를 더한다. 지금은 프로필 · 로그인 이메일뿐이라, 로그인 주소와 다른 회사 Gmail이면 "보낸 사람 = 나"를 못 알아본다 | 기존 + 1 |
-| `src/lib/connectors/store.ts` `ingestDeps` | Google 두 연결은 (1) "이미 넣음"을 이 연결 **또는 끊긴 연결(`connection_id` null)**의 같은 외부 id로 본다: 끊으면 원문의 `connection_id`가 null이 되어(`on delete set null`), 다시 연결하면 14일을 또 넣는다(FEATURE_MAP 7장 1번, Notion은 그대로 둔다). (2) 연결 전 시각의 원문(첫 14일 · 다시 연결 뒤 이어 가져오기)은 확인 요청 알림을 보내지 않는다(`processSource`가 원문마다 알림을 보낸다, 원칙 3). 확인 요청 자체는 그대로 만든다 | 기존 + 2 |
-| `src/lib/connectors/store.ts` `recordSync` | `{ reauth: true }`는 PR #16이 더했다. 더할 것: `reauth`는 `connected_at`이 이번 동기화를 시작한 시각보다 앞일 때만 바꾸고(그 사이 다시 연결했으면 되돌리지 않음, Slack 앱 해제와 같은 기준), 실제로 바꿨는지 돌려준다 | 기존 + 2 |
+| `src/lib/connectors/store.ts` `ingestDeps` · `src/lib/sources/process.ts` | (1) "이미 넣음"을 이 연결 **또는 끊긴 연결(`connection_id` null)**의 같은 외부 id로 본다: 끊으면 원문의 `connection_id`가 null이 되어(`on delete set null`), 다시 연결하면 14일을 또 넣는다. **#18이 모든 연동(Notion 포함)에 넣었다**(FEATURE_MAP 7장 1번). (2) `ingestDeps(admin, { notifyFrom: connected_at })`: 연결 전 시각의 원문(첫 14일 · 다시 연결 뒤 이어 가져오기)은 `processSource(…, { notify: false })`로 확인 요청 알림을 보내지 않는다(원칙 3). 확인 요청 자체는 그대로 만든다. Gmail만 쓴다 (PR 2) | 기존 + 2 |
+| `src/lib/connectors/store.ts` `recordSync` | `{ reauth: true }`는 PR #16이 더했다. `connected_at`이 이번 동기화의 잠금 시각(`claimedAt`)보다 뒤면(그 사이 다시 연결함) 상태 · 커서를 덮지 않는 것은 #18이 더했다. 남은 것: 실제로 `reauth`로 바꿨는지 돌려준다 (PR 4, 알림 G9와 함께) | 기존 + 2 |
 | `src/lib/notify/service.ts` · `apns.ts` | `notifyReconnect(admin, userId, provider)`: `recordSync`가 실제로 `reauth`로 바꾼 동기화에서만 (G9). `reauth` 연결은 다시 연결할 때까지 동기화하지 않으므로(`syncable_connections`) 한 번으로 끝난다 | 기존 알림 테스트 + 1 |
 | `src/app/api/connectors/{google,gmail}/callback/route.ts` | 공용 `handleOAuthCallback`에 넘긴다 (Notion · Slack callback과 같은 모양) | — |
-| `src/app/api/connectors/{google,gmail}/start/route.ts` · `src/app/lab/connections-panel.tsx` · `lab/page.tsx` | 웹(/lab) 시작 · 연결 버튼 · 결과 문구. dev 확인용이라 Slack처럼 운영에서는 운영자만(`slackWebConnector`를 서비스를 받는 함수로 넓힌다) | 기존 registry 테스트 |
+| `src/app/api/connectors/{google,gmail}/start/route.ts` · `src/app/lab/connections-panel.tsx` · `lab/page.tsx` | 웹(/lab) 시작 · 연결 버튼 · 결과 문구. dev 확인용이라 Slack처럼 운영에서는 운영자만(`slackWebConnector`를 `webConnector(provider, email)`로 넓혔다, PR 2) | 기존 registry 테스트 |
+| `src/lib/metrics/{compute,load}.ts` · `src/app/admin/metrics/page.tsx` | Gmail 거르기 개수(`settings.stats`의 합, 8장). 연결 설정 중 `stats`만 읽는다 (PR 2) | 순수 |
 | `src/lib/connectors/registry.ts` | `CONNECTORS`에 `google` · `gmail`. 운영에서는 처리방침 · 앱 문구를 맞출 때까지 닫아 둔다: `GOOGLE_CONNECT_ENABLED` · `GMAIL_CONNECT_ENABLED`(Slack의 `SLACK_CONNECT_ENABLED`와 같은 모양, 비우면 개발 서버에서만 열림) | 기존 + provider 둘 |
 | `src/lib/env.ts` · `.env.example` | `GOOGLE_CLIENT_ID` · `GOOGLE_CLIENT_SECRET` · `GOOGLE_REDIRECT_URI` · `GMAIL_CLIENT_ID` · `GMAIL_CLIENT_SECRET` · `GMAIL_REDIRECT_URI` · 여는 플래그 둘 | 기존 env 테스트 |
-| `src/lib/api/contract.ts` | `connectedStatusSchema`에 `connected_partial` · `missing_scope`(G10). 원문은 앱이 Supabase에서 직접 읽으므로(`Models.swift` `SourceSummary.columns`) `sources.meeting`은 contract가 아니라 Swift 쪽에 더한다 | 기존 |
-| `scripts/reprocess-sources.ts` | 바꾸지 않는다(`--notion-authors`는 Notion 연결만 읽는다). Google 원문을 다시 처리해도 깨지지 않는지만 본다 | — |
+| `src/lib/api/contract.ts` | `connectedStatusSchema`에 `connected_partial` · `missing_scope`(G10). `missing_scope`는 PR 2가 더했다(연결이 생기지 않았으므로 `isConnected`가 거짓 → 연결 지표 · 첫 동기화를 하지 않는다), `connected_partial`은 PR 3. 원문은 앱이 Supabase에서 직접 읽으므로(`Models.swift` `SourceSummary.columns`) `sources.meeting`은 contract가 아니라 Swift 쪽에 더한다 | 기존 |
+| `scripts/reprocess-sources.ts` | `--notion-authors`는 그대로(Notion 연결만 읽는다). "원문 속 나"를 스크립트가 따로 만들던 것을 `loadIdentity`로 바꿨다: 그대로 두면 Gmail 원문을 다시 처리할 때 연결한 Google 주소를 모른다 (PR 2, dev에서 Gmail 원문을 다시 처리해 확인) | — |
 
 `google` · `gmail`은 이미 `Provider` 타입 · `connectProviderSchema` · DB provider 검사 · 앱의 `stageOne`에 들어 있다. 새로 넓힐 enum은 연결 결과 두 값(G10)뿐이다. 한 서비스에 계정 하나(베타): 다른 Google 계정으로 연결하면 같은 서비스의 옛 연결은 끊는다(토큰 폐기 → `disconnect_connection`). 앱의 `ConnectionState`가 `active` 행을 먼저 보여 줘서, 두지 않으면 옛 `reauth` 행을 끊을 곳이 없다.
 
@@ -151,19 +155,20 @@ Jordan Lee: Great. I'll book the follow-up call next week.
 
 | 항목 | 규칙 |
 |---|---|
-| 목록 | `users.messages.list`, `q = after:{창 시작의 epoch 초} before:{창 끝} -in:chats -in:drafts -category:promotions -category:social`, `includeSpamTrash=false`(기본). 창은 아래 "커서 · 창". `after:` · `before:`가 초 단위를 받는지는 Google 문서에서 확인하지 못했다 → PR 2에서 확인하고, 안 되면 날짜 단위 창 + 하루 겹침(이미 넣은 것 · `seen`으로 걸러진다) |
-| 한도 | 쿼터 단위: `messages.list` 5, `messages.get` 20(형식과 관계없이), 사용자당 분당 6,000(9장). 한 동기화에 **머리글 읽기 200통 + 본문 받기 20통**(넣기 공통 상한 `ingestItems` 20건과 같게, 합쳐 4,500 단위 안팎), 동시에 4개, 오래된 것부터. 본문을 받았는데 넣지 못한 메일이 생기지 않게 두 상한을 맞춘다. 429면 멈추고 결정을 마친 곳까지만 커서를 옮긴다. 첫 14일이 많으면 몇 시간에 걸쳐 오래된 것부터 채워진다(Notion과 같음) |
-| 커서 · 창 | `sync_cursor = { after: ISO 시각, seen: [메시지 id] }`. `after` 앞의 메일은 모두 결정됨(넣음 · 거름), `seen`은 `after` 뒤에서 이미 결정한 id(최대 2,000개). 목록은 `after − 1시간`부터 **하루 단위 창**(`after:` · `before:`)으로 오래된 창부터 받고, 창 안의 id는 페이지를 끝까지 받는다(`messages.list`는 날짜순을 약속하지 않는다). 받은 id에서 **이미 넣은 것(`ingestedIds`, 2-2의 끊긴 연결 포함)과 `seen`을 먼저 빼고** 남은 것만 머리글을 읽는다 — 본문을 받기 전에 거른다. 창 하나를 다 결정하면 `after` = 창 끝, `seen` 비움. 한도 · 시간 · 429로 멈추면 결정한 id만 `seen`에 더한다. 첫 동기화는 14일 전, `after`가 30일보다 오래됐으면 30일 전으로 당긴다(G8) |
-| 머리글 읽기 | 목록의 메일마다 `users.messages.get(format=metadata, metadataHeaders=From,To,Cc,Subject,Date,Message-ID,List-Id,List-Unsubscribe,Precedence,Auto-Submitted,Sender,Content-Type)` + `labelIds`. 본문은 받지 않는다 |
-| 거르기 | `gmail/filter.ts`. 위에서부터 처음 맞는 규칙: ① `DRAFT` · `SPAM` · `TRASH` 표시 → 버림 ② `Auto-Submitted`가 있고 `no`가 아님 → 버림(부재 중 자동 답장 · 시스템 알림. 사용자가 보낸 것도) ③ `SENT` 표시가 있거나 보낸 사람이 사용자(연결한 Google 주소 · 프로필 이메일) → **남김** ④ `CATEGORY_PROMOTIONS` · `CATEGORY_SOCIAL` → 버림 ⑤ `Precedence`가 `bulk` · `junk` → 버림 ⑥ `List-Unsubscribe` 또는 `List-Id`가 있고, 보낸 주소의 도메인이 사용자 회사 도메인(연결한 주소의 도메인, 단 `gmail.com` 같은 공용 도메인이면 회사 도메인 없음)이 아님 → 버림 ⑦ 보낸 주소가 no-reply류(`noreply` · `no-reply` · `donotreply` · `do-not-reply` · `notification(s)` · `mailer-daemon` · `postmaster` · `bounce`로 시작) → 버림 ⑧ 일정 초대(`Content-Type`이 `text/calendar`를 담거나 `Sender`가 Google Calendar 알림 주소) → 버림 ⑨ 나머지 → 남김. 버린 메일은 개수와 이유 코드만 로그에 남긴다 |
-| 본문 받기 | 남긴 메일만 `format=full`. `text/plain` 부분을 먼저, 없으면 `text/html`을 글로 바꾼다(태그 · 스타일 · 스크립트 제거, 줄바꿈 유지, 링크는 `글 (주소)`). 파일 이름이 있는 부분(첨부)은 읽지 않는다. `Content-Type`의 문자 집합으로 풀고(UTF-8 · EUC-KR · ISO-2022-KR 등, Node `TextDecoder`), 모르면 UTF-8 |
+| 목록 | `users.messages.list`, `q = after:{창 시작의 epoch 초} before:{창 끝} -in:chats -in:drafts -category:promotions -category:social`, `includeSpamTrash=false`(기본). 창은 아래 "커서 · 창". `after:` · `before:`는 epoch 초를 받는다(Gmail 검색 안내: 날짜만 주면 PST 0시로 읽으니 다른 시간대는 초로 주라, 9장). `fields=messages(id,threadId),nextPageToken` |
+| 한도 | 쿼터 단위: `messages.list` 5, `messages.get` 20(형식과 관계없이), 사용자당 분당 6,000(9장). 한 동기화에 **머리글 읽기 200통 + 본문 받기 20통**(넣기 공통 상한 `ingestItems` 20건과 같게, 합쳐 4,500 단위 안팎), 동시에 4개, 오래된 것부터. 본문을 받았는데 넣지 못한 메일이 생기지 않게 두 상한을 맞춘다. 429면 멈추고 결정을 마친 곳까지만 커서를 옮긴다(연결은 `error` "Gmail 요청 한도에 걸려 다음 동기화에서 이어서 가져옵니다.", 다음 동기화가 `active`로 되돌린다). 첫 14일이 많으면 몇 시간에 걸쳐 오래된 것부터 채워진다(Notion과 같음) |
+| 커서 · 창 | `sync_cursor = { after: ISO 시각, seen: { 메시지 id: 받은 시각(epoch ms) } }`. `after` 앞의 메일은 모두 결정됨(넣음 · 거름), `seen`은 `after − 1시간` 뒤에서 이미 결정한 id(최대 2,000개, 넘으면 최근 것만). 받은 시각을 같이 두어 겹침 구간을 지난 id를 버린다: 창을 끝내도 `seen`을 비우지 않아 겹침 1시간의 거른 메일을 매번 다시 읽지 않는다(`settings.stats`가 두 번 세지 않게). 목록은 `after − 1시간`부터 **하루 단위 창**(`after:` · `before:`)으로 오래된 창부터 받고, 창 안의 id는 페이지를 끝까지 받는다(`messages.list`는 날짜순을 약속하지 않는다). 받은 id에서 **이미 넣은 것(`ingestedIds`, 2-2의 끊긴 연결 포함)과 `seen`을 먼저 빼고** 남은 것만 머리글을 읽는다 — 본문을 받기 전에 거른다. 창 하나를 다 결정하면 `after` = 창 끝. 한도 · 시간 · 429(또는 403 `rateLimitExceeded` · `userRateLimitExceeded`)로 멈추면 `after`는 그대로 두고 결정한 id만 `seen`에 더한다. 한 창에 아직 결정하지 않은 메일이 `seen`에 다 담기지 않을 만큼(2,000 − 200통 넘게) 많으면 창을 반씩, 2시간까지 줄인다(`seen`이 넘쳐 오래된 결정부터 잊으면 커서가 그 창에 묶인다). 창 끝(`before:`)은 초 단위로 내림한다. "이미 넣음" 확인은 150개씩 나눠 묻는다. 첫 동기화는 14일 전, `after`가 30일보다 오래됐으면 30일 전으로 당긴다(G8) |
+| 머리글 읽기 | 목록의 메일마다 `users.messages.get(format=metadata, metadataHeaders=From,To,Cc,Subject,Date,Message-ID,List-Id,List-Unsubscribe,Precedence,Auto-Submitted,Sender,Content-Type,Content-Class)` + `labelIds`, `fields=id,threadId,labelIds,internalDate,payload/headers`. 본문은 받지 않는다 — `snippet`(본문 앞부분)도 `fields`에서 뺀다 |
+| 거르기 | `gmail/filter.ts`. 위에서부터 처음 맞는 규칙: ① `DRAFT` · `SPAM` · `TRASH` · `CHAT` 표시 → 버림 ② `Auto-Submitted`가 있고 `no`가 아님 → 버림(부재 중 자동 답장 · 시스템 알림. 사용자가 보낸 것도) ③ `SENT` 표시가 있거나 보낸 사람이 사용자(연결한 Google 주소 · 프로필 이메일) → **남김** ④ `CATEGORY_PROMOTIONS` · `CATEGORY_SOCIAL` → 버림 ⑤ `Precedence`가 `bulk` · `junk` → 버림 ⑥ `List-Unsubscribe` 또는 `List-Id`가 있고, 보낸 주소의 도메인도 `List-Id`의 도메인(Google 그룹은 `<team.회사.dev>`)도 사용자 회사 도메인(연결한 주소의 도메인과 그 하위 도메인, 단 `gmail.com` 같은 공용 도메인이면 회사 도메인 없음)이 아님 → 버림. `List-Id`도 보는 이유: 거래처가 회사 그룹 주소로 보낸 메일은 보낸 주소가 거래처 도메인이다 ⑦ 보낸 주소 앞부분이 no-reply 낱말(`noreply` · `no-reply` · `no_reply` · `donotreply` · `do-not-reply`)로 시작하거나 구분자(`-` `_` `.` `+`) 뒤에 있음(`workspace-noreply@`), 또는 `notification(s)` · `mailer-daemon` · `postmaster` · `bounce`로 시작 → 버림 ⑧ 일정 초대(`Content-Type`이 `text/calendar`를 담거나, Outlook 초대의 `Content-Class: …calendarmessage`, `From` · `Sender`가 Google Calendar 알림 주소 `calendar-notification@google.com`) → 버림. `format=metadata`는 맨 위 머리글만 주어 초대 메일의 `text/calendar` 부분은 보이지 않으므로 `Sender`가 주로 잡는다 ⑨ 나머지 → 남김. 버린 메일은 이유 코드별 개수만 연결 설정 `settings.stats`에 더한다(로그 · 원문에는 남기지 않는다) |
+| 본문 받기 | 남긴 메일만 `format=full`(`fields=id,threadId,labelIds,internalDate,payload`). `text/plain` 부분을 먼저, 없으면 `text/html`을 글로 바꾼다(태그 · 스타일 · 스크립트 제거, 줄바꿈 유지, 링크는 `글 (주소)`). 파일 이름이 있는 부분(첨부)은 읽지 않는다. `Content-Type`의 문자 집합으로 풀고(UTF-8 · EUC-KR · ISO-2022-KR 등, Node `TextDecoder`), 모르면 UTF-8 |
 | 종류 · 제목 | `kind = email`, `title = 제목`(200자), `writtenByMe = null`(메일에는 인용된 남의 글이 섞인다. judge-v4의 "직접 쓴 문서" 질문을 쓰지 않는다) |
 | 관련자 | `from` · `to` · `cc`: 머리글의 `이름 <주소>`를 그대로(이름이 없으면 주소만). 사용자는 G5와 같게 연결한 주소로 알아본다(`loadIdentity`에 더함, 2-2). `Bcc`는 받는 쪽 머리글에 없으므로 쓰지 않는다 |
 | 시각 | `occurredAt` = `lastEditedAt` = `internalDate`(Gmail이 받은 · 보낸 시각). 안정화 없이 넣는다(G6, `settleMinutes: 0`) |
 | 외부 id · 버전 | `externalId = Gmail 메시지 id`, `externalVersion = "1"`(메일은 바뀌지 않는다) |
 | 원본 링크 | `https://mail.google.com/mail/?authuser={연결한 주소}#all/{threadId}`. Google이 공식으로 정한 주소 형식은 없다(9장). dev에서 열리는지 PR 2에서 확인한다 |
 | 너무 짧은 원문 | 길이로 거르지 않는다(`minTextLength: 1`). "OK" · "Sounds good." 같은 수락도 기한 변경의 근거다. 제목 줄이 있어 빈 글은 생기지 않는다 |
-| 길이 | 본문 2만 자에서 자른다(인용된 옛 메일이 길게 이어지는 스레드의 비용 상한). 한도 20만 자보다 작다 |
+| 길이 | 본문 2만 자에서 자른다(인용된 옛 메일이 길게 이어지는 스레드의 비용 상한). 한도 20만 자보다 작다. 글로 바꾸기 전에 부분마다 20만 자에서 먼저 자른다(몇 MB짜리 HTML) |
+| 저장할 수 없는 글자 | NUL과 짝이 없는 서로게이트(자른 끝의 이모지 반쪽 · `&#xD800;`)는 빼거나 U+FFFD로 바꾼다(`storableText`). 남으면 원문 저장이 실패하고 그 창에서 동기화가 멈춘다 |
 
 본문 형식 (머리줄은 제목만, 보낸 사람 · 받는 사람은 `participants`로. 기존 메일 골든셋은 `제목:`만 있는 것과 `보낸사람:` · `받는사람:` 줄이 있는 것이 섞여 있다 — 어댑터는 앞의 모양 하나로 정하고, Gmail 골든셋은 이 모양으로 쓴다):
 
@@ -332,7 +337,7 @@ eval에 하나를 더했다: 시퀀스 끝에 **확인 요청이 남은 열린 A
 | 0 | 이 계획 문서 | 1장 결정 | — |
 | 1 | 골든셋(4장 표) + 지금 파이프라인으로 기준 점수, G12 비교 | `npm run eval` 기록에 Gmail · Meet 줄. 파이프라인 코드 변경 없음 | 1~2일 |
 | 1b | 파이프라인 보완(4장 "기준 점수" E1~E5: 인용 속 구절 버리기 · 수락이 확인 요청을 풀기 · G12 규칙) + G13 실제 원문 | Gmail · Meet 병합 정확도 100%, 함정 자동 반영 0, 위 표의 "확인 요청 없음" 케이스에 확인 요청이 남지 않음, 전체 eval에서 회의록 · Slack 숫자가 떨어지지 않음 | 1~2일 |
-| 2 | Google OAuth 공통 + **Gmail** 연결 · 거르기 · 넣기 · `reauth` · 폐기 + `loadIdentity` 주소 + callback · lab 시작 + 여는 플래그 | 단위 테스트. dev 프로젝트로: 연결 → 동기화 → fixture 1 · 5가 할 일 · 기한 갱신으로, 뉴스레터는 DB에 없음, 권한을 거두면 다음 동기화에서 `reauth` | 3일 |
+| 2 | Google OAuth 공통 + **Gmail** 연결 · 거르기 · 넣기 · `reauth` · 폐기 + `loadIdentity` 주소 + callback · lab 시작 + 여는 플래그 | 단위 테스트. dev 프로젝트로: 연결 → 동기화 → fixture 1 · 5가 할 일 · 기한 갱신으로, 뉴스레터는 DB에 없음, 권한을 거두면 다음 동기화에서 `reauth` · **dev 확인 2026-09-29** (8장 · 9장 "PR 2 dev에서 확인") | 3일 |
 | 3 | **google** 연결: Calendar 조회 · 회의 잇기 · Meet 전사 넣기 + Notion 회의록에 일정 붙이기(`enrich`) + `sources.meeting` 마이그레이션 | 단위 · DB 테스트. dev Workspace로: Meet 회의 → 전사가 발화자 이름표와 함께 원문으로, 같은 회의 Notion 회의록에 참석자 · 일정, 둘이 할 일 하나로 | 3~4일 |
 | 4 | 재연결 알림(G9) + 앱: Gmail 연결 전 안내 · Meet 줄 · 알림 눌러 연결 화면 · 근거 줄 일정 제목 · Sources 한 회의 묶기 | `swift test` · iOS · macOS 빌드. 시뮬레이터에서 Gmail 확인 창 · `reauth` 줄 · 알림 | 2일 |
 | 5 | 처리방침 · 문서 맞추기(5장) + 전체 검증 + 런북 C4 | 8장 전부. 운영에서만 확인할 수 있는 칸은 go live 순서에서 | 1일 |
@@ -353,15 +358,15 @@ PR 2(Gmail)를 먼저 하는 이유: 프로젝트 B는 Testing이라 콘솔 설�
 ## 8. 끝난 기준 (체크리스트 C4)
 
 - [ ] `npm run lint && npm run typecheck && npm run test && npm run eval` 통과, Gmail · Meet 골든셋 숫자가 README 기록 표에 있음 (PR 1 · 5)
-- [ ] dev: Gmail 연결 → 답장 속 약속이 할 일로, 상대의 "Wednesday works too"가 **새 할 일 없이** 기한 갱신, 링크가 그 스레드를 연다 (PR 2)
-- [ ] dev: 뉴스레터 · 프로모션 · no-reply 메일은 `sources`에 없고, 본문을 받지 않았다(요청 기록) (PR 2)
-- [ ] `invalid_grant` → `reauth`: 단위 테스트 + dev에서 Google 계정의 접근 권한을 거둔 뒤 다음 동기화가 `reauth`, 앱에 "Reconnect to keep syncing", 알림 한 번, 다시 연결하면 끊긴 동안의 메일이 들어옴 (PR 2 · 4)
+- [x] dev: Gmail 연결 → 답장 속 약속이 할 일로, 상대의 "Wednesday works too"가 **새 할 일 없이** 기한 갱신, 링크가 그 스레드를 연다 (PR 2, 2026-09-29. 기한은 10/7로 갱신됐지만 요청 메일이 만든 확인 요청이 남았다 → 9장, PR 1b)
+- [x] dev: 뉴스레터 · 프로모션 · no-reply 메일은 `sources`에 없고, 본문을 받지 않았다(요청 기록) (PR 2, 2026-09-29: 머리글 14통 중 거른 8통(자동 발송 4 · no-reply 3 · 대량 1)에 `format=full` 요청 0건. dev 메일함에는 프로모션 분류가 없었다)
+- [ ] `invalid_grant` → `reauth`: 단위 테스트 + dev에서 Google 계정의 접근 권한을 거둔 뒤 다음 동기화가 `reauth`, 앱에 "Reconnect to keep syncing", 알림 한 번, 다시 연결하면 끊긴 동안의 메일이 들어옴 (PR 2 · 4. **PR 2 몫 확인 2026-09-29**: 저장된 갱신 토큰을 Google 폐기 API로 거둔 뒤 다음 동기화가 `reauth` + "Gmail 연결이 만료됐습니다. 다시 연결해 주세요.", 같은 계정으로 다시 연결하면 같은 연결 행이 `active` · 커서 유지 · 다음 동기화가 커서부터 이어 감. 끊긴 동안 온 메일은 없어 실제 메일로는 보지 못했다(단위 테스트). 앱 문구 · 알림은 PR 4)
 - [ ] dev: Meet 전사가 발화자 이름표와 함께 원문으로(사용자 줄은 프로필 이름), 같은 회의의 Notion 회의록에 일정 참석자, 둘이 담당 "나"인 할 일 하나 (PR 3)
 - [ ] dev: 상대가 주최한 회의의 전사를 가져오는지(G2 ②) 결과를 이 문서 9장에 적고, 처리방침 3장 · 앱 Meet 줄을 그 결과대로 (PR 3 · 5)
-- [ ] 1주 사용에서 볼 숫자(원칙 6): Notion 회의록 중 일정이 붙은 비율 · 같은 일정에 Meet 전사도 있는 비율은 `sources`(`meeting`)로 센다. 거른 메일은 원문이 남지 않고 Vercel 로그는 1일이라, 동기화마다 **이유 코드별 개수**(넣음 · 규칙 ①~⑧) · Meet 전사 수 · 일정 잇기 결과(붙음 · 애매 · 없음)를 연결 설정 `settings.stats`에 누적한다(글자 · 주소 없이). `/admin/metrics`에서 본다 (PR 2 · 3)
-- [ ] 첫 동기화(14일) · 다시 연결 뒤 이어 가져오기가 확인 요청 알림을 원문마다 보내지 않음 (PR 2, 2-2 `ingestDeps`)
+- [ ] 1주 사용에서 볼 숫자(원칙 6): Notion 회의록 중 일정이 붙은 비율 · 같은 일정에 Meet 전사도 있는 비율은 `sources`(`meeting`)로 센다. 거른 메일은 원문이 남지 않고 Vercel 로그는 1일이라, 동기화마다 **이유 코드별 개수**(넣음 · 규칙 ①~⑧) · Meet 전사 수 · 일정 잇기 결과(붙음 · 애매 · 없음)를 연결 설정 `settings.stats`에 누적한다(글자 · 주소 없이). `/admin/metrics`에서 본다 (PR 2 · 3. Gmail 몫은 PR 2: `stats.counts` · "Gmail 거르기" 카드)
+- [x] 첫 동기화(14일) · 다시 연결 뒤 이어 가져오기가 확인 요청 알림을 원문마다 보내지 않음 (PR 2, 2-2 `ingestDeps`: `connected_at` 전 시각의 원문은 `notify: false`. 단위 테스트)
 - [ ] Calendar 요청의 `fields`에 설명 · 첨부가 없음(테스트), 일정은 원문으로 저장되지 않음 (PR 3)
-- [ ] 앱에서 연결 끊기 · 계정 삭제 → Google 계정의 "타사 앱" 목록에서 Taskforce가 사라짐(토큰 폐기) (PR 2 · 3)
+- [ ] 앱에서 연결 끊기 · 계정 삭제 → Google 계정의 "타사 앱" 목록에서 Taskforce가 사라짐(토큰 폐기) (PR 2 · 3. PR 2 dev: `DELETE /api/v1/connections/:id` 204, 폐기 실패 로그 없음, 연결 행 삭제, Gmail 원문 10건은 `connection_id`만 비워져 남음(G11))
 - [ ] 앱이 요청하는 범위가 처리방침 3장 목록 · google-verification.md 1장과 같고, 3장 Google · Gmail 문장(거르기 · 저장 · 첫 동기화 · 재연결)이 구현과 같음 (PR 5, 한국어 · 영어)
 - [ ] Vercel 로그에 메일 본문 · 전사 · 토큰 · code 없음 (운영 배포 뒤)
 
@@ -387,7 +392,8 @@ Google 공식 문서(대부분 2026-04 ~ 2026-09 갱신)의 원문으로 확인�
 | Gmail 머리글만 읽기 | `format=metadata`: "Returns only email message IDs, labels, and email headers." `metadataHeaders`로 고른 머리글만 | 2-6(거른 메일은 본문을 받지 않는다) |
 | Gmail 쿼터 | `messages.list` 5 · `messages.get` 20 · `threads.get` 40 · `history.list` 2 단위, 사용자당 분당 6,000 | 2-6 한도 |
 | Gmail history | "typically valid for at least a week, but in some rare circumstances may be valid for only a few hours", 만료면 404 → 전체 동기화 | history를 쓰지 않고 시각 커서(G8) |
-| Gmail 링크 | Gmail API 문서에 스레드 주소 형식이 **없다**(공식은 Apps Script `getPermalink()`뿐) | 흔히 쓰는 `#all/{id}` 형식을 dev에서 확인(2-6) |
+| Gmail 링크 | Gmail API 문서에 스레드 주소 형식이 **없다**(공식은 Apps Script `getPermalink()`뿐) | `https://mail.google.com/mail/?authuser={연결한 주소}#all/{threadId}`가 그 스레드를 연다(PR 2 dev, 2026-09-29) |
+| Gmail 검색 시각 | "All dates used in the search query are interpreted as midnight on that date in the PST timezone. To specify accurate dates for other timezones pass the value in seconds instead." (Gmail 검색 안내) | `after:` · `before:`에 epoch 초(2-6) |
 | Gmail 분류 | `CATEGORY_PROMOTIONS` 등은 Gmail 탭과 같다("Corresponds to messages that are displayed in the Promotions tab") | G7 |
 | `invalid_grant` | "The user has revoked your app's access", "has not been used for six months", "changed passwords and the refresh token contains Gmail scopes", 계정당 갱신 토큰 한도 초과, Testing 상태의 7일 만료. 웹 서버 안내: "Authenticate the user again" | 2-3: 모두 `reauth` |
 | 갱신 토큰 한도 | "a limit of 100 refresh tokens per Google Account per OAuth 2.0 client ID", 넘으면 가장 오래된 것이 경고 없이 무효 | `prompt=consent`로 다시 연결할 때마다 새로 받는다. 7일마다 다시 연결해도 쓰는 것은 가장 새것 하나라 문제없다 |
@@ -397,6 +403,19 @@ Google 공식 문서(대부분 2026-04 ~ 2026-09 갱신)의 원문으로 확인�
 | 액세스 토큰 수명 | `expires_in`(초)만 있고 고정 값은 문서에 없다 | `expires_at = 받은 시각 + expires_in` |
 | AI 전송 | Workspace 사용자 데이터 정책(2026-09-03): 전송은 "To provide or improve your appropriate use case or user-facing features" 등 예외만, 사용자에게 보이는 기능 · 동의 조건. 일반 AI 모델 학습 금지. 승인된 쓰임 예: Gmail "generative AI summaries", Meet "meeting or speaking insights" | 지금 처리방침 4 · 15장 · 앱 동의로 맞다. 외부 AI 공급자를 하위 처리자로 쓰는 것에 대한 명시 문장은 없다 → L9 검토 항목(legal README 7번)에 이미 있음 |
 | 삭제 | "Honor user requests to delete their data", 이용자가 지우는 방법을 안내하라. 끊으면 지우라는 규칙 · 기한은 찾지 못했다. 같은 쪽에 Google 약관의 "creating permanent copies of Google User data" 금지가 인용된다 | G11. L9에 더함 |
+
+### PR 2 dev에서 확인 (2026-09-29, dev 프로젝트 B · Workspace 메일함 daniel@taskforcelabs.dev)
+
+| 항목 | 확인한 것 | 대응 |
+|---|---|---|
+| Gmail API 켜기 | OAuth client가 속한 프로젝트에 Gmail API가 꺼져 있으면 모든 요청이 `403 accessNotConfigured`(동기화는 `error` "Gmail 요청 실패 (403)") | 운영 프로젝트 B에서도 Gmail API가 켜져 있는지 go live 때 확인(런북 C4) |
+| 빈 목록 | 결과가 없는 창의 `messages.list`는 `fields`가 모든 필드를 걸러 **204 본문 없음** | 빈 목록으로 읽는다(`gmail/client.ts`) |
+| 받은 범위 문자열 | callback · 토큰 응답의 `scope`에 `email`과 `…/userinfo.email`이 함께 온다 | 짧은 이름을 긴 이름으로 맞춰 비교(`grantedScopes`) |
+| Workspace 메일함 분류 | dev Workspace 메일함에는 `CATEGORY_*` 라벨이 없었다(탭 없음). 규칙 ④는 개인 Gmail에서만 걸린다 | 머리글 규칙(②⑤⑥⑦)이 대신 거른다 |
+| Google 시스템 메일 | `workspace-noreply@` · `notify-noreply@` · `platformnotifications-noreply@google.com`: 자동 발송 머리글이 없고 no-reply가 주소 **가운데**에 있다 | 규칙 ⑦을 "구분자 뒤의 no-reply 낱말"까지 넓혔다 |
+| 권한 거둠 | 저장된 갱신 토큰을 폐기 API로 거둔 뒤 API는 401, 갱신은 `invalid_grant` → `reauth` | 2-3 그대로 |
+| 늦게 목록에 나오는 메일 | 스팸 · 휴지통에서 되돌린 메일, 프로모션에서 옮긴 메일처럼 받은 시각(`internalDate`)이 `after − 1시간`보다 앞인데 나중에 목록에 나오는 메일은 가져오지 않는다(시각 커서의 한계, 검토에서 확인) | 베타에서는 두고, 누락 신고로 들어오면 본다 |
+| **파이프라인 (PR 1b, 4장 "기준 점수"와 같은 것)** | 실제 메일에서도 골든셋과 같은 것이 났다. ① 연장 메일("Wednesday, Oct 7 works too")에서 인용된 "Sure, I'll send it by Monday"가 기한 10/5 후보로 **자동 반영**됐다(최종 기한은 규칙 4로 10/7) = **E2**. ② 혼자 받은 요청 메일이 만든 확인 요청이 내 수락 답장 뒤에도 남았다 = **E3**. 더해서 본 것: 한 스레드의 세 통이 같은 동기화에 들어오면 `ingestItems`가 3개씩 동시에 처리해 보낸 순서대로 병합되지 않는다(골든셋 시퀀스는 차례로 넣는다). ③ 인용이 붙은 메일의 추출이 90초 초과 · `finish_reason: length`로 실패했다 = **E6**. 보낸 사람 표시 이름이 사용자 이름과 같고 주소만 다를 때(두 시험 계정이 모두 "Daniel Song") 매번 실패했고, 이름을 다르게 하면 35초에 끝났다. `failed` 원문은 `scripts/reprocess-sources.ts --source`로 다시 처리된다(연결한 Google 주소를 쓰도록 이 PR에서 고쳤다) | E2 · E3 · E6 고침과 함께: 같은 스레드의 메일을 보낸 순서대로 병합할지, `isUser`가 주소가 다른 사람을 이름으로 사용자로 보는 규칙 |
 
 ### 출처
 
