@@ -194,6 +194,37 @@ struct ConnectionsTests {
         #expect(ConnectionProvider.stageTwo.allSatisfy { $0.logo == nil })
     }
 
+    /// Slack: 연결 전에 무엇을 받는지 알리고, 끊으면 Slack 글이 지워진다고 알린다 (slack-integration.md 3장 · D3)
+    @Test func slackConnectAndDisconnectCopy() {
+        #expect(ConnectionProvider.slack.readsBeforeConnecting == [
+            "DMs and group DMs",
+            "Channel threads you write in or are mentioned in",
+            "New messages only. Taskforce never sends anything.",
+        ])
+        #expect(ConnectionProvider.notion.readsBeforeConnecting.isEmpty)
+        #expect(ConnectionProvider.disconnectNote(for: "slack") == "Slack messages are removed from Taskforce. Tasks stay.")
+        #expect(ConnectionProvider.disconnectNote(for: "notion") == "Tasks already found stay.")
+        #expect(ConnectionProvider.disconnectNote(for: "someday") == "Tasks already found stay.")
+    }
+
+    /// 서버가 Slack 연결을 끊으며 바꾼 근거 인용은 인용이 아니라 앱 문구로 보여 준다
+    @Test func removedSlackQuote() {
+        #expect(RemovedQuote.isRemoved("Slack 연결을 끊어 지웠어요"))
+        #expect(!RemovedQuote.isRemoved("제안서는 월요일에 받아도 괜찮아요"))
+        #expect(RemovedQuote.label == "Removed when Slack was disconnected")
+    }
+
+    /// 맨 앞 근거는 남아 있는 인용을 먼저 고른다 (지운 Slack 인용이 더 최근이어도)
+    @Test func evidenceLeadPrefersKeptQuote() {
+        let source = UUID()
+        func line(_ quote: String, _ day: Int) -> EvidenceLine {
+            EvidenceLine(id: UUID(), quote: quote, sourceID: source, sourceTitle: nil, occurredAt: Date(timeIntervalSince1970: Double(day) * 86_400), externalURL: nil, service: .notion)
+        }
+        let digest = EvidenceDigest(lines: [line("금요일까지 제안서 보내드릴게요", 1), line(RemovedQuote.slackDisconnected, 2)])
+        #expect(digest.lead?.quote == "금요일까지 제안서 보내드릴게요")
+        #expect(EvidenceDigest(lines: [line(RemovedQuote.slackDisconnected, 2)]).lead?.quote == RemovedQuote.slackDisconnected)
+    }
+
     // MARK: 단축키
 
     @Test func defaultHotKeyIsOptionSpace() {

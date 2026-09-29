@@ -1,5 +1,5 @@
 import type { SourceKind } from "./extract";
-import type { UserIdentity } from "./identity";
+import { speakerRole, type UserIdentity } from "./identity";
 import type { Decide, JudgeSignals } from "./judge";
 import { matchCandidate, shortlistActions, type MatchRelation, type OpenAction } from "./match";
 import { resolveAction, type Claim } from "./resolve";
@@ -78,6 +78,29 @@ export function toOpenAction(a: TrackedAction): OpenAction {
 }
 
 export type MergeSource = { id: string; text: string; kind: SourceKind; occurredAt: Date };
+
+/**
+ * 인용 줄의 이름표를 붙일 Action의 요청자와 비교해 Claim의 화자 역할을 코드로 정한다 (docs/TRUTH_RULES.md 2장 "구현").
+ * 요청자가 아닌 사람의 말이면 third_party라 규칙 0이 기한 연장 · 취소를 막는다. 모르면 Jev 답 그대로.
+ * 요청자 본인의 **취소**는 직접 발언으로 본다: 취소는 요청자의 결정이라, 이유로 남의 말을 붙여도("대표님이 이미 받으셨대요")
+ * 규칙 3의 "본인의 발언"이다. 연장 · 변경은 요청자가 윗사람의 결정을 전할 수도 있어("팀장님이 다음 주도 된대요") Jev 답을 그대로 둔다.
+ */
+export function withSpeakerFromLabel(
+  signals: JudgeSignals,
+  speaker: string | undefined,
+  requester: string | null | undefined,
+  identity: UserIdentity,
+  signal?: VerifiedCandidate["signal"],
+): JudgeSignals {
+  const role = speaker ? speakerRole(speaker, requester, identity) : null;
+  if (!role) return signals;
+  const ownCancel = role === "counterpart" && signal === "cancellation";
+  return {
+    ...signals,
+    speaker_role: { choice: role, probabilities: { [role]: 1 } },
+    ...(ownCancel ? { directness: { choice: "first_hand" as const, probabilities: { first_hand: 1 } } } : {}),
+  };
+}
 
 /** 후보 하나와 Jev 신호로 Claim을 만든다. 발언 속성(누가 · 얼마나 확정 · 직접 · 공유)은 Jev 판정을 쓴다. */
 export function candidateClaims(
@@ -159,11 +182,15 @@ export async function mergeJudged(
     }
 
     const [vector] = await deps.embed([embedText(candidate.title, candidate.quote)]);
-    const match = await matchCandidate(candidate, source, identity, await store.shortlist(vector), deps.decide);
+    const shortlist = await store.shortlist(vector);
+    const match = await matchCandidate(candidate, source, identity, shortlist, deps.decide);
     outcomes.push({ quote: candidate.quote, signal: candidate.signal, relation: match.relation, actionId: match.actionId, confidence: match.confidence });
     if (match.relation === "unmatched") continue;
 
-    const claims = candidateClaims(candidate, judge.signals, source, match.relation, deps.newId);
+    // 새 Action은 후보가 적은 상대, 기존 Action에 붙이면 그 Action의 상대(처음 약속한 요청자)와 이름표를 비교한다.
+    const requester = match.relation === "new" ? candidate.counterpart : (shortlist.find((a) => a.id === match.actionId)?.counterpart ?? null);
+    const signals = withSpeakerFromLabel(judge.signals, judge.speaker, requester, identity, candidate.signal);
+    const claims = candidateClaims(candidate, signals, source, match.relation, deps.newId);
     const evidence: Evidence = { sourceId: source.id, quote: candidate.quote, role: EVIDENCE_ROLE[match.relation] };
 
     if (match.relation === "new") {

@@ -5,6 +5,7 @@ import { randomUUID } from "node:crypto";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 import type { ActionProgressState, ActionSummary, EditActionRequest, HandoffResponse } from "@/lib/api/contract";
+import { SLACK_DISCONNECTED_QUOTE } from "@/lib/retention";
 
 import { loadClaims, loadStoredRow, retryOnConflict, writeAction, writeProgress, type ActionWrite, type StoredRow } from "./db-store";
 import { quoteContext } from "@/lib/pipeline/text";
@@ -186,7 +187,10 @@ export async function handoffAction(client: SupabaseClient, admin: SupabaseClien
       .throwOnError(),
     client.from("claims").select("field, value, occurred_at").eq("action_id", actionId).eq("origin", "user").throwOnError(),
   ]);
-  const evidenceRows = (evidence ?? []) as { quote: string; role: HandoffEvidence["role"]; source_id: string }[];
+  // Slack 연결을 끊어 지운 인용 자리 표시는 옮기지 않는다 (근거가 아니다)
+  const evidenceRows = ((evidence ?? []) as { quote: string; role: HandoffEvidence["role"]; source_id: string }[]).filter(
+    (e) => e.quote !== SLACK_DISCONNECTED_QUOTE,
+  );
   const sourceIds = [...new Set(evidenceRows.map((e) => e.source_id))];
   const { data: sources } = sourceIds.length
     ? await client.from("sources").select("id, kind, title, raw_text, raw_text_purged_at, occurred_at, external_url").in("id", sourceIds).throwOnError()

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { findQuoteSpan, quoteContext, quoteInText } from "./text";
+import { findQuoteSpan, quoteContext, quoteInText, quoteLineIndexes } from "./text";
 
 const text = ["a: 1", "b: 2", "c: 3", "나: 금요일까지 제안서", "보내드릴게요.", "d: 4", "e: 5"].join("\n");
 
@@ -80,5 +80,19 @@ describe("findQuoteSpan", () => {
     const source = "İstanbul: 금요일까지 보낼게요";
     expect(findQuoteSpan(source, "금요일까지 보낼게요")?.quote).toBe("금요일까지 보낼게요");
     expect(findQuoteSpan(source, "İSTANBUL 금요일")?.quote).toBe("İstanbul: 금요일");
+  });
+});
+
+describe("quoteLineIndexes", () => {
+  it("인용이 있는 줄 번호를 돌려준다. 여러 줄에 걸치면 걸친 줄 모두", () => {
+    expect(quoteLineIndexes(text, "금요일까지 제안서")).toEqual([3]);
+    expect(quoteLineIndexes(text, "제안서 보내드릴게요")).toEqual([3, 4]);
+    expect(quoteLineIndexes(text, "없는 문장")).toEqual([]);
+  });
+
+  it("같은 구절이 여러 줄에 있거나 ...로 이은 인용은 줄을 모두 돌려준다", () => {
+    const chat = ["박지훈: 넵 확인했어요", "", "윤지호: 넵 월요일에 드릴게요"].join("\n");
+    expect(quoteLineIndexes(chat, "넵")).toEqual([0, 2]);
+    expect(quoteLineIndexes(chat, "확인했어요 ... 월요일에 드릴게요")).toEqual([0, 2]);
   });
 });

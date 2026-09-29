@@ -1,0 +1,67 @@
+{
+  "id": "slack-namesake-other-person",
+  "description": "안전장치(이름 겹침): 사용자 윤지호의 별칭은 Jiho다. 같은 채널의 다른 사람 Jiho Park을 부른 요청과 그 사람의 약속은 할 일이 아니고, 사용자를 부른 요청과 사용자의 수락만 할 일이다.",
+  "origin": "synthetic",
+  "tags": [
+    "slack"
+  ],
+  "user": {
+    "name": "윤지호",
+    "aliases": [
+      "Jiho"
+    ],
+    "emails": []
+  },
+  "sources": [
+    {
+      "id": "slack-1005",
+      "kind": "message",
+      "occurred_at": "2026-10-05T13:00:00+09:00",
+      "text": "[#design]\n진서우: @Jiho Park 배너 시안 금요일까지 부탁드려요\nJiho Park: 넵 금요일까지 드릴게요\n진서우: @윤지호 지호님은 목요일에 카피만 한 번 봐주세요\n윤지호: 네 목요일에 볼게요",
+      "participants": {
+        "attendees": [
+          {
+            "name": "진서우"
+          },
+          {
+            "name": "Jiho Park"
+          },
+          {
+            "name": "윤지호"
+          }
+        ]
+      }
+    }
+  ],
+  "expected_actions": [
+    {
+      "title": "진서우의 배너 카피 검토",
+      "owner": "me",
+      "counterpart": "진서우",
+      "due": "2026-10-08",
+      "status": "open",
+      "evidence": [
+        {
+          "source": "slack-1005",
+          "quote": "네 목요일에 볼게요"
+        },
+        {
+          "source": "slack-1005",
+          "quote": "지호님은 목요일에 카피만 한 번 봐주세요"
+        }
+      ]
+    }
+  ],
+  "must_not_extract": [
+    {
+      "source": "slack-1005",
+      "quote": "배너 시안 금요일까지 부탁드려요",
+      "reason": "NOT_MY_ACTION"
+    },
+    {
+      "source": "slack-1005",
+      "quote": "넵 금요일까지 드릴게요",
+      "reason": "NOT_MY_ACTION"
+    }
+  ]
+}

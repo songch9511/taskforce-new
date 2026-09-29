@@ -10,7 +10,8 @@ import TaskforceUI
 struct ConnectionsView: View {
     @Environment(AccountStore.self) private var account
     @Environment(\.webAuthenticationSession) private var webAuthenticationSession
-    @State private var confirmingGoogle = false
+    /// 연결 전에 읽는 것을 먼저 보여 주는 서비스 (Google · Slack)
+    @State private var confirming: ConnectionProvider?
     @State private var disconnecting: ConnectionRecord?
 
     var body: some View {
@@ -58,13 +59,14 @@ struct ConnectionsView: View {
             await account.followSync()
         }
         .confirmationDialog(
-            ConnectionProvider.google.displayName,
-            isPresented: $confirmingGoogle,
-            titleVisibility: .visible
-        ) {
-            Button("Continue") { start(.google) }
-        } message: {
-            Text(ConnectionProvider.google.readsBeforeConnecting.joined(separator: "\n"))
+            confirming?.displayName ?? "",
+            isPresented: Binding(get: { confirming != nil }, set: { if !$0 { confirming = nil } }),
+            titleVisibility: .visible,
+            presenting: confirming
+        ) { provider in
+            Button("Continue") { start(provider) }
+        } message: { provider in
+            Text(provider.readsBeforeConnecting.joined(separator: "\n"))
         }
         .confirmationDialog(
             "Disconnect?",
@@ -73,8 +75,8 @@ struct ConnectionsView: View {
             presenting: disconnecting
         ) { record in
             Button("Disconnect", role: .destructive) { Task { await account.disconnect(record) } }
-        } message: { _ in
-            Text("Tasks already found stay.")
+        } message: { record in
+            Text(ConnectionProvider.disconnectNote(for: record.provider))
         }
         .sheet(isPresented: $account.showsConsent, onDismiss: { account.declineConsent() }) {
             ConsentPrompt()
@@ -90,7 +92,7 @@ struct ConnectionsView: View {
 
     private func connect(_ provider: ConnectionProvider) {
         if !provider.readsBeforeConnecting.isEmpty, !account.needsConsent {
-            confirmingGoogle = true
+            confirming = provider
         } else {
             start(provider)
         }
@@ -141,6 +143,16 @@ private struct ConnectionRow: View {
         }
     }
 
+    private func moreMenu<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+        Menu(content: content) {
+            Image(systemName: "ellipsis.circle")
+                .foregroundStyle(TFColor.textSecondary)
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .accessibilityLabel("More")
+    }
+
     @ViewBuilder
     private var trailing: some View {
         if connecting {
@@ -152,22 +164,22 @@ private struct ConnectionRow: View {
                     Button("Connect", action: onConnect)
                         .buttonStyle(.bordered)
                 }
-            case .needsReconnect:
-                Button("Reconnect", action: onConnect)
-                    .buttonStyle(.bordered)
+            case .needsReconnect(let record):
+                // 끊긴 연결도 지울 수 있다 (Slack에서 앱을 지워 남은 연결 기록)
+                HStack(spacing: TFSpace.sm) {
+                    Button("Reconnect", action: onConnect)
+                        .buttonStyle(.bordered)
+                    moreMenu {
+                        Button("Disconnect", role: .destructive) { onDisconnect(record) }
+                    }
+                }
             case .connected(let record), .syncFailed(let record):
-                Menu {
+                moreMenu {
                     // 동기화 중에 눌러도 된다: 서버가 429로 답하면 오류 없이 "Syncing…" 그대로
                     Button("Sync Now", action: onSync)
                         .disabled(sending)
                     Button("Disconnect", role: .destructive) { onDisconnect(record) }
-                } label: {
-                    Image(systemName: "ellipsis.circle")
-                        .foregroundStyle(TFColor.textSecondary)
                 }
-                .menuStyle(.borderlessButton)
-                .fixedSize()
-                .accessibilityLabel("More")
             }
         }
     }
