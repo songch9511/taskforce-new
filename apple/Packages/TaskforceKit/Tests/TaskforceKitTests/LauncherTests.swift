@@ -255,4 +255,24 @@ struct LauncherTests {
     @Test func clockGoingBackSendsAgain() {
         #expect(sends([0, -3600]) == [true, true])
     }
+
+    // MARK: ⌘⌫
+
+    @Test func deleteKeyRepeatIsIgnored() {
+        let guardian = LauncherDeleteGuard()
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        #expect(guardian.allows(isRepeat: false, at: now))
+        #expect(!guardian.allows(isRepeat: true, at: now))
+    }
+
+    /// 안내를 ⌘⌫로 닫은 직후 한 번 더 누른 ⌘⌫는 다음 줄(Review · 할 일)에 닿지 않는다
+    @Test func deleteRightAfterNoticeDismissalIsIgnored() {
+        var guardian = LauncherDeleteGuard()
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        guardian.noticeDismissed(at: now)
+        #expect(!guardian.allows(isRepeat: false, at: now.addingTimeInterval(0.2)))
+        #expect(!guardian.allows(isRepeat: false, at: now.addingTimeInterval(LauncherDeleteGuard.settle - 0.01)))
+        #expect(guardian.allows(isRepeat: false, at: now.addingTimeInterval(LauncherDeleteGuard.settle)))
+        #expect(!guardian.allows(isRepeat: true, at: now.addingTimeInterval(5)))
+    }
 }

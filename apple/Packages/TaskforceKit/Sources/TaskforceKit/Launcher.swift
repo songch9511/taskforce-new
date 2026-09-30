@@ -289,6 +289,29 @@ public enum PastedSource {
     }
 }
 
+/// ⌘⌫ (Review Dismiss · 할 일 Delete · 처리방침 안내 닫기)는 되돌리기 어려운 키라, 누르고 있어 반복된 입력은 무시한다.
+/// 안내 줄을 닫으면 다음 줄(Review 카드 · 할 일)이 골라지므로, 닫은 직후 잠깐 들어온 ⌘⌫(두 번 누름)도 무시한다.
+public struct LauncherDeleteGuard: Sendable, Equatable {
+    /// 안내를 닫은 뒤 ⌘⌫를 받지 않는 시간
+    public static let settle: TimeInterval = 0.6
+
+    private var quietUntil: Date?
+
+    public init() {}
+
+    /// 이 ⌘⌫를 실행해도 되는지
+    public func allows(isRepeat: Bool, at now: Date) -> Bool {
+        if isRepeat { return false }
+        if let quietUntil, now < quietUntil { return false }
+        return true
+    }
+
+    /// 처리방침 안내 줄을 ⌘⌫로 닫았을 때
+    public mutating func noticeDismissed(at now: Date) {
+        quietUntil = now.addingTimeInterval(Self.settle)
+    }
+}
+
 /// Mac: 런처를 띄울 때마다 `app_opened`를 보내면 지표가 부풀어서, 30분에 한 번만 보낸다 (지표 2 · 3).
 public struct LauncherOpenThrottle: Sendable, Equatable {
     public static let interval: TimeInterval = 30 * 60

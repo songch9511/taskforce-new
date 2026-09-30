@@ -36,6 +36,8 @@ final class AccountStore {
     private(set) var policyNotice: PolicyNotice?
     /// 안내를 읽은 계정 (열거나 닫으면 이 계정에 적는다)
     private var policyUserID: UUID?
+    /// 계정마다 30분에 한 번만 읽는다
+    private var policyRefresh = PolicyNoticeRefresh()
     /// `reset()`마다 오른다: 전 사용자의 늦은 응답을 버린다
     private var generation = 0
 
@@ -122,6 +124,7 @@ final class AccountStore {
         comingSoon = []
         policyNotice = nil
         policyUserID = nil
+        policyRefresh = PolicyNoticeRefresh()
         loaded = false
         showsConsent = false
         pendingProvider = nil
@@ -165,13 +168,16 @@ final class AccountStore {
 
     // MARK: 처리방침 변경 안내
 
-    /// 처리방침 변경 안내를 읽는다 (앱을 열거나 앞으로 돌아올 때). 실패하면 지금 보이는 것을 그대로 둔다
+    /// 처리방침 변경 안내를 읽는다 (앱을 열거나 앞으로 돌아올 때, 계정마다 30분에 한 번 `PolicyNoticeRefresh`).
+    /// 실패하면 지금 보이는 것을 그대로 둔다
     func loadPolicyNotice(userID: UUID) async {
         #if DEBUG
         if sampleMode { return }
         #endif
+        guard policyRefresh.isDue(for: userID, at: Date()) else { return }
         let generation = generation
         guard let response = try? await services.api.legal(), generation == self.generation else { return }
+        policyRefresh.loaded(for: userID, at: Date())
         policyUserID = userID
         policyNotice = PolicyNoticeSeen.pending(response.privacy.notice, for: userID)
     }

@@ -155,7 +155,12 @@ Supabase → Organization → Billing에서 프로젝트가 **Free**이고 백�
 5. `npm run build && npm test` → Preview 배포에서 확인 → **사용자 승인 뒤** Production.
 6. 끝: `https://www.taskforcelabs.dev/en/privacy`에 새 처리방침이 보이고, `docs/legal/README.md`의 게시 규칙(자리표시자 · 상자 없음)을 지킨다.
 7. TestFlight CTA 링크는 go live 날 넣는다(체크리스트 G2): Vercel `taskforce-website` Production에 `TESTFLIGHT_URL` → 재배포(빌드 때 읽는다). 그 전에는 두 CTA 자리에 링크 없는 "Coming soon"이 나온다(2026-09-29).
-8. 처리방침을 바꿀 때 `src/lib/legal/policy.ts`의 버전 · 시행일을 함께 바꾼다. 앱은 `GET /api/v1/legal`로 받아 안내 한 줄을 보인다(처리방침 17장 "앱과 이 페이지에 알립니다"). 게시와 함께 시행하면 `current`를 새 판으로 바꾸고(그 전에 가입한 계정에 "Privacy Policy updated"), 미리 알리면(시행 7일 전, 이용자에게 불리하면 30일 전) `upcoming`에 새 판을 둔다(모든 계정에 "Privacy Policy changes <날짜>", 시행일 한국 시간 0시가 지나면 배포 없이 현재 판이 된다). 서버를 배포해야 안내가 나가므로 웹사이트 게시와 같은 날 배포한다. 안내를 봤는지는 기기에만 남고 서버에는 남기지 않는다: 서버에 남기려면 처리방침에 그 이용 기록을 먼저 적는다.
+8. 처리방침을 바꿀 때 `src/lib/legal/policy.ts`의 버전 · 시행일을 함께 바꾼다. 앱은 `GET /api/v1/legal`로 받아 안내 한 줄을 보인다(처리방침 17장 "앱과 이 페이지에 알립니다").
+   - **기본은 `upcoming`이다 (go live 뒤의 모든 실질 변경).** 새 판을 `upcoming`에 두고 시행 7일 전까지 배포한다. 수집 항목 · 목적 · 받는 곳이 늘어나는 변경은 30일 전까지 둔다(17장의 약속). 그러면 모든 계정에 "Privacy Policy changes <날짜>"가 보이고, 시행일 한국 시간 0시가 지나면 배포 없이 현재 판이 된다. 다음에 고칠 때 `current`로 옮기고 `upcoming`을 비운다.
+   - **`upcoming.url`은 그 판의 버전 주소다** (`https://www.taskforcelabs.dev/{ko,en}/privacy/{version}`, 예: `/ko/privacy/beta-1.2`). 알리는 동안 `/{lang}/privacy`는 아직 현재 판을 보여 주므로, "View"가 새 판을 열려면 웹사이트가 시행 전 판도 버전 주소로 내놓아야 한다. 지금 웹사이트는 보관본(`/{lang}/privacy/beta-1.0`)만 버전 주소로 내놓는다. 시행 예정 판을 내놓는 길은 웹사이트 저장소의 별도 변경이다. 첫 `upcoming` 전에 만든다.
+   - **`current`만 바꾸기(게시와 함께 시행, 시행 뒤 알림)는 두 경우뿐이다:** 처리 내용이 바뀌지 않는 고침(오탈자 · 문장 다듬기 · 연락처)이거나, 계정이 운영자 것뿐일 때(베타 1.1이 그랬다, `docs/legal/README.md` 게시 기록). 그 전에 가입한 계정에 시행일부터 30일 동안 "Privacy Policy updated"가 보인다(그 뒤 처음 앱을 연 계정에는 보이지 않는다).
+   - 서버를 배포해야 안내가 나간다. `current`만 바꿀 때는 웹사이트 게시와 같은 날 배포한다.
+   - 안내를 봤는지는 기기에만 남고 서버에는 남기지 않는다: 서버에 남기려면 처리방침에 그 이용 기록을 먼저 적는다. 앱은 계정마다 30분에 한 번만 읽으므로 배포 뒤 안내가 보이기까지 30분쯤 걸릴 수 있다.
 
 ## 8. 배포 뒤 확인 (한 번씩)
 

@@ -11,8 +11,19 @@ public struct LegalResponse: Decodable, Sendable, Hashable {
 public struct PrivacyPolicyStatus: Decodable, Sendable, Hashable {
     public let current: PolicyVersion
     public let upcoming: PolicyVersion?
-    /// 이 계정에 보일 안내. 없으면 nil
+    /// 이 계정에 보일 안내. 없으면 nil. 모르는 `kind`(새 서버) · 어긋난 안내도 nil로 읽는다 (나머지 응답은 그대로)
     public let notice: PolicyNotice?
+
+    enum CodingKeys: String, CodingKey {
+        case current, upcoming, notice
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        current = try c.decode(PolicyVersion.self, forKey: .current)
+        upcoming = try c.decodeIfPresent(PolicyVersion.self, forKey: .upcoming)
+        notice = try? c.decodeIfPresent(PolicyNotice.self, forKey: .notice)
+    }
 }
 
 /// contract.ts `policyVersionSchema`
@@ -99,5 +110,28 @@ public enum PolicyNoticeSeen {
     public static func pending(_ notice: PolicyNotice?, for userID: UUID, in defaults: UserDefaults = .standard) -> PolicyNotice? {
         guard let notice, !versions(for: userID, in: defaults).contains(notice.version) else { return nil }
         return notice
+    }
+}
+
+/// GET /legal은 계정마다 30분에 한 번만 읽는다 (iPhone은 앞으로 돌아올 때마다, Mac은 런처를 열 때마다 부른다).
+/// 읽기에 성공한 때만 센다: 실패하면 다음 기회에 다시 읽는다. 안내는 하루 이상 앞서 나오므로 30분 늦어도 된다.
+public struct PolicyNoticeRefresh: Sendable, Equatable {
+    public static let interval: TimeInterval = 30 * 60
+
+    private var userID: UUID?
+    private var loadedAt: Date?
+
+    public init() {}
+
+    /// 이 계정으로 지금 읽어야 하는지 (다른 계정이거나 30분이 지났거나 아직 읽지 않았으면)
+    public func isDue(for userID: UUID, at now: Date) -> Bool {
+        guard self.userID == userID, let loadedAt, now >= loadedAt else { return true }
+        return now.timeIntervalSince(loadedAt) >= Self.interval
+    }
+
+    /// 읽기에 성공했을 때
+    public mutating func loaded(for userID: UUID, at now: Date) {
+        self.userID = userID
+        loadedAt = now
     }
 }

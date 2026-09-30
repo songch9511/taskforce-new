@@ -38,6 +38,30 @@ struct PolicyNoticeTests {
         #expect(response.privacy.notice == nil)
     }
 
+    /// 새 서버가 모르는 kind를 보내도 안내만 없고 나머지는 읽는다
+    @Test func unknownKindMeansNoNotice() throws {
+        let json = Self.legalJSON.replacingOccurrences(of: #""kind":"upcoming""#, with: #""kind":"withdrawn""#)
+        let response = try TaskforceJSON.decoder().decode(LegalResponse.self, from: Data(json.utf8))
+        #expect(response.privacy.notice == nil)
+        #expect(response.privacy.current.version == "beta-1.1")
+        #expect(response.privacy.upcoming?.version == "beta-1.2")
+    }
+
+    @Test func refreshIsPerAccountEvery30Minutes() {
+        var refresh = PolicyNoticeRefresh()
+        let me = UUID()
+        let other = UUID()
+        let start = Date(timeIntervalSince1970: 1_000_000)
+        #expect(refresh.isDue(for: me, at: start))
+        refresh.loaded(for: me, at: start)
+        #expect(!refresh.isDue(for: me, at: start.addingTimeInterval(60)))
+        #expect(!refresh.isDue(for: me, at: start.addingTimeInterval(29 * 60)))
+        #expect(refresh.isDue(for: me, at: start.addingTimeInterval(30 * 60)))
+        // 다른 계정 · 시계가 뒤로 가면 다시 읽는다
+        #expect(refresh.isDue(for: other, at: start.addingTimeInterval(60)))
+        #expect(refresh.isDue(for: me, at: start.addingTimeInterval(-60)))
+    }
+
     @Test func titleIsTerse() {
         let today = LocalDate("2026-09-30")!
         #expect(Self.updated.title(today: today) == "Privacy Policy updated")

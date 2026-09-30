@@ -6,12 +6,18 @@ import { handleGetLegal, type LegalDeps } from "./legal";
 type User = { id: string };
 
 const url = { ko: "https://www.taskforcelabs.dev/ko/privacy", en: "https://www.taskforcelabs.dev/en/privacy" };
-const policy = { current: { version: "beta-1.1", effective_date: "2026-09-30", url }, upcoming: null };
+const current = { version: "beta-1.1", effective_date: "2026-09-30", url };
+const upcoming = {
+  version: "beta-1.2",
+  effective_date: "2026-10-07",
+  url: { ko: "https://www.taskforcelabs.dev/ko/privacy/beta-1.2", en: "https://www.taskforcelabs.dev/en/privacy/beta-1.2" },
+};
+const policy = { current, upcoming: null };
 const now = () => new Date("2026-10-01T03:00:00Z");
 const get = () => new Request("http://localhost/api/v1/legal");
 
-function deps(user: User | null, createdAt: () => Promise<Date>): LegalDeps<User> {
-  return { authenticate: async () => user, accountCreatedAt: createdAt, policy, now };
+function deps(user: User | null, createdAt: () => Promise<Date>, overrides: Partial<LegalDeps<User>> = {}): LegalDeps<User> {
+  return { authenticate: async () => user, accountCreatedAt: createdAt, policy, now, ...overrides };
 }
 
 describe("GET /api/v1/legal", () => {
@@ -26,8 +32,8 @@ describe("GET /api/v1/legal", () => {
     const response = await handleGetLegal(get(), deps({ id: "u" }, async () => new Date("2026-09-20T00:00:00Z")));
     expect(response.status).toBe(200);
     const body = legalResponseSchema.parse(await response.json());
-    expect(body.privacy.notice).toEqual({ ...policy.current, kind: "updated" });
-    expect(body.privacy.current).toEqual(policy.current);
+    expect(body.privacy.notice).toEqual({ ...current, kind: "updated" });
+    expect(body.privacy.current).toEqual(current);
     expect(body.privacy.upcoming).toBeNull();
   });
 
@@ -36,7 +42,16 @@ describe("GET /api/v1/legal", () => {
     expect(legalResponseSchema.parse(await response.json()).privacy.notice).toBeNull();
   });
 
-  it("가입 시각을 읽지 못하면 500", async () => {
+  it("시행 예정 판이 있거나 updated 기간이 지났으면 가입 시각을 읽지 않는다", async () => {
+    const createdAt = vi.fn(async () => new Date("2026-09-20T00:00:00Z"));
+    const withUpcoming = await handleGetLegal(get(), deps({ id: "u" }, createdAt, { policy: { current, upcoming } }));
+    expect(legalResponseSchema.parse(await withUpcoming.json()).privacy.notice).toEqual({ ...upcoming, kind: "upcoming" });
+    const later = await handleGetLegal(get(), deps({ id: "u" }, createdAt, { now: () => new Date("2026-11-15T00:00:00Z") }));
+    expect(legalResponseSchema.parse(await later.json()).privacy.notice).toBeNull();
+    expect(createdAt).not.toHaveBeenCalled();
+  });
+
+  it("가입 시각이 필요한데 읽지 못하면 500", async () => {
     const log = vi.spyOn(console, "error").mockImplementation(() => {});
     const failed = await handleGetLegal(get(), deps({ id: "u" }, async () => Promise.reject(new Error("auth down"))));
     expect(failed.status).toBe(500);
