@@ -24,7 +24,7 @@
 
 | 방법 | 소스 | 비고 |
 |---|---|---|
-| 서버 OAuth (주기 동기화) | Notion, Slack, Gmail (구현). Calendar, Meet 전사 (1단계, 아직 없음) | 아래 구조. GitHub 등 2단계 연동은 아직 "원해요"만 받는다([다음 연동](#다음-연동)) |
+| 서버 OAuth (주기 동기화) | Notion, Slack, Gmail, Calendar, Meet 전사 (구현) | 아래 구조. GitHub 등 2단계 연동은 아직 "원해요"만 받는다([다음 연동](#다음-연동)) |
 | 기기 안 (Apple 앱이 전달) | 미리 알림(EventKit), Apple 메모 (아직 없음) | Apple 메모는 공개 API가 없다. 공유 시트와 단축어(App Intents)의 "Taskforce로 보내기"로 받을 계획이다 (둘 다 아직 없음) |
 | 범용 입구 | 메일 전달 주소, 붙여넣기 | 연동이 없는 소스를 대신한다 |
 
@@ -43,7 +43,7 @@
 - **수동 동기화**: `POST /api/v1/connections/sync` (로그인한 사용자의 연결만, 연결마다 1분에 한 번). 연결 끊기: `DELETE /api/v1/connections/:id`.
 - **동시 실행 방지**: 동기화 전에 연결을 잡는다(`sync_started_at`, 10분 뒤 자동으로 풀림). cron과 수동 동기화가 같은 연결을 겹쳐 돌리지 않고, 실행 시간 한도에 가까워지면 남은 항목은 다음 차례로 미룬다.
 - **한도**: 연동 원문도 직접 입력과 같은 한도(본문 20만 자, 제목 200자, 관련자 200명)를 따른다. 사용자에게는 짧은 오류만 보이고 자세한 내용은 서버 로그에만 남는다.
-- **토큰 폐기**: 연결 끊기(`DELETE /api/v1/connections/:id`) · 계정 삭제 모두 서비스 쪽 토큰도 폐기한다 (Notion · Slack, `src/lib/connectors/registry.ts`의 `tokenRevokerFor` · `revokeConnectorTokens`). 폐기가 실패해도 끊기 · 삭제는 계속하고, 우리 쪽 토큰은 연결과 함께 지운다.
+- **토큰 폐기**: 연결 끊기(`DELETE /api/v1/connections/:id`) · 계정 삭제 모두 서비스 쪽 토큰도 폐기한다 (Notion · Slack · Gmail · google(Calendar · Meet), `src/lib/connectors/registry.ts`의 `tokenRevokerFor` · `revokeConnectorTokens`). 폐기가 실패해도 끊기 · 삭제는 계속하고, 우리 쪽 토큰은 연결과 함께 지운다.
 
 ### 넣는 규칙 (`src/lib/connectors/ingest.ts`)
 
@@ -342,8 +342,8 @@ type DataSourceSetting = {
 | Notion 할 일 DB | 담당 · 기한 · 상태 속성과 그 변화 | 구현됨 (위 설계) |
 | Slack | 나에게 온 DM, 나를 언급한 글, 내가 쓴 약속 | 사전 필터 없이 1자부터 받는다(`minTextLength: 1`). 글이 많고 짧아 사전 필터는 비용 · 품질을 보고 정한다. 비공개 배포 앱의 조회 속도 제한 확인 필요 |
 | Gmail | 내가 보내거나 받은 메일 (한 통이 원문 하나) | **구현됨** (2026-09-29, `src/lib/connectors/gmail/`. 운영에서는 `GMAIL_CONNECT_ENABLED`를 켜기 전까지 새 연결이 닫혀 있다). 프로모션 · 소셜 분류(목록에서 뺀다, 읽지 않는다)와 스팸 · 휴지통 · 임시 보관 · 채팅은 거르고, 자동 발송 · 대량 발송 · 수신 거부 · 메일링 리스트 머리글(같은 회사 도메인의 그룹 메일은 남김) · no-reply · 알림 · 반송 주소 · 일정 초대 · 알림은 머리글만 읽어 거르고 본문을 받지 않는다. 첫 동기화는 14일, 다시 연결하면 마지막 동기화부터(최대 30일). 메일 읽기는 Google 제한 범위라 정식 공개에는 심사 · CASA가 필요하고, 그 전에는 Testing(테스트 사용자 100명까지, 7일마다 재연결). 규칙 전체는 [google-integration.md](go-live/google-integration.md) 2-6 |
-| Calendar | 회의 참석자 | 아직 없음 (google-integration.md PR 3). **Calendar 이벤트는 같은 회의의 원문(Notion 회의록 · Meet 전사)을 잇는 열쇠**로 쓴다 |
-| Meet 전사 (선택) | 회의 전사 | 발화마다 화자 이름이 있어 Notion AI 요약의 담당자 없는 액션 아이템을 정할 수 있다. 전사를 켜지 않는 회의가 많아 있으면 가져오는 방식으로 둔다 |
+| Calendar | 회의 참석자 | **구현됨** (google-integration.md PR 3 #30 · PR 4b #36, `src/lib/connectors/google/`. Meet 전사와 같은 `google` 연결이고, 운영에서는 `GOOGLE_CONNECT_ENABLED`를 켜기 전까지 새 연결이 닫혀 있다. 녹화한 Meet 회의로 하는 dev 확인은 남음, google-integration.md 9장). **Calendar 이벤트는 같은 회의의 원문(Notion 회의록 · Meet 전사)을 잇는 열쇠**로 쓴다 |
+| Meet 전사 (선택) | 회의 전사 | **구현됨** (Calendar와 같은 `google` 연결). 발화마다 화자 이름이 있어 Notion AI 요약의 담당자 없는 액션 아이템을 정할 수 있다. 전사를 켜지 않는 회의가 많아 있으면 가져오는 방식으로 둔다 |
 | GitHub | 나에게 배정된 이슈, 리뷰 요청, 나를 언급한 댓글 | 배정 · 리뷰 요청은 구조화된 할 일 형태 |
 
 **하지 않는 것: 자체 녹음 · 전사.** 녹음 · 동의의 법적 부담이 크고, STT 비용이 새로 생기며, 녹음 앱이라는 별도 제품이 된다. Taskforce의 목적은 여러 소스에서 Action을 찾아 알리고 수행하는 것이므로 회의록 도구의 결과를 받는다 ([PRD](PRD.md) 하지 않는 것).
