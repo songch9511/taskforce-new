@@ -36,8 +36,10 @@ public enum APIError: Error, Equatable, Sendable, CustomStringConvertible {
         switch self {
         case .server(_, .conflict, _):
             "This changed somewhere else. It's been refreshed."
-        case .server(_, .unauthorized, _), .notSignedIn:
-            "Sign in again to continue."
+        case .server(_, .unauthorized, _):
+            "This session was rejected. In Account, choose Sign Out, then sign in again. This signs you out on all devices."
+        case .notSignedIn:
+            "Sign in to continue."
         case .server(_, .rateLimited, _):
             "Too many requests. Try again in a moment."
         case .server(_, .notFound, _):

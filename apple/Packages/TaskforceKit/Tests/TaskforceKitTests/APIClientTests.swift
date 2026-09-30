@@ -246,6 +246,17 @@ struct APIClientTests {
         }
     }
 
+    @Test func unauthorizedExplainsAccountRecovery() async throws {
+        let api = client(status: 401, body: #"{"error":{"code":"unauthorized","message":"Unauthorized"}}"#)
+        do {
+            _ = try await api.now()
+            Issue.record("오류가 나야 함")
+        } catch let error as APIError {
+            #expect(error == .server(status: 401, code: .unauthorized, message: "Unauthorized"))
+            #expect(error.userMessage == "This session was rejected. In Account, choose Sign Out, then sign in again. This signs you out on all devices.")
+        }
+    }
+
     @Test func decodesInvalidRequest() async throws {
         let api = client(status: 400, body: #"{"error":{"code":"invalid_request","message":"구절이 원문에 없습니다."}}"#)
         await #expect(throws: APIError.server(status: 400, code: .invalidRequest, message: "구절이 원문에 없습니다.")) {
@@ -278,6 +289,7 @@ struct APIClientTests {
         struct NoSession: Error {}
         let api = client(token: { throw NoSession() })
         await #expect(throws: APIError.notSignedIn) { _ = try await api.now() }
+        #expect(APIError.notSignedIn.userMessage == "Sign in to continue.")
         #expect(StubProtocol.requests(host: host).isEmpty)
     }
 
