@@ -1,3 +1,5 @@
+import type { RejectReason } from "@/lib/pipeline/judge";
+import { JUDGE_REASON_PREFIX } from "@/lib/pipeline/merge";
 import type { ClaimField } from "@/lib/pipeline/resolve";
 
 import type { ActionOwner, ActionStatus, FieldResolution } from "./project";
@@ -86,16 +88,34 @@ function fieldValue(field: ClaimField, value: string | null): string {
   return value;
 }
 
-/** 확인 이유 · 위험 신호를 받는 쪽(AI)이 읽을 수 있는 말로. 내부용 이유(병합 확인 등)는 뺀다. 닫힌 일은 묻지 않는다. */
+const DERIVED_REASON_LINES: Record<string, string> = {
+  "담당 확인": "내가 맡은 일인지 아직 확실하지 않습니다.",
+  "기한 확인": "기한이 아직 확실하지 않습니다.",
+  "내용 확인": "할 일의 범위가 아직 확실하지 않습니다.",
+  "상태 확인": "끝났는지 · 취소됐는지 아직 확실하지 않습니다.",
+};
+const JUDGE_REASON_LINES: Record<RejectReason, string> = {
+  NOT_MY_ACTION: "내가 맡은 일인지 아직 확실하지 않습니다.",
+  INFO_ONLY: "해야 할 일이 아니라 알려 주는 내용일 수 있습니다.",
+  TENTATIVE: "확정된 약속이 아니라 잠정적인 이야기일 수 있습니다.",
+  ALREADY_DONE: "이미 끝난 일일 수 있습니다.",
+};
+
+/** "판정 확인: INFO_ONLY, TENTATIVE" → 코드 목록 (merge.ts가 쉼표로 이어 남긴다). 판정 확인이 아니면 빈 목록 */
+function judgeCodes(reason: string): string[] {
+  const prefix = `${JUDGE_REASON_PREFIX}:`;
+  return reason.startsWith(prefix) ? reason.slice(prefix.length).split(",").map((code) => code.trim()) : [];
+}
+
+/** 확인 이유 · 위험 신호를 받는 쪽(AI)이 읽을 수 있는 말로. 내부용 이유(병합 · 중복 확인)와 모르는 판정 코드는 뺀다. 닫힌 일은 묻지 않는다. */
 function uncertainties(action: HandoffInput["action"]): string[] {
   if (action.status !== "open") return [];
   const lines: string[] = [];
   for (const reason of action.confirm_reasons) {
-    if (reason.startsWith("판정 확인: NOT_MY_ACTION") || reason === "담당 확인") lines.push("내가 맡은 일인지 아직 확실하지 않습니다.");
-    else if (reason === "기한 확인") lines.push("기한이 아직 확실하지 않습니다.");
-    else if (reason === "내용 확인") lines.push("할 일의 범위가 아직 확실하지 않습니다.");
-    else if (reason === "상태 확인") lines.push("끝났는지 · 취소됐는지 아직 확실하지 않습니다.");
-    else if (reason.startsWith("판정 확인: TENTATIVE")) lines.push("확정된 약속이 아니라 잠정적인 이야기일 수 있습니다.");
+    if (Object.hasOwn(DERIVED_REASON_LINES, reason)) lines.push(DERIVED_REASON_LINES[reason]);
+    for (const code of judgeCodes(reason)) {
+      if (Object.hasOwn(JUDGE_REASON_LINES, code)) lines.push(JUDGE_REASON_LINES[code as RejectReason]);
+    }
   }
   for (const field of Object.keys(FIELD_LABELS) as ClaimField[]) {
     for (const risk of action.resolution?.[field]?.risks ?? []) {
