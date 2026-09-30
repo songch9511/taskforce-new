@@ -2,10 +2,11 @@ import SwiftUI
 import TaskforceKit
 
 /// Launcher row (Figma 5:52, Mac): 제목 + 오른쪽에 기한 하나. 기한 지남 · 오늘은 빨강 (L2).
-/// 선택 행만 bg/selected + return 키캡. 부제는 기본으로 끈다 (L4). 높이 40.
+/// 선택 행만 bg/selected + return 키캡. 부제는 기본으로 끈다 (L4, Review 행은 부제 자리에 확인 이유). 높이 40.
 /// 오늘 끝낸 할 일(`dimmed`)은 제목을 text/secondary로 흐리게 (취소선 없음).
 /// `checked`: 고르는 목록의 지금 값 (⌘K Status의 지금 상태). 오른쪽에 체크, 골라도 return 키캡은 없다 (↩가 할 일이 없다).
-/// `shortcut`: 그 줄의 단축키 (⌘K Delete의 "⌘⌫"). 늘 보이는 키캡, 고르면 그 오른쪽에 return 키캡.
+/// `shortcut`: 그 줄의 단축키 (⌘K Confirm "⌘↩" · Dismiss · Delete "⌘⌫"). 늘 보이는 키캡, 고르면 그 오른쪽에 return 키캡.
+/// `keepsSubtitle`: 부제를 자르지 않고 제목을 줄인다 (Review 행의 확인 이유).
 public struct LauncherRow: View {
     public enum Leading: Sendable, Equatable {
         /// 할 일: 16pt 상태 표시 (`TaskStatusMark`)
@@ -26,6 +27,7 @@ public struct LauncherRow: View {
     let dimmed: Bool
     let checked: Bool
     let shortcut: String?
+    let keepsSubtitle: Bool
     let leading: Leading
     let onMark: (() -> Void)?
 
@@ -39,6 +41,7 @@ public struct LauncherRow: View {
         dimmed: Bool = false,
         checked: Bool = false,
         shortcut: String? = nil,
+        keepsSubtitle: Bool = false,
         leading: Leading = .status(.toDo),
         onMark: (() -> Void)? = nil
     ) {
@@ -50,6 +53,7 @@ public struct LauncherRow: View {
         self.dimmed = dimmed
         self.checked = checked
         self.shortcut = shortcut
+        self.keepsSubtitle = keepsSubtitle
         self.leading = leading
         self.onMark = onMark
     }
@@ -58,7 +62,7 @@ public struct LauncherRow: View {
         HStack(spacing: TFSpace.md) {
             leadingView
                 .frame(width: 16, height: 16)
-            TitleSubtitleLayout(maxTitleWidth: 400, spacing: TFSpace.sm) {
+            TitleSubtitleLayout(maxTitleWidth: 400, spacing: TFSpace.sm, keepsSubtitle: keepsSubtitle) {
                 Text(title)
                     .font(TFFont.callout)
                     .foregroundStyle(dimmed ? TFColor.textSecondary : TFColor.textPrimary)
@@ -122,10 +126,12 @@ public struct LauncherRow: View {
     }
 }
 
-/// 제목은 최대 400까지 제 폭만, 부제는 남는 폭 (L1: 긴 제목이 부제를 한 글자로 자르지 않게)
+/// 제목은 최대 400까지 제 폭만, 부제는 남는 폭 (L1: 긴 제목이 부제를 한 글자로 자르지 않게).
+/// `keepsSubtitle`이면 부제를 다 보이고 제목이 남는 폭을 쓴다 (Review 행의 확인 이유).
 struct TitleSubtitleLayout: Layout {
     let maxTitleWidth: CGFloat
     let spacing: CGFloat
+    var keepsSubtitle = false
 
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
         let frames = place(width: proposal.width ?? .infinity, subviews: subviews)
@@ -147,7 +153,11 @@ struct TitleSubtitleLayout: Layout {
     private func place(width: CGFloat, subviews: Subviews) -> [CGRect] {
         guard let title = subviews.first else { return [] }
         let ideal = title.sizeThatFits(.unspecified).width
-        let titleWidth = min(ideal, maxTitleWidth, width)
+        var titleWidth = min(ideal, maxTitleWidth, width)
+        if keepsSubtitle, subviews.count > 1 {
+            let subtitleIdeal = subviews[1].sizeThatFits(.unspecified).width
+            titleWidth = max(0, min(ideal, width - spacing - subtitleIdeal))
+        }
         var frames = [CGRect(x: 0, y: 0, width: titleWidth, height: 0)]
         if subviews.count > 1 {
             let x = titleWidth + spacing
@@ -180,7 +190,15 @@ public struct LauncherSectionLabel: View {
 #Preview("Launcher row") {
     VStack(spacing: 0) {
         LauncherSectionLabel("Review")
-        LauncherRow(title: "법무팀에 계약서 초안 전달", accessory: "Fri", leading: .status(.review))
+        LauncherRow(title: "법무팀에 계약서 초안 전달", subtitle: "Not sure it's yours", accessory: "Fri", keepsSubtitle: true, leading: .status(.review))
+        LauncherRow(
+            title: "An extremely long review title that keeps going and going well past four hundred points wide",
+            subtitle: "May not be a firm commitment",
+            accessory: "Yesterday",
+            selected: true,
+            keepsSubtitle: true,
+            leading: .status(.review)
+        )
         LauncherSectionLabel("In Progress")
         LauncherRow(title: "투자사 IR 자료 업데이트", accessory: "Overdue", urgent: true, leading: .status(.inProgress)) {}
         LauncherSectionLabel("To Do")

@@ -223,6 +223,7 @@ struct HomeView: View {
         ReviewCard(
             title: action.title,
             value: action.dueDate.map { DueText.short($0, today: today) },
+            reason: ConfirmReasonText.label(action.confirmReasons),
             busy: store.busy.contains(action.id),
             onConfirm: { Task { await store.confirm(action.id) } },
             onDismiss: { Task { await store.dismiss(action.id) } }

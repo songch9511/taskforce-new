@@ -8,11 +8,37 @@ struct LabelsTests {
         #expect(RankReason.allCases.filter(\.isUrgent) == [.overdue, .dueToday])
     }
 
-    @Test func confirmReasonsNeverShowInternalCodes() {
-        #expect(ConfirmReasonText.userFacing(["판정 확인: NOT_MY_ACTION", "담당 확인"]) == ["내가 맡은 일인지 확실하지 않아요"])
-        #expect(ConfirmReasonText.userFacing(["판정 확인: TENTATIVE, INFO_ONLY"]) == ["확정된 약속이 아닐 수 있어요", "할 일인지 확실하지 않아요"])
-        #expect(ConfirmReasonText.userFacing(["병합 확인 (55%)", "기한 확인"]) == ["비슷한 할 일과 같은 일인지 확실하지 않아요", "기한이 확실하지 않아요"])
-        #expect(ConfirmReasonText.userFacing(["판정 확인: SOMETHING_NEW", "새 이유"]) == ["확인이 필요해요"])
+    @Test(arguments: [
+        (["판정 확인: NOT_MY_ACTION"], "Not sure it's yours"),
+        (["담당 확인"], "Not sure it's yours"),
+        (["판정 확인: ALREADY_DONE"], "May be done already"),
+        (["판정 확인: INFO_ONLY"], "May not be a task"),
+        (["판정 확인: TENTATIVE"], "May not be a firm commitment"),
+        (["병합 확인 (55%)"], "Update may not belong here"),
+        (["중복 확인 (72%): 제안서 보내기"], "May duplicate another task"),
+        (["기한 확인"], "Due date unclear"),
+        (["내용 확인"], "Scope unclear"),
+        (["상태 확인"], "Status unclear"),
+    ])
+    func confirmReasonLabel(_ reasons: [String], _ expected: String) {
+        #expect(ConfirmReasonText.label(reasons) == expected)
+    }
+
+    @Test func confirmReasonShowsOnlyTheMostImportantOneOwnerFirst() {
+        // 담당이 뒤에 있어도, 한 판정 안의 뒤쪽 코드여도 담당이 먼저
+        #expect(ConfirmReasonText.label(["기한 확인", "판정 확인: TENTATIVE, NOT_MY_ACTION"]) == "Not sure it's yours")
+        #expect(ConfirmReasonText.label(["판정 확인: TENTATIVE, ALREADY_DONE"]) == "May be done already")
+        #expect(ConfirmReasonText.label(["판정 확인: TENTATIVE, INFO_ONLY"]) == "May not be a task")
+        #expect(ConfirmReasonText.label(["기한 확인", "병합 확인 (55%)"]) == "Update may not belong here")
+        #expect(ConfirmReasonText.label(["기한 확인", "중복 확인 (72%): 제안서 보내기"]) == "May duplicate another task")
+        #expect(ConfirmReasonText.label(["상태 확인", "내용 확인", "기한 확인"]) == "Due date unclear")
+    }
+
+    @Test func confirmReasonNeverShowsInternalCodes() {
+        #expect(ConfirmReasonText.label(["판정 확인: SOMETHING_NEW", "새 이유"]) == "Needs review")
+        #expect(ConfirmReasonText.label([]) == "Needs review")
+        // 모르는 이유가 아는 이유를 가리지 않는다
+        #expect(ConfirmReasonText.label(["새 이유", "판정 확인: SOMETHING_NEW, ALREADY_DONE"]) == "May be done already")
     }
 
     @Test func ownerLabels() {

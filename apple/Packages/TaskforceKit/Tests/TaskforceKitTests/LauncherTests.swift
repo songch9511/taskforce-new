@@ -282,4 +282,119 @@ struct LauncherTests {
         #expect(guardian.allows(isRepeat: false, at: now.addingTimeInterval(LauncherDeleteGuard.settle)))
         #expect(!guardian.allows(isRepeat: true, at: now.addingTimeInterval(5)))
     }
+
+    // MARK: ↩ · ⌘↩
+
+    private func effect(_ place: LauncherReturn.Place, command: Bool = false, isRepeat: Bool = false) -> LauncherReturn.Effect {
+        LauncherReturn.effect(at: place, command: command, isRepeat: isRepeat)
+    }
+
+    /// Review 행의 ↩는 확정하지 않고 근거를 펼친다. 확정은 ⌘↩
+    @Test func returnOnReviewRowShowsSourcesAndCommandReturnConfirms() {
+        let review = LauncherItem.review(now.confirmations[0])
+        #expect(effect(.list(review)) == .showSources)
+        #expect(effect(.list(review), command: true) == .confirm)
+    }
+
+    /// 펼침 · ⌘K 패널의 ↩는 지금처럼 (⌘K 패널 열기 · 고른 줄 실행), ⌘↩는 고른 줄과 상관없이 확정
+    @Test func returnOnReviewDetailOrActionsKeepsPrimaryAndCommandReturnConfirms() {
+        #expect(effect(.task(.review)) == .primary)
+        #expect(effect(.task(.review), command: true) == .confirm)
+    }
+
+    /// 누르고 있어 반복된 ↩ · ⌘↩는 어느 화면에서나 아무것도 하지 않는다
+    /// (펼침 → 패널로 이어지거나, 확정 뒤 완료 화면 · 목록 첫 줄에 닿지 않게)
+    @Test func repeatedReturnIsIgnoredEverywhere() {
+        let places: [LauncherReturn.Place] = [
+            .list(.review(now.confirmations[0])), .task(.review),
+            .list(.task(now.now[0])), .list(.policyNotice(PolicyNotice(
+                kind: .updated, version: "v", effectiveDate: LocalDate("2026-09-30")!,
+                url: PolicyLinks(ko: URL(string: "https://example.com/ko")!, en: URL(string: "https://example.com/en")!)
+            ))), .list(nil), .task(.toDo), .other,
+        ]
+        for place in places {
+            #expect(effect(place, isRepeat: true) == .ignore)
+            #expect(effect(place, command: true, isRepeat: true) == .ignore)
+        }
+    }
+
+    /// 새로 누른 ↩ · ⌘↩는 다른 행 · 화면에서 지금까지의 기본 동작 (확정하지 않는다)
+    @Test func returnElsewhereKeepsPrimary() {
+        let task = LauncherItem.task(now.now[0])
+        let places: [LauncherReturn.Place] = [
+            .list(task), .list(.done(now.now[0].action)), .list(.command(.settings)), .list(.ask("자료")), .list(nil),
+            // Review 할 일을 넘기는 Hand off 행은 Review 행이 아니다
+            .list(.handoff(now.confirmations[0])),
+            .task(.toDo), .task(.inProgress), .task(.doneToday), .other,
+        ]
+        for place in places {
+            #expect(effect(place) == .primary)
+            #expect(effect(place, command: true) == .primary)
+        }
+    }
+
+    /// 목록이 새로 오면 고르던 행을 그대로 가리킨다. 그 행이 사라졌으면 같은 자리
+    @Test func refreshedListKeepsTheSelectedRow() {
+        let items = LauncherContent.sections(for: .empty, now: now, signedIn: true).flatMap(\.items)
+        #expect(LauncherContent.reselect(items[2].id, in: items, at: 0) == 2)
+        #expect(LauncherContent.reselect("task-gone", in: items, at: 2) == 2)
+        #expect(LauncherContent.reselect("task-gone", in: items, at: 99) == items.count - 1)
+        #expect(LauncherContent.reselect(nil, in: [], at: 3) == 0)
+    }
+
+    private func action(_ title: String, review: Bool = false) -> ActionSummary {
+        ActionSummary(
+            id: UUID(), title: title, owner: .me, status: .open, dueDate: nil, counterpart: nil,
+            needsConfirmation: review, confirmReasons: review ? ["담당 확인"] : [], startedAt: nil, lastActivityAt: Date(timeIntervalSince1970: 0)
+        )
+    }
+
+    private func items(reviews: [ActionSummary], toDo: [ActionSummary]) -> [LauncherItem] {
+        let board = NowResponse(
+            now: toDo.map { RankedAction(action: $0, score: 1, reasons: [], daysUntilDue: nil) }, confirmations: reviews, weeklyCheck: nil
+        )
+        return LauncherContent.sections(for: .empty, now: board, signedIn: true).flatMap(\.items)
+    }
+
+    /// 펼침 · 패널에서 돌아오면 본 할 일의 행 (그 자리의 다른 행이 아니라)
+    @Test func goingBackSelectsTheViewedRow() {
+        let (a, b, task) = (action("A", review: true), action("B", review: true), action("T"))
+        let list = items(reviews: [a, b], toDo: [task])
+        #expect(LauncherContent.rowAfterBack(viewing: b.id, in: list, near: 1) == 1)
+        #expect(LauncherContent.rowAfterBack(viewing: task.id, in: list, near: 2) == 2)
+        // 떠날 때 적어 둔 자리가 다른 행(맨 위 A)이어도 본 할 일 B의 행 — ⌘K → Open source → 알림 → esc (S1)
+        #expect(LauncherContent.rowAfterBack(viewing: b.id, in: list, near: 0) == 1)
+    }
+
+    /// 보는 사이 위에 Review가 새로 들어와도 본 할 일의 행 (S2: 같은 자리의 새 Review가 아니라)
+    @Test func goingBackFollowsTheViewedRowAfterARefresh() {
+        let (task, fresh) = (action("T"), action("새 Review", review: true))
+        let before = items(reviews: [], toDo: [task])
+        #expect(before.firstIndex { $0.action?.id == task.id } == 0)
+        let after = items(reviews: [fresh], toDo: [task])
+        #expect(LauncherContent.rowAfterBack(viewing: task.id, in: after, near: 0) == 1)
+    }
+
+    /// 본 할 일이 사라졌으면(다른 기기에서 확정) Review가 아니라 가장 가까운 할 일 행, 할 일 행이 없으면 고른 줄 없음 (A2)
+    @Test func goingBackAfterTheViewedRowVanishedNeverLandsOnAReview() {
+        let gone = UUID()
+        let (a, b, c) = (action("A", review: true), action("B", review: true), action("C", review: true))
+        let (t1, t2) = (action("T1"), action("T2"))
+        let list = items(reviews: [a, b, c], toDo: [t1, t2])
+        // 떠날 때 자리 1(Review 사이) → 가장 가까운 할 일 행 T1(3)
+        #expect(LauncherContent.rowAfterBack(viewing: gone, in: list, near: 1) == 3)
+        #expect(LauncherContent.rowAfterBack(viewing: gone, in: list, near: 4) == 4)
+        #expect(list[3].group == .toDo)
+        // Review와 명령뿐이면 고른 줄 없음
+        #expect(LauncherContent.rowAfterBack(viewing: gone, in: items(reviews: [a, b], toDo: []), near: 0) == nil)
+    }
+
+    /// 본 할 일이 없으면(물어보기 답 등) 맨 위. Hand off 행이 아니라 그 할 일의 행을 고른다
+    @Test func goingBackWithoutAViewedItemSelectsTheTop() {
+        let list = LauncherContent.sections(for: .query("자료"), now: now, signedIn: true).flatMap(\.items)
+        #expect(LauncherContent.rowAfterBack(viewing: nil, in: list, near: 3) == 0)
+        let handoff = list.firstIndex { if case .handoff = $0 { true } else { false } }
+        #expect(handoff != nil)
+        #expect(LauncherContent.rowAfterBack(viewing: now.now[0].action.id, in: list, near: handoff ?? 0) == 0)
+    }
 }

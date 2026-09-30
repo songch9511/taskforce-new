@@ -28,7 +28,11 @@ enum SampleData {
 
     static var now: NowResponse {
         let today = DueDateFormat.today()
-        let review = summary(reviewID, "법무팀에 계약서 초안 전달", due: today.adding(days: 4), needsConfirmation: true)
+        // 확인 이유는 Review마다 다르게 (제목 아래 한 줄, `ConfirmReasonText`)
+        let review = summary(
+            reviewID, "법무팀에 계약서 초안 전달", due: today.adding(days: 4), needsConfirmation: true,
+            reasons: ["판정 확인: NOT_MY_ACTION", "기한 확인"]
+        )
         return NowResponse(
             now: [
                 ranked(2, "계약서 검토 의견 전달", due: today.adding(days: -1), reasons: [.overdue], counterpart: "김대표"),
@@ -37,8 +41,8 @@ enum SampleData {
             ],
             confirmations: [
                 review,
-                summary(UUID(), "견적서 회신", due: nil, needsConfirmation: true),
-                summary(UUID(), "월간 보고서 초안", due: today.adding(days: 6), needsConfirmation: true),
+                summary(UUID(), "견적서 회신", due: nil, needsConfirmation: true, reasons: ["판정 확인: ALREADY_DONE"]),
+                summary(UUID(), "월간 보고서 초안", due: today.adding(days: 6), needsConfirmation: true, reasons: ["병합 확인 (55%)"]),
             ],
             weeklyCheck: nil
         )
@@ -112,12 +116,12 @@ enum SampleData {
     }
 
     private static func summary(
-        _ id: UUID, _ title: String, due: LocalDate?, needsConfirmation: Bool, counterpart: String? = nil,
-        status: ActionStatus = .open, startedAt: Date? = nil
+        _ id: UUID, _ title: String, due: LocalDate?, needsConfirmation: Bool, reasons: [String] = ["기한 확인"],
+        counterpart: String? = nil, status: ActionStatus = .open, startedAt: Date? = nil
     ) -> ActionSummary {
         ActionSummary(
             id: id, title: title, owner: .me, status: status, dueDate: due, counterpart: counterpart,
-            needsConfirmation: needsConfirmation, confirmReasons: needsConfirmation ? ["기한 확인"] : [], startedAt: startedAt,
+            needsConfirmation: needsConfirmation, confirmReasons: needsConfirmation ? reasons : [], startedAt: startedAt,
             lastActivityAt: Date()
         )
     }
