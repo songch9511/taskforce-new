@@ -25,6 +25,7 @@ import { loadIdentity } from "../src/lib/connectors/store";
 import type { Connection } from "../src/lib/connectors/types";
 import type { ExtractInput } from "../src/lib/pipeline/extract";
 import type { UserIdentity } from "../src/lib/pipeline/identity";
+import { readAll } from "../src/lib/read-all";
 import { createAdminClient } from "../src/lib/supabase/admin";
 import { processSource } from "../src/lib/sources/process";
 
@@ -44,17 +45,6 @@ type SourceRow = {
   /** 연결로 가져온 원문은 서비스의 id가 있고, 직접 넣은 원문은 없다 (연결을 끊어 connection_id가 비어도 남는다) */
   external_id: string | null;
 };
-
-/** PostgREST는 한 번에 최대 행 수(기본 1000)까지만 주므로 끝까지 나눠 읽는다. */
-async function readAll<T>(page: (from: number, to: number) => PromiseLike<{ data: unknown[] | null; error: unknown }>): Promise<T[]> {
-  const rows: T[] = [];
-  for (let from = 0; ; from += 1000) {
-    const { data, error } = await page(from, from + 999);
-    if (error) throw error;
-    rows.push(...((data ?? []) as T[]));
-    if ((data ?? []).length < 1000) return rows;
-  }
-}
 
 type Admin = ReturnType<typeof createAdminClient>;
 

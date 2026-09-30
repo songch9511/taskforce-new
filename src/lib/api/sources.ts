@@ -1,7 +1,7 @@
 import { consentRequired } from "./consent";
+import { errorResponse } from "./respond";
 import {
   createSourceRequestSchema,
-  type ApiError,
   type CreateSourceRequest,
   type CreateSourceResponse,
   type ParticipantsInput,
@@ -67,8 +67,4 @@ export async function handleCreateSource<User>(request: Request, deps: CreateSou
 
   deps.schedule(user, sourceId, source, request_.user_name);
   return Response.json({ source_id: sourceId, status: "pending" } satisfies CreateSourceResponse, { status: 202 });
-}
-
-function errorResponse(status: number, code: ApiError["error"]["code"], message: string): Response {
-  return Response.json({ error: { code, message } } satisfies ApiError, { status });
 }

@@ -9,22 +9,19 @@ import {
   addConnectionStats,
   claimConnection,
   connectedAt,
-  disconnectConnection,
   ingestDeps,
   loadIdentity,
   loadToken,
-  mergeConnectionSettings,
-  otherConnections,
   recordSync,
-  saveConnection,
   saveToken,
 } from "../store";
 import type { Connection, Connector, ConnectorSyncOutcome } from "../types";
 
 import { calendarClient } from "./calendar";
 import { meetClient, MeetBudgetExhausted } from "./meet";
-import { exchangeGoogleCode, GoogleOAuthError, googleAuthorizeUrl, googleTokenSchema, missingScopes, revokeGoogleToken, type GoogleOAuthConfig } from "./oauth";
-import { accountSettings, googleSettingsSchema } from "./settings";
+import { disconnectOtherGoogleAccounts, revokeStoredGoogleToken, saveGoogleAccount } from "./account";
+import { exchangeGoogleCode, GoogleOAuthError, googleAuthorizeUrl, missingScopes, type GoogleOAuthConfig } from "./oauth";
+import { googleSettingsSchema } from "./settings";
 import { DEFAULT_GOOGLE_SYNC, MEET_REQUEST_BUDGET, syncGoogleMeet } from "./sync";
 import { GoogleApiError, googleAccess, GoogleReauthError } from "./token";
 import { CALENDAR_EVENTS_SCOPE, MEET_READONLY_SCOPE } from "./unverified";
@@ -66,12 +63,6 @@ function userFacingError(error: unknown): string {
 }
 
 const logError = (what: string) => (error: unknown) => console.error(`${what}:`, error instanceof Error ? error.message : error);
-
-/** 저장된 토큰을 폐기한다 (갱신 토큰이 있으면 그것으로: 허용 전체가 거둬진다) */
-async function revokeStoredToken(token: unknown): Promise<void> {
-  const parsed = googleTokenSchema.safeParse(token);
-  if (parsed.success) await revokeGoogleToken(parsed.data.refresh_token ?? parsed.data.access_token);
-}
 
 export async function syncGoogleConnection(
   admin: SupabaseClient,
@@ -147,14 +138,6 @@ export async function syncGoogleConnection(
   }
 }
 
-/** 한 서비스에 계정 하나 (베타): 다른 Google 계정으로 연결했으면 옛 연결의 토큰을 폐기하고 끊는다. 실패해도 새 연결은 그대로 둔다 */
-async function disconnectOtherAccounts(admin: SupabaseClient, userId: string, keepId: string): Promise<void> {
-  for (const other of await otherConnections(admin, userId, "google", keepId)) {
-    await revokeStoredToken(other.token).catch(logError(`옛 Google 연결 토큰 폐기 실패 (${other.id})`));
-    await disconnectConnection(admin, userId, other.id).catch(logError(`옛 Google 연결 끊기 실패 (${other.id})`));
-  }
-}
-
 /** 연결 틀(registry.ts)에 내놓는 google 연동 */
 export const googleConnector: Connector = {
   provider: "google",
@@ -164,24 +147,20 @@ export const googleConnector: Connector = {
     const features = grantedFeatures(grant.scopes);
     // 권한 화면에서 Calendar · Meet 체크를 둘 다 뺐거나 계정을 알 수 없으면(openid 없음) 연결하지 않고, 쓸 수 없는 토큰은 바로 폐기한다 (G10)
     if (!grant.account || (!features.calendar && !features.meet)) {
-      await revokeStoredToken(grant.token).catch(logError("Google 토큰 폐기 실패 (범위 부족)"));
+      await revokeStoredGoogleToken(grant.token).catch(logError("Google 토큰 폐기 실패 (범위 부족)"));
       return "missing_scope";
     }
     const account = grant.account;
-    const connectionId = await saveConnection(admin, {
+    const connectionId = await saveGoogleAccount(admin, {
       userId,
       provider: "google",
-      externalAccountId: account.sub,
-      displayName: account.email,
+      account,
+      scopes: grant.scopes,
       token: grant.token,
     });
-    // 받은 범위를 남긴다: 다시 연결하면 그때 허용한 범위로 바뀐다 (동기화는 받은 것만 쓴다). 그 키만 바꿔 통계는 그대로 둔다
-    if (!(await mergeConnectionSettings(admin, { id: connectionId, userId }, { set: accountSettings(account, grant.scopes) }))) {
-      throw new Error("연결 설정을 저장하지 못했습니다 (연결이 사라짐)");
-    }
-    await disconnectOtherAccounts(admin, userId, connectionId);
+    await disconnectOtherGoogleAccounts(admin, userId, "google", connectionId);
     return features.calendar && features.meet ? "connected" : "connected_partial";
   },
   sync: (admin, connection, options) => syncGoogleConnection(admin, connection, options),
-  revokeToken: revokeStoredToken,
+  revokeToken: revokeStoredGoogleToken,
 };
