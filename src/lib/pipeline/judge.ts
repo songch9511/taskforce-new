@@ -2,9 +2,19 @@ import type { JevDecision, JevQuestion } from "@/lib/ai/jev";
 import { kstDate } from "@/lib/ai/prompts/extract";
 import { JUDGE_PROMPT_VERSION, JUDGE_QUESTIONS, WRITTEN_BY_ME_PROMPT_VERSION, WRITTEN_BY_ME_QUESTIONS } from "@/lib/ai/prompts/judge";
 
-import { addressedToUser, findNameVariants, quoteSpeaker, userPosition, type Participants, type UserIdentity } from "./identity";
+import {
+  addressedAmbiguouslyToUser,
+  addressedToUser,
+  containsAmbiguousAssignee,
+  findNameVariants,
+  isAmbiguousUserName,
+  quoteSpeaker,
+  userPosition,
+  type Participants,
+  type UserIdentity,
+} from "./identity";
 import { JUDGE_THRESHOLDS, type JudgeThresholds } from "./judge.config";
-import { quoteContext } from "./text";
+import { quoteContext, quoteLineIndexes } from "./text";
 
 // ③ Jev 판정 (docs/TRUTH_RULES.md 1장). 후보 하나에 질문 여러 개를 한 번에 묻고,
 // 돌아온 확률을 임계값과 비교해 자동 반영 / 확인 요청 / 기각으로 나눈다. 판정 규칙은 순수 함수라 단위 테스트로 고정한다.
@@ -12,7 +22,7 @@ import { quoteContext } from "./text";
 export type RejectReason = "NOT_MY_ACTION" | "INFO_ONLY" | "TENTATIVE" | "ALREADY_DONE";
 export type JudgeDecision = "auto" | "confirm" | "reject";
 
-export type JudgeCandidate = { title: string; quote: string; due_text: string | null; counterpart?: string | null };
+export type JudgeCandidate = { title: string; quote: string; due_text: string | null; counterpart?: string | null; owner?: "me" | "unknown" };
 
 export type JudgeSource = {
   text: string;
@@ -43,10 +53,11 @@ export type JudgeOutcome = {
   /** reject면 기각 사유, confirm이면 확인이 필요한 이유 */
   reasons: RejectReason[];
   /**
-   * 확률 표가 아니라 코드 규칙으로 정한 판정. 둘 다 아직 수락하지 않은 요청이라 기각 대신 확인 요청으로 보낸다.
+   * 확률 표가 아니라 코드 규칙으로 정한 판정.
    * addressed_request: 사용자를 @이름으로 불렀다. sole_recipient_request: 사용자가 유일한 받는 사람인 메일이다.
+   * identity_ambiguous: 참석자 중 동명이인과 겹치는 이름이 있어 화자·담당 확인이 필요하다.
    */
-  rule?: "addressed_request" | "sole_recipient_request";
+  rule?: "addressed_request" | "sole_recipient_request" | "identity_ambiguous";
 };
 
 
@@ -54,6 +65,10 @@ export type JudgeResult = JudgeOutcome & {
   signals: JudgeSignals;
   /** 인용 줄의 화자 이름표 (코드가 원문에서 읽은 값, quoteSpeaker). 병합이 붙일 Action의 요청자와 비교해 화자 역할을 정한다 */
   speaker?: string;
+  /** 화자 이름이 참석자 중 동명이인과 겹친다. 원문 이름표는 유지하고 Claim의 역할은 unknown으로 둔다. */
+  speakerAmbiguous?: true;
+  /** 사용자로 읽은 담당 이름이나 @호칭이 참석자 중 동명이인과 겹친다. 담당은 확인 전까지 모른다. */
+  ownerAmbiguous?: true;
   promptVersion: string;
   model: string;
   cost?: number;
@@ -177,13 +192,32 @@ export async function judgeCandidate(
   const response = await decide({ state: buildJudgeState(candidate, source, identity), questions });
   const signals = parseJudgeAnswers(response.answers);
   const speaker = quoteSpeaker(source.text, candidate.quote, identity, source.participants);
+  const speakerAmbiguous = Boolean(speaker && isAmbiguousUserName(speaker, identity, source.participants));
+  const sourceLines = source.text.split("\n");
+  const quoteLines = quoteLineIndexes(source.text, candidate.quote).map((index) => sourceLines[index]);
+  const ownerAmbiguous = speakerAmbiguous || (
+    containsAmbiguousAssignee(quoteLines.join("\n"), identity, source.participants) ||
+    addressedAmbiguouslyToUser(source.text, candidate.quote, identity, source.participants)
+  );
+  const identityAmbiguous = speakerAmbiguous || ownerAmbiguous;
+  const outcome = decideOutcome(signals, thresholds, {
+    addressedToUser: addressedToUser(source.text, candidate.quote, identity, source.participants),
+    soleRecipient: source.kind === "email" && userPosition(identity, source.participants) === "sole_recipient",
+  });
+  const judgedOutcome = identityAmbiguous && outcome.decision !== "reject"
+    ? {
+        ...outcome,
+        decision: "confirm" as const,
+        reasons: [...new Set<RejectReason>([...outcome.reasons, "NOT_MY_ACTION"])],
+        rule: "identity_ambiguous" as const,
+      }
+    : outcome;
   return {
-    ...decideOutcome(signals, thresholds, {
-      addressedToUser: addressedToUser(source.text, candidate.quote, identity, source.participants),
-      soleRecipient: source.kind === "email" && userPosition(identity, source.participants) === "sole_recipient",
-    }),
+    ...judgedOutcome,
     signals,
     ...(speaker ? { speaker } : {}),
+    ...(speakerAmbiguous ? { speakerAmbiguous: true as const } : {}),
+    ...(ownerAmbiguous ? { ownerAmbiguous: true as const } : {}),
     promptVersion: self ? WRITTEN_BY_ME_PROMPT_VERSION : JUDGE_PROMPT_VERSION,
     model: response.model,
     cost: response.usage?.cost,

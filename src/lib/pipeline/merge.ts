@@ -1,6 +1,6 @@
 import type { SourceKind } from "./extract";
 import { speakerRole, type UserIdentity } from "./identity";
-import type { Decide, JudgeDecision, JudgeSignals } from "./judge";
+import type { Decide, JudgeDecision, JudgeResult, JudgeSignals } from "./judge";
 import { storedReasons } from "@/lib/actions/rows";
 
 import { MATCH_THRESHOLDS, matchCandidate, shortlistActions, type MatchRelation, type MatchResult, type OpenAction } from "./match";
@@ -36,7 +36,7 @@ export interface ActionStore {
  * 기존 Action에 더할 것. clearJudgeReasons: 사용자의 확정 약속이 붙어 판정 단계의 확인 이유("판정 확인: …")를 푼다 (settlingCommitment).
  * 이유만 지운다: Claim과 근거는 그대로 두고, 담당 · 병합 같은 다른 확인 이유도 그대로다.
  */
-export type AppendUpdate = { claims: Claim[]; evidence: Evidence; confirmReason?: string; clearJudgeReasons?: boolean };
+export type AppendUpdate = { claims: Claim[]; evidence: Evidence; confirmReasons?: string[]; confirmReason?: string; clearJudgeReasons?: boolean };
 
 /** 판정 단계(Jev)가 확인 요청으로 보낼 때 남기는 확인 이유의 머리말. 예: "판정 확인: NOT_MY_ACTION" */
 export const JUDGE_REASON_PREFIX = "판정 확인";
@@ -74,6 +74,7 @@ export class InMemoryActionStore implements ActionStore {
     action.claims.push(...update.claims);
     action.evidence.push(update.evidence);
     if (update.clearJudgeReasons) action.confirmReasons = withoutJudgeReasons(action.confirmReasons);
+    action.confirmReasons.push(...(update.confirmReasons ?? []));
     if (update.confirmReason) action.confirmReasons.push(update.confirmReason);
   }
 }
@@ -121,6 +122,22 @@ export function withSpeakerFromLabel(
 /** 사용자가 직접, 확정적으로 한 약속인가 (me · firm · first_hand). 요청자의 말이거나 추정 · 전언이면 아니다. */
 export const isUserFirmCommitment = (signals: JudgeSignals) =>
   signals.speaker_role.choice === "me" && signals.statement_certainty.choice === "firm" && signals.directness.choice === "first_hand";
+
+function judgeReason(judge: JudgeResult): string {
+  return `${JUDGE_REASON_PREFIX}: ${judge.reasons.join(", ")}`;
+}
+
+/** 기존 Action에 붙일 때 보존할 판정 · 신원 확인 이유. 병합 이유는 별도 항목으로 둔다. */
+function matchedJudgeReasons(candidate: VerifiedCandidate, judge: JudgeResult): string[] {
+  const identityAmbiguous = judge.speakerAmbiguous || judge.ownerAmbiguous;
+  const reasons =
+    judge.decision === "confirm" && (candidate.signal === "commitment" || identityAmbiguous) ? [judgeReason(judge)] : [];
+  const ownerUncertain = (candidate.signal === "commitment" && candidate.owner === "unknown") || judge.ownerAmbiguous;
+  if (ownerUncertain && !reasons.some((reason) => reason.includes("NOT_MY_ACTION"))) {
+    reasons.push(`${JUDGE_REASON_PREFIX}: NOT_MY_ACTION`);
+  }
+  return reasons;
+}
 
 /**
  * 사용자의 확정 약속이 기존 Action에 같은 일의 반복 · 변경으로 붙는가. 그렇다면 붙는 Action을, 아니면 null (docs/TRUTH_RULES.md 규칙 0 "양쪽이 말했는가").
@@ -246,15 +263,34 @@ export async function mergeJudged(
 
     // 새 Action은 후보가 적은 상대, 기존 Action에 붙이면 그 Action의 상대(처음 약속한 요청자)와 이름표를 비교한다.
     const requester = match.relation === "new" ? candidate.counterpart : (shortlist.find((a) => a.id === match.actionId)?.counterpart ?? null);
-    const signals = withSpeakerFromLabel(judge.signals, judge.speaker, requester, identity, candidate.signal);
-    const settles = settlingCommitment(candidate, signals, judge.decision, match, shortlist.find((a) => a.id === match.actionId));
-    const claims = candidateClaims(candidate, signals, source, match.relation, deps.newId, settles);
+    // 이름표가 참석자 동명이인과 겹치면 Jev의 추정 역할도 코드의 이름 매칭도 화자를 확정할 수 없다.
+    // 다른 발언 속성은 그대로 두고 Claim의 speakerRole만 unknown으로 만든다.
+    const signals = judge.speakerAmbiguous ? judge.signals : withSpeakerFromLabel(judge.signals, judge.speaker, requester, identity, candidate.signal);
+    const resolvedCandidate = judge.ownerAmbiguous ? { ...candidate, owner: "unknown" as const } : candidate;
+    const ambiguousIdentity = judge.speakerAmbiguous || judge.ownerAmbiguous;
+    const unknownOwnerCommitment = candidate.signal === "commitment" && candidate.owner === "unknown";
+    const settles =
+      ambiguousIdentity || unknownOwnerCommitment
+        ? null
+        : settlingCommitment(candidate, signals, judge.decision, match, shortlist.find((a) => a.id === match.actionId));
+    const disputedExistingClaims =
+      match.relation !== "new" &&
+      ((candidate.signal === "commitment" && (judge.decision === "confirm" || candidate.owner === "unknown")) ||
+        judge.ownerAmbiguous ||
+        judge.speakerAmbiguous ||
+        match.needsConfirmation);
+    const claims = candidateClaims(resolvedCandidate, signals, source, match.relation, deps.newId, settles).map((claim) => ({
+      ...claim,
+      ...(judge.speakerAmbiguous ? { speakerRole: "unknown" as const } : {}),
+      ...(disputedExistingClaims ? { state: "disputed" as const } : {}),
+    }));
     const evidence: Evidence = { sourceId: source.id, quote: candidate.quote, role: EVIDENCE_ROLE[match.relation] };
 
     if (match.relation === "new") {
       const reasons = [
-        ...(judge.decision === "confirm" ? [`${JUDGE_REASON_PREFIX}: ${judge.reasons.join(", ")}`] : []),
-        ...(candidate.owner !== "me" ? ["담당 확인"] : []),
+        ...(judge.decision === "confirm" ? [judgeReason(judge)] : []),
+        ...(judge.ownerAmbiguous && judge.decision !== "confirm" ? [`${JUDGE_REASON_PREFIX}: NOT_MY_ACTION`] : []),
+        ...(resolvedCandidate.owner !== "me" ? ["담당 확인"] : []),
       ];
       const created = await store.create({
         title: candidate.title,
@@ -266,10 +302,14 @@ export async function mergeJudged(
       });
       outcomes[outcomes.length - 1].actionId = created.id;
     } else {
+      const confirmReasons = [
+        ...matchedJudgeReasons(candidate, judge),
+        ...(match.needsConfirmation ? [`병합 확인 (${Math.round(match.confidence * 100)}%)`] : []),
+      ];
       await store.append(match.actionId!, {
         claims,
         evidence,
-        confirmReason: match.needsConfirmation ? `병합 확인 (${Math.round(match.confidence * 100)}%)` : undefined,
+        confirmReasons,
         clearJudgeReasons: settles !== null,
       });
     }

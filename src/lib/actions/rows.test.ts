@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import type { Claim } from "@/lib/pipeline/resolve";
 
-import { claimFromRow, claimToRow, storedReasons, toPgVector } from "./rows";
+import { claimFromRow, claimToRow, storedReasons, toPgVector, type ClaimRow } from "./rows";
 
 const claim: Claim = {
   id: "11111111-1111-4111-8111-111111111111",
@@ -20,7 +20,21 @@ describe("claims 행 변환", () => {
   it("Claim → 행 → Claim이 되돌아온다", () => {
     const row = claimToRow(claim, "u1", "a1", { sourceId: "s1", quote: "금요일까지" });
     expect(row).toMatchObject({ user_id: "u1", action_id: "a1", source_id: "s1", quote: "금요일까지", origin: "source", occurred_at: "2025-09-22T01:00:00.000Z" });
-    expect(claimFromRow(row)).toEqual({ ...claim, origin: "source" });
+    expect(claimFromRow(row)).toEqual({ ...claim, origin: "source", state: "active" });
+  });
+
+  it("disputed 상태를 저장하고 다시 읽는다", () => {
+    const disputed = { ...claim, state: "disputed" as const };
+    const row = claimToRow(disputed, "u1", "a1", { sourceId: "s1", quote: "금요일까지" });
+    expect(row.state).toBe("disputed");
+    expect(claimFromRow(row)).toEqual({ ...disputed, origin: "source" });
+  });
+
+  it("state가 빠진 예전 행은 active로 읽는다", () => {
+    const { state, ...oldRow } = claimToRow(claim, "u1", "a1", { sourceId: "s1", quote: "금요일까지" });
+    expect(state).toBe("active");
+    const row: ClaimRow = oldRow;
+    expect(claimFromRow(row)).toEqual({ ...claim, origin: "source", state: "active" });
   });
 
   it("사용자가 고친 값은 원문 없이 origin user", () => {

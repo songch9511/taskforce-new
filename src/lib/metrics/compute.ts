@@ -125,7 +125,7 @@ export function misjudgment(events: ActionEventRow[], period: Period): Misjudgme
     result.confirmed += sorted.filter((e) => e.type === "user_confirmed").length;
     const asked = created.after?.needs_confirmation;
     // 물어서 만들었어도 AI가 나중 원문(사용자의 확정 약속)으로 물음을 풀었으면 사용자에게는 자동으로 반영된 것이다:
-    // 그 뒤 고치면 자동 반영의 오판으로 센다 (withClearedConfirmation이 AI 쓰기의 이벤트 before · after에 얹는 needs_confirmation 전후.
+    // 그 뒤 고치면 자동 반영의 오판으로 센다 (withConfirmationChange가 AI 쓰기의 이벤트 before · after에 얹는 needs_confirmation 전후.
     // 만들 때 이벤트(created)는 before가 없어 여기 걸리지 않는다)
     const cleared = sorted.some((e) => e.actor === "ai" && e.type !== "created" && e.before?.needs_confirmation === true && e.after?.needs_confirmation === false);
     const bucket = result.byConfirmation[asked === true && !cleared ? "asked" : asked === true || asked === false ? "auto" : "unknown"];

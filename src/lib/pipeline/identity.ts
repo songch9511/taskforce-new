@@ -24,6 +24,11 @@ export type UserPosition = "sender" | "sole_recipient" | "recipient" | "cc_only"
 
 const normalizeEmail = (email: string) => email.trim().toLowerCase();
 const normalizeName = (name: string) => name.replace(/\s+/g, "").toLowerCase();
+const normalizeIdentityName = (name: string) => normalizeName(name).replace(/(님|씨)$/, "");
+const personNameForms = (raw: string) => {
+  const name = normalizeIdentityName(raw);
+  return !name ? [] : /^[가-힣]{3}$/.test(name) ? [name, name.slice(1)] : [name];
+};
 
 /** 원문의 관련자 모두: 보낸 사람 · 받는 사람 · 참조 · 참석자 (빈 칸은 undefined) */
 const everyone = (participants: Participants | undefined): (Person | undefined)[] => [
@@ -37,29 +42,42 @@ const everyone = (participants: Participants | undefined): (Person | undefined)[
 export function userNameForms(identity: UserIdentity): string[] {
   const forms = new Set<string>();
   for (const raw of [identity.name, ...identity.aliases]) {
-    const name = normalizeName(raw);
-    if (!name) continue;
-    forms.add(name);
-    if (/^[가-힣]{3}$/.test(name)) forms.add(name.slice(1));
+    personNameForms(raw).forEach((form) => forms.add(form));
   }
   return [...forms];
 }
 
-export function isUser(person: Person | undefined, identity: UserIdentity): boolean {
+/** A source can use a name form for both the user and a different participant. */
+export function isAmbiguousUserName(name: string, identity: UserIdentity, participants?: Participants): boolean {
+  const form = normalizeIdentityName(name);
+  if (!form || !userNameForms(identity).includes(form)) return false;
+  const identityNames = new Set([identity.name, ...identity.aliases].map(normalizeIdentityName));
+  const emails = new Set(identity.emails.map(normalizeEmail));
+  const matchingPeople = everyone(participants).filter((person): person is Person => Boolean(person?.name && personNameForms(person.name).includes(form)));
+  return matchingPeople.some((person) => {
+    const email = person.email && normalizeEmail(person.email);
+    if (email) return !emails.has(email);
+    const personName = normalizeIdentityName(person.name!);
+    return !identityNames.has(personName) && !userNameForms(identity).includes(personName);
+  });
+}
+
+export function isUser(person: Person | undefined, identity: UserIdentity, participants?: Participants): boolean {
   if (!person) return false;
   const emails = identity.emails.map(normalizeEmail);
-  if (person.email && emails.includes(normalizeEmail(person.email))) return true;
-  return person.name ? userNameForms(identity).includes(normalizeName(person.name)) : false;
+  const email = person.email && normalizeEmail(person.email);
+  if (email) return emails.includes(email);
+  return person.name ? userNameForms(identity).includes(normalizeIdentityName(person.name)) && !isAmbiguousUserName(person.name, identity, participants) : false;
 }
 
 /** 메일이면 보낸 사람 / 받는 사람 / 참조 중 어디에 있는지, 회의면 참석자인지 */
 export function userPosition(identity: UserIdentity, participants: Participants | undefined): UserPosition {
   if (!participants) return "unknown";
-  if (isUser(participants.from, identity)) return "sender";
+  if (isUser(participants.from, identity, participants)) return "sender";
   const to = participants.to ?? [];
-  if (to.some((p) => isUser(p, identity))) return to.length === 1 ? "sole_recipient" : "recipient";
-  if ((participants.cc ?? []).some((p) => isUser(p, identity))) return "cc_only";
-  if ((participants.attendees ?? []).some((p) => isUser(p, identity))) return "attendee";
+  if (to.some((p) => isUser(p, identity, participants))) return to.length === 1 ? "sole_recipient" : "recipient";
+  if ((participants.cc ?? []).some((p) => isUser(p, identity, participants))) return "cc_only";
+  if ((participants.attendees ?? []).some((p) => isUser(p, identity, participants))) return "attendee";
   return "unknown";
 }
 
@@ -74,11 +92,8 @@ export function findNameVariants(text: string, identity: UserIdentity, participa
   const forms = userNameForms(identity);
   const others = new Set(
     everyone(participants)
-      .filter((p): p is Person => Boolean(p?.name) && !isUser(p, identity))
-      .flatMap((p) => {
-        const name = normalizeName(p.name!);
-        return /^[가-힣]{3}$/.test(name) ? [name, name.slice(1)] : [name];
-      }),
+      .filter((p): p is Person => Boolean(p?.name) && !isUser(p, identity, participants))
+      .flatMap((p) => personNameForms(p.name!)),
   );
 
   const variants = new Set<string>();
@@ -138,7 +153,7 @@ export function quoteSpeaker(text: string, quote: string, identity: UserIdentity
   }
   if (labels.size !== 1) return null;
   const [label] = labels;
-  if (isUser({ name: label }, identity)) return label;
+  if (isUser({ name: label }, identity, participants) || isAmbiguousUserName(label, identity, participants)) return label;
   const known = everyone(participants);
   if (known.some((p) => p?.name && normalizeName(p.name) === normalizeName(label))) return label;
   const uses = lines.filter((line) => speakerLabel(line) === label).length;
@@ -157,6 +172,30 @@ function nameAt(after: string, name: string): number | null {
   return match ? match[0].length : null;
 }
 
+const userMentionForms = (identity: UserIdentity) => [identity.name, ...identity.aliases].flatMap((raw) => {
+  const name = raw.trim();
+  if (!name) return [];
+  return /^[가-힣]{3}$/.test(name) ? [name, name.slice(1)] : [name];
+});
+
+/** `담당: 도윤`처럼 명시적으로 담당자를 적은 경우에만 짧은 동명이인 이름을 잡는다. */
+export function containsAmbiguousAssignee(text: string, identity: UserIdentity, participants?: Participants): boolean {
+  const forms = userMentionForms(identity).filter((name) => isAmbiguousUserName(name, identity, participants));
+  return forms.some((name) => {
+    const words = name.split(/\s+/).map(escapeRegExp).join("\\s+");
+    return new RegExp(`(?:^|\\n)\\s*(?:[-*•]\\s*(?:\\[\\s*[xX]?\\s*\\]\\s*)?)?(?:담당|담당자)\\s*[:：=]\\s*(?:@\\s*)?${words}(?:님|씨)?(?=$|[\\s,;|)\\]])`, "iu").test(text);
+  });
+}
+
+function mentionsAmbiguousUser(line: string, identity: UserIdentity, participants?: Participants): boolean {
+  const forms = userMentionForms(identity).filter((name) => isAmbiguousUserName(name, identity, participants));
+  for (const at of line.matchAll(/(?<![\p{L}\p{N}._%+-])@\s?/gu)) {
+    const after = line.slice(at.index! + at[0].length);
+    if (forms.some((name) => nameAt(after, name) !== null)) return true;
+  }
+  return false;
+}
+
 /**
  * 한 줄이 사용자를 @이름으로 부르는가. "@" 뒤를 사용자 이름 · 별칭 · 성을 뺀 이름과 관련자 이름 중 **가장 긴 이름**으로 읽는다:
  * 관련자에 "Daniel Kim"이 있으면 "@Daniel Kim"은 별칭이 "Daniel"인 사용자가 아니다. 관련자 목록이 없어도,
@@ -166,14 +205,10 @@ function nameAt(after: string, name: string): number | null {
 function mentionsUser(line: string, identity: UserIdentity, participants?: Participants): boolean {
   // userNameForms와 달리 원래 글자(공백 · 대소문자 그대로)를 쓴다: nameAt이 원문과 맞춰 보며 둘을 직접 무시한다.
   // 그래서 "김 도윤"처럼 띄어 쓴 이름은 성을 뺀 형태를 만들지 않는다 (userNameForms는 공백을 지운 뒤 만든다).
-  const userForms = [identity.name, ...identity.aliases].flatMap((raw) => {
-    const name = raw.trim();
-    if (!name) return [];
-    return /^[가-힣]{3}$/.test(name) ? [name, name.slice(1)] : [name];
-  });
+  const userForms = userMentionForms(identity).filter((name) => !isAmbiguousUserName(name, identity, participants));
   if (userForms.length === 0) return false;
   const others = everyone(participants)
-    .filter((p): p is Person => Boolean(p?.name?.trim()) && !isUser(p!, identity))
+    .filter((p): p is Person => Boolean(p?.name?.trim()) && !isUser(p!, identity, participants))
     .map((p) => p.name!.trim());
   const names = [...userForms.map((name) => ({ name, me: true })), ...others.map((name) => ({ name, me: false }))].sort(
     (a, b) => normalizeName(b.name).length - normalizeName(a.name).length,
@@ -200,16 +235,17 @@ function mentionsUser(line: string, identity: UserIdentity, participants?: Parti
  *   요청자의 말로 보면 규칙 0 · 3을 건너뛴다. "김대표" · "민수" · 영문 이름처럼 비교할 수 없는 모양이면 null.
  * 누가 말했는지는 원문의 이름표가 정하는 사실이라(원칙 5) Jev의 추측보다 앞선다.
  */
-export function speakerRole(speaker: string, requester: string | null | undefined, identity: UserIdentity): "me" | "counterpart" | "third_party" | null {
+export function speakerRole(speaker: string, requester: string | null | undefined, identity: UserIdentity, participants?: Participants): "me" | "counterpart" | "third_party" | null {
   const hasRequester = Boolean(requester?.trim());
-  if (isUser({ name: speaker }, identity)) return hasRequester && samePerson(requester!, speaker) ? null : "me";
+  if (isAmbiguousUserName(speaker, identity, participants)) return null;
+  if (isUser({ name: speaker }, identity, participants)) return hasRequester && samePerson(requester!, speaker) ? null : "me";
   if (!hasRequester) return null;
   if (samePerson(requester!, speaker)) return "counterpart";
   return fullName(speaker) && fullName(requester!) && script(speaker) === script(requester!) ? "third_party" : null;
 }
 
 const TITLE = /(대표|팀장|실장|이사|부장|과장|차장|매니저|님|씨)+$/;
-const bareName = (name: string) => normalizeName(name).replace(/(님|씨)$/, "");
+const bareName = normalizeIdentityName;
 const script = (name: string) => (/[가-힣]/.test(name) ? "hangul" : "latin");
 
 /** 사람을 가려낼 수 있는 이름: 한글 3~4자(직함으로 끝나지 않음) 또는 두 단어 이상의 영문 이름 */
@@ -237,6 +273,17 @@ export function addressedToUser(text: string, quote: string, identity: UserIdent
     for (let i = start; i <= index; i++) checked.add(i);
   }
   return [...checked].some((i) => mentionsUser(lines[i], identity, participants));
+}
+
+/** 인용이 속한 메시지에서 동명이인과 겹치는 @사용자 이름을 썼는가. */
+export function addressedAmbiguouslyToUser(text: string, quote: string, identity: UserIdentity, participants?: Participants): boolean {
+  const lines = text.split("\n");
+  const checked = new Set<number>();
+  for (const index of quoteLineIndexes(text, quote)) {
+    const start = messageStart(lines, index) ?? index;
+    for (let i = start; i <= index; i++) checked.add(i);
+  }
+  return [...checked].some((i) => mentionsAmbiguousUser(lines[i], identity, participants));
 }
 
 function oneSyllableApart(a: string, b: string): boolean {

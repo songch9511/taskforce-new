@@ -13,6 +13,7 @@ const claim = (over: Partial<Claim> & Pick<Claim, "value" | "occurredAt">): Clai
   channel: "meeting",
   ...over,
 });
+const disputed = (c: Claim): Claim => ({ ...c, state: "disputed" });
 const at = (day: string, time = "10:00") => new Date(`2025-09-${day}T${time}:00+09:00`);
 
 describe("핵심 시나리오 (TRUTH_RULES 2장 표: 9/22 → 9/24)", () => {
@@ -139,6 +140,185 @@ describe("규칙 5 · 6: 같은 시점", () => {
     const a = claim({ value: "2025-09-26", occurredAt: at("22") });
     const b = claim({ value: "2025-09-25", occurredAt: at("22") });
     expect(resolveField("due", [a, b])).toMatchObject({ needsConfirmation: true, pending: [a.id, b.id], rules: [6] });
+  });
+
+  it("같은 시점의 내 일방적인 기한 연장은 채널이 높아도 반영하지 않는다", () => {
+    const first = claim({ value: "2025-09-26", occurredAt: at("21") });
+    const extension = claim({ value: "2025-09-30", occurredAt: at("22"), channel: "email" });
+    const r = resolveField("due", [first, extension]);
+
+    expect(r).toMatchObject({ value: "2025-09-26", winningClaimId: first.id, risks: [{ kind: "unauthorized_change", claimId: extension.id, value: extension.value }] });
+  });
+
+  it.each(["user", "tracker"] as const)("같은 시점의 %s 편집이 원문 발언보다 우선한다", (origin) => {
+    const source = claim({ value: "2025-09-29", occurredAt: at("22"), speakerRole: "counterpart", channel: "email" });
+    const edit = claim({ value: "2025-09-26", occurredAt: at("22"), origin, channel: "note" });
+    const r = resolveField("due", [source, edit]);
+
+    expect(r).toMatchObject({ value: edit.value, winningClaimId: edit.id, reason: origin === "tracker" ? "사용자가 할 일 도구에서 정함" : "사용자가 직접 정함" });
+  });
+
+  it.each(["user", "tracker"] as const)("같은 값을 재확인한 %s Claim이 같은 시점의 완료 발언을 막는다 (입력 순서 무관)", (origin) => {
+    const open = claim({ field: "status", value: "open", occurredAt: at("21") });
+    const reaffirmation = claim({ field: "status", value: "open", occurredAt: at("22"), origin, channel: "note" });
+    const completion = claim({ field: "status", value: "done", occurredAt: at("22"), speakerRole: "counterpart", channel: "email" });
+    const expected = {
+      value: "open",
+      winningClaimId: reaffirmation.id,
+      needsConfirmation: false,
+      pending: [],
+      reason: origin === "tracker" ? "사용자가 할 일 도구에서 정함" : "사용자가 직접 정함",
+    };
+
+    expect(resolveField("status", [open, reaffirmation, completion])).toMatchObject(expected);
+    expect(resolveField("status", [open, completion, reaffirmation])).toMatchObject(expected);
+  });
+
+  it.each([[false], [true]])("제3자의 높은 채널이 취소를 확정하지 않는다 (입력 역순: %s)", (reverse) => {
+    const thirdParty = claim({ field: "status", value: "dropped", occurredAt: at("22"), speakerRole: "third_party", channel: "email" });
+    const counterpart = claim({ field: "status", value: "open", occurredAt: at("22"), speakerRole: "counterpart", channel: "meeting" });
+    const r = resolveField("status", reverse ? [counterpart, thirdParty] : [thirdParty, counterpart]);
+
+    expect(r).toMatchObject({ value: "open", winningClaimId: counterpart.id, needsConfirmation: true, pending: [thirdParty.id], rules: [0] });
+  });
+
+  it.each([[false], [true]])("제3자의 완료 발언이 같은 시점의 요청자 취소를 덮지 않는다 (입력 역순: %s)", (reverse) => {
+    const thirdParty = claim({ field: "status", value: "done", occurredAt: at("22"), speakerRole: "third_party", channel: "email" });
+    const counterpart = claim({ field: "status", value: "dropped", occurredAt: at("22"), speakerRole: "counterpart", channel: "meeting" });
+    const r = resolveField("status", reverse ? [counterpart, thirdParty] : [thirdParty, counterpart]);
+
+    expect(r).toMatchObject({ value: "dropped", winningClaimId: counterpart.id, needsConfirmation: true, pending: [thirdParty.id], rules: [0] });
+  });
+
+  it("권한이 없는 초기 완료 Claim은 확인 전 Action을 완료하지 않는다", () => {
+    const thirdParty = claim({ field: "status", value: "done", occurredAt: at("22"), speakerRole: "third_party", channel: "email" });
+    expect(resolveField("status", [thirdParty])).toMatchObject({
+      value: null,
+      winningClaimId: null,
+      needsConfirmation: true,
+      pending: [thirdParty.id],
+      rules: [0],
+    });
+  });
+
+  it("내가 혼자 취소한 초기 Claim은 확인 전 Action을 닫지 않는다", () => {
+    const myDrop = claim({ field: "status", value: "dropped", occurredAt: at("22"), speakerRole: "me" });
+    expect(resolveField("status", [myDrop])).toMatchObject({
+      value: null,
+      winningClaimId: null,
+      needsConfirmation: true,
+      pending: [myDrop.id],
+      rules: [0],
+    });
+  });
+
+  it.each([[false], [true]])("초기 종료 Claim이 모두 권한 없으면 닫힌 상태를 쓰지 않는다 (입력 역순: %s)", (reverse) => {
+    const done = claim({ field: "status", value: "done", occurredAt: at("22"), speakerRole: "third_party", channel: "email" });
+    const dropped = claim({ field: "status", value: "dropped", occurredAt: at("22"), speakerRole: "third_party", channel: "meeting" });
+    const r = resolveField("status", reverse ? [dropped, done] : [done, dropped]);
+
+    expect(r).toMatchObject({ value: null, winningClaimId: null, needsConfirmation: true, rules: [0] });
+    expect(new Set(r.pending)).toEqual(new Set([done.id, dropped.id]));
+  });
+
+  it("초기 요청자 완료는 권한이 있어 그대로 적용한다", () => {
+    const done = claim({ field: "status", value: "done", occurredAt: at("22"), speakerRole: "counterpart" });
+    expect(resolveField("status", [done])).toMatchObject({ value: "done", winningClaimId: done.id, needsConfirmation: false });
+  });
+
+  it.each(["done", "dropped"] as const)("불명확한 발화자의 %s 발언이 같은 시점의 기존 상태를 바꾸지 않는다", (value) => {
+    const mine = claim({ field: "status", value: "open", occurredAt: at("22"), channel: "meeting" });
+    const unknown = claim({ field: "status", value, occurredAt: at("22"), speakerRole: "unknown", channel: "email" });
+    const expected = { value: "open", winningClaimId: mine.id, needsConfirmation: true, pending: [unknown.id], rules: [0] };
+
+    expect(resolveField("status", [mine, unknown])).toMatchObject(expected);
+    expect(resolveField("status", [unknown, mine])).toMatchObject(expected);
+  });
+});
+
+describe("speaker_role이 unknown인 Claim", () => {
+  const unresolved = (value: string, occurredAt: Date) =>
+    claim({ field: "status", value, occurredAt, speakerRole: "unknown", channel: "email" });
+
+  it("초기 값은 보여주되 확인을 요구한다", () => {
+    const unknown = unresolved("done", at("22"));
+    expect(resolveField("status", [unknown])).toMatchObject({
+      value: "done",
+      winningClaimId: unknown.id,
+      needsConfirmation: true,
+      pending: [unknown.id],
+      rules: [0],
+    });
+  });
+
+  it("기존 값을 나중 발언으로 바꾸지 않는다", () => {
+    const open = claim({ field: "status", value: "open", occurredAt: at("21") });
+    const unknown = unresolved("done", at("22"));
+    expect(resolveField("status", [open, unknown])).toMatchObject({
+      value: "open",
+      winningClaimId: open.id,
+      needsConfirmation: true,
+      pending: [unknown.id],
+      rules: [0],
+    });
+  });
+
+  it("나중의 확정된 같은 값은 화자 불명 Claim의 확인을 대신한다", () => {
+    const unknown = unresolved("done", at("22"));
+    const known = claim({ field: "status", value: "done", occurredAt: at("23"), speakerRole: "counterpart" });
+    expect(resolveField("status", [unknown, known])).toMatchObject({ value: "done", needsConfirmation: false, pending: [] });
+  });
+
+  it.each(["user", "tracker"] as const)("나중의 %s 확인이 이전 불확실성을 푼다", (origin) => {
+    const unknown = unresolved("done", at("22"));
+    const confirmation = claim({ field: "status", value: "done", occurredAt: at("23"), origin });
+    expect(resolveField("status", [unknown, confirmation])).toMatchObject({ value: "done", needsConfirmation: false, pending: [] });
+  });
+});
+
+describe("state=disputed인 source Claim", () => {
+  it("기존 근거가 없으면 후보 값을 보여주되 확인을 요구한다", () => {
+    const candidate = disputed(claim({ field: "status", value: "done", occurredAt: at("22"), speakerRole: "counterpart" }));
+    expect(resolveField("status", [candidate])).toMatchObject({
+      value: "done",
+      winningClaimId: candidate.id,
+      needsConfirmation: true,
+      pending: [candidate.id],
+      rules: [0],
+    });
+  });
+
+  it.each([
+    ["due", "2026-10-09", "2026-10-12"],
+    ["status", "open", "done"],
+    ["status", "open", "dropped"],
+  ] as const)("%s disputed %s는 기존 값을 바꾸지 않는다", (field, existing, proposed) => {
+    const known = claim({ field, value: existing, occurredAt: at("21"), speakerRole: "counterpart" });
+    const candidate = disputed(
+      claim({ field, value: proposed, occurredAt: at("22"), speakerRole: "counterpart", certainty: "firm", directness: "first_hand" }),
+    );
+    const r = resolveField(field, [known, candidate]);
+
+    expect(candidate).toMatchObject({ certainty: "firm", directness: "first_hand", speakerRole: "counterpart" });
+    expect(r).toMatchObject({
+      value: existing,
+      winningClaimId: known.id,
+      needsConfirmation: true,
+      pending: [candidate.id],
+      rules: [0],
+    });
+  });
+
+  it("나중의 확정된 같은 값은 disputed source Claim을 확인한다", () => {
+    const candidate = disputed(claim({ field: "status", value: "done", occurredAt: at("22"), speakerRole: "counterpart" }));
+    const known = claim({ field: "status", value: "done", occurredAt: at("23"), speakerRole: "counterpart" });
+    expect(resolveField("status", [candidate, known])).toMatchObject({ value: "done", needsConfirmation: false, pending: [] });
+  });
+
+  it.each(["user", "tracker"] as const)("명시적인 %s Claim은 disputed 표시에 막히지 않는다", (origin) => {
+    const known = claim({ field: "status", value: "open", occurredAt: at("21") });
+    const edit = disputed(claim({ field: "status", value: "dropped", occurredAt: at("22"), origin }));
+    expect(resolveField("status", [known, edit])).toMatchObject({ value: "dropped", winningClaimId: edit.id, needsConfirmation: false });
   });
 });
 

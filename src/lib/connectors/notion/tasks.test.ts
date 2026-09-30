@@ -339,19 +339,29 @@ describe("pageSnapshot", () => {
     expect(pageSnapshot(stranger, setting, identity, "someone-else")?.owner).toBe("other");
   });
 
-  it("연결한 사람을 알면 다른 id는 이름 · 별칭이 같아도 내가 아니다 (이메일이 맞을 때만 나)", () => {
+  it("연결한 사람을 알면 다른 id는 이메일이 맞을 때만 나이고, 모르면 이메일 없는 이름 · 별칭으로 보완한다", () => {
     const sameName = page({ people: [{ name: "청혁" }] });
     const sameAlias = page({ people: [{ name: "Daniel", email: "daniel@other.com" }] });
-    // 같은 이름 · 별칭, 다른 id → 남
+    const aliasWithoutEmail = page({ people: [{ name: "Daniel" }] });
+    // 같은 이름 · 별칭이어도 명시된 다른 이메일 → 남
     expect(pageSnapshot(sameName, setting, identity, "notion-me")?.owner).toBe("other");
     expect(pageSnapshot(sameAlias, setting, identity, "notion-me")?.owner).toBe("other");
     // 같은 id → 나
     expect(pageSnapshot(sameName, setting, identity, "u0")?.owner).toBe("me");
     // 다른 id라도 이메일이 프로필과 같으면 나 (대소문자 무시)
     expect(pageSnapshot(page({ people: [{ name: "Someone", email: "Daniel@X.com" }] }), setting, identity, "notion-me")?.owner).toBe("me");
-    // 연결한 사람을 모르면 지금처럼 이름 · 별칭으로도 알아본다
+    // 연결한 사람을 모르면 이메일 없는 이름 · 별칭으로 알아본다. 이메일이 명시되어 다르면 이름보다 우선한다.
     expect(pageSnapshot(sameName, setting, identity)?.owner).toBe("me");
-    expect(pageSnapshot(sameAlias, setting, identity)?.owner).toBe("me");
+    expect(pageSnapshot(aliasWithoutEmail, setting, identity)?.owner).toBe("me");
+    expect(pageSnapshot(sameAlias, setting, identity)?.owner).toBe("other");
+  });
+
+  it("연결한 사람을 모를 때 같은 이름에 다른 이메일이 있으면 담당을 남으로 둔다", () => {
+    const namesake = page({ people: [{ name: "청혁", email: "colleague@x.com" }] });
+    const user = { object: "user" as const, id: "x", name: "청혁", person: { email: "colleague@x.com" } };
+
+    expect(pageSnapshot(namesake, setting, identity)?.owner).toBe("other");
+    expect(isNotionUserMe(user, identity, null)).toBe(false);
   });
 
   it("isNotionUserMe: 담당 · 마지막으로 고친 사람에 같은 규칙", () => {

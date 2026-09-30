@@ -12,7 +12,7 @@ import { USER_REASON } from "@/lib/pipeline/resolve";
 import type { Claim } from "@/lib/pipeline/resolve";
 import { SLACK_DISCONNECTED_QUOTE } from "@/lib/retention";
 
-import { changeEvents, projectAction, withClearedConfirmation, type ActionStatus, type EventDraft } from "./project";
+import { changeEvents, projectAction, withConfirmationChange, type ActionStatus, type EventDraft } from "./project";
 import { actionRowValues, CLAIM_COLUMNS, claimFromRow, claimToRow, storedReasons, toPgVector, type ClaimRow } from "./rows";
 
 // Phase 2 병합 결과를 DB에 쓴다 (service role). 쿼리마다 user_id로 범위를 좁힌다.
@@ -165,14 +165,19 @@ export class SupabaseActionStore implements ActionStore, EmbeddingBackfillStore 
       const kept = storedReasons(row.confirm_reasons);
       const before = projectAction(row.title, existing, kept);
       const stays = update.clearJudgeReasons ? withoutJudgeReasons(kept) : kept;
-      const after = projectAction(row.title, [...existing, ...update.claims], update.confirmReason ? [...stays, update.confirmReason] : stays);
+      const confirmReasons = update.confirmReasons ?? [];
+      const after = projectAction(
+        row.title,
+        [...existing, ...update.claims],
+        [...stays, ...confirmReasons, ...(update.confirmReason ? [update.confirmReason] : [])],
+      );
 
       const written = await writeAction(this.admin, this.userId, actionId, {
         expectedVersion: row.version,
         action: actionRowValues(after),
         claims: update.claims,
         evidence: update.evidence,
-        events: withClearedConfirmation(changeEvents(before, after, update.evidence.role), before, after),
+        events: withConfirmationChange(changeEvents(before, after, update.evidence.role), before, after),
         actor: "ai",
       });
       if (!written) return null;

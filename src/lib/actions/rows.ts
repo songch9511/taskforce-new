@@ -15,9 +15,10 @@ export type ClaimRow = {
   audience: Claim["audience"];
   origin: NonNullable<Claim["origin"]>;
   channel: ClaimChannel | null;
+  state?: Claim["state"];
 };
 
-export const CLAIM_COLUMNS = "id, field, value, occurred_at, speaker_role, certainty, directness, audience, origin, channel";
+export const CLAIM_COLUMNS = "id, field, value, occurred_at, speaker_role, certainty, directness, audience, origin, channel, state";
 
 export function claimFromRow(row: ClaimRow): Claim {
   return {
@@ -31,6 +32,7 @@ export function claimFromRow(row: ClaimRow): Claim {
     audience: row.audience,
     channel: row.channel ?? "note",
     origin: row.origin,
+    state: row.state ?? "active",
   };
 }
 
@@ -50,6 +52,7 @@ export function claimToRow(claim: Claim, userId: string, actionId: string, evide
     audience: claim.audience,
     origin: claim.origin ?? "source",
     channel: claim.channel,
+    state: claim.state ?? "active",
   };
 }
 

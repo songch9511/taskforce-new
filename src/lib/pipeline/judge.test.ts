@@ -188,6 +188,145 @@ describe("judgeCandidate", () => {
     expect(unlabeled.speaker).toBeUndefined();
   });
 
+  it("동명이인 참석자와 겹치는 화자 이름은 자동 반영하지 않고 사용자 역할 확인으로 보낸다", async () => {
+    const identity = { name: "김도윤", aliases: [], emails: [] };
+    const participants = { attendees: [{ name: "김도윤" }, { name: "박도윤" }] };
+    const ambiguous = {
+      ...source,
+      text: "도윤님: 금요일까지 자료를 보내드릴게요",
+      participants,
+    };
+    const result = await judgeCandidate(
+      { title: "자료 전달", quote: "금요일까지 자료를 보내드릴게요", due_text: null, owner: "me" },
+      ambiguous,
+      identity,
+      async () => ({ model: "m", answers }),
+    );
+
+    expect(result).toMatchObject({
+      decision: "confirm",
+      reasons: ["NOT_MY_ACTION"],
+      rule: "identity_ambiguous",
+      speaker: "도윤님",
+      speakerAmbiguous: true,
+      ownerAmbiguous: true,
+      signals: { speaker_role: { choice: "me" } },
+    });
+  });
+
+  it("알려진 요청자가 말했어도 동명이인에게 한 @요청은 담당만 확인한다", async () => {
+    const identity = { name: "김도윤", aliases: [], emails: [] };
+    const participants = { attendees: [{ name: "김도윤" }, { name: "박도윤" }, { name: "박지훈" }] };
+    const message = {
+      ...source,
+      text: "박지훈: @도윤 자료 부탁해요",
+      participants,
+    };
+    const result = await judgeCandidate(
+      { title: "자료 전달", quote: "자료 부탁해요", due_text: null, counterpart: "박지훈", owner: "me" },
+      message,
+      identity,
+      async () => ({ model: "m", answers }),
+    );
+
+    expect(result).toMatchObject({
+      decision: "confirm",
+      reasons: ["NOT_MY_ACTION"],
+      rule: "identity_ambiguous",
+      speaker: "박지훈",
+      ownerAmbiguous: true,
+    });
+    expect(result.speakerAmbiguous).toBeUndefined();
+  });
+
+  it("담당 추출이 unknown이어도 동명이인에게 보낸 비약속 변경은 확인하고 화자는 유지한다", async () => {
+    const identity = { name: "김도윤", aliases: [], emails: [] };
+    const participants = { attendees: [{ name: "김도윤" }, { name: "박도윤" }, { name: "박지훈" }] };
+    const message = {
+      ...source,
+      kind: "message",
+      text: "박지훈: @도윤 이제 제안서는 안 보내셔도 돼요",
+      participants,
+    };
+    const change = { title: "제안서 발송 취소", quote: "이제 제안서는 안 보내셔도 돼요", due_text: null, counterpart: "박지훈", owner: "unknown" as const };
+    const result = await judgeCandidate(change, message, identity, async () => ({ model: "m", answers }));
+    const rejected = await judgeCandidate(change, message, identity, async () => ({
+      model: "m",
+      answers: { ...answers, is_my_commitment: { type: "noul", noul: 0.2 } },
+    }));
+
+    expect(result).toMatchObject({
+      decision: "confirm",
+      reasons: ["NOT_MY_ACTION"],
+      rule: "identity_ambiguous",
+      speaker: "박지훈",
+      ownerAmbiguous: true,
+    });
+    expect(result.speakerAmbiguous).toBeUndefined();
+    expect(rejected).toMatchObject({ decision: "reject", speaker: "박지훈", ownerAmbiguous: true });
+    expect(rejected.speakerAmbiguous).toBeUndefined();
+  });
+
+  it("동명이인 참석자와 겹치는 짧은 담당 이름만 확인하고 전체 이름은 그대로 판단한다", async () => {
+    const identity = { name: "김도윤", aliases: [], emails: [] };
+    const participants = { attendees: [{ name: "김도윤" }, { name: "박도윤" }] };
+    const decide: Decide = async () => ({ model: "m", answers });
+    const short = await judgeCandidate(
+      { title: "견적서 검토", quote: "- [ ] 담당: 도윤 — 금요일까지 견적서 검토", due_text: null, owner: "me" },
+      { ...source, kind: "meeting", text: "회의 요약\n- [ ] 담당: 도윤 — 금요일까지 견적서 검토", participants },
+      identity,
+      decide,
+    );
+    const full = await judgeCandidate(
+      { title: "프로젝트 일정표 발송", quote: "- [ ] 담당: 김도윤 — 목요일까지 프로젝트 일정표 발송", due_text: null, owner: "me" },
+      { ...source, kind: "meeting", text: "회의 요약\n- [ ] 담당: 김도윤 — 목요일까지 프로젝트 일정표 발송", participants },
+      identity,
+      decide,
+    );
+
+    expect(short).toMatchObject({ decision: "confirm", reasons: ["NOT_MY_ACTION"], ownerAmbiguous: true, rule: "identity_ambiguous" });
+    expect(full).toMatchObject({ decision: "auto", reasons: [] });
+    expect(full.ownerAmbiguous).toBeUndefined();
+
+    const namedSpeaker = await judgeCandidate(
+      { title: "자료 전달", quote: "도윤님에게 내가 보내드릴게요", due_text: null, owner: "me" },
+      { ...source, kind: "meeting", text: "김도윤: 도윤님에게 내가 보내드릴게요", participants },
+      identity,
+      decide,
+    );
+    expect(namedSpeaker).toMatchObject({ decision: "auto", speaker: "김도윤" });
+    expect(namedSpeaker.ownerAmbiguous).toBeUndefined();
+  });
+
+  it("짧은 인용은 같은 원문 줄의 담당 라벨만 보고 인접한 전체 이름 할 일은 자동 반영할 수 있다", async () => {
+    const identity = { name: "김도윤", aliases: [], emails: [] };
+    const participants = { attendees: [{ name: "김도윤" }, { name: "박도윤" }] };
+    const text = [
+      "[Notion AI 요약 · 주간 운영 회의]",
+      "- [ ] 담당: 도윤 — 금요일까지 견적서 검토",
+      "- [ ] 담당: 김도윤 — 목요일까지 프로젝트 일정표 발송",
+    ].join("\n");
+    const meeting = { ...source, kind: "meeting", text, participants };
+    const decide: Decide = async () => ({ model: "m", answers });
+
+    const short = await judgeCandidate(
+      { title: "견적서 검토", quote: "금요일까지 견적서 검토", due_text: null, owner: "me" },
+      meeting,
+      identity,
+      decide,
+    );
+    const full = await judgeCandidate(
+      { title: "프로젝트 일정표 발송", quote: "목요일까지 프로젝트 일정표 발송", due_text: null, owner: "me" },
+      meeting,
+      identity,
+      decide,
+    );
+
+    expect(short).toMatchObject({ decision: "confirm", reasons: ["NOT_MY_ACTION"], ownerAmbiguous: true, rule: "identity_ambiguous" });
+    expect(full).toMatchObject({ decision: "auto", reasons: [] });
+    expect(full.ownerAmbiguous).toBeUndefined();
+  });
+
   it("인용 줄이 사용자를 @이름으로 부르면 확인 요청 규칙을 적용한다", async () => {
     const decide: Decide = async () => ({ model: "m", answers: { ...answers, is_my_commitment: { type: "noul", noul: 0.3 } } });
     const mention = { ...source, text: "[#sales · 스레드 중간부터]\n최유나: @윤지호 이거 금요일까지 될까요?" };
