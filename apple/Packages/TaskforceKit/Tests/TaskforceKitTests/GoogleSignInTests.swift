@@ -109,6 +109,72 @@ struct SignInMethodsTests {
     }
 }
 
+struct AccountDeletionPlanTests {
+    let google = SignInMethods(providers: ["google"], primary: "google")
+    let apple = SignInMethods(providers: ["apple"], primary: "apple")
+    let email = SignInMethods(providers: ["email"], primary: "email")
+
+    struct Offline: Error {}
+
+    /// Google로 가입한 뒤 다른 기기에서 Apple을 이은 계정: 세션에는 google뿐이어도 새로 읽은 사용자로 Apple 토큰을 폐기한다
+    @Test func freshUserWithLinkedAppleReauthorizesWithApple() async {
+        let fresh = SignInMethodsTests().user(provider: "google", providers: ["google", "apple"])
+        let plan = await AccountDeletionPlan.make(cached: google) { fresh }
+        #expect(plan == AccountDeletionPlan(fresh: SignInMethods(providers: ["google", "apple"], primary: "google"), cached: google))
+        #expect(plan.reauthorizeWithApple)
+        #expect(plan.disconnectGoogle)
+    }
+
+    /// 새로 읽지 못하면 Apple 재확인을 받는다 (Google 폐기는 세션의 방식으로)
+    @Test func unreadableUserFallsBackToAskingApple() async {
+        let plan = await AccountDeletionPlan.make(cached: google) { throw Offline() }
+        #expect(plan.reauthorizeWithApple)
+        #expect(plan.disconnectGoogle)
+        let emailPlan = await AccountDeletionPlan.make(cached: email) { throw Offline() }
+        #expect(emailPlan.reauthorizeWithApple)
+        #expect(!emailPlan.disconnectGoogle)
+    }
+
+    @Test func plansByProvider() {
+        let plans = [google, apple, email, .unknown].map { AccountDeletionPlan(fresh: $0, cached: email) }
+        #expect(plans.map(\.reauthorizeWithApple) == [false, true, false, true])
+        #expect(plans.map(\.disconnectGoogle) == [true, false, false, false])
+    }
+}
+
+struct AccountNameFillTests {
+    let userID = UUID()
+    let empty = Profile(displayName: nil, aliases: ["Doyun"], emails: ["me@x.co"], aiConsentAt: nil, reportsConsent: true)
+
+    @Test func fillsEmptyNameForTheSameUser() throws {
+        let fill = AccountNameFill(userID: userID, name: "Doyun Kim")
+        let filled = try #require(fill.profile(filling: empty, signedInUserID: userID))
+        #expect(filled.displayName == "Doyun Kim")
+        #expect(filled.aliases == ["Doyun"])
+        #expect(filled.emails == ["me@x.co"])
+    }
+
+    /// 그사이 다른 계정으로 바뀌었거나 로그아웃했으면 저장하지 않는다
+    @Test func skipsOtherOrNoUser() {
+        let fill = AccountNameFill(userID: userID, name: "Doyun Kim")
+        #expect(fill.profile(filling: empty, signedInUserID: UUID()) == nil)
+        #expect(fill.profile(filling: empty, signedInUserID: nil) == nil)
+    }
+
+    /// 이름이 있으면 그대로 둔다
+    @Test func keepsExistingName() {
+        var named = empty
+        named.displayName = "김도윤"
+        #expect(AccountNameFill(userID: userID, name: "Doyun Kim").profile(filling: named, signedInUserID: userID) == nil)
+    }
+
+    /// Apple · 이메일 로그인은 이름이 없어 채울 것이 없다
+    @Test func onlyUsersWithANameGiveAFill() {
+        let noName = SignInMethodsTests().user(provider: "apple", providers: ["apple"])
+        #expect(AccountNameFill(user: noName) == nil)
+    }
+}
+
 struct AccountNameTests {
     /// Supabase가 Google ID 토큰으로 채우는 user_metadata 모양 (supabase/auth `parseGoogleIDToken`)
     @Test func readsGoogleFullName() {

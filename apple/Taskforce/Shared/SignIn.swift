@@ -114,7 +114,10 @@ struct SignInView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(TFColor.bgCanvas)
         // 다음 로그인 화면은 다시 Apple 버튼만
-        .onDisappear { showsEmail = false }
+        .onDisappear {
+            showsEmail = false
+            GoogleSignInFlow.forgetRunningFlow()
+        }
         #if os(iOS)
         // Google 로그인 콜백 (보통은 ASWebAuthenticationSession이 바로 받는다). Mac은 MacAppDelegate가 받는다.
         .onOpenURL { url in _ = GoogleSignInFlow.handle(url) }

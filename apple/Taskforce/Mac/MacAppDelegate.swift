@@ -70,6 +70,8 @@ final class MacAppDelegate: NSObject, NSApplicationDelegate {
                 model.sessionChanged()
                 // 알림: 허용돼 있으면 로그인한 사용자로 기기 토큰을 보낸다
                 PushCenter.shared.follow(userID: model.signedInUserID, services: model.services)
+                // 로그아웃 · 세션 만료 · 계정 삭제 모두: 이 기기의 Google 로그인도 지운다 (다음 계정이 전 계정의 Google 토큰을 쓰지 않게)
+                if session.state == .signedOut { GoogleSignInFlow.signOut() }
                 self.follow(session, model: model)
             }
         }

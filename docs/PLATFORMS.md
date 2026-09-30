@@ -174,7 +174,9 @@ Server Action은 웹 폼 전용이라 Swift 앱에서 부를 수 없다.
 - 흐름: Google Sign-In SDK(`GoogleSignIn-iOS` 10, SPM, iOS · macOS) → `GIDSignIn.signIn(withPresenting:hint:additionalScopes:nonce:)` → ID 토큰 · 액세스 토큰 →
   `supabase.auth.signInWithIdToken(OpenIDConnectCredentials(provider: .google, idToken:, accessToken:, nonce:))` (Apple 로그인과 같은 호출, `SessionStore.signInWithGoogle`).
   - nonce: 앱이 만든 값의 SHA-256을 Google에 보내고(ID 토큰의 `nonce` 클레임), 원래 값을 Supabase에 보낸다(`SignInNonce`). Supabase Google 제공자의 **Skip nonce checks는 끈다**. SDK 9.0부터 nonce를 넘길 수 있다.
-  - 범위: SDK 기본값 `openid` · `email` · `profile`만. 추가 범위 없음. 로그인 클라이언트(iOS 유형)는 연동의 웹 클라이언트와 달라서 `include_granted_scopes`가 연동 범위를 끌어오지 않는다.
+  - 범위: SDK 기본값 `openid` · `email` · `profile`만 요청한다. 추가 범위 없음.
+  - **이미 허용한 범위가 붙을 수 있다:** Google Sign-In SDK는 늘 `include_granted_scopes=true`를 보내고, 로그인 클라이언트는 Calendar · Meet 연동 클라이언트(`Taskforce server`)와 같은 프로젝트 A에 있다. 그래서 Calendar · Meet 연결을 허용한 사용자의 **기기 Google 액세스 토큰에는 그 범위가 함께 붙을 수 있다.**
+    앱은 이 액세스 토큰으로 Google API를 부르지 않는다. Supabase에는 ID 토큰과 함께 보내지만 Supabase는 ID 토큰의 `at_hash` 확인에만 쓰고 저장하지 않는다. 토큰은 이 기기의 Google SDK Keychain에만 있고 Taskforce 로그인이 풀리면 지운다. 받아들인 위험으로 기록한다. 기기에서 확인하는 법은 [런북](go-live/runbook.md) 5장 5번(`grantedScopes`).
 - 앱 안(native)으로 하는 이유: Supabase 웹 OAuth(`/auth/v1/authorize?provider=google`)는 Google 동의 화면에 Supabase 프로젝트 도메인(`<ref>.supabase.co`)이 보이고, 인증받은 Google 브랜드(프로젝트 A)의 승인 도메인에 `supabase.co`를 넣어야 한다.
 - 클라이언트: Google Cloud 프로젝트 A(`taskforce-510108`)의 **iOS 유형** 클라이언트 "Taskforce app sign-in (iOS · Mac)" 하나를 iPhone · Mac이 같이 쓴다(번들 `dev.taskforcelabs.taskforce`, Google 문서: macOS 앱도 iOS 유형). 비밀 값은 없다.
 - 설정 키 (xcconfig → Info.plist): `GOOGLE_IOS_CLIENT_ID` → `GIDClientID`, `GOOGLE_IOS_URL_SCHEME`(클라이언트 ID를 점 단위로 뒤집은 값) → `CFBundleURLTypes`.
@@ -185,12 +187,13 @@ Server Action은 웹 폼 전용이라 Swift 앱에서 부를 수 없다.
 - 버튼: Google 브랜드 규칙의 Light 테마(흰 바탕 · #747775 테두리 · 표준 색 G)를 Apple 버튼과 같은 크기로 둔다(iOS 높이 48 · macOS 30, `TaskforceUI` `SignInWithGoogleButton`). Apple이 먼저다(App Store 4.8). SDK의 SwiftUI 버튼은 높이 40 고정 · 예전 디자인이라 쓰지 않았다. 글꼴은 규칙의 Google Sans 대신 시스템 글꼴이다.
 - Supabase에 남는 것 (supabase/auth `parseGoogleIDToken`): `auth.users.email`, `raw_app_meta_data` = `{provider: "google", providers: ["google"]}`, `raw_user_meta_data`와 `auth.identities.identity_data` =
   `iss`(`https://accounts.google.com`) · `sub` · `provider_id`(= sub) · `name` · `full_name`(= name) · `picture` · `avatar_url`(= picture, 프로필 사진 주소) · `email` · `email_verified` · `phone_verified`(false), Workspace 계정이면 `custom_claims.hd`(도메인).
-  Google 토큰은 Supabase에 저장되지 않는다(이 기기의 Google SDK Keychain에만 있고 로그아웃 때 지운다).
-- 이름: 프로필 이름이 비어 있으면 Google 이름(`full_name`)으로 계정마다 한 번 채운다(`AccountStore`, `AccountName`). 그러면 iPhone의 첫 이름 질문이 뜨지 않는다. Apple 로그인은 이름을 받지 않아(범위 `email`만) 전처럼 처음 한 번 묻는다. 서버도 프로필 이름이 없으면 계정 이름(`full_name` → `name` → 이메일 앞부분)을 쓴다(`accountDisplayName`).
-- 로그아웃: Supabase 세션과 이 기기의 Google SDK 로그인을 지운다(권한은 남는다).
-- 계정 삭제: Apple 로그인이 붙은 계정만 Apple 재확인(토큰 폐기용 code)을 받는다. Google 로그인이 붙은 계정은 삭제한 뒤 앱이 `GIDSignIn.disconnect()`로 Google 권한을 폐기한다(기다리지 않고, 실패해도 삭제는 끝났다). 이 기기에 Google 토큰이 없으면(다른 기기에서만 Google로 로그인) 폐기하지 못한다: 사용자가 Google 계정 → 보안 → 서드파티 앱에서 지울 수 있다. 이메일(심사 계정)은 폐기할 것이 없다. 방식은 세션의 identities · `app_metadata`로 정한다(`SignInMethods`).
+  Google 토큰은 Supabase에 저장되지 않는다(이 기기의 Google SDK Keychain에만 있고 Taskforce 로그인이 풀리면 지운다).
+- 이름: **Google 로그인 직후** 처음 읽은 프로필의 이름이 비어 있으면 그 로그인이 준 이름(`full_name`)으로 채운다(`SessionStore.takeAccountNameFill` → `AccountStore`, `AccountNameFill`). 그 로그인의 사용자가 지금 로그인한 사용자일 때만 저장하고, 기회는 한 번뿐이다(이름이 이미 있어도 쓴다). 그래서 사용자가 이름을 지운 뒤 다른 기기에서 앱을 열어도 다시 채우지 않는다(그 기기에서 다시 Google로 로그인하면 채운다). 채우면 iPhone의 첫 이름 질문이 뜨지 않는다. Apple 로그인은 이름을 받지 않아(범위 `email`만) 전처럼 처음 한 번 묻는다. 서버도 프로필 이름이 없으면 계정 이름(`full_name` → `name` → 이메일 앞부분)을 쓴다(`accountDisplayName`).
+- 로그아웃: Taskforce 로그인이 풀릴 때마다(Sign Out · 세션 만료 · 다른 곳에서 모두 로그아웃 · 계정 삭제, iPhone `RootView` · Mac `MacAppDelegate`의 로그인 상태 변화) 이 기기의 Google SDK 로그인도 지운다(권한은 남는다). 다음에 로그인한 다른 Taskforce 계정이 전 계정의 Google 토큰을 폐기하는 일이 없게.
+- 계정 삭제: Apple 로그인이 붙은 계정만 Apple 재확인(토큰 폐기용 code)을 받는다. Google 로그인이 붙은 계정은 삭제한 뒤 앱이 `GIDSignIn.disconnect()`로 Google 권한을 폐기한다(기다리지 않고, 실패해도 삭제는 끝났다). 이 기기에 Google 토큰이 없으면(다른 기기에서만 Google로 로그인) 폐기하지 못한다: 사용자가 Google 계정 → 보안 → 서드파티 앱에서 지울 수 있다. 이메일(심사 계정)은 폐기할 것이 없다. 무엇을 할지는 **삭제 직전에 서버에서 새로 읽은 사용자**(`auth.user()`)의 identities · `app_metadata`로 정한다(`AccountDeletionPlan`): 세션의 사용자는 토큰을 받은 때의 것이라, Google로 가입한 뒤 다른 기기에서 Apple을 이었으면 빠져 있다. 새로 읽지 못하면 Apple 재확인을 받는다.
 - 가입 훅: Before User Created 훅(`hook_before_user_created`)은 `provider = email`만 막는다. Google 가입은 통과한다(`tests/db/review-accounts.test.ts`).
 - **계정 연결:** Supabase는 확인된 같은 이메일의 로그인을 한 계정으로 자동으로 잇는다(Apple 실제 주소 = Google 주소면 한 계정). Apple "나의 이메일 가리기"(`@privaterelay.appleid.com`)로 가입한 사용자가 나중에 Google로 로그인하면 이메일이 달라 **별도 계정**이 된다. 수동으로 잇는 화면은 지금 두지 않는다.
+  **받아들인 위험:** 자동 연결은 "확인된 같은 이메일 = 같은 사람"을 믿는다. 그 이메일의 Google 계정(또는 Apple ID)을 가진 사람은 그 Taskforce 계정에 들어온다. Google · Apple 모두 확인한 주소만 "확인됨"으로 주므로 받아들인다(확인되지 않은 주소는 잇지 않는다). 연결하지 않으면 같은 사람이 로그인 방식마다 다른 계정을 갖게 된다.
 - 계정 메뉴의 로그인 계정 줄은 가입 방식에 따라 "Apple ID" · "Google Account" · "Email"이다.
 
 ---

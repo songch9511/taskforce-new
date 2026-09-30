@@ -133,7 +133,7 @@ Where to look:
 
 Third-party AI (Guideline 5.1.2(i)): before the first connection, the app shows which data is sent (source text and the names of people in it), who receives it (OpenRouter and the AI model providers it routes to, all with zero data retention and no training), and asks for explicit consent. Without consent, the server does not process connected sources. Consent can be withdrawn in Account > AI data.
 
-Account deletion (Guideline 5.1.1(v)): Account > Delete account deletes all data immediately (no backups) and revokes Sign in with Apple tokens, the Google sign-in grant (for accounts that signed in with Google), and connected-service tokens. If you delete the demo account, please let us know and we will recreate it.
+Account deletion (Guideline 5.1.1(v)): Account > Delete account deletes all data immediately (no backups) and revokes Sign in with Apple tokens and connected-service tokens, and revokes the Google sign-in grant from this device when available. If you delete the demo account, please let us know and we will recreate it.
 
 A demo video of connecting each service: {{Unlisted YouTube URL}}
 ```
@@ -211,7 +211,8 @@ Privacy Policy
 1. **키 발급 (사용자):** Apple Developer → Certificates, IDs & Profiles → Keys → + → 이름 `Taskforce SIWA` → **Sign in with Apple** 체크 → Configure → Primary App ID `dev.taskforcelabs.taskforce` → Register → `.p8` 내려받기(한 번만 받을 수 있다). `.env.example`은 APNs 키와 같은 키여도 된다고 적지만, 권한을 나눠 두려면 따로 만든다.
 2. **환경변수 (서버 전용, `.env.example`에 있음):** `APPLE_TEAM_ID=U9DWQKQFMW`, `APPLE_KEY_ID=<키 ID>`, `APPLE_PRIVATE_KEY=<.p8 내용, 줄바꿈은 \n>`, `APPLE_CLIENT_ID`(비우면 `dev.taskforcelabs.taskforce`). 비워 두면 폐기를 건너뛰고 삭제는 그대로 한다.
 3. **앱 (코드, 남음):** 계정 삭제 확인 화면에서 Sign in with Apple을 한 번 더 받아(`ASAuthorizationAppleIDProvider`, 범위 없음) 새 `authorizationCode`를 얻는다(5분 안에 한 번만 쓸 수 있다). `DELETE /api/v1/account` 본문 `{"apple_authorization_code": "…"}`로 보낸다(`contract.ts`의 `deleteAccountRequestSchema`). 이메일 · Google로 가입한 계정은 이 단계를 건너뛴다(2026-09-30부터 Apple 로그인이 붙은 계정만, `SignInMethods`).
-   - **Google 로그인 계정 (2026-09-30):** Supabase는 Google 토큰을 갖고 있지 않아 서버가 폐기할 것이 없다. 앱이 삭제가 끝난 뒤 `GIDSignIn.disconnect()`로 이 앱의 Google 권한을 폐기한다(기다리지 않고, 실패해도 삭제는 끝났다). 이 기기에 Google 토큰이 없으면 폐기하지 못한다(PLATFORMS.md 4장).
+   - Apple 재확인을 받을지는 삭제 직전에 서버에서 새로 읽은 사용자로 정한다(`AccountDeletionPlan`). Google로 가입한 뒤 다른 기기에서 Apple을 이은 계정도 Apple 토큰을 폐기하고, 새로 읽지 못하면 Apple 재확인을 받는다.
+   - **Google 로그인 계정 (2026-09-30):** Supabase는 Google 토큰을 갖고 있지 않아 서버가 폐기할 것이 없다. 앱이 삭제가 끝난 뒤 `GIDSignIn.disconnect()`로 이 기기의 Google 로그인 권한을 폐기한다(기다리지 않고, 실패해도 삭제는 끝났다). 이 기기에 Google 토큰이 없으면 폐기하지 못한다(PLATFORMS.md 4장).
 4. **서버 (구현됨):**
    - `client_secret`: ES256 JWT. 헤더 `kid=APPLE_KEY_ID`, 클레임 `iss=APPLE_TEAM_ID`, `iat=지금`, `exp=지금+5분`, `aud=https://appleid.apple.com`, `sub=APPLE_CLIENT_ID`.
    - `POST https://appleid.apple.com/auth/token` (`grant_type=authorization_code`, `code`, `client_id`, `client_secret`) → 토큰.

@@ -137,8 +137,20 @@ Supabase → Organization → Billing에서 프로젝트가 **Free**이고 백�
   2. ✅ (2026-09-30) Supabase(운영) → Authentication → Sign In / Providers → Google → Enable, Client IDs에 1번 클라이언트 ID, Client Secret 비움, Skip nonce checks **끔**. 4장 Auth 설정 표.
   3. 앱 설정: Release(TestFlight · App Store)는 커밋된 `apple/Config/Release.xcconfig`의 `GOOGLE_IOS_CLIENT_ID` · `GOOGLE_IOS_URL_SCHEME`을 쓴다(이 PR, 공개 식별자). Debug로 Google 로그인을 시험하려면 로컬 `apple/Config/Secrets.xcconfig`에 같은 두 줄을 넣는다(비우면 버튼이 숨는다, `Secrets.example.xcconfig`).
      아카이브한 앱의 Info.plist `GIDClientID`가 1번 값인지 확인한다.
-  4. 서명한 Mac 빌드: 권한 파일에 `keychain-access-groups`(`$(AppIdentifierPrefix)dev.taskforcelabs.taskforce`)가 더해졌다. 자동 서명 프로필이 이 그룹을 받는지(Mac 개발 프로필은 보통 `TEAMID.*`를 허용) 처음 서명 빌드 때 확인한다. 빠지면 Google 로그인이 "keychain error"로 실패한다.
-  5. 실기기 확인(8장): iPhone · Mac에서 Google 로그인 → 이름이 프로필에 채워짐 → 로그아웃 → 다시 로그인 → 계정 삭제 → Google 계정 → 보안 → 서드파티 앱 목록에서 Taskforce가 사라짐.
+  4. 서명한 Mac 빌드: 권한 파일에 `keychain-access-groups`(`$(AppIdentifierPrefix)dev.taskforcelabs.taskforce`)가 더해졌다. **처음 서명 빌드(Debug · 아카이브 모두) 때 프로필이 이 그룹을 허용하는지 확인한다.**
+     허용되지 않으면 Google 로그인만 실패하는 게 아니다: 권한 파일과 프로필이 어긋나면 macOS가 앱 실행을 막거나 권한을 통째로 무시해 App Group Keychain의 Supabase 세션도 저장하지 못할 수 있다(`-34018`, "Couldn't save your sign-in.", apple/README 4번과 같은 증상).
+     ```bash
+     APP=<빌드된 Taskforce.app>   # 예: ~/Library/Developer/Xcode/DerivedData/…/Build/Products/Debug/Taskforce.app
+     codesign -d --entitlements :- "$APP"          # keychain-access-groups에 U9DWQKQFMW.dev.taskforcelabs.taskforce, application-groups에 group.dev.taskforcelabs.taskforce
+     security cms -D -i "$APP/Contents/embedded.provisionprofile" | plutil -extract Entitlements xml1 -o - -   # keychain-access-groups가 U9DWQKQFMW.* 를 허용하는지
+     codesign --verify --deep --strict "$APP"       # 아무것도 출력하지 않아야 한다
+     ```
+     프로필에 없으면 Apple Developer에서 프로필을 다시 받고(apple/README 4번의 순서: 옛 Mac 프로필 · 빌드된 앱을 지운 뒤 `-allowProvisioningUpdates`) 다시 확인한다.
+  5. 실기기 확인(8장): iPhone · Mac에서
+     - Google 로그인 → 계정 메뉴에 "Google Account", 프로필 이름이 Google 이름으로 채워짐 → 로그아웃 → 다시 Google 로그인.
+     - **받은 범위:** Debug 빌드로 로그인한 뒤 Xcode에서 일시 정지하고 `po GIDSignIn.sharedInstance.currentUser?.grantedScopes`. 로그인 범위(`openid` · `email` · `profile`)만 기대하지만, 같은 Google 계정으로 Calendar · Meet 연결을 허용했다면 `include_granted_scopes` 때문에 그 범위도 보일 수 있다(PLATFORMS.md 4장, 앱은 쓰지 않는다). 본 값을 여기에 적는다.
+     - 계정 삭제 → Apple 창이 뜨지 않음(Google로만 가입한 계정) → Google 계정 → 보안 → 서드파티 앱 및 서비스에서 Taskforce가 사라짐. 같은 프로젝트라 Calendar · Meet 연결 권한도 함께 사라질 수 있다(삭제 때 서버도 연동 토큰을 폐기하므로 괜찮다).
+     - Google로 가입한 계정에 다른 기기에서 Apple로 로그인해 이은 뒤(같은 이메일일 때) 첫 기기에서 계정 삭제 → Apple 창이 뜬다.
 - **URL scheme:** `taskforce`가 `apple/Taskforce/Info.plist`에 등록되어 있다. OAuth 복귀(`taskforce://connections/{provider}?handoff=<id>`, `src/lib/connectors/callback.ts`)가 이걸로 앱에 돌아온다. callback은 code를 암호화한 완료 대기(handoff, 2분)로 남기고 이 주소로 보낼 뿐이고, 앱이 그 `handoff`로 `POST /api/v1/connections/{provider}/complete`(Bearer 토큰)를 불러야 연결이 끝난다(시작한 사용자만, 한 번만). 릴리스 빌드에서도 URL scheme이 빠지지 않았는지 확인한다.
 
 ## 6. Cron 확인

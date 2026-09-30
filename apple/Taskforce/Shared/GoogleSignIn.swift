@@ -21,17 +21,24 @@ enum GoogleSignInFlow {
 
     static var isAvailable: Bool { config != nil }
 
-    /// 로그인 창이 떠 있는 동안 (런처 행과 설정 창 버튼을 함께 눌러도 흐름 하나만: SDK는 두 번째가 첫 번째를 덮는다)
-    private static var inProgress = false
+    /// 떠 있는 로그인 흐름 (런처 행과 설정 창 버튼을 함께 눌러도 흐름 하나만: SDK는 두 번째가 첫 번째를 덮어 nonce가 어긋난다).
+    /// 끝을 받지 못한 채 로그인 화면이 사라지면 `forgetRunningFlow`가 푼다 (버튼이 계속 막히지 않게)
+    private static var running: UUID?
 
     /// 로그인을 시작한다. Google에는 nonce의 SHA-256을, Supabase에는 원래 값을 보낸다 (Supabase Google 제공자의 nonce 확인은 켜 둔다).
     /// `anchor`가 없으면 지금 앞에 있는 화면 · 창. `onFinish`: 창을 닫았거나 Supabase 로그인까지 끝났을 때.
     static func signIn(session: SessionStore, presenting anchor: GoogleSignInAnchor? = nil, onFinish: @escaping @MainActor () -> Void = {}) {
-        guard let config, !inProgress, let anchor = anchor ?? currentAnchor() else {
+        guard let config, running == nil else {
             onFinish()
             return
         }
-        inProgress = true
+        guard let anchor = anchor ?? currentAnchor() else {
+            session.reportError("Couldn't open Google sign-in. Try again.")
+            onFinish()
+            return
+        }
+        let flow = UUID()
+        running = flow
         let google = GIDSignIn.sharedInstance
         google.configuration = GIDConfiguration(clientID: config.clientID)
         let nonce = SignInNonce.random()
@@ -47,7 +54,7 @@ enum GoogleSignInFlow {
             }
             Task { @MainActor in
                 await finish(outcome, nonce: nonce, session: session)
-                inProgress = false
+                if running == flow { running = nil }
                 onFinish()
             }
         }
@@ -77,6 +84,11 @@ enum GoogleSignInFlow {
         }
     }
 
+    /// 로그인 화면이 사라질 때: 끝을 받지 못한 흐름이 다음 로그인을 막지 않게 한다
+    static func forgetRunningFlow() {
+        running = nil
+    }
+
     /// Google 로그인 콜백이면 SDK에 넘기고 true. 보통은 ASWebAuthenticationSession이 바로 받고, 앱 밖에서 열린 경우를 위해 둔다.
     /// `taskforce://` 연결 콜백은 false (연결 화면이 처리한다).
     static func handle(_ url: URL) -> Bool {
@@ -85,7 +97,8 @@ enum GoogleSignInFlow {
         return true
     }
 
-    /// Taskforce에서 로그아웃할 때 이 기기의 Google 로그인도 지운다 (권한 폐기는 계정 삭제 때만, `disconnect`).
+    /// Taskforce 로그인이 풀릴 때마다(로그아웃 · 세션 만료 · 계정 삭제) 이 기기의 Google 로그인도 지운다 (권한 폐기는 계정 삭제 때만, `disconnect`).
+    /// 다음에 로그인한 다른 계정이 전 계정의 Google 토큰을 폐기하는 일이 없게.
     static func signOut() {
         guard isAvailable else { return }
         GIDSignIn.sharedInstance.signOut()

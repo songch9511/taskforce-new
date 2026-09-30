@@ -17,8 +17,10 @@ public final class SessionStore {
     public private(set) var errorMessage: String?
     /// 오류는 아니지만 로그인 화면에 한 줄로 알릴 것 (예: 계정은 지웠지만 Apple 로그인 연결은 남음)
     public private(set) var notice: String?
-    /// 로그인한 계정의 로그인 방식 (계정 줄 이름 · 계정 삭제 때 폐기할 것). 로그인 전이면 `unknown`
+    /// 로그인한 계정의 로그인 방식 (계정 줄 이름). 로그인 전이면 `unknown`. 계정 삭제는 서버에서 새로 읽는다(`AccountDeletionPlan`)
     public private(set) var signInMethods = SignInMethods.unknown
+    /// 방금 Google 로그인이 준 이름: 프로필을 처음 읽을 때 한 번 꺼내 쓴다 (`takeAccountNameFill`)
+    private var accountNameFill: AccountNameFill?
 
     private let auth: AuthClient
     private var listenTask: Task<Void, Never>?
@@ -43,6 +45,7 @@ public final class SessionStore {
         if event == .signedIn, session != nil, auth.currentSession == nil {
             state = .signedOut
             signInMethods = .unknown
+            accountNameFill = nil
             errorMessage = Self.sessionNotSavedMessage
             return
         }
@@ -51,6 +54,7 @@ public final class SessionStore {
             signInMethods = SignInMethods(user: session.user)
         } else {
             signInMethods = .unknown
+            accountNameFill = nil
         }
     }
 
@@ -77,15 +81,22 @@ public final class SessionStore {
     }
 
     /// Google Sign-In이 돌려준 ID 토큰 · 액세스 토큰으로 Supabase에 로그인한다 (Google에는 `nonce.hashed`를 보냈다).
-    /// 액세스 토큰은 Supabase가 ID 토큰의 `at_hash`와 맞춰 본다. 실패하면 false (앱이 Google SDK 쪽 로그인도 지운다).
+    /// 액세스 토큰은 Supabase가 ID 토큰의 `at_hash`와 맞춰 보는 데만 쓴다(저장하지 않음). 실패하면 false (앱이 Google SDK 쪽 로그인도 지운다).
+    /// 성공하면 그 로그인이 준 이름을 한 번 들고 있다 (`takeAccountNameFill`).
     @discardableResult
     public func signInWithGoogle(idToken: String, accessToken: String, nonce: SignInNonce) async -> Bool {
         errorMessage = nil
         notice = nil
         do {
-            _ = try await auth.signInWithIdToken(
+            let session = try await auth.signInWithIdToken(
                 credentials: OpenIDConnectCredentials(provider: .google, idToken: idToken, accessToken: accessToken, nonce: nonce.raw)
             )
+            // 세션을 Keychain에 저장하지 못했으면 로그인되지 않은 것이다 (`apply`와 같은 판단)
+            guard auth.currentSession?.user.id == session.user.id else {
+                errorMessage = Self.sessionNotSavedMessage
+                return false
+            }
+            accountNameFill = AccountNameFill(user: session.user)
             return true
         } catch {
             errorMessage = "Couldn't sign in. \(error.localizedDescription)"
@@ -107,6 +118,12 @@ public final class SessionStore {
         } catch {
             errorMessage = "Couldn't sign in. Check your email and password."
         }
+    }
+
+    /// Google 로그인 직후 한 번만 준다: 꺼내면 지운다 (이름이 이미 있어도 다시 채우지 않게)
+    public func takeAccountNameFill() -> AccountNameFill? {
+        defer { accountNameFill = nil }
+        return accountNameFill
     }
 
     public func reportError(_ message: String) {
