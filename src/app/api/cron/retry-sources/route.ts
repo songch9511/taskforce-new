@@ -4,6 +4,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 
 // 실패했거나 처리 도중 멈춘 글 원문 다시 처리 (Vercel Cron, 30분마다 · 동기화 cron과 겹치지 않게 7분 · 37분).
 // Authorization: Bearer $CRON_SECRET 인 요청만 받는다. 한 원문은 첫 처리를 포함해 세 번까지 처리해 본다 (lib/sources/retry.ts).
+// 들어온 지 하루가 지나서도 처리 중 · 대기에 멈춘 원문은 다시 처리하지 않고 같은 실행에서 실패로 닫는다 (결과의 expired).
 export const maxDuration = 300;
 
 // 한 건을 새로 시작하려면 남아 있어야 하는 시간: 추출 최악(90초 제한, 한 번 다시 시도) + 보통의 판정 · 병합.
