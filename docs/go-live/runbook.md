@@ -278,7 +278,7 @@ union all select 'slack_people', count(*) from public.slack_people where user_id
 | # | 항목 | 담당 | 끝난 기준 | 먼저 필요한 것 |
 |---|---|---|---|---|
 | C1 | 연결 틀 · 서명된 state · 동의 API · 연결 요청 · 계정 삭제 시 연동 토큰 폐기 (트랙 2-1) | 코드 ✅ (2026-09-28) | 단위 · RLS 테스트 통과 (state 정상 · 변조 · 만료 · 재사용 · 다른 사용자, 동의 없으면 처리 안 함) | — |
-| C2 | 계정 삭제 시 Sign in with Apple 토큰 폐기 (서버는 `src/lib/apple/sign-in.ts`로 구현됨, 앱이 삭제 전에 authorization code를 보내는 일이 남음) | 코드 ✅ 코드 (실기기 확인 남음) | 앱이 `apple_authorization_code`를 보내는 테스트 통과, 실기기에서 Apple ID 목록에서 사라짐 (`app-store.md` 6장) | I8 |
+| C2 | 계정 삭제 시 Sign in with Apple 토큰 폐기 (서버 `src/lib/apple/sign-in.ts`, 앱은 Apple로 로그인한 계정만 삭제 전에 authorization code를 보낸다 `apple/Taskforce/Shared/AccountDeletion.swift`) | 코드 ✅ (실기기 확인 남음) | 앱이 `apple_authorization_code`를 보내는 테스트 통과, 실기기에서 Apple ID 목록에서 사라짐, 심사 계정(이메일)은 Apple 확인 창 없이 지워짐 (`app-store.md` 6장) | I8 |
 | C3 | 물어보기 `POST /api/v1/ask` (트랙 2-2) | 코드 ✅ | 인용 기계 검증 · 근거 없으면 "모른다" 테스트, ask 골든셋 eval | C1 |
 | C4 | Google 연동: Calendar · Meet 전사 · Gmail (트랙 2-3, 계획 [google-integration.md](google-integration.md)) | 코드 ✅ (2026-09-30: Gmail #25 · #27 · #31, Calendar · Meet #30 · #36, 운영 배포. 운영 DB에 `20261015` · `20261016` · `20261017` 적용). 남은 것: 녹화한 Meet 회의로 dev 확인(google-integration.md 9장), PR 5b(처리방침 Calendar · Meet 문장 · 전체 검증), 처리방침 재게시 뒤 `GMAIL_CONNECT_ENABLED`, 심사 뒤 `GOOGLE_CONNECT_ENABLED` | 메일 · Meet 골든셋 eval 기록, `invalid_grant` → `reauth` + 재연결 안내, 처리방침 3장 Google · Gmail 문장과 구현 값 일치 | C1 |
 | C5 | Slack 연동: OAuth + Events API (트랙 2-4, 계획 [slack-integration.md](slack-integration.md)) | 코드 ✅ (2026-09-29, PR 1~4. dev 워크스페이스에서 시나리오 2 · 연결 끊기 확인) | 서명 검증 · 버리는 규칙 테스트, Slack 골든셋(핵심 시나리오 2) eval, 권한이 처리방침 3장과 일치. 운영에서 남은 확인은 아래 "Slack 켜기" | C1 |

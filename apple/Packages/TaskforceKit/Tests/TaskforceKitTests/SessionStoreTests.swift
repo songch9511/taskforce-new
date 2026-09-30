@@ -6,15 +6,25 @@ import Testing
 struct SessionStoreTests {
     let userID = UUID()
 
-    func session(expiresIn seconds: TimeInterval) -> Session {
-        let user = User(
-            id: userID, appMetadata: [:], userMetadata: [:], aud: "authenticated",
-            email: "me@example.com", createdAt: Date(), updatedAt: Date()
+    /// `identities`: 연결된 로그인 방법 (`apple` · `email`)
+    func user(identities: [String]? = nil, appMetadata: [String: AnyJSON] = [:]) -> User {
+        User(
+            id: userID, appMetadata: appMetadata, userMetadata: [:], aud: "authenticated",
+            email: "me@example.com", createdAt: Date(), updatedAt: Date(),
+            identities: identities?.map { provider in
+                UserIdentity(
+                    id: "\(provider)-sub", identityId: UUID(), userId: userID, identityData: [:],
+                    provider: provider, createdAt: nil, lastSignInAt: nil, updatedAt: nil
+                )
+            }
         )
-        return Session(
+    }
+
+    func session(expiresIn seconds: TimeInterval, user: User? = nil) -> Session {
+        Session(
             accessToken: "access", tokenType: "bearer", expiresIn: seconds,
             expiresAt: Date().addingTimeInterval(seconds).timeIntervalSince1970,
-            refreshToken: "refresh", user: user
+            refreshToken: "refresh", user: user ?? self.user()
         )
     }
 
@@ -35,6 +45,31 @@ struct SessionStoreTests {
     @Test func expiredStoredSessionStaysSignedInUntilRefreshResolves() {
         #expect(SessionStore.state(for: .initialSession, session: session(expiresIn: -60))
             == .signedIn(userID: userID, email: "me@example.com"))
+    }
+
+    /// Apple로 가입했거나 이메일 계정에 Apple이 연결된 계정
+    @Test(arguments: [["apple"], ["email", "apple"]])
+    func appleIdentityIsApple(_ identities: [String]) {
+        #expect(SessionStore.hasAppleIdentity(user(identities: identities)))
+    }
+
+    /// App Store 심사 계정처럼 이메일로 가입한 계정: 계정 삭제 때 Apple 확인을 띄우지 않는다
+    @Test func emailAccountIsNotApple() {
+        #expect(!SessionStore.hasAppleIdentity(
+            user(identities: ["email"], appMetadata: ["provider": "email", "providers": ["email"]])
+        ))
+    }
+
+    /// 저장된 세션에 identities가 없거나 비어 있어도 app_metadata.providers로 안다
+    @Test(arguments: [nil, []] as [[String]?])
+    func providersCoverMissingIdentities(_ identities: [String]?) {
+        #expect(SessionStore.hasAppleIdentity(
+            user(identities: identities, appMetadata: ["provider": "apple", "providers": ["apple"]])
+        ))
+    }
+
+    @Test func noProviderIsNotApple() {
+        #expect(!SessionStore.hasAppleIdentity(user()))
     }
 }
 
@@ -77,5 +112,18 @@ struct SessionStoreSaveTests {
         store.apply(event: .signedIn, session: session)
         #expect(store.state == .signedIn(userID: fixtures.userID, email: "me@example.com"))
         #expect(store.errorMessage == nil)
+    }
+
+    @Test(arguments: [(["apple"], [], true), (["email"], ["email"], false), (nil, ["apple"], true)] as [([String]?, [String], Bool)])
+    func isAppleAccountReadsSavedSession(identities: [String]?, providers: [String], apple: Bool) throws {
+        let user = fixtures.user(identities: identities, appMetadata: ["providers": .array(providers.map(AnyJSON.string))])
+        let session = fixtures.session(expiresIn: 3600, user: user)
+        let store = store(storage: SavedSessionStorage(data: try JSONEncoder().encode(session)))
+        #expect(store.isAppleAccount == apple)
+    }
+
+    /// 저장된 세션을 읽지 못하면 Apple 확인을 띄운다 (폐기를 빠뜨리지 않게)
+    @Test func unreadableSessionCountsAsApple() {
+        #expect(store(storage: UnsavableStorage()).isAppleAccount)
     }
 }

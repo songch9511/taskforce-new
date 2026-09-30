@@ -55,6 +55,20 @@ public final class SessionStore {
         return .signedIn(userID: session.user.id, email: session.user.email)
     }
 
+    /// 로그인한 계정이 Sign in with Apple 계정인가. 계정 삭제 때 Apple 확인을 받을지 정한다
+    /// (이메일로 가입한 계정 · App Store 심사 계정은 폐기할 Apple 토큰이 없다).
+    /// 저장된 세션을 읽지 못해 알 수 없으면 Apple 계정으로 본다: 확인 창 한 번이 폐기를 빠뜨리는 것보다 낫다.
+    public var isAppleAccount: Bool {
+        auth.currentUser.map(Self.hasAppleIdentity) ?? true
+    }
+
+    /// 서버(`/api/v1/account`)처럼 identities를 본다. 저장된 세션에 identities가 빠졌을 때를 위해
+    /// GoTrue가 모든 사용자에 넣는 app_metadata.providers도 본다.
+    nonisolated static func hasAppleIdentity(_ user: User) -> Bool {
+        user.identities?.contains { $0.provider == "apple" } == true
+            || user.appMetadata["providers"]?.arrayValue?.contains(.string("apple")) == true
+    }
+
     /// Sign in with Apple이 돌려준 ID 토큰으로 Supabase에 로그인한다.
     public func signInWithApple(idToken: String, nonce: AppleSignInNonce) async {
         errorMessage = nil

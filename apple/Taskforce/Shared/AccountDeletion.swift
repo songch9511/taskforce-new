@@ -5,21 +5,23 @@ import TaskforceKit
 import UIKit
 #endif
 
-/// 계정 삭제 (App Store 5.1.1(v)): 삭제 직전에 Sign in with Apple을 한 번 더 받아 authorization code를 서버로 보내면
-/// 서버가 Apple 토큰을 폐기한다. 사용자가 Apple 확인을 취소해도 삭제는 하고, 로그인 화면에 한 줄로 알린다.
+/// 계정 삭제 (App Store 5.1.1(v)): Apple로 로그인한 계정은 삭제 직전에 Sign in with Apple을 한 번 더 받아 authorization code를
+/// 서버로 보내면 서버가 Apple 토큰을 폐기한다. 사용자가 Apple 확인을 취소해도 삭제는 하고, 로그인 화면에 한 줄로 알린다.
+/// 이메일로 가입한 계정(App Store 심사 계정)은 Apple 확인 없이 지운다.
 @MainActor
 enum AccountDeletion {
     static let revokeSkippedNote = "Account deleted. To remove Apple sign-in too, open Settings › Apple Account › Sign in with Apple."
 
     /// 성공하면 nil, 실패하면 화면에 보여 줄 한 줄
     static func delete(services: AppServices, session: SessionStore) async -> String? {
-        let code = await AppleReauthorization.authorizationCode()
+        let apple = session.isAppleAccount
+        let code = apple ? await AppleReauthorization.authorizationCode() : nil
         do {
             try await services.api.deleteAccount(authorizationCode: code)
         } catch {
             return "Couldn't delete your account. \(error.userMessage)"
         }
-        await session.accountDeleted(note: code == nil ? revokeSkippedNote : nil)
+        await session.accountDeleted(note: apple && code == nil ? revokeSkippedNote : nil)
         return nil
     }
 }

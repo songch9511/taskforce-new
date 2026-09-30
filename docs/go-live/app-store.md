@@ -20,7 +20,7 @@
 | 외부 AI로 보내기 전 명시적 동의 | 5.1.2(i) | 서버 동의 API(`POST` · `DELETE /api/v1/consent`)와 앱 동의 화면(`apple/Taskforce/Shared/AccountViews.swift`) 작업 중 | 코드 (트랙 2-1 · 3-4). 문구를 5장과 맞춘다 |
 | 동의 철회 방법 | 5.1.1(i) | 앱 계정 메뉴의 AI 동의 화면에서 철회 작업 중 | 코드 |
 | 앱 안 계정 삭제 | 5.1.1(v) | 있음 (계정 메뉴 → 계정 삭제 → `DELETE /api/v1/account`) | — |
-| 계정 삭제 때 Sign in with Apple 토큰 폐기 | 5.1.1(v), Apple 계정 삭제 안내 | 서버 구현됨. **앱이 authorization code를 아직 보내지 않는다** (6장) | 코드 (앱 한 단계) |
+| 계정 삭제 때 Sign in with Apple 토큰 폐기 | 5.1.1(v), Apple 계정 삭제 안내 | 구현됨: Apple로 로그인한 계정은 Apple 확인을 한 번 더 받아 code를 보내고, 이메일 계정(데모 계정)은 건너뛴다 (6장) | 실기기 확인 (6장 6번) |
 | 앱 안 처리방침 링크 | 5.1.1(i) | 없음 (2026-09-27 `apple/`에 링크 없음) | 코드 (계정 메뉴에 "Privacy Policy") |
 | 심사원이 들어갈 수 있는 데모 계정 | 2.1 | Sign in with Apple만 있어 데모 계정으로 로그인할 수 없음 | **결정 + 코드** (3장) |
 | 수출 규정 | — | HTTPS만 쓰면 면제 | `Info.plist`에 `ITSAppUsesNonExemptEncryption = NO` 확인 |
@@ -202,31 +202,32 @@ Privacy Policy
 
 - 앱: 계정 메뉴 → 계정 삭제 → 확인 → `DELETE /api/v1/account` → 서버가 폐기를 먼저 하고 `auth.admin.deleteUser` → 모든 사용자 표가 cascade로 지워진다(`tests/db/account-deletion.test.ts`).
 - 연결 서비스 토큰 폐기: `src/lib/connectors/registry.ts`의 `revokeConnectorTokens`(Notion `POST /v1/oauth/revoke`). Google(`https://oauth2.googleapis.com/revoke`) · Slack(`auth.revoke`)은 각 연동을 붙일 때 `revokeToken`으로 더한다.
-- **Sign in with Apple 토큰 폐기: 구현됨 (2026-09-30 코드 확인, 실기기 확인 남음).** 앱이 삭제 확인 때 Apple 확인을 한 번 더 받아 code를 보내고(`apple/Taskforce/Shared/AccountDeletion.swift` → `APIClient.deleteAccount(authorizationCode:)`), `src/lib/apple/sign-in.ts`가 아래 4번을 한다. 확인을 취소하거나 실패하면 code 없이 삭제하고 로그인 화면에 직접 지우는 방법을 한 줄로 알린다(`revokeSkippedNote`, 처리방침 5장). 폐기하지 않으면 이용자의 설정 → Apple ID → Sign in with Apple 목록에 Taskforce가 남는다.
+- **Sign in with Apple 토큰 폐기: 구현됨 (2026-09-30 코드 확인, 실기기 확인 남음).** Apple로 로그인한 계정은 앱이 삭제 확인 때 Apple 확인을 한 번 더 받아 code를 보내고(`apple/Taskforce/Shared/AccountDeletion.swift` → `APIClient.deleteAccount(authorizationCode:)`), `src/lib/apple/sign-in.ts`가 아래 4번을 한다. 이메일로 가입한 계정은 Apple 확인 없이 지운다(아래 3번). 확인을 취소하거나 실패하면 code 없이 삭제하고 로그인 화면에 직접 지우는 방법을 한 줄로 알린다(`revokeSkippedNote`, 처리방침 5장). 폐기하지 않으면 이용자의 설정 → Apple ID → Sign in with Apple 목록에 Taskforce가 남는다.
 
-### 명세 (남은 일은 3의 이메일 계정 · 6)
+### 명세 (남은 일은 6)
 
 1. **키 발급 (사용자, ✅ runbook I8):** Apple Developer → Certificates, IDs & Profiles → Keys → + → 이름 `Taskforce SIWA` → **Sign in with Apple** 체크 → Configure → Primary App ID `dev.taskforcelabs.taskforce` → Register → `.p8` 내려받기(한 번만 받을 수 있다). `.env.example`은 APNs 키와 같은 키여도 된다고 적지만, 권한을 나눠 두려면 따로 만든다.
 2. **환경변수 (서버 전용, `.env.example`에 있음):** `APPLE_TEAM_ID=U9DWQKQFMW`, `APPLE_KEY_ID=<키 ID>`, `APPLE_PRIVATE_KEY=<.p8 내용, 줄바꿈은 \n>`, `APPLE_CLIENT_ID`(비우면 `dev.taskforcelabs.taskforce`). 비워 두면 폐기를 건너뛰고 삭제는 그대로 한다.
-3. **앱 (구현됨, 이메일 계정만 남음):** 계정 삭제 확인 화면에서 Sign in with Apple을 한 번 더 받아(`ASAuthorizationAppleIDProvider`, 범위 없음) 새 `authorizationCode`를 얻는다(5분 안에 한 번만 쓸 수 있다). `DELETE /api/v1/account` 본문 `{"apple_authorization_code": "…"}`로 보낸다(`contract.ts`의 `deleteAccountRequestSchema`). 이메일로 가입한 계정은 이 단계를 건너뛴다 — **아직 아니다: 지금은 이메일 계정(심사용 데모 계정 포함)에도 Apple 확인 창이 뜨고, 취소하면 "To remove Apple sign-in too…" 안내가 나온다(`AccountDeletion.delete`).**
+3. **앱 (구현됨):** 계정 삭제 확인 화면에서 Sign in with Apple을 한 번 더 받아(`ASAuthorizationAppleIDProvider`, 범위 없음) 새 `authorizationCode`를 얻는다(5분 안에 한 번만 쓸 수 있다). `DELETE /api/v1/account` 본문 `{"apple_authorization_code": "…"}`로 보낸다(`contract.ts`의 `deleteAccountRequestSchema`). 이메일로 가입한 계정(심사용 데모 계정 포함)은 이 단계를 건너뛰고 code 없이 보낸다: 로그인한 사용자의 identities(없으면 `app_metadata.providers`)에 `apple`이 있을 때만 Apple 확인을 띄우고(`SessionStore.isAppleAccount`, 저장된 세션을 읽지 못하면 띄운다), "To remove Apple sign-in too…" 안내도 Apple 계정에만 보인다. 서버는 Apple identity도 code도 없으면 폐기를 부르지 않는다(`src/app/api/v1/account/route.ts`).
 4. **서버 (구현됨):**
    - `client_secret`: ES256 JWT. 헤더 `kid=APPLE_KEY_ID`, 클레임 `iss=APPLE_TEAM_ID`, `iat=지금`, `exp=지금+5분`, `aud=https://appleid.apple.com`, `sub=APPLE_CLIENT_ID`.
    - `POST https://appleid.apple.com/auth/token` (`grant_type=authorization_code`, `code`, `client_id`, `client_secret`) → 토큰.
    - `POST https://appleid.apple.com/auth/revoke` (`client_id`, `client_secret`, `token`, `token_type_hint`) → 200.
    - 이어서 `revokeConnectorTokens` → `deleteUser`. 폐기가 실패해도 삭제는 진행한다(이용자의 삭제 요청이 우선). 로그에는 이유만 남기고 code · 토큰은 남기지 않는다.
-5. **테스트:** 서버 쪽은 `src/lib/api/account.test.ts` 등. 앱 쪽은 `APIClientTests` `deleteAccountSendsAppleAuthorizationCode`(code를 본문에 담음).
-6. **실기기 확인 (사용자):** TestFlight 빌드로 계정 삭제 → iPhone 설정 → Apple ID → 로그인 및 보안 → Sign in with Apple 목록에서 Taskforce가 사라지는지, Notion 설정 → 연결에서 Taskforce가 사라지는지 확인한다.
+5. **테스트:** 서버 쪽은 `src/lib/api/account.test.ts` 등. 앱 쪽은 `APIClientTests` `deleteAccountSendsAppleAuthorizationCode`(code를 본문에 담음), `SessionStoreTests`(Apple 계정인지: identities · `app_metadata.providers` · 저장된 세션).
+6. **실기기 확인 (사용자):** TestFlight 빌드로 계정 삭제 → iPhone 설정 → Apple ID → 로그인 및 보안 → Sign in with Apple 목록에서 Taskforce가 사라지는지, Notion 설정 → 연결에서 Taskforce가 사라지는지 확인한다. 심사용 데모 계정(이메일)으로 지울 때는 Apple 확인 창과 "To remove Apple sign-in too…" 안내가 뜨지 않는지 본다(지운 뒤 데모 계정을 다시 만든다).
 
 ### 삭제 확인 화면 문구
 
 ```
-Delete account
+Delete your account?
 
-This deletes your tasks, sources, and connections right away. It can't be undone.
-You'll confirm with Apple so we can remove Taskforce from your Apple ID.
+Your sources, tasks, and history are deleted right away. This can't be undone.
 
-[Delete account]   [Cancel]
+[Delete Account]   [Cancel]
 ```
+
+Apple로 로그인한 계정은 [Delete Account]를 누르면 Apple 확인 창이 한 번 더 뜬다(이메일 계정은 뜨지 않는다). 앱 문구는 `apple/Taskforce/iOS/AccountSheet.swift` · `apple/Taskforce/Mac/MacSettingsView.swift`.
 
 ## 7. 사용자가 누르는 순서
 

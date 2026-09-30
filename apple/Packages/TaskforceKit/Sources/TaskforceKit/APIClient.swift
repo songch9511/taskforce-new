@@ -134,7 +134,7 @@ public struct APIClient: Sendable {
 
     /// 계정 삭제 (서버가 원문 · 할 일 · 변경 이력을 모두 지운다. 되돌릴 수 없다).
     /// `authorizationCode`: 삭제 직전 Sign in with Apple로 새로 받은 authorization code. 있으면 서버가 Apple 토큰을 폐기한다
-    /// (App Store 5.1.1(v)). 사용자가 Apple 확인을 취소했으면 nil로 보내고, 서버는 폐기 없이 지운다.
+    /// (App Store 5.1.1(v)). 사용자가 Apple 확인을 취소했거나 이메일로 가입한 계정이면 nil로 보내고, 서버는 폐기 없이 지운다.
     /// 성공하면 `SessionStore.accountDeleted()`로 이 기기에 저장된 세션을 지운다.
     public func deleteAccount(authorizationCode: String? = nil) async throws {
         let body = authorizationCode.map(DeleteAccountRequest.init(appleAuthorizationCode:))
