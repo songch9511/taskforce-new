@@ -81,13 +81,17 @@ export function processDepsFromEnv(deadline?: number): ProcessDeps {
 const mergeQueues = new Map<string, Promise<unknown>>();
 
 export const USER_LOCK_TIMEOUT_MESSAGE = "병합 대기 시간 초과 (같은 사용자의 다른 처리가 끝나지 않음)";
+/** 기다리지 않았는데(앞선 병합 없음) 마감까지 MERGE_MIN_MS가 남지 않았을 때: 앞 단계(추출 · 판정)가 시간을 다 썼다 */
+export const MERGE_NO_TIME_MESSAGE = "병합할 시간 없음 (앞 단계가 마감 전 시간을 다 씀)";
 
 /**
  * deadline(epoch ms)을 주면(사용자가 기다리는 누락 신고) 앞선 병합을 마감 전 MERGE_MIN_MS까지만 기다린다.
  * 넘기면 task를 부르지 않고 DeadlineExceededError를 낸다: 차례가 나중에 와도 병합하지 않는다. 대기열 순서는 그대로다.
  * 차례가 와도 마감까지 MERGE_MIN_MS가 남지 않았으면 병합을 시작하지 않는다. 시작한 병합은 끊지 않는다 (그 안의 모델 호출이 마감을 넘지 않는다).
+ * 오류 단계(deadline_exceeded 기록)는 앞선 병합을 기다렸으면 lock, 기다리지 않았으면 merge다 (앞 단계가 느렸다).
  */
 export function withUserLock<T>(userId: string, task: () => Promise<T>, deadline?: number): Promise<T> {
+  const contended = mergeQueues.has(userId);
   const previous = mergeQueues.get(userId) ?? Promise.resolve();
   let timer: ReturnType<typeof setTimeout> | undefined;
   let expired = false;
@@ -95,8 +99,9 @@ export function withUserLock<T>(userId: string, task: () => Promise<T>, deadline
     .catch(() => undefined)
     .then(() => {
       clearTimeout(timer);
-      if (expired || (deadline !== undefined && deadline - Date.now() < MERGE_MIN_MS)) {
-        throw new DeadlineExceededError("lock", USER_LOCK_TIMEOUT_MESSAGE);
+      if (expired) throw new DeadlineExceededError("lock", USER_LOCK_TIMEOUT_MESSAGE);
+      if (deadline !== undefined && deadline - Date.now() < MERGE_MIN_MS) {
+        throw contended ? new DeadlineExceededError("lock", USER_LOCK_TIMEOUT_MESSAGE) : new DeadlineExceededError("merge", MERGE_NO_TIME_MESSAGE);
       }
       return task();
     });

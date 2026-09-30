@@ -17,6 +17,7 @@ import {
   AFTER_EXTRACT_MS,
   failureSummary,
   MERGE_MIN_MS,
+  MERGE_NO_TIME_MESSAGE,
   processDepsFromEnv,
   processSource,
   replaceJudgeLogs,
@@ -357,6 +358,13 @@ describe("withUserLock: 같은 사용자의 병합은 한 번에 하나씩", () 
     await first;
     await expect(report).rejects.toThrow(USER_LOCK_TIMEOUT_MESSAGE);
     expect(late).not.toHaveBeenCalled();
+  });
+
+  it("기다리지 않았는데 마감까지 MERGE_MIN_MS가 남지 않았으면 lock이 아니라 merge 단계로 멈춘다 (앞 단계가 느렸다)", async () => {
+    const task = vi.fn(async () => "merged");
+    const error = await withUserLock("lock-u5", task, Date.now() + MERGE_MIN_MS - 1_000).catch((e: unknown) => e);
+    expect(error).toMatchObject({ stage: "merge", message: expect.stringContaining(MERGE_NO_TIME_MESSAGE) });
+    expect(task).not.toHaveBeenCalled();
   });
 
   it("차례가 마감 안에 오면 병합하고, 시작한 병합은 마감을 넘겨도 끊지 않는다", async () => {

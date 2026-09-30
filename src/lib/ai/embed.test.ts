@@ -69,6 +69,13 @@ describe("embed", () => {
     });
   });
 
+  it("머리글 뒤 본문을 읽다가 시간 한도가 울리면: 마감이 있으면 마감 오류, 없으면 원래 오류 그대로", async () => {
+    const bodyTimesOut = (async () =>
+      ({ ok: true, status: 200, json: async () => { throw new DOMException("timed out", "TimeoutError"); } }) as unknown as Response) as typeof fetch;
+    await expect(embed({ apiKey: "k", model: "m", fetch: bodyTimesOut, deadline: Date.now() + 20_000 }, ["a"])).rejects.toBeInstanceOf(DeadlineExceededError);
+    await expect(embed({ apiKey: "k", model: "m", fetch: bodyTimesOut }, ["a"])).rejects.toBeInstanceOf(DOMException);
+  });
+
   it("빈 입력은 호출하지 않는다", async () => {
     const c = config({});
     expect(await embed(c, [])).toEqual({ vectors: [] });

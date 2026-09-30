@@ -27,7 +27,7 @@ export function remainingMs(deadline: number | undefined, now = Date.now()): num
 /** 마감 안에 끝내지 못했다: 남은 시간이 없어 부르지 않았거나, 마감에 맞춰 줄인 시간 한도를 넘겼다 */
 export class DeadlineExceededError extends Error {
   constructor(
-    readonly stage: "llm" | "jev" | "embed" | "lock",
+    readonly stage: "llm" | "jev" | "embed" | "lock" | "merge",
     detail: string,
   ) {
     super(`마감 안에 끝내지 못했습니다 (${stage}: ${detail})`);

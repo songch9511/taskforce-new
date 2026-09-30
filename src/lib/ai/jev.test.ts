@@ -18,6 +18,10 @@ function config(body: unknown, status = 200): JevConfig & { requests: RequestIni
 
 const questions = { ok: { type: "noul" as const, instructions: "?" } };
 
+const bodyTimesOut = (async () =>
+  ({ ok: true, status: 200, json: async () => { throw new DOMException("timed out", "TimeoutError"); }, text: async () => "" }) as unknown as Response) as typeof fetch;
+
+
 describe("decide", () => {
   it("모델 · state · questions를 보내고 답을 검증해 돌려준다", async () => {
     const c = config({ model: "typesafe/jev-1.13-x", answers: { ok: { type: "noul", noul: 0.7 } } });
@@ -135,6 +139,11 @@ describe("decide", () => {
       // 첫 요청은 1.5초(3초의 절반). 끝났을 때 남은 0.5초는 1초가 안 되어 다시 묻지 않는다
       expect(sent()).toEqual([1_500]);
     });
+  });
+
+  it("머리글 뒤 본문을 읽다가 시간 한도가 울리면: 마감이 있으면 마감 오류, 없으면 원래 오류 그대로", async () => {
+    await expect(decide({ apiKey: "k", model: "m", fetch: bodyTimesOut, deadline: Date.now() + 20_000 }, { state: {}, questions })).rejects.toBeInstanceOf(DeadlineExceededError);
+    await expect(decide({ apiKey: "k", model: "m", fetch: bodyTimesOut }, { state: {}, questions })).rejects.toBeInstanceOf(DOMException);
   });
 
   it("HTTP 오류는 JevError", async () => {

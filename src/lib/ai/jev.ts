@@ -131,11 +131,23 @@ export async function decide(
     }
   }
 
+  // 머리글 뒤 본문을 읽다가도 시간 한도가 울릴 수 있다: 마감이 있으면 마감 오류로 바꿔 deadline_exceeded로 센다
+  const readBody = async <T>(read: () => Promise<T>): Promise<T> => {
+    try {
+      return await read();
+    } catch (error) {
+      if (config.deadline !== undefined && error instanceof DOMException && error.name === "TimeoutError") {
+        throw new DeadlineExceededError("jev", "응답 본문 읽기 시간 초과");
+      }
+      throw error;
+    }
+  };
+
   if (!response.ok) {
-    throw new JevError(`Decisions API 요청 실패 (${response.status})`, (await response.text()).slice(0, 500));
+    throw new JevError(`Decisions API 요청 실패 (${response.status})`, (await readBody(() => response.text())).slice(0, 500));
   }
 
-  const parsed = decisionResponseSchema.safeParse(await response.json());
+  const parsed = decisionResponseSchema.safeParse(await readBody(() => response.json()));
   if (!parsed.success) throw new JevError("Decisions API 응답 형식이 예상과 다릅니다", parsed.error.issues);
 
   const missing = Object.keys(request.questions).filter((key) => !(key in parsed.data.answers));

@@ -60,7 +60,17 @@ export async function embed(config: EmbedConfig, texts: string[]): Promise<{ vec
   }
   if (!response.ok) throw new EmbedError(`임베딩 요청 실패 (${response.status})`);
 
-  const parsed = embeddingResponseSchema.safeParse(await response.json());
+  let body: unknown;
+  try {
+    body = await response.json();
+  } catch (error) {
+    // 머리글 뒤 본문을 읽다가 시간 한도가 울린 경우도 마감이면 마감 오류로 센다
+    if (config.deadline !== undefined && error instanceof DOMException && error.name === "TimeoutError") {
+      throw new DeadlineExceededError("embed", "응답 본문 읽기 시간 초과");
+    }
+    throw error;
+  }
+  const parsed = embeddingResponseSchema.safeParse(body);
   if (!parsed.success) throw new EmbedError("임베딩 응답 형식이 예상과 다릅니다");
   const vectors = [...parsed.data.data].sort((a, b) => a.index - b.index).map((d) => d.embedding);
   if (vectors.length !== texts.length || vectors.some((v) => v.length !== EMBEDDING_DIMENSIONS)) {
