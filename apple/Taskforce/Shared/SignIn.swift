@@ -7,10 +7,10 @@ import TaskforceUI
 /// Mac 런처의 "Sign in with Apple" 행(ASAuthorizationController)이 같은 규칙을 쓴다.
 @MainActor
 final class AppleSignInFlow {
-    private var nonce = AppleSignInNonce.random()
+    private var nonce = SignInNonce.random()
 
     func configure(_ request: ASAuthorizationAppleIDRequest) {
-        nonce = AppleSignInNonce.random()
+        nonce = SignInNonce.random()
         request.requestedScopes = [.email]
         request.nonce = nonce.hashed
     }
@@ -35,7 +35,7 @@ final class AppleSignInFlow {
     }
 }
 
-/// 로그인 화면: 로고 + Sign in with Apple. 설명 문장은 두지 않는다.
+/// 로그인 화면: 로고 + Sign in with Apple · Sign in with Google(설정이 있을 때, Apple 아래 같은 크기). 설명 문장은 두지 않는다.
 /// 그 아래 눈에 덜 띄게 "Sign in with email" (App Store 심사 계정용, 가입 화면 없음: 서버가 허용한 계정만 로그인된다).
 struct SignInView: View {
     /// Mac 런처의 "Sign in with email" 행이 설정 창을 열며 켠다
@@ -48,6 +48,10 @@ struct SignInView: View {
     @State private var email = ""
     @State private var password = ""
     @State private var signingIn = false
+    @State private var signingInWithGoogle = false
+
+    /// Apple · Google 버튼 높이 (iOS 48, macOS는 Apple 버튼이 그려지는 30). 둘을 같은 크기로 둔다.
+    private let buttonHeight = SignInWithGoogleButton.height
 
     var body: some View {
         VStack(spacing: TFSpace.xl) {
@@ -64,13 +68,24 @@ struct SignInView: View {
             .foregroundStyle(TFColor.textPrimary)
             .accessibilityElement(children: .combine)
             Spacer()
-            SignInWithAppleButton(.signIn) { request in
-                flow.configure(request)
-            } onCompletion: { result in
-                flow.handle(result, session: session)
+            VStack(spacing: TFSpace.md) {
+                SignInWithAppleButton(.signIn) { request in
+                    flow.configure(request)
+                } onCompletion: { result in
+                    flow.handle(result, session: session)
+                }
+                .signInWithAppleButtonStyle(colorScheme == .dark ? .white : .black)
+                .frame(maxWidth: 360, minHeight: buttonHeight, maxHeight: buttonHeight)
+
+                if GoogleSignInFlow.isAvailable {
+                    SignInWithGoogleButton {
+                        signingInWithGoogle = true
+                        GoogleSignInFlow.signIn(session: session) { signingInWithGoogle = false }
+                    }
+                    .frame(maxWidth: 360, minHeight: buttonHeight, maxHeight: buttonHeight)
+                    .disabled(signingInWithGoogle)
+                }
             }
-            .signInWithAppleButtonStyle(colorScheme == .dark ? .white : .black)
-            .frame(maxWidth: 360, minHeight: 48, maxHeight: 48)
 
             if showsEmail {
                 emailForm
@@ -99,7 +114,14 @@ struct SignInView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(TFColor.bgCanvas)
         // 다음 로그인 화면은 다시 Apple 버튼만
-        .onDisappear { showsEmail = false }
+        .onDisappear {
+            showsEmail = false
+            GoogleSignInFlow.forgetRunningFlow()
+        }
+        #if os(iOS)
+        // Google 로그인 콜백 (보통은 ASWebAuthenticationSession이 바로 받는다). Mac은 MacAppDelegate가 받는다.
+        .onOpenURL { url in _ = GoogleSignInFlow.handle(url) }
+        #endif
     }
 
     private var emailForm: some View {

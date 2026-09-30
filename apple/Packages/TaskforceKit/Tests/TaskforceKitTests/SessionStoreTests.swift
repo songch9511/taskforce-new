@@ -78,4 +78,14 @@ struct SessionStoreSaveTests {
         #expect(store.state == .signedIn(userID: fixtures.userID, email: "me@example.com"))
         #expect(store.errorMessage == nil)
     }
+
+    @Test func signInMethodsFollowTheSession() throws {
+        var session = fixtures.session(expiresIn: 3600)
+        session.user.appMetadata = ["provider": "google", "providers": ["google"]]
+        let store = store(storage: SavedSessionStorage(data: try JSONEncoder().encode(session)))
+        store.apply(event: .signedIn, session: session)
+        #expect(store.signInMethods == SignInMethods(providers: ["google"], primary: "google"))
+        store.apply(event: .signedOut, session: nil)
+        #expect(store.signInMethods == .unknown)
+    }
 }

@@ -65,6 +65,8 @@ public enum LauncherItem: Hashable, Sendable, Identifiable {
     /// 직접 추가: 찾는 말과 맞는 할 일이 없을 때 "Add “…”" (`LauncherAdd`)
     case addAction(String)
     case signIn
+    /// Sign in with Google (Apple 바로 아래, 설정이 있을 때만)
+    case signInWithGoogle
     /// App Store 심사 계정용 이메일 로그인 (눈에 덜 띄게 Sign in with Apple 아래)
     case signInWithEmail
     /// 외부 AI 처리 동의 전이라 연동 원문을 읽지 못함 (목록은 그대로 보인다)
@@ -83,6 +85,7 @@ public enum LauncherItem: Hashable, Sendable, Identifiable {
         case .sendAsSource: "send-as-source"
         case .addAction: "add-action"
         case .signIn: "sign-in"
+        case .signInWithGoogle: "sign-in-google"
         case .signInWithEmail: "sign-in-email"
         case .allowAI: "allow-ai"
         case .policyNotice: "policy-notice"
@@ -130,13 +133,14 @@ public enum LauncherContent {
     /// 찾는 중에는 네 구역을 모두 거르고, Done Today는 Ask · Add 아래에 둔다 (맞는 열린 할 일이 없으면 Add가 맨 위라 ↩ 한 번으로 시작).
     /// `needsConsent`: 동의 전이면 빈 입력창 맨 위에 "Allow AI processing" 한 줄 (목록을 막지 않는다)
     /// `policyNotice`: 처리방침 변경 안내가 있으면 빈 입력창 맨 위에 한 줄 (동의 줄 아래)
+    /// `googleSignIn`: 로그인 전 목록에 Sign in with Google을 둘지 (앱에 Google 클라이언트 설정이 있을 때)
     public static func sections(
         for mode: LauncherInput.Mode, now: NowResponse?, doneToday: [ActionSummary] = [], signedIn: Bool, needsConsent: Bool = false,
-        policyNotice: PolicyNotice? = nil
+        policyNotice: PolicyNotice? = nil, googleSignIn: Bool = false
     ) -> [LauncherSection] {
         guard signedIn else {
             return [
-                LauncherSection(title: nil, items: [.signIn, .signInWithEmail]),
+                LauncherSection(title: nil, items: [.signIn] + (googleSignIn ? [.signInWithGoogle] : []) + [.signInWithEmail]),
                 LauncherSection(title: "Commands", items: [.command(.quit)]),
             ].filter { !$0.items.isEmpty }
         }

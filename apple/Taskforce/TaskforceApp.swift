@@ -56,7 +56,8 @@ enum AppRuntime {
     /// 연결 · 동의 · 프로필 상태 (iPhone 시트와 Mac 설정 창이 같은 것을 본다)
     static func account(services: AppServices) -> AccountStore {
         if let accountStore { return accountStore }
-        let store = AccountStore(services: services)
+        let session: SessionStore? = if case .ready(let session, _) = startup { session } else { nil }
+        let store = AccountStore(services: services, session: session)
         accountStore = store
         return store
     }
