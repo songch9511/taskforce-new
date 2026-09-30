@@ -67,10 +67,13 @@ public struct EvidenceDigest: Sendable, Hashable {
     }
 
     public init(evidence: [EvidenceRecord], sources: [UUID: SourceSummary]) {
-        // 같은 원문의 같은 구절은 한 번만
+        // 같은 원문의 같은 구절은 한 번만. 같은 시각이면 원문 id · 구절 · 근거 id 순으로 정해 읽을 때마다 순서가 바뀌지 않게
         var seen = Set<String>()
         let unique = evidence
-            .sorted { $0.createdAt < $1.createdAt }
+            .sorted {
+                ($0.createdAt, $0.sourceID.uuidString, $0.quote, $0.id.uuidString)
+                    < ($1.createdAt, $1.sourceID.uuidString, $1.quote, $1.id.uuidString)
+            }
             .filter { seen.insert("\($0.sourceID)|\($0.quote)").inserted }
         lines = unique.map { record in
             let source = sources[record.sourceID]
@@ -110,7 +113,13 @@ public struct EvidenceGroup: Sendable, Hashable, Identifiable {
     public let lines: [EvidenceLine]
 
     public var id: UUID { lines[0].id }
-    public var meeting: SourceMeeting? { lines[0].meeting }
+
+    /// 묶음의 일정 · "When · Source"는 모두 가장 나중에 들어온 줄의 값을 쓴다 (일정 이름이 바뀌었으면 나중 값).
+    /// 화면은 이 값을 마지막 줄 아래에 한 번, VoiceOver는 줄마다 읽는다.
+    public var latest: EvidenceLine { lines[lines.count - 1] }
+    public var meeting: SourceMeeting? { latest.meeting }
+    public var displayDate: Date? { latest.displayDate }
+    public var displayTitle: String? { latest.displayTitle }
 
     private init(lines: [EvidenceLine]) {
         precondition(!lines.isEmpty)

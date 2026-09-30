@@ -134,11 +134,15 @@ struct SourceStackTests {
         #expect(digest.lines[0].displayDate != sources[untitled]?.occurredAt)
     }
 
-    func line(_ n: Int, meeting eventID: String?) -> EvidenceLine {
+    func line(
+        _ n: Int, meeting eventID: String?, title: String? = "M", start: TimeInterval = 0, sourceTitle: String? = nil
+    ) -> EvidenceLine {
         EvidenceLine(
-            id: UUID(uuidString: String(format: "00000000-0000-4000-8000-%012d", n))!, quote: "q\(n)", sourceID: UUID(), sourceTitle: nil,
+            id: UUID(uuidString: String(format: "00000000-0000-4000-8000-%012d", n))!, quote: "q\(n)", sourceID: UUID(), sourceTitle: sourceTitle,
             occurredAt: Date(timeIntervalSince1970: Double(n)), externalURL: nil, service: .notion,
-            meeting: eventID.map { SourceMeeting(calendarEventID: $0, title: "M", start: Date(timeIntervalSince1970: 0), end: Date(timeIntervalSince1970: 60)) }
+            meeting: eventID.map {
+                SourceMeeting(calendarEventID: $0, title: title, start: Date(timeIntervalSince1970: start), end: Date(timeIntervalSince1970: start + 60))
+            }
         )
     }
 
@@ -151,6 +155,53 @@ struct SourceStackTests {
         #expect(groups[0].meeting?.calendarEventID == "evt-1")
         #expect(groups[1].meeting == nil)
         #expect(groups.map(\.id) == [lines[0].id, lines[1].id, lines[3].id, lines[4].id])
+    }
+
+    /// 묶음의 일정과 "When · Source"는 한 규칙: 가장 나중에 들어온 줄의 일정 (회의록과 전사 사이에 일정 이름 · 시각이 바뀌었으면 나중 값)
+    @Test func groupUsesLatestMeetingSnapshot() {
+        let notion = line(1, meeting: "evt-1", title: "Proposal review", start: 1_000, sourceTitle: "회의록")
+        let meet = line(3, meeting: "evt-1", title: "Proposal review — Acme", start: 2_000, sourceTitle: "Google Meet · 2026-09-30 10:00")
+        let group = EvidenceGroup.grouped([notion, line(2, meeting: nil), meet])[0]
+        #expect(group.lines.map(\.id) == [notion.id, meet.id])
+        #expect(group.latest.id == meet.id)
+        #expect(group.meeting == meet.meeting)
+        #expect(group.displayTitle == "Proposal review — Acme")
+        #expect(group.displayDate == Date(timeIntervalSince1970: 2_000))
+
+        // 나중 일정에 제목이 없으면 그 줄의 원문 제목 (앞 줄의 옛 제목을 섞지 않는다)
+        let untitled = line(4, meeting: "evt-1", title: nil, start: 2_000, sourceTitle: "Google Meet · 2026-09-30 10:00")
+        let renamed = EvidenceGroup.grouped([notion, untitled])[0]
+        #expect(renamed.meeting == untitled.meeting)
+        #expect(renamed.displayTitle == "Google Meet · 2026-09-30 10:00")
+
+        // 일정이 없는 한 줄 묶음은 그 줄 그대로
+        let single = EvidenceGroup.grouped([line(5, meeting: nil, sourceTitle: "#sales")])[0]
+        #expect(single.meeting == nil)
+        #expect(single.displayTitle == "#sales")
+        #expect(single.displayDate == Date(timeIntervalSince1970: 5))
+    }
+
+    /// 같은 시각에 들어온 근거도 읽을 때마다 같은 순서 (원문 id → 구절 → 근거 id)
+    @Test func evidenceOrderIsDeterministicForEqualTimes() {
+        let sourceA = UUID(uuidString: "AAAAAAAA-0000-4000-8000-000000000000")!
+        let sourceB = UUID(uuidString: "BBBBBBBB-0000-4000-8000-000000000000")!
+        let records = [
+            evidence(1, source: sourceB, quote: "가", at: 100),
+            evidence(2, source: sourceA, quote: "나", at: 100),
+            evidence(3, source: sourceA, quote: "가", at: 100),
+            evidence(4, source: sourceA, quote: "먼저", at: 50),
+        ]
+        let expected = ["먼저", "가", "나", "가"]
+        let expectedSources = [sourceA, sourceA, sourceA, sourceB]
+        for permutation in [records, records.reversed(), [records[2], records[0], records[3], records[1]]] {
+            let digest = EvidenceDigest(evidence: permutation, sources: [:])
+            #expect(digest.lines.map(\.quote) == expected)
+            #expect(digest.lines.map(\.sourceID) == expectedSources)
+        }
+        // 같은 원문 · 같은 구절이 같은 시각에 둘이면 근거 id가 앞선 것을 남긴다
+        let twins = [evidence(9, source: sourceA, quote: "같음", at: 100), evidence(8, source: sourceA, quote: "같음", at: 100)]
+        #expect(EvidenceDigest(evidence: twins, sources: [:]).lines.map(\.id) == [twins[1].id])
+        #expect(EvidenceDigest(evidence: twins.reversed(), sources: [:]).lines.map(\.id) == [twins[1].id])
     }
 
     @Test func sourcesWithoutMeetingStayOnePerLine() {

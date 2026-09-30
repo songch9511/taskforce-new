@@ -10,6 +10,8 @@ public struct EvidenceView: View {
     let source: String?
     let others: [SourceService]
     let quoteLineLimit: Int?
+    /// 거짓이면 "When · Source"를 그리지 않고 VoiceOver 값으로만 읽는다 (Sources에서 같은 회의의 앞 줄)
+    let showsMeta: Bool
     let showsOpen: Bool
     let onOpen: (() -> Void)?
 
@@ -20,6 +22,7 @@ public struct EvidenceView: View {
         source: String?,
         others: [SourceService] = [],
         quoteLineLimit: Int? = nil,
+        showsMeta: Bool = true,
         showsOpen: Bool = false,
         onOpen: (() -> Void)? = nil
     ) {
@@ -29,28 +32,47 @@ public struct EvidenceView: View {
         self.source = source
         self.others = others
         self.quoteLineLimit = quoteLineLimit
+        self.showsMeta = showsMeta
         self.showsOpen = showsOpen
         self.onOpen = onOpen
     }
 
     /// 근거 한 줄 (`EvidenceDigest`의 줄). 원문에 일정이 붙었으면 "When · Source"가 일정 날짜 · 제목이다.
-    /// `showsMeta`가 거짓이면 "When · Source" 줄을 그리지 않는다 (Sources에서 같은 회의의 줄은 마지막 줄에만).
     public init(
         _ line: EvidenceLine,
         others: [SourceService] = [],
         now: Date = Date(),
         quoteLineLimit: Int? = nil,
-        showsMeta: Bool = true,
         showsOpen: Bool = false,
         onOpen: (() -> Void)? = nil
     ) {
         self.init(
             service: line.service,
             quote: line.quote,
-            when: showsMeta ? line.displayDate.map { WhenText.label($0, now: now) } : nil,
-            source: showsMeta ? line.displayTitle : nil,
+            when: line.displayDate.map { WhenText.label($0, now: now) },
+            source: line.displayTitle,
             others: others,
             quoteLineLimit: quoteLineLimit,
+            showsOpen: showsOpen,
+            onOpen: onOpen
+        )
+    }
+
+    /// Sources 묶음의 한 줄. "When · Source"는 묶음의 값(`EvidenceGroup`: 가장 나중 줄의 일정)이고
+    /// 화면에는 마지막 줄 아래에만, 앞 줄은 VoiceOver로만 읽는다.
+    public init(
+        _ line: EvidenceLine,
+        in group: EvidenceGroup,
+        now: Date = Date(),
+        showsOpen: Bool = false,
+        onOpen: (() -> Void)? = nil
+    ) {
+        self.init(
+            service: line.service,
+            quote: line.quote,
+            when: group.displayDate.map { WhenText.label($0, now: now) },
+            source: group.displayTitle,
+            showsMeta: line.id == group.latest.id,
             showsOpen: showsOpen,
             onOpen: onOpen
         )
@@ -62,7 +84,7 @@ public struct EvidenceView: View {
                 .padding(.top, 1)
             VStack(alignment: .leading, spacing: TFSpace.xxs) {
                 quoteText
-                if hasMeta {
+                if showsMeta, hasMeta {
                     meta
                 }
             }
@@ -76,6 +98,8 @@ public struct EvidenceView: View {
             }
         }
         .accessibilityElement(children: .combine)
+        // 그리지 않은 "When · Source"도 VoiceOver는 읽는다
+        .accessibilityValue(showsMeta ? "" : metaLabel)
     }
 
     @ViewBuilder
@@ -98,6 +122,11 @@ public struct EvidenceView: View {
 
     private var hasMeta: Bool {
         when != nil || !(source ?? "").isEmpty || !others.isEmpty
+    }
+
+    /// "Sep 30 · Proposal review — Acme"
+    private var metaLabel: String {
+        [when, source].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · ")
     }
 
     private var meta: some View {
@@ -125,7 +154,8 @@ public struct EvidenceView: View {
 }
 
 /// Evidence group (Figma 10:737, Mac "Sources N"): 겹친 로고 + "Sources N" 아래에 근거를 줄마다, 오래된 것이 위.
-/// 같은 일정에 붙은 원문의 근거(Notion 회의록 + Meet 전사)는 한 회의로 붙여 두고 "When · Source"(일정 날짜 · 제목)를 마지막 줄에 한 번만.
+/// 같은 일정에 붙은 원문의 근거(Notion 회의록 + Meet 전사)는 한 회의로 붙여 두고 "When · Source"(일정 날짜 · 제목)를 마지막 줄에 한 번만
+/// (앞 줄은 VoiceOver로 같은 값을 읽는다).
 public struct SourcesGroup: View {
     let lines: [EvidenceLine]
     let now: Date
@@ -151,8 +181,8 @@ public struct SourcesGroup: View {
                     ForEach(group.lines) { line in
                         EvidenceView(
                             line,
+                            in: group,
                             now: now,
-                            showsMeta: line.id == group.lines.last?.id,
                             showsOpen: line.externalURL != nil,
                             onOpen: line.externalURL == nil ? nil : { onOpen(line) }
                         )
