@@ -85,6 +85,25 @@ describe("buildHandoff", () => {
     expect(md).toContain("확정된 것처럼 쓰지 말아 주세요");
   });
 
+  it("판정 확인은 코드마다 한 줄씩 적는다 (코드 순서와 상관없이)", () => {
+    const md = buildHandoff(input({ confirm_reasons: ["판정 확인: INFO_ONLY, TENTATIVE", "판정 확인: ALREADY_DONE"] }));
+    expect(md).toContain(
+      "## 아직 확실하지 않은 것\n- 해야 할 일이 아니라 알려 주는 내용일 수 있습니다.\n- 확정된 약속이 아니라 잠정적인 이야기일 수 있습니다.\n- 이미 끝난 일일 수 있습니다.\n\n",
+    );
+  });
+
+  it("담당 확인과 NOT_MY_ACTION은 한 줄로, 중복 확인 · 모르는 판정 코드는 빼고 적는다", () => {
+    const md = buildHandoff(input({ confirm_reasons: ["판정 확인: NOT_MY_ACTION, UNKNOWN_CODE", "담당 확인", "중복 확인 (45%): 견적서 회신", "상태 확인"] }));
+    expect(md).toContain("## 아직 확실하지 않은 것\n- 내가 맡은 일인지 아직 확실하지 않습니다.\n- 끝났는지 · 취소됐는지 아직 확실하지 않습니다.\n\n");
+    expect(md).not.toContain("UNKNOWN_CODE");
+    expect(md).not.toContain("중복 확인");
+  });
+
+  it("판정 확인만 있고 아는 코드가 없으면 불확실한 것 칸을 만들지 않는다", () => {
+    const md = buildHandoff(input({ confirm_reasons: ["판정 확인: UNKNOWN_CODE", "병합 확인 (55%)"] }));
+    expect(md).not.toContain("아직 확실하지 않은 것");
+  });
+
   it("사용자가 앱에서 정한 값도 경위에 들어간다", () => {
     const md = buildHandoff(input({ due_date: "2025-10-06" }, { userEdits: [{ field: "due", value: "2025-10-06", occurredAt: "2025-09-25T00:00:00Z" }] }));
     expect(md).toContain("3. 2025-09-25 (목) 내가 직접 정함: 기한 → 2025-10-06 (월)");
