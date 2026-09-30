@@ -58,6 +58,21 @@ describe("scoreSequence", () => {
     expect(split.correct).toBe(0);
   });
 
+  it("완료 · 취소로 잘못 바뀐 최종 상태와 기한을 각각 센다", () => {
+    const s = scoreSequence(golden, [
+      action("a1", ["금요일까지 제안서 보내드릴게요", "제안서는 월요일에 받아도 괜찮아요"], "2025-09-26", "done"),
+      action("a2", ["견적서는 수요일까지 드릴게요"], "2025-09-23", "dropped"),
+    ]);
+
+    expect(s.fieldErrors).toEqual([
+      { title: "제안서 발송", field: "due", expected: "2025-09-29", actual: "2025-09-26" },
+      { title: "제안서 발송", field: "status", expected: "open", actual: "done" },
+      { title: "견적서 발송", field: "due", expected: "2025-09-24", actual: "2025-09-23" },
+      { title: "견적서 발송", field: "status", expected: "open", actual: "dropped" },
+    ]);
+    expect(s.correct).toBe(0);
+  });
+
   it("다른 약속을 하나로 합치면 over-merge, 함정은 사유별 extra", () => {
     const s = scoreSequence(golden, [
       action("a1", ["금요일까지 제안서 보내드릴게요", "견적서는 수요일까지 드릴게요"], "2025-09-29"),

@@ -46,6 +46,8 @@ export type Totals = {
   misses: number;
   ownerCorrect: number;
   dueCorrect: number;
+  /** NOT_MY_ACTION 함정 오탐 중 담당을 me로 기록한 절대 건수 */
+  falseAttributions: number;
   hallucinated: number;
   falsePositivesByKind: Record<FalsePositiveKind, number>;
   precision: number | null;
@@ -159,6 +161,7 @@ export function totals(scores: CaseScore[]): Totals {
   let fn = 0;
   let owner = 0;
   let due = 0;
+  let falseAttributions = 0;
   let hallucinated = 0;
   for (const s of scores) {
     tp += s.truePositives;
@@ -167,7 +170,10 @@ export function totals(scores: CaseScore[]): Totals {
     owner += s.ownerCorrect;
     due += s.dueCorrect;
     hallucinated += s.hallucinated.length;
-    for (const f of s.falsePositives) byKind[f.kind]++;
+    for (const f of s.falsePositives) {
+      byKind[f.kind]++;
+      if (f.kind === "NOT_MY_ACTION" && f.candidate.owner === "me") falseAttributions++;
+    }
   }
   const ratio = (n: number, d: number) => (d === 0 ? null : n / d);
   return {
@@ -177,6 +183,7 @@ export function totals(scores: CaseScore[]): Totals {
     misses: fn,
     ownerCorrect: owner,
     dueCorrect: due,
+    falseAttributions,
     hallucinated,
     falsePositivesByKind: byKind,
     precision: ratio(tp, tp + fp),
