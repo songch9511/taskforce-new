@@ -48,6 +48,15 @@ jobs:
       - name: swift test (TaskforceKit)
         working-directory: apple/Packages/TaskforceKit
         run: swift test
+      - name: Test macOS launcher
+        run: >-
+          xcodebuild test
+          -project apple/Taskforce.xcodeproj
+          -scheme Taskforce
+          -configuration Debug
+          -destination 'platform=macOS'
+          -derivedDataPath "$RUNNER_TEMP/DerivedData"
+          CODE_SIGNING_ALLOWED=NO
       - name: Build macOS
         run: >-
           xcodebuild build

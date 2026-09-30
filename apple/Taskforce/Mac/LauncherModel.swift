@@ -365,6 +365,8 @@ final class LauncherModel {
         let userID = signedInUserID
         guard userID != lastUserID else { return }
         lastUserID = userID
+        work?.cancel()
+        work = nil
         now?.reset()
         account?.reset()
         clearUndo()
@@ -1075,6 +1077,7 @@ final class LauncherModel {
                 screen = .pickLines(detail.source, purpose)
             } catch is CancellationError {
             } catch {
+                guard !Task.isCancelled else { return }
                 screen = .notice(error.userMessage)
             }
         }
