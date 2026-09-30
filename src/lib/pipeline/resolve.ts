@@ -15,11 +15,12 @@ export type Claim = {
   value: string | null;
   /** 발언 시점 (입력 시점 아님, 규칙 4) */
   occurredAt: Date;
-  speakerRole: "me" | "counterpart" | "third_party";
+  speakerRole: "me" | "counterpart" | "third_party" | "unknown";
   certainty: "firm" | "tentative";
   directness: "first_hand" | "reported";
   audience: "shared" | "private";
   channel: ClaimChannel;
+  state?: "active" | "superseded" | "disputed";
   /**
    * user: 사용자가 앱에서 직접 고친 값. 그 시점까지의 어떤 발언보다 우선한다 (이후의 유효한 발언은 다시 바꿀 수 있다).
    * tracker: 사용자가 할 일 도구(Notion 할 일 DB 등)에서 직접 고친 값. 판정에서는 user와 같고, AI 오판으로 세지 않는다.
@@ -61,7 +62,9 @@ const CHANNEL_RANK: Record<ClaimChannel, number> = { email: 3, doc: 3, task: 3, 
 const byTime = (a: Claim, b: Claim) => a.occurredAt.getTime() - b.occurredAt.getTime();
 /** 사용자가 직접 정한 값 (앱 또는 할 일 도구) */
 const isUser = (c: Claim) => c.origin === "user" || c.origin === "tracker";
-const isStrong = (c: Claim) => isUser(c) || (c.certainty === "firm" && c.directness === "first_hand");
+const isUnresolvedSource = (c: Claim) => !isUser(c) && (c.speakerRole === "unknown" || c.state === "disputed");
+const isStrong = (c: Claim) =>
+  isUser(c) || (!isUnresolvedSource(c) && c.certainty === "firm" && c.directness === "first_hand");
 
 type Authority = "apply" | "needs_confirmation" | "reject";
 
@@ -121,16 +124,28 @@ export function resolveField(field: ClaimField, claims: Claim[]): Resolution {
 
   const shared = all.filter((c) => isStrong(c) && (c.audience === "shared" || isUser(c)));
   const privateStrong = all.filter((c) => isStrong(c) && c.audience === "private" && !isUser(c));
-  const reported = all.filter((c) => c.directness === "reported");
-  const tentative = all.filter((c) => c.certainty === "tentative" && c.directness === "first_hand");
+  const unresolvedSource = all.filter(isUnresolvedSource);
+  const reported = all.filter((c) => !isUnresolvedSource(c) && c.directness === "reported");
+  const tentative = all.filter((c) => !isUnresolvedSource(c) && c.certainty === "tentative" && c.directness === "first_hand");
 
   // 규칙 1: 공유된 확정 발언이 있으면 그것들로 정한다. 없을 때만 내 메모를 쓴다.
   const basis = shared.length > 0 ? shared : privateStrong;
   const result: Resolution = { ...empty, rules: shared.length > 0 ? [] : privateStrong.length > 0 ? [1] : [] };
 
   if (basis.length === 0) {
-    // 확정 · 직접 발언이 하나도 없다: 가장 최근의 추정 · 전언을 보여주되 확인을 받는다 (규칙 2 · 3).
-    const latest = [...tentative, ...reported].sort(byTime).at(-1)!;
+    // 적용할 확정 발언이 없다: 가장 최근의 추정 · 전언 · 불명확한 화자를 보여주되 확인을 받는다.
+    const latest = [...tentative, ...reported, ...unresolvedSource].sort(byTime).at(-1)!;
+    if (isUnresolvedSource(latest)) {
+      return {
+        ...result,
+        value: latest.value,
+        winningClaimId: latest.id,
+        rules: [0],
+        reason: "화자 또는 판정이 불확실해 확인이 필요합니다",
+        needsConfirmation: true,
+        pending: [latest.id],
+      };
+    }
     return {
       ...result,
       value: latest.value,
@@ -142,46 +157,94 @@ export function resolveField(field: ClaimField, claims: Claim[]): Resolution {
     };
   }
 
-  // 규칙 0 · 4 · 5: 시간순으로 유효한 변경만 적용한다.
+  // 규칙 0 · 4 · 5: 같은 시각의 Claims는 권한부터 판정하고, 허용된 값끼리 채널을 비교한다.
   let winner = basis[0];
+  let hasWinner = false;
   const rules = new Set<RuleId>(result.rules);
-  for (let i = 1; i < basis.length; i++) {
-    const next = basis[i];
-    if (next.value === winner.value) continue;
-
-    // 규칙 5 · 6: 같은 시점에 다른 값
-    if (next.occurredAt.getTime() === winner.occurredAt.getTime()) {
-      const diff = CHANNEL_RANK[next.channel] - CHANNEL_RANK[winner.channel];
-      if (diff === 0) {
-        rules.add(6);
-        result.pending.push(winner.id, next.id);
-        result.needsConfirmation = true;
-        continue;
-      }
-      rules.add(5);
-      if (diff > 0) {
-        result.superseded.push(winner.id);
-        winner = next;
-      } else {
-        result.superseded.push(next.id);
-      }
+  for (let start = 0; start < basis.length; ) {
+    let end = start + 1;
+    while (end < basis.length && basis[end].occurredAt.getTime() === basis[start].occurredAt.getTime()) end++;
+    const group = basis.slice(start, end);
+    if (
+      !hasWinner &&
+      field === "status" &&
+      group.some((c) => c.value === "done" || c.value === "dropped") &&
+      group.every((c) => authority(field, null, c, group) !== "apply")
+    ) {
+      rules.add(0);
+      result.pending.push(...group.map((c) => c.id));
+      start = end;
+      continue;
+    }
+    if (hasWinner && group.every((c) => c.value === winner.value) && !group.some(isUser)) {
+      start = end;
       continue;
     }
 
-    // 앞서 확인 대기로 둔 발언도 "양쪽이 말했는가"를 볼 때는 센다.
-    const decision = authority(field, winner.value, next, basis.slice(0, i));
-    if (decision === "apply") {
-      if (!isUser(next)) rules.add(0).add(4);
-      result.superseded.push(winner.id);
-      winner = next;
-    } else if (decision === "needs_confirmation") {
-      rules.add(0);
-      result.pending.push(next.id);
-      result.needsConfirmation = true;
-    } else {
-      rules.add(0);
-      result.risks.push({ kind: "unauthorized_change", claimId: next.id, value: next.value });
+    const distinct = new Set(group.map((c) => c.value));
+    if (hasWinner) distinct.add(winner.value);
+    if (distinct.size === 1) {
+      if (!hasWinner || group.some(isUser)) winner = group.find(isUser) ?? group[0];
+      hasWinner = true;
+      start = end;
+      continue;
     }
+
+    const before = hasWinner ? winner : null;
+    const confirmedBy = [...basis.slice(0, start), ...group];
+    const allowed: Claim[] = [];
+    for (const next of group) {
+      if (before && next.value === before.value && !isUser(next)) continue;
+      const decision = authority(field, before?.value ?? null, next, confirmedBy);
+      if (decision === "apply") allowed.push(next);
+      else {
+        rules.add(0);
+        if (decision === "needs_confirmation") result.pending.push(next.id);
+        else result.risks.push({ kind: "unauthorized_change", claimId: next.id, value: next.value });
+      }
+    }
+
+    if (allowed.length > 0) {
+      const userClaims = allowed.filter(isUser);
+      const eligible = userClaims.length > 0 ? userClaims : allowed;
+      const ranks = eligible.map((c) => CHANNEL_RANK[c.channel]);
+      const maxRank = Math.max(...ranks);
+      const top = eligible.filter((c) => CHANNEL_RANK[c.channel] === maxRank);
+      const topValues = new Set(top.map((c) => c.value));
+      const chosen = top[0];
+
+      if (new Set(eligible.map((c) => c.value)).size > 1 && new Set(ranks).size > 1) rules.add(5);
+      if (topValues.size > 1) {
+        rules.add(6);
+        result.pending.push(...top.map((c) => c.id));
+      }
+      if (before && before.value !== chosen.value && !isUser(chosen)) rules.add(0).add(4);
+      if (before && before.value !== chosen.value) result.superseded.push(before.id);
+      for (const c of eligible) {
+        if (c.value !== chosen.value && CHANNEL_RANK[c.channel] < maxRank) result.superseded.push(c.id);
+      }
+      winner = chosen;
+      hasWinner = true;
+    } else if (!hasWinner) {
+      // 확인 대기 중에도 기존 표시값을 유지한다.
+      winner = group[0];
+      hasWinner = true;
+    }
+    start = end;
+  }
+
+  if (!hasWinner) {
+    const pending = [...new Set(result.pending)];
+    const finalRules = [...rules].sort((a, b) => a - b);
+    return {
+      ...result,
+      value: null,
+      winningClaimId: null,
+      rules: finalRules,
+      reason: `규칙 ${finalRules.join(" + ")}: ${finalRules.map((r) => RULE_TEXT[r]).join(", ")}`,
+      needsConfirmation: pending.length > 0,
+      pending,
+    };
   }
 
   // 규칙 1 · 2 · 3: 반영하지 않은 발언 중 값이 다른 것은 위험 신호 · 확인으로 남긴다.
@@ -202,6 +265,13 @@ export function resolveField(field: ClaimField, claims: Claim[]): Resolution {
   for (const c of reported) {
     if (c.value !== winner.value && c.occurredAt >= winner.occurredAt) {
       rules.add(3);
+      result.pending.push(c.id);
+      result.needsConfirmation = true;
+    }
+  }
+  for (const c of unresolvedSource) {
+    if (c.value !== winner.value && c.occurredAt >= winner.occurredAt) {
+      rules.add(0);
       result.pending.push(c.id);
       result.needsConfirmation = true;
     }

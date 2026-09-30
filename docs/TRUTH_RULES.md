@@ -122,6 +122,8 @@ Jev의 확률은 보정을 목표로 학습되어 있어서 **"P(내 약속) < 0
 기각 사유는 어느 질문의 확률이 낮았는지로 코드가 만듭니다 (`NOT_MY_ACTION`, `INFO_ONLY`, `TENTATIVE`, `ALREADY_DONE`).
 Jev는 설명 문장을 주지 않으므로, 사용자에게 보여줄 이유는 이 사유 코드와 원문 인용으로 구성합니다.
 
+원문 관련자 정보로 실제 이름 충돌이 확인되면 모델이 자동 반영을 허용해도 확인으로 낮춥니다(`identity_ambiguous`, `NOT_MY_ACTION`). 화자 이름표 충돌은 실제 역할을 `unknown`으로 남기고, `@이름` 요청이나 명시적인 `담당: 이름`의 충돌은 담당을 모름으로 둡니다. 단순히 동료 이름이 등장했다는 이유로 보류하지 않습니다. 모델의 원래 확률·발언 속성은 기록에 유지하며, 이미 기각한 후보를 다시 살리지는 않습니다.
+
 사용자가 직접 추가한 Action(`user_created`)은 추출 · Jev 판정을 거치지 않습니다. 필드 값은 origin `user` Claim에서 계산하고, 원문 없이 추가했으면 근거(Evidence)가 없을 수 있습니다.
 
 #### Jev를 더 쓸 수 있는 곳
@@ -153,14 +155,14 @@ Action의 현재 값은 Claim들로부터 **계산되는 값**입니다.
 ```
 Claim  id, action_id, field(due|scope|owner|status), value,
        source_id, quote, occurred_at,          -- 발언 시점 (입력 시점 아님)
-       speaker, speaker_role(me|counterpart|third_party),
+       speaker, speaker_role(me|counterpart|third_party|unknown),
        certainty(firm|tentative),              -- "~할게요" vs "아마 ~쯤"
        directness(first_hand|reported),        -- 본인 발언 vs "민수가 그러던데"
        audience(shared|private),               -- 상대에게 한 말 vs 내 메모
        state(active|superseded|disputed)
 ```
 
-`state` 컬럼은 스키마에만 있고 쓰는 코드가 없습니다. 어느 Claim이 졌는지(superseded)는 저장하지 않고 `resolve()`가 판정할 때마다 계산합니다(`src/lib/pipeline/resolve.ts`).
+`state=disputed`는 기존 Action에 붙는 후보가 판정·담당·매칭 확인을 기다리는 경우에 저장합니다. 발언의 확정도·직접성·화자를 바꾸지 않고, 기존 확정 값을 덮지 않는 확인 근거로 남깁니다. `speaker_role=unknown`인 원문 Claim도 같은 방식으로 다룹니다. 나중의 확정 근거나 사용자·할 일 도구의 명시적 선택이 들어오면 판정에서 확인 대기가 풀릴 수 있습니다. 어느 Claim이 졌는지(superseded)는 저장하지 않고 `resolve()`가 판정할 때마다 계산합니다(`src/lib/pipeline/resolve.ts`).
 
 ### 판정 규칙 (위에서부터 순서대로 적용)
 
@@ -197,7 +199,7 @@ Claim  id, action_id, field(due|scope|owner|status), value,
 **규칙 5. 동점일 때만 채널 신뢰도를 본다**
 
 같은 시점, 같은 권한인데 값이 다를 때의 마지막 기준입니다.
-서면 확인(메일·문서) > 채팅 메시지 > 회의록(음성인식 오류 가능성).
+서면 확인(메일·문서) > 채팅 메시지 > 회의록(음성인식 오류 가능성). 같은 시각의 발언은 먼저 규칙 0의 권한을 검사하고, 적용 가능한 발언끼리만 채널을 비교합니다. 사용자·할 일 도구의 명시적 선택은 같은 시각의 원문 발언보다 우선합니다.
 
 **규칙 6. 그래도 못 정하면 사용자에게 묻는다**
 
@@ -219,7 +221,7 @@ Claim  id, action_id, field(due|scope|owner|status), value,
 
 - `src/lib/pipeline/resolve.ts`: `resolveField(field, claims)` / `resolveAction(claims)`. 규칙마다 `resolve.test.ts`에 테스트가 있다.
 - Claim 속성(누가 · 확정도 · 직접 · 공유)은 Jev 판정(`speaker_role`, `statement_certainty`, `directness`, `audience`)에서 온다. 단 누가 말했는지는 원문이 정하는 사실이라(원칙 5), 인용 줄의 이름표를 알면 병합이 **붙일 Action의 요청자**(새 Action이면 후보의 상대)와 비교해 코드로 정한다(`withSpeakerFromLabel`, `speakerRole`):
-  - 이름표가 사용자(이름 · 별칭 · 성을 뺀 이름) → `me`. 단 요청자와 같은 이름이면 정하지 않는다.
+  - 이름표가 사용자(이름 · 별칭 · 성을 뺀 이름) → `me`. 단 요청자와 같은 이름이면 정하지 않는다. 명시된 이메일이 사용자 이메일과 다르면 이름만 같아도 사용자로 보지 않는다. 원문의 관련자에 다른 이메일의 동명이인이나 같은 짧은 이름을 쓰는 사람이 확인되면 그 이름표를 `unknown`으로 남기고 자동 반영하지 않는다. 충돌 증거가 없는 고유한 짧은 이름·별칭은 유지한다.
   - 요청자와 같은 사람 → `counterpart`. 같은 사람은 호칭(님 · 씨)을 뗀 이름이 같거나 전체 이름 뒤에 직함만 붙은 경우("김민수" = "김민수 대표")뿐이다. 요청자 본인의 **취소**는 `first_hand`로 정한다: 취소는 요청자의 결정이라 이유로 남의 말을 붙여도("안 하셔도 돼요! 대표님이 이미 받으셨대요") 규칙 3의 "본인의 발언"이다. Jev는 뒤의 이유를 보고 전언으로 답하는 일이 잦았다(Slack 골든셋 F2). 연장 · 변경은 요청자가 윗사람의 결정을 전할 수도 있어("팀장님이 다음 주도 된대요") 전언 여부를 Jev 답 그대로 둔다.
   - 요청자와 이름표가 둘 다 전체 이름(한글 3~4자 · 두 단어 이상 영문)이고 분명히 다르면 → `third_party`. 대화 상대라도 요청자가 아니면 남의 허락을 전하는 사람이라 규칙 0이 연장 · 취소를 막는다(`seq-slack-relayed-extension`).
   - 이름표나 요청자를 모르거나, "김대표" · "민수" · 한글/영문처럼 비교할 수 없는 모양이면 Jev 답 그대로.
@@ -227,6 +229,7 @@ Claim  id, action_id, field(due|scope|owner|status), value,
   규칙 0은 대화 속 약속의 권한을 가리려고 만든 것이라, 사용자가 자기 할 일 기록을 직접 고친 것까지 막으면 할 일 도구와 값이 어긋난다.
   `tracker`는 원문(속성 스냅샷)과 인용이 있고, AI 오판(PRD 지표 1)으로 세지 않는다. 할 일 도구에서 다른 사람이 고친 값은 `counterpart` 발언으로 본다 ([INTEGRATIONS.md](INTEGRATIONS.md) "Notion 할 일 DB").
 - `src/lib/pipeline/merge.ts`: 새 후보를 기존 Action에 Claim으로 붙인다. 매칭(`match.ts`)은 임베딩(`EMBEDDING_MODEL`, 기본 `openai/text-embedding-3-small`)으로 비슷한 열린 Action을 5개까지 추리고 Jev에게 new / 같은 일의 반복 · 변경 · 완료 · 취소를 묻는다. 관계 확신이 0.6 미만이면 병합을 확인받는다.
+  - 새 약속(`commitment`)의 판정이 확인 요청이거나 담당이 `unknown`이면 기존 Action에 매칭되어도 판정 확인 이유를 남긴다. 담당 이름의 충돌 또는 낮은 병합 확신도도 확인 대상으로 남긴다. 이 경우 붙이는 Claim은 `state=disputed`로 저장해 기존 기한·상태를 자동으로 바꾸지 않는다. 특히 완료·취소 상태로 먼저 닫으면 확인 큐에서 빠지므로 표시 플래그만 붙이지 않는다. 반면 기존 약속에 대한 요청자의 확정된 변경·완료·취소는 새 약속 여부만으로 막지 않고 기존 권한 규칙을 따른다. 확인 이유는 판정·병합별로 따로 저장하며, 이유의 추가·해제도 기존 이벤트의 before·after에 남긴다.
   - **사용자의 확정 약속이 기존 Action에 같은 일의 반복 · 변경으로 붙을 때**(`settlingCommitment`: 나 · 확정 · 직접 발언, 후보가 새 약속 · 변경, 그 발언이 판정을 자동 반영으로 통과, 병합 확신 0.8 이상) 기한뿐 아니라 내용(같은 일의 반복일 때만) · 담당 · 상태 Claim도 함께 더하고(`candidateClaims`), 판정 단계가 남긴 확인 이유("판정 확인: …")를 푼다(`append`의 `clearJudgeReasons`). 요청자의 요청("~해 주실 수 있을까요?")은 추정 발언이라 Action의 내용 · 담당 · 상태가 "확정되지 않은 말뿐"으로 남는데, 사용자가 "네, 목요일까지 드리겠습니다"로 받아들이면 규칙 0의 "양쪽이 말했는가"가 채워진다(메일은 요청과 수락이 늘 다른 원문이라 가장 흔한 모양이다. Notion 요약의 담당 없는 액션 아이템에 같은 회의 Meet 전사의 내 약속이 붙는 경우도 같다). 내용 Claim은 Action의 지금 제목 그대로 받아들여(글이 다른 표현으로 "내용 확인"을 새로 만들지 않고 제목도 바뀌지 않는다), 담당 Claim은 추출기가 나로 뽑았고 다른 사람 담당 Action이 아닐 때만 더한다. 병합 확신이 0.8 미만인 붙임(0.6 미만은 병합 확인, 0.6~0.8은 붙이기만 한다. 다른 일에 잘못 붙었을 수 있다), 사용자의 발언이 추정 · 전언이거나 요청자의 말인 경우, 그 발언 자체가 Jev 판정을 자동 반영으로 통과하지 못한 경우(확인 요청 · 기각)는 풀지 않는다. 병합 확인 같은 다른 저장된 이유는 그대로 남고(담당 · 기한 · 내용 · 상태 확인은 저장하지 않고 Claim에서 다시 계산한다. 메모리 저장소도 같다), Claim은 지우지 않는다. 누락 신고(`missing.ts`)는 판정을 자동 반영으로 고정하므로(사용자가 "이 구절은 내 할 일"이라고 했다) 같은 조건에서 "판정 확인"을 풀 수 있다. AI가 이유를 풀면 그 쓰기의 이벤트 before · after에 `needs_confirmation` · `confirm_reasons` 전후를 싣고(값이 바뀌었으면 그 이벤트에, 바뀐 값이 없으면 `merged`에. 앱의 변경 이력에 줄이 늘지 않는다), 지표 1은 그런 Action을 "물어서 만든 것"이 아니라 자동 반영으로 센다(`metrics/compute.ts`).
 
 ### 핵심 시나리오에 적용

@@ -270,11 +270,14 @@ describe("syncNotion 할 일 DB", () => {
     expect(result.notionUserId).toBe("notion-me");
   });
 
-  it("고친 사람: 연결한 사람을 알면 다른 id는 이름이 같아도 사용자가 아니다 (이메일이 맞을 때만). 모르면 이름으로도 알아본다", async () => {
+  it("고친 사람: id를 모르면 정확한 이메일 또는 이메일 없는 이름으로 알아보고 다른 이메일은 구별한다", async () => {
     const editedBy = (id: string, editor: string, owner: string) => ({ ...taskPage(id, 40, owner), last_edited_by: { id: editor } });
-    // 모든 사람의 이름이 사용자와 같다. 이메일은 id "me"만 프로필과 같다.
+    // 모든 사람의 이름이 사용자와 같다. "me"만 프로필 이메일과 같고, "name-only"는 이메일이 없다.
     const namesakes = (client: NotionClient) => {
-      client.user = async (id) => ({ object: "user", id, name: "청혁", person: { email: id === "me" ? "me@x.com" : `${id}@other.com` } });
+      client.user = async (id) => {
+        const email = id === "me" ? "me@x.com" : id === "name-only" ? undefined : `${id}@other.com`;
+        return { object: "user", id, name: "청혁", ...(email ? { person: { email } } : {}) };
+      };
     };
     const editors = (items: TaskItem[]) => Object.fromEntries(items.map((i) => [i.externalId, i.editedByUser]));
 
@@ -285,11 +288,15 @@ describe("syncNotion 할 일 DB", () => {
     await syncNotion(conn, known.client, { ...fakeIngest().deps, tasks: first.tasks }, options);
     expect(editors(first.processed)).toEqual({ "by-namesake": false, "by-email": true, "by-me": true });
 
-    const unknown = fakeClient([[editedBy("by-namesake", "namesake", "me")]]);
+    const unknown = fakeClient([[
+      editedBy("by-namesake", "namesake", "me"),
+      editedBy("by-email", "me", "me"),
+      editedBy("by-name-only", "name-only", "me"),
+    ]]);
     namesakes(unknown.client);
     const second = fakeTasks();
     await syncNotion({ ...connection(minutesAgo(200)), settings: settings("2026-09-20T00:00:00Z") }, unknown.client, { ...fakeIngest().deps, tasks: second.tasks }, options);
-    expect(editors(second.processed)).toEqual({ "by-namesake": true });
+    expect(editors(second.processed)).toEqual({ "by-namesake": false, "by-email": true, "by-name-only": true });
   });
 
   it("담당: 연결한 사람을 알면 이름만 같은 다른 사람의 할 일은 넣지 않는다", async () => {

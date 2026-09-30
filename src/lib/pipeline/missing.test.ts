@@ -210,6 +210,47 @@ describe("누락 신고 흐름 (extractMissing → mergeJudged)", () => {
     expect(resolveAction(store.all()[1].claims).owner.value).toBe("me");
     expect(store.all()[0].evidence).toEqual([]);
   });
+
+  it("사용자가 누락 신고로 담당을 확정해도 모르는 화자 역할은 unknown으로 남긴다", async () => {
+    const identity = { name: "김도윤", aliases: [], emails: ["doyun@taskforcelabs.example"] };
+    const participants = {
+      attendees: [
+        { name: "김도윤", email: "doyun@taskforcelabs.example" },
+        { name: "박도윤", email: "parkdoyun@lumenfield.example" },
+      ],
+    };
+    const report = {
+      text: "도윤님: 금요일까지 자료를 보내드릴게요",
+      kind: "meeting" as const,
+      occurredAt: input.occurredAt,
+      identity,
+      participants,
+      quote: "금요일까지 자료를 보내드릴게요",
+    };
+    const { complete: namesakeComplete } = fakeComplete({
+      title: "자료 전달",
+      counterpart: "박지훈",
+      due_text: null,
+      due: null,
+      due_confidence: null,
+    });
+    const { judged } = await extractMissing(report, { complete: namesakeComplete, decide: judgeDecide });
+    expect(judged.candidate.owner).toBe("me");
+    expect(judged.judge).toMatchObject({ decision: "auto", speaker: "도윤님", speakerAmbiguous: true });
+    expect(judged.judge.ownerAmbiguous).toBeUndefined();
+
+    const store = new InMemoryActionStore();
+    const [outcome] = await mergeJudged(store, [judged], { ...source, text: report.text }, identity, {
+      embed,
+      decide: judgeDecide,
+      newId: () => "missing-owner-claim",
+    });
+
+    expect(outcome.relation).toBe("new");
+    const owner = resolveAction(store.all()[0].claims).owner;
+    expect(owner).toMatchObject({ value: "me", needsConfirmation: true });
+    expect(store.all()[0].claims.find((claim) => claim.field === "owner")).toMatchObject({ value: "me", speakerRole: "unknown" });
+  });
 });
 
 describe("trackedByEvidence", () => {

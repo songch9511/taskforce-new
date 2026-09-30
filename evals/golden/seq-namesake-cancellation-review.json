@@ -1,0 +1,73 @@
+{
+  "id": "seq-namesake-cancellation-review",
+  "description": "사용자가 이름으로 확인되는 제안서 약속을 한 뒤, 요청자가 동명이인과 겹치는 짧은 @호칭으로 취소한다. 기존 약속은 열어 두고 취소 변경은 확인 요청으로 남긴다.",
+  "origin": "synthetic",
+  "tags": [
+    "slack",
+    "w2"
+  ],
+  "user": {
+    "name": "김도윤",
+    "aliases": [],
+    "emails": []
+  },
+  "sources": [
+    {
+      "id": "slack-namesake-commitment",
+      "kind": "message",
+      "occurred_at": "2026-10-01T09:00:00+09:00",
+      "text": "[DM · 박지훈]\n박지훈: 김도윤님, 제안서 초안 작성해서 보내주실 수 있나요?\n김도윤: 네, 제가 제안서 초안 작성해서 보내드릴게요.",
+      "participants": {
+        "attendees": [
+          {
+            "name": "박지훈"
+          },
+          {
+            "name": "김도윤"
+          },
+          {
+            "name": "박도윤"
+          }
+        ]
+      }
+    },
+    {
+      "id": "slack-namesake-cancellation",
+      "kind": "message",
+      "occurred_at": "2026-10-01T10:00:00+09:00",
+      "text": "[DM · 박지훈]\n박지훈: @도윤 제안서 초안은 이제 안 보내셔도 돼요.",
+      "participants": {
+        "attendees": [
+          {
+            "name": "박지훈"
+          },
+          {
+            "name": "김도윤"
+          },
+          {
+            "name": "박도윤"
+          }
+        ]
+      }
+    }
+  ],
+  "expected_actions": [
+    {
+      "title": "박지훈에게 제안서 초안 전달",
+      "owner": "me",
+      "counterpart": "박지훈",
+      "status": "open",
+      "evidence": [
+        {
+          "source": "slack-namesake-commitment",
+          "quote": "제가 제안서 초안 작성해서 보내드릴게요."
+        },
+        {
+          "source": "slack-namesake-cancellation",
+          "quote": "@도윤 제안서 초안은 이제 안 보내셔도 돼요."
+        }
+      ]
+    }
+  ],
+  "must_not_extract": []
+}

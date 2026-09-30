@@ -1,0 +1,48 @@
+{
+  "id": "notion-meeting-namesake-owner",
+  "origin": "synthetic",
+  "description": "화자 없는 Notion 회의 요약에 사용자 김도윤과 동료 박도윤이 함께 참석했다. '담당: 도윤'은 누구인지 모를 담당으로 확인에 남기고, 전체 이름 '김도윤'은 사용자로 판정할 수 있다.",
+  "tags": ["notion", "ownership"],
+  "user": {
+    "name": "김도윤",
+    "aliases": [],
+    "emails": ["doyun@taskforcelabs.example"]
+  },
+  "sources": [
+    {
+      "id": "notion-meeting-namesake",
+      "kind": "meeting",
+      "occurred_at": "2026-09-30T10:00:00+09:00",
+      "participants": {
+        "attendees": [
+          { "name": "김도윤", "email": "doyun@taskforcelabs.example" },
+          { "name": "박도윤", "email": "parkdoyun@lumenfield.example" },
+          { "name": "박지훈", "email": "jihoon@lumenfield.example" }
+        ]
+      },
+      "text": "[Notion AI 요약 · 주간 운영 회의]\n참석자: 김도윤, 박도윤, 박지훈\n### 액션 아이템\n- [ ] 담당: 도윤 — 금요일까지 견적서 검토\n- [ ] 담당: 김도윤 — 목요일까지 프로젝트 일정표 발송"
+    }
+  ],
+  "expected_actions": [
+    {
+      "title": "견적서 검토",
+      "owner": "unknown",
+      "due": "2026-10-02",
+      "status": "open",
+      "needs_review": true,
+      "evidence": [
+        { "source": "notion-meeting-namesake", "quote": "담당: 도윤 — 금요일까지 견적서 검토" }
+      ]
+    },
+    {
+      "title": "프로젝트 일정표 발송",
+      "owner": "me",
+      "due": "2026-10-01",
+      "status": "open",
+      "evidence": [
+        { "source": "notion-meeting-namesake", "quote": "담당: 김도윤 — 목요일까지 프로젝트 일정표 발송" }
+      ]
+    }
+  ],
+  "must_not_extract": []
+}

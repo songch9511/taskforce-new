@@ -1,6 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { describe, expect, it, vi } from "vitest";
 
+import type { AppendUpdate } from "@/lib/pipeline/merge";
 import type { Claim } from "@/lib/pipeline/resolve";
 import { SLACK_DISCONNECTED_QUOTE } from "@/lib/retention";
 
@@ -101,11 +102,15 @@ describe("SupabaseActionStore.append: 사용자의 확정 약속이 붙으면 �
   });
 
   /** 저장된 Action 행과 Claim을 돌려주고, write_action에 넘긴 인자를 모으는 가짜 service role 클라이언트 */
-  function appendAdmin(storedReasons: string[]) {
+  function appendAdmin(
+    storedReasons: string[],
+    storedClaims = [CLAIM("c1", "scope", "견적서 정리"), CLAIM("c2", "owner", "me"), CLAIM("c3", "status", "open")],
+    needsConfirmation = true,
+  ) {
     const writes: Record<string, unknown>[] = [];
     const rows: Record<string, unknown> = {
-      actions: { title: "견적서 정리", confirm_reasons: storedReasons, needs_confirmation: true, version: 3, status: "open", started_at: null },
-      claims: [CLAIM("c1", "scope", "견적서 정리"), CLAIM("c2", "owner", "me"), CLAIM("c3", "status", "open")],
+      actions: { title: "견적서 정리", confirm_reasons: storedReasons, needs_confirmation: needsConfirmation, version: 3, status: "open", started_at: null },
+      claims: storedClaims,
     };
     const admin = {
       from: (table: string) => {
@@ -204,5 +209,74 @@ describe("SupabaseActionStore.append: 사용자의 확정 약속이 붙으면 �
     const { admin, writes } = appendAdmin(["판정 확인: NOT_MY_ACTION"]);
     await new SupabaseActionStore(admin, USER).append("a1", { claims: firmClaims(), evidence });
     expect(written(writes).confirm_reasons).toEqual(["판정 확인: NOT_MY_ACTION"]);
+  });
+
+  it("기존 판정 확인을 풀면서 새 확인 이유 여러 개와 기존 단일 이유를 함께 저장한다", async () => {
+    const { admin, writes } = appendAdmin(["판정 확인: OLD"]);
+    const update = {
+      claims: [],
+      evidence,
+      clearJudgeReasons: true,
+      confirmReasons: ["판정 확인: NOT_MY_ACTION", "소유권 확인: 불확실"],
+      confirmReason: "병합 확인 (55%)",
+    } satisfies AppendUpdate;
+
+    await new SupabaseActionStore(admin, USER).append("a1", update);
+
+    const reasons = written(writes).confirm_reasons;
+    expect(reasons).toContain("판정 확인: NOT_MY_ACTION");
+    expect(reasons).toContain("소유권 확인: 불확실");
+    expect(reasons).toContain("병합 확인 (55%)");
+    expect(reasons).not.toContain("판정 확인: OLD");
+  });
+
+  it("disputed Claim이 기존 기한을 덮지 않고 확인 대기와 merged 이벤트를 남긴다", async () => {
+    const firm = (id: string, field: string, value: string) => ({
+      ...CLAIM(id, field, value),
+      speaker_role: "me",
+      certainty: "firm",
+      directness: "first_hand",
+      state: "active",
+    });
+    const { admin, writes } = appendAdmin(
+      [],
+      [firm("scope", "scope", "견적서 정리"), firm("owner", "owner", "me"), firm("status", "status", "open"), firm("due-old", "due", "2026-10-09")],
+      false,
+    );
+    const disputedDue: Claim = {
+      id: "due-disputed",
+      field: "due",
+      value: "2026-10-12",
+      occurredAt: new Date("2026-10-07T01:30:00Z"),
+      speakerRole: "me",
+      certainty: "firm",
+      directness: "first_hand",
+      audience: "shared",
+      channel: "email",
+      state: "disputed",
+    };
+
+    await new SupabaseActionStore(admin, USER).append("a1", {
+      claims: [disputedDue],
+      evidence,
+      confirmReasons: ["판정 확인: NOT_MY_ACTION"],
+    });
+
+    const action = written(writes) as ReturnType<typeof written> & { due_date: string | null; resolution: { due: { pending: string[]; value: string | null } } };
+    expect(action.due_date).toBe("2026-10-09");
+    expect(action.resolution.due).toMatchObject({ value: "2026-10-09", pending: ["due-disputed"] });
+    expect(action.confirm_reasons).toEqual(["판정 확인: NOT_MY_ACTION", "기한 확인"]);
+    const claimRows = writes[0].p_claims as { state: string }[];
+    expect(claimRows[0].state).toBe("disputed");
+    expect(writes[0].p_events).toEqual([
+      {
+        type: "merged",
+        before: { needs_confirmation: false, confirm_reasons: [] },
+        after: { needs_confirmation: true, confirm_reasons: ["판정 확인: NOT_MY_ACTION", "기한 확인"] },
+        rule: null,
+        actor: "ai",
+        source_id: "s2",
+      },
+    ]);
   });
 });

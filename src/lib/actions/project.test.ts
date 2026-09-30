@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import type { Claim } from "@/lib/pipeline/resolve";
 
-import { changeEvents, projectAction, withClearedConfirmation } from "./project";
+import { changeEvents, projectAction, withConfirmationChange } from "./project";
 
 let n = 0;
 const claim = (field: Claim["field"], value: string | null, day: string, over: Partial<Claim> = {}): Claim => ({
@@ -80,7 +80,7 @@ describe("changeEvents", () => {
   });
 });
 
-describe("withClearedConfirmation: AI가 확인 요청을 풀면 이벤트에 전후를 남긴다", () => {
+describe("withConfirmationChange: AI가 확인 요청을 바꾸면 이벤트에 전후를 남긴다", () => {
   // 요청자의 추정 발언뿐이라 내용 · 담당 · 상태 확인이 남은 Action
   const tentative = (day: string) => ({ speakerRole: "counterpart" as const, certainty: "tentative" as const, day });
   const asked = [claim("scope", "견적서 발송", "22", tentative("22")), claim("owner", "me", "22", tentative("22")), claim("status", "open", "22", tentative("22"))];
@@ -93,7 +93,7 @@ describe("withClearedConfirmation: AI가 확인 요청을 풀면 이벤트에 �
     expect(beforeState.confirm_reasons).toEqual(["판정 확인: NOT_MY_ACTION", "내용 확인", "담당 확인", "상태 확인"]);
     expect(afterState.confirm_reasons).toEqual([]);
     // 바뀐 필드가 없는 반복: 이미 있는 merged 이벤트에 싣는다 (이벤트가 둘이 되지 않는다)
-    const events = withClearedConfirmation(changeEvents(beforeState, afterState, "duplicate"), beforeState, afterState);
+    const events = withConfirmationChange(changeEvents(beforeState, afterState, "duplicate"), beforeState, afterState);
     expect(events).toEqual([
       {
         type: "merged",
@@ -111,7 +111,7 @@ describe("withClearedConfirmation: AI가 확인 요청을 풀면 이벤트에 �
       { type: "due_changed", before: { due: null }, after: { due: "2025-09-26" }, rule: "rule0+rule4" },
       { type: "completed", before: { status: "open" }, after: { status: "done" }, rule: null },
     ];
-    const events = withClearedConfirmation(changed, beforeState, afterState);
+    const events = withConfirmationChange(changed, beforeState, afterState);
     expect(events.map((e) => e.type)).toEqual(["due_changed", "completed"]);
     expect(events[0]).toEqual({
       type: "due_changed",
@@ -122,15 +122,24 @@ describe("withClearedConfirmation: AI가 확인 요청을 풀면 이벤트에 �
     // 두 번째 이벤트는 건드리지 않는다
     expect(events[1]).toEqual(changed[1]);
     // 이벤트가 하나도 없는 갱신(바뀐 값 없음)만 merged를 따로 만든다
-    expect(withClearedConfirmation([], beforeState, afterState).map((e) => e.type)).toEqual(["merged"]);
+    expect(withConfirmationChange([], beforeState, afterState).map((e) => e.type)).toEqual(["merged"]);
   });
 
-  it("풀린 이유가 없으면(이유가 그대로거나 늘기만 함) 이벤트를 바꾸지 않는다", () => {
+  it("이유가 그대로면 이벤트를 바꾸지 않고 새 확인 요청은 merged에 기록한다", () => {
     const beforeState = projectAction("t", asked, stored);
-    const same = withClearedConfirmation(changeEvents(beforeState, beforeState, "duplicate"), beforeState, beforeState);
+    const same = withConfirmationChange(changeEvents(beforeState, beforeState, "duplicate"), beforeState, beforeState);
     expect(same).toEqual([{ type: "merged", before: null, after: null, rule: null }]);
+    expect(withConfirmationChange([], beforeState, beforeState)).toEqual([]);
     const clean = projectAction("t", created);
     const worse = projectAction("t", created, ["병합 확인 (55%)"]);
-    expect(withClearedConfirmation([], clean, worse)).toEqual([]);
+    // 새로운 확인 요청도 Claim 쓰기와 함께 추적해야 한다. 그대로면 다음 처리에서 재현할 근거가 없다.
+    expect(withConfirmationChange([], clean, worse)).toEqual([
+      {
+        type: "merged",
+        before: { needs_confirmation: false, confirm_reasons: [] },
+        after: { needs_confirmation: true, confirm_reasons: ["병합 확인 (55%)"] },
+        rule: null,
+      },
+    ]);
   });
 });

@@ -2,9 +2,11 @@ import { describe, expect, it } from "vitest";
 
 import {
   addressedToUser,
+  containsAmbiguousAssignee,
   describeIdentity,
   findNameVariants,
   isUser,
+  isAmbiguousUserName,
   quoteSpeaker,
   speakerRole,
   userNameForms,
@@ -28,6 +30,47 @@ describe("isUser", () => {
     expect(isUser({ name: "daniel" }, me)).toBe(true);
     expect(isUser({ name: "준서", email: "j@x.com" }, me)).toBe(false);
     expect(isUser(undefined, me)).toBe(false);
+  });
+
+  it("명시된 다른 이메일은 같은 이름보다 우선한다", () => {
+    expect(isUser({ name: "송청혁", email: "colleague@taskforcelabs.dev" }, me)).toBe(false);
+  });
+
+  it("성을 뺀 이름이 참석자 사이에서 겹치면 사용자로 단정하지 않는다", () => {
+    const identity = { name: "김도윤", aliases: [], emails: [] };
+    const participants = { attendees: [{ name: "도윤" }, { name: "박도윤" }] };
+
+    expect(isUser({ name: "도윤" }, identity, participants)).toBe(false);
+    expect(userPosition(identity, participants)).toBe("unknown");
+    expect(addressedToUser("도윤: @도윤 금요일까지 보내주세요", "@도윤 금요일까지 보내주세요", identity, participants)).toBe(false);
+    expect(speakerRole("도윤", "박지훈", identity, participants)).toBeNull();
+  });
+
+  it("짧은 이름만 있는 단독 참석자는 사용자 별칭으로 본다", () => {
+    const identity = { name: "김도윤", aliases: [], emails: [] };
+    const participants = { attendees: [{ name: "도윤" }] };
+
+    expect(isUser({ name: "도윤" }, identity, participants)).toBe(true);
+    expect(userPosition(identity, participants)).toBe("attendee");
+  });
+
+  it("사용자의 줄임 이름뿐인 참석자는 다른 전체 이름이 없는 한 동명이인 충돌로 보지 않는다", () => {
+    const identity = { name: "김도윤", aliases: [], emails: [] };
+
+    expect(isAmbiguousUserName("도윤", identity, { attendees: [{ name: "김도윤" }, { name: "도윤" }] })).toBe(false);
+    expect(isAmbiguousUserName("도윤", identity, { attendees: [{ name: "김도윤" }, { name: "박도윤" }] })).toBe(true);
+  });
+
+});
+
+describe("containsAmbiguousAssignee", () => {
+  const identity = { name: "김도윤", aliases: [], emails: [] };
+  const participants = { attendees: [{ name: "김도윤" }, { name: "박도윤" }] };
+
+  it("명시 담당 라벨의 짧은 이름은 잡되 체크박스 표기를 허용하고, 전체 이름이나 수신자 언급은 잡지 않는다", () => {
+    expect(containsAmbiguousAssignee("- [ ] 담당: 도윤 — 금요일까지 견적서 검토", identity, participants)).toBe(true);
+    expect(containsAmbiguousAssignee("담당: 김도윤 — 금요일까지 견적서 검토", identity, participants)).toBe(false);
+    expect(containsAmbiguousAssignee("김도윤: 도윤님에게 내가 보내드릴게요", identity, participants)).toBe(false);
   });
 });
 
@@ -90,6 +133,20 @@ describe("quoteSpeaker", () => {
   it("관련자 목록이 없어도 원문에서 화자 표로 두 번 이상 쓰인 이름은 믿는다", () => {
     const kakao = ["[신예린] 카피 3개 더 가능하실까요?", "[나] 이번 주는 어렵겠어요", "[신예린] 넵 알겠어요"].join("\n");
     expect(quoteSpeaker(kakao, "카피 3개 더 가능하실까요", me)).toBe("신예린");
+  });
+
+  it("성을 뺀 이름이 다른 참석자와 겹치면 사용자 화자로 단정하지 않는다", () => {
+    const identity = { name: "김도윤", aliases: [], emails: [] };
+    const chat = "도윤님: 금요일까지 자료를 보낼게요";
+    const participants = { attendees: [{ name: "김도윤" }, { name: "박도윤" }] };
+
+    expect(quoteSpeaker(chat, "금요일까지 자료를 보낼게요", identity, participants)).toBe("도윤님");
+    expect(speakerRole("도윤님", "박지훈", identity, participants)).toBeNull();
+  });
+
+  it("사용자 성을 뺀 이름은 관련자 이름과 겹치지 않으면 유지한다", () => {
+    expect(quoteSpeaker("청혁: 금요일까지 보낼게요", "금요일까지 보낼게요", me, { attendees: [{ name: "송청혁" }] })).toBe("청혁");
+    expect(quoteSpeaker("청혁님: 금요일까지 보낼게요", "금요일까지 보낼게요", me, { attendees: [{ name: "송청혁" }] })).toBe("청혁님");
   });
 
   it("머리글 · 시각 · 한 번만 나온 이름표는 화자로 읽지 않는다", () => {
