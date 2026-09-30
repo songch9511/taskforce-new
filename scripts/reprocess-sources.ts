@@ -1,6 +1,6 @@
 // 저장된 원문을 다시 처리해 Action으로 반영한다 (Phase 3 이전에 들어온 원문 채우기, 처리 실패 재시도).
-// 기본: 아직 근거(evidence)가 하나도 없는 원문만 오래된 순서로. 이미 반영된 원문을 다시 돌려도 매칭이 "중복"으로 판정하지만,
-// Claim이 한 번 더 쌓이므로 기본에서는 뺀다.
+// 기본: 아직 근거(evidence)가 하나도 없는 원문만 오래된 순서로. --source로 이미 반영된 원문을 다시 돌리면
+// 이미 근거로 붙은 구절과 겹치는 후보는 빼고 병합한다 (재처리 cron과 같은 retry 처리).
 // 외부 AI 처리에 동의한 사용자의 원문만 처리한다 (profiles.ai_consent_at). 보관 기간이 지나 글이 지워진 원문은 건너뛴다.
 // 도중에 동의를 철회하면 그 사용자의 남은 원문은 처리하지 않는다 (processSource가 모델 호출 직전에 다시 확인한다).
 //
@@ -162,7 +162,8 @@ async function main() {
     if (withdrawn.has(source.user_id)) continue;
     const started = Date.now();
     try {
-      const result = await processSource(admin, { id: source.id, userId: source.user_id }, {
+      // retry: 이미 근거로 붙은 구절과 겹치는 후보는 빼고 병합한다 (--source로 이미 반영된 원문 · 멈춰 닫힌 원문을 살릴 때 근거 · Claim이 두 번 붙지 않게)
+      const result = await processSource(admin, { id: source.id, userId: source.user_id, retry: true }, {
         text: source.raw_text,
         kind: source.kind,
         occurredAt: new Date(source.occurred_at),

@@ -13,6 +13,8 @@ import { failureSummary, processSource, PROCESSING_FAILED_MESSAGE, RETRY_MAX_ATT
 // (/api/cron/retry-sources). 그대로 두면 그 원문의 약속이 조용히 빠진다: 다른 곳에서 다시 처리하지 않고, Slack은 대기 메시지 본문도 비운다.
 // 할 일 DB 항목(kind task)은 task_source_states가 멈춘 처리를 따로 다시 한다.
 // 앞선 시도가 이미 반영한 후보는 processSource가 빼고 병합한다 (근거가 두 번 붙지 않게).
+// 들어온 지 RETRY_WINDOW_MS가 지난 뒤에도 처리 중 · 대기에 멈춘 원문(동의하지 않은 사용자의 것, 후보 밖이었던 것, 창이 닫히기 전 마지막
+// 시도에서 함수가 끊긴 것)은 다시 처리하지 않고 실패로 닫는다: 그대로 두면 영영 "처리 중"이다 (한 번에 EXPIRE_BATCH건까지).
 
 /** 처리 중 · 대기에 이만큼 멈춰 있으면 함수가 끊긴 것으로 본다 (원문을 처리하는 함수의 실행 한도 300초보다 넉넉히) */
 export const STALE_PROCESSING_MS = 15 * 60_000;
@@ -21,6 +23,10 @@ export const STALE_PROCESSING_MS = 15 * 60_000;
  * 그 사이 처리된 뒷 원문(완료 · 취소)과 순서가 뒤집힌다. 이 기능 전에 실패한 오래된 원문은 scripts/reprocess-sources.ts로 따로 본다.
  */
 export const RETRY_WINDOW_MS = 24 * 3_600_000;
+/** 창을 지나 멈춘 원문을 한 번의 cron 실행에서 실패로 닫는 최대 건수 (오래된 것부터, 남은 것은 다음 cron이 이어서 한다) */
+export const EXPIRE_BATCH = 100;
+/** 닫기에 쓰는 시간 한도: DB가 느려도 닫기가 창 안 원문의 다시 처리 시간을 먹지 않게 (닫기는 다음 cron이 이어서 해도 된다) */
+export const EXPIRE_TIME_BUDGET_MS = 20_000;
 /** 실패한 뒤 다음 시도까지 기다리는 시간 (첫 실패 뒤 · 두 번째 실패 뒤): 공급자 장애가 잠깐 이어질 때 시도를 한꺼번에 다 쓰지 않게 */
 export const RETRY_DELAYS_MS = [30 * 60_000, 3 * 3_600_000];
 
@@ -41,15 +47,22 @@ export type RetryCandidate = {
   created_at: string;
 };
 
+/** 창을 지나 멈춘 원문을 닫는 데 필요한 것만 (글은 읽지 않는다). kind는 글 종류가 아니어도 받아 task를 다시 걸러낸다 */
+export type ExpiredCandidate = Pick<RetryCandidate, "id" | "user_id" | "processing_status" | "processing_summary" | "created_at"> & { kind: string };
+
 /** retry: 이번 시도 번호로 다시 처리한다. give_up: 멈춘 채 시도를 다 써서 실패로 닫는다 */
 export type RetryPlan = { kind: "retry"; attempt: number } | { kind: "give_up"; attempt: number };
 
 const numberOr = (value: unknown, fallback: number) => (typeof value === "number" && Number.isFinite(value) ? value : fallback);
 
+/** 지금까지 시도한 횟수 (기록이 없으면 대기는 0, 처리 중은 1) */
+const attemptOf = (row: Pick<RetryCandidate, "processing_status" | "processing_summary">) =>
+  numberOr(row.processing_summary?.attempt, row.processing_status === "pending" ? 0 : 1);
+
 /** 이 원문을 지금 어떻게 할지 (아직 기다리거나 대상이 아니면 null) */
 export function retryPlan(row: RetryCandidate, now: Date): RetryPlan | null {
   const summary = row.processing_summary ?? {};
-  const attempt = numberOr(summary.attempt, row.processing_status === "pending" ? 0 : 1);
+  const attempt = attemptOf(row);
   // 기록된 시각이 없으면 들어온 시각으로 본다
   const elapsed = (at: unknown) => now.getTime() - new Date(typeof at === "string" ? at : row.created_at).getTime();
   if (row.processing_status === "failed") {
@@ -66,6 +79,22 @@ export function retryPlan(row: RetryCandidate, now: Date): RetryPlan | null {
   return null;
 }
 
+/**
+ * 다시 처리하지 않고 실패로 닫을 원문인가: 들어온 지 RETRY_WINDOW_MS가 지났고 처리 중 · 대기에 STALE_PROCESSING_MS 넘게 멈춘 글 원문.
+ * 닫을 때 기록할 시도 번호를 돌려준다 (아니면 null). 처리 창 안의 원문 · 아직 돌고 있을 수 있는 원문 · 할 일 DB 항목은 건드리지 않는다.
+ */
+export function expiredAttempt(row: ExpiredCandidate, now: Date): number | null {
+  if (row.kind === "task") return null;
+  if (row.processing_status !== "processing" && row.processing_status !== "pending") return null;
+  const age = (at: string) => now.getTime() - new Date(at).getTime();
+  // 창 안(candidates의 created_at >= 창 시작)이면 다시 처리 대상이다
+  if (age(row.created_at) <= RETRY_WINDOW_MS) return null;
+  // 기록된 시각이 없으면 들어온 시각으로 본다 (retryPlan과 같다)
+  const startedAt = row.processing_summary?.started_at;
+  if (age(typeof startedAt === "string" ? startedAt : row.created_at) < STALE_PROCESSING_MS) return null;
+  return attemptOf(row);
+}
+
 export type RetryDeps = {
   /** since 뒤에 들어온, 끝나지 않은 글 원문 (들어온 순서로) */
   candidates: (since: Date) => Promise<RetryCandidate[]>;
@@ -78,24 +107,30 @@ export type RetryDeps = {
   process: (row: RetryCandidate, identity: UserIdentity, attempt: number) => Promise<boolean>;
   /** 멈춘 채 시도를 다 쓴 원문을 실패로 닫는다 (읽은 뒤 바뀌지 않았을 때만). 닫았으면 true */
   giveUp: (row: RetryCandidate, attempt: number) => Promise<boolean>;
+  /** createdBefore 전에 들어와 startedBefore 전부터 처리 중 · 대기에 멈춘 글 원문 (들어온 순서로 limit건까지) */
+  expired: (range: { createdBefore: Date; startedBefore: Date; limit: number }) => Promise<ExpiredCandidate[]>;
+  /** 창을 지나 멈춘 원문을 실패로 닫는다 (읽은 뒤 바뀌지 않았을 때만). 닫았으면 true */
+  expire: (row: ExpiredCandidate, attempt: number) => Promise<boolean>;
   /** 처리 도중 Slack 연결을 끊었으면 이번 처리가 쓴 글자도 지운다 (D3) */
   repurge: (row: RetryCandidate) => Promise<void>;
   clock?: () => number;
 };
 
-export type RetryResult = { due: number; retried: number; failed: number; gaveUp: number; skippedForTime: number };
+export type RetryResult = { due: number; retried: number; failed: number; gaveUp: number; expired: number; skippedForTime: number };
 
 /**
  * 다시 처리할 원문을 오래된 순서로 하나씩 처리한다. 한 건의 처리 시간 예산(itemBudgetMs)이 한도(deadline) 안에 들 때만 새로 시작하고,
  * 남은 것은 다음 cron이 이어서 한다. 한 건이 실패해도 다음 원문을 처리한다. 도중에 동의를 철회한 사용자의 남은 원문은 멈춘다.
+ * 그 전에 창(RETRY_WINDOW_MS)을 지나서도 처리 중 · 대기에 멈춘 원문을 오래된 것부터 EXPIRE_BATCH건까지 실패로 닫는다 (동의와 상관없이).
  */
 export async function retryStalledSources(deps: RetryDeps, options: { now: Date; deadline: number; itemBudgetMs: number }): Promise<RetryResult> {
   const clock = deps.clock ?? Date.now;
-  const plans = (await deps.candidates(new Date(options.now.getTime() - RETRY_WINDOW_MS))).flatMap((row) => {
+  const windowStart = new Date(options.now.getTime() - RETRY_WINDOW_MS);
+  const plans = (await deps.candidates(windowStart)).flatMap((row) => {
     const plan = retryPlan(row, options.now);
     return plan ? [{ row, plan }] : [];
   });
-  const result: RetryResult = { due: 0, retried: 0, failed: 0, gaveUp: 0, skippedForTime: 0 };
+  const result: RetryResult = { due: 0, retried: 0, failed: 0, gaveUp: 0, expired: 0, skippedForTime: 0 };
 
   for (const { row, plan } of plans) {
     if (plan.kind !== "give_up") continue;
@@ -103,6 +138,27 @@ export async function retryStalledSources(deps: RetryDeps, options: { now: Date;
       (closed) => closed && result.gaveUp++,
       (error) => console.error(`멈춘 원문 닫기 실패 (${row.id}):`, error instanceof Error ? error.message : error),
     );
+  }
+
+  // 닫기는 살리는 일이 아니라 정리라서, 찾기가 실패해도 다시 처리는 막지 않는다
+  try {
+    const expired = await deps.expired({
+      createdBefore: windowStart,
+      startedBefore: new Date(options.now.getTime() - STALE_PROCESSING_MS),
+      limit: EXPIRE_BATCH,
+    });
+    const expireUntil = clock() + EXPIRE_TIME_BUDGET_MS;
+    for (const row of expired) {
+      if (clock() > expireUntil) break;
+      const attempt = expiredAttempt(row, options.now);
+      if (attempt === null) continue;
+      await deps.expire(row, attempt).then(
+        (closed) => closed && result.expired++,
+        (error) => console.error(`창을 지난 원문 닫기 실패 (${row.id}):`, error instanceof Error ? error.message : error),
+      );
+    }
+  } catch (error) {
+    console.error("창을 지난 원문 찾기 실패:", error instanceof Error ? error.message : error);
   }
 
   const due = plans.flatMap(({ row, plan }) => (plan.kind === "retry" ? [{ row, attempt: plan.attempt }] : []));
@@ -144,7 +200,11 @@ export async function retryStalledSources(deps: RetryDeps, options: { now: Date;
 }
 
 /** 읽은 뒤 상태와 처리 기록이 그대로일 때만 고친다 (시도마다 시작 · 실패 시각이 새로 찍혀 기록이 바뀐다). 고쳤으면 true */
-async function updateIfUnchanged(admin: SupabaseClient, row: RetryCandidate, values: Record<string, unknown>): Promise<boolean> {
+async function updateIfUnchanged(
+  admin: SupabaseClient,
+  row: Pick<RetryCandidate, "id" | "user_id" | "processing_status" | "processing_summary">,
+  values: Record<string, unknown>,
+): Promise<boolean> {
   const query = admin
     .from("sources")
     .update(values)
@@ -156,6 +216,15 @@ async function updateIfUnchanged(admin: SupabaseClient, row: RetryCandidate, val
     .throwOnError();
   return (data ?? []).length > 0;
 }
+
+/** 실패로 닫고 다시 하지 않는다. extra는 닫은 까닭 (마지막 시도에서 멈춘 원문 · 창을 지난 원문을 가른다) */
+const closeFailed = (admin: SupabaseClient, row: ExpiredCandidate, attempt: number, extra: Record<string, unknown> = {}) =>
+  updateIfUnchanged(admin, row, {
+    processing_status: "failed",
+    processed_at: new Date().toISOString(),
+    processing_error: PROCESSING_FAILED_MESSAGE,
+    processing_summary: { ...failureSummary(null, attempt), retryable: false, ...extra },
+  });
 
 /** service role로 읽고 처리한다. 후보는 RETRY_WINDOW_MS 안에 들어온 것을 오래된 순서로 limit건 (나중 원문이 앞 원문의 약속을 바꾼다) */
 export function retryDeps(admin: SupabaseClient, limit = 50): RetryDeps {
@@ -210,13 +279,22 @@ export function retryDeps(admin: SupabaseClient, limit = 50): RetryDeps {
       });
       return ok;
     },
-    giveUp: (row, attempt) =>
-      updateIfUnchanged(admin, row, {
-        processing_status: "failed",
-        processed_at: new Date().toISOString(),
-        processing_error: PROCESSING_FAILED_MESSAGE,
-        processing_summary: { ...failureSummary(null, attempt), retryable: false },
-      }),
+    giveUp: (row, attempt) => closeFailed(admin, row, attempt),
+    // 글은 읽지 않는다 (닫는 데 필요 없다). 글이 지워진 원문도 닫는다: 그대로 두면 처리 중으로 남는다
+    expired: async ({ createdBefore, startedBefore, limit }) => {
+      const { data } = await admin
+        .from("sources")
+        .select("id, user_id, kind, processing_status, processing_summary, created_at")
+        .in("processing_status", ["pending", "processing"])
+        .neq("kind", "task")
+        .lt("created_at", createdBefore.toISOString())
+        .or(`processing_summary->>started_at.is.null,processing_summary->>started_at.lt.${startedBefore.toISOString()}`)
+        .order("created_at", { ascending: true })
+        .limit(limit)
+        .throwOnError();
+      return (data ?? []) as ExpiredCandidate[];
+    },
+    expire: (row, attempt) => closeFailed(admin, row, attempt, { closed: "expired" }),
     repurge: async (row) => {
       await admin.rpc("slack_repurge_if_disconnected", { p_user_id: row.user_id, p_source_id: row.id }).throwOnError();
     },
