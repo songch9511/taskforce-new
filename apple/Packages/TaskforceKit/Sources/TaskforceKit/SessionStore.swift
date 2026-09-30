@@ -40,18 +40,26 @@ public final class SessionStore {
     }
 
     func apply(event: AuthChangeEvent, session: Session?) {
-        // supabase-swift는 세션을 Keychain에 저장하지 못해도(오류는 삼킨다) 로그인 이벤트를 보낸다.
-        // 그대로 두면 화면은 로그인 상태인데 서버 요청마다 "Sign in again"이 뜬다. 로그인되지 않은 것으로 보고 알린다.
-        if event == .signedIn, session != nil, auth.currentSession == nil {
+        let currentSession = auth.currentSession
+        var appliedSession = session
+        // supabase-swift는 Keychain 저장 오류를 삼키고 로그인 이벤트를 보낼 수 있다.
+        // 저장된 계정이 없거나 다르면 이 로그인은 이 기기에 저장되지 않은 것이다.
+        if event == .signedIn, let session, currentSession?.user.id != session.user.id {
             state = .signedOut
             signInMethods = .unknown
             accountNameFill = nil
             errorMessage = Self.sessionNotSavedMessage
             return
         }
-        state = Self.state(for: event, session: session)
-        if case .signedIn = state, let session {
-            signInMethods = SignInMethods(user: session.user)
+        // authStateChanges는 버퍼된 이벤트를 전달한다. 계정이 바뀐 뒤 늦게 도착한 초기 세션이나
+        // 토큰 갱신 이벤트는 현재 저장된 계정을 반영한다. 로그아웃 뒤면 저장된 계정이 없다.
+        // 비교는 사용자 ID로 해 토큰 갱신에 따른 정상적인 토큰 교체는 허용한다.
+        if event != .signedOut, let session, currentSession?.user.id != session.user.id {
+            appliedSession = currentSession
+        }
+        state = Self.state(for: event, session: appliedSession)
+        if case .signedIn = state, let appliedSession {
+            signInMethods = SignInMethods(user: appliedSession.user)
         } else {
             signInMethods = .unknown
             accountNameFill = nil
