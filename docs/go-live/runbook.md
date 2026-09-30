@@ -35,7 +35,7 @@
 | `NEXT_PUBLIC_SUPABASE_URL` | `https://tirtdojsahotjfgdsryi.supabase.co` | 경로 없이 (`src/lib/env.ts`가 검사) |
 | `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` | Supabase → Project Settings → API Keys → Publishable | 공개 값 |
 | `SUPABASE_SERVICE_ROLE_KEY` | 같은 화면 → service_role (secret) | RLS 우회. **Sensitive**, `NEXT_PUBLIC_` 금지 |
-| `OPENROUTER_API_KEY` | openrouter.ai → Keys. **운영용 키(`taskforce-prod`)를 따로 만들어 Production에만** 넣고 사용 한도를 건다. 로컬 · eval은 개발 키(`taskforce-dev`)를 쓴다: eval 한 번이 약 $0.16이라 같은 키면 eval이 운영 한도를 쓴다(2026-09-30 한도 $10에 닿아 모든 호출 403) | 한도가 있으면 `max_tokens`를 꼭 보낸다(llm.ts 주석) |
+| `OPENROUTER_API_KEY` | openrouter.ai → Keys. **운영용 키 `taskforce-prod`**(하루 한도 $5, 매일 UTC 0시에 풀림, 만료 2027-09-30)를 넣는다(Production · Preview). 로컬 · eval은 개발 키(OpenRouter 이름 "Default key", 누적 한도 $20)를 쓴다: eval 한 번이 약 $0.16이라 같은 키면 eval이 운영 한도를 쓴다(2026-09-30 한도 $10에 닿아 모든 호출 403) | 한도가 있으면 `max_tokens`를 꼭 보낸다(llm.ts 주석) |
 | `LLM_MODEL` | `z-ai/glm-5.3-flash` (지금 `.env.local`, eval 기준) | 바꾸면 eval을 다시 돌린다. 추론하지 않는 모델이면 `LLM_OVERRUN_REASONING_EFFORT=off`도 같이 둔다 (아래) |
 | `JEV_MODEL` | `typesafe/jev-1.13` | 버전 고정 |
 | `EMBEDDING_MODEL` | 비움 → `openai/text-embedding-3-small` | 1536차원이어야 한다 |
@@ -262,7 +262,7 @@ union all select 'slack_people', count(*) from public.slack_people where user_id
 | I6 | Notion 연결 설정에 운영 redirect 추가 | 사용자 ✅ 설정 (2026-09-28, 앱에서 연결 확인 남음) | 앱에서 Notion 연결 → 앱으로 복귀 → 동기화 | I3, C1 |
 | I7 | APNs 키 | 사용자 ✅ 키 · env (2026-09-28, PR #4 배포 뒤 기기 수신 확인 남음) | TestFlight 기기에서 알림 수신 | I2 |
 | I8 | Sign in with Apple 키 | 사용자 ✅ (2026-09-28) | `APPLE_*` 4개가 env에 있음 | — |
-| I9 | OpenRouter 운영 키 · 로깅 꺼짐 · 사용 한도 | 사용자 ✅ (2026-09-28: 한도 $10, 계정 Privacy에서 ZDR 필수 · 학습 엔드포인트 모두 끔. 키 만료 2027-03-24). **2026-09-30: 로컬 · eval과 같이 쓰던 키가 한도 $10에 닿아 모든 AI 호출이 403 → 그 키를 개발 키 `taskforce-dev`(한도 $20, `.env.local` · eval)로 두고, 운영 키 `taskforce-prod`(Vercel Production만)를 새로 만든다 — 사용자, 진행 중**) | 설정 화면에서 확인 | — |
+| I9 | OpenRouter 운영 키 · 로깅 꺼짐 · 사용 한도 | 사용자 ✅ (2026-09-28: 한도 $10, 계정 Privacy에서 ZDR 필수 · 학습 엔드포인트 모두 끔. 키 만료 2027-03-24). **2026-09-30: 로컬 · eval과 같이 쓰던 키가 한도 $10에 닿아 모든 AI 호출이 403 → 키를 나눴다 ✅.** 운영 `taskforce-prod`(하루 $5, Vercel Production · Preview, 다시 배포 뒤 앱 물어보기로 이 키만 쓰이는 것 확인), 개발 "Default key"(누적 $20, `.env.local` · eval). **운영 키 만료 2027-09-30 전에 새 키로 바꾼다.** 두 키가 같은 계정 크레딧에서 빠지므로 크레딧 잔액 · 자동 충전도 본다) | 설정 화면에서 확인 | — |
 | I10 | Supabase Free · 백업 없음 확인 | 사용자 ✅ (2026-09-29, 처리방침 게시 전 확인) | Billing · Backups 화면 확인 (4장) | — |
 | I11 | Cron 동작 | 사용자 | `/api/cron/sync` 15분마다 200, `/api/cron/retry-sources` 매시 7분 · 37분 200, `/api/cron/reminders` 09:00 KST 200, `/api/cron/retention` 03:30 KST 200 | I1, I2 |
 | I12 | 운영 계정 2단계 인증 (Vercel · Supabase · GitHub · Google · Apple · Slack · Notion · OpenRouter) | 사용자 | 모두 켜짐 (처리방침 9장 약속) | — |
