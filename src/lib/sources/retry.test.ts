@@ -8,6 +8,7 @@ import { connectedAt } from "@/lib/connectors/store";
 import { processSource } from "./process";
 import {
   EXPIRE_BATCH,
+  EXPIRE_TIME_BUDGET_MS,
   expiredAttempt,
   RETRY_WINDOW_MS,
   retryDeps,
@@ -142,6 +143,7 @@ describe("retryStalledSources", () => {
       expired?: ExpiredCandidate[];
       expireElsewhere?: string[];
       expireFails?: string[];
+      msPerExpire?: number;
       expiredLookupFails?: boolean;
     } = {},
   ) {
@@ -186,6 +188,7 @@ describe("retryStalledSources", () => {
         return (options.expired ?? []).filter((e) => !done.has(e.id)).slice(0, range.limit);
       },
       expire: async (candidate, attempt) => {
+        now += options.msPerExpire ?? 0;
         if (options.expireFails?.includes(candidate.id)) throw new Error("닫기 실패");
         if (options.expireElsewhere?.includes(candidate.id)) return false;
         expiredClosed.push({ id: candidate.id, attempt });
@@ -333,6 +336,17 @@ describe("retryStalledSources", () => {
     expect((await run(d)).expired).toBe(30);
     expect((await run(d)).expired).toBe(0);
     expect(expiredClosed.map((c) => c.id)).toEqual(rows.map((r) => r.id));
+  });
+
+  it("닫기가 시간 한도를 넘기면 멈추고 창 안 원문을 다시 처리한다 (남은 닫기는 다음 실행이)", async () => {
+    const rows = Array.from({ length: 10 }, (_, i) => expiredRow({ id: `e${i}` }));
+    // 한 건에 5초씩 걸리는 느린 DB: 한도 안에서 시작한 닫기까지만 한다
+    const { d, expiredClosed, processed } = deps([row({ id: "r" })], { expired: rows, msPerExpire: 5_000 });
+    const result = await run(d);
+    const closed = Math.floor(EXPIRE_TIME_BUDGET_MS / 5_000) + 1;
+    expect(result.expired).toBe(closed);
+    expect(expiredClosed.map((c) => c.id)).toEqual(rows.slice(0, closed).map((r) => r.id));
+    expect(processed.map((p) => p.id)).toEqual(["r"]);
   });
 
   it("창 안의 원문 처리는 그대로다: 동의하지 않은 사용자의 창 안 원문은 닫지 않고 남긴다", async () => {

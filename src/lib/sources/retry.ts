@@ -25,6 +25,8 @@ export const STALE_PROCESSING_MS = 15 * 60_000;
 export const RETRY_WINDOW_MS = 24 * 3_600_000;
 /** 창을 지나 멈춘 원문을 한 번의 cron 실행에서 실패로 닫는 최대 건수 (오래된 것부터, 남은 것은 다음 cron이 이어서 한다) */
 export const EXPIRE_BATCH = 100;
+/** 닫기에 쓰는 시간 한도: DB가 느려도 닫기가 창 안 원문의 다시 처리 시간을 먹지 않게 (닫기는 다음 cron이 이어서 해도 된다) */
+export const EXPIRE_TIME_BUDGET_MS = 20_000;
 /** 실패한 뒤 다음 시도까지 기다리는 시간 (첫 실패 뒤 · 두 번째 실패 뒤): 공급자 장애가 잠깐 이어질 때 시도를 한꺼번에 다 쓰지 않게 */
 export const RETRY_DELAYS_MS = [30 * 60_000, 3 * 3_600_000];
 
@@ -143,7 +145,9 @@ export async function retryStalledSources(deps: RetryDeps, options: { now: Date;
       startedBefore: new Date(options.now.getTime() - STALE_PROCESSING_MS),
       limit: EXPIRE_BATCH,
     });
+    const expireUntil = clock() + EXPIRE_TIME_BUDGET_MS;
     for (const row of expired) {
+      if (clock() > expireUntil) break;
       const attempt = expiredAttempt(row, options.now);
       if (attempt === null) continue;
       await deps.expire(row, attempt).then(
