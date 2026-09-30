@@ -33,6 +33,7 @@ export type PipelineResult = {
     models: { extract: string; judge: string | null };
     promptVersions: { extract: string; judge: string };
     cost: number;
+    reasoningLimited: boolean;
   };
 };
 
@@ -67,6 +68,8 @@ export async function runPipeline(input: ExtractInput, deps: PipelineDeps): Prom
       models: { extract: extracted.model, judge: judged[0]?.judge.model ?? null },
       promptVersions: { extract: EXTRACT_PROMPT_VERSION, judge: JUDGE_PROMPT_VERSION },
       cost,
+      // 추출이 한도를 넘겨 추론량을 제한해 다시 물은 답이면 true (품질이 조금 낮을 수 있다, 제품 원칙 6)
+      reasoningLimited: extracted.reasoningLimited,
     },
   };
 }

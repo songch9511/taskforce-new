@@ -67,6 +67,8 @@ export type ExtractResult = {
   promptVersion: string;
   model: string;
   usage?: JsonCompletion<unknown>["usage"];
+  /** 한도를 넘겨 추론량을 제한해 다시 물은 답인가 (lib/ai/llm.ts) */
+  reasoningLimited: boolean;
 };
 
 export type CompleteJson = <T extends z.ZodType>(request: JsonCompletionRequest<T>) => Promise<JsonCompletion<z.infer<T>>>;
@@ -97,7 +99,7 @@ export async function extractCandidates(input: ExtractInput, complete: CompleteJ
     })
     .filter((c) => c.title.length > 0 && c.quote.length > 0);
 
-  return { candidates, promptVersion: EXTRACT_PROMPT_VERSION, model: result.model, usage: result.usage };
+  return { candidates, promptVersion: EXTRACT_PROMPT_VERSION, model: result.model, usage: result.usage, reasoningLimited: result.reasoningLimited === true };
 }
 
 export function isIsoDate(value: string | null): value is string {
