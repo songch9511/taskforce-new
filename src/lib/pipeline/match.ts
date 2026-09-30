@@ -46,6 +46,11 @@ export const MATCH_THRESHOLDS = {
    * 누락 신고(missing.ts reportMatchDecide)는 새 Action으로 만든다.
    */
   confirmBelow: 0.6,
+  /**
+   * 사용자의 확정 약속이 기존 Action에 붙을 때 남은 확인 이유를 풀려면 필요한 확신 (merge.ts settlingCommitment).
+   * 0.6~0.8은 붙이기는 하지만(병합 확인은 없다) 다른 일에 잘못 붙었을 수 있어, 그 Action의 확인을 풀고 내용 · 담당 · 상태를 확정하기에는 이르다.
+   */
+  settleAtLeast: 0.8,
 } as const;
 
 export function shortlistActions(vector: number[], actions: OpenAction[], options = MATCH_THRESHOLDS): OpenAction[] {

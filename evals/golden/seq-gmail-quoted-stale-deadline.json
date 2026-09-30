@@ -31,7 +31,8 @@
           }
         ]
       },
-      "text": "제목: Security questionnaire\n\nHi Alex,\n\nCould you send the completed security questionnaire by Monday?\nOur procurement review starts that week.\n\nThanks,\nMorgan"
+      "text": "제목: Security questionnaire\n\nHi Alex,\n\nCould you send the completed security questionnaire by Monday?\nOur procurement review starts that week.\n\nThanks,\nMorgan",
+      "from_connector": true
     },
     {
       "id": "gmail-1008r",
@@ -49,7 +50,8 @@
           }
         ]
       },
-      "text": "제목: Re: Security questionnaire\n\nSure, I'll send the completed questionnaire by Monday.\n\nAlex\n\nOn Thu, Oct 8, 2026 at 3:20 PM Morgan Tate <morgan@quillstone.example> wrote:\n\n> Hi Alex,\n>\n> Could you send the completed security questionnaire by Monday?\n> Our procurement review starts that week.\n>\n> Thanks,\n> Morgan"
+      "text": "제목: Re: Security questionnaire\n\nSure, I'll send the completed questionnaire by Monday.\n\nAlex\n\nOn Thu, Oct 8, 2026 at 3:20 PM Morgan Tate <morgan@quillstone.example> wrote:\n\n> Hi Alex,\n>\n> Could you send the completed security questionnaire by Monday?\n> Our procurement review starts that week.\n>\n> Thanks,\n> Morgan",
+      "from_connector": true
     },
     {
       "id": "gmail-1009",
@@ -67,7 +69,8 @@
           }
         ]
       },
-      "text": "제목: Re: Security questionnaire\n\nHi Alex,\n\nQuick update: our review meeting moved, so Wednesday works for the questionnaire.\n\nMorgan\n\nOn Thu, Oct 8, 2026 at 4:05 PM Alex Kim <alex@lumenfield.example> wrote:\n\n> Sure, I'll send the completed questionnaire by Monday.\n>\n> Alex\n>\n> On Thu, Oct 8, 2026 at 3:20 PM Morgan Tate <morgan@quillstone.example> wrote:\n>\n>> Hi Alex,\n>>\n>> Could you send the completed security questionnaire by Monday?\n>> Our procurement review starts that week.\n>>\n>> Thanks,\n>> Morgan"
+      "text": "제목: Re: Security questionnaire\n\nHi Alex,\n\nQuick update: our review meeting moved, so Wednesday works for the questionnaire.\n\nMorgan\n\nOn Thu, Oct 8, 2026 at 4:05 PM Alex Kim <alex@lumenfield.example> wrote:\n\n> Sure, I'll send the completed questionnaire by Monday.\n>\n> Alex\n>\n> On Thu, Oct 8, 2026 at 3:20 PM Morgan Tate <morgan@quillstone.example> wrote:\n>\n>> Hi Alex,\n>>\n>> Could you send the completed security questionnaire by Monday?\n>> Our procurement review starts that week.\n>>\n>> Thanks,\n>> Morgan",
+      "from_connector": true
     },
     {
       "id": "gmail-1012",
@@ -85,7 +88,8 @@
           }
         ]
       },
-      "text": "제목: Re: Security questionnaire\n\nThanks, Morgan! That helps a lot.\n\nAlex\n\nOn Fri, Oct 9, 2026 at 11:05 AM Morgan Tate <morgan@quillstone.example> wrote:\n\n> Hi Alex,\n>\n> Quick update: our review meeting moved, so Wednesday works for the questionnaire.\n>\n> Morgan\n>\n> On Thu, Oct 8, 2026 at 4:05 PM Alex Kim <alex@lumenfield.example> wrote:\n>\n>> Sure, I'll send the completed questionnaire by Monday.\n>>\n>> Alex\n>>\n>> On Thu, Oct 8, 2026 at 3:20 PM Morgan Tate <morgan@quillstone.example> wrote:\n>>\n>>> Hi Alex,\n>>>\n>>> Could you send the completed security questionnaire by Monday?\n>>> Our procurement review starts that week.\n>>>\n>>> Thanks,\n>>> Morgan"
+      "text": "제목: Re: Security questionnaire\n\nThanks, Morgan! That helps a lot.\n\nAlex\n\nOn Fri, Oct 9, 2026 at 11:05 AM Morgan Tate <morgan@quillstone.example> wrote:\n\n> Hi Alex,\n>\n> Quick update: our review meeting moved, so Wednesday works for the questionnaire.\n>\n> Morgan\n>\n> On Thu, Oct 8, 2026 at 4:05 PM Alex Kim <alex@lumenfield.example> wrote:\n>\n>> Sure, I'll send the completed questionnaire by Monday.\n>>\n>> Alex\n>>\n>> On Thu, Oct 8, 2026 at 3:20 PM Morgan Tate <morgan@quillstone.example> wrote:\n>>\n>>> Hi Alex,\n>>>\n>>> Could you send the completed security questionnaire by Monday?\n>>> Our procurement review starts that week.\n>>>\n>>> Thanks,\n>>> Morgan",
+      "from_connector": true
     }
   ],
   "expected_actions": [

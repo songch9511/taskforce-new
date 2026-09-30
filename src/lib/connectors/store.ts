@@ -338,6 +338,8 @@ export function ingestDeps(admin: SupabaseClient, options: { notifyFrom?: Date |
           identity,
           participants: item.participants,
           writtenByMe: item.writtenByMe,
+          // 연결로 가져온 원문: 메일이면 스레드의 앞선 메일이 따로 들어오므로 인용된 옛 메일 속 후보는 버린다 (pipeline/verify.ts)
+          fromConnector: true,
         });
       } catch (error) {
         // 동의를 철회해 처리하지 못한 원문은, 아직 아무 Action의 근거도 되지 않았으면 지운다:

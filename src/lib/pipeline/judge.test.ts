@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { JevDecision } from "@/lib/ai/jev";
 import { JUDGE_PROMPT_VERSION, JUDGE_QUESTIONS, WRITTEN_BY_ME_PROMPT_VERSION, WRITTEN_BY_ME_QUESTIONS } from "@/lib/ai/prompts/judge";
 
-import { buildJudgeState, decideOutcome, judgeCandidate, parseJudgeAnswers, type Decide, type JudgeSignals } from "./judge";
+import { buildJudgeState, decideOutcome, judgeCandidate, parseJudgeAnswers, SOLE_RECIPIENT_MIN_MINE, type Decide, type JudgeSignals } from "./judge";
 
 const firm: JudgeSignals = {
   is_my_commitment: 0.95,
@@ -200,6 +200,82 @@ describe("judgeCandidate", () => {
     const jiho = { name: "윤지호", aliases: ["Jiho"], emails: [] };
     const namesake = { ...mention, text: "최유나: @Jiho Park 이거 금요일까지 될까요?", participants: { attendees: [{ name: "최유나" }, { name: "Jiho Park" }] } };
     expect((await judgeCandidate(ask, namesake, jiho, decide)).decision).toBe("reject");
+  });
+
+  describe("사용자가 유일한 받는 사람인 메일 (E5, G12)", () => {
+    // "내 약속 아님" 하나로만 기각될 확률(0.3)인 요청. 다른 답은 모두 자신 있다.
+    const decide: Decide = async () => ({ model: "m", answers: { ...answers, is_my_commitment: { type: "noul", noul: 0.3 } } });
+    const identity = { name: "가은", aliases: [], emails: ["gaeun@lumenfield.example"] };
+    const ask = { title: "견적서 수정본 전달", quote: "견적서 수정본도 목요일까지 부탁드려도 될까요?", due_text: "목요일까지" };
+    const me = { name: "가은", email: "gaeun@lumenfield.example" };
+    const dohyun = { name: "차도현", email: "dohyun@saebyeok-logis.example" };
+    const mail = {
+      ...source,
+      kind: "email",
+      text: "제목: 미팅 내용 정리\n\n1. 창고 이전은 11월로 확정했습니다.\n\n아, 그리고 견적서 수정본도 목요일까지 부탁드려도 될까요?\n\n감사합니다.",
+      participants: { from: dohyun, to: [me] },
+    };
+
+    it("기각 사유가 '내 약속 아님' 하나뿐이면 확인 요청까지 보낸다 (자동 반영은 아님)", async () => {
+      const result = await judgeCandidate(ask, mail, identity, decide);
+      expect(result).toMatchObject({ decision: "confirm", reasons: ["NOT_MY_ACTION"], rule: "sole_recipient_request" });
+      // 다른 실행처럼 확률이 높으면 그냥 자동 반영이다 (규칙은 기각만 살린다)
+      const sure = await judgeCandidate(ask, mail, identity, async () => ({ model: "m", answers }));
+      expect(sure).toMatchObject({ decision: "auto", reasons: [] });
+      expect(sure.rule).toBeUndefined();
+    });
+
+    it("받는 사람이 여럿이거나 참조로만 받았거나 내가 보낸 메일이거나 메일이 아니면 기각 그대로", async () => {
+      const cases = {
+        여럿: { ...mail, participants: { from: dohyun, to: [me, { name: "박서연", email: "s@x.example" }] } },
+        참조: { ...mail, participants: { from: dohyun, to: [{ name: "박서연", email: "s@x.example" }], cc: [me] } },
+        보낸사람: { ...mail, participants: { from: me, to: [dohyun] } },
+        회의: { ...mail, kind: "meeting" },
+        관련자없음: { ...mail, participants: undefined },
+      };
+      for (const [label, source] of Object.entries(cases)) {
+        expect((await judgeCandidate(ask, source, identity, decide)).decision, label).toBe("reject");
+      }
+    });
+
+    it("다른 기각 사유가 함께 있으면(이미 했음 · 할 일 아님 · 약속 없음) 기각 그대로", async () => {
+      const extras: JevDecision["answers"][] = [{ already_done: { type: "noul", noul: 0.9 } }, { is_actionable: { type: "noul", noul: 0.2 } }];
+      for (const extra of extras) {
+        const both: Decide = async () => ({ model: "m", answers: { ...answers, is_my_commitment: { type: "noul", noul: 0.3 }, ...extra } });
+        expect((await judgeCandidate(ask, mail, identity, both)).decision).toBe("reject");
+      }
+    });
+
+    it("@이름으로 부른 요청이면 규칙 이름은 addressed_request 그대로", async () => {
+      const mentioned = { ...mail, text: `${mail.text}\n@가은 확인 부탁드려요` };
+      const result = await judgeCandidate({ ...ask, quote: "@가은 확인 부탁드려요" }, mentioned, identity, decide);
+      expect(result).toMatchObject({ decision: "confirm", rule: "addressed_request" });
+    });
+  });
+});
+
+describe("decideOutcome — 유일한 받는 사람 메일 규칙", () => {
+  const pending = { ...firm, is_my_commitment: 0.3 };
+
+  it("'내 약속 아님' 하나뿐인 기각만 확인 요청으로 살리고, 임계값이 뒤집혀도 자동 반영하지 않는다", () => {
+    expect(decideOutcome(pending)).toEqual({ decision: "reject", reasons: ["NOT_MY_ACTION"] });
+    expect(decideOutcome(pending, undefined, { soleRecipient: true })).toEqual({ decision: "confirm", reasons: ["NOT_MY_ACTION"], rule: "sole_recipient_request" });
+    expect(decideOutcome({ ...pending, is_actionable: 0.2 }, undefined, { soleRecipient: true }).decision).toBe("reject");
+    expect(decideOutcome({ ...pending, certainty: { choice: "none", probabilities: {} } }, undefined, { soleRecipient: true }).decision).toBe("reject");
+    expect(decideOutcome({ ...firm, is_my_commitment: 0.6 }, undefined, { soleRecipient: true })).toEqual({ decision: "confirm", reasons: ["NOT_MY_ACTION"] });
+    const inverted = { accept: 0.3, reject: 0.5, doneAcceptBelow: 0.3, doneRejectAt: 0.7 };
+    expect(decideOutcome({ ...firm, is_my_commitment: 0.4 }, inverted, { soleRecipient: true }).decision).toBe("confirm");
+  });
+
+  it("내 약속 확률이 너무 낮은 후보(남의 일을 추출한 것)는 살리지 않는다. 경계는 SOLE_RECIPIENT_MIN_MINE, @이름 규칙에는 하한이 없다", () => {
+    expect(SOLE_RECIPIENT_MIN_MINE).toBe(0.2);
+    expect(decideOutcome({ ...firm, is_my_commitment: 0.19 }, undefined, { soleRecipient: true })).toEqual({ decision: "reject", reasons: ["NOT_MY_ACTION"] });
+    expect(decideOutcome({ ...firm, is_my_commitment: 0.2 }, undefined, { soleRecipient: true })).toMatchObject({ decision: "confirm", rule: "sole_recipient_request" });
+    expect(decideOutcome({ ...firm, is_my_commitment: 0.05 }, undefined, { addressedToUser: true })).toMatchObject({ decision: "confirm", rule: "addressed_request" });
+  });
+
+  it("둘 다 해당하면 @이름 규칙으로 기록한다", () => {
+    expect(decideOutcome(pending, undefined, { soleRecipient: true, addressedToUser: true }).rule).toBe("addressed_request");
   });
 });
 

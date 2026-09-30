@@ -31,7 +31,8 @@
           }
         ]
       },
-      "text": "제목: Re: Signed contract\n\nSure, I'll send it by Monday.\n\nAlex\n\nOn Thu, Oct 1, 2026 at 4:12 PM Jordan Lee <jordan@harborline.example> wrote:\n\n> Hi Alex,\n>\n> Could you send the signed contract by Monday?\n> Our finance team will countersign it on Tuesday.\n>\n> Thanks,\n> Jordan"
+      "text": "제목: Re: Signed contract\n\nSure, I'll send it by Monday.\n\nAlex\n\nOn Thu, Oct 1, 2026 at 4:12 PM Jordan Lee <jordan@harborline.example> wrote:\n\n> Hi Alex,\n>\n> Could you send the signed contract by Monday?\n> Our finance team will countersign it on Tuesday.\n>\n> Thanks,\n> Jordan",
+      "from_connector": true
     }
   ],
   "expected_actions": [

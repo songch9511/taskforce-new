@@ -31,7 +31,8 @@
           }
         ]
       },
-      "text": "제목: Office hours\n\nHi Alex,\n\nOffice hours are unchanged this week. No action needed.\nWe're still on Tuesdays and Thursdays, 2–4 PM, in Room 3B.\n\nJordan"
+      "text": "제목: Office hours\n\nHi Alex,\n\nOffice hours are unchanged this week. No action needed.\nWe're still on Tuesdays and Thursdays, 2–4 PM, in Room 3B.\n\nJordan",
+      "from_connector": true
     }
   ],
   "expected_actions": [],
