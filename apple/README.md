@@ -88,10 +88,11 @@ Mac은 `--show-launcher -TFSampleData -TFSnapshot <폴더>`로 실행하면 런�
     - 열린 할 일(Review · In Progress · To Do)에 맞는 것이 없으면 맨 위에 Add “…”(Done Today는 보지 않는다)(`POST /actions`, 제목 200자까지): ↩ → 기한(맨 위 No due date) → 원문(맨 위 No source, 아래는 빠진 할 일 신고와 같은 최근 원문) → 원문을 골랐으면 줄 고르기 후 ⌘↩ → "Added". esc는 한 단계 뒤로
   - 200자가 넘거나 여러 줄 → Send as source(`POST /sources`, 여러 줄은 note · 한 줄은 message, 제목은 첫 줄) + Ask
   - Review 행은 제목 옆(부제 자리)에 확인 이유 한 줄(iPhone Review card와 같은 `ConfirmReasonText.label`). 행 높이는 그대로 40이고, 긴 제목은 이유를 자르지 않고 제목을 줄인다
-  - 키: ↑↓ 고르기 · ↩ 실행(Review 행은 근거 펼치기 — 행에서 ↩로 확정하지 않는다, 할 일은 ⌘K 패널) · ⌘↩ Review Confirm(목록 · 펼침 · ⌘K 패널, 패널에서 고른 줄과 상관없이) · ⌘K 동작 · Tab/→ 펼침(Sources 묶음) · ⌘⌫ Review Dismiss(목록은 입력이 비었을 때, 펼친 Review · ⌘K 패널에서도) · 할 일 Delete(목록은 입력이 비었을 때, ⌘K 패널에서도. 펼친 할 일에서는 아무것도 하지 않는다) · esc 뒤로/닫기
+  - 키: ↑↓ 고르기 · ↩ 실행(Review 행은 근거 펼치기 — 행에서 ↩로 확정하지 않는다, 할 일은 ⌘K 패널) · ⌘↩ Review Confirm(목록 · 펼침 · ⌘K 패널, 패널에서 고른 줄과 상관없이) · ⌘K 동작 · Tab/→ 펼침(Sources 묶음) · ⌘⌫ Review Dismiss(목록 · 펼친 Review는 입력이 비었을 때, ⌘K 패널에서도. 펼침에서 입력이 있으면 아무것도 하지 않는다) · 할 일 Delete(목록은 입력이 비었을 때, ⌘K 패널에서도. 펼친 할 일에서는 아무것도 하지 않는다) · esc 뒤로/닫기
     - 누르고 있어 반복된 ↩ · ⌘↩는 어느 화면에서나 무시한다(`LauncherReturn`: 펼침 → ⌘K로 이어지거나, 확정 뒤 다음 화면 · 목록 첫 줄을 실행하지 않게). ⌘⌫ 반복도 무시(`LauncherDeleteGuard`). "Confirmed" 같은 완료 줄에서 ↩는 런처를 닫기만 한다
-    - 펼침 · ⌘K 패널에서 esc로 돌아오면 보던 행을 다시 고른다(`LauncherContent.reselect`, 그 행이 사라졌으면 같은 자리). 펼침 · 패널의 ⌘↩ · ⌘⌫는 누른 때의 목록 구역으로 본다(다른 기기에서 확정됐으면 Dismiss하지 않는다)
-    - Review 행 · 펼친 Review를 고르면 아래에 "Confirm ⌘↩ · Dismiss ⌘⌫ · Actions ⌘K"(목록에서 입력이 있으면 Dismiss는 빠진다)
+    - 펼침 · ⌘K 패널(과 거기서 연 알림)에서 esc로 돌아오면 본 할 일의 행을 고른다(`LauncherContent.rowAfterBack`: 목록이 새로 와 자리가 바뀌어도 그 행. 사라졌으면 가장 가까운 할 일 행, Review · 명령 줄은 고르지 않고 할 일 행이 없으면 고른 줄 없음)
+    - 펼침 · 패널을 연 뒤 그 할 일이 바뀌었으면(다른 기기에서 확정 · 옮김 · 지움) ↩ · ⌘↩ · ⌘⌫ · 패널 줄 누르기는 실행하지 않고 목록으로 돌아간다
+    - Review 행 · 펼친 Review를 고르면 아래에 "Confirm ⌘↩ · Dismiss ⌘⌫ · Actions ⌘K"(입력이 있으면 Dismiss는 빠진다)
     - ⌘K: To Do · In Progress = Status(To Do · In Progress · Done, 지금 상태에 체크) + Actions(Hand off to AI · Open source · Edit due · Delete ⌘⌫), Done Today = Status + Actions(Open source · Delete ⌘⌫), Review = Confirm ⌘↩ · Dismiss ⌘⌫ · Hand off to AI · Open source · Edit due.
       열면 다음 상태를 고른 채 둔다(To Do → In Progress → Done, Done → 끝내기 전 상태). Review는 Open source를 고른 채 연다(↩를 이어 눌러도 확정되지 않게. 확정은 ⌘↩이나 Confirm 줄로 옮겨서 ↩)
   - 행 왼쪽 상태 표시(Review는 점선 원, 누를 수 없음): ○ · ◉를 누르면 Done, ✓는 끝내기 전 상태로. 상태를 옮기면 런처를 닫지 않고 그 행을 옮긴 구역에서 고른 채 둔다.

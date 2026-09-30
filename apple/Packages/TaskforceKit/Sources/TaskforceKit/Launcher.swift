@@ -191,11 +191,26 @@ public enum LauncherContent {
         return sections
     }
 
-    /// 목록이 새로 왔을 때 · 펼침 · ⌘K 패널에서 목록으로 돌아올 때 고를 줄: 전에 고른 행(`id`)이 아직 있으면 그 행,
-    /// 없으면 같은 자리(끝을 넘지 않게). 맨 위(다른 Review 등)로 옮기지 않는다.
+    /// 목록이 새로 왔을 때 고를 줄: 전에 고른 행(`id`)이 아직 있으면 그 행, 없으면 같은 자리(끝을 넘지 않게).
     public static func reselect(_ id: String?, in items: [LauncherItem], at index: Int) -> Int {
         if let id, let found = items.firstIndex(where: { $0.id == id }) { return found }
         return move(index, by: 0, count: items.count)
+    }
+
+    /// 펼침 · ⌘K 패널(과 거기서 연 Working… · 알림)에서 목록으로 돌아올 때 고를 줄. nil이면 고른 줄 없이 둔다.
+    /// - 본 할 일(`id`)의 행이 있으면 그 행이다(Hand off 행이 아니라 그 할 일의 행). 그사이 목록이 새로 와 자리가 바뀌어도 그 행.
+    /// - 사라졌으면(다른 기기에서 확정 · 지움) 떠난 자리(`index`)에서 가장 가까운 할 일 행(In Progress · To Do · Done Today, 같은 거리면 아래).
+    ///   Review · 명령 · 안내 줄은 고르지 않는다: ↩ · ⌘↩ · ⌘⌫ 한 번에 보지 않은 Review가 확정 · 넘겨지거나 명령이 실행되지 않게. 할 일 행이 없으면 nil.
+    /// - 본 할 일이 없으면(물어보기 답 · 원문 보내기 등) 맨 위.
+    public static func rowAfterBack(viewing id: UUID?, in items: [LauncherItem], near index: Int) -> Int? {
+        guard let id else { return 0 }
+        if let row = items.firstIndex(where: { $0.group != nil && $0.action?.id == id }) { return row }
+        return items.indices
+            .filter { items[$0].group != nil && items[$0].group != .review }
+            .min { lhs, rhs in
+                let (left, right) = (abs(lhs - index), abs(rhs - index))
+                return left < right || (left == right && lhs > rhs)
+            }
     }
 
     /// 선택 이동. 끝에서 멈춘다 (돌아가지 않는다).

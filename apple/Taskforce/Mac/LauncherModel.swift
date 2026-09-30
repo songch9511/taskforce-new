@@ -135,8 +135,10 @@ final class LauncherModel {
     private var submission: Int?
     /// 목록이 바뀌어도 같은 행을 가리키게 (Realtime · 다시 불러오기)
     private var selectedID: String?
-    /// 펼침 · ⌘K 패널을 열 때 목록에서 고른 자리: 돌아왔는데 그 행이 사라졌으면 같은 자리를 고른다
-    private var listRow = 0
+    /// 목록에서 펼침 · ⌘K 패널을 연 할 일과 그때의 자리. 목록으로 돌아오면 그 행을 고른다 (`returnToList`)
+    private var viewed: (id: UUID, row: Int)?
+    /// 고른 줄이 없는 상태 (돌아왔는데 본 할 일이 사라졌고 가까운 할 일 행도 없음): ↩ · ⌘↩ · ⌘⌫가 아무 행에도 닿지 않는다
+    private static let noRow = -1
     /// 방금 옮기거나 지운 할 일: 잠시 ⌘Z로 그 전 상태로 되돌린다 (아래 "Undo ⌘Z")
     private(set) var undoOffer = UndoOffer()
     private var undoTimer: Task<Void, Never>?
@@ -319,6 +321,7 @@ final class LauncherModel {
         screen = .list
         selection = 0
         selectedID = nil
+        viewed = nil
         pendingFocus = nil
         guard isSignedIn, let now else { return }
         Task { await now.load() }
@@ -373,6 +376,7 @@ final class LauncherModel {
         screen = .list
         selection = 0
         selectedID = nil
+        viewed = nil
         guard isSignedIn, let now else { return }
         Task { await now.load() }
         if let account { Task { await account.load() } }
@@ -405,6 +409,8 @@ final class LauncherModel {
         case kVK_Return, kVK_ANSI_KeypadEnter:
             // ⌥↩ · ⇧↩는 입력창에서 줄바꿈
             if flags.contains(.option) || flags.contains(.shift) { return false }
+            // 펼침 · 패널의 할 일이 그사이 바뀌었으면(다른 기기에서 확정 등) 실행하지 않고 목록으로
+            if leaveIfStale() { return true }
             // Review는 ↩로 확정하지 않는다: ↩ 근거 펼치기, ⌘↩ Confirm, 반복 입력은 무시 (`LauncherReturn`)
             switch LauncherReturn.effect(at: returnPlace, command: command, isRepeat: event.isARepeat) {
             case .primary: command ? commandReturn() : primary()
@@ -429,6 +435,7 @@ final class LauncherModel {
             undo()
             return true
         case kVK_Delete where command:
+            if leaveIfStale() { return true }
             let dismissesNotice = canDismissNotice
             let shortcut = deleteShortcut
             guard dismissesNotice || shortcut != nil else {
@@ -456,8 +463,9 @@ final class LauncherModel {
         switch screen {
         // 목록에서 입력이 있으면 ⌘⌫는 입력창의 줄 지우기
         case .list: guard text.isEmpty else { return nil }
-        // 펼침은 Review의 Dismiss만 (펼친 할 일의 Delete는 ⌘K 패널에서). 입력이 있어도 펼친 Review에
-        case .detail, .actions: break
+        // 펼침은 입력이 비었을 때 Review의 Dismiss만 (펼친 할 일의 Delete는 ⌘K 패널에서, 입력이 있으면 먹는다)
+        case .detail: guard text.isEmpty else { return nil }
+        case .actions: break
         default: return nil
         }
         guard let target = focusedTarget else { return nil }
@@ -523,10 +531,37 @@ final class LauncherModel {
             self.pendingFocus = nil
             selection = index
             selectedID = items[index].id
+        } else if selection == Self.noRow {
+            // 고른 줄 없이 둔 상태: 새 목록이 와도 맨 위(다른 Review일 수 있음)를 고르지 않는다
+            selectedID = nil
         } else {
             selection = LauncherContent.reselect(selectedID, in: items, at: selection)
             selectedID = items.indices.contains(selection) ? items[selection].id : nil
         }
+    }
+
+    /// 목록으로 돌아간다: 펼침 · ⌘K 패널에서 본 할 일이 있으면 그 행, 사라졌으면 가까운 할 일 행(없으면 고른 줄 없음),
+    /// 본 할 일이 없으면 맨 위 (`LauncherContent.rowAfterBack`). 고른 줄과 `selectedID`를 늘 함께 맞춘다.
+    private func returnToList() {
+        screen = .list
+        let items = items
+        let row = LauncherContent.rowAfterBack(viewing: viewed?.id, in: items, near: viewed?.row ?? 0)
+        viewed = nil
+        selection = row ?? Self.noRow
+        selectedID = row.flatMap { items.indices.contains($0) ? items[$0].id : nil }
+    }
+
+    /// 펼침 · ⌘K 패널의 할 일이 연 뒤에 바뀌었으면(다른 기기에서 확정 · 옮김 · 지움) 아무것도 하지 않고 목록으로 돌아간다.
+    /// 바뀐 할 일에 패널의 Dismiss · Delete · Confirm이 닿지 않게. 돌아갔으면 true
+    private func leaveIfStale() -> Bool {
+        let target: Target
+        switch screen {
+        case .detail(let viewing), .actions(let viewing): target = viewing
+        default: return false
+        }
+        guard now?.sections.find(target.action.id)?.group != target.group else { return false }
+        returnToList()
+        return true
     }
 
     /// return
@@ -586,7 +621,7 @@ final class LauncherModel {
     }
 
     private func showSources(_ target: Target) {
-        if screen == .list { listRow = selection }
+        if screen == .list { viewed = (target.action.id, selection) }
         screen = .detail(target)
         Task { await now?.loadEvidence(target.action.id) }
     }
@@ -605,7 +640,7 @@ final class LauncherModel {
     }
 
     private func openActions(_ target: Target) {
-        if screen == .list { listRow = selection }
+        if screen == .list { viewed = (target.action.id, selection) }
         screen = .actions(target)
         selection = initialActionIndex(for: target)
     }
@@ -626,25 +661,20 @@ final class LauncherModel {
         case .pickLines(_, let purpose):
             screen = .pickSource(purpose)
             selection = 0
-        case .detail, .actions:
-            // 보던 행으로 돌아간다 (맨 위의 다른 Review를 고른 채 두지 않게). 그 행이 사라졌으면 같은 자리
-            screen = .list
-            selection = listRow
-            reconcileSelection()
         case .working:
             // 직접 추가 · 신고는 결과가 올 때까지 기다린다 (돌아가서 다시 보내면 중복)
             guard !isSubmitting else { return }
             work?.cancel()
             writeGeneration += 1
-            screen = .list
-            selection = 0
+            returnToList()
         default:
-            screen = .list
-            selection = 0
+            // 펼침 · ⌘K 패널(과 거기서 연 알림)은 본 할 일의 행으로 (맨 위의 다른 Review를 고른 채 두지 않게)
+            returnToList()
         }
     }
 
     private func textChanged() {
+        viewed = nil
         switch screen {
         case .list, .pickSource:
             selection = 0
@@ -720,7 +750,8 @@ final class LauncherModel {
     }
 
     func perform(_ entry: ActionEntry, on target: Target) {
-        guard let now else { return }
+        // ⌘K 패널 줄을 누름 · ↩: 그사이 바뀐 할 일에는 실행하지 않는다
+        guard let now, !leaveIfStale() else { return }
         let id = target.action.id
         switch entry {
         case .state(let state):
@@ -769,6 +800,7 @@ final class LauncherModel {
         guard let deleted = now.delete(action.id) else { return }
         closeTimer?.cancel()
         screen = .list
+        viewed = nil
         selection = row ?? 0
         selectedID = nil
         reconcileSelection()
@@ -819,6 +851,7 @@ final class LauncherModel {
     private func selectRow(of id: UUID) {
         closeTimer?.cancel()
         screen = .list
+        viewed = nil
         let items = items
         if let index = items.firstIndex(where: { $0.group != nil && $0.action?.id == id }) {
             selection = index
