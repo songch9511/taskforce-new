@@ -6,24 +6,25 @@ import { CONSENT_WITHDRAWN_MESSAGE, ConsentRequiredError } from "@/lib/consent/g
 import { notifyReconnect } from "@/lib/notify/service";
 
 import {
+  addConnectionStats,
   claimConnection,
   connectedAt,
   disconnectConnection,
   ingestDeps,
   loadIdentity,
   loadToken,
+  mergeConnectionSettings,
   otherConnections,
   recordSync,
   saveConnection,
   saveToken,
-  updateConnectionSettings,
 } from "../store";
 import type { Connection, Connector, ConnectorSyncOutcome } from "../types";
 
 import { calendarClient } from "./calendar";
 import { meetClient, MeetBudgetExhausted } from "./meet";
 import { exchangeGoogleCode, GoogleOAuthError, googleAuthorizeUrl, googleTokenSchema, missingScopes, revokeGoogleToken, type GoogleOAuthConfig } from "./oauth";
-import { googleSettingsSchema, withAccount, withStats } from "./settings";
+import { accountSettings, googleSettingsSchema } from "./settings";
 import { DEFAULT_GOOGLE_SYNC, MEET_REQUEST_BUDGET, syncGoogleMeet } from "./sync";
 import { GoogleApiError, googleAccess, GoogleReauthError } from "./token";
 import { CALENDAR_EVENTS_SCOPE, MEET_READONLY_SCOPE } from "./unverified";
@@ -122,7 +123,7 @@ export async function syncGoogleConnection(
       error: result.rateLimited ? RATE_LIMITED_MESSAGE : null,
     });
     // 커서를 남긴 뒤에 센다: 커서 기록이 실패하면 다음 동기화가 같은 전사를 다시 결정해 두 번 세지 않게
-    await updateConnectionSettings(admin, connection, (current) => withStats(current, result.counts, now)).catch(logError(`Google 통계 기록 실패 (${connection.id})`));
+    await addConnectionStats(admin, connection, result.counts, now).catch(logError(`Google 통계 기록 실패 (${connection.id})`));
     return { connectionId: connection.id, ok: true, result };
   } catch (error) {
     // 동기화 도중 외부 AI 처리 동의를 철회함: 연결 오류가 아니다. 커서를 옮기지 않아 다시 동의하면 이어서 가져온다
@@ -174,8 +175,10 @@ export const googleConnector: Connector = {
       displayName: account.email,
       token: grant.token,
     });
-    // 받은 범위를 남긴다: 다시 연결하면 그때 허용한 범위로 바뀐다 (동기화는 받은 것만 쓴다)
-    await updateConnectionSettings(admin, { id: connectionId, userId }, (current) => withAccount(current, account, grant.scopes));
+    // 받은 범위를 남긴다: 다시 연결하면 그때 허용한 범위로 바뀐다 (동기화는 받은 것만 쓴다). 그 키만 바꿔 통계는 그대로 둔다
+    if (!(await mergeConnectionSettings(admin, { id: connectionId, userId }, { set: accountSettings(account, grant.scopes) }))) {
+      throw new Error("연결 설정을 저장하지 못했습니다 (연결이 사라짐)");
+    }
     await disconnectOtherAccounts(admin, userId, connectionId);
     return features.calendar && features.meet ? "connected" : "connected_partial";
   },

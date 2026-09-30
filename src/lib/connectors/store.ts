@@ -2,7 +2,7 @@ import "server-only";
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 
-import { connectionSettingsSchema, profileInputSchema } from "@/lib/api/contract";
+import { connectionSettingsSchema, profileInputSchema, type DataSourceSetting } from "@/lib/api/contract";
 import { accountDisplayName, resolveIdentity } from "@/lib/api/profile";
 import { ConsentRequiredError } from "@/lib/consent/gate";
 import type { UserIdentity } from "@/lib/pipeline/identity";
@@ -11,15 +11,7 @@ import { processSource, processTaskSource } from "@/lib/sources/process";
 
 import { decryptSecret, encryptSecret, parseTokenKey } from "./crypto";
 import type { IngestDeps } from "./ingest";
-import {
-  settingsWithoutNotionUserId,
-  type AutoConfirmed,
-  type AutoConfirmReverted,
-  type Backfilled,
-  type NotionTaskDeps,
-  type SeenDataSource,
-  type UnreachableDataSource,
-} from "./notion/sync";
+import type { AutoConfirmed, AutoConfirmReverted, Backfilled, NotionTaskDeps, SeenDataSource, UnreachableDataSource } from "./notion/sync";
 import type { OAuthStatePayload } from "./oauth-state";
 import type { TaskItem, TaskState } from "./tasks-ingest";
 import type { Connection, Provider } from "./types";
@@ -56,9 +48,10 @@ export async function saveConnection(
     .upsert({ connection_id: data.id, sealed_token: encryptSecret(JSON.stringify(input.token), tokenKey()), updated_at: new Date().toISOString() })
     .throwOnError();
 
-  // 다시 연결: 연결한 사람이 바뀌었을 수 있으므로 남겨 둔 Notion user id를 지운다 (다음 동기화가 새 토큰으로 다시 알아낸다).
-  const settings = settingsWithoutNotionUserId(data.settings as Record<string, unknown> | null);
-  if (settings) await admin.from("connections").update({ settings }).eq("id", data.id).eq("user_id", input.userId).throwOnError();
+  // 다시 연결: 같은 워크스페이스를 다른 Notion 계정으로 다시 연결하면 연결 행은 그대로라, 남겨 둔 Notion user id가 남으면
+  // 그 사람이 쓴 문서가 written_by_me = true가 된다. 그 키만 지운다 (다음 동기화가 새 토큰의 봇 주인으로 다시 알아낸다). 없으면 쓰지 않는다.
+  const settings = data.settings as Record<string, unknown> | null;
+  if (settings && "notionUserId" in settings) await mergeConnectionSettings(admin, { id: data.id, userId: input.userId }, { remove: ["notionUserId"] });
   return data.id as string;
 }
 
@@ -396,19 +389,59 @@ export async function connectedAt(admin: SupabaseClient, connection: Pick<Connec
   return data ? new Date(data.connected_at) : null;
 }
 
+/** 연결 설정에서 바꿀 것 (mergeConnectionSettings) */
+export type ConnectionSettingsPatch = {
+  /** 위 수준 키를 이 값으로 바꾼다 */
+  set?: Record<string, unknown>;
+  /** 뺄 위 수준 키 */
+  remove?: string[];
+  /** Notion DB 설정(settings.dataSources)에서 이 DB들의 설정만 통째로 바꾼다 */
+  dataSources?: Record<string, DataSourceSetting>;
+};
+
 /**
- * 연결 설정을 지금 값에서 고친다 (update가 null이면 쓰지 않는다). 설정 전체를 다시 쓰므로 바꿀 때만 부른다.
- * 연결 정보(Google 계정 · 범위)와 동기화 통계(stats)처럼 나머지 값은 그대로 둬야 하는 곳에서 쓴다.
+ * 연결 설정에서 넘긴 키만 바꾼다. 나머지 값(통계 · 다른 DB 설정 등)은 DB에 있는 지금 값 그대로 둔다.
+ * 설정 전체를 읽고 다시 쓰지 않고 DB 함수 한 번으로 합치므로(merge_connection_settings, 20261017000000), 같은 연결의 설정을 동시에 쓰는 쪽을 되돌리지 않는다.
+ * 돌려주는 값: 고친 연결이 있는가 (그 사이 끊겨 없으면 false).
  */
-export async function updateConnectionSettings(
+export async function mergeConnectionSettings(
   admin: SupabaseClient,
-  connection: { id: string; userId: string },
-  update: (settings: Record<string, unknown>) => Record<string, unknown> | null,
+  connection: Pick<Connection, "id" | "userId">,
+  patch: ConnectionSettingsPatch,
+): Promise<boolean> {
+  const { data } = await admin
+    .rpc("merge_connection_settings", {
+      p_user_id: connection.userId,
+      p_connection_id: connection.id,
+      p_set: patch.set ?? {},
+      p_remove: patch.remove ?? [],
+      p_data_sources: patch.dataSources ?? {},
+    })
+    .throwOnError();
+  return data === true;
+}
+
+/**
+ * 이번 동기화의 개수(이유 코드별, 글자 · 주소 없이)를 연결 설정 통계(settings.stats)에 더한다. 0 · undefined는 빼고, 더할 것이 없으면 부르지 않는다.
+ * DB 함수가 연결 행을 잠근 채 더하므로(add_connection_stats, 20261017000000) 동시에 더한 개수가 모두 남는다.
+ * 처음이면 now부터 세고, 저장된 통계 모양이 다르면 새로 센다.
+ */
+export async function addConnectionStats(
+  admin: SupabaseClient,
+  connection: Pick<Connection, "id" | "userId">,
+  counts: Partial<Record<string, number>>,
+  now: Date,
 ): Promise<void> {
-  const { data } = await admin.from("connections").select("settings").eq("id", connection.id).eq("user_id", connection.userId).single().throwOnError();
-  const next = update((data.settings as Record<string, unknown> | null) ?? {});
-  if (!next) return;
-  await admin.from("connections").update({ settings: next }).eq("id", connection.id).eq("user_id", connection.userId).throwOnError();
+  const added = Object.entries(counts).filter((entry): entry is [string, number] => (entry[1] ?? 0) > 0);
+  if (added.length === 0) return;
+  await admin
+    .rpc("add_connection_stats", {
+      p_user_id: connection.userId,
+      p_connection_id: connection.id,
+      p_counts: Object.fromEntries(added),
+      p_now: now.toISOString(),
+    })
+    .throwOnError();
 }
 
 /** 같은 서비스의 다른 연결 (다른 계정으로 다시 연결했을 때 끊을 옛 연결)과 풀어 둔 토큰 (풀지 못했으면 null) */
@@ -560,27 +593,20 @@ export function taskDeps(admin: SupabaseClient): NotionTaskDeps {
 
 /**
  * 할 일 DB를 처음 훑었다고 남긴다. 그 사이 사용자가 설정을 다시 확인했으면(confirmedAt이 다르면) 새 설정으로는 아직 훑지 않았으므로 남기지 않는다.
- * 지금 값을 다시 읽어 그 항목만 고친다.
+ * 지금 값을 다시 읽어 그 DB의 설정만 고친다 (다른 DB의 설정 · 다른 키는 DB에 있는 값 그대로, mergeConnectionSettings).
  */
 export async function markBackfilled(admin: SupabaseClient, connection: Connection, done: Backfilled[], now = new Date()): Promise<void> {
   if (done.length === 0) return;
   const { data } = await admin.from("connections").select("settings").eq("id", connection.id).eq("user_id", connection.userId).single().throwOnError();
-  const settings = connectionSettingsSchema.parse(data.settings ?? {});
-  const dataSources = { ...(settings.dataSources ?? {}) };
-  let changed = false;
+  const saved = connectionSettingsSchema.parse(data.settings ?? {}).dataSources ?? {};
+  const changed: Record<string, DataSourceSetting> = {};
   for (const { dataSourceId, confirmedAt } of done) {
-    const current = dataSources[dataSourceId];
+    const current = saved[dataSourceId];
     if (current?.role !== "tasks" || current.confirmedAt !== confirmedAt) continue;
-    dataSources[dataSourceId] = { ...current, backfilledAt: now.toISOString() };
-    changed = true;
+    changed[dataSourceId] = { ...current, backfilledAt: now.toISOString() };
   }
-  if (!changed) return;
-  await admin
-    .from("connections")
-    .update({ settings: { ...settings, dataSources } })
-    .eq("id", connection.id)
-    .eq("user_id", connection.userId)
-    .throwOnError();
+  if (Object.keys(changed).length === 0) return;
+  await mergeConnectionSettings(admin, connection, { dataSources: changed });
 }
 
 /**
@@ -588,6 +614,8 @@ export async function markBackfilled(admin: SupabaseClient, connection: Connecti
  * 공유가 조용히 끊기면 원문이 들어오지 않아도 알 수 없으므로, 앱 · /lab이 이 값으로 경고를 띄운다.
  * 연결한 사람의 Notion user id(notionUserId)를 처음 알아냈으면 함께 남겨, 다음 동기화부터 다시 묻지 않는다.
  * 자동 확인한 할 일 DB(autoConfirmed)와 자동 확인을 되돌린 DB(reverted)도 남긴다. markBackfilled보다 먼저 불러야 처음 훑기 표시가 이 확인 시각과 맞는다.
+ * claimedAt: 이 동기화가 잠금을 잡은 시각. 그 뒤에 다시 연결했으면(saveConnection이 connected_at을 새로 적고 notionUserId를 뺌)
+ * 옛 연결로 알아낸 notionUserId를 다시 쓰지 않는다 (다른 Notion 계정으로 다시 연결했을 수 있다, recordSync와 같은 기준).
  */
 export async function recordNotionHealth(
   admin: SupabaseClient,
@@ -600,27 +628,36 @@ export async function recordNotionHealth(
     reverted?: AutoConfirmReverted[];
   },
   now = new Date(),
+  claimedAt?: Date,
 ): Promise<void> {
-  const { data } = await admin.from("connections").select("settings").eq("id", connection.id).eq("user_id", connection.userId).single().throwOnError();
-  const settings = connectionSettingsSchema.parse(data.settings ?? {});
-  const dataSources = { ...(settings.dataSources ?? {}) };
-  // 동기화는 확인 전 DB와 자동 확인한 DB(매핑이 바뀌어 다시 확인 · 되돌림)만 바꾼다.
-  // 그 사이 사용자가 확인한 DB(가져오지 않음 · 글 원문 포함)는 덮지 않는다.
-  const confirmed = (report.autoConfirmed ?? []).filter(({ id }) => !dataSources[id]?.confirmedAt || dataSources[id]?.confirmedBy === "auto");
-  const reverted = (report.reverted ?? []).filter(({ id }) => dataSources[id]?.confirmedBy === "auto");
-  for (const { id, setting } of [...confirmed, ...reverted]) dataSources[id] = setting;
-  const added = report.seen.filter(({ id }) => !dataSources[id]);
-  for (const { id, title, role } of added) dataSources[id] = { role, title: title?.slice(0, 200) ?? null, seenAt: now.toISOString() };
-  const notionUserId = report.notionUserId && report.notionUserId !== settings.notionUserId ? report.notionUserId : null;
-  // 바뀐 것이 있을 때만 쓴다: 설정 전체를 다시 쓰므로, 매 동기화마다 쓰면 그 사이 /lab에서 저장한 설정을 덮을 수 있다.
-  // 끝까지 확인하지 못한 동기화(null)는 지난 결과를 그대로 둔다.
-  const key = (list: UnreachableDataSource[]) => list.map((d) => d.id).sort().join(",");
-  const health = report.unreachable ? { unreachable: report.unreachable, checkedAt: now.toISOString() } : settings.health;
-  if (added.length === 0 && confirmed.length === 0 && reverted.length === 0 && !notionUserId && (!report.unreachable || key(settings.health?.unreachable ?? []) === key(report.unreachable))) return;
-  await admin
+  const { data } = await admin
     .from("connections")
-    .update({ settings: { ...settings, dataSources, ...(health ? { health } : {}), ...(notionUserId ? { notionUserId } : {}) } })
+    .select("settings, connected_at")
     .eq("id", connection.id)
     .eq("user_id", connection.userId)
+    .single()
     .throwOnError();
+  const settings = connectionSettingsSchema.parse(data.settings ?? {});
+  const reconnected = claimedAt !== undefined && typeof data.connected_at === "string" && new Date(data.connected_at) > claimedAt;
+  const saved = settings.dataSources ?? {};
+  // 동기화는 확인 전 DB와 자동 확인한 DB(매핑이 바뀌어 다시 확인 · 되돌림)만 바꾼다.
+  // 그 사이 사용자가 확인한 DB(가져오지 않음 · 글 원문 포함)는 덮지 않는다.
+  const changed: Record<string, DataSourceSetting> = {};
+  const confirmed = (report.autoConfirmed ?? []).filter(({ id }) => !saved[id]?.confirmedAt || saved[id]?.confirmedBy === "auto");
+  const reverted = (report.reverted ?? []).filter(({ id }) => saved[id]?.confirmedBy === "auto");
+  for (const { id, setting } of [...confirmed, ...reverted]) changed[id] = setting;
+  const added = report.seen.filter(({ id }) => !saved[id] && !changed[id]);
+  for (const { id, title, role } of added) changed[id] = { role, title: title?.slice(0, 200) ?? null, seenAt: now.toISOString() };
+  const notionUserId = !reconnected && report.notionUserId && report.notionUserId !== settings.notionUserId ? report.notionUserId : null;
+  // 바뀐 것이 있을 때만, 바뀐 DB의 설정과 값만 쓴다 (다른 DB의 설정 · 다른 키는 DB에 있는 값 그대로, mergeConnectionSettings).
+  // 끝까지 확인하지 못한 동기화(null)는 지난 결과를 그대로 둔다.
+  const key = (list: UnreachableDataSource[]) => list.map((d) => d.id).sort().join(",");
+  if (added.length === 0 && confirmed.length === 0 && reverted.length === 0 && !notionUserId && (!report.unreachable || key(settings.health?.unreachable ?? []) === key(report.unreachable))) return;
+  await mergeConnectionSettings(admin, connection, {
+    set: {
+      ...(report.unreachable ? { health: { unreachable: report.unreachable, checkedAt: now.toISOString() } } : {}),
+      ...(notionUserId ? { notionUserId } : {}),
+    },
+    dataSources: changed,
+  });
 }

@@ -112,18 +112,6 @@ export const savedNotionUserId = (connection: Connection): string | null =>
   typeof connection.settings.notionUserId === "string" ? connection.settings.notionUserId : null;
 
 /**
- * OAuth로 연결을 (다시) 저장할 때의 설정: 남겨 둔 notionUserId를 뺀다. 같은 워크스페이스를 다른 Notion 계정으로 다시 연결하면
- * 연결 행은 그대로라, 옛 값이 남으면 그 사람이 쓴 문서가 written_by_me = true가 된다. 다음 동기화가 새 토큰의 봇 주인으로 다시 알아낸다.
- * 뺄 것이 없으면 null (쓰지 않는다).
- */
-export function settingsWithoutNotionUserId(settings: Record<string, unknown> | null): Record<string, unknown> | null {
-  if (!settings || !("notionUserId" in settings)) return null;
-  const rest = { ...settings };
-  delete rest.notionUserId;
-  return rest;
-}
-
-/**
  * 연결한 사람의 Notion user id: 설정에 없으면 봇 주인(GET /v1/users/me)으로 알아낸다. 페이지를 사용자가 직접 썼는지 가르는 데 쓴다.
  * 알 수 없으면(권한 · 일시적인 오류) null로 두고 동기화는 계속한다 (작성자를 모름). 권한 끊김(401)은 그대로 올린다.
  */

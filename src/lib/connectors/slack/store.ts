@@ -4,7 +4,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 
 import { hasConsentFor } from "@/lib/consent/store";
 
-import { ingestDeps, loadIdentity } from "../store";
+import { ingestDeps, loadIdentity, mergeConnectionSettings } from "../store";
 import type { Connection } from "../types";
 
 import type { StoredSlackMessage } from "./bucket";
@@ -162,21 +162,16 @@ export async function revokeSlackConnections(admin: SupabaseClient, teamId: stri
   return (data as number | null) ?? 0;
 }
 
-/** 연결할 때: 이용자의 Slack id · 팀 id · 워크스페이스 주소를 연결 설정에 둔다 (다른 설정은 그대로) */
+/** 연결할 때: 이용자의 Slack id · 팀 id · 워크스페이스 주소를 연결 설정에 둔다 (그 키만 바꾸고 다른 설정은 그대로, mergeConnectionSettings) */
 export async function saveSlackSettings(
   admin: SupabaseClient,
   userId: string,
   connectionId: string,
   values: { slackUserId: string; teamId: string; teamUrl: string | null },
 ): Promise<void> {
-  const { data } = await admin.from("connections").select("settings").eq("id", connectionId).eq("user_id", userId).single().throwOnError();
-  const settings = (data.settings as Record<string, unknown> | null) ?? {};
-  await admin
-    .from("connections")
-    .update({ settings: { ...settings, ...values } })
-    .eq("id", connectionId)
-    .eq("user_id", userId)
-    .throwOnError();
+  if (!(await mergeConnectionSettings(admin, { id: connectionId, userId }, { set: values }))) {
+    throw new Error("연결 설정을 저장하지 못했습니다 (연결이 사라짐)");
+  }
 }
 
 type PendingRow = {
