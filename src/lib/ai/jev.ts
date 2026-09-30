@@ -76,9 +76,9 @@ export async function decide(
 ): Promise<JevDecision> {
   const doFetch = config.fetch ?? fetch;
   const limit = config.timeoutMs ?? JEV_TIMEOUT_MS;
-  const send = () => {
-    // 마감이 있으면 요청마다 남은 시간까지로 줄인다
-    const timeoutMs = Math.min(limit, (config.deadline ?? Infinity) - Date.now());
+  // 마감이 있으면 요청마다 남은 시간까지로 줄인다
+  const timeoutNow = () => Math.min(limit, (config.deadline ?? Infinity) - Date.now());
+  const send = (timeoutMs: number) => {
     if (timeoutMs <= 0) throw new JevError("Decisions API 응답 시간 초과 (남은 시간 없음)");
     return doFetch(OPENROUTER_DECISIONS_URL, {
       signal: AbortSignal.timeout(timeoutMs),
@@ -97,14 +97,15 @@ export async function decide(
   // 판정은 보통 1~2초지만 가끔 멈춘다. 시간 초과는 한 번만 다시 묻는다.
   let response: Response;
   try {
-    response = await send();
+    response = await send(timeoutNow());
   } catch (error) {
     if (!(error instanceof DOMException && error.name === "TimeoutError")) throw error;
+    const retryMs = timeoutNow();
     try {
-      response = await send();
+      response = await send(retryMs);
     } catch (retryError) {
       if (retryError instanceof DOMException && retryError.name === "TimeoutError") {
-        throw new JevError(`Decisions API 응답 시간 초과 (${Math.round(limit / 1000)}초)`);
+        throw new JevError(`Decisions API 응답 시간 초과 (${Math.round(retryMs / 1000)}초)`);
       }
       throw retryError;
     }

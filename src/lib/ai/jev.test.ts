@@ -98,6 +98,18 @@ describe("decide", () => {
       };
       await expect(decide(stuck, { state: {}, questions })).rejects.toBeInstanceOf(JevError);
       expect(calls).toBe(1);
+
+      // 다시 묻기는 남은 시간(40 − 30 = 10초)만 기다리고, 오류에 그 한도를 적는다
+      const slow: JevConfig = {
+        apiKey: "key",
+        model: "m",
+        deadline: clock.now + 40_000,
+        fetch: (async () => {
+          clock.now += 30_000;
+          throw new DOMException("timed out", "TimeoutError");
+        }) as typeof fetch,
+      };
+      await expect(decide(slow, { state: {}, questions })).rejects.toThrow("Decisions API 응답 시간 초과 (10초)");
     } finally {
       spy.mockRestore();
     }

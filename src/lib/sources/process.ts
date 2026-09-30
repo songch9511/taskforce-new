@@ -38,6 +38,7 @@ import { notifyConfirmations } from "@/lib/notify/service";
 // 빠진 할 일 신고(reportMissing, POST /api/v1/sources/:id/missing)도 같은 병합 · 사용자 잠금을 쓴다.
 // 세 함수 모두 모델 호출(LLM · Jev · 임베딩) 직전마다 외부 AI 처리 동의를 다시 확인한다 (withConsentGate).
 // 매칭 전에는 임베딩이 없는 열린 Action(직접 추가할 때 못 만든 것)을 몇 개씩 채운다 (backfillEmbeddings, 실패해도 처리는 계속).
+// 사용자가 기다리는 누락 신고는 채우지 않는다 (배경 처리가 채운다).
 // 도중에 철회하면 ConsentRequiredError를 던진다: 원문은 failed로 남기고, 부르는 쪽(동기화 · 스크립트 · 재처리 cron)은 남은 항목을 멈춘다.
 
 export type ProcessDeps = PipelineDeps & Pick<MergeDeps, "embed">;
@@ -72,16 +73,39 @@ export function processDepsFromEnv(deadline?: number): ProcessDeps {
 // 같은 사용자의 병합은 한 번에 하나씩: 동시에 비슷한 후보 둘이 모두 "새 Action"이 되는 중복을 막는다.
 // (한 서버 인스턴스 안에서만 보장된다. 인스턴스 사이의 드문 경합은 write_action의 버전 확인이 값 손실을 막는다.)
 const mergeQueues = new Map<string, Promise<unknown>>();
-function withUserLock<T>(userId: string, task: () => Promise<T>): Promise<T> {
+
+export const USER_LOCK_TIMEOUT_MESSAGE = "병합 대기 시간 초과 (같은 사용자의 다른 처리가 끝나지 않음)";
+
+/**
+ * deadline(epoch ms)을 주면(사용자가 기다리는 누락 신고) 앞선 병합을 그 시각까지만 기다린다.
+ * 넘기면 task를 부르지 않고 오류를 낸다: 차례가 나중에 와도 병합하지 않는다. 대기열 순서는 그대로다.
+ */
+export function withUserLock<T>(userId: string, task: () => Promise<T>, deadline?: number): Promise<T> {
   const previous = mergeQueues.get(userId) ?? Promise.resolve();
-  const run = previous.catch(() => undefined).then(task);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let expired = false;
+  const run = previous
+    .catch(() => undefined)
+    .then(() => {
+      clearTimeout(timer);
+      if (expired) throw new Error(USER_LOCK_TIMEOUT_MESSAGE);
+      return task();
+    });
   mergeQueues.set(userId, run);
   // 실패해도 대기열을 비운다. finally가 아니라 then(성공, 실패)이어야 거절이 처리되지 않은 채 남지 않는다.
   const release = () => {
     if (mergeQueues.get(userId) === run) mergeQueues.delete(userId);
   };
   run.then(release, release);
-  return run;
+  if (deadline === undefined) return run;
+  // 차례가 오면(task를 시작하면) 타이머를 지우므로, 이 약속은 기다리는 동안 마감을 넘겼을 때만 끝난다.
+  const waited = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      expired = true;
+      reject(new Error(USER_LOCK_TIMEOUT_MESSAGE));
+    }, Math.max(0, deadline - Date.now()));
+  });
+  return Promise.race([run, waited]);
 }
 
 /** 사용자에게 보여도 되는 오류만 그대로 두고, DB 오류 등은 일반 문구로 바꾼다 (자세한 내용은 서버 로그). */
@@ -316,12 +340,16 @@ export async function processTaskSource(
  *    이미 있는 Action(확실한 반복 · 변경)이면 근거만 더하고 already_tracked — 신고로 세지 않는다.
  * 병합이 기존 Action의 완료 · 취소로 보는 경우는 reportMatchDecide가 같은 일의 반복으로 바꾼다 (신고로 할 일을 끝내지 않는다).
  * commitment 후보는 unmatched가 되지 않으므로, Action을 못 얻으면 오류로 본다.
+ * 사용자가 기다리므로 deadline(epoch ms, lib/ai/llm.ts interactiveDeadline) 안에 끝낸다: 모델 호출(processDepsFromEnv(deadline))과
+ * 같은 사용자의 다른 병합 기다리기(withUserLock)가 마감을 넘지 않고, 임베딩 채우기(backfillEmbeddings)는 하지 않는다
+ * (그만큼 신고에 필요한 임베딩 · 매칭 시간을 쓰지 않게. 배경 처리가 채운다).
  */
 export async function reportMissing(
   admin: SupabaseClient,
   source: { id: string; userId: string; processingStatus: string },
   input: MissingInput,
-  deps: ProcessDeps = processDepsFromEnv(),
+  deadline: number,
+  deps: ProcessDeps = processDepsFromEnv(deadline),
 ): Promise<MissingReportResponse> {
   const tracked = await trackedActionSummary(admin, source, input.quote);
   if (tracked) return { status: "already_tracked", action: tracked, stage: null };
@@ -358,14 +386,16 @@ export async function reportMissing(
       },
     ],
   });
-  const [outcome] = await withUserLock(source.userId, async () => {
-    await backfillEmbeddings(store, ai.embed);
-    return mergeJudged(reportStore(store), [judged], { id: source.id, text: input.text, kind: input.kind, occurredAt: input.occurredAt }, input.identity, {
-      embed: ai.embed,
-      decide: reportMatchDecide(ai.decide),
-      newId: () => crypto.randomUUID(),
-    });
-  });
+  const [outcome] = await withUserLock(
+    source.userId,
+    () =>
+      mergeJudged(reportStore(store), [judged], { id: source.id, text: input.text, kind: input.kind, occurredAt: input.occurredAt }, input.identity, {
+        embed: ai.embed,
+        decide: reportMatchDecide(ai.decide),
+        newId: () => crypto.randomUUID(),
+      }),
+    deadline,
+  );
   if (!outcome?.actionId) throw new Error(`누락 신고를 반영하지 못했습니다 (${outcome?.relation ?? "결과 없음"})`);
 
   const action = await actionSummary(admin, source.userId, outcome.actionId);
