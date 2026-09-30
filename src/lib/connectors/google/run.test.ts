@@ -193,6 +193,8 @@ describe("googleConnector.connect", () => {
     stubGoogle({ token: () => grant() });
     vi.mocked(mergeConnectionSettings).mockResolvedValueOnce(false);
     await expect(googleConnector.connect(admin, "u1", "code-1")).rejects.toThrow("연결 설정을 저장하지 못했습니다");
+    expect(otherConnections).not.toHaveBeenCalled();
+    expect(disconnectConnection).not.toHaveBeenCalled();
   });
 
   it("저장한 뒤 설정에 계정 · 받은 범위만 합친다 (통계 등 나머지 값은 DB에 있는 값 그대로)", async () => {
@@ -259,6 +261,7 @@ describe("googleConnector.connect", () => {
     expect(otherConnections).toHaveBeenCalledWith(admin, "u1", "google", "conn-new");
     expect(google.revoked()).toEqual(["old-refresh"]);
     expect(disconnectConnection).toHaveBeenCalledWith(admin, "u1", "conn-old");
+    expect(vi.mocked(mergeConnectionSettings).mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(otherConnections).mock.invocationCallOrder[0]);
   });
 
   it("옛 연결의 폐기 · 끊기가 실패해도 새 연결은 그대로 connected. 로그에 토큰을 남기지 않는다", async () => {

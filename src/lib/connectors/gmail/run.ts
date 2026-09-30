@@ -9,20 +9,17 @@ import {
   addConnectionStats,
   claimConnection,
   connectedAt,
-  disconnectConnection,
   ingestDeps,
   loadIdentity,
   loadToken,
-  mergeConnectionSettings,
-  otherConnections,
   recordSync,
-  saveConnection,
   saveToken,
 } from "../store";
 import type { Connection, Connector, ConnectorSyncOutcome } from "../types";
 
-import { exchangeGoogleCode, GoogleOAuthError, googleAuthorizeUrl, googleTokenSchema, missingScopes, revokeGoogleToken, type GoogleOAuthConfig } from "../google/oauth";
-import { accountSettings, googleSettingsSchema } from "../google/settings";
+import { revokeStoredGoogleToken, saveGoogleAccount } from "../google/account";
+import { exchangeGoogleCode, GoogleOAuthError, googleAuthorizeUrl, missingScopes, type GoogleOAuthConfig } from "../google/oauth";
+import { googleSettingsSchema } from "../google/settings";
 import { GoogleApiError, googleAccess, GoogleReauthError } from "../google/token";
 
 import { gmailClient } from "./client";
@@ -58,12 +55,6 @@ function userFacingError(error: unknown): string {
 }
 
 const logError = (what: string) => (error: unknown) => console.error(`${what}:`, error instanceof Error ? error.message : error);
-
-/** 저장된 토큰을 폐기한다 (갱신 토큰이 있으면 그것으로: 허용 전체가 거둬진다) */
-async function revokeStoredToken(token: unknown): Promise<void> {
-  const parsed = googleTokenSchema.safeParse(token);
-  if (parsed.success) await revokeGoogleToken(parsed.data.refresh_token ?? parsed.data.access_token);
-}
 
 export async function syncGmailConnection(
   admin: SupabaseClient,
@@ -113,14 +104,6 @@ export async function syncGmailConnection(
   }
 }
 
-/** 한 서비스에 계정 하나 (베타): 다른 Google 계정으로 연결했으면 옛 연결의 토큰을 폐기하고 끊는다. 실패해도 새 연결은 그대로 둔다 */
-async function disconnectOtherAccounts(admin: SupabaseClient, userId: string, keepId: string): Promise<void> {
-  for (const other of await otherConnections(admin, userId, "gmail", keepId)) {
-    await revokeStoredToken(other.token).catch(logError(`옛 Gmail 연결 토큰 폐기 실패 (${other.id})`));
-    await disconnectConnection(admin, userId, other.id).catch(logError(`옛 Gmail 연결 끊기 실패 (${other.id})`));
-  }
-}
-
 /** 연결 틀(registry.ts)에 내놓는 Gmail 연동 */
 export const gmailConnector: Connector = {
   provider: "gmail",
@@ -129,23 +112,19 @@ export const gmailConnector: Connector = {
     const grant = await exchangeGoogleCode(gmailOAuthConfig(), code);
     // 권한 화면에서 Gmail 체크를 뺐거나 계정을 알 수 없으면(openid 없음) 연결하지 않고, 쓸 수 없는 토큰은 바로 폐기한다 (G10)
     if (!grant.account || missingScopes(grant.scopes, [GMAIL_READONLY]).length > 0) {
-      await revokeStoredToken(grant.token).catch(logError("Gmail 토큰 폐기 실패 (범위 부족)"));
+      await revokeStoredGoogleToken(grant.token).catch(logError("Gmail 토큰 폐기 실패 (범위 부족)"));
       return "missing_scope";
     }
     const account = grant.account;
-    const connectionId = await saveConnection(admin, {
+    await saveGoogleAccount(admin, {
       userId,
       provider: "gmail",
-      externalAccountId: account.sub,
-      displayName: account.email,
+      account,
+      scopes: grant.scopes,
       token: grant.token,
     });
-    if (!(await mergeConnectionSettings(admin, { id: connectionId, userId }, { set: accountSettings(account, grant.scopes) }))) {
-      throw new Error("연결 설정을 저장하지 못했습니다 (연결이 사라짐)");
-    }
-    await disconnectOtherAccounts(admin, userId, connectionId);
     return "connected";
   },
   sync: (admin, connection, options) => syncGmailConnection(admin, connection, options),
-  revokeToken: revokeStoredToken,
+  revokeToken: revokeStoredGoogleToken,
 };
