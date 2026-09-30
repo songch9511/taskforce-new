@@ -6,7 +6,19 @@ import { CONSENT_WITHDRAWN_MESSAGE, ConsentRequiredError } from "@/lib/consent/g
 import { connectedAt } from "@/lib/connectors/store";
 
 import { processSource } from "./process";
-import { RETRY_WINDOW_MS, retryDeps, retryPlan, retryStalledSources, type RetryCandidate, type RetryDeps } from "./retry";
+import {
+  EXPIRE_BATCH,
+  EXPIRE_TIME_BUDGET_MS,
+  expiredAttempt,
+  RETRY_WINDOW_MS,
+  retryDeps,
+  retryPlan,
+  retryStalledSources,
+  STALE_PROCESSING_MS,
+  type ExpiredCandidate,
+  type RetryCandidate,
+  type RetryDeps,
+} from "./retry";
 
 vi.mock("server-only", () => ({}));
 vi.mock("@/lib/connectors/store", () => ({ connectedAt: vi.fn(), loadIdentity: vi.fn() }));
@@ -22,6 +34,7 @@ const row = (over: Partial<RetryCandidate> = {}): RetryCandidate => ({
   id: "s1",
   user_id: "u1",
   connection_id: null,
+  external_id: null,
   kind: "message",
   raw_text: "금요일까지 보낼게요",
   occurred_at: minutesAgo(120),
@@ -36,6 +49,17 @@ const row = (over: Partial<RetryCandidate> = {}): RetryCandidate => ({
 const stalled = (attempt: number, minutes: number) => ({
   processing_status: "processing" as const,
   processing_summary: { attempt, started_at: minutesAgo(minutes) },
+});
+const DAY = 24 * 60;
+/** 들어온 지 이틀, 3시간 전부터 처리 중에 멈춘 원문 (창을 지났다) */
+const expiredRow = (over: Partial<ExpiredCandidate> = {}): ExpiredCandidate => ({
+  id: "x1",
+  user_id: "u1",
+  kind: "message",
+  processing_status: "processing",
+  processing_summary: { attempt: 2, started_at: minutesAgo(180) },
+  created_at: minutesAgo(2 * DAY),
+  ...over,
 });
 
 beforeEach(() => vi.clearAllMocks());
@@ -76,6 +100,34 @@ describe("retryPlan: 다시 처리할 원문과 이번 시도 번호", () => {
   });
 });
 
+describe("expiredAttempt: 창을 지나서도 멈춘 원문 (다시 하지 않고 닫는다)", () => {
+  it("들어온 지 하루가 지났고 처리 중 · 대기에 15분 넘게 멈춘 글 원문은 닫는다. 기록된 시도 횟수를 그대로 돌려준다 (기록이 없으면 대기 0, 처리 중 1)", () => {
+    expect(expiredAttempt(expiredRow(), NOW)).toBe(2);
+    expect(expiredAttempt(expiredRow({ processing_status: "pending", processing_summary: null }), NOW)).toBe(0);
+    expect(expiredAttempt(expiredRow({ processing_status: "processing", processing_summary: null }), NOW)).toBe(1);
+    // 마지막 시도에서 멈췄어도 창을 지났으면 같은 방식으로 닫는다
+    expect(expiredAttempt(expiredRow({ processing_summary: { attempt: 3, started_at: minutesAgo(600) } }), NOW)).toBe(3);
+  });
+
+  it("창 안(하루 이내)의 원문은 얼마나 멈췄든 건드리지 않는다. 창의 경계는 candidates(created_at >= 창 시작)와 겹치지 않는다", () => {
+    expect(expiredAttempt(expiredRow({ created_at: minutesAgo(23 * 60) }), NOW)).toBeNull();
+    expect(expiredAttempt(expiredRow({ created_at: new Date(NOW.getTime() - RETRY_WINDOW_MS).toISOString() }), NOW)).toBeNull();
+    expect(expiredAttempt(expiredRow({ created_at: new Date(NOW.getTime() - RETRY_WINDOW_MS - 1).toISOString() }), NOW)).toBe(2);
+  });
+
+  it("아직 돌고 있을 수 있으면(시작한 지 15분이 안 됨) 두고, 시작 시각이 없으면 들어온 시각으로 본다", () => {
+    expect(expiredAttempt(expiredRow({ processing_summary: { attempt: 2, started_at: minutesAgo(5) } }), NOW)).toBeNull();
+    expect(expiredAttempt(expiredRow({ processing_summary: { attempt: 2, started_at: new Date(NOW.getTime() - STALE_PROCESSING_MS + 1).toISOString() } }), NOW)).toBeNull();
+    expect(expiredAttempt(expiredRow({ processing_summary: { attempt: 2 } }), NOW)).toBe(2);
+  });
+
+  it("할 일 DB 항목(task)과 처리가 끝난(완료 · 실패) 원문은 닫지 않는다", () => {
+    expect(expiredAttempt(expiredRow({ kind: "task" }), NOW)).toBeNull();
+    expect(expiredAttempt(expiredRow({ processing_status: "done" }), NOW)).toBeNull();
+    expect(expiredAttempt(expiredRow({ processing_status: "failed" }), NOW)).toBeNull();
+  });
+});
+
 describe("retryStalledSources", () => {
   function deps(
     candidates: RetryCandidate[],
@@ -88,6 +140,12 @@ describe("retryStalledSources", () => {
       taken?: string[];
       closedElsewhere?: string[];
       noIdentity?: string[];
+      /** 창을 지나 멈춘 원문 (닫으면 다음 조회에서 빠진다) */
+      expired?: ExpiredCandidate[];
+      expireElsewhere?: string[];
+      expireFails?: string[];
+      msPerExpire?: number;
+      expiredLookupFails?: boolean;
     } = {},
   ) {
     let now = NOW.getTime();
@@ -96,6 +154,8 @@ describe("retryStalledSources", () => {
     const gaveUp: { id: string; attempt: number }[] = [];
     const since: Date[] = [];
     const claimed: string[] = [];
+    const ranges: { createdBefore: Date; startedBefore: Date; limit: number }[] = [];
+    const expiredClosed: { id: string; attempt: number }[] = [];
     const d: RetryDeps = {
       candidates: async (from) => {
         since.push(from);
@@ -121,12 +181,26 @@ describe("retryStalledSources", () => {
         gaveUp.push({ id: candidate.id, attempt });
         return !options.closedElsewhere?.includes(candidate.id);
       },
+      // 실제 조회처럼 이미 닫은 것은 빼고 들어온 순서로 limit건까지만 돌려준다 (창 · 시각 조건은 일부러 보지 않는다: 부르는 쪽이 다시 확인한다)
+      expired: async (range) => {
+        ranges.push(range);
+        if (options.expiredLookupFails) throw new Error("조회 실패");
+        const done = new Set(expiredClosed.map((c) => c.id));
+        return (options.expired ?? []).filter((e) => !done.has(e.id)).slice(0, range.limit);
+      },
+      expire: async (candidate, attempt) => {
+        now += options.msPerExpire ?? 0;
+        if (options.expireFails?.includes(candidate.id)) throw new Error("닫기 실패");
+        if (options.expireElsewhere?.includes(candidate.id)) return false;
+        expiredClosed.push({ id: candidate.id, attempt });
+        return true;
+      },
       repurge: async (candidate) => {
         repurged.push(candidate.id);
       },
       clock: () => now,
     };
-    return { d, processed, repurged, gaveUp, since, claimed };
+    return { d, processed, repurged, gaveUp, since, claimed, ranges, expiredClosed };
   }
   const run = (d: RetryDeps, itemBudgetMs = 200_000) => retryStalledSources(d, { now: NOW, deadline: NOW.getTime() + 280_000, itemBudgetMs });
 
@@ -145,7 +219,7 @@ describe("retryStalledSources", () => {
       { id: "d", attempt: 3 },
     ]);
     expect(repurged).toEqual(["a", "d"]);
-    expect(result).toEqual({ due: 2, retried: 2, failed: 0, gaveUp: 0, skippedForTime: 0 });
+    expect(result).toEqual({ due: 2, retried: 2, failed: 0, gaveUp: 0, expired: 0, skippedForTime: 0 });
   });
 
   it("다른 실행이 먼저 가져간 원문은 건너뛴다", async () => {
@@ -200,6 +274,88 @@ describe("retryStalledSources", () => {
     expect(processed.map((p) => p.id)).toEqual(["a", "b"]);
     expect(repurged).toEqual(["a", "b"]);
     expect(result).toMatchObject({ due: 3, retried: 2, failed: 1 });
+  });
+
+  it("창을 지나 멈춘 원문은 동의와 상관없이 실패로 닫고 센다. 조회에는 창 시작 · 15분 전 · 한 번의 상한을 넘긴다", async () => {
+    const { d, expiredClosed, ranges } = deps([], {
+      expired: [
+        expiredRow({ id: "a" }),
+        // 동의하지 않은 사용자 · 대기 상태 · 시도 기록 없음
+        expiredRow({ id: "b", user_id: "u3", processing_status: "pending", processing_summary: null }),
+      ],
+    });
+    const result = await run(d);
+    expect(ranges).toEqual([
+      { createdBefore: new Date(NOW.getTime() - RETRY_WINDOW_MS), startedBefore: new Date(NOW.getTime() - STALE_PROCESSING_MS), limit: EXPIRE_BATCH },
+    ]);
+    expect(expiredClosed).toEqual([
+      { id: "a", attempt: 2 },
+      { id: "b", attempt: 0 },
+    ]);
+    expect(result).toEqual({ due: 0, retried: 0, failed: 0, gaveUp: 0, expired: 2, skippedForTime: 0 });
+  });
+
+  it("창 안 · 아직 돌고 있을 수 있는 · 할 일 DB 항목 · 끝난 원문은 조회가 잘못 돌려줘도 닫지 않는다", async () => {
+    const { d, expiredClosed } = deps([], {
+      expired: [
+        expiredRow({ id: "in-window", created_at: minutesAgo(23 * 60) }),
+        expiredRow({ id: "running", processing_summary: { attempt: 2, started_at: minutesAgo(5) } }),
+        expiredRow({ id: "task", kind: "task" }),
+        expiredRow({ id: "done", processing_status: "done" }),
+        expiredRow({ id: "real" }),
+      ],
+    });
+    const result = await run(d);
+    expect(expiredClosed.map((c) => c.id)).toEqual(["real"]);
+    expect(result.expired).toBe(1);
+  });
+
+  it("읽은 뒤 다른 실행이 바꿨으면(닫기가 false) 덮어쓰지 않고 세지도 않는다", async () => {
+    const { d, expiredClosed } = deps([], { expired: [expiredRow({ id: "a" }), expiredRow({ id: "b" })], expireElsewhere: ["a"] });
+    const result = await run(d);
+    expect(expiredClosed.map((c) => c.id)).toEqual(["b"]);
+    expect(result.expired).toBe(1);
+  });
+
+  it("한 건을 닫지 못해도 다음 원문을 닫고, 조회가 실패해도 다시 처리는 막지 않는다", async () => {
+    const failing = deps([], { expired: [expiredRow({ id: "a" }), expiredRow({ id: "b" })], expireFails: ["a"] });
+    expect((await run(failing.d)).expired).toBe(1);
+    expect(failing.expiredClosed.map((c) => c.id)).toEqual(["b"]);
+
+    const lookup = deps([row({ id: "r" })], { expired: [expiredRow({ id: "a" })], expiredLookupFails: true });
+    const result = await run(lookup.d);
+    expect(lookup.processed.map((p) => p.id)).toEqual(["r"]);
+    expect(result).toEqual({ due: 1, retried: 1, failed: 0, gaveUp: 0, expired: 0, skippedForTime: 0 });
+  });
+
+  it("한 번에 EXPIRE_BATCH건까지만 오래된 것부터 닫고, 남은 것은 다음 실행이 이어서 닫는다", async () => {
+    const rows = Array.from({ length: EXPIRE_BATCH * 2 + 30 }, (_, i) => expiredRow({ id: `e${i}` }));
+    const { d, expiredClosed } = deps([], { expired: rows });
+    expect((await run(d)).expired).toBe(EXPIRE_BATCH);
+    expect(expiredClosed.map((c) => c.id)).toEqual(rows.slice(0, EXPIRE_BATCH).map((r) => r.id));
+    expect((await run(d)).expired).toBe(EXPIRE_BATCH);
+    expect((await run(d)).expired).toBe(30);
+    expect((await run(d)).expired).toBe(0);
+    expect(expiredClosed.map((c) => c.id)).toEqual(rows.map((r) => r.id));
+  });
+
+  it("닫기가 시간 한도를 넘기면 멈추고 창 안 원문을 다시 처리한다 (남은 닫기는 다음 실행이)", async () => {
+    const rows = Array.from({ length: 10 }, (_, i) => expiredRow({ id: `e${i}` }));
+    // 한 건에 5초씩 걸리는 느린 DB: 한도 안에서 시작한 닫기까지만 한다
+    const { d, expiredClosed, processed } = deps([row({ id: "r" })], { expired: rows, msPerExpire: 5_000 });
+    const result = await run(d);
+    const closed = Math.floor(EXPIRE_TIME_BUDGET_MS / 5_000) + 1;
+    expect(result.expired).toBe(closed);
+    expect(expiredClosed.map((c) => c.id)).toEqual(rows.slice(0, closed).map((r) => r.id));
+    expect(processed.map((p) => p.id)).toEqual(["r"]);
+  });
+
+  it("창 안의 원문 처리는 그대로다: 동의하지 않은 사용자의 창 안 원문은 닫지 않고 남긴다", async () => {
+    const { d, expiredClosed, processed } = deps([row({ id: "mine" }), row({ id: "theirs", user_id: "u3" })], { expired: [expiredRow({ id: "old" })] });
+    const result = await run(d);
+    expect(processed.map((p) => p.id)).toEqual(["mine"]);
+    expect(expiredClosed.map((c) => c.id)).toEqual(["old"]);
+    expect(result).toMatchObject({ due: 1, retried: 1, expired: 1 });
   });
 });
 
@@ -272,6 +428,52 @@ describe("retryDeps: DB 조건", () => {
     expect(queries[0]).toContain("eq processing_status processing");
   });
 
+  it("창을 지난 원문 조회: 글은 읽지 않고, 창 전에 들어와 처리 중 · 대기에 멈춘 글 원문을 오래된 순서로 한 번의 상한까지", async () => {
+    const { admin, queries } = fakeAdmin([[expiredRow({ id: "a" })]]);
+    const createdBefore = new Date(NOW.getTime() - RETRY_WINDOW_MS);
+    const startedBefore = new Date(NOW.getTime() - STALE_PROCESSING_MS);
+    expect((await retryDeps(admin).expired({ createdBefore, startedBefore, limit: EXPIRE_BATCH })).map((r) => r.id)).toEqual(["a"]);
+    expect(queries[0]).toEqual([
+      "from sources",
+      "select id, user_id, kind, processing_status, processing_summary, created_at",
+      'in processing_status ["pending","processing"]',
+      "neq kind task",
+      `lt created_at ${createdBefore.toISOString()}`,
+      `or processing_summary->>started_at.is.null,processing_summary->>started_at.lt.${startedBefore.toISOString()}`,
+      'order created_at {"ascending":true}',
+      `limit ${EXPIRE_BATCH}`,
+    ]);
+  });
+
+  it("창을 지난 원문 닫기: 실패로 닫고 더 다시 하지 않으며 까닭을 남긴다. 읽은 뒤 상태 · 기록이 그대로일 때만", async () => {
+    const { admin, queries } = fakeAdmin([[{ id: "x1" }], []]);
+    const deps = retryDeps(admin);
+    const stuck = expiredRow();
+    expect(await deps.expire(stuck, 2)).toBe(true);
+    const update = JSON.parse(queries[0][1].slice("update ".length));
+    expect(update).toMatchObject({
+      processing_status: "failed",
+      processing_error: "처리 중 오류가 발생했습니다.",
+      processing_summary: { attempt: 2, retryable: false, closed: "expired" },
+    });
+    expect(typeof update.processed_at).toBe("string");
+    expect(typeof update.processing_summary.failed_at).toBe("string");
+    expect(queries[0]).toContain("eq processing_status processing");
+    expect(queries[0]).toContain("eq user_id u1");
+    expect(queries[0]).toContain(`contains processing_summary ${JSON.stringify(stuck.processing_summary)}`);
+
+    // 그 사이 다른 실행이 바꿨으면(0행) 닫지 않는다. 기록이 없던 원문은 여전히 없을 때만
+    expect(await deps.expire(expiredRow({ processing_status: "pending", processing_summary: null }), 0)).toBe(false);
+    expect(queries[1]).toContain("is processing_summary null");
+    expect(queries[1]).toContain("eq processing_status pending");
+  });
+
+  it("마지막 시도에서 멈춰 닫는 것(giveUp)에는 창을 지나 닫는 까닭이 붙지 않는다 (둘을 가를 수 있게)", async () => {
+    const { admin, queries } = fakeAdmin([[{ id: "s1" }]]);
+    await retryDeps(admin).giveUp(row(stalled(3, 30)), 3);
+    expect(JSON.parse(queries[0][1].slice("update ".length)).processing_summary).not.toHaveProperty("closed");
+  });
+
   it("처리: 연결 전 시각의 연동 원문은 알림 없이 처리한다 (동기화가 한꺼번에 가져온 옛 원문)", async () => {
     const { admin } = fakeAdmin();
     const deps = retryDeps(admin);
@@ -285,6 +487,16 @@ describe("retryDeps: DB 조건", () => {
     // 연결 시각은 연결마다 한 번만 읽는다
     expect(connectedAt).toHaveBeenCalledTimes(1);
     expect(connectedAt).toHaveBeenCalledWith(admin, { id: "c1", userId: "u1" });
+  });
+
+  it("처리: 연결로 가져온 원문(서비스 id가 있음)만 fromConnector로 넘긴다. 연결을 끊어 connection_id가 비어도 그대로다", async () => {
+    const { admin } = fakeAdmin();
+    const deps = retryDeps(admin);
+    const identity = { name: "나", aliases: [], emails: [] };
+    vi.mocked(processSource).mockResolvedValue({ ok: true, needsConfirmation: [] });
+    await deps.process(row({ kind: "email", external_id: "gmail-msg-1", connection_id: null }), identity, 2);
+    await deps.process(row({ id: "s2", kind: "email", external_id: null }), identity, 2);
+    expect(vi.mocked(processSource).mock.calls.map(([, , input]) => input.fromConnector)).toEqual([true, false]);
   });
 
   it("처리: 다시 처리임과 시도 번호를 넘기고 결과를 돌려준다. 동의를 철회했으면 원문은 지우지 않는다 (다시 얻을 수 없다)", async () => {

@@ -104,6 +104,7 @@ describe("processSource: 다시 처리 (재처리 cron)", () => {
   function recordingAdmin(evidenceQuotes: string[]) {
     const queries: string[][] = [];
     const updates: Record<string, unknown>[] = [];
+    const inserts: { table: string; rows: unknown }[] = [];
     let current: string[] = [];
     let table = "";
     const builder: object = new Proxy(
@@ -114,6 +115,7 @@ describe("processSource: 다시 처리 (재처리 cron)", () => {
             ? async () => ({ data: table === "evidence" ? evidenceQuotes.map((quote) => ({ quote })) : null })
             : (...args: unknown[]) => {
                 if (method === "update") updates.push(args[0] as Record<string, unknown>);
+                if (method === "insert") inserts.push({ table, rows: args[0] });
                 current.push(String(method));
                 return builder;
               },
@@ -127,7 +129,7 @@ describe("processSource: 다시 처리 (재처리 cron)", () => {
         return builder;
       },
     } as unknown as SupabaseClient;
-    return { admin, queries, updates };
+    return { admin, queries, updates, inserts };
   }
 
   beforeEach(() => {
@@ -138,6 +140,7 @@ describe("processSource: 다시 처리 (재처리 cron)", () => {
   it("이 원문에서 이미 근거로 쓰인 구절과 겹치는 후보는 빼고 병합하고, 뺀 수와 시도 번호를 남긴다", async () => {
     vi.mocked(runPipeline).mockResolvedValue({
       judged: [judged("금요일까지 견적서 정리해서 드릴게요"), judged("다음 주에 미팅 잡을게요")],
+      droppedQuotedHistory: [],
       summary: { extracted: 2 },
     } as unknown as PipelineResult);
     const { admin, updates } = recordingAdmin(["네, 금요일까지 견적서 정리해서 드릴게요."]);
@@ -152,8 +155,31 @@ describe("processSource: 다시 처리 (재처리 cron)", () => {
     });
   });
 
+  it("연결 메일의 인용된 옛 메일 속이라 버린 후보는 판정 기록에 이유만 남기고, 이유별 개수는 처리 요약에 들어간다", async () => {
+    const dropped = { title: "옛 약속", quote: "네, 수정 시안은 목요일까지 드리겠습니다." };
+    vi.mocked(runPipeline).mockResolvedValue({
+      judged: [judged("감사합니다")],
+      droppedQuotedHistory: [dropped],
+      summary: { extracted: 3, dropped: 2, droppedByReason: { quoteNotFound: 1, quotedHistory: 1 }, promptVersions: { extract: "extract-v5", judge: "judge-v5" } },
+    } as unknown as PipelineResult);
+    const { admin, inserts, updates } = recordingAdmin([]);
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    await processSource(admin, { id: "s1", userId: "u1" }, { ...input, kind: "email", fromConnector: true }, deps);
+
+    const rows = inserts.find((i) => i.table === "judge_logs")!.rows as { decision: string; jev_answers: Record<string, unknown>; candidate: unknown; model_version: string }[];
+    expect(rows).toHaveLength(2);
+    expect(rows[1]).toMatchObject({ decision: "reject", candidate: dropped, jev_answers: { dropped: "QUOTED_HISTORY" }, model_version: "verify@extract-v5" });
+    expect(updates.at(-1)).toMatchObject({ processing_summary: { droppedByReason: { quoteNotFound: 1, quotedHistory: 1 } } });
+    // 서버 로그에는 개수와 원문 id만 (후보 글은 찍지 않는다)
+    const logged = log.mock.calls.flat().join(" ");
+    expect(logged).toContain("1건 버림");
+    expect(logged).not.toContain("목요일");
+    log.mockRestore();
+  });
+
   it("처음 처리는 근거를 보지 않고 모든 후보를 병합한다", async () => {
-    vi.mocked(runPipeline).mockResolvedValue({ judged: [judged("금요일까지 견적서 정리해서 드릴게요")], summary: { extracted: 1 } } as unknown as PipelineResult);
+    vi.mocked(runPipeline).mockResolvedValue({ judged: [judged("금요일까지 견적서 정리해서 드릴게요")], droppedQuotedHistory: [], summary: { extracted: 1 } } as unknown as PipelineResult);
     const { admin, queries, updates } = recordingAdmin(["금요일까지 견적서 정리해서 드릴게요"]);
 
     await processSource(admin, { id: "s1", userId: "u1" }, input, deps);
@@ -198,7 +224,7 @@ describe("processSource: 확인 요청 알림", () => {
 
   beforeEach(() => {
     vi.mocked(notifyConfirmations).mockClear();
-    vi.mocked(runPipeline).mockResolvedValue({ judged: [], droppedCount: 0, summary: {} } as unknown as PipelineResult);
+    vi.mocked(runPipeline).mockResolvedValue({ judged: [], droppedCount: 0, droppedQuotedHistory: [], summary: {} } as unknown as PipelineResult);
     // 병합이 확인 요청이 필요한 Action 하나를 만든다
     vi.mocked(mergeJudged).mockImplementation(async (store: ActionStore) => {
       (store as unknown as { needsConfirmation: Set<string> }).needsConfirmation.add("action-1");
