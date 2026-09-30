@@ -37,7 +37,8 @@
           }
         ]
       },
-      "text": "제목: Banner update\n\nHi Sam,\n\nSam, please update the banner by Thursday. Alex is copied for awareness.\nThe new tagline is in the brand doc we shared last week.\n\nThanks,\nJordan"
+      "text": "제목: Banner update\n\nHi Sam,\n\nSam, please update the banner by Thursday. Alex is copied for awareness.\nThe new tagline is in the brand doc we shared last week.\n\nThanks,\nJordan",
+      "from_connector": true
     }
   ],
   "expected_actions": [],

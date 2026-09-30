@@ -42,8 +42,11 @@ export type JudgeOutcome = {
   decision: JudgeDecision;
   /** reject면 기각 사유, confirm이면 확인이 필요한 이유 */
   reasons: RejectReason[];
-  /** 확률 표가 아니라 코드 규칙으로 정한 판정. addressed_request: @이름으로 부른 요청이라 기각 대신 확인 요청 */
-  rule?: "addressed_request";
+  /**
+   * 확률 표가 아니라 코드 규칙으로 정한 판정. 둘 다 아직 수락하지 않은 요청이라 기각 대신 확인 요청으로 보낸다.
+   * addressed_request: 사용자를 @이름으로 불렀다. sole_recipient_request: 사용자가 유일한 받는 사람인 메일이다.
+   */
+  rule?: "addressed_request" | "sole_recipient_request";
 };
 
 
@@ -116,9 +119,19 @@ export function parseJudgeAnswers(answers: JevDecision["answers"]): JudgeSignals
   };
 }
 
+/**
+ * 유일한 받는 사람 메일 규칙(sole_recipient_request)이 확인 요청으로 살리는 후보의 최소 `is_my_commitment`.
+ * 이 아래는 사용자에게 한 요청이 아니라 남의 일 · 남의 말을 추출한 것에 가까워 기각 그대로 둔다: 골든셋 보정 표에서 0.0~0.2 구간의
+ * 실제 내 약속 비율이 0/57이다. 개인화된 영업 메일("Open to a 15-min call Tuesday?")이 요청처럼 보여도 아는 사이인지는 파이프라인이 모르므로
+ * (주소가 회사 도메인이 아닌 외부 거래처가 이 규칙의 주된 대상이다) 확률 아래쪽만 자른다. @이름 규칙(addressed_request)에는 쓰지 않는다: 이름을 직접 불렀다.
+ */
+export const SOLE_RECIPIENT_MIN_MINE = 0.2;
+
 export type DecideContext = {
   /** 인용 줄이 사용자를 @이름으로 직접 부른다 (addressedToUser) */
   addressedToUser?: boolean;
+  /** 사용자가 유일한 받는 사람인 메일의 후보다 (kind email + userPosition sole_recipient) */
+  soleRecipient?: boolean;
 };
 
 /** 확률을 임계값과 비교해 자동 반영 / 확인 요청 / 기각을 정한다 (docs/TRUTH_RULES.md 1장 표). */
@@ -132,9 +145,12 @@ export function decideOutcome(
   if (signals.is_actionable < thresholds.reject) rejects.push("INFO_ONLY");
   if (signals.certainty.choice === "none") rejects.push("TENTATIVE");
   if (signals.already_done >= thresholds.doneRejectAt) rejects.push("ALREADY_DONE");
-  // 사용자를 @이름으로 직접 부른 요청은 아직 수락하지 않았다는 이유("내 약속 아님") 하나로는 버리지 않고 묻는다 (원칙 3).
-  // 무엇을 가리키는지 원문에 없는 요청("@지호 이거 금요일까지 될까요?")이 조용히 사라지지 않게 한다. 다른 사유가 함께 있으면 그대로 기각.
-  const pendingRequest = context.addressedToUser === true && rejects.length === 1 && rejects[0] === "NOT_MY_ACTION";
+  // 사용자를 @이름으로 직접 부른 요청, 사용자가 유일한 받는 사람인 메일의 요청은 아직 수락하지 않았다는 이유("내 약속 아님") 하나로는
+  // 버리지 않고 묻는다 (원칙 3). 무엇을 가리키는지 원문에 없는 요청("@지호 이거 금요일까지 될까요?")이나 여러 이야기 사이에 묻힌
+  // 메일 요청("계약서 사본도 한 부 보내주실 수 있을까요?")이 조용히 사라지지 않게 한다. 다른 사유가 함께 있으면 그대로 기각.
+  const soleRecipient = context.soleRecipient === true && signals.is_my_commitment >= SOLE_RECIPIENT_MIN_MINE;
+  const pendingRule = context.addressedToUser === true ? "addressed_request" : soleRecipient ? "sole_recipient_request" : null;
+  const pendingRequest = pendingRule !== null && rejects.length === 1 && rejects[0] === "NOT_MY_ACTION";
   if (rejects.length > 0 && !pendingRequest) return { decision: "reject", reasons: rejects };
 
   const doubts: RejectReason[] = [];
@@ -143,7 +159,7 @@ export function decideOutcome(
   if (signals.certainty.choice !== "firm") doubts.push("TENTATIVE");
   if (signals.already_done >= thresholds.doneAcceptBelow) doubts.push("ALREADY_DONE");
   // 규칙으로 살린 요청은 임계값 설정과 상관없이 확인 요청까지만 간다 (자동 반영하지 않는다).
-  if (pendingRequest) return { decision: "confirm", reasons: [...new Set<RejectReason>(["NOT_MY_ACTION", ...doubts])], rule: "addressed_request" };
+  if (pendingRequest) return { decision: "confirm", reasons: [...new Set<RejectReason>(["NOT_MY_ACTION", ...doubts])], rule: pendingRule };
   return doubts.length > 0 ? { decision: "confirm", reasons: doubts } : { decision: "auto", reasons: [] };
 }
 
@@ -162,7 +178,10 @@ export async function judgeCandidate(
   const signals = parseJudgeAnswers(response.answers);
   const speaker = quoteSpeaker(source.text, candidate.quote, identity, source.participants);
   return {
-    ...decideOutcome(signals, thresholds, { addressedToUser: addressedToUser(source.text, candidate.quote, identity, source.participants) }),
+    ...decideOutcome(signals, thresholds, {
+      addressedToUser: addressedToUser(source.text, candidate.quote, identity, source.participants),
+      soleRecipient: source.kind === "email" && userPosition(identity, source.participants) === "sole_recipient",
+    }),
     signals,
     ...(speaker ? { speaker } : {}),
     promptVersion: self ? WRITTEN_BY_ME_PROMPT_VERSION : JUDGE_PROMPT_VERSION,

@@ -53,7 +53,8 @@
           }
         ]
       },
-      "text": "제목: Implementation plan timing\n\nHi Alex,\n\nOur steering meeting moved to next Tuesday, so Friday is fine for the implementation plan.\n\nBest,\nNina"
+      "text": "제목: Implementation plan timing\n\nHi Alex,\n\nOur steering meeting moved to next Tuesday, so Friday is fine for the implementation plan.\n\nBest,\nNina",
+      "from_connector": true
     }
   ],
   "expected_actions": [

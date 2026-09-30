@@ -22,6 +22,8 @@ import { mergeTask, type TaskInput } from "@/lib/pipeline/merge-task";
 import {
   classifyMiss,
   extractMissing,
+  QUOTED_HISTORY_DROP,
+  responseMissStage,
   reportMatchDecide,
   reportStore,
   trackedByEvidence,
@@ -190,23 +192,30 @@ export async function processSource(
     await assertConsent(check);
     const result = await runPipeline(input, ai);
 
-    await replaceJudgeLogs(
-      admin,
-      source,
-      result.judged.map(({ candidate, judge }) => ({
-        user_id: source.userId,
-        source_id: sourceId,
-        candidate,
-        jev_answers: {
-          signals: judge.signals,
-          reasons: judge.reasons,
-          ...(judge.rule ? { rule: judge.rule } : {}),
-          ...(judge.speaker ? { quote_speaker: judge.speaker } : {}),
-        },
-        decision: judge.decision,
-        model_version: `${judge.model}@${judge.promptVersion}`,
-      })),
-    );
+    const judgedRows: JudgeLogRow[] = result.judged.map(({ candidate, judge }) => ({
+      user_id: source.userId,
+      source_id: sourceId,
+      candidate,
+      jev_answers: {
+        signals: judge.signals,
+        reasons: judge.reasons,
+        ...(judge.rule ? { rule: judge.rule } : {}),
+        ...(judge.speaker ? { quote_speaker: judge.speaker } : {}),
+      },
+      decision: judge.decision,
+      model_version: `${judge.model}@${judge.promptVersion}`,
+    }));
+    // 연결 메일의 인용된 옛 메일에만 있어 기계 검증이 버린 후보: 판정 전에 버렸으니 답 대신 이유만 남긴다 (누락 신고가 이 단계를 알아본다, classifyMiss)
+    const droppedRows: JudgeLogRow[] = result.droppedQuotedHistory.map((candidate) => ({
+      user_id: source.userId,
+      source_id: sourceId,
+      candidate,
+      jev_answers: { dropped: QUOTED_HISTORY_DROP },
+      decision: "reject",
+      model_version: `verify@${result.summary.promptVersions.extract}`,
+    }));
+    await replaceJudgeLogs(admin, source, [...judgedRows, ...droppedRows]);
+    if (result.droppedQuotedHistory.length > 0) console.log(`인용된 옛 메일 속 후보 ${result.droppedQuotedHistory.length}건 버림 (${sourceId})`);
 
     // 기존 Action과 맞춰 보고 반영한다.
     const store = new SupabaseActionStore(admin, source.userId);
@@ -371,15 +380,16 @@ export async function reportMissing(
 
   const { data: logs } = await admin
     .from("judge_logs")
-    .select("candidate, decision")
+    .select("candidate, decision, jev_answers")
     .eq("user_id", source.userId)
     .eq("source_id", source.id)
     .throwOnError();
   const stage = classifyMiss({
     processingStatus: source.processingStatus,
-    logs: ((logs ?? []) as { candidate: { quote?: unknown } | null; decision: MissLog["decision"] }[]).map((log) => ({
+    logs: ((logs ?? []) as { candidate: { quote?: unknown } | null; decision: MissLog["decision"]; jev_answers: { dropped?: unknown } | null }[]).map((log) => ({
       quote: typeof log.candidate?.quote === "string" ? log.candidate.quote : "",
       decision: log.decision,
+      ...(log.jev_answers?.dropped === QUOTED_HISTORY_DROP ? { dropped: QUOTED_HISTORY_DROP } : {}),
     })),
     quote: input.quote,
   });
@@ -410,7 +420,8 @@ export async function reportMissing(
   if (!outcome?.actionId) throw new Error(`누락 신고를 반영하지 못했습니다 (${outcome?.relation ?? "결과 없음"})`);
 
   const action = await actionSummary(admin, source.userId, outcome.actionId);
-  return outcome.relation === "new" ? { status: "created", action, stage } : { status: "already_tracked", action, stage: null };
+  // 응답 계약에는 quoted_history가 없다(missStageSchema): 응답에서는 추출 안 됨으로 보이고, 이벤트(지표)에만 그대로 남는다
+  return outcome.relation === "new" ? { status: "created", action, stage: responseMissStage(stage) } : { status: "already_tracked", action, stage: null };
 }
 
 async function actionSummary(admin: SupabaseClient, userId: string, actionId: string): Promise<ActionSummary> {
