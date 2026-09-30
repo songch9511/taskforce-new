@@ -34,6 +34,7 @@ const row = (over: Partial<RetryCandidate> = {}): RetryCandidate => ({
   id: "s1",
   user_id: "u1",
   connection_id: null,
+  external_id: null,
   kind: "message",
   raw_text: "금요일까지 보낼게요",
   occurred_at: minutesAgo(120),
@@ -486,6 +487,16 @@ describe("retryDeps: DB 조건", () => {
     // 연결 시각은 연결마다 한 번만 읽는다
     expect(connectedAt).toHaveBeenCalledTimes(1);
     expect(connectedAt).toHaveBeenCalledWith(admin, { id: "c1", userId: "u1" });
+  });
+
+  it("처리: 연결로 가져온 원문(서비스 id가 있음)만 fromConnector로 넘긴다. 연결을 끊어 connection_id가 비어도 그대로다", async () => {
+    const { admin } = fakeAdmin();
+    const deps = retryDeps(admin);
+    const identity = { name: "나", aliases: [], emails: [] };
+    vi.mocked(processSource).mockResolvedValue({ ok: true, needsConfirmation: [] });
+    await deps.process(row({ kind: "email", external_id: "gmail-msg-1", connection_id: null }), identity, 2);
+    await deps.process(row({ id: "s2", kind: "email", external_id: null }), identity, 2);
+    expect(vi.mocked(processSource).mock.calls.map(([, , input]) => input.fromConnector)).toEqual([true, false]);
   });
 
   it("처리: 다시 처리임과 시도 번호를 넘기고 결과를 돌려준다. 동의를 철회했으면 원문은 지우지 않는다 (다시 얻을 수 없다)", async () => {

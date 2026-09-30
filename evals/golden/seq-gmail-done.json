@@ -31,7 +31,8 @@
           }
         ]
       },
-      "text": "제목: Re: Signed contract\n\nHi Riley,\n\nSure — I'll send the signed contract by Thursday.\n\nAlex\n\nOn Tue, Oct 6, 2026 at 9:14 AM Riley Brooks <riley@pinegate.example> wrote:\n\n> Hi Alex,\n>\n> Could you send the signed contract by Thursday? We'd like to start onboarding next week.\n>\n> Thanks,\n> Riley"
+      "text": "제목: Re: Signed contract\n\nHi Riley,\n\nSure — I'll send the signed contract by Thursday.\n\nAlex\n\nOn Tue, Oct 6, 2026 at 9:14 AM Riley Brooks <riley@pinegate.example> wrote:\n\n> Hi Alex,\n>\n> Could you send the signed contract by Thursday? We'd like to start onboarding next week.\n>\n> Thanks,\n> Riley",
+      "from_connector": true
     },
     {
       "id": "gmail-1008d",
@@ -49,7 +50,8 @@
           }
         ]
       },
-      "text": "제목: Re: Signed contract\n\nHi Riley,\n\nAttached the signed contract. Let me know if anything else is needed for onboarding.\n\nAlex\n\nOn Tue, Oct 6, 2026 at 11:00 AM Alex Kim <alex@lumenfield.example> wrote:\n\n> Hi Riley,\n>\n> Sure — I'll send the signed contract by Thursday.\n>\n> Alex\n>\n> On Tue, Oct 6, 2026 at 9:14 AM Riley Brooks <riley@pinegate.example> wrote:\n>\n>> Hi Alex,\n>>\n>> Could you send the signed contract by Thursday? We'd like to start onboarding next week.\n>>\n>> Thanks,\n>> Riley"
+      "text": "제목: Re: Signed contract\n\nHi Riley,\n\nAttached the signed contract. Let me know if anything else is needed for onboarding.\n\nAlex\n\nOn Tue, Oct 6, 2026 at 11:00 AM Alex Kim <alex@lumenfield.example> wrote:\n\n> Hi Riley,\n>\n> Sure — I'll send the signed contract by Thursday.\n>\n> Alex\n>\n> On Tue, Oct 6, 2026 at 9:14 AM Riley Brooks <riley@pinegate.example> wrote:\n>\n>> Hi Alex,\n>>\n>> Could you send the signed contract by Thursday? We'd like to start onboarding next week.\n>>\n>> Thanks,\n>> Riley",
+      "from_connector": true
     }
   ],
   "expected_actions": [

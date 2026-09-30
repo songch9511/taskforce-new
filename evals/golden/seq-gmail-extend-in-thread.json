@@ -31,7 +31,8 @@
           }
         ]
       },
-      "text": "제목: Signed contract\n\nHi Alex,\n\nCould you send the signed contract by Monday?\nOur finance team will countersign it on Tuesday.\n\nThanks,\nJordan"
+      "text": "제목: Signed contract\n\nHi Alex,\n\nCould you send the signed contract by Monday?\nOur finance team will countersign it on Tuesday.\n\nThanks,\nJordan",
+      "from_connector": true
     },
     {
       "id": "gmail-1001b",
@@ -49,7 +50,8 @@
           }
         ]
       },
-      "text": "제목: Re: Signed contract\n\nSure, I'll send it by Monday.\n\nAlex\n\nOn Thu, Oct 1, 2026 at 4:12 PM Jordan Lee <jordan@harborline.example> wrote:\n\n> Hi Alex,\n>\n> Could you send the signed contract by Monday?\n> Our finance team will countersign it on Tuesday.\n>\n> Thanks,\n> Jordan"
+      "text": "제목: Re: Signed contract\n\nSure, I'll send it by Monday.\n\nAlex\n\nOn Thu, Oct 1, 2026 at 4:12 PM Jordan Lee <jordan@harborline.example> wrote:\n\n> Hi Alex,\n>\n> Could you send the signed contract by Monday?\n> Our finance team will countersign it on Tuesday.\n>\n> Thanks,\n> Jordan",
+      "from_connector": true
     },
     {
       "id": "gmail-1005c",
@@ -67,7 +69,8 @@
           }
         ]
       },
-      "text": "제목: Re: Signed contract\n\nWednesday works too, no rush.\n\nJordan\n\nOn Thu, Oct 1, 2026 at 5:05 PM Alex Kim <alex@lumenfield.example> wrote:\n\n> Sure, I'll send it by Monday.\n>\n> Alex\n>\n> On Thu, Oct 1, 2026 at 4:12 PM Jordan Lee <jordan@harborline.example> wrote:\n>\n>> Hi Alex,\n>>\n>> Could you send the signed contract by Monday?\n>> Our finance team will countersign it on Tuesday.\n>>\n>> Thanks,\n>> Jordan"
+      "text": "제목: Re: Signed contract\n\nWednesday works too, no rush.\n\nJordan\n\nOn Thu, Oct 1, 2026 at 5:05 PM Alex Kim <alex@lumenfield.example> wrote:\n\n> Sure, I'll send it by Monday.\n>\n> Alex\n>\n> On Thu, Oct 1, 2026 at 4:12 PM Jordan Lee <jordan@harborline.example> wrote:\n>\n>> Hi Alex,\n>>\n>> Could you send the signed contract by Monday?\n>> Our finance team will countersign it on Tuesday.\n>>\n>> Thanks,\n>> Jordan",
+      "from_connector": true
     }
   ],
   "expected_actions": [

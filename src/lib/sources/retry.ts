@@ -34,6 +34,8 @@ export type RetryCandidate = {
   id: string;
   user_id: string;
   connection_id: string | null;
+  /** 연결로 가져온 원문이면 서비스의 id (직접 넣은 원문은 null. 연결을 끊어 connection_id가 비어도 남는다) */
+  external_id: string | null;
   kind: ExtractInput["kind"];
   raw_text: string;
   occurred_at: string;
@@ -241,7 +243,7 @@ export function retryDeps(admin: SupabaseClient, limit = 50): RetryDeps {
       const { data } = await admin
         .from("sources")
         .select(
-          "id, user_id, connection_id, kind, raw_text, occurred_at, participants, written_by_me, processing_status, processing_summary, processing_error, created_at",
+          "id, user_id, connection_id, external_id, kind, raw_text, occurred_at, participants, written_by_me, processing_status, processing_summary, processing_error, created_at",
         )
         .in("processing_status", ["pending", "processing", "failed"])
         .neq("kind", "task")
@@ -273,6 +275,7 @@ export function retryDeps(admin: SupabaseClient, limit = 50): RetryDeps {
         identity,
         participants: row.participants ?? undefined,
         writtenByMe: row.written_by_me,
+        fromConnector: row.external_id !== null,
       });
       return ok;
     },

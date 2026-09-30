@@ -41,7 +41,8 @@ type JudgeLogRow = {
   id: string;
   decision: "auto" | "confirm" | "reject";
   candidate: VerifiedCandidate;
-  jev_answers: { signals: JudgeSignals; reasons: RejectReason[] };
+  // dropped: 판정 전에 기계 검증이 버린 후보(연결 메일의 인용된 옛 메일 속)라 Jev 답이 없다
+  jev_answers: { signals: JudgeSignals; reasons: RejectReason[]; dropped?: never } | { dropped: string; signals?: never; reasons?: never };
   model_version: string;
 };
 
@@ -227,6 +228,18 @@ export default async function LabPage({ searchParams }: { searchParams: Promise<
                   <tbody>
                     {sortedLogs.map((log) => {
                       const { signals, reasons } = log.jev_answers;
+                      if (!signals) {
+                        return (
+                          <tr key={log.id} className="border-b align-top last:border-0">
+                            <td className="py-2 pr-3 whitespace-nowrap">버림</td>
+                            <td className="py-2 pr-3" colSpan={7}>
+                              <div className="font-medium">{log.candidate.title}</div>
+                              <div className="text-muted-foreground">“{log.candidate.quote}”</div>
+                            </td>
+                            <td className="py-2 whitespace-nowrap">인용된 옛 메일 속</td>
+                          </tr>
+                        );
+                      }
                       return (
                         <tr key={log.id} className="border-b align-top last:border-0">
                           <td className="py-2 pr-3 whitespace-nowrap">{DECISION_LABELS[log.decision]}</td>

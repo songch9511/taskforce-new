@@ -1,0 +1,64 @@
+{
+  "id": "gmail-reply-request-only-in-quote",
+  "description": "열린 문제 케이스(PR 1b 검토): 사용자가 요청 메일에 \"Sure, I'll handle it.\" 한 줄로 답했는데, 무엇을 언제까지인지는 인용된 요청에만 있고 그 요청 메일은 따로 들어온 적이 없다(동기화 창 밖 · 거르기에 걸림 등). 인용 속 구절은 기계 검증이 버리므로(연결 메일) 새 글의 \"Sure, I'll handle it.\"만 후보가 될 수 있다. 정답은 이 답이 DPA 검토 의견을 목요일까지 보내겠다는 약속이라는 것이다. 현재 동작은 evals/golden/README.md 기록 표와 google-integration.md 4장 \"PR 1b 결과\"에 그대로 적는다. 다른 케이스를 이 케이스에 맞춰 바꾸지 않는다.",
+  "origin": "synthetic",
+  "tags": [
+    "gmail"
+  ],
+  "user": {
+    "name": "Alex Kim",
+    "aliases": [
+      "Alex"
+    ],
+    "emails": [
+      "alex@lumenfield.example"
+    ]
+  },
+  "sources": [
+    {
+      "id": "gmail-1013q",
+      "kind": "email",
+      "occurred_at": "2026-10-13T10:00:00+09:00",
+      "participants": {
+        "from": {
+          "name": "Alex Kim",
+          "email": "alex@lumenfield.example"
+        },
+        "to": [
+          {
+            "name": "Casey Nolan",
+            "email": "casey@brightforge.example"
+          }
+        ]
+      },
+      "text": "제목: Re: DPA review\n\nSure, I'll handle it.\n\nAlex\n\nOn Mon, Oct 12, 2026 at 2:10 PM Casey Nolan <casey@brightforge.example> wrote:\n\n> Hi Alex,\n>\n> Could you review the updated DPA and send back your comments by Thursday?\n> Legal needs it before the vendor call.\n>\n> Thanks,\n> Casey",
+      "from_connector": true
+    }
+  ],
+  "expected_actions": [
+    {
+      "title": "Casey Nolan에게 DPA 검토 의견 전달",
+      "owner": "me",
+      "counterpart": "Casey Nolan",
+      "due": "2026-10-15",
+      "status": "open",
+      "evidence": [
+        {
+          "source": "gmail-1013q",
+          "quote": "Sure, I'll handle it."
+        },
+        {
+          "source": "gmail-1013q",
+          "quote": "Could you review the updated DPA and send back your comments by Thursday?"
+        }
+      ]
+    }
+  ],
+  "must_not_extract": [
+    {
+      "source": "gmail-1013q",
+      "quote": "Legal needs it before the vendor call.",
+      "reason": "INFO_ONLY"
+    }
+  ]
+}
