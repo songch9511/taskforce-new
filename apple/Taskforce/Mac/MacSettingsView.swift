@@ -102,6 +102,8 @@ private struct MacAccountPane: View {
         .formStyle(.grouped)
         .task(id: userID) {
             await account.load()
+            // 계정이 바뀌어 취소됐으면 전 계정으로 칸을 채우지 않는다 (읽기는 취소돼도 끝까지 돈다)
+            guard !Task.isCancelled else { return }
             fill(for: userID)
         }
         .onChange(of: account.profile) { fill(for: userID) }

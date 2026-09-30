@@ -40,6 +40,9 @@ final class AccountStore {
     private var policyRefresh = PolicyNoticeRefresh()
     /// `reset()`마다 오른다: 전 사용자의 늦은 응답을 버린다
     private var generation = 0
+    /// `load()`를 겹쳐 부르면 (Mac: 로그인 직후 런처 + 설정 창) 한 번만 읽는다. 따로 읽으면 Google 로그인 이름을 채우지 않은 쪽이
+    /// 먼저 빈 이름의 프로필을 두고, 설정 창 이름 칸이 그 빈 값으로 채워진 채 굳는다
+    private let loads = SingleFlight()
 
     let services: AppServices
     /// Google 로그인 직후 이름 채우기에만 쓴다 (`namedFromAccount`)
@@ -98,11 +101,19 @@ final class AccountStore {
     /// 화면에 보일 동의 상태
     var hasConsent: Bool { consentGiven || profile?.hasAIConsent == true }
 
+    /// 프로필 · 연결 · 요청을 읽는다. 이미 읽는 중이면 그 끝을 기다린다 (`loads`)
     func load() async {
         #if DEBUG
         if sampleMode { return }
         #endif
+        // 부른 때의 계정으로 읽는다: 읽기는 부른 화면이 사라져도 끝까지 돈다.
+        // 그사이 계정이 바뀌면 결과를 버리고(`generation`) 다음 계정의 Google 이름을 가져가지 않는다(`userID`)
         let generation = generation
+        let userID = signedInUserID
+        await loads.run { await self.read(generation: generation, userID: userID) }
+    }
+
+    private func read(generation: Int, userID: UUID?) async {
         async let profileValue = try? services.api.profile()
         async let connectionsValue = try? services.reads.connections()
         // 예전 서버에는 표가 없다
@@ -114,7 +125,7 @@ final class AccountStore {
         if let loadedProfile {
             // 이름을 채우면 채운 프로필을 한 번에 둔다 (Mac 프로필 칸은 처음 받은 프로필로 한 번만 채운다).
             // 저장이 실패해도 generation을 다시 본다: 그사이 로그아웃 · 계정 전환이면 전 사용자 값을 두지 않는다
-            let named = await namedFromAccount(loadedProfile)
+            let named = await namedFromAccount(loadedProfile, readFor: userID)
             guard generation == self.generation else { return }
             profile = named ?? loadedProfile
         }
@@ -124,6 +135,8 @@ final class AccountStore {
     /// 로그아웃 · 계정 전환 뒤 (Mac은 이 저장소 하나를 계속 쓴다)
     func reset() {
         generation += 1
+        // 전 사용자의 읽기는 `generation`으로 버려진다: 다음 `load()`는 그것을 기다리지 않고 새로 읽는다
+        loads.reset()
         consentGiven = false
         resumeProvider = nil
         profile = nil
@@ -390,13 +403,19 @@ final class AccountStore {
     // MARK: 프로필
 
     /// Google 로그인 직후 처음 읽은 프로필의 이름이 비어 있으면 그 로그인이 준 이름으로 채운다: 원문 속 "나"를 찾는 기본 이름.
-    /// 로그인 직후 한 번만 (이름이 이미 있어도 기회를 쓴다), 그 로그인의 사용자가 지금 로그인한 사용자일 때만 저장한다.
+    /// 로그인 직후 한 번만 (이름이 이미 있어도 기회를 쓴다), 그 로그인의 사용자를 읽었고 그 사용자가 지금 로그인한 사용자일 때만 저장한다
+    /// (iPhone은 계정마다 저장소가 따로라 `reset()`이 없다: 로그아웃 전에 시작한 읽기가 다음 계정의 이름을 전 계정 프로필과 섞어 저장하지 않게).
     /// 채웠으면 저장된 프로필, 아니면 nil (저장이 실패하면 iPhone이 처음 한 번 이름을 묻는다).
-    private func namedFromAccount(_ profile: Profile) async -> Profile? {
-        guard let session, let fill = session.takeAccountNameFill() else { return nil }
-        let signedInUserID: UUID? = if case .signedIn(let userID, _) = session.state { userID } else { nil }
+    private func namedFromAccount(_ profile: Profile, readFor userID: UUID?) async -> Profile? {
+        guard let session, let userID, let fill = session.takeAccountNameFill(for: userID) else { return nil }
         guard let edited = fill.profile(filling: profile, signedInUserID: signedInUserID) else { return nil }
         return try? await services.api.saveProfile(edited)
+    }
+
+    /// 지금 로그인한 사용자 (세션을 모르면 nil)
+    private var signedInUserID: UUID? {
+        guard let session, case .signedIn(let userID, _) = session.state else { return nil }
+        return userID
     }
 
     /// 이름 · 별칭 저장. 성공하면 true.

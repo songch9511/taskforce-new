@@ -83,6 +83,8 @@ struct HomeView: View {
         }
         .task {
             await account.load()
+            // 로그아웃으로 사라졌으면 묻지 않는다: 묻지 않고 "물었음"만 남기면 이 기기에서 다시 묻지 않는다 (읽기는 취소돼도 끝까지 돈다)
+            guard !Task.isCancelled else { return }
             promptProfileIfNeeded()
             promptConsentIfNeeded()
         }
