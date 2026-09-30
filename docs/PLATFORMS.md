@@ -32,7 +32,7 @@
 | 기능 | 역할 | 단계 |
 |---|---|---|
 | 한 화면 | 위에 Review 카드(한 번에 하나, 확인 · 수정) + 아래 In Progress · To Do · Done Today 목록(상태 이름 To Do · In Progress · Done으로만 옮긴다: 상태 표시 누르기 · 밀기 · 길게 누르기. 삭제는 왼쪽 밀기 · 길게 누르기의 Delete, 5초 Undo). 처리방침이 바뀌면 목록 위에 한 줄(View · 닫기) | MVP |
-| 계정 시트 | Connections(연결 · 연결 끊기), AI processing consent(동의 · 철회), Privacy Policy · Terms 링크, Sign out, Delete account(Apple로 다시 인증해 Sign in with Apple 토큰을 폐기한 뒤 삭제) | MVP |
+| 계정 시트 | Connections(연결 · 연결 끊기), AI data(외부 AI 처리 동의 · 철회), Privacy Policy · Terms 링크, Sign out, Delete account(Apple로 다시 인증해 Sign in with Apple 토큰을 폐기한 뒤 삭제) | MVP |
 | 알림 | 확인 요청이 생겼을 때, 기한이 임박했을 때 | MVP |
 | 공유 확장 · 위젯 · App Intents | go live 뒤로 미룬다. 타깃이 아직 없다 ([PRD.md](PRD.md) "이후", [남은 일](GO_LIVE.md#10-남은-일-go-live-조건-아님)) | 이후 |
 

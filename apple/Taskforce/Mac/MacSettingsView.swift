@@ -4,7 +4,7 @@ import SwiftUI
 import TaskforceKit
 import TaskforceUI
 
-/// Mac 설정 창: Account · Connections · AI processing · Shortcut. iPhone과 같은 연결 · 동의 화면을 쓴다.
+/// Mac 설정 창: Account · Connections · AI data · Shortcut. iPhone과 같은 연결 · 동의 화면을 쓴다.
 struct MacSettingsView: View {
     @Environment(SessionStore.self) private var session
     @Environment(AccountStore.self) private var account
@@ -18,7 +18,7 @@ struct MacSettingsView: View {
             Tab("Connections", systemImage: "link", value: MacSettingsTab.connections.rawValue) {
                 signedInOnly { ConnectionsView() }
             }
-            Tab("AI processing", systemImage: "hand.raised", value: MacSettingsTab.ai.rawValue) {
+            Tab("AI data", systemImage: "hand.raised", value: MacSettingsTab.ai.rawValue) {
                 signedInOnly { ConsentSettingsView() }
             }
             Tab("Shortcut", systemImage: "keyboard", value: MacSettingsTab.shortcut.rawValue) {

@@ -228,7 +228,7 @@ struct ConsentPrompt: View {
         VStack(alignment: .leading, spacing: TFSpace.xl) {
             ScrollView {
                 VStack(alignment: .leading, spacing: TFSpace.xl) {
-                    Text("AI processing")
+                    Text("AI data")
                         .font(TFFont.title)
                         .foregroundStyle(TFColor.textPrimary)
                     ConsentDetails()
@@ -287,7 +287,7 @@ struct ConsentSettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .navigationTitle("AI processing")
+        .navigationTitle("AI data")
         .task { await account.load() }
         .confirmationDialog("Withdraw AI processing?", isPresented: $confirmingWithdraw, titleVisibility: .visible) {
             Button("Withdraw", role: .destructive) { Task { await account.withdrawConsent() } }
