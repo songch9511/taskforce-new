@@ -35,7 +35,7 @@
 | `NEXT_PUBLIC_SUPABASE_URL` | `https://tirtdojsahotjfgdsryi.supabase.co` | 경로 없이 (`src/lib/env.ts`가 검사) |
 | `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` | Supabase → Project Settings → API Keys → Publishable | 공개 값 |
 | `SUPABASE_SERVICE_ROLE_KEY` | 같은 화면 → service_role (secret) | RLS 우회. **Sensitive**, `NEXT_PUBLIC_` 금지 |
-| `OPENROUTER_API_KEY` | openrouter.ai → Keys. 운영용 키를 따로 만들고 사용 한도를 건다 | 한도가 있으면 `max_tokens`를 꼭 보낸다(llm.ts 주석) |
+| `OPENROUTER_API_KEY` | openrouter.ai → Keys. **운영용 키(`taskforce-prod`)를 따로 만들어 Production에만** 넣고 사용 한도를 건다. 로컬 · eval은 개발 키(`taskforce-dev`)를 쓴다: eval 한 번이 약 $0.16이라 같은 키면 eval이 운영 한도를 쓴다(2026-09-30 한도 $10에 닿아 모든 호출 403) | 한도가 있으면 `max_tokens`를 꼭 보낸다(llm.ts 주석) |
 | `LLM_MODEL` | `z-ai/glm-5.3-flash` (지금 `.env.local`, eval 기준) | 바꾸면 eval을 다시 돌린다. 추론하지 않는 모델이면 `LLM_OVERRUN_REASONING_EFFORT=off`도 같이 둔다 (아래) |
 | `JEV_MODEL` | `typesafe/jev-1.13` | 버전 고정 |
 | `EMBEDDING_MODEL` | 비움 → `openai/text-embedding-3-small` | 1536차원이어야 한다 |
@@ -262,7 +262,7 @@ union all select 'slack_people', count(*) from public.slack_people where user_id
 | I6 | Notion 연결 설정에 운영 redirect 추가 | 사용자 ✅ 설정 (2026-09-28, 앱에서 연결 확인 남음) | 앱에서 Notion 연결 → 앱으로 복귀 → 동기화 | I3, C1 |
 | I7 | APNs 키 | 사용자 ✅ 키 · env (2026-09-28, PR #4 배포 뒤 기기 수신 확인 남음) | TestFlight 기기에서 알림 수신 | I2 |
 | I8 | Sign in with Apple 키 | 사용자 ✅ (2026-09-28) | `APPLE_*` 4개가 env에 있음 | — |
-| I9 | OpenRouter 운영 키 · 로깅 꺼짐 · 사용 한도 | 사용자 ✅ (2026-09-28: 한도 $10, 계정 Privacy에서 ZDR 필수 · 학습 엔드포인트 모두 끔. 키는 아직 로컬과 하나를 같이 쓴다 → 출시 직전 운영 키 분리. 키 만료 2027-03-24) | 설정 화면에서 확인 | — |
+| I9 | OpenRouter 운영 키 · 로깅 꺼짐 · 사용 한도 | 사용자 ✅ (2026-09-28: 한도 $10, 계정 Privacy에서 ZDR 필수 · 학습 엔드포인트 모두 끔. 키 만료 2027-03-24). **2026-09-30: 로컬 · eval과 같이 쓰던 키가 한도 $10에 닿아 모든 AI 호출이 403 → 그 키를 개발 키 `taskforce-dev`(한도 $20, `.env.local` · eval)로 두고, 운영 키 `taskforce-prod`(Vercel Production만)를 새로 만든다 — 사용자, 진행 중**) | 설정 화면에서 확인 | — |
 | I10 | Supabase Free · 백업 없음 확인 | 사용자 ✅ (2026-09-29, 처리방침 게시 전 확인) | Billing · Backups 화면 확인 (4장) | — |
 | I11 | Cron 동작 | 사용자 | `/api/cron/sync` 15분마다 200, `/api/cron/retry-sources` 매시 7분 · 37분 200, `/api/cron/reminders` 09:00 KST 200, `/api/cron/retention` 03:30 KST 200 | I1, I2 |
 | I12 | 운영 계정 2단계 인증 (Vercel · Supabase · GitHub · Google · Apple · Slack · Notion · OpenRouter) | 사용자 | 모두 켜짐 (처리방침 9장 약속) | — |
@@ -274,7 +274,7 @@ union all select 'slack_people', count(*) from public.slack_people where user_id
 | C1 | 연결 틀 · 서명된 state · 동의 API · 연결 요청 · 계정 삭제 시 연동 토큰 폐기 (트랙 2-1) | 코드 ✅ (2026-09-28) | 단위 · RLS 테스트 통과 (state 정상 · 변조 · 만료 · 재사용 · 다른 사용자, 동의 없으면 처리 안 함) | — |
 | C2 | 계정 삭제 시 Sign in with Apple 토큰 폐기 (서버는 `src/lib/apple/sign-in.ts`로 구현됨, 앱이 삭제 전에 authorization code를 보내는 일이 남음) | 코드 ✅ 코드 (실기기 확인 남음) | 앱이 `apple_authorization_code`를 보내는 테스트 통과, 실기기에서 Apple ID 목록에서 사라짐 (`app-store.md` 6장) | I8 |
 | C3 | 물어보기 `POST /api/v1/ask` (트랙 2-2) | 코드 ✅ | 인용 기계 검증 · 근거 없으면 "모른다" 테스트, ask 골든셋 eval | C1 |
-| C4 | Google 연동: Calendar · Meet 전사 · Gmail (트랙 2-3, 계획 [google-integration.md](google-integration.md)) | 코드 · Gmail 부분 진행 (2026-09-29: 연결 · 거르기 · `reauth` · 토큰 폐기 PR #25, 처리방침 3장 Gmail 문장을 구현에 맞춤 PR 5a — 웹사이트 재게시와 `GMAIL_CONNECT_ENABLED`는 남음. 재연결 알림 · Gmail 확인 창 · 연결 결과 문구는 PR 4a(#27, 코드 있음 · 배포 전), Meet 줄 · 근거 줄 일정 제목은 PR 4b, google(Calendar · Meet) 연결 코드 · 단위 · DB 테스트는 PR 3 ✅ 2026-09-29(`reauth` 알림도 같은 두 줄로 붙임 2026-09-30), Meet dev 회의 확인은 대기 — google-integration.md 9장 "PR 3 dev에서 확인할 것". 그 처리방침 문장은 PR 5b) | 메일 · Meet 골든셋 eval 기록, `invalid_grant` → `reauth` + 재연결 안내, 처리방침 3장 Google · Gmail 문장과 구현 값 일치 | C1 |
+| C4 | Google 연동: Calendar · Meet 전사 · Gmail (트랙 2-3, 계획 [google-integration.md](google-integration.md)) | 코드 ✅ (2026-09-30: Gmail #25 · #27 · #31, Calendar · Meet #30 · #36, 운영 배포. 운영 DB에 `20261015` · `20261016` · `20261017` 적용). 남은 것: 녹화한 Meet 회의로 dev 확인(google-integration.md 9장), PR 5b(처리방침 Calendar · Meet 문장 · 전체 검증), 처리방침 재게시 뒤 `GMAIL_CONNECT_ENABLED`, 심사 뒤 `GOOGLE_CONNECT_ENABLED` | 메일 · Meet 골든셋 eval 기록, `invalid_grant` → `reauth` + 재연결 안내, 처리방침 3장 Google · Gmail 문장과 구현 값 일치 | C1 |
 | C5 | Slack 연동: OAuth + Events API (트랙 2-4, 계획 [slack-integration.md](slack-integration.md)) | 코드 ✅ (2026-09-29, PR 1~4. dev 워크스페이스에서 시나리오 2 · 연결 끊기 확인) | 서명 검증 · 버리는 규칙 테스트, Slack 골든셋(핵심 시나리오 2) eval, 권한이 처리방침 3장과 일치. 운영에서 남은 확인은 아래 "Slack 켜기" | C1 |
 | C6 | 앱: iPhone 한 화면 · Mac 런처 · 연결 · AI 동의 화면 · 계정 메뉴(Connections · AI data · Privacy Policy · Sign out · Delete account) · 데모 로그인 (트랙 3) | 코드 ✅ (Mac E2E 2026-09-28, 로컬 서버) | 시뮬레이터 · Mac E2E: 로그인 → 동의 → Notion 연결(앱 복귀) → 할 일 → 체크 · Review 확정 | C1, 데모 로그인 결정 |
 | C7 | 모델 공급자 고정 (`provider.only`) | 코드 ✅ (`src/lib/ai/providers.ts`) | 처리방침 7장 표에 공급자 · 국가를 적음(`docs/legal/README.md` 결정 1, 해결됨). 남은 것: TypeSafe 소재지 서면 확인 | — |
