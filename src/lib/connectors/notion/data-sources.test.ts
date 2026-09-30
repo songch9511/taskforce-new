@@ -35,6 +35,12 @@ beforeEach(() => {
 });
 
 describe("saveDataSource: 데이터베이스를 읽지 못하면", () => {
+  it("저장할 연결이 그 사이 사라졌으면(끊기) 404", async () => {
+    vi.mocked(withNotionClient).mockRejectedValue(new NotionError("Notion API 요청 실패 (404 object_not_found)", 404, "object_not_found"));
+    vi.mocked(mergeConnectionSettings).mockResolvedValue(false);
+    await expect(saveDataSource(fakeAdmin(), "u1", "c1", "ds1", { role: "ignore" }, NOW)).rejects.toMatchObject({ status: 404 });
+  });
+
   it("Notion이 없다고 하면(404) 저장된 DB의 역할만 바꾼다", async () => {
     vi.mocked(withNotionClient).mockRejectedValue(new NotionError("Notion API 요청 실패 (404 object_not_found)", 404, "object_not_found"));
     const admin = fakeAdmin();

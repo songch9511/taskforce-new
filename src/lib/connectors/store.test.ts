@@ -151,6 +151,22 @@ describe("recordNotionHealth: 자동 확인 다시 보기", () => {
   });
 });
 
+describe("recordNotionHealth: 잠금 뒤 다시 연결했으면 notionUserId 다시 쓰지 않기", () => {
+  const claimedAt = new Date("2026-09-28T00:00:00.000Z");
+
+  it("잠금을 잡은 뒤 다시 연결했으면(connected_at이 뒤) 옛 연결로 알아낸 notionUserId를 쓰지 않는다 (saveConnection이 뺀 값)", async () => {
+    const { admin, rpcs } = fakeAdmin({}, true, "2026-09-28T00:01:00.000Z");
+    await recordNotionHealth(admin, connection, { seen: [], unreachable: null, notionUserId: "old-person" }, now, claimedAt);
+    expect(rpcs).toEqual([]);
+  });
+
+  it("다시 연결하지 않았으면(connected_at이 앞) 처음 알아낸 notionUserId를 남긴다", async () => {
+    const { admin, merges } = fakeAdmin({}, true, "2026-09-27T00:00:00.000Z");
+    await recordNotionHealth(admin, connection, { seen: [], unreachable: null, notionUserId: "notion-me" }, now, claimedAt);
+    expect(merges()).toEqual([merged({ p_set: { notionUserId: "notion-me" } })]);
+  });
+});
+
 describe("markBackfilled: 처음 훑기 표시", () => {
   const tasks = (confirmedAt: string): DataSourceSetting => ({ ...auto("Tasks"), confirmedAt });
 
