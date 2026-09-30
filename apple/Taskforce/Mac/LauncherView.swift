@@ -237,6 +237,8 @@ struct LauncherRootView: View {
             LauncherRow(title: "Sign in with email", selected: selected, leading: .symbol("envelope"))
         case .allowAI:
             LauncherRow(title: "Allow AI processing to keep your list up to date", selected: selected, leading: .symbol("hand.raised"))
+        case .policyNotice(let notice):
+            LauncherRow(title: notice.title(today: today), accessory: "View", selected: selected, leading: .symbol("doc.text"))
         }
     }
 
@@ -494,6 +496,14 @@ struct LauncherRootView: View {
                         .font(TFFont.footnote)
                         .foregroundStyle(TFColor.textSecondary)
                     Keycap("⌘Z")
+                        .padding(.trailing, TFSpace.sm)
+                }
+                // 처리방침 변경 안내 줄을 고르면 닫기
+                if model.canDismissNotice {
+                    Text("Dismiss")
+                        .font(TFFont.footnote)
+                        .foregroundStyle(TFColor.textSecondary)
+                    Keycap("⌘⌫")
                         .padding(.trailing, TFSpace.sm)
                 }
                 // 할 일 행이 아니면 (명령 · Add 등) ⌘K가 할 일이 없어 흐리게

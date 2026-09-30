@@ -31,7 +31,7 @@
 
 | 기능 | 역할 | 단계 |
 |---|---|---|
-| 한 화면 | 위에 Review 카드(한 번에 하나, 확인 · 수정) + 아래 In Progress · To Do · Done Today 목록(상태 이름 To Do · In Progress · Done으로만 옮긴다: 상태 표시 누르기 · 밀기 · 길게 누르기. 삭제는 왼쪽 밀기 · 길게 누르기의 Delete, 5초 Undo) | MVP |
+| 한 화면 | 위에 Review 카드(한 번에 하나, 확인 · 수정) + 아래 In Progress · To Do · Done Today 목록(상태 이름 To Do · In Progress · Done으로만 옮긴다: 상태 표시 누르기 · 밀기 · 길게 누르기. 삭제는 왼쪽 밀기 · 길게 누르기의 Delete, 5초 Undo). 처리방침이 바뀌면 목록 위에 한 줄(View · 닫기) | MVP |
 | 계정 시트 | Connections(연결 · 연결 끊기), AI processing consent(동의 · 철회), Privacy Policy · Terms 링크, Sign out, Delete account(Apple로 다시 인증해 Sign in with Apple 토큰을 폐기한 뒤 삭제) | MVP |
 | 알림 | 확인 요청이 생겼을 때, 기한이 임박했을 때 | MVP |
 | 공유 확장 · 위젯 · App Intents | go live 뒤로 미룬다. 타깃이 아직 없다 ([PRD.md](PRD.md) "이후", [남은 일](GO_LIVE.md#10-남은-일-go-live-조건-아님)) | 이후 |
@@ -48,6 +48,7 @@
 | Send as source | 클립보드 · 선택한 텍스트를 원문으로 전송 | MVP |
 | ⌘K | 그 밖의 명령(연결, 계정, 설정 등) 팔레트 | MVP |
 | 알림 | iOS와 같음 | MVP |
+| 처리방침 변경 안내 | 처리방침이 바뀌면 빈 입력창 맨 위에 한 줄(↩ View · ⌘⌫ Dismiss) | MVP |
 
 ### 웹 (내부용)
 
@@ -136,6 +137,7 @@ Server Action은 웹 폼 전용이라 Swift 앱에서 부를 수 없다.
 | `POST` · `DELETE /api/v1/devices` | 알림용 기기 토큰 등록 · 해제 (로그아웃 때 DELETE). 토큰은 마지막 로그인 계정에 속하고, 사용자당 10대 | 3 ✅ |
 | `POST /api/v1/ask` | 물어보기 `{ question }`(500자까지) → `{ answer, unknown, citations }`. 내 할 일 · 근거 원문에서 찾아 답하고, 인용은 원문과 기계로 대조해 원문에서 잘라 낸 구절만 남긴다. 남는 인용이 없으면 답하지 않고 "모른다"(`unknown: true`). 외부 AI 처리 동의 전 409, 사용자별 10분에 20번을 넘으면 429. 질문 · 답은 로그에 남기지 않는다 | go live ✅ |
 | `POST` · `DELETE /api/v1/consent` | 외부 AI 처리 동의 `{ ai_processing: true }` · 철회 → 204. `profiles.ai_consent_at`에 시각을 적거나 비운다. 동의 전에는 원문을 외부 AI로 보내지 않고, 그런 요청(원문 보내기 · 빠진 할 일 신고 · 물어보기 · 연결 시작 · 연결 마치기 · 동기화)은 409 | go live ✅ |
+| `GET /api/v1/legal` | 처리방침 변경 안내 → `{ privacy: { current, upcoming, notice } }`(판마다 `version` · `effective_date` · `url: { ko, en }`, `notice`는 `kind: updated \| upcoming`을 더한 판 또는 null). 판 · 시행일은 `src/lib/legal/policy.ts` 한 곳. 시행 예정 판이 있으면 모든 계정에(그 판의 버전 주소로), 없으면 현재 판 시행일 전에 가입한 계정에만 시행 뒤 30일 동안 안내한다. 읽기만 한다: 앱은 열거나 닫은 판을 기기에 계정별로 적고, 계정마다 30분에 한 번 읽는다 | go live ✅ |
 | `DELETE /api/v1/account` | 계정 삭제 (본문 선택 `{ apple_authorization_code? }`) → `{ deleted: true }`. 연동 토큰(Notion · Slack)과 Sign in with Apple 토큰을 서비스 쪽에서 동시에 폐기하고(20초 한도, 실패해도 계속) 사용자를 지운다. 사용자 테이블은 on delete cascade로 함께 지워지고, 이미 지워진 계정이면 성공으로 답한다 | go live ✅ |
 | `POST /api/v1/connections/{provider}/start` | 연결 시작 → `{ url }`(서명된 `state`를 담은 권한 화면 주소). 경로의 `[id]` 자리가 서비스 이름이다. 모르는 서비스 404, 열지 않은 서비스 400, 동의 전 409, 10분에 10번을 넘으면 429. 권한 화면 뒤 `taskforce://connections/{provider}?handoff=…`로 돌아온다 | go live ✅ |
 | `POST /api/v1/connections/{provider}/complete` | 연결 마치기 `{ handoff }` → `{ status }`. 연결을 시작한 사용자만 2분 안에 한 번 쓸 수 있고, 연결되면 응답 뒤(`after()`) 첫 동기화를 돌린다. handoff가 없거나 만료 · 재사용 · 남의 것이면 404, 동의 전 409, 토큰 교환 실패 502 | go live ✅ |

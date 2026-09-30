@@ -65,7 +65,7 @@ private struct SignedInRoot: View {
         #if DEBUG
         if SampleData.isEnabled {
             now.useSampleData()
-            account.useSampleData(connections: SampleData.connections)
+            account.useSampleData(connections: SampleData.connections, policyNotice: SampleData.policyNotice)
         }
         #endif
         _now = State(initialValue: now)

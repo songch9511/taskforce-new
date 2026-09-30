@@ -134,6 +134,8 @@ final class LauncherModel {
     /// 방금 옮기거나 지운 할 일: 잠시 ⌘Z로 그 전 상태로 되돌린다 (아래 "Undo ⌘Z")
     private(set) var undoOffer = UndoOffer()
     private var undoTimer: Task<Void, Never>?
+    /// ⌘⌫ 반복 입력 · 안내를 닫은 직후의 ⌘⌫를 무시한다 (다음 줄의 Review · 할 일을 지우지 않게)
+    private var deleteGuard = LauncherDeleteGuard()
     private var lastUserID: UUID?
     /// 런처가 떠 있는지 (연결 동기화를 다시 읽는 것은 떠 있는 동안만)
     private(set) var isShown = false
@@ -152,7 +154,7 @@ final class LauncherModel {
         #if DEBUG
         if SampleData.isEnabled {
             now.useSampleData()
-            account.useSampleData(connections: SampleData.connections)
+            account.useSampleData(connections: SampleData.connections, policyNotice: SampleData.policyNotice)
         }
         #endif
         self.now = now
@@ -187,7 +189,7 @@ final class LauncherModel {
         let board = now?.board
         return LauncherContent.sections(
             for: inputMode, now: board?.now, doneToday: board?.doneToday ?? [], signedIn: isSignedIn,
-            needsConsent: account?.shouldPromptConsent ?? false
+            needsConsent: account?.shouldPromptConsent ?? false, policyNotice: account?.policyNotice
         )
     }
 
@@ -261,6 +263,13 @@ final class LauncherModel {
     /// 방금 옮기거나 지운 할 일을 ⌘Z로 되돌릴 수 있는지 (목록에서만)
     var canUndo: Bool { screen == .list && undoOffer.pending != nil }
 
+    /// 고른 줄이 처리방침 변경 안내라 ⌘⌫로 닫을 수 있는지 (아래 "Dismiss ⌘⌫").
+    /// 공백만 입력해도 안내 줄은 보이지만, 그때 ⌘⌫는 입력창의 줄 지우기다
+    var canDismissNotice: Bool {
+        guard screen == .list, text.isEmpty, case .policyNotice = selectedItem else { return false }
+        return true
+    }
+
     /// 지금 화면에서 ↑↓로 고르는 줄 수
     var rowCount: Int {
         switch screen {
@@ -297,7 +306,14 @@ final class LauncherModel {
                 await account.load()
                 await PushCenter.shared.requestIfNeeded(hasConnections: account.hasConnections)
             }
+            loadPolicyNotice()
         }
+    }
+
+    /// 처리방침 변경 안내 (못 읽으면 조용히 넘긴다)
+    private func loadPolicyNotice() {
+        guard let account, let userID = signedInUserID else { return }
+        Task { await account.loadPolicyNotice(userID: userID) }
     }
 
     func didHide() {
@@ -337,6 +353,7 @@ final class LauncherModel {
         guard isSignedIn, let now else { return }
         Task { await now.load() }
         if let account { Task { await account.load() } }
+        loadPolicyNotice()
     }
 
     // MARK: 키보드
@@ -383,8 +400,18 @@ final class LauncherModel {
             undo()
             return true
         case kVK_Delete where command:
-            guard let (entry, target) = deleteShortcut else { return false }
-            perform(entry, on: target)
+            let dismissesNotice = canDismissNotice
+            let shortcut = deleteShortcut
+            // 입력창의 줄 지우기는 그대로 둔다
+            guard dismissesNotice || shortcut != nil else { return false }
+            // 누르고 있어 반복된 ⌘⌫ · 안내를 닫은 직후의 ⌘⌫는 먹고 아무것도 하지 않는다 (`LauncherDeleteGuard`)
+            guard deleteGuard.allows(isRepeat: event.isARepeat, at: Date()) else { return true }
+            if dismissesNotice {
+                account?.acknowledgePolicyNotice()
+                deleteGuard.noticeDismissed(at: Date())
+            } else if let (entry, target) = shortcut {
+                perform(entry, on: target)
+            }
             return true
         default:
             return false
@@ -591,6 +618,9 @@ final class LauncherModel {
             openSettings(.account)
         case .allowAI:
             openSettings(.ai)
+        case .policyNotice(let notice):
+            account?.acknowledgePolicyNotice()
+            open(notice.url.url())
         }
     }
 

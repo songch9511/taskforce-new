@@ -86,6 +86,11 @@ struct HomeView: View {
             promptProfileIfNeeded()
             promptConsentIfNeeded()
         }
+        // 처리방침 변경 안내: 나타날 때와 앞으로 돌아올 때마다 (못 읽으면 조용히 넘긴다)
+        .task(id: scenePhase == .active) {
+            guard scenePhase == .active else { return }
+            await account.loadPolicyNotice(userID: userID)
+        }
         .sheet(item: $accountRoute) { route in
             AccountSheet(email: email, initialRoute: route)
         }
@@ -165,6 +170,7 @@ struct HomeView: View {
             }
             reconnectBanner
             consentBanner
+            policyBanner
             // 누른 알림의 확인 요청이면 그 카드를 먼저
             if let first = sections.review.first(where: { $0.id == reviewFocus }) ?? sections.review.first {
                 reviewHeader(count: sections.review.count)
@@ -452,6 +458,48 @@ struct HomeView: View {
                 .background(TFColor.bgSurface, in: RoundedRectangle(cornerRadius: TFRadius.lg, style: .continuous))
             }
             .buttonStyle(.plain)
+            .plainRow(top: TFSpace.sm, bottom: TFSpace.md)
+        }
+    }
+
+    /// 처리방침 변경 안내 (처리방침 17장): 한 줄 + View(기기 언어의 처리방침 페이지) + 닫기. 열거나 닫으면 이 판은 다시 보이지 않는다
+    @ViewBuilder
+    private var policyBanner: some View {
+        if let notice = account.policyNotice {
+            HStack(spacing: 0) {
+                Button {
+                    openURL(notice.url.url())
+                    account.acknowledgePolicyNotice()
+                } label: {
+                    HStack(spacing: TFSpace.md) {
+                        Image(systemName: "doc.text")
+                            .font(TFFont.callout.weight(.semibold))
+                            .foregroundStyle(TFColor.textPrimary)
+                            .frame(width: 20)
+                        Text(notice.title(today: today))
+                            .font(TFFont.callout)
+                            .foregroundStyle(TFColor.textPrimary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        Text("View")
+                            .font(TFFont.callout.weight(.semibold))
+                            .foregroundStyle(TFColor.textPrimary)
+                    }
+                    .padding([.vertical, .leading], TFSpace.md)
+                    .contentShape(Rectangle())
+                }
+                Button {
+                    withAnimation(Self.move) { account.acknowledgePolicyNotice() }
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(TFFont.footnote.weight(.semibold))
+                        .foregroundStyle(TFColor.textSecondary)
+                        .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
+                }
+                .accessibilityLabel("Dismiss")
+            }
+            .buttonStyle(.plain)
+            .background(TFColor.bgSurface, in: RoundedRectangle(cornerRadius: TFRadius.lg, style: .continuous))
             .plainRow(top: TFSpace.sm, bottom: TFSpace.md)
         }
     }
