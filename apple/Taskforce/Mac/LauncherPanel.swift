@@ -189,7 +189,7 @@ final class LauncherPanelController: NSObject, NSWindowDelegate {
     // MARK: NSWindowDelegate
 
     func windowDidResignKey(_ notification: Notification) {
-        // 다른 곳을 누르면 닫는다 (Apple 로그인 창을 띄운 동안은 빼고)
+        // 다른 곳을 누르면 닫는다 (Apple · Google 로그인 창을 띄운 동안은 빼고)
         guard !model.suspendsAutoClose else { return }
         hide()
     }

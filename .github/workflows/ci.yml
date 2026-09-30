@@ -39,7 +39,8 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: ~/Library/Caches/org.swift.swiftpm
-          key: swiftpm-${{ runner.os }}-xcode${{ env.XCODE_VERSION }}-${{ hashFiles('apple/Packages/TaskforceKit/Package.resolved') }}
+          # 앱의 고정 버전(Google Sign-In 포함)은 xcodeproj 작업 공간의 Package.resolved, 패키지 테스트는 TaskforceKit 것
+          key: swiftpm-${{ runner.os }}-xcode${{ env.XCODE_VERSION }}-${{ hashFiles('apple/Packages/TaskforceKit/Package.resolved', 'apple/Taskforce.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
           restore-keys: swiftpm-${{ runner.os }}-xcode${{ env.XCODE_VERSION }}-
       # Secrets.xcconfig는 커밋하지 않는다(Base.xcconfig가 #include?로 읽는다). 빌드만 하므로 예제 값으로 채운다.
       - name: Secrets.xcconfig from example

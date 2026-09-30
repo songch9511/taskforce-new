@@ -118,7 +118,7 @@ final class LauncherModel {
     /// 패널 컨트롤러가 채운다
     var close: () -> Void = {}
     var presentationAnchor: () -> NSWindow? = { nil }
-    /// Apple 로그인 창을 띄운 동안은 포커스를 잃어도 닫지 않는다
+    /// Apple · Google 로그인 창을 띄운 동안은 포커스를 잃어도 닫지 않는다
     private(set) var suspendsAutoClose = false
 
     /// 취소해도 되는 읽기 (물어보기 · 원문 읽기). 쓰기는 창을 닫아도 끝까지 보낸다.
@@ -189,7 +189,8 @@ final class LauncherModel {
         let board = now?.board
         return LauncherContent.sections(
             for: inputMode, now: board?.now, doneToday: board?.doneToday ?? [], signedIn: isSignedIn,
-            needsConsent: account?.shouldPromptConsent ?? false, policyNotice: account?.policyNotice
+            needsConsent: account?.shouldPromptConsent ?? false, policyNotice: account?.policyNotice,
+            googleSignIn: GoogleSignInFlow.isAvailable
         )
     }
 
@@ -612,6 +613,8 @@ final class LauncherModel {
             startAdd(title)
         case .signIn:
             startSignIn()
+        case .signInWithGoogle:
+            startGoogleSignIn()
         case .signInWithEmail:
             // 이메일 로그인은 설정 창의 로그인 화면에서 (입력칸 둘)
             UserDefaults.standard.set(true, forKey: SignInView.emailExpandedKey)
@@ -1048,6 +1051,18 @@ final class LauncherModel {
         }
         signInController = controller
         controller.start(configure: signInFlow.configure)
+    }
+
+    /// 런처의 "Sign in with Google" 행: 로그인 화면의 버튼과 같은 흐름을 런처 창 위에 띄운다
+    private func startGoogleSignIn() {
+        guard let session, let anchor = presentationAnchor() else { return }
+        suspendsAutoClose = true
+        NSApplication.shared.activate()
+        GoogleSignInFlow.signIn(session: session, presenting: anchor) { [weak self] in
+            guard let self else { return }
+            self.suspendsAutoClose = false
+            self.focusRequest += 1
+        }
     }
 
     /// 기한 선택기의 Date ↔ 기한 날짜 (선택기는 기기 시간대로 날짜를 보여준다)

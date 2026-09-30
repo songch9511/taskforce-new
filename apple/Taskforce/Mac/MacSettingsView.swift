@@ -80,7 +80,7 @@ private struct MacAccountPane: View {
             }
             Section {
                 if let email {
-                    LabeledContent("Apple ID", value: email)
+                    LabeledContent(session.signInMethods.accountLabel, value: email)
                 }
                 HStack {
                     Button("Sign Out") {

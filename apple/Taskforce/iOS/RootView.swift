@@ -18,7 +18,7 @@ struct RootView: View {
                 #if DEBUG
                 // 견본 모드는 로그인 없이 견본 화면을 보여 준다 (시뮬레이터에 Apple ID가 없어도 화면을 확인할 수 있게)
                 if SampleData.isEnabled, let services {
-                    SignedInRoot(services: services, userID: SampleData.userID, email: nil)
+                    SignedInRoot(services: services, session: session, userID: SampleData.userID, email: nil)
                 } else {
                     SignInView()
                 }
@@ -27,17 +27,20 @@ struct RootView: View {
                 #endif
             case .signedIn(let userID, let email):
                 if let services {
-                    SignedInRoot(services: services, userID: userID, email: email)
+                    SignedInRoot(services: services, session: session, userID: userID, email: email)
                         // 계정이 바뀌면 화면 상태를 새로 만든다
                         .id(userID)
                 }
             }
         }
         // 알림: 허용돼 있으면 로그인한 사용자로 기기 토큰을 보낸다 (로그아웃이면 멈춘다)
+        // 로그아웃 · 세션 만료 · 계정 삭제 모두: 이 기기의 Google 로그인도 지운다 (다음 계정이 전 계정의 Google 토큰을 쓰지 않게)
         .onChange(of: session.state, initial: true) { _, state in
             switch state {
             case .signedIn(let userID, _): PushCenter.shared.follow(userID: userID, services: services)
-            case .signedOut: PushCenter.shared.follow(userID: nil, services: nil)
+            case .signedOut:
+                PushCenter.shared.follow(userID: nil, services: nil)
+                GoogleSignInFlow.signOut()
             case .loading: break
             }
         }
@@ -56,12 +59,12 @@ private struct SignedInRoot: View {
     @State private var now: NowStore
     @State private var account: AccountStore
 
-    init(services: AppServices, userID: UUID, email: String?) {
+    init(services: AppServices, session: SessionStore, userID: UUID, email: String?) {
         self.services = services
         self.userID = userID
         self.email = email
         let now = NowStore(services: services)
-        let account = AccountStore(services: services)
+        let account = AccountStore(services: services, session: session)
         #if DEBUG
         if SampleData.isEnabled {
             now.useSampleData()

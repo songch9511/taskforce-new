@@ -1,6 +1,12 @@
-// Release 빌드(TestFlight · App Store)만. Base(+ Secrets)를 그대로 쓰고 서버 주소만 운영 서버로 고정한다.
-// Debug는 Secrets.xcconfig의 API_BASE_URL(로컬 서버 등)을 그대로 쓴다. Supabase URL · 키는 두 설정 모두 Secrets에서 온다.
+// Release 빌드(TestFlight · App Store)만. Base(+ Secrets)를 그대로 쓰고 서버 주소 · Google 로그인 클라이언트만 운영 값으로 고정한다.
+// Debug는 Secrets.xcconfig의 API_BASE_URL(로컬 서버 등) · GOOGLE_IOS_*(선택)를 그대로 쓴다. Supabase URL · 키는 두 설정 모두 Secrets에서 온다.
 // xcconfig에서 "//"는 주석이라 URL의 "//"를 "/$()/"로 적는다.
 #include "Base.xcconfig"
 
 API_BASE_URL = https:/$()/api.taskforcelabs.dev
+
+// Sign in with Google: 프로젝트 A(taskforce-510108)의 iOS 클라이언트 "Taskforce app sign-in (iOS · Mac)".
+// 앱 Info.plist에 그대로 들어가는 공개 식별자(비밀 없음)라 커밋한다. 아카이브하는 Mac의 Secrets에 값이 빠져도
+// TestFlight 빌드에서 Google 버튼이 조용히 사라지지 않게 여기서 고정한다. 운영 Supabase → Google 제공자의 Client IDs와 같은 값이다.
+GOOGLE_IOS_CLIENT_ID = 923900348266-iopmhbf1foor213n1jc3a8tv6v4fti82.apps.googleusercontent.com
+GOOGLE_IOS_URL_SCHEME = com.googleusercontent.apps.923900348266-iopmhbf1foor213n1jc3a8tv6v4fti82
