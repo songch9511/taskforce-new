@@ -302,16 +302,23 @@ struct LauncherTests {
         #expect(effect(.task(.review), command: true) == .confirm)
     }
 
-    /// 누르고 있어 반복된 ↩ · ⌘↩는 Review에서 아무것도 하지 않는다 (펼침 → 패널 → Confirm으로 이어지지 않게)
-    @Test func repeatedReturnOnReviewIsIgnored() {
-        let review = LauncherItem.review(now.confirmations[0])
-        for place in [LauncherReturn.Place.list(review), .task(.review)] {
+    /// 누르고 있어 반복된 ↩ · ⌘↩는 어느 화면에서나 아무것도 하지 않는다
+    /// (펼침 → 패널로 이어지거나, 확정 뒤 완료 화면 · 목록 첫 줄에 닿지 않게)
+    @Test func repeatedReturnIsIgnoredEverywhere() {
+        let places: [LauncherReturn.Place] = [
+            .list(.review(now.confirmations[0])), .task(.review),
+            .list(.task(now.now[0])), .list(.policyNotice(PolicyNotice(
+                kind: .updated, version: "v", effectiveDate: LocalDate("2026-09-30")!,
+                url: PolicyLinks(ko: URL(string: "https://example.com/ko")!, en: URL(string: "https://example.com/en")!)
+            ))), .list(nil), .task(.toDo), .other,
+        ]
+        for place in places {
             #expect(effect(place, isRepeat: true) == .ignore)
             #expect(effect(place, command: true, isRepeat: true) == .ignore)
         }
     }
 
-    /// 다른 행 · 화면은 ↩ · ⌘↩ 모두 지금까지의 기본 동작 (확정하지 않는다)
+    /// 새로 누른 ↩ · ⌘↩는 다른 행 · 화면에서 지금까지의 기본 동작 (확정하지 않는다)
     @Test func returnElsewhereKeepsPrimary() {
         let task = LauncherItem.task(now.now[0])
         let places: [LauncherReturn.Place] = [
@@ -323,7 +330,18 @@ struct LauncherTests {
         for place in places {
             #expect(effect(place) == .primary)
             #expect(effect(place, command: true) == .primary)
-            #expect(effect(place, isRepeat: true) == .primary)
         }
+    }
+
+    /// 펼침 · ⌘K 패널에서 돌아오면 보던 행을 다시 고른다 (맨 위의 다른 Review를 고른 채 두지 않게). 사라졌으면 같은 자리
+    @Test func goingBackReselectsTheSameRow() {
+        let items = LauncherContent.sections(for: .empty, now: now, signedIn: true).flatMap(\.items)
+        let task = items[2]
+        #expect(items[0].group == .review)
+        #expect(LauncherContent.reselect(task.id, in: items, at: 0) == 2)
+        #expect(LauncherContent.reselect("task-gone", in: items, at: 2) == 2)
+        #expect(LauncherContent.reselect("task-gone", in: items, at: 99) == items.count - 1)
+        #expect(LauncherContent.reselect(nil, in: items, at: 1) == 1)
+        #expect(LauncherContent.reselect(nil, in: [], at: 3) == 0)
     }
 }

@@ -46,7 +46,7 @@ public struct ReviewCard<Evidence: View>: View {
     public init(
         title: String,
         value: String?,
-        reason: String?,
+        reason: String? = nil,
         busy: Bool = false,
         onConfirm: @escaping () -> Void,
         onDismiss: @escaping () -> Void,

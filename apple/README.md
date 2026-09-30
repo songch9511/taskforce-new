@@ -62,7 +62,7 @@ Mac은 `--show-launcher -TFSampleData -TFSnapshot <폴더>`로 실행하면 런�
 - 로그인: Sign in with Apple, 그 아래 같은 크기의 Sign in with Google(Google 클라이언트 설정이 있을 때, 로그인만: 기본 범위 openid · email · profile), 그 아래 눈에 덜 띄게 "Sign in with email"(App Store 심사 계정용, 가입 화면 없음). Mac 런처도 같은 순서의 행이고, "Sign in with email" 행은 설정 창의 같은 로그인 화면을 연다.
   Google 버튼은 Google 브랜드 규칙의 Light 테마(흰 바탕 · 회색 테두리 · 표준 색 G)로 다크 모드에서도 같다(`SignInWithGoogleButton`). Google 로그인 직후 프로필 이름이 비어 있으면 그 이름으로 한 번 채운다. 로그인이 풀릴 때마다(로그아웃 · 만료 · 계정 삭제) Google SDK 로그인도 지운다.
 - "Review 1 / N" + Review card 한 장(Confirm = `POST confirm`, Dismiss = `DELETE`, 둘 다 버튼으로만) → In Progress · To Do · Done Today 구역의 Task row 목록(빈 구역은 숨김). 구역 안 순서는 서버가 정한 그대로(`TaskBoard`).
-  Review card 제목 아래에 확인 이유 한 줄(`ConfirmReasonText.label`: `confirm_reasons` 중 가장 중요한 하나 — Not sure it's yours · May be done already · May not be a task · May not be a firm commitment · May duplicate another task · Due date unclear · Scope unclear · Status unclear, 모르는 이유는 Needs review).
+  Review card 제목 아래에 확인 이유 한 줄(`ConfirmReasonText.label`: `confirm_reasons` 중 가장 중요한 하나 — Not sure it's yours · May be done already · May not be a task · May not be a firm commitment · Update may not belong here(`병합 확인`: 기존 할 일에 붙은 새 내용) · May duplicate another task(`중복 확인`) · Due date unclear · Scope unclear · Status unclear, 모르는 이유는 Needs review).
   Review card는 iOS 26부터 Liquid Glass(카드 regular 유리, Confirm = 잉크 `glassProminent`, Dismiss = `glass`), 그 전은 bg/surface + 캡슐 버튼(`TFGlassCard` · `TFGlassButtonStyle`). 할 일 행은 평평하게 둔다.
 - 상태는 To Do · In Progress · Done 세 이름으로만 옮긴다(`POST /actions/:id/progress {"state": "to_do"|"in_progress"|"done"}`, `NowStore.move`). 서버를 기다리지 않고 곧바로 그 구역으로 옮기고, 쓰기가 끝나면 두 목록을 다시 읽는다.
   - 왼쪽 상태 표시(`TaskStatusMark`: ○ To Do · ◉ In Progress · ✓ Done): ○ · ◉를 누르면 Done, ✓는 끝내기 전 상태로(이 기기에서 끝낸 것은 기억, 모르면 착수 시각이 있으면 In Progress, 없으면 To Do)
@@ -87,12 +87,13 @@ Mac은 `--show-launcher -TFSampleData -TFSnapshot <폴더>`로 실행하면 런�
   - 짧은 글 → 네 구역을 앱에서 거른 결과(순서 계산 아님) + Ask “…” + Hand off “첫 결과” to AI, 그 아래 거른 Done Today
     - 열린 할 일(Review · In Progress · To Do)에 맞는 것이 없으면 맨 위에 Add “…”(Done Today는 보지 않는다)(`POST /actions`, 제목 200자까지): ↩ → 기한(맨 위 No due date) → 원문(맨 위 No source, 아래는 빠진 할 일 신고와 같은 최근 원문) → 원문을 골랐으면 줄 고르기 후 ⌘↩ → "Added". esc는 한 단계 뒤로
   - 200자가 넘거나 여러 줄 → Send as source(`POST /sources`, 여러 줄은 note · 한 줄은 message, 제목은 첫 줄) + Ask
-  - Review 행은 제목 옆(부제 자리)에 확인 이유 한 줄(iPhone Review card와 같은 `ConfirmReasonText.label`). 행 높이는 그대로 40
-  - 키: ↑↓ 고르기 · ↩ 실행(Review는 근거 펼치기 — ↩로 확정하지 않는다, 할 일은 ⌘K 패널) · ⌘↩ Review Confirm(목록 · 펼침 · ⌘K 패널) · ⌘K 동작 · Tab/→ 펼침(Sources 묶음) · ⌘⌫ Review Dismiss · 할 일 Delete(목록 · 펼침은 입력이 비었을 때, ⌘K 패널에서도) · esc 뒤로/닫기
-    - Review에서 누르고 있어 반복된 ↩ · ⌘↩는 무시한다(`LauncherReturn`: 펼침 → ⌘K → Confirm으로 이어지거나 다음 Review를 확정하지 않게). ⌘⌫ 반복도 무시(`LauncherDeleteGuard`)
-    - Review 행 · 펼친 Review를 고르면 아래에 "Confirm ⌘↩ · Dismiss ⌘⌫ · Actions ⌘K"
+  - Review 행은 제목 옆(부제 자리)에 확인 이유 한 줄(iPhone Review card와 같은 `ConfirmReasonText.label`). 행 높이는 그대로 40이고, 긴 제목은 이유를 자르지 않고 제목을 줄인다
+  - 키: ↑↓ 고르기 · ↩ 실행(Review 행은 근거 펼치기 — 행에서 ↩로 확정하지 않는다, 할 일은 ⌘K 패널) · ⌘↩ Review Confirm(목록 · 펼침 · ⌘K 패널, 패널에서 고른 줄과 상관없이) · ⌘K 동작 · Tab/→ 펼침(Sources 묶음) · ⌘⌫ Review Dismiss(목록은 입력이 비었을 때, 펼친 Review · ⌘K 패널에서도) · 할 일 Delete(목록은 입력이 비었을 때, ⌘K 패널에서도. 펼친 할 일에서는 아무것도 하지 않는다) · esc 뒤로/닫기
+    - 누르고 있어 반복된 ↩ · ⌘↩는 어느 화면에서나 무시한다(`LauncherReturn`: 펼침 → ⌘K로 이어지거나, 확정 뒤 다음 화면 · 목록 첫 줄을 실행하지 않게). ⌘⌫ 반복도 무시(`LauncherDeleteGuard`). "Confirmed" 같은 완료 줄에서 ↩는 런처를 닫기만 한다
+    - 펼침 · ⌘K 패널에서 esc로 돌아오면 보던 행을 다시 고른다(`LauncherContent.reselect`, 그 행이 사라졌으면 같은 자리). 펼침 · 패널의 ⌘↩ · ⌘⌫는 누른 때의 목록 구역으로 본다(다른 기기에서 확정됐으면 Dismiss하지 않는다)
+    - Review 행 · 펼친 Review를 고르면 아래에 "Confirm ⌘↩ · Dismiss ⌘⌫ · Actions ⌘K"(목록에서 입력이 있으면 Dismiss는 빠진다)
     - ⌘K: To Do · In Progress = Status(To Do · In Progress · Done, 지금 상태에 체크) + Actions(Hand off to AI · Open source · Edit due · Delete ⌘⌫), Done Today = Status + Actions(Open source · Delete ⌘⌫), Review = Confirm ⌘↩ · Dismiss ⌘⌫ · Hand off to AI · Open source · Edit due.
-      열면 다음 상태를 고른 채 둔다(To Do → In Progress → Done, Done → 끝내기 전 상태)
+      열면 다음 상태를 고른 채 둔다(To Do → In Progress → Done, Done → 끝내기 전 상태). Review는 Open source를 고른 채 연다(↩를 이어 눌러도 확정되지 않게. 확정은 ⌘↩이나 Confirm 줄로 옮겨서 ↩)
   - 행 왼쪽 상태 표시(Review는 점선 원, 누를 수 없음): ○ · ◉를 누르면 Done, ✓는 끝내기 전 상태로. 상태를 옮기면 런처를 닫지 않고 그 행을 옮긴 구역에서 고른 채 둔다.
     옮긴 뒤 5초 동안 아래에 "Undo ⌘Z"(⌘Z = 옮기기 전 상태로)
   - Delete는 런처를 닫지 않고 그 행을 빼고 같은 자리의 다음 행을 고른다. 5초 동안 "Undo ⌘Z"(⌘Z = 지우기 전 구역으로 되살림, iPhone Undo와 같은 쓰기)

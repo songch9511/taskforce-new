@@ -20,7 +20,7 @@ final class LauncherModel {
         case list
         /// ⌘K 동작 패널
         case actions(Target)
-        /// Tab/→ 펼침: Sources 묶음
+        /// Tab/→ 펼침 (Review 행은 ↩ · 클릭도): Sources 묶음
         case detail(Target)
         case editDue(Target)
         /// 직접 추가: 기한 고르기 → 원문 고르기(없어도 됨) → 줄 고르기. 원문 고르기에서 돌아와도 고른 기한이 남는다.
@@ -135,6 +135,8 @@ final class LauncherModel {
     private var submission: Int?
     /// 목록이 바뀌어도 같은 행을 가리키게 (Realtime · 다시 불러오기)
     private var selectedID: String?
+    /// 펼침 · ⌘K 패널을 열 때 목록에서 고른 자리: 돌아왔는데 그 행이 사라졌으면 같은 자리를 고른다
+    private var listRow = 0
     /// 방금 옮기거나 지운 할 일: 잠시 ⌘Z로 그 전 상태로 되돌린다 (아래 "Undo ⌘Z")
     private(set) var undoOffer = UndoOffer()
     private var undoTimer: Task<Void, Never>?
@@ -254,8 +256,10 @@ final class LauncherModel {
         actionGroups(for: target).flatMap(\.entries)
     }
 
-    /// ⌘K를 열면 먼저 고르는 줄: 다음 상태 (To Do → In Progress → Done, Done → 끝내기 전 상태). Review는 Confirm
+    /// ⌘K를 열면 먼저 고르는 줄: 다음 상태 (To Do → In Progress → Done, Done → 끝내기 전 상태).
+    /// Review는 Open source: ↩를 이어 눌러도 확정되지 않게 (확정은 ⌘↩ · Confirm 줄로 옮겨서 ↩)
     private func initialActionIndex(for target: Target) -> Int {
+        if target.group == .review { return actionEntries(for: target).firstIndex(of: .openSource) ?? 0 }
         guard let current = WorkState(target.group) else { return 0 }
         let next: WorkState = switch current {
         case .toDo: .inProgress
@@ -427,8 +431,12 @@ final class LauncherModel {
         case kVK_Delete where command:
             let dismissesNotice = canDismissNotice
             let shortcut = deleteShortcut
-            // 입력창의 줄 지우기는 그대로 둔다
-            guard dismissesNotice || shortcut != nil else { return false }
+            guard dismissesNotice || shortcut != nil else {
+                // 펼침에서는 먹는다: 입력창의 줄 지우기로 목록에 돌아가 다른 행에 닿지 않게
+                if case .detail = screen { return true }
+                // 목록에서는 입력창의 줄 지우기를 그대로 둔다
+                return false
+            }
             // 누르고 있어 반복된 ⌘⌫ · 안내를 닫은 직후의 ⌘⌫는 먹고 아무것도 하지 않는다 (`LauncherDeleteGuard`)
             guard deleteGuard.allows(isRepeat: event.isARepeat, at: Date()) else { return true }
             if dismissesNotice {
@@ -443,36 +451,40 @@ final class LauncherModel {
         }
     }
 
-    /// ⌘⌫: 목록에서 고른 할 일 행 · 펼친 할 일 · ⌘K 패널의 할 일. Review는 Dismiss, 나머지(In Progress · To Do · Done Today)는 Delete
+    /// ⌘⌫: 목록에서 고른 할 일 행 · 펼친 Review · ⌘K 패널의 할 일. Review는 Dismiss, 나머지(In Progress · To Do · Done Today)는 Delete
     private var deleteShortcut: (ActionEntry, Target)? {
         switch screen {
-        // 목록 · 펼침에서 입력이 있으면 ⌘⌫는 입력창의 줄 지우기
-        case .list, .detail: guard text.isEmpty else { return nil }
-        case .actions: break
+        // 목록에서 입력이 있으면 ⌘⌫는 입력창의 줄 지우기
+        case .list: guard text.isEmpty else { return nil }
+        // 펼침은 Review의 Dismiss만 (펼친 할 일의 Delete는 ⌘K 패널에서). 입력이 있어도 펼친 Review에
+        case .detail, .actions: break
         default: return nil
         }
         guard let target = focusedTarget else { return nil }
+        if case .detail = screen, target.group != .review { return nil }
         return (target.group.isDeletable ? .delete : .dismiss, target)
     }
 
-    /// 목록에서 고른 할 일 행(Hand off 행은 할 일 행이 아니다) · 펼친 할 일 · ⌘K 패널의 할 일
+    /// 목록에서 고른 할 일 행(Hand off 행은 할 일 행이 아니다) · 펼친 할 일 · ⌘K 패널의 할 일.
+    /// 펼침 · 패널은 연 뒤에 바뀌었을 수 있어(다른 기기에서 확정 · 옮김) 지금 목록의 구역으로 본다. 사라졌으면 nil
     private var focusedTarget: Target? {
         switch screen {
         case .list:
             guard let item = selectedItem, item.group != nil else { return nil }
             return target(for: item)
         case .detail(let target), .actions(let target):
-            return target
+            guard let found = now?.sections.find(target.action.id) else { return nil }
+            return Target(action: found.action, group: found.group)
         default:
             return nil
         }
     }
 
-    /// ↩ · ⌘↩를 받은 곳 (`LauncherReturn`)
+    /// ↩ · ⌘↩를 받은 곳 (`LauncherReturn`). 펼침 · 패널은 지금 구역으로
     private var returnPlace: LauncherReturn.Place {
         switch screen {
         case .list: .list(selectedItem)
-        case .detail(let target), .actions(let target): .task(target.group)
+        case .detail(let target), .actions(let target): .task(focusedTarget?.group ?? target.group)
         default: .other
         }
     }
@@ -503,7 +515,7 @@ final class LauncherModel {
         if screen == .list { selectedID = selectedItem?.id }
     }
 
-    /// 목록이 새로 왔을 때: 고르던 행이 아직 있으면 그 행을, 없으면 같은 자리(끝을 넘지 않게)를 가리킨다
+    /// 목록이 새로 왔을 때: 고르던 행이 아직 있으면 그 행을, 없으면 같은 자리(끝을 넘지 않게)를 가리킨다 (`LauncherContent.reselect`)
     func reconcileSelection() {
         guard screen == .list else { return }
         let items = items
@@ -511,10 +523,8 @@ final class LauncherModel {
             self.pendingFocus = nil
             selection = index
             selectedID = items[index].id
-        } else if let selectedID, let index = items.firstIndex(where: { $0.id == selectedID }) {
-            selection = index
         } else {
-            selection = LauncherContent.move(selection, by: 0, count: items.count)
+            selection = LauncherContent.reselect(selectedID, in: items, at: selection)
             selectedID = items.indices.contains(selection) ? items[selection].id : nil
         }
     }
@@ -548,7 +558,10 @@ final class LauncherModel {
             if sources.indices.contains(index) { pick(sources[index], for: purpose) }
         case .pickLines:
             lineSelection.tap(lineCursor)
-        case .done, .notice:
+        case .done:
+            // 완료 줄은 닫기만 (목록으로 돌아가 다른 행을 실행하지 않게)
+            close()
+        case .notice:
             back()
         case .consentNeeded:
             openSettings(.ai)
@@ -573,6 +586,7 @@ final class LauncherModel {
     }
 
     private func showSources(_ target: Target) {
+        if screen == .list { listRow = selection }
         screen = .detail(target)
         Task { await now?.loadEvidence(target.action.id) }
     }
@@ -591,6 +605,7 @@ final class LauncherModel {
     }
 
     private func openActions(_ target: Target) {
+        if screen == .list { listRow = selection }
         screen = .actions(target)
         selection = initialActionIndex(for: target)
     }
@@ -602,7 +617,8 @@ final class LauncherModel {
             if text.isEmpty { close() } else { text = "" }
         case .editDue(let target):
             screen = .actions(target)
-            selection = 0
+            // Review는 맨 위 Confirm이 아니라 떠난 Edit due 줄로 돌아온다
+            selection = target.group == .review ? actionEntries(for: target).firstIndex(of: .editDue) ?? 0 : 0
         case .pickSource(.add(let draft)):
             screen = .addDue(draft)
             selection = LauncherDue.index(of: draft.due, in: dueChoices)
@@ -610,6 +626,11 @@ final class LauncherModel {
         case .pickLines(_, let purpose):
             screen = .pickSource(purpose)
             selection = 0
+        case .detail, .actions:
+            // 보던 행으로 돌아간다 (맨 위의 다른 Review를 고른 채 두지 않게). 그 행이 사라졌으면 같은 자리
+            screen = .list
+            selection = listRow
+            reconcileSelection()
         case .working:
             // 직접 추가 · 신고는 결과가 올 때까지 기다린다 (돌아가서 다시 보내면 중복)
             guard !isSubmitting else { return }

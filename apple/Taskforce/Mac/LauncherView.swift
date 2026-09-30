@@ -195,13 +195,14 @@ struct LauncherRootView: View {
     private func row(_ item: LauncherItem, selected: Bool) -> some View {
         switch item {
         case .review(let action):
-            // 제목 옆에 확인 이유 한 줄 (부제 자리, 행 높이는 그대로)
+            // 제목 옆에 확인 이유 한 줄 (부제 자리, 행 높이는 그대로). 긴 제목은 이유를 자르지 않고 제목을 줄인다
             LauncherRow(
                 title: action.title,
                 subtitle: ConfirmReasonText.label(action.confirmReasons),
                 accessory: action.dueDate.map { DueText.accessory($0, today: today) },
                 urgent: DueText.isUrgent(due: action.dueDate, reasons: [], today: today),
                 selected: selected,
+                keepsSubtitle: true,
                 leading: .status(.review)
             )
         case .task(let ranked):
@@ -302,6 +303,7 @@ struct LauncherRootView: View {
             urgent: !done && DueText.isUrgent(due: action.dueDate, reasons: [], today: today),
             selected: true,
             dimmed: done,
+            keepsSubtitle: target.group == .review,
             leading: .status(TaskStatusMark.State(target.group))
         )
         Group {

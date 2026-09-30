@@ -14,7 +14,7 @@ struct LabelsTests {
         (["판정 확인: ALREADY_DONE"], "May be done already"),
         (["판정 확인: INFO_ONLY"], "May not be a task"),
         (["판정 확인: TENTATIVE"], "May not be a firm commitment"),
-        (["병합 확인 (55%)"], "May duplicate another task"),
+        (["병합 확인 (55%)"], "Update may not belong here"),
         (["중복 확인 (72%): 제안서 보내기"], "May duplicate another task"),
         (["기한 확인"], "Due date unclear"),
         (["내용 확인"], "Scope unclear"),
@@ -29,7 +29,8 @@ struct LabelsTests {
         #expect(ConfirmReasonText.label(["기한 확인", "판정 확인: TENTATIVE, NOT_MY_ACTION"]) == "Not sure it's yours")
         #expect(ConfirmReasonText.label(["판정 확인: TENTATIVE, ALREADY_DONE"]) == "May be done already")
         #expect(ConfirmReasonText.label(["판정 확인: TENTATIVE, INFO_ONLY"]) == "May not be a task")
-        #expect(ConfirmReasonText.label(["기한 확인", "병합 확인 (55%)"]) == "May duplicate another task")
+        #expect(ConfirmReasonText.label(["기한 확인", "병합 확인 (55%)"]) == "Update may not belong here")
+        #expect(ConfirmReasonText.label(["기한 확인", "중복 확인 (72%): 제안서 보내기"]) == "May duplicate another task")
         #expect(ConfirmReasonText.label(["상태 확인", "내용 확인", "기한 확인"]) == "Due date unclear")
     }
 

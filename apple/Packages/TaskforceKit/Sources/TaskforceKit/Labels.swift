@@ -24,10 +24,11 @@ extension RankReason {
 /// ("판정 확인: NOT_MY_ACTION", "병합 확인 (55%)", "기한 확인" 등)를 짧은 영어 표기 하나로.
 /// 이유가 여럿이면 가장 중요한 하나만 보인다(`Kind` 순서, 담당이 먼저). 모르는 이유는 내부 코드를 보이지 않게 "Needs review".
 /// 서버의 핸드오프 번들(src/lib/actions/handoff.ts)은 이 표기를 쓰지 않고 따로 한국어 문장으로 옮긴다.
+/// 서버가 남기는 이유 이름이 여기 모두 있는지는 src/lib/actions/confirm-reasons.test.ts가 본다 (이름이 바뀌면 그 테스트가 깨진다).
 public enum ConfirmReasonText {
     /// 확인 이유의 종류. 앞일수록 중요하다 (확정하기 전에 먼저 알아야 할 것)
     enum Kind: Int, Comparable {
-        case owner, done, notTask, tentative, duplicate, due, scope, status
+        case owner, done, notTask, tentative, uncertainMerge, duplicate, due, scope, status
 
         var label: String {
             switch self {
@@ -35,6 +36,7 @@ public enum ConfirmReasonText {
             case .done: "May be done already"
             case .notTask: "May not be a task"
             case .tentative: "May not be a firm commitment"
+            case .uncertainMerge: "Update may not belong here"
             case .duplicate: "May duplicate another task"
             case .due: "Due date unclear"
             case .scope: "Scope unclear"
@@ -72,8 +74,11 @@ public enum ConfirmReasonText {
         if reason.hasPrefix("판정 확인:") {
             return reason.dropFirst("판정 확인:".count).split(separator: ",").compactMap { judge[$0.trimmingCharacters(in: .whitespaces)] }
         }
-        // "병합 확인 (55%)": 원문을 붙인 병합, "중복 확인 (72%): 제목": Notion 할 일 DB 항목 (src/lib/pipeline/merge-task.ts)
-        if reason.hasPrefix("병합 확인") || reason.hasPrefix("중복 확인") { return [.duplicate] }
+        // "병합 확인 (55%)": 기존 할 일에 새 원문을 붙였지만 같은 일인지 확신이 낮다 (src/lib/pipeline/merge.ts).
+        // 이 할 일은 원래 있던 것이라, 새로 붙은 내용이 여기 속하는지를 묻는다
+        if reason.hasPrefix("병합 확인") { return [.uncertainMerge] }
+        // "중복 확인 (72%): 제목": Notion 할 일 DB 항목이 비슷한 할 일과 따로 만들어졌다 (src/lib/pipeline/merge-task.ts)
+        if reason.hasPrefix("중복 확인") { return [.duplicate] }
         return []
     }
 }

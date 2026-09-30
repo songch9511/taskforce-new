@@ -191,6 +191,13 @@ public enum LauncherContent {
         return sections
     }
 
+    /// 목록이 새로 왔을 때 · 펼침 · ⌘K 패널에서 목록으로 돌아올 때 고를 줄: 전에 고른 행(`id`)이 아직 있으면 그 행,
+    /// 없으면 같은 자리(끝을 넘지 않게). 맨 위(다른 Review 등)로 옮기지 않는다.
+    public static func reselect(_ id: String?, in items: [LauncherItem], at index: Int) -> Int {
+        if let id, let found = items.firstIndex(where: { $0.id == id }) { return found }
+        return move(index, by: 0, count: items.count)
+    }
+
     /// 선택 이동. 끝에서 멈춘다 (돌아가지 않는다).
     public static func move(_ index: Int, by delta: Int, count: Int) -> Int {
         guard count > 0 else { return 0 }
@@ -318,14 +325,16 @@ public struct LauncherDeleteGuard: Sendable, Equatable {
 
 /// ↩ · ⌘↩. Review는 제목만 보고 확정하지 않게 ↩로 확정하지 않는다: 목록의 Review 행에서 ↩는 근거(Sources 묶음)를 펼치고,
 /// 확정은 ⌘↩다(목록 · 펼침 · ⌘K 패널 어디서든 고른 줄과 상관없이, ⌘K 패널의 Confirm도 그대로). Dismiss는 ⌘⌫(`LauncherDeleteGuard`).
-/// Review에서 누르고 있어 반복된 ↩ · ⌘↩는 먹고 아무것도 하지 않는다: 펼침 → ⌘K 패널 → Confirm으로 이어지거나, 확정 뒤 다음 Review를 확정하지 않게.
+/// 누르고 있어 반복된 ↩ · ⌘↩는 어느 화면에서나 먹고 아무것도 하지 않는다: 펼침 → ⌘K 패널로 이어지거나, 확정 뒤 누르고 있던 키가
+/// 다음 화면 · 목록 첫 줄(안내 · 다른 Review · 할 일)을 실행하지 않게. 런처에 키 반복이 필요한 곳은 없다.
+/// ⌘K 패널은 Review면 Confirm이 아니라 Open source를 고른 채 연다(앱 `LauncherModel`).
 /// 다른 행 · 화면은 지금까지처럼 그 화면의 기본 동작이다(⌘↩도 ↩와 같고, 줄 고르기의 ⌘↩는 보내기).
 public enum LauncherReturn {
     /// ↩를 받은 곳
     public enum Place: Equatable, Sendable {
         /// 목록: 고른 행 (없으면 nil)
         case list(LauncherItem?)
-        /// 펼침 · ⌘K 패널: 그 할 일의 구역
+        /// 펼침 · ⌘K 패널: 그 할 일의 (지금) 구역
         case task(TaskGroup)
         /// 그 밖의 화면 (기한 · 원문 · 줄 고르기, 물어보기 답 등)
         case other
@@ -343,13 +352,13 @@ public enum LauncherReturn {
     }
 
     public static func effect(at place: Place, command: Bool, isRepeat: Bool) -> Effect {
+        if isRepeat { return .ignore }
         let onList: Bool
         switch place {
         case .list(let item) where item?.group == .review: onList = true
         case .task(.review): onList = false
         default: return .primary
         }
-        if isRepeat { return .ignore }
         if command { return .confirm }
         return onList ? .showSources : .primary
     }
