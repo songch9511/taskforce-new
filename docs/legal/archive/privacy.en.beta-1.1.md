@@ -3,7 +3,7 @@
 Taskforce (AI project manager) · Beta
 
 - Effective date: 2026-09-30
-- Version: Beta 1.2
+- Version: Beta 1.1
 - 한국어: [개인정보 처리방침](privacy.ko.md) (the Korean version prevails if the two differ)
 
 태스크포스 ("we", "us") operates the Taskforce app (iOS and macOS), its server, and the website (www.taskforcelabs.dev). We process your personal information under the Personal Information Protection Act of the Republic of Korea (PIPA) and other applicable laws.
@@ -43,7 +43,7 @@ This policy explains what we process, why, where, and for how long, and how you 
 
 | Category | Items | How we collect it |
 |---|---|---|
-| Account | Sign in with Apple: your Apple user identifier and email address (if you choose "Hide My Email", the relay address Apple creates). Sign in with Google: your Google account identifier, email address, name, profile photo URL, and, for Google Workspace accounts, your organization's domain (the values Google provides at sign-in; we do not store Google's tokens on our servers). Email sign-in: your email address. We do not receive your name from Apple | When you sign in |
+| Account | Sign in with Apple: your Apple user identifier and email address (if you choose "Hide My Email", the relay address Apple creates). Email sign-in: your email address. We do not receive your name from Apple | When you sign in |
 | Profile | Display name, aliases, additional email addresses | You enter them in the app |
 | Connections | The connected service, workspace or account identifier and name (for Google, the account's email address), connection settings (names and identifiers of databases to include or skip; for Google, the permission scopes you granted and, for Gmail, counts of emails by reason), sync status (where the last import reached; for Gmail, the identifier and received time of recently imported or filtered emails), access tokens (stored encrypted) | When you connect a service in the app |
 | Source text from connected services | Meeting notes, documents, task database entries, calendar events, meeting transcripts, emails, and Slack messages, with their titles, times, original links, and the people involved (names and email addresses of senders, recipients, attendees, and speakers). See section 3 for each service | Through the connected service's API |
@@ -170,7 +170,7 @@ No law currently requires us to keep any of this information longer. If one does
 ### How we delete
 
 - **Account deletion:** app → Account → Delete account. When the server deletes your authentication account, rows in every table linked to it (profile, connections and tokens, source text, tasks, evidence, history, judgment records, usage records, device tokens) are deleted in the same request.
-  When you delete your account, we also ask Apple to revoke your Sign in with Apple tokens, ask each connected service to revoke its tokens, and, if you signed in with Google, ask Google to revoke that sign-in access.
+  When you delete your account, we also ask Apple to revoke your Sign in with Apple tokens and ask each connected service to revoke its tokens.
 - **Automatic deletion of source text:** a job runs daily and deletes the body text of source text stored 90 days ago, and deletes Jev judgment records stored 90 days ago. The same job deletes queued Slack messages that arrived 3 days ago and Slack threads with no activity for 14 days.
 - **Disconnecting or removing Slack:** when you disconnect Slack in the app or remove the app (or revoke its access) in Slack, we delete that connection's Slack source body text, titles, and people involved, evidence quotes, claim quote text, Jev judgment records, queued messages, tracked threads, and name information at once (Slack in section 3). A daily check of Slack tokens runs the same deletion within a day even if we were not told the app was removed.
 - **No backups:** we keep no database backups, so deleted data cannot be recovered and does not linger in a backup. If we start keeping backups, we will add their retention period to this policy first.
@@ -290,7 +290,7 @@ For counseling or dispute resolution about privacy violations, you can contact:
 
 ## 15. Google user data
 
-For information Taskforce receives through Google APIs (Google sign-in information, Calendar events, Meet transcripts, Gmail messages), we make these commitments:
+For information Taskforce receives through Google APIs (Calendar events, Meet transcripts, Gmail messages), we make these commitments:
 
 > Taskforce's use of information received from Google APIs will adhere to the [Google API Services User Data Policy](https://developers.google.com/terms/api-services-user-data-policy), including the Limited Use requirements.
 >
@@ -322,8 +322,7 @@ The beta is not offered to people who live in the European Economic Area (EEA, i
 
 Change history
 
-- Beta 1.2 (effective 2026-09-30): You can now sign in with Google. At sign-in we receive your Google account identifier, email address, name, and profile photo URL (and your organization's domain for Google Workspace accounts), and when you delete your account we ask Google to revoke that sign-in access.
-- Beta 1.1 (effective 2026-09-30, [view previous version](https://www.taskforcelabs.dev/en/privacy/beta-1.1)): The Gmail section now matches how the service works (which mail is skipped and why, one message stored at a time, the IDs and received times of fetched or skipped mail and per-reason counts, and the account-identification permissions). When a connection expires, we send one reminder to reconnect and keep a record of connections, expirations, and reminders. Baseten was removed from the source-analysis providers.
+- Beta 1.1 (effective 2026-09-30): The Gmail section now matches how the service works (which mail is skipped and why, one message stored at a time, the IDs and received times of fetched or skipped mail and per-reason counts, and the account-identification permissions). When a connection expires, we send one reminder to reconnect and keep a record of connections, expirations, and reminders. Baseten was removed from the source-analysis providers.
 - Beta 1.0 (effective 2026-09-29): [View previous version](https://www.taskforcelabs.dev/en/privacy/beta-1.0)
 
 This policy takes effect on 2026-09-30.
