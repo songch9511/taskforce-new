@@ -21,13 +21,17 @@ enum GoogleSignInFlow {
 
     static var isAvailable: Bool { config != nil }
 
+    /// 로그인 창이 떠 있는 동안 (런처 행과 설정 창 버튼을 함께 눌러도 흐름 하나만: SDK는 두 번째가 첫 번째를 덮는다)
+    private static var inProgress = false
+
     /// 로그인을 시작한다. Google에는 nonce의 SHA-256을, Supabase에는 원래 값을 보낸다 (Supabase Google 제공자의 nonce 확인은 켜 둔다).
     /// `anchor`가 없으면 지금 앞에 있는 화면 · 창. `onFinish`: 창을 닫았거나 Supabase 로그인까지 끝났을 때.
     static func signIn(session: SessionStore, presenting anchor: GoogleSignInAnchor? = nil, onFinish: @escaping @MainActor () -> Void = {}) {
-        guard let config, let anchor = anchor ?? currentAnchor() else {
+        guard let config, !inProgress, let anchor = anchor ?? currentAnchor() else {
             onFinish()
             return
         }
+        inProgress = true
         let google = GIDSignIn.sharedInstance
         google.configuration = GIDConfiguration(clientID: config.clientID)
         let nonce = SignInNonce.random()
@@ -43,6 +47,7 @@ enum GoogleSignInFlow {
             }
             Task { @MainActor in
                 await finish(outcome, nonce: nonce, session: session)
+                inProgress = false
                 onFinish()
             }
         }
