@@ -1,6 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { decide, jevConfigFromEnv, JevError, type JevConfig } from "./jev";
+import { DeadlineExceededError, MIN_REQUEST_MS } from "./deadline";
+import { decide, JEV_DEADLINE_FIRST_MS, JEV_TIMEOUT_MS, jevConfigFromEnv, JevError, jevTimeoutMs, type JevConfig } from "./jev";
 
 function config(body: unknown, status = 200): JevConfig & { requests: RequestInit[] } {
   const requests: RequestInit[] = [];
@@ -16,6 +17,10 @@ function config(body: unknown, status = 200): JevConfig & { requests: RequestIni
 }
 
 const questions = { ok: { type: "noul" as const, instructions: "?" } };
+
+const bodyTimesOut = (async () =>
+  ({ ok: true, status: 200, json: async () => { throw new DOMException("timed out", "TimeoutError"); }, text: async () => "" }) as unknown as Response) as typeof fetch;
+
 
 describe("decide", () => {
   it("모델 · state · questions를 보내고 답을 검증해 돌려준다", async () => {
@@ -66,6 +71,79 @@ describe("decide", () => {
       }) as typeof fetch,
     };
     await expect(decide(stuck, { state: {}, questions })).rejects.toThrow(/시간 초과/);
+  });
+
+  describe("마감이 있으면(빠진 할 일 신고)", () => {
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    /** Date.now를 가짜 시계로 바꾸고, 요청마다 준 시간 한도(AbortSignal.timeout에 넘긴 값)를 모은다 */
+    function fakeClock(start = 1_000_000) {
+      const clock = { now: start };
+      vi.spyOn(Date, "now").mockImplementation(() => clock.now);
+      const spy = vi.spyOn(AbortSignal, "timeout");
+      return { clock, sent: () => spy.mock.calls.map(([ms]) => ms) };
+    }
+
+    it("첫 요청은 남은 시간의 절반과 10초 중 짧은 쪽, 다시 묻기는 남은 시간. 1초가 안 남으면 묻지 않는다", () => {
+      const now = 0;
+      expect(jevTimeoutMs({}, true, now)).toBe(JEV_TIMEOUT_MS);
+      expect(jevTimeoutMs({ deadline: 40_000 }, true, now)).toBe(JEV_DEADLINE_FIRST_MS);
+      expect(jevTimeoutMs({ deadline: 12_000 }, true, now)).toBe(6_000);
+      expect(jevTimeoutMs({ deadline: 12_000 }, false, now)).toBe(12_000);
+      expect(jevTimeoutMs({ deadline: 60_000 }, false, now)).toBe(JEV_TIMEOUT_MS);
+      // 둘로 나눌 만큼 남지 않았으면 첫 요청에 남은 시간을 다 준다
+      expect(jevTimeoutMs({ deadline: 1_500 }, true, now)).toBe(1_500);
+      expect(jevTimeoutMs({ deadline: MIN_REQUEST_MS - 1 }, true, now)).toBeNull();
+    });
+
+    it("남은 시간이 1초가 안 되면 부르지 않는다", async () => {
+      const c = { ...config({ model: "m", answers: { ok: { type: "noul", noul: 0.5 } } }), deadline: Date.now() + MIN_REQUEST_MS - 1 };
+      const error = await decide(c, { state: {}, questions }).catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(DeadlineExceededError);
+      expect((error as DeadlineExceededError).stage).toBe("jev");
+      expect(c.requests).toHaveLength(0);
+    });
+
+    it("첫 요청이 멈추면 남은 시간으로 다시 묻고, 또 넘기면 그 시도의 실제 한도를 적은 마감 오류", async () => {
+      const { clock, sent } = fakeClock();
+      const slow: JevConfig = {
+        apiKey: "key",
+        model: "m",
+        deadline: clock.now + 40_000,
+        fetch: (async () => {
+          clock.now += sent().length === 1 ? 10_000 : 30_000;
+          throw new DOMException("timed out", "TimeoutError");
+        }) as typeof fetch,
+      };
+      const error = await decide(slow, { state: {}, questions }).catch((e: unknown) => e);
+      // 첫 요청 10초(상한), 다시 묻기는 남은 30초
+      expect(sent()).toEqual([10_000, 30_000]);
+      expect(error).toBeInstanceOf(DeadlineExceededError);
+      expect((error as Error).message).toContain("Decisions API 응답 시간 초과 (30초)");
+    });
+
+    it("첫 요청이 마감 가까이까지 멈췄으면 다시 묻지 않는다", async () => {
+      const { clock, sent } = fakeClock();
+      const stuck: JevConfig = {
+        apiKey: "key",
+        model: "m",
+        deadline: clock.now + 3_000,
+        fetch: (async () => {
+          clock.now += 2_500;
+          throw new DOMException("timed out", "TimeoutError");
+        }) as typeof fetch,
+      };
+      await expect(decide(stuck, { state: {}, questions })).rejects.toThrow(/다시 물을 시간 없음/);
+      // 첫 요청은 1.5초(3초의 절반). 끝났을 때 남은 0.5초는 1초가 안 되어 다시 묻지 않는다
+      expect(sent()).toEqual([1_500]);
+    });
+  });
+
+  it("머리글 뒤 본문을 읽다가 시간 한도가 울리면: 마감이 있으면 마감 오류, 없으면 원래 오류 그대로", async () => {
+    await expect(decide({ apiKey: "k", model: "m", fetch: bodyTimesOut, deadline: Date.now() + 20_000 }, { state: {}, questions })).rejects.toBeInstanceOf(DeadlineExceededError);
+    await expect(decide({ apiKey: "k", model: "m", fetch: bodyTimesOut }, { state: {}, questions })).rejects.toBeInstanceOf(DOMException);
   });
 
   it("HTTP 오류는 JevError", async () => {

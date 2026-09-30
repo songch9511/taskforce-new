@@ -31,11 +31,11 @@ function answers(my: number): JevDecision["answers"] {
   };
 }
 
-function fakeComplete(data: Record<string, unknown>) {
+function fakeComplete(data: Record<string, unknown>, extra: { reasoningLimited?: boolean } = {}) {
   const requests: { system: string; user: string }[] = [];
   const complete = (async (request: { system: string; user: string }) => {
     requests.push(request);
-    return { model: "test/llm", usage: { prompt_tokens: 1, completion_tokens: 1, cost: 0.002 }, data };
+    return { model: "test/llm", usage: { prompt_tokens: 1, completion_tokens: 1, cost: 0.002 }, data, ...extra };
   }) as unknown as CompleteJson;
   return { complete, requests };
 }
@@ -67,8 +67,18 @@ describe("extractMissing", () => {
     // Claim 속성은 Jev 답을 그대로 쓴다
     expect(result.judged.judge.signals.statement_certainty.choice).toBe("tentative");
     expect(result.summary.cost).toBeCloseTo(0.0025);
+    expect(result.summary.reasoningLimited).toBe(false);
     // 원문 전체가 아니라 구절과 앞뒤 문맥만 보낸다
     expect(requests[0].user).toContain("<신고한 구절>\n금요일까지 견적서 정리해서 드릴게요");
+  });
+
+  it("추론량을 제한해 받은 답이면 요약에 남긴다 (신고는 사용자가 기다려 첫 호출부터 제한한다)", async () => {
+    const { complete } = fakeComplete(
+      { title: "김대표에게 견적서 전달", counterpart: "김대표", due_text: null, due: null, due_confidence: null },
+      { reasoningLimited: true },
+    );
+    const result = await extractMissing(input, { complete, decide: judgeDecide });
+    expect(result.summary.reasoningLimited).toBe(true);
   });
 
   it("제목이 비었으면 구절을 제목으로 쓰고, 형식이 틀린 날짜는 버린다", async () => {

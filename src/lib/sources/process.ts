@@ -4,6 +4,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 
 import { SupabaseActionStore, SupabaseTaskLinks } from "@/lib/actions/db-store";
 import { SUMMARY_COLUMNS } from "@/lib/actions/service";
+import { DeadlineExceededError } from "@/lib/ai/deadline";
 import { embed, embedConfigFromEnv, EmbedError } from "@/lib/ai/embed";
 import { decide, jevConfigFromEnv, JevError } from "@/lib/ai/jev";
 import { completeJson, llmConfigFromEnv, LlmError } from "@/lib/ai/llm";
@@ -37,17 +38,37 @@ import { notifyConfirmations } from "@/lib/notify/service";
 // 저장된 원문 하나를 끝까지 처리한다 (POST /api/v1/sources · 연동 동기화 · 재처리 cron이 부른다):
 // 추출 → 검증 → Jev 판정(judge_logs) → 기존 Action과 매칭 · 병합(actions · claims · evidence · action_events).
 // Action 쓰기는 서버만 할 수 있으므로 service role 클라이언트로 부르고, 모든 쓰기에 user_id를 넣는다.
-// 빠진 할 일 신고(reportMissing, POST /api/v1/sources/:id/missing)도 같은 병합 · 사용자 잠금을 쓴다.
+// 빠진 할 일 신고(reportMissing, POST /api/v1/sources/:id/missing)도 같은 병합 · 사용자 잠금을 쓴다. 사용자가 기다리므로 마감 안에서만 한다.
 // 세 함수 모두 모델 호출(LLM · Jev · 임베딩) 직전마다 외부 AI 처리 동의를 다시 확인한다 (withConsentGate).
-// 매칭 전에는 임베딩이 없는 열린 Action(직접 추가할 때 못 만든 것)을 몇 개씩 채운다 (backfillEmbeddings, 실패해도 처리는 계속).
+// 원문 처리의 매칭 전에는 임베딩이 없는 열린 Action(직접 추가할 때 못 만든 것)을 몇 개씩 채운다 (backfillEmbeddings, 실패해도 처리는 계속).
+// 사용자가 기다리는 빠진 할 일 신고는 채우지 않는다 (시간이 빠듯하고, 배경 처리가 채운다).
 // 도중에 철회하면 ConsentRequiredError를 던진다: 원문은 failed로 남기고, 부르는 쪽(동기화 · 스크립트 · 재처리 cron)은 남은 항목을 멈춘다.
 
 export type ProcessDeps = PipelineDeps & Pick<MergeDeps, "embed">;
 
-export function processDepsFromEnv(): ProcessDeps {
+/**
+ * 사용자가 기다리는 처리(빠진 할 일 신고)에서 추출(LLM) 뒤 판정 · 병합에 남기는 시간: Jev 2번(판정 · 매칭) · 후보 임베딩 · DB 읽기 · 쓰기 · 잠금 대기.
+ * 보통 합쳐 몇 초다. 그 호출들은 마감(deadline)까지 쓸 수 있어, 멈춰도 실행 한도 안에 오류로 끝난다.
+ */
+export const AFTER_EXTRACT_MS = 15_000;
+
+/** 빠진 할 일 신고가 사용자 잠금을 얻은 뒤 병합(후보 임베딩 · Jev 매칭 · 쓰기)에 필요한 최소 시간. 마감까지 이만큼 남지 않으면 병합을 시작하지 않는다 */
+export const MERGE_MIN_MS = 5_000;
+
+/**
+ * deadline(epoch ms, lib/ai/deadline.ts interactiveDeadline)을 주면 사용자가 기다리는 처리(빠진 할 일 신고)다: 모델 호출을 모두 그 시각 안에 끝내고,
+ * 추출(LLM)은 첫 호출부터 추론량을 제한하며 뒤의 판정 · 병합에 AFTER_EXTRACT_MS를 남긴다.
+ * 없으면 배경 처리(원문 처리 · 동기화 · 재처리 cron): 호출마다 제 시간 한도(LLM 90초 · Jev · 임베딩 30초)만 쓴다.
+ */
+export function processDepsFromEnv(deadline?: number): ProcessDeps {
   const llm = llmConfigFromEnv();
   const jev = jevConfigFromEnv();
   const embedding = embedConfigFromEnv();
+  if (deadline !== undefined) {
+    llm.deadline = deadline - AFTER_EXTRACT_MS;
+    jev.deadline = deadline;
+    embedding.deadline = deadline;
+  }
   return {
     complete: (request) => completeJson(llm, request),
     decide: (request) => decide(jev, request),
@@ -58,16 +79,50 @@ export function processDepsFromEnv(): ProcessDeps {
 // 같은 사용자의 병합은 한 번에 하나씩: 동시에 비슷한 후보 둘이 모두 "새 Action"이 되는 중복을 막는다.
 // (한 서버 인스턴스 안에서만 보장된다. 인스턴스 사이의 드문 경합은 write_action의 버전 확인이 값 손실을 막는다.)
 const mergeQueues = new Map<string, Promise<unknown>>();
-function withUserLock<T>(userId: string, task: () => Promise<T>): Promise<T> {
+
+export const USER_LOCK_TIMEOUT_MESSAGE = "병합 대기 시간 초과 (같은 사용자의 다른 처리가 끝나지 않음)";
+/** 기다리지 않았는데(앞선 병합 없음) 마감까지 MERGE_MIN_MS가 남지 않았을 때: 앞 단계(추출 · 판정)가 시간을 다 썼다 */
+export const MERGE_NO_TIME_MESSAGE = "병합할 시간 없음 (앞 단계가 마감 전 시간을 다 씀)";
+
+/**
+ * deadline(epoch ms)을 주면(사용자가 기다리는 누락 신고) 앞선 병합을 마감 전 MERGE_MIN_MS까지만 기다린다.
+ * 넘기면 task를 부르지 않고 DeadlineExceededError를 낸다: 차례가 나중에 와도 병합하지 않는다. 대기열 순서는 그대로다.
+ * 차례가 와도 마감까지 MERGE_MIN_MS가 남지 않았으면 병합을 시작하지 않는다. 시작한 병합은 끊지 않는다 (그 안의 모델 호출이 마감을 넘지 않는다).
+ * 오류 단계(deadline_exceeded 기록)는 앞선 병합을 기다렸으면 lock, 기다리지 않았으면 merge다 (앞 단계가 느렸다).
+ */
+export function withUserLock<T>(userId: string, task: () => Promise<T>, deadline?: number): Promise<T> {
+  const contended = mergeQueues.has(userId);
   const previous = mergeQueues.get(userId) ?? Promise.resolve();
-  const run = previous.catch(() => undefined).then(task);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let expired = false;
+  const run = previous
+    .catch(() => undefined)
+    .then(() => {
+      clearTimeout(timer);
+      if (expired) throw new DeadlineExceededError("lock", USER_LOCK_TIMEOUT_MESSAGE);
+      if (deadline !== undefined && deadline - Date.now() < MERGE_MIN_MS) {
+        throw contended ? new DeadlineExceededError("lock", USER_LOCK_TIMEOUT_MESSAGE) : new DeadlineExceededError("merge", MERGE_NO_TIME_MESSAGE);
+      }
+      return task();
+    });
   mergeQueues.set(userId, run);
   // 실패해도 대기열을 비운다. finally가 아니라 then(성공, 실패)이어야 거절이 처리되지 않은 채 남지 않는다.
   const release = () => {
     if (mergeQueues.get(userId) === run) mergeQueues.delete(userId);
   };
   run.then(release, release);
-  return run;
+  if (deadline === undefined) return run;
+  // 차례가 오면(task를 시작하면) 타이머를 지우므로, 이 약속은 기다리는 동안 마감 전 MERGE_MIN_MS를 넘겼을 때만 끝난다.
+  const waited = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () => {
+        expired = true;
+        reject(new DeadlineExceededError("lock", USER_LOCK_TIMEOUT_MESSAGE));
+      },
+      Math.max(0, deadline - MERGE_MIN_MS - Date.now()),
+    );
+  });
+  return Promise.race([run, waited]);
 }
 
 /** 사용자에게 보여도 되는 오류만 그대로 두고, DB 오류 등은 일반 문구로 바꾼다 (자세한 내용은 서버 로그). */
@@ -305,16 +360,21 @@ export async function processTaskSource(
  * 2. 원래 처리의 판정 기록(judge_logs)으로 어느 단계가 놓쳤는지 가른다 (classifyMiss)
  * 3. 구절 하나를 후보로 만들고(extractMissing) 보통 원문과 같은 병합(mergeJudged)으로 반영한다.
  *    다른 사람 담당 Action과는 합치지 않고(reportStore), 확신이 낮은 병합은 새 일로 본다(reportMatchDecide)
- * 4. 새 Action이면 created와 같은 트랜잭션에 user_reported_missing(actor user, after { stage, source_id })을 남긴다.
+ * 4. 새 Action이면 created와 같은 트랜잭션에 user_reported_missing(actor user, after { stage, source_id, reasoning_limited })을 남긴다.
  *    이미 있는 Action(확실한 반복 · 변경)이면 근거만 더하고 already_tracked — 신고로 세지 않는다.
  * 병합이 기존 Action의 완료 · 취소로 보는 경우는 reportMatchDecide가 같은 일의 반복으로 바꾼다 (신고로 할 일을 끝내지 않는다).
  * commitment 후보는 unmatched가 되지 않으므로, Action을 못 얻으면 오류로 본다.
+ * 사용자가 기다리므로 마감을 반드시 받는다: deadline(epoch ms, lib/ai/deadline.ts interactiveDeadline)과 그 마감으로 만든
+ * deps(processDepsFromEnv(deadline)). 모델 호출과 같은 사용자의 다른 병합 기다리기(withUserLock)가 마감을 넘지 않고,
+ * 임베딩 채우기(backfillEmbeddings)는 하지 않는다 (그만큼 신고에 필요한 임베딩 · 매칭 시간을 쓰지 않게. 배경 처리가 채운다).
+ * 시간이 모자라면 DeadlineExceededError.
  */
 export async function reportMissing(
   admin: SupabaseClient,
   source: { id: string; userId: string; processingStatus: string },
   input: MissingInput,
-  deps: ProcessDeps = processDepsFromEnv(),
+  deadline: number,
+  deps: ProcessDeps,
 ): Promise<MissingReportResponse> {
   const tracked = await trackedActionSummary(admin, source, input.quote);
   if (tracked) return { status: "already_tracked", action: tracked, stage: null };
@@ -339,18 +399,29 @@ export async function reportMissing(
     quote: input.quote,
   });
 
-  const { judged } = await extractMissing(input, ai);
+  const { judged, summary } = await extractMissing(input, ai);
   const store = new SupabaseActionStore(admin, source.userId, {
-    createEvents: [{ type: "user_reported_missing", before: null, after: { stage, source_id: source.id }, rule: null, actor: "user" }],
+    createEvents: [
+      {
+        type: "user_reported_missing",
+        before: null,
+        // reasoning_limited: 추론량을 제한해 뽑은 신고인가 (신고는 첫 호출부터 제한하므로 LLM_OVERRUN_REASONING_EFFORT=off가 아니면 true, 제품 원칙 6)
+        after: { stage, source_id: source.id, reasoning_limited: summary.reasoningLimited },
+        rule: null,
+        actor: "user",
+      },
+    ],
   });
-  const [outcome] = await withUserLock(source.userId, async () => {
-    await backfillEmbeddings(store, ai.embed);
-    return mergeJudged(reportStore(store), [judged], { id: source.id, text: input.text, kind: input.kind, occurredAt: input.occurredAt }, input.identity, {
-      embed: ai.embed,
-      decide: reportMatchDecide(ai.decide),
-      newId: () => crypto.randomUUID(),
-    });
-  });
+  const [outcome] = await withUserLock(
+    source.userId,
+    () =>
+      mergeJudged(reportStore(store), [judged], { id: source.id, text: input.text, kind: input.kind, occurredAt: input.occurredAt }, input.identity, {
+        embed: ai.embed,
+        decide: reportMatchDecide(ai.decide),
+        newId: () => crypto.randomUUID(),
+      }),
+    deadline,
+  );
   if (!outcome?.actionId) throw new Error(`누락 신고를 반영하지 못했습니다 (${outcome?.relation ?? "결과 없음"})`);
 
   const action = await actionSummary(admin, source.userId, outcome.actionId);

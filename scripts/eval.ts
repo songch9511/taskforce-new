@@ -11,6 +11,7 @@ import { parseArgs } from "node:util";
 
 import { embed, embedConfigFromEnv } from "../src/lib/ai/embed";
 import { decide, jevConfigFromEnv } from "../src/lib/ai/jev";
+import { DeadlineExceededError, INTERACTIVE_MAX_DURATION_S, interactiveDeadline } from "../src/lib/ai/deadline";
 import { completeJson, llmConfigFromEnv } from "../src/lib/ai/llm";
 import { ASK_PROMPT_VERSION } from "../src/lib/ai/prompts/ask";
 import { EXTRACT_PROMPT_VERSION } from "../src/lib/ai/prompts/extract";
@@ -413,28 +414,34 @@ async function main() {
   }
 
   // 4) 물어보기: 케이스의 Action · 원문을 검색 결과로 주고(검색 자체는 DB 테스트가 본다) 답 · 인용 검증 · 모름을 채점한다.
+  //    LLM은 앱의 질문(v1/ask/route.ts, 실행 한도 INTERACTIVE_MAX_DURATION_S)과 같게 마감을 두고 첫 호출부터 추론량을 제한한다.
   let askCost = 0;
+  // 호출이 실패한 질문(시간 초과 포함): 통과하지 못한 것으로 세어 분모에 넣는다 (앱에서도 답을 받지 못한다)
+  const askFailed: { golden: AskCase; error: string; deadline: boolean }[] = [];
   const askRuns = (
     await mapLimit(askSelected, LLM_CONCURRENCY, async (golden): Promise<{ golden: AskCase; result: AskResult; score: AskScore } | null> => {
+      const deadline = interactiveDeadline(INTERACTIVE_MAX_DURATION_S);
       try {
         const result = await answerQuestion(
           golden.question,
           {
             embed: async (texts) => texts.map(() => []),
             retrieve: async () => askContextOf(golden),
-            complete: (request) => completeJson(llm, request),
+            complete: (request) => completeJson({ ...llm, deadline }, request),
           },
           new Date(golden.asked_at),
         );
         askCost += result.summary.cost;
         return { golden, result, score: scoreAskCase(golden, result) };
       } catch (error) {
-        errors.push(`${golden.id} 물어보기: ${error instanceof Error ? error.message : String(error)}`);
+        const message = error instanceof Error ? error.message : String(error);
+        errors.push(`${golden.id} 물어보기: ${message}`);
+        askFailed.push({ golden, error: message, deadline: error instanceof DeadlineExceededError });
         return null;
       }
     })
   ).filter((r): r is { golden: AskCase; result: AskResult; score: AskScore } => r !== null);
-  if (askRuns.length > 0) {
+  if (askRuns.length + askFailed.length > 0) {
     console.log(`\n물어보기 (${ASK_PROMPT_VERSION})`);
     for (const { golden, result, score } of askRuns) {
       const expected = golden.expect.unknown ? "모름" : "답함";
@@ -448,13 +455,17 @@ async function main() {
       ].filter(Boolean);
       console.log(`  ${score.pass ? "✓" : "✗"} ${golden.id.padEnd(28)} 기대 ${expected} / 결과 ${got}${notes.length ? ` (${notes.join(", ")})` : ""}`);
     }
+    for (const { golden, error } of askFailed) console.log(`  ✗ ${golden.id.padEnd(28)} 호출 실패 (${error})`);
     const passed = askRuns.filter((r) => r.score.pass).length;
     const answerableRuns = askRuns.filter((r) => !r.golden.expect.unknown);
     const unknownRuns = askRuns.filter((r) => r.golden.expect.unknown);
+    const answerableFailed = askFailed.filter((f) => !f.golden.expect.unknown).length;
+    const timedOut = askFailed.filter((f) => f.deadline || f.error.includes("시간 초과")).length;
     const rate = (n: number, d: number) => `${pct(d ? n / d : null)} (${n}/${d})`;
     console.log(
-      `통과 ${rate(passed, askRuns.length)} · 답할 수 있는 질문에 검증된 인용으로 답함 ${rate(answerableRuns.filter((r) => !r.result.unknown && r.score.citedExpected).length, answerableRuns.length)}` +
-        ` · 답이 없는 질문에 모른다고 함 ${rate(unknownRuns.filter((r) => r.result.unknown).length, unknownRuns.length)}` +
+      `통과 ${rate(passed, askRuns.length + askFailed.length)} · 호출 실패 ${askFailed.length}건(마감 · 시간 초과 ${timedOut})` +
+        ` · 답할 수 있는 질문에 검증된 인용으로 답함 ${rate(answerableRuns.filter((r) => !r.result.unknown && r.score.citedExpected).length, answerableRuns.length + answerableFailed)}` +
+        ` · 답이 없는 질문에 모른다고 함 ${rate(unknownRuns.filter((r) => r.result.unknown).length, unknownRuns.length + askFailed.length - answerableFailed)}` +
         ` · 가짜 인용 폐기 ${askRuns.reduce((n, r) => n + r.score.dropped, 0)}건`,
     );
   }
@@ -480,7 +491,14 @@ async function main() {
         sequences: sequenceRuns.map((r) => ({ id: r.golden.id, tags: r.golden.tags ?? [], score: r.score, finals: r.finals, outcomes: r.outcomes })),
         cases: done.map((r) => ({ id: r.golden.id, origin: r.golden.origin, tags: r.golden.tags ?? [], extracted: r.extracted, judged: r.judged ?? r.verified })),
         judgedLabels: judgedItems.map((j) => ({ caseId: j.caseId, kind: j.kind, quote: j.candidate.quote, labels: j.labels, result: j.result })),
-        ask: askRuns.map((r) => ({ id: r.golden.id, score: r.score, answer: r.result.answer, unknown: r.result.unknown, citations: r.result.citations })),
+        ask: askRuns.map((r) => ({
+          id: r.golden.id,
+          score: r.score,
+          answer: r.result.answer,
+          unknown: r.result.unknown,
+          citations: r.result.citations,
+          reasoningLimited: r.result.summary.reasoningLimited,
+        })),
         errors,
       },
       null,
