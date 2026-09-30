@@ -46,6 +46,12 @@ private struct UnsavableStorage: AuthLocalStorage {
     func remove(key: String) throws {}
 }
 
+private struct EmptyStorage: AuthLocalStorage {
+    func store(key: String, value: Data) throws {}
+    func retrieve(key: String) throws -> Data? { nil }
+    func remove(key: String) throws {}
+}
+
 /// 세션 하나가 저장돼 있는 저장소
 private struct SavedSessionStorage: AuthLocalStorage {
     let data: Data
@@ -75,6 +81,65 @@ struct SessionStoreSaveTests {
         let session = fixtures.session(expiresIn: 3600)
         let store = store(storage: SavedSessionStorage(data: try JSONEncoder().encode(session)))
         store.apply(event: .signedIn, session: session)
+        #expect(store.state == .signedIn(userID: fixtures.userID, email: "me@example.com"))
+        #expect(store.errorMessage == nil)
+    }
+
+    @Test func signInForDifferentUserThanSavedSessionStaysSignedOut() throws {
+        var savedSession = fixtures.session(expiresIn: 3600)
+        savedSession.user.id = UUID()
+        savedSession.user.email = "previous@example.com"
+        let attemptedSession = fixtures.session(expiresIn: 3600)
+        let store = store(storage: SavedSessionStorage(data: try JSONEncoder().encode(savedSession)))
+
+        store.apply(event: .signedIn, session: attemptedSession)
+
+        #expect(store.state == .signedOut)
+        #expect(store.errorMessage == SessionStore.sessionNotSavedMessage)
+    }
+
+    @Test(arguments: [AuthChangeEvent.initialSession, .tokenRefreshed])
+    func staleSessionEventKeepsTheSavedUser(_ event: AuthChangeEvent) throws {
+        var savedSession = fixtures.session(expiresIn: 3600)
+        savedSession.user.id = UUID()
+        savedSession.user.email = "current@example.com"
+        let staleSession = fixtures.session(expiresIn: 3600)
+        let store = store(storage: SavedSessionStorage(data: try JSONEncoder().encode(savedSession)))
+
+        store.apply(event: event, session: staleSession)
+
+        #expect(store.state == .signedIn(userID: savedSession.user.id, email: savedSession.user.email))
+        #expect(store.errorMessage == nil)
+    }
+
+    @Test(arguments: [AuthChangeEvent.initialSession, .tokenRefreshed])
+    func staleSessionEventAfterLogoutStaysSignedOut(_ event: AuthChangeEvent) {
+        let store = store(storage: EmptyStorage())
+
+        store.apply(event: event, session: fixtures.session(expiresIn: 3600))
+
+        #expect(store.state == .signedOut)
+        #expect(store.errorMessage == nil)
+    }
+
+    @Test func expiredSavedSessionRemainsSignedInUntilRefreshResolves() throws {
+        let expiredSession = fixtures.session(expiresIn: -60)
+        let store = store(storage: SavedSessionStorage(data: try JSONEncoder().encode(expiredSession)))
+
+        store.apply(event: .initialSession, session: expiredSession)
+
+        #expect(store.state == .signedIn(userID: fixtures.userID, email: "me@example.com"))
+    }
+
+    @Test func tokenRefreshForSavedUserCanRotateTokens() throws {
+        let savedSession = fixtures.session(expiresIn: 3600)
+        var refreshedSession = savedSession
+        refreshedSession.accessToken = "rotated-access"
+        refreshedSession.refreshToken = "rotated-refresh"
+        let store = store(storage: SavedSessionStorage(data: try JSONEncoder().encode(savedSession)))
+
+        store.apply(event: .tokenRefreshed, session: refreshedSession)
+
         #expect(store.state == .signedIn(userID: fixtures.userID, email: "me@example.com"))
         #expect(store.errorMessage == nil)
     }
