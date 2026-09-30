@@ -9,7 +9,7 @@ enum AccountRoute: Hashable, Identifiable {
     var id: Self { self }
 }
 
-/// 계정 메뉴 시트: Profile · Connections · AI processing · Sign Out · Delete Account
+/// 계정 메뉴 시트: Profile · Connections · AI data · Sign Out · Delete Account
 struct AccountSheet: View {
     let email: String?
     let initialRoute: AccountRoute
@@ -34,7 +34,7 @@ struct AccountSheet: View {
                         LabeledContent("Connections", value: connectedSummary)
                     }
                     NavigationLink(value: AccountRoute.consent) {
-                        LabeledContent("AI processing", value: account.hasConsent ? "On" : "Off")
+                        LabeledContent("AI data", value: account.hasConsent ? "On" : "Off")
                     }
                 }
                 Section {

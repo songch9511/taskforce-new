@@ -73,7 +73,7 @@ Mac은 `--show-launcher -TFSampleData -TFSnapshot <폴더>`로 실행하면 런�
 - 오른쪽 위 "+" = New Task 시트(`NowStore.add`, 원문 없이 `POST /actions`): 제목(200자까지) · Due(None · Today · Tomorrow · Date…) · Cancel / Add.
   iOS 26은 시스템 유리 시트 그대로 두고, 제목 칸 · 기한 칩 · Existing 줄은 bg/elevated 바탕 위에 둬서 뒤 목록 글자가 비치지 않게 한다(그 전 OS는 bg/canvas 시트).
   쓰는 동안 열린 할 일(Review · In Progress · To Do)에서 맞는 것을 "Existing"으로 세 개까지 보여 준다(`LauncherAdd.existing`, 런처 찾기와 같은 거르기). 추가는 막지 않는다. 추가되면 닫고 `/now`를 다시 부른다.
-- 오른쪽 위 계정 시트: Profile(이름 · 다른 이름, 비어 있으면 처음 한 번 묻는다) · Connections · AI processing(외부 AI 처리 동의) · 로그인 계정 줄("Apple ID" · "Google Account" · "Email") · Sign Out · Delete Account(Apple 로그인 계정은 Apple 재확인 → 토큰 폐기, Google 로그인 계정은 삭제 뒤 Google 권한 폐기) · Privacy Policy · Terms of Use.
+- 오른쪽 위 계정 시트: Profile(이름 · 다른 이름, 비어 있으면 처음 한 번 묻는다) · Connections · AI data(외부 AI 처리 동의) · 로그인 계정 줄("Apple ID" · "Google Account" · "Email") · Sign Out · Delete Account(Apple 로그인 계정은 Apple 재확인 → 토큰 폐기, Google 로그인 계정은 삭제 뒤 Google 권한 폐기) · Privacy Policy · Terms of Use.
 - 연결이 없고 할 일도 없으면 로고 네 개 + "Connect" 한 줄. 연결이 동기화 중이고 할 일이 없으면 가운데 진행 표시 + "Syncing…". 권한이 끊긴 연결이 있으면 목록 위에 Reconnect 줄.
 - 알림(C10): 권한은 첫 실행에 묻지 않고, 로그인했고 연결이 하나라도 있으며 다른 시트가 없을 때 한 번 묻는다(`PushPermission`). 알림을 누르면 떠 있는 시트를 닫고 목록을 다시 읽은 뒤 그 할 일로 스크롤한다: 확인 요청이면 그 Review card를 먼저 보이고, 할 일이면 그 행을 2초 동안 bg/surface로 칠한다.
 
@@ -95,7 +95,7 @@ Mac은 `--show-launcher -TFSampleData -TFSnapshot <폴더>`로 실행하면 런�
   - `app_opened`는 런처가 뜰 때 30분에 한 번(`LauncherOpenThrottle`).
   - 할 일이 하나도 없는데 연결이 동기화 중이면 빈 입력창 목록 맨 위에 진행 표시 + "Syncing…" 한 줄(고를 수 없음).
   - 알림 권한은 런처가 뜰 때 연결이 있으면 한 번 묻는다. 알림을 누르면 런처를 열고 그 할 일(Review · 할 일 행)을 고른다(목록을 아직 못 읽었으면 읽은 뒤에).
-- 설정 창(SwiftUI Settings 장면): Account · Connections · AI processing · Shortcut. iPhone과 같은 연결 · 동의 화면을 쓴다.
+- 설정 창(SwiftUI Settings 장면): Account · Connections · AI data · Shortcut. iPhone과 같은 연결 · 동의 화면을 쓴다.
 
 ### 연결 · 동의 (양쪽)
 

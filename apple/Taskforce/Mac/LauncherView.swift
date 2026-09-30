@@ -111,7 +111,7 @@ struct LauncherRootView: View {
             statusRow(message, symbol: "exclamationmark.circle")
         case .consentNeeded:
             VStack(spacing: 0) {
-                LauncherSectionLabel("AI processing")
+                LauncherSectionLabel("AI data")
                 LauncherRow(title: "Allow AI processing to continue", selected: true, leading: .symbol("hand.raised"))
                     .onTapGesture { model.primary() }
             }
