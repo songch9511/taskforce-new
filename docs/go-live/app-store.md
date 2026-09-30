@@ -21,7 +21,7 @@
 | 동의 철회 방법 | 5.1.1(i) | 있음: 계정 메뉴(Mac은 설정) → AI data → Withdraw → `DELETE /api/v1/consent` (`ConsentSettingsView`) | — |
 | 앱 안 계정 삭제 | 5.1.1(v) | 있음 (계정 메뉴 → 계정 삭제 → `DELETE /api/v1/account`) | — |
 | 제3자 로그인(Google)을 두면 동등한 로그인 옵션 | 4.8 | Sign in with Apple이 먼저, 같은 크기 (2026-09-30 Sign in with Google 추가, PLATFORMS.md 4장) | — |
-| 계정 삭제 때 Sign in with Apple 토큰 폐기 | 5.1.1(v), Apple 계정 삭제 안내 | 구현됨: Apple 로그인이 붙은 계정은 Apple 확인을 한 번 더 받아 code를 보내고, 이메일 · Google로만 가입한 계정(데모 계정 포함)은 건너뛴다 (6장 3번, `AccountDeletionPlan`) | 실기기 확인 (6장 6번) |
+| 계정 삭제 때 Sign in with Apple 토큰 폐기 | 5.1.1(v), Apple 계정 삭제 안내 | 구현됨: Apple 로그인이 붙은 계정은 Apple 확인을 한 번 더 받아 code를 보내고, 이메일 · Google로만 가입한 계정(데모 계정 포함)은 건너뛴다. 삭제 직전에 서버에서 사용자를 읽지 못하면 이 계정에도 뜬다 (6장 3번, `AccountDeletionPlan`) | 실기기 확인 (6장 6번) |
 | 앱 안 처리방침 링크 | 5.1.1(i) | 있음: 계정 메뉴 · Mac 설정 · 로그인 화면 · AI data 화면의 "Privacy Policy" · "Terms of Use" (`apple/Taskforce/iOS/AccountSheet.swift`, `LegalLinksRow`) | — |
 | 심사원이 들어갈 수 있는 데모 계정 | 2.1 | 있음: 로그인 화면의 "Sign in with email" → 이메일 + 비밀번호(`SessionStore.signInWithEmail`, 가입 화면 없음). 허용 목록(`review_accounts`) 밖 이메일 가입은 DB 훅이 막는다 (3장) | 사용자: 훅 켜기 · 데모 계정 만들기 (7장 1번) |
 | 수출 규정 | — | HTTPS만 쓰면 면제 | `Info.plist`에 `ITSAppUsesNonExemptEncryption = NO` 확인 |
@@ -110,7 +110,7 @@ Feedback: privacy@taskforcelabs.dev or the TestFlight screenshot feedback.
 4. 심사 기간에는 데모 계정의 데이터를 지우거나 동기화를 끄지 않는다. 심사원이 계정을 지우면(계정 삭제 시험) 다시 만든다 → 제출 전에 재생성 절차를 한 번 연습한다.
 5. 지표: 데모 계정의 이벤트는 지표에서 뺀다(지금 `[E2E 테스트]` 원문을 빼는 것과 같은 방식, 코드).
 
-`scripts/create-review-account.ts`가 AI 동의와 "[Review] …" 합성 원문 처리를 대신한다. 단 프로필 이름은 `Jamie`(별칭 없음)로 넣고 합성 원문도 `Jamie`로 쓰므로, 2를 연결하기 전에 앱에서 이름을 `Alex Kim` · 별칭 `Alex`로 바꾼다(스크립트를 다시 돌리면 `Jamie`로 돌아간다). 2(Notion · Google · Slack 실제 연결)는 Google 심사 영상 · 실기기 확인에 필요해 수동으로 한다.
+`scripts/create-review-account.ts`가 AI 동의와 "[Review] …" 합성 원문 처리를 대신한다. 단 프로필 이름은 `Jamie`(별칭 없음)로 넣고 합성 원문도 `Jamie`로 쓰므로, 2를 연결하기 전에 앱에서 이름을 `Alex Kim` · 별칭 `Alex`로 바꾼다(스크립트를 다시 돌리면 이름만 `Jamie`로 돌아가고 별칭은 남는다. `--reseed`는 이 계정의 원문 · 할 일을 모두 지우고 합성 원문만 다시 만들어, 2 · 3에서 동기화한 것도 사라진다). 2(Notion · Google · Slack 실제 연결)는 Google 심사 영상 · 실기기 확인에 필요해 수동으로 한다.
 
 ### Beta App Review Information
 
@@ -218,8 +218,8 @@ Privacy Policy
    - `POST https://appleid.apple.com/auth/token` (`grant_type=authorization_code`, `code`, `client_id`, `client_secret`) → 토큰.
    - `POST https://appleid.apple.com/auth/revoke` (`client_id`, `client_secret`, `token`, `token_type_hint`) → 200.
    - 이어서 `revokeConnectorTokens` → `deleteUser`. 폐기가 실패해도 삭제는 진행한다(이용자의 삭제 요청이 우선). 로그에는 이유만 남기고 code · 토큰은 남기지 않는다.
-5. **테스트:** 서버 쪽은 `src/lib/api/account.test.ts` 등. 앱 쪽은 `APIClientTests` `deleteAccountSendsAppleAuthorizationCode`(code를 본문에 담음), `GoogleSignInTests`의 `SignInMethodsTests` · `AccountDeletionPlanTests`(Apple 재확인 · Google 해제를 할 계정인지).
-6. **실기기 확인 (사용자):** TestFlight 빌드로 계정 삭제 → iPhone 설정 → Apple ID → 로그인 및 보안 → Sign in with Apple 목록에서 Taskforce가 사라지는지, Notion 설정 → 연결에서 Taskforce가 사라지는지 확인한다. 심사용 데모 계정(이메일)으로 지울 때는 Apple 확인 창과 "To remove Apple sign-in too…" 안내가 뜨지 않는지 본다(지운 뒤 데모 계정을 다시 만든다).
+5. **테스트:** 서버 쪽은 `src/lib/api/account.test.ts` 등. 앱 쪽은 `APIClientTests` `deleteAccountSendsAppleAuthorizationCode`(code를 본문에 담음), `GoogleSignInTests.swift`의 `SignInMethodsTests` · `AccountDeletionPlanTests`(Apple 재확인 · Google 해제를 할 계정인지).
+6. **실기기 확인 (사용자):** TestFlight 빌드로 계정 삭제 → iPhone 설정 → Apple ID → 로그인 및 보안 → Sign in with Apple 목록에서 Taskforce가 사라지는지, Notion 설정 → 연결에서 Taskforce가 사라지는지 확인한다. 심사용 데모 계정(이메일)으로 지울 때는 Apple 확인 창과 "To remove Apple sign-in too…" 안내가 뜨지 않는지 본다(서버에서 사용자를 읽지 못한 경우에는 뜬다)(지운 뒤 데모 계정을 다시 만든다).
 
 ### 삭제 확인 화면 문구
 
@@ -231,7 +231,7 @@ Your sources, tasks, and history are deleted right away. This can't be undone.
 [Delete Account]   [Cancel]
 ```
 
-Apple 로그인이 붙은 계정은 [Delete Account]를 누르면 Apple 확인 창이 한 번 더 뜬다(이메일 · Google로만 가입한 계정은 뜨지 않는다). 앱 문구는 `apple/Taskforce/iOS/AccountSheet.swift` · `apple/Taskforce/Mac/MacSettingsView.swift`.
+Apple 로그인이 붙은 계정은 [Delete Account]를 누르면 Apple 확인 창이 한 번 더 뜬다(이메일 · Google로만 가입한 계정은 뜨지 않는다. 삭제 직전에 서버에서 사용자를 읽지 못하면 뜬다). 앱 문구는 `apple/Taskforce/iOS/AccountSheet.swift` · `apple/Taskforce/Mac/MacSettingsView.swift`.
 
 ## 7. 사용자가 누르는 순서
 
