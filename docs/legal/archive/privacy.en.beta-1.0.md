@@ -2,8 +2,8 @@
 
 Taskforce (AI project manager) · Beta
 
-- Effective date: 2026-09-30
-- Version: Beta 1.1
+- Effective date: 2026-09-29
+- Version: Beta 1.0
 - 한국어: [개인정보 처리방침](privacy.ko.md) (the Korean version prevails if the two differ)
 
 태스크포스 ("we", "us") operates the Taskforce app (iOS and macOS), its server, and the website (www.taskforcelabs.dev). We process your personal information under the Personal Information Protection Act of the Republic of Korea (PIPA) and other applicable laws.
@@ -45,10 +45,10 @@ This policy explains what we process, why, where, and for how long, and how you 
 |---|---|---|
 | Account | Sign in with Apple: your Apple user identifier and email address (if you choose "Hide My Email", the relay address Apple creates). Email sign-in: your email address. We do not receive your name from Apple | When you sign in |
 | Profile | Display name, aliases, additional email addresses | You enter them in the app |
-| Connections | The connected service, workspace or account identifier and name (for Google, the account's email address), connection settings (names and identifiers of databases to include or skip; for Google, the permission scopes you granted and, for Gmail, counts of emails by reason), sync status (where the last import reached; for Gmail, the identifier and received time of recently imported or filtered emails), access tokens (stored encrypted) | When you connect a service in the app |
-| Source text from connected services | Meeting notes, documents, task database entries, calendar events, meeting transcripts, emails, and Slack messages, with their titles, times, original links, and the people involved (names and email addresses of senders, recipients, attendees, and speakers). See section 3 for each service | Through the connected service's API |
+| Connections | The connected service, workspace or account identifier and name, connection settings (names and identifiers of databases to include or skip), sync status, access tokens (stored encrypted) | When you connect a service in the app |
+| Source text from connected services | Meeting notes, documents, task database entries, calendar events, meeting transcripts, email threads, and Slack messages, with their titles, times, original links, and the people involved (names and email addresses of senders, recipients, attendees, and speakers). See section 3 for each service | Through the connected service's API |
 | Information derived from source text | Task title, scope, due date, owner, counterpart name, evidence quotes, a record of who said what and when, change history, AI judgment records (candidates and probabilities), numeric vectors used to find similar tasks (embeddings) | When the server processes a source |
-| Usage records | App opens; starting, completing, editing, deleting, or confirming a task; use of "Hand off to AI"; weekly question answers; times you reported a missing task; requests for services we do not support yet; records of completing a connection, of a connection expiring so that you need to reconnect, and of sending a reconnect notice (service name and time only) | When you use the app, or when the server syncs your connections |
+| Usage records | App opens; starting, completing, editing, deleting, or confirming a task; use of "Hand off to AI"; weekly question answers; times you reported a missing task; requests for services we do not support yet | When you use the app |
 | Device and notifications | Push notification device token (APNs), platform (iOS or macOS), app version, last seen time | After the app receives notification permission |
 | Automatically generated | IP address and device information (User-Agent) of your sign-in session; server request records (path, time, status code, short error message) | Generated while you use the service |
 | Support | Your email address and message | When you email us |
@@ -64,7 +64,7 @@ This policy explains what we process, why, where, and for how long, and how you 
 |---|---|---|
 | Identify you, keep you signed in, delete your account | Account, automatically generated | Performance of our agreement with you (PIPA Art. 15(1)(4)) |
 | Find the work you committed to, merge it with existing tasks, and apply changes to due dates and scope | Connections, source text, derived information, profile | Performance of our agreement. Sending to external AI also requires your in-app consent (section 4). For other people's information inside your sources, see "Other people's information inside your sources" below |
-| Send review requests, due-date notifications, and connection-expiry (reconnect) notices | Device and notifications | Performance of our agreement |
+| Send review requests and due-date notifications | Device and notifications | Performance of our agreement |
 | Measure whether the service works (share of tasks the AI got wrong, share of missed tasks, return visits) | Usage records | Our legitimate interest in improving the service (PIPA Art. 15(1)(6)). Not used to profile you for advertising |
 | Fix errors and prevent abuse and security incidents | Automatically generated | Our legitimate interest; legal obligations |
 | Answer support requests | Support | Your request |
@@ -83,7 +83,7 @@ The email, notes, and messages you connect contain names, email addresses, and s
 
 You connect each service yourself in the app's Connections screen and can disconnect at any time. We only **read** from connected services. We never send email or change events, documents, or messages.
 
-When you disconnect (app → Connections → Disconnect), the service's access token is deleted immediately, we ask the service to revoke it, and we stop reading from it. For Notion and Google (including Gmail), **source text already imported, and tasks created from it, remain.** Slack is different: when you disconnect or remove the app in Slack, **we delete the text we got from Slack right away and keep only your tasks** (see Slack below). To delete everything, delete your account (section 5).
+When you disconnect (app → Connections → Disconnect), the service's access token is deleted immediately, we ask the service to revoke it, and we stop reading from it. For Notion and Google, **source text already imported, and tasks created from it, remain.** Slack is different: when you disconnect or remove the app in Slack, **we delete the text we got from Slack right away and keep only your tasks** (see Slack below). To delete everything, delete your account (section 5).
 
 ### Notion
 
@@ -91,7 +91,6 @@ When you disconnect (app → Connections → Disconnect), the service's access t
 - **What we don't read:** pages you did not select, recording transcript blocks, attachments.
 - **What we store:** the body of imported pages (up to 200,000 characters each), title, people involved, original link, last edited time. Your Notion workspace name and identifier.
 - **Access:** we request read-content access only. You can also remove Taskforce in Notion under Settings → Connections.
-- **When the connection expires or ends:** we show it on the app's Connections screen. If Notion rejects the refresh of the stored access token so that you need to reconnect (this can also happen after you remove Taskforce's access in Notion), we also notify you once. The notification contains only the service name (for example "Notion"), never source text or task titles.
 
 ### Google (Calendar and Meet transcripts)
 
@@ -104,12 +103,9 @@ When you disconnect (app → Connections → Disconnect), the service's access t
 ### Gmail
 
 - During the beta, Gmail is **connected separately** from Google Calendar and Meet. While Google reviews it, Gmail runs in Google's Testing mode: only users registered as test users can connect it, and **you need to reconnect every 7 days.** We tell you in the app and by notification when the connection expires.
-- **What we read:** the subject; sender, recipients, and CC (names and email addresses); date; and body of emails you sent or received. We do not read attachments (we only recognize them in order to skip them, and we do not store their names or types). Other headers that arrive with the body (such as BCC on email you sent; other than format headers used to decode the body) are not used or stored. When you first connect, we import the last 14 days of email (the same applies if you disconnect and connect again, or connect a different account). If the connection expired and you reconnect the same account, we resume from the last time we imported, or from 30 days ago if that gap is longer.
-- **What we filter out:** we filter out newsletters, promotions, and automated notifications by the rules below and do not store them. Email that matches none of these rules is imported.
-  - Mail in the Promotions or Social category, and spam, trash, drafts, and chats, is left out of the list we fetch, so we do not read it.
-  - For mail with an auto-submitted, bulk, unsubscribe, or mailing-list header, mail from a no-reply, notification, or bounce address, and calendar invitations and notifications, **we read only the headers (sender, recipients, subject, date, message ID, and the markers used for filtering) and never fetch the body.** Two exceptions: mail is not filtered because of an unsubscribe or mailing-list header if the sender's address or the group address is on the same domain as your company (company accounts only), and email you sent is filtered by these rules only if it has an auto-submitted header.
-- **What we store:** the remaining emails, **one by one** (emails in the same conversation are stored separately): the body (including quoted earlier messages that came with the email; the first 20,000 characters, and anything longer is cut), subject, people involved (sender, recipients, CC), date, and original link (a Gmail address that opens the conversation the email belongs to). We do not store filtered email. To avoid reading the same email again, we keep the identifier and received time of emails we imported or filtered in the connection's information until the import has moved more than an hour past that time (they stay while importing is paused because the connection expired or AI consent was withdrawn, and they are deleted immediately when you disconnect). We add up, in the connection's settings, how many emails were filtered by each rule and how many were imported (no text or addresses).
-- **Access:** `gmail.readonly` (read email) and `openid` · `email` (to identify the Google account you connected, show its address on the Connections screen, recognize you in the source text, tell same-company mail apart from other mail, and make the original link open that account's mailbox). We never send, delete, or relabel email.
+- **What we read:** email threads you sent or received: subject; sender, recipients, and CC (names and email addresses); date; and body. We filter out newsletters, promotions, and automated notifications (messages with an unsubscribe header or in the Promotions category) and do not store them. We do not read spam, trash, or attachments.
+- **What we store:** the body, subject, people involved, date, and original link of the remaining threads.
+- **Access:** `gmail.readonly` (read email). We never send, delete, or relabel email.
 
 ### Slack
 
@@ -205,10 +201,10 @@ Our server and database are outside Korea. All transfers happen over the network
 | Vercel Inc. (privacy@vercel.com, 440 N Barranca Ave #4133, Covina, CA 91723, USA) | Australia (Sydney, server execution), USA (request records and management systems) | Everything that passes through the server (section 1), server request records | Server operation, website hosting | While the request is processed; request records 1 day |
 | Supabase Pte. Ltd. (privacy@supabase.com) | Australia (Sydney, AWS ap-southeast-2) | All items in section 1 except support email | Data storage, sign-in and authentication | Until account deletion; request records 1 day |
 | OpenRouter, Inc. (privacy@openrouter.ai) | USA | What we send (section 4) | Routing AI requests | Not stored (only while the request is processed) |
-| Together AI, Inc. (privacy@together.ai) · Fireworks AI, Inc. (privacy@fireworks.ai) · Deep Infra Inc. (policy@deepinfra.com, 2625 Middlefield Road #460, Palo Alto, CA 94306, USA) (through OpenRouter, finding tasks in source text) | USA (based on headquarters; the providers do not publish where the request is actually processed) | What we send (section 4) | Running AI models (source analysis) | Not stored (Zero Data Retention) |
+| Together AI, Inc. (privacy@together.ai) · Fireworks AI, Inc. (privacy@fireworks.ai) · Deep Infra Inc. (policy@deepinfra.com, 2625 Middlefield Road #460, Palo Alto, CA 94306, USA) · Baseten Labs, Inc. (privacy@baseten.co, 560 Davis St., Suite 250, San Francisco, CA 94111, USA) (through OpenRouter, finding tasks in source text) | USA (based on headquarters; the providers do not publish where the request is actually processed) | What we send (section 4) | Running AI models (source analysis) | Not stored (Zero Data Retention) |
 | Microsoft Corporation (Azure, through OpenRouter, embeddings; privacy contact: go.microsoft.com/fwlink/?linkid=2126612, One Microsoft Way, Redmond, WA 98052, USA) | USA (based on headquarters) | The part of what we send (section 4) used to find similar tasks (titles and evidence quotes of new candidates and existing tasks) | Running AI models (embeddings) | Not stored (Zero Data Retention) |
 | TypeSafe AI, Inc. (through OpenRouter, judgment; privacy@typesafe.ai, 255 California St, Suite 1300, San Francisco, CA, USA) | USA (address in TypeSafe's terms of use) | What we send (section 4) | Running AI models (judgment) | Not stored (Zero Data Retention) |
-| Apple Inc. (One Apple Park Way, Cupertino, CA 95014, USA · apple.com/legal/privacy/contact) | USA | Push device token, notification content (for review and due-date notifications, task identifiers and a short generic phrase such as "Review" or "Due today", plus the number of tasks for due-date notifications; for a connection-expiry notice, only a short generic phrase containing the service name, such as "Reconnect Gmail to keep syncing.", and no task identifier; task titles are never included) | Delivering push notifications | Under Apple's policy |
+| Apple Inc. (One Apple Park Way, Cupertino, CA 95014, USA · apple.com/legal/privacy/contact) | USA | Push device token, notification content (task identifier and a generic phrase such as "Review needed"; task titles are never included) | Delivering push notifications | Under Apple's policy |
 | Google LLC (1600 Amphitheatre Parkway, Mountain View, CA 94043, USA) | USA and other countries where Google has data centers | Email address and content of support email | Receiving and storing support email | 90 days after the request is closed |
 
 - **Ground for transfer:** entrustment and storage needed to perform our agreement with you, with the items above disclosed in this policy (PIPA Art. 28-8(1)(3)). Sending to external AI (section 4) additionally requires your in-app consent.
@@ -320,9 +316,4 @@ The beta is not offered to people who live in the European Economic Area (EEA, i
 - We announce changes in the app and on this page at least 7 days before they take effect. Changes that are less favorable to you, such as new items, purposes, or recipients, are announced 30 days in advance, and we ask for consent again where needed.
 - Previous versions remain available on this page.
 
-Change history
-
-- Beta 1.1 (effective 2026-09-30): The Gmail section now matches how the service works (which mail is skipped and why, one message stored at a time, the IDs and received times of fetched or skipped mail and per-reason counts, and the account-identification permissions). When a connection expires, we send one reminder to reconnect and keep a record of connections, expirations, and reminders. Baseten was removed from the source-analysis providers.
-- Beta 1.0 (effective 2026-09-29): [View previous version](https://www.taskforcelabs.dev/en/privacy/beta-1.0)
-
-This policy takes effect on 2026-09-30.
+This policy takes effect on 2026-09-29.
