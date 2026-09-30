@@ -5,6 +5,7 @@ import { createClient as createSupabaseClient, type SupabaseClient } from "@supa
 import { isCrossSiteWrite } from "@/lib/api/csrf";
 import { accountDisplayName } from "@/lib/api/profile";
 import { publicEnv } from "@/lib/env";
+import { getVerifiedClaims } from "@/lib/supabase/claims";
 import { createClient as createCookieClient } from "@/lib/supabase/server";
 
 // /api/v1 인증. 앱은 `Authorization: Bearer <Supabase access token>`, 웹은 쿠키 세션을 보낸다.
@@ -36,7 +37,7 @@ export async function authenticateRequest(request: Request): Promise<ApiContext 
     supabase = await createCookieClient();
   }
 
-  const { data, error } = await supabase.auth.getClaims(token);
+  const { data, error } = await getVerifiedClaims(supabase, token);
   if (error || !data?.claims) return null;
 
   const claims = data.claims;

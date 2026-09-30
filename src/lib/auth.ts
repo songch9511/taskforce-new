@@ -2,6 +2,7 @@ import "server-only";
 
 import { redirect } from "next/navigation";
 
+import { getVerifiedClaims } from "@/lib/supabase/claims";
 import { createClient } from "@/lib/supabase/server";
 
 export type CurrentUser = {
@@ -13,7 +14,7 @@ export type CurrentUser = {
 // getClaims는 JWT 서명을 검증하므로 쿠키 값을 그대로 믿지 않는다.
 export async function requireUser(): Promise<CurrentUser> {
   const supabase = await createClient();
-  const { data, error } = await supabase.auth.getClaims();
+  const { data, error } = await getVerifiedClaims(supabase);
 
   if (error || !data?.claims) {
     redirect("/login");
