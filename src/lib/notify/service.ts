@@ -47,10 +47,10 @@ export async function notifyConfirmations(admin: SupabaseClient, userId: string,
 }
 
 /**
- * 재연결 알림에 쓰는 서비스 이름. notion · gmail · slack은 앱 연결 화면의 이름과 같다.
- * google은 앱에 "Google Calendar & Meet"으로 보이는데 여기서는 "Google"이다: google 연동을 붙이는 PR 4b에서 문구를 정한다.
+ * 재연결 알림에 쓰는 서비스 이름. 앱 연결 화면의 이름(Swift `ConnectionProvider.displayName`)과 같다:
+ * 알림을 누르면 그 화면이 열리므로 같은 이름이어야 찾는다. google은 "Google Calendar & Meet" (PR 4b).
  */
-const SERVICE_NAMES: Record<Provider, string> = { notion: "Notion", google: "Google", gmail: "Gmail", slack: "Slack", github: "GitHub" };
+const SERVICE_NAMES: Record<Provider, string> = { notion: "Notion", google: "Google Calendar & Meet", gmail: "Gmail", slack: "Slack", github: "GitHub" };
 
 /**
  * 연결이 reauth로 바뀌었을 때 (recordSync가 true를 돌려준 동기화에서만 부른다, G9): 알림 한 번.

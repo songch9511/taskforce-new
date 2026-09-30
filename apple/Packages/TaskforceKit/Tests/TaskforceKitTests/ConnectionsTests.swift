@@ -211,7 +211,7 @@ struct ConnectionsTests {
             "Read-only. Sent to AI only after your consent. Never used for training.",
             "Beta: reconnect every 7 days.",
         ])
-        // Meet 줄은 G2 시험 결과(PR 4b)에 맞춰 고친다: 그때까지 그대로
+        // Meet 줄은 G2 dev 회의 시험 결과에 맞춰 고친다 (서버 LIST_ATTENDED_MEETINGS와 같이): 그때까지 그대로
         #expect(ConnectionProvider.google.readsBeforeConnecting == [
             "Calendar: event titles, times, attendees",
             "Meet: transcripts of meetings you attend",

@@ -41,7 +41,8 @@ public enum ConnectionProvider: String, CaseIterable, Sendable, Codable, Hashabl
         case .google:
             [
                 "Calendar: event titles, times, attendees",
-                // G2 시험 결과에 맞춰 고친다 (참석한 회의를 못 읽으면 "meetings you host"): google-integration.md 3장
+                // G2(참석한 회의의 전사를 읽는가)는 dev 회의 시험 전이라 그대로 둔다. 못 읽으면 이 한 줄만 "meetings you host"로
+                // (서버 google/unverified.ts LIST_ATTENDED_MEETINGS · 처리방침 3장과 같이): google-integration.md 3장
                 "Meet: transcripts of meetings you attend",
                 "Read-only. Sent to AI only after your consent. Never used for training.",
             ]
