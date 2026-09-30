@@ -94,5 +94,9 @@ struct LegalLinksRow: View {
             Link("Privacy Policy", destination: LegalLinks.privacy)
             Link("Terms of Use", destination: LegalLinks.terms)
         }
+        #if os(iOS)
+        // iPhone Form 한 줄에 링크가 둘이라, 줄 전체가 한 링크로 눌리지 않게 (Mac은 이 스타일이 링크를 회색 글자로 만든다)
+        .buttonStyle(.borderless)
+        #endif
     }
 }

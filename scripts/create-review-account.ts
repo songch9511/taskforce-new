@@ -4,7 +4,7 @@
 //
 // 1. 주소를 허용 목록(review_accounts)에 넣는다: Before User Created 훅(20261007000000)이 목록에 없는 이메일 가입을 막는다.
 // 2. 사용자를 만들거나(이미 있으면 비밀번호만 바꾼다) 이메일 확인을 마친 상태로 둔다.
-// 3. 프로필 이름을 정하고 외부 AI 처리에 동의한 상태로 둔다 (심사자가 동의 화면을 거치지 않아도 할 일이 보이게).
+// 3. 프로필 이름 · 별칭(Alex Kim · Alex)을 정하고 외부 AI 처리에 동의한 상태로 둔다 (심사자가 동의 화면을 거치지 않아도 할 일이 보이게).
 // 4. "[Review] …" 합성 원문 두 개를 보통 파이프라인(추출 → 검증 → Jev → 병합)으로 처리해 근거가 붙은 할 일을 만든다.
 //    이미 있으면 건너뛴다 (--reseed면 지우고 다시 만든다). 실제 사용자 데이터는 쓰지 않는다.
 // server-only 모듈을 불러오므로 react-server 조건이 필요하다. 키는 .env.local에서 읽는다 (SUPABASE_SERVICE_ROLE_KEY 등).
@@ -23,7 +23,10 @@ if (existsSync(".env.local")) process.loadEnvFile(".env.local");
 
 const { values } = parseArgs({ options: { yes: { type: "boolean", default: false }, reseed: { type: "boolean", default: false } } });
 
-const REVIEWER_NAME = "Jamie";
+// 심사용 가상 워크스페이스(docs/go-live/google-verification.md 6장)가 "나"를 Alex로 쓴다: 프로필 이름 · 별칭도 같게 둬야
+// 그 워크스페이스를 연결했을 때 Alex의 약속이 이 계정의 할 일이 된다.
+const REVIEWER_NAME = "Alex Kim";
+const REVIEWER_ALIAS = "Alex";
 const TITLE_PREFIX = "[Review]";
 const DAY = 86_400_000;
 
@@ -48,10 +51,10 @@ function demoSources(email: string): DemoSource[] {
         `Attendees: ${REVIEWER_NAME}, Priya, Marcus`,
         "",
         "Priya: Can someone send the updated pricing deck to Northwind before Friday?",
-        `${REVIEWER_NAME}: I'll send the pricing deck to Northwind by Friday.`,
+        `${REVIEWER_ALIAS}: I'll send the pricing deck to Northwind by Friday.`,
         "Marcus: I'll book the venue for the team offsite next week.",
-        `Priya: ${REVIEWER_NAME}, could you also draft the onboarding email for new beta users?`,
-        `${REVIEWER_NAME}: Sure, I'll have a draft ready by Wednesday.`,
+        `Priya: ${REVIEWER_ALIAS}, could you also draft the onboarding email for new beta users?`,
+        `${REVIEWER_ALIAS}: Sure, I'll have a draft ready by Wednesday.`,
         "Priya: Great, thanks everyone.",
       ].join("\n"),
     },
@@ -65,7 +68,7 @@ function demoSources(email: string): DemoSource[] {
         `To: ${REVIEWER_NAME} <${email}>`,
         "Subject: Re: Contract review",
         "",
-        `Hi ${REVIEWER_NAME},`,
+        `Hi ${REVIEWER_ALIAS},`,
         "",
         "Thanks for the call today. Could you send me your comments on the contract by next Tuesday?",
         "Our legal team wants to sign before the end of the month.",
@@ -108,7 +111,7 @@ async function main() {
   // 2) 사용자
   let userId = await findUserId(admin, email);
   if (userId) {
-    const { error } = await admin.auth.admin.updateUserById(userId, { password, email_confirm: true });
+    const { error } = await admin.auth.admin.updateUserById(userId, { password, email_confirm: true, user_metadata: { name: REVIEWER_NAME } });
     if (error) throw error;
     console.log("기존 사용자의 비밀번호를 바꿨습니다.");
   } else {
@@ -121,7 +124,7 @@ async function main() {
   // 3) 프로필 + 외부 AI 처리 동의
   await admin
     .from("profiles")
-    .upsert({ user_id: userId, display_name: REVIEWER_NAME, ai_consent_at: new Date().toISOString() }, { onConflict: "user_id" })
+    .upsert({ user_id: userId, display_name: REVIEWER_NAME, aliases: [REVIEWER_ALIAS], ai_consent_at: new Date().toISOString() }, { onConflict: "user_id" })
     .throwOnError();
 
   // 4) 합성 원문 → 보통 파이프라인

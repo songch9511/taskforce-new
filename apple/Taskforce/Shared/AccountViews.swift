@@ -185,14 +185,25 @@ private struct ConnectionRow: View {
     }
 }
 
-/// 외부 AI 처리 동의 내용 (App Store 5.1.2(i)): 무엇을 · 어디로 · 학습 안 함 · 철회
+/// 외부 AI 처리 동의 내용 (App Store 5.1.2(i)): 무엇을 · 누구에게 · 어떻게 지키나 · 철회.
+/// 처리방침 4장 · 7장 표와 같은 내용 · 이름을 쓴다(docs/go-live/app-store.md 5장). 공급자가 바뀌면 처리방침과 함께 고친다.
 struct ConsentDetails: View {
+    #if os(macOS)
+    private let settingsPath = "Settings > AI data"
+    #else
+    private let settingsPath = "Account > AI data"
+    #endif
+
     var body: some View {
         VStack(alignment: .leading, spacing: TFSpace.lg) {
-            item("doc.text", "What's sent", "Text from the sources you connect: meeting notes, messages, and emails.")
-            item("arrow.up.right", "Where it goes", "OpenRouter and the AI model providers it routes to, with zero data retention.")
-            item("nosign", "Not for training", "Your data is never used to train AI models.")
-            item("arrow.uturn.backward", "Withdraw anytime", "Turn this off in Settings. Taskforce then stops sending anything.")
+            Text("To find your tasks, Taskforce sends the text you connect or paste in to third-party AI models.")
+                .font(TFFont.callout)
+                .foregroundStyle(TFColor.textPrimary)
+                .fixedSize(horizontal: false, vertical: true)
+            item("doc.text", "What's sent", "Notes, documents, transcripts, messages, and email you connect or paste in, with the names and email addresses of people in them. Your name, nicknames, and email addresses, so the AI can recognize you. Your task titles and quotes, and questions you ask.")
+            item("arrow.up.right", "Who receives it", "OpenRouter (USA), which routes each request to Fireworks, Together AI, DeepInfra, Microsoft Azure, or TypeSafe (all USA).")
+            item("lock.shield", "How it's protected", "Only providers that keep no data. Never used to train AI models. Stored on our servers in Sydney. Delete your account to delete it all.")
+            item("arrow.uturn.backward", "Withdraw anytime", "Turn this off in \(settingsPath). Without it, Taskforce can't find tasks in your sources.")
             LegalLinksRow()
                 .font(TFFont.footnote)
                 .padding(.leading, 20 + TFSpace.md)
@@ -235,6 +246,7 @@ struct ConsentPrompt: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
+            .scrollIndicators(.visible)
             HStack(spacing: TFSpace.sm) {
                 Button("Allow") {
                     working = true
@@ -258,7 +270,8 @@ struct ConsentPrompt: View {
         #if os(iOS)
         .presentationDetents([.large])
         #else
-        .frame(width: 420, height: 440)
+        // 알리는 내용이 스크롤 없이 모두 보이게 (5.1.2(i))
+        .frame(width: 460, height: 640)
         #endif
     }
 }

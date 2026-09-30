@@ -25,7 +25,8 @@ struct MacSettingsView: View {
                 HotKeyPane()
             }
         }
-        .frame(width: 540, height: 460)
+        // AI data 탭의 알리는 내용과 Allow · Withdraw가 한 화면에 보이게
+        .frame(width: 540, height: 620)
     }
 
     @ViewBuilder

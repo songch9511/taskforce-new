@@ -17,7 +17,7 @@
 
 | 요구 | 가이드라인 | 앱 상태 (2026-09-30) | 담당 |
 |---|---|---|---|
-| 외부 AI로 보내기 전 명시적 동의 | 5.1.2(i) | 있음: 첫 연결 전에 AI data 화면(`ConsentPrompt`, `apple/Taskforce/Shared/AccountViews.swift`) → Allow → `POST /api/v1/consent`. 서버는 동의가 없으면 409(`src/lib/api/consent.ts`) | 문구를 5장과 맞춘다 (앱 `ConsentDetails`는 5장 문안보다 짧다) |
+| 외부 AI로 보내기 전 명시적 동의 | 5.1.2(i) | 있음: 첫 연결 전에 AI data 화면(`ConsentPrompt`, `apple/Taskforce/Shared/AccountViews.swift`) → Allow → `POST /api/v1/consent`. 서버는 동의가 없으면 409(`src/lib/api/consent.ts`). 문구는 5장 문안 그대로(`ConsentDetails`) | — |
 | 동의 철회 방법 | 5.1.1(i) | 있음: 계정 메뉴(Mac은 설정) → AI data → Withdraw → `DELETE /api/v1/consent` (`ConsentSettingsView`) | — |
 | 앱 안 계정 삭제 | 5.1.1(v) | 있음 (계정 메뉴 → 계정 삭제 → `DELETE /api/v1/account`) | — |
 | 제3자 로그인(Google)을 두면 동등한 로그인 옵션 | 4.8 | Sign in with Apple이 먼저, 같은 크기 (2026-09-30 Sign in with Google 추가, PLATFORMS.md 4장) | — |
@@ -96,7 +96,7 @@ Feedback: privacy@taskforcelabs.dev or the TestFlight screenshot feedback.
 
 **구현 (A):** Supabase Auth의 **Before User Created** 훅으로 `public.hook_before_user_created`(마이그레이션 `20261007000000_review_account_signup_hook.sql`)를 켠다. 이 함수는 `provider = email`로 새로 가입하는 요청 중 `review_accounts` 표에 없는 주소를 403으로 거절한다. Apple 가입과 이미 있는 사용자는 그대로 통과한다. 대시보드 설정 · env는 `runbook.md` 4장.
 
-데모 계정은 `scripts/create-review-account.ts`가 만든다: `REVIEW_ACCOUNT_EMAIL` · `REVIEW_ACCOUNT_PASSWORD`로 실행하면 (1) 그 주소를 `review_accounts`에 넣고, (2) 이메일 확인을 마친 사용자로 만들거나 비밀번호만 바꾸고, (3) 프로필 이름을 정하고 AI 처리에 동의한 상태로 두고, (4) "[Review] …" 합성 원문을 보통 파이프라인으로 처리해 근거가 붙은 할 일을 만든다(다시 실행해도 안전, `--reseed`로 다시 만들 수 있음).
+데모 계정은 `scripts/create-review-account.ts`가 만든다: `REVIEW_ACCOUNT_EMAIL` · `REVIEW_ACCOUNT_PASSWORD`로 실행하면 (1) 그 주소를 `review_accounts`에 넣고, (2) 이메일 확인을 마친 사용자로 만들거나 비밀번호만 바꾸고, (3) 프로필 이름 · 별칭(`Alex Kim` · `Alex`)을 정하고 AI 처리에 동의한 상태로 두고, (4) "[Review] …" 합성 원문을 보통 파이프라인으로 처리해 근거가 붙은 할 일을 만든다(다시 실행해도 안전, `--reseed`로 다시 만들 수 있음).
 
 데모 계정: `review@taskforcelabs.dev` / 비밀번호는 비밀번호 관리자에만 두고 App Store Connect 칸에만 넣는다. 이 계정은 Google 심사 계정과 같은 주소를 쓴다(`google-verification.md` 6장).
 
@@ -110,7 +110,7 @@ Feedback: privacy@taskforcelabs.dev or the TestFlight screenshot feedback.
 4. 심사 기간에는 데모 계정의 데이터를 지우거나 동기화를 끄지 않는다. 심사원이 계정을 지우면(계정 삭제 시험) 다시 만든다 → 제출 전에 재생성 절차를 한 번 연습한다.
 5. 지표: 데모 계정의 이벤트는 지표에서 뺀다(지금 `[E2E 테스트]` 원문을 빼는 것과 같은 방식, 코드).
 
-`scripts/create-review-account.ts`가 AI 동의와 "[Review] …" 합성 원문 처리를 대신한다. 단 프로필 이름은 `Jamie`(별칭 없음)로 넣고 합성 원문도 `Jamie`로 쓰므로, 2를 연결하기 전에 앱에서 이름을 `Alex Kim` · 별칭 `Alex`로 바꾼다(스크립트를 다시 돌리면 이름만 `Jamie`로 돌아가고 별칭은 남는다. `--reseed`는 이 계정의 원문 · 할 일을 모두 지우고 합성 원문만 다시 만들어, 2 · 3에서 동기화한 것도 사라진다). 2(Notion · Google · Slack 실제 연결)는 Google 심사 영상 · 실기기 확인에 필요해 수동으로 한다.
+`scripts/create-review-account.ts`가 1(프로필 이름 `Alex Kim` · 별칭 `Alex` · AI 동의)과 "[Review] …" 합성 원문 처리를 대신한다(다시 돌려도 같다. `--reseed`는 이 계정의 원문 · 할 일을 모두 지우고 합성 원문만 다시 만들어, 2 · 3에서 동기화한 것도 사라진다). 2(Notion · Google · Slack 실제 연결)는 Google 심사 영상 · 실기기 확인에 필요해 수동으로 한다.
 
 ### Beta App Review Information
 
@@ -131,7 +131,7 @@ Where to look:
 - Review card at the top: a task whose owner or due date is uncertain. Confirm or Dismiss.
 - Account menu: Connections (connect/disconnect services), AI data (consent to sending source text to third-party AI and how to withdraw it), Privacy Policy, Sign out, Delete account.
 
-Third-party AI (Guideline 5.1.2(i)): before the first connection, the app shows which data is sent (text from the meeting notes, messages, and email the user connects), who receives it (OpenRouter and the AI model providers it routes to, all with zero data retention and no training), and asks for explicit consent. Without consent, the server does not process connected sources. Consent can be withdrawn in Account > AI data.
+Third-party AI (Guideline 5.1.2(i)): before the first connection, the app shows which data is sent (notes, documents, transcripts, messages, and email the user connects or pastes in, with the names and email addresses of people in them; the user's name and nicknames; task titles and quotes; questions asked), who receives it (OpenRouter and the five named AI model providers it routes to, all with zero data retention and no training), where it is stored (Sydney), and asks for explicit consent. Without consent, the server does not process any sources. The same information is always at Account > AI data (Mac: Settings > AI data), where consent can be withdrawn. The demo account has already allowed it. To see the prompt, tap Withdraw there, then open Account > Connections (Mac: Settings > Connections) and choose Sync Now from any connected service's menu; the prompt appears. Tap Allow so the demo keeps working.
 
 Account deletion (Guideline 5.1.1(v)): Account > Delete account deletes all data immediately (no backups) and asks Apple and connected services to revoke their tokens (for Sign in with Apple accounts, after the user confirms with Apple once more), and revokes the Google sign-in grant from this device when available. If you delete the demo account, please let us know and we will recreate it.
 
@@ -147,7 +147,7 @@ App Store Connect → 앱 → App Privacy. 모든 항목: **Linked to the user =
 | Contact Info → **Name** | 예 | App Functionality | 이용자가 입력한 표시 이름 · 별칭, Google로 로그인하면 Google 계정 이름(프로필 이름이 비어 있으면 처음 한 번 채운다) |
 | Contact Info → **Email Address** | 예 | App Functionality | 로그인 이메일(Apple 전달 주소 · Google 주소 포함), 프로필의 추가 이메일 |
 | User Content → **Emails or Text Messages** | 예 | App Functionality | Gmail 메일, Slack 메시지 (제목 · 보낸 사람 · 받는 사람 · 본문) |
-| User Content → **Other User Content** | 예 | App Functionality | Notion 회의록 · 문서 · 할 일 DB 항목, Meet 전사, 일정 제목 · 참석자, 할 일 · 근거 인용, 주간 질문 응답 |
+| User Content → **Other User Content** | 예 | App Functionality | Notion 회의록 · 문서 · 할 일 DB 항목, Meet 전사, Mac 런처에 붙여 넣은 원문, 일정 제목 · 참석자, 할 일 · 근거 인용, 주간 질문 응답 |
 | Identifiers → **User ID** | 예 | App Functionality | 계정 id, Apple · Google 사용자 식별자, 연결한 서비스의 워크스페이스 · 계정 id |
 | Usage Data → **Product Interaction** | 예 | Analytics, App Functionality | 앱 열기, 착수 · 완료 · 수정 · 삭제 · 확인, "Hand off to AI" 사용 |
 | Identifiers → Device ID | 아니오 (판단) | — | APNs 기기 토큰은 앱 설치마다 다른 알림 전달용 값이라 Apple 정의("advertising identifier, or other device-level ID")에 해당하지 않는다고 본다. 보수적으로 가려면 "예 · App Functionality" |
@@ -168,33 +168,37 @@ App Store Connect → 앱 → App Privacy. 모든 항목: **Linked to the user =
 
 - **첫 연결 전에 한 번.** 연결 화면에서 어느 서비스든 Connect를 누르면, AI 동의가 없을 때 이 화면이 먼저 뜬다. 서버도 동의가 없으면 연결 시작 · 동기화 · 원문 보내기 · 물어보기에 `409 conflict`("외부 AI 처리 동의가 필요해요")를 돌려준다(`src/lib/api/consent.ts`). 앱은 이 응답을 받으면 이 화면을 띄운다.
 - **Allow를 눌러야만** `POST /api/v1/consent {"ai_processing": true}`. 미리 체크된 상자 · 스크롤만으로 동의 처리를 하지 않는다.
-- **Not now**면 연결을 시작하지 않고 연결 화면으로 돌아간다. 앱의 다른 기능(이미 있는 할 일 보기)은 막지 않는다.
+- **Not Now**면 연결을 시작하지 않고 연결 화면으로 돌아간다. 앱의 다른 기능(이미 있는 할 일 보기)은 막지 않는다.
 - **철회:** 계정 메뉴 → AI data → Withdraw → `DELETE /api/v1/consent`. 철회 뒤에는 새 원문을 처리하지 않는다는 한 줄을 보여 준다.
 - 동의한 시각은 `profiles.ai_consent_at`에 남는다. 문안을 바꾸면(받는 곳이 늘어나는 등) 다시 동의를 받는다 → 문안 버전을 함께 남길지 트랙 2-1에서 정한다.
 
 ### 문안
 
-화면 틀은 BRAND.md 규칙대로 짧은 영어로 쓴다. 이 화면은 법적 고지라 설명 문장이 필요한 예외다. 받는 곳은 처리방침 7장 표와 **같은 이름**을 쓴다(모델 공급자 목록을 고정한 뒤 채운다).
+화면 틀은 BRAND.md 규칙대로 짧은 영어로 쓴다. 이 화면은 법적 고지라 설명 문장이 필요한 예외다. 보내는 것 · 받는 곳은 처리방침 4장 · 7장 표와 **같은 내용 · 이름**을 쓴다(공급자는 2026-09-29 고정한 `src/lib/ai/providers.ts` 목록). 앱 문구는 `ConsentDetails`(`apple/Taskforce/Shared/AccountViews.swift`)이고, 처리방침 · 공급자가 바뀌면 함께 고친다.
 
 ```
 AI data
 
-To find your tasks, Taskforce sends text from the services you connect to third-party AI models.
+To find your tasks, Taskforce sends the text you connect or paste in to third-party AI models.
 
 What's sent
-Meeting notes, messages, email, and calendar details you connect, including the names and email addresses of people in them. Your name and nicknames, so the AI can recognize you.
+Notes, documents, transcripts, messages, and email you connect or paste in, with the names and email addresses of people in them. Your name, nicknames, and email addresses, so the AI can recognize you. Your task titles and quotes, and questions you ask.
 
 Who receives it
-OpenRouter (USA), which routes each request to an AI model provider: {{공급자 목록}}.
+OpenRouter (USA), which routes each request to Fireworks, Together AI, DeepInfra, Microsoft Azure, or TypeSafe (all USA).
 
 How it's protected
 Only providers that keep no data. Never used to train AI models. Stored on our servers in Sydney. Delete your account to delete it all.
 
-You can withdraw anytime in Account > AI data. Without this, Taskforce can't create tasks from your connected services.
+Withdraw anytime
+Turn this off in Account > AI data. Without it, Taskforce can't find tasks in your sources.
 
-[Allow]   [Not now]
-Privacy Policy
+Privacy Policy   Terms of Use
+
+[Allow]   [Not Now]
 ```
+
+Mac은 철회 경로가 "Settings > AI data"다. 계정 설정의 AI data 화면(`ConsentSettingsView`)도 같은 내용 아래에 Allow 또는 Withdraw를 둔다.
 
 한국어 화면을 따로 둘지는 앱 전체의 현지화 결정을 따른다. 둔다면 처리방침 4장 문장을 줄여 쓴다.
 
