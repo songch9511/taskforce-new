@@ -80,7 +80,22 @@ describe("answerQuestion", () => {
         quote: "금요일까지 제안서 보내드릴게요",
       },
     ]);
-    expect(result.summary).toMatchObject({ actions: 2, sources: 2, citations: 1, dropped: 0, model: "test-model" });
+    expect(result.summary).toMatchObject({ actions: 2, sources: 2, citations: 1, dropped: 0, model: "test-model", reasoningLimited: false });
+  });
+
+  it("추론량을 제한해 받은 답이면 요약에 남긴다 (앱의 질문은 첫 호출부터 제한한다)", async () => {
+    const { d } = deps({
+      unknown: false,
+      answer: "금요일까지 보내기로 했어요.",
+      citations: [{ source: "S1", action: "A1", quote: "금요일까지 제안서 보내드릴게요" }],
+    });
+    const complete = d.complete;
+    d.complete = (async (request) => ({ ...(await complete(request)), reasoningLimited: true })) as CompleteJson;
+    expect((await answerQuestion("제안서 언제까지?", d, NOW)).summary.reasoningLimited).toBe(true);
+
+    // 모델을 부르지 않은 "모른다"는 제한한 답이 아니다
+    const empty = deps(null, { actions: [], sources: [] });
+    expect((await answerQuestion("제안서 언제까지?", empty.d, NOW)).summary.reasoningLimited).toBe(false);
   });
 
   it("원문에 없는 인용 · 모르는 원문 번호 · 너무 짧은 인용은 버리고, 남은 것만 돌려준다", async () => {

@@ -97,6 +97,8 @@ export type MissingResult = {
     models: { missing: string; judge: string };
     promptVersions: { missing: string; judge: string };
     cost: number;
+    /** 추론량을 제한해 뽑은 답인가 (신고는 사용자가 기다려 첫 호출부터 제한한다, lib/ai/llm.ts) */
+    reasoningLimited: boolean;
   };
 };
 
@@ -150,6 +152,7 @@ export async function extractMissing(input: MissingInput, deps: PipelineDeps): P
       models: { missing: result.model, judge: judge.model },
       promptVersions: { missing: MISSING_PROMPT_VERSION, judge: JUDGE_PROMPT_VERSION },
       cost: (result.usage?.cost ?? 0) + (judge.cost ?? 0),
+      reasoningLimited: result.reasoningLimited === true,
     },
   };
 }

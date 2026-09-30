@@ -48,8 +48,20 @@ export type AskResult = {
   answer: string;
   unknown: boolean;
   citations: AskCitation[];
-  /** 로그 · eval용 숫자. 질문 · 답 · 인용은 담지 않는다 */
-  summary: { actions: number; sources: number; citations: number; dropped: number; model: string | null; promptVersion: string; cost: number };
+  /**
+   * 로그 · eval용 숫자. 질문 · 답 · 인용은 담지 않는다.
+   * reasoningLimited: 추론량을 제한해 받은 답인가 (앱의 질문은 사용자가 기다려 첫 호출부터 제한한다, lib/ai/llm.ts)
+   */
+  summary: {
+    actions: number;
+    sources: number;
+    citations: number;
+    dropped: number;
+    model: string | null;
+    promptVersion: string;
+    cost: number;
+    reasoningLimited: boolean;
+  };
 };
 
 // 모델에게 주는 응답 스키마. 번호(A1 · S1)로 가리키게 해서 id를 지어내지 못하게 한다.
@@ -181,7 +193,7 @@ export async function answerQuestion(question: string, deps: AskDeps, now = new 
     answer: notFoundAnswer(question),
     unknown: true,
     citations: [],
-    summary: { ...base, citations: 0, dropped: 0, model: null, cost: 0, ...extra },
+    summary: { ...base, citations: 0, dropped: 0, model: null, cost: 0, reasoningLimited: false, ...extra },
   });
 
   // 찾을 할 일이 없으면 모델을 부르지 않는다.
@@ -196,7 +208,7 @@ export async function answerQuestion(question: string, deps: AskDeps, now = new 
   });
   const { citations, dropped } = verifyCitations(result.data.citations, aliased);
   const answer = result.data.answer.trim();
-  const usage = { model: result.model, cost: result.usage?.cost ?? 0, dropped };
+  const usage = { model: result.model, cost: result.usage?.cost ?? 0, dropped, reasoningLimited: result.reasoningLimited === true };
 
   // 모델이 모른다고 했거나, 검증된 근거가 하나도 없으면 답하지 않는다 (근거 없는 답은 버그다).
   if (result.data.unknown || citations.length === 0 || answer.length === 0) return unknown(usage);

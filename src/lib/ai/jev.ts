@@ -16,6 +16,8 @@ export type JevConfig = {
   fetch?: typeof fetch;
   /** 판정은 짧아야 한다. 넘기면 끊는다. */
   timeoutMs?: number;
+  /** 사용자가 기다리는 요청(빠진 할 일 신고)의 마감 시각 (epoch ms). 있으면 시간 한도를 남은 시간까지로 줄이고, 남은 시간이 없으면 묻지 않는다 */
+  deadline?: number;
 };
 
 export const JEV_TIMEOUT_MS = 30_000;
@@ -73,9 +75,13 @@ export async function decide(
   request: { state: unknown; questions: Record<string, JevQuestion> },
 ): Promise<JevDecision> {
   const doFetch = config.fetch ?? fetch;
-  const send = () =>
-    doFetch(OPENROUTER_DECISIONS_URL, {
-      signal: AbortSignal.timeout(config.timeoutMs ?? JEV_TIMEOUT_MS),
+  const limit = config.timeoutMs ?? JEV_TIMEOUT_MS;
+  const send = () => {
+    // 마감이 있으면 요청마다 남은 시간까지로 줄인다
+    const timeoutMs = Math.min(limit, (config.deadline ?? Infinity) - Date.now());
+    if (timeoutMs <= 0) throw new JevError("Decisions API 응답 시간 초과 (남은 시간 없음)");
+    return doFetch(OPENROUTER_DECISIONS_URL, {
+      signal: AbortSignal.timeout(timeoutMs),
       method: "POST",
       headers: { Authorization: `Bearer ${config.apiKey}`, "Content-Type": "application/json" },
       // 원문을 저장 · 학습에 쓰지 않는(ZDR) 고정 공급자에게만 보낸다 (llm.ts · embed.ts와 같은 조건, providers.ts).
@@ -86,6 +92,7 @@ export async function decide(
         provider: providerRouting(config.providers),
       }),
     });
+  };
 
   // 판정은 보통 1~2초지만 가끔 멈춘다. 시간 초과는 한 번만 다시 묻는다.
   let response: Response;
@@ -97,7 +104,7 @@ export async function decide(
       response = await send();
     } catch (retryError) {
       if (retryError instanceof DOMException && retryError.name === "TimeoutError") {
-        throw new JevError(`Decisions API 응답 시간 초과 (${Math.round((config.timeoutMs ?? JEV_TIMEOUT_MS) / 1000)}초)`);
+        throw new JevError(`Decisions API 응답 시간 초과 (${Math.round(limit / 1000)}초)`);
       }
       throw retryError;
     }

@@ -42,10 +42,26 @@ import { notifyConfirmations } from "@/lib/notify/service";
 
 export type ProcessDeps = PipelineDeps & Pick<MergeDeps, "embed">;
 
-export function processDepsFromEnv(): ProcessDeps {
+/**
+ * 사용자가 기다리는 처리(빠진 할 일 신고)에서 추출(LLM) 뒤 판정 · 병합에 남기는 시간: Jev 2번(판정 · 매칭) · 임베딩 1~2번 · DB 읽기 · 쓰기.
+ * 보통 합쳐 몇 초다. 그 호출들은 마감(deadline)까지 쓸 수 있어, 멈춰도 실행 한도 안에 오류로 끝난다.
+ */
+export const AFTER_EXTRACT_MS = 15_000;
+
+/**
+ * deadline(epoch ms, lib/ai/llm.ts interactiveDeadline)을 주면 사용자가 기다리는 처리(빠진 할 일 신고)다: 모델 호출을 모두 그 시각 안에 끝내고,
+ * 추출(LLM)은 첫 호출부터 추론량을 제한하며 뒤의 판정 · 병합에 AFTER_EXTRACT_MS를 남긴다.
+ * 없으면 배경 처리(원문 처리 · 동기화 · 재처리 cron): 호출마다 제 시간 한도(LLM 90초 · Jev · 임베딩 30초)만 쓴다.
+ */
+export function processDepsFromEnv(deadline?: number): ProcessDeps {
   const llm = llmConfigFromEnv();
   const jev = jevConfigFromEnv();
   const embedding = embedConfigFromEnv();
+  if (deadline !== undefined) {
+    llm.deadline = deadline - AFTER_EXTRACT_MS;
+    jev.deadline = deadline;
+    embedding.deadline = deadline;
+  }
   return {
     complete: (request) => completeJson(llm, request),
     decide: (request) => decide(jev, request),
@@ -296,7 +312,7 @@ export async function processTaskSource(
  * 2. 원래 처리의 판정 기록(judge_logs)으로 어느 단계가 놓쳤는지 가른다 (classifyMiss)
  * 3. 구절 하나를 후보로 만들고(extractMissing) 보통 원문과 같은 병합(mergeJudged)으로 반영한다.
  *    다른 사람 담당 Action과는 합치지 않고(reportStore), 확신이 낮은 병합은 새 일로 본다(reportMatchDecide)
- * 4. 새 Action이면 created와 같은 트랜잭션에 user_reported_missing(actor user, after { stage, source_id })을 남긴다.
+ * 4. 새 Action이면 created와 같은 트랜잭션에 user_reported_missing(actor user, after { stage, source_id, reasoning_limited })을 남긴다.
  *    이미 있는 Action(확실한 반복 · 변경)이면 근거만 더하고 already_tracked — 신고로 세지 않는다.
  * 병합이 기존 Action의 완료 · 취소로 보는 경우는 reportMatchDecide가 같은 일의 반복으로 바꾼다 (신고로 할 일을 끝내지 않는다).
  * commitment 후보는 unmatched가 되지 않으므로, Action을 못 얻으면 오류로 본다.
@@ -329,9 +345,18 @@ export async function reportMissing(
     quote: input.quote,
   });
 
-  const { judged } = await extractMissing(input, ai);
+  const { judged, summary } = await extractMissing(input, ai);
   const store = new SupabaseActionStore(admin, source.userId, {
-    createEvents: [{ type: "user_reported_missing", before: null, after: { stage, source_id: source.id }, rule: null, actor: "user" }],
+    createEvents: [
+      {
+        type: "user_reported_missing",
+        before: null,
+        // reasoning_limited: 추론량을 제한해 뽑은 신고인가 (사용자가 기다리는 신고는 첫 호출부터 제한한다, 제품 원칙 6)
+        after: { stage, source_id: source.id, reasoning_limited: summary.reasoningLimited },
+        rule: null,
+        actor: "user",
+      },
+    ],
   });
   const [outcome] = await withUserLock(source.userId, async () => {
     await backfillEmbeddings(store, ai.embed);

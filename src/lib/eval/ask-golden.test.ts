@@ -24,7 +24,7 @@ const citation = (sourceId: string) => ({
   external_url: null,
   quote: "금요일까지 제안서 보내드릴게요",
 });
-const summary = { actions: 1, sources: 1, citations: 1, dropped: 0, model: "m", promptVersion: "ask-v1", cost: 0 };
+const summary = { actions: 1, sources: 1, citations: 1, dropped: 0, model: "m", promptVersion: "ask-v1", cost: 0, reasoningLimited: false };
 
 describe("findAskLabelErrors", () => {
   it("공백 차이는 무시하고 근거 구절을 찾는다", () => {

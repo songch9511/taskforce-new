@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { decide, jevConfigFromEnv, JevError, type JevConfig } from "./jev";
 
@@ -66,6 +66,41 @@ describe("decide", () => {
       }) as typeof fetch,
     };
     await expect(decide(stuck, { state: {}, questions })).rejects.toThrow(/시간 초과/);
+  });
+
+  it("마감이 있으면(빠진 할 일 신고) 남은 시간이 없을 때 묻지도 다시 묻지도 않는다", async () => {
+    let calls = 0;
+    const late: JevConfig = {
+      apiKey: "key",
+      model: "m",
+      deadline: Date.now() - 1,
+      fetch: (async () => {
+        calls++;
+        return new Response(JSON.stringify({ model: "m", answers: { ok: { type: "noul", noul: 0.5 } } }));
+      }) as typeof fetch,
+    };
+    await expect(decide(late, { state: {}, questions })).rejects.toThrow(/남은 시간 없음/);
+    expect(calls).toBe(0);
+
+    // 첫 요청이 마감까지 멈췄으면 다시 묻지 않는다
+    const clock = { now: 1_000_000 };
+    const spy = vi.spyOn(Date, "now").mockImplementation(() => clock.now);
+    try {
+      const stuck: JevConfig = {
+        apiKey: "key",
+        model: "m",
+        deadline: clock.now + 10_000,
+        fetch: (async () => {
+          calls++;
+          clock.now += 10_000;
+          throw new DOMException("timed out", "TimeoutError");
+        }) as typeof fetch,
+      };
+      await expect(decide(stuck, { state: {}, questions })).rejects.toBeInstanceOf(JevError);
+      expect(calls).toBe(1);
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it("HTTP 오류는 JevError", async () => {

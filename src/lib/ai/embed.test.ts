@@ -37,6 +37,12 @@ describe("embed", () => {
     await expect(embed(config({ data: [{ index: 0, embedding: [1, 2] }] }), ["a"])).rejects.toBeInstanceOf(EmbedError);
   });
 
+  it("마감이 있으면(빠진 할 일 신고 · 물어보기) 남은 시간이 없을 때 부르지 않는다", async () => {
+    const c = { ...config({ data: [{ index: 0, embedding: vec(1) }] }), deadline: Date.now() - 1 };
+    await expect(embed(c, ["a"])).rejects.toThrow(/남은 시간 없음/);
+    expect(c.sent).toEqual([]);
+  });
+
   it("빈 입력은 호출하지 않는다", async () => {
     const c = config({});
     expect(await embed(c, [])).toEqual({ vectors: [] });

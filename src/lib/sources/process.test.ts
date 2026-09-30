@@ -1,5 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { z } from "zod";
 
 import { LlmError } from "@/lib/ai/llm";
 import { ConsentRequiredError } from "@/lib/consent/gate";
@@ -8,7 +9,7 @@ import { mergeJudged } from "@/lib/pipeline/merge";
 import { runPipeline, type JudgedCandidate, type PipelineResult } from "@/lib/pipeline/run";
 import { notifyConfirmations } from "@/lib/notify/service";
 
-import { failureSummary, processSource, replaceJudgeLogs } from "./process";
+import { AFTER_EXTRACT_MS, failureSummary, processDepsFromEnv, processSource, replaceJudgeLogs } from "./process";
 
 vi.mock("server-only", () => ({}));
 // processSource: 동의는 있고, 추출 · 병합은 준비한 결과를 돌려주며, 알림은 부른 인자만 남긴다
@@ -220,5 +221,51 @@ describe("processSource: 확인 요청 알림", () => {
     expect(notifyConfirmations).toHaveBeenLastCalledWith(admin, "u1", ["action-1"]);
     await processSource(admin, { id: "s2", userId: "u1", notify: true }, input, deps);
     expect(notifyConfirmations).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("processDepsFromEnv: 사용자가 기다리는 처리와 배경 처리", () => {
+  const request = { system: "s", user: "u", schemaName: "t", schema: z.object({ ok: z.boolean() }) };
+
+  /** 환경변수와 OpenRouter를 가짜로 둔다. 보낸 요청의 주소와 본문을 남긴다 */
+  function fakeOpenRouter() {
+    vi.stubEnv("OPENROUTER_API_KEY", "k");
+    vi.stubEnv("LLM_MODEL", "m");
+    vi.stubEnv("JEV_MODEL", "j");
+    vi.stubEnv("LLM_OVERRUN_REASONING_EFFORT", "");
+    const sent: { url: string; body: Record<string, unknown> }[] = [];
+    vi.stubGlobal("fetch", async (url: string, init: RequestInit) => {
+      sent.push({ url, body: JSON.parse(init.body as string) });
+      return new Response(JSON.stringify({ model: "m", choices: [{ message: { content: '{"ok":true}' } }], answers: {} }));
+    });
+    return sent;
+  }
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
+  });
+
+  it("마감이 없으면(원문 처리 · 동기화 · 재처리 cron) 추출은 지금처럼 추론량을 제한하지 않는다", async () => {
+    const sent = fakeOpenRouter();
+    const result = await processDepsFromEnv().complete(request);
+    expect(sent[0].body.reasoning).toBeUndefined();
+    expect(result.reasoningLimited).toBeUndefined();
+  });
+
+  it("마감을 주면(빠진 할 일 신고) 추출은 첫 호출부터 추론량을 제한한다", async () => {
+    const sent = fakeOpenRouter();
+    const result = await processDepsFromEnv(Date.now() + 55_000).complete(request);
+    expect(sent[0].body.reasoning).toEqual({ effort: "high", exclude: true });
+    expect(result.reasoningLimited).toBe(true);
+  });
+
+  it("추출은 뒤의 판정 · 병합에 시간을 남긴다: 남은 시간이 그만큼뿐이면 추출은 부르지 않고, 판정은 마감까지 부른다", async () => {
+    const sent = fakeOpenRouter();
+    const deps = processDepsFromEnv(Date.now() + AFTER_EXTRACT_MS + 1_000);
+    await expect(deps.complete(request)).rejects.toThrow(/남은 시간 없음/);
+    expect(sent).toHaveLength(0);
+    await deps.decide({ state: {}, questions: {} });
+    expect(sent.map((s) => s.url)).toEqual(["https://openrouter.ai/api/alpha/decisions"]);
   });
 });

@@ -16,6 +16,12 @@ export type LlmConfig = {
   timeoutMs?: number;
   /** 출력 · 시간 한도를 넘긴 호출을 다시 물을 때 거는 추론량 제한. 지정하지 않으면 OVERRUN_RETRY_REASONING, null이면 걸지 않는다 */
   overrunReasoning?: OverrunReasoning | null;
+  /**
+   * 사용자가 기다리는 호출(빠진 할 일 신고 · 물어보기)의 마감 시각 (epoch ms). 있으면 한도를 넘긴 뒤 다시 물을 시간이 없으므로
+   * 첫 호출부터 추론량을 제한하고(overrunReasoning), 시도마다 남은 시간으로 시간 한도를 정한다(attemptTimeoutMs).
+   * 없으면 배경 처리(원문 처리 · 동기화 · 재처리 cron · eval 추출): 시도마다 timeoutMs, 한도를 넘긴 호출을 다시 물을 때만 제한한다.
+   */
+  deadline?: number;
 };
 
 export type OverrunReasoning = { effort: "low" | "medium" | "high" };
@@ -105,28 +111,60 @@ export const LLM_TIMEOUT_MS = 90_000;
  * 출력 한도 · 시간 한도를 넘겨 다시 물을 때만 거는 추론량 제한 (기본값). 추론 모델(glm-5.3-flash)은 추론 토큰도 출력 한도(8,192)에 들어가,
  * 긴 추론이 한도를 채우면 답이 비거나 잘린다. 처음부터 제한하면 품질이 조금 내려가(2026-09-29 eval: 병합 100% → 95%,
  * 담당 오류 1건) 평소에는 걸지 않고, 넘긴 호출을 다시 물을 때만 건다 (그 eval에서 호출 실패 0, 호출 시간 95%가 8초 안).
+ * 사용자가 기다리는 호출(LlmConfig.deadline)은 넘긴 뒤 다시 물을 시간이 없어 첫 호출부터 건다.
  * glm-5.3-flash · Fireworks에서 잰 값이다. 모델을 바꾸면 LLM_OVERRUN_REASONING_EFFORT로 다시 정한다
  * (기본 effort가 medium인 모델에서 high는 추론을 늘리고, 추론 옵션이 없는 모델은 require_parameters로 공급자가 없어진다).
  */
 export const OVERRUN_RETRY_REASONING: OverrunReasoning = { effort: "high" };
+
+/** 사용자가 기다리는 요청에서 모델 호출 뒤 DB 쓰기 · 응답에 남기는 시간: 모델 호출은 실행 한도보다 이만큼 먼저 끝낸다 */
+export const RESPONSE_MARGIN_MS = 5_000;
+
+/** 실행 한도(Route Handler maxDuration)가 maxDurationSeconds초인 요청에서 모델 호출을 끝낼 시각 (epoch ms). 요청을 받자마자 잰다 */
+export function interactiveDeadline(maxDurationSeconds: number, start = Date.now()): number {
+  return start + maxDurationSeconds * 1000 - RESPONSE_MARGIN_MS;
+}
+
+/** 마감이 있을 때 한 번 시도에 주는 최소 시간. 남은 시간이 이보다 짧으면 (다시) 묻지 않는다 */
+export const LLM_MIN_ATTEMPT_MS = 5_000;
+
+/**
+ * 이번 시도의 시간 한도 (ms). 마감이 없으면 timeoutMs(기본 90초).
+ * 마감이 있으면 남은 시간을 남은 시도 수로 나누되 LLM_MIN_ATTEMPT_MS보다 짧게 주지 않는다: 첫 시도가 멈춰도 다시 물을 시간이 남고,
+ * 첫 시도가 빨리 실패하면 다시 묻기가 남은 시간을 다 쓴다. 남은 시간이 LLM_MIN_ATTEMPT_MS보다 짧으면 null (묻지 않는다).
+ */
+export function attemptTimeoutMs(config: Pick<LlmConfig, "timeoutMs" | "deadline">, attemptsLeft: number, now = Date.now()): number | null {
+  const limit = config.timeoutMs ?? LLM_TIMEOUT_MS;
+  if (config.deadline === undefined) return limit;
+  const remaining = config.deadline - now;
+  if (remaining < LLM_MIN_ATTEMPT_MS) return null;
+  return Math.min(limit, Math.max(LLM_MIN_ATTEMPT_MS, Math.floor(remaining / attemptsLeft)));
+}
 
 export async function completeJson<T extends z.ZodType>(
   config: LlmConfig,
   request: JsonCompletionRequest<T>,
 ): Promise<JsonCompletion<z.infer<T>>> {
   const overrunReasoning = config.overrunReasoning === undefined ? OVERRUN_RETRY_REASONING : config.overrunReasoning;
-  let reasoning: OverrunReasoning | null = null;
+  // 사용자가 기다리는 호출(마감 있음)은 한도를 넘긴 뒤 다시 물을 시간이 없어 첫 호출부터 제한한다.
+  let reasoning: OverrunReasoning | null = config.deadline === undefined ? null : overrunReasoning;
+  const attempts = FORMAT_RETRIES + 1;
+  let timeoutMs = attemptTimeoutMs(config, attempts);
+  if (timeoutMs === null) throw new LlmError("응답 시간 초과 (남은 시간 없음)");
   for (let attempt = 0; ; attempt++) {
     try {
-      const result = await completeJsonOnce(config, request, reasoning);
+      const result = await completeJsonOnce(config, request, reasoning, timeoutMs);
       return reasoning ? { ...result, reasoningLimited: true } : result;
     } catch (error) {
       // 응답 본문을 읽는 도중에도 시간 초과가 날 수 있다.
       const timedOut = error instanceof DOMException && error.name === "TimeoutError";
       const retryable = timedOut || (error instanceof LlmError && error.retryable);
-      if (!retryable || attempt >= FORMAT_RETRIES) {
-        throw timedOut ? new LlmError(`응답 시간 초과 (${Math.round((config.timeoutMs ?? LLM_TIMEOUT_MS) / 1000)}초)`) : error;
+      // 마감이 있으면 남은 시간이 한 번 더 물을 만큼일 때만 다시 묻는다.
+      const next = retryable && attempt < FORMAT_RETRIES ? attemptTimeoutMs(config, attempts - attempt - 1) : null;
+      if (next === null) {
+        throw timedOut ? new LlmError(`응답 시간 초과 (${Math.round(timeoutMs / 1000)}초)`) : error;
       }
+      timeoutMs = next;
       if (timedOut || (error instanceof LlmError && error.overran)) reasoning ??= overrunReasoning;
     }
   }
@@ -136,13 +174,14 @@ async function completeJsonOnce<T extends z.ZodType>(
   config: LlmConfig,
   request: JsonCompletionRequest<T>,
   reasoning: OverrunReasoning | null,
+  timeoutMs: number,
 ): Promise<JsonCompletion<z.infer<T>>> {
   const doFetch = config.fetch ?? fetch;
   const maxTokens = request.maxTokens ?? 8192;
   let response: Response;
   try {
     response = await doFetch(OPENROUTER_CHAT_URL, {
-      signal: AbortSignal.timeout(config.timeoutMs ?? LLM_TIMEOUT_MS),
+      signal: AbortSignal.timeout(timeoutMs),
       method: "POST",
       headers: { Authorization: `Bearer ${config.apiKey}`, "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -165,7 +204,7 @@ async function completeJsonOnce<T extends z.ZodType>(
     });
   } catch (error) {
     if (error instanceof DOMException && error.name === "TimeoutError") {
-      throw new LlmError(`응답 시간 초과 (${Math.round((config.timeoutMs ?? LLM_TIMEOUT_MS) / 1000)}초)`, undefined, true, true);
+      throw new LlmError(`응답 시간 초과 (${Math.round(timeoutMs / 1000)}초)`, undefined, true, true);
     }
     throw error;
   }

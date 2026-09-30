@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { interactiveDeadline } from "@/lib/ai/llm";
 import { authenticateRequest } from "@/lib/api/auth";
 import { consentRequired } from "@/lib/api/consent";
 import { missingReportRequestSchema, type MissingReportResponse } from "@/lib/api/contract";
@@ -13,13 +14,15 @@ import type { Participants } from "@/lib/pipeline/identity";
 import { QuoteNotInSourceError } from "@/lib/pipeline/missing";
 import { quoteInText } from "@/lib/pipeline/text";
 import { purgedSourceMessage } from "@/lib/retention";
-import { reportMissing } from "@/lib/sources/process";
+import { processDepsFromEnv, reportMissing } from "@/lib/sources/process";
 import { createAdminClient } from "@/lib/supabase/admin";
 
 // 빠진 할 일 신고 (지표 4): 사용자가 원문 구절을 골라 "여기 내 할 일이 있다"고 알려준다.
 // 동기로 처리해(추출 · Jev · 매칭, 수 초) 새로 만들었는지 · 이미 있던 할 일인지를 바로 돌려준다.
 // 신고마다 모델을 부르므로 사용자별로 10분에 10번까지 받는다 (넘으면 429 rate_limited). 외부 AI 처리 동의 전이면 409.
 // 보관 기간(90일)이 지나 글이 지워진 원문은 신고할 수 없다 (400).
+// 앱도 60초 기다린다. 모델 호출은 실행 한도보다 5초 먼저 끝내고, 추출(LLM)은 첫 호출부터 추론량을 제한하며
+// 뒤의 판정 · 병합에 시간을 남긴다 (lib/sources/process.ts processDepsFromEnv).
 export const maxDuration = 60;
 
 type Params = { params: Promise<{ id: string }> };
@@ -37,6 +40,7 @@ type SourceRow = {
 
 
 export async function POST(request: Request, { params }: Params) {
+  const deadline = interactiveDeadline(maxDuration);
   const context = await authenticateRequest(request);
   if (!context) return unauthorized();
   const { id } = await params;
@@ -72,6 +76,7 @@ export async function POST(request: Request, { params }: Params) {
         participants: source.participants ?? undefined,
         quote: body.data.quote,
       },
+      processDepsFromEnv(deadline),
     );
     return Response.json(result satisfies MissingReportResponse);
   } catch (error) {

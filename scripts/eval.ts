@@ -11,7 +11,7 @@ import { parseArgs } from "node:util";
 
 import { embed, embedConfigFromEnv } from "../src/lib/ai/embed";
 import { decide, jevConfigFromEnv } from "../src/lib/ai/jev";
-import { completeJson, llmConfigFromEnv } from "../src/lib/ai/llm";
+import { completeJson, interactiveDeadline, llmConfigFromEnv } from "../src/lib/ai/llm";
 import { ASK_PROMPT_VERSION } from "../src/lib/ai/prompts/ask";
 import { EXTRACT_PROMPT_VERSION } from "../src/lib/ai/prompts/extract";
 import { JUDGE_PROMPT_VERSION } from "../src/lib/ai/prompts/judge";
@@ -412,16 +412,18 @@ async function main() {
   }
 
   // 4) 물어보기: 케이스의 Action · 원문을 검색 결과로 주고(검색 자체는 DB 테스트가 본다) 답 · 인용 검증 · 모름을 채점한다.
+  //    LLM은 앱의 질문(v1/ask/route.ts, 실행 한도 60초)과 같게 마감을 두고 첫 호출부터 추론량을 제한한다.
   let askCost = 0;
   const askRuns = (
     await mapLimit(askSelected, LLM_CONCURRENCY, async (golden): Promise<{ golden: AskCase; result: AskResult; score: AskScore } | null> => {
+      const deadline = interactiveDeadline(60);
       try {
         const result = await answerQuestion(
           golden.question,
           {
             embed: async (texts) => texts.map(() => []),
             retrieve: async () => askContextOf(golden),
-            complete: (request) => completeJson(llm, request),
+            complete: (request) => completeJson({ ...llm, deadline }, request),
           },
           new Date(golden.asked_at),
         );
@@ -479,7 +481,14 @@ async function main() {
         sequences: sequenceRuns.map((r) => ({ id: r.golden.id, tags: r.golden.tags ?? [], score: r.score, finals: r.finals, outcomes: r.outcomes })),
         cases: done.map((r) => ({ id: r.golden.id, origin: r.golden.origin, tags: r.golden.tags ?? [], extracted: r.extracted, judged: r.judged ?? r.verified })),
         judgedLabels: judgedItems.map((j) => ({ caseId: j.caseId, kind: j.kind, quote: j.candidate.quote, labels: j.labels, result: j.result })),
-        ask: askRuns.map((r) => ({ id: r.golden.id, score: r.score, answer: r.result.answer, unknown: r.result.unknown, citations: r.result.citations })),
+        ask: askRuns.map((r) => ({
+          id: r.golden.id,
+          score: r.score,
+          answer: r.result.answer,
+          unknown: r.result.unknown,
+          citations: r.result.citations,
+          reasoningLimited: r.result.summary.reasoningLimited,
+        })),
         errors,
       },
       null,
