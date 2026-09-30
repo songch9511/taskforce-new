@@ -51,6 +51,12 @@ describe("hook_before_user_created", () => {
     expect(await hook("apple", null)).toEqual({});
   });
 
+  it("Sign in with Google 가입은 그대로 받고, 같은 주소의 이메일 가입은 여전히 거절한다", async () => {
+    expect(await hook("google", "someone@gmail.com")).toEqual({});
+    expect(await hook("google", "Someone@Example.com")).toEqual({});
+    expect((await hook("email", "someone@gmail.com")).error).toMatchObject({ http_code: 403 });
+  });
+
   it("허용 목록은 소문자 주소만 받는다", async () => {
     await expect(db.query(`insert into public.review_accounts (email) values ('Upper@Example.com')`)).rejects.toThrow(/check/);
   });

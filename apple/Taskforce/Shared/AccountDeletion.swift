@@ -5,21 +5,25 @@ import TaskforceKit
 import UIKit
 #endif
 
-/// 계정 삭제 (App Store 5.1.1(v)): 삭제 직전에 Sign in with Apple을 한 번 더 받아 authorization code를 서버로 보내면
-/// 서버가 Apple 토큰을 폐기한다. 사용자가 Apple 확인을 취소해도 삭제는 하고, 로그인 화면에 한 줄로 알린다.
+/// 계정 삭제 (App Store 5.1.1(v)): Apple 로그인이 붙은 계정은 삭제 직전에 Sign in with Apple을 한 번 더 받아 authorization code를
+/// 서버로 보내면 서버가 Apple 토큰을 폐기한다. 사용자가 Apple 확인을 취소해도 삭제는 하고, 로그인 화면에 한 줄로 알린다.
+/// Google 로그인이 붙은 계정은 삭제한 뒤 앱이 Google 권한을 폐기한다(`GoogleSignInFlow.disconnect`, Supabase는 Google 토큰을 갖고 있지 않다).
+/// 이메일 · 비밀번호(심사 계정)는 폐기할 것이 없다.
 @MainActor
 enum AccountDeletion {
     static let revokeSkippedNote = "Account deleted. To remove Apple sign-in too, open Settings › Apple Account › Sign in with Apple."
 
     /// 성공하면 nil, 실패하면 화면에 보여 줄 한 줄
     static func delete(services: AppServices, session: SessionStore) async -> String? {
-        let code = await AppleReauthorization.authorizationCode()
+        let methods = session.signInMethods
+        let code = methods.needsAppleReauthorization ? await AppleReauthorization.authorizationCode() : nil
         do {
             try await services.api.deleteAccount(authorizationCode: code)
         } catch {
             return "Couldn't delete your account. \(error.userMessage)"
         }
-        await session.accountDeleted(note: code == nil ? revokeSkippedNote : nil)
+        if methods.hasGoogle { GoogleSignInFlow.disconnect() }
+        await session.accountDeleted(note: methods.needsAppleReauthorization && code == nil ? revokeSkippedNote : nil)
         return nil
     }
 }

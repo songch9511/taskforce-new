@@ -52,11 +52,11 @@ final class MacAppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// `taskforce://connections/…` (ASWebAuthenticationSession이 주소를 바로 돌려주지만, 앱 밖에서 열린 경우를 위해)
+    /// `taskforce://connections/…` · Google 로그인 콜백 (ASWebAuthenticationSession이 주소를 바로 돌려주지만, 앱 밖에서 열린 경우를 위해)
     func application(_ application: NSApplication, open urls: [URL]) {
         guard case .ready(_, let services) = AppRuntime.startup else { return }
         let account = AppRuntime.account(services: services)
-        for url in urls {
+        for url in urls where !GoogleSignInFlow.handle(url) {
             Task { await account.handleCallback(url) }
         }
     }

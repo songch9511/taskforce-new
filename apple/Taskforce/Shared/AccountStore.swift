@@ -104,8 +104,13 @@ final class AccountStore {
         async let connectionsValue = try? services.reads.connections()
         // 예전 서버에는 표가 없다
         async let requestsValue = try? services.reads.connectionRequests()
-        let (profile, connections, requests) = await (profileValue, connectionsValue, requestsValue)
+        let (loadedProfile, connections, requests) = await (profileValue, connectionsValue, requestsValue)
         guard generation == self.generation else { return }
+        var profile = loadedProfile
+        if let loadedProfile, let named = await namedFromAccount(loadedProfile) {
+            guard generation == self.generation else { return }
+            profile = named
+        }
         if let profile { self.profile = profile }
         if let connections { apply(connections) }
         if let requests { requested = requests }
@@ -379,6 +384,22 @@ final class AccountStore {
     }
 
     // MARK: 프로필
+
+    /// 프로필 이름이 비어 있으면 로그인 계정이 준 이름(Google 로그인의 이름)으로 계정마다 한 번 채운다: 원문 속 "나"를 찾는 기본 이름.
+    /// 채웠으면 저장된 프로필, 채울 것이 없거나 저장하지 못했으면 nil (그러면 iPhone이 처음 한 번 이름을 묻는다).
+    /// 나중에 사용자가 이름을 지워도 다시 채우지 않는다.
+    private func namedFromAccount(_ profile: Profile) async -> Profile? {
+        guard profile.displayName == nil,
+              let user = services.supabase.auth.currentUser,
+              let name = AccountName.from(metadata: user.userMetadata)
+        else { return nil }
+        let key = "profileNamedFromAccount.\(user.id.uuidString.lowercased())"
+        guard !UserDefaults.standard.bool(forKey: key),
+              let saved = try? await services.api.saveProfile(Profile.edited(name: name, aliases: profile.aliases, keeping: profile))
+        else { return nil }
+        UserDefaults.standard.set(true, forKey: key)
+        return saved
+    }
 
     /// 이름 · 별칭 저장. 성공하면 true.
     func saveProfile(name: String, aliases: [String]) async -> Bool {

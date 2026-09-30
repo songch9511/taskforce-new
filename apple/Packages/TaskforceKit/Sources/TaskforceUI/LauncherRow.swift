@@ -14,6 +14,8 @@ public struct LauncherRow: View {
         case symbol(String)
         /// 원문 고르기: 출처 로고 (Source icon S)
         case source(SourceService)
+        /// Sign in with Google: 표준 색 G를 흰 원 위에 (Google 브랜드 규칙: 흰 바탕)
+        case google
     }
 
     let title: String
@@ -110,6 +112,12 @@ public struct LauncherRow: View {
                 .foregroundStyle(selected ? TFColor.textAccent : TFColor.textSecondary)
         case .source(let service):
             SourceIcon(service, size: .s)
+        case .google:
+            TFImage.googleG
+                .resizable()
+                .frame(width: 12, height: 12)
+                .frame(width: 16, height: 16)
+                .background(Circle().fill(Color.white))
         }
     }
 }

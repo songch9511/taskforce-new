@@ -17,6 +17,8 @@ public final class SessionStore {
     public private(set) var errorMessage: String?
     /// 오류는 아니지만 로그인 화면에 한 줄로 알릴 것 (예: 계정은 지웠지만 Apple 로그인 연결은 남음)
     public private(set) var notice: String?
+    /// 로그인한 계정의 로그인 방식 (계정 줄 이름 · 계정 삭제 때 폐기할 것). 로그인 전이면 `unknown`
+    public private(set) var signInMethods = SignInMethods.unknown
 
     private let auth: AuthClient
     private var listenTask: Task<Void, Never>?
@@ -40,10 +42,16 @@ public final class SessionStore {
         // 그대로 두면 화면은 로그인 상태인데 서버 요청마다 "Sign in again"이 뜬다. 로그인되지 않은 것으로 보고 알린다.
         if event == .signedIn, session != nil, auth.currentSession == nil {
             state = .signedOut
+            signInMethods = .unknown
             errorMessage = Self.sessionNotSavedMessage
             return
         }
         state = Self.state(for: event, session: session)
+        if case .signedIn = state, let session {
+            signInMethods = SignInMethods(user: session.user)
+        } else {
+            signInMethods = .unknown
+        }
     }
 
     static let sessionNotSavedMessage = "Couldn't save your sign-in. Try again."
@@ -56,7 +64,7 @@ public final class SessionStore {
     }
 
     /// Sign in with Apple이 돌려준 ID 토큰으로 Supabase에 로그인한다.
-    public func signInWithApple(idToken: String, nonce: AppleSignInNonce) async {
+    public func signInWithApple(idToken: String, nonce: SignInNonce) async {
         errorMessage = nil
         notice = nil
         do {
@@ -65,6 +73,23 @@ public final class SessionStore {
             )
         } catch {
             errorMessage = "Couldn't sign in. \(error.localizedDescription)"
+        }
+    }
+
+    /// Google Sign-In이 돌려준 ID 토큰 · 액세스 토큰으로 Supabase에 로그인한다 (Google에는 `nonce.hashed`를 보냈다).
+    /// 액세스 토큰은 Supabase가 ID 토큰의 `at_hash`와 맞춰 본다. 실패하면 false (앱이 Google SDK 쪽 로그인도 지운다).
+    @discardableResult
+    public func signInWithGoogle(idToken: String, accessToken: String, nonce: SignInNonce) async -> Bool {
+        errorMessage = nil
+        notice = nil
+        do {
+            _ = try await auth.signInWithIdToken(
+                credentials: OpenIDConnectCredentials(provider: .google, idToken: idToken, accessToken: accessToken, nonce: nonce.raw)
+            )
+            return true
+        } catch {
+            errorMessage = "Couldn't sign in. \(error.localizedDescription)"
+            return false
         }
     }
 

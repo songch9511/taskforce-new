@@ -21,6 +21,7 @@
 		6271B456853052DD6DF1D2F3 /* NewTaskSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 854A74CC3784F0337B1287DB /* NewTaskSheet.swift */; };
 		68DFF761D14327138E4CB5F4 /* MacSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4A28A214EF045FAF600AC14 /* MacSettingsView.swift */; };
 		9731E4E4A9B4D4EC556F263B /* MacAppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = D553D4AC83AD95CD5BD8CBF7 /* MacAppDelegate.swift */; };
+		B12630859AFFAB6A88E428E6 /* GoogleSignIn.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0EEFD4BECF876565725DFA15 /* GoogleSignIn.swift */; };
 		B1CC59880F2E7DB9E145834B /* AccountViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9E2BFF6EF4C37CFDCEBD88DB /* AccountViews.swift */; };
 		BDD2EC4FA6C9D0C3A53DD751 /* HotKeyCenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2069D753238A9DAE1E390CB3 /* HotKeyCenter.swift */; };
 		BFA4251C2205BD1639A1ECB9 /* AccountSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1BBB26ECA12CD6A87E74BA4A /* AccountSheet.swift */; };
@@ -28,6 +29,7 @@
 		D872654C1DF62819BA31E385 /* NowStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0C3F69D6A673231631FB11C /* NowStore.swift */; };
 		E185BE8D099E7CD4FF8F72D1 /* IOSAppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 430F30EA2339CCCFF7AAF2D4 /* IOSAppDelegate.swift */; };
 		E2E22004841EC931D746713B /* AccountStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9E5447C917C7443CACB72BD8 /* AccountStore.swift */; };
+		E9FF4630E2A023E47E3CBE13 /* GoogleSignIn in Frameworks */ = {isa = PBXBuildFile; productRef = 61502A661BD123C408697237 /* GoogleSignIn */; };
 		EA68509AE7950D6476FCBBB3 /* HomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2044DBA924AC241979F1353D /* HomeView.swift */; };
 		EE5266EC7D5700427BFCFD8F /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D9F39726A86DE99A44B6BE7 /* RootView.swift */; };
 		EF810C02C820D340DC1EB4F7 /* LauncherModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6EE4BF508E321D0E6BBC09B1 /* LauncherModel.swift */; };
@@ -35,6 +37,7 @@
 
 /* Begin PBXFileReference section */
 		010DF3CB9AFFABF74B07F0F2 /* Release.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Release.xcconfig; sourceTree = "<group>"; };
+		0EEFD4BECF876565725DFA15 /* GoogleSignIn.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GoogleSignIn.swift; sourceTree = "<group>"; };
 		1ADEC50CCCD6DD9A67EAA50B /* Base.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Base.xcconfig; sourceTree = "<group>"; };
 		1BBB26ECA12CD6A87E74BA4A /* AccountSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccountSheet.swift; sourceTree = "<group>"; };
 		1FCAEE30F5C476D81D71E869 /* Taskforce-macOS.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = "Taskforce-macOS.entitlements"; sourceTree = "<group>"; };
@@ -72,6 +75,7 @@
 			files = (
 				584A291FF09ECAF09FD9B4B7 /* TaskforceKit in Frameworks */,
 				51DD873085D1961D40AC7681 /* TaskforceUI in Frameworks */,
+				E9FF4630E2A023E47E3CBE13 /* GoogleSignIn in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -132,6 +136,7 @@
 				9E5447C917C7443CACB72BD8 /* AccountStore.swift */,
 				9E2BFF6EF4C37CFDCEBD88DB /* AccountViews.swift */,
 				9B61143ECDB3A70FF32355F0 /* AppEnvironment.swift */,
+				0EEFD4BECF876565725DFA15 /* GoogleSignIn.swift */,
 				F0C3F69D6A673231631FB11C /* NowStore.swift */,
 				7439B64C561B831037F0D2E2 /* PushCenter.swift */,
 				599D903AD6A4CA63031CAE4D /* SampleData.swift */,
@@ -188,6 +193,7 @@
 			packageProductDependencies = (
 				73C221837F84EEB751235C8E /* TaskforceKit */,
 				80B175BF4CA400FA877FD5AF /* TaskforceUI */,
+				61502A661BD123C408697237 /* GoogleSignIn */,
 			);
 			productName = Taskforce;
 			productReference = B585CF3FD7B78EDC16427DEF /* Taskforce.app */;
@@ -218,6 +224,7 @@
 			mainGroup = 0F92A9E7EB73E6C16C15EF06;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
+				6160D25A59DF8DE9D2770B2D /* XCRemoteSwiftPackageReference "GoogleSignIn-iOS" */,
 				658ABECEB7A903834CEDBDD8 /* XCLocalSwiftPackageReference "Packages/TaskforceKit" */,
 			);
 			preferredProjectObjectVersion = 77;
@@ -251,6 +258,7 @@
 				E2E22004841EC931D746713B /* AccountStore.swift in Sources */,
 				B1CC59880F2E7DB9E145834B /* AccountViews.swift in Sources */,
 				025F33A82A421DE1FC6CC896 /* AppEnvironment.swift in Sources */,
+				B12630859AFFAB6A88E428E6 /* GoogleSignIn.swift in Sources */,
 				EA68509AE7950D6476FCBBB3 /* HomeView.swift in Sources */,
 				BDD2EC4FA6C9D0C3A53DD751 /* HotKeyCenter.swift in Sources */,
 				E185BE8D099E7CD4FF8F72D1 /* IOSAppDelegate.swift in Sources */,
@@ -498,7 +506,23 @@
 		};
 /* End XCLocalSwiftPackageReference section */
 
+/* Begin XCRemoteSwiftPackageReference section */
+		6160D25A59DF8DE9D2770B2D /* XCRemoteSwiftPackageReference "GoogleSignIn-iOS" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/google/GoogleSignIn-iOS";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 10.0.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
 /* Begin XCSwiftPackageProductDependency section */
+		61502A661BD123C408697237 /* GoogleSignIn */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 6160D25A59DF8DE9D2770B2D /* XCRemoteSwiftPackageReference "GoogleSignIn-iOS" */;
+			productName = GoogleSignIn;
+		};
 		73C221837F84EEB751235C8E /* TaskforceKit */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = TaskforceKit;

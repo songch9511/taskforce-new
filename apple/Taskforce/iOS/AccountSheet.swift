@@ -39,13 +39,14 @@ struct AccountSheet: View {
                 }
                 Section {
                     if let email {
-                        LabeledContent("Apple ID", value: email)
+                        LabeledContent(session.signInMethods.accountLabel, value: email)
                     }
                     Button("Sign Out") {
                         Task {
                             // 세션이 남아 있을 때 이 기기를 알림에서 뺀다
                             await PushCenter.shared.unregister()
                             await session.signOut()
+                            GoogleSignInFlow.signOut()
                         }
                     }
                     Button("Delete Account", role: .destructive) {
