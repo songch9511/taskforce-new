@@ -11,6 +11,7 @@ AI 프로젝트 매니저 — 회의록·메시지·메일에서 내가 약속�
 - [바이브코딩 플랜](docs/VIBE_CODING_PLAN.md)
 - [피처맵: 기능 → 코드](docs/FEATURE_MAP.md)
 - [에이전트 작업 규칙](CLAUDE.md)
+- [에이전트 핸드오프: 현재 상태 · 확인된 문제 · 이어서 할 일](docs/HANDOFF.md)
 
 ## 로컬 실행
 
