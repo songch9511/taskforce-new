@@ -17,7 +17,7 @@
 
 | 요구 | 가이드라인 | 앱 상태 (2026-09-30) | 담당 |
 |---|---|---|---|
-| 외부 AI로 보내기 전 명시적 동의 | 5.1.2(i) | 있음: 첫 연결 전에 AI data 화면(`ConsentPrompt`, `apple/Taskforce/Shared/AccountViews.swift`) → Allow → `POST /api/v1/consent`. 서버는 동의가 없으면 409(`src/lib/api/consent.ts`) | 문구를 5장과 맞춘다 (앱 `ConsentDetails`는 5장 문안보다 짧다) |
+| 외부 AI로 보내기 전 명시적 동의 | 5.1.2(i) | 있음: 첫 연결 전에 AI data 화면(`ConsentPrompt`, `apple/Taskforce/Shared/AccountViews.swift`) → Allow → `POST /api/v1/consent`. 서버는 동의가 없으면 409(`src/lib/api/consent.ts`). 문구는 5장 문안 그대로(`ConsentDetails`) | — |
 | 동의 철회 방법 | 5.1.1(i) | 있음: 계정 메뉴(Mac은 설정) → AI data → Withdraw → `DELETE /api/v1/consent` (`ConsentSettingsView`) | — |
 | 앱 안 계정 삭제 | 5.1.1(v) | 있음 (계정 메뉴 → 계정 삭제 → `DELETE /api/v1/account`) | — |
 | 제3자 로그인(Google)을 두면 동등한 로그인 옵션 | 4.8 | Sign in with Apple이 먼저, 같은 크기 (2026-09-30 Sign in with Google 추가, PLATFORMS.md 4장) | — |
@@ -110,7 +110,7 @@ Feedback: privacy@taskforcelabs.dev or the TestFlight screenshot feedback.
 4. 심사 기간에는 데모 계정의 데이터를 지우거나 동기화를 끄지 않는다. 심사원이 계정을 지우면(계정 삭제 시험) 다시 만든다 → 제출 전에 재생성 절차를 한 번 연습한다.
 5. 지표: 데모 계정의 이벤트는 지표에서 뺀다(지금 `[E2E 테스트]` 원문을 빼는 것과 같은 방식, 코드).
 
-`scripts/create-review-account.ts`가 AI 동의와 "[Review] …" 합성 원문 처리를 대신한다. 단 프로필 이름은 `Jamie`(별칭 없음)로 넣고 합성 원문도 `Jamie`로 쓰므로, 2를 연결하기 전에 앱에서 이름을 `Alex Kim` · 별칭 `Alex`로 바꾼다(스크립트를 다시 돌리면 이름만 `Jamie`로 돌아가고 별칭은 남는다. `--reseed`는 이 계정의 원문 · 할 일을 모두 지우고 합성 원문만 다시 만들어, 2 · 3에서 동기화한 것도 사라진다). 2(Notion · Google · Slack 실제 연결)는 Google 심사 영상 · 실기기 확인에 필요해 수동으로 한다.
+`scripts/create-review-account.ts`가 1(프로필 이름 `Alex Kim` · 별칭 `Alex` · AI 동의)과 "[Review] …" 합성 원문 처리를 대신한다(다시 돌려도 같다. `--reseed`는 이 계정의 원문 · 할 일을 모두 지우고 합성 원문만 다시 만들어, 2 · 3에서 동기화한 것도 사라진다). 2(Notion · Google · Slack 실제 연결)는 Google 심사 영상 · 실기기 확인에 필요해 수동으로 한다.
 
 ### Beta App Review Information
 
@@ -131,7 +131,7 @@ Where to look:
 - Review card at the top: a task whose owner or due date is uncertain. Confirm or Dismiss.
 - Account menu: Connections (connect/disconnect services), AI data (consent to sending source text to third-party AI and how to withdraw it), Privacy Policy, Sign out, Delete account.
 
-Third-party AI (Guideline 5.1.2(i)): before the first connection, the app shows which data is sent (text from the meeting notes, messages, and email the user connects), who receives it (OpenRouter and the AI model providers it routes to, all with zero data retention and no training), and asks for explicit consent. Without consent, the server does not process connected sources. Consent can be withdrawn in Account > AI data.
+Third-party AI (Guideline 5.1.2(i)): before the first connection, the app shows which data is sent (the meeting notes, transcripts, messages, and email the user connects, with the names and email addresses of people in them, and the user's own name), who receives it (OpenRouter and the named AI model providers it routes to, all with zero data retention and no training), where it is stored (Sydney), and asks for explicit consent. Without consent, the server does not process connected sources. Consent can be withdrawn in Account > AI data.
 
 Account deletion (Guideline 5.1.1(v)): Account > Delete account deletes all data immediately (no backups) and asks Apple and connected services to revoke their tokens (for Sign in with Apple accounts, after the user confirms with Apple once more), and revokes the Google sign-in grant from this device when available. If you delete the demo account, please let us know and we will recreate it.
 
@@ -174,7 +174,7 @@ App Store Connect → 앱 → App Privacy. 모든 항목: **Linked to the user =
 
 ### 문안
 
-화면 틀은 BRAND.md 규칙대로 짧은 영어로 쓴다. 이 화면은 법적 고지라 설명 문장이 필요한 예외다. 받는 곳은 처리방침 7장 표와 **같은 이름**을 쓴다(모델 공급자 목록을 고정한 뒤 채운다).
+화면 틀은 BRAND.md 규칙대로 짧은 영어로 쓴다. 이 화면은 법적 고지라 설명 문장이 필요한 예외다. 보내는 것 · 받는 곳은 처리방침 4장 · 7장 표와 **같은 내용 · 이름**을 쓴다(공급자는 2026-09-29 고정한 `src/lib/ai/providers.ts` 목록). 앱 문구는 `ConsentDetails`(`apple/Taskforce/Shared/AccountViews.swift`)이고, 처리방침 · 공급자가 바뀌면 함께 고친다.
 
 ```
 AI data
@@ -182,19 +182,23 @@ AI data
 To find your tasks, Taskforce sends text from the services you connect to third-party AI models.
 
 What's sent
-Meeting notes, messages, email, and calendar details you connect, including the names and email addresses of people in them. Your name and nicknames, so the AI can recognize you.
+Meeting notes, transcripts, messages, and email you connect, with the names and email addresses of people in them. Your name, nicknames, and email addresses, so the AI can recognize you. Your task titles and quotes, and questions you ask.
 
 Who receives it
-OpenRouter (USA), which routes each request to an AI model provider: {{공급자 목록}}.
+OpenRouter (USA), which routes each request to Fireworks, Together AI, DeepInfra, Microsoft Azure, or TypeSafe (all USA).
 
 How it's protected
 Only providers that keep no data. Never used to train AI models. Stored on our servers in Sydney. Delete your account to delete it all.
 
-You can withdraw anytime in Account > AI data. Without this, Taskforce can't create tasks from your connected services.
+Withdraw anytime
+Turn this off in Account > AI data. Without it, Taskforce can't create tasks from your connected services.
 
-[Allow]   [Not now]
-Privacy Policy
+Privacy Policy   Terms of Use
+
+[Allow]   [Not Now]
 ```
+
+Mac은 철회 경로가 "Settings > AI data"다. 계정 설정의 AI data 화면(`ConsentSettingsView`)도 같은 내용 아래에 Allow 또는 Withdraw를 둔다.
 
 한국어 화면을 따로 둘지는 앱 전체의 현지화 결정을 따른다. 둔다면 처리방침 4장 문장을 줄여 쓴다.
 
