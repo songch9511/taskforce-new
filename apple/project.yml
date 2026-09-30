@@ -14,6 +14,7 @@ configFiles:
   Release: Config/Release.xcconfig
 settings:
   base:
+    SDKROOT: auto
     SWIFT_VERSION: "6.0"
     DEVELOPMENT_TEAM: U9DWQKQFMW
     CODE_SIGN_STYLE: Automatic
@@ -58,11 +59,28 @@ targets:
         CODE_SIGN_ENTITLEMENTS: Taskforce/Taskforce-iOS.entitlements
         "CODE_SIGN_ENTITLEMENTS[sdk=macosx*]": Taskforce/Taskforce-macOS.entitlements
         ENABLE_HARDENED_RUNTIME: YES
+  TaskforceTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: TaskforceTests
+    dependencies:
+      - target: Taskforce
+      - package: TaskforceKit
+        product: TaskforceKit
+      - package: TaskforceKit
+        product: Supabase
+    settings:
+      base:
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Taskforce.app/Contents/MacOS/Taskforce"
 schemes:
   Taskforce:
     build:
       targets:
         Taskforce: all
+    test:
+      targets:
+        - TaskforceTests
     run:
       config: Debug
     archive:

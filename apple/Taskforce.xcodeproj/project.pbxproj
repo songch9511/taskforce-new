@@ -9,13 +9,16 @@
 /* Begin PBXBuildFile section */
 		025F33A82A421DE1FC6CC896 /* AppEnvironment.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9B61143ECDB3A70FF32355F0 /* AppEnvironment.swift */; };
 		03921D74809B28972F7A6762 /* LauncherPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = D29FF94F9BE621AF3A6095B4 /* LauncherPanel.swift */; };
+		1D21B5CFAA41940E0383FCBE /* LauncherModelSessionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D30BD73A1EB36763CBA0B37E /* LauncherModelSessionTests.swift */; };
 		2DF2F905D563F3DF432CF8B7 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = DE37FA5998D1A9FB0C6A9AF2 /* Assets.xcassets */; };
 		31373BB6936E3F2AC9DB6243 /* SignIn.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB26C2543E88F763B3553D02 /* SignIn.swift */; };
 		3498CC69345186E53C0CC66E /* PushCenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7439B64C561B831037F0D2E2 /* PushCenter.swift */; };
+		3620F367D9B7666BE0D25E58 /* TaskforceKit in Frameworks */ = {isa = PBXBuildFile; productRef = 2A771618579B2627F65408E5 /* TaskforceKit */; };
 		463B3B9643F7288FE0FDD9B7 /* AccountDeletion.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8F35BE01B9CE310854A11A47 /* AccountDeletion.swift */; };
 		497A72C80C3F5A62742FA119 /* TaskforceApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2DD246DFD55D3C8EB54CDCF0 /* TaskforceApp.swift */; };
 		51DD873085D1961D40AC7681 /* TaskforceUI in Frameworks */ = {isa = PBXBuildFile; productRef = 80B175BF4CA400FA877FD5AF /* TaskforceUI */; };
 		578284CEF0A8A1DD0672CB7E /* LauncherSnapshot.swift in Sources */ = {isa = PBXBuildFile; fileRef = 524FC1544A0E35537AE10E50 /* LauncherSnapshot.swift */; };
+		581217CC14A2D6D2EB1107D4 /* Supabase in Frameworks */ = {isa = PBXBuildFile; productRef = A1C5FE529FB0C309AD76DA12 /* Supabase */; };
 		584A291FF09ECAF09FD9B4B7 /* TaskforceKit in Frameworks */ = {isa = PBXBuildFile; productRef = 73C221837F84EEB751235C8E /* TaskforceKit */; };
 		5AADF7819C0656F5D1C3C1C1 /* SampleData.swift in Sources */ = {isa = PBXBuildFile; fileRef = 599D903AD6A4CA63031CAE4D /* SampleData.swift */; };
 		6271B456853052DD6DF1D2F3 /* NewTaskSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 854A74CC3784F0337B1287DB /* NewTaskSheet.swift */; };
@@ -35,6 +38,16 @@
 		EF810C02C820D340DC1EB4F7 /* LauncherModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6EE4BF508E321D0E6BBC09B1 /* LauncherModel.swift */; };
 /* End PBXBuildFile section */
 
+/* Begin PBXContainerItemProxy section */
+		44201B66A5B5E3DFC96F1EAE /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 4048BC7BE910FF1E399DC4C5 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 6CC10594A8A3513CB3649C13;
+			remoteInfo = Taskforce;
+		};
+/* End PBXContainerItemProxy section */
+
 /* Begin PBXFileReference section */
 		010DF3CB9AFFABF74B07F0F2 /* Release.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Release.xcconfig; sourceTree = "<group>"; };
 		0EEFD4BECF876565725DFA15 /* GoogleSignIn.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GoogleSignIn.swift; sourceTree = "<group>"; };
@@ -47,6 +60,7 @@
 		2D9F39726A86DE99A44B6BE7 /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
 		2DD246DFD55D3C8EB54CDCF0 /* TaskforceApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TaskforceApp.swift; sourceTree = "<group>"; };
 		430F30EA2339CCCFF7AAF2D4 /* IOSAppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IOSAppDelegate.swift; sourceTree = "<group>"; };
+		4575E663CCDD3F320C873CBA /* TaskforceTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = TaskforceTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		524FC1544A0E35537AE10E50 /* LauncherSnapshot.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LauncherSnapshot.swift; sourceTree = "<group>"; };
 		599D903AD6A4CA63031CAE4D /* SampleData.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SampleData.swift; sourceTree = "<group>"; };
 		6EE4BF508E321D0E6BBC09B1 /* LauncherModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LauncherModel.swift; sourceTree = "<group>"; };
@@ -62,6 +76,7 @@
 		C4A28A214EF045FAF600AC14 /* MacSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacSettingsView.swift; sourceTree = "<group>"; };
 		D1D7134479EB84008A2F52BD /* TaskforceKit */ = {isa = PBXFileReference; lastKnownFileType = folder; name = TaskforceKit; path = Packages/TaskforceKit; sourceTree = SOURCE_ROOT; };
 		D29FF94F9BE621AF3A6095B4 /* LauncherPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LauncherPanel.swift; sourceTree = "<group>"; };
+		D30BD73A1EB36763CBA0B37E /* LauncherModelSessionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LauncherModelSessionTests.swift; sourceTree = "<group>"; };
 		D553D4AC83AD95CD5BD8CBF7 /* MacAppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacAppDelegate.swift; sourceTree = "<group>"; };
 		DE37FA5998D1A9FB0C6A9AF2 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		E188CB78A16E96E9EFA7B9FA /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
@@ -69,6 +84,15 @@
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
+		077BECEE37FED2C0BD2A1A6F /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				3620F367D9B7666BE0D25E58 /* TaskforceKit in Frameworks */,
+				581217CC14A2D6D2EB1107D4 /* Supabase in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		A7431063D3D0B070C849405F /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
@@ -88,6 +112,7 @@
 				CF923E8A8BC7821D4981C44A /* Config */,
 				EC6822F54AD6ECF22E2FBCC9 /* Packages */,
 				6E68EA2E154F426FC006C0DE /* Taskforce */,
+				8E2E91C6463591C5FAE186CB /* TaskforceTests */,
 				75865EDD53C9C43B08C20529 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -125,8 +150,17 @@
 			isa = PBXGroup;
 			children = (
 				B585CF3FD7B78EDC16427DEF /* Taskforce.app */,
+				4575E663CCDD3F320C873CBA /* TaskforceTests.xctest */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		8E2E91C6463591C5FAE186CB /* TaskforceTests */ = {
+			isa = PBXGroup;
+			children = (
+				D30BD73A1EB36763CBA0B37E /* LauncherModelSessionTests.swift */,
+			);
+			path = TaskforceTests;
 			sourceTree = "<group>";
 		};
 		919E84BCDD5605B0CDD6FF09 /* Shared */ = {
@@ -177,6 +211,27 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
+		2CB50A0CE95B5EC02A90D00C /* TaskforceTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = F3FB80DDDAD2CA29093A2E63 /* Build configuration list for PBXNativeTarget "TaskforceTests" */;
+			buildPhases = (
+				1A1231F1DD6BD2AB52B14579 /* Sources */,
+				077BECEE37FED2C0BD2A1A6F /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				BB11039C29FC138C0F6D82E6 /* PBXTargetDependency */,
+			);
+			name = TaskforceTests;
+			packageProductDependencies = (
+				2A771618579B2627F65408E5 /* TaskforceKit */,
+				A1C5FE529FB0C309AD76DA12 /* Supabase */,
+			);
+			productName = TaskforceTests;
+			productReference = 4575E663CCDD3F320C873CBA /* TaskforceTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 		6CC10594A8A3513CB3649C13 /* Taskforce */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = 9F99BCB75CB561ACE0726F26 /* Build configuration list for PBXNativeTarget "Taskforce" */;
@@ -208,6 +263,10 @@
 				BuildIndependentTargetsInParallel = YES;
 				LastUpgradeCheck = 1430;
 				TargetAttributes = {
+					2CB50A0CE95B5EC02A90D00C = {
+						DevelopmentTeam = U9DWQKQFMW;
+						ProvisioningStyle = Automatic;
+					};
 					6CC10594A8A3513CB3649C13 = {
 						DevelopmentTeam = U9DWQKQFMW;
 						ProvisioningStyle = Automatic;
@@ -233,6 +292,7 @@
 			projectRoot = "";
 			targets = (
 				6CC10594A8A3513CB3649C13 /* Taskforce */,
+				2CB50A0CE95B5EC02A90D00C /* TaskforceTests */,
 			);
 		};
 /* End PBXProject section */
@@ -249,6 +309,14 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
+		1A1231F1DD6BD2AB52B14579 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				1D21B5CFAA41940E0383FCBE /* LauncherModelSessionTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		8D711A9902D3883976AA2C32 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -279,6 +347,14 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		BB11039C29FC138C0F6D82E6 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 6CC10594A8A3513CB3649C13 /* Taskforce */;
+			targetProxy = 44201B66A5B5E3DFC96F1EAE /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		1C2DC0F5723F1BC552B07C3F /* Release */ = {
@@ -340,6 +416,22 @@
 				SWIFT_COMPILATION_MODE = wholemodule;
 				SWIFT_OPTIMIZATION_LEVEL = "-O";
 				SWIFT_VERSION = 6.0;
+			};
+			name = Release;
+		};
+		30BE20E51797734425613534 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				COMBINE_HIDPI_IMAGES = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = dev.taskforcelabs.TaskforceTests;
+				SDKROOT = macosx;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Taskforce.app/Contents/MacOS/Taskforce";
 			};
 			name = Release;
 		};
@@ -406,6 +498,22 @@
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
 			name = Release;
+		};
+		BD13A67FFE196063AF3C2C08 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				COMBINE_HIDPI_IMAGES = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = dev.taskforcelabs.TaskforceTests;
+				SDKROOT = macosx;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Taskforce.app/Contents/MacOS/Taskforce";
+			};
+			name = Debug;
 		};
 		EA63A1716FAF9ABE83D47BAA /* Debug */ = {
 			isa = XCBuildConfiguration;
@@ -497,6 +605,15 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;
 		};
+		F3FB80DDDAD2CA29093A2E63 /* Build configuration list for PBXNativeTarget "TaskforceTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				BD13A67FFE196063AF3C2C08 /* Debug */,
+				30BE20E51797734425613534 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
 /* End XCConfigurationList section */
 
 /* Begin XCLocalSwiftPackageReference section */
@@ -518,6 +635,10 @@
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
+		2A771618579B2627F65408E5 /* TaskforceKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = TaskforceKit;
+		};
 		61502A661BD123C408697237 /* GoogleSignIn */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = 6160D25A59DF8DE9D2770B2D /* XCRemoteSwiftPackageReference "GoogleSignIn-iOS" */;
@@ -530,6 +651,10 @@
 		80B175BF4CA400FA877FD5AF /* TaskforceUI */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = TaskforceUI;
+		};
+		A1C5FE529FB0C309AD76DA12 /* Supabase */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = Supabase;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};
