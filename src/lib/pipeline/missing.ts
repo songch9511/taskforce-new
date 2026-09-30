@@ -31,6 +31,14 @@ export const QUOTED_HISTORY_DROP = "QUOTED_HISTORY";
  */
 export type MissStage = (typeof MISS_STAGES)[number];
 
+/**
+ * API 응답(missingReportResponseSchema)이 보이는 단계. quoted_history는 응답에서 not_extracted로 보인다: 이벤트 · 지표에만 있는 내부 구분이다.
+ * (앱은 모르는 단계를 무시하지만, 서버가 보내지 않는 값을 계약에 적어 두지 않는다)
+ */
+export const RESPONSE_MISS_STAGES = ["processing_failed", "not_extracted", "judge_rejected", "merge_absorbed"] as const;
+export type ResponseMissStage = (typeof RESPONSE_MISS_STAGES)[number];
+export const responseMissStage = (stage: MissStage): ResponseMissStage => (stage === "quoted_history" ? "not_extracted" : stage);
+
 /** 두 인용이 같은 대목인지 볼 때의 글자 쌍(bigram) 유사도 기준 */
 export const MISS_OVERLAP_THRESHOLD = 0.6;
 /** 한쪽이 다른 쪽에 들어 있으면 겹친다고 보는 최소 길이 (정규화한 글자 수). 짧은 말("네")이 우연히 들어 있는 것은 뺀다 */

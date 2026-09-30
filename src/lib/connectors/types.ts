@@ -8,6 +8,9 @@ import type { SourceKind } from "@/lib/pipeline/extract";
 
 export type Provider = "notion" | "google" | "gmail" | "slack" | "github";
 
+/** 회의 원문(Notion 회의록 · Meet 전사)에 붙인 Calendar 일정 (sources.meeting). 일정의 제목 · 시각만 남긴다 (google-integration.md 2-7) */
+export type SourceMeeting = { calendar_event_id: string; title: string | null; start: string; end: string };
+
 export type IngestItem = {
   /** 외부 서비스의 항목 id (예: Notion 페이지 id) */
   externalId: string;
@@ -23,6 +26,8 @@ export type IngestItem = {
   participants?: ParticipantsInput;
   /** 사용자가 직접 쓴 원문인가 (sources.written_by_me). 모르면 null · 없음 */
   writtenByMe?: boolean | null;
+  /** 같은 회의의 Calendar 일정 (없으면 없음). 앱이 근거 줄의 출처 · Sources 묶기에 쓴다 */
+  meeting?: SourceMeeting;
 };
 
 export type Connection = {

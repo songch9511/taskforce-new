@@ -165,3 +165,26 @@ describe("초기 마이그레이션", () => {
     expect(rows[0].title).toBe("가까운 일");
   });
 });
+
+// sources.meeting (20261016000000_sources_meeting): 새 표 없이 열만 더한다. 자세한 검사는 sources-meeting.test.ts
+describe("sources.meeting (회의 원문에 붙인 Calendar 일정)", () => {
+  it("열이 있고, 사용자는 자기 원문의 일정만 본다", async () => {
+    const { rows: columns } = await db.query<{ data_type: string }>(
+      `select data_type from information_schema.columns where table_schema = 'public' and table_name = 'sources' and column_name = 'meeting'`,
+    );
+    expect(columns).toEqual([{ data_type: "jsonb" }]);
+
+    const { rows } = await db.query<{ id: string }>(
+      `insert into public.sources (user_id, kind, raw_text, occurred_at, meeting)
+       values ($1, 'meeting', '회의 전사', now(), '{"calendar_event_id":"evt-1","title":"주간 회의","start":"2026-09-30T01:00:00Z","end":"2026-09-30T02:00:00Z"}') returning id`,
+      [ALICE],
+    );
+    await asUser(db, ALICE, async () => {
+      const mine = await db.query<{ meeting: { title: string } }>(`select meeting from public.sources where id = $1`, [rows[0].id]);
+      expect(mine.rows[0].meeting.title).toBe("주간 회의");
+    });
+    await asUser(db, BOB, async () => {
+      expect((await db.query(`select meeting from public.sources where id = $1`, [rows[0].id])).rows).toHaveLength(0);
+    });
+  });
+});

@@ -12,7 +12,6 @@ import { apiErrorSchema, missingReportResponseSchema, type MissingReportResponse
 const STAGE_LABELS: Record<NonNullable<MissingReportResponse["stage"]>, string> = {
   processing_failed: "원문 처리 실패 · 미완료",
   not_extracted: "추출 안 됨",
-  quoted_history: "인용된 옛 메일 속이라 버림",
   judge_rejected: "Jev가 기각",
   merge_absorbed: "병합에서 합쳐짐",
 };

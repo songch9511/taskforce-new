@@ -125,8 +125,9 @@ export function misjudgment(events: ActionEventRow[], period: Period): Misjudgme
     result.confirmed += sorted.filter((e) => e.type === "user_confirmed").length;
     const asked = created.after?.needs_confirmation;
     // 물어서 만들었어도 AI가 나중 원문(사용자의 확정 약속)으로 물음을 풀었으면 사용자에게는 자동으로 반영된 것이다:
-    // 그 뒤 고치면 자동 반영의 오판으로 센다 (withClearedConfirmation이 남기는 merged 이벤트)
-    const cleared = sorted.some((e) => e.actor === "ai" && e.type === "merged" && e.before?.needs_confirmation === true && e.after?.needs_confirmation === false);
+    // 그 뒤 고치면 자동 반영의 오판으로 센다 (withClearedConfirmation이 AI 쓰기의 이벤트 before · after에 얹는 needs_confirmation 전후.
+    // 만들 때 이벤트(created)는 before가 없어 여기 걸리지 않는다)
+    const cleared = sorted.some((e) => e.actor === "ai" && e.type !== "created" && e.before?.needs_confirmation === true && e.after?.needs_confirmation === false);
     const bucket = result.byConfirmation[asked === true && !cleared ? "asked" : asked === true || asked === false ? "auto" : "unknown"];
     bucket.created++;
 
@@ -400,4 +401,47 @@ export function gmailFiltering(stats: unknown[]): GmailFilterMetric {
     }
   }
   return { connections: withStats, counts };
+}
+
+/** Google(Calendar · Meet) 연결 설정의 개수 합: Gmail 거르기와 같은 모양(stats.counts)이다. 전사 수 · 일정 잇기 결과(붙음 · 애매 · 없음 · 실패) · 참석한 회의 찾기 */
+export const googleActivity = gmailFiltering;
+
+export type MeetingLinkageMetric = {
+  /** 기간 안에 들어온 Notion 회의록(연동 회의 원문 중 Meet 전사가 아닌 것): 전체 · 일정이 붙은 것 · 붙은 일정에 Meet 전사도 있는 것 */
+  notion: { total: number; linked: number; withTranscript: number };
+  /** 기간 안에 들어온 Meet 전사: 전체 · 일정이 붙은 것 */
+  meet: { total: number; linked: number };
+};
+
+/** Meet 전사의 외부 id는 conferenceRecords/{c}/transcripts/{t}다 (google/transcript.ts) */
+const isMeetTranscript = (externalId: string) => externalId.startsWith("conferenceRecords/");
+
+/**
+ * 회의 원문에 일정이 붙은 비율 (원칙 6, google-integration.md 8장). 원문 글자는 읽지 않고 외부 id와 붙은 일정 id만 본다.
+ * 직접 입력한 회의 원문(외부 id 없음)은 세지 않는다.
+ * Notion 회의록은 Calendar를 허용한 google 연결이 있는 사용자(calendarUsers)의 것만 센다: 그 밖의 사용자의 회의록은 일정이 붙을 수 없어 비율을 깎는다.
+ */
+export function meetingLinkage(
+  rows: { user_id: string; external_id: string | null; calendar_event_id: string | null }[],
+  calendarUsers: ReadonlySet<string>,
+): MeetingLinkageMetric {
+  const metric: MeetingLinkageMetric = { notion: { total: 0, linked: 0, withTranscript: 0 }, meet: { total: 0, linked: 0 } };
+  // 같은 일정 id가 다른 사용자의 캘린더에도 있으므로(같은 회의 초대) 사용자마다 따로 본다
+  const eventKey = (row: { user_id: string; calendar_event_id: string | null }) => `${row.user_id}:${row.calendar_event_id}`;
+  const transcriptEvents = new Set(rows.filter((r) => r.external_id && isMeetTranscript(r.external_id) && r.calendar_event_id).map(eventKey));
+  for (const row of rows) {
+    if (!row.external_id) continue;
+    if (isMeetTranscript(row.external_id)) {
+      metric.meet.total++;
+      if (row.calendar_event_id) metric.meet.linked++;
+    } else {
+      if (!calendarUsers.has(row.user_id)) continue;
+      metric.notion.total++;
+      if (row.calendar_event_id) {
+        metric.notion.linked++;
+        if (transcriptEvents.has(eventKey(row))) metric.notion.withTranscript++;
+      }
+    }
+  }
+  return metric;
 }

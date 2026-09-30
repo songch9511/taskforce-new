@@ -104,13 +104,24 @@ describe("withClearedConfirmation: AI가 확인 요청을 풀면 이벤트에 �
     ]);
   });
 
-  it("값이 바뀐 이벤트가 있거나 갱신(updated)이어도 따로 merged를 더한다. 일부만 풀려도 남긴다", () => {
+  it("값이 바뀐 이벤트가 있으면 그 첫 이벤트에 전후를 얹는다 (이력에 줄이 늘지 않고, 원래 값 키는 그대로). 일부만 풀려도 남긴다", () => {
     const beforeState = projectAction("t", asked, stored);
     const afterState = projectAction("t", [...asked, ...acceptance], ["병합 확인 (55%)"]);
-    const extra: ReturnType<typeof changeEvents> = [{ type: "due_changed", before: { due: null }, after: { due: "2025-09-26" }, rule: null }];
-    const events = withClearedConfirmation(extra, beforeState, afterState);
-    expect(events.map((e) => e.type)).toEqual(["due_changed", "merged"]);
-    expect(events[1]).toMatchObject({ after: { needs_confirmation: true, confirm_reasons: ["병합 확인 (55%)"] } });
+    const changed: ReturnType<typeof changeEvents> = [
+      { type: "due_changed", before: { due: null }, after: { due: "2025-09-26" }, rule: "rule0+rule4" },
+      { type: "completed", before: { status: "open" }, after: { status: "done" }, rule: null },
+    ];
+    const events = withClearedConfirmation(changed, beforeState, afterState);
+    expect(events.map((e) => e.type)).toEqual(["due_changed", "completed"]);
+    expect(events[0]).toEqual({
+      type: "due_changed",
+      before: { due: null, needs_confirmation: true, confirm_reasons: ["판정 확인: NOT_MY_ACTION", "내용 확인", "담당 확인", "상태 확인"] },
+      after: { due: "2025-09-26", needs_confirmation: true, confirm_reasons: ["병합 확인 (55%)"] },
+      rule: "rule0+rule4",
+    });
+    // 두 번째 이벤트는 건드리지 않는다
+    expect(events[1]).toEqual(changed[1]);
+    // 이벤트가 하나도 없는 갱신(바뀐 값 없음)만 merged를 따로 만든다
     expect(withClearedConfirmation([], beforeState, afterState).map((e) => e.type)).toEqual(["merged"]);
   });
 

@@ -5,7 +5,9 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { CONSENT_WITHDRAWN_MESSAGE, ConsentRequiredError } from "@/lib/consent/gate";
 import { notifyReconnect } from "@/lib/notify/service";
 
-import { claimConnection, ingestDeps, loadToken, markBackfilled, recordNotionHealth, recordSync, saveConnection, saveToken, taskDeps } from "../store";
+import { googleCalendarLookup } from "../google/lookup";
+import { withStats } from "../google/settings";
+import { claimConnection, ingestDeps, loadToken, markBackfilled, recordNotionHealth, recordSync, saveConnection, saveToken, taskDeps, updateConnectionSettings } from "../store";
 import type { Connection, Connector } from "../types";
 
 import {
@@ -101,15 +103,23 @@ export async function syncNotionConnection(
     return { connectionId: connection.id, ok: false, error: "이미 동기화 중입니다.", revoked: false, busy: true };
   }
 
-  const run = (client: NotionClient) =>
-    syncNotion(connection, client, { ...ingestDeps(admin), tasks: taskDeps(admin) }, {
-      now,
-      deadline: options.deadline,
-      ...DEFAULT_NOTION_SYNC,
-    });
-
   try {
+    // 사용자의 google 연결이 Calendar를 허용했으면 이번 회의록에 같은 회의의 일정을 붙인다 (없으면 그대로: Google을 부르지 않는다)
+    const calendar = await googleCalendarLookup(admin, connection.userId);
+    const run = (client: NotionClient) =>
+      syncNotion(connection, client, { ...ingestDeps(admin), tasks: taskDeps(admin), meetingEvent: calendar?.lookup }, {
+        now,
+        deadline: options.deadline,
+        ...DEFAULT_NOTION_SYNC,
+      });
     const result = await withNotionClient(admin, connection.id, run);
+    // 일정 잇기 결과(붙음 · 애매 · 없음 · 실패)를 google 연결 설정 stats에 센다 (글자 · 주소 없이, 8장)
+    if (calendar && result.meetingLinks) {
+      const { attached, ambiguous, none, failed } = result.meetingLinks;
+      await updateConnectionSettings(admin, { id: calendar.connectionId, userId: connection.userId }, (current) =>
+        withStats(current, { notion_link_attached: attached, notion_link_ambiguous: ambiguous, notion_link_none: none, notion_link_failed: failed }, now),
+      ).catch((error) => console.error(`Google 통계 기록 실패 (${calendar.connectionId}):`, error instanceof Error ? error.message : error));
+    }
     // 상태 기록이 실패해도 이미 넣은 원문 · 커서는 남긴다. 자동 확인한 할 일 DB도 여기서 남기므로 처음 훑기 표시보다 먼저 한다
     // (실패하면 처음 훑기도 표시되지 않아 다음 동기화가 다시 확인하고 다시 훑는다).
     await recordNotionHealth(admin, connection, result).catch((error) =>

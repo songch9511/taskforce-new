@@ -52,7 +52,20 @@ const GMAIL_CALLBACK_MESSAGES: Record<string, string> = {
   consent_required: CALLBACK_MESSAGES.consent_required,
 };
 
-const PROVIDER_LABELS: Record<string, string> = { notion: "Notion", slack: "Slack", gmail: "Gmail" };
+const GOOGLE_CALLBACK_MESSAGES: Record<string, string> = {
+  connected:
+    "Google(Calendar · Meet)을 연결했습니다. 동기화(15분마다 · '지금 동기화')가 끝난 Meet 회의의 전사를 원문으로 가져오고, Notion 회의록에는 같은 회의의 Calendar 일정 참석자를 붙입니다. Calendar 일정은 저장하지 않고 필요할 때만 조회합니다.",
+  connected_partial:
+    "Google을 연결했지만 일부 권한이 꺼져 있습니다. 허용한 권한만 씁니다 (Calendar만이면 Notion 회의록에 일정만 붙이고, Meet만이면 전사만 가져옵니다). 다시 연결할 때 나머지도 체크할 수 있습니다.",
+  missing_scope: "Google 권한 화면에서 Calendar와 Meet 체크가 모두 빠져 연결하지 않았습니다. 다시 연결할 때 하나 이상 체크해 주세요.",
+  denied: "Google 연결을 취소했습니다.",
+  unavailable: "Google 연결은 아직 운영자만 시험할 수 있습니다 (GOOGLE_CONNECT_ENABLED · ADMIN_EMAILS).",
+  invalid_state: CALLBACK_MESSAGES.invalid_state,
+  error: "Google 연결에 실패했습니다. 서버 로그를 확인해 주세요. '관리자가 차단' 오류였다면 Workspace 관리 콘솔 → 보안 → API 제어에서 이 앱을 허용해야 합니다.",
+  consent_required: CALLBACK_MESSAGES.consent_required,
+};
+
+const PROVIDER_LABELS: Record<string, string> = { notion: "Notion", slack: "Slack", gmail: "Gmail", google: "Google" };
 
 /** 권한 화면에 들어가기 전에 보여준다: 한 번에 제대로 고르게 (다른 Notion 연동 도구들이 겪는 "DB가 안 보여요"를 줄인다) */
 function ConnectChecklist({ reconnect }: { reconnect: boolean }) {
@@ -88,11 +101,13 @@ export function ConnectionsPanel({
   notionStatus,
   slackStatus,
   gmailStatus,
+  googleStatus,
 }: {
   connections: ConnectionRow[];
   notionStatus?: string;
   slackStatus?: string;
   gmailStatus?: string;
+  googleStatus?: string;
 }) {
   const router = useRouter();
   const [pending, setPending] = useState<string | null>(null);
@@ -105,7 +120,9 @@ export function ConnectionsPanel({
         ? (SLACK_CALLBACK_MESSAGES[slackStatus] ?? null)
         : gmailStatus
           ? (GMAIL_CALLBACK_MESSAGES[gmailStatus] ?? null)
-          : null,
+          : googleStatus
+            ? (GOOGLE_CALLBACK_MESSAGES[googleStatus] ?? null)
+            : null,
   );
 
   async function syncNow() {
@@ -206,6 +223,9 @@ export function ConnectionsPanel({
         <Button variant="outline" asChild>
           <a href="/api/connectors/gmail/start">{connections.some((c) => c.provider === "gmail") ? "Gmail 다시 연결" : "Gmail 연결"}</a>
         </Button>
+        <Button variant="outline" asChild>
+          <a href="/api/connectors/google/start">{connections.some((c) => c.provider === "google") ? "Google 다시 연결" : "Google 연결"}</a>
+        </Button>
         {connections.length > 0 && (
           <Button onClick={syncNow} disabled={pending !== null}>
             {pending === "sync" ? "동기화 중…" : "지금 동기화"}
@@ -214,7 +234,7 @@ export function ConnectionsPanel({
       </div>
       {message && (
         <p
-          className={`text-sm ${[CALLBACK_MESSAGES.connected_empty, CALLBACK_MESSAGES.connected_no_meetings, GMAIL_CALLBACK_MESSAGES.missing_scope].includes(message) ? "text-destructive" : "text-muted-foreground"}`}
+          className={`text-sm ${[CALLBACK_MESSAGES.connected_empty, CALLBACK_MESSAGES.connected_no_meetings, GMAIL_CALLBACK_MESSAGES.missing_scope, GOOGLE_CALLBACK_MESSAGES.missing_scope].includes(message) ? "text-destructive" : "text-muted-foreground"}`}
         >
           {message}
         </p>

@@ -111,19 +111,20 @@ export function changeEvents(before: ProjectedAction | null, after: ProjectedAct
 
 /**
  * AI가 붙인 원문 때문에 확인 요청 이유가 풀렸으면(사용자의 확정 약속으로 판정 · 기한 · 내용 · 담당 · 상태 확인이 사라짐) 그 전후를 이벤트에 남긴다:
- * 모든 쓰기는 이벤트를 남긴다. 새 이벤트 종류를 만들지 않고 `merged`(같은 할 일이 다시 언급됨)에 { needs_confirmation, confirm_reasons }를 전후로 싣는다.
+ * 모든 쓰기는 이벤트를 남긴다. 새 이벤트 종류를 만들지 않고 { needs_confirmation, confirm_reasons }를 그 쓰기의 이벤트 before · after에 얹는다.
+ * 값이 바뀐 이벤트(기한 변경 · 완료 등)가 있으면 그 첫 이벤트에 얹어 앱의 변경 이력에 줄이 늘지 않게 하고(이력은 필요한 키만 읽는다),
+ * 바뀐 값이 없는 반복이면 그 merged 이벤트에, 이벤트가 하나도 없으면 merged 하나를 만들어 싣는다.
  * 지표 1이 이런 Action을 "만들 때 물었다"가 아니라 "AI가 물음을 풀어 반영했다"(자동)로 세게 한다 (metrics/compute.ts misjudgment).
  * 사용자가 확인해서 푼 것(user_confirmed)은 여기서 다루지 않는다. AI가 붙이는 경로(SupabaseActionStore.append)만 부른다.
  */
 export function withClearedConfirmation(events: EventDraft[], before: ProjectedAction, after: ProjectedAction): EventDraft[] {
   const cleared = before.confirm_reasons.some((reason) => !after.confirm_reasons.includes(reason));
   if (!cleared) return events;
-  const payload = {
+  const change = {
     before: { needs_confirmation: before.needs_confirmation, confirm_reasons: before.confirm_reasons },
     after: { needs_confirmation: after.needs_confirmation, confirm_reasons: after.confirm_reasons },
   };
-  // 바뀐 게 없는 반복이라 이미 있는 merged 이벤트에 실는다. 그 밖에는 따로 더한다.
-  const bare = events.findIndex((e) => e.type === "merged" && e.before === null && e.after === null);
-  if (bare >= 0) return events.map((e, i) => (i === bare ? { ...e, ...payload } : e));
-  return [...events, { type: "merged", ...payload, rule: null }];
+  if (events.length === 0) return [{ type: "merged", ...change, rule: null }];
+  const [first, ...rest] = events;
+  return [{ ...first, before: { ...first.before, ...change.before }, after: { ...first.after, ...change.after } }, ...rest];
 }

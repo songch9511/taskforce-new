@@ -22,6 +22,7 @@ import {
   classifyMiss,
   extractMissing,
   QUOTED_HISTORY_DROP,
+  responseMissStage,
   reportMatchDecide,
   reportStore,
   trackedByEvidence,
@@ -353,9 +354,8 @@ export async function reportMissing(
   if (!outcome?.actionId) throw new Error(`누락 신고를 반영하지 못했습니다 (${outcome?.relation ?? "결과 없음"})`);
 
   const action = await actionSummary(admin, source.userId, outcome.actionId);
-  // 앱(Swift)은 단계를 알려진 값만 읽는다: 연결 메일 규칙으로 버린 단계(quoted_history)는 응답에서 추출 안 됨으로 보이고, 이벤트(지표)에만 그대로 남는다
-  const responseStage = stage === "quoted_history" ? "not_extracted" : stage;
-  return outcome.relation === "new" ? { status: "created", action, stage: responseStage } : { status: "already_tracked", action, stage: null };
+  // 응답 계약에는 quoted_history가 없다(missStageSchema): 응답에서는 추출 안 됨으로 보이고, 이벤트(지표)에만 그대로 남는다
+  return outcome.relation === "new" ? { status: "created", action, stage: responseMissStage(stage) } : { status: "already_tracked", action, stage: null };
 }
 
 async function actionSummary(admin: SupabaseClient, userId: string, actionId: string): Promise<ActionSummary> {

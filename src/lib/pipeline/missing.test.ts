@@ -6,7 +6,7 @@ import type { JevDecision } from "@/lib/ai/jev";
 import type { CompleteJson } from "./extract";
 import type { Decide } from "./judge";
 import { InMemoryActionStore, mergeJudged } from "./merge";
-import { classifyMiss, extractMissing, reportedQuoteOverlaps, reportMatchDecide, reportStore, trackedByEvidence, unappliedCandidates } from "./missing";
+import { classifyMiss, extractMissing, MISS_STAGES, reportedQuoteOverlaps, reportMatchDecide, reportStore, RESPONSE_MISS_STAGES, responseMissStage, trackedByEvidence, unappliedCandidates } from "./missing";
 import { resolveAction } from "./resolve";
 
 const text = "김대표: 견적서도 같이 받을 수 있을까요?\n나: 네, 금요일까지 견적서 정리해서 드릴게요.\n김대표: 좋아요.";
@@ -279,6 +279,15 @@ describe("reportedQuoteOverlaps", () => {
     ["", "금요일까지", false],
   ])("%s ↔ %s → %s", (a, b, expected) => {
     expect(reportedQuoteOverlaps(a, b)).toBe(expected);
+  });
+});
+
+describe("responseMissStage: API 응답에 보이는 단계", () => {
+  it("quoted_history는 응답에서 not_extracted로 보이고, 나머지는 그대로다. 응답 단계 목록에는 quoted_history가 없다", () => {
+    expect(responseMissStage("quoted_history")).toBe("not_extracted");
+    for (const stage of MISS_STAGES.filter((s) => s !== "quoted_history")) expect(responseMissStage(stage)).toBe(stage);
+    expect(RESPONSE_MISS_STAGES).not.toContain("quoted_history");
+    expect(MISS_STAGES).toContain("quoted_history");
   });
 });
 

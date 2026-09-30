@@ -170,6 +170,16 @@ describe("SupabaseActionStore.append: 사용자의 확정 약속이 붙으면 �
     expect((kept.writes[0].p_events as { after: unknown }[])[0].after).toEqual({ needs_confirmation: true, confirm_reasons: ["판정 확인: NOT_MY_ACTION"] });
   });
 
+  it("기한이 바뀌는 붙임이면 별도 merged를 더하지 않고 그 due_changed 이벤트에 전후를 얹는다", async () => {
+    const { admin, writes } = appendAdmin(["판정 확인: NOT_MY_ACTION"]);
+    const due: Claim = { ...firmClaims()[0], id: "n9", field: "due", value: "2026-10-09" };
+    await new SupabaseActionStore(admin, USER).append("a1", { claims: [...firmClaims(), due], evidence, clearJudgeReasons: true });
+    const events = writes[0].p_events as { type: string; before: Record<string, unknown>; after: Record<string, unknown> }[];
+    expect(events.map((e) => e.type)).toEqual(["due_changed"]);
+    expect(events[0].before).toMatchObject({ due: null, needs_confirmation: true });
+    expect(events[0].after).toMatchObject({ due: "2026-10-09", needs_confirmation: false, confirm_reasons: [] });
+  });
+
   it("판정 확인 하나뿐이었으면 확인 요청이 없어진다", async () => {
     const { admin, writes } = appendAdmin(["판정 확인: NOT_MY_ACTION"]);
     await new SupabaseActionStore(admin, USER).append("a1", { claims: firmClaims(), evidence, clearJudgeReasons: true });

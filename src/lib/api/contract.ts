@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 import { sourceKindSchema } from "@/lib/pipeline/extract";
-import { MISS_STAGES } from "@/lib/pipeline/missing";
+import { RESPONSE_MISS_STAGES } from "@/lib/pipeline/missing";
 
 // 앱 · 웹이 부르는 /api/v1 요청 · 응답 형식. Swift 모델(TaskforceKit)은 이 파일을 기준으로 맞춘다.
 // 호환이 깨지는 변경은 /api/v2로 낸다 (docs/PLATFORMS.md 3장).
@@ -126,8 +126,11 @@ export type WeeklyCheckRequest = z.infer<typeof weeklyCheckRequestSchema>;
 export const missingReportRequestSchema = z.object({ quote: z.string().trim().min(1).max(2000) });
 export type MissingReportRequest = z.infer<typeof missingReportRequestSchema>;
 
-/** 파이프라인의 어느 단계에서 빠졌나: 처리 실패 / 추출 안 됨(검증 탈락 포함) / Jev 기각 / 다른 Action에 합쳐짐 */
-export const missStageSchema = z.enum(MISS_STAGES);
+/**
+ * 파이프라인의 어느 단계에서 빠졌나: 처리 실패 / 추출 안 됨(검증 탈락 포함, 연결 메일의 인용된 옛 메일 속이라 버린 것도) / Jev 기각 / 다른 Action에 합쳐짐.
+ * 서버 안에서는 quoted_history를 따로 세지만(MISS_STAGES, 이벤트 · 지표) 응답에는 not_extracted로 나간다 (responseMissStage).
+ */
+export const missStageSchema = z.enum(RESPONSE_MISS_STAGES);
 
 export const missingReportResponseSchema = z.object({
   /**
@@ -323,10 +326,11 @@ export type ConnectionStartResponse = z.infer<typeof connectionStartResponseSche
 
 /**
  * 권한 화면을 마쳤을 때의 결과. connected_empty: 고른 페이지가 없음, connected_no_meetings: 회의록 DB가 빠짐 (Notion).
- * missing_scope: 권한 화면에서 필요한 권한의 체크를 빼서 연결하지 않았음 (Gmail. 받은 토큰은 바로 폐기한다, google-integration.md G10).
+ * connected_partial: 권한 화면에서 일부 권한의 체크를 빼서 받은 것만으로 연결했음 (Google. Calendar만 · Meet만, 받은 범위는 연결 설정 scopes).
+ * missing_scope: 권한 화면에서 필요한 권한의 체크를 빼서 연결하지 않았음 (Gmail · Google. 받은 토큰은 바로 폐기한다, google-integration.md G10).
  * 이 값을 모르는 옛 앱은 연결 실패 문구를 보인다.
  */
-export const connectedStatusSchema = z.enum(["connected", "connected_empty", "connected_no_meetings", "missing_scope"]);
+export const connectedStatusSchema = z.enum(["connected", "connected_partial", "connected_empty", "connected_no_meetings", "missing_scope"]);
 export type ConnectedStatusValue = z.infer<typeof connectedStatusSchema>;
 /** 연결이 생기지 않은 결과 (연결 지표 · 첫 동기화를 하지 않는다) */
 export const isConnected = (status: ConnectedStatusValue) => status !== "missing_scope";
