@@ -29,7 +29,8 @@ const merge = async (
   patch: { set?: object; remove?: string[]; dataSources?: object } = {},
 ): Promise<boolean> =>
   (
-    await db.query<{ ok: boolean }>(`select public.merge_connection_settings($1, $2, $3, $4, $5) as ok`, [
+    await db.query<{ ok: boolean }>(// PostgREST는 인자를 이름으로 넘기므로 이름으로 부른다 (SQL 인자 이름이 바뀌면 여기서 깨진다)
+    `select public.merge_connection_settings(p_user_id => $1, p_connection_id => $2, p_set => $3, p_remove => $4, p_data_sources => $5) as ok`, [
       userId,
       id,
       JSON.stringify(patch.set ?? {}),
@@ -39,7 +40,7 @@ const merge = async (
   ).rows[0].ok;
 
 const addStats = async (userId: string, id: string, counts: unknown, now = NOW): Promise<boolean> =>
-  (await db.query<{ ok: boolean }>(`select public.add_connection_stats($1, $2, $3, $4) as ok`, [userId, id, JSON.stringify(counts), now])).rows[0].ok;
+  (await db.query<{ ok: boolean }>(`select public.add_connection_stats(p_user_id => $1, p_connection_id => $2, p_counts => $3, p_now => $4) as ok`, [userId, id, JSON.stringify(counts), now])).rows[0].ok;
 
 beforeAll(async () => {
   db = await createLocalSupabase();
@@ -110,6 +111,21 @@ describe("merge_connection_settings", () => {
     expect(await merge(BOB, id, { set: { scopes: [] }, remove: ["scopes"] })).toBe(false);
     expect(await merge(ALICE, "00000000-0000-0000-0000-0000000000ff", { set: { scopes: [] } })).toBe(false);
     expect(await settingsOf(id)).toEqual({ scopes: ["openid"] });
+  });
+
+  it("DB 설정이 객체가 아니면 오류 (null로 DB 설정을 지우지 않는다)", async () => {
+    const id = await connection(ALICE, {});
+    await expect(merge(ALICE, id, { dataSources: { ds1: null } })).rejects.toThrow(/객체여야/);
+  });
+
+  it("PostgREST처럼 기본값이 있는 인자는 빼고 이름으로 부를 수 있다", async () => {
+    const id = await connection(ALICE, {});
+    const { rows } = await db.query<{ ok: boolean }>(
+      `select public.merge_connection_settings(p_user_id => $1, p_connection_id => $2, p_set => $3) as ok`,
+      [ALICE, id, JSON.stringify({ email: "me@x.dev" })],
+    );
+    expect(rows[0].ok).toBe(true);
+    expect(await settingsOf(id)).toMatchObject({ email: "me@x.dev" });
   });
 
   it("잘못된 인자는 오류: 객체가 아닌 값, dataSources를 두 길로 함께 바꾸기", async () => {

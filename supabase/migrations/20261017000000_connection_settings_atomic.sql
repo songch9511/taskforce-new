@@ -27,6 +27,9 @@ begin
   if jsonb_typeof(v_set) <> 'object' or jsonb_typeof(v_data_sources) <> 'object' then
     raise exception 'merge_connection_settings: 잘못된 인자';
   end if;
+  if exists (select 1 from jsonb_each(v_data_sources) e where jsonb_typeof(e.value) <> 'object') then
+    raise exception 'merge_connection_settings: DB 설정은 객체여야 함';
+  end if;
   if v_data_sources <> '{}'::jsonb and ((v_set -> 'dataSources') is not null or 'dataSources' = any (v_remove)) then
     raise exception 'merge_connection_settings: dataSources를 p_set · p_remove와 p_data_sources로 함께 바꿀 수 없음';
   end if;
@@ -52,7 +55,7 @@ grant execute on function public.merge_connection_settings to service_role;
 --    since는 저장된 값을 그대로 두고, 처음이면 p_now(ISO 8601, 밀리초 · Z). 저장된 통계 모양이 다르면(객체가 아님 · since가 문자열이 아님 ·
 --    counts가 객체가 아님 · counts에 숫자가 아닌 값이 있음) 새로 센다 (전의 google/settings.ts withStats와 같다). 숫자인지 먼저 보고 더하므로 형 변환 오류가 나지 않는다.
 --    p_counts에서 숫자가 아니거나 양수가 아닌 값은 더하지 않는다. 더할 것이 없거나 연결이 없으면 쓰지 않고 false.
---    연결 행을 잠근 채(for update) 읽고 쓰므로, 같은 연결에 동시에 더한 개수가 모두 남는다.
+--    연결 행을 잠근 채(for no key update: 키를 바꾸지 않으므로 외래키 확인과 부딪치지 않는다) 읽고 쓰므로, 같은 연결에 동시에 더한 개수가 모두 남는다.
 create function public.add_connection_stats(p_user_id uuid, p_connection_id uuid, p_counts jsonb, p_now timestamptz)
 returns boolean
 language plpgsql
@@ -74,7 +77,7 @@ begin
   select c.settings into v_settings
     from public.connections c
    where c.id = p_connection_id and c.user_id = p_user_id
-   for update;
+   for no key update;
   if not found then
     return false;
   end if;
@@ -82,14 +85,19 @@ begin
     v_settings := '{}'::jsonb;
   end if;
 
+  -- 모양 검사는 IF를 겹쳐 순서를 못박는다 (AND의 계산 순서는 정해져 있지 않아, counts가 객체가 아닐 때 jsonb_each가 먼저 돌면 오류가 난다)
   v_stats := v_settings -> 'stats';
-  if jsonb_typeof(v_stats) = 'object'
-     and jsonb_typeof(v_stats -> 'since') = 'string'
-     and jsonb_typeof(v_stats -> 'counts') = 'object'
-     and not exists (select 1 from jsonb_each(v_stats -> 'counts') e where jsonb_typeof(e.value) <> 'number') then
-    v_since := v_stats -> 'since';
-    v_counts := v_stats -> 'counts';
-  else
+  v_since := null;
+  v_counts := null;
+  if jsonb_typeof(v_stats) = 'object' then
+    if jsonb_typeof(v_stats -> 'since') = 'string' and jsonb_typeof(v_stats -> 'counts') = 'object' then
+      if not exists (select 1 from jsonb_each(v_stats -> 'counts') e where jsonb_typeof(e.value) <> 'number') then
+        v_since := v_stats -> 'since';
+        v_counts := v_stats -> 'counts';
+      end if;
+    end if;
+  end if;
+  if v_counts is null then
     v_since := to_jsonb(to_char(p_now at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'));
     v_counts := '{}'::jsonb;
   end if;

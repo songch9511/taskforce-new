@@ -26,14 +26,14 @@ type Query = { eq: () => Query; single: () => Query; throwOnError: () => Promise
 type Rpc = { name: string; args: Record<string, unknown> };
 
 /** connections 행 하나의 settings를 읽고, 설정 쓰기(DB 함수 호출)를 기록하는 가짜 service role 클라이언트 */
-function fakeAdmin(stored: Record<string, unknown>, rpcResult: unknown = true) {
+function fakeAdmin(stored: Record<string, unknown>, rpcResult: unknown = true, connectedAt = "2026-09-01T00:00:00.000Z") {
   const rpcs: Rpc[] = [];
   const query = (result: () => unknown): Query => {
     const q: Query = { eq: () => q, single: () => q, throwOnError: async () => result() };
     return q;
   };
   const admin = {
-    from: () => ({ select: () => query(() => ({ data: { settings: stored } })) }),
+    from: () => ({ select: () => query(() => ({ data: { settings: stored, connected_at: connectedAt } })) }),
     rpc: (name: string, args: Record<string, unknown>) => {
       rpcs.push({ name, args });
       return { throwOnError: async () => ({ data: rpcResult }) };

@@ -140,7 +140,9 @@ export const gmailConnector: Connector = {
       displayName: account.email,
       token: grant.token,
     });
-    await mergeConnectionSettings(admin, { id: connectionId, userId }, { set: accountSettings(account, grant.scopes) });
+    if (!(await mergeConnectionSettings(admin, { id: connectionId, userId }, { set: accountSettings(account, grant.scopes) }))) {
+      throw new Error("연결 설정을 저장하지 못했습니다 (연결이 사라짐)");
+    }
     await disconnectOtherAccounts(admin, userId, connectionId);
     return "connected";
   },

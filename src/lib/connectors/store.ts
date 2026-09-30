@@ -612,6 +612,8 @@ export async function markBackfilled(admin: SupabaseClient, connection: Connecti
  * 공유가 조용히 끊기면 원문이 들어오지 않아도 알 수 없으므로, 앱 · /lab이 이 값으로 경고를 띄운다.
  * 연결한 사람의 Notion user id(notionUserId)를 처음 알아냈으면 함께 남겨, 다음 동기화부터 다시 묻지 않는다.
  * 자동 확인한 할 일 DB(autoConfirmed)와 자동 확인을 되돌린 DB(reverted)도 남긴다. markBackfilled보다 먼저 불러야 처음 훑기 표시가 이 확인 시각과 맞는다.
+ * claimedAt: 이 동기화가 잠금을 잡은 시각. 그 뒤에 다시 연결했으면(saveConnection이 connected_at을 새로 적고 notionUserId를 뺌)
+ * 옛 연결로 알아낸 notionUserId를 다시 쓰지 않는다 (다른 Notion 계정으로 다시 연결했을 수 있다, recordSync와 같은 기준).
  */
 export async function recordNotionHealth(
   admin: SupabaseClient,
@@ -624,9 +626,17 @@ export async function recordNotionHealth(
     reverted?: AutoConfirmReverted[];
   },
   now = new Date(),
+  claimedAt?: Date,
 ): Promise<void> {
-  const { data } = await admin.from("connections").select("settings").eq("id", connection.id).eq("user_id", connection.userId).single().throwOnError();
+  const { data } = await admin
+    .from("connections")
+    .select("settings, connected_at")
+    .eq("id", connection.id)
+    .eq("user_id", connection.userId)
+    .single()
+    .throwOnError();
   const settings = connectionSettingsSchema.parse(data.settings ?? {});
+  const reconnected = claimedAt !== undefined && typeof data.connected_at === "string" && new Date(data.connected_at) > claimedAt;
   const saved = settings.dataSources ?? {};
   // 동기화는 확인 전 DB와 자동 확인한 DB(매핑이 바뀌어 다시 확인 · 되돌림)만 바꾼다.
   // 그 사이 사용자가 확인한 DB(가져오지 않음 · 글 원문 포함)는 덮지 않는다.
@@ -636,7 +646,7 @@ export async function recordNotionHealth(
   for (const { id, setting } of [...confirmed, ...reverted]) changed[id] = setting;
   const added = report.seen.filter(({ id }) => !saved[id] && !changed[id]);
   for (const { id, title, role } of added) changed[id] = { role, title: title?.slice(0, 200) ?? null, seenAt: now.toISOString() };
-  const notionUserId = report.notionUserId && report.notionUserId !== settings.notionUserId ? report.notionUserId : null;
+  const notionUserId = !reconnected && report.notionUserId && report.notionUserId !== settings.notionUserId ? report.notionUserId : null;
   // 바뀐 것이 있을 때만, 바뀐 DB의 설정과 값만 쓴다 (다른 DB의 설정 · 다른 키는 DB에 있는 값 그대로, mergeConnectionSettings).
   // 끝까지 확인하지 못한 동기화(null)는 지난 결과를 그대로 둔다.
   const key = (list: UnreachableDataSource[]) => list.map((d) => d.id).sort().join(",");

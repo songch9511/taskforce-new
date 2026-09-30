@@ -173,6 +173,12 @@ describe("gmailConnector.connect", () => {
     expect(google.revoked()).toEqual([]);
   });
 
+  it("설정을 저장할 연결 행이 그 사이 사라졌으면(동시에 끊기) 연결 성공으로 돌려주지 않는다", async () => {
+    stubGoogle({ token: () => grant() });
+    vi.mocked(mergeConnectionSettings).mockResolvedValueOnce(false);
+    await expect(gmailConnector.connect(admin, "u1", "code-1")).rejects.toThrow("연결 설정을 저장하지 못했습니다");
+  });
+
   it("저장한 뒤 설정에 계정 · 범위만 합친다 (통계 등 나머지 값은 DB에 있는 값 그대로)", async () => {
     stubGoogle({ token: () => grant() });
     await gmailConnector.connect(admin, "u1", "code-1");

@@ -169,7 +169,9 @@ export async function saveSlackSettings(
   connectionId: string,
   values: { slackUserId: string; teamId: string; teamUrl: string | null },
 ): Promise<void> {
-  await mergeConnectionSettings(admin, { id: connectionId, userId }, { set: values });
+  if (!(await mergeConnectionSettings(admin, { id: connectionId, userId }, { set: values }))) {
+    throw new Error("연결 설정을 저장하지 못했습니다 (연결이 사라짐)");
+  }
 }
 
 type PendingRow = {

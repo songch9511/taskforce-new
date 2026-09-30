@@ -124,7 +124,7 @@ export async function syncNotionConnection(
     }
     // 상태 기록이 실패해도 이미 넣은 원문 · 커서는 남긴다. 자동 확인한 할 일 DB도 여기서 남기므로 처음 훑기 표시보다 먼저 한다
     // (실패하면 처음 훑기도 표시되지 않아 다음 동기화가 다시 확인하고 다시 훑는다).
-    await recordNotionHealth(admin, connection, result).catch((error) =>
+    await recordNotionHealth(admin, connection, result, undefined, now).catch((error) =>
       console.error(`Notion 연결 상태 기록 실패 (${connection.id}):`, error instanceof Error ? error.message : error),
     );
     await markBackfilled(admin, connection, result.backfilled);

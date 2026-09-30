@@ -176,7 +176,9 @@ export const googleConnector: Connector = {
       token: grant.token,
     });
     // 받은 범위를 남긴다: 다시 연결하면 그때 허용한 범위로 바뀐다 (동기화는 받은 것만 쓴다). 그 키만 바꿔 통계는 그대로 둔다
-    await mergeConnectionSettings(admin, { id: connectionId, userId }, { set: accountSettings(account, grant.scopes) });
+    if (!(await mergeConnectionSettings(admin, { id: connectionId, userId }, { set: accountSettings(account, grant.scopes) }))) {
+      throw new Error("연결 설정을 저장하지 못했습니다 (연결이 사라짐)");
+    }
     await disconnectOtherAccounts(admin, userId, connectionId);
     return features.calendar && features.meet ? "connected" : "connected_partial";
   },
