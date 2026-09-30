@@ -3,6 +3,8 @@ import "server-only";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { connectionSettingsSchema, type DataSourceSetting, type DataSourceSummary } from "@/lib/api/contract";
 
+import { mergeConnectionSettings } from "../store";
+
 import { dataSourceTitle, NotionError, NotionOAuthError, type NotionDataSource } from "./api";
 import { withNotionClient } from "./run";
 import { defaultStatusMap, isMeetingSource, suggestSetting, validateSetting, type SaveDataSourceRequest } from "./tasks";
@@ -117,13 +119,7 @@ export async function saveDataSource(
       throw new DataSourceError("데이터베이스를 읽을 수 없습니다. Notion에서 이 데이터베이스를 Taskforce 연결에 다시 공유해 주세요.", 404);
     }
     const setting: DataSourceSetting = { role: request.role, title: saved.title, confirmedAt: now.toISOString() };
-    const current = await loadSettings(admin, userId, connectionId);
-    await admin
-      .from("connections")
-      .update({ settings: { ...current, dataSources: { ...(current.dataSources ?? {}), [dataSourceId]: setting } } })
-      .eq("id", connectionId)
-      .eq("user_id", userId)
-      .throwOnError();
+    await mergeConnectionSettings(admin, { id: connectionId, userId }, { dataSources: { [dataSourceId]: setting } });
     return unreachable(dataSourceId, setting);
   }
   const invalid = validateSetting(ds, request);
@@ -148,12 +144,8 @@ export async function saveDataSource(
     confirmedAt: now.toISOString(),
     ...(sameMapping && previous.backfilledAt ? { backfilledAt: previous.backfilledAt } : {}),
   };
-  await admin
-    .from("connections")
-    .update({ settings: { ...current, dataSources: { ...(current.dataSources ?? {}), [dataSourceId]: setting } } })
-    .eq("id", connectionId)
-    .eq("user_id", userId)
-    .throwOnError();
+  // 이 DB의 설정만 바꾼다: 다른 DB의 설정 · 동기화가 남기는 값(공유 상태 등)은 DB에 있는 값 그대로 (mergeConnectionSettings)
+  await mergeConnectionSettings(admin, { id: connectionId, userId }, { dataSources: { [dataSourceId]: setting } });
   return summarize(ds, setting);
 }
 

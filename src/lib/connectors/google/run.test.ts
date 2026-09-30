@@ -5,17 +5,18 @@ import { CONSENT_WITHDRAWN_MESSAGE, ConsentRequiredError } from "@/lib/consent/g
 import { notifyReconnect } from "@/lib/notify/service";
 
 import {
+  addConnectionStats,
   claimConnection,
   connectedAt,
   disconnectConnection,
   ingestDeps,
   loadIdentity,
   loadToken,
+  mergeConnectionSettings,
   otherConnections,
   recordSync,
   saveConnection,
   saveToken,
-  updateConnectionSettings,
 } from "../store";
 import type { Connection } from "../types";
 
@@ -26,17 +27,18 @@ import { GoogleApiError } from "./token";
 vi.mock("server-only", () => ({}));
 vi.mock("@/lib/notify/service", () => ({ notifyReconnect: vi.fn() }));
 vi.mock("../store", () => ({
+  addConnectionStats: vi.fn(),
   claimConnection: vi.fn(),
   connectedAt: vi.fn(),
   disconnectConnection: vi.fn(),
   ingestDeps: vi.fn(),
   loadIdentity: vi.fn(),
   loadToken: vi.fn(),
+  mergeConnectionSettings: vi.fn(),
   otherConnections: vi.fn(),
   recordSync: vi.fn(),
   saveConnection: vi.fn(),
   saveToken: vi.fn(),
-  updateConnectionSettings: vi.fn(),
 }));
 vi.mock("./sync", async (importOriginal) => ({ ...(await importOriginal<typeof import("./sync")>()), syncGoogleMeet: vi.fn() }));
 
@@ -122,7 +124,8 @@ beforeEach(() => {
   vi.mocked(notifyReconnect).mockResolvedValue(1);
   vi.mocked(saveConnection).mockResolvedValue("conn-new");
   vi.mocked(saveToken).mockResolvedValue();
-  vi.mocked(updateConnectionSettings).mockResolvedValue();
+  vi.mocked(mergeConnectionSettings).mockResolvedValue(true);
+  vi.mocked(addConnectionStats).mockResolvedValue();
   vi.mocked(syncGoogleMeet).mockResolvedValue(synced);
 });
 
@@ -186,15 +189,16 @@ describe("googleConnector.connect", () => {
     expect(google.revoked()).toEqual([]);
   });
 
-  it("저장한 뒤 설정에 계정 · 받은 범위를 남긴다 (통계 등 나머지 값은 그대로)", async () => {
+  it("저장한 뒤 설정에 계정 · 받은 범위만 합친다 (통계 등 나머지 값은 DB에 있는 값 그대로)", async () => {
     stubGoogle({ token: () => grant() });
     await googleConnector.connect(admin, "u1", "code-1");
 
-    expect(updateConnectionSettings).toHaveBeenCalledWith(admin, { id: "conn-new", userId: "u1" }, expect.any(Function));
-    const update = vi.mocked(updateConnectionSettings).mock.calls[0][2];
-    const stats = { since: "2026-09-01T00:00:00.000Z", counts: { meet_transcripts: 4 } };
-    expect(update({ stats })).toEqual({ stats, googleUserId: "google-sub-1", email: "me@company.dev", scopes: ALL_SCOPES });
-    expect(vi.mocked(saveConnection).mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(updateConnectionSettings).mock.invocationCallOrder[0]);
+    expect(mergeConnectionSettings).toHaveBeenCalledWith(
+      admin,
+      { id: "conn-new", userId: "u1" },
+      { set: { googleUserId: "google-sub-1", email: "me@company.dev", scopes: ALL_SCOPES } },
+    );
+    expect(vi.mocked(saveConnection).mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(mergeConnectionSettings).mock.invocationCallOrder[0]);
   });
 
   it("Calendar만 허용했으면 connected_partial: 연결하고 받은 범위만 남긴다 (토큰은 폐기하지 않는다)", async () => {
@@ -203,15 +207,14 @@ describe("googleConnector.connect", () => {
     expect(await googleConnector.connect(admin, "u1", "code-1")).toBe("connected_partial");
 
     expect(saveConnection).toHaveBeenCalled();
-    const update = vi.mocked(updateConnectionSettings).mock.calls[0][2];
-    expect(update({})).toMatchObject({ scopes: ["openid", USERINFO_EMAIL, CALENDAR] });
+    expect(vi.mocked(mergeConnectionSettings).mock.calls[0][2]).toMatchObject({ set: { scopes: ["openid", USERINFO_EMAIL, CALENDAR] } });
     expect(google.revoked()).toEqual([]);
   });
 
   it("Meet만 허용했어도 connected_partial", async () => {
     stubGoogle({ token: () => grant({ scope: `openid ${USERINFO_EMAIL} ${MEET}` }) });
     expect(await googleConnector.connect(admin, "u1", "code-1")).toBe("connected_partial");
-    expect(vi.mocked(updateConnectionSettings).mock.calls[0][2]({})).toMatchObject({ scopes: ["openid", USERINFO_EMAIL, MEET] });
+    expect(vi.mocked(mergeConnectionSettings).mock.calls[0][2]).toMatchObject({ set: { scopes: ["openid", USERINFO_EMAIL, MEET] } });
   });
 
   it("둘 다 빼고 허용했으면 연결하지 않고 받은 토큰(갱신 토큰)을 폐기한다: missing_scope", async () => {
@@ -220,7 +223,7 @@ describe("googleConnector.connect", () => {
     expect(await googleConnector.connect(admin, "u1", "code-1")).toBe("missing_scope");
     expect(google.revoked()).toEqual(["fake-refresh"]);
     expect(saveConnection).not.toHaveBeenCalled();
-    expect(updateConnectionSettings).not.toHaveBeenCalled();
+    expect(mergeConnectionSettings).not.toHaveBeenCalled();
   });
 
   it("id_token이 없으면(openid 빠짐, 연결 키 없음) missing_scope. 갱신 토큰이 없으면 액세스 토큰을 폐기한다", async () => {
@@ -236,11 +239,10 @@ describe("googleConnector.connect", () => {
     expect(await googleConnector.connect(admin, "u1", "code-1")).toBe("missing_scope");
   });
 
-  it("다시 연결하면 그때 허용한 범위로 바뀐다 (Calendar만이었다가 둘 다)", async () => {
+  it("다시 연결하면 그때 허용한 범위로 바꾼다 (Calendar만이었다가 둘 다: 받은 범위 전체를 set으로)", async () => {
     stubGoogle({ token: () => grant() });
     await googleConnector.connect(admin, "u1", "code-1");
-    const update = vi.mocked(updateConnectionSettings).mock.calls[0][2];
-    expect(update({ googleUserId: "google-sub-1", email: "me@company.dev", scopes: ["openid", CALENDAR] })).toMatchObject({ scopes: ALL_SCOPES });
+    expect(vi.mocked(mergeConnectionSettings).mock.calls[0][2]).toEqual({ set: expect.objectContaining({ scopes: ALL_SCOPES }) });
   });
 
   it("다른 Google 계정으로 연결하면 같은 서비스(google)의 옛 연결은 토큰을 폐기하고 끊는다", async () => {
@@ -289,18 +291,13 @@ describe("syncGoogleConnection", () => {
     stubGoogle();
     await syncGoogleConnection(admin, connection, { now: NOW });
 
-    expect(updateConnectionSettings).toHaveBeenCalledWith(admin, connection, expect.any(Function));
-    const update = vi.mocked(updateConnectionSettings).mock.calls[0][2];
-    expect(update({ email: "me@company.dev" })).toEqual({
-      email: "me@company.dev",
-      stats: { since: NOW.toISOString(), counts: { meet_transcripts: 1, meet_link_attached: 1 } },
-    });
-    expect(vi.mocked(recordSync).mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(updateConnectionSettings).mock.invocationCallOrder[0]);
+    expect(addConnectionStats).toHaveBeenCalledWith(admin, connection, { meet_transcripts: 1, meet_link_attached: 1 }, NOW);
+    expect(vi.mocked(recordSync).mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(addConnectionStats).mock.invocationCallOrder[0]);
   });
 
   it("통계를 쓰지 못해도 동기화는 성공으로 남긴다", async () => {
     stubGoogle();
-    vi.mocked(updateConnectionSettings).mockRejectedValue(new Error("db down"));
+    vi.mocked(addConnectionStats).mockRejectedValue(new Error("db down"));
     const outcome = await syncGoogleConnection(admin, connection, { now: NOW });
     expect(outcome.ok).toBe(true);
     expect(recordSync).toHaveBeenCalledWith(admin, connection, { claimedAt: NOW, cursor: synced.cursor, error: null });

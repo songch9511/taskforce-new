@@ -5,17 +5,18 @@ import { CONSENT_WITHDRAWN_MESSAGE, ConsentRequiredError } from "@/lib/consent/g
 import { notifyReconnect } from "@/lib/notify/service";
 
 import {
+  addConnectionStats,
   claimConnection,
   connectedAt,
   disconnectConnection,
   ingestDeps,
   loadIdentity,
   loadToken,
+  mergeConnectionSettings,
   otherConnections,
   recordSync,
   saveConnection,
   saveToken,
-  updateConnectionSettings,
 } from "../store";
 import type { Connection } from "../types";
 
@@ -25,17 +26,18 @@ import { DEFAULT_GMAIL_SYNC, syncGmail, type GmailSyncResult } from "./sync";
 vi.mock("server-only", () => ({}));
 vi.mock("@/lib/notify/service", () => ({ notifyReconnect: vi.fn() }));
 vi.mock("../store", () => ({
+  addConnectionStats: vi.fn(),
   claimConnection: vi.fn(),
   connectedAt: vi.fn(),
   disconnectConnection: vi.fn(),
   ingestDeps: vi.fn(),
   loadIdentity: vi.fn(),
   loadToken: vi.fn(),
+  mergeConnectionSettings: vi.fn(),
   otherConnections: vi.fn(),
   recordSync: vi.fn(),
   saveConnection: vi.fn(),
   saveToken: vi.fn(),
-  updateConnectionSettings: vi.fn(),
 }));
 vi.mock("./sync", async (importOriginal) => ({ ...(await importOriginal<typeof import("./sync")>()), syncGmail: vi.fn() }));
 
@@ -116,7 +118,8 @@ beforeEach(() => {
   vi.mocked(notifyReconnect).mockResolvedValue(1);
   vi.mocked(saveConnection).mockResolvedValue("conn-new");
   vi.mocked(saveToken).mockResolvedValue();
-  vi.mocked(updateConnectionSettings).mockResolvedValue();
+  vi.mocked(mergeConnectionSettings).mockResolvedValue(true);
+  vi.mocked(addConnectionStats).mockResolvedValue();
   // 동기화 본체는 Gmail 목록을 한 번 부른다 (토큰 읽기 · 갱신이 이때 일어난다)
   vi.mocked(syncGmail).mockImplementation(async (_connection, client) => {
     await client.listMessages("after:1 before:2");
@@ -170,15 +173,16 @@ describe("gmailConnector.connect", () => {
     expect(google.revoked()).toEqual([]);
   });
 
-  it("저장한 뒤 설정에 계정 · 범위를 남긴다 (통계 등 나머지 값은 그대로)", async () => {
+  it("저장한 뒤 설정에 계정 · 범위만 합친다 (통계 등 나머지 값은 DB에 있는 값 그대로)", async () => {
     stubGoogle({ token: () => grant() });
     await gmailConnector.connect(admin, "u1", "code-1");
 
-    expect(updateConnectionSettings).toHaveBeenCalledWith(admin, { id: "conn-new", userId: "u1" }, expect.any(Function));
-    const update = vi.mocked(updateConnectionSettings).mock.calls[0][2];
-    const stats = { since: "2026-09-01T00:00:00.000Z", counts: { inbound: 4 } };
-    expect(update({ stats })).toEqual({ stats, googleUserId: "google-sub-1", email: "me@company.dev", scopes: ["openid", USERINFO_EMAIL, GMAIL_READONLY] });
-    expect(vi.mocked(saveConnection).mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(updateConnectionSettings).mock.invocationCallOrder[0]);
+    expect(mergeConnectionSettings).toHaveBeenCalledWith(
+      admin,
+      { id: "conn-new", userId: "u1" },
+      { set: { googleUserId: "google-sub-1", email: "me@company.dev", scopes: ["openid", USERINFO_EMAIL, GMAIL_READONLY] } },
+    );
+    expect(vi.mocked(saveConnection).mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(mergeConnectionSettings).mock.invocationCallOrder[0]);
   });
 
   it("Gmail 범위를 빼고 허용했으면 연결하지 않고 받은 토큰(갱신 토큰)을 폐기한다: missing_scope", async () => {
@@ -187,7 +191,7 @@ describe("gmailConnector.connect", () => {
     expect(await gmailConnector.connect(admin, "u1", "code-1")).toBe("missing_scope");
     expect(google.revoked()).toEqual(["fake-refresh"]);
     expect(saveConnection).not.toHaveBeenCalled();
-    expect(updateConnectionSettings).not.toHaveBeenCalled();
+    expect(mergeConnectionSettings).not.toHaveBeenCalled();
   });
 
   it("id_token이 없으면(openid 빠짐, 연결 키 없음) missing_scope. 갱신 토큰이 없으면 액세스 토큰을 폐기한다", async () => {
@@ -256,17 +260,13 @@ describe("syncGmailConnection", () => {
     stubGoogle();
     await syncGmailConnection(admin, connection, { now: NOW });
 
-    expect(updateConnectionSettings).toHaveBeenCalledWith(admin, connection, expect.any(Function));
-    const update = vi.mocked(updateConnectionSettings).mock.calls[0][2];
-    expect(update({ email: "me@company.dev" })).toEqual({
-      email: "me@company.dev",
-      stats: { since: NOW.toISOString(), counts: { inbound: 1, category: 2, ingested: 1 } },
-    });
+    expect(addConnectionStats).toHaveBeenCalledWith(admin, connection, { inbound: 1, category: 2, ingested: 1 }, NOW);
+    expect(vi.mocked(recordSync).mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(addConnectionStats).mock.invocationCallOrder[0]);
   });
 
   it("통계를 쓰지 못해도 동기화는 성공으로 남긴다", async () => {
     stubGoogle();
-    vi.mocked(updateConnectionSettings).mockRejectedValue(new Error("db down"));
+    vi.mocked(addConnectionStats).mockRejectedValue(new Error("db down"));
     const outcome = await syncGmailConnection(admin, connection, { now: NOW });
     expect(outcome.ok).toBe(true);
     expect(recordSync).toHaveBeenCalledWith(admin, connection, { claimedAt: NOW, cursor: synced.cursor, error: null });

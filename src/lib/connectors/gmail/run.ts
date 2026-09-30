@@ -6,22 +6,23 @@ import { CONSENT_WITHDRAWN_MESSAGE, ConsentRequiredError } from "@/lib/consent/g
 import { notifyReconnect } from "@/lib/notify/service";
 
 import {
+  addConnectionStats,
   claimConnection,
   connectedAt,
   disconnectConnection,
   ingestDeps,
   loadIdentity,
   loadToken,
+  mergeConnectionSettings,
   otherConnections,
   recordSync,
   saveConnection,
   saveToken,
-  updateConnectionSettings,
 } from "../store";
 import type { Connection, Connector, ConnectorSyncOutcome } from "../types";
 
 import { exchangeGoogleCode, GoogleOAuthError, googleAuthorizeUrl, googleTokenSchema, missingScopes, revokeGoogleToken, type GoogleOAuthConfig } from "../google/oauth";
-import { googleSettingsSchema, withAccount, withStats } from "../google/settings";
+import { accountSettings, googleSettingsSchema } from "../google/settings";
 import { GoogleApiError, googleAccess, GoogleReauthError } from "../google/token";
 
 import { gmailClient } from "./client";
@@ -90,9 +91,7 @@ export async function syncGmailConnection(
     );
     await recordSync(admin, connection, { claimedAt: now, cursor: result.cursor, error: result.rateLimited ? RATE_LIMITED_MESSAGE : null });
     // 커서를 남긴 뒤에 센다: 커서 기록이 실패하면 다음 동기화가 같은 메일을 다시 결정해 두 번 세지 않게
-    await updateConnectionSettings(admin, connection, (current) => withStats(current, { ...result.decisions, ingested: result.created.length }, now)).catch(
-      logError(`Gmail 통계 기록 실패 (${connection.id})`),
-    );
+    await addConnectionStats(admin, connection, { ...result.decisions, ingested: result.created.length }, now).catch(logError(`Gmail 통계 기록 실패 (${connection.id})`));
     return { connectionId: connection.id, ok: true, result };
   } catch (error) {
     // 동기화 도중 외부 AI 처리 동의를 철회함: 연결 오류가 아니다. 커서를 옮기지 않아 다시 동의하면 이어서 가져온다
@@ -141,7 +140,7 @@ export const gmailConnector: Connector = {
       displayName: account.email,
       token: grant.token,
     });
-    await updateConnectionSettings(admin, { id: connectionId, userId }, (current) => withAccount(current, account, grant.scopes));
+    await mergeConnectionSettings(admin, { id: connectionId, userId }, { set: accountSettings(account, grant.scopes) });
     await disconnectOtherAccounts(admin, userId, connectionId);
     return "connected";
   },

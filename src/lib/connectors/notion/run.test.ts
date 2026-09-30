@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { notifyReconnect } from "@/lib/notify/service";
 
 import { googleCalendarLookup } from "../google/lookup";
-import { claimConnection, loadToken, markBackfilled, recordNotionHealth, recordSync, saveToken, updateConnectionSettings } from "../store";
+import { addConnectionStats, claimConnection, loadToken, markBackfilled, recordNotionHealth, recordSync, saveToken } from "../store";
 import type { Connection } from "../types";
 
 import { NotionError, type NotionClient, type NotionToken } from "./api";
@@ -14,6 +14,7 @@ import { syncNotion, type NotionSyncResult } from "./sync";
 vi.mock("server-only", () => ({}));
 vi.mock("@/lib/notify/service", () => ({ notifyReconnect: vi.fn() }));
 vi.mock("../store", () => ({
+  addConnectionStats: vi.fn(),
   claimConnection: vi.fn(),
   ingestDeps: vi.fn(() => ({})),
   loadToken: vi.fn(),
@@ -23,7 +24,6 @@ vi.mock("../store", () => ({
   saveConnection: vi.fn(),
   saveToken: vi.fn(),
   taskDeps: vi.fn(() => ({})),
-  updateConnectionSettings: vi.fn(),
 }));
 vi.mock("../google/lookup", () => ({ googleCalendarLookup: vi.fn() }));
 // Notion 호출은 가짜 클라이언트(쓴 토큰만 담음)로 바꾸고, 토큰 갱신(POST /v1/oauth/token)만 fetch로 흉내 낸다
@@ -82,7 +82,7 @@ beforeEach(() => {
   vi.mocked(recordNotionHealth).mockResolvedValue();
   vi.mocked(markBackfilled).mockResolvedValue();
   vi.mocked(saveToken).mockResolvedValue();
-  vi.mocked(updateConnectionSettings).mockResolvedValue();
+  vi.mocked(addConnectionStats).mockResolvedValue();
   vi.mocked(googleCalendarLookup).mockResolvedValue(null);
   // 만료된 액세스 토큰("expired…")은 401, 그 밖의 토큰으로는 동기화된다
   vi.mocked(syncNotion).mockImplementation(async (_connection, client) => {
@@ -260,7 +260,7 @@ describe("syncNotionConnection: google 연결의 Calendar 일정", () => {
     expect(outcome.ok).toBe(true);
     expect(googleCalendarLookup).toHaveBeenCalledWith(admin, "u1");
     expect(passedDeps().meetingEvent).toBeUndefined();
-    expect(updateConnectionSettings).not.toHaveBeenCalled();
+    expect(addConnectionStats).not.toHaveBeenCalled();
   });
 
   it("있으면 일정 조회를 넘기고, 이은 결과(붙음 · 애매 · 없음 · 실패)를 google 연결 설정 stats에 센다", async () => {
@@ -271,19 +271,19 @@ describe("syncNotionConnection: google 연결의 Calendar 일정", () => {
 
     expect(outcome.ok).toBe(true);
     expect(passedDeps().meetingEvent).toBe(lookup);
-    expect(updateConnectionSettings).toHaveBeenCalledWith(admin, { id: "g1", userId: "u1" }, expect.any(Function));
-    const update = vi.mocked(updateConnectionSettings).mock.calls[0][2];
-    expect(update({ email: "me@company.dev" })).toEqual({
-      email: "me@company.dev",
-      stats: { since: expect.any(String), counts: { notion_link_attached: 2, notion_link_ambiguous: 1, notion_link_none: 3 } },
-    });
+    expect(addConnectionStats).toHaveBeenCalledWith(
+      admin,
+      { id: "g1", userId: "u1" },
+      { notion_link_attached: 2, notion_link_ambiguous: 1, notion_link_none: 3, notion_link_failed: 0 },
+      expect.any(Date),
+    );
   });
 
   it("통계를 쓰지 못해도 Notion 동기화는 성공으로 남긴다", async () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     vi.mocked(googleCalendarLookup).mockResolvedValue(calendar);
     vi.mocked(syncNotion).mockResolvedValue({ ...synced, meetingLinks } as unknown as NotionSyncResult);
-    vi.mocked(updateConnectionSettings).mockRejectedValue(new Error("db down"));
+    vi.mocked(addConnectionStats).mockRejectedValue(new Error("db down"));
 
     const outcome = await sync();
 
@@ -292,12 +292,16 @@ describe("syncNotionConnection: google 연결의 Calendar 일정", () => {
     vi.restoreAllMocks();
   });
 
-  it("일정 조회를 줬어도 이은 회의록이 없으면(개수가 모두 0) 설정을 쓰지 않는다", async () => {
+  it("일정 조회를 줬어도 이은 회의록이 없으면 개수가 모두 0이다 (addConnectionStats가 쓰지 않는다, store.test.ts)", async () => {
     vi.mocked(googleCalendarLookup).mockResolvedValue(calendar);
     vi.mocked(syncNotion).mockResolvedValue({ ...synced, meetingLinks: { attached: 0, ambiguous: 0, none: 0, failed: 0 } } as unknown as NotionSyncResult);
     await sync();
 
-    const update = vi.mocked(updateConnectionSettings).mock.calls[0][2];
-    expect(update({ email: "me@company.dev" })).toBeNull();
+    expect(addConnectionStats).toHaveBeenCalledWith(
+      admin,
+      { id: "g1", userId: "u1" },
+      { notion_link_attached: 0, notion_link_ambiguous: 0, notion_link_none: 0, notion_link_failed: 0 },
+      expect.any(Date),
+    );
   });
 });

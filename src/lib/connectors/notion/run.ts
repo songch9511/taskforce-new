@@ -6,8 +6,7 @@ import { CONSENT_WITHDRAWN_MESSAGE, ConsentRequiredError } from "@/lib/consent/g
 import { notifyReconnect } from "@/lib/notify/service";
 
 import { googleCalendarLookup } from "../google/lookup";
-import { withStats } from "../google/settings";
-import { claimConnection, ingestDeps, loadToken, markBackfilled, recordNotionHealth, recordSync, saveConnection, saveToken, taskDeps, updateConnectionSettings } from "../store";
+import { addConnectionStats, claimConnection, ingestDeps, loadToken, markBackfilled, recordNotionHealth, recordSync, saveConnection, saveToken, taskDeps } from "../store";
 import type { Connection, Connector } from "../types";
 
 import {
@@ -116,8 +115,11 @@ export async function syncNotionConnection(
     // 일정 잇기 결과(붙음 · 애매 · 없음 · 실패)를 google 연결 설정 stats에 센다 (글자 · 주소 없이, 8장)
     if (calendar && result.meetingLinks) {
       const { attached, ambiguous, none, failed } = result.meetingLinks;
-      await updateConnectionSettings(admin, { id: calendar.connectionId, userId: connection.userId }, (current) =>
-        withStats(current, { notion_link_attached: attached, notion_link_ambiguous: ambiguous, notion_link_none: none, notion_link_failed: failed }, now),
+      await addConnectionStats(
+        admin,
+        { id: calendar.connectionId, userId: connection.userId },
+        { notion_link_attached: attached, notion_link_ambiguous: ambiguous, notion_link_none: none, notion_link_failed: failed },
+        now,
       ).catch((error) => console.error(`Google 통계 기록 실패 (${calendar.connectionId}):`, error instanceof Error ? error.message : error));
     }
     // 상태 기록이 실패해도 이미 넣은 원문 · 커서는 남긴다. 자동 확인한 할 일 DB도 여기서 남기므로 처음 훑기 표시보다 먼저 한다
