@@ -1,10 +1,20 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { DataSourceSetting } from "@/lib/api/contract";
 import { processSource } from "@/lib/sources/process";
 
-import { ingestDeps, loadIdentity, recordConnectionCreated, recordNotionHealth, recordSync, updateConnectionSettings } from "./store";
+import {
+  addConnectionStats,
+  ingestDeps,
+  loadIdentity,
+  markBackfilled,
+  mergeConnectionSettings,
+  recordConnectionCreated,
+  recordNotionHealth,
+  recordSync,
+  saveConnection,
+} from "./store";
 import type { Connection, IngestItem } from "./types";
 
 vi.mock("server-only", () => ({}));
@@ -13,25 +23,36 @@ vi.mock("@/lib/sources/process", () => ({ processSource: vi.fn(async () => ({ ne
 
 type Query = { eq: () => Query; single: () => Query; throwOnError: () => Promise<unknown> };
 
-/** connections 행 하나의 settings만 읽고 쓰는 가짜 service role 클라이언트 */
-function fakeAdmin(stored: Record<string, unknown>) {
-  const writes: Record<string, unknown>[] = [];
+type Rpc = { name: string; args: Record<string, unknown> };
+
+/** connections 행 하나의 settings를 읽고, 설정 쓰기(DB 함수 호출)를 기록하는 가짜 service role 클라이언트 */
+function fakeAdmin(stored: Record<string, unknown>, rpcResult: unknown = true, connectedAt = "2026-09-01T00:00:00.000Z") {
+  const rpcs: Rpc[] = [];
   const query = (result: () => unknown): Query => {
     const q: Query = { eq: () => q, single: () => q, throwOnError: async () => result() };
     return q;
   };
   const admin = {
-    from: () => ({
-      select: () => query(() => ({ data: { settings: stored } })),
-      update: (values: { settings: Record<string, unknown> }) =>
-        query(() => {
-          writes.push(values.settings);
-          return { data: null };
-        }),
-    }),
+    from: () => ({ select: () => query(() => ({ data: { settings: stored, connected_at: connectedAt } })) }),
+    rpc: (name: string, args: Record<string, unknown>) => {
+      rpcs.push({ name, args });
+      return { throwOnError: async () => ({ data: rpcResult }) };
+    },
   } as unknown as SupabaseClient;
-  return { admin, writes };
+  /** merge_connection_settings에 넘긴 인자들 */
+  const merges = () => rpcs.filter((r) => r.name === "merge_connection_settings").map((r) => r.args);
+  return { admin, rpcs, merges };
 }
+
+/** 연결 c1(u1)에 넘긴 merge_connection_settings 인자 */
+const merged = (patch: { p_set?: object; p_remove?: string[]; p_data_sources?: object }) => ({
+  p_user_id: "u1",
+  p_connection_id: "c1",
+  p_set: {},
+  p_remove: [],
+  p_data_sources: {},
+  ...patch,
+});
 
 const connection: Connection = { id: "c1", userId: "u1", provider: "notion", settings: {}, syncCursor: null };
 const now = new Date("2026-09-28T00:00:00.000Z");
@@ -45,8 +66,8 @@ const auto = (title: string): DataSourceSetting => ({
 });
 
 describe("recordNotionHealth: 자동 확인한 할 일 DB", () => {
-  it("남기되, 그 사이 사용자가 확인한 DB(가져오지 않음 등)는 덮지 않는다", async () => {
-    const { admin, writes } = fakeAdmin({
+  it("남기되, 그 사이 사용자가 확인한 DB(가져오지 않음 등)는 덮지 않는다: 바뀐 DB의 설정만 넘긴다", async () => {
+    const { admin, merges } = fakeAdmin({
       notionUserId: "notion-me",
       dataSources: {
         "ds-a": { role: "tasks", title: "Action", seenAt: "2026-09-20T00:00:00Z" },
@@ -59,18 +80,12 @@ describe("recordNotionHealth: 자동 확인한 할 일 DB", () => {
       { seen: [], unreachable: null, notionUserId: "notion-me", autoConfirmed: [{ id: "ds-a", setting: auto("Action") }, { id: "ds-b", setting: auto("Tasks") }] },
       now,
     );
-    expect(writes).toHaveLength(1);
-    expect(writes[0]).toMatchObject({
-      notionUserId: "notion-me",
-      dataSources: {
-        "ds-a": auto("Action"),
-        "ds-b": { role: "ignore", title: "Tasks", confirmedAt: "2026-09-27T12:00:00Z" },
-      },
-    });
+    // 연결한 사람 · 공유 상태는 그대로라 넘기지 않고, 사용자가 확인한 ds-b는 넘기지 않는다 (DB에 있는 값 그대로)
+    expect(merges()).toEqual([merged({ p_data_sources: { "ds-a": auto("Action") } })]);
   });
 
-  it("바뀐 것이 없으면 쓰지 않는다 (그 사이 /lab에서 저장한 설정을 덮지 않게)", async () => {
-    const { admin, writes } = fakeAdmin({
+  it("바뀐 것이 없으면 쓰지 않는다", async () => {
+    const { admin, rpcs } = fakeAdmin({
       notionUserId: "notion-me",
       dataSources: { "ds-b": { role: "text", title: "Tasks", confirmedAt: "2026-09-27T12:00:00Z" } },
       health: { unreachable: [], checkedAt: "2026-09-27T00:00:00Z" },
@@ -83,7 +98,25 @@ describe("recordNotionHealth: 자동 확인한 할 일 DB", () => {
       now,
     );
     await recordNotionHealth(admin, connection, { seen: [], unreachable: null, autoConfirmed: [] }, now);
-    expect(writes).toEqual([]);
+    expect(rpcs).toEqual([]);
+  });
+
+  it("처음 본 DB · 공유 상태 · 새로 알아낸 연결한 사람만 넘긴다 (다른 DB의 설정은 넘기지 않는다)", async () => {
+    const saved = { role: "text", title: "회의록", confirmedAt: "2026-09-27T12:00:00Z" };
+    const { admin, merges } = fakeAdmin({ dataSources: { ds1: saved }, health: { unreachable: [], checkedAt: "2026-09-27T00:00:00Z" } });
+    const unreachable = [{ id: "ds1", title: "회의록" }];
+    await recordNotionHealth(
+      admin,
+      connection,
+      { seen: [{ id: "ds1", title: "회의록", role: "text" }, { id: "ds2", title: "New", role: "text" }], unreachable, notionUserId: "notion-me" },
+      now,
+    );
+    expect(merges()).toEqual([
+      merged({
+        p_set: { health: { unreachable, checkedAt: now.toISOString() }, notionUserId: "notion-me" },
+        p_data_sources: { ds2: { role: "text", title: "New", seenAt: now.toISOString() } },
+      }),
+    ]);
   });
 });
 
@@ -99,24 +132,64 @@ describe("recordNotionHealth: 자동 확인 다시 보기", () => {
     ...extra,
   });
 
-  it("되돌린 자동 확인은 다른 변화가 없어도 남긴다 (처음 훑기 표시도 함께 빠진다)", async () => {
-    const { admin, writes } = fakeAdmin({ notionUserId: "notion-me", dataSources: { "ds-p": person({}) } });
+  it("되돌린 자동 확인은 다른 변화가 없어도 남긴다 (처음 훑기 표시도 함께 빠진다: 그 DB의 설정을 통째로 바꾼다)", async () => {
+    const { admin, merges } = fakeAdmin({ notionUserId: "notion-me", dataSources: { "ds-p": person({}) } });
     await recordNotionHealth(admin, connection, { seen: [], unreachable: null, notionUserId: "notion-me", autoConfirmed: [], reverted: [{ id: "ds-p", setting: reverted }] }, now);
-    expect(writes).toHaveLength(1);
-    expect((writes[0].dataSources as Record<string, unknown>)["ds-p"]).toEqual(reverted);
+    expect(merges()).toEqual([merged({ p_data_sources: { "ds-p": reverted } })]);
   });
 
   it("그 사이 사용자가 확인한 DB는 되돌리지 않는다 (담당 속성이 Person이어도)", async () => {
-    const { admin, writes } = fakeAdmin({ notionUserId: "notion-me", dataSources: { "ds-p": person({ confirmedBy: undefined }) } });
+    const { admin, rpcs } = fakeAdmin({ notionUserId: "notion-me", dataSources: { "ds-p": person({ confirmedBy: undefined }) } });
     await recordNotionHealth(admin, connection, { seen: [], unreachable: null, notionUserId: "notion-me", reverted: [{ id: "ds-p", setting: reverted }] }, now);
-    expect(writes).toEqual([]);
+    expect(rpcs).toEqual([]);
   });
 
   it("매핑이 바뀌어 다시 자동 확인한 DB는 전의 자동 확인을 덮는다", async () => {
-    const { admin, writes } = fakeAdmin({ notionUserId: "notion-me", dataSources: { "ds-a": { ...auto("Action"), confirmedAt: earlier, backfilledAt: earlier } } });
+    const { admin, merges } = fakeAdmin({ notionUserId: "notion-me", dataSources: { "ds-a": { ...auto("Action"), confirmedAt: earlier, backfilledAt: earlier } } });
     await recordNotionHealth(admin, connection, { seen: [], unreachable: null, notionUserId: "notion-me", autoConfirmed: [{ id: "ds-a", setting: auto("Action") }] }, now);
-    expect(writes).toHaveLength(1);
-    expect((writes[0].dataSources as Record<string, unknown>)["ds-a"]).toEqual(auto("Action"));
+    expect(merges()).toEqual([merged({ p_data_sources: { "ds-a": auto("Action") } })]);
+  });
+});
+
+describe("recordNotionHealth: 잠금 뒤 다시 연결했으면 notionUserId 다시 쓰지 않기", () => {
+  const claimedAt = new Date("2026-09-28T00:00:00.000Z");
+
+  it("잠금을 잡은 뒤 다시 연결했으면(connected_at이 뒤) 옛 연결로 알아낸 notionUserId를 쓰지 않는다 (saveConnection이 뺀 값)", async () => {
+    const { admin, rpcs } = fakeAdmin({}, true, "2026-09-28T00:01:00.000Z");
+    await recordNotionHealth(admin, connection, { seen: [], unreachable: null, notionUserId: "old-person" }, now, claimedAt);
+    expect(rpcs).toEqual([]);
+  });
+
+  it("다시 연결하지 않았으면(connected_at이 앞) 처음 알아낸 notionUserId를 남긴다", async () => {
+    const { admin, merges } = fakeAdmin({}, true, "2026-09-27T00:00:00.000Z");
+    await recordNotionHealth(admin, connection, { seen: [], unreachable: null, notionUserId: "notion-me" }, now, claimedAt);
+    expect(merges()).toEqual([merged({ p_set: { notionUserId: "notion-me" } })]);
+  });
+});
+
+describe("markBackfilled: 처음 훑기 표시", () => {
+  const tasks = (confirmedAt: string): DataSourceSetting => ({ ...auto("Tasks"), confirmedAt });
+
+  it("확인 시각이 같은 할 일 DB의 설정만 넘긴다 (그 사이 다시 확인한 DB · 다른 DB는 넘기지 않는다)", async () => {
+    const { admin, merges } = fakeAdmin({ dataSources: { t1: tasks("A"), t2: tasks("B"), doc: { role: "text", title: "회의록" } } });
+    await markBackfilled(
+      admin,
+      connection,
+      [
+        { dataSourceId: "t1", confirmedAt: "A" },
+        { dataSourceId: "t2", confirmedAt: "old" },
+        { dataSourceId: "doc", confirmedAt: "A" },
+      ],
+      now,
+    );
+    expect(merges()).toEqual([merged({ p_data_sources: { t1: { ...tasks("A"), backfilledAt: now.toISOString() } } })]);
+  });
+
+  it("표시할 것이 없으면 쓰지 않는다", async () => {
+    const { admin, rpcs } = fakeAdmin({ dataSources: { t1: tasks("B") } });
+    await markBackfilled(admin, connection, [{ dataSourceId: "t1", confirmedAt: "A" }], now);
+    await markBackfilled(admin, connection, [], now);
+    expect(rpcs).toEqual([]);
   });
 });
 
@@ -547,27 +620,80 @@ describe("ingestDeps.process: 확인 요청 알림", () => {
   });
 });
 
-describe("updateConnectionSettings", () => {
-  it("지금 설정을 넘겨 받은 값으로 고친다", async () => {
-    const { admin, writes } = fakeAdmin({ googleUserId: "s", stats: { since: "x", counts: {} } });
-    const seen: Record<string, unknown>[] = [];
-    await updateConnectionSettings(admin, connection, (settings) => {
-      seen.push(settings);
-      return { ...settings, email: "me@company.dev" };
-    });
-    expect(seen).toEqual([{ googleUserId: "s", stats: { since: "x", counts: {} } }]);
-    expect(writes).toEqual([{ googleUserId: "s", stats: { since: "x", counts: {} }, email: "me@company.dev" }]);
+describe("mergeConnectionSettings", () => {
+  it("바꿀 키 · 뺄 키 · DB 설정을 DB 함수에 넘기고, 고친 연결이 있는지 돌려준다", async () => {
+    const { admin, rpcs } = fakeAdmin({});
+    const setting: DataSourceSetting = { role: "text", title: "회의록", confirmedAt: now.toISOString() };
+    expect(await mergeConnectionSettings(admin, connection, { set: { scopes: ["openid"] }, remove: ["notionUserId"], dataSources: { ds1: setting } })).toBe(true);
+    expect(rpcs).toEqual([
+      { name: "merge_connection_settings", args: merged({ p_set: { scopes: ["openid"] }, p_remove: ["notionUserId"], p_data_sources: { ds1: setting } }) },
+    ]);
   });
 
-  it("update가 null이면 쓰지 않는다 (그 사이 다른 곳에서 저장한 설정을 덮지 않게)", async () => {
-    const { admin, writes } = fakeAdmin({ googleUserId: "s" });
-    await updateConnectionSettings(admin, connection, () => null);
-    expect(writes).toEqual([]);
+  it("빠진 값은 빈 값으로 넘긴다. 연결이 없으면(그 사이 끊김) false", async () => {
+    const { admin, rpcs } = fakeAdmin({}, false);
+    expect(await mergeConnectionSettings(admin, connection, { set: { email: null } })).toBe(false);
+    expect(rpcs[0].args).toEqual(merged({ p_set: { email: null } }));
+  });
+});
+
+describe("addConnectionStats", () => {
+  it("0 · undefined를 빼고 더할 개수와 시각을 DB 함수에 넘긴다", async () => {
+    const { admin, rpcs } = fakeAdmin({});
+    await addConnectionStats(admin, connection, { inbound: 3, sent: 1, bulk: 0, no_reply: undefined }, now);
+    expect(rpcs).toEqual([
+      { name: "add_connection_stats", args: { p_user_id: "u1", p_connection_id: "c1", p_counts: { inbound: 3, sent: 1 }, p_now: now.toISOString() } },
+    ]);
   });
 
-  it("설정이 비어 있으면(null) 빈 객체를 넘긴다", async () => {
-    const { admin, writes } = fakeAdmin(null as unknown as Record<string, unknown>);
-    await updateConnectionSettings(admin, connection, (settings) => ({ ...settings, scopes: [] }));
-    expect(writes).toEqual([{ scopes: [] }]);
+  it("더할 것이 없으면(모두 0 · undefined) 부르지 않는다", async () => {
+    const { admin, rpcs } = fakeAdmin({});
+    await addConnectionStats(admin, connection, { inbound: 0, bulk: undefined }, now);
+    await addConnectionStats(admin, connection, {}, now);
+    expect(rpcs).toEqual([]);
+  });
+});
+
+describe("saveConnection: 다시 연결", () => {
+  /** upsert한 연결 행(settings)을 돌려주고, 토큰 저장 · DB 함수 호출을 기록하는 가짜 service role 클라이언트 */
+  function fakeConnectAdmin(settings: Record<string, unknown> | null) {
+    const rpcs: Rpc[] = [];
+    const tables: string[] = [];
+    const chain = (data: unknown) => {
+      const q = { select: () => q, single: () => q, throwOnError: async () => ({ data }) };
+      return q;
+    };
+    const admin = {
+      from: (table: string) => ({
+        upsert: () => {
+          tables.push(table);
+          return chain(table === "connections" ? { id: "c1", settings } : null);
+        },
+      }),
+      rpc: (name: string, args: Record<string, unknown>) => {
+        rpcs.push({ name, args });
+        return { throwOnError: async () => ({ data: true }) };
+      },
+    } as unknown as SupabaseClient;
+    return { admin, rpcs, tables };
+  }
+  const input = { userId: "u1", provider: "notion" as const, externalAccountId: "ws", displayName: "WS", token: { access_token: "t" } };
+
+  beforeEach(() => vi.stubEnv("CONNECTOR_TOKEN_KEY", Buffer.alloc(32, 1).toString("base64")));
+  afterEach(() => vi.unstubAllEnvs());
+
+  it("남겨 둔 Notion user id가 있으면 그 키만 뺀다 (다른 설정은 DB에 있는 값 그대로)", async () => {
+    const { admin, rpcs, tables } = fakeConnectAdmin({ notionUserId: "notion-old", dataSources: {} });
+    expect(await saveConnection(admin, input)).toBe("c1");
+    expect(tables).toEqual(["connections", "connection_secrets"]);
+    expect(rpcs).toEqual([{ name: "merge_connection_settings", args: merged({ p_remove: ["notionUserId"] }) }]);
+  });
+
+  it("뺄 것이 없으면 설정을 쓰지 않는다", async () => {
+    for (const settings of [{ dataSources: {} }, null]) {
+      const { admin, rpcs } = fakeConnectAdmin(settings);
+      await saveConnection(admin, input);
+      expect(rpcs).toEqual([]);
+    }
   });
 });
