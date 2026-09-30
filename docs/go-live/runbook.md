@@ -155,6 +155,7 @@ Supabase → Organization → Billing에서 프로젝트가 **Free**이고 백�
 5. `npm run build && npm test` → Preview 배포에서 확인 → **사용자 승인 뒤** Production.
 6. 끝: `https://www.taskforcelabs.dev/en/privacy`에 새 처리방침이 보이고, `docs/legal/README.md`의 게시 규칙(자리표시자 · 상자 없음)을 지킨다.
 7. TestFlight CTA 링크는 go live 날 넣는다(체크리스트 G2): Vercel `taskforce-website` Production에 `TESTFLIGHT_URL` → 재배포(빌드 때 읽는다). 그 전에는 두 CTA 자리에 링크 없는 "Coming soon"이 나온다(2026-09-29).
+8. 처리방침을 바꿀 때 `src/lib/legal/policy.ts`의 버전 · 시행일을 함께 바꾼다. 앱은 `GET /api/v1/legal`로 받아 안내 한 줄을 보인다(처리방침 17장 "앱과 이 페이지에 알립니다"). 게시와 함께 시행하면 `current`를 새 판으로 바꾸고(그 전에 가입한 계정에 "Privacy Policy updated"), 미리 알리면(시행 7일 전, 이용자에게 불리하면 30일 전) `upcoming`에 새 판을 둔다(모든 계정에 "Privacy Policy changes <날짜>", 시행일 한국 시간 0시가 지나면 배포 없이 현재 판이 된다). 서버를 배포해야 안내가 나가므로 웹사이트 게시와 같은 날 배포한다. 안내를 봤는지는 기기에만 남고 서버에는 남기지 않는다: 서버에 남기려면 처리방침에 그 이용 기록을 먼저 적는다.
 
 ## 8. 배포 뒤 확인 (한 번씩)
 
