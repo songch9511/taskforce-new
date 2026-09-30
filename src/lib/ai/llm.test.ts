@@ -1,13 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 
-import { completeJson, llmConfigFromEnv, LlmError, type LlmConfig } from "./llm";
+import { completeJson, llmConfigFromEnv, LlmError, OVERRUN_RETRY_REASONING, type LlmConfig } from "./llm";
 
 const schema = z.object({ ok: z.boolean() });
 const request = { system: "s", user: "u", schemaName: "t", schema };
 
-function config(contents: (string | null)[], status = 200): LlmConfig & { bodies: unknown[] } {
-  const bodies: unknown[] = [];
+/** contents: 차례로 돌려줄 답 (finish_reason은 stop, [답, 끝난 이유]로 바꿀 수 있다) */
+function config(contents: (string | null | [string | null, string])[], status = 200): LlmConfig & { bodies: Record<string, unknown>[] } {
+  const bodies: Record<string, unknown>[] = [];
   let call = 0;
   return {
     apiKey: "key",
@@ -15,8 +16,9 @@ function config(contents: (string | null)[], status = 200): LlmConfig & { bodies
     bodies,
     fetch: (async (_url: string, init: RequestInit) => {
       bodies.push(JSON.parse(init.body as string));
-      const content = contents[Math.min(call++, contents.length - 1)];
-      return new Response(JSON.stringify({ model: "test/model", choices: [{ finish_reason: "stop", message: { content } }] }), {
+      const next = contents[Math.min(call++, contents.length - 1)];
+      const [content, finish_reason] = Array.isArray(next) ? next : [next, "stop"];
+      return new Response(JSON.stringify({ model: "test/model", choices: [{ finish_reason, message: { content } }] }), {
         status,
       });
     }) as typeof fetch,
@@ -79,6 +81,53 @@ describe("completeJson", () => {
     };
     expect((await completeJson(c, request)).data).toEqual({ ok: true });
     expect(calls).toBe(2);
+  });
+
+  it("평소에는 추론량을 제한하지 않는다", async () => {
+    const c = config(["oops", '{"ok":true}']);
+    expect((await completeJson(c, request)).reasoningLimited).toBeUndefined();
+    // 형식이 깨진 것(출력 한도 아님)은 제한 없이 다시 묻는다
+    expect(c.bodies.map((body) => body.reasoning)).toEqual([undefined, undefined]);
+  });
+
+  it("출력 한도를 넘겨 답이 비거나 잘렸으면, 다시 물을 때만 추론량을 제한한다", async () => {
+    const empty = config([[null, "length"], '{"ok":true}']);
+    expect((await completeJson(empty, request)).data).toEqual({ ok: true });
+    expect(empty.bodies.map((body) => body.reasoning)).toEqual([undefined, { ...OVERRUN_RETRY_REASONING, exclude: true }]);
+
+    const cut = config([['{"ok":', "length"], '{"ok":true}']);
+    const result = await completeJson(cut, request);
+    expect(cut.bodies[1].reasoning).toEqual({ effort: "high", exclude: true });
+    // 제한해 다시 물은 답인지 남긴다
+    expect(result.reasoningLimited).toBe(true);
+  });
+
+  it("시간 한도를 넘겼어도 다시 물을 때 추론량을 제한한다", async () => {
+    const bodies: Record<string, unknown>[] = [];
+    const c: LlmConfig = {
+      apiKey: "key",
+      model: "test/model",
+      fetch: (async (_url: string, init: RequestInit) => {
+        bodies.push(JSON.parse(init.body as string));
+        if (bodies.length === 1) throw new DOMException("timed out", "TimeoutError");
+        return new Response(JSON.stringify({ model: "m", choices: [{ message: { content: '{"ok":true}' } }] }));
+      }) as typeof fetch,
+    };
+    await completeJson(c, request);
+    expect(bodies.map((body) => body.reasoning)).toEqual([undefined, { effort: "high", exclude: true }]);
+  });
+
+  it("추론량 제한은 환경변수로 바꾸거나 끌 수 있다 (추론하지 않는 모델로 바꿀 때)", async () => {
+    const env = { OPENROUTER_API_KEY: "k", LLM_MODEL: "m" };
+    expect(llmConfigFromEnv(env).overrunReasoning).toBeUndefined();
+    expect(llmConfigFromEnv({ ...env, LLM_OVERRUN_REASONING_EFFORT: "medium" }).overrunReasoning).toEqual({ effort: "medium" });
+    expect(llmConfigFromEnv({ ...env, LLM_OVERRUN_REASONING_EFFORT: "off" }).overrunReasoning).toBeNull();
+    expect(() => llmConfigFromEnv({ ...env, LLM_OVERRUN_REASONING_EFFORT: "max" })).toThrow(LlmError);
+
+    const off = { ...config([[null, "length"], '{"ok":true}']), overrunReasoning: null };
+    const result = await completeJson(off, request);
+    expect(off.bodies.map((body) => body.reasoning)).toEqual([undefined, undefined]);
+    expect(result.reasoningLimited).toBeUndefined();
   });
 
   it("HTTP 오류는 다시 묻지 않는다", async () => {
