@@ -77,6 +77,7 @@
 | Slack OAuth | Slack 앱 → OAuth & Permissions → Redirect URLs | `https://api.taskforcelabs.dev/api/connectors/slack/callback` | Taskforce dev 앱(터널 주소) |
 | Slack 이벤트 | Slack 앱 → Event Subscriptions → Request URL | `https://api.taskforcelabs.dev/api/connectors/slack/events` | Taskforce dev 앱(터널 주소) |
 | 앱 복귀 | 앱 `Info.plist` URL scheme | `taskforce://connections/{provider}?handoff=<id>` (앱이 받으면 `POST /api/v1/connections/{provider}/complete`로 마무리) | 같음 |
+| Google 로그인 복귀 | 등록 없음 (프로젝트 A iOS 클라이언트가 정한다. 앱 `Info.plist`에 scheme) | `com.googleusercontent.apps.923900348266-iopmhbf1foor213n1jc3a8tv6v4fti82:/oauth2callback` (Google Sign-In SDK가 받는다) | 같음 |
 
 Google · Slack 경로는 연결 틀(`src/lib/connectors/callback.ts`)의 `/api/connectors/{provider}/callback`을 따른 것이다. 트랙 2-3 · 2-4가 경로를 바꾸면 이 표 · 콘솔 · 매니페스트를 같이 고친다.
 
@@ -112,8 +113,9 @@ Supabase → Authentication:
 | URL Configuration → Site URL | `https://api.taskforcelabs.dev` |
 | Redirect URLs | `https://api.taskforcelabs.dev/auth/confirm`, `http://localhost:3000/auth/confirm` |
 | Sign In / Providers → Apple | 켬, Client IDs `dev.taskforcelabs.taskforce` (앱 안 로그인만이면 Services ID · Secret 불필요, PLATFORMS.md 6장) |
+| Sign In / Providers → Google | 켬 ✅ (2026-09-30). Client IDs = 프로젝트 A iOS 클라이언트 ID `923900348266-iopmhbf1foor213n1jc3a8tv6v4fti82.apps.googleusercontent.com`, Client Secret 비움(웹 OAuth용이라 앱 로그인에는 쓰지 않는다), **Skip nonce checks 끔**(앱이 nonce를 보낸다). 5장 "Sign in with Google" |
 | Providers → Email | 웹 관리 화면의 링크 로그인용 + App Store 심사용 비밀번호 로그인으로 켬. 새 가입은 막지 않는다 — 허용 목록은 아래 Hooks가 대신 막는다 |
-| Hooks → Before User Created | Postgres function `public.hook_before_user_created` → **Enable** (마이그레이션 `20261007000000_review_account_signup_hook.sql`). `provider = email`로 가입하는 주소가 `review_accounts`에 없으면 403으로 거절한다. Apple 가입에는 영향 없다(`docs/go-live/app-store.md` 3장) |
+| Hooks → Before User Created | Postgres function `public.hook_before_user_created` → **Enable** (마이그레이션 `20261007000000_review_account_signup_hook.sql`). `provider = email`로 가입하는 주소가 `review_accounts`에 없으면 403으로 거절한다. Apple · Google 가입에는 영향 없다(`docs/go-live/app-store.md` 3장, `tests/db/review-accounts.test.ts`) |
 | Email Templates → Magic Link | 앱에 이메일 6자리 코드를 붙이면 `{{ .Token }}` 추가 (PLATFORMS.md 4장) |
 | SMTP | 지금은 Supabase 기본 메일(한도가 낮음, 운영자 로그인용으로만 충분). 이용자에게 이메일 로그인을 열면 자체 SMTP를 붙이고 처리방침 7장에 수탁자를 더한다(`docs/legal/README.md` 결정 3) |
 
@@ -129,6 +131,14 @@ Supabase → Organization → Billing에서 프로젝트가 **Free**이고 백�
 - **Push Notifications 기능:** App ID `dev.taskforcelabs.taskforce`에 Push Notifications를 켠다. 앱 권한 파일에 `aps-environment`가 있어서, 켜기 전에는 서명 빌드의 프로필 발급이 실패한다.
 - **APNs 키:** Apple Developer → Keys → + → Apple Push Notifications service → `.p8` → `APNS_KEY_ID` · `APNS_PRIVATE_KEY`.
 - **Sign in with Apple 키:** `app-store.md` 6장 1번 → `APPLE_*`.
+- **Sign in with Google (로그인만, [PLATFORMS.md](../PLATFORMS.md) 4장):** 사용자가 콘솔에서 하는 순서.
+  1. ✅ (2026-09-30) Google Cloud 프로젝트 A `taskforce-510108` → Google Auth Platform → Clients → Create client → 유형 **iOS**, 이름 "Taskforce app sign-in (iOS · Mac)", 번들 ID `dev.taskforcelabs.taskforce`, Team ID `U9DWQKQFMW`. Mac 앱도 같은 iOS 클라이언트를 쓴다(Google 문서: macOS 앱은 iOS 유형). 클라이언트 ID `923900348266-iopmhbf1foor213n1jc3a8tv6v4fti82.apps.googleusercontent.com`, iOS URL scheme `com.googleusercontent.apps.923900348266-iopmhbf1foor213n1jc3a8tv6v4fti82`. 비밀 값은 없다.
+     범위는 SDK 기본값(`openid` · `email` · `profile`, 민감하지 않은 범위)만 쓴다. 프로젝트 A의 Data access 목록에 `userinfo.profile`이 없으면 넣어 둔다(재심사 없음. 로그인 동의 화면에 이름 · 프로필 사진 공유가 보인다).
+  2. ✅ (2026-09-30) Supabase(운영) → Authentication → Sign In / Providers → Google → Enable, Client IDs에 1번 클라이언트 ID, Client Secret 비움, Skip nonce checks **끔**. 4장 Auth 설정 표.
+  3. 앱 설정: Release(TestFlight · App Store)는 커밋된 `apple/Config/Release.xcconfig`의 `GOOGLE_IOS_CLIENT_ID` · `GOOGLE_IOS_URL_SCHEME`을 쓴다(이 PR, 공개 식별자). Debug로 Google 로그인을 시험하려면 로컬 `apple/Config/Secrets.xcconfig`에 같은 두 줄을 넣는다(비우면 버튼이 숨는다, `Secrets.example.xcconfig`).
+     아카이브한 앱의 Info.plist `GIDClientID`가 1번 값인지 확인한다.
+  4. 서명한 Mac 빌드: 권한 파일에 `keychain-access-groups`(`$(AppIdentifierPrefix)dev.taskforcelabs.taskforce`)가 더해졌다. 자동 서명 프로필이 이 그룹을 받는지(Mac 개발 프로필은 보통 `TEAMID.*`를 허용) 처음 서명 빌드 때 확인한다. 빠지면 Google 로그인이 "keychain error"로 실패한다.
+  5. 실기기 확인(8장): iPhone · Mac에서 Google 로그인 → 이름이 프로필에 채워짐 → 로그아웃 → 다시 로그인 → 계정 삭제 → Google 계정 → 보안 → 서드파티 앱 목록에서 Taskforce가 사라짐.
 - **URL scheme:** `taskforce`가 `apple/Taskforce/Info.plist`에 등록되어 있다. OAuth 복귀(`taskforce://connections/{provider}?handoff=<id>`, `src/lib/connectors/callback.ts`)가 이걸로 앱에 돌아온다. callback은 code를 암호화한 완료 대기(handoff, 2분)로 남기고 이 주소로 보낼 뿐이고, 앱이 그 `handoff`로 `POST /api/v1/connections/{provider}/complete`(Bearer 토큰)를 불러야 연결이 끝난다(시작한 사용자만, 한 번만). 릴리스 빌드에서도 URL scheme이 빠지지 않았는지 확인한다.
 
 ## 6. Cron 확인
@@ -265,6 +275,7 @@ union all select 'slack_people', count(*) from public.slack_people where user_id
 | I3 | 도메인 `api.taskforcelabs.dev` | 사용자 ✅ (2026-09-28) | 인증 없는 요청에 401 | I1 |
 | I4 | 운영 DB 마이그레이션 적용 | 코드(명령 준비) → **사용자**(승인 · 실행) | 4장 읽기 쿼리로 새 테이블 확인 | C1, C3~C5의 마이그레이션 |
 | I5 | Supabase Auth URL · Apple 제공자 | 사용자 ✅ 설정 (2026-09-28, 운영 서버로 앱 로그인 확인 남음) | 운영 서버로 앱 로그인 성공 | I3 |
+| I13 | Sign in with Google: 프로젝트 A iOS 클라이언트 · Supabase Google 제공자 (5장 "Sign in with Google" 1 · 2) | 사용자 ✅ 설정 (2026-09-30, 실기기 로그인 · 계정 삭제 확인 남음) | TestFlight 빌드에서 Google 로그인 성공, 계정 삭제 뒤 Google 서드파티 앱 목록에서 사라짐 | L3 |
 | I6 | Notion 연결 설정에 운영 redirect 추가 | 사용자 ✅ 설정 (2026-09-28, 앱에서 연결 확인 남음) | 앱에서 Notion 연결 → 앱으로 복귀 → 동기화 | I3, C1 |
 | I7 | APNs 키 | 사용자 ✅ 키 · env (2026-09-28, PR #4 배포 뒤 기기 수신 확인 남음) | TestFlight 기기에서 알림 수신 | I2 |
 | I8 | Sign in with Apple 키 | 사용자 ✅ (2026-09-28) | `APPLE_*` 4개가 env에 있음 | — |

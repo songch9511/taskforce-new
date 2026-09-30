@@ -20,6 +20,7 @@
 | 외부 AI로 보내기 전 명시적 동의 | 5.1.2(i) | 서버 동의 API(`POST` · `DELETE /api/v1/consent`)와 앱 동의 화면(`apple/Taskforce/Shared/AccountViews.swift`) 작업 중 | 코드 (트랙 2-1 · 3-4). 문구를 5장과 맞춘다 |
 | 동의 철회 방법 | 5.1.1(i) | 앱 계정 메뉴의 AI 동의 화면에서 철회 작업 중 | 코드 |
 | 앱 안 계정 삭제 | 5.1.1(v) | 있음 (계정 메뉴 → 계정 삭제 → `DELETE /api/v1/account`) | — |
+| 제3자 로그인(Google)을 두면 동등한 로그인 옵션 | 4.8 | Sign in with Apple이 먼저, 같은 크기 (2026-09-30 Sign in with Google 추가, PLATFORMS.md 4장) | — |
 | 계정 삭제 때 Sign in with Apple 토큰 폐기 | 5.1.1(v), Apple 계정 삭제 안내 | 서버 구현됨. **앱이 authorization code를 아직 보내지 않는다** (6장) | 코드 (앱 한 단계) |
 | 앱 안 처리방침 링크 | 5.1.1(i) | 없음 (2026-09-27 `apple/`에 링크 없음) | 코드 (계정 메뉴에 "Privacy Policy") |
 | 심사원이 들어갈 수 있는 데모 계정 | 2.1 | Sign in with Apple만 있어 데모 계정으로 로그인할 수 없음 | **결정 + 코드** (3장) |
@@ -123,7 +124,7 @@ Review Notes (붙여 넣을 영어):
 ```
 Taskforce finds the work a user committed to in their meeting notes, messages, and email from services they connect (Notion, Google, Slack), and keeps the list up to date.
 
-Demo account: tap "Sign in with email" below the Sign in with Apple button and use the credentials above. The account is already connected to fictional review workspaces (Notion, Google Calendar/Meet, Slack) and contains sample tasks, so you do not need your own accounts. Everything in it is fictional.
+Demo account: tap "Sign in with email" below the Sign in with Apple and Sign in with Google buttons and use the credentials above. The account is already connected to fictional review workspaces (Notion, Google Calendar/Meet, Slack) and contains sample tasks, so you do not need your own accounts. Everything in it is fictional.
 
 Where to look:
 - Now: tasks found from connected sources. Tap a task to see the exact quote it came from; the source link opens the original.
@@ -132,7 +133,7 @@ Where to look:
 
 Third-party AI (Guideline 5.1.2(i)): before the first connection, the app shows which data is sent (source text and the names of people in it), who receives it (OpenRouter and the AI model providers it routes to, all with zero data retention and no training), and asks for explicit consent. Without consent, the server does not process connected sources. Consent can be withdrawn in Account > AI data.
 
-Account deletion (Guideline 5.1.1(v)): Account > Delete account deletes all data immediately (no backups) and revokes Sign in with Apple tokens and connected-service tokens. If you delete the demo account, please let us know and we will recreate it.
+Account deletion (Guideline 5.1.1(v)): Account > Delete account deletes all data immediately (no backups) and revokes Sign in with Apple tokens, the Google sign-in grant (for accounts that signed in with Google), and connected-service tokens. If you delete the demo account, please let us know and we will recreate it.
 
 A demo video of connecting each service: {{Unlisted YouTube URL}}
 ```
@@ -143,16 +144,17 @@ App Store Connect → 앱 → App Privacy. 모든 항목: **Linked to the user =
 
 | Apple 데이터 유형 | 수집 | 목적 | 무엇인가 (처리방침 1장) |
 |---|---|---|---|
-| Contact Info → **Name** | 예 | App Functionality | 이용자가 입력한 표시 이름 · 별칭 |
-| Contact Info → **Email Address** | 예 | App Functionality | 로그인 이메일(Apple 전달 주소 포함), 프로필의 추가 이메일 |
+| Contact Info → **Name** | 예 | App Functionality | 이용자가 입력한 표시 이름 · 별칭, Google로 로그인하면 Google 계정 이름(프로필 이름이 비어 있으면 처음 한 번 채운다) |
+| Contact Info → **Email Address** | 예 | App Functionality | 로그인 이메일(Apple 전달 주소 · Google 주소 포함), 프로필의 추가 이메일 |
 | User Content → **Emails or Text Messages** | 예 | App Functionality | Gmail 메일, Slack 메시지 (제목 · 보낸 사람 · 받는 사람 · 본문) |
 | User Content → **Other User Content** | 예 | App Functionality | Notion 회의록 · 문서 · 할 일 DB 항목, Meet 전사, 일정 제목 · 참석자, 할 일 · 근거 인용, 주간 질문 응답 |
-| Identifiers → **User ID** | 예 | App Functionality | 계정 id, Apple 사용자 식별자, 연결한 서비스의 워크스페이스 · 계정 id |
+| Identifiers → **User ID** | 예 | App Functionality | 계정 id, Apple · Google 사용자 식별자, 연결한 서비스의 워크스페이스 · 계정 id |
 | Usage Data → **Product Interaction** | 예 | Analytics, App Functionality | 앱 열기, 착수 · 완료 · 수정 · 삭제 · 확인, "Hand off to AI" 사용 |
 | Identifiers → Device ID | 아니오 (판단) | — | APNs 기기 토큰은 앱 설치마다 다른 알림 전달용 값이라 Apple 정의("advertising identifier, or other device-level ID")에 해당하지 않는다고 본다. 보수적으로 가려면 "예 · App Functionality" |
 | Diagnostics | 아니오 | — | 충돌 · 성능 수집 SDK가 없다. 서버 요청 기록은 1일 보관하고 콘텐츠를 담지 않는다 |
 | Contacts | 아니오 | — | 주소록을 읽지 않는다. 원문 속 사람 이름은 User Content에 포함 |
 | Search History | 아니오 | — | 런처 검색은 기기 안에서 거른다. 물어보기 질문은 서버가 처리만 하고 저장하지 않는다(속도 제한만 `rate_limit_events`에 시각으로 남음, 질문 · 답 내용은 없음) |
+| Photos or Videos | 아니오 (판단) | — | Google로 로그인하면 Supabase가 계정 정보에 Google 프로필 사진 **주소**(`picture` · `avatar_url`)를 함께 저장한다. 앱은 쓰지 않고 사진 자체를 받지 않는다. 처리방침에 적을지는 처리방침 쪽에서 정한다 |
 | Location · Health · Financial · Sensitive Info · Browsing History · Purchases · Other Data | 아니오 | — | 수집하지 않는다 |
 
 - 처리방침이 바뀌어 수집 항목이 늘면 이 표도 함께 고친다. 새 SDK를 넣기 전에 라벨과 처리방침을 먼저 본다.
@@ -208,7 +210,8 @@ Privacy Policy
 
 1. **키 발급 (사용자):** Apple Developer → Certificates, IDs & Profiles → Keys → + → 이름 `Taskforce SIWA` → **Sign in with Apple** 체크 → Configure → Primary App ID `dev.taskforcelabs.taskforce` → Register → `.p8` 내려받기(한 번만 받을 수 있다). `.env.example`은 APNs 키와 같은 키여도 된다고 적지만, 권한을 나눠 두려면 따로 만든다.
 2. **환경변수 (서버 전용, `.env.example`에 있음):** `APPLE_TEAM_ID=U9DWQKQFMW`, `APPLE_KEY_ID=<키 ID>`, `APPLE_PRIVATE_KEY=<.p8 내용, 줄바꿈은 \n>`, `APPLE_CLIENT_ID`(비우면 `dev.taskforcelabs.taskforce`). 비워 두면 폐기를 건너뛰고 삭제는 그대로 한다.
-3. **앱 (코드, 남음):** 계정 삭제 확인 화면에서 Sign in with Apple을 한 번 더 받아(`ASAuthorizationAppleIDProvider`, 범위 없음) 새 `authorizationCode`를 얻는다(5분 안에 한 번만 쓸 수 있다). `DELETE /api/v1/account` 본문 `{"apple_authorization_code": "…"}`로 보낸다(`contract.ts`의 `deleteAccountRequestSchema`). 이메일로 가입한 계정은 이 단계를 건너뛴다.
+3. **앱 (코드, 남음):** 계정 삭제 확인 화면에서 Sign in with Apple을 한 번 더 받아(`ASAuthorizationAppleIDProvider`, 범위 없음) 새 `authorizationCode`를 얻는다(5분 안에 한 번만 쓸 수 있다). `DELETE /api/v1/account` 본문 `{"apple_authorization_code": "…"}`로 보낸다(`contract.ts`의 `deleteAccountRequestSchema`). 이메일 · Google로 가입한 계정은 이 단계를 건너뛴다(2026-09-30부터 Apple 로그인이 붙은 계정만, `SignInMethods`).
+   - **Google 로그인 계정 (2026-09-30):** Supabase는 Google 토큰을 갖고 있지 않아 서버가 폐기할 것이 없다. 앱이 삭제가 끝난 뒤 `GIDSignIn.disconnect()`로 이 앱의 Google 권한을 폐기한다(기다리지 않고, 실패해도 삭제는 끝났다). 이 기기에 Google 토큰이 없으면 폐기하지 못한다(PLATFORMS.md 4장).
 4. **서버 (구현됨):**
    - `client_secret`: ES256 JWT. 헤더 `kid=APPLE_KEY_ID`, 클레임 `iss=APPLE_TEAM_ID`, `iat=지금`, `exp=지금+5분`, `aud=https://appleid.apple.com`, `sub=APPLE_CLIENT_ID`.
    - `POST https://appleid.apple.com/auth/token` (`grant_type=authorization_code`, `code`, `client_id`, `client_secret`) → 토큰.

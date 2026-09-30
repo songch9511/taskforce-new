@@ -43,7 +43,7 @@ AI 코딩 에이전트가 이 저장소에서 작업할 때 반드시 지켜야 
   - Jev (검증·분류·매칭 판정): OpenRouter Decisions API `POST /api/alpha/decisions`, 모델 `typesafe/jev-1.13` 고정. 상세는 `docs/TRUTH_RULES.md` 1장.
   - 글 생성이 필요 없는 판정(예/아니오, 선택지 고르기, 척도)은 LLM이 아니라 Jev로 한다.
 - Apple 앱: SwiftUI 멀티플랫폼 + Swift Concurrency, 공유 로직은 `apple/Packages/TaskforceKit`, Supabase는 `supabase-swift`
-  - 로그인은 Sign in with Apple이다. 이메일 + 비밀번호는 App Store 심사 계정용으로만 둔다(허용 목록 밖 이메일 가입은 DB 훅이 막는다, Supabase 대시보드에서 훅을 켠 경우). 세션은 App Group 공유 Keychain에 저장한다 (공유 확장 · 위젯을 붙이면 같은 세션을 읽는다, 아직 없음).
+  - 로그인은 Sign in with Apple과 Sign in with Google(로그인만, Gmail · Calendar 연결과 별개. `docs/PLATFORMS.md` 4장)이다. 이메일 + 비밀번호는 App Store 심사 계정용으로만 둔다(허용 목록 밖 이메일 가입은 DB 훅이 막는다, Supabase 대시보드에서 훅을 켠 경우). 세션은 App Group 공유 Keychain에 저장한다 (공유 확장 · 위젯을 붙이면 같은 세션을 읽는다, 아직 없음).
   - Supabase URL · 키는 xcconfig로 빼고 커밋하지 않는다.
 - 스키마 검증: zod
 - 테스트: Vitest (단위), 추출 품질은 `evals/`의 골든셋으로 평가

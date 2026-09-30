@@ -7,7 +7,7 @@ SwiftUI 멀티플랫폼 앱과 공유 패키지 `TaskforceKit`(화면 없는 코
 |---|---|
 | 번들 ID | `dev.taskforcelabs.taskforce` |
 | App Group | `group.dev.taskforcelabs.taskforce` |
-| URL scheme | `taskforce://` (연동 OAuth가 끝나면 `taskforce://connections/{provider}?handoff=…` 또는 `?status=…`로 돌아온다) |
+| URL scheme | `taskforce://` (연동 OAuth가 끝나면 `taskforce://connections/{provider}?handoff=…` 또는 `?status=…`로 돌아온다), Google 로그인 `com.googleusercontent.apps.<클라이언트>`(`GOOGLE_IOS_URL_SCHEME`) |
 | 최소 OS | iOS 18 · macOS 15 |
 
 ## 처음 한 번
@@ -24,6 +24,7 @@ SwiftUI 멀티플랫폼 앱과 공유 패키지 `TaskforceKit`(화면 없는 코
    - **Release 빌드(아카이브 · TestFlight)는 커밋된 `Config/Release.xcconfig`가 `https://api.taskforcelabs.dev`로 고정**합니다(Base + Secrets를 불러온 뒤 `API_BASE_URL`만 바꿈). Supabase URL · 키는 두 설정 모두 Secrets에서 옵니다.
 2. `apple/Taskforce.xcodeproj`를 Xcode로 엽니다. 서명은 자동이고 Team은 `U9DWQKQFMW`로 잡혀 있습니다.
 3. Supabase → Authentication → Sign In / Providers → Apple을 켜고 Client IDs에 `dev.taskforcelabs.taskforce`를 넣어야 로그인이 됩니다.
+   Sign in with Google은 Google 제공자(Client IDs = 프로젝트 A iOS 클라이언트 ID, Skip nonce checks 끔, 2026-09-30 켬)가 받습니다. Debug 빌드에서 Google 버튼을 보려면 `Secrets.xcconfig`에 `GOOGLE_IOS_CLIENT_ID` · `GOOGLE_IOS_URL_SCHEME`을 넣습니다(값은 `Config/Release.xcconfig`와 같음, 비우면 버튼이 숨음). [PLATFORMS.md](../docs/PLATFORMS.md) 4장.
 4. Apple Developer → Identifiers → `dev.taskforcelabs.taskforce`에 App Groups가 켜져 있고 `group.dev.taskforcelabs.taskforce`가 연결돼 있어야 합니다(2026-09-28에 켬).
    빠지면 Mac 프로필에 App Group이 없어 macOS가 앱 권한을 통째로 무시하고, 로그인 세션을 Keychain에 저장하지 못합니다(`-34018`, 앱에는 "Couldn't save your sign-in.").
    프로필이 바뀌면 `~/Library/Developer/Xcode/UserData/Provisioning Profiles`의 옛 Mac 프로필을 지우고, **빌드된 `Taskforce.app`도 지운 뒤** `-allowProvisioningUpdates`로 다시 빌드합니다.
@@ -39,6 +40,8 @@ SwiftUI 멀티플랫폼 앱과 공유 패키지 `TaskforceKit`(화면 없는 코
 brew install xcodegen
 cd apple && xcodegen
 ```
+
+앱이 쓰는 패키지(TaskforceKit의 supabase-swift, Google Sign-In)의 고정 버전은 `Taskforce.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved`(커밋, xcodegen이 지우지 않음)다. 올릴 때는 Xcode → File → Packages → Update to Latest Package Versions 뒤 이 파일을 커밋한다.
 
 ## 테스트 · 빌드
 
@@ -56,7 +59,8 @@ Mac은 `--show-launcher -TFSampleData -TFSnapshot <폴더>`로 실행하면 런�
 
 ### iPhone — 한 화면 (Figma 9:529 · Website 17:962)
 
-- 로그인: Sign in with Apple, 그 아래 눈에 덜 띄게 "Sign in with email"(App Store 심사 계정용, 가입 화면 없음). Mac 런처의 "Sign in with email" 행은 설정 창의 같은 로그인 화면을 연다.
+- 로그인: Sign in with Apple, 그 아래 같은 크기의 Sign in with Google(Google 클라이언트 설정이 있을 때, 로그인만: 기본 범위 openid · email · profile), 그 아래 눈에 덜 띄게 "Sign in with email"(App Store 심사 계정용, 가입 화면 없음). Mac 런처도 같은 순서의 행이고, "Sign in with email" 행은 설정 창의 같은 로그인 화면을 연다.
+  Google 버튼은 Google 브랜드 규칙의 Light 테마(흰 바탕 · 회색 테두리 · 표준 색 G)로 다크 모드에서도 같다(`SignInWithGoogleButton`). 프로필 이름이 비어 있으면 Google 이름으로 한 번 채운다.
 - "Review 1 / N" + Review card 한 장(Confirm = `POST confirm`, Dismiss = `DELETE`) → In Progress · To Do · Done Today 구역의 Task row 목록(빈 구역은 숨김). 구역 안 순서는 서버가 정한 그대로(`TaskBoard`).
   Review card는 iOS 26부터 Liquid Glass(카드 regular 유리, Confirm = 잉크 `glassProminent`, Dismiss = `glass`), 그 전은 bg/surface + 캡슐 버튼(`TFGlassCard` · `TFGlassButtonStyle`). 할 일 행은 평평하게 둔다.
 - 상태는 To Do · In Progress · Done 세 이름으로만 옮긴다(`POST /actions/:id/progress {"state": "to_do"|"in_progress"|"done"}`, `NowStore.move`). 서버를 기다리지 않고 곧바로 그 구역으로 옮기고, 쓰기가 끝나면 두 목록을 다시 읽는다.
@@ -69,7 +73,7 @@ Mac은 `--show-launcher -TFSampleData -TFSnapshot <폴더>`로 실행하면 런�
 - 오른쪽 위 "+" = New Task 시트(`NowStore.add`, 원문 없이 `POST /actions`): 제목(200자까지) · Due(None · Today · Tomorrow · Date…) · Cancel / Add.
   iOS 26은 시스템 유리 시트 그대로 두고, 제목 칸 · 기한 칩 · Existing 줄은 bg/elevated 바탕 위에 둬서 뒤 목록 글자가 비치지 않게 한다(그 전 OS는 bg/canvas 시트).
   쓰는 동안 열린 할 일(Review · In Progress · To Do)에서 맞는 것을 "Existing"으로 세 개까지 보여 준다(`LauncherAdd.existing`, 런처 찾기와 같은 거르기). 추가는 막지 않는다. 추가되면 닫고 `/now`를 다시 부른다.
-- 오른쪽 위 계정 시트: Profile(이름 · 다른 이름, 비어 있으면 처음 한 번 묻는다) · Connections · AI processing(외부 AI 처리 동의) · Sign Out · Delete Account(Apple 재확인 → 토큰 폐기) · Privacy Policy · Terms of Use.
+- 오른쪽 위 계정 시트: Profile(이름 · 다른 이름, 비어 있으면 처음 한 번 묻는다) · Connections · AI processing(외부 AI 처리 동의) · 로그인 계정 줄("Apple ID" · "Google Account" · "Email") · Sign Out(Google SDK 로그인도 지움) · Delete Account(Apple 로그인 계정은 Apple 재확인 → 토큰 폐기, Google 로그인 계정은 삭제 뒤 Google 권한 폐기) · Privacy Policy · Terms of Use.
 - 연결이 없고 할 일도 없으면 로고 네 개 + "Connect" 한 줄. 연결이 동기화 중이고 할 일이 없으면 가운데 진행 표시 + "Syncing…". 권한이 끊긴 연결이 있으면 목록 위에 Reconnect 줄.
 - 알림(C10): 권한은 첫 실행에 묻지 않고, 로그인했고 연결이 하나라도 있으며 다른 시트가 없을 때 한 번 묻는다(`PushPermission`). 알림을 누르면 떠 있는 시트를 닫고 목록을 다시 읽은 뒤 그 할 일로 스크롤한다: 확인 요청이면 그 Review card를 먼저 보이고, 할 일이면 그 행을 2초 동안 bg/surface로 칠한다.
 
@@ -112,7 +116,7 @@ Mac은 `--show-launcher -TFSampleData -TFSnapshot <폴더>`로 실행하면 런�
 ## 구조
 
 - `Taskforce/` — 앱
-  - `Shared/` — 두 플랫폼 공용: `PushCenter`(알림 권한 · 기기 토큰 · 누른 알림), `NowStore`(지금 할 일 · 오늘 끝낸 할 일 · 근거 · 쓰기, To Do · In Progress · Done 옮기기 · 삭제 · 되살리기는 먼저 보여 줌), `AccountStore`(연결 · 동의 · 프로필), 연결 · 동의 · 프로필 화면, 로그인, 계정 삭제
+  - `Shared/` — 두 플랫폼 공용: `PushCenter`(알림 권한 · 기기 토큰 · 누른 알림), `NowStore`(지금 할 일 · 오늘 끝낸 할 일 · 근거 · 쓰기, To Do · In Progress · Done 옮기기 · 삭제 · 되살리기는 먼저 보여 줌), `AccountStore`(연결 · 동의 · 프로필), 연결 · 동의 · 프로필 화면, 로그인(Apple · Google `GoogleSignInFlow`), 계정 삭제
   - `iOS/` — 한 화면(`HomeView`) · 계정 시트 · New Task 시트 · 앱 델리게이트(기기 토큰)
   - `Mac/` — 앱 델리게이트 · 메뉴 막대 · 단축키 · 런처 패널/모델/화면 · 설정 창
 - `Packages/TaskforceKit/`
@@ -121,6 +125,7 @@ Mac은 `--show-launcher -TFSampleData -TFSnapshot <폴더>`로 실행하면 런�
     - `TaskforceReads`: Supabase 직접 읽기 (RLS, 읽기 전용) — 할 일 상세 · 근거 · 원문 · 연결 · 원해요 · 오늘 끝낸 할 일(`status = done`, 기기 시간대 오늘 0시 뒤 `updated_at`, 최근 것부터 10개, 다른 사람 몫 제외)
     - `ActionChanges`: `actions` Realtime 구독. "바뀜" 신호로만 쓰고 지금 할 일은 항상 `/now`를 다시 불러온다 (로그인해 있는 동안 구독 하나: `ActionChangeFeed`)
     - `Models` · `AccountModels` · `Connections`: `src/lib/api/contract.ts`와 같은 모양 (새 필드는 없어도 읽는다)
+    - 로그인: `SessionStore`(Apple · Google `signInWithIdToken`, `SignInNonce`), Google 설정 `GoogleSignInConfig`(Info.plist), 로그인 방식 `SignInMethods`, 계정 이름 `AccountName`
     - 순수 규칙(테스트로 고정): 목록 구역 · 진행 상태(`WorkState`) · 먼저 보여 주는 내 변경 · 지울 수 있는 행 · 되돌리기(`TaskSections`: `TaskChange` · `TaskUndo` · `UndoOffer`), 런처 입력 모드 · 구역 · 거르기 · 붙여 넣은 원문 · 직접 추가 제목 · 이미 있는 할 일(`Launcher`), 영어 기한 · 시점 표기 · Task row 메타(`DisplayText`), 서비스 추정 · Source stack 접기(`SourceService`), 근거 고르기(`EvidenceDigest`), 연결 상태 · 줄 상태 · 동기화 진행 · 콜백 · 시작 · Sync Now 실패 분류(`Connections`), 알림 토큰 · APNs 환경 · 권한 · 누른 알림(`PushNotifications`), 단축키(`HotKeyShortcut`), `app_opened`(`AppOpenTracker` · `LauncherOpenThrottle`), 원문 줄 고르기(`SourceText` · `LineSelection`)
   - `TaskforceUI` — Figma 토큰(Asset Catalog 색 세트, 이름 = Figma 변수 · 간격 · 모서리 · 글자)과 부품(Task status · Task row · Review card · Evidence · Sources group · Source icon/stack · Launcher row · Keycap · 캡슐 버튼 · 유리 카드/버튼/묶음), 부품마다 `#Preview`
     - 서비스 로고는 Figma Source icon(Simple Icons 단색)의 글리프만 template 이미지로 두고, 타일은 토큰으로 그린다
