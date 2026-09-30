@@ -5,6 +5,7 @@ import TaskforceUI
 
 /// 런처 창 내용 (Figma 5:57): 입력창 "Search" · 구역(Review · In Progress · To Do · Done Today · Commands) · 행 · 아래 "Actions ⌘K".
 /// 할 일 행 왼쪽은 상태 표시(`TaskStatusMark`): ○ · ●를 누르면 Done, ✓는 끝내기 전 상태로 (Review는 누를 수 없음).
+/// Review 행은 제목 옆에 확인 이유 한 줄(`ConfirmReasonText`). ↩는 근거를 펼치고, 확정은 ⌘↩ · 넘기기는 ⌘⌫ (아래 "Confirm ⌘↩ · Dismiss ⌘⌫").
 /// ⌘K 패널 · 펼침 · Ask 답 · 원문 고르기처럼 Figma에 없는 화면은 같은 부품(Launcher row · Keycap · Sources 묶음)과 토큰으로만 구성한다.
 struct LauncherRootView: View {
     @Bindable var model: LauncherModel
@@ -194,8 +195,10 @@ struct LauncherRootView: View {
     private func row(_ item: LauncherItem, selected: Bool) -> some View {
         switch item {
         case .review(let action):
+            // 제목 옆에 확인 이유 한 줄 (부제 자리, 행 높이는 그대로)
             LauncherRow(
                 title: action.title,
+                subtitle: ConfirmReasonText.label(action.confirmReasons),
                 accessory: action.dueDate.map { DueText.accessory($0, today: today) },
                 urgent: DueText.isUrgent(due: action.dueDate, reasons: [], today: today),
                 selected: selected,
@@ -294,6 +297,7 @@ struct LauncherRootView: View {
         let done = target.group == .doneToday
         LauncherRow(
             title: action.title,
+            subtitle: target.group == .review ? ConfirmReasonText.label(action.confirmReasons) : nil,
             accessory: done ? nil : action.dueDate.map { DueText.accessory($0, today: today) },
             urgent: !done && DueText.isUrgent(due: action.dueDate, reasons: [], today: today),
             selected: true,
@@ -500,8 +504,16 @@ struct LauncherRootView: View {
                     Keycap("⌘Z")
                         .padding(.trailing, TFSpace.sm)
                 }
-                // 처리방침 변경 안내 줄을 고르면 닫기
-                if model.canDismissNotice {
+                // Review: ↩는 근거를 펼치고, 확정 · 넘기기는 단축키로
+                if model.canConfirmReview {
+                    Text("Confirm")
+                        .font(TFFont.footnote)
+                        .foregroundStyle(TFColor.textSecondary)
+                    Keycap("⌘↩")
+                        .padding(.trailing, TFSpace.sm)
+                }
+                // 처리방침 변경 안내 줄 · Review를 고르면 닫기 · 넘기기
+                if model.canDismissNotice || model.canDismissReview {
                     Text("Dismiss")
                         .font(TFFont.footnote)
                         .foregroundStyle(TFColor.textSecondary)

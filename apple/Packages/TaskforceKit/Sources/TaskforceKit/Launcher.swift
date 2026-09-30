@@ -52,7 +52,7 @@ public enum LauncherCommand: String, CaseIterable, Sendable, Hashable {
 }
 
 public enum LauncherItem: Hashable, Sendable, Identifiable {
-    /// 확인 요청 (Confirm · Dismiss)
+    /// 확인 요청: ↩ 근거 펼치기 · ⌘↩ Confirm · ⌘⌫ Dismiss (`LauncherReturn`)
     case review(ActionSummary)
     /// 열린 할 일 (In Progress · To Do, `TaskGroup.open`)
     case task(RankedAction)
@@ -313,6 +313,45 @@ public struct LauncherDeleteGuard: Sendable, Equatable {
     /// 처리방침 안내 줄을 ⌘⌫로 닫았을 때
     public mutating func noticeDismissed(at now: Date) {
         quietUntil = now.addingTimeInterval(Self.settle)
+    }
+}
+
+/// ↩ · ⌘↩. Review는 제목만 보고 확정하지 않게 ↩로 확정하지 않는다: 목록의 Review 행에서 ↩는 근거(Sources 묶음)를 펼치고,
+/// 확정은 ⌘↩다(목록 · 펼침 · ⌘K 패널 어디서든 고른 줄과 상관없이, ⌘K 패널의 Confirm도 그대로). Dismiss는 ⌘⌫(`LauncherDeleteGuard`).
+/// Review에서 누르고 있어 반복된 ↩ · ⌘↩는 먹고 아무것도 하지 않는다: 펼침 → ⌘K 패널 → Confirm으로 이어지거나, 확정 뒤 다음 Review를 확정하지 않게.
+/// 다른 행 · 화면은 지금까지처럼 그 화면의 기본 동작이다(⌘↩도 ↩와 같고, 줄 고르기의 ⌘↩는 보내기).
+public enum LauncherReturn {
+    /// ↩를 받은 곳
+    public enum Place: Equatable, Sendable {
+        /// 목록: 고른 행 (없으면 nil)
+        case list(LauncherItem?)
+        /// 펼침 · ⌘K 패널: 그 할 일의 구역
+        case task(TaskGroup)
+        /// 그 밖의 화면 (기한 · 원문 · 줄 고르기, 물어보기 답 등)
+        case other
+    }
+
+    public enum Effect: Equatable, Sendable {
+        /// 그 화면의 기본 동작 (행 실행 · ⌘K 패널 열기 · 고른 줄 실행)
+        case primary
+        /// Review 행의 근거 펼치기
+        case showSources
+        /// Review 확정
+        case confirm
+        /// 먹고 아무것도 하지 않는다
+        case ignore
+    }
+
+    public static func effect(at place: Place, command: Bool, isRepeat: Bool) -> Effect {
+        let onList: Bool
+        switch place {
+        case .list(let item) where item?.group == .review: onList = true
+        case .task(.review): onList = false
+        default: return .primary
+        }
+        if isRepeat { return .ignore }
+        if command { return .confirm }
+        return onList ? .showSources : .primary
     }
 }
 

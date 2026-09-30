@@ -68,9 +68,13 @@ final class LauncherModel {
             }
         }
 
-        /// 줄 오른쪽에 보이는 단축키
+        /// 줄 오른쪽에 보이는 단축키 (Review Confirm ⌘↩ · Dismiss ⌘⌫, 할 일 Delete ⌘⌫)
         var shortcut: String? {
-            self == .delete ? "⌘⌫" : nil
+            switch self {
+            case .confirm: "⌘↩"
+            case .dismiss, .delete: "⌘⌫"
+            default: nil
+            }
         }
     }
 
@@ -264,6 +268,20 @@ final class LauncherModel {
     /// 방금 옮기거나 지운 할 일을 ⌘Z로 되돌릴 수 있는지 (목록에서만)
     var canUndo: Bool { screen == .list && undoOffer.pending != nil }
 
+    /// 고른 Review 행 · 펼친 Review를 ⌘↩로 확정할 수 있는지 (아래 "Confirm ⌘↩")
+    var canConfirmReview: Bool {
+        switch screen {
+        case .list, .detail: focusedTarget?.group == .review
+        default: false
+        }
+    }
+
+    /// 고른 Review 행 · 펼친 Review를 ⌘⌫로 넘길 수 있는지 (아래 "Dismiss ⌘⌫"). 입력이 있으면 ⌘⌫는 입력창의 줄 지우기
+    var canDismissReview: Bool {
+        guard canConfirmReview, case (.dismiss, _)? = deleteShortcut else { return false }
+        return true
+    }
+
     /// 고른 줄이 처리방침 변경 안내라 ⌘⌫로 닫을 수 있는지 (아래 "Dismiss ⌘⌫").
     /// 공백만 입력해도 안내 줄은 보이지만, 그때 ⌘⌫는 입력창의 줄 지우기다
     var canDismissNotice: Bool {
@@ -383,7 +401,13 @@ final class LauncherModel {
         case kVK_Return, kVK_ANSI_KeypadEnter:
             // ⌥↩ · ⇧↩는 입력창에서 줄바꿈
             if flags.contains(.option) || flags.contains(.shift) { return false }
-            command ? commandReturn() : primary()
+            // Review는 ↩로 확정하지 않는다: ↩ 근거 펼치기, ⌘↩ Confirm, 반복 입력은 무시 (`LauncherReturn`)
+            switch LauncherReturn.effect(at: returnPlace, command: command, isRepeat: event.isARepeat) {
+            case .primary: command ? commandReturn() : primary()
+            case .showSources: expand()
+            case .confirm: confirmReview()
+            case .ignore: break
+            }
             return true
         case kVK_Tab:
             expand()
@@ -419,21 +443,44 @@ final class LauncherModel {
         }
     }
 
-    /// ⌘⌫: 목록에서 고른 할 일 행 · ⌘K 패널의 할 일. Review는 Dismiss, 나머지(In Progress · To Do · Done Today)는 Delete
+    /// ⌘⌫: 목록에서 고른 할 일 행 · 펼친 할 일 · ⌘K 패널의 할 일. Review는 Dismiss, 나머지(In Progress · To Do · Done Today)는 Delete
     private var deleteShortcut: (ActionEntry, Target)? {
-        let target: Target?
+        switch screen {
+        // 목록 · 펼침에서 입력이 있으면 ⌘⌫는 입력창의 줄 지우기
+        case .list, .detail: guard text.isEmpty else { return nil }
+        case .actions: break
+        default: return nil
+        }
+        guard let target = focusedTarget else { return nil }
+        return (target.group.isDeletable ? .delete : .dismiss, target)
+    }
+
+    /// 목록에서 고른 할 일 행(Hand off 행은 할 일 행이 아니다) · 펼친 할 일 · ⌘K 패널의 할 일
+    private var focusedTarget: Target? {
         switch screen {
         case .list:
-            // 입력이 있으면 ⌘⌫는 줄 지우기. Hand off 행은 할 일 행이 아니다
-            guard text.isEmpty, let item = selectedItem, item.group != nil else { return nil }
-            target = self.target(for: item)
-        case .actions(let actionsTarget):
-            target = actionsTarget
+            guard let item = selectedItem, item.group != nil else { return nil }
+            return target(for: item)
+        case .detail(let target), .actions(let target):
+            return target
         default:
             return nil
         }
-        guard let target else { return nil }
-        return (target.group.isDeletable ? .delete : .dismiss, target)
+    }
+
+    /// ↩ · ⌘↩를 받은 곳 (`LauncherReturn`)
+    private var returnPlace: LauncherReturn.Place {
+        switch screen {
+        case .list: .list(selectedItem)
+        case .detail(let target), .actions(let target): .task(target.group)
+        default: .other
+        }
+    }
+
+    /// ⌘↩: 고른 Review 행 · 펼친 Review · ⌘K 패널의 Review를 확정 (패널에서 고른 줄과 상관없이)
+    private func confirmReview() {
+        guard let target = focusedTarget, target.group == .review else { return }
+        perform(.confirm, on: target)
     }
 
     private func caretAtEnd(in window: NSWindow?) -> Bool {
@@ -519,9 +566,13 @@ final class LauncherModel {
         }
     }
 
-    /// Tab/→: Sources 묶음 펼치기
+    /// Tab/→ (Review 행은 ↩도): Sources 묶음 펼치기
     func expand() {
         guard screen == .list, let item = selectedItem, let target = target(for: item) else { return }
+        showSources(target)
+    }
+
+    private func showSources(_ target: Target) {
         screen = .detail(target)
         Task { await now?.loadEvidence(target.action.id) }
     }
@@ -598,7 +649,8 @@ final class LauncherModel {
     func run(_ item: LauncherItem) {
         switch item {
         case .review(let action):
-            perform(.confirm, on: Target(action: action, group: .review))
+            // 제목만 보고 확정하지 않게 근거를 먼저 보인다. 확정은 ⌘↩ · ⌘K Confirm
+            showSources(Target(action: action, group: .review))
         case .task, .done:
             if let target = target(for: item) { openActions(target) }
         case .command(let command):

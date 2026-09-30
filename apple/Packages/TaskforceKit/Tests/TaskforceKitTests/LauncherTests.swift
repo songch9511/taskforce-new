@@ -282,4 +282,48 @@ struct LauncherTests {
         #expect(guardian.allows(isRepeat: false, at: now.addingTimeInterval(LauncherDeleteGuard.settle)))
         #expect(!guardian.allows(isRepeat: true, at: now.addingTimeInterval(5)))
     }
+
+    // MARK: ↩ · ⌘↩
+
+    private func effect(_ place: LauncherReturn.Place, command: Bool = false, isRepeat: Bool = false) -> LauncherReturn.Effect {
+        LauncherReturn.effect(at: place, command: command, isRepeat: isRepeat)
+    }
+
+    /// Review 행의 ↩는 확정하지 않고 근거를 펼친다. 확정은 ⌘↩
+    @Test func returnOnReviewRowShowsSourcesAndCommandReturnConfirms() {
+        let review = LauncherItem.review(now.confirmations[0])
+        #expect(effect(.list(review)) == .showSources)
+        #expect(effect(.list(review), command: true) == .confirm)
+    }
+
+    /// 펼침 · ⌘K 패널의 ↩는 지금처럼 (⌘K 패널 열기 · 고른 줄 실행), ⌘↩는 고른 줄과 상관없이 확정
+    @Test func returnOnReviewDetailOrActionsKeepsPrimaryAndCommandReturnConfirms() {
+        #expect(effect(.task(.review)) == .primary)
+        #expect(effect(.task(.review), command: true) == .confirm)
+    }
+
+    /// 누르고 있어 반복된 ↩ · ⌘↩는 Review에서 아무것도 하지 않는다 (펼침 → 패널 → Confirm으로 이어지지 않게)
+    @Test func repeatedReturnOnReviewIsIgnored() {
+        let review = LauncherItem.review(now.confirmations[0])
+        for place in [LauncherReturn.Place.list(review), .task(.review)] {
+            #expect(effect(place, isRepeat: true) == .ignore)
+            #expect(effect(place, command: true, isRepeat: true) == .ignore)
+        }
+    }
+
+    /// 다른 행 · 화면은 ↩ · ⌘↩ 모두 지금까지의 기본 동작 (확정하지 않는다)
+    @Test func returnElsewhereKeepsPrimary() {
+        let task = LauncherItem.task(now.now[0])
+        let places: [LauncherReturn.Place] = [
+            .list(task), .list(.done(now.now[0].action)), .list(.command(.settings)), .list(.ask("자료")), .list(nil),
+            // Review 할 일을 넘기는 Hand off 행은 Review 행이 아니다
+            .list(.handoff(now.confirmations[0])),
+            .task(.toDo), .task(.inProgress), .task(.doneToday), .other,
+        ]
+        for place in places {
+            #expect(effect(place) == .primary)
+            #expect(effect(place, command: true) == .primary)
+            #expect(effect(place, isRepeat: true) == .primary)
+        }
+    }
 }
