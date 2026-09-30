@@ -406,6 +406,32 @@ export type DeleteAccountRequest = z.infer<typeof deleteAccountRequestSchema>;
 export const deleteAccountResponseSchema = z.object({ deleted: z.literal(true) });
 export type DeleteAccountResponse = z.infer<typeof deleteAccountResponseSchema>;
 
+// ─── 처리방침 변경 안내 ─────────────────────────────────────
+// GET /api/v1/legal — 개인정보 처리방침의 현재 판 · 시행 예정 판과 이 계정에 보일 변경 안내 (Bearer 또는 웹 쿠키).
+// 판 · 시행일은 src/lib/legal/policy.ts 한 곳에서 정한다. 시행일은 한국 시간 0시부터이고, 시행 예정 판은 시행일이 지나면 현재 판이 된다.
+// notice: 시행 예정 판이 있으면 "upcoming"(시행 전 안내), 없으면 계정이 현재 판의 시행일 전에 만들어졌을 때만 "updated".
+// 새 계정은 가입할 때 현재 판에 동의했으므로 안내하지 않는다. 앱은 notice.version을 본 적이 없을 때만 한 줄을 보이고,
+// 열거나 닫으면 그 판을 기기에 계정별로 본 것으로 적는다. 서버에는 남기지 않는다(처리방침에 없는 이용 기록이 된다).
+// 오류: 계정 가입 시각을 읽지 못하면 500 (앱은 조용히 넘긴다).
+export const policyVersionSchema = z.object({
+  version: z.string().min(1),
+  effective_date: z.iso.date(),
+  url: z.object({ ko: z.url(), en: z.url() }),
+});
+export type PolicyVersion = z.infer<typeof policyVersionSchema>;
+
+export const policyNoticeSchema = policyVersionSchema.extend({ kind: z.enum(["updated", "upcoming"]) });
+export type PolicyNotice = z.infer<typeof policyNoticeSchema>;
+
+export const legalResponseSchema = z.object({
+  privacy: z.object({
+    current: policyVersionSchema,
+    upcoming: policyVersionSchema.nullable(),
+    notice: policyNoticeSchema.nullable(),
+  }),
+});
+export type LegalResponse = z.infer<typeof legalResponseSchema>;
+
 export const apiErrorCodeSchema = z.enum(["unauthorized", "invalid_request", "not_found", "conflict", "rate_limited", "internal_error"]);
 
 export const apiErrorSchema = z.object({
