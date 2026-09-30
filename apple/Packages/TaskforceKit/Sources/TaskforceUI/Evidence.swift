@@ -10,6 +10,8 @@ public struct EvidenceView: View {
     let source: String?
     let others: [SourceService]
     let quoteLineLimit: Int?
+    /// 거짓이면 "When · Source"를 그리지 않고 VoiceOver 값으로만 읽는다 (Sources에서 같은 회의의 앞 줄)
+    let showsMeta: Bool
     let showsOpen: Bool
     let onOpen: (() -> Void)?
 
@@ -20,6 +22,7 @@ public struct EvidenceView: View {
         source: String?,
         others: [SourceService] = [],
         quoteLineLimit: Int? = nil,
+        showsMeta: Bool = true,
         showsOpen: Bool = false,
         onOpen: (() -> Void)? = nil
     ) {
@@ -29,11 +32,12 @@ public struct EvidenceView: View {
         self.source = source
         self.others = others
         self.quoteLineLimit = quoteLineLimit
+        self.showsMeta = showsMeta
         self.showsOpen = showsOpen
         self.onOpen = onOpen
     }
 
-    /// 근거 한 줄 (`EvidenceDigest`의 줄)
+    /// 근거 한 줄 (`EvidenceDigest`의 줄). 원문에 일정이 붙었으면 "When · Source"가 일정 날짜 · 제목이다.
     public init(
         _ line: EvidenceLine,
         others: [SourceService] = [],
@@ -45,10 +49,30 @@ public struct EvidenceView: View {
         self.init(
             service: line.service,
             quote: line.quote,
-            when: line.occurredAt.map { WhenText.label($0, now: now) },
-            source: line.sourceTitle,
+            when: line.displayDate.map { WhenText.label($0, now: now) },
+            source: line.displayTitle,
             others: others,
             quoteLineLimit: quoteLineLimit,
+            showsOpen: showsOpen,
+            onOpen: onOpen
+        )
+    }
+
+    /// Sources 묶음의 한 줄. "When · Source"는 묶음의 값(`EvidenceGroup`: 가장 나중 줄의 일정)이고
+    /// 화면에는 마지막 줄 아래에만, 앞 줄은 VoiceOver로만 읽는다.
+    public init(
+        _ line: EvidenceLine,
+        in group: EvidenceGroup,
+        now: Date = Date(),
+        showsOpen: Bool = false,
+        onOpen: (() -> Void)? = nil
+    ) {
+        self.init(
+            service: line.service,
+            quote: line.quote,
+            when: group.displayDate.map { WhenText.label($0, now: now) },
+            source: group.displayTitle,
+            showsMeta: line.id == group.latest.id,
             showsOpen: showsOpen,
             onOpen: onOpen
         )
@@ -60,7 +84,9 @@ public struct EvidenceView: View {
                 .padding(.top, 1)
             VStack(alignment: .leading, spacing: TFSpace.xxs) {
                 quoteText
-                meta
+                if showsMeta, hasMeta {
+                    meta
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             if showsOpen, let onOpen {
@@ -72,6 +98,8 @@ public struct EvidenceView: View {
             }
         }
         .accessibilityElement(children: .combine)
+        // 그리지 않은 "When · Source"도 VoiceOver는 읽는다
+        .accessibilityValue(showsMeta ? "" : metaLabel)
     }
 
     @ViewBuilder
@@ -90,6 +118,15 @@ public struct EvidenceView: View {
         } else {
             text
         }
+    }
+
+    private var hasMeta: Bool {
+        when != nil || !(source ?? "").isEmpty || !others.isEmpty
+    }
+
+    /// "Sep 30 · Proposal review — Acme"
+    private var metaLabel: String {
+        [when, source].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · ")
     }
 
     private var meta: some View {
@@ -117,6 +154,8 @@ public struct EvidenceView: View {
 }
 
 /// Evidence group (Figma 10:737, Mac "Sources N"): 겹친 로고 + "Sources N" 아래에 근거를 줄마다, 오래된 것이 위.
+/// 같은 일정에 붙은 원문의 근거(Notion 회의록 + Meet 전사)는 한 회의로 붙여 두고 "When · Source"(일정 날짜 · 제목)를 마지막 줄에 한 번만
+/// (앞 줄은 VoiceOver로 같은 값을 읽는다).
 public struct SourcesGroup: View {
     let lines: [EvidenceLine]
     let now: Date
@@ -137,13 +176,18 @@ public struct SourcesGroup: View {
                     .font(TFFont.footnote)
                     .foregroundStyle(TFColor.textSecondary)
             }
-            ForEach(lines) { line in
-                EvidenceView(
-                    line,
-                    now: now,
-                    showsOpen: line.externalURL != nil,
-                    onOpen: line.externalURL == nil ? nil : { onOpen(line) }
-                )
+            ForEach(EvidenceGroup.grouped(lines)) { group in
+                VStack(alignment: .leading, spacing: TFSpace.sm) {
+                    ForEach(group.lines) { line in
+                        EvidenceView(
+                            line,
+                            in: group,
+                            now: now,
+                            showsOpen: line.externalURL != nil,
+                            onOpen: line.externalURL == nil ? nil : { onOpen(line) }
+                        )
+                    }
+                }
             }
         }
         .padding(.horizontal, TFSpace.lg)
@@ -165,6 +209,31 @@ extension PreviewData {
             occurredAt: Date(timeIntervalSinceNow: -3 * 86_400), externalURL: URL(string: "https://acme.slack.com/x"), service: .slack
         ),
     ]
+
+    /// 같은 일정에 붙은 Notion 회의록 · Meet 전사 + 그 뒤의 메일 (google-verification.md 5장 영상 A)
+    static let meetingLines: [EvidenceLine] = {
+        let meeting = SourceMeeting(
+            calendarEventID: "preview-event", title: "Proposal review — Acme",
+            start: Date(timeIntervalSinceNow: -4 * 86_400), end: Date(timeIntervalSinceNow: -4 * 86_400 + 1_800)
+        )
+        return [
+            EvidenceLine(
+                id: UUID(), quote: "Alex to send the revised proposal to Jordan by Friday", sourceID: UUID(), sourceTitle: "Proposal review",
+                occurredAt: Date(timeIntervalSinceNow: -4 * 86_400), externalURL: URL(string: "https://www.notion.so/x"), service: .notion,
+                meeting: meeting
+            ),
+            EvidenceLine(
+                id: UUID(), quote: "Alex Kim: Sure. I'll send the revised proposal to Jordan by Friday.", sourceID: UUID(),
+                sourceTitle: "Proposal review — Acme", occurredAt: Date(timeIntervalSinceNow: -4 * 86_400 + 60),
+                externalURL: URL(string: "https://docs.google.com/document/d/x/view"), service: .googleMeet, meeting: meeting
+            ),
+            EvidenceLine(
+                id: UUID(), quote: "Wednesday works too.", sourceID: UUID(), sourceTitle: "RE: Revised proposal",
+                occurredAt: Date(timeIntervalSinceNow: -2 * 86_400), externalURL: URL(string: "https://mail.google.com/mail/#all/x"),
+                service: .gmail
+            ),
+        ]
+    }()
 }
 
 #Preview("Evidence") {
@@ -180,6 +249,15 @@ extension PreviewData {
             onOpen: {}
         )
         SourcesGroup(lines: PreviewData.lines) { _ in }
+    }
+    .padding()
+    .frame(width: 520)
+}
+
+#Preview("Evidence · meeting") {
+    VStack(alignment: .leading, spacing: 24) {
+        EvidenceView(PreviewData.meetingLines[1], others: [.notion, .gmail], quoteLineLimit: 3, onOpen: {})
+        SourcesGroup(lines: PreviewData.meetingLines) { _ in }
     }
     .padding()
     .frame(width: 520)

@@ -398,6 +398,43 @@ public struct ActionEventRecord: Decodable, Sendable, Hashable, Identifiable {
     }
 }
 
+/// `sources.meeting`: 서버가 회의 원문(Notion 회의록 · Meet 전사)에 붙인 Calendar 일정 (docs/go-live/google-integration.md 2-7).
+/// 근거 줄에 일정 제목 · 날짜를 보이고, Sources가 같은 일정의 원문을 한 회의로 묶는 데 쓴다. 잇기는 서버가 정한다.
+public struct SourceMeeting: Decodable, Sendable, Hashable {
+    public let calendarEventID: String
+    /// 일정 제목. 없거나 비었으면 nil (근거 줄은 원문 제목을 쓴다)
+    public let title: String?
+    public let start: Date
+    public let end: Date
+
+    enum CodingKeys: String, CodingKey {
+        case title, start, end
+        case calendarEventID = "calendar_event_id"
+    }
+
+    public init(calendarEventID: String, title: String?, start: Date, end: Date) {
+        self.calendarEventID = calendarEventID
+        self.title = title.flatMap { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : $0 }
+        self.start = start
+        self.end = end
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let calendarEventID = try c.decode(String.self, forKey: .calendarEventID)
+        // 빈 id는 다른 회의끼리 한데 묶이므로 일정이 없는 것으로 본다
+        guard !calendarEventID.isEmpty else {
+            throw DecodingError.dataCorruptedError(forKey: .calendarEventID, in: c, debugDescription: "빈 calendar_event_id")
+        }
+        self.init(
+            calendarEventID: calendarEventID,
+            title: try c.decodeIfPresent(String.self, forKey: .title),
+            start: try c.decode(Date.self, forKey: .start),
+            end: try c.decode(Date.self, forKey: .end)
+        )
+    }
+}
+
 /// `sources` 행 (목록용, 원문 제외)
 public struct SourceSummary: Decodable, Sendable, Hashable, Identifiable {
     public let id: UUID
@@ -407,11 +444,13 @@ public struct SourceSummary: Decodable, Sendable, Hashable, Identifiable {
     public let externalURL: URL?
     public let createdAt: Date
     public let processingStatus: ProcessingStatus
+    /// 붙은 Calendar 일정. 일정이 없는 원문 · 옛 행은 nil
+    public let meeting: SourceMeeting?
 
-    public static let columns = "id, kind, title, occurred_at, external_url, created_at, processing_status"
+    public static let columns = "id, kind, title, occurred_at, external_url, created_at, processing_status, meeting"
 
     enum CodingKeys: String, CodingKey {
-        case id, kind, title
+        case id, kind, title, meeting
         case occurredAt = "occurred_at"
         case externalURL = "external_url"
         case createdAt = "created_at"
@@ -428,6 +467,8 @@ public struct SourceSummary: Decodable, Sendable, Hashable, Identifiable {
         externalURL = (try? c.decodeIfPresent(String.self, forKey: .externalURL)).flatMap { $0.flatMap(URL.init(string:)) }
         createdAt = try c.decode(Date.self, forKey: .createdAt)
         processingStatus = try c.decode(ProcessingStatus.self, forKey: .processingStatus)
+        // 일정 모양이 어긋나도 원문은 읽는다 (일정 없이 보인다)
+        meeting = try? c.decodeIfPresent(SourceMeeting.self, forKey: .meeting)
     }
 }
 

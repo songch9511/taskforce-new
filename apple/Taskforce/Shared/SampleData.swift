@@ -66,8 +66,26 @@ enum SampleData {
                     occurredAt: Date(timeIntervalSinceNow: -3 * day), externalURL: URL(string: "https://acme.slack.com/sample"), service: .slack
                 ),
             ]),
+            // 같은 Calendar 일정에 붙은 Notion 회의록 · Meet 전사: 근거 줄은 일정 제목 · 날짜, Sources는 한 회의로
+            id(3): EvidenceDigest(lines: [
+                EvidenceLine(
+                    id: UUID(), quote: "IR 자료 숫자는 이번 주 안에 업데이트해서 공유", sourceID: UUID(), sourceTitle: "투자사 미팅 회의록",
+                    occurredAt: Date(timeIntervalSinceNow: -2 * day), externalURL: URL(string: "https://www.notion.so/sample"), service: .notion,
+                    meeting: irMeeting
+                ),
+                EvidenceLine(
+                    id: UUID(), quote: "이준호: 네, 숫자 바꿔서 금요일까지 다시 보내드릴게요", sourceID: UUID(), sourceTitle: "투자사 미팅 — 한빛벤처스",
+                    occurredAt: Date(timeIntervalSinceNow: -2 * day + 60),
+                    externalURL: URL(string: "https://docs.google.com/document/d/sample/view"), service: .googleMeet, meeting: irMeeting
+                ),
+            ]),
         ]
     }
+
+    private static let irMeeting = SourceMeeting(
+        calendarEventID: "sample-event", title: "투자사 미팅 — 한빛벤처스",
+        start: Date(timeIntervalSinceNow: -2 * 86_400), end: Date(timeIntervalSinceNow: -2 * 86_400 + 3_600)
+    )
 
     /// 직접 추가: 서버 없이 Now 끝에 붙인다
     static func adding(_ title: String, due: LocalDate?, to response: NowResponse?) -> NowResponse {

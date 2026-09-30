@@ -9,18 +9,22 @@ public enum RemovedQuote {
     public static func isRemoved(_ quote: String) -> Bool { quote == slackDisconnected }
 }
 
-/// 근거 한 줄에 필요한 것: 인용 + 원문 (+ 서비스)
+/// 근거 한 줄에 필요한 것: 인용 + 원문 (+ 서비스 · 붙은 일정)
 public struct EvidenceLine: Sendable, Hashable, Identifiable {
     public let id: UUID
     public let quote: String
     public let sourceID: UUID
     public let sourceTitle: String?
+    /// 원문 시점 (일정이 없으면 근거 줄의 When). 일정 시작은 근거 순서에 쓰지 않는다
     public let occurredAt: Date?
     public let externalURL: URL?
     public let service: SourceService
+    /// 원문에 붙은 Calendar 일정 (Notion 회의록 · Meet 전사)
+    public let meeting: SourceMeeting?
 
     public init(
-        id: UUID, quote: String, sourceID: UUID, sourceTitle: String?, occurredAt: Date?, externalURL: URL?, service: SourceService
+        id: UUID, quote: String, sourceID: UUID, sourceTitle: String?, occurredAt: Date?, externalURL: URL?, service: SourceService,
+        meeting: SourceMeeting? = nil
     ) {
         self.id = id
         self.quote = quote
@@ -29,7 +33,14 @@ public struct EvidenceLine: Sendable, Hashable, Identifiable {
         self.occurredAt = occurredAt
         self.externalURL = externalURL
         self.service = service
+        self.meeting = meeting
     }
+
+    /// 근거 줄 "When · Source"의 When: 일정이 붙었으면 일정 시작 ("Sep 30 · Proposal review — Acme")
+    public var displayDate: Date? { meeting?.start ?? occurredAt }
+
+    /// 근거 줄 "When · Source"의 Source: 일정이 붙었으면 일정 제목, 제목 없는 일정이면 원문 제목
+    public var displayTitle: String? { meeting?.title ?? sourceTitle }
 
     public init(_ citation: AskCitation) {
         self.init(
@@ -56,10 +67,13 @@ public struct EvidenceDigest: Sendable, Hashable {
     }
 
     public init(evidence: [EvidenceRecord], sources: [UUID: SourceSummary]) {
-        // 같은 원문의 같은 구절은 한 번만
+        // 같은 원문의 같은 구절은 한 번만. 같은 시각이면 원문 id · 구절 · 근거 id 순으로 정해 읽을 때마다 순서가 바뀌지 않게
         var seen = Set<String>()
         let unique = evidence
-            .sorted { $0.createdAt < $1.createdAt }
+            .sorted {
+                ($0.createdAt, $0.sourceID.uuidString, $0.quote, $0.id.uuidString)
+                    < ($1.createdAt, $1.sourceID.uuidString, $1.quote, $1.id.uuidString)
+            }
             .filter { seen.insert("\($0.sourceID)|\($0.quote)").inserted }
         lines = unique.map { record in
             let source = sources[record.sourceID]
@@ -70,7 +84,8 @@ public struct EvidenceDigest: Sendable, Hashable {
                 sourceTitle: source?.title,
                 occurredAt: source?.occurredAt ?? record.createdAt,
                 externalURL: source?.externalURL,
-                service: source.map { SourceService.infer(externalURL: $0.externalURL, kind: $0.kind) } ?? .manual(.note)
+                service: source.map { SourceService.infer(externalURL: $0.externalURL, kind: $0.kind) } ?? .manual(.note),
+                meeting: source?.meeting
             )
         }
     }
@@ -89,4 +104,42 @@ public struct EvidenceDigest: Sendable, Hashable {
 
     /// Sources 묶음 머리의 겹친 로고 (처음 들어온 순서)
     public var services: [SourceService] { lines.map(\.service) }
+}
+
+/// Sources 묶음의 한 덩어리: 같은 일정(`calendar_event_id`)에 붙은 원문의 근거(예: Notion 회의록 + Meet 전사)는 한 회의로,
+/// 일정이 없는 근거는 줄마다 하나.
+public struct EvidenceGroup: Sendable, Hashable, Identifiable {
+    /// 한 줄 이상, 받은 순서 그대로
+    public let lines: [EvidenceLine]
+
+    public var id: UUID { lines[0].id }
+
+    /// 묶음의 일정 · "When · Source"는 모두 가장 나중에 들어온 줄의 값을 쓴다 (일정 이름이 바뀌었으면 나중 값).
+    /// 화면은 이 값을 마지막 줄 아래에 한 번, VoiceOver는 줄마다 읽는다.
+    public var latest: EvidenceLine { lines[lines.count - 1] }
+    public var meeting: SourceMeeting? { latest.meeting }
+    public var displayDate: Date? { latest.displayDate }
+    public var displayTitle: String? { latest.displayTitle }
+
+    private init(lines: [EvidenceLine]) {
+        precondition(!lines.isEmpty)
+        self.lines = lines
+    }
+
+    /// 받은 순서를 지키고, 같은 회의의 줄은 그 회의가 처음 나온 자리에 모은다.
+    public static func grouped(_ lines: [EvidenceLine]) -> [EvidenceGroup] {
+        var groups: [[EvidenceLine]] = []
+        var meetingIndex: [String: Int] = [:]
+        for line in lines {
+            if let key = line.meeting?.calendarEventID {
+                if let index = meetingIndex[key] {
+                    groups[index].append(line)
+                    continue
+                }
+                meetingIndex[key] = groups.count
+            }
+            groups.append([line])
+        }
+        return groups.map(EvidenceGroup.init(lines:))
+    }
 }

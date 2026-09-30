@@ -135,7 +135,7 @@ export async function syncGoogleConnection(
     if (error instanceof GoogleReauthError) {
       const changed = await recordSync(admin, connection, { claimedAt: now, error: REAUTH_MESSAGE, reauth: true });
       // 상태를 실제로 reauth로 바꾼 동기화에서만 알림 한 번 (G9). 알림이 실패해도 동기화 결과는 그대로다.
-      // 문구는 서버 SERVICE_NAMES.google("Google")이다: 앱의 "Google Calendar & Meet"과 맞추는 것은 PR 4b가 정한다
+      // 문구는 앱 연결 화면의 이름 그대로 "Reconnect Google Calendar & Meet to keep syncing." (notify/service.ts SERVICE_NAMES)
       if (changed) await notifyReconnect(admin, connection.userId, "google").catch(logError(`Google 재연결 알림 실패 (${connection.id})`));
       return { connectionId: connection.id, ok: false, error: REAUTH_MESSAGE, revoked: false };
     }

@@ -66,12 +66,17 @@ struct AccountSheet: View {
                 }
             }
             .navigationDestination(for: AccountRoute.self) { route in
-                switch route {
-                case .home: EmptyView()
-                case .profile: ProfileForm()
-                case .connections: ConnectionsView()
-                case .consent: ConsentSettingsView()
+                Group {
+                    switch route {
+                    case .home: EmptyView()
+                    case .profile: ProfileForm()
+                    case .connections: ConnectionsView()
+                    case .consent: ConsentSettingsView()
+                    }
                 }
+                // 줄을 눌러 들어가면 루트("Account")의 작은 제목을 물려받지만, 시트가 처음부터 이 화면으로 열리면(`initialRoute`:
+                // 재연결 배너 · 재연결 알림) 물려받지 못해 큰 제목이 첫 줄 위에 겹친다. 어느 길로 와도 작은 제목으로 둔다.
+                .navigationBarTitleDisplayMode(.inline)
             }
             .task { await account.load() }
             .confirmationDialog("Delete your account?", isPresented: $confirmingDelete, titleVisibility: .visible) {

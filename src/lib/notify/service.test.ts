@@ -72,6 +72,13 @@ describe("notifyReconnect", () => {
     expect(vi.mocked(sendPush).mock.calls[0][2].aps.alert.body).toBe("Reconnect Notion to keep syncing.");
   });
 
+  it("google은 앱 연결 화면의 이름 그대로 (ConnectionProvider.displayName)", async () => {
+    const { admin, inserted } = fakeAdmin([device]);
+    await notifyReconnect(admin, "u1", "google");
+    expect(vi.mocked(sendPush).mock.calls[0][2].aps.alert.body).toBe("Reconnect Google Calendar & Meet to keep syncing.");
+    expect(inserted).toEqual([{ table: "metric_events", row: { user_id: "u1", type: "reconnect_notified", provider: "google" } }]);
+  });
+
   it("기기가 여럿이어도 알림은 기기마다 하나, 이벤트는 한 줄", async () => {
     const { admin, inserted } = fakeAdmin([device, { ...device, id: "d2", token: "b".repeat(64) }]);
     expect(await notifyReconnect(admin, "u1", "gmail")).toBe(2);

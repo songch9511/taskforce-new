@@ -71,6 +71,36 @@ struct ModelDecodingTests {
         #expect(source.summary.processingStatus == .done)
         #expect(source.summary.externalURL?.host == "www.notion.so")
         #expect(source.rawText.contains("\n"))
+        // meeting 열이 없는 응답(옛 행 모양)도 읽는다
+        #expect(source.summary.meeting == nil)
+    }
+
+    @Test func sourceColumnsReadMeeting() {
+        #expect(SourceSummary.columns.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.contains("meeting"))
+        #expect(SourceRecord.columns.hasPrefix(SourceSummary.columns))
+    }
+
+    @Test func decodesSourceMeeting() throws {
+        let rows = try decode([SourceSummary].self, Fixtures.sourceRowsWithMeeting)
+        #expect(rows.count == 6)
+
+        let meeting = try #require(rows[0].meeting)
+        #expect(meeting.calendarEventID == "evt-1")
+        #expect(meeting.title == "Proposal review — Acme")
+        #expect(meeting.start == Date(timeIntervalSince1970: 1_790_730_000)) // 2026-09-30T01:00:00Z
+        #expect(meeting.end == meeting.start.addingTimeInterval(3_600))
+
+        // null · 열 없음 → 일정 없음
+        #expect(rows[1].meeting == nil)
+        #expect(rows[2].meeting == nil)
+        // 모양이 어긋난 일정(시각 없음)은 버리고 원문은 읽는다
+        #expect(rows[3].meeting == nil)
+        #expect(rows[3].title == "주간 회의")
+        // 빈 제목은 없는 것으로
+        #expect(rows[4].meeting?.calendarEventID == "evt-3")
+        #expect(rows[4].meeting?.title == nil)
+        // 빈 일정 id는 다른 회의끼리 묶이므로 일정 없음
+        #expect(rows[5].meeting == nil)
     }
 
     @Test func encodesEditWithExplicitNullDue() throws {

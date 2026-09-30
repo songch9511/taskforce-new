@@ -12,7 +12,8 @@ export const MEET_READONLY_SCOPE = "https://www.googleapis.com/auth/meetings.spa
 /**
  * G2 ②: 참석한(주최하지 않은) 회의의 전사도 찾는가. Calendar에서 참석한 Meet 일정의 회의 코드로 `conferenceRecords.list`를 부른다.
  * Google 문서가 서로 달라(가이드: "list는 주최한 회의만" / 릴리스 노트: "참가자도 회의 기록을 조회") dev에서 두 계정으로 시험한다.
- * 참석한 회의를 못 찾으면(빈 목록 · 403) false로 바꾸고 처리방침 3장 · 앱 문구를 "내가 주최한 회의"로 적는다.
+ * 참석한 회의를 못 찾으면(빈 목록 · 403) false로 바꾸고 처리방침 3장 · 앱 문구를 "내가 주최한 회의"로 적는다
+ * (앱은 `Connections.swift` `readsBeforeConnecting`의 Meet 한 줄 "…meetings you attend" → "…meetings you host").
  */
 export const LIST_ATTENDED_MEETINGS: boolean = true;
 
