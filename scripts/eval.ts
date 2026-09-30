@@ -105,6 +105,7 @@ function summaryRow(label: string, t: Totals): string {
     pct(t.precision),
     pct(t.recall),
     pct(t.ownerAccuracy),
+    String(t.falseAttributions).padStart(4),
     pct(t.dueAccuracy),
     `${t.truePositives}/${t.falsePositives}/${t.misses}`.padStart(9),
     String(t.hallucinated).padStart(4),
@@ -286,7 +287,7 @@ async function main() {
   console.log(`\n기계 검증: 환각 인용 폐기 ${droppedBy("QUOTE_NOT_FOUND")}건 · 인용된 옛 메일 속 후보 폐기 ${droppedBy("QUOTED_HISTORY")}건 · 기한 코드 보정 ${corrected.length}건`);
   corrected.forEach((c) => console.log(`    "${c.due_text}": 모델 ${c.model_due ?? "없음"} → 코드 ${c.due}`));
 
-  const header = ["단계".padEnd(16), "precision", "recall", "담당", "기한", "맞음/오탐/누락", "환각"].join("  ");
+  const header = ["단계".padEnd(16), "precision", "recall", "담당", "남의 일→me", "기한", "맞음/오탐/누락", "환각"].join("  ");
   console.log(`\n${header}`);
   const stageTotals = stages.map((stage) => {
     const t = totals(done.map((r) => scoreCase(r.golden, stage.pick(r), { autoOnly: stage.autoOnly })));

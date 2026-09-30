@@ -155,6 +155,18 @@ describe("totals", () => {
     expect(t.falsePositivesByKind.NOT_MY_ACTION).toBe(1);
   });
 
+  it("남의 일 오탐 중 사용자에게 귀속한 절대 건수를 센다", () => {
+    const score = scoreCase(golden, [
+      candidate("견적서는 박팀장이 드릴게요", { owner: "me" }),
+      candidate("견적서는 박팀장이 드릴게요", { owner: "unknown" }),
+      candidate("사무실을 옮겨요", { owner: "me" }),
+    ]);
+    const t = totals([score]);
+
+    expect(t.falsePositivesByKind.NOT_MY_ACTION).toBe(2);
+    expect(t.falseAttributions).toBe(1);
+  });
+
   it("후보가 없으면 precision은 계산하지 않는다", () => {
     expect(totals([scoreCase(golden, [])]).precision).toBeNull();
   });
