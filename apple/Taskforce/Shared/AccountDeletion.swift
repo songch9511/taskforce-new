@@ -9,7 +9,7 @@ import UIKit
 /// 서버로 보내면 서버가 Apple 토큰을 폐기한다. 사용자가 Apple 확인을 취소해도 삭제는 하고, 로그인 화면에 한 줄로 알린다.
 /// Google 로그인이 붙은 계정은 삭제한 뒤 앱이 이 기기의 Google 권한을 폐기한다(`GoogleSignInFlow.disconnect`, Supabase는 Google 토큰을 갖고 있지 않다).
 /// 이메일 · 비밀번호(심사 계정)는 폐기할 것이 없다. 무엇을 할지는 삭제 직전에 서버에서 새로 읽은 사용자로 정한다(`AccountDeletionPlan`):
-/// 다른 기기에서 Apple을 이은 계정도 놓치지 않게. 못 읽으면 Apple 재확인을 받는다.
+/// 다른 기기에서 Apple을 이은 계정도 놓치지 않게. 못 읽거나, 새로 읽은 쪽에 없어도 세션에 Apple이 있으면 Apple 재확인을 받는다.
 @MainActor
 enum AccountDeletion {
     static let revokeSkippedNote = "Account deleted. To remove Apple sign-in too, open Settings › Apple Account › Sign in with Apple."

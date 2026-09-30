@@ -79,6 +79,88 @@ struct SessionStoreSaveTests {
         #expect(store.errorMessage == nil)
     }
 
+    // MARK: Google 로그인 (`signInWithGoogle`)
+
+    /// Google ID 토큰 로그인(`/token?grant_type=id_token`)에 이 세션을 돌려주는 서버. 받은 요청이 `signInWithGoogle`의 값인지 본다
+    func store(storage: any AuthLocalStorage, signingIn session: Session) throws -> SessionStore {
+        let body = try AuthClient.Configuration.jsonEncoder.encode(session)
+        return SessionStore(auth: AuthClient(
+            url: URL(string: "https://example.supabase.co/auth/v1")!, localStorage: storage,
+            fetch: { request in
+                let url = try #require(request.url)
+                #expect(url.path == "/auth/v1/token")
+                #expect(URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems == [URLQueryItem(name: "grant_type", value: "id_token")])
+                let sent = try #require(JSONSerialization.jsonObject(with: request.httpBody ?? Data()) as? [String: Any])
+                #expect(sent["provider"] as? String == "google")
+                #expect(sent["id_token"] as? String == "id-token")
+                #expect(sent["access_token"] as? String == "access-token")
+                #expect(sent["nonce"] as? String == "nonce")
+                return (body, HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: ["Content-Type": "application/json"])!)
+            },
+            autoRefreshToken: false
+        ))
+    }
+
+    /// Supabase가 Google ID 토큰으로 만든 사용자 (이름은 `user_metadata`에)
+    func googleSession() -> Session {
+        var session = fixtures.session(expiresIn: 3600)
+        session.user.appMetadata = ["provider": "google", "providers": ["google"]]
+        session.user.userMetadata = ["full_name": "Doyun Kim", "name": "Doyun Kim"]
+        return session
+    }
+
+    func signInWithGoogle(_ store: SessionStore) async -> Bool {
+        await store.signInWithGoogle(idToken: "id-token", accessToken: "access-token", nonce: SignInNonce(raw: "nonce"))
+    }
+
+    /// 서버는 로그인시켰지만 세션을 Keychain에 저장하지 못했으면 실패다 (앱이 Google SDK 쪽 로그인도 지운다). 이름도 들고 있지 않는다
+    @Test func googleSignInThatWasNotSavedFails() async throws {
+        let store = try store(storage: UnsavableStorage(), signingIn: googleSession())
+        #expect(await signInWithGoogle(store) == false)
+        #expect(store.errorMessage == SessionStore.sessionNotSavedMessage)
+        #expect(store.takeAccountNameFill(for: fixtures.userID) == nil)
+    }
+
+    /// 전 계정의 세션이 남아 있어도 새 세션을 저장하지 못했으면 실패다
+    @Test func googleSignInOverAnotherSavedSessionFails() async throws {
+        var other = fixtures.session(expiresIn: 3600)
+        other.user.id = UUID()
+        let store = try store(storage: SavedSessionStorage(data: try JSONEncoder().encode(other)), signingIn: googleSession())
+        #expect(await signInWithGoogle(store) == false)
+        #expect(store.errorMessage == SessionStore.sessionNotSavedMessage)
+        #expect(store.takeAccountNameFill(for: fixtures.userID) == nil)
+    }
+
+    /// 저장된 Google 로그인은 그 로그인이 준 이름을 한 번만 준다 (로그인 이벤트는 지우지 않는다)
+    @Test func googleSignInGivesItsNameOnce() async throws {
+        let session = googleSession()
+        let store = try store(storage: SavedSessionStorage(data: try JSONEncoder().encode(session)), signingIn: session)
+        #expect(await signInWithGoogle(store))
+        #expect(store.errorMessage == nil)
+        store.apply(event: .signedIn, session: session)
+        #expect(store.takeAccountNameFill(for: fixtures.userID) == AccountNameFill(userID: fixtures.userID, name: "Doyun Kim"))
+        #expect(store.takeAccountNameFill(for: fixtures.userID) == nil)
+    }
+
+    /// 다른 사용자를 읽던 늦은 읽기(로그아웃 전에 시작한 전 계정의 읽기)는 이름을 가져가지 못하고, 이름은 그 사용자의 읽기에 남는다
+    @Test func googleNameIsOnlyForItsOwnUser() async throws {
+        let session = googleSession()
+        let store = try store(storage: SavedSessionStorage(data: try JSONEncoder().encode(session)), signingIn: session)
+        #expect(await signInWithGoogle(store))
+        #expect(store.takeAccountNameFill(for: UUID()) == nil)
+        #expect(store.takeAccountNameFill(for: fixtures.userID) == AccountNameFill(userID: fixtures.userID, name: "Doyun Kim"))
+    }
+
+    /// 꺼내 쓰기 전에 로그아웃하면 이름을 버린다 (다음 계정의 프로필에 채우지 않게)
+    @Test func signOutDropsTheGoogleName() async throws {
+        let session = googleSession()
+        let store = try store(storage: SavedSessionStorage(data: try JSONEncoder().encode(session)), signingIn: session)
+        #expect(await signInWithGoogle(store))
+        store.apply(event: .signedIn, session: session)
+        store.apply(event: .signedOut, session: nil)
+        #expect(store.takeAccountNameFill(for: fixtures.userID) == nil)
+    }
+
     @Test func signInMethodsFollowTheSession() throws {
         var session = fixtures.session(expiresIn: 3600)
         session.user.appMetadata = ["provider": "google", "providers": ["google"]]

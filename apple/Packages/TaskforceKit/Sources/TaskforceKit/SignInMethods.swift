@@ -42,6 +42,7 @@ public struct SignInMethods: Equatable, Sendable {
 
 /// 계정 삭제 때 폐기할 것. 삭제 직전에 서버에서 새로 읽은 사용자로 정한다: 세션의 사용자는 토큰을 받은 때의 것이라,
 /// 그 뒤 다른 기기에서 Apple을 이었으면 빠져 있다 (App Store 5.1.1(v): Apple 토큰 폐기). 못 읽으면 Apple 재확인을 받는다.
+/// 새로 읽은 쪽에 Apple이 없어도 세션에 있으면 받는다: 폐기를 빠뜨리는 것보다 한 번 더 묻는 쪽이 안전하다.
 public struct AccountDeletionPlan: Equatable, Sendable {
     /// 삭제 전에 Sign in with Apple을 한 번 더 받아 토큰 폐기용 code를 보낼지
     public let reauthorizeWithApple: Bool
@@ -50,7 +51,7 @@ public struct AccountDeletionPlan: Equatable, Sendable {
 
     /// `fresh`: 서버에서 새로 읽은 방식 (못 읽었으면 nil), `cached`: 세션의 방식
     public init(fresh: SignInMethods?, cached: SignInMethods) {
-        reauthorizeWithApple = (fresh ?? .unknown).needsAppleReauthorization
+        reauthorizeWithApple = (fresh ?? .unknown).needsAppleReauthorization || cached.providers.contains("apple")
         disconnectGoogle = (fresh?.hasGoogle ?? false) || cached.hasGoogle
     }
 

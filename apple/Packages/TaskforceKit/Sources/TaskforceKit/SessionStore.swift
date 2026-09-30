@@ -19,7 +19,7 @@ public final class SessionStore {
     public private(set) var notice: String?
     /// 로그인한 계정의 로그인 방식 (계정 줄 이름). 로그인 전이면 `unknown`. 계정 삭제는 서버에서 새로 읽는다(`AccountDeletionPlan`)
     public private(set) var signInMethods = SignInMethods.unknown
-    /// 방금 Google 로그인이 준 이름: 프로필을 처음 읽을 때 한 번 꺼내 쓴다 (`takeAccountNameFill`)
+    /// 방금 Google 로그인이 준 이름: 그 사용자의 프로필을 처음 읽을 때 한 번 꺼내 쓴다 (`takeAccountNameFill`)
     private var accountNameFill: AccountNameFill?
 
     private let auth: AuthClient
@@ -120,8 +120,10 @@ public final class SessionStore {
         }
     }
 
-    /// Google 로그인 직후 한 번만 준다: 꺼내면 지운다 (이름이 이미 있어도 다시 채우지 않게)
-    public func takeAccountNameFill() -> AccountNameFill? {
+    /// Google 로그인 직후 한 번만 준다: 꺼내면 지운다 (이름이 이미 있어도 다시 채우지 않게).
+    /// 그 로그인의 사용자를 읽은 쪽만 꺼낸다: 로그아웃 전에 시작한 전 계정의 늦은 읽기는 다음 계정의 이름을 가져가지 못한다
+    public func takeAccountNameFill(for userID: UUID) -> AccountNameFill? {
+        guard accountNameFill?.userID == userID else { return nil }
         defer { accountNameFill = nil }
         return accountNameFill
     }

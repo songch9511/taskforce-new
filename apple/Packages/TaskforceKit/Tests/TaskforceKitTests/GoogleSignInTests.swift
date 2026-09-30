@@ -135,6 +135,19 @@ struct AccountDeletionPlanTests {
         #expect(!emailPlan.disconnectGoogle)
     }
 
+    /// 새로 읽은 사용자에 Apple이 없어도 세션에 있으면 Apple 재확인을 받는다 (App Store 5.1.1(v))
+    @Test func cachedAppleStillReauthorizesWithApple() async {
+        let linked = SignInMethods(providers: ["google", "apple"], primary: "google")
+        let fresh = SignInMethodsTests().user(provider: "google", providers: ["google"])
+        let plan = await AccountDeletionPlan.make(cached: linked) { fresh }
+        #expect(plan.reauthorizeWithApple)
+        #expect(plan.disconnectGoogle)
+        #expect(AccountDeletionPlan(fresh: google, cached: apple).reauthorizeWithApple)
+        #expect(!AccountDeletionPlan(fresh: google, cached: google).reauthorizeWithApple)
+        // 세션의 방식을 모르는 것은 Apple이 붙은 것이 아니다: 심사 계정(이메일)에 Apple 확인을 띄우지 않는다
+        #expect(!AccountDeletionPlan(fresh: email, cached: .unknown).reauthorizeWithApple)
+    }
+
     @Test func plansByProvider() {
         let plans = [google, apple, email, .unknown].map { AccountDeletionPlan(fresh: $0, cached: email) }
         #expect(plans.map(\.reauthorizeWithApple) == [false, true, false, true])

@@ -21,7 +21,7 @@
 | 동의 철회 방법 | 5.1.1(i) | 있음: 계정 메뉴(Mac은 설정) → AI data → Withdraw → `DELETE /api/v1/consent` (`ConsentSettingsView`) | — |
 | 앱 안 계정 삭제 | 5.1.1(v) | 있음 (계정 메뉴 → 계정 삭제 → `DELETE /api/v1/account`) | — |
 | 제3자 로그인(Google)을 두면 동등한 로그인 옵션 | 4.8 | Sign in with Apple이 먼저, 같은 크기 (2026-09-30 Sign in with Google 추가, PLATFORMS.md 4장) | — |
-| 계정 삭제 때 Sign in with Apple 토큰 폐기 | 5.1.1(v), Apple 계정 삭제 안내 | 구현됨: Apple 로그인이 붙은 계정은 Apple 확인을 한 번 더 받아 code를 보내고, 이메일 · Google로만 가입한 계정(데모 계정 포함)은 건너뛴다. 삭제 직전에 서버에서 사용자를 읽지 못하면 이 계정에도 뜬다 (6장 3번, `AccountDeletionPlan`) | 실기기 확인 (6장 6번) |
+| 계정 삭제 때 Sign in with Apple 토큰 폐기 | 5.1.1(v), Apple 계정 삭제 안내 | 구현됨: Apple 로그인이 붙은 계정은 Apple 확인을 한 번 더 받아 code를 보내고, 이메일 · Google로만 가입한 계정(데모 계정 포함)은 건너뛴다. 삭제 직전에 서버에서 사용자를 읽지 못하면 이 계정에도 뜬다. 새로 읽은 사용자에 Apple이 없어도 세션에 있으면 뜬다 (6장 3번, `AccountDeletionPlan`) | 실기기 확인 (6장 6번) |
 | 앱 안 처리방침 링크 | 5.1.1(i) | 있음: 계정 메뉴 · Mac 설정 · 로그인 화면 · AI data 화면의 "Privacy Policy" · "Terms of Use" (`apple/Taskforce/iOS/AccountSheet.swift`, `LegalLinksRow`) | — |
 | 심사원이 들어갈 수 있는 데모 계정 | 2.1 | 있음: 로그인 화면의 "Sign in with email" → 이메일 + 비밀번호(`SessionStore.signInWithEmail`, 가입 화면 없음). 허용 목록(`review_accounts`) 밖 이메일 가입은 DB 훅이 막는다 (3장) | 사용자: 훅 켜기 · 데모 계정 만들기 (7장 1번) |
 | 수출 규정 | — | HTTPS만 쓰면 면제 | `Info.plist`에 `ITSAppUsesNonExemptEncryption = NO` 확인 |
@@ -215,7 +215,7 @@ Mac은 철회 경로가 "Settings > AI data"다. 계정 설정의 AI data 화면
 1. **키 발급 (사용자, ✅ runbook I8):** Apple Developer → Certificates, IDs & Profiles → Keys → + → 이름 `Taskforce SIWA` → **Sign in with Apple** 체크 → Configure → Primary App ID `dev.taskforcelabs.taskforce` → Register → `.p8` 내려받기(한 번만 받을 수 있다). `.env.example`은 APNs 키와 같은 키여도 된다고 적지만, 권한을 나눠 두려면 따로 만든다.
 2. **환경변수 (서버 전용, `.env.example`에 있음):** `APPLE_TEAM_ID=U9DWQKQFMW`, `APPLE_KEY_ID=<키 ID>`, `APPLE_PRIVATE_KEY=<.p8 내용, 줄바꿈은 \n>`, `APPLE_CLIENT_ID`(비우면 `dev.taskforcelabs.taskforce`). 비워 두면 폐기를 건너뛰고 삭제는 그대로 한다.
 3. **앱 (구현됨):** 계정 삭제 확인 화면에서 Sign in with Apple을 한 번 더 받아(`ASAuthorizationAppleIDProvider`, 범위 없음) 새 `authorizationCode`를 얻는다(5분 안에 한 번만 쓸 수 있다). `DELETE /api/v1/account` 본문 `{"apple_authorization_code": "…"}`로 보낸다(`contract.ts`의 `deleteAccountRequestSchema`). 이메일 · Google로 가입한 계정은 이 단계를 건너뛴다(2026-09-30부터 Apple 로그인이 붙은 계정만, `SignInMethods`).
-   - Apple 재확인을 받을지는 삭제 직전에 서버에서 새로 읽은 사용자로 정한다(`AccountDeletionPlan`). Google로 가입한 뒤 다른 기기에서 Apple을 이은 계정도 Apple 토큰을 폐기하고, 새로 읽지 못하면 Apple 재확인을 받는다.
+   - Apple 재확인을 받을지는 삭제 직전에 서버에서 새로 읽은 사용자로 정한다(`AccountDeletionPlan`). Google로 가입한 뒤 다른 기기에서 Apple을 이은 계정도 Apple 토큰을 폐기하고, 새로 읽지 못하거나 새로 읽은 쪽에 없어도 세션에 Apple이 있으면 Apple 재확인을 받는다.
    - **Google 로그인 계정 (2026-09-30):** Supabase는 Google 토큰을 갖고 있지 않아 서버가 폐기할 것이 없다. 앱이 삭제가 끝난 뒤 `GIDSignIn.disconnect()`로 이 기기의 Google 로그인 권한을 폐기한다(기다리지 않고, 실패해도 삭제는 끝났다). 이 기기에 Google 토큰이 없으면 폐기하지 못한다(PLATFORMS.md 4장).
 4. **서버 (구현됨):**
    - `client_secret`: ES256 JWT. 헤더 `kid=APPLE_KEY_ID`, 클레임 `iss=APPLE_TEAM_ID`, `iat=지금`, `exp=지금+5분`, `aud=https://appleid.apple.com`, `sub=APPLE_CLIENT_ID`.
