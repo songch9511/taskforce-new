@@ -15,7 +15,7 @@ public struct EvidenceLine: Sendable, Hashable, Identifiable {
     public let quote: String
     public let sourceID: UUID
     public let sourceTitle: String?
-    /// 원문 시점. 근거 순서(오래된 것이 위 · 맨 앞 근거)는 이것으로 정한다
+    /// 원문 시점 (일정이 없으면 근거 줄의 When). 일정 시작은 근거 순서에 쓰지 않는다
     public let occurredAt: Date?
     public let externalURL: URL?
     public let service: SourceService
@@ -111,6 +111,11 @@ public struct EvidenceGroup: Sendable, Hashable, Identifiable {
 
     public var id: UUID { lines[0].id }
     public var meeting: SourceMeeting? { lines[0].meeting }
+
+    private init(lines: [EvidenceLine]) {
+        precondition(!lines.isEmpty)
+        self.lines = lines
+    }
 
     /// 받은 순서를 지키고, 같은 회의의 줄은 그 회의가 처음 나온 자리에 모은다.
     public static func grouped(_ lines: [EvidenceLine]) -> [EvidenceGroup] {

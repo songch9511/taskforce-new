@@ -97,35 +97,41 @@ struct SourceStackTests {
         let notion = UUID(uuidString: "33333333-3333-4333-8333-000000000001")!
         let slack = UUID(uuidString: "33333333-3333-4333-8333-000000000003")!
         let untitled = UUID(uuidString: "33333333-3333-4333-8333-000000000005")!
+        // 근거가 들어온 순서: 제목 없는 일정 → Notion 회의록 → Slack (원문 시점 · 일정 시작 순서와 모두 다르다)
         let digest = EvidenceDigest(
             evidence: [
-                evidence(1, source: notion, quote: "I'll send the revised proposal by Friday", at: 100),
-                evidence(2, source: slack, quote: "Wednesday works too", at: 200),
-                evidence(3, source: untitled, quote: "다음 주로", at: 300),
+                evidence(1, source: untitled, quote: "다음 주로", at: 100),
+                evidence(2, source: notion, quote: "I'll send the revised proposal by Friday", at: 200),
+                evidence(3, source: slack, quote: "Wednesday works too", at: 300),
             ],
             sources: sources
         )
-        let meetingLine = digest.lines[0]
+        // 순서는 그대로 근거가 들어온 순서 (일정 시작으로 다시 줄 세우지 않는다)
+        #expect(digest.lines.map(\.sourceID) == [untitled, notion, slack])
+        #expect(digest.lead?.sourceID == slack)
+
+        // 회의록은 다음 날 만들어졌지만(Oct 1) When은 일정 시작 (Sep 30)
+        let meetingLine = digest.lines[1]
         #expect(meetingLine.meeting?.calendarEventID == "evt-1")
         #expect(meetingLine.displayTitle == "Proposal review — Acme")
         #expect(meetingLine.displayDate == sources[notion]?.meeting?.start)
+        #expect(meetingLine.displayDate != meetingLine.occurredAt)
         // "Sep 30 · Proposal review — Acme"
         let utc = TimeZone(secondsFromGMT: 0)!
         let now = Date(timeIntervalSince1970: 1_790_730_000 + 5 * 86_400)
         #expect(WhenText.label(try #require(meetingLine.displayDate), now: now, timeZone: utc) == "Sep 30")
+        #expect(WhenText.label(try #require(meetingLine.occurredAt), now: now, timeZone: utc) == "Oct 1")
 
         // 일정이 없으면 원문 그대로
-        let slackLine = digest.lines[1]
+        let slackLine = digest.lines[2]
         #expect(slackLine.meeting == nil)
         #expect(slackLine.displayTitle == "#sales")
         #expect(slackLine.displayDate == sources[slack]?.occurredAt)
 
-        // 제목 없는 일정: 날짜는 일정, 이름은 원문 제목
-        #expect(digest.lines[2].displayTitle == "주간 회의")
-        #expect(digest.lines[2].displayDate == sources[untitled]?.meeting?.start)
-
-        // 순서는 원문 시점 그대로 (일정 시작으로 바꾸지 않는다)
-        #expect(digest.lines.map(\.occurredAt) == [notion, slack, untitled].map { sources[$0]?.occurredAt })
+        // 제목 없는 일정: 날짜는 일정 시작(05:00, 원문은 05:20), 이름은 원문 제목
+        #expect(digest.lines[0].displayTitle == "주간 회의")
+        #expect(digest.lines[0].displayDate == sources[untitled]?.meeting?.start)
+        #expect(digest.lines[0].displayDate != sources[untitled]?.occurredAt)
     }
 
     func line(_ n: Int, meeting eventID: String?) -> EvidenceLine {

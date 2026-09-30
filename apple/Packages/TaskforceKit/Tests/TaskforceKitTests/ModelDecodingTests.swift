@@ -82,7 +82,7 @@ struct ModelDecodingTests {
 
     @Test func decodesSourceMeeting() throws {
         let rows = try decode([SourceSummary].self, Fixtures.sourceRowsWithMeeting)
-        #expect(rows.count == 5)
+        #expect(rows.count == 6)
 
         let meeting = try #require(rows[0].meeting)
         #expect(meeting.calendarEventID == "evt-1")
@@ -99,6 +99,8 @@ struct ModelDecodingTests {
         // 빈 제목은 없는 것으로
         #expect(rows[4].meeting?.calendarEventID == "evt-3")
         #expect(rows[4].meeting?.title == nil)
+        // 빈 일정 id는 다른 회의끼리 묶이므로 일정 없음
+        #expect(rows[5].meeting == nil)
     }
 
     @Test func encodesEditWithExplicitNullDue() throws {

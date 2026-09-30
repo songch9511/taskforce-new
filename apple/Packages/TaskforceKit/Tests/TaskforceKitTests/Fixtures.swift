@@ -137,14 +137,14 @@ enum Fixtures {
     }]
     """
 
-    /// `sources.meeting`이 있는 행 · null · 없음 · 모양이 어긋남 · 제목 없음 (SourceSummary.columns, google-integration.md 2-7)
+    /// `sources.meeting`이 있는 행 · null · 없음 · 모양이 어긋남 · 제목 없음 · 빈 id (SourceSummary.columns, google-integration.md 2-7)
     static let sourceRowsWithMeeting = """
     [
       {
         "id": "33333333-3333-4333-8333-000000000001",
         "kind": "meeting",
         "title": "Proposal review",
-        "occurred_at": "2026-09-30T01:00:00+00:00",
+        "occurred_at": "2026-10-01T00:30:00+00:00",
         "external_url": "https://www.notion.so/proposal",
         "created_at": "2026-09-30T02:00:00.123456+00:00",
         "processing_status": "done",
@@ -188,11 +188,21 @@ enum Fixtures {
         "id": "33333333-3333-4333-8333-000000000005",
         "kind": "meeting",
         "title": "주간 회의",
-        "occurred_at": "2026-09-30T05:00:00+00:00",
+        "occurred_at": "2026-09-30T05:20:00+00:00",
         "external_url": "https://www.notion.so/weekly2",
         "created_at": "2026-09-30T05:10:00+00:00",
         "processing_status": "done",
         "meeting": { "calendar_event_id": "evt-3", "title": "  ", "start": "2026-09-30T05:00:00.000Z", "end": "2026-09-30T05:30:00.000Z" }
+      },
+      {
+        "id": "33333333-3333-4333-8333-000000000006",
+        "kind": "meeting",
+        "title": "Standup",
+        "occurred_at": "2026-09-30T06:00:00+00:00",
+        "external_url": "https://www.notion.so/standup",
+        "created_at": "2026-09-30T06:10:00+00:00",
+        "processing_status": "done",
+        "meeting": { "calendar_event_id": "", "title": "Standup", "start": "2026-09-30T06:00:00.000Z", "end": "2026-09-30T06:15:00.000Z" }
       }
     ]
     """

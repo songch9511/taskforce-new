@@ -421,8 +421,13 @@ public struct SourceMeeting: Decodable, Sendable, Hashable {
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
+        let calendarEventID = try c.decode(String.self, forKey: .calendarEventID)
+        // 빈 id는 다른 회의끼리 한데 묶이므로 일정이 없는 것으로 본다
+        guard !calendarEventID.isEmpty else {
+            throw DecodingError.dataCorruptedError(forKey: .calendarEventID, in: c, debugDescription: "빈 calendar_event_id")
+        }
         self.init(
-            calendarEventID: try c.decode(String.self, forKey: .calendarEventID),
+            calendarEventID: calendarEventID,
             title: try c.decodeIfPresent(String.self, forKey: .title),
             start: try c.decode(Date.self, forKey: .start),
             end: try c.decode(Date.self, forKey: .end)
