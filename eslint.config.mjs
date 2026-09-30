@@ -14,6 +14,9 @@ const eslintConfig = defineConfig([
     "next-env.d.ts",
     // Apple 앱 빌드 산출물 (Swift 패키지 체크아웃에 TS 예제가 들어 있음)
     "apple/**",
+    // 도구 폴더: .claude/worktrees에 다른 세션의 작업 트리 사본(빌드 산출물 포함)이 들어 있다
+    ".claude/**",
+    ".omc/**",
   ]),
 ]);
 
