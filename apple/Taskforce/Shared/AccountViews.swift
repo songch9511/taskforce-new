@@ -196,14 +196,14 @@ struct ConsentDetails: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: TFSpace.lg) {
-            Text("To find your tasks, Taskforce sends text from the services you connect to third-party AI models.")
+            Text("To find your tasks, Taskforce sends the text you connect or paste in to third-party AI models.")
                 .font(TFFont.callout)
                 .foregroundStyle(TFColor.textPrimary)
                 .fixedSize(horizontal: false, vertical: true)
-            item("doc.text", "What's sent", "Meeting notes, transcripts, messages, and email you connect, with the names and email addresses of people in them. Your name, nicknames, and email addresses, so the AI can recognize you. Your task titles and quotes, and questions you ask.")
+            item("doc.text", "What's sent", "Notes, documents, transcripts, messages, and email you connect or paste in, with the names and email addresses of people in them. Your name, nicknames, and email addresses, so the AI can recognize you. Your task titles and quotes, and questions you ask.")
             item("arrow.up.right", "Who receives it", "OpenRouter (USA), which routes each request to Fireworks, Together AI, DeepInfra, Microsoft Azure, or TypeSafe (all USA).")
             item("lock.shield", "How it's protected", "Only providers that keep no data. Never used to train AI models. Stored on our servers in Sydney. Delete your account to delete it all.")
-            item("arrow.uturn.backward", "Withdraw anytime", "Turn this off in \(settingsPath). Without it, Taskforce can't create tasks from your connected services.")
+            item("arrow.uturn.backward", "Withdraw anytime", "Turn this off in \(settingsPath). Without it, Taskforce can't find tasks in your sources.")
             LegalLinksRow()
                 .font(TFFont.footnote)
                 .padding(.leading, 20 + TFSpace.md)
@@ -246,6 +246,7 @@ struct ConsentPrompt: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
+            .scrollIndicators(.visible)
             HStack(spacing: TFSpace.sm) {
                 Button("Allow") {
                     working = true
@@ -269,7 +270,8 @@ struct ConsentPrompt: View {
         #if os(iOS)
         .presentationDetents([.large])
         #else
-        .frame(width: 420, height: 440)
+        // 알리는 내용이 스크롤 없이 모두 보이게 (5.1.2(i))
+        .frame(width: 460, height: 640)
         #endif
     }
 }

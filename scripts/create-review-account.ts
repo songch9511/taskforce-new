@@ -111,7 +111,7 @@ async function main() {
   // 2) 사용자
   let userId = await findUserId(admin, email);
   if (userId) {
-    const { error } = await admin.auth.admin.updateUserById(userId, { password, email_confirm: true });
+    const { error } = await admin.auth.admin.updateUserById(userId, { password, email_confirm: true, user_metadata: { name: REVIEWER_NAME } });
     if (error) throw error;
     console.log("기존 사용자의 비밀번호를 바꿨습니다.");
   } else {

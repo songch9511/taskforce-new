@@ -47,6 +47,7 @@ This policy explains what we process, why, where, and for how long, and how you 
 | Profile | Display name, aliases, additional email addresses | You enter them in the app |
 | Connections | The connected service, workspace or account identifier and name (for Google, the account's email address), connection settings (names and identifiers of databases to include or skip; for Google, the permission scopes you granted and, for Gmail, counts of emails by reason), sync status (where the last import reached; for Gmail, the identifier and received time of recently imported or filtered emails), access tokens (stored encrypted) | When you connect a service in the app |
 | Source text from connected services | Meeting notes, documents, task database entries, calendar events, meeting transcripts, emails, and Slack messages, with their titles, times, original links, and the people involved (names and email addresses of senders, recipients, attendees, and speakers). See section 3 for each service | Through the connected service's API |
+| Pasted source text | Text you paste into the Mac launcher (such as meeting notes or messages) and its title (the first line) | You enter it in the app |
 | Information derived from source text | Task title, scope, due date, owner, counterpart name, evidence quotes, a record of who said what and when, change history, AI judgment records (candidates and probabilities), numeric vectors used to find similar tasks (embeddings) | When the server processes a source |
 | Usage records | App opens; starting, completing, editing, deleting, or confirming a task; use of "Hand off to AI"; weekly question answers; times you reported a missing task; requests for services we do not support yet; records of completing a connection, of a connection expiring so that you need to reconnect, and of sending a reconnect notice (service name and time only) | When you use the app, or when the server syncs your connections |
 | Device and notifications | Push notification device token (APNs), platform (iOS or macOS), app version, last seen time | After the app receives notification permission |
@@ -127,6 +128,7 @@ Taskforce uses external AI models to find tasks in source text, decide whether a
 ### What we send
 
 - Source text from connected services (body, title, date) and the names and email addresses of the people involved
+- Text you paste in (body and title)
 - Your display name, aliases, and email addresses, so the model can recognize you in the text
 - Titles and evidence quotes of existing tasks, to compare with newly found candidates
 - (When you use Ask) your question and the related tasks and evidence quotes
@@ -140,7 +142,7 @@ Taskforce uses external AI models to find tasks in source text, decide whether a
 
 ### Consent and withdrawal
 
-- Before you connect your first service, the app shows you this information and asks for your consent. **If you do not agree, the server does not send or process source text from connected services.**
+- Before you connect your first service, the app shows you this information and asks for your consent. **If you do not agree, the server does not send or process source text from connected services or text you paste in.**
 - You can withdraw consent at any time in app → Account → AI data. After you withdraw, new source text is not sent to AI, so no new tasks are created. Existing tasks remain; to delete them, delete your account.
 - "Hand off to AI" packages a task's context as text and shows it in the app. If you paste that text into another AI tool, you are doing so yourself; we do not send it.
 
@@ -152,7 +154,7 @@ Taskforce uses external AI models to find tasks in source text, decide whether a
 |---|---|
 | Account, profile, sign-in sessions | Until you delete your account |
 | Connections and access tokens | Until you disconnect or delete your account |
-| Source text from connected services (body text) | **90 days after it is stored.** After 90 days we delete only the body text; the row, title, original link, people involved, and processing result remain until you delete your account (they remain after you disconnect). **For Slack, when you disconnect or remove the app,** we delete the body text, title, and people involved right away |
+| Source text from connected services and pasted source text (body text) | **90 days after it is stored.** After 90 days we delete only the body text; the row, title, original link, people involved, and processing result remain until you delete your account (they remain after you disconnect). **For Slack, when you disconnect or remove the app,** we delete the body text, title, and people involved right away |
 | Jev judgment records (including candidate quotes) | 90 days after they are stored. For Slack source text, right away when you disconnect or remove the app |
 | Tasks, evidence quotes, change history, embeddings | Until you delete your account. Evidence quotes remain even after the source body text is deleted, except that evidence quotes from Slack are deleted when you disconnect or remove the app (the tasks and embeddings remain). A task you delete in the app disappears from your list but is kept in a "deleted" state so we can calculate the error rate |
 | Queued Slack messages (before grouping into source text) | 3 days after they arrive. Once grouped into source text and processed, the text is cleared, and only a marker (conversation, message, and sender identifiers) is kept until 3 days after arrival so the same message is not received twice. Right away when you disconnect or remove the app |
@@ -212,7 +214,7 @@ Our server and database are outside Korea. All transfers happen over the network
 | Google LLC (1600 Amphitheatre Parkway, Mountain View, CA 94043, USA) | USA and other countries where Google has data centers | Email address and content of support email | Receiving and storing support email | 90 days after the request is closed |
 
 - **Ground for transfer:** entrustment and storage needed to perform our agreement with you, with the items above disclosed in this policy (PIPA Art. 28-8(1)(3)). Sending to external AI (section 4) additionally requires your in-app consent.
-- **How to refuse, and the effect:** because our server and database are outside Korea, we cannot provide the service if you refuse international transfer. To refuse, stop using the service and delete your account. To refuse only the transfer to external AI, do not give, or withdraw, AI data consent. In that case we do not process source text from your connected services, and no tasks are created automatically.
+- **How to refuse, and the effect:** because our server and database are outside Korea, we cannot provide the service if you refuse international transfer. To refuse, stop using the service and delete your account. To refuse only the transfer to external AI, do not give, or withdraw, AI data consent. In that case we do not process source text from your connected services or text you paste in, and no tasks are created automatically.
 
 ## 8. When we look at your source text
 
