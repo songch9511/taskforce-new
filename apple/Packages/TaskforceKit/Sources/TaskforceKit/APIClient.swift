@@ -167,6 +167,11 @@ public struct APIClient: Sendable {
         try await sendNoContent(.delete, "consent")
     }
 
+    /// 처리방침 판과 이 계정에 보일 변경 안내 (읽기만. 본 판은 `PolicyNoticeSeen`이 기기에 적는다)
+    public func legal() async throws -> LegalResponse {
+        try await send(.get, "legal")
+    }
+
     // MARK: 연동
 
     /// OAuth 시작 주소. `ASWebAuthenticationSession`으로 열고 `taskforce://connections/{provider}?status=…`로 돌아온다.

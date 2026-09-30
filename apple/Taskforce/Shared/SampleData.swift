@@ -8,6 +8,19 @@ enum SampleData {
     static var isEnabled: Bool { ProcessInfo.processInfo.arguments.contains("-TFSampleData") }
     /// 첫 동기화 화면 (`-TFSampleData -TFSampleSyncing`): 할 일 없이 Notion이 동기화 중
     static var isSyncing: Bool { ProcessInfo.processInfo.arguments.contains("-TFSampleSyncing") }
+    /// 처리방침 변경 안내 (`-TFSampleData -TFSamplePolicy`: 시행된 판, `-TFSamplePolicyUpcoming`: 시행 예정 판)
+    static var policyNotice: PolicyNotice? {
+        let arguments = ProcessInfo.processInfo.arguments
+        let links = PolicyLinks(
+            ko: URL(string: "https://www.taskforcelabs.dev/ko/privacy")!,
+            en: URL(string: "https://www.taskforcelabs.dev/en/privacy")!
+        )
+        if arguments.contains("-TFSamplePolicyUpcoming") {
+            return PolicyNotice(kind: .upcoming, version: "sample-upcoming", effectiveDate: DueDateFormat.today().adding(days: 7), url: links)
+        }
+        guard arguments.contains("-TFSamplePolicy") else { return nil }
+        return PolicyNotice(kind: .updated, version: "sample", effectiveDate: DueDateFormat.today(), url: links)
+    }
 
     static let reviewID = UUID(uuidString: "5A000000-0000-4000-8000-000000000001")!
     /// 로그인 없이 견본 화면을 띄울 때 쓰는 사용자 id (iPhone)

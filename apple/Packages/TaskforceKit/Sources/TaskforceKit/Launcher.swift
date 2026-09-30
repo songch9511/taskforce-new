@@ -69,6 +69,8 @@ public enum LauncherItem: Hashable, Sendable, Identifiable {
     case signInWithEmail
     /// 외부 AI 처리 동의 전이라 연동 원문을 읽지 못함 (목록은 그대로 보인다)
     case allowAI
+    /// 처리방침 변경 안내: ↩ View (처리방침 페이지) · ⌘⌫ 닫기
+    case policyNotice(PolicyNotice)
 
     public var id: String {
         switch self {
@@ -83,6 +85,7 @@ public enum LauncherItem: Hashable, Sendable, Identifiable {
         case .signIn: "sign-in"
         case .signInWithEmail: "sign-in-email"
         case .allowAI: "allow-ai"
+        case .policyNotice: "policy-notice"
         }
     }
 
@@ -126,8 +129,10 @@ public enum LauncherContent {
     /// 구역은 `TaskBoard.sections` (Review · In Progress · To Do · Done Today). 내 변경을 얹은 목록을 넘긴다.
     /// 찾는 중에는 네 구역을 모두 거르고, Done Today는 Ask · Add 아래에 둔다 (맞는 열린 할 일이 없으면 Add가 맨 위라 ↩ 한 번으로 시작).
     /// `needsConsent`: 동의 전이면 빈 입력창 맨 위에 "Allow AI processing" 한 줄 (목록을 막지 않는다)
+    /// `policyNotice`: 처리방침 변경 안내가 있으면 빈 입력창 맨 위에 한 줄 (동의 줄 아래)
     public static func sections(
-        for mode: LauncherInput.Mode, now: NowResponse?, doneToday: [ActionSummary] = [], signedIn: Bool, needsConsent: Bool = false
+        for mode: LauncherInput.Mode, now: NowResponse?, doneToday: [ActionSummary] = [], signedIn: Bool, needsConsent: Bool = false,
+        policyNotice: PolicyNotice? = nil
     ) -> [LauncherSection] {
         guard signedIn else {
             return [
@@ -140,7 +145,8 @@ public enum LauncherContent {
         switch mode {
         case .empty:
             let tasks = board.sections()
-            sections = [LauncherSection(title: nil, items: needsConsent ? [.allowAI] : [])]
+            let notices: [LauncherItem] = (needsConsent ? [.allowAI] : []) + (policyNotice.map { [.policyNotice($0)] } ?? [])
+            sections = [LauncherSection(title: nil, items: notices)]
                 + taskSections(tasks, includingDone: true)
                 + [LauncherSection(title: "Commands", items: LauncherCommand.allCases.map(LauncherItem.command))]
         case .query(let query):

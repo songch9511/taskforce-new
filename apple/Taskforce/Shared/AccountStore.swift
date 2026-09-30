@@ -4,7 +4,7 @@ import Observation
 import SwiftUI
 import TaskforceKit
 
-/// 연결 · 외부 AI 처리 동의 · 프로필. iPhone 계정 시트와 Mac 설정 창이 같은 것을 쓴다.
+/// 연결 · 외부 AI 처리 동의 · 프로필 · 처리방침 변경 안내. iPhone 계정 시트와 Mac 설정 창이 같은 것을 쓴다.
 @MainActor
 @Observable
 final class AccountStore {
@@ -32,6 +32,10 @@ final class AccountStore {
     private var pendingHandoff: (provider: ConnectionProvider, id: String)?
     /// 동의가 끝나 이어서 연결할 서비스. 연결 화면이 자기 브라우저 세션으로 시작한다 (동의 시트는 이미 닫혔다).
     var resumeProvider: ConnectionProvider?
+    /// 처리방침 변경 안내 (이 계정이 아직 열거나 닫지 않은 판만). 못 읽으면 보이지 않는다: 안내는 곁가지라 오류를 띄우지 않는다
+    private(set) var policyNotice: PolicyNotice?
+    /// 안내를 읽은 계정 (열거나 닫으면 이 계정에 적는다)
+    private var policyUserID: UUID?
     /// `reset()`마다 오른다: 전 사용자의 늦은 응답을 버린다
     private var generation = 0
 
@@ -45,9 +49,11 @@ final class AccountStore {
     /// 디자인 비교용 견본 (`SampleData`): 서버를 부르지 않는다
     private(set) var sampleMode = false
 
-    func useSampleData(connections: [ConnectionRecord]) {
+    /// 견본의 처리방침 안내는 닫아도 본 판을 기기에 적지 않는다 (`policyUserID` 없음)
+    func useSampleData(connections: [ConnectionRecord], policyNotice: PolicyNotice? = nil) {
         sampleMode = true
         apply(connections)
+        self.policyNotice = policyNotice
         loaded = true
     }
     #endif
@@ -114,6 +120,8 @@ final class AccountStore {
         syncRequests = [:]
         requested = []
         comingSoon = []
+        policyNotice = nil
+        policyUserID = nil
         loaded = false
         showsConsent = false
         pendingProvider = nil
@@ -153,6 +161,26 @@ final class AccountStore {
     private func expectSync(_ providers: [String]) {
         let now = Date()
         for provider in providers { syncRequests[provider] = now }
+    }
+
+    // MARK: 처리방침 변경 안내
+
+    /// 처리방침 변경 안내를 읽는다 (앱을 열거나 앞으로 돌아올 때). 실패하면 지금 보이는 것을 그대로 둔다
+    func loadPolicyNotice(userID: UUID) async {
+        #if DEBUG
+        if sampleMode { return }
+        #endif
+        let generation = generation
+        guard let response = try? await services.api.legal(), generation == self.generation else { return }
+        policyUserID = userID
+        policyNotice = PolicyNoticeSeen.pending(response.privacy.notice, for: userID)
+    }
+
+    /// View · 닫기: 이 판은 이 계정에 다시 보이지 않는다 (이 기기에만 적는다)
+    func acknowledgePolicyNotice() {
+        guard let notice = policyNotice else { return }
+        if let policyUserID { PolicyNoticeSeen.mark(notice.version, for: policyUserID) }
+        policyNotice = nil
     }
 
     // MARK: 연결

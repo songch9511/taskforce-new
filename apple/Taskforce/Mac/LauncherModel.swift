@@ -152,7 +152,7 @@ final class LauncherModel {
         #if DEBUG
         if SampleData.isEnabled {
             now.useSampleData()
-            account.useSampleData(connections: SampleData.connections)
+            account.useSampleData(connections: SampleData.connections, policyNotice: SampleData.policyNotice)
         }
         #endif
         self.now = now
@@ -187,7 +187,7 @@ final class LauncherModel {
         let board = now?.board
         return LauncherContent.sections(
             for: inputMode, now: board?.now, doneToday: board?.doneToday ?? [], signedIn: isSignedIn,
-            needsConsent: account?.shouldPromptConsent ?? false
+            needsConsent: account?.shouldPromptConsent ?? false, policyNotice: account?.policyNotice
         )
     }
 
@@ -261,6 +261,12 @@ final class LauncherModel {
     /// 방금 옮기거나 지운 할 일을 ⌘Z로 되돌릴 수 있는지 (목록에서만)
     var canUndo: Bool { screen == .list && undoOffer.pending != nil }
 
+    /// 고른 줄이 처리방침 변경 안내라 ⌘⌫로 닫을 수 있는지 (아래 "Dismiss ⌘⌫")
+    var canDismissNotice: Bool {
+        guard screen == .list, case .policyNotice = selectedItem else { return false }
+        return true
+    }
+
     /// 지금 화면에서 ↑↓로 고르는 줄 수
     var rowCount: Int {
         switch screen {
@@ -297,7 +303,14 @@ final class LauncherModel {
                 await account.load()
                 await PushCenter.shared.requestIfNeeded(hasConnections: account.hasConnections)
             }
+            loadPolicyNotice()
         }
+    }
+
+    /// 처리방침 변경 안내 (못 읽으면 조용히 넘긴다)
+    private func loadPolicyNotice() {
+        guard let account, let userID = signedInUserID else { return }
+        Task { await account.loadPolicyNotice(userID: userID) }
     }
 
     func didHide() {
@@ -337,6 +350,7 @@ final class LauncherModel {
         guard isSignedIn, let now else { return }
         Task { await now.load() }
         if let account { Task { await account.load() } }
+        loadPolicyNotice()
     }
 
     // MARK: 키보드
@@ -383,6 +397,11 @@ final class LauncherModel {
             undo()
             return true
         case kVK_Delete where command:
+            // 처리방침 변경 안내 줄은 닫는다 (입력이 있으면 그 줄이 보이지 않는다)
+            if canDismissNotice {
+                account?.acknowledgePolicyNotice()
+                return true
+            }
             guard let (entry, target) = deleteShortcut else { return false }
             perform(entry, on: target)
             return true
@@ -591,6 +610,9 @@ final class LauncherModel {
             openSettings(.account)
         case .allowAI:
             openSettings(.ai)
+        case .policyNotice(let notice):
+            account?.acknowledgePolicyNotice()
+            open(notice.url.url())
         }
     }
 
