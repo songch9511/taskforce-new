@@ -11,7 +11,8 @@ import { parseArgs } from "node:util";
 
 import { embed, embedConfigFromEnv } from "../src/lib/ai/embed";
 import { decide, jevConfigFromEnv } from "../src/lib/ai/jev";
-import { completeJson, interactiveDeadline, llmConfigFromEnv } from "../src/lib/ai/llm";
+import { DeadlineExceededError, INTERACTIVE_MAX_DURATION_S, interactiveDeadline } from "../src/lib/ai/deadline";
+import { completeJson, llmConfigFromEnv } from "../src/lib/ai/llm";
 import { ASK_PROMPT_VERSION } from "../src/lib/ai/prompts/ask";
 import { EXTRACT_PROMPT_VERSION } from "../src/lib/ai/prompts/extract";
 import { JUDGE_PROMPT_VERSION } from "../src/lib/ai/prompts/judge";
@@ -412,13 +413,13 @@ async function main() {
   }
 
   // 4) 물어보기: 케이스의 Action · 원문을 검색 결과로 주고(검색 자체는 DB 테스트가 본다) 답 · 인용 검증 · 모름을 채점한다.
-  //    LLM은 앱의 질문(v1/ask/route.ts, 실행 한도 60초)과 같게 마감을 두고 첫 호출부터 추론량을 제한한다.
+  //    LLM은 앱의 질문(v1/ask/route.ts, 실행 한도 INTERACTIVE_MAX_DURATION_S)과 같게 마감을 두고 첫 호출부터 추론량을 제한한다.
   let askCost = 0;
   // 호출이 실패한 질문(시간 초과 포함): 통과하지 못한 것으로 세어 분모에 넣는다 (앱에서도 답을 받지 못한다)
-  const askFailed: { golden: AskCase; error: string }[] = [];
+  const askFailed: { golden: AskCase; error: string; deadline: boolean }[] = [];
   const askRuns = (
     await mapLimit(askSelected, LLM_CONCURRENCY, async (golden): Promise<{ golden: AskCase; result: AskResult; score: AskScore } | null> => {
-      const deadline = interactiveDeadline(60);
+      const deadline = interactiveDeadline(INTERACTIVE_MAX_DURATION_S);
       try {
         const result = await answerQuestion(
           golden.question,
@@ -434,7 +435,7 @@ async function main() {
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         errors.push(`${golden.id} 물어보기: ${message}`);
-        askFailed.push({ golden, error: message });
+        askFailed.push({ golden, error: message, deadline: error instanceof DeadlineExceededError });
         return null;
       }
     })
@@ -458,10 +459,10 @@ async function main() {
     const answerableRuns = askRuns.filter((r) => !r.golden.expect.unknown);
     const unknownRuns = askRuns.filter((r) => r.golden.expect.unknown);
     const answerableFailed = askFailed.filter((f) => !f.golden.expect.unknown).length;
-    const timedOut = askFailed.filter((f) => f.error.includes("시간 초과")).length;
+    const timedOut = askFailed.filter((f) => f.deadline || f.error.includes("시간 초과")).length;
     const rate = (n: number, d: number) => `${pct(d ? n / d : null)} (${n}/${d})`;
     console.log(
-      `통과 ${rate(passed, askRuns.length + askFailed.length)} · 호출 실패 ${askFailed.length}건(시간 초과 ${timedOut})` +
+      `통과 ${rate(passed, askRuns.length + askFailed.length)} · 호출 실패 ${askFailed.length}건(마감 · 시간 초과 ${timedOut})` +
         ` · 답할 수 있는 질문에 검증된 인용으로 답함 ${rate(answerableRuns.filter((r) => !r.result.unknown && r.score.citedExpected).length, answerableRuns.length + answerableFailed)}` +
         ` · 답이 없는 질문에 모른다고 함 ${rate(unknownRuns.filter((r) => r.result.unknown).length, unknownRuns.length + askFailed.length - answerableFailed)}` +
         ` · 가짜 인용 폐기 ${askRuns.reduce((n, r) => n + r.score.dropped, 0)}건`,

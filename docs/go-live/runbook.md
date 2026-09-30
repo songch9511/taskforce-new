@@ -36,11 +36,11 @@
 | `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` | Supabase → Project Settings → API Keys → Publishable | 공개 값 |
 | `SUPABASE_SERVICE_ROLE_KEY` | 같은 화면 → service_role (secret) | RLS 우회. **Sensitive**, `NEXT_PUBLIC_` 금지 |
 | `OPENROUTER_API_KEY` | openrouter.ai → Keys. 운영용 키를 따로 만들고 사용 한도를 건다 | 한도가 있으면 `max_tokens`를 꼭 보낸다(llm.ts 주석) |
-| `LLM_MODEL` | `z-ai/glm-5.3-flash` (지금 `.env.local`, eval 기준) | 바꾸면 eval을 다시 돌린다 |
+| `LLM_MODEL` | `z-ai/glm-5.3-flash` (지금 `.env.local`, eval 기준) | 바꾸면 eval을 다시 돌린다. 추론하지 않는 모델이면 `LLM_OVERRUN_REASONING_EFFORT=off`도 같이 둔다 (아래) |
 | `JEV_MODEL` | `typesafe/jev-1.13` | 버전 고정 |
 | `EMBEDDING_MODEL` | 비움 → `openai/text-embedding-3-small` | 1536차원이어야 한다 |
 | `LLM_PROVIDERS` · `EMBED_PROVIDERS` · `JEV_PROVIDERS` | 비움 (선택) → 기본값 `src/lib/ai/providers.ts`: LLM `fireworks,together,deepinfra` · 임베딩 `azure` · Jev `typesafe` | ZDR · 학습 금지 공급자 고정 목록(쉼표 구분). 처리방침 7장 표와 맞춘다(`docs/legal/README.md` 결정 1) |
-| `LLM_OVERRUN_REASONING_EFFORT` | 비움 → `high` | 추출이 출력 · 시간 한도를 넘기면 다시 물을 때 거는 추론량 제한(`low` · `medium` · `high` · `off`). 사용자가 기다리는 빠진 할 일 신고 · 물어보기는 첫 호출부터 건다. `LLM_MODEL`을 바꾸면 eval로 다시 정한다 (`src/lib/ai/llm.ts` `OVERRUN_RETRY_REASONING`). 추론 옵션이 없는 모델로 바꾸면 `off`로 둔다: 추론량 제한을 보내면 `require_parameters` 때문에 받을 공급자가 없어, 빠진 할 일 신고 · 물어보기는 모든 호출이 실패한다 |
+| `LLM_OVERRUN_REASONING_EFFORT` | 비움 → `high` | 추출이 출력 · 시간 한도를 넘기면 다시 물을 때 거는 추론량 제한(`low` · `medium` · `high` · `off`). 사용자가 기다리는 빠진 할 일 신고 · 물어보기는 첫 호출부터 건다. `LLM_MODEL`을 바꾸면 eval로 다시 정한다 (`src/lib/ai/llm.ts` `OVERRUN_RETRY_REASONING`). 추론 옵션이 없는 모델로 바꾸면 `off`로 둔다: 빠진 할 일 신고 · 물어보기는 첫 호출부터 추론 옵션을 보내, `require_parameters` 때문에 받을 공급자가 없다는 404("No endpoints found that can handle the requested parameters")를 받는다. 그러면 호출마다 한 번 옵션 없이 다시 물어 늦어지고, 서버 로그에 "추론 옵션을 받는 공급자가 없어" 경고가 남는다 (배경 처리의 다시 묻기는 그대로 실패한다) |
 | `CONNECTOR_TOKEN_KEY` | `openssl rand -base64 32` | **운영 DB에 이미 저장된 연결 토큰을 암호화한 키와 같아야 한다.** 로컬 `.env.local` 값으로 운영 DB에 연결을 만들었다면 같은 값을 넣고, 새 키를 쓰면 기존 연결은 다시 연결해야 한다 |
 | `CRON_SECRET` | `openssl rand -hex 32` | Vercel Cron이 `Authorization: Bearer`로 보낸다. 없으면 cron이 401 |
 | `OAUTH_STATE_SECRET` | `openssl rand -hex 32` | 32자 이상(`env.ts`의 `oauthStateSecret`) |

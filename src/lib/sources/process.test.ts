@@ -2,6 +2,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 
+import { DeadlineExceededError } from "@/lib/ai/deadline";
 import { LlmError } from "@/lib/ai/llm";
 import { ConsentRequiredError } from "@/lib/consent/gate";
 import type { ActionStore } from "@/lib/pipeline/merge";
@@ -15,6 +16,7 @@ import { extractMissing, type MissingResult } from "@/lib/pipeline/missing";
 import {
   AFTER_EXTRACT_MS,
   failureSummary,
+  MERGE_MIN_MS,
   processDepsFromEnv,
   processSource,
   replaceJudgeLogs,
@@ -23,6 +25,18 @@ import {
   withUserLock,
 } from "./process";
 
+// 누락 신고가 새 Action과 같이 남길 이벤트(createEvents)를 보려고, 만든 저장소의 옵션을 모은다
+const { storeOptions } = vi.hoisted(() => ({ storeOptions: [] as unknown[] }));
+vi.mock("@/lib/actions/db-store", async (importOriginal) => {
+  const original = await importOriginal<typeof import("@/lib/actions/db-store")>();
+  class RecordingStore extends original.SupabaseActionStore {
+    constructor(...args: ConstructorParameters<typeof original.SupabaseActionStore>) {
+      super(...args);
+      if (args[2]) storeOptions.push(args[2]);
+    }
+  }
+  return { ...original, SupabaseActionStore: RecordingStore };
+});
 vi.mock("server-only", () => ({}));
 // processSource: 동의는 있고, 추출 · 병합은 준비한 결과를 돌려주며, 알림은 부른 인자만 남긴다
 vi.mock("@/lib/consent/store", async (importOriginal) => ({ ...(await importOriginal<typeof import("@/lib/consent/store")>()), consentCheck: () => async () => true }));
@@ -284,22 +298,44 @@ describe("processDepsFromEnv: 사용자가 기다리는 처리와 배경 처리"
 });
 
 describe("withUserLock: 같은 사용자의 병합은 한 번에 하나씩", () => {
-  it("마감을 주면 앞선 병합을 그때까지만 기다리고, 넘기면 차례가 나중에 와도 병합하지 않는다", async () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("마감을 주면 앞선 병합을 마감 전 MERGE_MIN_MS까지만 기다리고, 넘기면 차례가 나중에 와도 병합하지 않는다", async () => {
     let finishFirst!: () => void;
     const first = withUserLock("lock-u1", () => new Promise<void>((resolve) => (finishFirst = resolve)));
     const late = vi.fn(async () => "merged");
-    await expect(withUserLock("lock-u1", late, Date.now() + 20)).rejects.toThrow(USER_LOCK_TIMEOUT_MESSAGE);
+    const error = await withUserLock("lock-u1", late, Date.now() + MERGE_MIN_MS + 20).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(DeadlineExceededError);
+    expect(error).toMatchObject({ stage: "lock", message: expect.stringContaining(USER_LOCK_TIMEOUT_MESSAGE) });
 
     finishFirst();
     await first;
     // 대기열은 그대로 이어진다: 다음 병합은 바로 돌고, 마감을 넘긴 병합은 끝내 부르지 않는다
-    await expect(withUserLock("lock-u1", async () => "next", Date.now() + 1_000)).resolves.toBe("next");
+    await expect(withUserLock("lock-u1", async () => "next", Date.now() + MERGE_MIN_MS + 1_000)).resolves.toBe("next");
+    expect(late).not.toHaveBeenCalled();
+  });
+
+  it("차례가 와도 마감까지 MERGE_MIN_MS가 남지 않았으면 병합을 시작하지 않는다", async () => {
+    const clock = { now: 1_000_000 };
+    vi.spyOn(Date, "now").mockImplementation(() => clock.now);
+    let finishFirst!: () => void;
+    const first = withUserLock("lock-u4", () => new Promise<void>((resolve) => (finishFirst = resolve)));
+    const late = vi.fn(async () => "merged");
+    // 기다리기 타이머는 60초 뒤라 울리지 않는다. 앞선 병합이 끝났을 때 가짜 시계로는 마감까지 4초만 남았다
+    const report = withUserLock("lock-u4", late, clock.now + MERGE_MIN_MS + 60_000);
+    await vi.waitFor(() => expect(finishFirst).toBeTypeOf("function"));
+    clock.now += 61_000;
+    finishFirst();
+    await first;
+    await expect(report).rejects.toThrow(USER_LOCK_TIMEOUT_MESSAGE);
     expect(late).not.toHaveBeenCalled();
   });
 
   it("차례가 마감 안에 오면 병합하고, 시작한 병합은 마감을 넘겨도 끊지 않는다", async () => {
     const slow = () => new Promise<string>((resolve) => setTimeout(() => resolve("done"), 30));
-    await expect(withUserLock("lock-u2", slow, Date.now() + 10)).resolves.toBe("done");
+    await expect(withUserLock("lock-u2", slow, Date.now() + MERGE_MIN_MS + 10)).resolves.toBe("done");
   });
 
   it("마감이 없으면(배경 처리) 앞선 병합이 끝날 때까지 기다린다", async () => {
@@ -351,20 +387,38 @@ describe("reportMissing: 사용자가 기다리는 누락 신고", () => {
       judged: { candidate: { quote: input.quote }, judge: { decision: "auto" } },
       summary: { reasoningLimited: true },
     } as unknown as MissingResult);
+    storeOptions.length = 0;
   });
 
   it("임베딩 채우기를 하지 않고 병합한다 (신고에 필요한 임베딩 · 매칭 시간을 쓰지 않게)", async () => {
-    const result = await reportMissing(reportAdmin(), { id: "s1", userId: "report-u1", processingStatus: "done" }, input, Date.now() + 55_000, deps);
+    const result = await reportMissing(reportAdmin(), { id: "s1", userId: "report-u1", processingStatus: "done" }, input, Date.now() + 52_000, deps);
     expect(result).toMatchObject({ status: "created", action: { id: "action-1" }, stage: "not_extracted" });
     expect(mergeJudged).toHaveBeenCalledTimes(1);
     expect(backfillEmbeddings).not.toHaveBeenCalled();
   });
 
-  it("같은 사용자의 다른 병합이 마감까지 끝나지 않으면 병합하지 않고 오류를 낸다", async () => {
+  it("추론량을 제한해 뽑은 신고면 user_reported_missing 이벤트에 reasoning_limited를 남긴다 (제품 원칙 6)", async () => {
+    await reportMissing(reportAdmin(), { id: "s1", userId: "report-u3", processingStatus: "done" }, input, Date.now() + 52_000, deps);
+    expect(storeOptions).toEqual([
+      {
+        createEvents: [
+          {
+            type: "user_reported_missing",
+            before: null,
+            after: { stage: "not_extracted", source_id: "s1", reasoning_limited: true },
+            rule: null,
+            actor: "user",
+          },
+        ],
+      },
+    ]);
+  });
+
+  it("같은 사용자의 다른 병합이 마감까지 끝나지 않으면 병합하지 않고 마감 오류를 낸다", async () => {
     let finishOther!: () => void;
     const other = withUserLock("report-u2", () => new Promise<void>((resolve) => (finishOther = resolve)));
-    const report = reportMissing(reportAdmin(), { id: "s1", userId: "report-u2", processingStatus: "done" }, input, Date.now() + 30, deps);
-    await expect(report).rejects.toThrow(USER_LOCK_TIMEOUT_MESSAGE);
+    const report = reportMissing(reportAdmin(), { id: "s1", userId: "report-u2", processingStatus: "done" }, input, Date.now() + MERGE_MIN_MS + 30, deps);
+    await expect(report).rejects.toBeInstanceOf(DeadlineExceededError);
     finishOther();
     await other;
     expect(mergeJudged).not.toHaveBeenCalled();

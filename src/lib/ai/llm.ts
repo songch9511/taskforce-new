@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { DeadlineExceededError } from "./deadline";
 import { DEFAULT_LLM_PROVIDERS, parseProviders, providerRouting } from "./providers";
 
 // 생성형 LLM 호출 (OpenRouter chat completions). 구조화 출력(JSON 스키마)으로만 받고 zod로 검증한다.
@@ -14,11 +15,16 @@ export type LlmConfig = {
   providers?: string[];
   fetch?: typeof fetch;
   timeoutMs?: number;
-  /** 출력 · 시간 한도를 넘긴 호출을 다시 물을 때 거는 추론량 제한. 지정하지 않으면 OVERRUN_RETRY_REASONING, null이면 걸지 않는다 */
+  /**
+   * 추론량 제한. 배경 처리는 출력 · 시간 한도를 넘긴 호출을 다시 물을 때만, 마감이 있는 호출은 첫 호출부터 건다.
+   * 지정하지 않으면 OVERRUN_RETRY_REASONING, null이면 어느 쪽에서도 걸지 않는다 (LLM_OVERRUN_REASONING_EFFORT=off)
+   */
   overrunReasoning?: OverrunReasoning | null;
   /**
-   * 사용자가 기다리는 호출(빠진 할 일 신고 · 물어보기)의 마감 시각 (epoch ms). 있으면 한도를 넘긴 뒤 다시 물을 시간이 없으므로
-   * 첫 호출부터 추론량을 제한하고(overrunReasoning), 시도마다 남은 시간으로 시간 한도를 정한다(attemptTimeoutMs).
+   * 사용자가 기다리는 호출(빠진 할 일 신고 · 물어보기)의 마감 시각 (epoch ms, deadline.ts interactiveDeadline). 있으면:
+   * - 한도를 넘긴 뒤 다시 물을 시간이 없으므로 첫 호출부터 추론량을 제한하고(overrunReasoning), 그래도 넘기면 low로 줄여 다시 묻는다
+   * - 시도마다 남은 시간으로 시간 한도를 정한다(attemptTimeoutMs). 시간이 모자라 끝내지 못하면 DeadlineExceededError
+   * - 추론 옵션을 받는 공급자가 없다고 거절되면 한 번, 추론 옵션 없이 다시 묻는다
    * 없으면 배경 처리(원문 처리 · 동기화 · 재처리 cron · eval 추출): 시도마다 timeoutMs, 한도를 넘긴 호출을 다시 물을 때만 제한한다.
    */
   deadline?: number;
@@ -45,7 +51,10 @@ export type JsonCompletion<T> = {
   data: T;
   model: string;
   usage?: { prompt_tokens: number; completion_tokens: number; cost?: number };
-  /** 한도를 넘긴 첫 호출 대신 추론량을 제한해 다시 물은 답인가 (품질이 조금 낮을 수 있어 기록한다) */
+  /**
+   * 추론량을 제한해 받은 답인가 (품질이 조금 낮을 수 있어 기록한다). 배경 처리는 한도를 넘긴 첫 호출을 제한해 다시 물은 답,
+   * 마감이 있는 호출은 첫 호출부터 제한하므로 추론량 제한을 끄지 않았으면 늘 true다.
+   */
   reasoningLimited?: boolean;
 };
 
@@ -57,6 +66,8 @@ export class LlmError extends Error {
     readonly retryable = false,
     /** 출력 한도(finish_reason length)나 시간 한도를 넘긴 오류: 추론이 길어져서일 수 있다 */
     readonly overran = false,
+    /** timeout: 응답 시간 한도를 넘김. unsupported_parameters: 요청의 매개변수(추론 옵션 등)를 모두 받는 공급자가 없음 */
+    readonly kind?: "timeout" | "unsupported_parameters",
   ) {
     super(message);
     this.name = "LlmError";
@@ -117,28 +128,28 @@ export const LLM_TIMEOUT_MS = 90_000;
  */
 export const OVERRUN_RETRY_REASONING: OverrunReasoning = { effort: "high" };
 
-/** 사용자가 기다리는 요청에서 모델 호출 뒤 DB 쓰기 · 응답에 남기는 시간: 모델 호출은 실행 한도보다 이만큼 먼저 끝낸다 */
-export const RESPONSE_MARGIN_MS = 5_000;
-
-/** 실행 한도(Route Handler maxDuration)가 maxDurationSeconds초인 요청에서 모델 호출을 끝낼 시각 (epoch ms). 요청을 받자마자 잰다 */
-export function interactiveDeadline(maxDurationSeconds: number, start = Date.now()): number {
-  return start + maxDurationSeconds * 1000 - RESPONSE_MARGIN_MS;
-}
+/**
+ * 마감이 있는 호출이 첫 호출부터 제한했는데도 출력 · 시간 한도를 넘겼을 때 다시 물을 추론량.
+ * 2026-09-29 실험에서 늘 low는 호출 시간 95%가 5초 안이었지만 조건부 약속 오탐으로 정밀도가 약 5%p 내려가, 이 다시 묻기에만 쓴다.
+ */
+export const DEADLINE_OVERRUN_REASONING: OverrunReasoning = { effort: "low" };
 
 /** 마감이 있을 때 한 번 시도에 주는 최소 시간. 남은 시간이 이보다 짧으면 (다시) 묻지 않는다 */
 export const LLM_MIN_ATTEMPT_MS = 5_000;
 
 /**
  * 이번 시도의 시간 한도 (ms). 마감이 없으면 timeoutMs(기본 90초).
- * 마감이 있으면 남은 시간을 남은 시도 수로 나누되 LLM_MIN_ATTEMPT_MS보다 짧게 주지 않는다: 첫 시도가 멈춰도 다시 물을 시간이 남고,
- * 첫 시도가 빨리 실패하면 다시 묻기가 남은 시간을 다 쓴다. 남은 시간이 LLM_MIN_ATTEMPT_MS보다 짧으면 null (묻지 않는다).
+ * 마감이 있으면 남은 시간을 남은 시도 수로 나눈다: 첫 시도가 멈춰도 다시 물을 시간이 남고, 첫 시도가 빨리 실패하면 다시 묻기가 남은 시간을 다 쓴다.
+ * 나누면 한 시도가 LLM_MIN_ATTEMPT_MS보다 짧아질 만큼 남았으면 이 시도에 남은 시간을 다 준다(다시 묻기는 빠진다).
+ * 남은 시간이 LLM_MIN_ATTEMPT_MS보다 짧으면 null (묻지 않는다).
  */
 export function attemptTimeoutMs(config: Pick<LlmConfig, "timeoutMs" | "deadline">, attemptsLeft: number, now = Date.now()): number | null {
   const limit = config.timeoutMs ?? LLM_TIMEOUT_MS;
   if (config.deadline === undefined) return limit;
   const remaining = config.deadline - now;
   if (remaining < LLM_MIN_ATTEMPT_MS) return null;
-  return Math.min(limit, Math.max(LLM_MIN_ATTEMPT_MS, Math.floor(remaining / attemptsLeft)));
+  if (remaining < LLM_MIN_ATTEMPT_MS * attemptsLeft) return Math.min(limit, remaining);
+  return Math.min(limit, Math.floor(remaining / attemptsLeft));
 }
 
 export async function completeJson<T extends z.ZodType>(
@@ -146,29 +157,59 @@ export async function completeJson<T extends z.ZodType>(
   request: JsonCompletionRequest<T>,
 ): Promise<JsonCompletion<z.infer<T>>> {
   const overrunReasoning = config.overrunReasoning === undefined ? OVERRUN_RETRY_REASONING : config.overrunReasoning;
+  const hasDeadline = config.deadline !== undefined;
   // 사용자가 기다리는 호출(마감 있음)은 한도를 넘긴 뒤 다시 물을 시간이 없어 첫 호출부터 제한한다.
-  let reasoning: OverrunReasoning | null = config.deadline === undefined ? null : overrunReasoning;
-  const attempts = FORMAT_RETRIES + 1;
-  let timeoutMs = attemptTimeoutMs(config, attempts);
-  if (timeoutMs === null) throw new LlmError("응답 시간 초과 (남은 시간 없음)");
-  for (let attempt = 0; ; attempt++) {
+  let reasoning: OverrunReasoning | null = hasDeadline ? overrunReasoning : null;
+  let attemptsLeft = FORMAT_RETRIES + 1;
+  let triedWithoutReasoning = false;
+  let timeoutMs = attemptTimeoutMs(config, attemptsLeft);
+  if (timeoutMs === null) throw new DeadlineExceededError("llm", "남은 시간 없음");
+  for (;;) {
     try {
       const result = await completeJsonOnce(config, request, reasoning, timeoutMs);
       return reasoning ? { ...result, reasoningLimited: true } : result;
     } catch (error) {
+      // 마감이 있는 호출은 첫 호출부터 추론 옵션을 보낸다. 그 옵션을 받는 공급자가 없다고 거절되면(추론하지 않는 모델로 바꿨는데
+      // LLM_OVERRUN_REASONING_EFFORT를 끄지 않음) 한 번, 옵션 없이 다시 묻는다. 거절은 바로 오므로 다시 묻기 횟수에 넣지 않는다.
+      if (hasDeadline && reasoning && !triedWithoutReasoning && error instanceof LlmError && error.kind === "unsupported_parameters") {
+        console.warn("추론 옵션을 받는 공급자가 없어 추론량 제한 없이 다시 묻습니다. 이 모델이면 LLM_OVERRUN_REASONING_EFFORT=off로 두세요.");
+        reasoning = null;
+        triedWithoutReasoning = true;
+        const next = attemptTimeoutMs(config, attemptsLeft);
+        if (next === null) throw new DeadlineExceededError("llm", "남은 시간 없음");
+        timeoutMs = next;
+        continue;
+      }
       // 응답 본문을 읽는 도중에도 시간 초과가 날 수 있다.
-      const timedOut = error instanceof DOMException && error.name === "TimeoutError";
-      const retryable = timedOut || (error instanceof LlmError && error.retryable);
+      const bodyTimedOut = error instanceof DOMException && error.name === "TimeoutError";
+      const timedOut = bodyTimedOut || (error instanceof LlmError && error.kind === "timeout");
+      const retryable = bodyTimedOut || (error instanceof LlmError && error.retryable);
+      attemptsLeft--;
       // 마감이 있으면 남은 시간이 한 번 더 물을 만큼일 때만 다시 묻는다.
-      const next = retryable && attempt < FORMAT_RETRIES ? attemptTimeoutMs(config, attempts - attempt - 1) : null;
+      const next = retryable && attemptsLeft > 0 ? attemptTimeoutMs(config, attemptsLeft) : null;
       if (next === null) {
-        throw timedOut ? new LlmError(`응답 시간 초과 (${Math.round(timeoutMs / 1000)}초)`) : error;
+        const seconds = Math.round(timeoutMs / 1000);
+        if (hasDeadline && timedOut) throw new DeadlineExceededError("llm", `응답 시간 초과 (${seconds}초)`);
+        if (hasDeadline && retryable && attemptsLeft > 0) {
+          throw new DeadlineExceededError("llm", `다시 물을 시간 없음 (${error instanceof Error ? error.message : String(error)})`);
+        }
+        throw bodyTimedOut ? new LlmError(`응답 시간 초과 (${seconds}초)`) : error;
       }
       timeoutMs = next;
-      if (timedOut || (error instanceof LlmError && error.overran)) reasoning ??= overrunReasoning;
+      if (timedOut || (error instanceof LlmError && error.overran)) {
+        // 배경 처리: 제한 없던 호출을 제한해 다시 묻는다. 마감: 이미 제한한 호출이 넘겼으니 더 줄여 다시 묻는다 (끈 경우는 그대로 없음).
+        reasoning = hasDeadline ? reasoning && DEADLINE_OVERRUN_REASONING : (reasoning ?? overrunReasoning);
+      }
     }
   }
 }
+
+/**
+ * require_parameters로 요청의 매개변수(추론 옵션 등)를 모두 받는 공급자가 없을 때 OpenRouter의 거절: 404,
+ * error.message "No endpoints found that can handle the requested parameters." (2026-09-30 공개 이슈 보고 기준, 직접 재현하지 못했다).
+ * 모델이 없는 404("No endpoints found for <모델>")나 도구 · 옵션별 404와 가르려고 이 문구만 본다.
+ */
+const UNSUPPORTED_PARAMETERS = /No endpoints found that can handle the requested parameters/i;
 
 async function completeJsonOnce<T extends z.ZodType>(
   config: LlmConfig,
@@ -204,7 +245,7 @@ async function completeJsonOnce<T extends z.ZodType>(
     });
   } catch (error) {
     if (error instanceof DOMException && error.name === "TimeoutError") {
-      throw new LlmError(`응답 시간 초과 (${Math.round(timeoutMs / 1000)}초)`, undefined, true, true);
+      throw new LlmError(`응답 시간 초과 (${Math.round(timeoutMs / 1000)}초)`, undefined, true, true, "timeout");
     }
     throw error;
   }
@@ -212,7 +253,8 @@ async function completeJsonOnce<T extends z.ZodType>(
   if (!response.ok) {
     // 응답 본문에는 원문이 들어 있지 않지만, 길이를 제한해 로그가 커지지 않게 한다.
     const body = (await response.text()).slice(0, 500);
-    throw new LlmError(`OpenRouter 요청 실패 (${response.status})`, body);
+    const kind = response.status === 404 && UNSUPPORTED_PARAMETERS.test(body) ? "unsupported_parameters" : undefined;
+    throw new LlmError(`OpenRouter 요청 실패 (${response.status})`, body, false, false, kind);
   }
 
   const parsed = chatResponseSchema.safeParse(await response.json());

@@ -103,7 +103,7 @@ export async function retrieveAskContext(admin: SupabaseClient, userId: string, 
 
 /**
  * 모델 호출(임베딩 · LLM) 직전마다 외부 AI 처리 동의를 다시 확인한다 (도중에 철회하면 ConsentRequiredError).
- * 사용자가 답을 기다리므로 임베딩 · LLM을 deadline(epoch ms, lib/ai/llm.ts interactiveDeadline) 안에 끝내고, LLM은 첫 호출부터 추론량을 제한한다.
+ * 사용자가 답을 기다리므로 임베딩 · LLM을 deadline(epoch ms, lib/ai/deadline.ts interactiveDeadline) 안에 끝내고, LLM은 첫 호출부터 추론량을 제한한다.
  */
 export function askDepsFromEnv(admin: SupabaseClient, userId: string, deadline: number): AskDeps {
   const llm = { ...llmConfigFromEnv(), deadline };

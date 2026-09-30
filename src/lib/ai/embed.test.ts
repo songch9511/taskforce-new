@@ -1,5 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { DeadlineExceededError, MIN_REQUEST_MS } from "./deadline";
 import { cosine, embed, embedConfigFromEnv, EMBEDDING_DIMENSIONS, EmbedError, type EmbedConfig } from "./embed";
 
 const vec = (x: number) => Array.from({ length: EMBEDDING_DIMENSIONS }, (_, i) => (i === 0 ? x : 0));
@@ -37,10 +38,35 @@ describe("embed", () => {
     await expect(embed(config({ data: [{ index: 0, embedding: [1, 2] }] }), ["a"])).rejects.toBeInstanceOf(EmbedError);
   });
 
-  it("마감이 있으면(빠진 할 일 신고 · 물어보기) 남은 시간이 없을 때 부르지 않는다", async () => {
-    const c = { ...config({ data: [{ index: 0, embedding: vec(1) }] }), deadline: Date.now() - 1 };
-    await expect(embed(c, ["a"])).rejects.toThrow(/남은 시간 없음/);
-    expect(c.sent).toEqual([]);
+  describe("마감이 있으면(빠진 할 일 신고 · 물어보기)", () => {
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    it("시간 한도를 남은 시간까지로 줄인다 (마감이 없으면 30초)", async () => {
+      vi.spyOn(Date, "now").mockReturnValue(1_000_000);
+      const sent = vi.spyOn(AbortSignal, "timeout");
+      await embed({ ...config({ data: [{ index: 0, embedding: vec(1) }] }), deadline: 1_000_000 + 7_000 }, ["a"]);
+      await embed({ ...config({ data: [{ index: 0, embedding: vec(1) }] }), deadline: 1_000_000 + 60_000 }, ["a"]);
+      await embed(config({ data: [{ index: 0, embedding: vec(1) }] }), ["a"]);
+      expect(sent.mock.calls.map(([ms]) => ms)).toEqual([7_000, 30_000, 30_000]);
+    });
+
+    it("1초가 안 남았으면 부르지 않는다", async () => {
+      const c = { ...config({ data: [{ index: 0, embedding: vec(1) }] }), deadline: Date.now() + MIN_REQUEST_MS - 1 };
+      const error = await embed(c, ["a"]).catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(DeadlineExceededError);
+      expect((error as DeadlineExceededError).stage).toBe("embed");
+      expect(c.sent).toEqual([]);
+    });
+
+    it("줄인 시간 한도를 넘기면 마감 오류 (마감이 없으면 원래 오류 그대로)", async () => {
+      const timedOut = (async () => {
+        throw new DOMException("timed out", "TimeoutError");
+      }) as typeof fetch;
+      await expect(embed({ apiKey: "k", model: "m", fetch: timedOut, deadline: Date.now() + 5_000 }, ["a"])).rejects.toBeInstanceOf(DeadlineExceededError);
+      await expect(embed({ apiKey: "k", model: "m", fetch: timedOut }, ["a"])).rejects.toBeInstanceOf(DOMException);
+    });
   });
 
   it("빈 입력은 호출하지 않는다", async () => {

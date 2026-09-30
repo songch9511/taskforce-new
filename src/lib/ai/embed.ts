@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { DeadlineExceededError, MIN_REQUEST_MS, remainingMs } from "./deadline";
 import { DEFAULT_EMBED_PROVIDERS, parseProviders, providerRouting } from "./providers";
 
 // 임베딩 (OpenRouter embeddings). 새 후보와 비슷한 열린 Action을 찾는 데 쓴다 (docs/TRUTH_RULES.md, Phase 2 매칭).
@@ -11,7 +12,8 @@ export const EMBEDDING_DIMENSIONS = 1536;
 
 /**
  * providers: 보낼 공급자 (OpenRouter slug, 이 순서로만). providers.ts
- * deadline: 사용자가 기다리는 요청(빠진 할 일 신고 · 물어보기)의 마감 시각 (epoch ms). 있으면 시간 한도를 남은 시간까지로 줄이고, 남은 시간이 없으면 부르지 않는다
+ * deadline: 사용자가 기다리는 요청(빠진 할 일 신고 · 물어보기)의 마감 시각 (epoch ms). 있으면 시간 한도를 남은 시간까지로 줄이고,
+ *   시간이 모자라 끝내지 못하면 DeadlineExceededError
  */
 export type EmbedConfig = { apiKey: string; model: string; providers?: string[]; fetch?: typeof fetch; timeoutMs?: number; deadline?: number };
 
@@ -38,14 +40,24 @@ export function embedConfigFromEnv(env: Record<string, string | undefined> = pro
 
 export async function embed(config: EmbedConfig, texts: string[]): Promise<{ vectors: number[][]; cost?: number }> {
   if (texts.length === 0) return { vectors: [] };
-  const timeoutMs = Math.min(config.timeoutMs ?? 30_000, (config.deadline ?? Infinity) - Date.now());
-  if (timeoutMs <= 0) throw new EmbedError("임베딩 응답 시간 초과 (남은 시간 없음)");
-  const response = await (config.fetch ?? fetch)(OPENROUTER_EMBEDDINGS_URL, {
-    signal: AbortSignal.timeout(timeoutMs),
-    method: "POST",
-    headers: { Authorization: `Bearer ${config.apiKey}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ model: config.model, input: texts, provider: providerRouting(config.providers) }),
-  });
+  // 마감이 있으면 시간 한도를 남은 시간까지로 줄이고, 1초가 안 남았으면 부르지 않는다
+  const remaining = remainingMs(config.deadline);
+  if (remaining < MIN_REQUEST_MS) throw new DeadlineExceededError("embed", "남은 시간 없음");
+  const timeoutMs = Math.min(config.timeoutMs ?? 30_000, remaining);
+  let response: Response;
+  try {
+    response = await (config.fetch ?? fetch)(OPENROUTER_EMBEDDINGS_URL, {
+      signal: AbortSignal.timeout(timeoutMs),
+      method: "POST",
+      headers: { Authorization: `Bearer ${config.apiKey}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ model: config.model, input: texts, provider: providerRouting(config.providers) }),
+    });
+  } catch (error) {
+    if (config.deadline !== undefined && error instanceof DOMException && error.name === "TimeoutError") {
+      throw new DeadlineExceededError("embed", `응답 시간 초과 (${Math.round(timeoutMs / 1000)}초)`);
+    }
+    throw error;
+  }
   if (!response.ok) throw new EmbedError(`임베딩 요청 실패 (${response.status})`);
 
   const parsed = embeddingResponseSchema.safeParse(await response.json());

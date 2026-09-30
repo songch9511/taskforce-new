@@ -50,7 +50,8 @@ export type AskResult = {
   citations: AskCitation[];
   /**
    * 로그 · eval용 숫자. 질문 · 답 · 인용은 담지 않는다.
-   * reasoningLimited: 추론량을 제한해 받은 답인가 (앱의 질문은 사용자가 기다려 첫 호출부터 제한한다, lib/ai/llm.ts)
+   * reasoningLimited: 추론량을 제한해 받은 답인가 (앱의 질문은 사용자가 기다려 첫 호출부터 제한한다, lib/ai/llm.ts).
+   *   운영(v1/ask)은 요약을 저장하지 않아 eval 결과에만 남는다.
    */
   summary: {
     actions: number;
