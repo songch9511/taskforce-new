@@ -583,6 +583,19 @@ describe("ingestDeps.process: 확인 요청 알림", () => {
     expect(processSource).toHaveBeenLastCalledWith(admin, expect.objectContaining({ notify: true }), expect.anything());
   });
 
+  it("연결로 가져온 원문임을 파이프라인에 알린다 (메일의 인용된 옛 메일 속 후보를 버리는 기준)", async () => {
+    const admin = identityAdmin();
+    await ingestDeps(admin).process(gmailConnection, "src-7", item(connectedAt));
+    expect(processSource).toHaveBeenLastCalledWith(admin, expect.anything(), expect.objectContaining({ kind: "email", fromConnector: true }));
+  });
+
+  it("Google 연결(Meet 전사)의 원문도 같은 길로 fromConnector를 넘긴다", async () => {
+    const admin = identityAdmin();
+    const google: Connection = { id: "g2", userId: "u1", provider: "google", settings: {}, syncCursor: null };
+    await ingestDeps(admin).process(google, "src-8", { ...item(connectedAt), kind: "meeting", text: "[Google Meet · 회의]\n김민수: 금요일까지 보내드릴게요" });
+    expect(processSource).toHaveBeenLastCalledWith(admin, expect.anything(), expect.objectContaining({ kind: "meeting", fromConnector: true }));
+  });
+
   it("\"원문 속 나\"에 연결한 Gmail 주소가 들어간다", async () => {
     const admin = identityAdmin();
     await ingestDeps(admin).process(gmailConnection, "src-6", item(connectedAt));

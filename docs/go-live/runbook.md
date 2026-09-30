@@ -133,13 +133,13 @@ Supabase → Organization → Billing에서 프로젝트가 **Free**이고 백�
 
 ## 6. Cron 확인
 
-`vercel.json`: `/api/cron/sync` 15분마다, `/api/cron/retry-sources` 매시 7분 · 37분(실패 · 멈춘 글 원문 다시 처리, 하루 안에 들어온 원문만 첫 처리 포함 3번까지), `/api/cron/reminders` 매일 00:00 UTC(한국 09:00), `/api/cron/retention` 매일 18:30 UTC(한국 03:30, 원문 90일 보관 정리 · `src/lib/retention.ts`).
+`vercel.json`: `/api/cron/sync` 15분마다, `/api/cron/retry-sources` 매시 7분 · 37분(실패 · 멈춘 글 원문 다시 처리, 하루 안에 들어온 원문만 첫 처리 포함 3번까지. 하루가 지나서도 멈춘 원문은 실패로 닫는다), `/api/cron/reminders` 매일 00:00 UTC(한국 09:00), `/api/cron/retention` 매일 18:30 UTC(한국 03:30, 원문 90일 보관 정리 · `src/lib/retention.ts`).
 
 1. 배포 뒤 Vercel → 프로젝트 → Settings → Cron Jobs에 네 개가 보이는지.
 2. Logs에서 `/api/cron/sync`가 15분마다 200인지. 401이면 `CRON_SECRET`이 없거나 다르다.
 3. 다음 날 09:00 KST에 `/api/cron/reminders`가 200인지(기한 임박 알림).
 4. 다음 날 03:30 KST에 `/api/cron/retention`이 200이고 `{ sources_purged, judge_logs_deleted }`를 돌려주는지(처리방침 5장 "90일" 약속).
-5. `/api/cron/retry-sources`가 30분마다 200이고 `{ due, retried, failed, gaveUp, skippedForTime }`를 돌려주는지. `failed`나 `gaveUp`이 자주 0보다 크면 추출 실패가 잦다는 뜻이다(모델 · 공급자 확인). 이 cron은 들어온 지 하루가 넘은 원문은 다시 처리하지 않는다: 배포 전에 `processing_status`가 `failed` · `processing` · `pending`인 글 원문(kind task 제외)을 세어 보고, 살릴 것만 `scripts/reprocess-sources.ts --source <id>`로 하나씩 처리한다. 옵션 없이 돌리면 근거가 없는 모든 원문(할 일이 없어 끝난 원문 포함)을 다시 처리하므로 쓰지 않는다.
+5. `/api/cron/retry-sources`가 30분마다 200이고 `{ due, retried, failed, gaveUp, expired, skippedForTime }`를 돌려주는지. `failed`나 `gaveUp`이 자주 0보다 크면 추출 실패가 잦다는 뜻이다(모델 · 공급자 확인). `expired`는 이번 실행에서 실패로 닫은, 들어온 지 하루가 넘고도 처리 중 · 대기에 15분 넘게 멈춘 글 원문(kind task 제외)의 수다: 사용자가 동의하지 않았거나 후보 밖이었거나 마지막 시도에서 끊겨 앱에 "처리 중"으로 남던 원문을 다시 처리하지 않고 `failed` · `processing_summary.closed = "expired"`로 닫는다. 한 번에 100건까지(닫기에 20초까지) 오래된 것부터라, 배포 직후 옛 원문이 쌓여 있으면 몇 번의 실행 동안 `expired`가 0보다 크다가 0으로 돌아온다(계속 0보다 크면 원문이 계속 멈추고 있다는 뜻이다: 다시 처리 실패 로그와 `maxDuration`을 본다). 닫는 조회가 실패하면 로그에 "창을 지난 원문 찾기 실패"가 남고 다시 처리는 그대로 돈다. 이 cron은 들어온 지 하루가 넘은 원문은 다시 처리하지 않는다: 배포 전에 `processing_status`가 `failed` · `processing` · `pending`인 글 원문(kind task 제외)을 세어 보고, 살릴 것만 `scripts/reprocess-sources.ts --source <id>`로 하나씩 처리한다(이미 닫힌 원문도 같은 방법으로 살릴 수 있다. 스크립트는 재처리 cron처럼 이미 근거로 붙은 구절과 겹치는 후보를 빼고 병합해 근거 · Claim이 두 번 붙지 않는다). 옵션 없이 돌리면 근거가 없는 모든 원문(할 일이 없어 끝난 원문 포함)을 다시 처리하므로 쓰지 않는다.
 6. 동의하지 않은 사용자의 연결은 동기화에서 건너뛴다(`registry.ts`의 `withoutConsent`). 테스트 계정으로 동의 전 · 후를 한 번씩 본다.
 
 ## 7. 웹사이트 배포

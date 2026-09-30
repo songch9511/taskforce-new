@@ -31,7 +31,8 @@
           }
         ]
       },
-      "text": "제목: Fwd: Invoice discrepancy — September\n\nCould you take this by Friday, Sam? Loop me in if you need the contract terms.\n\nAlex\n\n---------- Forwarded message ---------\nFrom: Casey Nolan <casey@brightforge.example>\nDate: Mon, Oct 12, 2026 at 11:02 AM\nSubject: Invoice discrepancy — September\nTo: Alex Kim <alex@lumenfield.example>\n\n\nHi Alex,\n\nThe September invoice shows 42 seats, but we only had 38 active users.\nCould you check and send a corrected invoice by Friday?\nI'll send over our updated PO number tomorrow.\n\nThanks,\nCasey"
+      "text": "제목: Fwd: Invoice discrepancy — September\n\nCould you take this by Friday, Sam? Loop me in if you need the contract terms.\n\nAlex\n\n---------- Forwarded message ---------\nFrom: Casey Nolan <casey@brightforge.example>\nDate: Mon, Oct 12, 2026 at 11:02 AM\nSubject: Invoice discrepancy — September\nTo: Alex Kim <alex@lumenfield.example>\n\n\nHi Alex,\n\nThe September invoice shows 42 seats, but we only had 38 active users.\nCould you check and send a corrected invoice by Friday?\nI'll send over our updated PO number tomorrow.\n\nThanks,\nCasey",
+      "from_connector": true
     }
   ],
   "expected_actions": [],
