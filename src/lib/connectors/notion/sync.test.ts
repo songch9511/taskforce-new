@@ -6,7 +6,7 @@ import type { TaskItem } from "../tasks-ingest";
 import type { Connection, IngestItem } from "../types";
 
 import { NotionError, type NotionClient, type NotionDataSource, type NotionPage } from "./api";
-import { settingsWithoutNotionUserId, syncNotion, type NotionTaskDeps } from "./sync";
+import { syncNotion, type NotionTaskDeps } from "./sync";
 
 const now = new Date("2026-09-25T12:00:00.000Z");
 const minutesAgo = (m: number) => new Date(now.getTime() - m * 60_000).toISOString();
@@ -642,16 +642,12 @@ describe("syncNotion: 사용자가 쓴 문서", () => {
   });
 
   it("다시 연결하면(saveConnection) 남겨 둔 연결한 사람을 지우고, 다음 동기화가 새 봇 주인으로 다시 알아낸다", async () => {
-    // 같은 워크스페이스를 다른 Notion 계정으로 다시 연결: 연결 행 · 다른 설정은 그대로, notionUserId만 빠진다.
-    const settings = settingsWithoutNotionUserId({ notionUserId: "notion-old", dataSources: {} });
-    expect(settings).toEqual({ dataSources: {} });
-    // 뺄 것이 없으면 쓰지 않는다.
-    expect(settingsWithoutNotionUserId({ dataSources: {} })).toBeNull();
-    expect(settingsWithoutNotionUserId(null)).toBeNull();
+    // 같은 워크스페이스를 다른 Notion 계정으로 다시 연결: 연결 행 · 다른 설정은 그대로, notionUserId만 빠진다 (store.test.ts saveConnection).
+    const settings = { dataSources: {} };
 
     const { client, ownerCalls } = fakeClient([[doc("mine", "notion-new"), doc("theirs", "notion-old")]], [], { markdown: DOC_MD, owner: "notion-new" });
     const { deps, items } = capture();
-    const result = await syncNotion({ ...connection(minutesAgo(200)), settings: settings! }, client, deps, options);
+    const result = await syncNotion({ ...connection(minutesAgo(200)), settings }, client, deps, options);
     expect(ownerCalls()).toBe(1);
     expect(writtenByMe(items)).toEqual({ mine: true, theirs: false });
     expect(result.notionUserId).toBe("notion-new");

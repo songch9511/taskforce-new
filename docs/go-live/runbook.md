@@ -99,6 +99,7 @@ npx supabase db query --linked -f supabase/migrations/20261011000000_slack.sql  
 npx supabase db query --linked -f supabase/migrations/20261012000000_slack_tombstones_revoke.sql   # 지움 표시 · 앱 해제 함수 (2026-09-29 적용함)
 npx supabase db query --linked -f supabase/migrations/20261013000000_slack_sync.sql   # Slack 원문 넣기 · 연결 끊기(D3) · 대기 데이터 정리 함수 (2026-09-29 적용함). 코드 배포 전에
 npx supabase db query --linked -f supabase/migrations/20261014000000_connections_server_delete.sql   # 앱의 연결 직접 삭제 정책 지우기. 서버 권한 끊기 코드를 배포한 **뒤에** (2026-09-29 배포 뒤 적용함)
+npx supabase db query --linked -f supabase/migrations/20261017000000_connection_settings_atomic.sql   # 연결 설정을 한 번에 고치는 함수(merge_connection_settings · add_connection_stats). 이 함수를 부르는 코드를 병합하기 **직전에**. 먼저 배포하면 연결 · 다시 연결 · Notion DB 설정 저장과 처음 훑기를 끝낸 Notion 동기화가 실패한다. 적용 뒤 `select has_function_privilege('service_role', 'public.merge_connection_settings(uuid,uuid,jsonb,text[],jsonb)', 'execute')`가 true, `notify pgrst, 'reload schema';`
 # 트랙 2-3 · 2-4가 더한 파일도 같은 방식으로
 ```
 
