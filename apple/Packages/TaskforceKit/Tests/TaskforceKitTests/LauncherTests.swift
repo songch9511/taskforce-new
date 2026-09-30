@@ -157,6 +157,13 @@ struct LauncherTests {
         #expect(sections.flatMap(\.items) == [.signIn, .signInWithEmail, .command(.quit)])
     }
 
+    /// Google 클라이언트 설정이 있으면 Apple 바로 아래에 Google (Apple이 먼저, 이메일은 맨 아래)
+    @Test func signedOutShowsGoogleUnderAppleWhenConfigured() {
+        let sections = LauncherContent.sections(for: .empty, now: nil, signedIn: false, googleSignIn: true)
+        #expect(sections.flatMap(\.items) == [.signIn, .signInWithGoogle, .signInWithEmail, .command(.quit)])
+        #expect(LauncherContent.sections(for: .empty, now: now, signedIn: true, googleSignIn: true).flatMap(\.items).contains(.signInWithGoogle) == false)
+    }
+
     @Test func missingConsentAddsAllowRowOnTopWithoutHidingTheList() {
         let sections = LauncherContent.sections(for: .empty, now: now, signedIn: true, needsConsent: true)
         #expect(sections.first?.items == [.allowAI])

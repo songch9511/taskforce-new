@@ -42,9 +42,12 @@ final class AccountStore {
     private var generation = 0
 
     let services: AppServices
+    /// Google 로그인 직후 이름 채우기에만 쓴다 (`namedFromAccount`)
+    private let session: SessionStore?
 
-    init(services: AppServices) {
+    init(services: AppServices, session: SessionStore?) {
         self.services = services
+        self.session = session
     }
 
     #if DEBUG
@@ -104,11 +107,17 @@ final class AccountStore {
         async let connectionsValue = try? services.reads.connections()
         // 예전 서버에는 표가 없다
         async let requestsValue = try? services.reads.connectionRequests()
-        let (profile, connections, requests) = await (profileValue, connectionsValue, requestsValue)
+        let (loadedProfile, connections, requests) = await (profileValue, connectionsValue, requestsValue)
         guard generation == self.generation else { return }
-        if let profile { self.profile = profile }
         if let connections { apply(connections) }
         if let requests { requested = requests }
+        if let loadedProfile {
+            // 이름을 채우면 채운 프로필을 한 번에 둔다 (Mac 프로필 칸은 처음 받은 프로필로 한 번만 채운다).
+            // 저장이 실패해도 generation을 다시 본다: 그사이 로그아웃 · 계정 전환이면 전 사용자 값을 두지 않는다
+            let named = await namedFromAccount(loadedProfile)
+            guard generation == self.generation else { return }
+            profile = named ?? loadedProfile
+        }
         loaded = true
     }
 
@@ -379,6 +388,16 @@ final class AccountStore {
     }
 
     // MARK: 프로필
+
+    /// Google 로그인 직후 처음 읽은 프로필의 이름이 비어 있으면 그 로그인이 준 이름으로 채운다: 원문 속 "나"를 찾는 기본 이름.
+    /// 로그인 직후 한 번만 (이름이 이미 있어도 기회를 쓴다), 그 로그인의 사용자가 지금 로그인한 사용자일 때만 저장한다.
+    /// 채웠으면 저장된 프로필, 아니면 nil (저장이 실패하면 iPhone이 처음 한 번 이름을 묻는다).
+    private func namedFromAccount(_ profile: Profile) async -> Profile? {
+        guard let session, let fill = session.takeAccountNameFill() else { return nil }
+        let signedInUserID: UUID? = if case .signedIn(let userID, _) = session.state { userID } else { nil }
+        guard let edited = fill.profile(filling: profile, signedInUserID: signedInUserID) else { return nil }
+        return try? await services.api.saveProfile(edited)
+    }
 
     /// 이름 · 별칭 저장. 성공하면 true.
     func saveProfile(name: String, aliases: [String]) async -> Bool {

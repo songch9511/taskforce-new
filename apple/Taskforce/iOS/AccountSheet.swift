@@ -39,7 +39,7 @@ struct AccountSheet: View {
                 }
                 Section {
                     if let email {
-                        LabeledContent("Apple ID", value: email)
+                        LabeledContent(session.signInMethods.accountLabel, value: email)
                     }
                     Button("Sign Out") {
                         Task {

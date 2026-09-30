@@ -52,11 +52,11 @@ final class MacAppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// `taskforce://connections/…` (ASWebAuthenticationSession이 주소를 바로 돌려주지만, 앱 밖에서 열린 경우를 위해)
+    /// `taskforce://connections/…` · Google 로그인 콜백 (ASWebAuthenticationSession이 주소를 바로 돌려주지만, 앱 밖에서 열린 경우를 위해)
     func application(_ application: NSApplication, open urls: [URL]) {
         guard case .ready(_, let services) = AppRuntime.startup else { return }
         let account = AppRuntime.account(services: services)
-        for url in urls {
+        for url in urls where !GoogleSignInFlow.handle(url) {
             Task { await account.handleCallback(url) }
         }
     }
@@ -70,6 +70,8 @@ final class MacAppDelegate: NSObject, NSApplicationDelegate {
                 model.sessionChanged()
                 // 알림: 허용돼 있으면 로그인한 사용자로 기기 토큰을 보낸다
                 PushCenter.shared.follow(userID: model.signedInUserID, services: model.services)
+                // 로그아웃 · 세션 만료 · 계정 삭제 모두: 이 기기의 Google 로그인도 지운다 (다음 계정이 전 계정의 Google 토큰을 쓰지 않게)
+                if session.state == .signedOut { GoogleSignInFlow.signOut() }
                 self.follow(session, model: model)
             }
         }

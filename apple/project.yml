@@ -22,6 +22,10 @@ settings:
 packages:
   TaskforceKit:
     path: Packages/TaskforceKit
+  # Sign in with Google (로그인만, 기본 범위 openid · email · profile). 9.0부터 nonce를 넘길 수 있다(Supabase nonce 확인).
+  GoogleSignIn:
+    url: https://github.com/google/GoogleSignIn-iOS
+    from: 10.0.0
 targets:
   Taskforce:
     type: application
@@ -33,6 +37,8 @@ targets:
         product: TaskforceKit
       - package: TaskforceKit
         product: TaskforceUI
+      - package: GoogleSignIn
+        product: GoogleSignIn
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: $(APP_BUNDLE_ID)

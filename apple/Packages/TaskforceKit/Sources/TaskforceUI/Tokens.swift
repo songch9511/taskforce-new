@@ -86,6 +86,9 @@ public enum TFImage {
     /// Logo/Mark 3:319 (비율 720:510)
     public static var logoMark: Image { Image("logo/mark", bundle: .module) }
     public static let logoMarkAspectRatio: CGFloat = 720.0 / 510.0
+    /// Google "G" (표준 색 그라데이션, 18pt). Google Sign-In SDK 10.0.0의 버튼 아이콘(`GoogleSignIn/Sources/Resources/google*.png`) 그대로.
+    /// Google 브랜드 규칙: 색 · 모양을 바꾸지 않고 흰 바탕 위에 둔다.
+    public static var googleG: Image { Image("logo/google-g", bundle: .module) }
 }
 
 #if os(macOS)

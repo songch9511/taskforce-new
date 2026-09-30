@@ -233,6 +233,8 @@ struct LauncherRootView: View {
             LauncherRow(title: "Add “\(title)”", selected: selected, leading: .symbol("plus.circle"))
         case .signIn:
             LauncherRow(title: "Sign in with Apple", selected: selected, leading: .symbol("apple.logo"))
+        case .signInWithGoogle:
+            LauncherRow(title: SignInWithGoogleButton.title, selected: selected, leading: .google)
         case .signInWithEmail:
             LauncherRow(title: "Sign in with email", selected: selected, leading: .symbol("envelope"))
         case .allowAI:
