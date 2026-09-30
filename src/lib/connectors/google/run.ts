@@ -19,7 +19,7 @@ import type { Connection, Connector, ConnectorSyncOutcome } from "../types";
 
 import { calendarClient } from "./calendar";
 import { meetClient, MeetBudgetExhausted } from "./meet";
-import { disconnectOtherGoogleAccounts, revokeStoredGoogleToken, saveGoogleAccount } from "./account";
+import { revokeStoredGoogleToken, saveGoogleAccount } from "./account";
 import { exchangeGoogleCode, GoogleOAuthError, googleAuthorizeUrl, missingScopes, type GoogleOAuthConfig } from "./oauth";
 import { googleSettingsSchema } from "./settings";
 import { DEFAULT_GOOGLE_SYNC, MEET_REQUEST_BUDGET, syncGoogleMeet } from "./sync";
@@ -151,14 +151,13 @@ export const googleConnector: Connector = {
       return "missing_scope";
     }
     const account = grant.account;
-    const connectionId = await saveGoogleAccount(admin, {
+    await saveGoogleAccount(admin, {
       userId,
       provider: "google",
       account,
       scopes: grant.scopes,
       token: grant.token,
     });
-    await disconnectOtherGoogleAccounts(admin, userId, "google", connectionId);
     return features.calendar && features.meet ? "connected" : "connected_partial";
   },
   sync: (admin, connection, options) => syncGoogleConnection(admin, connection, options),

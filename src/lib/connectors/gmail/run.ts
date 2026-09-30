@@ -17,7 +17,7 @@ import {
 } from "../store";
 import type { Connection, Connector, ConnectorSyncOutcome } from "../types";
 
-import { disconnectOtherGoogleAccounts, revokeStoredGoogleToken, saveGoogleAccount } from "../google/account";
+import { revokeStoredGoogleToken, saveGoogleAccount } from "../google/account";
 import { exchangeGoogleCode, GoogleOAuthError, googleAuthorizeUrl, missingScopes, type GoogleOAuthConfig } from "../google/oauth";
 import { googleSettingsSchema } from "../google/settings";
 import { GoogleApiError, googleAccess, GoogleReauthError } from "../google/token";
@@ -116,14 +116,13 @@ export const gmailConnector: Connector = {
       return "missing_scope";
     }
     const account = grant.account;
-    const connectionId = await saveGoogleAccount(admin, {
+    await saveGoogleAccount(admin, {
       userId,
       provider: "gmail",
       account,
       scopes: grant.scopes,
       token: grant.token,
     });
-    await disconnectOtherGoogleAccounts(admin, userId, "gmail", connectionId);
     return "connected";
   },
   sync: (admin, connection, options) => syncGmailConnection(admin, connection, options),

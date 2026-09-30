@@ -18,7 +18,7 @@ export async function revokeStoredGoogleToken(token: unknown): Promise<void> {
 export async function saveGoogleAccount(
   admin: SupabaseClient,
   input: { userId: string; provider: GoogleProvider; account: GoogleAccount; scopes: string[]; token: unknown },
-): Promise<string> {
+): Promise<void> {
   const connectionId = await saveConnection(admin, {
     userId: input.userId,
     provider: input.provider,
@@ -31,18 +31,10 @@ export async function saveGoogleAccount(
   if (!merged) {
     throw new Error("연결 설정을 저장하지 못했습니다 (연결이 사라짐)");
   }
-  return connectionId;
-}
 
-export async function disconnectOtherGoogleAccounts(
-  admin: SupabaseClient,
-  userId: string,
-  provider: GoogleProvider,
-  keepId: string,
-): Promise<void> {
-  const service = provider === "gmail" ? "Gmail" : "Google";
-  for (const other of await otherConnections(admin, userId, provider, keepId)) {
+  const service = input.provider === "gmail" ? "Gmail" : "Google";
+  for (const other of await otherConnections(admin, input.userId, input.provider, connectionId)) {
     await revokeStoredGoogleToken(other.token).catch(logError(`옛 ${service} 연결 토큰 폐기 실패 (${other.id})`));
-    await disconnectConnection(admin, userId, other.id).catch(logError(`옛 ${service} 연결 끊기 실패 (${other.id})`));
+    await disconnectConnection(admin, input.userId, other.id).catch(logError(`옛 ${service} 연결 끊기 실패 (${other.id})`));
   }
 }
