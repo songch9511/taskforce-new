@@ -73,9 +73,9 @@ function reasonText(decision: JudgeLogRow["decision"], reasons: RejectReason[]):
 
 const pct = (p: number) => `${Math.round(p * 100)}%`;
 
-export default async function LabPage({ searchParams }: { searchParams: Promise<{ source?: string; notion?: string; slack?: string; gmail?: string }> }) {
+export default async function LabPage({ searchParams }: { searchParams: Promise<{ source?: string; notion?: string; slack?: string; gmail?: string; google?: string }> }) {
   const user = await requireUser();
-  const { source: selectedId, notion: notionStatus, slack: slackStatus, gmail: gmailStatus } = await searchParams;
+  const { source: selectedId, notion: notionStatus, slack: slackStatus, gmail: gmailStatus, google: googleStatus } = await searchParams;
   const supabase = await createClient();
 
   const { data: profileRow } = await supabase.from("profiles").select("display_name, aliases, emails, ai_consent_at").maybeSingle();
@@ -164,7 +164,13 @@ export default async function LabPage({ searchParams }: { searchParams: Promise<
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <ConnectionsPanel connections={connections ?? []} notionStatus={notionStatus} slackStatus={slackStatus} gmailStatus={gmailStatus} />
+          <ConnectionsPanel
+            connections={connections ?? []}
+            notionStatus={notionStatus}
+            slackStatus={slackStatus}
+            gmailStatus={gmailStatus}
+            googleStatus={googleStatus}
+          />
         </CardContent>
       </Card>
 

@@ -204,6 +204,15 @@ describe("OAuth callback — 필요한 권한이 빠짐 (missing_scope)", () => 
     expect(after).toEqual([]);
   });
 
+  it("일부 권한만 허용해 연결됐으면(connected_partial) /lab?google=connected_partial로 돌아가고 onConnected를 부른다 (G10)", async () => {
+    const { deps, after } = setup({ session: { id: ALICE }, cookie: { state: cookieState, userId: ALICE }, connect: async () => "connected_partial" });
+    const google: OAuthCallbackDeps = { ...deps, provider: "google" };
+    const response = await handleOAuthCallback(new Request(`http://localhost:3000/api/connectors/google/callback?${new URLSearchParams({ state: cookieState, code: "c" })}`), google);
+    expect(response.headers.get("location")).toBe("http://localhost:3000/lab?google=connected_partial");
+    expect(response.headers.get("set-cookie")).toMatch(/^google_oauth_state=; Path=\/api\/connectors\/google; Max-Age=0/);
+    expect(after).toEqual([ALICE]);
+  });
+
   it("연결된 다른 상태(connected_empty 등)는 onConnected를 부른다", async () => {
     const { deps, after } = setup({ session: { id: ALICE }, cookie: { state: cookieState, userId: ALICE }, connect: async () => "connected_empty" });
     const response = await handleOAuthCallback(callback({ state: cookieState, code: "c" }), deps);

@@ -275,6 +275,76 @@ describe("recordSync: 동기화 결과를 연결 상태로", () => {
   });
 });
 
+describe("ingestDeps.insertSource: 붙인 일정 (sources.meeting)", () => {
+  const item: IngestItem = {
+    externalId: "conferenceRecords/c1/transcripts/t1",
+    externalVersion: "1",
+    kind: "meeting",
+    title: "Proposal review — Acme",
+    text: "[Google Meet · Proposal review — Acme]\nJordan Lee: Hello there, everyone.",
+    occurredAt: new Date("2026-09-30T01:00:00Z"),
+    lastEditedAt: new Date("2026-09-30T02:00:00Z"),
+    externalUrl: null,
+  };
+
+  /** 넣는 행을 기록하는 가짜 service role 클라이언트. failures를 주면 차례로 그 오류를 돌려준다 (그 뒤는 성공) */
+  function fakeInsert(failures: { code: string; message: string }[] = []) {
+    const rows: Record<string, unknown>[] = [];
+    const pending = [...failures];
+    const admin = {
+      from: () => ({
+        insert: (row: Record<string, unknown>) => {
+          rows.push(row);
+          const error = pending.shift();
+          return { select: () => ({ single: async () => (error ? { data: null, error } : { data: { id: "src-1" }, error: null }) }) };
+        },
+      }),
+    } as unknown as SupabaseClient;
+    return { admin, rows };
+  }
+  const meeting = { calendar_event_id: "evt-1", title: "Proposal review — Acme", start: "2026-09-30T01:00:00.000Z", end: "2026-09-30T02:00:00.000Z" };
+
+  it("일정이 붙은 원문은 { calendar_event_id, title, start, end }를 meeting에 저장한다", async () => {
+    const { admin, rows } = fakeInsert();
+    expect(await ingestDeps(admin).insertSource(connection, { ...item, meeting })).toBe("src-1");
+    expect(rows[0]).toMatchObject({ user_id: "u1", connection_id: "c1", external_id: item.externalId, kind: "meeting", meeting });
+  });
+
+  it("일정이 없는 원문은 meeting 열을 보내지 않는다: 마이그레이션을 적용하기 전에 배포해도 다른 원문의 저장은 그대로 된다", async () => {
+    const { admin, rows } = fakeInsert();
+    await ingestDeps(admin).insertSource(connection, item);
+    expect("meeting" in rows[0]).toBe(false);
+  });
+
+  it.each([
+    ["PostgREST 스키마 캐시에 열이 없음", "PGRST204"],
+    ["Postgres undefined_column", "42703"],
+  ])("마이그레이션 전이라 meeting 열이 없으면(%s) 일정 없이 다시 넣는다: 일정 붙이기가 동기화 전체를 막지 않는다 (일정 연결만 잃고, 로그에 남긴다)", async (_name, code) => {
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { admin, rows } = fakeInsert([{ code, message: "Could not find the 'meeting' column of 'sources' in the schema cache" }]);
+
+    expect(await ingestDeps(admin).insertSource(connection, { ...item, meeting })).toBe("src-1");
+
+    expect(rows).toHaveLength(2);
+    expect("meeting" in rows[0]).toBe(true);
+    expect("meeting" in rows[1]).toBe(false);
+    expect(rows[1]).toMatchObject({ external_id: item.externalId, raw_text: item.text });
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(spy.mock.calls)).not.toContain("Jordan");
+    spy.mockRestore();
+  });
+
+  it("그 밖의 저장 오류는 다시 넣지 않고 던진다. 동시에 같은 항목이 들어왔으면(23505) null", async () => {
+    const failing = fakeInsert([{ code: "23514", message: "check constraint sources_meeting_shape" }]);
+    await expect(ingestDeps(failing.admin).insertSource(connection, { ...item, meeting })).rejects.toThrow(/원문 저장 실패/);
+    expect(failing.rows).toHaveLength(1);
+
+    const duplicate = fakeInsert([{ code: "23505", message: "duplicate key" }]);
+    expect(await ingestDeps(duplicate.admin).insertSource(connection, { ...item, meeting })).toBeNull();
+    expect(duplicate.rows).toHaveLength(1);
+  });
+});
+
 describe("recordConnectionCreated: 연결 완료 지표", () => {
   it("서비스를 담아 남긴다 (재연결 알림 지표와 서비스별로 맞추려고)", async () => {
     const inserted: unknown[] = [];

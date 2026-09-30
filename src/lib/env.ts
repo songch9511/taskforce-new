@@ -88,6 +88,15 @@ export function gmailConnectEnabled(env: Record<string, string | undefined> = pr
   return connectFlag(env, "GMAIL_CONNECT_ENABLED");
 }
 
+/**
+ * 앱에 google(Calendar · Meet 전사) 연결을 여는가 (GOOGLE_CONNECT_ENABLED = "true"). Gmail과 같은 모양: 운영은 처리방침 3장 Google 절 · 앱 문구
+ * (docs/go-live/google-integration.md PR 4 · 5)를 맞춘 뒤에 켠다. 설정하지 않았으면 개발 서버에서만 연다.
+ * 닫혀 있어도 이미 있는 연결의 동기화 · 토큰 폐기는 그대로 한다.
+ */
+export function googleConnectEnabled(env: Record<string, string | undefined> = process.env): boolean {
+  return connectFlag(env, "GOOGLE_CONNECT_ENABLED");
+}
+
 function connectFlag(env: Record<string, string | undefined>, name: string): boolean {
   const flag = env[name]?.trim();
   if (flag) return flag === "true";
