@@ -272,7 +272,7 @@ union all select 'slack_people', count(*) from public.slack_people where user_id
 | L2 | Search Console 도메인 인증 | 사용자 ✅ (2026-09-28, `daniel@taskforcelabs.dev`) | Search Console에 `taskforcelabs.dev` "확인됨" | Google Workspace Owner 계정 |
 | L3 | Google 프로젝트 A 설정 + 브랜드 심사 | 사용자 ✅ (2026-09-29, `taskforce-510108` In production, 브랜딩 자동 인증 · 게시. 범위는 `openid` · `email`만, 민감 범위는 L4에서) | "Brand verified" | L1, L2 |
 | L4 | Google 프로젝트 A 민감 범위 심사 제출 (Calendar · Meet) | 사용자 | 제출 확인 메일 → 통과 (추정 10 영업일) | L3, C4, 영상 A (`google-verification.md` 5장) |
-| L5 | Google 프로젝트 B Testing + 테스트 사용자 등록 (Gmail) | 사용자 · 진행 중 (2026-09-29: `taskforce-gmail-beta` Testing, 범위 3개, 클라이언트 · `GMAIL_*` env, 테스트 사용자 등록 끝. 연결 성공은 C4 배포 뒤) | 등록한 테스터가 Gmail 연결 성공 | L1, C4, I3 |
+| L5 | Google 프로젝트 B Testing + 테스트 사용자 등록 (Gmail) | 사용자 ✅ (2026-09-29: `taskforce-gmail-beta` Testing, 범위 3개, 클라이언트 · `GMAIL_*` env, 테스트 사용자 등록. 2026-09-30: `GMAIL_CONNECT_ENABLED=true` 뒤 첫 연결의 동기화가 `Gmail 요청 실패 (403)` — **운영 프로젝트 B에 Gmail API를 켜지 않았었다**(dev 프로젝트에만 켬). API 및 서비스 → Gmail API → 사용으로 고친 뒤 메일 13통 처리 확인. 프로젝트 A(`taskforce-510108`)는 Calendar API · Meet REST API가 켜져 있음을 같은 날 확인. 새 Google 프로젝트를 만들면 쓰는 API를 먼저 켠다. 테스트 사용자: `daniel@taskforcelabs.dev` · `songch9511@gmail.com` · `songch9511@dimension.company`) | 등록한 테스터가 Gmail 연결 성공 | L1, C4, I3 |
 | L6 | Google 프로젝트 B 제한 범위 심사 + CASA | 사용자 (평가기관 계약 · 결제 포함) | 심사 통과 · LOA. **go live 조건 아님** (Testing으로 go live, 통과 뒤 7일 재연결 해제) | L5, 영상 B, Google의 CASA 요청 |
 | L7 | Slack 앱 생성 · 이벤트 URL 확인 · 공개 배포 | 사용자 ✅ (2026-09-29, `A0C584MQJV7`, 공개 배포 켬) | "Public distribution is active", 다른 워크스페이스에서 설치 성공(남음) | I3, C5 (`slack-app.md` 9장) |
 | L8 | TestFlight 외부 테스트 심사 | 사용자 | 베타 앱 심사 통과 | C6, C2, I1~I5, 데모 계정 (`app-store.md` 7장) |
