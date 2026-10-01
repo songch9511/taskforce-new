@@ -13,6 +13,7 @@ import type { Claim } from "@/lib/pipeline/resolve";
 import { SLACK_DISCONNECTED_QUOTE } from "@/lib/retention";
 
 import { changeEvents, projectAction, withConfirmationChange, type ActionStatus, type EventDraft } from "./project";
+import { isConfirmationEligible } from "./rank";
 import { actionRowValues, CLAIM_COLUMNS, claimFromRow, claimToRow, storedReasons, toPgVector, type ClaimRow } from "./rows";
 
 // Phase 2 병합 결과를 DB에 쓴다 (service role). 쿼리마다 user_id로 범위를 좁힌다.
@@ -153,7 +154,7 @@ export class SupabaseActionStore implements ActionStore, EmbeddingBackfillStore 
       events: [...changeEvents(null, projected, first.role), ...(this.options.createEvents ?? [])],
       actor: "ai",
     });
-    if (projected.needs_confirmation) this.needsConfirmation.add(id);
+    if (isConfirmationEligible(projected)) this.needsConfirmation.add(id);
     return { ...action, id };
   }
 
@@ -181,9 +182,11 @@ export class SupabaseActionStore implements ActionStore, EmbeddingBackfillStore 
         actor: "ai",
       });
       if (!written) return null;
-      if (after.needs_confirmation && !row.needs_confirmation) this.needsConfirmation.add(actionId);
-      // 같은 처리에서 만든 확인 요청이 이번 붙임(사용자의 확정 약속)으로 풀렸으면 알림 대상에서 뺀다
-      if (!after.needs_confirmation) this.needsConfirmation.delete(actionId);
+      if (isConfirmationEligible(after)) {
+        if (!isConfirmationEligible(before)) this.needsConfirmation.add(actionId);
+      } else {
+        this.needsConfirmation.delete(actionId);
+      }
       return true;
     });
   }

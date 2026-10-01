@@ -13,6 +13,11 @@ export type RankInput = {
   last_activity_at: string;
 };
 
+/** Review 목록과 확인 요청 알림이 함께 쓰는 표시 조건. */
+export function isConfirmationEligible(action: Pick<RankInput, "status" | "owner" | "needs_confirmation">): boolean {
+  return action.status === "open" && action.owner !== "other" && action.needs_confirmation;
+}
+
 export type RankReason = "overdue" | "due_today" | "due_soon" | "external" | "neglected" | "started";
 
 export type RankedAction<T extends RankInput = RankInput> = T & { score: number; reasons: RankReason[]; days_until_due: number | null };
@@ -76,6 +81,6 @@ export function rankNow<T extends RankInput>(actions: T[], now: Date): { now: Ra
   const byScore = (a: RankedAction<T>, b: RankedAction<T>) => b.score - a.score || (a.due_date ?? "9999").localeCompare(b.due_date ?? "9999");
   return {
     now: open.filter((a) => !a.needs_confirmation).sort(byScore),
-    confirmations: open.filter((a) => a.needs_confirmation).sort((a, b) => a.last_activity_at.localeCompare(b.last_activity_at)),
+    confirmations: open.filter(isConfirmationEligible).sort((a, b) => a.last_activity_at.localeCompare(b.last_activity_at)),
   };
 }
