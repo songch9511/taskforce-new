@@ -71,7 +71,7 @@ step: `pending → prepared → calling → called | unknown_outcome | failed | 
 
 ## 4. write-ahead intent와 표식
 
-- intent key = (Action id, 공급자, 도구, 목적, 정규화한 대상, 회차). 도구가 다르면 같은 목적 · 대상이라도 중복이 아니다. 내부 효과는 단계마다 하나다(외부 상태가 없어 다른 단계와 중복을 따지지 않는다). 같은 표식을 다시 쓰는 것은 내부 효과의 재시도뿐이다: 이미 표식을 가진 외부 단계는 다시 `prepared`가 되어도 부르지 않고 `skipped`다. `intents.intent_key`는 DB unique다. 수동 버튼과 자동 trigger가 같은 목적을 동시에 시작해도 한 단계만 `calling`으로 간다. 다른 쪽은 `skipped`, receipt에 누구의 중복인지 적는다.
+- intent key = (Action id, 공급자, 도구, 목적, 정규화한 대상, 회차). 도구가 다르면 같은 목적 · 대상이라도 중복이 아니다. 내부 효과는 단계마다 하나다(외부 상태가 없어 다른 단계와 중복을 따지지 않는다). 같은 표식을 다시 쓰는 것은 내부 효과의 재시도뿐이다: 이미 자기 표식을 가진 외부 단계가 (계약 밖에서) 다시 `prepared`가 되어도 부르지 않고(`stale`), 앞 결과를 덮거나 run을 끝내지 않는다. `intents.intent_key`는 DB unique다. 수동 버튼과 자동 trigger가 같은 목적을 동시에 시작해도 한 단계만 `calling`으로 간다. 다른 쪽은 `skipped`, receipt에 누구의 중복인지 적는다.
 - 표식(marker)은 `intents` 행에 저장하는 임의 값이다(무작위 uuid, 또는 서버 비밀로 만든 intent key의 HMAC). 외부(메일 헤더 · 댓글 본문)에는 표식만 실린다. intent key는 DB 밖으로 나가지 않는다.
 - 순서:
   1. intent 행(표식) + `prepared → calling` + lease를 한 트랜잭션에 commit한다.
@@ -172,6 +172,6 @@ step: `pending → prepared → calling → called | unknown_outcome | failed | 
 | — | 받은 뒤 receipt 저장 실패 | 다시 써서 `called`. 계속 실패하면 오류, `calling`에 남아 lease 만료 뒤 readback으로 `called` |
 | — | 내부 효과(AI 호출)에서 lease 만료 · 응답 없음 | 승인 없이 부른다(Manual이어도). 결과 불명 대신 같은 표식으로 다시 준비, 다시 준비가 2번을 넘으면 `failed` · run `failed` |
 | — | 실행 주체 · 수신자 허용 목록 밖 / 목록 밖 도구 · 외부 도구를 내부 효과로 적은 단계 / 수신자 없는 외부 단계(대상을 인자에만) / 보내는 연결 없음 | 효과 0(승인이 있어도), 단계는 `prepared`, run에 막힌 이유(`hold_reason` `actor` · `blocked` · `needs_connection`). 목록에 넣으면 이어 가서 1 |
-| — | 이미 보낸 외부 단계를 `prepared`로 되돌림 / 앞 단계가 결과 불명인데 뒤 단계를 직접 부름 / 승인 뒤 공급자만 바뀜 | 효과 추가 0 (`skipped` / `stale` / 승인 대기) |
+| — | 이미 보낸 외부 단계를 `prepared`로 되돌림 / 앞 단계가 결과 불명인데 뒤 단계를 직접 부름 / 승인 뒤 공급자만 바뀜 | 효과 추가 0 (`stale`, 앞 receipt 그대로 / `stale` / 승인 대기) |
 
 한계: PGlite는 연결이 하나라 트랜잭션이 실제로 겹치지 않는다. 동시성은 트랜잭션 경계(단계를 읽은 뒤 · `calling` commit 뒤)에 끼어드는 방식으로 보인다. 잠금과 동시 commit 경합은 `tests/pg/execution-locks.test.ts`가 실제 Postgres에 연결 둘을 열어 시험한다(`npm run test:pg`, CI는 postgres service): 스위치 끄기 · 실행 주체 · 수신자 허용 목록 · 도구 목록 지우기 vs `begin_call`(양쪽 순서), 같은 intent 동시 `begin_call`(commit · rollback), 같은 단계 동시 `begin_call`, 승인 철회 vs `begin_call`(양쪽 순서). 운영 쪽 모양(처음 상태 · run 만들기 · 실행 이벤트 · 권한)은 `tests/db/execution-core.test.ts` · `execution-rls.test.ts`가 본다.

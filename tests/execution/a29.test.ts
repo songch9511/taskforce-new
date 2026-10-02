@@ -633,16 +633,21 @@ describe("A29: 내부 효과 · 허용 목록 · 도구 목록", () => {
     expect(await holdReason("r38")).toBe("needs_connection");
   });
 
-  it("이미 보낸 외부 단계를 서버 권한으로 prepared로 되돌려도 같은 표식으로 다시 보내지 않고 건너뛴다", async () => {
+  it("이미 보낸 외부 단계를 서버 권한으로 prepared로 되돌려도(계약 밖) 다시 보내지 않고, 앞 결과를 덮거나 run을 끝내지 않는다(stale)", async () => {
     await createRun("r35", "auto");
     await fn("fn-1").start(uid("r35"));
     expect(await effects()).toBe(1);
     await db.query("update public.execution_steps set state = 'prepared', version = version + 1 where id = $1", [uid("r35-s1")]);
     await db.query("update public.execution_runs set state = 'running' where id = $1", [uid("r35")]);
-    await fn("fn-2").wake(uid("r35"));
+    const { rows } = await db.query<{ version: number }>("select version from public.execution_steps where id = $1", [uid("r35-s1")]);
+    const gate = await db.query<{ g: { gate: string } }>("select public.begin_call($1, 'fn-2', $2) as g", [uid("r35-s1"), rows[0].version]);
+    expect(gate.rows[0].g.gate).toBe("stale");
+    await fn("fn-3").wake(uid("r35"));
     await fn("cron").sweep();
     expect(await effects()).toBe(1);
-    expect(await stepState("r35-s1")).toBe("skipped");
+    const step = await db.query<{ state: string; receipt: { via: string } }>("select state, receipt from public.execution_steps where id = $1", [uid("r35-s1")]);
+    expect(step.rows[0]).toMatchObject({ state: "prepared", receipt: { via: "response" } });
+    expect(await runState("r35")).toBe("running");
   });
 
   it("앞 단계가 결과 불명이면 뒤 단계를 직접 준비해 불러도 begin_call이 거절한다", async () => {

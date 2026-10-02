@@ -296,6 +296,49 @@ describe("실행 코어 잠금 경합 (실제 Postgres, 연결 둘)", () => {
   });
 });
 
+// 이벤트 기록 트리거는 소유자 권한(security definer)으로 돈다: 서버가 아닌 역할이 연결을 지워(set null) 단계가 다시 계획돼도
+// 그 역할에 execution_events 권한이 없어 실패하지 않는다. Supabase Auth의 계정 삭제(supabase_auth_admin)도 같은 길이다.
+// PGlite에서는 이 권한 문제가 드러나지 않아 실제 Postgres로 본다.
+describe("서버가 아닌 역할의 삭제가 단계를 다시 계획할 때 (실제 Postgres)", () => {
+  it("supabase_auth_admin이 연결 · 계정을 지워도 실패하지 않고, 다시 계획된 단계의 이벤트가 남는다", async () => {
+    await setup.query(`
+      grant select, delete on public.connections to supabase_auth_admin;
+      create policy "auth_admin_select_test" on public.connections for select to supabase_auth_admin using (true);
+      create policy "auth_admin_delete_test" on public.connections for delete to supabase_auth_admin using (true);
+      grant usage on schema auth to supabase_auth_admin; -- Supabase에서는 supabase_auth_admin이 auth 스키마 · users의 소유자다
+      grant select, delete on auth.users to supabase_auth_admin;
+    `);
+    const user = await newUser();
+    const step = await preparedStep(user, "send-1");
+
+    await setup.query("set role supabase_auth_admin");
+    try {
+      const deleted = await setup.query("delete from public.connections where id = $1", [user.connectionId]);
+      expect(deleted.rowCount).toBe(1);
+    } finally {
+      await setup.query("reset role");
+    }
+    const { rows } = await setup.query<{ state: string; connection_id: string | null }>(
+      "select state, connection_id from public.execution_steps where id = $1",
+      [step.stepId],
+    );
+    expect(rows[0]).toEqual({ state: "pending", connection_id: null });
+    const events = await setup.query("select 1 from public.execution_events where step_id = $1 and from_state = 'prepared' and to_state = 'pending'", [step.stepId]);
+    expect(events.rowCount).toBe(1);
+
+    // 계정 삭제: 연결 · run · 단계 · 이벤트가 cascade로 함께 지워진다
+    const other = await newUser();
+    await preparedStep(other, "send-1");
+    await setup.query("set role supabase_auth_admin");
+    try {
+      expect((await setup.query("delete from auth.users where id = $1", [other.userId])).rowCount).toBe(1);
+    } finally {
+      await setup.query("reset role");
+    }
+    expect((await setup.query("select 1 from public.execution_runs where user_id = $1", [other.userId])).rowCount).toBe(0);
+  });
+});
+
 /** route: 사용자가 본 계획 그대로 승인 */
 async function approve(user: User, stepId: string) {
   const shown = (await setup.query<{ hash: string; expires_at: Date }>("select * from public.show_plan($1, $2)", [user.userId, stepId])).rows[0];

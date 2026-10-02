@@ -8,11 +8,59 @@
 --
 -- 적용: 운영 DB에는 병합 직전 승인을 받고 `supabase db query --linked -f`로 한다(db push 금지). 코드는 아직 이 표를 쓰지 않는다(PR6, 플래그 꺼짐).
 
--- rate_limit_events 제약을 바꾸며 잠금을 잡는다: 운영에서 오래 기다리지 않고 실패하게 한다 (다시 적용하면 된다)
+-- 기존 표(rate_limit_events)의 제약을 바꾸며 잠금을 잡는다: 운영에서 오래 기다리지 않고 실패하게 한다.
+-- 잠금을 잡는 변경을 맨 앞에 두어, 시간이 다 되면 새 객체를 하나도 만들기 전에 실패한다 (그때는 그대로 다시 적용한다).
+-- 그 뒤에서 실패하면 파일 전체가 한 트랜잭션으로 돌았는지에 따라 남은 객체가 있을 수 있으니, 다시 적용하기 전에 확인한다.
 set lock_timeout = '5s';
 
 -- ─────────────────────────────────────────────
--- 0) 시각 · 주소 정규화
+-- 0) run 만들기의 사용자별 횟수 제한 (POST /api/v1/runs, U2 PR6). 시도 기록은 같은 표(rate_limit_events)에, 글은 남기지 않는다
+-- ─────────────────────────────────────────────
+alter table public.rate_limit_events drop constraint rate_limit_events_kind_check;
+alter table public.rate_limit_events add constraint rate_limit_events_kind_check
+  check (kind in ('ask', 'connection_start', 'action_create', 'run_create'));
+
+-- 20261009000000_action_create_rate_limit와 같고, rate_limit_events로 세는 종류에 run_create만 더했다.
+create or replace function public.take_rate_limit(p_user_id uuid, p_kind text, p_max int, p_window_seconds int)
+returns timestamptz
+language plpgsql
+set search_path = ''
+as $$
+declare
+  v_window interval := make_interval(secs => p_window_seconds);
+  v_since timestamptz;
+  v_nth timestamptz;
+begin
+  if p_user_id is null or p_max < 1 or p_window_seconds < 1 then
+    raise exception 'take_rate_limit: 잘못된 인자';
+  end if;
+  perform pg_advisory_xact_lock(hashtext(p_user_id::text || ':' || p_kind));
+  v_since := clock_timestamp() - v_window;
+
+  if p_kind = 'missing_report' then
+    select r.created_at into v_nth from public.missing_reports r
+    where r.user_id = p_user_id and r.created_at > v_since
+    order by r.created_at desc offset p_max - 1 limit 1;
+    if v_nth is not null then return v_nth + v_window; end if;
+    insert into public.missing_reports (user_id, created_at) values (p_user_id, clock_timestamp());
+  elsif p_kind in ('ask', 'connection_start', 'action_create', 'run_create') then
+    select e.created_at into v_nth from public.rate_limit_events e
+    where e.user_id = p_user_id and e.kind = p_kind and e.created_at > v_since
+    order by e.created_at desc offset p_max - 1 limit 1;
+    if v_nth is not null then return v_nth + v_window; end if;
+    insert into public.rate_limit_events (user_id, kind, created_at) values (p_user_id, p_kind, clock_timestamp());
+  else
+    raise exception 'take_rate_limit: 모르는 종류 %', p_kind;
+  end if;
+  return null;
+end;
+$$;
+
+revoke execute on function public.take_rate_limit from public, anon, authenticated;
+grant execute on function public.take_rate_limit to service_role;
+
+-- ─────────────────────────────────────────────
+-- 1) 시각 · 주소 정규화
 -- ─────────────────────────────────────────────
 -- 운영은 now()뿐이다. 테스트는 적용 뒤 테스트 안에서만 app.now 판으로 바꾼다 (세션 설정은 풀링된 연결에 남을 수 있다).
 create function public.db_now() returns timestamptz
@@ -49,7 +97,7 @@ as $$
 $$;
 
 -- ─────────────────────────────────────────────
--- 1) 정책: 사용자마다 하나. 기본 Manual
+-- 2) 정책: 사용자마다 하나. 기본 Manual
 -- ─────────────────────────────────────────────
 create table public.execution_policies (
   id uuid primary key default gen_random_uuid(),
@@ -63,7 +111,7 @@ create table public.execution_policies (
 );
 
 -- ─────────────────────────────────────────────
--- 2) run: Action 하나에 대한 실행 한 번. 상태는 Action 상태와 따로 둔다 (EXECUTION 3장)
+-- 3) run: Action 하나에 대한 실행 한 번. 상태는 Action 상태와 따로 둔다 (EXECUTION 3장)
 -- ─────────────────────────────────────────────
 create table public.execution_runs (
   id uuid primary key default gen_random_uuid(),
@@ -89,7 +137,7 @@ create index execution_runs_action_idx on public.execution_runs (action_id);
 create index execution_runs_open_idx on public.execution_runs (created_at) where state in ('queued', 'running', 'waiting_approval');
 
 -- ─────────────────────────────────────────────
--- 3) step: 함수 호출 한 번 = 단계 하나. 전이는 CAS (state + version)
+-- 4) step: 함수 호출 한 번 = 단계 하나. 전이는 CAS (state + version)
 -- ─────────────────────────────────────────────
 create table public.execution_steps (
   id uuid primary key default gen_random_uuid(),
@@ -166,7 +214,7 @@ create trigger execution_steps_replan
   for each row execute function public.execution_steps_replan();
 
 -- ─────────────────────────────────────────────
--- 4) 승인 · intent
+-- 5) 승인 · intent
 -- ─────────────────────────────────────────────
 create table public.execution_approvals (
   id uuid primary key default gen_random_uuid(),
@@ -195,7 +243,7 @@ create table public.execution_intents (
 create index execution_intents_step_idx on public.execution_intents (step_id);
 
 -- ─────────────────────────────────────────────
--- 5) 운영 표: 차단 스위치 · 도구 목록 · 허용 목록 (EXECUTION 6 · 7장). 클라이언트는 읽지도 못한다
+-- 6) 운영 표: 차단 스위치 · 도구 목록 · 허용 목록 (EXECUTION 6 · 7장). 클라이언트는 읽지도 못한다
 -- ─────────────────────────────────────────────
 -- 세 층(전체 · 공급자 · 모드). 행이 없는 공급자 · 모드는 막힌 것으로 본다
 create table public.execution_controls (
@@ -238,7 +286,7 @@ create table public.execution_recipient_allowlist (
 );
 
 -- ─────────────────────────────────────────────
--- 6) 실행 이벤트: 상태 · hold가 바뀔 때만 같은 트랜잭션에서 남긴다 (거절마다 남기지 않는다). 글은 담지 않는다
+-- 7) 실행 이벤트: 상태 · hold가 바뀔 때만 같은 트랜잭션에서 남긴다 (거절마다 남기지 않는다). 글은 담지 않는다
 -- ─────────────────────────────────────────────
 create table public.execution_events (
   id bigint generated always as identity primary key,
@@ -260,8 +308,11 @@ create index execution_events_run_idx on public.execution_events (run_id, at);
 create index execution_events_step_idx on public.execution_events (step_id) where step_id is not null;
 
 -- 함수는 상태를 바꾸기 전에 트랜잭션 안에서만 유효한 execution.gate를 정한다 (set_config(..., true)). 트리거가 그 값을 적는다.
+-- 이벤트 기록은 security definer(소유자 권한)로 한다: 서버가 아닌 역할의 연결 삭제(set null)가 단계를 다시 계획해도
+-- 그 역할에 execution_events 권한이 없어 실패하지 않게 (계정 삭제 cascade 포함). 실행 권한은 아래에서 막는다
 create function public.execution_runs_log() returns trigger
 language plpgsql
+security definer
 set search_path = ''
 as $$
 declare
@@ -286,6 +337,7 @@ $$;
 
 create function public.execution_steps_log() returns trigger
 language plpgsql
+security definer
 set search_path = ''
 as $$
 declare
@@ -311,7 +363,7 @@ create trigger execution_steps_log
   for each row execute function public.execution_steps_log();
 
 -- ─────────────────────────────────────────────
--- 7) 권한: 앱은 자기 정책 · run · step · 승인을 읽기만 한다. 운영 표 · intent · 이벤트는 서버만
+-- 8) 권한: 앱은 자기 정책 · run · step · 승인을 읽기만 한다. 운영 표 · intent · 이벤트는 서버만
 -- ─────────────────────────────────────────────
 do $$
 declare
@@ -334,7 +386,7 @@ end;
 $$;
 
 -- ─────────────────────────────────────────────
--- 8) 판단 함수
+-- 9) 판단 함수
 -- ─────────────────────────────────────────────
 -- 승인 없이 나갈 수 있는가: Auto/Full + 수신자가 하나 이상 + 모든 수신자가 사용자에게서 + 규칙 안 + 준비할 때의 정책 버전 그대로.
 -- 모르면(NULL) 아니다. 수신자가 없는 단계(대상을 인자에만 적은 것)는 규칙으로 판단할 수 없으므로 아니다
@@ -371,7 +423,7 @@ as $$
 $$;
 
 -- ─────────────────────────────────────────────
--- 9) run · step 만들기 (실행기 · route)
+-- 10) run · step 만들기 (실행기 · route)
 -- ─────────────────────────────────────────────
 -- POST /api/v1/runs: 열린 Action에 run을 만들고 첫 단계(계획, 내부 효과)를 둔다. 깨우기를 놓쳐도 sweep이 이 단계부터 이어 간다.
 -- 정책이 없으면 기본(Manual)으로 만든다.
@@ -438,7 +490,7 @@ end;
 $$;
 
 -- ─────────────────────────────────────────────
--- 10) 상태 전이 (실행기). 모든 입구(route · 자기 호출 · sweep)가 같은 함수를 지난다
+-- 11) 상태 전이 (실행기). 모든 입구(route · 자기 호출 · sweep)가 같은 함수를 지난다
 -- ─────────────────────────────────────────────
 -- pending → prepared: intent key · 정책 버전 · 승인 필요 표시. 첫 단계를 준비하면 run이 running으로 간다.
 -- intent key = (Action, 공급자, 도구, 목적, 정규화한 대상, 회차). 내부 효과는 단계마다 하나다 (외부 상태가 없어 다른 단계와 중복을 따지지 않는다).
@@ -542,11 +594,15 @@ begin
   end if;
   select * into v_policy from public.execution_policies where id = v_run.policy_id for share;
 
-  -- 같은 목적을 다른 단계가 이미 가졌거나, 외부 효과 단계가 이미 표식을 가졌으면(한 번 불렀다) 다시 부르지 않는다.
+  -- 같은 목적을 다른 단계가 이미 가졌으면 승인을 묻지 않고 건너뛴다.
+  -- 외부 효과 단계가 이미 자기 표식을 가졌으면(한 번 불렀다, 계약 밖에서 prepared로 되돌아옴) 다시 부르지도, 앞 결과를 덮지도 않는다.
   -- 같은 표식을 다시 쓰는 것은 내부 효과의 재시도뿐이다
   select i.step_id into v_held from public.execution_intents i where i.intent_key = v_step.intent_key;
-  if v_held is not null and (v_held <> v_step.id or v_step.effect_class <> 'internal') then
+  if v_held is not null and v_held <> v_step.id then
     return public.execution_skip(v_step.id, v_run.id, v_held);
+  end if;
+  if v_held = v_step.id and v_step.effect_class <> 'internal' then
+    return '{"gate": "stale"}';
   end if;
 
   -- 실행 주체: 운영자 허용 목록 (EXECUTION 7장 1)
@@ -613,10 +669,10 @@ begin
     returning marker into v_marker;
   if v_marker is null then
     select i.step_id, i.marker into v_held, v_marker from public.execution_intents i where i.intent_key = v_step.intent_key;
-    if v_held is null then
+    if v_held is null or (v_held = v_step.id and v_step.effect_class <> 'internal') then
       return '{"gate": "stale"}';
     end if;
-    if v_held <> v_step.id or v_step.effect_class <> 'internal' then
+    if v_held <> v_step.id then
       -- 위 확인과 이 insert 사이에 다른 단계가 먼저 commit했다
       return public.execution_skip(v_step.id, v_run.id, v_held);
     end if;
@@ -777,7 +833,7 @@ end;
 $$;
 
 -- ─────────────────────────────────────────────
--- 11) 사용자 행동 (route). 다른 사용자의 행은 없는 것처럼 다룬다
+-- 12) 사용자 행동 (route). 다른 사용자의 행은 없는 것처럼 다룬다
 -- ─────────────────────────────────────────────
 -- 사용자가 볼 계획의 hash. 만료는 초 단위 (앱의 Date는 밀리초라 마이크로초가 사라진다)
 create function public.show_plan(p_user_id uuid, p_step uuid) returns table (hash text, expires_at timestamptz)
@@ -867,49 +923,3 @@ begin
   end loop;
 end;
 $$;
-
--- ─────────────────────────────────────────────
--- 12) run 만들기의 사용자별 횟수 제한 (POST /api/v1/runs, U2 PR6). 시도 기록은 같은 표(rate_limit_events)에, 글은 남기지 않는다
--- ─────────────────────────────────────────────
-alter table public.rate_limit_events drop constraint rate_limit_events_kind_check;
-alter table public.rate_limit_events add constraint rate_limit_events_kind_check
-  check (kind in ('ask', 'connection_start', 'action_create', 'run_create'));
-
--- 20261009000000_action_create_rate_limit와 같고, rate_limit_events로 세는 종류에 run_create만 더했다.
-create or replace function public.take_rate_limit(p_user_id uuid, p_kind text, p_max int, p_window_seconds int)
-returns timestamptz
-language plpgsql
-set search_path = ''
-as $$
-declare
-  v_window interval := make_interval(secs => p_window_seconds);
-  v_since timestamptz;
-  v_nth timestamptz;
-begin
-  if p_user_id is null or p_max < 1 or p_window_seconds < 1 then
-    raise exception 'take_rate_limit: 잘못된 인자';
-  end if;
-  perform pg_advisory_xact_lock(hashtext(p_user_id::text || ':' || p_kind));
-  v_since := clock_timestamp() - v_window;
-
-  if p_kind = 'missing_report' then
-    select r.created_at into v_nth from public.missing_reports r
-    where r.user_id = p_user_id and r.created_at > v_since
-    order by r.created_at desc offset p_max - 1 limit 1;
-    if v_nth is not null then return v_nth + v_window; end if;
-    insert into public.missing_reports (user_id, created_at) values (p_user_id, clock_timestamp());
-  elsif p_kind in ('ask', 'connection_start', 'action_create', 'run_create') then
-    select e.created_at into v_nth from public.rate_limit_events e
-    where e.user_id = p_user_id and e.kind = p_kind and e.created_at > v_since
-    order by e.created_at desc offset p_max - 1 limit 1;
-    if v_nth is not null then return v_nth + v_window; end if;
-    insert into public.rate_limit_events (user_id, kind, created_at) values (p_user_id, p_kind, clock_timestamp());
-  else
-    raise exception 'take_rate_limit: 모르는 종류 %', p_kind;
-  end if;
-  return null;
-end;
-$$;
-
-revoke execute on function public.take_rate_limit from public, anon, authenticated;
-grant execute on function public.take_rate_limit to service_role;

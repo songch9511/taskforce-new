@@ -113,6 +113,16 @@ describe("실행 코어 RLS · 권한", () => {
     );
     expect(rows.map((r) => r.name)).toEqual([...CORE_FUNCTIONS, ...HELPER_FUNCTIONS].sort());
     for (const row of rows) expect(row, row.name).toEqual({ name: row.name, anon: false, authenticated: false, service_role: true });
+
+    // 모두 search_path = ''. 소유자 권한(security definer)은 이벤트 기록 트리거 둘뿐이다
+    const settings = await db.query<{ name: string; definer: boolean; config: string[] | null }>(
+      `select p.proname as name, p.prosecdef as definer, p.proconfig as config
+       from pg_catalog.pg_proc p join pg_catalog.pg_namespace n on n.oid = p.pronamespace
+       where n.nspname = 'public' and (p.proname like 'execution\\_%' or p.proname = any ($1))`,
+      [CORE_FUNCTIONS],
+    );
+    for (const row of settings.rows) expect(row.config, row.name).toContain('search_path=""');
+    expect(settings.rows.filter((r) => r.definer).map((r) => r.name).sort()).toEqual(["execution_runs_log", "execution_steps_log"]);
   });
 
   it("service_role은 RPC로 run을 만들고 단계를 준비 · 부른다 (트리거 · 검사 함수가 service_role 권한으로 돈다)", async () => {
