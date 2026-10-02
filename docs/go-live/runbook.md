@@ -310,7 +310,7 @@ npx supabase db query --linked "select count(*) as actors from public.execution_
 
 ### 9-3. 크레딧 지급 `grant_credits`
 
-크레딧은 운영자가 지급한다(구매 경로 없음, EXECUTION 12장). 양은 크레딧이고 요율 `c3-v1`에서 1 크레딧 = $0.001다. 초안 단계 하나의 예약 추정치는 `DRAFT_ESTIMATE_CREDITS`(`src/lib/execution/limits.ts`)이고, 정산은 확정된 원가 ÷ 크레딧당 USD를 올림한 값이고 예약을 넘지 않는다. 가용 잔액(지급 - 예약 - 정산)이 이 추정치 이상이어야 초안 단계를 부른다. 모자라거나, run을 만들 때 준 `budget_credits`가 추정치보다 작으면 run이 `hold_reason = 'credit'`로 막힌다(뒤의 경우는 지급으로 풀리지 않는다: 새 run을 만든다). 양수는 지급, 음수는 회수(예약 · 정산된 크레딧은 회수하지 못한다). 지급 id마다 한 번만 들어간다: 같은 id로 다시 보내면 아무것도 하지 않고 `false`, 같은 id로 다른 양을 보내면 오류다.
+크레딧은 운영자가 지급한다(구매 경로 없음, EXECUTION 12장). 양은 크레딧이고 요율 `c3-v1`에서 1 크레딧 = $0.001다. 초안 단계 하나의 예약 추정치는 `DRAFT_ESTIMATE_CREDITS`(`src/lib/execution/limits.ts`)이고, 정산은 확정된 원가 ÷ 크레딧당 USD를 올림한 값이고 예약을 넘지 않는다. 가용 잔액(지급 - 예약 - 정산)이 이 추정치 이상이어야 초안 단계를 부른다. 모자라면 run이 `hold_reason = 'credit'`로 막히고, 지급하면 늦어도 5분 안에 이어 간다(9-1). run 예산(`budget_credits`)은 만들 때 이 추정치 이상만 받는다(작으면 400). 초안 둘을 맡긴 run은 첫 초안 정산 뒤 남은 예산이 추정치보다 작으면 `credit`으로 기다리고 지급으로 풀리지 않는다: 그 run은 멈춘다(9-4 "오래 막힌 run 정리"). 양수는 지급, 음수는 회수(예약 · 정산된 크레딧은 회수하지 못한다). 지급 id마다 한 번만 들어간다: 같은 id로 다시 보내면 아무것도 하지 않고 `false`, 같은 id로 다른 양을 보내면 오류다.
 
 ```bash
 # 지급 id를 지급마다 새로 만든다 (작업 기록에 적어 둔다. 같은 지급을 다시 보내도 한 번만 들어간다)
@@ -340,6 +340,14 @@ select billable, generation_id is not null as has_generation, created_at < now()
 from public.execution_usage where cost_status = 'unconfirmed' group by 1, 2, 3 order by 1, 2, 3;
 -- 끝났는데 열린 예약이 남은 run: 원가가 미확정인 run만 남아야 한다 (그 밖은 sweep의 보조 안전망이 1분 안에 푼다)
 select count(*) as open_ended_runs from public.credit_open_ended_runs(1000);
+-- receipt가 빠진 끝낸 초안 (EXECUTION 9장): 0이어야 한다. sweep 보조 안전망이 하루 안의 것을 1분마다 이어 쓴다.
+-- 하루가 지나도 남으면 로그 execution_receipt_failed(단계 id · 까닭)를 본다 (sweep은 하루 지난 산출물을 더 고르지 않는다)
+select count(*) as missing_receipts from public.execution_artifacts a join public.execution_steps s on s.id = a.step_id
+where s.state = 'called' and not exists (select 1 from public.sources x where x.kind = 'execution' and x.user_id = a.user_id and x.external_id = a.step_id::text);
+-- 원문 · 인용 없는 실행 Claim (기준 17): 0이어야 한다
+select count(*) as claims_without_source from public.claims where origin = 'execution' and (source_id is null or quote is null);
+-- 실패한 단계의 까닭 (코드 값만): retries_exhausted가 몰리면 OpenRouter 키 · 잔액 · 권한(401 · 402 · 403)부터 본다 (EXECUTION 13장 오류 표)
+select receipt->>'error' as error, count(*) as steps from public.execution_steps where state = 'failed' group by 1 order by 2 desc;
 ```
 
 `EXECUTION_ENABLED`가 꺼져 있으면 sweep이 아무것도 하지 않아(lease 정리 · 원가 확정 · 예약 해제 모두) 위 수가 그대로 남는다. 켜면 1분 안에 줄어든다.
@@ -355,13 +363,22 @@ npx supabase db query --linked "select public.reconcile_usage(<id>, <비용 USD>
 
 비용을 찾을 수 없으면 정하지 않고 사용자에게 묻는다. 0원으로 확정하거나 예약을 손으로 해제하지 않는다(A46: 모르는 원가를 0으로 두지 않는다).
 
+오래 막힌 run 정리 (운영자, run마다 승인). 운영자만 풀 수 있는 hold(`actor` · `blocked`)나 지급으로 풀리지 않는 `credit`(run 예산 부족)에 머문 run은 sweep이 5분마다 깨워도 그대로다. 풀 수 있는 것(9-1 · 9-2 · 9-3)이면 먼저 푼다. 아니면 그 run의 주인(지금은 운영자)에게 확인하고 멈춘다. 멈추면 남은 예약이 해제되고 이미 만든 초안은 그대로다.
+
+```bash
+# 하루 넘게 막힌 끝나지 않은 run (id · 이유 · 만든 날만)
+npx supabase db query --linked "select id, hold_reason, created_at::date as created from public.execution_runs where state in ('queued', 'running', 'waiting_approval') and hold_reason is not null and created_at < now() - interval '1 day' order by created_at limit 20"
+# 멈추기: run마다 한 명령 (여러 run을 한 명령에서 멈추면 run · 계정 잠금끼리 교착할 수 있다). 결과 stopped. 교착(40P01)으로 되돌려지면 그대로 다시 보낸다
+npx supabase db query --linked "select public.stop_run((select user_id from public.execution_runs where id = '<run>'), '<run>') as state"
+```
+
 ### 9-5. 되돌리기
 
 순서대로. 앞 단계만으로 멈추면 거기서 끝낸다.
 
 1. **global 막기** (9-1 "끄기 · 긴급"). 새 단계가 바로 멈추고, 전체가 막히면 `POST /api/v1/runs`도 404다. 진행 중인 `calling`은 결과를 받는다.
 2. **`EXECUTION_ENABLED` 끄기**: Vercel → Settings → Environment Variables(Production)에서 지우거나 `true`가 아닌 값으로 → Redeploy(환경변수는 새 배포부터 적용된다). 실행 route 404, sweep은 `{ enabled: false }`로 바로 끝난다.
-3. **코드 되돌리기** (코드가 문제일 때): Vercel → Deployments → 되돌아갈 앞 Production 배포 → Instant Rollback(다시 빌드하지 않아 바로 바뀐다). 배포는 만들 때의 환경변수를 지닌다: 되돌아간 배포가 `EXECUTION_ENABLED=true`를 넣은 뒤에 만든 것이면 2번이 풀린다. 9-6 3번의 curl로 404인지 확인하고, 401이면 global을 막힌 채 두고 아래 revert 배포를 올린다. 이어서 main에서 그 PR을 revert(`git revert -m 1 <merge sha>` → PR → 병합). Instant Rollback 뒤에는 새 main 배포가 운영 도메인에 자동으로 붙지 않으니, revert 배포가 나오면 그 배포를 Promote해 자동 연결을 되살린다. 마이그레이션은 되돌리지 않는다(표를 지우지 않는다. 앞 코드는 실행 표를 쓰지 않는다).
+3. **코드 되돌리기** (코드가 문제일 때): Vercel → Deployments → 되돌아갈 앞 Production 배포 → Instant Rollback(다시 빌드하지 않아 바로 바뀐다). 배포는 만들 때의 환경변수를 지닌다: 되돌아간 배포가 `EXECUTION_ENABLED=true`를 넣은 뒤에 만든 것이면 2번이 풀린다. 9-6 3번의 curl로 404인지 확인하고, 401이면 global을 막힌 채 두고 아래 revert 배포를 올린다. 이어서 main에서 그 PR을 revert(`git revert -m 1 <merge sha>` → PR → 병합). Instant Rollback 뒤에는 새 main 배포가 운영 도메인에 자동으로 붙지 않으니, revert 배포가 나오면 그 배포를 Promote해 자동 연결을 되살린다. 마이그레이션은 되돌리지 않는다(표를 지우지 않는다. 실행 마이그레이션은 표 · 함수 · 허용 값을 더하기만 해서 앞 배포도 그대로 돈다).
 
 ### 9-6. 운영 켜기 순서 (줄마다 승인 한 번)
 
@@ -383,7 +400,7 @@ npx supabase db query --linked "select public.reconcile_usage(<id>, <비용 USD>
 4. **운영자 실행 주체 1행** (9-2 넣기). 확인: `actors = 1`.
 5. **운영자 크레딧 지급** (9-3). 확인: `available`이 지급한 양.
 6. **`global` 풀기** (9-1 켜기). auto · full은 막힌 채다. 확인: 읽기에서 `global` false, `auto` · `full` true.
-7. **내장 초안 1건.** AI 동의를 마친 운영자 계정으로 웹 /lab에 로그인한 브라우저의 개발자 도구 콘솔에서 부른다(같은 출처라 쿠키 인증 · CSRF를 지난다). 할 일 id는 같은 콘솔에서 자기 목록(`GET /api/v1/now`의 `now[].id`)으로 고른다.
+7. **내장 초안 1건.** 먼저 운영자 기기의 앱을 receipt 값(`execution` · `executed` · `agent`)을 아는 빌드(#76 이후)로 올린다: 옛 빌드는 receipt가 붙은 할 일의 상세 · 원문 목록을 읽지 못한다(EXECUTION 9장). AI 동의를 마친 운영자 계정으로 웹 /lab에 로그인한 브라우저의 개발자 도구 콘솔에서 부른다(같은 출처라 쿠키 인증 · CSRF를 지난다). 할 일 id는 같은 콘솔에서 자기 목록(`GET /api/v1/now`의 `now[].id`)으로 고른다.
    ```js
    await fetch("/api/v1/now").then((r) => r.json())
    await fetch("/api/v1/runs", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action_id: "<할 일 id>", goal: "draft", request: "<맡길 일>" }) }).then((r) => r.json())
@@ -400,7 +417,7 @@ npx supabase db query --linked "select state, outcome, hold_reason from public.e
 # 산출물 · 원가 · 원장
 npx supabase db query --linked "select (select count(*) from public.execution_artifacts where run_id = '<run>') as artifacts, (select count(*) from public.execution_usage where run_id = '<run>' and billable and generation_id is not null and cost_status = 'confirmed') as billable_confirmed, (select count(*) from public.execution_usage where run_id = '<run>' and cost_status = 'unconfirmed') as unconfirmed, (select count(*) from public.credit_ledger where run_id = '<run>' and kind = 'reserve') as reserve, (select count(*) from public.credit_ledger where run_id = '<run>' and kind = 'settle') as settle, (select count(*) from public.credit_ledger where run_id = '<run>' and kind = 'release') as release"
 # receipt → Claim/Evidence, Action 상태 (claims_without_evidence는 전체 실행 Claim 중 executed 근거가 없는 것)
-npx supabase db query --linked "select (select count(*) from public.claims c where c.action_id = r.action_id and c.origin = 'execution') as execution_claims, (select count(*) from public.claims c where c.origin = 'execution' and not exists (select 1 from public.evidence e where e.action_id = c.action_id and e.source_id = c.source_id and e.role = 'executed')) as claims_without_evidence, (select count(*) from public.evidence e where e.action_id = r.action_id and e.role = 'executed') as executed_evidence, (select a.status from public.actions a where a.id = r.action_id) as action_status from public.execution_runs r where r.id = '<run>'"
+npx supabase db query --linked "select (select count(*) from public.sources x join public.execution_artifacts a on x.external_id = a.step_id::text and x.user_id = a.user_id where a.run_id = r.id and x.kind = 'execution') as receipts, (select count(*) from public.execution_artifacts a join public.execution_steps s on s.id = a.step_id where a.run_id = r.id and s.state = 'called' and not exists (select 1 from public.sources x where x.kind = 'execution' and x.user_id = a.user_id and x.external_id = a.step_id::text)) as missing_receipts, (select count(*) from public.claims c where c.action_id = r.action_id and c.origin = 'execution') as execution_claims, (select count(*) from public.claims c where c.origin = 'execution' and not exists (select 1 from public.evidence e where e.action_id = c.action_id and e.source_id = c.source_id and e.role = 'executed')) as claims_without_evidence, (select count(*) from public.evidence e where e.action_id = r.action_id and e.role = 'executed') as executed_evidence, (select a.status from public.actions a where a.id = r.action_id) as action_status from public.execution_runs r where r.id = '<run>'"
 ```
 
 | 확인 | 기대 |
@@ -408,11 +425,12 @@ npx supabase db query --linked "select (select count(*) from public.claims c whe
 | 산출물 `artifacts` | 1 |
 | 원가 `billable_confirmed` · `unconfirmed` | 1 이상(generation id와 확정 비용이 있는 청구 대상 행) · 0. 다시 물은 시도가 있으면 청구 대상 행이 더 있다 |
 | 원장 `reserve` · `settle` · `release` | 1 · 1 · 0 또는 1 (정산하고 남은 예약만 해제) |
-| receipt `execution_claims` · `executed_evidence` | 1 이상 · 1 이상 (Claim origin은 `execution`, `user`가 아니다) |
+| receipt `receipts` · `missing_receipts` | 1 · 0 (끝낸 초안마다 receipt 원문 하나, kind `execution`) |
+| `execution_claims` · `executed_evidence` | 1 · 1 (그 할 일에 앞선 실행이 없을 때. Claim origin은 `execution`, field `artifact`, `user`가 아니다) |
 | `claims_without_evidence` | 0 (실행 Claim마다 같은 receipt 원문의 `executed` 근거가 있다. 원문 · 인용이 null인 실행 Claim은 DB 제약이, 빈 인용은 `write_execution_receipt`가 막는다) |
 | `action_status` | 실행 전과 같음(`open`): 초안은 완료가 아니다 |
 
-`unconfirmed`가 0이 아니면 정산이 보류된 것이다(`settle` 0, 예약 유지). 하루 안이면 sweep이 확정하고, 지나면 9-4 "미확정 원가 정하기".
+`unconfirmed`가 0이 아니면 정산이 보류된 것이다(`settle` 0, 예약 유지). 하루 안이면 sweep이 확정하고, 지나면 9-4 "미확정 원가 정하기". `missing_receipts`가 0이 아니면 1분 안에 sweep이 이어 쓴다(9-4 receipt 점검).
 
 ---
 
