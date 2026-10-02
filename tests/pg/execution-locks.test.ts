@@ -116,6 +116,32 @@ async function preparedStep(user: User, purpose: string, origin = "user") {
   return { stepId, version: 1 };
 }
 
+/** 내장 초안 단계(내부 효과, 추정치 estimate) 하나를 가진 run을 새로 만들고 prepared까지 */
+async function preparedDraft(user: User, estimate: number) {
+  const runId = randomUUID();
+  await setup.query(
+    `insert into public.execution_runs (id, user_id, action_id, policy_id, goal, request)
+     select $1, $2, $3, id, 'draft', '제안서 초안 써 줘' from public.execution_policies where user_id = $2`,
+    [runId, user.userId, user.actionId],
+  );
+  const { rows } = await setup.query<{ id: string }>(
+    `insert into public.execution_steps (user_id, run_id, seq, kind, provider, tool, effect_class, purpose, estimate_credits)
+     values ($1, $2, 1, 'draft', 'taskforce', 'draft', 'internal', 'draft', $3) returning id`,
+    [user.userId, runId, estimate],
+  );
+  const prepared = await setup.query<{ ok: boolean }>("select public.prepare_step($1, 0) as ok", [rows[0].id]);
+  expect(prepared.rows[0].ok).toBe(true);
+  return { stepId: rows[0].id, version: 1, runId };
+}
+
+const userWithCredits = async (credits: number) => {
+  const user = await newUser();
+  await setup.query("select public.grant_credits($1, $2, gen_random_uuid())", [user.userId, credits]);
+  return user;
+};
+const account = async (user: User) =>
+  (await setup.query("select granted, reserved, settled from public.credit_accounts where user_id = $1", [user.userId])).rows[0];
+
 const beginCall = async (client: pg.Client, step: { stepId: string; version: number }, owner: string) =>
   (await client.query<{ g: { gate: string } }>("select public.begin_call($1, $2, $3) as g", [step.stepId, owner, step.version])).rows[0].g.gate;
 const stepState = async (stepId: string) =>
@@ -296,6 +322,113 @@ describe("실행 코어 잠금 경합 (실제 Postgres, 연결 둘)", () => {
   });
 });
 
+// 크레딧 원장(20261022000000_execution_credits_artifacts)의 잠금: 예약 · 정산 · 해제 · 지급은 모두 사용자의 계정 행을 for update로 잠그고 확인한다.
+// 같은 사용자의 두 run이 동시에 예약해도 잔액을 넘지 않고, 같은 단계의 원가를 두 함수가 동시에 확정해도 정산은 한 번이다
+describe("크레딧 원장 잠금 경합 (실제 Postgres, 연결 둘)", () => {
+  it("같은 사용자의 두 run이 동시에 예약하면 뒤의 쪽은 계정 잠금을 기다렸다가 남은 잔액으로 판단한다: 잔액을 넘는 예약은 없다", async () => {
+    const user = await userWithCredits(100);
+    const first = await preparedDraft(user, 60);
+    const second = await preparedDraft(user, 60);
+
+    await a.query("begin");
+    expect(await beginCall(a, first, "fn-a")).toBe("ok");
+    const late = beginCall(b, second, "fn-b");
+    await waitForLockWait(bPid);
+    await a.query("commit");
+
+    expect(await late).toBe("insufficient_credit");
+    expect([await stepState(first.stepId), await stepState(second.stepId)]).toEqual(["calling", "prepared"]);
+    expect(await account(user)).toEqual({ granted: 100, reserved: 60, settled: 0 });
+    const { rows } = await setup.query("select step_id from public.credit_ledger where user_id = $1 and kind = 'reserve'", [user.userId]);
+    expect(rows).toEqual([{ step_id: first.stepId }]);
+  });
+
+  it("앞의 예약이 rollback되면 기다리던 쪽이 그 잔액으로 예약한다", async () => {
+    const user = await userWithCredits(100);
+    const first = await preparedDraft(user, 60);
+    const second = await preparedDraft(user, 60);
+
+    await a.query("begin");
+    expect(await beginCall(a, first, "fn-a")).toBe("ok");
+    const late = beginCall(b, second, "fn-b");
+    await waitForLockWait(bPid);
+    await a.query("rollback");
+
+    expect(await late).toBe("ok");
+    expect([await stepState(first.stepId), await stepState(second.stepId)]).toEqual(["prepared", "calling"]);
+    expect(await account(user)).toEqual({ granted: 100, reserved: 60, settled: 0 });
+  });
+
+  // 해제는 run을 끝내는 쪽(stop_run: run 잠금)과 부르던 단계를 내보내는 쪽(mark_unknown · settle_step: 단계 잠금 → 트리거가 run 잠금)이
+  // 같은 run 행에서 줄을 서서, 뒤에 commit하는 쪽이 앞의 결과를 보고 해제한다 (어느 쪽이 먼저여도 예약이 남지 않는다)
+  it("단계를 내보내는 쪽(응답 없음 → 다시 준비)이 먼저면 멈추기는 run 잠금을 기다렸다가 그 단계의 예약을 해제한다", async () => {
+    const user = await userWithCredits(100);
+    const step = await preparedDraft(user, 40);
+    expect(await beginCall(setup, step, "fn-a")).toBe("ok");
+
+    await a.query("begin");
+    await a.query("select public.mark_unknown($1, 'fn-a')", [step.stepId]);
+    const stop = b.query("select public.stop_run($1, $2)", [user.userId, step.runId]);
+    await waitForLockWait(bPid);
+    await a.query("commit");
+    await stop;
+
+    expect(await stepState(step.stepId)).toBe("prepared");
+    expect(await account(user)).toEqual({ granted: 100, reserved: 0, settled: 0 });
+  });
+
+  it("멈추기가 먼저면 단계를 내보내는 쪽(확정 거절 → failed)이 run 잠금을 기다렸다가 예약을 해제한다", async () => {
+    const user = await userWithCredits(100);
+    const step = await preparedDraft(user, 40);
+    expect(await beginCall(setup, step, "fn-a")).toBe("ok");
+
+    await b.query("begin");
+    await b.query("select public.stop_run($1, $2)", [user.userId, step.runId]);
+    const fail = a.query("select public.settle_step($1, 'fn-a', 'failed', '{}')", [step.stepId]);
+    await waitForLockWait(aPid);
+    await b.query("commit");
+    await fail;
+
+    expect(await stepState(step.stepId)).toBe("failed");
+    const { rows } = await setup.query("select state from public.execution_runs where id = $1", [step.runId]);
+    expect(rows[0].state).toBe("stopped");
+    expect(await account(user)).toEqual({ granted: 100, reserved: 0, settled: 0 });
+  });
+
+  it("같은 단계의 미확정 원가 두 행을 두 연결이 동시에 확정해도 정산은 한 번이고, 뒤의 쪽이 앞의 확정을 보고 정산한다", async () => {
+    const user = await userWithCredits(100);
+    const step = await preparedDraft(user, 50);
+    expect(await beginCall(setup, step, "fn-setup")).toBe("ok");
+    // 비용이 응답에 없던 시도 둘 (generation 조회로 확정할 수 있다): 정산을 보류하고 예약을 둔다
+    const attempts = [1, 2].map(() => ({ generationId: `gen-${randomUUID()}`, model: "m", usage: { prompt_tokens: 10, completion_tokens: 5 } }));
+    const artifact = { title: "제안서 초안", body: "초안 본문", model: "m", prompt_version: "draft-v1" };
+    const completed = await setup.query<{ ok: boolean }>(
+      "select public.complete_internal_step($1, 'fn-setup', '{}', $2::jsonb, $3::jsonb, 'draft_ready') as ok",
+      [step.stepId, JSON.stringify(attempts), JSON.stringify(artifact)],
+    );
+    expect(completed.rows[0].ok).toBe(true);
+    expect(await account(user)).toEqual({ granted: 100, reserved: 50, settled: 0 });
+    const usage = (await setup.query<{ id: string }>("select id from public.execution_usage where step_id = $1 order by id", [step.stepId])).rows;
+    const reconcile = async (client: pg.Client, id: string, cost: number) =>
+      (await client.query<{ ok: boolean }>("select public.reconcile_usage($1, $2) as ok", [id, cost])).rows[0].ok;
+
+    await a.query("begin");
+    expect(await reconcile(a, usage[0].id, 0.01)).toBe(true); // 다른 행이 아직 미확정이라 정산하지 않는다
+    const late = reconcile(b, usage[1].id, 0.02); // 계정 잠금을 기다린다
+    await waitForLockWait(bPid);
+    await a.query("commit");
+    expect(await late).toBe(true);
+
+    const ledger = await setup.query("select kind, credits from public.credit_ledger where step_id = $1 order by id", [step.stepId]);
+    expect(ledger.rows).toEqual([
+      { kind: "reserve", credits: 50 },
+      { kind: "settle", credits: 30 },
+      { kind: "release", credits: 20 },
+    ]);
+    expect(await account(user)).toEqual({ granted: 100, reserved: 0, settled: 30 });
+  });
+});
+
 // 이벤트 기록 트리거는 소유자 권한(security definer)으로 돈다: 서버가 아닌 역할이 연결을 지워(set null) 단계가 다시 계획돼도
 // 그 역할에 execution_events 권한이 없어 실패하지 않는다. Supabase Auth의 계정 삭제(supabase_auth_admin)도 같은 길이다.
 // PGlite에서는 이 권한 문제가 드러나지 않아 실제 Postgres로 본다.
@@ -326,16 +459,22 @@ describe("서버가 아닌 역할의 삭제가 단계를 다시 계획할 때 (�
     const events = await setup.query("select 1 from public.execution_events where step_id = $1 and from_state = 'prepared' and to_state = 'pending'", [step.stepId]);
     expect(events.rowCount).toBe(1);
 
-    // 계정 삭제: 연결 · run · 단계 · 이벤트가 cascade로 함께 지워진다
-    const other = await newUser();
+    // 계정 삭제: 연결 · run · 단계 · 이벤트가 cascade로 함께 지워진다. 원장 · 원가의 run · step 외래키는 지울 때 막지만(no action)
+    // 같은 문장 안에서 원장도 auth.users cascade로 지워져 막히지 않는다
+    const other = await userWithCredits(100);
     await preparedStep(other, "send-1");
+    const draft = await preparedDraft(other, 40);
+    expect(await beginCall(setup, draft, "fn-setup")).toBe("ok");
+    await setup.query("select public.record_usage($1, $2::jsonb)", [draft.stepId, JSON.stringify([{ generationId: null, model: "m" }])]);
     await setup.query("set role supabase_auth_admin");
     try {
       expect((await setup.query("delete from auth.users where id = $1", [other.userId])).rowCount).toBe(1);
     } finally {
       await setup.query("reset role");
     }
-    expect((await setup.query("select 1 from public.execution_runs where user_id = $1", [other.userId])).rowCount).toBe(0);
+    for (const table of ["execution_runs", "credit_accounts", "credit_ledger", "execution_usage"]) {
+      expect((await setup.query(`select 1 from public.${table} where user_id = $1`, [other.userId])).rowCount, table).toBe(0);
+    }
   });
 });
 
