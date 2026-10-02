@@ -82,11 +82,13 @@ export function supabaseExecutionStore(admin: SupabaseClient): ExecutionStore {
         .maybeSingle()
         .throwOnError();
       if (!action) return null;
+      // 실행 receipt(role executed)는 원문 근거가 아니라 읽지 않는다: 초안마다 늘어 최근 40개 자리를 원문 근거에서 빼앗지 않게 (context.ts도 다시 뺀다)
       const { data: evidence } = await admin
         .from("evidence")
         .select("source_id, quote")
         .eq("action_id", actionId)
         .eq("user_id", userId)
+        .neq("role", "executed")
         .order("created_at", { ascending: false })
         .limit(EVIDENCE_LIMIT)
         .throwOnError();

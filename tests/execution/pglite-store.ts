@@ -37,7 +37,7 @@ export function pgliteExecutionStore(db: PGlite, options: { userName?: string } 
       const action = await one<ActionRow>("select title, status, owner, due_date::text, counterpart from public.actions where id = $1 and user_id = $2", [actionId, userId]);
       if (!action) return null;
       const evidence = (
-        await db.query<EvidenceRow>("select source_id, quote from public.evidence where action_id = $1 and user_id = $2 order by created_at desc limit 40", [actionId, userId])
+        await db.query<EvidenceRow>("select source_id, quote from public.evidence where action_id = $1 and user_id = $2 and role <> 'executed' order by created_at desc limit 40", [actionId, userId])
       ).rows;
       const sources = (
         await db.query<SourceRow>(

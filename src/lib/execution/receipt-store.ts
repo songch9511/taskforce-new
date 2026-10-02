@@ -35,9 +35,10 @@ export function supabaseReceiptStore(admin: SupabaseClient): ReceiptStore {
       };
     },
     async loadAction(userId, actionId) {
-      const row = await loadStoredRow(admin, userId, actionId);
+      // 버전은 행에서 읽고 쓰기는 그 버전으로 CAS하므로, Claim을 함께 읽어도 그 사이 바뀐 것은 conflict로 다시 읽는다
+      const [row, claims] = await Promise.all([loadStoredRow(admin, userId, actionId), loadClaims(admin, userId, actionId)]);
       if (!row) return null;
-      return { version: row.version, title: row.title, confirmReasons: row.confirm_reasons, claims: await loadClaims(admin, userId, actionId) };
+      return { version: row.version, title: row.title, confirmReasons: row.confirm_reasons, claims };
     },
     async writeReceipt(stepId, expectedVersion, receipt) {
       const { data } = await admin.rpc("write_execution_receipt", { p_step: stepId, p_expected_version: expectedVersion, p_receipt: receipt }).throwOnError();

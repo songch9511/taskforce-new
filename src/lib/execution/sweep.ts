@@ -10,9 +10,9 @@ import type { ExecutionStore } from "./types";
 //   ① sweep_expire: lease가 끝난 calling → 내부 효과는 다시 준비(2번을 넘으면 실패), 외부 효과는 결과 불명
 //   ② 미확정 원가: generation 조회로 비용을 찾으면 reconcile_usage (행마다 RPC 한 번, 찾으면 그 단계를 정산)
 //   ③ 보조 안전망: 끝난 run에 남은 예약 → release_run_credits (run마다 RPC 한 번, 한 트랜잭션에서 여러 run을 잠그지 않는다)
-//   ③' 보조 안전망: receipt 없이 끝난 초안 단계(하루 안, SWEEP_RECEIPT_LIMIT개) → receipt를 이어 쓴다 (실행기가 끝낸 뒤 쓰기 전에 죽은 경우, receipt.ts)
 //   ④ 이어 갈 run 깨우기: 끝나지 않았고 부르는 중인 단계가 없는 run (다시 준비된 재시도 · 승인 대기 포함, begin_call이 다시 본다).
 //      막힌 run은 HELD_WAKE_EVERY_MINUTES분마다만, 차단 스위치가 전체를 막고 있으면 아무도 깨우지 않는다 (begin_call이 어차피 막는다)
+//   ⑤ 보조 안전망: receipt 없이 끝난 초안 단계(하루 안, SWEEP_RECEIPT_LIMIT개) → receipt를 이어 쓴다 (실행기가 끝낸 뒤 쓰기 전에 죽은 경우, receipt.ts)
 // 한 단계가 실패해도 다음 단계는 한다 (실패 수만 errors에 센다). 로그에는 숫자만 남긴다.
 
 export type SweepDeps = {
@@ -85,13 +85,6 @@ export async function sweep(deps: SweepDeps): Promise<SweepResult> {
     }
   });
 
-  // 끝낸 단계의 기록이라 차단 스위치와 상관없이 한다 (외부도 모델도 부르지 않는다)
-  await phase("receipts", async () => {
-    const { written, failed } = await writeMissingReceipts(store, SWEEP_RECEIPT_LIMIT);
-    result.receipts = written;
-    result.receipt_failed = failed;
-  });
-
   await phase("wake", async () => {
     if (await store.globallyBlocked()) {
       result.blocked = true;
@@ -104,6 +97,13 @@ export async function sweep(deps: SweepDeps): Promise<SweepResult> {
     const woken = await Promise.all(due.map((run) => deps.wake(run.id)));
     result.woken = woken.filter(Boolean).length;
     result.wake_failed = woken.length - result.woken;
+  });
+
+  // 보조 안전망이라 깨우기 뒤에 한다 (DB가 느려 쌓였을 때 깨우기를 늦추지 않게). 끝낸 단계의 기록이라 차단 스위치와 상관없이 한다 (외부도 모델도 부르지 않는다)
+  await phase("receipts", async () => {
+    const { written, failed } = await writeMissingReceipts(store, SWEEP_RECEIPT_LIMIT);
+    result.receipts = written;
+    result.receipt_failed = failed;
   });
 
   return result;

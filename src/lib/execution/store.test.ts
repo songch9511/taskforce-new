@@ -19,6 +19,8 @@ function matches(row: Row, [op, args]: Op): boolean {
   switch (op) {
     case "eq":
       return row[column] === a;
+    case "neq":
+      return row[column] !== a;
     case "in":
       return (a as unknown[]).includes(row[column]);
     case "gt":
@@ -53,7 +55,7 @@ function fakeAdmin(tables: Record<string, Row[]>, rpc: (fn: string, args: Row) =
       maybeSingle: () => ((single = true), builder),
       throwOnError: () => builder,
     };
-    for (const op of ["select", "eq", "in", "is", "not", "gt", "lt", "gte", "order", "limit"]) {
+    for (const op of ["select", "eq", "neq", "in", "is", "not", "gt", "lt", "gte", "order", "limit"]) {
       builder[op] = (...args: unknown[]) => (ops.push([op, args]), builder);
     }
     return builder;
@@ -73,6 +75,8 @@ describe("supabaseExecutionStore.loadMaterial", () => {
       evidence: [
         { action_id: "a1", user_id: USER, source_id: "s-slack", quote: "slack-secret-7731" },
         { action_id: "a1", user_id: USER, source_id: "s-mail", quote: "견적서 금요일까지" },
+        // 실행 receipt 근거는 읽지 않는다 (초안마다 늘어 최근 근거 자리를 차지하지 않게)
+        { action_id: "a1", user_id: USER, source_id: "s-receipt", quote: "초안 저장: Re: 견적", role: "executed" },
       ],
       sources: [
         {
@@ -112,6 +116,7 @@ describe("supabaseExecutionStore.loadMaterial", () => {
       ],
     });
     const input = await supabaseExecutionStore(client).loadMaterial(USER, "a1");
+    expect(input?.evidence.map((e) => e.sourceId)).toEqual(["s-slack", "s-mail"]);
     expect(input?.sources.map((s) => [s.id, s.provider])).toEqual([
       ["s-slack", "slack"],
       ["s-mail", "gmail"],

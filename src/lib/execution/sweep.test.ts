@@ -60,7 +60,7 @@ describe("sweep", () => {
       blocked: false,
       errors: 0,
     });
-    expect(d.order).toEqual(["expire", "unconfirmed", "reconcile:1", "reconcile:3", "open-ended", "release:r1", "release:r2", "missing-receipts", "blocked?", "wakeable"]);
+    expect(d.order).toEqual(["expire", "unconfirmed", "reconcile:1", "reconcile:3", "open-ended", "release:r1", "release:r2", "blocked?", "wakeable", "missing-receipts"]);
     expect(d.store.missingReceipts).toHaveBeenCalledWith(SWEEP_RECEIPT_LIMIT);
     expect(d.store.reconcileUsage).toHaveBeenCalledWith(1, 0.001);
     expect(d.store.unconfirmedUsage).toHaveBeenCalledWith(SWEEP_RECONCILE_LIMIT, new Date(NOW.getTime() - RECONCILE_WINDOW_HOURS * 3_600_000));
@@ -77,9 +77,10 @@ describe("sweep", () => {
     expect(d.wake.mock.calls).toEqual([["r3"], ["r4"]]);
   });
 
-  it("차단 스위치가 전체를 막고 있으면 아무도 깨우지 않는다 (만료 · 원가 · 해제는 한다)", async () => {
+  it("차단 스위치가 전체를 막고 있으면 아무도 깨우지 않는다 (만료 · 원가 · 해제 · receipt 보조 안전망은 한다)", async () => {
     const d = deps({ globallyBlocked: vi.fn(async () => true) });
     expect(await sweep(d.value)).toMatchObject({ expired: 2, reconciled: 2, released: 2, woken: 0, blocked: true, errors: 0 });
+    expect(d.store.missingReceipts).toHaveBeenCalledWith(SWEEP_RECEIPT_LIMIT);
     expect(d.store.wakeableRuns).not.toHaveBeenCalled();
     expect(d.wake).not.toHaveBeenCalled();
   });

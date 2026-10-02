@@ -180,13 +180,14 @@ describe("advance", () => {
     expect(lostDraft.store.writeReceipt).not.toHaveBeenCalled();
 
     const error = vi.spyOn(console, "error").mockImplementation(() => {});
-    for (const failing of [fakeStore({ writeReceipt: vi.fn().mockRejectedValue(new Error("connection reset")) }), fakeStore({ receiptTarget: vi.fn(async () => null) })]) {
+    const dbError = Object.assign(new Error("deadlock detected"), { code: "40P01" });
+    for (const failing of [fakeStore({ writeReceipt: vi.fn().mockRejectedValue(dbError) }), fakeStore({ receiptTarget: vi.fn(async () => null) })]) {
       expect(await advance({ store: failing.store, complete: draftReply, owner: "fn-1" }, "r1")).toEqual({ status: "completed", step: "s2", next: true });
       expect(failing.store.settleFailed).not.toHaveBeenCalled();
       expect(failing.store.markUnknown).not.toHaveBeenCalled();
     }
     expect(error.mock.calls.map((c) => JSON.parse(String(c[0])))).toEqual([
-      { event: "execution_receipt_failed", run: "r1", step: "s2", reason: "Error" },
+      { event: "execution_receipt_failed", run: "r1", step: "s2", reason: "Error", code: "40P01" },
       { event: "execution_receipt_failed", run: "r1", step: "s2", reason: "not_found" },
     ]);
     // 완료 로그에 receipt 결과가 숫자 · 상태로만 남는다

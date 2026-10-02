@@ -145,7 +145,9 @@ export async function writeMissingReceipts(store: ReceiptStore, limit = 20): Pro
     } catch (error) {
       failed++;
       const reason = error instanceof ReceiptWriteError ? error.code : error instanceof Error ? error.name : "unknown";
-      console.error(JSON.stringify({ event: "execution_receipt_failed", step: stepId, reason }));
+      // DB 오류면 SQLSTATE도 남긴다 (사용자 글이 없는 코드)
+      const code = error instanceof ReceiptWriteError ? undefined : (error as { code?: unknown } | null)?.code;
+      console.error(JSON.stringify({ event: "execution_receipt_failed", step: stepId, reason, ...(typeof code === "string" ? { code } : {}) }));
     }
   }
   return { written, failed };

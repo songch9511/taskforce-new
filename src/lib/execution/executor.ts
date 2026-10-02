@@ -136,7 +136,7 @@ async function runEffect(deps: ExecutorDeps, run: RunRow, step: StepRow, args: R
     await recordUsage(store, step.id, effect.attempts.filter((a) => a.generationId !== null));
   }
   // 다시 쓴 쪽이 false인 경우(앞 쓰기가 commit하고 응답만 잃음)도 부른다: 단계가 끝낸 초안이 아니면 receipt.ts가 쓰지 않는다(not_found)
-  const receipt = step.kind === "draft" ? await writeReceipt(store, run, step) : undefined;
+  const receipt = step.kind === "draft" ? await attachReceipt(store, run, step) : undefined;
   if (effect.finish) await store.finishRun(run.id);
   log({ event: "execution_step", run: run.id, step: step.id, kind: step.kind, status: "completed", outcome: effect.outcome, next, ...(receipt ? { receipt } : {}) });
   return { status: "completed", step: step.id, next };
@@ -146,14 +146,21 @@ async function runEffect(deps: ExecutorDeps, run: RunRow, step: StepRow, args: R
  * 끝낸 초안 단계의 receipt (receipt.ts writeDraftReceipt, 다시 불러도 한 번). 실패해도 단계 · run은 그대로 둔다:
  * 단계 id와 까닭만 로그에 남기고 sweep 보조 안전망(writeMissingReceipts)이 이어 쓴다
  */
-async function writeReceipt(store: ExecutionStore, run: RunRow, step: StepRow): Promise<"written" | "exists" | "failed"> {
+async function attachReceipt(store: ExecutionStore, run: RunRow, step: StepRow): Promise<"written" | "exists" | "failed"> {
   try {
     return await writeDraftReceipt(store, step.id);
   } catch (error) {
     const reason = error instanceof ReceiptWriteError ? error.code : errorName(error);
-    console.error(JSON.stringify({ event: "execution_receipt_failed", run: run.id, step: step.id, reason }));
+    console.error(JSON.stringify({ event: "execution_receipt_failed", run: run.id, step: step.id, reason, ...sqlState(error) }));
     return "failed";
   }
+}
+
+/** DB 오류의 SQLSTATE (교착 40P01 · 단계 상태 P0002 · 잠금 시간 초과 55P03 등을 가른다). 사용자 글이 없는 코드뿐이다 */
+function sqlState(error: unknown): { code?: string } {
+  if (error instanceof ReceiptWriteError) return {};
+  const code = (error as { code?: unknown } | null)?.code;
+  return typeof code === "string" ? { code } : {};
 }
 
 /** lease를 잃은 뒤 받은 응답: 결과를 버리고 원가만 플랫폼 원가로 남긴다 (청구 · 단계 상태는 그대로) */
