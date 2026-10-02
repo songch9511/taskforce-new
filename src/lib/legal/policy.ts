@@ -7,14 +7,14 @@ import type { LegalResponse, PolicyVersion } from "@/lib/api/contract";
 //   upcoming.url은 그 판의 버전 주소(`/{lang}/privacy/{version}`)여야 한다: 알리는 동안 `/{lang}/privacy`는 아직 현재 판이다.
 //   시행일이 지나면 배포 없이 현재 판이 된다(policyAt). 다음에 고칠 때 current로 옮기고 upcoming을 비운다.
 // - current만 바꾸기 (게시와 함께 시행, 알림은 시행 뒤): 처리 내용이 바뀌지 않는 고침(오탈자 · 문장 다듬기 · 연락처)이거나
-//   계정이 운영자 것뿐일 때만 (베타 1.1 · 1.2가 그랬다, docs/legal/README.md 게시 기록). 그 전에 가입한 계정에 30일 동안 "Privacy Policy updated".
+//   계정이 운영자 것뿐일 때만 (베타 1.1 · 1.2 · 1.3이 그랬다, docs/legal/README.md 게시 기록). 그 전에 가입한 계정에 30일 동안 "Privacy Policy updated".
 
 export type PrivacyPolicy = { current: PolicyVersion; upcoming: PolicyVersion | null };
 
 const PRIVACY_URL = { ko: "https://www.taskforcelabs.dev/ko/privacy", en: "https://www.taskforcelabs.dev/en/privacy" };
 
 export const PRIVACY_POLICY: PrivacyPolicy = {
-  current: { version: "beta-1.2", effective_date: "2026-09-30", url: PRIVACY_URL },
+  current: { version: "beta-1.3", effective_date: "2026-10-02", url: PRIVACY_URL },
   upcoming: null,
 };
 

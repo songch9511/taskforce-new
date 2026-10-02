@@ -2,8 +2,8 @@
 
 Taskforce (AI project manager) · Beta
 
-- Effective date: 2026-10-02
-- Version: Beta 1.3
+- Effective date: 2026-09-30
+- Version: Beta 1.2
 - 한국어: [개인정보 처리방침](privacy.ko.md) (the Korean version prevails if the two differ)
 
 태스크포스 ("we", "us") operates the Taskforce app (iOS and macOS), its server, and the website (www.taskforcelabs.dev). We process your personal information under the Personal Information Protection Act of the Republic of Korea (PIPA) and other applicable laws.
@@ -47,7 +47,6 @@ This policy explains what we process, why, where, and for how long, and how you 
 | Profile | Display name, aliases, additional email addresses | You enter them in the app |
 | Connections | The connected service, workspace or account identifier and name (for Google, the account's email address), connection settings (names and identifiers of databases to include or skip; for Google, the permission scopes you granted and, for Gmail, counts of emails by reason), sync status (where the last import reached; for Gmail, the identifier and received time of recently imported or filtered emails), access tokens (stored encrypted) | When you connect a service in the app |
 | Source text from connected services | Meeting notes, documents, task database entries, calendar events, meeting transcripts, emails, and Slack messages, with their titles, times, original links, and the people involved (names and email addresses of senders, recipients, attendees, and speakers). See section 3 for each service | Through the connected service's API |
-| Pasted source text | Text you paste into the Mac launcher (such as meeting notes or messages) and its title (the first line) | You enter it in the app |
 | Information derived from source text | Task title, scope, due date, owner, counterpart name, evidence quotes, a record of who said what and when, change history, AI judgment records (candidates and probabilities), numeric vectors used to find similar tasks (embeddings) | When the server processes a source |
 | Usage records | App opens; starting, completing, editing, deleting, or confirming a task; use of "Hand off to AI"; weekly question answers; times you reported a missing task; requests for services we do not support yet; records of completing a connection, of a connection expiring so that you need to reconnect, and of sending a reconnect notice (service name and time only) | When you use the app, or when the server syncs your connections |
 | Device and notifications | Push notification device token (APNs), platform (iOS or macOS), app version, last seen time | After the app receives notification permission |
@@ -128,7 +127,6 @@ Taskforce uses external AI models to find tasks in source text, decide whether a
 ### What we send
 
 - Source text from connected services (body, title, date) and the names and email addresses of the people involved
-- Text you paste in (body and title)
 - Your display name, aliases, and email addresses, so the model can recognize you in the text
 - Titles and evidence quotes of existing tasks, to compare with newly found candidates
 - (When you use Ask) your question and the related tasks and evidence quotes
@@ -142,7 +140,7 @@ Taskforce uses external AI models to find tasks in source text, decide whether a
 
 ### Consent and withdrawal
 
-- Before you connect your first service, the app shows you this information and asks for your consent. **If you do not agree, the server does not send or process source text from connected services or text you paste in.**
+- Before you connect your first service, the app shows you this information and asks for your consent. **If you do not agree, the server does not send or process source text from connected services.**
 - You can withdraw consent at any time in app → Account → AI data. After you withdraw, new source text is not sent to AI, so no new tasks are created. Existing tasks remain; to delete them, delete your account.
 - "Hand off to AI" packages a task's context as text and shows it in the app. If you paste that text into another AI tool, you are doing so yourself; we do not send it.
 
@@ -154,7 +152,7 @@ Taskforce uses external AI models to find tasks in source text, decide whether a
 |---|---|
 | Account, profile, sign-in sessions | Until you delete your account |
 | Connections and access tokens | Until you disconnect or delete your account |
-| Source text from connected services and pasted source text (body text) | **90 days after it is stored.** After 90 days we delete only the body text; the row, title, original link, people involved, and processing result remain until you delete your account (they remain after you disconnect). **For Slack, when you disconnect or remove the app,** we delete the body text, title, and people involved right away |
+| Source text from connected services (body text) | **90 days after it is stored.** After 90 days we delete only the body text; the row, title, original link, people involved, and processing result remain until you delete your account (they remain after you disconnect). **For Slack, when you disconnect or remove the app,** we delete the body text, title, and people involved right away |
 | Jev judgment records (including candidate quotes) | 90 days after they are stored. For Slack source text, right away when you disconnect or remove the app |
 | Tasks, evidence quotes, change history, embeddings | Until you delete your account. Evidence quotes remain even after the source body text is deleted, except that evidence quotes from Slack are deleted when you disconnect or remove the app (the tasks and embeddings remain). A task you delete in the app disappears from your list but is kept in a "deleted" state so we can calculate the error rate |
 | Queued Slack messages (before grouping into source text) | 3 days after they arrive. Once grouped into source text and processed, the text is cleared, and only a marker (conversation, message, and sender identifiers) is kept until 3 days after arrival so the same message is not received twice. Right away when you disconnect or remove the app |
@@ -172,7 +170,7 @@ No law currently requires us to keep any of this information longer. If one does
 ### How we delete
 
 - **Account deletion:** app → Account → Delete account. When the server deletes your authentication account, rows in every table linked to it (profile, connections and tokens, source text, tasks, evidence, history, judgment records, usage records, device tokens) are deleted in the same request.
-  When you delete your account, we also ask Apple to revoke your Sign in with Apple tokens, ask each connected service to revoke its tokens, and, if you signed in with Google, ask Google to revoke that sign-in access. For accounts that sign in with Apple, we ask you to confirm with Apple once more before we request revocation. If you cancel, or the confirmation or revocation fails, Taskforce may remain linked in your Apple Account, but your account is still deleted. If you cancel or the confirmation fails, the app shows how to remove Taskforce in your Apple Account settings.
+  When you delete your account, we also ask Apple to revoke your Sign in with Apple tokens, ask each connected service to revoke its tokens, and, if you signed in with Google, ask Google to revoke that sign-in access.
 - **Automatic deletion of source text:** a job runs daily and deletes the body text of source text stored 90 days ago, and deletes Jev judgment records stored 90 days ago. The same job deletes queued Slack messages that arrived 3 days ago and Slack threads with no activity for 14 days.
 - **Disconnecting or removing Slack:** when you disconnect Slack in the app or remove the app (or revoke its access) in Slack, we delete that connection's Slack source body text, titles, and people involved, evidence quotes, claim quote text, Jev judgment records, queued messages, tracked threads, and name information at once (Slack in section 3). A daily check of Slack tokens runs the same deletion within a day even if we were not told the app was removed.
 - **No backups:** we keep no database backups, so deleted data cannot be recovered and does not linger in a backup. If we start keeping backups, we will add their retention period to this policy first.
@@ -214,7 +212,7 @@ Our server and database are outside Korea. All transfers happen over the network
 | Google LLC (1600 Amphitheatre Parkway, Mountain View, CA 94043, USA) | USA and other countries where Google has data centers | Email address and content of support email | Receiving and storing support email | 90 days after the request is closed |
 
 - **Ground for transfer:** entrustment and storage needed to perform our agreement with you, with the items above disclosed in this policy (PIPA Art. 28-8(1)(3)). Sending to external AI (section 4) additionally requires your in-app consent.
-- **How to refuse, and the effect:** because our server and database are outside Korea, we cannot provide the service if you refuse international transfer. To refuse, stop using the service and delete your account. To refuse only the transfer to external AI, do not give, or withdraw, AI data consent. In that case we do not process source text from your connected services or text you paste in, and no tasks are created automatically.
+- **How to refuse, and the effect:** because our server and database are outside Korea, we cannot provide the service if you refuse international transfer. To refuse, stop using the service and delete your account. To refuse only the transfer to external AI, do not give, or withdraw, AI data consent. In that case we do not process source text from your connected services, and no tasks are created automatically.
 
 ## 8. When we look at your source text
 
@@ -324,9 +322,8 @@ The beta is not offered to people who live in the European Economic Area (EEA, i
 
 Change history
 
-- Beta 1.3 (effective 2026-10-02): Text you paste into the Mac launcher (body and title) is now listed among the information we process. Like source text from connected services, it is sent to external AI only after you give AI data consent, and its body text is deleted 90 days after it is stored. We also describe what happens when you delete an account that signs in with Apple and you cancel the Apple confirmation, or the confirmation or revocation fails.
-- Beta 1.2 (effective 2026-09-30, [view previous version](https://www.taskforcelabs.dev/en/privacy/beta-1.2)): You can now sign in with Google. At sign-in we receive your Google account identifier, email address, name, and profile photo URL (and your organization's domain for Google Workspace accounts), and when you delete your account we ask Google to revoke that sign-in access.
+- Beta 1.2 (effective 2026-09-30): You can now sign in with Google. At sign-in we receive your Google account identifier, email address, name, and profile photo URL (and your organization's domain for Google Workspace accounts), and when you delete your account we ask Google to revoke that sign-in access.
 - Beta 1.1 (effective 2026-09-30, [view previous version](https://www.taskforcelabs.dev/en/privacy/beta-1.1)): The Gmail section now matches how the service works (which mail is skipped and why, one message stored at a time, the IDs and received times of fetched or skipped mail and per-reason counts, and the account-identification permissions). When a connection expires, we send one reminder to reconnect and keep a record of connections, expirations, and reminders. Baseten was removed from the source-analysis providers.
 - Beta 1.0 (effective 2026-09-29): [View previous version](https://www.taskforcelabs.dev/en/privacy/beta-1.0)
 
-This policy takes effect on 2026-10-02.
+This policy takes effect on 2026-09-30.
