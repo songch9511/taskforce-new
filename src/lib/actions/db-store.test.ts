@@ -2,7 +2,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { describe, expect, it, vi } from "vitest";
 
 import type { AppendUpdate } from "@/lib/pipeline/merge";
-import type { Claim } from "@/lib/pipeline/resolve";
+import type { Claim, ClaimField } from "@/lib/pipeline/resolve";
 import { taskClaims } from "@/lib/pipeline/structured";
 import { rankNow, type RankInput } from "./rank";
 import { SLACK_DISCONNECTED_QUOTE } from "@/lib/retention";
@@ -359,7 +359,7 @@ describe("SupabaseActionStore.needsConfirmation: Review에 보이는 Action만 �
     last_activity_at: occurredAt.toISOString(),
   });
   const reviewReason = ["판정 확인: NOT_MY_ACTION"];
-  const taskClaim = (field: Claim["field"], value: string) =>
+  const taskClaim = (field: ClaimField, value: string) =>
     taskClaims([{ field, value, quote: `${field}: ${value}` }], { editedByUser: false, occurredAt }, () => `task-${field}-${value}`);
   const create = async (owner: string, confirmReasons: string[] = []) => {
     const fixture = statefulAppendAdmin([]);

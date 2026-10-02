@@ -288,6 +288,8 @@ public enum WeeklyCheckAnswer: String, Encodable, Sendable {
 
 public enum SourceKind: String, Codable, Sendable {
     case meeting, message, email, doc, note, task
+    /// 실행 receipt (서버가 쓴다): 에이전트가 산출물(초안)을 저장한 기록. 원문 목록에는 넣지 않는다
+    case execution
 }
 
 public enum ProcessingStatus: String, Codable, Sendable {
@@ -326,6 +328,8 @@ public struct ActionRecord: Decodable, Sendable, Hashable, Identifiable {
 
 public enum EvidenceRole: String, Codable, Sendable {
     case created, updated, completed, duplicate
+    /// 실행 receipt (초안 저장). 할 일을 끝낸 근거가 아니다
+    case executed
 }
 
 /// `evidence` 행: 원문 인용 구절
@@ -358,6 +362,8 @@ public struct EvidenceRecord: Decodable, Sendable, Hashable, Identifiable {
 
 public enum EventActor: String, Codable, Sendable {
     case ai, user
+    /// 실행기가 남긴 기록 (artifact_created). AI 판정도, 사용자가 정한 것도 아니다
+    case agent
 }
 
 /// `action_events` 행: 변경 이력

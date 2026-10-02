@@ -139,6 +139,21 @@ step: `pending → prepared → calling → called | unknown_outcome | failed | 
 - 모든 전이 · 승인 · 거절 · 중단은 이벤트로 남긴다(원칙 6). 운영 지표: `unknown_outcome` 수, 승인 요청 수(원칙 3: 확인 요청은 그 자체가 비용).
 - 인스턴스 경합: 수집 쪽 병합 대기열은 메모리라 인스턴스 하나 안에서만 보장되고, 인스턴스 사이는 `write_action` 버전 확인이 막는다(`src/lib/sources/process.ts`). 실행 쪽은 메모리에 기대지 않고 intent unique + CAS로 막는다.
 
+**초안 receipt (U2 PR7에서 구현).** `supabase/migrations/20261023000000_execution_receipts.sql`, `src/lib/execution/receipt.ts`. 끝낸(`called`) 초안 단계 하나에 receipt 하나를 Action에 붙인다. 초안 목적의 완료만 반영하고 Action은 끝내지 않는다(A38).
+
+| 무엇 | 값 |
+|---|---|
+| receipt 원문 | `sources` kind `execution`, 글 = 인용 = `초안 저장: <산출물 제목>`(한 줄, 200자, 본문 · 원문 · 요청은 담지 않는다), 링크 `taskforce://artifacts/<산출물 id>`, `external_id` = 단계 id(사용자마다 unique), 시각 = 산출물을 저장한 DB 시각, `processing_status = 'done'` |
+| Claim | origin `execution`, field `artifact`, 값 = 산출물 id, 인용 = receipt 글. 화자 나 · 확정 · 직접 · private(아직 보내지 않은 내 초안) |
+| 근거 · 이벤트 | 근거 role `executed`. 이벤트 `artifact_created`, actor `agent`, after = 산출물 · run · 단계 id(글 없음) |
+
+- 진입점: `writeDraftReceipt(store: ReceiptStore, stepId: string): Promise<"written" | "exists">`. 운영 store는 `supabaseReceiptStore(admin)`(`receipt-store.ts`, service role). 실행기는 `complete_internal_step`이 true를 돌려준 초안 단계마다 부른다. 실패해도(`ReceiptWriteError`, DB 오류) 단계 · run은 그대로 두고 로그에 id만 남긴다. sweep은 보조 안전망으로 `writeMissingReceipts(store, 20)`을 부른다(receipt가 없는 하루 안의 끝낸 초안 단계, `missing_execution_receipts`). 실행기 · sweep 연결은 U2 PR6 병합 뒤 그 위에 붙인다.
+- 쓰기는 DB 함수 `write_execution_receipt(단계, 읽은 Action 버전, Action 값, receipt)` 하나가 receipt 원문 · Claim · 근거 · 이벤트를 `write_action`과 한 트랜잭션에서 쓴다. Action 값은 실행기가 Claim을 더해 진실 판정 순수 함수(`projectAction`)로 다시 계산한 값이고, 붙이기 전 판정과 다르면 쓰지 않는다(`changes_action`). 사용자 · Action · 종류 · 시각 · Claim의 필드 · origin · 값 · 근거 · 이벤트는 DB 함수가 단계 · 산출물 행에서 정한다(호출자가 넘긴 값을 믿지 않는다). 끝낸 초안 단계 · 산출물이 아니거나 인용이 receipt 글에 없으면 거절한다. Action 행을 먼저 잠가 같은 단계를 함께 쓰는 실행기 · sweep이 줄을 서고, 이미 붙었으면 `exists`, 버전이 어긋나면 아무것도 쓰지 않고 `conflict`(다시 읽어 3번까지).
+- 진실 판정은 `artifact` 필드를 계산하지 않는다(`TRUTH_RULES.md` 2장 "구현"): 상태 · 기한 · 담당 · 내용 · 확인 이유 그대로라 초안은 완료가 아니고, 사용자가 끝낸 할 일도 다시 열지 않는다(A57). 실행 Claim은 origin `user`가 아니다(A55).
+- DB가 막는 것: 원문 · 인용 없는 실행 Claim(`claims_source_origin`), 실행 Claim으로 `artifact` 밖의 필드(`claims_execution_artifact`), 처리하지 않은 receipt 원문(`sources_execution_receipt`: 재처리 cron · 추출이 고르거나 `processing`으로 바꾸지 못한다), 클라이언트가 receipt 원문을 만들거나 고치거나 지우는 것(제한 정책, 읽기는 그대로). 기준 17 확인 쿼리: `select count(*) from claims where origin = 'execution' and (source_id is null or quote is null)` = 0.
+- receipt는 원문이 아니다: 초안 자료(`context.ts`)에 넣지 않고(앞선 초안 제목은 모델이 쓴 글이다), 빠진 할 일 신고는 400, 앱 원문 목록(`recentSources`)에서 뺀다. Action 상세의 근거 · 변경 이력에는 보인다("초안 저장"). 지표 1(AI 오판율)은 actor `agent` 이벤트를 세지 않는다.
+- 앱 디코딩: 이 값(`execution` · `executed` · `agent`)을 모르는 앱 빌드는 receipt가 붙은 할 일의 상세와 원문 목록을 읽지 못한다. 실행은 운영자 계정만(`execution_actors`)이라, 켜기 전에 운영자 앱을 이 값을 아는 빌드로 올린다.
+
 ## 10. 관문
 
 ①–④ 모두 2026-10-02에 확인했다. ②의 "같은 연결로 readback이 읽히는지"는 U3a에서 확인한다.

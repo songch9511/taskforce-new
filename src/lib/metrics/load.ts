@@ -51,7 +51,7 @@ type EventRecord = {
   action_id: string;
   user_id: string;
   type: string;
-  actor: "ai" | "user";
+  actor: "ai" | "user" | "agent";
   before: Record<string, unknown> | null;
   after: Record<string, unknown> | null;
   created_at: string;

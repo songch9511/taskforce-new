@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 import type { PGlite } from "@electric-sql/pglite";
 import { beforeAll, describe, expect, it } from "vitest";
 
@@ -153,6 +155,19 @@ async function seed(userId: string, tokenHex: string) {
       draft,
       attempts(`gen-draft-${userId}`),
     ]);
+    // 실행 receipt (U2 PR7): receipt 원문(kind execution) · Claim(origin execution) · 근거(executed) · 이벤트(actor agent).
+    // 원문은 클라이언트가 지우지 못하지만 계정 삭제(auth.users cascade)로는 함께 지워져야 한다
+    const receipt = {
+      source: { title: "제안서", raw_text: "초안 저장: 제안서", external_url: "taskforce://artifacts/x" },
+      claim: { id: randomUUID(), quote: "초안 저장: 제안서", speaker_role: "me", certainty: "firm", directness: "first_hand", audience: "private" },
+    };
+    const written = await db.query<{ r: string }>(
+      `select public.write_execution_receipt($1, a.version, jsonb_build_object('title', a.title, 'owner', a.owner, 'due_date', a.due_date, 'due_at', a.due_at,
+         'status', a.status, 'needs_confirmation', a.needs_confirmation, 'confirm_reasons', to_jsonb(a.confirm_reasons), 'resolution', a.resolution), $3::jsonb) as r
+       from public.actions a where a.id = $2`,
+      [draft, actionId, JSON.stringify(receipt)],
+    );
+    expect(written.rows[0].r).toBe("written");
   } finally {
     await db.query(`update public.execution_controls set blocked = true where scope = 'global'`);
   }
@@ -197,6 +212,15 @@ describe("계정 삭제 (auth.users on delete cascade)", () => {
   it("삭제 전에는 두 사용자 모두 모든 테이블에 행이 있다", async () => {
     for (const userId of [ALICE, BOB]) {
       expect(Object.values(await rowCounts(userId)).every((n) => n > 0)).toBe(true);
+      // 실행 receipt도 있다 (원문 · Claim · 근거 · 이벤트)
+      const { rows } = await db.query<{ n: number }>(
+        `select (select count(*) from public.sources where user_id = $1 and kind = 'execution')
+              + (select count(*) from public.claims where user_id = $1 and origin = 'execution')
+              + (select count(*) from public.evidence where user_id = $1 and role = 'executed')
+              + (select count(*) from public.action_events where user_id = $1 and actor = 'agent') as n`,
+        [userId],
+      );
+      expect(Number(rows[0].n)).toBe(4);
     }
     expect(await secretCount(aliceConnection)).toBe(1);
   });

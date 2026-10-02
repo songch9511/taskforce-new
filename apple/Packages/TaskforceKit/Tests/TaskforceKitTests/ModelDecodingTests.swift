@@ -75,6 +75,30 @@ struct ModelDecodingTests {
         #expect(source.summary.meeting == nil)
     }
 
+    /// 실행 receipt (U2 PR7): 원문 종류 execution · 근거 executed · 이벤트 주체 agent를 읽는다 (모르면 상세 화면 전체를 못 읽는다)
+    @Test func decodesExecutionReceiptRows() throws {
+        let source = try #require(try decode([SourceSummary].self, """
+            [{ "id": "22222222-2222-4222-8222-222222222222", "kind": "execution", "title": "제안서 초안", "occurred_at": "2026-10-02T05:00:00.123456+00:00",
+               "external_url": "taskforce://artifacts/7c2e5f0a-1b3d-4e6f-8a9b-0c1d2e3f4a5b", "created_at": "2026-10-02T05:00:01+00:00",
+               "processing_status": "done", "meeting": null }]
+            """).first)
+        #expect(source.kind == .execution)
+        #expect(SourceService.infer(externalURL: source.externalURL, kind: source.kind) == .manual(.execution))
+        let evidence = try #require(try decode([EvidenceRecord].self, """
+            [{ "id": "aaaaaaaa-0000-4000-8000-000000000003", "action_id": "11111111-1111-4111-8111-111111111111",
+               "source_id": "22222222-2222-4222-8222-222222222222", "quote": "초안 저장: 제안서 초안", "role": "executed",
+               "created_at": "2026-10-02T05:00:01+00:00" }]
+            """).first)
+        #expect(evidence.role == .executed)
+        let event = try #require(try decode([ActionEventRecord].self, """
+            [{ "id": "aaaaaaaa-0000-4000-8000-000000000004", "action_id": "11111111-1111-4111-8111-111111111111", "type": "artifact_created",
+               "before": null, "after": { "artifact_id": "7c2e5f0a-1b3d-4e6f-8a9b-0c1d2e3f4a5b" }, "source_id": "22222222-2222-4222-8222-222222222222",
+               "actor": "agent", "rule": null, "created_at": "2026-10-02T05:00:01+00:00" }]
+            """).first)
+        #expect(event.actor == .agent)
+        #expect(ActionHistory.sentence(for: event, today: LocalDate("2026-10-02")!) == "초안 저장")
+    }
+
     @Test func sourceColumnsReadMeeting() {
         #expect(SourceSummary.columns.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.contains("meeting"))
         #expect(SourceRecord.columns.hasPrefix(SourceSummary.columns))

@@ -190,6 +190,30 @@ describe("misjudgment (지표 1)", () => {
     );
     expect(m).toMatchObject({ aiCreated: 3, corrected: 1, byField: { status: 1, title: 0, due: 0, owner: 0, deleted: 0 }, byStage: { extract: 0, update: 1 } });
   });
+
+  it("실행 receipt(artifact_created, actor agent)는 AI 생성 · 오판 · 물음 풀기에 섞이지 않는다 (U2 PR7)", () => {
+    // load.ts의 keep()은 receipt 이벤트의 after(산출물 · run · 단계 id)를 빈 객체로 남긴다
+    const receipt = (id: string, at: string) => ev(id, "artifact_created", at, { actor: "agent", sourceKind: "execution", after: {} });
+    const m = misjudgment(
+      [
+        { ...created("drafted"), after: { needs_confirmation: false } },
+        receipt("drafted", "2026-09-23T00:00:00Z"),
+        { ...created("asked"), after: { needs_confirmation: true } },
+        receipt("asked", "2026-09-23T00:00:00Z"),
+        // 사용자가 끝낸 뒤 초안이 붙고, 사용자가 다시 연다: 자기가 끝낸 것을 다시 연 것이라 오판이 아니다
+        { ...created("own"), after: { needs_confirmation: false } },
+        ev("own", "user_edited", "2026-09-23T01:00:00Z", { before: { status: "open" }, after: { status: "done" } }),
+        receipt("own", "2026-09-23T02:00:00Z"),
+        ev("own", "user_edited", "2026-09-23T03:00:00Z", { before: { status: "done" }, after: { status: "open" } }),
+        // 직접 추가한 할 일의 초안: 지표 1에 넣지 않는다
+        ev("mine", "user_created", "2026-09-22T01:00:00Z"),
+        receipt("mine", "2026-09-23T00:00:00Z"),
+      ],
+      period,
+    );
+    expect(m).toMatchObject({ aiCreated: 3, corrected: 0, rate: 0 });
+    expect(m.byConfirmation).toEqual({ auto: { created: 2, corrected: 0 }, asked: { created: 1, corrected: 0 }, unknown: { created: 0, corrected: 0 } });
+  });
 });
 
 describe("timeToStart (지표 2)", () => {

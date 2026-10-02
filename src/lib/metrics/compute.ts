@@ -17,7 +17,8 @@ export type ActionEventRow = {
   actionId: string;
   userId: string;
   type: string;
-  actor: "ai" | "user";
+  /** agent: 실행 receipt (artifact_created, U2 PR7). 지표 1의 AI 판단 · 사용자 수정이 아니다 */
+  actor: "ai" | "user" | "agent";
   before: Record<string, unknown> | null;
   after: Record<string, unknown> | null;
   at: string;

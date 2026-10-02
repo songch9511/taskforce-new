@@ -203,3 +203,30 @@ describe("sources.meeting (회의 원문에 붙인 Calendar 일정)", () => {
     });
   });
 });
+
+// 실행 receipt (20261023000000_execution_receipts): 새 표 없이 값 · 제약 · 함수만 더한다. 자세한 검사는 execution-receipts.test.ts
+describe("실행 receipt 값 (원문 execution · Claim origin execution, field artifact · 근거 executed · 이벤트 artifact_created, agent)", () => {
+  it("서버는 새 값으로 쓸 수 있고, 사용자는 receipt 원문을 직접 만들지 못한다", async () => {
+    const actionId = await insertAction(ALICE);
+    const { rows } = await db.query<{ id: string }>(
+      `insert into public.sources (user_id, kind, raw_text, occurred_at, external_id, processing_status)
+       values ($1, 'execution', '초안 저장: 제안서', now(), 'step-1', 'done') returning id`,
+      [ALICE],
+    );
+    const sourceId = rows[0].id;
+    await db.query(
+      `insert into public.claims (user_id, action_id, source_id, field, value, quote, occurred_at, speaker_role, certainty, directness, audience, origin)
+       values ($1, $2, $3, 'artifact', 'artifact-1', '초안 저장: 제안서', now(), 'me', 'firm', 'first_hand', 'private', 'execution')`,
+      [ALICE, actionId, sourceId],
+    );
+    await db.query(`insert into public.evidence (user_id, action_id, source_id, quote, role) values ($1, $2, $3, '초안 저장: 제안서', 'executed')`, [ALICE, actionId, sourceId]);
+    await db.query(`insert into public.action_events (user_id, action_id, type, actor, source_id) values ($1, $2, 'artifact_created', 'agent', $3)`, [ALICE, actionId, sourceId]);
+
+    await asUser(db, ALICE, async () => {
+      expect((await db.query(`select kind from public.sources where id = $1`, [sourceId])).rows).toEqual([{ kind: "execution" }]);
+      await expect(
+        db.query(`insert into public.sources (kind, raw_text, occurred_at, external_id, processing_status) values ('execution', 'x', now(), 'step-2', 'done')`),
+      ).rejects.toThrow(/row-level security/);
+    });
+  });
+});

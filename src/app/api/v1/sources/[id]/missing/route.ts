@@ -30,7 +30,7 @@ type Params = { params: Promise<{ id: string }> };
 
 type SourceRow = {
   id: string;
-  kind: SourceKind | "task";
+  kind: SourceKind | "task" | "execution";
   raw_text: string;
   occurred_at: string;
   participants: Participants | null;
@@ -62,6 +62,8 @@ export async function POST(request: Request, { params }: Params) {
   if (!source) return errorResponse(404, "not_found", "원문이 없습니다.");
   // 할 일 DB 항목은 속성을 그대로 옮기므로 빠질 구절이 없다.
   if (source.kind === "task") return errorResponse(400, "invalid_request", "할 일 DB에서 가져온 항목은 신고할 수 없습니다.");
+  // 실행 receipt(초안 저장 기록)는 원문이 아니라 추출하지 않는다 (docs/EXECUTION.md 9장)
+  if (source.kind === "execution") return errorResponse(400, "invalid_request", "실행 기록은 신고할 수 없습니다.");
   if (source.raw_text_purged_at) return errorResponse(400, "invalid_request", purgedSourceMessage(source.raw_text_purge_reason));
   if (!quoteInText(body.data.quote, source.raw_text)) return errorResponse(400, "invalid_request", "원문에 없는 구절입니다.");
 

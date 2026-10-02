@@ -39,7 +39,7 @@ const input: ExecutionContextInput = {
 describe("buildExecutionContext", () => {
   it("Slack 원문의 인용 · 본문 · 관련자는 하나도 넣지 않는다", () => {
     const context = buildExecutionContext(input);
-    expect(context.excluded).toEqual({ slack: 2, missing: 0, overSources: 0 });
+    expect(context.excluded).toEqual({ slack: 2, receipts: 0, missing: 0, overSources: 0 });
     expect(context.material.sources).toHaveLength(1);
     const sent = JSON.stringify(context.material);
     for (const word of ["18%", "마진", "제작팀", "박서준", "제가 회신할게요", "Slack 연결을 끊어"]) expect(sent).not.toContain(word);
@@ -88,7 +88,24 @@ describe("buildExecutionContext", () => {
       ],
     });
     expect(context.material.sources).toEqual([]);
-    expect(context.excluded).toEqual({ slack: 0, missing: 2, overSources: 0 });
+    expect(context.excluded).toEqual({ slack: 0, receipts: 0, missing: 2, overSources: 0 });
+  });
+
+  it("실행 receipt(앞선 초안의 기록)는 원문이 아니라 넣지 않는다 (U2 PR7)", () => {
+    const context = buildExecutionContext({
+      action,
+      sources: [
+        source({ id: "mail", text: "납품일을 10월 16일로 미룰 수 있을까요?" }),
+        source({ id: "receipt", kind: "execution", provider: null, title: "일정 변경 회신", text: "초안 저장: 일정 변경 회신", externalUrl: "taskforce://artifacts/a1" }),
+      ],
+      evidence: [
+        { sourceId: "mail", quote: "납품일을 10월 16일로 미룰 수 있을까요?" },
+        { sourceId: "receipt", quote: "초안 저장: 일정 변경 회신" },
+      ],
+    });
+    expect(context.excluded).toEqual({ slack: 0, receipts: 1, missing: 0, overSources: 0 });
+    expect(context.material.sources.map((s) => s.kind)).toEqual(["email"]);
+    expect(JSON.stringify(context.material)).not.toContain("초안 저장");
   });
 
   it("같은 원문의 근거는 한 원문 아래 겹치지 않는 발췌로 모은다", () => {

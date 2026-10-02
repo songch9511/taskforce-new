@@ -44,6 +44,7 @@ const KIND_LABELS: Record<string, string> = {
   doc: "문서",
   note: "메모",
   task: "할 일 DB",
+  execution: "실행 기록",
 };
 const OWNER_LABELS: Record<ActionOwner, string> = { me: "나", other: "다른 사람", unknown: "아직 모름" };
 const STATUS_LABELS: Record<ActionStatus, string> = { open: "진행 전 · 진행 중", done: "완료", dropped: "취소됨" };

@@ -78,6 +78,8 @@ public enum ActionHistory {
             return "빠진 할 일로 신고해 추가함"
         case "user_created":
             return "직접 추가함"
+        case "artifact_created":
+            return "초안 저장"
         default:
             return "변경됨"
         }

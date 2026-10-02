@@ -384,3 +384,39 @@ describe("할 일 도구에서 사용자가 고친 값 (origin: tracker)", () =>
     expect(resolveField("owner", [mine, reassigned])).toMatchObject({ value: "me", needsConfirmation: true, pending: [reassigned.id] });
   });
 });
+
+describe("실행 결과 Claim (origin: execution, field: artifact, docs/EXECUTION.md 9장)", () => {
+  // 초안 receipt: 값은 산출물 id, 인용은 "초안 저장: …"
+  const receipt = (occurredAt: Date) =>
+    claim({ field: "artifact", value: "artifact-1", occurredAt, origin: "execution", audience: "private", channel: "note" });
+  const open = [
+    claim({ field: "scope", value: "제안서 보내기", occurredAt: at("22") }),
+    claim({ field: "due", value: "2025-09-26", occurredAt: at("22") }),
+    claim({ field: "owner", value: "me", occurredAt: at("22") }),
+    claim({ field: "status", value: "open", occurredAt: at("22") }),
+  ];
+
+  it("어느 필드도 바꾸지 않는다: 초안은 완료가 아니다 (A38)", () => {
+    expect(resolveAction([...open, receipt(at("24"))])).toEqual(resolveAction(open));
+    expect(resolveAction([...open, receipt(at("24"))]).status.value).toBe("open");
+  });
+
+  it("사용자가 끝낸 할 일을 다시 열지 않는다, 그 뒤에 와도 (A57)", () => {
+    const done = [...open, claim({ field: "status", value: "done", occurredAt: at("23"), origin: "user", channel: "note" })];
+    const r = resolveAction([...done, receipt(at("25"))]);
+    expect(r).toEqual(resolveAction(done));
+    expect(r.status).toMatchObject({ value: "done", reason: "사용자가 직접 정함" });
+  });
+
+  it("확인 대기 · 위험 신호를 만들거나 풀지 않는다 (사용자 Claim이 아니다, A55)", () => {
+    const pending = [...open, claim({ field: "due", value: "2025-09-29", occurredAt: at("23"), directness: "reported", speakerRole: "third_party" })];
+    const before = resolveAction(pending);
+    expect(before.due.needsConfirmation).toBe(true);
+    expect(resolveAction([...pending, receipt(at("24"))])).toEqual(before);
+  });
+
+  it("artifact Claim만 있으면 모든 필드가 근거 없음이다", () => {
+    const r = resolveAction([receipt(at("24"))]);
+    for (const field of ["due", "scope", "owner", "status"] as const) expect(r[field]).toMatchObject({ value: null, winningClaimId: null, reason: "근거 없음" });
+  });
+});

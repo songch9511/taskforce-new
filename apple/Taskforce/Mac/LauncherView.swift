@@ -431,6 +431,7 @@ struct LauncherRootView: View {
         case .doc: "Document"
         case .note: "Note"
         case .task: "Task"
+        case .execution: "Execution record"
         }
     }
 
