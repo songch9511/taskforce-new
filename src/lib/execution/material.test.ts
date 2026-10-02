@@ -44,6 +44,26 @@ describe("materialFromRows", () => {
     expect(buildExecutionContext(input).excluded.slack).toBe(1);
   });
 
+  it("실행 receipt(kind execution, 연결 없이 외부 id = 단계 id)는 출처 모름으로 빼지 않고 넘겨, 자료에서는 receipt로 빼고 센다 (U2 PR7)", () => {
+    const input = materialFromRows({
+      action: ACTION,
+      evidence: [
+        { source_id: "receipt-1", quote: "초안 저장: 견적 회신 메일" },
+        { source_id: "paste-1", quote: "paste-1 원문" },
+      ],
+      sources: [
+        source("receipt-1", { kind: "execution", raw_text: "초안 저장: 견적 회신 메일", external_id: "step-uuid", external_url: "taskforce://artifacts/a1" }),
+        source("paste-1"),
+      ],
+      connections: [],
+    });
+    expect(input.sources.find((s) => s.id === "receipt-1")).toMatchObject({ kind: "execution", provider: null });
+    expect(input.evidence.map((e) => e.sourceId)).toEqual(["receipt-1", "paste-1"]);
+    const context = buildExecutionContext(input);
+    expect(context.excluded).toEqual({ slack: 0, receipts: 1, missing: 0, overSources: 0 });
+    expect(sent(input)).not.toContain("초안 저장");
+  });
+
   it("출처를 확인할 수 없는 원문은 근거째 뺀다: 연결 행을 찾지 못함 · 연결 없이 외부 id만 있음", () => {
     const input = materialFromRows({
       action: ACTION,

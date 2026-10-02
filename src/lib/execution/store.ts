@@ -9,6 +9,7 @@ import { loadIdentity } from "@/lib/connectors/store";
 import type { ExecutionContextInput } from "./context";
 import { withDeadlockRetry } from "./deadlock";
 import { materialFromRows, type ActionRow, type ConnectionRow, type EvidenceRow, type SourceRow } from "./material";
+import { supabaseReceiptStore } from "./receipt-store";
 import { OPEN_RUN_STATES, RunActionNotFoundError, type ExecutionStore, type StepRow } from "./types";
 
 // 실행기의 DB 쪽 (service role). 판단(스위치 · 허용 목록 · 크레딧 · CAS)은 SQL 함수에만 있고(20261021000000 · 20261022000000), 여기는 RPC와 읽기뿐이다.
@@ -25,6 +26,9 @@ export function supabaseExecutionStore(admin: SupabaseClient): ExecutionStore {
     withDeadlockRetry(async () => (await admin.rpc(fn, args).throwOnError()).data as T);
 
   return {
+    // receipt 쓰기 (receipt-store.ts): 끝낸 초안 단계 · 산출물 읽기와 write_execution_receipt · missing_execution_receipts
+    ...supabaseReceiptStore(admin),
+
     async loadRun(runId) {
       const { data } = await admin.from("execution_runs").select("id, user_id, action_id, state, request").eq("id", runId).maybeSingle().throwOnError();
       return data;

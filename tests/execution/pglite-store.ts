@@ -3,6 +3,8 @@ import type { PGlite } from "@electric-sql/pglite";
 import { materialFromRows, type ActionRow, type ConnectionRow, type EvidenceRow, type SourceRow } from "@/lib/execution/material";
 import type { BeginCallResult, DraftHistoryRow, ExecutionStore, RunRow, StepRow } from "@/lib/execution/types";
 
+import { pgliteReceiptStore } from "./pglite-receipt-store";
+
 // 실행기(src/lib/execution/executor.ts)를 PGlite에서 돌리는 store. 운영 store(store.ts, supabase-js)와 같은 SQL 함수를 부르고,
 // 읽기만 같은 뜻의 SQL로 옮겼다. 자료는 운영과 같은 materialFromRows로 만든다 (DB 모양 그대로).
 
@@ -14,6 +16,7 @@ export function pgliteExecutionStore(db: PGlite, options: { userName?: string } 
   const json = (value: unknown) => (value === null ? null : JSON.stringify(value));
 
   return {
+    ...pgliteReceiptStore(db),
     loadRun: async (runId) => (await one<RunRow>("select id, user_id, action_id, state, request from public.execution_runs where id = $1", [runId])) ?? null,
     nextOpenStep: async (runId) =>
       (await one<StepRow>(

@@ -2,6 +2,7 @@ import type { LlmAttempt } from "@/lib/ai/llm";
 import type { CompleteJson } from "@/lib/pipeline/extract";
 
 import type { ExecutionContextInput } from "./context";
+import type { ReceiptStore } from "./receipt";
 
 // 실행기가 쓰는 DB 연산. 운영은 store.ts(supabase · service role), 테스트는 같은 SQL 함수를 PGlite에서 부르는 store다.
 
@@ -33,7 +34,8 @@ export type ArtifactInput = { title: string; body: string; model: string; prompt
 /** 계획 단계에 넘기는 앞선 초안 단계 (seq 순) */
 export type DraftHistoryRow = { state: "called" | "failed"; brief: string | null; title: string | null };
 
-export interface ExecutionStore {
+/** receipt 쓰기(receipt.ts)의 DB 연산도 같은 store가 갖는다: 실행기는 끝낸 초안 단계마다, sweep은 보조 안전망으로 부른다 */
+export interface ExecutionStore extends ReceiptStore {
   loadRun(runId: string): Promise<RunRow | null>;
   /** 끝나지 않은(called · skipped가 아닌) 첫 단계 */
   nextOpenStep(runId: string): Promise<StepRow | null>;

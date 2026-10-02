@@ -689,6 +689,73 @@ describe("route 처리 × DB", () => {
   });
 });
 
+describe("receipt (U2 PR7): 초안 목적만 완료, Action은 그대로", () => {
+  const actionRow = (actionId: string) =>
+    one<Record<string, unknown>>(
+      "select title, owner, due_date, status, needs_confirmation, confirm_reasons, resolution, last_activity_at::text, version from public.actions where id = $1",
+      [actionId],
+    );
+  const receipts = (actionId: string) =>
+    Promise.all([
+      count("select 1 from public.sources s join public.evidence e on e.source_id = s.id where e.action_id = $1 and s.kind = 'execution'", [actionId]),
+      rows<{ value: string; origin: string; field: string }>("select value, origin, field from public.claims where action_id = $1 order by created_at", [actionId]),
+      count("select 1 from public.evidence where action_id = $1 and role = 'executed'", [actionId]),
+      count("select 1 from public.action_events where action_id = $1 and type = 'artifact_created' and actor = 'agent'", [actionId]),
+    ]);
+
+  it("초안 단계를 끝낼 때마다 receipt(원문 execution · Claim origin execution · 근거 executed · 이벤트 agent)가 붙고, Action 상태 · 값은 그대로다. 다음 초안 자료에 receipt는 들어가지 않는다", async () => {
+    const user = await newUser({ credits: 100 });
+    const actionId = await newAction(user);
+    const before = await actionRow(actionId);
+    const runId = await startRun(user, actionId);
+    llm.plans = [{ kind: "draft", brief: "제안서" }, { kind: "draft", brief: "후속 메일" }];
+    llm.drafts = [DRAFT, { ...DRAFT, title: "후속: 견적 일정" }];
+    await drive(runId);
+    expect(await runState(runId)).toEqual({ state: "done", hold_reason: null, outcome: "draft_ready" });
+
+    const artifacts = (await rows<{ id: string }>("select id from public.execution_artifacts where run_id = $1 order by created_at", [runId])).map((a) => a.id);
+    const [sources, claims, executed, events] = await receipts(actionId);
+    expect(sources).toBe(2);
+    expect(claims).toEqual(artifacts.map((id) => ({ value: id, origin: "execution", field: "artifact" })));
+    expect([executed, events]).toEqual([2, 2]);
+    expect(await count("select 1 from public.claims where action_id = $1 and origin = 'user'", [actionId])).toBe(0);
+    // 초안 ≠ 완료: 상태 · 값 · 확인 · 활동 시각 그대로, 버전만 receipt마다 하나씩
+    expect(await actionRow(actionId)).toEqual({ ...before, version: (before.version as number) + 2 });
+    // 두 번째 초안(4번째 모델 호출)은 앞선 receipt를 원문으로 받지 않는다 (근거 원문은 받는다)
+    expect(llm.prompts[3]).toContain("견적서 금요일까지 회신 부탁드려요");
+    expect(llm.prompts[3]).not.toContain("초안 저장");
+  });
+
+  it("실행기가 receipt를 쓰지 못하고 끝나도 단계 · run은 끝낸 그대로이고, sweep 보조 안전망이 한 번만 이어 쓴다", async () => {
+    const user = await newUser({ credits: 100 });
+    const actionId = await newAction(user);
+    const runId = await startRun(user, actionId);
+    llm.plans = [{ kind: "draft", brief: "회신" }, { kind: "done" }];
+    const dying = (): ExecutorDeps => ({
+      ...deps(),
+      store: {
+        ...store(),
+        writeReceipt: async () => {
+          throw new Error("function killed");
+        },
+      },
+    });
+    for (let i = 0; i < 5; i++) {
+      const result = await advance(dying(), runId);
+      if (!(result.status === "completed" && result.next)) break;
+    }
+    expect(await runState(runId)).toEqual({ state: "done", hold_reason: null, outcome: "draft_ready" });
+    expect((await receipts(actionId))[0]).toBe(0);
+
+    const sweepDeps = { store: store(), lookupGeneration: async (): Promise<GenerationLookup> => ({ status: "pending" }), wake: async () => true, now: () => NOW };
+    expect(await sweep(sweepDeps)).toMatchObject({ receipts: 1, receipt_failed: 0, errors: 0 });
+    expect(await sweep(sweepDeps)).toMatchObject({ receipts: 0, receipt_failed: 0, errors: 0 });
+    const [sources, claims, executed, events] = await receipts(actionId);
+    expect([sources, claims.length, executed, events]).toEqual([1, 1, 1, 1]);
+    expect((await one<{ status: string }>("select status from public.actions where id = $1", [actionId])).status).toBe("open");
+  });
+});
+
 describe("외부 효과 없음", () => {
   it("외부 단계(kind external)는 begin_call도 부르지 않는다 (발송은 U6a)", async () => {
     const user = await newUser();

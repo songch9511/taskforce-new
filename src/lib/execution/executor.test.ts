@@ -49,6 +49,17 @@ function fakeStore(overrides: Partial<ExecutionStore> = {}) {
     openEndedCreditRuns: vi.fn(),
     releaseRunCredits: vi.fn(),
     wakeableRuns: vi.fn(),
+    // receipt 쓰기 (receipt.ts): 끝낸 초안 단계 · Action을 읽고 write_execution_receipt
+    receiptTarget: vi.fn(async (stepId: string) => ({
+      stepId,
+      runId: "r1",
+      userId: "u1",
+      actionId: "a1",
+      artifact: { id: "art-1", title: "Re: 견적", createdAt: new Date("2026-10-02T00:00:00Z") },
+    })),
+    loadAction: vi.fn(async () => ({ version: 1, title: "견적 회신", confirmReasons: [], claims: [] })),
+    writeReceipt: vi.fn(track("writeReceipt", "written" as const)),
+    missingReceipts: vi.fn(),
     ...overrides,
   } satisfies ExecutionStore;
   return { store, order };
@@ -75,7 +86,9 @@ describe("advance", () => {
     const { store, order } = fakeStore();
     const result = await advance({ store, complete: draftReply, owner: "fn-1" }, "r1");
     expect(result).toEqual({ status: "completed", step: "s2", next: true });
-    expect(order).toEqual(["beginCall", "appendStep", "completeInternalStep"]);
+    // 초안 단계를 끝낸 뒤 receipt를 붙인다 (receipt.ts, Action은 바꾸지 않는다)
+    expect(order).toEqual(["beginCall", "appendStep", "completeInternalStep", "writeReceipt"]);
+    expect(store.writeReceipt).toHaveBeenCalledWith("s2", 1, expect.objectContaining({ source: expect.objectContaining({ raw_text: "초안 저장: Re: 견적" }) }));
     expect(store.beginCall).toHaveBeenCalledWith("s2", "fn-1", 3);
     expect(store.appendStep).toHaveBeenCalledWith("r1", 3, { kind: "plan", provider: "taskforce", tool: "plan", purpose: "plan", estimate_credits: 0 });
     expect(store.completeInternalStep).toHaveBeenCalledWith(
@@ -152,6 +165,33 @@ describe("advance", () => {
     expect(await advance({ store, complete: reply, owner: "fn-1" }, "r1")).toEqual({ status: "completed", step: "s2", next: true });
     expect(completeInternalStep).toHaveBeenCalledTimes(2);
     expect(store.recordUsage).toHaveBeenCalledWith("s2", ATTEMPTS);
+    // 앞 쓰기가 commit했을 수 있으니 receipt도 붙인다 (다시 불러도 한 번, 끝내지 않은 단계면 receipt.ts가 쓰지 않는다)
+    expect(store.writeReceipt).toHaveBeenCalledTimes(1);
+  });
+
+  it("receipt: 계획 단계 · lease를 잃은 초안에는 붙이지 않고, 쓰지 못해도 단계는 끝낸 것으로 둔다 (단계 id와 까닭만 로그, sweep이 이어 쓴다)", async () => {
+    const plan: StepRow = { ...DRAFT_STEP, id: "s1", seq: 1, kind: "plan" };
+    const planned = fakeStore({ nextOpenStep: vi.fn(async () => plan) });
+    await advance({ store: planned.store, complete: (async (request) => ({ data: request.schema.parse({ reason: "r", step: { kind: "done" } }), model: "m", attempts: ATTEMPTS })) as CompleteJson, owner: "fn-1" }, "r1");
+    expect(planned.store.writeReceipt).not.toHaveBeenCalled();
+
+    const lostDraft = fakeStore({ completeInternalStep: vi.fn(async () => false) });
+    expect(await advance({ store: lostDraft.store, complete: draftReply, owner: "fn-1" }, "r1")).toEqual({ status: "lost", step: "s2" });
+    expect(lostDraft.store.writeReceipt).not.toHaveBeenCalled();
+
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    for (const failing of [fakeStore({ writeReceipt: vi.fn().mockRejectedValue(new Error("connection reset")) }), fakeStore({ receiptTarget: vi.fn(async () => null) })]) {
+      expect(await advance({ store: failing.store, complete: draftReply, owner: "fn-1" }, "r1")).toEqual({ status: "completed", step: "s2", next: true });
+      expect(failing.store.settleFailed).not.toHaveBeenCalled();
+      expect(failing.store.markUnknown).not.toHaveBeenCalled();
+    }
+    expect(error.mock.calls.map((c) => JSON.parse(String(c[0])))).toEqual([
+      { event: "execution_receipt_failed", run: "r1", step: "s2", reason: "Error" },
+      { event: "execution_receipt_failed", run: "r1", step: "s2", reason: "not_found" },
+    ]);
+    // 완료 로그에 receipt 결과가 숫자 · 상태로만 남는다
+    const completed = info.mock.calls.map((c: unknown[]) => JSON.parse(String(c[0]))).filter((l: { status?: string; kind?: string }) => l.status === "completed" && l.kind === "draft");
+    expect(completed.map((l: { receipt?: string }) => l.receipt)).toEqual(["failed", "failed"]);
   });
 
   it("결과 쓰기 · 다음 단계 붙이기가 계속 실패하면 받은 시도의 원가를 남기고 오류를 낸다 (단계는 calling에 남고 lease 만료 뒤 다시 준비된다)", async () => {

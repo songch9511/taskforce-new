@@ -147,7 +147,7 @@ step: `pending → prepared → calling → called | unknown_outcome | failed | 
 | Claim | origin `execution`, field `artifact`, 값 = 산출물 id, 인용 = receipt 글. 화자 나 · 확정 · 직접 · private(아직 보내지 않은 내 초안) |
 | 근거 · 이벤트 | 근거 role `executed`. 이벤트 `artifact_created`, actor `agent`, after = 산출물 · run · 단계 id(글 없음) |
 
-- 진입점: `writeDraftReceipt(store: ReceiptStore, stepId: string): Promise<"written" | "exists">`. 운영 store는 `supabaseReceiptStore(admin)`(`receipt-store.ts`, service role). 실행기는 `complete_internal_step`이 true를 돌려준 초안 단계마다 부르고, 다시 쓴 `complete_internal_step`이 false여도(앞 시도가 commit하고 응답만 잃음) 단계가 이미 `called`인 초안이면 부른다(멱등). 실패해도(`ReceiptWriteError`, DB 오류) 단계 · run은 그대로 두고 로그에 id만 남긴다. sweep은 보조 안전망으로 `writeMissingReceipts(store, 20)`을 부른다(receipt가 없는 하루 안의 끝낸 초안 단계, `missing_execution_receipts`). 실행기 · sweep 연결은 U2 PR6 병합 뒤 그 위에 붙인다(그때까지 운영은 receipt를 쓰지 않는다. U2 서버 완료 확인의 receipt 항목은 그 연결 뒤에야 확인된다).
+- 진입점: `writeDraftReceipt(store: ReceiptStore, stepId: string): Promise<"written" | "exists">`. `ExecutionStore`가 `ReceiptStore`를 포함한다(운영 `supabaseExecutionStore`는 `supabaseReceiptStore(admin)`을, 시험 `pgliteExecutionStore`는 `pgliteReceiptStore`를 담는다). 실행기(13장 `advance`)는 초안 단계를 끝내면(`complete_internal_step`이 true, 또는 다시 쓴 쪽이 false라 앞 쓰기가 commit했을 수 있을 때) 부른다(멱등. 끝내지 않은 단계면 `not_found`로 쓰지 않는다). 실패해도(`ReceiptWriteError`, DB 오류) 단계 · run은 끝낸 그대로 두고 `execution_receipt_failed`(run · 단계 id · 까닭)만 남긴다. sweep은 보조 안전망 단계로 `writeMissingReceipts(store, SWEEP_RECEIPT_LIMIT = 20)`을 부른다(receipt가 없는 하루 안의 끝낸 초안 단계, `missing_execution_receipts`).
 - 쓰기는 DB 함수 `write_execution_receipt(단계, 읽은 Action 버전, receipt)` 하나가 receipt 원문 · Claim · 근거 · 이벤트를 `write_action`과 한 트랜잭션에서 쓴다. receipt는 Action을 바꾸지 않으므로 DB 함수가 잠근 Action 행의 값을 그대로 다시 쓰고 활동 시각(`last_activity_at`, 랭킹 · 확인 순서)도 되돌린다: 바뀌는 것은 버전(+1)과 `updated_at`뿐이다. 실행기는 그 전에 Claim을 더해 진실 판정 순수 함수(`projectAction`)로 다시 계산해도 값이 같은지 확인하고, 다르면 쓰지 않는다(`changes_action`). 사용자 · Action · 종류 · 시각 · Claim의 필드 · origin · 값 · 상태 · 채널 · 근거 · 이벤트는 DB 함수가 단계 · 산출물 행에서 정한다(호출자가 넘긴 값을 믿지 않는다). 끝낸 초안 단계 · 산출물이 아니거나, 인용이 receipt 글에 없거나, 링크가 그 산출물을 가리키지 않으면 거절한다. Action 행을 먼저 잠가 같은 단계를 함께 쓰는 실행기 · sweep이 줄을 서고, 이미 붙었으면 `exists`, 버전이 어긋나면 아무것도 쓰지 않고 `conflict`(다시 읽어 3번까지, 실제 Postgres 경합은 `tests/pg/execution-receipts.test.ts`).
 - 진실 판정은 `artifact` 필드를 계산하지 않는다(`TRUTH_RULES.md` 2장 "구현"): 상태 · 기한 · 담당 · 내용 · 확인 이유 그대로라 초안은 완료가 아니고, 사용자가 끝낸 할 일도 다시 열지 않는다(A57). 실행 Claim은 origin `user`가 아니다(A55).
 - DB가 막는 것: 원문 · 인용 없는 실행 Claim(`claims_source_origin`), 실행 Claim으로 `artifact` 밖의 필드(`claims_execution_artifact`), 처리하지 않은 receipt 원문(`sources_execution_receipt`: 재처리 cron · 추출이 고르거나 `processing`으로 바꾸지 못한다), 클라이언트가 receipt 원문을 만들거나 고치거나 지우는 것(제한 정책, 읽기는 그대로). 기준 17 확인 쿼리: `select count(*) from claims where origin = 'execution' and (source_id is null or quote is null)` = 0.
@@ -226,7 +226,7 @@ step: `pending → prepared → calling → called | unknown_outcome | failed | 
 | sweep | `GET /api/cron/execution-sweep` (Vercel Cron 1분, `maxDuration` 60) | 아래 sweep. 단계를 직접 돌리지 않고 이어 갈 run마다 자기 호출을 보낸다 |
 | 멈추기 | `POST /api/v1/runs/:id/stop` | `stop_run`(5장). 이미 끝난 run은 그대로 200 |
 
-- `advance`: 끝나지 않은 첫 단계 → `pending`이면 `prepare_step` → `begin_call(단계, lease 소유자, 버전)` → `ok`면 효과 → 다음 단계를 먼저 붙이고(`append_step`, seq + 1) → `complete_internal_step`(called + 산출물 + 원가 + 정산). `begin_call`이 막으면(gate) 단계는 `prepared`에 남고 sweep이 다시 본다. lease 소유자는 함수 호출마다 새 값이다.
+- `advance`: 끝나지 않은 첫 단계 → `pending`이면 `prepare_step` → `begin_call(단계, lease 소유자, 버전)` → `ok`면 효과 → 다음 단계를 먼저 붙이고(`append_step`, seq + 1) → `complete_internal_step`(called + 산출물 + 원가 + 정산) → 초안 단계면 receipt(9장 `writeDraftReceipt`, 실패해도 단계는 끝낸 그대로). `begin_call`이 막으면(gate) 단계는 `prepared`에 남고 sweep이 다시 본다. lease 소유자는 함수 호출마다 새 값이다.
 - 단계 차례: 계획 → 초안 → 계획 → 초안, 상한 4(`limits.ts` `MAX_STEPS`). 초안을 끝낼 때 다음 계획 단계를 붙여 남은 조각을 다시 본다(그 계획이 또 초안을 붙일 자리가 있을 때만). 계획 단계의 결정(`plan.ts`)과 run 결과:
 
 | planner의 다음 단계 | run에 반영 | `outcome` |
@@ -241,7 +241,7 @@ step: `pending → prepared → calling → called | unknown_outcome | failed | 
 - 후속 계획(초안 뒤의 계획 단계)은 남은 조각을 다시 볼 뿐이라, 함수가 오류를 받으면(모델 · 자료 · 동의, 일시 오류 포함) 다시 하지 않고 이미 만든 초안으로 끝낸다
   (함수가 죽어 lease가 끝나는 경우는 다른 단계처럼 다시 준비되고, 세 번이면 SQL이 실패로 끝낸다): 계획 단계 `called`(`receipt.decision = 'done'`, `error`), run `done` · `draft_ready`. 초안을 받고 청구된 run을 실패로 두지 않는다.
 - run 예산(`budget_credits`)은 초안 한 건의 예약(20) 이상만 받는다(작으면 초안을 한 번도 부르지 못하고 지급으로도 풀리지 않는다). 초안 둘을 맡긴 run은 첫 초안 정산 뒤 남은 예산이 다시 20 이상이어야 둘째 초안을 부른다(아니면 `hold_reason = 'credit'`으로 기다리고, 사용자가 멈춘다). 운영자만 풀 수 있는 hold(`actor` · `blocked`)에 오래 머문 run을 정리하는 일은 U2 PR8 런북에 둔다.
-- 자료(`material.ts`): Action · 근거 인용 · 근거 원문을 service role로 읽고 user_id로 좁힌다. 원문의 서비스는 `sources.connection_id`가 가리키는 `connections.provider`에서 읽는다(sources에는 provider가 없다). 출처를 확인할 수 없는 원문(연결 행을 찾지 못함, 연결 없이 외부 id만 있음 = 연결이 지워진 연동 원문)은 근거째 뺀다. Slack 원문은 `context.ts`가 뺀다(provider · 지운 이유 · 링크).
+- 자료(`material.ts`): Action · 근거 인용 · 근거 원문을 service role로 읽고 user_id로 좁힌다. 원문의 서비스는 `sources.connection_id`가 가리키는 `connections.provider`에서 읽는다(sources에는 provider가 없다). 출처를 확인할 수 없는 원문(연결 행을 찾지 못함, 연결 없이 외부 id만 있음 = 연결이 지워진 연동 원문)은 근거째 뺀다. 실행 receipt(kind `execution`, 외부 id = 단계 id)는 출처가 분명한 내부 기록이라 넘기고 `context.ts`가 receipt로 빼고 센다(`excluded.receipts`, 9장). Slack 원문은 `context.ts`가 뺀다(provider · 지운 이유 · 링크).
 - 동의: 모델을 부르기 직전마다 다시 확인한다(`withConsentGate`). 처리 도중 철회하면 단계 · run을 실패(`error: consent`)로 끝낸다. 후속 계획에서 철회했으면 아래처럼 `draft_ready`로 끝낸다.
 
 **오류.** 내부 효과라 결과 불명 대신 다시 준비한다(3장 표).
@@ -263,11 +263,11 @@ step: `pending → prepared → calling → called | unknown_outcome | failed | 
 
 1. `sweep_expire`: lease가 끝난 `calling` → 내부 효과는 다시 준비(3장).
 2. 미확정 원가: 하루 안의 `unconfirmed` 행(generation id 있음) 20개(청구 대상 먼저)를 generation 조회(`generation.ts`)로 확정 → `reconcile_usage`(행마다 RPC 한 번, 12장). 하루가 지난 행은 운영자가 정한다(U2 PR8 런북).
-3. 보조 안전망: `credit_open_ended_runs(50)`이 고른 run마다 `release_run_credits` RPC 한 번(12장).
+3. 보조 안전망: `credit_open_ended_runs(50)`이 고른 run마다 `release_run_credits` RPC 한 번(12장). 이어서 receipt가 없는 끝낸 초안 단계 20개에 receipt를 이어 쓴다(`writeMissingReceipts`, 9장. 차단 스위치와 상관없이: 외부도 모델도 부르지 않는 기록이다). 결과의 `receipts` · `receipt_failed`.
 4. 이어 갈 run: 끝나지 않았고 부르는 중인 단계가 없는 run 20개(막히지 않은 run 먼저 오래된 순, 막힌 run은 뒤에 새것부터: 운영자만 풀 수 있는 오래된 hold가 쌓여도 지급으로 풀린 새 run이 굶지 않게)에 자기 호출. 다시 준비된 재시도 · 승인 대기가 여기서 이어진다(`begin_call`이 다시 본다). 막힌 run(`hold_reason` 있음)은 5분마다만(UTC 분이 5의 배수, `HELD_WAKE_EVERY_MINUTES`) 깨우고, 차단 스위치가 전체를 막고 있으면 아무도 깨우지 않는다(매분 함수 호출을 쓰지 않게). 실패한 단계가 있으면 sweep 로그를 오류로 남긴다.
 
-**기록.** 상태 · hold가 바뀌는 모든 쓰기는 같은 트랜잭션에서 `execution_events`를 남긴다(7장 트리거). 로그에는 id · 상태 · gate · 숫자만 남긴다(요청 · 원문 · 초안 · 모델의 이유는 남기지 않는다): `execution_step`(단계마다), `execution_sweep`(sweep마다), `execution_wake_failed` · `execution_advance_failed`.
+**기록.** 상태 · hold가 바뀌는 모든 쓰기는 같은 트랜잭션에서 `execution_events`를 남긴다(7장 트리거). 로그에는 id · 상태 · gate · 숫자만 남긴다(요청 · 원문 · 초안 · 모델의 이유는 남기지 않는다): `execution_step`(단계마다, 초안이면 `receipt`: written · exists · failed), `execution_sweep`(sweep마다), `execution_wake_failed` · `execution_advance_failed` · `execution_receipt_failed`.
 
 **과금 경계 (A37 · A44).** 할 일 직접 추가 · 수정 · 완료와 원문 처리는 실행 · 크레딧을 확인하지도 부르지도 않는다(`src/lib/execution/boundary.test.ts`, eslint `no-restricted-imports`).
 
-**테스트.** 실행기 × 운영 마이그레이션(PGlite, 가짜 LLM) `tests/db/execution-executor.test.ts`: 초안 1건의 산출물 · 원가 · 예약/정산/해제, 다시 물은 시도까지 더한 정산, 단계 상한, A39, 함수가 중간에 죽은 뒤 이어 가기와 늦은 응답(A18), 스위치를 끄면 세 입구 모두 `calling` 0(기준 9), 크레딧 부족 hold → 지급 뒤 이어 가기, 미확정 원가 보류(A46), 멈추기, Slack · 출처 모를 원문 제외. 순서 · 오류 처리 단위 테스트는 `src/lib/execution/*.test.ts`, route는 `src/app/api/v1/runs/**/route.test.ts` · `credits` · `cron/execution-*`.
+**테스트.** 실행기 × 운영 마이그레이션(PGlite, 가짜 LLM) `tests/db/execution-executor.test.ts`: 초안 1건의 산출물 · 원가 · 예약/정산/해제, 다시 물은 시도까지 더한 정산, 단계 상한, A39, 함수가 중간에 죽은 뒤 이어 가기와 늦은 응답(A18), 스위치를 끄면 세 입구 모두 `calling` 0(기준 9), 크레딧 부족 hold → 지급 뒤 이어 가기, 미확정 원가 보류(A46), 멈추기, Slack · 출처 모를 원문 제외, 초안마다 receipt · Action 그대로 · 다음 초안 자료에 receipt 없음 · sweep이 빠진 receipt를 한 번만 이어 씀(9장). 순서 · 오류 처리 단위 테스트는 `src/lib/execution/*.test.ts`, route는 `src/app/api/v1/runs/**/route.test.ts` · `credits` · `cron/execution-*`.
