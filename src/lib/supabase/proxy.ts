@@ -2,6 +2,7 @@ import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
 
 import { publicEnv } from "@/lib/env";
+import { getVerifiedClaims } from "@/lib/supabase/claims";
 
 // 로그인 없이 열 수 있는 경로
 const PUBLIC_PATHS = ["/login", "/auth"];
@@ -42,7 +43,7 @@ export async function updateSession(request: NextRequest) {
   );
 
   // createServerClient와 getClaims 사이에 다른 코드를 넣지 않는다 (세션 갱신이 꼬인다).
-  const { data } = await supabase.auth.getClaims();
+  const { data } = await getVerifiedClaims(supabase);
   const signedIn = Boolean(data?.claims);
 
   if (!signedIn && !isPublicPath(request.nextUrl.pathname) && !isApiPath(request.nextUrl.pathname)) {
