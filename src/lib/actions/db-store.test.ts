@@ -3,9 +3,12 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { AppendUpdate } from "@/lib/pipeline/merge";
 import type { Claim } from "@/lib/pipeline/resolve";
+import { taskClaims } from "@/lib/pipeline/structured";
+import { rankNow, type RankInput } from "./rank";
 import { SLACK_DISCONNECTED_QUOTE } from "@/lib/retention";
 
 import { SupabaseActionStore } from "./db-store";
+import { claimToRow } from "./rows";
 
 vi.mock("server-only", () => ({}));
 
@@ -38,6 +41,67 @@ function fakeAdmin(tables: Record<string, Row[]>, matches: { id: string; similar
 }
 
 const action = (id: string, title: string): Row => ({ id, title, counterpart: "민지", due_date: null, owner: "me" });
+
+function userClaim(id: string, field: Claim["field"], value: string, occurredAt = new Date("2026-10-06T01:00:00Z")): Claim {
+  return {
+    id,
+    field,
+    value,
+    occurredAt,
+    speakerRole: "me",
+    certainty: "firm",
+    directness: "first_hand",
+    audience: "shared",
+    origin: "user",
+    channel: "task",
+    state: "active",
+  };
+}
+
+/** write_action을 반영해 다음 append가 실제로 읽은 상태를 보게 하는 오프라인 DB fixture */
+function statefulAppendAdmin(initialClaims: Claim[], actionOver: Partial<Row> = {}) {
+  const writes: Record<string, unknown>[] = [];
+  const rows: Record<string, Row | Row[]> = {
+    actions: {
+      title: "견적서 정리",
+      confirm_reasons: [],
+      needs_confirmation: false,
+      version: 1,
+      status: "open",
+      started_at: null,
+      ...actionOver,
+    },
+    claims: initialClaims.map((claim) => claimToRow(claim, USER, "a1", { sourceId: null, quote: null })),
+  };
+  const admin = {
+    from: (table: string) => {
+      const q = {
+        select: () => q,
+        eq: () => q,
+        returns: () => q,
+        maybeSingle: () => q,
+        throwOnError: async () => ({ data: rows[table] }),
+      };
+      return q;
+    },
+    rpc: (_fn: string, params: Record<string, unknown>) => ({
+      throwOnError: async () => {
+        writes.push(params);
+        const current = rows.actions as Row;
+        rows.actions = { ...current, ...(params.p_action as Row), version: Number(current.version) + 1 };
+        (rows.claims as Row[]).push(...(params.p_claims as Row[]));
+        return { data: true };
+      },
+    }),
+  } as unknown as SupabaseClient;
+  return { admin, writes, rows };
+}
+
+const userClaimsFor = (owner: string, status: string): Claim[] => [
+  userClaim("scope-user", "scope", "견적서 정리"),
+  userClaim("owner-user", "owner", owner),
+  userClaim("status-user", "status", status),
+];
 
 describe("SupabaseActionStore.shortlist: 매칭 판정에 넘기는 최근 인용", () => {
   it("Slack 연결을 끊어 지운 자리 표시는 건너뛰고 남은 인용 중 가장 최근 것을 쓴다. 인용이 자리 표시뿐이면 null", async () => {
@@ -278,5 +342,132 @@ describe("SupabaseActionStore.append: 사용자의 확정 약속이 붙으면 �
         source_id: "s2",
       },
     ]);
+  });
+});
+
+describe("SupabaseActionStore.needsConfirmation: Review에 보이는 Action만 알린다", () => {
+  const occurredAt = new Date("2026-10-07T01:00:00Z");
+  const rankInput = (id: string, values: Row): RankInput => ({
+    id,
+    title: String(values.title),
+    owner: values.owner as RankInput["owner"],
+    status: values.status as RankInput["status"],
+    due_date: (values.due_date as string | null) ?? null,
+    counterpart: null,
+    needs_confirmation: Boolean(values.needs_confirmation),
+    started_at: null,
+    last_activity_at: occurredAt.toISOString(),
+  });
+  const reviewReason = ["판정 확인: NOT_MY_ACTION"];
+  const taskClaim = (field: Claim["field"], value: string) =>
+    taskClaims([{ field, value, quote: `${field}: ${value}` }], { editedByUser: false, occurredAt }, () => `task-${field}-${value}`);
+  const create = async (owner: string, confirmReasons: string[] = []) => {
+    const fixture = statefulAppendAdmin([]);
+    const store = new SupabaseActionStore(fixture.admin, USER);
+    const action = await store.create({
+      title: "견적서 정리",
+      counterpart: null,
+      embedding: null,
+      claims: userClaimsFor(owner, "open"),
+      evidence: [{ sourceId: "s1", quote: "확인할 일", role: "created" }],
+      confirmReasons,
+    });
+    return { fixture, store, action };
+  };
+
+  it("연결된 닫힌 할 일의 상대 담당자 수정은 Claim과 확인 이유를 남기되 알림 큐에는 넣지 않는다", async () => {
+    const fixture = statefulAppendAdmin(userClaimsFor("me", "done"), { status: "done" });
+    const store = new SupabaseActionStore(fixture.admin, USER);
+
+    await store.append("a1", { claims: taskClaim("owner", "other"), evidence: { sourceId: "s2", quote: "담당: Chan", role: "updated" } });
+
+    const params = fixture.writes[0];
+    const action = params.p_action as Row;
+    expect(params.p_claims).toMatchObject([{ field: "owner", value: "other", speaker_role: "counterpart", origin: "source" }]);
+    expect(action).toMatchObject({ owner: "me", status: "done", needs_confirmation: true, confirm_reasons: ["담당 확인"] });
+    expect(store.needsConfirmation.has("a1")).toBe(false);
+    expect(rankNow([rankInput("a1", action)], occurredAt).confirmations).toEqual([]);
+  });
+
+  it("같은 처리에서 확인 가능해졌다가 닫히면 그 ID를 알림 큐에서 뺀다", async () => {
+    const fixture = statefulAppendAdmin(userClaimsFor("me", "open"));
+    const store = new SupabaseActionStore(fixture.admin, USER);
+
+    await store.append("a1", { claims: taskClaim("owner", "other"), evidence: { sourceId: "s2", quote: "담당: Chan", role: "updated" } });
+    expect(store.needsConfirmation.has("a1")).toBe(true);
+    await store.append("a1", { claims: taskClaim("status", "done"), evidence: { sourceId: "s2", quote: "상태: Done", role: "completed" } });
+
+    expect(fixture.writes).toHaveLength(2);
+    expect(fixture.writes[0].p_action).toMatchObject({ status: "open", needs_confirmation: true });
+    expect(fixture.writes[1].p_action).toMatchObject({ status: "done", needs_confirmation: true });
+    expect(store.needsConfirmation.has("a1")).toBe(false);
+    expect(rankNow([rankInput("a1", fixture.writes[1].p_action as Row)], occurredAt).confirmations).toEqual([]);
+  });
+
+  it("확인이 남은 닫힌 Action이 다시 열리면 알린다", async () => {
+    const fixture = statefulAppendAdmin(userClaimsFor("me", "done"), {
+      confirm_reasons: reviewReason,
+      needs_confirmation: true,
+      status: "done",
+    });
+    const store = new SupabaseActionStore(fixture.admin, USER);
+
+    await store.append("a1", {
+      claims: [userClaim("reopened", "status", "open", occurredAt)],
+      evidence: { sourceId: "s2", quote: "다시 열기", role: "updated" },
+    });
+
+    expect(fixture.writes[0].p_action).toMatchObject({ owner: "me", status: "open", needs_confirmation: true, confirm_reasons: reviewReason });
+    expect(store.needsConfirmation.has("a1")).toBe(true);
+    expect(rankNow([rankInput("a1", fixture.writes[0].p_action as Row)], occurredAt).confirmations.map((a) => a.id)).toEqual(["a1"]);
+  });
+
+  it("확인이 남은 other-owner Action이 사용자 담당으로 바뀌면 알린다", async () => {
+    const fixture = statefulAppendAdmin(userClaimsFor("other", "open"), {
+      confirm_reasons: reviewReason,
+      needs_confirmation: true,
+      status: "open",
+    });
+    const store = new SupabaseActionStore(fixture.admin, USER);
+
+    await store.append("a1", {
+      claims: [userClaim("reassigned", "owner", "me", occurredAt)],
+      evidence: { sourceId: "s2", quote: "담당: me", role: "updated" },
+    });
+
+    expect(fixture.writes[0].p_action).toMatchObject({ owner: "me", status: "open", needs_confirmation: true, confirm_reasons: reviewReason });
+    expect(store.needsConfirmation.has("a1")).toBe(true);
+    expect(rankNow([rankInput("a1", fixture.writes[0].p_action as Row)], occurredAt).confirmations.map((a) => a.id)).toEqual(["a1"]);
+  });
+
+  it("새 unknown-owner Action은 Review 대상이고 other-owner Action은 아니다", async () => {
+    const { fixture: unknownFixture, store: unknownStore, action: unknown } = await create("unknown");
+    const unknownAction = unknownFixture.writes[0].p_action as Row;
+    expect(unknownAction).toMatchObject({ owner: "unknown", status: "open", needs_confirmation: true });
+    expect(unknownStore.needsConfirmation.has(unknown.id)).toBe(true);
+    expect(rankNow([rankInput(unknown.id, unknownAction)], occurredAt).confirmations.map((a) => a.id)).toEqual([unknown.id]);
+
+    const { fixture: otherFixture, store: otherStore, action: other } = await create("other", reviewReason);
+    const otherAction = otherFixture.writes[0].p_action as Row;
+    expect(otherAction).toMatchObject({ owner: "other", status: "open", needs_confirmation: true });
+    expect(otherStore.needsConfirmation.has(other.id)).toBe(false);
+    expect(rankNow([rankInput(other.id, otherAction)], occurredAt).confirmations).toEqual([]);
+  });
+
+  it("이미 열린 Review Action의 같은 확인은 새 알림을 만들지 않는다", async () => {
+    const fixture = statefulAppendAdmin(userClaimsFor("me", "open"), {
+      confirm_reasons: reviewReason,
+      needs_confirmation: true,
+    });
+    const store = new SupabaseActionStore(fixture.admin, USER);
+
+    await store.append("a1", {
+      claims: [userClaim("same-scope", "scope", "견적서 정리", occurredAt)],
+      evidence: { sourceId: "s2", quote: "같은 확인", role: "duplicate" },
+    });
+
+    expect(fixture.writes[0].p_action).toMatchObject({ owner: "me", status: "open", needs_confirmation: true, confirm_reasons: reviewReason });
+    expect(store.needsConfirmation.has("a1")).toBe(false);
+    expect(rankNow([rankInput("a1", fixture.writes[0].p_action as Row)], occurredAt).confirmations.map((a) => a.id)).toEqual(["a1"]);
   });
 });
