@@ -4,7 +4,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 
 import type { RateLimit } from "./rate-limit";
 
-export type RateLimitKind = "ask" | "missing_report" | "connection_start" | "action_create";
+export type RateLimitKind = "ask" | "missing_report" | "connection_start" | "action_create" | "run_create";
 
 /**
  * 한도에 찼으면 다시 할 수 있는 시각, 아니면 시도를 한 번 남기고 null (모델 · 외부 서비스를 부르기 전에 부른다).

@@ -459,6 +459,104 @@ export const legalResponseSchema = z.object({
 });
 export type LegalResponse = z.infer<typeof legalResponseSchema>;
 
+// ─── 실행 (U2, docs/EXECUTION.md) ───────────────────────────
+// Action 하나에 Taskforce가 내장 초안을 쓰는 run. 밖으로는 아무것도 보내지 않는다 (발송은 U6a).
+// 쓰기만 API로 한다: run 만들기 · 멈추기. run · 단계 · 산출물은 앱이 RLS로 읽는다 (execution_runs · execution_steps · execution_artifacts, 아래 스키마의 열).
+// 크레딧 원장 · 계정은 클라이언트가 읽지 못해 합계만 GET /api/v1/credits로 준다.
+// 기능 플래그(EXECUTION_ENABLED)가 꺼졌거나 실행 주체 허용 목록 밖이면 세 route 모두 404 not_found (존재를 드러내지 않는다).
+
+/** run 상태 (execution_runs.state). 끝 상태는 done · failed · stopped */
+export const runStateSchema = z.enum(["queued", "running", "waiting_approval", "done", "failed", "stopped"]);
+/** 실행기가 막힌 이유 (execution_runs.hold_reason): 차단 스위치 · 도구 / 실행 주체 / 보내는 연결 없음 / 크레딧 부족. 풀리면 sweep이 이어 간다 */
+export const runHoldReasonSchema = z.enum(["blocked", "actor", "needs_connection", "credit"]);
+/** 끝낸 결과 (execution_runs.outcome): 초안 있음 / 보내기는 연결이 필요(초안은 그대로) / 사용자에게 물을 것이 있음(질문은 계획 단계 receipt.question) */
+export const runOutcomeSchema = z.enum(["draft_ready", "needs_connection", "needs_input"]);
+
+export const runSummarySchema = z.object({
+  id: z.uuid(),
+  action_id: z.uuid(),
+  goal: z.literal("draft"),
+  state: runStateSchema,
+  hold_reason: runHoldReasonSchema.nullable(),
+  outcome: runOutcomeSchema.nullable(),
+  budget_credits: z.number().int().positive().nullable(),
+  created_at: z.string(),
+});
+export type RunSummary = z.infer<typeof runSummarySchema>;
+
+/**
+ * 단계 receipt (execution_steps.receipt). 글은 사용자에게 보일 것만 담는다.
+ * 계획: decision(다음 단계), needs_connection이면 capability, ask_user면 question. 초안: to(초안의 받는 사람, 모델이 자료에서 고른 이름 · 주소).
+ * 실패: error (consent: 처리 도중 동의 철회, rejected: AI 공급자가 확정적으로 거절, action_missing: Action이 지워짐, retries_exhausted: 다시 준비 한도)
+ */
+export const stepReceiptSchema = z.looseObject({
+  decision: z.enum(["draft", "needs_connection", "ask_user", "done"]).optional(),
+  capability: z.string().optional(),
+  question: z.string().optional(),
+  to: z.array(z.string()).optional(),
+  model: z.string().optional(),
+  prompt_version: z.string().optional(),
+  error: z.string().optional(),
+});
+
+export const stepSummarySchema = z.object({
+  id: z.uuid(),
+  run_id: z.uuid(),
+  seq: z.number().int().positive(),
+  kind: z.enum(["plan", "draft", "external"]),
+  state: z.enum(["pending", "prepared", "calling", "called", "unknown_outcome", "failed", "skipped"]),
+  attempt: z.number().int().nonnegative(),
+  receipt: stepReceiptSchema.nullable(),
+  created_at: z.string(),
+});
+export type StepSummary = z.infer<typeof stepSummarySchema>;
+
+/** 초안 (execution_artifacts). 보관 기간(retain_until)이 지나면 본문만 비운다(body = '', body_purged_at) */
+export const artifactSchema = z.object({
+  id: z.uuid(),
+  run_id: z.uuid(),
+  step_id: z.uuid(),
+  action_id: z.uuid(),
+  kind: z.literal("draft"),
+  title: z.string(),
+  body: z.string(),
+  model: z.string(),
+  prompt_version: z.string(),
+  retain_until: z.string(),
+  body_purged_at: z.string().nullable(),
+  created_at: z.string(),
+});
+export type Artifact = z.infer<typeof artifactSchema>;
+
+// POST /api/v1/runs — 열린 내 Action에 내장 초안 run을 만든다 → 202 { run }. 첫 단계(계획)는 응답 뒤에 돈다.
+// 차단 스위치가 전체를 막고 있어도 404. 외부 AI 처리 동의 전 409, 없거나 남의 · 열리지 않은 Action 404, 사용자별 10분에 10번을 넘으면 429.
+// 크레딧은 여기서 보지 않는다: 초안 단계가 부르기 직전에 예약하고, 모자라면 run이 hold_reason credit으로 기다린다.
+export const createRunRequestSchema = z.object({
+  action_id: z.uuid(),
+  goal: z.literal("draft"),
+  /** 사용자가 맡긴 일 (예: "견적 회신 메일 초안 써 줘") */
+  request: z.string().trim().min(1).max(2000),
+  /** 이 run이 쓸 수 있는 크레딧 상한 (없으면 잔액만 본다) */
+  budget_credits: z.number().int().positive().max(1_000_000).optional(),
+});
+export type CreateRunRequest = z.infer<typeof createRunRequestSchema>;
+export const createRunResponseSchema = z.object({ run: runSummarySchema });
+export type CreateRunResponse = z.infer<typeof createRunResponseSchema>;
+
+// POST /api/v1/runs/:id/stop — 다음 단계만 막는다 (이미 부르는 단계는 끝까지 결과를 받는다) → 200 { run }. 이미 끝난 run은 그대로 200.
+// 없거나 남의 run 404
+export const stopRunResponseSchema = z.object({ run: runSummarySchema });
+export type StopRunResponse = z.infer<typeof stopRunResponseSchema>;
+
+// GET /api/v1/credits — 내 크레딧 합계 (서버가 계정 행에서 계산). available = 지급 - 예약 - 사용, reserved = 아직 정산 · 해제하지 않은 예약.
+// rate_version: 지금 요율 (c3-v1: 1 크레딧 = $0.001). 지급 기록이 없으면 0 · 0
+export const creditsResponseSchema = z.object({
+  available: z.number().int().nonnegative(),
+  reserved: z.number().int().nonnegative(),
+  rate_version: z.string().nullable(),
+});
+export type CreditsResponse = z.infer<typeof creditsResponseSchema>;
+
 export const apiErrorCodeSchema = z.enum(["unauthorized", "invalid_request", "not_found", "conflict", "rate_limited", "internal_error"]);
 
 export const apiErrorSchema = z.object({

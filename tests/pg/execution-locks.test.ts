@@ -3,6 +3,8 @@ import { randomUUID } from "node:crypto";
 import pg from "pg";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
+import { isDeadlock, withDeadlockRetry } from "@/lib/execution/deadlock";
+
 import { supabaseSchemaScripts } from "../db/local-supabase";
 
 // 실행 코어의 잠금 경합 (docs/EXECUTION.md 6장 · 11장 한계). PGlite는 연결이 하나라 트랜잭션이 실제로 겹치지 않는다.
@@ -426,6 +428,48 @@ describe("크레딧 원장 잠금 경합 (실제 Postgres, 연결 둘)", () => {
       { kind: "release", credits: 20 },
     ]);
     expect(await account(user)).toEqual({ granted: 100, reserved: 0, settled: 30 });
+  });
+});
+
+// 실행기(U2 PR6)는 RPC를 교착(40P01)이면 다시 부른다 (src/lib/execution/deadlock.ts). 되돌려진 트랜잭션은 아무것도 commit하지 않았다.
+// 실제로 나는 교착: 같은 run의 재시도 begin_call(단계 for update → run 잠금)과 멈추기(run 잠금 → 해제 트리거의 원장 insert가
+// 단계 외래키 확인에 key share 잠금)가 서로를 기다린다 (docs/EXECUTION.md 12장)
+describe("교착 다시 시도 (U2 PR6 실행기, 실제 Postgres)", () => {
+  it("멈추기 vs 같은 run의 재시도 begin_call이 교착하면 되돌려진 쪽을 다시 불러 끝나고, 단계를 내보내면 예약이 남지 않는다", async () => {
+    const user = await userWithCredits(100);
+    const step = await preparedDraft(user, 40);
+    expect(await beginCall(setup, step, "fn-a")).toBe("ok"); // 예약 40
+    await setup.query("select public.mark_unknown($1, 'fn-a')", [step.stepId]); // 응답 없음 → 다시 준비 (예약은 재시도가 쓴다)
+    const { version } = (await setup.query<{ version: number }>("select version from public.execution_steps where id = $1", [step.stepId])).rows[0];
+
+    let stopCalls = 0;
+    await a.query("begin");
+    await a.query("select 1 from public.execution_steps where id = $1 for update", [step.stepId]); // begin_call의 첫 잠금 (단계)
+    const stop = withDeadlockRetry(() => {
+      stopCalls++;
+      return b.query("select public.stop_run($1, $2)", [user.userId, step.runId]);
+    });
+    await waitForLockWait(bPid); // 멈추기: run을 잠근 채 원장 insert의 단계 외래키 확인을 기다린다
+    let retryGate: string | null = null;
+    try {
+      retryGate = (await a.query<{ g: { gate: string } }>("select public.begin_call($1, 'fn-b', $2) as g", [step.stepId, version])).rows[0].g.gate;
+      await a.query("commit");
+    } catch (error) {
+      expect(isDeadlock(error)).toBe(true);
+      await a.query("rollback");
+    }
+    await stop;
+    // 둘 중 하나가 교착으로 되돌려졌다: 멈추기면 다시 불렀고, begin_call이면 그 트랜잭션이 rollback됐다
+    expect(stopCalls === 2 || retryGate === null).toBe(true);
+
+    const { rows } = await setup.query("select state from public.execution_runs where id = $1", [step.runId]);
+    expect(rows[0].state).toBe("stopped");
+    if (retryGate === "ok") {
+      // begin_call이 먼저 끝났으면 그 단계는 부르는 중이다: 결과를 받아 내보내면(여기서는 응답 없음) 트리거가 예약을 해제한다
+      expect(await stepState(step.stepId)).toBe("calling");
+      await setup.query("select public.mark_unknown($1, 'fn-b')", [step.stepId]);
+    }
+    expect(await account(user)).toEqual({ granted: 100, reserved: 0, settled: 0 });
   });
 });
 
