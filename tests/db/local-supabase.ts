@@ -14,10 +14,14 @@ const SUPABASE_STUB = `
   create function auth.uid() returns uuid language sql stable as $$
     select nullif(current_setting('request.jwt.claim.sub', true), '')::uuid
   $$;
-  create role anon nologin;
-  create role authenticated nologin;
-  create role service_role nologin bypassrls;
-  create role supabase_auth_admin nologin;
+  -- 역할은 클러스터 전체에 남는다: 실제 Postgres(tests/pg)에서 데이터베이스를 새로 만들어도 다시 만들지 않는다
+  do $$
+  begin
+    if not exists (select 1 from pg_roles where rolname = 'anon') then create role anon nologin; end if;
+    if not exists (select 1 from pg_roles where rolname = 'authenticated') then create role authenticated nologin; end if;
+    if not exists (select 1 from pg_roles where rolname = 'service_role') then create role service_role nologin bypassrls; end if;
+    if not exists (select 1 from pg_roles where rolname = 'supabase_auth_admin') then create role supabase_auth_admin nologin; end if;
+  end $$;
   grant usage on schema auth, extensions to anon, authenticated;
 `;
 
@@ -30,16 +34,16 @@ const SUPABASE_DEFAULT_GRANTS = `
   alter default privileges in schema public grant execute on functions to anon, authenticated, service_role;
 `;
 
+/** Supabase 흉내 + 모든 마이그레이션 (적용 순서대로). PGlite와 실제 Postgres(tests/pg)가 같은 SQL을 적용한다 */
+export async function supabaseSchemaScripts(): Promise<string[]> {
+  const files = (await readdir(MIGRATIONS_DIR)).filter((f) => f.endsWith(".sql")).sort();
+  const migrations = await Promise.all(files.map((file) => readFile(path.join(MIGRATIONS_DIR, file), "utf8")));
+  return [SUPABASE_STUB, SUPABASE_DEFAULT_GRANTS, ...migrations];
+}
+
 export async function createLocalSupabase(): Promise<PGlite> {
   const db = new PGlite({ extensions: { vector } });
-  await db.exec(SUPABASE_STUB);
-  await db.exec(SUPABASE_DEFAULT_GRANTS);
-
-  const files = (await readdir(MIGRATIONS_DIR)).filter((f) => f.endsWith(".sql")).sort();
-  for (const file of files) {
-    await db.exec(await readFile(path.join(MIGRATIONS_DIR, file), "utf8"));
-  }
-
+  for (const sql of await supabaseSchemaScripts()) await db.exec(sql);
   return db;
 }
 

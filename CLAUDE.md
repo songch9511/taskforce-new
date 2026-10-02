@@ -63,8 +63,9 @@ npm run dev        # 로컬 개발 서버
 npm run lint
 npm run typecheck  # 라우트 타입 생성 후 tsc
 npm run test       # 단위 테스트 + DB 마이그레이션·RLS 테스트 (PGlite)
+npm run test:pg    # 실제 Postgres 잠금 경합 테스트 (DATABASE_URL 필요, 없으면 실패하며 docker로 띄우는 법을 알려 준다)
 npm run eval       # 골든셋으로 추출 품질 평가
 npm run build
 ```
 
-커밋 전에 lint, typecheck, test, eval을 모두 통과시킨다 (CI와 같은 순서).
+커밋 전에 lint, typecheck, test, eval을 모두 통과시킨다 (CI와 같은 순서). `supabase/migrations/`나 `tests/pg/`를 바꿨으면 test:pg도 돌린다 (CI는 test 다음에 돌린다).

@@ -43,7 +43,7 @@ run: `queued → running ⇄ waiting_approval`, 끝 상태는 `done | failed | s
 | `queued → running` | 실행기 (모든 입구) | 첫 단계를 준비했다 |
 | `running → waiting_approval` | `begin_call` 트랜잭션 안에서 | 유효한 승인이 없고 Auto/Full 규칙도 충족하지 않는다 |
 | `waiting_approval → running` | route `POST /approvals/[id]`(승인 기록과 같은 트랜잭션), 또는 `begin_call`(sweep) | 지금 계획의 hash에 묶인 유효한 승인이 있다. 또는 같은 목적을 다른 단계가 이미 가져 단계를 건너뛰었다(승인을 기다릴 이유가 없다) |
-| `running → done` | 실행기 | 남은 단계가 없다 (모두 `called` · `skipped`) |
+| `running → done` | 실행기 | 남은 단계가 없다 (모두 `called` · `skipped`). 계획 단계를 끝낼 때는 planner가 다음 단계를 붙이지 않고 끝났다고 정했을 때(결과 `outcome`)만 |
 | `running → failed` | 실행기 | 단계가 `failed`다 |
 | 끝나지 않은 상태 → `stopped` | route `POST /runs/[id]/stop` | 사용자가 멈췄다 (5장) |
 
@@ -58,6 +58,7 @@ step: `pending → prepared → calling → called | unknown_outcome | failed | 
 | `calling → called` | lease를 가진 함수 | 공급자 응답을 받아 receipt를 저장했다 |
 | `calling → failed` | lease를 가진 함수 | 공급자가 확정적으로 거절했다 (예: 형식 오류 400) |
 | `calling → unknown_outcome` | lease를 가진 함수(시간 초과 · 연결 끊김), 또는 sweep(lease 만료) | 다시 부르지 않는다 |
+| `calling → prepared` (내부 효과만) | sweep(lease 만료), 또는 lease를 가진 함수(응답 없음) | 외부 상태를 바꾸지 않는 내부 효과(`effect_class='internal'`: 내장 계획 · 초안의 AI 호출, 1장 범위 밖)는 결과 불명 대신 다시 준비한다. `attempt + 1`, 같은 표식을 다시 쓴다. 다시 준비가 2번을 넘으면 `failed` · run `failed` |
 | `unknown_outcome → called` | sweep | readback 기간 안에 표식을 찾았다 |
 | `unknown_outcome → failed` | 사용자 | 사용자가 결과를 정했다. 다시 보내기는 새 회차다(4장) |
 
@@ -65,29 +66,30 @@ step: `pending → prepared → calling → called | unknown_outcome | failed | 
 - lease: `calling`으로 갈 때 소유자 id(함수 호출 id)와 만료 시각을 적는다. `calling → called | failed | unknown_outcome`은 lease 소유자만 쓴다(sweep의 만료 처리는 예외).
 - 시각: lease와 승인 만료는 DB 시각으로 잰다. 호출자가 넘긴 시각을 쓰지 않는다. lease 길이 = 실행 route의 `maxDuration` + 여유(fixture는 300 + 30초)라 살아 있는 함수의 lease는 만료되지 않는다. route의 `maxDuration`은 리터럴이라 같은 값인지 U2의 route 테스트가 본다(`src/lib/ai/deadline.ts`의 `INTERACTIVE_MAX_DURATION_S`와 같은 방식).
 - 결과: 함수 종료 · lease 만료 · 중복 실행에서도 같은 단계의 외부 호출은 한 번이다. 어느 지점에서 죽어도 DB만 보고 이어 간다. 메모리 checkpoint는 복구 수단이 아니다.
-- `unknown_outcome` 단계가 있는 run은 다음 단계로 가지 않는다. readback은 결과 불명이 된 뒤 정한 기간(fixture 24시간) 안에서만 sweep이 시도한다. 지나면 그대로 두고 사용자가 정한다.
+- `unknown_outcome` 단계가 있는 run은 다음 단계로 가지 않는다. `begin_call`은 앞 단계가 모두 `called` · `skipped`일 때만 다음 단계를 부른다. readback은 결과 불명이 된 뒤 정한 기간(fixture 24시간) 안에서만 sweep이 시도한다. 지나면 그대로 두고 사용자가 정한다.
 - `called`는 공급자가 받았다는 뜻이지 목적 달성(상대가 받음 · 읽음)이 아니다. HTTP 200, `isError: false`, "완료" 문장만으로 목적 달성으로 보지 않는다.
 
 ## 4. write-ahead intent와 표식
 
-- intent key = (Action id, 공급자, 도구, 목적, 정규화한 대상, 회차). 도구가 다르면 같은 목적 · 대상이라도 중복이 아니다. `intents.intent_key`는 DB unique다. 수동 버튼과 자동 trigger가 같은 목적을 동시에 시작해도 한 단계만 `calling`으로 간다. 다른 쪽은 `skipped`, receipt에 누구의 중복인지 적는다.
+- intent key = (Action id, 공급자, 도구, 목적, 정규화한 대상, 회차). 도구가 다르면 같은 목적 · 대상이라도 중복이 아니다. 내부 효과는 단계마다 하나다(외부 상태가 없어 다른 단계와 중복을 따지지 않는다). 같은 표식을 다시 쓰는 것은 내부 효과의 재시도뿐이다: 이미 자기 표식을 가진 외부 단계가 (계약 밖에서) 다시 `prepared`가 되어도 부르지 않고(`stale`), 앞 결과를 덮거나 run을 끝내지 않는다. `intents.intent_key`는 DB unique다. 수동 버튼과 자동 trigger가 같은 목적을 동시에 시작해도 한 단계만 `calling`으로 간다. 다른 쪽은 `skipped`, receipt에 누구의 중복인지 적는다.
 - 표식(marker)은 `intents` 행에 저장하는 임의 값이다(무작위 uuid, 또는 서버 비밀로 만든 intent key의 HMAC). 외부(메일 헤더 · 댓글 본문)에는 표식만 실린다. intent key는 DB 밖으로 나가지 않는다.
 - 순서:
   1. intent 행(표식) + `prepared → calling` + lease를 한 트랜잭션에 commit한다.
   2. 표식을 실어, `begin_call`이 검증해 돌려준 내용(수신자 · 본문 · 인자) 그대로 외부를 부른다. 그 전에 읽어 둔 내용으로 보내지 않는다.
   3. `called` + receipt를 commit한다. 받은 뒤 이 쓰기가 실패하면 다시 쓰고, 그래도 안 되면 오류를 낸다. 결과 불명으로 바꾸지 않는다(단계는 `calling`으로 남고 lease 만료 뒤 readback이 확인한다).
 - 1과 3 사이에 죽으면 sweep이 lease 만료를 보고 `unknown_outcome`으로 옮긴다. 다시 부르지 않는다. 그 뒤 sweep이 readback으로 표식을 찾는다.
-- 회차: 같은 회차의 재시도 · 중복 동기화는 새 회차가 아니다. 새 회차는 사용자의 명시적 다시 보내기, 또는 미리 허용한 후속 규칙의 다음 발생(서버가 결정적 occurrence key로 한 번만 발행)에서만 생긴다. 모델은 회차를 늘리지 못한다. 앞 효과가 `unknown_outcome`이면 새 회차로 우회하지 않는다.
+- 회차: 같은 회차의 재시도 · 중복 동기화는 새 회차가 아니다. 새 회차는 사용자의 명시적 다시 보내기, 또는 미리 허용한 후속 규칙의 다음 발생(서버가 결정적 occurrence key로 한 번만 발행)에서만 생긴다. 모델은 회차를 늘리지 못한다(planner가 붙이는 단계는 늘 1회차, `append_step`). 앞 효과가 `unknown_outcome`이면 새 회차로 우회하지 않는다.
 - 외부 호출 직전에 Action과 정책의 최신 버전을 다시 읽는다. 이미 외부에서 끝났으면(readback으로 확인) 부르지 않고 관찰로 반영한다.
 
 ## 5. 승인
 
-- 승인 hash = (도구, 보내는 연결(계정, 단계에 묶임), 인자, 수신자, 본문 hash, 원문 revision, 정책 버전, 만료). 만료는 초 단위로 자르고 UTC로 직렬화한다(앱의 Date는 밀리초라 마이크로초가 사라진다. 세션 시간대와 상관없이 같은 값).
+- 승인 hash = (공급자, 도구, 효과 종류, 보내는 연결(계정, 단계에 묶임), 인자, 수신자, 본문 hash, 원문 revision, 정책 버전, 만료). 만료는 초 단위로 자르고 UTC로 직렬화한다(앱의 Date는 밀리초라 마이크로초가 사라진다. 세션 시간대와 상관없이 같은 값).
 - 정규화 규칙은 하나다: 주소는 앞뒤 공백 제거 · 소문자 · 중복 제거 · 정렬. 승인 hash · intent key · Auto 규칙 비교가 같은 함수를 쓴다.
 - 앱은 보여 준 계획의 hash를 승인과 함께 보낸다. 서버는 지금 계획으로 hash를 다시 계산해 같을 때만 승인을 기록한다. 보여 준 뒤 바뀐 계획은 승인되지 않는다.
 - `begin_call`은 지금 단계로 hash를 다시 계산해 승인 행과 같을 때만 통과시킨다. 하나라도 바뀌면 기존 승인으로는 실행 0이다.
 - 유효한 승인이 없는 단계는 `begin_call`이 Auto/Full 규칙을 지금 다시 확인한다(준비 단계의 표시를 믿지 않는다): 모드가 `auto` · `full`, 모든 수신자의 출처가 사용자, 모든 주소가 규칙 안, 규칙의 정책 버전이 준비할 때와 같음. 하나라도 아니거나 모르면(NULL) 승인 대기다. `pending`이 아닌 단계에는 준비할 때의 정책 버전이 반드시 있다(DB 제약).
-- 철회 · 만료된 승인은 무효다. 철회 뒤에는 이어서 실행(resume)해도 부르지 않는다.
+- 승인 · Auto/Full 규칙은 외부 효과에만 적용한다. 내부 효과(내장 계획 · 초안의 AI 호출)는 승인 없이 부른다. 수신자가 없는 외부 단계는 Auto/Full 규칙을 충족하지 못한다. 승인은 아직 부르지 않은 단계(`pending` · `prepared`)에만 기록한다.
+- 철회 · 만료된 승인은 무효다. 철회 뒤에는 이어서 실행(resume)해도 부르지 않는다. 철회는 단계 행을 먼저 잠가 진행 중인 `begin_call`과 줄을 선다: `begin_call`이 먼저 commit하면 철회는 단계가 이미 `calling`이라고 알린다(철회가 늦었다).
 - Review의 "내 일 맞음" 확인과 AI 처리 동의는 실행 승인이 아니다.
 - 중단(stop)은 다음 단계만 막는다. 이미 `calling`인 호출은 되돌릴 수 없으므로 결과 확인(응답 · readback)을 끝까지 한다. 중단 요청을 받았다는 것이 원격 작업이 멈췄다는 증거는 아니다. `begin_call`은 run이 `stopped`면 거절한다.
 
@@ -95,7 +97,7 @@ step: `pending → prepared → calling → called | unknown_outcome | failed | 
 
 - DB 플래그 세 층: 전체(`global`) / 공급자별(`provider`, 예: `gmail`) / 모드별(`mode`: `manual` · `auto` · `full`). `auto`와 `full`을 끄면 "Manual만"이다.
 - `begin_call`은 RPC 하나 = READ COMMITTED 트랜잭션 하나이고, 외부 호출 전에 commit된다. 외부 호출은 그 트랜잭션 안에 없다.
-- 스위치는 그 트랜잭션 안에서, `prepared → calling`과 함께 확인한다. 해당 행 셋(전체 · 그 공급자 · 그 모드)을 `for share`로 잠그고 읽는다. 끄는 쪽의 `update`는 진행 중인 전이가 끝날 때까지 기다리고, 끈 뒤에 commit되는 전이는 없다. 잠금 순서는 step → run → 정책 → 스위치다.
+- 스위치는 그 트랜잭션 안에서, `prepared → calling`과 함께 확인한다. 해당 행 셋(전체 · 그 공급자 · 그 모드)을 `for share`로 잠그고 읽는다. 끄는 쪽의 `update`는 진행 중인 전이가 끝날 때까지 기다리고, 끈 뒤에 commit되는 전이는 없다. 잠금 순서는 step → run → 정책 → 실행 주체 → 스위치 → 도구 · 수신자 허용 목록(7장)이다.
 - 모든 입구(route · 자기 호출 · sweep)가 같은 `begin_call`을 지난다. 입구마다 실제로 그런지는 U2에서 route 테스트로 확인한다.
 - 행이 없는 공급자 · 모드는 막힌 것으로 본다(닫힌 쪽). 새 공급자는 행을 추가해야 실행된다.
 - 막힌 단계는 실패가 아니다. `prepared`로 남고, 다시 켜면 sweep이 이어 간다. 이미 `calling`인 호출은 끝까지 결과를 받는다.
@@ -113,6 +115,8 @@ step: `pending → prepared → calling → called | unknown_outcome | failed | 
 - 출처는 수신자마다 둔다: `user` · `source`(원문) · `tool_output` · `model`(모델이 제안). 사용자가 정한 것만 `user`다.
 - 하나라도 `user`가 아니면 그 단계는 승인을 받는다. 규칙에 있는 주소라도 마찬가지다.
 - 정책 평가(준비 단계)가 승인 필요로 표시하고, `begin_call`이 출처 · 규칙을 다시 확인한다(5장). 준비 단계가 틀려도 막힌다.
+- 출처는 서버 코드가 주소가 어디서 왔는지 보고 정한다. 모델 출력의 출처 값을 그대로 받지 않는다(DB 제약은 형식만 확인한다).
+- 외부 단계의 수신자 · 대상은 하나 이상이고 모두 허용 목록 안이어야 한다. 대상을 인자에만 적은 외부 단계는 막는다(Notion · GitHub 쓰기 대상은 U6b에서 수신자 항목으로 둔다). 보내는 연결이 없는 외부 단계도 막는다(`needs_connection`). 허용 목록은 외부 효과에만 적용한다.
 
 ## 8. 효과별 계약표
 
@@ -148,7 +152,7 @@ step: `pending → prepared → calling → called | unknown_outcome | failed | 
 
 ## 11. A29 fixture (실행 가능한 명세)
 
-`tests/execution/a29.test.ts`, 드라이버 `tests/execution/driver.ts`. 테스트 안에서만 만드는 최소 스키마(policies · runs · steps · approvals · intents · execution_controls + 외부 효과를 기록하는 가짜 공급자 원장)와 SQL 함수(정규화 · 정책 · 승인 hash · `prepare_step` · `approve_step` · `begin_call`, 계획 수정 trigger)다. 마이그레이션이 아니고, U2가 만들 실행기도 아니다. "함수가 죽는다" = Driver 인스턴스를 버리고 새로 만든다. 시각은 DB 시각이다. 운영의 `db_now()`는 `now()`뿐이고, fixture의 `app.now`는 테스트 시계다(세션 설정은 풀링된 연결에 남을 수 있어 운영에서 쓰지 않는다).
+`tests/execution/a29.test.ts`, 드라이버 `tests/execution/driver.ts`. 운영 마이그레이션 `supabase/migrations/20261021000000_execution_core.sql`(U2 PR3)을 PGlite에 그대로 적용해 시험한다. fixture만의 SQL은 없어서 명세와 운영 SQL이 어긋나지 않는다. 테스트 안에서만 더하는 것: 테스트 시계, 외부 효과를 기록하는 가짜 공급자 원장(`fake.ledger`)과 시험 전용 외부 도구(`fake.send` · `fake.reply`), 모두 켠 스위치, 허용 목록 안의 시험 사용자 · 주소. 드라이버는 U2가 만들 실행기가 아니다. "함수가 죽는다" = Driver 인스턴스를 버리고 새로 만든다. 시각은 DB 시각이다. 운영의 `db_now()`는 `now()`뿐이고, 테스트는 마이그레이션을 적용한 뒤 테스트 안에서만 `app.now`를 읽는 판으로 바꾼다(세션 설정은 풀링된 연결에 남을 수 있어 운영에서 쓰지 않는다).
 
 | # | 사례 | 결과 |
 |---|---|---|
@@ -166,5 +170,8 @@ step: `pending → prepared → calling → called | unknown_outcome | failed | 
 | 7 | 준비 단계 표시가 틀림 / 준비 뒤 규칙 비움 · 정책 버전 올림 / 준비 때 정책 버전 NULL | `begin_call`이 막음, 효과 0 (NULL은 DB 제약도 막음) |
 | — | 중단 | 진행 중 호출은 결과를 받고 다음 단계 0. 부르기 직전 중단도 0 |
 | — | 받은 뒤 receipt 저장 실패 | 다시 써서 `called`. 계속 실패하면 오류, `calling`에 남아 lease 만료 뒤 readback으로 `called` |
+| — | 내부 효과(AI 호출)에서 lease 만료 · 응답 없음 | 승인 없이 부른다(Manual이어도). 결과 불명 대신 같은 표식으로 다시 준비, 다시 준비가 2번을 넘으면 `failed` · run `failed` |
+| — | 실행 주체 · 수신자 허용 목록 밖 / 목록 밖 도구 · 외부 도구를 내부 효과로 적은 단계 / 수신자 없는 외부 단계(대상을 인자에만) / 보내는 연결 없음 | 효과 0(승인이 있어도), 단계는 `prepared`, run에 막힌 이유(`hold_reason` `actor` · `blocked` · `needs_connection`). 목록에 넣으면 이어 가서 1 |
+| — | 이미 보낸 외부 단계를 `prepared`로 되돌림 / 앞 단계가 결과 불명인데 뒤 단계를 직접 부름 / 승인 뒤 공급자만 바뀜 | 효과 추가 0 (`stale`, 앞 receipt 그대로 / `stale` / 승인 대기) |
 
-한계: PGlite는 연결이 하나라 트랜잭션이 실제로 겹치지 않는다. 동시성은 트랜잭션 경계(단계를 읽은 뒤 · `calling` commit 뒤)에 끼어드는 방식으로 보인다. `for share` · `for no key update` 잠금과 동시 commit 경합은 U2에서 실제 Postgres(연결 둘)로 다시 시험한다. 허용 목록(7장 1 · 2)과 실행 이벤트 행은 fixture에 없다(U2 · U6a).
+한계: PGlite는 연결이 하나라 트랜잭션이 실제로 겹치지 않는다. 동시성은 트랜잭션 경계(단계를 읽은 뒤 · `calling` commit 뒤)에 끼어드는 방식으로 보인다. 잠금과 동시 commit 경합은 `tests/pg/execution-locks.test.ts`가 실제 Postgres에 연결 둘을 열어 시험한다(`npm run test:pg`, CI는 postgres service): 스위치 끄기 · 실행 주체 · 수신자 허용 목록 · 도구 목록 지우기 vs `begin_call`(양쪽 순서), 같은 intent 동시 `begin_call`(commit · rollback), 같은 단계 동시 `begin_call`, 승인 철회 vs `begin_call`(양쪽 순서). 운영 쪽 모양(처음 상태 · run 만들기 · 실행 이벤트 · 권한)은 `tests/db/execution-core.test.ts` · `execution-rls.test.ts`가 본다.
