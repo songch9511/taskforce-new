@@ -20,6 +20,13 @@
 | 관문 | 계획 생성(`completeJson` + discriminated union, ZDR 공급자) 통과 · 원격 MCP(Linear 바로 · GitHub 앱 등록 · Figma는 REST 읽기만) · Vercel Pro(함수 최대 800초, cron 최소 1분) · Gmail 헤더(`X-Taskforce-Intent` 보존, 클라이언트 Message-ID는 Gmail이 바꿈). 자세한 내용은 EXECUTION.md 10장 |
 | 연결 플래그(운영) | `GMAIL_CONNECT_ENABLED=true`, Slack · Google 비어 있음. Gmail은 프로젝트 B Testing이라 테스트 사용자만 연결된다 |
 
+### 2026-10-02 U2 서버 진행 (KST)
+
+- **병합(= 운영 배포):** #69 원칙 1 · 2와 PRD 지표 4 문서, #70 W4 처리 실패 가시화 · 지표 4 분리 · 발견 원가(마이그레이션 `20261020000000`), #71 실행 코어 스키마(`20261021000000`), #72 AI 원가 포착 · 실행 계획 · 내장 초안 프롬프트 · eval E1 · E2, #73 산출물 · 크레딧 원장 · AI 원가 기록(`20261022000000`).
+- **병합 전:** #74 TS 실행기 · `/api/v1/runs` · 멈추기 · 크레딧 route · 1분 sweep · `EXECUTION_ENABLED` 플래그, receipt → Claim/Evidence(`20261023000000`), 운영(런북 9장 · `/admin/metrics` 실행 카드 · 실행 산출물 본문 보관 정리).
+- **닫힌 채로 나간다:** 플래그 기본 꺼짐, 차단 스위치 시드는 `global` 막힘 · auto · full 막힘, 실행 주체 시드 없음. 켜는 순서(줄마다 승인) · 되돌리기 · 점검 쿼리 · U2 완료 확인은 [런북 9장](go-live/runbook.md). 운영 DB의 마이그레이션 적용 상태는 이 문서에서 확인하지 않았다: 런북 9-6 2번의 읽기 쿼리로 본다.
+- **켜기 전 남은 결정:** 처리방침 개정(D9a-1: 내장 초안 · 산출물 · 크레딧 원장 · AI 원가, 산출물 보관 기간. 지금은 열 기본값 90일).
+
 ### 2026-10-01 머지·운영 스키마 적용 (KST)
 
 사용자가 기존 작업 머지를 승인했고, #60의 운영 DB 변경 두 건은 별도 질문에 명시적으로 승인했다. PR 최신 HEAD가 기존 검토 커밋과 같고 필수 `check`·`apple`이 SUCCESS임을 확인한 뒤 저장소 방식(`--merge`, HEAD 고정)으로 머지했다.
@@ -192,6 +199,7 @@
 
 ### W4. 처리 실패가 사용자에게 보이지 않는다 (급하지 않음)
 
+- **상태 (2026-10-02, #70 병합):** 서버 쪽은 보인다. 실패로 닫은 원문은 까닭 코드 `sources.processing_error_code`(`ai_quota` · `ai_timeout` · `ai_output` · `consent` · `expired` · `internal`)를 남기고, 시도를 다 쓰거나 창이 지나거나 동의를 철회해 닫으면 지표 이벤트 `source_failed`(서비스만, 원문 없음)를 남긴다. `GET /api/v1/now`는 하루 안의 실패를 `failed_sources`(개수 · 마지막 시각 · 까닭)로 돌려주고, `/admin/metrics` 발견 원가 카드에 실패로 닫은 수가 서비스별로 나온다. 남은 것: 앱이 "All caught up" 대신 실패를 보여 주는 화면(U1 셸). 아래는 그 전 기록이다.
 - 운영에서 실패는 2/294라 지금은 드물다. 그래도 실패한 원문은 앱에 보이지 않고(연결이 있고 목록이 비면 "All caught up"), `metric_events`에 처리 실패 이벤트도 없다. 재시도는 첫 처리를 포함해 3번까지, 하루 안에서만 한다 (`sources/retry.ts`).
 - 새 운영 키는 하루 $5다. 첫 동기화(Notion · Gmail 각 14일치)가 한꺼번에 들어오면 한도에 걸릴 수 있다 (추정).
 
