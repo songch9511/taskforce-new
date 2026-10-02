@@ -2,7 +2,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { describe, expect, it, vi } from "vitest";
 
 import type { AppendUpdate } from "@/lib/pipeline/merge";
-import type { Claim } from "@/lib/pipeline/resolve";
+import type { Claim, ClaimField } from "@/lib/pipeline/resolve";
 import { taskClaims } from "@/lib/pipeline/structured";
 import { rankNow, type RankInput } from "./rank";
 import { SLACK_DISCONNECTED_QUOTE } from "@/lib/retention";
@@ -128,6 +128,23 @@ describe("SupabaseActionStore.shortlist: 매칭 판정에 넘기는 최근 인�
       [KEPT, "금요일까지 견적서 보내드릴게요"],
       [REMOVED, null],
     ]);
+  });
+});
+
+describe("SupabaseActionStore.shortlist: 실행 receipt", () => {
+  it("나중에 붙은 실행 receipt(초안 저장)는 인용으로 넘기지 않고 그 전 원문 인용을 쓴다", async () => {
+    const admin = fakeAdmin(
+      {
+        actions: [action(KEPT, "견적서 보내기")],
+        evidence: [
+          { action_id: KEPT, quote: "금요일까지 견적서 보내드릴게요", role: "created", created_at: "2026-09-20T01:00:00Z" },
+          { action_id: KEPT, quote: "초안 저장: 견적서 송부 메일", role: "executed", created_at: "2026-09-22T01:00:00Z" },
+        ],
+      },
+      [{ id: KEPT, similarity: 0.9 }],
+    );
+    const shortlist = await new SupabaseActionStore(admin, USER).shortlist([1, 0, 0]);
+    expect(shortlist.map((a) => a.latestQuote)).toEqual(["금요일까지 견적서 보내드릴게요"]);
   });
 });
 
@@ -359,7 +376,7 @@ describe("SupabaseActionStore.needsConfirmation: Review에 보이는 Action만 �
     last_activity_at: occurredAt.toISOString(),
   });
   const reviewReason = ["판정 확인: NOT_MY_ACTION"];
-  const taskClaim = (field: Claim["field"], value: string) =>
+  const taskClaim = (field: ClaimField, value: string) =>
     taskClaims([{ field, value, quote: `${field}: ${value}` }], { editedByUser: false, occurredAt }, () => `task-${field}-${value}`);
   const create = async (owner: string, confirmReasons: string[] = []) => {
     const fixture = statefulAppendAdmin([]);

@@ -112,6 +112,7 @@ extension SourceKind {
         case .doc: "문서"
         case .note: "메모"
         case .task: "할 일 도구"
+        case .execution: "실행 기록"
         }
     }
 
@@ -124,6 +125,7 @@ extension SourceKind {
         case .doc: "doc.text"
         case .note: "note.text"
         case .task: "checklist"
+        case .execution: "doc.badge.gearshape"
         }
     }
 }

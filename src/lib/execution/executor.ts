@@ -5,6 +5,7 @@ import type { CompleteJson } from "@/lib/pipeline/extract";
 import { draftEffect } from "./effects/draft";
 import { planEffect } from "./effects/plan";
 import { ExecutionInputError } from "./material";
+import { ReceiptWriteError, writeDraftReceipt } from "./receipt";
 import { OPEN_RUN_STATES, type EffectInput, type EffectResult, type ExecutionStore, type RunRow, type StepRow } from "./types";
 
 // 실행기 (B2, docs/EXECUTION.md 2 · 3 · 13장). advance(runId) 한 번 = 단계 하나. 모든 상태는 DB에 있어 함수가 어디서 죽어도 DB만 보고 이어 간다.
@@ -13,6 +14,7 @@ import { OPEN_RUN_STATES, type EffectInput, type EffectResult, type ExecutionSto
 // 모든 입구(route의 after() · 자기 호출 · sweep)가 이 함수 하나를 지나고, 부르기 전 판단은 begin_call 하나가 한다.
 // 외부 효과는 없다: 외부 단계(kind external)는 부르지 않고 그대로 둔다 (발송은 U6a).
 // 원가: 받은 시도는 어느 길로 끝나든 남긴다 (끝내면 complete_internal_step, 그 밖은 record_usage를 단계를 내보내기 전에).
+// receipt: 초안 단계를 끝내면 receipt(원문 · Claim · 근거 · 이벤트)를 Action에 붙인다(receipt.ts, EXECUTION 9장). Action은 바꾸지 않는다.
 // 로그에는 id · 상태 · gate만 남긴다 (요청 · 원문 · 초안 · 모델의 이유는 남기지 않는다).
 
 export type ExecutorDeps = {
@@ -133,9 +135,32 @@ async function runEffect(deps: ExecutorDeps, run: RunRow, step: StepRow, args: R
     if (!completed.retried) return lost(store, run, step, effect.attempts);
     await recordUsage(store, step.id, effect.attempts.filter((a) => a.generationId !== null));
   }
+  // 다시 쓴 쪽이 false인 경우(앞 쓰기가 commit하고 응답만 잃음)도 부른다: 단계가 끝낸 초안이 아니면 receipt.ts가 쓰지 않는다(not_found)
+  const receipt = step.kind === "draft" ? await attachReceipt(store, run, step) : undefined;
   if (effect.finish) await store.finishRun(run.id);
-  log({ event: "execution_step", run: run.id, step: step.id, kind: step.kind, status: "completed", outcome: effect.outcome, next });
+  log({ event: "execution_step", run: run.id, step: step.id, kind: step.kind, status: "completed", outcome: effect.outcome, next, ...(receipt ? { receipt } : {}) });
   return { status: "completed", step: step.id, next };
+}
+
+/**
+ * 끝낸 초안 단계의 receipt (receipt.ts writeDraftReceipt, 다시 불러도 한 번). 실패해도 단계 · run은 그대로 둔다:
+ * 단계 id와 까닭만 로그에 남기고 sweep 보조 안전망(writeMissingReceipts)이 이어 쓴다
+ */
+async function attachReceipt(store: ExecutionStore, run: RunRow, step: StepRow): Promise<"written" | "exists" | "failed"> {
+  try {
+    return await writeDraftReceipt(store, step.id);
+  } catch (error) {
+    const reason = error instanceof ReceiptWriteError ? error.code : errorName(error);
+    console.error(JSON.stringify({ event: "execution_receipt_failed", run: run.id, step: step.id, reason, ...sqlState(error) }));
+    return "failed";
+  }
+}
+
+/** DB 오류의 SQLSTATE (교착 40P01 · 단계 상태 P0002 · 잠금 시간 초과 55P03 등을 가른다). 사용자 글이 없는 코드뿐이다 */
+function sqlState(error: unknown): { code?: string } {
+  if (error instanceof ReceiptWriteError) return {};
+  const code = (error as { code?: unknown } | null)?.code;
+  return typeof code === "string" ? { code } : {};
 }
 
 /** lease를 잃은 뒤 받은 응답: 결과를 버리고 원가만 플랫폼 원가로 남긴다 (청구 · 단계 상태는 그대로) */

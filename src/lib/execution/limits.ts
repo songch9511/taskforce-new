@@ -38,6 +38,9 @@ export const SWEEP_WAKE_LIMIT = 20;
  */
 export const HELD_WAKE_EVERY_MINUTES = 5;
 
+/** sweep 한 번에 receipt를 이어 쓰는 끝낸 초안 단계 수 (보조 안전망, receipt.ts writeMissingReceipts). 단계마다 읽기 몇 번 + RPC 한 번 */
+export const SWEEP_RECEIPT_LIMIT = 20;
+
 /** sweep 한 번에 generation 조회로 확정하는 미확정 원가 행 수 */
 export const SWEEP_RECONCILE_LIMIT = 20;
 

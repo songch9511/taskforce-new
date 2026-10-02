@@ -11,6 +11,8 @@ import type { ExecutionStore, RunRow } from "./types";
 //   - 연결이 있는데 그 연결 행을 찾지 못함 (읽는 사이에 연결을 끊음)
 //   - 연결 없이 외부 항목 id(external_id)만 있음: 연동으로 들어왔는데 연결 행이 지워졌다 (Slack일 수 있다)
 // 연결도 외부 id도 없는 원문은 사용자가 직접 넣은 원문이다 (POST /api/v1/sources). 남은 Slack 판단(지운 이유 · 링크)은 context.ts가 한다.
+// 실행 receipt(kind execution, U2 PR7)는 연결 없이 외부 id(단계 id)를 갖지만 출처가 분명한 내부 기록이다: 출처 모름으로 빼지 않고 넘겨
+// context.ts가 receipt로 빼고 센다(excluded.receipts).
 
 export type ActionRow = { title: string; status: ExecutionAction["status"]; owner: ExecutionAction["owner"]; due_date: string | null; counterpart: string | null };
 export type EvidenceRow = { source_id: string; quote: string };
@@ -37,6 +39,7 @@ function participantsOf(value: unknown): Participants | null {
 
 /** 원문을 가져온 서비스. undefined면 출처를 확인할 수 없다 (뺀다), null이면 직접 넣은 원문 */
 function providerOf(source: SourceRow, providers: Map<string, string>): string | null | undefined {
+  if (source.kind === "execution") return null;
   if (source.connection_id) return providers.get(source.connection_id);
   return source.external_id ? undefined : null;
 }

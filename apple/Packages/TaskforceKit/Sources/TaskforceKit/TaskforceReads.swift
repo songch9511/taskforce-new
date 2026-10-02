@@ -65,10 +65,10 @@ public struct TaskforceReads: Sendable {
         )
     }
 
-    /// 최근 원문. 할 일 도구 스냅샷(`task`)은 읽을 글이 아니라 뺀다.
+    /// 최근 원문. 할 일 도구 스냅샷(`task`)과 실행 receipt(`execution`)는 읽을 글이 아니라 뺀다.
     public func recentSources(limit: Int = 50) async throws -> [SourceSummary] {
         try await rows(
-            supabase.from("sources").select(SourceSummary.columns).neq("kind", value: "task")
+            supabase.from("sources").select(SourceSummary.columns).neq("kind", value: "task").neq("kind", value: SourceKind.execution.rawValue)
                 .order("occurred_at", ascending: false).limit(limit)
         )
     }

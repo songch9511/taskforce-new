@@ -130,11 +130,14 @@ export class SupabaseActionStore implements ActionStore, EmbeddingBackfillStore 
 
     const [{ data: actions }, { data: evidence }] = await Promise.all([
       this.admin.from("actions").select("id, title, counterpart, due_date, owner").eq("user_id", this.userId).in("id", ids).throwOnError(),
-      this.admin.from("evidence").select("action_id, quote, created_at").eq("user_id", this.userId).in("action_id", ids).order("created_at").throwOnError(),
+      this.admin.from("evidence").select("action_id, quote, role, created_at").eq("user_id", this.userId).in("action_id", ids).order("created_at").throwOnError(),
     ]);
-    // 빈 인용 · Slack 연결을 끊어 지운 인용 자리 표시는 근거가 아니다 (latest_quote에는 그 전 인용을 넘긴다)
+    // 빈 인용 · Slack 연결을 끊어 지운 인용 자리 표시는 근거가 아니다 (latest_quote에는 그 전 인용을 넘긴다).
+    // 실행 receipt(role executed, "초안 저장: <모델이 쓴 제목>")도 원문 인용이 아니라 매칭 판정에 넘기지 않는다
     const latest = new Map(
-      (evidence ?? []).filter((e) => e.quote && e.quote !== SLACK_DISCONNECTED_QUOTE).map((e) => [e.action_id as string, e.quote as string]),
+      (evidence ?? [])
+        .filter((e) => e.quote && e.quote !== SLACK_DISCONNECTED_QUOTE && e.role !== "executed")
+        .map((e) => [e.action_id as string, e.quote as string]),
     );
     return ids.flatMap((id) => {
       const a = (actions ?? []).find((row) => row.id === id);

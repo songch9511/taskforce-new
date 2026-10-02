@@ -11,7 +11,7 @@ export type HandoffEvidence = {
   quote: string;
   /** 원문에서 인용 앞뒤 몇 줄 (누가 무엇을 요청했는지). 못 찾으면 null */
   context: string | null;
-  role: "created" | "updated" | "completed" | "duplicate";
+  role: "created" | "updated" | "completed" | "duplicate" | "executed";
   source: { kind: string; title: string | null; occurredAt: string; url: string | null };
 };
 
@@ -44,6 +44,7 @@ const KIND_LABELS: Record<string, string> = {
   doc: "문서",
   note: "메모",
   task: "할 일 DB",
+  execution: "실행 기록",
 };
 const OWNER_LABELS: Record<ActionOwner, string> = { me: "나", other: "다른 사람", unknown: "아직 모름" };
 const STATUS_LABELS: Record<ActionStatus, string> = { open: "진행 전 · 진행 중", done: "완료", dropped: "취소됨" };

@@ -39,6 +39,7 @@ public enum SourceService: Hashable, Sendable {
             case .doc: "Document"
             case .note: "Note"
             case .task: "Task"
+            case .execution: "Execution record"
             }
         }
     }

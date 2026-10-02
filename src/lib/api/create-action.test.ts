@@ -169,6 +169,7 @@ describe("POST /api/v1/actions (직접 추가)", () => {
   it.each([
     ["원문에 없는 구절", MEETING, "다음 주에 계약서 보내드릴게요", "원문에 없는 구절입니다."],
     ["할 일 DB 항목", { ...MEETING, kind: "task" }, "금요일까지 견적서 보내드릴게요", "할 일 DB에서 가져온 항목은 고를 수 없습니다."],
+    ["실행 receipt", { kind: "execution", raw_text: "초안 저장: 견적서", raw_text_purged_at: null }, "초안 저장: 견적서", "실행 기록은 고를 수 없습니다."],
     ["보관 기간이 지난 원문", { kind: "meeting", raw_text: "", raw_text_purged_at: "2026-09-01T00:00:00Z" }, "금요일까지 견적서 보내드릴게요", "원문이 보관 기간(90일)이 지나 지워졌어요."],
   ])("%s이면 400", async (_label, source, quote, message) => {
     const { deps, created } = setup({ source });

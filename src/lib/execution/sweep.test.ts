@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { GenerationLookup } from "@/lib/ai/generation";
 
-import { HELD_WAKE_EVERY_MINUTES, RECONCILE_WINDOW_HOURS, SWEEP_RECONCILE_LIMIT, SWEEP_RELEASE_LIMIT, SWEEP_WAKE_LIMIT } from "./limits";
+import { HELD_WAKE_EVERY_MINUTES, RECONCILE_WINDOW_HOURS, SWEEP_RECEIPT_LIMIT, SWEEP_RECONCILE_LIMIT, SWEEP_RELEASE_LIMIT, SWEEP_WAKE_LIMIT } from "./limits";
 import { sweep, type SweepDeps } from "./sweep";
 import type { ExecutionStore } from "./types";
 
@@ -26,6 +26,8 @@ function deps(overrides: Partial<ExecutionStore> = {}, extra: Partial<SweepDeps>
     reconcileUsage: vi.fn(async (id: number) => (order.push(`reconcile:${id}`), true)),
     openEndedCreditRuns: vi.fn(async () => (order.push("open-ended"), ["r1", "r2"])),
     releaseRunCredits: vi.fn(async (runId: string) => (order.push(`release:${runId}`), 1)),
+    // receipt 보조 안전망: 이어 쓸 단계가 없다 (있는 경우는 아래 테스트)
+    missingReceipts: vi.fn(async () => (order.push("missing-receipts"), [])),
     globallyBlocked: vi.fn(async () => (order.push("blocked?"), false)),
     wakeableRuns: vi.fn(async () => (order.push("wakeable"), [
       { id: "r3", held: false },
@@ -46,8 +48,20 @@ afterEach(() => vi.restoreAllMocks());
 describe("sweep", () => {
   it("① lease 만료 → ② 미확정 원가 확정(행마다 RPC 한 번) → ③ 끝난 run의 예약(run마다 RPC 한 번) → ④ 깨우기. 단계를 직접 돌리지 않는다", async () => {
     const d = deps();
-    expect(await sweep(d.value)).toEqual({ expired: 2, reconciled: 2, released: 2, woken: 2, wake_failed: 1, deferred: 0, blocked: false, errors: 0 });
-    expect(d.order).toEqual(["expire", "unconfirmed", "reconcile:1", "reconcile:3", "open-ended", "release:r1", "release:r2", "blocked?", "wakeable"]);
+    expect(await sweep(d.value)).toEqual({
+      expired: 2,
+      reconciled: 2,
+      released: 2,
+      receipts: 0,
+      receipt_failed: 0,
+      woken: 2,
+      wake_failed: 1,
+      deferred: 0,
+      blocked: false,
+      errors: 0,
+    });
+    expect(d.order).toEqual(["expire", "unconfirmed", "reconcile:1", "reconcile:3", "open-ended", "release:r1", "release:r2", "blocked?", "wakeable", "missing-receipts"]);
+    expect(d.store.missingReceipts).toHaveBeenCalledWith(SWEEP_RECEIPT_LIMIT);
     expect(d.store.reconcileUsage).toHaveBeenCalledWith(1, 0.001);
     expect(d.store.unconfirmedUsage).toHaveBeenCalledWith(SWEEP_RECONCILE_LIMIT, new Date(NOW.getTime() - RECONCILE_WINDOW_HOURS * 3_600_000));
     expect(d.store.openEndedCreditRuns).toHaveBeenCalledWith(SWEEP_RELEASE_LIMIT);
@@ -63,9 +77,10 @@ describe("sweep", () => {
     expect(d.wake.mock.calls).toEqual([["r3"], ["r4"]]);
   });
 
-  it("차단 스위치가 전체를 막고 있으면 아무도 깨우지 않는다 (만료 · 원가 · 해제는 한다)", async () => {
+  it("차단 스위치가 전체를 막고 있으면 아무도 깨우지 않는다 (만료 · 원가 · 해제 · receipt 보조 안전망은 한다)", async () => {
     const d = deps({ globallyBlocked: vi.fn(async () => true) });
     expect(await sweep(d.value)).toMatchObject({ expired: 2, reconciled: 2, released: 2, woken: 0, blocked: true, errors: 0 });
+    expect(d.store.missingReceipts).toHaveBeenCalledWith(SWEEP_RECEIPT_LIMIT);
     expect(d.store.wakeableRuns).not.toHaveBeenCalled();
     expect(d.wake).not.toHaveBeenCalled();
   });
@@ -90,5 +105,20 @@ describe("sweep", () => {
     const result = await sweep(d.value);
     expect(result).toMatchObject({ expired: 0, reconciled: 2, released: 0, woken: 2, errors: 2 });
     expect(d.wake).toHaveBeenCalledTimes(3);
+  });
+
+  it("receipt 보조 안전망: 끝낸 초안 단계마다 receipt를 이어 쓰고, 하나가 실패해도 다음 단계 · 깨우기를 한다. 목록을 못 읽으면 그 단계만 오류", async () => {
+    const target = (stepId: string) => ({ stepId, runId: "r1", userId: "u1", actionId: "a1", artifact: { id: `art-${stepId}`, title: "초안", createdAt: NOW } });
+    const d = deps({
+      missingReceipts: vi.fn(async () => ["s1", "s2", "s3"]),
+      receiptTarget: vi.fn(async (stepId: string) => (stepId === "s2" ? null : target(stepId))),
+      loadAction: vi.fn(async () => ({ version: 1, title: "할 일", confirmReasons: [], claims: [] })),
+      writeReceipt: vi.fn(async (stepId: string) => (stepId === "s3" ? "exists" : "written")),
+    });
+    expect(await sweep(d.value)).toMatchObject({ receipts: 1, receipt_failed: 1, woken: 2, errors: 0 });
+    expect(d.store.writeReceipt).toHaveBeenCalledTimes(2);
+
+    const broken = deps({ missingReceipts: vi.fn(async () => Promise.reject(new Error("timeout"))) });
+    expect(await sweep(broken.value)).toMatchObject({ receipts: 0, receipt_failed: 0, woken: 2, errors: 1 });
   });
 });

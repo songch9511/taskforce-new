@@ -61,16 +61,17 @@
 ## 4. 데이터 모델 (초안)
 
 ```
-Source        id, user_id, kind(meeting|message|email|doc|note), title, raw_text, occurred_at, external_url
+Source        id, user_id, kind(meeting|message|email|doc|note|execution), title, raw_text, occurred_at, external_url
 Action        id, user_id, title, scope_summary, owner(me|other|unknown), counterpart,
               due_at, due_confidence, owner_confidence, status(open|done|dropped),
               needs_confirmation, embedding, created_at, updated_at
-Evidence      id, action_id, source_id, quote, role(created|updated|completed)
-Claim         id, action_id, field(due|scope|owner|status), value, source_id, quote, occurred_at,
+Evidence      id, action_id, source_id, quote, role(created|updated|completed|executed)
+Claim         id, action_id, field(due|scope|owner|status|artifact), value, source_id, quote, occurred_at,
               speaker_role(me|counterpart|third_party), certainty(firm|tentative),
               directness(first_hand|reported), audience(shared|private), state(active|superseded|disputed)
 ActionEvent   id, action_id, type(created|due_changed|scope_changed|merged|completed|
-              user_edited|user_deleted|user_confirmed|user_reported_missing|user_created), before, after, source_id, actor(ai|user)
+              user_edited|user_deleted|user_confirmed|user_reported_missing|user_created|artifact_created), before, after, source_id,
+              actor(ai|user|agent)   -- agent: 실행 receipt (docs/EXECUTION.md 9장). 지표 1에 넣지 않는다
 MetricEvent   id, user_id, type(app_opened|action_started|handoff_used), action_id, at
 ```
 

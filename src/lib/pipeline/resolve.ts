@@ -5,13 +5,19 @@ import type { SourceKind } from "./extract";
 
 export type ClaimField = "due" | "scope" | "owner" | "status";
 
+/**
+ * 실행 결과 Claim의 필드 (origin `execution`, docs/EXECUTION.md 9장): 값은 산출물 id(`execution_artifacts.id`).
+ * 진실 판정은 이 필드를 계산하지 않는다: Action 필드(기한 · 내용 · 담당 · 상태)를 바꾸지 않으므로 초안은 완료가 아니다 (A38).
+ */
+export type ArtifactField = "artifact";
+
 /** 원문 종류 + 구조화된 할 일(task) */
 export type ClaimChannel = SourceKind | "task";
 
 export type Claim = {
   id: string;
-  field: ClaimField;
-  /** due: YYYY-MM-DD, owner: "me" | "other" | 이름, status: "open" | "done" | "dropped", scope: 자유 문장 */
+  field: ClaimField | ArtifactField;
+  /** due: YYYY-MM-DD, owner: "me" | "other" | 이름, status: "open" | "done" | "dropped", scope: 자유 문장, artifact: 산출물 id */
   value: string | null;
   /** 발언 시점 (입력 시점 아님, 규칙 4) */
   occurredAt: Date;
@@ -24,8 +30,9 @@ export type Claim = {
   /**
    * user: 사용자가 앱에서 직접 고친 값. 그 시점까지의 어떤 발언보다 우선한다 (이후의 유효한 발언은 다시 바꿀 수 있다).
    * tracker: 사용자가 할 일 도구(Notion 할 일 DB 등)에서 직접 고친 값. 판정에서는 user와 같고, AI 오판으로 세지 않는다.
+   * execution: 실행 결과(receipt). 사용자가 정한 값이 아니다 — 실행을 허락한 것은 값을 정한 것이 아니다 (A55). 지금은 artifact 필드뿐이다.
    */
-  origin?: "source" | "user" | "tracker";
+  origin?: "source" | "user" | "tracker" | "execution";
 };
 
 /** 규칙 번호 (TRUTH_RULES 2장) */
@@ -306,6 +313,7 @@ export function resolveField(field: ClaimField, claims: Claim[]): Resolution {
 
 export type ActionState = Record<ClaimField, Resolution>;
 
+/** Action 필드마다 판정한다. 실행 결과 Claim(field artifact)은 어느 필드에도 들지 않아 값 · 확인 · 위험 신호에 영향이 없다 */
 export function resolveAction(claims: Claim[]): ActionState {
   return {
     due: resolveField("due", claims),

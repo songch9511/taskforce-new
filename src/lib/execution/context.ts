@@ -6,6 +6,7 @@ import { findQuoteSpan, quoteContext } from "@/lib/pipeline/text";
 // Slack에서 온 원문은 인용 · 본문 · 제목 · 관련자를 하나도 넣지 않는다: 초안은 사용자가 밖으로 보내는 글이 되므로, Slack 글자가 초안을 거쳐
 // Slack 밖으로 나가지 않게 한다 (Slack 개발자 정책 docs/go-live/slack-integration.md D3, 계획의 위험 "보낸 메일의 Slack 글자").
 // Action의 제목 · 상대 · 기한은 넣는다: Slack 연결을 끊어도 남기는 값이다(purge_slack_sources는 Action을 지우지 않는다, D3).
+// 실행 receipt(kind execution, U2 PR7)도 넣지 않는다: 원문이 아니라 앞선 실행의 기록이고, 그 글(초안 제목)은 모델이 쓴 것이다.
 // 원문 전체는 보내지 않고 근거 구절 앞뒤만 보낸다 (물어보기 pipeline/ask.ts와 같은 방식).
 
 export type ExecutionAction = {
@@ -45,8 +46,8 @@ export type ExecutionMaterial = {
 
 export type ExecutionContext = {
   material: ExecutionMaterial;
-  /** 넣지 않은 수: Slack 원문의 근거, 원문을 찾을 수 없는 근거, 원문 수 상한을 넘은 원문. 로그 · eval용 숫자 */
-  excluded: { slack: number; missing: number; overSources: number };
+  /** 넣지 않은 수: Slack 원문의 근거, 실행 receipt의 근거, 원문을 찾을 수 없는 근거, 원문 수 상한을 넘은 원문. 로그 · eval용 숫자 */
+  excluded: { slack: number; receipts: number; missing: number; overSources: number };
 };
 
 /** 원문 하나에서 보내는 발췌 길이 상한 (글자) */
@@ -89,6 +90,7 @@ export function buildExecutionContext(input: ExecutionContextInput): ExecutionCo
   const sourceById = new Map(input.sources.map((s) => [s.id, s]));
   const quotesBySource = new Map<string, string[]>();
   let slack = 0;
+  let receipts = 0;
   let missing = 0;
   for (const e of input.evidence) {
     const source = sourceById.get(e.sourceId);
@@ -98,6 +100,10 @@ export function buildExecutionContext(input: ExecutionContextInput): ExecutionCo
     }
     if (isSlackSource(source)) {
       slack++;
+      continue;
+    }
+    if (source.kind === "execution") {
+      receipts++;
       continue;
     }
     quotesBySource.set(e.sourceId, [...(quotesBySource.get(e.sourceId) ?? []), e.quote]);
@@ -142,6 +148,6 @@ export function buildExecutionContext(input: ExecutionContextInput): ExecutionCo
       action: { title: a.title, status: a.status, owner: a.owner, due: a.due_date, counterpart: a.counterpart },
       sources,
     },
-    excluded: { slack, missing, overSources },
+    excluded: { slack, receipts, missing, overSources },
   };
 }
