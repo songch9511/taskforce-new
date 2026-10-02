@@ -35,7 +35,8 @@ export function supabaseReceiptStore(admin: SupabaseClient): ReceiptStore {
       };
     },
     async loadAction(userId, actionId) {
-      // 버전은 행에서 읽고 쓰기는 그 버전으로 CAS하므로, Claim을 함께 읽어도 그 사이 바뀐 것은 conflict로 다시 읽는다
+      // 행 · Claim을 함께 읽는다: Claim이 행보다 조금 옛것일 수 있지만, artifact Claim은 어느 필드 판정에도 들지 않아
+      // 확인(assertReceiptKeepsAction) 결과가 같고, DB 함수는 잠근 행 값을 그대로 쓴다. 버전은 행의 것으로 CAS한다
       const [row, claims] = await Promise.all([loadStoredRow(admin, userId, actionId), loadClaims(admin, userId, actionId)]);
       if (!row) return null;
       return { version: row.version, title: row.title, confirmReasons: row.confirm_reasons, claims };
