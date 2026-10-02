@@ -30,11 +30,11 @@ afterAll(() => db.close());
 /** 정책 · run · 단계(단계마다 수신자 목록, seq마다 목적이 다르다). 첫 단계 id를 돌려준다 */
 async function createRun(id: string, mode: "manual" | "auto" | "full", steps: Recipient[][] = [[user()]], actionId = `action-${id}`) {
   await db.query("insert into policies (id, mode, auto_recipients) values ($1, $2, $3::jsonb)", [id, mode, JSON.stringify([RULE, RULE2])]);
-  await db.query("insert into runs (id, action_id, policy_id, connection_id) values ($1, $2, $1, 'conn-1')", [id, actionId]);
+  await db.query("insert into runs (id, action_id, policy_id) values ($1, $2, $1)", [id, actionId]);
   for (const [i, recipients] of steps.entries()) {
     await db.query(
-      `insert into steps (id, run_id, seq, provider, tool, purpose, recipients, body, args)
-       values ($1, $2, $3, 'gmail', 'gmail.send', $4, $5::jsonb, '견적서 보내드립니다', '{"subject": "견적"}')`,
+      `insert into steps (id, run_id, seq, provider, tool, purpose, connection_id, recipients, body, args)
+       values ($1, $2, $3, 'gmail', 'gmail.send', $4, 'conn-1', $5::jsonb, '견적서 보내드립니다', '{"subject": "견적"}')`,
       [`${id}-s${i + 1}`, id, i + 1, `send-${i + 1}`, JSON.stringify(recipients)],
     );
   }
@@ -44,7 +44,8 @@ async function createRun(id: string, mode: "manual" | "auto" | "full", steps: Re
 const fn = (owner: string, hooks?: ConstructorParameters<typeof Driver>[3]) => new Driver(db, owner, provider, hooks);
 /** route: 앱이 보여 준 계획 그대로 승인 */
 const approveAsShown = async (step: string) => fn("route").approve(step, await fn("route").showPlan(step));
-const ledger = async () => (await db.query<{ marker: string; body: string }>("select marker, body from provider_ledger order by id")).rows;
+const ledger = async () =>
+  (await db.query<{ marker: string; connection_id: string; body: string }>("select marker, connection_id, body from provider_ledger order by id")).rows;
 const effects = async () => (await ledger()).length;
 const stepState = async (id: string) => (await db.query<{ state: string }>("select state from steps where id = $1", [id])).rows[0].state;
 const runState = async (id: string) => (await db.query<{ state: string }>("select state from runs where id = $1", [id])).rows[0].state;
@@ -203,7 +204,7 @@ describe("A29 fixture: B2 실행기 (외부 효과 한 번, 모르면 결과 불
     ["본문", "update steps set body = '다른 본문' where id = $1"],
     ["원문 revision", "update steps set source_revision = source_revision + 1 where id = $1"],
     ["정책 버전", "update policies set version = version + 1 where id = (select run_id from steps where id = $1)"],
-    ["보내는 연결", "update runs set connection_id = 'conn-2' where id = (select run_id from steps where id = $1)"],
+    ["보내는 연결", "update steps set connection_id = 'conn-2' where id = $1"],
   ])("4: 승인 뒤 승인 hash 항목(%s)이 바뀌면 기존 승인으로 실행하지 않는다", async (_, change) => {
     const step = await createRun("r4", "manual");
     await fn("fn-1").start("r4");
@@ -226,16 +227,30 @@ describe("A29 fixture: B2 실행기 (외부 효과 한 번, 모르면 결과 불
     expect(await effects()).toBe(0);
   });
 
-  it("4: 부르기 직전에 계획이 바뀌면 옛 내용으로 보내지 않는다. 거절되고, 다시 준비한 내용 그대로 나간다", async () => {
+  it.each([
+    ["본문", "body = '고친 본문'", { body: "고친 본문", connection_id: "conn-1" }],
+    ["보내는 연결", "connection_id = 'conn-2'", { body: "견적서 보내드립니다", connection_id: "conn-2" }],
+  ])("4: 부르기 직전에 %s이 바뀌면 옛 계획으로 보내지 않는다. 거절되고, 다시 준비한 계획 그대로 나간다", async (_, change, sent) => {
     await createRun("r4s", "auto");
     const edit = async () => {
-      await db.query("update steps set body = '고친 본문' where id = 'r4s-s1'");
+      await db.query(`update steps set ${change} where id = 'r4s-s1'`);
     };
     await fn("fn-1", { beforeBeginCall: edit }).start("r4s");
     expect(await effects()).toBe(0);
     expect(await stepState("r4s-s1")).toBe("pending"); // 계획을 바꾸면 늘 version + 1, pending
     await fn("cron").sweep();
-    expect((await ledger()).map((row) => row.body)).toEqual(["고친 본문"]);
+    expect((await ledger()).map(({ body, connection_id }) => ({ body, connection_id }))).toEqual([sent]);
+  });
+
+  it("4: 만료가 마이크로초인 시각에도 앱의 Date(밀리초)로 돌려받은 승인이 맞는다", async () => {
+    await advanceClock(db, 1234.5678); // 테스트 시계를 초 단위가 아닌 시각으로
+    const step = await createRun("r4p", "manual");
+    await fn("fn-1").start("r4p");
+    const shown = await fn("route").showPlan(step);
+    expect(shown.expires_at).toBeInstanceOf(Date); // 앱처럼 Date로 받았다가 그대로 돌려보낸다
+    expect(await fn("route").approve(step, shown)).toBe(true);
+    await fn("fn-2").wake("r4p");
+    expect(await effects()).toBe(1);
   });
 
   it.each([
@@ -323,6 +338,19 @@ describe("A29 fixture: B2 실행기 (외부 효과 한 번, 모르면 결과 불
     expect(await effects()).toBe(1);
   });
 
+  it("6: 승인을 기다리던 run의 목적을 다른 run이 먼저 보내면, 기다리던 단계는 건너뛰고 run도 끝난다", async () => {
+    await createRun("r6-wait", "manual", undefined, "action-6w");
+    await fn("fn-1").start("r6-wait");
+    expect(await runState("r6-wait")).toBe("waiting_approval");
+    await createRun("r6-first", "auto", undefined, "action-6w");
+    await fn("fn-2").start("r6-first");
+    await fn("cron").sweep();
+    expect(await stepState("r6-wait-s1")).toBe("skipped");
+    await fn("cron").sweep();
+    expect(await runState("r6-wait")).toBe("done");
+    expect(await effects()).toBe(1);
+  });
+
   it.each([
     ["사용자가 정한 규칙 안 수신자", 1, [user()]],
     ["사용자가 정한 규칙 밖 수신자", 0, [user(OTHER)]],
@@ -365,6 +393,64 @@ describe("A29 fixture: B2 실행기 (외부 효과 한 번, 모르면 결과 불
     await fn("fn-1", { beforeBeginCall: changePolicy }).start("r7c");
     expect(await effects()).toBe(0);
     expect(await runState("r7c")).toBe("waiting_approval");
+  });
+
+  it("7: 준비할 때의 정책 버전이 비어 있으면(NULL) 막는다. 제약이 막고, 제약이 없어도 begin_call이 막는다", async () => {
+    await createRun("r7m", "auto");
+    const nullify = async () => {
+      await db.query("update steps set policy_version = null where id = 'r7m-s1'");
+    };
+    await expect(fn("fn-1", { beforeBeginCall: nullify }).start("r7m")).rejects.toThrow(/prepared_has_policy_version/);
+    await db.query("alter table steps drop constraint prepared_has_policy_version");
+    try {
+      await fn("fn-2", { beforeBeginCall: nullify }).start("r7m");
+      expect(await effects()).toBe(0);
+      expect(await runState("r7m")).toBe("waiting_approval");
+    } finally {
+      await db.query("alter table steps add constraint prepared_has_policy_version check (state = 'pending' or policy_version is not null) not valid");
+    }
+  });
+
+  it("intent key에 공급자 · 도구가 들어간다: 같은 목적 · 대상이라도 도구가 다르면 서로 중복이 아니다", async () => {
+    await createRun("r12", "auto");
+    await db.query(
+      `insert into steps (id, run_id, seq, provider, tool, purpose, connection_id, recipients, body)
+       select 'r12-s2', run_id, 2, provider, 'gmail.reply', purpose, connection_id, recipients, body from steps where id = 'r12-s1'`,
+    );
+    await fn("fn-1").start("r12");
+    await fn("fn-2").wake("r12");
+    expect(await effects()).toBe(2);
+  });
+
+  it("받은 뒤 receipt 저장이 실패해도 결과 불명으로 바꾸지 않는다: 다시 써서 성공하거나, 오류를 내고 calling으로 남아 readback이 확인한다", async () => {
+    // 테스트 전용 고장: 'called' 쓰기를 n번 실패시킨다 (sequence는 롤백되지 않는다)
+    await db.exec(`
+      create sequence if not exists settle_failures;
+      create or replace function fail_settle() returns trigger language plpgsql as $$
+      begin
+        if new.state = 'called' and nextval('settle_failures') <= current_setting('app.settle_failures')::int then raise exception 'db down'; end if;
+        return new;
+      end $$;
+      create trigger fail_settle before update on steps for each row execute function fail_settle();
+    `);
+    try {
+      await db.query("select setval('settle_failures', 1, false), set_config('app.settle_failures', '1', false)");
+      await createRun("r10", "auto");
+      await fn("fn-1").start("r10"); // 한 번 실패, 다시 써서 성공
+      const { rows } = await db.query<{ state: string; receipt: { via: string } }>("select state, receipt from steps where id = 'r10-s1'");
+      expect(rows[0]).toMatchObject({ state: "called", receipt: { via: "response" } });
+
+      await db.query("select setval('settle_failures', 1, false), set_config('app.settle_failures', '99', false)");
+      await createRun("r11", "auto");
+      await expect(fn("fn-2").start("r11")).rejects.toThrow(/db down/);
+      expect(await stepState("r11-s1")).toBe("calling");
+    } finally {
+      await db.exec("drop trigger fail_settle on steps");
+    }
+    await advanceClock(db, LEASE_MS + 1);
+    await fn("cron").sweep();
+    expect(await stepState("r11-s1")).toBe("called");
+    expect(await effects()).toBe(2);
   });
 
   it("중단: 다음 단계만 막고, calling 중이던 호출은 결과를 받는다. 부르기 직전의 중단도 막는다", async () => {

@@ -10,7 +10,7 @@ export const LEASE_SECONDS = 330;
 export const READBACK_WINDOW_HOURS = 24;
 
 const SCHEMA = `
-  -- 테스트 시계: app.now가 있으면 그 시각, 없으면 now()
+  -- 테스트 시계: app.now가 있으면 그 시각, 없으면 now(). 운영의 db_now()는 now()뿐이다 (세션 설정은 풀링된 연결에 남을 수 있다)
   create function db_now() returns timestamptz language sql stable as $$
     select coalesce(nullif(current_setting('app.now', true), '')::timestamptz, now())
   $$;
@@ -23,18 +23,19 @@ const SCHEMA = `
   );
   create table runs (
     id text primary key, action_id text not null, policy_id text not null references policies (id),
-    connection_id text not null, -- 보내는 연결(계정)
     state text not null default 'queued' check (state in ('queued', 'running', 'waiting_approval', 'done', 'failed', 'stopped'))
   );
   create table steps (
     id text primary key, run_id text not null references runs (id), seq int not null, unique (run_id, seq),
     provider text not null, tool text not null, purpose text not null, occurrence int not null default 1,
+    connection_id text not null, -- 보내는 연결(계정). 계획의 일부라 pending을 떠나면 바꿀 수 없다
     recipients jsonb not null, -- [{address, origin}], origin: user | source | tool_output | model
     body text not null, args jsonb not null default '{}', source_revision int not null default 1,
     state text not null default 'pending'
       check (state in ('pending', 'prepared', 'calling', 'called', 'unknown_outcome', 'failed', 'skipped')),
     version int not null default 0, policy_version int, needs_approval boolean, intent_key text,
-    lease_owner text, lease_expires_at timestamptz, unknown_since timestamptz, receipt jsonb
+    lease_owner text, lease_expires_at timestamptz, unknown_since timestamptz, receipt jsonb,
+    constraint prepared_has_policy_version check (state = 'pending' or policy_version is not null)
   );
   create table approvals (
     id serial primary key, step_id text not null references steps (id), hash text not null, expires_at timestamptz not null, revoked_at timestamptz
@@ -49,7 +50,7 @@ const SCHEMA = `
   );
   -- 가짜 공급자의 외부 효과. 실행기 트랜잭션 밖에서만 쓴다 (실제로는 다른 시스템이다)
   create table provider_ledger (
-    id serial primary key, marker text not null, recipients jsonb not null, body text not null, visible_at timestamptz not null
+    id serial primary key, marker text not null, connection_id text not null, recipients jsonb not null, body text not null, visible_at timestamptz not null
   );
 
   -- 정규화 규칙은 하나: 승인 hash · intent key · Auto 규칙 비교가 모두 이것을 쓴다
@@ -66,19 +67,20 @@ const SCHEMA = `
     from steps s join runs r on r.id = s.run_id join policies p on p.id = r.policy_id where s.id = p_step
   $$;
 
-  -- 승인 hash: 도구 · 연결 · 인자 · 수신자 · 본문 hash · 원문 revision · 정책 버전 · 만료(UTC). 하나라도 바뀌면 값이 바뀐다
+  -- 승인 hash: 도구 · 연결 · 인자 · 수신자 · 본문 hash · 원문 revision · 정책 버전 · 만료(UTC, 초 단위). 하나라도 바뀌면 값이 바뀐다
   create function approval_hash(p_step text, p_expires timestamptz) returns text language sql stable as $$
     select encode(sha256(convert_to(jsonb_build_object(
-      'tool', s.tool, 'connection', r.connection_id, 'args', s.args, 'recipients', norm_addresses(s.recipients),
+      'tool', s.tool, 'connection', s.connection_id, 'args', s.args, 'recipients', norm_addresses(s.recipients),
       'body_sha256', encode(sha256(convert_to(s.body, 'UTF8')), 'hex'), 'source_revision', s.source_revision, 'policy_version', p.version,
-      'expires_at', to_char(p_expires at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'))::text, 'UTF8')), 'hex')
+      'expires_at', to_char(date_trunc('second', p_expires) at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'))::text, 'UTF8')), 'hex')
     from steps s join runs r on r.id = s.run_id join policies p on p.id = r.policy_id where s.id = p_step
   $$;
 
-  -- 계획(수신자 · 본문 · 인자 · 원문 revision)을 바꾸면 늘 pending으로 되돌리고 version을 올린다. 부르는 중 · 끝난 단계는 못 바꾼다
+  -- 계획(도구 · 연결 · 수신자 · 본문 · 인자 · 원문 revision)을 바꾸면 늘 pending으로 되돌리고 version을 올린다. 부르는 중 · 끝난 단계는 못 바꾼다
   create function steps_replan() returns trigger language plpgsql as $$
   begin
-    if (new.recipients, new.body, new.args, new.source_revision) is distinct from (old.recipients, old.body, old.args, old.source_revision) then
+    if (new.provider, new.tool, new.connection_id, new.recipients, new.body, new.args, new.source_revision)
+       is distinct from (old.provider, old.tool, old.connection_id, old.recipients, old.body, old.args, old.source_revision) then
       if old.state not in ('pending', 'prepared') then raise exception 'step % is %: plan is frozen', old.id, old.state; end if;
       new.state := 'pending'; new.version := old.version + 1;
       new.intent_key := null; new.policy_version := null; new.needs_approval := null;
@@ -91,18 +93,18 @@ const SCHEMA = `
   create function prepare_step(p_step text, p_version int) returns boolean language plpgsql as $$
   begin
     update steps s set state = 'prepared', version = s.version + 1, policy_version = p.version,
-      intent_key = concat_ws('|', r.action_id, s.purpose, norm_addresses(s.recipients)::text, s.occurrence)
+      intent_key = concat_ws('|', r.action_id, s.provider, s.tool, s.purpose, norm_addresses(s.recipients)::text, s.occurrence)
     from runs r join policies p on p.id = r.policy_id
     where s.id = p_step and s.state = 'pending' and s.version = p_version and r.id = s.run_id;
     if not found then return false; end if;
-    update steps set needs_approval = not auto_allowed(id) where id = p_step;
+    update steps set needs_approval = auto_allowed(id) is not true where id = p_step;
     update runs set state = 'running' where id = (select run_id from steps where id = p_step) and state = 'queued';
     return true;
   end $$;
 
-  -- route: 사용자가 본 계획의 hash. 승인할 때 다시 계산해 같아야 기록한다
-  create function show_plan(p_step text) returns table (hash text, expires_at text) language sql stable as $$
-    select approval_hash(p_step, db_now() + interval '1 hour'), (db_now() + interval '1 hour')::text
+  -- route: 사용자가 본 계획의 hash. 승인할 때 다시 계산해 같아야 기록한다. 만료는 초 단위 (앱의 Date는 밀리초라 마이크로초가 사라진다)
+  create function show_plan(p_step text) returns table (hash text, expires_at timestamptz) language sql stable as $$
+    select approval_hash(p_step, e), e from (select date_trunc('second', db_now() + interval '1 hour') as e) t
   $$;
   create function approve_step(p_step text, p_shown_hash text, p_expires timestamptz) returns boolean language plpgsql as $$
   begin
@@ -129,6 +131,7 @@ const SCHEMA = `
     select step_id into held from intents where intent_key = s.intent_key;
     if held is not null and held <> s.id then
       update steps set state = 'skipped', version = version + 1, receipt = jsonb_build_object('duplicate_of', held) where id = s.id;
+      update runs set state = 'running' where id = r.id and state = 'waiting_approval'; -- 승인을 기다릴 이유가 없어졌다
       return '{"gate": "duplicate"}';
     end if;
 
@@ -139,7 +142,7 @@ const SCHEMA = `
     if locked < 3 or blocked then return '{"gate": "blocked"}'; end if;
 
     -- 유효한 승인이 없으면 Auto/Full 규칙을 지금 다시 확인한다 (준비 단계의 needs_approval을 믿지 않는다)
-    if not auto_allowed(s.id) and not exists (
+    if auto_allowed(s.id) is not true and not exists ( -- NULL(모름)이면 막는다
       select 1 from approvals a
       where a.step_id = s.id and a.revoked_at is null and a.expires_at > db_now() and a.hash = approval_hash(s.id, a.expires_at)
     ) then
@@ -150,12 +153,13 @@ const SCHEMA = `
 
     insert into intents (intent_key, step_id) values (s.intent_key, s.id) on conflict (intent_key) do nothing returning marker into m;
     if m is null then -- 위 확인과 이 insert 사이에 다른 단계가 먼저 commit했다
-      update steps set state = 'skipped', version = version + 1 where id = s.id;
+      select step_id into held from intents where intent_key = s.intent_key;
+      update steps set state = 'skipped', version = version + 1, receipt = jsonb_build_object('duplicate_of', held) where id = s.id;
       return '{"gate": "duplicate"}';
     end if;
     update steps set state = 'calling', version = version + 1, lease_owner = p_owner,
       lease_expires_at = db_now() + make_interval(secs => ${LEASE_SECONDS}) where id = s.id;
-    return jsonb_build_object('gate', 'ok', 'marker', m, 'recipients', norm_addresses(s.recipients), 'body', s.body, 'args', s.args);
+    return jsonb_build_object('gate', 'ok', 'marker', m, 'connection', s.connection_id, 'recipients', norm_addresses(s.recipients), 'body', s.body, 'args', s.args);
   end $$;
 `;
 
@@ -194,12 +198,12 @@ export class FakeProvider {
 
   constructor(private db: PGlite) {}
 
-  async send(marker: string, recipients: string[], body: string): Promise<{ id: number }> {
+  async send(marker: string, connection: string, recipients: string[], body: string): Promise<{ id: number }> {
     if (this.reject) throw new Rejected("400 invalid recipient header");
     const { rows } = await this.db.query<{ id: number }>(
-      `insert into provider_ledger (marker, recipients, body, visible_at)
-       values ($1, $2::jsonb, $3, db_now() + make_interval(secs => $4::float8 / 1000)) returning id`,
-      [marker, JSON.stringify(recipients), body, this.readbackLagMs],
+      `insert into provider_ledger (marker, connection_id, recipients, body, visible_at)
+       values ($1, $2, $3::jsonb, $4, db_now() + make_interval(secs => $5::float8 / 1000)) returning id`,
+      [marker, connection, JSON.stringify(recipients), body, this.readbackLagMs],
     );
     await this.onAccepted?.();
     return rows[0];
@@ -211,9 +215,9 @@ export class FakeProvider {
   }
 }
 
-type Gate = { gate: string; marker?: string; recipients?: string[]; body?: string };
+type Gate = { gate: string; marker?: string; connection?: string; recipients?: string[]; body?: string };
 type Hooks = { beforeBeginCall?: () => Promise<void>; afterGate?: (gate: string) => void | Promise<void> };
-export type ShownPlan = { hash: string; expires_at: string };
+export type ShownPlan = { hash: string; expires_at: Date };
 
 export class Driver {
   constructor(
@@ -253,7 +257,7 @@ export class Driver {
 
   /** route: POST /approvals/[id]. 사용자가 본 hash가 지금 계획과 다르면 거절한다 */
   async approve(stepId: string, shown: ShownPlan): Promise<boolean> {
-    const { rows } = await this.db.query<{ ok: boolean }>("select approve_step($1, $2, $3::timestamptz) as ok", [stepId, shown.hash, shown.expires_at]);
+    const { rows } = await this.db.query<{ ok: boolean }>("select approve_step($1, $2, $3) as ok", [stepId, shown.hash, shown.expires_at]);
     return rows[0].ok;
   }
 
@@ -292,20 +296,28 @@ export class Driver {
     await this.hooks.afterGate?.(gate.gate);
     if (gate.gate !== "ok") return;
 
-    // begin_call이 검증해 돌려준 내용만 보낸다. 외부로는 표식만 나가고 intent key는 나가지 않는다
+    // begin_call이 검증해 돌려준 내용만 보낸다. 외부로는 표식만 나가고 intent key는 나가지 않는다. try는 외부 호출만 감싼다
+    let sent: { id: number };
     try {
-      const sent = await this.provider.send(gate.marker!, gate.recipients!, gate.body!);
-      await this.settle(step.id, "called", { provider_id: sent.id, via: "response" }, this.owner);
+      sent = await this.provider.send(gate.marker!, gate.connection!, gate.recipients!, gate.body!);
     } catch (error) {
       if (error instanceof Crash) throw error;
-      if (error instanceof Rejected) await this.settle(step.id, "failed", { error: error.message }, this.owner);
+      if (error instanceof Rejected) return this.settle(step.id, "failed", { error: error.message }, this.owner);
       // 시간 초과 · 연결 끊김: 받았는지 모른다. lease를 가진 함수가 결과 불명으로 옮긴다 (다시 부르지 않는다)
-      else
-        await this.db.query(
-          `update steps set state = 'unknown_outcome', unknown_since = db_now(), version = version + 1, lease_owner = null
-           where id = $1 and state = 'calling' and lease_owner = $2`,
-          [step.id, this.owner],
-        );
+      await this.db.query(
+        `update steps set state = 'unknown_outcome', unknown_since = db_now(), version = version + 1, lease_owner = null
+         where id = $1 and state = 'calling' and lease_owner = $2`,
+        [step.id, this.owner],
+      );
+      return;
+    }
+    // 받은 뒤의 DB 오류는 결과 불명이 아니다: 세 번까지 다시 쓰고, 그래도 안 되면 오류를 낸다 (lease 만료 뒤 readback이 확인한다)
+    for (let attempt = 1; ; attempt++) {
+      try {
+        return await this.settle(step.id, "called", { provider_id: sent.id, via: "response" }, this.owner);
+      } catch (error) {
+        if (attempt === 3) throw error;
+      }
     }
   }
 

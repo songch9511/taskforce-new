@@ -21,16 +21,16 @@ U2(실행기)와 U6a · U6b(쓰기)는 이 문서를 계약으로 따릅니다. 
 | 후보 | 내용 | 판단 |
 |---|---|---|
 | **B2 Postgres 상태 머신** | run · step · approval · intent 행을 Supabase Postgres에 둔다. 함수 호출 한 번 = 단계 하나. commit 뒤 깨우기 + sweep | **채택.** B2를 fixture로 검증했다(11장) |
-| B4 Supabase `pg_cron` + `pg_net` (선택 `pgmq`) | DB가 주기적으로 HTTP로 실행기를 깨운다 | 비교 문서만. 운영 Supabase에 셋 다 설치할 수 있지만 설치돼 있지 않다(2026-10-02 확인). sweep 주기가 부족하면 다시 본다 |
+| B4 Supabase `pg_cron` + `pg_net` (선택 `pgmq`) | DB가 주기적으로 HTTP로 실행기를 깨운다 | 비교 문서만. 운영 Supabase에 셋 다 설치할 수 있지만 설치돼 있지 않다(2026-10-02 확인). Vercel cron이 1분마다 돌 수 있어 sweep은 그것으로 충분하다. 1분 sweep이 부족하다고 확인될 때만 1분 미만 주기로 다시 본다 |
 | B1 LangGraph | checkpointer가 그래프 상태를 보존 | 문서 비교만. interrupt 뒤 재개하면 그 node를 처음부터 다시 실행하므로 승인 전 부수 효과를 따로 막아야 한다. 그래프 상태와 run/step 상태가 이중이 된다 |
 | B3 Vercel Workflow | 관리형 지속 실행 | 탈락. 처리방침은 Vercel이 정보를 "요청을 처리하는 동안"만 둔다고 약속한다(`docs/legal/privacy.ko.md` 7장 국외 이전 표의 Vercel 행). 실행 상태를 Vercel에 지속 보관하면 이 약속과 충돌한다 |
 
 K2 실행 위치:
 
 - 함수 호출 한 번이 단계 하나를 처리한다. 긴 업무 전체를 요청 하나나 `after()` 하나에 맡기지 않는다. 상주 worker는 두지 않는다(처리방침의 받는 곳이 늘어난다).
-- 시간 한도: 저장소 설정의 최장 `maxDuration`은 300초다(`src/app/api/cron/sync/route.ts`, `src/app/api/v1/sources/route.ts`). 플랜이 실제로 허용하는 상한은 확인 대기(10장 ③). 300초를 넘는 단계는 쪼갠다.
+- 시간 한도: 저장소 설정의 최장 `maxDuration`은 300초다(`src/app/api/cron/sync/route.ts`, `src/app/api/v1/sources/route.ts`). Pro 플랜은 최대 800초까지 허용한다(10장 ③). lease = 실행 route의 `maxDuration` + 여유(3장). 300초를 넘는 단계는 먼저 쪼개고, 늘려야 하면 800초 안에서 route 설정과 lease를 함께 바꾼다.
 - 깨우기: 상태를 commit한 뒤 `after()`(지금 `src/app/api/v1/sources/route.ts`가 쓰는 방식) 또는 인증된 자기 호출(`CRON_SECRET`, `src/lib/api/cron.ts`)로 다음 단계를 부른다.
-- sweep: 깨우기를 놓친 run과 승인이 들어온 승인 대기 run을 이어 간다. Vercel cron(`vercel.json`: 지금 `*/15` 동기화 · `7,37` 재처리)에 실행 sweep을 더한다. 주기는 U2에서 정한다.
+- sweep: 깨우기를 놓친 run과 승인이 들어온 승인 대기 run을 이어 간다. Vercel cron(`vercel.json`: 지금 `*/15` 동기화 · `7,37` 재처리)에 실행 sweep을 더한다. 주기는 U2에서 정한다(최소 1분). sweep은 돌 때마다 승인 대기 run에도 `begin_call`을 다시 시도한다. 이벤트는 상태가 바뀔 때만 남기고 거절마다 남기지 않는다.
 
 ## 3. 상태와 전이
 
@@ -42,7 +42,7 @@ run: `queued → running ⇄ waiting_approval`, 끝 상태는 `done | failed | s
 |---|---|---|
 | `queued → running` | 실행기 (모든 입구) | 첫 단계를 준비했다 |
 | `running → waiting_approval` | `begin_call` 트랜잭션 안에서 | 유효한 승인이 없고 Auto/Full 규칙도 충족하지 않는다 |
-| `waiting_approval → running` | route `POST /approvals/[id]`(승인 기록과 같은 트랜잭션), 또는 `begin_call`(sweep) | 지금 계획의 hash에 묶인 유효한 승인이 있다 |
+| `waiting_approval → running` | route `POST /approvals/[id]`(승인 기록과 같은 트랜잭션), 또는 `begin_call`(sweep) | 지금 계획의 hash에 묶인 유효한 승인이 있다. 또는 같은 목적을 다른 단계가 이미 가져 단계를 건너뛰었다(승인을 기다릴 이유가 없다) |
 | `running → done` | 실행기 | 남은 단계가 없다 (모두 `called` · `skipped`) |
 | `running → failed` | 실행기 | 단계가 `failed`다 |
 | 끝나지 않은 상태 → `stopped` | route `POST /runs/[id]/stop` | 사용자가 멈췄다 (5장) |
@@ -52,7 +52,7 @@ step: `pending → prepared → calling → called | unknown_outcome | failed | 
 | 전이 | 누가 | 조건 |
 |---|---|---|
 | `pending → prepared` | 실행기 | intent key · 준비할 때의 정책 버전 기록, 정책 평가(승인 필요 표시) |
-| `prepared → pending` (다시 계획) | planner · 계획 수정 route | 수신자 · 본문 · 인자 · 원문 revision이 바뀌었다. 늘 version + 1, intent key는 다시 준비할 때 계산. `calling` 이후 상태에서는 거절 |
+| `prepared → pending` (다시 계획) | planner · 계획 수정 route | 도구 · 보내는 연결 · 수신자 · 본문 · 인자 · 원문 revision이 바뀌었다. 늘 version + 1, intent key는 다시 준비할 때 계산. `calling` 이후 상태에서는 거절 |
 | `prepared → calling` | 실행기, **`begin_call` 하나로만** | 5–7장 확인을 모두 통과. intent 행(표식) + lease를 같은 트랜잭션에서 commit |
 | `prepared → skipped` | `begin_call` | 같은 intent key를 다른 단계가 이미 가졌다 (승인보다 먼저 본다) |
 | `calling → called` | lease를 가진 함수 | 공급자 응답을 받아 receipt를 저장했다 |
@@ -70,23 +70,23 @@ step: `pending → prepared → calling → called | unknown_outcome | failed | 
 
 ## 4. write-ahead intent와 표식
 
-- intent key = (Action id, 목적, 정규화한 대상, 회차). `intents.intent_key`는 DB unique다. 수동 버튼과 자동 trigger가 같은 목적을 동시에 시작해도 한 단계만 `calling`으로 간다. 다른 쪽은 `skipped`, receipt에 누구의 중복인지 적는다.
+- intent key = (Action id, 공급자, 도구, 목적, 정규화한 대상, 회차). 도구가 다르면 같은 목적 · 대상이라도 중복이 아니다. `intents.intent_key`는 DB unique다. 수동 버튼과 자동 trigger가 같은 목적을 동시에 시작해도 한 단계만 `calling`으로 간다. 다른 쪽은 `skipped`, receipt에 누구의 중복인지 적는다.
 - 표식(marker)은 `intents` 행에 저장하는 임의 값이다(무작위 uuid, 또는 서버 비밀로 만든 intent key의 HMAC). 외부(메일 헤더 · 댓글 본문)에는 표식만 실린다. intent key는 DB 밖으로 나가지 않는다.
 - 순서:
   1. intent 행(표식) + `prepared → calling` + lease를 한 트랜잭션에 commit한다.
   2. 표식을 실어, `begin_call`이 검증해 돌려준 내용(수신자 · 본문 · 인자) 그대로 외부를 부른다. 그 전에 읽어 둔 내용으로 보내지 않는다.
-  3. `called` + receipt를 commit한다.
+  3. `called` + receipt를 commit한다. 받은 뒤 이 쓰기가 실패하면 다시 쓰고, 그래도 안 되면 오류를 낸다. 결과 불명으로 바꾸지 않는다(단계는 `calling`으로 남고 lease 만료 뒤 readback이 확인한다).
 - 1과 3 사이에 죽으면 sweep이 lease 만료를 보고 `unknown_outcome`으로 옮긴다. 다시 부르지 않는다. 그 뒤 sweep이 readback으로 표식을 찾는다.
 - 회차: 같은 회차의 재시도 · 중복 동기화는 새 회차가 아니다. 새 회차는 사용자의 명시적 다시 보내기, 또는 미리 허용한 후속 규칙의 다음 발생(서버가 결정적 occurrence key로 한 번만 발행)에서만 생긴다. 모델은 회차를 늘리지 못한다. 앞 효과가 `unknown_outcome`이면 새 회차로 우회하지 않는다.
 - 외부 호출 직전에 Action과 정책의 최신 버전을 다시 읽는다. 이미 외부에서 끝났으면(readback으로 확인) 부르지 않고 관찰로 반영한다.
 
 ## 5. 승인
 
-- 승인 hash = (도구, 보내는 연결(계정), 인자, 수신자, 본문 hash, 원문 revision, 정책 버전, 만료). 만료는 UTC로 직렬화한다(세션 시간대와 상관없이 같은 값).
+- 승인 hash = (도구, 보내는 연결(계정, 단계에 묶임), 인자, 수신자, 본문 hash, 원문 revision, 정책 버전, 만료). 만료는 초 단위로 자르고 UTC로 직렬화한다(앱의 Date는 밀리초라 마이크로초가 사라진다. 세션 시간대와 상관없이 같은 값).
 - 정규화 규칙은 하나다: 주소는 앞뒤 공백 제거 · 소문자 · 중복 제거 · 정렬. 승인 hash · intent key · Auto 규칙 비교가 같은 함수를 쓴다.
 - 앱은 보여 준 계획의 hash를 승인과 함께 보낸다. 서버는 지금 계획으로 hash를 다시 계산해 같을 때만 승인을 기록한다. 보여 준 뒤 바뀐 계획은 승인되지 않는다.
 - `begin_call`은 지금 단계로 hash를 다시 계산해 승인 행과 같을 때만 통과시킨다. 하나라도 바뀌면 기존 승인으로는 실행 0이다.
-- 유효한 승인이 없는 단계는 `begin_call`이 Auto/Full 규칙을 지금 다시 확인한다(준비 단계의 표시를 믿지 않는다): 모드가 `auto` · `full`, 모든 수신자의 출처가 사용자, 모든 주소가 규칙 안, 규칙의 정책 버전이 준비할 때와 같음. 하나라도 아니면 승인 대기다.
+- 유효한 승인이 없는 단계는 `begin_call`이 Auto/Full 규칙을 지금 다시 확인한다(준비 단계의 표시를 믿지 않는다): 모드가 `auto` · `full`, 모든 수신자의 출처가 사용자, 모든 주소가 규칙 안, 규칙의 정책 버전이 준비할 때와 같음. 하나라도 아니거나 모르면(NULL) 승인 대기다. `pending`이 아닌 단계에는 준비할 때의 정책 버전이 반드시 있다(DB 제약).
 - 철회 · 만료된 승인은 무효다. 철회 뒤에는 이어서 실행(resume)해도 부르지 않는다.
 - Review의 "내 일 맞음" 확인과 AI 처리 동의는 실행 승인이 아니다.
 - 중단(stop)은 다음 단계만 막는다. 이미 `calling`인 호출은 되돌릴 수 없으므로 결과 확인(응답 · readback)을 끝까지 한다. 중단 요청을 받았다는 것이 원격 작업이 멈췄다는 증거는 아니다. `begin_call`은 run이 `stopped`면 거절한다.
@@ -137,18 +137,18 @@ step: `pending → prepared → calling → called | unknown_outcome | failed | 
 
 ## 10. 관문
 
-①②④는 2026-10-02에 확인했다. ③은 사용자가 Vercel에서 확인한다.
+①–④ 모두 2026-10-02에 확인했다. ②의 "같은 연결로 readback이 읽히는지"는 U3a에서 확인한다.
 
 | 관문 | 확인할 것 | 안 되면 |
 |---|---|---|
 | ① 계획 생성 | **확인함 (2026-10-02).** 기본 공급자(fireworks · together · deepinfra)의 `z-ai/glm-5.3-flash`로 객체 안 discriminated union 다음 단계 5/5 유효, 단계 종류 4/5(검색할 상황을 끝남으로 고름) → 품질은 eval E2로 본다. 확인한 것: ZDR 공급자 허용 목록 안에서 서비스되는 모델로 `completeJson`(`src/lib/ai/llm.ts`, `json_schema` strict)이 다음 단계 discriminated union 스키마를 받는지. `src/lib/ai/providers.ts`는 모델이 아니라 공급자를 고정한다(`data_collection: deny` · `zdr: true` · 목록 밖 fallback 금지) | 그 공급자들이 서비스하는 다른 모델. 조건을 풀어 성공시키지 않는다. `tool_calls`는 eval이 요구할 때만 |
 | ② 원격 MCP | **확인함 (2026-10-02, 공개 메타데이터 · 공식 문서).** Linear: 동적 등록 · Client ID 메타데이터 문서 둘 다 지원 → 바로 연결. GitHub: 둘 다 없음 → 자체 OAuth App 또는 GitHub App 등록 필요(서버에서는 GitHub App + REST가 권한이 더 좁다). Figma: MCP 카탈로그에 오른 클라이언트만(신규 접수 중단) → REST 읽기만, 캔버스 쓰기 없음. 확인한 것: GitHub · Linear · Figma 원격 MCP가 제3자 서버 클라이언트(동적 등록 · 허용 목록)를 받는지, 같은 연결로 readback 경로가 읽히는지 | GitHub App, 또는 "Want this"로 내림 |
-| ③ Vercel 플랜 한도 | 실제 `maxDuration` 상한, cron 최소 주기 | 단계를 더 쪼갠다. sweep 주기는 B4를 다시 본다 |
+| ③ Vercel 플랜 한도 | **확인함 (2026-10-02).** 팀은 Pro 플랜(사용자 확인). Fluid compute(기본 켜짐)에서 함수 기본 300초, 최대 800초(GA), 함수별 확장 최대 1800초(베타). cron은 프로젝트당 100개, 최소 1분 주기 · 분 단위 정밀도. 출처: https://vercel.com/docs/functions/configuring-functions/duration (2026-08-24 갱신), https://vercel.com/docs/cron-jobs/usage-and-pricing (2026-07-15 갱신). 확인한 것: 실제 `maxDuration` 상한, cron 최소 주기 | 단계를 더 쪼갠다. 1분 sweep이 부족하면 B4(1분 미만) |
 | ④ Gmail 헤더 보존 | **확인함 (2026-10-02, dev 프로젝트).** `X-Taskforce-Intent`는 남고 클라이언트 `Message-ID`는 바뀐다(8장). U6a에서 프로젝트 B Testing으로 다시 확인 | 프로젝트 B에서 헤더가 지워지면 readback 없이 `unknown_outcome`으로 두고 사용자가 정한다 |
 
 ## 11. A29 fixture (실행 가능한 명세)
 
-`tests/execution/a29.test.ts`, 드라이버 `tests/execution/driver.ts`. 테스트 안에서만 만드는 최소 스키마(policies · runs · steps · approvals · intents · execution_controls + 외부 효과를 기록하는 가짜 공급자 원장)와 SQL 함수(정규화 · 정책 · 승인 hash · `prepare_step` · `approve_step` · `begin_call`, 계획 수정 trigger)다. 마이그레이션이 아니고, U2가 만들 실행기도 아니다. "함수가 죽는다" = Driver 인스턴스를 버리고 새로 만든다. 시각은 DB 시각(테스트 시계)이다.
+`tests/execution/a29.test.ts`, 드라이버 `tests/execution/driver.ts`. 테스트 안에서만 만드는 최소 스키마(policies · runs · steps · approvals · intents · execution_controls + 외부 효과를 기록하는 가짜 공급자 원장)와 SQL 함수(정규화 · 정책 · 승인 hash · `prepare_step` · `approve_step` · `begin_call`, 계획 수정 trigger)다. 마이그레이션이 아니고, U2가 만들 실행기도 아니다. "함수가 죽는다" = Driver 인스턴스를 버리고 새로 만든다. 시각은 DB 시각이다. 운영의 `db_now()`는 `now()`뿐이고, fixture의 `app.now`는 테스트 시계다(세션 설정은 풀링된 연결에 남을 수 있어 운영에서 쓰지 않는다).
 
 | # | 사례 | 결과 |
 |---|---|---|
@@ -158,11 +158,13 @@ step: `pending → prepared → calling → called | unknown_outcome | failed | 
 | 3 | 승인 철회 · 만료 | 효과 0 |
 | 3 | 승인 대기 commit 직후 승인, 승인 행만 있고 깨우기 없음 | run이 멈추지 않고 효과 1 |
 | 4 | 승인 hash 항목(수신자 · 본문 · 원문 revision · 정책 버전 · 연결) 변경 | 효과 0 |
-| 4 | 보여 준 뒤 수신자 추가 → 승인 / 부르기 직전 본문 수정 | 승인 거절 / 거절 뒤 다시 준비한 본문 그대로 1건 |
+| 4 | 보여 준 뒤 수신자 추가 → 승인 / 부르기 직전 본문 · 연결 수정 / 마이크로초 만료를 Date로 돌려받아 승인 | 승인 거절 / 거절 뒤 다시 준비한 계획 그대로 1건 / 승인됨 |
 | 5 | 스위치 전체 · 공급자 · Manual만 · 행 없음(전체 · 공급자 · 모드) × route · 자기 호출 · sweep | 효과 0, 다시 켜면 1. 단계를 읽은 뒤 끄면 0, `calling` commit 뒤 끄면 진행 중 1건만. Manual만에서 승인된 Manual은 1 |
-| 6 | 같은 단계를 두 함수가 같은 버전으로 / 같은 intent를 수동 · 자동 run이 동시에 / 이미 보낸 목적을 Manual로 다시 | 효과 1. 마지막은 승인을 묻지 않고 `skipped` |
+| 6 | 같은 단계를 두 함수가 같은 버전으로 / 같은 intent를 수동 · 자동 run이 동시에 / 이미 보낸 목적을 Manual로 다시 / 승인을 기다리던 목적을 다른 run이 먼저 보냄 | 효과 1. 뒤의 둘은 승인을 묻지 않고 `skipped`, 기다리던 run도 끝남 |
+| 6 | 도구만 다른 같은 목적 · 대상 | 효과 2 (중복 아님) |
 | 7 | Auto run에서 수신자 출처(사용자 규칙 안 · 밖, 원문, 도구 출력, 모델, 섞임) | 사용자 · 규칙 안만 1, 나머지 승인 대기 |
-| 7 | 준비 단계 표시가 틀림 / 준비 뒤 규칙 비움 · 정책 버전 올림 | `begin_call`이 막음, 효과 0 |
+| 7 | 준비 단계 표시가 틀림 / 준비 뒤 규칙 비움 · 정책 버전 올림 / 준비 때 정책 버전 NULL | `begin_call`이 막음, 효과 0 (NULL은 DB 제약도 막음) |
 | — | 중단 | 진행 중 호출은 결과를 받고 다음 단계 0. 부르기 직전 중단도 0 |
+| — | 받은 뒤 receipt 저장 실패 | 다시 써서 `called`. 계속 실패하면 오류, `calling`에 남아 lease 만료 뒤 readback으로 `called` |
 
 한계: PGlite는 연결이 하나라 트랜잭션이 실제로 겹치지 않는다. 동시성은 트랜잭션 경계(단계를 읽은 뒤 · `calling` commit 뒤)에 끼어드는 방식으로 보인다. `for share` · `for no key update` 잠금과 동시 commit 경합은 U2에서 실제 Postgres(연결 둘)로 다시 시험한다. 허용 목록(7장 1 · 2)과 실행 이벤트 행은 fixture에 없다(U2 · U6a).
