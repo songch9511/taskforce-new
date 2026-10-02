@@ -1,14 +1,34 @@
-# 에이전트 핸드오프 (2026-10-01, W2 담당·상태 변경 점검)
+# 에이전트 핸드오프 (2026-10-01, W1 확인 부담·W3 부분 완료)
 
-다른 에이전트(Codex 등)가 이 저장소를 이어받을 때 먼저 읽는 문서다. 규칙은 [CLAUDE.md](../CLAUDE.md), 기능 위치는 [FEATURE_MAP.md](FEATURE_MAP.md), 남은 출시 일은 [GO_LIVE.md](GO_LIVE.md)와 [런북 체크리스트](go-live/runbook.md)가 기준이다. 이 문서는 PR #54 완료 상태, W3 치명적 경로 및 W2 재검증과 **2026-09-30 09:00 UTC QA의 당시 기록 및 후속 작업 승인 범위**를 함께 담는다.
+다른 에이전트(Codex 등)가 이 저장소를 이어받을 때 먼저 읽는 문서다. 규칙은 [CLAUDE.md](../CLAUDE.md), 기능 위치는 [FEATURE_MAP.md](FEATURE_MAP.md), 남은 출시 일은 [GO_LIVE.md](GO_LIVE.md)와 [런북 체크리스트](go-live/runbook.md)가 기준이다. 이 문서는 PR #54 완료 상태, W3 치명적 경로·W2 재검증·W3 로그인 사용성·W1 확인 부담 수정과 **2026-09-30 09:00 UTC QA의 당시 기록 및 후속 작업 승인 범위**를 함께 담는다.
 
 ## 1. 지금 상태
+
+### 2026-10-01 머지·운영 스키마 적용 (KST)
+
+사용자가 기존 작업 머지를 승인했고, #60의 운영 DB 변경 두 건은 별도 질문에 명시적으로 승인했다. PR 최신 HEAD가 기존 검토 커밋과 같고 필수 `check`·`apple`이 SUCCESS임을 확인한 뒤 저장소 방식(`--merge`, HEAD 고정)으로 머지했다.
+
+| PR | 범위 | merge commit |
+|---|---|---|
+| [#57](https://github.com/songch9511/taskforce-new/pull/57) | SDK 토큰 갱신 경쟁 수정 | `3d5ee13` |
+| [#56](https://github.com/songch9511/taskforce-new/pull/56) | 저장된 세션과 화면 계정 일치 | `19bb798` |
+| [#58](https://github.com/songch9511/taskforce-new/pull/58) | 계정 전환 시 이전 원문 요청 취소 | `2fb0a0c` |
+| [#59](https://github.com/songch9511/taskforce-new/pull/59) | eval 담당 오판 집계 | `db3ecb3` |
+| [#55](https://github.com/songch9511/taskforce-new/pull/55) | 이전 검증 HANDOFF | `8ec2dce` |
+| [#60](https://github.com/songch9511/taskforce-new/pull/60) | W2 담당·상태 변경 보호 | `da121ba` |
+
+- 운영 프로젝트 `tirtdojsahotjfgdsryi`의 스키마만 읽어 `write_action` 본문이 예상한 기존 정의와 완전히 같음을 먼저 확인했다. `20261018000000_claims_unknown_speaker_role.sql`, `20261019000000_claim_state_write.sql`을 순서대로 파일 하나씩 적용했고, 각각 읽기로 확인했다. 최종 화자 제약에 `unknown`이 있고 RPC 본문은 두 번째 파일과 같으며, execute 권한은 service_role만 유지된다(anon·authenticated는 false). 기존 데이터 재처리·수정·삭제나 `db push`는 하지 않았다.
+- 최종 merge SHA `da121baf494649c391c5e917a813c1cb2344ef11`의 Vercel Production 배포 `6763975671`은 2026-10-01 00:58:22 KST `success` / `Deployment has completed`였다. [배포 URL](https://taskforce-okgijkb2v-songch9511s-projects.vercel.app). [main 통합 CI](https://github.com/songch9511/taskforce-new/actions/runs/36740703587)의 `check`·`apple`도 이 SHA에서 모두 SUCCESS였다. 같은 소스 트리의 로컬 lint·typecheck·130 파일/1,702 테스트·eval 라벨 검사·build도 통과했다.
+- Apple 수정은 main 소스에 반영된 상태이며 Vercel 배포가 서명 앱 배포를 뜻하지 않는다. 사용자가 실제 OAuth·연결·기기 E2E는 필수적인 막힘이 없는 한 W1–W5가 끝난 뒤로 미뤘다. 이 단계에서 실제 제공자 인증·연결·기기 E2E는 실행하지 않았다.
+- 위 머지 승인 범위는 #55–#60이다. 이후 만드는 W3 나머지·W1·W4·W5 PR의 머지와 새로운 운영 DB 변경은 다시 별도 승인 대상이다.
+
+### 이전 PR #54 및 QA 기준선
 
 - [PR #54](https://github.com/songch9511/taskforce-new/pull/54)는 Draft 해제 후 2026-09-30 11:56:31 UTC `b944b40` merge commit으로 `MERGED` 됐다. PR 최종 HEAD는 `35a24ec`이며 merge tree와 완전히 같다.
 - PR #54 최종 HEAD `35a24ec`에서 `npm run lint`, `npm run typecheck`, 전체 테스트 128 파일 · 1,645 테스트, 실제 모델 eval, `npm run build`가 통과했다. merge commit의 코드 tree가 같아 이 결과를 재사용한다. GitHub Actions [`check`와 `apple`](https://github.com/songch9511/taskforce-new/actions/runs/36708650219)도 모두 `SUCCESS`다. CI의 eval 단계는 키 없이 실행하는 라벨 검사이며 실제 모델 eval과 구분한다.
 - 실제 모델 eval은 2026-09-30 11:26 UTC 개발 키로 실행했다. 자동 반영과 확인 요청 합계: precision 91.5%, recall 92.9%, 담당 정확도 96.9%, 기한 정확도 98.5%. 자동 반영만: precision 98.2%, recall 81.8%, 담당·기한 정확도 100%. 시퀀스 28/28 정답, 추가 0, pending 2; 질문 8/8; 오류 0; 비용 $0.164.
 - 운영 배포 `6758727983`은 SHA `b944b40`로 11:57:24 UTC에 GitHub의 Vercel Production deployment 상태 `success` / `Deployment has completed`임을 확인했다. [배포 URL](https://taskforce-chah5ca8a-songch9511s-projects.vercel.app). `GET https://api.taskforcelabs.dev/api/v1/now`의 무인증 요청은 HTTP 401이었다. 이것은 인증이 없는 요청의 기본 응답만 확인한 것이며 유효 토큰 로그인이나 E2E 증거가 아니다.
-- 이번 단계에서 실제 제공자 OAuth, 로그인·연결, 서명 기기 E2E는 실행하지 않았고 운영 DB 변경도 없었다.
+- PR #54 단계에서 실제 제공자 OAuth, 로그인·연결, 서명 기기 E2E는 실행하지 않았고 운영 DB 변경도 없었다.
 - **당시 기준선 (2026-09-30 09:00 UTC, 읽기 전용 집계; 현재 상태로 간주하지 않음):**
   - 연결 4개(Notion 3 · Gmail 1) 모두 `active`, 마지막 동기화 08:45 UTC, 오류 · 걸린 잠금 없음. Slack · Google(Calendar · Meet) 연결은 없다 (Google은 심사 전이라 닫혀 있다).
   - 원문 294건: 처리 완료 292, 실패 2, 멈춘 것 0. 실패 2건은 모두 `빈 응답 (finish_reason: length)` (9/27 · 9/29, 재시도 수정 전).
@@ -17,28 +37,28 @@
   - 프로필 4개 중 3개만 AI 동의를 마쳤다. 동의 없는 프로필 1개는 동기화 대상에서 빠진다 (`syncable_connections`).
   - 원문이 있는 계정은 모두 열린 할 일이 있다. "할 일이 아예 안 생기는 계정"은 이 집계에서 보이지 않았다.
 
-### W3 치명적 경로 재검증 (후속 PR, 운영 미반영)
+### W3 치명적 경로 재검증 (main 머지 완료, 서명 앱 배포 별도)
 
-실제 운영 피해를 확인한 기록이 아니다. 아래 우선순위는 현재 코드·SDK 및 로컬 재현의 영향과 발생 조건에 따른다. 코드 작성은 GPT-6 Luna Max가 맡았고, 세 문제는 모두 `b944b40` 기반 별도 브랜치로 분리했다. 서로 변경 파일이 겹치지 않으며 다른 후속 PR을 기반으로 쌓지 않는다. 이 문서는 문서 전용 [Draft PR #55](https://github.com/songch9511/taskforce-new/pull/55)에서만 수정한다.
+실제 운영 피해를 확인한 기록이 아니다. 아래 우선순위는 현재 코드·SDK 및 로컬 재현의 영향과 발생 조건에 따른다. 코드 작성은 GPT-6 Luna Max가 맡았고, 세 문제는 모두 `b944b40` 기반 별도 브랜치로 분리했다. 서로 변경 파일이 겹치지 않으며 다른 후속 PR을 기반으로 쌓지 않는다. 아래 당시 검증 기록은 문서 전용 [PR #55](https://github.com/songch9511/taskforce-new/pull/55)로 머지했다.
 
 | 우선순위 | 문제·영향·발생 조건 | 근거와 조치 |
 |---|---|---|
-| P1 · 1 | 이전 계정의 진행 중 토큰 갱신이 계정 전환 뒤 성공하면 새 세션을 이전 계정으로 덮고, 특정 실패 응답이면 새 세션을 지운다. API 토큰이 바뀌므로 읽기·쓰기 계정이 잘못될 수 있다. 갱신과 로그아웃/다음 로그인이 겹쳐야 한다. 운영 발생률은 미확인 | 고정된 Supabase Swift 2.55.2의 코드와 공식 [2.55.3 수정](https://github.com/supabase/supabase-swift/releases/tag/v2.55.3)을 확인했다. [Draft PR #57](https://github.com/songch9511/taskforce-new/pull/57), `20d87bf`. SDK 최소 버전과 두 lockfile을 2.55.3으로 올렸다. 공개 AuthClient와 AppServices 회귀에서 2.55.2는 이전 계정 토큰 전송·새 세션 삭제·로그아웃 후 복원이 재현됐고, 2.55.3은 세 경우를 막으면서 정상 갱신도 통과했다. 자체 갱신 관리자는 만들지 않았다 |
-| P1 · 2 | Mac에서 원문 읽기 중 계정을 바꾸면 이전 계정의 늦은 응답이 원문 화면을 다시 채울 수 있다. 공유 기기에서 이전 계정 원문이 노출된다. 원문 요청과 계정 전환이 겹칠 때 발생하며 운영 빈도는 미확인 | `LauncherModel.sessionChanged`는 화면만 비우고 `work`를 취소하지 않았다. [Draft PR #58](https://github.com/songch9511/taskforce-new/pull/58), `a4f70e9`. 실제 LauncherModel과 TaskforceReads를 호출하는 회귀에서 이전 원문 재표시를 재현했다. 기존 Task 취소와 취소 뒤 오류 무시를 3줄로 적용했고 정상 읽기는 유지됐다. 새 앱 테스트 타깃과 CI 실행도 추가했다 |
-| P1 · 3 | Keychain에 A가 남은 채 B 저장이 실패하면 화면은 B, API 토큰은 A가 될 수 있다. 저장 실패와 이전 세션 잔존이 함께 필요하다. OS 실패의 실제 빈도는 미확인 | [Draft PR #56](https://github.com/songch9511/taskforce-new/pull/56), `b2bb927`. 기존 코드의 잘못된 표시를 로컬 저장소 fixture로 재현했다. 새 로그인은 저장된 사용자 ID와 대조하고, 늦은 세션 이벤트는 현재 저장된 계정 또는 로그아웃 상태를 따른다. 같은 사용자 토큰 교체와 만료 세션의 오프라인 표시는 유지한다 |
+| P1 · 1 | 이전 계정의 진행 중 토큰 갱신이 계정 전환 뒤 성공하면 새 세션을 이전 계정으로 덮고, 특정 실패 응답이면 새 세션을 지운다. API 토큰이 바뀌므로 읽기·쓰기 계정이 잘못될 수 있다. 갱신과 로그아웃/다음 로그인이 겹쳐야 한다. 운영 발생률은 미확인 | 고정된 Supabase Swift 2.55.2의 코드와 공식 [2.55.3 수정](https://github.com/supabase/supabase-swift/releases/tag/v2.55.3)을 확인했다. [PR #57](https://github.com/songch9511/taskforce-new/pull/57), `20d87bf`. SDK 최소 버전과 두 lockfile을 2.55.3으로 올렸다. 공개 AuthClient와 AppServices 회귀에서 2.55.2는 이전 계정 토큰 전송·새 세션 삭제·로그아웃 후 복원이 재현됐고, 2.55.3은 세 경우를 막으면서 정상 갱신도 통과했다. 자체 갱신 관리자는 만들지 않았다 |
+| P1 · 2 | Mac에서 원문 읽기 중 계정을 바꾸면 이전 계정의 늦은 응답이 원문 화면을 다시 채울 수 있다. 공유 기기에서 이전 계정 원문이 노출된다. 원문 요청과 계정 전환이 겹칠 때 발생하며 운영 빈도는 미확인 | `LauncherModel.sessionChanged`는 화면만 비우고 `work`를 취소하지 않았다. [PR #58](https://github.com/songch9511/taskforce-new/pull/58), `a4f70e9`. 실제 LauncherModel과 TaskforceReads를 호출하는 회귀에서 이전 원문 재표시를 재현했다. 기존 Task 취소와 취소 뒤 오류 무시를 3줄로 적용했고 정상 읽기는 유지됐다. 새 앱 테스트 타깃과 CI 실행도 추가했다 |
+| P1 · 3 | Keychain에 A가 남은 채 B 저장이 실패하면 화면은 B, API 토큰은 A가 될 수 있다. 저장 실패와 이전 세션 잔존이 함께 필요하다. OS 실패의 실제 빈도는 미확인 | [PR #56](https://github.com/songch9511/taskforce-new/pull/56), `b2bb927`. 기존 코드의 잘못된 표시를 로컬 저장소 fixture로 재현했다. 새 로그인은 저장된 사용자 ID와 대조하고, 늦은 세션 이벤트는 현재 저장된 계정 또는 로그아웃 상태를 따른다. 같은 사용자 토큰 교체와 만료 세션의 오프라인 표시는 유지한다 |
 
 - **서버 W3e:** 설치된 `@supabase/auth-js` 2.117.1의 `getClaims`는 서명·만료를 검증하고 HS/JWKS 미확보 경로에서는 Auth `getUser`로 검증한다. 오프라인 SDK 재현에서 만료·오서명·다른 프로젝트 키 토큰은 거절됐다. 신뢰된 테스트 개인키로 직접 서명한 `sub` 누락/다른 role 토큰을 받아들인 것은 claim 형식 검사가 없다는 근거이며, 공개 키만 가진 사용자의 우회 재현은 아니다. 표준 Supabase Auth 발급 경로에서 도달 가능한 인증 우회·타인 계정 접근은 확인하지 못했다. [Custom Access Token Hook](https://supabase.com/docs/guides/auth/auth-hooks/custom-access-token-hook)은 `sub`·`role`을 필수로 요구한다. 저장소에는 가입 전 훅만 있으며 **운영 Dashboard의 signing key/custom token hook 설정은 확인하지 않았다**.
 - `connections/sync`의 사용자 ID가 없으면 전체 연결 조회가 가능한 내부 경로는 앞선 사용자 범위 동의 조회가 막는다. 로컬 PGlite에서 일반 `authenticated` role + `auth.uid() = null`은 프로필 0건이었다. 관련 RLS 4 파일 · 35 테스트가 통과했다. 서비스 역할 쓰기의 사용자 필터/소유권 RPC도 호출 흐름으로 점검했다. 이를 운영 설정 전체의 안전성 검증으로 표현하지 않는다.
-- SDK가 이미 수행하는 만료·폐기 refresh 세션 정리는 다시 구현하지 않는다. 잘못된 JSON JWT가 401 대신 500을 만드는 별도 오류 처리는 확인했으며 W3 나머지 단계에 남긴다. API 401 반복 안내, Google 창 취소 복구와 이메일 오류 문구도 다음 W3 범위다. 전체 기기 로그아웃 정책과 Apple 이메일 숨기기/Google 계정 통합은 제품 결정 대상으로 유지한다.
+- SDK가 이미 수행하는 만료·폐기 refresh 세션 정리는 다시 구현하지 않는다. 잘못된 JSON JWT가 401 대신 500을 만드는 오류 처리는 이후 W3 나머지 단계의 Draft PR #63에서 수정했다. API 401 반복 안내·이메일 오류 문구의 수정과 Google 취소 재검증은 아래 W3 나머지 절을 본다. 일반 로그아웃은 이후 `.local` 정책으로 확정했으나 구현·검증은 남아 있고, Apple 이메일 숨기기/Google 계정의 데이터 통합은 범위 밖으로 보류한다.
 - 세 코드 브랜치에서 lint, typecheck, 전체 Node 테스트 128 파일 · 1,645개, `npm run eval -- --labels`, build가 통과했다. 추출·판정·병합·프롬프트를 바꾸지 않아 실제 모델 eval은 다시 실행하지 않았다. #56은 SwiftPM 285 테스트 · 28 suite, #57은 284 테스트 · 29 suite, #58은 실제 Mac 모델 3개 테스트와 iOS Simulator 빌드가 통과했다.
 - 세 수정을 별도 검증 checkout에 함께 적용해 **SwiftPM 289 테스트 · 29 suite, Mac 모델 3개 테스트, iOS Simulator 빌드**도 통과했다. Xcode 26.6 / `CODE_SIGNING_ALLOWED=NO` 검증이다. 테스트 데이터는 가짜 계정·토큰·원문이며 실제 제공자/서명 기기 증거가 아니다. 최종 필수 검사 실패는 없으며, 수정 전 회귀 실패는 버그 재현 근거로 구분한다.
-- 코드 PR의 최신 HEAD CI: [#56 `b2bb927`](https://github.com/songch9511/taskforce-new/actions/runs/36720414012), [#57 `20d87bf`](https://github.com/songch9511/taskforce-new/actions/runs/36721843202), [#58 `a4f70e9`](https://github.com/songch9511/taskforce-new/actions/runs/36722835621) 모두 `check`·`apple`이 `SUCCESS`임을 2026-09-30 13:44 UTC에 확인했다. 세 PR은 Draft이며 운영에 merge하지 않았다.
+- 코드 PR의 최신 HEAD CI: [#56 `b2bb927`](https://github.com/songch9511/taskforce-new/actions/runs/36720414012), [#57 `20d87bf`](https://github.com/songch9511/taskforce-new/actions/runs/36721843202), [#58 `a4f70e9`](https://github.com/songch9511/taskforce-new/actions/runs/36722835621) 모두 `check`·`apple`이 `SUCCESS`임을 2026-09-30 13:44 UTC에 확인했다. 당시에는 Draft였으며, 이후 사용자 승인으로 위 머지 절의 커밋에 반영했다.
 - 원본 공유 checkout의 `main`/HEAD `72cbe39`와 스테이징 index는 시작 시점 그대로다. 보존 검사에서 초기 스냅샷 27개 파일 중 26개가 동일했고, 동시에 변경된 `docs/LAUNCH_VIDEO.md`는 이번 작업에서 건드리지 않았다. 코드 PR마다 지정 파일만 커밋했고 공유 폴더에서 reset/clean/stash/브랜치 전환을 하지 않았다.
-- 실제 제공자 OAuth, 서명 앱/기기 Keychain, 로그인·연결 E2E는 실행하지 않았다. 후속 PR은 Draft로 남기며 merge·운영 DB 변경·계정 통합·파괴적 정리는 하지 않는다.
+- 실제 제공자 OAuth, 서명 앱/기기 Keychain, 로그인·연결 E2E는 실행하지 않았다. 당시 후속 PR은 Draft로 남겼다. 이후 #55–#60 머지와 두 스키마 변경만 승인·실행했으며, 계정 통합·파괴적 정리는 하지 않았다.
 
-### W2 담당·상태 변경 재검증 (후속 PR, 운영 미반영)
+### W2 담당·상태 변경 재검증 (main·운영 서버 반영 완료)
 
-기존 W2 표의 `확인`·`보고`는 아래와 같이 현재 코드·호출 흐름·회귀 테스트로 다시 검증했다. 운영 피해 건수나 빈도를 확인한 것은 아니다. GPT-6 Luna Max가 코드를 작성했으며 두 W2 브랜치는 `origin/main`의 `b944b40`에서 시작했다. W3 Draft PR #56–#58에 의존하지 않는다. 런타임 수정은 신원 판별 → Claim 판정 → 병합 → DB 저장이 함께 유지되어야 해 [Draft PR #60](https://github.com/songch9511/taskforce-new/pull/60), `dcf5da0`에 모았고, 독립적인 eval 지표는 [Draft PR #59](https://github.com/songch9511/taskforce-new/pull/59), `fe717b9`로 분리했다. 두 PR은 변경 파일이 겹치지 않는다.
+기존 W2 표의 `확인`·`보고`는 아래와 같이 현재 코드·호출 흐름·회귀 테스트로 다시 검증했다. 운영 피해 건수나 빈도를 확인한 것은 아니다. GPT-6 Luna Max가 코드를 작성했으며 두 W2 브랜치는 `origin/main`의 `b944b40`에서 시작했다. W3 Draft PR #56–#58에 의존하지 않는다. 런타임 수정은 신원 판별 → Claim 판정 → 병합 → DB 저장이 함께 유지되어야 해 [PR #60](https://github.com/songch9511/taskforce-new/pull/60), `dcf5da0`에 모았고, 독립적인 eval 지표는 [PR #59](https://github.com/songch9511/taskforce-new/pull/59), `fe717b9`로 분리했다. 두 PR은 변경 파일이 겹치지 않는다.
 
 | 우선순위 | 재현 조건·영향 | 확인된 원인과 조치 |
 |---|---|---|
@@ -68,15 +88,46 @@
 - 추가 2 사례를 포함한 전체 84 사례: 자동+확인 정밀도·재현율 93.1%·93.1%, 담당 98.5%·기한 100%; 자동 전용 정밀도·재현율 98.2%·83.6%, 담당·기한 100%. 시퀀스 최종 정답 **29/29**, 추가 자동 생성 0, 확인 대기 5. 새 동명이인 취소 시퀀스는 할 일을 `open`으로 유지하며 확인 이유를 남겼다.
 - **남은 품질 문제:** 새 Notion 동명이인 단일 사례에서 추출기가 확인용 후보 1개를 누락했다(명시적 전체 이름 1개는 정상 처리). 누락을 통과로 세지 않는다. 추출되었을 때 보류하는 경로는 결정적 회귀 테스트로 검증했다. 공통 사례의 남의 일 오탐 3개는 확인 대상으로 남고, 자동 전용 오탐 1개는 중복이다. 기존 `notion-summary-with-attendees`의 담당 필드 오류 1개도 남는다. 기존 질문 1개는 기준선에서 답 문구 채점에 실패했으며 수정 후 실행은 8/8이다. 이를 해결하려고 임계값이나 프롬프트를 임의로 바꾸지 않았다.
 - **CI 연결:** [#59 `fe717b9`](https://github.com/songch9511/taskforce-new/actions/runs/36728768560)의 `check`·`apple`은 모두 SUCCESS였다. [#60 `dcf5da0`의 필수 CI](https://github.com/songch9511/taskforce-new/actions/runs/36737816271)와 [문서 PR #55의 최신 검사](https://github.com/songch9511/taskforce-new/pull/55/checks)는 해당 HEAD의 결과를 확인한다. CI eval은 키 없는 라벨 검사이고 실제 모델 eval은 위 별도 실행이다.
-- **merge 전 별도 승인 필요:** 운영 DB에는 아무것도 적용하지 않았다. 런북에 따라 `20261018000000_claims_unknown_speaker_role.sql`(기존 화자 역할 제약에 unknown 추가), `20261019000000_claim_state_write.sql`(기존 RPC에서 Claim 상태 보존)을 하나씩 승인·적용·확인한 뒤 #60을 merge해야 한다. 기존 운영 데이터의 수정·재처리·삭제는 실행하지 않았다. `db push` 금지다.
+- **운영 적용 완료:** 사용자 별도 승인 후 `20261018000000_claims_unknown_speaker_role.sql`(기존 화자 역할 제약에 unknown 추가), `20261019000000_claim_state_write.sql`(기존 RPC에서 Claim 상태 보존)을 하나씩 적용·확인한 뒤 #60을 merge했다. 상세는 위 머지 절을 본다. 기존 운영 데이터의 수정·재처리·삭제는 실행하지 않았다. `db push` 금지다.
 - 원본 공유 checkout은 `main`/HEAD `72cbe39`, 스테이징 index와 상태 목록이 시작 때와 같다. 시작 스냅샷 27개 파일 중 26개가 같았으며, 다른 세션이 바꾼 `docs/LAUNCH_VIDEO.md`는 건드리지 않았다. 이번 런타임 26개 파일과 eval 4개 파일만 각 전용 브랜치에 커밋했다. 공유 폴더에서 reset·clean·stash·브랜치 전환은 하지 않았다.
+
+### W3 나머지 로그인 사용성 (부분 완료, 후속 Draft는 main 미반영)
+
+기존 W3 표의 보고·추정을 최신 main `da121ba`와 고정 SDK의 실제 호출 흐름으로 다시 확인했다. 코드 작성은 GPT-6 Luna Max가 맡았다. 독립 변경은 겹치지 않는 파일로 분리했으며 이 단계의 새 PR은 merge하지 않는다.
+
+| 우선순위 | 확인된 문제와 조건 | 변경·근거 |
+|---|---|---|
+| P2 | 설치 SDK가 잘못된 JSON JWT·null/numeric alg 헤더·비문자열 저장 토큰에서 원시 예외를 던져 인증 거절 대신 500을 만든다. 깨진 토큰으로 재현되며 인증 우회·데이터 노출을 확인한 문제는 아니다 | [Draft PR #63](https://github.com/songch9511/taskforce-new/pull/63), `167948e`. API·서버 화면·proxy의 세 getClaims 호출에 같은 오류 경계를 사용한다. SDK 서명·만료 검증은 유지하고 재현한 입력 오류만 SDK의 invalid-JWT 결과로 돌린다. getSession은 손상 토큰을 거절하는 데만 쓰고 session.user를 신뢰하지 않는다. 정상 헤더의 WebCrypto TypeError·구성 오류는 전파하고 JWKS 오류·CSRF·쿠키·리다이렉트를 유지한다 |
+| P2 | API가 401을 반환해도 앱은 로그인 상태를 유지하는데 재로그인 안내만 있어 같은 작업을 반복할 수 있다. 401만으로 Supabase 세션 만료라고 확정할 수는 없다 | [Draft PR #61](https://github.com/songch9511/taskforce-new/pull/61), `7289fe5`. 실제 iPhone Account 및 Mac Settings → Account 경로에 맞춰 Sign Out → 로그인 방법과 현재 모든 기기 로그아웃 영향을 안내한다. 로컬 세션이 없으면 로그인 안내만 한다. 자동 로그아웃·세션 무효화 정책은 추가하지 않았다 |
+| P2 | 이메일 로그인에서 네트워크 단절·429·서버 장애도 이메일/비밀번호 실수로 표시된다. 사용자가 잘못된 원인에 대응하게 된다 | [Draft PR #62](https://github.com/songch9511/taskforce-new/pull/62), `f089a43`. SDK의 오류 코드·URLError로 분류한다. 잘못된 자격 증명 문구는 유지하고 속도 제한·연결 실패를 구분하며, 예상 밖 오류와 허용되지 않은 계정은 같은 중립적인 안내로 처리해 계정 존재·허용 목록을 공개하지 않는다. 실제 SDK fixture에서 수정 전 세 종류의 오분류를 재현했다 |
+
+- #61은 APIClient 27 테스트, 전체 SwiftPM 290 테스트/29 suite를 통과했다. #62는 SessionStore 18 테스트, 전체 SwiftPM 294 테스트/29 suite를 통과했다. 실제 제공자 호출·UI 기기 E2E가 아닌 mock HTTP/SDK fixture 검증이다. 두 PR의 서버 소스·의존성은 `da121ba`와 같아 같은 서버 트리의 로컬 lint·typecheck·1,702 테스트·라벨 검사·build 결과를 재사용한다. 각 최신 HEAD의 필수 CI는 [#61](https://github.com/songch9511/taskforce-new/pull/61/checks), [#62](https://github.com/songch9511/taskforce-new/pull/62/checks)에서 별도로 확인한다.
+- #63은 설치된 실제 SDK의 로컬 fixture로 기존 예외를 재현했고, 집중 4 파일/24 테스트와 전체 **133 파일/1,714 테스트**, lint·typecheck·eval 라벨 검사(84 사례)·build·diff 검사를 통과했다. [최신 HEAD 필수 CI](https://github.com/songch9511/taskforce-new/pull/63/checks)를 별도로 확인한다. 추출·판정·병합·프롬프트를 바꾸지 않아 W3에서 실제 모델 eval은 재실행하지 않았다.
+- 일반 리뷰에서 인증 거절·정상 사용자 매핑·오류 전파·쿠키/CSRF/리다이렉트를 대조했고, Ponytail 리뷰에서 SDK 재사용과 세 호출부에 필요한 공용 예외 처리만 유지했다. 새 의존성·자체 서명 검증기·로그인 관리 프레임워크는 없다. 세 코드 PR은 모두 병합된 main `da121ba` 기반이며 서로 선행 머지에 의존하거나 같은 파일을 중복 수정하지 않는다.
+- 이번 단계 전후 원본 공유 checkout의 `main`/HEAD `72cbe39`, index, 상태 목록과 스냅샷 파일 27개 해시가 모두 같다. 공유 폴더의 다른 세션 변경은 보존했고 새 코드 PR당 2개/2개/8개 파일만 커밋했다. HANDOFF는 별도 문서 브랜치로 분리했다.
+- #62에서 저장소 필수 검사가 아닌 stock `swift format lint --strict`도 시도했으나 기존 4칸 들여쓰기를 기본 2칸 규칙과 비교해 실패했다. 저장소에는 그 formatter 설정이 없으므로 기존 스타일을 유지했다. 필수 검사의 실패로 세지 않으며 이 부가 검사를 통과했다고 표현하지 않는다.
+- **Google 취소 멈춤: 재현 검증 대기.** 고정 GoogleSignIn-iOS 10.0.0은 AppAuth 사용자 취소와 OAuth `access_denied`를 `.canceled`로 전달한다. 앱은 취소를 조용히 처리하고 완료 경로의 `onFinish`가 런처 자동 닫기 중지를 해제한다. 이 코드 조사만으로 실제 기기 검증을 완료 처리하지 않는다. Mac·iPhone 각각 취소, 권한 거절, 취소 직후 재시도를 실행해 로그인 버튼과 런처가 다시 반응해야 닫는다. 멈춤이 재현되면 호출 흐름과 로그를 근거로 수정하며, 지금은 watchdog·타이머·강제 초기화를 추가하지 않는다.
+- **일반 로그아웃: 정책 확정, 구현·검증 미완료 (2026-10-01 KST).** 기본은 명시적 `.local`로 이 기기 세션만 종료한다. 다른 기기의 세션은 유지하며, 모든 기기 로그아웃은 필요할 때 별도의 명시적 동작으로 다룬다. 현재 코드는 아직 Swift SDK 기본 `.global`이고, 계정 삭제 뒤 로컬 정리만 `.local`이다. 이번 단계에서 로그아웃은 정책과 완료 조건만 기록한다. 후속 구현에서는 현재 기기의 화면·계정별 캐시·진행 중 요청을 정리하고 늦은 응답으로 이전 계정 데이터가 다시 보이지 않는지, 다른 기기 세션과 갱신은 유지되는지 검증한다. **PR #61의 모든 기기 안내는 실제 `.local` 동작 변경과 함께 수정·검증해야 하며 현재 상태를 최종 정책 구현 완료로 머지하지 않는다.** SDK의 세션 정리는 재사용한다. [공식 signout 문서](https://supabase.com/docs/guides/auth/signout)는 두 범위를 지원하며, 폐기한 세션의 access token도 만료까지 유효할 수 있다고 설명한다. 다른 기기의 즉시 화면 종료를 global 검증 기준으로 삼지 않는다.
+- **계정 통합: 이번 범위 밖으로 보류, 완료 아님.** 이미 존재하는 두 계정의 데이터 병합은 할 일·연결·동의·중복 처리 결정을 포함하는 별도 기능이다. 현재 계정·로그인 수단 표시와 Apple 이메일 가리기 사용 시 기존 Apple 로그인으로 돌아가는 안내는 후속 구현·검증 항목으로 남긴다. 이후에는 로그인한 기존 계정에 로그인 수단을 추가하는 [공식 identity linking](https://supabase.com/docs/guides/auth/auth-identity-linking)을 먼저 검토하되, 이를 두 계정의 앱 데이터 병합과 같은 작업으로 취급하지 않는다. 이번에는 UI·인증 설정·운영 계정·데이터를 변경하지 않는다.
+- **상태 집계 원칙:** W3는 **부분 완료**다. 위 세 버그 수정의 코드·로컬 테스트·CI 완료와 W3 전체 완료는 다르다. `.local` 구현은 W1과 별도 PR로 추적한다(전용 구현 PR은 아직 생성하지 않았고 구현 대기). 그 PR은 실제 로그아웃 동작, PR #61 안내 문구, 현재 기기의 화면·캐시·진행 중 요청 정리, 다른 기기 세션·갱신 유지 검증을 함께 마쳐야 한다. PR #62도 SessionStore를 수정하므로 구현 시 두 PR의 의존성과 파일 충돌을 먼저 정리한다. Google 취소는 재현 검증 대기, 실제 OAuth·연결·기기 E2E는 출시 전 필수 미실행이다. **W3 최종 완료 조건은 로그아웃 구현 완료 + 실제 인증·취소 E2E 통과**이며, 계정 통합은 별도 기능이라 이 완료 조건에 포함하지 않는다. 보류·미실행·미재현을 성공 또는 완료로 집계하지 않는다.
+
+### W1 확인 부담 재검증 (2026-10-01 KST)
+
+- **진단 범위:** 09-30 당시 확인 요청 43%와 담당 불확실 31건은 과거 집계이며 이번에 운영 원문을 읽거나 현재 비율로 다시 측정하지 않았다. 최신 main `da121ba`의 앱 Confirm/Dismiss, 원문 재처리, Claim 판정·병합, 알림 호출 흐름을 대조했다. W2의 담당 충돌·불확실한 Claim 보류·낮은 병합 확신도 보호는 유지한다.
+- **수정 전 확인된 P2:** `mergeTask`는 연결된 완료 항목의 이후 속성 변경도 Claim으로 보관한다. 예를 들어 동료가 담당을 바꾸면 확인 사유가 생길 수 있다. `SupabaseActionStore`는 `needs_confirmation`만 보고 알림 대상으로 삼고 `processTaskSource` → `notifyConfirmations`는 그 ID로 푸시를 보낸다. 하지만 `/now`와 `rankNow`, Mac·iPhone의 Review 목록은 열린 항목 중 담당이 other가 아닌 것만 보여 준다. 닫힌 항목·남의 항목에 생긴 확인은 푸시를 눌러도 목록에 없고, 같은 처리에서 닫힌 항목의 ID도 큐에 남을 수 있다. 반대로 확인 사유를 유지한 채 다시 열린 항목은 false→true 변화가 없어 알림을 놓친다. 호출 흐름으로 확인한 조건부 버그이며 운영 발생 빈도·푸시 수신 건수는 미측정이다.
+- **구현·검증 완료, Draft 미머지:** [PR #65](https://github.com/songch9511/taskforce-new/pull/65), 커밋 `d56d6ea` (`codex/w1-confirmation`). 최신 main `da121ba`에서 분리했고 W3 Draft #61–#63에 의존하거나 파일이 겹치지 않는다. GPT-6 Luna Max가 `rank.ts`, `db-store.ts`, `db-store.test.ts`만 수정했다. 목록과 생성·붙임 후 알림 큐가 같은 작은 조건(`open` · owner가 `other`가 아님 · 확인 필요)을 쓰며, Review에 들어올 때만 알리고 같은 처리에서 대상 밖으로 나가면 ID를 뺀다. 담당 판정·Claim·확인 사유·이벤트·동시 수정 재시도·사용자 범위는 유지했다. 일반 리뷰와 Ponytail 리뷰에서 추가 필수 문제를 찾지 못했다.
+- **검증 증거와 한계:** 수정 전 회귀 테스트는 5건 실패했고 수정 후 관련 20개 테스트가 통과했다. 전체 130개 파일 / **1,708개 테스트**, lint, typecheck, build, `git diff --check`가 통과했다. `npm run eval -- --labels`도 통과했다(추출 84건, 기대 Action 101개, 금지 문장 221개; 물어보기 8건). 추출·판정·병합·프롬프트·골든셋은 바꾸지 않아 실제 모델 채점을 재실행하지 않았고 품질 지표 개선으로 표현하지 않는다. 최신 커밋의 필수 CI `check`·`apple` 결과는 [PR 검사](https://github.com/songch9511/taskforce-new/pull/65/checks)에서 별도로 확인한다. 실제 APNs 수신·OAuth·연결·기기 E2E는 미실행이며 출시 전 검증으로 남긴다. 로컬 로그는 `/var/folders/xj/m5m8d4j96f9_msr1vt_x577m0000gn/T/taskforce-w1-dpadye9k/`에 있다.
+- **작업 공간 보존:** 이번 단계 시작 시점의 공유 원본 `main`/HEAD `72cbe39`, index, 상태 목록이 최종 점검에서도 같다. 스냅샷 파일 27개 중 26개가 같고, 진행 중 다른 세션이 바꾼 `docs/LAUNCH_VIDEO.md`는 그대로 보존했다. 다른 세션의 변경과 별도 dirty W2 Claim 작업 트리는 건드리지 않았다. 운영 DB 변경·원문 조회·새 PR 머지는 실행하지 않았다.
+- **이미 있는 반복 방지:** 같은 구조화된 할 일 속성 스냅샷은 다시 처리하지 않고, 재시도 원문의 이미 적용된 인용은 병합 전에 제외한다. 한 원문의 여러 확인 요청은 푸시 하나로 묶으며, 같은 처리에서 확정돼 확인이 풀린 항목은 큐에서 뺀다. 충분히 확실한 본인 발언이 붙으면 기존 판정 확인을 푸는 경로도 있다. 이 기능을 중복 구현하지 않는다.
+- **억지로 바꾸지 않은 항목:** 판정 이유만 있는 Confirm은 그 이유를 지우고 `user_confirmed` 이벤트를 남기되 필드 Claim을 추가하지 않을 수 있다. 같은 원문 재시도는 이미 인용으로 중복을 막고, 다른 원문의 새 불확실성은 다시 확인할 근거가 있다. 단지 이전에 확인했다는 이유로 이후의 담당·병합 확인을 모두 억제하지 않는다. Confirm이 현재 불확실한 필드를 함께 확인하는 동작도 기존 문서의 한 번 탭 확인과 모순되는 버그로 확인하지 못했다.
+- **제품 선택으로 남는 W1 범위:** 담당 증거가 없는 원문을 자동 배정하거나 임계값을 낮추는 방식은 사용하지 않는다. 다음 최소 방향 후보는 **같은 원문의 근거를 보면서 사용자가 선택한 항목만 함께 확인하는 UI**다. 이 기능은 클릭 수를 줄이지만 선택 범위·부분 실패 처리 등 제품 선택이 필요해 이번에 구현하지 않았다. Calendar 참석 사실이나 Notion 문서 작성자만으로 개별 할 일 담당을 확정하지 않으며, W2의 `written_by_me` 정책도 그대로 둔다. 이번 알림 수정으로 과거 43% 확인 비율이나 담당 불확실성이 해결됐다고 표현하지 않는다.
 
 ## 2. 작업 규칙 (저장소 소유자와 합의)
 
 - 코드 작성은 GPT-6 Luna Max에 위임한다. 최신 `origin/main` 기반 전용 worktree에서 작업하고, 공유 원본 checkout의 미커밋 상태는 보존한다 (`reset` · `clean` · `stash` · 브랜치 전환 금지).
 - **PR #54 최종 수정과 merge는 승인되어 완료됐다.** W1–W5 진단, 코드 수정, 회귀 테스트, 후속 PR 초안 작성은 승인되어 있으며 일반 버그마다 다시 승인받을 필요는 없다. 각 단계가 끝나면 근거와 결과를 보고하고 멈춘다. 3장의 W1–W5는 승인된 후속 작업 범위다. 문서에 적힌 방향 선택 등 제품 선택이 필요한 변경은 답을 얻을 때까지 보류한다.
-- 사용자의 후속 진행 요청으로 W3 치명적 인증·계정·세션에 이어 W2 담당·상태 변경을 진행했다. W2 결과를 보고한 뒤 멈춘다. 다음 단계는 W3 나머지 UX이며, W1·W4·W5와 함께 아직 시작하지 않았다.
-- 후속 PR merge(운영 배포), 운영 DB 쓰기, 계정 통합, 파괴적인 정리는 별도 승인이 필요하다. 확인된 인증 우회, 타인 데이터 접근, 데이터 손실, 잘못된 자동 완료는 아래 우선순위보다 먼저 다룬다.
+- W3 치명적 인증·계정·세션과 W2를 마친 뒤 사용자 요청으로 기존 PR을 머지했다. W3 나머지 UX의 세 버그 수정은 Draft로 정리했고 W3는 부분 완료다. 2026-10-01 후속 정책 요청에서는 코드·설정을 변경하지 않았으며, 이후 사용자가 W1의 독립 진행을 지시했다. 남은 W3 항목은 W1을 막지 않는다. 이번 단계는 W1만 진행하고 마친 뒤 보고하며, W4·W5는 아직 시작하지 않았다.
+- #55–#60의 merge와 명시적으로 승인된 두 스키마 변경은 완료했다. 이후 후속 PR merge(운영 배포), 새 운영 DB 쓰기, 계정 통합, 파괴적인 정리는 별도 승인이 필요하다. 확인된 인증 우회, 타인 데이터 접근, 데이터 손실, 잘못된 자동 완료는 아래 우선순위보다 먼저 다룬다.
 - 후속 작업 순서: W3 치명적 인증·계정·세션 → W2 잘못된 담당·상태 변경 → W3 나머지 UX → W1 확인 부담 → W4 처리 실패·복구 → W5 누락·갱신.
 - **`npx supabase db query --linked`는 운영 프로젝트다.** 조회는 `SELECT` 집계만, 원문 본문 · 이메일은 읽지 않는다. 쓰기와 새 마이그레이션 적용은 사용자 승인 뒤 파일 하나씩 `db query --linked -f`로 한다. `db push` 금지 ([런북 4장](go-live/runbook.md)).
 - **`main` 병합은 Vercel 운영 배포다.** PR #54 배포는 완료됐으며, 후속 PR은 별도 merge 승인 뒤 배포한다. 새 마이그레이션이 있으면 승인된 운영 DB 적용을 merge보다 먼저 해야 한다. `db push` 금지 ([런북 4장](go-live/runbook.md), [google-integration.md](go-live/google-integration.md) 마이그레이션 적용 대상).
@@ -141,9 +192,21 @@
 4. **Supabase Before-User-Created 훅이 운영에서 켜져 있는지.** 런북에 ✅가 없다. 꺼져 있으면 이메일 가입이 열려 있다.
 5. **Vercel 로그.** 보관이 1일이라 9/30 이전 실패의 로그 근거는 남아 있지 않다.
 
-## 5. 외부 제공자·기기 E2E 미실행 항목
+## 5. 출시 전 필수 OAuth·연결·기기 E2E (미실행)
 
-아래 실제 제공자·서명 기기 E2E는 PR #54, W3 치명적 경로 및 W2 단계에서 실행하지 않았다. 운영 배포 완료나 무인증 HTTP 401은 이 검증을 대신하지 않는다. 항목 번호는 [런북 체크리스트](go-live/runbook.md#go-live-체크리스트)와 같다.
+아래 실제 제공자·서명 기기 E2E는 PR #54, W3 치명적 경로·W2·W3 나머지 단계에서 실행하지 않았다. 2026-10-01 사용자 지시에 따라 필수적인 막힘이 없는 한 W1–W5 완료 뒤에 수행한다. 운영 배포 완료나 무인증 HTTP 401은 이 검증을 대신하지 않는다. 항목 번호는 [런북 체크리스트](go-live/runbook.md#go-live-체크리스트)와 같다.
+
+**출시 순서:** 테스트용 서명 Release 빌드 → 내부 배포 → 아래 실제 E2E → 공개 배포. W1–W5 뒤에 하나의 출시 검증 단계로 실행하며, 아래 최소 항목의 실제 증거를 확보하기 전에는 공개 출시 검증 완료로 처리하지 않는다. 이 순서의 기록이 내부·공개 배포나 운영 변경을 지금 실행하라는 승인은 아니다.
+
+| 최소 필수 검증 | 종료 조건 | 현재 상태 |
+|---|---|---|
+| Mac·iPhone Apple·Google 로그인과 세션 복원 | 서명 Release에서 제공자별 로그인 후 앱 재실행으로 같은 계정 세션 복원, 해당 세션의 서버 API 정상 응답 | 미실행 |
+| 실제 연결 → 원문 수집 → 할 일 표시 | 연결한 제공자의 새 원문과 앱에 표시된 할 일·근거를 대조 | 미실행 |
+| 계정 전환 격리 | 전환 후 이전 계정 화면·캐시·진행 중 요청의 늦은 결과가 노출되지 않음 | 미실행 |
+| 취소·권한 거절·직후 재시도 | Mac·iPhone에서 로그인 버튼과 런처가 다시 반응하고 재로그인 가능 | 재현 검증 대기 |
+| 일반 로그아웃 `.local` | 현재 기기 화면·캐시·요청 정리 및 재실행 후 로그아웃 유지, 다른 기기의 세션·갱신 유지, 안내 문구와 동작 일치 | 정책 확정, 구현·실제 검증 대기 |
+
+다음 기존 런북 항목도 유지한다.
 
 1. TestFlight(서명한 Release) 빌드로 Apple 로그인 → 그 세션의 access token으로 `GET /api/v1/now`가 200인지 (I5). Supabase URL · 키가 서버와 같은지가 핵심이다 (Release 빌드는 아카이브한 Mac의 `Secrets.xcconfig`를 쓴다).
 2. Google 로그인: iPhone · Mac(런처 위 브라우저 시트 포함), Apple로 만든 계정과 같은 이메일일 때의 동작 (I13).
