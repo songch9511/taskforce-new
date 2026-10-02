@@ -3,7 +3,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 
 import { DeadlineExceededError } from "@/lib/ai/deadline";
-import { LlmError } from "@/lib/ai/llm";
+import { embed, embedConfigFromEnv } from "@/lib/ai/embed";
+import { decide, jevConfigFromEnv } from "@/lib/ai/jev";
+import { completeJson, llmConfigFromEnv, LlmError } from "@/lib/ai/llm";
 import { ConsentRequiredError } from "@/lib/consent/gate";
 import type { ActionStore } from "@/lib/pipeline/merge";
 import { mergeJudged } from "@/lib/pipeline/merge";
@@ -20,8 +22,10 @@ import {
   MERGE_NO_TIME_MESSAGE,
   processDepsFromEnv,
   processSource,
+  recordSourceFailed,
   replaceJudgeLogs,
   reportMissing,
+  sourceFailureCode,
   USER_LOCK_TIMEOUT_MESSAGE,
   withUserLock,
 } from "./process";
@@ -117,6 +121,173 @@ describe("failureSummary: 실패 기록 (다시 처리할지 가른다)", () => 
     expect(failureSummary(new LlmError("응답 시간 초과 (90초)"), 1, now)).toMatchObject({ attempt: 1, retryable: true });
     // 마지막 시도였으면 더 하지 않는다 (cron이 후보에서 뺀다)
     expect(failureSummary(new LlmError("응답 시간 초과 (90초)"), 3, now)).toMatchObject({ attempt: 3, retryable: false });
+  });
+});
+
+// 실패한 원문은 앱에 보이고(GET /api/v1/now failed_sources, 앱의 RLS 읽기) 까닭 코드가 남는다 (W4, sources.processing_error_code).
+describe("sourceFailureCode: 처리 실패의 까닭 코드", () => {
+  const request = { system: "s", user: "u", schemaName: "t", schema: z.object({ ok: z.boolean() }) };
+  const timeout = () => {
+    throw new DOMException("signal timed out", "TimeoutError");
+  };
+  const respond = (status: number, body: unknown = {}) => async () => new Response(JSON.stringify(body), { status });
+  /** 실제 AI 호출 함수가 이 응답에 던지는 오류 (오류 문구가 바뀌면 분류가 깨지는 것을 여기서 잡는다) */
+  const thrown = async (call: () => Promise<unknown>) => call().then(() => expect.fail("오류가 나야 한다"), (error: unknown) => error);
+  const llm = (fetch: () => Promise<Response>) => thrown(() => completeJson({ apiKey: "k", model: "m", overrunReasoning: null, fetch: fetch as typeof globalThis.fetch }, request));
+  const jev = (fetch: () => Promise<Response>) => thrown(() => decide({ apiKey: "k", model: "j", fetch: fetch as typeof globalThis.fetch }, { state: {}, questions: {} }));
+  const emb = (fetch: () => Promise<Response>) => thrown(() => embed({ apiKey: "k", model: "e", fetch: fetch as typeof globalThis.fetch }, ["x"]));
+
+  it("AI 공급자가 한도 · 잔액으로 거절하면(402 · 403) ai_quota: LLM · Jev · 임베딩 모두", async () => {
+    for (const status of [402, 403]) {
+      expect(sourceFailureCode(await llm(respond(status)))).toBe("ai_quota");
+      expect(sourceFailureCode(await jev(respond(status)))).toBe("ai_quota");
+      expect(sourceFailureCode(await emb(respond(status)))).toBe("ai_quota");
+    }
+  });
+
+  it("그 밖의 공급자 오류 응답(429 · 500 · 추론 옵션을 받는 공급자 없음 404)은 internal", async () => {
+    expect(sourceFailureCode(await llm(respond(500)))).toBe("internal");
+    expect(sourceFailureCode(await llm(respond(404, { error: { message: "No endpoints found that can handle the requested parameters." } })))).toBe("internal");
+    expect(sourceFailureCode(await jev(respond(429)))).toBe("internal");
+    expect(sourceFailureCode(await emb(respond(503)))).toBe("internal");
+  });
+
+  it("응답 시간 초과는 ai_timeout (배경 처리: LLM은 다시 물은 뒤, Jev는 한 번 다시 물은 뒤, 임베딩은 바로)", async () => {
+    expect(sourceFailureCode(await llm(async () => timeout()))).toBe("ai_timeout");
+    expect(sourceFailureCode(await jev(async () => timeout()))).toBe("ai_timeout");
+    expect(sourceFailureCode(await emb(async () => timeout()))).toBe("ai_timeout");
+    expect(sourceFailureCode(new LlmError("응답 시간 초과 (90초)"))).toBe("ai_timeout");
+    expect(sourceFailureCode(new DeadlineExceededError("llm", "응답 시간 초과 (26초)"))).toBe("ai_timeout");
+  });
+
+  it("응답 형식이 깨지면 ai_output (빈 응답 · JSON 아님 · 스키마와 다름 · 답 없는 질문 · 임베딩 개수)", async () => {
+    const chat = (content: string | null) => respond(200, { model: "m", choices: [{ finish_reason: "stop", message: { content } }] });
+    expect(sourceFailureCode(await llm(chat(null)))).toBe("ai_output");
+    expect(sourceFailureCode(await llm(chat("not json")))).toBe("ai_output");
+    expect(sourceFailureCode(await llm(chat('{"ok":"yes"}')))).toBe("ai_output");
+    expect(sourceFailureCode(await llm(respond(200, { unexpected: true })))).toBe("ai_output");
+    expect(sourceFailureCode(await thrown(() => decide({ apiKey: "k", model: "j", fetch: respond(200, { model: "j", answers: {} }) as typeof fetch }, { state: {}, questions: { q: { type: "noul", instructions: "?" } } })))).toBe("ai_output");
+    expect(sourceFailureCode(await emb(respond(200, { data: [] })))).toBe("ai_output");
+  });
+
+  it("AI 설정 오류(키 · 모델 환경변수 없음, 추론량 제한 값이 틀림)는 AI 응답 문제가 아니라 internal", () => {
+    const configError = (make: () => unknown) => {
+      try {
+        make();
+      } catch (error) {
+        return error;
+      }
+      return expect.fail("설정 오류가 나야 한다");
+    };
+    expect(sourceFailureCode(configError(() => llmConfigFromEnv({})))).toBe("internal");
+    expect(sourceFailureCode(configError(() => llmConfigFromEnv({ OPENROUTER_API_KEY: "k", LLM_MODEL: "m", LLM_OVERRUN_REASONING_EFFORT: "max" })))).toBe("internal");
+    expect(sourceFailureCode(configError(() => jevConfigFromEnv({})))).toBe("internal");
+    expect(sourceFailureCode(configError(() => embedConfigFromEnv({})))).toBe("internal");
+  });
+
+  it("동의 철회는 consent, 그 밖(DB 오류 · 병합 대기 마감)은 internal", () => {
+    expect(sourceFailureCode(new ConsentRequiredError())).toBe("consent");
+    expect(sourceFailureCode(new Error("connection refused"))).toBe("internal");
+    expect(sourceFailureCode(new DeadlineExceededError("lock", USER_LOCK_TIMEOUT_MESSAGE))).toBe("internal");
+    expect(sourceFailureCode("문자열")).toBe("internal");
+  });
+});
+
+describe("processSource: 실패 기록 (W4)", () => {
+  const input = { text: "금요일까지 견적서 보낼게요", kind: "message" as const, occurredAt: new Date("2026-10-02T00:00:00.000Z"), identity: { name: "나", aliases: [], emails: [] } };
+  const deps = { complete: vi.fn(), decide: vi.fn(), embed: vi.fn() };
+
+  /**
+   * 표마다 준비한 응답을 돌려주고, 바꾼 값 · 넣은 행을 기록하는 가짜 service role 클라이언트.
+   * throwOnError 없이 기다리는 쿼리(실패 기록)는 updateError를 오류로 돌려준다
+   */
+  function failingAdmin(responses: Record<string, unknown> = {}, updateError: { message: string } | null = null) {
+    const updates: Record<string, unknown>[] = [];
+    const inserts: { table: string; rows: unknown }[] = [];
+    let table = "";
+    const builder: object = new Proxy(
+      {},
+      {
+        get: (_target, method) =>
+          // 실패 기록은 throwOnError 없이 결과의 error를 본다
+          method === "then"
+            ? (resolve: (value: unknown) => void) => resolve({ data: null, error: updateError })
+            : method === "throwOnError"
+              ? async () => ({ data: responses[table] ?? null })
+              : (...args: unknown[]) => {
+                  if (method === "update" && table === "sources") updates.push(args[0] as Record<string, unknown>);
+                  if (method === "insert") inserts.push({ table, rows: args[0] });
+                  return builder;
+                },
+      },
+    );
+    const admin = {
+      from: (name: string) => {
+        table = name;
+        return builder;
+      },
+    } as unknown as SupabaseClient;
+    return { admin, updates, inserts };
+  }
+
+  beforeEach(() => {
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+  });
+  afterEach(() => vi.mocked(console.error).mockRestore());
+
+  it("다시 해 볼 만한 실패는 까닭 코드만 남기고, 닫힌 실패로 세지 않는다", async () => {
+    vi.mocked(runPipeline).mockRejectedValueOnce(new LlmError("OpenRouter 요청 실패 (402)", "{}"));
+    const { admin, updates, inserts } = failingAdmin();
+
+    expect(await processSource(admin, { id: "s1", userId: "u1" }, input, deps)).toEqual({ ok: false, needsConfirmation: [] });
+    expect(updates.at(-1)).toMatchObject({ processing_status: "failed", processing_error_code: "ai_quota", processing_summary: { attempt: 1, retryable: true } });
+    expect(inserts.filter((i) => i.table === "metric_events")).toEqual([]);
+  });
+
+  it("마지막 시도의 실패는 닫힌 실패로 source_failed 한 줄을 남긴다. 서비스는 원문을 가져온 연결의 것, 원문 글은 넣지 않는다", async () => {
+    vi.mocked(runPipeline).mockRejectedValueOnce(new LlmError("응답 시간 초과 (90초)", undefined, true, true, "timeout"));
+    const { admin, updates, inserts } = failingAdmin({ sources: { connection_id: "c1" }, connections: { provider: "notion" } });
+
+    await processSource(admin, { id: "s1", userId: "u1", attempt: 3, retry: true }, input, deps);
+    expect(updates.at(-1)).toMatchObject({ processing_error_code: "ai_timeout", processing_summary: { attempt: 3, retryable: false } });
+    expect(inserts.filter((i) => i.table === "metric_events")).toEqual([{ table: "metric_events", rows: { user_id: "u1", type: "source_failed", provider: "notion" } }]);
+  });
+
+  it("동의 철회는 consent로 닫고(source_failed) 부르는 쪽에 오류를 넘긴다. 직접 넣은 원문은 서비스 없이", async () => {
+    vi.mocked(runPipeline).mockRejectedValueOnce(new ConsentRequiredError());
+    const { admin, updates, inserts } = failingAdmin({ sources: { connection_id: null } });
+
+    await expect(processSource(admin, { id: "s1", userId: "u1" }, input, deps)).rejects.toBeInstanceOf(ConsentRequiredError);
+    expect(updates.at(-1)).toMatchObject({ processing_error_code: "consent", processing_summary: { retryable: false } });
+    expect(inserts.filter((i) => i.table === "metric_events")).toEqual([{ table: "metric_events", rows: { user_id: "u1", type: "source_failed", provider: null } }]);
+  });
+
+  it("처리를 마치면 까닭 코드를 지운다 (다시 처리해 성공한 원문)", async () => {
+    vi.mocked(runPipeline).mockResolvedValueOnce({ judged: [], droppedQuotedHistory: [], summary: {} } as unknown as PipelineResult);
+    vi.mocked(mergeJudged).mockResolvedValueOnce([]);
+    const { admin, updates } = failingAdmin();
+
+    await processSource(admin, { id: "s1", userId: "u1", attempt: 2, retry: true }, input, deps);
+    expect(updates.at(-1)).toMatchObject({ processing_status: "done", processing_error: null, processing_error_code: null });
+  });
+
+  it("실패로 기록하지 못했으면(sources 갱신 오류) 닫힌 실패로 세지 않는다", async () => {
+    vi.mocked(runPipeline).mockRejectedValueOnce(new ConsentRequiredError());
+    const { admin, inserts } = failingAdmin({ sources: { connection_id: null } }, { message: "column does not exist" });
+
+    await expect(processSource(admin, { id: "s1", userId: "u1" }, input, deps)).rejects.toBeInstanceOf(ConsentRequiredError);
+    expect(inserts.filter((i) => i.table === "metric_events")).toEqual([]);
+    expect(console.error).toHaveBeenCalledWith("원문 실패 기록 실패 (s1):", "column does not exist");
+  });
+
+  it("source_failed 기록이 실패해도 처리 결과는 그대로다. 로그에는 원문 id와 오류만 남는다", async () => {
+    const admin = {
+      from: () => {
+        throw new Error("metric_events_type_check");
+      },
+    } as unknown as SupabaseClient;
+    await expect(recordSourceFailed(admin, { id: "s1", userId: "u1" })).resolves.toBeUndefined();
+    expect(console.error).toHaveBeenCalledWith("원문 실패 지표 기록 실패 (s1):", "metric_events_type_check");
   });
 });
 

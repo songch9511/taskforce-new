@@ -7,8 +7,10 @@ import type { MissStage } from "@/lib/pipeline/missing";
 // 2 착수 시간   app_opened → 첫 action_started / handoff_used. action_started는 Action마다 처음 한 번만 착수로 본다
 //               (착수를 되돌렸다가 다시 시작하거나 착수를 다시 눌러도 새 착수가 아니다)
 // 3 리텐션      첫 활동 주부터 N주 뒤에도 활동했는가
-// 4 AI 누락률   (신고된 누락 + 직접 추가) / (AI 생성 + 신고된 누락 + 직접 추가). 신고(user_reported_missing)는 놓친 단계별로도 센다.
-//               직접 추가(user_created)는 추출이 놓친 할 일을 사용자가 적은 것으로 본다 (원문을 고르지 않으면 단계를 알 수 없다)
+// 4 AI 누락률   (신고된 누락 + 원문 구절을 고른 직접 추가) / (AI 생성 + 신고된 누락 + 원문 구절을 고른 직접 추가).
+//               신고(user_reported_missing)는 놓친 단계별로도 센다. 직접 추가(user_created)는 이벤트에 원문(source_id)이 있을 때만
+//               추출이 놓친 할 일로 본다. 구절 없는 직접 추가는 일반 입력으로 따로 세고 분자 · 분모에 넣지 않는다:
+//               원문을 연결하지 않은(무료 · 플러그인 미사용) 사용자의 수동 입력을 AI 재현율 실패로 세지 않는다 (A42)
 // 5 그림자 목록  주간 질문 "Taskforce 밖에 따로 적어둔 할 일이 있나요?"에 "있다" / ("있다" + "없다"). 건너뛰기는 응답 수에만 넣는다
 
 export type ActionEventRow = {
@@ -21,9 +23,11 @@ export type ActionEventRow = {
   at: string;
   /** 이 이벤트의 원문 종류 (meeting · email · task 등). 사용자 이벤트는 null */
   sourceKind: string | null;
+  /** 이벤트에 원문이 붙어 있는가 (action_events.source_id). 직접 추가(user_created)는 원문 구절을 골랐을 때만 true */
+  hasSource: boolean;
 };
 
-/** provider: 연결 이벤트(connection_created · connection_reauth · reconnect_notified)의 서비스. 그 밖의 이벤트, 열이 생기기 전의 connection_created는 없다 */
+/** provider: 연결 이벤트(connection_created · connection_reauth · reconnect_notified)와 source_failed(원문을 가져온 연결)의 서비스. 그 밖의 이벤트, 열이 생기기 전의 connection_created, 직접 넣은 원문은 없다 */
 export type MetricEventRow = { userId: string; type: string; actionId: string | null; at: string; provider?: string | null };
 
 export type Period = { from: Date; to: Date };
@@ -239,12 +243,12 @@ export function kstWeek(at: string): string {
 
 export type Activity = { userId: string; at: string };
 
-/** 서버가 남기는 연결 이벤트: 사용자의 활동이 아니다 (연결 완료 · 연결 만료 · 재연결 알림) */
-const SERVER_CONNECTION_EVENTS = new Set(["connection_created", "connection_reauth", "reconnect_notified"]);
+/** 서버가 남기는 이벤트: 사용자의 활동이 아니다 (연결 완료 · 연결 만료 · 재연결 알림 · 원문 처리 실패로 닫음) */
+const SERVER_EVENTS = new Set(["connection_created", "connection_reauth", "reconnect_notified", "source_failed"]);
 
-/** 지표 이벤트 중 사용자의 활동(앱 열기 · 착수 · 넘기기 등). 서버 연결 이벤트는 넣지 않는다: 리텐션 정의를 바꾸지 않게 */
+/** 지표 이벤트 중 사용자의 활동(앱 열기 · 착수 · 넘기기 등). 서버 이벤트는 넣지 않는다: 리텐션 정의를 바꾸지 않게 */
 export function metricActivity(events: MetricEventRow[]): Activity[] {
-  return events.filter((e) => !SERVER_CONNECTION_EVENTS.has(e.type)).map((e) => ({ userId: e.userId, at: e.at }));
+  return events.filter((e) => !SERVER_EVENTS.has(e.type)).map((e) => ({ userId: e.userId, at: e.at }));
 }
 
 /**
@@ -275,27 +279,74 @@ export function retention(activity: Activity[], now: Date, weeks = 4): Retention
 export type MissedMetric = {
   /** 누락 신고 (원문 구절을 골라 신고, user_reported_missing) */
   reported: number;
-  /** 직접 추가 (user_created) */
+  /** 원문 구절을 고른 직접 추가 (user_created + source_id): 추출이 놓친 신호, 지표 4에 넣는다 */
   added: number;
+  /** 구절 없는 직접 추가 (user_created, source_id 없음): 일반 입력, 지표 4에 넣지 않고 따로 센다 (A42) */
+  addedPlain: number;
   rate: number | null;
   available: boolean;
   /** 원래 처리에서 놓친 단계별 신고 수 (단계 기록이 없으면 unknown) */
   byStage: Record<MissStage | "unknown", number>;
 };
 
-/** 누락 신고가 아직 없으면(기능 전) 측정 전으로 둔다. 신고 · 직접 추가는 실제 누락의 하한이다. */
+/** 누락 신고가 아직 없으면(기능 전) 측정 전으로 둔다. 신고 · 구절을 고른 직접 추가는 실제 누락의 하한이다. */
 export function missed(events: ActionEventRow[], misjudged: MisjudgmentMetric, period: Period, reportingAvailable: boolean): MissedMetric {
   const reports = events.filter((e) => e.type === "user_reported_missing" && inPeriod(e.at, period));
-  const added = events.filter((e) => e.type === "user_created" && inPeriod(e.at, period)).length;
+  const adds = events.filter((e) => e.type === "user_created" && inPeriod(e.at, period));
+  const added = adds.filter((e) => e.hasSource).length;
+  const addedPlain = adds.length - added;
   const byStage: MissedMetric["byStage"] = { processing_failed: 0, not_extracted: 0, quoted_history: 0, judge_rejected: 0, merge_absorbed: 0, unknown: 0 };
   for (const report of reports) {
     const stage = report.after?.stage;
     byStage[typeof stage === "string" && stage in byStage ? (stage as MissStage) : "unknown"]++;
   }
   const reported = reports.length;
-  if (!reportingAvailable) return { reported, added, rate: null, available: false, byStage };
+  if (!reportingAvailable) return { reported, added, addedPlain, rate: null, available: false, byStage };
   const total = misjudged.aiCreated + reported + added;
-  return { reported, added, rate: total > 0 ? (reported + added) / total : null, available: true, byStage };
+  return { reported, added, addedPlain, rate: total > 0 ? (reported + added) / total : null, available: true, byStage };
+}
+
+export type DiscoveryCostMetric = {
+  /** 기간 안에 처리를 마친 원문의 발견 원가 합계 (USD). 처리 요약의 cost(추출 LLM + 판정 Jev)다: 매칭 · 임베딩 · 실패한 시도의 원가는 들어 있지 않다 */
+  totalUsd: number;
+  /** 원가가 기록된 원문 수 */
+  sources: number;
+  /** 날짜별 합계 (UTC 날짜: OpenRouter 키의 하루 한도가 UTC 0시에 풀린다), 오래된 날짜부터 */
+  days: { day: string; usd: number; sources: number }[];
+};
+
+/**
+ * 발견 원가 (A43): 원문 처리(무료 발견)에 든 AI 원가를 서비스 원가로 모은다. 사용자에게 청구하지 않는다.
+ * 하루 합계가 운영 키 하루 한도에 가까워지면 원문 처리가 ai_quota로 실패하기 시작한다 (P5).
+ */
+export function discoveryCost(rows: { processedAt: string | null; cost: unknown }[], period: Period): DiscoveryCostMetric {
+  const byDay = new Map<string, { usd: number; sources: number }>();
+  for (const { processedAt, cost } of rows) {
+    if (!processedAt || !inPeriod(processedAt, period) || typeof cost !== "number" || !Number.isFinite(cost)) continue;
+    const day = new Date(processedAt).toISOString().slice(0, 10);
+    const entry = byDay.get(day) ?? { usd: 0, sources: 0 };
+    byDay.set(day, { usd: entry.usd + cost, sources: entry.sources + 1 });
+  }
+  const days = [...byDay].sort(([a], [b]) => a.localeCompare(b)).map(([day, entry]) => ({ day, ...entry }));
+  return { totalUsd: days.reduce((sum, d) => sum + d.usd, 0), sources: days.reduce((sum, d) => sum + d.sources, 0), days };
+}
+
+export type SourceFailureMetric = {
+  /** 기간 안에 더 다시 처리하지 않기로 실패로 닫은 원문 수 (source_failed: 시도를 다 씀 · 창이 지남 · 동의 철회) */
+  closed: number;
+  /** 서비스별 (직접 넣은 원문 · 연결을 끊은 원문은 direct), 많은 순 */
+  byProvider: { provider: string; count: number }[];
+};
+
+/** 원문 처리 실패 (W4): 서버가 남긴 source_failed 이벤트. 까닭별 개수는 sources.processing_error_code에 있다 */
+export function sourceFailures(events: MetricEventRow[], period: Period): SourceFailureMetric {
+  const closed = events.filter((e) => e.type === "source_failed" && inPeriod(e.at, period));
+  const counts = new Map<string, number>();
+  for (const e of closed) counts.set(e.provider ?? "direct", (counts.get(e.provider ?? "direct") ?? 0) + 1);
+  return {
+    closed: closed.length,
+    byProvider: [...counts].map(([provider, count]) => ({ provider, count })).sort((a, b) => b.count - a.count || a.provider.localeCompare(b.provider)),
+  };
 }
 
 export type WeeklyCheckRow = {

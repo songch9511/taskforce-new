@@ -77,9 +77,28 @@ describe("weekly check", () => {
     expect(weeklyCheckRequestSchema.safeParse({ week_start: "09/21", answer: "yes" }).success).toBe(false);
   });
 
+  const noFailures = { count: 0, latest_at: null, reason: null };
+
   it("GET /now 응답에는 weekly_check가 항상 있다 (없으면 null)", () => {
-    expect(nowResponseSchema.safeParse({ now: [], confirmations: [], weekly_check: null }).success).toBe(true);
-    expect(nowResponseSchema.safeParse({ now: [], confirmations: [], weekly_check: { week_start: "2026-09-21" } }).success).toBe(true);
-    expect(nowResponseSchema.safeParse({ now: [], confirmations: [] }).success).toBe(false);
+    expect(nowResponseSchema.safeParse({ now: [], confirmations: [], weekly_check: null, failed_sources: noFailures }).success).toBe(true);
+    expect(
+      nowResponseSchema.safeParse({ now: [], confirmations: [], weekly_check: { week_start: "2026-09-21" }, failed_sources: noFailures }).success,
+    ).toBe(true);
+    expect(nowResponseSchema.safeParse({ now: [], confirmations: [], failed_sources: noFailures }).success).toBe(false);
+  });
+});
+
+describe("GET /now failed_sources (W4)", () => {
+  const response = (failed_sources: unknown) => nowResponseSchema.safeParse({ now: [], confirmations: [], weekly_check: null, failed_sources });
+
+  it("실패 원문 수 · 마지막 실패 시각 · 까닭이 항상 있다. 까닭은 정해진 코드나 null(기록 전 실패)", () => {
+    expect(response({ count: 2, latest_at: "2026-10-02T03:00:00.000Z", reason: "ai_quota" }).success).toBe(true);
+    expect(response({ count: 1, latest_at: "2026-09-29T03:00:00.000Z", reason: null }).success).toBe(true);
+    // DB의 timestamptz(오프셋 포함) 그대로
+    expect(response({ count: 1, latest_at: "2026-10-02T03:00:00.123456+00:00", reason: "ai_timeout" }).success).toBe(true);
+    expect(response({ count: 1, latest_at: "yesterday", reason: null }).success).toBe(false);
+    expect(response({ count: 1, latest_at: null, reason: "rate_limited" }).success).toBe(false);
+    expect(response({ count: -1, latest_at: null, reason: null }).success).toBe(false);
+    expect(nowResponseSchema.safeParse({ now: [], confirmations: [], weekly_check: null }).success).toBe(false);
   });
 });

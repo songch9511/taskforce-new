@@ -8,7 +8,7 @@ import { DeadlineExceededError } from "@/lib/ai/deadline";
 import { embed, embedConfigFromEnv, EmbedError } from "@/lib/ai/embed";
 import { decide, jevConfigFromEnv, JevError } from "@/lib/ai/jev";
 import { completeJson, llmConfigFromEnv, LlmError } from "@/lib/ai/llm";
-import type { ActionSummary, MissingReportResponse } from "@/lib/api/contract";
+import type { ActionSummary, MissingReportResponse, SourceFailureCode } from "@/lib/api/contract";
 import { MISSING_REPORT_LIMIT, RateLimitedError } from "@/lib/api/rate-limit";
 import { takeRateLimit } from "@/lib/api/rate-limit-store";
 import { assertConsent, CONSENT_WITHDRAWN_MESSAGE, ConsentRequiredError, withConsentGate } from "@/lib/consent/gate";
@@ -135,6 +135,56 @@ function userFacingError(error: unknown): string {
 /** 원인을 사용자에게 보일 수 없는 처리 실패 문구 (처리 중에 멈춘 채 다시 처리할 횟수를 다 쓴 원문에도 쓴다, retry.ts) */
 export const PROCESSING_FAILED_MESSAGE = "처리 중 오류가 발생했습니다.";
 
+/** AI 공급자(OpenRouter)가 한도 · 잔액으로 거절한 응답 코드. 402 잔액 부족, 403 키 사용 한도 (2026-09-30 한도 도달 때 모든 호출이 403, 런북 I9) */
+const AI_QUOTA_STATUSES = new Set([402, 403]);
+
+/** AI 설정 오류(키 · 모델 환경변수가 없음, LLM_OVERRUN_REASONING_EFFORT 값이 틀림)의 문구에는 환경변수 이름이 들어 있다 */
+const AI_CONFIG_ERROR = /[A-Z0-9]+_[A-Z0-9_]+/;
+
+/**
+ * 처리 실패의 까닭 코드 (sources.processing_error_code, 앱 · 지표가 본다). AI 호출 오류는 응답 코드 · 시간 초과 · 응답 형식으로 가른다.
+ * 오류 문구는 lib/ai의 llm.ts · jev.ts · embed.ts가 만든 것이다: "… 요청 실패 (상태 코드)" · "… 시간 초과 …" (process.test.ts가 실제 함수의 오류로 고정한다).
+ */
+export function sourceFailureCode(error: unknown): SourceFailureCode {
+  if (error instanceof ConsentRequiredError) return "consent";
+  if (error instanceof DeadlineExceededError) return error.stage === "lock" || error.stage === "merge" ? "internal" : "ai_timeout";
+  // 배경 처리의 임베딩은 시간 초과를 그대로 던진다 (embed.ts)
+  if (error instanceof DOMException && error.name === "TimeoutError") return "ai_timeout";
+  if (!(error instanceof LlmError || error instanceof JevError || error instanceof EmbedError)) return "internal";
+  // 운영 설정 문제지 AI 응답 문제가 아니다
+  if (AI_CONFIG_ERROR.test(error.message)) return "internal";
+  const status = /요청 실패 \((\d{3})\)/.exec(error.message)?.[1];
+  if (status) return AI_QUOTA_STATUSES.has(Number(status)) ? "ai_quota" : "internal";
+  if ((error instanceof LlmError && error.kind === "timeout") || /시간 초과/.test(error.message)) return "ai_timeout";
+  return "ai_output";
+}
+
+/**
+ * 원문을 더 다시 처리하지 않기로 실패로 닫았을 때(시도를 다 씀 · 창이 지남 · 동의 철회) 지표 이벤트 source_failed를 한 줄 남긴다.
+ * provider는 그 원문을 가져온 연결의 서비스 (직접 넣은 원문 · 연결을 끊은 원문은 null). 원문 · 까닭 글은 남기지 않는다.
+ * 기록이 실패해도 처리 결과에는 영향이 없다 (로그에는 원문 id와 오류만).
+ */
+export async function recordSourceFailed(admin: SupabaseClient, source: { id: string; userId: string }): Promise<void> {
+  try {
+    const { data: row } = await admin.from("sources").select("connection_id").eq("id", source.id).eq("user_id", source.userId).maybeSingle().throwOnError();
+    const connectionId = (row as { connection_id?: string | null } | null)?.connection_id ?? null;
+    let provider: string | null = null;
+    if (connectionId) {
+      const { data: connection } = await admin
+        .from("connections")
+        .select("provider")
+        .eq("id", connectionId)
+        .eq("user_id", source.userId)
+        .maybeSingle()
+        .throwOnError();
+      provider = (connection as { provider?: string } | null)?.provider ?? null;
+    }
+    await admin.from("metric_events").insert({ user_id: source.userId, type: "source_failed", provider }).throwOnError();
+  } catch (error) {
+    console.error(`원문 실패 지표 기록 실패 (${source.id}):`, error instanceof Error ? error.message : error);
+  }
+}
+
 /** 한 원문을 처리해 보는 최대 횟수 (첫 처리 포함). 넘으면 cron이 더 다시 처리하지 않는다 (retry.ts) */
 export const RETRY_MAX_ATTEMPTS = 3;
 
@@ -246,6 +296,7 @@ export async function processSource(
         processing_status: "done",
         processed_at: new Date().toISOString(),
         processing_error: null,
+        processing_error_code: null,
         processing_summary: {
           ...result.summary,
           attempt,
@@ -272,14 +323,19 @@ export async function processSource(
   } catch (error) {
     // 서버 로그에는 원인을, 사용자에게는 원문 · 내부 정보가 없는 문구만 남긴다.
     console.error(`원문 처리 실패 (${sourceId}):`, error instanceof Error ? error.message : error);
-    await scoped(
+    const summary = failureSummary(error, attempt);
+    const { error: recordError } = await scoped(
       admin.from("sources").update({
         processing_status: "failed",
         processed_at: new Date().toISOString(),
         processing_error: userFacingError(error),
-        processing_summary: failureSummary(error, attempt),
+        processing_error_code: sourceFailureCode(error),
+        processing_summary: summary,
       }),
     );
+    if (recordError) console.error(`원문 실패 기록 실패 (${sourceId}):`, recordError.message);
+    // 더 다시 하지 않는 실패(동의 철회 · 마지막 시도)는 닫힌 실패로 센다. 실패로 기록하지 못했으면 닫히지 않은 것이라 세지 않는다
+    else if (!summary.retryable) await recordSourceFailed(admin, source);
     if (error instanceof ConsentRequiredError) throw error;
     return { ok: false, needsConfirmation: [] };
   }
@@ -327,6 +383,7 @@ export async function processTaskSource(
         processing_status: "done",
         processed_at: new Date().toISOString(),
         processing_error: null,
+        processing_error_code: null,
         processing_summary: {
           structured: true,
           relation: outcome.relation,
@@ -343,9 +400,14 @@ export async function processTaskSource(
   } catch (error) {
     console.error(`할 일 처리 실패 (${source.id}):`, error instanceof Error ? error.message : error);
     await scoped(
-      admin.from("sources").update({ processing_status: "failed", processed_at: new Date().toISOString(), processing_error: userFacingError(error) }),
+      admin.from("sources").update({
+        processing_status: "failed",
+        processed_at: new Date().toISOString(),
+        processing_error: userFacingError(error),
+        processing_error_code: sourceFailureCode(error),
+      }),
     );
-    // 처리를 마치지 못한 할 일은 동의한 뒤 동기화가 다시 처리한다 (pendingTasks).
+    // 처리를 마치지 못한 할 일은 동의한 뒤 동기화가 다시 처리한다 (pendingTasks). 닫힌 실패가 아니라 source_failed는 남기지 않는다.
     if (error instanceof ConsentRequiredError) throw error;
     return { ok: false, needsConfirmation: [] };
   }
