@@ -194,6 +194,43 @@ describe("예약 (begin_call)", () => {
     expect(await account(user)).toEqual({ granted: 1000, reserved: 40, settled: 10 });
   });
 
+  it("청구 대상인 초안 단계는 추정치가 있어야 부른다 (추정치 0이면 no_estimate)", async () => {
+    const user = await newUser(100);
+    const { runId, drafts } = await draftRun(user, [0]);
+    expect(await gate(drafts[0])).toEqual({ gate: "no_estimate" });
+    expect((await runState(runId)).hold_reason).toBe("credit");
+    expect((await ledger(user)).map((l) => l.kind)).toEqual(["grant"]);
+  });
+
+  it("지금 쓰는 요율이 없으면 새 유료 단계를 보류한다 (no_rate)", async () => {
+    const user = await newUser(100);
+    const { drafts } = await draftRun(user, [10]);
+    await db.query("update public.credit_rates set active = false");
+    try {
+      expect(await gate(drafts[0])).toEqual({ gate: "no_rate" });
+    } finally {
+      await db.query("update public.credit_rates set active = true where version = 'c3-v1'");
+    }
+    expect((await gate(drafts[0])).gate).toBe("ok");
+  });
+
+  it("이미 정산 · 해제된 예약으로는 다시 부르지 않는다 (reservation_closed)", async () => {
+    const user = await newUser(100);
+    const { runId, drafts } = await draftRun(user, [40]);
+    expect((await gate(drafts[0])).gate).toBe("ok");
+    expect(await one("select public.mark_unknown($1, 'fn-1') as ok", [drafts[0]])).toEqual({ ok: true });
+    // 계약 밖에서 예약이 닫혔다 (해제 행)
+    await db.query("insert into public.credit_ledger (user_id, kind, credits, run_id, step_id, receipt_key) values ($1, 'release', 40, $2, $3, $4)", [
+      user,
+      runId,
+      drafts[0],
+      `release:${drafts[0]}`,
+    ]);
+    await db.query("update public.credit_accounts set reserved = reserved - 40 where user_id = $1", [user]);
+    expect(await gate(drafts[0], "fn-2")).toEqual({ gate: "reservation_closed" });
+    expect(await one("select state from public.execution_steps where id = $1", [drafts[0]])).toEqual({ state: "prepared" });
+  });
+
   it("같은 단계의 재시도(내부 효과 다시 준비)는 처음 예약을 그대로 쓰고(reserve 하나), 한도를 넘겨 실패하면 run이 끝나며 해제한다", async () => {
     const user = await newUser(100);
     const { runId, drafts } = await draftRun(user, [40]);
@@ -329,44 +366,102 @@ describe("정산 (complete_internal_step)", () => {
 });
 
 describe("미확정 원가 (A46 · A51)", () => {
-  it("청구 대상 시도의 비용을 모르면 정산하지 않고 예약을 둔다(0원 처리 · 해제 없음, run이 끝나도). 확정되면 정산하고, 같은 확정은 한 번", async () => {
+  const reconcile = async (id: string, cost: number) => (await one<{ ok: boolean }>("select public.reconcile_usage($1, $2) as ok", [id, cost])).ok;
+  const usageOf = async (step: string) =>
+    (
+      await db.query<{ id: string; generation_id: string | null; cost_usd: string | null; cost_status: string; billable: boolean }>(
+        "select id, generation_id, cost_usd, cost_status, billable from public.execution_usage where step_id = $1 order by id",
+        [step],
+      )
+    ).rows;
+
+  it("청구 대상 시도의 비용을 모르면 정산하지 않고 예약을 둔다(0원 처리 · 해제 없음, run이 끝나도). 모두 확정되면 정산하고, 같은 확정은 한 번", async () => {
     const user = await newUser(100);
     const { runId, drafts } = await draftRun(user, [50]);
     const step = drafts[0];
     expect((await gate(step)).gate).toBe("ok");
-    // 시간 초과로 id 없이 끝난 시도 + 비용이 응답에 없던 시도 (generation 조회로 확정할 수 있다)
-    const lost = attempt(undefined, null);
-    const pending = attempt();
-    expect(await complete(step, [lost, pending], ARTIFACT, "draft_ready")).toBe(true);
+    // 비용이 응답에 없던 시도 둘 (generation 조회로 확정할 수 있다)
+    const first = attempt();
+    const second = attempt();
+    expect(await complete(step, [first, second], ARTIFACT, "draft_ready")).toBe(true);
 
     expect(await runState(runId)).toEqual({ state: "done", hold_reason: null, outcome: "draft_ready" }); // 산출물은 쓸 수 있다
     expect((await ledger(user)).map((l) => l.kind)).toEqual(["grant", "reserve"]);
     expect(await account(user)).toEqual({ granted: 100, reserved: 50, settled: 0 });
-    const rows = await db.query<{ id: string; generation_id: string | null; cost_usd: string | null; cost_status: string }>(
-      "select id, generation_id, cost_usd, cost_status from public.execution_usage where step_id = $1 order by id",
-      [step],
-    );
-    expect(rows.rows.map((r) => [r.generation_id, r.cost_usd, r.cost_status])).toEqual([
-      [null, null, "unconfirmed"],
-      [pending.generationId, null, "unconfirmed"],
+    const rows = await usageOf(step);
+    expect(rows.map((r) => [r.generation_id, r.cost_usd, r.cost_status, r.billable])).toEqual([
+      [first.generationId, null, "unconfirmed", true],
+      [second.generationId, null, "unconfirmed", true],
     ]);
     // 끝난 run의 예약 해제를 다시 불러도 끝낸 단계(called)의 미확정 예약은 그대로다
     expect(await one("select public.release_run_credits($1) as n", [runId])).toEqual({ n: 0 });
+    expect(await one("select public.release_run_credits() as n")).toEqual({ n: 0 });
     expect(await account(user)).toEqual({ granted: 100, reserved: 50, settled: 0 });
 
-    const reconcile = async (id: string, cost: number) => (await one<{ ok: boolean }>("select public.reconcile_usage($1, $2) as ok", [id, cost])).ok;
-    await expect(reconcile(rows.rows[1].id, -1)).rejects.toThrow(/잘못된 비용/);
-    expect(await reconcile(rows.rows[1].id, 0.004)).toBe(true); // sweep: generation 조회
-    expect(await reconcile(rows.rows[1].id, 0.004)).toBe(false); // 같은 확정을 다시 받아도
-    expect(await account(user)).toEqual({ granted: 100, reserved: 50, settled: 0 }); // id 없는 시도가 아직 미확정
+    await expect(reconcile(rows[0].id, -1)).rejects.toThrow(/잘못된 비용/);
+    expect(await reconcile(rows[0].id, 0.004)).toBe(true); // sweep: generation 조회
+    expect(await reconcile(rows[0].id, 0.004)).toBe(false); // 같은 확정을 다시 받아도
+    expect(await account(user)).toEqual({ granted: 100, reserved: 50, settled: 0 }); // 둘째 시도가 아직 미확정
 
-    expect(await reconcile(rows.rows[0].id, 0.0021)).toBe(true); // 운영자가 정한 값
+    expect(await reconcile(rows[1].id, 0.0021)).toBe(true);
     expect((await ledger(user)).slice(1).map((l) => [l.kind, l.credits, l.cost_usd])).toEqual([
       ["reserve", 50, null],
       ["settle", 7, "0.0061"],
       ["release", 43, null],
     ]);
     expect(await account(user)).toEqual({ granted: 100, reserved: 0, settled: 7 });
+  });
+
+  it("응답을 받지 못한(generation id 없는) 시도는 청구 근거가 없어 플랫폼 원가(미확정)로 남고, 정산은 확인된 시도로 한다", async () => {
+    const user = await newUser(100);
+    const { drafts } = await draftRun(user, [50]);
+    expect((await gate(drafts[0])).gate).toBe("ok");
+    // 시간 초과 뒤 다시 물어 받은 답 (llm.ts는 시간 초과도 다시 묻는다)
+    const answered = attempt(0.003);
+    expect(await complete(drafts[0], [attempt(undefined, null), answered], ARTIFACT, "draft_ready")).toBe(true);
+    expect((await usageOf(drafts[0])).map((r) => [r.generation_id, r.cost_usd, r.cost_status, r.billable])).toEqual([
+      [null, null, "unconfirmed", false],
+      [answered.generationId, "0.003", "confirmed", true],
+    ]);
+    expect((await ledger(user)).slice(1).map((l) => [l.kind, l.credits])).toEqual([
+      ["reserve", 50],
+      ["settle", 3],
+      ["release", 47],
+    ]);
+  });
+
+  it("끝내지 않은 단계(다시 준비 중)의 원가를 확정해도 정산 · 해제하지 않는다: 재시도가 그 예약을 그대로 쓴다", async () => {
+    const user = await newUser(100);
+    const { drafts } = await draftRun(user, [40]);
+    const step = drafts[0];
+    expect((await gate(step, "fn-a")).gate).toBe("ok");
+    // 응답 없이 끝난 호출: 비용 없는 시도를 원가로 남기고 다시 준비
+    expect((await one<{ n: number }>("select public.record_usage($1, $2::jsonb) as n", [step, JSON.stringify([attempt()])])).n).toBe(1);
+    expect(await one("select public.mark_unknown($1, 'fn-a') as ok", [step])).toEqual({ ok: true });
+    expect(await reconcile((await usageOf(step))[0].id, 0.002)).toBe(true); // sweep이 그 사이에 확정
+    expect((await ledger(user)).map((l) => l.kind)).toEqual(["grant", "reserve"]);
+    expect(await account(user)).toEqual({ granted: 100, reserved: 40, settled: 0 });
+
+    // 예약이 잡혀 있어 다른 run이 그 잔액을 쓰지 못한다
+    const other = await draftRun(user, [70]);
+    expect(await gate(other.drafts[0])).toEqual({ gate: "insufficient_credit" });
+    expect((await gate(step, "fn-b")).gate).toBe("ok"); // 재시도는 열린 예약을 쓴다
+    expect(await complete(step, [attempt(0.01)], ARTIFACT, "draft_ready", "fn-b")).toBe(true);
+    expect((await ledger(user)).slice(1).map((l) => [l.kind, l.credits, l.cost_usd])).toEqual([
+      ["reserve", 40, null],
+      ["settle", 10, "0.01"], // 앞 호출의 원가는 플랫폼 몫
+      ["release", 30, null],
+    ]);
+  });
+
+  it("초안 단계를 원가 기록 없이 끝냈으면(complete_internal_step을 거치지 않음) 원가를 모르는 것이라 정산하지 않는다", async () => {
+    const user = await newUser(100);
+    const { runId, drafts } = await draftRun(user, [40]);
+    expect((await gate(drafts[0])).gate).toBe("ok");
+    expect(await one("select public.settle_step($1, 'fn-1', 'called', '{}', 'draft_ready') as ok", [drafts[0]])).toEqual({ ok: true });
+    expect((await runState(runId)).state).toBe("done");
+    expect((await ledger(user)).map((l) => l.kind)).toEqual(["grant", "reserve"]);
+    expect(await account(user)).toEqual({ granted: 100, reserved: 40, settled: 0 });
   });
 });
 
@@ -425,6 +520,48 @@ describe("해제", () => {
     }
   });
 
+  it("멈춘 run에서 부르던 외부 단계가 나중에 끝나면(응답 · readback) 그때 정산 · 해제하고, 결과 불명인 동안은 예약을 둔다", async () => {
+    await db.query("insert into public.execution_tools (provider, tool, effect_class) values ('fake', 'send', 'external') on conflict do nothing");
+    await db.query("insert into public.execution_controls (scope, key, blocked) values ('provider', 'fake', false) on conflict (scope, key) do update set blocked = false");
+    await db.query("insert into public.execution_recipient_allowlist (address) values ('rule@example.com') on conflict do nothing");
+    for (const finish of ["response", "readback"]) {
+      const user = await newUser(100);
+      const connection = (
+        await one<{ id: string }>("insert into public.connections (user_id, provider, external_account_id) values ($1, 'gmail', $2) returning id", [
+          user,
+          `${user}@example.com`,
+        ])
+      ).id;
+      const { runId } = await draftRun(user, []);
+      const send = {
+        kind: "external", provider: "fake", tool: "send", purpose: "send", connection_id: connection,
+        recipients: [{ address: "rule@example.com", origin: "user" }], body: "견적서 보내드립니다", estimate_credits: 20,
+      };
+      const step = (await one<{ id: string }>("select public.append_step($1, 2, $2::jsonb) as id", [runId, JSON.stringify(send)])).id;
+      expect(await one("select public.prepare_step($1, 0) as ok", [step])).toEqual({ ok: true });
+      const shown = await one<{ hash: string; expires_at: Date }>("select * from public.show_plan($1, $2)", [user, step]);
+      expect(await one("select public.approve_step($1, $2, $3, $4) as ok", [user, step, shown.hash, shown.expires_at])).toEqual({ ok: true });
+      expect((await gate(step)).gate).toBe("ok");
+      expect(await one("select public.stop_run($1, $2) as s", [user, runId])).toEqual({ s: "stopped" });
+      expect(await account(user)).toEqual({ granted: 100, reserved: 20, settled: 0 });
+
+      if (finish === "response") {
+        expect(await one("select public.settle_step($1, 'fn-1', 'called', '{\"id\": 1}') as ok", [step])).toEqual({ ok: true });
+      } else {
+        expect(await one("select public.mark_unknown($1, 'fn-1') as ok", [step])).toEqual({ ok: true });
+        expect(await account(user)).toEqual({ granted: 100, reserved: 20, settled: 0 }); // 결과 불명: 둔다
+        expect(await one("select public.readback_settle($1, '{\"id\": 1}') as ok", [step])).toEqual({ ok: true });
+      }
+      // 외부 단계는 청구 대상 AI 원가가 없어 0 정산 · 나머지 해제
+      expect((await ledger(user)).slice(1).map((l) => [l.kind, l.credits])).toEqual([
+        ["reserve", 20],
+        ["settle", 0],
+        ["release", 20],
+      ]);
+      expect(await account(user)).toEqual({ granted: 100, reserved: 0, settled: 0 });
+    }
+  });
+
   it("잔액이 0이면 새 단계는 부르지 않고, 이미 만든 산출물은 그대로다", async () => {
     const user = await newUser(17);
     const first = await draftRun(user, [17]);
@@ -454,7 +591,10 @@ describe("원장은 DB가 지킨다", () => {
     await expect(insert(`reserve:${randomUUID()}`)).rejects.toThrow(/credit_ledger_key/);
     await expect(insert(`grant:${randomUUID()}`, "grant")).rejects.toThrow(/credit_ledger_(key|rate)/);
     await expect(db.query("update public.credit_accounts set reserved = 200 where user_id = $1", [user])).rejects.toThrow(/credit_accounts_balance/);
-    await expect(db.query("update public.execution_usage set cost_status = 'confirmed' where cost_usd is null")).rejects.toThrow(/execution_usage_cost/);
+    await db.query("select public.record_usage($1, $2::jsonb)", [drafts[0], JSON.stringify([attempt()])]);
+    await expect(
+      db.query("update public.execution_usage set cost_status = 'confirmed' where step_id = $1 and cost_usd is null", [drafts[0]]),
+    ).rejects.toThrow(/execution_usage_cost/);
   });
 
   it("원장 · 원가는 지우지 않는다: 원장이 가리키는 run은 지울 수 없다 (계정 삭제는 account-deletion.test.ts)", async () => {
@@ -589,7 +729,10 @@ describe("권한", () => {
       expect(await one("select public.mark_unknown($1, 'fn-1') as ok", [drafts[1]])).toEqual({ ok: true }); // 단계 트리거가 해제
       expect(await account(user)).toEqual({ granted: 100, reserved: 0, settled: 5 });
       expect(await one("select public.release_run_credits($1) as n", [runId])).toEqual({ n: 0 });
-      expect(await one("select public.reconcile_usage(id, 0.001) as ok from public.execution_usage where cost_status = 'unconfirmed' limit 1")).toEqual({ ok: true });
+      expect((await one<{ n: number }>("select public.record_usage($1, $2::jsonb) as n", [drafts[1], JSON.stringify([attempt()])])).n).toBe(1);
+      expect(
+        await one("select public.reconcile_usage(id, 0.001) as ok from public.execution_usage where step_id = $1 and cost_status = 'unconfirmed'", [drafts[1]]),
+      ).toEqual({ ok: true });
       expect(await one("select public.purge_expired_artifacts() as n")).toEqual({ n: 0 });
     } finally {
       await db.exec("reset role");

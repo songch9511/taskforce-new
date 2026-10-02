@@ -131,7 +131,7 @@ async function preparedDraft(user: User, estimate: number) {
   );
   const prepared = await setup.query<{ ok: boolean }>("select public.prepare_step($1, 0) as ok", [rows[0].id]);
   expect(prepared.rows[0].ok).toBe(true);
-  return { stepId: rows[0].id, version: 1 };
+  return { stepId: rows[0].id, version: 1, runId };
 }
 
 const userWithCredits = async (credits: number) => {
@@ -357,6 +357,42 @@ describe("크레딧 원장 잠금 경합 (실제 Postgres, 연결 둘)", () => {
     expect(await late).toBe("ok");
     expect([await stepState(first.stepId), await stepState(second.stepId)]).toEqual(["prepared", "calling"]);
     expect(await account(user)).toEqual({ granted: 100, reserved: 60, settled: 0 });
+  });
+
+  // 해제는 run을 끝내는 쪽(stop_run: run 잠금)과 부르던 단계를 내보내는 쪽(mark_unknown · settle_step: 단계 잠금 → 트리거가 run 잠금)이
+  // 같은 run 행에서 줄을 서서, 뒤에 commit하는 쪽이 앞의 결과를 보고 해제한다 (어느 쪽이 먼저여도 예약이 남지 않는다)
+  it("단계를 내보내는 쪽(응답 없음 → 다시 준비)이 먼저면 멈추기는 run 잠금을 기다렸다가 그 단계의 예약을 해제한다", async () => {
+    const user = await userWithCredits(100);
+    const step = await preparedDraft(user, 40);
+    expect(await beginCall(setup, step, "fn-a")).toBe("ok");
+
+    await a.query("begin");
+    await a.query("select public.mark_unknown($1, 'fn-a')", [step.stepId]);
+    const stop = b.query("select public.stop_run($1, $2)", [user.userId, step.runId]);
+    await waitForLockWait(bPid);
+    await a.query("commit");
+    await stop;
+
+    expect(await stepState(step.stepId)).toBe("prepared");
+    expect(await account(user)).toEqual({ granted: 100, reserved: 0, settled: 0 });
+  });
+
+  it("멈추기가 먼저면 단계를 내보내는 쪽(확정 거절 → failed)이 run 잠금을 기다렸다가 예약을 해제한다", async () => {
+    const user = await userWithCredits(100);
+    const step = await preparedDraft(user, 40);
+    expect(await beginCall(setup, step, "fn-a")).toBe("ok");
+
+    await b.query("begin");
+    await b.query("select public.stop_run($1, $2)", [user.userId, step.runId]);
+    const fail = a.query("select public.settle_step($1, 'fn-a', 'failed', '{}')", [step.stepId]);
+    await waitForLockWait(aPid);
+    await b.query("commit");
+    await fail;
+
+    expect(await stepState(step.stepId)).toBe("failed");
+    const { rows } = await setup.query("select state from public.execution_runs where id = $1", [step.runId]);
+    expect(rows[0].state).toBe("stopped");
+    expect(await account(user)).toEqual({ granted: 100, reserved: 0, settled: 0 });
   });
 
   it("같은 단계의 미확정 원가 두 행을 두 연결이 동시에 확정해도 정산은 한 번이고, 뒤의 쪽이 앞의 확정을 보고 정산한다", async () => {

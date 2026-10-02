@@ -3,8 +3,9 @@
 -- - 크레딧은 운영자가 지급한다(grant_credits, 승인된 db query). 구매 · 구독 · 클라이언트 지급 경로는 없다.
 -- - begin_call이 단계를 부르기 전에 그 단계의 추정치를 예약한다. 계정 행을 잠가(for update) 같은 사용자의 run끼리 줄을 세우므로
 --   잔액을 넘는 예약은 생기지 않는다. 모자라면 부르지 않고 run에 이유(hold_reason 'credit')를 남긴다. 단계는 prepared에 남는다.
--- - 정산은 확정된 청구 대상 원가 × 요율(credit_rates)이고 예약을 넘지 않는다. 남은 예약은 해제한다.
+-- - 정산은 끝낸 단계의 확정된 청구 대상 원가 × 요율(credit_rates)이고 예약을 넘지 않는다. 남은 예약은 해제한다.
 --   청구 대상 원가가 하나라도 미확정이면 정산하지 않고 예약을 그대로 둔다(0원 처리 · 해제 없음, A46).
+-- - 부르지 못했거나 실패한 단계의 예약은 run이 끝날 때(또는 끝난 run에서 단계가 나올 때) 트리거가 해제한다.
 -- - OpenRouter 원가(execution_usage)는 사용자 크레딧과 따로 남긴다. 시도마다 한 행이라 합계는 다시 물은 시도까지 모두 더한다(A51).
 -- - 원장 키(receipt_key)와 generation id는 unique다: 같은 영수증 · 재시도 · 중복 호출이 두 번 차감하거나 두 번 지급하지 않는다.
 -- - 쓰기는 서버(service role)만 한다. 앱은 자기 산출물만 RLS로 읽고, 원장 · 계정 · 요율 · 원가는 읽지도 못한다(잔액은 PR6의 GET 합계).
@@ -110,8 +111,9 @@ create index credit_ledger_step_idx on public.credit_ledger (step_id) where step
 -- ─────────────────────────────────────────────
 -- confirmed: 응답의 usage.cost 또는 generation 조회(reconcile_usage)로 확정한 비용. unconfirmed: 모른다(cost_usd null, 0으로 두지 않는다).
 -- generation id가 없는 시도(시간 초과 등)는 조회로 확정할 수 없어 운영자가 정할 때까지 unconfirmed다.
--- billable: 사용자 청구 대상. 초안 단계를 끝낸 호출(complete_internal_step)의 시도만 true. 계획 단계 · 실패 · 응답 없이 다시 부른
--- 시도(record_usage)는 플랫폼 원가다. 서버가 단계 종류로 정한다(호출자가 넘기지 않는다)
+-- billable: 사용자 청구 대상. 초안 단계를 끝낸 호출(complete_internal_step)에서 응답을 받은(generation id가 있는) 시도만 true.
+-- 계획 단계 · 실패 · 응답 없이 다시 부른 시도(record_usage) · 응답을 받지 못한 시도는 플랫폼 원가다(청구 근거가 없다).
+-- 서버가 단계 종류와 시도 기록으로 정한다(호출자가 넘기지 않는다)
 create table public.execution_usage (
   id bigint generated always as identity primary key,
   user_id uuid not null references auth.users (id) on delete cascade,
@@ -126,7 +128,7 @@ create table public.execution_usage (
   billable boolean not null,
   confirmed_at timestamptz,
   created_at timestamptz not null default now(),
-  constraint execution_usage_cost check ((cost_status = 'confirmed') = (cost_usd is not null)),
+  constraint execution_usage_cost check ((cost_status = 'confirmed') = (cost_usd is not null) and (cost_status = 'confirmed') = (confirmed_at is not null)),
   foreign key (run_id, user_id) references public.execution_runs (id, user_id),
   foreign key (step_id, user_id) references public.execution_steps (id, user_id)
 );
@@ -303,27 +305,36 @@ begin
     end if;
   end if;
 
-  -- 크레딧 (U2 PR4): 단계의 추정치를 가용 잔액과 run의 남은 예산 안에서 예약할 수 있어야 부른다. 추정치 0(계획 단계)은 예약하지 않는다.
-  -- 예약은 단계마다 한 번이다: 같은 단계의 재시도(내부 효과 다시 준비)는 처음 예약을 그대로 쓴다 (예약이 해제되는 것은 run이 끝난 뒤뿐이고,
-  -- 끝난 run은 위에서 막힌다). 모자라면 부르지 않고 run에 이유를 남긴다. 단계는 prepared에 남아 지급 뒤 sweep이 이어 간다.
+  -- 크레딧 (U2 PR4): 단계의 추정치를 가용 잔액과 run의 남은 예산 안에서 예약할 수 있어야 부른다. 막히면 부르지 않고 run에 이유(credit)를
+  -- 남긴다. 단계는 prepared에 남아 지급 뒤 sweep이 이어 간다. 추정치 0인 단계(계획)는 예약하지 않지만, 청구 대상인 초안 단계는 추정치가 있어야 한다.
+  -- 예약은 단계마다 한 번이다: 같은 단계의 재시도(내부 효과 다시 준비)는 열린 처음 예약을 그대로 쓴다. 이미 정산 · 해제된 예약으로는 부르지 않는다.
   -- 원장 · 계정은 intent를 얻은 뒤에 쓴다: 그 사이에 다른 단계가 먼저 commit해 건너뛰면 예약이 남지 않게
-  if v_step.estimate_credits > 0
-     and not exists (select 1 from public.credit_ledger l where l.receipt_key = 'reserve:' || v_step.id::text) then
-    select * into v_account from public.credit_accounts where user_id = v_run.user_id for update;
-    if v_run.budget_credits is not null then
-      -- run이 쓴 예산 = 예약 - 해제 (정산은 예약에서 옮겨 가므로 그대로 센다)
-      select coalesce(sum(case l.kind when 'reserve' then l.credits when 'release' then -l.credits else 0 end), 0)::integer
-        into v_run_used from public.credit_ledger l where l.run_id = v_run.id;
+  if v_step.kind = 'draft' and v_step.estimate_credits <= 0 then
+    return public.execution_hold(v_run.id, 'credit', 'no_estimate');
+  end if;
+  if v_step.estimate_credits > 0 then
+    if exists (select 1 from public.credit_ledger l where l.receipt_key = 'reserve:' || v_step.id::text) then
+      if exists (select 1 from public.credit_ledger l
+                 where l.receipt_key in ('settle:' || v_step.id::text, 'release:' || v_step.id::text)) then
+        return public.execution_hold(v_run.id, 'credit', 'reservation_closed');
+      end if;
+    else
+      select * into v_account from public.credit_accounts where user_id = v_run.user_id for update;
+      select r.version into v_rate from public.credit_rates r where r.active;
+      if v_rate is null then
+        return public.execution_hold(v_run.id, 'credit', 'no_rate'); -- 요율을 모르면 새 유료 단계를 보류한다 (A41)
+      end if;
+      if v_run.budget_credits is not null then
+        -- run이 쓴 예산 = 예약 - 해제 (정산은 예약에서 옮겨 가므로 그대로 센다)
+        select coalesce(sum(case l.kind when 'reserve' then l.credits when 'release' then -l.credits else 0 end), 0)::integer
+          into v_run_used from public.credit_ledger l where l.run_id = v_run.id;
+      end if;
+      if v_step.estimate_credits > coalesce(v_account.granted - v_account.reserved - v_account.settled, 0)
+         or (v_run.budget_credits is not null and v_step.estimate_credits > v_run.budget_credits - v_run_used) then
+        return public.execution_hold(v_run.id, 'credit', 'insufficient_credit');
+      end if;
+      v_reserve := v_step.estimate_credits;
     end if;
-    if v_step.estimate_credits > coalesce(v_account.granted - v_account.reserved - v_account.settled, 0)
-       or (v_run.budget_credits is not null and v_step.estimate_credits > v_run.budget_credits - v_run_used) then
-      return public.execution_hold(v_run.id, 'credit', 'insufficient_credit');
-    end if;
-    select r.version into v_rate from public.credit_rates r where r.active;
-    if v_rate is null then
-      raise exception 'begin_call: 지금 쓰는 크레딧 요율이 없다';
-    end if;
-    v_reserve := v_step.estimate_credits;
   end if;
 
   perform set_config('execution.gate', 'ok', true);
@@ -366,7 +377,8 @@ $$;
 -- 8) 원가 기록 · 정산 · 해제
 -- ─────────────────────────────────────────────
 -- 시도 기록(src/lib/ai/llm.ts LlmAttempt 배열 그대로: [{generationId, model, usage?: {prompt_tokens, completion_tokens, cost?}}])을
--- 단계의 원가 행으로 남긴다. 비용이 있으면 확정, 없으면 미확정(0으로 두지 않는다). 같은 generation id는 한 번만 남긴다
+-- 단계의 원가 행으로 남긴다. 비용이 있으면 확정, 없으면 미확정(0으로 두지 않는다). 같은 generation id는 한 번만 남긴다.
+-- 청구 대상(p_billable)이어도 generation id가 없는 시도(응답을 받지 못함)는 플랫폼 원가로 남긴다: 확인할 수 없는 사용량으로 청구하지 않는다
 create function public.credit_insert_usage(p_step uuid, p_attempts jsonb, p_billable boolean) returns integer
 language plpgsql
 set search_path = ''
@@ -383,7 +395,7 @@ begin
          (a.value->'usage'->>'prompt_tokens')::integer, (a.value->'usage'->>'completion_tokens')::integer,
          (a.value->'usage'->>'cost')::numeric,
          case when a.value->'usage'->>'cost' is null then 'unconfirmed' else 'confirmed' end,
-         p_billable,
+         p_billable and a.value->>'generationId' is not null,
          case when a.value->'usage'->>'cost' is null then null else public.db_now() end
   from public.execution_steps s, jsonb_array_elements(p_attempts) with ordinality a (value, n)
   where s.id = p_step
@@ -394,16 +406,18 @@ begin
 end;
 $$;
 
--- 단계 하나의 예약을 정산한다: 확정된 청구 대상 원가 합계(모든 시도) × 예약 때 요율, 예약을 넘지 않게 올림. 남은 예약은 해제.
--- 예약이 없거나 이미 정산 · 해제했으면 그대로, 청구 대상 원가가 하나라도 미확정이면 예약을 둔 채 돌아간다 (A46).
+-- 끝낸(called) 단계 하나의 예약을 정산한다: 확정된 청구 대상 원가 합계(모든 시도) × 예약 때 요율, 예약을 넘지 않게 올림. 남은 예약은 해제.
+-- 예약이 없거나 이미 정산 · 해제했으면 그대로. 아직 끝내지 않은 단계(부르는 중 · 다시 준비 · 결과 불명)는 정산하지 않는다(재시도가 그 예약을 쓴다).
+-- 청구 대상 원가가 하나라도 미확정이면, 또는 초안 단계인데 청구 대상 원가 행이 없으면(원가를 모른다) 예약을 둔 채 돌아간다 (A46).
 -- 계정 행을 먼저 잠그고 확인한다: 같은 단계의 원가를 두 함수가 동시에 확정해도 뒤의 쪽이 앞의 commit을 보고 한 번만 정산한다.
--- 결과: none · done · unconfirmed · settled
+-- 결과: none · done · pending · unconfirmed · settled
 create function public.credit_settle_step(p_step uuid) returns text
 language plpgsql
 set search_path = ''
 as $$
 declare
   v_reserve public.credit_ledger;
+  v_step public.execution_steps;
   v_cost numeric;
   v_credits integer;
 begin
@@ -416,7 +430,12 @@ begin
              where receipt_key in ('settle:' || p_step::text, 'release:' || p_step::text)) then
     return 'done';
   end if;
-  if exists (select 1 from public.execution_usage u where u.step_id = p_step and u.billable and u.cost_status = 'unconfirmed') then
+  select * into v_step from public.execution_steps where id = p_step;
+  if v_step.state is distinct from 'called' then
+    return 'pending';
+  end if;
+  if exists (select 1 from public.execution_usage u where u.step_id = p_step and u.billable and u.cost_status = 'unconfirmed')
+     or (v_step.kind = 'draft' and not exists (select 1 from public.execution_usage u where u.step_id = p_step and u.billable)) then
     return 'unconfirmed';
   end if;
   select coalesce(sum(u.cost_usd), 0) into v_cost from public.execution_usage u where u.step_id = p_step and u.billable;
@@ -434,23 +453,40 @@ begin
 end;
 $$;
 
--- 끝난 run(done · failed · stopped)에서 부르지 못했거나 실패한 단계(pending · prepared · failed · skipped)의 예약을 해제한다. 해제한 단계 수.
--- 부르는 중(calling)은 결과를 받으면 정산하고, 끝낸 단계(called)는 정산한다(원가가 미확정이면 예약을 둔다, A46). 결과 불명(외부)도 둔다.
--- 아래 트리거가 부른다. 다시 불러도 같은 단계를 두 번 해제하지 않는다
-create function public.release_run_credits(p_run_id uuid) returns integer
+-- 끝난 run(done · failed · stopped)에서 부르지 못했거나 실패한 단계(pending · prepared · failed · skipped)의 예약을 해제하고,
+-- 끝낸 단계(called)는 정산한다(원가가 미확정이면 예약을 둔다, A46). 부르는 중(calling) · 결과 불명(외부)은 둔다. 해제한 단계 수.
+-- run 행을 먼저 잠그고(step → run → 계정 순서) 새로 읽는다: run을 끝내는 함수(stop_run)와 단계를 내보내는 함수(mark_unknown · settle_step)가
+-- 동시에 돌아도 뒤에 commit하는 쪽이 앞의 결과를 보고 해제한다. 아래 트리거가 부른다. 다시 불러도 같은 단계를 두 번 해제하지 않는다.
+-- p_run_id가 null이면 열린 예약이 남은 끝난 run 모두 (sweep의 보조 안전망, U2 PR6)
+create function public.release_run_credits(p_run_id uuid default null) returns integer
 language plpgsql
 set search_path = ''
 as $$
 declare
   r record;
+  v_state text;
   v_count integer := 0;
 begin
+  if p_run_id is null then
+    for r in
+      select distinct l.run_id from public.credit_ledger l join public.execution_runs run on run.id = l.run_id
+      where l.kind = 'reserve' and run.state in ('done', 'failed', 'stopped')
+        and not exists (select 1 from public.credit_ledger x
+                        where x.receipt_key in ('settle:' || l.step_id::text, 'release:' || l.step_id::text))
+    loop
+      v_count := v_count + public.release_run_credits(r.run_id);
+    end loop;
+    return v_count;
+  end if;
+  select state into v_state from public.execution_runs where id = p_run_id for no key update;
+  if v_state is null or v_state not in ('done', 'failed', 'stopped') then
+    return 0;
+  end if;
   for r in
     select l.user_id, l.step_id, l.credits, s.state as step_state
     from public.credit_ledger l
-    join public.execution_runs run on run.id = l.run_id
     join public.execution_steps s on s.id = l.step_id
-    where l.run_id = p_run_id and l.kind = 'reserve' and run.state in ('done', 'failed', 'stopped')
+    where l.run_id = p_run_id and l.kind = 'reserve'
     order by l.id
   loop
     if r.step_state = 'called' then
@@ -472,9 +508,10 @@ begin
 end;
 $$;
 
--- 남은 예약을 그 자리에서 해제하는 두 순간 (어느 함수가 바꿨든):
+-- 남은 예약을 그 자리에서 해제 · 정산하는 두 순간 (어느 함수가 바꿨든):
 --   ① run이 끝 상태로 간다 (stop_run · settle_step 실패 · 다시 준비 한도 · finish_run)
---   ② 이미 끝난(멈춘) run에서 부르던 단계가 끝내지 못하고 나온다 (calling → prepared · failed). run이 끝나지 않았으면 아무것도 안 한다
+--   ② 부르던 단계 · 결과 불명 단계가 나온다 (calling · unknown_outcome → called · prepared · failed 등). 이미 끝난(멈춘) run이면
+--      나온 단계를 정산 · 해제하고, run이 끝나지 않았으면 아무것도 안 한다
 -- run · 단계 상태를 바꾸는 것은 서버 함수뿐이라 호출자 권한으로 돈다. 연결 끊기의 set null(서버가 아닌 역할일 수 있다)은
 -- state를 update 대상으로 적지 않아(update of state) 이 트리거를 부르지 않는다
 create function public.credit_release_trigger() returns trigger
@@ -500,7 +537,7 @@ create trigger execution_runs_release_credits
 create trigger execution_steps_release_credits
   after update of state on public.execution_steps
   for each row
-  when (old.state = 'calling' and new.state in ('prepared', 'failed'))
+  when (old.state in ('calling', 'unknown_outcome') and new.state is distinct from old.state)
   execute function public.credit_release_trigger();
 
 -- ─────────────────────────────────────────────
@@ -556,7 +593,8 @@ end;
 $$;
 
 -- 끝내지 못한 호출의 시도를 원가로 남긴다: 형식 오류 · 시간 초과로 실패(settle_step 'failed')하거나 응답 없이 다시 준비(mark_unknown)하기 전,
--- 또는 lease를 잃은 함수가 뒤늦게 응답을 받았을 때. 모두 플랫폼 원가(billable false)라 청구 · 단계 상태를 바꾸지 않는다. 남긴 행 수
+-- 또는 lease를 잃은 함수가 뒤늦게 응답을 받았을 때. 모두 플랫폼 원가(billable false)라 청구 · 단계 상태를 바꾸지 않는다. 남긴 행 수.
+-- 실행기는 단계를 내보내기(settle_step · mark_unknown) 전에 먼저 부른다: 그 사이에 죽어도 원가 행은 남고, 단계는 lease 만료로 다시 준비된다
 create function public.record_usage(p_step uuid, p_attempts jsonb) returns integer
 language plpgsql
 set search_path = ''
@@ -567,7 +605,8 @@ end;
 $$;
 
 -- 미확정 원가를 확정한다: sweep이 generation 조회(src/lib/ai/generation.ts)의 total_cost로, generation id가 없는 행은 운영자가 정한 값으로.
--- 미확정 행만 바꾼다(같은 확정을 두 번 받아도 한 번). 그 단계의 청구 대상 원가가 모두 확정되면 정산한다
+-- 미확정 행만 바꾼다(같은 확정을 두 번 받아도 한 번). 그 단계를 끝냈고(called) 청구 대상 원가가 모두 확정되면 정산한다.
+-- 원가 행 → 계정 순서로 잠근다: 한 트랜잭션에서 여러 행을 확정하지 말고 RPC 한 번에 한 행씩 부른다(겹친 sweep끼리 교착하지 않게)
 create function public.reconcile_usage(p_usage_id bigint, p_cost_usd numeric) returns boolean
 language plpgsql
 set search_path = ''
