@@ -91,11 +91,17 @@ describe("loadExecution", () => {
       credit_ledger: "credits, rate_version, created_at",
       credit_rates: "version, usd_per_credit",
     });
-    const filters = calls.filter((c) => c.method === "eq" || c.method === "or").map((c) => [c.table, c.method, ...c.args]);
+    const filters = calls.filter((c) => ["eq", "or", "gte"].includes(c.method)).map((c) => [c.table, c.method, ...c.args]);
+    const since = period.from.toISOString();
     expect(filters).toEqual([
+      ["execution_runs", "gte", "created_at", since],
       ["execution_events", "or", "type.eq.hold,to_state.eq.waiting_approval"],
+      ["execution_events", "gte", "at", since],
+      // 결과 불명은 기간과 상관없이 지금 수
       ["execution_steps", "eq", "state", "unknown_outcome"],
+      ["execution_usage", "gte", "created_at", since],
       ["credit_ledger", "eq", "kind", "settle"],
+      ["credit_ledger", "gte", "created_at", since],
     ]);
   });
 

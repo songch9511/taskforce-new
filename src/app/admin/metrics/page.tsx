@@ -30,7 +30,7 @@ const RUN_STATE_LABELS: Record<RunState, string> = {
   stopped: "멈춤",
 };
 const HOLD_LABELS: Record<HoldReason, string> = {
-  blocked: "차단 스위치 · 도구 · 수신자",
+  blocked: "차단 스위치 · 도구 · 수신자 · 서버 쪽 보류",
   actor: "실행 주체 목록 밖",
   needs_connection: "보내는 연결 없음",
   credit: "크레딧 부족",
@@ -84,7 +84,7 @@ const GOOGLE_COUNT_LABELS: [string, string][] = [
 
 const pct = (value: number | null) => (value === null ? "—" : `${Math.round(value * 1000) / 10}%`);
 const num = (value: number | null, unit = "") => (value === null ? "—" : `${Math.round(value * 10) / 10}${unit}`);
-const usd = (value: number) => value.toFixed(3);
+const usd = (value: number, digits = 3) => value.toFixed(digits);
 
 export default async function MetricsPage({ searchParams }: { searchParams: Promise<{ days?: string }> }) {
   const user = await requireUser();
@@ -329,11 +329,11 @@ export default async function MetricsPage({ searchParams }: { searchParams: Prom
             <ul className="space-y-0.5 sm:col-span-2">
               <li className="flex justify-between">
                 <span>AI 원가 · 청구 대상</span>
-                <span>${usd(execution.cost.billableUsd)}</span>
+                <span>${usd(execution.cost.billableUsd, 4)}</span>
               </li>
               <li className="flex justify-between">
                 <span>AI 원가 · 플랫폼 (계획 · 실패 · 응답 없는 시도)</span>
-                <span>${usd(execution.cost.platformUsd)}</span>
+                <span>${usd(execution.cost.platformUsd, 4)}</span>
               </li>
               <li className="flex justify-between">
                 <span>원가 미확정</span>
@@ -342,7 +342,7 @@ export default async function MetricsPage({ searchParams }: { searchParams: Prom
               <li className="flex justify-between">
                 <span>청구 (정산한 크레딧)</span>
                 <span>
-                  {execution.charged.credits} 크레딧 · ${usd(execution.charged.usd)}
+                  {execution.charged.credits} 크레딧 · ${usd(execution.charged.usd, 4)}
                 </span>
               </li>
             </ul>

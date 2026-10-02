@@ -354,7 +354,7 @@ export function sourceFailures(events: MetricEventRow[], period: Period): Source
 /** run 상태 (execution_runs.state, docs/EXECUTION.md 3장) */
 export const RUN_STATES = ["queued", "running", "waiting_approval", "done", "failed", "stopped"] as const;
 export type RunState = (typeof RUN_STATES)[number];
-/** begin_call이 run을 막은 이유 (execution_runs.hold_reason): 스위치 · 도구 · 수신자 / 실행 주체 밖 / 보내는 연결 없음 / 크레딧 부족 */
+/** begin_call이 run을 막은 이유 (execution_runs.hold_reason): 스위치 · 도구 · 수신자 · 서버 쪽 보류(요율 · 추정치 없음, 닫힌 예약) / 실행 주체 밖 / 보내는 연결 없음 / 크레딧 부족 */
 export const HOLD_REASONS = ["blocked", "actor", "needs_connection", "credit"] as const;
 export type HoldReason = (typeof HOLD_REASONS)[number];
 
