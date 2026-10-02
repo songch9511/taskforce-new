@@ -47,7 +47,12 @@ npm run eval -- --case <id>   # 한 케이스만
 npm run eval -- --tag slack   # 태그가 붙은 케이스만 (물어보기는 건너뜀)
 npm run eval -- --no-judge    # Jev 없이 추출 · 기계 검증만
 npm run eval -- --labels      # 라벨 검사만 (키가 없으면 CI도 여기까지만)
+npm run eval -- --draft       # 초안 골든셋(evals/draft, E1)만: Jev 예/아니오 3개 + Slack 글자 기계 대조, 사람 검토 표본 25%
+npm run eval -- --plan        # 다음 단계 골든셋(evals/plan, E2)만: 스키마 유효 · 단계 종류 일치
+npm run eval -- --all         # 위 채점 전부 (기본 실행은 추출 · 물어보기만, E1 · E2 결과는 따로 저장)
 ```
+
+- 실행 골든셋(`evals/draft` · `evals/plan`)은 요청 + Action · 근거 원문 모양이고(`src/lib/eval/execution-golden.ts`), 원문마다 연결 서비스(`provider`)를 적습니다. `slack` 원문은 실행 자료(`src/lib/execution/context.ts`)에서 빠져야 하고, 초안에 그 글이 나오면 실패입니다.
 
 - 후보와 정답은 **인용 구절이 겹치는지**로 짝짓습니다 (공백·문장부호 무시). 제목은 비교하지 않습니다.
 - precision = 맞음 / 뽑은 것 전체, recall = 맞음 / 정답 전체. 담당·기한 정확도는 맞게 짝지어진 것 중에서 셉니다.

@@ -1,0 +1,50 @@
+{
+  "id": "plan-draft-thanks-on-done-action",
+  "description": "할 일 상태가 끝남이고 원문에 '보내드렸습니다'가 있어도, 요청은 새 감사 메일 초안이다 → draft (관문 ① done 오답 유형)",
+  "origin": "synthetic",
+  "tags": [
+    "done-trap"
+  ],
+  "now": "2026-10-02T10:00:00+09:00",
+  "user": {
+    "name": "김도윤"
+  },
+  "request": "견적서 잘 받으셨는지 확인하면서 감사 인사 전하는 메일 초안 써 줘",
+  "action": {
+    "title": "소나무랩 견적서 발송",
+    "status": "done",
+    "counterpart": "박서준"
+  },
+  "sources": [
+    {
+      "id": "s1",
+      "kind": "email",
+      "provider": "gmail",
+      "title": "RE: 영상 제작 견적",
+      "occurred_at": "2026-09-29T17:40:00+09:00",
+      "participants": {
+        "from": {
+          "name": "김도윤",
+          "email": "doyun@example.com"
+        },
+        "to": [
+          {
+            "name": "박서준",
+            "email": "seojun@example.com"
+          }
+        ]
+      },
+      "text": "제목: RE: 영상 제작 견적\n\n서준님, 요청하신 영상 2편 견적서 보내드렸습니다.\n검토해 보시고 편하게 말씀 주세요.\n\n김도윤 드림"
+    }
+  ],
+  "evidence": [
+    {
+      "source": "s1",
+      "quote": "요청하신 영상 2편 견적서 보내드렸습니다"
+    }
+  ],
+  "history": [],
+  "expect": {
+    "kind": "draft"
+  }
+}

@@ -1,0 +1,35 @@
+{
+  "id": "plan-needs-slack-post-ko",
+  "description": "Slack 채널에 올려 달라는 요청: Slack 쓰기는 없다 (읽기만) → needs_connection",
+  "origin": "synthetic",
+  "now": "2026-10-02T10:00:00+09:00",
+  "user": {
+    "name": "김도윤"
+  },
+  "request": "출시일 바뀐 거 #마케팅 채널에 공지로 올려 줘",
+  "action": {
+    "title": "출시일 변경 공유",
+    "due_date": "2026-10-02"
+  },
+  "sources": [
+    {
+      "id": "s1",
+      "kind": "doc",
+      "provider": "notion",
+      "title": "출시 일정",
+      "occurred_at": "2026-10-01T19:00:00+09:00",
+      "text": "# 출시 일정\n\n- 앱 2.0 출시일: 10월 13일에서 10월 20일로 변경\n- 변경 내용은 김도윤이 마케팅팀에 공유"
+    }
+  ],
+  "evidence": [
+    {
+      "source": "s1",
+      "quote": "변경 내용은 김도윤이 마케팅팀에 공유"
+    }
+  ],
+  "history": [],
+  "expect": {
+    "kind": "needs_connection",
+    "capability": "send_message"
+  }
+}

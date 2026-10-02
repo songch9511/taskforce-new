@@ -4,26 +4,40 @@
 //   npm run eval -- --tag slack   태그가 붙은 케이스만 (물어보기는 건너뜀)
 //   npm run eval -- --no-judge    Jev 없이 추출 · 기계 검증만
 //   npm run eval -- --labels      라벨 검사만 (CI처럼 키가 없을 때와 같음)
+//   npm run eval -- --draft       초안 골든셋(evals/draft, E1)만 채점 (--case로 그 세트의 케이스를 주면 저절로)
+//   npm run eval -- --plan        다음 단계 골든셋(evals/plan, E2)만 채점
+//   npm run eval -- --all         기존 채점 + E1 + E2 (기본 실행은 기존 채점만, E1 · E2는 따로 보고 · 따로 저장)
 // 키(OPENROUTER_API_KEY, LLM_MODEL, JEV_MODEL)는 환경변수나 .env.local에서 읽는다.
 import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { parseArgs } from "node:util";
 
+import type { z } from "zod";
+
 import { embed, embedConfigFromEnv } from "../src/lib/ai/embed";
-import { decide, jevConfigFromEnv } from "../src/lib/ai/jev";
+import { decide, jevConfigFromEnv, type JevConfig } from "../src/lib/ai/jev";
 import { DeadlineExceededError, INTERACTIVE_MAX_DURATION_S, interactiveDeadline } from "../src/lib/ai/deadline";
-import { completeJson, llmConfigFromEnv } from "../src/lib/ai/llm";
+import { fetchGeneration, type Generation } from "../src/lib/ai/generation";
+import { completeJson, llmAttemptsOf, llmConfigFromEnv, LlmError, type LlmAttempt, type LlmConfig } from "../src/lib/ai/llm";
 import { ASK_PROMPT_VERSION } from "../src/lib/ai/prompts/ask";
+import { DRAFT_PROMPT_VERSION } from "../src/lib/ai/prompts/draft";
+import { DRAFT_JUDGE_PROMPT_VERSION, DRAFT_JUDGE_QUESTIONS, type DraftJudgeQuestionKey } from "../src/lib/ai/prompts/draft-judge";
+import { PLAN_PROMPT_VERSION } from "../src/lib/ai/prompts/plan";
 import { EXTRACT_PROMPT_VERSION } from "../src/lib/ai/prompts/extract";
 import { JUDGE_PROMPT_VERSION } from "../src/lib/ai/prompts/judge";
 import { projectAction } from "../src/lib/actions/project";
 import { askCaseSchema, askContextOf, findAskLabelErrors, scoreAskCase, type AskCase, type AskScore } from "../src/lib/eval/ask-golden";
+import { draftCaseSchema, draftJudgeState, draftTotals, findDraftLabelErrors, humanSample, scoreDraftCase, type DraftCase, type DraftScore } from "../src/lib/eval/draft-golden";
+import { executionContextOf } from "../src/lib/eval/execution-golden";
+import { findPlanLabelErrors, planCaseSchema, planTotals, scorePlanCase, type PlanCase, type PlanScore } from "../src/lib/eval/plan-golden";
+import { writeDraft, type DraftResult } from "../src/lib/execution/draft";
+import { planNextStep, type PlanResult } from "../src/lib/execution/plan";
 import { findLabelErrors, goldenCaseSchema, type GoldenCase } from "../src/lib/eval/golden";
 import { agreement, calibration, decisionTable, labeledItems, type JudgedItem } from "../src/lib/eval/judge-metrics";
 import { scoreCase, totals, type CaseScore, type ScoredCandidate, type Totals } from "../src/lib/eval/score";
 import { scoreSequence, sequenceTotals, type FinalAction, type SequenceScore } from "../src/lib/eval/sequence-score";
 import { answerQuestion, type AskResult } from "../src/lib/pipeline/ask";
-import { extractCandidates, type ActionCandidate } from "../src/lib/pipeline/extract";
+import { extractCandidates, type ActionCandidate, type CompleteJson } from "../src/lib/pipeline/extract";
 import { judgeCandidate, type JudgeResult, type JudgeSource } from "../src/lib/pipeline/judge";
 import { InMemoryActionStore, mergeJudged, type MergeOutcome } from "../src/lib/pipeline/merge";
 import { resolveAction } from "../src/lib/pipeline/resolve";
@@ -34,6 +48,8 @@ import { verifyCandidates, type VerifiedCandidate } from "../src/lib/pipeline/ve
 const ROOT = path.resolve(import.meta.dirname, "..");
 const GOLDEN_DIR = path.join(ROOT, "evals/golden");
 const ASK_DIR = path.join(ROOT, "evals/ask");
+const DRAFT_DIR = path.join(ROOT, "evals/draft");
+const PLAN_DIR = path.join(ROOT, "evals/plan");
 const RESULTS_DIR = path.join(ROOT, "evals/results");
 const LLM_CONCURRENCY = 4;
 const JEV_CONCURRENCY = 8;
@@ -77,6 +93,30 @@ async function loadAskCases(): Promise<{ cases: AskCase[]; failed: number }> {
     if (errors.length > 0) {
       failed++;
       console.error(`✗ ask/${file}: 라벨 오류\n${errors.map((e) => `  - ${e}`).join("\n")}`);
+      continue;
+    }
+    cases.push(parsed.data);
+  }
+  return { cases, failed };
+}
+
+/** 실행 골든셋 (evals/draft E1 · evals/plan E2): 형식 · 라벨 검사 */
+async function loadExecutionSet<T>(dir: string, schema: z.ZodType<T>, findErrors: (golden: T) => string[]): Promise<{ cases: T[]; failed: number }> {
+  const label = path.basename(dir);
+  const files = (await readdir(dir).catch(() => [] as string[])).filter((f) => f.endsWith(".json")).sort();
+  const cases: T[] = [];
+  let failed = 0;
+  for (const file of files) {
+    const parsed = schema.safeParse(JSON.parse(await readFile(path.join(dir, file), "utf8")));
+    if (!parsed.success) {
+      failed++;
+      console.error(`✗ ${label}/${file}: 형식 오류\n${parsed.error.issues.map((i) => `  - ${i.path.join(".")}: ${i.message}`).join("\n")}`);
+      continue;
+    }
+    const errors = findErrors(parsed.data);
+    if (errors.length > 0) {
+      failed++;
+      console.error(`✗ ${label}/${file}: 라벨 오류\n${errors.map((e) => `  - ${e}`).join("\n")}`);
       continue;
     }
     cases.push(parsed.data);
@@ -145,9 +185,241 @@ type CaseRun = {
   judged: { candidate: VerifiedCandidate; result: JudgeResult }[] | null;
 };
 
+/** 시도 기록의 원가: 응답의 usage.cost 합계, id가 없는(시간 초과) 시도 수, id는 있지만 비용이 없는 시도 수 */
+function attemptCost(attempts: LlmAttempt[]): { cost: number; unconfirmed: number; noCost: number } {
+  return {
+    cost: attempts.reduce((sum, a) => sum + (a.usage?.cost ?? 0), 0),
+    unconfirmed: attempts.filter((a) => a.generationId === null).length,
+    noCost: attempts.filter((a) => a.generationId !== null && a.usage?.cost === undefined).length,
+  };
+}
+
+/**
+ * 응답의 비용을 generation 조회(generation.ts)로 확인한다 (A51). 생성 직후에는 404라 10초 간격으로 몇 번 더 묻는다.
+ * 채점과 상관없는 확인이라 실패해도 eval을 실패로 두지 않는다.
+ */
+async function reconcileAttempts(apiKey: string, attempts: LlmAttempt[]) {
+  const pending = new Map(attempts.filter((a) => a.generationId !== null).map((a) => [a.generationId!, a]));
+  const found = new Map<string, Generation>();
+  const failures: string[] = [];
+  for (let round = 0; round < 6 && pending.size > 0; round++) {
+    await new Promise((resolve) => setTimeout(resolve, 10_000));
+    await mapLimit([...pending.keys()], JEV_CONCURRENCY, async (id) => {
+      try {
+        const lookup = await fetchGeneration({ apiKey }, id);
+        if (lookup.status === "found") {
+          found.set(id, lookup.generation);
+          pending.delete(id);
+        }
+      } catch (error) {
+        failures.push(error instanceof Error ? error.message : String(error));
+        pending.delete(id);
+      }
+    });
+  }
+  const matched = [...found.entries()].filter(([id, g]) => {
+    const cost = attempts.find((a) => a.generationId === id)?.usage?.cost;
+    return cost !== undefined && Math.abs(cost - g.costUsd) < 1e-9;
+  }).length;
+  const providers: Record<string, number> = {};
+  for (const g of found.values()) providers[g.provider ?? "?"] = (providers[g.provider ?? "?"] ?? 0) + 1;
+  return { asked: found.size + pending.size + failures.length, found: found.size, notYet: pending.size, failed: failures.length, costMatched: matched, providers };
+}
+
+/**
+ * 실행 eval: E2(다음 단계 고르기, evals/plan)와 E1(초안, evals/draft). 기존 추출 · 물어보기 숫자와 섞지 않고 따로 보고 · 따로 저장한다.
+ * 기준(docs 계획 9장): E2 스키마 유효 ≥95% · 단계 종류 일치 ≥90%, E1 전 항목 ≥90% · 지어낸 사실 0 (+ 사람이 25% 표본을 본다).
+ */
+async function runExecutionEvals(llm: LlmConfig, jev: JevConfig | null, planCases: PlanCase[], draftCases: DraftCase[]): Promise<string[]> {
+  if (planCases.length + draftCases.length === 0) return [];
+  const errors: string[] = [];
+  const allAttempts: LlmAttempt[] = [];
+  let jevCost = 0;
+  // 다시 물은 시도까지 모두 모은다 (성공이면 결과의 attempts, 실패면 오류에 붙은 기록)
+  const complete =
+    (attempts: LlmAttempt[]): CompleteJson =>
+    (request) =>
+      completeJson(llm, request).then(
+      (result) => {
+        attempts.push(...(result.attempts ?? []));
+        return result;
+      },
+      (error: unknown) => {
+        attempts.push(...llmAttemptsOf(error));
+        throw error;
+      },
+    );
+  const pct = (n: number, d: number) => `${d ? ((n / d) * 100).toFixed(1) : "-"}% (${n}/${d})`;
+  const verdict = (ok: boolean) => (ok ? "통과" : "미달");
+
+  // E2: 다음 단계
+  type PlanRun = { golden: PlanCase; result: PlanResult | null; score: PlanScore; attempts: LlmAttempt[]; invalidReason?: string };
+  const planRuns = (
+    await mapLimit(planCases, LLM_CONCURRENCY, async (golden): Promise<PlanRun | null> => {
+      const attempts: LlmAttempt[] = [];
+      try {
+        const result = await planNextStep(
+          { request: golden.request, now: new Date(golden.now), user: golden.user, context: executionContextOf(golden), history: golden.history },
+          complete(attempts),
+        );
+        allAttempts.push(...attempts);
+        return { golden, result, score: scorePlanCase(golden, result.step), attempts };
+      } catch (error) {
+        allAttempts.push(...attempts);
+        // 다시 물어도 형식이 깨진 답(스키마 실패)은 채점에 넣고, 호출 실패(HTTP · 시간 초과)는 오류로 센다
+        if (error instanceof LlmError && error.retryable && error.kind !== "timeout") {
+          return { golden, result: null, score: scorePlanCase(golden, null), attempts, invalidReason: error.message };
+        }
+        errors.push(`${golden.id} 다음 단계: ${error instanceof Error ? error.message : String(error)}`);
+        return null;
+      }
+    })
+  ).filter((r): r is PlanRun => r !== null);
+
+  if (planRuns.length > 0) {
+    console.log(`\nE2 다음 단계 (${PLAN_PROMPT_VERSION}, ${llm.model})`);
+    for (const { golden, result, score, invalidReason, attempts } of planRuns) {
+      const got = result ? result.step.kind + (result.step.kind === "needs_connection" ? `(${result.step.capability})` : "") : `스키마 실패 (${invalidReason})`;
+      const expected = golden.expect.kind + (golden.expect.capability ? `(${golden.expect.capability})` : "");
+      const notes = [attempts.length > 1 ? `시도 ${attempts.length}` : null, score.capabilityCorrect === false ? "capability 다름" : null, score.argsPresent ? null : "인자 빔"].filter(Boolean);
+      console.log(`  ${score.kindCorrect ? "✓" : "✗"} ${golden.id.padEnd(36)} 기대 ${expected} / 결과 ${got}${notes.length ? ` (${notes.join(", ")})` : ""}`);
+      if (!score.kindCorrect && result) console.log(`      이유: ${result.reason}`);
+    }
+    const t = planTotals(planRuns.map((r) => r.score));
+    console.log(`  기대 → 결과   draft  needs  ask  done  실패`);
+    for (const [kind, row] of Object.entries(t.confusion)) {
+      if (Object.values(row).some((n) => n > 0)) {
+        console.log(`  ${kind.padEnd(16)} ${[row.draft, row.needs_connection, row.ask_user, row.done, row.invalid].map((n) => String(n).padStart(5)).join(" ")}`);
+      }
+    }
+    console.log(
+      `스키마 유효 ${pct(t.schemaValid, t.n)} · 단계 종류 일치 ${pct(t.kindCorrect, t.n)} · capability ${t.capabilityCorrect}/${t.capabilityJudged}` +
+        ` · 다시 물은 케이스 ${planRuns.filter((r) => r.attempts.length > 1).length}건` +
+        ` → 기준(≥95% · ≥90%) ${verdict(t.n > 0 && t.schemaValid / t.n >= 0.95 && t.kindCorrect / t.n >= 0.9)}`,
+    );
+  }
+
+  // E1: 초안
+  type DraftRun = { golden: DraftCase; result: DraftResult; score: DraftScore; excludedSlack: number; attempts: LlmAttempt[] };
+  const draftRuns = (
+    await mapLimit(draftCases, LLM_CONCURRENCY, async (golden): Promise<DraftRun | null> => {
+      const attempts: LlmAttempt[] = [];
+      try {
+        const context = executionContextOf(golden);
+        const result = await writeDraft(
+          { request: golden.request, brief: golden.brief, now: new Date(golden.now), user: golden.user, context },
+          complete(attempts),
+        );
+        let answers: Record<DraftJudgeQuestionKey, number> | null = null;
+        if (jev) {
+          const decision = await decide(jev, { state: draftJudgeState(golden, context.material, result.draft), questions: DRAFT_JUDGE_QUESTIONS });
+          jevCost += decision.usage?.cost ?? 0;
+          answers = Object.fromEntries(
+            Object.keys(DRAFT_JUDGE_QUESTIONS).map((key) => {
+              const answer = decision.answers[key];
+              return [key, answer.type === "noul" ? answer.noul : 0];
+            }),
+          ) as Record<DraftJudgeQuestionKey, number>;
+        }
+        allAttempts.push(...attempts);
+        return { golden, result, score: scoreDraftCase(golden, context.material, result.draft, answers), excludedSlack: context.excluded.slack, attempts };
+      } catch (error) {
+        allAttempts.push(...attempts);
+        // E1에는 스키마 기준이 없어(E2와 다름) 다시 물어도 형식이 깨진 초안도 호출 실패로 센다: 다시 돌린다
+        errors.push(`${golden.id} 초안: ${error instanceof Error ? error.message : String(error)}`);
+        return null;
+      }
+    })
+  ).filter((r): r is DraftRun => r !== null);
+
+  if (draftRuns.length > 0) {
+    console.log(`\nE1 초안 (${DRAFT_PROMPT_VERSION}, ${llm.model}${jev ? ` / 채점 ${jev.model} · ${DRAFT_JUDGE_PROMPT_VERSION}` : " / Jev 없음: 기계 대조만"})`);
+    const short = { source_facts_only: "원문 사실", recipients_correct: "받는 사람", matches_request: "요청 일치" } as const;
+    for (const { golden, score, excludedSlack } of draftRuns) {
+      const failed = [
+        ...(score.jev ? (Object.keys(short) as DraftJudgeQuestionKey[]).filter((k) => !score.jev![k]).map((k) => `${short[k]} 아니오(${score.probabilities![k].toFixed(2)})`) : []),
+        score.slackFree ? null : `Slack 글자 ${score.slackLeaks.length}조각`,
+        score.forbidden.length ? `금지어 ${score.forbidden.join(", ")}` : null,
+        score.unknownContacts.length ? `자료에 없는 주소 ${score.unknownContacts.join(", ")}` : null,
+        score.jev && score.jev.recipients_correct !== score.recipientsMachine ? `받는 사람 기계 대조 ${score.recipientsMachine ? "맞음" : "틀림"}` : null,
+      ].filter(Boolean);
+      const ok = !score.fabricated && score.slackFree && (!score.jev || Object.values(score.jev).every(Boolean));
+      console.log(`  ${ok ? "✓" : "✗"} ${golden.id.padEnd(36)}${excludedSlack ? ` (Slack 근거 ${excludedSlack}개 뺌)` : ""}${failed.length ? ` ${failed.join(" · ")}` : ""}`);
+    }
+    const t = draftTotals(
+      draftRuns.map((r) => r.score),
+      draftRuns.map((r) => r.golden),
+    );
+    const rate = (value: number | null) => (value === null ? "-" : `${(value * 100).toFixed(1)}%`);
+    const itemsPass = Object.values(t.rates).every((value) => value === null || value >= 0.9);
+    console.log(
+      `원문 사실만 ${rate(t.rates.source_facts_only)} · 받는 사람 ${rate(t.rates.recipients_correct)} · 요청 일치 ${rate(t.rates.matches_request)}` +
+        ` · Slack 글자 없음 ${rate(t.rates.slack_free)} (Slack 섞인 케이스 ${t.slackCases}건 중) · 지어낸 사실 ${t.fabricated}건` +
+        ` · 받는 사람 기계 대조 ${t.recipientsMachine}/${t.n}` +
+        ` → 기준(전 항목 ≥90% · 지어낸 사실 0 · Slack 글자 0) ${verdict(itemsPass && t.fabricated === 0 && t.slackLeaked === 0 && jev !== null)}`,
+    );
+    // 표본은 고른 케이스 전체에서 정한다: 호출이 실패한 케이스가 있어도 표본이 바뀌지 않게
+    const sample = humanSample(draftCases).map((g) => g.id);
+    console.log(`사람 검토 표본 (25%): ${sample.join(", ")}`);
+    for (const run of draftRuns.filter((r) => sample.includes(r.golden.id))) {
+      const d = run.result.draft;
+      console.log(`\n  ── ${run.golden.id}\n  제목: ${d.title}\n  받는 사람: ${d.to.join(", ") || "(없음)"}\n${d.body.split("\n").map((line) => `  | ${line}`).join("\n")}`);
+    }
+  }
+
+  const cost = attemptCost(allAttempts);
+  console.log(
+    `\n실행 eval 비용 약 $${(cost.cost + jevCost).toFixed(4)} (LLM $${cost.cost.toFixed(4)}, 다시 물은 시도 포함 ${allAttempts.length}회 · Jev $${jevCost.toFixed(4)})` +
+      ` · generation id 없는 시도 ${cost.unconfirmed}회 · 비용 없는 응답 ${cost.noCost}회`,
+  );
+  console.log("generation 조회로 비용 확인 중 (생성 직후는 404라 10초씩 기다림)...");
+  const reconcile = await reconcileAttempts(llm.apiKey, allAttempts).catch((error: unknown) => ({ error: error instanceof Error ? error.message : String(error) }));
+  if ("error" in reconcile) console.log(`  조회 실패: ${reconcile.error}`);
+  else {
+    console.log(
+      `  찾음 ${reconcile.found}/${reconcile.asked} · 응답 usage.cost와 같음 ${reconcile.costMatched} · 아직 없음 ${reconcile.notYet} · 조회 오류 ${reconcile.failed}` +
+        ` · 공급자 ${Object.entries(reconcile.providers).map(([name, n]) => `${name} ${n}`).join(", ")}`,
+    );
+  }
+
+  await mkdir(RESULTS_DIR, { recursive: true });
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  await writeFile(
+    path.join(RESULTS_DIR, `${stamp}-execution-${PLAN_PROMPT_VERSION}-${DRAFT_PROMPT_VERSION}.json`),
+    JSON.stringify(
+      {
+        at: new Date().toISOString(),
+        models: { llm: llm.model, judge: jev?.model ?? null },
+        promptVersions: { plan: PLAN_PROMPT_VERSION, draft: DRAFT_PROMPT_VERSION, draftJudge: jev ? DRAFT_JUDGE_PROMPT_VERSION : null },
+        plan: planRuns.map((r) => ({ id: r.golden.id, expect: r.golden.expect, step: r.result?.step ?? null, reason: r.result?.reason ?? null, score: r.score, attempts: r.attempts })),
+        planTotals: planTotals(planRuns.map((r) => r.score)),
+        draft: draftRuns.map((r) => ({ id: r.golden.id, draft: r.result.draft, score: r.score, attempts: r.attempts })),
+        draftTotals: draftTotals(
+          draftRuns.map((r) => r.score),
+          draftRuns.map((r) => r.golden),
+        ),
+        cost: { ...cost, jev: jevCost },
+        reconcile,
+        errors,
+      },
+      null,
+      2,
+    ),
+  );
+  return errors;
+}
+
 async function main() {
   const { values } = parseArgs({
-    options: { case: { type: "string" }, tag: { type: "string" }, labels: { type: "boolean" }, "no-judge": { type: "boolean" } },
+    options: {
+      case: { type: "string" },
+      tag: { type: "string" },
+      labels: { type: "boolean" },
+      "no-judge": { type: "boolean" },
+      draft: { type: "boolean" },
+      plan: { type: "boolean" },
+      all: { type: "boolean" },
+    },
   });
 
   const { cases, failed } = await loadGolden();
@@ -157,8 +429,16 @@ async function main() {
   const ask = await loadAskCases();
   const answerable = ask.cases.filter((c) => !c.expect.unknown).length;
   console.log(`물어보기 골든셋 ${ask.cases.length + ask.failed}건 · 답할 수 있는 질문 ${answerable}개 · 원문에 답이 없는 질문 ${ask.cases.length - answerable}개`);
-  if (failed + ask.failed > 0) {
-    console.error(`${failed + ask.failed}건에 오류가 있습니다.`);
+  const draftSet = await loadExecutionSet(DRAFT_DIR, draftCaseSchema, findDraftLabelErrors);
+  const planSet = await loadExecutionSet(PLAN_DIR, planCaseSchema, findPlanLabelErrors);
+  const expectedKinds = Object.entries(Object.groupBy(planSet.cases, (c) => c.expect.kind)).map(([kind, list]) => `${kind} ${list?.length ?? 0}`);
+  console.log(
+    `초안 골든셋(E1) ${draftSet.cases.length + draftSet.failed}건 · Slack 섞인 케이스 ${draftSet.cases.filter((c) => c.tags?.includes("slack")).length}건` +
+      ` / 다음 단계 골든셋(E2) ${planSet.cases.length + planSet.failed}건 · 기대 ${expectedKinds.join(" · ")}`,
+  );
+  const labelFailures = failed + ask.failed + draftSet.failed + planSet.failed;
+  if (labelFailures > 0) {
+    console.error(`${labelFailures}건에 오류가 있습니다.`);
     process.exit(1);
   }
   if (values.labels) return;
@@ -176,12 +456,37 @@ async function main() {
   const useJudge = !values["no-judge"];
   const jev = useJudge ? jevConfigFromEnv() : null;
 
+  // 실행 eval(E1 · E2)은 --draft · --plan · --all이거나 --case가 그 세트의 케이스일 때만. 기본 실행(기존 채점)은 그대로다.
+  const pick = <T extends { id: string; tags?: string[] }>(items: T[]) =>
+    items.filter((c) => (!values.case || c.id === values.case) && (!values.tag || c.tags?.includes(values.tag)));
+  const caseIn = (items: { id: string }[]) => Boolean(values.case) && items.some((c) => c.id === values.case);
+  const runDraft = Boolean(values.all || values.draft || caseIn(draftSet.cases));
+  const runPlan = Boolean(values.all || values.plan || caseIn(planSet.cases));
+  const runExisting = values.all ? !caseIn(draftSet.cases) && !caseIn(planSet.cases) : !runDraft && !runPlan;
+  const planPicked = runPlan ? pick(planSet.cases) : [];
+  const draftPicked = runDraft ? pick(draftSet.cases) : [];
+  const runExecution = () => runExecutionEvals(llm, jev, planPicked, draftPicked);
+  const runExecutionOnly = async () => {
+    if (planPicked.length + draftPicked.length === 0) {
+      console.error(values.tag ? `태그 ${values.tag}가 붙은 실행 케이스가 없습니다.` : "채점할 케이스가 없습니다.");
+      process.exit(1);
+    }
+    const executionErrors = await runExecution();
+    if (executionErrors.length > 0) {
+      console.error(`\n${executionErrors.length}건 호출 실패:\n${executionErrors.map((e) => `  - ${e}`).join("\n")}`);
+      process.exit(1);
+    }
+  };
+  if (!runExisting) return runExecutionOnly();
+
   // 원문 하나짜리 케이스는 추출 품질을, 여러 원문이 이어지는 케이스는 매칭 · 병합 품질을 본다 (시퀀스는 Jev가 필요).
   const selected = cases.filter((c) => (!values.case || c.id === values.case) && (!values.tag || c.tags?.includes(values.tag)));
   const single = selected.filter((c) => c.sources.length === 1);
   const sequences = selected.filter((c) => c.sources.length > 1);
   // 물어보기 케이스에는 태그가 없다: --tag를 주면 건너뛴다.
   const askSelected = values.tag ? [] : ask.cases.filter((c) => !values.case || c.id === values.case);
+  // --all인데 기존 세트에 고를 케이스가 없으면(예: --all --tag done-trap) 실행 eval만 돌린다
+  if (selected.length === 0 && askSelected.length === 0 && planPicked.length + draftPicked.length > 0) return runExecutionOnly();
   if (selected.length === 0 && askSelected.length === 0) {
     const caseExists = values.case && [...cases, ...ask.cases].some((c) => c.id === values.case);
     console.error(
@@ -506,6 +811,8 @@ async function main() {
       2,
     ),
   );
+
+  if (runDraft || runPlan) errors.push(...(await runExecution()));
 
   if (errors.length > 0) {
     console.error(`\n${errors.length}건 호출 실패:\n${errors.map((e) => `  - ${e}`).join("\n")}`);

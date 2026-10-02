@@ -1,0 +1,65 @@
+{
+  "id": "draft-missing-amount-ko",
+  "description": "견적 회신 메일인데 금액이 자료에 없다(사용자가 채운다고 함). 금액을 지어내지 않고 [대괄호]로 둬야 한다",
+  "origin": "synthetic",
+  "now": "2026-10-02T10:00:00+09:00",
+  "user": {
+    "name": "김도윤"
+  },
+  "request": "박서준님께 영상 견적 회신 메일 초안 써 줘. 금액은 내가 채울게",
+  "brief": "박서준님께 제품 소개 영상 2편 제작 견적 회신 메일. 금액은 [금액] 빈칸으로, 제작 기간 약 4주, 촬영 1회 포함. 한국어.",
+  "action": {
+    "title": "영상 제작 견적 회신",
+    "counterpart": "박서준",
+    "due_date": "2026-10-06"
+  },
+  "sources": [
+    {
+      "id": "s1",
+      "kind": "email",
+      "provider": "gmail",
+      "title": "영상 제작 견적 문의",
+      "occurred_at": "2026-10-01T13:10:00+09:00",
+      "participants": {
+        "from": {
+          "name": "박서준",
+          "email": "seojun@example.com"
+        },
+        "to": [
+          {
+            "name": "김도윤",
+            "email": "doyun@example.com"
+          }
+        ]
+      },
+      "text": "제목: 영상 제작 견적 문의\n\n도윤님, 제품 소개 영상 2편 제작 견적 부탁드립니다. 다음 주 화요일까지 회신 주시면 됩니다.\n\n박서준 드림"
+    },
+    {
+      "id": "s2",
+      "kind": "note",
+      "provider": null,
+      "title": "견적 메모",
+      "occurred_at": "2026-10-01T20:00:00+09:00",
+      "text": "소나무랩 영상 2편: 제작 기간 약 4주, 촬영 1회 포함. 금액은 대표님 확인 후 확정."
+    }
+  ],
+  "evidence": [
+    {
+      "source": "s1",
+      "quote": "제품 소개 영상 2편 제작 견적 부탁드립니다"
+    },
+    {
+      "source": "s2",
+      "quote": "제작 기간 약 4주, 촬영 1회 포함"
+    }
+  ],
+  "expect": {
+    "recipients": [
+      [
+        "박서준",
+        "seojun@example.com"
+      ]
+    ],
+    "must_not_include": []
+  }
+}

@@ -1,0 +1,46 @@
+{
+  "id": "plan-draft-minor-blank-ko",
+  "description": "미팅 시각이 원문에 없지만 사소한 빈칸이라 묻지 않고 초안에서 [대괄호]로 비운다 → draft (ask_user 아님)",
+  "origin": "synthetic",
+  "now": "2026-10-02T10:00:00+09:00",
+  "user": {
+    "name": "김도윤"
+  },
+  "request": "유나님께 다음 주에 미팅 잡자는 메일 초안 써 줘",
+  "action": {
+    "title": "최유나님과 미팅 일정 잡기",
+    "counterpart": "최유나"
+  },
+  "sources": [
+    {
+      "id": "s1",
+      "kind": "email",
+      "provider": "gmail",
+      "title": "협업 관련",
+      "occurred_at": "2026-10-01T10:12:00+09:00",
+      "participants": {
+        "from": {
+          "name": "최유나",
+          "email": "yuna@example.com"
+        },
+        "to": [
+          {
+            "name": "김도윤",
+            "email": "doyun@example.com"
+          }
+        ]
+      },
+      "text": "제목: 협업 관련\n\n도윤님, 지난번 말씀하신 협업 건 좋습니다.\n다음 주 중에 미팅 한번 하시죠. 편하신 시간 알려 주세요.\n\n최유나 드림"
+    }
+  ],
+  "evidence": [
+    {
+      "source": "s1",
+      "quote": "다음 주 중에 미팅 한번 하시죠"
+    }
+  ],
+  "history": [],
+  "expect": {
+    "kind": "draft"
+  }
+}

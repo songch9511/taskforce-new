@@ -1,0 +1,73 @@
+{
+  "id": "draft-followup-email-en",
+  "description": "Follow-up email with feedback points taken from the user's own notes",
+  "origin": "synthetic",
+  "now": "2026-10-02T10:00:00+09:00",
+  "user": {
+    "name": "Doyun Kim"
+  },
+  "request": "Write a follow-up email to Alex with my feedback on the brand guide from my notes.",
+  "brief": "Follow-up email to Alex Chen with feedback on the Bluefin brand guide from Doyun's notes: logo spacing rules unclear, add dark-mode color values, icon set looks great. English.",
+  "action": {
+    "title": "Send brand guide feedback to Alex",
+    "counterpart": "Alex Chen",
+    "due_date": "2026-10-02"
+  },
+  "sources": [
+    {
+      "id": "s1",
+      "kind": "email",
+      "provider": "gmail",
+      "title": "Brand guide v2",
+      "occurred_at": "2026-09-29T11:00:00+09:00",
+      "participants": {
+        "from": {
+          "name": "Alex Chen",
+          "email": "alex@example.com"
+        },
+        "to": [
+          {
+            "name": "Doyun Kim",
+            "email": "doyun@example.com"
+          }
+        ]
+      },
+      "text": "Subject: Brand guide v2\n\nHi Doyun,\nAttached is v2 of the Bluefin brand guide. Could you send your feedback by Friday?\n\nThanks,\nAlex"
+    },
+    {
+      "id": "s2",
+      "kind": "note",
+      "provider": null,
+      "title": "Brand guide notes",
+      "occurred_at": "2026-10-01T20:00:00+09:00",
+      "text": "Feedback for Alex:\n- logo spacing rules are unclear (minimum clear space?)\n- add dark-mode values for the color palette\n- icon set looks great, keep it"
+    }
+  ],
+  "evidence": [
+    {
+      "source": "s1",
+      "quote": "Could you send your feedback by Friday?"
+    },
+    {
+      "source": "s2",
+      "quote": "logo spacing rules are unclear"
+    },
+    {
+      "source": "s2",
+      "quote": "add dark-mode values for the color palette"
+    },
+    {
+      "source": "s2",
+      "quote": "icon set looks great, keep it"
+    }
+  ],
+  "expect": {
+    "recipients": [
+      [
+        "Alex",
+        "alex@example.com"
+      ]
+    ],
+    "must_not_include": []
+  }
+}

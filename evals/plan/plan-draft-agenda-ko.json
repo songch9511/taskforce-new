@@ -1,0 +1,35 @@
+{
+  "id": "plan-draft-agenda-ko",
+  "description": "'안건 정리해 줘'는 초안이다 (어느 서비스에 쓰라는 말이 없다)",
+  "origin": "synthetic",
+  "now": "2026-10-02T10:00:00+09:00",
+  "user": {
+    "name": "김도윤"
+  },
+  "request": "다음 주 주간회의 안건 정리해 줘",
+  "action": {
+    "title": "주간회의 안건 준비",
+    "owner": "me",
+    "due_date": "2026-10-05"
+  },
+  "sources": [
+    {
+      "id": "s1",
+      "kind": "doc",
+      "provider": "notion",
+      "title": "9월 5주 주간회의",
+      "occurred_at": "2026-09-28T11:00:00+09:00",
+      "text": "# 9월 5주 주간회의\n\n[메모]\n- 다음 회의 안건은 김도윤이 준비\n- 이월: 신규 고객 온보딩 문서, 10월 채용 계획\n- 소나무랩 제안서 진행 상황 공유 필요"
+    }
+  ],
+  "evidence": [
+    {
+      "source": "s1",
+      "quote": "다음 회의 안건은 김도윤이 준비"
+    }
+  ],
+  "history": [],
+  "expect": {
+    "kind": "draft"
+  }
+}

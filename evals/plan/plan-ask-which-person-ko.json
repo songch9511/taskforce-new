@@ -1,0 +1,33 @@
+{
+  "id": "plan-ask-which-person-ko",
+  "description": "'그분께' 메일인데 자료에 후보가 둘(이민지 · 박서준)이고 상대가 정해지지 않았다 → ask_user",
+  "origin": "synthetic",
+  "now": "2026-10-02T10:00:00+09:00",
+  "user": {
+    "name": "김도윤"
+  },
+  "request": "그분께 다음 주 화요일로 일정 확정됐다고 메일 초안 써 줘",
+  "action": {
+    "title": "워크숍 일정 확정 안내"
+  },
+  "sources": [
+    {
+      "id": "s1",
+      "kind": "meeting",
+      "provider": "notion",
+      "title": "워크숍 준비 회의",
+      "occurred_at": "2026-09-30T10:00:00+09:00",
+      "text": "# 워크숍 준비 회의\n\n[메모]\n- 이민지님은 화요일 선호, 박서준님은 수요일 선호\n- 일정이 정해지면 김도윤이 한 분께 먼저 알리고 그분이 팀에 전달"
+    }
+  ],
+  "evidence": [
+    {
+      "source": "s1",
+      "quote": "일정이 정해지면 김도윤이 한 분께 먼저 알리고 그분이 팀에 전달"
+    }
+  ],
+  "history": [],
+  "expect": {
+    "kind": "ask_user"
+  }
+}

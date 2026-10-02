@@ -1,0 +1,47 @@
+{
+  "id": "plan-draft-then-send-en",
+  "description": "'Draft ... and send it' with empty history: the draft piece comes first, sending comes after",
+  "origin": "synthetic",
+  "now": "2026-10-02T10:00:00+09:00",
+  "user": {
+    "name": "Doyun Kim"
+  },
+  "request": "Draft the follow-up to Mina about the pilot timeline and send it.",
+  "action": {
+    "title": "Follow up with Mina on pilot timeline",
+    "counterpart": "Mina Park",
+    "due_date": "2026-10-05"
+  },
+  "sources": [
+    {
+      "id": "s1",
+      "kind": "meeting",
+      "provider": "google",
+      "title": "Maple Analytics pilot sync",
+      "occurred_at": "2026-10-01T15:00:00+09:00",
+      "participants": {
+        "attendees": [
+          {
+            "name": "Doyun Kim",
+            "email": "doyun@example.com"
+          },
+          {
+            "name": "Mina Park",
+            "email": "mina@example.com"
+          }
+        ]
+      },
+      "text": "[Google Meet · Maple Analytics pilot sync]\nMina Park: Can we start the pilot in the second week of November?\nDoyun Kim: That should work. I'll confirm the timeline by email on Monday."
+    }
+  ],
+  "evidence": [
+    {
+      "source": "s1",
+      "quote": "I'll confirm the timeline by email on Monday."
+    }
+  ],
+  "history": [],
+  "expect": {
+    "kind": "draft"
+  }
+}

@@ -1,0 +1,42 @@
+{
+  "id": "plan-done-email-ko",
+  "description": "요청한 메일 초안이 history에 성공으로 있다 → done",
+  "origin": "synthetic",
+  "now": "2026-10-02T10:00:00+09:00",
+  "user": {
+    "name": "김도윤"
+  },
+  "request": "민지님께 시안 피드백 정리 메일 초안 써 줘",
+  "action": {
+    "title": "시안 피드백 정리 공유",
+    "counterpart": "이민지",
+    "due_date": "2026-10-02"
+  },
+  "sources": [
+    {
+      "id": "s1",
+      "kind": "meeting",
+      "provider": "notion",
+      "title": "시안 리뷰",
+      "occurred_at": "2026-10-01T15:00:00+09:00",
+      "text": "# 시안 리뷰\n\n[메모]\n- B안으로 진행, 헤더 글씨 크기만 키우기\n- 김도윤: 피드백 정리해서 민지님께 보내드릴게요."
+    }
+  ],
+  "evidence": [
+    {
+      "source": "s1",
+      "quote": "피드백 정리해서 민지님께 보내드릴게요"
+    }
+  ],
+  "history": [
+    {
+      "kind": "draft",
+      "status": "called",
+      "brief": "이민지님께 시안 리뷰 피드백 정리 메일: B안 진행, 헤더 글씨 크기 키우기",
+      "title": "시안 리뷰 피드백 정리"
+    }
+  ],
+  "expect": {
+    "kind": "done"
+  }
+}
