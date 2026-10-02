@@ -67,6 +67,7 @@ flowchart TD
 | 연결 설정 쓰기 | `lib/connectors/store.ts` `mergeConnectionSettings` → RPC `merge_connection_settings` · `addConnectionStats` → RPC `add_connection_stats` (`20261017000000_connection_settings_atomic.sql`) | `connections.settings`를 읽어 통째로 다시 쓰지 않는다: 바꿀 키(`set` · `remove`)나 바꿀 Notion DB의 설정(`dataSources`)만 넘기면 DB가 지금 값에 합친다. 동기화 통계(`settings.stats`)는 `addConnectionStats`로만 더한다(연결 행을 잠근 채 더해 동시에 센 개수가 모두 남는다) |
 | OAuth state · 토큰 | `lib/connectors/oauth-state.ts` (HMAC, 10분) · `lib/connectors/crypto.ts` (AES-256-GCM) | 토큰은 `connection_secrets`에 암호화해서만 저장한다. 웹(lab) 시작은 provider마다 쿠키 state(`oauthCookie`), callback은 provider별 route가 `handleOAuthCallback` 하나를 부른다 |
 | 앱의 쓰기 · 읽기 | `Kit/APIClient.swift` (모든 쓰기) · `Kit/TaskforceReads.swift` (직접 읽기) | 앱 코드의 `supabase.from(...)`은 `TaskforceReads`에만 있고 읽기뿐이다 |
+| 실행 (U2) | `lib/execution/executor.ts` `advance`(함수 호출 한 번 = 단계 하나) → RPC `prepare_step` · `begin_call` · `complete_internal_step` (`lib/execution/store.ts`, 교착이면 다시 부름 `deadlock.ts`) | route · 자기 호출 · sweep 모두 `advance`를 지나고, 부르기 전 판단(스위치 · 허용 목록 · 크레딧)은 `begin_call` 하나가 한다. 외부 단계는 부르지 않는다 ([EXECUTION.md](EXECUTION.md) 13장) |
 | 앱 목록 구역 · 상태 | `Kit/TaskSections.swift` `TaskBoard` · `WorkState` · `TaskUndo` · `UndoOffer` | 내 변경을 먼저 보여 줄 뿐 순서를 다시 매기지 않는다 |
 
 ## 3. 피처맵
@@ -171,6 +172,20 @@ flowchart TD
 | app_opened | iPhone `App/iOS/RootView.swift`, Mac `App/Mac/LauncherPanel.swift` | `Kit/AppOpenTracker.swift`, `LauncherOpenThrottle`(30분) | `POST /metric-events` | 둘 다 | `AppOpenTrackerTests`, `LauncherTests` |
 | 변경 구독 | `App/Shared/AppEnvironment.swift` `ActionChangeFeed` | `Kit/ActionChanges.swift`. 바뀜 신호로만 쓰고 `/now`를 다시 읽는다 | Realtime `actions` | 둘 다 | 없음 |
 | 주간 질문 | HomeView 카드 | `NowStore.answerWeekly` | `POST /weekly-check` | iOS | `APIClientTests` |
+
+### 3-6. 실행 · 크레딧 (서버, U2)
+
+기능 플래그 `EXECUTION_ENABLED`(기본 꺼짐) · 실행 주체 허용 목록(`execution_actors`) · 차단 스위치(`execution_controls`)가 모두 열려야 단계를 부른다. 계약은 [EXECUTION.md](EXECUTION.md) 13장.
+
+| 기능 | 진입점 | 정식 구현 → 저장 (이벤트) | 호출자 | 테스트 |
+|---|---|---|---|---|
+| run 만들기 | `v1/runs/route.ts` POST → `lib/api/runs.ts` `handleCreateRun` | 플래그 → 로그인 → 실행 주체(`lib/execution/store.ts` `isExecutionActor`) → 전체 스위치(`executionGloballyBlocked`) → 동의 → 열린 Action(`actionIsOpen`, RLS) → 속도 제한 `run_create`(10분 10번) → RPC `create_run`(run + 계획 단계, `execution_events`) → 202 → `after()`에서 `lib/execution/wake.ts` `advanceAndWake` | 앱(아직 없음), 운영자 시험 | `lib/api/runs.test.ts`, `v1/runs/route.test.ts`, `tests/db/execution-executor.test.ts` |
+| 단계 하나 | `lib/execution/executor.ts` `advance` | `prepare_step` → `begin_call` → 효과 `effects/plan.ts`(`plan.ts` `planNextStep`, 다음 단계 붙이기 `append_step`) · `effects/draft.ts`(`draft.ts` `writeDraft`, 산출물) → `complete_internal_step`(called + 산출물 + 원가 + 정산). 자료는 `material.ts` `loadExecutionContext`(provider는 `connections`에서, 출처 모를 원문은 뺌) → `context.ts`(Slack 제외). 오류: 다시 준비 `mark_unknown` · 실패 `settle_step`, 둘 다 먼저 `record_usage`. 후속 계획(초안 뒤)이 실패하면 `draft_ready`로 끝낸다 | run 만들기의 `after()`, 자기 호출, sweep | `lib/execution/executor.test.ts`, `material.test.ts`, `store.test.ts`, `tests/db/execution-executor.test.ts` |
+| 자기 호출 | `src/app/api/cron/execution-advance/route.ts` POST (`CRON_SECRET`) | 202 → `after()`에서 `advanceAndWake`. 보내는 쪽은 `wake.ts` `wakeRun`(주소 `wakeOrigin`: `EXECUTION_WAKE_ORIGIN` → 운영 `VERCEL_PROJECT_PRODUCTION_URL` → 개발 localhost) | 단계를 끝내고 다음 단계를 붙인 함수, sweep | `cron/execution-advance/route.test.ts`, `lib/execution/wake.test.ts` |
+| sweep | `src/app/api/cron/execution-sweep/route.ts` GET (1분, `vercel.json`) | `lib/execution/sweep.ts` `sweep`: `sweep_expire` → 미확정 원가 generation 조회(`lib/ai/generation.ts`) → `reconcile_usage` 행마다 → `credit_open_ended_runs` → `release_run_credits` run마다 → 이어 갈 run 20개 `wakeRun`(막힌 run은 5분마다, 전체 스위치가 막혀 있으면 깨우지 않음) | Vercel Cron | `lib/execution/sweep.test.ts`, `cron/execution-sweep/route.test.ts`, `tests/db/execution-executor.test.ts` |
+| 멈추기 | `v1/runs/[id]/stop/route.ts` POST → `handleStopRun` | RPC `stop_run`(교착이면 다시 부름) → 끝난 run은 트리거가 예약 해제 | 앱(아직 없음) | `lib/api/runs.test.ts`, `v1/runs/[id]/stop/route.test.ts`, `tests/pg/execution-locks.test.ts`(교착) |
+| 크레딧 합계 | `v1/credits/route.ts` GET → `handleCredits` | `lib/execution/store.ts` `loadCredits`: `credit_accounts` 합계 + 지금 요율(`credit_rates`) | 앱(아직 없음) | `lib/api/runs.test.ts`, `v1/credits/route.test.ts`, `lib/execution/store.test.ts` |
+| 과금 경계 (A37 · A44) | 할 일 쓰기 · 원문 처리 경로 | 실행 · 크레딧을 확인하지도 부르지도 않는다. eslint `no-restricted-imports`(원문 처리 → 실행) | — | `lib/execution/boundary.test.ts` |
 
 ## 4. 실행과 검증
 

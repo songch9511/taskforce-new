@@ -15,6 +15,9 @@ export const CONNECTION_START_LIMIT: RateLimit = { max: 10, windowMs: 10 * 60_00
 /** 직접 추가: 모델은 부르지 않지만(동의했으면 임베딩 하나) Action을 쓰므로 10분에 30번까지 */
 export const ACTION_CREATE_LIMIT: RateLimit = { max: 30, windowMs: 10 * 60_000 };
 
+/** run 만들기 (POST /api/v1/runs): run 하나가 모델을 여러 번 부르고 크레딧을 예약하므로 10분에 10번까지 */
+export const RUN_CREATE_LIMIT: RateLimit = { max: 10, windowMs: 10 * 60_000 };
+
 /** 429의 Retry-After 헤더 값 (초, 최소 1) */
 export function retryAfterSeconds(retryAt: Date, now: Date): number {
   return Math.max(1, Math.ceil((retryAt.getTime() - now.getTime()) / 1000));

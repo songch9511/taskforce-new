@@ -36,6 +36,14 @@ export function weeklyCheckEnabled(env: Record<string, string | undefined> = pro
   return !["false", "0", "off"].includes((env.WEEKLY_CHECK_ENABLED ?? "").trim().toLowerCase());
 }
 
+/**
+ * 실행(U2: run · 내장 초안, docs/EXECUTION.md)을 여는가 (EXECUTION_ENABLED = "true", 서버 전용). 기본은 꺼짐이고 개발 서버도 같다.
+ * 꺼져 있으면 /api/v1/runs · stop · credits와 자기 호출이 404, sweep은 바로 끝난다. 켜도 DB의 차단 스위치 · 실행 주체 허용 목록이 따로 막는다.
+ */
+export function executionEnabled(env: Record<string, string | undefined> = process.env): boolean {
+  return env.EXECUTION_ENABLED?.trim() === "true";
+}
+
 /** 서명된 OAuth state를 만들고 확인할 때 쓰는 키의 최소 길이 (openssl rand -hex 32는 64자) */
 const MIN_OAUTH_STATE_SECRET = 32;
 

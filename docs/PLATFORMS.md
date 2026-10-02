@@ -101,6 +101,8 @@ flowchart TB
 | 지금 할 일 순서 · 확인 요청 | 앱 → `GET /api/v1/now` | 순서 계산(랭킹)은 서버에만 둔다. Realtime(`actions`)은 "바뀜" 신호로만 쓰고 `/now`를 다시 부른다 |
 | 읽기 (할 일 상세 · 근거 · 원문, 연결, 오늘 끝낸 할 일) | 앱 → Supabase 직접 (RLS) | 빠르고 서버 코드가 필요 없음 |
 | 쓰기 (원문 전송, 수정, 삭제, 확정, 착수, 핸드오프) | 앱 → 서버 API | 모든 쓰기에서 ActionEvent·MetricEvent를 **빠짐없이** 남겨야 지표 1이 정확해짐 |
+| 실행 (run 만들기 · 멈추기) | 앱 → 서버 API. run · 단계 · 초안 읽기는 Supabase 직접 (RLS: `execution_runs` · `execution_steps` · `execution_artifacts`) | 쓰기는 상태 전이 함수만 하고 같은 트랜잭션에서 `execution_events`를 남긴다 ([EXECUTION.md](EXECUTION.md) 13장) |
+| 크레딧 잔액 | 앱 → `GET /api/v1/credits` | 원장 · 계정은 클라이언트가 읽지 못해(revoke all) 서버가 합계만 준다 |
 
 Phase 3에서 새 마이그레이션으로 `actions`, `claims`, `evidence`, `action_events` 테이블의 클라이언트 쓰기 권한을 막는다
 (읽기 전용 RLS + 서버는 service role로 쓰기). 그래야 앱이 이벤트 없이 데이터를 고치는 경로가 사라진다.
@@ -146,6 +148,9 @@ Server Action은 웹 폼 전용이라 Swift 앱에서 부를 수 없다.
 | `GET /api/v1/connections/:id/data-sources` | Notion 연결에 공유된 데이터베이스와 역할(할 일 · 글 · 무시), 확인 전이면 제안값. 내부 도구(`/lab`)만 쓴다 | 내부 ✅ |
 | `PUT /api/v1/connections/:id/data-sources/:dataSourceId` | 데이터베이스 역할 · 속성 매핑 확인 → `{ dataSource }`. 확인한 할 일 DB만 다음 동기화부터 구조화된 할 일로 읽는다. 할 일 DB인데 매핑이 없으면 400. 내부 도구(`/lab`)만 쓴다 | 내부 ✅ |
 | `POST /api/v1/connection-requests` | 2단계 연동 "원해요" `{ provider }`(microsoft · zoom · github · linear · jira) → 204. `connection_requests` 표에 사용자 · 서비스마다 한 행(다시 눌러도 그대로) | go live ✅ |
+| `POST /api/v1/runs` | 내장 초안 run 만들기 `{ action_id, goal: "draft", request(1–2000자), budget_credits?(초안 예약 20 이상, 작으면 400) }` → 202 `{ run }`. 첫 단계(계획)는 응답 뒤에 돌고 다음 단계는 서버가 이어 간다(자기 호출 · 1분 sweep). 밖으로는 아무것도 보내지 않는다(초안 저장만, 발송은 U6a). 기능 플래그(`EXECUTION_ENABLED`, 기본 꺼짐) · 실행 주체 허용 목록 밖 · 차단 스위치 전체 막힘은 404, 동의 전 409, 없거나 남의 · 열리지 않은 Action 404, 사용자별 10분에 10번을 넘으면 429. 크레딧은 여기서 보지 않는다: 초안 단계가 부르기 직전에 예약하고, 모자라면 run이 `hold_reason: credit`으로 기다린다. 결과는 `run.outcome`(`draft_ready` · `needs_connection` · `needs_input`, 질문은 계획 단계 `receipt.question`) | U2 서버 ✅ (운영 꺼짐) |
+| `POST /api/v1/runs/:id/stop` | 멈추기 → 200 `{ run }`. 다음 단계만 막고 부르는 중인 단계는 결과를 받는다. 이미 끝난 run은 그대로 200, 없거나 남의 run · 플래그 꺼짐 · 허용 목록 밖 404 | U2 서버 ✅ (운영 꺼짐) |
+| `GET /api/v1/credits` | 크레딧 합계 `{ available, reserved, rate_version }`(가용 = 지급 - 예약 - 사용). 플래그 꺼짐 · 허용 목록 밖 404 | U2 서버 ✅ (운영 꺼짐) |
 
 알림(APNs)에는 할 일 제목을 싣지 않는다. 서버는 짧은 영어 문구(확인 요청 "Review", 기한 "Due today" · "Due tomorrow"와 건수)와 `action_id`만 보낸다. 알림 확장(Notification Service Extension)은 아직 없다. `mutable-content: 1`은 확장을 붙여 로그인 세션으로 제목을 채울 때를 위해 남긴다 ([남은 일](GO_LIVE.md#10-남은-일-go-live-조건-아님)).
 

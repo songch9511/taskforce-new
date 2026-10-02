@@ -30,7 +30,7 @@ K2 실행 위치:
 - 함수 호출 한 번이 단계 하나를 처리한다. 긴 업무 전체를 요청 하나나 `after()` 하나에 맡기지 않는다. 상주 worker는 두지 않는다(처리방침의 받는 곳이 늘어난다).
 - 시간 한도: 저장소 설정의 최장 `maxDuration`은 300초다(`src/app/api/cron/sync/route.ts`, `src/app/api/v1/sources/route.ts`). Pro 플랜은 최대 800초까지 허용한다(10장 ③). lease = 실행 route의 `maxDuration` + 여유(3장). 300초를 넘는 단계는 먼저 쪼개고, 늘려야 하면 800초 안에서 route 설정과 lease를 함께 바꾼다.
 - 깨우기: 상태를 commit한 뒤 `after()`(지금 `src/app/api/v1/sources/route.ts`가 쓰는 방식) 또는 인증된 자기 호출(`CRON_SECRET`, `src/lib/api/cron.ts`)로 다음 단계를 부른다.
-- sweep: 깨우기를 놓친 run과 승인이 들어온 승인 대기 run을 이어 간다. Vercel cron(`vercel.json`: 지금 `*/15` 동기화 · `7,37` 재처리)에 실행 sweep을 더한다. 주기는 U2에서 정한다(최소 1분). sweep은 돌 때마다 승인 대기 run에도 `begin_call`을 다시 시도한다. 이벤트는 상태가 바뀔 때만 남기고 거절마다 남기지 않는다.
+- sweep: 깨우기를 놓친 run과 승인이 들어온 승인 대기 run을 이어 간다. Vercel cron(`vercel.json`: 지금 `*/15` 동기화 · `7,37` 재처리)에 실행 sweep을 더한다. 주기는 1분이다(U2 PR6, `vercel.json`의 `/api/cron/execution-sweep`, 13장). sweep은 돌 때마다 승인 대기 run에도 `begin_call`을 다시 시도한다. 이벤트는 상태가 바뀔 때만 남기고 거절마다 남기지 않는다.
 
 ## 3. 상태와 전이
 
@@ -98,7 +98,7 @@ step: `pending → prepared → calling → called | unknown_outcome | failed | 
 - DB 플래그 세 층: 전체(`global`) / 공급자별(`provider`, 예: `gmail`) / 모드별(`mode`: `manual` · `auto` · `full`). `auto`와 `full`을 끄면 "Manual만"이다.
 - `begin_call`은 RPC 하나 = READ COMMITTED 트랜잭션 하나이고, 외부 호출 전에 commit된다. 외부 호출은 그 트랜잭션 안에 없다.
 - 스위치는 그 트랜잭션 안에서, `prepared → calling`과 함께 확인한다. 해당 행 셋(전체 · 그 공급자 · 그 모드)을 `for share`로 잠그고 읽는다. 끄는 쪽의 `update`는 진행 중인 전이가 끝날 때까지 기다리고, 끈 뒤에 commit되는 전이는 없다. 잠금 순서는 step → run → 정책 → 실행 주체 → 스위치 → 도구 · 수신자 허용 목록(7장) → 크레딧 계정(12장)이다.
-- 모든 입구(route · 자기 호출 · sweep)가 같은 `begin_call`을 지난다. 입구마다 실제로 그런지는 U2에서 route 테스트로 확인한다.
+- 모든 입구(route · 자기 호출 · sweep)가 같은 `begin_call`을 지난다. 스위치를 끄면 세 입구 모두 `calling` 0인 것을 `tests/db/execution-executor.test.ts`가 본다(13장).
 - 행이 없는 공급자 · 모드는 막힌 것으로 본다(닫힌 쪽). 새 공급자는 행을 추가해야 실행된다.
 - 막힌 단계는 실패가 아니다. `prepared`로 남고, 다시 켜면 sweep이 이어 간다. 이미 `calling`인 호출은 끝까지 결과를 받는다.
 - 끄기 · 켜기는 승인된 `db query`로 한다. 절차는 U2에서 런북(`docs/go-live/runbook.md`)에 쓴다.
@@ -184,7 +184,74 @@ step: `pending → prepared → calling → called | unknown_outcome | failed | 
 - 예약: `begin_call`이 승인/Auto 확인 뒤, intent + lease와 같은 트랜잭션에서 계정 행을 `for update`로 잠그고 단계 추정치(`estimate_credits`)가 가용 잔액과 run의 남은 예산(`budget_credits - (예약 - 해제)`) 안이면 예약한다. 모자라면 gate `insufficient_credit` · `hold_reason='credit'`, 지급으로 풀리지 않는 서버 쪽 문제는 `hold_reason='blocked'`(gate: 요율 없음 `no_rate`, 추정치 없는 초안 `no_estimate`, 이미 닫힌 예약 `reservation_closed`). 단계는 `prepared`에 남는다. 추정치 0인 계획 단계는 예약하지 않는다. 같은 단계의 재시도는 열린 처음 예약을 그대로 쓴다.
 - 정산: 내부 효과 단계는 `complete_internal_step`이 `called` + 산출물 + 원가 행 + 정산을 한 트랜잭션에서 한다(lease 소유자만). 정산 = 확정된 청구 대상 원가 합계(그 호출의 모든 시도, 형식 오류로 다시 물은 시도 포함) × 예약 때 요율(`credit_rates`, `c3-v1`: 1 크레딧 = $0.001), 올림, 예약 상한 안. 남은 예약은 해제한다. 끝내지 않은 단계(부르는 중 · 다시 준비 · 결과 불명)는 정산하지 않는다.
 - 미확정(A46): 청구 대상 시도 하나라도 비용을 모르면, 또는 초안 단계인데 청구 대상 원가 행이 없으면 정산하지 않고 예약을 둔다. 0원으로 처리하지도, run이 끝났다고 해제하지도 않는다. `reconcile_usage`가 비용을 확정하면(sweep의 generation 조회) 그때 정산한다. 원가 행 하나씩 RPC 한 번에 확정한다.
-- 해제: run이 끝나거나(`done` · `failed` · `stopped`), 끝난 run에서 부르던 · 결과 불명이던 단계가 나오면 트리거가 `release_run_credits`를 부른다: 부르지 못했거나 실패한 단계의 예약은 해제, 끝낸 단계는 정산, 부르는 중 · 결과 불명은 둔다. 함수는 run 행을 먼저 잠가(step → run → 계정) 멈추기와 단계 종료가 겹쳐도 뒤에 commit하는 쪽이 해제한다. 드물게 Postgres가 교착을 감지해 한쪽을 되돌린다(40P01, 멈추기 vs 같은 run의 재시도 `begin_call`): U2 PR6은 stop route · `begin_call` · `complete_internal_step`에서 40P01을 다시 시도한다(되돌려지면 단계는 그대로라 안전하다). PR6 sweep은 보조 안전망으로 `credit_open_ended_runs()`가 고른 run마다 `release_run_credits(run)`을 RPC 한 번씩 부른다(한 트랜잭션에서 여러 run을 부르지 않는다).
+- 해제: run이 끝나거나(`done` · `failed` · `stopped`), 끝난 run에서 부르던 · 결과 불명이던 단계가 나오면 트리거가 `release_run_credits`를 부른다: 부르지 못했거나 실패한 단계의 예약은 해제, 끝낸 단계는 정산, 부르는 중 · 결과 불명은 둔다. 함수는 run 행을 먼저 잠가(step → run → 계정) 멈추기와 단계 종료가 겹쳐도 뒤에 commit하는 쪽이 해제한다. 드물게 Postgres가 교착을 감지해 한쪽을 되돌린다(40P01, 멈추기 vs 같은 run의 재시도 `begin_call`): 실행기는 stop route · `begin_call` · `complete_internal_step`을 포함한 RPC를 40P01이면 다시 부른다(되돌려지면 단계는 그대로라 안전하다, `src/lib/execution/deadlock.ts`, 실제 교착은 `tests/pg/execution-locks.test.ts`). sweep은 보조 안전망으로 `credit_open_ended_runs()`가 고른 run마다 `release_run_credits(run)`을 RPC 한 번씩 부른다(한 트랜잭션에서 여러 run을 부르지 않는다).
 - 원가(`execution_usage`, A51): OpenRouter 시도마다 한 행(generation id unique, 모델 · 토큰 · `cost_usd`, `confirmed | unconfirmed`)이고 사용자 청구와 따로 둔다. 청구 대상(`billable`)은 초안 단계를 끝낸 호출에서 응답을 받은(generation id나 비용이 있는) 시도뿐이고 서버가 정한다. 계획 단계 · 실패 · 응답 없이 다시 부른 시도(`record_usage`, 단계를 내보내기 전에 부른다) · 응답을 받지 못한 시도는 플랫폼 원가다(id 없는 행은 운영자가 정할 때까지 미확정).
 - 산출물(`execution_artifacts`): 단계 하나에 초안 하나, 앱이 RLS로 읽는다. 본문은 `retain_until`(기본 90일, D9a-1이 정함)이 지나면 `purge_expired_artifacts`가 비운다. 원장 · 계정 · 요율 · 원가는 클라이언트가 읽지 못한다(잔액은 U2 PR6의 `GET /api/v1/credits` 합계).
 - 원장 · 원가가 가리키는 run · step은 지울 수 없다(외래키 no action): 원장이 있는 사용자의 할 일을 하드 삭제하는 스크립트(심사 계정 `--reseed` 등)는 실패한다. 계정 삭제는 `auth.users` cascade로 같은 문장에서 함께 지운다.
+
+## 13. 실행기 (U2 PR6)
+
+`src/lib/execution/`. 2장 B2를 TS로 구현했다. 판단(스위치 · 허용 목록 · 크레딧 · CAS)은 SQL 함수에만 있고 실행기는 RPC를 부른다. 외부 효과는 없다: 유일한 효과는 내장 계획 · 초안의 AI 호출(내부 효과)이고, 외부 단계(`kind = 'external'`)는 준비도 부르기도 하지 않는다(발송은 U6a).
+
+**켜기.** 세 겹이 모두 열려야 단계를 부른다.
+
+| 겹 | 어디 | 꺼져 있으면 |
+|---|---|---|
+| 기능 플래그 `EXECUTION_ENABLED` | 환경변수 (`src/lib/env.ts` `executionEnabled`, `"true"`만 켬, 기본 꺼짐 · 개발 서버도) | `/api/v1/runs` · stop · credits · 자기 호출 404, sweep은 아무것도 하지 않고 200 `{ enabled: false }`. 그동안 lease가 끝난 단계와 그 예약은 다시 켤 때까지 그대로 남는다 |
+| 실행 주체 허용 목록 | `execution_actors` (7장) | route 404(존재를 드러내지 않는다), 있던 run은 `begin_call`이 `hold_reason = 'actor'` |
+| 차단 스위치 | `execution_controls` (6장) | 전체가 막혔으면 `POST /runs` 404(막힌 채 기다릴 run을 만들지 않는다) · sweep은 깨우지 않는다, 있던 run에 자기 호출이 와도 `begin_call`이 `hold_reason = 'blocked'` |
+
+**입구와 흐름.** 함수 호출 한 번 = 단계 하나(`executor.ts` `advance`). 모든 입구가 `advance`를 지나고, 부르기 전 판단은 `begin_call` 하나가 한다.
+
+| 입구 | route | 하는 일 |
+|---|---|---|
+| run 만들기 | `POST /api/v1/runs` (`maxDuration` 300) | 플래그 → 로그인 → 실행 주체 → 전체 스위치 → 본문(예산은 초안 예약 20 이상) → 동의(409) → 열린 내 Action(404) → `take_rate_limit('run_create')`(10분 10번, 429) → `create_run` → 202 `{ run }` → `after()`에서 첫 단계 |
+| 자기 호출 | `POST /api/cron/execution-advance` (`CRON_SECRET`, `maxDuration` 300) | 단계를 끝내고 다음 단계를 붙인 함수가 부른다. 바로 202로 답하고 단계는 `after()`에서 돈다 |
+| sweep | `GET /api/cron/execution-sweep` (Vercel Cron 1분, `maxDuration` 60) | 아래 sweep. 단계를 직접 돌리지 않고 이어 갈 run마다 자기 호출을 보낸다 |
+| 멈추기 | `POST /api/v1/runs/:id/stop` | `stop_run`(5장). 이미 끝난 run은 그대로 200 |
+
+- `advance`: 끝나지 않은 첫 단계 → `pending`이면 `prepare_step` → `begin_call(단계, lease 소유자, 버전)` → `ok`면 효과 → 다음 단계를 먼저 붙이고(`append_step`, seq + 1) → `complete_internal_step`(called + 산출물 + 원가 + 정산). `begin_call`이 막으면(gate) 단계는 `prepared`에 남고 sweep이 다시 본다. lease 소유자는 함수 호출마다 새 값이다.
+- 단계 차례: 계획 → 초안 → 계획 → 초안, 상한 4(`limits.ts` `MAX_STEPS`). 초안을 끝낼 때 다음 계획 단계를 붙여 남은 조각을 다시 본다(그 계획이 또 초안을 붙일 자리가 있을 때만). 계획 단계의 결정(`plan.ts`)과 run 결과:
+
+| planner의 다음 단계 | run에 반영 | `outcome` |
+|---|---|---|
+| `draft{brief}` | 초안 단계를 붙인다 (`args.brief`, 예약 추정치 `DRAFT_ESTIMATE_CREDITS` = 20) | 계속 |
+| `needs_connection{capability}` | 끝 (A39: 초안 단계 0 · 청구 0, 앞서 만든 초안은 그대로) | `needs_connection` |
+| `ask_user{question}` | 끝 (질문은 계획 단계 `receipt.question`) | `needs_input` |
+| `done` | 끝 | 앞선 초안이 있으면 `draft_ready`, 없으면 null |
+
+- receipt(앱이 RLS로 읽는다, `contract.ts` `stepReceiptSchema`): 계획은 `decision` · `capability` · `question`, 초안은 `to`(모델이 자료에서 고른 받는 사람, 보내는 데 쓰지 않는다), 실패는 `error`. 산출물은 `execution_artifacts`(제목 · 본문 · 모델 · 프롬프트 버전).
+- 같은 계획 단계를 다시 부르면(lease 만료 뒤 다시 준비) 앞 시도가 이미 붙인 단계가 있을 수 있다: 모델을 다시 부르지 않고 그대로 끝내고 깨운다.
+- 후속 계획(초안 뒤의 계획 단계)은 남은 조각을 다시 볼 뿐이라, 함수가 오류를 받으면(모델 · 자료 · 동의, 일시 오류 포함) 다시 하지 않고 이미 만든 초안으로 끝낸다
+  (함수가 죽어 lease가 끝나는 경우는 다른 단계처럼 다시 준비되고, 세 번이면 SQL이 실패로 끝낸다): 계획 단계 `called`(`receipt.decision = 'done'`, `error`), run `done` · `draft_ready`. 초안을 받고 청구된 run을 실패로 두지 않는다.
+- run 예산(`budget_credits`)은 초안 한 건의 예약(20) 이상만 받는다(작으면 초안을 한 번도 부르지 못하고 지급으로도 풀리지 않는다). 초안 둘을 맡긴 run은 첫 초안 정산 뒤 남은 예산이 다시 20 이상이어야 둘째 초안을 부른다(아니면 `hold_reason = 'credit'`으로 기다리고, 사용자가 멈춘다). 운영자만 풀 수 있는 hold(`actor` · `blocked`)에 오래 머문 run을 정리하는 일은 U2 PR8 런북에 둔다.
+- 자료(`material.ts`): Action · 근거 인용 · 근거 원문을 service role로 읽고 user_id로 좁힌다. 원문의 서비스는 `sources.connection_id`가 가리키는 `connections.provider`에서 읽는다(sources에는 provider가 없다). 출처를 확인할 수 없는 원문(연결 행을 찾지 못함, 연결 없이 외부 id만 있음 = 연결이 지워진 연동 원문)은 근거째 뺀다. Slack 원문은 `context.ts`가 뺀다(provider · 지운 이유 · 링크).
+- 동의: 모델을 부르기 직전마다 다시 확인한다(`withConsentGate`). 처리 도중 철회하면 단계 · run을 실패(`error: consent`)로 끝낸다. 후속 계획에서 철회했으면 아래처럼 `draft_ready`로 끝낸다.
+
+**오류.** 내부 효과라 결과 불명 대신 다시 준비한다(3장 표).
+
+| 경우 | 실행기 |
+|---|---|
+| 응답 없음 · 시간 초과 · 연결 끊김 · 공급자 5xx · 408 · 429 · 401 · 402 · 403(키 · 잔액 · 권한: 운영 설정 문제) · 형식 오류 · 자료 읽기 실패 | 원가를 먼저 남기고(`record_usage`) `mark_unknown` → 다시 준비(`attempt + 1`). 다시 준비가 2번을 넘으면 SQL이 `failed`(`retries_exhausted`). 다시 부르는 것은 sweep(1분)이다. 그래서 키 · 잔액 장애가 2분쯤 넘게 이어지면 그동안 부른 run은 실패한다(시도를 쓰지 않고 기다리는 hold 전이는 후속 마이그레이션) |
+| 공급자의 확정적 거절(그 밖의 4xx, 추론 옵션 404) · 동의 철회 · Action이 지워짐 | 원가를 먼저 남기고 `settle_step('failed')` → run `failed`, 예약 해제(12장). 후속 계획이면 위처럼 `draft_ready`로 끝낸다 |
+| 받은 뒤 쓰기(다음 단계 붙이기 · 결과 쓰기) 실패 | 3번까지 다시 쓰고, 그래도 안 되면 받은 시도의 원가를 남기고 오류(단계는 `calling`에 남고 lease 만료 뒤 다시 준비). 다시 쓴 쪽이 false면 앞 쓰기가 commit했을 수 있어 generation id가 있는 시도만 다시 남긴다(같은 id는 한 번) |
+| lease를 잃은 뒤 받은 응답 | 다음 단계를 붙이지 않고(붙이기 전에 lease를 확인한다, `append_step`은 run만 본다) 결과를 버리고 원가만 플랫폼 원가로 남긴다(`record_usage`) |
+| 원가 기록 실패 | 로그만 남기고 단계는 그대로 내보낸다(lease를 붙잡지 않는다) |
+| 교착(40P01) | 모든 RPC를 3번까지(50ms 기준 두 배씩, 0.5–1.5배로 흩뜨려) 다시 부른다 (`deadlock.ts`) |
+
+**lease와 실행 한도.** lease 330초 = 실행 route의 `maxDuration` 300 + 여유 30(`limits.ts` `LEASE_SECONDS`, `begin_call`의 리터럴과 같은지 `tests/db/execution-executor.test.ts`). 두 실행 route의 `maxDuration` 리터럴이 `EXECUTION_MAX_DURATION_S`와 같은지는 각 `route.test.ts`가 본다. 단계 하나의 최악은 LLM 한 번(90초 × 2시도, `llm.ts`)이라 한도 안이다.
+
+**깨우기 (`wake.ts`).** 다음 단계는 `CRON_SECRET`을 실은 자기 호출로 새 함수 호출에 맡긴다. 주소는 요청 헤더에서 만들지 않는다(비밀값을 실어 보내므로): `EXECUTION_WAKE_ORIGIN`(https, http는 localhost만) → 운영 배포면 Vercel의 `VERCEL_PROJECT_PRODUCTION_URL` → 개발 서버면 localhost → 없으면 깨우지 않는다. 자기 호출이 실패해도 run은 DB에 남아 sweep이 이어 간다. 미리보기 배포는 주소가 없고 Vercel cron도 돌지 않아 첫 단계 뒤에 이어지지 않는다(실행은 운영 · 로컬 개발만). 운영 도메인에 Vercel Deployment Protection을 걸면 자기 호출이 막혀 sweep(1분)으로만 이어진다.
+
+**sweep (`sweep.ts`).** 모두 다시 해도 같은 결과인 RPC라 겹쳐 돌아도 된다. 한 단계가 실패해도 다음 단계는 한다.
+
+1. `sweep_expire`: lease가 끝난 `calling` → 내부 효과는 다시 준비(3장).
+2. 미확정 원가: 하루 안의 `unconfirmed` 행(generation id 있음) 20개(청구 대상 먼저)를 generation 조회(`generation.ts`)로 확정 → `reconcile_usage`(행마다 RPC 한 번, 12장). 하루가 지난 행은 운영자가 정한다(U2 PR8 런북).
+3. 보조 안전망: `credit_open_ended_runs(50)`이 고른 run마다 `release_run_credits` RPC 한 번(12장).
+4. 이어 갈 run: 끝나지 않았고 부르는 중인 단계가 없는 run 20개(막히지 않은 run 먼저 오래된 순, 막힌 run은 뒤에 새것부터: 운영자만 풀 수 있는 오래된 hold가 쌓여도 지급으로 풀린 새 run이 굶지 않게)에 자기 호출. 다시 준비된 재시도 · 승인 대기가 여기서 이어진다(`begin_call`이 다시 본다). 막힌 run(`hold_reason` 있음)은 5분마다만(UTC 분이 5의 배수, `HELD_WAKE_EVERY_MINUTES`) 깨우고, 차단 스위치가 전체를 막고 있으면 아무도 깨우지 않는다(매분 함수 호출을 쓰지 않게). 실패한 단계가 있으면 sweep 로그를 오류로 남긴다.
+
+**기록.** 상태 · hold가 바뀌는 모든 쓰기는 같은 트랜잭션에서 `execution_events`를 남긴다(7장 트리거). 로그에는 id · 상태 · gate · 숫자만 남긴다(요청 · 원문 · 초안 · 모델의 이유는 남기지 않는다): `execution_step`(단계마다), `execution_sweep`(sweep마다), `execution_wake_failed` · `execution_advance_failed`.
+
+**과금 경계 (A37 · A44).** 할 일 직접 추가 · 수정 · 완료와 원문 처리는 실행 · 크레딧을 확인하지도 부르지도 않는다(`src/lib/execution/boundary.test.ts`, eslint `no-restricted-imports`).
+
+**테스트.** 실행기 × 운영 마이그레이션(PGlite, 가짜 LLM) `tests/db/execution-executor.test.ts`: 초안 1건의 산출물 · 원가 · 예약/정산/해제, 다시 물은 시도까지 더한 정산, 단계 상한, A39, 함수가 중간에 죽은 뒤 이어 가기와 늦은 응답(A18), 스위치를 끄면 세 입구 모두 `calling` 0(기준 9), 크레딧 부족 hold → 지급 뒤 이어 가기, 미확정 원가 보류(A46), 멈추기, Slack · 출처 모를 원문 제외. 순서 · 오류 처리 단위 테스트는 `src/lib/execution/*.test.ts`, route는 `src/app/api/v1/runs/**/route.test.ts` · `credits` · `cron/execution-*`.
