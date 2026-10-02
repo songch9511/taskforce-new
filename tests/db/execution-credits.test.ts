@@ -198,7 +198,7 @@ describe("예약 (begin_call)", () => {
     const user = await newUser(100);
     const { runId, drafts } = await draftRun(user, [0]);
     expect(await gate(drafts[0])).toEqual({ gate: "no_estimate" });
-    expect((await runState(runId)).hold_reason).toBe("credit");
+    expect((await runState(runId)).hold_reason).toBe("blocked"); // 지급으로 풀리지 않는다
     expect((await ledger(user)).map((l) => l.kind)).toEqual(["grant"]);
   });
 
@@ -395,7 +395,8 @@ describe("미확정 원가 (A46 · A51)", () => {
     ]);
     // 끝난 run의 예약 해제를 다시 불러도 끝낸 단계(called)의 미확정 예약은 그대로다
     expect(await one("select public.release_run_credits($1) as n", [runId])).toEqual({ n: 0 });
-    expect(await one("select public.release_run_credits() as n")).toEqual({ n: 0 });
+    expect((await db.query("select run_id from public.credit_open_ended_runs()")).rows).toContainEqual({ run_id: runId }); // sweep이 고르고
+    expect(await one("select public.release_run_credits($1) as n", [runId])).toEqual({ n: 0 }); // 그래도 둔다
     expect(await account(user)).toEqual({ granted: 100, reserved: 50, settled: 0 });
 
     await expect(reconcile(rows[0].id, -1)).rejects.toThrow(/잘못된 비용/);
@@ -412,21 +413,23 @@ describe("미확정 원가 (A46 · A51)", () => {
     expect(await account(user)).toEqual({ granted: 100, reserved: 0, settled: 7 });
   });
 
-  it("응답을 받지 못한(generation id 없는) 시도는 청구 근거가 없어 플랫폼 원가(미확정)로 남고, 정산은 확인된 시도로 한다", async () => {
+  it("응답을 받지 못한(generation id도 비용도 없는) 시도는 청구 근거가 없어 플랫폼 원가(미확정)로 남고, 정산은 확인된 시도로 한다", async () => {
     const user = await newUser(100);
     const { drafts } = await draftRun(user, [50]);
     expect((await gate(drafts[0])).gate).toBe("ok");
-    // 시간 초과 뒤 다시 물어 받은 답 (llm.ts는 시간 초과도 다시 묻는다)
+    // 시간 초과 → id 없이 비용만 담긴 응답(형식 오류로 다시 물음) → 받은 답 (llm.ts는 시간 초과도 다시 묻는다)
+    const costOnly: Attempt = { generationId: null, model: "z-ai/glm-5.3-flash", usage: { prompt_tokens: 1200, completion_tokens: 400, cost: 0.002 } };
     const answered = attempt(0.003);
-    expect(await complete(drafts[0], [attempt(undefined, null), answered], ARTIFACT, "draft_ready")).toBe(true);
+    expect(await complete(drafts[0], [attempt(undefined, null), costOnly, answered], ARTIFACT, "draft_ready")).toBe(true);
     expect((await usageOf(drafts[0])).map((r) => [r.generation_id, r.cost_usd, r.cost_status, r.billable])).toEqual([
       [null, null, "unconfirmed", false],
+      [null, "0.002", "confirmed", true],
       [answered.generationId, "0.003", "confirmed", true],
     ]);
     expect((await ledger(user)).slice(1).map((l) => [l.kind, l.credits])).toEqual([
       ["reserve", 50],
-      ["settle", 3],
-      ["release", 47],
+      ["settle", 5],
+      ["release", 45],
     ]);
   });
 
@@ -705,6 +708,7 @@ describe("권한", () => {
     ["record_usage", "select public.record_usage(gen_random_uuid(), '[]')"],
     ["reconcile_usage", "select public.reconcile_usage(1, 0)"],
     ["release_run_credits", "select public.release_run_credits(gen_random_uuid())"],
+    ["credit_open_ended_runs", "select * from public.credit_open_ended_runs()"],
     ["purge_expired_artifacts", "select public.purge_expired_artifacts()"],
     ["credit_settle_step", "select public.credit_settle_step(gen_random_uuid())"],
     ["credit_insert_usage", "select public.credit_insert_usage(gen_random_uuid(), '[]', true)"],

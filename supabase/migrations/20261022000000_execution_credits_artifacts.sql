@@ -305,24 +305,24 @@ begin
     end if;
   end if;
 
-  -- 크레딧 (U2 PR4): 단계의 추정치를 가용 잔액과 run의 남은 예산 안에서 예약할 수 있어야 부른다. 막히면 부르지 않고 run에 이유(credit)를
-  -- 남긴다. 단계는 prepared에 남아 지급 뒤 sweep이 이어 간다. 추정치 0인 단계(계획)는 예약하지 않지만, 청구 대상인 초안 단계는 추정치가 있어야 한다.
+  -- 크레딧 (U2 PR4): 단계의 추정치를 가용 잔액과 run의 남은 예산 안에서 예약할 수 있어야 부른다. 모자라면 부르지 않고 run에 이유(credit)를
+  -- 남긴다. 단계는 prepared에 남아 지급 뒤 sweep이 이어 간다. 지급으로 풀리지 않는 서버 쪽 문제(요율 · 추정치 없음, 닫힌 예약)는 blocked. 추정치 0인 단계(계획)는 예약하지 않지만, 청구 대상인 초안 단계는 추정치가 있어야 한다.
   -- 예약은 단계마다 한 번이다: 같은 단계의 재시도(내부 효과 다시 준비)는 열린 처음 예약을 그대로 쓴다. 이미 정산 · 해제된 예약으로는 부르지 않는다.
   -- 원장 · 계정은 intent를 얻은 뒤에 쓴다: 그 사이에 다른 단계가 먼저 commit해 건너뛰면 예약이 남지 않게
   if v_step.kind = 'draft' and v_step.estimate_credits <= 0 then
-    return public.execution_hold(v_run.id, 'credit', 'no_estimate');
+    return public.execution_hold(v_run.id, 'blocked', 'no_estimate');
   end if;
   if v_step.estimate_credits > 0 then
     if exists (select 1 from public.credit_ledger l where l.receipt_key = 'reserve:' || v_step.id::text) then
       if exists (select 1 from public.credit_ledger l
                  where l.receipt_key in ('settle:' || v_step.id::text, 'release:' || v_step.id::text)) then
-        return public.execution_hold(v_run.id, 'credit', 'reservation_closed');
+        return public.execution_hold(v_run.id, 'blocked', 'reservation_closed');
       end if;
     else
       select * into v_account from public.credit_accounts where user_id = v_run.user_id for update;
       select r.version into v_rate from public.credit_rates r where r.active;
       if v_rate is null then
-        return public.execution_hold(v_run.id, 'credit', 'no_rate'); -- 요율을 모르면 새 유료 단계를 보류한다 (A41)
+        return public.execution_hold(v_run.id, 'blocked', 'no_rate'); -- 요율을 모르면 새 유료 단계를 보류한다 (A41)
       end if;
       if v_run.budget_credits is not null then
         -- run이 쓴 예산 = 예약 - 해제 (정산은 예약에서 옮겨 가므로 그대로 센다)
@@ -378,7 +378,7 @@ $$;
 -- ─────────────────────────────────────────────
 -- 시도 기록(src/lib/ai/llm.ts LlmAttempt 배열 그대로: [{generationId, model, usage?: {prompt_tokens, completion_tokens, cost?}}])을
 -- 단계의 원가 행으로 남긴다. 비용이 있으면 확정, 없으면 미확정(0으로 두지 않는다). 같은 generation id는 한 번만 남긴다.
--- 청구 대상(p_billable)이어도 generation id가 없는 시도(응답을 받지 못함)는 플랫폼 원가로 남긴다: 확인할 수 없는 사용량으로 청구하지 않는다
+-- 청구 대상(p_billable)이어도 응답을 받지 못한 시도(generation id도 비용도 없음)는 플랫폼 원가로 남긴다: 확인할 수 없는 사용량으로 청구하지 않는다
 create function public.credit_insert_usage(p_step uuid, p_attempts jsonb, p_billable boolean) returns integer
 language plpgsql
 set search_path = ''
@@ -395,7 +395,7 @@ begin
          (a.value->'usage'->>'prompt_tokens')::integer, (a.value->'usage'->>'completion_tokens')::integer,
          (a.value->'usage'->>'cost')::numeric,
          case when a.value->'usage'->>'cost' is null then 'unconfirmed' else 'confirmed' end,
-         p_billable and a.value->>'generationId' is not null,
+         p_billable and (a.value->>'generationId' is not null or a.value->'usage'->>'cost' is not null),
          case when a.value->'usage'->>'cost' is null then null else public.db_now() end
   from public.execution_steps s, jsonb_array_elements(p_attempts) with ordinality a (value, n)
   where s.id = p_step
@@ -424,6 +424,11 @@ begin
   select * into v_reserve from public.credit_ledger where receipt_key = 'reserve:' || p_step::text;
   if not found then
     return 'none';
+  end if;
+  -- 정산 · 해제 행은 commit되면 바뀌지 않는다: 이미 닫힌 예약은 계정을 잠그지 않고 돌아간다 (잠근 뒤 다시 확인한다)
+  if exists (select 1 from public.credit_ledger
+             where receipt_key in ('settle:' || p_step::text, 'release:' || p_step::text)) then
+    return 'done';
   end if;
   perform 1 from public.credit_accounts where user_id = v_reserve.user_id for update;
   if exists (select 1 from public.credit_ledger
@@ -457,8 +462,8 @@ $$;
 -- 끝낸 단계(called)는 정산한다(원가가 미확정이면 예약을 둔다, A46). 부르는 중(calling) · 결과 불명(외부)은 둔다. 해제한 단계 수.
 -- run 행을 먼저 잠그고(step → run → 계정 순서) 새로 읽는다: run을 끝내는 함수(stop_run)와 단계를 내보내는 함수(mark_unknown · settle_step)가
 -- 동시에 돌아도 뒤에 commit하는 쪽이 앞의 결과를 보고 해제한다. 아래 트리거가 부른다. 다시 불러도 같은 단계를 두 번 해제하지 않는다.
--- p_run_id가 null이면 열린 예약이 남은 끝난 run 모두 (sweep의 보조 안전망, U2 PR6)
-create function public.release_run_credits(p_run_id uuid default null) returns integer
+-- 한 트랜잭션에서 여러 run을 부르지 않는다(run → 계정 잠금을 쥔 채 다른 run을 기다리면 교착한다). sweep은 credit_open_ended_runs로 고른 run마다 RPC 한 번
+create function public.release_run_credits(p_run_id uuid) returns integer
 language plpgsql
 set search_path = ''
 as $$
@@ -467,17 +472,6 @@ declare
   v_state text;
   v_count integer := 0;
 begin
-  if p_run_id is null then
-    for r in
-      select distinct l.run_id from public.credit_ledger l join public.execution_runs run on run.id = l.run_id
-      where l.kind = 'reserve' and run.state in ('done', 'failed', 'stopped')
-        and not exists (select 1 from public.credit_ledger x
-                        where x.receipt_key in ('settle:' || l.step_id::text, 'release:' || l.step_id::text))
-    loop
-      v_count := v_count + public.release_run_credits(r.run_id);
-    end loop;
-    return v_count;
-  end if;
   select state into v_state from public.execution_runs where id = p_run_id for no key update;
   if v_state is null or v_state not in ('done', 'failed', 'stopped') then
     return 0;
@@ -506,6 +500,21 @@ begin
   end loop;
   return v_count;
 end;
+$$;
+
+-- 열린 예약(정산 · 해제 전)이 남은 끝난 run (U2 PR6 sweep의 보조 안전망: 이 run마다 release_run_credits를 RPC 한 번씩). 잠그지 않고 읽기만 한다.
+-- 끝낸 단계의 원가가 미확정이라 예약을 둔 run도 들어 있다 (release_run_credits가 그대로 둔다)
+create function public.credit_open_ended_runs(p_limit integer default 100) returns table (run_id uuid)
+language sql stable
+set search_path = ''
+as $$
+  select l.run_id from public.credit_ledger l join public.execution_runs r on r.id = l.run_id
+  where l.kind = 'reserve' and r.state in ('done', 'failed', 'stopped')
+    and not exists (select 1 from public.credit_ledger x
+                    where x.receipt_key in ('settle:' || l.step_id::text, 'release:' || l.step_id::text))
+  group by l.run_id
+  order by min(l.id)
+  limit p_limit
 $$;
 
 -- 남은 예약을 그 자리에서 해제 · 정산하는 두 순간 (어느 함수가 바꿨든):
@@ -649,7 +658,7 @@ declare
   f text;
 begin
   foreach f in array array[
-    'grant_credits', 'begin_call', 'credit_insert_usage', 'credit_settle_step', 'release_run_credits', 'credit_release_trigger',
+    'grant_credits', 'begin_call', 'credit_insert_usage', 'credit_settle_step', 'release_run_credits', 'credit_open_ended_runs', 'credit_release_trigger',
     'complete_internal_step', 'record_usage', 'reconcile_usage', 'purge_expired_artifacts'
   ] loop
     execute format('revoke execute on function public.%I from public, anon, authenticated', f);
