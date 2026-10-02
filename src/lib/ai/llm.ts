@@ -47,18 +47,37 @@ export type JsonCompletionRequest<T extends z.ZodType> = {
   maxTokens?: number;
 };
 
+export type LlmUsage = { prompt_tokens: number; completion_tokens: number; cost?: number };
+
+/**
+ * 시도 한 번의 원가 기록. 형식이 깨져 다시 물은 시도도 공급자 비용이 들어 시도마다 남긴다 (원가 · 청구 기록, A51).
+ * - generationId: 응답의 id (OpenRouter generation id, "gen-…"). 이 id로 비용을 나중에 확정할 수 있다 (generation.ts).
+ *   응답을 받지 못한 시도(시간 초과 · 본문을 읽지 못함)는 null: 공급자가 생성을 마쳐 비용이 났을 수 있지만 확인할 수 없다 (미확정).
+ * - usage.cost: 응답에 담긴 비용(USD). OpenRouter는 모든 응답에 넣는다 (usage: { include: true }는 폐기돼 효과가 없다, 2026-10-02 문서 · 개발 키 확인).
+ * - model: 요청한 모델 (LlmConfig.model). 시도마다 같은 값이라 모델별로 모을 수 있다. 응답의 날짜 붙은 판은 JsonCompletion.model · generation 조회에 있다.
+ * HTTP 오류로 거절된 요청(402 · 429 · 5xx 등)은 생성 id가 없고 청구되지 않아(OpenRouter zero completion insurance) 남기지 않는다.
+ * 시간 초과가 아닌 네트워크 오류(연결 끊김 등)도 남기지 않는다: 요청이 닿기 전인지 뒤인지 가를 수 없고, 미확정으로 두면 청구를 막아 둬야 해서다(드묾).
+ */
+export type LlmAttempt = { generationId: string | null; model: string; usage?: LlmUsage };
+
 export type JsonCompletion<T> = {
   data: T;
   model: string;
-  usage?: { prompt_tokens: number; completion_tokens: number; cost?: number };
+  /** 답을 받은 마지막 시도의 사용량. 다시 물은 시도까지 합한 원가는 attempts에 있다 */
+  usage?: LlmUsage;
   /**
    * 추론량을 제한해 받은 답인가 (품질이 조금 낮을 수 있어 기록한다). 배경 처리는 한도를 넘긴 첫 호출을 제한해 다시 물은 답,
    * 마감이 있는 호출은 첫 호출부터 제한하므로 추론량 제한을 끄지 않았으면 늘 true다.
    */
   reasoningLimited?: boolean;
+  /** 이 답을 받기까지의 모든 시도 (다시 묻기 포함, 차례대로). completeJson은 늘 채운다 */
+  attempts?: LlmAttempt[];
 };
 
 export class LlmError extends Error {
+  /** 이 오류로 끝난 completeJson 호출의 모든 시도 (원가 기록용). 다른 오류로 끝났을 때는 llmAttemptsOf로 읽는다 */
+  attempts: LlmAttempt[] = [];
+
   constructor(
     message: string,
     readonly detail?: unknown,
@@ -74,6 +93,8 @@ export class LlmError extends Error {
   }
 }
 
+const usageSchema = z.object({ prompt_tokens: z.number(), completion_tokens: z.number(), cost: z.number().optional() });
+
 const chatResponseSchema = z.object({
   model: z.string(),
   choices: z
@@ -84,10 +105,28 @@ const chatResponseSchema = z.object({
       }),
     )
     .min(1),
-  usage: z
-    .object({ prompt_tokens: z.number(), completion_tokens: z.number(), cost: z.number().optional() })
-    .optional(),
+  usage: usageSchema.optional(),
 });
+
+/** 시도 기록에 남길 값만 너그럽게 읽는다: 응답 형식이 어긋나도(chatResponseSchema 실패) 생성 id · 비용은 남긴다 */
+const attemptMetaSchema = z.object({
+  id: z.string().optional().catch(undefined),
+  usage: usageSchema.optional().catch(undefined),
+});
+
+/**
+ * completeJson이 실패로 끝났을 때 그때까지의 시도 (원가 기록용). LlmError는 attempts 필드로도 읽을 수 있고,
+ * 마감 오류(DeadlineExceededError) · 네트워크 오류처럼 다른 오류로 끝나도 같은 기록을 붙여 두므로 이 함수로 읽는다.
+ */
+export function llmAttemptsOf(error: unknown): LlmAttempt[] {
+  const attempts = error instanceof Error ? (error as Error & { attempts?: unknown }).attempts : undefined;
+  return Array.isArray(attempts) ? (attempts as LlmAttempt[]) : [];
+}
+
+function withAttempts<E>(error: E, attempts: LlmAttempt[]): E {
+  if (error instanceof Error) Object.assign(error, { attempts: [...attempts] });
+  return error;
+}
 
 export function llmConfigFromEnv(env: Record<string, string | undefined> = process.env): LlmConfig {
   const apiKey = env.OPENROUTER_API_KEY;
@@ -162,12 +201,15 @@ export async function completeJson<T extends z.ZodType>(
   let reasoning: OverrunReasoning | null = hasDeadline ? overrunReasoning : null;
   let attemptsLeft = FORMAT_RETRIES + 1;
   let triedWithoutReasoning = false;
+  // 시도마다 원가 기록. 성공하면 결과에, 실패하면 던지는 오류에 붙인다 (llmAttemptsOf)
+  const attempts: LlmAttempt[] = [];
+  const record = (attempt: LlmAttempt) => attempts.push(attempt);
   let timeoutMs = attemptTimeoutMs(config, attemptsLeft);
   if (timeoutMs === null) throw new DeadlineExceededError("llm", "남은 시간 없음");
   for (;;) {
     try {
-      const result = await completeJsonOnce(config, request, reasoning, timeoutMs);
-      return reasoning ? { ...result, reasoningLimited: true } : result;
+      const result = await completeJsonOnce(config, request, reasoning, timeoutMs, record);
+      return { ...result, ...(reasoning ? { reasoningLimited: true } : {}), attempts };
     } catch (error) {
       // 마감이 있는 호출은 첫 호출부터 추론 옵션을 보낸다. 그 옵션을 받는 공급자가 없다고 거절되면(추론하지 않는 모델로 바꿨는데
       // LLM_OVERRUN_REASONING_EFFORT를 끄지 않음) 한 번, 옵션 없이 다시 묻는다. 거절은 바로 오므로 다시 묻기 횟수에 넣지 않는다.
@@ -176,7 +218,7 @@ export async function completeJson<T extends z.ZodType>(
         reasoning = null;
         triedWithoutReasoning = true;
         const next = attemptTimeoutMs(config, attemptsLeft);
-        if (next === null) throw new DeadlineExceededError("llm", "남은 시간 없음");
+        if (next === null) throw withAttempts(new DeadlineExceededError("llm", "남은 시간 없음"), attempts);
         timeoutMs = next;
         continue;
       }
@@ -189,11 +231,11 @@ export async function completeJson<T extends z.ZodType>(
       const next = retryable && attemptsLeft > 0 ? attemptTimeoutMs(config, attemptsLeft) : null;
       if (next === null) {
         const seconds = Math.round(timeoutMs / 1000);
-        if (hasDeadline && timedOut) throw new DeadlineExceededError("llm", `응답 시간 초과 (${seconds}초)`);
+        if (hasDeadline && timedOut) throw withAttempts(new DeadlineExceededError("llm", `응답 시간 초과 (${seconds}초)`), attempts);
         if (hasDeadline && retryable && attemptsLeft > 0) {
-          throw new DeadlineExceededError("llm", `다시 물을 시간 없음 (${error instanceof Error ? error.message : String(error)})`);
+          throw withAttempts(new DeadlineExceededError("llm", `다시 물을 시간 없음 (${error instanceof Error ? error.message : String(error)})`), attempts);
         }
-        throw bodyTimedOut ? new LlmError(`응답 시간 초과 (${seconds}초)`) : error;
+        throw withAttempts(bodyTimedOut ? new LlmError(`응답 시간 초과 (${seconds}초)`) : error, attempts);
       }
       timeoutMs = next;
       if (timedOut || (error instanceof LlmError && error.overran)) {
@@ -216,6 +258,7 @@ async function completeJsonOnce<T extends z.ZodType>(
   request: JsonCompletionRequest<T>,
   reasoning: OverrunReasoning | null,
   timeoutMs: number,
+  record: (attempt: LlmAttempt) => void,
 ): Promise<JsonCompletion<z.infer<T>>> {
   const doFetch = config.fetch ?? fetch;
   const maxTokens = request.maxTokens ?? 8192;
@@ -245,6 +288,8 @@ async function completeJsonOnce<T extends z.ZodType>(
     });
   } catch (error) {
     if (error instanceof DOMException && error.name === "TimeoutError") {
+      // 응답을 받지 못했다: 공급자는 생성을 마쳤을 수 있지만 id가 없어 비용을 확인할 수 없는 시도로 남긴다
+      record({ generationId: null, model: config.model });
       throw new LlmError(`응답 시간 초과 (${Math.round(timeoutMs / 1000)}초)`, undefined, true, true, "timeout");
     }
     throw error;
@@ -257,7 +302,18 @@ async function completeJsonOnce<T extends z.ZodType>(
     throw new LlmError(`OpenRouter 요청 실패 (${response.status})`, body, false, false, kind);
   }
 
-  const parsed = chatResponseSchema.safeParse(await response.json());
+  let body: unknown;
+  try {
+    body = await response.json();
+  } catch (error) {
+    // 본문을 읽다가 시간 한도가 울렸거나 본문이 JSON이 아니다: 생성은 됐을 수 있지만 id를 읽지 못한 시도
+    record({ generationId: null, model: config.model });
+    throw error;
+  }
+  const meta = attemptMetaSchema.safeParse(body).data;
+  record({ generationId: meta?.id ?? null, model: config.model, ...(meta?.usage ? { usage: meta.usage } : {}) });
+
+  const parsed = chatResponseSchema.safeParse(body);
   if (!parsed.success) throw new LlmError("OpenRouter 응답 형식이 예상과 다릅니다", parsed.error.issues);
 
   const choice = parsed.data.choices[0];

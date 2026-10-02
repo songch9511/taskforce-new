@@ -1,0 +1,60 @@
+{
+  "id": "draft-slack-only-ko",
+  "description": "근거가 Slack DM뿐이다: 자료에는 Action만 남고, 초안은 빈칸을 [대괄호]로 두어야 한다. Slack의 사이즈 · 수량이 나오면 안 된다",
+  "origin": "synthetic",
+  "tags": [
+    "slack"
+  ],
+  "now": "2026-10-02T10:00:00+09:00",
+  "user": {
+    "name": "김도윤"
+  },
+  "request": "민지님께 배너 수정본 전달 일정 확인 메일 초안 써 줘",
+  "brief": "이민지님께 배너 수정본 전달 일정을 확인하는 짧은 메일. 기한은 10월 7일(수). 세부 사양은 자료에 없으니 빈칸으로. 한국어.",
+  "action": {
+    "title": "배너 수정본 전달",
+    "counterpart": "이민지",
+    "due_date": "2026-10-07"
+  },
+  "sources": [
+    {
+      "id": "s1",
+      "kind": "message",
+      "provider": "slack",
+      "title": "DM · 이민지",
+      "occurred_at": "2026-10-01T11:20:00+09:00",
+      "participants": {
+        "attendees": [
+          {
+            "name": "김도윤",
+            "email": "doyun@example.com"
+          },
+          {
+            "name": "이민지",
+            "email": "minji@example.com"
+          }
+        ]
+      },
+      "text": "[DM · 이민지]\n이민지: 도윤님, 다음 주 수요일까지 배너 3종 수정본 부탁드려요. 사이즈는 1200x628이고 문구는 가을 세일로 바꿔 주세요\n김도윤: 네 수요일까지 드릴게요"
+    }
+  ],
+  "evidence": [
+    {
+      "source": "s1",
+      "quote": "네 수요일까지 드릴게요"
+    }
+  ],
+  "expect": {
+    "recipients": [
+      [
+        "이민지"
+      ]
+    ],
+    "must_not_include": [
+      "1200",
+      "628",
+      "3종",
+      "가을 세일"
+    ]
+  }
+}

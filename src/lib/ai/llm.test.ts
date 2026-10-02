@@ -8,6 +8,7 @@ import {
   DEADLINE_OVERRUN_REASONING,
   LLM_MIN_ATTEMPT_MS,
   LLM_TIMEOUT_MS,
+  llmAttemptsOf,
   llmConfigFromEnv,
   LlmError,
   OVERRUN_RETRY_REASONING,
@@ -48,6 +49,8 @@ describe("completeJson", () => {
       provider: { require_parameters: true, data_collection: "deny", zdr: true },
     });
     expect(c.bodies[0]).not.toHaveProperty("temperature");
+    // 비용은 모든 응답에 들어 있어(usage: { include: true }는 폐기) 요청 본문에 사용량 옵션을 더하지 않는다
+    expect(c.bodies[0]).not.toHaveProperty("usage");
   });
 
   it("공급자를 고정하면 그 목록만, 그 순서로, 넘어가지 않게 보낸다", async () => {
@@ -310,5 +313,102 @@ describe("사용자가 기다리는 호출 (마감 있음: 빠진 할 일 신고
       await expect(completeJson(background, request)).rejects.toMatchObject({ kind: "unsupported_parameters" });
       expect(background.bodies).toHaveLength(1);
     });
+  });
+});
+
+describe("시도마다 원가 기록 (generation id · usage.cost)", () => {
+  /** 차례로 돌려줄 응답: [답, generation id, 비용] 또는 시간 초과 · HTTP 상태 */
+  type Step = { content: string | null; id?: string; cost?: number } | "timeout" | { status: number };
+  function sequence(steps: Step[], extra: Partial<LlmConfig> = {}): LlmConfig & { calls: () => number } {
+    let call = 0;
+    return {
+      apiKey: "key",
+      model: "test/model",
+      ...extra,
+      calls: () => call,
+      fetch: (async () => {
+        const step = steps[Math.min(call++, steps.length - 1)];
+        if (step === "timeout") throw new DOMException("timed out", "TimeoutError");
+        if ("status" in step) return new Response(JSON.stringify({ error: { code: step.status, message: "rate limited" } }), { status: step.status });
+        return new Response(
+          JSON.stringify({
+            ...(step.id ? { id: step.id } : {}),
+            model: "test/model-20260826",
+            choices: [{ finish_reason: "stop", message: { content: step.content } }],
+            ...(step.cost === undefined ? {} : { usage: { prompt_tokens: 10, completion_tokens: 5, cost: step.cost } }),
+          }),
+        );
+      }) as typeof fetch,
+    };
+  }
+
+  it("성공한 호출은 다시 물은 시도까지 generation id · 요청한 모델 · 사용량을 차례로 남긴다", async () => {
+    const c = sequence([
+      { content: "oops", id: "gen-1", cost: 0.0002 },
+      { content: '{"ok":true}', id: "gen-2", cost: 0.0003 },
+    ]);
+    const result = await completeJson(c, request);
+    expect(result.data).toEqual({ ok: true });
+    expect(result.attempts).toEqual([
+      { generationId: "gen-1", model: "test/model", usage: { prompt_tokens: 10, completion_tokens: 5, cost: 0.0002 } },
+      { generationId: "gen-2", model: "test/model", usage: { prompt_tokens: 10, completion_tokens: 5, cost: 0.0003 } },
+    ]);
+    // 응답의 날짜 붙은 판은 결과의 model에 그대로
+    expect(result.model).toBe("test/model-20260826");
+    // 기존 필드는 그대로: usage는 답을 받은 마지막 시도의 것
+    expect(result.usage?.cost).toBe(0.0003);
+  });
+
+  it("시간 초과로 응답을 받지 못한 시도는 id 없는(미확정) 시도로 남긴다", async () => {
+    const c = sequence(["timeout", { content: '{"ok":true}', id: "gen-2", cost: 0.0001 }]);
+    const result = await completeJson(c, request);
+    expect(result.attempts?.map((a) => a.generationId)).toEqual([null, "gen-2"]);
+    expect(result.attempts?.[0]).toEqual({ generationId: null, model: "test/model" });
+  });
+
+  it("비용이 없는 응답도 id는 남긴다 (generation 조회로 나중에 확정)", async () => {
+    const c = sequence([{ content: '{"ok":true}', id: "gen-1" }]);
+    expect((await completeJson(c, request)).attempts).toEqual([{ generationId: "gen-1", model: "test/model" }]);
+  });
+
+  it("다시 물어도 실패하면 LlmError.attempts에 모든 시도를 붙인다", async () => {
+    const c = sequence([
+      { content: "oops", id: "gen-1", cost: 0.0002 },
+      { content: '{"ok":"no"}', id: "gen-2", cost: 0.0002 },
+    ]);
+    const error = await completeJson(c, request).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(LlmError);
+    expect((error as LlmError).attempts.map((a) => a.generationId)).toEqual(["gen-1", "gen-2"]);
+    expect(llmAttemptsOf(error)).toEqual((error as LlmError).attempts);
+  });
+
+  it("HTTP 오류로 거절된 요청은 생성이 없어 남기지 않는다", async () => {
+    const c = sequence([{ status: 429 }]);
+    const error = await completeJson(c, request).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(LlmError);
+    expect(llmAttemptsOf(error)).toEqual([]);
+    expect(c.calls()).toBe(1);
+  });
+
+  it("앞 시도가 비용을 냈고 다시 묻다가 HTTP 오류로 끝나도 앞 시도 기록은 오류에 남는다", async () => {
+    const c = sequence([{ content: "oops", id: "gen-1", cost: 0.0002 }, { status: 502 }]);
+    const error = await completeJson(c, request).catch((e: unknown) => e);
+    expect((error as Error).message).toContain("502");
+    expect(llmAttemptsOf(error).map((a) => a.generationId)).toEqual(["gen-1"]);
+  });
+
+  it("마감 오류(DeadlineExceededError)로 끝나도 시도 기록을 붙인다", async () => {
+    const c = sequence(["timeout", "timeout"], { deadline: Date.now() + 40_000 });
+    const error = await completeJson(c, request).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(DeadlineExceededError);
+    expect(llmAttemptsOf(error)).toEqual([
+      { generationId: null, model: "test/model" },
+      { generationId: null, model: "test/model" },
+    ]);
+  });
+
+  it("다른 값이 오류에 없으면 빈 기록", () => {
+    expect(llmAttemptsOf(new Error("x"))).toEqual([]);
+    expect(llmAttemptsOf("x")).toEqual([]);
   });
 });

@@ -1,0 +1,57 @@
+{
+  "id": "draft-agenda-two-recipients-en",
+  "description": "Email to two people proposing a joint review agenda. Both recipients, nobody else",
+  "origin": "synthetic",
+  "now": "2026-10-02T10:00:00+09:00",
+  "user": {
+    "name": "Doyun Kim"
+  },
+  "request": "Draft an email to Alex and Mina proposing the agenda for Thursday's joint review.",
+  "brief": "Email to Alex Chen and Mina Park proposing the agenda for the joint review on Thursday, October 8: onboarding flow results, dashboard data sources, open questions. English.",
+  "action": {
+    "title": "Send joint review agenda",
+    "counterpart": "Alex Chen",
+    "due_date": "2026-10-05"
+  },
+  "sources": [
+    {
+      "id": "s1",
+      "kind": "meeting",
+      "provider": "notion",
+      "title": "Internal planning",
+      "occurred_at": "2026-10-01T11:00:00+09:00",
+      "participants": {
+        "attendees": [
+          {
+            "name": "Doyun Kim",
+            "email": "doyun@example.com"
+          },
+          {
+            "name": "Jordan Lee",
+            "email": "jordan@example.com"
+          }
+        ]
+      },
+      "text": "# Internal planning\n\n[Notes]\n- Joint review with Alex (Bluefin) and Mina (Maple Analytics) on Thursday, October 8\n- Agenda: onboarding flow results, dashboard data sources, open questions\n- Doyun sends the agenda to Alex and Mina by Monday\n- Contacts: alex@example.com, mina@example.com"
+    }
+  ],
+  "evidence": [
+    {
+      "source": "s1",
+      "quote": "Doyun sends the agenda to Alex and Mina by Monday"
+    }
+  ],
+  "expect": {
+    "recipients": [
+      [
+        "Alex",
+        "alex@example.com"
+      ],
+      [
+        "Mina",
+        "mina@example.com"
+      ]
+    ],
+    "must_not_include": []
+  }
+}

@@ -1,0 +1,96 @@
+{
+  "id": "draft-slack-mixed-email-en",
+  "description": "Gmail request + internal Slack channel about a QA crash and an internal ticket. The status email must not leak the Slack details",
+  "origin": "synthetic",
+  "tags": [
+    "slack"
+  ],
+  "now": "2026-10-02T10:00:00+09:00",
+  "user": {
+    "name": "Doyun Kim"
+  },
+  "request": "Draft a status update email to Sam on the onboarding redesign.",
+  "brief": "Status update email to Sam Rivera on the onboarding redesign: new sign-up screen design done, usability test with 5 users scheduled for October 8, next update after the test. English.",
+  "action": {
+    "title": "Send Sam a status update",
+    "counterpart": "Sam Rivera",
+    "due_date": "2026-10-02"
+  },
+  "sources": [
+    {
+      "id": "s1",
+      "kind": "email",
+      "provider": "gmail",
+      "title": "Status?",
+      "occurred_at": "2026-10-01T09:00:00+09:00",
+      "participants": {
+        "from": {
+          "name": "Sam Rivera",
+          "email": "sam@example.com"
+        },
+        "to": [
+          {
+            "name": "Doyun Kim",
+            "email": "doyun@example.com"
+          }
+        ]
+      },
+      "text": "Subject: Status?\n\nHi Doyun,\nCould you send me a quick status update on the onboarding redesign by Friday?\n\nSam"
+    },
+    {
+      "id": "s2",
+      "kind": "doc",
+      "provider": "notion",
+      "title": "Onboarding redesign tracker",
+      "occurred_at": "2026-10-01T19:00:00+09:00",
+      "text": "# Onboarding redesign tracker\n\n- New sign-up screen design: done\n- Usability test with 5 users: October 8\n- Next client update after the test"
+    },
+    {
+      "id": "s3",
+      "kind": "message",
+      "provider": "slack",
+      "title": "#onboarding-dev",
+      "occurred_at": "2026-10-01T21:10:00+09:00",
+      "participants": {
+        "attendees": [
+          {
+            "name": "Doyun Kim",
+            "email": "doyun@example.com"
+          },
+          {
+            "name": "Jordan Lee",
+            "email": "jordan@example.com"
+          }
+        ]
+      },
+      "text": "[#onboarding-dev]\nJordan Lee: heads up, the QA build crashed twice on Android during sign-up, tracking it in NOVA-512\nJordan Lee: let's not mention it to the client until we have a fix\nDoyun Kim: ok, I'll keep the status update to the design progress"
+    }
+  ],
+  "evidence": [
+    {
+      "source": "s1",
+      "quote": "Could you send me a quick status update on the onboarding redesign by Friday?"
+    },
+    {
+      "source": "s2",
+      "quote": "Usability test with 5 users: October 8"
+    },
+    {
+      "source": "s3",
+      "quote": "I'll keep the status update to the design progress"
+    }
+  ],
+  "expect": {
+    "recipients": [
+      [
+        "Sam",
+        "sam@example.com"
+      ]
+    ],
+    "must_not_include": [
+      "NOVA-512",
+      "crash",
+      "Android"
+    ]
+  }
+}

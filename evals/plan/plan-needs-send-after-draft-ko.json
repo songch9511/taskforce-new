@@ -1,0 +1,55 @@
+{
+  "id": "plan-needs-send-after-draft-ko",
+  "description": "'초안 쓰고 보내 줘'에서 초안은 history에 있다 → 남은 발송 조각 needs_connection",
+  "origin": "synthetic",
+  "now": "2026-10-02T10:00:00+09:00",
+  "user": {
+    "name": "김도윤"
+  },
+  "request": "견적 회신 초안 쓰고 민지님께 보내 줘",
+  "action": {
+    "title": "한빛디자인 견적 회신",
+    "counterpart": "이민지",
+    "due_date": "2026-10-05"
+  },
+  "sources": [
+    {
+      "id": "s1",
+      "kind": "email",
+      "provider": "gmail",
+      "title": "견적 문의",
+      "occurred_at": "2026-09-30T11:00:00+09:00",
+      "participants": {
+        "from": {
+          "name": "이민지",
+          "email": "minji@example.com"
+        },
+        "to": [
+          {
+            "name": "김도윤",
+            "email": "doyun@example.com"
+          }
+        ]
+      },
+      "text": "제목: 견적 문의\n\n도윤님, 브로슈어 8쪽 디자인 견적 부탁드립니다. 단가는 지난번과 같은 쪽당 30만 원이면 좋겠습니다.\n\n이민지 드림"
+    }
+  ],
+  "evidence": [
+    {
+      "source": "s1",
+      "quote": "브로슈어 8쪽 디자인 견적 부탁드립니다"
+    }
+  ],
+  "history": [
+    {
+      "kind": "draft",
+      "status": "called",
+      "brief": "이민지님께 브로슈어 8쪽 디자인 견적 회신 메일, 쪽당 30만 원 기준",
+      "title": "브로슈어 디자인 견적 회신"
+    }
+  ],
+  "expect": {
+    "kind": "needs_connection",
+    "capability": "send_email"
+  }
+}

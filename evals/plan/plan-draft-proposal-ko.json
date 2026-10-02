@@ -1,0 +1,47 @@
+{
+  "id": "plan-draft-proposal-ko",
+  "description": "고객이 메일로 요청한 리뉴얼 제안서 초안. 범위가 원문에 있으니 바로 draft",
+  "origin": "synthetic",
+  "now": "2026-10-02T10:00:00+09:00",
+  "user": {
+    "name": "김도윤"
+  },
+  "request": "소나무랩에 보낼 홈페이지 리뉴얼 제안서 초안 만들어 줘",
+  "action": {
+    "title": "소나무랩 리뉴얼 제안서 전달",
+    "counterpart": "박서준",
+    "due_date": "2026-10-09"
+  },
+  "sources": [
+    {
+      "id": "s1",
+      "kind": "email",
+      "provider": "gmail",
+      "title": "홈페이지 리뉴얼 제안 요청",
+      "occurred_at": "2026-09-30T14:20:00+09:00",
+      "participants": {
+        "from": {
+          "name": "박서준",
+          "email": "seojun@example.com"
+        },
+        "to": [
+          {
+            "name": "김도윤",
+            "email": "doyun@example.com"
+          }
+        ]
+      },
+      "text": "제목: 홈페이지 리뉴얼 제안 요청\n\n도윤님 안녕하세요, 소나무랩 박서준입니다.\n메인과 제품 소개 페이지 5개를 새로 만들고 모바일도 함께 대응하고 싶습니다.\n11월 말 오픈을 희망하고, 다음 주 금요일까지 제안서를 받아 볼 수 있을까요?\n\n박서준 드림"
+    }
+  ],
+  "evidence": [
+    {
+      "source": "s1",
+      "quote": "다음 주 금요일까지 제안서를 받아 볼 수 있을까요?"
+    }
+  ],
+  "history": [],
+  "expect": {
+    "kind": "draft"
+  }
+}

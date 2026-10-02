@@ -1,0 +1,57 @@
+{
+  "id": "draft-followup-email-ko",
+  "description": "회의 직후 후속 메일. 회의록의 결정 사항(시안 2종 · 10월 8일 · 남색 · 다음 회의)만 담아야 한다",
+  "origin": "synthetic",
+  "now": "2026-10-02T10:00:00+09:00",
+  "user": {
+    "name": "김도윤"
+  },
+  "request": "민지님께 오늘 회의 후속 메일 초안 써 줘",
+  "brief": "이민지님께 보낼 회의 후속 메일. 요점: 시안 2종 10월 8일까지 전달, 로고 색상 남색 유지, 다음 회의 10월 14일(수) 오후 2시. 한국어.",
+  "action": {
+    "title": "한빛디자인 회의 후속 메일",
+    "counterpart": "이민지",
+    "due_date": "2026-10-02"
+  },
+  "sources": [
+    {
+      "id": "s1",
+      "kind": "meeting",
+      "provider": "notion",
+      "title": "한빛디자인 시안 회의",
+      "occurred_at": "2026-10-02T09:00:00+09:00",
+      "participants": {
+        "attendees": [
+          {
+            "name": "김도윤",
+            "email": "doyun@example.com"
+          },
+          {
+            "name": "이민지",
+            "email": "minji@example.com"
+          }
+        ]
+      },
+      "text": "# 한빛디자인 시안 회의\n\n[메모]\n- 시안 2종은 10월 8일까지 전달\n- 로고 색상은 남색 유지, 서체는 시안에서 두 가지 제안\n- 다음 회의: 10월 14일(수) 오후 2시\n- 김도윤: 오늘 중으로 회의 내용 정리해서 메일 드릴게요."
+    }
+  ],
+  "evidence": [
+    {
+      "source": "s1",
+      "quote": "오늘 중으로 회의 내용 정리해서 메일 드릴게요"
+    },
+    {
+      "source": "s1",
+      "quote": "시안 2종은 10월 8일까지 전달"
+    }
+  ],
+  "expect": {
+    "recipients": [
+      [
+        "이민지",
+        "minji@example.com"
+      ]
+    ],
+    "must_not_include": []
+  }
+}

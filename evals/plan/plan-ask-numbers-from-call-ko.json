@@ -1,0 +1,35 @@
+{
+  "id": "plan-ask-numbers-from-call-ko",
+  "description": "'통화에서 정한 수치 그대로' 넣으라는데 통화 메모에 수치가 없다 → ask_user",
+  "origin": "synthetic",
+  "now": "2026-10-02T10:00:00+09:00",
+  "user": {
+    "name": "김도윤"
+  },
+  "request": "통화에서 정한 수치 그대로 넣어서 파일럿 제안서 써 줘",
+  "action": {
+    "title": "파일럿 제안서 작성",
+    "counterpart": "최유나",
+    "due_date": "2026-10-08"
+  },
+  "sources": [
+    {
+      "id": "s1",
+      "kind": "note",
+      "provider": null,
+      "title": "최유나님 통화 메모",
+      "occurred_at": "2026-10-01T16:00:00+09:00",
+      "text": "최유나님 통화. 파일럿 기간이랑 인원은 통화로 정했고, 제안서는 내가 다음 주 목요일까지 보내기로 함."
+    }
+  ],
+  "evidence": [
+    {
+      "source": "s1",
+      "quote": "제안서는 내가 다음 주 목요일까지 보내기로 함"
+    }
+  ],
+  "history": [],
+  "expect": {
+    "kind": "ask_user"
+  }
+}
