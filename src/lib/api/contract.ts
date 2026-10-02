@@ -105,12 +105,36 @@ export const rankedActionSchema = actionSummarySchema.extend({
 // 주간 질문 "Taskforce 밖에 따로 적어둔 할 일이 있나요?" (지표 5). week_start: 그 주 월요일 (한국 시간)
 export const weeklyCheckPromptSchema = z.object({ week_start: z.iso.date() });
 
+/**
+ * 원문 처리 실패 까닭 (sources.processing_error_code, 마이그레이션 20261020000000).
+ * ai_quota: AI 공급자가 한도 · 잔액으로 거절, ai_timeout: AI 응답 시간 초과, ai_output: AI 응답 형식이 깨짐,
+ * consent: 처리 도중 외부 AI 처리 동의 철회, expired: 하루가 지나도록 멈춰 다시 처리하지 않고 닫음, internal: 그 밖.
+ */
+export const SOURCE_FAILURE_CODES = ["ai_quota", "ai_timeout", "ai_output", "consent", "expired", "internal"] as const;
+export const sourceFailureCodeSchema = z.enum(SOURCE_FAILURE_CODES);
+export type SourceFailureCode = z.infer<typeof sourceFailureCodeSchema>;
+
+/**
+ * 처리에 실패한 원문 (processing_status failed, 다시 처리를 기다리는 것 포함). 앱이 목록이 비었을 때 "All caught up" 대신 실패를 보인다.
+ * 실패 원문 목록은 앱이 RLS로 직접 읽는다 (sources: processing_status = 'failed', processing_error_code).
+ */
+export const failedSourcesSchema = z.object({
+  count: z.number().int().nonnegative(),
+  /** 마지막 실패 시각 (없으면 null) */
+  latest_at: z.string().nullable(),
+  /** 마지막 실패의 까닭. 없거나 까닭을 기록하기 전(20261020000000 전)의 실패면 null */
+  reason: sourceFailureCodeSchema.nullable(),
+});
+export type FailedSources = z.infer<typeof failedSourcesSchema>;
+
 // GET /api/v1/now
 export const nowResponseSchema = z.object({
   now: z.array(rankedActionSchema),
   confirmations: z.array(rankedActionSchema),
   /** 이번 주에 물어볼 주간 질문. 물을 때가 아니면 null (필드는 항상 있다) */
   weekly_check: weeklyCheckPromptSchema.nullable(),
+  /** 처리에 실패한 원문 (필드는 항상 있다. 못 읽으면 count 0으로 두고 목록은 그대로 돌려준다). 예전 서버에는 없다 */
+  failed_sources: failedSourcesSchema,
 });
 export type NowResponse = z.infer<typeof nowResponseSchema>;
 
@@ -157,7 +181,8 @@ export const editActionRequestSchema = z
 export type EditActionRequest = z.infer<typeof editActionRequestSchema>;
 
 // POST /api/v1/actions — 직접 추가 (Mac 런처: 찾는 할 일이 없으면 제목으로 추가, 기한 · 관련 원문 구절은 선택).
-// 값은 사용자 Claim(origin user)으로 정하고 user_created 이벤트를 남긴다 (추출이 놓친 신호, 지표 4). 확인 요청은 만들지 않는다.
+// 값은 사용자 Claim(origin user)으로 정하고 user_created 이벤트를 남긴다. 확인 요청은 만들지 않는다.
+// 원문 구절을 고른 직접 추가(이벤트 source_id 있음)만 추출이 놓친 신호(지표 4)로 세고, 구절 없는 직접 추가는 일반 입력으로 따로 센다 (A42).
 // source_id와 quote는 함께 보낸다. 구절은 그 원문에 실제로 있어야 한다 (공백 · 문장부호 차이는 무시).
 // 201 { action, status: "created" } · 200 { action, status: "already_tracked" } (createActionResponseSchema).
 // 오류: 400 invalid_request(원문에 없는 구절 · 할 일 DB 항목 · 보관 기간이 지난 원문 포함)

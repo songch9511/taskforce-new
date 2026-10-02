@@ -416,16 +416,27 @@ describe("retryDeps: DB 조건", () => {
     expect(queries[1]).toContain("eq processing_status pending");
   });
 
-  it("닫기: 마지막 시도에서 멈춘 원문을 더 다시 하지 않는 실패로", async () => {
-    const { admin, queries } = fakeAdmin([[{ id: "s1" }]]);
+  it("닫기: 마지막 시도에서 멈춘 원문을 더 다시 하지 않는 실패로 (끊긴 까닭을 몰라 internal), 닫았으면 source_failed 한 줄", async () => {
+    const { admin, queries } = fakeAdmin([[{ id: "s1" }], { connection_id: "c1" }, { provider: "slack" }]);
     await retryDeps(admin).giveUp(row(stalled(3, 30)), 3);
     const update = JSON.parse(queries[0][1].slice("update ".length));
     expect(update).toMatchObject({
       processing_status: "failed",
       processing_error: "처리 중 오류가 발생했습니다.",
+      processing_error_code: "internal",
       processing_summary: { attempt: 3, retryable: false },
     });
     expect(queries[0]).toContain("eq processing_status processing");
+    // 원문을 가져온 연결의 서비스만 남긴다 (글은 읽지 않는다)
+    expect(queries[1]).toEqual(["from sources", "select connection_id", "eq id s1", "eq user_id u1", "maybeSingle"]);
+    expect(queries[2]).toEqual(["from connections", "select provider", "eq id c1", "eq user_id u1", "maybeSingle"]);
+    expect(queries[3]).toEqual(["from metric_events", 'insert {"user_id":"u1","type":"source_failed","provider":"slack"}']);
+  });
+
+  it("닫기: 다른 실행이 먼저 바꿨으면(0행) source_failed를 남기지 않는다", async () => {
+    const { admin, queries } = fakeAdmin([[]]);
+    expect(await retryDeps(admin).giveUp(row(stalled(3, 30)), 3)).toBe(false);
+    expect(queries).toHaveLength(1);
   });
 
   it("창을 지난 원문 조회: 글은 읽지 않고, 창 전에 들어와 처리 중 · 대기에 멈춘 글 원문을 오래된 순서로 한 번의 상한까지", async () => {
@@ -454,6 +465,7 @@ describe("retryDeps: DB 조건", () => {
     expect(update).toMatchObject({
       processing_status: "failed",
       processing_error: "처리 중 오류가 발생했습니다.",
+      processing_error_code: "expired",
       processing_summary: { attempt: 2, retryable: false, closed: "expired" },
     });
     expect(typeof update.processed_at).toBe("string");
@@ -462,10 +474,14 @@ describe("retryDeps: DB 조건", () => {
     expect(queries[0]).toContain("eq user_id u1");
     expect(queries[0]).toContain(`contains processing_summary ${JSON.stringify(stuck.processing_summary)}`);
 
-    // 그 사이 다른 실행이 바꿨으면(0행) 닫지 않는다. 기록이 없던 원문은 여전히 없을 때만
+    // 닫았으면 source_failed (연결이 없는 원문은 서비스 없이)
+    expect(queries[2]).toEqual(["from metric_events", 'insert {"user_id":"u1","type":"source_failed","provider":null}']);
+
+    // 그 사이 다른 실행이 바꿨으면(0행) 닫지 않고 source_failed도 남기지 않는다. 기록이 없던 원문은 여전히 없을 때만
     expect(await deps.expire(expiredRow({ processing_status: "pending", processing_summary: null }), 0)).toBe(false);
-    expect(queries[1]).toContain("is processing_summary null");
-    expect(queries[1]).toContain("eq processing_status pending");
+    expect(queries[3]).toContain("is processing_summary null");
+    expect(queries[3]).toContain("eq processing_status pending");
+    expect(queries).toHaveLength(4);
   });
 
   it("마지막 시도에서 멈춰 닫는 것(giveUp)에는 창을 지나 닫는 까닭이 붙지 않는다 (둘을 가를 수 있게)", async () => {

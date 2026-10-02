@@ -7,6 +7,7 @@ import { grantedFeatures } from "@/lib/connectors/google/run";
 import { readAll } from "../read-all";
 import {
   connections,
+  discoveryCost,
   gmailFiltering,
   googleActivity,
   meetingLinkage,
@@ -15,6 +16,7 @@ import {
   missed,
   retention,
   shadowList,
+  sourceFailures,
   timeToStart,
   type ActionEventRow,
   type Activity,
@@ -28,6 +30,7 @@ import {
 // 원문 · 인용은 읽지 않고, 원문 제목은 시험용 원문을 가려낼 때만 서버 쿼리 조건으로 쓴다.
 // 주간 질문(weekly_checks)은 답(있다 · 없다 · 건너뜀)만, 연동 요청(connection_requests)은 서비스 이름만 읽는다.
 // Gmail · Google 연결은 설정 중 개수(settings.stats)만 읽는다 (주소 · 계정은 읽지 않는다). 회의 원문은 외부 id와 붙은 일정 id만 읽는다.
+// 발견 원가는 처리를 마친 원문의 처리 시각과 처리 요약 중 원가(processing_summary.cost)만 읽는다.
 
 /** 관리자 이메일 (ADMIN_EMAILS, 쉼표로 구분). 비어 있으면 아무도 관리자가 아니다 */
 export function isAdmin(email: string | null): boolean {
@@ -118,6 +121,8 @@ export async function loadMetrics(admin: SupabaseClient, period: Period) {
       after: keep(e.after),
       at: e.created_at,
       sourceKind: e.source_id ? (sources.get(e.source_id) ?? null) : null,
+      // 직접 추가(user_created)는 원문 구절을 골랐을 때만 source_id가 있다 (지표 4는 그것만 센다, A42)
+      hasSource: e.source_id !== null,
     }));
   const metrics: MetricEventRow[] = metricEvents
     .filter((e) => !e.action_id || !testActions.has(e.action_id))
@@ -161,6 +166,19 @@ export async function loadMetrics(admin: SupabaseClient, period: Period) {
     return [];
   });
 
+  // 발견 원가 (A43): 기간 안에 처리를 마친 글 원문의 처리 시각과 원가만 읽는다
+  const costRows = await readAll<{ processed_at: string | null; cost: unknown }>((from, to) =>
+    admin
+      .from("sources")
+      .select("processed_at, cost:processing_summary->cost")
+      .eq("processing_status", "done")
+      .neq("kind", "task")
+      .gte("processed_at", since)
+      .order("processed_at")
+      .order("id")
+      .range(from, to),
+  );
+
   const misjudged = misjudgment(rows, period);
   return {
     period,
@@ -168,8 +186,13 @@ export async function loadMetrics(admin: SupabaseClient, period: Period) {
     misjudgment: misjudged,
     start: timeToStart(metrics, period),
     retention: retention(activity, period.to, RETENTION_WEEKS),
-    // 누락 신고(POST /api/v1/sources/:id/missing, Phase A1)
+    // 누락 신고(POST /api/v1/sources/:id/missing, Phase A1) · 원문 구절을 고른 직접 추가. 구절 없는 직접 추가는 따로 센다
     missed: missed(rows, misjudged, period, true),
+    discoveryCost: discoveryCost(
+      costRows.map((row) => ({ processedAt: row.processed_at, cost: row.cost })),
+      period,
+    ),
+    sourceFailures: sourceFailures(metrics, period),
     connections: connections(metrics, connectionRequests, period),
     gmail: gmailFiltering(gmailStats.map((row) => row.stats)),
     google: googleActivity(googleStats.map((row) => row.stats)),

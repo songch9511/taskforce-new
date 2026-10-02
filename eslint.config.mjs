@@ -18,6 +18,23 @@ const eslintConfig = defineConfig([
     ".claude/**",
     ".omc/**",
   ]),
+  {
+    // 과금 경계 (A44): 무료 발견(원문 처리 · 추출 파이프라인)은 유료 실행 코드(src/lib/execution, U2 PR6에서 생김)를 부르지 못한다
+    files: ["src/lib/pipeline/**", "src/lib/sources/**"],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          patterns: [
+            {
+              group: ["@/lib/execution", "@/lib/execution/**", "**/execution", "**/execution/**"],
+              message: "원문 처리 · 파이프라인(무료 발견)은 실행(src/lib/execution)을 부르지 않는다 (A44 과금 경계).",
+            },
+          ],
+        },
+      ],
+    },
+  },
 ]);
 
 export default eslintConfig;

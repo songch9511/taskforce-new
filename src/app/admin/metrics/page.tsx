@@ -69,6 +69,7 @@ const GOOGLE_COUNT_LABELS: [string, string][] = [
 
 const pct = (value: number | null) => (value === null ? "—" : `${Math.round(value * 1000) / 10}%`);
 const num = (value: number | null, unit = "") => (value === null ? "—" : `${Math.round(value * 10) / 10}${unit}`);
+const usd = (value: number) => value.toFixed(3);
 
 export default async function MetricsPage({ searchParams }: { searchParams: Promise<{ days?: string }> }) {
   const user = await requireUser();
@@ -78,7 +79,19 @@ export default async function MetricsPage({ searchParams }: { searchParams: Prom
   const days = PERIODS.find((d) => String(d) === daysParam) ?? 28;
   const to = new Date();
   const report = await loadMetrics(createAdminClient(), { from: new Date(to.getTime() - days * 86_400_000), to });
-  const { misjudgment: m, start, retention, missed, shadowList: shadow, connections, gmail, google, meetingLinkage: linkage } = report;
+  const {
+    misjudgment: m,
+    start,
+    retention,
+    missed,
+    shadowList: shadow,
+    connections,
+    gmail,
+    google,
+    meetingLinkage: linkage,
+    discoveryCost: cost,
+    sourceFailures: failures,
+  } = report;
   // 피벗 판단은 자동 반영이 틀린 비율로 한다 (PRD 6장). 구분이 생기기 전 기록뿐이면 전체 비율을 보여준다.
   const auto = m.byConfirmation.auto;
   const headline = auto.created > 0 ? { label: "자동 반영", rate: auto.corrected / auto.created } : { label: "전체 · 구분 전 기록 포함", rate: m.rate };
@@ -205,8 +218,9 @@ export default async function MetricsPage({ searchParams }: { searchParams: Prom
         <CardHeader>
           <CardTitle>4. AI 누락률 {missed.available ? pct(missed.rate) : "측정 전"}</CardTitle>
           <CardDescription>
-            (신고된 누락 {missed.reported}개 + 직접 추가 {missed.added}개) / (AI 생성 {m.aiCreated}개 + 신고된 누락 + 직접 추가). 사용자가 알려준 것만 세므로 실제
-            누락의 하한입니다. 이미 있던 할 일로 합쳐진 신고는 세지 않고, 신고 · 직접 추가로 생긴 Action은 지표 1에서 뺐습니다.
+            (신고된 누락 {missed.reported}개 + 원문 구절을 고른 직접 추가 {missed.added}개) / (AI 생성 {m.aiCreated}개 + 신고된 누락 + 구절을 고른 직접
+            추가). 사용자가 알려준 것만 세므로 실제 누락의 하한입니다. 이미 있던 할 일로 합쳐진 신고는 세지 않고, 신고 · 직접 추가로 생긴 Action은 지표
+            1에서 뺐습니다. 구절 없는 직접 추가 {missed.addedPlain}개는 일반 입력이라 넣지 않았습니다.
           </CardDescription>
         </CardHeader>
         <CardContent className="text-sm">
@@ -232,6 +246,31 @@ export default async function MetricsPage({ searchParams }: { searchParams: Prom
         </CardHeader>
         {shadow.responses === 0 && (
           <CardContent className="text-muted-foreground text-sm">아직 응답이 없습니다. 첫 원문을 넣고 7일이 지난 사용자에게 Apple 앱이 주마다 묻습니다.</CardContent>
+        )}
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>발견 원가 ${usd(cost.totalUsd)}</CardTitle>
+          <CardDescription>
+            기간 안에 처리를 마친 원문 {cost.sources}개의 AI 원가 (추출 + 판정, 사용자에게 청구하지 않음). 매칭 · 임베딩 · 실패한 시도의 원가는 빠져 있어 실제보다
+            적습니다. 날짜는 UTC (운영 키 하루 한도가 UTC 0시에 풀립니다). 더 다시 처리하지 않기로 실패로 닫은 원문 {failures.closed}개
+            {failures.byProvider.length > 0 && ` (${failures.byProvider.map((f) => `${PROVIDER_LABELS[f.provider] ?? (f.provider === "direct" ? "직접 넣음" : f.provider)} ${f.count}`).join(" · ")})`}.
+          </CardDescription>
+        </CardHeader>
+        {cost.days.length > 0 && (
+          <CardContent className="text-sm">
+            <ul className="space-y-0.5">
+              {cost.days.slice(-14).map((d) => (
+                <li key={d.day} className="flex justify-between">
+                  <span>{d.day}</span>
+                  <span>
+                    ${usd(d.usd)} · 원문 {d.sources}개
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </CardContent>
         )}
       </Card>
 

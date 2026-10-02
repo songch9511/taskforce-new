@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   connections,
+  discoveryCost,
   gmailFiltering,
   googleActivity,
   kstWeek,
@@ -11,6 +12,7 @@ import {
   misjudgment,
   retention,
   shadowList,
+  sourceFailures,
   timeToStart,
   type ActionEventRow,
   type MetricEventRow,
@@ -28,6 +30,7 @@ const ev = (actionId: string, type: string, at: string, over: Partial<ActionEven
   after: null,
   at,
   sourceKind: type.startsWith("user_") ? null : "meeting",
+  hasSource: !type.startsWith("user_"),
   ...over,
 });
 const created = (id: string, at = "2026-09-22T01:00:00Z", kind = "meeting") => ev(id, "created", at, { sourceKind: kind });
@@ -269,10 +272,11 @@ const noStages = { processing_failed: 0, not_extracted: 0, quoted_history: 0, ju
 describe("missed (지표 4)", () => {
   it("누락 신고 기능 전에는 측정 전", () => {
     const m = misjudgment([created("a")], period);
-    expect(missed([], m, period, false)).toEqual({ reported: 0, added: 0, rate: null, available: false, byStage: noStages });
+    expect(missed([], m, period, false)).toEqual({ reported: 0, added: 0, addedPlain: 0, rate: null, available: false, byStage: noStages });
     expect(missed([ev("r", "user_reported_missing", "2026-09-23T00:00:00Z")], m, period, true)).toEqual({
       reported: 1,
       added: 0,
+      addedPlain: 0,
       rate: 0.5,
       available: true,
       byStage: { ...noStages, unknown: 1 },
@@ -290,21 +294,101 @@ describe("missed (지표 4)", () => {
     const m = misjudgment(events, period);
     expect(m).toMatchObject({ aiCreated: 1, corrected: 0 });
     // 연결 메일의 인용된 옛 메일 속이라 버린 것(quoted_history)은 따로 센다
-    expect(missed(events, m, period, true)).toEqual({ reported: 4, added: 0, rate: 0.8, available: true, byStage: { ...noStages, not_extracted: 2, judge_rejected: 1, quoted_history: 1 } });
+    expect(missed(events, m, period, true)).toEqual({
+      reported: 4,
+      added: 0,
+      addedPlain: 0,
+      rate: 0.8,
+      available: true,
+      byStage: { ...noStages, not_extracted: 2, judge_rejected: 1, quoted_history: 1 },
+    });
   });
 
-  it("직접 추가한 Action은 지표 1에서 빼고 지표 4의 누락으로 센다 (단계는 모름이 아니라 따로 센다)", () => {
-    const added = (id: string, at = "2026-09-22T01:00:00Z") => [
-      ev(id, "user_created", at, { after: { title: true, due: true, owner: true, status: "open", needs_confirmation: false } }),
-      // 직접 추가한 Action을 나중 원문이 갱신하고 사용자가 고쳐도 AI 오판이 아니다
-      ev(id, "due_changed", "2026-09-23T00:00:00Z", { after: { due: true } }),
-      ev(id, "user_edited", "2026-09-24T00:00:00Z", { after: { due: true } }),
-    ];
+  // 직접 추가: 원문 구절을 고르면 이벤트에 source_id가 남는다 (lib/actions/service.ts createUserAction → write_action의 이벤트 source_id)
+  const added = (id: string, at = "2026-09-22T01:00:00Z", fromSource = true) => [
+    ev(id, "user_created", at, { hasSource: fromSource, after: { title: true, due: true, owner: true, status: "open", needs_confirmation: false } }),
+    // 직접 추가한 Action을 나중 원문이 갱신하고 사용자가 고쳐도 AI 오판이 아니다
+    ev(id, "due_changed", "2026-09-23T00:00:00Z", { after: { due: true } }),
+    ev(id, "user_edited", "2026-09-24T00:00:00Z", { after: { due: true } }),
+  ];
+
+  it("원문 구절을 고른 직접 추가는 지표 1에서 빼고 지표 4의 누락으로 센다 (단계는 모름이 아니라 따로 센다)", () => {
     const events = [created("a"), created("b"), ...added("u1"), ...added("u2"), ...added("old", "2026-09-10T00:00:00Z")];
     const m = misjudgment(events, period);
     expect(m).toMatchObject({ aiCreated: 2, corrected: 0 });
-    // (신고 0 + 직접 추가 2) / (AI 생성 2 + 0 + 2). 기간 밖의 추가는 세지 않는다
-    expect(missed(events, m, period, true)).toEqual({ reported: 0, added: 2, rate: 0.5, available: true, byStage: noStages });
+    // (신고 0 + 구절을 고른 직접 추가 2) / (AI 생성 2 + 0 + 2). 기간 밖의 추가는 세지 않는다
+    expect(missed(events, m, period, true)).toEqual({ reported: 0, added: 2, addedPlain: 0, rate: 0.5, available: true, byStage: noStages });
+  });
+
+  it("구절 없는 직접 추가는 일반 입력으로 따로 세고 분자 · 분모에 넣지 않는다. 지표 1에서도 뺀다 (A42)", () => {
+    const events = [created("a"), created("b"), created("c"), ...added("q1"), ...added("p1", undefined, false), ...added("p2", undefined, false), ...added("p3", undefined, false)];
+    const m = misjudgment(events, period);
+    expect(m).toMatchObject({ aiCreated: 3, corrected: 0 });
+    // (0 + 1) / (3 + 0 + 1). 구절 없는 추가 3개는 비율을 움직이지 않는다
+    expect(missed(events, m, period, true)).toEqual({ reported: 0, added: 1, addedPlain: 3, rate: 0.25, available: true, byStage: noStages });
+  });
+
+  it("원문을 연결하지 않은(무료 · 플러그인 미사용) 사용자가 손으로만 적은 할 일은 AI 누락으로 세지 않는다", () => {
+    // AI가 만든 Action도, 신고도, 구절을 고른 추가도 없이 손으로만 적은 사용자
+    const free = [...added("f1", undefined, false), ...added("f2", "2026-09-25T00:00:00Z", false)].map((e) => ({ ...e, userId: "free" }));
+    const m = misjudgment(free, period);
+    expect(m.aiCreated).toBe(0);
+    expect(missed(free, m, period, true)).toEqual({ reported: 0, added: 0, addedPlain: 2, rate: null, available: true, byStage: noStages });
+
+    // 원문을 연결한 사용자와 섞여도 그 사용자의 비율만 남는다
+    const connected = [created("a"), ...added("q1")];
+    const mixed = [...connected, ...free];
+    expect(missed(mixed, misjudgment(mixed, period), period, true)).toMatchObject({ added: 1, addedPlain: 2, rate: 0.5 });
+  });
+});
+
+describe("discoveryCost: 발견 원가 (A43)", () => {
+  it("기간 안에 처리를 마친 원문의 처리 요약 원가를 UTC 날짜별로 더한다. 원가가 없는 요약 · 기간 밖은 뺀다", () => {
+    const metric = discoveryCost(
+      [
+        { processedAt: "2026-09-22T23:59:00Z", cost: 0.002 },
+        { processedAt: "2026-09-22T01:00:00Z", cost: 0.001 },
+        // 한국 시간으로는 9월 23일 오전이지만 키의 하루 한도는 UTC 0시에 풀린다
+        { processedAt: "2026-09-23T00:30:00Z", cost: 0.004 },
+        { processedAt: "2026-09-23T02:00:00Z", cost: undefined },
+        { processedAt: "2026-09-23T03:00:00Z", cost: "0.5" },
+        { processedAt: null, cost: 0.1 },
+        { processedAt: "2026-09-20T23:00:00Z", cost: 0.1 },
+        { processedAt: "2026-09-28T00:00:00Z", cost: 0.1 },
+      ],
+      period,
+    );
+    expect(metric.days).toEqual([
+      { day: "2026-09-22", usd: 0.003, sources: 2 },
+      { day: "2026-09-23", usd: 0.004, sources: 1 },
+    ]);
+    expect(metric.sources).toBe(3);
+    expect(metric.totalUsd).toBeCloseTo(0.007, 10);
+    expect(discoveryCost([], period)).toEqual({ totalUsd: 0, sources: 0, days: [] });
+  });
+});
+
+describe("sourceFailures: 원문 처리 실패로 닫음 (W4)", () => {
+  it("기간 안의 source_failed를 서비스별로 많은 순서로 센다. 직접 넣은 원문(서비스 없음)은 direct", () => {
+    const failed = (at: string, provider: string | null): MetricEventRow => ({ userId: "u1", type: "source_failed", actionId: null, at, provider });
+    expect(
+      sourceFailures(
+        [
+          failed("2026-09-22T00:00:00Z", "notion"),
+          failed("2026-09-23T00:00:00Z", null),
+          failed("2026-09-24T00:00:00Z", "notion"),
+          failed("2026-09-10T00:00:00Z", "gmail"),
+          { userId: "u1", type: "connection_reauth", actionId: null, at: "2026-09-22T00:00:00Z", provider: "gmail" },
+        ],
+        period,
+      ),
+    ).toEqual({
+      closed: 3,
+      byProvider: [
+        { provider: "notion", count: 2 },
+        { provider: "direct", count: 1 },
+      ],
+    });
   });
 });
 
@@ -327,13 +411,14 @@ describe("shadowList (지표 5)", () => {
 });
 
 describe("metricActivity: 리텐션의 활동", () => {
-  it("서버가 남기는 연결 이벤트(연결 완료 · 만료 · 재연결 알림)는 활동이 아니다", () => {
+  it("서버가 남기는 이벤트(연결 완료 · 만료 · 재연결 알림 · 원문 처리 실패로 닫음)는 활동이 아니다", () => {
     const events: MetricEventRow[] = [
       { userId: "a", type: "app_opened", actionId: null, at: "2026-09-10T00:00:00Z" },
       { userId: "a", type: "action_started", actionId: "x", at: "2026-09-10T01:00:00Z" },
       { userId: "a", type: "connection_created", actionId: null, at: "2026-09-11T00:00:00Z", provider: "gmail" },
       { userId: "a", type: "connection_reauth", actionId: null, at: "2026-09-12T00:00:00Z", provider: "gmail" },
       { userId: "a", type: "reconnect_notified", actionId: null, at: "2026-09-12T00:00:01Z", provider: "gmail" },
+      { userId: "b", type: "source_failed", actionId: null, at: "2026-09-13T00:00:00Z", provider: "notion" },
     ];
     expect(metricActivity(events)).toEqual([
       { userId: "a", at: "2026-09-10T00:00:00Z" },

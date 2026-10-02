@@ -2,12 +2,13 @@ import "server-only";
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 
+import type { SourceFailureCode } from "@/lib/api/contract";
 import { CONSENT_WITHDRAWN_MESSAGE, ConsentRequiredError } from "@/lib/consent/gate";
 import { connectedAt, loadIdentity } from "@/lib/connectors/store";
 import type { ExtractInput } from "@/lib/pipeline/extract";
 import type { UserIdentity } from "@/lib/pipeline/identity";
 
-import { failureSummary, processSource, PROCESSING_FAILED_MESSAGE, RETRY_MAX_ATTEMPTS } from "./process";
+import { failureSummary, processSource, PROCESSING_FAILED_MESSAGE, recordSourceFailed, RETRY_MAX_ATTEMPTS } from "./process";
 
 // 추출이 실패했거나(모델 시간 초과 · 출력 한도 등) 처리 도중 함수가 끊겨 "처리 중"에 멈춘 글 원문을 다시 처리한다
 // (/api/cron/retry-sources). 그대로 두면 그 원문의 약속이 조용히 빠진다: 다른 곳에서 다시 처리하지 않고, Slack은 대기 메시지 본문도 비운다.
@@ -217,14 +218,21 @@ async function updateIfUnchanged(
   return (data ?? []).length > 0;
 }
 
-/** 실패로 닫고 다시 하지 않는다. extra는 닫은 까닭 (마지막 시도에서 멈춘 원문 · 창을 지난 원문을 가른다) */
-const closeFailed = (admin: SupabaseClient, row: ExpiredCandidate, attempt: number, extra: Record<string, unknown> = {}) =>
-  updateIfUnchanged(admin, row, {
+/**
+ * 실패로 닫고 다시 하지 않는다. code는 까닭 코드: 마지막 시도에서 멈춘 원문(함수가 끊긴 까닭을 모른다)은 internal, 창을 지난 원문은 expired.
+ * extra는 처리 기록에 남기는 닫은 까닭. 닫았으면 지표 이벤트 source_failed를 남긴다 (다른 실행이 먼저 바꿨으면 남기지 않는다).
+ */
+async function closeFailed(admin: SupabaseClient, row: ExpiredCandidate, attempt: number, code: SourceFailureCode, extra: Record<string, unknown> = {}) {
+  const closed = await updateIfUnchanged(admin, row, {
     processing_status: "failed",
     processed_at: new Date().toISOString(),
     processing_error: PROCESSING_FAILED_MESSAGE,
+    processing_error_code: code,
     processing_summary: { ...failureSummary(null, attempt), retryable: false, ...extra },
   });
+  if (closed) await recordSourceFailed(admin, { id: row.id, userId: row.user_id });
+  return closed;
+}
 
 /** service role로 읽고 처리한다. 후보는 RETRY_WINDOW_MS 안에 들어온 것을 오래된 순서로 limit건 (나중 원문이 앞 원문의 약속을 바꾼다) */
 export function retryDeps(admin: SupabaseClient, limit = 50): RetryDeps {
@@ -279,7 +287,7 @@ export function retryDeps(admin: SupabaseClient, limit = 50): RetryDeps {
       });
       return ok;
     },
-    giveUp: (row, attempt) => closeFailed(admin, row, attempt),
+    giveUp: (row, attempt) => closeFailed(admin, row, attempt, "internal"),
     // 글은 읽지 않는다 (닫는 데 필요 없다). 글이 지워진 원문도 닫는다: 그대로 두면 처리 중으로 남는다
     expired: async ({ createdBefore, startedBefore, limit }) => {
       const { data } = await admin
@@ -294,7 +302,7 @@ export function retryDeps(admin: SupabaseClient, limit = 50): RetryDeps {
         .throwOnError();
       return (data ?? []) as ExpiredCandidate[];
     },
-    expire: (row, attempt) => closeFailed(admin, row, attempt, { closed: "expired" }),
+    expire: (row, attempt) => closeFailed(admin, row, attempt, "expired", { closed: "expired" }),
     repurge: async (row) => {
       await admin.rpc("slack_repurge_if_disconnected", { p_user_id: row.user_id, p_source_id: row.id }).throwOnError();
     },
