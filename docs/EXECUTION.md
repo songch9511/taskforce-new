@@ -53,7 +53,7 @@ step: `pending → prepared → calling → called | unknown_outcome | failed | 
 |---|---|---|
 | `pending → prepared` | 실행기 | intent key · 준비할 때의 정책 버전 기록, 정책 평가(승인 필요 표시) |
 | `prepared → pending` (다시 계획) | planner · 계획 수정 route | 도구 · 보내는 연결 · 수신자 · 본문 · 인자 · 원문 revision이 바뀌었다. 늘 version + 1, intent key는 다시 준비할 때 계산. `calling` 이후 상태에서는 거절 |
-| `prepared → calling` | 실행기, **`begin_call` 하나로만** | 5–7장 확인을 모두 통과. intent 행(표식) + lease를 같은 트랜잭션에서 commit |
+| `prepared → calling` | 실행기, **`begin_call` 하나로만** | 5–7장 · 12장(크레딧 예약) 확인을 모두 통과. intent 행(표식) + lease를 같은 트랜잭션에서 commit |
 | `prepared → skipped` | `begin_call` | 같은 intent key를 다른 단계가 이미 가졌다 (승인보다 먼저 본다) |
 | `calling → called` | lease를 가진 함수 | 공급자 응답을 받아 receipt를 저장했다 |
 | `calling → failed` | lease를 가진 함수 | 공급자가 확정적으로 거절했다 (예: 형식 오류 400) |
@@ -97,7 +97,7 @@ step: `pending → prepared → calling → called | unknown_outcome | failed | 
 
 - DB 플래그 세 층: 전체(`global`) / 공급자별(`provider`, 예: `gmail`) / 모드별(`mode`: `manual` · `auto` · `full`). `auto`와 `full`을 끄면 "Manual만"이다.
 - `begin_call`은 RPC 하나 = READ COMMITTED 트랜잭션 하나이고, 외부 호출 전에 commit된다. 외부 호출은 그 트랜잭션 안에 없다.
-- 스위치는 그 트랜잭션 안에서, `prepared → calling`과 함께 확인한다. 해당 행 셋(전체 · 그 공급자 · 그 모드)을 `for share`로 잠그고 읽는다. 끄는 쪽의 `update`는 진행 중인 전이가 끝날 때까지 기다리고, 끈 뒤에 commit되는 전이는 없다. 잠금 순서는 step → run → 정책 → 실행 주체 → 스위치 → 도구 · 수신자 허용 목록(7장)이다.
+- 스위치는 그 트랜잭션 안에서, `prepared → calling`과 함께 확인한다. 해당 행 셋(전체 · 그 공급자 · 그 모드)을 `for share`로 잠그고 읽는다. 끄는 쪽의 `update`는 진행 중인 전이가 끝날 때까지 기다리고, 끈 뒤에 commit되는 전이는 없다. 잠금 순서는 step → run → 정책 → 실행 주체 → 스위치 → 도구 · 수신자 허용 목록(7장) → 크레딧 계정(12장)이다.
 - 모든 입구(route · 자기 호출 · sweep)가 같은 `begin_call`을 지난다. 입구마다 실제로 그런지는 U2에서 route 테스트로 확인한다.
 - 행이 없는 공급자 · 모드는 막힌 것으로 본다(닫힌 쪽). 새 공급자는 행을 추가해야 실행된다.
 - 막힌 단계는 실패가 아니다. `prepared`로 남고, 다시 켜면 sweep이 이어 간다. 이미 `calling`인 호출은 끝까지 결과를 받는다.
@@ -174,4 +174,17 @@ step: `pending → prepared → calling → called | unknown_outcome | failed | 
 | — | 실행 주체 · 수신자 허용 목록 밖 / 목록 밖 도구 · 외부 도구를 내부 효과로 적은 단계 / 수신자 없는 외부 단계(대상을 인자에만) / 보내는 연결 없음 | 효과 0(승인이 있어도), 단계는 `prepared`, run에 막힌 이유(`hold_reason` `actor` · `blocked` · `needs_connection`). 목록에 넣으면 이어 가서 1 |
 | — | 이미 보낸 외부 단계를 `prepared`로 되돌림 / 앞 단계가 결과 불명인데 뒤 단계를 직접 부름 / 승인 뒤 공급자만 바뀜 | 효과 추가 0 (`stale`, 앞 receipt 그대로 / `stale` / 승인 대기) |
 
-한계: PGlite는 연결이 하나라 트랜잭션이 실제로 겹치지 않는다. 동시성은 트랜잭션 경계(단계를 읽은 뒤 · `calling` commit 뒤)에 끼어드는 방식으로 보인다. 잠금과 동시 commit 경합은 `tests/pg/execution-locks.test.ts`가 실제 Postgres에 연결 둘을 열어 시험한다(`npm run test:pg`, CI는 postgres service): 스위치 끄기 · 실행 주체 · 수신자 허용 목록 · 도구 목록 지우기 vs `begin_call`(양쪽 순서), 같은 intent 동시 `begin_call`(commit · rollback), 같은 단계 동시 `begin_call`, 승인 철회 vs `begin_call`(양쪽 순서). 운영 쪽 모양(처음 상태 · run 만들기 · 실행 이벤트 · 권한)은 `tests/db/execution-core.test.ts` · `execution-rls.test.ts`가 본다.
+한계: PGlite는 연결이 하나라 트랜잭션이 실제로 겹치지 않는다. 동시성은 트랜잭션 경계(단계를 읽은 뒤 · `calling` commit 뒤)에 끼어드는 방식으로 보인다. 잠금과 동시 commit 경합은 `tests/pg/execution-locks.test.ts`가 실제 Postgres에 연결 둘을 열어 시험한다(`npm run test:pg`, CI는 postgres service): 스위치 끄기 · 실행 주체 · 수신자 허용 목록 · 도구 목록 지우기 vs `begin_call`(양쪽 순서), 같은 intent 동시 `begin_call`(commit · rollback), 같은 단계 동시 `begin_call`, 승인 철회 vs `begin_call`(양쪽 순서). 운영 쪽 모양(처음 상태 · run 만들기 · 실행 이벤트 · 권한)은 `tests/db/execution-core.test.ts` · `execution-rls.test.ts`가 본다. 크레딧 · 산출물 · 원가(12장)는 `tests/db/execution-credits.test.ts`가, 같은 사용자의 동시 예약 · 같은 단계 원가의 동시 확정은 `tests/pg/execution-locks.test.ts`가 본다.
+
+## 12. 크레딧 · 산출물 · AI 원가 (U2 PR4)
+
+`supabase/migrations/20261022000000_execution_credits_artifacts.sql`. K4 = C3: 크레딧은 운영자가 지급한다(`grant_credits`, 승인된 `db query`). 구매 · 구독 · 클라이언트 지급 경로는 없다.
+
+- 원장(`credit_ledger`)은 더하기만 한다. 키(`receipt_key`)가 unique다: `grant:<지급 id>` · `reserve:<step>` · `settle:<step>` · `release:<step>`. 같은 영수증 · 재시도 · 중복 호출은 두 번 차감 · 지급하지 않는다. 계정(`credit_accounts`)은 원장 합계를 들고 있는 잠금 행이고, 가용(`granted - reserved - settled`)은 제약으로 음수가 되지 않는다.
+- 예약: `begin_call`이 승인/Auto 확인 뒤, intent + lease와 같은 트랜잭션에서 계정 행을 `for update`로 잠그고 단계 추정치(`estimate_credits`)가 가용 잔액과 run의 남은 예산(`budget_credits - (예약 - 해제)`) 안이면 예약한다. 모자라면 gate `insufficient_credit` · `hold_reason='credit'`, 단계는 `prepared`에 남는다(지급 뒤 sweep이 이어 간다). 추정치 0(계획 단계)은 예약하지 않는다. 같은 단계의 재시도는 처음 예약을 그대로 쓴다.
+- 정산: 내부 효과 단계는 `complete_internal_step`이 `called` + 산출물 + 원가 행 + 정산을 한 트랜잭션에서 한다(lease 소유자만). 정산 = 확정된 청구 대상 원가 합계(그 호출의 모든 시도) × 예약 때 요율(`credit_rates`, `c3-v1`: 1 크레딧 = $0.001), 올림, 예약 상한 안. 남은 예약은 해제한다.
+- 미확정(A46): 청구 대상 시도 하나라도 비용을 모르면 정산하지 않고 예약을 둔다. 0원으로 처리하지도, run이 끝났다고 해제하지도 않는다. `reconcile_usage`가 비용을 확정하면(sweep의 generation 조회, id 없는 시도는 운영자) 그때 정산한다.
+- 해제: run이 끝나거나(`done` · `failed` · `stopped`) 끝난 run에서 부르던 단계가 끝내지 못하고 나오면(`calling → prepared · failed`) 트리거가 `release_run_credits`를 부른다. 부르지 못했거나 실패한 단계의 예약만 해제한다. 부르는 중인 단계는 결과를 받아 정산한다.
+- 원가(`execution_usage`, A51): OpenRouter 시도마다 한 행(generation id unique, 모델 · 토큰 · `cost_usd`, `confirmed | unconfirmed`)이고 사용자 청구와 따로 둔다. 청구 대상(`billable`)은 초안 단계를 끝낸 호출의 시도뿐이고 서버가 단계 종류로 정한다. 계획 단계 · 실패 · 응답 없이 다시 부른 시도(`record_usage`)는 플랫폼 원가다.
+- 산출물(`execution_artifacts`): 단계 하나에 초안 하나, 앱이 RLS로 읽는다. 본문은 `retain_until`(기본 90일, D9a-1이 정함)이 지나면 `purge_expired_artifacts`가 비운다. 원장 · 계정 · 요율 · 원가는 클라이언트가 읽지 못한다(잔액은 U2 PR6의 `GET /api/v1/credits` 합계).
+- 원장 · 원가가 가리키는 run · step은 지울 수 없다(외래키 no action). 계정 삭제는 `auth.users` cascade로 함께 지운다.

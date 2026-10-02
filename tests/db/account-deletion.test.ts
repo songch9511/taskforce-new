@@ -17,15 +17,19 @@ const USER_TABLES = [
   "claims",
   "connection_requests",
   "connections",
+  "credit_accounts",
+  "credit_ledger",
   "devices",
   "evidence",
   "execution_actors",
   "execution_approvals",
+  "execution_artifacts",
   "execution_events",
   "execution_intents",
   "execution_policies",
   "execution_runs",
   "execution_steps",
+  "execution_usage",
   "judge_logs",
   "metric_events",
   "missing_reports",
@@ -124,6 +128,34 @@ async function seed(userId: string, tokenHex: string) {
   );
   await db.query(`insert into public.execution_approvals (user_id, step_id, hash, expires_at) values ($1, $2, 'h', now())`, [userId, stepId]);
   await db.query(`insert into public.execution_intents (intent_key, user_id, step_id) values ($1, $2, $3)`, [`key-${userId}`, userId, stepId]);
+  // 크레딧 · 산출물 · 원가: 운영자 지급, 다른 run에서 계획 단계 → 초안 단계를 실행기처럼 끝까지 (예약 · 정산 · 해제 · 산출물 · 원가 행).
+  // 원장 · 원가의 run · step 외래키는 지울 때 막는다(no action): 계정 삭제는 같은 문장 안에서 원장도 함께 지워 막히지 않아야 한다
+  await db.query(`select public.grant_credits($1, 100, gen_random_uuid())`, [userId]);
+  await db.query(`update public.execution_controls set blocked = false where scope = 'global'`);
+  try {
+    const draftRun = await one(`select public.create_run($1, $2, 'draft', '초안') as id`, [userId, actionId]);
+    const call = async (step: string) => {
+      const { version } = (await db.query<{ version: number }>(`select version from public.execution_steps where id = $1`, [step])).rows[0];
+      await db.query(`select public.prepare_step($1, $2)`, [step, version]);
+      const gate = await db.query<{ g: { gate: string } }>(`select public.begin_call($1, 'fn', $2) as g`, [step, version + 1]);
+      expect(gate.rows[0].g.gate).toBe("ok");
+    };
+    const plan = await one(`select id from public.execution_steps where run_id = $1 and seq = 1`, [draftRun]);
+    await call(plan);
+    const attempts = (id: string) => JSON.stringify([{ generationId: id, model: "m", usage: { prompt_tokens: 10, completion_tokens: 5, cost: 0.0042 } }]);
+    await db.query(`select public.complete_internal_step($1, 'fn', '{}', $2::jsonb)`, [plan, attempts(`gen-plan-${userId}`)]);
+    const draft = await one(
+      `select public.append_step($1, 2, '{"kind": "draft", "provider": "taskforce", "tool": "draft", "purpose": "draft", "estimate_credits": 10}') as id`,
+      [draftRun],
+    );
+    await call(draft);
+    await db.query(`select public.complete_internal_step($1, 'fn', '{}', $2::jsonb, '{"title": "제안서", "body": "초안 본문", "model": "m", "prompt_version": "draft-v1"}', 'draft_ready')`, [
+      draft,
+      attempts(`gen-draft-${userId}`),
+    ]);
+  } finally {
+    await db.query(`update public.execution_controls set blocked = true where scope = 'global'`);
+  }
   return connectionId;
 }
 
