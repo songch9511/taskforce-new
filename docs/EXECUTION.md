@@ -137,12 +137,12 @@ step: `pending → prepared → calling → called | unknown_outcome | failed | 
 
 ## 10. 관문
 
-④는 이 문서에 적었다. ①–③ 결과는 U0 다음 문서 PR에 적는다.
+①②④는 2026-10-02에 확인했다. ③은 사용자가 Vercel에서 확인한다.
 
 | 관문 | 확인할 것 | 안 되면 |
 |---|---|---|
-| ① 계획 생성 | ZDR 공급자 허용 목록 안에서 서비스되는 모델로 `completeJson`(`src/lib/ai/llm.ts`, `json_schema` strict)이 다음 단계 discriminated union 스키마를 받는지. `src/lib/ai/providers.ts`는 모델이 아니라 공급자를 고정한다(`data_collection: deny` · `zdr: true` · 목록 밖 fallback 금지) | 그 공급자들이 서비스하는 다른 모델. 조건을 풀어 성공시키지 않는다. `tool_calls`는 eval이 요구할 때만 |
-| ② 원격 MCP | GitHub · Linear · Figma 원격 MCP가 제3자 서버 클라이언트(동적 등록 · 허용 목록)를 받는지, 같은 연결로 readback 경로가 읽히는지 | GitHub App, 또는 "Want this"로 내림 |
+| ① 계획 생성 | **확인함 (2026-10-02).** 기본 공급자(fireworks · together · deepinfra)의 `z-ai/glm-5.3-flash`로 객체 안 discriminated union 다음 단계 5/5 유효, 단계 종류 4/5(검색할 상황을 끝남으로 고름) → 품질은 eval E2로 본다. 확인한 것: ZDR 공급자 허용 목록 안에서 서비스되는 모델로 `completeJson`(`src/lib/ai/llm.ts`, `json_schema` strict)이 다음 단계 discriminated union 스키마를 받는지. `src/lib/ai/providers.ts`는 모델이 아니라 공급자를 고정한다(`data_collection: deny` · `zdr: true` · 목록 밖 fallback 금지) | 그 공급자들이 서비스하는 다른 모델. 조건을 풀어 성공시키지 않는다. `tool_calls`는 eval이 요구할 때만 |
+| ② 원격 MCP | **확인함 (2026-10-02, 공개 메타데이터 · 공식 문서).** Linear: 동적 등록 · Client ID 메타데이터 문서 둘 다 지원 → 바로 연결. GitHub: 둘 다 없음 → 자체 OAuth App 또는 GitHub App 등록 필요(서버에서는 GitHub App + REST가 권한이 더 좁다). Figma: MCP 카탈로그에 오른 클라이언트만(신규 접수 중단) → REST 읽기만, 캔버스 쓰기 없음. 확인한 것: GitHub · Linear · Figma 원격 MCP가 제3자 서버 클라이언트(동적 등록 · 허용 목록)를 받는지, 같은 연결로 readback 경로가 읽히는지 | GitHub App, 또는 "Want this"로 내림 |
 | ③ Vercel 플랜 한도 | 실제 `maxDuration` 상한, cron 최소 주기 | 단계를 더 쪼갠다. sweep 주기는 B4를 다시 본다 |
 | ④ Gmail 헤더 보존 | **확인함 (2026-10-02, dev 프로젝트).** `X-Taskforce-Intent`는 남고 클라이언트 `Message-ID`는 바뀐다(8장). U6a에서 프로젝트 B Testing으로 다시 확인 | 프로젝트 B에서 헤더가 지워지면 readback 없이 `unknown_outcome`으로 두고 사용자가 정한다 |
 
