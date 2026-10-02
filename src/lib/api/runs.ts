@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { DRAFT_ESTIMATE_CREDITS } from "@/lib/execution/limits";
 import { RunActionNotFoundError } from "@/lib/execution/types";
 
 import { consentRequired } from "./consent";
@@ -60,6 +61,10 @@ export async function handleCreateRun<User>(request: Request, deps: CreateRunDep
   const { user } = gated;
   const body = await parseBody(request, createRunRequestSchema);
   if ("error" in body) return body.error;
+  // 초안 한 건의 예약보다 작은 예산은 초안을 한 번도 부르지 못하고 지급으로도 풀리지 않는다
+  if (body.data.budget_credits !== undefined && body.data.budget_credits < DRAFT_ESTIMATE_CREDITS) {
+    return errorResponse(400, "invalid_request", `잘못된 필드: budget_credits (${DRAFT_ESTIMATE_CREDITS} 이상)`);
+  }
 
   try {
     if (await deps.globallyBlocked()) return unavailable();

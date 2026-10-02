@@ -26,6 +26,8 @@ const FREE_PATHS = [
   // 원문 처리 · 파이프라인 (A44)
   ...files(path.join(ROOT, "src/lib/sources")),
   ...files(path.join(ROOT, "src/lib/pipeline")),
+  // 위 경로가 읽는 공유 계약: 여기서 실행 모듈을 가져오면 무료 경로가 건너서 의존한다
+  path.join(ROOT, "src/lib/api/contract.ts"),
 ];
 
 const EXECUTION_MARKERS = [/@\/lib\/execution/, /from ["'][^"']*\/execution(\/|["'])/, /credit_(accounts|ledger|rates)/, /\b(begin_call|create_run|grant_credits|take_rate_limit\([^)]*run_create)/, /executionEnabled/];

@@ -27,6 +27,8 @@ function matches(row: Row, [op, args]: Op): boolean {
       return (row[column] as number) < (a as number);
     case "gte":
       return String(row[column]) >= String(a);
+    case "is":
+      return a === null ? row[column] === null || row[column] === undefined : row[column] === a;
     case "not":
       if (a === "is") return row[column] !== null && row[column] !== undefined;
       if (a === "in") return !String(b).slice(1, -1).split(",").includes(String(row[column]));
@@ -51,7 +53,7 @@ function fakeAdmin(tables: Record<string, Row[]>, rpc: (fn: string, args: Row) =
       maybeSingle: () => ((single = true), builder),
       throwOnError: () => builder,
     };
-    for (const op of ["select", "eq", "in", "not", "gt", "lt", "gte", "order", "limit"]) {
+    for (const op of ["select", "eq", "in", "is", "not", "gt", "lt", "gte", "order", "limit"]) {
       builder[op] = (...args: unknown[]) => (ops.push([op, args]), builder);
     }
     return builder;
@@ -130,8 +132,8 @@ describe("supabaseExecutionStore.loadMaterial", () => {
 });
 
 describe("supabaseExecutionStore 읽기", () => {
-  it("wakeableRuns: 끝나지 않은 run 중 부르는 중인 단계가 없는 것만, 상한까지", async () => {
-    const { client } = fakeAdmin({
+  it("wakeableRuns: 끝나지 않은 run 중 부르는 중인 단계가 없는 것만, 막히지 않은 run 먼저(오래된 순) · 막힌 run은 새것부터, 상한까지", async () => {
+    const { client, queries } = fakeAdmin({
       execution_runs: [
         { id: "r1", state: "running", hold_reason: null },
         { id: "r2", state: "queued", hold_reason: null },
@@ -146,6 +148,9 @@ describe("supabaseExecutionStore 읽기", () => {
       { id: "r3", held: true },
     ]);
     expect(await store.wakeableRuns(1)).toEqual([{ id: "r1", held: false }]);
+    const runQueries = queries.filter((q) => q.table === "execution_runs").slice(0, 2);
+    expect(runQueries[0].ops).toContainEqual(["order", ["created_at"]]);
+    expect(runQueries[1].ops).toContainEqual(["order", ["created_at", { ascending: false }]]);
   });
 
   it("draftHistory: 끝낸 · 실패한 초안 단계의 지시와 산출물 제목", async () => {

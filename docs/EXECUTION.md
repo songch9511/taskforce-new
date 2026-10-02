@@ -222,16 +222,17 @@ step: `pending → prepared → calling → called | unknown_outcome | failed | 
 
 - receipt(앱이 RLS로 읽는다, `contract.ts` `stepReceiptSchema`): 계획은 `decision` · `capability` · `question`, 초안은 `to`(모델이 자료에서 고른 받는 사람, 보내는 데 쓰지 않는다), 실패는 `error`. 산출물은 `execution_artifacts`(제목 · 본문 · 모델 · 프롬프트 버전).
 - 같은 계획 단계를 다시 부르면(lease 만료 뒤 다시 준비) 앞 시도가 이미 붙인 단계가 있을 수 있다: 모델을 다시 부르지 않고 그대로 끝내고 깨운다.
-- 후속 계획(초안 뒤의 계획 단계)은 남은 조각을 다시 볼 뿐이라, 실패하면(어떤 까닭이든) 다시 하지 않고 이미 만든 초안으로 끝낸다: 계획 단계 `called`(`receipt.decision = 'done'`, `error`), run `done` · `draft_ready`. 초안을 받고 청구된 run을 실패로 두지 않는다.
-- run 예산(`budget_credits`)은 초안 한 건의 예약(20) 이상만 받는다(작으면 초안을 한 번도 부르지 못하고 지급으로도 풀리지 않는다). 초안 둘을 맡긴 run은 첫 초안 정산 뒤 남은 예산이 다시 20 이상이어야 둘째 초안을 부른다(아니면 `hold_reason = 'credit'`으로 기다리고, 사용자가 멈춘다).
+- 후속 계획(초안 뒤의 계획 단계)은 남은 조각을 다시 볼 뿐이라, 함수가 오류를 받으면(모델 · 자료 · 동의, 일시 오류 포함) 다시 하지 않고 이미 만든 초안으로 끝낸다
+  (함수가 죽어 lease가 끝나는 경우는 다른 단계처럼 다시 준비되고, 세 번이면 SQL이 실패로 끝낸다): 계획 단계 `called`(`receipt.decision = 'done'`, `error`), run `done` · `draft_ready`. 초안을 받고 청구된 run을 실패로 두지 않는다.
+- run 예산(`budget_credits`)은 초안 한 건의 예약(20) 이상만 받는다(작으면 초안을 한 번도 부르지 못하고 지급으로도 풀리지 않는다). 초안 둘을 맡긴 run은 첫 초안 정산 뒤 남은 예산이 다시 20 이상이어야 둘째 초안을 부른다(아니면 `hold_reason = 'credit'`으로 기다리고, 사용자가 멈춘다). 운영자만 풀 수 있는 hold(`actor` · `blocked`)에 오래 머문 run을 정리하는 일은 U2 PR8 런북에 둔다.
 - 자료(`material.ts`): Action · 근거 인용 · 근거 원문을 service role로 읽고 user_id로 좁힌다. 원문의 서비스는 `sources.connection_id`가 가리키는 `connections.provider`에서 읽는다(sources에는 provider가 없다). 출처를 확인할 수 없는 원문(연결 행을 찾지 못함, 연결 없이 외부 id만 있음 = 연결이 지워진 연동 원문)은 근거째 뺀다. Slack 원문은 `context.ts`가 뺀다(provider · 지운 이유 · 링크).
-- 동의: 모델을 부르기 직전마다 다시 확인한다(`withConsentGate`). 처리 도중 철회하면 단계 · run을 실패(`error: consent`)로 끝낸다.
+- 동의: 모델을 부르기 직전마다 다시 확인한다(`withConsentGate`). 처리 도중 철회하면 단계 · run을 실패(`error: consent`)로 끝낸다. 후속 계획에서 철회했으면 아래처럼 `draft_ready`로 끝낸다.
 
 **오류.** 내부 효과라 결과 불명 대신 다시 준비한다(3장 표).
 
 | 경우 | 실행기 |
 |---|---|
-| 응답 없음 · 시간 초과 · 연결 끊김 · 공급자 5xx · 408 · 429 · 401 · 402 · 403(키 · 잔액 · 권한: 운영 설정 문제) · 형식 오류 · 자료 읽기 실패 | 원가를 먼저 남기고(`record_usage`) `mark_unknown` → 다시 준비(`attempt + 1`). 다시 준비가 2번을 넘으면 SQL이 `failed`(`retries_exhausted`). 다시 부르는 것은 sweep(1분)이다 |
+| 응답 없음 · 시간 초과 · 연결 끊김 · 공급자 5xx · 408 · 429 · 401 · 402 · 403(키 · 잔액 · 권한: 운영 설정 문제) · 형식 오류 · 자료 읽기 실패 | 원가를 먼저 남기고(`record_usage`) `mark_unknown` → 다시 준비(`attempt + 1`). 다시 준비가 2번을 넘으면 SQL이 `failed`(`retries_exhausted`). 다시 부르는 것은 sweep(1분)이다. 그래서 키 · 잔액 장애가 2분쯤 넘게 이어지면 그동안 부른 run은 실패한다(시도를 쓰지 않고 기다리는 hold 전이는 후속 마이그레이션) |
 | 공급자의 확정적 거절(그 밖의 4xx, 추론 옵션 404) · 동의 철회 · Action이 지워짐 | 원가를 먼저 남기고 `settle_step('failed')` → run `failed`, 예약 해제(12장). 후속 계획이면 위처럼 `draft_ready`로 끝낸다 |
 | 받은 뒤 쓰기(다음 단계 붙이기 · 결과 쓰기) 실패 | 3번까지 다시 쓰고, 그래도 안 되면 받은 시도의 원가를 남기고 오류(단계는 `calling`에 남고 lease 만료 뒤 다시 준비). 다시 쓴 쪽이 false면 앞 쓰기가 commit했을 수 있어 generation id가 있는 시도만 다시 남긴다(같은 id는 한 번) |
 | lease를 잃은 뒤 받은 응답 | 다음 단계를 붙이지 않고(붙이기 전에 lease를 확인한다, `append_step`은 run만 본다) 결과를 버리고 원가만 플랫폼 원가로 남긴다(`record_usage`) |
@@ -247,7 +248,7 @@ step: `pending → prepared → calling → called | unknown_outcome | failed | 
 1. `sweep_expire`: lease가 끝난 `calling` → 내부 효과는 다시 준비(3장).
 2. 미확정 원가: 하루 안의 `unconfirmed` 행(generation id 있음) 20개(청구 대상 먼저)를 generation 조회(`generation.ts`)로 확정 → `reconcile_usage`(행마다 RPC 한 번, 12장). 하루가 지난 행은 운영자가 정한다(U2 PR8 런북).
 3. 보조 안전망: `credit_open_ended_runs(50)`이 고른 run마다 `release_run_credits` RPC 한 번(12장).
-4. 이어 갈 run: 끝나지 않았고 부르는 중인 단계가 없는 run 20개(막힌 run은 뒤로)에 자기 호출. 다시 준비된 재시도 · 승인 대기가 여기서 이어진다(`begin_call`이 다시 본다). 막힌 run(`hold_reason` 있음)은 5분마다만(UTC 분이 5의 배수, `HELD_WAKE_EVERY_MINUTES`) 깨우고, 차단 스위치가 전체를 막고 있으면 아무도 깨우지 않는다(매분 함수 호출을 쓰지 않게). 실패한 단계가 있으면 sweep 로그를 오류로 남긴다.
+4. 이어 갈 run: 끝나지 않았고 부르는 중인 단계가 없는 run 20개(막히지 않은 run 먼저 오래된 순, 막힌 run은 뒤에 새것부터: 운영자만 풀 수 있는 오래된 hold가 쌓여도 지급으로 풀린 새 run이 굶지 않게)에 자기 호출. 다시 준비된 재시도 · 승인 대기가 여기서 이어진다(`begin_call`이 다시 본다). 막힌 run(`hold_reason` 있음)은 5분마다만(UTC 분이 5의 배수, `HELD_WAKE_EVERY_MINUTES`) 깨우고, 차단 스위치가 전체를 막고 있으면 아무도 깨우지 않는다(매분 함수 호출을 쓰지 않게). 실패한 단계가 있으면 sweep 로그를 오류로 남긴다.
 
 **기록.** 상태 · hold가 바뀌는 모든 쓰기는 같은 트랜잭션에서 `execution_events`를 남긴다(7장 트리거). 로그에는 id · 상태 · gate · 숫자만 남긴다(요청 · 원문 · 초안 · 모델의 이유는 남기지 않는다): `execution_step`(단계마다), `execution_sweep`(sweep마다), `execution_wake_failed` · `execution_advance_failed`.
 

@@ -85,7 +85,9 @@ export function pgliteExecutionStore(db: PGlite, options: { userName?: string } 
         await db.query<{ id: string; held: boolean }>(
           `select r.id, r.hold_reason is not null as held from public.execution_runs r where r.state in ${OPEN_RUN_STATES}
              and not exists (select 1 from public.execution_steps s where s.run_id = r.id and s.state = 'calling')
-           order by r.hold_reason nulls first, r.created_at limit $1`,
+           order by r.hold_reason is not null,
+                    case when r.hold_reason is null then extract(epoch from r.created_at) else -extract(epoch from r.created_at) end
+           limit $1`,
           [limit],
         )
       ).rows,

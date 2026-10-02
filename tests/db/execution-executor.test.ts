@@ -494,6 +494,22 @@ describe("크레딧", () => {
     expect((await sweep({ store: store(), lookupGeneration, wake: async () => true, now: () => new Date() })).reconciled).toBe(0);
   });
 
+  it("운영자만 풀 수 있는 오래된 hold가 쌓여도 지급으로 풀릴 새 run(credit)은 깨울 목록에 든다 (막힌 run은 새것부터)", async () => {
+    const user = await newUser();
+    const actionId = await newAction(user);
+    for (let i = 0; i < 25; i++) {
+      const runId = await startRun(user, actionId);
+      await db.query("update public.execution_runs set hold_reason = 'actor', created_at = $2 where id = $1", [runId, new Date(NOW.getTime() - (100 - i) * 60_000).toISOString()]);
+    }
+    const credit = await startRun(user, actionId);
+    await db.query("update public.execution_runs set hold_reason = 'credit' where id = $1", [credit]);
+    const free = await startRun(user, actionId);
+    const wakeable = await store().wakeableRuns(20);
+    expect(wakeable).toHaveLength(20);
+    expect(wakeable[0]).toEqual({ id: free, held: false });
+    expect(wakeable[1]).toEqual({ id: credit, held: true });
+  });
+
   it("run 예산: 예산이 초안 추정치보다 작으면 초안을 부르지 않는다 (그래서 POST /runs는 그런 예산을 400으로 받지 않는다, contract.ts)", async () => {
     const user = await newUser({ credits: 100 });
     const runId = await startRun(user, await newAction(user), DRAFT_ESTIMATE_CREDITS - 1);

@@ -1,6 +1,5 @@
 import { z } from "zod";
 
-import { DRAFT_ESTIMATE_CREDITS } from "@/lib/execution/limits";
 import { sourceKindSchema } from "@/lib/pipeline/extract";
 import { RESPONSE_MISS_STAGES } from "@/lib/pipeline/missing";
 
@@ -488,7 +487,8 @@ export type RunSummary = z.infer<typeof runSummarySchema>;
 /**
  * 단계 receipt (execution_steps.receipt). 글은 사용자에게 보일 것만 담는다.
  * 계획: decision(다음 단계), needs_connection이면 capability, ask_user면 question. 초안: to(초안의 받는 사람, 모델이 자료에서 고른 이름 · 주소).
- * 실패: error (consent: 처리 도중 동의 철회, rejected: AI 공급자가 확정적으로 거절, action_missing: Action이 지워짐, retries_exhausted: 다시 준비 한도)
+ * 실패: error (consent: 처리 도중 동의 철회, rejected: AI 공급자가 확정적으로 거절, action_missing: Action이 지워짐, retries_exhausted: 다시 준비 한도,
+ * unavailable: 후속 계획이 일시 오류로 끝나지 못함 — 이때 run은 실패가 아니라 draft_ready다)
  */
 export const stepReceiptSchema = z.looseObject({
   decision: z.enum(["draft", "needs_connection", "ask_user", "done"]).optional(),
@@ -538,10 +538,11 @@ export const createRunRequestSchema = z.object({
   /** 사용자가 맡긴 일 (예: "견적 회신 메일 초안 써 줘") */
   request: z.string().trim().min(1).max(2000),
   /**
-   * 이 run이 쓸 수 있는 크레딧 상한 (없으면 잔액만 본다). 초안 한 건의 예약(DRAFT_ESTIMATE_CREDITS)보다 작으면 초안을 한 번도 부르지 못하고
-   * 지급으로도 풀리지 않으므로 받지 않는다. 초안 둘을 맡기면 정산 뒤 남은 예산이 다시 예약 이상이어야 둘째 초안을 부른다
+   * 이 run이 쓸 수 있는 크레딧 상한 (없으면 잔액만 본다). 초안 한 건의 예약(20 크레딧, src/lib/execution/limits.ts)보다 작으면
+   * 초안을 한 번도 부르지 못하고 지급으로도 풀리지 않으므로 400으로 받지 않는다 (route가 확인한다: 이 파일은 무료 경로도 읽어 실행 모듈을 가져오지 않는다, A44).
+   * 초안 둘을 맡기면 정산 뒤 남은 예산이 다시 예약 이상이어야 둘째 초안을 부른다
    */
-  budget_credits: z.number().int().min(DRAFT_ESTIMATE_CREDITS).max(1_000_000).optional(),
+  budget_credits: z.number().int().positive().max(1_000_000).optional(),
 });
 export type CreateRunRequest = z.infer<typeof createRunRequestSchema>;
 export const createRunResponseSchema = z.object({ run: runSummarySchema });

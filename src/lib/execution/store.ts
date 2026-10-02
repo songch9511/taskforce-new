@@ -164,16 +164,14 @@ export function supabaseExecutionStore(admin: SupabaseClient): ExecutionStore {
     releaseRunCredits: (runId) => rpc<number>("release_run_credits", { p_run_id: runId }),
 
     async wakeableRuns(limit) {
-      // 막힌 run(hold_reason)은 뒤로: 매번 begin_call만 다시 보고 끝나므로, 깨우기를 놓친 run이 그 뒤에 밀리지 않게
-      const { data: runs } = await admin
-        .from("execution_runs")
-        .select("id, hold_reason")
-        .in("state", [...OPEN_RUN_STATES])
-        .order("hold_reason", { ascending: true, nullsFirst: true })
-        .order("created_at")
-        .limit(limit * 2)
-        .throwOnError();
-      const rows = (runs ?? []) as { id: string; hold_reason: string | null }[];
+      // 막히지 않은 run 먼저(오래된 순), 막힌 run(hold_reason)은 뒤에 새것부터: 운영자만 풀 수 있는 오래된 hold(actor · blocked)가 쌓여도
+      // 지급으로 풀린 새 run(credit)이 그 뒤에 굶지 않게
+      const open = () => admin.from("execution_runs").select("id, hold_reason").in("state", [...OPEN_RUN_STATES]);
+      const [{ data: free }, { data: held }] = await Promise.all([
+        open().is("hold_reason", null).order("created_at").limit(limit * 2).throwOnError(),
+        open().not("hold_reason", "is", null).order("created_at", { ascending: false }).limit(limit * 2).throwOnError(),
+      ]);
+      const rows = [...(free ?? []), ...(held ?? [])] as { id: string; hold_reason: string | null }[];
       if (rows.length === 0) return [];
       // lease를 가진 함수가 부르는 중인 run은 깨우지 않는다 (깨워도 아무것도 하지 않는다)
       const { data: calling } = await admin

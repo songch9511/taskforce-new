@@ -118,7 +118,8 @@ async function runEffect(deps: ExecutorDeps, run: RunRow, step: StepRow, args: R
       if (!(await store.holdsLease(step.id, owner))) return await lost(store, run, step, effect.attempts);
       // 다음 단계를 먼저 붙인다: 이 단계를 끝내며 남은 단계가 없으면 run이 끝나므로. 앞 시도가 이미 붙였으면(seq가 찼다) null
       const appended = await writeWithRetry(() => store.appendStep(run.id, step.seq + 1, effect.append!));
-      next = appended.value !== null || (await store.hasStepAfter(run.id, step.seq));
+      // 확인 읽기가 실패해도 결과 쓰기를 막지 않는다: 깨워서 할 일이 없으면 advance가 그냥 끝난다
+      next = appended.value !== null || (await store.hasStepAfter(run.id, step.seq).catch(() => true));
     }
     completed = await writeWithRetry(() => store.completeInternalStep(step.id, owner, effect.receipt, effect.attempts, effect.artifact, effect.outcome));
   } catch (error) {
@@ -167,7 +168,8 @@ async function recordUsage(store: ExecutionStore, stepId: string, attempts: LlmA
 
 /**
  * 다시 해도 같은 실패: 단계를 실패로 끝낸다. 그 밖(시간 초과 · 연결 · 형식 · 공급자 5xx · 408 · 429 · DB 읽기)은 다시 준비한다.
- * 401 · 402 · 403(키 · 잔액 · 권한)은 요청이 아니라 운영 설정 문제라 사용자의 run을 바로 실패로 두지 않고 다시 준비한다 (다시 준비 한도 안에서)
+ * 401 · 402 · 403(키 · 잔액 · 권한)은 운영 설정 문제라 바로 실패로 두지 않고 다시 준비하지만, 다시 준비 한도(2번, sweep 1분 간격) 안에서만이다:
+ * 2분쯤 넘게 이어지면 SQL이 retries_exhausted로 실패시킨다. 공급자 장애 동안 시도를 쓰지 않고 기다리게(hold) 하려면 SQL 전이가 필요하다 (후속 마이그레이션)
  */
 export function definitiveFailure(error: unknown): string | null {
   if (error instanceof ConsentRequiredError) return "consent";
