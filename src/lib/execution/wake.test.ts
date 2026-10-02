@@ -28,6 +28,9 @@ describe("wakeOrigin", () => {
     expect(wakeOrigin({ NODE_ENV: "development", PORT: "3100" })).toBe("http://localhost:3100");
     expect(wakeOrigin({ NODE_ENV: "production" })).toBeNull();
     expect(wakeOrigin({ EXECUTION_WAKE_ORIGIN: "javascript:alert(1)" })).toBeNull();
+    // 비밀값을 평문으로 보내지 않는다: http는 localhost만
+    expect(wakeOrigin({ EXECUTION_WAKE_ORIGIN: "http://taskforce.example.com" })).toBeNull();
+    expect(wakeOrigin({ EXECUTION_WAKE_ORIGIN: "http://127.0.0.1:3000" })).toBe("http://127.0.0.1:3000");
   });
 });
 

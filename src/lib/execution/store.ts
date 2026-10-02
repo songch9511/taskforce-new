@@ -9,7 +9,7 @@ import { loadIdentity } from "@/lib/connectors/store";
 import type { ExecutionContextInput } from "./context";
 import { withDeadlockRetry } from "./deadlock";
 import { materialFromRows, type ActionRow, type ConnectionRow, type EvidenceRow, type SourceRow } from "./material";
-import { RunActionNotFoundError, type ExecutionStore, type OpenRunState, type StepRow } from "./types";
+import { OPEN_RUN_STATES, RunActionNotFoundError, type ExecutionStore, type StepRow } from "./types";
 
 // 실행기의 DB 쪽 (service role). 판단(스위치 · 허용 목록 · 크레딧 · CAS)은 SQL 함수에만 있고(20261021000000 · 20261022000000), 여기는 RPC와 읽기뿐이다.
 // 모든 RPC는 교착(40P01)이면 다시 부른다(deadlock.ts): stop · begin_call · complete_internal_step · 예약 해제가 같은 run · 계정을 잠근다.
@@ -18,7 +18,6 @@ import { RunActionNotFoundError, type ExecutionStore, type OpenRunState, type St
 /** 근거가 많은 Action도 읽는 양이 커지지 않게 최근 근거만 (context.ts가 원문 6개 · 발췌 길이로 다시 줄인다) */
 const EVIDENCE_LIMIT = 40;
 
-const OPEN_RUN_STATES: OpenRunState[] = ["queued", "running", "waiting_approval"];
 const RUN_SUMMARY_COLUMNS = "id, action_id, goal, state, hold_reason, outcome, budget_credits, created_at";
 
 export function supabaseExecutionStore(admin: SupabaseClient): ExecutionStore {
@@ -111,6 +110,12 @@ export function supabaseExecutionStore(admin: SupabaseClient): ExecutionStore {
       });
     },
 
+    async holdsLease(stepId, owner) {
+      const { data } = await admin.from("execution_steps").select("state, lease_owner").eq("id", stepId).maybeSingle().throwOnError();
+      const row = data as { state: string; lease_owner: string | null } | null;
+      return row?.state === "calling" && row.lease_owner === owner;
+    },
+
     hasConsent: (userId) => hasConsentFor(admin, userId),
     userName: async (userId) => (await loadIdentity(admin, userId)).name,
 
@@ -131,6 +136,7 @@ export function supabaseExecutionStore(admin: SupabaseClient): ExecutionStore {
     markUnknown: (stepId, owner) => rpc<boolean>("mark_unknown", { p_step: stepId, p_owner: owner }),
     finishRun: (runId) => rpc<boolean>("finish_run", { p_run_id: runId }),
 
+    globallyBlocked: () => executionGloballyBlocked(admin),
     sweepExpire: () => rpc<number>("sweep_expire", {}),
 
     async unconfirmedUsage(limit, since) {
@@ -140,6 +146,8 @@ export function supabaseExecutionStore(admin: SupabaseClient): ExecutionStore {
         .eq("cost_status", "unconfirmed")
         .not("generation_id", "is", null)
         .gte("created_at", since.toISOString())
+        // 청구 대상(초안) 먼저: 확정돼야 정산 · 해제되는 행이 플랫폼 원가 행 뒤에 밀리지 않게
+        .order("billable", { ascending: false })
         .order("created_at")
         .limit(limit)
         .throwOnError();
@@ -159,18 +167,26 @@ export function supabaseExecutionStore(admin: SupabaseClient): ExecutionStore {
       // 막힌 run(hold_reason)은 뒤로: 매번 begin_call만 다시 보고 끝나므로, 깨우기를 놓친 run이 그 뒤에 밀리지 않게
       const { data: runs } = await admin
         .from("execution_runs")
-        .select("id")
-        .in("state", OPEN_RUN_STATES)
+        .select("id, hold_reason")
+        .in("state", [...OPEN_RUN_STATES])
         .order("hold_reason", { ascending: true, nullsFirst: true })
         .order("created_at")
         .limit(limit * 2)
         .throwOnError();
-      const ids = ((runs ?? []) as { id: string }[]).map((r) => r.id);
-      if (ids.length === 0) return [];
+      const rows = (runs ?? []) as { id: string; hold_reason: string | null }[];
+      if (rows.length === 0) return [];
       // lease를 가진 함수가 부르는 중인 run은 깨우지 않는다 (깨워도 아무것도 하지 않는다)
-      const { data: calling } = await admin.from("execution_steps").select("run_id").eq("state", "calling").in("run_id", ids).throwOnError();
+      const { data: calling } = await admin
+        .from("execution_steps")
+        .select("run_id")
+        .eq("state", "calling")
+        .in("run_id", rows.map((r) => r.id))
+        .throwOnError();
       const busy = new Set(((calling ?? []) as { run_id: string }[]).map((s) => s.run_id));
-      return ids.filter((id) => !busy.has(id)).slice(0, limit);
+      return rows
+        .filter((r) => !busy.has(r.id))
+        .slice(0, limit)
+        .map((r) => ({ id: r.id, held: r.hold_reason !== null }));
     },
   };
 }

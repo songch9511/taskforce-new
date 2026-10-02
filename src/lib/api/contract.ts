@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { DRAFT_ESTIMATE_CREDITS } from "@/lib/execution/limits";
 import { sourceKindSchema } from "@/lib/pipeline/extract";
 import { RESPONSE_MISS_STAGES } from "@/lib/pipeline/missing";
 
@@ -536,8 +537,11 @@ export const createRunRequestSchema = z.object({
   goal: z.literal("draft"),
   /** 사용자가 맡긴 일 (예: "견적 회신 메일 초안 써 줘") */
   request: z.string().trim().min(1).max(2000),
-  /** 이 run이 쓸 수 있는 크레딧 상한 (없으면 잔액만 본다) */
-  budget_credits: z.number().int().positive().max(1_000_000).optional(),
+  /**
+   * 이 run이 쓸 수 있는 크레딧 상한 (없으면 잔액만 본다). 초안 한 건의 예약(DRAFT_ESTIMATE_CREDITS)보다 작으면 초안을 한 번도 부르지 못하고
+   * 지급으로도 풀리지 않으므로 받지 않는다. 초안 둘을 맡기면 정산 뒤 남은 예산이 다시 예약 이상이어야 둘째 초안을 부른다
+   */
+  budget_credits: z.number().int().min(DRAFT_ESTIMATE_CREDITS).max(1_000_000).optional(),
 });
 export type CreateRunRequest = z.infer<typeof createRunRequestSchema>;
 export const createRunResponseSchema = z.object({ run: runSummarySchema });

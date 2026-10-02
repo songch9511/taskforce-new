@@ -370,7 +370,7 @@ describe("함수가 중간에 죽음 (A18)", () => {
     expect(await account(user)).toEqual({ granted: 100, reserved: 0, settled: 0 });
   });
 
-  it("공급자의 확정적 거절(402 등) · 처리 도중 동의 철회는 다시 하지 않고 실패로 끝낸다 (receipt에 까닭)", async () => {
+  it("공급자의 확정적 거절(400 등) · 처리 도중 동의 철회는 다시 하지 않고 실패로 끝낸다 (receipt에 까닭). 키 · 잔액 문제(401 · 402)는 다시 준비", async () => {
     const user = await newUser({ credits: 100 });
     const quota = await startRun(user, await newAction(user));
     llm.plans = [{ kind: "draft", brief: "회신" }];
@@ -379,7 +379,11 @@ describe("함수가 중간에 죽음 (A18)", () => {
       async () => {
         throw Object.assign(new LlmError("OpenRouter 요청 실패 (402)"), { attempts: [] });
       },
+      async () => {
+        throw Object.assign(new LlmError("OpenRouter 요청 실패 (400)"), { attempts: [] });
+      },
     ];
+    expect(await advance(deps(), quota)).toMatchObject({ status: "retry" }); // 운영 설정 문제: 사용자 run을 바로 실패로 두지 않는다
     expect(await advance(deps(), quota)).toMatchObject({ status: "failed", reason: "rejected" });
     expect(await runState(quota)).toMatchObject({ state: "failed" });
 
@@ -392,6 +396,51 @@ describe("함수가 중간에 죽음 (A18)", () => {
     expect(llm.prompts.length).toBe(before); // 모델을 부르지 않았다
     expect((await steps(consent))[1]).toMatchObject({ state: "failed", receipt: { error: "consent" } });
     expect(await account(user)).toEqual({ granted: 100, reserved: 0, settled: 0 });
+  });
+});
+
+describe("이어 가기 · 후속 계획", () => {
+  it("계획 단계가 다음 단계를 붙인 뒤 끝내지 못하고 죽으면, 다시 부를 때 모델을 부르지 않고 끝낸 뒤 이어 간다. 첫 시도의 원가는 남는다", async () => {
+    const user = await newUser({ credits: 100 });
+    const runId = await startRun(user, await newAction(user));
+    llm.plans = [{ kind: "draft", brief: "회신" }, { kind: "done" }];
+    const broken = { ...store(), completeInternalStep: async () => Promise.reject(new Error("connection reset")) };
+    await expect(advance({ ...deps("fn-dead"), store: broken }, runId)).rejects.toThrow("connection reset");
+    expect((await steps(runId)).map((s) => [s.kind, s.state])).toEqual([
+      ["plan", "calling"],
+      ["draft", "pending"],
+    ]);
+    // 받은 계획 시도의 원가는 단계가 calling에 남아도 남는다 (플랫폼 원가)
+    expect(await usage(runId)).toEqual([{ kind: "plan", cost_status: "confirmed", billable: false, cost_usd: "0.0007" }]);
+
+    await advanceClock(LEASE_SECONDS + 1);
+    const woken: string[] = [];
+    await sweep({ store: store(), lookupGeneration: async () => ({ status: "pending" }), wake: async (id) => (woken.push(id), true), now: () => NOW });
+    expect(woken).toEqual([runId]);
+    const results = await drive(runId, "fn-new");
+    expect(results[0]).toEqual({ status: "completed", step: expect.any(String), next: true });
+    expect(await runState(runId)).toEqual({ state: "done", hold_reason: null, outcome: "draft_ready" });
+    // 계획 모델 호출은 첫 시도와 후속 계획 둘뿐 (다시 부른 계획 단계는 모델을 부르지 않았다)
+    expect(llm.prompts.filter((p) => p.includes("실행 계획 담당"))).toHaveLength(2);
+    expect(await count("select 1 from public.execution_artifacts where run_id = $1", [runId])).toBe(1);
+  });
+
+  it("후속 계획(초안 뒤)이 실패하면 다시 하지 않고 이미 만든 초안으로 끝낸다: run은 done · draft_ready, 청구는 초안 한 번", async () => {
+    const user = await newUser({ credits: 100 });
+    const runId = await startRun(user, await newAction(user));
+    llm.plans = [{ kind: "draft", brief: "회신" }];
+    await advance(deps("fn-1"), runId); // 계획
+    await advance(deps("fn-2"), runId); // 초안
+    llm.overrides = [
+      async () => {
+        throw Object.assign(new LlmError("OpenRouter 요청 실패 (503)"), { attempts: [attempt(0.0002)] });
+      },
+    ];
+    expect(await advance(deps("fn-3"), runId)).toMatchObject({ status: "completed", next: false });
+    expect(await runState(runId)).toEqual({ state: "done", hold_reason: null, outcome: "draft_ready" });
+    expect((await steps(runId))[2]).toMatchObject({ kind: "plan", state: "called", receipt: { decision: "done", error: "unavailable" } });
+    expect((await ledger(user)).map((l) => l.kind)).toEqual(["reserve", "settle", "release"]);
+    expect((await usage(runId)).at(-1)).toEqual({ kind: "plan", cost_status: "confirmed", billable: false, cost_usd: "0.0002" });
   });
 });
 
@@ -445,7 +494,7 @@ describe("크레딧", () => {
     expect((await sweep({ store: store(), lookupGeneration, wake: async () => true, now: () => new Date() })).reconciled).toBe(0);
   });
 
-  it("run 예산: 예산이 초안 추정치보다 작으면 초안을 부르지 않는다", async () => {
+  it("run 예산: 예산이 초안 추정치보다 작으면 초안을 부르지 않는다 (그래서 POST /runs는 그런 예산을 400으로 받지 않는다, contract.ts)", async () => {
     const user = await newUser({ credits: 100 });
     const runId = await startRun(user, await newAction(user), DRAFT_ESTIMATE_CREDITS - 1);
     llm.plans = [{ kind: "draft", brief: "회신" }];
@@ -513,9 +562,13 @@ describe("차단 스위치 (기준 9): 세 입구 모두 calling 0", () => {
       }),
     );
     expect(response.status).toBe(404);
+    // sweep은 전체가 막혀 있으면 깨우지도 않는다 (begin_call이 어차피 막는다)
     const viaSweep: AdvanceResult[] = [];
-    await sweep({ store: store(), lookupGeneration: async () => ({ status: "pending" }), wake: async (id) => (viaSweep.push(await advance(deps(), id)), true), now: () => NOW });
-    expect(viaSweep.find((r) => r.status !== "held")).toBeUndefined();
+    const result = await sweep({ store: store(), lookupGeneration: async () => ({ status: "pending" }), wake: async (id) => (viaSweep.push(await advance(deps(), id)), true), now: () => NOW });
+    expect(result).toMatchObject({ blocked: true, woken: 0 });
+    expect(viaSweep).toEqual([]);
+    // 자기 호출이 와도 begin_call이 막는다
+    expect(await advance(deps(), runId)).toMatchObject({ status: "held", gate: "blocked" });
     expect(await calling()).toBe(0);
     expect(await runState(runId)).toMatchObject({ hold_reason: "blocked" });
   });

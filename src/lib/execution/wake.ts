@@ -19,13 +19,16 @@ export const WAKE_TIMEOUT_MS = 10_000;
 /**
  * 자기 호출을 보낼 주소. 요청 헤더(Host)에서 만들지 않는다: CRON_SECRET을 실어 보내므로 정해 둔 곳에만 보낸다.
  * EXECUTION_WAKE_ORIGIN(예: https://taskforce.example.com) → 운영 배포면 Vercel이 넣는 VERCEL_PROJECT_PRODUCTION_URL → 개발 서버면 localhost.
- * 모르면 null: 깨우지 않고 sweep(1분)이 이어 간다.
+ * 모르면 null: 깨우지 않고 sweep(1분)이 이어 간다. 미리보기 배포는 null이고 Vercel cron도 돌지 않아 첫 단계 뒤에 이어지지 않는다
+ * (실행은 운영 · 로컬 개발에서만 쓴다).
  */
 export function wakeOrigin(env: Record<string, string | undefined> = process.env): string | null {
   const explicit = env.EXECUTION_WAKE_ORIGIN?.trim();
   if (explicit) {
+    // 비밀값이 평문으로 나가지 않게 http는 이 컴퓨터(로컬 개발)만
     const url = URL.parse(explicit);
-    return url && (url.protocol === "https:" || url.protocol === "http:") ? url.origin : null;
+    const local = url?.hostname === "localhost" || url?.hostname === "127.0.0.1";
+    return url && (url.protocol === "https:" || (url.protocol === "http:" && local)) ? url.origin : null;
   }
   const production = env.VERCEL_PROJECT_PRODUCTION_URL?.trim();
   if (env.VERCEL_ENV === "production" && production) return `https://${production}`;

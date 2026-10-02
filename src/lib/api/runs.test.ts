@@ -108,12 +108,14 @@ describe("POST /api/v1/runs", () => {
     expect(deps.createRun).not.toHaveBeenCalled();
   });
 
-  it("본문 검증: goal은 draft만, request 1–2000자, budget_credits는 양의 정수", async () => {
+  it("본문 검증: goal은 draft만, request 1–2000자, budget_credits는 초안 예약 이상의 정수", async () => {
     for (const body of [
       { action_id: ACTION_ID, goal: "send", request: "보내 줘" },
       { action_id: ACTION_ID, goal: "draft", request: "   " },
       { action_id: ACTION_ID, goal: "draft", request: "가".repeat(2001) },
       { action_id: ACTION_ID, goal: "draft", request: "초안", budget_credits: 0 },
+      // 초안 한 건의 예약(20)보다 작은 예산은 초안을 한 번도 부르지 못한다
+      { action_id: ACTION_ID, goal: "draft", request: "초안", budget_credits: 19 },
       { action_id: "not-a-uuid", goal: "draft", request: "초안" },
     ]) {
       expect((await handleCreateRun(post(body), createDeps())).status).toBe(400);

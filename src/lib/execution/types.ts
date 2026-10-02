@@ -5,7 +5,8 @@ import type { ExecutionContextInput } from "./context";
 
 // 실행기가 쓰는 DB 연산. 운영은 store.ts(supabase · service role), 테스트는 같은 SQL 함수를 PGlite에서 부르는 store다.
 
-export type OpenRunState = "queued" | "running" | "waiting_approval";
+export const OPEN_RUN_STATES = ["queued", "running", "waiting_approval"] as const;
+export type OpenRunState = (typeof OPEN_RUN_STATES)[number];
 export type RunState = OpenRunState | "done" | "failed" | "stopped";
 export type StepState = "pending" | "prepared" | "calling" | "called" | "unknown_outcome" | "failed" | "skipped";
 export type RunOutcome = "draft_ready" | "needs_connection" | "needs_input";
@@ -43,6 +44,9 @@ export interface ExecutionStore {
   hasConsent(userId: string): Promise<boolean>;
   userName(userId: string): Promise<string>;
 
+  /** 그 단계가 아직 이 함수의 lease 아래 부르는 중인가 (calling + lease 소유자) */
+  holdsLease(stepId: string, owner: string): Promise<boolean>;
+
   prepareStep(stepId: string, version: number): Promise<boolean>;
   beginCall(stepId: string, owner: string, version: number): Promise<BeginCallResult>;
   appendStep(runId: string, seq: number, step: AppendStep): Promise<string | null>;
@@ -59,13 +63,15 @@ export interface ExecutionStore {
   markUnknown(stepId: string, owner: string): Promise<boolean>;
   finishRun(runId: string): Promise<boolean>;
 
+  /** 차단 스위치의 전체 행이 막혔거나 없다 */
+  globallyBlocked(): Promise<boolean>;
   sweepExpire(): Promise<number>;
   unconfirmedUsage(limit: number, since: Date): Promise<{ id: number; generation_id: string }[]>;
   reconcileUsage(usageId: number, costUsd: number): Promise<boolean>;
   openEndedCreditRuns(limit: number): Promise<string[]>;
   releaseRunCredits(runId: string): Promise<number>;
-  /** 깨울 run: 끝나지 않았고 부르는 중인 단계가 없다. 막힌 run은 뒤로 */
-  wakeableRuns(limit: number): Promise<string[]>;
+  /** 깨울 run: 끝나지 않았고 부르는 중인 단계가 없다. 막힌 run(held: hold_reason 있음)은 뒤로 */
+  wakeableRuns(limit: number): Promise<{ id: string; held: boolean }[]>;
 }
 
 /** create_run이 열린 Action을 찾지 못했다 (없음 · 남의 것 · 열리지 않음, SQLSTATE P0002) */
@@ -98,4 +104,6 @@ export type EffectResult = {
   outcome: RunOutcome | null;
   /** 결과 없이 끝내고 붙인 단계도 없다: 단계를 끝낸 뒤 run을 닫는다 (계획 단계는 결과 없이 run을 끝내지 않는다) */
   finish: boolean;
+  /** 앞 시도가 이미 다음 단계를 붙였다 (다시 부른 계획 단계): 끝낸 뒤 깨운다 */
+  stepAfterExists?: boolean;
 };

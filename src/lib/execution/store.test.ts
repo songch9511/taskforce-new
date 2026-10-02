@@ -133,16 +133,19 @@ describe("supabaseExecutionStore 읽기", () => {
   it("wakeableRuns: 끝나지 않은 run 중 부르는 중인 단계가 없는 것만, 상한까지", async () => {
     const { client } = fakeAdmin({
       execution_runs: [
-        { id: "r1", state: "running" },
-        { id: "r2", state: "queued" },
-        { id: "r3", state: "waiting_approval" },
-        { id: "r4", state: "done" },
+        { id: "r1", state: "running", hold_reason: null },
+        { id: "r2", state: "queued", hold_reason: null },
+        { id: "r3", state: "waiting_approval", hold_reason: "credit" },
+        { id: "r4", state: "done", hold_reason: null },
       ],
       execution_steps: [{ run_id: "r2", state: "calling" }],
     });
     const store = supabaseExecutionStore(client);
-    expect(await store.wakeableRuns(10)).toEqual(["r1", "r3"]);
-    expect(await store.wakeableRuns(1)).toEqual(["r1"]);
+    expect(await store.wakeableRuns(10)).toEqual([
+      { id: "r1", held: false },
+      { id: "r3", held: true },
+    ]);
+    expect(await store.wakeableRuns(1)).toEqual([{ id: "r1", held: false }]);
   });
 
   it("draftHistory: 끝낸 · 실패한 초안 단계의 지시와 산출물 제목", async () => {

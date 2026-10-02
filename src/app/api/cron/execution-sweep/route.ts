@@ -20,6 +20,7 @@ export async function GET(request: Request) {
     lookupGeneration: (id) => fetchGeneration(generationConfigFromEnv(), id),
     wake: (runId) => wakeRun(runId),
   });
-  console.info(JSON.stringify({ event: "execution_sweep", ...result }));
+  // 실패한 단계가 있으면 오류 로그로 (cron 응답은 그대로 200: 다음 분에 다시 돈다)
+  (result.errors > 0 ? console.error : console.info)(JSON.stringify({ event: "execution_sweep", ...result }));
   return Response.json({ enabled: true, ...result });
 }

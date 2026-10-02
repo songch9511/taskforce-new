@@ -31,6 +31,7 @@ function fakeStore(overrides: Partial<ExecutionStore> = {}) {
       sources: [],
       evidence: [],
     })),
+    holdsLease: vi.fn(async () => true),
     hasConsent: vi.fn(async () => true),
     userName: vi.fn(async () => "김도윤"),
     prepareStep: vi.fn(track("prepareStep", true)),
@@ -41,6 +42,7 @@ function fakeStore(overrides: Partial<ExecutionStore> = {}) {
     settleFailed: vi.fn(track("settleFailed", true)),
     markUnknown: vi.fn(track("markUnknown", true)),
     finishRun: vi.fn(track("finishRun", true)),
+    globallyBlocked: vi.fn(),
     sweepExpire: vi.fn(),
     unconfirmedUsage: vi.fn(),
     reconcileUsage: vi.fn(),
@@ -128,7 +130,7 @@ describe("advance", () => {
   });
 
   it("확정적 거절이면 원가를 먼저 남기고 실패로 끝낸다 (settle_step failed)", async () => {
-    const error = Object.assign(new LlmError("OpenRouter 요청 실패 (402)"), { attempts: ATTEMPTS });
+    const error = Object.assign(new LlmError("OpenRouter 요청 실패 (400)"), { attempts: ATTEMPTS });
     const { store, order } = fakeStore();
     expect(await advance({ store, complete: failWith(error), owner: "fn-1" }, "r1")).toEqual({ status: "failed", step: "s2", reason: "rejected" });
     expect(order).toEqual(["beginCall", "recordUsage", "settleFailed"]);
@@ -142,20 +144,78 @@ describe("advance", () => {
     expect(complete).not.toHaveBeenCalled();
   });
 
-  it("결과 쓰기가 DB 오류면 다시 쓴다. 다시 쓴 쪽이 false면 앞 시도가 commit한 것으로 보고 원가를 다시 남기지 않는다", async () => {
+  it("결과 쓰기가 DB 오류면 다시 쓴다. 다시 쓴 쪽이 false면(앞 쓰기가 commit했거나 lease를 잃음) generation id가 있는 시도만 다시 남긴다", async () => {
+    const withTimeout: LlmAttempt[] = [{ generationId: null, model: "m" }, ...ATTEMPTS];
+    const reply = (async (request) => ({ data: request.schema.parse({ title: "t", to: [], body: "b" }), model: "m", attempts: withTimeout })) as CompleteJson;
     const completeInternalStep = vi.fn().mockRejectedValueOnce(new Error("fetch failed")).mockResolvedValueOnce(false);
     const { store } = fakeStore({ completeInternalStep });
-    expect(await advance({ store, complete: draftReply, owner: "fn-1" }, "r1")).toEqual({ status: "completed", step: "s2", next: true });
+    expect(await advance({ store, complete: reply, owner: "fn-1" }, "r1")).toEqual({ status: "completed", step: "s2", next: true });
     expect(completeInternalStep).toHaveBeenCalledTimes(2);
-    expect(store.recordUsage).not.toHaveBeenCalled();
+    expect(store.recordUsage).toHaveBeenCalledWith("s2", ATTEMPTS);
   });
 
-  it("결과 쓰기가 계속 실패하면 오류를 낸다 (단계는 calling에 남고 lease 만료 뒤 다시 준비된다)", async () => {
+  it("결과 쓰기 · 다음 단계 붙이기가 계속 실패하면 받은 시도의 원가를 남기고 오류를 낸다 (단계는 calling에 남고 lease 만료 뒤 다시 준비된다)", async () => {
     const completeInternalStep = vi.fn().mockRejectedValue(new Error("fetch failed"));
-    const { store } = fakeStore({ completeInternalStep });
-    await expect(advance({ store, complete: draftReply, owner: "fn-1" }, "r1")).rejects.toThrow("fetch failed");
+    const failing = fakeStore({ completeInternalStep });
+    await expect(advance({ store: failing.store, complete: draftReply, owner: "fn-1" }, "r1")).rejects.toThrow("fetch failed");
     expect(completeInternalStep).toHaveBeenCalledTimes(3);
-    expect(store.markUnknown).not.toHaveBeenCalled();
+    expect(failing.store.recordUsage).toHaveBeenCalledWith("s2", ATTEMPTS);
+    expect(failing.store.markUnknown).not.toHaveBeenCalled();
+
+    const appendStep = vi.fn().mockRejectedValue(new Error("connection reset"));
+    const noAppend = fakeStore({ appendStep });
+    await expect(advance({ store: noAppend.store, complete: draftReply, owner: "fn-1" }, "r1")).rejects.toThrow("connection reset");
+    expect(appendStep).toHaveBeenCalledTimes(3);
+    expect(noAppend.store.completeInternalStep).not.toHaveBeenCalled();
+    expect(noAppend.store.recordUsage).toHaveBeenCalledWith("s2", ATTEMPTS);
+  });
+
+  it("다음 단계 붙이기가 null이면(run이 멈춤 · 앞 시도가 붙임) 실제로 다음 단계가 있을 때만 깨운다", async () => {
+    const stopped = fakeStore({ appendStep: vi.fn(async () => null), hasStepAfter: vi.fn(async () => false) });
+    expect(await advance({ store: stopped.store, complete: draftReply, owner: "fn-1" }, "r1")).toEqual({ status: "completed", step: "s2", next: false });
+    const already = fakeStore({ appendStep: vi.fn(async () => null), hasStepAfter: vi.fn(async () => true) });
+    expect(await advance({ store: already.store, complete: draftReply, owner: "fn-1" }, "r1")).toEqual({ status: "completed", step: "s2", next: true });
+  });
+
+  it("lease를 잃은 함수는 다음 단계를 붙이지 않는다 (원가만 남긴다)", async () => {
+    const { store } = fakeStore({ holdsLease: vi.fn(async () => false) });
+    expect(await advance({ store, complete: draftReply, owner: "fn-1" }, "r1")).toEqual({ status: "lost", step: "s2" });
+    expect(store.appendStep).not.toHaveBeenCalled();
+    expect(store.completeInternalStep).not.toHaveBeenCalled();
+    expect(store.recordUsage).toHaveBeenCalledWith("s2", ATTEMPTS);
+  });
+
+  it("후속 계획(초안 뒤 계획 단계)이 실패하면 다시 하지 않고 이미 만든 초안으로 끝낸다 (draft_ready)", async () => {
+    const followUp: StepRow = { ...DRAFT_STEP, id: "s3", seq: 3, kind: "plan" };
+    for (const error of [new LlmError("OpenRouter 요청 실패 (400)"), new LlmError("OpenRouter 요청 실패 (503)"), new ConsentRequiredError()]) {
+      const { store } = fakeStore({ nextOpenStep: vi.fn(async () => followUp), draftHistory: vi.fn(async () => [{ state: "called" as const, brief: "b", title: "t" }]) });
+      expect(await advance({ store, complete: failWith(Object.assign(error, { attempts: ATTEMPTS })), owner: "fn-1" }, "r1")).toEqual({
+        status: "completed",
+        step: "s3",
+        next: false,
+      });
+      expect(store.recordUsage).toHaveBeenCalledWith("s3", ATTEMPTS);
+      expect(store.completeInternalStep).toHaveBeenCalledWith("s3", "fn-1", expect.objectContaining({ decision: "done" }), [], null, "draft_ready");
+      expect(store.settleFailed).not.toHaveBeenCalled();
+      expect(store.markUnknown).not.toHaveBeenCalled();
+    }
+  });
+
+  it("다시 부른 계획 단계는 앞 시도가 붙인 단계가 있으면 모델을 부르지 않고 끝낸 뒤 깨운다", async () => {
+    const complete = vi.fn(draftReply);
+    const plan: StepRow = { ...DRAFT_STEP, id: "s1", seq: 1, kind: "plan" };
+    const { store } = fakeStore({ nextOpenStep: vi.fn(async () => plan), hasStepAfter: vi.fn(async () => true) });
+    expect(await advance({ store, complete: complete as CompleteJson, owner: "fn-1" }, "r1")).toEqual({ status: "completed", step: "s1", next: true });
+    expect(complete).not.toHaveBeenCalled();
+    expect(store.appendStep).not.toHaveBeenCalled();
+    expect(store.completeInternalStep).toHaveBeenCalledWith("s1", "fn-1", expect.objectContaining({ decision: "draft" }), [], null, null);
+  });
+
+  it("원가 기록이 실패해도 단계는 내보낸다 (lease를 붙잡지 않는다)", async () => {
+    const error = Object.assign(new LlmError("응답 시간 초과 (90초)", undefined, true, true, "timeout"), { attempts: ATTEMPTS });
+    const { store } = fakeStore({ recordUsage: vi.fn().mockRejectedValue(new Error("connection reset")) });
+    expect(await advance({ store, complete: failWith(error), owner: "fn-1" }, "r1")).toEqual({ status: "retry", step: "s2" });
+    expect(store.markUnknown).toHaveBeenCalledWith("s2", "fn-1");
   });
 
   it("lease를 잃었으면(첫 쓰기가 false) 결과를 버리고 원가만 플랫폼 원가로 남긴다", async () => {
@@ -185,7 +245,10 @@ describe("definitiveFailure", () => {
     [new ConsentRequiredError(), "consent"],
     [new ExecutionInputError("action_missing"), "action_missing"],
     [new LlmError("OpenRouter 요청 실패 (400)"), "rejected"],
-    [new LlmError("OpenRouter 요청 실패 (402)"), "rejected"],
+    [new LlmError("OpenRouter 요청 실패 (413)"), "rejected"],
+    [new LlmError("OpenRouter 요청 실패 (401)"), null],
+    [new LlmError("OpenRouter 요청 실패 (402)"), null],
+    [new LlmError("OpenRouter 요청 실패 (403)"), null],
     [new LlmError("OpenRouter 요청 실패 (404)", undefined, false, false, "unsupported_parameters"), "rejected"],
     [new LlmError("OpenRouter 요청 실패 (408)"), null],
     [new LlmError("OpenRouter 요청 실패 (429)"), null],

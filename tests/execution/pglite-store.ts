@@ -51,6 +51,8 @@ export function pgliteExecutionStore(db: PGlite, options: { userName?: string } 
       ).rows;
       return materialFromRows({ action, evidence, sources, connections });
     },
+    holdsLease: (stepId, owner) =>
+      r<boolean>("select exists (select 1 from public.execution_steps where id = $1 and state = 'calling' and lease_owner = $2) as r", [stepId, owner]),
     hasConsent: (userId) => r<boolean>("select exists (select 1 from public.profiles where user_id = $1 and ai_consent_at is not null) as r", [userId]),
     userName: async () => options.userName ?? "김도윤",
 
@@ -64,12 +66,14 @@ export function pgliteExecutionStore(db: PGlite, options: { userName?: string } 
     markUnknown: (stepId, owner) => r<boolean>("select public.mark_unknown($1, $2) as r", [stepId, owner]),
     finishRun: (runId) => r<boolean>("select public.finish_run($1) as r", [runId]),
 
+    globallyBlocked: () =>
+      r<boolean>("select coalesce((select blocked from public.execution_controls where scope = 'global' and key = '*'), true) as r"),
     sweepExpire: () => r<number>("select public.sweep_expire() as r"),
     unconfirmedUsage: async (limit, since) =>
       (
         await db.query<{ id: number; generation_id: string }>(
           `select id::int, generation_id from public.execution_usage
-           where cost_status = 'unconfirmed' and generation_id is not null and created_at >= $2 order by created_at limit $1`,
+           where cost_status = 'unconfirmed' and generation_id is not null and created_at >= $2 order by billable desc, created_at limit $1`,
           [limit, since.toISOString()],
         )
       ).rows,
@@ -78,12 +82,12 @@ export function pgliteExecutionStore(db: PGlite, options: { userName?: string } 
     releaseRunCredits: (runId) => r<number>("select public.release_run_credits($1) as r", [runId]),
     wakeableRuns: async (limit) =>
       (
-        await db.query<{ id: string }>(
-          `select r.id from public.execution_runs r where r.state in ${OPEN_RUN_STATES}
+        await db.query<{ id: string; held: boolean }>(
+          `select r.id, r.hold_reason is not null as held from public.execution_runs r where r.state in ${OPEN_RUN_STATES}
              and not exists (select 1 from public.execution_steps s where s.run_id = r.id and s.state = 'calling')
            order by r.hold_reason nulls first, r.created_at limit $1`,
           [limit],
         )
-      ).rows.map((x) => x.id),
+      ).rows,
   };
 }

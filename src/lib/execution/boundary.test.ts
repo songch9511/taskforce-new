@@ -28,7 +28,7 @@ const FREE_PATHS = [
   ...files(path.join(ROOT, "src/lib/pipeline")),
 ];
 
-const EXECUTION_MARKERS = [/@\/lib\/execution/, /credit_(accounts|ledger|rates)/, /\b(begin_call|create_run|grant_credits|take_rate_limit\([^)]*run_create)/, /executionEnabled/];
+const EXECUTION_MARKERS = [/@\/lib\/execution/, /from ["'][^"']*\/execution(\/|["'])/, /credit_(accounts|ledger|rates)/, /\b(begin_call|create_run|grant_credits|take_rate_limit\([^)]*run_create)/, /executionEnabled/];
 
 describe("과금 경계 (A37 · A44)", () => {
   it("할 일 쓰기 · 원문 처리 경로는 실행 · 크레딧을 확인하지도 부르지도 않는다", () => {

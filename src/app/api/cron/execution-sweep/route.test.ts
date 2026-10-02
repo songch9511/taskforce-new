@@ -22,6 +22,7 @@ beforeEach(() => {
   vi.stubEnv("EXECUTION_ENABLED", "true");
   mocks.sweep.mockResolvedValue(RESULT);
   vi.spyOn(console, "info").mockImplementation(() => {});
+  vi.spyOn(console, "error").mockImplementation(() => {});
 });
 
 afterEach(() => {
@@ -57,5 +58,11 @@ describe("GET /api/cron/execution-sweep", () => {
     const [{ wake }] = mocks.sweep.mock.calls[0] as [{ wake: (id: string) => Promise<boolean> }];
     await wake("r1");
     expect(mocks.wakeRun).toHaveBeenCalledWith("r1");
+  });
+
+  it("실패한 단계가 있으면 오류 로그로 남긴다 (응답은 200, 다음 분에 다시 돈다)", async () => {
+    mocks.sweep.mockResolvedValueOnce({ ...RESULT, errors: 1 });
+    expect((await cron()).status).toBe(200);
+    expect(console.error).toHaveBeenCalledWith(JSON.stringify({ event: "execution_sweep", ...RESULT, errors: 1 }));
   });
 });

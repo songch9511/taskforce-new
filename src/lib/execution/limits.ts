@@ -32,6 +32,12 @@ export const DRAFT_ESTIMATE_CREDITS = 20;
 /** sweep 한 번에 자기 호출로 깨우는 run 수 (sweep은 단계를 직접 돌리지 않는다) */
 export const SWEEP_WAKE_LIMIT = 20;
 
+/**
+ * 막힌 run(hold_reason: 크레딧 · 실행 주체 · 스위치 · 도구)은 이 분마다만 깨운다 (UTC 분이 이 수의 배수일 때). 풀리기를 기다리는 run이
+ * 매분 함수 호출을 쓰지 않게. 풀린 뒤 늦어도 이만큼 안에 이어 간다
+ */
+export const HELD_WAKE_EVERY_MINUTES = 5;
+
 /** sweep 한 번에 generation 조회로 확정하는 미확정 원가 행 수 */
 export const SWEEP_RECONCILE_LIMIT = 20;
 
