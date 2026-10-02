@@ -130,7 +130,7 @@ step: `pending → prepared → calling → called | unknown_outcome | failed | 
 ## 9. CLAUDE.md 원칙과의 관계
 
 - 실행 결과도 Claim → 진실 판정 → Action/Evidence를 거친다. 실행기는 Action 필드를 직접 쓰지 않는다(원칙 5).
-- receipt(공급자 id · readback 결과)는 근거가 된다. 원칙 2는 지금 "원문 인용 구절 + 출처 링크"만 근거로 적으므로, receipt를 근거로 넣는 개정은 U2 PR에서 한다. receipt는 새 source kind로 기존 writer(`write_action`)를 지난다.
+- receipt(공급자 id · readback 결과)는 근거가 된다(원칙 2). receipt는 source kind `execution`으로 기존 writer(`write_action`)를 지나고, 실행 결과 Claim의 origin은 `execution`이다.
 - 에이전트의 결정은 `origin=user`가 아니다. 사용자의 승인은 그 계획의 실행을 허락한 것이지 사용자가 값을 정한 Claim이 아니다.
 - 모든 전이 · 승인 · 거절 · 중단은 이벤트로 남긴다(원칙 6). 운영 지표: `unknown_outcome` 수, 승인 요청 수(원칙 3: 확인 요청은 그 자체가 비용).
 - 인스턴스 경합: 수집 쪽 병합 대기열은 메모리라 인스턴스 하나 안에서만 보장되고, 인스턴스 사이는 `write_action` 버전 확인이 막는다(`src/lib/sources/process.ts`). 실행 쪽은 메모리에 기대지 않고 intent unique + CAS로 막는다.
