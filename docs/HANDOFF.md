@@ -1,8 +1,24 @@
-# 에이전트 핸드오프 (2026-10-01, W1 확인 부담·W3 부분 완료)
+# 에이전트 핸드오프 (2026-10-02, 방향 변경·U0)
 
 다른 에이전트(Codex 등)가 이 저장소를 이어받을 때 먼저 읽는 문서다. 규칙은 [CLAUDE.md](../CLAUDE.md), 기능 위치는 [FEATURE_MAP.md](FEATURE_MAP.md), 남은 출시 일은 [GO_LIVE.md](GO_LIVE.md)와 [런북 체크리스트](go-live/runbook.md)가 기준이다. 이 문서는 PR #54 완료 상태, W3 치명적 경로·W2 재검증·W3 로그인 사용성·W1 확인 부담 수정과 **2026-09-30 09:00 UTC QA의 당시 기록 및 후속 작업 승인 범위**를 함께 담는다.
 
 ## 1. 지금 상태
+
+### 2026-10-02 방향과 U0 (KST)
+
+- **방향:** 제품 문제 정의(다맥락 창업자의 맥락 휘발 · 관리 비용)는 유지한다. Taskforce는 AI 에이전트(OpenAI dots 등)가 늘린 일의 관리 부담을 대신 지는 도구로, 에이전트와 함께 쓴다. 2026-10-01 Figma 재설계(`Redesign · Native · 2026-10-01`) 전체를 실제 제품으로 만든 뒤 첫 사용자 한 명에게 건넨다. 공개 출시 · 팀 기능은 그 뒤다. 시각(D1)은 지금 Figma 그대로 승인됐다.
+- **구현 계획:** 단위 U0 → U2 서버 → U1 셸 → U2 Mac → U5 → U8a → U3a → U4 → U6a → U6b → U8b → U9 → U10. 코드는 단위마다 착수 승인, PR마다 병합 승인(병합 = 운영 배포). 계획 원문은 저장소 밖(로컬)에 있다.
+- **외부 효과 계약:** [EXECUTION.md](EXECUTION.md)(#67 병합 뒤). 외부 쓰기는 이 문서를 따른다.
+- **U0에서 한 일:**
+
+| 항목 | 결과 |
+|---|---|
+| 병합 | #63 `4ba5d8b`(잘못된 JWT 401) · #65 `04e602f`(W1 알림 정렬) · #64 `ba2cb71`(문서). Production success, main CI success, 무인증 · 잘못된 JWT 401 |
+| 보류 | #61 · #62는 U1(`.local` 로그아웃 · SessionStore 정리)까지 |
+| 처리방침 | 베타 1.3 게시(2026-10-02, [legal/README.md](legal/README.md) 게시 기록) |
+| eval 기준선 (`29576c6`) | 자동+확인 정밀도 90.4% · 재현율 91.7% · 담당 98.5% · 기한 100% · 남의 일 3 / 자동만 98.3% · 85.1% · 100% · 100% · 0 / 시퀀스 29/29 / 물어보기 8/8. 이후 PR은 이보다 떨어지지 않아야 한다 |
+| 관문 | 계획 생성(`completeJson` + discriminated union, ZDR 공급자) 통과 · 원격 MCP(Linear 바로 · GitHub 앱 등록 · Figma는 REST 읽기만) · Vercel Pro(함수 최대 800초, cron 최소 1분) · Gmail 헤더(`X-Taskforce-Intent` 보존, 클라이언트 Message-ID는 Gmail이 바꿈). 자세한 내용은 EXECUTION.md 10장 |
+| 연결 플래그(운영) | `GMAIL_CONNECT_ENABLED=true`, Slack · Google 비어 있음. Gmail은 프로젝트 B Testing이라 테스트 사용자만 연결된다 |
 
 ### 2026-10-01 머지·운영 스키마 적용 (KST)
 
