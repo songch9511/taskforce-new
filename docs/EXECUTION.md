@@ -58,6 +58,7 @@ step: `pending → prepared → calling → called | unknown_outcome | failed | 
 | `calling → called` | lease를 가진 함수 | 공급자 응답을 받아 receipt를 저장했다 |
 | `calling → failed` | lease를 가진 함수 | 공급자가 확정적으로 거절했다 (예: 형식 오류 400) |
 | `calling → unknown_outcome` | lease를 가진 함수(시간 초과 · 연결 끊김), 또는 sweep(lease 만료) | 다시 부르지 않는다 |
+| `calling → prepared` (내부 효과만) | sweep(lease 만료), 또는 lease를 가진 함수(응답 없음) | 외부 상태를 바꾸지 않는 내부 효과(`effect_class='internal'`: 내장 계획 · 초안의 AI 호출, 1장 범위 밖)는 결과 불명 대신 다시 준비한다. `attempt + 1`, 같은 표식을 다시 쓴다. 다시 준비가 2번을 넘으면 `failed` · run `failed` |
 | `unknown_outcome → called` | sweep | readback 기간 안에 표식을 찾았다 |
 | `unknown_outcome → failed` | 사용자 | 사용자가 결과를 정했다. 다시 보내기는 새 회차다(4장) |
 
@@ -70,7 +71,7 @@ step: `pending → prepared → calling → called | unknown_outcome | failed | 
 
 ## 4. write-ahead intent와 표식
 
-- intent key = (Action id, 공급자, 도구, 목적, 정규화한 대상, 회차). 도구가 다르면 같은 목적 · 대상이라도 중복이 아니다. `intents.intent_key`는 DB unique다. 수동 버튼과 자동 trigger가 같은 목적을 동시에 시작해도 한 단계만 `calling`으로 간다. 다른 쪽은 `skipped`, receipt에 누구의 중복인지 적는다.
+- intent key = (Action id, 공급자, 도구, 목적, 정규화한 대상, 회차). 도구가 다르면 같은 목적 · 대상이라도 중복이 아니다. 내부 효과는 단계마다 하나다(외부 상태가 없어 다른 단계와 중복을 따지지 않는다). `intents.intent_key`는 DB unique다. 수동 버튼과 자동 trigger가 같은 목적을 동시에 시작해도 한 단계만 `calling`으로 간다. 다른 쪽은 `skipped`, receipt에 누구의 중복인지 적는다.
 - 표식(marker)은 `intents` 행에 저장하는 임의 값이다(무작위 uuid, 또는 서버 비밀로 만든 intent key의 HMAC). 외부(메일 헤더 · 댓글 본문)에는 표식만 실린다. intent key는 DB 밖으로 나가지 않는다.
 - 순서:
   1. intent 행(표식) + `prepared → calling` + lease를 한 트랜잭션에 commit한다.
@@ -95,7 +96,7 @@ step: `pending → prepared → calling → called | unknown_outcome | failed | 
 
 - DB 플래그 세 층: 전체(`global`) / 공급자별(`provider`, 예: `gmail`) / 모드별(`mode`: `manual` · `auto` · `full`). `auto`와 `full`을 끄면 "Manual만"이다.
 - `begin_call`은 RPC 하나 = READ COMMITTED 트랜잭션 하나이고, 외부 호출 전에 commit된다. 외부 호출은 그 트랜잭션 안에 없다.
-- 스위치는 그 트랜잭션 안에서, `prepared → calling`과 함께 확인한다. 해당 행 셋(전체 · 그 공급자 · 그 모드)을 `for share`로 잠그고 읽는다. 끄는 쪽의 `update`는 진행 중인 전이가 끝날 때까지 기다리고, 끈 뒤에 commit되는 전이는 없다. 잠금 순서는 step → run → 정책 → 스위치다.
+- 스위치는 그 트랜잭션 안에서, `prepared → calling`과 함께 확인한다. 해당 행 셋(전체 · 그 공급자 · 그 모드)을 `for share`로 잠그고 읽는다. 끄는 쪽의 `update`는 진행 중인 전이가 끝날 때까지 기다리고, 끈 뒤에 commit되는 전이는 없다. 잠금 순서는 step → run → 정책 → 실행 주체 → 스위치 → 도구 · 수신자 허용 목록(7장)이다.
 - 모든 입구(route · 자기 호출 · sweep)가 같은 `begin_call`을 지난다. 입구마다 실제로 그런지는 U2에서 route 테스트로 확인한다.
 - 행이 없는 공급자 · 모드는 막힌 것으로 본다(닫힌 쪽). 새 공급자는 행을 추가해야 실행된다.
 - 막힌 단계는 실패가 아니다. `prepared`로 남고, 다시 켜면 sweep이 이어 간다. 이미 `calling`인 호출은 끝까지 결과를 받는다.
@@ -148,7 +149,7 @@ step: `pending → prepared → calling → called | unknown_outcome | failed | 
 
 ## 11. A29 fixture (실행 가능한 명세)
 
-`tests/execution/a29.test.ts`, 드라이버 `tests/execution/driver.ts`. 테스트 안에서만 만드는 최소 스키마(policies · runs · steps · approvals · intents · execution_controls + 외부 효과를 기록하는 가짜 공급자 원장)와 SQL 함수(정규화 · 정책 · 승인 hash · `prepare_step` · `approve_step` · `begin_call`, 계획 수정 trigger)다. 마이그레이션이 아니고, U2가 만들 실행기도 아니다. "함수가 죽는다" = Driver 인스턴스를 버리고 새로 만든다. 시각은 DB 시각이다. 운영의 `db_now()`는 `now()`뿐이고, fixture의 `app.now`는 테스트 시계다(세션 설정은 풀링된 연결에 남을 수 있어 운영에서 쓰지 않는다).
+`tests/execution/a29.test.ts`, 드라이버 `tests/execution/driver.ts`. 운영 마이그레이션 `supabase/migrations/20261021000000_execution_core.sql`(U2 PR3)을 PGlite에 그대로 적용해 시험한다. fixture만의 SQL은 없어서 명세와 운영 SQL이 어긋나지 않는다. 테스트 안에서만 더하는 것: 테스트 시계, 외부 효과를 기록하는 가짜 공급자 원장(`fake.ledger`)과 시험 전용 외부 도구(`fake.send` · `fake.reply`), 모두 켠 스위치, 허용 목록 안의 시험 사용자 · 주소. 드라이버는 U2가 만들 실행기가 아니다. "함수가 죽는다" = Driver 인스턴스를 버리고 새로 만든다. 시각은 DB 시각이다. 운영의 `db_now()`는 `now()`뿐이고, 테스트는 마이그레이션을 적용한 뒤 테스트 안에서만 `app.now`를 읽는 판으로 바꾼다(세션 설정은 풀링된 연결에 남을 수 있어 운영에서 쓰지 않는다).
 
 | # | 사례 | 결과 |
 |---|---|---|
@@ -166,5 +167,7 @@ step: `pending → prepared → calling → called | unknown_outcome | failed | 
 | 7 | 준비 단계 표시가 틀림 / 준비 뒤 규칙 비움 · 정책 버전 올림 / 준비 때 정책 버전 NULL | `begin_call`이 막음, 효과 0 (NULL은 DB 제약도 막음) |
 | — | 중단 | 진행 중 호출은 결과를 받고 다음 단계 0. 부르기 직전 중단도 0 |
 | — | 받은 뒤 receipt 저장 실패 | 다시 써서 `called`. 계속 실패하면 오류, `calling`에 남아 lease 만료 뒤 readback으로 `called` |
+| — | 내부 효과(AI 호출)에서 lease 만료 · 응답 없음 | 승인 없이 부른다(Manual이어도). 결과 불명 대신 같은 표식으로 다시 준비, 다시 준비가 2번을 넘으면 `failed` · run `failed` |
+| — | 실행 주체 · 수신자 허용 목록 밖 / 목록 밖 도구 · 외부 도구를 내부 효과로 적은 단계 | 효과 0(승인이 있어도), 단계는 `prepared`, run에 막힌 이유(`hold_reason` `actor` · `blocked`). 목록에 넣으면 이어 가서 1 |
 
-한계: PGlite는 연결이 하나라 트랜잭션이 실제로 겹치지 않는다. 동시성은 트랜잭션 경계(단계를 읽은 뒤 · `calling` commit 뒤)에 끼어드는 방식으로 보인다. `for share` · `for no key update` 잠금과 동시 commit 경합은 U2에서 실제 Postgres(연결 둘)로 다시 시험한다. 허용 목록(7장 1 · 2)과 실행 이벤트 행은 fixture에 없다(U2 · U6a).
+한계: PGlite는 연결이 하나라 트랜잭션이 실제로 겹치지 않는다. 동시성은 트랜잭션 경계(단계를 읽은 뒤 · `calling` commit 뒤)에 끼어드는 방식으로 보인다. 잠금과 동시 commit 경합은 `tests/pg/execution-locks.test.ts`가 실제 Postgres에 연결 둘을 열어 시험한다(`npm run test:pg`, CI는 postgres service): 스위치 끄기 vs `begin_call`(양쪽 순서), 같은 intent 동시 `begin_call`(commit · rollback), 같은 단계 동시 `begin_call`. 운영 쪽 모양(처음 상태 · run 만들기 · 실행 이벤트 · 권한)은 `tests/db/execution-core.test.ts` · `execution-rls.test.ts`가 본다.
