@@ -59,6 +59,31 @@ describe("sources.processing_error_code", () => {
     });
   });
 
+  it("GET /api/v1/now의 실패 수 조건(실패한 지 하루 안 · 할 일 DB 항목 제외): 창을 지나 멈춰 닫은 원문은 보이고, 옛 실패는 빠진다", async () => {
+    const carol = "00000000-0000-0000-0000-00000000000c";
+    await db.query("insert into auth.users (id, email) values ($1, 'carol@example.com')", [carol]);
+    const insert = (kind: string, code: string, createdAgo: string, processedAgo: string) =>
+      db.query(
+        `insert into public.sources (user_id, kind, raw_text, occurred_at, processing_status, processing_error_code, created_at, processed_at)
+         values ($1, $2, 'x', now(), 'failed', $3, now() - $4::interval, now() - $5::interval)`,
+        [carol, kind, code, createdAgo, processedAgo],
+      );
+    // 들어온 지 이틀, 방금 창을 지나 멈춰 닫음 → 보인다
+    await insert("message", "expired", "2 days", "1 minute");
+    // 다시 해 볼 실패로 남은 채 창이 지나 닫음: 실패 시각이 그대로라 하루가 지나 빠진다
+    await insert("message", "ai_quota", "3 days", "25 hours");
+    // 할 일 DB 항목의 실패는 다음 버전이 대신한다
+    await insert("task", "internal", "1 hour", "1 hour");
+    await asUser(db, carol, async () => {
+      const { rows } = await db.query<{ count: number; reason: string | null }>(
+        `select count(*)::int as count, (array_agg(processing_error_code order by processed_at desc nulls last))[1] as reason
+         from public.sources
+         where processing_status = 'failed' and kind <> 'task' and processed_at >= now() - interval '24 hours'`,
+      );
+      expect(rows).toEqual([{ count: 1, reason: "expired" }]);
+    });
+  });
+
   it("GET /api/v1/now가 쓰는 실패 원문 부분 인덱스가 있다", async () => {
     const { rows } = await db.query<{ indexdef: string }>(`select indexdef from pg_indexes where indexname = 'sources_failed_idx'`);
     expect(rows).toHaveLength(1);

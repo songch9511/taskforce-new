@@ -33,11 +33,12 @@ const eslintConfig = defineConfig([
           ],
         },
       ],
-      // 동적 import도 같다 (no-restricted-imports는 import()를 보지 않는다)
+      // 동적 import도 같다 (no-restricted-imports는 import()를 보지 않는다). 경로 조각이 정확히 execution인 문자열만 본다
+      // (esquery 정규식에는 /를 못 써서 \x2F로 적는다). 템플릿 문자열로 만든 import()는 잡지 못한다
       "no-restricted-syntax": [
         "error",
         {
-          selector: "ImportExpression[source.value=/(^|\\W)execution(\\W|$)/]",
+          selector: "ImportExpression[source.value=/(^|\\x2F)execution(\\x2F|$)/]",
           message: "원문 처리 · 파이프라인(무료 발견)은 실행(src/lib/execution)을 부르지 않는다 (A44 과금 경계).",
         },
       ],

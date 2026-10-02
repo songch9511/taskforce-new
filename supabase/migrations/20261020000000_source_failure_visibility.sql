@@ -15,7 +15,7 @@ set lock_timeout = '5s';
 alter table public.sources add column if not exists processing_error_code text
   check (processing_error_code in ('ai_quota', 'ai_timeout', 'ai_output', 'consent', 'expired', 'internal'));
 
--- GET /api/v1/now가 요청마다 사용자의 실패 원문 수와 마지막 실패를 읽는다 (재처리 창 안의 글 원문). 실패는 드물어 부분 인덱스는 작다.
+-- GET /api/v1/now가 요청마다 사용자의 실패 원문 수와 마지막 실패를 읽는다 (실패한 지 하루 안의 글 원문, processed_at으로 거름). 실패는 드물어 부분 인덱스는 작다.
 create index if not exists sources_failed_idx on public.sources (user_id, processed_at desc nulls last) where processing_status = 'failed';
 
 -- 2) 지표 이벤트 source_failed: 원문을 더 다시 처리하지 않기로 실패로 닫았을 때 한 줄

@@ -6,7 +6,7 @@ import { sourceFailureCodeSchema, type FailedSources, type NowResponse } from "@
 import { errorResponse, unauthorized } from "@/lib/api/respond";
 import { weeklyCheckEnabled } from "@/lib/env";
 import { previousKstWeek, weeklyCheckDue } from "@/lib/metrics/weekly-check";
-import { RETRY_WINDOW_MS } from "@/lib/sources/retry";
+import { RETRY_WINDOW_MS } from "@/lib/sources/retry-window";
 
 // 지금 할 일 순서와 확인 요청 목록, 이번 주에 물을 주간 질문, 처리에 실패한 원문 수. 순서 계산은 서버에만 둔다 (앱에 같은 로직을 두지 않는다).
 export async function GET(request: Request) {
@@ -45,8 +45,10 @@ async function weeklyCheck(client: SupabaseClient, now: Date): Promise<NowRespon
 
 /**
  * 처리에 실패한 원문 수와 마지막 실패 (W4): 사용자 권한(RLS)으로 자기 원문만 센다. 원문 글은 읽지 않는다.
- * 재처리 창(들어온 지 RETRY_WINDOW_MS) 안의 글 원문만 센다: 창을 지난 실패는 다시 처리되지 않아 닫힌 것이고(lib/sources/retry.ts),
- * 할 일 DB 항목(kind task)의 실패는 다음 버전이 대신해 다시 처리되지 않는다. 둘을 세면 사라지지 않는 실패가 남는다.
+ * 실패한 지(processed_at) RETRY_WINDOW_MS 안의 글 원문만 센다: 오래된 실패를 세면 사라지지 않는 실패가 남는다.
+ * 창을 지나 멈춰 닫은 원문(expired)은 닫을 때 실패 시각이 찍혀 하루 동안 보이고, 다시 해 볼 실패로 남은 채 창이 지나 닫은 원문은
+ * 원래 실패 시각을 그대로 두어 그 시각부터 하루 뒤 빠진다 (lib/sources/retry.ts). 할 일 DB 항목(kind task)의 실패는 다음 버전이 대신해
+ * 다시 처리되지 않아 세지 않는다. 부분 인덱스 sources_failed_idx (user_id, processed_at)를 탄다.
  * 곁가지다: 못 읽으면(예: 마이그레이션 20261020000000 전) 0으로 두고 목록은 그대로 돌려준다.
  */
 async function failedSources(client: SupabaseClient, now: Date): Promise<FailedSources> {
@@ -56,7 +58,7 @@ async function failedSources(client: SupabaseClient, now: Date): Promise<FailedS
       .select("processed_at, processing_error_code", { count: "exact" })
       .eq("processing_status", "failed")
       .neq("kind", "task")
-      .gte("created_at", new Date(now.getTime() - RETRY_WINDOW_MS).toISOString())
+      .gte("processed_at", new Date(now.getTime() - RETRY_WINDOW_MS).toISOString())
       .order("processed_at", { ascending: false, nullsFirst: false })
       .limit(1)
       .throwOnError();
