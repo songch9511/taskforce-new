@@ -33,6 +33,14 @@ const eslintConfig = defineConfig([
           ],
         },
       ],
+      // 동적 import도 같다 (no-restricted-imports는 import()를 보지 않는다)
+      "no-restricted-syntax": [
+        "error",
+        {
+          selector: "ImportExpression[source.value=/(^|\\W)execution(\\W|$)/]",
+          message: "원문 처리 · 파이프라인(무료 발견)은 실행(src/lib/execution)을 부르지 않는다 (A44 과금 경계).",
+        },
+      ],
     },
   },
 ]);

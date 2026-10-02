@@ -1,5 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { authenticateRequest } from "@/lib/api/auth";
 import { nowResponseSchema } from "@/lib/api/contract";
@@ -33,6 +33,14 @@ function fakeClient(result: () => { data: unknown; count: number | null }) {
           query.filters.push(`eq ${column} ${value}`);
           return q;
         },
+        neq: (column: string, value: string) => {
+          query.filters.push(`neq ${column} ${value}`);
+          return q;
+        },
+        gte: (column: string, value: string) => {
+          query.filters.push(`gte ${column} ${value}`);
+          return q;
+        },
         order: (column: string, options: unknown) => {
           query.filters.push(`order ${column} ${JSON.stringify(options)}`);
           return q;
@@ -51,12 +59,20 @@ function fakeClient(result: () => { data: unknown; count: number | null }) {
 
 const get = () => GET(new Request("https://api.example.dev/api/v1/now", { headers: { Authorization: "Bearer t" } }));
 
+const NOW = new Date("2026-10-02T12:00:00.000Z");
+
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(NOW);
+});
+
+afterEach(() => {
+  vi.useRealTimers();
 });
 
 describe("GET /api/v1/now failed_sources", () => {
-  it("실패 원문 수 · 마지막 실패 시각 · 까닭을 돌려준다. 글은 읽지 않고 실패한 것만 최근 순으로 하나 본다", async () => {
+  it("실패 원문 수 · 마지막 실패 시각 · 까닭을 돌려준다. 글은 읽지 않고, 재처리 창(하루) 안의 글 원문 실패만 최근 순으로 하나 본다", async () => {
     const { client, queries } = fakeClient(() => ({ data: [{ processed_at: "2026-10-02T03:00:00.000Z", processing_error_code: "ai_quota" }], count: 3 }));
     vi.mocked(authenticateRequest).mockResolvedValue({ user: { id: "u1" }, supabase: client } as never);
 
@@ -69,7 +85,14 @@ describe("GET /api/v1/now failed_sources", () => {
         table: "sources",
         select: "processed_at, processing_error_code",
         options: { count: "exact" },
-        filters: ["eq processing_status failed", 'order processed_at {"ascending":false,"nullsFirst":false}', "limit 1"],
+        filters: [
+          "eq processing_status failed",
+          // 할 일 DB 항목의 실패는 다음 버전이 대신해 다시 처리되지 않고, 창을 지난 실패는 닫힌 것이라 세지 않는다 (사라지지 않는 실패)
+          "neq kind task",
+          "gte created_at 2026-10-01T12:00:00.000Z",
+          'order processed_at {"ascending":false,"nullsFirst":false}',
+          "limit 1",
+        ],
       },
     ]);
   });

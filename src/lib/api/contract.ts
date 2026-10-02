@@ -115,13 +115,14 @@ export const sourceFailureCodeSchema = z.enum(SOURCE_FAILURE_CODES);
 export type SourceFailureCode = z.infer<typeof sourceFailureCodeSchema>;
 
 /**
- * 처리에 실패한 원문 (processing_status failed, 다시 처리를 기다리는 것 포함). 앱이 목록이 비었을 때 "All caught up" 대신 실패를 보인다.
- * 실패 원문 목록은 앱이 RLS로 직접 읽는다 (sources: processing_status = 'failed', processing_error_code).
+ * 처리에 실패한 원문: 들어온 지 하루(재처리 창) 안의 글 원문 중 processing_status failed (다시 처리를 기다리는 것 포함, 할 일 DB 항목 제외).
+ * 창을 지난 실패는 다시 처리되지 않아 닫힌 것이라 세지 않는다. 앱이 목록이 비었을 때 "All caught up" 대신 실패를 보인다.
+ * 실패 원문 목록은 앱이 RLS로 직접 읽는다 (sources: processing_status = 'failed', processing_error_code. 같은 범위로 거른다).
  */
 export const failedSourcesSchema = z.object({
   count: z.number().int().nonnegative(),
   /** 마지막 실패 시각 (없으면 null) */
-  latest_at: z.string().nullable(),
+  latest_at: z.iso.datetime({ offset: true }).nullable(),
   /** 마지막 실패의 까닭. 없거나 까닭을 기록하기 전(20261020000000 전)의 실패면 null */
   reason: sourceFailureCodeSchema.nullable(),
 });

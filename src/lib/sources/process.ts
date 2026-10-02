@@ -138,6 +138,9 @@ export const PROCESSING_FAILED_MESSAGE = "처리 중 오류가 발생했습니�
 /** AI 공급자(OpenRouter)가 한도 · 잔액으로 거절한 응답 코드. 402 잔액 부족, 403 키 사용 한도 (2026-09-30 한도 도달 때 모든 호출이 403, 런북 I9) */
 const AI_QUOTA_STATUSES = new Set([402, 403]);
 
+/** AI 설정 오류(키 · 모델 환경변수가 없음, LLM_OVERRUN_REASONING_EFFORT 값이 틀림)의 문구에는 환경변수 이름이 들어 있다 */
+const AI_CONFIG_ERROR = /[A-Z0-9]+_[A-Z0-9_]+/;
+
 /**
  * 처리 실패의 까닭 코드 (sources.processing_error_code, 앱 · 지표가 본다). AI 호출 오류는 응답 코드 · 시간 초과 · 응답 형식으로 가른다.
  * 오류 문구는 lib/ai의 llm.ts · jev.ts · embed.ts가 만든 것이다: "… 요청 실패 (상태 코드)" · "… 시간 초과 …" (process.test.ts가 실제 함수의 오류로 고정한다).
@@ -148,6 +151,8 @@ export function sourceFailureCode(error: unknown): SourceFailureCode {
   // 배경 처리의 임베딩은 시간 초과를 그대로 던진다 (embed.ts)
   if (error instanceof DOMException && error.name === "TimeoutError") return "ai_timeout";
   if (!(error instanceof LlmError || error instanceof JevError || error instanceof EmbedError)) return "internal";
+  // 운영 설정 문제지 AI 응답 문제가 아니다
+  if (AI_CONFIG_ERROR.test(error.message)) return "internal";
   const status = /요청 실패 \((\d{3})\)/.exec(error.message)?.[1];
   if (status) return AI_QUOTA_STATUSES.has(Number(status)) ? "ai_quota" : "internal";
   if ((error instanceof LlmError && error.kind === "timeout") || /시간 초과/.test(error.message)) return "ai_timeout";
@@ -319,7 +324,7 @@ export async function processSource(
     // 서버 로그에는 원인을, 사용자에게는 원문 · 내부 정보가 없는 문구만 남긴다.
     console.error(`원문 처리 실패 (${sourceId}):`, error instanceof Error ? error.message : error);
     const summary = failureSummary(error, attempt);
-    await scoped(
+    const { error: recordError } = await scoped(
       admin.from("sources").update({
         processing_status: "failed",
         processed_at: new Date().toISOString(),
@@ -328,8 +333,9 @@ export async function processSource(
         processing_summary: summary,
       }),
     );
-    // 더 다시 하지 않는 실패(동의 철회 · 마지막 시도)는 닫힌 실패로 센다
-    if (!summary.retryable) await recordSourceFailed(admin, source);
+    if (recordError) console.error(`원문 실패 기록 실패 (${sourceId}):`, recordError.message);
+    // 더 다시 하지 않는 실패(동의 철회 · 마지막 시도)는 닫힌 실패로 센다. 실패로 기록하지 못했으면 닫히지 않은 것이라 세지 않는다
+    else if (!summary.retryable) await recordSourceFailed(admin, source);
     if (error instanceof ConsentRequiredError) throw error;
     return { ok: false, needsConfirmation: [] };
   }

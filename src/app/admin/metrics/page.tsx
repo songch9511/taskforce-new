@@ -254,7 +254,8 @@ export default async function MetricsPage({ searchParams }: { searchParams: Prom
           <CardTitle>발견 원가 ${usd(cost.totalUsd)}</CardTitle>
           <CardDescription>
             기간 안에 처리를 마친 원문 {cost.sources}개의 AI 원가 (추출 + 판정, 사용자에게 청구하지 않음). 매칭 · 임베딩 · 실패한 시도의 원가는 빠져 있어 실제보다
-            적습니다. 날짜는 UTC (운영 키 하루 한도가 UTC 0시에 풀립니다). 더 다시 처리하지 않기로 실패로 닫은 원문 {failures.closed}개
+            적습니다. 시험용 원문([E2E 테스트])도 같은 키 한도를 쓰므로 원가 · 실패 수에 들어 있습니다. 날짜는 UTC (운영 키 하루 한도가 UTC 0시에 풀립니다).
+            더 다시 처리하지 않기로 실패로 닫은 원문 {failures.closed}개
             {failures.byProvider.length > 0 && ` (${failures.byProvider.map((f) => `${PROVIDER_LABELS[f.provider] ?? (f.provider === "direct" ? "직접 넣음" : f.provider)} ${f.count}`).join(" · ")})`}.
           </CardDescription>
         </CardHeader>

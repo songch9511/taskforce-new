@@ -16,6 +16,7 @@ import { failureSummary, processSource, PROCESSING_FAILED_MESSAGE, recordSourceF
 // 앞선 시도가 이미 반영한 후보는 processSource가 빼고 병합한다 (근거가 두 번 붙지 않게).
 // 들어온 지 RETRY_WINDOW_MS가 지난 뒤에도 처리 중 · 대기에 멈춘 원문(동의하지 않은 사용자의 것, 후보 밖이었던 것, 창이 닫히기 전 마지막
 // 시도에서 함수가 끊긴 것)은 다시 처리하지 않고 실패로 닫는다: 그대로 두면 영영 "처리 중"이다 (한 번에 EXPIRE_BATCH건까지).
+// 다시 해 볼 만한 실패로 남았는데 다음 시도 전에 창이 지난 원문도 더 다시 하지 않는 실패로 닫는다 (까닭 코드 · 문구는 그대로).
 
 /** 처리 중 · 대기에 이만큼 멈춰 있으면 함수가 끊긴 것으로 본다 (원문을 처리하는 함수의 실행 한도 300초보다 넉넉히) */
 export const STALE_PROCESSING_MS = 15 * 60_000;
@@ -48,8 +49,13 @@ export type RetryCandidate = {
   created_at: string;
 };
 
-/** 창을 지나 멈춘 원문을 닫는 데 필요한 것만 (글은 읽지 않는다). kind는 글 종류가 아니어도 받아 task를 다시 걸러낸다 */
-export type ExpiredCandidate = Pick<RetryCandidate, "id" | "user_id" | "processing_status" | "processing_summary" | "created_at"> & { kind: string };
+/**
+ * 창을 지나 멈춘 원문 · 창을 지난 다시 해 볼 만한 실패를 닫는 데 필요한 것만 (글은 읽지 않는다). kind는 글 종류가 아니어도 받아 task를 다시 걸러낸다.
+ * processing_error는 시도 기록이 생기기 전의 실패가 동의 철회인지 가르는 데만 쓴다 (retryPlan과 같다).
+ */
+export type ExpiredCandidate = Pick<RetryCandidate, "id" | "user_id" | "processing_status" | "processing_summary" | "processing_error" | "created_at"> & {
+  kind: string;
+};
 
 /** retry: 이번 시도 번호로 다시 처리한다. give_up: 멈춘 채 시도를 다 써서 실패로 닫는다 */
 export type RetryPlan = { kind: "retry"; attempt: number } | { kind: "give_up"; attempt: number };
@@ -60,6 +66,10 @@ const numberOr = (value: unknown, fallback: number) => (typeof value === "number
 const attemptOf = (row: Pick<RetryCandidate, "processing_status" | "processing_summary">) =>
   numberOr(row.processing_summary?.attempt, row.processing_status === "pending" ? 0 : 1);
 
+/** 실패한 원문을 다시 해 볼 만한가. 시도 기록이 생기기 전에 실패한 원문은 오류 문구로 가른다 (동의 철회는 다시 하지 않는다) */
+const failureRetryable = (row: Pick<RetryCandidate, "processing_summary" | "processing_error">) =>
+  typeof row.processing_summary?.retryable === "boolean" ? row.processing_summary.retryable : row.processing_error !== CONSENT_WITHDRAWN_MESSAGE;
+
 /** 이 원문을 지금 어떻게 할지 (아직 기다리거나 대상이 아니면 null) */
 export function retryPlan(row: RetryCandidate, now: Date): RetryPlan | null {
   const summary = row.processing_summary ?? {};
@@ -67,9 +77,7 @@ export function retryPlan(row: RetryCandidate, now: Date): RetryPlan | null {
   // 기록된 시각이 없으면 들어온 시각으로 본다
   const elapsed = (at: unknown) => now.getTime() - new Date(typeof at === "string" ? at : row.created_at).getTime();
   if (row.processing_status === "failed") {
-    // 시도 기록이 생기기 전에 실패한 원문은 오류 문구로 가른다 (동의 철회는 다시 하지 않는다)
-    const retryable = typeof summary.retryable === "boolean" ? summary.retryable : row.processing_error !== CONSENT_WITHDRAWN_MESSAGE;
-    if (!retryable || attempt >= RETRY_MAX_ATTEMPTS) return null;
+    if (!failureRetryable(row) || attempt >= RETRY_MAX_ATTEMPTS) return null;
     const delay = RETRY_DELAYS_MS[Math.min(attempt, RETRY_DELAYS_MS.length) - 1];
     return elapsed(summary.failed_at) >= delay ? { kind: "retry", attempt: attempt + 1 } : null;
   }
@@ -81,15 +89,17 @@ export function retryPlan(row: RetryCandidate, now: Date): RetryPlan | null {
 }
 
 /**
- * 다시 처리하지 않고 실패로 닫을 원문인가: 들어온 지 RETRY_WINDOW_MS가 지났고 처리 중 · 대기에 STALE_PROCESSING_MS 넘게 멈춘 글 원문.
- * 닫을 때 기록할 시도 번호를 돌려준다 (아니면 null). 처리 창 안의 원문 · 아직 돌고 있을 수 있는 원문 · 할 일 DB 항목은 건드리지 않는다.
+ * 다시 처리하지 않고 실패로 닫을 원문인가: 들어온 지 RETRY_WINDOW_MS가 지났고 처리 중 · 대기에 STALE_PROCESSING_MS 넘게 멈춘 글 원문,
+ * 또는 들어온 지 RETRY_WINDOW_MS가 지난 다시 해 볼 만한 실패(다음 시도 전에 창이 지남).
+ * 닫을 때 기록할 시도 번호를 돌려준다 (아니면 null). 처리 창 안의 원문 · 아직 돌고 있을 수 있는 원문 · 할 일 DB 항목 · 이미 닫힌 실패는 건드리지 않는다.
  */
 export function expiredAttempt(row: ExpiredCandidate, now: Date): number | null {
   if (row.kind === "task") return null;
-  if (row.processing_status !== "processing" && row.processing_status !== "pending") return null;
   const age = (at: string) => now.getTime() - new Date(at).getTime();
   // 창 안(candidates의 created_at >= 창 시작)이면 다시 처리 대상이다
   if (age(row.created_at) <= RETRY_WINDOW_MS) return null;
+  if (row.processing_status === "failed") return failureRetryable(row) ? attemptOf(row) : null;
+  if (row.processing_status !== "processing" && row.processing_status !== "pending") return null;
   // 기록된 시각이 없으면 들어온 시각으로 본다 (retryPlan과 같다)
   const startedAt = row.processing_summary?.started_at;
   if (age(typeof startedAt === "string" ? startedAt : row.created_at) < STALE_PROCESSING_MS) return null;
@@ -108,9 +118,12 @@ export type RetryDeps = {
   process: (row: RetryCandidate, identity: UserIdentity, attempt: number) => Promise<boolean>;
   /** 멈춘 채 시도를 다 쓴 원문을 실패로 닫는다 (읽은 뒤 바뀌지 않았을 때만). 닫았으면 true */
   giveUp: (row: RetryCandidate, attempt: number) => Promise<boolean>;
-  /** createdBefore 전에 들어와 startedBefore 전부터 처리 중 · 대기에 멈춘 글 원문 (들어온 순서로 limit건까지) */
+  /**
+   * createdBefore 전에 들어와 startedBefore 전부터 처리 중 · 대기에 멈춘 글 원문과, createdBefore 전에 들어온 다시 해 볼 만한 실패
+   * (들어온 순서로 limit건까지)
+   */
   expired: (range: { createdBefore: Date; startedBefore: Date; limit: number }) => Promise<ExpiredCandidate[]>;
-  /** 창을 지나 멈춘 원문을 실패로 닫는다 (읽은 뒤 바뀌지 않았을 때만). 닫았으면 true */
+  /** 창을 지나 멈춘 원문 · 창을 지난 다시 해 볼 만한 실패를 더 다시 하지 않는 실패로 닫는다 (읽은 뒤 바뀌지 않았을 때만). 닫았으면 true */
   expire: (row: ExpiredCandidate, attempt: number) => Promise<boolean>;
   /** 처리 도중 Slack 연결을 끊었으면 이번 처리가 쓴 글자도 지운다 (D3) */
   repurge: (row: RetryCandidate) => Promise<void>;
@@ -234,6 +247,16 @@ async function closeFailed(admin: SupabaseClient, row: ExpiredCandidate, attempt
   return closed;
 }
 
+/**
+ * 다음 시도 전에 창이 지난 다시 해 볼 만한 실패를 더 다시 하지 않는 실패로 닫는다. 실패 시각 · 문구 · 까닭 코드는 그대로 두고
+ * 처리 기록에 retryable false와 닫은 까닭만 더한다. 닫았으면 source_failed를 남긴다 (다른 실행이 먼저 바꿨으면 남기지 않는다).
+ */
+async function closeAgedOutFailure(admin: SupabaseClient, row: ExpiredCandidate) {
+  const closed = await updateIfUnchanged(admin, row, { processing_summary: { ...row.processing_summary, retryable: false, closed: "expired" } });
+  if (closed) await recordSourceFailed(admin, { id: row.id, userId: row.user_id });
+  return closed;
+}
+
 /** service role로 읽고 처리한다. 후보는 RETRY_WINDOW_MS 안에 들어온 것을 오래된 순서로 limit건 (나중 원문이 앞 원문의 약속을 바꾼다) */
 export function retryDeps(admin: SupabaseClient, limit = 50): RetryDeps {
   const connectedAts = new Map<string, Promise<Date | null>>();
@@ -288,11 +311,12 @@ export function retryDeps(admin: SupabaseClient, limit = 50): RetryDeps {
       return ok;
     },
     giveUp: (row, attempt) => closeFailed(admin, row, attempt, "internal"),
-    // 글은 읽지 않는다 (닫는 데 필요 없다). 글이 지워진 원문도 닫는다: 그대로 두면 처리 중으로 남는다
+    // 글은 읽지 않는다 (닫는 데 필요 없다). 글이 지워진 원문도 닫는다: 그대로 두면 처리 중 · 다시 해 볼 실패로 남는다
     expired: async ({ createdBefore, startedBefore, limit }) => {
-      const { data } = await admin
+      const columns = "id, user_id, kind, processing_status, processing_summary, processing_error, created_at";
+      const { data: stalled } = await admin
         .from("sources")
-        .select("id, user_id, kind, processing_status, processing_summary, created_at")
+        .select(columns)
         .in("processing_status", ["pending", "processing"])
         .neq("kind", "task")
         .lt("created_at", createdBefore.toISOString())
@@ -300,9 +324,21 @@ export function retryDeps(admin: SupabaseClient, limit = 50): RetryDeps {
         .order("created_at", { ascending: true })
         .limit(limit)
         .throwOnError();
-      return (data ?? []) as ExpiredCandidate[];
+      // 다시 해 볼 만한 실패로 남았는데 창이 지난 것 (candidates와 같은 retryable 조건)
+      const { data: failed } = await admin
+        .from("sources")
+        .select(columns)
+        .eq("processing_status", "failed")
+        .neq("kind", "task")
+        .lt("created_at", createdBefore.toISOString())
+        .or("processing_summary->>retryable.is.null,processing_summary->>retryable.eq.true")
+        .order("created_at", { ascending: true })
+        .limit(limit)
+        .throwOnError();
+      return ([...(stalled ?? []), ...(failed ?? [])] as ExpiredCandidate[]).sort((a, b) => a.created_at.localeCompare(b.created_at)).slice(0, limit);
     },
-    expire: (row, attempt) => closeFailed(admin, row, attempt, "expired", { closed: "expired" }),
+    expire: (row, attempt) =>
+      row.processing_status === "failed" ? closeAgedOutFailure(admin, row) : closeFailed(admin, row, attempt, "expired", { closed: "expired" }),
     repurge: async (row) => {
       await admin.rpc("slack_repurge_if_disconnected", { p_user_id: row.user_id, p_source_id: row.id }).throwOnError();
     },

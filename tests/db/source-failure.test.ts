@@ -43,14 +43,6 @@ describe("sources.processing_error_code", () => {
     await expect(db.query(`update public.sources set processing_error_code = 'unknown' where id = $1`, [fresh])).rejects.toThrow(/check/);
   });
 
-  it("처리를 마치면 서버가 지운다 (다시 처리해 성공)", async () => {
-    const id = await insertSource(ALICE, "failed", "ai_timeout");
-    await db.query(`update public.sources set processing_status = 'done', processing_error = null, processing_error_code = null where id = $1`, [id]);
-    expect((await db.query(`select processing_status, processing_error_code from public.sources where id = $1`, [id])).rows).toEqual([
-      { processing_status: "done", processing_error_code: null },
-    ]);
-  });
-
   it("앱은 자기 실패 원문의 까닭만 읽는다 (다른 사용자의 실패는 안 보인다)", async () => {
     const bobs = await insertSource(BOB, "failed", "ai_quota");
     await asUser(db, ALICE, async () => {

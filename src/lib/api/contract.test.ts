@@ -94,6 +94,9 @@ describe("GET /now failed_sources (W4)", () => {
   it("실패 원문 수 · 마지막 실패 시각 · 까닭이 항상 있다. 까닭은 정해진 코드나 null(기록 전 실패)", () => {
     expect(response({ count: 2, latest_at: "2026-10-02T03:00:00.000Z", reason: "ai_quota" }).success).toBe(true);
     expect(response({ count: 1, latest_at: "2026-09-29T03:00:00.000Z", reason: null }).success).toBe(true);
+    // DB의 timestamptz(오프셋 포함) 그대로
+    expect(response({ count: 1, latest_at: "2026-10-02T03:00:00.123456+00:00", reason: "ai_timeout" }).success).toBe(true);
+    expect(response({ count: 1, latest_at: "yesterday", reason: null }).success).toBe(false);
     expect(response({ count: 1, latest_at: null, reason: "rate_limited" }).success).toBe(false);
     expect(response({ count: -1, latest_at: null, reason: null }).success).toBe(false);
     expect(nowResponseSchema.safeParse({ now: [], confirmations: [], weekly_check: null }).success).toBe(false);

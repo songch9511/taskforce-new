@@ -3,9 +3,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 
 import { DeadlineExceededError } from "@/lib/ai/deadline";
-import { embed } from "@/lib/ai/embed";
-import { decide } from "@/lib/ai/jev";
-import { completeJson, LlmError } from "@/lib/ai/llm";
+import { embed, embedConfigFromEnv } from "@/lib/ai/embed";
+import { decide, jevConfigFromEnv } from "@/lib/ai/jev";
+import { completeJson, llmConfigFromEnv, LlmError } from "@/lib/ai/llm";
 import { ConsentRequiredError } from "@/lib/consent/gate";
 import type { ActionStore } from "@/lib/pipeline/merge";
 import { mergeJudged } from "@/lib/pipeline/merge";
@@ -170,6 +170,21 @@ describe("sourceFailureCode: 처리 실패의 까닭 코드", () => {
     expect(sourceFailureCode(await emb(respond(200, { data: [] })))).toBe("ai_output");
   });
 
+  it("AI 설정 오류(키 · 모델 환경변수 없음, 추론량 제한 값이 틀림)는 AI 응답 문제가 아니라 internal", () => {
+    const configError = (make: () => unknown) => {
+      try {
+        make();
+      } catch (error) {
+        return error;
+      }
+      return expect.fail("설정 오류가 나야 한다");
+    };
+    expect(sourceFailureCode(configError(() => llmConfigFromEnv({})))).toBe("internal");
+    expect(sourceFailureCode(configError(() => llmConfigFromEnv({ OPENROUTER_API_KEY: "k", LLM_MODEL: "m", LLM_OVERRUN_REASONING_EFFORT: "max" })))).toBe("internal");
+    expect(sourceFailureCode(configError(() => jevConfigFromEnv({})))).toBe("internal");
+    expect(sourceFailureCode(configError(() => embedConfigFromEnv({})))).toBe("internal");
+  });
+
   it("동의 철회는 consent, 그 밖(DB 오류 · 병합 대기 마감)은 internal", () => {
     expect(sourceFailureCode(new ConsentRequiredError())).toBe("consent");
     expect(sourceFailureCode(new Error("connection refused"))).toBe("internal");
@@ -182,8 +197,11 @@ describe("processSource: 실패 기록 (W4)", () => {
   const input = { text: "금요일까지 견적서 보낼게요", kind: "message" as const, occurredAt: new Date("2026-10-02T00:00:00.000Z"), identity: { name: "나", aliases: [], emails: [] } };
   const deps = { complete: vi.fn(), decide: vi.fn(), embed: vi.fn() };
 
-  /** 표마다 준비한 응답을 돌려주고, 바꾼 값 · 넣은 행을 기록하는 가짜 service role 클라이언트 */
-  function failingAdmin(responses: Record<string, unknown> = {}) {
+  /**
+   * 표마다 준비한 응답을 돌려주고, 바꾼 값 · 넣은 행을 기록하는 가짜 service role 클라이언트.
+   * throwOnError 없이 기다리는 쿼리(실패 기록)는 updateError를 오류로 돌려준다
+   */
+  function failingAdmin(responses: Record<string, unknown> = {}, updateError: { message: string } | null = null) {
     const updates: Record<string, unknown>[] = [];
     const inserts: { table: string; rows: unknown }[] = [];
     let table = "";
@@ -191,9 +209,9 @@ describe("processSource: 실패 기록 (W4)", () => {
       {},
       {
         get: (_target, method) =>
-          // 실패 기록은 결과를 기다리기만 한다(throwOnError 없이 await): then이 없어야 바로 끝난다
+          // 실패 기록은 throwOnError 없이 결과의 error를 본다
           method === "then"
-            ? undefined
+            ? (resolve: (value: unknown) => void) => resolve({ data: null, error: updateError })
             : method === "throwOnError"
               ? async () => ({ data: responses[table] ?? null })
               : (...args: unknown[]) => {
@@ -251,6 +269,15 @@ describe("processSource: 실패 기록 (W4)", () => {
 
     await processSource(admin, { id: "s1", userId: "u1", attempt: 2, retry: true }, input, deps);
     expect(updates.at(-1)).toMatchObject({ processing_status: "done", processing_error: null, processing_error_code: null });
+  });
+
+  it("실패로 기록하지 못했으면(sources 갱신 오류) 닫힌 실패로 세지 않는다", async () => {
+    vi.mocked(runPipeline).mockRejectedValueOnce(new ConsentRequiredError());
+    const { admin, inserts } = failingAdmin({ sources: { connection_id: null } }, { message: "column does not exist" });
+
+    await expect(processSource(admin, { id: "s1", userId: "u1" }, input, deps)).rejects.toBeInstanceOf(ConsentRequiredError);
+    expect(inserts.filter((i) => i.table === "metric_events")).toEqual([]);
+    expect(console.error).toHaveBeenCalledWith("원문 실패 기록 실패 (s1):", "column does not exist");
   });
 
   it("source_failed 기록이 실패해도 처리 결과는 그대로다. 로그에는 원문 id와 오류만 남는다", async () => {
