@@ -237,6 +237,7 @@ describe("A29: B2 실행기 (외부 효과 한 번, 모르면 결과 불명)", (
     ["원문 revision", "update public.execution_steps set source_revision = source_revision + 1 where id = $1"],
     ["정책 버전", "update public.execution_policies set version = version + 1 where user_id = (select user_id from public.execution_steps where id = $1)"],
     ["보내는 연결", `update public.execution_steps set connection_id = '${uid("conn-2")}' where id = $1`],
+    ["공급자(도구 이름은 같음)", "update public.execution_steps set provider = 'fake2' where id = $1"],
   ])("4: 승인 뒤 승인 hash 항목(%s)이 바뀌면 기존 승인으로 실행하지 않는다", async (_, change) => {
     const step = await createRun("r4", "manual");
     await fn("fn-1").start(uid("r4"));
@@ -350,18 +351,17 @@ describe("A29: B2 실행기 (외부 효과 한 번, 모르면 결과 불명)", (
     expect(await stepState(step)).toBe("called");
   });
 
-  // 운영은 사용자마다 정책이 하나라 같은 Action의 두 run은 같은 정책을 쓴다: 수동 버튼 run과 자동 trigger run, 둘 다 승인됨
-  it("6: 같은 Action · 목적 · 대상 · 회차를 두 run(수동 버튼 · 자동 trigger)이 동시에 시작해도 intent unique가 하나만 보낸다", async () => {
-    await createRun("r6-manual", "manual", undefined, "action-6");
-    await createRun("r6-auto", "manual", undefined, "action-6");
+  // 운영은 사용자마다 정책이 하나다: 같은 Auto 정책 아래, 승인이 필요한 수동 run(원문에서 나온 수신자, 사용자가 승인)과 Auto 규칙으로 나가는 run
+  it("6: 같은 Action · 목적 · 대상 · 회차를 수동 run과 자동 run이 동시에 시작해도 intent unique가 하나만 보낸다", async () => {
+    await createRun("r6-manual", "auto", [[{ address: RULE, origin: "source" }]], "action-6");
+    await createRun("r6-auto", "auto", undefined, "action-6");
     await fn("fn-0").start(uid("r6-manual"));
-    await fn("fn-0").start(uid("r6-auto"));
+    expect(await runState("r6-manual")).toBe("waiting_approval");
     await approveAsShown("r6-manual-s1");
-    await approveAsShown("r6-auto-s1");
     const bothReady = barrier(2);
     await Promise.all([
       fn("fn-1", { beforeBeginCall: bothReady }).wake(uid("r6-manual")),
-      fn("fn-2", { beforeBeginCall: bothReady }).wake(uid("r6-auto")),
+      fn("fn-2", { beforeBeginCall: bothReady }).start(uid("r6-auto")),
     ]);
     await fn("cron").sweep();
     expect(await effects()).toBe(1);
@@ -552,6 +552,9 @@ describe("A29: 내부 효과 · 허용 목록 · 도구 목록", () => {
     expect(await stepOf(runId)).toEqual({ state: "prepared", attempt: 1 });
     await fn("fn-2").wake(runId);
     expect(await stepOf(runId)).toEqual({ state: "called", attempt: 1 });
+    // 계획 단계는 결과 없이 끝내면 run을 닫지 않는다 (planner가 다음 단계를 붙일 수 있다). 붙인 것이 없으면 다음 깨우기가 닫는다
+    expect(await runOf(runId)).toBe("running");
+    await fn("fn-3").wake(runId);
     expect(await runOf(runId)).toBe("done");
     expect(await effects()).toBe(2);
     expect(new Set((await ledger()).map((row) => row.marker)).size).toBe(1);
@@ -605,5 +608,66 @@ describe("A29: 내부 효과 · 허용 목록 · 도구 목록", () => {
     await fn("cron").sweep();
     expect(await effects()).toBe(0);
     expect(await holdReason("r33")).toBe("blocked");
+  });
+
+  it("외부 단계에 수신자가 없으면(대상을 인자에만 적음) Auto 규칙도 승인도 통과시키지 않는다", async () => {
+    const step = await createRun("r34", "auto", [[]]);
+    await db.query(`update public.execution_steps set args = '{"to": "stranger@example.net"}' where id = $1`, [uid(step)]);
+    await fn("fn-1").start(uid("r34"));
+    const { rows } = await db.query<{ needs_approval: boolean }>("select needs_approval from public.execution_steps where id = $1", [uid(step)]);
+    expect(rows[0].needs_approval).toBe(true); // 수신자 없이는 Auto 규칙을 충족하지 못한다
+    expect(await holdReason("r34")).toBe("blocked");
+    expect(await approveAsShown(step)).toBe(true);
+    await fn("fn-2").wake(uid("r34"));
+    await fn("cron").sweep();
+    expect(await effects()).toBe(0);
+    expect(await stepState(step)).toBe("prepared");
+  });
+
+  it("보내는 연결이 없는 외부 단계는 부르지 않고 막힌 이유를 needs_connection으로 둔다", async () => {
+    const step = await createRun("r38", "auto");
+    await db.query("update public.execution_steps set connection_id = null where id = $1", [uid(step)]);
+    await fn("fn-1").start(uid("r38"));
+    expect(await effects()).toBe(0);
+    expect(await stepState(step)).toBe("prepared");
+    expect(await holdReason("r38")).toBe("needs_connection");
+  });
+
+  it("이미 보낸 외부 단계를 서버 권한으로 prepared로 되돌려도 같은 표식으로 다시 보내지 않고 건너뛴다", async () => {
+    await createRun("r35", "auto");
+    await fn("fn-1").start(uid("r35"));
+    expect(await effects()).toBe(1);
+    await db.query("update public.execution_steps set state = 'prepared', version = version + 1 where id = $1", [uid("r35-s1")]);
+    await db.query("update public.execution_runs set state = 'running' where id = $1", [uid("r35")]);
+    await fn("fn-2").wake(uid("r35"));
+    await fn("cron").sweep();
+    expect(await effects()).toBe(1);
+    expect(await stepState("r35-s1")).toBe("skipped");
+  });
+
+  it("앞 단계가 결과 불명이면 뒤 단계를 직접 준비해 불러도 begin_call이 거절한다", async () => {
+    await createRun("r36", "auto", [[user()], [user(RULE2)]]);
+    provider.onAccepted = () => {
+      throw new Error("timeout");
+    };
+    await fn("fn-1").start(uid("r36"));
+    provider.onAccepted = undefined;
+    expect(await stepState("r36-s1")).toBe("unknown_outcome");
+    await db.query("select public.prepare_step($1, 0)", [uid("r36-s2")]);
+    const { rows } = await db.query<{ g: { gate: string } }>("select public.begin_call($1, 'fn-2', 1) as g", [uid("r36-s2")]);
+    expect(rows[0].g.gate).toBe("stale");
+    expect(await stepState("r36-s2")).toBe("prepared");
+    expect(await effects()).toBe(1);
+  });
+
+  it("내부 효과(초안)에 적힌 받을 사람은 수신자 허용 목록 밖이어도 막지 않는다 (허용 목록 · 승인은 외부 효과에만)", async () => {
+    const runId = await createDraftRun("r37");
+    await db.query("update public.execution_steps set recipients = $2::jsonb where run_id = $1", [
+      runId,
+      JSON.stringify([{ address: "outside@example.com", origin: "model" }]),
+    ]);
+    await fn("fn-1").start(runId);
+    expect(await effects()).toBe(1);
+    expect(await stepOf(runId)).toEqual({ state: "called", attempt: 0 });
   });
 });

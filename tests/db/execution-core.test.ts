@@ -121,19 +121,21 @@ describe("run · 단계 만들기", () => {
     });
   });
 
-  it("append_step: 끝나지 않은 run에 기대한 순번(마지막 + 1)일 때만 붙이고, 효과 종류는 도구 목록이 정한다", async () => {
+  it("append_step: 끝나지 않은 run에 기대한 순번(마지막 + 1)일 때만 붙이고, 효과 종류는 도구 목록이 정하고, 회차는 늘 1이다", async () => {
     const { runId } = await preparedRun(ALICE);
     const append = async (seq: number, step: object) =>
       (await one<{ id: string | null }>("select public.append_step($1, $2, $3::jsonb) as id", [runId, seq, JSON.stringify(step)])).id;
-    const draft = { kind: "draft", provider: "taskforce", tool: "draft", purpose: "draft", body: "제안서 초안", estimate_credits: 30 };
+    // 모델 · planner는 회차를 늘리지 못한다: 넘겨도 1
+    const draft = { kind: "draft", provider: "taskforce", tool: "draft", purpose: "draft", body: "제안서 초안", estimate_credits: 30, occurrence: 5 };
 
     const id = await append(2, draft);
     expect(id).toEqual(expect.any(String));
-    expect(await one("select seq, effect_class, body, estimate_credits, user_id from public.execution_steps where id = $1", [id])).toEqual({
+    expect(await one("select seq, effect_class, body, estimate_credits, occurrence, user_id from public.execution_steps where id = $1", [id])).toEqual({
       seq: 2,
       effect_class: "internal",
       body: "제안서 초안",
       estimate_credits: 30,
+      occurrence: 1,
       user_id: ALICE,
     });
     expect(await append(2, draft)).toBeNull(); // 다른 함수가 먼저 붙였다
@@ -143,8 +145,24 @@ describe("run · 단계 만들기", () => {
     const unknown = await append(3, { kind: "external", provider: "gmail", tool: "send", purpose: "send", effect_class: "internal" });
     expect((await one<{ effect_class: string }>("select effect_class from public.execution_steps where id = $1", [unknown])).effect_class).toBe("external");
 
+    // 수신자 출처는 정한 값(user · source · tool_output · model)만, 주소는 비어 있지 않아야 한다
+    for (const recipients of [[{ address: "a@example.com", origin: "admin" }], [{ address: " ", origin: "user" }], [{ origin: "model" }], ["a@example.com"]]) {
+      await expect(append(4, { kind: "external", provider: "gmail", tool: "send", purpose: "send", recipients })).rejects.toThrow(/check constraint/);
+    }
+
     expect(await one<{ s: string }>("select public.stop_run($1, $2) as s", [ALICE, runId])).toEqual({ s: "stopped" });
     expect(await append(4, draft)).toBeNull(); // 멈춘 run에는 붙이지 않는다
+  });
+
+  it("approval_hash: 공급자 · 효과 종류가 바뀌어도 값이 바뀐다", async () => {
+    const { stepId } = await preparedRun(ALICE);
+    const at = new Date(Date.now() + 600_000);
+    const hash = async () => (await one<{ h: string }>("select public.approval_hash($1, $2) as h", [stepId, at])).h;
+    const before = await hash();
+    await db.query("update public.execution_steps set provider = 'other' where id = $1", [stepId]);
+    const afterProvider = await hash();
+    await db.query("update public.execution_steps set effect_class = 'external' where id = $1", [stepId]);
+    expect(new Set([before, afterProvider, await hash()]).size).toBe(3);
   });
 });
 
@@ -162,6 +180,15 @@ describe("끝내기 · 멈추기", () => {
       expect(await settle("fn-owner")).toBe(false); // 이미 끝났다
       expect(await one("select state, outcome from public.execution_runs where id = $1", [runId])).toEqual({ state: "done", outcome: "needs_connection" });
       await expect(db.query("select public.settle_step($1, 'fn-owner', 'unknown_outcome', '{}')", [stepId])).rejects.toThrow(/잘못된 상태/);
+
+      // 계획 단계를 결과 없이 끝내면 run은 그대로(planner가 다음 단계를 붙인다). 붙인 것이 없으면 finish_run이 닫는다
+      const other = await preparedRun(ALICE);
+      expect((await gate(other.stepId, "fn-owner")).gate).toBe("ok");
+      expect((await one<{ ok: boolean }>("select public.settle_step($1, 'fn-owner', 'called', '{}') as ok", [other.stepId])).ok).toBe(true);
+      expect((await one<{ state: string }>("select state from public.execution_runs where id = $1", [other.runId])).state).toBe("running");
+      expect(await one("select public.finish_run($1) as ok", [other.runId])).toEqual({ ok: true });
+      expect(await one("select gate from public.execution_events where run_id = $1 and type = 'run' and to_state = 'done'", [other.runId])).toEqual({ gate: "finish" });
+      expect(await one("select gate from public.execution_events where run_id = $1 and type = 'run' and to_state = 'done'", [runId])).toEqual({ gate: "response" });
     } finally {
       await setGlobal(true);
     }
@@ -189,8 +216,32 @@ describe("끝내기 · 멈추기", () => {
     const past = (await one<{ e: Date }>("select date_trunc('second', now() - interval '1 minute') as e")).e;
     expect(await approve(ALICE, (await one<{ h: string }>("select public.approval_hash($1, $2) as h", [stepId, past])).h, past)).toBe(false);
     expect(await approve(ALICE, shown.hash, shown.expires_at)).toBe(true);
-    expect(await one("select public.revoke_approval($1, $2) as n", [BOB, stepId])).toEqual({ n: 0 });
-    expect(await one("select public.revoke_approval($1, $2) as n", [ALICE, stepId])).toEqual({ n: 1 });
+    const revoke = async (userId: string) => (await db.query("select * from public.revoke_approval($1, $2)", [userId, stepId])).rows;
+    expect(await revoke(BOB)).toEqual([]);
+    expect(await revoke(ALICE)).toEqual([{ revoked: 1, step_state: "prepared" }]);
+
+    // 이미 부르기 시작했거나 끝난 단계는 승인하지 않고, 철회는 늦었다고 알린다
+    await db.query("update public.execution_steps set state = 'called' where id = $1", [stepId]);
+    expect(await approve(ALICE, shown.hash, shown.expires_at)).toBe(false);
+    expect(await revoke(ALICE)).toEqual([{ revoked: 0, step_state: "called" }]);
+  });
+
+  it("내부 효과 다시 준비는 lease가 끝난 단계(sweep) 또는 그 lease 소유자(응답 없음)만: 겹친 sweep이 새 lease를 건드리지 않는다", async () => {
+    await db.query("insert into public.execution_actors (user_id) values ($1) on conflict do nothing", [ALICE]);
+    await setGlobal(false);
+    try {
+      const { stepId } = await preparedRun(ALICE);
+      expect((await gate(stepId, "fn-live")).gate).toBe("ok");
+      const retry = async (owner: string | null) =>
+        (await one<{ n: number }>("select public.execution_retry_internal(array[$1]::uuid[], $2) as n", [stepId, owner])).n;
+      expect(await retry(null)).toBe(0); // lease가 살아 있다
+      expect(await retry("fn-other")).toBe(0);
+      expect(await one("select state, attempt from public.execution_steps where id = $1", [stepId])).toEqual({ state: "calling", attempt: 0 });
+      expect(await retry("fn-live")).toBe(1);
+      expect(await one("select state, attempt from public.execution_steps where id = $1", [stepId])).toEqual({ state: "prepared", attempt: 1 });
+    } finally {
+      await setGlobal(true);
+    }
   });
 });
 

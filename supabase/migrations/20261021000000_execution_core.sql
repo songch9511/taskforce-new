@@ -8,6 +8,9 @@
 --
 -- 적용: 운영 DB에는 병합 직전 승인을 받고 `supabase db query --linked -f`로 한다(db push 금지). 코드는 아직 이 표를 쓰지 않는다(PR6, 플래그 꺼짐).
 
+-- rate_limit_events 제약을 바꾸며 잠금을 잡는다: 운영에서 오래 기다리지 않고 실패하게 한다 (다시 적용하면 된다)
+set lock_timeout = '5s';
+
 -- ─────────────────────────────────────────────
 -- 0) 시각 · 주소 정규화
 -- ─────────────────────────────────────────────
@@ -29,6 +32,20 @@ set search_path = ''
 as $$
   select coalesce(jsonb_agg(distinct public.norm_address(x->>'address') order by public.norm_address(x->>'address')), '[]')
   from jsonb_array_elements(p) x
+$$;
+
+-- 단계의 수신자 목록: [{address, origin}]. 출처(origin)는 서버가 주소가 어디서 왔는지 보고 정한다 (user · source · tool_output · model).
+-- 모델 출력이 정하지 않는다: 모델이 제안한 주소는 늘 model이고, 사용자가 정한 주소만 user다 (EXECUTION 7장)
+create function public.execution_recipients_valid(p jsonb) returns boolean
+language sql immutable
+set search_path = ''
+as $$
+  select jsonb_typeof(p) = 'array' and not exists (
+    select 1 from jsonb_array_elements(p) x
+    where jsonb_typeof(x) <> 'object'
+       or coalesce(trim(x->>'address'), '') = ''
+       or coalesce(x->>'origin', '') not in ('user', 'source', 'tool_output', 'model')
+  )
 $$;
 
 -- ─────────────────────────────────────────────
@@ -58,7 +75,8 @@ create table public.execution_runs (
   budget_credits integer check (budget_credits > 0),
   state text not null default 'queued'
     check (state in ('queued', 'running', 'waiting_approval', 'done', 'failed', 'stopped')),
-  hold_reason text check (hold_reason in ('blocked', 'actor', 'credit')), -- begin_call이 막은 이유 (스위치 · 도구 · 수신자 / 실행 주체 / 크레딧)
+  -- begin_call이 막은 이유: 스위치 · 도구 · 수신자 / 실행 주체 / 보내는 연결 없음 / 크레딧(U2 PR4)
+  hold_reason text check (hold_reason in ('blocked', 'actor', 'needs_connection', 'credit')),
   outcome text check (outcome in ('draft_ready', 'needs_connection', 'needs_input')),
   created_at timestamptz not null default now(),
   unique (id, user_id),
@@ -67,6 +85,7 @@ create table public.execution_runs (
 );
 
 create index execution_runs_user_created_idx on public.execution_runs (user_id, created_at desc);
+create index execution_runs_action_idx on public.execution_runs (action_id);
 create index execution_runs_open_idx on public.execution_runs (created_at) where state in ('queued', 'running', 'waiting_approval');
 
 -- ─────────────────────────────────────────────
@@ -85,7 +104,7 @@ create table public.execution_steps (
   purpose text not null,
   occurrence integer not null default 1,        -- 회차. 사용자의 명시적 다시 보내기에서만 늘어난다
   connection_id uuid,                           -- 보내는 연결(계정). 계획의 일부라 pending을 떠나면 바꿀 수 없다
-  recipients jsonb not null default '[]' check (jsonb_typeof(recipients) = 'array'), -- [{address, origin}], origin: user | source | tool_output | model
+  recipients jsonb not null default '[]' check (public.execution_recipients_valid(recipients)), -- [{address, origin}], 출처는 서버가 정한다
   body text not null default '',
   args jsonb not null default '{}',
   source_revision integer not null default 1,
@@ -111,6 +130,7 @@ create table public.execution_steps (
 
 create index execution_steps_calling_idx on public.execution_steps (lease_expires_at) where state = 'calling';
 create index execution_steps_unknown_idx on public.execution_steps (unknown_since) where state = 'unknown_outcome';
+create index execution_steps_connection_idx on public.execution_steps (connection_id) where connection_id is not null;
 
 -- 계획(공급자 · 도구 · 효과 종류 · 목적 · 회차 · 연결 · 수신자 · 본문 · 인자 · 원문 revision)을 바꾸면 늘 pending으로 되돌리고 version을 올린다.
 -- 부르는 중 · 끝난 단계는 못 바꾼다. 예외: 연결을 끊으면(connections 삭제 → set null) 그 단계의 기록은 상태 그대로 남긴다.
@@ -222,7 +242,9 @@ create table public.execution_recipient_allowlist (
 -- ─────────────────────────────────────────────
 create table public.execution_events (
   id bigint generated always as identity primary key,
-  user_id uuid not null references auth.users (id) on delete cascade,
+  -- auth.users를 직접 가리키지 않는다: 계정 삭제 중 연결 삭제(set null)가 단계를 다시 계획하며 이벤트를 남길 때
+  -- cascade 순서와 상관없이 실패하지 않게. run 복합 FK가 user_id를 확인하고 함께 지운다
+  user_id uuid not null,
   run_id uuid not null,
   step_id uuid,
   type text not null check (type in ('run', 'step', 'hold')),
@@ -235,6 +257,7 @@ create table public.execution_events (
 );
 
 create index execution_events_run_idx on public.execution_events (run_id, at);
+create index execution_events_step_idx on public.execution_events (step_id) where step_id is not null;
 
 -- 함수는 상태를 바꾸기 전에 트랜잭션 안에서만 유효한 execution.gate를 정한다 (set_config(..., true)). 트리거가 그 값을 적는다.
 create function public.execution_runs_log() returns trigger
@@ -313,12 +336,14 @@ $$;
 -- ─────────────────────────────────────────────
 -- 8) 판단 함수
 -- ─────────────────────────────────────────────
--- 승인 없이 나갈 수 있는가: Auto/Full + 모든 수신자가 사용자에게서 + 규칙 안 + 준비할 때의 정책 버전 그대로. 모르면(NULL) 아니다
+-- 승인 없이 나갈 수 있는가: Auto/Full + 수신자가 하나 이상 + 모든 수신자가 사용자에게서 + 규칙 안 + 준비할 때의 정책 버전 그대로.
+-- 모르면(NULL) 아니다. 수신자가 없는 단계(대상을 인자에만 적은 것)는 규칙으로 판단할 수 없으므로 아니다
 create function public.auto_allowed(p_step uuid) returns boolean
 language sql stable
 set search_path = ''
 as $$
   select p.mode in ('auto', 'full') and s.policy_version = p.version
+    and jsonb_array_length(s.recipients) > 0
     and not exists (select 1 from jsonb_array_elements(s.recipients) x where coalesce(x->>'origin', '') <> 'user')
     and public.norm_addresses(s.recipients)
         <@ (select coalesce(jsonb_agg(public.norm_address(a)), '[]') from jsonb_array_elements_text(p.auto_recipients) a)
@@ -328,13 +353,15 @@ as $$
   where s.id = p_step
 $$;
 
--- 승인 hash: 도구 · 연결 · 인자 · 수신자 · 본문 hash · 원문 revision · 정책 버전 · 만료(UTC, 초 단위). 하나라도 바뀌면 값이 바뀐다
+-- 승인 hash: 공급자 · 도구 · 효과 종류 · 연결 · 인자 · 수신자 · 본문 hash · 원문 revision · 정책 버전 · 만료(UTC, 초 단위).
+-- 하나라도 바뀌면 값이 바뀐다
 create function public.approval_hash(p_step uuid, p_expires timestamptz) returns text
 language sql stable
 set search_path = ''
 as $$
   select encode(sha256(convert_to(jsonb_build_object(
-    'tool', s.tool, 'connection', s.connection_id, 'args', s.args, 'recipients', public.norm_addresses(s.recipients),
+    'provider', s.provider, 'tool', s.tool, 'effect_class', s.effect_class,
+    'connection', s.connection_id, 'args', s.args, 'recipients', public.norm_addresses(s.recipients),
     'body_sha256', encode(sha256(convert_to(s.body, 'UTF8')), 'hex'), 'source_revision', s.source_revision, 'policy_version', p.version,
     'expires_at', to_char(date_trunc('second', p_expires) at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'))::text, 'UTF8')), 'hex')
   from public.execution_steps s
@@ -375,7 +402,9 @@ $$;
 
 -- planner가 다음 단계를 붙인다. run을 잠그고, 끝나지 않은 run에 기대한 순번(지금 마지막 + 1)일 때만 넣는다 (CAS).
 -- 두 함수가 같은 계획을 붙이려 하면 하나만 들어간다. 효과 종류는 도구 목록이 정한다 (목록 밖이면 external, begin_call이 막는다).
--- p_step: {kind, provider, tool, purpose, occurrence?, connection_id?, recipients?, body?, args?, source_revision?, estimate_credits?}
+-- 회차는 늘 1이다: 모델 · planner는 회차를 늘리지 못한다 (사용자의 명시적 다시 보내기는 따로 만든다, EXECUTION 4장).
+-- 수신자 출처는 서버 코드가 주소가 어디서 왔는지 보고 정한다. 모델 출력의 출처 값을 그대로 넘기지 않는다 (형식은 제약이 확인한다).
+-- p_step: {kind, provider, tool, purpose, connection_id?, recipients?, body?, args?, source_revision?, estimate_credits?}
 create function public.append_step(p_run_id uuid, p_seq integer, p_step jsonb)
 returns uuid
 language plpgsql
@@ -394,12 +423,12 @@ begin
     return null;
   end if;
   perform set_config('execution.gate', 'append', true);
-  insert into public.execution_steps (user_id, run_id, seq, kind, provider, tool, effect_class, purpose, occurrence,
+  insert into public.execution_steps (user_id, run_id, seq, kind, provider, tool, effect_class, purpose,
                                       connection_id, recipients, body, args, source_revision, estimate_credits)
   values (
     v_user, p_run_id, p_seq, p_step->>'kind', p_step->>'provider', p_step->>'tool',
     coalesce((select t.effect_class from public.execution_tools t where t.provider = p_step->>'provider' and t.tool = p_step->>'tool'), 'external'),
-    p_step->>'purpose', coalesce((p_step->>'occurrence')::integer, 1), (p_step->>'connection_id')::uuid,
+    p_step->>'purpose', (p_step->>'connection_id')::uuid,
     coalesce(p_step->'recipients', '[]'), coalesce(p_step->>'body', ''), coalesce(p_step->'args', '{}'),
     coalesce((p_step->>'source_revision')::integer, 1), coalesce((p_step->>'estimate_credits')::integer, 0)
   )
@@ -454,9 +483,27 @@ begin
 end;
 $$;
 
+-- 같은 목적을 다른 단계가 이미 가졌다: 승인을 묻지 않고 건너뛴다(승인을 기다릴 이유가 없어졌다). 남은 단계가 없으면 run도 끝낸다
+create function public.execution_skip(p_step uuid, p_run_id uuid, p_held uuid) returns jsonb
+language plpgsql
+set search_path = ''
+as $$
+begin
+  perform set_config('execution.gate', 'duplicate', true);
+  update public.execution_steps
+    set state = 'skipped', version = version + 1, receipt = coalesce(receipt, '{}') || jsonb_build_object('duplicate_of', p_held)
+    where id = p_step;
+  update public.execution_runs set state = 'running', hold_reason = null
+    where id = p_run_id and (state <> 'running' or hold_reason is not null);
+  perform public.finish_run(p_run_id, null);
+  return '{"gate": "duplicate"}';
+end;
+$$;
+
 -- prepared → calling. RPC 하나 = READ COMMITTED 트랜잭션 하나, 외부 호출 전에 commit된다 (외부 호출은 이 안에 없다).
--- 순서: stale → stopped → 중복(intent) → 실행 주체 → 스위치 → 도구 → 수신자 → (외부만) 승인/Auto → intent + lease.
--- 잠금 순서: step → run → 정책 → 실행 주체 · 스위치 · 도구 · 수신자(for share). 끄는 쪽의 update는 이 트랜잭션이 끝날 때까지 기다린다.
+-- 순서: stale(단계 · run · 앞 단계) → stopped → 중복(intent) → 실행 주체 → 스위치 → 도구 → (외부만) 보내는 연결 → 수신자 허용 목록
+--       → 승인/Auto → intent + lease.
+-- 잠금 순서: step → run → 정책 → 실행 주체 → 스위치 → 도구 → 수신자(for share, 여러 행은 키 순서로). 끄는 쪽의 update는 이 트랜잭션이 끝날 때까지 기다린다.
 -- 검증한 그대로의 내용을 돌려준다. 실행기는 이 내용만 보낸다.
 create function public.begin_call(p_step uuid, p_owner text, p_version integer) returns jsonb
 language plpgsql
@@ -473,6 +520,9 @@ declare
   v_addresses jsonb;
   v_allowed integer;
 begin
+  if p_owner is null then
+    raise exception 'begin_call: lease 소유자가 필요하다';
+  end if;
   select * into v_step from public.execution_steps where id = p_step for update;
   if not found or v_step.state <> 'prepared' or v_step.version <> p_version then
     return '{"gate": "stale"}';
@@ -484,18 +534,19 @@ begin
   if v_run.state not in ('running', 'waiting_approval') then
     return '{"gate": "stale"}';
   end if;
+  -- 앞 단계가 끝나지 않았으면(부르는 중 · 결과 불명 · 실패 · 준비 전) 다음 단계로 가지 않는다 (EXECUTION 3장)
+  perform 1 from public.execution_steps e
+    where e.run_id = v_step.run_id and e.seq < v_step.seq and e.state not in ('called', 'skipped');
+  if found then
+    return '{"gate": "stale"}';
+  end if;
   select * into v_policy from public.execution_policies where id = v_run.policy_id for share;
 
-  -- 같은 목적을 다른 단계가 이미 가졌으면 승인을 묻지 않고 건너뛴다. 같은 단계의 재시도(내부 효과)는 중복이 아니다
+  -- 같은 목적을 다른 단계가 이미 가졌거나, 외부 효과 단계가 이미 표식을 가졌으면(한 번 불렀다) 다시 부르지 않는다.
+  -- 같은 표식을 다시 쓰는 것은 내부 효과의 재시도뿐이다
   select i.step_id into v_held from public.execution_intents i where i.intent_key = v_step.intent_key;
-  if v_held is not null and v_held <> v_step.id then
-    perform set_config('execution.gate', 'duplicate', true);
-    update public.execution_steps set state = 'skipped', version = version + 1, receipt = jsonb_build_object('duplicate_of', v_held)
-      where id = v_step.id;
-    -- 승인을 기다릴 이유가 없어졌다
-    update public.execution_runs set state = 'running', hold_reason = null
-      where id = v_run.id and (state <> 'running' or hold_reason is not null);
-    return '{"gate": "duplicate"}';
+  if v_held is not null and (v_held <> v_step.id or v_step.effect_class <> 'internal') then
+    return public.execution_skip(v_step.id, v_run.id, v_held);
   end if;
 
   -- 실행 주체: 운영자 허용 목록 (EXECUTION 7장 1)
@@ -508,6 +559,7 @@ begin
   select count(*), coalesce(bool_or(c.blocked), false) into v_locked, v_blocked from (
     select e.blocked from public.execution_controls e
     where (e.scope, e.key) in (('global', '*'), ('provider', v_step.provider), ('mode', v_policy.mode))
+    order by e.scope, e.key
     for share
   ) c;
   if v_locked < 3 or v_blocked then
@@ -522,27 +574,34 @@ begin
     return public.execution_hold(v_run.id, 'blocked', 'tool');
   end if;
 
-  -- 수신자 허용 목록 (EXECUTION 7장 2). 수신자가 없는 단계(내부 효과)는 통과
   v_addresses := public.norm_addresses(v_step.recipients);
-  select count(*) into v_allowed from (
-    select 1 from public.execution_recipient_allowlist l
-    where l.address in (select jsonb_array_elements_text(v_addresses))
-    for share of l
-  ) x;
-  if v_allowed < jsonb_array_length(v_addresses) then
-    return public.execution_hold(v_run.id, 'blocked', 'recipient');
-  end if;
-
-  -- 외부 효과: 유효한 승인이 없으면 Auto/Full 규칙을 지금 다시 확인한다 (준비 단계의 needs_approval을 믿지 않는다. NULL이면 막는다)
-  if v_step.effect_class = 'external' and public.auto_allowed(v_step.id) is not true and not exists (
-    select 1 from public.execution_approvals a
-    where a.step_id = v_step.id and a.revoked_at is null and a.expires_at > public.db_now()
-      and a.hash = public.approval_hash(v_step.id, a.expires_at)
-  ) then
-    perform set_config('execution.gate', 'not_approved', true);
-    update public.execution_runs set state = 'waiting_approval', hold_reason = null
-      where id = v_run.id and (state <> 'waiting_approval' or hold_reason is not null);
-    return '{"gate": "not_approved"}';
+  -- 보내는 연결 · 수신자 허용 목록 · 승인은 외부 효과에만 (EXECUTION 5 · 7장). 내부 효과(초안)에 적힌 받을 사람은 막지 않는다
+  if v_step.effect_class = 'external' then
+    if v_step.connection_id is null then
+      return public.execution_hold(v_run.id, 'needs_connection', 'needs_connection');
+    end if;
+    -- 수신자 · 대상은 하나 이상, 모두 허용 목록 안. 대상을 인자에만 적은 단계는 판단할 수 없으므로 막는다
+    -- (Notion · GitHub 쓰기 대상은 U6b에서 수신자 항목으로 둔다)
+    select count(*) into v_allowed from (
+      select 1 from public.execution_recipient_allowlist l
+      where l.address in (select jsonb_array_elements_text(v_addresses))
+      order by l.address
+      for share of l
+    ) x;
+    if jsonb_array_length(v_addresses) = 0 or v_allowed < jsonb_array_length(v_addresses) then
+      return public.execution_hold(v_run.id, 'blocked', 'recipient');
+    end if;
+    -- 유효한 승인이 없으면 Auto/Full 규칙을 지금 다시 확인한다 (준비 단계의 needs_approval을 믿지 않는다. NULL이면 막는다)
+    if public.auto_allowed(v_step.id) is not true and not exists (
+      select 1 from public.execution_approvals a
+      where a.step_id = v_step.id and a.revoked_at is null and a.expires_at > public.db_now()
+        and a.hash = public.approval_hash(v_step.id, a.expires_at)
+    ) then
+      perform set_config('execution.gate', 'not_approved', true);
+      update public.execution_runs set state = 'waiting_approval', hold_reason = null
+        where id = v_run.id and (state <> 'waiting_approval' or hold_reason is not null);
+      return '{"gate": "not_approved"}';
+    end if;
   end if;
 
   perform set_config('execution.gate', 'ok', true);
@@ -554,14 +613,14 @@ begin
     returning marker into v_marker;
   if v_marker is null then
     select i.step_id, i.marker into v_held, v_marker from public.execution_intents i where i.intent_key = v_step.intent_key;
-    if v_held <> v_step.id then
-      -- 위 확인과 이 insert 사이에 다른 단계가 먼저 commit했다
-      perform set_config('execution.gate', 'duplicate', true);
-      update public.execution_steps set state = 'skipped', version = version + 1, receipt = jsonb_build_object('duplicate_of', v_held)
-        where id = v_step.id;
-      return '{"gate": "duplicate"}';
+    if v_held is null then
+      return '{"gate": "stale"}';
     end if;
-    -- 같은 단계의 재시도: 표식을 다시 쓴다
+    if v_held <> v_step.id or v_step.effect_class <> 'internal' then
+      -- 위 확인과 이 insert 사이에 다른 단계가 먼저 commit했다
+      return public.execution_skip(v_step.id, v_run.id, v_held);
+    end if;
+    -- 같은 내부 효과 단계의 재시도: 표식을 다시 쓴다
   end if;
 
   -- lease = 실행 route의 maxDuration(300초) + 여유 30초. 살아 있는 함수의 lease는 만료되지 않는다 (U2 PR6 limits.ts의 LEASE_SECONDS와 같은 값)
@@ -581,6 +640,11 @@ language plpgsql
 set search_path = ''
 as $$
 begin
+  if coalesce(current_setting('execution.gate', true), '') = '' then
+    perform set_config('execution.gate', 'finish', true);
+  end if;
+  -- run을 먼저 잠근다: 같은 run에 단계를 붙이는 append_step(run 잠금)이 commit된 뒤의 단계를 센다
+  perform 1 from public.execution_runs where id = p_run_id for no key update;
   update public.execution_runs r set state = 'done', outcome = coalesce(p_outcome, r.outcome)
   where r.id = p_run_id and r.state = 'running'
     and not exists (select 1 from public.execution_steps s where s.run_id = p_run_id and s.state not in ('called', 'skipped'));
@@ -588,7 +652,9 @@ begin
 end;
 $$;
 
--- calling → called | failed: lease를 가진 함수만. called면 남은 단계가 없을 때 run done, failed면 run failed
+-- calling → called | failed: lease를 가진 함수만. failed면 run failed.
+-- called면 남은 단계가 없을 때 run done. 단 계획 단계는 결과(p_outcome)를 줄 때만 끝낸다: planner는 다음 단계를 붙이고(append_step)
+-- 계획 단계를 끝내거나, 끝났다고 정하며(p_outcome) 끝낸다. 결과 없이 끝내고 아무것도 붙이지 않았으면 다음 깨우기의 finish_run이 닫는다.
 create function public.settle_step(p_step uuid, p_owner text, p_state text, p_receipt jsonb, p_outcome text default null)
 returns boolean
 language plpgsql
@@ -596,6 +662,7 @@ set search_path = ''
 as $$
 declare
   v_run uuid;
+  v_kind text;
 begin
   if p_state not in ('called', 'failed') then
     raise exception 'settle_step: 잘못된 상태 %', p_state;
@@ -603,24 +670,31 @@ begin
   perform set_config('execution.gate', 'response', true);
   update public.execution_steps set state = p_state, receipt = p_receipt, version = version + 1, lease_owner = null, lease_expires_at = null
     where id = p_step and state = 'calling' and lease_owner = p_owner
-    returning run_id into v_run;
+    returning run_id, kind into v_run, v_kind;
   if v_run is null then
     return false;
   end if;
   if p_state = 'failed' then
     update public.execution_runs set state = 'failed' where id = v_run and state = 'running';
-  else
+  elsif p_outcome is not null or v_kind <> 'plan' then
     perform public.finish_run(v_run, p_outcome);
   end if;
   return true;
 end;
 $$;
 
--- 내부 효과(AI 호출)는 외부 상태가 없다: 결과 불명 대신 다시 준비한다(attempt + 1, 같은 표식). 다시 준비가 2번을 넘으면 failed · run failed
-create function public.execution_retry_internal(p_steps uuid[]) returns integer
-language sql
+-- 내부 효과(AI 호출)는 외부 상태가 없다: 결과 불명 대신 다시 준비한다(attempt + 1, 같은 표식). 다시 준비가 2번을 넘으면 failed · run failed.
+-- p_owner가 있으면 그 lease 소유자의 단계만(응답 없음), 없으면 lease가 끝난 단계만(sweep: 겹친 sweep이 새 lease를 받은 단계를 건드리지 않는다)
+create function public.execution_retry_internal(p_steps uuid[], p_owner text default null) returns integer
+language plpgsql
 set search_path = ''
 as $$
+declare
+  v_count integer;
+begin
+  if coalesce(current_setting('execution.gate', true), '') = '' then
+    perform set_config('execution.gate', 'retry', true);
+  end if;
   with moved as (
     update public.execution_steps s set
       state = case when s.attempt < 2 then 'prepared' else 'failed' end,
@@ -628,13 +702,16 @@ as $$
       receipt = case when s.attempt < 2 then s.receipt else jsonb_build_object('error', 'retries_exhausted') end,
       version = s.version + 1, lease_owner = null, lease_expires_at = null
     where s.id = any (p_steps) and s.state = 'calling' and s.effect_class = 'internal'
+      and (case when p_owner is null then s.lease_expires_at < public.db_now() else s.lease_owner = p_owner end)
     returning s.run_id, s.state
   ), failed_runs as (
     update public.execution_runs r set state = 'failed'
     where r.state = 'running' and r.id in (select m.run_id from moved m where m.state = 'failed')
     returning r.id
   )
-  select count(*)::integer from moved
+  select count(*)::integer into v_count from moved;
+  return v_count;
+end;
 $$;
 
 -- lease를 가진 함수가 응답을 못 받았다(시간 초과 · 연결 끊김). 외부 효과는 다시 부르지 않고 결과 불명, 내부 효과는 다시 준비
@@ -653,7 +730,7 @@ begin
     return false;
   end if;
   if v_effect = 'internal' then
-    return public.execution_retry_internal(array[p_step]) = 1;
+    return public.execution_retry_internal(array[p_step], p_owner) = 1;
   end if;
   update public.execution_steps set state = 'unknown_outcome', unknown_since = public.db_now(), version = version + 1, lease_owner = null
     where id = p_step;
@@ -712,7 +789,8 @@ as $$
   where s.id = p_step and s.user_id = p_user_id
 $$;
 
--- POST /approvals/[id]: 사용자가 본 hash를 지금 계획으로 다시 계산해 같을 때만 기록한다. 만료는 지금부터 1시간 안 (show_plan과 같은 창)
+-- POST /approvals/[id]: 사용자가 본 hash를 지금 계획으로 다시 계산해 같을 때만 기록한다. 만료는 지금부터 1시간 안 (show_plan과 같은 창).
+-- 아직 부르지 않은 단계(pending · prepared)만 승인한다
 create function public.approve_step(p_user_id uuid, p_step uuid, p_shown_hash text, p_expires timestamptz) returns boolean
 language plpgsql
 set search_path = ''
@@ -723,7 +801,7 @@ begin
   if p_expires <= public.db_now() or p_expires > public.db_now() + interval '1 hour' then
     return false;
   end if;
-  select run_id into v_run from public.execution_steps where id = p_step and user_id = p_user_id;
+  select run_id into v_run from public.execution_steps where id = p_step and user_id = p_user_id and state in ('pending', 'prepared');
   if v_run is null or public.approval_hash(p_step, p_expires) is distinct from p_shown_hash then
     return false;
   end if;
@@ -734,18 +812,26 @@ begin
 end;
 $$;
 
--- 승인 철회. 철회 뒤에는 이어서 실행해도 부르지 않는다. 철회한 승인 수
-create function public.revoke_approval(p_user_id uuid, p_step uuid) returns integer
+-- 승인 철회. 철회 뒤에는 이어서 실행해도 부르지 않는다.
+-- 단계를 먼저 잠가(begin_call과 같은 순서) 진행 중인 begin_call과 줄을 세운다: begin_call이 먼저면 그 commit을 기다린 뒤 철회하고,
+-- 철회가 먼저면 begin_call이 철회된 승인을 본다. 철회한 승인 수와 그때의 단계 상태를 돌려준다.
+-- 단계가 prepared · pending이 아니면(calling · called 등) 이미 부르기 시작해 철회가 늦었다. 그 사용자의 단계가 없으면 행이 없다
+create function public.revoke_approval(p_user_id uuid, p_step uuid) returns table (revoked integer, step_state text)
 language plpgsql
 set search_path = ''
 as $$
 declare
+  v_state text;
   v_count integer;
 begin
+  select s.state into v_state from public.execution_steps s where s.id = p_step and s.user_id = p_user_id for update;
+  if not found then
+    return;
+  end if;
   update public.execution_approvals set revoked_at = public.db_now()
     where step_id = p_step and user_id = p_user_id and revoked_at is null;
   get diagnostics v_count = row_count;
-  return v_count;
+  return query select v_count, v_state;
 end;
 $$;
 
@@ -765,14 +851,15 @@ begin
 end;
 $$;
 
--- 함수는 모두 서버(service role) 전용이다 (write_action 패턴)
+-- 함수는 모두 서버(service role) 전용이다 (write_action 패턴). 트리거 함수도 막는다 (트리거로 불릴 때는 권한을 보지 않는다)
 do $$
 declare
   f text;
 begin
   foreach f in array array[
-    'db_now', 'norm_address', 'norm_addresses', 'auto_allowed', 'approval_hash', 'create_run', 'append_step', 'prepare_step',
-    'execution_hold', 'begin_call', 'finish_run', 'settle_step', 'execution_retry_internal', 'mark_unknown', 'sweep_expire',
+    'db_now', 'norm_address', 'norm_addresses', 'execution_recipients_valid', 'execution_steps_replan', 'execution_runs_log',
+    'execution_steps_log', 'auto_allowed', 'approval_hash', 'create_run', 'append_step', 'prepare_step', 'execution_hold',
+    'execution_skip', 'begin_call', 'finish_run', 'settle_step', 'execution_retry_internal', 'mark_unknown', 'sweep_expire',
     'readback_settle', 'show_plan', 'approve_step', 'revoke_approval', 'stop_run'
   ] loop
     execute format('revoke execute on function public.%I from public, anon, authenticated', f);

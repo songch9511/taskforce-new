@@ -6,7 +6,8 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import { supabaseSchemaScripts } from "../db/local-supabase";
 
 // 실행 코어의 잠금 경합 (docs/EXECUTION.md 6장 · 11장 한계). PGlite는 연결이 하나라 트랜잭션이 실제로 겹치지 않는다.
-// 실제 Postgres에 연결 둘(A · B)을 열어, begin_call의 스위치 for share · intent unique · 단계 for update가 동시 commit에서 지키는 것을 본다.
+// 실제 Postgres에 연결 둘(A · B)을 열어, begin_call의 for share(스위치 · 실행 주체 · 도구 · 수신자 허용 목록) · intent unique ·
+// 단계 for update(같은 단계 · 승인 철회)가 동시 commit에서 지키는 것을 본다.
 // DATABASE_URL의 서버에 일회용 데이터베이스를 만들어 운영 마이그레이션을 그대로 적용하고, 끝나면 지운다.
 // DATABASE_URL이 없으면 건너뛰지 않고 실패한다 (CI는 check 작업의 postgres service).
 
@@ -78,19 +79,26 @@ afterEach(async () => {
   await b.query("rollback").catch(() => {});
 });
 
-/** 시험 사용자 하나: Auto 정책(규칙 RULE), 실행 주체 허용 목록 안, Action 하나 */
-async function newUser() {
+type User = { userId: string; actionId: string; connectionId: string };
+
+/** 시험 사용자 하나: Auto 정책(규칙 RULE), 실행 주체 허용 목록 안, 보내는 연결 · Action 하나 */
+async function newUser(): Promise<User> {
   const userId = randomUUID();
   const actionId = randomUUID();
   await setup.query("insert into auth.users (id, email) values ($1, $2)", [userId, `${userId}@example.com`]);
   await setup.query("insert into public.actions (id, user_id, title) values ($1, $2, '견적서 보내기')", [actionId, userId]);
   await setup.query("insert into public.execution_actors (user_id) values ($1)", [userId]);
   await setup.query("insert into public.execution_policies (user_id, mode, auto_recipients) values ($1, 'auto', $2::jsonb)", [userId, JSON.stringify([RULE])]);
-  return { userId, actionId };
+  const { rows } = await setup.query<{ id: string }>(
+    "insert into public.connections (user_id, provider, external_account_id) values ($1, 'gmail', $2) returning id",
+    [userId, `${userId}@example.com`],
+  );
+  return { userId, actionId, connectionId: rows[0].id };
 }
 
-/** 외부 단계(fake.send → RULE) 하나를 가진 run을 새로 만들고 prepared까지. 같은 Action · 목적이면 intent key가 같다 */
-async function preparedStep(user: { userId: string; actionId: string }, purpose: string) {
+/** 외부 단계(fake.send → RULE) 하나를 가진 run을 새로 만들고 prepared까지. 같은 Action · 목적이면 intent key가 같다.
+ *  수신자 출처가 user가 아니면(origin) Auto 규칙을 충족하지 못해 승인이 필요하다 */
+async function preparedStep(user: User, purpose: string, origin = "user") {
   const runId = randomUUID();
   await setup.query(
     `insert into public.execution_runs (id, user_id, action_id, policy_id, goal, request)
@@ -98,9 +106,9 @@ async function preparedStep(user: { userId: string; actionId: string }, purpose:
     [runId, user.userId, user.actionId],
   );
   const { rows } = await setup.query<{ id: string }>(
-    `insert into public.execution_steps (user_id, run_id, seq, kind, provider, tool, purpose, recipients, body)
-     values ($1, $2, 1, 'external', 'fake', 'send', $3, $4::jsonb, '견적서 보내드립니다') returning id`,
-    [user.userId, runId, purpose, JSON.stringify([{ address: RULE, origin: "user" }])],
+    `insert into public.execution_steps (user_id, run_id, seq, kind, provider, tool, purpose, connection_id, recipients, body)
+     values ($1, $2, 1, 'external', 'fake', 'send', $3, $4, $5::jsonb, '견적서 보내드립니다') returning id`,
+    [user.userId, runId, purpose, user.connectionId, JSON.stringify([{ address: RULE, origin }])],
   );
   const stepId = rows[0].id;
   const prepared = await setup.query<{ ok: boolean }>("select public.prepare_step($1, 0) as ok", [stepId]);
@@ -203,4 +211,94 @@ describe("실행 코어 잠금 경합 (실제 Postgres, 연결 둘)", () => {
     const { rows } = await setup.query<{ state: string; lease_owner: string }>("select state, lease_owner from public.execution_steps where id = $1", [step.stepId]);
     expect(rows[0]).toEqual({ state: "calling", lease_owner: "fn-a" });
   });
+
+  // 허용 목록 · 도구 목록도 스위치처럼 for share로 읽는다: 지우는 쪽은 진행 중인 전이를 기다리고, 지운 뒤에 commit되는 전이는 없다
+  it.each([
+    [
+      "실행 주체",
+      (user: User) => `delete from public.execution_actors where user_id = '${user.userId}'`,
+      (user: User) => `insert into public.execution_actors (user_id) values ('${user.userId}') on conflict do nothing`,
+      "actor",
+    ],
+    [
+      "수신자 허용 목록",
+      () => `delete from public.execution_recipient_allowlist where address = '${RULE}'`,
+      () => `insert into public.execution_recipient_allowlist (address) values ('${RULE}') on conflict do nothing`,
+      "recipient",
+    ],
+    [
+      "도구 목록",
+      () => "delete from public.execution_tools where provider = 'fake' and tool = 'send'",
+      () => "insert into public.execution_tools (provider, tool, effect_class) values ('fake', 'send', 'external') on conflict do nothing",
+      "tool",
+    ],
+  ] as [string, (user: User) => string, (user: User) => string, string][])(
+    "%s에서 지우는 쪽은 진행 중인 begin_call이 commit될 때까지 기다리고, 먼저 지우면 begin_call이 기다렸다가 막힌다",
+    async (_, remove, restore, gate) => {
+      const user = await newUser();
+      const first = await preparedStep(user, "send-1");
+      const second = await preparedStep(user, "send-2");
+      try {
+        // begin_call이 먼저: 지우기는 그 commit을 기다린다. 전이는 남는다
+        await a.query("begin");
+        expect(await beginCall(a, first, "fn-a")).toBe("ok");
+        const removal = b.query(remove(user));
+        await waitForLockWait(bPid);
+        await a.query("commit");
+        await removal;
+        expect(await stepState(first.stepId)).toBe("calling");
+        await setup.query(restore(user));
+
+        // 지우기가 먼저: begin_call은 기다렸다가 지워진 것을 보고 막는다
+        await b.query("begin");
+        await b.query(remove(user));
+        const call = beginCall(a, second, "fn-a");
+        await waitForLockWait(aPid);
+        await b.query("commit");
+        expect(await call).toBe(gate);
+        expect(await stepState(second.stepId)).toBe("prepared");
+      } finally {
+        // 실패해도 다음 테스트를 위해 되돌린다 (열린 트랜잭션은 먼저 푼다)
+        await a.query("rollback").catch(() => {});
+        await b.query("rollback").catch(() => {});
+        await setup.query(restore(user));
+      }
+    },
+  );
+
+  it("승인 철회가 먼저 단계를 잠그면 begin_call은 기다렸다가 철회된 승인을 보고 부르지 않는다", async () => {
+    const user = await newUser();
+    const step = await preparedStep(user, "send-1", "source");
+    await approve(user, step.stepId);
+
+    await b.query("begin");
+    expect((await b.query("select * from public.revoke_approval($1, $2)", [user.userId, step.stepId])).rows).toEqual([{ revoked: 1, step_state: "prepared" }]);
+    const call = beginCall(a, step, "fn-a");
+    await waitForLockWait(aPid);
+    await b.query("commit");
+
+    expect(await call).toBe("not_approved");
+    expect(await stepState(step.stepId)).toBe("prepared");
+  });
+
+  it("begin_call이 먼저면 승인 철회는 그 commit을 기다린 뒤, 이미 부르기 시작했다(calling)고 알린다", async () => {
+    const user = await newUser();
+    const step = await preparedStep(user, "send-1", "source");
+    await approve(user, step.stepId);
+
+    await a.query("begin");
+    expect(await beginCall(a, step, "fn-a")).toBe("ok");
+    const revoke = b.query("select * from public.revoke_approval($1, $2)", [user.userId, step.stepId]);
+    await waitForLockWait(bPid);
+    await a.query("commit");
+
+    expect((await revoke).rows).toEqual([{ revoked: 1, step_state: "calling" }]);
+  });
 });
+
+/** route: 사용자가 본 계획 그대로 승인 */
+async function approve(user: User, stepId: string) {
+  const shown = (await setup.query<{ hash: string; expires_at: Date }>("select * from public.show_plan($1, $2)", [user.userId, stepId])).rows[0];
+  const { rows } = await setup.query<{ ok: boolean }>("select public.approve_step($1, $2, $3, $4) as ok", [user.userId, stepId, shown.hash, shown.expires_at]);
+  expect(rows[0].ok).toBe(true);
+}

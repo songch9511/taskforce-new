@@ -15,6 +15,15 @@ let runId: string;
 let stepId: string;
 
 const OWNER_TABLES = ["execution_policies", "execution_runs", "execution_steps", "execution_approvals"];
+/** 이 마이그레이션의 함수 중 이름이 execution_으로 시작하지 않는 것 (execution_* 은 카탈로그에서 이름으로 찾는다) */
+const CORE_FUNCTIONS = [
+  "db_now", "norm_address", "norm_addresses", "auto_allowed", "approval_hash", "create_run", "append_step", "prepare_step", "begin_call",
+  "finish_run", "settle_step", "mark_unknown", "sweep_expire", "readback_settle", "show_plan", "approve_step", "revoke_approval", "stop_run",
+];
+const HELPER_FUNCTIONS = [
+  "execution_hold", "execution_recipients_valid", "execution_retry_internal", "execution_runs_log", "execution_skip", "execution_steps_log",
+  "execution_steps_replan",
+];
 const SERVER_TABLES = ["execution_intents", "execution_controls", "execution_tools", "execution_actors", "execution_recipient_allowlist", "execution_events"];
 
 beforeAll(async () => {
@@ -88,6 +97,36 @@ describe("실행 코어 RLS · 권한", () => {
       } finally {
         await db.exec("reset role; select set_config('request.jwt.claim.sub', '', false);");
       }
+    }
+  });
+
+  it("실행 코어 함수는 모두 서버 전용이다: 카탈로그의 모든 함수에 anon · authenticated 실행 권한이 없고 service_role만 있다", async () => {
+    const { rows } = await db.query<{ name: string; anon: boolean; authenticated: boolean; service_role: boolean }>(
+      `select p.proname as name,
+              has_function_privilege('anon', p.oid, 'execute') as anon,
+              has_function_privilege('authenticated', p.oid, 'execute') as authenticated,
+              has_function_privilege('service_role', p.oid, 'execute') as service_role
+       from pg_catalog.pg_proc p join pg_catalog.pg_namespace n on n.oid = p.pronamespace
+       where n.nspname = 'public' and (p.proname like 'execution\\_%' or p.proname = any ($1))
+       order by p.proname`,
+      [CORE_FUNCTIONS],
+    );
+    expect(rows.map((r) => r.name)).toEqual([...CORE_FUNCTIONS, ...HELPER_FUNCTIONS].sort());
+    for (const row of rows) expect(row, row.name).toEqual({ name: row.name, anon: false, authenticated: false, service_role: true });
+  });
+
+  it("service_role은 RPC로 run을 만들고 단계를 준비 · 부른다 (트리거 · 검사 함수가 service_role 권한으로 돈다)", async () => {
+    const action = (await db.query<{ id: string }>("insert into public.actions (user_id, title) values ($1, '다른 할 일') returning id", [ALICE])).rows[0].id;
+    await db.exec("set role service_role");
+    try {
+      const run = (await db.query<{ id: string }>("select public.create_run($1, $2, 'draft', '초안') as id", [ALICE, action])).rows[0].id;
+      const step = (await db.query<{ id: string }>("select id from public.execution_steps where run_id = $1", [run])).rows[0].id;
+      await db.query("select public.prepare_step($1, 0)", [step]);
+      expect((await db.query<{ g: { gate: string } }>("select public.begin_call($1, 'fn-2', 1) as g", [step])).rows[0].g.gate).toBe("ok");
+      const events = await db.query("select 1 from public.execution_events where run_id = $1", [run]);
+      expect(events.rows.length).toBeGreaterThan(0);
+    } finally {
+      await db.exec("reset role");
     }
   });
 

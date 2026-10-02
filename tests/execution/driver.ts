@@ -31,24 +31,25 @@ const TEST_CLOCK = `
 `;
 
 // 시험에만 있는 것: 가짜 공급자의 외부 효과 원장(실행기 트랜잭션 밖에서만 쓴다, 실제로는 다른 시스템이다),
-// 시험 전용 외부 도구(fake.send · fake.reply), 시험 사용자와 보내는 연결 둘
+// 시험 전용 외부 도구(fake.send · fake.reply, 공급자만 다른 fake2.send), 시험 사용자와 보내는 연결 둘
 const TEST_SETUP = `
   create schema fake;
   create table fake.ledger (
     id serial primary key, marker text not null, connection_id uuid, recipients jsonb not null, body text not null, visible_at timestamptz not null
   );
-  insert into public.execution_tools (provider, tool, effect_class) values ('fake', 'send', 'external'), ('fake', 'reply', 'external');
+  insert into public.execution_tools (provider, tool, effect_class) values
+    ('fake', 'send', 'external'), ('fake', 'reply', 'external'), ('fake2', 'send', 'external');
   insert into auth.users (id, email) values ('${USER}', 'operator@example.com');
   insert into public.connections (id, user_id, provider, external_account_id) values
     ('${uid("conn-1")}', '${USER}', 'gmail', 'me-1@example.com'), ('${uid("conn-2")}', '${USER}', 'gmail', 'me-2@example.com');
 `;
 
-// 테스트마다 처음 상태: 스위치는 모두 켜짐(시험 공급자 fake · 내장 taskforce), 시험 사용자는 실행 주체 허용 목록 안,
+// 테스트마다 처음 상태: 스위치는 모두 켜짐(시험 공급자 fake · fake2 · 내장 taskforce), 시험 사용자는 실행 주체 허용 목록 안,
 // 사례의 주소는 모두 수신자 허용 목록 안. 테스트 시계는 2026-10-02 00:00 UTC
 const SEED = `
   delete from public.execution_controls;
   insert into public.execution_controls (scope, key) values
-    ('global', '*'), ('provider', 'fake'), ('provider', 'taskforce'), ('mode', 'manual'), ('mode', 'auto'), ('mode', 'full');
+    ('global', '*'), ('provider', 'fake'), ('provider', 'fake2'), ('provider', 'taskforce'), ('mode', 'manual'), ('mode', 'auto'), ('mode', 'full');
   insert into public.execution_actors (user_id) values ('${USER}') on conflict do nothing;
   delete from public.execution_recipient_allowlist;
   insert into public.execution_recipient_allowlist (address) values ('rule@example.com'), ('rule2@example.com'), ('other@example.com');
@@ -146,7 +147,7 @@ export class Driver {
   }
 
   async revoke(stepId: string): Promise<void> {
-    await this.db.query("select public.revoke_approval($1, $2)", [USER, stepId]);
+    await this.db.query("select * from public.revoke_approval($1, $2)", [USER, stepId]);
   }
 
   /** route: POST /runs/[id]/stop. 다음 단계만 막는다 */

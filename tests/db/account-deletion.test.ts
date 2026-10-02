@@ -108,12 +108,18 @@ async function seed(userId: string, tokenHex: string) {
   );
   await db.query(`insert into public.slack_threads (connection_id, user_id, channel_id, thread_ts) values ($1, $2, 'C1', '1.0')`, [slack, userId]);
   await db.query(`insert into public.slack_people (connection_id, user_id, slack_id, kind, name) values ($1, $2, 'U2', 'user', 'x')`, [slack, userId]);
-  // 실행 코어: run(정책 · 첫 단계 · 이벤트가 함께 생긴다), 연결을 쓰는 끝난 외부 단계(연결 삭제의 set null 경로), 승인 · intent, 실행 주체
+  // 실행 코어: run(정책 · 첫 단계 · 이벤트가 함께 생긴다), 연결을 쓰는 끝난 · 준비된 외부 단계(연결 삭제의 set null 경로,
+  // 준비된 단계는 다시 계획되며 이벤트를 남긴다), 승인 · intent, 실행 주체
   await db.query(`insert into public.execution_actors (user_id) values ($1)`, [userId]);
   const runId = await one(`select public.create_run($1, $2, 'draft', '초안') as id`, [userId, actionId]);
   const stepId = await one(
     `insert into public.execution_steps (user_id, run_id, seq, kind, provider, tool, purpose, connection_id, state, policy_version)
      values ($1, $2, 2, 'external', 'gmail', 'send', 'send', $3, 'called', 1) returning id`,
+    [userId, runId, connectionId],
+  );
+  await db.query(
+    `insert into public.execution_steps (user_id, run_id, seq, kind, provider, tool, purpose, connection_id, state, policy_version)
+     values ($1, $2, 3, 'external', 'gmail', 'send', 'send-2', $3, 'prepared', 1)`,
     [userId, runId, connectionId],
   );
   await db.query(`insert into public.execution_approvals (user_id, step_id, hash, expires_at) values ($1, $2, 'h', now())`, [userId, stepId]);
