@@ -77,8 +77,8 @@ describe("supabaseReceiptStore", () => {
       source: { title: "제안서 초안", raw_text: "초안 저장: 제안서 초안", external_url: "taskforce://artifacts/artifact-1" },
       claim: { id: "claim-1", quote: "초안 저장: 제안서 초안", speaker_role: "me" as const, certainty: "firm" as const, directness: "first_hand" as const, audience: "private" as const },
     };
-    expect(await store.writeReceipt("step-1", 4, { status: "open" }, receipt)).toBe("exists");
-    expect(rpc).toHaveBeenCalledWith("write_execution_receipt", { p_step: "step-1", p_expected_version: 4, p_action: { status: "open" }, p_receipt: receipt });
+    expect(await store.writeReceipt("step-1", 4, receipt)).toBe("exists");
+    expect(rpc).toHaveBeenCalledWith("write_execution_receipt", { p_step: "step-1", p_expected_version: 4, p_receipt: receipt });
     expect(await store.missingReceipts(20)).toEqual(["a", "b"]);
     expect(rpc).toHaveBeenCalledWith("missing_execution_receipts", { p_limit: 20 });
   });

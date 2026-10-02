@@ -101,18 +101,14 @@ async function finishedDraft() {
   return { userId, actionId, stepId, version };
 }
 
-/** 실행기가 넘기는 것과 같은 모양: Action 값(지금 행 그대로) + receipt */
-const writeReceipt = async (client: pg.Client, stepId: string, actionId: string, version: number) => {
+/** 실행기가 넘기는 것과 같은 모양 (링크는 그 단계의 산출물) */
+const writeReceipt = async (client: pg.Client, stepId: string, version: number) => {
+  const { rows: artifact } = await setup.query<{ id: string }>("select id from public.execution_artifacts where step_id = $1", [stepId]);
   const receipt = {
-    source: { title: "제안서 초안", raw_text: "초안 저장: 제안서 초안", external_url: "taskforce://artifacts/x" },
+    source: { title: "제안서 초안", raw_text: "초안 저장: 제안서 초안", external_url: `taskforce://artifacts/${artifact[0].id}` },
     claim: { id: randomUUID(), quote: "초안 저장: 제안서 초안", speaker_role: "me", certainty: "firm", directness: "first_hand", audience: "private" },
   };
-  const { rows } = await client.query<{ r: string }>(
-    `select public.write_execution_receipt($1, $2, jsonb_build_object('title', a.title, 'owner', a.owner, 'due_date', a.due_date, 'due_at', a.due_at,
-       'status', a.status, 'needs_confirmation', a.needs_confirmation, 'confirm_reasons', to_jsonb(a.confirm_reasons), 'resolution', a.resolution), $4::jsonb) as r
-     from public.actions a where a.id = $3`,
-    [stepId, version, actionId, JSON.stringify(receipt)],
-  );
+  const { rows } = await client.query<{ r: string }>("select public.write_execution_receipt($1, $2, $3::jsonb) as r", [stepId, version, JSON.stringify(receipt)]);
   return rows[0].r;
 };
 
@@ -131,8 +127,8 @@ describe("실행 receipt 잠금 경합 (실제 Postgres, 연결 둘)", () => {
   it("같은 단계의 receipt를 두 연결(실행기 · sweep)이 함께 쓰면 하나만 붙고, 기다린 쪽은 exists", async () => {
     const draft = await finishedDraft();
     await a.query("begin");
-    expect(await writeReceipt(a, draft.stepId, draft.actionId, draft.version)).toBe("written");
-    const late = writeReceipt(b, draft.stepId, draft.actionId, draft.version); // Action 행 잠금을 기다린다
+    expect(await writeReceipt(a, draft.stepId, draft.version)).toBe("written");
+    const late = writeReceipt(b, draft.stepId, draft.version); // Action 행 잠금을 기다린다
     await waitForLockWait(bPid);
     await a.query("commit");
     expect(await late).toBe("exists");
@@ -143,11 +139,11 @@ describe("실행 receipt 잠금 경합 (실제 Postgres, 연결 둘)", () => {
     const draft = await finishedDraft();
     await b.query("begin");
     await b.query("update public.actions set version = version + 1 where id = $1", [draft.actionId]); // 사용자의 write_action
-    const receipt = writeReceipt(a, draft.stepId, draft.actionId, draft.version);
+    const receipt = writeReceipt(a, draft.stepId, draft.version);
     await waitForLockWait(aPid);
     await b.query("commit");
     expect(await receipt).toBe("conflict");
     expect(await receiptRows(draft.actionId)).toEqual({ sources: 0, claims: 0, evidence: 0, events: 0 });
-    expect(await writeReceipt(a, draft.stepId, draft.actionId, draft.version + 1)).toBe("written");
+    expect(await writeReceipt(a, draft.stepId, draft.version + 1)).toBe("written");
   });
 });

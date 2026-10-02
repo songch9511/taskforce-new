@@ -28,7 +28,8 @@ async function weeklyCheck(client: SupabaseClient, now: Date): Promise<NowRespon
   try {
     // 이번 주 답, 그리고 이번 주 들어 답한 지난주 답(월요일 새벽에 지난주 카드에 답한 경우)만 보면 된다.
     const [{ data: first }, { data: answers }] = await Promise.all([
-      client.from("sources").select("created_at").order("created_at").limit(1).maybeSingle().throwOnError(),
+      // 실행 receipt(kind execution)는 사용자가 넣은 원문이 아니라 첫 원문으로 세지 않는다
+      client.from("sources").select("created_at").neq("kind", "execution").order("created_at").limit(1).maybeSingle().throwOnError(),
       client.from("weekly_checks").select("week_start, answered_at").gte("week_start", previousKstWeek(now)).throwOnError(),
     ]);
     return weeklyCheckDue({

@@ -131,6 +131,23 @@ describe("SupabaseActionStore.shortlist: 매칭 판정에 넘기는 최근 인�
   });
 });
 
+describe("SupabaseActionStore.shortlist: 실행 receipt", () => {
+  it("나중에 붙은 실행 receipt(초안 저장)는 인용으로 넘기지 않고 그 전 원문 인용을 쓴다", async () => {
+    const admin = fakeAdmin(
+      {
+        actions: [action(KEPT, "견적서 보내기")],
+        evidence: [
+          { action_id: KEPT, quote: "금요일까지 견적서 보내드릴게요", role: "created", created_at: "2026-09-20T01:00:00Z" },
+          { action_id: KEPT, quote: "초안 저장: 견적서 송부 메일", role: "executed", created_at: "2026-09-22T01:00:00Z" },
+        ],
+      },
+      [{ id: KEPT, similarity: 0.9 }],
+    );
+    const shortlist = await new SupabaseActionStore(admin, USER).shortlist([1, 0, 0]);
+    expect(shortlist.map((a) => a.latestQuote)).toEqual(["금요일까지 견적서 보내드릴게요"]);
+  });
+});
+
 describe("SupabaseActionStore.unembedded: 임베딩을 채울 때 쓰는 인용", () => {
   it("만든 근거가 Slack 연결을 끊어 지운 자리 표시면 인용 없이(제목만) 채운다", async () => {
     const admin = fakeAdmin({

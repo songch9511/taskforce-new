@@ -15,43 +15,43 @@
 set lock_timeout = '5s';
 
 -- ─────────────────────────────────────────────
--- 1) 값 넓히기: 기존 값은 모두 그대로 받고 실행 receipt의 값만 더한다
+-- 1) 값 넓히기 + 모양. 표마다 문장 하나: 제약을 지우고 넓혀 다시 만드는 사이에 제약 없는 표가 남지 않고, 표를 한 번만 훑는다.
+--    기존 값은 모두 그대로 받고 실행 receipt의 값만 더한다.
+--    - receipt 원문은 처리를 마친 것으로만 들어간다: 재처리 cron(pending · processing · failed만 고른다)이 고르지 않고,
+--      추출 처리(processSource)가 processing으로 바꾸려 하면 sources_execution_receipt가 막는다. external_id = 단계 id
+--    - 실행 Claim은 산출물 Claim뿐이고 산출물 Claim은 실행에서만 온다(claims_execution_artifact): 상태 · 기한 등 Action 필드를 실행 결과로 정하지 않는다
 -- ─────────────────────────────────────────────
-alter table public.sources drop constraint sources_kind_check;
-alter table public.sources add constraint sources_kind_check
-  check (kind in ('meeting', 'message', 'email', 'doc', 'note', 'task', 'execution'));
+alter table public.sources
+  drop constraint sources_kind_check,
+  add constraint sources_kind_check check (kind in ('meeting', 'message', 'email', 'doc', 'note', 'task', 'execution')),
+  add constraint sources_execution_receipt check (kind <> 'execution' or (processing_status = 'done' and external_id is not null));
 
-alter table public.claims drop constraint claims_origin_check;
-alter table public.claims add constraint claims_origin_check check (origin in ('source', 'user', 'tracker', 'execution'));
-alter table public.claims drop constraint claims_field_check;
-alter table public.claims add constraint claims_field_check check (field in ('due', 'scope', 'owner', 'status', 'artifact'));
+alter table public.claims
+  drop constraint claims_origin_check,
+  add constraint claims_origin_check check (origin in ('source', 'user', 'tracker', 'execution')),
+  drop constraint claims_field_check,
+  add constraint claims_field_check check (field in ('due', 'scope', 'owner', 'status', 'artifact')),
+  add constraint claims_execution_artifact check ((origin = 'execution') = (field = 'artifact'));
 
-alter table public.evidence drop constraint evidence_role_check;
-alter table public.evidence add constraint evidence_role_check check (role in ('created', 'updated', 'completed', 'duplicate', 'executed'));
+alter table public.evidence
+  drop constraint evidence_role_check,
+  add constraint evidence_role_check check (role in ('created', 'updated', 'completed', 'duplicate', 'executed'));
 
-alter table public.action_events drop constraint action_events_type_check;
-alter table public.action_events add constraint action_events_type_check check (type in (
-  'created', 'due_changed', 'scope_changed', 'owner_changed', 'merged', 'completed', 'dropped', 'reopened',
-  'user_edited', 'user_deleted', 'user_confirmed', 'user_started', 'user_reported_missing', 'user_created',
-  'user_unstarted', 'artifact_created'
-));
-alter table public.action_events drop constraint action_events_actor_check;
-alter table public.action_events add constraint action_events_actor_check check (actor in ('ai', 'user', 'agent'));
-
--- ─────────────────────────────────────────────
--- 2) 모양: 실행 Claim은 산출물 Claim뿐이고 산출물 Claim은 실행에서만 온다 (상태 · 기한 등 Action 필드를 실행 결과로 정하지 않는다).
---    receipt 원문은 처리를 마친 것으로만 들어간다: 재처리 cron(pending · processing · failed만 고른다)이 고르지 않고,
---    추출 처리(processSource)가 processing으로 바꾸려 하면 이 제약이 막는다. external_id = 단계 id
--- ─────────────────────────────────────────────
-alter table public.claims add constraint claims_execution_artifact check ((origin = 'execution') = (field = 'artifact'));
-alter table public.sources add constraint sources_execution_receipt
-  check (kind <> 'execution' or (processing_status = 'done' and external_id is not null));
+alter table public.action_events
+  drop constraint action_events_type_check,
+  add constraint action_events_type_check check (type in (
+    'created', 'due_changed', 'scope_changed', 'owner_changed', 'merged', 'completed', 'dropped', 'reopened',
+    'user_edited', 'user_deleted', 'user_confirmed', 'user_started', 'user_reported_missing', 'user_created',
+    'user_unstarted', 'artifact_created'
+  )),
+  drop constraint action_events_actor_check,
+  add constraint action_events_actor_check check (actor in ('ai', 'user', 'agent'));
 
 -- 단계 하나에 receipt 원문 하나 (같은 단계를 다시 써도 두 번 붙지 않는다)
 create unique index sources_execution_receipt_idx on public.sources (user_id, external_id) where kind = 'execution';
 
 -- ─────────────────────────────────────────────
--- 3) receipt 원문은 서버만 쓴다. sources는 본인 행을 쓸 수 있는 owner_all 그대로 두고(POST /api/v1/sources가 사용자 권한으로 넣는다),
+-- 2) receipt 원문은 서버만 쓴다. sources는 본인 행을 쓸 수 있는 owner_all 그대로 두고(POST /api/v1/sources가 사용자 권한으로 넣는다),
 --    실행 receipt만 클라이언트가 만들거나 고치거나 지우지 못하게 제한 정책을 더한다 (읽기는 그대로: 앱이 근거 원문으로 읽는다)
 -- ─────────────────────────────────────────────
 create policy "execution_receipt_no_client_insert" on public.sources as restrictive for insert to authenticated
@@ -62,17 +62,19 @@ create policy "execution_receipt_no_client_delete" on public.sources as restrict
   using (kind <> 'execution');
 
 -- ─────────────────────────────────────────────
--- 4) receipt 쓰기 (실행기, src/lib/execution/receipt.ts writeDraftReceipt)
+-- 3) receipt 쓰기 (실행기, src/lib/execution/receipt.ts writeDraftReceipt)
 -- ─────────────────────────────────────────────
 -- 끝낸(called) 초안 단계의 receipt를 Action에 붙인다: receipt 원문 + Claim + 근거 + 이벤트를 write_action 한 번과 같은 트랜잭션에서.
--- Action 필드 값(p_action)은 실행기가 진실 판정 순수 함수로 계산해 넘긴다(artifact Claim은 어떤 필드도 바꾸지 않는다, 원칙 5).
+-- receipt는 Action을 바꾸지 않는다(초안 ≠ 완료 A38, 사용자가 끝낸 할 일 그대로 A57): Action 값은 잠근 행 그대로 다시 쓰고(원칙 5: 진실 판정이
+-- 앞서 계산한 값 그대로), 활동 시각도 되돌려 랭킹 · 확인 순서가 초안으로 바뀌지 않게 한다. 바뀌는 것은 버전(+1) · updated_at뿐이다.
+-- 실행기는 부르기 전에 Claim을 더해 다시 판정해도 값이 같은지 확인한다(receipt.ts).
 -- p_receipt: { source: { title, raw_text, external_url }, claim: { id, quote, speaker_role, certainty, directness, audience } }
 -- 서버가 정하는 값(호출자의 값을 믿지 않는다): 사용자 · Action(run의 것), 원문 종류 · 외부 id(단계 id) · 시각(산출물 시각) · 처리 상태,
--- Claim의 필드 · origin · 값(산출물 id) · 시각, 근거의 역할 · 인용(Claim 인용), 이벤트 전부(글 없이 id만).
--- 인용은 receipt 글에 그대로 있어야 한다(원문 인용 실재 확인과 같은 뜻).
+-- Claim의 필드 · origin · 값(산출물 id) · 시각 · 상태 · 채널, 근거의 역할 · 인용(Claim 인용), 이벤트 전부(글 없이 id만).
+-- 확인하는 값: 인용이 receipt 글에 그대로 있다(원문 인용 실재 확인과 같은 뜻), 링크가 그 산출물을 가리킨다.
 -- Action 행을 먼저 잠근다: 같은 단계의 receipt를 함께 쓰는 함수(실행기 · sweep)끼리 줄을 서고, 뒤의 것은 이미 붙은 것을 본다.
--- 결과: written(붙였다) · exists(이미 붙어 있다, 버전과 상관없이) · conflict(버전이 어긋나 아무것도 쓰지 않았다. 다시 읽고 다시 계산해 부른다)
-create function public.write_execution_receipt(p_step uuid, p_expected_version integer, p_action jsonb, p_receipt jsonb)
+-- 결과: written(붙였다) · exists(이미 붙어 있다, 버전과 상관없이) · conflict(버전이 어긋나 아무것도 쓰지 않았다. 다시 읽어 부른다)
+create function public.write_execution_receipt(p_step uuid, p_expected_version integer, p_receipt jsonb)
 returns text
 language plpgsql
 set search_path = ''
@@ -81,11 +83,14 @@ declare
   v_step public.execution_steps;
   v_run public.execution_runs;
   v_artifact public.execution_artifacts;
-  v_version integer;
+  v_action public.actions;
   v_source uuid;
   v_text text := p_receipt->'source'->>'raw_text';
   v_quote text := p_receipt->'claim'->>'quote';
 begin
+  if p_expected_version is null then
+    raise exception 'write_execution_receipt: 읽은 Action 버전이 없다';
+  end if;
   select * into v_step from public.execution_steps where id = p_step;
   if not found or v_step.kind <> 'draft' or v_step.state <> 'called' then
     raise exception 'write_execution_receipt: 끝낸 초안 단계가 아니다' using errcode = 'P0002';
@@ -98,12 +103,15 @@ begin
   if coalesce(v_quote, '') = '' or coalesce(strpos(v_text, v_quote), 0) = 0 then
     raise exception 'write_execution_receipt: 인용이 receipt 글에 없다';
   end if;
+  if (p_receipt->'source'->>'external_url') is distinct from 'taskforce://artifacts/' || v_artifact.id::text then
+    raise exception 'write_execution_receipt: 링크가 산출물을 가리키지 않는다';
+  end if;
   if jsonb_typeof(p_receipt->'claim'->'id') is distinct from 'string' then
     raise exception 'write_execution_receipt: Claim id가 없다';
   end if;
 
-  select version into v_version from public.actions where id = v_run.action_id and user_id = v_run.user_id for update;
-  if v_version is null then
+  select * into v_action from public.actions where id = v_run.action_id and user_id = v_run.user_id for update;
+  if not found then
     raise exception 'action not found' using errcode = 'P0002';
   end if;
 
@@ -112,7 +120,7 @@ begin
   if v_source is not null and exists (select 1 from public.claims c where c.source_id = v_source and c.origin = 'execution') then
     return 'exists';
   end if;
-  if v_version <> p_expected_version then
+  if v_action.version <> p_expected_version then
     return 'conflict';
   end if;
 
@@ -124,7 +132,12 @@ begin
   end if;
 
   if not public.write_action(
-    v_run.user_id, v_run.action_id, p_expected_version, p_action,
+    v_run.user_id, v_run.action_id, p_expected_version,
+    -- 잠근 행 그대로 (resolution이 null인 행은 null 그대로 남게 키를 빼고 넘긴다)
+    jsonb_build_object(
+      'title', v_action.title, 'owner', v_action.owner, 'due_date', v_action.due_date, 'due_at', v_action.due_at,
+      'status', v_action.status, 'needs_confirmation', v_action.needs_confirmation, 'confirm_reasons', to_jsonb(v_action.confirm_reasons))
+      || case when v_action.resolution is null then '{}'::jsonb else jsonb_build_object('resolution', v_action.resolution) end,
     jsonb_build_array((p_receipt->'claim') || jsonb_build_object(
       'source_id', v_source, 'field', 'artifact', 'origin', 'execution', 'value', v_artifact.id,
       'occurred_at', v_artifact.created_at, 'state', 'active', 'channel', null)),
@@ -135,6 +148,7 @@ begin
   ) then
     raise exception 'write_execution_receipt: 잠근 버전으로 쓰지 못했다'; -- 위에서 잠그고 확인했으므로 일어나지 않는다
   end if;
+  update public.actions set last_activity_at = v_action.last_activity_at where id = v_action.id and user_id = v_action.user_id;
   return 'written';
 end;
 $$;

@@ -39,10 +39,8 @@ export function supabaseReceiptStore(admin: SupabaseClient): ReceiptStore {
       if (!row) return null;
       return { version: row.version, title: row.title, confirmReasons: row.confirm_reasons, claims: await loadClaims(admin, userId, actionId) };
     },
-    async writeReceipt(stepId, expectedVersion, action, receipt) {
-      const { data } = await admin
-        .rpc("write_execution_receipt", { p_step: stepId, p_expected_version: expectedVersion, p_action: action, p_receipt: receipt })
-        .throwOnError();
+    async writeReceipt(stepId, expectedVersion, receipt) {
+      const { data } = await admin.rpc("write_execution_receipt", { p_step: stepId, p_expected_version: expectedVersion, p_receipt: receipt }).throwOnError();
       return data as ReceiptWriteResult;
     },
     async missingReceipts(limit) {

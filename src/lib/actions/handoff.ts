@@ -11,7 +11,7 @@ export type HandoffEvidence = {
   quote: string;
   /** 원문에서 인용 앞뒤 몇 줄 (누가 무엇을 요청했는지). 못 찾으면 null */
   context: string | null;
-  role: "created" | "updated" | "completed" | "duplicate";
+  role: "created" | "updated" | "completed" | "duplicate" | "executed";
   source: { kind: string; title: string | null; occurredAt: string; url: string | null };
 };
 

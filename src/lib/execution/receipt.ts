@@ -7,8 +7,9 @@ import type { Claim } from "@/lib/pipeline/resolve";
 // 실행 receipt → Claim/Evidence (docs/EXECUTION.md 9장, CLAUDE.md 원칙 2 · 5, A38 · A55 · A57).
 // 끝낸 초안 단계 하나 = receipt 원문(kind execution) 하나 + Claim(origin execution, field artifact, 값 = 산출물 id) + 근거(executed)
 // + 이벤트(artifact_created, actor agent). 쓰기는 DB 함수 write_execution_receipt가 write_action과 한 트랜잭션에서 한다.
-// Action 필드 값은 진실 판정 순수 함수(projectAction)로 다시 계산해 넘기고, artifact Claim은 어떤 필드도 바꾸지 않는다:
-// 초안은 완료가 아니고(A38), 사용자가 끝낸 할 일도 그대로다(A57). 실행 결과는 사용자 Claim이 아니다(A55).
+// receipt는 Action을 바꾸지 않는다: 초안은 완료가 아니고(A38), 사용자가 끝낸 할 일도 그대로다(A57). DB 함수가 잠근 Action 행의 값을
+// 그대로 다시 쓰고, 그 전에 여기서 Claim을 더해 진실 판정 순수 함수(projectAction)로 다시 계산해도 같은지 확인한다(원칙 5).
+// 실행 결과는 사용자 Claim이 아니다(A55).
 // receipt 글은 산출물 제목만 담는다(본문 · 원문 · 요청은 담지 않는다). 로그에는 단계 id와 오류 이름만 남긴다.
 
 /** receipt를 붙일 끝낸(called) 초안 단계: 단계 · run의 Action · 산출물 (DB에서 읽은 값) */
@@ -37,8 +38,8 @@ export interface ReceiptStore {
   /** 끝낸 초안 단계와 그 산출물 · run의 Action. 아니면(없음 · 초안이 아님 · 끝내지 않음 · 산출물 없음) null */
   receiptTarget(stepId: string): Promise<ReceiptTarget | null>;
   loadAction(userId: string, actionId: string): Promise<ReceiptAction | null>;
-  /** DB 함수 write_execution_receipt */
-  writeReceipt(stepId: string, expectedVersion: number, action: Record<string, unknown>, receipt: DraftReceipt): Promise<ReceiptWriteResult>;
+  /** DB 함수 write_execution_receipt (Action 값은 DB 함수가 잠근 행 그대로 쓴다) */
+  writeReceipt(stepId: string, expectedVersion: number, receipt: DraftReceipt): Promise<ReceiptWriteResult>;
   /** receipt가 아직 없는 끝낸 초안 단계 (DB 함수 missing_execution_receipts, 하루 안) */
   missingReceipts(limit: number): Promise<string[]>;
 }
@@ -58,11 +59,12 @@ export const DRAFT_RECEIPT_PREFIX = "초안 저장";
 /** 산출물 딥링크 (앱 URL scheme `taskforce://`). 외부 주소가 아니라 앱 안의 산출물을 가리킨다 */
 export const artifactLink = (artifactId: string) => `taskforce://artifacts/${artifactId}`;
 
-/** 모델이 만든 제목을 한 줄로: 줄바꿈 · 연속 공백을 하나로, 앞뒤 공백 제거, 길면 자른다. 비면 null */
+/** 모델이 만든 제목을 한 줄로: 줄바꿈 · 연속 공백을 하나로, 앞뒤 공백 제거, 길면 자른다(글자 단위: 이모지를 반으로 자르지 않는다). 비면 null */
 export function receiptTitle(title: string): string | null {
   const line = title.replace(/\s+/g, " ").trim();
   if (!line) return null;
-  return line.length > TITLE_CHARS ? `${line.slice(0, TITLE_CHARS - 1)}…` : line;
+  const chars = Array.from(line);
+  return chars.length > TITLE_CHARS ? `${chars.slice(0, TITLE_CHARS - 1).join("")}…` : line;
 }
 
 /** receipt 원문과 그 Claim (판정에 넣을 값). 인용 = receipt 글 한 줄 */
@@ -99,15 +101,14 @@ export function buildDraftReceipt(target: ReceiptTarget, claimId: string): { rec
 }
 
 /**
- * receipt를 붙인 뒤의 Action 행 값: Claim을 더해 다시 판정한다(원칙 5). artifact Claim은 필드를 바꾸지 않으므로 붙이기 전 판정과 같아야 한다.
- * 다르면 쓰지 않는다(초안이 Action을 바꾸는 일은 없다, A38 · A57).
+ * receipt Claim을 더해 다시 판정해도(원칙 5) Action 행 값이 붙이기 전 판정과 같은지 확인한다. artifact Claim은 필드를 바꾸지 않으므로 같아야 하고,
+ * 다르면 쓰지 않는다(changes_action): 초안이 Action을 바꾸는 일은 없다(A38 · A57). DB 함수는 잠근 행 값을 그대로 쓴다.
  */
-export function receiptActionValues(action: ReceiptAction, claim: Claim): Record<string, unknown> {
+export function assertReceiptKeepsAction(action: ReceiptAction, claim: Claim): void {
   const reasons = storedReasons(action.confirmReasons);
   const before = actionRowValues(projectAction(action.title, action.claims, reasons));
   const after = actionRowValues(projectAction(action.title, [...action.claims, claim], reasons));
   if (JSON.stringify(before) !== JSON.stringify(after)) throw new ReceiptWriteError("changes_action");
-  return after;
 }
 
 /** 버전이 어긋나면 다시 읽고 다시 계산하는 횟수 (lib/actions/db-store.ts retryOnConflict와 같다) */
@@ -124,7 +125,8 @@ export async function writeDraftReceipt(store: ReceiptStore, stepId: string, new
   for (let i = 0; i < WRITE_TRIES; i++) {
     const action = await store.loadAction(target.userId, target.actionId);
     if (!action) throw new ReceiptWriteError("not_found");
-    const result = await store.writeReceipt(stepId, action.version, receiptActionValues(action, claim), receipt);
+    assertReceiptKeepsAction(action, claim);
+    const result = await store.writeReceipt(stepId, action.version, receipt);
     if (result !== "conflict") return result;
   }
   throw new ReceiptWriteError("conflict");

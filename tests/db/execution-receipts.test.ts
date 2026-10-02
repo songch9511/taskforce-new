@@ -114,11 +114,12 @@ type ActionSnapshot = {
   needs_confirmation: boolean;
   confirm_reasons: string[];
   resolution: unknown;
+  last_activity_at: string;
   version: number;
 };
 const actionRow = (actionId: string) =>
   one<ActionSnapshot>(
-    "select title, owner, due_date::text, status, needs_confirmation, confirm_reasons, resolution, version from public.actions where id = $1",
+    "select title, owner, due_date::text, status, needs_confirmation, confirm_reasons, resolution, last_activity_at::text, version from public.actions where id = $1",
     [actionId],
   );
 
@@ -187,7 +188,7 @@ describe("초안 receipt 붙이기 (writeDraftReceipt → write_execution_receip
     // 값이 바뀐 이벤트(완료 · 기한 변경 등)는 없다
     expect(await count("select 1 from public.action_events where action_id = $1 and type <> 'created' and type <> 'artifact_created'", [actionId])).toBe(0);
 
-    // 초안 ≠ 완료: 상태 · 기한 · 담당 · 제목 · 확인 · 판정 이유 그대로, 버전만 하나 오른다
+    // 초안 ≠ 완료: 상태 · 기한 · 담당 · 제목 · 확인 · 판정 이유 · 활동 시각(랭킹) 그대로, 버전만 하나 오른다
     const after = await actionRow(actionId);
     expect(after).toEqual({ ...before, version: before.version + 1 });
     expect(after.status).toBe("open");
@@ -199,7 +200,7 @@ describe("초안 receipt 붙이기 (writeDraftReceipt → write_execution_receip
   it("다시 불러도 한 번만 붙는다: 이미 붙었으면 버전과 상관없이 exists, 아무것도 더 쓰지 않는다", async () => {
     const user = await newUser();
     const actionId = await newAction(user);
-    const { stepId } = await finishedDraft(user, actionId);
+    const { stepId, artifactId } = await finishedDraft(user, actionId);
     expect(await writeDraftReceipt(store, stepId)).toBe("written");
     const version = (await actionRow(actionId)).version;
     const rows = () =>
@@ -213,8 +214,8 @@ describe("초안 receipt 붙이기 (writeDraftReceipt → write_execution_receip
 
     expect(await writeDraftReceipt(store, stepId)).toBe("exists");
     // 앞 시도가 commit한 뒤 응답만 잃은 실행기가 옛 버전으로 다시 불러도 exists (conflict로 되풀이하지 않는다)
-    const receipt = { source: { title: null, raw_text: "초안 저장", external_url: "taskforce://artifacts/x" }, claim: { id: randomUUID(), quote: "초안 저장" } };
-    expect((await one<{ r: string }>("select public.write_execution_receipt($1, $2, '{}', $3::jsonb) as r", [stepId, version - 1, JSON.stringify(receipt)])).r).toBe("exists");
+    const receipt = { source: { title: null, raw_text: "초안 저장", external_url: `taskforce://artifacts/${artifactId}` }, claim: { id: randomUUID(), quote: "초안 저장" } };
+    expect((await one<{ r: string }>("select public.write_execution_receipt($1, $2, $3::jsonb) as r", [stepId, version - 1, JSON.stringify(receipt)])).r).toBe("exists");
     expect(await rows()).toEqual([1, 1, 1, 1]);
     expect((await actionRow(actionId)).version).toBe(version);
   });
@@ -222,10 +223,10 @@ describe("초안 receipt 붙이기 (writeDraftReceipt → write_execution_receip
   it("버전이 어긋나면 아무것도 쓰지 않고(conflict), 실행기는 다시 읽고 다시 계산해 붙인다", async () => {
     const user = await newUser();
     const actionId = await newAction(user);
-    const { stepId } = await finishedDraft(user, actionId);
+    const { stepId, artifactId } = await finishedDraft(user, actionId);
     const { version } = await actionRow(actionId);
-    const receipt = { source: { title: "x", raw_text: "초안 저장: x", external_url: "taskforce://artifacts/x" }, claim: { id: randomUUID(), quote: "초안 저장: x", speaker_role: "me", certainty: "firm", directness: "first_hand", audience: "private" } };
-    expect((await one<{ r: string }>("select public.write_execution_receipt($1, $2, '{}', $3::jsonb) as r", [stepId, version + 5, JSON.stringify(receipt)])).r).toBe("conflict");
+    const receipt = { source: { title: "x", raw_text: "초안 저장: x", external_url: `taskforce://artifacts/${artifactId}` }, claim: { id: randomUUID(), quote: "초안 저장: x", speaker_role: "me", certainty: "firm", directness: "first_hand", audience: "private" } };
+    expect((await one<{ r: string }>("select public.write_execution_receipt($1, $2, $3::jsonb) as r", [stepId, version + 5, JSON.stringify(receipt)])).r).toBe("conflict");
     expect(await count("select 1 from public.sources where user_id = $1 and kind = 'execution'", [user])).toBe(0);
     expect(await count("select 1 from public.claims where action_id = $1 and origin = 'execution'", [actionId])).toBe(0);
 
@@ -271,26 +272,40 @@ describe("초안 receipt 붙이기 (writeDraftReceipt → write_execution_receip
     expect(await actionRow(actionId)).toEqual({ ...before, version: before.version + 1 });
   });
 
-  it("값은 서버가 정한다: 호출자가 다른 값 · origin · 필드를 넘겨도 산출물 id · execution · artifact로 쓴다 (A55: user Claim으로 위조 못 함)", async () => {
+  it("값은 서버가 정한다: 호출자가 다른 값 · origin · 필드 · 상태를 넘겨도 산출물 id · execution · artifact로 쓰고, Action은 잠근 행 그대로 (A55 · A38)", async () => {
     const user = await newUser();
     const actionId = await newAction(user);
     const { stepId, artifactId } = await finishedDraft(user, actionId);
-    const row = await actionRow(actionId);
+    const before = await actionRow(actionId);
     const forged = {
-      source: { title: "x", raw_text: "초안 저장: x", external_url: "taskforce://artifacts/x" },
-      claim: { id: randomUUID(), quote: "초안 저장: x", field: "status", value: "done", origin: "user", source_id: null, speaker_role: "me", certainty: "firm", directness: "first_hand", audience: "private" },
+      source: { title: "x", raw_text: "초안 저장: x", external_url: `taskforce://artifacts/${artifactId}` },
+      claim: {
+        id: randomUUID(), quote: "초안 저장: x", field: "status", value: "done", origin: "user", source_id: null, state: "disputed", channel: "email",
+        occurred_at: "2020-01-01T00:00:00Z", speaker_role: "me", certainty: "firm", directness: "first_hand", audience: "private",
+      },
+      // 예전 판의 p_action 자리: DB 함수는 받지 않는다 (Action 값은 잠근 행에서)
+      action: { status: "done" },
     };
-    // Action 값은 지금 행 그대로 (실행기가 다시 판정한 값과 같다)
-    const { action } = await one<{ action: Record<string, unknown> }>(
-      `select jsonb_build_object('title', title, 'owner', owner, 'due_date', due_date, 'due_at', due_at, 'status', status,
-         'needs_confirmation', needs_confirmation, 'confirm_reasons', to_jsonb(confirm_reasons), 'resolution', resolution) as action
-       from public.actions where id = $1`,
-      [actionId],
+    expect((await one<{ r: string }>("select public.write_execution_receipt($1, $2, $3::jsonb) as r", [stepId, before.version, JSON.stringify(forged)])).r).toBe("written");
+    const stored = await one(
+      `select c.field, c.value, c.origin, c.state, c.channel, c.source_id = s.id as own_source, c.occurred_at = a.created_at as artifact_time
+       from public.claims c, public.sources s, public.execution_artifacts a
+       where c.action_id = $1 and c.origin <> 'source' and s.external_id = $2 and s.kind = 'execution' and a.id = $3`,
+      [actionId, stepId, artifactId],
     );
-    expect((await one<{ r: string }>("select public.write_execution_receipt($1, $2, $3::jsonb, $4::jsonb) as r", [stepId, row.version, JSON.stringify(action), JSON.stringify(forged)])).r).toBe("written");
-    const stored = await one("select field, value, origin, source_id is not null as has_source from public.claims where action_id = $1 and origin <> 'source'", [actionId]);
-    expect(stored).toEqual({ field: "artifact", value: artifactId, origin: "execution", has_source: true });
-    expect((await actionRow(actionId)).status).toBe("open");
+    expect(stored).toEqual({ field: "artifact", value: artifactId, origin: "execution", state: "active", channel: null, own_source: true, artifact_time: true });
+    expect(await actionRow(actionId)).toEqual({ ...before, version: before.version + 1 });
+  });
+
+  it("링크가 그 산출물을 가리키지 않거나 읽은 버전이 없으면 거절한다", async () => {
+    const user = await newUser();
+    const actionId = await newAction(user);
+    const { stepId, artifactId } = await finishedDraft(user, actionId);
+    const receipt = (link: string) => JSON.stringify({ source: { title: "x", raw_text: "초안 저장: x", external_url: link }, claim: { id: randomUUID(), quote: "초안 저장: x" } });
+    await expect(db.query("select public.write_execution_receipt($1, 1, $2::jsonb)", [stepId, receipt("taskforce://artifacts/x")])).rejects.toThrow(/링크가 산출물을 가리키지 않는다/);
+    await expect(db.query("select public.write_execution_receipt($1, 1, $2::jsonb)", [stepId, receipt("https://evil.example/x")])).rejects.toThrow(/링크가 산출물을 가리키지 않는다/);
+    await expect(db.query("select public.write_execution_receipt($1, null, $2::jsonb)", [stepId, receipt(`taskforce://artifacts/${artifactId}`)])).rejects.toThrow(/읽은 Action 버전이 없다/);
+    expect(await count("select 1 from public.sources where user_id = $1 and kind = 'execution'", [user])).toBe(0);
   });
 
   it("끝낸 초안 단계 · 산출물이 아니면 쓰지 않는다 (계획 단계 · 부르는 중 · 없는 단계), 인용이 receipt 글에 없어도 거절", async () => {
@@ -300,11 +315,11 @@ describe("초안 receipt 붙이기 (writeDraftReceipt → write_execution_receip
     const planId = (await one<{ id: string }>("select id from public.execution_steps where run_id = $1 and seq = 1", [runId])).id;
     const receipt = (quote: string) => JSON.stringify({ source: { title: "x", raw_text: "초안 저장: x", external_url: "taskforce://artifacts/x" }, claim: { id: randomUUID(), quote } });
     for (const step of [planId, randomUUID()]) {
-      await expect(db.query("select public.write_execution_receipt($1, 0, '{}', $2::jsonb)", [step, receipt("초안 저장: x")])).rejects.toThrow(/끝낸 초안 단계가 아니다/);
+      await expect(db.query("select public.write_execution_receipt($1, 0, $2::jsonb)", [step, receipt("초안 저장: x")])).rejects.toThrow(/끝낸 초안 단계가 아니다/);
       await expect(writeDraftReceipt(store, step)).rejects.toThrow(ReceiptWriteError);
     }
-    await expect(db.query("select public.write_execution_receipt($1, 0, '{}', $2::jsonb)", [stepId, receipt("완료했습니다")])).rejects.toThrow(/인용이 receipt 글에 없다/);
-    await expect(db.query("select public.write_execution_receipt($1, 0, '{}', $2::jsonb)", [stepId, receipt("")])).rejects.toThrow(/인용이 receipt 글에 없다/);
+    await expect(db.query("select public.write_execution_receipt($1, 0, $2::jsonb)", [stepId, receipt("완료했습니다")])).rejects.toThrow(/인용이 receipt 글에 없다/);
+    await expect(db.query("select public.write_execution_receipt($1, 0, $2::jsonb)", [stepId, receipt("")])).rejects.toThrow(/인용이 receipt 글에 없다/);
 
     // 부르는 중인 초안 단계 (아직 산출물 없음)
     const run2 = (await one<{ id: string }>("select public.create_run($1, $2, 'draft', '하나 더') as id", [user, actionId])).id;
@@ -438,7 +453,7 @@ describe("권한: receipt는 본인만 읽고, 서버만 쓴다", () => {
     }
     const user = await newUser();
     await asUser(db, user, async () => {
-      await expect(db.query("select public.write_execution_receipt(gen_random_uuid(), 0, '{}', '{}')")).rejects.toThrow(/permission denied/);
+      await expect(db.query("select public.write_execution_receipt(gen_random_uuid(), 0, '{}')")).rejects.toThrow(/permission denied/);
       await expect(db.query("select * from public.missing_execution_receipts()")).rejects.toThrow(/permission denied/);
     });
   });

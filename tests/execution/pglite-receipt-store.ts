@@ -39,13 +39,8 @@ export function pgliteReceiptStore(db: PGlite): ReceiptStore {
       const claims = (await db.query<ClaimRow>(`select ${CLAIM_COLUMNS} from public.claims where action_id = $1 and user_id = $2`, [actionId, userId])).rows;
       return { version: row.version, title: row.title, confirmReasons: row.confirm_reasons, claims: claims.map(claimFromRow) };
     },
-    async writeReceipt(stepId, expectedVersion, action, receipt) {
-      const row = await one<{ r: ReceiptWriteResult }>("select public.write_execution_receipt($1, $2, $3::jsonb, $4::jsonb) as r", [
-        stepId,
-        expectedVersion,
-        JSON.stringify(action),
-        JSON.stringify(receipt),
-      ]);
+    async writeReceipt(stepId, expectedVersion, receipt) {
+      const row = await one<{ r: ReceiptWriteResult }>("select public.write_execution_receipt($1, $2, $3::jsonb) as r", [stepId, expectedVersion, JSON.stringify(receipt)]);
       return row.r;
     },
     async missingReceipts(limit) {

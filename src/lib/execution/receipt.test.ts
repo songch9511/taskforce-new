@@ -1,13 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { projectAction } from "@/lib/actions/project";
-import { actionRowValues } from "@/lib/actions/rows";
 import type { Claim } from "@/lib/pipeline/resolve";
 
 import {
   artifactLink,
+  assertReceiptKeepsAction,
   buildDraftReceipt,
-  receiptActionValues,
   receiptTitle,
   ReceiptWriteError,
   writeDraftReceipt,
@@ -69,48 +67,47 @@ describe("buildDraftReceipt", () => {
     expect(long).toHaveLength(200);
     expect(long.endsWith("…")).toBe(true);
     expect(receiptTitle(" \n ")).toBeNull();
+    // 글자 단위로 자른다: 이모지를 반으로 자르면 jsonb가 받지 않는 글이 된다
+    const emoji = receiptTitle("📝".repeat(300))!;
+    expect(Array.from(emoji)).toHaveLength(200);
+    expect(emoji.isWellFormed()).toBe(true);
     const blank = buildDraftReceipt({ ...target, artifact: { ...target.artifact, title: "\n" } }, "c");
     expect(blank.receipt.source).toMatchObject({ title: null, raw_text: "초안 저장" });
     expect(blank.receipt.claim.quote).toBe("초안 저장");
   });
 });
 
-describe("receiptActionValues: Claim을 더해 다시 판정한 Action 값", () => {
-  it("artifact Claim은 필드를 바꾸지 않는다: 붙이기 전 판정과 같은 값 (초안 ≠ 완료, A38)", () => {
-    const action = openAction();
-    const { claim } = buildDraftReceipt(target, "claim-1");
-    const values = receiptActionValues(action, claim);
-    expect(values).toEqual(actionRowValues(projectAction(action.title, action.claims)));
-    expect(values).toMatchObject({ status: "open", due_date: "2026-10-09", owner: "me", needs_confirmation: false });
+describe("assertReceiptKeepsAction: Claim을 더해 다시 판정해도 Action 값이 같은가", () => {
+  it("artifact Claim은 필드를 바꾸지 않는다 (초안 ≠ 완료, A38)", () => {
+    expect(() => assertReceiptKeepsAction(openAction(), buildDraftReceipt(target, "claim-1").claim)).not.toThrow();
   });
 
-  it("사용자가 끝낸 할 일은 끝난 그대로 (A57), 저장된 확인 이유도 그대로", () => {
+  it("사용자가 끝낸 할 일 · 저장된 확인 이유가 있는 할 일도 그대로 (A57)", () => {
     const done = openAction({
       claims: [...openAction().claims, sourceClaim("status", "done", { origin: "user", channel: "note", occurredAt: new Date("2026-10-02T01:00:00Z") })],
       confirmReasons: ["병합 확인 (55%)"],
     });
-    const values = receiptActionValues(done, buildDraftReceipt(target, "claim-1").claim);
-    expect(values).toMatchObject({ status: "done", confirm_reasons: ["병합 확인 (55%)"], needs_confirmation: true });
+    expect(() => assertReceiptKeepsAction(done, buildDraftReceipt(target, "claim-1").claim)).not.toThrow();
   });
 
   it("더한 Claim이 필드를 바꾸면 쓰지 않는다 (changes_action): 실행 결과로 Action을 끝내는 길은 없다", () => {
     const completing = { ...buildDraftReceipt(target, "claim-1").claim, field: "status" as const, value: "done" };
-    expect(() => receiptActionValues(openAction(), completing)).toThrow(ReceiptWriteError);
-    expect(() => receiptActionValues(openAction(), completing)).toThrow(expect.objectContaining({ code: "changes_action" }));
+    expect(() => assertReceiptKeepsAction(openAction(), completing)).toThrow(ReceiptWriteError);
+    expect(() => assertReceiptKeepsAction(openAction(), completing)).toThrow(expect.objectContaining({ code: "changes_action" }));
   });
 });
 
 /** 가짜 store: 결과를 차례로 돌려주고 받은 인자를 기록한다 */
 function fakeStore(over: { target?: ReceiptTarget | null; action?: ReceiptAction | null; results?: ReceiptWriteResult[]; missing?: string[] } = {}) {
   const results = [...(over.results ?? ["written"])];
-  const writes: { stepId: string; expectedVersion: number; action: Record<string, unknown> }[] = [];
+  const writes: { stepId: string; expectedVersion: number }[] = [];
   let version = (over.action ?? openAction()).version;
   const store: ReceiptStore = {
     receiptTarget: vi.fn(async () => (over.target === undefined ? target : over.target)),
     // 읽을 때마다 지금 버전을 돌려준다 (conflict 뒤에는 다른 쓰기가 버전을 올렸다)
     loadAction: vi.fn(async () => (over.action === null ? null : { ...(over.action ?? openAction()), version })),
-    writeReceipt: vi.fn(async (stepId, expectedVersion, action) => {
-      writes.push({ stepId, expectedVersion, action });
+    writeReceipt: vi.fn(async (stepId, expectedVersion) => {
+      writes.push({ stepId, expectedVersion });
       const result = results.shift() ?? "written";
       if (result === "conflict") version++;
       return result;
@@ -121,11 +118,11 @@ function fakeStore(over: { target?: ReceiptTarget | null; action?: ReceiptAction
 }
 
 describe("writeDraftReceipt", () => {
-  it("읽은 버전으로 다시 판정한 값을 쓴다", async () => {
+  it("읽은 버전으로 receipt를 쓴다", async () => {
     const { store, writes } = fakeStore();
     expect(await writeDraftReceipt(store, "step-1", () => "claim-1")).toBe("written");
-    expect(writes).toEqual([{ stepId: "step-1", expectedVersion: 3, action: receiptActionValues(openAction(), buildDraftReceipt(target, "claim-1").claim) }]);
-    expect(store.writeReceipt).toHaveBeenCalledWith("step-1", 3, expect.any(Object), buildDraftReceipt(target, "claim-1").receipt);
+    expect(writes).toEqual([{ stepId: "step-1", expectedVersion: 3 }]);
+    expect(store.writeReceipt).toHaveBeenCalledWith("step-1", 3, buildDraftReceipt(target, "claim-1").receipt);
   });
 
   it("버전이 어긋나면 다시 읽고 다시 써서 붙이고, 이미 붙었으면 exists", async () => {
@@ -133,7 +130,7 @@ describe("writeDraftReceipt", () => {
     expect(await writeDraftReceipt(retried.store, "step-1")).toBe("written");
     expect(retried.writes.map((w) => w.expectedVersion)).toEqual([3, 4]);
     // 같은 Claim id로 다시 쓴다 (receipt는 한 번 만든다)
-    expect(new Set(vi.mocked(retried.store.writeReceipt).mock.calls.map((call) => call[3].claim.id)).size).toBe(1);
+    expect(new Set(vi.mocked(retried.store.writeReceipt).mock.calls.map((call) => call[2].claim.id)).size).toBe(1);
 
     expect(await writeDraftReceipt(fakeStore({ results: ["exists"] }).store, "step-1")).toBe("exists");
   });
