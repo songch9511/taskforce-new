@@ -47,7 +47,7 @@ App Store 정식 출시가 아니다. "Notion만 연결할 수 있다"로는 go 
 |---|---|---|---|
 | Notion | ✅ | ✅ 열림 | — |
 | Slack | ✅ (#4 ~ #15) | `SLACK_CONNECT_ENABLED` 비움 | Slack 확인 창 · 끊기 문구가 든 앱 빌드를 TestFlight에 올림 |
-| Gmail | ✅ (#25 · #27 · #31) | `GMAIL_CONNECT_ENABLED` 비움 | 처리방침 재게시(BaseTen 삭제 · Gmail 절 · 재연결 알림을 한 버전으로) → 17장 고지 기간 → 새 앱 빌드 |
+| Gmail | ✅ (#25 · #27 · #31) | `GMAIL_CONNECT_ENABLED=true` (2026-09-30 켬, 2026-10-02 운영 값 확인). 프로젝트 B가 Testing이라 테스트 사용자만 연결된다 | 처리방침 재게시(BaseTen 삭제 · Gmail 절 · 재연결 알림을 한 버전으로) → 17장 고지 기간 → 새 앱 빌드 |
 | Calendar · Meet | ✅ (#30 · #36) | `GOOGLE_CONNECT_ENABLED` 비움 | 녹화한 Meet 회의 둘로 dev 확인(google-integration.md 9장: G2 참석한 회의 · G5 · 회의 코드 · 초대 일정) → PR 5b(처리방침 Calendar · Meet 문장 · 전체 검증) → 민감 범위 심사(L4) 또는 프로젝트 A도 Testing |
 
 2026-09-30에 더 고친 것: 출력 한도를 넘긴 추출은 추론량을 제한해 다시 묻기(#28), Gmail · Meet 파이프라인 보완(#31), 하루 넘게 멈춘 원문을 실패로 닫기(#33), 빠진 할 일 신고 · 물어보기를 60초 안에(#34), 연결 설정을 DB 함수로 한 번에 쓰기(#35, 운영 DB에 `20261017000000` 적용).
