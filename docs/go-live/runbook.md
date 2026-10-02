@@ -310,7 +310,7 @@ npx supabase db query --linked "select count(*) as actors from public.execution_
 
 ### 9-3. 크레딧 지급 `grant_credits`
 
-크레딧은 운영자가 지급한다(구매 경로 없음, EXECUTION 12장). 양은 크레딧이고 요율 `c3-v1`에서 1 크레딧 = $0.001다. 초안 단계 하나의 예약 추정치는 `DRAFT_ESTIMATE_CREDITS`(`src/lib/execution/limits.ts`)이고, 정산은 확정된 원가 ÷ 크레딧당 USD를 올림한 값이고 예약을 넘지 않는다. 한 번에 지급하는 양은 적어도 이 추정치여야 한다(모자라면 run이 `hold_reason = 'credit'`로 막힌다). 양수는 지급, 음수는 회수(예약 · 정산된 크레딧은 회수하지 못한다). 지급 id마다 한 번만 들어간다: 같은 id로 다시 보내면 아무것도 하지 않고 `false`, 같은 id로 다른 양을 보내면 오류다.
+크레딧은 운영자가 지급한다(구매 경로 없음, EXECUTION 12장). 양은 크레딧이고 요율 `c3-v1`에서 1 크레딧 = $0.001다. 초안 단계 하나의 예약 추정치는 `DRAFT_ESTIMATE_CREDITS`(`src/lib/execution/limits.ts`)이고, 정산은 확정된 원가 ÷ 크레딧당 USD를 올림한 값이고 예약을 넘지 않는다. 가용 잔액(지급 - 예약 - 정산)이 이 추정치 이상이어야 초안 단계를 부른다. 모자라거나, run을 만들 때 준 `budget_credits`가 추정치보다 작으면 run이 `hold_reason = 'credit'`로 막힌다(뒤의 경우는 지급으로 풀리지 않는다: 새 run을 만든다). 양수는 지급, 음수는 회수(예약 · 정산된 크레딧은 회수하지 못한다). 지급 id마다 한 번만 들어간다: 같은 id로 다시 보내면 아무것도 하지 않고 `false`, 같은 id로 다른 양을 보내면 오류다.
 
 ```bash
 # 지급 id를 지급마다 새로 만든다 (작업 기록에 적어 둔다. 같은 지급을 다시 보내도 한 번만 들어간다)
@@ -328,10 +328,11 @@ npx supabase db query --linked "select granted, reserved, settled, granted - res
 select count(*) as expired_calling from public.execution_steps where state = 'calling' and lease_expires_at < now();
 -- 결과 불명 단계: U2에는 외부 효과가 없어 0이어야 한다 (내부 효과는 결과 불명 대신 다시 준비한다)
 select count(*) as unknown_outcome, min(unknown_since) as oldest from public.execution_steps where state = 'unknown_outcome';
--- 끝나지 않은 run의 막힌 이유 (null = 막히지 않음). credit → 9-3 지급, actor → 9-2, blocked → 아래 판단별. 풀린 뒤 늦어도 5분 안에 이어 간다(9-1)
+-- 끝나지 않은 run의 막힌 이유 (null = 막히지 않음). credit → 9-3 지급(또는 run 예산이 작음), actor → 9-2, blocked → 아래 판단별. 풀린 뒤 늦어도 5분 안에 이어 간다(9-1)
 select hold_reason, count(*) as runs from public.execution_runs where state in ('queued', 'running', 'waiting_approval') group by 1 order by 1;
 -- blocked인 run을 막은 판단 (막힌 이유가 blocked로 바뀐 때의 gate, 코드 값만): blocked = 스위치(9-1), tool = 도구 목록, recipient = 수신자 허용 목록,
--- no_rate · no_estimate · reservation_closed = 서버 쪽 문제(요율 없음 · 추정치 없는 초안 · 닫힌 예약). 운영자가 풀 수 없다 → 코드 · 데이터를 본다
+-- no_rate · no_estimate · reservation_closed = 서버 쪽 문제(요율 없음 · 추정치 없는 초안 · 닫힌 예약). 운영자가 풀 수 없다 → 코드 · 데이터를 본다.
+-- 이벤트는 막힌 이유가 바뀔 때만 남아, blocked인 채 다른 판단으로 막혀도 처음 판단이 보인다: 스위치를 푼 지 5분이 지나도 blocked면 도구 · 수신자 · 서버 쪽을 본다
 select gate, count(*) as runs from (select distinct on (e.run_id) e.gate from public.execution_events e join public.execution_runs r on r.id = e.run_id
   where e.type = 'hold' and r.hold_reason = 'blocked' and r.state in ('queued', 'running', 'waiting_approval') order by e.run_id, e.id desc) g group by 1 order by 1;
 -- 미확정 원가: sweep은 하루 안의 행만 generation 조회로 확정한다. 청구 대상(billable)이고 하루가 지난 행은 아래 "미확정 원가 정하기"
@@ -408,7 +409,7 @@ npx supabase db query --linked "select (select count(*) from public.claims c whe
 | 원가 `billable_confirmed` · `unconfirmed` | 1 이상(generation id와 확정 비용이 있는 청구 대상 행) · 0. 다시 물은 시도가 있으면 청구 대상 행이 더 있다 |
 | 원장 `reserve` · `settle` · `release` | 1 · 1 · 0 또는 1 (정산하고 남은 예약만 해제) |
 | receipt `execution_claims` · `executed_evidence` | 1 이상 · 1 이상 (Claim origin은 `execution`, `user`가 아니다) |
-| `claims_without_evidence` | 0 (실행 Claim마다 같은 receipt 원문의 `executed` 근거가 있다. 원문 · 인용이 없는 실행 Claim은 DB 제약이 막는다) |
+| `claims_without_evidence` | 0 (실행 Claim마다 같은 receipt 원문의 `executed` 근거가 있다. 원문 · 인용이 null인 실행 Claim은 DB 제약이, 빈 인용은 `write_execution_receipt`가 막는다) |
 | `action_status` | 실행 전과 같음(`open`): 초안은 완료가 아니다 |
 
 `unconfirmed`가 0이 아니면 정산이 보류된 것이다(`settle` 0, 예약 유지). 하루 안이면 sweep이 확정하고, 지나면 9-4 "미확정 원가 정하기".
