@@ -12,6 +12,7 @@ import type { MissStage } from "@/lib/pipeline/missing";
 //               추출이 놓친 할 일로 본다. 구절 없는 직접 추가는 일반 입력으로 따로 세고 분자 · 분모에 넣지 않는다:
 //               원문을 연결하지 않은(무료 · 플러그인 미사용) 사용자의 수동 입력을 AI 재현율 실패로 세지 않는다 (A42)
 // 5 그림자 목록  주간 질문 "Taskforce 밖에 따로 적어둔 할 일이 있나요?"에 "있다" / ("있다" + "없다"). 건너뛰기는 응답 수에만 넣는다
+// 실행 (U2)     run 상태 · 결과 불명 단계 · 승인 요청 · 막힌 이유 · AI 원가 vs 청구 크레딧 (docs/EXECUTION.md 9장 운영 지표)
 
 export type ActionEventRow = {
   actionId: string;
@@ -347,6 +348,78 @@ export function sourceFailures(events: MetricEventRow[], period: Period): Source
   return {
     closed: closed.length,
     byProvider: [...counts].map(([provider, count]) => ({ provider, count })).sort((a, b) => b.count - a.count || a.provider.localeCompare(b.provider)),
+  };
+}
+
+/** run 상태 (execution_runs.state, docs/EXECUTION.md 3장) */
+export const RUN_STATES = ["queued", "running", "waiting_approval", "done", "failed", "stopped"] as const;
+export type RunState = (typeof RUN_STATES)[number];
+/** begin_call이 run을 막은 이유 (execution_runs.hold_reason): 스위치 · 도구 · 수신자 · 서버 쪽 보류(요율 · 추정치 없음, 닫힌 예약) / 실행 주체 밖 / 보내는 연결 없음 / 크레딧 부족 */
+export const HOLD_REASONS = ["blocked", "actor", "needs_connection", "credit"] as const;
+export type HoldReason = (typeof HOLD_REASONS)[number];
+
+export type ExecutionRows = {
+  /** run의 만든 시각과 지금 상태 */
+  runs: { state: string; createdAt: string }[];
+  /** 실행 이벤트 (execution_events): hold(막힘 · 풀림)와 run 전이 */
+  events: { type: string; toState: string | null; at: string }[];
+  /** 지금 결과 불명(unknown_outcome)인 단계 수 (기간과 상관없이) */
+  unknownOutcome: number;
+  /** OpenRouter 원가 (execution_usage, 시도마다 한 행). 미확정이면 costUsd null */
+  usage: { costUsd: number | null; confirmed: boolean; billable: boolean; at: string }[];
+  /** 정산 원장 행 (credit_ledger kind settle): 청구한 크레딧과 그 요율의 크레딧당 USD */
+  settles: { credits: number; usdPerCredit: number | null; at: string }[];
+};
+
+export type ExecutionMetric = {
+  /** 기간 안에 만든 run 수와 그 run의 지금 상태별 수 */
+  runs: number;
+  byState: Record<RunState, number>;
+  /** 지금 결과 불명인 단계 (U2는 외부 효과가 없어 0이어야 한다) */
+  unknownOutcome: number;
+  /** 기간 안에 run이 승인 대기로 간 수 (원칙 3: 확인 요청은 그 자체가 비용) */
+  approvalRequests: number;
+  /** 기간 안에 run이 막힌 수 (이유별, 이유가 바뀔 때마다 한 번) */
+  holds: Record<HoldReason, number>;
+  /** 기간 안에 기록한 AI 원가 (USD): 청구 대상 · 플랫폼 원가(계획 · 실패 · 응답 없는 시도), 미확정 행 수 */
+  cost: { billableUsd: number; platformUsd: number; unconfirmed: number };
+  /** 기간 안에 정산한 크레딧과 그 금액 (USD, 정산 때 요율) */
+  charged: { credits: number; usd: number };
+};
+
+/** 실행 (U2): 숫자만 받는다. 요청 · 계획 · 초안 · receipt는 읽지 않는다 */
+export function execution(rows: ExecutionRows, period: Period): ExecutionMetric {
+  const byState = Object.fromEntries(RUN_STATES.map((s) => [s, 0])) as Record<RunState, number>;
+  const runs = rows.runs.filter((r) => inPeriod(r.createdAt, period));
+  for (const { state } of runs) if (state in byState) byState[state as RunState]++;
+
+  const events = rows.events.filter((e) => inPeriod(e.at, period));
+  const holds = Object.fromEntries(HOLD_REASONS.map((r) => [r, 0])) as Record<HoldReason, number>;
+  for (const e of events) if (e.type === "hold" && e.toState !== null && e.toState in holds) holds[e.toState as HoldReason]++;
+
+  const cost = { billableUsd: 0, platformUsd: 0, unconfirmed: 0 };
+  for (const u of rows.usage) {
+    if (!inPeriod(u.at, period)) continue;
+    if (!u.confirmed || u.costUsd === null || !Number.isFinite(u.costUsd)) cost.unconfirmed++;
+    else if (u.billable) cost.billableUsd += u.costUsd;
+    else cost.platformUsd += u.costUsd;
+  }
+
+  const charged = { credits: 0, usd: 0 };
+  for (const s of rows.settles) {
+    if (!inPeriod(s.at, period)) continue;
+    charged.credits += s.credits;
+    charged.usd += s.credits * (s.usdPerCredit ?? 0);
+  }
+
+  return {
+    runs: runs.length,
+    byState,
+    unknownOutcome: rows.unknownOutcome,
+    approvalRequests: events.filter((e) => e.type === "run" && e.toState === "waiting_approval").length,
+    holds,
+    cost,
+    charged,
   };
 }
 

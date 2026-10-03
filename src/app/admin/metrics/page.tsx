@@ -3,7 +3,7 @@ import { notFound } from "next/navigation";
 
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { requireUser } from "@/lib/auth";
-import type { ErrorField, MissedMetric } from "@/lib/metrics/compute";
+import { HOLD_REASONS, RUN_STATES, type ErrorField, type HoldReason, type MissedMetric, type RunState } from "@/lib/metrics/compute";
 import { isAdmin, loadMetrics } from "@/lib/metrics/load";
 import { createAdminClient } from "@/lib/supabase/admin";
 
@@ -19,6 +19,21 @@ const MISS_STAGE_LABELS: Record<keyof MissedMetric["byStage"], string> = {
   merge_absorbed: "병합에서 다른 Action에 합쳐짐",
   processing_failed: "원문 처리 실패 · 미완료",
   unknown: "단계 기록 없음",
+};
+
+const RUN_STATE_LABELS: Record<RunState, string> = {
+  queued: "대기",
+  running: "진행",
+  waiting_approval: "승인 대기",
+  done: "끝",
+  failed: "실패",
+  stopped: "멈춤",
+};
+const HOLD_LABELS: Record<HoldReason, string> = {
+  blocked: "차단 스위치 · 도구 · 수신자 · 서버 쪽 보류",
+  actor: "실행 주체 목록 밖",
+  needs_connection: "보내는 연결 없음",
+  credit: "크레딧 부족",
 };
 
 const PROVIDER_LABELS: Record<string, string> = {
@@ -69,7 +84,7 @@ const GOOGLE_COUNT_LABELS: [string, string][] = [
 
 const pct = (value: number | null) => (value === null ? "—" : `${Math.round(value * 1000) / 10}%`);
 const num = (value: number | null, unit = "") => (value === null ? "—" : `${Math.round(value * 10) / 10}${unit}`);
-const usd = (value: number) => value.toFixed(3);
+const usd = (value: number, digits = 3) => value.toFixed(digits);
 
 export default async function MetricsPage({ searchParams }: { searchParams: Promise<{ days?: string }> }) {
   const user = await requireUser();
@@ -91,6 +106,7 @@ export default async function MetricsPage({ searchParams }: { searchParams: Prom
     meetingLinkage: linkage,
     discoveryCost: cost,
     sourceFailures: failures,
+    execution,
   } = report;
   // 피벗 판단은 자동 반영이 틀린 비율로 한다 (PRD 6장). 구분이 생기기 전 기록뿐이면 전체 비율을 보여준다.
   const auto = m.byConfirmation.auto;
@@ -270,6 +286,65 @@ export default async function MetricsPage({ searchParams }: { searchParams: Prom
                   </span>
                 </li>
               ))}
+            </ul>
+          </CardContent>
+        )}
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>실행 (U2)</CardTitle>
+          <CardDescription>
+            {execution
+              ? `최근 ${days}일에 만든 run ${execution.runs}개의 지금 상태. 결과 불명 단계는 지금 수(기간과 상관없이), 승인 요청 · 막힘은 기간 안에 생긴 수입니다.`
+              : "실행 표를 읽지 못했습니다 (마이그레이션 20261021 · 20261022 적용 전이거나 읽기 오류, 서버 로그)."}
+          </CardDescription>
+        </CardHeader>
+        {execution && (
+          <CardContent className="grid gap-4 text-sm sm:grid-cols-2">
+            <ul className="space-y-0.5">
+              {RUN_STATES.map((state) => (
+                <li key={state} className="flex justify-between">
+                  <span>{RUN_STATE_LABELS[state]}</span>
+                  <span>{execution.byState[state]}개</span>
+                </li>
+              ))}
+            </ul>
+            <ul className="space-y-0.5">
+              <li className="flex justify-between">
+                <span>결과 불명 단계</span>
+                <span>{execution.unknownOutcome}개</span>
+              </li>
+              <li className="flex justify-between">
+                <span>승인 요청</span>
+                <span>{execution.approvalRequests}번</span>
+              </li>
+              {HOLD_REASONS.map((reason) => (
+                <li key={reason} className="flex justify-between">
+                  <span>막힘 · {HOLD_LABELS[reason]}</span>
+                  <span>{execution.holds[reason]}번</span>
+                </li>
+              ))}
+            </ul>
+            <ul className="space-y-0.5 sm:col-span-2">
+              <li className="flex justify-between">
+                <span>AI 원가 · 청구 대상</span>
+                <span>${usd(execution.cost.billableUsd, 4)}</span>
+              </li>
+              <li className="flex justify-between">
+                <span>AI 원가 · 플랫폼 (계획 · 실패 · 응답 없는 시도)</span>
+                <span>${usd(execution.cost.platformUsd, 4)}</span>
+              </li>
+              <li className="flex justify-between">
+                <span>원가 미확정</span>
+                <span>{execution.cost.unconfirmed}건</span>
+              </li>
+              <li className="flex justify-between">
+                <span>청구 (정산한 크레딧)</span>
+                <span>
+                  {execution.charged.credits} 크레딧 · ${usd(execution.charged.usd, 4)}
+                </span>
+              </li>
             </ul>
           </CardContent>
         )}

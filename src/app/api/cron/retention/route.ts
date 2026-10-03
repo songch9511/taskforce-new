@@ -7,6 +7,9 @@ import { createAdminClient } from "@/lib/supabase/admin";
 // 90일이 지난 원문의 글 · 판정 기록, 하루 지난 시도 기록(rate_limit_events · missing_reports)을 지운다 (src/lib/retention.ts).
 // Slack 대기 메시지(받은 지 3일) · 추적 스레드(마지막 활동 뒤 14일)도 지우고, 연결을 끊어 지운 원문에 남은 글자가 있으면 다시 지운다 (purge_slack_buffers).
 // 끝으로 Slack 토큰이 살아 있는지 확인한다: Slack에서 앱을 지웠다는 이벤트를 놓쳤어도 하루 안에 끊고 Slack 글자를 지운다 (slack/health.ts).
+// 실행 산출물(내장 초안)은 보관 기간(retain_until, 열 기본값)이 지난 본문만 맨 먼저 비운다 (purge_expired_artifacts, 한도 없는 한 문장.
+// 운영자 시험 규모라 짧다. 밀린 산출물이 많아지면 그만큼 원문 정리 시간이 줄어든다: 그때 한도를 두는 판으로 바꾼다).
+// 실패해도 나머지 정리 · Slack 토큰 확인은 하고, 응답을 500으로 해 cron 기록에 남긴다.
 // 한 번에 최대 PURGE_LIMIT건씩 지우므로, 밀린 게 있으면(어느 하나라도 한도만큼 지워졌으면) 시간 한도 안에서 반복해서 부른다.
 export const maxDuration = 60;
 
@@ -31,7 +34,17 @@ export async function GET(request: Request) {
   const started = Date.now();
   const tokenDeadline = started + TIME_BUDGET_MS - SLACK_CALL_TIMEOUT_MS;
   const purgeDeadline = tokenDeadline - SLACK_TOKEN_CHECK_MS;
-  let calls = 0;
+  let calls = 1; // purge_expired_artifacts
+  const artifactsPurged = await admin
+    .rpc("purge_expired_artifacts")
+    .throwOnError()
+    .then(
+      ({ data }) => data as number,
+      (error: unknown) => {
+        console.error("실행 산출물 본문 정리 실패:", error instanceof Error ? error.message : error);
+        return null;
+      },
+    );
   for (;;) {
     calls++;
     const { data } = await admin
@@ -64,13 +77,17 @@ export async function GET(request: Request) {
     console.error("Slack 토큰 확인 실패:", error instanceof Error ? error.message : error);
     return null;
   });
-  return Response.json({
-    ...totals,
-    slack_tokens_checked: slackTokens?.checked ?? 0,
-    slack_tokens_revoked: slackTokens?.revoked ?? 0,
-    slack_messages_deleted: slack.messages_deleted,
-    slack_threads_deleted: slack.threads_deleted,
-    slack_sources_repurged: slack.sources_repurged,
-    calls,
-  });
+  return Response.json(
+    {
+      ...totals,
+      artifacts_purged: artifactsPurged,
+      slack_tokens_checked: slackTokens?.checked ?? 0,
+      slack_tokens_revoked: slackTokens?.revoked ?? 0,
+      slack_messages_deleted: slack.messages_deleted,
+      slack_threads_deleted: slack.threads_deleted,
+      slack_sources_repurged: slack.sources_repurged,
+      calls,
+    },
+    { status: artifactsPurged === null ? 500 : 200 },
+  );
 }

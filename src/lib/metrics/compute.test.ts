@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   connections,
   discoveryCost,
+  execution,
   gmailFiltering,
   googleActivity,
   kstWeek,
@@ -15,6 +16,7 @@ import {
   sourceFailures,
   timeToStart,
   type ActionEventRow,
+  type ExecutionRows,
   type MetricEventRow,
   type WeeklyCheckRow,
 } from "./compute";
@@ -412,6 +414,92 @@ describe("sourceFailures: 원문 처리 실패로 닫음 (W4)", () => {
         { provider: "notion", count: 2 },
         { provider: "direct", count: 1 },
       ],
+    });
+  });
+});
+
+describe("execution: 실행 (U2)", () => {
+  const empty: ExecutionRows = { runs: [], events: [], unknownOutcome: 0, usage: [], settles: [] };
+
+  it("기간 안에 만든 run을 지금 상태별로 센다. 기간 밖 run은 뺀다", () => {
+    const metric = execution(
+      {
+        ...empty,
+        runs: [
+          { state: "done", createdAt: "2026-09-22T00:00:00Z" },
+          { state: "done", createdAt: "2026-09-23T00:00:00Z" },
+          { state: "running", createdAt: "2026-09-24T00:00:00Z" },
+          { state: "stopped", createdAt: "2026-09-25T00:00:00Z" },
+          { state: "failed", createdAt: "2026-09-20T23:59:59Z" },
+          { state: "queued", createdAt: "2026-09-28T00:00:00Z" },
+        ],
+      },
+      period,
+    );
+    expect(metric.runs).toBe(4);
+    expect(metric.byState).toEqual({ queued: 0, running: 1, waiting_approval: 0, done: 2, failed: 0, stopped: 1 });
+  });
+
+  it("승인 요청 = run이 승인 대기로 간 수, 막힘 = 이유가 정해진 hold 이벤트(풀림은 세지 않는다). 결과 불명은 받은 지금 수 그대로", () => {
+    const metric = execution(
+      {
+        ...empty,
+        unknownOutcome: 2,
+        events: [
+          { type: "run", toState: "waiting_approval", at: "2026-09-22T00:00:00Z" },
+          { type: "run", toState: "waiting_approval", at: "2026-09-23T00:00:00Z" },
+          { type: "run", toState: "running", at: "2026-09-23T00:01:00Z" },
+          { type: "hold", toState: "credit", at: "2026-09-22T00:00:00Z" },
+          { type: "hold", toState: null, at: "2026-09-22T01:00:00Z" },
+          { type: "hold", toState: "credit", at: "2026-09-24T00:00:00Z" },
+          { type: "hold", toState: "actor", at: "2026-09-24T00:00:00Z" },
+          { type: "hold", toState: "blocked", at: "2026-09-10T00:00:00Z" },
+          { type: "step", toState: "unknown_outcome", at: "2026-09-24T00:00:00Z" },
+        ],
+      },
+      period,
+    );
+    expect(metric.approvalRequests).toBe(2);
+    expect(metric.holds).toEqual({ blocked: 0, actor: 1, needs_connection: 0, credit: 2 });
+    expect(metric.unknownOutcome).toBe(2);
+  });
+
+  it("AI 원가는 청구 대상 · 플랫폼으로 나누고 미확정은 0원으로 더하지 않고 센다. 청구는 정산 크레딧 × 그때 요율", () => {
+    const metric = execution(
+      {
+        ...empty,
+        usage: [
+          { costUsd: 0.004, confirmed: true, billable: true, at: "2026-09-22T00:00:00Z" },
+          { costUsd: 0.0015, confirmed: true, billable: true, at: "2026-09-22T00:00:01Z" },
+          { costUsd: 0.001, confirmed: true, billable: false, at: "2026-09-22T00:00:02Z" },
+          { costUsd: null, confirmed: false, billable: true, at: "2026-09-23T00:00:00Z" },
+          { costUsd: null, confirmed: false, billable: false, at: "2026-09-23T00:00:00Z" },
+          { costUsd: 9, confirmed: true, billable: true, at: "2026-09-10T00:00:00Z" },
+        ],
+        settles: [
+          { credits: 6, usdPerCredit: 0.001, at: "2026-09-22T00:00:03Z" },
+          { credits: 3, usdPerCredit: 0.001, at: "2026-09-23T00:00:00Z" },
+          { credits: 100, usdPerCredit: 0.001, at: "2026-09-28T00:00:00Z" },
+        ],
+      },
+      period,
+    );
+    expect(metric.cost.billableUsd).toBeCloseTo(0.0055, 10);
+    expect(metric.cost.platformUsd).toBeCloseTo(0.001, 10);
+    expect(metric.cost.unconfirmed).toBe(2);
+    expect(metric.charged.credits).toBe(9);
+    expect(metric.charged.usd).toBeCloseTo(0.009, 10);
+  });
+
+  it("아무것도 없으면 모두 0", () => {
+    expect(execution(empty, period)).toEqual({
+      runs: 0,
+      byState: { queued: 0, running: 0, waiting_approval: 0, done: 0, failed: 0, stopped: 0 },
+      unknownOutcome: 0,
+      approvalRequests: 0,
+      holds: { blocked: 0, actor: 0, needs_connection: 0, credit: 0 },
+      cost: { billableUsd: 0, platformUsd: 0, unconfirmed: 0 },
+      charged: { credits: 0, usd: 0 },
     });
   });
 });

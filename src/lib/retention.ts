@@ -5,6 +5,8 @@
 // 글이 지워진 뒤: AI에게 넘기기와 물어보기는 저장된 근거 구절로 대신하고, 누락 신고는 400으로 거절한다.
 // 예외: Slack 연결을 끊거나 앱을 지우면 Slack 원문은 제목 · 관련자까지, 근거 인용은 SLACK_DISCONNECTED_QUOTE로 바로 바꾼다
 // (purge_slack_sources, 20261013000000, docs/go-live/slack-integration.md D3).
+// 실행 산출물(내장 초안, execution_artifacts)은 행마다 보관 기한(retain_until, 열 기본값 90일 · 처리방침 D9a-1이 정한다)이 지나면
+// 같은 cron이 본문만 비운다(purge_expired_artifacts, 20261022000000). 제목 · 기록 · 원가 · 원장은 남긴다. 기간을 바꾸려면 새 마이그레이션으로 열 기본값을 바꾼다.
 
 export const RAW_TEXT_RETENTION_DAYS = 90;
 

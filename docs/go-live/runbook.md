@@ -1,6 +1,6 @@
 # go live 런북
 
-관련 문서: [go live](../GO_LIVE.md) · [Google 심사](google-verification.md) · [Slack 앱](slack-app.md) · [App Store](app-store.md) · [법률 문서](../legal/README.md) · [연동](../INTEGRATIONS.md)
+관련 문서: [go live](../GO_LIVE.md) · [Google 심사](google-verification.md) · [Slack 앱](slack-app.md) · [App Store](app-store.md) · [법률 문서](../legal/README.md) · [연동](../INTEGRATIONS.md) · [실행 계약](../EXECUTION.md)
 
 작성: 2026-09-27. 서버 배포부터 TestFlight 공개 링크까지, 무엇을 어떤 순서로 하는지 적는다. **맨 아래 [GO LIVE 체크리스트](#go-live-체크리스트)가 기준표**이고, 위 장들은 그 항목의 자세한 방법이다.
 "사용자"는 계정 · 결제 · 외부 공개처럼 코드로 대신할 수 없는 일, "코드"는 이 저장소의 변경으로 끝나는 일이다.
@@ -64,6 +64,7 @@
 | `APNS_BUNDLE_ID` | 비움 → `dev.taskforcelabs.taskforce` | TestFlight 빌드의 기기 토큰은 `production` 환경이다 |
 | `ADMIN_EMAILS` | 운영자 이메일 (쉼표로 구분) | `/admin/metrics` 접근 |
 | `WEEKLY_CHECK_ENABLED` | 비움 (켜짐) | 베타가 끝나면 `false` |
+| `EXECUTION_ENABLED` | 비움 (꺼짐) → 9-6 순서의 3번에서 `true` | 실행(U2: run · 내장 초안)을 연다. `true`만 켠다. 켜도 DB의 차단 스위치 · 실행 주체 허용 목록이 따로 막는다(9장). 끄면 실행 route 404, sweep은 바로 끝난다 |
 
 키를 새로 만들면 로컬 `.env.local`에도 개발용 값을 따로 둔다. 운영 비밀값을 로컬에 복사해 두지 않는다(`CONNECTOR_TOKEN_KEY` 예외는 위 비고).
 
@@ -155,12 +156,12 @@ Supabase → Organization → Billing에서 프로젝트가 **Free**이고 백�
 
 ## 6. Cron 확인
 
-`vercel.json`: `/api/cron/sync` 15분마다, `/api/cron/retry-sources` 매시 7분 · 37분(실패 · 멈춘 글 원문 다시 처리, 하루 안에 들어온 원문만 첫 처리 포함 3번까지. 하루가 지나서도 멈춘 원문은 실패로 닫는다), `/api/cron/reminders` 매일 00:00 UTC(한국 09:00), `/api/cron/retention` 매일 18:30 UTC(한국 03:30, 원문 90일 보관 정리 · `src/lib/retention.ts`).
+`vercel.json`: `/api/cron/sync` 15분마다, `/api/cron/retry-sources` 매시 7분 · 37분(실패 · 멈춘 글 원문 다시 처리, 하루 안에 들어온 원문만 첫 처리 포함 3번까지. 하루가 지나서도 멈춘 원문은 실패로 닫는다), `/api/cron/reminders` 매일 00:00 UTC(한국 09:00), `/api/cron/retention` 매일 18:30 UTC(한국 03:30, 원문 90일 보관 정리 · 보관 기한이 지난 실행 산출물 본문 비우기 · `src/lib/retention.ts`), `/api/cron/execution-sweep` 1분마다(실행, 9장. `EXECUTION_ENABLED`가 꺼져 있으면 `{ enabled: false }`로 바로 끝난다).
 
-1. 배포 뒤 Vercel → 프로젝트 → Settings → Cron Jobs에 네 개가 보이는지.
+1. 배포 뒤 Vercel → 프로젝트 → Settings → Cron Jobs에 다섯 개가 보이는지.
 2. Logs에서 `/api/cron/sync`가 15분마다 200인지. 401이면 `CRON_SECRET`이 없거나 다르다.
 3. 다음 날 09:00 KST에 `/api/cron/reminders`가 200인지(기한 임박 알림).
-4. 다음 날 03:30 KST에 `/api/cron/retention`이 200이고 `{ sources_purged, judge_logs_deleted }`를 돌려주는지(처리방침 5장 "90일" 약속).
+4. 다음 날 03:30 KST에 `/api/cron/retention`이 200이고 `{ sources_purged, judge_logs_deleted, artifacts_purged }`를 돌려주는지(처리방침 5장 "90일" 약속). 산출물 정리가 실패하면 나머지 정리는 하고 500 · `artifacts_purged: null` · 로그 "실행 산출물 본문 정리 실패"다(마이그레이션 `20261022000000` 적용 전이면 이렇다).
 5. `/api/cron/retry-sources`가 30분마다 200이고 `{ due, retried, failed, gaveUp, expired, skippedForTime }`를 돌려주는지. `failed`나 `gaveUp`이 자주 0보다 크면 추출 실패가 잦다는 뜻이다(모델 · 공급자 확인). `expired`는 이번 실행에서 실패로 닫은, 들어온 지 하루가 넘고도 처리 중 · 대기에 15분 넘게 멈춘 글 원문(kind task 제외)의 수다: 사용자가 동의하지 않았거나 후보 밖이었거나 마지막 시도에서 끊겨 앱에 "처리 중"으로 남던 원문을 다시 처리하지 않고 `failed` · `processing_summary.closed = "expired"`로 닫는다. 한 번에 100건까지(닫기에 20초까지) 오래된 것부터라, 배포 직후 옛 원문이 쌓여 있으면 몇 번의 실행 동안 `expired`가 0보다 크다가 0으로 돌아온다(계속 0보다 크면 원문이 계속 멈추고 있다는 뜻이다: 다시 처리 실패 로그와 `maxDuration`을 본다). 닫는 조회가 실패하면 로그에 "창을 지난 원문 찾기 실패"가 남고 다시 처리는 그대로 돈다. 이 cron은 들어온 지 하루가 넘은 원문은 다시 처리하지 않는다: 배포 전에 `processing_status`가 `failed` · `processing` · `pending`인 글 원문(kind task 제외)을 세어 보고, 살릴 것만 `scripts/reprocess-sources.ts --source <id>`로 하나씩 처리한다(이미 닫힌 원문도 같은 방법으로 살릴 수 있다. 스크립트는 재처리 cron처럼 이미 근거로 붙은 구절과 겹치는 후보를 빼고 병합해 근거 · Claim이 두 번 붙지 않는다). 옵션 없이 돌리면 근거가 없는 모든 원문(할 일이 없어 끝난 원문 포함)을 다시 처리하므로 쓰지 않는다.
 6. 동의하지 않은 사용자의 연결은 동기화에서 건너뛴다(`registry.ts`의 `withoutConsent`). 테스트 계정으로 동의 전 · 후를 한 번씩 본다.
 
@@ -257,6 +258,180 @@ union all select 'slack_threads', count(*) from public.slack_threads where user_
 union all select 'slack_people', count(*) from public.slack_people where user_id = '<id>';
 ```
 
+## 9. 실행 (U2: run · 내장 초안)
+
+계약은 [EXECUTION.md](../EXECUTION.md). 단계는 세 겹이 모두 열려야 불린다: 환경변수 `EXECUTION_ENABLED`(Vercel), 실행 주체 허용 목록 `execution_actors`, 차단 스위치 `execution_controls`. U2는 외부로 아무것도 보내지 않는다(유일한 효과는 내장 초안의 AI 호출).
+
+- 아래 명령은 저장소 루트에서 `npx supabase db query --linked "<sql>"`로 한다. **운영 DB다.** 쓰기는 줄마다 사용자 승인 뒤, 한 명령에 문장 하나만 넣는다(여러 문장을 한 명령에 넣으면 한 트랜잭션으로 돌 수 있다).
+- 조회는 개수 · 상태 · 시각만 본다. 요청 · 계획 · 초안 · receipt · 원문 본문과 다른 사람의 이메일은 읽지 않는다. 운영자 계정은 자기 이메일로 찾되 이메일을 출력하지 않는다.
+- 이메일 · 크레딧 양 · uuid는 `<…>` 자리에 넣는다. 이 문서에 실제 값을 적지 않는다(공개 저장소).
+
+### 9-1. 차단 스위치 `execution_controls`
+
+행 다섯 개: `global '*'` · `provider 'taskforce'` · `mode 'manual'` · `mode 'auto'` · `mode 'full'`. 행이 없거나 `blocked = true`면 막힌다. 처음 상태(마이그레이션 시드)는 `global` 막힘, `auto` · `full` 막힘이라 `global`을 풀어도 "Manual만"이다. 막힌 단계는 실패가 아니다: `prepared`에 남고, 풀리면 sweep이 이어 간다. sweep은 막힌 run을 5분마다만 깨우므로(UTC 분이 5의 배수일 때, `HELD_WAKE_EVERY_MINUTES`) 풀린 뒤 늦어도 5분 안에 이어 간다. global이 막혀 있는 동안에는 어떤 run도 깨우지 않는다. 이미 `calling`인 단계는 끝까지 결과를 받는다(EXECUTION 6장).
+
+```bash
+# 지금 상태 (읽기)
+npx supabase db query --linked "select scope, key, blocked from public.execution_controls order by scope, key"
+# 끄기 · 긴급 (이 한 줄만)
+npx supabase db query --linked "update public.execution_controls set blocked = true where scope = 'global' and key = '*'"
+# 켜기 (먼저 위 읽기로 auto · full이 막혀 있는지 본다)
+npx supabase db query --linked "update public.execution_controls set blocked = false where scope = 'global' and key = '*'"
+```
+
+"Manual만"으로 되돌리기(auto · full을 연 적이 있을 때): **global을 먼저 막고**, 모드 행을 한 줄씩 바꾸고, 읽기로 확인한 뒤 global을 푼다. 바꾸는 동안 반쯤 바뀐 스위치로 단계가 불리지 않는다.
+
+```bash
+npx supabase db query --linked "update public.execution_controls set blocked = true where scope = 'global' and key = '*'"
+npx supabase db query --linked "update public.execution_controls set blocked = true where scope = 'mode' and key = 'auto'"
+npx supabase db query --linked "update public.execution_controls set blocked = true where scope = 'mode' and key = 'full'"
+npx supabase db query --linked "select scope, key, blocked from public.execution_controls order by scope, key"
+npx supabase db query --linked "update public.execution_controls set blocked = false where scope = 'global' and key = '*'"
+```
+
+교착(deadlock)을 피하는 규칙. `begin_call`은 단계 → run → 정책 → 실행 주체 → 스위치 세 행(`global` → `mode` → `provider` 순서) → 도구 → 크레딧 계정 순서로 잠근다(EXECUTION 6장). 이 순서를 거스르는 운영자 쓰기는 진행 중인 `begin_call`과 서로 기다리다 한쪽이 되돌려진다(40P01).
+
+- 긴급할 때는 **`global` 한 행만** 바꾼다. 스위치 여러 행을 한 문장 · 한 명령에서 바꾸지 않는다(행을 잠그는 순서가 정해지지 않는다).
+- 정책(`execution_policies`)과 단계(`execution_steps`)를 한 트랜잭션(한 명령)에서 쓰지 않는다: `begin_call`은 단계를 먼저, 정책을 나중에 잠근다. U2에서 운영자가 정책 · 단계를 고칠 일은 없다. 꼭 고쳐야 하면 한 명령에 한 표만.
+- 끄는 update는 진행 중인 `begin_call`(RPC 하나 길이)이 끝날 때까지 기다렸다가 들어간다. 그 뒤에 `calling`으로 가는 단계는 없다.
+
+### 9-2. 실행 주체 `execution_actors`
+
+건넴 전까지 운영자 계정만 넣는다. 목록 밖 사용자는 `/api/v1/runs`가 404이고, 이미 있던 run은 `begin_call`이 `hold_reason = 'actor'`로 막는다.
+
+```bash
+# 넣기: 결과가 1행(added = 1)이어야 한다. 0행이면 이메일이 틀렸거나 이미 들어 있다
+npx supabase db query --linked "insert into public.execution_actors (user_id) select id from auth.users where lower(email) = lower('<운영자 이메일>') on conflict do nothing returning 1 as added"
+# 빼기: 결과 1행(removed = 1)
+npx supabase db query --linked "delete from public.execution_actors where user_id = (select id from auth.users where lower(email) = lower('<운영자 이메일>')) returning 1 as removed"
+# 확인 (개수만)
+npx supabase db query --linked "select count(*) as actors from public.execution_actors"
+```
+
+### 9-3. 크레딧 지급 `grant_credits`
+
+크레딧은 운영자가 지급한다(구매 경로 없음, EXECUTION 12장). 양은 크레딧이고 요율 `c3-v1`에서 1 크레딧 = $0.001다. 초안 단계 하나의 예약 추정치는 `DRAFT_ESTIMATE_CREDITS`(`src/lib/execution/limits.ts`)이고, 정산은 확정된 원가 ÷ 크레딧당 USD를 올림한 값이고 예약을 넘지 않는다. 가용 잔액(지급 - 예약 - 정산)이 이 추정치 이상이어야 초안 단계를 부른다. 모자라면 run이 `hold_reason = 'credit'`로 막히고, 지급하면 늦어도 5분 안에 이어 간다(9-1). run 예산(`budget_credits`)은 만들 때 이 추정치 이상만 받는다(작으면 400). 초안 둘을 맡긴 run은 첫 초안 정산 뒤 남은 예산이 추정치보다 작으면 `credit`으로 기다리고 지급으로 풀리지 않는다: 그 run은 멈춘다(9-4 "오래 막힌 run 정리"). 양수는 지급, 음수는 회수(예약 · 정산된 크레딧은 회수하지 못한다). 지급 id마다 한 번만 들어간다: 같은 id로 다시 보내면 아무것도 하지 않고 `false`, 같은 id로 다른 양을 보내면 오류다.
+
+```bash
+# 지급 id를 지급마다 새로 만든다 (작업 기록에 적어 둔다. 같은 지급을 다시 보내도 한 번만 들어간다)
+uuidgen
+# 지급: granted = true (이메일이 틀리면 '잘못된 인자' 오류)
+npx supabase db query --linked "select public.grant_credits((select id from auth.users where lower(email) = lower('<운영자 이메일>')), <크레딧>, '<지급 uuid>') as granted"
+# 확인 (그 계정의 합계만)
+npx supabase db query --linked "select granted, reserved, settled, granted - reserved - settled as available from public.credit_accounts where user_id = (select id from auth.users where lower(email) = lower('<운영자 이메일>'))"
+```
+
+### 9-4. 점검 (읽기, 개수만)
+
+```sql
+-- lease가 끝났는데 아직 calling인 단계: 1분 sweep이 옮긴다. 몇 분 넘게 0이 아니면 sweep이 돌지 않는다 (Vercel Cron · CRON_SECRET · EXECUTION_ENABLED)
+select count(*) as expired_calling from public.execution_steps where state = 'calling' and lease_expires_at < now();
+-- 결과 불명 단계: U2에는 외부 효과가 없어 0이어야 한다 (내부 효과는 결과 불명 대신 다시 준비한다)
+select count(*) as unknown_outcome, min(unknown_since) as oldest from public.execution_steps where state = 'unknown_outcome';
+-- 끝나지 않은 run의 막힌 이유 (null = 막히지 않음). credit → 9-3 지급(또는 run 예산이 작음), actor → 9-2, blocked → 아래 판단별. 풀린 뒤 늦어도 5분 안에 이어 간다(9-1)
+select hold_reason, count(*) as runs from public.execution_runs where state in ('queued', 'running', 'waiting_approval') group by 1 order by 1;
+-- blocked인 run을 막은 판단 (막힌 이유가 blocked로 바뀐 때의 gate, 코드 값만): blocked = 스위치(9-1), tool = 도구 목록, recipient = 수신자 허용 목록,
+-- no_rate · no_estimate · reservation_closed = 서버 쪽 문제(요율 없음 · 추정치 없는 초안 · 닫힌 예약). 운영자가 풀 수 없다 → 코드 · 데이터를 본다.
+-- 이벤트는 막힌 이유가 바뀔 때만 남아, blocked인 채 다른 판단으로 막혀도 처음 판단이 보인다: 스위치를 푼 지 5분이 지나도 blocked면 도구 · 수신자 · 서버 쪽을 본다
+select gate, count(*) as runs from (select distinct on (e.run_id) e.gate from public.execution_events e join public.execution_runs r on r.id = e.run_id
+  where e.type = 'hold' and r.hold_reason = 'blocked' and r.state in ('queued', 'running', 'waiting_approval') order by e.run_id, e.id desc) g group by 1 order by 1;
+-- 미확정 원가: sweep은 하루 안의 행만 generation 조회로 확정한다. 청구 대상(billable)이고 하루가 지난 행은 아래 "미확정 원가 정하기"
+select billable, generation_id is not null as has_generation, created_at < now() - interval '1 day' as over_a_day, count(*) as n
+from public.execution_usage where cost_status = 'unconfirmed' group by 1, 2, 3 order by 1, 2, 3;
+-- 끝났는데 열린 예약이 남은 run: 원가가 미확정인 run만 남아야 한다 (그 밖은 sweep의 보조 안전망이 1분 안에 푼다)
+select count(*) as open_ended_runs from public.credit_open_ended_runs(1000);
+-- receipt가 빠진 끝낸 초안 (EXECUTION 9장): 0이어야 한다. sweep 보조 안전망이 하루 안의 것을 1분마다 이어 쓴다.
+-- 하루가 지나도 남으면 로그 execution_receipt_failed(단계 id · 까닭)를 본다 (sweep은 하루 지난 산출물을 더 고르지 않는다)
+select count(*) as missing_receipts from public.execution_artifacts a join public.execution_steps s on s.id = a.step_id
+where s.state = 'called' and not exists (select 1 from public.sources x where x.kind = 'execution' and x.user_id = a.user_id and x.external_id = a.step_id::text);
+-- 원문 · 인용 없는 실행 Claim (기준 17): 0이어야 한다
+select count(*) as claims_without_source from public.claims where origin = 'execution' and (source_id is null or quote is null);
+-- 실패한 단계의 까닭 (코드 값만): retries_exhausted가 몰리면 OpenRouter 키 · 잔액 · 권한(401 · 402 · 403)부터 본다 (EXECUTION 13장 오류 표)
+select receipt->>'error' as error, count(*) as steps from public.execution_steps where state = 'failed' group by 1 order by 2 desc;
+```
+
+`EXECUTION_ENABLED`가 꺼져 있으면 sweep이 아무것도 하지 않아(lease 정리 · 원가 확정 · 예약 해제 모두) 위 수가 그대로 남는다. 켜면 1분 안에 줄어든다.
+
+미확정 원가 정하기 (운영자, 행마다 승인). 예약을 잡고 있는 것은 청구 대상 행뿐이고, 청구 대상 미확정 행에는 늘 generation id가 있다. 청구 대상이 아닌 행(플랫폼 원가: 계획 · 실패 · 응답 없는 시도)은 청구 · 예약에 영향이 없고 지표의 미확정 수에만 남는다.
+
+```bash
+# 하루가 지난 청구 대상 미확정 행 (id · generation id만)
+npx supabase db query --linked "select id, generation_id from public.execution_usage where cost_status = 'unconfirmed' and billable and created_at < now() - interval '1 day' order by id limit 20"
+# OpenRouter 대시보드 Activity에서 그 generation의 비용(USD)을 찾는다 → 확정 (끝낸 단계면 그 자리에서 정산한다)
+npx supabase db query --linked "select public.reconcile_usage(<id>, <비용 USD>) as confirmed"
+```
+
+비용을 찾을 수 없으면 정하지 않고 사용자에게 묻는다. 0원으로 확정하거나 예약을 손으로 해제하지 않는다(A46: 모르는 원가를 0으로 두지 않는다).
+
+오래 막힌 run 정리 (운영자, run마다 승인). 운영자만 풀 수 있는 hold(`actor` · `blocked`)나 지급으로 풀리지 않는 `credit`(run 예산 부족)에 머문 run은 sweep이 5분마다 깨워도 그대로다. 풀 수 있는 것(9-1 · 9-2 · 9-3)이면 먼저 푼다. 아니면 그 run의 주인(지금은 운영자)에게 확인하고 멈춘다. 멈추면 남은 예약이 해제되고 이미 만든 초안은 그대로다.
+
+```bash
+# 하루 넘게 막힌 끝나지 않은 run (id · 이유 · 만든 날만)
+npx supabase db query --linked "select id, hold_reason, created_at::date as created from public.execution_runs where state in ('queued', 'running', 'waiting_approval') and hold_reason is not null and created_at < now() - interval '1 day' order by created_at limit 20"
+# 멈추기: run마다 한 명령 (여러 run을 한 명령에서 멈추면 run · 계정 잠금끼리 교착할 수 있다). 결과 stopped. 교착(40P01)으로 되돌려지면 그대로 다시 보낸다
+npx supabase db query --linked "select public.stop_run((select user_id from public.execution_runs where id = '<run>'), '<run>') as state"
+```
+
+### 9-5. 되돌리기
+
+순서대로. 앞 단계만으로 멈추면 거기서 끝낸다.
+
+1. **global 막기** (9-1 "끄기 · 긴급"). 새 단계가 바로 멈추고, 전체가 막히면 `POST /api/v1/runs`도 404다. 진행 중인 `calling`은 결과를 받는다.
+2. **`EXECUTION_ENABLED` 끄기**: Vercel → Settings → Environment Variables(Production)에서 지우거나 `true`가 아닌 값으로 → Redeploy(환경변수는 새 배포부터 적용된다). 실행 route 404, sweep은 `{ enabled: false }`로 바로 끝난다.
+3. **코드 되돌리기** (코드가 문제일 때): Vercel → Deployments → 되돌아갈 앞 Production 배포 → Instant Rollback(다시 빌드하지 않아 바로 바뀐다). 배포는 만들 때의 환경변수를 지닌다: 되돌아간 배포가 `EXECUTION_ENABLED=true`를 넣은 뒤에 만든 것이면 2번이 풀린다. 9-6 3번의 curl로 404인지 확인하고, 401이면 global을 막힌 채 두고 아래 revert 배포를 올린다. 이어서 main에서 그 PR을 revert(`git revert -m 1 <merge sha>` → PR → 병합). Instant Rollback 뒤에는 새 main 배포가 운영 도메인에 자동으로 붙지 않으니, revert 배포가 나오면 그 배포를 Promote해 자동 연결을 되살린다. 마이그레이션은 되돌리지 않는다(표를 지우지 않는다. 실행 마이그레이션은 표 · 함수 · 허용 값을 더하기만 해서 앞 배포도 그대로 돈다).
+
+### 9-6. 운영 켜기 순서 (줄마다 승인 한 번)
+
+앞 줄이 끝나고 확인까지 된 뒤 다음 줄로 간다. 어느 줄에서든 이상하면 9-5.
+
+1. **처리방침 개정 게시 (D9a-1).** 내장 초안 · 산출물 · 크레딧 원장 · AI 원가 기록과 산출물 보관 기간을 담은 판을 게시한다([legal/README.md](../legal/README.md) 게시 규칙). 계정이 운영자 것뿐이면 게시와 함께 시행할 수 있다(7장 8번 "`current`만 바꾸기"). 먼저 개수로 확인한다: 운영자 계정(심사 계정 포함)의 이메일을 모두 넣고 `others = 0`이어야 한다(이메일이 없는 계정도 `others`에 든다).
+   ```bash
+   npx supabase db query --linked "select count(*) as total, count(*) filter (where email is null or lower(email) not in (lower('<운영자 이메일 1>'), lower('<운영자 이메일 2>'))) as others from auth.users"
+   ```
+   보관 기간이 90일(`execution_artifacts.retain_until` 열 기본값)이 아니면 켜기 전에 새 마이그레이션으로 열 기본값을 바꾼다. 본문은 매일 retention cron이 비운다(6장).
+2. **마이그레이션 `20261020`–`20261023` 적용 확인** (읽기, 4장 방식으로 적용한 뒤). 기대: `1 · true · true · true · 2`.
+   ```bash
+   npx supabase db query --linked "select (select count(*) from information_schema.columns where table_schema = 'public' and table_name = 'sources' and column_name = 'processing_error_code') as m20261020, to_regprocedure('public.sweep_expire()') is not null as m20261021, to_regprocedure('public.purge_expired_artifacts()') is not null as m20261022, (select prosrc like '%insufficient_credit%' from pg_proc where oid = to_regprocedure('public.begin_call(uuid,text,integer)')) as begin_call_credits, (select count(*) from pg_constraint where conname in ('sources_kind_check', 'claims_origin_check') and pg_get_constraintdef(oid) like '%execution%') as m20261023"
+   # 시드 그대로인지 (global 막힘, auto · full 막힘)와 빈 표
+   npx supabase db query --linked "select scope, key, blocked from public.execution_controls order by scope, key"
+   npx supabase db query --linked "select (select count(*) from public.execution_runs) as runs, (select count(*) from public.execution_actors) as actors, (select count(*) from public.credit_ledger) as ledger"
+   ```
+3. **`EXECUTION_ENABLED=true`** (Vercel Production) → Redeploy. 확인: `curl -s -o /dev/null -w '%{http_code}' -X POST https://api.taskforcelabs.dev/api/v1/runs`가 401(꺼져 있으면 404). `/api/cron/execution-sweep` 로그에 `execution_sweep`이 1분마다 남는다. 아직 실행 주체가 없고 global이 막혀 있어 아무것도 불리지 않는다.
+4. **운영자 실행 주체 1행** (9-2 넣기). 확인: `actors = 1`.
+5. **운영자 크레딧 지급** (9-3). 확인: `available`이 지급한 양.
+6. **`global` 풀기** (9-1 켜기). auto · full은 막힌 채다. 확인: 읽기에서 `global` false, `auto` · `full` true.
+7. **내장 초안 1건.** 먼저 운영자 기기의 앱을 receipt 값(`execution` · `executed` · `agent`)을 아는 빌드(#76 이후)로 올린다: 옛 빌드는 receipt가 붙은 할 일의 상세 · 원문 목록을 읽지 못한다(EXECUTION 9장). AI 동의를 마친 운영자 계정으로 웹 /lab에 로그인한 브라우저의 개발자 도구 콘솔에서 부른다(같은 출처라 쿠키 인증 · CSRF를 지난다). 할 일 id는 같은 콘솔에서 자기 목록(`GET /api/v1/now`의 `now[].id`)으로 고른다.
+   ```js
+   await fetch("/api/v1/now").then((r) => r.json())
+   await fetch("/api/v1/runs", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action_id: "<할 일 id>", goal: "draft", request: "<맡길 일>" }) }).then((r) => r.json())
+   ```
+   202 `{ run }`의 `run.id`를 적어 둔다. 1–2분 뒤 아래 9-7로 확인한다. 문제가 있으면 9-5.
+
+### 9-7. U2 완료 확인
+
+9-6 7번의 run으로. `<run>`은 그 run id다. 아래 기대값은 초안이 하나인 run 기준이다(planner가 초안을 둘 붙였으면 산출물 · 원장 수가 단계마다 하나씩 늘어난다). 모두 기대와 같으면 U2 서버 완료다.
+
+```bash
+# run: state done · outcome draft_ready · hold_reason null
+npx supabase db query --linked "select state, outcome, hold_reason from public.execution_runs where id = '<run>'"
+# 산출물 · 원가 · 원장
+npx supabase db query --linked "select (select count(*) from public.execution_artifacts where run_id = '<run>') as artifacts, (select count(*) from public.execution_usage where run_id = '<run>' and billable and generation_id is not null and cost_status = 'confirmed') as billable_confirmed, (select count(*) from public.execution_usage where run_id = '<run>' and cost_status = 'unconfirmed') as unconfirmed, (select count(*) from public.credit_ledger where run_id = '<run>' and kind = 'reserve') as reserve, (select count(*) from public.credit_ledger where run_id = '<run>' and kind = 'settle') as settle, (select count(*) from public.credit_ledger where run_id = '<run>' and kind = 'release') as release"
+# receipt → Claim/Evidence, Action 상태 (claims_without_evidence는 전체 실행 Claim 중 executed 근거가 없는 것)
+npx supabase db query --linked "select (select count(*) from public.sources x join public.execution_artifacts a on x.external_id = a.step_id::text and x.user_id = a.user_id where a.run_id = r.id and x.kind = 'execution') as receipts, (select count(*) from public.execution_artifacts a join public.execution_steps s on s.id = a.step_id where a.run_id = r.id and s.state = 'called' and not exists (select 1 from public.sources x where x.kind = 'execution' and x.user_id = a.user_id and x.external_id = a.step_id::text)) as missing_receipts, (select count(*) from public.claims c where c.action_id = r.action_id and c.origin = 'execution') as execution_claims, (select count(*) from public.claims c where c.origin = 'execution' and not exists (select 1 from public.evidence e where e.action_id = c.action_id and e.source_id = c.source_id and e.role = 'executed')) as claims_without_evidence, (select count(*) from public.evidence e where e.action_id = r.action_id and e.role = 'executed') as executed_evidence, (select a.status from public.actions a where a.id = r.action_id) as action_status from public.execution_runs r where r.id = '<run>'"
+```
+
+| 확인 | 기대 |
+|---|---|
+| 산출물 `artifacts` | 1 |
+| 원가 `billable_confirmed` · `unconfirmed` | 1 이상(generation id와 확정 비용이 있는 청구 대상 행) · 0. 다시 물은 시도가 있으면 청구 대상 행이 더 있다 |
+| 원장 `reserve` · `settle` · `release` | 1 · 1 · 0 또는 1 (정산하고 남은 예약만 해제) |
+| receipt `receipts` · `missing_receipts` | 1 · 0 (끝낸 초안마다 receipt 원문 하나, kind `execution`) |
+| `execution_claims` · `executed_evidence` | 1 · 1 (그 할 일에 앞선 실행이 없을 때. Claim origin은 `execution`, field `artifact`, `user`가 아니다) |
+| `claims_without_evidence` | 0 (실행 Claim마다 같은 receipt 원문의 `executed` 근거가 있다. 원문 · 인용이 null인 실행 Claim은 DB 제약이, 빈 인용은 `write_execution_receipt`가 막는다) |
+| `action_status` | 실행 전과 같음(`open`): 초안은 완료가 아니다 |
+
+`unconfirmed`가 0이 아니면 정산이 보류된 것이다(`settle` 0, 예약 유지). 하루 안이면 sweep이 확정하고, 지나면 9-4 "미확정 원가 정하기". `missing_receipts`가 0이 아니면 1분 안에 sweep이 이어 쓴다(9-4 receipt 점검).
+
 ---
 
 ## GO LIVE 체크리스트
@@ -293,7 +468,7 @@ union all select 'slack_people', count(*) from public.slack_people where user_id
 | I8 | Sign in with Apple 키 | 사용자 ✅ (2026-09-28) | `APPLE_*` 4개가 env에 있음 | — |
 | I9 | OpenRouter 운영 키 · 로깅 꺼짐 · 사용 한도 | 사용자 ✅ (2026-09-28: 한도 $10, 계정 Privacy에서 ZDR 필수 · 학습 엔드포인트 모두 끔. 키 만료 2027-03-24). **2026-09-30: 로컬 · eval과 같이 쓰던 키가 한도 $10에 닿아 모든 AI 호출이 403 → 키를 나눴다 ✅.** 운영 `taskforce-prod`(하루 $5, Vercel Production · Preview, 다시 배포 뒤 앱 물어보기로 이 키만 쓰이는 것 확인), 개발 "Default key"(누적 $20, `.env.local` · eval). **운영 키 만료 2027-09-30 전에 새 키로 바꾼다.** 두 키가 같은 계정 크레딧에서 빠지므로 크레딧 잔액 · 자동 충전도 본다) | 설정 화면에서 확인 | — |
 | I10 | Supabase Free · 백업 없음 확인 | 사용자 ✅ (2026-09-29, 처리방침 게시 전 확인) | Billing · Backups 화면 확인 (4장) | — |
-| I11 | Cron 동작 | 사용자 | `/api/cron/sync` 15분마다 200, `/api/cron/retry-sources` 매시 7분 · 37분 200, `/api/cron/reminders` 09:00 KST 200, `/api/cron/retention` 03:30 KST 200 | I1, I2 |
+| I11 | Cron 동작 | 사용자 | `/api/cron/sync` 15분마다 200, `/api/cron/retry-sources` 매시 7분 · 37분 200, `/api/cron/reminders` 09:00 KST 200, `/api/cron/retention` 03:30 KST 200, `/api/cron/execution-sweep` 1분마다 200 | I1, I2 |
 | I12 | 운영 계정 2단계 인증 (Vercel · Supabase · GitHub · Google · Apple · Slack · Notion · OpenRouter) | 사용자 | 모두 켜짐 (처리방침 9장 약속) | — |
 
 ### 3) 코드

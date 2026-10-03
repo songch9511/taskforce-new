@@ -8,6 +8,7 @@ import { readAll } from "../read-all";
 import {
   connections,
   discoveryCost,
+  execution,
   gmailFiltering,
   googleActivity,
   meetingLinkage,
@@ -20,6 +21,7 @@ import {
   timeToStart,
   type ActionEventRow,
   type Activity,
+  type ExecutionMetric,
   type MetricEventRow,
   type Period,
   type WeeklyCheckRow,
@@ -31,6 +33,7 @@ import {
 // 주간 질문(weekly_checks)은 답(있다 · 없다 · 건너뜀)만, 연동 요청(connection_requests)은 서비스 이름만 읽는다.
 // Gmail · Google 연결은 설정 중 개수(settings.stats)만 읽는다 (주소 · 계정은 읽지 않는다). 회의 원문은 외부 id와 붙은 일정 id만 읽는다.
 // 발견 원가는 처리를 마친 원문의 처리 시각과 처리 요약 중 원가(processing_summary.cost)만 읽는다.
+// 실행(U2)은 상태 · 시각 · 원가 · 크레딧 숫자 열만 읽는다 (요청 · 계획 · 초안 · receipt는 읽지 않는다).
 
 /** 관리자 이메일 (ADMIN_EMAILS, 쉼표로 구분). 비어 있으면 아무도 관리자가 아니다 */
 export function isAdmin(email: string | null): boolean {
@@ -67,6 +70,76 @@ function keep(values: Record<string, unknown> | null): Record<string, unknown> |
   if ("needs_confirmation" in values) kept.needs_confirmation = values.needs_confirmation;
   if (typeof values.stage === "string") kept.stage = values.stage;
   return kept;
+}
+
+/**
+ * 실행 지표 (U2). 실행 표는 마이그레이션 20261021000000 · 20261022000000 뒤에 있다:
+ * 읽지 못하면(적용 전 등) null로 두고 다른 지표는 그대로 보여 준다.
+ */
+export async function loadExecution(admin: SupabaseClient, period: Period): Promise<ExecutionMetric | null> {
+  const since = period.from.toISOString();
+  try {
+    const runs = await readAll<{ state: string; created_at: string }>((from, to) =>
+      admin.from("execution_runs").select("state, created_at").gte("created_at", since).order("created_at").order("id").range(from, to),
+    );
+    // 막힘(hold)과 승인 대기로 간 run 전이만
+    const events = await readAll<{ type: string; to_state: string | null; at: string }>((from, to) =>
+      admin
+        .from("execution_events")
+        .select("type, to_state, at")
+        .or("type.eq.hold,to_state.eq.waiting_approval")
+        .gte("at", since)
+        .order("at")
+        .order("id")
+        .range(from, to),
+    );
+    const { count: unknownOutcome } = await admin
+      .from("execution_steps")
+      .select("id", { count: "exact", head: true })
+      .eq("state", "unknown_outcome")
+      .throwOnError();
+    const usage = await readAll<{ cost_usd: number | string | null; cost_status: string; billable: boolean; created_at: string }>((from, to) =>
+      admin
+        .from("execution_usage")
+        .select("cost_usd, cost_status, billable, created_at")
+        .gte("created_at", since)
+        .order("created_at")
+        .order("id")
+        .range(from, to),
+    );
+    const settles = await readAll<{ credits: number; rate_version: string; created_at: string }>((from, to) =>
+      admin
+        .from("credit_ledger")
+        .select("credits, rate_version, created_at")
+        .eq("kind", "settle")
+        .gte("created_at", since)
+        .order("created_at")
+        .order("id")
+        .range(from, to),
+    );
+    const { data: rates } = await admin.from("credit_rates").select("version, usd_per_credit").throwOnError();
+    const usdPerCredit = new Map((rates ?? []).map((r) => [r.version as string, Number(r.usd_per_credit)]));
+
+    return execution(
+      {
+        runs: runs.map((r) => ({ state: r.state, createdAt: r.created_at })),
+        events: events.map((e) => ({ type: e.type, toState: e.to_state, at: e.at })),
+        unknownOutcome: unknownOutcome ?? 0,
+        // numeric 열: 문자열로 와도 숫자로 읽는다
+        usage: usage.map((u) => ({
+          costUsd: u.cost_usd === null ? null : Number(u.cost_usd),
+          confirmed: u.cost_status === "confirmed",
+          billable: u.billable,
+          at: u.created_at,
+        })),
+        settles: settles.map((s) => ({ credits: s.credits, usdPerCredit: usdPerCredit.get(s.rate_version) ?? null, at: s.created_at })),
+      },
+      period,
+    );
+  } catch (error) {
+    console.error("실행 지표 읽기 실패:", error instanceof Error ? error.message : error);
+    return null;
+  }
 }
 
 export async function loadMetrics(admin: SupabaseClient, period: Period) {
@@ -179,6 +252,8 @@ export async function loadMetrics(admin: SupabaseClient, period: Period) {
       .range(from, to),
   );
 
+  const executionMetric = await loadExecution(admin, period);
+
   const misjudged = misjudgment(rows, period);
   return {
     period,
@@ -193,6 +268,7 @@ export async function loadMetrics(admin: SupabaseClient, period: Period) {
       period,
     ),
     sourceFailures: sourceFailures(metrics, period),
+    execution: executionMetric,
     connections: connections(metrics, connectionRequests, period),
     gmail: gmailFiltering(gmailStats.map((row) => row.stats)),
     google: googleActivity(googleStats.map((row) => row.stats)),
