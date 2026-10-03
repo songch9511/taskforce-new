@@ -102,3 +102,46 @@ describe("GET /now failed_sources (W4)", () => {
     expect(nowResponseSchema.safeParse({ now: [], confirmations: [], weekly_check: null }).success).toBe(false);
   });
 });
+
+describe("GET /now 바뀜 점 · 섹션 개수 (U1, 추가만)", () => {
+  const failed_sources = { count: 0, latest_at: null, reason: null };
+  const item = {
+    id: "11111111-1111-4111-8111-111111111111",
+    title: "투자 자료 보내기",
+    owner: "me",
+    status: "open",
+    due_date: null,
+    counterpart: null,
+    needs_confirmation: false,
+    confirm_reasons: [],
+    started_at: null,
+    last_activity_at: "2026-10-02T03:00:00.000Z",
+    score: 0,
+    reasons: [],
+    days_until_due: null,
+  };
+
+  it("예전 서버 응답(changed · section_limits 없음)도 받는다: changed false, section_limits 2 · 5 · 5", () => {
+    const parsed = nowResponseSchema.parse({ now: [item], confirmations: [item], weekly_check: null, failed_sources });
+    expect(parsed.now[0].changed).toBe(false);
+    expect(parsed.confirmations[0].changed).toBe(false);
+    expect(parsed.section_limits).toEqual({ review: 2, in_progress: 5, to_do: 5 });
+  });
+
+  it("새 서버 응답은 그대로, 섹션 개수는 양의 정수만", () => {
+    const parsed = nowResponseSchema.parse({
+      now: [{ ...item, changed: true }],
+      confirmations: [],
+      weekly_check: null,
+      failed_sources,
+      section_limits: { review: 3, in_progress: 4, to_do: 6 },
+    });
+    expect(parsed.now[0].changed).toBe(true);
+    expect(parsed.section_limits).toEqual({ review: 3, in_progress: 4, to_do: 6 });
+    const limits = (section_limits: unknown) => nowResponseSchema.safeParse({ now: [], confirmations: [], weekly_check: null, failed_sources, section_limits }).success;
+    expect(limits({ review: 0, in_progress: 5, to_do: 5 })).toBe(false);
+    expect(limits({ review: 2.5, in_progress: 5, to_do: 5 })).toBe(false);
+    expect(limits({ review: 2, in_progress: 5 })).toBe(false);
+    expect(nowResponseSchema.safeParse({ now: [{ ...item, changed: "yes" }], confirmations: [], weekly_check: null, failed_sources }).success).toBe(false);
+  });
+});

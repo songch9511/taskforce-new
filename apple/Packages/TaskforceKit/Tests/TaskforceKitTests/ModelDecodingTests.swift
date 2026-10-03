@@ -37,6 +37,30 @@ struct ModelDecodingTests {
         #expect(now.now.isEmpty)
     }
 
+    /// U1 PR2 서버(항목의 `changed`, `section_limits`, `failed_sources`)를 지금 앱 모델이 그대로 읽는다: 새 필드는 무시하고 순서 · 값은 같다
+    @Test func decodesU1ServerNowWithTodayModel() throws {
+        let item = { (id: String, title: String, changed: Bool) in
+            """
+            { "id": "\(id)", "title": "\(title)", "owner": "me", "status": "open", "due_date": null, "counterpart": null,
+              "needs_confirmation": false, "confirm_reasons": [], "started_at": null,
+              "last_activity_at": "2026-10-02T09:00:00.000Z", "score": 42, "reasons": ["neglected"], "days_until_due": null,
+              "changed": \(changed) }
+            """
+        }
+        let now = try decode(NowResponse.self, """
+            { "now": [\(item("11111111-1111-4111-8111-111111111111", "투자 자료 보내기", true)),
+                      \(item("33333333-3333-4333-8333-333333333333", "계약서 검토", false))],
+              "confirmations": [\(item("44444444-4444-4444-8444-444444444444", "견적서 회신", true))],
+              "weekly_check": null,
+              "failed_sources": { "count": 0, "latest_at": null, "reason": null },
+              "section_limits": { "review": 2, "in_progress": 5, "to_do": 5 } }
+            """)
+        #expect(now.now.map(\.action.title) == ["투자 자료 보내기", "계약서 검토"])
+        #expect(now.now.map(\.score) == [42, 42])
+        #expect(now.confirmations.map(\.title) == ["견적서 회신"])
+        #expect(now.weeklyCheck == nil)
+    }
+
     @Test func decodesMissingReport() throws {
         let created = try decode(MissingReportResponse.self, Fixtures.missingCreated)
         #expect(created.status == .created)

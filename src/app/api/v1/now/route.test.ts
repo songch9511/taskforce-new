@@ -133,3 +133,13 @@ describe("GET /api/v1/now failed_sources", () => {
     expect((await get()).status).toBe(401);
   });
 });
+
+describe("GET /api/v1/now section_limits (U1)", () => {
+  it("섹션마다 처음에 보일 개수 Review 2 · In Progress 5 · To Do 5를 늘 싣는다 (개수는 싣지 않는다: 앱이 센다)", async () => {
+    const { client } = fakeClient(() => ({ data: [], count: 0 }));
+    vi.mocked(authenticateRequest).mockResolvedValue({ user: { id: "u1" }, supabase: client } as never);
+    const body = (await (await get()).json()) as Record<string, unknown>;
+    expect(body.section_limits).toEqual({ review: 2, in_progress: 5, to_do: 5 });
+    expect(nowResponseSchema.parse(body).section_limits).toEqual({ review: 2, in_progress: 5, to_do: 5 });
+  });
+});

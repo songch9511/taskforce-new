@@ -100,6 +100,12 @@ export const rankedActionSchema = actionSummarySchema.extend({
   score: z.number(),
   reasons: z.array(z.enum(["overdue", "due_today", "due_soon", "external", "neglected", "started"])),
   days_until_due: z.number().nullable(),
+  /**
+   * 바뀜 점 (U1): 사용자가 마지막으로 본 뒤(POST /api/v1/actions/:id/seen 또는 사용자가 직접 한 쓰기) AI · 원문 · 실행기가 바꿨다.
+   * 기한 · 내용 · 담당 변경, 다시 언급(merged), 완료 · 취소 · 다시 열림 신호, 실행 receipt만 센다 (lib/actions/changed.ts).
+   * 사용자 자신의 수정과 AI가 새로 만든 할 일은 바뀜이 아니다. 순서와는 상관없다. 예전 서버에는 없다(없으면 false)
+   */
+  changed: z.boolean().default(false),
 });
 
 // 주간 질문 "Taskforce 밖에 따로 적어둔 할 일이 있나요?" (지표 5). week_start: 그 주 월요일 (한국 시간)
@@ -128,6 +134,20 @@ export const failedSourcesSchema = z.object({
 });
 export type FailedSources = z.infer<typeof failedSourcesSchema>;
 
+/**
+ * 목록 섹션마다 처음에 보일 개수 (U1 접기: 넘으면 "Show N More"). 앱이 그대로 쓰고, 서버가 바꾸면 앱 배포 없이 바뀐다.
+ * 개수(몇 개가 있나)는 내려주지 않는다: 목록이 전부 오므로 앱이 센다. 예전 서버에는 없다(없으면 기본값 2 · 5 · 5)
+ */
+export const NOW_SECTION_LIMITS = { review: 2, in_progress: 5, to_do: 5 } as const;
+export const sectionLimitsSchema = z.object({
+  /** Review (확인 요청, confirmations) */
+  review: z.number().int().positive(),
+  /** In Progress (now 중 착수한 것) */
+  in_progress: z.number().int().positive(),
+  /** To Do (now 중 착수 전) */
+  to_do: z.number().int().positive(),
+});
+
 // GET /api/v1/now
 export const nowResponseSchema = z.object({
   now: z.array(rankedActionSchema),
@@ -136,6 +156,7 @@ export const nowResponseSchema = z.object({
   weekly_check: weeklyCheckPromptSchema.nullable(),
   /** 처리에 실패한 원문 (필드는 항상 있다. 못 읽으면 count 0으로 두고 목록은 그대로 돌려준다). 예전 서버에는 없다 */
   failed_sources: failedSourcesSchema,
+  section_limits: sectionLimitsSchema.default(NOW_SECTION_LIMITS),
 });
 export type NowResponse = z.infer<typeof nowResponseSchema>;
 
@@ -220,6 +241,11 @@ export const actionProgressStateSchema = z.enum(["to_do", "in_progress", "done"]
 export type ActionProgressState = z.infer<typeof actionProgressStateSchema>;
 export const actionProgressRequestSchema = z.object({ state: actionProgressStateSchema });
 export type ActionProgressRequest = z.infer<typeof actionProgressRequestSchema>;
+
+// POST /api/v1/actions/:id/seen — 본 것 표시 (U1 바뀜 점). 본문 없음(보내도 읽지 않는다), 204.
+// 지금 /now에 바뀜(changed)으로 보일 할 일일 때만 user_seen 이벤트 한 줄을 남기고, 아니면 아무것도 쓰지 않는다:
+// 다시 보내도 · 바뀌지 않은 할 일을 보내도 204 그대로라 화살표로 지나가도 이벤트가 쌓이지 않는다. actions 행은 바뀌지 않는다.
+// 오류: 404 not_found(id가 uuid가 아님 · 없거나 남의 것).
 
 // PATCH · DELETE · confirm · start · progress 응답
 export const actionResponseSchema = z.object({ action: actionSummarySchema });

@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { markActionSeen } from "@/lib/actions/service";
 import { DeadlineExceededError, interactiveDeadline, logDeadlineExceeded } from "@/lib/ai/deadline";
 import { authenticateRequest } from "@/lib/api/auth";
 import { consentRequired } from "@/lib/api/consent";
@@ -69,8 +70,9 @@ export async function POST(request: Request, { params }: Params) {
 
   try {
     const identity = resolveIdentity(await loadProfile(context).catch(() => null), context.user);
+    const admin = createAdminClient();
     const result = await reportMissing(
-      createAdminClient(),
+      admin,
       { id: source.id, userId: context.user.id, processingStatus: source.processing_status },
       {
         text: source.raw_text,
@@ -83,6 +85,13 @@ export async function POST(request: Request, { params }: Params) {
       deadline,
       processDepsFromEnv(deadline),
     );
+    // 이미 있는 할 일에 붙었으면 사용자가 방금 그 할 일을 본 것이다: 신고로 붙은 AI 병합 · 변경으로 바뀜 점이 켜지지 않게 본 것으로 남긴다
+    // (사용자 자신의 행동은 바뀜이 아니다, lib/actions/changed.ts). 곁가지라 실패해도 신고 결과는 그대로 돌려준다 (예: 마이그레이션 20261025000000 전)
+    if (result.status === "already_tracked") {
+      await markActionSeen(context.supabase, admin, context.user.id, result.action.id).catch((error) =>
+        console.error("누락 신고 뒤 본 것 표시 실패:", error instanceof Error ? error.message : error),
+      );
+    }
     return Response.json(result satisfies MissingReportResponse);
   } catch (error) {
     if (error instanceof QuoteNotInSourceError) return errorResponse(400, "invalid_request", error.message);
