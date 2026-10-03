@@ -65,7 +65,10 @@ struct ContrastTests {
         ("text/secondary", "bg/elevated"),
         ("text/secondary", "settings/content"),
         ("text/secondary", "settings/window"),
+        // 지난 · 오늘 기한: 목록 칸 · 상세 칸 · 설정 본문 (다크 #FF594F, 2026-10-03)
         ("status/overdue", "settings/sidebar"),
+        ("status/overdue", "bg/elevated"),
+        ("status/overdue", "settings/content"),
         ("text/link", "bg/elevated"),
         ("text/link", "settings/content"),
         ("source/text", "source/paper"),

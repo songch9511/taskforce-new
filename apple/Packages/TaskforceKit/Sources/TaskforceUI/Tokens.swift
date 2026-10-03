@@ -31,6 +31,7 @@ public enum TFColor {
     /// 선택 행 위의 보조 글자 (bg/selected 위에서도 4.5:1. 다크 `#B9B9BE`는 2026-10-03 Figma에서 4.5:1에 맞춰 고친 값)
     public static let textSecondarySelected = color(.textSecondarySelected)
 
+    /// 지난 · 오늘 기한, 오류 한 줄. 다크 `#FF594F`는 2026-10-03 bg/elevated(상세 칸) 위 4.5:1에 맞춰 #FF453A에서 밝힌 값 (Figma도 같은 값)
     public static let statusOverdue = color(.statusOverdue)
     /// 선택 행 위의 지난 · 오늘 기한 (bg/selected 위에서도 4.5:1. 다크 `#FFA099`는 2026-10-03 Figma에서 4.5:1에 맞춰 고친 값)
     public static let statusOverdueSelected = color(.statusOverdueSelected)

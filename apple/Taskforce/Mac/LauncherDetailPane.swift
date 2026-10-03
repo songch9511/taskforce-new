@@ -52,11 +52,8 @@ struct LauncherDetailPane: View {
             if due != nil || reason != nil {
                 VStack(alignment: .leading, spacing: TFSpace.xs) {
                     if let due {
-                        // 상세 면(bg/elevated)은 Dark에서 status/overdue가 4.1:1이라 선택 전용 색(4.5:1 이상)으로 그린다
                         Text("Due \(DueText.short(due, today: today))")
-                            .foregroundStyle(
-                                DueText.isUrgent(due: due, reasons: [], today: today) ? TFColor.statusOverdueSelected : TFColor.textSecondary
-                            )
+                            .foregroundStyle(DueText.isUrgent(due: due, reasons: [], today: today) ? TFColor.statusOverdue : TFColor.textSecondary)
                     }
                     if let reason {
                         Text(reason).foregroundStyle(TFColor.textSecondary)

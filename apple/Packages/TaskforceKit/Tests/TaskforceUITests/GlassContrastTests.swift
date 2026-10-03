@@ -3,9 +3,11 @@ import Testing
 @testable import TaskforceUI
 
 /// 런처 검색줄 · 액션 바 글자는 반투명 bg/glass 위에 있다 (U1 PR4). 대비는 창 뒤 바탕에 따라 바뀐다.
-/// 여기서는 앱만으로 정해지는 짝을 고정한다: 투명도 줄이기(불투명 settings/window), 같은 모양의 바탕 위(흰 바탕 위 Light 유리 · 검은 바탕 위 Dark 유리),
-/// 22pt 자리표시(큰 글자 3:1)는 가장 나쁜 바탕(Light는 검정, Dark는 흰색) 위에서도.
-/// 13pt 보조 글자의 가장 나쁜 바탕 값(bg/glass만, 시스템 유리를 빼고 계산)은 PR 본문에 숫자로 적는다 (Light 3.5 · Dark 3.1, 실제로는 시스템 유리가 더해져 더 높다).
+/// 시스템 유리를 빼고 bg/glass만으로, 가장 나쁜 창 뒤 바탕(Light는 검정, Dark는 흰색) 위에서도:
+/// - 액션 바 상태 문장 · 화면 이름 · 동작 이름 · 키(13pt · 11pt)와 입력한 글자는 text/primary로 4.5:1 이상 (사용자 결정 2026-10-03:
+///   Figma의 text/secondary는 3.5 / 3.1:1이라 바꿈, 유리 불투명도는 그대로)
+/// - 22pt 자리표시(`Search tasks`)는 text/secondary 그대로, 큰 글자 3:1 이상
+/// 투명도 줄이기는 불투명 settings/window 위 4.5:1.
 struct GlassContrastTests {
     static let appearances = [false, true]
 
@@ -18,14 +20,14 @@ struct GlassContrastTests {
         Contrast.composite(Contrast.shipped("bg/glass", dark: dark), over: backdrop)
     }
 
-    /// 투명도 줄이기: 유리 대신 불투명 settings/window. 13pt 보조 글자 · 본문 글자 모두 4.5:1 이상
+    /// 투명도 줄이기: 유리 대신 불투명 settings/window. 본문 글자 · 보조 글자 모두 4.5:1 이상
     @Test(arguments: ["text/primary", "text/secondary"], appearances)
     func reduceTransparencySurface(_ token: String, _ dark: Bool) {
         let ratio = Contrast.ratio(Contrast.shipped(token, dark: dark), Contrast.shipped("settings/window", dark: dark))
         #expect(ratio >= 4.5, "\(token) on settings/window \(dark ? "Dark" : "Light"): \(ratio)")
     }
 
-    /// 같은 모양 바탕 위 유리: 13pt 보조 글자(상태 문장 · 키) 4.5:1 이상
+    /// 같은 모양 바탕 위 유리 (흔한 경우)
     @Test(arguments: ["text/primary", "text/secondary"], appearances)
     func glassOverUsualBackdrop(_ token: String, _ dark: Bool) {
         let background = Self.glass(over: Self.usualBackdrop(dark: dark), dark: dark)
@@ -33,13 +35,13 @@ struct GlassContrastTests {
         #expect(ratio >= 4.5, "\(token) on bg/glass (usual) \(dark ? "Dark" : "Light"): \(ratio)")
     }
 
-    /// 가장 나쁜 바탕 위 유리: 입력한 글자(text/primary)는 4.5:1, 22pt 자리표시(text/secondary, 큰 글자)는 3:1 이상
+    /// 가장 나쁜 바탕 위 유리: 액션 바 글자 · 키 · 입력한 글자(text/primary) 4.5:1, 22pt 자리표시(text/secondary, 큰 글자) 3:1
     @Test(arguments: appearances)
     func glassOverWorstBackdrop(_ dark: Bool) {
         let background = Self.glass(over: Self.worstBackdrop(dark: dark), dark: dark)
-        let typed = Contrast.ratio(Contrast.shipped("text/primary", dark: dark), background)
+        let barText = Contrast.ratio(Contrast.shipped("text/primary", dark: dark), background)
         let placeholder = Contrast.ratio(Contrast.shipped("text/secondary", dark: dark), background)
-        #expect(typed >= 4.5, "text/primary on bg/glass (worst) \(dark ? "Dark" : "Light"): \(typed)")
+        #expect(barText >= 4.5, "text/primary (action bar, keys) on bg/glass (worst) \(dark ? "Dark" : "Light"): \(barText)")
         #expect(placeholder >= 3, "text/secondary 22pt on bg/glass (worst) \(dark ? "Dark" : "Light"): \(placeholder)")
     }
 

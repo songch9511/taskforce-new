@@ -12,9 +12,9 @@ public struct KeyHint: View {
     let keys: [Key]
     let onFill: Bool
 
-    /// "⌘K" · "⌘↩" · "⌥Space" · "esc".
-    /// `onFill`: 회색 면(settings/fill, 액션 바 Return 동작 알약) 위. Figma는 text/secondary지만 다크에서 4.1:1이라
-    /// 회색 면 위 보조 글자 토큰 text/secondary-selected로 그린다 (4.5:1 이상, TaskforceUITests `ContrastTests`).
+    /// "⌘K" · "⌘↩" · "⌥Space" · "esc". 키 글자는 text/primary (액션 바는 반투명 유리 위: Figma의 text/secondary는
+    /// 창 뒤가 가장 나쁜 바탕이면 4.5:1에 못 미쳐 바꿈, 사용자 결정 2026-10-03, `GlassContrastTests`).
+    /// `onFill`: 회색 면(settings/fill, 액션 바 Return 동작 알약) 위. 불투명 면이라 그대로 text/secondary-selected (4.5:1 이상, `ContrastTests`).
     public init(_ shortcut: String, onFill: Bool = false) {
         keys = Self.keys(shortcut)
         self.onFill = onFill
@@ -74,7 +74,7 @@ public struct KeyHint: View {
     public var body: some View {
         HStack(spacing: 3) {
             ForEach(Array(keys.enumerated()), id: \.offset) { _, key in
-                KeyCap(key: key, color: onFill ? TFColor.textSecondarySelected : TFColor.textSecondary)
+                KeyCap(key: key, color: onFill ? TFColor.textSecondarySelected : TFColor.textPrimary)
             }
         }
         .accessibilityElement(children: .ignore)
@@ -82,7 +82,7 @@ public struct KeyHint: View {
     }
 }
 
-/// 키 상자 하나: 20×20부터, 안쪽 4, r5, 1pt text/secondary 테두리, 글자 11 semibold
+/// 키 상자 하나: 20×20부터, 안쪽 4, r5, 1pt 글자색 테두리, 글자 11 semibold
 private struct KeyCap: View {
     let key: KeyHint.Key
     let color: Color

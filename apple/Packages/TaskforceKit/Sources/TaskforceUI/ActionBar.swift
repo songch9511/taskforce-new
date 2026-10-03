@@ -16,6 +16,8 @@ public struct ActionBarItem {
 /// 런처 아래 액션 바 (Figma M1 · M19 · M20 Footer, Raycast): 높이 44, 좌우 18.
 /// 왼쪽은 앱 기호 + 화면 이름(`Tasks`) 또는 상태(`Offline since 8:01.`), 오른쪽은
 /// 다시 시도 같은 보조 동작 → Return 동작(회색 알약, 이름 + ↩) → `Actions ⌘K`. 사이에 세로 구분선.
+/// 글자 · 키는 반투명 유리 위라 text/primary로 그린다 (Figma는 text/secondary: 창 뒤가 가장 나쁜 바탕이면 3.5 / 3.1:1이라
+/// 4.5:1을 위해 바꿈, 사용자 결정 2026-10-03, `GlassContrastTests`). 상태 기호는 글자가 아니라 3:1 규칙이라 그대로.
 public struct ActionBar: View {
     public enum Leading {
         /// 앱 기호 + 화면 이름
@@ -73,7 +75,7 @@ public struct ActionBar: View {
                     .accessibilityHidden(true)
                 Text(title)
                     .font(TFFont.footnote)
-                    .foregroundStyle(TFColor.textSecondary)
+                    .foregroundStyle(TFColor.textPrimary)
                     .lineLimit(1)
             }
         case .status(let systemImage, let text, let alert):
@@ -85,7 +87,7 @@ public struct ActionBar: View {
                     .accessibilityHidden(true)
                 Text(text)
                     .font(TFFont.footnote)
-                    .foregroundStyle(TFColor.textSecondary)
+                    .foregroundStyle(TFColor.textPrimary)
                     .lineLimit(1)
             }
             .accessibilityElement(children: .combine)
@@ -126,7 +128,7 @@ public struct ActionBar: View {
             HStack(spacing: 6) {
                 Text(item.title)
                     .font(TFFont.footnote)
-                    .foregroundStyle(TFColor.textSecondary)
+                    .foregroundStyle(TFColor.textPrimary)
                     .lineLimit(1)
                 KeyHint(item.keys)
             }

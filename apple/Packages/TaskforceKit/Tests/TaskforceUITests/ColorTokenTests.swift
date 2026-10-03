@@ -53,7 +53,8 @@ enum FigmaColor {
         "text/inverse": ("#FFFFFF", "#1D1D1F"),
         "text/link": ("#3F6199", "#7FA0D6"),
         "text/secondary-selected": ("#5A5A5E", "#B9B9BE"),
-        "status/overdue": ("#D70015", "#FF453A"),
+        // 다크는 2026-10-03 #FF453A → #FF594F (같은 색상, bg/elevated 위 4.5:1, 사용자 결정 · Figma 변수도 같은 값)
+        "status/overdue": ("#D70015", "#FF594F"),
         "status/overdue-selected": ("#BF0013", "#FFA099"),
         "border/default": ("#E0E0E0", "#3A3A3C"),
         "border/control": ("#636366", "#9A9AA0"),
