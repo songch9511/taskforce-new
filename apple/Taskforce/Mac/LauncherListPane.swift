@@ -87,12 +87,13 @@ struct LauncherListPane: View {
         }
     }
 
-    /// 할 일 · 저장본 행은 고르기만 한다 (상세가 바로 보인다, ↩가 원문 · ⌘K). 나머지 줄(Show N More · Done Today · 안내 · 명령 등)은 실행
+    /// 할 일 · 저장본 행은 고르기만 한다 (상세가 바로 보인다, ↩가 원문 · ⌘K). Show N More · Done Today는 그 줄의 Button이 실행한다
+    /// (바깥 탭과 함께 불려 두 번 열고 닫히지 않게). 나머지 줄(안내 · 명령 등)은 실행
     private func tap(_ item: LauncherItem, at index: Int) {
         if model.screen != .list { model.back() }
         model.select(index)
         switch item {
-        case .review, .task, .done, .saved: break
+        case .review, .task, .done, .saved, .showMore, .doneToday: break
         default: model.run(item)
         }
     }

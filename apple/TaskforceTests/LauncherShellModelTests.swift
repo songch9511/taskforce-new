@@ -78,6 +78,35 @@ struct LauncherShellModelTests {
         #expect(await harness.router.seenIDs() == [t1])
     }
 
+    /// 새 `/now`로 고른 행 위에 바뀐 행이 끼어들어도, 그 자리의 다른 행(본 적 없는 행)에 seen을 보내지 않는다 (리뷰 B1)
+    @Test func refreshKeepsSeenOnTheSelectedRowWhenRowsShift() async throws {
+        let harness = try await ShellHarness.make(now: ShellNow.body(toDo: ["A", "X"], changed: ["X"]))
+        let model = harness.model
+        model.prepareForShow()
+        await harness.waitUntil { await harness.router.nowRequests() >= 2 }
+        try await Task.sleep(for: .milliseconds(100))
+        let x = try #require(model.items.first { $0.action?.title == "X" }?.action?.id)
+        model.select(1)
+        model.syncSeen()
+
+        // 바뀐 C가 X 자리(1)에 끼어든다
+        await harness.router.setNow(ShellNow.body(toDo: ["A", "C", "X"], changed: ["C", "X"]))
+        let now = try #require(model.now)
+        await now.load()
+        // 화면이 하는 일: 목록이 바뀌면 다시 맞추고, 고른 할 일을 따라 seen
+        model.reconcileSelection()
+        model.syncSeen()
+        #expect(model.selectedItem?.action?.id == x)
+        #expect(await harness.router.seenIDs().isEmpty)
+
+        // X를 떠나면 X만
+        model.move(-1)
+        model.syncSeen()
+        await harness.waitUntil { await harness.router.seenIDs() == [x] }
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(await harness.router.seenIDs() == [x])
+    }
+
     /// 이번 실행에서 받은 목록도 저장본도 없이 오프라인이면 M20, 연결이 돌아오면 목록을 다시 불러온다
     @Test func offlineWithoutSavedCopyShowsM20ThenReloadsOnReconnect() async throws {
         let harness = try await ShellHarness.make(now: nil)
@@ -222,7 +251,9 @@ enum ShellNow {
         reviews: [String] = [], toDo: [String] = [], changed: Set<String> = [], limits: (Int, Int, Int) = (2, 5, 5)
     ) -> Data {
         func row(_ title: String, review: Bool, index: Int) -> String {
-            let id = String(format: "00000000-0000-4000-8000-%012d", (review ? 100 : 200) + index)
+            // id는 제목으로 정한다 (목록 자리가 바뀌어도 같은 할 일)
+            let number = title.utf8.reduce(review ? 7 : 3) { ($0 &* 31 &+ Int($1)) % 1_000_000_000 }
+            let id = String(format: "00000000-0000-4000-8000-%012d", number)
             let ranked = review ? "" : #","score":1,"reasons":[],"days_until_due":null"#
             return """
             {"id":"\(id)","title":"\(title)","owner":"me","status":"open","due_date":null,"counterpart":null,\

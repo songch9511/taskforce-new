@@ -196,10 +196,11 @@ final class LauncherModel {
     private let signInFlow = AppleSignInFlow()
     private var signInController: MacAppleSignInController?
 
-    /// `saved`: 이 기기의 저장본 (앱은 App Group 위치, 테스트는 임시 폴더나 nil). `connectivity`: 연결 경로 (기본은 `NWPathMonitor`)
+    /// `saved`: 이 기기의 저장본 (앱은 App Group 위치, 테스트는 임시 폴더나 nil).
+    /// `connectivity`: 연결 경로 (앱은 `Connectivity.updates()`, 기본은 바로 끝나는 스트림이라 연결 감시 없음)
     init(
         session: SessionStore, services: AppServices, account: AccountStore, saved: SavedNowStore? = nil,
-        connectivity: AsyncStream<Bool> = Connectivity.updates()
+        connectivity: AsyncStream<Bool> = AsyncStream { $0.finish() }
     ) {
         self.session = session
         self.services = services
@@ -228,9 +229,11 @@ final class LauncherModel {
         now.onLoaded = { [weak self] in self?.nowRefreshed() }
         guard !sample else { return }
         // 연결이 끊기면 오프라인 화면, 돌아오면 목록을 다시 불러온다 (M20 "연결이 돌아오면 자동으로")
+        // 모델이 사라지면 다음 신호에서 끝난다 (스트림을 놓으면 감시도 멈춘다)
         connectivityTask = Task { [weak self] in
             for await online in connectivity {
-                self?.connectivityChanged(online)
+                guard let self else { return }
+                self.connectivityChanged(online)
             }
         }
     }
@@ -405,6 +408,7 @@ final class LauncherModel {
         case .detail:
             return canConfirmReview ? BarAction(title: "Confirm", keys: "⌘↩") : nil
         case .pickLines(_, let purpose):
+            guard selectedQuote != nil else { return nil }
             return BarAction(title: purpose == .reportMissing ? "Report" : "Add", keys: "⌘↩")
         default:
             return nil
@@ -530,7 +534,9 @@ final class LauncherModel {
     }
 
     /// 새 `/now`를 받음: 서버의 바뀜이 진실 (지금 고른 행이 이제 바뀜이면 떠날 때 보낸다)
+    /// 고르던 행을 먼저 다시 맞춘다(`reconcileSelection`): 위에 행이 들고 나도 같은 자리의 다른 행을 넘기지 않게
     private func nowRefreshed() {
+        reconcileSelection()
         seen.refreshed(changed: changedIDs, selected: seenSubject)
     }
 
@@ -1043,7 +1049,7 @@ final class LauncherModel {
         selection = initialActionIndex(for: target)
     }
 
-    /// 명령 패널 (로그인한 동안). 목록으로 돌아오면 떠난 행 (`viewed` 없이 맨 위가 아니라 그 자리)
+    /// 명령 패널 (로그인한 동안). esc로 목록에 돌아오면 맨 위 (`rowAfterBack`: 본 할 일 없음)
     private func openCommands() {
         guard isSignedIn, configurationError == nil else { return }
         scopeMenuSelection = nil
@@ -1187,12 +1193,6 @@ final class LauncherModel {
     }
 
     // MARK: 진행 상태 (런처를 닫지 않는다)
-
-    /// 할 일 행 왼쪽 상태 표시를 누름: ○ · ●는 Done, ✓는 끝내기 전 상태 (`WorkState.toggled`)
-    func toggle(_ item: LauncherItem) {
-        guard let action = item.action, item.group != .review, let state = now?.toggleTarget(action.id) else { return }
-        setState(action, to: state)
-    }
 
     /// To Do · In Progress · Done으로 옮김: 그 행을 옮긴 구역에서 고른 채 두고, 잠시 ⌘Z로 그 전 상태로 되돌린다
     func setState(_ action: ActionSummary, to state: WorkState, undoable: Bool = true) {

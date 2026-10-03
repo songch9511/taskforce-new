@@ -218,8 +218,9 @@ public enum LauncherContent {
         return sections.filter { !$0.items.isEmpty }
     }
 
-    /// 이 기기의 저장본으로 만든 목록 (오프라인 · 새로고침 실패, `/now`를 이번 실행에서 아직 받지 못했을 때). 읽기만 한다:
-    /// 찾기는 저장된 제목으로 거르고, 물어보기 · 추가 · 넘기기는 없다 (서버가 필요). 범위 · 접기는 `sections`와 같은 규칙, 바뀜 범위는 비어 있다.
+    /// 이 기기의 저장본으로 만든 목록 (오프라인 · 새로고침 실패 · 처음 불러오는 중, `/now`를 이번 실행에서 아직 받지 못했을 때). 행은 읽기만 한다:
+    /// 찾기는 저장된 제목으로 거르고, 물어보기 · 추가 · 넘기기 줄은 없다 (할 일 목록이 서버에 있어야 한다). 붙여 넣은 글은 지금처럼 원문 보내기 · 물어보기
+    /// (처음 불러오는 중 · 새로고침 실패는 온라인일 수 있다. 오프라인이면 보내기가 실패를 알린다). 범위 · 접기는 `sections`와 같은 규칙, 바뀜 범위는 비어 있다.
     public static func savedSections(_ saved: SavedNow, for mode: LauncherInput.Mode, layout: Layout, now: Date, timeZone: TimeZone = .current) -> [LauncherSection] {
         let query: String
         switch mode {

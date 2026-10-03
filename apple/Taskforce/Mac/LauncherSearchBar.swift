@@ -59,7 +59,7 @@ struct LauncherScopeMenu: View {
         // 뒤 내용은 흐리게 (Figma backdrop blur), 그 위에 bg/menu
         .background(TFColor.bgMenu, in: RoundedRectangle(cornerRadius: TFRadius.panel, style: .continuous))
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: TFRadius.panel, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: TFRadius.panel, style: .continuous).strokeBorder(Color.black.opacity(0.12), lineWidth: 0.5))
+        .overlay(RoundedRectangle(cornerRadius: TFRadius.panel, style: .continuous).strokeBorder(TFColor.borderDefault, lineWidth: 0.5))
         .shadow(color: .black.opacity(0.2), radius: 16, y: 12)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Scope, \(model.scope.title)")
