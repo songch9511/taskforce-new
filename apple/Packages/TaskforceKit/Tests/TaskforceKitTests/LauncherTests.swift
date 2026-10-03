@@ -318,11 +318,21 @@ struct LauncherTests {
         }
     }
 
+    /// 목록의 할 일 행(In Progress · To Do · Done Today) ↩ · ⌘↩는 원문 열기 (U1 PR4, Figma M1 `Open in Notion ↩`. 링크가 없으면 앱이 ⌘K 패널)
+    @Test func returnOnTaskRowOpensSource() {
+        let places: [LauncherReturn.Place] = [.list(.task(now.now[0])), .list(.done(now.now[0].action))]
+        for place in places {
+            #expect(effect(place) == .openSource)
+            #expect(effect(place, command: true) == .openSource)
+            #expect(effect(place, isRepeat: true) == .ignore)
+        }
+    }
+
     /// 새로 누른 ↩ · ⌘↩는 다른 행 · 화면에서 지금까지의 기본 동작 (확정하지 않는다)
     @Test func returnElsewhereKeepsPrimary() {
-        let task = LauncherItem.task(now.now[0])
         let places: [LauncherReturn.Place] = [
-            .list(task), .list(.done(now.now[0].action)), .list(.command(.settings)), .list(.ask("자료")), .list(nil),
+            .list(.command(.settings)), .list(.ask("자료")), .list(nil),
+            .list(.showMore(.toDo, hidden: 2)), .list(.doneToday(count: 1, expanded: false)),
             // Review 할 일을 넘기는 Hand off 행은 Review 행이 아니다
             .list(.handoff(now.confirmations[0])),
             .task(.toDo), .task(.inProgress), .task(.doneToday), .other,

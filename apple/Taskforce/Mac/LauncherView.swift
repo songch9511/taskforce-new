@@ -3,44 +3,61 @@ import SwiftUI
 import TaskforceKit
 import TaskforceUI
 
-/// 런처 창 내용 (Figma 5:57): 입력창 "Search" · 구역(Review · In Progress · To Do · Done Today · Commands) · 행 · 아래 "Actions ⌘K".
-/// 할 일 행 왼쪽은 상태 표시(`TaskStatusMark`): ○ · ●를 누르면 Done, ✓는 끝내기 전 상태로 (Review는 누를 수 없음).
-/// Review 행은 제목 옆에 확인 이유 한 줄(`ConfirmReasonText`). ↩는 근거를 펼치고, 확정은 ⌘↩ · 넘기기는 ⌘⌫ (아래 "Confirm ⌘↩ · Dismiss ⌘⌫").
-/// ⌘K 패널 · 펼침 · Ask 답 · 원문 고르기처럼 Figma에 없는 화면은 같은 부품(Launcher row · Keycap · Sources 묶음)과 토큰으로만 구성한다.
+/// 런처 창 내용 (Figma 156:6 M1 · M20, 760×480 고정): 검색줄 62(`LauncherSearchBar`, 오른쪽 범위 `All Tasks ⌄`) →
+/// 본문 카드(r12, settings/line 테두리) → 액션 바 44(`LauncherActionBar`). 가로 구분선 없음.
+/// 본문 카드는 목록 | 상세(`LauncherListPane` · `LauncherDetailPane`), 상태 화면(`LauncherStateView`: M20 · M21 · 불러오는 중),
+/// 또는 한 열(로그인 줄 · ⌘K 패널 · 기한 · 원문 고르기 등 Figma에 없는 화면은 지금 부품 그대로)을 담는다.
 struct LauncherRootView: View {
     @Bindable var model: LauncherModel
-    let onHeightChange: (CGFloat) -> Void
 
     @FocusState private var searchFocused: Bool
-    @State private var contentHeight: CGFloat = 0
-
-    /// 이보다 길면 목록을 스크롤한다
-    private let maxContentHeight: CGFloat = 440
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
     var body: some View {
         VStack(spacing: 0) {
-            searchField
-            content
-            footer
+            LauncherSearchBar(model: model, focused: $searchFocused, locked: inputLocked)
+            bodyCard
+            LauncherActionBar(model: model)
         }
-        .padding(TFSpace.sm)
-        .frame(width: LauncherPanelController.width)
-        .fixedSize(horizontal: false, vertical: true)
+        .padding(.horizontal, TFSpace.xs)
+        .frame(width: LauncherPanelController.size.width, height: LauncherPanelController.size.height)
+        // 검색줄 · 액션 바는 유리 위 (bg/glass, 투명도 줄이기면 불투명 settings/window)
+        .background(reduceTransparency ? TFColor.settingsWindow : TFColor.bgGlass)
+        .overlay(alignment: .topTrailing) {
+            if model.scopeMenuSelection != nil {
+                ZStack(alignment: .topTrailing) {
+                    // 메뉴 밖을 누르면 닫는다
+                    Color.clear
+                        .contentShape(Rectangle())
+                        .onTapGesture { model.closeScopeMenu() }
+                    LauncherScopeMenu(model: model)
+                        .padding(.top, 48)
+                        .padding(.trailing, 18)
+                }
+            }
+        }
+        .clipShape(RoundedRectangle(cornerRadius: TFRadius.window, style: .continuous))
         .overlay {
             // 유리 재질(macOS 15)에만 창 테두리. Liquid Glass는 제 가장자리를 그린다
             if !LauncherPanelController.usesGlass {
-                RoundedRectangle(cornerRadius: TFRadius.xl, style: .continuous)
+                RoundedRectangle(cornerRadius: TFRadius.window, style: .continuous)
                     .strokeBorder(TFColor.borderDefault, lineWidth: 1)
             }
         }
-        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { onHeightChange($0) }
-        // 창이 새 높이로 바뀌기 전 잠깐 동안에도 입력창은 창 위쪽에 붙어 있게 (창은 위 모서리를 고정하고 늘고 준다)
-        .frame(maxHeight: .infinity, alignment: .top)
         .onChange(of: model.focusRequest, initial: true) { searchFocused = true }
         // 줄 고르기 · 기한 고르기에서 돌아오면 다시 입력창으로
         .onChange(of: inputLocked) { _, locked in if !locked { searchFocused = true } }
-        // Realtime · 다시 불러오기로 목록이 바뀌어도 고르던 행을 그대로
+        // Realtime · 다시 불러오기 · 범위 · 펼침으로 목록이 바뀌어도 고르던 행을 그대로
         .onChange(of: model.items.map(\.id)) { model.reconcileSelection() }
+        // 고른 할 일이 바뀌면 바뀜 점 · seen (화살표로 지나가기 포함)
+        .onChange(of: model.seenSubject, initial: true) { model.syncSeen() }
+        // 상세 칸의 근거: 화살표로 빠르게 지나갈 때는 읽지 않게 잠깐 기다린다
+        .task(id: model.detailTarget?.action.id) {
+            guard let id = model.detailTarget?.action.id else { return }
+            try? await Task.sleep(for: .milliseconds(120))
+            guard !Task.isCancelled else { return }
+            await model.now?.loadEvidence(id)
+        }
         .task(id: model.signedInUserID) {
             // 로그인해 있는 동안 Realtime 구독 하나 (런처가 숨어 있어도 목록을 새로 둔다)
             guard let userID = model.signedInUserID, let services = model.services else { return }
@@ -57,23 +74,11 @@ struct LauncherRootView: View {
         .onChange(of: model.account?.syncFinished) {
             Task { await model.now?.load() }
         }
-    }
-
-    // MARK: 입력창
-
-    private var searchField: some View {
-        TextField(text: $model.text, prompt: Text("Search").foregroundStyle(TFColor.textSecondary), axis: .vertical) {
-            Text("Search")
+        // 오프라인 · 새로고침 실패로 바뀌면 VoiceOver가 알린다
+        .onChange(of: model.statusText) { _, text in
+            guard let text else { return }
+            AccessibilityNotification.Announcement(text).post()
         }
-        .textFieldStyle(.plain)
-        .font(TFFont.title)
-        .foregroundStyle(TFColor.textPrimary)
-        .lineLimit(1...3)
-        .focused($searchFocused)
-        .disabled(inputLocked)
-        .padding(.horizontal, TFSpace.md)
-        .padding(.top, 10)
-        .padding(.bottom, 14)
     }
 
     private var inputLocked: Bool {
@@ -85,50 +90,42 @@ struct LauncherRootView: View {
         }
     }
 
-    // MARK: 내용
+    // MARK: 본문 카드
 
-    @ViewBuilder
-    private var content: some View {
-        switch model.screen {
-        case .list:
-            scrolling { listRows }
-        case .actions(let target):
-            scrolling { actionRows(target) }
-        case .detail(let target):
-            scrolling { detail(target) }
-        case .editDue, .addDue:
-            scrolling { dueRows }
-        case .working(let label):
-            statusRow(label, symbol: nil)
-        case .answer(let question, let response, let lines):
-            scrolling { answer(question: question, response: response, lines: lines) }
-        case .pickSource(let purpose):
-            scrolling { sourceRows(purpose) }
-        case .pickLines:
-            scrolling { lineRows }
-        case .done(let message):
-            statusRow(message, symbol: "checkmark.circle")
-        case .notice(let message):
-            statusRow(message, symbol: "exclamationmark.circle")
-        case .consentNeeded:
-            VStack(spacing: 0) {
-                LauncherSectionLabel("AI data")
-                LauncherRow(title: "Allow AI processing to continue", selected: true, leading: .symbol("hand.raised"))
-                    .onTapGesture { model.primary() }
+    private var bodyCard: some View {
+        let shape = RoundedRectangle(cornerRadius: TFRadius.panel, style: .continuous)
+        return Group {
+            switch model.bodyState {
+            case .list:
+                HStack(spacing: 0) {
+                    LauncherListPane(model: model)
+                        .frame(width: 300)
+                    TFColor.settingsLine.frame(width: 1)
+                    LauncherDetailPane(model: model)
+                }
+            case .single:
+                LauncherFlowView(model: model)
+            case let state:
+                LauncherStateView(state: state)
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(TFColor.bgElevated)
+        .clipShape(shape)
+        .overlay(shape.strokeBorder(TFColor.settingsLine, lineWidth: 1))
     }
+}
 
-    /// 내용 높이에 맞추되 `maxContentHeight`를 넘으면 스크롤
-    private func scrolling<Content: View>(@ViewBuilder _ rows: () -> Content) -> some View {
-        let rows = rows()
-        return ScrollViewReader { proxy in
+/// 본문 카드 한 열: 로그인 줄 · ⌘K 패널 · 명령 · 기한 · 물어보기 답 · 원문 · 줄 고르기 · 진행 · 알림 (Figma에 없는 화면, 지금 부품 그대로)
+struct LauncherFlowView: View {
+    @Bindable var model: LauncherModel
+
+    var body: some View {
+        ScrollViewReader { proxy in
             ScrollView {
-                VStack(spacing: 0) { rows }
-                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { contentHeight = $0 }
+                VStack(spacing: 0) { content }
+                    .padding(TFSpace.sm)
             }
-            .scrollIndicators(contentHeight > maxContentHeight ? .automatic : .never)
-            .frame(height: min(contentHeight, maxContentHeight))
             .onChange(of: model.selection) { _, index in
                 withAnimation(.easeOut(duration: 0.1)) { proxy.scrollTo(index) }
             }
@@ -138,121 +135,69 @@ struct LauncherRootView: View {
         }
     }
 
-    // MARK: 목록
-
     @ViewBuilder
-    private var listRows: some View {
-        if let error = model.configurationError {
-            statusRow(error, symbol: "wrench.and.screwdriver")
-        } else if model.session?.state == .loading, !model.isSignedIn {
-            statusRow("Loading…", symbol: nil)
-        } else {
-            let sections = model.sections
-            let offsets = Self.offsets(sections)
-            // 첫 동기화 (몇 분 걸린다): 할 일이 들어오면 사라진다
-            if model.showsSyncing {
-                statusRow(ConnectionSync.label, symbol: nil)
-            }
-            ForEach(Array(sections.enumerated()), id: \.element.id) { sectionIndex, section in
-                if let title = section.title {
-                    LauncherSectionLabel(title)
-                }
-                ForEach(Array(section.items.enumerated()), id: \.element.id) { itemIndex, item in
-                    let index = offsets[sectionIndex] + itemIndex
-                    row(item, selected: index == model.selection)
-                        .id(index)
-                        .onTapGesture {
-                            model.select(index)
-                            model.run(item)
-                        }
-                }
-            }
-            if sections.isEmpty {
-                statusRow("Loading…", symbol: nil)
-            }
-            if let error = model.now?.loadError, model.isSignedIn {
-                Text(error)
-                    .font(TFFont.footnote)
-                    .foregroundStyle(TFColor.textSecondary)
-                    .padding(.horizontal, TFSpace.md)
-                    .padding(.vertical, TFSpace.xs)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-        }
-    }
-
-    private static func offsets(_ sections: [LauncherSection]) -> [Int] {
-        var running = 0
-        return sections.map { section in
-            defer { running += section.items.count }
-            return running
+    private var content: some View {
+        switch model.screen {
+        case .list, .detail:
+            // 로그아웃: 로그인 줄 · Quit (지금 그대로)
+            signedOutRows
+        case .actions(let target):
+            actionRows(target)
+        case .commands:
+            commandRows
+        case .editDue, .addDue:
+            dueRows
+        case .working(let label):
+            statusRow(label, symbol: nil)
+        case .answer(let question, let response, let lines):
+            answer(question: question, response: response, lines: lines)
+        case .pickSource(let purpose):
+            sourceRows(purpose)
+        case .pickLines:
+            lineRows
+        case .done(let message):
+            statusRow(message, symbol: "checkmark.circle")
+        case .notice(let message):
+            statusRow(message, symbol: "exclamationmark.circle")
+        case .consentNeeded:
+            LauncherSectionLabel("AI data")
+            LauncherRow(title: "Allow AI processing to continue", selected: true, leading: .symbol("hand.raised"))
+                .onTapGesture { model.primary() }
         }
     }
 
     private var today: LocalDate { DueDateFormat.today() }
 
     @ViewBuilder
-    private func row(_ item: LauncherItem, selected: Bool) -> some View {
+    private var signedOutRows: some View {
+        let items = model.items
+        ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
+            signedOutRow(item, selected: index == model.selection)
+                .id(index)
+                .onTapGesture {
+                    model.select(index)
+                    model.run(item)
+                }
+        }
+    }
+
+    @ViewBuilder
+    private func signedOutRow(_ item: LauncherItem, selected: Bool) -> some View {
         switch item {
-        case .review(let action):
-            // 제목 옆에 확인 이유 한 줄 (부제 자리, 행 높이는 그대로). 긴 제목은 이유를 자르지 않고 제목을 줄인다
-            LauncherRow(
-                title: action.title,
-                subtitle: ConfirmReasonText.label(action.confirmReasons),
-                accessory: action.dueDate.map { DueText.accessory($0, today: today) },
-                urgent: DueText.isUrgent(due: action.dueDate, reasons: [], today: today),
-                selected: selected,
-                keepsSubtitle: true,
-                leading: .status(.review)
-            )
-        case .task(let ranked):
-            LauncherRow(
-                title: ranked.action.title,
-                accessory: ranked.action.dueDate.map { DueText.accessory($0, today: today) },
-                urgent: DueText.isUrgent(due: ranked.action.dueDate, reasons: ranked.reasons, today: today),
-                selected: selected,
-                leading: .status(TaskStatusMark.State(TaskGroup.open(ranked.action)))
-            ) {
-                model.toggle(item)
-            }
-        case .done(let action):
-            // 끝낸 할 일은 기한을 보이지 않는다 (지남 · 오늘 빨강이 뜻이 없다)
-            LauncherRow(title: action.title, selected: selected, dimmed: true, leading: .status(.done)) {
-                model.toggle(item)
-            }
-        case .command(let command):
-            LauncherRow(title: command.title, selected: selected, leading: .symbol(command.symbolName))
-        case .ask(let question):
-            LauncherRow(title: "Ask “\(Self.oneLine(question))”", selected: selected, leading: .symbol("text.bubble"))
-        case .handoff(let action):
-            LauncherRow(title: "Hand off “\(action.title)” to AI", selected: selected, leading: .symbol("paperplane"))
-        case .sendAsSource(let text):
-            LauncherRow(
-                title: "Send as source",
-                subtitle: Self.oneLine(text),
-                selected: selected,
-                leading: .symbol("tray.and.arrow.up")
-            )
-        case .addAction(let title):
-            LauncherRow(title: "Add “\(title)”", selected: selected, leading: .symbol("plus.circle"))
         case .signIn:
             LauncherRow(title: "Sign in with Apple", selected: selected, leading: .symbol("apple.logo"))
         case .signInWithGoogle:
             LauncherRow(title: SignInWithGoogleButton.title, selected: selected, leading: .google)
         case .signInWithEmail:
             LauncherRow(title: "Sign in with email", selected: selected, leading: .symbol("envelope"))
-        case .allowAI:
-            LauncherRow(title: "Allow AI processing to keep your list up to date", selected: selected, leading: .symbol("hand.raised"))
-        case .policyNotice(let notice):
-            LauncherRow(title: notice.title(today: today), accessory: "View", selected: selected, leading: .symbol("doc.text"))
+        case .command(let command):
+            LauncherRow(title: command.title, selected: selected, leading: .symbol(command.symbolName))
+        default:
+            EmptyView()
         }
     }
 
-    private static func oneLine(_ text: String) -> String {
-        text.split(whereSeparator: \.isNewline).first.map(String.init) ?? text
-    }
-
-    // MARK: ⌘K 동작
+    // MARK: ⌘K 동작 · 명령
 
     /// 할 일 제목 아래 Status(To Do · In Progress · Done, 지금 상태에 체크) · Actions(맨 아래 Delete ⌘⌫). Review는 제목 아래 한 묶음.
     @ViewBuilder
@@ -290,38 +235,17 @@ struct LauncherRootView: View {
         }
     }
 
-    // MARK: 펼침 (Sources 묶음)
-
     @ViewBuilder
-    private func detail(_ target: LauncherModel.Target) -> some View {
-        let action = target.action
-        let done = target.group == .doneToday
-        LauncherRow(
-            title: action.title,
-            subtitle: target.group == .review ? ConfirmReasonText.label(action.confirmReasons) : nil,
-            accessory: done ? nil : action.dueDate.map { DueText.accessory($0, today: today) },
-            urgent: !done && DueText.isUrgent(due: action.dueDate, reasons: [], today: today),
-            selected: true,
-            dimmed: done,
-            keepsSubtitle: target.group == .review,
-            leading: .status(TaskStatusMark.State(target.group))
-        )
-        Group {
-            if let digest = model.now?.evidence[action.id] {
-                if digest.isEmpty {
-                    statusRow("No sources yet.", symbol: "tray")
-                } else {
-                    SourcesGroup(lines: digest.lines) { line in
-                        if let url = line.externalURL { model.open(url) }
-                    }
+    private var commandRows: some View {
+        LauncherSectionLabel("Commands")
+        ForEach(Array(LauncherCommand.allCases.enumerated()), id: \.element) { index, command in
+            LauncherRow(title: command.title, selected: index == model.selection, leading: .symbol(command.symbolName))
+                .id(index)
+                .onTapGesture {
+                    model.selection = index
+                    model.primary()
                 }
-            } else if model.now?.evidenceFailed.contains(action.id) == true {
-                statusRow("Couldn't load sources.", symbol: "exclamationmark.circle")
-            } else {
-                statusRow("Loading…", symbol: nil)
-            }
         }
-        .padding(.top, TFSpace.sm)
     }
 
     // MARK: 기한 고치기 · 직접 추가의 기한
@@ -382,6 +306,10 @@ struct LauncherRootView: View {
                 if let url = line.externalURL { model.open(url) }
             }
         }
+    }
+
+    static func oneLine(_ text: String) -> String {
+        text.split(whereSeparator: \.isNewline).first.map(String.init) ?? text
     }
 
     // MARK: 빠진 할 일 신고 · 직접 추가의 원문
@@ -466,7 +394,7 @@ struct LauncherRootView: View {
         }
     }
 
-    // MARK: 한 줄 상태 · 아래
+    // MARK: 한 줄 상태
 
     private func statusRow(_ text: String, symbol: String?) -> some View {
         HStack(spacing: TFSpace.md) {
@@ -487,58 +415,6 @@ struct LauncherRootView: View {
         .foregroundStyle(TFColor.textSecondary)
         .padding(.horizontal, TFSpace.md)
         .frame(minHeight: 40)
-    }
-
-    private var footer: some View {
-        HStack(spacing: 6) {
-            Spacer()
-            switch model.screen {
-            case .pickLines(_, let purpose):
-                Text(purpose == .reportMissing ? "Report" : "Add")
-                    .font(TFFont.footnote)
-                    .foregroundStyle(model.selectedQuote == nil ? TFColor.textSecondary.opacity(0.5) : TFColor.textSecondary)
-                Keycap("⌘↩")
-            case .list, .detail:
-                // 진행 상태를 바꾸거나 지운 뒤 잠시 되돌리기
-                if model.canUndo {
-                    Text("Undo")
-                        .font(TFFont.footnote)
-                        .foregroundStyle(TFColor.textSecondary)
-                    Keycap("⌘Z")
-                        .padding(.trailing, TFSpace.sm)
-                }
-                // Review: ↩는 근거를 펼치고, 확정 · 넘기기는 단축키로
-                if model.canConfirmReview {
-                    Text("Confirm")
-                        .font(TFFont.footnote)
-                        .foregroundStyle(TFColor.textSecondary)
-                    Keycap("⌘↩")
-                        .padding(.trailing, TFSpace.sm)
-                }
-                // 처리방침 변경 안내 줄 · Review를 고르면 닫기 · 넘기기
-                if model.canDismissNotice || model.canDismissReview {
-                    Text("Dismiss")
-                        .font(TFFont.footnote)
-                        .foregroundStyle(TFColor.textSecondary)
-                    Keycap("⌘⌫")
-                        .padding(.trailing, TFSpace.sm)
-                }
-                // 할 일 행이 아니면 (명령 · Add 등) ⌘K가 할 일이 없어 흐리게
-                Text("Actions")
-                    .font(TFFont.footnote)
-                    .foregroundStyle(model.canOpenActions ? TFColor.textSecondary : TFColor.textSecondary.opacity(0.5))
-                Keycap("⌘K")
-            default:
-                // 직접 추가 · 신고를 보내는 중에는 esc가 할 일이 없어 흐리게
-                Text("Back")
-                    .font(TFFont.footnote)
-                    .foregroundStyle(model.isSubmitting ? TFColor.textSecondary.opacity(0.5) : TFColor.textSecondary)
-                Keycap("esc")
-            }
-        }
-        .padding(.horizontal, TFSpace.md)
-        .padding(.top, 10)
-        .padding(.bottom, TFSpace.xs)
     }
 }
 #endif

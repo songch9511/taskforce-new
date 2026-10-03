@@ -1,12 +1,13 @@
 import SwiftUI
 
 /// 빈 화면 (Figma M14 · M20 · M21): 가운데 기호 + 제목 + 설명. 동작은 액션 바에 둔다. VoiceOver는 한 요소로 읽는다.
+/// 기호는 없어도 된다 (M21 `No tasks yet`).
 public struct EmptyState: View {
-    let systemImage: String
+    let systemImage: String?
     let title: String
     let message: String?
 
-    public init(systemImage: String, title: String, message: String? = nil) {
+    public init(systemImage: String?, title: String, message: String? = nil) {
         self.systemImage = systemImage
         self.title = title
         self.message = message
@@ -14,10 +15,12 @@ public struct EmptyState: View {
 
     public var body: some View {
         VStack(spacing: TFSpace.sm) {
-            Image(systemName: systemImage)
-                .font(.system(size: 22))
-                .foregroundStyle(TFColor.textSecondary)
-                .frame(width: 27, height: 27)
+            if let systemImage {
+                Image(systemName: systemImage)
+                    .font(.system(size: 22))
+                    .foregroundStyle(TFColor.textSecondary)
+                    .frame(width: 27, height: 27)
+            }
             Text(title)
                 .font(TFFont.calloutEmphasis)
                 .foregroundStyle(TFColor.textPrimary)

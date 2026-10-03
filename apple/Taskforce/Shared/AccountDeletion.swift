@@ -25,6 +25,8 @@ enum AccountDeletion {
             return "Couldn't delete your account. \(error.userMessage)"
         }
         if plan.disconnectGoogle { GoogleSignInFlow.disconnect() }
+        // 이 기기의 저장본(할 일 제목 · 기한 · 상태)도 지운다. 로그아웃 정리(`SessionStore.onSignedOut`)도 지우지만, 계정을 지웠으면 먼저 확실히
+        if case .signedIn(let userID, _) = session.state { try? AppRuntime.savedNow?.remove(account: userID) }
         await session.accountDeleted(note: plan.reauthorizeWithApple && code == nil ? revokeSkippedNote : nil)
         return nil
     }

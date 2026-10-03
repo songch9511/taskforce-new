@@ -51,6 +51,11 @@ struct TaskforceApp: App {
 enum AppRuntime {
     static let startup = Startup.make()
 
+    /// 이 기기의 저장본 위치: App Group 컨테이너 아래 계정 폴더 (`SavedNowStore`). 설정 · App Group이 없으면 nil (저장본 없이 둔다)
+    static let savedNow: SavedNowStore? = (try? AppConfig.fromMainBundle())
+        .flatMap { SavedNowStore.defaultRoot(appGroupID: $0.appGroupID) }
+        .map(SavedNowStore.init(root:))
+
     private static var accountStore: AccountStore?
 
     /// 연결 · 동의 · 프로필 상태 (iPhone 시트와 Mac 설정 창이 같은 것을 본다)
@@ -76,7 +81,7 @@ enum Startup {
             let supabase = TaskforceClient.makeSupabase(config: config)
             // 요청은 디스크 캐시 없는 세션으로 (`TaskforceClient.urlSession`). 예전 빌드가 공유 캐시에 남긴 응답 사본은 시작할 때 지운다
             URLCache.shared.removeAllCachedResponses()
-            // 계정별로 이 기기에 남기는 데이터는 계정이 떠날 때 `SessionStore.onSignedOut`에서 지운다 (Mac 런처: `LauncherModel`)
+            // 계정별로 이 기기에 남기는 데이터(목록 · 저장본)는 계정이 떠날 때 `SessionStore.onSignedOut`에서 지운다 (Mac 런처: `LauncherModel`)
             return .ready(
                 SessionStore(auth: supabase.auth),
                 AppServices(config: config, supabase: supabase, session: TaskforceClient.urlSession)

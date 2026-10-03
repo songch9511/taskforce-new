@@ -73,6 +73,14 @@ public enum LauncherItem: Hashable, Sendable, Identifiable {
     case allowAI
     /// 처리방침 변경 안내: ↩ View (처리방침 페이지) · ⌘⌫ 닫기
     case policyNotice(PolicyNotice)
+    /// 하루 안에 처리에 실패한 원문 (`/now` `failed_sources`). 알리기만 한다
+    case failedSources(FailedSources)
+    /// 접힌 섹션의 나머지 "Show N More" (`SectionCaps`). ↩ 펼침
+    case showMore(TaskGroup, hidden: Int)
+    /// Done Today 머리 (접힌 한 줄 · 펼침). ↩ 열고 닫기
+    case doneToday(count: Int, expanded: Bool)
+    /// 이 기기의 저장본 한 줄 (오프라인 · 새로고침 실패, 읽기만)
+    case saved(SavedNow.Row)
 
     public var id: String {
         switch self {
@@ -89,6 +97,10 @@ public enum LauncherItem: Hashable, Sendable, Identifiable {
         case .signInWithEmail: "sign-in-email"
         case .allowAI: "allow-ai"
         case .policyNotice: "policy-notice"
+        case .failedSources: "failed-sources"
+        case .showMore(let group, _): "more-\(group.rawValue)"
+        case .doneToday: "done-today"
+        case .saved(let row): "saved-\(row.id)"
         }
     }
 
@@ -116,12 +128,15 @@ public struct LauncherSection: Hashable, Sendable, Identifiable {
     /// "Review" · "In Progress" · "To Do" · "Done Today" · "Commands". nil이면 제목 없이
     public let title: String?
     public let items: [LauncherItem]
+    /// 섹션 머리의 개수 (`Review 4`). 접혀서 일부만 보여도 섹션 전체 수다. 명령 · 안내는 nil
+    public let count: Int?
 
     public var id: String { title ?? items.first?.id ?? "empty" }
 
-    public init(title: String?, items: [LauncherItem]) {
+    public init(title: String?, items: [LauncherItem], count: Int? = nil) {
         self.title = title
         self.items = items
+        self.count = count
     }
 }
 
@@ -134,9 +149,29 @@ public enum LauncherContent {
     /// `needsConsent`: 동의 전이면 빈 입력창 맨 위에 "Allow AI processing" 한 줄 (목록을 막지 않는다)
     /// `policyNotice`: 처리방침 변경 안내가 있으면 빈 입력창 맨 위에 한 줄 (동의 줄 아래)
     /// `googleSignIn`: 로그인 전 목록에 Sign in with Google을 둘지 (앱에 Google 클라이언트 설정이 있을 때)
+    /// Mac 런처 셸(U1 PR4)의 목록 모양. 기본값(`nil`)이면 예전 모양 그대로다 (명령 구역 · 접지 않음 · 모든 범위).
+    public struct Layout: Sendable, Hashable {
+        /// 섹션 접기 (`Show N More` · Done Today 접힌 한 줄). 기준값은 `/now` `section_limits`
+        public var caps: SectionCaps
+        public var scope: TaskScope
+        /// 범위 Changed Since Last Look이 고르는 할 일 (`NowResponse.changedIDs`)
+        public var changed: Set<UUID>
+        /// 맨 위 안내 줄 (`failed_sources`, 0이면 줄 없음)
+        public var failedSources: FailedSources
+
+        public init(caps: SectionCaps = SectionCaps(), scope: TaskScope = .allTasks, changed: Set<UUID> = [], failedSources: FailedSources = .empty) {
+            self.caps = caps
+            self.scope = scope
+            self.changed = changed
+            self.failedSources = failedSources
+        }
+    }
+
+    /// `layout`이 있으면(Mac 런처 셸) 빈 입력창 목록에 명령 구역을 두지 않는다: 명령은 찾기 결과와 ⌘K 패널(`LauncherCommand`)로 찾는다.
+    /// 범위는 네 구역을 좁히고, 접기는 빈 입력창 · All Tasks에서만 한다 (`SectionCaps.isUnfolded`).
     public static func sections(
         for mode: LauncherInput.Mode, now: NowResponse?, doneToday: [ActionSummary] = [], signedIn: Bool, needsConsent: Bool = false,
-        policyNotice: PolicyNotice? = nil, googleSignIn: Bool = false
+        policyNotice: PolicyNotice? = nil, googleSignIn: Bool = false, layout: Layout? = nil
     ) -> [LauncherSection] {
         guard signedIn else {
             return [
@@ -145,16 +180,20 @@ public enum LauncherContent {
             ].filter { !$0.items.isEmpty }
         }
         let board = TaskBoard(now: now, doneToday: doneToday)
+        let scope = layout?.scope ?? .allTasks
+        let changed = layout?.changed ?? []
         var sections: [LauncherSection]
         switch mode {
         case .empty:
-            let tasks = board.sections()
-            let notices: [LauncherItem] = (needsConsent ? [.allowAI] : []) + (policyNotice.map { [.policyNotice($0)] } ?? [])
-            sections = [LauncherSection(title: nil, items: notices)]
-                + taskSections(tasks, includingDone: true)
-                + [LauncherSection(title: "Commands", items: LauncherCommand.allCases.map(LauncherItem.command))]
+            let tasks = scope.apply(to: board.sections(), changed: changed)
+            var notices: [LauncherItem] = (needsConsent ? [.allowAI] : []) + (policyNotice.map { [.policyNotice($0)] } ?? [])
+            if let failed = layout?.failedSources, failed.count > 0 { notices.append(.failedSources(failed)) }
+            sections = [LauncherSection(title: nil, items: notices)] + taskSections(tasks, includingDone: true, layout: layout, query: "")
+            if layout == nil {
+                sections.append(LauncherSection(title: "Commands", items: LauncherCommand.allCases.map(LauncherItem.command)))
+            }
         case .query(let query):
-            let tasks = board.sections(matching: query)
+            let tasks = scope.apply(to: board.sections(matching: query), changed: changed)
             // 맞는 열린 할 일 중 맨 위 (보이는 순서: In Progress → To Do → Review)
             let top = tasks.inProgress.first?.action ?? tasks.toDo.first?.action ?? tasks.review.first
             var assist: [LauncherItem] = [.ask(query)]
@@ -165,10 +204,10 @@ public enum LauncherContent {
                 assist.insert(.addAction(title), at: 0)
             }
             let commands = LauncherCommand.allCases.filter { TaskFilter.matches(text: $0.title, query: query) }
-            sections = taskSections(tasks, includingDone: false)
+            sections = taskSections(tasks, includingDone: false, layout: layout, query: query)
                 + [
                     LauncherSection(title: nil, items: assist),
-                    LauncherSection(title: TaskGroup.doneToday.title, items: tasks.doneToday.map(LauncherItem.done)),
+                    titled(.doneToday, tasks.doneToday.map(LauncherItem.done), counted: layout != nil),
                     LauncherSection(title: "Commands", items: commands.map(LauncherItem.command)),
                 ]
         case .paste(let text):
@@ -179,16 +218,61 @@ public enum LauncherContent {
         return sections.filter { !$0.items.isEmpty }
     }
 
-    private static func taskSections(_ tasks: TaskSections, includingDone: Bool) -> [LauncherSection] {
+    /// 이 기기의 저장본으로 만든 목록 (오프라인 · 새로고침 실패 · 처음 불러오는 중, `/now`를 이번 실행에서 아직 받지 못했을 때). 행은 읽기만 한다:
+    /// 찾기는 저장된 제목으로 거르고, 물어보기 · 추가 · 넘기기 줄은 없다 (할 일 목록이 서버에 있어야 한다). 붙여 넣은 글은 지금처럼 원문 보내기 · 물어보기
+    /// (처음 불러오는 중 · 새로고침 실패는 온라인일 수 있다. 오프라인이면 보내기가 실패를 알린다). 범위 · 접기는 `sections`와 같은 규칙, 바뀜 범위는 비어 있다.
+    public static func savedSections(_ saved: SavedNow, for mode: LauncherInput.Mode, layout: Layout, now: Date, timeZone: TimeZone = .current) -> [LauncherSection] {
+        let query: String
+        switch mode {
+        case .empty: query = ""
+        case .query(let text): query = text
+        case .paste(let text):
+            let ask: [LauncherItem] = text.utf16.count <= askMaxLength ? [.ask(text)] : []
+            return [LauncherSection(title: nil, items: [.sendAsSource(text)] + ask)]
+        }
+        var sections = TaskGroup.allCases.map { group in
+            let rows = layout.scope.rows(in: saved, group: group, now: now, timeZone: timeZone)
+                .filter { query.isEmpty || TaskFilter.matches(text: $0.task.title, query: query) }
+            return folded(group, rows.map(LauncherItem.saved), layout: layout, query: query)
+        }
+        if !query.isEmpty {
+            let commands = LauncherCommand.allCases.filter { TaskFilter.matches(text: $0.title, query: query) }
+            sections.append(LauncherSection(title: "Commands", items: commands.map(LauncherItem.command)))
+        }
+        return sections.filter { !$0.items.isEmpty }
+    }
+
+    private static func taskSections(_ tasks: TaskSections, includingDone: Bool, layout: Layout?, query: String) -> [LauncherSection] {
         var sections = [
-            LauncherSection(title: TaskGroup.review.title, items: tasks.review.map(LauncherItem.review)),
-            LauncherSection(title: TaskGroup.inProgress.title, items: tasks.inProgress.map(LauncherItem.task)),
-            LauncherSection(title: TaskGroup.toDo.title, items: tasks.toDo.map(LauncherItem.task)),
+            folded(.review, tasks.review.map(LauncherItem.review), layout: layout, query: query),
+            folded(.inProgress, tasks.inProgress.map(LauncherItem.task), layout: layout, query: query),
+            folded(.toDo, tasks.toDo.map(LauncherItem.task), layout: layout, query: query),
         ]
         if includingDone {
-            sections.append(LauncherSection(title: TaskGroup.doneToday.title, items: tasks.doneToday.map(LauncherItem.done)))
+            sections.append(folded(.doneToday, tasks.doneToday.map(LauncherItem.done), layout: layout, query: query))
         }
         return sections
+    }
+
+    /// 한 구역을 접기 규칙대로: 앞 몇 행 + "Show N More", Done Today는 머리 한 줄(펼치면 머리 + 행).
+    /// `layout`이 없으면 다 보인다. 찾는 중 · 범위를 고른 동안은 Done Today도 제목 머리 아래 다 보인다.
+    private static func folded(_ group: TaskGroup, _ items: [LauncherItem], layout: Layout?, query: String) -> LauncherSection {
+        guard let layout else { return LauncherSection(title: group.title, items: items) }
+        let unfolded = SectionCaps.isUnfolded(query: query, scope: layout.scope)
+        if group == .doneToday, !unfolded, !items.isEmpty {
+            let expanded = layout.caps.expanded.contains(.doneToday)
+            return LauncherSection(title: nil, items: [.doneToday(count: items.count, expanded: expanded)] + (expanded ? items : []))
+        }
+        switch layout.caps.fold(group, count: items.count, query: query, scope: layout.scope) {
+        case .capped(let visible, let hidden):
+            return LauncherSection(title: group.title, items: Array(items.prefix(visible)) + [.showMore(group, hidden: hidden)], count: items.count)
+        case .all, .collapsed:
+            return LauncherSection(title: group.title, items: items, count: items.count)
+        }
+    }
+
+    private static func titled(_ group: TaskGroup, _ items: [LauncherItem], counted: Bool) -> LauncherSection {
+        LauncherSection(title: group.title, items: items, count: counted ? items.count : nil)
     }
 
     /// 목록이 새로 왔을 때 고를 줄: 전에 고른 행(`id`)이 아직 있으면 그 행, 없으면 같은 자리(끝을 넘지 않게).
@@ -343,6 +427,8 @@ public struct LauncherDeleteGuard: Sendable, Equatable {
 /// 누르고 있어 반복된 ↩ · ⌘↩는 어느 화면에서나 먹고 아무것도 하지 않는다: 펼침 → ⌘K 패널로 이어지거나, 확정 뒤 누르고 있던 키가
 /// 다음 화면 · 목록 첫 줄(안내 · 다른 Review · 할 일)을 실행하지 않게. 런처에 키 반복이 필요한 곳은 없다.
 /// ⌘K 패널은 Review면 Confirm이 아니라 Open source를 고른 채 연다(앱 `LauncherModel`).
+/// 목록의 할 일 행(In Progress · To Do · Done Today)은 원문을 연다(Figma M1 `Open in Notion ↩`, U1 PR4 사용자 결정).
+/// 원문 링크가 없으면 앱이 ⌘K 패널을 연다(전과 같다). ⌘↩도 ↩와 같다.
 /// 다른 행 · 화면은 지금까지처럼 그 화면의 기본 동작이다(⌘↩도 ↩와 같고, 줄 고르기의 ⌘↩는 보내기).
 public enum LauncherReturn {
     /// ↩를 받은 곳
@@ -362,6 +448,8 @@ public enum LauncherReturn {
         case showSources
         /// Review 확정
         case confirm
+        /// 할 일 행의 원문 열기 (링크가 없으면 앱이 ⌘K 패널)
+        case openSource
         /// 먹고 아무것도 하지 않는다
         case ignore
     }
@@ -371,6 +459,7 @@ public enum LauncherReturn {
         let onList: Bool
         switch place {
         case .list(let item) where item?.group == .review: onList = true
+        case .list(let item) where item?.group != nil: return .openSource
         case .task(.review): onList = false
         default: return .primary
         }

@@ -24,6 +24,17 @@ public enum SourceService: Hashable, Sendable {
         return .manual(kind)
     }
 
+    /// 런처 액션 바의 원문 열기 이름 (Figma M1 `Open in Notion`). Meet 전사는 Google Docs 문서로 열린다. 직접 넣은 원문의 링크는 서비스를 모른다
+    public var openTitle: String {
+        switch self {
+        case .notion: "Open in Notion"
+        case .slack: "Open in Slack"
+        case .gmail: "Open in Gmail"
+        case .googleMeet: "Open in Google Docs"
+        case .manual: "Open Link"
+        }
+    }
+
     /// 접근성 이름 (화면에 글자로 쓰지 않는다)
     public var accessibilityName: String {
         switch self {

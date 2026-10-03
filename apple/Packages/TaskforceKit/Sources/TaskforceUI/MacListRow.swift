@@ -131,7 +131,7 @@ public struct SectionHeader: View {
     }
 }
 
-/// 접힌 섹션의 나머지 (Figma M1 `More · 2 more`): "Show 2 More ›", 높이 28, 왼쪽 10. 키보드(↩)와 VoiceOver로도 연다.
+/// 접힌 섹션의 나머지 (Figma M1 `More · 2 more`): "Show 2 More ⌄"(꺾쇠는 아래로), 높이 28, 왼쪽 10. 키보드(↩)와 VoiceOver로도 연다.
 /// VoiceOver: "Show 2 more in Review"
 public struct ShowMoreRow: View {
     let count: Int
@@ -150,7 +150,7 @@ public struct ShowMoreRow: View {
         Button(action: action) {
             HStack(spacing: TFSpace.xs) {
                 Text("Show \(count) More")
-                Image(systemName: "chevron.right")
+                Image(systemName: "chevron.down")
                     .font(.system(size: 8, weight: .semibold))
                     .frame(width: 12, height: 12)
             }
