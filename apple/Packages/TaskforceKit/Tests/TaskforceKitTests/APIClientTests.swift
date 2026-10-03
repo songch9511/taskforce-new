@@ -267,7 +267,7 @@ struct APIClientTests {
             Issue.record("오류가 나야 함")
         } catch let error as APIError {
             #expect(error == .server(status: 401, code: .unauthorized, message: "Unauthorized"))
-            #expect(error.userMessage == "Taskforce couldn't verify this session. Sign out, then sign in again.")
+            #expect(error.userMessage == "Couldn't verify your sign-in. Sign out, then sign in again.")
         }
         #expect(checks.value == 1)
     }

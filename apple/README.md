@@ -102,7 +102,7 @@ Mac은 `--show-launcher -TFSampleData -TFSnapshot <폴더>`로 실행하면 런�
   - 할 일이 하나도 없는데 연결이 동기화 중이면 빈 입력창 목록 맨 위에 진행 표시 + "Syncing…" 한 줄(고를 수 없음).
   - 알림 권한은 런처가 뜰 때 연결이 있으면 한 번 묻는다. 알림을 누르면 런처를 열고 그 할 일(Review · 할 일 행)을 고른다(목록을 아직 못 읽었으면 읽은 뒤에).
 - 설정 창(SwiftUI Settings 장면): Account · Connections · AI data · Shortcut. iPhone과 같은 연결 · 동의 화면을 쓴다. Account의 Sign Out도 이 기기만이다.
-- 로그아웃 · 만료 · 계정 삭제 · 계정 전환으로 계정이 떠나면 `SessionStore.onSignedOut`에서 런처 화면 · 목록 · 진행 중 작업을 지운다. Supabase · API 요청은 응답을 디스크 캐시에 남기지 않는다(`TaskforceClient.urlSession`). API가 401이면 인증 서버에 세션을 다시 묻고, 계정(다른 기기에서 지움) · 세션이 없을 때만 이 기기를 로그아웃한다. 살아 있으면 "Taskforce couldn't verify this session. Sign out, then sign in again."
+- 로그아웃 · 만료 · 계정 삭제 · 계정 전환으로 계정이 떠나면 `SessionStore.onSignedOut`에서 런처 화면 · 목록 · 진행 중 작업을 지운다. Supabase · API 요청은 응답을 디스크 캐시에 남기지 않는다(`TaskforceClient.urlSession`). API가 401이면 인증 서버에 세션을 다시 묻고, 계정(다른 기기에서 지움) · 세션이 없을 때만 이 기기를 로그아웃한다. 살아 있으면 "Couldn't verify your sign-in. Sign out, then sign in again."
 
 ### 연결 · 동의 (양쪽)
 

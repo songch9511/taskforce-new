@@ -38,7 +38,7 @@ public enum APIError: Error, Equatable, Sendable, CustomStringConvertible {
             "This changed somewhere else. It's been refreshed."
         case .server(_, .unauthorized, _):
             // 이 서버가 거절했는데 인증 서버는 계정 · 세션이 있다고 함 (없다고 하면 `onUnauthorized`가 이 기기를 로그아웃시키고 `.notSignedIn`이 된다)
-            "Taskforce couldn't verify this session. Sign out, then sign in again."
+            "Couldn't verify your sign-in. Sign out, then sign in again."
         case .notSignedIn:
             "Sign in to continue."
         case .server(_, .rateLimited, _):
