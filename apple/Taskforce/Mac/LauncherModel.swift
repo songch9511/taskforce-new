@@ -167,6 +167,9 @@ final class LauncherModel {
         #endif
         self.now = now
         configurationError = nil
+        // 계정이 떠나면 (로그아웃 · 만료 · 계정 삭제 · 전환) 상태가 바뀐 그 자리에서 화면 · 목록 · 진행 중 작업을 지운다:
+        // 런처가 떠 있어도 전 계정의 목록이 한 번도 다음 상태와 함께 그려지지 않게. 로그인 쪽은 `MacAppDelegate`가 따라간다
+        session.onSignedOut { [weak self] _ in self?.sessionChanged() }
     }
 
     init(configurationError: String) {
@@ -367,6 +370,7 @@ final class LauncherModel {
         lastUserID = userID
         work?.cancel()
         work = nil
+        closeTimer?.cancel()
         now?.reset()
         account?.reset()
         clearUndo()
@@ -375,6 +379,9 @@ final class LauncherModel {
         sourceText = nil
         // 전 사용자의 쓰기 결과는 보여 주지 않는다
         writeGeneration += 1
+        submission = nil
+        pendingFocus = nil
+        text = ""
         screen = .list
         selection = 0
         selectedID = nil

@@ -38,7 +38,7 @@ final class AccountStore {
     private var policyUserID: UUID?
     /// 계정마다 30분에 한 번만 읽는다
     private var policyRefresh = PolicyNoticeRefresh()
-    /// `reset()`마다 오른다: 전 사용자의 늦은 응답을 버린다
+    /// `reset()`마다 오른다: 전 사용자의 늦은 응답(프로필 · 동의 · 연결 · 오류 문구)을 버린다
     private var generation = 0
     /// `load()`를 겹쳐 부르면 (Mac: 로그인 직후 런처 + 설정 창) 한 번만 읽는다. 따로 읽으면 Google 로그인 이름을 채우지 않은 쪽이
     /// 먼저 빈 이름의 프로필을 두고, 설정 창 이름 칸이 그 빈 값으로 채워진 채 굳는다
@@ -151,6 +151,7 @@ final class AccountStore {
         showsConsent = false
         pendingProvider = nil
         pendingHandoff = nil
+        message = nil
     }
 
     func reloadConnections() async {
@@ -223,10 +224,12 @@ final class AccountStore {
         }
         connecting = provider
         defer { connecting = nil }
+        let generation = generation
         let url: URL
         do {
             url = try await services.api.startConnection(provider)
         } catch let error as APIError {
+            guard generation == self.generation else { return }
             switch ConnectionStartFailure.classify(error) {
             case .comingSoon: comingSoon.insert(provider)
             case .consentRequired:
@@ -236,9 +239,10 @@ final class AccountStore {
             }
             return
         } catch {
-            if !(error is CancellationError) { message = error.userMessage }
+            if !(error is CancellationError), generation == self.generation { message = error.userMessage }
             return
         }
+        guard generation == self.generation else { return }
         do {
             let callbackURL = try await session.authenticate(
                 using: url,
@@ -246,11 +250,13 @@ final class AccountStore {
                 preferredBrowserSession: nil,
                 additionalHeaderFields: [:]
             )
+            // 브라우저에 있는 사이 로그아웃 · 계정 전환했으면 다음 계정의 토큰으로 이 연결을 마치지 않는다
+            guard generation == self.generation else { return }
             await handleCallback(callbackURL)
         } catch let error as ASWebAuthenticationSessionError where error.code == .canceledLogin {
             // 사용자가 닫음
         } catch {
-            if !(error is CancellationError) { message = "Couldn't connect. Try again." }
+            if !(error is CancellationError), generation == self.generation { message = "Couldn't connect. Try again." }
         }
     }
 
@@ -271,10 +277,13 @@ final class AccountStore {
     }
 
     private func complete(_ provider: ConnectionProvider, handoff: String) async {
+        let generation = generation
         do {
             let status = try await services.api.completeConnection(provider, handoff: handoff)
+            guard generation == self.generation else { return }
             await finishConnection(status, provider: provider)
         } catch let error as APIError {
+            guard generation == self.generation else { return }
             switch ConnectionCompleteFailure.classify(error) {
             case .consentRequired:
                 pendingHandoff = (provider, handoff)
@@ -283,7 +292,7 @@ final class AccountStore {
                 message = text
             }
         } catch {
-            if !(error is CancellationError) { message = ConnectionCompleteFailure.retryMessage }
+            if !(error is CancellationError), generation == self.generation { message = ConnectionCompleteFailure.retryMessage }
         }
     }
 
@@ -291,8 +300,9 @@ final class AccountStore {
         if let text = status.message { message = text }
         // 서버가 연결하며 첫 동기화를 뒤에서 시작한다 (몇 분 걸린다): 잠금이 보이기 전에도 곧바로 "Syncing…"
         if status.isConnected, let provider { expectSync([provider.rawValue]) }
+        let generation = generation
         await reloadConnections()
-        if status.isConnected {
+        if status.isConnected, generation == self.generation {
             // 서버가 연결하며 동기화를 시작하지만, 바로 한 번 더 부르면 첫 할 일이 빨리 채워진다 (막 동기화했으면 429라 조용히 넘긴다)
             Task { try? await services.api.syncConnections() }
         }
@@ -301,11 +311,13 @@ final class AccountStore {
     /// 2단계 "Want this"
     func request(_ provider: ConnectionProvider) async {
         requested.insert(provider)
+        let generation = generation
         do {
             try await services.api.requestConnection(provider)
         } catch let error as APIError where ConnectionStartFailure.classify(error) == .comingSoon {
             // 예전 서버: 요청을 받을 곳이 없다. 표시는 그대로 두고 조용히 넘긴다
         } catch {
+            guard generation == self.generation else { return }
             requested.remove(provider)
             message = error.userMessage
         }
@@ -317,6 +329,7 @@ final class AccountStore {
         guard !syncing else { return }
         syncing = true
         defer { syncing = false }
+        let generation = generation
         expectSync(connections.filter { $0.status == .active || $0.status == .error }.map(\.provider))
         let failure: SyncNowFailure?
         do {
@@ -329,6 +342,8 @@ final class AccountStore {
         } catch {
             failure = .failed(error.userMessage)
         }
+        // 기다리는 사이(최대 4분) 로그아웃 · 계정 전환했으면 전 계정의 결과는 버린다
+        guard generation == self.generation else { return }
         // 서버가 답했으면 앱 표시는 거두고 서버 상태(잠금 · 마지막 동기화)를 따른다
         syncRequests = [:]
         let finished = syncFinished
@@ -347,10 +362,11 @@ final class AccountStore {
     }
 
     func disconnect(_ record: ConnectionRecord) async {
+        let generation = generation
         do {
             try await services.api.disconnect(connectionID: record.id)
         } catch {
-            message = error.userMessage
+            if generation == self.generation { message = error.userMessage }
         }
         await reloadConnections()
     }
@@ -359,14 +375,17 @@ final class AccountStore {
 
     /// 동의하고, 기다리던 연결이 있으면 `resumeProvider`로 넘긴다
     func giveConsent() async {
+        let generation = generation
         do {
             try await services.api.giveAIConsent()
         } catch let error as APIError where ConnectionStartFailure.classify(error) == .comingSoon {
             // 예전 서버: 동의 없이도 처리한다
         } catch {
-            message = error.userMessage
+            if generation == self.generation { message = error.userMessage }
             return
         }
+        // 그사이 로그아웃 · 계정 전환했으면 다음 계정을 동의한 것으로 두지 않는다
+        guard generation == self.generation else { return }
         consentGiven = true
         // 시트가 닫히며 declineConsent()가 불려도 이어서 할 일은 잃지 않게 먼저 꺼내 둔다
         let provider = pendingProvider
@@ -374,7 +393,8 @@ final class AccountStore {
         pendingProvider = nil
         pendingHandoff = nil
         showsConsent = false
-        if let value = try? await services.api.profile() { profile = value }
+        if let value = try? await services.api.profile(), generation == self.generation { profile = value }
+        guard generation == self.generation else { return }
         if let handoff {
             // 브라우저는 이미 끝났다: 같은 handoff로 연결만 마친다
             await complete(handoff.provider, handoff: handoff.id)
@@ -390,14 +410,16 @@ final class AccountStore {
     }
 
     func withdrawConsent() async {
+        let generation = generation
         do {
             try await services.api.withdrawAIConsent()
         } catch {
-            message = error.userMessage
+            if generation == self.generation { message = error.userMessage }
             return
         }
+        guard generation == self.generation else { return }
         consentGiven = false
-        if let value = try? await services.api.profile() { profile = value }
+        if let value = try? await services.api.profile(), generation == self.generation { profile = value }
     }
 
     // MARK: 프로필
@@ -426,11 +448,15 @@ final class AccountStore {
             return false
         }
         let edited = Profile.edited(name: name, aliases: aliases, keeping: profile)
+        let generation = generation
         do {
-            self.profile = try await services.api.saveProfile(edited)
+            let saved = try await services.api.saveProfile(edited)
+            // 저장하는 사이 계정이 바뀌었으면 전 계정의 프로필을 두지 않는다
+            guard generation == self.generation else { return false }
+            self.profile = saved
             return true
         } catch {
-            message = error.userMessage
+            if generation == self.generation { message = error.userMessage }
             return false
         }
     }

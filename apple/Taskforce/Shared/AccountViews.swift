@@ -6,6 +6,12 @@ import TaskforceUI
 // 연결 · 외부 AI 처리 동의 · 프로필 화면. Figma에 없는 화면이라 Apple 기본 부품(Form)과 Taskforce 토큰 · 부품으로만 구성한다.
 // iPhone은 계정 시트에서, Mac은 설정 창에서 같은 화면을 쓴다.
 
+/// iPhone 계정 시트와 Mac 설정 Account가 같이 쓰는 문구
+enum AccountCopy {
+    /// Sign Out 아래 한 줄: 이 기기만 로그아웃한다 (`SessionStore.signOut`, `.local`). 다른 기기의 세션은 그대로다
+    static let signOutScope = "Sign Out keeps you signed in on other devices."
+}
+
 /// 연결 목록: 1단계는 바로 연결, 2단계는 "Want this"
 struct ConnectionsView: View {
     @Environment(AccountStore.self) private var account

@@ -56,6 +56,59 @@ struct LauncherModelSessionTests {
         #expect(harness.model.screen == .list)
         #expect(harness.model.sourceText == nil)
     }
+
+    /// 계정이 바뀌면 `SessionStore.onSignedOut` 한 곳에서 화면 · 선택 · 입력 · 최근 원문 · 근거를 지운다 (`sessionChanged`를 따로 부르지 않아도)
+    @Test func accountChangeResetsScreenSelectionAndEvidence() async throws {
+        let harness = try await LauncherHarness.make()
+        let now = try #require(harness.model.now)
+        await harness.router.holdActionDetail()
+        let evidenceRead = Task { await now.loadEvidence(harness.actionID) }
+        await harness.waitUntil { await harness.router.hasPendingActionDetail() }
+        await harness.router.releaseActionDetail()
+        _ = await evidenceRead.value
+        #expect(now.evidence[harness.actionID] != nil)
+        harness.model.run(.command(.reportMissing))
+        await harness.waitUntil { harness.model.sourcesLoaded }
+        harness.model.text = "Private"
+        harness.model.selection = 1
+        #expect(harness.model.screen == .pickSource(.reportMissing))
+
+        try harness.signInAsOtherAccount()
+
+        #expect(harness.model.signedInUserID == harness.otherSession.user.id)
+        #expect(harness.model.screen == .list)
+        #expect(harness.model.selection == 0)
+        #expect(harness.model.text.isEmpty)
+        #expect(harness.model.recentSources.isEmpty)
+        #expect(now.evidence.isEmpty)
+    }
+
+    /// 로그아웃 직전에 보낸 `/now` · 근거 읽기가 로그아웃 뒤에 도착해도 화면 · 저장소에 남지 않는다
+    @Test func lateNowAndEvidenceAfterSignOutStayHidden() async throws {
+        let harness = try await LauncherHarness.make()
+        let now = try #require(harness.model.now)
+        await harness.router.holdNow()
+        await harness.router.holdActionDetail()
+        let listRead = Task { await now.load() }
+        let evidenceRead = Task { await now.loadEvidence(harness.actionID) }
+        await harness.waitUntil { await harness.router.hasPendingNow() }
+        await harness.waitUntil { await harness.router.hasPendingActionDetail() }
+
+        harness.session.apply(event: .signedOut, session: nil)
+        #expect(harness.model.screen == .list)
+
+        await harness.router.releaseNow()
+        await harness.router.releaseActionDetail()
+        _ = await listRead.value
+        _ = await evidenceRead.value
+
+        #expect(harness.model.signedInUserID == nil)
+        #expect(now.response == nil)
+        #expect(now.loadError == nil)
+        #expect(now.evidence.isEmpty)
+        #expect(now.evidenceFailed.isEmpty)
+        #expect(!harness.model.items.contains { $0.action != nil })
+    }
 }
 
 @MainActor
@@ -65,6 +118,8 @@ private final class LauncherHarness {
     let router: LauncherTestRouter
     let source: SourceRecord
     let otherSession: Session
+    /// 전 계정의 할 일 (`/now` · 근거 읽기 응답)
+    let actionID: UUID
 
     private let storage: MutableSessionStorage
     private let urlSession: URLSession
@@ -75,6 +130,7 @@ private final class LauncherHarness {
         router: LauncherTestRouter,
         source: SourceRecord,
         otherSession: Session,
+        actionID: UUID,
         storage: MutableSessionStorage,
         urlSession: URLSession
     ) {
@@ -83,6 +139,7 @@ private final class LauncherHarness {
         self.router = router
         self.source = source
         self.otherSession = otherSession
+        self.actionID = actionID
         self.storage = storage
         self.urlSession = urlSession
     }
@@ -93,8 +150,11 @@ private final class LauncherHarness {
         let otherSession = makeSession(userID: UUID())
         let storage = MutableSessionStorage(data: try AuthClient.Configuration.jsonEncoder.encode(firstSession))
         let host = "supabase-\(UUID().uuidString.lowercased()).test"
-        let router = LauncherTestRouter(sourceID: sourceID)
+        let apiHost = "api-\(UUID().uuidString.lowercased()).test"
+        let actionID = UUID()
+        let router = LauncherTestRouter(sourceID: sourceID, actionID: actionID)
         await LauncherTestRouterRegistry.shared.register(router, for: host)
+        await LauncherTestRouterRegistry.shared.register(router, for: apiHost)
 
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [LauncherStubURLProtocol.self]
@@ -103,7 +163,7 @@ private final class LauncherHarness {
             supabaseURL: URL(string: "https://\(host)")!,
             supabaseKey: "test-key",
             appGroupID: "group.test.taskforce",
-            apiBaseURL: URL(string: "https://api.test")!
+            apiBaseURL: URL(string: "https://\(apiHost)")!
         )
         let supabase = SupabaseClient(
             supabaseURL: config.supabaseURL,
@@ -119,6 +179,10 @@ private final class LauncherHarness {
         let account = AccountStore(services: services, session: session)
         let model = LauncherModel(session: session, services: services, account: account)
         model.sessionChanged()
+        // 첫 목록 읽기(서버 500)가 끝난 뒤 시작한다: 테스트가 붙잡을 `/now`와 섞이지 않게
+        for _ in 0..<100 where model.now?.loaded != true {
+            try await Task.sleep(for: .milliseconds(10))
+        }
 
         let source = SourceRecordFixture.make(id: sourceID, rawText: "Private source line")
         return LauncherHarness(
@@ -127,9 +191,18 @@ private final class LauncherHarness {
             router: router,
             source: source,
             otherSession: otherSession,
+            actionID: actionID,
             storage: storage,
             urlSession: urlSession
         )
+    }
+
+    func waitUntil(_ condition: @MainActor () async -> Bool) async {
+        for _ in 0..<100 {
+            if await condition() { return }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(await condition())
     }
 
     func openSource() async {
@@ -184,13 +257,25 @@ private struct StubResponse: Sendable {
 
 private actor LauncherTestRouter {
     private let sourceID: UUID
+    private let actionID: UUID
     private var detailResponse: CheckedContinuation<StubResponse, any Error>?
+    private var holdingNow = false
+    private var nowResponses: [CheckedContinuation<StubResponse, any Error>] = []
+    private var holdingActionDetail = false
+    private var actionDetailResponses: [CheckedContinuation<StubResponse, any Error>] = []
 
-    init(sourceID: UUID) {
+    init(sourceID: UUID, actionID: UUID) {
         self.sourceID = sourceID
+        self.actionID = actionID
     }
 
     func response(path: String, query: [String: String]) async throws -> StubResponse {
+        if path == "/api/v1/now", holdingNow {
+            return try await withCheckedThrowingContinuation { nowResponses.append($0) }
+        }
+        if path == "/rest/v1/actions", query["id"] != nil, holdingActionDetail {
+            return try await withCheckedThrowingContinuation { actionDetailResponses.append($0) }
+        }
         if path == "/rest/v1/sources", query["id"] != nil {
             return try await withCheckedThrowingContinuation { continuation in
                 detailResponse = continuation
@@ -206,6 +291,34 @@ private actor LauncherTestRouter {
     }
 
     func hasPendingDetail() -> Bool { detailResponse != nil }
+
+    func holdNow() { holdingNow = true }
+
+    func hasPendingNow() -> Bool { !nowResponses.isEmpty }
+
+    /// 전 계정의 할 일 하나가 든 `/now`
+    func releaseNow() {
+        holdingNow = false
+        let body = Data("""
+        {"now":[{"id":"\(actionID.uuidString.lowercased())","title":"Private task","owner":"me","status":"open","due_date":null,"counterpart":null,"needs_confirmation":false,"confirm_reasons":[],"started_at":null,"last_activity_at":"2026-09-29T10:00:00Z","score":10,"reasons":[],"days_until_due":null}],"confirmations":[]}
+        """.utf8)
+        for response in nowResponses { response.resume(returning: StubResponse(status: 200, body: body)) }
+        nowResponses = []
+    }
+
+    func holdActionDetail() { holdingActionDetail = true }
+
+    func hasPendingActionDetail() -> Bool { !actionDetailResponses.isEmpty }
+
+    /// 전 계정의 할 일 행 (근거 · 이력은 빈 목록으로 답한다)
+    func releaseActionDetail() {
+        holdingActionDetail = false
+        let body = Data("""
+        [{"id":"\(actionID.uuidString.lowercased())","title":"Private task","scope_summary":null,"owner":"me","counterpart":null,"due_date":null,"status":"open","needs_confirmation":false,"confirm_reasons":[],"started_at":null,"last_activity_at":"2026-09-29T10:00:00Z","created_at":"2026-09-29T10:00:00Z"}]
+        """.utf8)
+        for response in actionDetailResponses { response.resume(returning: StubResponse(status: 200, body: body)) }
+        actionDetailResponses = []
+    }
 
     func releaseDetail() {
         detailResponse?.resume(returning: StubResponse(status: 200, body: SourceRecordFixture.json(id: sourceID, rawText: "Private source line")))

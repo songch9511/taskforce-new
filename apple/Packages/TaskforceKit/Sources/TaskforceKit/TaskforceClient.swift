@@ -26,15 +26,20 @@ public struct AppServices: Sendable {
     public init(config: AppConfig, supabase: SupabaseClient, session: URLSession = .shared) {
         self.supabase = supabase
         let auth = supabase.auth
-        self.api = APIClient(baseURL: config.apiBaseURL, session: session) {
-            // 만료가 가까우면 갱신된 토큰을 준다
-            do {
-                return try await auth.session.accessToken
-            } catch let AuthError.api(_, _, _, response) where response.statusCode >= 500 || response.statusCode == 429 {
-                // 인증 서버가 잠깐 탈이 난 것: 로그인이 풀린 게 아니다
-                throw APIClient.error(status: response.statusCode, data: Data())
-            }
-        }
+        self.api = APIClient(
+            baseURL: config.apiBaseURL, session: session,
+            token: {
+                // 만료가 가까우면 갱신된 토큰을 준다
+                do {
+                    return try await auth.session.accessToken
+                } catch let AuthError.api(_, _, _, response) where response.statusCode >= 500 || response.statusCode == 429 {
+                    // 인증 서버가 잠깐 탈이 난 것: 로그인이 풀린 게 아니다
+                    throw APIClient.error(status: response.statusCode, data: Data())
+                }
+            },
+            // 401이면 인증 서버에 세션을 다시 묻고, 계정 · 세션이 없으면 이 기기만 로그아웃 (`SessionStore.onSignedOut`이 정리)
+            onUnauthorized: { await auth.endSessionIfGone() }
+        )
         self.reads = TaskforceReads(supabase: supabase)
     }
 

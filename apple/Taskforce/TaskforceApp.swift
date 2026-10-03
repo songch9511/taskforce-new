@@ -74,7 +74,11 @@ enum Startup {
             let config = try AppConfig.fromMainBundle()
             // 클라이언트 하나를 로그인 · 읽기 · Realtime이 함께 쓴다 (세션 · 토큰 갱신을 공유)
             let supabase = TaskforceClient.makeSupabase(config: config)
-            return .ready(SessionStore(auth: supabase.auth), AppServices(config: config, supabase: supabase))
+            let session = SessionStore(auth: supabase.auth)
+            // 계정이 이 기기를 떠날 때 (로그아웃 · 만료 · 계정 삭제 · 전환): URLSession이 디스크에 남겼을 수 있는 그 계정의 응답 사본을 지운다.
+            // 계정별로 기기에 남기는 것은 이 정리 지점(`SessionStore.onSignedOut`)에 등록한다
+            session.onSignedOut { _ in URLCache.shared.removeAllCachedResponses() }
+            return .ready(session, AppServices(config: config, supabase: supabase))
         } catch {
             return .misconfigured(String(describing: error))
         }

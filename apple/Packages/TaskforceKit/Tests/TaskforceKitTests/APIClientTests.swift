@@ -69,11 +69,17 @@ final class StubProtocol: URLProtocol {
 struct APIClientTests {
     let host = "t\(UUID().uuidString.lowercased().prefix(8)).test"
 
-    func client(status: Int = 200, body: String = "{}", token: @escaping APIClient.TokenProvider = { "token-123" }) -> APIClient {
+    func client(
+        status: Int = 200, body: String = "{}", token: @escaping APIClient.TokenProvider = { "token-123" },
+        onUnauthorized: APIClient.UnauthorizedHandler? = nil
+    ) -> APIClient {
         StubProtocol.register(host: host, reply: .init(status: status, body: body))
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [StubProtocol.self]
-        return APIClient(baseURL: URL(string: "https://\(host)")!, session: URLSession(configuration: configuration), token: token)
+        return APIClient(
+            baseURL: URL(string: "https://\(host)")!, session: URLSession(configuration: configuration), token: token,
+            onUnauthorized: onUnauthorized
+        )
     }
 
     var last: StubProtocol.Recorded? { StubProtocol.requests(host: host).last }
@@ -246,6 +252,45 @@ struct APIClientTests {
         }
     }
 
+    static let unauthorizedBody = #"{"error":{"code":"unauthorized","message":"Unauthorized"}}"#
+
+    /// 인증 서버는 세션을 인정하는데 이 서버가 거절한 401: 다시 로그인하는 길을 알린다.
+    /// Sign Out은 이 기기만 끝내므로(`.local`) 닫은 #61의 "모든 기기에서 로그아웃" 안내는 없다
+    @Test func unauthorizedExplainsAccountRecovery() async throws {
+        let checks = CallCount()
+        let api = client(status: 401, body: Self.unauthorizedBody, onUnauthorized: {
+            checks.add()
+            return false
+        })
+        do {
+            _ = try await api.now()
+            Issue.record("오류가 나야 함")
+        } catch let error as APIError {
+            #expect(error == .server(status: 401, code: .unauthorized, message: "Unauthorized"))
+            #expect(error.userMessage == "Taskforce couldn't verify this session. Sign out, then sign in again.")
+        }
+        #expect(checks.value == 1)
+    }
+
+    /// 401 뒤 이 기기의 세션이 끝난 것으로 확인됨(다른 기기에서 계정 삭제 등): 이미 로그아웃됐으니 로그인 안내
+    @Test func unauthorizedForAnEndedSessionAsksToSignIn() async throws {
+        let api = client(status: 401, body: Self.unauthorizedBody, onUnauthorized: { true })
+        await #expect(throws: APIError.notSignedIn) { _ = try await api.now() }
+        #expect(APIError.notSignedIn.userMessage == "Sign in to continue.")
+    }
+
+    /// 401이 아닌 거절에는 세션을 묻지 않는다
+    @Test(arguments: [403, 404, 409, 500])
+    func otherFailuresDoNotCheckTheSession(_ status: Int) async throws {
+        let checks = CallCount()
+        let api = client(status: status, body: "{}", onUnauthorized: {
+            checks.add()
+            return true
+        })
+        await #expect(throws: APIError.self) { _ = try await api.now() }
+        #expect(checks.value == 0)
+    }
+
     @Test func decodesInvalidRequest() async throws {
         let api = client(status: 400, body: #"{"error":{"code":"invalid_request","message":"구절이 원문에 없습니다."}}"#)
         await #expect(throws: APIError.server(status: 400, code: .invalidRequest, message: "구절이 원문에 없습니다.")) {
@@ -317,4 +362,13 @@ struct APIClientTests {
         #expect(APIClient.error(status: 429, data: Data("Too Many Requests".utf8)) == .server(status: 429, code: .rateLimited, message: ""))
         #expect(APIClient.error(status: 429, data: Data(#"{"error":{"code":"brand_new","message":"m"}}"#.utf8)) == .server(status: 429, code: .rateLimited, message: "m"))
     }
+}
+
+/// `onUnauthorized`가 불린 횟수
+final class CallCount: Sendable {
+    private let count = Mutex(0)
+
+    var value: Int { count.withLock { $0 } }
+
+    func add() { count.withLock { $0 += 1 } }
 }
