@@ -276,8 +276,8 @@ struct ConsentPrompt: View {
         #if os(iOS)
         .presentationDetents([.large])
         #else
-        // 알리는 내용이 스크롤 없이 모두 보이게 (5.1.2(i))
-        .frame(width: 460, height: 640)
+        // 설정 창(760×480) 안에 들어가게. 알리는 내용은 스크롤하고 Allow · Not Now는 아래에 고정 (5.1.2(i), 사용자 결정 2026-10-03)
+        .frame(width: 460, height: 440)
         #endif
     }
 }

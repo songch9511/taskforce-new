@@ -10,9 +10,11 @@
 		025F33A82A421DE1FC6CC896 /* AppEnvironment.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9B61143ECDB3A70FF32355F0 /* AppEnvironment.swift */; };
 		03921D74809B28972F7A6762 /* LauncherPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = D29FF94F9BE621AF3A6095B4 /* LauncherPanel.swift */; };
 		1D21B5CFAA41940E0383FCBE /* LauncherModelSessionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D30BD73A1EB36763CBA0B37E /* LauncherModelSessionTests.swift */; };
+		25515FBF682CB243F81947D9 /* SettingsSnapshot.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4980BC09AD044F0F918D864B /* SettingsSnapshot.swift */; };
 		2DF2F905D563F3DF432CF8B7 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = DE37FA5998D1A9FB0C6A9AF2 /* Assets.xcassets */; };
 		31373BB6936E3F2AC9DB6243 /* SignIn.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB26C2543E88F763B3553D02 /* SignIn.swift */; };
 		3498CC69345186E53C0CC66E /* PushCenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7439B64C561B831037F0D2E2 /* PushCenter.swift */; };
+		34AC3C55914B7872E39BC5BD /* MacSettingsTabTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3D43D09D38ACB649AE46CFE3 /* MacSettingsTabTests.swift */; };
 		3620F367D9B7666BE0D25E58 /* TaskforceKit in Frameworks */ = {isa = PBXBuildFile; productRef = 2A771618579B2627F65408E5 /* TaskforceKit */; };
 		463B3B9643F7288FE0FDD9B7 /* AccountDeletion.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8F35BE01B9CE310854A11A47 /* AccountDeletion.swift */; };
 		497A72C80C3F5A62742FA119 /* TaskforceApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2DD246DFD55D3C8EB54CDCF0 /* TaskforceApp.swift */; };
@@ -59,8 +61,10 @@
 		292A40762BBF5BFBB1023D7A /* Taskforce-iOS.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = "Taskforce-iOS.entitlements"; sourceTree = "<group>"; };
 		2D9F39726A86DE99A44B6BE7 /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
 		2DD246DFD55D3C8EB54CDCF0 /* TaskforceApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TaskforceApp.swift; sourceTree = "<group>"; };
+		3D43D09D38ACB649AE46CFE3 /* MacSettingsTabTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacSettingsTabTests.swift; sourceTree = "<group>"; };
 		430F30EA2339CCCFF7AAF2D4 /* IOSAppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IOSAppDelegate.swift; sourceTree = "<group>"; };
 		4575E663CCDD3F320C873CBA /* TaskforceTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = TaskforceTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		4980BC09AD044F0F918D864B /* SettingsSnapshot.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsSnapshot.swift; sourceTree = "<group>"; };
 		524FC1544A0E35537AE10E50 /* LauncherSnapshot.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LauncherSnapshot.swift; sourceTree = "<group>"; };
 		599D903AD6A4CA63031CAE4D /* SampleData.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SampleData.swift; sourceTree = "<group>"; };
 		6EE4BF508E321D0E6BBC09B1 /* LauncherModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LauncherModel.swift; sourceTree = "<group>"; };
@@ -127,6 +131,7 @@
 				89F1ED15CD31CFD73551EE92 /* LauncherView.swift */,
 				D553D4AC83AD95CD5BD8CBF7 /* MacAppDelegate.swift */,
 				C4A28A214EF045FAF600AC14 /* MacSettingsView.swift */,
+				4980BC09AD044F0F918D864B /* SettingsSnapshot.swift */,
 			);
 			path = Mac;
 			sourceTree = "<group>";
@@ -159,6 +164,7 @@
 			isa = PBXGroup;
 			children = (
 				D30BD73A1EB36763CBA0B37E /* LauncherModelSessionTests.swift */,
+				3D43D09D38ACB649AE46CFE3 /* MacSettingsTabTests.swift */,
 			);
 			path = TaskforceTests;
 			sourceTree = "<group>";
@@ -314,6 +320,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				1D21B5CFAA41940E0383FCBE /* LauncherModelSessionTests.swift in Sources */,
+				34AC3C55914B7872E39BC5BD /* MacSettingsTabTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -341,6 +348,7 @@
 				3498CC69345186E53C0CC66E /* PushCenter.swift in Sources */,
 				EE5266EC7D5700427BFCFD8F /* RootView.swift in Sources */,
 				5AADF7819C0656F5D1C3C1C1 /* SampleData.swift in Sources */,
+				25515FBF682CB243F81947D9 /* SettingsSnapshot.swift in Sources */,
 				31373BB6936E3F2AC9DB6243 /* SignIn.swift in Sources */,
 				497A72C80C3F5A62742FA119 /* TaskforceApp.swift in Sources */,
 			);
