@@ -106,7 +106,7 @@ Mac은 `--show-launcher -TFSampleData -TFSnapshot <폴더>`로 실행하면 런�
   - 알림 권한은 런처가 뜰 때 연결이 있으면 한 번 묻는다. 알림을 누르면 런처를 열고 그 할 일(Review · 할 일 행)을 고른다(목록을 아직 못 읽었으면 읽은 뒤에).
 - 설정 창(SwiftUI Settings 장면, 760×480, Figma S1): 왼쪽 사이드바(`Settings` · 검색칸 · Personal / Work)에 Keyboard Shortcuts · Account ↗ · Connections · Privacy & AI Data. Account는 페이지가 아니라 창 위 시트이고, 그 Sign Out도 이 기기만이다. iPhone과 같은 연결 · 동의 화면을 쓴다. 아직 내용이 없는 General · Notifications · Usage & Credits · Automation은 숨기고, 그 단위가 `MacSettingsTab.sidebar`에 한 줄씩 넣는다.
   - 키보드: 검색칸에서 시작한다. 글자로 항목 이름을 거르고, ↑↓로 옮기고, ↩로 연다(Account는 시트). ⌘F는 검색칸으로, esc는 검색어를 지운다.
-  - 마지막에 본 페이지를 기억한다(`settings.tab`). 예전 탭 값은 `MacSettingsTab.page(stored:)`가 옮긴다: `shortcut` → Keyboard Shortcuts, `account`(이제 시트) → 첫 페이지.
+  - 마지막에 본 페이지를 기억한다(`settings.tab`). 처음(저장값 없음)은 Connections. 예전 탭 값은 `MacSettingsTab.page(stored:)`가 옮긴다: `shortcut` → Keyboard Shortcuts, `account`(이제 시트) · 모르는 값 → Connections.
 - 로그아웃 · 만료 · 계정 삭제 · 계정 전환으로 계정이 떠나면 `SessionStore.onSignedOut`에서 런처 화면 · 목록 · 진행 중 작업을 지운다. Supabase · API 요청은 응답을 디스크 캐시에 남기지 않는다(`TaskforceClient.urlSession`). API가 401이면 인증 서버에 세션을 다시 묻고, 계정(다른 기기에서 지움) · 세션이 없을 때만 이 기기를 로그아웃한다. 살아 있으면 "Couldn't verify your sign-in. Sign out, then sign in again."
 
 ### 연결 · 동의 (양쪽)

@@ -180,11 +180,11 @@ enum MacSettingsTab: String, CaseIterable {
     var opensSheet: Bool { self == .account }
 
     /// 설정 창이 보일 페이지. 저장값은 예전 탭 값(`account` · `connections` · `ai` · `shortcut`)도 받는다:
-    /// `shortcut`은 Keyboard Shortcuts, `account`(이제 시트) · 모르는 값 · 사이드바에 없는 항목은 첫 페이지
+    /// `shortcut`은 Keyboard Shortcuts, 저장값 없음 · `account`(이제 시트) · 모르는 값 · 사이드바에 없는 항목은 Connections (사용자 결정 2026-10-03)
     static func page(stored: String?) -> MacSettingsTab {
         let tab = stored.flatMap { $0 == "shortcut" ? .keyboardShortcuts : MacSettingsTab(rawValue: $0) }
         if let tab, !tab.opensSheet, sidebar.contains(where: { $0.tab == tab }) { return tab }
-        return sidebar.first { !$0.tab.opensSheet }?.tab ?? .connections
+        return .connections
     }
 
     /// 사이드바 검색칸: 이름에 낱말이 모두 든 항목만 (대소문자 · 악센트 무시). 빈 칸이면 전부

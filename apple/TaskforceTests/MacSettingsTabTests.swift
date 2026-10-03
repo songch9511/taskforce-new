@@ -4,24 +4,24 @@ import Testing
 /// 설정 사이드바 (U1 PR5a): 저장된 예전 탭 값 → 페이지, 검색칸 거르기, ↑↓ 한 칸
 struct MacSettingsTabTests {
     @Test(arguments: [
-        // 예전 TabView 값: Account 탭은 이제 시트라 첫 페이지, Shortcut 탭은 Keyboard Shortcuts
-        ("account", MacSettingsTab.keyboardShortcuts),
+        // 예전 TabView 값: Account 탭은 이제 시트라 Connections, Shortcut 탭은 Keyboard Shortcuts
+        ("account", MacSettingsTab.connections),
         ("shortcut", .keyboardShortcuts),
         ("connections", .connections),
         ("ai", .ai),
         // 지금 값
         ("keyboardShortcuts", .keyboardShortcuts),
         // 아직 숨긴 항목 · 모르는 값 · 빈 값
-        ("general", .keyboardShortcuts),
-        ("", .keyboardShortcuts),
+        ("general", .connections),
+        ("unknown", .connections),
+        ("", .connections),
     ])
     func storedValueMapsToAVisiblePage(stored: String, page: MacSettingsTab) {
         #expect(MacSettingsTab.page(stored: stored) == page)
     }
 
-    @Test func nothingStoredOpensTheFirstPage() {
-        #expect(MacSettingsTab.page(stored: nil) == .keyboardShortcuts)
-        #expect(MacSettingsTab.page(stored: nil) == MacSettingsTab.sidebar.first?.tab)
+    @Test func nothingStoredOpensConnections() {
+        #expect(MacSettingsTab.page(stored: nil) == .connections)
     }
 
     @Test func sidebarShowsTheU1ItemsInFigmaOrder() {
