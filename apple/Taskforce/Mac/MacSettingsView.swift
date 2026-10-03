@@ -95,6 +95,9 @@ private struct MacAccountPane: View {
                     Button("Delete Account…", role: .destructive) { confirmingDelete = true }
                         .disabled(deleting)
                 }
+            } footer: {
+                // Sign Out은 이 기기의 세션만 끝낸다 (`SessionStore.signOut`, `.local`)
+                Text(AccountCopy.signOutScope)
             }
             Section {
                 LegalLinksRow()

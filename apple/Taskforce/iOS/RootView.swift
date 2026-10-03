@@ -94,6 +94,11 @@ private struct SignedInRoot: View {
             .onOpenURL { url in
                 Task { await account.handleCallback(url) }
             }
+            // 로그아웃 · 계정 전환으로 사라질 때: 이 계정의 저장소는 버려지지만, 그전에 보낸 요청의 늦은 결과(클립보드 · 연결 마치기 등)도 버린다
+            .onDisappear {
+                now.reset()
+                account.reset()
+            }
     }
 
     /// 견본 모드에서는 서버를 부르지 않는다 (Realtime · app_opened)

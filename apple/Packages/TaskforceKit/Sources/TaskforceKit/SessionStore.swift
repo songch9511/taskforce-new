@@ -24,9 +24,30 @@ public final class SessionStore {
 
     private let auth: AuthClient
     private var listenTask: Task<Void, Never>?
+    /// 계정이 이 기기를 떠날 때 부를 정리 (`onSignedOut`)
+    @ObservationIgnored private var signedOutCleanups: [@MainActor (UUID) -> Void] = []
 
     public init(auth: AuthClient) {
         self.auth = auth
+    }
+
+    /// 계정이 이 기기를 떠날 때마다 그 계정 ID로 한 번 부른다: 로그아웃 · 세션 만료 · 계정 삭제(이 기기 · 다른 기기에서 지운 뒤
+    /// 서버 401로 확인) · 다른 계정으로 전환. 토큰 갱신처럼 같은 계정이면 부르지 않는다.
+    /// 상태(`state` · 로그인 방식 · 오류)를 모두 바꾼 직후 같은 흐름에서 불러, 다음 화면이 그려지기 전에 지운다.
+    /// 계정별로 이 기기에 남는 데이터(화면 상태 · 메모리 캐시 · 기기 저장본)는 여기에 등록한다.
+    /// 앱이 돌지 않을 때 떠난 계정(로그아웃 도중 종료 등)은 여기로 오지 않는다: 디스크에 남기는 것은 시작할 때도 지금 계정 것만 남겨야 한다.
+    public func onSignedOut(_ cleanup: @escaping @MainActor (UUID) -> Void) {
+        signedOutCleanups.append(cleanup)
+    }
+
+    /// 로그인해 있던 계정이 떠났으면(로그아웃 · 다른 계정) 그 계정으로 정리를 부른다
+    private func runSignedOutCleanups(ifLeft previous: UUID?) {
+        guard let previous, previous != Self.userID(in: state) else { return }
+        for cleanup in signedOutCleanups { cleanup(previous) }
+    }
+
+    private static func userID(in state: State) -> UUID? {
+        if case .signedIn(let userID, _) = state { userID } else { nil }
     }
 
     /// 저장된 세션을 읽고 이후 로그인 · 로그아웃 · 토큰 갱신을 따라간다.
@@ -40,6 +61,9 @@ public final class SessionStore {
     }
 
     func apply(event: AuthChangeEvent, session: Session?) {
+        // 계정이 떠났으면 아래에서 상태를 모두 바꾼 뒤 정리를 부른다 (`onSignedOut`)
+        let previousUserID = Self.userID(in: state)
+        defer { runSignedOutCleanups(ifLeft: previousUserID) }
         let currentSession = auth.currentSession
         var appliedSession = session
         // supabase-swift는 Keychain 저장 오류를 삼키고 로그인 이벤트를 보낼 수 있다.
@@ -159,12 +183,36 @@ public final class SessionStore {
         try? await auth.signOut(scope: .local)
     }
 
+    /// Sign Out: 이 기기의 세션만 끝낸다 (`.local`). 다른 기기의 세션 · 토큰 갱신은 그대로다 (모든 기기 로그아웃은 따로 만들 때 명시적인 동작으로).
+    /// supabase-swift는 저장된 세션을 먼저 지우고 `signedOut`을 보낸 뒤 서버에 알린다: 그 요청이 실패해도(오프라인) 이 기기는 이미 로그아웃됐으니 오류로 알리지 않는다.
     public func signOut() async {
         errorMessage = nil
+        try? await auth.signOut(scope: .local)
+    }
+}
+
+extension AuthClient {
+    /// 서버 API가 401을 돌려준 뒤: 인증 서버에 지금 세션을 다시 묻는다(`GET /user`). 401만으로는 로그아웃하지 않는다.
+    /// - 세션이 서버에 없음(`session_not_found` 등): SDK가 이 기기의 세션을 이미 지우고 `signedOut`을 보냈다
+    /// - 계정이 없음(`user_not_found`, 다른 기기에서 계정을 지움): 이 기기의 세션만 지운다 (`.local` → `signedOut` → `SessionStore.onSignedOut`)
+    /// 이 기기의 세션이 끝났으면 true. 세션이 살아 있거나 확인하지 못했으면(오프라인 · 인증 서버 오류) false: 그대로 둔다.
+    func endSessionIfGone() async -> Bool {
+        let checkedUserID = currentSession?.user.id
         do {
-            try await auth.signOut()
+            _ = try await user()
+            return false
+        } catch AuthError.sessionMissing {
+            return currentSession == nil
+        } catch let AuthError.api(_, code, _, _) where code == .userNotFound {
+            guard let checkedUserID else { return false }
+            // 겹친 다른 401의 확인이 먼저 이 기기를 로그아웃시켰다
+            guard let current = currentSession?.user.id else { return true }
+            // 확인하는 사이 다른 계정이 로그인했으면 그 세션은 지우지 않는다
+            guard current == checkedUserID else { return false }
+            try? await signOut(scope: .local)
+            return true
         } catch {
-            errorMessage = "Couldn't sign out. \(error.localizedDescription)"
+            return false
         }
     }
 }

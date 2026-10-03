@@ -32,6 +32,8 @@ final class NowStore {
 
     /// 겹쳐 부른 불러오기 중 마지막 것만 반영한다 (늦게 온 옛 응답이 새 응답을 덮지 않게)
     private var loadSequence = 0
+    /// `reset()`마다 오른다: 로그아웃 · 계정 전환 전에 보낸 요청의 늦은 결과(근거 · 오류 문구 · 클립보드)를 버린다
+    private var generation = 0
 
     private struct Pending {
         let change: TaskChange
@@ -70,6 +72,7 @@ final class NowStore {
         #if DEBUG
         if sampleMode { return }
         #endif
+        generation += 1
         loadSequence += 1
         response = nil
         doneToday = []
@@ -81,6 +84,8 @@ final class NowStore {
         stateBeforeDone = [:]
         evidence = [:]
         evidenceFailed = []
+        message = nil
+        addError = nil
     }
 
     /// 서버에서 읽은 목록 + 먼저 보여 주는 내 변경
@@ -178,16 +183,20 @@ final class NowStore {
         #endif
         let previous = writes[id]?.task
         let api = services.api
+        let generation = generation
         let task = Task {
             await previous?.value
+            // 로그아웃 · 계정 전환 뒤에는 전 계정의 남은 쓰기를 보내지 않고, 끝난 쓰기의 결과도 알리지 않는다
+            guard generation == self.generation else { return }
             do {
                 _ = try await call(api)
                 // 이제부터 시작하는 불러오기가 반영되면 지운다
                 if pending[id]?.token == token { pending[id]?.settledBy = loadSequence + 1 }
             } catch {
                 if pending[id]?.token == token { pending[id] = nil }
-                message = error.userMessage
+                if generation == self.generation { message = error.userMessage }
             }
+            guard generation == self.generation else { return }
             if writes[id]?.token == token { writes[id] = nil }
             await load()
         }
@@ -216,12 +225,14 @@ final class NowStore {
             return true
         }
         #endif
+        let generation = generation
         do {
             _ = try await services.api.createAction(title: title, dueDate: due)
         } catch {
-            addError = error.userMessage
+            if generation == self.generation { addError = error.userMessage }
             return false
         }
+        guard generation == self.generation else { return false }
         await load()
         return true
     }
@@ -229,11 +240,13 @@ final class NowStore {
     /// 주간 질문 (PRD 지표 5: 그림자 목록)
     func answerWeekly(_ answer: WeeklyCheckAnswer) async {
         guard let prompt = response?.weeklyCheck else { return }
+        let generation = generation
         do {
             try await services.api.answerWeeklyCheck(weekStart: prompt.weekStart, answer: answer)
         } catch {
-            message = error.userMessage
+            if generation == self.generation { message = error.userMessage }
         }
+        guard generation == self.generation else { return }
         await load()
     }
 
@@ -241,12 +254,15 @@ final class NowStore {
     func handoff(_ id: UUID) async -> Bool {
         busy.insert(id)
         defer { busy.remove(id) }
+        let generation = generation
         do {
             let response = try await services.api.handoff(id: id)
+            // 그사이 로그아웃했으면 전 계정의 문서를 클립보드에 두지 않는다
+            guard generation == self.generation else { return false }
             Clipboard.copy(response.markdown)
             return true
         } catch {
-            message = error.userMessage
+            if generation == self.generation { message = error.userMessage }
             return false
         }
     }
@@ -259,15 +275,18 @@ final class NowStore {
         if sampleMode { return nil }
         #endif
         evidenceFailed.remove(id)
+        // 읽는 사이 로그아웃 · 계정 전환했으면 전 계정의 근거를 두지 않는다
+        let generation = generation
         do {
             let detail = try await services.reads.actionDetail(id: id)
+            guard generation == self.generation else { return nil }
             let digest = EvidenceDigest(evidence: detail.evidence, sources: detail.sources)
             evidence[id] = digest
             return digest
         } catch is CancellationError {
             return nil
         } catch {
-            evidenceFailed.insert(id)
+            if generation == self.generation { evidenceFailed.insert(id) }
             return nil
         }
     }
@@ -275,11 +294,13 @@ final class NowStore {
     private func act(_ id: UUID, _ call: (APIClient) async throws -> ActionSummary) async {
         busy.insert(id)
         defer { busy.remove(id) }
+        let generation = generation
         do {
             _ = try await call(services.api)
         } catch {
-            message = error.userMessage
+            if generation == self.generation { message = error.userMessage }
         }
+        guard generation == self.generation else { return }
         await load()
     }
 }

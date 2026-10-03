@@ -167,6 +167,9 @@ final class LauncherModel {
         #endif
         self.now = now
         configurationError = nil
+        // 계정이 떠나면 (로그아웃 · 만료 · 계정 삭제 · 전환) 상태가 바뀐 그 자리에서 화면 · 목록 · 진행 중 작업을 지운다:
+        // 런처가 떠 있어도 전 계정의 목록이 한 번도 다음 상태와 함께 그려지지 않게. 로그인 쪽은 `MacAppDelegate`가 따라간다
+        session.onSignedOut { [weak self] _ in self?.sessionChanged() }
     }
 
     init(configurationError: String) {
@@ -364,9 +367,12 @@ final class LauncherModel {
     func sessionChanged() {
         let userID = signedInUserID
         guard userID != lastUserID else { return }
+        // 첫 로그인 · 시작 때의 세션(nil → 계정)이면 로그인 전에 받은 알림 대상 · 입력은 둔다
+        let accountLeft = lastUserID != nil
         lastUserID = userID
         work?.cancel()
         work = nil
+        closeTimer?.cancel()
         now?.reset()
         account?.reset()
         clearUndo()
@@ -375,6 +381,11 @@ final class LauncherModel {
         sourceText = nil
         // 전 사용자의 쓰기 결과는 보여 주지 않는다
         writeGeneration += 1
+        if accountLeft {
+            submission = nil
+            pendingFocus = nil
+            text = ""
+        }
         screen = .list
         selection = 0
         selectedID = nil
@@ -1108,6 +1119,8 @@ final class LauncherModel {
             defer { endSubmission(generation) }
             do {
                 let result = try await services.api.reportMissing(sourceID: source.id, quote: quote)
+                // 그사이 로그아웃 · 계정 전환했으면 다시 읽지 않는다 (전 계정의 쓰기)
+                guard isCurrentWrite(generation) else { return }
                 await now?.load()
                 guard isCurrentWrite(generation) else { return }
                 let title = result.action.title
@@ -1135,6 +1148,7 @@ final class LauncherModel {
                 let result = try await services.api.createAction(
                     title: draft.title, dueDate: draft.due, sourceID: source?.id, quote: quote
                 )
+                guard isCurrentWrite(generation) else { return }
                 await now?.load()
                 guard isCurrentWrite(generation) else { return }
                 showDoneAndClose(result.status == .created ? "Added" : "Already tracked")

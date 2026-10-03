@@ -36,8 +36,11 @@ public enum APIError: Error, Equatable, Sendable, CustomStringConvertible {
         switch self {
         case .server(_, .conflict, _):
             "This changed somewhere else. It's been refreshed."
-        case .server(_, .unauthorized, _), .notSignedIn:
-            "Sign in again to continue."
+        case .server(_, .unauthorized, _):
+            // 이 서버가 거절했는데 인증 서버는 계정 · 세션이 있다고 함 (없다고 하면 `onUnauthorized`가 이 기기를 로그아웃시키고 `.notSignedIn`이 된다)
+            "Couldn't verify your sign-in. Sign out, then sign in again."
+        case .notSignedIn:
+            "Sign in to continue."
         case .server(_, .rateLimited, _):
             "Too many requests. Try again in a moment."
         case .server(_, .notFound, _):
@@ -64,15 +67,21 @@ public enum APIError: Error, Equatable, Sendable, CustomStringConvertible {
 /// 토큰은 부를 때마다 받아온다 (`supabase.auth.session.accessToken`은 만료가 가까우면 갱신한다).
 public struct APIClient: Sendable {
     public typealias TokenProvider = @Sendable () async throws -> String
+    /// 서버가 401을 돌려줬을 때: 이 기기의 세션이 끝났는지 확인하고, 끝났으면(로그아웃시켰으면) true
+    public typealias UnauthorizedHandler = @Sendable () async -> Bool
 
     public let baseURL: URL
     private let session: URLSession
     private let token: TokenProvider
+    private let onUnauthorized: UnauthorizedHandler?
 
-    public init(baseURL: URL, session: URLSession = .shared, token: @escaping TokenProvider) {
+    public init(
+        baseURL: URL, session: URLSession = .shared, token: @escaping TokenProvider, onUnauthorized: UnauthorizedHandler? = nil
+    ) {
         self.baseURL = baseURL
         self.session = session
         self.token = token
+        self.onUnauthorized = onUnauthorized
     }
 
     // MARK: 엔드포인트
@@ -279,7 +288,15 @@ public struct APIClient: Sendable {
             throw APIError.transport(error.localizedDescription)
         }
         guard let http = response as? HTTPURLResponse else { throw APIError.unexpectedStatus(0) }
-        guard (200..<300).contains(http.statusCode) else { throw Self.error(status: http.statusCode, data: data) }
+        guard (200..<300).contains(http.statusCode) else {
+            // 토큰을 거절당함: 세션이 끝난 것으로 확인되면(다른 기기에서 계정 삭제 등) 이 기기는 이미 로그아웃됐다 → 로그인 안내
+            if http.statusCode == 401, let onUnauthorized {
+                let ended = await onUnauthorized()
+                try Task.checkCancellation()
+                if ended { throw APIError.notSignedIn }
+            }
+            throw Self.error(status: http.statusCode, data: data)
+        }
         return (data, http)
     }
 

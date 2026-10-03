@@ -316,3 +316,146 @@ struct SessionStoreSaveTests {
         #expect(store.errorMessage == "Couldn't sign in. Try again in a moment.")
     }
 }
+
+/// 저장 · 삭제가 되는 메모리 저장소 (로그아웃이 세션을 지운다)
+private final class RemovableStorage: AuthLocalStorage, @unchecked Sendable {
+    static let key = "taskforce.auth.signout"
+    private let lock = NSLock()
+    private var values: [String: Data] = [:]
+
+    init(_ session: Session) throws {
+        try save(session)
+    }
+
+    var isEmpty: Bool { lock.withLock { values[Self.key] == nil } }
+
+    func save(_ session: Session) throws {
+        let value = try AuthClient.Configuration.jsonEncoder.encode(session)
+        lock.withLock { values[Self.key] = value }
+    }
+
+    func store(key: String, value: Data) throws { lock.withLock { values[key] = value } }
+    func retrieve(key: String) throws -> Data? { lock.withLock { values[key] } }
+    func remove(key: String) throws { lock.withLock { _ = values.removeValue(forKey: key) } }
+}
+
+/// 가짜 인증 서버가 받은 요청
+private final class RequestLog: @unchecked Sendable {
+    private let lock = NSLock()
+    private var recorded: [URLRequest] = []
+
+    var requests: [URLRequest] { lock.withLock { recorded } }
+
+    func append(_ request: URLRequest) { lock.withLock { recorded.append(request) } }
+}
+
+/// `onSignedOut`이 받은 계정들
+@MainActor
+final class Departures {
+    var ids: [UUID] = []
+    /// 정리가 불릴 때 본 로그인 상태
+    var states: [SessionStore.State] = []
+}
+
+@MainActor
+struct SessionStoreSignOutTests {
+    let fixtures = SessionStoreTests()
+
+    /// `/logout`에 `logoutStatus`로 답하는 인증 서버 (nil이면 오프라인)
+    fileprivate func store(storage: RemovableStorage, log: RequestLog = RequestLog(), logoutStatus: Int? = 204) -> SessionStore {
+        SessionStore(auth: AuthClient(
+            url: URL(string: "https://example.supabase.co/auth/v1")!, storageKey: RemovableStorage.key, localStorage: storage,
+            fetch: { request in
+                log.append(request)
+                guard let logoutStatus else { throw URLError(.notConnectedToInternet) }
+                return (Data(), HTTPURLResponse(url: request.url!, statusCode: logoutStatus, httpVersion: nil, headerFields: nil)!)
+            },
+            autoRefreshToken: false
+        ))
+    }
+
+    func wait(for state: SessionStore.State, in store: SessionStore) async {
+        for _ in 0..<300 where store.state != state {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+    }
+
+    var signedIn: SessionStore.State { .signedIn(userID: fixtures.userID, email: "me@example.com") }
+
+    /// Sign Out은 이 기기의 세션만 끝낸다 (`/logout?scope=local`): 같은 계정의 다른 기기 세션은 서버에 남는다
+    @Test func signOutEndsOnlyThisDeviceSession() async throws {
+        let storage = try RemovableStorage(fixtures.session(expiresIn: 3600))
+        let log = RequestLog()
+        let store = store(storage: storage, log: log)
+        store.start()
+        await wait(for: signedIn, in: store)
+        #expect(store.state == signedIn)
+
+        await store.signOut()
+        await wait(for: .signedOut, in: store)
+
+        let logout = try #require(log.requests.last)
+        #expect(logout.httpMethod == "POST")
+        #expect(logout.url?.path == "/auth/v1/logout")
+        #expect(URLComponents(url: try #require(logout.url), resolvingAgainstBaseURL: false)?.queryItems
+            == [URLQueryItem(name: "scope", value: "local")])
+        #expect(logout.value(forHTTPHeaderField: "Authorization") == "Bearer access")
+        #expect(store.state == .signedOut)
+        #expect(store.errorMessage == nil)
+        #expect(storage.isEmpty)
+    }
+
+    /// 서버에 알리지 못해도(오프라인) 이 기기의 세션은 이미 지워졌다: 로그아웃 상태이고 오류로 알리지 않는다
+    @Test func signOutWhileOfflineStillSignsOutThisDevice() async throws {
+        let storage = try RemovableStorage(fixtures.session(expiresIn: 3600))
+        let store = store(storage: storage, logoutStatus: nil)
+        store.start()
+        await wait(for: signedIn, in: store)
+        #expect(store.state == signedIn)
+
+        await store.signOut()
+        await wait(for: .signedOut, in: store)
+
+        #expect(store.state == .signedOut)
+        #expect(store.errorMessage == nil)
+        #expect(storage.isEmpty)
+    }
+
+    /// 계정이 떠날 때마다 그 계정으로 정리를 한 번 부른다. 토큰 갱신은 떠난 것이 아니다
+    @Test func signedOutCleanupRunsOncePerDepartedAccount() throws {
+        let session = fixtures.session(expiresIn: 3600)
+        let store = store(storage: try RemovableStorage(session))
+        let departed = Departures()
+        store.onSignedOut { departed.ids.append($0) }
+
+        store.apply(event: .signedIn, session: session)
+        store.apply(event: .tokenRefreshed, session: session)
+        #expect(departed.ids.isEmpty)
+
+        store.apply(event: .signedOut, session: nil)
+        store.apply(event: .signedOut, session: nil)
+        #expect(departed.ids == [fixtures.userID])
+    }
+
+    /// 다른 계정으로 바뀌면 전 계정을 정리한다. 정리는 상태가 바뀐 뒤에 불린다 (정리하는 쪽이 새 상태를 본다)
+    @Test func accountSwitchCleansUpThePreviousAccount() throws {
+        let first = fixtures.session(expiresIn: 3600)
+        var second = fixtures.session(expiresIn: 3600)
+        second.user.id = UUID()
+        second.user.email = "second@example.com"
+        let storage = try RemovableStorage(first)
+        let store = store(storage: storage)
+        let departed = Departures()
+        store.onSignedOut { departed.ids.append($0) }
+        store.onSignedOut { [unowned store] _ in departed.states.append(store.state) }
+
+        store.apply(event: .signedIn, session: first)
+        try storage.save(second)
+        store.apply(event: .signedIn, session: second)
+
+        let next = SessionStore.State.signedIn(userID: second.user.id, email: "second@example.com")
+        #expect(store.state == next)
+        #expect(departed.ids == [first.user.id])
+        #expect(departed.states == [next])
+    }
+}
