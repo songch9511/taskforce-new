@@ -110,7 +110,7 @@ public struct SavedNow: Codable, Sendable, Hashable {
 /// `<App Group>/Library/Application Support/Taskforce/SavedNow/<user id>/now.json`.
 /// - 기기 밖으로 나가지 않게 백업에서 뺀다 (iCloud · 컴퓨터 백업)
 /// - iOS 파일 보호: 기기를 켠 뒤 처음 잠금을 풀 때까지 읽지 못한다 (`completeUntilFirstUserAuthentication`)
-/// - 로그아웃 · 계정 삭제 · 계정 전환에서 지운다 (`remove(account:)` · `removeAll()`, 앱이 부른다)
+/// - 로그아웃 · 계정 삭제 · 계정 전환에서 지운다 (`remove(account:)` · `removeAll()`). 앱이 `SessionStore.onSignedOut`에서 부른다(U1 PR4가 잇는다)
 /// 비밀(토큰 · 키)은 넣지 않는다.
 public struct SavedNowStore: Sendable {
     public static let fileName = "now.json"
