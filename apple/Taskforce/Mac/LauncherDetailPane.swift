@@ -87,44 +87,4 @@ struct LauncherDetailPane: View {
         }
     }
 }
-
-/// 원문 슬립 (Figma Source slip 158:3878): 종이 면 위 인용(3줄까지) + 서비스 로고 · 원문 이름 · 시점. 누르면 원문을 연다
-struct SourceSlip: View {
-    let line: EvidenceLine
-    let onOpen: (URL) -> Void
-
-    var body: some View {
-        let removed = RemovedQuote.isRemoved(line.quote)
-        VStack(alignment: .leading, spacing: 6) {
-            Text(removed ? RemovedQuote.label : "“\(line.quote)”")
-                .font(TFFont.footnote)
-                .foregroundStyle(removed ? TFColor.sourceMeta : TFColor.sourceText)
-                .lineLimit(3)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            HStack(spacing: TFSpace.sm) {
-                SourceIcon(line.service, size: .s)
-                if let title = line.displayTitle, !title.isEmpty {
-                    Text(title)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                }
-                if let date = line.displayDate {
-                    Text(WhenText.label(date))
-                        .fixedSize()
-                }
-            }
-            .font(TFFont.meta)
-            .foregroundStyle(TFColor.sourceMeta)
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
-        .background(TFColor.sourcePaper, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .contentShape(Rectangle())
-        .onTapGesture {
-            if let url = line.externalURL { onOpen(url) }
-        }
-        .accessibilityElement(children: .combine)
-        .accessibilityAddTraits(line.externalURL == nil ? [] : .isLink)
-    }
-}
 #endif

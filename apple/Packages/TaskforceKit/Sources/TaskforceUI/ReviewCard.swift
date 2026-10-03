@@ -1,12 +1,13 @@
 import SwiftUI
 import TaskforceKit
 
-/// 캡슐 버튼 (Review card의 Confirm · Dismiss, 빈 화면의 Connect). 최소 44, 글자와 함께 커진다 (C3). 그림자 없음.
+/// 캡슐 버튼 (Figma Button 159:34: Review card의 Confirm · Dismiss, 빈 화면의 Connect, 동의 화면). 최소 44, 글자와 함께 커진다 (C3). 그림자 없음.
+/// 꺼지면 0.35 (Figma P10 오프라인).
 public struct CapsuleButtonStyle: ButtonStyle {
     public enum Kind: Sendable {
-        /// fill/inverse 바탕 + text/inverse
+        /// fill/inverse 바탕 + text/inverse (화면에 하나)
         case primary
-        /// fill/secondary 바탕 + text/primary
+        /// settings/fill 바탕 + text/primary (Figma `Button · Dismiss`)
         case secondary
     }
 
@@ -17,6 +18,16 @@ public struct CapsuleButtonStyle: ButtonStyle {
     }
 
     public func makeBody(configuration: Configuration) -> some View {
+        CapsuleButtonBody(configuration: configuration, kind: kind)
+    }
+}
+
+private struct CapsuleButtonBody: View {
+    let configuration: ButtonStyleConfiguration
+    let kind: CapsuleButtonStyle.Kind
+    @Environment(\.isEnabled) private var isEnabled
+
+    var body: some View {
         configuration.label
             .font(TFFont.headline)
             .foregroundStyle(kind == .primary ? TFColor.textInverse : TFColor.textPrimary)
@@ -24,30 +35,41 @@ public struct CapsuleButtonStyle: ButtonStyle {
             .padding(.vertical, 10)
             .padding(.horizontal, TFSpace.lg)
             .frame(maxWidth: .infinity, minHeight: 44)
-            .background(kind == .primary ? TFColor.fillInverse : TFColor.fillSecondary, in: Capsule())
+            .background(kind == .primary ? TFColor.fillInverse : TFColor.settingsFill, in: Capsule())
             .contentShape(Capsule())
-            .opacity(configuration.isPressed ? 0.7 : 1)
+            .opacity(isEnabled ? (configuration.isPressed ? 0.7 : 1) : 0.35)
     }
 }
 
-/// Review card (Figma 5:6, iPhone): 제목 + 확인 이유 한 줄 + 확인할 값 + 근거 1줄 + Confirm / Dismiss.
-/// 확인 이유는 제목 아래 짧은 표기 하나뿐이다(`ConfirmReasonText`, 2026-09-30). 설명 문장은 두지 않는다 (C1). 한 번에 한 장만 (S1).
-/// 목록 위에 떠 있는 면이라 iOS 26부터 유리(`TFGlassCard`, Confirm은 잉크 유리 · Dismiss는 유리). 그 전은 bg/surface + 캡슐 버튼.
+/// Review card (Figma 156:6 P1 190:3790 · P10 292:2746, iPhone): 확인 이유 + `1 of 4` → 제목 → 확인할 값 → 원문 → Confirm / Dismiss.
+/// 확인 이유는 짧은 표기 하나뿐이다(`ConfirmReasonText`, 2026-09-30). 설명 문장은 두지 않는다 (C1). 목록에는 한 번에 한 장 (S1).
+/// 면은 bg/elevated + settings/line 테두리 (r16). `canAct`가 거짓이면(오프라인 · 저장본) 두 버튼을 끄고 `note`를 아래에 둔다 (P10).
 public struct ReviewCard<Evidence: View>: View {
     let title: String
     let value: String?
     let reason: String?
+    let position: String?
+    let changed: Bool
     let busy: Bool
+    let canAct: Bool
+    let note: String?
     let onConfirm: () -> Void
     let onDismiss: () -> Void
     let evidence: Evidence
 
-    /// `reason`: 제목 아래 확인 이유 (`ConfirmReasonText.label`)
+    @Environment(\.dynamicTypeSize) private var typeSize
+
+    /// `reason`: 확인 이유 (`ConfirmReasonText.label`). `value`: 확인할 기한 (`Due Fri`). `position`: `1 of 4` (`PhoneHome.reviewPosition`).
+    /// `changed`: 마지막으로 본 뒤 바뀜 (6pt Ink 점)
     public init(
         title: String,
         value: String?,
         reason: String? = nil,
+        position: String? = nil,
+        changed: Bool = false,
         busy: Bool = false,
+        canAct: Bool = true,
+        note: String? = nil,
         onConfirm: @escaping () -> Void,
         onDismiss: @escaping () -> Void,
         @ViewBuilder evidence: () -> Evidence
@@ -55,59 +77,98 @@ public struct ReviewCard<Evidence: View>: View {
         self.title = title
         self.value = value
         self.reason = reason
+        self.position = position
+        self.changed = changed
         self.busy = busy
+        self.canAct = canAct
+        self.note = note
         self.onConfirm = onConfirm
         self.onDismiss = onDismiss
         self.evidence = evidence()
     }
 
     public var body: some View {
+        let shape = RoundedRectangle(cornerRadius: 16, style: .continuous)
         VStack(alignment: .leading, spacing: TFSpace.md) {
-            HStack(alignment: .firstTextBaseline, spacing: TFSpace.md) {
-                VStack(alignment: .leading, spacing: TFSpace.xxs) {
-                    Text(title)
-                        .font(TFFont.headline)
-                        .foregroundStyle(TFColor.textPrimary)
-                        .fixedSize(horizontal: false, vertical: true)
-                    if let reason {
-                        Text(reason)
-                            .font(TFFont.footnote)
-                            .foregroundStyle(TFColor.textSecondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                }
+            if reason != nil || position != nil || changed {
+                header
+            }
+            Text(title)
+                .font(TFFont.title)
+                .foregroundStyle(TFColor.textPrimary)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                if let value {
-                    Text(value)
+                .fixedSize(horizontal: false, vertical: true)
+            if let value {
+                // Figma `Owner  You, as PM  proposed`의 자리: 이름 + 값
+                HStack(alignment: .firstTextBaseline, spacing: TFSpace.sm) {
+                    Text("Due")
                         .font(TFFont.callout)
                         .foregroundStyle(TFColor.textSecondary)
-                        .fixedSize()
+                    Text(value)
+                        .font(TFFont.headline)
+                        .foregroundStyle(TFColor.textPrimary)
                 }
+                .accessibilityElement(children: .combine)
             }
             evidence
-            TFGlassGroup {
-                HStack(spacing: TFSpace.sm) {
-                    Button("Confirm", action: onConfirm)
-                        .buttonStyle(TFGlassButtonStyle(.primary))
-                    Button("Dismiss", action: onDismiss)
-                        .buttonStyle(TFGlassButtonStyle(.secondary))
-                }
+            // 큰 글자(접근성 크기)에서는 위아래로 (나란히 두면 단어가 잘린다)
+            let buttons = typeSize.isAccessibilitySize
+                ? AnyLayout(VStackLayout(spacing: 10))
+                : AnyLayout(HStackLayout(spacing: 10))
+            buttons {
+                Button("Confirm", action: onConfirm)
+                    .buttonStyle(CapsuleButtonStyle(.primary))
+                Button("Dismiss", action: onDismiss)
+                    .buttonStyle(CapsuleButtonStyle(.secondary))
             }
-            .disabled(busy)
+            .disabled(busy || !canAct)
+            if let note {
+                Text(note)
+                    .font(TFFont.callout)
+                    .foregroundStyle(TFColor.textSecondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
         .padding(TFSpace.lg)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .tfGlassCard(cornerRadius: TFRadius.lg)
+        .background(TFColor.bgElevated, in: shape)
+        .overlay(shape.strokeBorder(TFColor.settingsLine, lineWidth: 1))
+    }
+
+    private var header: some View {
+        HStack(alignment: .firstTextBaseline, spacing: TFSpace.sm) {
+            Text(reason ?? "")
+                .frame(maxWidth: .infinity, alignment: .leading)
+            if changed {
+                Circle()
+                    .fill(TFColor.textPrimary)
+                    .frame(width: 6, height: 6)
+                    .alignmentGuide(.firstTextBaseline) { $0[.bottom] + 1 }
+            }
+            if let position {
+                Text(position)
+                    .fixedSize()
+            }
+        }
+        .font(TFFont.callout)
+        .foregroundStyle(TFColor.textSecondary)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel([reason, changed ? "Changed" : nil, position].compactMap { $0 }.joined(separator: ", "))
+        .accessibilityAddTraits(.isStaticText)
     }
 }
 
 #Preview("Review card") {
     VStack(spacing: 24) {
-        ReviewCard(title: "제안서 보내기", value: "Fri", reason: "Due date unclear", onConfirm: {}, onDismiss: {}) {
+        ReviewCard(title: "새 온보딩 QA (결제·환불 시나리오와 접근성 점검 포함)", value: "Fri", reason: "Not sure it's yours", position: "1 of 4", onConfirm: {}, onDismiss: {}) {
             EvidenceView(service: .notion, quote: "금요일쯤 보내드릴 수 있을 것 같아요", when: "Sep 22", source: "김대표 미팅 회의록", quoteLineLimit: 3)
         }
-        ReviewCard(title: "Loop in the legal team", value: "Thu", reason: "Not sure it's yours", onConfirm: {}, onDismiss: {}) {
-            EvidenceView(service: .notion, quote: "Can you bring your legal team into the draft review?", when: "Sep 23", source: "Weekly sync", quoteLineLimit: 3)
+        ReviewCard(
+            title: "Loop in the legal team", value: "Thu", reason: "Due date unclear", position: "2 of 4", changed: true, canAct: false,
+            note: "Confirm and Dismiss wait for a connection. Nothing is saved for later.", onConfirm: {}, onDismiss: {}
+        ) {
+            EmptyView()
         }
     }
     .padding()

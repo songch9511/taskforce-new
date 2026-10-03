@@ -6,6 +6,8 @@ import TaskforceUI
 struct RootView: View {
     @Environment(SessionStore.self) private var session
     @Environment(\.services) private var services
+    /// 앱을 연 뒤 지금 계정이 아닌 저장본을 한 번 정리했는지
+    @State private var prunedSaved = false
 
     var body: some View {
         Group {
@@ -37,17 +39,32 @@ struct RootView: View {
         // 로그아웃 · 세션 만료 · 계정 삭제 모두: 이 기기의 Google 로그인도 지운다 (다음 계정이 전 계정의 Google 토큰을 쓰지 않게)
         .onChange(of: session.state, initial: true) { _, state in
             switch state {
-            case .signedIn(let userID, _): PushCenter.shared.follow(userID: userID, services: services)
+            case .signedIn(let userID, _):
+                PushCenter.shared.follow(userID: userID, services: services)
+                pruneSavedOnce(keeping: userID)
             case .signedOut:
                 PushCenter.shared.follow(userID: nil, services: nil)
                 GoogleSignInFlow.signOut()
+                pruneSavedOnce(keeping: nil)
             case .loading: break
             }
         }
     }
+
+    /// 앱을 연 뒤 로그인 상태를 처음 알게 되면 한 번: 지금 계정이 아닌 저장본을 지운다 (앱이 돌지 않는 동안 떠난 계정은 `onSignedOut`에 오지 않는다).
+    /// 로그아웃 상태면 모두. 앱이 도는 동안 떠나는 계정은 `Startup.make`가 등록한 `onSignedOut`이 지운다
+    private func pruneSavedOnce(keeping userID: UUID?) {
+        guard !prunedSaved, let saved = AppRuntime.savedNow else { return }
+        prunedSaved = true
+        if let userID {
+            try? saved.removeAll(except: userID)
+        } else {
+            try? saved.removeAll()
+        }
+    }
 }
 
-/// 로그인한 동안: Realtime 구독 하나 + app_opened + 연결 콜백
+/// 로그인한 동안: Realtime 구독 하나 + app_opened + 연결 콜백 + 연결 경로 + 저장본
 private struct SignedInRoot: View {
     let services: AppServices
     let userID: UUID
@@ -63,7 +80,9 @@ private struct SignedInRoot: View {
         self.services = services
         self.userID = userID
         self.email = email
-        let now = NowStore(services: services)
+        // 저장본(제목 · 기한 · 상태만): `/now`가 성공할 때마다 요청한 계정 폴더에 쓴다. 쓰는 순간 그 계정이 아직 로그인해 있을 때만 (`NowStore.writeSaved`):
+        // 로그아웃 뒤 이 화면이 사라지기 전에 늦게 온 `/now`도 다시 쓰지 않는다
+        let now = NowStore(services: services, session: session, saved: AppRuntime.savedNow)
         let account = AccountStore(services: services, session: session)
         #if DEBUG
         if SampleData.isEnabled {
@@ -84,6 +103,15 @@ private struct SignedInRoot: View {
             .task {
                 guard !isSample else { return }
                 await changes.follow(services: services, userID: userID)
+            }
+            // 이번 실행에서 `/now`를 받기 전(처음 불러오는 중 · 오프라인 · 새로고침 실패)에는 이 계정의 저장본을 보인다
+            .onAppear { now.restoreSaved() }
+            // 연결이 끊기면 오프라인 상태(P10), 돌아오면 다시 불러온다. 이 화면이 사라지면 감시도 끝난다
+            .task {
+                guard !isSample else { return }
+                for await online in Connectivity.updates() {
+                    if now.pathChanged(online: online) { Task { await now.load() } }
+                }
             }
             // 지표 2 · 3: 로그인한 화면이 처음 나타날 때와 백그라운드에서 돌아올 때 한 번
             .onChange(of: scenePhase, initial: true) { _, phase in

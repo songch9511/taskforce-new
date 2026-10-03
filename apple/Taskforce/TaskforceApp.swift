@@ -82,10 +82,14 @@ enum Startup {
             // 요청은 디스크 캐시 없는 세션으로 (`TaskforceClient.urlSession`). 예전 빌드가 공유 캐시에 남긴 응답 사본은 시작할 때 지운다
             URLCache.shared.removeAllCachedResponses()
             // 계정별로 이 기기에 남기는 데이터(목록 · 저장본)는 계정이 떠날 때 `SessionStore.onSignedOut`에서 지운다 (Mac 런처: `LauncherModel`)
-            return .ready(
-                SessionStore(auth: supabase.auth),
-                AppServices(config: config, supabase: supabase, session: TaskforceClient.urlSession)
-            )
+            let session = SessionStore(auth: supabase.auth)
+            #if os(iOS)
+            // iPhone: 계정이 떠나면 (로그아웃 · 만료 · 계정 삭제 · 전환) 이 기기의 저장본(할 일 제목 · 기한 · 상태)을 모두 지운다. 앱에 하나만 등록한다
+            if let saved = AppRuntime.savedNow {
+                session.onSignedOut { _ in try? saved.removeAll() }
+            }
+            #endif
+            return .ready(session, AppServices(config: config, supabase: supabase, session: TaskforceClient.urlSession))
         } catch {
             return .misconfigured(String(describing: error))
         }

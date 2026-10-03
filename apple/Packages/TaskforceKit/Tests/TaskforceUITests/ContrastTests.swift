@@ -74,10 +74,27 @@ struct ContrastTests {
         ("source/text", "source/paper"),
         ("source/meta", "source/paper"),
         ("bg/canvas", "text/primary"),
+        // iPhone 목록 (Figma P1 · P10): 바탕 bg/canvas 위 제목 · 섹션 개수 · 상태 줄 · 지난 · 오늘 기한, Review 카드의 Confirm
+        ("text/primary", "bg/canvas"),
+        ("text/secondary", "bg/canvas"),
+        ("status/overdue", "bg/canvas"),
+        ("text/inverse", "fill/inverse"),
     ], appearances)
     func baseText(_ pair: (text: String, background: String), _ dark: Bool) {
         let ratio = Contrast.ratio(Contrast.shipped(pair.text, dark: dark), Contrast.shipped(pair.background, dark: dark))
         #expect(ratio >= 4.5, "\(pair.text) on \(pair.background) \(dark ? "Dark" : "Light"): \(ratio)")
+    }
+
+    /// iPhone 할 일 행의 옅은 빈 원(누르면 Done): border/control을 `TaskRowMetrics.openMarkOpacity`로 bg/canvas 위에. 비문자 대비 3:1 (WCAG 1.4.11).
+    /// Figma P1의 0.55는 Light 2.3:1 · Dark 2.8:1이라 올렸다
+    @Test(arguments: appearances)
+    func openTaskMark(_ dark: Bool) {
+        let control = Contrast.shipped("border/control", dark: dark)
+        let alpha = Int((TaskRowMetrics.openMarkOpacity * 255).rounded())
+        let canvas = Contrast.shipped("bg/canvas", dark: dark)
+        let mark = Contrast.composite(RGBA(r: control.r, g: control.g, b: control.b, a: alpha), over: canvas)
+        let ratio = Contrast.ratio(mark, canvas)
+        #expect(ratio >= 3, "open mark \(dark ? "Dark" : "Light"): \(ratio)")
     }
 
     /// 계산이 맞는지: 검정/흰색 21:1, 같은 색 1:1

@@ -7,7 +7,7 @@ import TaskforceKit
 /// iPhone 화면과 Mac 런처가 같은 것을 쓴다.
 /// 저장본(`SavedNowStore`, 제목 · 기한 · 상태만): `session` · `saved`를 주면 `/now`가 성공할 때마다 요청한 계정 폴더에 쓰고,
 /// 이번 실행에서 `/now`를 받기 전(오프라인 · 새로고침 실패 · 처음 불러오는 중)에는 그 계정의 저장본을 보인다 (`savedCopy`).
-/// 지우기는 계정이 떠날 때 앱이 `SessionStore.onSignedOut`에서 한다 (Mac: `LauncherModel`).
+/// 지우기는 계정이 떠날 때 앱이 `SessionStore.onSignedOut`에서 한다 (Mac: `LauncherModel`, iPhone: `Startup.make`).
 @MainActor
 @Observable
 final class NowStore {
@@ -78,6 +78,12 @@ final class NowStore {
             refresh.loadStarted()
             refresh.loadFailed(at: failedAt)
         }
+    }
+
+    /// 견본: 이번 실행에서 받은 목록을 둔 채 끊김 (`-TFSampleOfflineLoaded`)
+    func applySampleOffline(loadedAt: Date, since: Date) {
+        refresh.loadSucceeded(at: loadedAt)
+        refresh.pathChanged(online: false, at: since)
     }
 
     /// 견본: 서버 없이 진행 상태 바꾸기를 바로 목록에 반영한다
