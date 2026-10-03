@@ -224,7 +224,7 @@ describe("끝난 run의 글 지우기 (purge_expired_execution_text)", () => {
     expect(await stepRows(held.runId)).toEqual(heldSteps);
   });
 
-  it("멈춘 · 실패한 run도 지운다. 준비된 채 멈춘 단계는 다시 계획되지 않고(상태 · 버전 그대로, 이벤트 없음), 부르는 중인 단계가 남은 run은 그 단계가 끝난 뒤에 지운다", async () => {
+  it("멈춘 · 실패한 run도 지운다. 준비된 · 대기 중인 채 멈춘 단계는 다시 계획되지 않고(상태 · 버전 그대로, 이벤트 없음), 부르는 중 · 결과 불명인 단계가 남은 run은 그 단계가 나온 뒤에 지운다", async () => {
     await drain();
     const user = await newUser();
     // 초안 단계를 준비한 채 멈춘 run
@@ -232,6 +232,11 @@ describe("끝난 run의 글 지우기 (purge_expired_execution_text)", () => {
     const { version } = await one<{ version: number }>("select version from public.execution_steps where id = $1", [stopped.draftId]);
     expect(await one("select public.prepare_step($1, $2) as ok", [stopped.draftId, version])).toEqual({ ok: true });
     expect(await one("select public.stop_run($1, $2) as s", [user, stopped.runId])).toEqual({ s: "stopped" });
+    // 초안 단계가 대기(pending)인 채 멈춘 run
+    const pending = await plannedRun(user);
+    expect(await one("select public.stop_run($1, $2) as s", [user, pending.runId])).toEqual({ s: "stopped" });
+    const pendingSteps = await stepRows(pending.runId);
+    expect(pendingSteps[1]).toMatchObject({ state: "pending", args: { brief: BRIEF } });
     // 계획 단계가 확정적으로 실패한 run
     const failedAction = (await one<{ id: string }>("insert into public.actions (user_id, title) values ($1, 'y') returning id", [user])).id;
     const failed = (await one<{ id: string }>("select public.create_run($1, $2, 'draft', $3) as id", [user, failedAction, REQUEST])).id;
@@ -243,22 +248,40 @@ describe("끝난 run의 글 지우기 (purge_expired_execution_text)", () => {
     const calling = await plannedRun(user);
     expect(await gate(calling.draftId)).toBe("ok");
     expect(await one("select public.stop_run($1, $2) as s", [user, calling.runId])).toEqual({ s: "stopped" });
+    // 결과 불명인 외부 단계가 남은 채 멈춘 run (U6a의 모양을 직접 넣는다. readback이 나중에 receipt를 쓴다)
+    const unknown = await plannedRun(user);
+    const externalId = (await one<{ id: string }>(
+      `insert into public.execution_steps (user_id, run_id, seq, kind, provider, tool, purpose, state, policy_version, unknown_since)
+       values ($1, $2, 3, 'external', 'gmail', 'send', 'send', 'unknown_outcome', 1, now()) returning id`,
+      [user, unknown.runId],
+    )).id;
+    expect(await one("select public.stop_run($1, $2) as s", [user, unknown.runId])).toEqual({ s: "stopped" });
 
     const stoppedSteps = await stepRows(stopped.runId);
     expect(stoppedSteps[1]).toMatchObject({ state: "prepared", args: { brief: BRIEF } });
-    const events = await count("select 1 from public.execution_events where run_id in ($1, $2, $3)", [stopped.runId, failed, calling.runId]);
+    const runIds = [stopped.runId, pending.runId, failed, calling.runId, unknown.runId];
+    const events = await count("select 1 from public.execution_events where run_id = any ($1)", [runIds]);
 
-    expect(await purge("now() + interval '1 day'")).toBe(2);
+    expect(await purge("now() + interval '1 day'")).toBe(3);
     expect(await runRow(stopped.runId)).toMatchObject({ request: "", state: "stopped", purged: true });
+    expect(await runRow(pending.runId)).toMatchObject({ request: "", state: "stopped", purged: true });
     expect(await runRow(failed)).toMatchObject({ request: "", state: "failed", purged: true });
     expect(await one("select receipt from public.execution_steps where id = $1", [failedPlan])).toEqual({ receipt: { error: "rejected" } });
-    const after = await stepRows(stopped.runId);
-    expect(planState(after)).toEqual(planState(stoppedSteps));
-    expect(after.map((s) => s.receipt)).toEqual(stoppedSteps.map((s) => s.receipt));
-    expect(after[1].args).toEqual({});
-    // 부르는 중인 단계가 남은 run은 미룬다
+    for (const [runId, before] of [[stopped.runId, stoppedSteps], [pending.runId, pendingSteps]] as const) {
+      const after = await stepRows(runId);
+      expect(planState(after)).toEqual(planState(before));
+      expect(after.map((s) => s.receipt)).toEqual(before.map((s) => s.receipt));
+      expect(after[1].args).toEqual({});
+    }
+    // 부르는 중 · 결과 불명인 단계가 남은 run은 미룬다
     expect(await runRow(calling.runId)).toMatchObject({ request: REQUEST, state: "stopped", purged: false });
-    expect(await count("select 1 from public.execution_events where run_id in ($1, $2, $3)", [stopped.runId, failed, calling.runId])).toBe(events);
+    expect(await runRow(unknown.runId)).toMatchObject({ request: REQUEST, state: "stopped", purged: false });
+    expect(await count("select 1 from public.execution_events where run_id = any ($1)", [runIds])).toBe(events);
+
+    // 결과 불명 단계를 readback이 찾아 끝내면 다음 정리에서 지운다
+    expect(await one("select public.readback_settle($1, $2::jsonb) as ok", [externalId, JSON.stringify({ to: TO })])).toEqual({ ok: true });
+    expect(await purge("now() + interval '1 day'")).toBe(1);
+    expect(await hasText(unknown.runId)).toEqual({ request: false, brief: 0, receiptText: 0 });
 
     // 그 호출이 결과(받는 사람 후보)를 받아 끝나면 다음 정리에서 지운다
     expect(await complete(calling.draftId, { to: TO, model: "m", prompt_version: "draft-v1" }, ARTIFACT)).toBe(true);
@@ -284,35 +307,50 @@ describe("끝난 run의 글 지우기 (purge_expired_execution_text)", () => {
 });
 
 describe("계획 동결 트리거의 예외는 정리 함수 안의 지시 지우기뿐이다 (execution_steps_replan)", () => {
-  it("정리 함수 밖에서 끝낸 단계의 지시를 지우거나, gate retention이어도 다른 계획 값을 바꾸면 plan is frozen", async () => {
+  it("정리 함수 밖에서 끝낸 단계의 지시를 지우거나, gate retention이어도 지시를 바꾸거나 다른 계획 값을 바꾸면 plan is frozen", async () => {
     await drain();
     const run = await finishedRun(await newUser());
-    const sql = (id: string) => `update public.execution_steps set args = args - 'brief' where id = '${id}'`;
+    const dropBrief = (id: string) => `update public.execution_steps set args = args - 'brief' where id = '${id}'`;
+    /** gate retention인 트랜잭션에서 sql을 부르면 plan is frozen으로 막히고 되돌려진다 */
+    const frozenUnderGate = (sql: string) =>
+      expect(
+        db.transaction(async (tx) => {
+          await tx.query("select set_config('execution.gate', 'retention', true)");
+          await tx.query(sql);
+        }),
+      ).rejects.toThrow(/plan is frozen/);
 
-    await expect(db.query(sql(run.draftId))).rejects.toThrow(/plan is frozen/);
-    await db.exec("begin");
-    try {
-      await db.query("select set_config('execution.gate', 'retention', true)");
-      await expect(db.query(`update public.execution_steps set args = args - 'brief', body = 'x' where id = $1`, [run.draftId])).rejects.toThrow(/plan is frozen/);
-    } finally {
-      await db.exec("rollback");
-    }
+    await expect(db.query(dropBrief(run.draftId))).rejects.toThrow(/plan is frozen/);
+    await frozenUnderGate(`update public.execution_steps set args = args - 'brief', body = 'x' where id = '${run.draftId}'`);
+    await frozenUnderGate(`update public.execution_steps set args = jsonb_set(args, '{brief}', '"다른 지시"') where id = '${run.draftId}'`);
+    await frozenUnderGate(`update public.execution_steps set args = (args - 'brief') || '{"extra": 1}' where id = '${run.draftId}'`);
+    expect(await hasText(run.runId)).toEqual({ request: true, brief: 1, receiptText: 2 });
 
-    // 정리 함수는 끝날 때 gate를 비운다: 같은 트랜잭션의 뒤 문장이 지시를 지우면 다시 막힌다 (정리까지 함께 되돌려진다)
+    // 정리 함수는 끝날 때 부른 쪽의 gate로 되돌린다: 같은 트랜잭션의 뒤 문장이 지시를 지우면 다시 막힌다 (정리까지 함께 되돌려진다)
     // 정리 기준보다 늦게(10일 뒤) 끝난 run: 이번 정리가 지우지 않아 지시가 남아 있다
     const other = await plannedRun(await newUser());
     await at("now() + interval '10 days'", async () => {
       expect(await gate(other.draftId)).toBe("ok");
       expect(await complete(other.draftId, { to: TO, model: "m", prompt_version: "draft-v1" }, ARTIFACT, "draft_ready")).toBe(true);
     });
-    await db.exec("begin");
-    try {
-      await db.query("select public.purge_expired_execution_text(now() + interval '1 day')");
-      expect((await runRow(run.runId)).purged).toBe(true);
-      await expect(db.query(sql(other.draftId))).rejects.toThrow(/plan is frozen/);
-    } finally {
-      await db.exec("rollback");
-    }
+    await expect(
+      db.transaction(async (tx) => {
+        await tx.query("select public.purge_expired_execution_text(now() + interval '1 day')");
+        expect((await tx.query<{ purged: boolean }>("select text_purged_at is not null as purged from public.execution_runs where id = $1", [run.runId])).rows).toEqual([
+          { purged: true },
+        ]);
+        await tx.query(dropBrief(other.draftId));
+      }),
+    ).rejects.toThrow(/plan is frozen/);
+    expect(await hasText(run.runId)).toEqual({ request: true, brief: 1, receiptText: 2 });
+
+    // 부른 쪽이 정한 gate는 그대로 남는다
+    await db.transaction(async (tx) => {
+      await tx.query("select set_config('execution.gate', 'stop', true)");
+      await tx.query("select public.purge_expired_execution_text(now() + interval '1 day')");
+      expect((await tx.query("select current_setting('execution.gate', true) as gate")).rows).toEqual([{ gate: "stop" }]);
+      await tx.rollback();
+    });
     expect(await hasText(run.runId)).toEqual({ request: true, brief: 1, receiptText: 2 });
   });
 });

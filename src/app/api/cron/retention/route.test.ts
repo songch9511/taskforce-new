@@ -43,7 +43,7 @@ function fakeAdmin({ busy = false, artifacts = 0, execution = 0 }: { busy?: bool
     },
   } as unknown as SupabaseClient;
   vi.mocked(createAdminClient).mockReturnValue(admin as ReturnType<typeof createAdminClient>);
-  return Object.assign(calls, { args });
+  return { calls, args };
 }
 
 const cron = (authorization = "Bearer s3cret") => GET(new Request("https://api.example.dev/api/cron/retention", { headers: { authorization } }));
@@ -63,25 +63,25 @@ afterEach(() => {
 
 describe("GET /api/cron/retention", () => {
   it("CRON_SECRET이 맞지 않으면 401", async () => {
-    const calls = fakeAdmin();
+    const { calls } = fakeAdmin();
     const response = await cron("Bearer wrong!");
     expect(response.status).toBe(401);
-    expect([...calls]).toEqual([]);
+    expect(calls).toEqual([]);
     expect(checkSlackConnectionTokens).not.toHaveBeenCalled();
   });
 
   it("보관 기간이 지난 실행 산출물 본문을 맨 먼저, 이어서 끝난 지 90일이 지난 run의 글을 한 번씩 지우고 수를 응답에 남긴다", async () => {
-    const calls = fakeAdmin({ artifacts: 3, execution: 2 });
+    const { calls, args } = fakeAdmin({ artifacts: 3, execution: 2 });
 
     const response = await cron();
 
     expect(response.status).toBe(200);
-    expect([...calls]).toEqual(["purge_expired_artifacts", "purge_expired_execution_text", "purge_expired_source_text", "purge_slack_buffers"]);
+    expect(calls).toEqual(["purge_expired_artifacts", "purge_expired_execution_text", "purge_expired_source_text", "purge_slack_buffers"]);
     expect(await response.json()).toMatchObject({ artifacts_purged: 3, execution_text_purged: 2, sources_purged: 0, calls: 4 });
     expect(checkSlackConnectionTokens).toHaveBeenCalledOnce();
     // 기준 시각 = 지금 - EXECUTION_TEXT_RETENTION_DAYS (run이 끝난 시각과 비교한다), 한 번에 5000개 run
     expect(EXECUTION_TEXT_RETENTION_DAYS).toBe(90);
-    const { p_before, p_limit } = calls.args.purge_expired_execution_text as { p_before: string; p_limit: number };
+    const { p_before, p_limit } = args.purge_expired_execution_text as { p_before: string; p_limit: number };
     const cutoff = new Date(p_before).getTime();
     expect(Math.abs(cutoff - retentionCutoff(new Date(), EXECUTION_TEXT_RETENTION_DAYS).getTime())).toBeLessThan(60_000);
     expect(p_limit).toBe(5000);
@@ -89,12 +89,12 @@ describe("GET /api/cron/retention", () => {
 
   it("산출물 정리가 실패해도 원문 · Slack 정리와 토큰 확인은 하고 500 (로그에는 오류 메시지만)", async () => {
     const error = vi.spyOn(console, "error").mockImplementation(() => {});
-    const calls = fakeAdmin({ artifacts: new Error("function public.purge_expired_artifacts() does not exist") });
+    const { calls } = fakeAdmin({ artifacts: new Error("function public.purge_expired_artifacts() does not exist") });
 
     const response = await cron();
 
     expect(response.status).toBe(500);
-    expect([...calls]).toEqual(["purge_expired_artifacts", "purge_expired_execution_text", "purge_expired_source_text", "purge_slack_buffers"]);
+    expect(calls).toEqual(["purge_expired_artifacts", "purge_expired_execution_text", "purge_expired_source_text", "purge_slack_buffers"]);
     expect(await response.json()).toMatchObject({ artifacts_purged: null, execution_text_purged: 0, sources_purged: 0 });
     expect(checkSlackConnectionTokens).toHaveBeenCalledOnce();
     expect(error).toHaveBeenCalledWith("실행 산출물 본문 정리 실패:", "function public.purge_expired_artifacts() does not exist");
@@ -102,12 +102,12 @@ describe("GET /api/cron/retention", () => {
 
   it("실행 글 정리가 실패해도 산출물 · 원문 · Slack 정리와 토큰 확인은 하고 500 (그 칸만 null, 로그에는 오류 메시지만)", async () => {
     const error = vi.spyOn(console, "error").mockImplementation(() => {});
-    const calls = fakeAdmin({ artifacts: 1, execution: new Error("function public.purge_expired_execution_text(timestamp with time zone, integer) does not exist") });
+    const { calls } = fakeAdmin({ artifacts: 1, execution: new Error("function public.purge_expired_execution_text(timestamp with time zone, integer) does not exist") });
 
     const response = await cron();
 
     expect(response.status).toBe(500);
-    expect([...calls]).toEqual(["purge_expired_artifacts", "purge_expired_execution_text", "purge_expired_source_text", "purge_slack_buffers"]);
+    expect(calls).toEqual(["purge_expired_artifacts", "purge_expired_execution_text", "purge_expired_source_text", "purge_slack_buffers"]);
     expect(await response.json()).toMatchObject({ artifacts_purged: 1, execution_text_purged: null, sources_purged: 0 });
     expect(checkSlackConnectionTokens).toHaveBeenCalledOnce();
     expect(error).toHaveBeenCalledWith(
@@ -116,8 +116,20 @@ describe("GET /api/cron/retention", () => {
     );
   });
 
+  it("산출물 · 실행 글 정리가 둘 다 실패해도 원문 · Slack 정리와 토큰 확인은 하고 500 (두 칸 모두 null)", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const { calls } = fakeAdmin({ artifacts: new Error("a"), execution: new Error("b") });
+
+    const response = await cron();
+
+    expect(response.status).toBe(500);
+    expect(calls).toEqual(["purge_expired_artifacts", "purge_expired_execution_text", "purge_expired_source_text", "purge_slack_buffers"]);
+    expect(await response.json()).toMatchObject({ artifacts_purged: null, execution_text_purged: null, sources_purged: 0 });
+    expect(checkSlackConnectionTokens).toHaveBeenCalledOnce();
+  });
+
   it("정리가 밀려도 Slack 토큰 확인에 떼어 둔 시간(15초 이상)을 남긴다", async () => {
-    const calls = fakeAdmin({ busy: true });
+    const { calls } = fakeAdmin({ busy: true });
     const started = now;
 
     const response = await cron();

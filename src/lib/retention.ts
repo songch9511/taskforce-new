@@ -12,7 +12,11 @@
 
 export const RAW_TEXT_RETENTION_DAYS = 90;
 
-/** 실행의 글 보관 기간: run이 끝난 뒤 90일 (처리방침 D9a-1 5장, docs/EXECUTION.md 12장) */
+/**
+ * 실행의 글 보관 기간: run이 끝난 뒤 90일 (purge_expired_execution_text, docs/EXECUTION.md 12장).
+ * 90일은 처리방침 D9a-1 초안 5장의 값이다. 초안 문안은 "저장한 뒤 90일"이고 코드는 끝난 시각으로 센다: run이 열린 동안 글이 남는다
+ * (오래 열린 run은 런북 9-4로 멈춘다). 둘 중 어느 쪽으로 맞출지는 게시 전에 정한다
+ */
 export const EXECUTION_TEXT_RETENTION_DAYS = 90;
 
 export const PURGED_SOURCE_MESSAGE = "원문이 보관 기간(90일)이 지나 지워졌어요.";

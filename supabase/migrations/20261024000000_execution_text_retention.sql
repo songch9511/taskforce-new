@@ -80,6 +80,7 @@ as $$
 declare
   v_runs uuid[];
   v_count integer;
+  v_gate text := current_setting('execution.gate', true); -- 부른 쪽의 gate (끝날 때 되돌린다)
 begin
   if p_before is null or p_limit is null or p_limit < 1 then
     raise exception 'purge_expired_execution_text: 잘못된 인자';
@@ -106,8 +107,8 @@ begin
   update public.execution_runs r set request = '', text_purged_at = public.db_now()
     where r.id = any (v_runs) and r.text_purged_at is null;
   get diagnostics v_count = row_count;
-  -- 트리거 예외는 이 함수 안에서만: 같은 트랜잭션의 뒤 문장이 지시를 지워도 다시 계획 · 동결 규칙대로 돈다
-  perform set_config('execution.gate', '', true);
+  -- 트리거 예외는 이 함수 안에서만: 부른 쪽의 gate로 되돌려, 같은 트랜잭션의 뒤 문장이 지시를 지우면 다시 계획 · 동결 규칙대로 돈다
+  perform set_config('execution.gate', coalesce(v_gate, ''), true);
   return v_count;
 end;
 $$;

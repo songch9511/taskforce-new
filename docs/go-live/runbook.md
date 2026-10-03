@@ -348,8 +348,8 @@ where s.state = 'called' and not exists (select 1 from public.sources x where x.
 select count(*) as claims_without_source from public.claims where origin = 'execution' and (source_id is null or quote is null);
 -- 실패한 단계의 까닭 (코드 값만): retries_exhausted가 몰리면 OpenRouter 키 · 잔액 · 권한(401 · 402 · 403)부터 본다 (EXECUTION 13장 오류 표)
 select receipt->>'error' as error, count(*) as steps from public.execution_steps where state = 'failed' group by 1 order by 2 desc;
--- 실행의 글 보관 (EXECUTION 12장): 글은 run이 끝난 지 90일 뒤 지운다. 90일 넘게 열린 run은 끝날 때까지 글이 남으므로 0이어야 한다.
--- 0이 아니면 아래 "오래 막힌 run 정리"로 멈춘다 (멈춘 뒤 90일에 지운다)
+-- 실행의 글 보관 (EXECUTION 12장): 글은 run이 끝난 지 90일 뒤 지운다(열린 동안은 남는다). 90일 넘게 열린 run은 0이어야 한다.
+-- 0이 아니면 아래 "오래 막힌 run 정리"의 두 번째 목록(막히지 않은 run 포함)을 보고 멈춘다. 멈춘 run의 글은 멈춘 뒤 90일에 지운다
 select count(*) as open_over_retention from public.execution_runs where state in ('queued', 'running', 'waiting_approval') and created_at < now() - interval '90 days';
 -- 끝난 지 91일이 지났는데 글이 남은 run: 0이어야 한다. 아니면 retention cron 응답의 execution_text_purged · 로그 "실행 글 정리 실패"를 본다
 -- (부르는 중 · 결과 불명 단계가 남은 run은 그 단계가 나올 때까지 미룬다: 위 expired_calling · unknown_outcome)
@@ -375,6 +375,8 @@ npx supabase db query --linked "select public.reconcile_usage(<id>, <비용 USD>
 ```bash
 # 하루 넘게 막힌 끝나지 않은 run (id · 이유 · 만든 날만)
 npx supabase db query --linked "select id, hold_reason, created_at::date as created from public.execution_runs where state in ('queued', 'running', 'waiting_approval') and hold_reason is not null and created_at < now() - interval '1 day' order by created_at limit 20"
+# 90일 넘게 열린 run (막히지 않은 것 포함, id · 상태 · 이유 · 만든 날만): 9-4의 open_over_retention. 글이 처리방침 보관 기간보다 오래 남는다
+npx supabase db query --linked "select id, state, hold_reason, created_at::date as created from public.execution_runs where state in ('queued', 'running', 'waiting_approval') and created_at < now() - interval '90 days' order by created_at limit 20"
 # 멈추기: run마다 한 명령 (여러 run을 한 명령에서 멈추면 run · 계정 잠금끼리 교착할 수 있다). 결과 stopped. 교착(40P01)으로 되돌려지면 그대로 다시 보낸다
 npx supabase db query --linked "select public.stop_run((select user_id from public.execution_runs where id = '<run>'), '<run>') as state"
 ```
