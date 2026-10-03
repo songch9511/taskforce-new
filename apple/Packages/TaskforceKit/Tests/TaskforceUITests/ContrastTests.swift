@@ -64,6 +64,8 @@ struct ContrastTests {
         ("text/primary", "settings/content"),
         ("text/primary", "settings/window"),
         ("text/primary", "settings/fill"),
+        // 액션 바 Return 동작 알약 안의 키 (`KeyHint(onFill:)`). text/secondary는 다크 settings/fill 위 4.06:1이라 쓰지 않는다
+        ("text/secondary-selected", "settings/fill"),
         ("text/secondary", "settings/sidebar"),
         ("text/secondary", "bg/elevated"),
         ("text/secondary", "settings/content"),

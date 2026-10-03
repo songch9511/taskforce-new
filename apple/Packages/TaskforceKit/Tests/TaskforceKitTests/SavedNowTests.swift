@@ -30,7 +30,7 @@ struct SavedNowTests {
     }
 
     @Test func roundTripsTitleDueAndStatusInOrder() throws {
-        defer { store.removeAll() }
+        defer { try? store.removeAll() }
         try store.save(SavedNow(sections: sections, savedAt: savedAt), account: alice)
         let saved = try #require(store.load(account: alice))
         #expect(saved.savedAt == savedAt)
@@ -40,12 +40,14 @@ struct SavedNowTests {
             .init(title: "할 일 21", dueDate: LocalDate(year: 2026, month: 10, day: 2), status: .toDo),
             .init(title: "할 일 41", dueDate: nil, status: .doneToday),
         ])
-        #expect(saved.tasks(in: .toDo, now: savedAt).map(\.title) == ["할 일 21"])
+        #expect(saved.rows(in: .toDo, now: savedAt).map(\.task.title) == ["할 일 21"])
+        // 행 id는 저장본 안의 자리 (구역이 달라도 겹치지 않는다)
+        #expect(TaskGroup.allCases.flatMap { saved.rows(in: $0, now: savedAt).map(\.id) } == [0, 1, 2, 3])
     }
 
     /// 파일에는 제목 · 기한 · 상태 · 저장 시각 · 판만 있다 (원문 · 상대 · 확인 이유 · id · 점수 없음)
     @Test func fileHoldsOnlyTheAllowedFields() throws {
-        defer { store.removeAll() }
+        defer { try? store.removeAll() }
         try store.save(SavedNow(sections: sections, savedAt: savedAt), account: alice)
         let data = try Data(contentsOf: store.file(for: alice))
         let object = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
@@ -62,7 +64,7 @@ struct SavedNowTests {
     }
 
     @Test func accountsAreIsolated() throws {
-        defer { store.removeAll() }
+        defer { try? store.removeAll() }
         try store.save(SavedNow(sections: sections, savedAt: savedAt), account: alice)
         #expect(store.load(account: bob) == nil)
         try store.save(SavedNow(savedAt: savedAt, tasks: []), account: bob)
@@ -72,10 +74,10 @@ struct SavedNowTests {
 
     /// 계정 삭제: 그 계정만 지운다
     @Test func removingOneAccount() throws {
-        defer { store.removeAll() }
+        defer { try? store.removeAll() }
         try store.save(SavedNow(sections: sections, savedAt: savedAt), account: alice)
         try store.save(SavedNow(sections: sections, savedAt: savedAt), account: bob)
-        store.remove(account: alice)
+        try store.remove(account: alice)
         #expect(store.load(account: alice) == nil)
         #expect(store.load(account: bob) != nil)
         #expect(!FileManager.default.fileExists(atPath: store.folder(for: alice).path))
@@ -85,18 +87,18 @@ struct SavedNowTests {
     @Test func removingAll() throws {
         try store.save(SavedNow(sections: sections, savedAt: savedAt), account: alice)
         try store.save(SavedNow(sections: sections, savedAt: savedAt), account: bob)
-        store.removeAll()
+        try store.removeAll()
         #expect(store.load(account: alice) == nil)
         #expect(store.load(account: bob) == nil)
         #expect(!FileManager.default.fileExists(atPath: root.path))
         // 지운 뒤에도 다시 저장할 수 있다
         try store.save(SavedNow(savedAt: savedAt, tasks: []), account: alice)
         #expect(store.load(account: alice) != nil)
-        store.removeAll()
+        try store.removeAll()
     }
 
     @Test func savingReplacesThePreviousCopy() throws {
-        defer { store.removeAll() }
+        defer { try? store.removeAll() }
         try store.save(SavedNow(sections: sections, savedAt: savedAt), account: alice)
         try store.save(SavedNow(savedAt: savedAt.addingTimeInterval(60), tasks: []), account: alice)
         let saved = try #require(store.load(account: alice))
@@ -106,7 +108,7 @@ struct SavedNowTests {
 
     @Test(arguments: [#"{"version": 2, "saved_at": "2026-10-03T00:00:00Z", "tasks": []}"#, "not json", #"{"tasks": []}"#])
     func unreadableCopyIsDropped(_ contents: String) throws {
-        defer { store.removeAll() }
+        defer { try? store.removeAll() }
         try FileManager.default.createDirectory(at: store.folder(for: alice), withIntermediateDirectories: true)
         try Data(contents.utf8).write(to: store.file(for: alice))
         #expect(store.load(account: alice) == nil)
@@ -114,7 +116,7 @@ struct SavedNowTests {
     }
 
     @Test func folderIsExcludedFromBackup() throws {
-        defer { store.removeAll() }
+        defer { try? store.removeAll() }
         try store.save(SavedNow(savedAt: savedAt, tasks: []), account: alice)
         let values = try root.resourceValues(forKeys: [.isExcludedFromBackupKey])
         #expect(values.isExcludedFromBackup == true)
@@ -128,9 +130,29 @@ struct SavedNowTests {
         let saved = SavedNow(sections: sections, savedAt: Date(timeIntervalSince1970: TimeInterval(midnightUTC)))
         let sameDay = saved.savedAt.addingTimeInterval(3600)
         let nextDay = saved.savedAt.addingTimeInterval(86_400)
-        #expect(saved.tasks(in: .doneToday, now: sameDay, timeZone: seoul).map(\.title) == ["할 일 41"])
-        #expect(saved.tasks(in: .doneToday, now: nextDay, timeZone: seoul).isEmpty)
-        #expect(saved.tasks(in: .review, now: nextDay, timeZone: seoul).count == 1)
+        #expect(saved.rows(in: .doneToday, now: sameDay, timeZone: seoul).map(\.task.title) == ["할 일 41"])
+        #expect(saved.rows(in: .doneToday, now: nextDay, timeZone: seoul).isEmpty)
+        #expect(saved.rows(in: .review, now: nextDay, timeZone: seoul).count == 1)
+    }
+
+    /// 지울 것이 없어도 성공이다 (로그아웃마다 부른다)
+    @Test func removingWhatIsNotThereSucceeds() throws {
+        try store.removeAll()
+        try store.remove(account: alice)
+    }
+
+    /// 오프라인 목록도 같은 범위 · 개수 규칙을 쓴다 (M15 · P10 "Search 23 saved tasks")
+    @Test func scopesWorkOnTheSavedCopy() {
+        let saved = SavedNow(sections: ListFixture.sections, savedAt: savedAt)
+        #expect(TaskScope.allTasks.count(in: saved, now: savedAt) == 23)
+        #expect(TaskScope.review.count(in: saved, now: savedAt) == 4)
+        #expect(TaskScope.toDo.count(in: saved, now: savedAt) == 14)
+        #expect(TaskScope.doneToday.count(in: saved, now: savedAt) == 6)
+        #expect(TaskScope.changed.count(in: saved, now: savedAt) == 0)
+        #expect(TaskScope.review.rows(in: saved, group: .toDo, now: savedAt).isEmpty)
+        #expect(TaskScope.allTasks.rows(in: saved, group: .toDo, now: savedAt).count == 14)
+        // 다음 날이면 Done Today는 세지 않는다
+        #expect(TaskScope.doneToday.count(in: saved, now: savedAt.addingTimeInterval(86_400 * 2)) == 0)
     }
 
     @Test func statusNamesAreStable() {

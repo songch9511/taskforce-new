@@ -65,7 +65,7 @@ public struct SavedNow: Codable, Sendable, Hashable {
         self.tasks = tasks
     }
 
-    /// 화면에 보인 목록에서 제목 · 기한 · 상태만 뽑는다
+    /// 받은 전체 목록(찾기 · 범위로 좁히지 않은 `TaskBoard.sections()`)에서 제목 · 기한 · 상태만 뽑는다
     public init(sections: TaskSections, savedAt: Date) {
         let tasks = TaskGroup.allCases.flatMap { group in
             sections.actions(in: group).map { Task(title: $0.title, dueDate: $0.dueDate, status: Status(group)) }
@@ -90,13 +90,19 @@ public struct SavedNow: Codable, Sendable, Hashable {
         try c.encode(tasks, forKey: .tasks)
     }
 
-    /// 그 구역의 저장된 할 일 (받은 순서). Done Today는 저장한 날이 `now`의 오늘(기기 시간대)일 때만 보인다:
+    /// 저장본의 한 행. id는 저장본 안의 자리라 같은 저장본에서는 바뀌지 않는다 (오프라인 목록의 선택 · 스크롤용, 서버 id가 아니다)
+    public struct Row: Identifiable, Sendable, Hashable {
+        public let id: Int
+        public let task: Task
+    }
+
+    /// 그 구역의 저장된 행 (받은 순서). Done Today는 저장한 날이 `now`의 오늘(기기 시간대)일 때만 보인다:
     /// 어제 끝낸 일을 "Done Today"로 보이지 않게.
-    public func tasks(in group: TaskGroup, now: Date, timeZone: TimeZone = .current) -> [Task] {
+    public func rows(in group: TaskGroup, now: Date, timeZone: TimeZone = .current) -> [Row] {
         if group == .doneToday, LocalDate(date: savedAt, timeZone: timeZone) != LocalDate(date: now, timeZone: timeZone) {
             return []
         }
-        return tasks.filter { $0.status.group == group }
+        return tasks.enumerated().filter { $0.element.status.group == group }.map { Row(id: $0.offset, task: $0.element) }
     }
 }
 
@@ -116,7 +122,10 @@ public struct SavedNowStore: Sendable {
         self.root = root
     }
 
-    /// App Group 컨테이너 아래 기본 위치. App Group 권한이 없는 빌드(서명 없음)면 nil: 로그인 세션도 저장하지 못하는 빌드라 저장본도 두지 않는다.
+    /// App Group 컨테이너 아래 기본 위치.
+    /// - iOS: App Group 권한이 없는 빌드면 nil (저장본 없이 둔다)
+    /// - macOS: 권한과 상관없이 늘 주소를 준다(`containerURL` 동작). 서명 없는 빌드에서는 `save`가 실패하거나 시스템이 접근을 물을 수 있으니,
+    ///   부르는 쪽은 `save` 실패를 무시하고 저장본 없이 둔다 (로그인 세션도 저장하지 못하는 빌드다)
     public static func defaultRoot(appGroupID: String, fileManager: FileManager = .default) -> URL? {
         fileManager.containerURL(forSecurityApplicationGroupIdentifier: appGroupID)?
             .appending(path: "Library/Application Support/Taskforce/SavedNow", directoryHint: .isDirectory)
@@ -145,14 +154,22 @@ public struct SavedNowStore: Sendable {
         return saved
     }
 
-    /// 그 계정의 저장본을 지운다 (계정 삭제)
-    public func remove(account: UUID) {
-        try? FileManager.default.removeItem(at: folder(for: account))
+    /// 그 계정의 저장본을 지운다 (계정 삭제). 이미 없으면 성공이다. 지우지 못하면 던진다
+    public func remove(account: UUID) throws {
+        try Self.removeIfPresent(folder(for: account))
     }
 
-    /// 모든 계정의 저장본을 지운다 (로그아웃 · 계정 전환: 다른 계정의 사본이 이 기기에 남지 않게)
-    public func removeAll() {
-        try? FileManager.default.removeItem(at: root)
+    /// 모든 계정의 저장본을 지운다 (로그아웃 · 계정 전환: 다른 계정의 사본이 이 기기에 남지 않게). 이미 없으면 성공이다. 지우지 못하면 던진다
+    public func removeAll() throws {
+        try Self.removeIfPresent(root)
+    }
+
+    private static func removeIfPresent(_ url: URL) throws {
+        do {
+            try FileManager.default.removeItem(at: url)
+        } catch CocoaError.fileNoSuchFile {
+            return
+        }
     }
 
     func folder(for account: UUID) -> URL {

@@ -13,6 +13,7 @@ struct ComponentRuleTests {
         ("⌘⌫", [.text("⌘"), .text("⌫")]),
         ("⇧⌘K", [.text("⇧"), .text("⌘"), .text("K")]),
         ("⌘ R", [.text("⌘"), .text("R")]),
+        ("↑↓", [.text("↑"), .text("↓")]),
         ("", []),
     ])
     func keysSplitOnePerBox(_ shortcut: String, _ expected: [KeyHint.Key]) {

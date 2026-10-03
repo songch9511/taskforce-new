@@ -59,6 +59,32 @@ public enum TaskScope: String, CaseIterable, Sendable, Hashable {
     }
 }
 
+extension TaskScope {
+    /// 범위가 보이는 구역 (All Tasks는 네 구역 모두, Done Today는 접힌 한 줄)
+    public var groups: [TaskGroup] {
+        switch self {
+        case .allTasks: TaskGroup.allCases
+        case .review: [.review]
+        case .inProgress: [.inProgress]
+        case .toDo: [.toDo]
+        case .doneToday: [.doneToday]
+        case .changed: [.review, .inProgress, .toDo]
+        }
+    }
+
+    /// 저장본(오프라인 · 새로고침 실패)에서 그 구역의 행. 저장본에는 바뀜이 없어 바뀜 범위는 비어 있다
+    public func rows(in saved: SavedNow, group: TaskGroup, now: Date, timeZone: TimeZone = .current) -> [SavedNow.Row] {
+        guard self != .changed, groups.contains(group) else { return [] }
+        return saved.rows(in: group, now: now, timeZone: timeZone)
+    }
+
+    /// 저장본의 범위 개수 (All Tasks = Review + In Progress + To Do, `count(in:changed:)`와 같은 규칙)
+    public func count(in saved: SavedNow, now: Date, timeZone: TimeZone = .current) -> Int {
+        let counted = self == .allTasks ? [TaskGroup.review, .inProgress, .toDo] : groups
+        return counted.reduce(0) { $0 + rows(in: saved, group: $1, now: now, timeZone: timeZone).count }
+    }
+}
+
 extension TaskSections {
     /// 열린 할 일 수 (Review + In Progress + To Do)
     var openCount: Int { review.count + inProgress.count + toDo.count }

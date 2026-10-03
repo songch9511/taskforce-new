@@ -47,6 +47,8 @@ cd apple && xcodegen
 
 ```bash
 cd apple/Packages/TaskforceKit && swift test
+# 색 토큰을 actool이 컴파일한 카탈로그로 확인 (swift test는 카탈로그를 복사만 한다, CI도 같은 단계). 줄마다 저장소 맨 위에서
+cd apple/Packages/TaskforceKit && TEST_RUNNER_TF_REQUIRE_COMPILED_CATALOG=1 xcodebuild test -scheme TaskforceKit-Package -destination 'platform=macOS' -only-testing:TaskforceUITests
 xcodebuild build -project apple/Taskforce.xcodeproj -scheme Taskforce -destination 'generic/platform=iOS Simulator' -derivedDataPath apple/build/dd CODE_SIGNING_ALLOWED=NO
 xcodebuild build -project apple/Taskforce.xcodeproj -scheme Taskforce -destination 'platform=macOS' -derivedDataPath apple/build/dd CODE_SIGNING_ALLOWED=NO
 ```

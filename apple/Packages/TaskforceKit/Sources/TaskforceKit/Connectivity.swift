@@ -54,6 +54,8 @@ public struct RefreshTracker: Sendable, Hashable {
         guard online != isOnline else { return false }
         isOnline = online
         offlineSince = online ? nil : date
+        // 돌아오면 곧 다시 불러오므로 지난 실패는 보이지 않는다
+        if online { failedAt = nil }
         return online
     }
 

@@ -104,7 +104,7 @@ public struct ActionBar: View {
                     .font(TFFont.footnoteEmphasis)
                     .foregroundStyle(TFColor.textPrimary)
                     .lineLimit(1)
-                KeyHint(item.keys)
+                KeyHint(item.keys, onFill: true)
             }
             .padding(.vertical, TFSpace.xs)
             .padding(.leading, 10)

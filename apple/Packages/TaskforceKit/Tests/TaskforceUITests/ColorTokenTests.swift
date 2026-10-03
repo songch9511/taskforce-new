@@ -81,8 +81,14 @@ enum FigmaColor {
 }
 
 /// 번들에 든 색 세트를 Light · Dark로 읽는다.
-/// Xcode가 컴파일한 Asset Catalog면 `NSColor(named:)`로, SwiftPM 명령행처럼 컴파일하지 않고 복사만 했으면 색 세트 JSON으로 읽는다.
+/// Xcode가 컴파일한 Asset Catalog(`Assets.car`)면 `NSColor(named:)`로만 읽는다 (actool이 받은 이름 · 값을 확인, CI `xcodebuild test -scheme TaskforceKit-Package`).
+/// SwiftPM 명령행(`swift test`)은 카탈로그를 컴파일하지 않고 복사만 하므로 복사된 색 세트 JSON으로 읽는다.
 enum TokenCatalog {
+    /// 번들에 컴파일된 Asset Catalog가 있나 (Xcode 빌드)
+    static var isCompiled: Bool {
+        TFColor.bundle.url(forResource: "Assets", withExtension: "car") != nil
+    }
+
     static var bundledCatalog: URL? {
         TFColor.bundle.resourceURL?.appending(path: "Tokens.xcassets", directoryHint: .isDirectory)
     }
@@ -94,7 +100,9 @@ enum TokenCatalog {
 
     static func resolve(_ name: String) -> (light: RGBA, dark: RGBA)? {
         #if canImport(AppKit)
-        if let color = NSColor(named: name, bundle: TFColor.bundle) {
+        if isCompiled {
+            // 컴파일된 카탈로그에서 못 찾으면 JSON으로 돌아가지 않고 실패한다 (actool이 버린 색 세트를 놓치지 않게)
+            guard let color = NSColor(named: name, bundle: TFColor.bundle) else { return nil }
             return (resolve(color, .aqua), resolve(color, .darkAqua))
         }
         #endif
@@ -168,6 +176,13 @@ struct ColorTokenTests {
         let expected = try #require(FigmaColor.shipped(name.rawValue), "\(name.rawValue)의 Figma 값이 표에 없음")
         #expect(resolved.light == expected.light, "\(name.rawValue) Light")
         #expect(resolved.dark == expected.dark, "\(name.rawValue) Dark")
+    }
+
+    /// CI의 xcodebuild 단계는 `TF_REQUIRE_COMPILED_CATALOG=1`로 돌린다: 그때는 actool이 컴파일한 카탈로그(`NSColor(named:)`)로 읽었어야 한다.
+    /// `swift test`(카탈로그를 복사만 함)에서는 이 값이 없어 JSON으로 읽는다.
+    @Test func compiledCatalogWhenRequired() {
+        guard ProcessInfo.processInfo.environment["TF_REQUIRE_COMPILED_CATALOG"] == "1" else { return }
+        #expect(TokenCatalog.isCompiled, "Assets.car가 없다: 색 토큰을 컴파일된 카탈로그로 확인하지 못함")
     }
 
     /// 토큰 표와 Figma 변수 표가 같은 이름을 다룬다 (Figma 변수가 빠지거나 남지 않게)

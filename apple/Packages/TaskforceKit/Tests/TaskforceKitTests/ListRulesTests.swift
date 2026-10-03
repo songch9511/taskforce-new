@@ -218,6 +218,16 @@ struct SeenTrackerTests {
         #expect(sent == nil)
     }
 
+    /// 고른 채로 있는 행이 새 `/now`에서 바뀜이 되면, 떠날 때 보낸다 (상세가 보였으므로)
+    @Test func selectedRowThatBecomesChangedSendsOnLeave() {
+        var tracker = SeenTracker()
+        let none = tracker.select(a, changed: [])
+        #expect(none == nil)
+        tracker.refreshed(changed: [a], selected: a)
+        let sent = tracker.select(b, changed: [a])
+        #expect(sent == a)
+    }
+
     /// iPhone: 열면 바로 보낸다 (한 번)
     @Test func openingSendsImmediately() {
         var tracker = SeenTracker()
@@ -291,6 +301,17 @@ struct RefreshTrackerTests {
         #expect(!reload2)
         #expect(tracker.offlineSince == nil)
         #expect(tracker.state == .loading)
+    }
+
+    /// 연결이 돌아오면 지난 "Couldn't refresh"는 보이지 않는다 (곧 다시 불러온다)
+    @Test func reconnectClearsAnOldFailure() {
+        var tracker = RefreshTracker()
+        tracker.loadSucceeded(at: t0)
+        tracker.loadFailed(at: t0.addingTimeInterval(60))
+        tracker.pathChanged(online: false, at: t0.addingTimeInterval(120))
+        tracker.pathChanged(online: true, at: t0.addingTimeInterval(180))
+        #expect(tracker.failedAt == nil)
+        #expect(tracker.state == .live)
     }
 
     /// M19: 온라인인데 실패 → "Couldn't refresh at 10:46. Showing 10:31."

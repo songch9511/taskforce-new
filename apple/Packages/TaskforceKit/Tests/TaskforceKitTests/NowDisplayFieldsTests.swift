@@ -35,6 +35,12 @@ struct NowDisplayFieldsTests {
         #expect(now.failedSources.count == 0)
     }
 
+    /// 할 일이 하나도 없어도 기준값이 오면 새 서버로 본다 (바뀜 범위를 보인다)
+    @Test func sectionLimitsAloneMarksANewServer() throws {
+        let now = try decode(#"{"now": [], "confirmations": [], "weekly_check": null, "section_limits": {"review": 2, "in_progress": 5, "to_do": 5}}"#)
+        #expect(now.tracksChanges)
+    }
+
     @Test func standardLimitsMatchFigma() {
         #expect(SectionLimits.standard == SectionLimits(review: 2, inProgress: 5, toDo: 5))
     }

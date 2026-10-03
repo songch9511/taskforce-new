@@ -10,19 +10,25 @@ public struct KeyHint: View {
     }
 
     let keys: [Key]
+    let onFill: Bool
 
-    /// "⌘K" · "⌘↩" · "⌥Space" · "esc"
-    public init(_ shortcut: String) {
+    /// "⌘K" · "⌘↩" · "⌥Space" · "esc".
+    /// `onFill`: 회색 면(settings/fill, 액션 바 Return 동작 알약) 위. Figma는 text/secondary지만 다크에서 4.1:1이라
+    /// 회색 면 위 보조 글자 토큰 text/secondary-selected로 그린다 (4.5:1 이상, TaskforceUITests `ContrastTests`).
+    public init(_ shortcut: String, onFill: Bool = false) {
         keys = Self.keys(shortcut)
+        self.onFill = onFill
     }
 
-    public init(keys: [Key]) {
+    public init(keys: [Key], onFill: Bool = false) {
         self.keys = keys
+        self.onFill = onFill
     }
 
-    nonisolated static let modifiers: Set<Character> = ["⌘", "⌥", "⌃", "⇧"]
+    /// 키 하나에 상자 하나인 글자: 수정 키와 화살표
+    nonisolated static let singleKeys: Set<Character> = ["⌘", "⌥", "⌃", "⇧", "↑", "↓", "←", "→"]
 
-    /// 단축키 글자를 키로 나눈다: 수정 키(⌘ ⌥ ⌃ ⇧)는 하나씩, ↩는 그린 기호, 나머지 이어진 글자는 키 하나 ("Space" · "esc")
+    /// 단축키 글자를 키로 나눈다: 수정 키(⌘ ⌥ ⌃ ⇧) · 화살표는 하나씩, ↩는 그린 기호, 나머지 이어진 글자는 키 하나 ("Space" · "esc")
     nonisolated public static func keys(_ shortcut: String) -> [Key] {
         var keys: [Key] = []
         var pending = ""
@@ -31,7 +37,7 @@ public struct KeyHint: View {
             pending = ""
         }
         for character in shortcut where !character.isWhitespace {
-            if modifiers.contains(character) {
+            if singleKeys.contains(character) {
                 flush()
                 keys.append(.text(String(character)))
             } else if character == "↩" {
@@ -55,6 +61,10 @@ public struct KeyHint: View {
             case .text("⌃"): "Control"
             case .text("⇧"): "Shift"
             case .text("⌫"): "Delete"
+            case .text("↑"): "Up Arrow"
+            case .text("↓"): "Down Arrow"
+            case .text("←"): "Left Arrow"
+            case .text("→"): "Right Arrow"
             case .text(let text): text
             }
         }
@@ -64,7 +74,7 @@ public struct KeyHint: View {
     public var body: some View {
         HStack(spacing: 3) {
             ForEach(Array(keys.enumerated()), id: \.offset) { _, key in
-                KeyCap(key: key)
+                KeyCap(key: key, color: onFill ? TFColor.textSecondarySelected : TFColor.textSecondary)
             }
         }
         .accessibilityElement(children: .ignore)
@@ -75,6 +85,7 @@ public struct KeyHint: View {
 /// 키 상자 하나: 20×20부터, 안쪽 4, r5, 1pt text/secondary 테두리, 글자 11 semibold
 private struct KeyCap: View {
     let key: KeyHint.Key
+    let color: Color
 
     var body: some View {
         Group {
@@ -85,11 +96,11 @@ private struct KeyCap: View {
                 Image(systemName: "return").font(.system(size: 9, weight: .semibold))
             }
         }
-        .foregroundStyle(TFColor.textSecondary)
+        .foregroundStyle(color)
         .lineLimit(1)
         .padding(.horizontal, TFSpace.xs)
         .frame(minWidth: 20, minHeight: 20)
-        .overlay(RoundedRectangle(cornerRadius: TFRadius.sm, style: .continuous).strokeBorder(TFColor.textSecondary, lineWidth: 1))
+        .overlay(RoundedRectangle(cornerRadius: TFRadius.sm, style: .continuous).strokeBorder(color, lineWidth: 1))
     }
 }
 

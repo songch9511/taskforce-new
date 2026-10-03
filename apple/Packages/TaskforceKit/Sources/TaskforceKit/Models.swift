@@ -145,8 +145,10 @@ public struct FailedSources: Decodable, Sendable, Hashable {
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         count = max(0, try c.decode(Int.self, forKey: .count))
+        // try?는 Optional을 한 겹으로 편다 (SE-0230): 없음 · null · 모양이 어긋남 모두 nil
         latestAt = try? c.decodeIfPresent(Date.self, forKey: .latestAt)
-        reason = (try? c.decodeIfPresent(String.self, forKey: .reason)).flatMap { $0.flatMap(SourceFailureCode.init(rawValue:)) }
+        let rawReason: String? = try? c.decodeIfPresent(String.self, forKey: .reason)
+        reason = rawReason.flatMap(SourceFailureCode.init(rawValue:))
     }
 }
 
@@ -162,7 +164,7 @@ public struct NowResponse: Decodable, Sendable, Hashable {
     public let sectionLimits: SectionLimits
     /// 바뀐 Review(확인 요청) id. 확인 요청은 `ActionSummary`로 읽어서 바뀜을 따로 둔다 (열린 할 일은 `RankedAction.changed`)
     public let changedConfirmations: Set<UUID>
-    /// 서버가 바뀜(`changed`)을 보냈나. 예전 서버면 false (바뀜 범위를 숨긴다: 내용이 없는 범위는 보이지 않는다)
+    /// 서버가 바뀜(`changed`)을 아는가 (`section_limits`가 있거나 행에 `changed`가 있음). 예전 서버면 false (바뀜 범위를 숨긴다: 내용이 없는 범위는 보이지 않는다)
     public let tracksChanges: Bool
 
     enum CodingKeys: String, CodingKey {
@@ -197,7 +199,8 @@ public struct NowResponse: Decodable, Sendable, Hashable {
         let flags = (try? c.decode([ChangedFlag].self, forKey: .confirmations)) ?? []
         changedConfirmations = Set(flags.filter { $0.changed == true }.map(\.id))
         let nowFlags = (try? c.decode([ChangedFlag].self, forKey: .now)) ?? []
-        tracksChanges = (flags + nowFlags).contains { $0.changed != nil }
+        // 바뀜과 기준값은 같은 서버 변경(U1 PR2)에서 생긴다: 기준값이 있거나 행에 바뀜이 있으면 새 서버
+        tracksChanges = c.contains(.sectionLimits) || (flags + nowFlags).contains { $0.changed != nil }
     }
 
     /// 바뀐 할 일 id (Review · In Progress · To Do)

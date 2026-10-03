@@ -38,7 +38,7 @@ public struct DropdownLabel: View {
     }
 }
 
-/// 누르면 `action`(메뉴 열기)을 부르는 Dropdown. VoiceOver: "Scope, All Tasks"
+/// 누르면 `action`(메뉴 열기)을 부르는 Dropdown. VoiceOver: 이름 "Scope" + 값 "All Tasks"
 public struct DropdownButton: View {
     let title: String
     let size: DropdownLabel.Size
@@ -57,7 +57,8 @@ public struct DropdownButton: View {
             DropdownLabel(title, size: size)
         }
         .buttonStyle(.plain)
-        .accessibilityLabel(accessibilityName.map { "\($0), \(title)" } ?? title)
+        .accessibilityLabel(accessibilityName ?? title)
+        .accessibilityValue(accessibilityName == nil ? "" : title)
     }
 }
 

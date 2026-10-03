@@ -3,6 +3,7 @@ import TaskforceKit
 
 /// Launcher row (Figma 5:52, Mac): 제목 + 오른쪽에 기한 하나. 기한 지남 · 오늘은 빨강 (L2).
 /// 선택 행만 bg/selected + return 키캡. 부제는 기본으로 끈다 (L4, Review 행은 부제 자리에 확인 이유). 높이 40.
+/// 선택 행 위의 보조 글자 · 빨간 기한은 선택 전용 색(`-selected`), 기호는 text/primary (청색은 포커스 · 링크 · 커서에만, Figma 156:6).
 /// 오늘 끝낸 할 일(`dimmed`)은 제목을 text/secondary로 흐리게 (취소선 없음).
 /// `checked`: 고르는 목록의 지금 값 (⌘K Status의 지금 상태). 오른쪽에 체크, 골라도 return 키캡은 없다 (↩가 할 일이 없다).
 /// `shortcut`: 그 줄의 단축키 (⌘K Confirm "⌘↩" · Dismiss · Delete "⌘⌫"). 늘 보이는 키캡, 고르면 그 오른쪽에 return 키캡.
@@ -65,13 +66,13 @@ public struct LauncherRow: View {
             TitleSubtitleLayout(maxTitleWidth: 400, spacing: TFSpace.sm, keepsSubtitle: keepsSubtitle) {
                 Text(title)
                     .font(TFFont.callout)
-                    .foregroundStyle(dimmed ? TFColor.textSecondary : TFColor.textPrimary)
+                    .foregroundStyle(dimmed ? secondary : TFColor.textPrimary)
                     .lineLimit(1)
                     .truncationMode(.tail)
                 if let subtitle {
                     Text(subtitle)
                         .font(TFFont.footnote)
-                        .foregroundStyle(TFColor.textSecondary)
+                        .foregroundStyle(secondary)
                         .lineLimit(1)
                         .truncationMode(.tail)
                 }
@@ -80,7 +81,7 @@ public struct LauncherRow: View {
             if let accessory {
                 Text(accessory)
                     .font(TFFont.footnote)
-                    .foregroundStyle(urgent ? TFColor.statusOverdue : TFColor.textSecondary)
+                    .foregroundStyle(urgent ? (selected ? TFColor.statusOverdueSelected : TFColor.statusOverdue) : secondary)
                     .lineLimit(1)
                     .frame(maxWidth: 160, alignment: .trailing)
                     .fixedSize()
@@ -91,7 +92,7 @@ public struct LauncherRow: View {
             if checked {
                 Image(systemName: "checkmark")
                     .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(TFColor.textSecondary)
+                    .foregroundStyle(secondary)
                     .frame(minWidth: 20, minHeight: 20)
             } else if selected {
                 Keycap(systemImage: "return")
@@ -105,6 +106,11 @@ public struct LauncherRow: View {
         .accessibilityAddTraits(selected || checked ? .isSelected : [])
     }
 
+    /// 보조 글자 색: 선택 행(반투명 회색 bg/selected) 위에서는 4.5:1을 지키는 선택 전용 색
+    private var secondary: Color {
+        selected ? TFColor.textSecondarySelected : TFColor.textSecondary
+    }
+
     @ViewBuilder
     private var leadingView: some View {
         switch leading {
@@ -113,7 +119,7 @@ public struct LauncherRow: View {
         case .symbol(let name):
             Image(systemName: name)
                 .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(selected ? TFColor.textAccent : TFColor.textSecondary)
+                .foregroundStyle(selected ? TFColor.textPrimary : TFColor.textSecondary)
         case .source(let service):
             SourceIcon(service, size: .s)
         case .google:

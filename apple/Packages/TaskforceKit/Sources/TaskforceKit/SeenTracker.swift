@@ -36,10 +36,11 @@ public struct SeenTracker: Sendable, Hashable {
     }
 
     /// 새 `/now`를 받았다: 서버의 `changed`가 진실이라 보낸 기록을 비운다 (보내기가 실패했으면 점이 다시 보인다).
-    /// 선택된 행이 이제 바뀜이 아니면 떠날 때 보내지 않는다.
-    public mutating func refreshed(changed: Set<UUID>) {
+    /// 지금 선택된 행(`selected`, Mac 런처)이 이제 바뀜이면 떠날 때 보내고, 바뀜이 아니면 보내지 않는다.
+    /// 보내기가 끝나기 전에 요청한 `/now`가 오면 점이 잠깐 다시 보일 수 있다 (서버는 바뀜일 때만 기록하므로 중복 기록은 없다).
+    public mutating func refreshed(changed: Set<UUID>, selected: UUID? = nil) {
         sent = []
-        if let viewing, !changed.contains(viewing) { self.viewing = nil }
+        viewing = selected.flatMap { changed.contains($0) ? $0 : nil }
     }
 
     /// 계정 전환 · 로그아웃

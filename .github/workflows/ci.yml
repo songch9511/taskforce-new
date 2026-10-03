@@ -65,6 +65,17 @@ jobs:
       - name: swift test (TaskforceKit)
         working-directory: apple/Packages/TaskforceKit
         run: swift test
+      # swift test는 Asset Catalog를 컴파일하지 않고 복사만 한다. 색 토큰 테스트를 actool이 컴파일한 카탈로그로도 돌린다.
+      - name: Test TaskforceUI tokens (compiled asset catalog)
+        working-directory: apple/Packages/TaskforceKit
+        env:
+          TEST_RUNNER_TF_REQUIRE_COMPILED_CATALOG: "1"
+        run: >-
+          xcodebuild test
+          -scheme TaskforceKit-Package
+          -destination 'platform=macOS'
+          -only-testing:TaskforceUITests
+          -derivedDataPath "$RUNNER_TEMP/DerivedDataKit"
       - name: Test macOS launcher
         run: >-
           xcodebuild test
