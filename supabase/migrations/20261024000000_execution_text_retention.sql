@@ -5,7 +5,8 @@
 -- - 남기는 것: run · 단계 행과 id · 상태 · 결과 · hold · 시각, receipt의 글 아닌 값(decision · capability · model · prompt_version · error),
 --   산출물 행(id · 제목. 본문은 purge_expired_artifacts가 따로 비운다) · 원가 · 원장 · intent · 승인 · 실행 이벤트(글이 없다).
 -- - 기준은 저장한 시각(run을 만든 시각 execution_runs.created_at)이다: 만든 지 보관 기간이 지난 끝난 run(done · failed · stopped)의 글을 지운다.
---   지시 · receipt는 run이 열린 동안에만 쓰이므로 run을 만든 시각보다 늦다. 그래서 늦게 쓴 글은 90일보다 일찍 지워질 수 있지만 늦게 지워지지는 않는다.
+--   지시 · receipt는 run을 만든 뒤에 쓰이므로(멈춘 뒤 늦게 오는 응답 · readback 포함) 만든 시각으로 세도 쓴 뒤 90일보다 늦게 남지 않는다:
+--   run이 그때 끝나 있으면 그 정리에서, 열려 있거나 부르는 중 · 결과 불명인 단계가 남았으면 끝나는 대로 다음 정리에서 지운다. 늦게 쓴 글은 90일보다 일찍 지워질 수 있다.
 --   끝나지 않은 run(막힌 run 포함)은 건드리지 않는다: 계획 · 초안 단계가 요청 · 지시를 다시 읽는다. 그때까지 열려 있던 run은 끝난 뒤 첫 정리에서 지운다
 --   (= 만든 뒤 90일과 끝난 때 중 늦은 쪽). 끝 상태는 다시 열리지 않는다.
 --   끝났어도 부르는 중 · 결과 불명인 단계가 남은 run은 그 단계가 나올 때까지 미룬다(응답이 receipt를 늦게 쓸 수 있다).
@@ -92,10 +93,11 @@ begin
       and r.state in ('done', 'failed', 'stopped')
       and r.created_at < p_before
       and not exists (select 1 from public.execution_steps s where s.run_id = r.id and s.state in ('calling', 'unknown_outcome'))
-    order by r.created_at
+    order by r.created_at, r.id
     limit p_limit
   ) x;
   if cardinality(v_runs) = 0 then
+    perform set_config('execution.gate', coalesce(nullif(v_gate, 'retention'), ''), true);
     return 0;
   end if;
 

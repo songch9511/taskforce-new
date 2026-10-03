@@ -10,7 +10,7 @@ import { asUser, createLocalSupabase } from "./local-supabase";
 // 그때 실행 중인 run은 건드리지 않고 끝나는 대로 지운다.
 // 실행기(U2 PR6)가 부를 순서 그대로 SQL을 부른다: run → 계획 단계(초안 단계를 붙임) → 초안 단계(산출물 · 원가 · 정산) → 후속 계획(되묻기).
 // "만든 지 N일"은 run의 created_at을 N일 앞으로 옮겨(age) 보고, 운영 cron과 같은 기준 시각(지금 - 90일)으로 부른다.
-// 기준 시각을 앞으로 옮겨(지금 + 1일 = 91일 뒤의 cron) 보는 테스트도 있다. 늦게 끝난 run은 테스트 시계(app.now)로 끝낸다.
+// 기준 시각을 앞으로 옮겨(지금 + 1일 = 91일 뒤의 cron) 보는 테스트도 있다. 어제 끝난 run은 테스트 시계(app.now)를 어제로 맞춰 끝낸다.
 
 // 테스트 시계 (execution-credits.test.ts와 같은 판): 마이그레이션을 적용한 뒤 테스트 안에서만 바꾼다. app.now가 비면 now()
 const TEST_CLOCK = `
@@ -30,7 +30,7 @@ let db: PGlite;
 const one = async <T>(sql: string, params: unknown[] = []) => (await db.query<T>(sql, params)).rows[0];
 const count = async (sql: string, params: unknown[] = []) => (await one<{ n: number }>(`select count(*)::int as n from (${sql}) x`, params)).n;
 
-/** 정리: 기준 시각(p_before, SQL 식)보다 먼저 끝난 run의 글을 지우고 지운 run 수 */
+/** 정리: 기준 시각(p_before, SQL 식)보다 먼저 만든 끝난 run의 글을 지우고 지운 run 수 */
 const purge = async (before: string, limit = 5000) =>
   (await one<{ n: number }>(`select public.purge_expired_execution_text(${before}, $1) as n`, [limit])).n;
 /** 앞선 테스트가 남긴 끝난 run을 모두 지운다 (수를 세는 테스트가 자기 run만 보게) */
@@ -221,22 +221,28 @@ describe("끝난 run의 글 지우기 (purge_expired_execution_text)", () => {
     expect(await hasText(recent.runId)).toEqual({ request: false, brief: 0, receiptText: 0 });
   });
 
-  it("만든 지 90일이 지났어도 끝나지 않은 run(대기 · 크레딧으로 막힘)은 건드리지 않고, 끝나는 대로 다음 정리에서 지운다", async () => {
+  it("만든 지 90일이 지났어도 끝나지 않은 run(대기 · 승인 대기 · 크레딧으로 막힘)은 건드리지 않고, 끝나는 대로 다음 정리에서 지운다", async () => {
     await drain();
     const user = await newUser();
     const action = (await one<{ id: string }>("insert into public.actions (user_id, title) values ($1, 'x') returning id", [user])).id;
     const queued = (await one<{ id: string }>("select public.create_run($1, $2, 'draft', $3) as id", [user, action, REQUEST])).id;
+    // 승인 대기 run: U2에는 승인을 묻는 외부 단계가 없어 begin_call로 갈 수 없으므로 상태만 바꾼다 (U6a의 모양)
+    const waiting = await plannedRun(user);
+    await db.query("update public.execution_runs set state = 'waiting_approval' where id = $1", [waiting.runId]);
     const heldUser = await newUser(0);
     const held = await plannedRun(heldUser);
     expect(await gate(held.draftId)).toBe("insufficient_credit");
     expect(await runRow(held.runId)).toMatchObject({ state: "running", hold_reason: "credit" });
     await age(queued, 100);
+    await age(waiting.runId, 100);
     await age(held.runId, 100);
     const heldSteps = await stepRows(held.runId);
 
     expect(await purge(TODAY)).toBe(0);
     expect(await purge("now() + interval '1000 days'")).toBe(0);
     expect(await runRow(queued)).toMatchObject({ request: REQUEST, state: "queued", purged: false });
+    expect(await runRow(waiting.runId)).toMatchObject({ request: REQUEST, state: "waiting_approval", purged: false });
+    expect(await hasText(waiting.runId)).toEqual({ request: true, brief: 1, receiptText: 0 });
     expect(await runRow(held.runId)).toMatchObject({ request: REQUEST, state: "running", hold_reason: "credit", purged: false });
     expect(await stepRows(held.runId)).toEqual(heldSteps);
 
@@ -375,6 +381,13 @@ describe("계획 동결 트리거의 예외는 정리 함수 안의 지시 지�
     await db.transaction(async (tx) => {
       await tx.query("select set_config('execution.gate', 'retention', true)");
       expect((await tx.query(`select public.purge_expired_execution_text(${TODAY}) as n`)).rows).toEqual([{ n: 1 }]);
+      expect((await tx.query("select current_setting('execution.gate', true) as gate")).rows).toEqual([{ gate: "" }]);
+      await tx.rollback();
+    });
+    // 지울 run이 없어 일찍 끝나는 경로도 같다
+    await db.transaction(async (tx) => {
+      await tx.query("select set_config('execution.gate', 'retention', true)");
+      expect((await tx.query("select public.purge_expired_execution_text(now() - interval '100000 days') as n")).rows).toEqual([{ n: 0 }]);
       expect((await tx.query("select current_setting('execution.gate', true) as gate")).rows).toEqual([{ gate: "" }]);
       await tx.rollback();
     });

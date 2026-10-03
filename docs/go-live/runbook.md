@@ -353,8 +353,9 @@ select receipt->>'error' as error, count(*) as steps from public.execution_steps
 -- 0이 아니면 그 정리의 두 번째 목록(막히지 않은 run 포함)을 본다. 멈추면 다음 정리에서 지운다
 select count(*) as open_over_retention from public.execution_runs where state in ('queued', 'running', 'waiting_approval') and created_at < now() - interval '90 days';
 -- 만든 지 91일이 넘은 끝난 run 중 글이 남은 run: 0이어야 한다. 아니면 retention cron 응답의 execution_text_purged · 로그 "실행 글 정리 실패"를 본다
--- (부르는 중 · 결과 불명 단계가 남은 run은 그 단계가 나올 때까지 미룬다: 위 expired_calling · unknown_outcome. 오늘 끝난 오래된 run은 다음 정리까지 남는다)
-select count(*) as text_overdue from public.execution_runs where text_purged_at is null and state in ('done', 'failed', 'stopped') and created_at < now() - interval '91 days';
+-- (부르는 중 · 결과 불명 단계가 남아 미룬 run은 빼고 센다: 그런 단계는 위 expired_calling · unknown_outcome. 오늘 정리 뒤에 끝난 오래된 run은 다음 정리까지 남는다)
+select count(*) as text_overdue from public.execution_runs where text_purged_at is null and state in ('done', 'failed', 'stopped') and created_at < now() - interval '91 days'
+  and not exists (select 1 from public.execution_steps s where s.run_id = execution_runs.id and s.state in ('calling', 'unknown_outcome'));
 ```
 
 `EXECUTION_ENABLED`가 꺼져 있으면 sweep이 아무것도 하지 않아(lease 정리 · 원가 확정 · 예약 해제 모두) 위 수가 그대로 남는다. 켜면 1분 안에 줄어든다.
