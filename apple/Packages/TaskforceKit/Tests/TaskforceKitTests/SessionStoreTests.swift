@@ -70,6 +70,32 @@ struct SessionStoreSaveTests {
         ))
     }
 
+    func emailStore(status: Int, body: String) -> SessionStore {
+        let data = Data(body.utf8)
+        return SessionStore(auth: AuthClient(
+            url: URL(string: "https://example.supabase.co/auth/v1")!, localStorage: EmptyStorage(),
+            fetch: { request in
+                let url = request.url!
+                return (data, HTTPURLResponse(
+                    url: url, statusCode: status, httpVersion: nil,
+                    headerFields: [
+                        "Content-Type": "application/json",
+                        "X-Supabase-Api-Version": "2024-01-01",
+                    ]
+                )!)
+            },
+            autoRefreshToken: false
+        ))
+    }
+
+    func offlineEmailStore() -> SessionStore {
+        SessionStore(auth: AuthClient(
+            url: URL(string: "https://example.supabase.co/auth/v1")!, localStorage: EmptyStorage(),
+            fetch: { _ in throw URLError(.notConnectedToInternet) },
+            autoRefreshToken: false
+        ))
+    }
+
     @Test func signInThatWasNotSavedStaysSignedOut() {
         let store = store(storage: UnsavableStorage())
         store.apply(event: .signedIn, session: fixtures.session(expiresIn: 3600))
@@ -234,5 +260,59 @@ struct SessionStoreSaveTests {
         #expect(store.signInMethods == SignInMethods(providers: ["google"], primary: "google"))
         store.apply(event: .signedOut, session: nil)
         #expect(store.signInMethods == .unknown)
+    }
+
+    @Test func emailSignInInvalidCredentialsKeepCredentialGuidance() async {
+        let store = emailStore(
+            status: 400,
+            body: #"{"code":"invalid_credentials","msg":"Invalid login credentials"}"#
+        )
+
+        await store.signInWithEmail(email: "me@example.com", password: "wrong")
+
+        #expect(store.errorMessage == "Couldn't sign in. Check your email and password.")
+    }
+
+    @Test func emailSignInRateLimitExplainsRetry() async {
+        let store = emailStore(
+            status: 429,
+            body: #"{"code":"over_request_rate_limit","msg":"Too many requests"}"#
+        )
+
+        await store.signInWithEmail(email: "me@example.com", password: "password")
+
+        #expect(
+            store.errorMessage == "Too many sign-in attempts. Wait a moment before trying again."
+        )
+    }
+
+    @Test func emailSignInTransportErrorExplainsConnectionIssue() async {
+        let store = offlineEmailStore()
+
+        await store.signInWithEmail(email: "me@example.com", password: "password")
+
+        #expect(store.errorMessage == "Can't reach the sign-in service. Check your connection.")
+    }
+
+    @Test func emailSignInUnexpectedAuthErrorDoesNotBlameCredentials() async {
+        let store = emailStore(
+            status: 500,
+            body: #"{"code":"unexpected_failure","msg":"Internal server error"}"#
+        )
+
+        await store.signInWithEmail(email: "me@example.com", password: "password")
+
+        #expect(store.errorMessage == "Couldn't sign in. Try again in a moment.")
+    }
+
+    @Test func emailSignInNotAuthorizedDoesNotRevealAccountStatus() async {
+        let store = emailStore(
+            status: 403,
+            body: #"{"code":"email_address_not_authorized","msg":"Email address is not authorized"}"#
+        )
+
+        await store.signInWithEmail(email: "not-allowed@example.com", password: "password")
+
+        #expect(store.errorMessage == "Couldn't sign in. Try again in a moment.")
     }
 }

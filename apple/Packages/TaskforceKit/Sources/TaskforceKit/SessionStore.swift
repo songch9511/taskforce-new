@@ -123,8 +123,19 @@ public final class SessionStore {
         }
         do {
             _ = try await auth.signIn(email: email, password: password)
+        } catch let error as AuthError {
+            switch error.errorCode {
+            case .invalidCredentials:
+                errorMessage = "Couldn't sign in. Check your email and password."
+            case .overRequestRateLimit, .overEmailSendRateLimit:
+                errorMessage = "Too many sign-in attempts. Wait a moment before trying again."
+            default:
+                errorMessage = "Couldn't sign in. Try again in a moment."
+            }
+        } catch is URLError {
+            errorMessage = "Can't reach the sign-in service. Check your connection."
         } catch {
-            errorMessage = "Couldn't sign in. Check your email and password."
+            errorMessage = "Couldn't sign in. Try again in a moment."
         }
     }
 
