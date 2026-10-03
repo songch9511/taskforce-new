@@ -1,7 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { loadExecution } from "./load";
+import { loadExecution, loadMetrics } from "./load";
 
 vi.mock("server-only", () => ({}));
 
@@ -19,7 +19,7 @@ function fakeAdmin(tables: Record<string, unknown[] | Error>) {
       const result = tables[table] ?? [];
       let head = false;
       const builder: Record<string, unknown> = {};
-      for (const method of ["gte", "eq", "or", "order"]) {
+      for (const method of ["gte", "eq", "neq", "or", "order", "like", "in"]) {
         builder[method] = (...args: unknown[]) => {
           calls.push({ table, method, args });
           return builder;
@@ -111,5 +111,19 @@ describe("loadExecution", () => {
 
     expect(await loadExecution(admin, period)).toBeNull();
     expect(error).toHaveBeenCalledWith("실행 지표 읽기 실패:", 'relation "public.execution_runs" does not exist');
+  });
+});
+
+describe("loadMetrics: 리텐션의 활동", () => {
+  it("사용자 쓰기 이벤트를 활동으로 읽되 본 것 표시(user_seen, U1 바뀜 점)는 빼고 읽는다", async () => {
+    const { admin, calls } = fakeAdmin({});
+    await loadMetrics(admin, period);
+    // action_events는 두 번 읽는다: 기간 안의 이벤트(지표 1 · 4) · 처음부터의 사용자 쓰기(지표 3 활동)
+    const writes = calls.filter((c) => c.table === "action_events" && c.method !== "select" && c.method !== "order");
+    expect(writes).toEqual([
+      { table: "action_events", method: "gte", args: ["created_at", period.from.toISOString()] },
+      { table: "action_events", method: "eq", args: ["actor", "user"] },
+      { table: "action_events", method: "neq", args: ["type", "user_seen"] },
+    ]);
   });
 });

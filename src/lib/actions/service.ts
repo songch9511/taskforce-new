@@ -5,8 +5,10 @@ import { randomUUID } from "node:crypto";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 import type { ActionProgressState, ActionSummary, EditActionRequest, HandoffResponse } from "@/lib/api/contract";
+import { readAll } from "@/lib/read-all";
 import { SLACK_DISCONNECTED_QUOTE } from "@/lib/retention";
 
+import { changedActionIds, changedSinceSeen, type SeenEvent } from "./changed";
 import { loadClaims, loadStoredRow, retryOnConflict, writeAction, writeProgress, type ActionWrite, type StoredRow } from "./db-store";
 import { quoteContext } from "@/lib/pipeline/text";
 
@@ -157,10 +159,57 @@ export async function setActionProgress(admin: SupabaseClient, userId: string, a
   return summary(admin, userId, actionId);
 }
 
-/** 지금 할 일: 사용자 권한(RLS)으로 읽고 서버가 순서를 정한다. */
+/**
+ * 지금 할 일: 사용자 권한(RLS)으로 읽고 서버가 순서를 정한다. 항목마다 바뀜(changed, changed.ts)을 붙인다.
+ * 바뀜은 순서에 끼어들지 않는다 (rankNow가 정한 순서 · 점수 그대로, 필드 하나를 더할 뿐).
+ */
 export async function nowList(client: SupabaseClient, now = new Date()) {
   const { data } = await client.from("actions").select(SUMMARY_COLUMNS).eq("status", "open").throwOnError();
-  return rankNow((data ?? []) as (ActionSummary & RankInput)[], now);
+  const ranked = rankNow((data ?? []) as (ActionSummary & RankInput)[], now);
+  const changed = await changedAmong(client, [...ranked.now, ...ranked.confirmations].map((a) => a.id));
+  const mark = <T extends { id: string }>(action: T) => ({ ...action, changed: changed.has(action.id) });
+  return { now: ranked.now.map(mark), confirmations: ranked.confirmations.map(mark) };
+}
+
+/** 이 Action들의 이벤트 중 바뀜 판정에 쓰는 열만 (사용자 권한, RLS). id는 100개씩 나눠(요청 주소 길이) 1000행씩 끝까지 읽는다 */
+async function loadSeenEvents(client: SupabaseClient, actionIds: string[]): Promise<SeenEvent[]> {
+  const chunks: string[][] = [];
+  for (let i = 0; i < actionIds.length; i += 100) chunks.push(actionIds.slice(i, i + 100));
+  const lists = await Promise.all(
+    chunks.map((ids) =>
+      readAll<SeenEvent>((from, to) =>
+        client.from("action_events").select("action_id, type, actor, created_at").in("action_id", ids).order("created_at").order("id").range(from, to),
+      ),
+    ),
+  );
+  return lists.flat();
+}
+
+/** 바뀜은 곁가지다: 이벤트를 못 읽으면 모두 바뀌지 않은 것으로 두고 목록은 그대로 돌려준다 (failed_sources와 같다) */
+async function changedAmong(client: SupabaseClient, actionIds: string[]): Promise<Set<string>> {
+  if (actionIds.length === 0) return new Set();
+  try {
+    return changedActionIds(await loadSeenEvents(client, actionIds));
+  } catch (error) {
+    console.error("바뀜 조회 실패:", error instanceof Error ? error.message : error);
+    return new Set();
+  }
+}
+
+/**
+ * 본 것 표시 (POST /api/v1/actions/:id/seen): 사용자 권한(RLS)으로 Action과 이벤트를 읽어, 지금 /now에 바뀜으로 보일 할 일일 때만
+ * user_seen(actor user) 한 줄을 남긴다 (service role). 바뀌지 않았으면(이미 봤거나 바뀐 것이 없음 · 지금 할 일 목록에 없는 할 일)
+ * 쓰지 않는다: 화살표로 지나가거나 다시 보내도 이벤트가 쌓이지 않는다. actions 행은 고치지 않는다(순서 · 활동 시각 · Realtime 그대로).
+ * 없거나 남의 Action이면 ActionNotFoundError. 남겼으면 true.
+ */
+export async function markActionSeen(client: SupabaseClient, admin: SupabaseClient, userId: string, actionId: string): Promise<boolean> {
+  const { data: action } = await client.from("actions").select("status, owner").eq("id", actionId).maybeSingle().throwOnError();
+  if (!action) throw new ActionNotFoundError();
+  // /now에 오는 할 일만 바뀜이 있다 (열림 + 다른 사람 일이 아님, rank.ts rankNow)
+  if (action.status !== "open" || action.owner === "other") return false;
+  if (!changedSinceSeen(await loadSeenEvents(client, [actionId]))) return false;
+  await admin.from("action_events").insert({ user_id: userId, action_id: actionId, type: "user_seen", actor: "user" }).throwOnError();
+  return true;
 }
 
 /**

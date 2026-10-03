@@ -655,3 +655,21 @@ describe("meetingLinkage: 회의 원문에 일정이 붙은 비율", () => {
     expect(meetingLinkage(rows, new Set()).notion).toEqual({ total: 0, linked: 0, withTranscript: 0 });
   });
 });
+
+describe("본 것 표시(user_seen, U1 바뀜 점)는 지표가 세지 않는다", () => {
+  it("오판 · 확인 · 누락 어디에도 들어가지 않고, AI가 끝낸 일을 다시 연 판정도 그대로다", () => {
+    const seen = (id: string, at: string) => ev(id, "user_seen", at);
+    const events = [
+      created("a"),
+      seen("a", "2026-09-22T02:00:00Z"),
+      created("b"),
+      ev("b", "completed", "2026-09-22T03:00:00Z", { before: { status: "open" }, after: { status: "done" } }),
+      seen("b", "2026-09-22T04:00:00Z"),
+      ev("b", "user_edited", "2026-09-22T05:00:00Z", { before: { status: "done" }, after: { status: "open" } }),
+    ];
+    const m = misjudgment(events, period);
+    expect(m).toMatchObject({ aiCreated: 2, corrected: 1, confirmed: 0 });
+    expect(m.byField).toMatchObject({ status: 1, title: 0, due: 0, owner: 0, deleted: 0 });
+    expect(missed(events, m, period, true)).toMatchObject({ reported: 0, added: 0, addedPlain: 0 });
+  });
+});

@@ -5,6 +5,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { authenticateRequest } from "@/lib/api/auth";
+import { nowResponseSchema } from "@/lib/api/contract";
 
 import { GET } from "./route";
 
@@ -128,5 +129,71 @@ describe("GET /api/v1/now 회귀 기준 (0a71b2c)", () => {
     expect(response.status).toBe(200);
     const body = (await response.json()) as Record<string, unknown>;
     expect(JSON.stringify(withoutU1Fields(body), null, 2)).toBe(JSON.stringify(GOLDEN, null, 2));
+  });
+});
+
+// U1 PR2: 항목마다 바뀜 점(changed)과 섹션마다 처음에 보일 개수(section_limits)를 더한다. 순서 · 나머지 값은 위 기준 그대로다.
+describe("GET /api/v1/now 바뀜 점 · 섹션 개수 (U1)", () => {
+  const id = (prefix: string) => OPEN_ACTIONS.find((a) => a.id.startsWith(prefix))!.id;
+  const ev = (prefix: string, type: string, actor: string, created_at: string) => ({ action_id: id(prefix), type, actor, created_at });
+  // 할 일마다 사용자가 마지막으로 본 뒤 AI · 원문 · 실행기가 바꿨나 (lib/actions/changed.ts)
+  const EVENTS = [
+    ev("a", "created", "ai", "2026-09-28T01:00:00+00:00"),
+    ev("a", "due_changed", "ai", "2026-10-01T01:00:00.123456+00:00"), // 바뀜
+    ev("b", "created", "ai", "2026-09-28T01:00:00+00:00"),
+    ev("b", "due_changed", "ai", "2026-10-01T01:00:00+00:00"),
+    ev("b", "user_seen", "user", "2026-10-02T01:00:00+00:00"), // 본 뒤 그대로
+    ev("c", "user_created", "user", "2026-09-20T01:00:00+00:00"),
+    ev("c", "user_edited", "user", "2026-09-21T01:00:00+00:00"), // 사용자 자신의 수정은 바뀜이 아니다
+    ev("d", "created", "ai", "2026-09-01T01:00:00+00:00"),
+    ev("d", "user_started", "user", "2026-09-05T01:00:00+00:00"),
+    ev("d", "artifact_created", "agent", "2026-09-06T01:00:00+00:00"), // 실행 receipt
+    ev("1", "created", "ai", "2026-10-01T00:00:00+00:00"), // AI가 새로 만들기만 함
+    ev("2", "created", "ai", "2026-09-27T00:00:00+00:00"),
+    ev("2", "merged", "ai", "2026-09-28T00:00:00+00:00"), // 원문 때문에 확인 요청이 생김
+    ev("3", "due_changed", "ai", "2026-10-02T00:00:00+00:00"), // 다른 사람 일: 목록에 없다
+  ];
+
+  it("새 필드를 뺀 응답은 기준과 같고, changed는 할 일마다 · section_limits는 2 · 5 · 5", async () => {
+    const { client, queries } = fakeClient((query) => {
+      if (query.table !== "action_events") return baseResolver(query);
+      const ids = query.calls.find((c) => c.method === "in")!.args[1] as string[];
+      return { data: EVENTS.filter((e) => ids.includes(e.action_id)) };
+    });
+    const response = await getNow(client);
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as Record<string, unknown>;
+    expect(JSON.stringify(withoutU1Fields(body), null, 2)).toBe(JSON.stringify(GOLDEN, null, 2));
+
+    const parsed = nowResponseSchema.parse(body);
+    const changed = (list: { id: string; changed: boolean }[]) => list.filter((a) => a.changed).map((a) => a.id.slice(0, 1));
+    expect(changed(parsed.now)).toEqual(["a", "d"]);
+    expect(changed(parsed.confirmations)).toEqual(["2"]);
+    expect(body.section_limits).toEqual({ review: 2, in_progress: 5, to_do: 5 });
+
+    // 목록에 오는 할 일(다른 사람 일 제외)의 이벤트만, 바뀜 판정에 쓰는 열만 읽는다
+    const events = queries.filter((q) => q.table === "action_events");
+    expect(events).toHaveLength(1);
+    expect(events[0].select).toBe("action_id, type, actor, created_at");
+    const listed = [...parsed.now, ...parsed.confirmations].map((a) => a.id);
+    expect(events[0].calls).toEqual([
+      { method: "in", args: ["action_id", listed] },
+      { method: "order", args: ["created_at"] },
+      { method: "order", args: ["id"] },
+      { method: "range", args: [0, 999] },
+    ]);
+  });
+
+  it("이벤트를 못 읽어도 목록은 그대로 200, changed는 모두 false", async () => {
+    const { client } = fakeClient((query) => (query.table === "action_events" ? { data: null, error: new Error("permission denied for table action_events") } : baseResolver(query)));
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    const response = await getNow(client);
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as Record<string, unknown>;
+    expect(JSON.stringify(withoutU1Fields(body), null, 2)).toBe(JSON.stringify(GOLDEN, null, 2));
+    const parsed = nowResponseSchema.parse(body);
+    expect([...parsed.now, ...parsed.confirmations].every((a) => a.changed === false)).toBe(true);
+    expect(log).toHaveBeenCalledWith("바뀜 조회 실패:", "permission denied for table action_events");
+    log.mockRestore();
   });
 });

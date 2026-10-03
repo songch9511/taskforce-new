@@ -2,20 +2,21 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 
 import { nowList } from "@/lib/actions/service";
 import { authenticateRequest } from "@/lib/api/auth";
-import { sourceFailureCodeSchema, type FailedSources, type NowResponse } from "@/lib/api/contract";
+import { NOW_SECTION_LIMITS, sourceFailureCodeSchema, type FailedSources, type NowResponse } from "@/lib/api/contract";
 import { errorResponse, unauthorized } from "@/lib/api/respond";
 import { weeklyCheckEnabled } from "@/lib/env";
 import { previousKstWeek, weeklyCheckDue } from "@/lib/metrics/weekly-check";
 import { RETRY_WINDOW_MS } from "@/lib/sources/retry-window";
 
-// 지금 할 일 순서와 확인 요청 목록, 이번 주에 물을 주간 질문, 처리에 실패한 원문 수. 순서 계산은 서버에만 둔다 (앱에 같은 로직을 두지 않는다).
+// 지금 할 일 순서와 확인 요청 목록(항목마다 바뀜 점), 이번 주에 물을 주간 질문, 처리에 실패한 원문 수, 섹션마다 처음에 보일 개수.
+// 순서 계산은 서버에만 둔다 (앱에 같은 로직을 두지 않는다).
 export async function GET(request: Request) {
   const context = await authenticateRequest(request);
   if (!context) return unauthorized();
   try {
     const now = new Date();
     const [ranked, weekly, failed] = await Promise.all([nowList(context.supabase, now), weeklyCheck(context.supabase, now), failedSources(context.supabase, now)]);
-    return Response.json({ ...ranked, weekly_check: weekly, failed_sources: failed } satisfies NowResponse);
+    return Response.json({ ...ranked, weekly_check: weekly, failed_sources: failed, section_limits: NOW_SECTION_LIMITS } satisfies NowResponse);
   } catch (error) {
     console.error("지금 할 일 조회 실패:", error instanceof Error ? error.message : error);
     return errorResponse(500, "internal_error", "목록을 불러오지 못했습니다.");

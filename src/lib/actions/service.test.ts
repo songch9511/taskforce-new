@@ -1,7 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { describe, expect, it, vi } from "vitest";
 
-import { createUserAction } from "./service";
+import { createUserAction, nowList } from "./service";
 
 vi.mock("server-only", () => ({}));
 
@@ -48,5 +48,76 @@ describe("createUserAction: 직접 추가의 원문 표시", () => {
     const events = writes[0].p_events as EventParam[];
     expect(events[0]).toMatchObject({ type: "user_created", source_id: null, after: { source_id: null } });
     expect(writes[0].p_evidence).toEqual([]);
+  });
+});
+
+// 지금 할 일의 바뀜 점 (U1): 이벤트는 사용자 권한으로 목록의 할 일 것만 읽는다. id가 많으면 100개씩 나누고(요청 주소 길이),
+// 한 번에 1000행까지 오므로 끝까지 이어 읽는다 (빠진 이벤트로 본 것 · 바뀐 것을 놓치지 않게).
+describe("nowList: 바뀜 점 이벤트 읽기", () => {
+  const actionId = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
+  const open = Array.from({ length: 150 }, (_, i) => ({
+    id: actionId(i),
+    title: `할 일 ${i}`,
+    owner: "me",
+    status: "open",
+    due_date: null,
+    counterpart: null,
+    needs_confirmation: false,
+    confirm_reasons: [],
+    started_at: null,
+    last_activity_at: "2026-10-02T09:00:00.000Z",
+  }));
+
+  it("150개면 100 · 50개씩 두 번, 1000행이 찬 쪽은 다음 쪽까지 읽어 마지막 쪽의 본 것까지 반영한다", async () => {
+    const reads: { ids: string[]; from: number; to: number }[] = [];
+    // 0번 할 일: AI 변경 1000건(첫 쪽을 채움) 뒤 두 번째 쪽에 user_seen → 바뀜 아님. 120번 할 일: AI 변경 → 바뀜
+    const first = Array.from({ length: 1000 }, (_, i) => ({ action_id: actionId(0), type: "merged", actor: "ai", created_at: new Date(Date.UTC(2026, 9, 1, 0, 0, i)).toISOString() }));
+    const second = [{ action_id: actionId(0), type: "user_seen", actor: "user", created_at: "2026-10-02T00:00:00.000Z" }];
+    const changed = [{ action_id: actionId(120), type: "due_changed", actor: "ai", created_at: "2026-10-02T00:00:00.000Z" }];
+    const client = {
+      from: (table: string) => {
+        let ids: string[] = [];
+        const q = {
+          select: () => q,
+          eq: () => q,
+          in: (_column: string, values: string[]) => {
+            ids = values;
+            return q;
+          },
+          order: () => q,
+          throwOnError: async () => ({ data: table === "actions" ? open : [] }),
+          range: async (from: number, to: number) => {
+            reads.push({ ids, from, to });
+            if (ids.includes(actionId(0))) return { data: from === 0 ? first : second, error: null };
+            return { data: ids.includes(actionId(120)) ? changed : [], error: null };
+          },
+        };
+        return q;
+      },
+    } as unknown as SupabaseClient;
+
+    const ranked = await nowList(client, new Date("2026-10-03T03:00:00.000Z"));
+    // 두 묶음은 함께 읽는다 (순서는 상관없다)
+    expect(reads.map((r) => [r.ids.length, r.from, r.to]).sort()).toEqual([
+      [100, 0, 999],
+      [100, 1000, 1999],
+      [50, 0, 999],
+    ]);
+    expect(new Set(reads.flatMap((r) => r.ids))).toEqual(new Set(open.map((a) => a.id)));
+    expect(ranked.now.filter((a) => a.changed).map((a) => a.id)).toEqual([actionId(120)]);
+    expect(ranked.now).toHaveLength(150);
+  });
+
+  it("열린 할 일이 없으면 이벤트를 읽지 않는다", async () => {
+    const tables: string[] = [];
+    const client = {
+      from: (table: string) => {
+        tables.push(table);
+        const q = { select: () => q, eq: () => q, throwOnError: async () => ({ data: [] }) };
+        return q;
+      },
+    } as unknown as SupabaseClient;
+    expect(await nowList(client)).toEqual({ now: [], confirmations: [] });
+    expect(tables).toEqual(["actions"]);
   });
 });

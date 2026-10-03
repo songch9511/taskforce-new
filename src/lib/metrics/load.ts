@@ -171,8 +171,16 @@ export async function loadMetrics(admin: SupabaseClient, period: Period) {
   const weeklyChecks = await readAll<{ user_id: string; week_start: string; answer: WeeklyCheckRow["answer"]; answered_at: string }>((from, to) =>
     admin.from("weekly_checks").select("user_id, week_start, answer, answered_at").gte("answered_at", since).order("answered_at").order("id").range(from, to),
   );
+  // 본 것 표시(user_seen, U1 바뀜 점)는 사용자의 쓰기가 아니라 활동에 넣지 않는다 (리텐션 정의를 바꾸지 않게)
   const userWrites = await readAll<{ user_id: string; action_id: string; created_at: string }>((from, to) =>
-    admin.from("action_events").select("user_id, action_id, created_at").eq("actor", "user").order("created_at").order("id").range(from, to),
+    admin
+      .from("action_events")
+      .select("user_id, action_id, created_at")
+      .eq("actor", "user")
+      .neq("type", "user_seen")
+      .order("created_at")
+      .order("id")
+      .range(from, to),
   );
 
   // 이벤트의 원문 종류: 할 일 DB에서 온 Action은 AI 판단이 아니다
