@@ -173,6 +173,7 @@ flowchart TD
 | app_opened | iPhone `App/iOS/RootView.swift`, Mac `App/Mac/LauncherPanel.swift` | `Kit/AppOpenTracker.swift`, `LauncherOpenThrottle`(30분) | `POST /metric-events` | 둘 다 | `AppOpenTrackerTests`, `LauncherTests` |
 | 변경 구독 | `App/Shared/AppEnvironment.swift` `ActionChangeFeed` | `Kit/ActionChanges.swift`. 바뀜 신호로만 쓰고 `/now`를 다시 읽는다 | Realtime `actions` | 둘 다 | 없음 |
 | 주간 질문 | HomeView 카드 | `NowStore.answerWeekly` | `POST /weekly-check` | iOS | `APIClientTests` |
+| Mac 설정 창 | `App/Mac/MacSettingsView.swift` (760×480 사이드바, Account는 시트), 확인용 `App/Mac/SettingsSnapshot.swift` | `App/Mac/MacAppDelegate.swift` `MacSettingsTab`: 보이는 항목 `sidebar`(숨긴 항목은 그 단위가 한 줄씩), 저장된 예전 탭 값 → 페이지 `page(stored:)`, 검색 `sidebar(matching:)`, ↑↓ `step`. 밖에서 열기 `SettingsOpener.open` · 시트 `SettingsRoute` | — | Mac | 앱 `TaskforceTests/MacSettingsTabTests` |
 
 ### 3-6. 실행 · 크레딧 (서버, U2)
 
@@ -200,7 +201,7 @@ flowchart TD
 | 로컬 서버 | `npm run dev` | 준비는 [README.md](../README.md) "로컬 실행" |
 | Apple 패키지 테스트 | `cd apple/Packages/TaskforceKit && swift test` (`--filter <스위트>`) | CI `apple` job (macos-26 · Xcode 26.6) |
 | Apple 빌드 | `xcodebuild build -project apple/Taskforce.xcodeproj -scheme Taskforce -configuration Debug -destination 'generic/platform=macOS' CODE_SIGNING_ALLOWED=NO` (iOS는 `'generic/platform=iOS Simulator'`) | `apple/Config/Base.xcconfig`가 `Secrets.xcconfig`를 선택적으로 읽는다. 없어도 빌드는 되지만 Supabase 값이 빈다 (CI는 예제 파일을 복사한다) |
-| 화면 견본 | 실행 인자 `-TFSampleData` · `-TFSampleSyncing`, Mac `--show-launcher -TFSampleData -TFSnapshot <폴더>` | [apple/README.md](../apple/README.md) |
+| 화면 견본 | 실행 인자 `-TFSampleData` · `-TFSampleSyncing`, Mac `--show-launcher -TFSampleData -TFSnapshot <폴더>` · 설정 창 `--show-settings -TFSampleData -TFSnapshot <폴더>` | [apple/README.md](../apple/README.md) |
 | 운영 DB 마이그레이션 | `npx supabase db query --linked -f supabase/migrations/<파일>` | `db push`는 쓰지 않는다 (원격에 마이그레이션 기록이 없다). [런북](go-live/runbook.md) |
 
 **테스트가 없는 곳 (2026-09-29).**

@@ -56,6 +56,7 @@ xcodebuild build -project apple/Taskforce.xcodeproj -scheme Taskforce -destinati
 디자인 비교용 견본 (Debug 빌드만): 실행 인자 `-TFSampleData`를 주면 Figma 견본과 같은 문구로 화면을 채우고 서버를 부르지 않는다.
 `-TFSampleData -TFSampleSyncing`은 할 일 없이 Notion이 첫 동기화 중인 화면("Syncing…")이다.
 Mac은 `--show-launcher -TFSampleData -TFSnapshot <폴더>`로 실행하면 런처의 목록 · 펼침 · ⌘K · 찾기 화면과 설정 창을 PNG로 남기고 끝낸다(화면 녹화 권한 없이 자기 창만 그린다).
+`--show-settings -TFSampleData -TFSnapshot <폴더>`는 설정 창 사이드바의 보이는 항목마다 Light · Dark PNG(`mac-settings-<항목>-light.png` · `-dark.png`, Account는 열린 시트)를 남기고 끝낸다. `-TFSnapshot` 없이 `--show-settings`만 주면 설정 창을 연다(Debug 빌드).
 
 ## 화면
 
@@ -83,7 +84,7 @@ Mac은 `--show-launcher -TFSampleData -TFSnapshot <폴더>`로 실행하면 런�
 ### Mac — 에이전트 앱 + ⌥Space 런처 (Figma 5:57 · 5:90)
 
 - Dock 아이콘 없음(`LSUIElement`, macOS만). 메뉴 막대의 로고 마크: Open Launcher · Settings… · Quit.
-- 전역 단축키 ⌥Space(Carbon `RegisterEventHotKey`, 샌드박스 안에서 동작). Settings → Shortcut에서 바꾼다(UserDefaults).
+- 전역 단축키 ⌥Space(Carbon `RegisterEventHotKey`, 샌드박스 안에서 동작). Settings → Keyboard Shortcuts에서 바꾼다(UserDefaults).
 - 런처: 폭 696 · 모서리 26, 바탕은 macOS 26부터 `NSGlassEffectView`(Liquid Glass), 그 전은 `NSVisualEffectView` 유리 재질 + 1pt 테두리. 화면 가운데 위쪽. esc · 다른 곳 클릭 · 동작 완료로 닫힌다.
   - 빈칸 → Review · In Progress · To Do · Done Today(흐리게) · Commands(Send clipboard as source · Report missing action · Connections · Settings · Quit). 빈 구역은 숨김
   - 짧은 글 → 네 구역을 앱에서 거른 결과(순서 계산 아님) + Ask “…” + Hand off “첫 결과” to AI, 그 아래 거른 Done Today
@@ -103,7 +104,9 @@ Mac은 `--show-launcher -TFSampleData -TFSnapshot <폴더>`로 실행하면 런�
   - `app_opened`는 런처가 뜰 때 30분에 한 번(`LauncherOpenThrottle`).
   - 할 일이 하나도 없는데 연결이 동기화 중이면 빈 입력창 목록 맨 위에 진행 표시 + "Syncing…" 한 줄(고를 수 없음).
   - 알림 권한은 런처가 뜰 때 연결이 있으면 한 번 묻는다. 알림을 누르면 런처를 열고 그 할 일(Review · 할 일 행)을 고른다(목록을 아직 못 읽었으면 읽은 뒤에).
-- 설정 창(SwiftUI Settings 장면): Account · Connections · AI data · Shortcut. iPhone과 같은 연결 · 동의 화면을 쓴다. Account의 Sign Out도 이 기기만이다.
+- 설정 창(SwiftUI Settings 장면, 760×480, Figma S1): 왼쪽 사이드바(`Settings` · 검색칸 · Personal / Work)에 Keyboard Shortcuts · Account ↗ · Connections · Privacy & AI Data. Account는 페이지가 아니라 창 위 시트이고, 그 Sign Out도 이 기기만이다. iPhone과 같은 연결 · 동의 화면을 쓴다. 아직 내용이 없는 General · Notifications · Usage & Credits · Automation은 숨기고, 그 단위가 `MacSettingsTab.sidebar`에 한 줄씩 넣는다.
+  - 키보드: 검색칸에서 시작한다. 글자로 항목 이름을 거르고, ↑↓로 옮기고, ↩로 연다(Account는 시트). ⌘F는 검색칸으로, esc는 검색어를 지운다.
+  - 마지막에 본 페이지를 기억한다(`settings.tab`). 예전 탭 값은 `MacSettingsTab.page(stored:)`가 옮긴다: `shortcut` → Keyboard Shortcuts, `account`(이제 시트) → 첫 페이지.
 - 로그아웃 · 만료 · 계정 삭제 · 계정 전환으로 계정이 떠나면 `SessionStore.onSignedOut`에서 런처 화면 · 목록 · 진행 중 작업을 지운다. Supabase · API 요청은 응답을 디스크 캐시에 남기지 않는다(`TaskforceClient.urlSession`). API가 401이면 인증 서버에 세션을 다시 묻고, 계정(다른 기기에서 지움) · 세션이 없을 때만 이 기기를 로그아웃한다. 살아 있으면 "Couldn't verify your sign-in. Sign out, then sign in again."
 
 ### 연결 · 동의 (양쪽)
@@ -120,7 +123,7 @@ Mac은 `--show-launcher -TFSampleData -TFSnapshot <폴더>`로 실행하면 런�
   동기화 중인 연결이 있으면 보이는 화면(iPhone 홈 · 계정 시트의 Connections · Mac 설정 · 떠 있는 런처)이 6초마다 연결을 다시 읽고, 끝나면 `NowStore.load()`로 새 할 일을 불러온다(Realtime `actions` 신호도 그대로).
   Sync Now는 서버가 끝날 때까지(최대 4분) 답하지 않아 요청 시간을 5분으로 둔다. 429 rate_limited(이미 동기화 중 · 방금 동기화)는 오류가 아니다: 연결을 다시 읽어 "Syncing…" 또는 "Synced just now"를 보여 준다(`SyncNowFailure`). 409는 동의 화면.
 - 알림 기기 등록(C10, `PushCenter`): 허용돼 있으면 실행 · 로그인마다 토큰을 다시 받아 `POST /api/v1/devices {token, platform, environment, app_version}`. environment는 서명 프로필의 aps-environment(개발 서명 = sandbox, TestFlight · App Store = production), 프로필이 없으면 Debug = sandbox · Release = production(`PushEnvironment`). Sign Out 전에 `DELETE /api/v1/devices {token}`.
-  알림 내용의 `kind`(confirmation · due · reconnect) · `action_id`(`action_ids`)로 열 곳을 정한다(`NotificationTarget`, 서버 `src/lib/notify/apns.ts`). `reconnect`(연결이 만료돼 다시 연결해야 함)는 할 일 없이 연결 화면을 연다: iPhone은 계정 시트의 Connections, Mac은 설정의 Connections 탭. 모르는 `kind`는 앱만 연다.
+  알림 내용의 `kind`(confirmation · due · reconnect) · `action_id`(`action_ids`)로 열 곳을 정한다(`NotificationTarget`, 서버 `src/lib/notify/apns.ts`). `reconnect`(연결이 만료돼 다시 연결해야 함)는 할 일 없이 연결 화면을 연다: iPhone은 계정 시트의 Connections, Mac은 설정의 Connections. 모르는 `kind`는 앱만 연다.
 
 ## 구조
 

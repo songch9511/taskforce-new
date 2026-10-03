@@ -50,6 +50,10 @@ final class MacAppDelegate: NSObject, NSApplicationDelegate {
             launcher.snapshotIfRequested()
             #endif
         }
+        #if DEBUG
+        // 설정 창 확인용: `--show-settings` (`-TFSnapshot <폴더>`면 항목마다 PNG를 남기고 끝낸다)
+        SettingsSnapshot.runIfRequested()
+        #endif
     }
 
     /// `taskforce://connections/…` · Google 로그인 콜백 (ASWebAuthenticationSession이 주소를 바로 돌려주지만, 앱 밖에서 열린 경우를 위해)
@@ -115,7 +119,7 @@ final class MacAppDelegate: NSObject, NSApplicationDelegate {
 struct MenuBarMenu: View {
     var body: some View {
         Button("Open Launcher") { MacAppDelegate.shared?.launcher?.show() }
-        Button("Settings…") { SettingsOpener.open(.account) }
+        Button("Settings…") { SettingsOpener.open() }
             .keyboardShortcut(",")
         Divider()
         Button("Quit Taskforce") { NSApplication.shared.terminate(nil) }
@@ -141,8 +145,71 @@ struct MenuBarLabel: View {
     }
 }
 
+/// 설정 사이드바 항목 (Figma S1 239:1614). 페이지의 rawValue는 마지막에 본 페이지로 저장된다 (`SettingsOpener.tabKey`).
 enum MacSettingsTab: String, CaseIterable {
-    case account, connections, ai, shortcut
+    case keyboardShortcuts
+    /// 페이지가 아니라 계정 시트 (↗)
+    case account
+    case connections
+    /// Privacy & AI Data (저장값은 예전 AI data 탭과 같은 `ai`)
+    case ai
+
+    enum Group: String {
+        case personal = "Personal"
+        case work = "Work"
+    }
+
+    struct Item: Identifiable, Equatable {
+        let tab: MacSettingsTab
+        let title: String
+        let systemImage: String
+        let group: Group
+
+        var id: MacSettingsTab { tab }
+    }
+
+    /// 사이드바, 순서대로. 아직 내용이 없는 항목은 숨기고 그 단위가 한 줄씩 넣는다:
+    /// Personal — General(맨 위) · Notifications(U8b) · Usage & Credits(U2 Mac, Account 위) / Work — Automation(U6b, Connections 아래)
+    static let sidebar: [Item] = [
+        Item(tab: .keyboardShortcuts, title: "Keyboard Shortcuts", systemImage: "keyboard", group: .personal),
+        Item(tab: .account, title: "Account", systemImage: "person", group: .personal),
+        Item(tab: .connections, title: "Connections", systemImage: "link", group: .work),
+        Item(tab: .ai, title: "Privacy & AI Data", systemImage: "shield", group: .work),
+    ]
+
+    var opensSheet: Bool { self == .account }
+
+    /// 설정 창이 보일 페이지. 저장값은 예전 탭 값(`account` · `connections` · `ai` · `shortcut`)도 받는다:
+    /// `shortcut`은 Keyboard Shortcuts, `account`(이제 시트) · 모르는 값 · 사이드바에 없는 항목은 첫 페이지
+    static func page(stored: String?) -> MacSettingsTab {
+        let tab = stored.flatMap { $0 == "shortcut" ? .keyboardShortcuts : MacSettingsTab(rawValue: $0) }
+        if let tab, !tab.opensSheet, sidebar.contains(where: { $0.tab == tab }) { return tab }
+        return sidebar.first { !$0.tab.opensSheet }?.tab ?? .connections
+    }
+
+    /// 사이드바 검색칸: 이름에 낱말이 모두 든 항목만 (대소문자 · 악센트 무시). 빈 칸이면 전부
+    static func sidebar(matching query: String) -> [Item] {
+        let words = query.split(whereSeparator: \.isWhitespace)
+        return sidebar.filter { item in words.allSatisfy { item.title.localizedStandardContains($0) } }
+    }
+
+    /// ↑↓: 보이는 항목 안에서 한 칸 (끝에서 멈춘다). 지금 항목이 목록에 없으면 ↓는 처음, ↑는 끝으로
+    static func step(from current: MacSettingsTab, by offset: Int, in items: [Item]) -> MacSettingsTab? {
+        guard let index = items.firstIndex(where: { $0.tab == current }) else {
+            return (offset > 0 ? items.first : items.last)?.tab
+        }
+        return items[min(max(index + offset, 0), items.count - 1)].tab
+    }
+}
+
+/// 설정 창 위 시트. 사이드바와 창 밖(런처 · 메뉴)이 같이 쓴다: 창이 없을 때 요청해도 창이 뜨면서 띄운다
+@MainActor
+@Observable
+final class SettingsRoute {
+    static let shared = SettingsRoute()
+
+    /// Account 시트 (사이드바 Account ↗ · `SettingsOpener.open(.account)`)
+    var showsAccount = false
 }
 
 /// 설정 창 열기. 에이전트 앱은 먼저 앞으로 나와야 창이 다른 앱 뒤에 숨지 않는다.
@@ -154,8 +221,13 @@ enum SettingsOpener {
     /// Settings 장면의 openSettings를 아직 받지 못했을 때 쓰는 같은 내용의 창
     private static var fallbackWindow: NSWindow?
 
-    static func open(_ tab: MacSettingsTab) {
-        UserDefaults.standard.set(tab.rawValue, forKey: tabKey)
+    /// `tab`이 없으면 마지막에 본 페이지. Account는 창 위에 시트로 연다
+    static func open(_ tab: MacSettingsTab? = nil) {
+        if let tab, tab.opensSheet {
+            SettingsRoute.shared.showsAccount = true
+        } else if let tab {
+            UserDefaults.standard.set(tab.rawValue, forKey: tabKey)
+        }
         NSApplication.shared.activate()
         guard let action else {
             showFallbackWindow()
