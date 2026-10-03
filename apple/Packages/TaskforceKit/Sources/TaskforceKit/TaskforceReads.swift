@@ -24,6 +24,9 @@ public struct TaskforceReads: Sendable {
         self.supabase = supabase
     }
 
+    /// `action_events.type` 중 변경 이력에서 빼는 것 (`POST /actions/:id/seen`이 남긴다)
+    static let seenEventType = "user_seen"
+
     public func actionDetail(id: UUID) async throws -> ActionDetail {
         let idString = id.lowercased
         async let actionRows: [ActionRecord] = rows(
@@ -33,8 +36,10 @@ public struct TaskforceReads: Sendable {
             supabase.from("evidence").select(EvidenceRecord.columns).eq("action_id", value: idString)
                 .order("created_at", ascending: false).limit(50)
         )
+        // `user_seen`(바뀜 점을 본 기록, U1 PR2)은 변경 이력이 아니라 빼고 읽는다: 이력에 보이지 않고 100개 한도도 먹지 않게
         async let eventRows: [ActionEventRecord] = rows(
             supabase.from("action_events").select(ActionEventRecord.columns).eq("action_id", value: idString)
+                .neq("type", value: Self.seenEventType)
                 .order("created_at", ascending: false).limit(100)
         )
         guard let action = try await actionRows.first else { throw APIError.server(status: 404, code: .notFound, message: "") }

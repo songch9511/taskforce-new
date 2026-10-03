@@ -221,7 +221,7 @@ public struct TaskBoard: Sendable, Hashable {
                 }
             }
         }
-        return TaskBoard(now: NowResponse(now: open, confirmations: reviews, weeklyCheck: now.weeklyCheck), doneToday: done)
+        return TaskBoard(now: now.replacing(now: open, confirmations: reviews), doneToday: done)
     }
 
     /// 구역으로 나눈다. `query`가 있으면 네 구역 모두 그 말로 거른다 (`TaskFilter`, 순서는 그대로).
@@ -290,6 +290,6 @@ extension ActionSummary {
 
 extension RankedAction {
     func replacing(action: ActionSummary) -> RankedAction {
-        RankedAction(action: action, score: score, reasons: reasons, daysUntilDue: daysUntilDue)
+        RankedAction(action: action, score: score, reasons: reasons, daysUntilDue: daysUntilDue, changed: changed)
     }
 }

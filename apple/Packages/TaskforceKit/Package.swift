@@ -25,5 +25,7 @@ let package = Package(
             resources: [.process("Resources")]
         ),
         .testTarget(name: "TaskforceKitTests", dependencies: ["TaskforceKit"]),
+        // 토큰 이름 · Light/Dark 값(Figma 변수) · 글자 대비, 부품의 순수 규칙
+        .testTarget(name: "TaskforceUITests", dependencies: ["TaskforceUI"]),
     ]
 )
