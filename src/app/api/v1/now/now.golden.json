@@ -1,0 +1,185 @@
+{
+  "now": [
+    {
+      "id": "a0000000-0000-4000-8000-000000000001",
+      "title": "할 일 a",
+      "owner": "me",
+      "status": "open",
+      "due_date": "2026-09-30",
+      "counterpart": "김대표",
+      "needs_confirmation": false,
+      "confirm_reasons": [],
+      "started_at": "2026-09-29T01:00:00.000Z",
+      "last_activity_at": "2026-10-01T01:00:00.000Z",
+      "score": 145,
+      "reasons": [
+        "overdue",
+        "external",
+        "started"
+      ],
+      "days_until_due": -3
+    },
+    {
+      "id": "b0000000-0000-4000-8000-000000000002",
+      "title": "할 일 b",
+      "owner": "me",
+      "status": "open",
+      "due_date": "2026-10-03",
+      "counterpart": null,
+      "needs_confirmation": false,
+      "confirm_reasons": [],
+      "started_at": null,
+      "last_activity_at": "2026-10-02T09:00:00.000Z",
+      "score": 90,
+      "reasons": [
+        "due_today"
+      ],
+      "days_until_due": 0
+    },
+    {
+      "id": "c0000000-0000-4000-8000-000000000003",
+      "title": "할 일 c",
+      "owner": "me",
+      "status": "open",
+      "due_date": "2026-10-05",
+      "counterpart": null,
+      "needs_confirmation": false,
+      "confirm_reasons": [],
+      "started_at": null,
+      "last_activity_at": "2026-09-20T01:00:00.000Z",
+      "score": 69.5,
+      "reasons": [
+        "due_soon",
+        "neglected"
+      ],
+      "days_until_due": 2
+    },
+    {
+      "id": "50000000-0000-4000-8000-00000000000c",
+      "title": "할 일 5",
+      "owner": "unknown",
+      "status": "open",
+      "due_date": "2026-10-06",
+      "counterpart": "최이사",
+      "needs_confirmation": false,
+      "confirm_reasons": [],
+      "started_at": null,
+      "last_activity_at": "2026-10-02T09:00:00.000Z",
+      "score": 60,
+      "reasons": [
+        "due_soon",
+        "external"
+      ],
+      "days_until_due": 3
+    },
+    {
+      "id": "d0000000-0000-4000-8000-000000000004",
+      "title": "할 일 d",
+      "owner": "me",
+      "status": "open",
+      "due_date": null,
+      "counterpart": null,
+      "needs_confirmation": false,
+      "confirm_reasons": [],
+      "started_at": null,
+      "last_activity_at": "2026-09-10T01:00:00.000Z",
+      "score": 42,
+      "reasons": [
+        "neglected"
+      ],
+      "days_until_due": null
+    },
+    {
+      "id": "e0000000-0000-4000-8000-000000000005",
+      "title": "할 일 e",
+      "owner": "me",
+      "status": "open",
+      "due_date": "2026-10-30",
+      "counterpart": null,
+      "needs_confirmation": false,
+      "confirm_reasons": [],
+      "started_at": null,
+      "last_activity_at": "2026-10-03T01:00:00.000Z",
+      "score": 0,
+      "reasons": [],
+      "days_until_due": 27
+    },
+    {
+      "id": "f0000000-0000-4000-8000-000000000006",
+      "title": "할 일 f",
+      "owner": "me",
+      "status": "open",
+      "due_date": null,
+      "counterpart": null,
+      "needs_confirmation": false,
+      "confirm_reasons": [],
+      "started_at": null,
+      "last_activity_at": "2026-10-02T10:00:00.000Z",
+      "score": 0,
+      "reasons": [],
+      "days_until_due": null
+    },
+    {
+      "id": "90000000-0000-4000-8000-000000000007",
+      "title": "할 일 9",
+      "owner": "me",
+      "status": "open",
+      "due_date": null,
+      "counterpart": null,
+      "needs_confirmation": false,
+      "confirm_reasons": [],
+      "started_at": null,
+      "last_activity_at": "2026-10-02T10:00:00.000Z",
+      "score": 0,
+      "reasons": [],
+      "days_until_due": null
+    }
+  ],
+  "confirmations": [
+    {
+      "id": "20000000-0000-4000-8000-000000000009",
+      "title": "할 일 2",
+      "owner": "me",
+      "status": "open",
+      "due_date": "2026-10-04",
+      "counterpart": null,
+      "needs_confirmation": true,
+      "confirm_reasons": [
+        "기한 확인"
+      ],
+      "started_at": null,
+      "last_activity_at": "2026-09-28T00:00:00.000Z",
+      "score": 67.5,
+      "reasons": [
+        "due_soon",
+        "neglected"
+      ],
+      "days_until_due": 1
+    },
+    {
+      "id": "10000000-0000-4000-8000-000000000008",
+      "title": "할 일 1",
+      "owner": "unknown",
+      "status": "open",
+      "due_date": null,
+      "counterpart": null,
+      "needs_confirmation": true,
+      "confirm_reasons": [
+        "담당 확인"
+      ],
+      "started_at": null,
+      "last_activity_at": "2026-10-01T00:00:00.000Z",
+      "score": 0,
+      "reasons": [],
+      "days_until_due": null
+    }
+  ],
+  "weekly_check": {
+    "week_start": "2026-09-28"
+  },
+  "failed_sources": {
+    "count": 2,
+    "latest_at": "2026-10-03T01:00:00.000Z",
+    "reason": "ai_timeout"
+  }
+}
