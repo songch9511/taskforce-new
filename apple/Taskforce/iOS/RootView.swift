@@ -56,11 +56,7 @@ struct RootView: View {
     private func pruneSavedOnce(keeping userID: UUID?) {
         guard !prunedSaved, let saved = AppRuntime.savedNow else { return }
         prunedSaved = true
-        if let userID {
-            try? saved.removeAll(except: userID)
-        } else {
-            try? saved.removeAll()
-        }
+        try? saved.prune(keeping: userID)
     }
 }
 

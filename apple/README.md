@@ -67,7 +67,7 @@ Mac은 `--show-launcher -TFSampleData -TFSnapshot <폴더>`로 실행하면 런�
   Google 버튼은 Google 브랜드 규칙의 Light 테마(흰 바탕 · 회색 테두리 · 표준 색 G)로 다크 모드에서도 같다(`SignInWithGoogleButton`). Google 로그인 직후 프로필 이름이 비어 있으면 그 이름으로 한 번 채운다. 로그인이 풀릴 때마다(로그아웃 · 만료 · 계정 삭제) Google SDK 로그인도 지운다.
 - 큰 제목 `Tasks` → 검색칸 `Search 23 tasks`(열린 할 일 수, `PhoneHome.searchPrompt`, 찾는 동안 네 구역 모두 거름 `TaskFilter`) → Review card 한 장(`1 of 4`, 위에 `Show All 4 ›` = 모든 카드 화면. Confirm = `POST confirm`, Dismiss = `DELETE`, 둘 다 버튼으로만) → In Progress · To Do · Done Today(머리에 개수, 빈 구역은 숨김)의 Task row 목록. 구역 안 순서는 서버가 정한 그대로(`TaskBoard`). 섹션 접기(`SectionCaps`)는 쓰지 않는다(Mac 런처만).
   Task row = 옅은 빈 원(열린 할 일, 누르면 Done) + 제목 2줄까지 + 오른쪽 기한(지났거나 오늘이면 빨강) + 바뀜 점. 접근성 크기에서는 제목 전부 · 기한은 제목 아래 · 원 44. 원 VoiceOver "Mark Done", 섹션 머리 `.isHeader`.
-  오프라인(P10): 목록 위 `Offline since 10:41. Showing saved tasks.`, 검색칸 `Search 23 saved tasks`, Confirm · Dismiss · 상태 바꾸기 · 삭제는 꺼지고 카드 아래 `Confirm and Dismiss wait for a connection. Nothing is saved for later.`(`PhoneHome.canWrite`). 새로고침 실패는 `Couldn’t refresh at 10:46. Showing 10:31.` + Try Again, 실패 원문은 `Couldn’t read 2 sources`. 연결이 돌아오면 다시 불러온다(`Connectivity`).
+  오프라인(P10): 목록 위 `Offline since 10:41. Showing saved tasks.`, 검색칸 `Search 23 saved tasks`, Confirm · Dismiss · 상태 바꾸기 · 삭제 · Undo · 주간 질문은 꺼지고(+ 직접 추가는 Figma P10대로 켜 둔다) 카드 아래 `Confirm and Dismiss wait for a connection. Nothing is saved for later.`(`PhoneHome.canWrite`). 새로고침 실패는 `Couldn’t refresh at 10:46. Showing 10:31.` + Try Again, 실패 원문은 `Couldn’t read 2 sources`. 연결이 돌아오면 다시 불러온다(`Connectivity`).
   저장본: `/now`가 성공할 때마다 그 계정의 저장본(제목 · 기한 · 상태만)을 쓰고, 이번 실행에서 `/now`를 받기 전에는 그것을 읽기만 한다. 계정이 떠나면 지운다(`Startup.make`의 `onSignedOut`, 앱을 열 때 `removeAll(except:)`).
   Review card 위 줄에 확인 이유(`ConfirmReasonText.label`: `confirm_reasons` 중 가장 중요한 하나 — Not sure it's yours · May be done already · May not be a task · May not be a firm commitment · Update may not belong here(`병합 확인`: 기존 할 일에 붙은 새 내용) · May duplicate another task(`중복 확인`) · Due date unclear · Scope unclear · Status unclear, 모르는 이유는 Needs review).
   Review card는 평평한 bg/elevated 면 + settings/line 테두리(r16), Confirm = 잉크 캡슐 · Dismiss = settings/fill 캡슐(`CapsuleButtonStyle`, Figma P1). 유리는 떠 있는 "Deleted  Undo" 막대에만.
@@ -77,7 +77,7 @@ Mac은 `--show-launcher -TFSampleData -TFSnapshot <폴더>`로 실행하면 런�
   - 길게 누르기: 세 상태 메뉴(지금 상태에 체크)
 - 삭제(`DELETE /actions/:id`, 서버는 취소로 두고 이력을 남긴다, `NowStore.delete`): 왼쪽으로 밀면 Done 옆에 빨간 Delete(끝까지 밀면 Done, Done Today는 끝까지 밀어도 지우지 않는다) · 길게 누르기 메뉴 맨 아래 Delete. Review는 Dismiss만.
   곧바로 행을 빼고 가벼운 햅틱, 5초 동안 아래에 "Deleted  Undo" 캡슐(iOS 26 유리, 그 전 material, `tfGlassCapsule`). Undo = `PATCH status`(Done Today였으면 done, 아니면 open: 착수 시각이 남아 있어 In Progress는 In Progress로 돌아온다, `TaskUndo.restoreEdit`)
-- 행을 누르면 근거 한 줄만 펼치고(종이 면 `SourceSlip`), 인용을 누르면 원문을 연다. 바뀐 할 일이면 펼칠 때 `POST /actions/:id/seen`을 한 번 보내고 점을 지운다(`SeenTracker.open`, 실패해도 다시 보내지 않음).
+- 행을 누르면 근거 한 줄만 펼치고(종이 면 `SourceSlip`), 인용을 누르면 원문을 연다. 바뀐 할 일이면 펼칠 때 `POST /actions/:id/seen`을 한 번 보내고 점을 지운다(`SeenTracker.open`, 실패해도 다시 보내지 않음, 오프라인이면 보내지 않음). 바뀐 Review 카드는 보였다가 떠날 때(다른 카드 · 화면 밖 · Show All) 같은 방법으로.
 - 오른쪽 위 "+" = New Task 시트(`NowStore.add`, 원문 없이 `POST /actions`): 제목(200자까지) · Due(None · Today · Tomorrow · Date…) · Cancel / Add.
   iOS 26은 시스템 유리 시트 그대로 두고, 제목 칸 · 기한 칩 · Existing 줄은 bg/elevated 바탕 위에 둬서 뒤 목록 글자가 비치지 않게 한다(그 전 OS는 bg/canvas 시트).
   쓰는 동안 열린 할 일(Review · In Progress · To Do)에서 맞는 것을 "Existing"으로 세 개까지 보여 준다(`LauncherAdd.existing`, 런처 찾기와 같은 거르기). 추가는 막지 않는다. 추가되면 닫고 `/now`를 다시 부른다.

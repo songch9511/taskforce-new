@@ -49,9 +49,8 @@ public struct SourceSlip: View {
         .padding(.vertical, Self.verticalPadding)
         .background(TFColor.sourcePaper, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         .contentShape(Rectangle())
-        .onTapGesture {
-            if let url = line.externalURL { onOpen(url) }
-        }
+        // 링크가 없으면 누르기를 받지 않는다 (iPhone: 펼친 행을 누르면 접힌다)
+        .modifier(OpenOnTap(url: line.externalURL, onOpen: onOpen))
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(line.externalURL == nil ? [] : .isLink)
     }
@@ -67,6 +66,19 @@ public struct SourceSlip: View {
 
     private var when: Text? {
         line.displayDate.map { Text(WhenText.label($0)) }
+    }
+
+    private struct OpenOnTap: ViewModifier {
+        let url: URL?
+        let onOpen: (URL) -> Void
+
+        func body(content: Content) -> some View {
+            if let url {
+                content.onTapGesture { onOpen(url) }
+            } else {
+                content
+            }
+        }
     }
 
     #if os(iOS)

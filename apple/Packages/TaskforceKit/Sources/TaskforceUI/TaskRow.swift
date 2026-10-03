@@ -24,6 +24,8 @@ public struct TaskRow<Detail: View>: View {
     @Environment(\.dynamicTypeSize) private var typeSize
     /// 원의 가운데를 제목 첫 줄 글자 가운데에 맞춘다 (기준선에서 대문자 높이의 반쯤 위)
     @ScaledMetric(relativeTo: .body) private var markBaselineOffset: CGFloat = 6
+    /// 바뀜 점 6 (글자와 함께 커진다)
+    @ScaledMetric(relativeTo: .body) private var dotSize: CGFloat = 6
 
     public init(
         title: String, due: String?, urgent: Bool = false, done: Bool = false, changed: Bool = false,
@@ -153,7 +155,7 @@ public struct TaskRow<Detail: View>: View {
         if changed {
             Circle()
                 .fill(TFColor.textPrimary)
-                .frame(width: 6, height: 6)
+                .frame(width: dotSize, height: dotSize)
                 .alignmentGuide(.firstTextBaseline) { $0[VerticalAlignment.center] + markBaselineOffset / 1.5 }
         }
     }

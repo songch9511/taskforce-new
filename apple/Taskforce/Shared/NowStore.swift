@@ -138,6 +138,10 @@ final class NowStore {
 
     /// 지금 계정의 저장본을 읽어 둔다 (이번 실행에서 `/now`를 받기 전에 보인다). 로그인 · 계정 전환 직후 `reset()` 뒤에 부른다
     func restoreSaved() {
+        #if DEBUG
+        // 견본은 이 기기의 실제 저장본을 읽지 않는다 (견본 스크린샷에 실제 할 일 제목이 섞이지 않게)
+        if sampleMode { return }
+        #endif
         guard response == nil, let saved, let account = signedInAccount, let copy = saved.load(account: account) else { return }
         savedCopy = copy
         refresh.restoredSaved(savedAt: copy.savedAt)

@@ -110,8 +110,9 @@ public struct SavedNow: Codable, Sendable, Hashable {
 /// `<App Group>/Library/Application Support/Taskforce/SavedNow/<user id>/now.json`.
 /// - 기기 밖으로 나가지 않게 백업에서 뺀다 (iCloud · 컴퓨터 백업)
 /// - iOS 파일 보호: 기기를 켠 뒤 처음 잠금을 풀 때까지 읽지 못한다 (`completeUntilFirstUserAuthentication`)
-/// - 로그아웃 · 계정 삭제 · 계정 전환에서 지운다 (`remove(account:)` · `removeAll()`). Mac 앱은 `SessionStore.onSignedOut`에서 `removeAll()`,
-///   앱을 열 때 `removeAll(except:)`, 계정 삭제에서 `remove(account:)`를 부른다 (`LauncherModel` · `AccountDeletion`)
+/// - 로그아웃 · 계정 삭제 · 계정 전환에서 지운다 (`remove(account:)` · `removeAll()`). 앱은 `SessionStore.onSignedOut`에서 `removeAll()`
+///   (Mac `LauncherModel` · iPhone `Startup.make`), 앱을 열 때 `prune(keeping:)`(Mac `LauncherModel` · iPhone `RootView`),
+///   계정 삭제에서 `remove(account:)`(`AccountDeletion`)를 부른다
 /// 비밀(토큰 · 키)은 넣지 않는다.
 public struct SavedNowStore: Sendable {
     public static let fileName = "now.json"
@@ -177,6 +178,15 @@ public struct SavedNowStore: Sendable {
         }
         for folder in folders where folder.lastPathComponent != keep {
             try Self.removeIfPresent(folder)
+        }
+    }
+
+    /// 앱을 열 때 한 번: 지금 계정 말고는 모두 지운다. 로그아웃 상태(`nil`)면 모두 (`removeAll(except:)` · `removeAll()`)
+    public func prune(keeping account: UUID?) throws {
+        if let account {
+            try removeAll(except: account)
+        } else {
+            try removeAll()
         }
     }
 

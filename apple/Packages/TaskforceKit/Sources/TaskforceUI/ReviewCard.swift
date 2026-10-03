@@ -58,6 +58,8 @@ public struct ReviewCard<Evidence: View>: View {
     let evidence: Evidence
 
     @Environment(\.dynamicTypeSize) private var typeSize
+    /// 바뀜 점 6 (글자와 함께 커진다)
+    @ScaledMetric(relativeTo: .subheadline) private var dotSize: CGFloat = 6
 
     /// `reason`: 확인 이유 (`ConfirmReasonText.label`). `value`: 확인할 기한 (`Due Fri`). `position`: `1 of 4` (`PhoneHome.reviewPosition`).
     /// `changed`: 마지막으로 본 뒤 바뀜 (6pt Ink 점)
@@ -143,7 +145,7 @@ public struct ReviewCard<Evidence: View>: View {
             if changed {
                 Circle()
                     .fill(TFColor.textPrimary)
-                    .frame(width: 6, height: 6)
+                    .frame(width: dotSize, height: dotSize)
                     .alignmentGuide(.firstTextBaseline) { $0[.bottom] + 1 }
             }
             if let position {

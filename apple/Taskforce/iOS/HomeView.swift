@@ -292,6 +292,8 @@ struct HomeView: View {
             }
             if store.response?.weeklyCheck != nil {
                 WeeklyCheckCard { answer in Task { await store.answerWeekly(answer) } }
+                    // 오프라인 · 저장본이면 답을 보내지 않는다 (모아 두지 않는다)
+                    .disabled(!canWrite)
                     .plainRow(top: TFSpace.xl, bottom: TFSpace.lg)
             }
         }
@@ -350,7 +352,8 @@ struct HomeView: View {
         let state = store.refreshState
         if let text = statusText {
             statusLine(systemImage: state.isOffline ? "wifi.slash" : "exclamationmark.triangle", text: text) {
-                if case .refreshFailed = state {
+                // 401이면 다시 시도보다 로그아웃 · 로그인이 답이라 버튼을 두지 않는다
+                if case .refreshFailed = state, !store.authFailed {
                     Button("Try Again") { Task { await store.load() } }
                         .font(TFFont.callout.weight(.semibold))
                         .foregroundStyle(TFColor.textPrimary)
@@ -442,8 +445,12 @@ struct HomeView: View {
         .plainRow(top: 0, bottom: TFSpace.sm)
     }
 
-    /// Review 카드. 저장본이면 제목 · 기한만 있고 버튼은 꺼진다. 오프라인이면 버튼 아래 P10 문장
-    private func reviewCard(_ row: Row, index: Int, count: Int) -> some View {
+    /// 오프라인일 때 Review 카드 아래 문장 (P10)
+    private static let offlineNote = "Confirm and Dismiss wait for a connection. Nothing is saved for later."
+
+    /// Review 카드. 저장본이면 제목 · 기한만 있고 버튼은 꺼진다. 오프라인이면 버튼 아래 P10 문장 (`showsNote`)
+    /// 바뀐 카드는 보인 뒤 떠날 때(다른 카드 · 화면 밖 · `Show All`) `seen`을 한 번 보낸다 (Mac 런처: 고른 행을 떠날 때와 같다)
+    private func reviewCard(_ row: Row, index: Int, count: Int, showsNote: Bool = true) -> some View {
         let action = row.action
         return ReviewCard(
             title: row.title,
@@ -453,7 +460,7 @@ struct HomeView: View {
             changed: action.map { seen.showsDot($0.id, changed: changedIDs) } ?? false,
             busy: action.map { store.busy.contains($0.id) } ?? false,
             canAct: canWrite,
-            note: store.refreshState.isOffline ? "Confirm and Dismiss wait for a connection. Nothing is saved for later." : nil,
+            note: showsNote && store.refreshState.isOffline ? Self.offlineNote : nil,
             onConfirm: { if let id = action?.id { Task { await store.confirm(id) } } },
             onDismiss: { if let id = action?.id { Task { await store.dismiss(id) } } }
         ) {
@@ -465,14 +472,25 @@ struct HomeView: View {
         .task(id: action?.id) {
             if let id = action?.id { await store.loadEvidence(id) }
         }
+        .onDisappear {
+            if let id = action?.id { markSeen(id) }
+        }
     }
 
     /// `Show All 4 ›`: Review 카드를 모두 (`1 of 4` … `4 of 4`). 다 처리하면 목록으로 돌아간다
     private var allReviews: some View {
         let reviews = listing.review
         return List {
+            // 오프라인 문장은 카드마다가 아니라 위에 한 번
+            if store.refreshState.isOffline {
+                Text(Self.offlineNote)
+                    .font(TFFont.callout)
+                    .foregroundStyle(TFColor.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .plainRow(top: TFSpace.sm, bottom: 0)
+            }
             ForEach(Array(reviews.enumerated()), id: \.element.id) { index, row in
-                reviewCard(row, index: index, count: reviews.count)
+                reviewCard(row, index: index, count: reviews.count, showsNote: false)
                     .plainRow(top: TFSpace.sm, bottom: TFSpace.md)
             }
         }
@@ -549,12 +567,18 @@ struct HomeView: View {
         }
     }
 
-    /// 행을 누름: 근거를 펼치고 접는다. 펼칠 때 바뀐 할 일이면 `seen`을 한 번 보낸다 (점은 바로 지움, 다시 보내지 않음)
+    /// 행을 누름: 근거를 펼치고 접는다. 펼칠 때 바뀐 할 일이면 본 것으로 (`markSeen`)
     private func open(_ id: UUID) {
         withAnimation(.snappy(duration: 0.2)) {
             expanded = expanded == id ? nil : id
         }
-        guard expanded == id, let opened = seen.open(id, changed: changedIDs) else { return }
+        if expanded == id { markSeen(id) }
+    }
+
+    /// 바뀐 할 일을 본 것으로: 점을 바로 지우고 `seen`을 한 번 보낸다 (`SeenTracker.open`, 실패해도 다시 보내지 않음. 다음 `/now`가 진실).
+    /// 오프라인이면 보내지 않고 점을 둔다 (보내도 실패하고 다음 `/now`에서 점이 다시 보인다)
+    private func markSeen(_ id: UUID) {
+        guard !store.refreshState.isOffline, let opened = seen.open(id, changed: changedIDs) else { return }
         #if DEBUG
         if store.sampleMode { return }
         #endif
@@ -592,7 +616,8 @@ struct HomeView: View {
     /// 지운 뒤 아래에 뜨는 막대: iOS 26은 유리 캡슐, 그 전은 material 캡슐 (`tfGlassCapsule`)
     @ViewBuilder
     private var undoBar: some View {
-        if undo.pending != nil {
+        // 오프라인이 되면 되살리기를 보낼 수 없으니 막대를 숨긴다
+        if undo.pending != nil, canWrite {
             HStack(spacing: 0) {
                 Text("Deleted")
                     .foregroundStyle(TFColor.textPrimary)

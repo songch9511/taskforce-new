@@ -224,4 +224,22 @@ struct SavedNowPruneTests {
         let root = FileManager.default.temporaryDirectory.appending(path: "SavedNowPrune-\(UUID().uuidString)", directoryHint: .isDirectory)
         try SavedNowStore(root: root).removeAll(except: UUID())
     }
+
+    /// 앱을 열 때 (Mac `LauncherModel` · iPhone `RootView`): 로그인해 있으면 그 계정만, 로그아웃이면 모두 지운다
+    @Test func pruneKeepsTheSignedInAccountOrNothing() throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: "SavedNowPrune-\(UUID().uuidString)", directoryHint: .isDirectory)
+        let store = SavedNowStore(root: root)
+        defer { try? store.removeAll() }
+        let (alice, bob) = (UUID(), UUID())
+        let copy = SavedNow(sections: ListFixture.sections, savedAt: Date(timeIntervalSince1970: 1_791_000_000))
+        for account in [alice, bob] { try store.save(copy, account: account) }
+        try store.prune(keeping: bob)
+        #expect(store.load(account: alice) == nil)
+        #expect(store.load(account: bob) == copy)
+        try store.prune(keeping: nil)
+        #expect(store.load(account: bob) == nil)
+        // 지울 것이 없어도 성공
+        try store.prune(keeping: nil)
+        try store.prune(keeping: alice)
+    }
 }
