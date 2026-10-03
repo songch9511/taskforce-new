@@ -152,6 +152,9 @@ final class AccountStore {
         pendingProvider = nil
         pendingHandoff = nil
         message = nil
+        // 전 계정의 연결 · Sync Now(최대 4분)가 다음 계정의 버튼을 막지 않게
+        connecting = nil
+        syncing = false
     }
 
     func reloadConnections() async {
@@ -223,8 +226,8 @@ final class AccountStore {
             return
         }
         connecting = provider
-        defer { connecting = nil }
         let generation = generation
+        defer { if generation == self.generation { connecting = nil } }
         let url: URL
         do {
             url = try await services.api.startConnection(provider)
@@ -328,8 +331,8 @@ final class AccountStore {
     func sync() async {
         guard !syncing else { return }
         syncing = true
-        defer { syncing = false }
         let generation = generation
+        defer { if generation == self.generation { syncing = false } }
         expectSync(connections.filter { $0.status == .active || $0.status == .error }.map(\.provider))
         let failure: SyncNowFailure?
         do {

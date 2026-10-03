@@ -291,6 +291,11 @@ struct APIClientTests {
         #expect(checks.value == 0)
     }
 
+    /// 앱의 Supabase · API 요청은 응답을 디스크 캐시에 남기지 않는다 (로그아웃 뒤 전 계정 응답 사본이 없게)
+    @Test func appURLSessionKeepsNoResponseCache() {
+        #expect(TaskforceClient.urlSession.configuration.urlCache == nil)
+    }
+
     @Test func decodesInvalidRequest() async throws {
         let api = client(status: 400, body: #"{"error":{"code":"invalid_request","message":"구절이 원문에 없습니다."}}"#)
         await #expect(throws: APIError.server(status: 400, code: .invalidRequest, message: "구절이 원문에 없습니다.")) {

@@ -25,25 +25,24 @@ public final class SessionStore {
     private let auth: AuthClient
     private var listenTask: Task<Void, Never>?
     /// 계정이 이 기기를 떠날 때 부를 정리 (`onSignedOut`)
-    private var signedOutCleanups: [@MainActor (UUID) -> Void] = []
+    @ObservationIgnored private var signedOutCleanups: [@MainActor (UUID) -> Void] = []
 
     public init(auth: AuthClient) {
         self.auth = auth
     }
 
     /// 계정이 이 기기를 떠날 때마다 그 계정 ID로 한 번 부른다: 로그아웃 · 세션 만료 · 계정 삭제(이 기기 · 다른 기기에서 지운 뒤
-    /// 서버 401로 확인) · 다른 계정으로 전환. `state`를 바꾼 직후 같은 흐름에서 불러, 다음 화면이 그려지기 전에 지운다.
-    /// 계정별로 이 기기에 남는 것(화면 상태 · 메모리 캐시 · 응답 캐시 · 기기 저장본)은 모두 여기에 등록한다.
+    /// 서버 401로 확인) · 다른 계정으로 전환. 토큰 갱신처럼 같은 계정이면 부르지 않는다.
+    /// 상태(`state` · 로그인 방식 · 오류)를 모두 바꾼 직후 같은 흐름에서 불러, 다음 화면이 그려지기 전에 지운다.
+    /// 계정별로 이 기기에 남는 데이터(화면 상태 · 메모리 캐시 · 기기 저장본)는 여기에 등록한다.
     /// 앱이 돌지 않을 때 떠난 계정(로그아웃 도중 종료 등)은 여기로 오지 않는다: 디스크에 남기는 것은 시작할 때도 지금 계정 것만 남겨야 한다.
     public func onSignedOut(_ cleanup: @escaping @MainActor (UUID) -> Void) {
         signedOutCleanups.append(cleanup)
     }
 
-    /// 상태를 바꾸고, 로그인해 있던 계정이 떠났으면(로그아웃 · 다른 계정) 정리를 부른다. 토큰 갱신처럼 같은 계정이면 부르지 않는다.
-    private func setState(_ newState: State) {
-        let previous = Self.userID(in: state)
-        state = newState
-        guard let previous, previous != Self.userID(in: newState) else { return }
+    /// 로그인해 있던 계정이 떠났으면(로그아웃 · 다른 계정) 그 계정으로 정리를 부른다
+    private func runSignedOutCleanups(ifLeft previous: UUID?) {
+        guard let previous, previous != Self.userID(in: state) else { return }
         for cleanup in signedOutCleanups { cleanup(previous) }
     }
 
@@ -62,12 +61,15 @@ public final class SessionStore {
     }
 
     func apply(event: AuthChangeEvent, session: Session?) {
+        // 계정이 떠났으면 아래에서 상태를 모두 바꾼 뒤 정리를 부른다 (`onSignedOut`)
+        let previousUserID = Self.userID(in: state)
+        defer { runSignedOutCleanups(ifLeft: previousUserID) }
         let currentSession = auth.currentSession
         var appliedSession = session
         // supabase-swift는 Keychain 저장 오류를 삼키고 로그인 이벤트를 보낼 수 있다.
         // 저장된 계정이 없거나 다르면 이 로그인은 이 기기에 저장되지 않은 것이다.
         if event == .signedIn, let session, currentSession?.user.id != session.user.id {
-            setState(.signedOut)
+            state = .signedOut
             signInMethods = .unknown
             accountNameFill = nil
             errorMessage = Self.sessionNotSavedMessage
@@ -79,7 +81,7 @@ public final class SessionStore {
         if event != .signedOut, let session, currentSession?.user.id != session.user.id {
             appliedSession = currentSession
         }
-        setState(Self.state(for: event, session: appliedSession))
+        state = Self.state(for: event, session: appliedSession)
         if case .signedIn = state, let appliedSession {
             signInMethods = SignInMethods(user: appliedSession.user)
         } else {
@@ -202,8 +204,11 @@ extension AuthClient {
         } catch AuthError.sessionMissing {
             return currentSession == nil
         } catch let AuthError.api(_, code, _, _) where code == .userNotFound {
+            guard let checkedUserID else { return false }
+            // 겹친 다른 401의 확인이 먼저 이 기기를 로그아웃시켰다
+            guard let current = currentSession?.user.id else { return true }
             // 확인하는 사이 다른 계정이 로그인했으면 그 세션은 지우지 않는다
-            guard checkedUserID != nil, currentSession?.user.id == checkedUserID else { return false }
+            guard current == checkedUserID else { return false }
             try? await signOut(scope: .local)
             return true
         } catch {

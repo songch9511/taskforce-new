@@ -37,7 +37,7 @@ public enum APIError: Error, Equatable, Sendable, CustomStringConvertible {
         case .server(_, .conflict, _):
             "This changed somewhere else. It's been refreshed."
         case .server(_, .unauthorized, _):
-            // 인증 서버는 세션을 인정하는데 이 서버가 거절함. 인증 서버도 거절하면 `onUnauthorized`가 이 기기를 로그아웃시키고 `.notSignedIn`이 된다
+            // 이 서버가 거절했는데 인증 서버는 계정 · 세션이 있다고 함 (없다고 하면 `onUnauthorized`가 이 기기를 로그아웃시키고 `.notSignedIn`이 된다)
             "Taskforce couldn't verify this session. Sign out, then sign in again."
         case .notSignedIn:
             "Sign in to continue."
@@ -290,7 +290,11 @@ public struct APIClient: Sendable {
         guard let http = response as? HTTPURLResponse else { throw APIError.unexpectedStatus(0) }
         guard (200..<300).contains(http.statusCode) else {
             // 토큰을 거절당함: 세션이 끝난 것으로 확인되면(다른 기기에서 계정 삭제 등) 이 기기는 이미 로그아웃됐다 → 로그인 안내
-            if http.statusCode == 401, let onUnauthorized, await onUnauthorized() { throw APIError.notSignedIn }
+            if http.statusCode == 401, let onUnauthorized {
+                let ended = await onUnauthorized()
+                try Task.checkCancellation()
+                if ended { throw APIError.notSignedIn }
+            }
             throw Self.error(status: http.statusCode, data: data)
         }
         return (data, http)

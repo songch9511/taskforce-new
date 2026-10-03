@@ -9,7 +9,7 @@ import TaskforceUI
 /// iPhone 계정 시트와 Mac 설정 Account가 같이 쓰는 문구
 enum AccountCopy {
     /// Sign Out 아래 한 줄: 이 기기만 로그아웃한다 (`SessionStore.signOut`, `.local`). 다른 기기의 세션은 그대로다
-    static let signOutScope = "Sign Out keeps you signed in on other devices."
+    static let signOutScope = "Sign Out applies only to this device."
 }
 
 /// 연결 목록: 1단계는 바로 연결, 2단계는 "Want this"

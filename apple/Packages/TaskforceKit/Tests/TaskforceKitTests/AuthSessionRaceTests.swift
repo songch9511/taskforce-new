@@ -298,8 +298,8 @@ struct SignOutScopeTests {
         #expect(StubProtocol.requests(host: harness.authHost).map(\.url.path) == ["/auth/v1/user"])
     }
 
-    /// 인증 서버에 닿지 못하면(오프라인) 그대로 둔다
-    @Test func unauthorizedWhileAuthIsUnreachableKeepsTheSession() async throws {
+    /// 인증 서버가 탈이 나 확인하지 못하면(5xx, SDK가 1초 뒤 한 번 다시 시도) 그대로 둔다
+    @Test func unauthorizedWhileAuthServerFailsKeepsTheSession() async throws {
         let account = session(nil, device: "unreachable")
         let harness = try await Harness.make(account: account, key: storageKey, auth: .init(status: 503, body: "<html>unavailable</html>"))
 
