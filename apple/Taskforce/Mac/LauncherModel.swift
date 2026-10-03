@@ -1165,7 +1165,8 @@ final class LauncherModel {
         case .connections:
             openSettings(.connections)
         case .settings:
-            openSettings(.account)
+            // 마지막에 본 설정 페이지 (`.account`는 이제 계정 시트다, U1 PR5a)
+            openSettings()
         case .quit:
             NSApplication.shared.terminate(nil)
         }
@@ -1421,7 +1422,8 @@ final class LauncherModel {
         close()
     }
 
-    func openSettings(_ tab: MacSettingsTab) {
+    /// `tab`이 없으면 마지막에 본 페이지 (`SettingsOpener.open`)
+    func openSettings(_ tab: MacSettingsTab? = nil) {
         close()
         SettingsOpener.open(tab)
     }
