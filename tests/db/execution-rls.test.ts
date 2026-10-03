@@ -20,6 +20,8 @@ const CORE_FUNCTIONS = [
   "db_now", "norm_address", "norm_addresses", "auto_allowed", "approval_hash", "create_run", "append_step", "prepare_step", "begin_call",
   "finish_run", "settle_step", "mark_unknown", "sweep_expire", "readback_settle", "show_plan", "approve_step", "revoke_approval", "stop_run",
 ];
+/** 실행 표를 쓰는 다른 마이그레이션의 함수 (20261024000000_execution_text_retention: 끝난 run의 글 지우기) */
+const RETENTION_FUNCTIONS = ["purge_expired_execution_text"];
 const HELPER_FUNCTIONS = [
   "execution_hold", "execution_recipients_valid", "execution_retry_internal", "execution_runs_log", "execution_skip", "execution_steps_log",
   "execution_steps_replan",
@@ -100,7 +102,7 @@ describe("실행 코어 RLS · 권한", () => {
     }
   });
 
-  it("실행 코어 함수는 모두 서버 전용이다: 카탈로그의 모든 함수에 anon · authenticated 실행 권한이 없고 service_role만 있다", async () => {
+  it("실행 코어 · 실행의 글 정리 함수는 모두 서버 전용이다: 카탈로그의 모든 함수에 anon · authenticated 실행 권한이 없고 service_role만 있다", async () => {
     const { rows } = await db.query<{ name: string; anon: boolean; authenticated: boolean; service_role: boolean }>(
       `select p.proname as name,
               has_function_privilege('anon', p.oid, 'execute') as anon,
@@ -109,17 +111,17 @@ describe("실행 코어 RLS · 권한", () => {
        from pg_catalog.pg_proc p join pg_catalog.pg_namespace n on n.oid = p.pronamespace
        where n.nspname = 'public' and (p.proname like 'execution\\_%' or p.proname = any ($1))
        order by p.proname`,
-      [CORE_FUNCTIONS],
+      [[...CORE_FUNCTIONS, ...RETENTION_FUNCTIONS]],
     );
-    expect(rows.map((r) => r.name)).toEqual([...CORE_FUNCTIONS, ...HELPER_FUNCTIONS].sort());
+    expect(rows.map((r) => r.name)).toEqual([...CORE_FUNCTIONS, ...RETENTION_FUNCTIONS, ...HELPER_FUNCTIONS].sort());
     for (const row of rows) expect(row, row.name).toEqual({ name: row.name, anon: false, authenticated: false, service_role: true });
 
-    // 모두 search_path = ''. 소유자 권한(security definer)은 이벤트 기록 트리거 둘뿐이다
+    // 모두 search_path = ''. 소유자 권한(security definer)은 이벤트 기록 트리거 둘뿐이다 (정리 함수 · 바꿔 만든 계획 동결 트리거는 호출자 권한)
     const settings = await db.query<{ name: string; definer: boolean; config: string[] | null }>(
       `select p.proname as name, p.prosecdef as definer, p.proconfig as config
        from pg_catalog.pg_proc p join pg_catalog.pg_namespace n on n.oid = p.pronamespace
        where n.nspname = 'public' and (p.proname like 'execution\\_%' or p.proname = any ($1))`,
-      [CORE_FUNCTIONS],
+      [[...CORE_FUNCTIONS, ...RETENTION_FUNCTIONS]],
     );
     for (const row of settings.rows) expect(row.config, row.name).toContain('search_path=""');
     expect(settings.rows.filter((r) => r.definer).map((r) => r.name).sort()).toEqual(["execution_runs_log", "execution_steps_log"]);
@@ -157,6 +159,7 @@ describe("실행 코어 RLS · 권한", () => {
     ["approval_hash", "select public.approval_hash($1, now())", ["step"]],
     ["auto_allowed", "select public.auto_allowed($1)", ["step"]],
     ["db_now", "select public.db_now()", []],
+    ["purge_expired_execution_text", "select public.purge_expired_execution_text(now() + interval '1 day')", []],
   ] as [string, string, string[]][])("클라이언트는 %s를 부를 수 없다 (서버 전용 RPC)", async (_, sql, params) => {
     const values = params.map((p) => (p === "run" ? runId : p === "step" ? stepId : p));
     await asUser(db, ALICE, async () => {
