@@ -230,3 +230,26 @@ describe("실행 receipt 값 (원문 execution · Claim origin execution, field 
     });
   });
 });
+
+// 실행의 글 보관 (20261024000000_execution_text_retention): 새 표 없이 열 · 색인 · 함수만 더하고 계획 동결 트리거를 바꾼다.
+// 자세한 검사는 execution-text-retention.test.ts
+describe("실행의 글 보관 (execution_runs.text_purged_at · purge_expired_execution_text)", () => {
+  it("열은 처음에 비어 있고 사용자는 자기 run의 값만 본다. 정리 함수는 서버만 부른다", async () => {
+    const { rows: columns } = await db.query<{ data_type: string }>(
+      `select data_type from information_schema.columns where table_schema = 'public' and table_name = 'execution_runs' and column_name = 'text_purged_at'`,
+    );
+    expect(columns).toEqual([{ data_type: "timestamp with time zone" }]);
+
+    const actionId = await insertAction(ALICE);
+    const { rows } = await db.query<{ id: string }>(`select public.create_run($1, $2, 'draft', '초안 써 줘') as id`, [ALICE, actionId]);
+    expect(await db.query(`select public.purge_expired_execution_text(now() + interval '1 day') as n`).then((r) => r.rows)).toEqual([{ n: 0 }]);
+    await asUser(db, ALICE, async () => {
+      const mine = await db.query(`select request, text_purged_at from public.execution_runs where id = $1`, [rows[0].id]);
+      expect(mine.rows).toEqual([{ request: "초안 써 줘", text_purged_at: null }]);
+      await expect(db.query(`select public.purge_expired_execution_text(now())`)).rejects.toThrow(/permission denied/);
+    });
+    await asUser(db, BOB, async () => {
+      expect((await db.query(`select text_purged_at from public.execution_runs where id = $1`, [rows[0].id])).rows).toHaveLength(0);
+    });
+  });
+});

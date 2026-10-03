@@ -198,6 +198,10 @@ beforeAll(async () => {
   await db.query("insert into auth.users (id, email) values ($1, 'alice@example.com'), ($2, 'bob@example.com')", [ALICE, BOB]);
   aliceConnection = await seed(ALICE, "a".repeat(64));
   bobConnection = await seed(BOB, "b".repeat(64));
+  // 실행의 글 보관 (20261024000000): 끝난 초안 run(사용자마다 하나)의 글을 지운 뒤에도 계정 삭제가 그대로 돈다.
+  // 끝나지 않은 run(외부 단계가 있는 첫 run)은 건드리지 않는다
+  const { rows } = await db.query<{ n: number }>(`select public.purge_expired_execution_text(now() + interval '1 day') as n`);
+  expect(rows[0].n).toBe(2);
 }, 60_000);
 
 describe("계정 삭제 (auth.users on delete cascade)", () => {
@@ -221,6 +225,15 @@ describe("계정 삭제 (auth.users on delete cascade)", () => {
         [userId],
       );
       expect(Number(rows[0].n)).toBe(4);
+      // 끝난 run은 글을 지웠고(지운 시각 있음), 끝나지 않은 run은 요청이 그대로다
+      const runs = await db.query<{ state: string; request: string; purged: boolean }>(
+        `select state, request, text_purged_at is not null as purged from public.execution_runs where user_id = $1 order by state`,
+        [userId],
+      );
+      expect(runs.rows).toEqual([
+        { state: "done", request: "", purged: true },
+        { state: "queued", request: "초안", purged: false },
+      ]);
     }
     expect(await secretCount(aliceConnection)).toBe(1);
   });

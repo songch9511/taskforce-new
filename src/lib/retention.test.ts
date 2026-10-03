@@ -3,12 +3,16 @@ import path from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { RAW_TEXT_RETENTION_DAYS, retentionCutoff, SLACK_DISCONNECTED_QUOTE } from "./retention";
+import { EXECUTION_TEXT_RETENTION_DAYS, RAW_TEXT_RETENTION_DAYS, retentionCutoff, SLACK_DISCONNECTED_QUOTE } from "./retention";
 
 describe("retentionCutoff", () => {
   it("원문은 90일 보관한다", () => {
     expect(RAW_TEXT_RETENTION_DAYS).toBe(90);
     expect(retentionCutoff(new Date("2026-12-26T00:00:00Z"))).toEqual(new Date("2026-09-27T00:00:00Z"));
+  });
+
+  it("실행의 글(요청 · 지시 · 받는 사람 후보 · 되묻는 질문)은 run이 끝난 뒤 90일 보관한다 (처리방침 D9a-1 5장)", () => {
+    expect(EXECUTION_TEXT_RETENTION_DAYS).toBe(90);
   });
 });
 
