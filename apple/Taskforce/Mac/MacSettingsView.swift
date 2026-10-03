@@ -56,9 +56,17 @@ struct MacSettingsView: View {
         .sheet(isPresented: $route.showsAccount) {
             MacAccountSheet()
         }
-        // 시트가 닫히면 창에 키보드 자리가 없으므로 검색칸으로 돌려준다
+        // 시트가 닫히면 창에 키보드 자리가 없으므로 검색칸으로 돌려준다 (알약은 보던 페이지로)
         .onChange(of: route.showsAccount) { _, shows in
-            if !shows { searchFocused = true }
+            guard !shows else { return }
+            cursor = nil
+            searchFocused = true
+        }
+        // 창 밖에서 열면 (메뉴 · 런처 · 알림) 지난 검색어 · 키보드 자리를 지운다: 연 페이지가 걸러져 숨지 않게.
+        // 설정 창은 닫아도 남아 있어 상태가 이어진다
+        .onChange(of: route.openCount) {
+            cursor = nil
+            query = ""
         }
     }
 
@@ -111,6 +119,7 @@ struct MacSettingsView: View {
         .background {
             Button("Search") { searchFocused = true }
                 .keyboardShortcut("f", modifiers: .command)
+                .focusable(false)
                 .opacity(0)
                 .allowsHitTesting(false)
                 .accessibilityHidden(true)
@@ -256,11 +265,9 @@ struct MacSettingsView: View {
         case .keyboardShortcuts:
             HotKeyPane()
         case .connections:
-            signedInOnly { ConnectionsView() }
-                .modifier(SettingsFormPage())
+            signedInOnly { ConnectionsView().modifier(SettingsFormPage()) }
         case .ai:
-            signedInOnly { ConsentSettingsView() }
-                .modifier(SettingsFormPage())
+            signedInOnly { ConsentSettingsView().modifier(SettingsFormPage()) }
         case .account:
             // 시트 항목이라 페이지가 되지 않는다 (`MacSettingsTab.page(stored:)`)
             EmptyView()
@@ -274,7 +281,7 @@ struct MacSettingsView: View {
         } else if Self.isSample {
             content()
         } else {
-            SignInView()
+            ScrollableSignIn()
         }
     }
 
@@ -307,8 +314,10 @@ private struct SettingsWindowChrome: NSViewRepresentable {
 
     func makeNSView(context: Context) -> NSView {
         let view = ChromeView()
-        view.onWindow = { height in
-            Task { @MainActor in titlebarHeight = height }
+        view.onTitlebarHeight = { height in
+            Task { @MainActor in
+                if titlebarHeight != height { titlebarHeight = height }
+            }
         }
         return view
     }
@@ -316,16 +325,42 @@ private struct SettingsWindowChrome: NSViewRepresentable {
     func updateNSView(_ nsView: NSView, context: Context) {}
 
     private final class ChromeView: NSView {
-        var onWindow: ((CGFloat) -> Void)?
+        var onTitlebarHeight: ((CGFloat) -> Void)?
+        private var resizeObserver: NSObjectProtocol?
 
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
+            if let resizeObserver { NotificationCenter.default.removeObserver(resizeObserver) }
+            resizeObserver = nil
             guard let window else { return }
             window.titleVisibility = .hidden
             window.titlebarAppearsTransparent = true
             window.titlebarSeparatorStyle = .none
             window.styleMask.insert(.fullSizeContentView)
-            onWindow?(window.frame.height - window.contentLayoutRect.height)
+            report(window)
+            // 창이 크기를 잡기 전에 붙으면 (대체 창) 잴 수 없어서, 창 크기가 바뀔 때마다 다시 잰다
+            resizeObserver = NotificationCenter.default.addObserver(
+                forName: NSWindow.didResizeNotification, object: window, queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated { self?.report(window) }
+            }
+        }
+
+        private func report(_ window: NSWindow) {
+            let height = window.frame.height - window.contentLayoutRect.height
+            if height > 0 { onTitlebarHeight?(height) }
+        }
+    }
+}
+
+/// 로그인 화면이 칸보다 길면 스크롤한다 (이메일 칸 · 오류 줄이 붙으면 480 창 · 시트를 넘는다). 짧으면 가운데
+private struct ScrollableSignIn: View {
+    var body: some View {
+        GeometryReader { proxy in
+            ScrollView {
+                SignInView()
+                    .frame(minHeight: proxy.size.height)
+            }
         }
     }
 }
@@ -372,10 +407,10 @@ private struct MacAccountPane: View {
             if SampleData.isEnabled {
                 form(userID: SampleData.userID, email: nil)
             } else {
-                SignInView()
+                ScrollableSignIn()
             }
             #else
-            SignInView()
+            ScrollableSignIn()
             #endif
         case .loading:
             ProgressView()

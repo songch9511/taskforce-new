@@ -210,6 +210,12 @@ final class SettingsRoute {
 
     /// Account 시트 (사이드바 Account ↗ · `SettingsOpener.open(.account)`)
     var showsAccount = false
+    /// 창 밖에서 연 횟수 (`SettingsOpener.open`). 창이 지난 검색어 · 키보드 자리를 지운다
+    private(set) var openCount = 0
+
+    func opened() {
+        openCount += 1
+    }
 }
 
 /// 설정 창 열기. 에이전트 앱은 먼저 앞으로 나와야 창이 다른 앱 뒤에 숨지 않는다.
@@ -223,6 +229,7 @@ enum SettingsOpener {
 
     /// `tab`이 없으면 마지막에 본 페이지. Account는 창 위에 시트로 연다
     static func open(_ tab: MacSettingsTab? = nil) {
+        SettingsRoute.shared.opened()
         if let tab, tab.opensSheet {
             SettingsRoute.shared.showsAccount = true
         } else if let tab {
@@ -253,7 +260,8 @@ enum SettingsOpener {
             .environment(AppRuntime.account(services: services))
         let window = NSWindow(contentViewController: NSHostingController(rootView: root))
         window.title = "Settings"
-        window.styleMask = [.titled, .closable]
+        // 장면 창과 같은 틀 (`MacSettingsView`의 `SettingsWindowChrome`이 넣는 것을 지우지 않게)
+        window.styleMask = [.titled, .closable, .fullSizeContentView]
         window.isReleasedWhenClosed = false
         window.center()
         fallbackWindow = window
