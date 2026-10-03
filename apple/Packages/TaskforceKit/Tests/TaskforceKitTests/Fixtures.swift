@@ -85,6 +85,77 @@ enum Fixtures {
     { "now": [], "confirmations": [], "weekly_check": null }
     """
 
+    /// U1 PR2 뒤 서버: 바뀜(`changed`) · 섹션 기준값(`section_limits`) · 실패 원문(`failed_sources`)
+    static let nowDisplayFields = """
+    {
+      "now": [
+        {
+          "id": "11111111-1111-4111-8111-111111111111",
+          "title": "투자 자료 보내기",
+          "owner": "me",
+          "status": "open",
+          "due_date": "2026-09-29",
+          "counterpart": "김대표",
+          "needs_confirmation": false,
+          "confirm_reasons": [],
+          "started_at": null,
+          "last_activity_at": "2026-09-27T01:02:03Z",
+          "score": 90,
+          "reasons": ["due_soon"],
+          "days_until_due": 2,
+          "changed": true
+        },
+        {
+          "id": "33333333-3333-4333-8333-333333333333",
+          "title": "계약서 검토",
+          "owner": "me",
+          "status": "open",
+          "due_date": null,
+          "counterpart": null,
+          "needs_confirmation": false,
+          "confirm_reasons": [],
+          "started_at": null,
+          "last_activity_at": "2026-09-20T01:02:03Z",
+          "score": 21,
+          "reasons": [],
+          "days_until_due": null,
+          "changed": false
+        }
+      ],
+      "confirmations": [
+        {
+          "id": "44444444-4444-4444-8444-444444444444",
+          "title": "견적서 회신",
+          "owner": "unknown",
+          "status": "open",
+          "due_date": null,
+          "counterpart": null,
+          "needs_confirmation": true,
+          "confirm_reasons": ["담당 확인"],
+          "started_at": null,
+          "last_activity_at": "2026-09-27T00:00:00Z",
+          "score": 40,
+          "reasons": [],
+          "days_until_due": null,
+          "changed": true
+        }
+      ],
+      "weekly_check": null,
+      "failed_sources": { "count": 2, "latest_at": "2026-10-03T00:46:00.000Z", "reason": "ai_timeout" },
+      "section_limits": { "review": 3, "in_progress": 4, "to_do": 6 }
+    }
+    """
+
+    /// failed_sources는 있지만 바뀜 · 기준값이 아직 없는 서버 (지금 운영)
+    static let nowFailedSourcesOnly = """
+    {
+      "now": [],
+      "confirmations": [],
+      "weekly_check": null,
+      "failed_sources": { "count": 0, "latest_at": null, "reason": null }
+    }
+    """
+
     static let missingCreated = """
     { "status": "created", "action": \(actionSummary), "stage": "judge_rejected" }
     """

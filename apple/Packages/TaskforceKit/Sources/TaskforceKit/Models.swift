@@ -70,19 +70,23 @@ public struct RankedAction: Decodable, Sendable, Hashable, Identifiable {
     public let score: Double
     public let reasons: [RankReason]
     public let daysUntilDue: Int?
+    /// 사용자가 마지막으로 본 뒤 사용자 아닌 쪽(AI · 실행기)이 바꿨나 (바뀜 점). 서버가 정한다.
+    /// 예전 서버에는 없는 필드라 없으면 false
+    public let changed: Bool
 
     public var id: UUID { action.id }
 
     enum CodingKeys: String, CodingKey {
-        case score, reasons
+        case score, reasons, changed
         case daysUntilDue = "days_until_due"
     }
 
-    public init(action: ActionSummary, score: Double, reasons: [RankReason], daysUntilDue: Int?) {
+    public init(action: ActionSummary, score: Double, reasons: [RankReason], daysUntilDue: Int?, changed: Bool = false) {
         self.action = action
         self.score = score
         self.reasons = reasons
         self.daysUntilDue = daysUntilDue
+        self.changed = changed
     }
 
     public init(from decoder: Decoder) throws {
@@ -91,6 +95,7 @@ public struct RankedAction: Decodable, Sendable, Hashable, Identifiable {
         score = try c.decode(Double.self, forKey: .score)
         reasons = try c.decode([String].self, forKey: .reasons).compactMap(RankReason.init(rawValue:))
         daysUntilDue = try c.decodeIfPresent(Double.self, forKey: .daysUntilDue).map { Int($0.rounded()) }
+        changed = (try? c.decodeIfPresent(Bool.self, forKey: .changed)) ?? false
     }
 }
 
@@ -107,22 +112,78 @@ public struct WeeklyCheckPrompt: Codable, Sendable, Hashable {
     }
 }
 
+/// contract.ts `SOURCE_FAILURE_CODES`: 원문 처리 실패 까닭
+public enum SourceFailureCode: String, Codable, Sendable, CaseIterable {
+    case aiQuota = "ai_quota"
+    case aiTimeout = "ai_timeout"
+    case aiOutput = "ai_output"
+    case consent
+    case expired
+    case `internal`
+}
+
+/// contract.ts `failedSourcesSchema`: 하루 안에 처리에 실패한 원문 수 · 마지막 실패 시각 · 까닭
+public struct FailedSources: Decodable, Sendable, Hashable {
+    public let count: Int
+    public let latestAt: Date?
+    /// 모르는 까닭 · 기록 전 실패는 nil
+    public let reason: SourceFailureCode?
+
+    public static let empty = FailedSources(count: 0, latestAt: nil, reason: nil)
+
+    enum CodingKeys: String, CodingKey {
+        case count, reason
+        case latestAt = "latest_at"
+    }
+
+    public init(count: Int, latestAt: Date?, reason: SourceFailureCode?) {
+        self.count = count
+        self.latestAt = latestAt
+        self.reason = reason
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        count = max(0, try c.decode(Int.self, forKey: .count))
+        latestAt = try? c.decodeIfPresent(Date.self, forKey: .latestAt)
+        reason = (try? c.decodeIfPresent(String.self, forKey: .reason)).flatMap { $0.flatMap(SourceFailureCode.init(rawValue:)) }
+    }
+}
+
 /// GET /api/v1/now
 public struct NowResponse: Decodable, Sendable, Hashable {
     public let now: [RankedAction]
     public let confirmations: [ActionSummary]
     /// 예전 서버에는 없는 필드라 없으면 nil
     public let weeklyCheck: WeeklyCheckPrompt?
+    /// 처리에 실패한 원문. 예전 서버 · 모양이 어긋나면 `.empty`
+    public let failedSources: FailedSources
+    /// 목록 섹션을 접는 기준 (`SectionCaps`). 예전 서버 · 모양이 어긋나면 기본값 2 · 5 · 5
+    public let sectionLimits: SectionLimits
+    /// 바뀐 Review(확인 요청) id. 확인 요청은 `ActionSummary`로 읽어서 바뀜을 따로 둔다 (열린 할 일은 `RankedAction.changed`)
+    public let changedConfirmations: Set<UUID>
+    /// 서버가 바뀜(`changed`)을 보냈나. 예전 서버면 false (바뀜 범위를 숨긴다: 내용이 없는 범위는 보이지 않는다)
+    public let tracksChanges: Bool
 
     enum CodingKeys: String, CodingKey {
         case now, confirmations
         case weeklyCheck = "weekly_check"
+        case failedSources = "failed_sources"
+        case sectionLimits = "section_limits"
     }
 
-    public init(now: [RankedAction], confirmations: [ActionSummary], weeklyCheck: WeeklyCheckPrompt?) {
+    public init(
+        now: [RankedAction], confirmations: [ActionSummary], weeklyCheck: WeeklyCheckPrompt?,
+        failedSources: FailedSources = .empty, sectionLimits: SectionLimits = .standard,
+        changedConfirmations: Set<UUID> = [], tracksChanges: Bool = false
+    ) {
         self.now = now
         self.confirmations = confirmations
         self.weeklyCheck = weeklyCheck
+        self.failedSources = failedSources
+        self.sectionLimits = sectionLimits
+        self.changedConfirmations = changedConfirmations
+        self.tracksChanges = tracksChanges
     }
 
     public init(from decoder: Decoder) throws {
@@ -130,6 +191,42 @@ public struct NowResponse: Decodable, Sendable, Hashable {
         now = try c.decode([RankedAction].self, forKey: .now)
         confirmations = try c.decode([ActionSummary].self, forKey: .confirmations)
         weeklyCheck = try c.decodeIfPresent(WeeklyCheckPrompt.self, forKey: .weeklyCheck)
+        // 새 필드는 모양이 어긋나도 목록은 읽는다
+        failedSources = (try? c.decodeIfPresent(FailedSources.self, forKey: .failedSources)) ?? .empty
+        sectionLimits = (try? c.decodeIfPresent(SectionLimits.self, forKey: .sectionLimits)) ?? .standard
+        let flags = (try? c.decode([ChangedFlag].self, forKey: .confirmations)) ?? []
+        changedConfirmations = Set(flags.filter { $0.changed == true }.map(\.id))
+        let nowFlags = (try? c.decode([ChangedFlag].self, forKey: .now)) ?? []
+        tracksChanges = (flags + nowFlags).contains { $0.changed != nil }
+    }
+
+    /// 바뀐 할 일 id (Review · In Progress · To Do)
+    public var changedIDs: Set<UUID> {
+        changedConfirmations.union(now.lazy.filter(\.changed).map(\.id))
+    }
+
+    /// 받은 목록에서 바뀜 · 새 필드는 그대로 두고 두 목록만 바꾼 값 (`TaskBoard.applying`)
+    func replacing(now: [RankedAction], confirmations: [ActionSummary]) -> NowResponse {
+        NowResponse(
+            now: now, confirmations: confirmations, weeklyCheck: weeklyCheck, failedSources: failedSources,
+            sectionLimits: sectionLimits, changedConfirmations: changedConfirmations, tracksChanges: tracksChanges
+        )
+    }
+}
+
+/// `now` · `confirmations` 행의 id와 바뀜만 (`NowResponse` 디코딩용)
+private struct ChangedFlag: Decodable {
+    let id: UUID
+    let changed: Bool?
+
+    enum CodingKeys: String, CodingKey {
+        case id, changed
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(UUID.self, forKey: .id)
+        changed = try? c.decodeIfPresent(Bool.self, forKey: .changed)
     }
 }
 

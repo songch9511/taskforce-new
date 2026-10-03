@@ -118,6 +118,12 @@ public struct APIClient: Sendable {
         return response.action
     }
 
+    /// 바뀐 할 일을 봤다 (`POST /actions/:id/seen`, 본문 없음 · 204). 서버는 지금 바뀜일 때만 기록한다.
+    /// 실패해도 다시 보내지 않는다: 다음 `/now`의 `changed`가 진실이다 (`SeenTracker`).
+    public func markSeen(_ id: UUID) async throws {
+        try await sendNoContent(.post, "actions/\(id.lowercased)/seen")
+    }
+
     public func handoff(id: UUID) async throws -> HandoffResponse {
         try await send(.post, "actions/\(id.lowercased)/handoff")
     }

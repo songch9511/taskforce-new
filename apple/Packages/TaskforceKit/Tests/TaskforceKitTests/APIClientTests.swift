@@ -124,6 +124,24 @@ struct APIClientTests {
         ])
     }
 
+    /// U1 PR2 `POST /actions/:id/seen`: 본문 없음 · 204, Bearer 토큰
+    @Test func markSeenPostsWithoutBody() async throws {
+        try await client(status: 204, body: "").markSeen(Fixtures.actionID)
+        let request = try #require(last)
+        #expect(request.method == "POST")
+        #expect(request.url.path == "/api/v1/actions/11111111-1111-4111-8111-111111111111/seen")
+        #expect(request.headers["Authorization"] == "Bearer token-123")
+        #expect(request.headers["Content-Type"] == nil)
+        #expect(request.body == nil || request.body?.isEmpty == true)
+    }
+
+    @Test func markSeenSurfacesNotFound() async throws {
+        let api = client(status: 404, body: #"{"error":{"code":"not_found","message":"없음"}}"#)
+        await #expect(throws: APIError.server(status: 404, code: .notFound, message: "없음")) {
+            try await api.markSeen(Fixtures.actionID)
+        }
+    }
+
     @Test func setProgressPostsTheState() async throws {
         let api = client(body: #"{"action":\#(Fixtures.actionSummary)}"#)
         for state in WorkState.allCases {
