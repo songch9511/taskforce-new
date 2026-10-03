@@ -1,12 +1,13 @@
--- 실행의 글 보관 기간 (처리방침 D9a-1 5장, 2026-10-03 사용자 결정: 90일). 매일 /api/cron/retention이 purge_expired_execution_text를 부른다.
+-- 실행의 글 보관 기간 (처리방침 D9a-1 5장, 2026-10-03 사용자 결정: 저장한 뒤 90일, 그때 실행 중이면 끝나는 대로). 매일 /api/cron/retention이 purge_expired_execution_text를 부른다.
 --
 -- - 지우는 글: 요청(execution_runs.request, 빈 문자열로) · 계획이 준 지시(execution_steps.args의 brief 키) ·
 --   초안의 받는 사람 후보(execution_steps.receipt의 to 키) · 되묻는 질문(receipt의 question 키). 원문 · 다른 사람의 이메일을 담을 수 있다.
 -- - 남기는 것: run · 단계 행과 id · 상태 · 결과 · hold · 시각, receipt의 글 아닌 값(decision · capability · model · prompt_version · error),
 --   산출물 행(id · 제목. 본문은 purge_expired_artifacts가 따로 비운다) · 원가 · 원장 · intent · 승인 · 실행 이벤트(글이 없다).
--- - 끝난 run(done · failed · stopped)만, 끝난 시각 기준이다. execution_runs에는 끝난 시각 열이 없다: run이 끝 상태로 간 실행 이벤트
---   (execution_events, type run, 같은 트랜잭션에서 트리거가 db_now()로 남긴다)의 시각을 쓴다. 끝 상태는 다시 열리지 않는다.
---   끝나지 않은 run(막힌 run 포함)은 건드리지 않는다: 계획 · 초안 단계가 요청 · 지시를 다시 읽는다.
+-- - 기준은 저장한 시각(run을 만든 시각 execution_runs.created_at)이다: 만든 지 보관 기간이 지난 끝난 run(done · failed · stopped)의 글을 지운다.
+--   지시 · receipt는 run이 열린 동안에만 쓰이므로 run을 만든 시각보다 늦다. 그래서 늦게 쓴 글은 90일보다 일찍 지워질 수 있지만 늦게 지워지지는 않는다.
+--   끝나지 않은 run(막힌 run 포함)은 건드리지 않는다: 계획 · 초안 단계가 요청 · 지시를 다시 읽는다. 그때까지 열려 있던 run은 끝난 뒤 첫 정리에서 지운다
+--   (= 만든 뒤 90일과 끝난 때 중 늦은 쪽). 끝 상태는 다시 열리지 않는다.
 --   끝났어도 부르는 중 · 결과 불명인 단계가 남은 run은 그 단계가 나올 때까지 미룬다(응답이 receipt를 늦게 쓸 수 있다).
 -- - 지운 시각을 run의 text_purged_at에 적는다(글 없이). 다시 불러도 같은 run을 두 번 지우지 않는다.
 -- - execution_steps_replan 트리거는 끝난 단계의 args가 바뀌면 "plan is frozen"으로 막고, 준비된 단계의 args가 바뀌면 다시 계획한다(pending · version + 1).
@@ -68,8 +69,8 @@ $$;
 -- ─────────────────────────────────────────────
 -- 2) 정리 (retention cron, src/app/api/cron/retention/route.ts)
 -- ─────────────────────────────────────────────
--- p_before(= 지금 - EXECUTION_TEXT_RETENTION_DAYS, src/lib/retention.ts)보다 먼저 끝난 run의 글을 지운다. 지운 run 수.
--- 한 번에 p_limit개 run씩, 오래된 것부터 (남은 것은 다음 날). 단계를 먼저, run을 나중에 쓴다(다른 함수와 같은 step → run 잠금 순서).
+-- p_before(= 지금 - EXECUTION_TEXT_RETENTION_DAYS, src/lib/retention.ts)보다 먼저 만든 끝난 run의 글을 지운다. 지운 run 수.
+-- 한 번에 p_limit개 run씩, 먼저 만든 것부터 (남은 것은 다음 날). 단계를 먼저, run을 나중에 쓴다(다른 함수와 같은 step → run 잠금 순서).
 -- 상태를 바꾸지 않으므로 실행 이벤트 · 크레딧 해제 트리거는 돌지 않는다
 create function public.purge_expired_execution_text(p_before timestamptz, p_limit integer default 5000)
 returns integer
@@ -89,9 +90,7 @@ begin
     select r.id from public.execution_runs r
     where r.text_purged_at is null
       and r.state in ('done', 'failed', 'stopped')
-      and r.created_at < p_before -- 끝난 시각은 만든 시각보다 늦다: 색인으로 먼저 좁힌다
-      and (select max(e.at) from public.execution_events e
-           where e.run_id = r.id and e.type = 'run' and e.to_state in ('done', 'failed', 'stopped')) < p_before
+      and r.created_at < p_before
       and not exists (select 1 from public.execution_steps s where s.run_id = r.id and s.state in ('calling', 'unknown_outcome'))
     order by r.created_at
     limit p_limit
@@ -107,8 +106,8 @@ begin
   update public.execution_runs r set request = '', text_purged_at = public.db_now()
     where r.id = any (v_runs) and r.text_purged_at is null;
   get diagnostics v_count = row_count;
-  -- 트리거 예외는 이 함수 안에서만: 부른 쪽의 gate로 되돌려, 같은 트랜잭션의 뒤 문장이 지시를 지우면 다시 계획 · 동결 규칙대로 돈다
-  perform set_config('execution.gate', coalesce(v_gate, ''), true);
+  -- 트리거 예외는 이 함수 안에서만: 부른 쪽의 gate로 되돌려(retention은 남기지 않는다), 같은 트랜잭션의 뒤 문장이 지시를 지우면 다시 계획 · 동결 규칙대로 돈다
+  perform set_config('execution.gate', coalesce(nullif(v_gate, 'retention'), ''), true);
   return v_count;
 end;
 $$;

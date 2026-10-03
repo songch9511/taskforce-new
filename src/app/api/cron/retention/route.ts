@@ -9,7 +9,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 // 끝으로 Slack 토큰이 살아 있는지 확인한다: Slack에서 앱을 지웠다는 이벤트를 놓쳤어도 하루 안에 끊고 Slack 글자를 지운다 (slack/health.ts).
 // 실행 산출물(내장 초안)은 보관 기간(retain_until, 열 기본값)이 지난 본문만 맨 먼저 비운다 (purge_expired_artifacts, 한도 없는 한 문장.
 // 운영자 시험 규모라 짧다. 밀린 산출물이 많아지면 그만큼 원문 정리 시간이 줄어든다: 그때 한도를 두는 판으로 바꾼다).
-// 이어서 끝난 지 90일이 지난 run의 글(요청 · 지시 · 받는 사람 후보 · 되묻는 질문)을 지운다 (purge_expired_execution_text, 한 번에 PURGE_LIMIT개 run, 남은 것은 다음 날).
+// 이어서 만든 지 90일이 지난 끝난 run의 글(요청 · 지시 · 받는 사람 후보 · 되묻는 질문)을 지운다 (purge_expired_execution_text, 한 번에 PURGE_LIMIT개 run, 남은 것은 다음 날).
 // 둘 다 실패해도 나머지 정리 · Slack 토큰 확인은 하고, 응답을 500으로 해 cron 기록에 남긴다 (실패한 칸은 null).
 // 한 번에 최대 PURGE_LIMIT건씩 지우므로, 밀린 게 있으면(어느 하나라도 한도만큼 지워졌으면) 시간 한도 안에서 반복해서 부른다.
 export const maxDuration = 60;

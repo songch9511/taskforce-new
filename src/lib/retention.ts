@@ -7,15 +7,13 @@
 // (purge_slack_sources, 20261013000000, docs/go-live/slack-integration.md D3).
 // 실행 산출물(내장 초안, execution_artifacts)은 행마다 보관 기한(retain_until, 열 기본값 90일 · 처리방침 D9a-1이 정한다)이 지나면
 // 같은 cron이 본문만 비운다(purge_expired_artifacts, 20261022000000). 제목 · 기록 · 원가 · 원장은 남긴다. 기간을 바꾸려면 새 마이그레이션으로 열 기본값을 바꾼다.
-// 실행의 글(요청 · 지시 · 받는 사람 후보 · 되묻는 질문)은 run이 끝난 지 EXECUTION_TEXT_RETENTION_DAYS일이 지나면 같은 cron이 지운다
-// (purge_expired_execution_text, 20261024000000). 끝나지 않은 run은 건드리지 않는다. run · 단계의 상태 · 기록 · 원가는 남긴다.
+// 실행의 글(요청 · 지시 · 받는 사람 후보 · 되묻는 질문)은 run을 만든 지 EXECUTION_TEXT_RETENTION_DAYS일이 지나면 같은 cron이 지운다
+// (purge_expired_execution_text, 20261024000000). 그때 끝나지 않은 run은 건드리지 않고 끝난 뒤 첫 정리에서 지운다. run · 단계의 상태 · 기록 · 원가는 남긴다.
 
 export const RAW_TEXT_RETENTION_DAYS = 90;
 
 /**
- * 실행의 글 보관 기간: run이 끝난 뒤 90일 (purge_expired_execution_text, docs/EXECUTION.md 12장).
- * 90일은 처리방침 D9a-1 초안 5장의 값이다. 초안 문안은 "저장한 뒤 90일"이고 코드는 끝난 시각으로 센다: run이 열린 동안 글이 남는다
- * (오래 열린 run은 런북 9-4로 멈춘다). 둘 중 어느 쪽으로 맞출지는 게시 전에 정한다
+ * 실행의 글 보관 기간: 저장한 뒤(run을 만든 뒤) 90일, 그때 실행 중이면 끝나는 대로 (처리방침 D9a-1 5장, purge_expired_execution_text, docs/EXECUTION.md 12장)
  */
 export const EXECUTION_TEXT_RETENTION_DAYS = 90;
 

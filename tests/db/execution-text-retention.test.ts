@@ -6,9 +6,11 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { asUser, createLocalSupabase } from "./local-supabase";
 
 // 실행의 글 보관 기간 (20261024000000_execution_text_retention, 처리방침 D9a-1 5장, docs/EXECUTION.md 12장).
-// 끝난 run(done · failed · stopped)이 끝난 지 보관 기간이 지나면 요청 · 지시(args.brief) · 받는 사람 후보(receipt.to) · 되묻는 질문(receipt.question)만 지운다.
+// 저장한 뒤(run을 만든 뒤) 보관 기간이 지난 끝난 run(done · failed · stopped)의 요청 · 지시(args.brief) · 받는 사람 후보(receipt.to) · 되묻는 질문(receipt.question)만 지운다.
+// 그때 실행 중인 run은 건드리지 않고 끝나는 대로 지운다.
 // 실행기(U2 PR6)가 부를 순서 그대로 SQL을 부른다: run → 계획 단계(초안 단계를 붙임) → 초안 단계(산출물 · 원가 · 정산) → 후속 계획(되묻기).
-// "보관 기간이 지났다"는 기준 시각(p_before)을 앞으로 옮겨 본다. 끝난 시각을 뒤로 미룬 run은 테스트 시계(app.now)로 끝낸다.
+// "만든 지 N일"은 run의 created_at을 N일 앞으로 옮겨(age) 보고, 운영 cron과 같은 기준 시각(지금 - 90일)으로 부른다.
+// 기준 시각을 앞으로 옮겨(지금 + 1일 = 91일 뒤의 cron) 보는 테스트도 있다. 늦게 끝난 run은 테스트 시계(app.now)로 끝낸다.
 
 // 테스트 시계 (execution-credits.test.ts와 같은 판): 마이그레이션을 적용한 뒤 테스트 안에서만 바꾼다. app.now가 비면 now()
 const TEST_CLOCK = `
@@ -33,6 +35,11 @@ const purge = async (before: string, limit = 5000) =>
   (await one<{ n: number }>(`select public.purge_expired_execution_text(${before}, $1) as n`, [limit])).n;
 /** 앞선 테스트가 남긴 끝난 run을 모두 지운다 (수를 세는 테스트가 자기 run만 보게) */
 const drain = () => purge("now() + interval '1000 days'");
+/** 운영 cron의 기준 시각: 지금 - EXECUTION_TEXT_RETENTION_DAYS(90) */
+const TODAY = "now() - interval '90 days'";
+/** run을 만든 시각을 days일 앞으로 옮긴다 (만든 지 days일 된 run) */
+const age = (runId: string, days: number) =>
+  db.query("update public.execution_runs set created_at = now() - make_interval(days => $2) where id = $1", [runId, days]);
 
 const attempts = (cost = 0.001) => JSON.stringify([{ generationId: `gen-${randomUUID()}`, model: "m", usage: { prompt_tokens: 100, completion_tokens: 50, cost } }]);
 
@@ -136,7 +143,7 @@ beforeAll(async () => {
 }, 60_000);
 
 describe("끝난 run의 글 지우기 (purge_expired_execution_text)", () => {
-  it("끝난 지 보관 기간이 지난 run은 요청 · 지시 · 받는 사람 후보 · 되묻는 질문만 지우고, id · 상태 · 결과 · receipt의 다른 값 · 산출물 · 원가 · 원장 · 이벤트는 그대로", async () => {
+  it("만든 지 보관 기간이 지난 끝난 run은 요청 · 지시 · 받는 사람 후보 · 되묻는 질문만 지우고, id · 상태 · 결과 · receipt의 다른 값 · 산출물 · 원가 · 원장 · 이벤트는 그대로", async () => {
     await drain();
     const user = await newUser();
     const run = await finishedRun(user);
@@ -154,12 +161,13 @@ describe("끝난 run의 글 지우기 (purge_expired_execution_text)", () => {
     expect(before.ledger.length).toBeGreaterThan(0);
     expect(await hasText(run.runId)).toEqual({ request: true, brief: 1, receiptText: 2 });
 
-    // 오늘의 cron (기준 = 지금 - 90일): 방금 끝난 run은 그대로
-    expect(await purge("now() - interval '90 days'")).toBe(0);
+    // 오늘의 cron (기준 = 지금 - 90일): 방금 만든 run은 그대로
+    expect(await purge(TODAY)).toBe(0);
     expect(await hasText(run.runId)).toEqual({ request: true, brief: 1, receiptText: 2 });
 
-    // 91일 뒤의 cron (기준 = 91일 뒤 - 90일 = 지금 + 1일)
-    expect(await purge("now() + interval '1 day'")).toBe(1);
+    // 만든 지 91일이 된 run
+    await age(run.runId, 91);
+    expect(await purge(TODAY)).toBe(1);
     expect(await hasText(run.runId)).toEqual({ request: false, brief: 0, receiptText: 0 });
     expect(await runRow(run.runId)).toEqual({ request: "", state: "done", outcome: "needs_input", hold_reason: null, purged: true });
 
@@ -188,40 +196,55 @@ describe("끝난 run의 글 지우기 (purge_expired_execution_text)", () => {
     expect(await stepRows(run.runId)).toEqual(steps);
   });
 
-  it("만든 시각이 아니라 끝난 시각으로 센다: 오래 열려 있다가 늦게 끝난 run은 끝난 뒤 보관 기간이 지나야 지운다", async () => {
+  it("저장한 시각(run을 만든 시각)으로 센다: 만든 지 90일이 지났으면 어제 끝났어도 지우고, 만든 지 10일이면 끝났어도 그대로", async () => {
     await drain();
     const user = await newUser();
-    const early = await finishedRun(user);
-    // 같은 때 만들었지만 30일 뒤에 끝난 run (초안 단계부터 테스트 시계 30일 뒤)
-    const late = await plannedRun(user);
-    await at("now() + interval '30 days'", async () => {
-      expect(await gate(late.draftId)).toBe("ok");
-      expect(await complete(late.draftId, { to: TO, model: "m", prompt_version: "draft-v1" }, ARTIFACT, "draft_ready")).toBe(true);
+    // 만든 지 100일, 어제 끝난 run (초안 단계부터 테스트 시계로 어제)
+    const old = await plannedRun(user);
+    await at("now() - interval '1 day'", async () => {
+      expect(await gate(old.draftId)).toBe("ok");
+      expect(await complete(old.draftId, { to: TO, model: "m", prompt_version: "draft-v1" }, ARTIFACT, "draft_ready")).toBe(true);
     });
-    expect((await runRow(late.runId)).state).toBe("done");
+    expect((await runRow(old.runId)).state).toBe("done");
+    await age(old.runId, 100);
+    // 만든 지 10일, 끝난 run
+    const recent = await finishedRun(user);
+    await age(recent.runId, 10);
 
-    expect(await purge("now() + interval '1 day'")).toBe(1);
-    expect((await runRow(early.runId)).purged).toBe(true);
-    expect(await hasText(late.runId)).toEqual({ request: true, brief: 1, receiptText: 1 });
+    expect(await purge(TODAY)).toBe(1);
+    expect(await hasText(old.runId)).toEqual({ request: false, brief: 0, receiptText: 0 });
+    expect(await hasText(recent.runId)).toEqual({ request: true, brief: 1, receiptText: 2 });
 
-    expect(await purge("now() + interval '31 days'")).toBe(1);
-    expect(await hasText(late.runId)).toEqual({ request: false, brief: 0, receiptText: 0 });
+    // 만든 지 90일이 지나면 그 run도 지운다
+    await age(recent.runId, 91);
+    expect(await purge(TODAY)).toBe(1);
+    expect(await hasText(recent.runId)).toEqual({ request: false, brief: 0, receiptText: 0 });
   });
 
-  it("끝나지 않은 run(대기 · 크레딧으로 막힘)은 아무리 오래돼도 건드리지 않는다", async () => {
+  it("만든 지 90일이 지났어도 끝나지 않은 run(대기 · 크레딧으로 막힘)은 건드리지 않고, 끝나는 대로 다음 정리에서 지운다", async () => {
     await drain();
     const user = await newUser();
     const action = (await one<{ id: string }>("insert into public.actions (user_id, title) values ($1, 'x') returning id", [user])).id;
     const queued = (await one<{ id: string }>("select public.create_run($1, $2, 'draft', $3) as id", [user, action, REQUEST])).id;
-    const held = await plannedRun(await newUser(0));
+    const heldUser = await newUser(0);
+    const held = await plannedRun(heldUser);
     expect(await gate(held.draftId)).toBe("insufficient_credit");
     expect(await runRow(held.runId)).toMatchObject({ state: "running", hold_reason: "credit" });
+    await age(queued, 100);
+    await age(held.runId, 100);
     const heldSteps = await stepRows(held.runId);
 
+    expect(await purge(TODAY)).toBe(0);
     expect(await purge("now() + interval '1000 days'")).toBe(0);
     expect(await runRow(queued)).toMatchObject({ request: REQUEST, state: "queued", purged: false });
     expect(await runRow(held.runId)).toMatchObject({ request: REQUEST, state: "running", hold_reason: "credit", purged: false });
     expect(await stepRows(held.runId)).toEqual(heldSteps);
+
+    // 막힌 run을 멈추면 바로 다음 정리에서 지운다 (만든 뒤 90일이 이미 지났다)
+    expect(await one("select public.stop_run($1, $2) as s", [heldUser, held.runId])).toEqual({ s: "stopped" });
+    expect(await purge(TODAY)).toBe(1);
+    expect(await hasText(held.runId)).toEqual({ request: false, brief: 0, receiptText: 0 });
+    expect(await runRow(queued)).toMatchObject({ request: REQUEST, purged: false });
   });
 
   it("멈춘 · 실패한 run도 지운다. 준비된 · 대기 중인 채 멈춘 단계는 다시 계획되지 않고(상태 · 버전 그대로, 이벤트 없음), 부르는 중 · 결과 불명인 단계가 남은 run은 그 단계가 나온 뒤에 지운다", async () => {
@@ -291,7 +314,7 @@ describe("끝난 run의 글 지우기 (purge_expired_execution_text)", () => {
     expect((await stepRows(calling.runId))[1]).toMatchObject({ state: "called", receipt: { model: "m", prompt_version: "draft-v1" } });
   });
 
-  it("한 번에 p_limit개 run씩, 오래된 것부터 지운다. 인자가 없거나 한도가 1보다 작으면 오류", async () => {
+  it("한 번에 p_limit개 run씩, 먼저 만든 것부터 지운다. 인자가 없거나 한도가 1보다 작으면 오류", async () => {
     await drain();
     const user = await newUser();
     const first = await finishedRun(user);
@@ -327,15 +350,12 @@ describe("계획 동결 트리거의 예외는 정리 함수 안의 지시 지�
     expect(await hasText(run.runId)).toEqual({ request: true, brief: 1, receiptText: 2 });
 
     // 정리 함수는 끝날 때 부른 쪽의 gate로 되돌린다: 같은 트랜잭션의 뒤 문장이 지시를 지우면 다시 막힌다 (정리까지 함께 되돌려진다)
-    // 정리 기준보다 늦게(10일 뒤) 끝난 run: 이번 정리가 지우지 않아 지시가 남아 있다
-    const other = await plannedRun(await newUser());
-    await at("now() + interval '10 days'", async () => {
-      expect(await gate(other.draftId)).toBe("ok");
-      expect(await complete(other.draftId, { to: TO, model: "m", prompt_version: "draft-v1" }, ARTIFACT, "draft_ready")).toBe(true);
-    });
+    // run은 만든 지 100일, other는 방금 만든 끝난 run이라 이번 정리(기준 = 지금 - 90일)가 지우지 않아 지시가 남아 있다
+    await age(run.runId, 100);
+    const other = await finishedRun(await newUser());
     await expect(
       db.transaction(async (tx) => {
-        await tx.query("select public.purge_expired_execution_text(now() + interval '1 day')");
+        expect((await tx.query(`select public.purge_expired_execution_text(${TODAY}) as n`)).rows).toEqual([{ n: 1 }]);
         expect((await tx.query<{ purged: boolean }>("select text_purged_at is not null as purged from public.execution_runs where id = $1", [run.runId])).rows).toEqual([
           { purged: true },
         ]);
@@ -344,11 +364,18 @@ describe("계획 동결 트리거의 예외는 정리 함수 안의 지시 지�
     ).rejects.toThrow(/plan is frozen/);
     expect(await hasText(run.runId)).toEqual({ request: true, brief: 1, receiptText: 2 });
 
-    // 부른 쪽이 정한 gate는 그대로 남는다
+    // 부른 쪽이 정한 gate는 그대로 남는다 (정리가 실제로 한 run을 지우는 경로에서)
     await db.transaction(async (tx) => {
       await tx.query("select set_config('execution.gate', 'stop', true)");
-      await tx.query("select public.purge_expired_execution_text(now() + interval '1 day')");
+      expect((await tx.query(`select public.purge_expired_execution_text(${TODAY}) as n`)).rows).toEqual([{ n: 1 }]);
       expect((await tx.query("select current_setting('execution.gate', true) as gate")).rows).toEqual([{ gate: "stop" }]);
+      await tx.rollback();
+    });
+    // 부른 쪽이 retention을 정해 두었어도 끝난 뒤에는 남기지 않는다 (예외는 이 함수 안에서만)
+    await db.transaction(async (tx) => {
+      await tx.query("select set_config('execution.gate', 'retention', true)");
+      expect((await tx.query(`select public.purge_expired_execution_text(${TODAY}) as n`)).rows).toEqual([{ n: 1 }]);
+      expect((await tx.query("select current_setting('execution.gate', true) as gate")).rows).toEqual([{ gate: "" }]);
       await tx.rollback();
     });
     expect(await hasText(run.runId)).toEqual({ request: true, brief: 1, receiptText: 2 });

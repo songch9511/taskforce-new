@@ -11,7 +11,7 @@ describe("retentionCutoff", () => {
     expect(retentionCutoff(new Date("2026-12-26T00:00:00Z"))).toEqual(new Date("2026-09-27T00:00:00Z"));
   });
 
-  it("실행의 글(요청 · 지시 · 받는 사람 후보 · 되묻는 질문)은 run이 끝난 뒤 90일 보관한다 (처리방침 D9a-1 초안 5장의 90일, 끝난 시각 기준)", () => {
+  it("실행의 글(요청 · 지시 · 받는 사람 후보 · 되묻는 질문)은 저장한 뒤 90일 보관한다 (처리방침 D9a-1 5장, 그때 실행 중이면 끝나는 대로)", () => {
     expect(EXECUTION_TEXT_RETENTION_DAYS).toBe(90);
   });
 });

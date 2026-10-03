@@ -12,7 +12,7 @@ vi.mock("@/lib/supabase/admin", () => ({ createAdminClient: vi.fn() }));
 vi.mock("@/lib/connectors/slack/run", () => ({ checkSlackConnectionTokens: vi.fn() }));
 
 // 원문 정리가 밀려도(매번 한도만큼 지움) Slack 토큰 확인에 떼어 둔 시간은 남는다 (D3: 앱 해제 이벤트를 놓쳤을 때의 안전망).
-// 실행 산출물 본문(보관 기간이 지난 것)과 끝난 지 90일이 지난 run의 글도 같은 cron이 지운다. 실패해도 나머지는 하고 500.
+// 실행 산출물 본문(보관 기간이 지난 것)과 만든 지 90일이 지난 끝난 run의 글도 같은 cron이 지운다. 실패해도 나머지는 하고 500.
 
 let now = 0;
 
@@ -70,7 +70,7 @@ describe("GET /api/cron/retention", () => {
     expect(checkSlackConnectionTokens).not.toHaveBeenCalled();
   });
 
-  it("보관 기간이 지난 실행 산출물 본문을 맨 먼저, 이어서 끝난 지 90일이 지난 run의 글을 한 번씩 지우고 수를 응답에 남긴다", async () => {
+  it("보관 기간이 지난 실행 산출물 본문을 맨 먼저, 이어서 만든 지 90일이 지난 끝난 run의 글을 한 번씩 지우고 수를 응답에 남긴다", async () => {
     const { calls, args } = fakeAdmin({ artifacts: 3, execution: 2 });
 
     const response = await cron();
@@ -79,7 +79,7 @@ describe("GET /api/cron/retention", () => {
     expect(calls).toEqual(["purge_expired_artifacts", "purge_expired_execution_text", "purge_expired_source_text", "purge_slack_buffers"]);
     expect(await response.json()).toMatchObject({ artifacts_purged: 3, execution_text_purged: 2, sources_purged: 0, calls: 4 });
     expect(checkSlackConnectionTokens).toHaveBeenCalledOnce();
-    // 기준 시각 = 지금 - EXECUTION_TEXT_RETENTION_DAYS (run이 끝난 시각과 비교한다), 한 번에 5000개 run
+    // 기준 시각 = 지금 - EXECUTION_TEXT_RETENTION_DAYS (run을 만든 시각과 비교한다), 한 번에 5000개 run
     expect(EXECUTION_TEXT_RETENTION_DAYS).toBe(90);
     const { p_before, p_limit } = args.purge_expired_execution_text as { p_before: string; p_limit: number };
     const cutoff = new Date(p_before).getTime();

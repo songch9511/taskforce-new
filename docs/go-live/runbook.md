@@ -156,12 +156,12 @@ Supabase → Organization → Billing에서 프로젝트가 **Free**이고 백�
 
 ## 6. Cron 확인
 
-`vercel.json`: `/api/cron/sync` 15분마다, `/api/cron/retry-sources` 매시 7분 · 37분(실패 · 멈춘 글 원문 다시 처리, 하루 안에 들어온 원문만 첫 처리 포함 3번까지. 하루가 지나서도 멈춘 원문은 실패로 닫는다), `/api/cron/reminders` 매일 00:00 UTC(한국 09:00), `/api/cron/retention` 매일 18:30 UTC(한국 03:30, 원문 90일 보관 정리 · 보관 기한이 지난 실행 산출물 본문 비우기 · 끝난 지 90일이 지난 run의 글 지우기 · `src/lib/retention.ts`), `/api/cron/execution-sweep` 1분마다(실행, 9장. `EXECUTION_ENABLED`가 꺼져 있으면 `{ enabled: false }`로 바로 끝난다).
+`vercel.json`: `/api/cron/sync` 15분마다, `/api/cron/retry-sources` 매시 7분 · 37분(실패 · 멈춘 글 원문 다시 처리, 하루 안에 들어온 원문만 첫 처리 포함 3번까지. 하루가 지나서도 멈춘 원문은 실패로 닫는다), `/api/cron/reminders` 매일 00:00 UTC(한국 09:00), `/api/cron/retention` 매일 18:30 UTC(한국 03:30, 원문 90일 보관 정리 · 보관 기한이 지난 실행 산출물 본문 비우기 · 만든 지 90일이 지난 끝난 run의 글 지우기 · `src/lib/retention.ts`), `/api/cron/execution-sweep` 1분마다(실행, 9장. `EXECUTION_ENABLED`가 꺼져 있으면 `{ enabled: false }`로 바로 끝난다).
 
 1. 배포 뒤 Vercel → 프로젝트 → Settings → Cron Jobs에 다섯 개가 보이는지.
 2. Logs에서 `/api/cron/sync`가 15분마다 200인지. 401이면 `CRON_SECRET`이 없거나 다르다.
 3. 다음 날 09:00 KST에 `/api/cron/reminders`가 200인지(기한 임박 알림).
-4. 다음 날 03:30 KST에 `/api/cron/retention`이 200이고 `{ sources_purged, judge_logs_deleted, artifacts_purged, execution_text_purged }`를 돌려주는지(처리방침 5장 "90일" 약속). 산출물 정리가 실패하면 나머지 정리는 하고 500 · `artifacts_purged: null` · 로그 "실행 산출물 본문 정리 실패"다(마이그레이션 `20261022000000` 적용 전이면 이렇다). 실행의 글(요청 · 지시 · 받는 사람 후보 · 되묻는 질문, 끝난 지 `EXECUTION_TEXT_RETENTION_DAYS`일이 지난 run) 정리가 실패해도 같다: 500 · `execution_text_purged: null` · 로그 "실행 글 정리 실패"(`20261024000000` 적용 전이면 이렇다). 한 번에 5,000개 run까지라 남은 것은 다음 날 지운다.
+4. 다음 날 03:30 KST에 `/api/cron/retention`이 200이고 `{ sources_purged, judge_logs_deleted, artifacts_purged, execution_text_purged }`를 돌려주는지(처리방침 5장 "90일" 약속). 산출물 정리가 실패하면 나머지 정리는 하고 500 · `artifacts_purged: null` · 로그 "실행 산출물 본문 정리 실패"다(마이그레이션 `20261022000000` 적용 전이면 이렇다). 실행의 글(요청 · 지시 · 받는 사람 후보 · 되묻는 질문, 만든 지 `EXECUTION_TEXT_RETENTION_DAYS`일이 지난 끝난 run) 정리가 실패해도 같다: 500 · `execution_text_purged: null` · 로그 "실행 글 정리 실패"(`20261024000000` 적용 전이면 이렇다). 한 번에 5,000개 run까지라 남은 것은 다음 날 지운다.
 5. `/api/cron/retry-sources`가 30분마다 200이고 `{ due, retried, failed, gaveUp, expired, skippedForTime }`를 돌려주는지. `failed`나 `gaveUp`이 자주 0보다 크면 추출 실패가 잦다는 뜻이다(모델 · 공급자 확인). `expired`는 이번 실행에서 실패로 닫은, 들어온 지 하루가 넘고도 처리 중 · 대기에 15분 넘게 멈춘 글 원문(kind task 제외)의 수다: 사용자가 동의하지 않았거나 후보 밖이었거나 마지막 시도에서 끊겨 앱에 "처리 중"으로 남던 원문을 다시 처리하지 않고 `failed` · `processing_summary.closed = "expired"`로 닫는다. 한 번에 100건까지(닫기에 20초까지) 오래된 것부터라, 배포 직후 옛 원문이 쌓여 있으면 몇 번의 실행 동안 `expired`가 0보다 크다가 0으로 돌아온다(계속 0보다 크면 원문이 계속 멈추고 있다는 뜻이다: 다시 처리 실패 로그와 `maxDuration`을 본다). 닫는 조회가 실패하면 로그에 "창을 지난 원문 찾기 실패"가 남고 다시 처리는 그대로 돈다. 이 cron은 들어온 지 하루가 넘은 원문은 다시 처리하지 않는다: 배포 전에 `processing_status`가 `failed` · `processing` · `pending`인 글 원문(kind task 제외)을 세어 보고, 살릴 것만 `scripts/reprocess-sources.ts --source <id>`로 하나씩 처리한다(이미 닫힌 원문도 같은 방법으로 살릴 수 있다. 스크립트는 재처리 cron처럼 이미 근거로 붙은 구절과 겹치는 후보를 빼고 병합해 근거 · Claim이 두 번 붙지 않는다). 옵션 없이 돌리면 근거가 없는 모든 원문(할 일이 없어 끝난 원문 포함)을 다시 처리하므로 쓰지 않는다.
 6. 동의하지 않은 사용자의 연결은 동기화에서 건너뛴다(`registry.ts`의 `withoutConsent`). 테스트 계정으로 동의 전 · 후를 한 번씩 본다.
 
@@ -348,13 +348,13 @@ where s.state = 'called' and not exists (select 1 from public.sources x where x.
 select count(*) as claims_without_source from public.claims where origin = 'execution' and (source_id is null or quote is null);
 -- 실패한 단계의 까닭 (코드 값만): retries_exhausted가 몰리면 OpenRouter 키 · 잔액 · 권한(401 · 402 · 403)부터 본다 (EXECUTION 13장 오류 표)
 select receipt->>'error' as error, count(*) as steps from public.execution_steps where state = 'failed' group by 1 order by 2 desc;
--- 실행의 글 보관 (EXECUTION 12장): 글은 run이 끝난 지 90일 뒤 지운다(열린 동안은 남는다). 90일 넘게 열린 run은 0이어야 한다.
--- 0이 아니면 아래 "오래 막힌 run 정리"의 두 번째 목록(막히지 않은 run 포함)을 보고 멈춘다. 멈춘 run의 글은 멈춘 뒤 90일에 지운다
+-- 실행의 글 보관 (EXECUTION 12장): 저장한 뒤 90일에 지우고, 그때 실행 중인 run은 끝나는 대로 지운다.
+-- 90일 넘게 열린 run: 글이 끝날 때까지 남는다. 하루 넘게 막힌 run은 아래 "오래 막힌 run 정리"로 멈추므로 보통 0이다.
+-- 0이 아니면 그 정리의 두 번째 목록(막히지 않은 run 포함)을 본다. 멈추면 다음 정리에서 지운다
 select count(*) as open_over_retention from public.execution_runs where state in ('queued', 'running', 'waiting_approval') and created_at < now() - interval '90 days';
--- 끝난 지 91일이 지났는데 글이 남은 run: 0이어야 한다. 아니면 retention cron 응답의 execution_text_purged · 로그 "실행 글 정리 실패"를 본다
--- (부르는 중 · 결과 불명 단계가 남은 run은 그 단계가 나올 때까지 미룬다: 위 expired_calling · unknown_outcome)
-select count(*) as text_overdue from public.execution_runs r where r.text_purged_at is null and r.state in ('done', 'failed', 'stopped')
-  and (select max(e.at) from public.execution_events e where e.run_id = r.id and e.type = 'run' and e.to_state in ('done', 'failed', 'stopped')) < now() - interval '91 days';
+-- 만든 지 91일이 넘은 끝난 run 중 글이 남은 run: 0이어야 한다. 아니면 retention cron 응답의 execution_text_purged · 로그 "실행 글 정리 실패"를 본다
+-- (부르는 중 · 결과 불명 단계가 남은 run은 그 단계가 나올 때까지 미룬다: 위 expired_calling · unknown_outcome. 오늘 끝난 오래된 run은 다음 정리까지 남는다)
+select count(*) as text_overdue from public.execution_runs where text_purged_at is null and state in ('done', 'failed', 'stopped') and created_at < now() - interval '91 days';
 ```
 
 `EXECUTION_ENABLED`가 꺼져 있으면 sweep이 아무것도 하지 않아(lease 정리 · 원가 확정 · 예약 해제 모두) 위 수가 그대로 남는다. 켜면 1분 안에 줄어든다.
@@ -375,7 +375,7 @@ npx supabase db query --linked "select public.reconcile_usage(<id>, <비용 USD>
 ```bash
 # 하루 넘게 막힌 끝나지 않은 run (id · 이유 · 만든 날만)
 npx supabase db query --linked "select id, hold_reason, created_at::date as created from public.execution_runs where state in ('queued', 'running', 'waiting_approval') and hold_reason is not null and created_at < now() - interval '1 day' order by created_at limit 20"
-# 90일 넘게 열린 run (막히지 않은 것 포함, id · 상태 · 이유 · 만든 날만): 9-4의 open_over_retention. 글이 처리방침 보관 기간보다 오래 남는다
+# 90일 넘게 열린 run (막히지 않은 것 포함, id · 상태 · 이유 · 만든 날만): 9-4의 open_over_retention. 끝날 때까지 실행의 글이 남는다
 npx supabase db query --linked "select id, state, hold_reason, created_at::date as created from public.execution_runs where state in ('queued', 'running', 'waiting_approval') and created_at < now() - interval '90 days' order by created_at limit 20"
 # 멈추기: run마다 한 명령 (여러 run을 한 명령에서 멈추면 run · 계정 잠금끼리 교착할 수 있다). 결과 stopped. 교착(40P01)으로 되돌려지면 그대로 다시 보낸다
 npx supabase db query --linked "select public.stop_run((select user_id from public.execution_runs where id = '<run>'), '<run>') as state"
@@ -397,7 +397,7 @@ npx supabase db query --linked "select public.stop_run((select user_id from publ
    ```bash
    npx supabase db query --linked "select count(*) as total, count(*) filter (where email is null or lower(email) not in (lower('<운영자 이메일 1>'), lower('<운영자 이메일 2>'))) as others from auth.users"
    ```
-   보관 기간이 90일(`execution_artifacts.retain_until` 열 기본값)이 아니면 켜기 전에 새 마이그레이션으로 열 기본값을 바꾼다. 본문은 매일 retention cron이 비운다(6장). 실행의 글(요청 · 지시 · 받는 사람 후보 · 되묻는 질문)은 run이 끝난 지 `EXECUTION_TEXT_RETENTION_DAYS`(90일, `src/lib/retention.ts`)가 지나면 같은 cron이 지운다(`20261024000000`, 2번에서 확인).
+   보관 기간이 90일(`execution_artifacts.retain_until` 열 기본값)이 아니면 켜기 전에 새 마이그레이션으로 열 기본값을 바꾼다. 본문은 매일 retention cron이 비운다(6장). 실행의 글(요청 · 지시 · 받는 사람 후보 · 되묻는 질문)은 저장한 뒤 `EXECUTION_TEXT_RETENTION_DAYS`(90일, `src/lib/retention.ts`), 그때 실행 중이면 끝나는 대로 같은 cron이 지운다(`20261024000000`, 2번에서 확인).
 2. **마이그레이션 `20261020`–`20261024` 적용 확인** (읽기, 4장 방식으로 적용한 뒤). 기대: `1 · true · true · true · 2 · true`.
    ```bash
    npx supabase db query --linked "select (select count(*) from information_schema.columns where table_schema = 'public' and table_name = 'sources' and column_name = 'processing_error_code') as m20261020, to_regprocedure('public.sweep_expire()') is not null as m20261021, to_regprocedure('public.purge_expired_artifacts()') is not null as m20261022, (select prosrc like '%insufficient_credit%' from pg_proc where oid = to_regprocedure('public.begin_call(uuid,text,integer)')) as begin_call_credits, (select count(*) from pg_constraint where conname in ('sources_kind_check', 'claims_origin_check') and pg_get_constraintdef(oid) like '%execution%') as m20261023, to_regprocedure('public.purge_expired_execution_text(timestamp with time zone,integer)') is not null as m20261024"
