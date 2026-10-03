@@ -10,12 +10,13 @@ final class LauncherPanel: NSPanel {
     override var canBecomeMain: Bool { false }
 }
 
-/// ⌥Space 런처 창 (Figma 5:57 · 5:90): 폭 696, 모서리 26, 높이는 내용에 맞춘다.
+/// ⌥Space 런처 창 (Figma 156:6 M1 · M20): 760×480 고정, 모서리 18 (`TFRadius.window`).
 /// 바탕은 macOS 26부터 Liquid Glass(`NSGlassEffectView`), 그 전은 시스템 유리 재질(`NSVisualEffectView` popover).
-/// 화면 가운데 위쪽 1/3에 뜨고, esc · 다른 곳 클릭(포커스 잃음) · 동작 완료로 닫힌다.
+/// 그 위에 bg/glass(투명도 줄이기면 불투명 settings/window)를 깐다 (`LauncherRootView`).
+/// 화면 가운데 위쪽 1/5 지점에 뜨고, esc · 다른 곳 클릭(포커스 잃음) · 동작 완료로 닫힌다.
 @MainActor
 final class LauncherPanelController: NSObject, NSWindowDelegate {
-    static let width: CGFloat = 696
+    static let size = CGSize(width: 760, height: 480)
 
     /// 창 바탕이 Liquid Glass인지 (유리는 제 테두리를 그려서 따로 긋지 않는다)
     static var usesGlass: Bool {
@@ -26,14 +27,11 @@ final class LauncherPanelController: NSObject, NSWindowDelegate {
     private let panel: LauncherPanel
     private var keyMonitor: Any?
     private var openThrottle = LauncherOpenThrottle()
-    private var height: CGFloat = 120
-    /// 창 높이 맞추기를 다음 차례로 미뤄 둔 상태
-    private var resizeScheduled = false
 
     init(model: LauncherModel) {
         self.model = model
         panel = LauncherPanel(
-            contentRect: NSRect(x: 0, y: 0, width: Self.width, height: 120),
+            contentRect: NSRect(origin: .zero, size: Self.size),
             styleMask: [.borderless, .nonactivatingPanel, .fullSizeContentView],
             backing: .buffered,
             defer: false
@@ -52,10 +50,8 @@ final class LauncherPanelController: NSObject, NSWindowDelegate {
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient, .ignoresCycle]
         panel.delegate = self
 
-        let hosting = NSHostingView(
-            rootView: LauncherRootView(model: model) { [weak self] height in self?.resize(height: height) }
-        )
-        // 창 크기는 이 컨트롤러가 정한다 (내용 높이를 받아서)
+        let hosting = NSHostingView(rootView: LauncherRootView(model: model))
+        // 창 크기는 고정 (760×480)
         hosting.sizingOptions = []
 
         let background: NSView
@@ -63,7 +59,7 @@ final class LauncherPanelController: NSObject, NSWindowDelegate {
             // Liquid Glass: 내용은 유리의 contentView로 (유리가 제약으로 같은 크기에 맞춘다. setFrame(display: true)의 레이아웃에서 바로 맞춰진다)
             let glass = NSGlassEffectView()
             glass.style = .regular
-            glass.cornerRadius = TFRadius.xl
+            glass.cornerRadius = TFRadius.window
             glass.contentView = hosting
             background = glass
         } else {
@@ -71,7 +67,7 @@ final class LauncherPanelController: NSObject, NSWindowDelegate {
             effect.material = .popover
             effect.blendingMode = .behindWindow
             effect.state = .active
-            effect.maskImage = Self.roundedMask(radius: TFRadius.xl)
+            effect.maskImage = Self.roundedMask(radius: TFRadius.window)
             // 제약 대신 autoresizing: 창 크기가 바뀌는 즉시 내용도 같은 크기가 된다 (제약은 다음 레이아웃 차례까지 옛 크기로 남는다)
             hosting.frame = effect.bounds
             hosting.autoresizingMask = [.width, .height]
@@ -96,8 +92,6 @@ final class LauncherPanelController: NSObject, NSWindowDelegate {
         model.prepareForShow()
         position()
         panel.makeKeyAndOrderFront(nil)
-        // 처음 앞으로 나올 때 창이 만들어지며 크기가 처음 값으로 돌아갈 수 있어 한 번 더 맞춘다
-        position()
         installKeyMonitor()
         // 지표 2 · 3: 런처를 띄울 때마다가 아니라 30분에 한 번
         if model.isSignedIn, openThrottle.shouldSend(at: Date()) {
@@ -119,39 +113,16 @@ final class LauncherPanelController: NSObject, NSWindowDelegate {
     }
     #endif
 
-    // MARK: 크기 · 위치
-
-    private func resize(height: CGFloat) {
-        let height = ceil(height)
-        guard abs(height - self.height) > 0.5 else { return }
-        self.height = height
-        // SwiftUI 레이아웃 도중(onGeometryChange)에 창 크기를 바꾸면 창 · 유리 · 내용 · 그림자가 서로 다른 크기로 남는다.
-        // 이번 차례가 끝난 뒤 마지막 높이로 한 번에 맞춘다.
-        guard panel.isVisible, !resizeScheduled else { return }
-        resizeScheduled = true
-        Task { [weak self] in self?.applyHeight() }
-    }
-
-    private func applyHeight() {
-        resizeScheduled = false
-        guard panel.isVisible else { return }
-        var frame = panel.frame
-        guard abs(frame.height - height) > 0.5 else { return }
-        // 위 모서리를 고정하고 아래로 늘고 준다
-        frame.origin.y = frame.maxY - height
-        frame.size.height = height
-        panel.setFrame(frame, display: true)
-        // 그림자는 새 크기로 다시 그린 뒤에 계산한다 (먼저 계산하면 옛 모양이 남는다)
-        panel.invalidateShadow()
-    }
+    // MARK: 위치
 
     private func position() {
         let screen = NSScreen.screens.first { $0.frame.contains(NSEvent.mouseLocation) } ?? NSScreen.main
         guard let visible = screen?.visibleFrame else { return }
-        let width = min(Self.width, visible.width - 32)
-        // 가운데, 위쪽 1/3 지점에 위 모서리
+        let size = Self.size
+        // 가운데, 위 모서리는 위에서 1/5 지점 (작은 화면에서는 아래로 넘치지 않게)
         let top = visible.maxY - visible.height / 5
-        panel.setFrame(NSRect(x: visible.midX - width / 2, y: top - height, width: width, height: height), display: false)
+        let origin = NSPoint(x: visible.midX - size.width / 2, y: max(visible.minY, top - size.height))
+        panel.setFrame(NSRect(origin: origin, size: size), display: false)
         panel.invalidateShadow()
     }
 

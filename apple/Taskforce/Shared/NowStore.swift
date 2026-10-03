@@ -5,6 +5,9 @@ import TaskforceKit
 /// 지금 할 일 + 확인 요청 + 오늘 끝낸 할 일. 순서 · 이유는 서버가 정하고, 무엇이 바뀌든 `/now`와 Done Today를 다시 불러온다.
 /// 진행 상태(To Do · In Progress · Done) 바꾸기 · 삭제 · 되살리기는 서버 응답을 기다리지 않고 먼저 보여 준다 (`TaskBoard.applying`).
 /// iPhone 화면과 Mac 런처가 같은 것을 쓴다.
+/// 저장본(`SavedNowStore`, 제목 · 기한 · 상태만): `session` · `saved`를 주면 `/now`가 성공할 때마다 요청한 계정 폴더에 쓰고,
+/// 이번 실행에서 `/now`를 받기 전(오프라인 · 새로고침 실패 · 처음 불러오는 중)에는 그 계정의 저장본을 보인다 (`savedCopy`).
+/// 지우기는 계정이 떠날 때 앱이 `SessionStore.onSignedOut`에서 한다 (Mac: `LauncherModel`).
 @MainActor
 @Observable
 final class NowStore {
@@ -30,6 +33,15 @@ final class NowStore {
     /// 직접 추가 실패 문구. iPhone New Task 시트가 자기 알림으로 보여 준다 (시트가 떠 있는 동안 홈 화면 알림은 뜨지 않는다).
     var addError: String?
 
+    /// 연결 · 불러오기 상태 (Figma M15 · M19 · M20, `RefreshTracker`)
+    private(set) var refresh = RefreshTracker()
+    /// 이번 실행에서 `/now`를 받기 전에 보일 지금 계정의 저장본. `/now`를 받으면 비운다
+    private(set) var savedCopy: SavedNow?
+    /// 마지막 불러오기가 서버의 401로 실패함 (세션을 확인하지 못함: 다시 시도보다 로그아웃 · 로그인이 답이다)
+    private(set) var authFailed = false
+    /// `/now`를 새로 받아 반영한 직후 (Mac 런처: 바뀜 점 · seen 기록을 서버 값으로 맞춘다)
+    @ObservationIgnored var onLoaded: (() -> Void)?
+
     /// 겹쳐 부른 불러오기 중 마지막 것만 반영한다 (늦게 온 옛 응답이 새 응답을 덮지 않게)
     private var loadSequence = 0
     /// `reset()`마다 오른다: 로그아웃 · 계정 전환 전에 보낸 요청의 늦은 결과(근거 · 오류 문구 · 클립보드)를 버린다
@@ -53,6 +65,21 @@ final class NowStore {
         loaded = true
     }
 
+    /// 견본: 저장본 · 연결 상태 (`-TFSampleOffline` · `-TFSampleRefreshFailed` · `-TFSampleNoSaved` · `-TFSampleLoading`).
+    /// 목록(`response`)은 비우고 저장본만 보인다 (이번 실행에서 `/now`를 받기 전)
+    func applySampleState(saved copy: SavedNow?, offlineSince: Date?, failedAt: Date?) {
+        response = nil
+        doneToday = []
+        loaded = false
+        savedCopy = copy
+        if let copy { refresh.restoredSaved(savedAt: copy.savedAt) }
+        if let offlineSince { refresh.pathChanged(online: false, at: offlineSince) }
+        if let failedAt {
+            refresh.loadStarted()
+            refresh.loadFailed(at: failedAt)
+        }
+    }
+
     /// 견본: 서버 없이 진행 상태 바꾸기를 바로 목록에 반영한다
     private func commitSample() {
         let board = self.board
@@ -62,9 +89,21 @@ final class NowStore {
     }
     #endif
     let services: AppServices
+    /// 저장본을 쓸 계정을 정한다 (없으면 저장본을 쓰지 않는다)
+    private let session: SessionStore?
+    private let saved: SavedNowStore?
 
-    init(services: AppServices) {
+    init(services: AppServices, session: SessionStore? = nil, saved: SavedNowStore? = nil) {
         self.services = services
+        self.session = session
+        self.saved = saved
+    }
+
+    var refreshState: RefreshState { refresh.state }
+
+    /// 로그인한 계정 (저장본을 읽고 쓰는 기준)
+    private var signedInAccount: UUID? {
+        if case .signedIn(let userID, _) = session?.state { userID } else { nil }
     }
 
     /// 로그아웃 · 계정 전환 뒤 (Mac 런처는 이 저장소 하나를 계속 쓴다)
@@ -86,6 +125,31 @@ final class NowStore {
         evidenceFailed = []
         message = nil
         addError = nil
+        refresh.reset()
+        savedCopy = nil
+        authFailed = false
+    }
+
+    /// 지금 계정의 저장본을 읽어 둔다 (이번 실행에서 `/now`를 받기 전에 보인다). 로그인 · 계정 전환 직후 `reset()` 뒤에 부른다
+    func restoreSaved() {
+        guard response == nil, let saved, let account = signedInAccount, let copy = saved.load(account: account) else { return }
+        savedCopy = copy
+        refresh.restoredSaved(savedAt: copy.savedAt)
+    }
+
+    /// 연결 경로가 바뀜. 오프라인에서 돌아왔으면 true (부르는 쪽이 다시 불러온다)
+    @discardableResult
+    func pathChanged(online: Bool, at date: Date = Date()) -> Bool {
+        refresh.pathChanged(online: online, at: date)
+    }
+
+    /// 방금 받은 `/now`를 그 요청을 보낸 계정의 저장본으로 남긴다.
+    /// 쓰는 순간(main actor)에 아직 그 계정이 로그인해 있고 그사이 `reset()`이 없었을 때만: 로그아웃 뒤 늦게 온 `/now`가 다시 쓰지 않게
+    private func writeSaved(account: UUID?, generation: Int) {
+        guard let saved, let account, generation == self.generation, account == signedInAccount else { return }
+        let copy = SavedNow(sections: TaskBoard(now: response, doneToday: doneToday).sections(), savedAt: Date())
+        // 서명하지 않은 빌드 등 App Group에 쓸 수 없으면 저장본 없이 둔다
+        try? saved.save(copy, account: account)
     }
 
     /// 서버에서 읽은 목록 + 먼저 보여 주는 내 변경
@@ -102,7 +166,11 @@ final class NowStore {
         #endif
         loadSequence += 1
         let sequence = loadSequence
+        // 이 요청을 보낸 계정 (받은 목록은 이 계정의 저장본으로만 남긴다)
+        let account = signedInAccount
+        let generation = generation
         let reads = services.reads
+        refresh.loadStarted()
         // 오늘 끝낸 할 일은 읽지 못해도 목록은 보여 준다 (전에 읽은 것을 둔다)
         async let doneRows = try? reads.doneToday(since: Calendar.current.startOfDay(for: Date()))
         do {
@@ -116,12 +184,19 @@ final class NowStore {
                 pending = pending.filter { $0.value.settledBy.map { $0 > sequence } ?? true }
             }
             loadError = nil
+            authFailed = false
             loaded = true
+            refresh.loadSucceeded(at: Date())
+            savedCopy = nil
+            writeSaved(account: account, generation: generation)
+            onLoaded?()
         } catch is CancellationError {
         } catch {
             guard sequence == loadSequence else { return }
             loadError = error.userMessage
+            if case .server(_, .unauthorized, _)? = error as? APIError { authFailed = true } else { authFailed = false }
             loaded = true
+            refresh.loadFailed(at: Date())
         }
     }
 

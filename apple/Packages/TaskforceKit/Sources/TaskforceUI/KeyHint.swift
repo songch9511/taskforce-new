@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// Key (Figma 202:1756): 테두리만 있는 키캡. 키 하나에 상자 하나(⌘ · K 따로), Return은 그린 기호라 이모지로 바뀌지 않는다.
-/// 런처 액션 바 · ⌘K 메뉴의 단축키 표시. (지금 화면의 채운 `Keycap`은 PR4 · PR5가 화면을 바꿀 때 이것으로 옮긴다.)
+/// 런처 액션 바 · ⌘K 메뉴의 단축키 표시. (채운 `Keycap`은 런처 ⌘K 패널(U6a M7 전) · 설정 단축키 칸이 아직 쓴다.)
 public struct KeyHint: View {
     public enum Key: Sendable, Hashable {
         case text(String)

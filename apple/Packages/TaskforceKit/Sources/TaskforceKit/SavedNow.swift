@@ -110,7 +110,8 @@ public struct SavedNow: Codable, Sendable, Hashable {
 /// `<App Group>/Library/Application Support/Taskforce/SavedNow/<user id>/now.json`.
 /// - 기기 밖으로 나가지 않게 백업에서 뺀다 (iCloud · 컴퓨터 백업)
 /// - iOS 파일 보호: 기기를 켠 뒤 처음 잠금을 풀 때까지 읽지 못한다 (`completeUntilFirstUserAuthentication`)
-/// - 로그아웃 · 계정 삭제 · 계정 전환에서 지운다 (`remove(account:)` · `removeAll()`). 앱이 `SessionStore.onSignedOut`에서 부른다(U1 PR4가 잇는다)
+/// - 로그아웃 · 계정 삭제 · 계정 전환에서 지운다 (`remove(account:)` · `removeAll()`). Mac 앱은 `SessionStore.onSignedOut`에서 `removeAll()`,
+///   앱을 열 때 `removeAll(except:)`, 계정 삭제에서 `remove(account:)`를 부른다 (`LauncherModel` · `AccountDeletion`)
 /// 비밀(토큰 · 키)은 넣지 않는다.
 public struct SavedNowStore: Sendable {
     public static let fileName = "now.json"
@@ -162,6 +163,21 @@ public struct SavedNowStore: Sendable {
     /// 모든 계정의 저장본을 지운다 (로그아웃 · 계정 전환: 다른 계정의 사본이 이 기기에 남지 않게). 이미 없으면 성공이다. 지우지 못하면 던진다
     public func removeAll() throws {
         try Self.removeIfPresent(root)
+    }
+
+    /// 그 계정 말고 다른 계정의 저장본을 모두 지운다 (앱을 열 때: 앱이 돌지 않는 동안 떠난 계정은 `onSignedOut`에 오지 않는다).
+    /// 지울 것이 없으면 성공이다. 하나라도 지우지 못하면 던진다
+    public func removeAll(except account: UUID) throws {
+        let keep = account.uuidString.lowercased()
+        let folders: [URL]
+        do {
+            folders = try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
+        } catch let error as CocoaError where error.code == .fileReadNoSuchFile || error.code == .fileNoSuchFile {
+            return
+        }
+        for folder in folders where folder.lastPathComponent != keep {
+            try Self.removeIfPresent(folder)
+        }
     }
 
     private static func removeIfPresent(_ url: URL) throws {

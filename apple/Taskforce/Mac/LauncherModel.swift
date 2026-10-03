@@ -5,8 +5,8 @@ import Carbon.HIToolbox
 import Observation
 import TaskforceKit
 
-/// ⌥Space 런처의 상태와 키보드. 무엇을 보여 줄지(입력 모드 · 거르기 · 묶기)는 TaskforceKit의 순수 함수(`LauncherContent`)가 정하고,
-/// 여기서는 선택 · 화면 전환 · 서버 호출만 한다.
+/// ⌥Space 런처의 상태와 키보드. 무엇을 보여 줄지(입력 모드 · 거르기 · 묶기 · 접기 · 범위)는 TaskforceKit의 순수 함수(`LauncherContent`)가 정하고,
+/// 여기서는 선택 · 화면 전환 · 서버 호출만 한다. 화면(760×480 셸, Figma 156:6 M1 · M13 · M15 · M19 · M20 · M21)은 `LauncherRootView`.
 @MainActor
 @Observable
 final class LauncherModel {
@@ -23,6 +23,8 @@ final class LauncherModel {
         /// Tab/→ 펼침 (Review 행은 ↩ · 클릭도): Sources 묶음
         case detail(Target)
         case editDue(Target)
+        /// 할 일 행이 아닌 줄(빈 화면 · 안내 · 저장본 등)에서 ⌘K: 명령 (Send clipboard as source · Report missing action · Connections · Settings · Quit)
+        case commands
         /// 직접 추가: 기한 고르기 → 원문 고르기(없어도 됨) → 줄 고르기. 원문 고르기에서 돌아와도 고른 기한이 남는다.
         case addDue(Draft)
         case working(String)
@@ -99,6 +101,32 @@ final class LauncherModel {
         let due: LocalDate?
     }
 
+    /// 액션 바 Return 동작 · 보조 동작 (이름 + 단축키, `ActionBar`)
+    struct BarAction: Equatable {
+        let title: String
+        let keys: String
+    }
+
+    /// 본문 카드에 무엇을 보이나 (Figma M1 · M20 · M21 · 불러오는 중)
+    enum Body: Equatable {
+        /// 설정 오류 한 줄
+        case message(String)
+        /// 로그인 상태 · 첫 목록을 기다리는 중 (보일 저장본도 없음)
+        case loading
+        /// M20: 오프라인 + 이 Mac에 저장본 없음
+        case offlineEmpty
+        /// 새로고침 실패 + 저장본 없음
+        case failedEmpty
+        /// 첫 동기화 중이고 할 일이 아직 없음
+        case syncing
+        /// M21: 할 일 없음
+        case empty
+        /// 목록 | 상세 (M1)
+        case list
+        /// 한 열: 로그인 줄 · ⌘K 패널 · 기한 · 원문 고르기 등
+        case single
+    }
+
     var text = "" {
         didSet { if text != oldValue { textChanged() } }
     }
@@ -118,6 +146,20 @@ final class LauncherModel {
     let now: NowStore?
     let account: AccountStore?
     let changes = ActionChangeFeed()
+    /// 이 기기의 저장본 (계정별 폴더). 없으면 저장본 없이 둔다 (테스트 · 설정 오류)
+    let saved: SavedNowStore?
+
+    /// 범위 (Figma M13 `All Tasks ⌄`, ⌘P). 런처를 열 때 · 계정이 바뀌면 All Tasks
+    private(set) var scope: TaskScope = .allTasks
+    /// 섹션 펼침 (Show N More · Done Today). 런처를 열 때 · 계정이 바뀌면 처음 모양
+    private(set) var caps = SectionCaps()
+    /// 범위 메뉴가 열려 있으면 고른 줄 (`scopeChoices`의 자리)
+    private(set) var scopeMenuSelection: Int?
+    /// 바뀜 점을 지우고 `seen`을 보낼 때 (`SeenTracker`)
+    private(set) var seen = SeenTracker()
+    /// 앱을 연 뒤 지금 계정이 아닌 저장본을 한 번 정리했는지
+    private var prunedSaved = false
+    private var connectivityTask: Task<Void, Never>?
 
     /// 패널 컨트롤러가 채운다
     var close: () -> Void = {}
@@ -154,22 +196,43 @@ final class LauncherModel {
     private let signInFlow = AppleSignInFlow()
     private var signInController: MacAppleSignInController?
 
-    init(session: SessionStore, services: AppServices, account: AccountStore) {
+    /// `saved`: 이 기기의 저장본 (앱은 App Group 위치, 테스트는 임시 폴더나 nil). `connectivity`: 연결 경로 (기본은 `NWPathMonitor`)
+    init(
+        session: SessionStore, services: AppServices, account: AccountStore, saved: SavedNowStore? = nil,
+        connectivity: AsyncStream<Bool> = Connectivity.updates()
+    ) {
         self.session = session
         self.services = services
         self.account = account
-        let now = NowStore(services: services)
+        self.saved = saved
+        let now = NowStore(services: services, session: session, saved: saved)
+        var sample = false
         #if DEBUG
         if SampleData.isEnabled {
             now.useSampleData()
             account.useSampleData(connections: SampleData.connections, policyNotice: SampleData.policyNotice)
+            sample = true
         }
         #endif
         self.now = now
         configurationError = nil
-        // 계정이 떠나면 (로그아웃 · 만료 · 계정 삭제 · 전환) 상태가 바뀐 그 자리에서 화면 · 목록 · 진행 중 작업을 지운다:
+        // 계정이 떠나면 (로그아웃 · 만료 · 계정 삭제 · 전환) 그 자리에서 이 기기의 저장본(할 일 제목 · 기한 · 상태)을 모두 지운다:
+        // 다른 계정의 사본이 남지 않게. 화면 정리(아래)보다 먼저: 전환한 계정이 지워질 사본을 읽어 보이지 않게
+        if let saved {
+            session.onSignedOut { _ in try? saved.removeAll() }
+        }
+        // 상태가 바뀐 그 자리에서 화면 · 목록 · 진행 중 작업을 지운다:
         // 런처가 떠 있어도 전 계정의 목록이 한 번도 다음 상태와 함께 그려지지 않게. 로그인 쪽은 `MacAppDelegate`가 따라간다
         session.onSignedOut { [weak self] _ in self?.sessionChanged() }
+        // 새 `/now`가 오면 서버의 바뀜이 진실이다 (보낸 seen 기록을 비운다)
+        now.onLoaded = { [weak self] in self?.nowRefreshed() }
+        guard !sample else { return }
+        // 연결이 끊기면 오프라인 화면, 돌아오면 목록을 다시 불러온다 (M20 "연결이 돌아오면 자동으로")
+        connectivityTask = Task { [weak self] in
+            for await online in connectivity {
+                self?.connectivityChanged(online)
+            }
+        }
     }
 
     init(configurationError: String) {
@@ -177,6 +240,7 @@ final class LauncherModel {
         services = nil
         now = nil
         account = nil
+        saved = nil
         self.configurationError = configurationError
     }
 
@@ -196,18 +260,77 @@ final class LauncherModel {
 
     var sections: [LauncherSection] {
         guard configurationError == nil, isSignedIn || session?.state != .loading else { return [] }
+        let layout = listLayout
+        // 이번 실행에서 `/now`를 받기 전이면 이 기기의 저장본 (읽기만)
+        if isSignedIn, let saved = savedList {
+            return LauncherContent.savedSections(saved, for: inputMode, layout: layout, now: Date())
+        }
         // 먼저 보여 주는 완료 · 착수 · 다시 열기를 얹은 목록
         let board = now?.board
         return LauncherContent.sections(
             for: inputMode, now: board?.now, doneToday: board?.doneToday ?? [], signedIn: isSignedIn,
             needsConsent: account?.shouldPromptConsent ?? false, policyNotice: account?.policyNotice,
-            googleSignIn: GoogleSignInFlow.isAvailable
+            googleSignIn: GoogleSignInFlow.isAvailable, layout: layout
         )
     }
 
     var items: [LauncherItem] { sections.flatMap(\.items) }
 
-    /// 할 일이 하나도 없는데 연결이 동기화 중이면 목록 맨 위에 "Syncing…" 한 줄 (빈 입력창일 때만)
+    /// 목록 모양: 접기 기준은 서버 값(`section_limits`), 범위 · 바뀜 · 실패 원문 줄
+    private var listLayout: LauncherContent.Layout {
+        var caps = self.caps
+        caps.limits = now?.response?.sectionLimits ?? .standard
+        return LauncherContent.Layout(caps: caps, scope: scope, changed: changedIDs, failedSources: now?.response?.failedSources ?? .empty)
+    }
+
+    /// 이번 실행에서 `/now`를 아직 받지 못했을 때 보이는 이 기기의 저장본 (오프라인 · 새로고침 실패 · 처음 불러오는 중)
+    var savedList: SavedNow? {
+        guard now?.response == nil else { return nil }
+        return now?.savedCopy
+    }
+
+    /// 서버가 바뀜이라 한 할 일 (Review · In Progress · To Do)
+    var changedIDs: Set<UUID> { now?.board.now?.changedIDs ?? [] }
+
+    /// 바뀜 점을 보일지 (seen을 보낸 할 일은 다음 `/now`까지 지운다)
+    func showsDot(_ id: UUID) -> Bool { seen.showsDot(id, changed: changedIDs) }
+
+    /// 연결 · 불러오기 상태 (액션 바 왼쪽, M15 · M19 · M20)
+    var refreshState: RefreshState { now?.refreshState ?? .live }
+
+    /// 보이는 목록이 저장본(또는 이번 실행에서 받은 마지막 목록)이라 검색줄이 `Search saved tasks`인지 (M15 · M19)
+    var showsSavedTasks: Bool {
+        guard isSignedIn else { return false }
+        switch refreshState {
+        case .offlineSaved, .refreshFailed(_, .some): return true
+        default: return savedList != nil
+        }
+    }
+
+    /// 본문 카드 (Figma M1 목록 | 상세 · M20 · M21 · 불러오는 중)
+    var bodyState: Body {
+        if let configurationError { return .message(configurationError) }
+        switch screen {
+        case .list: break
+        case .detail: return .list
+        default: return .single
+        }
+        guard isSignedIn else { return session?.state == .loading ? .loading : .single }
+        let items = items
+        if now?.response == nil, savedList == nil, inputMode == .empty || items.isEmpty {
+            // 이번 실행에서 받은 목록도 저장본도 없다
+            switch refreshState {
+            case .offlineEmpty: return .offlineEmpty
+            case .refreshFailed: return .failedEmpty
+            default: return .loading
+            }
+        }
+        guard items.isEmpty else { return .list }
+        if showsSyncing { return .syncing }
+        return inputMode == .empty ? .empty : .list
+    }
+
+    /// 할 일이 하나도 없는데 연결이 동기화 중이면 "Syncing…" (빈 입력창일 때만): 목록이 비면 가운데, 안내 줄이 있으면 목록 맨 위 한 줄
     var showsSyncing: Bool {
         guard isSignedIn, inputMode == .empty, account?.anySyncing == true else { return false }
         return !items.contains { $0.group != nil }
@@ -237,12 +360,202 @@ final class LauncherModel {
         if case .pickSource(.add) = screen { 1 } else { 0 }
     }
 
-    /// ⌘K로 동작 패널을 열 수 있는지 (아래 "Actions ⌘K")
+    /// ⌘K로 동작 패널을 열 수 있는지 (아래 "Actions ⌘K"). 할 일 행이 아니면 명령 패널 (로그인한 동안)
     var canOpenActions: Bool {
         switch screen {
-        case .list: selectedItem?.action != nil
+        case .list: selectedItem?.action != nil || (isSignedIn && configurationError == nil)
         case .detail: true
         default: false
+        }
+    }
+
+    /// 상세 칸에 보일 할 일: 목록에서 고른 할 일 행(Hand off 행은 그 할 일), 상세로 포커스를 옮겼으면 그 할 일(지금 구역)
+    var detailTarget: Target? {
+        switch screen {
+        case .list:
+            guard let item = selectedItem, item.group != nil else { return nil }
+            return target(for: item)
+        case .detail(let target):
+            return focusedTarget ?? target
+        default:
+            return nil
+        }
+    }
+
+    /// 상세 칸에 보일 저장본 한 줄 (저장본 목록에서 고른 행)
+    var detailSavedRow: SavedNow.Row? {
+        guard screen == .list, case .saved(let row)? = selectedItem else { return nil }
+        return row
+    }
+
+    // MARK: 액션 바
+
+    /// Return 동작 (회색 알약): 할 일 행은 원문 열기(`Open in Notion`, 근거를 읽은 뒤), Review 행은 `Show Review`,
+    /// 상세로 포커스한 Review는 `Confirm ⌘↩`, 범위 메뉴가 열려 있으면 `Show <범위>`. 없으면 nil
+    var primaryAction: BarAction? {
+        if let index = scopeMenuSelection, scopeChoices.indices.contains(index) {
+            return BarAction(title: "Show \(scopeChoices[index].title)", keys: "↩")
+        }
+        switch screen {
+        case .list:
+            guard let item = selectedItem, let target = target(for: item), item.group != nil else { return nil }
+            if target.group == .review { return BarAction(title: "Show Review", keys: "↩") }
+            guard let link = now?.evidence[target.action.id]?.openLink else { return nil }
+            return BarAction(title: link.service.openTitle, keys: "↩")
+        case .detail:
+            return canConfirmReview ? BarAction(title: "Confirm", keys: "⌘↩") : nil
+        case .pickLines(_, let purpose):
+            return BarAction(title: purpose == .reportMissing ? "Report" : "Add", keys: "⌘↩")
+        default:
+            return nil
+        }
+    }
+
+    /// 보조 동작: 방금 옮긴 · 지운 할 일 `Undo ⌘Z`, 상세의 Review `Dismiss ⌘⌫`, 고른 안내 줄 `Dismiss ⌘⌫`, 새로고침 실패 `Try Again ⌘R` (M19)
+    var secondaryAction: BarAction? {
+        guard scopeMenuSelection == nil else { return nil }
+        switch screen {
+        case .list, .detail:
+            if canUndo { return BarAction(title: "Undo", keys: "⌘Z") }
+            if canDismissNotice || (canDismissReview && screen != .list) { return BarAction(title: "Dismiss", keys: "⌘⌫") }
+            if case .refreshFailed = refreshState, isSignedIn { return BarAction(title: "Try Again", keys: "⌘R") }
+            return nil
+        default:
+            return nil
+        }
+    }
+
+    /// 액션 바 왼쪽 문장: 오프라인 · 새로고침 실패 (M15 · M19 · M20). 401이면 다시 시도보다 로그아웃 · 로그인 안내. 온라인이면 nil (`Tasks`)
+    var statusText: String? {
+        guard isSignedIn else { return nil }
+        if case .refreshFailed = refreshState, now?.authFailed == true, let error = now?.loadError { return error }
+        return refreshState.statusText()
+    }
+
+    /// 액션 바 버튼을 누름 (같은 키를 누른 것과 같다)
+    func performPrimary() {
+        if let index = scopeMenuSelection, scopeChoices.indices.contains(index) {
+            chooseScope(scopeChoices[index])
+            return
+        }
+        switch screen {
+        case .list:
+            guard let item = selectedItem else { return }
+            if item.group == .review { expand() } else if let target = target(for: item) { openSourceOrActions(target) }
+        case .detail: confirmReview()
+        case .pickLines: submitLines()
+        default: break
+        }
+    }
+
+    func performSecondary() {
+        switch secondaryAction?.keys {
+        case "⌘Z": undo()
+        case "⌘R": retry()
+        case "⌘⌫":
+            if canDismissNotice {
+                account?.acknowledgePolicyNotice()
+            } else if let target = focusedTarget, target.group == .review {
+                perform(.dismiss, on: target)
+            }
+        default: break
+        }
+    }
+
+    // MARK: 범위 (M13)
+
+    /// 범위 메뉴의 줄. 서버가 바뀜을 모르면(예전 서버) 바뀜 범위를 숨긴다
+    var scopeChoices: [TaskScope] { TaskScope.menu(tracksChanges: now?.response?.tracksChanges ?? false) }
+
+    /// 범위의 개수 (All Tasks = Review + In Progress + To Do). 저장본이면 저장본으로 센다
+    func count(for scope: TaskScope) -> Int {
+        if let saved = savedList { return scope.count(in: saved, now: Date()) }
+        guard let sections = now?.sections else { return 0 }
+        return scope.count(in: sections, changed: changedIDs)
+    }
+
+    /// 범위 메뉴를 열 수 있는지 (로그인한 목록에서)
+    var canChooseScope: Bool { screen == .list && isSignedIn && configurationError == nil }
+
+    /// ⌘P · `All Tasks ⌄`: 범위 메뉴 열고 닫기 (열면 지금 범위를 고른 채)
+    func toggleScopeMenu() {
+        if scopeMenuSelection != nil {
+            scopeMenuSelection = nil
+        } else if canChooseScope {
+            scopeMenuSelection = scopeChoices.firstIndex(of: scope) ?? 0
+        }
+    }
+
+    func closeScopeMenu() {
+        scopeMenuSelection = nil
+    }
+
+    func selectScopeMenuRow(_ index: Int) {
+        guard scopeMenuSelection != nil, scopeChoices.indices.contains(index) else { return }
+        scopeMenuSelection = index
+    }
+
+    /// 범위를 고름: 고르던 행이 새 목록에 있으면 그 행, 없으면 같은 자리 (`reselect`)
+    func chooseScope(_ choice: TaskScope) {
+        scopeMenuSelection = nil
+        guard choice != scope else { return }
+        scope = choice
+        reconcileSelection()
+    }
+
+    // MARK: 바뀜 점 · seen
+
+    /// seen의 대상: 목록에서 고른 할 일 행, 상세 · ⌘K 패널 · 기한 고치기에서 보는 할 일. 런처가 숨으면 nil (떠남)
+    var seenSubject: UUID? {
+        guard isShown else { return nil }
+        switch screen {
+        case .list:
+            guard let item = selectedItem, item.group != nil else { return nil }
+            return item.action?.id
+        case .detail(let target), .actions(let target), .editDue(let target):
+            return target.action.id
+        default:
+            return nil
+        }
+    }
+
+    /// 고른 할 일이 바뀌었을 때 (화면이 `seenSubject`를 따라 부른다): 떠난 바뀐 행이 있으면 `seen`을 한 번 보낸다.
+    /// 점은 바로 지우고, 실패해도 다시 보내지 않는다 (다음 `/now`가 진실)
+    func syncSeen() {
+        guard let leaving = seen.select(seenSubject, changed: changedIDs), let services else { return }
+        #if DEBUG
+        if now?.sampleMode == true { return }
+        #endif
+        Task { try? await services.api.markSeen(leaving) }
+    }
+
+    /// 새 `/now`를 받음: 서버의 바뀜이 진실 (지금 고른 행이 이제 바뀜이면 떠날 때 보낸다)
+    private func nowRefreshed() {
+        seen.refreshed(changed: changedIDs, selected: seenSubject)
+    }
+
+    // MARK: 연결 · 저장본
+
+    /// 연결 경로가 바뀜: 오프라인에서 돌아오면 목록을 다시 불러온다
+    func connectivityChanged(_ online: Bool) {
+        guard let now, now.pathChanged(online: online), isSignedIn else { return }
+        Task { await now.load() }
+    }
+
+    /// ⌘R · `Try Again`: 다시 불러온다
+    func retry() {
+        guard isSignedIn, let now else { return }
+        Task { await now.load() }
+    }
+
+    /// 앱을 연 뒤 로그인 상태를 처음 알게 되면 한 번: 지금 계정이 아닌 저장본을 지운다 (앱이 돌지 않는 동안 떠난 계정, 로그아웃이면 모두)
+    private func pruneSavedOnce() {
+        guard !prunedSaved, let saved, let state = session?.state, state != .loading else { return }
+        prunedSaved = true
+        if let userID = signedInUserID {
+            try? saved.removeAll(except: userID)
+        } else {
+            try? saved.removeAll()
         }
     }
 
@@ -303,6 +616,7 @@ final class LauncherModel {
         switch screen {
         case .list: items.count
         case .actions(let target): actionEntries(for: target).count
+        case .commands: LauncherCommand.allCases.count
         case .editDue, .addDue: dueChoices.count
         case .pickSource: sourceRowOffset + filteredSources.count
         case .pickLines: sourceText?.lines.count ?? 0
@@ -326,6 +640,10 @@ final class LauncherModel {
         selectedID = nil
         viewed = nil
         pendingFocus = nil
+        // 열 때마다 처음 모양: All Tasks · 접힌 섹션
+        scope = .allTasks
+        caps.reset()
+        scopeMenuSelection = nil
         guard isSignedIn, let now else { return }
         Task { await now.load() }
         // 동의 · 연결 상태 (동의 전인데 연결이 있으면 맨 위에 "Allow AI processing").
@@ -349,6 +667,9 @@ final class LauncherModel {
         isShown = false
         closeTimer?.cancel()
         suspendsAutoClose = false
+        scopeMenuSelection = nil
+        // 닫힘도 떠남이다: 보고 있던 바뀐 행의 seen
+        syncSeen()
     }
 
     /// 누른 알림: 그 할 일(Review · 할 일 행)을 고른다. 아직 목록에 없으면 다시 읽은 목록이 오면 고른다
@@ -365,6 +686,7 @@ final class LauncherModel {
 
     /// 로그인 상태가 바뀌면 (로그아웃 · 계정 전환) 전 사용자의 목록을 지운다. 토큰 갱신처럼 같은 사용자면 그대로 둔다.
     func sessionChanged() {
+        pruneSavedOnce()
         let userID = signedInUserID
         guard userID != lastUserID else { return }
         // 첫 로그인 · 시작 때의 세션(nil → 계정)이면 로그인 전에 받은 알림 대상 · 입력은 둔다
@@ -390,7 +712,13 @@ final class LauncherModel {
         selection = 0
         selectedID = nil
         viewed = nil
+        scope = .allTasks
+        caps.reset()
+        scopeMenuSelection = nil
+        seen.reset()
         guard isSignedIn, let now else { return }
+        // 이번 실행에서 `/now`를 받기 전에는 이 계정의 저장본을 보인다 (오프라인 · 새로고침 실패)
+        now.restoreSaved()
         Task { await now.load() }
         if let account { Task { await account.load() } }
         loadPolicyNotice()
@@ -409,6 +737,11 @@ final class LauncherModel {
             chooseDue(LocalDate(date: pickedDate, timeZone: .current))
             return true
         }
+        // 한글 등 입력기가 글자를 조합하는 중이면 ↩ · esc · 방향키 · Tab은 입력기가 쓴다 (조합을 끝내는 ↩가 행을 실행하지 않게)
+        if (event.window?.firstResponder as? NSTextView)?.hasMarkedText() == true, Self.compositionKeys.contains(keyCode) {
+            return false
+        }
+        if scopeMenuSelection != nil, handleScopeMenuKey(keyCode, command: command) { return true }
         switch keyCode {
         case kVK_Escape:
             back()
@@ -418,6 +751,16 @@ final class LauncherModel {
             return true
         case kVK_DownArrow:
             move(1)
+            return true
+        case kVK_ANSI_P where command:
+            // 범위 메뉴 (Raycast 관례)
+            guard canChooseScope else { return false }
+            toggleScopeMenu()
+            return true
+        case kVK_ANSI_R where command:
+            // 다시 불러오기 (새로고침 실패 · 오프라인, M19 `Try Again ⌘R`)
+            guard isSignedIn, screen == .list || screen.isDetail else { return false }
+            retry()
             return true
         case kVK_Return, kVK_ANSI_KeypadEnter:
             // ⌥↩ · ⇧↩는 입력창에서 줄바꿈
@@ -429,6 +772,7 @@ final class LauncherModel {
             case .primary: command ? commandReturn() : primary()
             case .showSources: expand()
             case .confirm: confirmReview()
+            case .openSource: if let target = focusedTarget { openSourceOrActions(target) }
             case .ignore: break
             }
             return true
@@ -467,6 +811,33 @@ final class LauncherModel {
             }
             return true
         default:
+            return false
+        }
+    }
+
+    /// 입력기 조합 중이면 입력기에 넘기는 키
+    private static let compositionKeys: Set<Int> = [
+        kVK_Return, kVK_ANSI_KeypadEnter, kVK_Escape, kVK_UpArrow, kVK_DownArrow, kVK_LeftArrow, kVK_RightArrow, kVK_Tab,
+    ]
+
+    /// 범위 메뉴가 열려 있을 때: ↑↓ 고르기 · ↩ 고름 · esc · ⌘P 닫기. 다른 키는 메뉴를 닫고 평소처럼 (처리했으면 true)
+    private func handleScopeMenuKey(_ keyCode: Int, command: Bool) -> Bool {
+        guard let index = scopeMenuSelection else { return false }
+        switch keyCode {
+        case kVK_UpArrow, kVK_DownArrow:
+            scopeMenuSelection = LauncherContent.move(index, by: keyCode == kVK_UpArrow ? -1 : 1, count: scopeChoices.count)
+            return true
+        case kVK_Return, kVK_ANSI_KeypadEnter:
+            if scopeChoices.indices.contains(index) { chooseScope(scopeChoices[index]) }
+            return true
+        case kVK_Escape:
+            scopeMenuSelection = nil
+            return true
+        case kVK_ANSI_P where command:
+            scopeMenuSelection = nil
+            return true
+        default:
+            scopeMenuSelection = nil
             return false
         }
     }
@@ -525,9 +896,11 @@ final class LauncherModel {
     func move(_ delta: Int) {
         if case .pickLines = screen {
             lineCursor = LauncherContent.move(lineCursor, by: delta, count: rowCount)
-        } else {
-            select(LauncherContent.move(selection, by: delta, count: rowCount))
+            return
         }
+        // 상세에 포커스가 있으면 목록으로 돌아와 옮긴다 (목록 | 상세가 함께 보인다)
+        if screen.isDetail { returnToList() }
+        select(LauncherContent.move(selection, by: delta, count: rowCount))
     }
 
     /// 행 고르기 (목록이면 그 행의 id도 기억한다)
@@ -539,6 +912,12 @@ final class LauncherModel {
     /// 목록이 새로 왔을 때: 고르던 행이 아직 있으면 그 행을, 없으면 같은 자리(끝을 넘지 않게)를 가리킨다 (`LauncherContent.reselect`)
     func reconcileSelection() {
         guard screen == .list else { return }
+        // 누른 알림의 할 일이 접힌 섹션 · 다른 범위에 있으면 펼쳐서 보인다
+        if let pendingFocus, !items.contains(where: { $0.group != nil && $0.action?.id == pendingFocus }),
+           let found = now?.sections.find(pendingFocus) {
+            scope = .allTasks
+            caps.expand(found.group)
+        }
         let items = items
         if let pendingFocus, let index = items.firstIndex(where: { $0.group != nil && $0.action?.id == pendingFocus }) {
             self.pendingFocus = nil
@@ -587,6 +966,9 @@ final class LauncherModel {
             if entries.indices.contains(selection) { perform(entries[selection], on: target) }
         case .detail(let target):
             openActions(target)
+        case .commands:
+            let commands = LauncherCommand.allCases
+            if commands.indices.contains(selection) { run(commands[selection]) }
         case .editDue, .addDue:
             let choices = dueChoices
             guard choices.indices.contains(selection) else { return }
@@ -639,11 +1021,14 @@ final class LauncherModel {
         Task { await now?.loadEvidence(target.action.id) }
     }
 
-    /// ⌘K
+    /// ⌘K: 할 일 행이면 그 할 일의 동작, 아니면 명령 (빈 화면 · 안내 · 저장본 줄)
     func openActions() {
         switch screen {
         case .list:
-            guard let item = selectedItem, let target = target(for: item) else { return }
+            guard let item = selectedItem, let target = target(for: item) else {
+                openCommands()
+                return
+            }
             openActions(target)
         case .detail(let target):
             openActions(target)
@@ -656,6 +1041,15 @@ final class LauncherModel {
         if screen == .list { viewed = (target.action.id, selection) }
         screen = .actions(target)
         selection = initialActionIndex(for: target)
+    }
+
+    /// 명령 패널 (로그인한 동안). 목록으로 돌아오면 떠난 행 (`viewed` 없이 맨 위가 아니라 그 자리)
+    private func openCommands() {
+        guard isSignedIn, configurationError == nil else { return }
+        scopeMenuSelection = nil
+        viewed = nil
+        screen = .commands
+        selection = 0
     }
 
     /// esc: 한 단계 뒤로, 목록이면 입력을 지우고, 비어 있으면 닫는다
@@ -692,7 +1086,7 @@ final class LauncherModel {
         case .list, .pickSource:
             selection = 0
             selectedID = nil
-        case .actions, .detail, .answer, .done, .notice, .consentNeeded:
+        case .actions, .detail, .commands, .answer, .done, .notice, .consentNeeded:
             screen = .list
             selection = 0
             selectedID = nil
@@ -712,6 +1106,15 @@ final class LauncherModel {
 
     func run(_ item: LauncherItem) {
         switch item {
+        case .showMore(let group, _):
+            caps.expand(group)
+            reconcileSelection()
+        case .doneToday:
+            caps.toggle(.doneToday)
+            reconcileSelection()
+        case .failedSources, .saved:
+            // 알리기만 · 읽기만 하는 줄
+            break
         case .review(let action):
             // 제목만 보고 확정하지 않게 근거를 먼저 보인다. 확정은 ⌘↩ · ⌘K Confirm
             showSources(Target(action: action, group: .review))
@@ -865,6 +1268,10 @@ final class LauncherModel {
         closeTimer?.cancel()
         screen = .list
         viewed = nil
+        // 옮겨 간 자리가 접힌 나머지 안이면 그 섹션을 펼친다 (옮긴 행이 `Show N More` 뒤로 숨지 않게)
+        if !items.contains(where: { $0.group != nil && $0.action?.id == id }), let found = now?.sections.find(id) {
+            caps.expand(found.group)
+        }
         let items = items
         if let index = items.firstIndex(where: { $0.group != nil && $0.action?.id == id }) {
             selection = index
@@ -974,11 +1381,37 @@ final class LauncherModel {
         work = Task {
             let digest = await now.loadEvidence(action.id)
             guard !Task.isCancelled else { return }
-            let url = digest?.lead?.externalURL ?? digest?.lines.last(where: { $0.externalURL != nil })?.externalURL
-            if let url {
+            if let url = digest?.openLink?.externalURL {
                 open(url)
             } else {
                 screen = .notice("No link to the original.")
+            }
+        }
+    }
+
+    /// 할 일 행 ↩ (Figma M1 `Open in Notion ↩`): 원문 링크가 있으면 열고, 없으면 ⌘K 패널 (전과 같다).
+    /// 근거를 아직 읽지 못했으면 읽은 뒤 정한다
+    func openSourceOrActions(_ target: Target) {
+        guard let now else { return }
+        let id = target.action.id
+        if let digest = now.evidence[id] {
+            if let url = digest.openLink?.externalURL { open(url) } else { openActions(target) }
+            return
+        }
+        if now.evidenceFailed.contains(id) {
+            openActions(target)
+            return
+        }
+        if screen == .list { viewed = (id, selection) }
+        screen = .working("Opening…")
+        work = Task {
+            let digest = await now.loadEvidence(id)
+            guard !Task.isCancelled, case .working = screen else { return }
+            if let url = digest?.openLink?.externalURL {
+                open(url)
+            } else {
+                screen = .actions(target)
+                selection = initialActionIndex(for: target)
             }
         }
     }
@@ -1193,6 +1626,13 @@ final class LauncherModel {
         var components = DateComponents(year: date.year, month: date.month, day: date.day, hour: 12)
         components.timeZone = .current
         return Calendar(identifier: .gregorian).date(from: components) ?? Date()
+    }
+}
+
+extension LauncherModel.Screen {
+    /// 상세로 포커스 (Tab · →, Review 행 ↩)
+    var isDetail: Bool {
+        if case .detail = self { true } else { false }
     }
 }
 

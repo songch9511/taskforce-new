@@ -104,6 +104,12 @@ public struct EvidenceDigest: Sendable, Hashable {
 
     /// Sources 묶음 머리의 겹친 로고 (처음 들어온 순서)
     public var services: [SourceService] { lines.map(\.service) }
+
+    /// 할 일 행 ↩ · ⌘K Open source가 여는 근거 줄: 맨 앞 근거에 링크가 있으면 그것, 없으면 링크가 있는 가장 최근 줄. 없으면 nil
+    public var openLink: EvidenceLine? {
+        if let lead, lead.externalURL != nil { return lead }
+        return lines.last { $0.externalURL != nil }
+    }
 }
 
 /// Sources 묶음의 한 덩어리: 같은 일정(`calendar_event_id`)에 붙은 원문의 근거(예: Notion 회의록 + Meet 전사)는 한 회의로,

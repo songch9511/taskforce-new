@@ -21,6 +21,28 @@ public enum RefreshState: Sendable, Hashable {
         default: false
         }
     }
+
+    /// 런처 액션 바 왼쪽 문장 (Figma M15 · M19 · M20). 온라인으로 불러온 목록 · 처음 불러오는 중이면 nil (`Tasks`를 보인다).
+    /// 시각은 기기 시간대 24시간 "8:01".
+    public func statusText(timeZone: TimeZone = .current) -> String? {
+        func clock(_ date: Date) -> String {
+            var calendar = Calendar(identifier: .gregorian)
+            calendar.timeZone = timeZone
+            let c = calendar.dateComponents([.hour, .minute], from: date)
+            return String(format: "%d:%02d", c.hour ?? 0, c.minute ?? 0)
+        }
+        switch self {
+        case .loading, .live:
+            return nil
+        case .offlineSaved(let since, _):
+            return "Offline since \(clock(since)). Showing saved tasks."
+        case .offlineEmpty(let since):
+            return "Offline since \(clock(since))."
+        case .refreshFailed(let at, let savedAt):
+            guard let savedAt else { return "Couldn’t refresh at \(clock(at))." }
+            return "Couldn’t refresh at \(clock(at)). Showing \(clock(savedAt))."
+        }
+    }
 }
 
 /// 연결 · 불러오기 사건으로 `RefreshState`를 정한다 (화면 없는 순수 규칙).

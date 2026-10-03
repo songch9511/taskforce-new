@@ -25,7 +25,7 @@ final class MacAppDelegate: NSObject, NSApplicationDelegate {
         switch AppRuntime.startup {
         case .ready(let session, let services):
             session.start()
-            model = LauncherModel(session: session, services: services, account: AppRuntime.account(services: services))
+            model = LauncherModel(session: session, services: services, account: AppRuntime.account(services: services), saved: AppRuntime.savedNow)
         case .misconfigured(let message):
             model = LauncherModel(configurationError: message)
         }

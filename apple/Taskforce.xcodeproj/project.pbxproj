@@ -25,13 +25,19 @@
 		5AADF7819C0656F5D1C3C1C1 /* SampleData.swift in Sources */ = {isa = PBXBuildFile; fileRef = 599D903AD6A4CA63031CAE4D /* SampleData.swift */; };
 		6271B456853052DD6DF1D2F3 /* NewTaskSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 854A74CC3784F0337B1287DB /* NewTaskSheet.swift */; };
 		68DFF761D14327138E4CB5F4 /* MacSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4A28A214EF045FAF600AC14 /* MacSettingsView.swift */; };
+		6D563AFBBD0CFBB89C4A680E /* LauncherDetailPane.swift in Sources */ = {isa = PBXBuildFile; fileRef = F8F4C0A94A16821764C38281 /* LauncherDetailPane.swift */; };
+		79F9066EF922D90C473539BF /* LauncherActionBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = C269834CACB1135D6F14018F /* LauncherActionBar.swift */; };
+		7B16E71BE7CE882E8FEEF020 /* LauncherSearchBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0E7EEAC44B716850440D045 /* LauncherSearchBar.swift */; };
+		8996B663E7EE249A08383C19 /* LauncherStateView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F9CA2946F6A830979A66143B /* LauncherStateView.swift */; };
 		9731E4E4A9B4D4EC556F263B /* MacAppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = D553D4AC83AD95CD5BD8CBF7 /* MacAppDelegate.swift */; };
+		AF947F2BD43B557FCF6EAACA /* LauncherListPane.swift in Sources */ = {isa = PBXBuildFile; fileRef = C314FCA48C9C473BEC0F5388 /* LauncherListPane.swift */; };
 		B12630859AFFAB6A88E428E6 /* GoogleSignIn.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0EEFD4BECF876565725DFA15 /* GoogleSignIn.swift */; };
 		B1CC59880F2E7DB9E145834B /* AccountViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9E2BFF6EF4C37CFDCEBD88DB /* AccountViews.swift */; };
 		BDD2EC4FA6C9D0C3A53DD751 /* HotKeyCenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2069D753238A9DAE1E390CB3 /* HotKeyCenter.swift */; };
 		BFA4251C2205BD1639A1ECB9 /* AccountSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1BBB26ECA12CD6A87E74BA4A /* AccountSheet.swift */; };
 		C503B55F9B1BE9972DE63908 /* LauncherView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 89F1ED15CD31CFD73551EE92 /* LauncherView.swift */; };
 		D872654C1DF62819BA31E385 /* NowStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0C3F69D6A673231631FB11C /* NowStore.swift */; };
+		DE51DA1610314BCE5A25CE45 /* LauncherShellModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 65D96844CFEE5E58206572EF /* LauncherShellModelTests.swift */; };
 		E185BE8D099E7CD4FF8F72D1 /* IOSAppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 430F30EA2339CCCFF7AAF2D4 /* IOSAppDelegate.swift */; };
 		E2E22004841EC931D746713B /* AccountStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9E5447C917C7443CACB72BD8 /* AccountStore.swift */; };
 		E9FF4630E2A023E47E3CBE13 /* GoogleSignIn in Frameworks */ = {isa = PBXBuildFile; productRef = 61502A661BD123C408697237 /* GoogleSignIn */; };
@@ -67,6 +73,7 @@
 		4980BC09AD044F0F918D864B /* SettingsSnapshot.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsSnapshot.swift; sourceTree = "<group>"; };
 		524FC1544A0E35537AE10E50 /* LauncherSnapshot.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LauncherSnapshot.swift; sourceTree = "<group>"; };
 		599D903AD6A4CA63031CAE4D /* SampleData.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SampleData.swift; sourceTree = "<group>"; };
+		65D96844CFEE5E58206572EF /* LauncherShellModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LauncherShellModelTests.swift; sourceTree = "<group>"; };
 		6EE4BF508E321D0E6BBC09B1 /* LauncherModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LauncherModel.swift; sourceTree = "<group>"; };
 		7439B64C561B831037F0D2E2 /* PushCenter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PushCenter.swift; sourceTree = "<group>"; };
 		854A74CC3784F0337B1287DB /* NewTaskSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NewTaskSheet.swift; sourceTree = "<group>"; };
@@ -77,14 +84,19 @@
 		9E5447C917C7443CACB72BD8 /* AccountStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccountStore.swift; sourceTree = "<group>"; };
 		AB26C2543E88F763B3553D02 /* SignIn.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SignIn.swift; sourceTree = "<group>"; };
 		B585CF3FD7B78EDC16427DEF /* Taskforce.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = Taskforce.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		C269834CACB1135D6F14018F /* LauncherActionBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LauncherActionBar.swift; sourceTree = "<group>"; };
+		C314FCA48C9C473BEC0F5388 /* LauncherListPane.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LauncherListPane.swift; sourceTree = "<group>"; };
 		C4A28A214EF045FAF600AC14 /* MacSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacSettingsView.swift; sourceTree = "<group>"; };
 		D1D7134479EB84008A2F52BD /* TaskforceKit */ = {isa = PBXFileReference; lastKnownFileType = folder; name = TaskforceKit; path = Packages/TaskforceKit; sourceTree = SOURCE_ROOT; };
 		D29FF94F9BE621AF3A6095B4 /* LauncherPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LauncherPanel.swift; sourceTree = "<group>"; };
 		D30BD73A1EB36763CBA0B37E /* LauncherModelSessionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LauncherModelSessionTests.swift; sourceTree = "<group>"; };
 		D553D4AC83AD95CD5BD8CBF7 /* MacAppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacAppDelegate.swift; sourceTree = "<group>"; };
 		DE37FA5998D1A9FB0C6A9AF2 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		E0E7EEAC44B716850440D045 /* LauncherSearchBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LauncherSearchBar.swift; sourceTree = "<group>"; };
 		E188CB78A16E96E9EFA7B9FA /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		F0C3F69D6A673231631FB11C /* NowStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NowStore.swift; sourceTree = "<group>"; };
+		F8F4C0A94A16821764C38281 /* LauncherDetailPane.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LauncherDetailPane.swift; sourceTree = "<group>"; };
+		F9CA2946F6A830979A66143B /* LauncherStateView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LauncherStateView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -125,9 +137,14 @@
 			isa = PBXGroup;
 			children = (
 				2069D753238A9DAE1E390CB3 /* HotKeyCenter.swift */,
+				C269834CACB1135D6F14018F /* LauncherActionBar.swift */,
+				F8F4C0A94A16821764C38281 /* LauncherDetailPane.swift */,
+				C314FCA48C9C473BEC0F5388 /* LauncherListPane.swift */,
 				6EE4BF508E321D0E6BBC09B1 /* LauncherModel.swift */,
 				D29FF94F9BE621AF3A6095B4 /* LauncherPanel.swift */,
+				E0E7EEAC44B716850440D045 /* LauncherSearchBar.swift */,
 				524FC1544A0E35537AE10E50 /* LauncherSnapshot.swift */,
+				F9CA2946F6A830979A66143B /* LauncherStateView.swift */,
 				89F1ED15CD31CFD73551EE92 /* LauncherView.swift */,
 				D553D4AC83AD95CD5BD8CBF7 /* MacAppDelegate.swift */,
 				C4A28A214EF045FAF600AC14 /* MacSettingsView.swift */,
@@ -164,6 +181,7 @@
 			isa = PBXGroup;
 			children = (
 				D30BD73A1EB36763CBA0B37E /* LauncherModelSessionTests.swift */,
+				65D96844CFEE5E58206572EF /* LauncherShellModelTests.swift */,
 				3D43D09D38ACB649AE46CFE3 /* MacSettingsTabTests.swift */,
 			);
 			path = TaskforceTests;
@@ -320,6 +338,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				1D21B5CFAA41940E0383FCBE /* LauncherModelSessionTests.swift in Sources */,
+				DE51DA1610314BCE5A25CE45 /* LauncherShellModelTests.swift in Sources */,
 				34AC3C55914B7872E39BC5BD /* MacSettingsTabTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -337,9 +356,14 @@
 				EA68509AE7950D6476FCBBB3 /* HomeView.swift in Sources */,
 				BDD2EC4FA6C9D0C3A53DD751 /* HotKeyCenter.swift in Sources */,
 				E185BE8D099E7CD4FF8F72D1 /* IOSAppDelegate.swift in Sources */,
+				79F9066EF922D90C473539BF /* LauncherActionBar.swift in Sources */,
+				6D563AFBBD0CFBB89C4A680E /* LauncherDetailPane.swift in Sources */,
+				AF947F2BD43B557FCF6EAACA /* LauncherListPane.swift in Sources */,
 				EF810C02C820D340DC1EB4F7 /* LauncherModel.swift in Sources */,
 				03921D74809B28972F7A6762 /* LauncherPanel.swift in Sources */,
+				7B16E71BE7CE882E8FEEF020 /* LauncherSearchBar.swift in Sources */,
 				578284CEF0A8A1DD0672CB7E /* LauncherSnapshot.swift in Sources */,
+				8996B663E7EE249A08383C19 /* LauncherStateView.swift in Sources */,
 				C503B55F9B1BE9972DE63908 /* LauncherView.swift in Sources */,
 				9731E4E4A9B4D4EC556F263B /* MacAppDelegate.swift in Sources */,
 				68DFF761D14327138E4CB5F4 /* MacSettingsView.swift in Sources */,

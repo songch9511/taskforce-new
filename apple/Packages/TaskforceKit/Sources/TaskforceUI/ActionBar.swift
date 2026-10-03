@@ -60,6 +60,7 @@ public struct ActionBar: View {
         switch leading {
         case .app(let title):
             HStack(spacing: TFSpace.sm) {
+                // 앱 기호는 앱 아이콘처럼 모양과 상관없이 검은 바탕 + 흰 마크 (Figma Logo: 다크 모드 값으로 고정)
                 TFImage.logoMark
                     .renderingMode(.template)
                     .resizable()
@@ -68,6 +69,7 @@ public struct ActionBar: View {
                     .foregroundStyle(TFColor.fillInverse)
                     .frame(width: 18, height: 18)
                     .background(TFColor.bgCanvas, in: RoundedRectangle(cornerRadius: 4, style: .continuous))
+                    .environment(\.colorScheme, .dark)
                     .accessibilityHidden(true)
                 Text(title)
                     .font(TFFont.footnote)
