@@ -576,9 +576,10 @@ struct HomeView: View {
     }
 
     /// 바뀐 할 일을 본 것으로: 점을 바로 지우고 `seen`을 한 번 보낸다 (`SeenTracker.open`, 실패해도 다시 보내지 않음. 다음 `/now`가 진실).
-    /// 오프라인이면 보내지 않고 점을 둔다 (보내도 실패하고 다음 `/now`에서 점이 다시 보인다)
+    /// 오프라인이면 보내지 않고 점을 둔다 (보내도 실패하고 다음 `/now`에서 점이 다시 보인다).
+    /// 이번 실행에서 받은 목록이 없으면(로그아웃 · 계정 전환으로 비워짐) 보내지 않는다
     private func markSeen(_ id: UUID) {
-        guard !store.refreshState.isOffline, let opened = seen.open(id, changed: changedIDs) else { return }
+        guard store.response != nil, !store.refreshState.isOffline, let opened = seen.open(id, changed: changedIDs) else { return }
         #if DEBUG
         if store.sampleMode { return }
         #endif
