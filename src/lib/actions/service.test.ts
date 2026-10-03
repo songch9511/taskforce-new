@@ -1,7 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { createUserAction, nowList } from "./service";
+import { CHANGED_READ_TIMEOUT_MS, createUserAction, nowList } from "./service";
 
 vi.mock("server-only", () => ({}));
 
@@ -85,6 +85,7 @@ describe("nowList: 바뀜 점 이벤트 읽기", () => {
             return q;
           },
           order: () => q,
+          abortSignal: () => q,
           throwOnError: async () => ({ data: table === "actions" ? open : [] }),
           range: async (from: number, to: number) => {
             reads.push({ ids, from, to });
@@ -106,6 +107,42 @@ describe("nowList: 바뀜 점 이벤트 읽기", () => {
     expect(new Set(reads.flatMap((r) => r.ids))).toEqual(new Set(open.map((a) => a.id)));
     expect(ranked.now.filter((a) => a.changed).map((a) => a.id)).toEqual([actionId(120)]);
     expect(ranked.now).toHaveLength(150);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("이벤트 읽기가 2초 안에 끝나지 않으면 끊고 모두 바뀌지 않은 것으로 둔다 (목록은 그대로)", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    let signal: AbortSignal | undefined;
+    const client = {
+      from: (table: string) => {
+        const q = {
+          select: () => q,
+          eq: () => q,
+          in: () => q,
+          order: () => q,
+          abortSignal: (s: AbortSignal) => {
+            signal = s;
+            return q;
+          },
+          throwOnError: async () => ({ data: table === "actions" ? open.slice(0, 3) : [] }),
+          // 끊길 때까지 답이 없는 읽기 (supabase-js는 끊기면 error를 돌려준다)
+          range: () => new Promise((resolve) => signal!.addEventListener("abort", () => resolve({ data: null, error: { message: "AbortError: This operation was aborted" } }))),
+        };
+        return q;
+      },
+    } as unknown as SupabaseClient;
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const pending = nowList(client, new Date("2026-10-03T03:00:00.000Z"));
+    await vi.advanceTimersByTimeAsync(CHANGED_READ_TIMEOUT_MS);
+    const ranked = await pending;
+    expect(signal?.aborted).toBe(true);
+    expect(ranked.now.map((a) => [a.id, a.changed])).toEqual(open.slice(0, 3).map((a) => [a.id, false]));
+    expect(log).toHaveBeenCalledWith("바뀜 조회 실패:", "2000ms 안에 읽지 못함");
+    log.mockRestore();
   });
 
   it("열린 할 일이 없으면 이벤트를 읽지 않는다", async () => {

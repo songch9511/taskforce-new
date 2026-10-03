@@ -24,7 +24,8 @@ describe("changedSinceSeen", () => {
     ["본 뒤 다시 바뀜", [ev("created", "ai", 0), ev("due_changed", "ai", 5), ev("user_seen", "user", 6), ev("merged", "ai", 8)], true],
     ["바뀐 뒤 사용자가 확인 요청을 확정함 (직접 손댄 것은 본 것)", [ev("created", "ai", 0), ev("owner_changed", "ai", 5), ev("user_confirmed", "user", 7)], false],
     ["사용자가 고친 뒤 AI가 바꿈", [ev("created", "ai", 0), ev("user_edited", "user", 2), ev("due_changed", "ai", 5)], true],
-    ["같은 트랜잭션(같은 시각)의 AI 변경과 사용자 이벤트는 본 것", [ev("created", "ai", 0), ev("merged", "ai", 5), ev("user_reported_missing", "user", 5)], false],
+    ["시각이 같은 AI 변경과 사용자 이벤트는 본 것 (앞뒤를 가를 수 없다)", [ev("created", "ai", 0), ev("merged", "ai", 5), ev("user_seen", "user", 5)], false],
+    ["사용자 이벤트 1분 뒤의 AI 변경은 바뀜", [ev("created", "ai", 0), ev("user_seen", "user", 5), ev("merged", "ai", 6)], true],
     ["모르는 종류 · 사용자 종류를 AI가 남긴 것은 세지 않는다", [ev("created", "ai", 0), ev("something_new", "ai", 5), ev("user_unstarted", "ai", 6)], false],
     ["이벤트가 없으면 바뀜이 아니다", [], false],
   ])("%s → %s", (_name, events, expected) => {

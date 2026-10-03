@@ -171,28 +171,43 @@ export async function nowList(client: SupabaseClient, now = new Date()) {
   return { now: ranked.now.map(mark), confirmations: ranked.confirmations.map(mark) };
 }
 
-/** 이 Action들의 이벤트 중 바뀜 판정에 쓰는 열만 (사용자 권한, RLS). id는 100개씩 나눠(요청 주소 길이) 1000행씩 끝까지 읽는다 */
-async function loadSeenEvents(client: SupabaseClient, actionIds: string[]): Promise<SeenEvent[]> {
+/** /now에서 바뀜 판정용 이벤트 읽기를 기다리는 최대 시간. 넘으면 읽기를 멈추고 모두 바뀌지 않은 것으로 둔다 (목록이 늦어지지 않게) */
+export const CHANGED_READ_TIMEOUT_MS = 2_000;
+
+/**
+ * 이 Action들의 이벤트 중 바뀜 판정에 쓰는 열만 (사용자 권한, RLS). id는 100개씩 나눠(요청 주소 길이) 1000행씩 끝까지 읽는다.
+ * signal이 멈추면 읽기를 끊고 오류를 낸다.
+ */
+async function loadSeenEvents(client: SupabaseClient, actionIds: string[], signal?: AbortSignal): Promise<SeenEvent[]> {
   const chunks: string[][] = [];
   for (let i = 0; i < actionIds.length; i += 100) chunks.push(actionIds.slice(i, i + 100));
   const lists = await Promise.all(
     chunks.map((ids) =>
-      readAll<SeenEvent>((from, to) =>
-        client.from("action_events").select("action_id, type, actor, created_at").in("action_id", ids).order("created_at").order("id").range(from, to),
-      ),
+      readAll<SeenEvent>((from, to) => {
+        const query = client.from("action_events").select("action_id, type, actor, created_at").in("action_id", ids).order("created_at").order("id");
+        return (signal ? query.abortSignal(signal) : query).range(from, to);
+      }),
     ),
   );
   return lists.flat();
 }
 
-/** 바뀜은 곁가지다: 이벤트를 못 읽으면 모두 바뀌지 않은 것으로 두고 목록은 그대로 돌려준다 (failed_sources와 같다) */
+/**
+ * 바뀜은 곁가지다: 이벤트를 못 읽거나 CHANGED_READ_TIMEOUT_MS 안에 다 읽지 못하면 모두 바뀌지 않은 것으로 두고
+ * 목록은 그대로 돌려준다 (failed_sources와 같다).
+ */
 async function changedAmong(client: SupabaseClient, actionIds: string[]): Promise<Set<string>> {
   if (actionIds.length === 0) return new Set();
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), CHANGED_READ_TIMEOUT_MS);
   try {
-    return changedActionIds(await loadSeenEvents(client, actionIds));
+    return changedActionIds(await loadSeenEvents(client, actionIds, controller.signal));
   } catch (error) {
-    console.error("바뀜 조회 실패:", error instanceof Error ? error.message : error);
+    const message = controller.signal.aborted ? `${CHANGED_READ_TIMEOUT_MS}ms 안에 읽지 못함` : error instanceof Error ? error.message : error;
+    console.error("바뀜 조회 실패:", message);
     return new Set();
+  } finally {
+    clearTimeout(timer);
   }
 }
 

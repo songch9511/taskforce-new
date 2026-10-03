@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { DeadlineExceededError, INTERACTIVE_MAX_DURATION_S, RESPONSE_MARGIN_MS } from "@/lib/ai/deadline";
+import { markActionSeen } from "@/lib/actions/service";
 import { processDepsFromEnv, reportMissing } from "@/lib/sources/process";
 
 import { maxDuration, POST } from "./route";
@@ -8,6 +9,7 @@ import { maxDuration, POST } from "./route";
 vi.mock("server-only", () => ({}));
 vi.mock("@/lib/supabase/admin", () => ({ createAdminClient: vi.fn(() => ({ admin: true })) }));
 vi.mock("@/lib/api/profile-store", () => ({ hasAiConsent: vi.fn(async () => true), loadProfile: vi.fn(async () => null) }));
+vi.mock("@/lib/actions/service", () => ({ markActionSeen: vi.fn(async () => true) }));
 vi.mock("@/lib/sources/process", () => ({
   processDepsFromEnv: vi.fn(() => ({ deps: "missing" })),
   reportMissing: vi.fn(async () => ({ status: "created", action: { id: "action-1" }, stage: "not_extracted" })),
@@ -88,6 +90,34 @@ describe("POST /api/v1/sources/:id/missing", () => {
     expect(response.status).toBe(500);
     const marker = log.mock.calls.find(([line]) => typeof line === "string" && line.includes("deadline_exceeded"));
     expect(JSON.parse(marker![0] as string)).toEqual({ event: "deadline_exceeded", route: "missing", stage: "lock", elapsed_ms: 45_000 });
+    expect(JSON.stringify(log.mock.calls)).not.toContain(QUOTE);
+  });
+
+  it("이미 있는 할 일에 붙었으면(already_tracked) 그 할 일을 본 것으로 남긴다: 사용자 권한으로 읽고 service role로 쓴다 (U1 바뀜 점)", async () => {
+    const tracked = { status: "already_tracked", action: { id: "action-9" }, stage: null };
+    vi.mocked(reportMissing).mockResolvedValueOnce(tracked as never);
+    const response = await report();
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual(tracked);
+    expect(markActionSeen).toHaveBeenCalledTimes(1);
+    const [client, admin, userId, actionId] = vi.mocked(markActionSeen).mock.calls[0];
+    expect(client).toHaveProperty("from");
+    expect([admin, userId, actionId]).toEqual([{ admin: true }, "u1", "action-9"]);
+  });
+
+  it("새로 만든 할 일은 본 것으로 남기지 않는다 (AI가 만든 것은 바뀜이 아니다)", async () => {
+    expect((await report()).status).toBe(200);
+    expect(markActionSeen).not.toHaveBeenCalled();
+  });
+
+  it("본 것 표시가 실패해도 신고 결과는 그대로 200 (로그에 구절을 남기지 않는다)", async () => {
+    vi.mocked(reportMissing).mockResolvedValueOnce({ status: "already_tracked", action: { id: "action-9" }, stage: null } as never);
+    vi.mocked(markActionSeen).mockRejectedValueOnce(new Error("violates check constraint \"action_events_type_check\""));
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    const response = await report();
+    expect(response.status).toBe(200);
+    expect(((await response.json()) as { status: string }).status).toBe("already_tracked");
+    expect(log).toHaveBeenCalledWith("누락 신고 뒤 본 것 표시 실패:", 'violates check constraint "action_events_type_check"');
     expect(JSON.stringify(log.mock.calls)).not.toContain(QUOTE);
   });
 });

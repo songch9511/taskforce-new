@@ -64,7 +64,7 @@ function fakeClient(resolve: Resolver) {
       const query: Query = { table, select: "", calls: [] };
       queries.push(query);
       const chain: Record<string, unknown> = {};
-      for (const method of ["eq", "neq", "gte", "in", "order", "limit", "maybeSingle"]) {
+      for (const method of ["eq", "neq", "gte", "in", "order", "limit", "maybeSingle", "abortSignal"]) {
         chain[method] = (...args: unknown[]) => {
           query.calls.push({ method, args });
           return chain;
@@ -180,6 +180,8 @@ describe("GET /api/v1/now 바뀜 점 · 섹션 개수 (U1)", () => {
       { method: "in", args: ["action_id", listed] },
       { method: "order", args: ["created_at"] },
       { method: "order", args: ["id"] },
+      // 2초 안에 다 읽지 못하면 끊는다 (service.test.ts)
+      { method: "abortSignal", args: [expect.any(AbortSignal)] },
       { method: "range", args: [0, 999] },
     ]);
   });
