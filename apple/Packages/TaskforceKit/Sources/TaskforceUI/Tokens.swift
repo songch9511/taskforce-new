@@ -2,7 +2,7 @@ import SwiftUI
 
 // Figma 디자인 시스템 v1 (jDMRGHWMRXeNUILfi11xvf) Foundations 13:960.
 // 값이 다르면 Figma 변수가 기준이다. 색은 Asset Catalog 색 세트(Any/Dark)로 두고 이름은 Figma 변수 이름 그대로다.
-// Native 재설계(156:6)의 변수도 같은 규칙이다. 예외는 글자 대비 4.5:1에 못 미치는 다크 값 둘뿐이다 (아래 `-selected` 토큰).
+// Native 재설계(156:6)의 변수도 같은 규칙이다.
 
 /// Color 컬렉션 (13:983). 이름 = Figma 변수 이름(`color/` 뺀 것) = Asset Catalog 색 세트 경로.
 public enum TFColor {
@@ -28,13 +28,11 @@ public enum TFColor {
     public static let textInverse = color(.textInverse)
     /// 링크와 본문 안 동작
     public static let textLink = color(.textLink)
-    /// 선택 행 위의 보조 글자 (bg/selected 위에서도 4.5:1).
-    /// 다크 값은 Figma `#ADADB2`가 흰색 14% 선택 위에서 4.0–4.4:1이라 앱만 `#B9B9BE`로 밝혔다 (TaskforceUITests `FigmaColor.contrastAdjustedDark`)
+    /// 선택 행 위의 보조 글자 (bg/selected 위에서도 4.5:1. 다크 `#B9B9BE`는 2026-10-03 Figma에서 4.5:1에 맞춰 고친 값)
     public static let textSecondarySelected = color(.textSecondarySelected)
 
     public static let statusOverdue = color(.statusOverdue)
-    /// 선택 행 위의 지난 · 오늘 기한 (bg/selected 위에서도 4.5:1).
-    /// 다크 값은 Figma `#FF7A70`이 흰색 14% 선택 위에서 3.5–3.9:1이라 앱만 `#FFA099`로 밝혔다 (위와 같은 표)
+    /// 선택 행 위의 지난 · 오늘 기한 (bg/selected 위에서도 4.5:1. 다크 `#FFA099`는 2026-10-03 Figma에서 4.5:1에 맞춰 고친 값)
     public static let statusOverdueSelected = color(.statusOverdueSelected)
 
     public static let borderDefault = color(.borderDefault)

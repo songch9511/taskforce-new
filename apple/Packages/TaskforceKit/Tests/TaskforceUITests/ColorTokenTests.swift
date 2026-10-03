@@ -32,7 +32,8 @@ struct RGBA: Equatable, CustomStringConvertible {
     }
 }
 
-/// Figma 변수 (jDMRGHWMRXeNUILfi11xvf, 컬렉션 Color, 모드 Light/Dark) — 2026-10-03 `use_figma`로 읽은 값
+/// Figma 변수 (jDMRGHWMRXeNUILfi11xvf, 컬렉션 Color, 모드 Light/Dark) — 2026-10-03 `use_figma`로 읽은 값.
+/// 두 `-selected` 다크 값은 선택 행(흰색 14%) 위 4.5:1을 위해 2026-10-03 Figma에서 고친 값이다 (사용자 결정)
 enum FigmaColor {
     static let values: [String: (light: String, dark: String)] = [
         "bg/canvas": ("#FFFFFF", "#000000"),
@@ -51,9 +52,9 @@ enum FigmaColor {
         "text/on-accent": ("#FFFFFF", "#FFFFFF"),
         "text/inverse": ("#FFFFFF", "#1D1D1F"),
         "text/link": ("#3F6199", "#7FA0D6"),
-        "text/secondary-selected": ("#5A5A5E", "#ADADB2"),
+        "text/secondary-selected": ("#5A5A5E", "#B9B9BE"),
         "status/overdue": ("#D70015", "#FF453A"),
-        "status/overdue-selected": ("#BF0013", "#FF7A70"),
+        "status/overdue-selected": ("#BF0013", "#FFA099"),
         "border/default": ("#E0E0E0", "#3A3A3C"),
         "border/control": ("#636366", "#9A9AA0"),
         "border/accent": ("#4A6FA5", "#6A8CC7"),
@@ -67,16 +68,8 @@ enum FigmaColor {
         "settings/content": ("#FFFFFF", "#1C1C1E"),
     ]
 
-    /// Figma 값이 선택 행(bg/selected 다크 흰색 14%) 위에서 4.5:1에 못 미쳐(ContrastTests) 앱만 밝힌 다크 값.
-    /// 두 토큰은 Figma에서 "선택 행 위에서도 4.5:1"을 위해 만든 것이다. Figma를 고치면 이 표를 비운다.
-    static let contrastAdjustedDark: [String: String] = [
-        "text/secondary-selected": "#B9B9BE",
-        "status/overdue-selected": "#FFA099",
-    ]
-
     static func shipped(_ name: String) -> (light: RGBA, dark: RGBA)? {
-        guard let figma = values[name] else { return nil }
-        return (RGBA(figma.light), RGBA(contrastAdjustedDark[name] ?? figma.dark))
+        values[name].map { (RGBA($0.light), RGBA($0.dark)) }
     }
 }
 
@@ -200,13 +193,5 @@ struct ColorTokenTests {
         let selected = try #require(TokenCatalog.resolve("bg/selected"))
         #expect(selected.light == RGBA(r: 0, g: 0, b: 0, a: 20))
         #expect(selected.dark == RGBA(r: 255, g: 255, b: 255, a: 36))
-    }
-
-    /// 앱만 밝힌 값은 Figma 값이 실제로 4.5:1에 못 미칠 때만 둔다
-    @Test(arguments: Array(FigmaColor.contrastAdjustedDark.keys))
-    func adjustmentsOnlyWhereFigmaFails(_ name: String) throws {
-        let figma = try #require(FigmaColor.values[name])
-        let worst = Contrast.worstOnSelection(RGBA(figma.dark), dark: true)
-        #expect(worst < 4.5, "\(name) Figma 다크 값이 이미 \(worst):1 — 조정 표에서 뺀다")
     }
 }

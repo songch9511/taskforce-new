@@ -36,11 +36,6 @@ enum Contrast {
             ("bg/selected over \(base)", composite(selected, over: shipped(base, dark: dark)))
         }
     }
-
-    /// 선택 행 두 바탕 중 낮은 대비
-    static func worstOnSelection(_ text: RGBA, dark: Bool) -> Double {
-        selectionBackgrounds(dark: dark).map { ratio(text, $0.color) }.min()!
-    }
 }
 
 /// 글자 토큰은 놓이는 바탕 위에서 4.5:1 이상 (WCAG AA 본문)
