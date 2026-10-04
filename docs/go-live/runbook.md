@@ -289,7 +289,7 @@ npx supabase db query --linked "select scope, key, blocked from public.execution
 npx supabase db query --linked "update public.execution_controls set blocked = false where scope = 'global' and key = '*'"
 ```
 
-교착(deadlock)을 피하는 규칙. `begin_call`은 단계 → run → 할 일(`actions` 행, for share) → 정책 → 실행 주체 → 스위치 세 행(`global` → `mode` → `provider` 순서) → 도구 → 크레딧 계정 순서로 잠근다(EXECUTION 6장). 이 순서를 거스르는 운영자 쓰기는 진행 중인 `begin_call`과 서로 기다리다 한쪽이 되돌려진다(40P01). 할 일 · 계정 하드 삭제(cascade로 run을 지운다)도 드물게 그렇다: 되돌려지면 그대로 다시 한다.
+교착(deadlock)을 피하는 규칙. `begin_call`은 단계 → run → 할 일(`actions` 행, for share) → 정책 → 실행 주체 → 스위치 세 행(`global` → `mode` → `provider` 순서) → 도구 → 크레딧 계정 순서로 잠근다(EXECUTION 6장). 이 순서를 거스르는 운영자 쓰기는 진행 중인 `begin_call`과 서로 기다리다 한쪽이 되돌려진다(40P01). 할 일 · 계정 하드 삭제(cascade로 run을 지운다)도 드물게 그렇다: 삭제 쪽이 되돌려지면(계정 삭제는 500) 그대로 다시 한다.
 
 - 긴급할 때는 **`global` 한 행만** 바꾼다. 스위치 여러 행을 한 문장 · 한 명령에서 바꾸지 않는다(행을 잠그는 순서가 정해지지 않는다).
 - 정책(`execution_policies`)과 단계(`execution_steps`)를 한 트랜잭션(한 명령)에서 쓰지 않는다: `begin_call`은 단계를 먼저, 정책을 나중에 잠근다. U2에서 운영자가 정책 · 단계를 고칠 일은 없다. 꼭 고쳐야 하면 한 명령에 한 표만.

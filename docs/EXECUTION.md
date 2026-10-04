@@ -101,7 +101,7 @@ step: `pending → prepared → calling → called | unknown_outcome | failed | 
 
 - DB 플래그 세 층: 전체(`global`) / 공급자별(`provider`, 예: `gmail`) / 모드별(`mode`: `manual` · `auto` · `full`). `auto`와 `full`을 끄면 "Manual만"이다.
 - `begin_call`은 RPC 하나 = READ COMMITTED 트랜잭션 하나이고, 외부 호출 전에 commit된다. 외부 호출은 그 트랜잭션 안에 없다.
-- 스위치는 그 트랜잭션 안에서, `prepared → calling`과 함께 확인한다. 해당 행 셋(전체 · 그 공급자 · 그 모드)을 `for share`로 잠그고 읽는다. 끄는 쪽의 `update`는 진행 중인 전이가 끝날 때까지 기다리고, 끈 뒤에 commit되는 전이는 없다. 잠금 순서는 step → run → Action(5장 열린 Action 확인) → 정책 → 실행 주체 → 스위치 → 도구 · 수신자 허용 목록(7장) → 크레딧 계정(12장)이다. Action을 먼저 잠그고 run · 단계를 기다리는 경로는 할 일 · 계정 하드 삭제(cascade)뿐이다: 진행 중인 `begin_call`과 드물게 교착하면 Postgres가 한쪽을 되돌린다(40P01, `begin_call`은 다시 부르고, 삭제는 다시 시도한다).
+- 스위치는 그 트랜잭션 안에서, `prepared → calling`과 함께 확인한다. 해당 행 셋(전체 · 그 공급자 · 그 모드)을 `for share`로 잠그고 읽는다. 끄는 쪽의 `update`는 진행 중인 전이가 끝날 때까지 기다리고, 끈 뒤에 commit되는 전이는 없다. 잠금 순서는 step → run → Action(5장 열린 Action 확인) → 정책 → 실행 주체 → 스위치 → 도구 · 수신자 허용 목록(7장) → 크레딧 계정(12장)이다. Action을 먼저 잠그고 run · 단계를 기다리는 경로는 할 일 · 계정 하드 삭제(cascade)뿐이다: 진행 중인 `begin_call`과 드물게 교착하면 Postgres가 한쪽을 되돌린다(40P01): `begin_call`은 실행기가 다시 부르고, 삭제가 되돌려지면 그 요청이 실패해(계정 삭제는 500) 사용자 · 운영자가 다시 한다.
 - 모든 입구(route · 자기 호출 · sweep)가 같은 `begin_call`을 지난다. 스위치를 끄면 세 입구 모두 `calling` 0인 것을 `tests/db/execution-executor.test.ts`가 본다(13장).
 - 행이 없는 공급자 · 모드는 막힌 것으로 본다(닫힌 쪽). 새 공급자는 행을 추가해야 실행된다.
 - 막힌 단계는 실패가 아니다. `prepared`로 남고, 다시 켜면 sweep이 이어 간다. 이미 `calling`인 호출은 끝까지 결과를 받는다.

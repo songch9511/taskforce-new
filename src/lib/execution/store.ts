@@ -273,7 +273,7 @@ const ID_CHUNK = 100;
 /**
  * Usage & Credits(S3) 숫자: 진행 중 예약이 있는 run 수 · 정산을 미룬 예약(A46)과 그 할 일 · since 이후 사용 (credit-details.ts).
  * 원장은 이 사용자의 예약 · 정산 · 해제 행을 1000행씩 끝까지 읽고(초안 한 건에 2–3행), 단계 · run은 열린 예약의 것만 읽는다.
- * 원장과 단계를 따로 읽어 그 사이에 정산된 단계가 정산 보류로 보이지 않게, 끝낸(called) 단계의 정산 · 해제 행을 한 번 더 읽는다.
+ * 원장과 단계를 따로 읽어 그 사이에 정산 · 해제된 예약이 진행 중 · 정산 보류로 보이지 않게, 열린 예약 단계의 정산 · 해제 행을 한 번 더 읽는다.
  * 행이 많아지면 SQL 함수로 옮긴다
  */
 export async function loadCreditDetails(admin: SupabaseClient, userId: string, since: Date): Promise<CreditDetails> {
@@ -287,14 +287,15 @@ export async function loadCreditDetails(admin: SupabaseClient, userId: string, s
       .range(from, to),
   );
   const open = openReservations(ledger);
-  const steps = await rowsByIds<CreditStepRow>(admin, "execution_steps", "id, state", userId, "id", open.map((r) => r.step_id));
-  const called = steps.filter((s) => s.state === "called").map((s) => s.id);
-  // 원장을 읽은 뒤에 정산 · 해제된 단계 (원장 키는 단계마다 하나라 처음 읽은 원장에는 없는 행이다): 더해서 닫는다
-  const closedLater = await rowsByIds<CreditLedgerRow>(admin, "credit_ledger", "kind, credits, run_id, step_id, created_at", userId, "step_id", called, [
+  const openIds = open.map((r) => r.step_id);
+  const steps = await rowsByIds<CreditStepRow>(admin, "execution_steps", "id, state", userId, "id", openIds);
+  // 원장을 읽은 뒤에 정산 · 해제된 예약 (원장 키는 단계마다 하나라 처음 읽은 원장에는 없는 행이다): 더해서 닫는다
+  const closedLater = await rowsByIds<CreditLedgerRow>(admin, "credit_ledger", "kind, credits, run_id, step_id, created_at", userId, "step_id", openIds, [
     "settle",
     "release",
   ]);
-  const settling = new Set(called.filter((id) => !closedLater.some((l) => l.step_id === id)));
+  const closed = new Set(closedLater.map((l) => l.step_id));
+  const settling = new Set(steps.filter((s) => s.state === "called" && !closed.has(s.id)).map((s) => s.id));
   const runs = await rowsByIds<CreditRunRow>(admin, "execution_runs", "id, action_id", userId, "id", open.filter((r) => settling.has(r.step_id)).map((r) => r.run_id));
   return creditDetailsFromRows({ ledger: [...ledger, ...closedLater], steps, runs }, since);
 }

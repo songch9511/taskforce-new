@@ -77,7 +77,7 @@ begin
 
   -- 열린 Action에서만 다음 단계 (2026-10-04 사용자 결정 ②): 끝냈거나(done) 지운(dropped) 할 일의 run은 부르지 않고 멈춘다.
   -- 열림의 기준은 /now와 같다(status open). 멈추면 트리거가 남은 예약을 해제한다(release_run_credits). stopped_at은 사용자의 중단 요청
-  -- 시각이라 적지 않는다. hold_reason은 stop_run과 같이 그대로 둔다(끝난 run의 hold는 뜻이 없다, contract.ts runSummarySchema).
+  -- 시각이라 적지 않는다. hold_reason은 stop_run과 같이 그대로 둔다(끝난 run의 hold는 뜻이 없다, contract.ts runHoldReasonSchema).
   -- for share: 할 일을 끝내는 update는 이 전이가 commit될 때까지 기다리고, 끝낸 뒤 commit되는 전이는 없다. 스위치 · 지급과 달리 되돌려
   -- 이어 가지 않는다: 할 일을 다시 열어도 멈춘 run은 그대로고, 새 run으로 다시 시작한다
   select a.status into v_action_status from public.actions a where a.id = v_run.action_id and a.user_id = v_run.user_id for share;

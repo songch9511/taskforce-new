@@ -216,10 +216,10 @@ describe("supabaseExecutionStore 읽기", () => {
       used: { credits: 2, since: "2026-10-01T00:00:00.000Z" },
     });
     for (const q of queries) expect(q.ops, q.table).toContainEqual(["eq", ["user_id", USER]]);
-    // 끝낸 단계는 원장을 한 번 더 본다 (그 사이 정산됐는지)
+    // 열린 예약 단계는 원장을 한 번 더 본다 (그 사이 정산 · 해제됐는지)
     expect(queries.filter((q) => q.table === "credit_ledger")[1]?.ops).toEqual(
       expect.arrayContaining([
-        ["in", ["step_id", ["s-pending-cost"]]],
+        ["in", ["step_id", ["s-calling", "s-pending-cost", "s-unknown"]]],
         ["in", ["kind", ["settle", "release"]]],
       ]),
     );
@@ -229,18 +229,25 @@ describe("supabaseExecutionStore 읽기", () => {
     expect(queries.find((q) => q.table === "execution_runs")?.ops).toContainEqual(["in", ["id", ["r-pending-cost"]]]);
   });
 
-  it("loadCreditDetails: 원장을 읽은 뒤 단계를 읽기 전에 정산된 초안은 정산 보류로 세지 않고 사용에 든다", async () => {
+  it("loadCreditDetails: 원장을 읽은 뒤 단계를 읽기 전에 정산된 초안은 정산 보류로, 해제된 예약은 진행 중으로 세지 않는다 (정산은 사용에 든다)", async () => {
     const at = "2026-10-02T00:00:00.000000+00:00";
-    const ledger: Record<string, unknown>[] = [{ user_id: USER, kind: "reserve", credits: 20, run_id: "r1", step_id: "s1", created_at: at }];
+    const ledger: Record<string, unknown>[] = [
+      { user_id: USER, kind: "reserve", credits: 20, run_id: "r1", step_id: "s1", created_at: at },
+      { user_id: USER, kind: "reserve", credits: 20, run_id: "r2", step_id: "s2", created_at: at },
+    ];
     const tables: Record<string, Record<string, unknown>[]> = { credit_ledger: ledger, execution_runs: [{ id: "r1", user_id: USER, action_id: "a-1" }] };
-    // 단계를 읽는 순간 그 단계의 정산 · 해제가 commit된다
+    // 단계를 읽는 순간 s1의 정산 · 해제와 s2(멈춘 run에서 실패)의 해제가 commit된다
     Object.defineProperty(tables, "execution_steps", {
       get() {
-        if (ledger.length === 1) {
+        if (ledger.length === 2) {
           ledger.push({ user_id: USER, kind: "settle", credits: 1, run_id: "r1", step_id: "s1", created_at: at });
           ledger.push({ user_id: USER, kind: "release", credits: 19, run_id: "r1", step_id: "s1", created_at: at });
+          ledger.push({ user_id: USER, kind: "release", credits: 20, run_id: "r2", step_id: "s2", created_at: at });
         }
-        return [{ id: "s1", user_id: USER, state: "called" }];
+        return [
+          { id: "s1", user_id: USER, state: "called" },
+          { id: "s2", user_id: USER, state: "failed" },
+        ];
       },
     });
     const { client, queries } = fakeAdmin(tables);
