@@ -1930,10 +1930,14 @@ final class LauncherModel {
         }
     }
 
-    /// ⌘C: 초안 제목 + 본문 (본문을 지운 초안은 없음). "Copied"를 잠깐 보이고 닫는다 (Hand off와 같다)
+    /// 초안 Copy가 쓰는 붙여넣기 판 (테스트는 이름 붙인 판으로 바꾼다)
+    @ObservationIgnored var pasteboard = NSPasteboard.general
+
+    /// ⌘C · 막대 Copy: 초안 제목 + 본문 (본문을 지운 초안은 없음). 사용자 결정 (2026-10-04, Raycast Copy to Clipboard):
+    /// 복사하고 런처의 완료 줄 `Copied`(`showDoneAndClose`, Hand off와 같다)를 잠깐 보인 뒤 닫는다
     func copyDraft() {
         guard case .draft(_, let artifact) = screen, !artifact.isPurged else { return }
-        Clipboard.copy("\(artifact.title)\n\n\(artifact.body)")
+        Clipboard.copy("\(artifact.title)\n\n\(artifact.body)", to: pasteboard)
         showDoneAndClose("Copied")
     }
 
