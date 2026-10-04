@@ -22,12 +22,15 @@ public struct LaneCard: View {
     let heading: String
     let title: String
     let subtitle: String?
+    /// VoiceOver가 갈래 이름 바로 뒤에 읽는 상태 (제목이 상태를 말하지 않을 때, 예 초안 제목 → "Draft ready")
+    let spokenState: String?
     let action: Action?
 
-    public init(heading: String, title: String, subtitle: String? = nil, action: Action? = nil) {
+    public init(heading: String, title: String, subtitle: String? = nil, spokenState: String? = nil, action: Action? = nil) {
         self.heading = heading
         self.title = title
         self.subtitle = subtitle
+        self.spokenState = spokenState
         self.action = action
     }
 
@@ -77,7 +80,7 @@ public struct LaneCard: View {
         .overlay(shape.strokeBorder(TFColor.settingsLine, lineWidth: 1))
     }
 
-    /// 상태 문장 + 부제. VoiceOver는 "Taskforce, <상태>, <부제>" 한 요소로, 버튼은 따로 읽는다
+    /// 상태 문장 + 부제. VoiceOver는 "Taskforce, [<상태>, ]<제목>, <부제>" 한 요소로, 버튼은 따로 읽는다
     private var sentence: some View {
         VStack(alignment: .leading, spacing: TFSpace.xxs) {
             Text(title)
@@ -93,12 +96,12 @@ public struct LaneCard: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(Self.accessibilityLabel(heading: heading, title: title, subtitle: subtitle))
+        .accessibilityLabel(Self.accessibilityLabel(heading: heading, title: title, subtitle: subtitle, spokenState: spokenState))
     }
 
-    /// "Taskforce, Draft ready[, AI draft · 14:20]"
-    nonisolated static func accessibilityLabel(heading: String, title: String, subtitle: String?) -> String {
-        ([heading, title] + [subtitle].compactMap { $0 }.filter { !$0.isEmpty }).joined(separator: ", ")
+    /// "Taskforce, Writing draft[, Started 14:02]" · 초안: "Taskforce, Draft ready, <초안 제목>, AI draft · 14:20"
+    nonisolated static func accessibilityLabel(heading: String, title: String, subtitle: String?, spokenState: String? = nil) -> String {
+        ([heading, spokenState, title, subtitle].compactMap { $0 }.filter { !$0.isEmpty }).joined(separator: ", ")
     }
 
     private enum Metrics {
