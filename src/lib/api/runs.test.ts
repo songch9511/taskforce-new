@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { DRAFT_ESTIMATE_CREDITS } from "@/lib/execution/limits";
 import { RunActionNotFoundError } from "@/lib/execution/types";
 
 import { CONSENT_REQUIRED_MESSAGE } from "./consent";
@@ -20,6 +21,7 @@ const RUN: RunSummary = {
   outcome: null,
   budget_credits: null,
   created_at: "2026-10-02T00:00:00.000Z",
+  stopped_at: null,
 };
 
 function createDeps(overrides: Partial<CreateRunDeps<User>> = {}) {
@@ -168,15 +170,77 @@ describe("POST /api/v1/runs/:id/stop", () => {
 });
 
 describe("GET /api/v1/credits", () => {
+  const NOW = new Date("2026-10-15T03:00:00Z");
+  const DETAILS = { running_runs: 1, settling: { steps: 1, reserved: 20, action_ids: [ACTION_ID] }, used: { credits: 12, since: "2026-10-01T00:00:00.000Z" } };
+  const creditsDeps = () => ({
+    enabled: () => true,
+    authenticate: async () => USER as User | null,
+    isActor: async () => true,
+    credits: vi.fn(async () => ({ available: 80, reserved: 40, rate_version: "c3-v1" })),
+    details: vi.fn(async (_user: User | null, since: Date) => ({ ...DETAILS, used: { ...DETAILS.used, since: since.toISOString() } })),
+    globallyBlocked: vi.fn(async () => false),
+    now: () => NOW,
+  });
+  const get = (query = "") => new Request(`https://api.example.test/api/v1/credits${query}`);
+
   it("서버 합계를 돌려준다. 플래그 꺼짐 · 허용 목록 밖은 404, 로그인 전 401", async () => {
-    const credits = vi.fn(async () => ({ available: 80, reserved: 20, rate_version: "c3-v1" }));
-    const base = { enabled: () => true, authenticate: async () => USER as User | null, isActor: async () => true, credits };
-    const request = new Request("https://api.example.test/api/v1/credits");
+    const base = creditsDeps();
+    const request = get();
     const response = await handleCredits(request, base);
     expect(response.status).toBe(200);
-    expect(creditsResponseSchema.parse(await response.json())).toEqual({ available: 80, reserved: 20, rate_version: "c3-v1" });
+    expect(creditsResponseSchema.parse(await response.json())).toEqual({
+      available: 80,
+      reserved: 40,
+      rate_version: "c3-v1",
+      ...DETAILS,
+      accepting_runs: true,
+      draft_estimate_credits: DRAFT_ESTIMATE_CREDITS,
+    });
     expect((await handleCredits(request, { ...base, enabled: () => false })).status).toBe(404);
     expect((await handleCredits(request, { ...base, isActor: async () => false })).status).toBe(404);
     expect((await handleCredits(request, { ...base, authenticate: async () => null })).status).toBe(401);
+  });
+
+  it("since: 없으면 UTC 이번 달 1일, 오프셋이 있는 ISO 8601은 그 시각(UTC로 돌려준다)", async () => {
+    const deps = creditsDeps();
+    await handleCredits(get(), deps);
+    expect(deps.details).toHaveBeenLastCalledWith(USER, new Date("2026-10-01T00:00:00Z"));
+
+    // 기기 시간대(KST)의 이번 달 1일 00:00 — 쿼리에서 +는 %2B로 보낸다
+    const response = await handleCredits(get(`?since=${encodeURIComponent("2026-10-01T00:00:00+09:00")}`), deps);
+    expect(response.status).toBe(200);
+    expect(deps.details).toHaveBeenLastCalledWith(USER, new Date("2026-09-30T15:00:00Z"));
+    expect(((await response.json()) as { used: { since: string } }).used.since).toBe("2026-09-30T15:00:00.000Z");
+    expect((await handleCredits(get("?since=2025-10-15T03:00:00Z"), deps)).status).toBe(200); // 딱 1년 전까지
+    expect((await handleCredits(get("?since=2026-10-15T03:00:00Z"), deps)).status).toBe(200); // 지금
+  });
+
+  it.each([
+    ["형식 오류", "?since=last-month"],
+    ["날짜만", "?since=2026-10-01"],
+    ["오프셋 없는 시각", "?since=2026-10-01T00:00:00"],
+    ["+를 인코딩하지 않음 (공백이 된다)", "?since=2026-10-01T00:00:00+09:00"],
+    ["빈 값", "?since="],
+    ["미래", "?since=2026-10-15T03:00:01Z"],
+    ["1년 넘게 전", "?since=2025-10-15T02:59:59Z"],
+  ])("since %s → 400 invalid_request (합계를 읽지 않는다)", async (_, query) => {
+    const deps = creditsDeps();
+    const response = await handleCredits(get(query), deps);
+    expect(response.status).toBe(400);
+    expect(((await response.json()) as { error: { code: string } }).error.code).toBe("invalid_request");
+    expect(deps.credits).not.toHaveBeenCalled();
+    expect(deps.details).not.toHaveBeenCalled();
+  });
+
+  it("since를 보기 전에 입구를 확인한다: 플래그 꺼짐 · 허용 목록 밖은 since가 틀려도 404", async () => {
+    expect((await handleCredits(get("?since=x"), { ...creditsDeps(), enabled: () => false })).status).toBe(404);
+    expect((await handleCredits(get("?since=x"), { ...creditsDeps(), isActor: async () => false })).status).toBe(404);
+  });
+
+  it("전체 스위치가 막혀 있으면 accepting_runs false (POST /runs가 404인 상태). 읽기가 실패하면 500", async () => {
+    const blocked = await handleCredits(get(), { ...creditsDeps(), globallyBlocked: async () => true });
+    expect(((await blocked.json()) as { accepting_runs: boolean }).accepting_runs).toBe(false);
+    const failing = await handleCredits(get(), { ...creditsDeps(), details: vi.fn(async () => Promise.reject(new Error("db down"))) });
+    expect(failing.status).toBe(500);
   });
 });

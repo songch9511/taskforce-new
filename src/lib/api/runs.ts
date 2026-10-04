@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import type { CreditDetails, CreditTotals } from "@/lib/execution/credit-details";
 import { DRAFT_ESTIMATE_CREDITS } from "@/lib/execution/limits";
 import { RunActionNotFoundError } from "@/lib/execution/types";
 
@@ -113,14 +114,45 @@ export async function handleStopRun<User>(request: Request, runId: string, deps:
 }
 
 export type CreditsDeps<User> = ExecutionGateDeps<User> & {
-  credits: (user: User) => Promise<CreditsResponse>;
+  /** 계정 행의 합계 (store.ts loadCredits) */
+  credits: (user: User) => Promise<CreditTotals>;
+  /** 원장에서 세는 S3 숫자: 진행 중 run · 정산 보류 · since 이후 사용 (store.ts loadCreditDetails) */
+  details: (user: User, since: Date) => Promise<CreditDetails>;
+  /** 차단 스위치의 전체 행이 막혔거나 없다 (POST /runs가 404로 받지 않는 상태) */
+  globallyBlocked: () => Promise<boolean>;
+  now?: () => Date;
 };
+
+const sinceSchema = z.iso.datetime({ offset: true });
+
+/**
+ * used를 셀 시작 시각 (?since=). 없으면 UTC 이번 달 1일. 오프셋 없는 시각 · 날짜만 · 형식 오류 · 미래 · 1년 넘게 전이면 null (400).
+ * 앱은 기기 시간대의 이번 달 1일 00:00을 보낸다
+ */
+function creditsSince(url: URL, now: Date): Date | null {
+  const raw = url.searchParams.get("since");
+  if (raw === null) return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+  if (!sinceSchema.safeParse(raw).success) return null;
+  const since = new Date(raw);
+  if (Number.isNaN(since.getTime())) return null;
+  const yearAgo = new Date(now);
+  yearAgo.setUTCFullYear(now.getUTCFullYear() - 1);
+  return since > now || since < yearAgo ? null : since;
+}
 
 export async function handleCredits<User>(request: Request, deps: CreditsDeps<User>): Promise<Response> {
   const gated = await gate(request, deps);
   if ("error" in gated) return gated.error;
+  const since = creditsSince(new URL(request.url), deps.now?.() ?? new Date());
+  if (!since) return errorResponse(400, "invalid_request", "잘못된 필드: since (오프셋이 있는 ISO 8601, 지금부터 1년 안)");
   try {
-    return Response.json((await deps.credits(gated.user)) satisfies CreditsResponse);
+    const [totals, details, blocked] = await Promise.all([deps.credits(gated.user), deps.details(gated.user, since), deps.globallyBlocked()]);
+    return Response.json({
+      ...totals,
+      ...details,
+      accepting_runs: !blocked,
+      draft_estimate_credits: DRAFT_ESTIMATE_CREDITS,
+    } satisfies CreditsResponse);
   } catch (error) {
     console.error("크레딧 읽기 실패:", error instanceof Error ? error.message : error);
     return errorResponse(500, "internal_error", "크레딧을 읽지 못했습니다.");
