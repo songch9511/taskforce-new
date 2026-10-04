@@ -237,7 +237,7 @@ Google 요구 사항(제한 범위 심사 문서): OAuth 권한 화면을 **영�
 | 2:15 | Taskforce: Review 카드가 사라지고 Now에 "Send revised proposal to Jordan" · 기한 Fri. 펼치면 근거 줄 "Sep 30 · Proposal review — Acme"와 Sources 2 | "Using the calendar event, Taskforce links the Notion note and the Meet transcript as the same meeting and uses the attendees to decide the owner. The task is now mine, with the meeting title and time on its evidence." |
 | 2:45 | Meet 전사 문서(Drive)에서 "Alex: I'll send the revised proposal to Jordan by Friday." | "This is the Meet transcript of that meeting. The speaker is recorded." |
 | 3:00 | Taskforce: Sources에서 Meet 전사 인용(발화자 포함) → Open으로 원본 | "The task shows this exact transcript line, with the speaker, as its evidence. This is the feature enabled by the Meet scope." |
-| 3:25 | Account → AI data (동의 · 철회), Connections → Google → Disconnect 버튼 | "I can withdraw AI consent or disconnect Google at any time. Deleting my account deletes all data immediately and revokes the Google token." |
+| 3:25 | Settings → Privacy & AI Data (동의 · 철회), Connections → Google → Disconnect 버튼 | "I can withdraw AI consent or disconnect Google at any time. Deleting my account deletes all data immediately and revokes the Google token." |
 | 3:45 | 처리방침 페이지 | "Taskforce never creates or changes events or meetings, and Google data is never used to train AI models. Thank you." |
 
 ### 영상 B: Gmail (프로젝트 B)
@@ -254,7 +254,7 @@ Google 요구 사항(제한 범위 심사 문서): OAuth 권한 화면을 **영�
 | 2:10 | Gmail: fixture 5 "Wednesday works too." 도착 → Sync | "Now Jordan writes that Wednesday also works." |
 | 2:25 | Taskforce: 같은 할 일의 기한이 Wed로 바뀜, Sources 2 (두 인용) | "Taskforce updates the due date of the existing task instead of creating a duplicate, and keeps both quotes as evidence." |
 | 2:45 | Gmail: fixture 2(정보 전달) · 4(뉴스레터) → Taskforce에 할 일 없음 | "An informational email and a newsletter did not create tasks." |
-| 3:00 | Account → AI data, Connections → Gmail → Disconnect, 처리방침 | "I can withdraw consent or disconnect at any time, and deleting my account deletes all Gmail data and revokes the token. Taskforce never sends, deletes, or changes email, and never uses Gmail data to train AI models." |
+| 3:00 | Settings → Privacy & AI Data, Connections → Gmail → Disconnect, 처리방침 | "I can withdraw consent or disconnect at any time, and deleting my account deletes all Gmail data and revokes the token. Taskforce never sends, deletes, or changes email, and never uses Gmail data to train AI models." |
 
 합격 확인 (녹화 뒤 체크):
 - [ ] 영상의 client ID가 제출하는 프로젝트의 client ID와 같다.

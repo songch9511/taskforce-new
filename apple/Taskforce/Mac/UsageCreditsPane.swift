@@ -19,6 +19,7 @@ struct UsageCreditsPane: View {
                 if isLoading {
                     ProgressView()
                         .controlSize(.small)
+                        .accessibilityLabel("Loading credits")
                         .frame(maxWidth: .infinity)
                         .padding(.top, TFSpace.lg)
                 } else {

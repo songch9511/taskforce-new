@@ -200,7 +200,7 @@ Server Action은 웹 폼 전용이라 Swift 앱에서 부를 수 없다.
 - 가입 훅: Before User Created 훅(`hook_before_user_created`)은 `provider = email`만 막는다. Google 가입은 통과한다(`tests/db/review-accounts.test.ts`).
 - **계정 연결:** Supabase는 확인된 같은 이메일의 로그인을 한 계정으로 자동으로 잇는다(Apple 실제 주소 = Google 주소면 한 계정). Apple "나의 이메일 가리기"(`@privaterelay.appleid.com`)로 가입한 사용자가 나중에 Google로 로그인하면 이메일이 달라 **별도 계정**이 된다. 수동으로 잇는 화면은 지금 두지 않는다.
   **받아들인 위험:** 자동 연결은 "확인된 같은 이메일 = 같은 사람"을 믿는다. 그 이메일의 Google 계정(또는 Apple ID)을 가진 사람은 그 Taskforce 계정에 들어온다. Google · Apple 모두 확인한 주소만 "확인됨"으로 주므로 받아들인다(확인되지 않은 주소는 잇지 않는다). 연결하지 않으면 같은 사람이 로그인 방식마다 다른 계정을 갖게 된다.
-- 계정 메뉴의 로그인 계정 줄은 가입 방식에 따라 "Apple ID" · "Google Account" · "Email"이다.
+- 설정(iPhone 설정 시트 · Mac 설정 Account)의 로그인 계정 줄은 가입 방식에 따라 "Apple ID" · "Google Account" · "Email"이다.
 
 ---
 
