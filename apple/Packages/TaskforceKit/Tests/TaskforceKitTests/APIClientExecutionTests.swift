@@ -79,6 +79,21 @@ struct APIClientExecutionTests {
         #expect(try await client(status: 404, body: body).credits(since: Date()) == nil)
     }
 
+    /// `since`를 받지 않으면(400) `since` 없이 한 번 더
+    @Test func creditsRetriesWithoutSinceOn400() async throws {
+        StubProtocol.register(host: host, reply: .init(status: 400, body: #"{"error":{"code":"invalid_request","message":"since"}}"#))
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [StubProtocol.self]
+        let api = APIClient(baseURL: URL(string: "https://\(host)")!, session: URLSession(configuration: configuration), token: { "t" })
+        await #expect(throws: APIError.server(status: 400, code: .invalidRequest, message: "since")) {
+            _ = try await api.credits(since: Date())
+        }
+        let urls = StubProtocol.requests(host: host).map(\.url)
+        #expect(urls.count == 2)
+        #expect(urls[0].query?.hasPrefix("since=") == true)
+        #expect(urls[1].query == nil)
+    }
+
     @Test func creditsOtherErrorsThrow() async throws {
         let api = client(status: 500, body: #"{"error":{"code":"internal_error","message":"x"}}"#)
         await #expect(throws: APIError.server(status: 500, code: .internalError, message: "x")) {

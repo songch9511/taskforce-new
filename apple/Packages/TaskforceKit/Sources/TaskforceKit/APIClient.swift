@@ -274,7 +274,8 @@ public struct APIClient: Sendable {
     }
 
     /// 내 크레딧 합계. 404면 nil: 실행을 쓸 수 없는 계정이다 (플래그 꺼짐 · 실행 주체 밖, 서버가 존재를 드러내지 않는다).
-    /// `since`(이번 달 사용량의 시작, 보통 `CreditsMonth.start`)는 UTC ISO 8601로 보낸다. 그 전 서버는 이 값을 읽지 않는다
+    /// `since`(이번 달 사용량의 시작, 보통 `CreditsMonth.start`)는 UTC ISO 8601로 보낸다. 그 전 서버는 이 값을 읽지 않는다.
+    /// 서버가 `since`를 받지 않으면(400: 기기 시계가 앞서 서버의 미래 등) `since` 없이 한 번 더 묻는다 (서버의 UTC 이번 달)
     public func credits(since: Date? = nil) async throws -> CreditsSummary? {
         let query = since.map { [URLQueryItem(name: "since", value: $0.ISO8601Format())] } ?? []
         do {
@@ -282,6 +283,8 @@ public struct APIClient: Sendable {
         } catch let error as APIError where error.status == 404 {
             // 실행 route가 없는 옛 서버의 404(형식 없는 응답)도 같다
             return nil
+        } catch let error as APIError where error.status == 400 && since != nil {
+            return try await credits(since: nil)
         }
     }
 

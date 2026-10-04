@@ -85,13 +85,17 @@ struct TaskforceReadsExecutionTests {
 
     /// 서버 U2 Mac PR1 마이그레이션 전 DB: `stopped_at`을 고르면 42703 → 그 열 없이 다시 읽는다
     @Test func fallsBackWithoutStoppedAt() async throws {
-        let runs = try await reads(withoutStoppedAt: true).activeRuns()
+        let reads = reads(withoutStoppedAt: true)
+        let runs = try await reads.activeRuns()
         #expect(runs.map(\.id) == [ExecutionFixtures.runID])
         #expect(runs.first?.stoppedAt == nil)
+        // 한 번 알면 이번 실행 동안은 처음부터 그 열 없이 (폴링마다 실패 응답을 받지 않게)
+        _ = try await reads.latestRuns(actionIDs: [Fixtures.actionID])
         let selects = ExecutionStubProtocol.requests(host: host).map { query($0)["select"] ?? "" }
-        #expect(selects.count == 2)
+        #expect(selects.count == 3)
         #expect(selects[0].contains("stopped_at"))
         #expect(!selects[1].contains("stopped_at"))
+        #expect(!selects[2].contains("stopped_at"))
     }
 
     @Test func stepsAndArtifacts() async throws {

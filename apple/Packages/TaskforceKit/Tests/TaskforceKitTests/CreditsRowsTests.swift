@@ -31,14 +31,14 @@ struct CreditsRowsTests {
         #expect(rows.notice == nil)
     }
 
-    /// 그 전 서버 (세 필드만): Reserved는 예약 그대로, Pending · 카드 없음, Used는 "—"
+    /// 그 전 서버 (세 필드만): Reserved는 예약 그대로(진행 중 run 수를 몰라 수 없이), Pending · 카드 없음, Used는 "—"
     @Test func beforeServerPR1() {
         let rows = CreditsRows.make(
             credits: CreditsSummary(available: 480, reserved: 20), loadFailed: false, checkedAt: now, pausedRuns: [], titles: [:], now: now,
             timeZone: seoul
         )
         #expect(rows.available.value == "480")
-        #expect(rows.reserved == .init(title: "Reserved", value: "20", subtitle: "Nothing held right now"))
+        #expect(rows.reserved == .init(title: "Reserved", value: "20", subtitle: "Held until running tasks finish"))
         #expect(rows.pending == nil)
         #expect(rows.paused == nil)
         #expect(rows.used.value == "—")
@@ -68,9 +68,12 @@ struct CreditsRowsTests {
         #expect(rows.notice == nil)
     }
 
-    @Test(arguments: [(0, "Nothing held right now"), (1, "Held for 1 running task until it finishes"), (3, "Held for 3 running tasks until they finish")])
-    func heldText(_ runs: Int, _ text: String) {
-        #expect(CreditsRows.heldText(runs: runs) == text)
+    @Test(arguments: [
+        (0, 0, "Nothing held right now"), (1, 20, "Held for 1 running task until it finishes"), (3, 60, "Held for 3 running tasks until they finish"),
+        (0, 20, "Held until running tasks finish"),
+    ])
+    func heldText(_ runs: Int, _ held: Int, _ text: String) {
+        #expect(CreditsRows.heldText(runs: runs, held: held) == text)
     }
 
     @Test func checkingText() {
@@ -159,6 +162,18 @@ struct DraftSourcesTests {
         ]
         let chips = DraftSources.make(evidence: evidence, sources: table([mail, slack, purged, receipt]))
         #expect(chips == [DraftSource(id: id(1), title: "일정 변경 요청", service: .gmail)])
+    }
+
+    /// 서버처럼 receipt가 아닌 근거 중 최근 40개만 본다 (receipt 근거가 많아도 원문 근거 자리를 빼앗지 않는다)
+    @Test func readsTheLatestFortyNonReceiptEvidence() {
+        let old = source(1, title: "오래된 메일")
+        let receipt = source(2, kind: .execution, title: "초안", url: "taskforce://artifacts/a1")
+        let recent = source(3, title: "최근 메일")
+        var evidence = [self.evidence(0, source: 1, minutes: 0)]
+        evidence += (1...40).map { self.evidence($0, source: 3, quote: "구절 \($0)", minutes: Double($0)) }
+        evidence += (41...90).map { self.evidence($0, source: 2, quote: "초안 저장: 초안", role: .executed, minutes: Double($0)) }
+        let chips = DraftSources.make(evidence: evidence, sources: table([old, receipt, recent]))
+        #expect(chips.map(\.id) == [id(3)])
     }
 
     /// 같은 원문은 한 번 (가장 최근 근거의 자리), 이름이 없으면 종류 이름

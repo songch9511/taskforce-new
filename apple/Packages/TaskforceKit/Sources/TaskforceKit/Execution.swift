@@ -392,11 +392,25 @@ public struct CreateRunRequest: Encodable, Sendable, Equatable {
         case actionID = "action_id"
     }
 
-    /// 앞뒤 공백을 빼고 2000자로 자른다
+    /// 앞뒤 공백을 빼고(서버 zod `.trim()`처럼 U+FEFF도) 2000으로 자른다. 길이는 서버(zod)와 같이 UTF-16 단위로 세고 글자 중간에서 자르지 않는다
     public init(actionID: UUID, request: String) {
         self.actionID = actionID
         goal = "draft"
-        self.request = String(request.trimmingCharacters(in: .whitespacesAndNewlines).prefix(Self.maxRequestLength))
+        self.request = Self.capped(request.trimmingCharacters(in: Self.trimmed))
+    }
+
+    /// JS `String.prototype.trim`이 빼는 문자 (Swift 공백 · 줄바꿈 + U+FEFF)
+    static let trimmed = CharacterSet.whitespacesAndNewlines.union(CharacterSet(charactersIn: "\u{FEFF}"))
+
+    static func capped(_ text: String) -> String {
+        var units = 0
+        var result = ""
+        for character in text {
+            units += character.utf16.count
+            guard units <= maxRequestLength else { break }
+            result.append(character)
+        }
+        return result
     }
 
     /// 빈 요청 (보내지 않는다: 서버는 400)
@@ -428,8 +442,9 @@ public enum RunStartFailure: Equatable, Sendable {
     public init(_ error: APIError) {
         switch error {
         case .server(_, .conflict, _): self = .consentNeeded
-        case .server(_, .notFound, _): self = .unavailable
         case .server(_, .rateLimited, _): self = .rateLimited
+        // 형식 없는 404(실행 route가 없는 옛 서버 · 앞단)도 쓸 수 없음
+        case _ where error.status == 404: self = .unavailable
         default: self = .other(error)
         }
     }

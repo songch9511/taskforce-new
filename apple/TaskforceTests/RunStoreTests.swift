@@ -137,6 +137,37 @@ struct RunStoreTests {
         harness.store.watch([])
     }
 
+    /// 상세를 닫은 뒤 끝난 run: 끝나지 않은 run 목록을 읽을 때 상세에서 읽어 둔 옛 값도 바로잡는다 (Taskforce Working · 갈래 · Start)
+    @Test func refreshActiveReconcilesRunsReadInTheDetail() async throws {
+        let harness = try await RunHarness.make()
+        await harness.store.loadCredits()
+        await harness.router.set(runs: [Self.runRow(id: 1, state: "running")])
+        harness.store.watch([action])
+        await harness.waitUntil { harness.store.lane(for: harness.action).state == .working }
+        harness.store.watch([])
+        await harness.router.set(runs: [Self.runRow(id: 1, state: "done", outcome: "draft_ready")])
+        await harness.store.refreshActive()
+        #expect(harness.store.workingActionIDs.isEmpty)
+        #expect(harness.store.lane(for: action).state == .draftReady)
+        #expect(harness.store.availability(for: action, signedIn: true, refresh: .live) == .available)
+    }
+
+    /// 멈춘 뒤 credits(해제된 예약)와 끝나지 않은 run을 다시 읽는다. 멈추는 중 다시 누르면 보내지 않는다
+    @Test func stopReloadsCreditsAndIgnoresDoublePress() async throws {
+        let harness = try await RunHarness.make()
+        await harness.store.loadCredits()
+        await harness.router.set(runs: [Self.runRow(id: 1, state: "running")])
+        await harness.router.set(stopRun: .init(status: 200, body: #"{"run":\#(Self.runRow(id: 1, state: "stopped"))}"#))
+        let creditsBefore = await harness.router.paths().filter { $0 == "/api/v1/credits" }.count
+        async let first = harness.store.stop(actionID: action)
+        async let second = harness.store.stop(actionID: action)
+        let (a, b) = await (first, second)
+        #expect([a, b].sorted { !$0 && $1 } == [false, true])
+        #expect(await harness.router.paths().filter { $0.hasSuffix("/stop") }.count == 1)
+        #expect(await harness.router.paths().filter { $0 == "/api/v1/credits" }.count == creditsBefore + 1)
+        #expect(harness.store.workingActionIDs.isEmpty)
+    }
+
     /// 상세를 credits보다 먼저 지켜봐도, 쓸 수 있음을 알면 곧바로 읽기 시작한다
     @Test func watchingBeforeCreditsStartsOnceAvailable() async throws {
         let harness = try await RunHarness.make()
@@ -358,7 +389,16 @@ private actor RunStubRouter {
         case _ where path.hasPrefix("/api/v1/runs/") && path.hasSuffix("/stop"):
             return stopRun
         case "/rest/v1/execution_runs":
-            return RunReply(status: 200, body: "[\(runs.joined(separator: ","))]")
+            // PostgREST 필터 흉내: state=in.(…) · hold_reason=eq.…
+            let states = query["state"].map { $0.dropFirst(4).dropLast().split(separator: ",").map(String.init) }
+            let hold = query["hold_reason"].map { String($0.dropFirst(3)) }
+            let rows = runs.filter { row in
+                guard let object = try? JSONSerialization.jsonObject(with: Data(row.utf8)) as? [String: Any] else { return false }
+                if let states, !states.contains(object["state"] as? String ?? "") { return false }
+                if let hold, object["hold_reason"] as? String != hold { return false }
+                return true
+            }
+            return RunReply(status: 200, body: "[\(rows.joined(separator: ","))]")
         case "/rest/v1/execution_artifacts":
             return RunReply(status: 200, body: "[\(artifacts.joined(separator: ","))]")
         default:

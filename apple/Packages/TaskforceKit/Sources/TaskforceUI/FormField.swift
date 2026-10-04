@@ -84,6 +84,7 @@ public struct GrowingTextField: View {
             .foregroundStyle(TFColor.textPrimary)
             .lineLimit(1...Self.maxLines)
             .focused(isFocused)
+            .focusEffectDisabled()
             .padding(.vertical, 5)
             .padding(.horizontal, TFSpace.sm)
             .background(TFColor.bgElevated, in: shape)

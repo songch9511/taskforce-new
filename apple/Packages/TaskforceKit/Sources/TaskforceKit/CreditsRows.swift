@@ -58,7 +58,7 @@ public struct CreditsRows: Equatable, Sendable {
         let available = Row(title: "Available", value: credits.map { "\($0.available)" } ?? missing, subtitle: checked, isEmphasized: true)
         let reserved = Row(
             title: "Reserved", value: credits.map { "\($0.heldForRunning)" } ?? missing,
-            subtitle: credits.map { heldText(runs: $0.runningRuns) }
+            subtitle: credits.map { heldText(runs: $0.runningRuns, held: $0.heldForRunning) }
         )
         let pending = credits.flatMap { credits in
             credits.hasPending ? Row(title: "Pending", value: "Unknown", subtitle: checkingText(credits.settling.actionIDs, titles: titles)) : nil
@@ -76,12 +76,14 @@ public struct CreditsRows: Equatable, Sendable {
         )
     }
 
-    /// "Held for 1 running task until it finishes" (Figma) · 여럿 · 0 (후보)
-    static func heldText(runs: Int) -> String {
-        switch runs {
-        case ..<1: "Nothing held right now"
-        case 1: "Held for 1 running task until it finishes"
-        default: "Held for \(runs) running tasks until they finish"
+    /// "Held for 1 running task until it finishes" (Figma) · 여럿 · 0 (후보).
+    /// 진행 중 run 수를 모르는 서버(PR1 전, `running_runs` 없음 = 0)에서 예약이 남아 있으면 수 없이 말한다
+    static func heldText(runs: Int, held: Int) -> String {
+        switch (runs, held) {
+        case (1, _): "Held for 1 running task until it finishes"
+        case (2..., _): "Held for \(runs) running tasks until they finish"
+        case (_, 1...): "Held until running tasks finish"
+        default: "Nothing held right now"
         }
     }
 

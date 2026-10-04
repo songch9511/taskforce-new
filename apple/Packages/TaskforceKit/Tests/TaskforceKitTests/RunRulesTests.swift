@@ -50,6 +50,9 @@ struct RunLaneTests {
         let lane = RunLane.state(run: nil, steps: [], artifacts: [])
         #expect(lane.state == .none)
         #expect(!lane.isVisible)
+        // 모르는 상태 · 초안 없음도 숨김
+        #expect(!RunLane.state(run: F.run(.unknown), steps: [], artifacts: []).isVisible)
+        #expect(RunLane.state(run: F.run(.unknown), steps: [], artifacts: [F.draft(1)]).isVisible)
     }
 
     @Test(arguments: [
@@ -197,36 +200,48 @@ struct RunAvailabilityTests {
     }
 }
 
-/// 다시 읽는 간격: 끝나지 않은 run이 있을 때만, 처음 30초 3초 → 10초, 막힌 run뿐이면 60초
+/// 다시 읽는 간격: 움직이는 run(끝나지 않음 · 멈췄는데 부르던 단계가 남음)이 있을 때만, 처음 30초 3초 → 10초, 막힌 run뿐이면 60초
 struct RunPollingTests {
     typealias F = RunFixture
     let since = RunFixture.start
 
-    @Test func noOpenRunNoPolling() {
-        #expect(RunPolling.interval(openRuns: [], watchingSince: since, now: since) == nil)
-        #expect(RunPolling.interval(openRuns: [F.run(.done), F.run(2, .stopped)], watchingSince: since, now: since) == nil)
+    @Test func busyRuns() {
+        #expect(RunPolling.isBusy(F.run(.running), steps: []))
+        #expect(RunPolling.isBusy(F.run(.queued, hold: .credit), steps: []))
+        #expect(!RunPolling.isBusy(F.run(.done), steps: [F.plan]))
+        // 멈췄는데 부르던 단계가 남음 (Finishing the current step.)
+        #expect(RunPolling.isBusy(F.run(.stopped), steps: [F.plan, F.step(2, .draft, .calling)]))
+        #expect(!RunPolling.isBusy(F.run(.stopped), steps: [F.plan, F.step(2, .draft, .called)]))
+        // 다른 run의 단계는 보지 않는다
+        #expect(!RunPolling.isBusy(F.run(.stopped), steps: [F.step(2, .draft, .calling, run: 2)]))
+        #expect(!RunPolling.isBusy(F.run(.unknown), steps: [F.step(2, .draft, .calling)]))
+    }
+
+    @Test func noBusyRunNoPolling() {
+        #expect(RunPolling.interval(busyRuns: [], watchingSince: since, now: since) == nil)
     }
 
     @Test(arguments: [(0.0, Duration.seconds(3)), (29.9, .seconds(3)), (30, .seconds(10)), (600, .seconds(10))])
     func fastThenSlow(_ elapsed: TimeInterval, _ expected: Duration) {
-        #expect(RunPolling.interval(openRuns: [F.run(.running)], watchingSince: since, now: since.addingTimeInterval(elapsed)) == expected)
+        #expect(RunPolling.interval(busyRuns: [F.run(.running)], watchingSince: since, now: since.addingTimeInterval(elapsed)) == expected)
+        // 결과를 받는 중인 멈춘 run도 같은 간격
+        #expect(RunPolling.interval(busyRuns: [F.run(.stopped)], watchingSince: since, now: since.addingTimeInterval(elapsed)) == expected)
     }
 
     @Test func heldRunsPollEveryMinute() {
         let held = [F.run(.running, hold: .credit), F.run(2, .queued, hold: .blocked)]
-        #expect(RunPolling.interval(openRuns: held, watchingSince: since, now: since) == .seconds(60))
+        #expect(RunPolling.interval(busyRuns: held, watchingSince: since, now: since) == .seconds(60))
         // 하나라도 막히지 않았으면 그 run의 간격
-        #expect(RunPolling.interval(openRuns: held + [F.run(3, .running)], watchingSince: since, now: since) == .seconds(3))
+        #expect(RunPolling.interval(busyRuns: held + [F.run(3, .running)], watchingSince: since, now: since) == .seconds(3))
     }
 
     @Test func finishedDetection() {
-        let before = [F.run(.running), F.run(2, .done)]
-        #expect(RunPolling.finished(before: before, after: [F.run(.done, outcome: .draftReady), F.run(2, .done)]))
-        #expect(RunPolling.finished(before: before, after: [F.run(.stopped)]))
-        #expect(!RunPolling.finished(before: before, after: [F.run(.running)]))
+        let a = F.id(1)
+        let b = F.id(2)
+        #expect(RunPolling.finished(before: [a, b], after: [b]) == [a])
+        #expect(RunPolling.finished(before: [a], after: [a]).isEmpty)
         // 처음 본 run이 이미 끝나 있으면 끝남 신호가 아니다
-        #expect(!RunPolling.finished(before: [], after: [F.run(.done)]))
-        #expect(!RunPolling.finished(before: [F.run(.running)], after: [F.run(.unknown)]))
+        #expect(RunPolling.finished(before: [], after: []).isEmpty)
     }
 }
 

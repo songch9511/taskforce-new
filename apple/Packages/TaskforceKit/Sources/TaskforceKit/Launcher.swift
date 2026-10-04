@@ -156,13 +156,19 @@ public enum LauncherContent {
         public var scope: TaskScope
         /// 범위 Changed Since Last Look이 고르는 할 일 (`NowResponse.changedIDs`)
         public var changed: Set<UUID>
+        /// 범위 Taskforce Working이 고르는 할 일 (끝나지 않은 run이 있는 할 일, `RunStore.workingActionIDs`)
+        public var working: Set<UUID>
         /// 맨 위 안내 줄 (`failed_sources`, 0이면 줄 없음)
         public var failedSources: FailedSources
 
-        public init(caps: SectionCaps = SectionCaps(), scope: TaskScope = .allTasks, changed: Set<UUID> = [], failedSources: FailedSources = .empty) {
+        public init(
+            caps: SectionCaps = SectionCaps(), scope: TaskScope = .allTasks, changed: Set<UUID> = [], working: Set<UUID> = [],
+            failedSources: FailedSources = .empty
+        ) {
             self.caps = caps
             self.scope = scope
             self.changed = changed
+            self.working = working
             self.failedSources = failedSources
         }
     }
@@ -182,10 +188,11 @@ public enum LauncherContent {
         let board = TaskBoard(now: now, doneToday: doneToday)
         let scope = layout?.scope ?? .allTasks
         let changed = layout?.changed ?? []
+        let working = layout?.working ?? []
         var sections: [LauncherSection]
         switch mode {
         case .empty:
-            let tasks = scope.apply(to: board.sections(), changed: changed)
+            let tasks = scope.apply(to: board.sections(), changed: changed, working: working)
             var notices: [LauncherItem] = (needsConsent ? [.allowAI] : []) + (policyNotice.map { [.policyNotice($0)] } ?? [])
             if let failed = layout?.failedSources, failed.count > 0 { notices.append(.failedSources(failed)) }
             sections = [LauncherSection(title: nil, items: notices)] + taskSections(tasks, includingDone: true, layout: layout, query: "")
@@ -193,7 +200,7 @@ public enum LauncherContent {
                 sections.append(LauncherSection(title: "Commands", items: LauncherCommand.allCases.map(LauncherItem.command)))
             }
         case .query(let query):
-            let tasks = scope.apply(to: board.sections(matching: query), changed: changed)
+            let tasks = scope.apply(to: board.sections(matching: query), changed: changed, working: working)
             // 맞는 열린 할 일 중 맨 위 (보이는 순서: In Progress → To Do → Review)
             let top = tasks.inProgress.first?.action ?? tasks.toDo.first?.action ?? tasks.review.first
             var assist: [LauncherItem] = [.ask(query)]

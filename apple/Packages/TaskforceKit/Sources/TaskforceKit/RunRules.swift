@@ -123,8 +123,8 @@ public struct RunLane: Equatable, Sendable {
         return trimmed.isEmpty ? nil : trimmed
     }
 
-    /// 갈래를 보일지 (할 일의 최신 run이 있을 때만)
-    public var isVisible: Bool { run != nil }
+    /// 갈래를 보일지 (보일 상태나 초안이 있을 때만: 모르는 상태 · 초안 없음이면 숨김)
+    public var isVisible: Bool { state != .none || !drafts.isEmpty }
 }
 
 /// 실행을 시작하는 기기. iPhone은 시작하지 않는다 (사용자 결정 O6: 결과 보기 · 멈추기만)
@@ -181,7 +181,7 @@ public enum RunAvailability: Equatable, Sendable {
     public var isEnabled: Bool { self == .available }
 }
 
-/// run 상태를 다시 읽는 간격. 보이는 할 일에 끝나지 않은 run이 있을 때만 읽는다.
+/// run 상태를 다시 읽는 간격. 보이는 할 일에 아직 움직이는 run(`isBusy`)이 있을 때만 읽는다.
 /// 처음 30초는 3초마다(계획 단계가 금방 끝난다), 그 뒤 10초마다. 막힌 run뿐이면 60초마다:
 /// 서버가 막힌 run을 5분마다만 깨운다 (`limits.ts` `HELD_WAKE_EVERY_MINUTES`).
 /// `actions` Realtime 신호(초안 receipt가 Action을 바꾼다)도 다시 읽는 계기다 (`ActionChanges`).
@@ -191,18 +191,21 @@ public enum RunPolling {
     public static let slowInterval: Duration = .seconds(10)
     public static let heldInterval: Duration = .seconds(60)
 
-    /// `openRuns`: 보이는 할 일의 끝나지 않은 run, `watchingSince`: 지켜보기 시작한 때(보이기 시작 · 시작한 run). 읽지 않으면 nil
-    public static func interval(openRuns: [RunSummary], watchingSince: Date, now: Date) -> Duration? {
-        let open = openRuns.filter(\.isOpen)
-        guard !open.isEmpty else { return nil }
-        if open.allSatisfy({ $0.holdReason != nil }) { return heldInterval }
+    /// 아직 움직이는 run: 끝나지 않았거나, 멈췄는데 부르던 단계가 남아 결과를 받는 중 (`RunLane.State.stopped(finishing: true)`)
+    public static func isBusy(_ run: RunSummary, steps: [StepSummary]) -> Bool {
+        run.isOpen || (run.state.isFinished && steps.contains { $0.runID == run.id && $0.state == .calling })
+    }
+
+    /// `busyRuns`: 보이는 할 일의 움직이는 run (`isBusy`), `watchingSince`: 지켜보기 시작한 때(보이기 시작 · 시작 · 멈춤). 읽지 않으면 nil
+    public static func interval(busyRuns: [RunSummary], watchingSince: Date, now: Date) -> Duration? {
+        guard !busyRuns.isEmpty else { return nil }
+        if busyRuns.allSatisfy({ $0.isOpen && $0.holdReason != nil }) { return heldInterval }
         return now.timeIntervalSince(watchingSince) < fastPeriod ? fastInterval : slowInterval
     }
 
-    /// 지난번에 끝나지 않았던 run 중 이번에 끝난 것이 있다: `/now`(바뀜 점은 서버 값) · 초안을 다시 읽는다
-    public static func finished(before: [RunSummary], after: [RunSummary]) -> Bool {
-        let wasOpen = Set(before.filter(\.isOpen).map(\.id))
-        return after.contains { wasOpen.contains($0.id) && $0.state.isFinished }
+    /// 지난번에 움직이던 run 중 이번에 멈춘 것 (끝남 · 부르던 단계도 끝남): `/now`(바뀜 점은 서버 값) · credits를 다시 읽는다
+    public static func finished(before: Set<UUID>, after: Set<UUID>) -> Set<UUID> {
+        before.subtracting(after)
     }
 }
 

@@ -30,10 +30,11 @@ public struct LaneCard: View {
 
     public var body: some View {
         VStack(alignment: .leading, spacing: TFSpace.sm) {
+            // VoiceOver는 카드 문장에서 "Taskforce, <상태>"로 한 번만 읽는다
             Text(heading)
                 .font(Metrics.headingFont)
                 .foregroundStyle(TFColor.textPrimary)
-                .accessibilityAddTraits(.isHeader)
+                .accessibilityHidden(true)
             card
         }
     }
@@ -72,7 +73,7 @@ public struct LaneCard: View {
                 .font(Metrics.titleFont)
                 .foregroundStyle(TFColor.textPrimary)
                 .fixedSize(horizontal: false, vertical: true)
-            if let subtitle {
+            if let subtitle, !subtitle.isEmpty {
                 Text(subtitle)
                     .font(Metrics.subtitleFont)
                     .foregroundStyle(TFColor.textSecondary)

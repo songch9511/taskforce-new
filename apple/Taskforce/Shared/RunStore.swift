@@ -36,6 +36,8 @@ final class RunStore {
         /// 없음 (다른 계정 · 지워진 행): `ArtifactLink.notFoundMessage`
         case notFound
         case failed(String)
+        /// 읽는 사이 계정이 바뀜 · 취소됨: 아무것도 보이지 않는다
+        case cancelled
     }
 
     private(set) var credits: Credits = .unknown
@@ -66,6 +68,10 @@ final class RunStore {
     private(set) var watched: Set<UUID> = []
     private var watchingSince = Date()
     private var pollTask: Task<Void, Never>?
+    /// 폴링을 새로 시작할 때마다 오른다: 끝난 · 바뀐 폴링이 지금 폴링 상태를 건드리지 않게
+    private var pollToken = 0
+    /// 끝났다고 이미 알린 run (겹친 다시 읽기가 같은 끝남을 두 번 알리지 않게)
+    private var reportedFinished: Set<UUID> = []
     /// `reset()`마다 오른다: 계정이 떠나기 전에 보낸 요청의 늦은 결과를 버린다
     private var generation = 0
 
@@ -123,7 +129,8 @@ final class RunStore {
         CreditsRows.make(credits: summary, loadFailed: creditsFailed, checkedAt: checkedAt, pausedRuns: paused, titles: titles, now: now)
     }
 
-    /// 그 할 일에 대해 아는 run (상세에서 읽은 것 + 끝나지 않은 run 목록, 같은 run은 한 번)
+    /// 그 할 일에 대해 아는 run (상세에서 읽은 것 + 끝나지 않은 run 목록, 같은 run은 한 번).
+    /// 두 목록이 어긋나면(한쪽이 늦게 읽음) `refreshActive` · `refreshWatched`가 맞춘다
     private func runs(for actionID: UUID) -> [RunSummary] {
         merged(runs[actionID] ?? [], active.filter { $0.actionID == actionID })
     }
@@ -132,10 +139,15 @@ final class RunStore {
         merged(runs.values.flatMap { $0 }, active)
     }
 
-    /// 같은 run은 먼저 온 쪽(더 최근에 읽은 쪽을 앞에 둔다)
+    /// 같은 run은 앞 목록의 것을 쓴다
     private func merged(_ first: [RunSummary], _ second: [RunSummary]) -> [RunSummary] {
         var seen = Set<UUID>()
         return (first + second).filter { seen.insert($0.id).inserted }
+    }
+
+    /// 지켜보는 할 일의 움직이는 run (끝나지 않음 · 멈췄는데 부르던 단계가 남음, `RunPolling.isBusy`)
+    private var watchedBusyRuns: [RunSummary] {
+        watched.flatMap { runs(for: $0) }.filter { RunPolling.isBusy($0, steps: steps[$0.id] ?? []) }
     }
 
     // MARK: 불러오기
@@ -146,8 +158,7 @@ final class RunStore {
         if sampleMode { return }
         #endif
         generation += 1
-        pollTask?.cancel()
-        pollTask = nil
+        stopPolling()
         credits = .unknown
         creditsFailed = false
         runs = [:]
@@ -159,6 +170,7 @@ final class RunStore {
         stopping = []
         message = nil
         watched = []
+        reportedFinished = []
     }
 
     /// `GET /credits?since=<이번 달 1일>`. 404면 숨기고, 다른 실패면 앞 값을 둔다
@@ -178,7 +190,7 @@ final class RunStore {
                 if !wasAvailable, !watched.isEmpty { restartPolling() }
             } else {
                 credits = .unavailable
-                pollTask?.cancel()
+                stopPolling()
             }
         } catch is CancellationError {
         } catch {
@@ -187,7 +199,8 @@ final class RunStore {
         }
     }
 
-    /// 끝나지 않은 run · 멈춘 run (범위 개수 · S3). 실행을 쓸 수 없으면 읽지 않는다. 실패하면 앞 값을 둔다
+    /// 끝나지 않은 run · 멈춘 run (범위 개수 · S3). 실행을 쓸 수 없으면 읽지 않는다. 실패하면 앞 값을 둔다.
+    /// 상세에서 읽어 둔 run 중 여기에 없는 끝나지 않은 run은 그사이 끝난 것이라 그 할 일을 다시 읽는다 (Taskforce Working · 갈래가 옛 값에 머물지 않게)
     func refreshActive() async {
         #if DEBUG
         if sampleMode { return }
@@ -199,42 +212,71 @@ final class RunStore {
         async let held = try? reads.pausedRuns()
         let (openRuns, heldRuns) = await (open, held)
         guard generation == self.generation else { return }
-        if let openRuns { active = openRuns }
         if let heldRuns { paused = heldRuns }
+        guard let openRuns else { return }
+        active = openRuns
+        let openIDs = Set(openRuns.map(\.id))
+        let stale = Set(runs.values.flatMap { $0 }.filter { $0.isOpen && !openIDs.contains($0.id) }.map(\.actionID))
+        guard !stale.isEmpty, let fresh = try? await reads.latestRuns(actionIDs: Array(stale), limit: Self.runLimit(stale.count)),
+              generation == self.generation
+        else { return }
+        let grouped = Dictionary(grouping: fresh, by: \.actionID)
+        for id in stale { runs[id] = grouped[id] ?? [] }
     }
 
-    /// 보이는 할 일을 지켜본다 (런처 상세 · iPhone 상세). 곧바로 읽고, 끝나지 않은 run이 있는 동안 `RunPolling` 간격으로 다시 읽는다.
+    /// 보이는 할 일을 지켜본다 (런처 상세 · iPhone 상세). 곧바로 읽고, 움직이는 run이 있는 동안 `RunPolling` 간격으로 다시 읽는다.
     /// 빈 집합이면 그만 본다 (런처를 닫음 · 앱이 뒤로 감)
     func watch(_ actionIDs: Set<UUID>) {
         guard actionIDs != watched else { return }
         watched = actionIDs
-        watchingSince = Date()
-        pollTask?.cancel()
-        pollTask = nil
-        guard !actionIDs.isEmpty else { return }
-        pollTask = Task { [weak self] in
-            await self?.refreshWatched()
-            await self?.poll()
+        if actionIDs.isEmpty {
+            stopPolling()
+        } else {
+            restartPolling()
         }
     }
 
-    /// Realtime `actions` 신호 (초안 receipt가 Action을 바꾼다): 지켜보는 할 일과 끝나지 않은 run을 다시 읽는다
+    /// Realtime `actions` 신호 (초안 receipt가 Action을 바꾼다): 지켜보는 할 일과 끝나지 않은 run을 다시 읽는다.
+    /// 폴링이 멈춘 뒤 움직이는 run이 새로 보이면(다른 기기에서 시작) 다시 폴링한다
     func actionsChanged() async {
         await refreshWatched()
         await refreshActive()
+        if pollTask == nil, !watchedBusyRuns.isEmpty { restartPolling() }
     }
 
-    private func poll() async {
-        while !Task.isCancelled {
-            let open = watched.flatMap { runs(for: $0) }
-            guard let interval = RunPolling.interval(openRuns: open, watchingSince: watchingSince, now: Date()) else { return }
+    private func restartPolling() {
+        watchingSince = Date()
+        pollTask?.cancel()
+        pollToken += 1
+        let token = pollToken
+        pollTask = Task { [weak self] in
+            await self?.refreshWatched()
+            await self?.poll(token: token)
+        }
+    }
+
+    private func stopPolling() {
+        pollTask?.cancel()
+        pollTask = nil
+        pollToken += 1
+    }
+
+    private func poll(token: Int) async {
+        defer { if token == pollToken { pollTask = nil } }
+        while !Task.isCancelled, token == pollToken {
+            guard let interval = RunPolling.interval(busyRuns: watchedBusyRuns, watchingSince: watchingSince, now: Date()) else { return }
             try? await Task.sleep(for: interval)
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled, token == pollToken else { return }
             await refreshWatched()
         }
     }
 
-    /// 지켜보는 할 일의 run · 최신 run의 단계 · 초안을 읽는다. 지켜보던 run이 끝났으면 `/now` · credits · 끝나지 않은 run을 다시 읽는다
+    /// 한 번에 읽는 run 수: 할 일이 여럿이면 할 일마다 넉넉히 (한 할 일의 run이 많아도 다른 할 일의 run이 밀려나지 않게)
+    private static func runLimit(_ actions: Int) -> Int {
+        min(500, max(50, actions * 20))
+    }
+
+    /// 지켜보는 할 일의 run · 최신 run의 단계 · 초안을 읽는다. 움직이던 run이 멈췄으면 `/now` · credits · 끝나지 않은 run을 다시 읽는다
     func refreshWatched() async {
         #if DEBUG
         if sampleMode { return }
@@ -242,8 +284,10 @@ final class RunStore {
         guard isAvailable, !watched.isEmpty else { return }
         let generation = generation
         let ids = Array(watched)
-        let before = ids.flatMap { runs(for: $0) }
-        guard let fresh = try? await services.reads.latestRuns(actionIDs: ids), generation == self.generation else { return }
+        let before = Set(watchedBusyRuns.map(\.id))
+        guard let fresh = try? await services.reads.latestRuns(actionIDs: ids, limit: Self.runLimit(ids.count)),
+              generation == self.generation
+        else { return }
         let grouped = Dictionary(grouping: fresh, by: \.actionID)
         for id in ids { runs[id] = grouped[id] ?? [] }
         // 끝나지 않은 run 목록에서도 끝난 run을 뺀다 (범위 개수가 바로 맞게)
@@ -256,11 +300,12 @@ final class RunStore {
             }
         }
         guard generation == self.generation else { return }
-        if RunPolling.finished(before: before, after: fresh) {
-            onRunsFinished?()
-            await loadCredits()
-            await refreshActive()
-        }
+        let ended = RunPolling.finished(before: before, after: Set(watchedBusyRuns.map(\.id))).subtracting(reportedFinished)
+        guard !ended.isEmpty else { return }
+        reportedFinished.formUnion(ended)
+        onRunsFinished?()
+        await loadCredits()
+        await refreshActive()
     }
 
     private func loadSteps(runID: UUID, generation: Int) async {
@@ -281,12 +326,13 @@ final class RunStore {
         guard RunAvailability.canStart(platform), !starting.contains(actionID),
               !CreateRunRequest(actionID: actionID, request: request).isEmpty
         else { return .ignored }
+        let generation = generation
         starting.insert(actionID)
-        defer { starting.remove(actionID) }
+        // 계정이 바뀐 뒤면 새 계정의 보내는 중 표시를 건드리지 않는다
+        defer { if generation == self.generation { starting.remove(actionID) } }
         #if DEBUG
         if sampleMode { return .started(startSample(actionID: actionID)) }
         #endif
-        let generation = generation
         do {
             let run = try await services.api.createRun(actionID: actionID, request: request)
             guard generation == self.generation else { return .ignored }
@@ -303,8 +349,8 @@ final class RunStore {
     }
 
     /// `Stop Taskforce`: 그 할 일의 끝나지 않은 run을 모두 멈춘다 (다른 기기 · 웹에서 시작한 run 포함, 먼저 새로 읽는다).
-    /// 이미 끝났거나 없는 run(404)은 그대로 둔다. 하나라도 보내지 못했으면 false + `message`.
-    /// 앱에서 할 일을 Delete · Done하기 전에도 부른다 (`RunStop`)
+    /// 이미 끝났거나 없는 run(404)은 그대로 둔다. 하나라도 보내지 못했으면(또는 이미 멈추는 중이면) false, 보내지 못했으면 `message`.
+    /// 멈춘 뒤 credits(해제된 예약) · 끝나지 않은 run을 다시 읽는다. 앱에서 할 일을 Delete · Done하기 전에도 부른다 (`RunStop`)
     @discardableResult
     func stop(actionID: UUID) async -> Bool {
         #if DEBUG
@@ -313,21 +359,24 @@ final class RunStore {
             return true
         }
         #endif
+        guard !stopping.contains(actionID) else { return false }
         let generation = generation
         stopping.insert(actionID)
-        defer { stopping.remove(actionID) }
+        defer { if generation == self.generation { stopping.remove(actionID) } }
         if let fresh = try? await services.reads.latestRuns(actionIDs: [actionID]) {
             guard generation == self.generation else { return false }
             runs[actionID] = fresh
         }
+        let targets = stopTargets(for: actionID)
         var allSent = true
-        for runID in stopTargets(for: actionID) {
+        for runID in targets {
             do {
                 let run = try await services.api.stopRun(id: runID)
                 guard generation == self.generation else { return false }
                 replace(run)
             } catch let error as APIError where error.status == 404 {
                 guard generation == self.generation else { return false }
+                runs[actionID]?.removeAll { $0.id == runID }
                 active.removeAll { $0.id == runID }
             } catch {
                 guard generation == self.generation else { return false }
@@ -335,7 +384,10 @@ final class RunStore {
                 message = error.userMessage
             }
         }
+        guard !targets.isEmpty else { return allSent }
         if watched.contains(actionID) { restartPolling() }
+        await loadCredits()
+        await refreshActive()
         return allSent
     }
 
@@ -348,9 +400,12 @@ final class RunStore {
         let generation = generation
         do {
             let found = try await services.reads.artifact(id: id)
-            guard generation == self.generation else { return .notFound }
+            guard generation == self.generation else { return .cancelled }
             return found.map(DraftLookup.found) ?? .notFound
+        } catch is CancellationError {
+            return .cancelled
         } catch {
+            guard generation == self.generation else { return .cancelled }
             return .failed(error.userMessage)
         }
     }
@@ -363,15 +418,6 @@ final class RunStore {
             active = active.map { $0.id == run.id ? run : $0 }
         } else {
             active.removeAll { $0.id == run.id }
-        }
-    }
-
-    private func restartPolling() {
-        watchingSince = Date()
-        pollTask?.cancel()
-        pollTask = Task { [weak self] in
-            await self?.refreshWatched()
-            await self?.poll()
         }
     }
 

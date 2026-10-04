@@ -1,5 +1,6 @@
 import Foundation
 import Supabase
+import Synchronization
 
 /// Action 상세에 필요한 것 한 번에: 행, 근거(+원문 요약), 변경 이력
 public struct ActionDetail: Sendable, Hashable {
@@ -19,6 +20,8 @@ public struct SourceDetail: Sendable, Hashable {
 /// Supabase 직접 읽기 (RLS로 본인 행만, 읽기 전용). 쓰기는 `APIClient`로만 한다.
 public struct TaskforceReads: Sendable {
     private let supabase: SupabaseClient
+    /// `execution_runs.stopped_at` 열이 없음을 이번 실행에서 알았나 (서버 U2 Mac PR1 마이그레이션 전 DB: 매 읽기마다 실패 응답을 받지 않게)
+    private let missingStoppedAt = MissingColumnMemo()
 
     public init(supabase: SupabaseClient) {
         self.supabase = supabase
@@ -157,11 +160,14 @@ public struct TaskforceReads: Sendable {
         return found.first
     }
 
-    /// run 행 읽기. `stopped_at` 열이 아직 없는 DB(서버 U2 Mac PR1 마이그레이션 전)면 그 열 없이 다시 읽는다 (`stoppedAt` = nil)
+    /// run 행 읽기. `stopped_at` 열이 아직 없는 DB(서버 U2 Mac PR1 마이그레이션 전)면 그 열 없이 다시 읽고(`stoppedAt` = nil),
+    /// 이번 실행 동안은 처음부터 그 열 없이 읽는다
     private func runRows(_ query: (String) -> PostgrestTransformBuilder) async throws -> [RunSummary] {
+        if missingStoppedAt.isSet { return try await rows(query(RunSummary.columnsWithoutStop)) }
         do {
             return try await rows(query(RunSummary.columns))
         } catch let error as PostgrestError where error.code == Self.undefinedColumn {
+            missingStoppedAt.set()
             return try await rows(query(RunSummary.columnsWithoutStop))
         }
     }
@@ -174,4 +180,13 @@ public struct TaskforceReads: Sendable {
         let data = try await builder.execute().data
         return try TaskforceJSON.decoder().decode([T].self, from: data)
     }
+}
+
+/// 한 번 알면 계속 참인 표시 (`TaskforceReads`는 값 타입이라 복사본끼리 같은 상자를 본다)
+final class MissingColumnMemo: Sendable {
+    private let flag = Mutex(false)
+
+    var isSet: Bool { flag.withLock { $0 } }
+
+    func set() { flag.withLock { $0 = true } }
 }

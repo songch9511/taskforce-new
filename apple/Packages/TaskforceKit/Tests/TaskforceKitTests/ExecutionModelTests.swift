@@ -153,6 +153,22 @@ struct ExecutionModelTests {
         #expect(failure.message?.contains("서버") != true)
     }
 
+    /// 서버 zod처럼 UTF-16 단위로 2000, 글자 중간에서 자르지 않음. U+FEFF도 공백으로 뺀다 (JS `trim`)
+    @Test func createRunRequestCountsUTF16LikeTheServer() {
+        let emoji = CreateRunRequest(actionID: Fixtures.actionID, request: String(repeating: "👍", count: 1_500))
+        #expect(emoji.request.utf16.count == 2_000)
+        #expect(emoji.request.count == 1_000)
+        let odd = CreateRunRequest(actionID: Fixtures.actionID, request: "a" + String(repeating: "👍", count: 1_500))
+        #expect(odd.request.utf16.count == 1_999)
+        #expect(CreateRunRequest(actionID: Fixtures.actionID, request: " \u{FEFF} \n").isEmpty)
+        #expect(CreateRunRequest(actionID: Fixtures.actionID, request: "\u{FEFF}초안\u{FEFF}").request == "초안")
+    }
+
+    /// 형식 없는 404(앞단 · 옛 서버)도 쓸 수 없음
+    @Test func plainNotFoundIsUnavailable() {
+        #expect(RunStartFailure(APIClient.error(status: 404, data: Data("<html>".utf8))) == .unavailable)
+    }
+
     @Test func otherStartFailureUsesTheGeneralLine() {
         let failure = RunStartFailure(.transport("offline"))
         #expect(failure == .other(.transport("offline")))
