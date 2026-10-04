@@ -218,10 +218,18 @@ struct LauncherRunTests {
         let t1 = RunLauncherHarness.actionID("T1")
         let harness = try await RunLauncherHarness.make(toDo: ["T1", "T2"], runs: [RunLauncherHarness.runRow(1, action: t1, state: "running")])
         let model = harness.model
-        #expect(model.scopeChoices.suffix(2) == [.taskforceWorking, .changed] || model.scopeChoices.last == .taskforceWorking)
+        // M13 마지막 묶음: Taskforce Working → Changed Since Last Look
+        #expect(model.scopeChoices == [.allTasks, .review, .inProgress, .toDo, .doneToday, .taskforceWorking, .changed])
         #expect(model.count(for: .taskforceWorking) == 1)
         model.chooseScope(.taskforceWorking)
         #expect(model.items.compactMap(\.action?.title) == ["T1"])
+        // 실행을 쓸 수 없게 되면(credits 404) 범위 · Stop Taskforce가 사라지고 All Tasks로 본다
+        await harness.router.set(credits: nil)
+        await model.runs?.loadCredits()
+        #expect(model.scope == .allTasks)
+        #expect(model.items.compactMap(\.action?.title) == ["T1", "T2"])
+        harness.select("T1")
+        #expect(!model.canStop(try #require(model.detailTarget)))
 
         let hidden = try await RunLauncherHarness.make(toDo: ["T1"], credits: nil, runs: [RunLauncherHarness.runRow(1, action: t1, state: "running")])
         #expect(!hidden.model.scopeChoices.contains(.taskforceWorking))
@@ -293,6 +301,80 @@ struct LauncherRunTests {
         #expect(await harness.router.seenIDs() == [t1])
     }
 
+    /// ⌘R: 새로고침 실패 · 할 일 아닌 줄(Show N More)은 다시 불러오기, ⌘K 패널에서는 M8
+    @Test func commandRInPanelAndOnOtherRows() async throws {
+        let harness = try await RunLauncherHarness.make(toDo: ["T1", "T2", "T3", "T4", "T5", "T6"])
+        let model = harness.model
+        let more = try #require(model.items.firstIndex { if case .showMore = $0 { true } else { false } })
+        model.select(more)
+        var before = await harness.router.nowRequests()
+        #expect(model.handleKey(.run(kVK_ANSI_R, [.command])))
+        #expect(model.screen == .list)
+        await harness.waitUntil { await harness.router.nowRequests() > before }
+
+        harness.select("T1")
+        model.openActions()
+        #expect(model.handleKey(.run(kVK_ANSI_R, [.command])))
+        #expect(model.screen.isRunWithAI)
+
+        await harness.router.set(now: nil)
+        harness.select("T1")
+        await model.now?.load()
+        guard case .refreshFailed = model.refreshState else {
+            Issue.record("새로고침 실패가 아님: \(model.refreshState)")
+            return
+        }
+        before = await harness.router.nowRequests()
+        #expect(model.handleKey(.run(kVK_ANSI_R, [.command])))
+        #expect(model.screen == .list)
+        await harness.waitUntil { await harness.router.nowRequests() > before }
+    }
+
+    /// 런처를 닫으면 Goal을 지운다 (사용자 글은 메모리에만, 닫을 때까지)
+    @Test func goalClearsWhenTheLauncherCloses() async throws {
+        let harness = try await RunLauncherHarness.make(toDo: ["T1"])
+        harness.model.prepareForShow()
+        harness.select("T1")
+        #expect(harness.model.handleKey(.run(kVK_ANSI_R, [.command])))
+        harness.model.goal = "초안"
+        harness.model.didHide()
+        harness.model.prepareForShow()
+        harness.select("T1")
+        #expect(harness.model.handleKey(.run(kVK_ANSI_R, [.command])))
+        #expect(harness.model.goal.isEmpty)
+    }
+
+    /// M8을 연 뒤 그 할 일이 사라지면(다른 기기에서 지움 · 끝냄) Start는 보내지 않고 목록으로
+    @Test func staleTaskInRunWithAIGoesBackToTheList() async throws {
+        let harness = try await RunLauncherHarness.make(toDo: ["T1", "T2"])
+        harness.select("T1")
+        #expect(harness.model.handleKey(.run(kVK_ANSI_R, [.command])))
+        harness.model.goal = "초안"
+        await harness.router.set(now: ShellNow.body(toDo: ["T2"]))
+        await harness.model.now?.load()
+        #expect(!harness.model.canStartRun)
+        #expect(harness.model.handleKey(.run(kVK_Return, [.command])))
+        #expect(harness.model.screen == .list)
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(await harness.router.createBodies().isEmpty)
+    }
+
+    /// 로그인 전에 받은 초안 링크(앱을 링크로 열었는데 세션을 읽는 중 · 로그아웃)는 처음 로그인하면 연다. 목록에 없는 할 일의 초안은 esc로 목록
+    @Test func draftLinkBeforeSignInOpensAfterSignIn() async throws {
+        let harness = try await RunLauncherHarness.make(toDo: ["T1"])
+        await harness.router.set(artifacts: [RunLauncherHarness.artifactRow(id: RunLauncherHarness.artifactID, action: UUID())])
+        harness.session.apply(event: .signedOut, session: nil)
+        harness.model.open(ArtifactLink.url(for: UUID(uuidString: RunLauncherHarness.artifactID)!))
+        #expect(harness.model.screen == .list)
+        try harness.switchAccount()
+        // 앱에서는 `MacAppDelegate`가 로그인 상태를 따라 부른다
+        harness.model.sessionChanged()
+        await harness.waitUntil { if case .draft(nil, _) = harness.model.screen { true } else { false } }
+        #expect(harness.model.crumb?.task == nil)
+        #expect(harness.model.handleKey(.run(kVK_Escape)))
+        #expect(harness.model.screen == .list)
+    }
+
     /// 갈래 문구 (Figma M1 · M12 · M17 · 후보)와 M17 막대
     @Test func laneText() {
         let now = Date(timeIntervalSince1970: 1_790_000_000)
@@ -332,6 +414,7 @@ extension LauncherModel.Screen {
 
 extension NSEvent {
     /// 런처 키 (수정 키 · 창 지정)
+    @MainActor
     static func run(_ code: Int, _ flags: NSEvent.ModifierFlags = [], window: NSWindow? = nil) -> NSEvent {
         NSEvent.keyEvent(
             with: .keyDown, location: .zero, modifierFlags: flags, timestamp: 0, windowNumber: window?.windowNumber ?? 0, context: nil,
@@ -432,7 +515,8 @@ private final class RunLauncherHarness {
     }
 
     func select(_ title: String) {
-        if model.screen != .list { model.back() }
+        // M8 · 초안 → 상세 → 목록
+        for _ in 0..<3 where model.screen != .list { model.back() }
         if let index = model.items.firstIndex(where: { $0.group != nil && $0.action?.title == title }) { model.select(index) }
     }
 
@@ -482,8 +566,9 @@ private final class RunLauncherStorage: AuthLocalStorage, @unchecked Sendable {
 
 /// 가짜 서버: `/now` · seen · credits · run 만들기(붙잡기) · 멈추기 · PostgREST 실행 표
 private actor RunLauncherRouter {
-    private let now: Data
-    private let credits: String?
+    /// nil = 500 (새로고침 실패)
+    private var now: Data?
+    private var credits: String?
     private var runs: [String]
     private var artifacts: [String] = []
     private var createRun = RunLauncherReply(status: 500, body: "{}")
@@ -498,6 +583,8 @@ private actor RunLauncherRouter {
     }
 
     func set(runs: [String]) { self.runs = runs }
+    func set(now: Data?) { self.now = now }
+    func set(credits: String?) { self.credits = credits }
     func set(artifacts: [String]) { self.artifacts = artifacts }
     func set(createRun: RunLauncherReply) { self.createRun = createRun }
     func holdCreate() { holdingCreate = true }
@@ -524,7 +611,7 @@ private actor RunLauncherRouter {
         recorded.append((method, path, body))
         switch path {
         case "/api/v1/now":
-            return RunLauncherReply(status: 200, body: String(decoding: now, as: UTF8.self))
+            return now.map { RunLauncherReply(status: 200, body: String(decoding: $0, as: UTF8.self)) } ?? RunLauncherReply(status: 500, body: "{}")
         case "/api/v1/credits":
             return credits.map { RunLauncherReply(status: 200, body: $0) } ?? RunLauncherReply(status: 404, body: #"{"error":{"code":"not_found","message":"x"}}"#)
         case "/api/v1/runs":

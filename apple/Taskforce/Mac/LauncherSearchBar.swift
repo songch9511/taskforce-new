@@ -54,7 +54,8 @@ struct LauncherSearchBar: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("Back")
+            // VoiceOver는 오른쪽 `Back esc` 하나로 (같은 이름이 둘이 되지 않게)
+            .accessibilityHidden(true)
             HStack(spacing: 0) {
                 if let task {
                     Text(task)

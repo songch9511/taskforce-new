@@ -169,8 +169,10 @@ final class LauncherModel {
     /// 상세에서 Tab · →로 갈래 버튼(`View Draft`)에 옮긴 할 일 (`laneFocusTarget`)
     private var laneFocus: UUID?
 
-    /// 범위 (Figma M13 `All Tasks ⌄`, ⌘P). 런처를 열 때 · 계정이 바뀌면 All Tasks
-    private(set) var scope: TaskScope = .allTasks
+    /// 범위 (Figma M13 `All Tasks ⌄`, ⌘P). 런처를 열 때 · 계정이 바뀌면 All Tasks.
+    /// 고른 범위가 메뉴에서 사라지면(실행을 쓸 수 없게 됨 · 저장본) All Tasks로 본다
+    var scope: TaskScope { scopeChoices.contains(chosenScope) ? chosenScope : .allTasks }
+    private var chosenScope: TaskScope = .allTasks
     /// 섹션 펼침 (Show N More · Done Today). 런처를 열 때 · 계정이 바뀌면 처음 모양
     private(set) var caps = SectionCaps()
     /// 범위 메뉴가 열려 있으면 고른 줄 (`scopeChoices`의 자리)
@@ -211,6 +213,8 @@ final class LauncherModel {
     private(set) var isShown = false
     /// 누른 알림의 할 일: 목록에 보이면 그 행을 고른다 (`focus(actionID:)`)
     private var pendingFocus: UUID?
+    /// 로그인 전(앱을 링크로 막 열어 세션을 읽는 중 · 로그아웃)에 받은 초안 링크: 처음 로그인하면 연다 (`pendingFocus`처럼)
+    private var pendingDraft: UUID?
     /// 최근 원문을 다 읽었는지 (빈 목록과 읽는 중을 나눈다)
     private(set) var sourcesLoaded = false
     private let signInFlow = AppleSignInFlow()
@@ -544,7 +548,7 @@ final class LauncherModel {
     func chooseScope(_ choice: TaskScope) {
         scopeMenuSelection = nil
         guard choice != scope else { return }
-        scope = choice
+        chosenScope = choice
         reconcileSelection()
     }
 
@@ -694,7 +698,7 @@ final class LauncherModel {
         viewed = nil
         pendingFocus = nil
         // 열 때마다 처음 모양: All Tasks · 접힌 섹션
-        scope = .allTasks
+        chosenScope = .allTasks
         caps.reset()
         scopeMenuSelection = nil
         guard isSignedIn, let now else { return }
@@ -766,13 +770,14 @@ final class LauncherModel {
         if accountLeft {
             submission = nil
             pendingFocus = nil
+            pendingDraft = nil
             text = ""
         }
         screen = .list
         selection = 0
         selectedID = nil
         viewed = nil
-        scope = .allTasks
+        chosenScope = .allTasks
         caps.reset()
         scopeMenuSelection = nil
         seen.reset()
@@ -783,6 +788,10 @@ final class LauncherModel {
         loadRuns()
         if let account { Task { await account.load() } }
         loadPolicyNotice()
+        if let id = pendingDraft {
+            pendingDraft = nil
+            openDraft(id: id)
+        }
     }
 
     /// 실행을 쓸 수 있는지(credits) · 끝나지 않은 run (범위 개수 · ⌘K 항목). 쓸 수 없는 계정이면 run은 읽지 않는다
@@ -1061,7 +1070,7 @@ final class LauncherModel {
         // 누른 알림의 할 일이 접힌 섹션 · 다른 범위에 있으면 펼쳐서 보인다
         if let pendingFocus, !items.contains(where: { $0.group != nil && $0.action?.id == pendingFocus }),
            let found = now?.sections.find(pendingFocus) {
-            scope = .allTasks
+            chosenScope = .allTasks
             caps.expand(found.group)
         }
         let items = items
@@ -1786,7 +1795,8 @@ final class LauncherModel {
 
     /// 그 할 일에 멈출 run이 있나 (`Stop Taskforce`)
     func canStop(_ target: Target) -> Bool {
-        !(runs?.stopTargets(for: target.action.id).isEmpty ?? true)
+        guard let runs, runs.isAvailable else { return false }
+        return !runs.stopTargets(for: target.action.id).isEmpty
     }
 
     /// 상세의 Taskforce 갈래 (실행을 쓸 수 없거나 보일 것이 없으면 nil)
@@ -1823,10 +1833,16 @@ final class LauncherModel {
         set { if case .runWithAI(let target) = screen { goals[target.action.id] = newValue } }
     }
 
+    /// M8의 할 일을 지금 목록에서 다시 찾은 값. 연 뒤에 지워졌거나 · 끝났거나 · Review로 갔으면(다른 기기) nil
+    private var runTarget: Target? {
+        guard case .runWithAI(let opened) = screen, let found = now?.sections.find(opened.action.id) else { return nil }
+        let target = Target(action: found.action, group: found.group)
+        return runAvailability(for: target) == .hidden ? nil : target
+    }
+
     /// Start를 누를 수 있나: 시작할 수 있는 할 일 · 빈 Goal 아님 · 보내는 중 아님
     var canStartRun: Bool {
-        guard case .runWithAI(let target) = screen, let runs, runAvailability(for: target).isEnabled,
-              !runs.starting.contains(target.action.id)
+        guard let target = runTarget, let runs, runAvailability(for: target).isEnabled, !runs.starting.contains(target.action.id)
         else { return false }
         return !CreateRunRequest(actionID: target.action.id, request: goal).isEmpty
     }
@@ -1850,7 +1866,10 @@ final class LauncherModel {
     /// ⌘↩ Start: `POST /runs` 한 번 (보내는 동안 다시 눌러도 무시). 202면 상세로 돌아가 갈래 working.
     /// 409 동의 화면 · 404 · 429 · 그 밖은 한 줄 알림 (그 할 일을 아직 보고 있을 때만)
     func startRun() {
-        guard canStartRun, case .runWithAI(let target) = screen, let runs else { return }
+        guard case .runWithAI = screen else { return }
+        // 연 뒤에 할 일이 바뀌었으면(지워짐 · 끝남 · Review) 보내지 않고 목록으로 (`leaveIfStale`처럼)
+        guard let target = runTarget else { return returnToList() }
+        guard canStartRun, let runs else { return }
         let request = goal
         let id = target.action.id
         Task {
@@ -1883,6 +1902,10 @@ final class LauncherModel {
     /// 초안 링크 (`taskforce://artifacts/<id>`: receipt 원문 슬립 · 앱 밖에서 연 링크). 읽어 둔 초안이 없으면 RLS로 읽는다
     func openDraft(id: UUID) {
         guard let runs else { return }
+        guard isSignedIn else {
+            pendingDraft = id
+            return
+        }
         if screen == .list, let target = detailTarget { viewed = (target.action.id, selection) }
         work?.cancel()
         screen = .working("Opening…")
@@ -1925,7 +1948,8 @@ final class LauncherModel {
     /// 할 일을 Delete · Done으로 옮길 때 끝나지 않은 run을 먼저 멈춘다 (`RunStop`: 목록에서 사라진 할 일이 크레딧을 쓰지 않게)
     private func stopRunsBeforeLeaving(_ id: UUID) {
         guard let runs, !runs.stopTargets(for: id).isEmpty else { return }
-        Task { await runs.stop(actionID: id) }
+        // 실패해도 알리지 않는다 (서버도 끝낸 · 버린 할 일의 다음 단계를 거절한다): 남은 오류 글을 지운다
+        Task { if !(await runs.stop(actionID: id)) { runs.message = nil } }
     }
 
     // MARK: 로그인
