@@ -62,7 +62,7 @@
 | `APNS_KEY_ID` · `APNS_PRIVATE_KEY` | Apple Developer → Keys → Apple Push Notifications service 키(.p8) | 없으면 알림이 꺼진 채 동작 |
 | `APNS_TEAM_ID` | `U9DWQKQFMW` | |
 | `APNS_BUNDLE_ID` | 비움 → `dev.taskforcelabs.taskforce` | TestFlight 빌드의 기기 토큰은 `production` 환경이다 |
-| `ADMIN_EMAILS` | 운영자 이메일 (쉼표로 구분) | `/admin/metrics` 접근 |
+| `ADMIN_EMAILS` | 운영자 이메일 (쉼표로 구분) | `/admin/metrics` · `/lab` 접근 (비우면 운영자도 404) |
 | `WEEKLY_CHECK_ENABLED` | 비움 (켜짐) | 베타가 끝나면 `false` |
 | `EXECUTION_ENABLED` | 비움 (꺼짐) → 9-6 순서의 3번에서 `true` | 실행(U2: run · 내장 초안)을 연다. `true`만 켠다. 켜도 DB의 차단 스위치 · 실행 주체 허용 목록이 따로 막는다(9장). 끄면 실행 route 404, sweep은 바로 끝난다 |
 
@@ -414,7 +414,7 @@ npx supabase db query --linked "select public.stop_run((select user_id from publ
 4. **운영자 실행 주체 1행** (9-2 넣기). 확인: `actors = 1`.
 5. **운영자 크레딧 지급** (9-3). 확인: `available`이 지급한 양.
 6. **`global` 풀기** (9-1 켜기). auto · full은 막힌 채다. 확인: 읽기에서 `global` false, `auto` · `full` true.
-7. **내장 초안 1건.** 먼저 운영자 기기의 앱을 receipt 값(`execution` · `executed` · `agent`)을 아는 빌드(#76 이후)로 올린다: 옛 빌드는 receipt가 붙은 할 일의 상세 · 원문 목록을 읽지 못한다(EXECUTION 9장). AI 동의를 마친 운영자 계정으로 웹 /lab에 로그인한 브라우저의 개발자 도구 콘솔에서 부른다(같은 출처라 쿠키 인증 · CSRF를 지난다). 할 일 id는 같은 콘솔에서 자기 목록(`GET /api/v1/now`의 `now[].id`)으로 고른다.
+7. **내장 초안 1건.** 먼저 운영자 기기의 앱을 receipt 값(`execution` · `executed` · `agent`)을 아는 빌드(#76 이후)로 올린다: 옛 빌드는 receipt가 붙은 할 일의 상세 · 원문 목록을 읽지 못한다(EXECUTION 9장). AI 동의를 마친 운영자 계정(`ADMIN_EMAILS`에 있어야 /lab이 열린다)으로 웹 /lab에 로그인한 브라우저의 개발자 도구 콘솔에서 부른다(같은 출처라 쿠키 인증 · CSRF를 지난다). 할 일 id는 같은 콘솔에서 자기 목록(`GET /api/v1/now`의 `now[].id`)으로 고른다.
    ```js
    await fetch("/api/v1/now").then((r) => r.json())
    await fetch("/api/v1/runs", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action_id: "<할 일 id>", goal: "draft", request: "<맡길 일>" }) }).then((r) => r.json())
