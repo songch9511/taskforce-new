@@ -2,11 +2,21 @@ import "server-only";
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 
-import type { CreditsResponse, RunSummary } from "@/lib/api/contract";
+import type { RunSummary } from "@/lib/api/contract";
 import { hasConsentFor } from "@/lib/consent/store";
 import { loadIdentity } from "@/lib/connectors/store";
+import { readAll } from "@/lib/read-all";
 
 import type { ExecutionContextInput } from "./context";
+import {
+  creditDetailsFromRows,
+  openReservations,
+  type CreditDetails,
+  type CreditLedgerRow,
+  type CreditRunRow,
+  type CreditStepRow,
+  type CreditTotals,
+} from "./credit-details";
 import { withDeadlockRetry } from "./deadlock";
 import { materialFromRows, type ActionRow, type ConnectionRow, type EvidenceRow, type SourceRow } from "./material";
 import { supabaseReceiptStore } from "./receipt-store";
@@ -19,7 +29,7 @@ import { OPEN_RUN_STATES, RunActionNotFoundError, type ExecutionStore, type Step
 /** 근거가 많은 Action도 읽는 양이 커지지 않게 최근 근거만 (context.ts가 원문 6개 · 발췌 길이로 다시 줄인다) */
 const EVIDENCE_LIMIT = 40;
 
-const RUN_SUMMARY_COLUMNS = "id, action_id, goal, state, hold_reason, outcome, budget_credits, created_at";
+const RUN_SUMMARY_COLUMNS = "id, action_id, goal, state, hold_reason, outcome, budget_credits, created_at, stopped_at";
 
 export function supabaseExecutionStore(admin: SupabaseClient): ExecutionStore {
   const rpc = <T>(fn: string, args: Record<string, unknown>) =>
@@ -244,7 +254,7 @@ export const stopRun = (admin: SupabaseClient, userId: string, runId: string) =>
   withDeadlockRetry(async () => (await admin.rpc("stop_run", { p_user_id: userId, p_run_id: runId }).throwOnError()).data as string | null);
 
 /** 크레딧 합계: 계정 행(원장 합계를 든 잠금 행)과 지금 요율. 지급 기록이 없으면 0 */
-export async function loadCredits(admin: SupabaseClient, userId: string): Promise<CreditsResponse> {
+export async function loadCredits(admin: SupabaseClient, userId: string): Promise<CreditTotals> {
   const [{ data: account }, { data: rate }] = await Promise.all([
     admin.from("credit_accounts").select("granted, reserved, settled").eq("user_id", userId).maybeSingle().throwOnError(),
     admin.from("credit_rates").select("version").eq("active", true).maybeSingle().throwOnError(),
@@ -255,4 +265,39 @@ export async function loadCredits(admin: SupabaseClient, userId: string): Promis
     reserved: a.reserved,
     rate_version: (rate as { version: string } | null)?.version ?? null,
   };
+}
+
+/** id 목록으로 읽을 때 한 요청에 넣는 수 (요청 주소 길이) */
+const ID_CHUNK = 100;
+
+/**
+ * Usage & Credits(S3) 숫자: 진행 중 예약이 있는 run 수 · 정산을 미룬 예약(A46)과 그 할 일 · since 이후 사용 (credit-details.ts).
+ * 원장은 이 사용자의 예약 · 정산 · 해제 행을 1000행씩 끝까지 읽고(초안 한 건에 2–3행), 단계 · run은 열린 예약의 것만 읽는다.
+ * 행이 많아지면 SQL 함수로 옮긴다
+ */
+export async function loadCreditDetails(admin: SupabaseClient, userId: string, since: Date): Promise<CreditDetails> {
+  const ledger = await readAll<CreditLedgerRow>((from, to) =>
+    admin
+      .from("credit_ledger")
+      .select("kind, credits, run_id, step_id, created_at")
+      .eq("user_id", userId)
+      .in("kind", ["reserve", "settle", "release"])
+      .order("id")
+      .range(from, to),
+  );
+  const open = openReservations(ledger);
+  const steps = await rowsByIds<CreditStepRow>(admin, "execution_steps", "id, state", userId, open.map((r) => r.step_id));
+  const called = new Set(steps.filter((s) => s.state === "called").map((s) => s.id));
+  const runs = await rowsByIds<CreditRunRow>(admin, "execution_runs", "id, action_id", userId, open.filter((r) => called.has(r.step_id)).map((r) => r.run_id));
+  return creditDetailsFromRows({ ledger, steps, runs }, since);
+}
+
+async function rowsByIds<T>(admin: SupabaseClient, table: string, columns: string, userId: string, ids: string[]): Promise<T[]> {
+  const unique = [...new Set(ids)];
+  const rows: T[] = [];
+  for (let i = 0; i < unique.length; i += ID_CHUNK) {
+    const { data } = await admin.from(table).select(columns).eq("user_id", userId).in("id", unique.slice(i, i + ID_CHUNK)).throwOnError();
+    rows.push(...((data ?? []) as T[]));
+  }
+  return rows;
 }

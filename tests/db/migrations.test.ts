@@ -253,3 +253,29 @@ describe("실행의 글 보관 (execution_runs.text_purged_at · purge_expired_e
     });
   });
 });
+
+// 중단 시각 · 열린 Action에서만 다음 단계 (20261026000000_execution_stopped_at): 새 표 없이 열 하나를 더하고 begin_call · stop_run을 바꾼다.
+// 자세한 검사는 execution-core.test.ts · execution-executor.test.ts · tests/pg/execution-locks.test.ts
+describe("중단 시각 (execution_runs.stopped_at)", () => {
+  it("열은 처음에 비어 있고, 멈추면 사용자는 자기 run의 값만 읽는다(owner_select). 고치지는 못한다", async () => {
+    const { rows: columns } = await db.query<{ data_type: string; is_nullable: string }>(
+      `select data_type, is_nullable from information_schema.columns where table_schema = 'public' and table_name = 'execution_runs' and column_name = 'stopped_at'`,
+    );
+    expect(columns).toEqual([{ data_type: "timestamp with time zone", is_nullable: "YES" }]);
+
+    const actionId = await insertAction(ALICE);
+    const { rows } = await db.query<{ id: string }>(`select public.create_run($1, $2, 'draft', '초안 써 줘') as id`, [ALICE, actionId]);
+    const runId = rows[0].id;
+    expect((await db.query(`select stopped_at from public.execution_runs where id = $1`, [runId])).rows).toEqual([{ stopped_at: null }]);
+    await db.query(`select public.stop_run($1, $2)`, [ALICE, runId]);
+    await asUser(db, ALICE, async () => {
+      const mine = await db.query<{ stopped_at: Date | null }>(`select stopped_at from public.execution_runs where id = $1`, [runId]);
+      expect(mine.rows[0].stopped_at).toBeInstanceOf(Date);
+      await expect(db.query(`update public.execution_runs set stopped_at = null where id = $1`, [runId])).rejects.toThrow(/permission denied/);
+      await expect(db.query(`select public.stop_run($1, $2)`, [ALICE, runId])).rejects.toThrow(/permission denied/);
+    });
+    await asUser(db, BOB, async () => {
+      expect((await db.query(`select stopped_at from public.execution_runs where id = $1`, [runId])).rows).toHaveLength(0);
+    });
+  });
+});

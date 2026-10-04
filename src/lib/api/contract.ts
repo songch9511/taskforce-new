@@ -507,6 +507,11 @@ export const runSummarySchema = z.object({
   outcome: runOutcomeSchema.nullable(),
   budget_credits: z.number().int().positive().nullable(),
   created_at: z.string(),
+  /**
+   * 멈춘 시각 (execution_runs.stopped_at, DB 시각). 사용자가 멈췄을 때(POST /runs/:id/stop, 어느 기기든) 또는 할 일이 닫혀(완료 · 삭제)
+   * 서버가 다음 단계를 시작하지 않고 멈췄을 때 처음 한 번 적고 바꾸지 않는다. 멈추지 않은 run과 마이그레이션 20261026000000 전에 멈춘 run은 null
+   */
+  stopped_at: z.string().nullable(),
 });
 export type RunSummary = z.infer<typeof runSummarySchema>;
 
@@ -579,12 +584,32 @@ export type CreateRunResponse = z.infer<typeof createRunResponseSchema>;
 export const stopRunResponseSchema = z.object({ run: runSummarySchema });
 export type StopRunResponse = z.infer<typeof stopRunResponseSchema>;
 
-// GET /api/v1/credits — 내 크레딧 합계 (서버가 계정 행에서 계산). available = 지급 - 예약 - 사용, reserved = 아직 정산 · 해제하지 않은 예약.
-// rate_version: 지금 요율 (c3-v1: 1 크레딧 = $0.001). 지급 기록이 없으면 0 · 0
+// GET /api/v1/credits?since=<ISO 8601> — 내 크레딧 합계 (서버가 계정 행 · 원장에서 계산). available = 지급 - 예약 - 사용, reserved = 아직 정산 · 해제하지 않은 예약.
+// rate_version: 지금 요율 (c3-v1: 1 크레딧 = $0.001). 지급 기록이 없으면 0 · 0.
+// 아래 필드는 Usage & Credits 화면(S3)용으로 나중에 더했다(U2 Mac PR1). 앱은 없는 필드를 기본값으로 읽는다(그 전 서버).
+// since: used를 셀 시작 시각. 오프셋이 있는 ISO 8601만 받는다(예: 기기 시간대의 이번 달 1일 00:00을 UTC로 적은 2026-09-30T15:00:00Z.
+// +09:00처럼 적으면 쿼리에서 +를 %2B로). 없으면 UTC 이번 달 1일. 형식 오류 · 미래 · 1년 넘게 전이면 400 invalid_request
 export const creditsResponseSchema = z.object({
   available: z.number().int().nonnegative(),
   reserved: z.number().int().nonnegative(),
   rate_version: z.string().nullable(),
+  /** 끝내지 않은 단계(prepared · calling)에 열린 예약이 있는 run 수 ("Held for N running task(s)") */
+  running_runs: z.number().int().nonnegative(),
+  /**
+   * 끝낸 초안 단계인데 원가가 확정되지 않아 정산을 미룬 예약(A46). reserved에 들어 있다: 진행 중 예약 = reserved - settling.reserved.
+   * action_ids: 그 run들의 할 일 id (중복 없이, 앱이 RLS로 제목을 읽는다)
+   */
+  settling: z.object({
+    steps: z.number().int().nonnegative(),
+    reserved: z.number().int().nonnegative(),
+    action_ids: z.array(z.uuid()),
+  }),
+  /** since 이후 정산(사용)한 크레딧 합계. since는 실제로 센 시작 시각(UTC ISO 8601) */
+  used: z.object({ credits: z.number().int().nonnegative(), since: z.string() }),
+  /** 차단 스위치의 전체 행이 열려 있다. false면 POST /api/v1/runs가 404라 앱이 시작을 미리 끈다 */
+  accepting_runs: z.boolean(),
+  /** 초안 단계 하나의 예약 (src/lib/execution/limits.ts DRAFT_ESTIMATE_CREDITS). 가용 잔액이 이보다 작으면 초안 단계는 크레딧을 기다린다 */
+  draft_estimate_credits: z.number().int().positive(),
 });
 export type CreditsResponse = z.infer<typeof creditsResponseSchema>;
 

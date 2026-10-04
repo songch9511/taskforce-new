@@ -324,6 +324,63 @@ describe("실행 코어 잠금 경합 (실제 Postgres, 연결 둘)", () => {
   });
 });
 
+// 열린 Action에서만 다음 단계(20261026000000_execution_stopped_at): begin_call은 run의 Action을 for share로 읽는다.
+// 할 일을 끝내는 update(write_action)는 진행 중인 전이가 commit될 때까지 기다리고, 끝낸 뒤 commit되는 전이는 없다 (스위치와 같다)
+describe("할 일 끝내기 vs begin_call (실제 Postgres, 연결 둘)", () => {
+  const runOf = async (stepId: string) =>
+    (await setup.query<{ state: string; stopped: boolean }>(
+      "select r.state, r.stopped_at is not null as stopped from public.execution_runs r join public.execution_steps s on s.run_id = r.id where s.id = $1",
+      [stepId],
+    )).rows[0];
+
+  it("할 일을 끝내는 update는 진행 중인 begin_call이 commit될 때까지 기다린다. 그 전이는 남고, 끝낸 뒤의 begin_call은 부르지 않고 run을 멈춘다", async () => {
+    const user = await newUser();
+    const first = await preparedStep(user, "send-1");
+    const second = await preparedStep(user, "send-2"); // 같은 할 일의 다른 run
+
+    await a.query("begin");
+    expect(await beginCall(a, first, "fn-a")).toBe("ok");
+    const done = b.query("update public.actions set status = 'done' where id = $1", [user.actionId]);
+    await waitForLockWait(bPid);
+    await a.query("commit");
+    await done;
+
+    expect(await stepState(first.stepId)).toBe("calling"); // 끝내기 전에 commit된 전이 하나만
+    expect(await beginCall(a, second, "fn-a")).toBe("action_closed");
+    expect(await stepState(second.stepId)).toBe("prepared");
+    expect(await runOf(second.stepId)).toEqual({ state: "stopped", stopped: true });
+  });
+
+  it("끝내는 쪽이 먼저 잠그면 begin_call이 기다렸다가 끝낸 값을 읽고 run을 멈춘다: 끝낸 뒤에 commit되는 전이는 없다", async () => {
+    const user = await newUser();
+    const step = await preparedStep(user, "send-1");
+
+    await b.query("begin");
+    await b.query("update public.actions set status = 'dropped' where id = $1", [user.actionId]);
+    const call = beginCall(a, step, "fn-a");
+    await waitForLockWait(aPid);
+    await b.query("commit");
+
+    expect(await call).toBe("action_closed");
+    expect(await stepState(step.stepId)).toBe("prepared");
+    expect(await runOf(step.stepId)).toEqual({ state: "stopped", stopped: true });
+  });
+
+  it("끝내는 쪽이 되돌리면(rollback) 기다리던 begin_call은 열린 할 일로 보고 부른다", async () => {
+    const user = await newUser();
+    const step = await preparedStep(user, "send-1");
+
+    await b.query("begin");
+    await b.query("update public.actions set status = 'done' where id = $1", [user.actionId]);
+    const call = beginCall(a, step, "fn-a");
+    await waitForLockWait(aPid);
+    await b.query("rollback");
+
+    expect(await call).toBe("ok");
+    expect(await stepState(step.stepId)).toBe("calling");
+  });
+});
+
 // 크레딧 원장(20261022000000_execution_credits_artifacts)의 잠금: 예약 · 정산 · 해제 · 지급은 모두 사용자의 계정 행을 for update로 잠그고 확인한다.
 // 같은 사용자의 두 run이 동시에 예약해도 잔액을 넘지 않고, 같은 단계의 원가를 두 함수가 동시에 확정해도 정산은 한 번이다
 describe("크레딧 원장 잠금 경합 (실제 Postgres, 연결 둘)", () => {

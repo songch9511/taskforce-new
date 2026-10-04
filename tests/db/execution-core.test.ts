@@ -203,6 +203,66 @@ describe("끝내기 · 멈추기", () => {
     expect(await one("select public.stop_run($1, $2) as s", [ALICE, runId])).toEqual({ s: "done" });
   });
 
+  it("stop_run은 멈춘 시각(stopped_at, DB 시각)을 처음 멈출 때 한 번만 적는다: 다시 멈춰도 · 남이 멈추려 해도 그대로, 멈추지 않은 run은 null", async () => {
+    const { runId } = await preparedRun(ALICE);
+    const stoppedAt = async () => (await one<{ stopped_at: Date | null }>("select stopped_at from public.execution_runs where id = $1", [runId])).stopped_at;
+    expect(await stoppedAt()).toBeNull();
+    await db.query("select public.stop_run($1, $2)", [BOB, runId]);
+    expect(await stoppedAt()).toBeNull();
+
+    await db.query("select public.stop_run($1, $2)", [ALICE, runId]);
+    const first = await stoppedAt();
+    expect(first).toBeInstanceOf(Date);
+    // 멈춘 전이의 실행 이벤트와 같은 DB 시각이다
+    expect(await one("select gate, at from public.execution_events where run_id = $1 and type = 'run' and to_state = 'stopped'", [runId])).toEqual({ gate: "stop", at: first });
+    await db.query("select public.stop_run($1, $2)", [ALICE, runId]);
+    expect(await stoppedAt()).toEqual(first);
+
+    const done = await preparedRun(ALICE);
+    await db.query("update public.execution_runs set state = 'done' where id = $1", [done.runId]);
+    await db.query("select public.stop_run($1, $2)", [ALICE, done.runId]);
+    expect(await one("select state, stopped_at from public.execution_runs where id = $1", [done.runId])).toEqual({ state: "done", stopped_at: null });
+  });
+
+  it("begin_call: 할 일이 열려 있지 않으면(완료 · 삭제) 부르지 않고 run을 멈춘다(gate action_closed, 멈춘 시각). 다시 열어도 멈춘 run은 그대로", async () => {
+    await db.query("insert into public.execution_actors (user_id) values ($1) on conflict do nothing", [ALICE]);
+    await setGlobal(false);
+    try {
+      for (const status of ["done", "dropped"]) {
+        const { runId, stepId } = await preparedRun(ALICE);
+        const actionId = (await one<{ action_id: string }>("select action_id from public.execution_runs where id = $1", [runId])).action_id;
+        await db.query("update public.actions set status = $2 where id = $1", [actionId, status]);
+        expect(await gate(stepId)).toEqual({ gate: "action_closed" });
+        const run = await one<{ state: string; hold_reason: string | null; stopped_at: Date | null }>(
+          "select state, hold_reason, stopped_at from public.execution_runs where id = $1",
+          [runId],
+        );
+        expect(run).toMatchObject({ state: "stopped", hold_reason: null });
+        expect(run.stopped_at).toBeInstanceOf(Date);
+        expect(await one("select gate, at from public.execution_events where run_id = $1 and type = 'run' and to_state = 'stopped'", [runId])).toEqual({
+          gate: "action_closed",
+          at: run.stopped_at,
+        });
+        // 단계는 부르지 않았다: prepared 그대로, 표식 · lease 없음
+        expect(await one("select state, lease_owner from public.execution_steps where id = $1", [stepId])).toEqual({ state: "prepared", lease_owner: null });
+        expect((await one<{ n: number }>("select count(*)::int as n from public.execution_intents where step_id = $1", [stepId])).n).toBe(0);
+
+        await db.query("update public.actions set status = 'open' where id = $1", [actionId]);
+        expect(await gate(stepId)).toEqual({ gate: "stopped" });
+        expect(await one("select stopped_at from public.execution_runs where id = $1", [runId])).toEqual({ stopped_at: run.stopped_at });
+      }
+    } finally {
+      await setGlobal(true);
+    }
+  });
+
+  it("begin_call: 할 일 확인은 차단 스위치 · 실행 주체보다 먼저다 (스위치가 막혀 있어도 닫힌 할 일의 run은 기다리지 않고 멈춘다)", async () => {
+    const { runId, stepId } = await preparedRun(BOB); // BOB은 실행 주체가 아니고, 전체 스위치는 막혀 있다
+    await db.query("update public.actions set status = 'done' where id = (select action_id from public.execution_runs where id = $1)", [runId]);
+    expect(await gate(stepId)).toEqual({ gate: "action_closed" });
+    expect(await one("select state, hold_reason from public.execution_runs where id = $1", [runId])).toEqual({ state: "stopped", hold_reason: null });
+  });
+
   it("show_plan · approve_step: 다른 사용자의 단계는 보이지 않고, 지난 만료 · 1시간 넘는 만료는 승인하지 않는다", async () => {
     const { stepId } = await preparedRun(ALICE);
     expect((await db.query("select * from public.show_plan($1, $2)", [BOB, stepId])).rows).toHaveLength(0);

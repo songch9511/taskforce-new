@@ -5,10 +5,10 @@ vi.mock("server-only", () => ({}));
 vi.mock("@/lib/connectors/store", () => ({ loadIdentity: vi.fn(async () => ({ name: "김도윤", aliases: [], emails: [] })) }));
 
 import { buildExecutionContext } from "./context";
-import { createRun, loadCredits, stopRun, supabaseExecutionStore } from "./store";
+import { createRun, loadCreditDetails, loadCredits, stopRun, supabaseExecutionStore } from "./store";
 import { RunActionNotFoundError } from "./types";
 
-// 운영 store(supabase-js)의 읽기 · RPC. PostgREST 대신 표 데이터를 거르는 작은 가짜 클라이언트로 본다 (eq · in · not · gt · lt · gte · maybeSingle).
+// 운영 store(supabase-js)의 읽기 · RPC. PostgREST 대신 표 데이터를 거르는 작은 가짜 클라이언트로 본다 (eq · in · not · gt · lt · gte · maybeSingle · range).
 // 실제 SQL 함수는 tests/db/execution-executor.test.ts가 PGlite에서 본다.
 
 type Row = Record<string, unknown>;
@@ -55,7 +55,7 @@ function fakeAdmin(tables: Record<string, Row[]>, rpc: (fn: string, args: Row) =
       maybeSingle: () => ((single = true), builder),
       throwOnError: () => builder,
     };
-    for (const op of ["select", "eq", "neq", "in", "is", "not", "gt", "lt", "gte", "order", "limit"]) {
+    for (const op of ["select", "eq", "neq", "in", "is", "not", "gt", "lt", "gte", "order", "limit", "range"]) {
       builder[op] = (...args: unknown[]) => (ops.push([op, args]), builder);
     }
     return builder;
@@ -181,6 +181,53 @@ describe("supabaseExecutionStore 읽기", () => {
       rate_version: "c3-v1",
     });
     expect(await loadCredits(fakeAdmin({ credit_rates: rates }).client, USER)).toEqual({ available: 0, reserved: 0, rate_version: "c3-v1" });
+  });
+
+  it("loadCreditDetails: 이 사용자의 원장 · 열린 예약의 단계 · 정산 보류 run만 읽어 센다 (모든 읽기를 사용자로 좁힌다)", async () => {
+    const at = "2026-10-02T00:00:00.000000+00:00";
+    const reserve = (step: string, run: string, user = USER) => ({ user_id: user, kind: "reserve", credits: 20, run_id: run, step_id: step, created_at: at });
+    const { client, queries } = fakeAdmin({
+      credit_ledger: [
+        { user_id: USER, kind: "grant", credits: 100, run_id: null, step_id: null, created_at: at },
+        reserve("s-done", "r-done"),
+        { user_id: USER, kind: "settle", credits: 2, run_id: "r-done", step_id: "s-done", created_at: at },
+        { user_id: USER, kind: "release", credits: 18, run_id: "r-done", step_id: "s-done", created_at: at },
+        reserve("s-calling", "r-calling"),
+        reserve("s-pending-cost", "r-pending-cost"),
+        // 다른 사용자의 같은 run · 단계 id는 섞이지 않는다
+        reserve("s-other", "r-other", "u2"),
+        { user_id: "u2", kind: "settle", credits: 7, run_id: "r-other", step_id: "s-other", created_at: at },
+      ],
+      execution_steps: [
+        { id: "s-calling", user_id: USER, state: "calling" },
+        { id: "s-pending-cost", user_id: USER, state: "called" },
+        { id: "s-other", user_id: "u2", state: "called" },
+      ],
+      execution_runs: [
+        { id: "r-pending-cost", user_id: USER, action_id: "a-1" },
+        { id: "r-calling", user_id: USER, action_id: "a-2" },
+      ],
+    });
+    expect(await loadCreditDetails(client, USER, new Date("2026-10-01T00:00:00Z"))).toEqual({
+      running_runs: 1,
+      settling: { steps: 1, reserved: 20, action_ids: ["a-1"] },
+      used: { credits: 2, since: "2026-10-01T00:00:00.000Z" },
+    });
+    for (const q of queries) expect(q.ops, q.table).toContainEqual(["eq", ["user_id", USER]]);
+    expect(queries.find((q) => q.table === "credit_ledger")?.ops).toContainEqual(["in", ["kind", ["reserve", "settle", "release"]]]);
+    // 단계는 열린 예약의 것만, run은 정산 보류(called) 단계의 것만
+    expect(queries.find((q) => q.table === "execution_steps")?.ops).toContainEqual(["in", ["id", ["s-calling", "s-pending-cost"]]]);
+    expect(queries.find((q) => q.table === "execution_runs")?.ops).toContainEqual(["in", ["id", ["r-pending-cost"]]]);
+  });
+
+  it("loadCreditDetails: 열린 예약이 없으면 단계 · run을 읽지 않는다 (지급 없음 = 모두 0)", async () => {
+    const { client, queries } = fakeAdmin({});
+    expect(await loadCreditDetails(client, USER, new Date("2026-10-01T00:00:00Z"))).toEqual({
+      running_runs: 0,
+      settling: { steps: 0, reserved: 0, action_ids: [] },
+      used: { credits: 0, since: "2026-10-01T00:00:00.000Z" },
+    });
+    expect(queries.map((q) => q.table)).toEqual(["credit_ledger"]);
   });
 });
 

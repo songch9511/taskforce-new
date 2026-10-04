@@ -33,7 +33,10 @@ export type AdvanceResult =
   | { status: "finished" }
   /** 다른 함수가 먼저 준비 · 부르는 중이거나, 결과를 기다리는 단계다 (부르지 않았다) */
   | { status: "busy"; step: string }
-  /** begin_call이 막았다 (stale · stopped · actor · blocked · tool · insufficient_credit 등). 단계는 prepared에 남는다 */
+  /**
+   * begin_call이 막았다 (stale · stopped · actor · blocked · tool · insufficient_credit 등). 단계는 prepared에 남는다.
+   * action_closed: 할 일이 닫혀(완료 · 삭제) begin_call이 run을 멈췄다 (다시 깨워도 closed)
+   */
   | { status: "held"; step: string; gate: string }
   /** 단계를 끝냈다. next: 다음 단계가 있다 (깨운다) */
   | { status: "completed"; step: string; next: boolean }

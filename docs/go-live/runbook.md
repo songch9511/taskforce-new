@@ -289,7 +289,7 @@ npx supabase db query --linked "select scope, key, blocked from public.execution
 npx supabase db query --linked "update public.execution_controls set blocked = false where scope = 'global' and key = '*'"
 ```
 
-교착(deadlock)을 피하는 규칙. `begin_call`은 단계 → run → 정책 → 실행 주체 → 스위치 세 행(`global` → `mode` → `provider` 순서) → 도구 → 크레딧 계정 순서로 잠근다(EXECUTION 6장). 이 순서를 거스르는 운영자 쓰기는 진행 중인 `begin_call`과 서로 기다리다 한쪽이 되돌려진다(40P01).
+교착(deadlock)을 피하는 규칙. `begin_call`은 단계 → run → 할 일(`actions` 행, for share) → 정책 → 실행 주체 → 스위치 세 행(`global` → `mode` → `provider` 순서) → 도구 → 크레딧 계정 순서로 잠근다(EXECUTION 6장). 이 순서를 거스르는 운영자 쓰기는 진행 중인 `begin_call`과 서로 기다리다 한쪽이 되돌려진다(40P01).
 
 - 긴급할 때는 **`global` 한 행만** 바꾼다. 스위치 여러 행을 한 문장 · 한 명령에서 바꾸지 않는다(행을 잠그는 순서가 정해지지 않는다).
 - 정책(`execution_policies`)과 단계(`execution_steps`)를 한 트랜잭션(한 명령)에서 쓰지 않는다: `begin_call`은 단계를 먼저, 정책을 나중에 잠근다. U2에서 운영자가 정책 · 단계를 고칠 일은 없다. 꼭 고쳐야 하면 한 명령에 한 표만.
@@ -348,6 +348,8 @@ where s.state = 'called' and not exists (select 1 from public.sources x where x.
 select count(*) as claims_without_source from public.claims where origin = 'execution' and (source_id is null or quote is null);
 -- 실패한 단계의 까닭 (코드 값만): retries_exhausted가 몰리면 OpenRouter 키 · 잔액 · 권한(401 · 402 · 403)부터 본다 (EXECUTION 13장 오류 표)
 select receipt->>'error' as error, count(*) as steps from public.execution_steps where state = 'failed' group by 1 order by 2 desc;
+-- 멈춘 run을 멈춘 판단 (코드 값만): stop = 사용자(또는 아래 운영자 정리), action_closed = 할 일이 끝나거나 지워져 begin_call이 다음 단계 전에 멈춤 (EXECUTION 5장)
+select gate, count(*) as runs from public.execution_events where type = 'run' and to_state = 'stopped' group by 1 order by 1;
 -- 실행의 글 보관 (EXECUTION 12장): 저장한 뒤 90일에 지우고, 그때 실행 중인 run은 끝나는 대로 지운다.
 -- 90일 넘게 열린 run: 글이 끝날 때까지 남는다. 하루 넘게 막힌 run은 아래 "오래 막힌 run 정리"로 멈추므로 보통 0이다.
 -- 0이 아니면 그 정리의 두 번째 목록(막히지 않은 run 포함)을 본다. 멈추면 다음 정리에서 지운다
@@ -371,7 +373,7 @@ npx supabase db query --linked "select public.reconcile_usage(<id>, <비용 USD>
 
 비용을 찾을 수 없으면 정하지 않고 사용자에게 묻는다. 0원으로 확정하거나 예약을 손으로 해제하지 않는다(A46: 모르는 원가를 0으로 두지 않는다).
 
-오래 막힌 run 정리 (운영자, run마다 승인). 운영자만 풀 수 있는 hold(`actor` · `blocked`)나 지급으로 풀리지 않는 `credit`(run 예산 부족)에 머문 run은 sweep이 5분마다 깨워도 그대로다. 풀 수 있는 것(9-1 · 9-2 · 9-3)이면 먼저 푼다. 아니면 그 run의 주인(지금은 운영자)에게 확인하고 멈춘다. 멈추면 남은 예약이 해제되고 이미 만든 초안은 그대로다.
+오래 막힌 run 정리 (운영자, run마다 승인). 할 일이 끝나거나 지워진 run은 정리할 필요가 없다: 다음에 깨울 때 `begin_call`이 멈춘다(gate `action_closed`, 전체 스위치가 막혀 있으면 풀린 뒤 첫 깨우기에서). 운영자만 풀 수 있는 hold(`actor` · `blocked`)나 지급으로 풀리지 않는 `credit`(run 예산 부족)에 머문 run은 sweep이 5분마다 깨워도 그대로다. 풀 수 있는 것(9-1 · 9-2 · 9-3)이면 먼저 푼다. 아니면 그 run의 주인(지금은 운영자)에게 확인하고 멈춘다. 멈추면 남은 예약이 해제되고 이미 만든 초안은 그대로다.
 
 ```bash
 # 하루 넘게 막힌 끝나지 않은 run (id · 이유 · 만든 날만)
@@ -402,6 +404,8 @@ npx supabase db query --linked "select public.stop_run((select user_id from publ
 2. **마이그레이션 `20261020`–`20261024` 적용 확인** (읽기, 4장 방식으로 적용한 뒤). 기대: `1 · true · true · true · 2 · true`.
    ```bash
    npx supabase db query --linked "select (select count(*) from information_schema.columns where table_schema = 'public' and table_name = 'sources' and column_name = 'processing_error_code') as m20261020, to_regprocedure('public.sweep_expire()') is not null as m20261021, to_regprocedure('public.purge_expired_artifacts()') is not null as m20261022, (select prosrc like '%insufficient_credit%' from pg_proc where oid = to_regprocedure('public.begin_call(uuid,text,integer)')) as begin_call_credits, (select count(*) from pg_constraint where conname in ('sources_kind_check', 'claims_origin_check') and pg_get_constraintdef(oid) like '%execution%') as m20261023, to_regprocedure('public.purge_expired_execution_text(timestamp with time zone,integer)') is not null as m20261024"
+   # 20261026 (멈춘 시각 · 열린 할 일에서만 다음 단계, U2 Mac PR1). 기대: 1 · true · true
+   npx supabase db query --linked "select (select count(*) from information_schema.columns where table_schema = 'public' and table_name = 'execution_runs' and column_name = 'stopped_at') as m20261026, (select prosrc like '%action_closed%' from pg_proc where oid = to_regprocedure('public.begin_call(uuid,text,integer)')) as begin_call_action_guard, (select prosrc like '%stopped_at%' from pg_proc where oid = to_regprocedure('public.stop_run(uuid,uuid)')) as stop_run_stopped_at"
    # 시드 그대로인지 (global 막힘, auto · full 막힘)와 빈 표
    npx supabase db query --linked "select scope, key, blocked from public.execution_controls order by scope, key"
    npx supabase db query --linked "select (select count(*) from public.execution_runs) as runs, (select count(*) from public.execution_actors) as actors, (select count(*) from public.credit_ledger) as ledger"

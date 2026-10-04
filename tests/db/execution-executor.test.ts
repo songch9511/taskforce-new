@@ -4,19 +4,24 @@ import type { PGlite } from "@electric-sql/pglite";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { z } from "zod";
 
+vi.mock("server-only", () => ({}));
+
 import type { GenerationLookup } from "@/lib/ai/generation";
 import { LlmError, type JsonCompletion, type JsonCompletionRequest, type LlmAttempt } from "@/lib/ai/llm";
 import { PLAN_PROMPT_VERSION } from "@/lib/ai/prompts/plan";
 import { DRAFT_PROMPT_VERSION } from "@/lib/ai/prompts/draft";
+import { runSummarySchema } from "@/lib/api/contract";
 import { handleCreateRun, handleCredits, handleStopRun } from "@/lib/api/runs";
 import type { Draft } from "@/lib/execution/draft";
 import { advance, type AdvanceResult, type ExecutorDeps } from "@/lib/execution/executor";
 import { DRAFT_ESTIMATE_CREDITS, LEASE_SECONDS, MAX_STEPS, RATE_VERSION } from "@/lib/execution/limits";
 import type { NextStep } from "@/lib/execution/plan";
+import { executionGloballyBlocked, loadCreditDetails } from "@/lib/execution/store";
 import { sweep } from "@/lib/execution/sweep";
 import { RunActionNotFoundError } from "@/lib/execution/types";
 import type { CompleteJson } from "@/lib/pipeline/extract";
 
+import { pgliteAdmin } from "../execution/pglite-admin";
 import { pgliteExecutionStore } from "../execution/pglite-store";
 import { createLocalSupabase } from "./local-supabase";
 
@@ -602,6 +607,125 @@ describe("차단 스위치 (기준 9): 세 입구 모두 calling 0", () => {
   });
 });
 
+describe("열린 할 일에서만 다음 단계 (U2 Mac PR1, 사용자 결정 ②)", () => {
+  const closeAction = (actionId: string, status: string) => db.query("update public.actions set status = $2 where id = $1", [actionId, status]);
+  const stoppedAt = async (runId: string) => (await one<{ stopped_at: Date | null }>("select stopped_at from public.execution_runs where id = $1", [runId])).stopped_at;
+
+  it.each(["done", "dropped"])(
+    "할 일이 %s가 되면 자기 호출은 다음 단계(초안)를 부르지 않고 run을 멈춘다: 모델 호출 · 예약 0, 다시 깨워도 closed, sweep은 깨우지 않는다. 열린 할 일의 run은 그대로 끝난다",
+    async (status) => {
+      const user = await newUser({ credits: 100 });
+      const closed = await newAction(user);
+      const closedRun = await startRun(user, closed);
+      const openRun = await startRun(user, await newAction(user));
+      llm.plans = [{ kind: "draft", brief: "회신" }, { kind: "draft", brief: "회신" }, { kind: "done" }];
+      expect(await advance(deps("fn-1"), closedRun)).toMatchObject({ status: "completed", next: true }); // 계획이 초안 단계를 붙였다
+
+      await closeAction(closed, status);
+      const prompts = llm.prompts.length;
+      expect(await advance(deps("fn-2"), closedRun)).toMatchObject({ status: "held", gate: "action_closed" });
+      expect(llm.prompts.length).toBe(prompts);
+      expect(await calling()).toBe(0);
+      expect(await runState(closedRun)).toEqual({ state: "stopped", hold_reason: null, outcome: null });
+      expect(await stoppedAt(closedRun)).toBeInstanceOf(Date);
+      expect((await steps(closedRun)).map((x) => [x.kind, x.state])).toEqual([
+        ["plan", "called"],
+        ["draft", "prepared"],
+      ]);
+      expect(await ledger(user)).toEqual([]);
+
+      expect(await advance(deps("fn-3"), closedRun)).toEqual({ status: "closed" });
+      const woken: string[] = [];
+      await sweep({ store: store(), lookupGeneration: async () => ({ status: "pending" }), wake: async (id) => (woken.push(id), true), now: () => NOW });
+      expect(woken).toEqual([openRun]);
+      await drive(openRun);
+      expect(await runState(openRun)).toEqual({ state: "done", hold_reason: null, outcome: "draft_ready" });
+    },
+  );
+
+  it("route의 after(): run을 만든 뒤 첫 단계 전에 할 일을 끝내면 계획도 부르지 않는다. 멈춘 run 요약에 멈춘 시각이 있다", async () => {
+    const user = await newUser();
+    const actionId = await newAction(user);
+    const scheduled: string[] = [];
+    const ctx = { id: user };
+    const response = await handleCreateRun(
+      new Request("https://api.example.test/api/v1/runs", { method: "POST", body: JSON.stringify({ action_id: actionId, goal: "draft", request: "견적 회신 메일 초안 써 줘" }) }),
+      routeDeps(ctx, (runId) => scheduled.push(runId)),
+    );
+    expect(response.status).toBe(202);
+    expect(runSummarySchema.parse(((await response.json()) as { run: unknown }).run).stopped_at).toBeNull();
+
+    await closeAction(actionId, "done");
+    expect(await advance(deps("fn-route"), scheduled[0])).toMatchObject({ status: "held", gate: "action_closed" });
+    expect(llm.prompts).toEqual([]);
+    const run = runSummarySchema.parse(await routeDeps(ctx, () => {}).loadRun(ctx, scheduled[0]));
+    expect(run.state).toBe("stopped");
+    expect(run.stopped_at).not.toBeNull();
+  });
+
+  it("sweep: lease가 끝나 다시 준비된 초안 단계(예약을 쥔 채)도 할 일이 닫혔으면 부르지 않고, run을 멈추며 예약을 해제한다", async () => {
+    const user = await newUser({ credits: 100 });
+    const actionId = await newAction(user);
+    const runId = await startRun(user, actionId);
+    llm.plans = [{ kind: "draft", brief: "회신" }];
+    await advance(deps("fn-1"), runId); // 계획
+    // 초안을 부르던 함수가 죽었다: 예약 · lease만 남는다
+    const draft = (await store().nextOpenStep(runId))!;
+    expect(await store().prepareStep(draft.id, draft.version)).toBe(true);
+    expect((await store().beginCall(draft.id, "fn-dead", draft.version + 1)).gate).toBe("ok");
+    expect(await account(user)).toEqual({ granted: 100, reserved: DRAFT_ESTIMATE_CREDITS, settled: 0 });
+
+    await closeAction(actionId, "dropped");
+    await advanceClock(LEASE_SECONDS + 1);
+    const viaSweep: AdvanceResult[] = [];
+    const result = await sweep({
+      store: store(),
+      lookupGeneration: async () => ({ status: "pending" }),
+      wake: async (id) => (viaSweep.push(await advance(deps("fn-sweep"), id)), true),
+      now: () => NOW,
+    });
+    expect(result.expired).toBe(1);
+    expect(viaSweep).toEqual([expect.objectContaining({ status: "held", gate: "action_closed" })]);
+    expect(llm.prompts).toHaveLength(1); // 계획 한 번뿐
+    expect(await runState(runId)).toMatchObject({ state: "stopped" });
+    expect((await steps(runId))[1]).toMatchObject({ kind: "draft", state: "prepared", attempt: 1 });
+    expect(await ledger(user)).toEqual([
+      { kind: "reserve", credits: DRAFT_ESTIMATE_CREDITS },
+      { kind: "release", credits: DRAFT_ESTIMATE_CREDITS },
+    ]);
+    expect(await account(user)).toEqual({ granted: 100, reserved: 0, settled: 0 });
+  });
+
+  it("이미 부르는 중인 단계는 할 일이 닫혀도 끝까지 결과를 받는다(초안 · 정산 · receipt). 그다음 단계는 부르지 않고 멈추며, 끝낸 할 일은 다시 열리지 않는다", async () => {
+    const user = await newUser({ credits: 100 });
+    const actionId = await newAction(user);
+    const runId = await startRun(user, actionId);
+    llm.plans = [{ kind: "draft", brief: "회신" }, { kind: "done" }];
+    await advance(deps("fn-1"), runId); // 계획
+    llm.overrides = [
+      async (request) => {
+        await closeAction(actionId, "done"); // 초안을 부르는 중에 할 일을 끝냄
+        return { data: request.schema.parse(DRAFT), model: MODEL, attempts: [attempt(0.0007)] };
+      },
+    ];
+    expect(await advance(deps("fn-2"), runId)).toMatchObject({ status: "completed", next: true }); // 초안 + 후속 계획 단계를 붙였다
+    expect(await advance(deps("fn-3"), runId)).toMatchObject({ status: "held", gate: "action_closed" });
+    expect(llm.prompts).toHaveLength(2); // 후속 계획은 부르지 않았다
+
+    expect(await runState(runId)).toMatchObject({ state: "stopped" });
+    expect((await steps(runId)).map((x) => [x.kind, x.state])).toEqual([
+      ["plan", "called"],
+      ["draft", "called"],
+      ["plan", "prepared"],
+    ]);
+    expect(await count("select 1 from public.execution_artifacts where run_id = $1", [runId])).toBe(1);
+    expect((await ledger(user)).map((l) => l.kind)).toEqual(["reserve", "settle", "release"]);
+    expect(await account(user)).toEqual({ granted: 100, reserved: 0, settled: 1 });
+    expect(await count("select 1 from public.claims where action_id = $1 and origin = 'execution'", [actionId])).toBe(1); // receipt는 붙는다
+    expect((await one<{ status: string }>("select status from public.actions where id = $1", [actionId])).status).toBe("done");
+  });
+});
+
 describe("멈추기", () => {
   it("초안을 부르는 중에 멈추면 그 초안은 받아 남기고 다음 단계는 없다. 예약은 정산 · 해제된다. 다시 멈춰도 같은 200", async () => {
     const user = await newUser({ credits: 100 });
@@ -679,8 +803,25 @@ describe("route 처리 × DB", () => {
     await advance(deps(), runId);
     llm.overrides = [
       async () => {
-        const response = await handleCredits(new Request("https://api.example.test/api/v1/credits"), { ...gateDeps({ id: user }), credits: (u) => credits(u.id) });
-        expect(await response.json()).toEqual({ available: 100 - DRAFT_ESTIMATE_CREDITS, reserved: DRAFT_ESTIMATE_CREDITS, rate_version: RATE_VERSION });
+        const admin = pgliteAdmin(db);
+        const response = await handleCredits(new Request("https://api.example.test/api/v1/credits"), {
+          ...gateDeps({ id: user }),
+          credits: (u) => credits(u.id),
+          details: (u, since) => loadCreditDetails(admin, u.id, since),
+          globallyBlocked: () => executionGloballyBlocked(admin),
+          now: () => NOW,
+        });
+        // 초안을 부르는 중: 예약 20은 진행 중 run 하나가 쥐고 있다 (정산 보류 · 사용 0)
+        expect(await response.json()).toEqual({
+          available: 100 - DRAFT_ESTIMATE_CREDITS,
+          reserved: DRAFT_ESTIMATE_CREDITS,
+          rate_version: RATE_VERSION,
+          running_runs: 1,
+          settling: { steps: 0, reserved: 0, action_ids: [] },
+          used: { credits: 0, since: "2026-10-01T00:00:00.000Z" },
+          accepting_runs: true,
+          draft_estimate_credits: DRAFT_ESTIMATE_CREDITS,
+        });
         throw Object.assign(new LlmError("OpenRouter 요청 실패 (400)"), { attempts: [] });
       },
     ];
@@ -807,7 +948,7 @@ function routeDeps(ctx: Ctx, schedule: (runId: string) => void) {
       }
     },
     loadRun: async (u: Ctx, runId: string) =>
-      (await one("select id, action_id, goal, state, hold_reason, outcome, budget_credits, created_at::text from public.execution_runs where id = $1 and user_id = $2", [
+      (await one("select id, action_id, goal, state, hold_reason, outcome, budget_credits, created_at::text, stopped_at::text from public.execution_runs where id = $1 and user_id = $2", [
         runId,
         u.id,
       ])) as never,
