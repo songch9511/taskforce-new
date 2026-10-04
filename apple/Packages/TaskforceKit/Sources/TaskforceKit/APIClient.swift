@@ -28,8 +28,16 @@ public enum APIError: Error, Equatable, Sendable, CustomStringConvertible {
         return false
     }
 
-    /// 외부 AI 처리 동의가 먼저 필요함 (`POST /sources` · `/ask` · 연결 시작의 409)
+    /// 외부 AI 처리 동의가 먼저 필요함 (`POST /sources` · `/ask` · 연결 시작 · `POST /runs`의 409)
     public var isConsentRequired: Bool { isConflict }
+
+    /// 서버가 돌려준 HTTP 상태 (응답을 받지 못했으면 nil)
+    public var status: Int? {
+        switch self {
+        case .server(let status, _, _), .unexpectedStatus(let status): status
+        case .decoding, .transport, .notSignedIn: nil
+        }
+    }
 
     /// 화면에 보여줄 한 줄 (화면 틀은 영어, docs/BRAND.md "UI 문구"). 서버의 한국어 설명은 보이지 않는다.
     public var userMessage: String {
@@ -248,15 +256,50 @@ public struct APIClient: Sendable {
         try await send(.post, "ask", body: AskRequest(question: question))
     }
 
+    // MARK: 실행 (U2, docs/EXECUTION.md)
+
+    /// 할 일에 내장 초안 run을 만든다 (202 `{ run }`). 첫 단계(계획)는 응답 뒤에 돈다. 크레딧은 여기서 보지 않는다:
+    /// 모자라면 run이 `hold_reason = credit`으로 기다린다. iPhone은 부르지 않는다 (`RunAvailability.canStart`).
+    /// 409 = 외부 AI 처리 동의가 먼저, 404 = 실행을 쓸 수 없음 · 열린 할 일이 아님, 429 = 10분에 10번을 넘음 (`RunStartFailure`).
+    /// `request`는 앞뒤 공백을 빼고 2000자로 잘라 보낸다 (`CreateRunRequest`). 빈 요청은 부르는 쪽이 막는다 (서버는 400)
+    public func createRun(actionID: UUID, request: String) async throws -> RunSummary {
+        let response: RunResponse = try await send(.post, "runs", body: CreateRunRequest(actionID: actionID, request: request))
+        return response.run
+    }
+
+    /// 다음 단계만 막는다 (이미 부르는 단계는 끝까지 결과를 받는다). 이미 끝난 run은 그대로 200. 없거나 남의 run 404
+    public func stopRun(id: UUID) async throws -> RunSummary {
+        let response: RunResponse = try await send(.post, "runs/\(id.lowercased)/stop")
+        return response.run
+    }
+
+    /// 내 크레딧 합계. 404면 nil: 실행을 쓸 수 없는 계정이다 (플래그 꺼짐 · 실행 주체 밖, 서버가 존재를 드러내지 않는다).
+    /// `since`(이번 달 사용량의 시작, 보통 `CreditsMonth.start`)는 UTC ISO 8601로 보낸다. 그 전 서버는 이 값을 읽지 않는다.
+    /// 서버가 `since`를 받지 않으면(400: 기기 시계가 앞서 서버의 미래 등) `since` 없이 한 번 더 묻는다 (서버의 UTC 이번 달)
+    public func credits(since: Date? = nil) async throws -> CreditsSummary? {
+        let query = since.map { [URLQueryItem(name: "since", value: $0.ISO8601Format())] } ?? []
+        do {
+            return try await send(.get, "credits", query: query)
+        } catch let error as APIError where error.status == 404 {
+            // 실행 route가 없는 옛 서버의 404(형식 없는 응답)도 같다
+            return nil
+        } catch let error as APIError where error.status == 400 && since != nil {
+            return try await credits(since: nil)
+        }
+    }
+
     // MARK: 요청
 
     enum Method: String {
         case get = "GET", post = "POST", put = "PUT", patch = "PATCH", delete = "DELETE"
     }
 
-    func makeRequest(_ method: Method, _ path: String, body: (any Encodable)?, token: String, timeout: TimeInterval? = nil) throws -> URLRequest {
+    func makeRequest(
+        _ method: Method, _ path: String, query: [URLQueryItem] = [], body: (any Encodable)?, token: String, timeout: TimeInterval? = nil
+    ) throws -> URLRequest {
         var url = baseURL.appending(path: "api/v1")
         url.append(path: path)
+        if !query.isEmpty { url.append(queryItems: query) }
         var request = URLRequest(url: url)
         request.httpMethod = method.rawValue
         if let timeout { request.timeoutInterval = timeout }
@@ -269,7 +312,9 @@ public struct APIClient: Sendable {
         return request
     }
 
-    private func perform(_ method: Method, _ path: String, body: (any Encodable)?, timeout: TimeInterval? = nil) async throws -> (Data, HTTPURLResponse) {
+    private func perform(
+        _ method: Method, _ path: String, query: [URLQueryItem] = [], body: (any Encodable)?, timeout: TimeInterval? = nil
+    ) async throws -> (Data, HTTPURLResponse) {
         let accessToken: String
         do {
             accessToken = try await token()
@@ -284,7 +329,7 @@ public struct APIClient: Sendable {
         } catch {
             throw APIError.notSignedIn
         }
-        let request = try makeRequest(method, path, body: body, token: accessToken, timeout: timeout)
+        let request = try makeRequest(method, path, query: query, body: body, token: accessToken, timeout: timeout)
         let data: Data
         let response: URLResponse
         do {
@@ -306,8 +351,8 @@ public struct APIClient: Sendable {
         return (data, http)
     }
 
-    private func send<T: Decodable>(_ method: Method, _ path: String, body: (any Encodable)? = nil) async throws -> T {
-        let (data, _) = try await perform(method, path, body: body)
+    private func send<T: Decodable>(_ method: Method, _ path: String, query: [URLQueryItem] = [], body: (any Encodable)? = nil) async throws -> T {
+        let (data, _) = try await perform(method, path, query: query, body: body)
         do {
             return try TaskforceJSON.decoder().decode(T.self, from: data)
         } catch {

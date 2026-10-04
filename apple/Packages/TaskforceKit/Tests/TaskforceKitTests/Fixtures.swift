@@ -278,3 +278,155 @@ enum Fixtures {
     ]
     """
 }
+
+/// 실행 (U2) 응답: contract.ts `runSummarySchema` · `stepSummarySchema` · `artifactSchema` · `creditsResponseSchema`와 같은 모양
+enum ExecutionFixtures {
+    static let runID = UUID(uuidString: "55555555-5555-4555-8555-555555555555")!
+    static let stepID = UUID(uuidString: "66666666-6666-4666-8666-666666666666")!
+    static let artifactID = UUID(uuidString: "77777777-7777-4777-8777-777777777777")!
+
+    /// 서버 U2 Mac PR1 뒤: `stopped_at`이 있다
+    static let stoppedRun = """
+    {
+      "id": "55555555-5555-4555-8555-555555555555",
+      "action_id": "11111111-1111-4111-8111-111111111111",
+      "goal": "draft",
+      "state": "stopped",
+      "hold_reason": null,
+      "outcome": null,
+      "budget_credits": null,
+      "created_at": "2026-10-04T05:00:00.123456+00:00",
+      "stopped_at": "2026-10-04T05:20:00+00:00"
+    }
+    """
+
+    /// 그 전 서버 (stopped_at 없음), 크레딧이 모자라 멈춤
+    static let heldRun = """
+    {
+      "id": "55555555-5555-4555-8555-555555555555",
+      "action_id": "11111111-1111-4111-8111-111111111111",
+      "goal": "draft",
+      "state": "running",
+      "hold_reason": "credit",
+      "outcome": null,
+      "budget_credits": 40,
+      "created_at": "2026-10-04T05:00:00Z"
+    }
+    """
+
+    static let futureRun = """
+    {
+      "id": "55555555-5555-4555-8555-555555555555",
+      "action_id": "11111111-1111-4111-8111-111111111111",
+      "goal": "draft",
+      "state": "paused_forever",
+      "hold_reason": "quota",
+      "outcome": "sent",
+      "budget_credits": null,
+      "created_at": "2026-10-04T05:00:00Z",
+      "stopped_at": "not a time"
+    }
+    """
+
+    static let planStep = """
+    {
+      "id": "66666666-6666-4666-8666-666666666666",
+      "run_id": "55555555-5555-4555-8555-555555555555",
+      "seq": 1,
+      "kind": "plan",
+      "state": "called",
+      "attempt": 0,
+      "receipt": {
+        "decision": "ask_user",
+        "question": "어느 고객사 데모인가요?",
+        "model": "z-ai/glm-5.3-flash",
+        "prompt_version": "plan-v2",
+        "future_key": { "nested": true }
+      },
+      "created_at": "2026-10-04T05:00:01Z"
+    }
+    """
+
+    /// receipt 모양이 어긋남 (`to`가 배열이 아님) · 모르는 종류
+    static let oddStep = """
+    {
+      "id": "66666666-6666-4666-8666-666666666666",
+      "run_id": "55555555-5555-4555-8555-555555555555",
+      "seq": 2,
+      "kind": "review",
+      "state": "waiting",
+      "attempt": 1,
+      "receipt": { "to": "minji@example.com", "error": "rejected", "decision": 3 },
+      "created_at": "2026-10-04T05:00:02Z"
+    }
+    """
+
+    static let artifact = """
+    {
+      "id": "77777777-7777-4777-8777-777777777777",
+      "run_id": "55555555-5555-4555-8555-555555555555",
+      "step_id": "66666666-6666-4666-8666-666666666666",
+      "action_id": "11111111-1111-4111-8111-111111111111",
+      "kind": "draft",
+      "title": "일정 변경 회신",
+      "body": "민지 님, 납품일은 10월 16일로 조정하겠습니다.",
+      "model": "z-ai/glm-5.3-flash",
+      "prompt_version": "draft-v1",
+      "retain_until": "2027-01-02T05:00:00+00:00",
+      "body_purged_at": null,
+      "created_at": "2026-10-04T05:01:30.5+00:00"
+    }
+    """
+
+    static let purgedArtifact = """
+    {
+      "id": "77777777-7777-4777-8777-777777777777",
+      "run_id": "55555555-5555-4555-8555-555555555555",
+      "step_id": "66666666-6666-4666-8666-666666666666",
+      "action_id": "11111111-1111-4111-8111-111111111111",
+      "kind": "draft",
+      "title": "일정 변경 회신",
+      "body": "",
+      "model": "z-ai/glm-5.3-flash",
+      "prompt_version": "draft-v1",
+      "retain_until": "2026-07-01T05:00:00+00:00",
+      "body_purged_at": "2026-07-02T03:00:00+00:00",
+      "created_at": "2026-04-02T05:01:30+00:00"
+    }
+    """
+
+    /// U2 PR6 서버 (S3 표시 필드 전)
+    static let creditsBefore = #"{"available":480,"reserved":20,"rate_version":"c3-v1"}"#
+
+    /// 서버 U2 Mac PR1 뒤 (S3 Figma 값: Available 0 · Reserved 12 · Pending · Used 188)
+    static let creditsAfter = """
+    {
+      "available": 0,
+      "reserved": 32,
+      "rate_version": "c3-v1",
+      "running_runs": 1,
+      "settling": { "steps": 1, "reserved": 20, "action_ids": ["11111111-1111-4111-8111-111111111111"] },
+      "used": { "credits": 188, "since": "2026-09-30T15:00:00.000Z" },
+      "accepting_runs": false,
+      "draft_estimate_credits": 20
+    }
+    """
+
+    /// 새 필드 모양이 어긋나도 합계는 읽는다
+    static let creditsOdd = """
+    {
+      "available": 5,
+      "reserved": 0,
+      "rate_version": null,
+      "running_runs": "one",
+      "settling": { "steps": -2, "reserved": 3, "action_ids": ["not-a-uuid", "11111111-1111-4111-8111-111111111111"] },
+      "used": { "credits": 1 },
+      "accepting_runs": "yes",
+      "draft_estimate_credits": null
+    }
+    """
+
+    static func decode<T: Decodable>(_ type: T.Type, _ json: String) throws -> T {
+        try TaskforceJSON.decoder().decode(T.self, from: Data(json.utf8))
+    }
+}
