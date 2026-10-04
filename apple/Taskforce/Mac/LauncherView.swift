@@ -178,7 +178,7 @@ struct LauncherFlowView: View {
         case .notice(let message):
             statusRow(message, symbol: "exclamationmark.circle")
         case .consentNeeded:
-            LauncherSectionLabel("AI data")
+            LauncherSectionLabel("Privacy & AI Data")
             LauncherRow(title: "Allow AI processing to continue", selected: true, leading: .symbol("hand.raised"))
                 .onTapGesture { model.primary() }
         case .runWithAI, .draft:
