@@ -14,7 +14,7 @@ These terms set out how you may use the Taskforce app (iOS and macOS) and its se
 1. The Service finds the work you committed to in meeting notes, messages, and email from services you connect (such as Notion, Google, and Slack), keeps it organized, updates it when due dates or scope change, and shows the quote each task came from. When you ask for a draft for a task (such as an email or document), the AI writes it and saves it in the app (during the beta, only on accounts we enable).
 2. The Service is a **beta**. Features may change or be removed, it may contain errors, and we may end the beta.
 3. The Service is **free** during the beta. If we introduce fees, we will tell you at least 30 days in advance and will not charge you unless you separately agree.
-4. The Service is distributed through TestFlight. Apple's terms also apply to your use of TestFlight.
+4. The Service is distributed through TestFlight or as a Mac installer file the Company provides directly. If you use TestFlight, Apple's terms also apply.
 
 ## 3. Agreement and changes
 
