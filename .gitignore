@@ -55,3 +55,6 @@ apple_secret/
 /.claude/worktrees/
 /.omc/*
 !/.omc/skills/
+
+# Mac DMG 배포 산출물 (scripts/release-mac-dmg.sh)
+/dist/

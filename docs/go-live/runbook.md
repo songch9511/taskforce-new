@@ -152,6 +152,7 @@ Supabase → Organization → Billing에서 프로젝트가 **Free**이고 백�
      - **받은 범위:** Debug 빌드로 로그인한 뒤 Xcode에서 일시 정지하고 `po GIDSignIn.sharedInstance.currentUser?.grantedScopes`. 로그인 범위(`openid` · `email` · `profile`)만 기대하지만, 같은 Google 계정으로 Calendar · Meet 연결을 허용했다면 `include_granted_scopes` 때문에 그 범위도 보일 수 있다(PLATFORMS.md 4장, 앱은 쓰지 않는다). 본 값을 여기에 적는다.
      - 계정 삭제 → Apple 창이 뜨지 않음(Google로만 가입한 계정) → Google 계정 → 보안 → 서드파티 앱 및 서비스에서 Taskforce가 사라짐. 같은 프로젝트라 Calendar · Meet 연결 권한도 함께 사라질 수 있다(삭제 때 서버도 연동 토큰을 폐기하므로 괜찮다).
      - Google로 가입한 계정에 다른 기기에서 Apple로 로그인해 이은 뒤(같은 이메일일 때) 첫 기기에서 계정 삭제 → Apple 창이 뜬다.
+- **Mac 앱 직접 배포 (DMG):** TestFlight 밖에서 한 사람(창업자)에게 Mac 앱을 건넬 때는 `scripts/release-mac-dmg.sh`로 Developer ID 서명 · 공증한 DMG를 만들고 숨은 주소로만 건넨다. 절차는 [mac-dmg.md](mac-dmg.md).
 - **URL scheme:** `taskforce`가 `apple/Taskforce/Info.plist`에 등록되어 있다. OAuth 복귀(`taskforce://connections/{provider}?handoff=<id>`, `src/lib/connectors/callback.ts`)가 이걸로 앱에 돌아온다. callback은 code를 암호화한 완료 대기(handoff, 2분)로 남기고 이 주소로 보낼 뿐이고, 앱이 그 `handoff`로 `POST /api/v1/connections/{provider}/complete`(Bearer 토큰)를 불러야 연결이 끝난다(시작한 사용자만, 한 번만). 릴리스 빌드에서도 URL scheme이 빠지지 않았는지 확인한다.
 
 ## 6. Cron 확인
