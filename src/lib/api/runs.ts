@@ -134,6 +134,7 @@ function creditsSince(url: URL, now: Date): Date | null {
   if (raw === null) return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
   if (!sinceSchema.safeParse(raw).success) return null;
   const since = new Date(raw);
+  if (Number.isNaN(since.getTime())) return null;
   const yearAgo = new Date(now);
   yearAgo.setUTCFullYear(now.getUTCFullYear() - 1);
   return since > now || since < yearAgo ? null : since;

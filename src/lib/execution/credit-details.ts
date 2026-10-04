@@ -24,10 +24,10 @@ export function openReservations(ledger: CreditLedgerRow[]): OpenReservation[] {
 }
 
 /**
- * - running_runs: 열린 예약이 끝내지 않은 단계(prepared · calling)에 있는 run 수. 멈춘 run이라도 부르던 단계가 남았으면 든다(끝날 때까지 예약을 쥔다)
+ * - running_runs: 열린 예약이 끝내지 않은(called가 아닌) 단계에 있는 run 수. 보통 prepared(다시 준비) · calling이고, 멈춘 run이라도 부르던 단계가
+ *   남았으면 든다(끝날 때까지 예약을 쥔다). 그래서 reserved - settling.reserved > 0이면 running_runs > 0이다
  * - settling: 열린 예약이 끝낸(called) 단계에 있다 = 원가가 확정되지 않아 정산을 미뤘다(A46, credit_settle_step의 unconfirmed 뿐이다)
  * - used: since 이후의 settle 합계. 시각은 밀리초까지 비교한다(since는 밀리초 단위라 DB의 마이크로초 비교와 결과가 같다)
- * 그 밖의 상태(pending · failed · skipped)의 열린 예약은 run이 끝나며 트리거가 곧 해제하는 사이라 어느 쪽에도 세지 않는다
  */
 export function creditDetailsFromRows(
   rows: { ledger: CreditLedgerRow[]; steps: CreditStepRow[]; runs: CreditRunRow[] },
@@ -39,8 +39,10 @@ export function creditDetailsFromRows(
   const settling = { steps: 0, reserved: 0, action_ids: [] as string[] };
   for (const r of openReservations(rows.ledger)) {
     const state = stepState.get(r.step_id);
-    if (state === "prepared" || state === "calling") running.add(r.run_id);
-    if (state !== "called") continue;
+    if (state !== "called") {
+      running.add(r.run_id);
+      continue;
+    }
     settling.steps += 1;
     settling.reserved += r.credits;
     const actionId = actionOf.get(r.run_id);

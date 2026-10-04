@@ -493,7 +493,10 @@ export type LegalResponse = z.infer<typeof legalResponseSchema>;
 
 /** run 상태 (execution_runs.state). 끝 상태는 done · failed · stopped */
 export const runStateSchema = z.enum(["queued", "running", "waiting_approval", "done", "failed", "stopped"]);
-/** 실행기가 막힌 이유 (execution_runs.hold_reason): 차단 스위치 · 도구 / 실행 주체 / 보내는 연결 없음 / 크레딧 부족. 풀리면 sweep이 이어 간다 */
+/**
+ * 실행기가 막힌 이유 (execution_runs.hold_reason): 차단 스위치 · 도구 / 실행 주체 / 보내는 연결 없음 / 크레딧 부족. 풀리면 sweep이 이어 간다.
+ * 끝나지 않은 run(queued · running · waiting_approval)에서만 뜻이 있다: 멈춘(stopped) run에는 멈추기 전의 값이 남는다 (크레딧을 기다리는 run은 state도 함께 본다)
+ */
 export const runHoldReasonSchema = z.enum(["blocked", "actor", "needs_connection", "credit"]);
 /** 끝낸 결과 (execution_runs.outcome): 초안 있음 / 보내기는 연결이 필요(초안은 그대로) / 사용자에게 물을 것이 있음(질문은 계획 단계 receipt.question) */
 export const runOutcomeSchema = z.enum(["draft_ready", "needs_connection", "needs_input"]);
@@ -508,8 +511,9 @@ export const runSummarySchema = z.object({
   budget_credits: z.number().int().positive().nullable(),
   created_at: z.string(),
   /**
-   * 멈춘 시각 (execution_runs.stopped_at, DB 시각). 사용자가 멈췄을 때(POST /runs/:id/stop, 어느 기기든) 또는 할 일이 닫혀(완료 · 삭제)
-   * 서버가 다음 단계를 시작하지 않고 멈췄을 때 처음 한 번 적고 바꾸지 않는다. 멈추지 않은 run과 마이그레이션 20261026000000 전에 멈춘 run은 null
+   * 사용자가 멈춘 시각 (execution_runs.stopped_at, DB 시각). POST /runs/:id/stop(어느 기기든)이 열린 run을 멈출 때 처음 한 번 적고 바꾸지 않는다.
+   * null: 멈추지 않은 run, 할 일이 닫혀(완료 · 삭제) 서버가 다음 단계 전에 멈춘 run(state stopped, 사용자가 누르지 않았다),
+   * 마이그레이션 20261026000000 전에 멈춘 run
    */
   stopped_at: z.string().nullable(),
 });

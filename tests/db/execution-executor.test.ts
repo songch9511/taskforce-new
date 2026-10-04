@@ -627,7 +627,7 @@ describe("열린 할 일에서만 다음 단계 (U2 Mac PR1, 사용자 결정 �
       expect(llm.prompts.length).toBe(prompts);
       expect(await calling()).toBe(0);
       expect(await runState(closedRun)).toEqual({ state: "stopped", hold_reason: null, outcome: null });
-      expect(await stoppedAt(closedRun)).toBeInstanceOf(Date);
+      expect(await stoppedAt(closedRun)).toBeNull(); // 사용자가 멈춘 게 아니다 (멈춘 시각은 stop만 적는다)
       expect((await steps(closedRun)).map((x) => [x.kind, x.state])).toEqual([
         ["plan", "called"],
         ["draft", "prepared"],
@@ -643,7 +643,7 @@ describe("열린 할 일에서만 다음 단계 (U2 Mac PR1, 사용자 결정 �
     },
   );
 
-  it("route의 after(): run을 만든 뒤 첫 단계 전에 할 일을 끝내면 계획도 부르지 않는다. 멈춘 run 요약에 멈춘 시각이 있다", async () => {
+  it("route의 after(): run을 만든 뒤 첫 단계 전에 할 일을 끝내면 계획도 부르지 않는다. 멈춘 run 요약의 stopped_at은 null(사용자 중단이 아니다)", async () => {
     const user = await newUser();
     const actionId = await newAction(user);
     const scheduled: string[] = [];
@@ -660,7 +660,29 @@ describe("열린 할 일에서만 다음 단계 (U2 Mac PR1, 사용자 결정 �
     expect(llm.prompts).toEqual([]);
     const run = runSummarySchema.parse(await routeDeps(ctx, () => {}).loadRun(ctx, scheduled[0]));
     expect(run.state).toBe("stopped");
-    expect(run.stopped_at).not.toBeNull();
+    expect(run.stopped_at).toBeNull();
+  });
+
+  it("크레딧을 기다리던(hold credit) run도 할 일이 닫히면 sweep의 5분 깨우기에서 멈춘다: 지급을 기다리는 run 목록(열린 run · hold credit)에서 빠진다", async () => {
+    const user = await newUser({ credits: 0 });
+    const actionId = await newAction(user);
+    const runId = await startRun(user, actionId);
+    llm.plans = [{ kind: "draft", brief: "회신" }];
+    expect((await drive(runId)).map((r) => r.status)).toEqual(["completed", "held"]);
+    expect(await runState(runId)).toEqual({ state: "running", hold_reason: "credit", outcome: null });
+    const waitingForCredit = () =>
+      count("select 1 from public.execution_runs where user_id = $1 and state in ('queued', 'running', 'waiting_approval') and hold_reason = 'credit'", [user]);
+    expect(await waitingForCredit()).toBe(1);
+
+    await closeAction(actionId, "dropped");
+    const viaSweep: AdvanceResult[] = [];
+    // NOW는 UTC 분이 5의 배수라 막힌 run도 깨운다
+    await sweep({ store: store(), lookupGeneration: async () => ({ status: "pending" }), wake: async (id) => (viaSweep.push(await advance(deps("fn-sweep"), id)), true), now: () => NOW });
+    expect(viaSweep).toEqual([expect.objectContaining({ status: "held", gate: "action_closed" })]);
+    // 끝난 run의 hold_reason은 멈추기 전 값이 남는다(stop_run과 같다, contract.ts): 앱은 열린 run에서만 hold를 본다
+    expect(await runState(runId)).toEqual({ state: "stopped", hold_reason: "credit", outcome: null });
+    expect(await waitingForCredit()).toBe(0);
+    expect(await ledger(user)).toEqual([]);
   });
 
   it("sweep: lease가 끝나 다시 준비된 초안 단계(예약을 쥔 채)도 할 일이 닫혔으면 부르지 않고, run을 멈추며 예약을 해제한다", async () => {

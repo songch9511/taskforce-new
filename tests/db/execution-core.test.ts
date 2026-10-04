@@ -224,7 +224,7 @@ describe("끝내기 · 멈추기", () => {
     expect(await one("select state, stopped_at from public.execution_runs where id = $1", [done.runId])).toEqual({ state: "done", stopped_at: null });
   });
 
-  it("begin_call: 할 일이 열려 있지 않으면(완료 · 삭제) 부르지 않고 run을 멈춘다(gate action_closed, 멈춘 시각). 다시 열어도 멈춘 run은 그대로", async () => {
+  it("begin_call: 할 일이 열려 있지 않으면(완료 · 삭제) 부르지 않고 run을 멈춘다(gate action_closed, 사용자가 멈춘 게 아니라 stopped_at은 null). 다시 열어도 멈춘 run은 그대로", async () => {
     await db.query("insert into public.execution_actors (user_id) values ($1) on conflict do nothing", [ALICE]);
     await setGlobal(false);
     try {
@@ -237,19 +237,15 @@ describe("끝내기 · 멈추기", () => {
           "select state, hold_reason, stopped_at from public.execution_runs where id = $1",
           [runId],
         );
-        expect(run).toMatchObject({ state: "stopped", hold_reason: null });
-        expect(run.stopped_at).toBeInstanceOf(Date);
-        expect(await one("select gate, at from public.execution_events where run_id = $1 and type = 'run' and to_state = 'stopped'", [runId])).toEqual({
-          gate: "action_closed",
-          at: run.stopped_at,
-        });
+        expect(run).toEqual({ state: "stopped", hold_reason: null, stopped_at: null });
+        expect(await one("select gate from public.execution_events where run_id = $1 and type = 'run' and to_state = 'stopped'", [runId])).toEqual({ gate: "action_closed" });
         // 단계는 부르지 않았다: prepared 그대로, 표식 · lease 없음
         expect(await one("select state, lease_owner from public.execution_steps where id = $1", [stepId])).toEqual({ state: "prepared", lease_owner: null });
         expect((await one<{ n: number }>("select count(*)::int as n from public.execution_intents where step_id = $1", [stepId])).n).toBe(0);
 
         await db.query("update public.actions set status = 'open' where id = $1", [actionId]);
         expect(await gate(stepId)).toEqual({ gate: "stopped" });
-        expect(await one("select stopped_at from public.execution_runs where id = $1", [runId])).toEqual({ stopped_at: run.stopped_at });
+        expect(await one("select state, stopped_at from public.execution_runs where id = $1", [runId])).toEqual({ state: "stopped", stopped_at: null });
       }
     } finally {
       await setGlobal(true);

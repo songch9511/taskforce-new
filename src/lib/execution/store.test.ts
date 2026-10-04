@@ -194,6 +194,7 @@ describe("supabaseExecutionStore 읽기", () => {
         { user_id: USER, kind: "release", credits: 18, run_id: "r-done", step_id: "s-done", created_at: at },
         reserve("s-calling", "r-calling"),
         reserve("s-pending-cost", "r-pending-cost"),
+        reserve("s-unknown", "r-unknown"), // 결과 불명(외부 단계, U6a)도 예약을 쥔 진행 중이다
         // 다른 사용자의 같은 run · 단계 id는 섞이지 않는다
         reserve("s-other", "r-other", "u2"),
         { user_id: "u2", kind: "settle", credits: 7, run_id: "r-other", step_id: "s-other", created_at: at },
@@ -201,6 +202,7 @@ describe("supabaseExecutionStore 읽기", () => {
       execution_steps: [
         { id: "s-calling", user_id: USER, state: "calling" },
         { id: "s-pending-cost", user_id: USER, state: "called" },
+        { id: "s-unknown", user_id: USER, state: "unknown_outcome" },
         { id: "s-other", user_id: "u2", state: "called" },
       ],
       execution_runs: [
@@ -209,15 +211,45 @@ describe("supabaseExecutionStore 읽기", () => {
       ],
     });
     expect(await loadCreditDetails(client, USER, new Date("2026-10-01T00:00:00Z"))).toEqual({
-      running_runs: 1,
+      running_runs: 2,
       settling: { steps: 1, reserved: 20, action_ids: ["a-1"] },
       used: { credits: 2, since: "2026-10-01T00:00:00.000Z" },
     });
     for (const q of queries) expect(q.ops, q.table).toContainEqual(["eq", ["user_id", USER]]);
+    // 끝낸 단계는 원장을 한 번 더 본다 (그 사이 정산됐는지)
+    expect(queries.filter((q) => q.table === "credit_ledger")[1]?.ops).toEqual(
+      expect.arrayContaining([
+        ["in", ["step_id", ["s-pending-cost"]]],
+        ["in", ["kind", ["settle", "release"]]],
+      ]),
+    );
     expect(queries.find((q) => q.table === "credit_ledger")?.ops).toContainEqual(["in", ["kind", ["reserve", "settle", "release"]]]);
     // 단계는 열린 예약의 것만, run은 정산 보류(called) 단계의 것만
-    expect(queries.find((q) => q.table === "execution_steps")?.ops).toContainEqual(["in", ["id", ["s-calling", "s-pending-cost"]]]);
+    expect(queries.find((q) => q.table === "execution_steps")?.ops).toContainEqual(["in", ["id", ["s-calling", "s-pending-cost", "s-unknown"]]]);
     expect(queries.find((q) => q.table === "execution_runs")?.ops).toContainEqual(["in", ["id", ["r-pending-cost"]]]);
+  });
+
+  it("loadCreditDetails: 원장을 읽은 뒤 단계를 읽기 전에 정산된 초안은 정산 보류로 세지 않고 사용에 든다", async () => {
+    const at = "2026-10-02T00:00:00.000000+00:00";
+    const ledger: Record<string, unknown>[] = [{ user_id: USER, kind: "reserve", credits: 20, run_id: "r1", step_id: "s1", created_at: at }];
+    const tables: Record<string, Record<string, unknown>[]> = { credit_ledger: ledger, execution_runs: [{ id: "r1", user_id: USER, action_id: "a-1" }] };
+    // 단계를 읽는 순간 그 단계의 정산 · 해제가 commit된다
+    Object.defineProperty(tables, "execution_steps", {
+      get() {
+        if (ledger.length === 1) {
+          ledger.push({ user_id: USER, kind: "settle", credits: 1, run_id: "r1", step_id: "s1", created_at: at });
+          ledger.push({ user_id: USER, kind: "release", credits: 19, run_id: "r1", step_id: "s1", created_at: at });
+        }
+        return [{ id: "s1", user_id: USER, state: "called" }];
+      },
+    });
+    const { client, queries } = fakeAdmin(tables);
+    expect(await loadCreditDetails(client, USER, new Date("2026-10-01T00:00:00Z"))).toEqual({
+      running_runs: 0,
+      settling: { steps: 0, reserved: 0, action_ids: [] },
+      used: { credits: 1, since: "2026-10-01T00:00:00.000Z" },
+    });
+    expect(queries.map((q) => q.table)).toEqual(["credit_ledger", "execution_steps", "credit_ledger"]);
   });
 
   it("loadCreditDetails: 열린 예약이 없으면 단계 · run을 읽지 않는다 (지급 없음 = 모두 0)", async () => {

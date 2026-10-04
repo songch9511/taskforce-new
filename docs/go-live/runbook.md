@@ -289,7 +289,7 @@ npx supabase db query --linked "select scope, key, blocked from public.execution
 npx supabase db query --linked "update public.execution_controls set blocked = false where scope = 'global' and key = '*'"
 ```
 
-교착(deadlock)을 피하는 규칙. `begin_call`은 단계 → run → 할 일(`actions` 행, for share) → 정책 → 실행 주체 → 스위치 세 행(`global` → `mode` → `provider` 순서) → 도구 → 크레딧 계정 순서로 잠근다(EXECUTION 6장). 이 순서를 거스르는 운영자 쓰기는 진행 중인 `begin_call`과 서로 기다리다 한쪽이 되돌려진다(40P01).
+교착(deadlock)을 피하는 규칙. `begin_call`은 단계 → run → 할 일(`actions` 행, for share) → 정책 → 실행 주체 → 스위치 세 행(`global` → `mode` → `provider` 순서) → 도구 → 크레딧 계정 순서로 잠근다(EXECUTION 6장). 이 순서를 거스르는 운영자 쓰기는 진행 중인 `begin_call`과 서로 기다리다 한쪽이 되돌려진다(40P01). 할 일 · 계정 하드 삭제(cascade로 run을 지운다)도 드물게 그렇다: 되돌려지면 그대로 다시 한다.
 
 - 긴급할 때는 **`global` 한 행만** 바꾼다. 스위치 여러 행을 한 문장 · 한 명령에서 바꾸지 않는다(행을 잠그는 순서가 정해지지 않는다).
 - 정책(`execution_policies`)과 단계(`execution_steps`)를 한 트랜잭션(한 명령)에서 쓰지 않는다: `begin_call`은 단계를 먼저, 정책을 나중에 잠근다. U2에서 운영자가 정책 · 단계를 고칠 일은 없다. 꼭 고쳐야 하면 한 명령에 한 표만.
@@ -401,7 +401,7 @@ npx supabase db query --linked "select public.stop_run((select user_id from publ
    npx supabase db query --linked "select count(*) as total, count(*) filter (where email is null or lower(email) not in (lower('<운영자 이메일 1>'), lower('<운영자 이메일 2>'))) as others from auth.users"
    ```
    보관 기간이 90일(`execution_artifacts.retain_until` 열 기본값)이 아니면 켜기 전에 새 마이그레이션으로 열 기본값을 바꾼다. 본문은 매일 retention cron이 비운다(6장). 실행의 글(요청 · 지시 · 받는 사람 후보 · 되묻는 질문)은 저장한 뒤 `EXECUTION_TEXT_RETENTION_DAYS`(90일, `src/lib/retention.ts`), 그때 실행 중이면 끝나는 대로 같은 cron이 지운다(`20261024000000`, 2번에서 확인).
-2. **마이그레이션 `20261020`–`20261024` 적용 확인** (읽기, 4장 방식으로 적용한 뒤). 기대: `1 · true · true · true · 2 · true`.
+2. **마이그레이션 `20261020`–`20261024` · `20261026` 적용 확인** (읽기, 4장 방식으로 적용한 뒤). 기대: `1 · true · true · true · 2 · true`, 그다음 줄 `1 · true · true`.
    ```bash
    npx supabase db query --linked "select (select count(*) from information_schema.columns where table_schema = 'public' and table_name = 'sources' and column_name = 'processing_error_code') as m20261020, to_regprocedure('public.sweep_expire()') is not null as m20261021, to_regprocedure('public.purge_expired_artifacts()') is not null as m20261022, (select prosrc like '%insufficient_credit%' from pg_proc where oid = to_regprocedure('public.begin_call(uuid,text,integer)')) as begin_call_credits, (select count(*) from pg_constraint where conname in ('sources_kind_check', 'claims_origin_check') and pg_get_constraintdef(oid) like '%execution%') as m20261023, to_regprocedure('public.purge_expired_execution_text(timestamp with time zone,integer)') is not null as m20261024"
    # 20261026 (멈춘 시각 · 열린 할 일에서만 다음 단계, U2 Mac PR1). 기대: 1 · true · true

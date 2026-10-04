@@ -1,11 +1,12 @@
 -- U2 Mac PR1: 중단 시각(execution_runs.stopped_at)과 열린 Action에서만 다음 단계 (docs/EXECUTION.md 3 · 5 · 6장, 2026-10-04 사용자 결정 ① · ②).
 --
--- ① 중단 시각: run이 멈춘(stopped) 때를 DB 시각으로 적는다. 앱이 어느 기기에서 멈췄든 "Stop requested <시각>"을 보인다(M17 · P9).
+-- ① 중단 시각: 사용자가 run을 멈춘(stop_run) 때를 DB 시각으로 적는다. 앱이 어느 기기에서 멈췄든 "Stop requested <시각>"을 보인다(M17 · P9).
 --    - stop_run이 열린 run을 멈출 때 적는다. 끝 상태는 다시 열리지 않으므로 처음 멈춘 때 한 번만 적히고, 다시 멈춰도(이미 stopped) 그대로다.
 --      지우는 함수는 없다. 앱은 자기 run 행을 RLS(owner_select)로 읽고, POST /runs · stop의 run 요약(runSummarySchema)에도 담는다.
---    - 이 마이그레이션 전에 멈춘 run은 비어 있다(null). 운영에는 그런 run이 없다(실행을 켠 적 없음). 앱은 null이면 시각 없이 보인다.
+--    - 사용자의 중단 요청 시각이다: ②로 서버가 멈춘 run(사용자가 누르지 않았다)은 비워 둔다. 앱은 null이면 시각 없이 "Stopped."로 보인다.
+--      이 마이그레이션 전에 멈춘 run도 null이다(운영에는 그런 run이 없다, 실행을 켠 적 없음).
 -- ② 열린 Action에서만 다음 단계: begin_call이 run의 Action을 읽어 열려 있지 않으면(status done · dropped, /now가 보이는 할 일은 open뿐)
---    단계를 부르지 않고 run을 멈춘다(stopped, gate action_closed, ①의 시각도 적는다). 모든 입구(route의 after() · 자기 호출 · sweep)가
+--    단계를 부르지 않고 run을 멈춘다(stopped, gate action_closed, 시각은 ①과 달리 비워 둔다). 모든 입구(route의 after() · 자기 호출 · sweep)가
 --    begin_call을 지나므로 세 입구 모두 막힌다. 남은 예약은 run을 멈추는 기존 트리거(release_run_credits)가 해제한다.
 --    이미 calling인 단계는 그대로 끝까지 결과를 받는다(stop과 같다, EXECUTION 5장). 다시 보내기 · 결과 불명 규칙은 바뀌지 않는다.
 --    Action 행은 for share로 잠근다(스위치와 같다): 할 일을 끝내는 쓰기(write_action의 update)는 진행 중인 begin_call이 commit될 때까지
@@ -28,7 +29,7 @@ alter table public.execution_runs add column stopped_at timestamptz;
 -- 1) begin_call: 20261022000000_execution_credits_artifacts와 같고, 앞 단계 확인 뒤에 Action 확인(②)만 더했다
 -- ─────────────────────────────────────────────
 -- prepared → calling. RPC 하나 = READ COMMITTED 트랜잭션 하나, 외부 호출 전에 commit된다 (외부 호출은 이 안에 없다).
--- 순서: stale(단계 · run · 앞 단계) → stopped → Action 열림(아니면 run을 멈춘다) → 중복(intent) → 실행 주체 → 스위치 → 도구
+-- 순서: stale(단계) → stopped · stale(run) → stale(앞 단계) → Action 열림(아니면 run을 멈춘다) → 중복(intent) → 실행 주체 → 스위치 → 도구
 --       → (외부만) 보내는 연결 → 수신자 허용 목록 → 승인/Auto → 크레딧 → intent + 예약 + lease.
 -- 잠금 순서: step → run → Action(for share) → 정책 → 실행 주체 → 스위치 → 도구 → 수신자(for share, 여러 행은 키 순서로) → 크레딧 계정(for update).
 -- 끄는 쪽의 update(스위치 · 할 일 끝내기)는 이 트랜잭션이 끝날 때까지 기다린다. 같은 사용자의 두 예약은 계정 행에서 줄을 선다.
@@ -75,14 +76,14 @@ begin
   end if;
 
   -- 열린 Action에서만 다음 단계 (2026-10-04 사용자 결정 ②): 끝냈거나(done) 지운(dropped) 할 일의 run은 부르지 않고 멈춘다.
-  -- 열림의 기준은 /now와 같다(status open). 멈추면 트리거가 남은 예약을 해제하고(release_run_credits), 시각을 stop_run과 같이 적는다.
+  -- 열림의 기준은 /now와 같다(status open). 멈추면 트리거가 남은 예약을 해제한다(release_run_credits). stopped_at은 사용자의 중단 요청
+  -- 시각이라 적지 않는다. hold_reason은 stop_run과 같이 그대로 둔다(끝난 run의 hold는 뜻이 없다, contract.ts runSummarySchema).
   -- for share: 할 일을 끝내는 update는 이 전이가 commit될 때까지 기다리고, 끝낸 뒤 commit되는 전이는 없다. 스위치 · 지급과 달리 되돌려
   -- 이어 가지 않는다: 할 일을 다시 열어도 멈춘 run은 그대로고, 새 run으로 다시 시작한다
   select a.status into v_action_status from public.actions a where a.id = v_run.action_id and a.user_id = v_run.user_id for share;
   if v_action_status is distinct from 'open' then
     perform set_config('execution.gate', 'action_closed', true);
-    update public.execution_runs set state = 'stopped', stopped_at = coalesce(stopped_at, public.db_now())
-      where id = v_run.id and state in ('running', 'waiting_approval');
+    update public.execution_runs set state = 'stopped' where id = v_run.id and state in ('running', 'waiting_approval');
     return '{"gate": "action_closed"}';
   end if;
 
