@@ -90,7 +90,7 @@ The email, notes, and messages you connect contain names, email addresses, and s
 
 You connect each service yourself in the app's Connections screen and can disconnect at any time. We only **read** from connected services. We never send email or change events, documents, or messages.
 
-When you disconnect (app → Connections → Disconnect), the service's access token is deleted immediately, we ask the service to revoke it, and we stop reading from it. For Notion and Google (including Gmail), **source text already imported, and tasks created from it, remain.** Slack is different: when you disconnect or remove the app in Slack, **we delete the text we got from Slack right away and keep only your tasks** (see Slack below). To delete everything, delete your account (section 5).
+When you disconnect (app → Settings → Connections → Disconnect), the service's access token is deleted immediately, we ask the service to revoke it, and we stop reading from it. For Notion and Google (including Gmail), **source text already imported, and tasks created from it, remain.** Slack is different: when you disconnect or remove the app in Slack, **we delete the text we got from Slack right away and keep only your tasks** (see Slack below). To delete everything, delete your account (section 5).
 
 ### Notion
 
@@ -150,7 +150,7 @@ Taskforce uses external AI models to find tasks in source text, decide whether a
 ### Consent and withdrawal
 
 - Before you connect your first service, the app shows you this information and asks for your consent. **If you do not agree, the server does not send or process source text from connected services or text you paste in, and does not write drafts.**
-- You can withdraw consent at any time in app → Settings → Privacy & AI Data. After you withdraw, new source text is not sent to AI, so no new tasks are created, and a draft in progress stops before its next AI request. Existing tasks and drafts remain; to delete them, delete your account.
+- You can withdraw consent at any time in app → Settings → Privacy & AI Data. After you withdraw, we stop importing new source text from your connected services and do not send source text to AI, so no new tasks are created, and a draft in progress stops before its next AI request. Existing tasks and drafts remain; to delete them, delete your account.
 - "Hand off to AI" packages a task's context as text and shows it in the app. If you paste that text into another AI tool, you are doing so yourself; we do not send it.
 
 ## 5. Retention and deletion
@@ -172,7 +172,7 @@ Taskforce uses external AI models to find tasks in source text, decide whether a
 | Slack name information (user and conversation names) | Until you disconnect or remove the app (a name older than 7 days is re-read when it is needed again) |
 | Usage records | Until you delete your account |
 | Push device tokens | Until you sign out, Apple reports the token invalid, or you delete your account |
-| Task list stored on your device | Until you sign out on that device or delete your account |
+| Task list stored on your device | Until you sign out on that device or delete your account (if the account is deleted on another device, the copy is deleted the next time this device's app reaches our server) |
 | Server request records (Vercel) | 1 day |
 | Database and authentication request records (Supabase) | 1 day |
 | AI requests (OpenRouter and model providers) | Request content not stored; only while the request is processed (OpenRouter keeps a usage record with no content, section 4) |
@@ -182,7 +182,7 @@ No law currently requires us to keep any of this information longer. If one does
 
 ### How we delete
 
-- **Account deletion:** app → Account → Delete account. When the server deletes your authentication account, rows in every table linked to it (profile, connections and tokens, source text, tasks, evidence, history, judgment records, usage records, device tokens, drafts and run records, AI usage and credit records) are deleted in the same request. The app also deletes the task list stored on that device.
+- **Account deletion:** app → Settings → Delete Account (Mac: Settings → Account → Delete Account). When the server deletes your authentication account, rows in every table linked to it (profile, connections and tokens, source text, tasks, evidence, history, judgment records, usage records, device tokens, drafts and run records, AI usage and credit records) are deleted in the same request. The app also deletes the task list stored on that device; on your other devices, the stored list is deleted the next time the app on that device reaches our server.
   When you delete your account, we also ask Apple to revoke your Sign in with Apple tokens, ask each connected service to revoke its tokens, and, if you signed in with Google, ask Google to revoke that sign-in access. For accounts that sign in with Apple, we ask you to confirm with Apple once more before we request revocation. If you cancel, or the confirmation or revocation fails, Taskforce may remain linked in your Apple Account, but your account is still deleted. If you cancel or the confirmation fails, the app shows how to remove Taskforce in your Apple Account settings.
 - **Automatic deletion of source text and drafts:** a job runs daily and deletes the body text of source text stored 90 days ago, and deletes Jev judgment records stored 90 days ago. The same job deletes draft body text, what you asked for, and the draft instructions, suggested recipients, and questions stored 90 days ago (if the draft run is still in progress at that point, it deletes what you asked for and the instructions, suggested recipients, and questions the first time it runs after the run ends), and deletes queued Slack messages that arrived 3 days ago and Slack threads with no activity for 14 days.
 - **Disconnecting or removing Slack:** when you disconnect Slack in the app or remove the app (or revoke its access) in Slack, we delete that connection's Slack source body text, titles, and people involved, evidence quotes, claim quote text, Jev judgment records, queued messages, tracked threads, and name information at once (Slack in section 3). A daily check of Slack tokens runs the same deletion within a day even if we were not told the app was removed.
@@ -264,11 +264,11 @@ You can ask to access, correct, delete, or stop the processing of your personal 
 | To do this | How |
 |---|---|
 | See your tasks, evidence, and drafts | Directly in the app |
-| Change your name, aliases, or email addresses | App → Account → Profile |
+| Change your name or aliases | App → Settings → Profile (Mac: Settings → Account) |
 | Edit or delete a task | Directly in the app |
-| Disconnect a service | App → Connections → Disconnect. You can also remove access in each service (Google: myaccount.google.com/connections; Notion: Settings → Connections; Slack: your workspace's app management). For Slack, disconnecting also deletes the text we got from Slack (your tasks remain) |
+| Disconnect a service | App → Settings → Connections → Disconnect. You can also remove access in each service (Google: myaccount.google.com/connections; Notion: Settings → Connections; Slack: your workspace's app management). For Slack, disconnecting also deletes the text we got from Slack (your tasks remain) |
 | Withdraw consent to AI transfer | App → Settings → Privacy & AI Data |
-| Delete all your data | App → Account → Delete account |
+| Delete all your data | App → Settings → Delete Account (Mac: Settings → Account → Delete Account) |
 | Any other access, correction, deletion, or restriction request | Email privacy@taskforcelabs.dev |
 
 - We answer email requests within 10 days. We may ask you to write from your account email so we can confirm it is you.
@@ -335,7 +335,7 @@ The beta is not offered to people who live in the European Economic Area (EEA, i
 
 Change history
 
-- Beta {{version}} (effective {{effective date}}): When you start a draft for a task (such as an email or document), we now send that task and excerpts of its evidence sources (excluding source text from Slack) to the same external AI providers used for source analysis, write the draft, and save it in the app. We do not send drafts to their recipients. Drafts, run records, AI usage, and credits (granted by us free of charge; no purchases) are now listed among the information we process, with their retention periods (draft body text, what you asked for, and the instructions, suggested recipients, and questions the AI set: 90 days after they are stored; if the draft run is still in progress at that point, what you asked for and the instructions, suggested recipients, and questions are deleted as soon as it ends). We also describe that OpenRouter keeps usage records with no content and that we look them up; that we record when a source is closed as failed; and that the app stores the last task list (title, due date, status) on your device for each account so it can show it offline, and deletes it when you sign out or delete your account. AI data consent is now changed in Settings → Privacy & AI Data.
+- Beta {{version}} (effective {{effective date}}): When you start a draft for a task (such as an email or document), we now send that task and excerpts of its evidence sources (excluding source text from Slack) to the same external AI providers used for source analysis, write the draft, and save it in the app. We do not send drafts to their recipients. Drafts, run records, AI usage, and credits (granted by us free of charge; no purchases) are now listed among the information we process, with their retention periods (draft body text, what you asked for, and the instructions, suggested recipients, and questions the AI set: 90 days after they are stored; if the draft run is still in progress at that point, what you asked for and the instructions, suggested recipients, and questions are deleted as soon as it ends). We also describe that OpenRouter keeps usage records with no content and that we look them up; that we record when a source is closed as failed; and that the app stores the last task list (title, due date, status) on your device for each account so it can show it offline, and deletes it when you sign out or delete your account (if the account is deleted on another device, the next time this device's app reaches our server). AI data consent is now changed in Settings → Privacy & AI Data, and the paths for your profile, disconnecting a service, and deleting your account now match the app's Settings screen.
 - Beta 1.3 (effective 2026-10-02): Text you paste into the Mac launcher (body and title) is now listed among the information we process. Like source text from connected services, it is sent to external AI only after you give AI data consent, and its body text is deleted 90 days after it is stored. We also describe what happens when you delete an account that signs in with Apple and you cancel the Apple confirmation, or the confirmation or revocation fails.
 - Beta 1.2 (effective 2026-09-30, [view previous version](https://www.taskforcelabs.dev/en/privacy/beta-1.2)): You can now sign in with Google. At sign-in we receive your Google account identifier, email address, name, and profile photo URL (and your organization's domain for Google Workspace accounts), and when you delete your account we ask Google to revoke that sign-in access.
 - Beta 1.1 (effective 2026-09-30, [view previous version](https://www.taskforcelabs.dev/en/privacy/beta-1.1)): The Gmail section now matches how the service works (which mail is skipped and why, one message stored at a time, the IDs and received times of fetched or skipped mail and per-reason counts, and the account-identification permissions). When a connection expires, we send one reminder to reconnect and keep a record of connections, expirations, and reminders. Baseten was removed from the source-analysis providers.
