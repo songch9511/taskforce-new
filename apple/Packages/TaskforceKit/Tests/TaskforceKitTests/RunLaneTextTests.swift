@@ -162,8 +162,87 @@ struct RunLaneTextTests {
     }
 }
 
-/// iPhone 상세의 원문: 실행 receipt(초안 저장 기록)는 원문 슬립 · `Open in <서비스>` · Show All에서 뺀다 (초안은 갈래 `View Draft`)
+/// iPhone의 원문: 실행 receipt(초안 저장 기록)는 상세의 원문 슬립 · `Open in <서비스>` · Show All, 목록의 펼친 행 · Review 카드 슬립에서 뺀다
+/// (초안은 갈래 `View Draft`)
 struct ReceiptLinesTests {
+    private func line(_ quote: String, at seconds: TimeInterval, _ service: SourceService) -> EvidenceLine {
+        EvidenceLine(
+            id: UUID(), quote: quote, sourceID: UUID(), sourceTitle: "원문", occurredAt: Date(timeIntervalSince1970: seconds),
+            externalURL: URL(string: "https://www.notion.so/sample"), service: service
+        )
+    }
+
+    private func receipt(at seconds: TimeInterval) -> EvidenceLine {
+        EvidenceLine(
+            id: UUID(), quote: "초안 저장: 데모 예상 질문", sourceID: UUID(), sourceTitle: "데모 예상 질문", occurredAt: Date(timeIntervalSince1970: seconds),
+            externalURL: ArtifactLink.url(for: UUID()), service: .manual(.execution)
+        )
+    }
+
+    /// 목록 슬립의 근거(`withoutReceipts.lead`): receipt를 뺀 가장 최근 원문. receipt만 있으면 슬립이 없다
+    @Test func listLeadSkipsReceipts() {
+        let notion = line("금요일 데모는 제가 준비할게요.", at: 100, .notion)
+        let slack = line("데모 시간은 3시로 바꿔요", at: 300, .slack)
+        let saved = receipt(at: 200)
+        let savedAgain = receipt(at: 400)
+        // receipt를 빼지 않으면 가장 최근인 receipt가 맨 앞
+        #expect(EvidenceDigest(lines: [notion, saved]).lead == saved)
+        #expect(EvidenceDigest(lines: [notion, saved]).withoutReceipts.lead == notion)
+        // receipt보다 늦은 원문은 그대로 맨 앞
+        #expect(EvidenceDigest(lines: [notion, saved, slack]).withoutReceipts.lead == slack)
+        #expect(EvidenceDigest(lines: [notion, saved, slack, savedAgain]).withoutReceipts.lead == slack)
+        #expect(EvidenceDigest(lines: [saved, savedAgain]).withoutReceipts.lead == nil)
+    }
+
+    /// Slack 연결을 끊어 지운 인용보다 남은 인용을 먼저 고르는 규칙은 receipt를 빼도 같다. 지운 인용만 남으면 그 줄 (receipt가 아니라)
+    @Test func listLeadKeepsRemovedQuoteRule() {
+        let notion = line("금요일 데모는 제가 준비할게요.", at: 100, .notion)
+        let removed = line(RemovedQuote.slackDisconnected, at: 300, .slack)
+        let saved = receipt(at: 400)
+        #expect(EvidenceDigest(lines: [notion, removed, saved]).lead == saved)
+        #expect(EvidenceDigest(lines: [notion, removed, saved]).withoutReceipts.lead == notion)
+        #expect(EvidenceDigest(lines: [removed, saved]).withoutReceipts.lead == removed)
+    }
+
+    /// receipt가 없는 계정은 전과 같다: 근거 줄 · 맨 앞 근거 모두 그대로
+    @Test func listLeadUnchangedWithoutReceipts() {
+        let notion = line("금요일 데모는 제가 준비할게요.", at: 100, .notion)
+        let slack = line("데모 시간은 3시로 바꿔요", at: 300, .slack)
+        let removed = line(RemovedQuote.slackDisconnected, at: 400, .slack)
+        let undated = EvidenceLine(
+            id: UUID(), quote: "직접 고른 구절", sourceID: UUID(), sourceTitle: nil, occurredAt: nil, externalURL: nil, service: .manual(.note)
+        )
+        let cases: [[EvidenceLine]] = [[], [notion], [slack, notion], [notion, removed], [removed], [notion, slack, removed, undated]]
+        for lines in cases {
+            let digest = EvidenceDigest(lines: lines)
+            #expect(digest.withoutReceipts == digest)
+            #expect(digest.withoutReceipts.lead == digest.lead)
+        }
+    }
+
+    /// 서버 행에서 만든 근거: receipt 원문(kind execution, `taskforce://artifacts/<id>`)이 가장 나중에 붙어도 목록 슬립은 원래 원문
+    @Test func listLeadFromServerRows() throws {
+        let rows = """
+        [{"id": "33333333-3333-4333-8333-000000000001", "kind": "meeting", "title": "제품 회의록", "occurred_at": "2026-09-30T00:00:00+00:00",
+          "external_url": "https://www.notion.so/a", "created_at": "2026-09-30T00:00:00+00:00", "processing_status": "done"},
+         {"id": "33333333-3333-4333-8333-000000000002", "kind": "execution", "title": "데모 예상 질문", "occurred_at": "2026-10-02T00:00:00+00:00",
+          "external_url": "taskforce://artifacts/77777777-7777-4777-8777-777777777777", "created_at": "2026-10-02T00:00:00+00:00",
+          "processing_status": "done"}]
+        """
+        let decoded = try TaskforceJSON.decoder().decode([SourceSummary].self, from: Data(rows.utf8))
+        let sources = Dictionary(uniqueKeysWithValues: decoded.map { ($0.id, $0) })
+        let evidence = [
+            EvidenceRecord(id: UUID(), actionID: UUID(), sourceID: decoded[0].id, quote: "금요일 데모는 제가 준비할게요.", role: .created,
+                           createdAt: Date(timeIntervalSince1970: 1_000)),
+            EvidenceRecord(id: UUID(), actionID: UUID(), sourceID: decoded[1].id, quote: "초안 저장: 데모 예상 질문", role: .executed,
+                           createdAt: Date(timeIntervalSince1970: 2_000)),
+        ]
+        let digest = EvidenceDigest(evidence: evidence, sources: sources)
+        #expect(digest.lead?.service == .manual(.execution))
+        #expect(digest.withoutReceipts.lead?.quote == "금요일 데모는 제가 준비할게요.")
+        #expect(digest.withoutReceipts.lead?.service == .notion)
+    }
+
     @Test func receiptsAreNotSourceLines() {
         let notion = UUID()
         let receipt = UUID()
