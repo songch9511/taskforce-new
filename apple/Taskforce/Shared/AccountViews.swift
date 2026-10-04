@@ -192,24 +192,30 @@ private struct ConnectionRow: View {
 }
 
 /// 외부 AI 처리 동의 내용 (App Store 5.1.2(i)): 무엇을 · 누구에게 · 어떻게 지키나 · 철회.
-/// 처리방침 4장 · 7장 표와 같은 내용 · 이름을 쓴다(docs/go-live/app-store.md 5장). 공급자가 바뀌면 처리방침과 함께 고친다.
+/// 처리방침 4장 · 7장 표와 같은 내용 · 이름을 쓴다(docs/go-live/app-store.md 5장, D9a-1 초안 4장 "What we send" · "Consent and withdrawal").
+/// 공급자 · 보내는 것이 바뀌면 처리방침과 함께 고친다.
 struct ConsentDetails: View {
-    #if os(macOS)
-    private let settingsPath = "Settings > AI data"
-    #else
-    private let settingsPath = "Account > AI data"
-    #endif
+    /// 철회 경로: Mac 설정 사이드바 · iPhone 설정 시트 모두 같은 이름 (처리방침 4장 · 11장 "app → Settings → Privacy & AI Data")
+    static let settingsPath = "Settings > Privacy & AI Data"
+
+    static let purpose = "To find your tasks and write drafts you start, Taskforce sends the text you connect or paste in to third-party AI models. Drafts are only saved in Taskforce, never sent to the people they're for or added to your connected services."
+    static let sent = "Notes, documents, transcripts, messages, and email you connect or paste in, with the names and email addresses of people in them. Your name, nicknames, and email addresses, so the AI can recognize you. Your task titles and quotes. Questions you ask, with related tasks and quotes, including draft records. Hand off to AI only shows text for you to copy; Taskforce doesn't send it."
+    static let drafts = "Your request. The task's title, status, owner, due date, and counterpart. Its quotes with nearby source text, and those sources' type, title, date, and the names and email addresses of people in them. Your name (or the first part of your email). Instructions and titles of earlier drafts for the same request. Text and quotes from Slack are left out; a task from Slack still sends its own title, status, owner, due date, and counterpart."
+    static let receivers = "OpenRouter (USA), which routes each request to Fireworks, Together AI, DeepInfra, Microsoft Azure, or TypeSafe (all USA)."
+    static let protection = "Only providers that keep no data. Never used to train AI models. Stored on our servers in Sydney. Delete your account to delete it all."
+    static let withdraw = "Turn this off in \(settingsPath). Without it, Taskforce doesn't send or process your sources and doesn't write drafts: no new tasks are found, and a draft in progress stops before its next AI request. Existing tasks and drafts stay."
 
     var body: some View {
         VStack(alignment: .leading, spacing: TFSpace.lg) {
-            Text("To find your tasks, Taskforce sends the text you connect or paste in to third-party AI models.")
+            Text(Self.purpose)
                 .font(TFFont.callout)
                 .foregroundStyle(TFColor.textPrimary)
                 .fixedSize(horizontal: false, vertical: true)
-            item("doc.text", "What's sent", "Notes, documents, transcripts, messages, and email you connect or paste in, with the names and email addresses of people in them. Your name, nicknames, and email addresses, so the AI can recognize you. Your task titles and quotes, and questions you ask.")
-            item("arrow.up.right", "Who receives it", "OpenRouter (USA), which routes each request to Fireworks, Together AI, DeepInfra, Microsoft Azure, or TypeSafe (all USA).")
-            item("lock.shield", "How it's protected", "Only providers that keep no data. Never used to train AI models. Stored on our servers in Sydney. Delete your account to delete it all.")
-            item("arrow.uturn.backward", "Withdraw anytime", "Turn this off in \(settingsPath). Without it, Taskforce can't find tasks in your sources.")
+            item("doc.text", "What's sent", Self.sent)
+            item("square.and.pencil", "For drafts you start", Self.drafts)
+            item("arrow.up.right", "Who receives it", Self.receivers)
+            item("lock.shield", "How it's protected", Self.protection)
+            item("arrow.uturn.backward", "Withdraw anytime", Self.withdraw)
             LegalLinksRow()
                 .font(TFFont.footnote)
                 .padding(.leading, 20 + TFSpace.md)
@@ -235,7 +241,7 @@ struct ConsentDetails: View {
     }
 }
 
-/// 첫 연결 전에 띄우는 동의 화면
+/// 첫 연결 전에 띄우는 동의 화면 (설정의 `Use AI on new sources`를 켤 때도)
 struct ConsentPrompt: View {
     @Environment(AccountStore.self) private var account
     @Environment(\.dismiss) private var dismiss
@@ -245,7 +251,7 @@ struct ConsentPrompt: View {
         VStack(alignment: .leading, spacing: TFSpace.xl) {
             ScrollView {
                 VStack(alignment: .leading, spacing: TFSpace.xl) {
-                    Text("AI data")
+                    Text("Privacy & AI Data")
                         .font(TFFont.title)
                         .foregroundStyle(TFColor.textPrimary)
                     ConsentDetails()
@@ -282,39 +288,146 @@ struct ConsentPrompt: View {
     }
 }
 
-/// 설정의 동의 화면: 내용 + 지금 상태 + 동의 / 철회
+/// `Use AI on new sources` 스위치를 바꾸려 할 때 할 일. 동의는 이어지는 화면이 바꾼다: 켜기는 동의 화면에서 Allow를 눌러야, 끄기는 철회를 확인해야
+enum ConsentSwitch: Equatable {
+    /// 켜기: 동의 화면 (`ConsentPrompt`)
+    case prompt
+    /// 끄기: 철회 확인
+    case confirmWithdraw
+    /// 바꿀 것 없음 (이미 그 상태 · 동의 상태를 모름)
+    case none
+
+    /// `known`: 동의 상태를 안다 (`AccountStore.consentKnown`). 모르면 바꾸지 않는다
+    static func change(to on: Bool, hasConsent: Bool, known: Bool) -> ConsentSwitch {
+        guard known, on != hasConsent else { return .none }
+        return on ? .prompt : .confirmWithdraw
+    }
+}
+
+/// 설정 Privacy & AI Data (Figma S7 269:5822 `Section · AI`): `Use AI on new sources` 스위치 · AI providers + 그 아래 동의 내용(5.1.2(i) 공개).
+/// S7의 Stored data · Support access는 U4. Mac은 설정 카드, iPhone은 설정 시트의 Form
 struct ConsentSettingsView: View {
     @Environment(AccountStore.self) private var account
+    @Environment(\.openURL) private var openURL
+    @State private var prompting = false
     @State private var confirmingWithdraw = false
+    @State private var withdrawing = false
+
+    static let pageDescription = "What Taskforce sends to AI, and what it keeps."
+    static let switchTitle = "Use AI on new sources"
+    static let providersTitle = "AI providers"
+    static let providersDetail = "Only providers that keep no data and never train on it. If none qualifies, the request fails."
 
     var body: some View {
         @Bindable var account = account
+        content
+            .task { await account.load() }
+            .sheet(isPresented: $prompting) {
+                ConsentPrompt()
+            }
+            .confirmationDialog("Withdraw AI processing?", isPresented: $confirmingWithdraw, titleVisibility: .visible) {
+                Button("Withdraw", role: .destructive) { withdraw() }
+            } message: {
+                Text("Taskforce stops reading new sources and writing drafts until you allow it again.")
+            }
+            .messageAlert($account.message)
+    }
+
+    /// 켜져 있으면 끄는 결과를, 꺼져 있으면 지금 상태를 (Figma S7 · S7c)
+    private var switchDetail: String {
+        account.hasConsent
+            ? "Turning this off stops new tasks from sources and new drafts. Your tasks and drafts stay."
+            : "New sources aren't read and no drafts are written. Your tasks and drafts stay."
+    }
+
+    private var useAI: Binding<Bool> {
+        Binding(
+            get: { account.hasConsent },
+            set: { on in
+                switch ConsentSwitch.change(to: on, hasConsent: account.hasConsent, known: account.consentKnown) {
+                case .prompt: prompting = true
+                case .confirmWithdraw: confirmingWithdraw = true
+                case .none: break
+                }
+            }
+        )
+    }
+
+    private func withdraw() {
+        withdrawing = true
+        Task {
+            await account.withdrawConsent()
+            withdrawing = false
+        }
+    }
+
+    #if os(macOS)
+    private var content: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                Text(Self.pageDescription)
+                    .font(TFFont.footnote)
+                    .foregroundStyle(TFColor.textSecondary)
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("AI")
+                        .font(TFFont.footnoteEmphasis)
+                        .foregroundStyle(TFColor.textPrimary)
+                        .accessibilityAddTraits(.isHeader)
+                    SettingsCard {
+                        SettingsRow(Self.switchTitle, subtitle: switchDetail) {
+                            Toggle(Self.switchTitle, isOn: useAI)
+                                .toggleStyle(.switch)
+                                .labelsHidden()
+                                .controlSize(.mini)
+                                .tint(TFColor.fillAccent)
+                                .disabled(!account.consentKnown || withdrawing)
+                        }
+                        SettingsDivider()
+                        SettingsRow(Self.providersTitle, subtitle: Self.providersDetail) {
+                            QuietButton("View Policy") { openURL(LegalLinks.privacy) }
+                        }
+                    }
+                }
+                SettingsCard {
+                    ConsentDetails()
+                        .padding(TFSpace.lg)
+                }
+            }
+            .frame(width: MacSettingsView.column, alignment: .leading)
+            .padding(.top, 20)
+            .padding(.bottom, 32)
+            .frame(maxWidth: .infinity)
+        }
+    }
+    #else
+    private var content: some View {
         Form {
+            Section {
+                Toggle(isOn: useAI) {
+                    Text(Self.switchTitle)
+                    Text(switchDetail)
+                }
+                .tint(TFColor.fillAccent)
+                .disabled(!account.consentKnown || withdrawing)
+                LabeledContent {
+                    Button("View Policy") { openURL(LegalLinks.privacy) }
+                } label: {
+                    Text(Self.providersTitle)
+                    Text(Self.providersDetail)
+                }
+            } header: {
+                Text(Self.pageDescription)
+                    .textCase(nil)
+            }
             Section {
                 ConsentDetails()
                     .padding(.vertical, TFSpace.xs)
             }
-            Section {
-                if account.hasConsent {
-                    if let date = account.profile?.aiConsentAt, date > .distantPast {
-                        LabeledContent("Allowed", value: WhenText.label(date))
-                    }
-                    Button("Withdraw", role: .destructive) { confirmingWithdraw = true }
-                } else {
-                    Button("Allow") { Task { await account.giveConsent() } }
-                }
-            }
         }
         .formStyle(.grouped)
-        .navigationTitle("AI data")
-        .task { await account.load() }
-        .confirmationDialog("Withdraw AI processing?", isPresented: $confirmingWithdraw, titleVisibility: .visible) {
-            Button("Withdraw", role: .destructive) { Task { await account.withdrawConsent() } }
-        } message: {
-            Text("Taskforce stops reading new sources until you allow it again.")
-        }
-        .messageAlert($account.message)
+        .navigationTitle("Privacy & AI Data")
     }
+    #endif
 }
 
 /// 이름 · 다른 이름: 원문 속 "나"를 알아보는 데 쓴다 (서버 PUT /profile)
