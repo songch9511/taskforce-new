@@ -202,7 +202,7 @@ Privacy Policy   Terms of Use
 [Allow]   [Not Now]
 ```
 
-철회 경로는 Mac · iPhone 모두 "Settings > Privacy & AI Data"다(iPhone 설정 시트 제목도 Settings). 설정의 Privacy & AI Data 화면(`ConsentSettingsView`, Figma S7 `Section · AI`)은 `Use AI on new sources` 스위치(켜기 → 이 동의 화면, 끄기 → 철회 확인) · AI providers(View Policy) 아래에 같은 내용을 둔다. 문장마다 처리방침 D9a-1 초안 4장(140 · 141 · 152 · 153 · 154행)과 맞춘 대조는 U2 Mac PR4 본문에 있다.
+철회 경로는 Mac · iPhone 모두 "Settings > Privacy & AI Data"다(iPhone 설정 시트 제목도 Settings). 설정의 Privacy & AI Data 화면(`ConsentSettingsView`, Figma S7 `Section · AI`)은 `Use AI on new sources` 스위치(켜기 → 이 동의 화면, 끄기 → 철회 확인) · AI providers(View Policy) 아래에 같은 내용을 둔다. 문장마다 처리방침 D9a-1 초안 4장(보내는 정보의 물어보기 · 초안 줄, 동의와 철회의 세 줄)과 맞춘 대조는 U2 Mac PR4 본문과 `docs/legal/README.md` "앱 동의 문구 대조"에 있다.
 
 한국어 화면을 따로 둘지는 앱 전체의 현지화 결정을 따른다. 둔다면 처리방침 4장 문장을 줄여 쓴다.
 

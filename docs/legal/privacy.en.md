@@ -44,7 +44,7 @@ This policy explains what we process, why, where, and for how long, and how you 
 | Category | Items | How we collect it |
 |---|---|---|
 | Account | Sign in with Apple: your Apple user identifier and email address (if you choose "Hide My Email", the relay address Apple creates). Sign in with Google: your Google account identifier, email address, name, profile photo URL, and, for Google Workspace accounts, your organization's domain (the values Google provides at sign-in; we do not store Google's tokens on our servers). Email sign-in: your email address. We do not receive your name from Apple | When you sign in |
-| Profile | Display name, aliases, additional email addresses | You enter them in the app (additional email addresses only if you ask us by email) |
+| Profile | Display name, aliases, additional email addresses | You enter them, or ask us to (name and aliases in the app) |
 | Connections | The connected service, workspace or account identifier and name (for Google, the account's email address), connection settings (names and identifiers of databases to include or skip; for Google, the permission scopes you granted and, for Gmail, counts of emails by reason), sync status (where the last import reached; for Gmail, the identifier and received time of recently imported or filtered emails), access tokens (stored encrypted) | When you connect a service in the app |
 | Source text from connected services | Meeting notes, documents, task database entries, calendar events, meeting transcripts, emails, and Slack messages, with their titles, times, original links, and the people involved (names and email addresses of senders, recipients, attendees, and speakers). See section 3 for each service | Through the connected service's API |
 | Pasted source text | Text you paste into the Mac launcher (such as meeting notes or messages) and its title (the first line) | You enter it in the app |
@@ -138,7 +138,7 @@ Taskforce uses external AI models to find tasks in source text, decide whether a
 - Text you paste in (body and title)
 - Your display name, aliases, and email addresses, so the model can recognize you in the text
 - Titles and evidence quotes of existing tasks, to compare with newly found candidates
-- (When you add a task yourself, only if you have given AI data consent) its title and, if you picked one, the source line, used to find similar tasks
+- (Tasks you add yourself, only after you have given AI data consent) its title and, if you picked one, the source line, used to find similar tasks
 - (When you use Ask) your question and the related tasks and evidence quotes (including draft records)
 - (When you start a draft) what you asked for; the task's title, status, owner, due date, and counterpart name; its evidence quotes with the surrounding excerpts of source text; those sources' type, title, date, and the names and email addresses of the people involved; your name (or the part of your account email before @); and the instructions and titles of drafts already written for the same request. **We do not send source text from Slack or its evidence quotes** (for tasks from Slack, the task's own title, status, owner, due date, and counterpart name are still sent)
 
