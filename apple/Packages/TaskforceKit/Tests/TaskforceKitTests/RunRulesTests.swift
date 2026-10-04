@@ -50,6 +50,10 @@ struct RunLaneTests {
         let lane = RunLane.state(run: nil, steps: [], artifacts: [])
         #expect(lane.state == .none)
         #expect(!lane.isVisible)
+        // run을 읽지 못했는데(지워짐) 초안이 있으면 초안 있음
+        let orphan = RunLane.state(run: nil, steps: [], artifacts: [F.draft(1)])
+        #expect(orphan.state == .draftReady)
+        #expect(orphan.isVisible)
         // 모르는 상태 · 초안 없음도 숨김
         #expect(!RunLane.state(run: F.run(.unknown), steps: [], artifacts: []).isVisible)
         #expect(RunLane.state(run: F.run(.unknown), steps: [], artifacts: [F.draft(1)]).isVisible)

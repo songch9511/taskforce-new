@@ -113,6 +113,15 @@ struct ExecutionModelTests {
         #expect(credits.isBelowDraftEstimate)
     }
 
+    /// 합계 · 원장이 잠깐 어긋나 음수가 와도 0으로 (서버 PR1)
+    @Test func creditsClampNegativeTotals() throws {
+        let json = #"{"available":-3,"reserved":-1,"rate_version":"c3-v1","used":{"credits":-2,"since":"2026-10-01T00:00:00Z"}}"#
+        let credits = try ExecutionFixtures.decode(CreditsSummary.self, json)
+        #expect(credits.available == 0)
+        #expect(credits.reserved == 0)
+        #expect(credits.used?.credits == 0)
+    }
+
     @Test func creditsWithMalformedNewFields() throws {
         let credits = try ExecutionFixtures.decode(CreditsSummary.self, ExecutionFixtures.creditsOdd)
         #expect(credits.available == 5)

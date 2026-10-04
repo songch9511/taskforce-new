@@ -87,7 +87,8 @@ public struct RunLane: Equatable, Sendable {
     }
 
     static func resolve(run: RunSummary?, steps: [StepSummary], hasDrafts: Bool) -> State {
-        guard let run else { return .none }
+        // run을 읽지 못했는데(지워짐 · 읽기 전) 초안이 있으면 초안 있음
+        guard let run else { return hasDrafts ? .draftReady : .none }
         let steps = steps.filter { $0.runID == run.id }.sorted { $0.seq < $1.seq }
         switch run.state {
         case .queued, .running, .waitingApproval:

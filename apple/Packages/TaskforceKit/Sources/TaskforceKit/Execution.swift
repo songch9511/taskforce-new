@@ -309,9 +309,19 @@ public struct CreditsSummary: Decodable, Sendable, Hashable {
         public let credits: Int
         public let since: Date
 
+        enum CodingKeys: String, CodingKey {
+            case credits, since
+        }
+
         public init(credits: Int, since: Date) {
             self.credits = credits
             self.since = since
+        }
+
+        public init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            credits = max(0, try c.decode(Int.self, forKey: .credits))
+            since = try c.decode(Date.self, forKey: .since)
         }
     }
 
@@ -353,8 +363,9 @@ public struct CreditsSummary: Decodable, Sendable, Hashable {
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        available = try c.decode(Int.self, forKey: .available)
-        reserved = try c.decode(Int.self, forKey: .reserved)
+        // 합계와 원장이 잠깐 어긋날 수 있어 음수는 0으로 (서버 PR1)
+        available = max(0, try c.decode(Int.self, forKey: .available))
+        reserved = max(0, try c.decode(Int.self, forKey: .reserved))
         rateVersion = try c.decodeIfPresent(String.self, forKey: .rateVersion)
         // 새 필드는 모양이 어긋나도 합계는 읽는다
         runningRuns = max(0, (try? c.decodeIfPresent(Int.self, forKey: .runningRuns)) ?? 0)

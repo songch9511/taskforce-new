@@ -72,6 +72,8 @@ final class RunStore {
     private var pollToken = 0
     /// 끝났다고 이미 알린 run (겹친 다시 읽기가 같은 끝남을 두 번 알리지 않게)
     private var reportedFinished: Set<UUID> = []
+    /// 할 일마다 보내는 중인 멈추기 (다시 부르면 같은 결과를 기다린다)
+    private var stopTasks: [UUID: Task<Bool, Never>] = [:]
     /// `reset()`마다 오른다: 계정이 떠나기 전에 보낸 요청의 늦은 결과를 버린다
     private var generation = 0
 
@@ -145,9 +147,14 @@ final class RunStore {
         return (first + second).filter { seen.insert($0.id).inserted }
     }
 
-    /// 지켜보는 할 일의 움직이는 run (끝나지 않음 · 멈췄는데 부르던 단계가 남음, `RunPolling.isBusy`)
+    /// 지켜보는 할 일의 움직이는 run: 끝나지 않은 run 전부 + 할 일의 최신 run이 멈췄는데 부르던 단계가 남음 (`RunPolling.isBusy`).
+    /// 단계는 최신 run 것만 다시 읽으므로, 앞선 run의 옛 단계로 "결과 받는 중"을 판단하지 않는다 (끝없이 폴링하지 않게)
     private var watchedBusyRuns: [RunSummary] {
-        watched.flatMap { runs(for: $0) }.filter { RunPolling.isBusy($0, steps: steps[$0.id] ?? []) }
+        watched.flatMap { id -> [RunSummary] in
+            let all = runs(for: id)
+            let latest = RunSummary.latestByAction(all)[id]?.id
+            return all.filter { $0.isOpen || ($0.id == latest && RunPolling.isBusy($0, steps: steps[$0.id] ?? [])) }
+        }
     }
 
     // MARK: 불러오기
@@ -168,6 +175,7 @@ final class RunStore {
         paused = []
         starting = []
         stopping = []
+        stopTasks = [:]
         message = nil
         watched = []
         reportedFinished = []
@@ -217,11 +225,15 @@ final class RunStore {
         active = openRuns
         let openIDs = Set(openRuns.map(\.id))
         let stale = Set(runs.values.flatMap { $0 }.filter { $0.isOpen && !openIDs.contains($0.id) }.map(\.actionID))
-        guard !stale.isEmpty, let fresh = try? await reads.latestRuns(actionIDs: Array(stale), limit: Self.runLimit(stale.count)),
+        // 지켜보는 할 일은 끝남을 알아채는 `refreshWatched`로 (/now · credits를 다시 읽는다), 나머지만 여기서 바로잡는다
+        if !stale.isDisjoint(with: watched) { await refreshWatched() }
+        let unwatched = stale.subtracting(watched)
+        guard !unwatched.isEmpty, generation == self.generation,
+              let fresh = try? await reads.latestRuns(actionIDs: Array(unwatched), limit: Self.runLimit(unwatched.count)),
               generation == self.generation
         else { return }
         let grouped = Dictionary(grouping: fresh, by: \.actionID)
-        for id in stale { runs[id] = grouped[id] ?? [] }
+        for id in unwatched { runs[id] = grouped[id] ?? [] }
     }
 
     /// 보이는 할 일을 지켜본다 (런처 상세 · iPhone 상세). 곧바로 읽고, 움직이는 run이 있는 동안 `RunPolling` 간격으로 다시 읽는다.
@@ -349,8 +361,9 @@ final class RunStore {
     }
 
     /// `Stop Taskforce`: 그 할 일의 끝나지 않은 run을 모두 멈춘다 (다른 기기 · 웹에서 시작한 run 포함, 먼저 새로 읽는다).
-    /// 이미 끝났거나 없는 run(404)은 그대로 둔다. 하나라도 보내지 못했으면(또는 이미 멈추는 중이면) false, 보내지 못했으면 `message`.
-    /// 멈춘 뒤 credits(해제된 예약) · 끝나지 않은 run을 다시 읽는다. 앱에서 할 일을 Delete · Done하기 전에도 부른다 (`RunStop`)
+    /// 이미 끝났거나 없는 run(404)은 그대로 둔다. 하나라도 보내지 못했으면 false + `message`.
+    /// 멈추는 중에 다시 부르면(⌘. 두 번 · 멈추는 중 Delete) 새로 보내지 않고 그 결과를 같이 기다린다.
+    /// 멈춘 뒤 credits(해제된 예약) · 끝나지 않은 run은 뒤에서 다시 읽는다. 앱에서 할 일을 Delete · Done하기 전에도 부른다 (`RunStop`)
     @discardableResult
     func stop(actionID: UUID) async -> Bool {
         #if DEBUG
@@ -359,10 +372,20 @@ final class RunStore {
             return true
         }
         #endif
-        guard !stopping.contains(actionID) else { return false }
+        if let inFlight = stopTasks[actionID] { return await inFlight.value }
         let generation = generation
+        let task = Task { await self.sendStops(actionID: actionID, generation: generation) }
+        stopTasks[actionID] = task
         stopping.insert(actionID)
-        defer { if generation == self.generation { stopping.remove(actionID) } }
+        let result = await task.value
+        if generation == self.generation, stopTasks[actionID] == task {
+            stopTasks[actionID] = nil
+            stopping.remove(actionID)
+        }
+        return result
+    }
+
+    private func sendStops(actionID: UUID, generation: Int) async -> Bool {
         if let fresh = try? await services.reads.latestRuns(actionIDs: [actionID]) {
             guard generation == self.generation else { return false }
             runs[actionID] = fresh
@@ -384,10 +407,12 @@ final class RunStore {
                 message = error.userMessage
             }
         }
-        guard !targets.isEmpty else { return allSent }
+        guard !targets.isEmpty, generation == self.generation else { return allSent }
         if watched.contains(actionID) { restartPolling() }
-        await loadCredits()
-        await refreshActive()
+        Task {
+            await loadCredits()
+            await refreshActive()
+        }
         return allSent
     }
 

@@ -152,8 +152,8 @@ struct RunStoreTests {
         #expect(harness.store.availability(for: action, signedIn: true, refresh: .live) == .available)
     }
 
-    /// 멈춘 뒤 credits(해제된 예약)와 끝나지 않은 run을 다시 읽는다. 멈추는 중 다시 누르면 보내지 않는다
-    @Test func stopReloadsCreditsAndIgnoresDoublePress() async throws {
+    /// 멈추는 중 다시 부르면 새로 보내지 않고 같은 결과를 기다린다. 멈춘 뒤 credits(해제된 예약)를 뒤에서 다시 읽는다
+    @Test func stopSharesTheInFlightStopAndReloadsCredits() async throws {
         let harness = try await RunHarness.make()
         await harness.store.loadCredits()
         await harness.router.set(runs: [Self.runRow(id: 1, state: "running")])
@@ -162,10 +162,45 @@ struct RunStoreTests {
         async let first = harness.store.stop(actionID: action)
         async let second = harness.store.stop(actionID: action)
         let (a, b) = await (first, second)
-        #expect([a, b].sorted { !$0 && $1 } == [false, true])
+        #expect(a && b)
         #expect(await harness.router.paths().filter { $0.hasSuffix("/stop") }.count == 1)
-        #expect(await harness.router.paths().filter { $0 == "/api/v1/credits" }.count == creditsBefore + 1)
+        #expect(harness.store.stopping.isEmpty)
         #expect(harness.store.workingActionIDs.isEmpty)
+        await harness.waitUntil { await harness.router.paths().filter { $0 == "/api/v1/credits" }.count == creditsBefore + 1 }
+    }
+
+    /// 지켜보는 할 일의 막힌 run(60초 폴링)이 그사이 끝났고 끝나지 않은 run 목록을 먼저 읽어도, 끝남을 알린다 (/now · credits 다시 읽기)
+    @Test func refreshActiveReportsAWatchedRunThatEnded() async throws {
+        let harness = try await RunHarness.make()
+        await harness.store.loadCredits()
+        var finished = 0
+        harness.store.onRunsFinished = { finished += 1 }
+        await harness.router.set(runs: [Self.runRow(id: 1, state: "running", hold: "credit")])
+        harness.store.watch([action])
+        await harness.waitUntil { harness.store.lane(for: harness.action).state == .paused(.credit) }
+        await harness.router.set(runs: [Self.runRow(id: 1, state: "done", outcome: "draft_ready")])
+        await harness.store.refreshActive()
+        #expect(finished == 1)
+        #expect(harness.store.lane(for: action).state == .draftReady)
+        harness.store.watch([])
+    }
+
+    /// 멈췄는데 결과를 받던 앞선 run의 옛 단계로 끝없이 폴링하지 않는다: 최신 run만 "결과 받는 중"을 본다
+    @Test func olderFinishingRunDoesNotKeepPolling() async throws {
+        let harness = try await RunHarness.make()
+        await harness.store.loadCredits()
+        var finished = 0
+        harness.store.onRunsFinished = { finished += 1 }
+        await harness.router.set(runs: [Self.runRow(id: 1, state: "stopped")])
+        await harness.router.set(steps: [Self.runID(1): [Self.stepRow(run: 1, seq: 2, state: "calling")]])
+        harness.store.watch([action])
+        await harness.waitUntil { harness.store.lane(for: harness.action).state == .stopped(finishing: true, stoppedAt: nil) }
+        // 같은 할 일에 새 run이 생겨 끝남: 앞선 run의 단계는 더 읽지 않는다
+        await harness.router.set(runs: [Self.runRow(id: 1, state: "stopped"), Self.runRow(id: 2, state: "done", minutes: 5)])
+        await harness.store.refreshWatched()
+        #expect(finished == 1)
+        #expect(harness.store.lane(for: action).run?.id.uuidString.lowercased() == Self.runID(2))
+        harness.store.watch([])
     }
 
     /// 상세를 credits보다 먼저 지켜봐도, 쓸 수 있음을 알면 곧바로 읽기 시작한다
@@ -228,6 +263,13 @@ struct RunStoreTests {
         {"id":"\(runID(id))","action_id":"11111111-1111-4111-8111-111111111111","goal":"draft","state":"\(state)",\
         "hold_reason":\(quoted(hold)),"outcome":\(quoted(outcome)),"budget_credits":null,\
         "created_at":"2026-10-04T05:\(String(format: "%02d", minutes)):00Z","stopped_at":null}
+        """
+    }
+
+    static func stepRow(run: Int, seq: Int, state: String) -> String {
+        """
+        {"id":"66666666-6666-4666-8666-\(String(format: "%012d", run * 10 + seq))","run_id":"\(runID(run))","seq":\(seq),"kind":"draft",\
+        "state":"\(state)","attempt":0,"receipt":null,"created_at":"2026-10-04T05:00:0\(seq)Z"}
         """
     }
 
@@ -335,6 +377,8 @@ private actor RunStubRouter {
     /// nil = 연결 실패
     private var credits: RunReply? = RunReply(status: 200, body: #"{"available":480,"reserved":0,"rate_version":"c3-v1"}"#)
     private var runs: [String] = []
+    /// run id(소문자) → 단계 행
+    private var steps: [String: [String]] = [:]
     private var artifacts: [String] = []
     private var createRun = RunReply(status: 500, body: "{}")
     private var stopRun = RunReply(status: 500, body: "{}")
@@ -346,6 +390,7 @@ private actor RunStubRouter {
 
     func set(credits: RunReply?) { self.credits = credits }
     func set(runs: [String]) { self.runs = runs }
+    func set(steps: [String: [String]]) { self.steps = steps }
     func set(artifacts: [String]) { self.artifacts = artifacts }
     func set(createRun: RunReply) { self.createRun = createRun }
     func set(stopRun: RunReply) { self.stopRun = stopRun }
@@ -399,6 +444,9 @@ private actor RunStubRouter {
                 return true
             }
             return RunReply(status: 200, body: "[\(rows.joined(separator: ","))]")
+        case "/rest/v1/execution_steps":
+            let run = query["run_id"].map { String($0.dropFirst(3)) } ?? ""
+            return RunReply(status: 200, body: "[\((steps[run] ?? []).joined(separator: ","))]")
         case "/rest/v1/execution_artifacts":
             return RunReply(status: 200, body: "[\(artifacts.joined(separator: ","))]")
         default:
