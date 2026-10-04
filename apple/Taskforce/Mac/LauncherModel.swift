@@ -221,9 +221,10 @@ final class LauncherModel {
     private var signInController: MacAppleSignInController?
 
     /// `saved`: 이 기기의 저장본 (앱은 App Group 위치, 테스트는 임시 폴더나 nil).
-    /// `connectivity`: 연결 경로 (앱은 `Connectivity.updates()`, 기본은 바로 끝나는 스트림이라 연결 감시 없음)
+    /// `connectivity`: 연결 경로 (앱은 `Connectivity.updates()`, 기본은 바로 끝나는 스트림이라 연결 감시 없음).
+    /// `runs`: 실행 상태 (앱은 설정 창과 같은 `AppRuntime.runs`, 없으면 이 런처만의 것)
     init(
-        session: SessionStore, services: AppServices, account: AccountStore, saved: SavedNowStore? = nil,
+        session: SessionStore, services: AppServices, account: AccountStore, saved: SavedNowStore? = nil, runs shared: RunStore? = nil,
         connectivity: AsyncStream<Bool> = AsyncStream { $0.finish() }
     ) {
         self.session = session
@@ -231,7 +232,7 @@ final class LauncherModel {
         self.account = account
         self.saved = saved
         let now = NowStore(services: services, session: session, saved: saved)
-        let runs = RunStore(services: services, session: session)
+        let runs = shared ?? RunStore(services: services, session: session)
         var sample = false
         #if DEBUG
         if SampleData.isEnabled {

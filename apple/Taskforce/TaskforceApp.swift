@@ -37,6 +37,7 @@ struct TaskforceApp: App {
                     .environment(session)
                     .environment(\.services, services)
                     .environment(AppRuntime.account(services: services))
+                    .environment(AppRuntime.runs(services: services))
             case .misconfigured(let message):
                 ConfigErrorView(message: message)
                     .frame(width: 420, height: 240)
@@ -64,6 +65,21 @@ enum AppRuntime {
         let session: SessionStore? = if case .ready(let session, _) = startup { session } else { nil }
         let store = AccountStore(services: services, session: session)
         accountStore = store
+        return store
+    }
+
+    private static var runStore: RunStore?
+
+    /// 실행(U2) 상태: credits · run · 초안 (Mac 설정 Usage & Credits와 런처가 같은 것을 본다). 계정이 떠나면 스스로 비운다 (`RunStore.reset`).
+    /// 견본(`-TFSampleData`)이면 서버를 부르지 않고 `SampleRuns` 인자대로 채운다
+    static func runs(services: AppServices) -> RunStore {
+        if let runStore { return runStore }
+        let session: SessionStore? = if case .ready(let session, _) = startup { session } else { nil }
+        let store = RunStore(services: services, session: session)
+        #if DEBUG
+        if SampleData.isEnabled { store.useSampleData() }
+        #endif
+        runStore = store
         return store
     }
 }

@@ -18,6 +18,16 @@ enum SampleData {
     static var hasNoSaved: Bool { ProcessInfo.processInfo.arguments.contains("-TFSampleNoSaved") }
     static var isEmpty: Bool { ProcessInfo.processInfo.arguments.contains("-TFSampleEmpty") }
     static var isLoading: Bool { ProcessInfo.processInfo.arguments.contains("-TFSampleLoading") }
+    /// AI 처리에 동의한 계정 (`-TFSampleConsent`): 설정 Privacy & AI Data 스위치가 켜진 모습
+    static var hasConsent: Bool { ProcessInfo.processInfo.arguments.contains("-TFSampleConsent") }
+    #if os(iOS)
+    /// iPhone 설정 시트를 연 채 시작: `-TFSampleSettings`는 첫 화면, `-TFSamplePrivacy`는 Privacy & AI Data
+    static var settingsRoute: AccountRoute? {
+        let arguments = ProcessInfo.processInfo.arguments
+        if arguments.contains("-TFSamplePrivacy") { return .consent }
+        return arguments.contains("-TFSampleSettings") ? .home : nil
+    }
+    #endif
     /// 처리방침 변경 안내 (`-TFSampleData -TFSamplePolicy`: 시행된 판, `-TFSamplePolicyUpcoming`: 시행 예정 판)
     static var policyNotice: PolicyNotice? {
         let arguments = ProcessInfo.processInfo.arguments
