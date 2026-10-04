@@ -2,7 +2,7 @@
 
 관련 문서: [go live](../GO_LIVE.md) · [런북](runbook.md) · [처리방침](../legal/privacy.ko.md) · [브랜드](../BRAND.md) · [플랫폼](../PLATFORMS.md)
 
-작성: 2026-09-27. go live = TestFlight **공개 링크**를 여는 날이다. 외부 테스트는 첫 빌드마다 Apple의 베타 앱 심사를 받는다. 이 문서는 그 심사와 개인정보 라벨에 넣을 값, 그리고 심사 전에 앱이 갖춰야 할 것(동의 화면 · 계정 삭제)을 적는다.
+작성: 2026-09-27. go live = TestFlight **공개 링크**를 여는 날이다(창업자 건넴은 예외로 공개 링크를 켜지 않는다, 2장 "외부 그룹"). 외부 테스트는 첫 빌드마다 Apple의 베타 앱 심사를 받는다. 이 문서는 그 심사와 개인정보 라벨에 넣을 값, 그리고 심사 전에 앱이 갖춰야 할 것(동의 화면 · 계정 삭제)을 적는다.
 
 | 항목 | 값 |
 |---|---|
@@ -30,6 +30,15 @@
 
 App Store Connect → 앱 → TestFlight → **Test Information** (현지화: English (U.S.), Korean).
 
+> **이 장의 문안이 맞춘 베타 상태 (2026-10-04, 첫 외부 사용자인 창업자 건넴 전):**
+> - Slack · Google(Calendar · Meet) 연결은 운영에서 닫혀 있다(`SLACK_CONNECT_ENABLED` · `GOOGLE_CONNECT_ENABLED` 비움, [런북](runbook.md) 2장). 앱 연결 목록에는 남아 있고, Connect → Continue를 누르면 그 줄이 "Coming soon"이 된다. 그래서 설명은 둘을 말하지 않고, 테스트 안내 · 심사 메모는 "아직 열지 않았고 Coming soon으로 보인다"고 미리 알린다.
+> - Gmail은 Google 프로젝트 B가 Testing이라 테스트 사용자로 넣은 계정만 연결되고(아니면 막힌다), 7일마다 다시 연결한다. 초대제로 쓴다.
+> - 주된 원문은 Notion 회의록과 Mac 런처에 붙여 넣은 글이다.
+> - 내장 AI 초안은 `execution_actors`에 넣은 계정만 쓴다(런북 9장). 문안은 "회사가 켠 계정만"으로 쓴다.
+> - 결제 · 구매는 없다(TestFlight 가이드라인 2.2).
+>
+> 위가 바뀌면(연결을 열거나 초안 대상을 넓히면) 아래 문안도 함께 고친다.
+
 ### Beta App Description
 
 BRAND.md 규칙: 핵심 메시지를 그대로 쓰고, App Store · TestFlight에서는 "Real AI Manager" 대신 **"AI 프로젝트 매니저"**를 쓴다.
@@ -38,31 +47,33 @@ BRAND.md 규칙: 핵심 메시지를 그대로 쓰고, App Store · TestFlight�
 ```
 Taskforce는 AI 프로젝트 매니저로서 회의록·메시지·메일에서 내가 맡은 일을 찾아 알아서 정리하고 관리해주는 앱으로, 미팅이 많은 창업자와 컨설턴트가 직접 관리하지 않아도 약속한 일을 놓치지 않게 해 줍니다.
 
-Notion · Google · Slack을 연결하면 새 회의록과 메시지, 메일을 읽고 내가 하겠다고 한 일만 골라 기한과 함께 목록에 넣습니다. 나중에 기한이 바뀌면 새로 만들지 않고 고치며, 모든 할 일에 원래 문장이 붙습니다. iPhone과 Mac에서 씁니다.
+이 베타에서는 Notion을 연결하면 새 회의록을 읽고, Mac에서는 메시지나 메일 같은 글을 붙여 넣어 보낼 수 있습니다. 내가 하겠다고 한 일만 골라 기한과 함께 목록에 넣습니다. 나중에 기한이 바뀌면 새로 만들지 않고 고치며, 모든 할 일에 원래 문장이 붙습니다. Gmail은 베타 동안 초대제라 테스터로 추가된 계정이 아니면 연결이 막힐 수 있고, 연결한 뒤에는 7일마다 다시 연결해야 합니다. 내장 AI 초안은 베타 동안 회사가 켠 계정에서만 쓸 수 있으며, 누구에게도 보내지 않고 앱에 저장만 합니다. iPhone과 Mac에서 씁니다.
 ```
 
 English:
 ```
 Taskforce is an AI project manager that finds the work you committed to in your meeting notes, messages, and email, and organizes and tracks it for you, so founders and consultants in back-to-back meetings never miss what they promised without managing a list themselves.
 
-Connect Notion, Google, and Slack. Taskforce reads new meeting notes, messages, and email, picks out only what you said you'd do, and adds it to your list with a due date. When a later message moves a deadline, it updates the task instead of adding a new one. Every task shows the line it came from. Works on iPhone and Mac.
+In this beta, connect Notion and Taskforce reads your new meeting notes; on Mac you can also paste in a message or email. It picks out only what you said you'd do and adds it to your list with a due date. When a later note or email moves a deadline, it updates the task instead of adding a new one. Every task shows the line it came from. Gmail is invite-only during the beta (connecting may be blocked unless your account was added as a tester, and you reconnect every 7 days). Built-in AI drafts are available only for accounts the company turns on during the beta, are never sent to anyone, and are saved in the app. Works on iPhone and Mac.
 ```
 
-1단계 연동 중 하나라도 go live 전에 빠지면 빠진 원문 종류를 문장에서 덜어낸다(BRAND.md).
+BRAND.md 규칙: 연동이 빠지면 빠진 원문 종류를 문장에서 덜어낸다. 지금은 Slack · Google(Calendar · Meet)이 닫혀 있어 둘째 문단에서 뺐다. 첫 문단(핵심 메시지)의 "회의록·메시지·메일"은 Notion · Gmail · 붙여 넣은 글로 그대로 맞아 두었다. 연결을 열 때 둘째 문단과 아래 What to Test를 다시 고친다.
 
 ### What to Test (빌드마다)
 
 ```
 Please try:
 1. Sign in with Apple, then enter your name and any nicknames people use for you.
-2. Review the Privacy & AI Data screen and allow it, then connect Notion (pick your meeting-notes database itself, not a linked view), Google, and Slack.
-3. Wait for your next meeting note or message. Tasks you committed to should appear under Now, each with the line it came from.
-4. Check a task when it's done. Use Confirm or Dismiss on Review cards.
-5. On Mac, press Option-Space to open the launcher.
+2. Review the Privacy & AI Data screen and allow it, then connect Notion (pick your meeting-notes database itself, not a linked view).
+3. Wait for your next meeting note. Tasks you committed to should appear under Now, each with the line it came from.
+4. On Mac, press Option-Space to open the launcher, paste a few lines of a message or meeting note, and choose Send as source.
+5. Check a task when it's done. Use Confirm or Dismiss on Review cards.
+6. Add a task yourself: tap + on iPhone, or type a title in the Mac launcher and choose Add.
 
 Known limits in this beta:
-- Gmail is invite-only while Google reviews it. Email your Google address to privacy@taskforcelabs.dev to be added, and reconnect Gmail every 7 days.
-- Slack messages are read from the moment you connect; older messages are not imported.
+- Gmail is invite-only while Google reviews it. Email your Google address to privacy@taskforcelabs.dev to be added as a tester; until then connecting Gmail may be blocked. Once connected, reconnect Gmail every 7 days.
+- Slack and Google Calendar & Meet can't be connected yet. They are listed in Connections and show "Coming soon" after you tap Connect, so please skip them. The services under More aren't available either; Want this only records your interest.
+- AI drafts ("Run with AI…" on Mac; results and Stop on iPhone) are available only for accounts the company turns on during the beta, are never sent to anyone, and are saved in the app.
 
 Feedback: privacy@taskforcelabs.dev or the TestFlight screenshot feedback.
 ```
@@ -75,7 +86,7 @@ Feedback: privacy@taskforcelabs.dev or the TestFlight screenshot feedback.
 | Marketing URL | `https://www.taskforcelabs.dev` |
 | Privacy Policy URL | `https://www.taskforcelabs.dev/en/privacy` |
 | License Agreement | Apple 표준 EULA (이용약관은 앱 안 · 웹에 `https://www.taskforcelabs.dev/en/terms`) |
-| 외부 그룹 | `Public beta` · 공개 링크 켬 |
+| 외부 그룹 | `Public beta` · 공개 링크 켬 (go live 때). **창업자 건넴은 공개 링크를 끈 채 둔다**(Public Link를 Enable하지 않는다). 외부 테스터를 이메일 초대로만 추가한다(TestFlight → External Testing → 그룹 → Testers → +). 첫 외부 빌드는 이 경우에도 베타 앱 심사를 받는다 |
 | 테스터 수 한도 | 처음에는 100명으로 둔다. Gmail 테스트 사용자 한도(100명)와 맞춰, 초대한 사람이 모두 Gmail까지 연결할 수 있게 한다. 늘릴 때 Gmail은 "초대제"로 안내한다 |
 | 빌드 유효기간 | 90일. 만료 전에 새 빌드를 올린다 |
 | macOS | 같은 그룹에 macOS 빌드도 넣는다 (TestFlight for Mac) |
@@ -102,15 +113,15 @@ Feedback: privacy@taskforcelabs.dev or the TestFlight screenshot feedback.
 
 ### 데모 계정 준비 (연결을 건너뛰어도 기능이 보이게)
 
-심사원은 Notion · Google · Slack 계정이 없다. 그래서 **연결과 데이터가 이미 채워진 계정**을 준다.
+심사원은 Notion · Google 계정이 없다. 그래서 **데이터가 이미 채워진 계정**을 준다.
 
 1. 데모 계정으로 로그인 → 프로필 이름 `Alex Kim`, 별칭 `Alex` → Privacy & AI Data 동의. 2의 가상 워크스페이스가 "나"를 `Alex`로 쓴다(`google-verification.md` 6장).
-2. 심사용 가상 워크스페이스를 연결해 둔다: Notion(review 워크스페이스, 회의록 DB), Google(프로젝트 A, `review@` 계정), Slack(review 워크스페이스). Gmail은 테스트 상태라 7일 뒤 만료되므로 연결하지 않거나, 심사 제출 직전에 연결한다.
-3. fixture(가상 회의록 · 메시지 · 메일, `google-verification.md` 6장)가 동기화되어 Now에 할 일 3~5개, Review 카드 1장, 끝낸 할 일 1개가 있게 한다. 연동이 아직 붙지 않은 원문 종류는 `POST /api/v1/sources`로 같은 가상 원문을 넣어 채운다.
+2. 심사용 가상 워크스페이스를 연결해 둔다: Notion(review 워크스페이스, 회의록 DB). Gmail(`review@` 계정)은 테스트 상태라 7일 뒤 만료되므로 연결하지 않거나, 심사 제출 직전에 연결한다. Slack · Google(Calendar · Meet)은 운영에서 연결이 닫혀 있어(런북 2장) 이 계정으로는 연결하지 못한다(운영자 `ADMIN_EMAILS`만 웹 /lab에서 연결한다). 심사 메모(아래)도 이 둘을 연결했다고 쓰지 않는다.
+3. fixture(가상 회의록 · 메시지 · 메일, `google-verification.md` 6장)가 동기화되어 Now에 할 일 3~5개, Review 카드 1장, 끝낸 할 일 1개가 있게 한다. 연결하지 않은 원문 종류는 `POST /api/v1/sources`로 같은 가상 원문을 넣어 채운다.
 4. 심사 기간에는 데모 계정의 데이터를 지우거나 동기화를 끄지 않는다. 심사원이 계정을 지우면(계정 삭제 시험) 다시 만든다 → 제출 전에 재생성 절차를 한 번 연습한다.
 5. 지표: 데모 계정의 이벤트는 지표에서 뺀다(지금 `[E2E 테스트]` 원문을 빼는 것과 같은 방식, 코드).
 
-`scripts/create-review-account.ts`가 1(프로필 이름 `Alex Kim` · 별칭 `Alex` · AI 동의)과 "[Review] …" 합성 원문 처리를 대신한다(다시 돌려도 같다. `--reseed`는 이 계정의 원문 · 할 일을 모두 지우고 합성 원문만 다시 만들어, 2 · 3에서 동기화한 것도 사라진다). 2(Notion · Google · Slack 실제 연결)는 Google 심사 영상 · 실기기 확인에 필요해 수동으로 한다.
+`scripts/create-review-account.ts`가 1(프로필 이름 `Alex Kim` · 별칭 `Alex` · AI 동의)과 "[Review] …" 합성 원문 처리를 대신한다(다시 돌려도 같다. `--reseed`는 이 계정의 원문 · 할 일을 모두 지우고 합성 원문만 다시 만들어, 2 · 3에서 동기화한 것도 사라진다). 2(Notion · Gmail 실제 연결)는 Google 심사 영상 · 실기기 확인에 필요해 수동으로 한다.
 
 ### Beta App Review Information
 
@@ -122,20 +133,25 @@ Feedback: privacy@taskforcelabs.dev or the TestFlight screenshot feedback.
 
 Review Notes (붙여 넣을 영어):
 ```
-Taskforce finds the work a user committed to in their meeting notes, messages, and email from services they connect (Notion, Google, Slack), and keeps the list up to date.
+Taskforce finds the work a user committed to in their meeting notes, messages, and email, and keeps the list up to date. In this beta the sources are Notion, Gmail (invite-only), and text pasted into the Mac launcher.
 
-Demo account: tap "Sign in with email" below the Sign in with Apple and Sign in with Google buttons and use the credentials above. The account is already connected to fictional review workspaces (Notion, Google Calendar/Meet, Slack) and contains sample tasks, so you do not need your own accounts. Everything in it is fictional.
+Demo account: tap "Sign in with email" below the Sign in with Apple and Sign in with Google buttons and use the credentials above. The account already contains sample tasks found in fictional meeting notes and email, so you do not need your own accounts or any connection to review the app. Everything in it is fictional.
 
 Where to look:
-- Now: tasks found from connected sources. Tap a task to see the exact quote it came from; the source link opens the original.
+- Now: tasks found from sources. Tap a task to see the exact quote it came from; the source link opens the original.
 - Review card at the top: a task whose owner or due date is uncertain. Confirm or Dismiss.
-- Settings (iPhone: the button at the top left; Mac: the menu bar icon > Settings): Connections (connect/disconnect services), Privacy & AI Data (consent to sending source text to third-party AI and how to withdraw it), Privacy Policy, Sign out, Delete account.
+- Mac: Option-Space opens the launcher. Paste a few lines of text and choose "Send as source" to add it as a source.
+- Settings (iPhone: the button at the top left; Mac: the menu bar icon > Settings): Connections, Privacy & AI Data (consent to sending source text to third-party AI and how to withdraw it), Privacy Policy, Sign out, Delete account.
+
+Connections in this beta: Notion connects with any Notion account. Gmail is invite-only: the Google project is in Google's "Testing" mode, so only Google accounts added as testers can connect (others are blocked), and a connected Gmail must be reconnected every 7 days; the app can be reviewed without it. Slack and Google Calendar & Meet are not open in this beta: they stay listed in Connections and show "Coming soon" if tapped, and nothing else in the app depends on them. The services under More (Microsoft 365, Zoom, GitHub, Linear, Jira) are not available; "Want this" only records interest.
+
+Built-in AI drafts ("Run with AI…" on Mac; results and Stop on iPhone) are available only for accounts the company turns on during the beta, are never sent to anyone, and are saved in the app. If drafts are not turned on for the demo account, the option is unavailable; nothing else depends on them.
 
 Third-party AI (Guideline 5.1.2(i)): before the first connection, the app shows which data is sent (notes, documents, transcripts, messages, and email the user connects or pastes in, with the names and email addresses of people in them; the user's name and nicknames; task titles and quotes; questions asked; and, for drafts the user starts, the request and that task's details and quotes), who receives it (OpenRouter and the five named AI model providers it routes to, all with zero data retention and no training), where it is stored (Sydney), and asks for explicit consent. Without consent, the server does not process any sources or write drafts. The same information is always at Settings > Privacy & AI Data on both iPhone and Mac, where consent can be withdrawn with the "Use AI on new sources" switch. The demo account has already allowed it. To see the prompt, turn the switch off (confirm Withdraw), then turn it on again (or, while it is off, open Settings > Connections and choose Sync Now from any connected service's menu); the prompt appears. Tap Allow so the demo keeps working.
 
 Account deletion (Guideline 5.1.1(v)): Settings > Delete Account (Mac: Settings > Account > Delete Account…) deletes all data immediately (no backups) and asks Apple and connected services to revoke their tokens (for Sign in with Apple accounts, after the user confirms with Apple once more), and revokes the Google sign-in grant from this device when available. If you delete the demo account, please let us know and we will recreate it.
 
-A demo video of connecting each service: {{Unlisted YouTube URL}}
+A short demo video (connecting Notion and Gmail, sending pasted text on Mac): {{Unlisted YouTube URL}}
 ```
 
 ## 4. 개인정보 라벨 (App Privacy)
@@ -252,7 +268,7 @@ Apple 로그인이 붙은 계정은 [Delete Account]를 누르면 Apple 확인 �
 7. **Test Information 입력** — 2장 값, 3장 Beta App Review Information.
 7-1. **배포 국가** — App Store Connect → 앱 → Pricing and Availability → App Availability → **유럽경제지역(EU 27개국 · 아이슬란드 · 리히텐슈타인 · 노르웨이)과 영국을 뺀다**(처리방침 16장, `docs/legal/self-review.md` 5번). TestFlight 공개 링크는 이 설정과 상관없이 어디서나 열린다(Apple: TestFlight에는 국가 제한이 없다) — 그 지역에는 링크를 알리지 않는다.
 8. **외부 그룹 · 제출** — TestFlight → External Testing → `Public beta` 그룹 → 빌드 추가 → Submit for Review. 끝: 심사 통과 메일.
-9. **공개 링크** — 그룹 → Public Link → Enable, 테스터 한도 100. 이 링크가 웹사이트 CTA("Join the TestFlight beta")에 들어간다(BRAND.md). **서버 배포 · 1단계 연동이 끝나기 전에는 웹사이트에 걸지 않는다.**
+9. **공개 링크** — 그룹 → Public Link → Enable, 테스터 한도 100. 이 링크가 웹사이트 CTA("Join the TestFlight beta")에 들어간다(BRAND.md). **서버 배포 · 1단계 연동이 끝나기 전에는 웹사이트에 걸지 않는다.** 창업자 건넴은 이 단계를 하지 않는다: 공개 링크는 끈 채(OFF) 외부 테스터를 이메일로만 초대한다(2장 "외부 그룹").
 10. **Gmail 초대 처리** — 테스터가 보낸 Google 주소를 프로젝트 B의 Test users에 넣는다(`google-verification.md` 9장 9번).
 
 ## 출처
