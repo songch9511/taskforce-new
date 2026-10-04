@@ -63,6 +63,26 @@ struct SavedNowTests {
         #expect(!text.contains(ListFixture.id(1).uuidString))
     }
 
+    /// 저장본에 run · 초안 · 요청이 들어가지 않게 키를 고정한다 (U2 Mac 계획 §0 "저장본 불변"): 할 일은 title · due_date · status뿐
+    @Test func savedTaskKeysArePinned() throws {
+        let task = SavedNow.Task(title: "제안서", dueDate: LocalDate(year: 2026, month: 10, day: 2), status: .inProgress)
+        let object = try #require(try JSONSerialization.jsonObject(with: JSONEncoder().encode(task)) as? [String: Any])
+        #expect(Set(object.keys) == ["title", "due_date", "status"])
+        #expect(Mirror(reflecting: task).children.map(\.label) == ["title", "dueDate", "status"])
+        let file = try #require(
+            try JSONSerialization.jsonObject(with: JSONEncoder().encode(SavedNow(savedAt: savedAt, tasks: [task]))) as? [String: Any]
+        )
+        #expect(Set(file.keys) == ["version", "saved_at", "tasks"])
+        #expect(Mirror(reflecting: SavedNow(savedAt: savedAt, tasks: [])).children.map(\.label) == ["savedAt", "tasks"])
+    }
+
+    /// 오프라인 · 새로고침 실패(저장본)에서 Taskforce Working은 비어 있다 (Changed와 같은 규칙)
+    @Test func savedCopyHasNoTaskforceWorking() {
+        let saved = SavedNow(sections: ListFixture.sections, savedAt: savedAt)
+        #expect(TaskScope.taskforceWorking.count(in: saved, now: savedAt) == 0)
+        #expect(TaskScope.taskforceWorking.rows(in: saved, group: .inProgress, now: savedAt).isEmpty)
+    }
+
     @Test func accountsAreIsolated() throws {
         defer { try? store.removeAll() }
         try store.save(SavedNow(sections: sections, savedAt: savedAt), account: alice)

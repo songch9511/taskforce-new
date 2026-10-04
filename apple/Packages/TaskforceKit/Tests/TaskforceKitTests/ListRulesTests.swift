@@ -102,8 +102,11 @@ struct TaskScopeTests {
     let s = ListFixture.sections
     let changed = ListFixture.changed
 
+    /// M13 순서 (… Done Today | Waiting on Someone(U5) · Taskforce Working · Changed Since Last Look)
     @Test func titlesMatchFigma() {
-        #expect(TaskScope.allCases.map(\.title) == ["All Tasks", "Review", "In Progress", "To Do", "Done Today", "Changed Since Last Look"])
+        #expect(TaskScope.allCases.map(\.title) == [
+            "All Tasks", "Review", "In Progress", "To Do", "Done Today", "Taskforce Working", "Changed Since Last Look",
+        ])
     }
 
     /// M13: All Tasks 23 = 4 + 5 + 14 (Done Today는 세지 않는다)
@@ -137,11 +140,34 @@ struct TaskScopeTests {
         #expect(scoped.doneToday.isEmpty)
     }
 
-    /// 예전 서버(바뀜 없음)에서는 바뀜 범위를 숨긴다
+    /// 예전 서버(바뀜 없음)에서는 바뀜 범위를 숨긴다. 실행을 쓸 수 없으면(기본) Taskforce Working도 숨긴다 (U1 메뉴 그대로)
     @Test func menuHidesChangedWithoutServerSupport() {
-        #expect(TaskScope.menu(tracksChanges: true) == TaskScope.allCases)
+        #expect(TaskScope.menu(tracksChanges: true) == TaskScope.allCases.filter { $0 != .taskforceWorking })
         #expect(!TaskScope.menu(tracksChanges: false).contains(.changed))
         #expect(TaskScope.menu(tracksChanges: false).count == 5)
+    }
+
+    /// Taskforce Working은 실행을 쓸 수 있을 때만 (credits 200), Changed 앞
+    @Test func menuShowsTaskforceWorkingWhenExecutionIsAvailable() {
+        #expect(TaskScope.menu(tracksChanges: true, showsTaskforce: true) == TaskScope.allCases)
+        #expect(TaskScope.menu(tracksChanges: true, showsTaskforce: true).suffix(2) == [.taskforceWorking, .changed])
+        #expect(TaskScope.menu(tracksChanges: false, showsTaskforce: true).last == .taskforceWorking)
+        #expect(!TaskScope.menu(tracksChanges: true, showsTaskforce: false).contains(.taskforceWorking))
+    }
+
+    /// 끝나지 않은 run이 있는 열린 할 일: 구역 안 순서 그대로, Done Today는 넣지 않는다
+    @Test func taskforceWorkingScope() {
+        let working: Set<UUID> = [ListFixture.id(3), ListFixture.id(11), ListFixture.id(25), ListFixture.id(41), UUID()]
+        let scoped = TaskScope.taskforceWorking.apply(to: s, changed: changed, working: working)
+        #expect(scoped.review.map(\.id) == [ListFixture.id(3)])
+        #expect(scoped.inProgress.map(\.id) == [ListFixture.id(11)])
+        #expect(scoped.toDo.map(\.id) == [ListFixture.id(25)])
+        #expect(scoped.doneToday.isEmpty)
+        #expect(TaskScope.taskforceWorking.count(in: s, changed: changed, working: working) == 3)
+        #expect(TaskScope.taskforceWorking.count(in: s, changed: changed) == 0)
+        #expect(TaskScope.taskforceWorking.groups == [.review, .inProgress, .toDo])
+        // 다른 범위는 run과 상관없다
+        #expect(TaskScope.review.count(in: s, changed: changed, working: working) == 4)
     }
 }
 

@@ -184,6 +184,161 @@ enum SampleData {
     }
 }
 
+/// 실행(U2) 견본 (Debug 빌드, U2 Mac 계획 §2): 서버를 부르지 않고 갈래 · S3 상태를 채운다. `-TFSampleData`와 함께 쓴다.
+/// 갈래 견본은 M1에서 고른 행(`SampleData.demoID`, 금요일 고객 데모 준비)의 run 하나:
+/// `-TFSampleRunWorking` · `-TFSampleRunDraftReady` · `-TFSampleRunCredit` · `-TFSampleRunStopped` · `-TFSampleRunStoppedFinishing` ·
+/// `-TFSampleRunFailed` · `-TFSampleRunNeedsInput` · `-TFSampleRunNeedsConnection` · `-TFSampleRunPurged`.
+/// `-TFSampleCredits`: S3 Figma 값 (Available 0 · Reserved 12 · Pending Unknown · Used 188 · 멈춘 2건). `-TFSampleNoExecution`: credits 404 (실행 UI 없음).
+/// 견본 인자가 없으면 실행을 쓸 수 없는 계정처럼 둔다 (실행 UI가 보이지 않는다).
+enum SampleRuns {
+    enum Lane: String, CaseIterable {
+        case working = "-TFSampleRunWorking"
+        case draftReady = "-TFSampleRunDraftReady"
+        case credit = "-TFSampleRunCredit"
+        case stopped = "-TFSampleRunStopped"
+        case stoppedFinishing = "-TFSampleRunStoppedFinishing"
+        case failed = "-TFSampleRunFailed"
+        case needsInput = "-TFSampleRunNeedsInput"
+        case needsConnection = "-TFSampleRunNeedsConnection"
+        case purged = "-TFSampleRunPurged"
+    }
+
+    static var lane: Lane? {
+        let arguments = ProcessInfo.processInfo.arguments
+        return Lane.allCases.first { arguments.contains($0.rawValue) }
+    }
+
+    static var showsCredits: Bool { ProcessInfo.processInfo.arguments.contains("-TFSampleCredits") }
+    static var noExecution: Bool { ProcessInfo.processInfo.arguments.contains("-TFSampleNoExecution") }
+
+    static let runID = UUID(uuidString: "5A000000-0000-4000-8000-0000000000A1")!
+    static let earlierRunID = UUID(uuidString: "5A000000-0000-4000-8000-0000000000A2")!
+    /// S3 견본: 크레딧이 모자라 멈춘 run 둘 (QA 시나리오 업데이트 · 계약서 변경 사항 검토)
+    static let pausedActionIDs = [sampleActionID(20), sampleActionID(21)]
+    /// S3 견본: 원가를 확인하는 중인 할 일 (지훈에게 디자인 인계)
+    static let settlingActionID = SampleData.changedID
+
+    /// S3 Figma 값: Available 0 · Reserved 12 (32 − 정산 보류 20) · Pending Unknown · Used 188 · 진행 중 run 1
+    static func creditsSummary(now: Date = Date()) -> CreditsSummary {
+        CreditsSummary(
+            available: 0, reserved: 32, rateVersion: "c3-v1", runningRuns: 1,
+            settling: .init(steps: 1, reserved: 20, actionIDs: [settlingActionID]),
+            used: .init(credits: 188, since: CreditsMonth.start(of: now)), acceptingRuns: true, draftEstimateCredits: 20
+        )
+    }
+
+    /// 갈래 견본의 크레딧 (잔액이 넉넉함, 크레딧 견본이면 0)
+    static func laneCredits(_ lane: Lane) -> CreditsSummary {
+        if lane == .credit { return creditsSummary() }
+        return CreditsSummary(available: 480, reserved: lane == .working ? 20 : 0, rateVersion: "c3-v1", runningRuns: lane == .working ? 1 : 0,
+                              acceptingRuns: true, draftEstimateCredits: 20)
+    }
+
+    /// 갈래 견본 하나 (run · 단계 · 초안)
+    static func fixture(_ lane: Lane, now: Date = Date()) -> (runs: [RunSummary], steps: [StepSummary], drafts: [Artifact]) {
+        let action = SampleData.demoID
+        let started = now.addingTimeInterval(-6 * 60)
+        func run(_ state: RunState, hold: RunHoldReason? = nil, outcome: RunOutcome? = nil, stoppedAt: Date? = nil) -> RunSummary {
+            RunSummary(id: runID, actionID: action, state: state, holdReason: hold, outcome: outcome, createdAt: started, stoppedAt: stoppedAt)
+        }
+        func step(_ seq: Int, _ kind: StepKind, _ state: StepState, _ receipt: StepReceipt? = nil, run: UUID = runID) -> StepSummary {
+            StepSummary(id: sampleStepID(run == runID ? seq : 10 + seq), runID: run, seq: seq, kind: kind, state: state, receipt: receipt,
+                        createdAt: started.addingTimeInterval(Double(seq) * 20))
+        }
+        let plan = step(1, .plan, .called, StepReceipt(decision: .draft))
+        func draft(purged: Bool = false, run: UUID = runID, at: Date? = nil) -> Artifact {
+            let created = at ?? started.addingTimeInterval(90)
+            return Artifact(
+                id: sampleArtifactID(run == runID ? 1 : 2), runID: run, stepID: sampleStepID(run == runID ? 2 : 12), actionID: action,
+                title: "데모 예상 질문과 답변 초안", body: purged ? "" : draftBody, model: "sample", promptVersion: "sample",
+                retainUntil: created.addingTimeInterval(86_400 * 90), bodyPurgedAt: purged ? now : nil, createdAt: created
+            )
+        }
+        switch lane {
+        case .working:
+            return ([run(.running)], [plan, step(2, .draft, .calling)], [])
+        case .draftReady:
+            return ([run(.done, outcome: .draftReady)], [plan, step(2, .draft, .called), step(3, .plan, .called, StepReceipt(decision: .done))], [draft()])
+        case .credit:
+            return ([run(.running, hold: .credit)], [plan, step(2, .draft, .prepared)], [])
+        case .stopped:
+            return ([run(.stopped, stoppedAt: SampleData.today(14, 20))], [plan, step(2, .draft, .prepared)], [])
+        case .stoppedFinishing:
+            return ([run(.stopped, stoppedAt: SampleData.today(14, 20))], [plan, step(2, .draft, .calling)], [])
+        case .failed:
+            return ([run(.failed)], [plan, step(2, .draft, .failed, StepReceipt(error: "rejected"))], [])
+        case .needsInput:
+            let ask = step(1, .plan, .called, StepReceipt(decision: .askUser, question: "데모는 어느 고객사 대상인가요?"))
+            return ([run(.done, outcome: .needsInput)], [ask], [])
+        case .needsConnection:
+            // 앞선 run이 만든 초안은 그대로 (A39): 어느 상태든 View Draft
+            let earlier = RunSummary(id: earlierRunID, actionID: action, state: .done, outcome: .draftReady, createdAt: started.addingTimeInterval(-86_400))
+            let connect = step(1, .plan, .called, StepReceipt(decision: .needsConnection, capability: "gmail.send"))
+            return ([run(.done, outcome: .needsConnection), earlier], [connect], [draft(run: earlierRunID, at: earlier.createdAt.addingTimeInterval(90))])
+        case .purged:
+            let old = now.addingTimeInterval(-86_400 * 91)
+            let oldRun = RunSummary(id: runID, actionID: action, state: .done, outcome: .draftReady, createdAt: old)
+            return ([oldRun], [plan, step(2, .draft, .called)], [draft(purged: true, at: old.addingTimeInterval(90))])
+        }
+    }
+
+    /// S3 견본의 멈춘 run 둘
+    static func pausedRuns(now: Date = Date()) -> [RunSummary] {
+        pausedActionIDs.enumerated().map { index, action in
+            RunSummary(id: sampleRunID(10 + index), actionID: action, state: .running, holdReason: .credit,
+                       createdAt: now.addingTimeInterval(Double(-3_600 * (index + 1))))
+        }
+    }
+
+    private static let draftBody = """
+    민서 님, 금요일 데모에서 나올 만한 질문과 답변을 정리했습니다.
+
+    1. 결제 단계에서 이탈이 많은 이유는 무엇인가요?
+    카드 등록 화면이 두 번 나와서였습니다. 새 온보딩에서 한 번으로 줄였습니다.
+
+    2. 개인정보는 어디에 저장되나요?
+    서울 리전에만 저장하고, 보관 기간이 지나면 지웁니다.
+    """
+
+    private static func sampleActionID(_ n: Int) -> UUID {
+        UUID(uuidString: String(format: "5A000000-0000-4000-8000-%012d", n))!
+    }
+
+    private static func sampleRunID(_ n: Int) -> UUID {
+        UUID(uuidString: String(format: "5A000000-0000-4000-8000-0000000A%04d", n))!
+    }
+
+    private static func sampleStepID(_ n: Int) -> UUID {
+        UUID(uuidString: String(format: "5A000000-0000-4000-8000-0000000B%04d", n))!
+    }
+
+    private static func sampleArtifactID(_ n: Int) -> UUID {
+        UUID(uuidString: String(format: "5A000000-0000-4000-8000-0000000C%04d", n))!
+    }
+}
+
+extension RunStore {
+    /// 견본으로 채운다 (이후 읽기 · 쓰기는 서버를 부르지 않는다). 견본 인자가 없으면 실행을 쓸 수 없는 계정처럼 둔다
+    func useSampleData(now: Date = Date()) {
+        if SampleRuns.noExecution {
+            applySample(credits: .unavailable, runs: [], steps: [], drafts: [])
+        } else if SampleRuns.showsCredits {
+            applySample(
+                credits: .available(SampleRuns.creditsSummary(now: now), checkedAt: SampleData.today(16, 10)),
+                runs: SampleRuns.pausedRuns(now: now), steps: [], drafts: [], paused: SampleRuns.pausedRuns(now: now)
+            )
+        } else if let lane = SampleRuns.lane {
+            let fixture = SampleRuns.fixture(lane, now: now)
+            applySample(
+                credits: .available(SampleRuns.laneCredits(lane), checkedAt: now), runs: fixture.runs, steps: fixture.steps,
+                drafts: fixture.drafts, paused: lane == .credit ? fixture.runs : []
+            )
+        } else {
+            applySample(credits: .unavailable, runs: [], steps: [], drafts: [])
+        }
+    }
+}
+
 extension NowStore {
     /// 견본으로 채운다 (이후 `load()`는 서버를 부르지 않는다)
     func useSampleData() {

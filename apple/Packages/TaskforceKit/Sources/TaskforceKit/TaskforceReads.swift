@@ -102,6 +102,73 @@ public struct TaskforceReads: Sendable {
         return Set(result.compactMap { ConnectionProvider(rawValue: $0.provider) })
     }
 
+    // MARK: 실행 (U2, RLS `execution_*` owner_select, 읽기만)
+
+    /// 끝나지 않은 run 상태 (`execution_runs.state`)
+    static let openRunStates = [RunState.queued, .running, .waitingApproval].map(\.rawValue)
+
+    /// 그 할 일들의 run (최근 것이 위). 할 일마다 최신 run은 `RunSummary.latestByAction`, 멈출 run은 `RunStop.targets`
+    public func latestRuns(actionIDs: [UUID], limit: Int = 50) async throws -> [RunSummary] {
+        guard !actionIDs.isEmpty else { return [] }
+        let ids = actionIDs.map(\.lowercased)
+        return try await runRows { columns in
+            supabase.from("execution_runs").select(columns).in("action_id", values: ids)
+                .order("created_at", ascending: false).limit(limit)
+        }
+    }
+
+    /// 끝나지 않은 run 전부 (queued · running · waiting_approval): 범위 `Taskforce Working`
+    public func activeRuns(limit: Int = 100) async throws -> [RunSummary] {
+        try await runRows { columns in
+            supabase.from("execution_runs").select(columns).in("state", values: Self.openRunStates)
+                .order("created_at", ascending: false).limit(limit)
+        }
+    }
+
+    /// 크레딧이 모자라 멈춘 끝나지 않은 run (S3 "N paid steps are paused")
+    public func pausedRuns(limit: Int = 50) async throws -> [RunSummary] {
+        try await runRows { columns in
+            supabase.from("execution_runs").select(columns).eq("hold_reason", value: RunHoldReason.credit.rawValue)
+                .in("state", values: Self.openRunStates)
+                .order("created_at", ascending: false).limit(limit)
+        }
+    }
+
+    /// run의 단계 (차례대로)
+    public func steps(runID: UUID) async throws -> [StepSummary] {
+        try await rows(
+            supabase.from("execution_steps").select(StepSummary.columns).eq("run_id", value: runID.lowercased).order("seq", ascending: true)
+        )
+    }
+
+    /// 할 일의 초안 (최근 것이 위). 본문은 사용자 글이라 메모리에만 둔다
+    public func artifacts(actionID: UUID, limit: Int = 20) async throws -> [Artifact] {
+        try await rows(
+            supabase.from("execution_artifacts").select(Artifact.columns).eq("action_id", value: actionID.lowercased)
+                .order("created_at", ascending: false).limit(limit)
+        )
+    }
+
+    /// 초안 하나 (receipt 링크 `taskforce://artifacts/<id>`). 없으면(다른 계정 · 지워진 행) nil
+    public func artifact(id: UUID) async throws -> Artifact? {
+        let found: [Artifact] = try await rows(
+            supabase.from("execution_artifacts").select(Artifact.columns).eq("id", value: id.lowercased).limit(1)
+        )
+        return found.first
+    }
+
+    /// run 행 읽기. `stopped_at` 열이 아직 없는 DB(서버 U2 Mac PR1 마이그레이션 전)면 그 열 없이 다시 읽는다 (`stoppedAt` = nil)
+    private func runRows(_ query: (String) -> PostgrestTransformBuilder) async throws -> [RunSummary] {
+        do {
+            return try await rows(query(RunSummary.columns))
+        } catch let error as PostgrestError where error.code == Self.undefinedColumn {
+            return try await rows(query(RunSummary.columnsWithoutStop))
+        }
+    }
+
+    /// Postgres undefined_column (PostgREST가 select의 없는 열에 돌려주는 코드)
+    static let undefinedColumn = "42703"
+
     /// 응답 본문을 앱의 디코더(마이크로초 시각 · 날짜)로 읽는다.
     private func rows<T: Decodable>(_ builder: PostgrestTransformBuilder) async throws -> [T] {
         let data = try await builder.execute().data

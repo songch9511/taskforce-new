@@ -97,6 +97,26 @@ struct ContrastTests {
         #expect(ratio >= 3, "open mark \(dark ? "Dark" : "Light"): \(ratio)")
     }
 
+    /// U2 실행 부품의 글자 (U2 Mac 계획 PR2): 칩 글자 / fill/keycap, 갈래 제목 · 부제 · 폼 라벨 · 입력칸 자리 글 / bg/elevated(상세 칸 · 갈래 카드)
+    @Test(arguments: [
+        ("text/primary", "fill/keycap"),
+        ("text/primary", "bg/elevated"),
+        ("text/secondary", "bg/elevated"),
+    ], appearances)
+    func executionPartText(_ pair: (text: String, background: String), _ dark: Bool) {
+        let ratio = Contrast.ratio(Contrast.shipped(pair.text, dark: dark), Contrast.shipped(pair.background, dark: dark))
+        #expect(ratio >= 4.5, "\(pair.text) on \(pair.background) \(dark ? "Dark" : "Light"): \(ratio)")
+    }
+
+    /// 입력칸 경계 (`GrowingTextField`, 비문자 3:1, WCAG 1.4.11): 포커스 테두리 fill/accent, 포커스 없을 때 border/control.
+    /// Figma의 border/default는 bg/elevated 위 Light 1.3:1이라 쓰지 않는다
+    @Test(arguments: ["fill/accent", "border/control"], appearances)
+    func textFieldBoundary(_ token: String, _ dark: Bool) {
+        let ratio = Contrast.ratio(Contrast.shipped(token, dark: dark), Contrast.shipped("bg/elevated", dark: dark))
+        #expect(ratio >= 3, "\(token) on bg/elevated \(dark ? "Dark" : "Light"): \(ratio)")
+        #expect(Contrast.ratio(Contrast.shipped("border/default", dark: false), Contrast.shipped("bg/elevated", dark: false)) < 3)
+    }
+
     /// 계산이 맞는지: 검정/흰색 21:1, 같은 색 1:1
     @Test func ratioSanity() {
         #expect(abs(Contrast.ratio(RGBA("#000000"), RGBA("#FFFFFF")) - 21) < 0.001)
