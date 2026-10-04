@@ -344,7 +344,7 @@ struct LauncherRunTests {
         #expect(harness.model.goal.isEmpty)
     }
 
-    /// M8을 연 뒤 그 할 일이 사라지면(다른 기기에서 지움 · 끝냄) Start는 보내지 않고 목록으로
+    /// M8을 연 뒤 그 할 일이 사라지면(다른 기기에서 지움 · 끝냄) 새 목록이 올 때 목록으로 돌아가고 보내지 않는다
     @Test func staleTaskInRunWithAIGoesBackToTheList() async throws {
         let harness = try await RunLauncherHarness.make(toDo: ["T1", "T2"])
         harness.select("T1")
@@ -352,9 +352,8 @@ struct LauncherRunTests {
         harness.model.goal = "초안"
         await harness.router.set(now: ShellNow.body(toDo: ["T2"]))
         await harness.model.now?.load()
-        #expect(!harness.model.canStartRun)
-        #expect(harness.model.handleKey(.run(kVK_Return, [.command])))
         #expect(harness.model.screen == .list)
+        #expect(!harness.model.canStartRun)
         try await Task.sleep(for: .milliseconds(100))
         #expect(await harness.router.createBodies().isEmpty)
     }
@@ -373,6 +372,24 @@ struct LauncherRunTests {
         #expect(harness.model.crumb?.task == nil)
         #expect(harness.model.handleKey(.run(kVK_Escape)))
         #expect(harness.model.screen == .list)
+    }
+
+    /// 앱을 초안 링크로 열면 초안을 목록보다 먼저 읽을 수 있다: 목록이 오면 그 할 일을 붙인다 (머리 · esc → 상세)
+    @Test func draftReadBeforeTheListGetsItsTaskWhenTheListArrives() async throws {
+        let t1 = RunLauncherHarness.actionID("T1")
+        let harness = try await RunLauncherHarness.make(toDo: ["T1"])
+        await harness.router.set(artifacts: [RunLauncherHarness.artifactRow(id: RunLauncherHarness.artifactID, action: t1)])
+        await harness.router.set(now: nil)
+        harness.session.apply(event: .signedOut, session: nil)
+        harness.model.open(ArtifactLink.url(for: UUID(uuidString: RunLauncherHarness.artifactID)!))
+        try harness.switchAccount()
+        harness.model.sessionChanged()
+        await harness.waitUntil { if case .draft(nil, _) = harness.model.screen { true } else { false } }
+        await harness.router.set(now: ShellNow.body(toDo: ["T1"]))
+        await harness.model.now?.load()
+        #expect(harness.model.crumb?.task == "T1")
+        #expect(harness.model.handleKey(.run(kVK_Escape)))
+        #expect(harness.model.screen.isDetail)
     }
 
     /// 갈래 문구 (Figma M1 · M12 · M17 · 후보)와 M17 막대

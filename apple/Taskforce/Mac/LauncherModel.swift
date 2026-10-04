@@ -590,6 +590,12 @@ final class LauncherModel {
     private func nowRefreshed() {
         reconcileSelection()
         seen.refreshed(changed: changedIDs, selected: seenSubject)
+        // 초안 링크를 목록보다 먼저 읽었으면(앱을 링크로 막 열었을 때) 목록이 오면 그 할 일을 붙인다 (머리 · ⌘K · esc → 상세)
+        if case .draft(nil, let artifact) = screen, let found = now?.sections.find(artifact.actionID) {
+            screen = .draft(Target(action: found.action, group: found.group), artifact)
+        }
+        // M8을 연 뒤 그 할 일이 지워졌거나 끝났거나 Review로 갔으면(다른 기기) 목록으로 (Goal은 남는다)
+        if case .runWithAI = screen, runTarget == nil { returnToList() }
     }
 
     // MARK: 연결 · 저장본
@@ -1902,7 +1908,8 @@ final class LauncherModel {
     /// 초안 링크 (`taskforce://artifacts/<id>`: receipt 원문 슬립 · 앱 밖에서 연 링크). 읽어 둔 초안이 없으면 RLS로 읽는다
     func openDraft(id: UUID) {
         guard let runs else { return }
-        guard isSignedIn else {
+        // 로그인 상태를 아직 따라가지 않았으면(`sessionChanged` 전) 그 뒤에 연다: 첫 로그인의 화면 정리에 지워지지 않게
+        guard isSignedIn, signedInUserID == lastUserID else {
             pendingDraft = id
             return
         }
