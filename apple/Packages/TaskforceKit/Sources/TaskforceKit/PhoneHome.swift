@@ -25,6 +25,20 @@ public enum PhoneHome {
         !state.isOffline && !showingSavedCopy
     }
 
+    /// 할 일 행을 눌렀을 때
+    public enum RowTap: Equatable, Sendable {
+        /// 상세(P2)로 간다: Taskforce 갈래 · 원문 · Mark Done
+        case openDetail
+        /// 행 아래에 근거 한 줄을 펼친다 (U1 PR5b)
+        case expandSource
+    }
+
+    /// 상세는 실행을 쓸 수 있는 계정(`GET /credits` 200)에서만 연다. 나머지 계정은 U1 PR5b 그대로 근거를 펼친다 (운영 회귀 0).
+    /// 모든 계정에 상세를 여는 것은 U5
+    public static func rowTap(executionAvailable: Bool) -> RowTap {
+        executionAvailable ? .openDetail : .expandSource
+    }
+
     /// 저장본의 그 구역 행을 찾는 말로 거른다 (저장된 제목만, `TaskFilter`). Done Today는 저장한 날이 오늘일 때만 (`SavedNow.rows`)
     public static func savedRows(
         _ saved: SavedNow, in group: TaskGroup, matching query: String, now: Date, timeZone: TimeZone = .current

@@ -60,7 +60,7 @@ struct RootView: View {
     }
 }
 
-/// 로그인한 동안: Realtime 구독 하나 + app_opened + 연결 콜백 + 연결 경로 + 저장본
+/// 로그인한 동안: Realtime 구독 하나 + app_opened + 연결 콜백 + 연결 경로 + 저장본 + 실행 결과(credits 200인 계정만 보인다)
 private struct SignedInRoot: View {
     let services: AppServices
     let userID: UUID
@@ -71,6 +71,10 @@ private struct SignedInRoot: View {
     @State private var appOpen = AppOpenTracker()
     @State private var now: NowStore
     @State private var account: AccountStore
+    /// 실행(U2): 결과 보기 · 멈추기만. iPhone은 run을 시작하지 않는다 (`RunAvailability.canStart`)
+    @State private var runs: RunStore
+    /// 연 초안 링크 (`taskforce://artifacts/<id>`): 목록이 초안 화면으로 연다
+    @State private var draftLink: UUID?
 
     init(services: AppServices, session: SessionStore, userID: UUID, email: String?) {
         self.services = services
@@ -80,21 +84,27 @@ private struct SignedInRoot: View {
         // 로그아웃 뒤 이 화면이 사라지기 전에 늦게 온 `/now`도 다시 쓰지 않는다
         let now = NowStore(services: services, session: session, saved: AppRuntime.savedNow)
         let account = AccountStore(services: services, session: session)
+        let runs = RunStore(services: services, session: session)
+        // 지켜보던 run이 끝나면 `/now`를 다시 받는다 (바뀜 점은 초안 receipt로 서버가 켠다)
+        runs.onRunsFinished = { [weak now] in Task { await now?.load() } }
         #if DEBUG
         if SampleData.isEnabled {
             now.useSampleData()
             account.useSampleData(connections: SampleData.connections, policyNotice: SampleData.policyNotice)
+            runs.useSampleData()
         }
         #endif
         _now = State(initialValue: now)
         _account = State(initialValue: account)
+        _runs = State(initialValue: runs)
     }
 
     var body: some View {
-        HomeView(userID: userID, email: email)
+        HomeView(userID: userID, email: email, draftLink: $draftLink)
             .environment(now)
             .environment(changes)
             .environment(account)
+            .environment(runs)
             // 로그인해 있는 동안 Realtime 구독 하나. 로그아웃 · 계정 전환으로 이 화면이 사라지면 끝난다.
             .task {
                 guard !isSample else { return }
@@ -102,6 +112,17 @@ private struct SignedInRoot: View {
             }
             // 이번 실행에서 `/now`를 받기 전(처음 불러오는 중 · 오프라인 · 새로고침 실패)에는 이 계정의 저장본을 보인다
             .onAppear { now.restoreSaved() }
+            // 실행을 쓸 수 있는지(credits 200) · 끝나지 않은 run: 나타날 때와 앞으로 돌아올 때마다. 404면 실행 UI가 하나도 보이지 않는다
+            .task(id: scenePhase == .active) {
+                guard !isSample, scenePhase == .active else { return }
+                await runs.loadCredits()
+                await runs.refreshActive()
+            }
+            // Realtime `actions` 신호 (초안 receipt가 Action을 바꾼다): 지켜보는 할 일 · 끝나지 않은 run을 다시 읽는다
+            .onChange(of: changes.revision) {
+                guard !isSample else { return }
+                Task { await runs.actionsChanged() }
+            }
             // 연결이 끊기면 오프라인 상태(P10), 돌아오면 다시 불러온다. 이 화면이 사라지면 감시도 끝난다
             .task {
                 guard !isSample else { return }
@@ -114,14 +135,19 @@ private struct SignedInRoot: View {
                 guard !isSample, appOpen.update(AppOpenTracker.Phase(phase)) else { return }
                 Task { try? await services.api.appOpened() }
             }
-            // ASWebAuthenticationSession이 주소를 바로 돌려주지만, 앱 밖에서 열린 경우를 위해
+            // 초안 링크는 초안 화면으로. 연결 콜백(ASWebAuthenticationSession이 주소를 바로 돌려주지만, 앱 밖에서 열린 경우)과 나눈다
             .onOpenURL { url in
-                Task { await account.handleCallback(url) }
+                if let id = ArtifactLink.parse(url) {
+                    draftLink = id
+                } else {
+                    Task { await account.handleCallback(url) }
+                }
             }
             // 로그아웃 · 계정 전환으로 사라질 때: 이 계정의 저장소는 버려지지만, 그전에 보낸 요청의 늦은 결과(클립보드 · 연결 마치기 등)도 버린다
             .onDisappear {
                 now.reset()
                 account.reset()
+                runs.reset()
             }
     }
 

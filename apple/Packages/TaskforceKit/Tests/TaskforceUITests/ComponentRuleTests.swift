@@ -45,6 +45,11 @@ struct ComponentRuleTests {
         #expect(LaneCard.accessibilityLabel(heading: "Taskforce", title: "Draft ready", subtitle: "AI draft · 14:20") == "Taskforce, Draft ready, AI draft · 14:20")
         #expect(LaneCard.accessibilityLabel(heading: "Taskforce", title: "Writing draft", subtitle: nil) == "Taskforce, Writing draft")
         #expect(LaneCard.accessibilityLabel(heading: "Taskforce", title: "Writing draft", subtitle: "") == "Taskforce, Writing draft")
+        // 초안 제목이 제목이면 상태를 먼저 읽는다 (iPhone P2 "Taskforce, Draft ready")
+        #expect(
+            LaneCard.accessibilityLabel(heading: "Taskforce", title: "데모 예상 질문", subtitle: "AI draft · 14:20", spokenState: "Draft ready")
+                == "Taskforce, Draft ready, 데모 예상 질문, AI draft · 14:20"
+        )
     }
 
     /// VoiceOver: "제목, 기한[, Changed]"
