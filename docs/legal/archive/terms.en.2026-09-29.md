@@ -2,7 +2,7 @@
 
 Taskforce (AI project manager)
 
-- Effective date: {{effective date}}
+- Effective date: 2026-09-29
 - 한국어: [이용약관](terms.ko.md) (the Korean version prevails if the two differ)
 
 ## 1. Purpose
@@ -11,7 +11,7 @@ These terms set out how you may use the Taskforce app (iOS and macOS) and its se
 
 ## 2. The Service
 
-1. The Service finds the work you committed to in meeting notes, messages, and email from services you connect (such as Notion, Google, and Slack), keeps it organized, updates it when due dates or scope change, and shows the quote each task came from. When you ask for a draft for a task (such as an email or document), the AI writes it and saves it in the app (during the beta, only on accounts we enable).
+1. The Service finds the work you committed to in meeting notes, messages, and email from services you connect (such as Notion, Google, and Slack), keeps it organized, updates it when due dates or scope change, and shows the quote each task came from.
 2. The Service is a **beta**. Features may change or be removed, it may contain errors, and we may end the beta.
 3. The Service is **free** during the beta. If we introduce fees, we will tell you at least 30 days in advance and will not charge you unless you separately agree.
 4. The Service is distributed through TestFlight. Apple's terms also apply to your use of TestFlight.
@@ -24,11 +24,11 @@ These terms set out how you may use the Taskforce app (iOS and macOS) and its se
 
 ## 4. Your account
 
-1. You create an account with Sign in with Apple, your Google account, or your email address.
+1. You create an account with Sign in with Apple or your email address.
 2. You must be at least 14 years old to use the Service.
 3. The beta is not offered to people who live in the European Economic Area (EEA, including the European Union) or the United Kingdom. Please do not sign up from these regions.
 4. Keep your account and devices secure. Tell us right away if you learn your account has been used without permission.
-5. You can delete your account at any time in app → Settings → Delete Account (Mac: Settings → Account → Delete Account). Deletion removes your stored data immediately and cannot be undone.
+5. You can delete your account at any time in app → Account → Delete account. Deletion removes your stored data immediately and cannot be undone.
 
 ## 5. Connections and permissions
 
@@ -39,9 +39,9 @@ These terms set out how you may use the Taskforce app (iOS and macOS) and its se
 
 ## 6. AI results
 
-1. The Service uses AI to find tasks, due dates, and owners. **AI results can be wrong or incomplete.** It may miss a task, treat someone else's task as yours, or misread a due date. Drafts the AI writes can also be wrong or incomplete.
+1. The Service uses AI to find tasks, due dates, and owners. **AI results can be wrong or incomplete.** It may miss a task, treat someone else's task as yours, or misread a due date.
 2. Check the evidence quote and the original source before relying on anything important. The Service does not replace the original record (the notes, email, or messages).
-3. The Service writes no draft you did not ask for, and never sends email or writes to a connected service on your behalf. A draft you ask for is only saved in the app; reviewing, using, or sending it is your choice and responsibility. "Hand off to AI" only packages context as text; using that text in another tool is also your choice and responsibility.
+3. The Service does not carry out tasks by itself. "Hand off to AI" only packages context as text; using that text in another tool is your choice and responsibility.
 
 ## 7. Your content
 
@@ -85,4 +85,4 @@ If we find such conduct, we may restrict your use after notifying you. In urgent
 - Address: 262-20, Galma-dong, Seo-gu, Daejeon, Republic of Korea
 - Email: privacy@taskforcelabs.dev
 
-These terms take effect on {{effective date}}.
+These terms take effect on 2026-09-29.
