@@ -9,6 +9,8 @@ import TaskforceUI
 /// 이번 실행에서 `/now`를 받기 전(처음 불러오는 중 · 오프라인 · 새로고침 실패)에는 이 기기의 저장본(제목 · 기한 · 상태만)을 읽기만 한다.
 /// 오프라인이거나 저장본이면 Confirm · Dismiss · 상태 바꾸기 · 삭제를 막는다 (`PhoneHome.canWrite`, 모아 두었다 보내지 않는다).
 /// 행을 누르면 근거 한 줄을 펼친다. 바뀐 할 일이면 그때 `seen`을 한 번 보낸다 (`SeenTracker.open`, 실패해도 다시 보내지 않음).
+/// 실행을 쓸 수 있는 계정(`GET /credits` 200)은 행을 누르면 상세(P2, `TaskDetailView`)로 간다 (`PhoneHome.rowTap`). 나머지 계정은 위 그대로 (운영 회귀 0).
+/// 초안 링크(`taskforce://artifacts/<id>`, 원문 슬립 · 앱 밖)는 초안 화면으로 연다 (`DraftView`). iPhone은 run을 시작하지 않는다 (결과 보기 · 멈추기만).
 /// 상태는 To Do · In Progress · Done 세 이름으로만 옮긴다 (`NowStore.move`):
 /// - 왼쪽 원: 열린 할 일 → Done, 끝낸 할 일 → 끝내기 전 상태
 /// - 밀기: To Do는 오른쪽 In Progress · 왼쪽 Done, In Progress는 오른쪽 To Do · 왼쪽 Done, Done Today는 오른쪽 To Do
@@ -18,8 +20,11 @@ import TaskforceUI
 struct HomeView: View {
     let userID: UUID
     let email: String?
+    /// 열 초안 (`RootView`의 `onOpenURL`이 넣는다, 연 뒤 비운다)
+    @Binding var draftLink: UUID?
 
     @Environment(NowStore.self) private var store
+    @Environment(RunStore.self) private var runs
     @Environment(AccountStore.self) private var account
     @Environment(ActionChangeFeed.self) private var changes
     @Environment(\.openURL) private var openURL
@@ -48,10 +53,13 @@ struct HomeView: View {
     @State private var seen = SeenTracker()
     /// `Show All 4 ›`: Review 카드를 모두 보이는 화면
     @State private var showingAllReviews = false
+    /// 상세 · 원문 전체 · 초안 (실행을 쓸 수 있는 계정, 초안 링크)
+    @State private var path: [PhoneRoute] = []
 
     var body: some View {
         @Bindable var store = store
-        NavigationStack {
+        @Bindable var runs = runs
+        NavigationStack(path: $path) {
             content
                 .background(TFColor.bgCanvas)
                 .overlay(alignment: .bottom) { undoBar }
@@ -76,6 +84,22 @@ struct HomeView: View {
                     }
                 }
                 .navigationDestination(isPresented: $showingAllReviews) { allReviews }
+                .navigationDestination(for: PhoneRoute.self) { destination($0) }
+        }
+        // 원문 슬립의 초안 링크(실행 receipt)는 앱 안에서 연다 (상세 · 원문 전체. 이 화면의 슬립은 `openLink`)
+        .environment(\.openURL, OpenURLAction { url in
+            guard ArtifactLink.parse(url) != nil else { return .systemAction }
+            openLink(url)
+            return .handled
+        })
+        .onChange(of: draftLink, initial: true) { _, id in
+            guard let id else { return }
+            draftLink = nil
+            Task { await openDraft(id) }
+        }
+        // 상세로 가는 계정이 되면 펼쳐 둔 근거를 접는다 (행을 누르면 상세)
+        .onChange(of: runs.isAvailable) { _, available in
+            if available { expanded = nil }
         }
         // 나타날 때마다, 그리고 Realtime 신호가 올 때마다
         .task(id: changes.revision) { await store.load() }
@@ -133,7 +157,16 @@ struct HomeView: View {
         .sheet(isPresented: $promptingConsent) {
             ConsentPrompt()
         }
-        .messageAlert($store.message)
+        // 목록 쓰기 실패 · 멈추기 실패 · 초안 링크를 못 찾음 (상세 · 초안 화면 위에서도 보인다). 알림은 한 번에 하나라 한 곳에서 띄운다:
+        // 둘이 겹치면 목록 쪽을 먼저 보이고, 닫으면 둘 다 비운다
+        .messageAlert(Binding(
+            get: { store.message ?? runs.message },
+            set: { message in
+                guard message == nil else { return }
+                store.message = nil
+                runs.message = nil
+            }
+        ))
     }
 
     @ViewBuilder
@@ -465,7 +498,7 @@ struct HomeView: View {
             onDismiss: { if let id = action?.id { Task { await store.dismiss(id) } } }
         ) {
             if let id = action?.id, let digest = store.evidence[id], let lead = digest.lead {
-                SourceSlip(line: lead) { openURL($0) }
+                SourceSlip(line: lead) { openLink($0) }
             }
         }
         .id(row.id)
@@ -523,9 +556,9 @@ struct HomeView: View {
                 changed: seen.showsDot(id, changed: changedIDs),
                 markLabel: done ? "Mark \((store.toggleTarget(id) ?? .toDo).title)" : "Mark Done",
                 // 원: 열린 할 일은 Done Today로, 끝낸 할 일은 끝내기 전 구역으로 옮겨 간다
-                onToggle: canWrite ? { withAnimation(Self.move) { _ = store.toggle(id) } } : nil,
+                onToggle: canWrite ? { toggle(id) } : nil,
                 onOpen: { open(id) },
-                openLabel: expanded == id ? "Hide Source" : "Show Source"
+                openLabel: runs.isAvailable ? "Show Details" : expanded == id ? "Hide Source" : "Show Source"
             ) {
                 expandedEvidence(for: id)
             }
@@ -567,12 +600,18 @@ struct HomeView: View {
         }
     }
 
-    /// 행을 누름: 근거를 펼치고 접는다. 펼칠 때 바뀐 할 일이면 본 것으로 (`markSeen`)
+    /// 행을 누름: 실행을 쓸 수 있는 계정은 상세로, 나머지는 근거를 펼치고 접는다. 열 때 바뀐 할 일이면 본 것으로 (`markSeen`)
     private func open(_ id: UUID) {
-        withAnimation(.snappy(duration: 0.2)) {
-            expanded = expanded == id ? nil : id
+        switch PhoneHome.rowTap(executionAvailable: runs.isAvailable) {
+        case .openDetail:
+            path.append(.task(id))
+            markSeen(id)
+        case .expandSource:
+            withAnimation(.snappy(duration: 0.2)) {
+                expanded = expanded == id ? nil : id
+            }
+            if expanded == id { markSeen(id) }
         }
-        if expanded == id { markSeen(id) }
     }
 
     /// 바뀐 할 일을 본 것으로: 점을 바로 지우고 `seen`을 한 번 보낸다 (`SeenTracker.open`, 실패해도 다시 보내지 않음. 다음 `/now`가 진실).
@@ -588,13 +627,74 @@ struct HomeView: View {
     }
 
     private func move(_ id: UUID, to state: WorkState) {
+        if state == .done { stopRuns(id) }
         withAnimation(Self.move) { _ = store.move(id, to: state) }
+    }
+
+    /// 원 · 상세 `Mark Done`: 열린 할 일은 Done으로, 끝낸 할 일은 끝내기 전 상태로
+    private func toggle(_ id: UUID) {
+        if store.toggleTarget(id) == .done { stopRuns(id) }
+        withAnimation(Self.move) { _ = store.toggle(id) }
+    }
+
+    /// 할 일을 Done으로 옮기거나 지울 때 그 할 일의 끝나지 않은 run을 멈춘다 (`RunStop`: 목록에서 사라진 할 일이 크레딧을 쓰지 않게).
+    /// 옮기기와 같이 보낸다 (서버도 열린 할 일에서만 다음 단계를 돈다). 실행을 쓸 수 없는 계정은 아무것도 보내지 않는다
+    private func stopRuns(_ id: UUID) {
+        guard runs.isAvailable, !runs.stopTargets(for: id).isEmpty else { return }
+        Task { await runs.stop(actionID: id) }
+    }
+
+    // MARK: 상세 · 초안
+
+    @ViewBuilder
+    private func destination(_ route: PhoneRoute) -> some View {
+        switch route {
+        case .task(let id):
+            TaskDetailView(
+                actionID: id,
+                canWrite: canWrite,
+                onToggle: {
+                    let finishing = store.toggleTarget(id) == .done
+                    toggle(id)
+                    // Mark Done 뒤에는 목록으로 돌아간다 (끝낸 할 일을 되돌릴 때는 상세에 남는다)
+                    if finishing, path.last == .task(id) { path.removeLast() }
+                },
+                onOpenDraft: { path.append(.draft($0)) },
+                onShowAllSources: { path.append(.sources(id)) }
+            )
+        case .sources(let id):
+            TaskSourcesView(actionID: id)
+        case .draft(let artifact):
+            DraftView(artifact: artifact)
+        }
+    }
+
+    /// 원문 슬립 누름: 초안 링크면 초안 화면, 아니면 원문 (Notion · Slack …)
+    private func openLink(_ url: URL) {
+        if let id = ArtifactLink.parse(url) {
+            Task { await openDraft(id) }
+        } else {
+            openURL(url)
+        }
+    }
+
+    /// 초안 링크: 읽어 둔 초안이나 RLS로 읽은 초안을 연다. 없으면 (다른 계정 · 지워진 행) "Draft not found."
+    /// 실행을 쓸 수 없는 계정(credits 404)이면 아무것도 하지 않는다 (이 PR 전과 같다). 아직 모르면(앱을 막 엶) 연다
+    private func openDraft(_ id: UUID) async {
+        guard runs.credits != .unavailable else { return }
+        switch await runs.draft(id: id) {
+        case .found(let artifact): path.append(.draft(artifact))
+        case .notFound: runs.message = ArtifactLink.notFoundMessage
+        case .failed(let text): runs.message = text
+        case .cancelled: break
+        }
     }
 
     // MARK: 삭제 · Undo
 
     /// 곧바로 목록에서 빼고 5초 동안 Undo. 지우지 못하면 행이 제자리로 돌아오고 알림이 뜨므로 Undo를 거둔다.
     private func delete(_ id: UUID) {
+        stopRuns(id)
         guard let deleted = withAnimation(Self.move, { store.delete(id) }) else { return }
         withAnimation(Self.move) { undo.offer(deleted.undo) }
         deletions += 1
@@ -678,7 +778,7 @@ struct HomeView: View {
             Group {
                 if let digest = store.evidence[id] {
                     if let lead = digest.lead {
-                        SourceSlip(line: lead) { openURL($0) }
+                        SourceSlip(line: lead) { openLink($0) }
                     }
                 } else if store.evidenceFailed.contains(id) {
                     Text("Couldn't load the source.")
@@ -841,6 +941,9 @@ struct HomeView: View {
             return
         }
         accountRoute = nil
+        // 상세 · 초안 · Show All 위에 있으면 목록으로 돌아와 그 할 일을 보인다
+        path = []
+        showingAllReviews = false
         Task {
             await store.load()
             guard let id = target.actionID, let found = store.sections.find(id) else { return }
@@ -873,6 +976,13 @@ struct HomeView: View {
         UserDefaults.standard.set(true, forKey: key)
         promptingProfile = true
     }
+}
+
+/// 목록에서 미는 화면: 할 일 상세(실행을 쓸 수 있는 계정) · 그 할 일의 원문 전체 · 초안
+enum PhoneRoute: Hashable {
+    case task(UUID)
+    case sources(UUID)
+    case draft(Artifact)
 }
 
 /// 주간 질문 (PRD 지표 5). 작게, 목록 아래에.
