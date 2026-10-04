@@ -62,6 +62,8 @@ final class AccountStore {
         sampleMode = true
         apply(connections)
         self.policyNotice = policyNotice
+        // 동의한 계정 견본 (`-TFSampleConsent`): 설정 Privacy & AI Data의 스위치가 켜진 모습
+        consentGiven = SampleData.hasConsent
         loaded = true
     }
     #endif
