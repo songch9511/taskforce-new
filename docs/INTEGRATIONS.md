@@ -85,7 +85,7 @@
 4. **Capabilities**: 콘텐츠 읽기만 켠다 (업데이트 · 삽입은 끔). 사용자 정보는 **이메일 포함**으로 (참석자 이메일로 사용자를 알아본다).
 5. 발급된 OAuth client ID · secret을 `.env.local`의 `NOTION_CLIENT_ID`, `NOTION_CLIENT_SECRET`에 넣는다.
 6. `.env.local`에 `SUPABASE_SERVICE_ROLE_KEY`(Supabase → Project Settings → API Keys)도 넣는다.
-7. `supabase/migrations/`의 마이그레이션을 최신까지 적용한 뒤(연결 · 동의 · 속도 제한 · 보관 기간이 여러 파일에 걸쳐 있다, `docs/go-live/runbook.md` 4장) `/lab` → **Notion 연결** → 회의록 데이터베이스를 고른다 → **지금 동기화**.
+7. `supabase/migrations/`의 마이그레이션을 최신까지 적용한 뒤(연결 · 동의 · 속도 제한 · 보관 기간이 여러 파일에 걸쳐 있다, `docs/go-live/runbook.md` 4장) `.env.local`의 `ADMIN_EMAILS`에 내 이메일을 넣고(없으면 `/lab`이 404) `/lab` → **Notion 연결** → 회의록 데이터베이스를 고른다 → **지금 동기화**.
    앱에서 연결할 때는 `/lab`이 아니라 `POST /api/v1/connections/notion/start` → 권한 화면 → callback이 만드는 완료 대기(handoff) → `POST /api/v1/connections/notion/complete`로 마친다([GO_LIVE.md](GO_LIVE.md) 1장).
 
 ## Notion 할 일 DB (설계)
