@@ -15,7 +15,7 @@
 |---|---|
 | 병합 | #63 `4ba5d8b`(잘못된 JWT 401) · #65 `04e602f`(W1 알림 정렬) · #64 `ba2cb71`(문서). Production success, main CI success, 무인증 · 잘못된 JWT 401 |
 | 보류 | #61 · #62는 U1(`.local` 로그아웃 · SessionStore 정리)까지 |
-| 처리방침 | 베타 1.3 게시(2026-10-02, [legal/README.md](legal/README.md) 게시 기록) |
+| 처리방침 | 베타 1.3 게시(2026-10-02) → 지금은 베타 1.4(2026-10-04), 약관은 2026-10-04 시행 판 ([legal/README.md](legal/README.md) 게시 기록) |
 | eval 기준선 (`29576c6`) | 자동+확인 정밀도 90.4% · 재현율 91.7% · 담당 98.5% · 기한 100% · 남의 일 3 / 자동만 98.3% · 85.1% · 100% · 100% · 0 / 시퀀스 29/29 / 물어보기 8/8. 이후 PR은 이보다 떨어지지 않아야 한다 |
 | 관문 | 계획 생성(`completeJson` + discriminated union, ZDR 공급자) 통과 · 원격 MCP(Linear 바로 · GitHub 앱 등록 · Figma는 REST 읽기만) · Vercel Pro(함수 최대 800초, cron 최소 1분) · Gmail 헤더(`X-Taskforce-Intent` 보존, 클라이언트 Message-ID는 Gmail이 바꿈). 자세한 내용은 EXECUTION.md 10장 |
 | 연결 플래그(운영) | `GMAIL_CONNECT_ENABLED=true`, Slack · Google 비어 있음. Gmail은 프로젝트 B Testing이라 테스트 사용자만 연결된다 |
