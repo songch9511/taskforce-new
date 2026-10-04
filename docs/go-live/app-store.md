@@ -131,7 +131,7 @@ Where to look:
 - Review card at the top: a task whose owner or due date is uncertain. Confirm or Dismiss.
 - Settings (iPhone: the button at the top left; Mac: the menu bar icon > Settings): Connections (connect/disconnect services), Privacy & AI Data (consent to sending source text to third-party AI and how to withdraw it), Privacy Policy, Sign out, Delete account.
 
-Third-party AI (Guideline 5.1.2(i)): before the first connection, the app shows which data is sent (notes, documents, transcripts, messages, and email the user connects or pastes in, with the names and email addresses of people in them; the user's name and nicknames; task titles and quotes; questions asked; and, for drafts the user starts, the request and that task's details and quotes), who receives it (OpenRouter and the five named AI model providers it routes to, all with zero data retention and no training), where it is stored (Sydney), and asks for explicit consent. Without consent, the server does not process any sources or write drafts. The same information is always at Settings > Privacy & AI Data on both iPhone and Mac, where consent can be withdrawn with the "Use AI on new sources" switch. The demo account has already allowed it. To see the prompt, turn the switch on again (or turn it off, then open Settings > Connections and choose Sync Now from any connected service's menu); the prompt appears. Tap Allow so the demo keeps working.
+Third-party AI (Guideline 5.1.2(i)): before the first connection, the app shows which data is sent (notes, documents, transcripts, messages, and email the user connects or pastes in, with the names and email addresses of people in them; the user's name and nicknames; task titles and quotes; questions asked; and, for drafts the user starts, the request and that task's details and quotes), who receives it (OpenRouter and the five named AI model providers it routes to, all with zero data retention and no training), where it is stored (Sydney), and asks for explicit consent. Without consent, the server does not process any sources or write drafts. The same information is always at Settings > Privacy & AI Data on both iPhone and Mac, where consent can be withdrawn with the "Use AI on new sources" switch. The demo account has already allowed it. To see the prompt, turn the switch off (confirm Withdraw), then turn it on again (or, while it is off, open Settings > Connections and choose Sync Now from any connected service's menu); the prompt appears. Tap Allow so the demo keeps working.
 
 Account deletion (Guideline 5.1.1(v)): Settings > Delete Account (Mac: Settings > Account > Delete Account…) deletes all data immediately (no backups) and asks Apple and connected services to revoke their tokens (for Sign in with Apple accounts, after the user confirms with Apple once more), and revokes the Google sign-in grant from this device when available. If you delete the demo account, please let us know and we will recreate it.
 
@@ -180,13 +180,13 @@ App Store Connect → 앱 → App Privacy. 모든 항목: **Linked to the user =
 ```
 Privacy & AI Data
 
-To find your tasks and write drafts you start, Taskforce sends the text you connect or paste in to third-party AI models. Drafts are only saved in Taskforce, never sent to anyone or added to your connected services.
+To find your tasks and write drafts you start, Taskforce sends the text you connect or paste in to third-party AI models. Drafts are only saved in Taskforce, never sent to the people they're for or added to your connected services.
 
 What's sent
 Notes, documents, transcripts, messages, and email you connect or paste in, with the names and email addresses of people in them. Your name, nicknames, and email addresses, so the AI can recognize you. Your task titles and quotes. Questions you ask, with related tasks and quotes, including draft records. Hand off to AI only shows text for you to copy; Taskforce doesn't send it.
 
 For drafts you start
-Your request. The task's title, status, owner, due date, and counterpart. Its quotes with nearby source text, and those sources' type, title, date, and the names and email addresses of people in them. Your name. Instructions and titles of earlier drafts for the same request. Text and quotes from Slack are left out.
+Your request. The task's title, status, owner, due date, and counterpart. Its quotes with nearby source text, and those sources' type, title, date, and the names and email addresses of people in them. Your name (or the first part of your email). Instructions and titles of earlier drafts for the same request. Text and quotes from Slack are left out; a task from Slack still sends its own title, status, owner, due date, and counterpart.
 
 Who receives it
 OpenRouter (USA), which routes each request to Fireworks, Together AI, DeepInfra, Microsoft Azure, or TypeSafe (all USA).
@@ -195,7 +195,7 @@ How it's protected
 Only providers that keep no data. Never used to train AI models. Stored on our servers in Sydney. Delete your account to delete it all.
 
 Withdraw anytime
-Turn this off in Settings > Privacy & AI Data. Without it, Taskforce doesn't send or process your sources and doesn't write drafts: no new tasks are found, and a draft in progress stops before its next AI request. Your tasks and drafts stay until you delete your account.
+Turn this off in Settings > Privacy & AI Data. Without it, Taskforce doesn't send or process your sources and doesn't write drafts: no new tasks are found, and a draft in progress stops before its next AI request. Existing tasks and drafts stay.
 
 Privacy Policy   Terms of Use
 

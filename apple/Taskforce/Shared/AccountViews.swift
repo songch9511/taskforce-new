@@ -198,17 +198,24 @@ struct ConsentDetails: View {
     /// 철회 경로: Mac 설정 사이드바 · iPhone 설정 시트 모두 같은 이름 (처리방침 4장 · 11장 "app → Settings → Privacy & AI Data")
     static let settingsPath = "Settings > Privacy & AI Data"
 
+    static let purpose = "To find your tasks and write drafts you start, Taskforce sends the text you connect or paste in to third-party AI models. Drafts are only saved in Taskforce, never sent to the people they're for or added to your connected services."
+    static let sent = "Notes, documents, transcripts, messages, and email you connect or paste in, with the names and email addresses of people in them. Your name, nicknames, and email addresses, so the AI can recognize you. Your task titles and quotes. Questions you ask, with related tasks and quotes, including draft records. Hand off to AI only shows text for you to copy; Taskforce doesn't send it."
+    static let drafts = "Your request. The task's title, status, owner, due date, and counterpart. Its quotes with nearby source text, and those sources' type, title, date, and the names and email addresses of people in them. Your name (or the first part of your email). Instructions and titles of earlier drafts for the same request. Text and quotes from Slack are left out; a task from Slack still sends its own title, status, owner, due date, and counterpart."
+    static let receivers = "OpenRouter (USA), which routes each request to Fireworks, Together AI, DeepInfra, Microsoft Azure, or TypeSafe (all USA)."
+    static let protection = "Only providers that keep no data. Never used to train AI models. Stored on our servers in Sydney. Delete your account to delete it all."
+    static let withdraw = "Turn this off in \(settingsPath). Without it, Taskforce doesn't send or process your sources and doesn't write drafts: no new tasks are found, and a draft in progress stops before its next AI request. Existing tasks and drafts stay."
+
     var body: some View {
         VStack(alignment: .leading, spacing: TFSpace.lg) {
-            Text("To find your tasks and write drafts you start, Taskforce sends the text you connect or paste in to third-party AI models. Drafts are only saved in Taskforce, never sent to anyone or added to your connected services.")
+            Text(Self.purpose)
                 .font(TFFont.callout)
                 .foregroundStyle(TFColor.textPrimary)
                 .fixedSize(horizontal: false, vertical: true)
-            item("doc.text", "What's sent", "Notes, documents, transcripts, messages, and email you connect or paste in, with the names and email addresses of people in them. Your name, nicknames, and email addresses, so the AI can recognize you. Your task titles and quotes. Questions you ask, with related tasks and quotes, including draft records. Hand off to AI only shows text for you to copy; Taskforce doesn't send it.")
-            item("square.and.pencil", "For drafts you start", "Your request. The task's title, status, owner, due date, and counterpart. Its quotes with nearby source text, and those sources' type, title, date, and the names and email addresses of people in them. Your name. Instructions and titles of earlier drafts for the same request. Text and quotes from Slack are left out.")
-            item("arrow.up.right", "Who receives it", "OpenRouter (USA), which routes each request to Fireworks, Together AI, DeepInfra, Microsoft Azure, or TypeSafe (all USA).")
-            item("lock.shield", "How it's protected", "Only providers that keep no data. Never used to train AI models. Stored on our servers in Sydney. Delete your account to delete it all.")
-            item("arrow.uturn.backward", "Withdraw anytime", "Turn this off in \(Self.settingsPath). Without it, Taskforce doesn't send or process your sources and doesn't write drafts: no new tasks are found, and a draft in progress stops before its next AI request. Your tasks and drafts stay until you delete your account.")
+            item("doc.text", "What's sent", Self.sent)
+            item("square.and.pencil", "For drafts you start", Self.drafts)
+            item("arrow.up.right", "Who receives it", Self.receivers)
+            item("lock.shield", "How it's protected", Self.protection)
+            item("arrow.uturn.backward", "Withdraw anytime", Self.withdraw)
             LegalLinksRow()
                 .font(TFFont.footnote)
                 .padding(.leading, 20 + TFSpace.md)
@@ -287,11 +294,12 @@ enum ConsentSwitch: Equatable {
     case prompt
     /// 끄기: 철회 확인
     case confirmWithdraw
-    /// 바꿀 것 없음 (이미 그 상태 · 동의 상태를 아직 읽지 않음)
+    /// 바꿀 것 없음 (이미 그 상태 · 동의 상태를 모름)
     case none
 
-    static func change(to on: Bool, hasConsent: Bool, loaded: Bool) -> ConsentSwitch {
-        guard loaded, on != hasConsent else { return .none }
+    /// `known`: 동의 상태를 안다 (`AccountStore.consentKnown`). 모르면 바꾸지 않는다
+    static func change(to on: Bool, hasConsent: Bool, known: Bool) -> ConsentSwitch {
+        guard known, on != hasConsent else { return .none }
         return on ? .prompt : .confirmWithdraw
     }
 }
@@ -329,14 +337,14 @@ struct ConsentSettingsView: View {
     private var switchDetail: String {
         account.hasConsent
             ? "Turning this off stops new tasks from sources and new drafts. Your tasks and drafts stay."
-            : "New sources aren't read, so no new tasks or drafts. Your tasks and drafts stay."
+            : "New sources aren't read and no drafts are written. Your tasks and drafts stay."
     }
 
     private var useAI: Binding<Bool> {
         Binding(
             get: { account.hasConsent },
             set: { on in
-                switch ConsentSwitch.change(to: on, hasConsent: account.hasConsent, loaded: account.loaded) {
+                switch ConsentSwitch.change(to: on, hasConsent: account.hasConsent, known: account.consentKnown) {
                 case .prompt: prompting = true
                 case .confirmWithdraw: confirmingWithdraw = true
                 case .none: break
@@ -372,8 +380,7 @@ struct ConsentSettingsView: View {
                                 .labelsHidden()
                                 .controlSize(.mini)
                                 .tint(TFColor.fillAccent)
-                                .disabled(!account.loaded || withdrawing)
-                                .accessibilityHint(switchDetail)
+                                .disabled(!account.consentKnown || withdrawing)
                         }
                         SettingsDivider()
                         SettingsRow(Self.providersTitle, subtitle: Self.providersDetail) {
@@ -401,7 +408,7 @@ struct ConsentSettingsView: View {
                     Text(switchDetail)
                 }
                 .tint(TFColor.fillAccent)
-                .disabled(!account.loaded || withdrawing)
+                .disabled(!account.consentKnown || withdrawing)
                 LabeledContent {
                     Button("View Policy") { openURL(LegalLinks.privacy) }
                 } label: {

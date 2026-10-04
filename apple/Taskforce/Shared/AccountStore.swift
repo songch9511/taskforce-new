@@ -103,6 +103,14 @@ final class AccountStore {
     /// 화면에 보일 동의 상태
     var hasConsent: Bool { consentGiven || profile?.hasAIConsent == true }
 
+    /// 동의 상태를 안다 (프로필을 읽었거나 방금 동의함). 모르면 설정 스위치를 끈다: 프로필을 못 읽은 동의한 계정이 꺼진 스위치를 보지 않게
+    var consentKnown: Bool {
+        #if DEBUG
+        if sampleMode { return true }
+        #endif
+        return consentGiven || profile != nil
+    }
+
     /// 프로필 · 연결 · 요청을 읽는다. 이미 읽는 중이면 그 끝을 기다린다 (`loads`)
     func load() async {
         #if DEBUG
@@ -424,7 +432,15 @@ final class AccountStore {
         }
         guard generation == self.generation else { return }
         consentGiven = false
-        if let value = try? await services.api.profile(), generation == self.generation { profile = value }
+        if let value = try? await services.api.profile(), generation == self.generation {
+            profile = value
+        } else if generation == self.generation, let current = profile {
+            // 다시 읽지 못해도 서버는 철회했다: 이 기기의 값에서도 동의를 지운다 (설정 스위치가 켜진 채 남지 않게)
+            profile = Profile(
+                displayName: current.displayName, aliases: current.aliases, emails: current.emails, aiConsentAt: nil,
+                reportsConsent: current.reportsConsent
+            )
+        }
     }
 
     // MARK: 프로필

@@ -82,7 +82,7 @@ Mac은 `--show-launcher -TFSampleData -TFSnapshot <폴더>`로 실행하면 런�
 - 오른쪽 위 "+" = New Task 시트(`NowStore.add`, 원문 없이 `POST /actions`): 제목(200자까지) · Due(None · Today · Tomorrow · Date…) · Cancel / Add.
   iOS 26은 시스템 유리 시트 그대로 두고, 제목 칸 · 기한 칩 · Existing 줄은 bg/elevated 바탕 위에 둬서 뒤 목록 글자가 비치지 않게 한다(그 전 OS는 bg/canvas 시트).
   쓰는 동안 열린 할 일(Review · In Progress · To Do)에서 맞는 것을 "Existing"으로 세 개까지 보여 준다(`LauncherAdd.existing`, 런처 찾기와 같은 거르기). 추가는 막지 않는다. 추가되면 닫고 `/now`를 다시 부른다.
-- 왼쪽 위 계정 시트(Figma P1에는 없지만 로그아웃 · 계정 삭제 경로라 둔다): Profile(이름 · 다른 이름, 비어 있으면 처음 한 번 묻는다) · Connections · AI data(외부 AI 처리 동의) · 로그인 계정 줄("Apple ID" · "Google Account" · "Email") · Sign Out(이 기기만, 다른 기기는 로그인 유지: 아래 한 줄 "Sign Out applies only to this device.") · Delete Account(Apple 로그인 계정은 Apple 재확인 → 토큰 폐기, Google 로그인 계정은 삭제 뒤 Google 권한 폐기) · Privacy Policy · Terms of Use.
+- 왼쪽 위 설정 시트(제목 Settings, Figma P1에는 없지만 로그아웃 · 계정 삭제 · 동의 철회 경로라 둔다): Profile(이름 · 다른 이름, 비어 있으면 처음 한 번 묻는다) · Connections · Privacy & AI Data(외부 AI 처리 동의 스위치 `Use AI on new sources`, 철회 경로 "Settings > Privacy & AI Data") · 로그인 계정 줄("Apple ID" · "Google Account" · "Email") · Sign Out(이 기기만, 다른 기기는 로그인 유지: 아래 한 줄 "Sign Out applies only to this device.") · Delete Account(Apple 로그인 계정은 Apple 재확인 → 토큰 폐기, Google 로그인 계정은 삭제 뒤 Google 권한 폐기) · Privacy Policy · Terms of Use.
 - 연결이 없고 할 일도 없으면 로고 네 개 + "Connect" 한 줄. 연결이 동기화 중이고 할 일이 없으면 가운데 진행 표시 + "Syncing…". 권한이 끊긴 연결이 있으면 목록 위에 Reconnect 줄.
 - 알림(C10): 권한은 첫 실행에 묻지 않고, 로그인했고 연결이 하나라도 있으며 다른 시트가 없을 때 한 번 묻는다(`PushPermission`). 알림을 누르면 떠 있는 시트를 닫고 목록을 다시 읽은 뒤 그 할 일로 스크롤한다: 확인 요청이면 그 Review card를 먼저 보이고, 할 일이면 그 행을 2초 동안 bg/surface로 칠한다.
 
@@ -109,9 +109,9 @@ Mac은 `--show-launcher -TFSampleData -TFSnapshot <폴더>`로 실행하면 런�
   - `app_opened`는 런처가 뜰 때 30분에 한 번(`LauncherOpenThrottle`).
   - 할 일이 하나도 없는데 연결이 동기화 중이면 빈 입력창 목록 맨 위에 진행 표시 + "Syncing…" 한 줄(고를 수 없음).
   - 알림 권한은 런처가 뜰 때 연결이 있으면 한 번 묻는다. 알림을 누르면 런처를 열고 그 할 일(Review · 할 일 행)을 고른다(목록을 아직 못 읽었으면 읽은 뒤에).
-- 설정 창(SwiftUI Settings 장면, 760×480, Figma S1): 왼쪽 사이드바(`Settings` · 검색칸 · Personal / Work)에 Keyboard Shortcuts · Account ↗ · Connections · Privacy & AI Data. Account는 페이지가 아니라 창 위 시트이고, 그 Sign Out도 이 기기만이다. iPhone과 같은 연결 · 동의 화면을 쓴다. 아직 내용이 없는 General · Notifications · Usage & Credits · Automation은 숨기고, 그 단위가 `MacSettingsTab.sidebar`에 한 줄씩 넣는다.
+- 설정 창(SwiftUI Settings 장면, 760×480, Figma S1): 왼쪽 사이드바(`Settings` · 검색칸 · Personal / Work)에 Keyboard Shortcuts · Usage & Credits · Account ↗ · Connections · Privacy & AI Data. Usage & Credits(Figma S3)는 실행을 쓸 수 있는 계정(`GET /credits` 200)에만 보인다(`MacSettingsTab.sidebar(executionAvailable:)`). Account는 페이지가 아니라 창 위 시트이고, 그 Sign Out도 이 기기만이다. iPhone과 같은 연결 · 동의 화면을 쓴다(Privacy & AI Data는 Mac에서 설정 카드 모양). 아직 내용이 없는 General · Notifications · Automation은 숨기고, 그 단위가 `MacSettingsTab.all`에 한 줄씩 넣는다.
   - 키보드: 검색칸에서 시작한다. 글자로 항목 이름을 거르고, ↑↓로 옮기고, ↩로 연다(Account는 시트). ⌘F는 검색칸으로, esc는 검색어를 지운다.
-  - 마지막에 본 페이지를 기억한다(`settings.tab`). 처음(저장값 없음)은 Connections. 예전 탭 값은 `MacSettingsTab.page(stored:)`가 옮긴다: `shortcut` → Keyboard Shortcuts, `account`(이제 시트) · 모르는 값 → Connections.
+  - 마지막에 본 페이지를 기억한다(`settings.tab`). 처음(저장값 없음)은 Connections. 예전 탭 값은 `MacSettingsTab.page(stored:execution:)`가 옮긴다: `shortcut` → Keyboard Shortcuts, `account`(이제 시트) · 모르는 값 → Connections. 저장된 `usage`는 실행을 쓸 수 없으면 Connections, 아직 모르면(credits를 읽는 중) 그대로.
 - 로그아웃 · 만료 · 계정 삭제 · 계정 전환으로 계정이 떠나면 `SessionStore.onSignedOut`에서 런처 화면 · 목록 · 진행 중 작업을 지운다. Supabase · API 요청은 응답을 디스크 캐시에 남기지 않는다(`TaskforceClient.urlSession`). API가 401이면 인증 서버에 세션을 다시 묻고, 계정(다른 기기에서 지움) · 세션이 없을 때만 이 기기를 로그아웃한다. 살아 있으면 "Couldn't verify your sign-in. Sign out, then sign in again."
 
 ### 연결 · 동의 (양쪽)

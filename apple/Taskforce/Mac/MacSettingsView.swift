@@ -32,18 +32,14 @@ struct MacSettingsView: View {
         MacSettingsTab.sidebar(matching: query, executionAvailable: execution == .available || page == .usage)
     }
 
-    /// 실행을 쓸 수 있는지: 로그아웃이면 쓸 수 없다. credits를 아직 읽지 못했으면(처음 · 전송 오류) 모름
+    /// 실행을 쓸 수 있는지 (`MacSettingsTab.Execution(signedIn:credits:)`). 견본은 로그인한 것으로 본다
     private var execution: MacSettingsTab.Execution {
-        guard isSignedIn || Self.isSample else { return .unavailable }
-        switch runs.credits {
-        case .unknown: return .unknown
-        case .unavailable: return .unavailable
-        case .available: return .available
+        let signedIn: Bool? = switch session.state {
+        case .signedIn: true
+        case .loading: Self.isSample ? true : nil
+        case .signedOut: Self.isSample
         }
-    }
-
-    private var isSignedIn: Bool {
-        if case .signedIn = session.state { true } else { false }
+        return MacSettingsTab.Execution(signedIn: signedIn, credits: runs.credits)
     }
 
     private var signedInUserID: UUID? {
@@ -89,9 +85,13 @@ struct MacSettingsView: View {
         .onChange(of: route.openCount) {
             cursor = nil
             query = ""
-            // 다시 열 때마다 실행을 쓸 수 있는지 다시 본다 (지급 · 켜기 뒤 다시 열면 바로 보이게)
+            // 다시 열 때마다 실행을 쓸 수 있는지 · 멈춘 run을 다시 본다 (지급 · 켜기 뒤 다시 열면 숫자 · 카드가 바로 바뀌게.
+            // 설정 창은 닫아도 남아 있어 Usage 페이지의 `.task`가 다시 돌지 않는다)
             guard signedInUserID != nil else { return }
-            Task { await runs.loadCredits() }
+            Task {
+                await runs.loadCredits()
+                await runs.refreshActive()
+            }
         }
         // Usage & Credits 항목: 로그인한 계정마다 credits를 읽는다 (404면 숨김, 전송 오류면 마지막 값 그대로)
         .task(id: signedInUserID) {
@@ -324,6 +324,19 @@ struct MacSettingsView: View {
         #else
         false
         #endif
+    }
+}
+
+extension MacSettingsTab.Execution {
+    /// 로그인 상태(`nil` = 앱을 막 열어 세션을 읽는 중)와 `RunStore.credits`로: 로그아웃이면 쓸 수 없음,
+    /// 세션 · credits를 아직 모르면(처음 · 전송 오류) 모름 — 저장된 Usage 페이지를 그사이 Connections로 떨어뜨리지 않는다
+    init(signedIn: Bool?, credits: RunStore.Credits) {
+        switch (signedIn, credits) {
+        case (false?, _): self = .unavailable
+        case (nil, _), (true?, .unknown): self = .unknown
+        case (true?, .unavailable): self = .unavailable
+        case (true?, .available): self = .available
+        }
     }
 }
 
