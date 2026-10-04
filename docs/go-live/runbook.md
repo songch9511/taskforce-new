@@ -420,6 +420,7 @@ npx supabase db query --linked "select public.stop_run((select user_id from publ
    await fetch("/api/v1/runs", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action_id: "<할 일 id>", goal: "draft", request: "<맡길 일>" }) }).then((r) => r.json())
    ```
    202 `{ run }`의 `run.id`를 적어 둔다. 1–2분 뒤 아래 9-7로 확인한다. 문제가 있으면 9-5.
+   또는 운영자 Mac 앱(U2 Mac 빌드)의 런처에서 그 할 일을 고르고 `Run with AI…`(⌘R) → Goal → `Start ⌘↩`(같은 `POST /api/v1/runs`). run id는 `npx supabase db query --linked "select id, state, created_at from public.execution_runs order by created_at desc limit 1"`로 읽는다.
 
 ### 9-7. U2 완료 확인
 

@@ -453,6 +453,16 @@ final class RunStore {
         }
     }
 
+    /// M8 `Use` 칩: 이 할 일의 근거 원문 중 초안 자료로 보낼 수 있는 것 (`DraftSources`). 못 읽었거나 계정이 바뀌었으면 nil
+    func draftSources(actionID: UUID) async -> [DraftSource]? {
+        #if DEBUG
+        if sampleMode { return SampleRuns.draftSources }
+        #endif
+        let generation = generation
+        guard let detail = try? await services.reads.actionDetail(id: actionID), generation == self.generation else { return nil }
+        return DraftSources.make(evidence: detail.evidence, sources: detail.sources)
+    }
+
     /// 서버가 돌려준 run으로 바꾼다 (상세에서 읽지 않은 run이면 앞에 넣는다)
     private func replace(_ run: RunSummary) {
         let known = runs[run.actionID] ?? []

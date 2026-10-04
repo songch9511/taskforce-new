@@ -38,12 +38,18 @@ final class LauncherModel {
         case notice(String)
         /// 외부 AI 처리 동의가 먼저 필요함
         case consentNeeded
+        /// Run with AI (Figma M8, U2 Mac): Goal을 적고 ⌘↩로 시작. 목록은 흐리게 두고 상세 칸이 폼이 된다
+        case runWithAI(Target)
+        /// 초안 보기 (Figma 없음, U2 Mac 계획 열린 질문 5). 목록에 없는 할 일(오늘 전에 끝냄)의 초안이면 대상이 nil
+        case draft(Target?, Artifact)
     }
 
     enum ActionEntry: Hashable {
         /// 진행 상태로 옮기기 (To Do · In Progress · Done). 왼쪽은 상태 표시
         case state(WorkState)
         case confirm, dismiss, handoff, openSource, editDue, delete
+        /// ⌘K `Taskforce on this task` 묶음 (Figma M7 일부)
+        case runWithAI, stopTaskforce
 
         var title: String {
             switch self {
@@ -54,6 +60,8 @@ final class LauncherModel {
             case .openSource: "Open source"
             case .editDue: "Edit due"
             case .delete: "Delete"
+            case .runWithAI: "Run with AI…"
+            case .stopTaskforce: "Stop Taskforce"
             }
         }
 
@@ -67,14 +75,18 @@ final class LauncherModel {
             case .openSource: "arrow.up.right.square"
             case .editDue: "calendar"
             case .delete: "trash"
+            case .runWithAI: "play.circle"
+            case .stopTaskforce: "stop.circle"
             }
         }
 
-        /// 줄 오른쪽에 보이는 단축키 (Review Confirm ⌘↩ · Dismiss ⌘⌫, 할 일 Delete ⌘⌫)
+        /// 줄 오른쪽에 보이는 단축키 (Review Confirm ⌘↩ · Dismiss ⌘⌫, 할 일 Delete ⌘⌫, Run with AI ⌘R · Stop Taskforce ⌘.)
         var shortcut: String? {
             switch self {
             case .confirm: "⌘↩"
             case .dismiss, .delete: "⌘⌫"
+            case .runWithAI: "⌘R"
+            case .stopTaskforce: "⌘."
             default: nil
             }
         }
@@ -148,6 +160,14 @@ final class LauncherModel {
     let changes = ActionChangeFeed()
     /// 이 기기의 저장본 (계정별 폴더). 없으면 저장본 없이 둔다 (테스트 · 설정 오류)
     let saved: SavedNowStore?
+    /// 실행 (U2): 쓸 수 있는지 · run · 초안 · 폴링. 화면 규칙 밖의 상태와 서버 호출은 여기에 둔다
+    let runs: RunStore?
+    /// Run with AI의 Goal: 할 일마다 런처를 닫을 때까지 남는다 (사용자 글: 메모리에만)
+    private var goals: [UUID: String] = [:]
+    /// Run with AI의 Use 칩 (읽는 중이면 nil)
+    private(set) var draftSources: [DraftSource]?
+    /// 상세에서 Tab · →로 갈래 버튼(`View Draft`)에 옮긴 할 일 (`laneFocusTarget`)
+    private var laneFocus: UUID?
 
     /// 범위 (Figma M13 `All Tasks ⌄`, ⌘P). 런처를 열 때 · 계정이 바뀌면 All Tasks
     private(set) var scope: TaskScope = .allTasks
@@ -207,16 +227,21 @@ final class LauncherModel {
         self.account = account
         self.saved = saved
         let now = NowStore(services: services, session: session, saved: saved)
+        let runs = RunStore(services: services, session: session)
         var sample = false
         #if DEBUG
         if SampleData.isEnabled {
             now.useSampleData()
+            runs.useSampleData()
             account.useSampleData(connections: SampleData.connections, policyNotice: SampleData.policyNotice)
             sample = true
         }
         #endif
         self.now = now
+        self.runs = runs
         configurationError = nil
+        // 지켜보던 run이 끝나면 `/now`를 다시 받는다 (바뀜 점은 초안 receipt로 서버가 켠다, 앱이 만들지 않는다)
+        runs.onRunsFinished = { [weak now] in Task { await now?.load() } }
         // 계정이 떠나면 (로그아웃 · 만료 · 계정 삭제 · 전환) 그 자리에서 이 기기의 저장본(할 일 제목 · 기한 · 상태)을 모두 지운다:
         // 다른 계정의 사본이 남지 않게. 화면 정리(아래)보다 먼저: 전환한 계정이 지워질 사본을 읽어 보이지 않게
         if let saved {
@@ -244,6 +269,7 @@ final class LauncherModel {
         now = nil
         account = nil
         saved = nil
+        runs = nil
         self.configurationError = configurationError
     }
 
@@ -283,8 +309,13 @@ final class LauncherModel {
     private var listLayout: LauncherContent.Layout {
         var caps = self.caps
         caps.limits = now?.response?.sectionLimits ?? .standard
-        return LauncherContent.Layout(caps: caps, scope: scope, changed: changedIDs, failedSources: now?.response?.failedSources ?? .empty)
+        return LauncherContent.Layout(
+            caps: caps, scope: scope, changed: changedIDs, working: workingIDs, failedSources: now?.response?.failedSources ?? .empty
+        )
     }
+
+    /// 끝나지 않은 run이 있는 할 일 (범위 Taskforce Working)
+    private var workingIDs: Set<UUID> { runs?.workingActionIDs ?? [] }
 
     /// 이번 실행에서 `/now`를 아직 받지 못했을 때 보이는 이 기기의 저장본 (오프라인 · 새로고침 실패 · 처음 불러오는 중)
     var savedList: SavedNow? {
@@ -312,7 +343,8 @@ final class LauncherModel {
         if let configurationError { return .message(configurationError) }
         switch screen {
         case .list: break
-        case .detail: return .list
+        // Run with AI · 초안: 목록은 흐리게 두고 상세 칸이 바뀐다 (Figma M8)
+        case .detail, .runWithAI, .draft: return .list
         default: return .single
         }
         guard isSignedIn else { return session?.state == .loading ? .loading : .single }
@@ -364,7 +396,7 @@ final class LauncherModel {
     var canOpenActions: Bool {
         switch screen {
         case .list: selectedItem?.action != nil || (isSignedIn && configurationError == nil)
-        case .detail: true
+        case .detail, .runWithAI, .draft(.some, _): true
         default: false
         }
     }
@@ -377,6 +409,8 @@ final class LauncherModel {
             return target(for: item)
         case .detail(let target):
             return focusedTarget ?? target
+        case .runWithAI(let target), .draft(let target?, _):
+            return target
         default:
             return nil
         }
@@ -400,10 +434,16 @@ final class LauncherModel {
         case .list:
             guard let item = selectedItem, let target = target(for: item), item.group != nil else { return nil }
             if target.group == .review { return BarAction(title: "Show Review", keys: "↩") }
-            guard let link = now?.evidence[target.action.id]?.openLink else { return nil }
-            return BarAction(title: link.service.openTitle, keys: "↩")
+            guard let link = Self.sourceLink(now?.evidence[target.action.id]) else { return nil }
+            let opensDraft = link.externalURL.flatMap(ArtifactLink.parse) != nil
+            return BarAction(title: opensDraft ? "View Draft" : link.service.openTitle, keys: "↩")
         case .detail:
+            if laneFocusTarget != nil { return BarAction(title: "View Draft", keys: "↩") }
             return canConfirmReview ? BarAction(title: "Confirm", keys: "⌘↩") : nil
+        case .runWithAI:
+            return BarAction(title: "Start", keys: "⌘↩")
+        case .draft(_, let artifact):
+            return artifact.isPurged ? nil : BarAction(title: "Copy", keys: "⌘C")
         case .pickLines(_, let purpose):
             guard selectedQuote != nil else { return nil }
             return BarAction(title: purpose == .reportMissing ? "Report" : "Add", keys: "⌘↩")
@@ -443,8 +483,10 @@ final class LauncherModel {
         case .list:
             guard let item = selectedItem else { return }
             if item.group == .review { expand() } else if let target = target(for: item) { openSourceOrActions(target) }
-        case .detail: confirmReview()
+        case .detail: if laneFocusTarget != nil { openFocusedDraft() } else { confirmReview() }
         case .pickLines: submitLines()
+        case .runWithAI: startRun()
+        case .draft: copyDraft()
         default: break
         }
     }
@@ -465,14 +507,16 @@ final class LauncherModel {
 
     // MARK: 범위 (M13)
 
-    /// 범위 메뉴의 줄. 서버가 바뀜을 모르면(예전 서버) 바뀜 범위를 숨긴다
-    var scopeChoices: [TaskScope] { TaskScope.menu(tracksChanges: now?.response?.tracksChanges ?? false) }
+    /// 범위 메뉴의 줄. 서버가 바뀜을 모르면(예전 서버) 바뀜 범위를 숨긴다. Taskforce Working은 실행을 쓸 수 있을 때만 (credits 200)
+    var scopeChoices: [TaskScope] {
+        TaskScope.menu(tracksChanges: now?.response?.tracksChanges ?? false, showsTaskforce: runs?.isAvailable ?? false)
+    }
 
-    /// 범위의 개수 (All Tasks = Review + In Progress + To Do). 저장본이면 저장본으로 센다
+    /// 범위의 개수 (All Tasks = Review + In Progress + To Do). 저장본이면 저장본으로 센다 (Taskforce Working은 0)
     func count(for scope: TaskScope) -> Int {
         if let saved = savedList { return scope.count(in: saved, now: Date()) }
         guard let sections = now?.sections else { return 0 }
-        return scope.count(in: sections, changed: changedIDs)
+        return scope.count(in: sections, changed: changedIDs, working: workingIDs)
     }
 
     /// 범위 메뉴를 열 수 있는지 (로그인한 목록에서)
@@ -513,11 +557,18 @@ final class LauncherModel {
         case .list:
             guard let item = selectedItem, item.group != nil else { return nil }
             return item.action?.id
-        case .detail(let target), .actions(let target), .editDue(let target):
+        case .detail(let target), .actions(let target), .editDue(let target), .runWithAI(let target), .draft(let target?, _):
             return target.action.id
         default:
             return nil
         }
+    }
+
+    /// 실행 상태를 지켜볼 할 일 (`RunStore.watch`): 런처가 떠 있는 동안 상세 칸 · Run with AI · 초안 · ⌘K 패널의 할 일
+    var runSubject: UUID? {
+        guard isShown else { return nil }
+        if case .actions(let target) = screen { return target.action.id }
+        return detailTarget?.action.id
     }
 
     /// 고른 할 일이 바뀌었을 때 (화면이 `seenSubject`를 따라 부른다): 떠난 바뀐 행이 있으면 `seen`을 한 번 보낸다.
@@ -558,14 +609,17 @@ final class LauncherModel {
         try? saved.prune(keeping: signedInUserID)
     }
 
-    /// ⌘K 패널: Review는 Confirm · Dismiss · …, 나머지는 Status(To Do · In Progress · Done, 지금 상태에 체크) + Actions(맨 아래 Delete)
+    /// ⌘K 패널: Review는 Confirm · Dismiss · …, 나머지는 Status(To Do · In Progress · Done, 지금 상태에 체크) + Actions(맨 아래 Delete).
+    /// 실행을 쓸 수 있으면 끝에 `Taskforce on this task`(Figma M7): Run with AI…(시작할 수 있을 때) · Stop Taskforce(끝나지 않은 run이 있을 때)
     func actionGroups(for target: Target) -> [ActionGroup] {
         let status = ActionGroup(title: "Status", entries: WorkState.allCases.map(ActionEntry.state))
-        switch target.group {
-        case .review: return [ActionGroup(title: nil, entries: [.confirm, .dismiss, .handoff, .openSource, .editDue])]
-        case .toDo, .inProgress: return [status, ActionGroup(title: "Actions", entries: [.handoff, .openSource, .editDue, .delete])]
-        case .doneToday: return [status, ActionGroup(title: "Actions", entries: [.openSource, .delete])]
+        let groups: [ActionGroup] = switch target.group {
+        case .review: [ActionGroup(title: nil, entries: [.confirm, .dismiss, .handoff, .openSource, .editDue])]
+        case .toDo, .inProgress: [status, ActionGroup(title: "Actions", entries: [.handoff, .openSource, .editDue, .delete])]
+        case .doneToday: [status, ActionGroup(title: "Actions", entries: [.openSource, .delete])]
         }
+        let taskforce = (runAvailability(for: target).isEnabled ? [ActionEntry.runWithAI] : []) + (canStop(target) ? [.stopTaskforce] : [])
+        return taskforce.isEmpty ? groups : groups + [ActionGroup(title: "Taskforce on this task", entries: taskforce)]
     }
 
     /// ↑↓로 고르는 순서 (묶음을 이어서)
@@ -645,6 +699,7 @@ final class LauncherModel {
         scopeMenuSelection = nil
         guard isSignedIn, let now else { return }
         Task { await now.load() }
+        loadRuns()
         // 동의 · 연결 상태 (동의 전인데 연결이 있으면 맨 위에 "Allow AI processing").
         // 연결이 있으면 알림 권한을 한 번 묻는다 (첫 실행 · 연결 전에는 묻지 않는다)
         if let account {
@@ -667,6 +722,9 @@ final class LauncherModel {
         closeTimer?.cancel()
         suspendsAutoClose = false
         scopeMenuSelection = nil
+        // 런처를 닫으면 Goal을 지우고 run 상태를 그만 읽는다
+        goals = [:]
+        runs?.watch([])
         // 닫힘도 떠남이다: 보고 있던 바뀐 행의 seen
         syncSeen()
     }
@@ -700,6 +758,9 @@ final class LauncherModel {
         recentSources = []
         sourcesLoaded = false
         sourceText = nil
+        goals = [:]
+        draftSources = nil
+        laneFocus = nil
         // 전 사용자의 쓰기 결과는 보여 주지 않는다
         writeGeneration += 1
         if accountLeft {
@@ -719,8 +780,18 @@ final class LauncherModel {
         // 이번 실행에서 `/now`를 받기 전에는 이 계정의 저장본을 보인다 (오프라인 · 새로고침 실패)
         now.restoreSaved()
         Task { await now.load() }
+        loadRuns()
         if let account { Task { await account.load() } }
         loadPolicyNotice()
+    }
+
+    /// 실행을 쓸 수 있는지(credits) · 끝나지 않은 run (범위 개수 · ⌘K 항목). 쓸 수 없는 계정이면 run은 읽지 않는다
+    private func loadRuns() {
+        guard let runs else { return }
+        Task {
+            await runs.loadCredits()
+            await runs.refreshActive()
+        }
     }
 
     // MARK: 키보드
@@ -741,6 +812,7 @@ final class LauncherModel {
             return false
         }
         if scopeMenuSelection != nil, handleScopeMenuKey(keyCode, command: command) { return true }
+        if let handled = handleSubScreenKey(event, keyCode: keyCode, flags: flags) { return handled }
         switch keyCode {
         case kVK_Escape:
             back()
@@ -757,15 +829,30 @@ final class LauncherModel {
             toggleScopeMenu()
             return true
         case kVK_ANSI_R where command:
-            // 다시 불러오기 (새로고침 실패 · 오프라인, M19 `Try Again ⌘R`)
+            // 할 일 행 · 상세 · ⌘K 패널에서 Run with AI를 시작할 수 있으면 M8 (M7 `Run with AI… ⌘R`),
+            // 그 밖(새로고침 실패 · 오프라인 · 쓸 수 없음 · 할 일 아닌 줄)은 다시 불러오기 (M19 `Try Again ⌘R`, U2 Mac 계획 열린 질문 2)
+            if let target = focusedTarget, runAvailability(for: target).isEnabled {
+                openRun(target)
+                return true
+            }
             guard isSignedIn, screen == .list || screen.isDetail else { return false }
             retry()
+            return true
+        case kVK_ANSI_Period where command:
+            // Stop Taskforce: 그 할 일의 끝나지 않은 run 전부 (확인 대화 없음, 다음 단계만 막는다)
+            guard let target = focusedTarget, canStop(target) else { return false }
+            stopTaskforce(target)
             return true
         case kVK_Return, kVK_ANSI_KeypadEnter:
             // ⌥↩ · ⇧↩는 입력창에서 줄바꿈
             if flags.contains(.option) || flags.contains(.shift) { return false }
             // 펼침 · 패널의 할 일이 그사이 바뀌었으면(다른 기기에서 확정 등) 실행하지 않고 목록으로
             if leaveIfStale() { return true }
+            // 상세에서 갈래 버튼으로 옮겼으면 ↩는 View Draft (⌘↩는 그대로 Review 확정)
+            if !command, laneFocusTarget != nil {
+                if !event.isARepeat { openFocusedDraft() }
+                return true
+            }
             // Review는 ↩로 확정하지 않는다: ↩ 근거 펼치기, ⌘↩ Confirm, 반복 입력은 무시 (`LauncherReturn`)
             switch LauncherReturn.effect(at: returnPlace, command: command, isRepeat: event.isARepeat) {
             case .primary: command ? commandReturn() : primary()
@@ -776,9 +863,13 @@ final class LauncherModel {
             }
             return true
         case kVK_Tab:
-            expand()
+            if screen.isDetail { focusLane() } else { expand() }
             return true
         case kVK_RightArrow:
+            if screen.isDetail, caretAtEnd(in: event.window), laneDrafts(focusedTarget) != nil {
+                focusLane()
+                return true
+            }
             guard screen == .list, caretAtEnd(in: event.window), selectedItem?.action != nil else { return false }
             expand()
             return true
@@ -838,6 +929,62 @@ final class LauncherModel {
         default:
             scopeMenuSelection = nil
             return false
+        }
+    }
+
+    /// Run with AI · 초안 화면의 키. 처리하지 않으면 nil (아래 평소 키로)
+    /// - M8: esc 상세로 · ⌘↩ Start · ↩ · ⌥↩ · ⇧↩는 Goal 줄바꿈 · 방향키는 입력칸 · ⌘K 할 일 동작
+    /// - 초안: esc 상세로 · ⌘C 복사(본문 일부를 골랐으면 그 글) · ⌘. Stop Taskforce · ⌘K 할 일 동작
+    private func handleSubScreenKey(_ event: NSEvent, keyCode: Int, flags: NSEvent.ModifierFlags) -> Bool? {
+        let command = flags.contains(.command)
+        switch screen {
+        case .runWithAI:
+            switch keyCode {
+            case kVK_Escape:
+                back()
+                return true
+            case kVK_Return, kVK_ANSI_KeypadEnter:
+                if command {
+                    if !event.isARepeat { startRun() }
+                    return true
+                }
+                if flags.contains(.option) || flags.contains(.shift) { return false }
+                // 입력칸은 ↩를 제출로 받아서 줄바꿈을 직접 넣는다
+                (event.window?.firstResponder as? NSTextView)?.insertNewlineIgnoringFieldEditor(nil)
+                return true
+            case kVK_UpArrow, kVK_DownArrow, kVK_LeftArrow, kVK_RightArrow:
+                return false
+            case kVK_Tab:
+                return true
+            case kVK_ANSI_K where command:
+                openActions()
+                return true
+            default:
+                return nil
+            }
+        case .draft(let target, _):
+            switch keyCode {
+            case kVK_Escape:
+                back()
+                return true
+            case kVK_ANSI_C where command:
+                if let editor = event.window?.firstResponder as? NSTextView, editor.selectedRange().length > 0 { return false }
+                copyDraft()
+                return true
+            case kVK_ANSI_Period where command:
+                guard let target, canStop(target) else { return false }
+                stopTaskforce(target)
+                return true
+            case kVK_ANSI_K where command:
+                openActions()
+                return true
+            case kVK_Return, kVK_ANSI_KeypadEnter, kVK_UpArrow, kVK_DownArrow, kVK_Tab:
+                return true
+            default:
+                return nil
+            }
+        default:
+            return nil
         }
     }
 
@@ -935,6 +1082,7 @@ final class LauncherModel {
     /// 본 할 일이 없으면 맨 위 (`LauncherContent.rowAfterBack`). 고른 줄과 `selectedID`를 늘 함께 맞춘다.
     private func returnToList() {
         screen = .list
+        laneFocus = nil
         let items = items
         let row = LauncherContent.rowAfterBack(viewing: viewed?.id, in: items, near: viewed?.row ?? 0)
         viewed = nil
@@ -994,7 +1142,8 @@ final class LauncherModel {
             back()
         case .consentNeeded:
             openSettings(.ai)
-        case .working:
+        case .working, .runWithAI, .draft:
+            // M8의 ↩는 Goal 줄바꿈 · 초안의 ↩는 할 일이 없다 (`handleSubScreenKey`)
             break
         }
     }
@@ -1016,6 +1165,7 @@ final class LauncherModel {
 
     private func showSources(_ target: Target) {
         if screen == .list { viewed = (target.action.id, selection) }
+        laneFocus = nil
         screen = .detail(target)
         Task { await now?.loadEvidence(target.action.id) }
     }
@@ -1029,7 +1179,7 @@ final class LauncherModel {
                 return
             }
             openActions(target)
-        case .detail(let target):
+        case .detail(let target), .runWithAI(let target), .draft(let target?, _):
             openActions(target)
         default:
             break
@@ -1067,6 +1217,13 @@ final class LauncherModel {
         case .pickLines(_, let purpose):
             screen = .pickSource(purpose)
             selection = 0
+        case .runWithAI(let target), .draft(let target?, _):
+            // M8 · 초안 → 상세 (입력한 Goal은 런처를 닫을 때까지 할 일별로 남는다)
+            work?.cancel()
+            screen = .detail(target)
+        case .detail where laneFocusTarget != nil:
+            // 갈래 버튼에서 상세로
+            laneFocus = nil
         case .working:
             // 직접 추가 · 신고는 결과가 올 때까지 기다린다 (돌아가서 다시 보내면 중복)
             guard !isSubmitting else { return }
@@ -1089,7 +1246,7 @@ final class LauncherModel {
             screen = .list
             selection = 0
             selectedID = nil
-        case .editDue, .addDue, .working, .pickLines:
+        case .editDue, .addDue, .working, .pickLines, .runWithAI, .draft:
             break
         }
     }
@@ -1183,6 +1340,8 @@ final class LauncherModel {
             selection = 0
             pickedDate = target.action.dueDate.map(Self.pickerDate) ?? Date()
         case .delete: delete(target.action)
+        case .runWithAI: openRun(target)
+        case .stopTaskforce: stopTaskforce(target)
         }
     }
 
@@ -1192,6 +1351,8 @@ final class LauncherModel {
     func setState(_ action: ActionSummary, to state: WorkState, undoable: Bool = true) {
         guard let now else { return }
         let previous = now.state(of: action.id)
+        // Done으로 옮기면 끝나지 않은 run을 먼저 멈춘다 (옮기기 쓰기와 함께 보낸다)
+        if state == .done, previous != nil, previous != .done { stopRunsBeforeLeaving(action.id) }
         let write = now.move(action.id, to: state)
         selectRow(of: action.id)
         guard let write else { return }
@@ -1207,6 +1368,8 @@ final class LauncherModel {
     func delete(_ action: ActionSummary) {
         guard let now else { return }
         let row = items.firstIndex { $0.group != nil && $0.action?.id == action.id }
+        // 끝나지 않은 run을 먼저 멈춘다 (지우기 쓰기와 함께 보낸다)
+        if now.sections.find(action.id)?.group.isDeletable == true { stopRunsBeforeLeaving(action.id) }
         guard let deleted = now.delete(action.id) else { return }
         closeTimer?.cancel()
         screen = .list
@@ -1375,7 +1538,7 @@ final class LauncherModel {
         work = Task {
             let digest = await now.loadEvidence(action.id)
             guard !Task.isCancelled else { return }
-            if let url = digest?.openLink?.externalURL {
+            if let url = Self.sourceLink(digest)?.externalURL {
                 open(url)
             } else {
                 screen = .notice("No link to the original.")
@@ -1389,7 +1552,7 @@ final class LauncherModel {
         guard let now else { return }
         let id = target.action.id
         if let digest = now.evidence[id] {
-            if let url = digest.openLink?.externalURL { open(url) } else { openActions(target) }
+            if let url = Self.sourceLink(digest)?.externalURL { open(url) } else { openActions(target) }
             return
         }
         if now.evidenceFailed.contains(id) {
@@ -1401,7 +1564,7 @@ final class LauncherModel {
         work = Task {
             let digest = await now.loadEvidence(id)
             guard !Task.isCancelled, case .working = screen else { return }
-            if let url = digest?.openLink?.externalURL {
+            if let url = Self.sourceLink(digest)?.externalURL {
                 open(url)
             } else {
                 screen = .actions(target)
@@ -1410,7 +1573,21 @@ final class LauncherModel {
         }
     }
 
+    /// 할 일 행 ↩ · Open source가 여는 근거 줄 (`EvidenceDigest.openLink`). 초안 receipt(`taskforce://artifacts`)가 가장 최근 근거여도
+    /// 원래 원문 링크가 있으면 그것 (Figma M1: 초안이 있어도 `Open in Notion`), 없을 때만 초안
+    static func sourceLink(_ digest: EvidenceDigest?) -> EvidenceLine? {
+        guard let digest else { return nil }
+        func isDraft(_ line: EvidenceLine) -> Bool { line.externalURL.flatMap(ArtifactLink.parse) != nil }
+        if let link = digest.openLink, !isDraft(link) { return link }
+        return digest.lines.last { $0.externalURL != nil && !isDraft($0) } ?? digest.openLink
+    }
+
+    /// 초안 링크(`taskforce://artifacts/<id>`, receipt 원문 슬립)는 런처 안 초안 화면, 나머지는 브라우저 · 앱으로 열고 닫는다
     func open(_ url: URL) {
+        if let id = ArtifactLink.parse(url) {
+            openDraft(id: id)
+            return
+        }
         NSWorkspace.shared.open(url)
         close()
     }
@@ -1585,6 +1762,170 @@ final class LauncherModel {
                 screen = .notice(error.userMessage)
             }
         }
+    }
+
+    // MARK: Run with AI · 갈래 · 초안 · 중단 (U2 Mac)
+
+    /// 하위 화면 머리 (Figma M8 `‹ <할 일> › Run with AI`). 검색줄 화면이면 nil
+    var crumb: (task: String?, screen: String)? {
+        switch screen {
+        case .runWithAI(let target): (target.action.title, "Run with AI")
+        case .draft(let target, _): (target?.action.title, "Draft")
+        default: nil
+        }
+    }
+
+    /// 머리가 검색줄 대신 경로인 화면 (목록은 흐리게, Figma M8)
+    var isSubScreen: Bool { crumb != nil }
+
+    /// `Run with AI…`를 보일지 · 켤지. To Do · In Progress만 (Review는 확인 전, Done은 서버가 받지 않는다)
+    func runAvailability(for target: Target) -> RunAvailability {
+        guard let runs, target.group == .toDo || target.group == .inProgress else { return .hidden }
+        return runs.availability(for: target.action.id, signedIn: isSignedIn, refresh: refreshState)
+    }
+
+    /// 그 할 일에 멈출 run이 있나 (`Stop Taskforce`)
+    func canStop(_ target: Target) -> Bool {
+        !(runs?.stopTargets(for: target.action.id).isEmpty ?? true)
+    }
+
+    /// 상세의 Taskforce 갈래 (실행을 쓸 수 없거나 보일 것이 없으면 nil)
+    func lane(for id: UUID) -> RunLane? {
+        guard let runs, runs.isAvailable else { return nil }
+        let lane = runs.lane(for: id)
+        return lane.isVisible ? lane : nil
+    }
+
+    private func laneDrafts(_ target: Target?) -> [Artifact]? {
+        guard let target, let drafts = lane(for: target.action.id)?.drafts, !drafts.isEmpty else { return nil }
+        return drafts
+    }
+
+    /// 갈래 버튼(`View Draft`)으로 옮긴 상세의 할 일 (Tab · →, ↩로 연다)
+    var laneFocusTarget: Target? {
+        guard case .detail = screen, let target = focusedTarget, laneFocus == target.action.id, laneDrafts(target) != nil else { return nil }
+        return target
+    }
+
+    private func focusLane() {
+        guard let target = focusedTarget, laneDrafts(target) != nil else { return }
+        laneFocus = target.action.id
+    }
+
+    private func openFocusedDraft() {
+        guard let target = laneFocusTarget, let draft = laneDrafts(target)?.first else { return }
+        openDraft(draft, for: target)
+    }
+
+    /// M8 Goal (지금 화면의 할 일 것)
+    var goal: String {
+        get { if case .runWithAI(let target) = screen { goals[target.action.id] ?? "" } else { "" } }
+        set { if case .runWithAI(let target) = screen { goals[target.action.id] = newValue } }
+    }
+
+    /// Start를 누를 수 있나: 시작할 수 있는 할 일 · 빈 Goal 아님 · 보내는 중 아님
+    var canStartRun: Bool {
+        guard case .runWithAI(let target) = screen, let runs, runAvailability(for: target).isEnabled,
+              !runs.starting.contains(target.action.id)
+        else { return false }
+        return !CreateRunRequest(actionID: target.action.id, request: goal).isEmpty
+    }
+
+    /// M8 열기 (⌘R · ⌘K `Run with AI…`). Use 칩은 이 할 일의 근거를 읽어 채운다
+    func openRun(_ target: Target) {
+        guard let runs, runAvailability(for: target).isEnabled else { return }
+        if screen == .list { viewed = (target.action.id, selection) }
+        laneFocus = nil
+        screen = .runWithAI(target)
+        draftSources = nil
+        let id = target.action.id
+        work?.cancel()
+        work = Task {
+            let sources = await runs.draftSources(actionID: id)
+            guard !Task.isCancelled, case .runWithAI(let current) = screen, current.action.id == id else { return }
+            draftSources = sources ?? []
+        }
+    }
+
+    /// ⌘↩ Start: `POST /runs` 한 번 (보내는 동안 다시 눌러도 무시). 202면 상세로 돌아가 갈래 working.
+    /// 409 동의 화면 · 404 · 429 · 그 밖은 한 줄 알림 (그 할 일을 아직 보고 있을 때만)
+    func startRun() {
+        guard canStartRun, case .runWithAI(let target) = screen, let runs else { return }
+        let request = goal
+        let id = target.action.id
+        Task {
+            let result = await runs.start(actionID: id, request: request)
+            let viewing = switch screen {
+            case .runWithAI(let current), .detail(let current): current.action.id == id
+            default: false
+            }
+            switch result {
+            case .started:
+                goals[id] = nil
+                if case .runWithAI = screen, viewing { screen = .detail(target) }
+            case .failed(.consentNeeded):
+                if viewing { screen = .consentNeeded }
+            case .failed(let failure):
+                if viewing, let message = failure.message { screen = .notice(message) }
+            case .ignored:
+                break
+            }
+        }
+    }
+
+    /// 초안 보기 (갈래 `View Draft`)
+    func openDraft(_ artifact: Artifact, for target: Target?) {
+        if screen == .list, let target { viewed = (target.action.id, selection) }
+        laneFocus = nil
+        screen = .draft(target, artifact)
+    }
+
+    /// 초안 링크 (`taskforce://artifacts/<id>`: receipt 원문 슬립 · 앱 밖에서 연 링크). 읽어 둔 초안이 없으면 RLS로 읽는다
+    func openDraft(id: UUID) {
+        guard let runs else { return }
+        if screen == .list, let target = detailTarget { viewed = (target.action.id, selection) }
+        work?.cancel()
+        screen = .working("Opening…")
+        work = Task {
+            let result = await runs.draft(id: id)
+            guard !Task.isCancelled, case .working = screen else { return }
+            switch result {
+            case .found(let artifact):
+                let found = now?.sections.find(artifact.actionID)
+                screen = .draft(found.map { Target(action: $0.action, group: $0.group) }, artifact)
+            case .notFound: screen = .notice(ArtifactLink.notFoundMessage)
+            case .failed(let message): screen = .notice(message)
+            case .cancelled: returnToList()
+            }
+        }
+    }
+
+    /// ⌘C: 초안 제목 + 본문 (본문을 지운 초안은 없음). "Copied"를 잠깐 보이고 닫는다 (Hand off와 같다)
+    func copyDraft() {
+        guard case .draft(_, let artifact) = screen, !artifact.isPurged else { return }
+        Clipboard.copy("\(artifact.title)\n\n\(artifact.body)")
+        showDoneAndClose("Copied")
+    }
+
+    /// Stop Taskforce (⌘. · ⌘K): 그 할 일의 끝나지 않은 run을 모두 멈춘다. ⌘K 패널이면 목록으로 돌아가 갈래를 보인다
+    func stopTaskforce(_ target: Target) {
+        guard let runs, canStop(target) else { return }
+        if case .actions = screen { returnToList() }
+        let id = target.action.id
+        Task {
+            guard !(await runs.stop(actionID: id)), let message = runs.message else { return }
+            runs.message = nil
+            switch screen {
+            case .list, .detail, .draft: screen = .notice(message)
+            default: break
+            }
+        }
+    }
+
+    /// 할 일을 Delete · Done으로 옮길 때 끝나지 않은 run을 먼저 멈춘다 (`RunStop`: 목록에서 사라진 할 일이 크레딧을 쓰지 않게)
+    private func stopRunsBeforeLeaving(_ id: UUID) {
+        guard let runs, !runs.stopTargets(for: id).isEmpty else { return }
+        Task { await runs.stop(actionID: id) }
     }
 
     // MARK: 로그인
