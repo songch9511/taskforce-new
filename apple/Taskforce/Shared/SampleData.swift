@@ -113,6 +113,20 @@ enum SampleData {
     }
 
     static var evidence: [UUID: EvidenceDigest] {
+        var digests = originalEvidence
+        // 실행 견본의 초안은 그 할 일의 근거에 receipt(초안 저장 기록)로도 붙는다 (서버 `buildDraftReceipt`). 시각은 초안을 만든 때
+        // (대개 가장 최근 근거. `-TFSampleRunPurged`는 91일 전 초안이라 가장 오래된 근거)
+        for draft in SampleRuns.lane.map({ SampleRuns.fixture($0).drafts }) ?? [] {
+            let receipt = EvidenceLine(
+                id: UUID(), quote: "초안 저장: \(draft.title)", sourceID: UUID(), sourceTitle: draft.title, occurredAt: draft.createdAt,
+                externalURL: ArtifactLink.url(for: draft.id), service: .manual(.execution)
+            )
+            digests[draft.actionID] = EvidenceDigest(lines: (digests[draft.actionID]?.lines ?? []) + [receipt])
+        }
+        return digests
+    }
+
+    private static var originalEvidence: [UUID: EvidenceDigest] {
         let day: TimeInterval = 86_400
         return [
             reviewID: EvidenceDigest(lines: [
@@ -199,6 +213,7 @@ enum SampleData {
 /// `-TFSampleRunWorking` · `-TFSampleRunDraftReady` · `-TFSampleRunCredit` · `-TFSampleRunStopped` · `-TFSampleRunStoppedFinishing` ·
 /// `-TFSampleRunFailed` · `-TFSampleRunNeedsInput` · `-TFSampleRunNeedsConnection` · `-TFSampleRunPurged`.
 /// `-TFSampleCredits`: S3 Figma 값 (Available 0 · Reserved 12 · Pending Unknown · Used 188 · 멈춘 2건). `-TFSampleNoExecution`: credits 404 (실행 UI 없음).
+/// 초안이 있는 갈래 견본이면 그 할 일 근거에 초안 receipt가 붙는다 (`SampleData.evidence`). `-TFSampleNoExecution`과 같이 쓰면 receipt가 남은 채 실행을 못 쓰는 계정 (행을 누르면 근거 펼치기).
 /// 견본 인자가 없으면 실행을 쓸 수 없는 계정처럼 둔다 (실행 UI가 보이지 않는다).
 enum SampleRuns {
     enum Lane: String, CaseIterable {

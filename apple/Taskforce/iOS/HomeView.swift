@@ -8,9 +8,9 @@ import TaskforceUI
 /// → In Progress · To Do · Done Today (머리에 개수). 순서는 서버가 정한 그대로 보여 준다 (구역 나누기는 `TaskBoard`).
 /// 이번 실행에서 `/now`를 받기 전(처음 불러오는 중 · 오프라인 · 새로고침 실패)에는 이 기기의 저장본(제목 · 기한 · 상태만)을 읽기만 한다.
 /// 오프라인이거나 저장본이면 Confirm · Dismiss · 상태 바꾸기 · 삭제를 막는다 (`PhoneHome.canWrite`, 모아 두었다 보내지 않는다).
-/// 행을 누르면 근거 한 줄을 펼친다. 바뀐 할 일이면 그때 `seen`을 한 번 보낸다 (`SeenTracker.open`, 실패해도 다시 보내지 않음).
+/// 행을 누르면 근거 한 줄을 펼친다 (Review 카드 슬립과 같이 실행 receipt는 빼고 원문만, 상세와 같다). 바뀐 할 일이면 그때 `seen`을 한 번 보낸다 (`SeenTracker.open`, 실패해도 다시 보내지 않음).
 /// 실행을 쓸 수 있는 계정(`GET /credits` 200)은 행을 누르면 상세(P2, `TaskDetailView`)로 간다 (`PhoneHome.rowTap`). 나머지 계정은 위 그대로 (운영 회귀 0).
-/// 초안 링크(`taskforce://artifacts/<id>`, 원문 슬립 · 앱 밖)는 초안 화면으로 연다 (`DraftView`). iPhone은 run을 시작하지 않는다 (결과 보기 · 멈추기만).
+/// 초안 링크(`taskforce://artifacts/<id>`, 앱 밖)는 초안 화면으로 연다 (`DraftView`). iPhone은 run을 시작하지 않는다 (결과 보기 · 멈추기만).
 /// 상태는 To Do · In Progress · Done 세 이름으로만 옮긴다 (`NowStore.move`):
 /// - 왼쪽 원: 열린 할 일 → Done, 끝낸 할 일 → 끝내기 전 상태
 /// - 밀기: To Do는 오른쪽 In Progress · 왼쪽 Done, In Progress는 오른쪽 To Do · 왼쪽 Done, Done Today는 오른쪽 To Do
@@ -87,7 +87,7 @@ struct HomeView: View {
                 .navigationDestination(isPresented: $showingAllReviews) { allReviews }
                 .navigationDestination(for: PhoneRoute.self) { destination($0) }
         }
-        // 원문 슬립의 초안 링크(실행 receipt)는 앱 안에서 연다 (상세 · 원문 전체. 이 화면의 슬립은 `openLink`)
+        // 초안 링크(실행 receipt)는 앱 안에서 연다. iPhone 원문 슬립은 receipt를 빼므로 지키는 길 (이 화면의 슬립은 `openLink`)
         .environment(\.openURL, OpenURLAction { url in
             guard ArtifactLink.parse(url) != nil else { return .systemAction }
             openLink(url)
@@ -502,7 +502,7 @@ struct HomeView: View {
             onConfirm: { if let id = action?.id { Task { await store.confirm(id) } } },
             onDismiss: { if let id = action?.id { Task { await store.dismiss(id) } } }
         ) {
-            if let id = action?.id, let digest = store.evidence[id], let lead = digest.lead {
+            if let id = action?.id, let lead = store.evidence[id]?.withoutReceipts.lead {
                 SourceSlip(line: lead) { openLink($0) }
             }
         }
@@ -674,7 +674,7 @@ struct HomeView: View {
         }
     }
 
-    /// 원문 슬립 누름: 초안 링크면 초안 화면, 아니면 원문 (Notion · Slack …)
+    /// 원문 슬립 누름: 원문 (Notion · Slack …). 슬립은 receipt를 빼지만 초안 링크면 초안 화면
     private func openLink(_ url: URL) {
         if let id = ArtifactLink.parse(url) {
             Task { await openDraft(id) }
@@ -781,7 +781,7 @@ struct HomeView: View {
     private func expandedEvidence(for id: UUID) -> some View {
         if expanded == id {
             Group {
-                if let digest = store.evidence[id] {
+                if let digest = store.evidence[id]?.withoutReceipts {
                     if let lead = digest.lead {
                         SourceSlip(line: lead) { openLink($0) }
                     }
