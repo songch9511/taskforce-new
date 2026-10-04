@@ -2,15 +2,16 @@ import Foundation
 import Testing
 @testable import TaskforceKit
 
-/// 갈래 카드의 글 (Mac 런처 · iPhone P2 · P9): 상태마다 제목 · 부제, 초안이 있으면 어느 상태든 `View Draft`
+/// 갈래 카드의 글 (Mac 런처 · iPhone P2 · P9): 상태마다 제목 · 부제, 초안이 있으면 어느 상태든 `View Draft`.
+/// 따로 적지 않은 사례는 iPhone 글 (Mac만 다른 것은 `macDifferences`)
 struct RunLaneTextTests {
     typealias F = RunFixture
     /// 견본 시각은 서울 기준 2026-10-03 13:00
     let seoul = TimeZone(identifier: "Asia/Seoul")!
     var now: Date { F.start.addingTimeInterval(3_600) }
 
-    func laneText(_ lane: RunLane) -> RunLaneText? {
-        RunLaneText.make(lane, now: now, timeZone: seoul)
+    func laneText(_ lane: RunLane, platform: RunPlatform = .iOS) -> RunLaneText? {
+        RunLaneText.make(lane, platform: platform, now: now, timeZone: seoul)
     }
 
     @Test func hiddenLaneHasNoText() {
@@ -121,6 +122,32 @@ struct RunLaneTextTests {
     @Test func finishedWithoutDraft() throws {
         let done = F.step(1, .plan, .called, StepReceipt(decision: .done))
         #expect(laneText(RunLane.state(run: F.run(.done), steps: [done], artifacts: [])) == RunLaneText(title: "No draft needed"))
+    }
+
+    /// 기기마다 다른 것 둘: 멈춤 문장의 시각(Mac은 액션 바), 실행 주체 밖 문장(`Run with AI`는 Mac에만). 나머지는 같다
+    @Test func macDifferences() throws {
+        let at = F.start.addingTimeInterval(1_200)
+        let stopped = RunLane.state(run: F.run(.stopped, stoppedAt: at), steps: [F.step(2, .draft, .calling)], artifacts: [])
+        #expect(laneText(stopped, platform: .macOS) == RunLaneText(title: "Stopped. No new steps will start.", subtitle: "Finishing the current step."))
+        #expect(laneText(stopped, platform: .iOS)?.title == "Stop requested 13:20. No new steps will start.")
+        let actor = RunLane.state(run: F.run(.running, hold: .actor), steps: [], artifacts: [])
+        #expect(laneText(actor, platform: .macOS)?.subtitle == "Run with AI isn't available for this account.")
+        #expect(laneText(actor, platform: .iOS)?.subtitle == "New steps are paused for now.")
+        let credit = RunLane.state(run: F.run(.running, hold: .credit), steps: [], artifacts: [F.draft(1)])
+        #expect(laneText(credit, platform: .macOS) == laneText(credit, platform: .iOS))
+    }
+
+    /// Mac 액션 바 `Stop requested 14:20` (M17, 서버 `stopped_at`이 없으면 없음) · 상태가 바뀔 때 낭독
+    @Test func macStopBarAndAnnouncements() {
+        let at = F.start.addingTimeInterval(1_200)
+        let stopped = RunLane.state(run: F.run(.stopped, stoppedAt: at), steps: [], artifacts: [])
+        #expect(RunLaneText.stopRequested(stopped, now: now, timeZone: seoul) == "Stop requested 13:20")
+        #expect(RunLaneText.stopRequested(RunLane.state(run: F.run(.stopped), steps: [], artifacts: []), now: now, timeZone: seoul) == nil)
+        #expect(RunLaneText.stopRequested(RunLane.state(run: F.run(.running), steps: [], artifacts: []), now: now, timeZone: seoul) == nil)
+        #expect(RunLaneText.announcement(.draftReady) == "Draft ready")
+        #expect(RunLaneText.announcement(.stopped(finishing: false, stoppedAt: at)) == "Stop requested")
+        #expect(RunLaneText.announcement(.stopped(finishing: true, stoppedAt: nil)) == "Stopped")
+        #expect(RunLaneText.announcement(.working) == nil)
     }
 
     /// 오늘은 시각만 (P9 `Stop requested 14:20.`, 상태 줄과 같은 "8:01" 모양), 그 전은 날짜 (Mac 갈래와 같다)

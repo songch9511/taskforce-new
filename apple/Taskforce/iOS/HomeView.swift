@@ -653,7 +653,12 @@ struct HomeView: View {
             TaskDetailView(
                 actionID: id,
                 canWrite: canWrite,
-                onToggle: { toggle(id) },
+                onToggle: {
+                    let finishing = store.toggleTarget(id) == .done
+                    toggle(id)
+                    // Mark Done 뒤에는 목록으로 돌아간다 (끝낸 할 일을 되돌릴 때는 상세에 남는다)
+                    if finishing, path.last == .task(id) { path.removeLast() }
+                },
                 onOpenDraft: { path.append(.draft($0)) },
                 onShowAllSources: { path.append(.sources(id)) }
             )

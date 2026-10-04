@@ -168,7 +168,7 @@ struct LauncherRunTests {
         harness.select("T1")
         let lane = try #require(model.lane(for: t1))
         #expect(lane.drafts == [draft])
-        #expect(LauncherLaneText.card(lane).title == (state == .stopped ? "Stopped. No new steps will start." : "Couldn't finish the draft"))
+        #expect(RunLaneText.make(lane, platform: .macOS)?.title == (state == .stopped ? "Stopped. No new steps will start." : "Couldn't finish the draft"))
 
         #expect(model.handleKey(.run(kVK_Tab)))
         #expect(model.screen.isDetail)
@@ -441,21 +441,28 @@ struct LauncherRunTests {
             }
             return RunLane(state: state, drafts: made, run: run)
         }
-        func card(_ lane: RunLane) -> LauncherLaneText.Card { LauncherLaneText.card(lane, now: now, timeZone: utc) }
+        // Kit `RunLaneText`의 Mac 글 (제목 · 부제)
+        struct Card: Equatable {
+            let title: String
+            let subtitle: String?
+        }
+        func card(_ lane: RunLane) -> Card? {
+            RunLaneText.make(lane, platform: .macOS, now: now, timeZone: utc).map { Card(title: $0.title, subtitle: $0.subtitle) }
+        }
         #expect(card(lane(.working)) == .init(title: "Writing draft", subtitle: "Started 14:03"))
         #expect(card(lane(.paused(.credit))) == .init(title: "Draft paused", subtitle: "Not enough credits. New paid steps are paused."))
         #expect(card(lane(.draftReady, drafts: 1)) == .init(title: "초안 0", subtitle: "AI draft · 14:13"))
-        #expect(card(lane(.draftReady, drafts: 3)).subtitle == "3 AI drafts · 14:13")
-        #expect(card(lane(.needsInput(question: nil))).subtitle == "Question deleted after 90 days.")
-        #expect(card(lane(.needsConnection(capability: "gmail.send"))).subtitle == "Connect Gmail to continue.")
+        #expect(card(lane(.draftReady, drafts: 3))?.subtitle == "3 AI drafts · 14:13")
+        #expect(card(lane(.needsInput(question: nil)))?.subtitle == "Question deleted after 90 days.")
+        #expect(card(lane(.needsConnection(capability: "gmail.send")))?.subtitle == "Connect Gmail to continue.")
         #expect(card(lane(.stopped(finishing: true, stoppedAt: nil))) == .init(title: "Stopped. No new steps will start.", subtitle: "Finishing the current step."))
-        #expect(card(lane(.failed(.rejected))).subtitle == "The AI provider declined this request.")
-        #expect(LauncherLaneText.stopRequested(lane(.stopped(finishing: false, stoppedAt: now)), now: now, timeZone: utc) == "Stop requested 14:13")
-        #expect(LauncherLaneText.stopRequested(lane(.stopped(finishing: false, stoppedAt: nil)), now: now, timeZone: utc) == nil)
-        #expect(LauncherLaneText.stopRequested(lane(.stopped(finishing: false, stoppedAt: now.addingTimeInterval(-86_400 * 2))), now: now, timeZone: utc)
+        #expect(card(lane(.failed(.rejected)))?.subtitle == "The AI provider declined this request.")
+        #expect(RunLaneText.stopRequested(lane(.stopped(finishing: false, stoppedAt: now)), now: now, timeZone: utc) == "Stop requested 14:13")
+        #expect(RunLaneText.stopRequested(lane(.stopped(finishing: false, stoppedAt: nil)), now: now, timeZone: utc) == nil)
+        #expect(RunLaneText.stopRequested(lane(.stopped(finishing: false, stoppedAt: now.addingTimeInterval(-86_400 * 2))), now: now, timeZone: utc)
             == "Stop requested Sep 19")
-        #expect(LauncherLaneText.announcement(.draftReady) == "Draft ready")
-        #expect(LauncherLaneText.announcement(.stopped(finishing: false, stoppedAt: now)) == "Stop requested")
+        #expect(RunLaneText.announcement(.draftReady) == "Draft ready")
+        #expect(RunLaneText.announcement(.stopped(finishing: false, stoppedAt: now)) == "Stop requested")
     }
 }
 

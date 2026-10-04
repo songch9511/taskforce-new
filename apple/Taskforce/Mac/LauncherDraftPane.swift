@@ -12,7 +12,7 @@ struct LauncherDraftPane: View {
 
     var body: some View {
         ScrollView {
-            DraftBody(artifact, detail: "AI draft · \(LauncherLaneText.clock(artifact.createdAt))")
+            DraftBody(artifact, detail: "AI draft · \(RunLaneText.clock(artifact.createdAt))")
                 .padding(.horizontal, TFSpace.xl)
                 .padding(.top, 18)
                 .padding(.bottom, TFSpace.xl)

@@ -1,10 +1,11 @@
 import Foundation
 
-/// iPhone 상세의 Taskforce 갈래 글 (`RunLane` → 제목 · 부제 · `View Draft`, Figma P2 · P9).
-/// 문구는 Mac 런처 갈래(U2 Mac PR3 `LauncherLaneText`)와 같다. 다른 것은 둘뿐이다:
-/// - 멈춤: P9대로 시각을 문장에 넣는다 (`Stop requested 14:20. No new steps will start.`). Mac M17은 시각을 액션 바에 둔다
-/// - 실행 주체 밖으로 멈춤: iPhone에는 `Run with AI`라는 말을 쓰지 않는다 (iPhone은 run을 시작하지 않는다)
-/// Figma에 있는 문구: M12 `Not enough credits. New paid steps are paused.`, M17 · P9 `Stop requested 14:20. No new steps will start.`.
+/// 상세의 Taskforce 갈래 글 (`RunLane` → 제목 · 부제 · `View Draft`): Mac 런처(Figma M1 · M12 · M17)와 iPhone 상세(P2 · P9)가 같이 쓴다.
+/// 기기마다 다른 것은 둘뿐이다 (`platform`):
+/// - 멈춤: iPhone은 P9대로 시각을 문장에 넣는다 (`Stop requested 14:20. No new steps will start.`). Mac은 M17대로 문장에 시각 없이,
+///   시각은 액션 바에 (`stopRequested`)
+/// - 실행 주체 밖으로 멈춤: Mac은 `Run with AI isn't available for this account.`, iPhone은 `Run with AI`라는 말을 쓰지 않는다 (run을 시작하지 않는다)
+/// Figma에 있는 문구: M12 `Not enough credits. New paid steps are paused.`, M17 `Stopped. No new steps will start.` · `Stop requested 14:20`, P9.
 /// 나머지는 후보 (U2 Mac 계획 PR3 표 · 열린 질문 9). 시각은 서버 값만 쓴다 (멈춘 시각 = `stopped_at`, 어느 기기에서 멈췄든).
 public struct RunLaneText: Equatable, Sendable {
     public let title: String
@@ -29,7 +30,9 @@ public struct RunLaneText: Equatable, Sendable {
     public static let viewDraft = "View Draft"
 
     /// 보일 갈래가 없으면 nil (`RunLane.isVisible`)
-    public static func make(_ lane: RunLane, now: Date = Date(), timeZone: TimeZone = .current) -> RunLaneText? {
+    public static func make(
+        _ lane: RunLane, platform: RunPlatform = .current, now: Date = Date(), timeZone: TimeZone = .current
+    ) -> RunLaneText? {
         guard lane.isVisible else { return nil }
         let draft = lane.drafts.first
         func clock(_ date: Date) -> String { Self.clock(date, now: now, timeZone: timeZone) }
@@ -49,18 +52,35 @@ public struct RunLaneText: Equatable, Sendable {
         case .paused(.credit):
             return RunLaneText(title: "Draft paused", subtitle: "Not enough credits. New paid steps are paused.", draft: draft)
         case .paused(let reason):
-            return RunLaneText(title: "Paused", subtitle: pausedSubtitle(reason), draft: draft)
+            return RunLaneText(title: "Paused", subtitle: pausedSubtitle(reason, platform: platform), draft: draft)
         case .needsInput(let question):
             return RunLaneText(title: "Taskforce has a question", subtitle: question ?? "Question deleted after 90 days.", draft: draft)
         case .needsConnection(let capability):
             return RunLaneText(title: "Needs a connection", subtitle: connectionSubtitle(capability), draft: draft)
         case .stopped(let finishing, let stoppedAt):
-            let title = stoppedAt.map { "Stop requested \(clock($0)). No new steps will start." } ?? "Stopped. No new steps will start."
+            let stopped = "Stopped. No new steps will start."
+            let title = platform == .iOS ? stoppedAt.map { "Stop requested \(clock($0)). No new steps will start." } ?? stopped : stopped
             return RunLaneText(title: title, subtitle: finishing ? "Finishing the current step." : nil, draft: draft)
         case .failed(let kind):
             return RunLaneText(title: "Couldn't finish the draft", subtitle: failureSubtitle(kind), draft: draft)
         case .finishedWithoutDraft:
             return RunLaneText(title: "No draft needed", draft: draft)
+        }
+    }
+
+    /// Mac 액션 바 왼쪽 (Figma M17 `Stop requested 14:20`, 정지 기호). 시각은 서버 `stopped_at`(어느 기기에서 멈췄든).
+    /// 없으면(사용자가 멈추지 않음: 할 일을 끝내 서버가 멈춤 · 그 전 서버) 막대에 보이지 않는다 (갈래 문장만)
+    public static func stopRequested(_ lane: RunLane, now: Date = Date(), timeZone: TimeZone = .current) -> String? {
+        guard case .stopped(_, let stoppedAt?) = lane.state else { return nil }
+        return "Stop requested \(clock(stoppedAt, now: now, timeZone: timeZone))"
+    }
+
+    /// 보고 있는 할 일의 상태가 바뀌면 VoiceOver가 읽는 한 마디 (Mac 런처)
+    public static func announcement(_ state: RunLane.State) -> String? {
+        switch state {
+        case .draftReady: draftAnnouncement
+        case .stopped(_, let stoppedAt): stoppedAt == nil ? "Stopped" : stopAnnouncement
+        default: nil
         }
     }
 
@@ -75,8 +95,9 @@ public struct RunLaneText: Equatable, Sendable {
         return String(format: "%d:%02d", c.hour ?? 0, c.minute ?? 0)
     }
 
-    private static func pausedSubtitle(_ reason: RunHoldReason) -> String? {
+    private static func pausedSubtitle(_ reason: RunHoldReason, platform: RunPlatform) -> String? {
         switch reason {
+        case .actor where platform == .macOS: "Run with AI isn't available for this account."
         case .blocked, .actor: "New steps are paused for now."
         case .needsConnection: "Needs a connection to continue."
         case .credit, .unknown: nil

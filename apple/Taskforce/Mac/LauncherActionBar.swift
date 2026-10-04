@@ -38,7 +38,7 @@ struct LauncherActionBar: View {
     /// M17: 상세에 보이는 할 일의 run을 멈췄으면 `Stop requested 14:20` (시각은 서버 값)
     private var stopRequested: String? {
         guard model.screen == .list || model.screen.isDetail, let id = model.detailTarget?.action.id, let lane = model.lane(for: id) else { return nil }
-        return LauncherLaneText.stopRequested(lane)
+        return RunLaneText.stopRequested(lane)
     }
 
     /// M8: 모드 · 비용 한 줄 (Mode `Change`는 U6b라 늘 Manual)

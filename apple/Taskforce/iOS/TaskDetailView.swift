@@ -13,7 +13,7 @@ struct TaskDetailView: View {
     let actionID: UUID
     /// 오프라인이거나 저장본이면 Mark Done · Stop을 보내지 않는다 (`PhoneHome.canWrite`)
     let canWrite: Bool
-    /// `Mark Done`(끝낸 할 일이면 끝내기 전 상태로). 옮기기 · 멈추기는 목록이 한다
+    /// `Mark Done`(끝낸 할 일이면 끝내기 전 상태로). 옮기기 · 멈추기 · Done 뒤 목록으로 돌아가기는 목록이 한다
     let onToggle: () -> Void
     let onOpenDraft: (Artifact) -> Void
     let onShowAllSources: () -> Void
@@ -179,7 +179,8 @@ struct TaskDetailView: View {
     private var moreMenu: some View {
         Menu {
             if hasOpenRun {
-                Button("Stop Taskforce", systemImage: "stop.circle", role: .destructive) { stop() }
+                // 지우는 것이 없어 파괴 동작(빨강)으로 두지 않는다
+                Button("Stop Taskforce", systemImage: "stop.circle") { stop() }
                     .disabled(!canWrite || runs.stopping.contains(actionID))
             }
             if let link = openLink, let url = link.externalURL {
