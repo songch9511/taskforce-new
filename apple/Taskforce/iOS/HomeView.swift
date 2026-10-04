@@ -3,13 +3,18 @@ import SwiftUI
 import TaskforceKit
 import TaskforceUI
 
-/// iPhone 한 화면 (Figma 9:529 · Website 17:962): "Review 1 / N" + 카드 한 장 → In Progress · To Do · Done Today의 Task row 목록.
-/// 순서는 서버가 정한 그대로 보여 준다 (구역 나누기는 `TaskBoard`). 행을 누르면 근거 한 줄만 펼친다.
+/// iPhone 한 화면 (Figma 156:6 P1 190:3668 · 오프라인 P10 292:2716 · 큰 글자 P11 292:2858):
+/// 큰 제목 `Tasks` → 검색칸 `Search 23 tasks` → 상태 줄(오프라인 · 새로고침 실패 · 실패 원문) → Review 카드 한 장(`1 of 4`, 위에 `Show All 4 ›`)
+/// → In Progress · To Do · Done Today (머리에 개수). 순서는 서버가 정한 그대로 보여 준다 (구역 나누기는 `TaskBoard`).
+/// 이번 실행에서 `/now`를 받기 전(처음 불러오는 중 · 오프라인 · 새로고침 실패)에는 이 기기의 저장본(제목 · 기한 · 상태만)을 읽기만 한다.
+/// 오프라인이거나 저장본이면 Confirm · Dismiss · 상태 바꾸기 · 삭제를 막는다 (`PhoneHome.canWrite`, 모아 두었다 보내지 않는다).
+/// 행을 누르면 근거 한 줄을 펼친다. 바뀐 할 일이면 그때 `seen`을 한 번 보낸다 (`SeenTracker.open`, 실패해도 다시 보내지 않음).
 /// 상태는 To Do · In Progress · Done 세 이름으로만 옮긴다 (`NowStore.move`):
-/// - 왼쪽 상태 표시: ○ · ● → Done, ✓ → 끝내기 전 상태
+/// - 왼쪽 원: 열린 할 일 → Done, 끝낸 할 일 → 끝내기 전 상태
 /// - 밀기: To Do는 오른쪽 In Progress · 왼쪽 Done, In Progress는 오른쪽 To Do · 왼쪽 Done, Done Today는 오른쪽 To Do
 /// - 길게 누르기: 세 상태 (지금 상태에 체크)
 /// 삭제: 왼쪽으로 밀기(Done 옆, 끝까지 밀면 Done) · 길게 누르기 맨 아래. 지운 뒤 5초 동안 아래에 "Deleted  Undo" (`NowStore.delete` · `restore`)
+/// Account 버튼은 Figma P1에 없지만 로그아웃 · 계정 삭제 경로라 왼쪽 위에 둔다 (U9 재판정).
 struct HomeView: View {
     let userID: UUID
     let email: String?
@@ -37,6 +42,12 @@ struct HomeView: View {
     /// 동의 전인데 연결이 있으면 로그인 뒤 한 번 (목록은 그대로 보인다)
     @State private var promptingConsent = false
     @State private var consentPrompted = false
+    /// 검색칸 (`TaskFilter`: 찾는 동안 네 구역 모두 거른다)
+    @State private var query = ""
+    /// 바뀜 점을 지우고 `seen`을 보낸 할 일 (`SeenTracker`, 새 `/now`가 오면 서버 값이 진실)
+    @State private var seen = SeenTracker()
+    /// `Show All 4 ›`: Review 카드를 모두 보이는 화면
+    @State private var showingAllReviews = false
 
     var body: some View {
         @Bindable var store = store
@@ -44,8 +55,17 @@ struct HomeView: View {
             content
                 .background(TFColor.bgCanvas)
                 .overlay(alignment: .bottom) { undoBar }
-                .navigationBarTitleDisplayMode(.inline)
+                .navigationTitle("Tasks")
+                .navigationBarTitleDisplayMode(.large)
                 .toolbar {
+                    ToolbarItem(placement: .topBarLeading) {
+                        Button {
+                            accountRoute = .home
+                        } label: {
+                            Image(systemName: "person.crop.circle")
+                        }
+                        .accessibilityLabel("Account")
+                    }
                     ToolbarItem(placement: .topBarTrailing) {
                         Button {
                             addingTask = true
@@ -54,18 +74,13 @@ struct HomeView: View {
                         }
                         .accessibilityLabel("New Task")
                     }
-                    ToolbarItem(placement: .topBarTrailing) {
-                        Button {
-                            accountRoute = .home
-                        } label: {
-                            Image(systemName: "person.crop.circle")
-                        }
-                        .accessibilityLabel("Account")
-                    }
                 }
+                .navigationDestination(isPresented: $showingAllReviews) { allReviews }
         }
         // 나타날 때마다, 그리고 Realtime 신호가 올 때마다
         .task(id: changes.revision) { await store.load() }
+        // 새 `/now`(또는 저장본)가 보이면 서버의 바뀜이 진실이다: 보낸 seen 기록을 비운다
+        .onChange(of: store.refresh.shownAt) { seen.refreshed(changed: changedIDs) }
         // 연결이 동기화 중이면 앞에 있는 동안 몇 초마다 연결을 다시 읽고, 끝나면 지금 할 일을 다시 불러온다
         .task(id: account.anySyncing && scenePhase == .active) {
             guard account.anySyncing, scenePhase == .active else { return }
@@ -123,20 +138,24 @@ struct HomeView: View {
 
     @ViewBuilder
     private var content: some View {
-        if !store.loaded {
-            ProgressView()
+        if store.response == nil, savedCopy == nil {
+            if case .offlineEmpty = store.refreshState {
+                offlineEmpty
+            } else if store.loaded, let error = store.loadError {
+                VStack(spacing: TFSpace.md) {
+                    Text(error)
+                        .font(TFFont.callout)
+                        .foregroundStyle(TFColor.textSecondary)
+                        .multilineTextAlignment(.center)
+                    Button("Try Again") { Task { await store.load() } }
+                        .buttonStyle(.bordered)
+                }
+                .padding(TFSpace.xl)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else if store.response == nil, let error = store.loadError {
-            VStack(spacing: TFSpace.md) {
-                Text(error)
-                    .font(TFFont.callout)
-                    .foregroundStyle(TFColor.textSecondary)
-                    .multilineTextAlignment(.center)
-                Button("Try Again") { Task { await store.load() } }
-                    .buttonStyle(.bordered)
+            } else {
+                ProgressView()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            .padding(TFSpace.xl)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             ScrollViewReader { proxy in
                 list
@@ -147,58 +166,140 @@ struct HomeView: View {
                     .onChange(of: scrollTarget) { _, id in
                         guard let id else { return }
                         scrollTarget = nil
-                        withAnimation { proxy.scrollTo(id, anchor: .center) }
+                        withAnimation { proxy.scrollTo(id.uuidString, anchor: .center) }
                     }
             }
         }
     }
 
+    /// 오프라인 + 보일 목록 없음 (이 기기에 저장본도 없음): 상태 줄 + 가운데 빈 화면 (Mac M20과 같은 문장, iPhone 이름)
+    private var offlineEmpty: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            statusLines
+                .padding(.horizontal, TFSpace.lg)
+                .padding(.top, TFSpace.sm)
+            EmptyState(systemImage: nil, title: "Nothing saved on this iPhone yet", message: "Tasks appear after Taskforce connects once.")
+        }
+    }
+
     private var isEmpty: Bool {
-        store.sections.isEmpty && store.response?.weeklyCheck == nil
+        let listing = listing
+        return query.isEmpty && listing.review.isEmpty && listing.groups.isEmpty && store.response?.weeklyCheck == nil && failedSources.count == 0
     }
 
     private var today: LocalDate { DueDateFormat.today() }
 
-    private var list: some View {
-        let sections = store.sections
-        // 비어 있지 않은 구역 (Review 카드 아래로)
-        let groups = [TaskGroup.inProgress, .toDo, .doneToday].filter { !sections.actions(in: $0).isEmpty }
-        return List {
-            if let error = store.loadError {
-                Text(error)
-                    .font(TFFont.footnote)
-                    .foregroundStyle(TFColor.textSecondary)
-                    .plainRow(top: 0, bottom: TFSpace.md)
+    // MARK: 보이는 목록 (이번 실행에서 받은 목록 또는 저장본)
+
+    /// 이번 실행에서 `/now`를 받기 전에 보이는 이 기기의 저장본
+    private var savedCopy: SavedNow? { store.response == nil ? store.savedCopy : nil }
+
+    /// 보내기를 막는지 (오프라인 · 저장본, P10)
+    private var canWrite: Bool { PhoneHome.canWrite(store.refreshState, showingSavedCopy: savedCopy != nil) }
+
+    /// 서버가 바뀜이라 한 할 일 (Review · In Progress · To Do)
+    private var changedIDs: Set<UUID> { store.board.now?.changedIDs ?? [] }
+
+    private var failedSources: FailedSources { store.response?.failedSources ?? .empty }
+
+    /// 한 행. 저장본 행은 서버 id가 없어 읽기만 한다 (`action == nil`)
+    private struct Row: Identifiable {
+        let id: String
+        let action: ActionSummary?
+        let title: String
+        let due: LocalDate?
+        let urgent: Bool
+    }
+
+    private struct Listing {
+        var review: [Row] = []
+        /// In Progress · To Do · Done Today 중 비지 않은 구역
+        var groups: [(group: TaskGroup, rows: [Row])] = []
+        /// 찾기 전 열린 할 일 수 (Review + In Progress + To Do, 검색칸 자리표시)
+        var openCount = 0
+    }
+
+    private var listing: Listing {
+        let today = today
+        if let saved = savedCopy {
+            let now = Date()
+            func rows(_ group: TaskGroup) -> [Row] {
+                PhoneHome.savedRows(saved, in: group, matching: query, now: now).map { row in
+                    let due = row.task.dueDate
+                    return Row(
+                        id: "saved-\(row.id)", action: nil, title: row.task.title, due: due,
+                        urgent: group != .doneToday && DueText.isUrgent(due: due, reasons: [], today: today)
+                    )
+                }
             }
+            return Listing(
+                review: rows(.review),
+                groups: [TaskGroup.inProgress, .toDo, .doneToday].map { ($0, rows($0)) }.filter { !$0.rows.isEmpty },
+                openCount: TaskScope.allTasks.count(in: saved, now: now)
+            )
+        }
+        let board = store.board
+        let all = board.sections()
+        let shown = query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? all : board.sections(matching: query)
+        func row(_ action: ActionSummary, reasons: [RankReason], done: Bool = false) -> Row {
+            Row(
+                id: action.id.uuidString, action: action, title: action.title, due: action.dueDate,
+                urgent: !done && DueText.isUrgent(due: action.dueDate, reasons: reasons, today: today)
+            )
+        }
+        let groups: [(group: TaskGroup, rows: [Row])] = [
+            (.inProgress, shown.inProgress.map { row($0.action, reasons: $0.reasons) }),
+            (.toDo, shown.toDo.map { row($0.action, reasons: $0.reasons) }),
+            (.doneToday, shown.doneToday.map { row($0, reasons: [], done: true) }),
+        ]
+        return Listing(
+            review: shown.review.map { row($0, reasons: []) },
+            groups: groups.filter { !$0.rows.isEmpty },
+            openCount: TaskScope.allTasks.count(in: all, changed: [])
+        )
+    }
+
+    private var list: some View {
+        let listing = listing
+        // 누른 알림의 확인 요청이면 그 카드를 먼저
+        let reviewIndex = listing.review.firstIndex { $0.action?.id == reviewFocus } ?? 0
+        return List {
+            searchField(count: listing.openCount)
+                .plainRow(top: TFSpace.sm, bottom: TFSpace.md)
+            statusLines
+                .plainRow(top: TFSpace.sm, bottom: TFSpace.sm)
             reconnectBanner
             consentBanner
             policyBanner
-            // 누른 알림의 확인 요청이면 그 카드를 먼저
-            if let first = sections.review.first(where: { $0.id == reviewFocus }) ?? sections.review.first {
-                reviewHeader(count: sections.review.count)
-                reviewCard(first)
+            if listing.review.indices.contains(reviewIndex) {
+                reviewHeader(count: listing.review.count)
+                reviewCard(listing.review[reviewIndex], index: reviewIndex, count: listing.review.count)
+                    .plainRow(top: 0, bottom: 0)
             }
-            ForEach(groups, id: \.self) { group in
-                Text(group.title)
-                    .font(TFFont.headline)
-                    .foregroundStyle(TFColor.textPrimary)
-                    .plainRow(top: group == groups.first ? (sections.review.isEmpty ? TFSpace.sm : 0) : TFSpace.xl, bottom: TFSpace.md)
-                ForEach(Array(sections.actions(in: group).enumerated()), id: \.element.id) { index, action in
-                    taskRow(action, group: group)
-                        .id(action.id)
-                        .listRowInsets(EdgeInsets(top: 0, leading: TFSpace.lg, bottom: 0, trailing: 0))
-                        .listRowBackground(highlighted == action.id ? TFColor.bgSurface : TFColor.bgCanvas)
+            ForEach(listing.groups, id: \.group) { section in
+                // 구역 사이 20 (Figma Content gap)
+                sectionHeader(section.group.title, count: section.rows.count)
+                    .plainRow(top: section.group == listing.groups.first?.group && listing.review.isEmpty ? TFSpace.sm : 20, bottom: TFSpace.xs)
+                ForEach(Array(section.rows.enumerated()), id: \.element.id) { index, row in
+                    taskRow(row, group: section.group)
+                        .id(row.id)
+                        // 보이는 원은 왼쪽 16에서 시작한다 (누르는 칸 44가 원보다 11 넓다)
+                        .listRowInsets(EdgeInsets(top: 0, leading: TFSpace.lg - 11, bottom: 0, trailing: TFSpace.lg))
+                        .listRowBackground(highlighted != nil && highlighted == row.action?.id ? TFColor.bgSurface : TFColor.bgCanvas)
                         .listRowSeparatorTint(TFColor.borderDefault)
                         .listRowSeparator(index == 0 ? .hidden : .automatic, edges: .top)
                 }
             }
             if store.response?.weeklyCheck != nil {
                 WeeklyCheckCard { answer in Task { await store.answerWeekly(answer) } }
+                    // 오프라인 · 저장본이면 답을 보내지 않는다 (모아 두지 않는다)
+                    .disabled(!canWrite)
                     .plainRow(top: TFSpace.xl, bottom: TFSpace.lg)
             }
         }
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
+        .scrollDismissesKeyboard(.immediately)
         .environment(\.defaultMinListRowHeight, 0)
         .refreshable {
             await store.load()
@@ -206,37 +307,201 @@ struct HomeView: View {
         }
     }
 
-    // MARK: Review
+    // MARK: 검색칸 · 상태 줄 · 섹션 머리
 
-    private func reviewHeader(count: Int) -> some View {
-        HStack(alignment: .firstTextBaseline) {
-            Text("Review")
-                .font(TFFont.headline)
+    /// Figma Search (205:2514): settings/fill 면 44 · r12. 자리표시는 회색 면 위 4.5:1을 지키는 text/secondary-selected
+    /// (Figma는 text/secondary, 다크 settings/fill 위 4.06:1. Mac 설정 검색칸 · `KeyHint(onFill:)`와 같은 짝)
+    private func searchField(count: Int) -> some View {
+        let prompt = PhoneHome.searchPrompt(count: count, saved: savedCopy != nil || store.refreshState.showsSavedTasks)
+        return HStack(spacing: 6) {
+            Image(systemName: "magnifyingglass")
+                .font(TFFont.body)
+                .foregroundStyle(TFColor.textSecondarySelected)
+                .accessibilityHidden(true)
+            // 칸 높이 전체(44)를 눌러도 입력이 시작된다
+            TextField(prompt, text: $query, prompt: Text(prompt).foregroundStyle(TFColor.textSecondarySelected))
+                .font(TFFont.body)
                 .foregroundStyle(TFColor.textPrimary)
-            Spacer()
-            Text("1 / \(count)")
-                .font(TFFont.footnote)
-                .foregroundStyle(TFColor.textSecondary)
-        }
-        .plainRow(top: TFSpace.sm, bottom: TFSpace.md)
-    }
-
-    private func reviewCard(_ action: ActionSummary) -> some View {
-        ReviewCard(
-            title: action.title,
-            value: action.dueDate.map { DueText.short($0, today: today) },
-            reason: ConfirmReasonText.label(action.confirmReasons),
-            busy: store.busy.contains(action.id),
-            onConfirm: { Task { await store.confirm(action.id) } },
-            onDismiss: { Task { await store.dismiss(action.id) } }
-        ) {
-            if let digest = store.evidence[action.id], let lead = digest.lead {
-                EvidenceView(lead, others: digest.otherSources, quoteLineLimit: 3, onOpen: open(lead))
+                .submitLabel(.search)
+                .autocorrectionDisabled()
+                .frame(maxWidth: .infinity, minHeight: 44)
+                .accessibilityLabel("Search")
+            if !query.isEmpty {
+                Button {
+                    query = ""
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(TFFont.body)
+                        .foregroundStyle(TFColor.textSecondarySelected)
+                        .frame(minWidth: 44, minHeight: 44)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Clear")
             }
         }
-        .id(action.id)
-        .task(id: action.id) { await store.loadEvidence(action.id) }
-        .plainRow(top: 0, bottom: TFSpace.xl + TFSpace.xs)
+        .padding(.leading, 10)
+        .padding(.trailing, query.isEmpty ? 10 : 0)
+        .frame(minHeight: 44)
+        .background(TFColor.settingsFill, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
+    /// 목록 위 상태 줄 (Figma P10 `Offline status`): 오프라인 · 새로고침 실패(401이면 로그아웃 · 로그인 안내) · 실패 원문 (U1 PR4 문구)
+    @ViewBuilder
+    private var statusLines: some View {
+        let state = store.refreshState
+        if let text = statusText {
+            statusLine(systemImage: state.isOffline ? "wifi.slash" : "exclamationmark.triangle", text: text) {
+                // 401이면 다시 시도보다 로그아웃 · 로그인이 답이라 버튼을 두지 않는다
+                if case .refreshFailed = state, !store.authFailed {
+                    Button("Try Again") { Task { await store.load() } }
+                        .font(TFFont.callout.weight(.semibold))
+                        .foregroundStyle(TFColor.textPrimary)
+                        .buttonStyle(.plain)
+                        .frame(minHeight: 44)
+                        .contentShape(Rectangle())
+                }
+            }
+        }
+        if failedSources.count > 0 {
+            statusLine(systemImage: "exclamationmark.triangle", text: failedSources.title) {
+                if let latest = failedSources.latestAt {
+                    Text(WhenText.label(latest))
+                        .font(TFFont.callout)
+                        .foregroundStyle(TFColor.textSecondary)
+                        .fixedSize()
+                }
+            }
+        }
+    }
+
+    /// 오프라인 · 새로고침 실패 문장 (`RefreshState.statusText`). 401이면 다시 시도보다 로그아웃 · 로그인이 답이라 그 안내
+    private var statusText: String? {
+        if case .refreshFailed = store.refreshState, store.authFailed, let error = store.loadError { return error }
+        return store.refreshState.statusText()
+    }
+
+    private func statusLine<Trailing: View>(systemImage: String, text: String, @ViewBuilder trailing: () -> Trailing) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: TFSpace.sm) {
+            Image(systemName: systemImage)
+                .font(TFFont.callout)
+                .foregroundStyle(TFColor.textSecondary)
+                .frame(minWidth: 20)
+                .accessibilityHidden(true)
+            Text(text)
+                .font(TFFont.callout)
+                .foregroundStyle(TFColor.textSecondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .fixedSize(horizontal: false, vertical: true)
+            trailing()
+        }
+    }
+
+    /// 섹션 머리 (Figma `Header · In Progress`): 이름 15 semibold + 오른쪽 개수 15 보조 색. VoiceOver 머리 "In Progress, 5"
+    private func sectionHeader(_ title: String, count: Int) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Text(title)
+                .font(TFFont.calloutEmphasis)
+                .foregroundStyle(TFColor.textPrimary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Text("\(count)")
+                .font(TFFont.callout)
+                .foregroundStyle(TFColor.textSecondary)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(title), \(count)")
+        .accessibilityAddTraits(.isHeader)
+    }
+
+    // MARK: Review
+
+    /// Figma `Header · Review`: `Review` + 오른쪽 `Show All 4 ›`(누르는 칸 44). 하나뿐이면 이름만
+    private func reviewHeader(count: Int) -> some View {
+        HStack(alignment: .center, spacing: TFSpace.xs) {
+            Text("Review")
+                .font(TFFont.calloutEmphasis)
+                .foregroundStyle(TFColor.textPrimary)
+                .accessibilityAddTraits(.isHeader)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            if count > 1 {
+                Button {
+                    showingAllReviews = true
+                } label: {
+                    HStack(spacing: TFSpace.xs) {
+                        Text("Show All \(count)")
+                        Image(systemName: "chevron.right")
+                            .font(TFFont.footnote.weight(.semibold))
+                            .accessibilityHidden(true)
+                    }
+                    .font(TFFont.callout)
+                    .foregroundStyle(TFColor.textSecondary)
+                    .frame(minHeight: 44)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .frame(minHeight: 44)
+        .plainRow(top: 0, bottom: TFSpace.sm)
+    }
+
+    /// 오프라인일 때 Review 카드 아래 문장 (P10)
+    private static let offlineNote = "Confirm and Dismiss wait for a connection. Nothing is saved for later."
+
+    /// Review 카드. 저장본이면 제목 · 기한만 있고 버튼은 꺼진다. 오프라인이면 버튼 아래 P10 문장 (`showsNote`)
+    /// 바뀐 카드는 보인 뒤 떠날 때(다른 카드 · 화면 밖 · `Show All`) `seen`을 한 번 보낸다 (Mac 런처: 고른 행을 떠날 때와 같다)
+    private func reviewCard(_ row: Row, index: Int, count: Int, showsNote: Bool = true) -> some View {
+        let action = row.action
+        return ReviewCard(
+            title: row.title,
+            value: row.due.map { DueText.short($0, today: today) },
+            reason: action.map { ConfirmReasonText.label($0.confirmReasons) },
+            position: PhoneHome.reviewPosition(index, of: count),
+            changed: action.map { seen.showsDot($0.id, changed: changedIDs) } ?? false,
+            busy: action.map { store.busy.contains($0.id) } ?? false,
+            canAct: canWrite,
+            note: showsNote && store.refreshState.isOffline ? Self.offlineNote : nil,
+            onConfirm: { if let id = action?.id { Task { await store.confirm(id) } } },
+            onDismiss: { if let id = action?.id { Task { await store.dismiss(id) } } }
+        ) {
+            if let id = action?.id, let digest = store.evidence[id], let lead = digest.lead {
+                SourceSlip(line: lead) { openURL($0) }
+            }
+        }
+        .id(row.id)
+        .task(id: action?.id) {
+            if let id = action?.id { await store.loadEvidence(id) }
+        }
+        .onDisappear {
+            if let id = action?.id { markSeen(id) }
+        }
+    }
+
+    /// `Show All 4 ›`: Review 카드를 모두 (`1 of 4` … `4 of 4`). 다 처리하면 목록으로 돌아간다
+    private var allReviews: some View {
+        let reviews = listing.review
+        return List {
+            // 오프라인 문장은 카드마다가 아니라 위에 한 번
+            if store.refreshState.isOffline {
+                Text(Self.offlineNote)
+                    .font(TFFont.callout)
+                    .foregroundStyle(TFColor.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .plainRow(top: TFSpace.sm, bottom: 0)
+            }
+            ForEach(Array(reviews.enumerated()), id: \.element.id) { index, row in
+                reviewCard(row, index: index, count: reviews.count, showsNote: false)
+                    .plainRow(top: TFSpace.sm, bottom: TFSpace.md)
+            }
+        }
+        .listStyle(.plain)
+        .scrollContentBackground(.hidden)
+        .background(TFColor.bgCanvas)
+        .navigationTitle("Review")
+        .navigationBarTitleDisplayMode(.inline)
+        .onChange(of: reviews.isEmpty) { _, empty in
+            if empty { showingAllReviews = false }
+        }
     }
 
     // MARK: In Progress · To Do · Done Today
@@ -244,56 +509,82 @@ struct HomeView: View {
     /// 행이 다른 구역으로 옮겨 갈 때 · 지울 때 · Undo 막대
     private static let move = Animation.snappy(duration: 0.25)
 
-    private func taskRow(_ action: ActionSummary, group: TaskGroup) -> some View {
-        let done = group == .doneToday
-        let overdue = action.dueDate.map { DueText.isOverdue($0, today: today) } == true
-        let state: TaskRowState = done ? .done : (overdue ? .overdue : .open)
-        return TaskRow(
-            title: action.title,
-            meta: TaskMetaLine(due: action.dueDate.map { DueText.short($0, today: today) }, counterpart: action.counterpart),
-            state: state,
-            inProgress: group == .inProgress,
-            onToggle: {
-                // ○ · ●는 Done Today로, ✓는 끝내기 전 구역으로 옮겨 간다
-                withAnimation(Self.move) { _ = store.toggle(action.id) }
+    @ViewBuilder
+    private func taskRow(_ row: Row, group: TaskGroup) -> some View {
+        if let action = row.action {
+            let id = action.id
+            let done = group == .doneToday
+            let canWrite = canWrite
+            TaskRow(
+                title: row.title,
+                due: row.due.map { DueText.short($0, today: today) },
+                urgent: row.urgent,
+                done: done,
+                changed: seen.showsDot(id, changed: changedIDs),
+                markLabel: done ? "Mark \((store.toggleTarget(id) ?? .toDo).title)" : "Mark Done",
+                // 원: 열린 할 일은 Done Today로, 끝낸 할 일은 끝내기 전 구역으로 옮겨 간다
+                onToggle: canWrite ? { withAnimation(Self.move) { _ = store.toggle(id) } } : nil,
+                onOpen: { open(id) },
+                openLabel: expanded == id ? "Hide Source" : "Show Source"
+            ) {
+                expandedEvidence(for: id)
             }
-        ) {
-            expandedEvidence(for: action.id)
-        }
-        .padding(.trailing, TFSpace.lg)
-        .contentShape(Rectangle())
-        .onTapGesture {
-            withAnimation(.snappy(duration: 0.2)) {
-                expanded = expanded == action.id ? nil : action.id
+            .swipeActions(edge: .leading, allowsFullSwipe: true) {
+                if canWrite, let state = Self.swipeStates(group).leading { swipeButton(id, to: state) }
             }
-        }
-        .accessibilityAction(named: expanded == action.id ? "Hide source" : "Show source") {
-            expanded = expanded == action.id ? nil : action.id
-        }
-        .swipeActions(edge: .leading, allowsFullSwipe: true) {
-            if let state = Self.swipeStates(group).leading { swipeButton(action.id, to: state) }
-        }
-        // 끝까지 밀면 Done (첫 버튼). Done이 없는 Done Today는 끝까지 밀어도 지우지 않는다
-        .swipeActions(edge: .trailing, allowsFullSwipe: Self.swipeStates(group).trailing != nil) {
-            if let state = Self.swipeStates(group).trailing { swipeButton(action.id, to: state) }
-            if group.isDeletable {
-                Button("Delete", role: .destructive) { delete(action.id) }
-            }
-        }
-        .contextMenu {
-            if let current = WorkState(group) {
-                Picker("Status", selection: Binding(get: { current }, set: { move(action.id, to: $0) })) {
-                    ForEach(WorkState.allCases, id: \.self) { state in
-                        Label(state.title, systemImage: Self.symbolName(state)).tag(state)
+            // 끝까지 밀면 Done (첫 버튼). Done이 없는 Done Today는 끝까지 밀어도 지우지 않는다
+            .swipeActions(edge: .trailing, allowsFullSwipe: Self.swipeStates(group).trailing != nil) {
+                if canWrite {
+                    if let state = Self.swipeStates(group).trailing { swipeButton(id, to: state) }
+                    if group.isDeletable {
+                        Button("Delete", role: .destructive) { delete(id) }
                     }
                 }
-                .pickerStyle(.inline)
             }
-            if group.isDeletable {
-                Divider()
-                Button("Delete", systemImage: "trash", role: .destructive) { delete(action.id) }
+            .contextMenu {
+                if canWrite, let current = WorkState(group) {
+                    Picker("Status", selection: Binding(get: { current }, set: { move(id, to: $0) })) {
+                        ForEach(WorkState.allCases, id: \.self) { state in
+                            Label(state.title, systemImage: Self.symbolName(state)).tag(state)
+                        }
+                    }
+                    .pickerStyle(.inline)
+                    if group.isDeletable {
+                        Divider()
+                        Button("Delete", systemImage: "trash", role: .destructive) { delete(id) }
+                    }
+                }
             }
+        } else {
+            // 저장본: 읽기만 (서버 id가 없다)
+            TaskRow(
+                title: row.title,
+                due: row.due.map { DueText.short($0, today: today) },
+                urgent: row.urgent,
+                done: group == .doneToday,
+                onToggle: nil
+            )
         }
+    }
+
+    /// 행을 누름: 근거를 펼치고 접는다. 펼칠 때 바뀐 할 일이면 본 것으로 (`markSeen`)
+    private func open(_ id: UUID) {
+        withAnimation(.snappy(duration: 0.2)) {
+            expanded = expanded == id ? nil : id
+        }
+        if expanded == id { markSeen(id) }
+    }
+
+    /// 바뀐 할 일을 본 것으로: 점을 바로 지우고 `seen`을 한 번 보낸다 (`SeenTracker.open`, 실패해도 다시 보내지 않음. 다음 `/now`가 진실).
+    /// 오프라인이면 보내지 않고 점을 둔다 (보내도 실패하고 다음 `/now`에서 점이 다시 보인다).
+    /// 이번 실행에서 받은 목록이 없으면(로그아웃 · 계정 전환으로 비워짐) 보내지 않는다
+    private func markSeen(_ id: UUID) {
+        guard store.response != nil, !store.refreshState.isOffline, let opened = seen.open(id, changed: changedIDs) else { return }
+        #if DEBUG
+        if store.sampleMode { return }
+        #endif
+        let api = store.services.api
+        Task { try? await api.markSeen(opened) }
     }
 
     private func move(_ id: UUID, to state: WorkState) {
@@ -326,7 +617,8 @@ struct HomeView: View {
     /// 지운 뒤 아래에 뜨는 막대: iOS 26은 유리 캡슐, 그 전은 material 캡슐 (`tfGlassCapsule`)
     @ViewBuilder
     private var undoBar: some View {
-        if undo.pending != nil {
+        // 오프라인이 되면 되살리기를 보낼 수 없으니 막대를 숨긴다
+        if undo.pending != nil, canWrite {
             HStack(spacing: 0) {
                 Text("Deleted")
                     .foregroundStyle(TFColor.textPrimary)
@@ -386,7 +678,7 @@ struct HomeView: View {
             Group {
                 if let digest = store.evidence[id] {
                     if let lead = digest.lead {
-                        EvidenceView(lead, others: digest.otherSources, quoteLineLimit: 3, onOpen: open(lead))
+                        SourceSlip(line: lead) { openURL($0) }
                     }
                 } else if store.evidenceFailed.contains(id) {
                     Text("Couldn't load the source.")
@@ -398,14 +690,8 @@ struct HomeView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
-            .padding(.top, TFSpace.sm)
             .task { await store.loadEvidence(id) }
         }
-    }
-
-    private func open(_ line: EvidenceLine) -> (() -> Void)? {
-        guard let url = line.externalURL else { return nil }
-        return { openURL(url) }
     }
 
     // MARK: 연결

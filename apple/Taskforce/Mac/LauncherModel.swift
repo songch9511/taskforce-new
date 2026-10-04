@@ -304,10 +304,7 @@ final class LauncherModel {
     /// 보이는 목록이 저장본(또는 이번 실행에서 받은 마지막 목록)이라 검색줄이 `Search saved tasks`인지 (M15 · M19)
     var showsSavedTasks: Bool {
         guard isSignedIn else { return false }
-        switch refreshState {
-        case .offlineSaved, .refreshFailed(_, .some): return true
-        default: return savedList != nil
-        }
+        return refreshState.showsSavedTasks || savedList != nil
     }
 
     /// 본문 카드 (Figma M1 목록 | 상세 · M20 · M21 · 불러오는 중)
@@ -558,11 +555,7 @@ final class LauncherModel {
     private func pruneSavedOnce() {
         guard !prunedSaved, let saved, let state = session?.state, state != .loading else { return }
         prunedSaved = true
-        if let userID = signedInUserID {
-            try? saved.removeAll(except: userID)
-        } else {
-            try? saved.removeAll()
-        }
+        try? saved.prune(keeping: signedInUserID)
     }
 
     /// ⌘K 패널: Review는 Confirm · Dismiss · …, 나머지는 Status(To Do · In Progress · Done, 지금 상태에 체크) + Actions(맨 아래 Delete)

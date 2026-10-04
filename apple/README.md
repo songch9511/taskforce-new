@@ -55,29 +55,33 @@ xcodebuild build -project apple/Taskforce.xcodeproj -scheme Taskforce -destinati
 
 디자인 비교용 견본 (Debug 빌드만): 실행 인자 `-TFSampleData`를 주면 Figma 견본과 같은 문구로 화면을 채우고 서버를 부르지 않는다.
 `-TFSampleData -TFSampleSyncing`은 할 일 없이 Notion이 첫 동기화 중인 화면("Syncing…")이다.
+상태 견본: `-TFSampleOffline`(저장본 + 오프라인) · `-TFSampleOfflineLoaded`(받은 목록 그대로 오프라인, iPhone P10) · `-TFSampleRefreshFailed` · `-TFSampleNoSaved`(저장본 없음) · `-TFSampleEmpty` · `-TFSampleLoading`. iPhone 큰 글자는 `-UIPreferredContentSizeCategoryName UICTContentSizeCategoryAccessibilityXXXL`.
 Mac은 `--show-launcher -TFSampleData -TFSnapshot <폴더>`로 실행하면 런처의 목록 · 펼침 · ⌘K · 찾기 화면과 설정 창을 PNG로 남기고 끝낸다(화면 녹화 권한 없이 자기 창만 그린다).
 `--show-settings -TFSampleData -TFSnapshot <폴더>`는 설정 창 사이드바의 보이는 항목마다 Light · Dark PNG(`mac-settings-<항목>-light.png` · `-dark.png`, Account는 열린 시트)를 남기고 끝낸다. `-TFSnapshot` 없이 `--show-settings`만 주면 설정 창을 연다(Debug 빌드).
 
 ## 화면
 
-### iPhone — 한 화면 (Figma 9:529 · Website 17:962)
+### iPhone — 한 화면 (Figma 156:6 P1 · P10 · P11, U1 셸)
 
 - 로그인: Sign in with Apple, 그 아래 같은 크기의 Sign in with Google(Google 클라이언트 설정이 있을 때, 로그인만: 기본 범위 openid · email · profile), 그 아래 눈에 덜 띄게 "Sign in with email"(App Store 심사 계정용, 가입 화면 없음). Mac 런처도 같은 순서의 행이고, "Sign in with email" 행은 설정 창의 같은 로그인 화면을 연다.
   Google 버튼은 Google 브랜드 규칙의 Light 테마(흰 바탕 · 회색 테두리 · 표준 색 G)로 다크 모드에서도 같다(`SignInWithGoogleButton`). Google 로그인 직후 프로필 이름이 비어 있으면 그 이름으로 한 번 채운다. 로그인이 풀릴 때마다(로그아웃 · 만료 · 계정 삭제) Google SDK 로그인도 지운다.
-- "Review 1 / N" + Review card 한 장(Confirm = `POST confirm`, Dismiss = `DELETE`, 둘 다 버튼으로만) → In Progress · To Do · Done Today 구역의 Task row 목록(빈 구역은 숨김). 구역 안 순서는 서버가 정한 그대로(`TaskBoard`).
-  Review card 제목 아래에 확인 이유 한 줄(`ConfirmReasonText.label`: `confirm_reasons` 중 가장 중요한 하나 — Not sure it's yours · May be done already · May not be a task · May not be a firm commitment · Update may not belong here(`병합 확인`: 기존 할 일에 붙은 새 내용) · May duplicate another task(`중복 확인`) · Due date unclear · Scope unclear · Status unclear, 모르는 이유는 Needs review).
-  Review card는 iOS 26부터 Liquid Glass(카드 regular 유리, Confirm = 잉크 `glassProminent`, Dismiss = `glass`), 그 전은 bg/surface + 캡슐 버튼(`TFGlassCard` · `TFGlassButtonStyle`). 할 일 행은 평평하게 둔다.
+- 큰 제목 `Tasks` → 검색칸 `Search 23 tasks`(열린 할 일 수, `PhoneHome.searchPrompt`, 찾는 동안 네 구역 모두 거름 `TaskFilter`) → Review card 한 장(`1 of 4`, 위에 `Show All 4 ›` = 모든 카드 화면. Confirm = `POST confirm`, Dismiss = `DELETE`, 둘 다 버튼으로만) → In Progress · To Do · Done Today(머리에 개수, 빈 구역은 숨김)의 Task row 목록. 구역 안 순서는 서버가 정한 그대로(`TaskBoard`). 섹션 접기(`SectionCaps`)는 쓰지 않는다(Mac 런처만).
+  Task row = 옅은 빈 원(열린 할 일, 누르면 Done) + 제목 2줄까지 + 오른쪽 기한(지났거나 오늘이면 빨강) + 바뀜 점. 접근성 크기에서는 제목 전부 · 기한은 제목 아래 · 원 44. 원 VoiceOver "Mark Done", 섹션 머리 `.isHeader`.
+  오프라인(P10): 목록 위 `Offline since 10:41. Showing saved tasks.`, 검색칸 `Search 23 saved tasks`, Confirm · Dismiss · 상태 바꾸기 · 삭제 · Undo · 주간 질문은 꺼지고(+ 직접 추가는 Figma P10대로 켜 둔다) 카드 아래 `Confirm and Dismiss wait for a connection. Nothing is saved for later.`(`PhoneHome.canWrite`). 새로고침 실패는 `Couldn’t refresh at 10:46. Showing 10:31.` + Try Again, 실패 원문은 `Couldn’t read 2 sources`. 연결이 돌아오면 다시 불러온다(`Connectivity`).
+  저장본: `/now`가 성공할 때마다 그 계정의 저장본(제목 · 기한 · 상태만)을 쓰고, 이번 실행에서 `/now`를 받기 전에는 그것을 읽기만 한다. 계정이 떠나면 지운다(`Startup.make`의 `onSignedOut`, 앱을 열 때 `SavedNowStore.prune(keeping:)`).
+  Review card 위 줄에 확인 이유(`ConfirmReasonText.label`: `confirm_reasons` 중 가장 중요한 하나 — Not sure it's yours · May be done already · May not be a task · May not be a firm commitment · Update may not belong here(`병합 확인`: 기존 할 일에 붙은 새 내용) · May duplicate another task(`중복 확인`) · Due date unclear · Scope unclear · Status unclear, 모르는 이유는 Needs review).
+  Review card는 평평한 bg/elevated 면 + settings/line 테두리(r16), Confirm = 잉크 캡슐 · Dismiss = settings/fill 캡슐(`CapsuleButtonStyle`, Figma P1). 유리는 떠 있는 "Deleted  Undo" 막대에만.
 - 상태는 To Do · In Progress · Done 세 이름으로만 옮긴다(`POST /actions/:id/progress {"state": "to_do"|"in_progress"|"done"}`, `NowStore.move`). 서버를 기다리지 않고 곧바로 그 구역으로 옮기고, 쓰기가 끝나면 두 목록을 다시 읽는다.
-  - 왼쪽 상태 표시(`TaskStatusMark`: ○ To Do · ◉ In Progress · ✓ Done): ○ · ◉를 누르면 Done, ✓는 끝내기 전 상태로(이 기기에서 끝낸 것은 기억, 모르면 착수 시각이 있으면 In Progress, 없으면 To Do)
+  - 왼쪽 원: 옅은 빈 원(To Do · In Progress)을 누르면 Done, ✓는 끝내기 전 상태로(이 기기에서 끝낸 것은 기억, 모르면 착수 시각이 있으면 In Progress, 없으면 To Do)
   - 밀기: To Do = 오른쪽 In Progress · 왼쪽 Done, In Progress = 오른쪽 To Do · 왼쪽 Done, Done Today = 오른쪽 To Do
   - 길게 누르기: 세 상태 메뉴(지금 상태에 체크)
 - 삭제(`DELETE /actions/:id`, 서버는 취소로 두고 이력을 남긴다, `NowStore.delete`): 왼쪽으로 밀면 Done 옆에 빨간 Delete(끝까지 밀면 Done, Done Today는 끝까지 밀어도 지우지 않는다) · 길게 누르기 메뉴 맨 아래 Delete. Review는 Dismiss만.
   곧바로 행을 빼고 가벼운 햅틱, 5초 동안 아래에 "Deleted  Undo" 캡슐(iOS 26 유리, 그 전 material, `tfGlassCapsule`). Undo = `PATCH status`(Done Today였으면 done, 아니면 open: 착수 시각이 남아 있어 In Progress는 In Progress로 돌아온다, `TaskUndo.restoreEdit`)
-- 행을 누르면 근거 한 줄만 펼치고, 인용을 누르면 원문을 연다.
+- 행을 누르면 근거 한 줄만 펼치고(종이 면 `SourceSlip`), 인용을 누르면 원문을 연다. 바뀐 할 일이면 펼칠 때 `POST /actions/:id/seen`을 한 번 보내고 점을 지운다(`SeenTracker.open`, 실패해도 다시 보내지 않음, 오프라인이면 보내지 않음). 바뀐 Review 카드는 보였다가 떠날 때(다른 카드 · 화면 밖 · Show All) 같은 방법으로.
 - 오른쪽 위 "+" = New Task 시트(`NowStore.add`, 원문 없이 `POST /actions`): 제목(200자까지) · Due(None · Today · Tomorrow · Date…) · Cancel / Add.
   iOS 26은 시스템 유리 시트 그대로 두고, 제목 칸 · 기한 칩 · Existing 줄은 bg/elevated 바탕 위에 둬서 뒤 목록 글자가 비치지 않게 한다(그 전 OS는 bg/canvas 시트).
   쓰는 동안 열린 할 일(Review · In Progress · To Do)에서 맞는 것을 "Existing"으로 세 개까지 보여 준다(`LauncherAdd.existing`, 런처 찾기와 같은 거르기). 추가는 막지 않는다. 추가되면 닫고 `/now`를 다시 부른다.
-- 오른쪽 위 계정 시트: Profile(이름 · 다른 이름, 비어 있으면 처음 한 번 묻는다) · Connections · AI data(외부 AI 처리 동의) · 로그인 계정 줄("Apple ID" · "Google Account" · "Email") · Sign Out(이 기기만, 다른 기기는 로그인 유지: 아래 한 줄 "Sign Out applies only to this device.") · Delete Account(Apple 로그인 계정은 Apple 재확인 → 토큰 폐기, Google 로그인 계정은 삭제 뒤 Google 권한 폐기) · Privacy Policy · Terms of Use.
+- 왼쪽 위 계정 시트(Figma P1에는 없지만 로그아웃 · 계정 삭제 경로라 둔다): Profile(이름 · 다른 이름, 비어 있으면 처음 한 번 묻는다) · Connections · AI data(외부 AI 처리 동의) · 로그인 계정 줄("Apple ID" · "Google Account" · "Email") · Sign Out(이 기기만, 다른 기기는 로그인 유지: 아래 한 줄 "Sign Out applies only to this device.") · Delete Account(Apple 로그인 계정은 Apple 재확인 → 토큰 폐기, Google 로그인 계정은 삭제 뒤 Google 권한 폐기) · Privacy Policy · Terms of Use.
 - 연결이 없고 할 일도 없으면 로고 네 개 + "Connect" 한 줄. 연결이 동기화 중이고 할 일이 없으면 가운데 진행 표시 + "Syncing…". 권한이 끊긴 연결이 있으면 목록 위에 Reconnect 줄.
 - 알림(C10): 권한은 첫 실행에 묻지 않고, 로그인했고 연결이 하나라도 있으며 다른 시트가 없을 때 한 번 묻는다(`PushPermission`). 알림을 누르면 떠 있는 시트를 닫고 목록을 다시 읽은 뒤 그 할 일로 스크롤한다: 확인 요청이면 그 Review card를 먼저 보이고, 할 일이면 그 행을 2초 동안 bg/surface로 칠한다.
 
@@ -138,9 +142,9 @@ Mac은 `--show-launcher -TFSampleData -TFSnapshot <폴더>`로 실행하면 런�
     - `ActionChanges`: `actions` Realtime 구독. "바뀜" 신호로만 쓰고 지금 할 일은 항상 `/now`를 다시 불러온다 (로그인해 있는 동안 구독 하나: `ActionChangeFeed`)
     - `Models` · `AccountModels` · `Connections`: `src/lib/api/contract.ts`와 같은 모양 (새 필드는 없어도 읽는다)
     - 로그인: `SessionStore`(Apple · Google `signInWithIdToken`, `SignInNonce`, Google 로그인 직후 이름 `AccountNameFill`), Google 설정 `GoogleSignInConfig`(Info.plist), 로그인 방식 `SignInMethods`, 계정 삭제 때 폐기할 것 `AccountDeletionPlan`(서버에서 새로 읽은 사용자), 계정 이름 `AccountName`
-    - 순수 규칙(테스트로 고정): 목록 구역 · 진행 상태(`WorkState`) · 먼저 보여 주는 내 변경 · 지울 수 있는 행 · 되돌리기(`TaskSections`: `TaskChange` · `TaskUndo` · `UndoOffer`), 런처 입력 모드 · 구역 · 거르기 · 붙여 넣은 원문 · 직접 추가 제목 · 이미 있는 할 일 · ↩ · ⌘↩(`Launcher`), Review 확인 이유 표기(`Labels` `ConfirmReasonText`), 영어 기한 · 시점 표기 · Task row 메타(`DisplayText`), 서비스 추정 · Source stack 접기(`SourceService`), 근거 고르기(`EvidenceDigest`), 연결 상태 · 줄 상태 · 동기화 진행 · 콜백 · 시작 · Sync Now 실패 분류(`Connections`), 알림 토큰 · APNs 환경 · 권한 · 누른 알림(`PushNotifications`), 단축키(`HotKeyShortcut`), `app_opened`(`AppOpenTracker` · `LauncherOpenThrottle`), 원문 줄 고르기(`SourceText` · `LineSelection`), 섹션 접기(`SectionCaps`: `/now` `section_limits`, 없으면 Review 2 · In Progress 5 · To Do 5, Done Today 접힌 한 줄, 찾는 중 · 범위 선택 중에는 접지 않음) · 범위와 개수(`TaskScope`) · 바뀜 점과 `seen` 보낼 때(`SeenTracker`) · 연결 · 새로고침 상태(`RefreshTracker` · `RefreshState`, 경로는 `Connectivity`)
-    - 저장본(`SavedNow` · `SavedNowStore`): 계정마다 마지막 목록의 제목 · 기한 · 상태만(원문 · 인용 · 상대 · id 없음, 사용자 결정 2026-10-03), App Group 컨테이너 `Library/Application Support/Taskforce/SavedNow/<user id>/now.json`, 백업 제외 · iOS 파일 보호. 로그아웃 · 계정 전환은 `removeAll()`, 계정 삭제는 `remove(account:)`(앱이 `SessionStore.onSignedOut`에서 부른다, U1 PR4)
-  - `TaskforceUI` — Figma 토큰(Asset Catalog 색 세트, 이름 = Figma 변수 · 간격 · 모서리 · 글자)과 부품(Task status · Task row · Review card · Evidence · Sources group · Source icon/stack · Launcher row · Keycap · 캡슐 버튼 · 유리 카드/버튼/묶음, Native 재설계 156:6의 Mac list row · Section header · Show N More · Key · Quiet button · Dropdown · Empty state · Action bar · Settings row/card/divider · 스크롤 아래 흐림), 부품마다 `#Preview`
+    - 순수 규칙(테스트로 고정): 목록 구역 · 진행 상태(`WorkState`) · 먼저 보여 주는 내 변경 · 지울 수 있는 행 · 되돌리기(`TaskSections`: `TaskChange` · `TaskUndo` · `UndoOffer`), 런처 입력 모드 · 구역 · 거르기 · 붙여 넣은 원문 · 직접 추가 제목 · 이미 있는 할 일 · ↩ · ⌘↩(`Launcher`), Review 확인 이유 표기(`Labels` `ConfirmReasonText`), 영어 기한 · 시점 표기 · Task row 메타(`DisplayText`), 서비스 추정 · Source stack 접기(`SourceService`), 근거 고르기(`EvidenceDigest`), 연결 상태 · 줄 상태 · 동기화 진행 · 콜백 · 시작 · Sync Now 실패 분류(`Connections`), 알림 토큰 · APNs 환경 · 권한 · 누른 알림(`PushNotifications`), 단축키(`HotKeyShortcut`), `app_opened`(`AppOpenTracker` · `LauncherOpenThrottle`), 원문 줄 고르기(`SourceText` · `LineSelection`), 섹션 접기(`SectionCaps`: `/now` `section_limits`, 없으면 Review 2 · In Progress 5 · To Do 5, Done Today 접힌 한 줄, 찾는 중 · 범위 선택 중에는 접지 않음) · 범위와 개수(`TaskScope`) · 바뀜 점과 `seen` 보낼 때(`SeenTracker`) · 연결 · 새로고침 상태(`RefreshTracker` · `RefreshState`, 경로는 `Connectivity`) · iPhone 목록 글자 · 쓰기 막기 · 저장본 찾기(`PhoneHome`)
+    - 저장본(`SavedNow` · `SavedNowStore`): 계정마다 마지막 목록의 제목 · 기한 · 상태만(원문 · 인용 · 상대 · id 없음, 사용자 결정 2026-10-03), App Group 컨테이너 `Library/Application Support/Taskforce/SavedNow/<user id>/now.json`, 백업 제외 · iOS 파일 보호. 로그아웃 · 계정 전환은 `removeAll()`, 계정 삭제는 `remove(account:)`(앱이 `SessionStore.onSignedOut`에서 부른다, Mac U1 PR4 · iPhone U1 PR5b)
+  - `TaskforceUI` — Figma 토큰(Asset Catalog 색 세트, 이름 = Figma 변수 · 간격 · 모서리 · 글자)과 부품(Task status · Task row · Review card · Evidence · Source slip · Sources group · Source icon/stack · Launcher row · Keycap · 캡슐 버튼 · 유리 캡슐, Native 재설계 156:6의 Mac list row · Section header · Show N More · Key · Quiet button · Dropdown · Empty state · Action bar · Settings row/card/divider · 스크롤 아래 흐림), 부품마다 `#Preview`
     - `TaskforceUITests`: 모든 색 토큰이 Light · Dark로 풀리고 Figma 변수와 같은지, 글자 토큰 대비 4.5:1 이상인지
     - 서비스 로고는 Figma Source icon(Simple Icons 단색)의 글리프만 template 이미지로 두고, 타일은 토큰으로 그린다
 - 순서 계산 · 판정은 서버에만 있다. 앱은 받은 순서를 그대로 보여준다.

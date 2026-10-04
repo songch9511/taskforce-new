@@ -6,11 +6,14 @@ import TaskforceKit
 /// Review 4 · In Progress 5 · To Do 14 · Done Today 6 (M13 All Tasks 23). To Do · In Progress · Done 옮기기도 서버 없이 반영된다.
 /// 상태 견본 (Mac 런처 U1 PR4): `-TFSampleOffline` 오프라인(M15) · `-TFSampleRefreshFailed` 새로고침 실패(M19) — 저장본을 보인다.
 /// `-TFSampleNoSaved`를 더하면 저장본 없음(M20 · 실패 빈 화면). `-TFSampleEmpty` 할 일 없음(M21) · `-TFSampleLoading` 처음 불러오는 중.
+/// `-TFSampleOfflineLoaded`: 받은 목록을 그대로 둔 채 오프라인 (iPhone P10의 Review 카드 전체 + 꺼진 버튼).
 enum SampleData {
     static var isEnabled: Bool { ProcessInfo.processInfo.arguments.contains("-TFSampleData") }
     /// 첫 동기화 화면 (`-TFSampleData -TFSampleSyncing`): 할 일 없이 Notion이 동기화 중
     static var isSyncing: Bool { ProcessInfo.processInfo.arguments.contains("-TFSampleSyncing") }
     static var isOffline: Bool { ProcessInfo.processInfo.arguments.contains("-TFSampleOffline") }
+    /// 이번 실행에서 목록을 받은 뒤 끊김 (`-TFSampleOfflineLoaded`): 받은 목록(확인 이유 · 원문 포함) 그대로 오프라인 (iPhone P10)
+    static var isOfflineLoaded: Bool { ProcessInfo.processInfo.arguments.contains("-TFSampleOfflineLoaded") }
     static var isRefreshFailed: Bool { ProcessInfo.processInfo.arguments.contains("-TFSampleRefreshFailed") }
     static var hasNoSaved: Bool { ProcessInfo.processInfo.arguments.contains("-TFSampleNoSaved") }
     static var isEmpty: Bool { ProcessInfo.processInfo.arguments.contains("-TFSampleEmpty") }
@@ -199,6 +202,9 @@ extension NowStore {
             applySampleState(saved: saved, offlineSince: nil, failedAt: SampleData.today(10, 46))
         } else if SampleData.isLoading {
             applySampleState(saved: nil, offlineSince: nil, failedAt: nil)
+        } else if SampleData.isOfflineLoaded {
+            // P10 "Offline since 10:41. Showing saved tasks." (10:31에 받은 목록)
+            applySampleOffline(loadedAt: SampleData.today(10, 31), since: SampleData.today(10, 41))
         }
     }
 

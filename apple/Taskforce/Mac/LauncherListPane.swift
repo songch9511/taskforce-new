@@ -139,7 +139,7 @@ struct LauncherListPane: View {
                 model.run(item)
             }
         case .failedSources(let failed):
-            MacListRow(title: Self.failedTitle(failed), accessory: failed.latestAt.map { WhenText.label($0) }, selected: selected)
+            MacListRow(title: failed.title, accessory: failed.latestAt.map { WhenText.label($0) }, selected: selected)
         case .policyNotice(let notice):
             MacListRow(title: notice.title(today: today), accessory: "View", selected: selected)
         case .allowAI:
@@ -158,11 +158,6 @@ struct LauncherListPane: View {
             // 로그아웃 목록은 한 열 (`LauncherFlowView`)
             EmptyView()
         }
-    }
-
-    /// 실패 원문 줄 (Figma에 없음 · 후보): "Couldn’t read 2 sources"
-    static func failedTitle(_ failed: FailedSources) -> String {
-        failed.count == 1 ? "Couldn’t read 1 source" : "Couldn’t read \(failed.count) sources"
     }
 }
 #endif
