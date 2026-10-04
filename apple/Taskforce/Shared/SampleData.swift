@@ -282,6 +282,16 @@ enum SampleRuns {
         }
     }
 
+    /// M8 `Use` 칩 견본 (Figma 185:2561과 같은 원문들, Slack은 보내지 않아 없다): 4개 + `2 more`
+    static let draftSources = [
+        DraftSource(id: sampleActionID(901), title: "제품 회의록", service: .notion),
+        DraftSource(id: sampleActionID(902), title: "데모 요청", service: .gmail),
+        DraftSource(id: sampleActionID(903), title: "기획서 v1", service: .notion),
+        DraftSource(id: sampleActionID(904), title: "고객 인터뷰 전사", service: .googleMeet),
+        DraftSource(id: sampleActionID(905), title: "견적서", service: .gmail),
+        DraftSource(id: sampleActionID(906), title: "디자인 리뷰 회의록", service: .notion),
+    ]
+
     /// S3 견본의 멈춘 run 둘
     static func pausedRuns(now: Date = Date()) -> [RunSummary] {
         pausedActionIDs.enumerated().map { index, action in

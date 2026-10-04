@@ -59,11 +59,17 @@ final class MacAppDelegate: NSObject, NSApplicationDelegate {
         #endif
     }
 
-    /// `taskforce://connections/…` · Google 로그인 콜백 (ASWebAuthenticationSession이 주소를 바로 돌려주지만, 앱 밖에서 열린 경우를 위해)
+    /// `taskforce://connections/…` · Google 로그인 콜백 (ASWebAuthenticationSession이 주소를 바로 돌려주지만, 앱 밖에서 열린 경우를 위해).
+    /// 초안 링크 `taskforce://artifacts/<id>`는 런처를 열고 그 초안 (U2 Mac)
     func application(_ application: NSApplication, open urls: [URL]) {
         guard case .ready(_, let services) = AppRuntime.startup else { return }
         let account = AppRuntime.account(services: services)
         for url in urls where !GoogleSignInFlow.handle(url) {
+            if let id = ArtifactLink.parse(url), let launcher {
+                launcher.show()
+                launcher.model.openDraft(id: id)
+                continue
+            }
             Task { await account.handleCallback(url) }
         }
     }

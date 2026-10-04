@@ -4,9 +4,9 @@ import TaskforceKit
 import TaskforceUI
 
 /// 상세 칸 (Figma M1 `Detail viewport`, bg/elevated, 안쪽 위 18 · 좌우 24): U1은 임시 상세다.
-/// 제목(자르지 않음) · 기한 · Review 이유 · 원문(`EvidenceDigest`의 근거 줄, 종이 위 인용).
-/// 갈래(`You` · `Waiting on` · `Taskforce` · `Done when`)는 U5 · U2 Mac · U6a가 `lanes` 자리에 끼운다.
-/// 저장본 행(오프라인)은 저장된 제목 · 기한만 있다.
+/// 제목(자르지 않음) · 기한 · Review 이유 · Taskforce 갈래(U2 Mac, `LauncherLaneView`) · 원문(`EvidenceDigest`의 근거 줄, 종이 위 인용).
+/// 나머지 갈래(`You` · `Waiting on` · `Done when`)는 U5 · U6a가 갈래 자리에 끼운다.
+/// 저장본 행(오프라인)은 저장된 제목 · 기한만 있다. Run with AI(M8) · 초안 화면이면 이 칸이 그 화면이 된다.
 struct LauncherDetailPane: View {
     @Bindable var model: LauncherModel
 
@@ -14,12 +14,21 @@ struct LauncherDetailPane: View {
     @State private var hasMoreBelow = false
 
     var body: some View {
+        switch model.screen {
+        case .runWithAI(let target): LauncherRunPane(model: model, target: target)
+        case .draft(_, let artifact): LauncherDraftPane(artifact: artifact)
+        default: detail
+        }
+    }
+
+    private var detail: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 if let target = model.detailTarget {
                     header(title: target.action.title, due: target.group == .doneToday ? nil : target.action.dueDate,
                            reason: target.group == .review ? ConfirmReasonText.label(target.action.confirmReasons) : nil)
-                    // 갈래 자리 (U5 · U2 Mac · U6a)
+                    // 갈래 자리 (Taskforce: U2 Mac, 나머지는 U5 · U6a)
+                    LauncherLaneView(model: model, target: target)
                     sources(target.action.id)
                 } else if let row = model.detailSavedRow {
                     header(title: row.task.title, due: row.task.status == .doneToday ? nil : row.task.dueDate, reason: nil)
