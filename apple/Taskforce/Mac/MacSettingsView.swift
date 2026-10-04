@@ -8,6 +8,7 @@ import TaskforceUI
 /// 연결 · 동의 화면은 iPhone과 같은 것을 쓰고, Account는 페이지가 아니라 시트다.
 struct MacSettingsView: View {
     @Environment(SessionStore.self) private var session
+    @Environment(RunStore.self) private var runs
     @AppStorage(SettingsOpener.tabKey) private var stored: String?
     @State private var query = ""
     /// ↑↓로 시트 항목(Account)에 올라섰을 때만 있다. 페이지는 그대로 두고 ↩로 시트를 연다
@@ -24,9 +25,30 @@ struct MacSettingsView: View {
     /// 본문 칸(창 - 안쪽 4 × 2 - 사이드바 = 556) 가운데 열의 좌우 여백 44
     static let columnInset = (windowSize.width - 2 * TFSpace.xs - sidebarWidth - column) / 2
 
-    private var page: MacSettingsTab { MacSettingsTab.page(stored: stored) }
+    private var page: MacSettingsTab { MacSettingsTab.page(stored: stored, execution: execution) }
     private var highlighted: MacSettingsTab { cursor ?? page }
-    private var items: [MacSettingsTab.Item] { MacSettingsTab.sidebar(matching: query) }
+    /// Usage & Credits는 실행을 쓸 수 있을 때, 또는 저장된 그 페이지를 불러오는 중일 때 (보이는 페이지가 사이드바에 있게)
+    private var items: [MacSettingsTab.Item] {
+        MacSettingsTab.sidebar(matching: query, executionAvailable: execution == .available || page == .usage)
+    }
+
+    /// 실행을 쓸 수 있는지: 로그아웃이면 쓸 수 없다. credits를 아직 읽지 못했으면(처음 · 전송 오류) 모름
+    private var execution: MacSettingsTab.Execution {
+        guard isSignedIn || Self.isSample else { return .unavailable }
+        switch runs.credits {
+        case .unknown: return .unknown
+        case .unavailable: return .unavailable
+        case .available: return .available
+        }
+    }
+
+    private var isSignedIn: Bool {
+        if case .signedIn = session.state { true } else { false }
+    }
+
+    private var signedInUserID: UUID? {
+        if case .signedIn(let userID, _) = session.state { userID } else { nil }
+    }
 
     var body: some View {
         @Bindable var route = SettingsRoute.shared
@@ -67,6 +89,14 @@ struct MacSettingsView: View {
         .onChange(of: route.openCount) {
             cursor = nil
             query = ""
+            // 다시 열 때마다 실행을 쓸 수 있는지 다시 본다 (지급 · 켜기 뒤 다시 열면 바로 보이게)
+            guard signedInUserID != nil else { return }
+            Task { await runs.loadCredits() }
+        }
+        // Usage & Credits 항목: 로그인한 계정마다 credits를 읽는다 (404면 숨김, 전송 오류면 마지막 값 그대로)
+        .task(id: signedInUserID) {
+            guard signedInUserID != nil else { return }
+            await runs.loadCredits()
         }
     }
 
@@ -243,7 +273,7 @@ struct MacSettingsView: View {
     // MARK: 본문
 
     private var content: some View {
-        let title = MacSettingsTab.sidebar.first { $0.tab == page }?.title ?? ""
+        let title = MacSettingsTab.all.first { $0.tab == page }?.title ?? ""
         return VStack(alignment: .leading, spacing: 0) {
             Text(title)
                 .font(TFFont.pageTitle)
@@ -264,10 +294,12 @@ struct MacSettingsView: View {
         switch page {
         case .keyboardShortcuts:
             HotKeyPane()
+        case .usage:
+            signedInOnly { UsageCreditsPane() }
         case .connections:
             signedInOnly { ConnectionsView().modifier(SettingsFormPage()) }
         case .ai:
-            signedInOnly { ConsentSettingsView().modifier(SettingsFormPage()) }
+            signedInOnly { ConsentSettingsView() }
         case .account:
             // 시트 항목이라 페이지가 되지 않는다 (`MacSettingsTab.page(stored:)`)
             EmptyView()

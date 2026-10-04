@@ -16,7 +16,7 @@ import TaskforceUI
 /// - 밀기: To Do는 오른쪽 In Progress · 왼쪽 Done, In Progress는 오른쪽 To Do · 왼쪽 Done, Done Today는 오른쪽 To Do
 /// - 길게 누르기: 세 상태 (지금 상태에 체크)
 /// 삭제: 왼쪽으로 밀기(Done 옆, 끝까지 밀면 Done) · 길게 누르기 맨 아래. 지운 뒤 5초 동안 아래에 "Deleted  Undo" (`NowStore.delete` · `restore`)
-/// Account 버튼은 Figma P1에 없지만 로그아웃 · 계정 삭제 경로라 왼쪽 위에 둔다 (U9 재판정).
+/// 설정 시트 버튼(Settings)은 Figma P1에 없지만 로그아웃 · 계정 삭제 · 동의 철회 경로라 왼쪽 위에 둔다 (U9 재판정).
 struct HomeView: View {
     let userID: UUID
     let email: String?
@@ -72,7 +72,8 @@ struct HomeView: View {
                         } label: {
                             Image(systemName: "person.crop.circle")
                         }
-                        .accessibilityLabel("Account")
+                        // 설정 시트를 연다 (시트 제목 Settings)
+                        .accessibilityLabel("Settings")
                     }
                     ToolbarItem(placement: .topBarTrailing) {
                         Button {
@@ -135,6 +136,10 @@ struct HomeView: View {
         .sheet(item: $accountRoute) { route in
             AccountSheet(email: email, initialRoute: route)
         }
+        #if DEBUG
+        // 견본: 설정 시트를 연 채 시작 (`-TFSampleSettings` · `-TFSamplePrivacy`, 스크린샷용)
+        .task { if accountRoute == nil, let route = SampleData.settingsRoute { accountRoute = route } }
+        #endif
         .sheet(isPresented: $addingTask) {
             NewTaskSheet { addedTasks += 1 }
         }

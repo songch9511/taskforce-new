@@ -9,7 +9,8 @@ enum AccountRoute: Hashable, Identifiable {
     var id: Self { self }
 }
 
-/// 계정 메뉴 시트: Profile · Connections · AI data · Sign Out · Delete Account
+/// 설정 시트 (제목 Settings, Figma P5 뒤로 라벨 `‹ Settings`): Profile · Connections · Privacy & AI Data · Sign Out · Delete Account.
+/// 동의 철회 경로가 Mac과 같은 "Settings > Privacy & AI Data"다 (처리방침 4장 · 11장, U2 Mac 계획 9장 결정)
 struct AccountSheet: View {
     let email: String?
     let initialRoute: AccountRoute
@@ -34,7 +35,7 @@ struct AccountSheet: View {
                         LabeledContent("Connections", value: connectedSummary)
                     }
                     NavigationLink(value: AccountRoute.consent) {
-                        LabeledContent("AI data", value: account.hasConsent ? "On" : "Off")
+                        LabeledContent("Privacy & AI Data", value: account.hasConsent ? "On" : "Off")
                     }
                 }
                 Section {
@@ -61,7 +62,7 @@ struct AccountSheet: View {
                     Link("Terms of Use", destination: LegalLinks.terms)
                 }
             }
-            .navigationTitle("Account")
+            .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
@@ -77,7 +78,7 @@ struct AccountSheet: View {
                     case .consent: ConsentSettingsView()
                     }
                 }
-                // 줄을 눌러 들어가면 루트("Account")의 작은 제목을 물려받지만, 시트가 처음부터 이 화면으로 열리면(`initialRoute`:
+                // 줄을 눌러 들어가면 루트("Settings")의 작은 제목을 물려받지만, 시트가 처음부터 이 화면으로 열리면(`initialRoute`:
                 // 재연결 배너 · 재연결 알림) 물려받지 못해 큰 제목이 첫 줄 위에 겹친다. 어느 길로 와도 작은 제목으로 둔다.
                 .navigationBarTitleDisplayMode(.inline)
             }

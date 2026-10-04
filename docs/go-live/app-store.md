@@ -17,12 +17,12 @@
 
 | 요구 | 가이드라인 | 앱 상태 (2026-09-30) | 담당 |
 |---|---|---|---|
-| 외부 AI로 보내기 전 명시적 동의 | 5.1.2(i) | 있음: 첫 연결 전에 AI data 화면(`ConsentPrompt`, `apple/Taskforce/Shared/AccountViews.swift`) → Allow → `POST /api/v1/consent`. 서버는 동의가 없으면 409(`src/lib/api/consent.ts`). 문구는 5장 문안 그대로(`ConsentDetails`) | — |
-| 동의 철회 방법 | 5.1.1(i) | 있음: 계정 메뉴(Mac은 설정) → AI data → Withdraw → `DELETE /api/v1/consent` (`ConsentSettingsView`) | — |
-| 앱 안 계정 삭제 | 5.1.1(v) | 있음 (계정 메뉴 → 계정 삭제 → `DELETE /api/v1/account`) | — |
+| 외부 AI로 보내기 전 명시적 동의 | 5.1.2(i) | 있음: 첫 연결 전에 Privacy & AI Data 동의 화면(`ConsentPrompt`, `apple/Taskforce/Shared/AccountViews.swift`) → Allow → `POST /api/v1/consent`. 서버는 동의가 없으면 409(`src/lib/api/consent.ts`). 문구는 5장 문안 그대로(`ConsentDetails`) | — |
+| 동의 철회 방법 | 5.1.1(i) | 있음: Settings(Mac 설정 창 · iPhone 설정 시트) → Privacy & AI Data → `Use AI on new sources` 끄기 → Withdraw → `DELETE /api/v1/consent` (`ConsentSettingsView`) | — |
+| 앱 안 계정 삭제 | 5.1.1(v) | 있음 (iPhone 설정 시트 · Mac 설정 Account → Delete Account → `DELETE /api/v1/account`) | — |
 | 제3자 로그인(Google)을 두면 동등한 로그인 옵션 | 4.8 | Sign in with Apple이 먼저, 같은 크기 (2026-09-30 Sign in with Google 추가, PLATFORMS.md 4장) | — |
 | 계정 삭제 때 Sign in with Apple 토큰 폐기 | 5.1.1(v), Apple 계정 삭제 안내 | 구현됨: Apple 로그인이 붙은 계정은 Apple 확인을 한 번 더 받아 code를 보내고, 이메일 · Google로만 가입한 계정(데모 계정 포함)은 건너뛴다. 삭제 직전에 서버에서 사용자를 읽지 못하면 이 계정에도 뜬다. 새로 읽은 사용자에 Apple이 없어도 세션에 있으면 뜬다 (6장 3번, `AccountDeletionPlan`) | 실기기 확인 (6장 6번) |
-| 앱 안 처리방침 링크 | 5.1.1(i) | 있음: 계정 메뉴 · Mac 설정 · 로그인 화면 · AI data 화면의 "Privacy Policy" · "Terms of Use" (`apple/Taskforce/iOS/AccountSheet.swift`, `LegalLinksRow`) | — |
+| 앱 안 처리방침 링크 | 5.1.1(i) | 있음: iPhone 설정 시트 · Mac 설정 · 로그인 화면 · Privacy & AI Data 화면의 "Privacy Policy" · "Terms of Use" (`apple/Taskforce/iOS/AccountSheet.swift`, `LegalLinksRow`) | — |
 | 심사원이 들어갈 수 있는 데모 계정 | 2.1 | 있음: 로그인 화면의 "Sign in with email" → 이메일 + 비밀번호(`SessionStore.signInWithEmail`, 가입 화면 없음). 허용 목록(`review_accounts`) 밖 이메일 가입은 DB 훅이 막는다 (3장) | 사용자: 훅 켜기 · 데모 계정 만들기 (7장 1번) |
 | 수출 규정 | — | HTTPS만 쓰면 면제 | `Info.plist`에 `ITSAppUsesNonExemptEncryption = NO` 확인 |
 
@@ -55,7 +55,7 @@ Connect Notion, Google, and Slack. Taskforce reads new meeting notes, messages, 
 ```
 Please try:
 1. Sign in with Apple, then enter your name and any nicknames people use for you.
-2. Review the AI data screen and allow it, then connect Notion (pick your meeting-notes database itself, not a linked view), Google, and Slack.
+2. Review the Privacy & AI Data screen and allow it, then connect Notion (pick your meeting-notes database itself, not a linked view), Google, and Slack.
 3. Wait for your next meeting note or message. Tasks you committed to should appear under Now, each with the line it came from.
 4. Check a task when it's done. Use Confirm or Dismiss on Review cards.
 5. On Mac, press Option-Space to open the launcher.
@@ -104,7 +104,7 @@ Feedback: privacy@taskforcelabs.dev or the TestFlight screenshot feedback.
 
 심사원은 Notion · Google · Slack 계정이 없다. 그래서 **연결과 데이터가 이미 채워진 계정**을 준다.
 
-1. 데모 계정으로 로그인 → 프로필 이름 `Alex Kim`, 별칭 `Alex` → AI data 동의. 2의 가상 워크스페이스가 "나"를 `Alex`로 쓴다(`google-verification.md` 6장).
+1. 데모 계정으로 로그인 → 프로필 이름 `Alex Kim`, 별칭 `Alex` → Privacy & AI Data 동의. 2의 가상 워크스페이스가 "나"를 `Alex`로 쓴다(`google-verification.md` 6장).
 2. 심사용 가상 워크스페이스를 연결해 둔다: Notion(review 워크스페이스, 회의록 DB), Google(프로젝트 A, `review@` 계정), Slack(review 워크스페이스). Gmail은 테스트 상태라 7일 뒤 만료되므로 연결하지 않거나, 심사 제출 직전에 연결한다.
 3. fixture(가상 회의록 · 메시지 · 메일, `google-verification.md` 6장)가 동기화되어 Now에 할 일 3~5개, Review 카드 1장, 끝낸 할 일 1개가 있게 한다. 연동이 아직 붙지 않은 원문 종류는 `POST /api/v1/sources`로 같은 가상 원문을 넣어 채운다.
 4. 심사 기간에는 데모 계정의 데이터를 지우거나 동기화를 끄지 않는다. 심사원이 계정을 지우면(계정 삭제 시험) 다시 만든다 → 제출 전에 재생성 절차를 한 번 연습한다.
@@ -129,11 +129,11 @@ Demo account: tap "Sign in with email" below the Sign in with Apple and Sign in 
 Where to look:
 - Now: tasks found from connected sources. Tap a task to see the exact quote it came from; the source link opens the original.
 - Review card at the top: a task whose owner or due date is uncertain. Confirm or Dismiss.
-- Account menu: Connections (connect/disconnect services), AI data (consent to sending source text to third-party AI and how to withdraw it), Privacy Policy, Sign out, Delete account.
+- Settings (iPhone: the button at the top left; Mac: the menu bar icon > Settings): Connections (connect/disconnect services), Privacy & AI Data (consent to sending source text to third-party AI and how to withdraw it), Privacy Policy, Sign out, Delete account.
 
-Third-party AI (Guideline 5.1.2(i)): before the first connection, the app shows which data is sent (notes, documents, transcripts, messages, and email the user connects or pastes in, with the names and email addresses of people in them; the user's name and nicknames; task titles and quotes; questions asked), who receives it (OpenRouter and the five named AI model providers it routes to, all with zero data retention and no training), where it is stored (Sydney), and asks for explicit consent. Without consent, the server does not process any sources. The same information is always at Account > AI data (Mac: Settings > AI data), where consent can be withdrawn. The demo account has already allowed it. To see the prompt, tap Withdraw there, then open Account > Connections (Mac: Settings > Connections) and choose Sync Now from any connected service's menu; the prompt appears. Tap Allow so the demo keeps working.
+Third-party AI (Guideline 5.1.2(i)): before the first connection, the app shows which data is sent (notes, documents, transcripts, messages, and email the user connects or pastes in, with the names and email addresses of people in them; the user's name and nicknames; task titles and quotes; questions asked; and, for drafts the user starts, the request and that task's details and quotes), who receives it (OpenRouter and the five named AI model providers it routes to, all with zero data retention and no training), where it is stored (Sydney), and asks for explicit consent. Without consent, the server does not process any sources or write drafts. The same information is always at Settings > Privacy & AI Data on both iPhone and Mac, where consent can be withdrawn with the "Use AI on new sources" switch. The demo account has already allowed it. To see the prompt, turn the switch on again (or turn it off, then open Settings > Connections and choose Sync Now from any connected service's menu); the prompt appears. Tap Allow so the demo keeps working.
 
-Account deletion (Guideline 5.1.1(v)): Account > Delete account deletes all data immediately (no backups) and asks Apple and connected services to revoke their tokens (for Sign in with Apple accounts, after the user confirms with Apple once more), and revokes the Google sign-in grant from this device when available. If you delete the demo account, please let us know and we will recreate it.
+Account deletion (Guideline 5.1.1(v)): Settings > Delete Account (Mac: Settings > Account > Delete Account…) deletes all data immediately (no backups) and asks Apple and connected services to revoke their tokens (for Sign in with Apple accounts, after the user confirms with Apple once more), and revokes the Google sign-in grant from this device when available. If you delete the demo account, please let us know and we will recreate it.
 
 A demo video of connecting each service: {{Unlisted YouTube URL}}
 ```
@@ -147,7 +147,7 @@ App Store Connect → 앱 → App Privacy. 모든 항목: **Linked to the user =
 | Contact Info → **Name** | 예 | App Functionality | 이용자가 입력한 표시 이름 · 별칭, Google로 로그인하면 Google 계정 이름(프로필 이름이 비어 있으면 처음 한 번 채운다) |
 | Contact Info → **Email Address** | 예 | App Functionality | 로그인 이메일(Apple 전달 주소 · Google 주소 포함), 프로필의 추가 이메일 |
 | User Content → **Emails or Text Messages** | 예 | App Functionality | Gmail 메일, Slack 메시지 (제목 · 보낸 사람 · 받는 사람 · 본문) |
-| User Content → **Other User Content** | 예 | App Functionality | Notion 회의록 · 문서 · 할 일 DB 항목, Meet 전사, Mac 런처에 붙여 넣은 원문, 일정 제목 · 참석자, 할 일 · 근거 인용, 주간 질문 응답 |
+| User Content → **Other User Content** | 예 | App Functionality | Notion 회의록 · 문서 · 할 일 DB 항목, Meet 전사, Mac 런처에 붙여 넣은 원문, 일정 제목 · 참석자, 할 일 · 근거 인용, 주간 질문 응답, 이용자가 시작한 초안(본문 · 제목)과 초안 요청(D9a-1, 처리방침 1장. 크레딧은 구매가 아니라 Purchases는 아니오 그대로, 실행 기록 · AI 사용량은 앱 기능용 기록) |
 | Identifiers → **User ID** | 예 | App Functionality | 계정 id, Apple · Google 사용자 식별자, 연결한 서비스의 워크스페이스 · 계정 id |
 | Usage Data → **Product Interaction** | 예 | Analytics, App Functionality | 앱 열기, 착수 · 완료 · 수정 · 삭제 · 확인, "Hand off to AI" 사용 |
 | Identifiers → Device ID | 아니오 (판단) | — | APNs 기기 토큰은 앱 설치마다 다른 알림 전달용 값이라 Apple 정의("advertising identifier, or other device-level ID")에 해당하지 않는다고 본다. 보수적으로 가려면 "예 · App Functionality" |
@@ -169,7 +169,8 @@ App Store Connect → 앱 → App Privacy. 모든 항목: **Linked to the user =
 - **첫 연결 전에 한 번.** 연결 화면에서 어느 서비스든 Connect를 누르면, AI 동의가 없을 때 이 화면이 먼저 뜬다. 서버도 동의가 없으면 연결 시작 · 동기화 · 원문 보내기 · 물어보기에 `409 conflict`("외부 AI 처리 동의가 필요해요")를 돌려준다(`src/lib/api/consent.ts`). 앱은 이 응답을 받으면 이 화면을 띄운다.
 - **Allow를 눌러야만** `POST /api/v1/consent {"ai_processing": true}`. 미리 체크된 상자 · 스크롤만으로 동의 처리를 하지 않는다.
 - **Not Now**면 연결을 시작하지 않고 연결 화면으로 돌아간다. 앱의 다른 기능(이미 있는 할 일 보기)은 막지 않는다.
-- **철회:** 계정 메뉴 → AI data → Withdraw → `DELETE /api/v1/consent`. 철회 뒤에는 새 원문을 처리하지 않는다는 한 줄을 보여 준다.
+- **철회:** Settings(Mac 설정 창 · iPhone 설정 시트) → Privacy & AI Data → `Use AI on new sources` 끄기 → 확인의 Withdraw → `DELETE /api/v1/consent`. 확인에 새 원문을 읽지 않고 초안을 쓰지 않는다는 한 줄을 보여 준다("Taskforce stops reading new sources and writing drafts until you allow it again."). 스위치를 다시 켜면 이 동의 화면이 뜨고 Allow를 눌러야 동의한다.
+- **초안(D9a-1):** 문안에 초안 목적 · 보내는 것을 더했다(U2 Mac PR4). 운영자 계정만 쓰는 동안은 다시 동의를 받지 않고, 운영자 밖 계정을 `execution_actors`에 넣기 전에 바뀐 문안으로 다시 동의를 받는다(처리방침 D9a-1 README 8번). 이 문안이 든 빌드는 D9a-1 게시 전까지 TestFlight · App Store에 내지 않는다(게시본 1.3은 아직 초안을 말하지 않는다).
 - 동의한 시각은 `profiles.ai_consent_at`에 남는다. 문안을 바꾸면(받는 곳이 늘어나는 등) 다시 동의를 받는다 → 문안 버전을 함께 남길지 트랙 2-1에서 정한다.
 
 ### 문안
@@ -177,12 +178,15 @@ App Store Connect → 앱 → App Privacy. 모든 항목: **Linked to the user =
 화면 틀은 BRAND.md 규칙대로 짧은 영어로 쓴다. 이 화면은 법적 고지라 설명 문장이 필요한 예외다. 보내는 것 · 받는 곳은 처리방침 4장 · 7장 표와 **같은 내용 · 이름**을 쓴다(공급자는 2026-09-29 고정한 `src/lib/ai/providers.ts` 목록). 앱 문구는 `ConsentDetails`(`apple/Taskforce/Shared/AccountViews.swift`)이고, 처리방침 · 공급자가 바뀌면 함께 고친다.
 
 ```
-AI data
+Privacy & AI Data
 
-To find your tasks, Taskforce sends the text you connect or paste in to third-party AI models.
+To find your tasks and write drafts you start, Taskforce sends the text you connect or paste in to third-party AI models. Drafts are only saved in Taskforce, never sent to anyone or added to your connected services.
 
 What's sent
-Notes, documents, transcripts, messages, and email you connect or paste in, with the names and email addresses of people in them. Your name, nicknames, and email addresses, so the AI can recognize you. Your task titles and quotes, and questions you ask.
+Notes, documents, transcripts, messages, and email you connect or paste in, with the names and email addresses of people in them. Your name, nicknames, and email addresses, so the AI can recognize you. Your task titles and quotes. Questions you ask, with related tasks and quotes, including draft records. Hand off to AI only shows text for you to copy; Taskforce doesn't send it.
+
+For drafts you start
+Your request. The task's title, status, owner, due date, and counterpart. Its quotes with nearby source text, and those sources' type, title, date, and the names and email addresses of people in them. Your name. Instructions and titles of earlier drafts for the same request. Text and quotes from Slack are left out.
 
 Who receives it
 OpenRouter (USA), which routes each request to Fireworks, Together AI, DeepInfra, Microsoft Azure, or TypeSafe (all USA).
@@ -191,14 +195,14 @@ How it's protected
 Only providers that keep no data. Never used to train AI models. Stored on our servers in Sydney. Delete your account to delete it all.
 
 Withdraw anytime
-Turn this off in Account > AI data. Without it, Taskforce can't find tasks in your sources.
+Turn this off in Settings > Privacy & AI Data. Without it, Taskforce doesn't send or process your sources and doesn't write drafts: no new tasks are found, and a draft in progress stops before its next AI request. Your tasks and drafts stay until you delete your account.
 
 Privacy Policy   Terms of Use
 
 [Allow]   [Not Now]
 ```
 
-Mac은 철회 경로가 "Settings > AI data"다. 계정 설정의 AI data 화면(`ConsentSettingsView`)도 같은 내용 아래에 Allow 또는 Withdraw를 둔다.
+철회 경로는 Mac · iPhone 모두 "Settings > Privacy & AI Data"다(iPhone 설정 시트 제목도 Settings). 설정의 Privacy & AI Data 화면(`ConsentSettingsView`, Figma S7 `Section · AI`)은 `Use AI on new sources` 스위치(켜기 → 이 동의 화면, 끄기 → 철회 확인) · AI providers(View Policy) 아래에 같은 내용을 둔다. 문장마다 처리방침 D9a-1 초안 4장(140 · 141 · 152 · 153 · 154행)과 맞춘 대조는 U2 Mac PR4 본문에 있다.
 
 한국어 화면을 따로 둘지는 앱 전체의 현지화 결정을 따른다. 둔다면 처리방침 4장 문장을 줄여 쓴다.
 
@@ -206,7 +210,7 @@ Mac은 철회 경로가 "Settings > AI data"다. 계정 설정의 AI data 화면
 
 ### 지금 (2026-09-30 코드 기준)
 
-- 앱: 계정 메뉴 → 계정 삭제 → 확인 → `DELETE /api/v1/account` → 서버가 폐기를 먼저 하고 `auth.admin.deleteUser` → 모든 사용자 표가 cascade로 지워진다(`tests/db/account-deletion.test.ts`).
+- 앱: 설정(iPhone 설정 시트 · Mac 설정 Account) → Delete Account → 확인 → `DELETE /api/v1/account` → 서버가 폐기를 먼저 하고 `auth.admin.deleteUser` → 모든 사용자 표가 cascade로 지워진다(`tests/db/account-deletion.test.ts`).
 - 연결 서비스 토큰 폐기: `src/lib/connectors/registry.ts`의 `revokeConnectorTokens`가 연결마다 `revokeToken`을 부른다. Notion `POST /v1/oauth/revoke`, Slack `auth.revoke`, Gmail · google(Calendar · Meet) `POST https://oauth2.googleapis.com/revoke`(`revokeGoogleToken`, `src/lib/connectors/google/oauth.ts`: 갱신 토큰이 있으면 그것으로 폐기해 그 프로젝트에 준 허용 전체를 거둔다). 폐기가 실패해도 삭제는 계속한다.
 - **Sign in with Apple 토큰 폐기: 구현됨 (2026-09-30 코드 확인, 실기기 확인 남음).** Apple 로그인이 붙은 계정은 앱이 삭제 확인 때 Apple 확인을 한 번 더 받아 code를 보내고(`apple/Taskforce/Shared/AccountDeletion.swift` → `APIClient.deleteAccount(authorizationCode:)`), `src/lib/apple/sign-in.ts`가 아래 4번을 한다. 이메일 · Google로만 가입한 계정은 Apple 확인 없이 지운다(아래 3번). 확인을 취소하거나 실패하면 code 없이 삭제하고 로그인 화면에 직접 지우는 방법을 한 줄로 알린다(`revokeSkippedNote`, 처리방침 5장). 폐기하지 않으면 이용자의 설정 → Apple ID → Sign in with Apple 목록에 Taskforce가 남는다.
 

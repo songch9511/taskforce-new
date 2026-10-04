@@ -58,6 +58,7 @@ xcodebuild build -project apple/Taskforce.xcodeproj -scheme Taskforce -destinati
 상태 견본: `-TFSampleOffline`(저장본 + 오프라인) · `-TFSampleOfflineLoaded`(받은 목록 그대로 오프라인, iPhone P10) · `-TFSampleRefreshFailed` · `-TFSampleNoSaved`(저장본 없음) · `-TFSampleEmpty` · `-TFSampleLoading`. iPhone 큰 글자는 `-UIPreferredContentSizeCategoryName UICTContentSizeCategoryAccessibilityXXXL`.
 Mac은 `--show-launcher -TFSampleData -TFSnapshot <폴더>`로 실행하면 런처의 목록 · 펼침 · ⌘K · 찾기 화면과 설정 창을 PNG로 남기고 끝낸다(화면 녹화 권한 없이 자기 창만 그린다).
 `--show-settings -TFSampleData -TFSnapshot <폴더>`는 설정 창 사이드바의 보이는 항목마다 Light · Dark PNG(`mac-settings-<항목>-light.png` · `-dark.png`, Account는 열린 시트)를 남기고 끝낸다. `-TFSnapshot` 없이 `--show-settings`만 주면 설정 창을 연다(Debug 빌드).
+실행(U2) 견본: `-TFSampleCredits`는 S3 Figma 값(Usage & Credits 항목이 보이고 `usage` · `usage-end` PNG), `-TFSampleNoExecution`은 credits 404(실행 UI 없음), `-TFSampleConsent`는 동의한 계정(Privacy & AI Data 스위치 켜짐). 설정 창 PNG에는 Privacy & AI Data 끝까지(`privacy-end`) · 동의 화면 처음과 끝(`consent-prompt` · `consent-prompt-end`)도 남는다. iPhone은 `-TFSampleSettings`(설정 시트) · `-TFSamplePrivacy`(Privacy & AI Data)로 그 화면을 연 채 시작한다.
 
 ## 화면
 
