@@ -1,10 +1,13 @@
 #if os(macOS) && DEBUG
 import AppKit
+import Carbon.HIToolbox
 import TaskforceKit
 
 /// 디자인 비교용 (Debug 빌드): `--show-launcher -TFSampleData -TFSnapshot <폴더>`로 실행하면 런처 화면을 PNG로 남기고 끝낸다.
 /// 화면 녹화 권한 없이 자기 창만 그린다 (유리 재질의 바탕화면 흐림은 담기지 않는다). `-TFSnapshotDark`면 Dark 모양으로, 파일 이름 끝에 `-dark`.
 /// - 상태 견본 하나(`-TFSampleOffline` · `-TFSampleRefreshFailed` · `-TFSampleNoSaved` · `-TFSampleEmpty` · `-TFSampleLoading`)면 그 화면 한 장
+/// - 실행 견본 하나(`-TFSampleRun…` · `-TFSampleNoExecution`, U2 Mac)면 갈래(M1 · M12 · M17) · ⌘K 패널(M7) · 범위 메뉴(M13) ·
+///   갈래 버튼 포커스 · 초안 · Run with AI(M8, 시작할 수 있을 때)
 /// - 아니면 목록(M1) · 끝까지 내린 목록(M2) · 범위 메뉴(M13) · 펼친 섹션 · 상세 포커스 · ⌘K 패널 · 찾기 · 설정 창
 @MainActor
 enum LauncherSnapshot {
@@ -34,6 +37,11 @@ enum LauncherSnapshot {
             try? await Task.sleep(for: .seconds(1.5))
             if let stateName {
                 capture(panel, to: file(stateName))
+                NSApplication.shared.terminate(nil)
+                return
+            }
+            if let runName {
+                await captureRun(panel: panel, model: model, name: runName, file: file)
                 NSApplication.shared.terminate(nil)
                 return
             }
@@ -84,6 +92,63 @@ enum LauncherSnapshot {
             }
             NSApplication.shared.terminate(nil)
         }
+    }
+
+    /// 실행 견본이면 그 이름 (`lane-<이름>`: `-TFSampleRunDraftReady` → `draftready`)
+    private static var runName: String? {
+        if SampleRuns.noExecution { return "no-execution" }
+        return SampleRuns.lane.map { $0.rawValue.dropFirst("-TFSampleRun".count).lowercased() }
+    }
+
+    private static func captureRun(panel: NSPanel, model: LauncherModel, name: String, file: (String) -> URL) async {
+        func settle() async { try? await Task.sleep(for: .seconds(1)) }
+        // 금요일 고객 데모 준비 (In Progress 첫 줄)를 고른 목록 | 상세: 갈래 · 막대(M17 Stop requested)
+        model.focus(actionID: SampleData.demoID)
+        await settle()
+        capture(panel, to: file("lane-\(name)"))
+        // ⌘K 패널: Taskforce on this task (M7 일부, 맨 아래 묶음의 마지막 줄을 골라 보이게)
+        model.openActions()
+        await settle()
+        model.select(model.rowCount - 1)
+        await settle()
+        capture(panel, to: file("lane-\(name)-actions"))
+        model.back()
+        // 범위 메뉴: Taskforce Working (M13)
+        model.toggleScopeMenu()
+        await settle()
+        capture(panel, to: file("lane-\(name)-scope"))
+        model.closeScopeMenu()
+        guard let target = model.detailTarget else { return }
+        // 갈래 버튼 포커스(Tab → Tab) → ↩ 초안
+        if model.lane(for: target.action.id)?.drafts.isEmpty == false {
+            press(kVK_Tab, in: panel, model: model)
+            press(kVK_Tab, in: panel, model: model)
+            await settle()
+            capture(panel, to: file("lane-\(name)-focus"))
+            press(kVK_Return, in: panel, model: model)
+            await settle()
+            capture(panel, to: file("draft-\(name)"))
+            model.back()
+            model.back()
+        }
+        // M8: 빈 Goal · Figma 예시 Goal
+        if model.runAvailability(for: target).isEnabled {
+            model.openRun(target)
+            await settle()
+            capture(panel, to: file("run-with-ai-empty-\(name)"))
+            model.goal = "데모 때 나올 예상 질문 목록과 답변 초안. 결제 단계 이탈 관련 질문을 먼저 두고, 보안·개인정보 질문은 따로 묶기"
+            await settle()
+            capture(panel, to: file("run-with-ai-\(name)"))
+        }
+    }
+
+    /// 키 하나를 런처에 보낸 것처럼 (`LauncherModel.handleKey`)
+    private static func press(_ keyCode: Int, in panel: NSPanel, model: LauncherModel) {
+        guard let event = NSEvent.keyEvent(
+            with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: panel.windowNumber, context: nil,
+            characters: "", charactersIgnoringModifiers: "", isARepeat: false, keyCode: UInt16(keyCode)
+        ) else { return }
+        _ = model.handleKey(event)
     }
 
     private static func capture(_ panel: NSWindow, to url: URL) {

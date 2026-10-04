@@ -4,11 +4,14 @@ import SwiftUI
 public struct ActionBarItem {
     public let title: String
     public let keys: String
+    /// 꺼짐 (예: Goal이 비었거나 보내는 중인 `Start ⌘↩`)
+    public let isEnabled: Bool
     public let action: () -> Void
 
-    public init(_ title: String, keys: String, action: @escaping () -> Void) {
+    public init(_ title: String, keys: String, isEnabled: Bool = true, action: @escaping () -> Void) {
         self.title = title
         self.keys = keys
+        self.isEnabled = isEnabled
         self.action = action
     }
 }
@@ -27,12 +30,17 @@ public struct ActionBar: View {
     }
 
     let leading: Leading
+    let note: String?
     let secondary: ActionBarItem?
     let primary: ActionBarItem?
     let actions: ActionBarItem?
 
-    public init(leading: Leading, secondary: ActionBarItem? = nil, primary: ActionBarItem? = nil, actions: ActionBarItem? = nil) {
+    /// `note`: Return 동작 앞의 설명 한 줄 (Figma M8 `Manual, uses credits`, 키 없음 · 구분선 없음)
+    public init(
+        leading: Leading, note: String? = nil, secondary: ActionBarItem? = nil, primary: ActionBarItem? = nil, actions: ActionBarItem? = nil
+    ) {
         self.leading = leading
+        self.note = note
         self.secondary = secondary
         self.primary = primary
         self.actions = actions
@@ -42,6 +50,12 @@ public struct ActionBar: View {
         HStack(spacing: TFSpace.sm) {
             leadingView
             Spacer(minLength: TFSpace.sm)
+            if let note {
+                Text(note)
+                    .font(TFFont.footnote)
+                    .foregroundStyle(TFColor.textPrimary)
+                    .lineLimit(1)
+            }
             let trailing = [secondary.map { (item: $0, isPrimary: false) }, primary.map { (item: $0, isPrimary: true) }, actions.map { (item: $0, isPrimary: false) }]
                 .compactMap { $0 }
             ForEach(Array(trailing.enumerated()), id: \.offset) { index, entry in
@@ -115,9 +129,11 @@ public struct ActionBar: View {
             .padding(.trailing, 6)
             .frame(height: 28)
             .background(TFColor.settingsFill, in: RoundedRectangle(cornerRadius: TFRadius.md, style: .continuous))
+            .opacity(item.isEnabled ? 1 : 0.4)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .disabled(!item.isEnabled)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(item.title)
         .accessibilityHint(KeyHint.spokenName(KeyHint.keys(item.keys)))
@@ -156,6 +172,12 @@ public struct ActionBar: View {
         )
         ActionBar(
             leading: .status(systemImage: "wifi.slash", text: "Offline since 8:01."),
+            actions: ActionBarItem("Actions", keys: "⌘K") {}
+        )
+        ActionBar(
+            leading: .app("Run with AI"),
+            note: "Manual, uses credits",
+            primary: ActionBarItem("Start", keys: "⌘↩", isEnabled: false) {},
             actions: ActionBarItem("Actions", keys: "⌘K") {}
         )
     }

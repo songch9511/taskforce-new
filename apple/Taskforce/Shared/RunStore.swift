@@ -305,10 +305,12 @@ final class RunStore {
     }
 
     /// 그 할 일들의 run · 최신 run의 단계 · 초안을 읽고, 그 할 일들에서 움직이던 run이 멈췄으면 알린다.
-    /// 전과 뒤를 같은 할 일 목록으로 견준다: 읽는 사이 지켜보는 할 일이 바뀌어도(`watch`) 거짓 끝남을 알리지 않는다. 읽지 못했으면 false
+    /// 전과 뒤를 같은 할 일 목록으로 견준다: 읽는 사이 지켜보는 할 일이 바뀌어도(`watch`) 거짓 끝남을 알리지 않는다. 읽지 못했으면 false.
+    /// `generation`: 부른 쪽이 먼저 잡은 세대 (멈추기). 그사이 계정이 떠났으면 읽지도 쓰지도 않는다
     @discardableResult
-    private func refresh(actionIDs ids: [UUID]) async -> Bool {
-        let generation = generation
+    private func refresh(actionIDs ids: [UUID], generation: Int? = nil) async -> Bool {
+        let generation = generation ?? self.generation
+        guard generation == self.generation else { return false }
         let before = Set(busyRuns(in: ids).map(\.id))
         guard let fresh = try? await services.reads.latestRuns(actionIDs: ids, limit: Self.runLimit(ids.count)),
               generation == self.generation
@@ -401,7 +403,7 @@ final class RunStore {
 
     private func sendStops(actionID: UUID, generation: Int) async -> Bool {
         // 먼저 새로 읽는다: 그사이 끝난 run이면 끝남을 알린다(/now · credits). 읽지 못하면 아는 run으로 멈춘다
-        await refresh(actionIDs: [actionID])
+        await refresh(actionIDs: [actionID], generation: generation)
         guard generation == self.generation else { return false }
         let targets = stopTargets(for: actionID)
         var allSent = true
@@ -449,6 +451,16 @@ final class RunStore {
             guard generation == self.generation else { return .cancelled }
             return .failed(error.userMessage)
         }
+    }
+
+    /// M8 `Use` 칩: 이 할 일의 근거 원문 중 초안 자료로 보낼 수 있는 것 (`DraftSources`). 못 읽었거나 계정이 바뀌었으면 nil
+    func draftSources(actionID: UUID) async -> [DraftSource]? {
+        #if DEBUG
+        if sampleMode { return SampleRuns.draftSources }
+        #endif
+        let generation = generation
+        guard let detail = try? await services.reads.actionDetail(id: actionID), generation == self.generation else { return nil }
+        return DraftSources.make(evidence: detail.evidence, sources: detail.sources)
     }
 
     /// 서버가 돌려준 run으로 바꾼다 (상세에서 읽지 않은 run이면 앞에 넣는다)

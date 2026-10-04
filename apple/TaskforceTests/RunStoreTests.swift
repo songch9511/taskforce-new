@@ -239,14 +239,18 @@ struct RunStoreTests {
         harness.store.watch([])
     }
 
-    /// 멈춘 뒤 뒤에서 다시 읽기 전에 계정이 떠나면 비운 저장소를 건드리지 않는다
+    /// 멈춘 뒤 뒤에서 다시 읽는 중에 계정이 떠나면 비운 저장소를 건드리지 않는다 (늦게 온 credits를 버린다)
     @Test func signOutRightAfterStopLeavesTheStoreCleared() async throws {
         let harness = try await RunHarness.make()
         await harness.store.loadCredits()
         await harness.router.set(runs: [Self.runRow(id: 1, state: "running")])
         await harness.router.set(stopRun: .init(status: 200, body: #"{"run":\#(Self.runRow(id: 1, state: "stopped"))}"#))
+        // 멈춘 뒤의 credits 다시 읽기를 붙잡아 둔 채로 로그아웃한다
+        await harness.router.holdCredits()
         #expect(await harness.store.stop(actionID: action))
+        await harness.waitUntil { await harness.router.hasHeldCredits() }
         harness.session.apply(event: .signedOut, session: nil)
+        await harness.router.releaseCredits()
         try await Task.sleep(for: .milliseconds(300))
         #expect(harness.store.credits == .unknown)
         #expect(!harness.store.creditsFailed)

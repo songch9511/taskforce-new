@@ -8,10 +8,13 @@ import SwiftUI
 public struct LaneCard: View {
     public struct Action {
         let title: String
+        /// 키보드로 옮겨 온 버튼 (Mac 상세 Tab · →, ↩로 누른다): fill/accent 링
+        let isFocused: Bool
         let perform: () -> Void
 
-        public init(_ title: String, perform: @escaping () -> Void) {
+        public init(_ title: String, isFocused: Bool = false, perform: @escaping () -> Void) {
             self.title = title
+            self.isFocused = isFocused
             self.perform = perform
         }
     }
@@ -56,6 +59,14 @@ public struct LaneCard: View {
                 if let action {
                     QuietButton(action.title, size: .small, action: action.perform)
                         .fixedSize()
+                        // 포커스 링: 입력칸 포커스와 같은 fill/accent (bg/elevated 위 3:1, `ContrastTests.textFieldBoundary`)
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                .inset(by: -3)
+                                .strokeBorder(TFColor.fillAccent, lineWidth: 2)
+                                .opacity(action.isFocused ? 1 : 0)
+                        }
+                        .accessibilityAddTraits(action.isFocused ? .isSelected : [])
                 }
             }
             .padding(EdgeInsets(top: 10, leading: 14, bottom: 10, trailing: TFSpace.md))

@@ -45,8 +45,9 @@ struct LauncherRootView: View {
             }
         }
         .onChange(of: model.focusRequest, initial: true) { searchFocused = true }
-        // 줄 고르기 · 기한 고르기에서 돌아오면 다시 입력창으로
+        // 줄 고르기 · 기한 고르기 · Run with AI · 초안에서 돌아오면 다시 입력창으로
         .onChange(of: inputLocked) { _, locked in if !locked { searchFocused = true } }
+        .onChange(of: model.isSubScreen) { _, sub in if !sub { searchFocused = true } }
         // Realtime · 다시 불러오기 · 범위 · 펼침으로 목록이 바뀌어도 고르던 행을 그대로
         .onChange(of: model.items.map(\.id)) { model.reconcileSelection() }
         // 고른 할 일이 바뀌면 바뀜 점 · seen (화살표로 지나가기 포함)
@@ -65,6 +66,19 @@ struct LauncherRootView: View {
         }
         .onChange(of: model.changes.revision) {
             Task { await model.now?.load() }
+            // 초안 receipt가 Action을 바꾼다: 보이는 할 일의 run · 끝나지 않은 run도 다시 읽는다
+            Task { await model.runs?.actionsChanged() }
+        }
+        // 상세에 보이는 할 일의 run 상태를 지켜본다 (움직이는 run이 있을 때만 폴링, 화살표로 빠르게 지나갈 때는 잠깐 기다린다).
+        // 런처가 숨으면 그만 본다
+        .task(id: model.runSubject) {
+            guard let id = model.runSubject else {
+                model.runs?.watch([])
+                return
+            }
+            try? await Task.sleep(for: .milliseconds(120))
+            guard !Task.isCancelled else { return }
+            model.runs?.watch([id])
         }
         // 연결이 동기화 중이면 런처가 떠 있는 동안 몇 초마다 연결을 다시 읽고, 끝나면 지금 할 일을 다시 불러온다
         .task(id: model.isShown && model.account?.anySyncing == true) {
@@ -98,8 +112,12 @@ struct LauncherRootView: View {
             switch model.bodyState {
             case .list:
                 HStack(spacing: 0) {
+                    // Run with AI · 초안: 목록은 흐리게 두고 누르지 않는다 (Figma M8 List viewport 40%)
                     LauncherListPane(model: model)
                         .frame(width: 300)
+                        .opacity(model.isSubScreen ? 0.4 : 1)
+                        .allowsHitTesting(!model.isSubScreen)
+                        .accessibilityHidden(model.isSubScreen)
                     TFColor.settingsLine.frame(width: 1)
                     LauncherDetailPane(model: model)
                 }
@@ -163,6 +181,9 @@ struct LauncherFlowView: View {
             LauncherSectionLabel("AI data")
             LauncherRow(title: "Allow AI processing to continue", selected: true, leading: .symbol("hand.raised"))
                 .onTapGesture { model.primary() }
+        case .runWithAI, .draft:
+            // 목록 | 상세 칸에 그린다 (`LauncherDetailPane`)
+            EmptyView()
         }
     }
 
