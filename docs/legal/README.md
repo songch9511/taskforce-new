@@ -31,7 +31,41 @@
 
 ### 게시 대기 (원본만 고침, 웹사이트에는 아직 없음)
 
-없음 (2026-10-02 베타 1.3으로 게시). 원본을 고치면 여기에 적고, 시행일 · 버전은 게시하는 날 정한다([self-review.md](self-review.md) "게시 전에 채울 값"). 웹사이트의 `scripts/sync-legal.mjs`는 `privacy.{ko,en}.md` · `terms.{ko,en}.md`와 `archive/`를 복사하므로, 고친 것은 모두 다음 판에 함께 나간다. 판을 바꿀 때마다 직전 게시본을 `archive/`에 남기고 17장 "변경 이력"에 링크를 더한다. 앱 안 알림용 버전 · 시행일(`src/lib/legal/policy.ts`)도 같이 바꾼다.
+원본을 고치면 여기에 적고, 시행일 · 버전은 게시하는 날 정한다([self-review.md](self-review.md) "게시 전에 채울 값"). 웹사이트의 `scripts/sync-legal.mjs`는 `privacy.{ko,en}.md` · `terms.{ko,en}.md`와 `archive/`를 복사하므로, 고친 것은 모두 다음 판에 함께 나간다. 판을 바꿀 때마다 직전 게시본을 `archive/`에 남기고 17장 "변경 이력"에 링크를 더한다. 앱 안 알림용 버전 · 시행일(`src/lib/legal/policy.ts`)도 같이 바꾼다.
+
+**D9a-1 (U2 내장 초안 · U1 기기 사본 · 동의 경로, 2026-10-03 초안, 사용자 결정 2026-10-03).** 지금 게시본은 베타 1.3(2026-10-02)이다. 아래는 원본만 고쳤고 웹사이트 · `policy.ts`는 그대로다. 근거 코드는 `origin/main` `c2f5305`(U2 PR1–PR7 병합, #69–#74 · #76)와 `0a71b2c`(U2 PR8 #75). **아래 게시 조건(실행의 글 지우기 PR · 앱 빌드)을 채운 뒤 게시하고(규칙 2의 예외 없음), U2를 운영에서 켜는 것은 그 게시 뒤다**(U2 PR8 켜기 순서의 첫 줄).
+
+| 고친 곳 | 내용 | 게시할 때 할 일 |
+|---|---|---|
+| 머리 · 17장 변경 이력 · 부칙 (한국어 · 영어) | 시행일 · 버전을 `{{시행일}}` · `{{버전}}`(영어 `{{effective date}}` · `{{version}}`)으로 비우고 17장에 다음 판 줄을 더했다. 게시 규칙 1에 따라 채우기 전에는 게시하지 않는다 | 게시하는 날 채운다(예: 베타 1.4). 1.3 줄에 "이전 버전 보기"(`/{ko,en}/privacy/beta-1.3`) 링크를 더한다 |
+| 한눈에 보기 · 2장 목적 표 · "원문 속 다른 사람의 정보" · 3장 Calendar의 쓰임 · 4장(머리 · 보내는 정보 · 동의와 철회) · 7장(원문 분석 공급자 행 · TypeSafe 행 · 거부 방법) · 8장 · 12장 · 15장 · 16장(법적 근거 · 제공 의무) | 새 처리 목적: 이용자가 시작한 할 일의 초안을 쓰고 앱에 저장한다(보내지 않음). 보내는 것 = 요청, 할 일의 제목 · 상태 · 담당 · 기한 · 상대, 근거 인용과 앞뒤 원문 발췌, 그 원문의 종류 · 제목 · 날짜 · 관련자, 이용자의 이름, 같은 요청의 앞선 초안 지시 · 제목. Slack 원문 · 인용은 빼고, Slack에서 온 할 일도 할 일 자체의 제목 · 상태 · 담당 · 기한 · 상대는 보낸다(`context.ts`). 초안은 받는 사람에게 보내지 않는다(외부 단계 없음). 받는 곳은 원문 분석과 같은 모델 · 공급자(`llmConfigFromEnv`, Fireworks · Together · DeepInfra, ZDR)라 새 받는 곳은 없다. 동의 없으면 쓰지 않고 철회하면 다음 AI 요청 전에 멈춘다(`POST /api/v1/runs` 409 · `withConsentGate`). 베타 동안 회사가 켠 계정만(`execution_actors`) | 아래 "D9a-1을 게시할 때" |
+| 1장 표(초안 · 실행 기록 · AI 사용량 · 크레딧 행, 이용 기록) · 5장(보유 기간 표 · 계정 삭제 · 자동 삭제) · 11장 | 새 데이터 종류와 보유 기간(아래 "보유 기간"). 이용 기록에 원문 처리를 실패로 닫은 기록(`metric_events` `source_failed`, 서비스 이름 · 시각만, U2 PR2 #70)을 더했다: 이미 병합된 동작이라 지금 게시본이 코드보다 뒤에 있다 | 게시 조건(아래 대조표 D9a-1 줄)을 확인한다 |
+| 4장 받는 곳 · 5장 AI 요청 행 · 7장 OpenRouter 행 | OpenRouter는 요청 내용 없이 요청마다 사용 기록(모델 · 토큰 수 · 비용 등)을 남기고(OpenRouter 문서 "Data collection", 2026-10-03 확인), 회사는 초안 비용을 확정하려고 요청 식별자로 조회한다(`src/lib/ai/generation.ts`). 메타데이터 저장은 모든 AI 호출에 이미 있던 동작이고, 조회는 U2에서 처음 쓴다 | 넣는다 (사용자 결정 2026-10-03) |
+| 1장 표(기기에 저장하는 할 일 목록 행) · 5장(보유 기간 표 · 계정 삭제) | U1: 앱이 오프라인 화면을 위해 마지막 할 일 목록(할 일 제목 · 기한 · 상태만, 원문 · 근거 없음)을 계정마다 기기에 저장하고, 로그아웃하거나 계정을 지우면 지운다 | 게시 조건(대조표 "D9a-1 기기 사본" 줄) |
+| 4장 동의와 철회 · 11장 표 | U1: AI 데이터 동의 스위치가 설정 → Privacy & AI Data(Mac 설정 사이드바, iPhone도 같은 이름)로 옮긴다. 문안은 "앱 → 설정 → 개인정보 · AI 데이터" / "app → Settings → Privacy & AI Data" | 게시 조건(대조표 "D9a-1 동의 경로" 줄) |
+
+**보유 기간 (사용자 결정 2026-10-03: 권장대로).** 문안은 아래 "문안" 칸대로 썼다.
+
+| 데이터 | 지금 코드 | 문안 |
+|---|---|---|
+| 초안 본문 (`execution_artifacts.body`) | `retain_until` 기본 `now() + 90 days`, `purge_expired_artifacts()`가 본문만 비운다. 매일 retention cron이 부른다(U2 PR8 #75, `0a71b2c`) | 저장한 뒤 90일 |
+| 초안 실행의 글: 요청(`execution_runs.request`, 2,000자까지) · 계획이 준 지시(`execution_steps.args.brief`) · 받는 사람 후보(`receipt.to`) · 되묻는 질문(`receipt.question`) | `main`에는 지우는 코드가 없다. 별도 PR(브랜치 `claude/run-text-retention`, 마이그레이션 `20261024…`)이 구현한다 | 저장한 뒤 90일 (초안 본문과 같이). 그때 초안 실행이 끝나지 않았으면 끝나는 대로 지운다(사용자 결정 2026-10-03). **그 PR이 병합되고 운영 DB에 적용된 뒤에 게시한다.** 그 PR(#78)이 다루는 것: `execution_steps_replan` 트리거가 끝난 단계의 `args` 변경을 막는다(`plan is frozen`, `receipt`는 대상이 아님), 끝나지 않은 run(크레딧 · 실행 주체 · 차단 hold)의 요청을 지우면 계획 단계가 깨지므로 끝난 run만 지운다(run을 만든 시각이 90일 전보다 이른 끝난 run = 만든 뒤 90일과 끝난 때 중 늦은 쪽). 오래 막힌 run은 런북 9-4 "오래 막힌 run 정리"로 멈춘다 |
+| 초안 제목 · 모델 · 프롬프트 버전, 실행 기록(run · 단계 상태 · 결과 · 시각 · 오류 종류, `execution_events`) | 계정 삭제까지. 원장 · 원가가 run · 단계를 외래키(no action)로 가리켜 따로 지울 수 없다 | 계정 삭제까지 |
+| 초안 저장 기록 (receipt: 근거 · Claim 인용 "초안 저장: <제목>", 앱 링크, `artifact_created` 이벤트) | 근거 · Claim 인용은 계정 삭제까지. receipt 원문(kind `execution`)의 글은 `purge_expired_source_text`가 90일 뒤 비운다(같은 글이 인용에 남는다) | 계정 삭제까지 (다른 근거 인용과 같음) |
+| AI 사용량 (`execution_usage`: generation id · 모델 · 토큰 · 비용, 글 없음) | 계정 삭제까지 | 계정 삭제까지 |
+| 크레딧 (`credit_accounts` · `credit_ledger`: 지급 · 예약 · 정산 · 해제, 크레딧 수 · 요율 · 비용) | 계정 삭제까지, 더하기만(잔액 = 원장 합계) | 계정 삭제까지. 결제가 없어 법정 보존 의무는 없다. 유료화하면 다시 본다 |
+
+**D9a-1을 게시할 때 (순서대로).**
+
+1. 게시 조건 (규칙 2의 예외 없음, 사용자 결정 2026-10-03): 아래 대조표의 D9a-1 줄이 모두 끝났는지 본다. ① 초안 실행의 글 지우기 PR(`claude/run-text-retention`, 마이그레이션 `20261024…`)이 병합되고 운영 DB에 적용됐다(초안 본문 지우기는 U2 PR8 #75로 cron에 연결됨, 운영 배포 확인). ② 앱 빌드가 나왔다: 초안 시작 · 보기, 바뀐 동의 문구, 설정 → Privacy & AI Data의 동의 스위치, 계정마다 기기에 저장하는 할 일 목록과 로그아웃 · 계정 삭제 때 지우기(대조표 "D9a-1 앱" · "D9a-1 기기 사본" · "D9a-1 동의 경로" 줄). U2를 운영에서 켜는 것도 이 게시 뒤다.
+2. 운영 계정이 모두 운영자 것인지 개수만 센다: 운영자 계정 id 목록 밖의 `auth.users` 수(`select count(*) …`, 행 내용은 보지 않는다). **0이면** 런북 7장 8번의 "current만 바꾸기"(게시일 = 시행일, 1.1 · 1.2 · 1.3과 같은 판단). **0이 아니면** 수집 항목 · 목적이 늘어나는 변경이라 `upcoming`에 두고 30일 전에 알린다(17장, 시행 예정 판의 버전 주소를 웹사이트가 먼저 내놓아야 한다).
+3. 머리 · 17장 · 부칙의 `{{…}}`을 채운다. 게시돼 있는 1.3을 `archive/privacy.{ko,en}.beta-1.3.md`로 남기고(웹사이트 `main`의 `apps/website/content/legal/privacy.{ko,en}.md`와 글자까지 같은지 확인) 17장 1.3 줄에 보기 링크를 더한다.
+4. 웹사이트 `songch9511/taskforce`에서 `scripts/sync-legal.mjs` → Preview 확인 → **사용자 승인 뒤** Production(런북 7장). 확인: `/{ko,en}/privacy` 새 판, `/{ko,en}/privacy/beta-1.3` 보관본.
+5. `src/lib/legal/policy.ts`의 `current`(2에서 0이 아니면 `upcoming`) 버전 · 시행일을 바꾸고 같은 날 서버를 배포한다.
+6. 위 "게시 기록" 표에 한 줄을 더하고 이 D9a-1 문단과 표를 지운다.
+7. App Store 개인정보 라벨(`docs/go-live/app-store.md` 4장): 새 Apple 데이터 유형은 없다고 본다(초안 · 요청은 "Other User Content", 크레딧은 구매가 아니라 "Purchases" 아니오 그대로, AI 사용량 · 실행 기록은 앱 기능용 기록). 4장 표의 "무엇인가" 칸에 초안 · 초안 요청을 더한다. 기기에 저장하는 할 일 목록은 기기 밖으로 보내지 않아 새 항목이 아니다. App Store Connect의 답은 바꾸지 않는다(사용자 결정 2026-10-03: 새 유형 없음, 문구만).
+8. 앱 동의 문구(1의 게시 조건): `ConsentDetails`(`apple/Taskforce/Shared/AccountViews.swift`)와 `app-store.md` 5장 문안의 목적("To find your tasks") · 보내는 것에 초안 · 요청을 더하고, 철회 경로를 "Settings > Privacy & AI Data"로 바꾼다(지금은 "Account > AI data" · Mac "Settings > AI data"). 받는 곳은 같다. 운영자 계정만 쓰는 동안은 다시 동의를 받지 않고, 운영자 밖 계정을 `execution_actors`에 넣기 전에 바뀐 문안으로 다시 동의를 받는다(사용자 결정 2026-10-03).
+9. 처리방침 밖의 후속(이 PR에서 고치지 않음): 약관 제6조 3항("서비스는 할 일을 스스로 실행하지 않습니다")을 초안에 맞출지, Google 심사 문서(`docs/go-live/google-verification.md`)의 `gmail.readonly` 쓰임에 초안 쓰기를 더할지(B 제출 전), [self-review.md](self-review.md)에 쟁점(초안 속 다른 사람의 정보 · Gmail 내용의 초안 사용)을 적을지.
 
 Calendar · Meet 문장(Google PR 5b)은 Google 연결을 열 때 30일 전 고지(`src/lib/legal/policy.ts` `upcoming`)로 따로 낸다(2026-10-02 결정. 5장 Apple 문장을 5b와 한 판으로 내기로 한 2026-09-30 결정을 대신한다).
 
@@ -73,6 +107,15 @@ Calendar · Meet 문장(Google PR 5b)은 Google 연결을 열 때 30일 전 고�
 | 앱 메뉴: 계정 → 프로필 · AI data · Privacy Policy · 계정 삭제, 연결 → 연결 끊기 (11장 표) | `apple/Taskforce/iOS/AccountSheet.swift` · `apple/Taskforce/Shared/AccountViews.swift`에 프로필 · 연결(연결 끊기) · AI 동의 · 계정 삭제가 있다. Privacy Policy · Terms of Use 링크는 iPhone 계정 시트(`iOS/AccountSheet.swift`) · Mac 설정 · 로그인 화면(`LegalLinksRow`, `apple/Taskforce/Shared/AccountDeletion.swift`)에 있다 | 구현됨 (2026-09-30 코드 확인) | — (2026-09-30 앱의 동의 메뉴 · 동의 화면 제목 · Mac 설정 탭을 "AI processing"에서 "AI data"로 바꿔 처리방침 4장 · 7장 · 11장의 "AI 데이터" · "AI data"와 `docs/go-live/app-store.md`에 맞췄다. 이 이름이 든 앱 빌드부터 적용) |
 | 물어보기에서 질문을 AI로 보냄 | `src/lib/pipeline/ask.ts` (질문 · 답은 저장하지 않는다). 속도 제한은 `rate_limit_events` · `take_rate_limit`(20261005000000, `ASK_LIMIT` 10분 20번)이 맡는다. `ask_requests` 표는 없다 | 구현됨 | — |
 | 문의 메일 90일 안 삭제 · 원문 열람 기록 · 운영 계정 2단계 인증 | 운영 규칙 (코드 아님) | 사용자가 지키기로 함 (2026-09-29 게시) | 열람 기록은 날짜 · 대상 · 이유 · 동의 여부를 적는 표 하나로 시작([internal-plan.md](internal-plan.md)). 2단계 인증은 runbook I12 |
+| D9a-1 초안: 이용자가 시작하면 할 일 · 근거 발췌(Slack 원문 · 인용 제외, Slack에서 온 할 일도 할 일 자체의 필드는 보냄)를 원문 분석과 같은 모델 · 공급자로 보내 초안을 쓰고 앱에 저장만 함(받는 사람에게 보내지 않음). 동의 없으면 쓰지 않고 철회하면 다음 AI 요청 전에 멈춤. 베타 동안 회사가 켠 계정만 (한눈에 보기 · 2장 · 3장 · 4장 · 7장 · 12장 · 15장 · 16장) | `POST /api/v1/runs`(플래그 `EXECUTION_ENABLED` → `execution_actors` → 전체 스위치 → 동의 409 → 열린 내 Action), `src/lib/execution/material.ts` · `context.ts`(`isSlackSource`, receipt 제외, 근거 구절 앞뒤 발췌), `plan.ts` · `draft.ts`(요청 · `user.name` · 같은 run의 앞선 초안 brief · title), `wake.ts` `llmConfigFromEnv()` → `completeJson`(`LLM_PROVIDERS` 기본 Fireworks · Together · DeepInfra, `providerRouting` ZDR · 학습 금지), `executor.ts` `withConsentGate`(모델 부르기 직전마다). 외부 단계는 준비도 부르지도 않음(`docs/EXECUTION.md` 13장). 임베딩 · Jev는 부르지 않음 | 구현됨 (U2 PR3–PR7, 운영은 플래그 꺼짐 · global 막힘) | 이 문장을 게시한 뒤에 U2를 켠다(U2 PR8 켜기 순서) |
+| D9a-1 초안 본문 · 초안 실행의 글(요청 · 지시 · 받는 사람 후보 · 되묻는 질문)은 저장한 뒤 90일에 지움(그때 초안 실행이 끝나지 않았으면 실행의 글은 끝나는 대로), 제목 · 실행 기록은 남음 (2장 · 5장) | `execution_artifacts.retain_until` 기본 90일 · `purge_expired_artifacts()`(본문만 비우고 `body_purged_at`, `20261022000000`), `/api/cron/retention`이 매일 맨 먼저 부름(U2 PR8 #75). 실행의 글(`execution_runs.request` · `execution_steps.args.brief` · `receipt.to` · `receipt.question`)을 지우는 코드는 `main`에 없음 | **일부 구현**: 초안 본문은 구현됨, 실행의 글은 별도 PR(`claude/run-text-retention`) | 실행의 글 지우기 PR(마이그레이션 `20261024…`, 위 "보유 기간")이 병합되고 운영 DB에 적용된 뒤 게시. #75 운영 배포 확인 |
+| D9a-1 실행 기록 · AI 사용량 · 크레딧 원장은 계정 삭제까지, 계정을 지우면 함께 지움, 구매 · 결제 없음 (1장 · 5장) | `20261021000000` · `20261022000000` · `20261023000000`: 사용자 행을 담는 새 표가 모두 `auth.users`에 `on delete cascade`(`execution_events`는 run · 단계 복합 FK cascade), 원장 · 원가의 run · 단계 FK는 no action(계정 삭제가 아니면 지울 수 없음), 원장은 더하기만, 지급은 `grant_credits`(운영자 db query)뿐이고 결제 경로가 없음. `tests/db/account-deletion.test.ts`가 새 표를 확인 | 구현됨 | 운영 DB에 세 마이그레이션이 적용됐는지 확인 |
+| D9a-1 초안 저장 기록(실행 receipt) = 근거 "초안 저장: <초안 제목>" + 앱 안 초안 링크, 계정 삭제까지 (1장 · 5장) | `write_execution_receipt`(`20261023000000`), `src/lib/execution/receipt.ts`(제목 200자, 본문 · 원문 · 요청은 담지 않음, 링크 `taskforce://artifacts/<id>`). receipt 원문 글은 `purge_expired_source_text`가 90일 뒤 비우고 근거 · Claim 인용은 남음 | 구현됨 | — |
+| D9a-1 OpenRouter는 요청마다 내용 없는 사용 기록을 남기고 회사가 요청 식별자로 조회 (4장 · 5장 · 7장) | OpenRouter 문서 "Data collection"(요청 내용은 저장하지 않고 토큰 수 · 지연 등 메타데이터는 요청마다 저장). `src/lib/ai/generation.ts`(generation id만 보내고 모델 · 공급자 · 토큰 수 · 비용만 받음), sweep `reconcile_usage` | 확인됨 (2026-10-03 문서) | — |
+| D9a-1 이용 기록: 원문 처리를 실패로 닫은 기록(서비스 이름 · 시각만) (1장) | `metric_events` `source_failed`(`20261020000000`, `provider` 열은 `20261015000000`), `src/lib/sources/process.ts` · `retry.ts`, 원문 · 까닭 글 없음 | 구현됨 (U2 PR2 #70) | 운영 DB 적용 확인 |
+| D9a-1 앱: 초안을 시작 · 보여 주는 화면, 동의 화면이 초안 목적 · 요청을 보여 줌 (한눈에 보기 · 1장 · 2장 · 4장 · 7장 · 11장 · 12장 · 15장) | 서버는 `POST /api/v1/runs` · 앱 RLS 읽기(`contract.ts` `artifactSchema`)를 갖췄지만 앱에는 run · 초안 화면이 없다(`ModelDecodingTests` fixture뿐). 동의 화면 `ConsentDetails`(`apple/Taskforce/Shared/AccountViews.swift`) · `app-store.md` 5장 문안은 목적을 "To find your tasks"로만 적고 초안 요청이 없다(위 "동의 전에는…" 줄의 게시 조건과 같은 문제) | 앱 미구현 | 앱 빌드(초안 시작 · 보기 + 바뀐 동의 문구) 뒤에 게시한다(규칙 2의 예외 없음, 사용자 결정 2026-10-03). 운영자 밖 계정을 `execution_actors`에 넣기 전에 바뀐 문안으로 다시 동의를 받는다 |
+| D9a-1 기기 사본: 앱이 오프라인 화면을 위해 마지막 할 일 목록(할 일 제목 · 기한 · 상태만, 원문 · 근거 없음)을 계정마다 기기에 저장하고 로그아웃하거나 계정을 삭제하면 그 기기에서 지움 (1장 · 5장) | U1 앱 작업(이 저장소에 아직 없음) | 앱 미구현 | U1 앱 빌드 뒤 게시. 확인할 것: 저장 항목이 제목 · 기한 · 상태뿐인지, 계정마다 따로인지, 로그아웃 · 계정 삭제 때 지우는지. 계정을 다른 기기에서 지웠을 때 이 기기의 사본이 언제 지워지는지(세션 만료를 받으면 지우는지) 확인해, 아니면 5장에 "다른 기기는 그 기기에서 로그아웃할 때"를 적는다 |
+| D9a-1 동의 경로: AI 데이터 동의를 앱 → 설정 → Privacy & AI Data에서 바꿈 (4장 · 11장) | U1 앱 작업: Mac 설정 사이드바 · iPhone 같은 이름. 지금 앱은 iPhone "Account > AI data" · Mac "Settings > AI data"(위 "앱 메뉴" 줄 · `ConsentDetails`) | 앱 미구현 | 그 경로를 담은 앱 빌드 뒤 게시. `ConsentDetails`의 "Withdraw anytime" 줄과 `app-store.md` 5장도 같은 경로로 |
 
 ## 결정 필요
 
