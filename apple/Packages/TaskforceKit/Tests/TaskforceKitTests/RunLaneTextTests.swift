@@ -55,17 +55,18 @@ struct RunLaneTextTests {
         #expect(text == RunLaneText(title: "Writing draft", subtitle: "Started 13:00"))
     }
 
-    /// M12 크레딧 부족 문장, 다른 막힘은 후보
+    /// M12 크레딧 부족 문장, 다른 막힘은 후보 (Mac 갈래와 같은 말, iPhone은 `Run with AI`라는 말을 쓰지 않는다)
     @Test(arguments: [
-        (RunHoldReason.credit, "Not enough credits. New paid steps are paused."),
-        (.needsConnection, "Waiting for a connection."),
-        (.blocked, "New steps are on hold."),
-        (.actor, "New steps are on hold."),
-        (.unknown, "New steps are on hold."),
+        (RunHoldReason.credit, "Draft paused", "Not enough credits. New paid steps are paused." as String?),
+        (.needsConnection, "Paused", "Needs a connection to continue."),
+        (.blocked, "Paused", "New steps are paused for now."),
+        (.actor, "Paused", "New steps are paused for now."),
+        (.unknown, "Paused", nil),
     ])
-    func paused(_ hold: RunHoldReason, _ subtitle: String) throws {
+    func paused(_ hold: RunHoldReason, _ title: String, _ subtitle: String?) throws {
         let text = try #require(laneText(RunLane.state(run: F.run(.running, hold: hold), steps: [], artifacts: [])))
-        #expect(text == RunLaneText(title: "Paused", subtitle: subtitle))
+        #expect(text == RunLaneText(title: title, subtitle: subtitle))
+        #expect(!text.title.contains("Run with AI") && !(text.subtitle ?? "").contains("Run with AI"))
     }
 
     /// P9: 시각은 서버 `stopped_at` (어느 기기에서 멈췄든). 없으면 시각 없이, 부르던 단계가 남았으면 부제
@@ -97,40 +98,83 @@ struct RunLaneTextTests {
         #expect(purged.subtitle == "Question deleted after 90 days.")
     }
 
-    @Test(arguments: [("gmail.send", "Connect Gmail to continue." as String?), ("slack.post", "Connect Slack to continue."), ("fax.send", nil)])
-    func needsConnection(_ capability: String, _ subtitle: String?) throws {
+    @Test(arguments: [
+        ("gmail.send", "Connect Gmail to continue."), ("calendar.write", "Connect Google Calendar to continue."),
+        ("fax.send", "Connect a service to continue."),
+    ])
+    func needsConnection(_ capability: String, _ subtitle: String) throws {
         let step = F.step(1, .plan, .called, StepReceipt(decision: .needsConnection, capability: capability))
         let text = try #require(laneText(RunLane.state(run: F.run(.done, outcome: .needsConnection), steps: [step], artifacts: [])))
-        #expect(text == RunLaneText(title: "Connection needed", subtitle: subtitle))
+        #expect(text == RunLaneText(title: "Needs a connection", subtitle: subtitle))
     }
 
     @Test(arguments: [
-        ("consent", "AI processing was turned off." as String?), ("rejected", "The AI provider declined the request."),
-        ("retries_exhausted", "Stopped after several tries."), ("action_missing", "The task was deleted."), ("brand_new", nil),
+        ("consent", "AI processing was turned off." as String?), ("rejected", "The AI provider declined this request."),
+        ("retries_exhausted", "Stopped after too many retries."), ("action_missing", "The task was deleted."), ("brand_new", nil),
     ])
     func failed(_ error: String, _ subtitle: String?) throws {
         let step = F.step(2, .draft, .failed, StepReceipt(error: error))
         let text = try #require(laneText(RunLane.state(run: F.run(.failed), steps: [F.plan, step], artifacts: [])))
-        #expect(text == RunLaneText(title: "Couldn’t finish the draft", subtitle: subtitle))
+        #expect(text == RunLaneText(title: "Couldn't finish the draft", subtitle: subtitle))
     }
 
     @Test func finishedWithoutDraft() throws {
         let done = F.step(1, .plan, .called, StepReceipt(decision: .done))
-        #expect(laneText(RunLane.state(run: F.run(.done), steps: [done], artifacts: [])) == RunLaneText(title: "Finished without a draft"))
+        #expect(laneText(RunLane.state(run: F.run(.done), steps: [done], artifacts: [])) == RunLaneText(title: "No draft needed"))
     }
 
-    /// 오늘은 시각만 (P9 `Stop requested 14:20.`), 어제는 `Yesterday 13:00`, 그 전은 날짜
+    /// 오늘은 시각만 (P9 `Stop requested 14:20.`, 상태 줄과 같은 "8:01" 모양), 그 전은 날짜 (Mac 갈래와 같다)
     @Test func clock() {
         #expect(RunLaneText.clock(F.start, now: now, timeZone: seoul) == "13:00")
-        #expect(RunLaneText.clock(F.start.addingTimeInterval(-86_400), now: now, timeZone: seoul) == "Yesterday 13:00")
+        #expect(RunLaneText.clock(F.start.addingTimeInterval(-5 * 3_600), now: now, timeZone: seoul) == "8:00")
+        #expect(RunLaneText.clock(F.start.addingTimeInterval(-86_400), now: now, timeZone: seoul) == "Oct 2")
         #expect(RunLaneText.clock(F.start.addingTimeInterval(-86_400 * 5), now: now, timeZone: seoul) == "Sep 28")
+        // 오늘이 아닌 멈춤은 날짜로 ("Stop requested Oct 2. No new steps will start.")
+        let lane = RunLane.state(run: F.run(.stopped, stoppedAt: F.start.addingTimeInterval(-86_400)), steps: [], artifacts: [])
+        #expect(laneText(lane)?.title == "Stop requested Oct 2. No new steps will start.")
     }
 }
 
-/// iPhone 행 누르기: 실행을 쓸 수 있는 계정만 상세, 나머지는 U1 PR5b 그대로 근거 펼치기 (운영 회귀 0)
-struct PhoneRowTapTests {
-    @Test func detailOnlyWhenExecutionIsAvailable() {
-        #expect(PhoneHome.rowTap(executionAvailable: true) == .openDetail)
-        #expect(PhoneHome.rowTap(executionAvailable: false) == .expandSource)
+/// iPhone 상세의 원문: 실행 receipt(초안 저장 기록)는 원문 슬립 · `Open in <서비스>` · Show All에서 뺀다 (초안은 갈래 `View Draft`)
+struct ReceiptLinesTests {
+    @Test func receiptsAreNotSourceLines() {
+        let notion = UUID()
+        let receipt = UUID()
+        let original = EvidenceLine(
+            id: UUID(), quote: "금요일 데모는 제가 준비할게요.", sourceID: notion, sourceTitle: "제품 회의록", occurredAt: Date(timeIntervalSince1970: 100),
+            externalURL: URL(string: "https://www.notion.so/sample"), service: .notion
+        )
+        let saved = EvidenceLine(
+            id: UUID(), quote: "초안 저장: 데모 예상 질문", sourceID: receipt, sourceTitle: "초안", occurredAt: Date(timeIntervalSince1970: 200),
+            externalURL: URL(string: "taskforce://artifacts/77777777-7777-4777-8777-777777777777"), service: .manual(.execution)
+        )
+        // receipt가 가장 최근 근거여도 맨 앞 · 여는 링크는 원문
+        let digest = EvidenceDigest(lines: [original, saved])
+        #expect(digest.lead?.sourceID == receipt)
+        let sources = digest.withoutReceipts
+        #expect(sources.lines.map(\.sourceID) == [notion])
+        #expect(sources.lead?.sourceID == notion)
+        #expect(sources.openLink?.service == .notion)
+        #expect(EvidenceDigest(lines: [saved]).withoutReceipts.isEmpty)
+    }
+
+    /// 근거에서 만든 줄은 들어온 순서 그대로 둔다 (다시 줄 세우지 않는다): 원문 시각이 늦어도 먼저 들어온 근거가 위
+    @Test func keepsArrivalOrder() throws {
+        let rows = """
+        [{"id": "22222222-2222-4222-8222-000000000001", "kind": "doc", "title": "늦게 쓴 문서", "occurred_at": "2026-09-30T00:00:00+00:00",
+          "external_url": "https://www.notion.so/a", "created_at": "2026-09-30T00:00:00+00:00", "processing_status": "done"},
+         {"id": "22222222-2222-4222-8222-000000000002", "kind": "doc", "title": "먼저 쓴 문서", "occurred_at": "2026-09-01T00:00:00+00:00",
+          "external_url": "https://www.notion.so/b", "created_at": "2026-09-01T00:00:00+00:00", "processing_status": "done"}]
+        """
+        let decoded = try TaskforceJSON.decoder().decode([SourceSummary].self, from: Data(rows.utf8))
+        let sources = Dictionary(uniqueKeysWithValues: decoded.map { ($0.id, $0) })
+        func record(_ source: SourceSummary, _ quote: String, at seconds: TimeInterval) -> EvidenceRecord {
+            EvidenceRecord(id: UUID(), actionID: UUID(), sourceID: source.id, quote: quote, role: .created, createdAt: Date(timeIntervalSince1970: seconds))
+        }
+        // 늦게 쓴 문서의 근거가 먼저 들어왔다
+        let evidence = [record(decoded[0], "먼저 들어온 근거", at: 1_000), record(decoded[1], "나중에 들어온 근거", at: 2_000)]
+        let digest = EvidenceDigest(evidence: evidence, sources: sources)
+        #expect(digest.withoutReceipts.lines.map(\.quote) == digest.lines.map(\.quote))
+        #expect(digest.withoutReceipts.lead?.quote == digest.lead?.quote)
     }
 }

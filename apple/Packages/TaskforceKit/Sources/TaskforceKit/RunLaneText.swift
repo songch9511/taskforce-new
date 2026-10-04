@@ -1,6 +1,9 @@
 import Foundation
 
-/// Taskforce 갈래 카드의 글 (`RunLane` → 제목 · 부제 · `View Draft`). Mac 런처 상세 · iPhone 상세(P2 · P9)가 같이 쓴다.
+/// iPhone 상세의 Taskforce 갈래 글 (`RunLane` → 제목 · 부제 · `View Draft`, Figma P2 · P9).
+/// 문구는 Mac 런처 갈래(U2 Mac PR3 `LauncherLaneText`)와 같다. 다른 것은 둘뿐이다:
+/// - 멈춤: P9대로 시각을 문장에 넣는다 (`Stop requested 14:20. No new steps will start.`). Mac M17은 시각을 액션 바에 둔다
+/// - 실행 주체 밖으로 멈춤: iPhone에는 `Run with AI`라는 말을 쓰지 않는다 (iPhone은 run을 시작하지 않는다)
 /// Figma에 있는 문구: M12 `Not enough credits. New paid steps are paused.`, M17 · P9 `Stop requested 14:20. No new steps will start.`.
 /// 나머지는 후보 (U2 Mac 계획 PR3 표 · 열린 질문 9). 시각은 서버 값만 쓴다 (멈춘 시각 = `stopped_at`, 어느 기기에서 멈췄든).
 public struct RunLaneText: Equatable, Sendable {
@@ -18,7 +21,7 @@ public struct RunLaneText: Equatable, Sendable {
         self.draft = draft
     }
 
-    /// 멈추기를 보낸 뒤 VoiceOver 알림
+    /// 멈추기를 보낸 뒤 VoiceOver 알림 (Mac과 같은 말)
     public static let stopAnnouncement = "Stop requested"
     /// 지켜보던 run이 초안을 냈을 때 VoiceOver 알림
     public static let draftAnnouncement = "Draft ready"
@@ -32,8 +35,8 @@ public struct RunLaneText: Equatable, Sendable {
         func clock(_ date: Date) -> String { Self.clock(date, now: now, timeZone: timeZone) }
         switch lane.state {
         case .none, .draftReady:
-            // `.none`이면서 보이는 갈래는 초안만 있는 경우다
-            guard let draft else { return RunLaneText(title: "Draft ready", spokenState: nil) }
+            // `.none`이면서 보이는 갈래는 초안만 있는 경우다. 제목은 초안 제목 (M1)
+            guard let draft else { return RunLaneText(title: "Draft ready") }
             let title = draft.title.trimmingCharacters(in: .whitespacesAndNewlines)
             let count = lane.drafts.count
             let label = count == 1 ? "AI draft" : "\(count) AI drafts"
@@ -43,49 +46,58 @@ public struct RunLaneText: Equatable, Sendable {
             )
         case .working:
             return RunLaneText(title: "Writing draft", subtitle: lane.run.map { "Started \(clock($0.createdAt))" }, draft: draft)
+        case .paused(.credit):
+            return RunLaneText(title: "Draft paused", subtitle: "Not enough credits. New paid steps are paused.", draft: draft)
         case .paused(let reason):
             return RunLaneText(title: "Paused", subtitle: pausedSubtitle(reason), draft: draft)
         case .needsInput(let question):
             return RunLaneText(title: "Taskforce has a question", subtitle: question ?? "Question deleted after 90 days.", draft: draft)
         case .needsConnection(let capability):
-            return RunLaneText(title: "Connection needed", subtitle: connectionSubtitle(capability), draft: draft)
+            return RunLaneText(title: "Needs a connection", subtitle: connectionSubtitle(capability), draft: draft)
         case .stopped(let finishing, let stoppedAt):
             let title = stoppedAt.map { "Stop requested \(clock($0)). No new steps will start." } ?? "Stopped. No new steps will start."
             return RunLaneText(title: title, subtitle: finishing ? "Finishing the current step." : nil, draft: draft)
         case .failed(let kind):
-            return RunLaneText(title: "Couldn’t finish the draft", subtitle: failureSubtitle(kind), draft: draft)
+            return RunLaneText(title: "Couldn't finish the draft", subtitle: failureSubtitle(kind), draft: draft)
         case .finishedWithoutDraft:
-            return RunLaneText(title: "Finished without a draft", draft: draft)
+            return RunLaneText(title: "No draft needed", draft: draft)
         }
     }
 
-    /// 갈래의 시각: 오늘이면 "14:20"(P9), 어제면 "Yesterday 14:20", 그 전이면 "Sep 30" (`WhenText`)
+    /// 갈래의 시각: 오늘이면 24시간제 "14:20" · "8:01" (`RefreshState.statusText`와 같은 모양), 아니면 "Oct 2" (Mac 갈래와 같다)
     public static func clock(_ date: Date, now: Date = Date(), timeZone: TimeZone = .current) -> String {
         let day = LocalDate(date: date, timeZone: timeZone)
         let today = LocalDate(date: now, timeZone: timeZone)
-        return day == today ? WhenText.time(date, timeZone: timeZone) : WhenText.label(date, now: now, timeZone: timeZone)
+        guard day == today else { return DueText.date(day, today: today) }
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = timeZone
+        let c = calendar.dateComponents([.hour, .minute], from: date)
+        return String(format: "%d:%02d", c.hour ?? 0, c.minute ?? 0)
     }
 
-    private static func pausedSubtitle(_ reason: RunHoldReason) -> String {
+    private static func pausedSubtitle(_ reason: RunHoldReason) -> String? {
         switch reason {
-        case .credit: "Not enough credits. New paid steps are paused."
-        case .needsConnection: "Waiting for a connection."
-        case .blocked, .actor, .unknown: "New steps are on hold."
+        case .blocked, .actor: "New steps are paused for now."
+        case .needsConnection: "Needs a connection to continue."
+        case .credit, .unknown: nil
         }
     }
 
-    /// 보내기에 필요한 연결 (`gmail.send` → Gmail). 모르는 서비스면 부제 없이
-    private static func connectionSubtitle(_ capability: String?) -> String? {
-        guard let service = capability?.split(separator: ".").first?.lowercased() else { return nil }
-        let names = ["gmail": "Gmail", "slack": "Slack", "notion": "Notion"]
-        return names[service].map { "Connect \($0) to continue." }
+    /// 보내기에 필요한 연결 (`gmail.send` → "Connect Gmail to continue.")
+    private static func connectionSubtitle(_ capability: String?) -> String {
+        let service = capability?.split(separator: ".").first.flatMap { serviceNames[$0.lowercased()] }
+        return service.map { "Connect \($0) to continue." } ?? "Connect a service to continue."
     }
+
+    private static let serviceNames = [
+        "gmail": "Gmail", "slack": "Slack", "notion": "Notion", "calendar": "Google Calendar", "google": "Google",
+    ]
 
     private static func failureSubtitle(_ kind: RunLane.FailureKind) -> String? {
         switch kind {
         case .consent: "AI processing was turned off."
-        case .rejected: "The AI provider declined the request."
-        case .retriesExhausted: "Stopped after several tries."
+        case .rejected: "The AI provider declined this request."
+        case .retriesExhausted: "Stopped after too many retries."
         case .actionMissing: "The task was deleted."
         case .other: nil
         }

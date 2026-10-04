@@ -157,9 +157,16 @@ struct HomeView: View {
         .sheet(isPresented: $promptingConsent) {
             ConsentPrompt()
         }
-        .messageAlert($store.message)
-        // 멈추기 실패 · 초안 링크를 못 찾음 (상세 · 초안 화면 위에서도 보인다)
-        .messageAlert($runs.message)
+        // 목록 쓰기 실패 · 멈추기 실패 · 초안 링크를 못 찾음 (상세 · 초안 화면 위에서도 보인다). 알림은 한 번에 하나라 한 곳에서 띄운다:
+        // 둘이 겹치면 목록 쪽을 먼저 보이고, 닫으면 둘 다 비운다
+        .messageAlert(Binding(
+            get: { store.message ?? runs.message },
+            set: { message in
+                guard message == nil else { return }
+                store.message = nil
+                runs.message = nil
+            }
+        ))
     }
 
     @ViewBuilder
@@ -667,7 +674,9 @@ struct HomeView: View {
     }
 
     /// 초안 링크: 읽어 둔 초안이나 RLS로 읽은 초안을 연다. 없으면 (다른 계정 · 지워진 행) "Draft not found."
+    /// 실행을 쓸 수 없는 계정(credits 404)이면 아무것도 하지 않는다 (이 PR 전과 같다). 아직 모르면(앱을 막 엶) 연다
     private func openDraft(_ id: UUID) async {
+        guard runs.credits != .unavailable else { return }
         switch await runs.draft(id: id) {
         case .found(let artifact): path.append(.draft(artifact))
         case .notFound: runs.message = ArtifactLink.notFoundMessage
@@ -927,6 +936,9 @@ struct HomeView: View {
             return
         }
         accountRoute = nil
+        // 상세 · 초안 · Show All 위에 있으면 목록으로 돌아와 그 할 일을 보인다
+        path = []
+        showingAllReviews = false
         Task {
             await store.load()
             guard let id = target.actionID, let found = store.sections.find(id) else { return }
