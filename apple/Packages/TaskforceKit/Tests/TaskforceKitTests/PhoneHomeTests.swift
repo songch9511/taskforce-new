@@ -21,6 +21,12 @@ struct PhoneHomeTests {
         #expect(PhoneHome.searchPrompt(count: 0, saved: true) == "Search saved tasks")
     }
 
+    /// 행 누르기: 실행을 쓸 수 있는 계정(credits 200)만 상세(P2), 나머지는 U1 PR5b 그대로 근거 펼치기 (운영 회귀 0)
+    @Test func rowTapOpensDetailOnlyWhenExecutionIsAvailable() {
+        #expect(PhoneHome.rowTap(executionAvailable: true) == .openDetail)
+        #expect(PhoneHome.rowTap(executionAvailable: false) == .expandSource)
+    }
+
     /// P1 Review 카드 `1 of 4`. 하나뿐이거나 자리가 없으면 보이지 않는다
     @Test func reviewPosition() {
         #expect(PhoneHome.reviewPosition(0, of: 4) == "1 of 4")

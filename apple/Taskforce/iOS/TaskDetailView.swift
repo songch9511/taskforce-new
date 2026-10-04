@@ -25,13 +25,15 @@ struct TaskDetailView: View {
     @Environment(\.dismiss) private var dismiss
     /// Mark Done을 누를 때마다 (가벼운 햅틱)
     @State private var toggles = 0
+    /// 이 화면이 길의 맨 위에 보이는 중 (초안 · 원문 전체를 밀면 false): 맨 위일 때만 지켜보고 목록으로 돌아간다
+    @State private var isFront = false
 
     var body: some View {
         let found = store.sections.find(actionID)
         ScrollView {
             if let found {
                 VStack(alignment: .leading, spacing: 22) {
-                    header(found.action, done: found.group == .doneToday)
+                    header(found.action, group: found.group)
                     lane
                     sources
                 }
@@ -50,31 +52,47 @@ struct TaskDetailView: View {
         }
         // 아래 Mark Done 막대: 글자가 커져도 내용이 막대 위에서 끝나게 막대 높이만큼 스크롤 영역을 줄인다 (Figma는 Content 아래 110 고정)
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            if let found { markDoneBar(done: found.group == .doneToday) }
+            // Review로 옮겨 간 할 일은 옮길 상태가 없다 (확정 · 넘기기는 목록 카드)
+            if let found, WorkState(found.group) != nil { markDoneBar(done: found.group == .doneToday) }
         }
         .sensoryFeedback(.impact(weight: .light), trigger: toggles)
         .task { await store.loadEvidence(actionID) }
-        // 앞에 있는 동안만 지켜본다 (뒤로 가거나 초안 화면을 밀면 멈춘다)
-        .onAppear { runs.watch(scenePhase == .active ? [actionID] : []) }
-        .onDisappear { runs.watch([]) }
-        .onChange(of: scenePhase) { _, phase in runs.watch(phase == .active ? [actionID] : []) }
+        // 맨 위에 보이고 앱이 앞에 있는 동안만 지켜본다 (뒤로 가거나 초안 화면을 밀면 멈춘다)
+        .onAppear {
+            isFront = true
+            follow()
+            // 가려진 사이 목록에서 사라졌으면 돌아간다
+            if store.sections.find(actionID) == nil { dismiss() }
+        }
+        .onDisappear {
+            isFront = false
+            follow()
+        }
+        .onChange(of: scenePhase) { follow() }
         // 지켜보던 run이 초안을 내면 VoiceOver로 알린다 (처음 읽은 값은 알리지 않는다)
         .onChange(of: runs.lane(for: actionID).state) { old, new in
             if new == .draftReady, old != .draftReady, old != .none {
                 AccessibilityNotification.Announcement(RunLaneText.draftAnnouncement).post()
             }
         }
-        // 다른 기기에서 지우거나 확정 요청을 넘겨 목록에서 사라지면 목록으로 돌아간다
+        // 다른 기기에서 지우거나 확정 요청을 넘겨 목록에서 사라지면 목록으로 돌아간다 (가려져 있으면 다시 보일 때)
         .onChange(of: found == nil) { _, gone in
-            if gone { dismiss() }
+            if gone, isFront { dismiss() }
         }
+    }
+
+    /// 지켜보기: 맨 위에 보이고 앱이 앞에 있을 때만 (`RunStore.watch`)
+    private func follow() {
+        runs.watch(isFront && scenePhase == .active ? [actionID] : [])
     }
 
     // MARK: 머리
 
-    /// 제목 전부(28 semibold, 자르지 않음) + 기한 (지났거나 오늘이면 status/overdue, 목록 행과 같은 기준)
-    private func header(_ action: ActionSummary, done: Bool) -> some View {
+    /// 제목 전부(28 semibold, 자르지 않음) + 기한 (지났거나 오늘이면 status/overdue, 목록 행과 같은 기준: 서버 이유가 있으면 그것)
+    private func header(_ action: ActionSummary, group: TaskGroup) -> some View {
         let today = DueDateFormat.today()
+        let done = group == .doneToday
+        let reasons = store.response?.now.first { $0.action.id == action.id }?.reasons ?? []
         return VStack(alignment: .leading, spacing: TFSpace.sm) {
             Text(action.title)
                 .font(.title.weight(.semibold))
@@ -85,7 +103,7 @@ struct TaskDetailView: View {
                 let text = DueText.short(due, today: today)
                 Text(text)
                     .font(TFFont.callout)
-                    .foregroundStyle(!done && DueText.isUrgent(due: due, reasons: [], today: today) ? TFColor.statusOverdue : TFColor.textSecondary)
+                    .foregroundStyle(!done && DueText.isUrgent(due: due, reasons: reasons, today: today) ? TFColor.statusOverdue : TFColor.textSecondary)
                     // "Due, Sat" (보이는 글자와 같은 값 + 이름: 이름만 바꾸면 접근성 감사가 글자가 잘렸다고 본다)
                     .accessibilityLabel("Due")
                     .accessibilityValue(text)
@@ -107,10 +125,10 @@ struct TaskDetailView: View {
 
     // MARK: 원문
 
-    /// `Source` + `Show All N ›`(원문 줄이 둘 이상일 때) + 가장 최근 근거의 슬립
+    /// `Source` + `Show All N ›`(원문 줄이 둘 이상일 때) + 가장 최근 근거의 슬립. 실행 receipt는 빼고 원문만 (초안은 갈래 `View Draft`)
     @ViewBuilder
     private var sources: some View {
-        if let digest = store.evidence[actionID] {
+        if let digest = store.evidence[actionID]?.withoutReceipts {
             if let lead = digest.lead {
                 VStack(alignment: .leading, spacing: 10) {
                     HStack(spacing: TFSpace.xs) {
@@ -152,7 +170,8 @@ struct TaskDetailView: View {
 
     // MARK: ··· · Mark Done
 
-    private var openLink: EvidenceLine? { store.evidence[actionID]?.openLink }
+    /// `Open in <서비스>`: receipt가 아닌 원문의 링크
+    private var openLink: EvidenceLine? { store.evidence[actionID]?.withoutReceipts.openLink }
     private var hasOpenRun: Bool { !runs.stopTargets(for: actionID).isEmpty }
     private var hasMenuItems: Bool { hasOpenRun || openLink?.externalURL != nil }
 
@@ -172,10 +191,11 @@ struct TaskDetailView: View {
         .accessibilityLabel("More")
     }
 
-    /// 그 할 일의 끝나지 않은 run을 모두 멈춘다 (확인 대화 없음: 다음 단계만 막아 되돌릴 일이 없다). 보냈으면 VoiceOver로 알린다
+    /// 그 할 일의 끝나지 않은 run을 모두 멈춘다 (확인 대화 없음: 다음 단계만 막아 되돌릴 일이 없다). 멈출 run이 있었고 보냈으면 VoiceOver로 알린다
     private func stop() {
+        let hadTargets = hasOpenRun
         Task {
-            if await runs.stop(actionID: actionID) {
+            if await runs.stop(actionID: actionID), hadTargets {
                 AccessibilityNotification.Announcement(RunLaneText.stopAnnouncement).post()
             }
         }
@@ -205,7 +225,7 @@ struct TaskDetailView: View {
     }
 }
 
-/// `Show All N`: 그 할 일의 원문 슬립 전부 (최근 것이 위). 원문 전체 · 묶음 보기(M3b)는 U5
+/// `Show All N`: 그 할 일의 원문 슬립 전부 (최근 것이 위, 실행 receipt는 빼고). 원문 전체 · 묶음 보기(M3b)는 U5
 struct TaskSourcesView: View {
     let actionID: UUID
 
@@ -213,7 +233,7 @@ struct TaskSourcesView: View {
     @Environment(\.openURL) private var openURL
 
     var body: some View {
-        let lines = Array((store.evidence[actionID]?.lines ?? []).reversed())
+        let lines = Array((store.evidence[actionID]?.withoutReceipts.lines ?? []).reversed())
         ScrollView {
             LazyVStack(alignment: .leading, spacing: TFSpace.md) {
                 ForEach(lines) { line in

@@ -66,6 +66,11 @@ public struct EvidenceDigest: Sendable, Hashable {
         self.lines = lines.sorted { ($0.occurredAt ?? .distantPast, $0.id.uuidString) < ($1.occurredAt ?? .distantPast, $1.id.uuidString) }
     }
 
+    /// 이미 정한 순서 그대로 (다시 줄 세우지 않는다)
+    private init(keeping lines: [EvidenceLine]) {
+        self.lines = lines
+    }
+
     public init(evidence: [EvidenceRecord], sources: [UUID: SourceSummary]) {
         // 같은 원문의 같은 구절은 한 번만. 같은 시각이면 원문 id · 구절 · 근거 id 순으로 정해 읽을 때마다 순서가 바뀌지 않게
         var seen = Set<String>()
@@ -104,6 +109,12 @@ public struct EvidenceDigest: Sendable, Hashable {
 
     /// Sources 묶음 머리의 겹친 로고 (처음 들어온 순서)
     public var services: [SourceService] { lines.map(\.service) }
+
+    /// 실행 receipt(초안 저장 기록, 원문 kind execution · 링크 `taskforce://artifacts/<id>`)를 뺀 근거.
+    /// receipt는 Taskforce의 말이라 원문 슬립(종이 면)에 두지 않고, 초안은 갈래 `View Draft`로 연다 (iPhone 상세 · 원문 전체)
+    public var withoutReceipts: EvidenceDigest {
+        EvidenceDigest(keeping: lines.filter { $0.service != .manual(.execution) })
+    }
 
     /// 할 일 행 ↩ · ⌘K Open source가 여는 근거 줄: 맨 앞 근거에 링크가 있으면 그것, 없으면 링크가 있는 가장 최근 줄. 없으면 nil
     public var openLink: EvidenceLine? {
