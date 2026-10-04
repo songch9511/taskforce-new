@@ -187,6 +187,42 @@ struct LauncherRunTests {
         #expect(model.laneFocusTarget == nil)
     }
 
+    /// 초안 Copy(⌘C · 막대): 제목 + 본문을 복사하고 `Copied`를 잠깐 보인 뒤 런처를 닫는다 (사용자 결정, Raycast Copy to Clipboard).
+    /// 본문을 지운 초안은 Copy가 없다
+    @Test(arguments: [false, true])
+    func copyDraftCopiesThenCloses(_ fromBar: Bool) async throws {
+        let harness = try await RunLauncherHarness.make(toDo: ["T1"])
+        let model = harness.model
+        let t1 = RunLauncherHarness.actionID("T1")
+        let pasteboard = NSPasteboard(name: NSPasteboard.Name("LauncherRunTests-\(UUID().uuidString)"))
+        defer { pasteboard.releaseGlobally() }
+        model.pasteboard = pasteboard
+        var closed = 0
+        model.close = { closed += 1 }
+        let run = RunSummary(id: UUID(), actionID: t1, state: .done, outcome: .draftReady, createdAt: Date())
+        let draft = Artifact(id: UUID(), runID: run.id, stepID: UUID(), actionID: t1, title: "회신 초안", body: "안녕하세요\n본문", retainUntil: Date(), createdAt: Date())
+        model.runs?.applySample(credits: .available(CreditsSummary(available: 100, reserved: 0), checkedAt: Date()), runs: [run], steps: [], drafts: [draft])
+        harness.select("T1")
+        let target = try #require(model.detailTarget)
+        model.openDraft(draft, for: target)
+        if fromBar {
+            model.performPrimary()
+        } else {
+            #expect(model.handleKey(.run(kVK_ANSI_C, [.command])))
+        }
+        #expect(pasteboard.string(forType: .string) == "회신 초안\n\n안녕하세요\n본문")
+        #expect(model.screen == .done("Copied"))
+        await harness.waitUntil { closed == 1 }
+
+        let purged = Artifact(id: UUID(), runID: run.id, stepID: UUID(), actionID: t1, title: "옛 초안", body: "", retainUntil: Date(),
+                              bodyPurgedAt: Date(), createdAt: Date())
+        model.openDraft(purged, for: target)
+        #expect(model.primaryAction == nil)
+        model.copyDraft()
+        #expect(model.screen == .draft(target, purged))
+        #expect(pasteboard.string(forType: .string) == "회신 초안\n\n안녕하세요\n본문")
+    }
+
     /// 초안 링크 (receipt 원문 슬립 · 앱 밖): 읽어서 초안 화면, 없으면 "Draft not found."
     @Test func artifactLinkOpensTheDraftOrSaysNotFound() async throws {
         let t1 = RunLauncherHarness.actionID("T1")

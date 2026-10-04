@@ -28,10 +28,17 @@ enum Clipboard {
         #if canImport(UIKit)
         UIPasteboard.general.string = text
         #elseif canImport(AppKit)
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(text, forType: .string)
+        copy(text, to: .general)
         #endif
     }
+
+    #if canImport(AppKit) && !canImport(UIKit)
+    /// 테스트는 이름 붙인 붙여넣기 판을 넘긴다 (사용자의 클립보드를 건드리지 않게)
+    static func copy(_ text: String, to pasteboard: NSPasteboard) {
+        pasteboard.clearContents()
+        pasteboard.setString(text, forType: .string)
+    }
+    #endif
 
     static var text: String? {
         #if canImport(UIKit)
