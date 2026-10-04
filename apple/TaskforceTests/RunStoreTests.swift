@@ -179,10 +179,78 @@ struct RunStoreTests {
         harness.store.watch([action])
         await harness.waitUntil { harness.store.lane(for: harness.action).state == .paused(.credit) }
         await harness.router.set(runs: [Self.runRow(id: 1, state: "done", outcome: "draft_ready")])
+        await harness.router.set(artifacts: [Self.artifactRow()])
         await harness.store.refreshActive()
         #expect(finished == 1)
         #expect(harness.store.lane(for: action).state == .draftReady)
+        #expect(harness.store.lane(for: action).drafts.map(\.title) == ["일정 변경 회신"])
         harness.store.watch([])
+    }
+
+    /// 다시 읽는 사이 지켜보는 할 일이 바뀌어도 거짓 끝남을 알리지 않고, 실제 끝남은 나중에 한 번 알린다
+    @Test(arguments: [false, true])
+    func watchChangeDuringRefreshDoesNotFakeAFinish(_ switchTask: Bool) async throws {
+        let harness = try await RunHarness.make()
+        await harness.store.loadCredits()
+        var finished = 0
+        harness.store.onRunsFinished = { finished += 1 }
+        await harness.router.set(runs: [Self.runRow(id: 1, state: "running")])
+        harness.store.watch([action])
+        await harness.waitUntil { harness.store.lane(for: harness.action).state == .working }
+
+        await harness.router.holdRuns()
+        let refresh = Task { await harness.store.refreshWatched() }
+        await harness.waitUntil { await harness.router.hasHeldRuns() }
+        harness.store.watch(switchTask ? [UUID()] : [])
+        await harness.router.releaseRuns()
+        await refresh.value
+        #expect(finished == 0)
+        #expect(harness.store.workingActionIDs == [action])
+
+        // 실제로 끝남: 다시 지켜보면 한 번 알린다
+        await harness.router.set(runs: [Self.runRow(id: 1, state: "done", outcome: "draft_ready")])
+        harness.store.watch([action])
+        await harness.waitUntil { finished == 1 }
+        #expect(harness.store.lane(for: action).state == .draftReady)
+        harness.store.watch([])
+        #expect(finished == 1)
+    }
+
+    /// 보지 못한 사이 끝난 run에 Stop(⌘. · Done · Delete 전): 보낼 것 없이 끝남을 한 번 알리고 credits를 다시 읽는다
+    @Test(arguments: [true, false])
+    func stopOnARunThatEndedUnseenReportsTheFinish(_ watching: Bool) async throws {
+        let harness = try await RunHarness.make()
+        await harness.store.loadCredits()
+        var finished = 0
+        harness.store.onRunsFinished = { finished += 1 }
+        await harness.router.set(runs: [Self.runRow(id: 1, state: "running")])
+        harness.store.watch([action])
+        await harness.waitUntil { harness.store.lane(for: harness.action).state == .working }
+        if !watching { harness.store.watch([]) }
+        await harness.router.set(runs: [Self.runRow(id: 1, state: "done", outcome: "draft_ready")])
+        let creditsBefore = await harness.router.paths().filter { $0 == "/api/v1/credits" }.count
+
+        #expect(await harness.store.stop(actionID: action))
+        #expect(finished == 1)
+        #expect(await harness.router.paths().filter { $0.hasSuffix("/stop") }.isEmpty)
+        #expect(await harness.router.paths().filter { $0 == "/api/v1/credits" }.count == creditsBefore + 1)
+        #expect(harness.store.workingActionIDs.isEmpty)
+        #expect(harness.store.lane(for: action).state == .draftReady)
+        harness.store.watch([])
+    }
+
+    /// 멈춘 뒤 뒤에서 다시 읽기 전에 계정이 떠나면 비운 저장소를 건드리지 않는다
+    @Test func signOutRightAfterStopLeavesTheStoreCleared() async throws {
+        let harness = try await RunHarness.make()
+        await harness.store.loadCredits()
+        await harness.router.set(runs: [Self.runRow(id: 1, state: "running")])
+        await harness.router.set(stopRun: .init(status: 200, body: #"{"run":\#(Self.runRow(id: 1, state: "stopped"))}"#))
+        #expect(await harness.store.stop(actionID: action))
+        harness.session.apply(event: .signedOut, session: nil)
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(harness.store.credits == .unknown)
+        #expect(!harness.store.creditsFailed)
+        #expect(harness.store.workingActionIDs.isEmpty)
     }
 
     /// 멈췄는데 결과를 받던 앞선 run의 옛 단계로 끝없이 폴링하지 않는다: 최신 run만 "결과 받는 중"을 본다
@@ -200,6 +268,12 @@ struct RunStoreTests {
         await harness.store.refreshWatched()
         #expect(finished == 1)
         #expect(harness.store.lane(for: action).run?.id.uuidString.lowercased() == Self.runID(2))
+        // 폴링이 실제로 멈춘다: 자던 폴링이 깨어 한 번 더 읽고 끝나면 run 읽기 수가 더 늘지 않는다
+        await harness.waitUntil(seconds: 5) { !harness.store.isPolling }
+        let reads = await harness.router.paths().filter { $0 == "/rest/v1/execution_runs" }.count
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(await harness.router.paths().filter { $0 == "/rest/v1/execution_runs" }.count == reads)
+        #expect(finished == 1)
         harness.store.watch([])
     }
 
@@ -322,8 +396,8 @@ private final class RunHarness {
         return RunHarness(store: RunStore(services: services, session: session, platform: platform), session: session, router: router)
     }
 
-    func waitUntil(_ condition: @MainActor () async -> Bool) async {
-        for _ in 0..<200 {
+    func waitUntil(seconds: Double = 2, _ condition: @MainActor () async -> Bool) async {
+        for _ in 0..<Int(seconds * 100) {
             if await condition() { return }
             try? await Task.sleep(for: .milliseconds(10))
         }
@@ -384,6 +458,8 @@ private actor RunStubRouter {
     private var stopRun = RunReply(status: 500, body: "{}")
     private var holdingCredits = false
     private var heldCredits: [CheckedContinuation<Void, Never>] = []
+    private var holdingRuns = false
+    private var heldRuns: [CheckedContinuation<Void, Never>] = []
     private var holdingCreate = false
     private var heldCreate: [CheckedContinuation<RunReply, Never>] = []
     private var recorded: [Recorded] = []
@@ -401,6 +477,14 @@ private actor RunStubRouter {
         holdingCredits = false
         heldCredits.forEach { $0.resume() }
         heldCredits = []
+    }
+
+    func holdRuns() { holdingRuns = true }
+    func hasHeldRuns() -> Bool { !heldRuns.isEmpty }
+    func releaseRuns() {
+        holdingRuns = false
+        heldRuns.forEach { $0.resume() }
+        heldRuns = []
     }
 
     func holdCreateRun() { holdingCreate = true }
@@ -434,6 +518,7 @@ private actor RunStubRouter {
         case _ where path.hasPrefix("/api/v1/runs/") && path.hasSuffix("/stop"):
             return stopRun
         case "/rest/v1/execution_runs":
+            if holdingRuns { await withCheckedContinuation { heldRuns.append($0) } }
             // PostgREST 필터 흉내: state=in.(…) · hold_reason=eq.…
             let states = query["state"].map { $0.dropFirst(4).dropLast().split(separator: ",").map(String.init) }
             let hold = query["hold_reason"].map { String($0.dropFirst(3)) }

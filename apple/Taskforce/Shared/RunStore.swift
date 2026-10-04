@@ -68,6 +68,8 @@ final class RunStore {
     private(set) var watched: Set<UUID> = []
     private var watchingSince = Date()
     private var pollTask: Task<Void, Never>?
+    /// 지켜보는 할 일을 다시 읽는 중인가 (폴링이 돌고 있음)
+    var isPolling: Bool { pollTask != nil }
     /// 폴링을 새로 시작할 때마다 오른다: 끝난 · 바뀐 폴링이 지금 폴링 상태를 건드리지 않게
     private var pollToken = 0
     /// 끝났다고 이미 알린 run (겹친 다시 읽기가 같은 끝남을 두 번 알리지 않게)
@@ -147,10 +149,13 @@ final class RunStore {
         return (first + second).filter { seen.insert($0.id).inserted }
     }
 
-    /// 지켜보는 할 일의 움직이는 run: 끝나지 않은 run 전부 + 할 일의 최신 run이 멈췄는데 부르던 단계가 남음 (`RunPolling.isBusy`).
+    /// 지켜보는 할 일의 움직이는 run (폴링 간격)
+    private var watchedBusyRuns: [RunSummary] { busyRuns(in: watched) }
+
+    /// 그 할 일들의 움직이는 run: 끝나지 않은 run 전부 + 할 일의 최신 run이 멈췄는데 부르던 단계가 남음 (`RunPolling.isBusy`).
     /// 단계는 최신 run 것만 다시 읽으므로, 앞선 run의 옛 단계로 "결과 받는 중"을 판단하지 않는다 (끝없이 폴링하지 않게)
-    private var watchedBusyRuns: [RunSummary] {
-        watched.flatMap { id -> [RunSummary] in
+    private func busyRuns(in actionIDs: some Sequence<UUID>) -> [RunSummary] {
+        actionIDs.flatMap { id -> [RunSummary] in
             let all = runs(for: id)
             let latest = RunSummary.latestByAction(all)[id]?.id
             return all.filter { $0.isOpen || ($0.id == latest && RunPolling.isBusy($0, steps: steps[$0.id] ?? [])) }
@@ -223,6 +228,8 @@ final class RunStore {
         if let heldRuns { paused = heldRuns }
         guard let openRuns else { return }
         active = openRuns
+        // 지켜보는 할 일에 이 목록으로만 아는 끝나지 않은 run이 있으면(다른 기기에서 시작) 폴링을 시작한다
+        if pollTask == nil, !watchedBusyRuns.isEmpty { restartPolling() }
         let openIDs = Set(openRuns.map(\.id))
         let stale = Set(runs.values.flatMap { $0 }.filter { $0.isOpen && !openIDs.contains($0.id) }.map(\.actionID))
         // 지켜보는 할 일은 끝남을 알아채는 `refreshWatched`로 (/now · credits를 다시 읽는다), 나머지만 여기서 바로잡는다
@@ -294,12 +301,18 @@ final class RunStore {
         if sampleMode { return }
         #endif
         guard isAvailable, !watched.isEmpty else { return }
+        await refresh(actionIDs: Array(watched))
+    }
+
+    /// 그 할 일들의 run · 최신 run의 단계 · 초안을 읽고, 그 할 일들에서 움직이던 run이 멈췄으면 알린다.
+    /// 전과 뒤를 같은 할 일 목록으로 견준다: 읽는 사이 지켜보는 할 일이 바뀌어도(`watch`) 거짓 끝남을 알리지 않는다. 읽지 못했으면 false
+    @discardableResult
+    private func refresh(actionIDs ids: [UUID]) async -> Bool {
         let generation = generation
-        let ids = Array(watched)
-        let before = Set(watchedBusyRuns.map(\.id))
+        let before = Set(busyRuns(in: ids).map(\.id))
         guard let fresh = try? await services.reads.latestRuns(actionIDs: ids, limit: Self.runLimit(ids.count)),
               generation == self.generation
-        else { return }
+        else { return false }
         let grouped = Dictionary(grouping: fresh, by: \.actionID)
         for id in ids { runs[id] = grouped[id] ?? [] }
         // 끝나지 않은 run 목록에서도 끝난 run을 뺀다 (범위 개수가 바로 맞게)
@@ -311,13 +324,14 @@ final class RunStore {
                 group.addTask { await self.loadDrafts(actionID: actionID, generation: generation) }
             }
         }
-        guard generation == self.generation else { return }
-        let ended = RunPolling.finished(before: before, after: Set(watchedBusyRuns.map(\.id))).subtracting(reportedFinished)
-        guard !ended.isEmpty else { return }
+        guard generation == self.generation else { return false }
+        let ended = RunPolling.finished(before: before, after: Set(busyRuns(in: ids).map(\.id))).subtracting(reportedFinished)
+        guard !ended.isEmpty else { return true }
         reportedFinished.formUnion(ended)
         onRunsFinished?()
         await loadCredits()
         await refreshActive()
+        return true
     }
 
     private func loadSteps(runID: UUID, generation: Int) async {
@@ -386,10 +400,9 @@ final class RunStore {
     }
 
     private func sendStops(actionID: UUID, generation: Int) async -> Bool {
-        if let fresh = try? await services.reads.latestRuns(actionIDs: [actionID]) {
-            guard generation == self.generation else { return false }
-            runs[actionID] = fresh
-        }
+        // 먼저 새로 읽는다: 그사이 끝난 run이면 끝남을 알린다(/now · credits). 읽지 못하면 아는 run으로 멈춘다
+        await refresh(actionIDs: [actionID])
+        guard generation == self.generation else { return false }
         let targets = stopTargets(for: actionID)
         var allSent = true
         for runID in targets {
@@ -409,8 +422,11 @@ final class RunStore {
         }
         guard !targets.isEmpty, generation == self.generation else { return allSent }
         if watched.contains(actionID) { restartPolling() }
+        // 뒤에서 다시 읽는다. 그사이 계정이 떠났으면 비운 저장소를 건드리지 않는다
         Task {
+            guard generation == self.generation else { return }
             await loadCredits()
+            guard generation == self.generation else { return }
             await refreshActive()
         }
         return allSent
