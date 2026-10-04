@@ -2,8 +2,8 @@
 
 Taskforce (AI project manager) · Beta
 
-- Effective date: 2026-10-04
-- Version: Beta 1.4
+- Effective date: 2026-10-02
+- Version: Beta 1.3
 - 한국어: [개인정보 처리방침](privacy.ko.md) (the Korean version prevails if the two differ)
 
 태스크포스 ("we", "us") operates the Taskforce app (iOS and macOS), its server, and the website (www.taskforcelabs.dev). We process your personal information under the Personal Information Protection Act of the Republic of Korea (PIPA) and other applicable laws.
@@ -11,8 +11,8 @@ This policy explains what we process, why, where, and for how long, and how you 
 
 ## At a glance
 
-- Taskforce reads meeting notes, messages, and email from the services **you connect** (Notion, Google, Slack) and finds the work you committed to. When you start a draft for that work (such as an email or document), it writes the draft and saves it in the app. We use your source text only for this. We do not send drafts to their recipients; you send them yourself.
-- To find that work and write drafts, we send source text to external AI models. **We do not send anything until you agree in the app.** AI requests go only to providers that keep no data (Zero Data Retention), and nothing is used to train any AI model.
+- Taskforce reads meeting notes, messages, and email from the services **you connect** (Notion, Google, Slack) and finds the work you committed to. We use your source text only for this.
+- To find that work, we send source text to external AI models. **We do not send anything until you agree in the app.** AI requests go only to providers that keep no data (Zero Data Retention), and nothing is used to train any AI model.
 - Your data is stored on servers and a database in Sydney, Australia. We keep no database backups, so **deleting your account deletes your stored data right away.**
 - We read your source text **only when you ask us to, or while responding to a security incident.** If we want to look at a source to analyze an extraction error, we ask for your consent first.
 - We do not sell your information or use it for advertising. The website has no analytics and no cookies.
@@ -44,17 +44,13 @@ This policy explains what we process, why, where, and for how long, and how you 
 | Category | Items | How we collect it |
 |---|---|---|
 | Account | Sign in with Apple: your Apple user identifier and email address (if you choose "Hide My Email", the relay address Apple creates). Sign in with Google: your Google account identifier, email address, name, profile photo URL, and, for Google Workspace accounts, your organization's domain (the values Google provides at sign-in; we do not store Google's tokens on our servers). Email sign-in: your email address. We do not receive your name from Apple | When you sign in |
-| Profile | Display name, aliases, additional email addresses | You enter them, or ask us to (name and aliases in the app) |
+| Profile | Display name, aliases, additional email addresses | You enter them in the app |
 | Connections | The connected service, workspace or account identifier and name (for Google, the account's email address), connection settings (names and identifiers of databases to include or skip; for Google, the permission scopes you granted and, for Gmail, counts of emails by reason), sync status (where the last import reached; for Gmail, the identifier and received time of recently imported or filtered emails), access tokens (stored encrypted) | When you connect a service in the app |
 | Source text from connected services | Meeting notes, documents, task database entries, calendar events, meeting transcripts, emails, and Slack messages, with their titles, times, original links, and the people involved (names and email addresses of senders, recipients, attendees, and speakers). See section 3 for each service | Through the connected service's API |
 | Pasted source text | Text you paste into the Mac launcher (such as meeting notes or messages) and its title (the first line) | You enter it in the app |
 | Information derived from source text | Task title, scope, due date, owner, counterpart name, evidence quotes, a record of who said what and when, change history, AI judgment records (candidates and probabilities), numeric vectors used to find similar tasks (embeddings) | When the server processes a source |
-| Drafts | What you asked for on a task; the title and body of the draft the AI wrote; and, while writing it, the instructions the AI set, suggested recipients (names and email addresses from the material), and questions it asks you back | When you start a draft in the app, and when the server writes it |
-| Run records | Status, outcome type, and times of each draft run and its steps; the model and prompt version used; error type; a record of status changes (no text); and the draft record attached to the task (the evidence line "초안 저장: [draft title]" ("Draft saved") and an in-app link to the draft) | When the server writes a draft |
-| AI usage and credits | For each AI request that writes a draft, OpenRouter's request identifier, the model, token counts, and cost (no text); credits we grant you and the records of reserving, using, and releasing them (credit amounts, rate, confirmed cost). We do not receive any purchase or payment information | When the server writes a draft, and when we grant credits |
-| Usage records | App opens; starting, completing, editing, deleting, or confirming a task; use of "Hand off to AI"; weekly question answers; times you reported a missing task; requests for services we do not support yet; records of completing a connection, of a connection expiring so that you need to reconnect, of sending a reconnect notice, and of closing a source as failed (service name and time only) | When you use the app, or when the server syncs your connections or processes a source |
+| Usage records | App opens; starting, completing, editing, deleting, or confirming a task; use of "Hand off to AI"; weekly question answers; times you reported a missing task; requests for services we do not support yet; records of completing a connection, of a connection expiring so that you need to reconnect, and of sending a reconnect notice (service name and time only) | When you use the app, or when the server syncs your connections |
 | Device and notifications | Push notification device token (APNs), platform (iOS or macOS), app version, last seen time | After the app receives notification permission |
-| Task list stored on your device | The last task list, so the app can show it until a fresh list arrives (for example, while you are offline) (task title, due date, and status only; no source text or evidence), kept separately for each account | When the app receives your tasks from the server (stored only on your device) |
 | Automatically generated | IP address and device information (User-Agent) of your sign-in session; server request records (path, time, status code, short error message) | Generated while you use the service |
 | Support | Your email address and message | When you email us |
 
@@ -69,10 +65,7 @@ This policy explains what we process, why, where, and for how long, and how you 
 |---|---|---|
 | Identify you, keep you signed in, delete your account | Account, automatically generated | Performance of our agreement with you (PIPA Art. 15(1)(4)) |
 | Find the work you committed to, merge it with existing tasks, and apply changes to due dates and scope | Connections, source text, derived information, profile | Performance of our agreement. Sending to external AI also requires your in-app consent (section 4). For other people's information inside your sources, see "Other people's information inside your sources" below |
-| Write a draft you start for a task (such as an email, document, or list of questions) and save it in the app (during the beta, only on accounts we enable) | Derived information (tasks and evidence quotes), excerpts of source text with their titles, dates, and people involved, your name, drafts, run records | Performance of our agreement (your request). Sending to external AI also requires your in-app consent (section 4) |
-| Count the credits a draft uses, and check AI costs | AI usage and credits | Counting credits: performance of our agreement; checking AI costs: our legitimate interest (PIPA Art. 15(1)(6)). We grant credits free of charge; there are no purchases or payments |
 | Send review requests, due-date notifications, and connection-expiry (reconnect) notices | Device and notifications | Performance of our agreement |
-| Show your last task list until a fresh list arrives (while you are offline or the list cannot be refreshed) | Task list stored on your device (on your device only) | Performance of our agreement |
 | Measure whether the service works (share of tasks the AI got wrong, share of missed tasks, return visits) | Usage records | Our legitimate interest in improving the service (PIPA Art. 15(1)(6)). Not used to profile you for advertising |
 | Fix errors and prevent abuse and security incidents | Automatically generated | Our legitimate interest; legal obligations |
 | Answer support requests | Support | Your request |
@@ -81,17 +74,17 @@ We do not use information beyond these purposes. If a purpose changes, we will t
 
 ### Other people's information inside your sources
 
-The email, notes, and messages you connect contain names, email addresses, and statements of people other than you (email senders, meeting attendees, Slack conversation partners, transcript speakers). We use this information only to find the work you are responsible for, to show who a commitment was made with, and to write the drafts you start for that work. We do not analyze these people separately or build profiles of them.
+The email, notes, and messages you connect contain names, email addresses, and statements of people other than you (email senders, meeting attendees, Slack conversation partners, transcript speakers). We use this information only to find the work you are responsible for and to show who a commitment was made with. We do not analyze these people separately or build profiles of them.
 
-- **Legal ground:** our legitimate interest (Personal Information Protection Act, Art. 15(1)(6)). It is finding your own commitments in work sources that you chose to connect and, when you ask, writing a draft for that work, and the processing is limited to that purpose.
-- **Minimization:** source body text, draft body text, what you asked for, and the draft instructions, suggested recipients, and questions are deleted 90 days after they are stored (if the draft run is still in progress at that point, what you asked for and the instructions, suggested recipients, and questions are deleted as soon as it ends). The people involved (names and email addresses), titles, evidence quotes, and draft titles remain with your tasks until you delete your account (section 5; anything from Slack is deleted when you disconnect). Anything sent to external AI goes only to providers that keep no data (section 4).
+- **Legal ground:** our legitimate interest (Personal Information Protection Act, Art. 15(1)(6)). It is finding your own commitments in work sources that you chose to connect, and the processing is limited to that purpose.
+- **Minimization:** source body text is deleted 90 days after it is stored. The people involved (names and email addresses), titles, and evidence quotes remain with your tasks until you delete your account (section 5; anything from Slack is deleted when you disconnect). Anything sent to external AI goes only to providers that keep no data (section 4).
 - **Their rights:** a person whose information appears in your sources can ask privacy@taskforcelabs.dev where we got it, why we process it, and about their right to stop the processing (Art. 20 of the same Act), and can ask us to stop processing or delete it. We act on such requests without delay, and where the law allows us to refuse, we will say why.
 
 ## 3. What we do with each connected service
 
 You connect each service yourself in the app's Connections screen and can disconnect at any time. We only **read** from connected services. We never send email or change events, documents, or messages.
 
-When you disconnect (app → Settings → Connections → Disconnect), the service's access token is deleted immediately, we ask the service to revoke it, and we stop reading from it. For Notion and Google (including Gmail), **source text already imported, and tasks created from it, remain.** Slack is different: when you disconnect or remove the app in Slack, **we delete the text we got from Slack right away and keep only your tasks** (see Slack below). To delete everything, delete your account (section 5).
+When you disconnect (app → Connections → Disconnect), the service's access token is deleted immediately, we ask the service to revoke it, and we stop reading from it. For Notion and Google (including Gmail), **source text already imported, and tasks created from it, remain.** Slack is different: when you disconnect or remove the app in Slack, **we delete the text we got from Slack right away and keep only your tasks** (see Slack below). To delete everything, delete your account (section 5).
 
 ### Notion
 
@@ -104,7 +97,7 @@ When you disconnect (app → Settings → Connections → Disconnect), the servi
 ### Google (Calendar and Meet transcripts)
 
 - **What we read from Calendar:** event titles, start and end times, organizer and attendees (names and email addresses), and the Google Meet conference identifier on your calendars. We do not read event descriptions or attachments.
-- **How Calendar is used:** events are not used as sources of tasks. We use them to attach attendees to the meeting notes (Notion) and Meet transcripts from the same time, which helps decide whose task something is; the attendees are also part of the material for drafts you start. The attached event title, time, and attendees are stored as the people involved in that meeting source.
+- **How Calendar is used:** events are not used as sources of tasks. We use them to attach attendees to the meeting notes (Notion) and Meet transcripts from the same time, which helps decide whose task something is. The attached event title, time, and attendees are stored as the people involved in that meeting source.
 - **What we read from Meet:** your Google Meet conference records and transcripts (speaker name, what was said, time). Google provides transcript entries through its API for only 30 days after a meeting ends, so we import them within that window.
 - **What we store:** the transcript text with speaker names, the meeting title and time, attendees.
 - **Access:** `calendar.events.owned.readonly` (read events on calendars you own) and `meetings.space.readonly` (read Meet conference information and transcripts). We never create or change events or meetings.
@@ -130,7 +123,7 @@ When you disconnect (app → Settings → Connections → Disconnect), the servi
 
 ## 4. What we send to external AI
 
-Taskforce uses external AI models to find tasks in source text, decide whether a new task is the same as an existing one, find similar tasks, and write drafts you start. Drafts are only saved in the app; we never send them to their recipients or write them to a connected service.
+Taskforce uses external AI models to find tasks in source text, decide whether a new task is the same as an existing one, and find similar tasks.
 
 ### What we send
 
@@ -138,21 +131,19 @@ Taskforce uses external AI models to find tasks in source text, decide whether a
 - Text you paste in (body and title)
 - Your display name, aliases, and email addresses, so the model can recognize you in the text
 - Titles and evidence quotes of existing tasks, to compare with newly found candidates
-- (Tasks you add yourself, only after you have given AI data consent) its title and, if you picked one, the source line, used to find similar tasks
-- (When you use Ask) your question and the related tasks and evidence quotes (including draft records)
-- (When you start a draft) what you asked for; the task's title, status, owner, due date, and counterpart name; its evidence quotes with the surrounding excerpts of source text; those sources' type, title, date, and the names and email addresses of the people involved; your name (or the part of your account email before @); and the instructions and titles of drafts already written for the same request. **We do not send source text from Slack or its evidence quotes** (for tasks from Slack, the task's own title, status, owner, due date, and counterpart name are still sent)
+- (When you use Ask) your question and the related tasks and evidence quotes
 
 ### Who receives it, and under what conditions
 
 - Every AI request goes through **OpenRouter, Inc.** (USA) to a model provider. Recipients and countries are listed in the table in section 7.
 - Every request requires "route only to providers with Zero Data Retention" and "do not use providers that collect or train on data". If no provider meets these conditions, the request fails; we never retry with weaker conditions.
-- OpenRouter prompt logging is turned off. OpenRouter keeps a usage record for each request with no content (model, token counts, cost, and similar), and we look up that record by request identifier to confirm what a draft cost.
+- OpenRouter prompt logging is turned off.
 - Nothing we send is used to train any AI model, ours or anyone else's.
 
 ### Consent and withdrawal
 
-- Before you connect your first service, the app shows you this information and asks for your consent. **If you do not agree, the server does not send or process source text from connected services or text you paste in, and does not write drafts.**
-- You can withdraw consent at any time in app → Settings → Privacy & AI Data. After you withdraw, we stop importing new source text from your connected services and do not send source text to AI, so no new tasks are created from your sources, and a draft in progress stops before its next AI request. Existing tasks and drafts remain; to delete them, delete your account.
+- Before you connect your first service, the app shows you this information and asks for your consent. **If you do not agree, the server does not send or process source text from connected services or text you paste in.**
+- You can withdraw consent at any time in app → Account → AI data. After you withdraw, new source text is not sent to AI, so no new tasks are created. Existing tasks remain; to delete them, delete your account.
 - "Hand off to AI" packages a task's context as text and shows it in the app. If you paste that text into another AI tool, you are doing so yourself; we do not send it.
 
 ## 5. Retention and deletion
@@ -165,28 +156,24 @@ Taskforce uses external AI models to find tasks in source text, decide whether a
 | Connections and access tokens | Until you disconnect or delete your account |
 | Source text from connected services and pasted source text (body text) | **90 days after it is stored.** After 90 days we delete only the body text; the row, title, original link, people involved, and processing result remain until you delete your account (they remain after you disconnect). **For Slack, when you disconnect or remove the app,** we delete the body text, title, and people involved right away |
 | Jev judgment records (including candidate quotes) | 90 days after they are stored. For Slack source text, right away when you disconnect or remove the app |
-| Tasks, evidence quotes (including draft records), change history, embeddings | Until you delete your account. Evidence quotes remain even after the source body text is deleted, except that evidence quotes from Slack are deleted when you disconnect or remove the app (the tasks and embeddings remain). A task you delete in the app disappears from your list but is kept in a "deleted" state so we can calculate the error rate |
-| Draft body text, what you asked for, and the instructions, suggested recipients, and questions the AI set while writing the draft | **90 days after they are stored.** After 90 days we delete only this text; the draft title and run records remain until you delete your account. If the draft run is still in progress at that point, we delete what you asked for and the instructions, suggested recipients, and questions as soon as the run ends. The same applies if you delete the task |
-| Run records (status, outcome type, times, model, error type, status changes) | Until you delete your account |
-| AI usage records and credit grant and usage records | Until you delete your account |
+| Tasks, evidence quotes, change history, embeddings | Until you delete your account. Evidence quotes remain even after the source body text is deleted, except that evidence quotes from Slack are deleted when you disconnect or remove the app (the tasks and embeddings remain). A task you delete in the app disappears from your list but is kept in a "deleted" state so we can calculate the error rate |
 | Queued Slack messages (before grouping into source text) | 3 days after they arrive. Once grouped into source text and processed, the text is cleared, and only a marker (conversation, message, and sender identifiers) is kept until 3 days after arrival so the same message is not received twice. Right away when you disconnect or remove the app |
 | Tracked Slack threads (identifiers of threads you wrote in or were mentioned in) | 14 days after the last activity. Right away when you disconnect or remove the app |
 | Slack name information (user and conversation names) | Until you disconnect or remove the app (a name older than 7 days is re-read when it is needed again) |
 | Usage records | Until you delete your account |
 | Push device tokens | Until you sign out, Apple reports the token invalid, or you delete your account |
-| Task list stored on your device | Until you sign out on that device or delete your account (if the account is deleted on another device, the copy is deleted the next time this device's app reaches our server). On a Mac, the list can remain on the computer if you delete the app without signing out |
 | Server request records (Vercel) | 1 day |
 | Database and authentication request records (Supabase) | 1 day |
-| AI requests (OpenRouter and model providers) | Request content not stored; only while the request is processed (OpenRouter keeps a usage record with no content, section 4) |
+| AI requests (OpenRouter and model providers) | Not stored; only while the request is processed |
 | Support email | Identifiable content deleted within 90 days after the request is closed |
 
 No law currently requires us to keep any of this information longer. If one does, we will list the legal basis and items here and store them separately.
 
 ### How we delete
 
-- **Account deletion:** app → Settings → Delete Account (Mac: Settings → Account → Delete Account). When the server deletes your authentication account, rows in every table linked to it (profile, connections and tokens, source text, tasks, evidence, history, judgment records, usage records, device tokens, drafts and run records, AI usage and credit records) are deleted in the same request. The app also deletes the task list stored on that device; on your other devices, the stored list is deleted the next time the app on that device reaches our server.
+- **Account deletion:** app → Account → Delete account. When the server deletes your authentication account, rows in every table linked to it (profile, connections and tokens, source text, tasks, evidence, history, judgment records, usage records, device tokens) are deleted in the same request.
   When you delete your account, we also ask Apple to revoke your Sign in with Apple tokens, ask each connected service to revoke its tokens, and, if you signed in with Google, ask Google to revoke that sign-in access. For accounts that sign in with Apple, we ask you to confirm with Apple once more before we request revocation. If you cancel, or the confirmation or revocation fails, Taskforce may remain linked in your Apple Account, but your account is still deleted. If you cancel or the confirmation fails, the app shows how to remove Taskforce in your Apple Account settings.
-- **Automatic deletion of source text and drafts:** a job runs daily and deletes the body text of source text stored 90 days ago, and deletes Jev judgment records stored 90 days ago. The same job deletes draft body text, what you asked for, and the draft instructions, suggested recipients, and questions stored 90 days ago (if the draft run is still in progress at that point, it deletes what you asked for and the instructions, suggested recipients, and questions the first time it runs after the run ends), and deletes queued Slack messages that arrived 3 days ago and Slack threads with no activity for 14 days.
+- **Automatic deletion of source text:** a job runs daily and deletes the body text of source text stored 90 days ago, and deletes Jev judgment records stored 90 days ago. The same job deletes queued Slack messages that arrived 3 days ago and Slack threads with no activity for 14 days.
 - **Disconnecting or removing Slack:** when you disconnect Slack in the app or remove the app (or revoke its access) in Slack, we delete that connection's Slack source body text, titles, and people involved, evidence quotes, claim quote text, Jev judgment records, queued messages, tracked threads, and name information at once (Slack in section 3). A daily check of Slack tokens runs the same deletion within a day even if we were not told the app was removed.
 - **No backups:** we keep no database backups, so deleted data cannot be recovered and does not linger in a backup. If we start keeping backups, we will add their retention period to this policy first.
 - **Logs:** server and database request records are deleted automatically by each provider after the periods above. These records do not contain source text.
@@ -218,27 +205,27 @@ Our server and database are outside Korea. All transfers happen over the network
 | Recipient (contact) | Country | Items | Purpose | Retention |
 |---|---|---|---|---|
 | Vercel Inc. (privacy@vercel.com, 440 N Barranca Ave #4133, Covina, CA 91723, USA) | Australia (Sydney, server execution), USA (request records and management systems) | Everything that passes through the server (section 1), server request records | Server operation, website hosting | While the request is processed; request records 1 day |
-| Supabase Pte. Ltd. (privacy@supabase.com) | Australia (Sydney, AWS ap-southeast-2) | All items in section 1 except support email and the task list stored on your device | Data storage, sign-in and authentication | Until account deletion; request records 1 day |
-| OpenRouter, Inc. (privacy@openrouter.ai) | USA | What we send (section 4) | Routing AI requests | Request content not stored (only while the request is processed). Usage records with no content are kept under OpenRouter's policy |
-| Together AI, Inc. (privacy@together.ai) · Fireworks AI, Inc. (privacy@fireworks.ai) · Deep Infra Inc. (policy@deepinfra.com, 2625 Middlefield Road #460, Palo Alto, CA 94306, USA) (through OpenRouter, finding tasks in source text and writing drafts) | USA (based on headquarters; the providers do not publish where the request is actually processed) | What we send (section 4) | Running AI models (source analysis and drafting) | Not stored (Zero Data Retention) |
-| Microsoft Corporation (Azure, through OpenRouter, embeddings; privacy contact: go.microsoft.com/fwlink/?linkid=2126612, One Microsoft Way, Redmond, WA 98052, USA) | USA (based on headquarters) | The part of what we send (section 4) used to find similar or related tasks (titles and evidence quotes of new candidates, tasks you add yourself, and existing tasks; your Ask questions) | Running AI models (embeddings) | Not stored (Zero Data Retention) |
-| TypeSafe AI, Inc. (through OpenRouter, judgment; privacy@typesafe.ai, 255 California St, Suite 1300, San Francisco, CA, USA) | USA (address in TypeSafe's terms of use) | What we send (section 4), except what we send when you start a draft | Running AI models (judgment) | Not stored (Zero Data Retention) |
+| Supabase Pte. Ltd. (privacy@supabase.com) | Australia (Sydney, AWS ap-southeast-2) | All items in section 1 except support email | Data storage, sign-in and authentication | Until account deletion; request records 1 day |
+| OpenRouter, Inc. (privacy@openrouter.ai) | USA | What we send (section 4) | Routing AI requests | Not stored (only while the request is processed) |
+| Together AI, Inc. (privacy@together.ai) · Fireworks AI, Inc. (privacy@fireworks.ai) · Deep Infra Inc. (policy@deepinfra.com, 2625 Middlefield Road #460, Palo Alto, CA 94306, USA) (through OpenRouter, finding tasks in source text) | USA (based on headquarters; the providers do not publish where the request is actually processed) | What we send (section 4) | Running AI models (source analysis) | Not stored (Zero Data Retention) |
+| Microsoft Corporation (Azure, through OpenRouter, embeddings; privacy contact: go.microsoft.com/fwlink/?linkid=2126612, One Microsoft Way, Redmond, WA 98052, USA) | USA (based on headquarters) | The part of what we send (section 4) used to find similar tasks (titles and evidence quotes of new candidates and existing tasks) | Running AI models (embeddings) | Not stored (Zero Data Retention) |
+| TypeSafe AI, Inc. (through OpenRouter, judgment; privacy@typesafe.ai, 255 California St, Suite 1300, San Francisco, CA, USA) | USA (address in TypeSafe's terms of use) | What we send (section 4) | Running AI models (judgment) | Not stored (Zero Data Retention) |
 | Apple Inc. (One Apple Park Way, Cupertino, CA 95014, USA · apple.com/legal/privacy/contact) | USA | Push device token, notification content (for review and due-date notifications, task identifiers and a short generic phrase such as "Review" or "Due today", plus the number of tasks for due-date notifications; for a connection-expiry notice, only a short generic phrase containing the service name, such as "Reconnect Gmail to keep syncing.", and no task identifier; task titles are never included) | Delivering push notifications | Under Apple's policy |
 | Google LLC (1600 Amphitheatre Parkway, Mountain View, CA 94043, USA) | USA and other countries where Google has data centers | Email address and content of support email | Receiving and storing support email | 90 days after the request is closed |
 
 - **Ground for transfer:** entrustment and storage needed to perform our agreement with you, with the items above disclosed in this policy (PIPA Art. 28-8(1)(3)). Sending to external AI (section 4) additionally requires your in-app consent.
-- **How to refuse, and the effect:** because our server and database are outside Korea, we cannot provide the service if you refuse international transfer. To refuse, stop using the service and delete your account. To refuse only the transfer to external AI, do not give, or withdraw, AI data consent. In that case we do not process source text from your connected services or text you paste in, no tasks are created automatically, and drafts cannot be written.
+- **How to refuse, and the effect:** because our server and database are outside Korea, we cannot provide the service if you refuse international transfer. To refuse, stop using the service and delete your account. To refuse only the transfer to external AI, do not give, or withdraw, AI data consent. In that case we do not process source text from your connected services or text you paste in, and no tasks are created automatically.
 
 ## 8. When we look at your source text
 
-We (the operator) look at your source text, tasks, and drafts only:
+We (the operator) look at your source text and tasks only:
 
-1. When you ask us for help with a specific source, task, or draft, and only within that request
+1. When you ask us for help with a specific source or task, and only within that request
 2. When it is strictly necessary to respond to a security incident or outage
 3. When required by law
 
 If we want to look at a source to analyze why a task was wrong or missed, or to use it as evaluation data, **we first tell you which source and why, and ask for your consent.** Evaluation data is used only after information that identifies people is removed.
-When we look at a source or draft, we record the date, what we looked at, and why.
+When we look at a source, we record the date, what we looked at, and why.
 
 ## 9. Security measures
 
@@ -265,12 +252,12 @@ You can ask to access, correct, delete, or stop the processing of your personal 
 
 | To do this | How |
 |---|---|
-| See your tasks, evidence, and drafts | Directly in the app |
-| Change your name or aliases | App → Settings → Profile (Mac: Settings → Account) |
+| See your tasks and evidence | Directly in the app |
+| Change your name, aliases, or email addresses | App → Account → Profile |
 | Edit or delete a task | Directly in the app |
-| Disconnect a service | App → Settings → Connections → Disconnect. You can also remove access in each service (Google: myaccount.google.com/connections; Notion: Settings → Connections; Slack: your workspace's app management). For Slack, disconnecting also deletes the text we got from Slack (your tasks remain) |
-| Withdraw consent to AI transfer | App → Settings → Privacy & AI Data |
-| Delete all your data | App → Settings → Delete Account (Mac: Settings → Account → Delete Account) |
+| Disconnect a service | App → Connections → Disconnect. You can also remove access in each service (Google: myaccount.google.com/connections; Notion: Settings → Connections; Slack: your workspace's app management). For Slack, disconnecting also deletes the text we got from Slack (your tasks remain) |
+| Withdraw consent to AI transfer | App → Account → AI data |
+| Delete all your data | App → Account → Delete account |
 | Any other access, correction, deletion, or restriction request | Email privacy@taskforcelabs.dev |
 
 - We answer email requests within 10 days. We may ask you to write from your account email so we can confirm it is you.
@@ -279,8 +266,8 @@ You can ask to access, correct, delete, or stop the processing of your personal 
 
 ## 12. Automated decisions
 
-Taskforce uses AI to find tasks, due dates, and owners in your sources and builds your list from them, and when you start a draft, writes it and saves it in the app (it is not sent to its recipients). This helps you organize your own work; it is not a decision that significantly affects your rights or obligations.
-We ask you to confirm owners and due dates we are unsure of, and every task the AI creates carries the quote it came from (except quotes deleted when Slack is disconnected, section 3). You can correct or delete any task at any time and ask us to explain how it was produced.
+Taskforce uses AI to find tasks, due dates, and owners in your sources and builds your list from them. This helps you organize your own work; it is not a decision that significantly affects your rights or obligations.
+We ask you to confirm owners and due dates we are unsure of, and every task the AI creates carries the quote it came from (except quotes deleted when Slack is disconnected, section 3). You can correct or delete any result at any time and ask us to explain how it was produced.
 
 ## 13. Privacy officer
 
@@ -313,7 +300,7 @@ For information Taskforce receives through Google APIs (Google sign-in informati
 
 Specifically:
 
-- We use Google data only for features visible in the app: finding and showing the work you committed to, linking sources from the same meeting, and writing drafts you start.
+- We use Google data only for features visible in the app: finding and showing the work you committed to, and linking sources from the same meeting.
 - We do not use Google data for advertising, credit assessment, or data sales, and we do not transfer it to third parties such as advertising platforms or data brokers.
 - We do not use Google data to create, train, or improve generalized AI or machine learning models. We send it to external AI models only when needed to provide these features, only after you consent in the app, and only to providers that keep no data (section 4).
 - No person reads Google data, except when you have explicitly agreed to let us view specific data, when necessary for security purposes (such as investigating abuse), when necessary to comply with applicable law, or when the data is aggregated so that no one can be identified and used for internal operations.
@@ -324,10 +311,10 @@ Specifically:
 The beta is not offered to people who live in the European Economic Area (EEA, including the European Union) or the United Kingdom (Terms of Use, section 4.3). We do not advertise there, and the app is not made available in those App Store regions. If the EU or UK General Data Protection Regulation (GDPR, UK GDPR) still applies to you:
 
 - **Controller:** 태스크포스 (Republic of Korea), privacy@taskforcelabs.dev. We have not appointed a Data Protection Officer.
-- **Legal bases:** providing the service: performance of a contract (Art. 6(1)(b)); sending to external AI: consent (Art. 6(1)(a)) and performance of a contract; service metrics, security, and processing other people's information in your sources: legitimate interests (Art. 6(1)(f)). Our legitimate interest is finding your own commitments in the work sources you connect and, when you ask, writing a draft for that work, and we use the information for nothing else.
+- **Legal bases:** providing the service: performance of a contract (Art. 6(1)(b)); sending to external AI: consent (Art. 6(1)(a)) and performance of a contract; service metrics, security, and processing other people's information in your sources: legitimate interests (Art. 6(1)(f)). Our legitimate interest is finding your own commitments in the work sources you connect, and we use the information for nothing else.
 - **International transfers:** your information is transferred outside the EU and UK (to Korea, Australia, the USA, and others). Our processors' data processing agreements include the European Commission's Standard Contractual Clauses (SCCs) or equivalent safeguards. You can request a copy at the contact above.
 - **Your rights:** access, rectification, erasure, restriction, portability, objection, and withdrawal of consent (without affecting the lawfulness of processing before withdrawal). You have the right to lodge a complaint with the supervisory authority in the EU member state or the UK where you live.
-- **Whether you must provide data:** account information is needed to use the service. Connecting services and consenting to AI transfer are optional, but without them no tasks are created automatically and drafts cannot be written.
+- **Whether you must provide data:** account information is needed to use the service. Connecting services and consenting to AI transfer are optional, but without them no tasks are created automatically.
 - **Automated decisions:** we make no decisions with legal or similarly significant effects under Art. 22 (section 12).
 
 ## 17. Changes to this policy
@@ -337,10 +324,9 @@ The beta is not offered to people who live in the European Economic Area (EEA, i
 
 Change history
 
-- Beta 1.4 (effective 2026-10-04): When you start a draft for a task (such as an email or document), we now send that task and excerpts of its evidence sources (excluding source text from Slack) to the same external AI providers used for source analysis, write the draft, and save it in the app. We do not send drafts to their recipients. Drafts, run records, AI usage, and credits (granted by us free of charge; no purchases) are now listed among the information we process, with their retention periods (draft body text, what you asked for, and the instructions, suggested recipients, and questions the AI set: 90 days after they are stored; if the draft run is still in progress at that point, what you asked for and the instructions, suggested recipients, and questions are deleted as soon as it ends). We also describe that OpenRouter keeps usage records with no content and that we look them up; that we record when a source is closed as failed; and that the app stores the last task list (title, due date, status) on your device for each account so it can show it until a fresh list arrives (for example, while offline), and deletes it when you sign out or delete your account (if the account is deleted on another device, the next time this device's app reaches our server). We also state that the titles and picked source lines of tasks you add yourself, and your Ask questions, also go to the embedding provider (Microsoft) to find similar tasks. AI data consent is now changed in Settings → Privacy & AI Data, and the paths for your profile, disconnecting a service, and deleting your account now match the app's Settings screen.
-- Beta 1.3 (effective 2026-10-02, [view previous version](https://www.taskforcelabs.dev/en/privacy/beta-1.3)): Text you paste into the Mac launcher (body and title) is now listed among the information we process. Like source text from connected services, it is sent to external AI only after you give AI data consent, and its body text is deleted 90 days after it is stored. We also describe what happens when you delete an account that signs in with Apple and you cancel the Apple confirmation, or the confirmation or revocation fails.
+- Beta 1.3 (effective 2026-10-02): Text you paste into the Mac launcher (body and title) is now listed among the information we process. Like source text from connected services, it is sent to external AI only after you give AI data consent, and its body text is deleted 90 days after it is stored. We also describe what happens when you delete an account that signs in with Apple and you cancel the Apple confirmation, or the confirmation or revocation fails.
 - Beta 1.2 (effective 2026-09-30, [view previous version](https://www.taskforcelabs.dev/en/privacy/beta-1.2)): You can now sign in with Google. At sign-in we receive your Google account identifier, email address, name, and profile photo URL (and your organization's domain for Google Workspace accounts), and when you delete your account we ask Google to revoke that sign-in access.
 - Beta 1.1 (effective 2026-09-30, [view previous version](https://www.taskforcelabs.dev/en/privacy/beta-1.1)): The Gmail section now matches how the service works (which mail is skipped and why, one message stored at a time, the IDs and received times of fetched or skipped mail and per-reason counts, and the account-identification permissions). When a connection expires, we send one reminder to reconnect and keep a record of connections, expirations, and reminders. Baseten was removed from the source-analysis providers.
 - Beta 1.0 (effective 2026-09-29): [View previous version](https://www.taskforcelabs.dev/en/privacy/beta-1.0)
 
-This policy takes effect on 2026-10-04.
+This policy takes effect on 2026-10-02.

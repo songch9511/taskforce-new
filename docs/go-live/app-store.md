@@ -170,7 +170,7 @@ App Store Connect → 앱 → App Privacy. 모든 항목: **Linked to the user =
 - **Allow를 눌러야만** `POST /api/v1/consent {"ai_processing": true}`. 미리 체크된 상자 · 스크롤만으로 동의 처리를 하지 않는다.
 - **Not Now**면 연결을 시작하지 않고 연결 화면으로 돌아간다. 앱의 다른 기능(이미 있는 할 일 보기)은 막지 않는다.
 - **철회:** Settings(Mac 설정 창 · iPhone 설정 시트) → Privacy & AI Data → `Use AI on new sources` 끄기 → 확인의 Withdraw → `DELETE /api/v1/consent`. 확인에 새 원문을 읽지 않고 초안을 쓰지 않는다는 한 줄을 보여 준다("Taskforce stops reading new sources and writing drafts until you allow it again."). 스위치를 다시 켜면 이 동의 화면이 뜨고 Allow를 눌러야 동의한다.
-- **초안(D9a-1):** 문안에 초안 목적 · 보내는 것을 더했다(U2 Mac PR4). 운영자 계정만 쓰는 동안은 다시 동의를 받지 않고, 운영자 밖 계정을 `execution_actors`에 넣기 전에 바뀐 문안으로 다시 동의를 받는다(처리방침 D9a-1 README 8번). 이 문안이 든 빌드는 D9a-1 게시 전까지 TestFlight · App Store에 내지 않는다(게시본 1.3은 아직 초안을 말하지 않는다).
+- **초안(D9a-1):** 문안에 초안 목적 · 보내는 것을 더했다(U2 Mac PR4). 운영자 계정만 쓰는 동안은 다시 동의를 받지 않고, 운영자 밖 계정을 `execution_actors`에 넣기 전에 바뀐 문안으로 다시 동의를 받는다(`docs/legal/README.md` "D9a-1 뒤 남은 일" 1). 처리방침 베타 1.4(2026-10-04 시행)가 초안을 말하므로 이 문안이 든 빌드를 TestFlight · App Store에 낼 수 있다(그 전에는 막았다).
 - 동의한 시각은 `profiles.ai_consent_at`에 남는다. 문안을 바꾸면(받는 곳이 늘어나는 등) 다시 동의를 받는다 → 문안 버전을 함께 남길지 트랙 2-1에서 정한다.
 
 ### 문안
