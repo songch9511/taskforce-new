@@ -2,7 +2,7 @@
 
 Taskforce (AI project manager)
 
-- Effective date: {{effective date}}
+- Effective date: 2026-10-04
 - 한국어: [이용약관](terms.ko.md) (the Korean version prevails if the two differ)
 
 ## 1. Purpose
@@ -85,4 +85,4 @@ If we find such conduct, we may restrict your use after notifying you. In urgent
 - Address: 262-20, Galma-dong, Seo-gu, Daejeon, Republic of Korea
 - Email: privacy@taskforcelabs.dev
 
-These terms take effect on {{effective date}}.
+These terms take effect on 2026-10-04.
