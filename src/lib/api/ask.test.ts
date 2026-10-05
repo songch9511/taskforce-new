@@ -1,3 +1,4 @@
+import { AiBudgetError } from "@/lib/ai/budget-error";
 import { describe, expect, it, vi } from "vitest";
 
 import { ConsentRequiredError } from "@/lib/consent/gate";
@@ -100,4 +101,12 @@ describe("POST /api/v1/ask", () => {
     expect(response.status).toBe(409);
     expect(apiErrorSchema.parse(await response.json()).error.code).toBe("conflict");
   });
+});
+
+it("returns a stable exhaustion error without exposing backend details", async () => {
+  const { deps } = setup({ answer: async () => { throw new AiBudgetError("ai_budget_exhausted"); } });
+  const response = await handleAsk(ask({ question: "test" }), deps);
+  expect(response.status).toBe(403);
+  expect((await response.json()).error.code).toBe("ai_budget_exhausted");
+  expect(response.headers.get("Retry-After")).toBeNull();
 });

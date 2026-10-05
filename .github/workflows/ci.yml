@@ -38,7 +38,7 @@ jobs:
       - run: npm run eval
       - run: npm run build
 
-  # Apple 앱: TaskforceKit 테스트와 iOS · macOS 빌드 (docs/go-live/runbook.md C12).
+  # Apple 앱: TaskforceKit 테스트와 macOS 앱 테스트 · 빌드.
   # Liquid Glass · Swift 6 때문에 Xcode 26 SDK가 필요하다. macos-latest는 예고 없이 옮겨 가므로
   # 러너 이미지와 Xcode를 고정한다. 이미지에서 이 Xcode가 빠지면 xcode-select 단계가 실패하니 그때 올린다.
   apple:
@@ -92,14 +92,5 @@ jobs:
           -scheme Taskforce
           -configuration Debug
           -destination 'generic/platform=macOS'
-          -derivedDataPath "$RUNNER_TEMP/DerivedData"
-          CODE_SIGNING_ALLOWED=NO
-      - name: Build iOS Simulator
-        run: >-
-          xcodebuild build
-          -project apple/Taskforce.xcodeproj
-          -scheme Taskforce
-          -configuration Debug
-          -destination 'generic/platform=iOS Simulator'
           -derivedDataPath "$RUNNER_TEMP/DerivedData"
           CODE_SIGNING_ALLOWED=NO

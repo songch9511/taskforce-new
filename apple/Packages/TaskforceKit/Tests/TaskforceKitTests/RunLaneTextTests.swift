@@ -58,7 +58,7 @@ struct RunLaneTextTests {
 
     /// M12 크레딧 부족 문장, 다른 막힘은 후보 (Mac 갈래와 같은 말, iPhone은 `Run with AI`라는 말을 쓰지 않는다)
     @Test(arguments: [
-        (RunHoldReason.credit, "Draft paused", "Not enough credits. New paid steps are paused." as String?),
+        (RunHoldReason.credit, "Draft paused", "Not enough credits. The draft will resume when credits are added." as String?),
         (.needsConnection, "Paused", "Needs a connection to continue."),
         (.blocked, "Paused", "New steps are paused for now."),
         (.actor, "Paused", "New steps are paused for now."),

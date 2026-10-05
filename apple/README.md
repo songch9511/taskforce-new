@@ -1,6 +1,6 @@
-# Taskforce Apple 앱 (iOS · macOS)
+# Taskforce Mac 앱
 
-SwiftUI 멀티플랫폼 앱과 공유 패키지 `TaskforceKit`(화면 없는 코드) · `TaskforceUI`(디자인 토큰 · 부품). 플랫폼 전략은 [`docs/PLATFORMS.md`](../docs/PLATFORMS.md), 화면 규칙은 [`docs/BRAND.md`](../docs/BRAND.md)를 보세요.
+현재 beta 앱 타깃은 macOS 15 이상입니다. `TaskforceKit`(화면 없는 코드) · `TaskforceUI`(디자인 토큰 · 부품)를 재사용합니다. 예전 iPhone 화면 설명은 아래에 설계 기록으로 남아 있으며 활성 앱 타깃이 아닙니다. 플랫폼 전략은 [`docs/PLATFORMS.md`](../docs/PLATFORMS.md), 화면 규칙은 [`docs/BRAND.md`](../docs/BRAND.md)를 보세요.
 디자인 원본(SSOT)은 Figma 디자인 시스템 v1(`jDMRGHWMRXeNUILfi11xvf`)이다. 값이 다르면 Figma 변수가 기준이다.
 
 | 항목 | 값 |
@@ -8,20 +8,20 @@ SwiftUI 멀티플랫폼 앱과 공유 패키지 `TaskforceKit`(화면 없는 코
 | 번들 ID | `dev.taskforcelabs.taskforce` |
 | App Group | `group.dev.taskforcelabs.taskforce` |
 | URL scheme | `taskforce://` (연동 OAuth가 끝나면 `taskforce://connections/{provider}?handoff=…` 또는 `?status=…`로 돌아온다), Google 로그인 `com.googleusercontent.apps.<클라이언트>`(`GOOGLE_IOS_URL_SCHEME`) |
-| 최소 OS | iOS 18 · macOS 15 |
+| 최소 OS | macOS 15 |
 
 ## 처음 한 번
 
 1. Supabase 설정을 채웁니다. 값은 웹의 `.env.local`과 같습니다.
    ```bash
-   cp apple/Config/Secrets.example.xcconfig apple/Config/Secrets.xcconfig
+   test -e apple/Config/Secrets.xcconfig || cp apple/Config/Secrets.example.xcconfig apple/Config/Secrets.xcconfig
    ```
    xcconfig에서는 `//`가 주석이라 URL을 `https:/$()/<ref>.supabase.co`처럼 적습니다.
    `API_BASE_URL`에는 Taskforce 서버 주소를 경로 없이 적습니다. **Debug 빌드만** 이 값을 씁니다.
    - 시뮬레이터 + 로컬 서버(`npm run dev`): `API_BASE_URL = http:/$()/localhost:3000`
      (Info.plist의 `NSAllowsLocalNetworking`으로 로컬 주소만 http를 허용합니다)
    - 실제 기기 · 배포 서버: `API_BASE_URL = https:/$()/<서버 주소>`
-   - **Release 빌드(아카이브 · TestFlight)는 커밋된 `Config/Release.xcconfig`가 `https://api.taskforcelabs.dev`로 고정**합니다(Base + Secrets를 불러온 뒤 `API_BASE_URL`만 바꿈). Supabase URL · 키는 두 설정 모두 Secrets에서 옵니다.
+   - **Release 빌드(직접 배포용 아카이브)는 커밋된 `Config/Release.xcconfig`가 `https://api.taskforcelabs.dev`로 고정**합니다(Base + Secrets를 불러온 뒤 `API_BASE_URL`만 바꿈). Supabase URL · 키는 두 설정 모두 Secrets에서 옵니다.
 2. `apple/Taskforce.xcodeproj`를 Xcode로 엽니다. 서명은 자동이고 Team은 `U9DWQKQFMW`로 잡혀 있습니다.
 3. Supabase → Authentication → Sign In / Providers → Apple을 켜고 Client IDs에 `dev.taskforcelabs.taskforce`를 넣어야 로그인이 됩니다.
    Sign in with Google은 Google 제공자(Client IDs = 프로젝트 A iOS 클라이언트 ID, Skip nonce checks 끔, 2026-09-30 켬)가 받습니다. Debug 빌드에서 Google 버튼을 보려면 `Secrets.xcconfig`에 `GOOGLE_IOS_CLIENT_ID` · `GOOGLE_IOS_URL_SCHEME`을 넣습니다(값은 `Config/Release.xcconfig`와 같음, 비우면 버튼이 숨음). [PLATFORMS.md](../docs/PLATFORMS.md) 4장.
@@ -29,7 +29,7 @@ SwiftUI 멀티플랫폼 앱과 공유 패키지 `TaskforceKit`(화면 없는 코
    빠지면 Mac 프로필에 App Group이 없어 macOS가 앱 권한을 통째로 무시하고, 로그인 세션을 Keychain에 저장하지 못합니다(`-34018`, 앱에는 "Couldn't save your sign-in.").
    프로필이 바뀌면 `~/Library/Developer/Xcode/UserData/Provisioning Profiles`의 옛 Mac 프로필을 지우고, **빌드된 `Taskforce.app`도 지운 뒤** `-allowProvisioningUpdates`로 다시 빌드합니다.
    이어서 빌드하면 새 프로필만 복사되고 서명은 그대로라 서명이 깨질 수 있습니다(`codesign --verify --deep --strict`가 "a sealed resource is missing or invalid"면 이 경우). 결과는 위와 같은 `-34018`입니다.
-5. 알림(C10): 앱 권한 파일에 `aps-environment`(iOS) · `com.apple.developer.aps-environment`(macOS) = `development`가 있습니다. **App ID `dev.taskforcelabs.taskforce`에 Push Notifications 기능이 켜져 있어야** 서명된 빌드의 프로필에 이 권한이 들어갑니다(빠지면 자동 서명이 프로필 오류로 멈춥니다). 켠 뒤에는 4번처럼 옛 프로필 · 빌드된 앱을 지우고 `-allowProvisioningUpdates`로 다시 빌드합니다. TestFlight · App Store로 내보낼 때 Xcode가 `production`으로 바꿉니다.
+5. 알림(C10): Mac 권한 파일의 `com.apple.developer.aps-environment`는 로컬 Debug에서 `development`, 직접 배포용 권한 확인에서는 `production`이어야 합니다. **App ID `dev.taskforcelabs.taskforce`에 Push Notifications 기능이 켜져 있어야** 서명된 빌드의 프로필에 이 권한이 들어갑니다(빠지면 자동 서명이 프로필 오류로 멈춥니다). 켠 뒤에는 프로필과 빌드 결과를 다시 확인합니다.
 
 ## 프로젝트 구조를 바꿀 때
 
@@ -49,7 +49,6 @@ cd apple && xcodegen
 cd apple/Packages/TaskforceKit && swift test
 # 색 토큰을 actool이 컴파일한 카탈로그로 확인 (swift test는 카탈로그를 복사만 한다, CI도 같은 단계). 줄마다 저장소 맨 위에서
 cd apple/Packages/TaskforceKit && TEST_RUNNER_TF_REQUIRE_COMPILED_CATALOG=1 xcodebuild test -scheme TaskforceKit-Package -destination 'platform=macOS' -only-testing:TaskforceUITests
-xcodebuild build -project apple/Taskforce.xcodeproj -scheme Taskforce -destination 'generic/platform=iOS Simulator' -derivedDataPath apple/build/dd CODE_SIGNING_ALLOWED=NO
 xcodebuild build -project apple/Taskforce.xcodeproj -scheme Taskforce -destination 'platform=macOS' -derivedDataPath apple/build/dd CODE_SIGNING_ALLOWED=NO
 ```
 
@@ -62,7 +61,7 @@ Mac은 `--show-launcher -TFSampleData -TFSnapshot <폴더>`로 실행하면 런�
 
 ## 화면
 
-### iPhone — 한 화면 (Figma 156:6 P1 · P10 · P11, U1 셸)
+### iPhone — 이전 설계 기록, 현재 beta 타깃 아님 (Figma 156:6 P1 · P10 · P11, U1 셸)
 
 - 로그인: Sign in with Apple, 그 아래 같은 크기의 Sign in with Google(Google 클라이언트 설정이 있을 때, 로그인만: 기본 범위 openid · email · profile), 그 아래 눈에 덜 띄게 "Sign in with email"(App Store 심사 계정용, 가입 화면 없음). Mac 런처도 같은 순서의 행이고, "Sign in with email" 행은 설정 창의 같은 로그인 화면을 연다.
   Google 버튼은 Google 브랜드 규칙의 Light 테마(흰 바탕 · 회색 테두리 · 표준 색 G)로 다크 모드에서도 같다(`SignInWithGoogleButton`). Google 로그인 직후 프로필 이름이 비어 있으면 그 이름으로 한 번 채운다. 로그인이 풀릴 때마다(로그아웃 · 만료 · 계정 삭제) Google SDK 로그인도 지운다.
@@ -133,8 +132,8 @@ Mac은 `--show-launcher -TFSampleData -TFSnapshot <폴더>`로 실행하면 런�
 ## 구조
 
 - `Taskforce/` — 앱
-  - `Shared/` — 두 플랫폼 공용: `PushCenter`(알림 권한 · 기기 토큰 · 누른 알림), `NowStore`(지금 할 일 · 오늘 끝낸 할 일 · 근거 · 쓰기, To Do · In Progress · Done 옮기기 · 삭제 · 되살리기는 먼저 보여 줌), `AccountStore`(연결 · 동의 · 프로필), 연결 · 동의 · 프로필 화면, 로그인(Apple · Google `GoogleSignInFlow`), 계정 삭제
-  - `iOS/` — 한 화면(`HomeView`) · 계정 시트 · New Task 시트 · 앱 델리게이트(기기 토큰)
+  - `Shared/` — Mac에서 재사용하는 계정·연결·동의·프로필·로그인·삭제 코드와 `NowStore` · `PushCenter` 등 화면 없는 공통 코드
+  - 이전 `iOS/` 화면은 활성 소스 트리에서 제거됐다. 복원 위치와 범위는 [`docs/REUSE_BASE.md`](../docs/REUSE_BASE.md)를 본다.
   - `Mac/` — 앱 델리게이트 · 메뉴 막대 · 단축키 · 런처 패널/모델/화면 · 설정 창
 - `Packages/TaskforceKit/`
   - `TaskforceKit` — 화면 없는 공유 코드

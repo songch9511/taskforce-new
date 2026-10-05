@@ -1,3 +1,4 @@
+import { AiBudgetError } from "@/lib/ai/budget-error";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { DeadlineExceededError } from "@/lib/ai/deadline";
@@ -301,4 +302,19 @@ describe("definitiveFailure", () => {
   ])("%s → %s", (error, expected) => {
     expect(definitiveFailure(error)).toBe(expected);
   });
+});
+
+it("exhaustion is terminal while infrastructure errors remain retryable", () => {
+  expect(definitiveFailure(new AiBudgetError("ai_budget_exhausted"))).toBe("ai_budget_exhausted");
+  expect(definitiveFailure(new AiBudgetError("ai_price_bound_unavailable"))).toBe("ai_pricing_unavailable");
+  expect(definitiveFailure(new AiBudgetError("ai_provider_bound_breached"))).toBe("ai_provider_bound_violation");
+  expect(definitiveFailure(new AiBudgetError("ai_budget_unavailable"))).toBeNull();
+});
+
+it("exhausted draft settles terminal failure without scheduling an unknown retry", async () => {
+  const { store } = fakeStore();
+  const result = await advance({ store, complete: failWith(new AiBudgetError("ai_budget_exhausted")), owner: "worker" }, "r1");
+  expect(result).toEqual({ status: "failed", step: "s2", reason: "ai_budget_exhausted" });
+  expect(store.settleFailed).toHaveBeenCalledWith("s2", "worker", { error: "ai_budget_exhausted" });
+  expect(store.markUnknown).not.toHaveBeenCalled();
 });

@@ -2,6 +2,7 @@ import "server-only";
 
 import { randomUUID } from "node:crypto";
 
+import { budgetFetch } from "@/lib/ai/budget";
 import { completeJson, llmConfigFromEnv } from "@/lib/ai/llm";
 import { createAdminClient } from "@/lib/supabase/admin";
 
@@ -61,9 +62,13 @@ export async function wakeRun(runId: string, options: WakeOptions = {}): Promise
 /** 단계 하나를 돌고(advance), 다음 단계를 붙였으면 깨운다. route의 after()가 부른다. 실패는 로그만 남긴다 (run은 DB에 남아 sweep이 이어 간다) */
 export async function advanceAndWake(runId: string): Promise<AdvanceResult | null> {
   try {
-    const llm = llmConfigFromEnv();
+    const admin = createAdminClient();
+    const store = supabaseExecutionStore(admin);
+    const run = await store.loadRun(runId);
+    if (!run) return null;
+    const llm = { ...llmConfigFromEnv(), fetch: budgetFetch(admin, run.user_id) };
     const result = await advance(
-      { store: supabaseExecutionStore(createAdminClient()), complete: (request) => completeJson(llm, request), owner: `fn-${randomUUID()}` },
+      { store, complete: (request) => completeJson(llm, request), owner: `fn-${randomUUID()}` },
       runId,
     );
     if (result.status === "completed" && result.next) await wakeRun(runId);

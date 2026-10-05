@@ -5,7 +5,7 @@ import Foundation
 /// - 멈춤: iPhone은 P9대로 시각을 문장에 넣는다 (`Stop requested 14:20. No new steps will start.`). Mac은 M17대로 문장에 시각 없이,
 ///   시각은 액션 바에 (`stopRequested`)
 /// - 실행 주체 밖으로 멈춤: Mac은 `Run with AI isn't available for this account.`, iPhone은 `Run with AI`라는 말을 쓰지 않는다 (run을 시작하지 않는다)
-/// Figma에 있는 문구: M12 `Not enough credits. New paid steps are paused.`, M17 `Stopped. No new steps will start.` · `Stop requested 14:20`, P9.
+/// Figma에 있는 문구: M12 `Draft paused` · `Not enough credits. The draft will resume when credits are added.`, M17 `Stopped. No new steps will start.` · `Stop requested 14:20`, P9.
 /// 나머지는 후보 (U2 Mac 계획 PR3 표 · 열린 질문 9). 시각은 서버 값만 쓴다 (멈춘 시각 = `stopped_at`, 어느 기기에서 멈췄든).
 public struct RunLaneText: Equatable, Sendable {
     public let title: String
@@ -50,7 +50,7 @@ public struct RunLaneText: Equatable, Sendable {
         case .working:
             return RunLaneText(title: "Writing draft", subtitle: lane.run.map { "Started \(clock($0.createdAt))" }, draft: draft)
         case .paused(.credit):
-            return RunLaneText(title: "Draft paused", subtitle: "Not enough credits. New paid steps are paused.", draft: draft)
+            return RunLaneText(title: "Draft paused", subtitle: "Not enough credits. The draft will resume when credits are added.", draft: draft)
         case .paused(let reason):
             return RunLaneText(title: "Paused", subtitle: pausedSubtitle(reason, platform: platform), draft: draft)
         case .needsInput(let question):
@@ -118,6 +118,9 @@ public struct RunLaneText: Equatable, Sendable {
         switch kind {
         case .consent: "AI processing was turned off."
         case .rejected: "The AI provider declined this request."
+        case .aiPricingUnavailable: "AI is unavailable because its price limit cannot be verified."
+        case .aiProviderBoundViolation: "AI is paused because a provider exceeded its reserved cost."
+        case .aiBudgetExhausted: "Your beta AI allowance cannot cover this request. Check Usage & Credits."
         case .retriesExhausted: "Stopped after too many retries."
         case .actionMissing: "The task was deleted."
         case .other: nil

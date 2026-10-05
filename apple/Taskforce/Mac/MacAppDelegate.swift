@@ -157,7 +157,7 @@ struct MenuBarLabel: View {
 /// 설정 사이드바 항목 (Figma S1 239:1614). 페이지의 rawValue는 마지막에 본 페이지로 저장된다 (`SettingsOpener.tabKey`).
 enum MacSettingsTab: String, CaseIterable {
     case keyboardShortcuts
-    /// Usage & Credits (Figma S3 240:1907): 실행(U2)을 쓸 수 있는 계정에만 (`GET /credits` 200)
+    /// Beta USD usage for signed-in accounts; execution credits are separately gated.
     case usage
     /// 페이지가 아니라 계정 시트 (↗)
     case account
@@ -194,9 +194,9 @@ enum MacSettingsTab: String, CaseIterable {
         Item(tab: .ai, title: "Privacy & AI Data", systemImage: "shield", group: .work),
     ]
 
-    /// 보이는 사이드바. Usage & Credits는 실행을 쓸 수 있을 때만 (404 · 로그아웃 · 실행 주체 밖이면 숨긴다)
-    static func sidebar(executionAvailable: Bool) -> [Item] {
-        executionAvailable ? all : all.filter { $0.tab != .usage }
+    /// Signed-in accounts see beta usage even when execution credits are unavailable.
+    static func sidebar(executionAvailable: Bool, signedIn: Bool = false) -> [Item] {
+        (executionAvailable || signedIn) ? all : all.filter { $0.tab != .usage }
     }
 
     /// 실행을 쓸 수 없는 계정의 사이드바 (U1 항목)
@@ -207,17 +207,17 @@ enum MacSettingsTab: String, CaseIterable {
     /// 설정 창이 보일 페이지. 저장값은 예전 탭 값(`account` · `connections` · `ai` · `shortcut`)도 받는다:
     /// `shortcut`은 Keyboard Shortcuts, 저장값 없음 · `account`(이제 시트) · 모르는 값 · 사이드바에 없는 항목은 Connections (사용자 결정 2026-10-03).
     /// 저장된 `usage`는 실행을 쓸 수 없으면 Connections, 아직 모르면(앱을 막 열어 credits를 읽는 중) 그대로 둔다: 읽는 동안 Connections로 떨어지지 않게
-    static func page(stored: String?, execution: Execution = .unavailable) -> MacSettingsTab {
+    static func page(stored: String?, execution: Execution = .unavailable, signedIn: Bool = false) -> MacSettingsTab {
         let tab = stored.flatMap { $0 == "shortcut" ? .keyboardShortcuts : MacSettingsTab(rawValue: $0) }
-        if tab == .usage { return execution == .unavailable ? .connections : .usage }
+        if tab == .usage { return execution == .unavailable && !signedIn ? .connections : .usage }
         if let tab, !tab.opensSheet, all.contains(where: { $0.tab == tab }) { return tab }
         return .connections
     }
 
     /// 사이드바 검색칸: 이름에 낱말이 모두 든 항목만 (대소문자 · 악센트 무시). 빈 칸이면 전부
-    static func sidebar(matching query: String, executionAvailable: Bool = false) -> [Item] {
+    static func sidebar(matching query: String, executionAvailable: Bool = false, signedIn: Bool = false) -> [Item] {
         let words = query.split(whereSeparator: \.isWhitespace)
-        return sidebar(executionAvailable: executionAvailable).filter { item in words.allSatisfy { item.title.localizedStandardContains($0) } }
+        return sidebar(executionAvailable: executionAvailable, signedIn: signedIn).filter { item in words.allSatisfy { item.title.localizedStandardContains($0) } }
     }
 
     /// ↑↓: 보이는 항목 안에서 한 칸 (끝에서 멈춘다). 지금 항목이 목록에 없으면 ↓는 처음, ↑는 끝으로

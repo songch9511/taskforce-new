@@ -44,6 +44,8 @@ public struct CreditsRows: Equatable, Sendable {
     public let included: Row
     /// 값을 한 번도 받지 못했는데 불러오기가 실패함 (빈 페이지 대신 "—"와 이 한 줄)
     public let notice: String?
+    /// 서버가 새 run을 받지 않을 때 (숫자와 가격 상태는 그대로 둔다)
+    public let limitNotice: String?
 
     static let missing = "—"
 
@@ -72,7 +74,8 @@ public struct CreditsRows: Equatable, Sendable {
             paused: pausedCard(pausedRuns, titles: titles),
             used: used,
             included: Row(title: "Included in your plan", value: "Not set yet", subtitle: "Pricing is not decided for the beta"),
-            notice: credits == nil && loadFailed ? "Couldn't load credits." : nil
+            notice: credits == nil && loadFailed ? "Couldn't load credits." : nil,
+            limitNotice: credits?.acceptingRuns == false ? "New AI drafts are temporarily unavailable." : nil
         )
     }
 
@@ -97,12 +100,12 @@ public struct CreditsRows: Equatable, Sendable {
         }
     }
 
-    /// "2 paid steps are paused" / "QA 시나리오 업데이트, 데모 스크립트 초안. They continue when credits are added." (Figma)
+    /// "2 AI drafts are paused" / "QA 시나리오 업데이트, 데모 스크립트 초안. They continue when credits are added." (Figma)
     static func pausedCard(_ runs: [RunSummary], titles: [UUID: String]) -> PausedCard? {
         let paused = runs.filter { $0.isOpen && $0.holdReason == .credit }
         guard !paused.isEmpty else { return nil }
         let names = unique(paused.sorted { $0.isNewer(than: $1) }.map(\.actionID)).compactMap { titles[$0] }
-        let title = paused.count == 1 ? "1 paid step is paused" : "\(paused.count) paid steps are paused"
+        let title = paused.count == 1 ? "1 AI draft is paused" : "\(paused.count) AI drafts are paused"
         let tail = "They continue when credits are added."
         return PausedCard(title: title, subtitle: names.isEmpty ? tail : "\(names.joined(separator: ", ")). \(tail)")
     }

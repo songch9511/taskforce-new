@@ -25,11 +25,11 @@ struct MacSettingsView: View {
     /// 본문 칸(창 - 안쪽 4 × 2 - 사이드바 = 556) 가운데 열의 좌우 여백 44
     static let columnInset = (windowSize.width - 2 * TFSpace.xs - sidebarWidth - column) / 2
 
-    private var page: MacSettingsTab { MacSettingsTab.page(stored: stored, execution: execution) }
+    private var page: MacSettingsTab { MacSettingsTab.page(stored: stored, execution: execution, signedIn: signedInUserID != nil) }
     private var highlighted: MacSettingsTab { cursor ?? page }
-    /// Usage & Credits는 실행을 쓸 수 있을 때, 또는 저장된 그 페이지를 불러오는 중일 때 (보이는 페이지가 사이드바에 있게)
+    /// Every signed-in beta account can see USD usage, independently of execution credits.
     private var items: [MacSettingsTab.Item] {
-        MacSettingsTab.sidebar(matching: query, executionAvailable: execution == .available || page == .usage)
+        MacSettingsTab.sidebar(matching: query, executionAvailable: execution == .available || page == .usage, signedIn: signedInUserID != nil)
     }
 
     /// 실행을 쓸 수 있는지 (`MacSettingsTab.Execution(signedIn:credits:)`). 견본은 로그인한 것으로 본다
@@ -295,7 +295,7 @@ struct MacSettingsView: View {
         case .keyboardShortcuts:
             HotKeyPane()
         case .usage:
-            signedInOnly { UsageCreditsPane() }
+            signedInOnly { UsageCreditsPane().id(signedInUserID) }
         case .connections:
             signedInOnly { ConnectionsView().modifier(SettingsFormPage()) }
         case .ai:
@@ -491,7 +491,13 @@ private struct MacAccountPane: View {
                         }
                     }
                     Spacer()
-                    Button("Delete Account…", role: .destructive) { confirmingDelete = true }
+                    Button("Delete Account…", role: .destructive) {
+                        if session.signInMethods.needsAppleReauthorization {
+                            message = AccountDeletion.unavailableMessage
+                        } else {
+                            confirmingDelete = true
+                        }
+                    }
                         .disabled(deleting)
                 }
             } footer: {
@@ -500,6 +506,7 @@ private struct MacAccountPane: View {
             }
             Section {
                 LegalLinksRow()
+                Link("Contact", destination: AccountDeletion.contactURL)
             }
         }
         .formStyle(.grouped)
@@ -514,7 +521,7 @@ private struct MacAccountPane: View {
             Button("Delete Account", role: .destructive) { deleteAccount() }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("Your sources, tasks, and history are deleted right away. This can't be undone.")
+            Text(AccountDeletion.confirmationMessage)
         }
         .messageAlert($message)
     }

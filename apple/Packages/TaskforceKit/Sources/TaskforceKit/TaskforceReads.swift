@@ -128,7 +128,7 @@ public struct TaskforceReads: Sendable {
         }
     }
 
-    /// 크레딧이 모자라 멈춘 끝나지 않은 run (S3 "N paid steps are paused")
+    /// 크레딧이 모자라 멈춘 끝나지 않은 run (S3 "N AI drafts are paused")
     public func pausedRuns(limit: Int = 50) async throws -> [RunSummary] {
         try await runRows { columns in
             supabase.from("execution_runs").select(columns).eq("hold_reason", value: RunHoldReason.credit.rawValue)

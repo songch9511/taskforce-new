@@ -63,7 +63,10 @@ struct LauncherRunPane: View {
 
     /// 잔액이 초안 한 건의 예약보다 적으면 (서버는 시작을 받고 크레딧이 들어오면 이어 간다, 열린 질문 13). 문구는 후보
     private var costDetail: String? {
-        model.runs?.summary?.isBelowDraftEstimate == true ? "Not enough credits. Starts when credits are added." : nil
+        if case .disabled(.notAccepting) = model.runAvailability(for: target) {
+            return "New AI drafts are temporarily unavailable."
+        }
+        return model.runs?.summary?.isBelowDraftEstimate == true ? "Not enough credits. Starts when credits are added." : nil
     }
 }
 #endif

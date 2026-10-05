@@ -1,3 +1,4 @@
+import { AiBudgetError } from "@/lib/ai/budget-error";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { DeadlineExceededError, INTERACTIVE_MAX_DURATION_S, RESPONSE_MARGIN_MS } from "@/lib/ai/deadline";
@@ -70,7 +71,7 @@ describe("POST /api/v1/sources/:id/missing", () => {
     const response = await report();
     expect(response.status).toBe(200);
     const deadline = 1_000_000 + INTERACTIVE_MAX_DURATION_S * 1000 - RESPONSE_MARGIN_MS;
-    expect(processDepsFromEnv).toHaveBeenCalledWith(deadline);
+    expect(processDepsFromEnv).toHaveBeenCalledWith({ admin: true }, "u1", deadline);
     const [admin, source, input, sentDeadline, deps] = vi.mocked(reportMissing).mock.calls[0];
     expect(admin).toEqual({ admin: true });
     expect(source).toEqual({ id: SOURCE_ID, userId: "u1", processingStatus: "done" });
@@ -120,4 +121,14 @@ describe("POST /api/v1/sources/:id/missing", () => {
     expect(log).toHaveBeenCalledWith("누락 신고 뒤 본 것 표시 실패:", 'violates check constraint "action_events_type_check"');
     expect(JSON.stringify(log.mock.calls)).not.toContain(QUOTE);
   });
+});
+
+it("returns budget exhaustion separately from pricing failures", async () => {
+  for (const [message, status, code] of [["ai_budget_exhausted", 403, "ai_budget_exhausted"], ["ai_price_bound_unavailable", 503, "ai_pricing_unavailable"]] as const) {
+    vi.mocked(reportMissing).mockRejectedValueOnce(new AiBudgetError(message));
+    const response = await report();
+    expect(response.status).toBe(status);
+    expect((await response.json()).error.code).toBe(code);
+    expect(response.headers.get("Retry-After")).toBeNull();
+  }
 });

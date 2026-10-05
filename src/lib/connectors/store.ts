@@ -478,7 +478,7 @@ type TaskStateRow = {
   external_version: string;
   /** 보관 기간(90일)이 지나 원문이 비워졌으면 null (purge_expired_source_text) */
   structured: StoredTask | null;
-  processing_status: "pending" | "processing" | "done" | "failed";
+  processing_status: "pending" | "processing" | "done" | "failed" | "blocked";
   started_at: string;
   linked: boolean;
 };
@@ -499,6 +499,8 @@ async function taskStates(admin: SupabaseClient, connection: Connection, externa
       const state = states.get(row.external_id) ?? { linked: row.linked };
       if (row.processing_status === "done") {
         state.done = { version: row.external_version, snapshot: row.structured?.snapshot ?? null };
+      } else if (row.processing_status === "blocked") {
+        state.blockedVersion = row.external_version;
       } else if (row.processing_status === "failed" || new Date(row.started_at).getTime() < staleBefore) {
         state.retry = { sourceId: row.source_id, version: row.external_version };
       } else {
@@ -530,6 +532,7 @@ export function taskDeps(admin: SupabaseClient): NotionTaskDeps {
         .eq("connection_id", connection.id)
         .eq("kind", "task")
         .neq("processing_status", "done")
+        .or("processing_summary->>retryable.is.null,processing_summary->>retryable.eq.true")
         .gte("created_at", since)
         .order("occurred_at")
         .limit(TASK_RETRY_BATCH)

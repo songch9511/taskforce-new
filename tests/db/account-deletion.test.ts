@@ -16,6 +16,7 @@ const USER_TABLES = [
   "action_events",
   "action_links",
   "actions",
+  "ai_spend_attempts",
   "claims",
   "connection_requests",
   "connections",
@@ -52,6 +53,7 @@ let db: PGlite;
 async function seed(userId: string, tokenHex: string) {
   const one = async (sql: string, params: unknown[]) => (await db.query<{ id: string }>(sql, params)).rows[0].id;
 
+  await db.query("select reserve_ai_spend($1,$2,'chat','m',0.1)", [userId, randomUUID()]);
   const connectionId = await one(
     `insert into public.connections (user_id, provider, external_account_id) values ($1, 'notion', 'ws') returning id`,
     [userId],

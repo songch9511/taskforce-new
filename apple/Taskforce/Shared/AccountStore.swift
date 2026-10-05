@@ -391,8 +391,6 @@ final class AccountStore {
         let generation = generation
         do {
             try await services.api.giveAIConsent()
-        } catch let error as APIError where ConnectionStartFailure.classify(error) == .comingSoon {
-            // 예전 서버: 동의 없이도 처리한다
         } catch {
             if generation == self.generation { message = error.userMessage }
             return

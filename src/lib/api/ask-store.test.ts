@@ -1,3 +1,4 @@
+vi.mock("@/lib/ai/budget", () => ({ budgetFetch: () => fetch }));
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 

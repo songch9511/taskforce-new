@@ -130,3 +130,11 @@ describe("ingestTaskItems", () => {
     expect(result.deferred).toEqual(["page"]);
   });
 });
+
+it("does not reprocess the same task version after a terminal budget failure", async () => {
+  const task = item("task", 10);
+  const { deps, processed } = fakeDeps({ task: { linked: false, blockedVersion: task.externalVersion } });
+  const result = await ingestTaskItems(connection, [task], deps, options);
+  expect(processed).toEqual([]);
+  expect(result.skipped.unchanged).toBe(1);
+});

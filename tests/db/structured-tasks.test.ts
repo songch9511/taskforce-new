@@ -115,3 +115,18 @@ describe("구조화된 할 일 (20260930000000_structured_tasks)", () => {
     expect((await db.query(`select 1 from public.actions where id = $1`, [aliceAction])).rows).toHaveLength(1);
   });
 });
+
+it("nonretryable task versions stay blocked in the sync state RPC", async () => {
+  const connection = (await db.query<{ id: string }>(
+    "insert into public.connections (user_id, provider, external_account_id) values ($1, 'notion', 'budget-test') returning id", [ALICE],
+  )).rows[0].id;
+  const id = (await db.query<{ id: string }>(
+    `insert into public.sources (user_id, kind, raw_text, structured, occurred_at, connection_id, external_id, external_version, processing_status, processing_summary, processing_error_code)
+     values ($1, 'task', 'x', '{}', now(), $2, 'budget-blocked', 'v1', 'failed', '{"retryable":false}', 'ai_budget_exhausted') returning id`,
+    [ALICE, connection],
+  )).rows[0].id;
+  const { rows } = await db.query<{ source_id: string; processing_status: string }>(
+    "select source_id, processing_status from task_source_states($1,$2,$3)", [ALICE, connection, ["budget-blocked"]],
+  );
+  expect(rows).toEqual([{ source_id: id, processing_status: "blocked" }]);
+});

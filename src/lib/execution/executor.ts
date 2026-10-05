@@ -1,3 +1,4 @@
+import { AiBudgetError } from "@/lib/ai/budget-error";
 import { LlmError, llmAttemptsOf, type LlmAttempt } from "@/lib/ai/llm";
 import { ConsentRequiredError, withConsentGate } from "@/lib/consent/gate";
 import type { CompleteJson } from "@/lib/pipeline/extract";
@@ -200,6 +201,7 @@ async function recordUsage(store: ExecutionStore, stepId: string, attempts: LlmA
  * 2분쯤 넘게 이어지면 SQL이 retries_exhausted로 실패시킨다. 공급자 장애 동안 시도를 쓰지 않고 기다리게(hold) 하려면 SQL 전이가 필요하다 (후속 마이그레이션)
  */
 export function definitiveFailure(error: unknown): string | null {
+  if (error instanceof AiBudgetError && error.code !== "ai_budget_unavailable") return error.code;
   if (error instanceof ConsentRequiredError) return "consent";
   if (error instanceof ExecutionInputError) return error.code;
   if (error instanceof LlmError) {
