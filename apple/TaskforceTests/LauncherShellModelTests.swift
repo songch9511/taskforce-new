@@ -1,8 +1,10 @@
 import AppKit
+import AuthenticationServices
 import Auth
 import Carbon.HIToolbox
 import Foundation
 import Supabase
+import SwiftUI
 import Testing
 @testable import Taskforce
 @testable import TaskforceKit
@@ -11,6 +13,102 @@ import Testing
 @Suite(.serialized)
 @MainActor
 struct LauncherShellModelTests {
+    @Test func consentSuccessResumesPendingProvider() async throws {
+        let harness = try await ShellHarness.make(now: ShellNow.body())
+        let account = try #require(harness.model.account)
+        await account.connect(.notion, using: EnvironmentValues().webAuthenticationSession)
+        #expect(account.pendingProvider == .notion)
+        #expect(account.showsConsent)
+
+        await account.giveConsent()
+
+        #expect(await harness.router.consentRequests() == 1)
+        #expect(account.hasConsent)
+        #expect(account.resumeProvider == .notion)
+        #expect(account.pendingProvider == nil)
+        #expect(!account.showsConsent)
+        #expect(account.message == nil)
+    }
+
+    @Test(arguments: [400, 404])
+    func consentFailureKeepsPendingProviderAndShowsError(status: Int) async throws {
+        let harness = try await ShellHarness.make(now: ShellNow.body())
+        let account = try #require(harness.model.account)
+        await harness.router.setConsentStatus(status)
+        await account.connect(.notion, using: EnvironmentValues().webAuthenticationSession)
+        #expect(account.pendingProvider == .notion)
+
+        await account.giveConsent()
+
+        #expect(await harness.router.consentRequests() == 1)
+        #expect(!account.hasConsent)
+        #expect(account.resumeProvider == nil)
+        #expect(account.pendingProvider == .notion)
+        #expect(account.showsConsent)
+        #expect(account.message == APIError.server(status: status, code: status == 404 ? .notFound : .invalidRequest, message: "Consent unavailable").userMessage)
+    }
+
+    @Test(arguments: [400, 404])
+    func consentFailureDoesNotRetryBlockedHandoff(status: Int) async throws {
+        let harness = try await ShellHarness.make(now: ShellNow.body())
+        let account = try #require(harness.model.account)
+        await harness.router.setConsentStatus(status)
+        await account.handleCallback(URL(string: "taskforce://connections/notion?handoff=test-handoff")!)
+        #expect(account.showsConsent)
+        #expect(await harness.router.completeRequests() == 1)
+
+        await account.giveConsent()
+
+        #expect(!account.hasConsent)
+        #expect(account.resumeProvider == nil)
+        #expect(account.showsConsent)
+        #expect(account.message != nil)
+        #expect(await harness.router.completeRequests() == 1)
+    }
+
+    @Test(arguments: [204, 400, 404], [false, true])
+    func lateConsentDoesNotChangeAccount(status: Int, changesAccount: Bool) async throws {
+        let harness = try await ShellHarness.make(now: ShellNow.body())
+        let account = try #require(harness.model.account)
+        await account.connect(.notion, using: EnvironmentValues().webAuthenticationSession)
+        await harness.router.setConsentStatus(status)
+        await harness.router.holdConsent()
+        let consent = Task { await account.giveConsent() }
+        await harness.waitUntil { await harness.router.hasPendingConsent() }
+
+        if changesAccount {
+            harness.session.apply(event: .signedIn, session: shellSession(userID: UUID()))
+        } else {
+            harness.session.apply(event: .signedOut, session: nil)
+        }
+        harness.model.sessionChanged()
+        account.message = "Current account message"
+        await harness.router.releaseConsent()
+        await consent.value
+
+        #expect(!account.hasConsent)
+        #expect(account.resumeProvider == nil)
+        #expect(account.pendingProvider == nil)
+        #expect(!account.showsConsent)
+        #expect(account.message == "Current account message")
+        #expect(await harness.router.completeRequests() == 0)
+    }
+
+    @Test(arguments: [400, 404])
+    func unavailableProviderStartStillShowsComingSoon(status: Int) async throws {
+        let harness = try await ShellHarness.make(now: ShellNow.body())
+        let account = try #require(harness.model.account)
+        await harness.router.setStartStatus(status)
+
+        await account.connect(.notion, using: EnvironmentValues().webAuthenticationSession)
+
+        #expect(account.comingSoon == [.notion])
+        #expect(account.message == nil)
+        #expect(!account.hasConsent)
+        #expect(!account.showsConsent)
+        #expect(account.connecting == nil)
+    }
+
     /// 범위를 바꿔도 고르던 행이 새 목록에 있으면 그 행, 없으면 같은 자리 (`reselect`), 패널에서 돌아오면 본 행 (`rowAfterBack`)
     @Test func scopeKeepsTheSelectionRules() async throws {
         let harness = try await ShellHarness.make(now: ShellNow.body(reviews: ["R1"], toDo: ["T1", "T2"]))
@@ -384,6 +482,12 @@ private struct ShellResponse: Sendable {
 
 private actor ShellRouter {
     private var now: Data?
+    private var consentStatus = 204
+    private var startStatus = 409
+    private var consentCount = 0
+    private var completeCount = 0
+    private var holdingConsent = false
+    private var heldConsent: [CheckedContinuation<ShellResponse, Never>] = []
     private var nowCount = 0
     private var seen: [UUID] = []
     private var holding = false
@@ -394,6 +498,18 @@ private actor ShellRouter {
     }
 
     func response(method: String, path: String) async -> ShellResponse {
+        if method == "POST", path == "/api/v1/consent" {
+            consentCount += 1
+            if holdingConsent { return await withCheckedContinuation { heldConsent.append($0) } }
+            return consentResponse()
+        }
+        if method == "POST", path == "/api/v1/connections/notion/start" {
+            return connectionResponse(status: startStatus)
+        }
+        if method == "POST", path == "/api/v1/connections/notion/complete" {
+            completeCount += 1
+            return connectionResponse(status: 409)
+        }
         if path == "/api/v1/now" {
             nowCount += 1
             if holding { return await withCheckedContinuation { held.append($0) } }
@@ -413,6 +529,30 @@ private actor ShellRouter {
     private func currentNow() -> ShellResponse {
         guard let now else { return ShellResponse(status: 500, body: Data("{}".utf8)) }
         return ShellResponse(status: 200, body: now)
+    }
+
+    private func consentResponse() -> ShellResponse {
+        if consentStatus == 204 { return ShellResponse(status: 204, body: Data()) }
+        let code = consentStatus == 404 ? "not_found" : "invalid_request"
+        return ShellResponse(status: consentStatus, body: Data("{\"error\":{\"code\":\"\(code)\",\"message\":\"Consent unavailable\"}}".utf8))
+    }
+
+    private func connectionResponse(status: Int) -> ShellResponse {
+        let code = status == 409 ? "conflict" : status == 404 ? "not_found" : "invalid_request"
+        return ShellResponse(status: status, body: Data("{\"error\":{\"code\":\"\(code)\",\"message\":\"Connection unavailable\"}}".utf8))
+    }
+
+    func setConsentStatus(_ status: Int) { consentStatus = status }
+    func setStartStatus(_ status: Int) { startStatus = status }
+    func consentRequests() -> Int { consentCount }
+    func completeRequests() -> Int { completeCount }
+    func holdConsent() { holdingConsent = true }
+    func hasPendingConsent() -> Bool { !heldConsent.isEmpty }
+
+    func releaseConsent() {
+        holdingConsent = false
+        for continuation in heldConsent { continuation.resume(returning: consentResponse()) }
+        heldConsent = []
     }
 
     func setNow(_ data: Data?) { now = data }

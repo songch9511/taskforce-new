@@ -3,26 +3,42 @@ import SwiftUI
 import TaskforceKit
 import TaskforceUI
 
-/// 설정 Usage & Credits (Figma S3 240:1907): 설명 · Balance(Available · Reserved · Pending) · 멈춘 단계 카드 · This month(Used · Included in your plan).
-/// 숫자는 서버가 정하고(`GET /credits`), 행 값 · 부제는 `CreditsRows`가 만든다. 사이드바 항목은 실행을 쓸 수 있을 때만 보인다 (`MacSettingsTab`).
-/// `Add Credits…`(Figma 머리)는 숨긴다: 크레딧은 운영자가 지급하고(C3) 구매 경로가 없다 (U2 Mac 계획 열린 질문 1).
+/// Beta supplier USD is available to every signed-in account; execution credits remain separately gated.
 struct UsageCreditsPane: View {
     @Environment(RunStore.self) private var runs
+    @Environment(\.services) private var services
+    @State private var budget: AiSpendSummary?
+    @State private var budgetFailed = false
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
-                Text("Credits are used when Taskforce does work you hand it. Finding tasks, your list, and checking results are free.")
-                    .font(TFFont.footnote)
-                    .foregroundStyle(TFColor.textSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                if isLoading {
-                    ProgressView()
-                        .controlSize(.small)
-                        .accessibilityLabel("Loading credits")
-                        .frame(maxWidth: .infinity)
-                        .padding(.top, TFSpace.lg)
-                } else {
+                section("Beta AI allowance · USD") {
+                    Text(AiSpendSummary.explanation)
+                        .font(TFFont.footnote)
+                        .foregroundStyle(TFColor.textSecondary)
+                    if let budget {
+                        SettingsCard {
+                            budgetRow("Beta cap", budget.capUSD)
+                            SettingsDivider()
+                            budgetRow("Confirmed spend", budget.confirmedUSD)
+                            SettingsDivider()
+                            budgetRow("Worst-case reserved · \(budget.pendingCount) pending", budget.reservedUSD)
+                            SettingsDivider()
+                            budgetRow("Remaining after reservations", budget.remainingUSD)
+                        }
+                        if let notice = budget.notice { Text(notice).font(TFFont.footnote) }
+                    } else if budgetFailed {
+                        Text("Couldn't load your AI allowance.").font(TFFont.footnote)
+                        Button("Try Again") { Task { await loadBudget() } }
+                    } else {
+                        ProgressView().accessibilityLabel("Loading AI allowance")
+                    }
+                }
+                if case .available = runs.credits {
+                    Text("Execution credits are separate units for AI drafts. They are not dollars and do not increase the beta AI allowance.")
+                        .font(TFFont.footnote)
+                        .foregroundStyle(TFColor.textSecondary)
                     content(runs.creditsRows(titles: Self.taskTitles))
                 }
             }
@@ -32,15 +48,29 @@ struct UsageCreditsPane: View {
             .frame(maxWidth: .infinity)
         }
         // 이 페이지를 열 때마다 새로 읽는다 (지급 · 정산 뒤 다시 열면 숫자 · 멈춘 카드가 바뀐다)
-        .task {
+        .task(id: SettingsRoute.shared.openCount) {
+            await loadBudget()
             await runs.loadCredits()
             await runs.refreshActive()
         }
     }
 
-    /// 앱을 막 열어 아직 한 번도 읽지 못함 (읽기가 실패했으면 "—"와 안내 한 줄을 보인다)
-    private var isLoading: Bool {
-        runs.credits == .unknown && !runs.creditsFailed
+    private func loadBudget() async {
+        budget = nil
+        budgetFailed = false
+        do {
+            guard let services else { budgetFailed = true; return }
+            let result = try await services.api.aiBudget()
+            guard !Task.isCancelled else { return }
+            budget = result
+        } catch {
+            guard !Task.isCancelled else { return }
+            budgetFailed = true
+        }
+    }
+
+    private func budgetRow(_ title: String, _ amount: Decimal) -> some View {
+        SettingsRow(title) { SettingsValue(AiSpendSummary.dollars(amount)) }
     }
 
     @ViewBuilder
@@ -60,6 +90,11 @@ struct UsageCreditsPane: View {
             Text(notice)
                 .font(TFFont.meta)
                 .foregroundStyle(TFColor.statusOverdue)
+        }
+        if let limitNotice = rows.limitNotice {
+            Text(limitNotice)
+                .font(TFFont.meta)
+                .foregroundStyle(TFColor.textSecondary)
         }
         if let paused = rows.paused {
             SettingsCard {
@@ -103,7 +138,7 @@ struct UsageCreditsPane: View {
         .accessibilityValue([row.value == "—" ? "Not available" : row.value, row.subtitle].compactMap { $0 }.joined(separator: ", "))
     }
 
-    /// "2 paid steps are paused" 카드 (Figma Settings row, 아이콘 20 · 굵은 제목 · ›): 누르면 런처 범위 `Taskforce Working`
+    /// "N AI drafts are paused" 카드 (Figma Settings row, 아이콘 20 · 굵은 제목 · ›): 누르면 런처 범위 `Taskforce Working`
     private func pausedRow(_ card: CreditsRows.PausedCard) -> some View {
         Button {
             LauncherRoute.showTaskforceWorking()

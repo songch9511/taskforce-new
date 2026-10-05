@@ -328,7 +328,7 @@ struct RunStoreTests {
         #expect(rows.reserved.value == "12")
         #expect(rows.pending?.value == "Unknown")
         #expect(rows.used.value == "188")
-        #expect(rows.paused?.title == "2 paid steps are paused")
+        #expect(rows.paused?.title == "2 AI drafts are paused")
     }
 
     // MARK: 응답 모양

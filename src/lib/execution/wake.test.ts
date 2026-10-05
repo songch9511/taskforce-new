@@ -1,3 +1,4 @@
+vi.mock("./store", () => ({ supabaseExecutionStore: () => ({ loadRun: async () => ({ user_id: "u1" }) }) }));
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));

@@ -137,3 +137,118 @@ private final class CopyTestStorage: AuthLocalStorage, @unchecked Sendable {
     /// 저장소 키 정리(옛 키 지우기)에 세션이 지워지지 않게 아무것도 하지 않는다 (`LauncherModelSessionTests`와 같다)
     func remove(key: String) throws {}
 }
+
+@MainActor
+struct GoogleOnlyAccountDeletionTests {
+    @Test func appleLinkedAndUnknownIdentityBlockDeletion() {
+        let id = UUID()
+        let google = SignInMethods(providers: ["google"], primary: "google")
+        for providers: Set<String> in [["apple"], ["apple", "google"], []] {
+            let fresh = user(id: id, providers: providers)
+            #expect(AccountDeletion.deletionBlocker(fresh: fresh, cached: google, expectedID: id, currentID: id) == AccountDeletion.unavailableMessage)
+        }
+        #expect(AccountDeletion.deletionBlocker(fresh: user(id: id, providers: ["google"]),
+            cached: SignInMethods(providers: ["apple"], primary: "apple"), expectedID: id, currentID: id) == AccountDeletion.unavailableMessage)
+    }
+
+    @Test func freshGoogleIdentityPermitsDeletionOnlyForTheSameAccount() {
+        let id = UUID()
+        let fresh = user(id: id, providers: ["google"])
+        let cached = SignInMethods(providers: ["google"], primary: "google")
+        #expect(AccountDeletion.deletionBlocker(fresh: fresh, cached: cached, expectedID: id, currentID: id) == nil)
+        #expect(AccountDeletion.deletionBlocker(fresh: fresh, cached: cached, expectedID: UUID(), currentID: id) != nil)
+        #expect(AccountDeletion.deletionBlocker(fresh: fresh, cached: cached, expectedID: id, currentID: UUID()) != nil)
+        #expect(AccountDeletion.deletionBlocker(fresh: fresh, cached: cached, expectedID: id, currentID: nil) != nil)
+    }
+
+    @Test func contactAndConfirmationExplainTheBlockedPath() {
+        #expect(AccountDeletion.contactURL.absoluteString == "mailto:privacy@taskforcelabs.dev")
+        #expect(AccountDeletion.unavailableMessage.contains("have not been deleted"))
+        #expect(AccountDeletion.unavailableMessage.contains("privacy@taskforcelabs.dev"))
+        #expect(AccountDeletion.confirmationMessage.contains("cannot be deleted here"))
+        #expect(!AccountDeletion.confirmationMessage.contains("remove Apple"))
+    }
+
+    @Test func switchingAccountsWhileDeletionIsPendingPreservesTheNewAccount() async throws {
+        let a = makeSession(id: UUID())
+        let b = makeSession(id: UUID())
+        let storage = CopyTestStorage(data: try AuthClient.Configuration.jsonEncoder.encode(a))
+        let auth = AuthClient(url: URL(string: "https://delete-race.invalid/auth/v1")!, localStorage: storage,
+            fetch: { _ in Issue.record("Test must not contact an auth server"); throw URLError(.badURL) }, autoRefreshToken: false)
+        let session = SessionStore(auth: auth, googleOnly: true)
+        session.apply(event: .signedIn, session: a)
+        let pending = PendingDeletion()
+        var removed: [UUID] = []
+        var googleConnected = true
+        var localSignOuts = 0
+        let deletion = Task {
+            await AccountDeletion.delete(session: session, fetchUser: { a.user },
+                deleteOnServer: { await pending.waitForResponse() },
+                removeSavedData: { removed.append($0) },
+                disconnectGoogle: { googleConnected = false },
+                accountDeleted: { localSignOuts += 1; session.apply(event: .signedOut, session: nil) })
+        }
+        await pending.waitUntilRequested()
+        try storage.store(key: "session", value: AuthClient.Configuration.jsonEncoder.encode(b))
+        session.apply(event: .signedIn, session: b)
+        pending.finish()
+        #expect(await deletion.value == nil)
+        #expect(removed == [a.user.id])
+        #expect(session.state == .signedIn(userID: b.user.id, email: b.user.email))
+        #expect(auth.currentSession?.user.id == b.user.id)
+        #expect(googleConnected)
+        #expect(localSignOuts == 0)
+    }
+
+    @Test func deletionOfTheCurrentAccountStillClearsLocalAuthentication() async throws {
+        let a = makeSession(id: UUID())
+        let storage = CopyTestStorage(data: try AuthClient.Configuration.jsonEncoder.encode(a))
+        let session = SessionStore(auth: AuthClient(url: URL(string: "https://delete-race.invalid/auth/v1")!,
+            localStorage: storage, autoRefreshToken: false), googleOnly: true)
+        session.apply(event: .signedIn, session: a)
+        var removed: [UUID] = []
+        var disconnected = false
+        let result = await AccountDeletion.delete(session: session, fetchUser: { a.user }, deleteOnServer: {},
+            removeSavedData: { removed.append($0) }, disconnectGoogle: { disconnected = true },
+            accountDeleted: { session.apply(event: .signedOut, session: nil) })
+        #expect(result == nil)
+        #expect(removed == [a.user.id])
+        #expect(disconnected)
+        #expect(session.state == .signedOut)
+    }
+
+    private func makeSession(id: UUID) -> Session {
+        Session(accessToken: "access-\(id)", tokenType: "bearer", expiresIn: 3600,
+            expiresAt: Date().addingTimeInterval(3600).timeIntervalSince1970, refreshToken: "refresh-\(id)",
+            user: user(id: id, providers: ["google"]))
+    }
+
+    private func user(id: UUID, providers: Set<String>) -> User {
+        User(id: id, appMetadata: ["providers": .array(providers.map { .string($0) })], userMetadata: [:],
+            aud: "authenticated", createdAt: Date(), updatedAt: Date())
+    }
+}
+
+@MainActor
+private final class PendingDeletion {
+    private var response: CheckedContinuation<Void, Never>?
+    private var requested: CheckedContinuation<Void, Never>?
+
+    func waitForResponse() async {
+        await withCheckedContinuation { continuation in
+            response = continuation
+            requested?.resume()
+            requested = nil
+        }
+    }
+
+    func waitUntilRequested() async {
+        if response != nil { return }
+        await withCheckedContinuation { requested = $0 }
+    }
+
+    func finish() {
+        response?.resume()
+        response = nil
+    }
+}

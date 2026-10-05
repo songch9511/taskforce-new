@@ -8,6 +8,10 @@ public enum APIErrorCode: String, Decodable, Sendable {
     case conflict
     case rateLimited = "rate_limited"
     case internalError = "internal_error"
+    case aiBudgetExhausted = "ai_budget_exhausted"
+    case aiPricingUnavailable = "ai_pricing_unavailable"
+    case aiProviderBoundViolation = "ai_provider_bound_violation"
+    case aiBudgetUnavailable = "ai_budget_unavailable"
 }
 
 public enum APIError: Error, Equatable, Sendable, CustomStringConvertible {
@@ -42,6 +46,14 @@ public enum APIError: Error, Equatable, Sendable, CustomStringConvertible {
     /// 화면에 보여줄 한 줄 (화면 틀은 영어, docs/BRAND.md "UI 문구"). 서버의 한국어 설명은 보이지 않는다.
     public var userMessage: String {
         switch self {
+        case .server(_, .aiBudgetExhausted, _):
+            "Your $10 beta AI allowance cannot cover this request. Reservations count until confirmed. You can still manage tasks and connections."
+        case .server(_, .aiPricingUnavailable, _):
+            "AI is unavailable because its price limit cannot be verified."
+        case .server(_, .aiProviderBoundViolation, _):
+            "AI is paused because a provider exceeded its reserved cost."
+        case .server(_, .aiBudgetUnavailable, _):
+            "Could not verify your AI allowance. Try again later."
         case .server(_, .conflict, _):
             "This changed somewhere else. It's been refreshed."
         case .server(_, .unauthorized, _):
@@ -286,6 +298,10 @@ public struct APIClient: Sendable {
         } catch let error as APIError where error.status == 400 && since != nil {
             return try await credits(since: nil)
         }
+    }
+
+    public func aiBudget() async throws -> AiSpendSummary {
+        try await send(.get, "ai-budget")
     }
 
     // MARK: 요청

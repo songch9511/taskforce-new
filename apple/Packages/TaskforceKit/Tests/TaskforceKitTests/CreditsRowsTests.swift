@@ -24,11 +24,21 @@ struct CreditsRowsTests {
         #expect(rows.reserved == .init(title: "Reserved", value: "12", subtitle: "Held for 1 running task until it finishes"))
         #expect(rows.pending == .init(title: "Pending", value: "Unknown", subtitle: "Follow-up 2 to 지훈 is still being checked"))
         #expect(rows.paused == .init(
-            title: "2 paid steps are paused", subtitle: "QA 시나리오 업데이트, 데모 스크립트 초안. They continue when credits are added."
+            title: "2 AI drafts are paused", subtitle: "QA 시나리오 업데이트, 데모 스크립트 초안. They continue when credits are added."
         ))
         #expect(rows.used == .init(title: "Used", value: "188", subtitle: "Oct 1 – Oct 4"))
         #expect(rows.included == .init(title: "Included in your plan", value: "Not set yet", subtitle: "Pricing is not decided for the beta"))
         #expect(rows.notice == nil)
+        #expect(rows.limitNotice == nil)
+    }
+
+    @Test func closedRunGateExplainsUnavailableDraftsWithoutSettingPrice() {
+        let credits = CreditsSummary(available: 12, reserved: 0, acceptingRuns: false)
+        let rows = CreditsRows.make(credits: credits, loadFailed: false, checkedAt: now, pausedRuns: [], titles: [:], now: now, timeZone: seoul)
+
+        #expect(rows.limitNotice == "New AI drafts are temporarily unavailable.")
+        #expect(rows.notice == nil)
+        #expect(rows.included == .init(title: "Included in your plan", value: "Not set yet", subtitle: "Pricing is not decided for the beta"))
     }
 
     /// 그 전 서버 (세 필드만): Reserved는 예약 그대로(진행 중 run 수를 몰라 수 없이), Pending · 카드 없음, Used는 "—"
@@ -89,7 +99,7 @@ struct CreditsRowsTests {
         // 끝난 run · 크레딧 밖의 이유는 세지 않는다
         #expect(CreditsRows.pausedCard([F.run(.stopped, hold: .credit), F.run(2, .running, hold: .actor)], titles: titles) == nil)
         let one = CreditsRows.pausedCard([F.run(.running, hold: .credit, action: qa)], titles: titles)
-        #expect(one == .init(title: "1 paid step is paused", subtitle: "QA 시나리오 업데이트. They continue when credits are added."))
+        #expect(one == .init(title: "1 AI draft is paused", subtitle: "QA 시나리오 업데이트. They continue when credits are added."))
         let unknown = CreditsRows.pausedCard([F.run(.running, hold: .credit, action: UUID())], titles: titles)
         #expect(unknown?.subtitle == "They continue when credits are added.")
     }

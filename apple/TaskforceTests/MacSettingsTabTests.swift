@@ -3,6 +3,11 @@ import Testing
 
 /// 설정 사이드바 (U1 PR5a): 저장된 예전 탭 값 → 페이지, 검색칸 거르기, ↑↓ 한 칸
 struct MacSettingsTabTests {
+    @Test func signedInBetaAccountSeesUsageWithoutExecutionCredits() {
+        #expect(MacSettingsTab.sidebar(executionAvailable: false, signedIn: true).contains { $0.tab == .usage })
+        #expect(MacSettingsTab.page(stored: "usage", execution: .unavailable, signedIn: true) == .usage)
+    }
+
     @Test(arguments: [
         // 예전 TabView 값: Account 탭은 이제 시트라 Connections, Shortcut 탭은 Keyboard Shortcuts
         ("account", MacSettingsTab.connections),

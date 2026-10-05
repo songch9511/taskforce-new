@@ -1,3 +1,5 @@
+import { AiBudgetError } from "@/lib/ai/budget-error";
+vi.mock("@/lib/ai/budget", () => ({ budgetFetch: () => fetch }));
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
@@ -473,21 +475,21 @@ describe("processDepsFromEnv: 사용자가 기다리는 처리와 배경 처리"
 
   it("마감이 없으면(원문 처리 · 동기화 · 재처리 cron) 추출은 지금처럼 추론량을 제한하지 않는다", async () => {
     const sent = fakeOpenRouter();
-    const result = await processDepsFromEnv().complete(request);
+    const result = await processDepsFromEnv({} as SupabaseClient, "u1").complete(request);
     expect(sent[0].body.reasoning).toBeUndefined();
     expect(result.reasoningLimited).toBeUndefined();
   });
 
   it("마감을 주면(빠진 할 일 신고) 추출은 첫 호출부터 추론량을 제한한다", async () => {
     const sent = fakeOpenRouter();
-    const result = await processDepsFromEnv(Date.now() + 55_000).complete(request);
+    const result = await processDepsFromEnv({} as SupabaseClient, "u1", Date.now() + 55_000).complete(request);
     expect(sent[0].body.reasoning).toEqual({ effort: "high", exclude: true });
     expect(result.reasoningLimited).toBe(true);
   });
 
   it("추출은 뒤의 판정 · 병합에 시간을 남긴다: 남은 시간이 그만큼뿐이면 추출은 부르지 않고, 판정은 마감까지 부른다", async () => {
     const sent = fakeOpenRouter();
-    const deps = processDepsFromEnv(Date.now() + AFTER_EXTRACT_MS + 1_000);
+    const deps = processDepsFromEnv({} as SupabaseClient, "u1", Date.now() + AFTER_EXTRACT_MS + 1_000);
     await expect(deps.complete(request)).rejects.toThrow(/남은 시간 없음/);
     expect(sent).toHaveLength(0);
     await deps.decide({ state: {}, questions: {} });
@@ -628,4 +630,15 @@ describe("reportMissing: 사용자가 기다리는 누락 신고", () => {
     await other;
     expect(mergeJudged).not.toHaveBeenCalled();
   });
+});
+
+it("does not retry exhausted AI budgets", () => {
+  expect(failureSummary(new AiBudgetError("ai_budget_exhausted"), 1, new Date()).retryable).toBe(false);
+});
+
+it("budget failures keep distinct safe reason codes", () => {
+  expect(sourceFailureCode(new AiBudgetError("ai_budget_exhausted"))).toBe("ai_budget_exhausted");
+  expect(sourceFailureCode(new AiBudgetError("ai_price_bound_unavailable"))).toBe("ai_pricing_unavailable");
+  expect(sourceFailureCode(new AiBudgetError("ai_provider_bound_breached"))).toBe("ai_provider_bound_violation");
+  expect(sourceFailureCode(new AiBudgetError("private database detail"))).toBe("ai_budget_unavailable");
 });

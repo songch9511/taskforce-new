@@ -1,5 +1,18 @@
 # 에이전트 핸드오프 (2026-10-02, 방향 변경·U0)
 
+## 현재 인계 (2026-10-05 KST)
+
+이 문서의 아래 기록은 각 날짜의 당시 상태다. 현재 Mac beta 재사용 베이스와 통합 경계는 [Taskforce Mac 재사용 베이스](REUSE_BASE.md), 서명·DMG·설치 절차는 [Mac beta DMG 준비와 설치 확인](go-live/mac-dmg.md)을 기준으로 한다.
+
+- 활성 작업본은 `/Users/daniel/.codex/worktrees/taskforce-mac-mvp-base/Taskforce-new`, 브랜치 `codex/taskforce-mac-beta-active-20261005`, 기준 HEAD 및 `origin/main` `64bdb480b04cb538fd57b728dd0fdf7443004b7d`다. 이번 작업은 격리된 worktree에서만 진행하며 공유 원본 checkout과 별도 archive는 건드리지 않았다.
+- Mac beta 결정은 macOS 전용 설치본과 Google 로그인이다. 앱의 native Apple 로그인 버튼·entitlement를 제거했지만 기존 Apple 계정, 서버의 Apple 지원, 연결 데이터는 삭제하거나 Google 계정과 합치지 않았다. Apple-only 계정은 이 Google-only 설치본에서 로그인할 수 없으며 기존 Apple 로그인 경로로 돌아가야 한다. 계정 통합은 별도 기능이다.
+- **서명 산출물 생성·공증은 통과했다.** `/Users/daniel/.codex/releases/taskforce/0.1.0-3/Taskforce-0.1.0-3/Taskforce-0.1.0-3.dmg` (0.1.0 build 3, 6,530,158 bytes), SHA-256 `849dc331fa8e46c6c56c2ccc3a7240b16a86eb9d0f785bebf98ab3aefa4d8cd8`. 2026-10-05 재확인에서 DMG checksum, 앱·DMG 서명, 두 stapler 검증, 두 Gatekeeper 판정이 통과했고 둘 다 `Notarized Developer ID`로 승인됐다. 이 Mac에서 설치·실행 및 실제 로그인·연결 E2E는 아직 미검증이다.
+- 사용자당 누적 AI 원가 `$10` 한도, 계정별 예약·정산·요약 API와 Mac 사용량 화면이 구현됐다. GLM endpoint의 제한된 cache-read 요금은 보수적으로 예약하고 `max_price` 초과 endpoint는 제외하도록 수정해 정상 호출을 허용한다. 알려지지 않은 요금 차원과 cache-write 비용은 계속 차단한다. 아직 변경은 commit/merge되지 않았고, 두 budget migration은 운영에 적용하지 않았다. 사용자가 승인한 대상은 `20261027000000_ai_spend_budget.sql`과 `20261028000000_ai_spend_summary.sql`뿐이다. 공유 provider key 한도나 결제 설정은 바꾸지 않았다.
+- 독립 검증 결과: backend lint·typecheck, 전체 175 files / 2,253 tests, disposable PostgreSQL 3 files / 23 tests, `npm run eval -- --labels` 및 Next build 통과. Swift `TaskforceKit` 전체 59 suites / 514 tests, macOS 앱 9 suites / 86 tests 및 focused auth 회귀 96 tests가 통과했다. 이들은 local evidence이며 실제 provider 인증을 입증하지 않는다.
+- 웹사이트 PR [#29](https://github.com/songch9511/taskforce/pull/29)은 Draft다. metadata guard, 웹 보안 업데이트와 설치 안내가 준비됐고 website CI·Vercel Preview는 성공했지만, DMG 공개 링크는 비활성이다. 출시 완료 전 실제 사이트 다운로드 → 설치 → 실행과 Google OAuth·연결 → 원문 수집 → 할 일 표시를 확인해야 한다. 실제 OpenRouter 계정 privacy 설정 및 운영 run flag·actor·credit 상태도 아직 확인되지 않았다.
+- W3는 **부분 완료**다. 일반 로그아웃은 `.local`로 병합 PR [#81](https://github.com/songch9511/taskforce-new/pull/81)이 구현했고, 앱의 저장본 정리는 [#83](https://github.com/songch9511/taskforce-new/pull/83)에 포함됐다. PR #61의 잘못된 “모든 기기” 안내는 #81에서 교체됐다. Mac·iPhone 실제 기기 로그아웃, 데이터·진행 중 요청 정리, 다른 기기 세션 유지·갱신 및 Google 취소·재시도 E2E는 아직 실행하지 않았다. W3 완료는 이 `.local` 경로의 기기 검증과 실제 인증·취소 E2E가 끝난 뒤다. 이미 존재하는 계정 병합은 W3 완료 조건이 아니다.
+- W1 독립 이슈는 W3를 기다릴 필요가 없다. 기존 알림 대상과 Review 목록의 불일치를 고친 PR [#65](https://github.com/songch9511/taskforce-new/pull/65)은 2026-10-02 병합됐다. 안전한 소스별 일괄 확인은 정확도를 유지해야 하고 선택·부분 실패 UX를 정하는 별도 제품 변경이다. W1은 진행 가능 상태로 유지하며, 근거 없는 자동 배정이나 임계값 완화는 하지 않는다.
+
 다른 에이전트(Codex 등)가 이 저장소를 이어받을 때 먼저 읽는 문서다. 규칙은 [CLAUDE.md](../CLAUDE.md), 기능 위치는 [FEATURE_MAP.md](FEATURE_MAP.md), 남은 출시 일은 [GO_LIVE.md](GO_LIVE.md)와 [런북 체크리스트](go-live/runbook.md)가 기준이다. 이 문서는 PR #54 완료 상태, W3 치명적 경로·W2 재검증·W3 로그인 사용성·W1 확인 부담 수정과 **2026-09-30 09:00 UTC QA의 당시 기록 및 후속 작업 승인 범위**를 함께 담는다.
 
 ## 1. 지금 상태
@@ -130,9 +143,9 @@
 - 이번 단계 전후 원본 공유 checkout의 `main`/HEAD `72cbe39`, index, 상태 목록과 스냅샷 파일 27개 해시가 모두 같다. 공유 폴더의 다른 세션 변경은 보존했고 새 코드 PR당 2개/2개/8개 파일만 커밋했다. HANDOFF는 별도 문서 브랜치로 분리했다.
 - #62에서 저장소 필수 검사가 아닌 stock `swift format lint --strict`도 시도했으나 기존 4칸 들여쓰기를 기본 2칸 규칙과 비교해 실패했다. 저장소에는 그 formatter 설정이 없으므로 기존 스타일을 유지했다. 필수 검사의 실패로 세지 않으며 이 부가 검사를 통과했다고 표현하지 않는다.
 - **Google 취소 멈춤: 재현 검증 대기.** 고정 GoogleSignIn-iOS 10.0.0은 AppAuth 사용자 취소와 OAuth `access_denied`를 `.canceled`로 전달한다. 앱은 취소를 조용히 처리하고 완료 경로의 `onFinish`가 런처 자동 닫기 중지를 해제한다. 이 코드 조사만으로 실제 기기 검증을 완료 처리하지 않는다. Mac·iPhone 각각 취소, 권한 거절, 취소 직후 재시도를 실행해 로그인 버튼과 런처가 다시 반응해야 닫는다. 멈춤이 재현되면 호출 흐름과 로그를 근거로 수정하며, 지금은 watchdog·타이머·강제 초기화를 추가하지 않는다.
-- **일반 로그아웃: 정책 확정(2026-10-01 KST), 구현 [U1 PR1 #81](https://github.com/songch9511/taskforce-new/pull/81)(미병합) · 실제 기기 E2E 대기.** 기본은 명시적 `.local`로 이 기기 세션만 종료한다. 다른 기기의 세션은 유지하며, 모든 기기 로그아웃은 필요할 때 별도의 명시적 동작으로 다룬다. U1 PR1이 `SessionStore.signOut()`을 `.local`로 바꾸고, 계정이 이 기기를 떠날 때(로그아웃 · 만료 · 계정 삭제 · 전환) 부르는 정리 지점 `SessionStore.onSignedOut` 한 곳을 두었다(지금은 Mac 런처 화면 · 목록 · 진행 중 작업. U1 PR3 저장본도 여기에 등록). 늦은 응답은 `NowStore` · `AccountStore`의 세대 번호로 버리고, Supabase · API 요청은 디스크 응답 캐시 없는 URLSession으로 보낸다. 로컬 테스트(SwiftPM · Mac 앱)는 통과했고 Mac · iPhone 실제 기기 확인은 남았다. 구현 전 기록: 현재 기기의 화면·계정별 캐시·진행 중 요청을 정리하고 늦은 응답으로 이전 계정 데이터가 다시 보이지 않는지, 다른 기기 세션과 갱신은 유지되는지 검증한다. **PR #61의 모든 기기 안내는 실제 `.local` 동작 변경과 함께 수정·검증해야 하며 현재 상태를 최종 정책 구현 완료로 머지하지 않는다.** SDK의 세션 정리는 재사용한다. [공식 signout 문서](https://supabase.com/docs/guides/auth/signout)는 두 범위를 지원하며, 폐기한 세션의 access token도 만료까지 유효할 수 있다고 설명한다. 다른 기기의 즉시 화면 종료를 global 검증 기준으로 삼지 않는다.
+- **일반 로그아웃: 정책 확정(2026-10-01 KST), 코드 구현 [U1 PR1 #81](https://github.com/songch9511/taskforce-new/pull/81)(2026-10-03 병합, `307209f`) · 실제 기기 E2E 대기.** 기본은 명시적 `.local`로 이 기기 세션만 종료한다. 다른 기기의 세션은 유지하며, 모든 기기 로그아웃은 필요할 때 별도의 명시적 동작으로 다룬다. #81은 `SessionStore.signOut()`을 `.local`로 바꾸고 API 401 복구 문구에서 모든 기기 로그아웃 안내를 제거했으며, 계정이 이 기기를 떠날 때(로그아웃 · 만료 · 계정 삭제 · 전환) 부르는 정리 지점 `SessionStore.onSignedOut`을 두었다. 현재 기기의 런처 화면 · 메모리 목록 · 진행 중 요청은 초기화하고 늦은 응답은 `NowStore` · `AccountStore` 세대 번호로 버리며, API 응답 디스크 캐시를 끈다. Mac 저장본 정리는 후속 U1 PR에서 같은 정리 지점에 등록됐고 코드 테스트를 통과했다. #81에는 `.local` 뒤 다른 기기 세션 갱신 유지와 늦은 응답 정리의 모의 회귀 테스트가 있다. PR #61은 2026-10-03 닫혔고 #81로 대체됐다. **실제 Mac · iPhone에서 로그아웃, 이전 계정 데이터·요청 정리, 다른 기기 세션 유지·갱신을 검증하지 않았으므로 W3는 부분 완료다.** 출시 전 실제 기기 확인은 남았다. SDK의 세션 정리는 재사용한다. [공식 signout 문서](https://supabase.com/docs/guides/auth/signout)는 두 범위를 지원하며, 폐기한 세션의 access token도 만료까지 유효할 수 있다고 설명한다. 다른 기기의 즉시 화면 종료를 global 검증 기준으로 삼지 않는다.
 - **계정 통합: 이번 범위 밖으로 보류, 완료 아님.** 이미 존재하는 두 계정의 데이터 병합은 할 일·연결·동의·중복 처리 결정을 포함하는 별도 기능이다. 현재 계정·로그인 수단 표시와 Apple 이메일 가리기 사용 시 기존 Apple 로그인으로 돌아가는 안내는 후속 구현·검증 항목으로 남긴다. 이후에는 로그인한 기존 계정에 로그인 수단을 추가하는 [공식 identity linking](https://supabase.com/docs/guides/auth/auth-identity-linking)을 먼저 검토하되, 이를 두 계정의 앱 데이터 병합과 같은 작업으로 취급하지 않는다. 이번에는 UI·인증 설정·운영 계정·데이터를 변경하지 않는다.
-- **상태 집계 원칙:** W3는 **부분 완료**다. 위 세 버그 수정의 코드·로컬 테스트·CI 완료와 W3 전체 완료는 다르다. `.local` 구현은 W1과 별도 PR([U1 PR1 #81](https://github.com/songch9511/taskforce-new/pull/81), 미병합)로 추적한다. 그 PR은 실제 로그아웃 동작, PR #61 안내 문구, 현재 기기의 화면·캐시·진행 중 요청 정리, 다른 기기 세션·갱신 유지 검증을 함께 마쳐야 한다. PR #62는 병합됐고(`90ea9fb`) U1 PR1은 그 위에 있다. Google 취소는 재현 검증 대기, 실제 OAuth·연결·기기 E2E는 출시 전 필수 미실행이다. **W3 최종 완료 조건은 로그아웃 구현 완료 + 실제 인증·취소 E2E 통과**이며, 계정 통합은 별도 기능이라 이 완료 조건에 포함하지 않는다. 보류·미실행·미재현을 성공 또는 완료로 집계하지 않는다.
+- **상태 집계 원칙:** W3는 **부분 완료**다. 위 세 버그 수정의 코드·로컬 테스트·CI 완료와 W3 전체 완료는 다르다. `.local` 구현은 W1과 분리된 PR #81에서 병합됐다. PR #61의 모든 기기 안내도 #81에서 제거됐다. Mac 저장본 정리와 계정 간 늦은 응답 방지는 뒤이은 별도 U1 PR에서 추가됐다. 코드·모의 테스트는 있지만 실제 기기 로그아웃과 다른 기기 세션 갱신 검증은 남아 있다. Google 취소는 재현 검증 대기, 실제 OAuth·연결·기기 E2E는 출시 전 필수 미실행이다. **W3 최종 완료 조건은 로그아웃 동작·현재 기기 데이터와 진행 중 요청 정리·다른 기기 세션 유지 검증을 포함한 `.local` 경로 완료 + 실제 인증·취소 E2E 통과**이며, 계정 통합은 별도 기능이라 이 완료 조건에 포함하지 않는다. W3 미완료 항목은 독립적인 W1 작업을 막지 않는다. 보류·미실행·미재현을 성공 또는 완료로 집계하지 않는다.
 
 ### W1 확인 부담 재검증 (2026-10-01 KST)
 
@@ -227,8 +240,8 @@
 | Mac·iPhone Apple·Google 로그인과 세션 복원 | 서명 Release에서 제공자별 로그인 후 앱 재실행으로 같은 계정 세션 복원, 해당 세션의 서버 API 정상 응답 | 미실행 |
 | 실제 연결 → 원문 수집 → 할 일 표시 | 연결한 제공자의 새 원문과 앱에 표시된 할 일·근거를 대조 | 미실행 |
 | 계정 전환 격리 | 전환 후 이전 계정 화면·캐시·진행 중 요청의 늦은 결과가 노출되지 않음 | 미실행 |
-| 취소·권한 거절·직후 재시도 | Mac·iPhone에서 로그인 버튼과 런처가 다시 반응하고 재로그인 가능 | 재현 검증 대기 |
-| 일반 로그아웃 `.local` | 현재 기기 화면·캐시·요청 정리 및 재실행 후 로그아웃 유지, 다른 기기의 세션·갱신 유지, 안내 문구와 동작 일치 | 정책 확정, 구현·실제 검증 대기 |
+| 취소·권한 거절·직후 재시도 | Mac·iPhone에서 로그인 버튼과 런처가 다시 반응하고 재로그인 가능 | 실제 기기 E2E 미실행 |
+| 일반 로그아웃 `.local` | 현재 기기 화면·캐시·요청 정리 및 재실행 후 로그아웃 유지, 다른 기기의 세션·갱신 유지, 안내 문구와 동작 일치 | 활성 Mac 작업본에 구현됨; 실제 기기 E2E 미실행 |
 
 다음 기존 런북 항목도 유지한다.
 

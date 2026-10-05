@@ -1,3 +1,4 @@
+import { AiBudgetError } from "@/lib/ai/budget-error";
 import { z } from "zod";
 
 import { markActionSeen } from "@/lib/actions/service";
@@ -83,7 +84,7 @@ export async function POST(request: Request, { params }: Params) {
         quote: body.data.quote,
       },
       deadline,
-      processDepsFromEnv(deadline),
+      processDepsFromEnv(admin, context.user.id, deadline),
     );
     // 이미 있는 할 일에 붙었으면 사용자가 방금 그 할 일을 본 것이다: 신고로 붙은 AI 병합 · 변경으로 바뀜 점이 켜지지 않게 본 것으로 남긴다
     // (사용자 자신의 행동은 바뀜이 아니다, lib/actions/changed.ts). 곁가지라 실패해도 신고 결과는 그대로 돌려준다 (예: 마이그레이션 20261025000000 전)
@@ -94,6 +95,7 @@ export async function POST(request: Request, { params }: Params) {
     }
     return Response.json(result satisfies MissingReportResponse);
   } catch (error) {
+    if (error instanceof AiBudgetError) return errorResponse(error.code === "ai_budget_exhausted" ? 403 : 503, error.code, error.userMessage);
     if (error instanceof QuoteNotInSourceError) return errorResponse(400, "invalid_request", error.message);
     // 처리 도중에 동의를 철회함 (모델 호출 직전 확인)
     if (error instanceof ConsentRequiredError) return consentRequired();

@@ -1,9 +1,11 @@
+import { AiBudgetError } from "@/lib/ai/budget-error";
 import "server-only";
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 import { SupabaseActionStore, SupabaseTaskLinks } from "@/lib/actions/db-store";
 import { SUMMARY_COLUMNS } from "@/lib/actions/service";
+import { budgetFetch } from "@/lib/ai/budget";
 import { DeadlineExceededError } from "@/lib/ai/deadline";
 import { embed, embedConfigFromEnv, EmbedError } from "@/lib/ai/embed";
 import { decide, jevConfigFromEnv, JevError } from "@/lib/ai/jev";
@@ -60,10 +62,11 @@ export const MERGE_MIN_MS = 5_000;
  * 추출(LLM)은 첫 호출부터 추론량을 제한하며 뒤의 판정 · 병합에 AFTER_EXTRACT_MS를 남긴다.
  * 없으면 배경 처리(원문 처리 · 동기화 · 재처리 cron): 호출마다 제 시간 한도(LLM 90초 · Jev · 임베딩 30초)만 쓴다.
  */
-export function processDepsFromEnv(deadline?: number): ProcessDeps {
-  const llm = llmConfigFromEnv();
-  const jev = jevConfigFromEnv();
-  const embedding = embedConfigFromEnv();
+export function processDepsFromEnv(admin: SupabaseClient, userId: string, deadline?: number): ProcessDeps {
+  const fetch = budgetFetch(admin, userId);
+  const llm = { ...llmConfigFromEnv(), fetch };
+  const jev = { ...jevConfigFromEnv(), fetch };
+  const embedding = { ...embedConfigFromEnv(), fetch };
   if (deadline !== undefined) {
     llm.deadline = deadline - AFTER_EXTRACT_MS;
     jev.deadline = deadline;
@@ -127,6 +130,7 @@ export function withUserLock<T>(userId: string, task: () => Promise<T>, deadline
 
 /** 사용자에게 보여도 되는 오류만 그대로 두고, DB 오류 등은 일반 문구로 바꾼다 (자세한 내용은 서버 로그). */
 function userFacingError(error: unknown): string {
+  if (error instanceof AiBudgetError) return error.userMessage;
   if (error instanceof ConsentRequiredError) return CONSENT_WITHDRAWN_MESSAGE;
   if (error instanceof LlmError || error instanceof JevError || error instanceof EmbedError) return error.message.slice(0, 300);
   return PROCESSING_FAILED_MESSAGE;
@@ -146,6 +150,7 @@ const AI_CONFIG_ERROR = /[A-Z0-9]+_[A-Z0-9_]+/;
  * 오류 문구는 lib/ai의 llm.ts · jev.ts · embed.ts가 만든 것이다: "… 요청 실패 (상태 코드)" · "… 시간 초과 …" (process.test.ts가 실제 함수의 오류로 고정한다).
  */
 export function sourceFailureCode(error: unknown): SourceFailureCode {
+  if (error instanceof AiBudgetError) return error.code;
   if (error instanceof ConsentRequiredError) return "consent";
   if (error instanceof DeadlineExceededError) return error.stage === "lock" || error.stage === "merge" ? "internal" : "ai_timeout";
   // 배경 처리의 임베딩은 시간 초과를 그대로 던진다 (embed.ts)
@@ -190,7 +195,7 @@ export const RETRY_MAX_ATTEMPTS = 3;
 
 /** 실패 기록 (processing_summary): 몇 번째 시도였고 다시 해 볼 만한지. 동의 철회 · 마지막 시도는 다시 하지 않는다 */
 export function failureSummary(error: unknown, attempt: number, now = new Date()): { attempt: number; retryable: boolean; failed_at: string } {
-  return { attempt, retryable: !(error instanceof ConsentRequiredError) && attempt < RETRY_MAX_ATTEMPTS, failed_at: now.toISOString() };
+  return { attempt, retryable: !(error instanceof ConsentRequiredError) && !(error instanceof AiBudgetError && error.code === "ai_budget_exhausted") && attempt < RETRY_MAX_ATTEMPTS, failed_at: now.toISOString() };
 }
 
 export type ProcessResult = {
@@ -231,7 +236,7 @@ export async function processSource(
    */
   source: { id: string; userId: string; attempt?: number; retry?: boolean; notify?: boolean },
   input: ExtractInput,
-  deps: ProcessDeps = processDepsFromEnv(),
+  deps: ProcessDeps = processDepsFromEnv(admin, source.userId),
 ): Promise<ProcessResult> {
   const sourceId = source.id;
   const scoped = <T extends { eq: (column: string, value: string) => T }>(query: T) => query.eq("id", sourceId).eq("user_id", source.userId);
@@ -355,7 +360,7 @@ export async function processTaskSource(
   admin: SupabaseClient,
   source: { id: string; userId: string; connectionId: string },
   task: TaskInput & { identity: UserIdentity },
-  deps: Pick<ProcessDeps, "embed" | "decide"> = processDepsFromEnv(),
+  deps: Pick<ProcessDeps, "embed" | "decide"> = processDepsFromEnv(admin, source.userId),
 ): Promise<ProcessResult> {
   const scoped = <T extends { eq: (column: string, value: string) => T }>(query: T) => query.eq("id", source.id).eq("user_id", source.userId);
   const check = consentCheck(admin, source.userId);
@@ -405,6 +410,7 @@ export async function processTaskSource(
         processed_at: new Date().toISOString(),
         processing_error: userFacingError(error),
         processing_error_code: sourceFailureCode(error),
+        processing_summary: { retryable: !(error instanceof AiBudgetError && error.code === "ai_budget_exhausted") },
       }),
     );
     // 처리를 마치지 못한 할 일은 동의한 뒤 동기화가 다시 처리한다 (pendingTasks). 닫힌 실패가 아니라 source_failed는 남기지 않는다.

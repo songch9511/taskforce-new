@@ -22,12 +22,17 @@ public final class SessionStore {
     /// 방금 Google 로그인이 준 이름: 그 사용자의 프로필을 처음 읽을 때 한 번 꺼내 쓴다 (`takeAccountNameFill`)
     private var accountNameFill: AccountNameFill?
 
+    public static let googleOnlyNotice = "This Mac app supports Google sign-in only. Existing Apple accounts and their data are preserved, but Apple-only accounts cannot sign in or delete their account here. Signing in with Google may open a different account."
+    private let googleOnly: Bool
+    private var verifiedGoogleUserID: UUID?
+    private var googleSignInInProgress = false
     private let auth: AuthClient
     private var listenTask: Task<Void, Never>?
     /// 계정이 이 기기를 떠날 때 부를 정리 (`onSignedOut`)
     @ObservationIgnored private var signedOutCleanups: [@MainActor (UUID) -> Void] = []
 
-    public init(auth: AuthClient) {
+    public init(auth: AuthClient, googleOnly: Bool = false) {
+        self.googleOnly = googleOnly
         self.auth = auth
     }
 
@@ -81,6 +86,15 @@ public final class SessionStore {
         if event != .signedOut, let session, currentSession?.user.id != session.user.id {
             appliedSession = currentSession
         }
+        if event == .signedOut { verifiedGoogleUserID = nil }
+        if googleOnly, event != .signedOut, let appliedSession,
+           !Self.allowsGoogleSession(appliedSession, verifiedGoogleUserID: verifiedGoogleUserID) {
+            state = googleSignInInProgress ? .loading : .signedOut
+            signInMethods = .unknown
+            accountNameFill = nil
+            notice = Self.googleOnlyNotice
+            return
+        }
         state = Self.state(for: event, session: appliedSession)
         if case .signedIn = state, let appliedSession {
             signInMethods = SignInMethods(user: appliedSession.user)
@@ -88,6 +102,13 @@ public final class SessionStore {
             signInMethods = .unknown
             accountNameFill = nil
         }
+    }
+
+    // Linked Apple/Google accounts must prove Google sign-in again in this process:
+    // provider membership alone does not identify how a persisted session authenticated.
+    nonisolated static func allowsGoogleSession(_ session: Session, verifiedGoogleUserID: UUID?) -> Bool {
+        let methods = SignInMethods(user: session.user)
+        return methods.hasGoogle && (methods.providers == ["google"] || verifiedGoogleUserID == session.user.id)
     }
 
     static let sessionNotSavedMessage = "Couldn't save your sign-in. Try again."
@@ -101,6 +122,7 @@ public final class SessionStore {
 
     /// Sign in with Apple이 돌려준 ID 토큰으로 Supabase에 로그인한다.
     public func signInWithApple(idToken: String, nonce: SignInNonce) async {
+        guard !googleOnly else { notice = Self.googleOnlyNotice; return }
         errorMessage = nil
         notice = nil
         do {
@@ -119,6 +141,11 @@ public final class SessionStore {
     public func signInWithGoogle(idToken: String, accessToken: String, nonce: SignInNonce) async -> Bool {
         errorMessage = nil
         notice = nil
+        googleSignInInProgress = true
+        defer {
+            googleSignInInProgress = false
+            if googleOnly { apply(event: .initialSession, session: auth.currentSession) }
+        }
         do {
             let session = try await auth.signInWithIdToken(
                 credentials: OpenIDConnectCredentials(provider: .google, idToken: idToken, accessToken: accessToken, nonce: nonce.raw)
@@ -127,6 +154,14 @@ public final class SessionStore {
             guard auth.currentSession?.user.id == session.user.id else {
                 errorMessage = Self.sessionNotSavedMessage
                 return false
+            }
+            if googleOnly {
+                guard SignInMethods(user: session.user).hasGoogle else {
+                    notice = Self.googleOnlyNotice
+                    return false
+                }
+                verifiedGoogleUserID = session.user.id
+                apply(event: .signedIn, session: session)
             }
             accountNameFill = AccountNameFill(user: session.user)
             return true
@@ -138,6 +173,7 @@ public final class SessionStore {
 
     /// 이메일 · 비밀번호 로그인 (App Store 심사 계정용). 가입 화면은 없다: 서버가 허용한 계정만 로그인된다.
     public func signInWithEmail(email: String, password: String) async {
+        guard !googleOnly else { notice = Self.googleOnlyNotice; return }
         errorMessage = nil
         notice = nil
         let email = email.trimmingCharacters(in: .whitespacesAndNewlines)

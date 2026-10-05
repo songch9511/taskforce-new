@@ -26,6 +26,7 @@ public struct RunLane: Equatable, Sendable {
     public enum FailureKind: Equatable, Sendable {
         /// 처리 도중 외부 AI 동의를 철회함
         case consent
+        case aiBudgetExhausted, aiPricingUnavailable, aiProviderBoundViolation
         /// AI 공급자가 확정적으로 거절함
         case rejected
         /// 다시 준비 한도를 넘음
@@ -37,6 +38,9 @@ public struct RunLane: Equatable, Sendable {
 
         init(_ error: String?) {
             switch error {
+            case "ai_pricing_unavailable": self = .aiPricingUnavailable
+            case "ai_provider_bound_violation": self = .aiProviderBoundViolation
+            case "ai_budget_exhausted": self = .aiBudgetExhausted
             case "consent": self = .consent
             case "rejected": self = .rejected
             case "retries_exhausted": self = .retriesExhausted

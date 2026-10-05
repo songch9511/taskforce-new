@@ -154,7 +154,7 @@ struct LauncherListPane: View {
             MacListRow(title: "Send as source", accessory: LauncherFlowView.oneLine(text), selected: selected)
         case .addAction(let title):
             MacListRow(title: "Add “\(title)”", selected: selected)
-        case .signIn, .signInWithGoogle, .signInWithEmail:
+        case .signInWithGoogle:
             // 로그아웃 목록은 한 열 (`LauncherFlowView`)
             EmptyView()
         }

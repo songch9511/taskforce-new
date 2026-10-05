@@ -173,7 +173,7 @@ struct SessionStoreSaveTests {
     // MARK: Google 로그인 (`signInWithGoogle`)
 
     /// Google ID 토큰 로그인(`/token?grant_type=id_token`)에 이 세션을 돌려주는 서버. 받은 요청이 `signInWithGoogle`의 값인지 본다
-    func store(storage: any AuthLocalStorage, signingIn session: Session) throws -> SessionStore {
+    func store(storage: any AuthLocalStorage, signingIn session: Session, googleOnly: Bool = false) throws -> SessionStore {
         let body = try AuthClient.Configuration.jsonEncoder.encode(session)
         return SessionStore(auth: AuthClient(
             url: URL(string: "https://example.supabase.co/auth/v1")!, localStorage: storage,
@@ -189,7 +189,7 @@ struct SessionStoreSaveTests {
                 return (body, HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: ["Content-Type": "application/json"])!)
             },
             autoRefreshToken: false
-        ))
+        ), googleOnly: googleOnly)
     }
 
     /// Supabase가 Google ID 토큰으로 만든 사용자 (이름은 `user_metadata`에)
@@ -457,5 +457,55 @@ struct SessionStoreSignOutTests {
         #expect(store.state == next)
         #expect(departed.ids == [first.user.id])
         #expect(departed.states == [next])
+    }
+}
+
+@MainActor
+struct GoogleOnlySessionTests {
+    @Test(arguments: [AuthChangeEvent.initialSession, .signedIn, .tokenRefreshed])
+    func legacySessionsStayOutsideTheApp(event: AuthChangeEvent) throws {
+        for providers: Set<String> in [["apple"], ["email"], [], ["apple", "google"]] {
+            var session = SessionStoreTests().session(expiresIn: 3600)
+            session.user.appMetadata = ["providers": .array(providers.map { .string($0) })]
+            let auth = AuthClient(url: URL(string: "https://example.supabase.co/auth/v1")!,
+                localStorage: SavedSessionStorage(data: try JSONEncoder().encode(session)), autoRefreshToken: false)
+            let store = SessionStore(auth: auth, googleOnly: true)
+            store.apply(event: event, session: session)
+            #expect(store.state == .signedOut)
+            #expect(store.notice == SessionStore.googleOnlyNotice)
+            #expect(auth.currentSession?.user.id == session.user.id) // no account mutation
+        }
+    }
+
+    @Test func googleOnlySavedSessionRemainsAvailable() throws {
+        let session = SessionStoreSaveTests().googleSession()
+        let auth = AuthClient(url: URL(string: "https://example.supabase.co/auth/v1")!,
+            localStorage: SavedSessionStorage(data: try JSONEncoder().encode(session)), autoRefreshToken: false)
+        let store = SessionStore(auth: auth, googleOnly: true)
+        store.apply(event: .initialSession, session: session)
+        #expect(store.state == .signedIn(userID: session.user.id, email: session.user.email))
+    }
+
+    @Test func linkedAccountRequiresFreshGoogleAndLosesProofOnSignOut() async throws {
+        let fixtures = SessionStoreSaveTests()
+        var session = fixtures.googleSession()
+        session.user.appMetadata = ["provider": "apple", "providers": ["apple", "google"]]
+        let store = try fixtures.store(storage: SavedSessionStorage(data: try JSONEncoder().encode(session)), signingIn: session, googleOnly: true)
+        store.apply(event: .initialSession, session: session)
+        #expect(store.state == .signedOut)
+        #expect(await fixtures.signInWithGoogle(store))
+        #expect(store.state == .signedIn(userID: session.user.id, email: session.user.email))
+        store.apply(event: .signedOut, session: nil)
+        store.apply(event: .tokenRefreshed, session: session)
+        #expect(store.state == .signedOut)
+    }
+
+    @Test func removedSignInMethodsNeverContactAuth() async {
+        let auth = AuthClient(url: URL(string: "https://example.supabase.co/auth/v1")!, localStorage: EmptyStorage(),
+            fetch: { _ in Issue.record("Removed sign-in method made a request"); throw URLError(.badURL) }, autoRefreshToken: false)
+        let store = SessionStore(auth: auth, googleOnly: true)
+        await store.signInWithApple(idToken: "unused", nonce: SignInNonce(raw: "nonce"))
+        await store.signInWithEmail(email: "unused@example.com", password: "unused")
+        #expect(store.notice == SessionStore.googleOnlyNotice)
     }
 }

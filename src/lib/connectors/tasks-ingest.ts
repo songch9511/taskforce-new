@@ -35,6 +35,7 @@ export type TaskState = {
   retry?: { sourceId: string; version: string };
   /** 지금 처리 중인 버전이 있다 (다른 실행). 이번에는 건너뛴다 */
   inFlight?: boolean;
+  blockedVersion?: string;
   /** Action과 이어져 있는가 (action_links) */
   linked: boolean;
 };
@@ -90,6 +91,10 @@ export async function ingestTaskItems(
   const states = await deps.taskStates(connection, settled.map((item) => item.externalId));
   const fresh = settled.filter((item) => {
     const state = states.get(item.externalId);
+    if (state?.blockedVersion === item.externalVersion) {
+      result.skipped.unchanged++;
+      return false;
+    }
     if (state?.inFlight) {
       result.deferred.push(item.externalId);
       return false;

@@ -206,20 +206,21 @@ struct ConnectionsTests {
 
     /// Google · Gmail: Google이 요구하는 앱 안 공개 (google-verification.md 2-4). Gmail은 확인 없이 권한 화면으로 가지 않는다
     @Test func googleAndGmailDisclosureCopy() {
+        let aiDisclosure = "Read-only. Sent to AI only after your consent. Taskforce asks AI providers not to use your text for training or keep it after a request. If no provider meets those conditions, we don't send it."
         #expect(ConnectionProvider.gmail.readsBeforeConnecting == [
             "Email you sent or received. Newsletters and promotions are skipped.",
-            "Read-only. Sent to AI only after your consent. Never used for training.",
+            aiDisclosure,
             "Beta: reconnect every 7 days.",
         ])
         // Meet 줄은 G2 dev 회의 시험 결과에 맞춰 고친다 (서버 LIST_ATTENDED_MEETINGS와 같이): 그때까지 그대로
         #expect(ConnectionProvider.google.readsBeforeConnecting == [
             "Calendar: event titles, times, attendees",
             "Meet: transcripts of meetings you attend",
-            "Read-only. Sent to AI only after your consent. Never used for training.",
+            aiDisclosure,
         ])
-        // 두 곳 모두 "AI로 보내는 것은 동의 뒤, 학습에 쓰지 않음"을 밝힌다
+        // 두 곳 모두 "동의 뒤 AI로 보내며, AI 제공자에게 학습 · 요청 뒤 보관을 요구"한다고 밝힌다
         for provider in [ConnectionProvider.google, .gmail] {
-            #expect(provider.readsBeforeConnecting.contains("Read-only. Sent to AI only after your consent. Never used for training."))
+            #expect(provider.readsBeforeConnecting.contains(aiDisclosure))
         }
     }
 

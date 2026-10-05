@@ -191,26 +191,35 @@ struct LauncherFlowView: View {
 
     @ViewBuilder
     private var signedOutRows: some View {
-        let items = model.items
-        ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
-            signedOutRow(item, selected: index == model.selection)
-                .id(index)
-                .onTapGesture {
-                    model.select(index)
-                    model.run(item)
-                }
+        VStack(alignment: .leading, spacing: TFSpace.md) {
+            Text(SessionStore.googleOnlyNotice)
+                .font(TFFont.footnote)
+                .foregroundStyle(TFColor.textSecondary)
+                .padding(.horizontal, TFSpace.md)
+            Link("Contact for account access or deletion help", destination: AccountDeletion.contactURL)
+                .font(TFFont.footnote)
+                .padding(.horizontal, TFSpace.md)
+            if !GoogleSignInFlow.isAvailable {
+                Text("Google sign-in is unavailable in this build.")
+                    .font(TFFont.footnote)
+                    .padding(.horizontal, TFSpace.md)
+            }
+            ForEach(Array(model.items.enumerated()), id: \.element.id) { index, item in
+                signedOutRow(item, selected: index == model.selection)
+                    .id(index)
+                    .onTapGesture {
+                        model.select(index)
+                        model.run(item)
+                    }
+            }
         }
     }
 
     @ViewBuilder
     private func signedOutRow(_ item: LauncherItem, selected: Bool) -> some View {
         switch item {
-        case .signIn:
-            LauncherRow(title: "Sign in with Apple", selected: selected, leading: .symbol("apple.logo"))
         case .signInWithGoogle:
             LauncherRow(title: SignInWithGoogleButton.title, selected: selected, leading: .google)
-        case .signInWithEmail:
-            LauncherRow(title: "Sign in with email", selected: selected, leading: .symbol("envelope"))
         case .command(let command):
             LauncherRow(title: command.title, selected: selected, leading: .symbol(command.symbolName))
         default:

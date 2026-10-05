@@ -105,6 +105,22 @@ npx supabase db query --linked -f supabase/migrations/20261017000000_connection_
 # 트랙 2-3 · 2-4가 더한 파일도 같은 방식으로
 ```
 
+### Mac beta AI 원가 한도 배포
+
+사용자당 누적 원가 한도 `$10`은 기존 운영 AI 호출에 과거 원가를 소급하지 않는 새 ledger다. 이 배포에서만 다음 순서를 쓴다.
+
+1. PR의 source commit과 필수 CI를 확인하고 code를 먼저 배포한다. 새 코드의 `budgetFetch`는 예약 RPC가 없거나 실패하면 provider를 부르지 않고 닫힌다. DB migration 전에는 유료 AI 경로가 잠시 실패할 수 있으므로 migration 완료 전 실제 AI 요청은 보내지 않는다.
+2. 배포 SHA와 Vercel Production `READY`를 확인한 뒤 기존 처리 중 AI 요청이 없는지 상태 개수만 조회한다. 남아 있으면 끝날 때까지 기다린다. 원문 본문·사용자 식별자·이메일은 읽지 않는다.
+3. project ref `tirtdojsahotjfgdsryi`를 확인하고, 아래 승인된 파일 두 개만 각각 별도 명령으로 적용한다. `db push`나 그 밖의 pending migration은 실행하지 않는다.
+
+```bash
+npx supabase db query --linked --project-ref tirtdojsahotjfgdsryi -f supabase/migrations/20261027000000_ai_spend_budget.sql
+npx supabase db query --linked --project-ref tirtdojsahotjfgdsryi -f supabase/migrations/20261028000000_ai_spend_summary.sql
+```
+
+4. 각 파일 뒤에 필요한 table/function/constraint 존재 여부와 RLS·function privileges만 조회한다. 1번 뒤에는 ledger table, `reserve_ai_spend`·`settle_ai_spend`, 확장된 source error constraint가 있어야 한다. 2번 뒤에는 `ai_spend_summary`가 추가돼야 한다. 권한은 reserve/settle/summary 모두 `service_role` 실행만 허용해야 한다. 예상과 다르면 다음 단계로 가지 않는다.
+5. API 배포 SHA, migration 상태, authenticated summary, 예산을 통과하는 최소 실제 AI 요청, supplier cost 정산을 각각 확인한다. 실제 OAuth와 앱에서 시작한 요청 전에는 public download를 열지 않는다.
+
 ### Auth 설정
 
 Supabase → Authentication:

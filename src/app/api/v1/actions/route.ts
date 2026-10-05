@@ -1,3 +1,4 @@
+import { budgetFetch } from "@/lib/ai/budget";
 import { createUserAction } from "@/lib/actions/service";
 import { embed, embedConfigFromEnv } from "@/lib/ai/embed";
 import { authenticateRequest } from "@/lib/api/auth";
@@ -22,7 +23,7 @@ export async function POST(request: Request) {
     trackedAction: ({ user }, sourceId, quote) => trackedActionSummary(createAdminClient(), { id: sourceId, userId: user.id }, quote),
     rateLimit: ({ user }) => takeRateLimit(createAdminClient(), user.id, "action_create", ACTION_CREATE_LIMIT),
     hasConsent: hasAiConsent,
-    embed: async (_context, text) => (await embed(embedConfigFromEnv(), [text])).vectors[0],
+    embed: async ({ user }, text) => (await embed({ ...embedConfigFromEnv(), fetch: budgetFetch(createAdminClient(), user.id) }, [text])).vectors[0],
     create: ({ user }, action) => createUserAction(createAdminClient(), user.id, action),
   });
 }

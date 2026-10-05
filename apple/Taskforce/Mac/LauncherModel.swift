@@ -1,6 +1,5 @@
 #if os(macOS)
 import AppKit
-import AuthenticationServices
 import Carbon.HIToolbox
 import Observation
 import TaskforceKit
@@ -186,7 +185,7 @@ final class LauncherModel {
     /// 패널 컨트롤러가 채운다
     var close: () -> Void = {}
     var presentationAnchor: () -> NSWindow? = { nil }
-    /// Apple · Google 로그인 창을 띄운 동안은 포커스를 잃어도 닫지 않는다
+    /// Google 로그인 창을 띄운 동안은 포커스를 잃어도 닫지 않는다
     private(set) var suspendsAutoClose = false
 
     /// 취소해도 되는 읽기 (물어보기 · 원문 읽기). 쓰기는 창을 닫아도 끝까지 보낸다.
@@ -217,8 +216,6 @@ final class LauncherModel {
     private var pendingDraft: UUID?
     /// 최근 원문을 다 읽었는지 (빈 목록과 읽는 중을 나눈다)
     private(set) var sourcesLoaded = false
-    private let signInFlow = AppleSignInFlow()
-    private var signInController: MacAppleSignInController?
 
     /// `saved`: 이 기기의 저장본 (앱은 App Group 위치, 테스트는 임시 폴더나 nil).
     /// `connectivity`: 연결 경로 (앱은 `Connectivity.updates()`, 기본은 바로 끝나는 스트림이라 연결 감시 없음).
@@ -1302,14 +1299,8 @@ final class LauncherModel {
             send(text)
         case .addAction(let title):
             startAdd(title)
-        case .signIn:
-            startSignIn()
         case .signInWithGoogle:
             startGoogleSignIn()
-        case .signInWithEmail:
-            // 이메일 로그인은 설정 창의 로그인 화면에서 (입력칸 둘)
-            UserDefaults.standard.set(true, forKey: SignInView.emailExpandedKey)
-            openSettings(.account)
         case .allowAI:
             openSettings(.ai)
         case .policyNotice(let notice):
@@ -1966,21 +1957,6 @@ final class LauncherModel {
 
     // MARK: 로그인
 
-    private func startSignIn() {
-        guard let session, let anchor = presentationAnchor() else { return }
-        suspendsAutoClose = true
-        NSApplication.shared.activate()
-        let controller = MacAppleSignInController(anchor: anchor) { [weak self] result in
-            guard let self else { return }
-            self.suspendsAutoClose = false
-            self.signInFlow.handle(result, session: session)
-            self.signInController = nil
-            self.focusRequest += 1
-        }
-        signInController = controller
-        controller.start(configure: signInFlow.configure)
-    }
-
     /// 런처의 "Sign in with Google" 행: 로그인 화면의 버튼과 같은 흐름을 런처 창 위에 띄운다
     private func startGoogleSignIn() {
         guard let session, let anchor = presentationAnchor() else { return }
@@ -2008,36 +1984,4 @@ extension LauncherModel.Screen {
     }
 }
 
-/// 런처의 "Sign in with Apple" 행: SignInWithAppleButton 없이 같은 요청을 보낸다 (결과 처리는 `AppleSignInFlow`)
-@MainActor
-final class MacAppleSignInController: NSObject, ASAuthorizationControllerDelegate, ASAuthorizationControllerPresentationContextProviding {
-    private let anchor: NSWindow
-    private let completion: (Result<ASAuthorization, Error>) -> Void
-
-    init(anchor: NSWindow, completion: @escaping (Result<ASAuthorization, Error>) -> Void) {
-        self.anchor = anchor
-        self.completion = completion
-    }
-
-    func start(configure: (ASAuthorizationAppleIDRequest) -> Void) {
-        let request = ASAuthorizationAppleIDProvider().createRequest()
-        configure(request)
-        let controller = ASAuthorizationController(authorizationRequests: [request])
-        controller.delegate = self
-        controller.presentationContextProvider = self
-        controller.performRequests()
-    }
-
-    func authorizationController(controller: ASAuthorizationController, didCompleteWithAuthorization authorization: ASAuthorization) {
-        completion(.success(authorization))
-    }
-
-    func authorizationController(controller: ASAuthorizationController, didCompleteWithError error: Error) {
-        completion(.failure(error))
-    }
-
-    func presentationAnchor(for controller: ASAuthorizationController) -> ASPresentationAnchor {
-        anchor
-    }
-}
 #endif

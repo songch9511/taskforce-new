@@ -202,7 +202,7 @@ struct ConsentDetails: View {
     static let sent = "Notes, documents, transcripts, messages, and email you connect or paste in, with the names and email addresses of people in them. Your name, nicknames, and email addresses, so the AI can recognize you. Your task titles and quotes. Questions you ask, with related tasks and quotes, including draft records. Hand off to AI only shows text for you to copy; Taskforce doesn't send it."
     static let drafts = "Your request. The task's title, status, owner, due date, and counterpart. Its quotes with nearby source text, and those sources' type, title, date, and the names and email addresses of people in them. Your name (or the first part of your email). Instructions and titles of earlier drafts for the same request. Text and quotes from Slack are left out; a task from Slack still sends its own title, status, owner, due date, and counterpart."
     static let receivers = "OpenRouter (USA), which routes each request to Fireworks, Together AI, DeepInfra, Microsoft Azure, or TypeSafe (all USA)."
-    static let protection = "Only providers that keep no data. Never used to train AI models. Stored on our servers in Sydney. Delete your account to delete it all."
+    static let protection = "AI providers process your text to make an answer. Taskforce asks them not to use it for training or keep it after a request. If no provider meets those conditions, Taskforce won't send the request. Taskforce stores your sources, tasks, and drafts separately under its own retention policy."
     static let withdraw = "Turn this off in \(settingsPath). Without it, Taskforce doesn't send or process your sources and doesn't write drafts: no new tasks are found, and a draft in progress stops before its next AI request. Existing tasks and drafts stay."
 
     var body: some View {
@@ -316,7 +316,7 @@ struct ConsentSettingsView: View {
     static let pageDescription = "What Taskforce sends to AI, and what it keeps."
     static let switchTitle = "Use AI on new sources"
     static let providersTitle = "AI providers"
-    static let providersDetail = "Only providers that keep no data and never train on it. If none qualifies, the request fails."
+    static let providersDetail = "Taskforce asks AI providers not to use your text for training or keep it after a request. If no provider meets those conditions, we don't send your request."
 
     var body: some View {
         @Bindable var account = account

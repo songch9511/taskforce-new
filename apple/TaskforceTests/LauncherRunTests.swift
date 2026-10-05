@@ -450,7 +450,7 @@ struct LauncherRunTests {
             RunLaneText.make(lane, platform: .macOS, now: now, timeZone: utc).map { Card(title: $0.title, subtitle: $0.subtitle) }
         }
         #expect(card(lane(.working)) == .init(title: "Writing draft", subtitle: "Started 14:03"))
-        #expect(card(lane(.paused(.credit))) == .init(title: "Draft paused", subtitle: "Not enough credits. New paid steps are paused."))
+        #expect(card(lane(.paused(.credit))) == .init(title: "Draft paused", subtitle: "Not enough credits. The draft will resume when credits are added."))
         #expect(card(lane(.draftReady, drafts: 1)) == .init(title: "초안 0", subtitle: "AI draft · 14:13"))
         #expect(card(lane(.draftReady, drafts: 3))?.subtitle == "3 AI drafts · 14:13")
         #expect(card(lane(.needsInput(question: nil)))?.subtitle == "Question deleted after 90 days.")

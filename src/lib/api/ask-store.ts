@@ -3,6 +3,7 @@ import "server-only";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 import { toPgVector } from "@/lib/actions/rows";
+import { budgetFetch } from "@/lib/ai/budget";
 import { embed, embedConfigFromEnv } from "@/lib/ai/embed";
 import { completeJson, llmConfigFromEnv } from "@/lib/ai/llm";
 import { withConsentGate } from "@/lib/consent/gate";
@@ -106,8 +107,9 @@ export async function retrieveAskContext(admin: SupabaseClient, userId: string, 
  * 사용자가 답을 기다리므로 임베딩 · LLM을 deadline(epoch ms, lib/ai/deadline.ts interactiveDeadline) 안에 끝내고, LLM은 첫 호출부터 추론량을 제한한다.
  */
 export function askDepsFromEnv(admin: SupabaseClient, userId: string, deadline: number): AskDeps {
-  const llm = { ...llmConfigFromEnv(), deadline };
-  const embedding = { ...embedConfigFromEnv(), deadline };
+  const fetch = budgetFetch(admin, userId);
+  const llm = { ...llmConfigFromEnv(), deadline, fetch };
+  const embedding = { ...embedConfigFromEnv(), deadline, fetch };
   return withConsentGate<AskDeps>(
     {
       embed: async (texts) => (await embed(embedding, texts)).vectors,

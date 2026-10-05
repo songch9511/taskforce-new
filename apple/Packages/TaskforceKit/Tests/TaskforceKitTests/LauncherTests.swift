@@ -90,7 +90,7 @@ struct LauncherTests {
         #expect(addTitle("Send deck to Mina", signedIn: false) == nil)
         #expect(LauncherAdd.title(for: .query("Send deck to Mina"), now: nil, signedIn: true) == nil)
         #expect(LauncherContent.sections(for: .query("Send deck"), now: now, signedIn: false).flatMap(\.items) == [
-            .signIn, .signInWithEmail, .command(.quit),
+            .command(.quit),
         ])
     }
 
@@ -154,13 +154,13 @@ struct LauncherTests {
 
     @Test func signedOutShowsSignInOnly() {
         let sections = LauncherContent.sections(for: .query("자료"), now: now, signedIn: false)
-        #expect(sections.flatMap(\.items) == [.signIn, .signInWithEmail, .command(.quit)])
+        #expect(sections.flatMap(\.items) == [.command(.quit)])
     }
 
-    /// Google 클라이언트 설정이 있으면 Apple 바로 아래에 Google (Apple이 먼저, 이메일은 맨 아래)
-    @Test func signedOutShowsGoogleUnderAppleWhenConfigured() {
+    /// Google 클라이언트 설정이 있으면 Google이 먼저, Apple 계정은 계속 쓸 수 있고 이메일은 맨 아래
+    @Test func signedOutShowsGoogleFirstWhenConfigured() {
         let sections = LauncherContent.sections(for: .empty, now: nil, signedIn: false, googleSignIn: true)
-        #expect(sections.flatMap(\.items) == [.signIn, .signInWithGoogle, .signInWithEmail, .command(.quit)])
+        #expect(sections.flatMap(\.items) == [.signInWithGoogle, .command(.quit)])
         #expect(LauncherContent.sections(for: .empty, now: now, signedIn: true, googleSignIn: true).flatMap(\.items).contains(.signInWithGoogle) == false)
     }
 
