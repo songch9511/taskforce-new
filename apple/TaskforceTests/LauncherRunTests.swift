@@ -471,6 +471,127 @@ struct LauncherRunTests {
     }
 }
 
+/// Native row menus can outlive the row and account state they were created from.
+@Suite(.serialized)
+@MainActor
+struct LauncherRowMenuTests {
+    @Test func rowMenuUsesClickedActionAndRefreshedSameIDData() async throws {
+        let harness = try await RunLauncherHarness.make(toDo: ["Clicked", "Selected"])
+        let model = harness.model
+        let now = try #require(model.now)
+        let clickedID = RunLauncherHarness.actionID("Clicked")
+        let selectedID = RunLauncherHarness.actionID("Selected")
+        let initialClicked = try #require(now.sections.find(clickedID)?.action)
+        let selected = try #require(now.sections.find(selectedID)?.action)
+        let refreshed = rowMenuAction(id: clickedID, title: "Clicked after refresh")
+
+        now.sampleMode = true
+        now.applySample(rowMenuResponse([refreshed, selected]), doneToday: [], evidence: [:])
+        let selectedIndex = try #require(model.items.firstIndex { $0.inlineDetailActionID == selectedID })
+        model.select(selectedIndex)
+        let accountID = try #require(model.signedInUserID)
+        let staleTarget = LauncherModel.Target(action: initialClicked, group: .toDo)
+        let delete = try #require(model.actionGroups(for: staleTarget).flatMap(\.entries).first { $0 == .delete })
+
+        #expect(model.selectedItem?.action?.id == selectedID)
+        model.performRowMenuAction(delete, actionID: clickedID, group: .toDo, accountID: accountID)
+
+        #expect(model.undoOffer.pending?.action == refreshed)
+        #expect(now.sections.find(clickedID) == nil)
+        #expect(now.sections.find(selectedID)?.action == selected)
+    }
+
+    @Test func rowMenuIgnoresDeletedAction() async throws {
+        let harness = try await RunLauncherHarness.make(toDo: ["Clicked", "Other"])
+        let model = harness.model
+        let now = try #require(model.now)
+        let clickedID = RunLauncherHarness.actionID("Clicked")
+        let staleAction = try #require(now.sections.find(clickedID)?.action)
+        let staleTarget = LauncherModel.Target(action: staleAction, group: .toDo)
+        let delete = try #require(model.actionGroups(for: staleTarget).flatMap(\.entries).first { $0 == .delete })
+        let other = try #require(now.sections.find(RunLauncherHarness.actionID("Other"))?.action)
+
+        now.sampleMode = true
+        now.applySample(rowMenuResponse([other]), doneToday: [], evidence: [:])
+        model.performRowMenuAction(delete, actionID: clickedID, group: .toDo, accountID: try #require(model.signedInUserID))
+
+        #expect(model.undoOffer.pending == nil)
+        #expect(now.sections.find(other.id)?.action == other)
+    }
+
+    @Test func rowMenuIgnoresActionThatChangedGroups() async throws {
+        let harness = try await RunLauncherHarness.make(toDo: ["Clicked"])
+        let model = harness.model
+        let now = try #require(model.now)
+        let clickedID = RunLauncherHarness.actionID("Clicked")
+        let staleAction = try #require(now.sections.find(clickedID)?.action)
+        let staleTarget = LauncherModel.Target(action: staleAction, group: .toDo)
+        let delete = try #require(model.actionGroups(for: staleTarget).flatMap(\.entries).first { $0 == .delete })
+        let refreshed = rowMenuAction(id: clickedID, title: staleAction.title, startedAt: Date(timeIntervalSince1970: 1_800_000_000))
+
+        now.sampleMode = true
+        now.applySample(rowMenuResponse([refreshed]), doneToday: [], evidence: [:])
+        model.performRowMenuAction(delete, actionID: clickedID, group: .toDo, accountID: try #require(model.signedInUserID))
+
+        #expect(now.sections.find(clickedID)?.group == .inProgress)
+        #expect(now.sections.find(clickedID)?.action == refreshed)
+        #expect(model.undoOffer.pending == nil)
+    }
+
+    @Test func rowMenuIgnoresEntryUnavailableForCurrentAction() async throws {
+        let harness = try await RunLauncherHarness.make(toDo: ["Clicked"])
+        let model = harness.model
+        let now = try #require(model.now)
+        let clickedID = RunLauncherHarness.actionID("Clicked")
+        let current = try #require(now.sections.find(clickedID)?.action)
+        let target = LauncherModel.Target(action: current, group: .toDo)
+        #expect(!model.actionGroups(for: target).flatMap(\.entries).contains(.confirm))
+        let originalScreen = model.screen
+
+        model.performRowMenuAction(.confirm, actionID: clickedID, group: .toDo, accountID: try #require(model.signedInUserID))
+
+        #expect(model.screen == originalScreen)
+        #expect(model.screen == .list)
+        #expect(now.sections.find(clickedID)?.action == current)
+        #expect(model.undoOffer.pending == nil)
+    }
+
+    @Test func rowMenuIgnoresMenuOpenedForPreviousAccount() async throws {
+        let harness = try await RunLauncherHarness.make(toDo: ["Clicked"])
+        let model = harness.model
+        let now = try #require(model.now)
+        let clickedID = RunLauncherHarness.actionID("Clicked")
+        let action = try #require(now.sections.find(clickedID)?.action)
+        let staleAccountID = try #require(model.signedInUserID)
+        let staleTarget = LauncherModel.Target(action: action, group: .toDo)
+        let delete = try #require(model.actionGroups(for: staleTarget).flatMap(\.entries).first { $0 == .delete })
+
+        try harness.switchAccount()
+        await harness.waitUntil { model.signedInUserID != staleAccountID && model.now?.loaded == true }
+        #expect(model.now?.sections.find(clickedID)?.action == action)
+
+        model.performRowMenuAction(delete, actionID: clickedID, group: .toDo, accountID: staleAccountID)
+
+        #expect(model.undoOffer.pending == nil)
+        #expect(now.sections.find(clickedID)?.action == action)
+    }
+}
+
+private func rowMenuAction(id: UUID, title: String, startedAt: Date? = nil) -> ActionSummary {
+    ActionSummary(
+        id: id, title: title, owner: .me, status: .open, dueDate: nil, counterpart: nil,
+        needsConfirmation: false, confirmReasons: [], startedAt: startedAt,
+        lastActivityAt: Date(timeIntervalSince1970: 1_800_000_000)
+    )
+}
+
+private func rowMenuResponse(_ actions: [ActionSummary]) -> NowResponse {
+    NowResponse(
+        now: actions.map { RankedAction(action: $0, score: 1, reasons: [], daysUntilDue: nil) },
+        confirmations: [], weeklyCheck: nil, tracksChanges: true
+    )
+}
+
 extension LauncherModel.Screen {
     var isRunWithAI: Bool {
         if case .runWithAI = self { true } else { false }

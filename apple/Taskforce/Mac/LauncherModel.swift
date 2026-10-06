@@ -1211,6 +1211,12 @@ final class LauncherModel {
         returnToList(focusing: nil)
     }
 
+    /// The detail-pane close button is an explicit dismissal, even if focus moved into a lane draft.
+    func closeDetailPane() {
+        guard case let .detail(target) = screen else { return }
+        returnToList(focusing: target.action.id)
+    }
+
     private func returnToList(focusing id: UUID?) {
         screen = .list
         laneFocus = nil
@@ -1498,6 +1504,22 @@ final class LauncherModel {
         case .runWithAI: openRun(target)
         case .stopTaskforce: stopTaskforce(target)
         }
+    }
+
+    /// A native list menu can outlive the row value used to build it. Re-resolve its
+    /// account, visible row, group, and available action before using the normal guarded dispatcher.
+    func performRowMenuAction(_ entry: ActionEntry, actionID: UUID, group: TaskGroup, accountID: UUID?) {
+        guard signedInUserID == accountID,
+              screen == .list || screen.isDetail,
+              let now,
+              let current = now.sections.find(actionID),
+              current.group == group,
+              items.contains(where: { $0.inlineDetailActionID == actionID && $0.group == group }),
+              actionGroups(for: Target(action: current.action, group: current.group))
+                .contains(where: { $0.entries.contains(entry) })
+        else { return }
+
+        perform(entry, on: Target(action: current.action, group: current.group))
     }
 
     // MARK: 진행 상태 (런처를 닫지 않는다)

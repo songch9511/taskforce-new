@@ -9,8 +9,7 @@ import TaskforceUI
 /// 저장본 행(오프라인)은 저장된 제목 · 기한만 있다. Run with AI(M8) · 초안 화면이면 이 칸이 그 화면이 된다.
 struct LauncherDetailPane: View {
     @Bindable var model: LauncherModel
-    /// Inserted below its row in the full-width task list.
-    var inline = false
+    var onClose: (() -> Void)? = nil
 
     /// 아래에 더 있는지 (아래 흐림)
     @State private var hasMoreBelow = false
@@ -20,11 +19,7 @@ struct LauncherDetailPane: View {
         case .runWithAI(let target): LauncherRunPane(model: model, target: target)
         case .draft(_, let artifact): LauncherDraftPane(artifact: artifact)
         default:
-            if inline {
-                inlineDetailContent
-            } else {
-                detail
-            }
+            detail
         }
     }
 
@@ -55,45 +50,11 @@ struct LauncherDetailPane: View {
                 sources(target.action.id)
             } else if let row = model.detailSavedRow {
                 header(title: row.task.title, due: row.task.status == .doneToday ? nil : row.task.dueDate, reason: nil)
+                Text("Saved · \(row.task.status.group.title)")
+                    .font(TFFont.meta)
+                    .foregroundStyle(TFColor.textSecondary)
             }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    /// Inline details continue the selected row instead of repeating its title in a second card.
-    @ViewBuilder
-    private var inlineDetailContent: some View {
-        VStack(alignment: .leading, spacing: TFSpace.sm) {
-            if let target = model.detailTarget {
-                VStack(alignment: .leading, spacing: TFSpace.xxs) {
-                    Text(target.group.title)
-                        .foregroundStyle(TFColor.textSecondary)
-                    if target.group != .doneToday, let due = target.action.dueDate {
-                        Text("Due \(DueText.short(due, today: today))")
-                            .foregroundStyle(DueText.isUrgent(due: due, reasons: [], today: today) ? TFColor.statusOverdue : TFColor.textSecondary)
-                    }
-                    if target.group == .review {
-                        Text(ConfirmReasonText.label(target.action.confirmReasons))
-                            .foregroundStyle(TFColor.textSecondary)
-                    }
-                }
-                .font(TFFont.meta)
-                LauncherLaneView(model: model, target: target)
-                sources(target.action.id)
-            } else if let row = model.detailSavedRow {
-                VStack(alignment: .leading, spacing: TFSpace.xxs) {
-                    Text("Saved · \(row.task.status.group.title)")
-                        .foregroundStyle(TFColor.textSecondary)
-                    if row.task.status != .doneToday, let due = row.task.dueDate {
-                        Text("Due \(DueText.short(due, today: today))")
-                            .foregroundStyle(DueText.isUrgent(due: due, reasons: [], today: today) ? TFColor.statusOverdue : TFColor.textSecondary)
-                    }
-                }
-                .font(TFFont.meta)
-            }
-        }
-        .padding(.leading, TFSpace.md)
-        .padding(.vertical, TFSpace.xxs)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
@@ -101,26 +62,41 @@ struct LauncherDetailPane: View {
 
     /// 제목 20 semibold (자르지 않음) + 기한 · 확인 이유 12
     private func header(title: String, due: LocalDate?, reason: String?) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(title)
-                .font(TFFont.title)
-                .foregroundStyle(TFColor.textPrimary)
-                .fixedSize(horizontal: false, vertical: true)
-                .textSelection(.enabled)
-            if due != nil || reason != nil {
-                VStack(alignment: .leading, spacing: TFSpace.xs) {
-                    if let due {
-                        Text("Due \(DueText.short(due, today: today))")
-                            .foregroundStyle(DueText.isUrgent(due: due, reasons: [], today: today) ? TFColor.statusOverdue : TFColor.textSecondary)
+        HStack(alignment: .top, spacing: TFSpace.sm) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text(title)
+                    .font(TFFont.title)
+                    .foregroundStyle(TFColor.textPrimary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+                if due != nil || reason != nil {
+                    VStack(alignment: .leading, spacing: TFSpace.xs) {
+                        if let due {
+                            Text("Due \(DueText.short(due, today: today))")
+                                .foregroundStyle(DueText.isUrgent(due: due, reasons: [], today: today) ? TFColor.statusOverdue : TFColor.textSecondary)
+                        }
+                        if let reason {
+                            Text(reason).foregroundStyle(TFColor.textSecondary)
+                        }
                     }
-                    if let reason {
-                        Text(reason).foregroundStyle(TFColor.textSecondary)
-                    }
+                    .font(TFFont.meta)
                 }
-                .font(TFFont.meta)
+            }
+            .accessibilityElement(children: .combine)
+            Spacer(minLength: 0)
+            if let onClose {
+                Button(action: onClose) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(TFColor.textSecondary)
+                        .frame(width: 26, height: 26)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("Close task details")
+                .accessibilityLabel("Close task details")
             }
         }
-        .accessibilityElement(children: .combine)
     }
 
     @ViewBuilder

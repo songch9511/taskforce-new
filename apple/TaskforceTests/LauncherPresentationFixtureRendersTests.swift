@@ -14,6 +14,51 @@ import Vision
 @Suite(.serialized)
 @MainActor
 struct LauncherPresentationFixtureRendersTests {
+    private final class MenuTrackingRecorder: @unchecked Sendable {
+        private let lock = NSLock()
+        private var began = false
+        private var ended = false
+        private var events: [String] = []
+
+        func recordBegin() {
+            lock.lock()
+            began = true
+            events.append("menu-begin")
+            lock.unlock()
+        }
+
+        func recordEnd() {
+            lock.lock()
+            ended = true
+            events.append("menu-end")
+            lock.unlock()
+        }
+
+        func record(_ event: String) {
+            lock.lock()
+            events.append(event)
+            lock.unlock()
+        }
+
+        var didBegin: Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            return began
+        }
+
+        var didEnd: Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            return ended
+        }
+
+        var trace: [String] {
+            lock.lock()
+            defer { lock.unlock() }
+            return events
+        }
+    }
+
     private struct RenderedText {
         let text: String
         let bounds: CGRect
@@ -84,7 +129,7 @@ struct LauncherPresentationFixtureRendersTests {
         print("Wrote synthetic fixture renders to \(directory.path)")
     }
 
-    @Test func mountedRowClicksKeepInlineDetailsWithTheirAction() async throws {
+    @Test func mountedRowClicksShowTheMatchingSideDetail() async throws {
         let model = try fixtureModel()
         let now = try #require(model.now)
         let response = inlineFixtureResponse()
@@ -106,7 +151,10 @@ struct LauncherPresentationFixtureRendersTests {
             styleMask: [.borderless], backing: .buffered, defer: false
         )
         window.isReleasedWhenClosed = false
-        let hosting = NSHostingView(rootView: LauncherRootView(model: model).environment(\.colorScheme, .light))
+        let hosting = NSHostingView(
+            rootView: LauncherRootView(model: model)
+                .environment(\.colorScheme, .light)
+        )
         hosting.frame = NSRect(origin: .zero, size: size)
         window.contentView = hosting
         window.makeKeyAndOrderFront(nil)
@@ -121,7 +169,7 @@ struct LauncherPresentationFixtureRendersTests {
         try pressKey(kVK_Return, characters: "\r", model: model, window: window)
         await settle(window, hosting)
         let expandedByReturn = try capture(hosting, name: "mounted-expanded-saved-return")
-        expectInlineContinuationBelowRow(reviewTitle, marker: "Saved", in: expandedByReturn)
+        _ = expectRightDetailBesideRow(reviewTitle, marker: "Saved", in: expandedByReturn)
         #expect(model.primaryAction?.title == "Hide details")
         try pressKey(kVK_Tab, characters: "\t", model: model, window: window)
         await settle(window, hosting)
@@ -129,16 +177,18 @@ struct LauncherPresentationFixtureRendersTests {
         #expect(collapsedByTab.filter { $0.text == reviewTitle }.count == 1)
         try pressKey(kVK_RightArrow, characters: "\u{F703}", model: model, window: window)
         await settle(window, hosting)
-        expectInlineContinuationBelowRow(reviewTitle, marker: "Saved", in: try capture(hosting, name: "mounted-expanded-saved-right-arrow"))
+        _ = expectRightDetailBesideRow(reviewTitle, marker: "Saved", in: try capture(hosting, name: "mounted-expanded-saved-right-arrow"))
         try pressKey(kVK_Return, characters: "\r", model: model, window: window)
         await settle(window, hosting)
         #expect(try capture(hosting, name: "mounted-collapsed-saved-return").filter { $0.text == reviewTitle }.count == 1)
 
         let beforeClick = try capture(hosting, name: "mounted-saved-before-click")
+        let savedRowY = try #require(rowBounds(reviewTitle, in: beforeClick)).midY
         try click(title: reviewTitle, in: beforeClick, window: window, size: size)
         await settle(window, hosting)
         let expandedSavedRow = try capture(hosting, name: "mounted-expanded-saved")
-        expectInlineContinuationBelowRow(reviewTitle, marker: "Saved", in: expandedSavedRow, unrelatedTitles: [targetTitle, "Task Charlie"])
+        let expandedSavedRowY = try #require(expectRightDetailBesideRow(reviewTitle, marker: "Saved", in: expandedSavedRow, unrelatedTitles: [targetTitle, "Task Charlie"])).midY
+        #expect(abs(savedRowY - expandedSavedRowY) < 0.01, "Opening the side pane keeps the clicked row at the same vertical position")
         try click(title: reviewTitle, in: expandedSavedRow, window: window, size: size)
         await settle(window, hosting)
         let collapsedSavedRow = try capture(hosting, name: "mounted-collapsed-saved")
@@ -146,7 +196,7 @@ struct LauncherPresentationFixtureRendersTests {
         try click(title: reviewTitle, in: collapsedSavedRow, window: window, size: size)
         await settle(window, hosting)
         let reopenedSavedRow = try capture(hosting, name: "mounted-reopened-saved")
-        expectInlineContinuationBelowRow(reviewTitle, marker: "Saved", in: reopenedSavedRow)
+        _ = expectRightDetailBesideRow(reviewTitle, marker: "Saved", in: reopenedSavedRow)
 
         let savedReviewIndex = try #require(model.items.firstIndex {
             if case .saved(let row) = $0 { return row.task.title == reviewTitle }
@@ -168,15 +218,16 @@ struct LauncherPresentationFixtureRendersTests {
         try click(title: reviewTitle, in: savedBack, window: window, size: size)
         await settle(window, hosting)
         let savedOpenBeforeHydration = try capture(hosting, name: "mounted-saved-open-before-hydration")
-        expectInlineContinuationBelowRow(reviewTitle, marker: "Saved", in: savedOpenBeforeHydration)
+        _ = expectRightDetailBesideRow(reviewTitle, marker: "Saved", in: savedOpenBeforeHydration)
 
-        now.applySample(response, doneToday: [], evidence: inlineFixtureEvidence(reviewID: reviewID, targetID: targetID))
+        now.applySample(response, doneToday: [], evidence: [:])
         await settle(window, hosting)
         let liveRows = try capture(hosting, name: "mounted-live")
         #expect(liveRows.filter { $0.text == reviewTitle }.count == 1, "Hydration clears the open saved-row subtree")
         #expect(liveRows.filter { $0.text == targetTitle }.count == 1, "Hydration must not reuse saved-row content")
         let target = try #require(model.items.first { $0.inlineDetailActionID == targetID })
         let targetIndex = try #require(model.items.firstIndex(where: { $0.id == target.id }))
+        let hydratedRowY = try #require(rowBounds(targetTitle, in: liveRows)).midY
         #expect(model.items.count == 3)
         #expect(now.response?.failedSources.count == 2, "Pipeline failure diagnostics remain in the underlying response")
         #expect(!model.items.contains { if case .failedSources = $0 { true } else { false } }, "The launcher list omits the top-level failed-sources notice")
@@ -185,15 +236,21 @@ struct LauncherPresentationFixtureRendersTests {
 
         #expect(model.detailTarget?.action.id == targetID)
         #expect(model.selection == targetIndex)
-        let expandedTarget = try capture(hosting, name: "mounted-expanded-target")
-        expectInlineContinuationBelowRow(targetTitle, marker: "Inline evidence target", in: expandedTarget, unrelatedTitles: [reviewTitle, "Task Charlie"])
+        let targetWithoutEvidence = try capture(hosting, name: "mounted-expanded-target-no-source")
+        let openedTargetRowY = try #require(expectRightDetailBesideRow(targetTitle, marker: "No source details", in: targetWithoutEvidence)).midY
+        #expect(abs(hydratedRowY - openedTargetRowY) < 0.01, "Opening live detail preserves the list's vertical position")
+
+        now.applySample(response, doneToday: [], evidence: inlineFixtureEvidence(reviewID: reviewID, targetID: targetID))
+        await settle(window, hosting)
+        let expandedTarget = try capture(hosting, name: "mounted-expanded-target-with-source")
+        let hydratedTargetRowY = try #require(expectRightDetailBesideRow(targetTitle, marker: "Inline evidence target", in: expandedTarget, unrelatedTitles: [reviewTitle, "Task Charlie"])).midY
+        #expect(abs(openedTargetRowY - hydratedTargetRowY) < 0.01, "Source arrival does not move the selected row")
 
         try click(title: reviewTitle, in: expandedTarget, window: window, size: size)
         await settle(window, hosting)
         #expect(model.detailTarget?.action.id == reviewID)
         let expandedReview = try capture(hosting, name: "mounted-expanded-review")
-        expectInlineContinuationBelowRow(reviewTitle, marker: "Inline evidence review", in: expandedReview, unrelatedTitles: [targetTitle, "Task Charlie"])
-        #expect(expandedReview.filter { $0.text == targetTitle }.count == 1)
+        _ = expectRightDetailBesideRow(reviewTitle, marker: "Inline evidence review", in: expandedReview, unrelatedTitles: [targetTitle, "Task Charlie"])
 
         try click(title: reviewTitle, in: expandedReview, window: window, size: size)
         await settle(window, hosting)
@@ -260,31 +317,31 @@ struct LauncherPresentationFixtureRendersTests {
         now.applySample(response, doneToday: [], evidence: [target.id: delayedDigest])
         await settlePanel(window)
         let expandedBeforeScroll = try capturePanel(window, name: "long-list-expanded-before-evidence-scroll")
-        #expect(expandedBeforeScroll.filter { $0.text == target.title }.count == 1, "Expansion keeps a single visible action title")
+        _ = expectRightDetailBesideRow(target.title, marker: "Delayed source 24", in: expandedBeforeScroll)
         scrollPanel(window, by: 260)
         await settlePanel(window)
         let expanded = try capturePanel(window, name: "long-list-expanded-after-evidence")
-        #expect(expanded.contains { $0.text.contains("Delayed source 24") }, "Evidence arriving after expansion redraws in the native scrolled list")
-        #expect(expanded.contains { $0.text.contains("Delayed arrival marker 24") }, "Long evidence remains visible after the list scrolls")
+        #expect(expanded.contains { $0.text.contains("Delayed source 24") && $0.bounds.midX >= 0.5 }, "Evidence remains in the independently scrolling detail pane")
+        #expect(expanded.contains { $0.text.contains("Delayed arrival marker 24") && $0.bounds.midX >= 0.5 })
+        scrollDetailPanelToBottom(window)
+        await settlePanel(window)
+        let detailBottom = try capturePanel(window, name: "long-list-detail-scrolled-to-bottom")
+        #expect(detailBottom.contains { $0.text.contains("Delayed source 1") && $0.bounds.midX >= 0.5 })
         await expectMainQueueHeartbeat()
 
-        try postKey(kVK_Escape, characters: "\u{1B}", to: window)
-        await settlePanel(window)
-        #expect(model.screen == .list, "Escape closes the long-row detail after scrolling its evidence")
-        #expect(controller.isVisible, "Escape closes inline detail without hiding the launcher panel")
-        let neighborIndex = try #require(model.items.firstIndex { $0.action?.id == neighbor.id })
-        model.select(neighborIndex)
-        await settlePanel(window)
-        let selectedNeighbor = try capturePanel(window, name: "long-list-selected-neighbor")
-        #expect(selectedNeighbor.contains { $0.text == neighbor.title })
+        let selectedNeighbor = try capturePanel(window, name: "long-list-visible-neighbor")
+        #expect(selectedNeighbor.contains { $0.text == neighbor.title && $0.bounds.midX < 0.5 })
         try clickPanel(title: neighbor.title, in: selectedNeighbor, window: window)
         await settlePanel(window)
         #expect(model.detailTarget?.action.id == neighbor.id, "Switching rows keeps the detail attached to the new action")
+        let neighborDetail = try capturePanel(window, name: "long-list-neighbor-detail-reset")
+        _ = expectRightDetailBesideRow(neighbor.title, marker: "No source details", in: neighborDetail)
+        #expect(!neighborDetail.contains { $0.text.contains("Delayed source 1") && $0.bounds.midX >= 0.5 }, "A new action resets the previous detail scroll position and content")
 
         try postKey(kVK_Escape, characters: "\u{1B}", to: window)
         await settlePanel(window)
-        #expect(model.screen == .list)
-        #expect(controller.isVisible)
+        #expect(model.screen == .list, "Escape closes the side detail after switching rows")
+        #expect(controller.isVisible, "Escape closes the side detail without hiding the launcher panel")
         try focusSearch(window)
         await settlePanel(window)
         #expect(controller.isVisible)
@@ -336,8 +393,8 @@ struct LauncherPresentationFixtureRendersTests {
 
         try postKey(kVK_Escape, characters: "\u{1B}", to: window)
         await settlePanel(window)
-        #expect(model.screen == .list, "Escape closes inline detail through the shown panel")
-        #expect(controller.isVisible, "Escape closes inline detail without hiding the launcher panel")
+        #expect(model.screen == .list, "Escape closes the side detail through the shown panel")
+        #expect(controller.isVisible, "Escape closes the side detail without hiding the launcher panel")
 
         try focusSearch(window)
         await settlePanel(window)
@@ -417,6 +474,110 @@ struct LauncherPresentationFixtureRendersTests {
         #expect(model.isSavedRowExpanded(replacementRow))
         model.prepareForShow()
         #expect(!model.isSavedRowExpanded(replacementRow))
+    }
+
+    @Test func explicitDetailCloseDismissesLaneFocusedPane() throws {
+        let model = try fixtureModel()
+        let item = try #require(model.items.first { $0.action?.id == SampleData.demoID })
+        let fixture = SampleRuns.fixture(.draftReady)
+        model.runs?.applySample(
+            credits: .available(SampleRuns.laneCredits(.draftReady), checkedAt: Date()),
+            runs: fixture.runs,
+            steps: fixture.steps,
+            drafts: fixture.drafts
+        )
+        model.openDetail(for: item)
+
+        let event = try #require(NSEvent.keyEvent(
+            with: .keyDown, location: .zero, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: 0, context: nil, characters: "\t", charactersIgnoringModifiers: "\t",
+            isARepeat: false, keyCode: UInt16(kVK_Tab)
+        ))
+        #expect(model.handleKey(event))
+        #expect(model.laneFocusTarget?.action.id == SampleData.demoID)
+
+        model.closeDetailPane()
+
+        #expect(model.screen == .list)
+        #expect(model.laneFocusTarget == nil)
+        #expect(model.selectedItem?.action?.id == SampleData.demoID)
+    }
+
+    @Test func nativeRowMenuEscDismissesMenuWithoutClosingLauncher() async throws {
+        let model = try fixtureModel()
+        let review = try #require(model.items.first { if case .review = $0 { true } else { false } })
+        let title = try #require(review.action?.title)
+        let controller = LauncherPanelController(model: model)
+        controller.show()
+        defer { controller.hide() }
+        let window = try #require(model.presentationAnchor())
+        await settlePanel(window)
+
+        let before = try capturePanel(window, name: "native-row-menu-before")
+        let row = try #require(rowBounds(title, in: before))
+        let point = NSPoint(
+            x: row.midX < 0.5 ? LauncherPanelController.size.width * 0.96 : row.maxX * LauncherPanelController.size.width,
+            y: row.midY * LauncherPanelController.size.height
+        )
+        let tracker = MenuTrackingRecorder()
+        let originalClose = model.close
+        var closeCalls = 0
+        model.close = {
+            closeCalls += 1
+            tracker.record("model-close")
+            originalClose()
+        }
+        let beganObserver = NotificationCenter.default.addObserver(
+            forName: NSMenu.didBeginTrackingNotification, object: nil, queue: nil
+        ) { _ in tracker.recordBegin() }
+        let endedObserver = NotificationCenter.default.addObserver(
+            forName: NSMenu.didEndTrackingNotification, object: nil, queue: nil
+        ) { _ in tracker.recordEnd() }
+        let resignObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.didResignKeyNotification, object: window, queue: nil
+        ) { _ in tracker.record("window-resign-key") }
+        let appResignObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didResignActiveNotification, object: NSApp, queue: nil
+        ) { _ in tracker.record("application-resign-active") }
+        let keyEventMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            if event.keyCode == UInt16(kVK_Escape) {
+                tracker.record("escape-local-monitor(window=\(event.window?.windowNumber ?? -1),menuTracking=\(tracker.didBegin && !tracker.didEnd))")
+            }
+            return event
+        }
+        defer {
+            NotificationCenter.default.removeObserver(beganObserver)
+            NotificationCenter.default.removeObserver(endedObserver)
+            NotificationCenter.default.removeObserver(resignObserver)
+            NotificationCenter.default.removeObserver(appResignObserver)
+            if let keyEventMonitor { NSEvent.removeMonitor(keyEventMonitor) }
+        }
+
+        guard let down = NSEvent.mouseEvent(
+            with: .leftMouseDown, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1
+        ), let escape = NSEvent.keyEvent(
+            with: .keyDown, location: .zero, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: 0, context: nil, characters: "\u{1B}",
+            charactersIgnoringModifiers: "\u{1B}", isARepeat: false, keyCode: UInt16(kVK_Escape)
+        ) else { throw FixtureRenderError.missingRenderedText("native row menu events") }
+
+        // AppKit enters native menu tracking synchronously from mouse-down; queue Escape first so this stays bounded.
+        #expect(controller.isVisible, "The launcher panel is visible before opening a row menu")
+        guard window.isKeyWindow else {
+            #expect(window.isKeyWindow, "Native menu input needs the fixture panel to be key")
+            return
+        }
+        tracker.record("before-menu-click")
+        NSApp.postEvent(escape, atStart: false)
+        NSApp.sendEvent(down)
+
+        #expect(tracker.didBegin, "Clicking the ellipsis opens the native row menu")
+        #expect(tracker.didEnd, "The queued Escape dismisses the native row menu")
+        #expect(model.screen == .list, "Opening a row menu must not activate an action")
+        #expect(closeCalls == 0, "A menu Escape should not reach the launcher close callback: \(tracker.trace)")
+        #expect(controller.isVisible, "Escape dismisses the native row menu without closing its launcher panel: \(tracker.trace)")
+        print("Native row-menu Escape trace: \(tracker.trace)")
     }
 
     @discardableResult
@@ -552,7 +713,7 @@ struct LauncherPresentationFixtureRendersTests {
     private func click(
         title: String, in texts: [RenderedText], window: NSWindow, size: NSSize
     ) throws {
-        let matches = texts.filter { $0.text == title }
+        let matches = texts.filter { $0.text == title && $0.bounds.midX < 0.5 }
         guard let frame = matches.max(by: { $0.bounds.midY < $1.bounds.midY })?.bounds else {
             throw FixtureRenderError.missingRenderedText(title)
         }
@@ -567,7 +728,7 @@ struct LauncherPresentationFixtureRendersTests {
     }
 
     private func clickPanel(title: String, in texts: [RenderedText], window: NSWindow) throws {
-        let matches = texts.filter { $0.text == title }
+        let matches = texts.filter { $0.text == title && $0.bounds.midX < 0.5 }
         guard let frame = matches.max(by: { $0.bounds.midY < $1.bounds.midY })?.bounds else {
             throw FixtureRenderError.missingRenderedText(title)
         }
@@ -625,21 +786,31 @@ struct LauncherPresentationFixtureRendersTests {
         #expect(model.handleKey(event), "Key \(keyCode) should be handled by the mounted launcher")
     }
 
-    private func expectInlineContinuationBelowRow(
+    private func rowBounds(_ title: String, in texts: [RenderedText]) -> CGRect? {
+        texts.first { $0.text == title && $0.bounds.midX < 0.5 }?.bounds
+    }
+
+    @discardableResult
+    private func expectRightDetailBesideRow(
         _ title: String, marker: String, in texts: [RenderedText], unrelatedTitles: [String] = []
-    ) {
-        let rowTitles = texts.filter { $0.text == title }
-        let continuation = texts.filter { $0.text.contains(marker) }
-        #expect(rowTitles.count == 1, "Inline details must not repeat the action title \(title): \(rowTitles.map(\.bounds))")
-        #expect(!continuation.isEmpty, "Expected useful inline detail marker \(marker)")
-        guard let row = rowTitles.first, let detail = continuation.first else { return }
-        #expect(detail.bounds.midY < row.bounds.midY, "Inline content must render below its selected row")
-        for unrelatedTitle in unrelatedTitles {
-            let between = texts.filter {
-                $0.text == unrelatedTitle && $0.bounds.midY > detail.bounds.midY && $0.bounds.midY < row.bounds.midY
-            }
-            #expect(between.isEmpty, "Unrelated row \(unrelatedTitle) must not appear between the clicked row and its inline detail")
+    ) -> CGRect? {
+        let rowTitles = texts.filter { $0.text == title && $0.bounds.midX < 0.5 }
+        let paneTitles = texts.filter { $0.text == title && $0.bounds.midX >= 0.5 }
+        let detail = texts.filter { $0.text.contains(marker) && $0.bounds.midX >= 0.5 }
+        #expect(rowTitles.count == 1, "The selected action title appears once in the list: \(rowTitles.map(\.bounds))")
+        #expect(paneTitles.count == 1, "The detail pane has one matching title: \(paneTitles.map(\.bounds))")
+        #expect(!detail.isEmpty, "Expected useful detail marker \(marker) in the right pane")
+        guard let row = rowTitles.first?.bounds else { return nil }
+        if let paneTitle = paneTitles.first {
+            #expect(paneTitle.bounds.midX > row.midX + 0.2, "Detail title belongs in the pane to the right of the selected row")
         }
+        for unrelatedTitle in unrelatedTitles {
+            #expect(
+                !texts.contains { $0.text == unrelatedTitle && $0.bounds.midX >= 0.5 },
+                "Unrelated row \(unrelatedTitle) must not become the right-pane detail"
+            )
+        }
+        return row
     }
 
     private func inlineFixtureEvidence(reviewID: UUID, targetID: UUID) -> [UUID: EvidenceDigest] {
@@ -680,6 +851,22 @@ struct LauncherPresentationFixtureRendersTests {
         var origin = clipView.bounds.origin
         let maxY = max(0, (scrollView.documentView?.bounds.height ?? 0) - clipView.bounds.height)
         origin.y = min(maxY, max(0, origin.y + delta))
+        clipView.scroll(to: origin)
+        scrollView.reflectScrolledClipView(clipView)
+    }
+
+    private func scrollDetailPanelToBottom(_ window: NSWindow) {
+        guard let root = panelHostingView(window) else { return }
+        var candidates: [NSScrollView] = []
+        func collectScrollViews(_ view: NSView) {
+            if let scrollView = view as? NSScrollView { candidates.append(scrollView) }
+            view.subviews.forEach(collectScrollViews)
+        }
+        collectScrollViews(root)
+        guard let scrollView = candidates.first(where: { $0.convert($0.bounds, to: root).midX > root.bounds.midX }) else { return }
+        let clipView = scrollView.contentView
+        var origin = clipView.bounds.origin
+        origin.y = max(0, (scrollView.documentView?.bounds.height ?? 0) - clipView.bounds.height)
         clipView.scroll(to: origin)
         scrollView.reflectScrolledClipView(clipView)
     }

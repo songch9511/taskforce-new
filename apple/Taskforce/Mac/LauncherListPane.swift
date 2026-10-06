@@ -3,111 +3,148 @@ import SwiftUI
 import TaskforceKit
 import TaskforceUI
 
-/// Full-width launcher list: notices, clear task sections, and inline details under the selected row.
+/// Launcher list with an optional right-side detail pane.
 /// The list uses an eager stack to avoid SwiftUI's nested lazy-section placement churn during scroll updates.
 struct LauncherListPane: View {
     @Bindable var model: LauncherModel
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     /// 아래에 더 있는지 (아래 흐림)
     @State private var hasMoreBelow = false
     /// 직전에 고른 줄 (한 칸 위로 옮길 때 고정 머리에 가리지 않게 한 줄 더 보인다)
     @State private var lastSelection = 0
+    @State private var pointerSelection: Int?
 
     var body: some View {
         let sections = model.sections
         let offsets = Self.offsets(sections)
         let firstTitledSectionIndex = sections.firstIndex { $0.title != nil }
-        ScrollViewReader { proxy in
-            ScrollView {
-                VStack(alignment: .leading, spacing: 0) {
-                    Color.clear.frame(height: 0).id(Self.top)
-                    if model.showsSyncing {
-                        Text(ConnectionSync.label)
+        let showsDetail = hasDetailPane
+        GeometryReader { geometry in
+          ScrollViewReader { proxy in
+            HStack(spacing: 0) {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 0) {
+                        Color.clear.frame(height: 0).id(Self.top)
+                        if model.showsSyncing {
+                            Text(ConnectionSync.label)
+                                .font(TFFont.meta)
+                                .foregroundStyle(TFColor.textSecondary)
+                                .padding(.horizontal, 18)
+                                .frame(height: 28, alignment: .leading)
+                        }
+                        if model.now?.sourceServicesFailed == true {
+                            HStack(spacing: TFSpace.xs) {
+                                Image(systemName: "exclamationmark.circle")
+                                    .accessibilityHidden(true)
+                                Text("Source icons unavailable")
+                                    .lineLimit(1)
+                                Spacer(minLength: TFSpace.xs)
+                                Button("Retry") { Task { await model.now?.load() } }
+                                    .buttonStyle(.plain)
+                                    .accessibilityLabel("Retry source icons")
+                                    .accessibilityHint("Reloads tasks and source provider icons")
+                            }
                             .font(TFFont.meta)
                             .foregroundStyle(TFColor.textSecondary)
                             .padding(.horizontal, 18)
-                            .frame(height: 28, alignment: .leading)
-                    }
-                    if model.now?.sourceServicesFailed == true {
-                        HStack(spacing: TFSpace.xs) {
-                            Image(systemName: "exclamationmark.circle")
-                                .accessibilityHidden(true)
-                            Text("Source icons unavailable")
-                                .lineLimit(1)
-                            Spacer(minLength: TFSpace.xs)
-                            Button("Retry") { Task { await model.now?.load() } }
-                                .buttonStyle(.plain)
-                                .accessibilityLabel("Retry source icons")
-                                .accessibilityHint("Reloads tasks and source provider icons")
+                            .frame(height: 28)
+                            .accessibilityElement(children: .contain)
                         }
-                        .font(TFFont.meta)
-                        .foregroundStyle(TFColor.textSecondary)
-                        .padding(.horizontal, 18)
-                        .frame(height: 28)
-                        .accessibilityElement(children: .contain)
-                    }
-                    ForEach(Array(sections.enumerated()), id: \.element.id) { sectionIndex, section in
-                        if let title = section.title {
-                            VStack(spacing: 0) {
-                                if sectionIndex != firstTitledSectionIndex {
-                                    Rectangle()
-                                        .fill(TFColor.settingsLine)
-                                        .frame(height: 1)
+                        ForEach(Array(sections.enumerated()), id: \.element.id) { sectionIndex, section in
+                            if let title = section.title {
+                                VStack(spacing: 0) {
+                                    if sectionIndex != firstTitledSectionIndex {
+                                        Rectangle()
+                                            .fill(TFColor.settingsLine)
+                                            .frame(height: 1)
+                                    }
+                                    SectionHeader(title, count: section.count ?? section.items.count)
+                                        .padding(.horizontal, TFSpace.sm)
                                 }
-                                SectionHeader(title, count: section.count ?? section.items.count)
+                                .background(TFColor.settingsSidebar)
+                            }
+                            ForEach(Array(section.items.enumerated()), id: \.element.id) { itemIndex, item in
+                                let index = offsets[sectionIndex] + itemIndex
+                                itemRow(item, selected: index == model.selection, at: index)
                                     .padding(.horizontal, TFSpace.sm)
                             }
-                            .background(TFColor.settingsSidebar)
-                        }
-                        ForEach(Array(section.items.enumerated()), id: \.element.id) { itemIndex, item in
-                            let index = offsets[sectionIndex] + itemIndex
-                            itemRow(item, selected: index == model.selection, at: index)
-                                .padding(.horizontal, TFSpace.sm)
                         }
                     }
+                    .padding(.top, TFSpace.xs)
+                    .padding(.bottom, TFSpace.sm)
                 }
-                .padding(.top, TFSpace.xs)
-                .padding(.bottom, TFSpace.sm)
-            }
-            .onScrollGeometryChange(for: Bool.self) { geometry in
-                geometry.contentOffset.y + geometry.containerSize.height < geometry.contentSize.height - 1
-            } action: { _, more in
-                hasMoreBelow = more
-            }
-            .onChange(of: model.selection) { old, index in
-                lastSelection = old
-                model.reconcileSavedDisclosure()
-                guard model.screen == .list else { return }
-                withAnimation(.easeOut(duration: 0.1)) { scroll(proxy, to: index, from: old) }
-            }
-            .onChange(of: model.items.map(\.id)) {
-                model.reconcileSavedDisclosure()
-            }
-            .onChange(of: model.savedList) { model.clearSavedDisclosure() }
-            .onChange(of: model.text) { model.clearSavedDisclosure() }
-            .onChange(of: model.scope) { model.clearSavedDisclosure() }
-            .onChange(of: model.focusRequest) { model.clearSavedDisclosure() }
-            .task(id: model.screen) {
-                guard case let .detail(target) = model.screen else { return }
-                // Let the updated stack finish layout before resolving the row target.
-                await Task.yield()
-                let items = model.items
-                guard !Task.isCancelled,
-                      let index = items.firstIndex(where: { $0.inlineDetailActionID == target.action.id })
-                else { return }
-                // Center the selected row so its inline continuation is visible after it opens.
-                if index == 0 {
-                    proxy.scrollTo(Self.top, anchor: .top)
-                } else {
-                    proxy.scrollTo(items[index].id, anchor: .center)
+                .frame(
+                    width: max(0, geometry.size.width - (showsDetail ? detailWidth : 0)),
+                    height: geometry.size.height
+                )
+                .onScrollGeometryChange(for: Bool.self) { geometry in
+                    geometry.contentOffset.y + geometry.containerSize.height < geometry.contentSize.height - 1
+                } action: { _, more in
+                    hasMoreBelow = more
                 }
+                .onChange(of: model.selection) { old, index in
+                    lastSelection = old
+                    model.reconcileSavedDisclosure()
+                    if pointerSelection == index {
+                        pointerSelection = nil
+                        return
+                    }
+                    guard model.screen == .list else { return }
+                    scroll(proxy, to: index, from: old)
+                }
+                .onChange(of: model.items.map(\.id)) { model.reconcileSavedDisclosure() }
+                .onChange(of: model.savedList) { model.clearSavedDisclosure() }
+                .onChange(of: model.text) { model.clearSavedDisclosure() }
+                .onChange(of: model.scope) { model.clearSavedDisclosure() }
+                .onChange(of: model.focusRequest) { model.clearSavedDisclosure() }
+                .scrollEdgeFade(TFColor.settingsSidebar, isActive: hasMoreBelow)
+
             }
+            .frame(width: geometry.size.width, height: geometry.size.height, alignment: .leading)
+            .overlay(alignment: .trailing) {
+                LauncherDetailPane(model: model, onClose: closeDetail)
+                    .id(detailIdentity)
+                    .frame(width: detailWidth)
+                    .frame(maxHeight: .infinity)
+                    .overlay(alignment: .leading) {
+                        if showsDetail { Rectangle().fill(TFColor.settingsLine).frame(width: 1) }
+                    }
+                    .opacity(showsDetail ? 1 : 0)
+                    .offset(x: showsDetail || reduceMotion ? 0 : 18)
+                    .allowsHitTesting(showsDetail)
+                    .accessibilityHidden(!showsDetail)
+                    .animation(detailAnimation, value: showsDetail)
+            }
+          }
         }
         .background(TFColor.settingsSidebar)
-        .scrollEdgeFade(TFColor.settingsSidebar, isActive: hasMoreBelow)
     }
 
     private static let top = "list-top"
+
+    private var hasDetailPane: Bool {
+        if case .detail = model.screen { return model.detailTarget != nil }
+        if case .saved(let row)? = model.selectedItem { return model.isSavedRowExpanded(row) }
+        return false
+    }
+
+    private var detailWidth: CGFloat { LauncherPanelController.size.width * 0.49 }
+
+    private var detailIdentity: String {
+        if case .detail(let target) = model.screen { return "action-\(target.action.id)" }
+        if case .saved(let row)? = model.selectedItem, model.isSavedRowExpanded(row) { return "saved-\(row.id)" }
+        return "hidden"
+    }
+
+    private var detailAnimation: Animation {
+        reduceMotion ? .easeOut(duration: 0.12) : .spring(response: 0.24, dampingFraction: 1, blendDuration: 0)
+    }
+
+    private func closeDetail() {
+        if case .saved(let row)? = model.selectedItem { model.toggleSavedRow(row) }
+        else { model.closeDetailPane() }
+    }
 
     /// 고른 줄이 보이게: 한 칸 아래면 그 줄까지, 한 칸 위면 그 위 줄까지(고정 머리 30이 행 36을 가리지 않게), 맨 위 줄이면 맨 위, 멀리 뛰면 가운데
     private func scroll(_ proxy: ScrollViewProxy, to index: Int, from old: Int) {
@@ -134,16 +171,20 @@ struct LauncherListPane: View {
         }
     }
 
-    /// Action rows open their inline detail; tapping the same row closes it. Other list commands keep their existing actions.
+    /// Action rows open their right-side detail; tapping the same row closes it.
     private func tap(_ item: LauncherItem, at index: Int) {
+        let previousSelection = model.selection
+        pointerSelection = index
+        defer { if model.selection == previousSelection { pointerSelection = nil } }
         switch item {
         case .review, .task, .done:
             let targetID = item.action?.id
             if case .detail = model.screen, model.detailTarget?.action.id == targetID {
-                model.back()
+                model.closeDetailPane()
                 return
             }
-            if model.screen != .list { model.back() }
+            if case .detail = model.screen { model.closeDetailPane() }
+            else if model.screen != .list { model.back() }
             model.openDetail(for: item)
         case .saved(let row):
             if model.screen != .list { model.back() }
@@ -160,31 +201,32 @@ struct LauncherListPane: View {
 
     @ViewBuilder
     private func itemRow(_ item: LauncherItem, selected: Bool, at index: Int) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
-            itemRowContent(item, selected: selected, at: index)
-                // The scroll target is the row itself, never its potentially long inline detail.
-                .id(item.id)
-            if isExpanded(item) {
-                LauncherDetailPane(model: model, inline: true)
-                    .padding(.horizontal, TFSpace.sm)
-                    .padding(.top, TFSpace.xs)
-                    .padding(.bottom, TFSpace.sm)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        itemRowContent(item, selected: selected, at: index)
+            .id(item.id)
+            .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     @ViewBuilder
     private func itemRowContent(_ item: LauncherItem, selected: Bool, at index: Int) -> some View {
         switch item {
-        case .review, .task, .done, .saved:
+        case .review, .task, .done:
+            HStack(spacing: 2) {
+                Button { tap(item, at: index) } label: {
+                    row(item, selected: selected).frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .buttonStyle(.plain)
+                .help(Text(fullTitle(for: item)))
+                .accessibilityHint(isLiveExpanded(item) ? "Hide details" : "Show details")
+                rowActionsMenu(item, selected: selected)
+            }
+        case .saved:
             Button { tap(item, at: index) } label: {
                 row(item, selected: selected)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             .buttonStyle(.plain)
             .help(Text(fullTitle(for: item)))
-            .accessibilityHint(isExpanded(item) ? "Hide details" : "Show details")
+            .accessibilityHint(isSavedExpanded(item) ? "Hide details" : "Show details")
         case .showMore, .doneToday:
             row(item, selected: selected)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -195,20 +237,74 @@ struct LauncherListPane: View {
         }
     }
 
-    private func isExpanded(_ item: LauncherItem) -> Bool {
-        if case .detail = model.screen, let id = item.inlineDetailActionID {
-            return model.detailTarget?.action.id == id
-        }
+    private func isSavedExpanded(_ item: LauncherItem) -> Bool {
         if case .saved(let savedRow) = item {
             return model.isSavedRowExpanded(savedRow)
         }
         return false
     }
 
+    private func isLiveExpanded(_ item: LauncherItem) -> Bool {
+        guard case .detail = model.screen, let id = item.inlineDetailActionID else { return false }
+        return model.detailTarget?.action.id == id
+    }
+
     private func fullTitle(for item: LauncherItem) -> String {
         if let title = item.action?.title { return title }
         if case .saved(let row) = item { return row.task.title }
         return ""
+    }
+
+    @ViewBuilder
+    private func rowActionsMenu(_ item: LauncherItem, selected: Bool) -> some View {
+        if let action = item.action, let group = item.group {
+            let target = LauncherModel.Target(action: action, group: group)
+            let accountID = model.signedInUserID
+            Menu {
+                ForEach(Array(model.actionGroups(for: target).enumerated()), id: \.offset) { _, actionGroup in
+                    if let title = actionGroup.title {
+                        Section(title) { rowMenuEntries(actionGroup.entries, target: target, accountID: accountID) }
+                    } else {
+                        rowMenuEntries(actionGroup.entries, target: target, accountID: accountID)
+                    }
+                }
+            } label: {
+                Image(systemName: "ellipsis")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(selected ? TFColor.textSecondarySelected : TFColor.textSecondary)
+                    .frame(width: 28, height: 28)
+                    .background(selected ? TFColor.bgSelected : .clear, in: RoundedRectangle(cornerRadius: TFRadius.md, style: .continuous))
+                    .contentShape(Rectangle())
+            }
+            .menuStyle(.borderlessButton)
+            .help("Actions for \(action.title)")
+            .accessibilityLabel("Actions for \(action.title)")
+        }
+    }
+
+    @ViewBuilder
+    private func rowMenuEntries(_ entries: [LauncherModel.ActionEntry], target: LauncherModel.Target, accountID: UUID?) -> some View {
+        ForEach(entries, id: \.self) { entry in
+            if entry == .delete {
+                Button(role: .destructive) {
+                    model.performRowMenuAction(entry, actionID: target.action.id, group: target.group, accountID: accountID)
+                } label: {
+                    Label(entry.title, systemImage: entry.symbolName ?? "trash")
+                }
+            } else {
+                Button {
+                    model.performRowMenuAction(entry, actionID: target.action.id, group: target.group, accountID: accountID)
+                } label: {
+                    if case .state(let state) = entry, state == WorkState(target.group) {
+                        Label(entry.title, systemImage: "checkmark")
+                    } else if let symbolName = entry.symbolName {
+                        Label(entry.title, systemImage: symbolName)
+                    } else {
+                        Text(entry.title)
+                    }
+                }
+            }
+        }
     }
 
     private var today: LocalDate { DueDateFormat.today() }
