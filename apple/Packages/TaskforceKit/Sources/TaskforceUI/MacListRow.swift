@@ -15,10 +15,11 @@ public struct MacListRow: View {
     let changed: Bool
     let selected: Bool
     let dimmed: Bool
+    let drawSelectionBackground: Bool
 
     public init(
         title: String, accessory: String? = nil, sourceServices: [SourceService] = [], urgent: Bool = false,
-        changed: Bool = false, selected: Bool = false, dimmed: Bool = false
+        changed: Bool = false, selected: Bool = false, dimmed: Bool = false, drawSelectionBackground: Bool = true
     ) {
         self.title = title
         self.accessory = accessory
@@ -27,6 +28,7 @@ public struct MacListRow: View {
         self.changed = changed
         self.selected = selected
         self.dimmed = dimmed
+        self.drawSelectionBackground = drawSelectionBackground
     }
 
     public var body: some View {
@@ -55,7 +57,7 @@ public struct MacListRow: View {
         }
         .padding(.horizontal, 10)
         .frame(height: 36)
-        .background(selected ? TFColor.bgSelected : .clear, in: RoundedRectangle(cornerRadius: TFRadius.md, style: .continuous))
+        .background(selected && drawSelectionBackground ? TFColor.bgSelected : .clear, in: RoundedRectangle(cornerRadius: TFRadius.md, style: .continuous))
         .contentShape(Rectangle())
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(Self.accessibilityLabel(title: title, accessory: accessory, changed: changed, sourceServices: sourceServices))
@@ -85,7 +87,7 @@ public struct MacListRow: View {
     }
 }
 
-/// 목록 섹션 머리 (Figma M1 `Section · Review`): 이름 + 개수, 둘 다 12 Regular 보조 색. 위 10 · 왼쪽 10 · 아래 4.
+/// 목록 섹션 머리 (Figma M1 `Section · Review`): Mac은 12 Semibold 제목 + 12 Regular 탭형 숫자 개수, 다른 플랫폼은 기존 12 Regular. 위 10 · 왼쪽 10 · 아래 4.
 /// Done Today처럼 접는 섹션은 `disclosure`로 꺾쇠를 붙이고 눌러서 연다(아래 6).
 /// 고정 머리로 쓸 때는 부르는 쪽이 목록 면 색(settings/sidebar)을 깐다.
 public struct SectionHeader: View {
@@ -123,9 +125,20 @@ public struct SectionHeader: View {
     }
 
     private var label: some View {
-        HStack(spacing: 5) {
+        #if os(macOS)
+        let spacing: CGFloat = 6
+        #else
+        let spacing: CGFloat = 5
+        #endif
+        return HStack(spacing: spacing) {
             Text(title)
+#if os(macOS)
+                .font(TFFont.meta.weight(.semibold))
+#endif
             Text("\(count)")
+#if os(macOS)
+                .monospacedDigit()
+#endif
             if let disclosure {
                 Image(systemName: disclosure == .collapsed ? "chevron.right" : "chevron.down")
                     .font(.system(size: 8, weight: .semibold))

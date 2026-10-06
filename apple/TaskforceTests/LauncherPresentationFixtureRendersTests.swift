@@ -19,6 +19,7 @@ struct LauncherPresentationFixtureRendersTests {
         private var began = false
         private var ended = false
         private var events: [String] = []
+        private var menuItems: [String] = []
 
         func recordBegin() {
             lock.lock()
@@ -31,6 +32,12 @@ struct LauncherPresentationFixtureRendersTests {
             lock.lock()
             ended = true
             events.append("menu-end")
+            lock.unlock()
+        }
+
+        func recordMenuItems(_ menu: NSMenu) {
+            lock.lock()
+            menuItems = menu.items.map { $0.isSeparatorItem ? "<separator>" : $0.title }
             lock.unlock()
         }
 
@@ -56,6 +63,12 @@ struct LauncherPresentationFixtureRendersTests {
             lock.lock()
             defer { lock.unlock() }
             return events
+        }
+
+        var trackedMenuItems: [String] {
+            lock.lock()
+            defer { lock.unlock() }
+            return menuItems
         }
     }
 
@@ -529,7 +542,10 @@ struct LauncherPresentationFixtureRendersTests {
         }
         let beganObserver = NotificationCenter.default.addObserver(
             forName: NSMenu.didBeginTrackingNotification, object: nil, queue: nil
-        ) { _ in tracker.recordBegin() }
+        ) { notification in
+            if let menu = notification.object as? NSMenu { tracker.recordMenuItems(menu) }
+            tracker.recordBegin()
+        }
         let endedObserver = NotificationCenter.default.addObserver(
             forName: NSMenu.didEndTrackingNotification, object: nil, queue: nil
         ) { _ in tracker.recordEnd() }
@@ -574,6 +590,17 @@ struct LauncherPresentationFixtureRendersTests {
 
         #expect(tracker.didBegin, "Clicking the ellipsis opens the native row menu")
         #expect(tracker.didEnd, "The queued Escape dismisses the native row menu")
+        let menuItems = tracker.trackedMenuItems
+        let confirmIndex = menuItems.firstIndex(of: "Confirm")
+        let dismissIndex = menuItems.firstIndex(of: "Dismiss")
+        let handoffIndex = menuItems.firstIndex(of: "Hand off to AI")
+        if let confirmIndex, let dismissIndex, let handoffIndex {
+            #expect(confirmIndex < dismissIndex && dismissIndex < handoffIndex, "Review actions retain their established order: \(menuItems)")
+            #expect(!menuItems[(confirmIndex + 1)..<dismissIndex].contains("<separator>"), "Confirm and Dismiss stay together: \(menuItems)")
+            #expect(menuItems[(dismissIndex + 1)..<handoffIndex].contains("<separator>"), "Handoff actions start a separate native menu group: \(menuItems)")
+        } else {
+            #expect(Bool(false), "The tracked native Review menu exposes Confirm, Dismiss, and Hand off to AI: \(menuItems)")
+        }
         #expect(model.screen == .list, "Opening a row menu must not activate an action")
         #expect(closeCalls == 0, "A menu Escape should not reach the launcher close callback: \(tracker.trace)")
         #expect(controller.isVisible, "Escape dismisses the native row menu without closing its launcher panel: \(tracker.trace)")

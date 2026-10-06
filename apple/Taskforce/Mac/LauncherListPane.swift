@@ -58,6 +58,8 @@ struct LauncherListPane: View {
                                         Rectangle()
                                             .fill(TFColor.settingsLine)
                                             .frame(height: 1)
+                                            .padding(.horizontal, TFSpace.md)
+                                            .padding(.top, TFSpace.sm)
                                     }
                                     SectionHeader(title, count: section.count ?? section.items.count)
                                         .padding(.horizontal, TFSpace.sm)
@@ -212,13 +214,18 @@ struct LauncherListPane: View {
         case .review, .task, .done:
             HStack(spacing: 2) {
                 Button { tap(item, at: index) } label: {
-                    row(item, selected: selected).frame(maxWidth: .infinity, alignment: .leading)
+                    row(item, selected: selected, drawSelectionBackground: false)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .buttonStyle(.plain)
                 .help(Text(fullTitle(for: item)))
                 .accessibilityHint(isLiveExpanded(item) ? "Hide details" : "Show details")
-                rowActionsMenu(item, selected: selected)
+                rowActionsMenu(item)
             }
+            .background(
+                selected ? TFColor.bgSelected : .clear,
+                in: RoundedRectangle(cornerRadius: TFRadius.md, style: .continuous)
+            )
         case .saved:
             Button { tap(item, at: index) } label: {
                 row(item, selected: selected)
@@ -256,10 +263,11 @@ struct LauncherListPane: View {
     }
 
     @ViewBuilder
-    private func rowActionsMenu(_ item: LauncherItem, selected: Bool) -> some View {
+    private func rowActionsMenu(_ item: LauncherItem) -> some View {
         if let action = item.action, let group = item.group {
             let target = LauncherModel.Target(action: action, group: group)
             let accountID = model.signedInUserID
+            let shape = RoundedRectangle(cornerRadius: TFRadius.md, style: .continuous)
             Menu {
                 ForEach(Array(model.actionGroups(for: target).enumerated()), id: \.offset) { _, actionGroup in
                     if let title = actionGroup.title {
@@ -271,12 +279,15 @@ struct LauncherListPane: View {
             } label: {
                 Image(systemName: "ellipsis")
                     .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(selected ? TFColor.textSecondarySelected : TFColor.textSecondary)
-                    .frame(width: 28, height: 28)
-                    .background(selected ? TFColor.bgSelected : .clear, in: RoundedRectangle(cornerRadius: TFRadius.md, style: .continuous))
-                    .contentShape(Rectangle())
+                    .foregroundStyle(TFColor.textSecondary)
             }
+            .menuIndicator(.hidden)
             .menuStyle(.borderlessButton)
+            .frame(width: 28, height: 28)
+            .background(TFColor.bgElevated, in: shape)
+            .overlay(shape.strokeBorder(TFColor.settingsLine, lineWidth: 1))
+            .contentShape(shape)
+            .padding(.trailing, TFSpace.xs)
             .help("Actions for \(action.title)")
             .accessibilityLabel("Actions for \(action.title)")
         }
@@ -284,7 +295,11 @@ struct LauncherListPane: View {
 
     @ViewBuilder
     private func rowMenuEntries(_ entries: [LauncherModel.ActionEntry], target: LauncherModel.Target, accountID: UUID?) -> some View {
-        ForEach(entries, id: \.self) { entry in
+        let separatesReviewActions = entries.contains(.confirm) && entries.contains(.dismiss)
+        ForEach(Array(entries.enumerated()), id: \.element) { index, entry in
+            if index > 0 && (entry == .delete || (entry == .handoff && separatesReviewActions)) {
+                Divider()
+            }
             if entry == .delete {
                 Button(role: .destructive) {
                     model.performRowMenuAction(entry, actionID: target.action.id, group: target.group, accountID: accountID)
@@ -311,7 +326,7 @@ struct LauncherListPane: View {
 
     /// 상세로 포커스를 옮겨도(Tab · →) 목록에서 고른 행은 그대로 보인다
     @ViewBuilder
-    private func row(_ item: LauncherItem, selected: Bool) -> some View {
+    private func row(_ item: LauncherItem, selected: Bool, drawSelectionBackground: Bool = true) -> some View {
         switch item {
         case .review(let action):
             MacListRow(
@@ -320,7 +335,8 @@ struct LauncherListPane: View {
                 sourceServices: sourceServices(action.id),
                 urgent: DueText.isUrgent(due: action.dueDate, reasons: [], today: today),
                 changed: model.showsDot(action.id),
-                selected: selected
+                selected: selected,
+                drawSelectionBackground: drawSelectionBackground
             )
         case .task(let ranked):
             MacListRow(
@@ -329,11 +345,15 @@ struct LauncherListPane: View {
                 sourceServices: sourceServices(ranked.action.id),
                 urgent: DueText.isUrgent(due: ranked.action.dueDate, reasons: ranked.reasons, today: today),
                 changed: model.showsDot(ranked.action.id),
-                selected: selected
+                selected: selected,
+                drawSelectionBackground: drawSelectionBackground
             )
         case .done(let action):
             // 끝낸 할 일은 기한을 보이지 않는다 (지남 · 오늘 빨강이 뜻이 없다)
-            MacListRow(title: action.title, sourceServices: sourceServices(action.id), selected: selected, dimmed: true)
+            MacListRow(
+                title: action.title, sourceServices: sourceServices(action.id), selected: selected, dimmed: true,
+                drawSelectionBackground: drawSelectionBackground
+            )
         case .saved(let row):
             let done = row.task.status == .doneToday
             MacListRow(
@@ -342,7 +362,8 @@ struct LauncherListPane: View {
                 sourceServices: [],
                 urgent: !done && DueText.isUrgent(due: row.task.dueDate, reasons: [], today: today),
                 selected: selected,
-                dimmed: done
+                dimmed: done,
+                drawSelectionBackground: drawSelectionBackground
             )
         case .showMore(let group, let hidden):
             ShowMoreRow(count: hidden, section: group.title, selected: selected) { model.run(item) }
