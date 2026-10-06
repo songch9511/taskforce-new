@@ -44,6 +44,8 @@ final class LauncherModel {
         case consentNeeded
         /// Run with AI (Figma M8, U2 Mac): Goal을 적고 ⌘↩로 시작. 목록은 흐리게 두고 상세 칸이 폼이 된다
         case runWithAI(Target)
+        /// AI handoff generation and editable result in the detail pane.
+        case handoff(Target)
         /// 초안 보기 (Figma 없음, U2 Mac 계획 열린 질문 5). 목록에 없는 할 일(오늘 전에 끝냄)의 초안이면 대상이 nil
         case draft(Target?, Artifact)
     }
@@ -117,6 +119,17 @@ final class LauncherModel {
         let due: LocalDate?
     }
 
+    struct HandoffPaneState: Equatable {
+        var ownerID: UUID?
+        var requestTarget: Target?
+        var response: HandoffResponse?
+        var prompt = ""
+        var isLoading = true
+        var error: String?
+        var copied = false
+        var copyError: String?
+    }
+
     /// 액션 바 Return 동작 · 보조 동작 (이름 + 단축키, `ActionBar`)
     struct BarAction: Equatable {
         let title: String
@@ -169,6 +182,8 @@ final class LauncherModel {
     let runs: RunStore?
     /// Run with AI의 Goal: 할 일마다 런처를 닫을 때까지 남는다 (사용자 글: 메모리에만)
     private var goals: [UUID: String] = [:]
+    /// Editable handoff drafts stay in memory only and are cleared when the account changes.
+    private(set) var handoffStates: [UUID: HandoffPaneState] = [:]
     /// Run with AI의 Use 칩 (읽는 중이면 nil)
     private(set) var draftSources: [DraftSource]?
     /// 상세에서 Tab · →로 갈래 버튼(`View Draft`)에 옮긴 할 일 (`laneFocusTarget`)
@@ -201,6 +216,8 @@ final class LauncherModel {
     @ObservationIgnored private var feedbackTimer: Task<Void, Never>?
     /// 쓰기마다 오른다: 끝난 쓰기가 그사이 바뀐 화면을 덮지 않게
     private var writeGeneration = 0
+    private var handoffRequestCounter = 0
+    private var handoffRequestTokens: [UUID: Int] = [:]
     /// 보내는 중인 직접 추가 · 빠진 할 일 신고의 쓰기 번호. 한 흐름에 한 번만 보낸다 (`isSubmitting`).
     private var submission: Int?
     /// 목록이 바뀌어도 같은 행을 가리키게 (Realtime · 다시 불러오기)
@@ -360,7 +377,7 @@ final class LauncherModel {
         switch screen {
         case .list: break
         // Run with AI · 초안: 목록은 흐리게 두고 상세 칸이 바뀐다 (Figma M8)
-        case .detail, .runWithAI, .draft: return .list
+        case .detail, .runWithAI, .handoff, .draft: return .list
         default: return .single
         }
         guard isSignedIn else { return session?.state == .loading ? .loading : .single }
@@ -412,7 +429,7 @@ final class LauncherModel {
     var canOpenActions: Bool {
         switch screen {
         case .list: selectedItem?.action != nil || (isSignedIn && configurationError == nil)
-        case .detail, .runWithAI, .draft(.some, _): true
+        case .detail, .runWithAI, .handoff, .draft(.some, _): true
         default: false
         }
     }
@@ -425,10 +442,26 @@ final class LauncherModel {
             return target(for: item)
         case .detail(let target):
             return focusedTarget ?? target
-        case .runWithAI(let target), .draft(let target?, _):
+        case .runWithAI(let target), .handoff(let target), .draft(let target?, _):
             return target
         default:
             return nil
+        }
+    }
+
+    var handoffPaneState: HandoffPaneState? {
+        guard case .handoff(let target) = screen else { return nil }
+        return handoffStates[target.action.id]
+    }
+
+    var handoffPrompt: String {
+        get { handoffPaneState?.prompt ?? "" }
+        set {
+            guard case .handoff(let target) = screen, var state = handoffStates[target.action.id] else { return }
+            state.prompt = newValue
+            state.copied = false
+            state.copyError = nil
+            handoffStates[target.action.id] = state
         }
     }
 
@@ -606,7 +639,7 @@ final class LauncherModel {
         case .list:
             guard let item = selectedItem, item.group != nil else { return nil }
             return item.action?.id
-        case .detail(let target), .actions(let target), .editDue(let target), .runWithAI(let target), .draft(let target?, _):
+        case .detail(let target), .actions(let target), .editDue(let target), .runWithAI(let target), .handoff(let target), .draft(let target?, _):
             return target.action.id
         default:
             return nil
@@ -617,7 +650,7 @@ final class LauncherModel {
     var runSubject: UUID? {
         guard isShown else { return nil }
         switch screen {
-        case .actions(let target), .detail(let target), .runWithAI(let target), .draft(let target?, _):
+        case .actions(let target), .detail(let target), .runWithAI(let target), .handoff(let target), .draft(let target?, _):
             return target.action.id
         default:
             return nil
@@ -645,6 +678,25 @@ final class LauncherModel {
         }
         // M8을 연 뒤 그 할 일이 지워졌거나 끝났거나 Review로 갔으면(다른 기기) 목록으로 (Goal은 남는다)
         if case .runWithAI = screen, runTarget == nil { returnToList() }
+        if case .handoff(let opened) = screen {
+            guard let current = currentHandoffTarget(for: opened) else {
+                handoffStates.removeValue(forKey: opened.action.id)
+                returnToList()
+                return
+            }
+            if var state = handoffStates[opened.action.id],
+               state.response != nil, state.requestTarget != current {
+                state.ownerID = nil
+                state.requestTarget = current
+                state.response = nil
+                state.prompt = ""
+                state.isLoading = false
+                state.error = "This task changed. Retry to prepare a current handoff."
+                state.copied = false
+                handoffStates[opened.action.id] = state
+            }
+            screen = .handoff(current)
+        }
     }
 
     // MARK: 연결 · 저장본
@@ -812,6 +864,7 @@ final class LauncherModel {
         lastUserID = userID
         work?.cancel()
         work = nil
+        handoffRequestTokens.removeAll()
         now?.reset()
         clearSavedDisclosure()
         account?.reset()
@@ -820,6 +873,7 @@ final class LauncherModel {
         sourcesLoaded = false
         sourceText = nil
         goals = [:]
+        handoffStates = [:]
         draftSources = nil
         clearFeedback()
         laneFocus = nil
@@ -1048,8 +1102,23 @@ final class LauncherModel {
             case kVK_ANSI_K where command:
                 openActions()
                 return true
-            case kVK_Return, kVK_ANSI_KeypadEnter, kVK_UpArrow, kVK_DownArrow, kVK_Tab:
+            default:
+                return nil
+            }
+        case .handoff:
+            switch keyCode {
+            case kVK_Escape:
+                back()
                 return true
+            case kVK_ANSI_C where command:
+                if let editor = event.window?.firstResponder as? NSTextView, editor.selectedRange().length > 0 { return false }
+                copyHandoffPrompt()
+                return true
+            case kVK_ANSI_K where command:
+                openActions()
+                return true
+            case kVK_Return, kVK_ANSI_KeypadEnter, kVK_UpArrow, kVK_DownArrow, kVK_LeftArrow, kVK_RightArrow, kVK_Tab:
+                return false
             default:
                 return nil
             }
@@ -1290,7 +1359,7 @@ final class LauncherModel {
             back()
         case .consentNeeded:
             openSettings(.ai)
-        case .working, .runWithAI, .draft:
+        case .working, .runWithAI, .handoff, .draft:
             // M8의 ↩는 Goal 줄바꿈 · 초안의 ↩는 할 일이 없다 (`handleSubScreenKey`)
             break
         }
@@ -1343,7 +1412,7 @@ final class LauncherModel {
         case .detail(let target):
             guard !leaveIfStale() else { return }
             openActions(target)
-        case .runWithAI(let target), .draft(let target?, _):
+        case .runWithAI(let target), .handoff(let target), .draft(let target?, _):
             openActions(target)
         default:
             break
@@ -1381,7 +1450,7 @@ final class LauncherModel {
         case .pickLines(_, let purpose):
             screen = .pickSource(purpose)
             selection = 0
-        case .runWithAI(let target), .draft(let target?, _):
+        case .runWithAI(let target), .handoff(let target), .draft(let target?, _):
             // M8 · 초안 → 상세 (입력한 Goal은 런처를 닫을 때까지 할 일별로 남는다)
             work?.cancel()
             screen = .detail(target)
@@ -1411,7 +1480,7 @@ final class LauncherModel {
             screen = .list
             selection = 0
             selectedID = nil
-        case .editDue, .addDue, .working, .pickLines, .runWithAI, .draft:
+        case .editDue, .addDue, .working, .pickLines, .runWithAI, .handoff, .draft:
             break
         }
     }
@@ -1494,7 +1563,7 @@ final class LauncherModel {
             setState(target.action, to: state)
         case .confirm: finish("Confirmed", focusing: id) { await now.confirm(id) }
         case .dismiss: finish("Dismissed", focusing: id) { await now.dismiss(id) }
-        case .handoff: finish("Copied", focusing: id) { _ = await now.handoff(id) }
+        case .handoff: startHandoff(for: target)
         case .openSource: openSource(target.action)
         case .editDue:
             screen = .editDue(target)
@@ -1504,6 +1573,149 @@ final class LauncherModel {
         case .runWithAI: openRun(target)
         case .stopTaskforce: stopTaskforce(target)
         }
+    }
+
+    private func currentHandoffTarget(for opened: Target) -> Target? {
+        guard let found = now?.sections.find(opened.action.id) else { return nil }
+        let current = Target(action: found.action, group: found.group)
+        guard actionGroups(for: current).contains(where: { $0.entries.contains(.handoff) }),
+              items.contains(where: { $0.inlineDetailActionID == current.action.id && $0.group == current.group })
+        else { return nil }
+        return current
+    }
+
+    private func startHandoff(for opened: Target) {
+        guard let now, !now.handoffBusy.contains(opened.action.id),
+              handoffStates[opened.action.id]?.isLoading != true,
+              let requestUserID = signedInUserID,
+              let target = currentHandoffTarget(for: opened)
+        else { return }
+
+        let id = target.action.id
+        if screen == .list { viewed = (id, selection) }
+        laneFocus = nil
+        screen = .handoff(target)
+        var state = handoffStates[id] ?? HandoffPaneState()
+        state.requestTarget = target
+        state.isLoading = true
+        state.error = nil
+        state.copyError = nil
+        state.copied = false
+        handoffStates[id] = state
+        handoffRequestCounter += 1
+        let requestToken = handoffRequestCounter
+        handoffRequestTokens[id] = requestToken
+
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                guard let response = try await now.handoff(id) else {
+                    guard handoffRequestTokens[id] == requestToken,
+                          signedInUserID == requestUserID
+                    else { return }
+                    guard case .handoff(let visible) = screen, visible.action.id == id else {
+                        clearHandoffLoading(id, requestToken: requestToken)
+                        return
+                    }
+                    var failed = handoffStates[id] ?? HandoffPaneState()
+                    failed.isLoading = false
+                    failed.error = "Couldn't prepare this handoff. Try again."
+                    handoffStates[id] = failed
+                    return
+                }
+                guard handoffRequestTokens[id] == requestToken,
+                      signedInUserID == requestUserID
+                else { return }
+                guard case .handoff(let visible) = screen, visible.action.id == id else {
+                    clearHandoffLoading(id, requestToken: requestToken)
+                    return
+                }
+                guard let current = currentHandoffTarget(for: visible) else {
+                    handoffStates.removeValue(forKey: id)
+                    returnToList(focusing: id)
+                    return
+                }
+                guard current == target else {
+                    handoffStates[id] = HandoffPaneState(isLoading: false, error: "This task changed while preparing the handoff. Retry to use its latest details.")
+                    screen = .handoff(current)
+                    return
+                }
+                screen = .handoff(current)
+                handoffStates[id] = HandoffPaneState(
+                    ownerID: requestUserID, requestTarget: target, response: response, prompt: response.markdown, isLoading: false
+                )
+            } catch {
+                guard handoffRequestTokens[id] == requestToken,
+                      signedInUserID == requestUserID
+                else { return }
+                guard case .handoff(let visible) = screen, visible.action.id == id else {
+                    clearHandoffLoading(id, requestToken: requestToken)
+                    return
+                }
+                if (error as? APIError)?.isConsentRequired == true {
+                    var failed = handoffStates[id] ?? HandoffPaneState()
+                    failed.isLoading = false
+                    failed.error = "Allow AI processing to prepare this handoff."
+                    handoffStates[id] = failed
+                    screen = .consentNeeded
+                    return
+                }
+                var failed = handoffStates[id] ?? HandoffPaneState()
+                failed.isLoading = false
+                failed.error = error.userMessage
+                handoffStates[id] = failed
+            }
+        }
+    }
+
+    private func clearHandoffLoading(_ id: UUID, requestToken: Int) {
+        guard handoffRequestTokens[id] == requestToken, var state = handoffStates[id] else { return }
+        state.isLoading = false
+        handoffStates[id] = state
+    }
+
+    func retryHandoff() {
+        guard case .handoff(let target) = screen,
+              handoffStates[target.action.id]?.isLoading != true
+        else { return }
+        startHandoff(for: target)
+    }
+
+    func copyHandoffPrompt() {
+        guard case .handoff(let target) = screen,
+              var state = handoffStates[target.action.id],
+              !state.isLoading, state.error == nil,
+              state.response != nil, !state.prompt.isEmpty
+        else { return }
+        guard let current = currentHandoffTarget(for: target) else {
+            handoffStates.removeValue(forKey: target.action.id)
+            returnToList(focusing: target.action.id)
+            return
+        }
+        guard current == target, state.requestTarget == target,
+              state.ownerID == signedInUserID
+        else {
+            state.ownerID = nil
+            state.requestTarget = current
+            state.response = nil
+            state.prompt = ""
+            state.isLoading = false
+            state.error = "This task changed. Retry to prepare a current handoff."
+            state.copied = false
+            handoffStates[target.action.id] = state
+            screen = .handoff(current)
+            return
+        }
+        pasteboard.clearContents()
+        guard pasteboard.setString(state.prompt, forType: .string) else {
+            state.copyError = "Couldn't copy the handoff prompt."
+            state.copied = false
+            handoffStates[target.action.id] = state
+            return
+        }
+        state.copyError = nil
+        state.copied = true
+        handoffStates[target.action.id] = state
     }
 
     /// A native list menu can outlive the row value used to build it. Re-resolve its
@@ -1959,6 +2171,7 @@ final class LauncherModel {
     var crumb: (task: String?, screen: String)? {
         switch screen {
         case .runWithAI(let target): (target.action.title, "Run with AI")
+        case .handoff(let target): (target.action.title, "Hand off to AI")
         case .draft(let target, _): (target?.action.title, "Draft")
         default: nil
         }

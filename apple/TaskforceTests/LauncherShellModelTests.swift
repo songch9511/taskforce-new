@@ -592,6 +592,129 @@ struct LauncherShellModelTests {
         #expect(harness.model.items.contains { if case .saved(let row) = $0 { row.task.title == "Saved T1" } else { false } })
         #expect(harness.model.bodyState == .list)
     }
+
+    @Test func handoffKeepsPerActionRequestsAndCopiesOnlyWhenReady() async throws {
+        let harness = try await ShellHarness.make(now: ShellNow.body(toDo: ["A", "B"]))
+        let model = harness.model
+        let now = try #require(model.now)
+        let aItem = try #require(model.items.first { $0.action?.title == "A" })
+        let bItem = try #require(model.items.first { $0.action?.title == "B" })
+        let a = LauncherModel.Target(action: try #require(aItem.action), group: try #require(aItem.group))
+        let b = LauncherModel.Target(action: try #require(bItem.action), group: try #require(bItem.group))
+        let clipboard = NSPasteboard(name: NSPasteboard.Name("TaskforceHandoff-\(UUID().uuidString)"))
+        clipboard.clearContents()
+        #expect(clipboard.setString("keep until explicit copy", forType: .string))
+        model.pasteboard = clipboard
+        await harness.router.holdHandoffs()
+
+        model.perform(.handoff, on: a)
+        await harness.waitUntil { await harness.router.pendingHandoffCount() == 1 }
+        model.perform(.handoff, on: a)
+        #expect(await harness.router.handoffRequestCount() == 1)
+        #expect(model.handoffPaneState?.isLoading == true)
+        model.copyHandoffPrompt()
+        #expect(model.handoffPaneState?.isLoading == true)
+        #expect(clipboard.string(forType: .string) == "keep until explicit copy")
+
+        model.perform(.handoff, on: b)
+        await harness.waitUntil { await harness.router.pendingHandoffCount() == 2 }
+        await harness.router.releaseHandoff(a.action.id)
+        await harness.waitUntil {
+            !now.handoffBusy.contains(a.action.id) && model.handoffStates[a.action.id]?.isLoading == false
+        }
+        #expect(model.screen == .handoff(b))
+        #expect(model.handoffStates[a.action.id]?.response == nil)
+
+        await harness.router.releaseHandoff(b.action.id)
+        await harness.waitUntil { model.handoffStates[b.action.id]?.response != nil }
+        model.perform(.handoff, on: a)
+        await harness.waitUntil { await harness.router.pendingHandoffCount() == 1 }
+        #expect(await harness.router.handoffRequestCount() == 3)
+        await harness.router.releaseHandoff(a.action.id)
+        await harness.waitUntil { model.screen == .handoff(a) && model.handoffStates[a.action.id]?.response != nil }
+        #expect(clipboard.string(forType: .string) == "keep until explicit copy")
+
+        let editedPrompt = "Edited prompt for the receiving assistant."
+        model.handoffPrompt = editedPrompt
+        model.copyHandoffPrompt()
+        #expect(clipboard.string(forType: .string) == editedPrompt)
+        #expect(model.handoffStates[a.action.id]?.copied == true)
+    }
+
+    @Test func handoffTimeoutCanBeRetriedSuccessfully() async throws {
+        let harness = try await ShellHarness.make(now: ShellNow.body(toDo: ["T1"]))
+        let model = harness.model
+        let item = try #require(model.items.first { $0.action?.title == "T1" })
+        let target = LauncherModel.Target(action: try #require(item.action), group: try #require(item.group))
+        await harness.router.timeoutNextHandoff()
+
+        model.perform(.handoff, on: target)
+        await harness.waitUntil { model.handoffPaneState?.error != nil && model.handoffPaneState?.isLoading == false }
+        #expect(model.handoffPaneState?.error == "AI took too long to prepare this handoff. Try again.")
+        #expect(await harness.router.handoffRequestCount() == 1)
+
+        model.retryHandoff()
+        await harness.waitUntil { model.handoffPaneState?.response != nil }
+        #expect(await harness.router.handoffRequestCount() == 2)
+        #expect(model.handoffPaneState?.error == nil)
+    }
+
+    @Test func handoffCannotCopyPromptAfterTheActionChanges() async throws {
+        let harness = try await ShellHarness.make(now: ShellNow.body(toDo: ["T1"]))
+        let model = harness.model
+        let now = try #require(model.now)
+        let item = try #require(model.items.first { $0.action?.title == "T1" })
+        let target = LauncherModel.Target(action: try #require(item.action), group: try #require(item.group))
+        let clipboard = NSPasteboard(name: NSPasteboard.Name("TaskforceHandoff-\(UUID().uuidString)"))
+        clipboard.clearContents()
+        #expect(clipboard.setString("preserve this text", forType: .string))
+        model.pasteboard = clipboard
+
+        model.perform(.handoff, on: target)
+        await harness.waitUntil { model.handoffStates[target.action.id]?.response != nil }
+        #expect(model.handoffStates[target.action.id]?.prompt.isEmpty == false)
+
+        let renamedNow = String(decoding: ShellNow.body(toDo: ["T1"]), as: UTF8.self)
+            .replacingOccurrences(of: "\"title\":\"T1\"", with: "\"title\":\"T1 renamed\"")
+        await harness.router.setNow(Data(renamedNow.utf8))
+        await now.load()
+        await harness.waitUntil {
+            guard case .handoff(let current) = model.screen else { return false }
+            return current.action.title == "T1 renamed" && model.handoffPaneState?.error != nil
+        }
+
+        #expect(model.handoffPaneState?.response == nil)
+        #expect(model.handoffPrompt.isEmpty)
+        model.copyHandoffPrompt()
+        #expect(clipboard.string(forType: .string) == "preserve this text")
+    }
+
+    @Test func heldHandoffCannotSurfaceAfterSignOut() async throws {
+        let harness = try await ShellHarness.make(now: ShellNow.body(toDo: ["T1"]))
+        let model = harness.model
+        let item = try #require(model.items.first { $0.action?.title == "T1" })
+        let target = LauncherModel.Target(action: try #require(item.action), group: try #require(item.group))
+        let clipboard = NSPasteboard(name: NSPasteboard.Name("TaskforceHandoff-\(UUID().uuidString)"))
+        clipboard.clearContents()
+        #expect(clipboard.setString("keep after sign out", forType: .string))
+        model.pasteboard = clipboard
+        await harness.router.holdHandoffs()
+
+        model.perform(.handoff, on: target)
+        await harness.waitUntil { await harness.router.pendingHandoffCount() == 1 }
+        harness.session.apply(event: .signedOut, session: nil)
+        model.sessionChanged()
+        #expect(model.screen == .list)
+        #expect(model.handoffStates.isEmpty)
+
+        await harness.router.releaseHandoff(target.action.id)
+        await harness.waitUntil { await harness.router.handoffResponseCount() == 1 }
+        try await Task.sleep(for: .milliseconds(100))
+        model.copyHandoffPrompt()
+        #expect(model.screen == .list)
+        #expect(model.handoffStates.isEmpty)
+        #expect(clipboard.string(forType: .string) == "keep after sign out")
+    }
 }
 
 // MARK: - 하네스
@@ -776,6 +899,11 @@ private actor ShellRouter {
     private var seen: [UUID] = []
     private var holding = false
     private var held: [CheckedContinuation<ShellResponse, Never>] = []
+    private var holdingHandoffs = false
+    private var heldHandoffs: [UUID: [CheckedContinuation<ShellResponse, Never>]] = [:]
+    private var handoffCount = 0
+    private var handoffTimeouts = 0
+    private var handoffResponses = 0
 
     init(now: Data?) {
         self.now = now
@@ -815,6 +943,23 @@ private actor ShellRouter {
             progressCount += 1
             let id = path.split(separator: "/").dropLast().last.map(String.init) ?? "00000000-0000-4000-8000-000000000001"
             return actionResponse(id)
+        }
+        if method == "POST", path.hasPrefix("/api/v1/actions/"), path.hasSuffix("/handoff") {
+            let rawID = path.dropFirst("/api/v1/actions/".count).dropLast("/handoff".count)
+            guard let id = UUID(uuidString: String(rawID)) else {
+                return ShellResponse(status: 400, body: Data("{}".utf8))
+            }
+            handoffCount += 1
+            if handoffTimeouts > 0 {
+                handoffTimeouts -= 1
+                return ShellResponse(status: 504, body: Data("""
+                {"error":{"code":"ai_timeout","message":"Timed out"}}
+                """.utf8))
+            }
+            if holdingHandoffs {
+                return await withCheckedContinuation { heldHandoffs[id, default: []].append($0) }
+            }
+            return handoffResponse(id)
         }
         if method == "PATCH", path.hasPrefix("/api/v1/actions/") {
             dueCount += 1
@@ -888,6 +1033,24 @@ private actor ShellRouter {
         let response = currentNow()
         for continuation in held { continuation.resume(returning: response) }
         held = []
+    }
+
+    func holdHandoffs() { holdingHandoffs = true }
+    func timeoutNextHandoff() { handoffTimeouts += 1 }
+    func handoffRequestCount() -> Int { handoffCount }
+    func handoffResponseCount() -> Int { handoffResponses }
+    func pendingHandoffCount() -> Int { heldHandoffs.values.reduce(0) { $0 + $1.count } }
+
+    func releaseHandoff(_ id: UUID) {
+        let continuations = heldHandoffs.removeValue(forKey: id) ?? []
+        for continuation in continuations { continuation.resume(returning: handoffResponse(id)) }
+    }
+
+    private func handoffResponse(_ id: UUID) -> ShellResponse {
+        handoffResponses += 1
+        return ShellResponse(status: 200, body: Data("""
+        {"action_id":"\(id.uuidString.lowercased())","title":"Handoff for task","markdown":"# Handoff prompt\\n\\nReview the task and prepare the requested deliverable.","assessment":{"effort":"low","difficulty":"medium","context":"sufficient","model":"test/model","rubric_version":"handoff-v1"}}
+        """.utf8))
     }
 
     private func actionResponse(_ id: String) -> ShellResponse {

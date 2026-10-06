@@ -18,6 +18,8 @@ final class NowStore {
     private(set) var loaded = false
     /// 요청 중인 확인 요청 (Confirm · Dismiss 버튼을 잠근다)
     private(set) var busy: Set<UUID> = []
+    /// AI handoffs in flight. The response is never copied automatically.
+    private(set) var handoffBusy: Set<UUID> = []
     /// 먼저 보여 주는 내 변경. 쓰기가 끝난 뒤 시작한 불러오기가 반영되면 지운다.
     private var pending: [UUID: Pending] = [:]
     private var changeCount = 0
@@ -138,6 +140,7 @@ final class NowStore {
         loadError = nil
         loaded = false
         busy = []
+        handoffBusy = []
         pending = [:]
         writes = [:]
         stateBeforeDone = [:]
@@ -383,21 +386,17 @@ final class NowStore {
         await load()
     }
 
-    /// AI에게 넘기기: 맥락 · 근거 문서를 받아 클립보드에 복사한다
-    func handoff(_ id: UUID) async -> Bool {
-        busy.insert(id)
-        defer { busy.remove(id) }
+    /// Prepare an AI handoff for explicit review and copying in the Mac detail pane.
+    func handoff(_ id: UUID) async throws -> HandoffResponse? {
+        guard !handoffBusy.contains(id) else { return nil }
+        handoffBusy.insert(id)
         let generation = generation
-        do {
-            let response = try await services.api.handoff(id: id)
-            // 그사이 로그아웃했으면 전 계정의 문서를 클립보드에 두지 않는다
-            guard generation == self.generation else { return false }
-            Clipboard.copy(response.markdown)
-            return true
-        } catch {
-            if generation == self.generation { message = error.userMessage }
-            return false
-        }
+        defer { if generation == self.generation { handoffBusy.remove(id) } }
+        let response = try await services.api.handoff(id: id)
+        // A sign-out/account reset or mismatched server response must not deliver another task's content.
+        guard generation == self.generation else { return nil }
+        guard response.actionID == id else { throw APIError.decoding("Handoff response action_id did not match the request") }
+        return response
     }
 
     /// 근거를 읽어 둔다 (이미 있으면 다시 읽지 않는다, `force`면 다시)

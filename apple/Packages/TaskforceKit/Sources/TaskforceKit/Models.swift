@@ -334,12 +334,36 @@ public struct CreateActionResponse: Decodable, Sendable, Hashable {
 public struct HandoffResponse: Decodable, Sendable, Hashable {
     public let actionID: UUID
     public let title: String
-    /// 그대로 복사해 AI 도구에 붙여 넣는 문서
+    /// 편집한 뒤 AI 도구에 붙여 넣는 문서
     public let markdown: String
+    /// 구버전 서버 응답에는 없을 수 있다.
+    public let assessment: HandoffAssessment?
 
     enum CodingKeys: String, CodingKey {
-        case title, markdown
+        case title, markdown, assessment
         case actionID = "action_id"
+    }
+}
+
+public struct HandoffAssessment: Decodable, Sendable, Hashable {
+    public enum Level: String, Decodable, Sendable, Hashable {
+        case low, medium, high, unknown
+    }
+
+    public enum Context: String, Decodable, Sendable, Hashable {
+        case sufficient
+        case needsClarification = "needs_clarification"
+    }
+
+    public let effort: Level
+    public let difficulty: Level
+    public let context: Context
+    public let model: String
+    public let rubricVersion: String
+
+    enum CodingKeys: String, CodingKey {
+        case effort, difficulty, context, model
+        case rubricVersion = "rubric_version"
     }
 }
 

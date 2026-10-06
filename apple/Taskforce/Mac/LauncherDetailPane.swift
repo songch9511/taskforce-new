@@ -17,6 +17,7 @@ struct LauncherDetailPane: View {
     var body: some View {
         switch model.screen {
         case .runWithAI(let target): LauncherRunPane(model: model, target: target)
+        case .handoff(let target): LauncherHandoffPane(model: model, target: target)
         case .draft(_, let artifact): LauncherDraftPane(artifact: artifact)
         default:
             detail
@@ -131,6 +132,145 @@ struct LauncherDetailPane: View {
             Text("No source details available.")
                 .font(TFFont.meta)
                 .foregroundStyle(TFColor.textSecondary)
+        }
+    }
+}
+
+private struct LauncherHandoffPane: View {
+    @Bindable var model: LauncherModel
+    let target: LauncherModel.Target
+
+    @State private var hasMoreBelow = false
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Hand off to AI")
+                        .font(TFFont.title)
+                        .foregroundStyle(TFColor.textPrimary)
+                        .accessibilityAddTraits(.isHeader)
+                    Text(target.action.title)
+                        .font(TFFont.meta)
+                        .foregroundStyle(TFColor.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                if let state = model.handoffPaneState {
+                    if state.isLoading {
+                        HStack(spacing: TFSpace.xs) {
+                            ProgressView().controlSize(.small)
+                            Text("Preparing handoff…")
+                        }
+                        .font(TFFont.meta)
+                        .foregroundStyle(TFColor.textSecondary)
+                    }
+
+                    if let error = state.error {
+                        Label(error, systemImage: "exclamationmark.circle")
+                            .font(TFFont.meta)
+                            .foregroundStyle(TFColor.textSecondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+
+                    if let response = state.response {
+                        assessment(response.assessment)
+                        Text("Prompt")
+                            .font(TFFont.footnoteEmphasis)
+                            .foregroundStyle(TFColor.textPrimary)
+                        TextEditor(text: $model.handoffPrompt)
+                            .font(TFFont.footnote)
+                            .scrollContentBackground(.hidden)
+                            .padding(TFSpace.xs)
+                            .frame(minHeight: 230)
+                            .background(TFColor.settingsFill, in: RoundedRectangle(cornerRadius: TFRadius.md, style: .continuous))
+                            .overlay {
+                                RoundedRectangle(cornerRadius: TFRadius.md, style: .continuous)
+                                    .strokeBorder(TFColor.settingsLine, lineWidth: 1)
+                            }
+                            .accessibilityLabel("Editable handoff prompt")
+                            .disabled(state.isLoading)
+
+                        if let copyError = state.copyError {
+                            Text(copyError)
+                                .font(TFFont.meta)
+                                .foregroundStyle(TFColor.textSecondary)
+                        }
+
+                        HStack {
+                            if state.error != nil {
+                                Button("Retry") { model.retryHandoff() }
+                                    .disabled(state.isLoading)
+                                    .accessibilityLabel("Retry handoff preparation")
+                            }
+                            Spacer(minLength: TFSpace.sm)
+                            Button(state.copied ? "Copied" : "Copy prompt") { model.copyHandoffPrompt() }
+                                .disabled(state.isLoading || model.handoffPrompt.isEmpty || state.error != nil)
+                                .accessibilityLabel(state.copied ? "Prompt copied" : "Copy handoff prompt")
+                        }
+                        .buttonStyle(.bordered)
+                    } else if !state.isLoading {
+                        Button("Retry") { model.retryHandoff() }
+                            .buttonStyle(.bordered)
+                            .accessibilityLabel("Retry handoff preparation")
+                    }
+                }
+            }
+            .padding(.horizontal, TFSpace.xl)
+            .padding(.top, 18)
+            .padding(.bottom, TFSpace.xl)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .onScrollGeometryChange(for: Bool.self) { geometry in
+            geometry.contentOffset.y + geometry.containerSize.height < geometry.contentSize.height - 1
+        } action: { _, more in
+            hasMoreBelow = more
+        }
+        .background(TFColor.bgElevated)
+        .scrollEdgeFade(TFColor.bgElevated, isActive: hasMoreBelow)
+    }
+
+    @ViewBuilder
+    private func assessment(_ result: HandoffAssessment?) -> some View {
+        if let result {
+            VStack(alignment: .leading, spacing: TFSpace.xs) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text("Effort")
+                        .foregroundStyle(TFColor.textSecondary)
+                    Text(result.effort.label)
+                        .foregroundStyle(TFColor.textPrimary)
+                    Spacer(minLength: TFSpace.sm)
+                    Text("Difficulty")
+                        .foregroundStyle(TFColor.textSecondary)
+                    Text(result.difficulty.label)
+                        .foregroundStyle(TFColor.textPrimary)
+                }
+                .font(TFFont.meta)
+
+                if result.context == .needsClarification {
+                    Label("Needs clarification", systemImage: "questionmark.circle")
+                        .font(TFFont.meta)
+                        .foregroundStyle(TFColor.textSecondary)
+                }
+            }
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("AI assessment. Effort \(result.effort.label), difficulty \(result.difficulty.label), context \(result.context == .sufficient ? "sufficient" : "needs clarification").")
+        } else {
+            Label("Context only", systemImage: "text.alignleft")
+                .font(TFFont.meta)
+                .foregroundStyle(TFColor.textSecondary)
+                .accessibilityHint("This server returned task context without an AI assessment.")
+        }
+    }
+}
+
+private extension HandoffAssessment.Level {
+    var label: String {
+        switch self {
+        case .low: "Low"
+        case .medium: "Medium"
+        case .high: "High"
+        case .unknown: "Unknown"
         }
     }
 }

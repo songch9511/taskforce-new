@@ -184,7 +184,9 @@ struct APIClientTests {
     @Test func handoff() async throws {
         let response = try await client(body: Fixtures.handoff).handoff(id: Fixtures.actionID)
         #expect(response.title == "투자 자료 보내기")
-        #expect(last?.url.path == "/api/v1/actions/11111111-1111-4111-8111-111111111111/handoff")
+        let request = try #require(last)
+        #expect(request.url.path == "/api/v1/actions/11111111-1111-4111-8111-111111111111/handoff")
+        #expect(try json(request.body) as NSDictionary == ["mode": "assisted"] as NSDictionary)
     }
 
     @Test func reportMissingSendsQuote() async throws {

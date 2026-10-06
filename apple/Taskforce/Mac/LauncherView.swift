@@ -96,7 +96,7 @@ struct LauncherRootView: View {
 
     private var inputLocked: Bool {
         switch model.screen {
-        case .editDue, .addDue, .pickLines, .working: true
+        case .editDue, .addDue, .pickLines, .working, .handoff: true
         // 직접 추가 중에는 입력창에 제목을 그대로 보여 준다
         case .pickSource(let purpose): purpose != .reportMissing
         default: false
@@ -175,7 +175,7 @@ struct LauncherFlowView: View {
             LauncherSectionLabel("Privacy & AI Data")
             LauncherRow(title: "Allow AI processing to continue", selected: true, leading: .symbol("hand.raised"))
                 .onTapGesture { model.primary() }
-        case .runWithAI, .draft:
+        case .runWithAI, .handoff, .draft:
             // 목록 | 상세 칸에 그린다 (`LauncherDetailPane`)
             EmptyView()
         }

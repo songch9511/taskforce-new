@@ -12,6 +12,8 @@ public enum APIErrorCode: String, Decodable, Sendable {
     case aiPricingUnavailable = "ai_pricing_unavailable"
     case aiProviderBoundViolation = "ai_provider_bound_violation"
     case aiBudgetUnavailable = "ai_budget_unavailable"
+    case aiTimeout = "ai_timeout"
+    case aiUnavailable = "ai_unavailable"
 }
 
 public enum APIError: Error, Equatable, Sendable, CustomStringConvertible {
@@ -54,6 +56,10 @@ public enum APIError: Error, Equatable, Sendable, CustomStringConvertible {
             "AI is paused because a provider exceeded its reserved cost."
         case .server(_, .aiBudgetUnavailable, _):
             "Could not verify your AI allowance. Try again later."
+        case .server(_, .aiTimeout, _):
+            "AI took too long to prepare this handoff. Try again."
+        case .server(_, .aiUnavailable, _):
+            "AI couldn't prepare this handoff. Try again."
         case .server(_, .conflict, _):
             "This changed somewhere else. It's been refreshed."
         case .server(_, .unauthorized, _):
@@ -144,8 +150,9 @@ public struct APIClient: Sendable {
         try await sendNoContent(.post, "actions/\(id.lowercased)/seen")
     }
 
-    public func handoff(id: UUID) async throws -> HandoffResponse {
-        try await send(.post, "actions/\(id.lowercased)/handoff")
+    public func handoff(id: UUID, assisted: Bool = true) async throws -> HandoffResponse {
+        let body: (any Encodable)? = assisted ? HandoffRequest(mode: "assisted") : nil
+        return try await send(.post, "actions/\(id.lowercased)/handoff", body: body)
     }
 
     /// 빠진 할 일 신고. `quote`는 원문에 그대로 있는 구절이어야 한다 (`SourceText.quote`). 서버가 LLM을 불러 몇 초 걸린다.
@@ -414,6 +421,10 @@ struct ProgressRequest: Encodable {
 
 struct MissingReportRequest: Encodable {
     let quote: String
+}
+
+private struct HandoffRequest: Encodable {
+    let mode: String
 }
 
 /// POST /api/v1/actions 본문. `source_id` · `quote`는 원문을 골랐을 때만 넣는다.

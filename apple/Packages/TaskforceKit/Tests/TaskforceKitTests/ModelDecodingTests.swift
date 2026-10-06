@@ -76,6 +76,16 @@ struct ModelDecodingTests {
         let handoff = try decode(HandoffResponse.self, Fixtures.handoff)
         #expect(handoff.actionID == Fixtures.actionID)
         #expect(handoff.markdown.hasPrefix("# 투자 자료 보내기\n"))
+        #expect(handoff.assessment == nil, "Older servers return context without an assessment")
+    }
+
+    @Test func decodesAssistedHandoffAssessment() throws {
+        let json = ##"{"action_id":"11111111-1111-4111-8111-111111111111","title":"Proposal","markdown":"# Draft","assessment":{"effort":"medium","difficulty":"high","context":"needs_clarification","model":"typesafe/jev-1.13","rubric_version":"handoff-v1"}}"##
+        let handoff = try decode(HandoffResponse.self, json)
+        #expect(handoff.assessment?.effort == .medium)
+        #expect(handoff.assessment?.difficulty == .high)
+        #expect(handoff.assessment?.context == .needsClarification)
+        #expect(handoff.assessment?.model == "typesafe/jev-1.13")
     }
 
     @Test func decodesEventRowsWithJSONB() throws {

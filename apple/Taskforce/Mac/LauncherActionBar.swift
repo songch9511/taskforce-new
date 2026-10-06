@@ -55,7 +55,7 @@ struct LauncherActionBar: View {
 
     private var trailing: ActionBarItem? {
         switch model.screen {
-        case .list, .detail, .runWithAI, .draft(.some, _):
+        case .list, .detail, .runWithAI, .handoff, .draft(.some, _):
             // 할 일 행이 아니면 명령 패널 (로그아웃이면 할 일이 없어 숨긴다)
             guard model.canOpenActions else { return nil }
             return ActionBarItem("Actions", keys: "⌘K") { model.openActions() }
