@@ -4,6 +4,20 @@ import SwiftUI
 import TaskforceKit
 import TaskforceUI
 
+private struct LauncherRowMenuButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        let shape = RoundedRectangle(cornerRadius: TFRadius.md, style: .continuous)
+        configuration.label
+            .font(.system(size: 12, weight: .semibold))
+            .foregroundStyle(TFColor.textSecondary)
+            .frame(width: 28, height: 28)
+            .background(TFColor.settingsFill, in: shape)
+            .overlay(shape.strokeBorder(TFColor.borderDefault, lineWidth: 1))
+            .opacity(configuration.isPressed ? 0.75 : 1)
+            .contentShape(shape)
+    }
+}
+
 /// Launcher list with an optional right-side detail pane.
 /// The list uses an eager stack to avoid SwiftUI's nested lazy-section placement churn during scroll updates.
 struct LauncherListPane: View {
@@ -301,14 +315,10 @@ struct LauncherListPane: View {
                 }
             } label: {
                 Image(systemName: "ellipsis")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(TFColor.textSecondary)
             }
             .menuIndicator(.hidden)
             .menuStyle(.button)
-            .buttonStyle(.bordered)
-            .buttonBorderShape(.roundedRectangle)
-            .controlSize(.regular)
+            .buttonStyle(LauncherRowMenuButtonStyle())
             .frame(width: 28, height: 28)
             .padding(.trailing, TFSpace.xs)
             .help("Actions for \(action.title)")
