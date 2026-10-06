@@ -33,6 +33,9 @@ final class NowStore {
     private(set) var sourceServicesFailed = false
     /// 근거를 읽지 못한 할 일 (계속 "읽는 중"으로 두지 않게)
     private(set) var evidenceFailed: Set<UUID> = []
+    /// 현재 읽는 중인 근거 (런처 상세의 진행 상태)
+    private(set) var evidenceLoading: Set<UUID> = []
+    private var evidenceLoadCounts: [UUID: Int] = [:]
     var message: String?
     /// 직접 추가 실패 문구. iPhone New Task 시트가 자기 알림으로 보여 준다 (시트가 떠 있는 동안 홈 화면 알림은 뜨지 않는다).
     var addError: String?
@@ -142,6 +145,8 @@ final class NowStore {
         sourceServicesByAction = [:]
         sourceServicesFailed = false
         evidenceFailed = []
+        evidenceLoading = []
+        evidenceLoadCounts = [:]
         message = nil
         addError = nil
         refresh.reset()
@@ -402,9 +407,21 @@ final class NowStore {
         #if DEBUG
         if sampleMode { return nil }
         #endif
-        evidenceFailed.remove(id)
-        // 읽는 사이 로그아웃 · 계정 전환했으면 전 계정의 근거를 두지 않는다
         let generation = generation
+        evidenceFailed.remove(id)
+        evidenceLoadCounts[id, default: 0] += 1
+        evidenceLoading.insert(id)
+        defer {
+            if generation == self.generation, let count = evidenceLoadCounts[id] {
+                if count <= 1 {
+                    evidenceLoadCounts.removeValue(forKey: id)
+                    evidenceLoading.remove(id)
+                } else {
+                    evidenceLoadCounts[id] = count - 1
+                }
+            }
+        }
+        // 읽는 사이 로그아웃 · 계정 전환했으면 전 계정의 근거를 두지 않는다
         do {
             let detail = try await services.reads.actionDetail(id: id)
             guard generation == self.generation else { return nil }

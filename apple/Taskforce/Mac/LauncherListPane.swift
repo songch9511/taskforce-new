@@ -4,7 +4,7 @@ import TaskforceKit
 import TaskforceUI
 
 /// Full-width launcher list: notices, clear task sections, and inline details under the selected row.
-/// `LazyVStack` keeps long lists responsive; source icons are supplied by the account-scoped metadata cache.
+/// The list uses an eager stack to avoid SwiftUI's nested lazy-section placement churn during scroll updates.
 struct LauncherListPane: View {
     @Bindable var model: LauncherModel
 
@@ -18,7 +18,7 @@ struct LauncherListPane: View {
         let offsets = Self.offsets(sections)
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
+                VStack(alignment: .leading, spacing: 0) {
                     Color.clear.frame(height: 0).id(Self.top)
                     if model.showsSyncing {
                         Text(ConnectionSync.label)
@@ -46,24 +46,20 @@ struct LauncherListPane: View {
                         .accessibilityElement(children: .contain)
                     }
                     ForEach(Array(sections.enumerated()), id: \.element.id) { sectionIndex, section in
-                        Section {
-                            ForEach(Array(section.items.enumerated()), id: \.element.id) { itemIndex, item in
-                                let index = offsets[sectionIndex] + itemIndex
-                                itemRow(item, selected: index == model.selection, at: index)
+                        if let title = section.title {
+                            VStack(spacing: 0) {
+                                Rectangle()
+                                    .fill(TFColor.settingsLine)
+                                    .frame(height: 1)
+                                SectionHeader(title, count: section.count ?? section.items.count)
                                     .padding(.horizontal, TFSpace.sm)
-                                    .id(item.id)
                             }
-                        } header: {
-                            if let title = section.title {
-                                VStack(spacing: 0) {
-                                    Rectangle()
-                                        .fill(TFColor.settingsLine)
-                                        .frame(height: 1)
-                                    SectionHeader(title, count: section.count ?? section.items.count)
-                                        .padding(.horizontal, TFSpace.sm)
-                                }
-                                .background(TFColor.settingsSidebar)
-                            }
+                            .background(TFColor.settingsSidebar)
+                        }
+                        ForEach(Array(section.items.enumerated()), id: \.element.id) { itemIndex, item in
+                            let index = offsets[sectionIndex] + itemIndex
+                            itemRow(item, selected: index == model.selection, at: index)
+                                .padding(.horizontal, TFSpace.sm)
                         }
                     }
                 }
@@ -90,18 +86,17 @@ struct LauncherListPane: View {
             .onChange(of: model.focusRequest) { model.clearSavedDisclosure() }
             .task(id: model.screen) {
                 guard case let .detail(target) = model.screen else { return }
-                // Let the lazy rows enter the scroll view before resolving the row target.
+                // Let the updated stack finish layout before resolving the row target.
                 await Task.yield()
                 let items = model.items
                 guard !Task.isCancelled,
                       let index = items.firstIndex(where: { $0.inlineDetailActionID == target.action.id })
                 else { return }
-                // Leave one row of clearance for the pinned section header. For index zero,
-                // the top sentinel puts the first row just below its pinned header.
+                // Center the selected row so its inline continuation is visible after it opens.
                 if index == 0 {
                     proxy.scrollTo(Self.top, anchor: .top)
                 } else {
-                    proxy.scrollTo(items[index - 1].id, anchor: .top)
+                    proxy.scrollTo(items[index].id, anchor: .center)
                 }
             }
         }
@@ -163,22 +158,9 @@ struct LauncherListPane: View {
     @ViewBuilder
     private func itemRow(_ item: LauncherItem, selected: Bool, at index: Int) -> some View {
         VStack(alignment: .leading, spacing: 0) {
-            switch item {
-            case .review, .task, .done, .saved:
-                Button { tap(item, at: index) } label: {
-                    row(item, selected: selected)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .buttonStyle(.plain)
-                .accessibilityHint(isExpanded(item) ? "Hide details" : "Show details")
-            case .showMore, .doneToday:
-                row(item, selected: selected)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            default:
-                row(item, selected: selected)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .onTapGesture { tap(item, at: index) }
-            }
+            itemRowContent(item, selected: selected, at: index)
+                // The scroll target is the row itself, never its potentially long inline detail.
+                .id(item.id)
             if isExpanded(item) {
                 LauncherDetailPane(model: model, inline: true)
                     .padding(.horizontal, TFSpace.sm)
@@ -189,6 +171,27 @@ struct LauncherListPane: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
+    @ViewBuilder
+    private func itemRowContent(_ item: LauncherItem, selected: Bool, at index: Int) -> some View {
+        switch item {
+        case .review, .task, .done, .saved:
+            Button { tap(item, at: index) } label: {
+                row(item, selected: selected)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .buttonStyle(.plain)
+            .help(Text(fullTitle(for: item)))
+            .accessibilityHint(isExpanded(item) ? "Hide details" : "Show details")
+        case .showMore, .doneToday:
+            row(item, selected: selected)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        default:
+            row(item, selected: selected)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .onTapGesture { tap(item, at: index) }
+        }
+    }
+
     private func isExpanded(_ item: LauncherItem) -> Bool {
         if case .detail = model.screen, let id = item.inlineDetailActionID {
             return model.detailTarget?.action.id == id
@@ -197,6 +200,12 @@ struct LauncherListPane: View {
             return model.isSavedRowExpanded(savedRow)
         }
         return false
+    }
+
+    private func fullTitle(for item: LauncherItem) -> String {
+        if let title = item.action?.title { return title }
+        if case .saved(let row) = item { return row.task.title }
+        return ""
     }
 
     private var today: LocalDate { DueDateFormat.today() }

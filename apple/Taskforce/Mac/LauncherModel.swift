@@ -323,10 +323,10 @@ final class LauncherModel {
         reconcileSelection()
     }
 
-    /// 목록 모양: 표시 설정은 Mac에 저장하고, 범위 · 바뀜 · 실패 원문은 서버 응답을 따른다.
+    /// 목록 모양: 표시 설정은 Mac에 저장하고, 범위 · 바뀜은 서버 응답을 따른다. 실패 원문은 응답 · 설정 진단에 유지한다.
     private var listLayout: LauncherContent.Layout {
         return LauncherContent.Layout(
-            caps: caps, scope: scope, changed: changedIDs, working: workingIDs, failedSources: now?.response?.failedSources ?? .empty
+            caps: caps, scope: scope, changed: changedIDs, working: workingIDs, failedSources: .empty
         )
     }
 

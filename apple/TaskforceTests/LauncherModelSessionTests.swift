@@ -83,6 +83,32 @@ struct LauncherModelSessionTests {
         #expect(now.evidence.isEmpty)
     }
 
+    @Test func evidenceLoadingFromOldAccountCannotClearNewAccountRequest() async throws {
+        let harness = try await LauncherHarness.make()
+        let now = try #require(harness.model.now)
+        await harness.router.holdActionDetail()
+
+        let oldRead = Task { await now.loadEvidence(harness.actionID) }
+        await harness.waitUntil { await harness.router.pendingActionDetailCount() == 1 }
+        #expect(now.evidenceLoading.contains(harness.actionID))
+
+        try harness.signInAsOtherAccount()
+        harness.model.sessionChanged()
+        #expect(now.evidenceLoading.isEmpty, "Account reset clears the previous account's loading state")
+
+        let newRead = Task { await now.loadEvidence(harness.actionID) }
+        await harness.waitUntil { await harness.router.pendingActionDetailCount() == 2 }
+        #expect(now.evidenceLoading.contains(harness.actionID))
+
+        await harness.router.releaseFirstActionDetail()
+        _ = await oldRead.value
+        #expect(now.evidenceLoading.contains(harness.actionID), "A late old-account defer cannot clear the new account's spinner")
+
+        await harness.router.releaseActionDetail()
+        _ = await newRead.value
+        #expect(!now.evidenceLoading.contains(harness.actionID))
+    }
+
     @Test func accountChangeClearsSavedDisclosure() async throws {
         let harness = try await LauncherHarness.make()
         let now = try #require(harness.model.now)
@@ -328,6 +354,17 @@ private actor LauncherTestRouter {
     func holdActionDetail() { holdingActionDetail = true }
 
     func hasPendingActionDetail() -> Bool { !actionDetailResponses.isEmpty }
+
+    func pendingActionDetailCount() -> Int { actionDetailResponses.count }
+
+    func releaseFirstActionDetail() {
+        guard !actionDetailResponses.isEmpty else { return }
+        let response = actionDetailResponses.removeFirst()
+        let body = Data("""
+        [{"id":"\(actionID.uuidString.lowercased())","title":"Private task","scope_summary":null,"owner":"me","counterpart":null,"due_date":null,"status":"open","needs_confirmation":false,"confirm_reasons":[],"started_at":null,"last_activity_at":"2026-09-29T10:00:00Z","created_at":"2026-09-29T10:00:00Z"}]
+        """.utf8)
+        response.resume(returning: StubResponse(status: 200, body: body))
+    }
 
     /// 전 계정의 할 일 행 (근거 · 이력은 빈 목록으로 답한다)
     func releaseActionDetail() {

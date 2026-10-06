@@ -21,11 +21,7 @@ struct LauncherDetailPane: View {
         case .draft(_, let artifact): LauncherDraftPane(artifact: artifact)
         default:
             if inline {
-                detailContent
-                    .padding(.horizontal, TFSpace.md)
-                    .padding(.vertical, TFSpace.md)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(TFColor.bgElevated, in: RoundedRectangle(cornerRadius: TFRadius.md, style: .continuous))
+                inlineDetailContent
             } else {
                 detail
             }
@@ -64,6 +60,43 @@ struct LauncherDetailPane: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
+    /// Inline details continue the selected row instead of repeating its title in a second card.
+    @ViewBuilder
+    private var inlineDetailContent: some View {
+        VStack(alignment: .leading, spacing: TFSpace.sm) {
+            if let target = model.detailTarget {
+                VStack(alignment: .leading, spacing: TFSpace.xxs) {
+                    Text(target.group.title)
+                        .foregroundStyle(TFColor.textSecondary)
+                    if target.group != .doneToday, let due = target.action.dueDate {
+                        Text("Due \(DueText.short(due, today: today))")
+                            .foregroundStyle(DueText.isUrgent(due: due, reasons: [], today: today) ? TFColor.statusOverdue : TFColor.textSecondary)
+                    }
+                    if target.group == .review {
+                        Text(ConfirmReasonText.label(target.action.confirmReasons))
+                            .foregroundStyle(TFColor.textSecondary)
+                    }
+                }
+                .font(TFFont.meta)
+                LauncherLaneView(model: model, target: target)
+                sources(target.action.id)
+            } else if let row = model.detailSavedRow {
+                VStack(alignment: .leading, spacing: TFSpace.xxs) {
+                    Text("Saved · \(row.task.status.group.title)")
+                        .foregroundStyle(TFColor.textSecondary)
+                    if row.task.status != .doneToday, let due = row.task.dueDate {
+                        Text("Due \(DueText.short(due, today: today))")
+                            .foregroundStyle(DueText.isUrgent(due: due, reasons: [], today: today) ? TFColor.statusOverdue : TFColor.textSecondary)
+                    }
+                }
+                .font(TFFont.meta)
+            }
+        }
+        .padding(.leading, TFSpace.md)
+        .padding(.vertical, TFSpace.xxs)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
     private var today: LocalDate { DueDateFormat.today() }
 
     /// 제목 20 semibold (자르지 않음) + 기한 · 확인 이유 12
@@ -92,21 +125,34 @@ struct LauncherDetailPane: View {
 
     @ViewBuilder
     private func sources(_ id: UUID) -> some View {
-        if let digest = model.now?.evidence[id] {
-            if !digest.isEmpty {
-                VStack(alignment: .leading, spacing: TFSpace.sm) {
-                    Text(digest.lines.count == 1 ? "Source" : "Sources")
-                        .font(TFFont.footnoteEmphasis)
-                        .foregroundStyle(TFColor.textPrimary)
-                        .accessibilityAddTraits(.isHeader)
-                    // 가장 최근 근거(지금 상태를 만든 말)가 위
-                    ForEach(digest.lines.reversed()) { line in
-                        SourceSlip(line: line) { url in model.open(url) }
-                    }
+        if let digest = model.now?.evidence[id], !digest.isEmpty {
+            VStack(alignment: .leading, spacing: TFSpace.sm) {
+                Text(digest.lines.count == 1 ? "Source" : "Sources")
+                    .font(TFFont.footnoteEmphasis)
+                    .foregroundStyle(TFColor.textPrimary)
+                    .accessibilityAddTraits(.isHeader)
+                // 가장 최근 근거(지금 상태를 만든 말)가 위
+                ForEach(digest.lines.reversed()) { line in
+                    SourceSlip(line: line) { url in model.open(url) }
                 }
             }
+        } else if model.now?.evidenceLoading.contains(id) == true {
+            HStack(spacing: TFSpace.xs) {
+                ProgressView().controlSize(.small)
+                Text("Loading source details…")
+            }
+            .font(TFFont.meta)
+            .foregroundStyle(TFColor.textSecondary)
         } else if model.now?.evidenceFailed.contains(id) == true {
-            Text("Couldn't load sources.")
+            HStack(spacing: TFSpace.sm) {
+                Text("Couldn't load sources.")
+                    .font(TFFont.meta)
+                    .foregroundStyle(TFColor.textSecondary)
+                Button("Retry") { Task { await model.now?.loadEvidence(id, force: true) } }
+                    .buttonStyle(.plain)
+            }
+        } else {
+            Text("No source details available.")
                 .font(TFFont.meta)
                 .foregroundStyle(TFColor.textSecondary)
         }
