@@ -87,6 +87,45 @@ describe("assisted handoff", () => {
     await expect(generateAssistedHandoff("# Sparse task", deps)).rejects.toMatchObject({ name: "HandoffGenerationError", stage: "plan" });
   });
 
+  it("forbids questions for sufficient known work and normalizes generated list markers", async () => {
+    const complete = vi.fn(async () => ({
+      data: {
+        ...plan,
+        steps: ["1. 1. 참석자에게 확정된 예산을 전달합니다."],
+        deliverables: ["- 예산 요약 메모"],
+        checks: ["1) 금액이 원문과 같은지 확인합니다."],
+        questions: [],
+      },
+      model: "test/plan",
+    })) as unknown as HandoffModelDeps["complete"];
+    const deps = modelDeps({
+      decide: vi.fn(async () => decision({
+        effort: choices("low", ["low", "medium", "high", "unknown"]),
+        difficulty: choices("medium", ["low", "medium", "high", "unknown"]),
+        context: choices("sufficient", ["sufficient", "needs_clarification"]),
+      })),
+      complete,
+    });
+
+    const result = await generateAssistedHandoff("# 예산 공유", deps);
+    expect(result.markdown).toContain("### 단계\n1. 참석자에게 확정된 예산을 전달합니다.");
+    expect(result.markdown).toContain("### 결과물\n- 예산 요약 메모");
+    expect(result.markdown).toContain("### 완료 기준\n- 금액이 원문과 같은지 확인합니다.");
+    expect(result.markdown).not.toContain("### 먼저 확인할 질문");
+    expect(result.markdown).not.toContain("1. 1.");
+
+    const unsolicitedQuestions = modelDeps({
+      decide: vi.fn(async () => decision({
+        effort: choices("low", ["low", "medium", "high", "unknown"]),
+        difficulty: choices("medium", ["low", "medium", "high", "unknown"]),
+        context: choices("sufficient", ["sufficient", "needs_clarification"]),
+      })),
+      complete: (async () => ({ data: { ...plan, questions: ["어떤 문서 템플릿을 쓸까요?"] }, model: "test/plan" })) as HandoffModelDeps["complete"],
+    });
+    await expect(generateAssistedHandoff("# 예산 공유", unsolicitedQuestions))
+      .rejects.toMatchObject({ name: "HandoffGenerationError", stage: "plan" });
+  });
+
   it("rechecks consent immediately before each model call", async () => {
     vi.stubEnv("OPENROUTER_API_KEY", "test-key");
     vi.stubEnv("JEV_MODEL", "typesafe/jev-1.13");

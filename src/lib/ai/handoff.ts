@@ -113,13 +113,18 @@ export function composeAssistedHandoff(markdown: string, plan: HandoffPlan): str
   const labels = korean
     ? { title: "# AI에게 넘길 실행 초안 (검토 필요)", goal: "### 목표", steps: "### 단계", deliverables: "### 결과물", checks: "### 완료 기준", questions: "### 먼저 확인할 질문", appendix: "## 참고 문맥 (아래 Taskforce 문서는 원문 그대로 유지)" }
     : { title: "# AI handoff draft (review required)", goal: "### Goal", steps: "### Steps", deliverables: "### Deliverables", checks: "### Completion checks", questions: "### Questions to clarify first", appendix: "## Reference context (the Taskforce document below is unchanged)" };
+  const plainItem = (item: string) => {
+    let text = item.trim();
+    while (/^(?:\d+[.)]|[-*+•])\s+/u.test(text)) text = text.replace(/^(?:\d+[.)]|[-*+•])\s+/u, "").trimStart();
+    return text;
+  };
   const sections = [
     labels.title,
     `${labels.goal}\n${plan.goal}`,
-    [labels.steps, ...plan.steps.map((step, index) => `${index + 1}. ${step}`)].join("\n"),
-    [labels.deliverables, ...plan.deliverables.map((item) => `- ${item}`)].join("\n"),
-    [labels.checks, ...plan.checks.map((item) => `- ${item}`)].join("\n"),
-    ...(plan.questions.length ? [[labels.questions, ...plan.questions.map((item) => `- ${item}`)].join("\n")] : []),
+    [labels.steps, ...plan.steps.map((step, index) => `${index + 1}. ${plainItem(step)}`)].join("\n"),
+    [labels.deliverables, ...plan.deliverables.map((item) => `- ${plainItem(item)}`)].join("\n"),
+    [labels.checks, ...plan.checks.map((item) => `- ${plainItem(item)}`)].join("\n"),
+    ...(plan.questions.length ? [[labels.questions, ...plan.questions.map((item) => `- ${plainItem(item)}`)].join("\n")] : []),
   ];
   return `${sections.join("\n\n")}\n\n${labels.appendix}\n\n---\n\n${markdown}`;
 }
@@ -137,14 +142,18 @@ export async function generateAssistedHandoff(markdown: string, deps: HandoffMod
     const assessment = handoffAssessmentFromDecision(decision);
 
     stage = "plan";
+    const questionsMustBeEmpty = assessment.context === "sufficient" && assessment.effort !== "unknown" && assessment.difficulty !== "unknown";
+    const responseSchema = questionsMustBeEmpty
+      ? handoffPlanSchema.extend({ questions: z.array(planText).max(0) })
+      : handoffPlanSchema;
     const generated = await deps.complete({
       system: HANDOFF_PLAN_V1_SYSTEM_PROMPT,
       user: handoffPlanV1UserPrompt(context, assessment),
       schemaName: "handoff_execution_plan",
-      schema: handoffPlanSchema,
+      schema: responseSchema,
       maxTokens: 1800,
     });
-    const plan = handoffPlanSchema.parse(generated.data);
+    const plan = responseSchema.parse(generated.data);
     if ((assessment.context === "needs_clarification" || assessment.effort === "unknown" || assessment.difficulty === "unknown") && plan.questions.length === 0) {
       throw new HandoffGenerationError("plan");
     }
