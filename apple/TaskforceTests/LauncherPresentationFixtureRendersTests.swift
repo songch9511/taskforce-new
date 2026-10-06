@@ -47,6 +47,15 @@ struct LauncherPresentationFixtureRendersTests {
             lock.unlock()
         }
 
+        func reset() {
+            lock.lock()
+            began = false
+            ended = false
+            events.removeAll(keepingCapacity: true)
+            menuItems.removeAll(keepingCapacity: true)
+            lock.unlock()
+        }
+
         var didBegin: Bool {
             lock.lock()
             defer { lock.unlock() }
@@ -528,10 +537,30 @@ struct LauncherPresentationFixtureRendersTests {
 
         let before = try capturePanel(window, name: "native-row-menu-before")
         let row = try #require(rowBounds(title, in: before))
-        let point = NSPoint(
+        let previousPoint = NSPoint(
             x: row.midX < 0.5 ? LauncherPanelController.size.width * 0.96 : row.maxX * LauncherPanelController.size.width,
             y: row.midY * LauncherPanelController.size.height
         )
+        let contentView = try #require(window.contentView)
+        let nativeControls = nativeMenuControlViews(in: contentView)
+        let rowControls = nativeControls.filter { view in
+            let frame = view.convert(view.bounds, to: nil)
+            return frame.minY <= previousPoint.y && frame.maxY >= previousPoint.y && frame.midX >= window.frame.width / 2
+        }
+        let menuControl = try #require(rowControls.max { lhs, rhs in
+            lhs.convert(lhs.bounds, to: nil).midX < rhs.convert(rhs.bounds, to: nil).midX
+        })
+        let menuControlFrame = menuControl.convert(menuControl.bounds, to: nil)
+        let point = NSPoint(x: menuControlFrame.midX, y: menuControlFrame.midY)
+        let clickPoints: [(String, NSPoint)] = [
+            ("center", point),
+            ("top interior", NSPoint(x: point.x, y: menuControlFrame.minY + 1)),
+            ("bottom interior", NSPoint(x: point.x, y: menuControlFrame.maxY - 1))
+        ]
+        let oldTarget = hitTestView(at: previousPoint, in: contentView)
+        print("Native row-menu control: \(type(of: menuControl)) frame=\(menuControlFrame), old OCR point=\(previousPoint) hit=\(hitTargetDescription(oldTarget))")
+        #expect(menuControlFrame.width >= 24 && menuControlFrame.height >= 16,
+                "The native bordered Menu has a compact hit target matching its visible bezel: \(menuControlFrame)")
         let tracker = MenuTrackingRecorder()
         let originalClose = model.close
         var closeCalls = 0
@@ -569,27 +598,37 @@ struct LauncherPresentationFixtureRendersTests {
             if let keyEventMonitor { NSEvent.removeMonitor(keyEventMonitor) }
         }
 
-        guard let down = NSEvent.mouseEvent(
-            with: .leftMouseDown, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
-            windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1
-        ), let escape = NSEvent.keyEvent(
-            with: .keyDown, location: .zero, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
-            windowNumber: 0, context: nil, characters: "\u{1B}",
-            charactersIgnoringModifiers: "\u{1B}", isARepeat: false, keyCode: UInt16(kVK_Escape)
-        ) else { throw FixtureRenderError.missingRenderedText("native row menu events") }
-
         // AppKit enters native menu tracking synchronously from mouse-down; queue Escape first so this stays bounded.
         #expect(controller.isVisible, "The launcher panel is visible before opening a row menu")
         guard window.isKeyWindow else {
             #expect(window.isKeyWindow, "Native menu input needs the fixture panel to be key")
             return
         }
-        tracker.record("before-menu-click")
-        NSApp.postEvent(escape, atStart: false)
-        NSApp.sendEvent(down)
 
-        #expect(tracker.didBegin, "Clicking the ellipsis opens the native row menu")
-        #expect(tracker.didEnd, "The queued Escape dismisses the native row menu")
+        for (name, clickPoint) in clickPoints {
+            let target = hitTestView(at: clickPoint, in: contentView)
+            #expect(target === menuControl, "The \(name) point \(clickPoint) hits the native menu button, got \(hitTargetDescription(target)); bounds=\(menuControlFrame)")
+            #expect(menuControlFrame.contains(clickPoint), "The \(name) point \(clickPoint) remains inside the native visible control \(menuControlFrame)")
+            guard let down = NSEvent.mouseEvent(
+                with: .leftMouseDown, location: clickPoint, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1
+            ), let escape = NSEvent.keyEvent(
+                with: .keyDown, location: .zero, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                windowNumber: 0, context: nil, characters: "\u{1B}",
+                charactersIgnoringModifiers: "\u{1B}", isARepeat: false, keyCode: UInt16(kVK_Escape)
+            ) else { throw FixtureRenderError.missingRenderedText("native row menu events at \(name)") }
+
+            tracker.reset()
+            tracker.record("before-menu-click-\(name)")
+            NSApp.postEvent(escape, atStart: false)
+            NSApp.sendEvent(down)
+
+            #expect(tracker.didBegin, "Clicking the native menu \(name) opens its menu: \(tracker.trace)")
+            #expect(tracker.didEnd, "Queued Escape dismisses the native menu \(name): \(tracker.trace)")
+            #expect(model.screen == .list, "The native menu \(name) point must not activate a row action")
+            #expect(controller.isVisible, "Escape from the native menu \(name) leaves the launcher visible: \(tracker.trace)")
+        }
+
         let menuItems = tracker.trackedMenuItems
         let confirmIndex = menuItems.firstIndex(of: "Confirm")
         let dismissIndex = menuItems.firstIndex(of: "Dismiss")
@@ -604,7 +643,7 @@ struct LauncherPresentationFixtureRendersTests {
         #expect(model.screen == .list, "Opening a row menu must not activate an action")
         #expect(closeCalls == 0, "A menu Escape should not reach the launcher close callback: \(tracker.trace)")
         #expect(controller.isVisible, "Escape dismisses the native row menu without closing its launcher panel: \(tracker.trace)")
-        print("Native row-menu Escape trace: \(tracker.trace)")
+        print("Native row-menu geometry and Escape checks: frame=\(menuControlFrame), points=\(clickPoints.map { $0.0 }), trace=\(tracker.trace)")
     }
 
     @discardableResult
@@ -815,6 +854,25 @@ struct LauncherPresentationFixtureRendersTests {
 
     private func rowBounds(_ title: String, in texts: [RenderedText]) -> CGRect? {
         texts.first { $0.text == title && $0.bounds.midX < 0.5 }?.bounds
+    }
+
+    private func nativeMenuControlViews(in view: NSView) -> [NSView] {
+        let typeName = String(describing: type(of: view))
+        let role = String(describing: view.accessibilityRole())
+        let isMenuControl = view is NSPopUpButton || typeName.contains("PopupButton") || role.contains("AXMenuButton") || role.contains("AXPopUpButton")
+        let descendants = view.subviews.flatMap(nativeMenuControlViews)
+        return isMenuControl ? [view] + descendants : descendants
+    }
+
+    private func hitTestView(at point: NSPoint, in view: NSView) -> NSView? {
+        let convertedPoint = view.convert(point, from: nil)
+        return view.hitTest(convertedPoint)
+    }
+
+    private func hitTargetDescription(_ view: NSView?) -> String {
+        guard let view else { return "<none>" }
+        let frame = view.convert(view.bounds, to: nil)
+        return "\(type(of: view)) frame=\(frame) role=\(String(describing: view.accessibilityRole()))"
     }
 
     @discardableResult

@@ -267,7 +267,6 @@ struct LauncherListPane: View {
         if let action = item.action, let group = item.group {
             let target = LauncherModel.Target(action: action, group: group)
             let accountID = model.signedInUserID
-            let shape = RoundedRectangle(cornerRadius: TFRadius.md, style: .continuous)
             Menu {
                 ForEach(Array(model.actionGroups(for: target).enumerated()), id: \.offset) { _, actionGroup in
                     if let title = actionGroup.title {
@@ -282,11 +281,11 @@ struct LauncherListPane: View {
                     .foregroundStyle(TFColor.textSecondary)
             }
             .menuIndicator(.hidden)
-            .menuStyle(.borderlessButton)
+            .menuStyle(.button)
+            .buttonStyle(.bordered)
+            .buttonBorderShape(.roundedRectangle)
+            .controlSize(.regular)
             .frame(width: 28, height: 28)
-            .background(TFColor.bgElevated, in: shape)
-            .overlay(shape.strokeBorder(TFColor.settingsLine, lineWidth: 1))
-            .contentShape(shape)
             .padding(.trailing, TFSpace.xs)
             .help("Actions for \(action.title)")
             .accessibilityLabel("Actions for \(action.title)")
