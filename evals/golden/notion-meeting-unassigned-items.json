@@ -1,0 +1,53 @@
+{
+  "id": "notion-meeting-unassigned-items",
+  "origin": "synthetic",
+  "description": "Notion AI 회의 요약에 다른 두 화자의 업무와 담당자 없는 액션이 있다. Notion 페이지 작성자가 연결 사용자일 수 있어도 회의록 작성은 할 일 담당 근거가 아니다. 이 fixture는 모르는 written_by_me를 생략한다.",
+  "tags": ["notion", "meeting", "ownership"],
+  "user": {
+    "name": "Alex Kim",
+    "aliases": ["Alex"],
+    "emails": ["alex@lumenfield.example"]
+  },
+  "sources": [
+    {
+      "id": "notion-q3-launch-retrospective",
+      "kind": "meeting",
+      "occurred_at": "2026-10-06T14:00:00+09:00",
+      "participants": {
+        "attendees": [
+          { "name": "Maya Chen", "email": "maya@lumenfield.example" },
+          { "name": "Sam Rivera", "email": "sam@lumenfield.example" }
+        ]
+      },
+      "text": "# Q3 Launch Retrospective\n\n[AI 요약]\n- [ ] Share usability test results by Thursday\n- [ ] Update signup form copy\n- [ ] Prepare launch FAQ\n\nMaya Chen: I'll share the usability test results by Thursday.\nSam Rivera: I'm already updating the signup form copy."
+    }
+  ],
+  "expected_actions": [],
+  "must_not_extract": [
+    {
+      "source": "notion-q3-launch-retrospective",
+      "quote": "Share usability test results by Thursday",
+      "reason": "NOT_MY_ACTION"
+    },
+    {
+      "source": "notion-q3-launch-retrospective",
+      "quote": "Update signup form copy",
+      "reason": "NOT_MY_ACTION"
+    },
+    {
+      "source": "notion-q3-launch-retrospective",
+      "quote": "Prepare launch FAQ",
+      "reason": "NOT_MY_ACTION"
+    },
+    {
+      "source": "notion-q3-launch-retrospective",
+      "quote": "I'll share the usability test results by Thursday.",
+      "reason": "NOT_MY_ACTION"
+    },
+    {
+      "source": "notion-q3-launch-retrospective",
+      "quote": "I'm already updating the signup form copy.",
+      "reason": "NOT_MY_ACTION"
+    }
+  ]
+}

@@ -106,6 +106,7 @@ enum SettingsSnapshot {
     private static func fileName(_ tab: MacSettingsTab) -> String {
         switch tab {
         case .keyboardShortcuts: "keyboard-shortcuts"
+        case .taskList: "task-list"
         case .usage: "usage"
         case .account: "account"
         case .connections: "connections"

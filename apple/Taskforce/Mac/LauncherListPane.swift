@@ -3,9 +3,8 @@ import SwiftUI
 import TaskforceKit
 import TaskforceUI
 
-/// 목록 칸 (Figma M1 `List viewport`, 폭 300 · settings/sidebar): 맨 위 안내 줄(Allow AI · 처리방침 · 실패 원문) → 섹션(머리 고정, `Review 4`)
-/// → 접힌 나머지 `Show 2 More ⌄` → Done Today 접힌 한 줄. 행은 `MacListRow`(상태 표시 없음, 제목 + 기한 + 바뀜 점).
-/// 많은 행도 끊기지 않게 `LazyVStack` + 고정 머리, 넘치면 아래 흐림.
+/// Full-width launcher list: notices, clear task sections, and inline details under the selected row.
+/// `LazyVStack` keeps long lists responsive; source icons are supplied by the account-scoped metadata cache.
 struct LauncherListPane: View {
     @Bindable var model: LauncherModel
 
@@ -28,20 +27,42 @@ struct LauncherListPane: View {
                             .padding(.horizontal, 18)
                             .frame(height: 28, alignment: .leading)
                     }
+                    if model.now?.sourceServicesFailed == true {
+                        HStack(spacing: TFSpace.xs) {
+                            Image(systemName: "exclamationmark.circle")
+                                .accessibilityHidden(true)
+                            Text("Source icons unavailable")
+                                .lineLimit(1)
+                            Spacer(minLength: TFSpace.xs)
+                            Button("Retry") { Task { await model.now?.load() } }
+                                .buttonStyle(.plain)
+                                .accessibilityLabel("Retry source icons")
+                                .accessibilityHint("Reloads tasks and source provider icons")
+                        }
+                        .font(TFFont.meta)
+                        .foregroundStyle(TFColor.textSecondary)
+                        .padding(.horizontal, 18)
+                        .frame(height: 28)
+                        .accessibilityElement(children: .contain)
+                    }
                     ForEach(Array(sections.enumerated()), id: \.element.id) { sectionIndex, section in
                         Section {
                             ForEach(Array(section.items.enumerated()), id: \.element.id) { itemIndex, item in
                                 let index = offsets[sectionIndex] + itemIndex
-                                row(item, selected: index == model.selection)
+                                itemRow(item, selected: index == model.selection, at: index)
                                     .padding(.horizontal, TFSpace.sm)
                                     .id(index)
-                                    .onTapGesture { tap(item, at: index) }
                             }
                         } header: {
                             if let title = section.title {
-                                SectionHeader(title, count: section.count ?? section.items.count)
-                                    .padding(.horizontal, TFSpace.sm)
-                                    .background(TFColor.settingsSidebar)
+                                VStack(spacing: 0) {
+                                    Rectangle()
+                                        .fill(TFColor.settingsLine)
+                                        .frame(height: 1)
+                                    SectionHeader(title, count: section.count ?? section.items.count)
+                                        .padding(.horizontal, TFSpace.sm)
+                                }
+                                .background(TFColor.settingsSidebar)
                             }
                         }
                     }
@@ -58,6 +79,21 @@ struct LauncherListPane: View {
                 lastSelection = old
                 guard model.screen == .list else { return }
                 withAnimation(.easeOut(duration: 0.1)) { scroll(proxy, to: index, from: old) }
+            }
+            .task(id: model.screen) {
+                guard case let .detail(target) = model.screen else { return }
+                // Let the lazy rows enter the scroll view before resolving the row target.
+                await Task.yield()
+                guard !Task.isCancelled,
+                      let index = model.items.firstIndex(where: { $0.inlineDetailActionID == target.action.id })
+                else { return }
+                // Leave one row of clearance for the pinned section header. For index zero,
+                // the top sentinel puts the first row just below its pinned header.
+                if index == 0 {
+                    proxy.scrollTo(Self.top, anchor: .top)
+                } else {
+                    proxy.scrollTo(index - 1, anchor: .top)
+                }
             }
         }
         .background(TFColor.settingsSidebar)
@@ -87,15 +123,66 @@ struct LauncherListPane: View {
         }
     }
 
-    /// 할 일 · 저장본 행은 고르기만 한다 (상세가 바로 보인다, ↩가 원문 · ⌘K). Show N More · Done Today는 그 줄의 Button이 실행한다
-    /// (바깥 탭과 함께 불려 두 번 열고 닫히지 않게). 나머지 줄(안내 · 명령 등)은 실행
+    /// Action rows open their inline detail; tapping the same row closes it. Other list commands keep their existing actions.
     private func tap(_ item: LauncherItem, at index: Int) {
-        if model.screen != .list { model.back() }
-        model.select(index)
         switch item {
-        case .review, .task, .done, .saved, .showMore, .doneToday: break
-        default: model.run(item)
+        case .review, .task, .done:
+            let targetID = item.action?.id
+            if case .detail = model.screen, model.detailTarget?.action.id == targetID {
+                model.back()
+                return
+            }
+            if model.screen != .list { model.back() }
+            model.openDetail(for: item)
+        case .saved:
+            if model.screen != .list { model.back() }
+            model.select(index)
+        case .showMore, .doneToday:
+            model.run(item)
+        default:
+            if model.screen != .list { model.back() }
+            model.select(index)
+            model.run(item)
         }
+    }
+
+    @ViewBuilder
+    private func itemRow(_ item: LauncherItem, selected: Bool, at index: Int) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            switch item {
+            case .review, .task, .done, .saved:
+                Button { tap(item, at: index) } label: {
+                    row(item, selected: selected)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .buttonStyle(.plain)
+                .accessibilityHint(isExpanded(item) ? "Hide details" : "Show details")
+            case .showMore, .doneToday:
+                row(item, selected: selected)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            default:
+                row(item, selected: selected)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .onTapGesture { tap(item, at: index) }
+            }
+            if isExpanded(item) {
+                LauncherDetailPane(model: model, inline: true)
+                    .padding(.horizontal, TFSpace.sm)
+                    .padding(.top, TFSpace.xs)
+                    .padding(.bottom, TFSpace.sm)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func isExpanded(_ item: LauncherItem) -> Bool {
+        if case .detail = model.screen, let id = item.inlineDetailActionID {
+            return model.detailTarget?.action.id == id
+        }
+        if case .saved(let savedRow) = item {
+            return model.screen == .list && model.detailSavedRow?.id == savedRow.id
+        }
+        return false
     }
 
     private var today: LocalDate { DueDateFormat.today() }
@@ -108,6 +195,7 @@ struct LauncherListPane: View {
             MacListRow(
                 title: action.title,
                 accessory: action.dueDate.map { DueText.accessory($0, today: today) },
+                sourceServices: sourceServices(action.id),
                 urgent: DueText.isUrgent(due: action.dueDate, reasons: [], today: today),
                 changed: model.showsDot(action.id),
                 selected: selected
@@ -116,18 +204,20 @@ struct LauncherListPane: View {
             MacListRow(
                 title: ranked.action.title,
                 accessory: ranked.action.dueDate.map { DueText.accessory($0, today: today) },
+                sourceServices: sourceServices(ranked.action.id),
                 urgent: DueText.isUrgent(due: ranked.action.dueDate, reasons: ranked.reasons, today: today),
                 changed: model.showsDot(ranked.action.id),
                 selected: selected
             )
         case .done(let action):
             // 끝낸 할 일은 기한을 보이지 않는다 (지남 · 오늘 빨강이 뜻이 없다)
-            MacListRow(title: action.title, selected: selected, dimmed: true)
+            MacListRow(title: action.title, sourceServices: sourceServices(action.id), selected: selected, dimmed: true)
         case .saved(let row):
             let done = row.task.status == .doneToday
             MacListRow(
                 title: row.task.title,
                 accessory: done ? nil : row.task.dueDate.map { DueText.accessory($0, today: today) },
+                sourceServices: [],
                 urgent: !done && DueText.isUrgent(due: row.task.dueDate, reasons: [], today: today),
                 selected: selected,
                 dimmed: done
@@ -158,6 +248,10 @@ struct LauncherListPane: View {
             // 로그아웃 목록은 한 열 (`LauncherFlowView`)
             EmptyView()
         }
+    }
+
+    private func sourceServices(_ id: UUID) -> [SourceService] {
+        model.now?.sourceServicesByAction[id] ?? []
     }
 }
 #endif

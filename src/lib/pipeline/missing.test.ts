@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { EMBEDDING_DIMENSIONS } from "@/lib/ai/embed";
 import type { JevDecision } from "@/lib/ai/jev";
+import { MEETING_JUDGE_PROMPT_VERSION } from "@/lib/ai/prompts/judge";
 
 import type { CompleteJson } from "./extract";
 import type { Decide } from "./judge";
@@ -28,6 +29,7 @@ function answers(my: number): JevDecision["answers"] {
     speaker_role: { type: "choice", choice: "me", probabilities: {} },
     directness: { type: "choice", choice: "first_hand", probabilities: {} },
     audience: { type: "choice", choice: "shared", probabilities: {} },
+    meeting_owner: { type: "choice", choice: "user", probabilities: { user: 0.9 } },
   };
 }
 
@@ -68,6 +70,7 @@ describe("extractMissing", () => {
     expect(result.judged.judge.signals.statement_certainty.choice).toBe("tentative");
     expect(result.summary.cost).toBeCloseTo(0.0025);
     expect(result.summary.reasoningLimited).toBe(false);
+    expect(result.summary.promptVersions.judge).toBe(MEETING_JUDGE_PROMPT_VERSION);
     // 원문 전체가 아니라 구절과 앞뒤 문맥만 보낸다
     expect(requests[0].user).toContain("<신고한 구절>\n금요일까지 견적서 정리해서 드릴게요");
   });

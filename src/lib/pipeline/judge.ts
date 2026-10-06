@@ -1,6 +1,17 @@
 import type { JevDecision, JevQuestion } from "@/lib/ai/jev";
 import { kstDate } from "@/lib/ai/prompts/extract";
-import { JUDGE_PROMPT_VERSION, JUDGE_QUESTIONS, WRITTEN_BY_ME_PROMPT_VERSION, WRITTEN_BY_ME_QUESTIONS } from "@/lib/ai/prompts/judge";
+import {
+  DOCUMENT_JUDGE_PROMPT_VERSION,
+  DOCUMENT_JUDGE_QUESTIONS,
+  JUDGE_PROMPT_VERSION,
+  JUDGE_QUESTIONS,
+  MEETING_JUDGE_PROMPT_VERSION,
+  MEETING_JUDGE_QUESTIONS,
+  WRITTEN_BY_ME_DOCUMENT_PROMPT_VERSION,
+  WRITTEN_BY_ME_DOCUMENT_JUDGE_QUESTIONS,
+  WRITTEN_BY_ME_PROMPT_VERSION,
+  WRITTEN_BY_ME_QUESTIONS,
+} from "@/lib/ai/prompts/judge";
 
 import {
   addressedAmbiguouslyToUser,
@@ -15,6 +26,7 @@ import {
 } from "./identity";
 import { JUDGE_THRESHOLDS, type JudgeThresholds } from "./judge.config";
 import { quoteContext, quoteLineIndexes } from "./text";
+import type { CandidateSignal } from "./extract";
 
 // ③ Jev 판정 (docs/TRUTH_RULES.md 1장). 후보 하나에 질문 여러 개를 한 번에 묻고,
 // 돌아온 확률을 임계값과 비교해 자동 반영 / 확인 요청 / 기각으로 나눈다. 판정 규칙은 순수 함수라 단위 테스트로 고정한다.
@@ -22,7 +34,16 @@ import { quoteContext, quoteLineIndexes } from "./text";
 export type RejectReason = "NOT_MY_ACTION" | "INFO_ONLY" | "TENTATIVE" | "ALREADY_DONE";
 export type JudgeDecision = "auto" | "confirm" | "reject";
 
-export type JudgeCandidate = { title: string; quote: string; due_text: string | null; counterpart?: string | null; owner?: "me" | "unknown" };
+export type JudgeCandidate = {
+  title: string;
+  quote: string;
+  due_text: string | null;
+  signal: CandidateSignal;
+  counterpart?: string | null;
+  owner?: "me" | "unknown";
+};
+
+type JudgeStateCandidate = Omit<JudgeCandidate, "signal"> & { signal?: CandidateSignal };
 
 export type JudgeSource = {
   text: string;
@@ -32,6 +53,23 @@ export type JudgeSource = {
   /** 사용자가 직접 쓴 원문인가 (sources.written_by_me). true일 때만 판정에 넘긴다 */
   writtenByMe?: boolean | null;
 };
+
+/** Source metadata selects the question-set version, including runs with no candidates. */
+export function judgePromptVersionForSource(source: Pick<JudgeSource, "kind" | "writtenByMe">): string {
+  if (source.kind === "meeting") return MEETING_JUDGE_PROMPT_VERSION;
+  if (source.kind === "doc") return source.writtenByMe === true ? WRITTEN_BY_ME_DOCUMENT_PROMPT_VERSION : DOCUMENT_JUDGE_PROMPT_VERSION;
+  return source.writtenByMe === true ? WRITTEN_BY_ME_PROMPT_VERSION : JUDGE_PROMPT_VERSION;
+}
+
+function boundedDocumentContext(text: string, quote: string): string {
+  const maxChars = 5000;
+  if (text.length <= maxChars) return text;
+  const local = quoteContext(text, quote, 12, 3500, Number.POSITIVE_INFINITY);
+  if (!local) return text.slice(0, maxChars);
+  const prefix = text.slice(0, Math.max(0, maxChars - local.length - 12));
+  if (local.startsWith(prefix)) return local.slice(0, maxChars);
+  return `${prefix}\n[…]\n${local}`;
+}
 
 type Choice<K extends string> = { choice: K; probabilities: Partial<Record<K, number>> };
 
@@ -46,6 +84,10 @@ export type JudgeSignals = {
   speaker_role: Choice<"me" | "counterpart" | "third_party">;
   directness: Choice<"first_hand" | "reported">;
   audience: Choice<"shared" | "private">;
+  /** 회의 후보 구절 자체가 사용자의 할 일인지 가리는 의미 판단 */
+  meeting_owner?: Choice<"user" | "someone_else" | "unassigned" | "ambiguous">;
+  /** 문서 후보 구절 자체가 사용자의 할 일인지 가리는 의미 판단 */
+  document_owner?: Choice<"user" | "someone_else" | "unassigned" | "ambiguous">;
 };
 
 export type JudgeOutcome = {
@@ -56,8 +98,9 @@ export type JudgeOutcome = {
    * 확률 표가 아니라 코드 규칙으로 정한 판정.
    * addressed_request: 사용자를 @이름으로 불렀다. sole_recipient_request: 사용자가 유일한 받는 사람인 메일이다.
    * identity_ambiguous: 참석자 중 동명이인과 겹치는 이름이 있어 화자·담당 확인이 필요하다.
+   * meeting_assignment · document_assignment: 원문에서 사용자에게 직접 할당됐지만 수락 여부만 불확실하다.
    */
-  rule?: "addressed_request" | "sole_recipient_request" | "identity_ambiguous";
+  rule?: "addressed_request" | "sole_recipient_request" | "identity_ambiguous" | "meeting_assignment" | "document_assignment";
 };
 
 
@@ -80,7 +123,7 @@ export type Decide = (request: { state: unknown; questions: Record<string, JevQu
  * Jev에 보낼 state. 추출기의 추론(rationale)은 넣지 않고, 후보와 인용 주변 원문, 사용자가 누구인지만 넣는다.
  * 이메일 주소는 넣지 않는다 (사용자의 위치로 충분하다).
  */
-export function buildJudgeState(candidate: JudgeCandidate, source: JudgeSource, identity: UserIdentity) {
+export function buildJudgeState(candidate: JudgeStateCandidate, source: JudgeSource, identity: UserIdentity) {
   const variants = findNameVariants(source.text, identity, source.participants);
   const speaker = quoteSpeaker(source.text, candidate.quote, identity, source.participants);
   return {
@@ -103,14 +146,16 @@ export function buildJudgeState(candidate: JudgeCandidate, source: JudgeSource, 
     source: {
       kind: source.kind,
       occurred_at: kstDate(source.occurredAt).iso,
-      // 사용자가 쓴 문서에 적은 할 일은 약속 · 요청 말투가 없어도 사용자가 정한 일이다 (WRITTEN_BY_ME_QUESTIONS).
-      // 모르거나(null) 다른 사람이 쓴 문서(false)는 넘기지 않는다: 작성자 정보가 없던 때와 같은 기준으로 판정한다.
-      ...(source.writtenByMe === true ? { written_by_me: true } : {}),
+      ...((source.kind === "meeting" || source.kind === "doc") && source.participants?.attendees?.length
+        ? { related_people: [...new Set(source.participants.attendees.flatMap((person) => (person.name?.trim() ? [person.name.trim()] : [])))] }
+        : {}),
+      ...(source.kind !== "meeting" && source.writtenByMe === true ? { written_by_me: true } : {}),
     },
+    ...(source.kind === "doc" ? { document_context: boundedDocumentContext(source.text, candidate.quote) } : {}),
   };
 }
 
-export function parseJudgeAnswers(answers: JevDecision["answers"]): JudgeSignals {
+export function parseJudgeAnswers(answers: JevDecision["answers"], ownership: "meeting" | "document" | null = null): JudgeSignals {
   const noul = (key: string) => {
     const answer = answers[key];
     if (answer?.type !== "noul") throw new Error(`Jev 답 형식 오류: ${key}`);
@@ -131,6 +176,8 @@ export function parseJudgeAnswers(answers: JevDecision["answers"]): JudgeSignals
     speaker_role: choice("speaker_role", ["me", "counterpart", "third_party"]),
     directness: choice("directness", ["first_hand", "reported"]),
     audience: choice("audience", ["shared", "private"]),
+    ...(ownership === "meeting" ? { meeting_owner: choice("meeting_owner", ["user", "someone_else", "unassigned", "ambiguous"]) } : {}),
+    ...(ownership === "document" ? { document_owner: choice("document_owner", ["user", "someone_else", "unassigned", "ambiguous"]) } : {}),
   };
 }
 
@@ -147,6 +194,10 @@ export type DecideContext = {
   addressedToUser?: boolean;
   /** 사용자가 유일한 받는 사람인 메일의 후보다 (kind email + userPosition sole_recipient) */
   soleRecipient?: boolean;
+  /** 회의 후보 자체가 사용자에게 명시적으로 할당된다는 Jev의 의미 판단 */
+  meetingAssignment?: boolean;
+  /** 문서 후보 자체가 사용자에게 명시적으로 할당되거나 사용자 개인 체크리스트로 판정된다는 Jev의 의미 판단 */
+  documentAssignment?: boolean;
 };
 
 /** 확률을 임계값과 비교해 자동 반영 / 확인 요청 / 기각을 정한다 (docs/TRUTH_RULES.md 1장 표). */
@@ -164,7 +215,15 @@ export function decideOutcome(
   // 버리지 않고 묻는다 (원칙 3). 무엇을 가리키는지 원문에 없는 요청("@지호 이거 금요일까지 될까요?")이나 여러 이야기 사이에 묻힌
   // 메일 요청("계약서 사본도 한 부 보내주실 수 있을까요?")이 조용히 사라지지 않게 한다. 다른 사유가 함께 있으면 그대로 기각.
   const soleRecipient = context.soleRecipient === true && signals.is_my_commitment >= SOLE_RECIPIENT_MIN_MINE;
-  const pendingRule = context.addressedToUser === true ? "addressed_request" : soleRecipient ? "sole_recipient_request" : null;
+  const pendingRule = context.addressedToUser === true
+    ? "addressed_request"
+    : context.meetingAssignment === true
+      ? "meeting_assignment"
+      : context.documentAssignment === true
+        ? "document_assignment"
+        : soleRecipient
+          ? "sole_recipient_request"
+          : null;
   const pendingRequest = pendingRule !== null && rejects.length === 1 && rejects[0] === "NOT_MY_ACTION";
   if (rejects.length > 0 && !pendingRequest) return { decision: "reject", reasons: rejects };
 
@@ -185,40 +244,68 @@ export async function judgeCandidate(
   decide: Decide,
   thresholds: JudgeThresholds = JUDGE_THRESHOLDS,
 ): Promise<JudgeResult> {
-  // 사용자가 직접 쓴 문서만 그에 맞춘 질문으로 묻는다. 작성자를 모르면 전과 같은 질문 (느슨해지지 않게).
-  // 남기는 버전도 질문 묶음마다 다르다 (judge_logs에서 어느 질문으로 물었는지 가른다).
-  const self = source.writtenByMe === true;
-  const questions = self ? WRITTEN_BY_ME_QUESTIONS : JUDGE_QUESTIONS;
+  // 회의에서는 문서 작성·참석 정보가 후보 담당을 대신하지 않도록 별도의 같은 호출 질문을 쓴다.
+  // 그 밖의 원문은 사용자가 직접 쓴 문서일 때만 그에 맞춘 질문을 묻는다.
+  const meeting = source.kind === "meeting";
+  const document = source.kind === "doc";
+  const self = !meeting && source.writtenByMe === true;
+  const questions = meeting
+    ? MEETING_JUDGE_QUESTIONS
+    : document
+      ? self
+        ? WRITTEN_BY_ME_DOCUMENT_JUDGE_QUESTIONS
+        : DOCUMENT_JUDGE_QUESTIONS
+      : self
+        ? WRITTEN_BY_ME_QUESTIONS
+        : JUDGE_QUESTIONS;
   const response = await decide({ state: buildJudgeState(candidate, source, identity), questions });
-  const signals = parseJudgeAnswers(response.answers);
+  const ownership = meeting ? "meeting" : document ? "document" : null;
+  const signals = parseJudgeAnswers(response.answers, ownership);
   const speaker = quoteSpeaker(source.text, candidate.quote, identity, source.participants);
   const speakerAmbiguous = Boolean(speaker && isAmbiguousUserName(speaker, identity, source.participants));
   const sourceLines = source.text.split("\n");
   const quoteLines = quoteLineIndexes(source.text, candidate.quote).map((index) => sourceLines[index]);
-  const ownerAmbiguous = speakerAmbiguous || (
+  const semanticOwner = meeting ? signals.meeting_owner?.choice : document ? signals.document_owner?.choice : undefined;
+  const gatedCommitment = (meeting || document) && candidate.signal === "commitment";
+  const explicitOtherOwner = gatedCommitment && semanticOwner === "someone_else";
+  const ambiguousAddress = addressedAmbiguouslyToUser(source.text, candidate.quote, identity, source.participants);
+  const unrelatedSourceOwnership = gatedCommitment && (semanticOwner === "someone_else" || semanticOwner === "unassigned");
+  const relatedUserWithUnassignedAction = candidate.signal === "commitment" && (meeting || document) && semanticOwner === "unassigned" &&
+    userPosition(identity, source.participants) === "attendee";
+  const ownerAmbiguous = !explicitOtherOwner && (speakerAmbiguous || (
     containsAmbiguousAssignee(quoteLines.join("\n"), identity, source.participants) ||
-    addressedAmbiguouslyToUser(source.text, candidate.quote, identity, source.participants)
-  );
-  const identityAmbiguous = speakerAmbiguous || ownerAmbiguous;
+    (ambiguousAddress && !unrelatedSourceOwnership)
+  ) || relatedUserWithUnassignedAction);
+  const identityAmbiguous = !explicitOtherOwner && (speakerAmbiguous || ownerAmbiguous);
+  const addressed = addressedToUser(source.text, candidate.quote, identity, source.participants);
   const outcome = decideOutcome(signals, thresholds, {
-    addressedToUser: addressedToUser(source.text, candidate.quote, identity, source.participants),
+    addressedToUser: addressed,
     soleRecipient: source.kind === "email" && userPosition(identity, source.participants) === "sole_recipient",
+    meetingAssignment: meeting && candidate.signal === "commitment" && semanticOwner === "user",
+    documentAssignment: document && candidate.signal === "commitment" && semanticOwner === "user",
   });
-  const judgedOutcome = identityAmbiguous && outcome.decision !== "reject"
-    ? {
-        ...outcome,
-        decision: "confirm" as const,
-        reasons: [...new Set<RejectReason>([...outcome.reasons, "NOT_MY_ACTION"])],
-        rule: "identity_ambiguous" as const,
-      }
-    : outcome;
+  const unrelatedCommitment = gatedCommitment && (explicitOtherOwner || (
+    !identityAmbiguous && !relatedUserWithUnassignedAction && semanticOwner === "unassigned"
+  ));
+  const semanticOwnerAmbiguous = gatedCommitment && !explicitOtherOwner && (semanticOwner === "ambiguous" || relatedUserWithUnassignedAction);
+  const canConfirmAmbiguous = identityAmbiguous || semanticOwnerAmbiguous;
+  const judgedOutcome = unrelatedCommitment
+    ? { decision: "reject" as const, reasons: [...new Set<RejectReason>([...outcome.reasons, "NOT_MY_ACTION"])] }
+    : canConfirmAmbiguous && (outcome.decision !== "reject" || (semanticOwnerAmbiguous && outcome.reasons.every((reason) => reason === "NOT_MY_ACTION")))
+      ? {
+          ...outcome,
+          decision: "confirm" as const,
+          reasons: [...new Set<RejectReason>([...outcome.reasons, "NOT_MY_ACTION"])],
+          ...(identityAmbiguous ? { rule: "identity_ambiguous" as const } : {}),
+        }
+      : outcome;
   return {
     ...judgedOutcome,
     signals,
     ...(speaker ? { speaker } : {}),
     ...(speakerAmbiguous ? { speakerAmbiguous: true as const } : {}),
-    ...(ownerAmbiguous ? { ownerAmbiguous: true as const } : {}),
-    promptVersion: self ? WRITTEN_BY_ME_PROMPT_VERSION : JUDGE_PROMPT_VERSION,
+    ...(ownerAmbiguous || semanticOwnerAmbiguous ? { ownerAmbiguous: true as const } : {}),
+    promptVersion: judgePromptVersionForSource(source),
     model: response.model,
     cost: response.usage?.cost,
   };

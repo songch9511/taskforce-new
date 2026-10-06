@@ -1,8 +1,6 @@
 import { z } from "zod";
 
 import { buildMissingUserPrompt, MISSING_PROMPT_VERSION, MISSING_SYSTEM_PROMPT } from "@/lib/ai/prompts/missing";
-import { JUDGE_PROMPT_VERSION } from "@/lib/ai/prompts/judge";
-
 import { blankToNull, clamp01, isIsoDate, type ActionCandidate, type ExtractInput } from "./extract";
 import { judgeCandidate, type Decide, type JudgeDecision } from "./judge";
 import { MATCH_THRESHOLDS } from "./match";
@@ -164,7 +162,7 @@ export async function extractMissing(input: MissingInput, deps: PipelineDeps): P
     judged: { candidate: verified, judge: { ...judge, decision: "auto", reasons: [], rule: undefined, ownerAmbiguous: undefined } },
     summary: {
       models: { missing: result.model, judge: judge.model },
-      promptVersions: { missing: MISSING_PROMPT_VERSION, judge: JUDGE_PROMPT_VERSION },
+      promptVersions: { missing: MISSING_PROMPT_VERSION, judge: judge.promptVersion },
       cost: (result.usage?.cost ?? 0) + (judge.cost ?? 0),
       reasoningLimited: result.reasoningLimited === true,
     },

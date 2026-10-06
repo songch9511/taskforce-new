@@ -5,7 +5,7 @@ import TaskforceUI
 
 /// 액션 바 (Figma M1 · M8 · M17 · M19 · M20 Footer, 높이 44): 왼쪽 앱 기호 + 화면 이름(`Tasks` · `Run with AI` · `Draft`) 또는 상태(`Offline since 8:01.` ·
 /// `Couldn’t refresh at 10:46. Showing 10:31.` · `Stop requested 14:20`), 오른쪽 설명(`Manual, uses credits`) · 보조 동작(`Try Again ⌘R` · `Undo ⌘Z` ·
-/// `Dismiss ⌘⌫`) → Return 동작(`Open in Notion ↩` · `Show Review ↩` · `Confirm ⌘↩` · `Start ⌘↩` · `View Draft ↩` · `Copy ⌘C`) → `Actions ⌘K`.
+/// `Dismiss ⌘⌫`) → Return 동작(`Open in Notion ↩` · `Show details ↩` · `Confirm ⌘↩` · `Start ⌘↩` · `View Draft ↩` · `Copy ⌘C`) → `Actions ⌘K`.
 /// 그 밖의 화면은 `Back esc`.
 struct LauncherActionBar: View {
     @Bindable var model: LauncherModel
@@ -43,7 +43,9 @@ struct LauncherActionBar: View {
 
     /// M8: 모드 · 비용 한 줄 (Mode `Change`는 U6b라 늘 Manual)
     private var note: String? {
-        if case .runWithAI = model.screen { "Manual, uses credits" } else { nil }
+        if let feedback = model.feedbackMessage { return feedback }
+        if case .runWithAI = model.screen { return "Manual, uses credits" }
+        return nil
     }
 
     /// M8 Start는 Goal이 있고 보내는 중이 아닐 때만

@@ -294,6 +294,8 @@ struct MacSettingsView: View {
         switch page {
         case .keyboardShortcuts:
             HotKeyPane()
+        case .taskList:
+            SectionDisplaySettingsPane()
         case .usage:
             signedInOnly { UsageCreditsPane().id(signedInUserID) }
         case .connections:
@@ -324,6 +326,44 @@ struct MacSettingsView: View {
         #else
         false
         #endif
+    }
+}
+
+/// Local per-section maximums for the launcher. The task list remains complete by default.
+struct SectionDisplaySettingsPane: View {
+    @State private var preferences: SectionDisplayPreferences
+
+    init(preferences: SectionDisplayPreferences = .load()) {
+        _preferences = State(initialValue: preferences)
+    }
+
+    var body: some View {
+        Form {
+            Section {
+                Text("All shows every task. Choose a number to show fewer rows and add Show More when needed.")
+                    .font(TFFont.footnote)
+                    .foregroundStyle(TFColor.textSecondary)
+            }
+            Section("Sections") {
+                picker("Review", selection: $preferences.review)
+                picker("In Progress", selection: $preferences.inProgress)
+                picker("To Do", selection: $preferences.toDo)
+                picker("Done Today", selection: $preferences.doneToday)
+            }
+        }
+        .modifier(SettingsFormPage())
+        .onChange(of: preferences) { _, value in
+            value.save()
+            MacAppDelegate.shared?.launcher?.model.applySectionDisplayPreferences(value)
+        }
+    }
+
+    private func picker(_ title: String, selection: Binding<SectionDisplayLimit>) -> some View {
+        Picker(title, selection: selection) {
+            ForEach(SectionDisplayLimit.allCases) { limit in
+                Text(limit.displayName).tag(limit)
+            }
+        }
     }
 }
 

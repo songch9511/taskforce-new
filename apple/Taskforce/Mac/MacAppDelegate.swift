@@ -157,6 +157,7 @@ struct MenuBarLabel: View {
 /// 설정 사이드바 항목 (Figma S1 239:1614). 페이지의 rawValue는 마지막에 본 페이지로 저장된다 (`SettingsOpener.tabKey`).
 enum MacSettingsTab: String, CaseIterable {
     case keyboardShortcuts
+    case taskList
     /// Beta USD usage for signed-in accounts; execution credits are separately gated.
     case usage
     /// 페이지가 아니라 계정 시트 (↗)
@@ -188,6 +189,7 @@ enum MacSettingsTab: String, CaseIterable {
     /// Personal — General(맨 위) · Notifications(U8b) / Work — Automation(U6b, Connections 아래)
     static let all: [Item] = [
         Item(tab: .keyboardShortcuts, title: "Keyboard Shortcuts", systemImage: "keyboard", group: .personal),
+        Item(tab: .taskList, title: "Task List", systemImage: "list.bullet", group: .personal),
         Item(tab: .usage, title: "Usage & Credits", systemImage: "gauge.open.with.lines.needle.33percent", group: .personal),
         Item(tab: .account, title: "Account", systemImage: "person", group: .personal),
         Item(tab: .connections, title: "Connections", systemImage: "link", group: .work),

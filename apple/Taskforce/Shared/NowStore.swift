@@ -27,6 +27,10 @@ final class NowStore {
     private var stateBeforeDone: [UUID: WorkState] = [:]
     /// 할 일마다 읽어 둔 근거 (Supabase 직접 읽기)
     private(set) var evidence: [UUID: EvidenceDigest] = [:]
+    /// 제공자 아이콘용 메타데이터만 배치로 읽는다 (인용 · 원문 본문은 읽지 않는다)
+    private(set) var sourceServicesByAction: [UUID: [SourceService]] = [:]
+    /// Optional metadata can fail without hiding the task list; the launcher offers a retry.
+    private(set) var sourceServicesFailed = false
     /// 근거를 읽지 못한 할 일 (계속 "읽는 중"으로 두지 않게)
     private(set) var evidenceFailed: Set<UUID> = []
     var message: String?
@@ -46,6 +50,7 @@ final class NowStore {
     private var loadSequence = 0
     /// `reset()`마다 오른다: 로그아웃 · 계정 전환 전에 보낸 요청의 늦은 결과(근거 · 오류 문구 · 클립보드)를 버린다
     private var generation = 0
+    @ObservationIgnored private var sourceServicesTask: Task<Void, Never>?
 
     private struct Pending {
         let change: TaskChange
@@ -58,10 +63,14 @@ final class NowStore {
     /// 디자인 비교용 견본을 보여 주는 중 (`SampleData`)
     var sampleMode = false
 
-    func applySample(_ response: NowResponse, doneToday: [ActionSummary], evidence: [UUID: EvidenceDigest]) {
+    func applySample(
+        _ response: NowResponse, doneToday: [ActionSummary], evidence: [UUID: EvidenceDigest],
+        sourceServices: [UUID: [SourceService]] = [:]
+    ) {
         self.response = response
         self.doneToday = doneToday
         self.evidence = evidence
+        sourceServicesByAction = sourceServices
         loaded = true
     }
 
@@ -119,6 +128,8 @@ final class NowStore {
         #endif
         generation += 1
         loadSequence += 1
+        sourceServicesTask?.cancel()
+        sourceServicesTask = nil
         response = nil
         doneToday = []
         loadError = nil
@@ -128,6 +139,8 @@ final class NowStore {
         writes = [:]
         stateBeforeDone = [:]
         evidence = [:]
+        sourceServicesByAction = [:]
+        sourceServicesFailed = false
         evidenceFailed = []
         message = nil
         addError = nil
@@ -176,13 +189,15 @@ final class NowStore {
         #endif
         loadSequence += 1
         let sequence = loadSequence
+        sourceServicesTask?.cancel()
+        sourceServicesTask = nil
         // 이 요청을 보낸 계정 (받은 목록은 이 계정의 저장본으로만 남긴다)
         let account = signedInAccount
         let generation = generation
         let reads = services.reads
         refresh.loadStarted()
         // 오늘 끝낸 할 일은 읽지 못해도 목록은 보여 준다 (전에 읽은 것을 둔다)
-        async let doneRows = try? reads.doneToday(since: Calendar.current.startOfDay(for: Date()))
+        async let doneRows = try? reads.allDoneToday(since: Calendar.current.startOfDay(for: Date()))
         do {
             let response = try await services.api.now()
             let done = await doneRows
@@ -193,6 +208,8 @@ final class NowStore {
                 // 두 목록을 모두 새로 읽었으면 반영된 내 변경은 지운다
                 pending = pending.filter { $0.value.settledBy.map { $0 > sequence } ?? true }
             }
+            let actionIDs = response.now.map { $0.action.id } + response.confirmations.map(\.id) + doneToday.map(\.id)
+            loadSourceServices(actionIDs: actionIDs, account: account, generation: generation, sequence: sequence)
             loadError = nil
             authFailed = false
             loaded = true
@@ -207,6 +224,32 @@ final class NowStore {
             if case .server(_, .unauthorized, _)? = error as? APIError { authFailed = true } else { authFailed = false }
             loaded = true
             refresh.loadFailed(at: Date())
+        }
+    }
+
+    /// Load source-service metadata outside the list request so rows appear promptly.
+    /// Both request generation and signed-in account are checked before applying results.
+    private func loadSourceServices(actionIDs: [UUID], account: UUID?, generation: Int, sequence: Int) {
+        guard !actionIDs.isEmpty else {
+            sourceServicesByAction = [:]
+            sourceServicesFailed = false
+            return
+        }
+        sourceServicesFailed = false
+        let reads = services.reads
+        sourceServicesTask = Task { [weak self] in
+            do {
+                let servicesByAction = try await reads.actionSourceServices(actionIDs: actionIDs)
+                guard let self, !Task.isCancelled,
+                      generation == self.generation, sequence == self.loadSequence, account == self.signedInAccount else { return }
+                self.sourceServicesByAction = servicesByAction
+            } catch is CancellationError {
+                return
+            } catch {
+                guard let self, !Task.isCancelled,
+                      generation == self.generation, sequence == self.loadSequence, account == self.signedInAccount else { return }
+                self.sourceServicesFailed = true
+            }
         }
     }
 
@@ -367,6 +410,7 @@ final class NowStore {
             guard generation == self.generation else { return nil }
             let digest = EvidenceDigest(evidence: detail.evidence, sources: detail.sources)
             evidence[id] = digest
+            sourceServicesByAction[id] = digest.withoutReceipts.services
             return digest
         } catch is CancellationError {
             return nil

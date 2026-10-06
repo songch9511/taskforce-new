@@ -29,6 +29,9 @@ public struct TaskforceReads: Sendable {
 
     /// `action_events.type` 중 변경 이력에서 빼는 것 (`POST /actions/:id/seen`이 남긴다)
     static let seenEventType = "user_seen"
+    private static let pageSize = 500
+    private static let evidenceActionChunkSize = 50
+    private static let sourceIDChunkSize = 100
 
     public func actionDetail(id: UUID) async throws -> ActionDetail {
         let idString = id.lowercased
@@ -64,13 +67,84 @@ public struct TaskforceReads: Sendable {
     /// 오늘 끝낸 할 일 (Done Today): `since`(기기 시간대의 오늘 0시) 뒤에 바뀐 완료 행, 최근 것이 위.
     /// 다른 사람 몫은 GET /now 목록에 보인 적이 없어 뺀다.
     public func doneToday(since start: Date, limit: Int = 10) async throws -> [ActionSummary] {
-        try await rows(
-            supabase.from("actions").select(ActionSummary.columns)
-                .eq("status", value: ActionStatus.done.rawValue)
-                .neq("owner", value: ActionOwner.other.rawValue)
-                .gte("updated_at", value: start.ISO8601Format())
-                .order("updated_at", ascending: false).limit(limit)
+        guard limit > 0 else { return [] }
+        return try await rows(
+            doneTodayQuery(since: start).limit(limit)
         )
+    }
+
+    /// Complete Done Today list for the Mac launcher. Uses stable pagination without
+    /// changing the existing limited `doneToday(since:limit:)` call contract.
+    public func allDoneToday(since start: Date) async throws -> [ActionSummary] {
+        var result: [ActionSummary] = []
+        var offset = 0
+        while true {
+            let page: [ActionSummary] = try await rows(
+                doneTodayQuery(since: start).range(from: offset, to: offset + Self.pageSize - 1)
+            )
+            result.append(contentsOf: page)
+            guard page.count == Self.pageSize else { return result }
+            offset += page.count
+        }
+    }
+
+    /// Source services for collapsed launcher rows. Reads references and provider
+    /// metadata in bounded batches; it never fetches quotes or source bodies.
+    public func actionSourceServices(actionIDs: [UUID]) async throws -> [UUID: [SourceService]] {
+        let actionIDs = Array(Set(actionIDs)).sorted { $0.uuidString < $1.uuidString }
+        guard !actionIDs.isEmpty else { return [:] }
+
+        var references: [ActionEvidenceSource] = []
+        for start in stride(from: 0, to: actionIDs.count, by: Self.evidenceActionChunkSize) {
+            let end = min(start + Self.evidenceActionChunkSize, actionIDs.count)
+            let ids = actionIDs[start..<end].map(\.lowercased)
+            var offset = 0
+            while true {
+                let page: [ActionEvidenceSource] = try await rows(
+                    supabase.from("evidence").select("id, action_id, source_id, created_at")
+                        .in("action_id", values: ids)
+                        .order("action_id", ascending: true)
+                        .order("created_at", ascending: true)
+                        .order("id", ascending: true)
+                        .range(from: offset, to: offset + Self.pageSize - 1)
+                )
+                references.append(contentsOf: page)
+                guard page.count == Self.pageSize else { break }
+                offset += page.count
+            }
+        }
+        guard !references.isEmpty else { return [:] }
+
+        let sourceIDs = Array(Set(references.map(\.sourceID))).sorted { $0.uuidString < $1.uuidString }
+        var sources: [UUID: SourceService] = [:]
+        for start in stride(from: 0, to: sourceIDs.count, by: Self.sourceIDChunkSize) {
+            let end = min(start + Self.sourceIDChunkSize, sourceIDs.count)
+            let ids = sourceIDs[start..<end].map(\.lowercased)
+            let page: [SourceProviderRecord] = try await rows(
+                supabase.from("sources").select("id, kind, external_url").in("id", values: ids)
+            )
+            for source in page {
+                let service = SourceService.infer(externalURL: source.externalURL, kind: source.kind)
+                if service != .manual(.execution) { sources[source.id] = service }
+            }
+        }
+
+        var result: [UUID: [SourceService]] = [:]
+        var seen: [UUID: Set<SourceService>] = [:]
+        for reference in references {
+            guard let service = sources[reference.sourceID], seen[reference.actionID, default: []].insert(service).inserted else { continue }
+            result[reference.actionID, default: []].append(service)
+        }
+        return result
+    }
+
+    private func doneTodayQuery(since start: Date) -> PostgrestTransformBuilder {
+        supabase.from("actions").select(ActionSummary.columns)
+            .eq("status", value: ActionStatus.done.rawValue)
+            .neq("owner", value: ActionOwner.other.rawValue)
+            .gte("updated_at", value: start.ISO8601Format())
+            .order("updated_at", ascending: false)
+            .order("id", ascending: false)
     }
 
     /// 최근 원문. 할 일 도구 스냅샷(`task`)과 실행 receipt(`execution`)는 읽을 글이 아니라 뺀다.
@@ -179,6 +253,37 @@ public struct TaskforceReads: Sendable {
     private func rows<T: Decodable>(_ builder: PostgrestTransformBuilder) async throws -> [T] {
         let data = try await builder.execute().data
         return try TaskforceJSON.decoder().decode([T].self, from: data)
+    }
+}
+
+private struct ActionEvidenceSource: Decodable {
+    let id: UUID
+    let actionID: UUID
+    let sourceID: UUID
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case actionID = "action_id"
+        case sourceID = "source_id"
+    }
+}
+
+private struct SourceProviderRecord: Decodable {
+    let id: UUID
+    let kind: SourceKind
+    let externalURL: URL?
+
+    enum CodingKeys: String, CodingKey {
+        case id, kind
+        case externalURL = "external_url"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        kind = try container.decode(SourceKind.self, forKey: .kind)
+        externalURL = (try? container.decodeIfPresent(String.self, forKey: .externalURL))
+            .flatMap { $0.flatMap(URL.init(string:)) }
     }
 }
 

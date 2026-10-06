@@ -44,6 +44,14 @@ export const isJudgeReason = (reason: string) => reason.startsWith(JUDGE_REASON_
 /** 판정 단계의 확인 이유를 뺀다 (AppendUpdate.clearJudgeReasons) */
 export const withoutJudgeReasons = (reasons: string[]) => reasons.filter((reason) => !isJudgeReason(reason));
 
+/** Keep an uncertain judged owner unknown in both persisted Actions and evaluation output. */
+export function withJudgeOwnership<T extends { owner: "me" | "unknown" }>(
+  candidate: T,
+  judge: Pick<JudgeResult, "ownerAmbiguous">,
+): Omit<T, "owner"> & { owner: "me" | "unknown" } {
+  return { ...candidate, owner: judge.ownerAmbiguous ? "unknown" : candidate.owner };
+}
+
 /** eval · 테스트용. 운영은 같은 인터페이스의 DB 저장소(lib/actions/db-store.ts SupabaseActionStore)를 쓴다. */
 export class InMemoryActionStore implements ActionStore {
   private readonly actions: TrackedAction[] = [];
@@ -266,7 +274,7 @@ export async function mergeJudged(
     // 이름표가 참석자 동명이인과 겹치면 Jev의 추정 역할도 코드의 이름 매칭도 화자를 확정할 수 없다.
     // 다른 발언 속성은 그대로 두고 Claim의 speakerRole만 unknown으로 만든다.
     const signals = judge.speakerAmbiguous ? judge.signals : withSpeakerFromLabel(judge.signals, judge.speaker, requester, identity, candidate.signal);
-    const resolvedCandidate = judge.ownerAmbiguous ? { ...candidate, owner: "unknown" as const } : candidate;
+    const resolvedCandidate = withJudgeOwnership(candidate, judge);
     const ambiguousIdentity = judge.speakerAmbiguous || judge.ownerAmbiguous;
     const unknownOwnerCommitment = candidate.signal === "commitment" && candidate.owner === "unknown";
     const settles =
