@@ -46,6 +46,7 @@
 | Mac 화면 fixture | 실제 LauncherRootView의 접힘·클릭 후 펼침·초기 펼침 및 표시 개수 설정을 light/dark로 렌더하고 육안 검토 |
 | Mac Release build | unsigned universal macOS 빌드 통과. 서명·공증·배포 검증과는 별개 |
 | 독립 코드 리뷰 | 서버·native 지적 사항 수정 후 승인. 실제 모델·앱 실행 증거와는 별개 |
+| GitHub CI (코드 커밋 `9ae55e9`) | [check·apple 모두 통과](https://github.com/songch9511/taskforce-new/actions/runs/37408136041). 서버 PostgreSQL 검사 및 Apple package·UI token·Mac launcher test·macOS build 포함 |
 
 첫 실제 모델 평가는 개발용 키와 기존 모델 설정(`z-ai/glm-5.3-flash`, `typesafe/jev-1.13`)으로 실행했다. 약 $0.145를 사용했으며 호출 5건이 429로 실패했다. 부분 결과는 자동+확인 precision/recall 91.2%/91.2%, 자동만 98.1%/82.5%였고, 일반 타인 문서에서 오귀속 3건이 남았다. 이 결과는 최종 수정 전이며 통과로 집계하지 않는다.
 
@@ -55,13 +56,26 @@
 
 동시성을 1/1로 낮춰 실패한 세 사례만 재시도했다. coffee-chat과 gap-reply는 첫 재시도에서 통과했고 heldout-cancel-hearsay는 429가 한 번 더 발생한 뒤 추가 단독 재시도에서 통과했다. 세 사례의 최종 개별 실행은 모두 exit 0이며 원본 실패 결과를 유지한다. 따라서 전체 87개 사례를 전체 실행과 실패 재시도로 검증했으며, 오류 없는 단일 전체 실행으로 표현하지 않는다. 두 동시성 옵션은 eval 호출량만 제어하며 운영 호출·임계값을 바꾸지 않는다. 기본 동시성은 기존 4/8이다.
 
+저장된 전체 결과와 실패한 세 사례의 성공 재시도만 합쳐, 같은 제품 담당 규칙으로 다시 채점했다. 추가 모델 호출 없이 재계산했으며 근거는 `artifacts/integrated-qa/eval-final-rescored.json`이다.
+
+| 최종 합산 | 정밀도 | 재현율 | 담당 / 기한 정확도 | 남의 일 → me |
+| --- | --- | --- | --- | --- |
+| 단일 원문 59건, 자동+Review | 97.1% | 93.2% | 100% / 100% | 0 |
+| 자동만 | 98.1% | 79.1% | 100% / 100% | 0 |
+
+시퀀스 28건의 기대 Action은 29/29 일치했으며 필드 오류는 없었다. Ask는 8/8이다. **품질 실패는 남아 있다:** 단일 원문은 중복 1건·가정적 행동 1건의 오탐과 누락 5건, 시퀀스는 Review 오탐 2건이다. 자동만 재현율 79.1%는 과거 HANDOFF 기준선 85.1%보다 낮다. 평가 시점·골든셋이 달라 이번 변경의 회귀로 단정하지 않으며, 배포 전 같은 조건의 기준선 비교 및 해당 실패 분류가 필요하다. 이 Draft는 품질 문제가 모두 해결됐다는 승인이 아니다.
+
 ## 사용자 보고 원문 대조
 
 사용자가 알려 준 세 Action 제목으로 Notion을 읽기 전용 검색하여 같은 회의록의 요약 체크리스트에 모두 있는 것을 확인했다. 세 항목에는 개인 담당자가 적혀 있지 않다. Notion 사용자 검색으로 확인한 Daniel 계정 ID는 원문의 참석자 3명 및 Owner 속성에 없었다. 이는 사용자의 불참·무언급 보고와 일치한다. 페이지 생성자는 fetch 결과에 없어 알 수 없으며 진단에서는 true/false 두 조건을 따로 확인한다. 운영 저장 Action의 source_id를 직접 조회하지 않았으므로 검색된 원문과 운영 레코드의 연결은 아직 별도 확인 대상이다.
 
-회의록 전체 내용과 ID는 저장소에 넣지 않고 로컬 진단 자료로만 보관한다. 회귀 테스트에는 민감한 원문 대신 동일한 구조의 합성 사례를 사용한다.
+회의록 전체 내용과 ID 및 전용 실행기는 저장소 밖의 private QA 폴더에 보관했다. 회귀 테스트에는 민감한 원문 대신 동일한 구조의 합성 사례를 사용한다.
 
-두 참석자 사례에서 eval이 `owner=me`로 보고한 오류는 실제 저장 오류가 아니었다. production은 `judge.ownerAmbiguous`를 `owner=unknown`으로 바꾼 뒤 병합하지만, 기존 단일 원문 eval은 판정 전 추출 후보의 owner를 그대로 채점했다. 평가가 실제 저장 경로의 담당자를 채점하도록 별도 보완한다.
+현재 `pageToItem`으로 변환한 원문과 사용자가 보고한 세 항목의 정확한 인용을 개발용 Jev에 순차 입력했다. 세 후보를 모두 `owner=me`, confidence 0.99로 시작했지만 **3/3 `NOT_MY_ACTION` 기각**, 담당 의미는 모두 `unassigned`였다(`judge-v6-meeting`). 비용은 약 $0.00022다. fetch에 표시 이름 매핑이 없어 판정 입력의 참석자 정보와 생성자 정보는 unknown을 유지했다. 원문의 참석자 ID에서 사용자가 제외된 사실은 별도의 Notion 사용자 검색으로 확인했다.
+
+이 진단은 실제 원문에 대한 판정 단계만 실행했다. 추출·embedding·DB 저장·앱 동기화는 호출하지 않았고 기존 프로필의 모든 별칭을 재현하지도 않았다. 따라서 production E2E 통과로 표현하지 않는다. 본문을 포함하지 않는 결과는 `artifacts/integrated-qa/notion-reported-source-probe.log`에 있다.
+
+두 참석자 사례에서 eval이 `owner=me`로 보고한 오류는 실제 저장 오류가 아니었다. production은 `judge.ownerAmbiguous`를 `owner=unknown`으로 바꾼 뒤 병합하지만, 기존 단일 원문 eval은 판정 전 추출 후보의 owner를 그대로 채점했다. 기존 변환을 `withJudgeOwnership`으로 공유해 평가와 저장 경로가 같게 보완했다. 원래의 추출·판정 결과 및 오탐 집계는 보존한다.
 
 ## 증거와 남은 범위
 
@@ -70,3 +84,5 @@
 현재 Debug 앱 경로로 GUI 검증을 다시 시도했으나 Computer Use가 `timeoutReached (-10005)`를 반환하여 화면 상태를 읽지 못했다. 이 결과만으로 앱 정지라고 단정하지 않는다. Escape·외부 클릭·Command-Tab을 포함한 실제 설치 앱 검증은 남아 있다.
 
 서명 설치본 업데이트, 기존 운영 Action 정리, main 병합·운영 배포는 이 기록의 로컬 검증과 별도다. DB migration은 변경하지 않았다.
+
+검토용 변경은 [Draft PR #100](https://github.com/songch9511/taskforce-new/pull/100)이다. 코드 커밋은 `9ae55e9`이며 이후 이 보고서의 결과 갱신은 문서만 변경한다.
