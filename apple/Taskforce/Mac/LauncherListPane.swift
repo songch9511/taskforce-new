@@ -5,14 +5,15 @@ import TaskforceKit
 import TaskforceUI
 
 private struct LauncherRowMenuButtonStyle: ButtonStyle {
+    var isHovered: Bool
+
     func makeBody(configuration: Configuration) -> some View {
         let shape = RoundedRectangle(cornerRadius: TFRadius.md, style: .continuous)
         configuration.label
             .font(.system(size: 12, weight: .semibold))
             .foregroundStyle(TFColor.textSecondary)
             .frame(width: 28, height: 28)
-            .background(TFColor.settingsFill, in: shape)
-            .overlay(shape.strokeBorder(TFColor.borderDefault, lineWidth: 1))
+            .background(isHovered ? TFColor.settingsFill : .clear, in: shape)
             .opacity(configuration.isPressed ? 0.75 : 1)
             .contentShape(shape)
     }
@@ -30,6 +31,7 @@ struct LauncherListPane: View {
     @State private var lastSelection = 0
     @State private var pointerSelection: Int?
     @State private var hoveredActionID: UUID?
+    @State private var hoveredMenuActionID: UUID?
     @State private var menuTrackingActionID: UUID?
 
     var body: some View {
@@ -260,6 +262,9 @@ struct LauncherListPane: View {
                     hoveredActionID = actionID
                 } else if hoveredActionID == actionID {
                     hoveredActionID = nil
+                    if hoveredMenuActionID == actionID {
+                        hoveredMenuActionID = nil
+                    }
                 }
             }
         case .saved:
@@ -321,8 +326,15 @@ struct LauncherListPane: View {
             }
             .menuIndicator(.hidden)
             .menuStyle(.button)
-            .buttonStyle(LauncherRowMenuButtonStyle())
+            .buttonStyle(LauncherRowMenuButtonStyle(isHovered: hoveredMenuActionID == action.id))
             .frame(width: 28, height: 28)
+            .onHover { isHovering in
+                if isHovering {
+                    hoveredMenuActionID = action.id
+                } else if hoveredMenuActionID == action.id {
+                    hoveredMenuActionID = nil
+                }
+            }
             .padding(.trailing, TFSpace.xs)
             .help("Actions for \(action.title)")
             .accessibilityLabel("Actions for \(action.title)")
