@@ -16,6 +16,7 @@ struct MacSettingsTabTests {
         ("ai", .ai),
         // 지금 값
         ("keyboardShortcuts", .keyboardShortcuts),
+        ("taskList", .taskList),
         // 아직 숨긴 항목 · 모르는 값 · 빈 값
         ("general", .connections),
         ("unknown", .connections),
@@ -30,17 +31,19 @@ struct MacSettingsTabTests {
     }
 
     @Test func sidebarShowsTheU1ItemsInFigmaOrder() {
-        #expect(MacSettingsTab.sidebar.map(\.title) == ["Keyboard Shortcuts", "Account", "Connections", "Privacy & AI Data"])
-        #expect(MacSettingsTab.sidebar.map(\.group) == [.personal, .personal, .work, .work])
+        #expect(MacSettingsTab.sidebar.map(\.title) == ["Keyboard Shortcuts", "Task List", "Account", "Connections", "Privacy & AI Data"])
+        #expect(MacSettingsTab.sidebar.map(\.group) == [.personal, .personal, .personal, .work, .work])
         #expect(MacSettingsTab.sidebar.filter(\.tab.opensSheet).map(\.tab) == [.account])
     }
 
     @Test(arguments: [
-        ("", ["Keyboard Shortcuts", "Account", "Connections", "Privacy & AI Data"]),
-        ("   ", ["Keyboard Shortcuts", "Account", "Connections", "Privacy & AI Data"]),
+        ("", ["Keyboard Shortcuts", "Task List", "Account", "Connections", "Privacy & AI Data"]),
+        ("   ", ["Keyboard Shortcuts", "Task List", "Account", "Connections", "Privacy & AI Data"]),
         ("conn", ["Connections"]),
         ("CONNECTIONS", ["Connections"]),
         ("shortcut", ["Keyboard Shortcuts"]),
+        ("task list", ["Task List"]),
+        ("task", ["Task List"]),
         ("ai", ["Privacy & AI Data"]),
         ("privacy data", ["Privacy & AI Data"]),
         ("acc", ["Account"]),
@@ -53,7 +56,8 @@ struct MacSettingsTabTests {
 
     @Test func arrowsMoveOneItemAndStopAtTheEnds() {
         let all = MacSettingsTab.sidebar
-        #expect(MacSettingsTab.step(from: .keyboardShortcuts, by: 1, in: all) == .account)
+        #expect(MacSettingsTab.step(from: .keyboardShortcuts, by: 1, in: all) == .taskList)
+        #expect(MacSettingsTab.step(from: .taskList, by: 1, in: all) == .account)
         #expect(MacSettingsTab.step(from: .account, by: 1, in: all) == .connections)
         #expect(MacSettingsTab.step(from: .ai, by: 1, in: all) == .ai)
         #expect(MacSettingsTab.step(from: .keyboardShortcuts, by: -1, in: all) == .keyboardShortcuts)
@@ -71,7 +75,7 @@ struct MacSettingsTabTests {
 
     @Test func usageAppearsAboveAccountOnlyWhenExecutionIsAvailable() {
         #expect(MacSettingsTab.sidebar(executionAvailable: true).map(\.title)
-            == ["Keyboard Shortcuts", "Usage & Credits", "Account", "Connections", "Privacy & AI Data"])
+            == ["Keyboard Shortcuts", "Task List", "Usage & Credits", "Account", "Connections", "Privacy & AI Data"])
         #expect(MacSettingsTab.sidebar(executionAvailable: true).first { $0.tab == .usage }?.group == .personal)
         #expect(!MacSettingsTab.sidebar(executionAvailable: false).contains { $0.tab == .usage })
         #expect(MacSettingsTab.sidebar.map(\.tab) == MacSettingsTab.sidebar(executionAvailable: false).map(\.tab))
@@ -92,6 +96,7 @@ struct MacSettingsTabTests {
     func otherStoredPagesIgnoreExecution(_ execution: MacSettingsTab.Execution) {
         #expect(MacSettingsTab.page(stored: "ai", execution: execution) == .ai)
         #expect(MacSettingsTab.page(stored: "keyboardShortcuts", execution: execution) == .keyboardShortcuts)
+        #expect(MacSettingsTab.page(stored: "taskList", execution: execution) == .taskList)
         #expect(MacSettingsTab.page(stored: "account", execution: execution) == .connections)
         #expect(MacSettingsTab.page(stored: nil, execution: execution) == .connections)
     }
@@ -102,7 +107,7 @@ struct MacSettingsTabTests {
         ("USAGE credits", true, ["Usage & Credits"]),
         ("credits", false, []),
         ("o", true, ["Keyboard Shortcuts", "Account", "Connections"]),
-        ("a", true, ["Keyboard Shortcuts", "Usage & Credits", "Account", "Privacy & AI Data"]),
+        ("a", true, ["Keyboard Shortcuts", "Task List", "Usage & Credits", "Account", "Privacy & AI Data"]),
     ])
     func searchFindsUsageOnlyWhenShown(query: String, executionAvailable: Bool, titles: [String]) {
         #expect(MacSettingsTab.sidebar(matching: query, executionAvailable: executionAvailable).map(\.title) == titles)
@@ -110,7 +115,8 @@ struct MacSettingsTabTests {
 
     @Test func arrowsStepThroughUsage() {
         let shown = MacSettingsTab.sidebar(executionAvailable: true)
-        #expect(MacSettingsTab.step(from: .keyboardShortcuts, by: 1, in: shown) == .usage)
+        #expect(MacSettingsTab.step(from: .keyboardShortcuts, by: 1, in: shown) == .taskList)
+        #expect(MacSettingsTab.step(from: .taskList, by: 1, in: shown) == .usage)
         #expect(MacSettingsTab.step(from: .usage, by: 1, in: shown) == .account)
         #expect(MacSettingsTab.step(from: .account, by: -1, in: shown) == .usage)
         // 항목이 숨은 뒤 그 페이지에서 ↓: 보이는 목록의 처음

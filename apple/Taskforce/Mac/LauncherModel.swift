@@ -172,8 +172,10 @@ final class LauncherModel {
     /// 고른 범위가 메뉴에서 사라지면(실행을 쓸 수 없게 됨 · 저장본) All Tasks로 본다
     var scope: TaskScope { scopeChoices.contains(chosenScope) ? chosenScope : .allTasks }
     private var chosenScope: TaskScope = .allTasks
-    /// 섹션 펼침 (Show N More · Done Today). 런처를 열 때 · 계정이 바뀌면 처음 모양
-    private(set) var caps = SectionCaps()
+    /// 섹션 표시 설정은 서버 기본값이 아니라 Mac의 사용자 설정을 쓴다.
+    private(set) var caps = SectionCaps(displayPreferences: .load())
+    /// 마지막 내부 작업의 성공 문구. 목록을 가리지 않고 잠깐 보여 준다.
+    private(set) var feedbackMessage: String?
     /// 범위 메뉴가 열려 있으면 고른 줄 (`scopeChoices`의 자리)
     private(set) var scopeMenuSelection: Int?
     /// 바뀜 점을 지우고 `seen`을 보낼 때 (`SeenTracker`)
@@ -190,8 +192,7 @@ final class LauncherModel {
 
     /// 취소해도 되는 읽기 (물어보기 · 원문 읽기). 쓰기는 창을 닫아도 끝까지 보낸다.
     private var work: Task<Void, Never>?
-    /// 동작 완료 뒤 닫기
-    private var closeTimer: Task<Void, Never>?
+    @ObservationIgnored private var feedbackTimer: Task<Void, Never>?
     /// 쓰기마다 오른다: 끝난 쓰기가 그사이 바뀐 화면을 덮지 않게
     private var writeGeneration = 0
     /// 보내는 중인 직접 추가 · 빠진 할 일 신고의 쓰기 번호. 한 흐름에 한 번만 보낸다 (`isSubmitting`).
@@ -216,18 +217,21 @@ final class LauncherModel {
     private var pendingDraft: UUID?
     /// 최근 원문을 다 읽었는지 (빈 목록과 읽는 중을 나눈다)
     private(set) var sourcesLoaded = false
+    @ObservationIgnored private var displayPreferencesDefaults = UserDefaults.standard
 
     /// `saved`: 이 기기의 저장본 (앱은 App Group 위치, 테스트는 임시 폴더나 nil).
     /// `connectivity`: 연결 경로 (앱은 `Connectivity.updates()`, 기본은 바로 끝나는 스트림이라 연결 감시 없음).
     /// `runs`: 실행 상태 (앱은 설정 창과 같은 `AppRuntime.runs`, 없으면 이 런처만의 것)
     init(
         session: SessionStore, services: AppServices, account: AccountStore, saved: SavedNowStore? = nil, runs shared: RunStore? = nil,
-        connectivity: AsyncStream<Bool> = AsyncStream { $0.finish() }
+        connectivity: AsyncStream<Bool> = AsyncStream { $0.finish() }, displayPreferencesDefaults: UserDefaults = .standard
     ) {
         self.session = session
         self.services = services
         self.account = account
         self.saved = saved
+        self.displayPreferencesDefaults = displayPreferencesDefaults
+        caps = SectionCaps(displayPreferences: .load(from: displayPreferencesDefaults))
         let now = NowStore(services: services, session: session, saved: saved)
         let runs = shared ?? RunStore(services: services, session: session)
         var sample = false
@@ -307,10 +311,14 @@ final class LauncherModel {
 
     var items: [LauncherItem] { sections.flatMap(\.items) }
 
-    /// 목록 모양: 접기 기준은 서버 값(`section_limits`), 범위 · 바뀜 · 실패 원문 줄
+    /// Settings may apply a new section preference while this launcher model is alive.
+    func applySectionDisplayPreferences(_ preferences: SectionDisplayPreferences) {
+        caps = SectionCaps(displayPreferences: preferences)
+        reconcileSelection()
+    }
+
+    /// 목록 모양: 표시 설정은 Mac에 저장하고, 범위 · 바뀜 · 실패 원문은 서버 응답을 따른다.
     private var listLayout: LauncherContent.Layout {
-        var caps = self.caps
-        caps.limits = now?.response?.sectionLimits ?? .standard
         return LauncherContent.Layout(
             caps: caps, scope: scope, changed: changedIDs, working: workingIDs, failedSources: now?.response?.failedSources ?? .empty
         )
@@ -426,19 +434,17 @@ final class LauncherModel {
 
     // MARK: 액션 바
 
-    /// Return 동작 (회색 알약): 할 일 행은 원문 열기(`Open in Notion`, 근거를 읽은 뒤), Review 행은 `Show Review`,
-    /// 상세로 포커스한 Review는 `Confirm ⌘↩`, 범위 메뉴가 열려 있으면 `Show <범위>`. 없으면 nil
+    /// Action bar primary: list Review is `Confirm ⌘↩`; other task rows show details with `↩`.
+    /// Expanded Review stays `Confirm ⌘↩`; an open scope menu shows `Show <scope>`. Otherwise nil.
     var primaryAction: BarAction? {
         if let index = scopeMenuSelection, scopeChoices.indices.contains(index) {
             return BarAction(title: "Show \(scopeChoices[index].title)", keys: "↩")
         }
         switch screen {
         case .list:
-            guard let item = selectedItem, let target = target(for: item), item.group != nil else { return nil }
-            if target.group == .review { return BarAction(title: "Show Review", keys: "↩") }
-            guard let link = Self.sourceLink(now?.evidence[target.action.id]) else { return nil }
-            let opensDraft = link.externalURL.flatMap(ArtifactLink.parse) != nil
-            return BarAction(title: opensDraft ? "View Draft" : link.service.openTitle, keys: "↩")
+            guard let item = selectedItem, item.group != nil, let target = target(for: item) else { return nil }
+            if target.group == .review { return BarAction(title: "Confirm", keys: "⌘↩") }
+            return BarAction(title: "Show details", keys: "↩")
         case .detail:
             if laneFocusTarget != nil { return BarAction(title: "View Draft", keys: "↩") }
             return canConfirmReview ? BarAction(title: "Confirm", keys: "⌘↩") : nil
@@ -460,7 +466,7 @@ final class LauncherModel {
         switch screen {
         case .list, .detail:
             if canUndo { return BarAction(title: "Undo", keys: "⌘Z") }
-            if canDismissNotice || (canDismissReview && screen != .list) { return BarAction(title: "Dismiss", keys: "⌘⌫") }
+            if canDismissNotice || canDismissReview { return BarAction(title: "Dismiss", keys: "⌘⌫") }
             if case .refreshFailed = refreshState, isSignedIn { return BarAction(title: "Try Again", keys: "⌘R") }
             return nil
         default:
@@ -484,8 +490,10 @@ final class LauncherModel {
         switch screen {
         case .list:
             guard let item = selectedItem else { return }
-            if item.group == .review { expand() } else if let target = target(for: item) { openSourceOrActions(target) }
-        case .detail: if laneFocusTarget != nil { openFocusedDraft() } else { confirmReview() }
+            if item.group == .review { confirmReview() } else { openDetail(for: item) }
+        case .detail:
+            guard !leaveIfStale() else { return }
+            if laneFocusTarget != nil { openFocusedDraft() } else { confirmReview() }
         case .pickLines: submitLines()
         case .runWithAI: startRun()
         case .draft: copyDraft()
@@ -569,8 +577,12 @@ final class LauncherModel {
     /// 실행 상태를 지켜볼 할 일 (`RunStore.watch`): 런처가 떠 있는 동안 상세 칸 · Run with AI · 초안 · ⌘K 패널의 할 일
     var runSubject: UUID? {
         guard isShown else { return nil }
-        if case .actions(let target) = screen { return target.action.id }
-        return detailTarget?.action.id
+        switch screen {
+        case .actions(let target), .detail(let target), .runWithAI(let target), .draft(let target?, _):
+            return target.action.id
+        default:
+            return nil
+        }
     }
 
     /// 고른 할 일이 바뀌었을 때 (화면이 `seenSubject`를 따라 부른다): 떠난 바뀐 행이 있으면 `seen`을 한 번 보낸다.
@@ -654,7 +666,8 @@ final class LauncherModel {
     /// 고른 Review 행 · 펼친 Review를 ⌘↩로 확정할 수 있는지 (아래 "Confirm ⌘↩")
     var canConfirmReview: Bool {
         switch screen {
-        case .list, .detail: focusedTarget?.group == .review
+        case .list: focusedTarget?.group == .review
+        case .detail(let viewing): focusedTarget?.group == .review && viewing.group == .review
         default: false
         }
     }
@@ -689,7 +702,7 @@ final class LauncherModel {
 
     func prepareForShow() {
         isShown = true
-        closeTimer?.cancel()
+        clearFeedback()
         clearUndo()
         focusRequest += 1
         // 직접 추가 · 신고를 보내는 중이면 그 진행 화면을 그대로 보여 준다 (목록으로 돌아가 다시 보내면 중복)
@@ -703,7 +716,7 @@ final class LauncherModel {
         pendingFocus = nil
         // 열 때마다 처음 모양: All Tasks · 접힌 섹션
         chosenScope = .allTasks
-        caps.reset()
+        caps = SectionCaps(displayPreferences: .load(from: displayPreferencesDefaults))
         scopeMenuSelection = nil
         guard isSignedIn, let now else { return }
         Task { await now.load() }
@@ -727,7 +740,7 @@ final class LauncherModel {
 
     func didHide() {
         isShown = false
-        closeTimer?.cancel()
+        clearFeedback()
         suspendsAutoClose = false
         scopeMenuSelection = nil
         // 런처를 닫으면 Goal을 지우고 run 상태를 그만 읽는다
@@ -759,7 +772,6 @@ final class LauncherModel {
         lastUserID = userID
         work?.cancel()
         work = nil
-        closeTimer?.cancel()
         now?.reset()
         account?.reset()
         clearUndo()
@@ -768,6 +780,7 @@ final class LauncherModel {
         sourceText = nil
         goals = [:]
         draftSources = nil
+        clearFeedback()
         laneFocus = nil
         // 전 사용자의 쓰기 결과는 보여 주지 않는다
         writeGeneration += 1
@@ -782,7 +795,7 @@ final class LauncherModel {
         selectedID = nil
         viewed = nil
         chosenScope = .allTasks
-        caps.reset()
+        caps = SectionCaps(displayPreferences: .load(from: displayPreferencesDefaults))
         scopeMenuSelection = nil
         seen.reset()
         guard isSignedIn, let now else { return }
@@ -871,7 +884,9 @@ final class LauncherModel {
             case .primary: command ? commandReturn() : primary()
             case .showSources: expand()
             case .confirm: confirmReview()
-            case .openSource: if let target = focusedTarget { openSourceOrActions(target) }
+            case .openSource:
+                if screen == .list { expand() }
+                else if let target = focusedTarget { openSourceOrActions(target) }
             case .ignore: break
             }
             return true
@@ -1042,7 +1057,7 @@ final class LauncherModel {
 
     /// ⌘↩: 고른 Review 행 · 펼친 Review · ⌘K 패널의 Review를 확정 (패널에서 고른 줄과 상관없이)
     private func confirmReview() {
-        guard let target = focusedTarget, target.group == .review else { return }
+        guard !leaveIfStale(), let target = focusedTarget, target.group == .review else { return }
         perform(.confirm, on: target)
     }
 
@@ -1070,6 +1085,10 @@ final class LauncherModel {
 
     /// 목록이 새로 왔을 때: 고르던 행이 아직 있으면 그 행을, 없으면 같은 자리(끝을 넘지 않게)를 가리킨다 (`LauncherContent.reselect`)
     func reconcileSelection() {
+        if case .detail = screen {
+            reconcileDetailSelection()
+            return
+        }
         guard screen == .list else { return }
         // 누른 알림의 할 일이 접힌 섹션 · 다른 범위에 있으면 펼쳐서 보인다
         if let pendingFocus, !items.contains(where: { $0.group != nil && $0.action?.id == pendingFocus }),
@@ -1091,13 +1110,66 @@ final class LauncherModel {
         }
     }
 
+    /// Keep the inline detail and highlighted row attached to the same action as live rows move.
+    private func reconcileDetailSelection() {
+        guard case .detail(let viewing) = screen else { return }
+        let id = viewing.action.id
+        guard let found = now?.sections.find(id) else {
+            closeDetailWithoutSelection()
+            return
+        }
+
+        if !items.contains(where: { $0.group != nil && $0.action?.id == id }) {
+            // A live status change can move the task outside the chosen scope; a new cap can hide it.
+            chosenScope = .allTasks
+            caps.expand(found.group)
+        }
+        let items = items
+        guard let index = items.firstIndex(where: { $0.group != nil && $0.action?.id == id }) else {
+            // A renamed task may no longer match the active search. Do not leave a detached detail pane
+            // that could make the newly highlighted row look like its Confirm target.
+            closeDetailWithoutSelection()
+            return
+        }
+
+        selection = index
+        selectedID = items[index].id
+        viewed = (id, index)
+        // Retain the opened group as the stale-target guard. `detailTarget` supplies the current action for display.
+        screen = .detail(Target(action: found.action, group: viewing.group))
+    }
+
+    /// Leave no row selected if the detail target disappeared or no longer matches the active search.
+    private func closeDetailWithoutSelection() {
+        screen = .list
+        laneFocus = nil
+        viewed = nil
+        selection = Self.noRow
+        selectedID = nil
+    }
+
     /// 목록으로 돌아간다: 펼침 · ⌘K 패널에서 본 할 일이 있으면 그 행, 사라졌으면 가까운 할 일 행(없으면 고른 줄 없음),
     /// 본 할 일이 없으면 맨 위 (`LauncherContent.rowAfterBack`). 고른 줄과 `selectedID`를 늘 함께 맞춘다.
     private func returnToList() {
+        returnToList(focusing: nil)
+    }
+
+    private func returnToList(focusing id: UUID?) {
         screen = .list
         laneFocus = nil
+        if let id, !items.contains(where: { $0.group != nil && $0.action?.id == id }),
+           let found = now?.sections.find(id) {
+            caps.expand(found.group)
+        }
         let items = items
-        let row = LauncherContent.rowAfterBack(viewing: viewed?.id, in: items, near: viewed?.row ?? 0)
+        if let id, let row = items.firstIndex(where: { $0.group != nil && $0.action?.id == id }) {
+            viewed = nil
+            selection = row
+            selectedID = items[row].id
+            return
+        }
+        let row = id.map { LauncherContent.rowAfterBack(viewing: $0, in: items, near: selection) }
+            ?? LauncherContent.rowAfterBack(viewing: viewed?.id, in: items, near: viewed?.row ?? 0)
         viewed = nil
         selection = row ?? Self.noRow
         selectedID = row.flatMap { items.indices.contains($0) ? items[$0].id : nil }
@@ -1176,6 +1248,17 @@ final class LauncherModel {
         showSources(target)
     }
 
+    /// 목록 행을 눌렀을 때 근거 상세를 연다. 이 동작은 Review를 확정하지 않는다.
+    func openDetail(for item: LauncherItem) {
+        let currentItems = items
+        guard screen == .list,
+              let index = currentItems.firstIndex(where: { $0.id == item.id }) else { return }
+        let current = currentItems[index]
+        guard current.group != nil, let target = target(for: current) else { return }
+        select(index)
+        showSources(target)
+    }
+
     private func showSources(_ target: Target) {
         if screen == .list { viewed = (target.action.id, selection) }
         laneFocus = nil
@@ -1192,7 +1275,10 @@ final class LauncherModel {
                 return
             }
             openActions(target)
-        case .detail(let target), .runWithAI(let target), .draft(let target?, _):
+        case .detail(let target):
+            guard !leaveIfStale() else { return }
+            openActions(target)
+        case .runWithAI(let target), .draft(let target?, _):
             openActions(target)
         default:
             break
@@ -1285,8 +1371,8 @@ final class LauncherModel {
             // 알리기만 · 읽기만 하는 줄
             break
         case .review(let action):
-            // 제목만 보고 확정하지 않게 근거를 먼저 보인다. 확정은 ⌘↩ · ⌘K Confirm
-            showSources(Target(action: action, group: .review))
+            // 제목만 보고 확정하지 않게 근거를 먼저 보인다. 확정은 별도 Confirm 동작이다.
+            openDetail(for: .review(action))
         case .task, .done:
             if let target = target(for: item) { openActions(target) }
         case .command(let command):
@@ -1338,9 +1424,9 @@ final class LauncherModel {
             // 지금 상태 줄은 체크만 (↩가 할 일이 없다)
             guard state != WorkState(target.group) else { return }
             setState(target.action, to: state)
-        case .confirm: finish("Confirmed") { await now.confirm(id) }
-        case .dismiss: finish("Dismissed") { await now.dismiss(id) }
-        case .handoff: finish("Copied") { _ = await now.handoff(id) }
+        case .confirm: finish("Confirmed", focusing: id) { await now.confirm(id) }
+        case .dismiss: finish("Dismissed", focusing: id) { await now.dismiss(id) }
+        case .handoff: finish("Copied", focusing: id) { _ = await now.handoff(id) }
         case .openSource: openSource(target.action)
         case .editDue:
             screen = .editDue(target)
@@ -1378,7 +1464,6 @@ final class LauncherModel {
         // 끝나지 않은 run을 먼저 멈춘다 (지우기 쓰기와 함께 보낸다)
         if now.sections.find(action.id)?.group.isDeletable == true { stopRunsBeforeLeaving(action.id) }
         guard let deleted = now.delete(action.id) else { return }
-        closeTimer?.cancel()
         screen = .list
         viewed = nil
         selection = row ?? 0
@@ -1429,7 +1514,6 @@ final class LauncherModel {
 
     /// 목록으로 돌아가 그 할 일의 행(옮겨 간 구역)을 고른다
     private func selectRow(of id: UUID) {
-        closeTimer?.cancel()
         screen = .list
         viewed = nil
         // 옮겨 간 자리가 접힌 나머지 안이면 그 섹션을 펼친다 (옮긴 행이 `Show N More` 뒤로 숨지 않게)
@@ -1477,11 +1561,11 @@ final class LauncherModel {
     func setDue(_ due: LocalDate?, on target: Target) {
         guard let now else { return }
         let label = due.map { "Due \(DueText.short($0, today: DueDateFormat.today()))" } ?? "Due date cleared"
-        finish(label) { await now.setDue(target.action.id, due) }
+        finish(label, focusing: target.action.id) { await now.setDue(target.action.id, due) }
     }
 
-    /// 서버 호출 → 성공하면 "Done" 한 줄을 잠깐 보이고 닫는다. `NowStore`가 남긴 오류가 있으면 알린다.
-    private func finish(_ message: String, _ operation: @escaping @MainActor () async -> Void) {
+    /// 서버 호출 → 성공하면 목록과 고른 할 일을 유지하고 짧게 알린다. `NowStore`가 남긴 오류는 계속 표시한다.
+    private func finish(_ message: String, focusing id: UUID? = nil, _ operation: @escaping @MainActor () async -> Void) {
         guard let now else { return }
         now.message = nil
         let generation = beginWrite()
@@ -1494,13 +1578,15 @@ final class LauncherModel {
             if let error {
                 screen = .notice(error)
             } else {
-                showDoneAndClose(message)
+                returnToList(focusing: id)
+                showFeedback(message)
             }
         }
     }
 
     private func beginWrite() -> Int {
         work?.cancel()
+        clearFeedback()
         writeGeneration += 1
         screen = .working("Working…")
         return writeGeneration
@@ -1529,14 +1615,21 @@ final class LauncherModel {
         if submission == generation { submission = nil }
     }
 
-    private func showDoneAndClose(_ message: String) {
-        screen = .done(message)
-        closeTimer?.cancel()
-        closeTimer = Task {
-            try? await Task.sleep(for: .milliseconds(700))
-            guard !Task.isCancelled, case .done = screen else { return }
-            close()
+    private func showFeedback(_ message: String) {
+        feedbackTimer?.cancel()
+        feedbackMessage = message
+        feedbackTimer = Task {
+            try? await Task.sleep(for: .seconds(2))
+            guard !Task.isCancelled, feedbackMessage == message else { return }
+            feedbackMessage = nil
+            feedbackTimer = nil
         }
+    }
+
+    private func clearFeedback() {
+        feedbackTimer?.cancel()
+        feedbackTimer = nil
+        feedbackMessage = nil
     }
 
     private func openSource(_ action: ActionSummary) {
@@ -1637,7 +1730,9 @@ final class LauncherModel {
             do {
                 _ = try await services.api.createSource(request)
                 guard isCurrentWrite(generation) else { return }
-                showDoneAndClose("Sent")
+                self.text = ""
+                returnToList()
+                showFeedback("Sent")
             } catch let error as APIError {
                 guard isCurrentWrite(generation) else { return }
                 screen = Self.screen(for: error, rateLimited: "Too many requests. Try again in a moment.", missing: error.userMessage)
@@ -1736,7 +1831,8 @@ final class LauncherModel {
                 await now?.load()
                 guard isCurrentWrite(generation) else { return }
                 let title = result.action.title
-                showDoneAndClose(result.status == .created ? "Added “\(title)”" : "Already tracked “\(title)”")
+                returnToList(focusing: result.action.id)
+                showFeedback(result.status == .created ? "Added “\(title)”" : "Already tracked “\(title)”")
             } catch let error as APIError {
                 guard isCurrentWrite(generation) else { return }
                 if case .server(_, .rateLimited, _) = error {
@@ -1763,7 +1859,9 @@ final class LauncherModel {
                 guard isCurrentWrite(generation) else { return }
                 await now?.load()
                 guard isCurrentWrite(generation) else { return }
-                showDoneAndClose(result.status == .created ? "Added" : "Already tracked")
+                self.text = ""
+                returnToList(focusing: result.action.id)
+                showFeedback(result.status == .created ? "Added" : "Already tracked")
             } catch {
                 guard isCurrentWrite(generation) else { return }
                 screen = .notice(error.userMessage)
@@ -1925,12 +2023,12 @@ final class LauncherModel {
     /// 초안 Copy가 쓰는 붙여넣기 판 (테스트는 이름 붙인 판으로 바꾼다)
     @ObservationIgnored var pasteboard = NSPasteboard.general
 
-    /// ⌘C · 막대 Copy: 초안 제목 + 본문 (본문을 지운 초안은 없음). 사용자 결정 (2026-10-04, Raycast Copy to Clipboard):
-    /// 복사하고 런처의 완료 줄 `Copied`(`showDoneAndClose`, Hand off와 같다)를 잠깐 보인 뒤 닫는다
+    /// ⌘C · 막대 Copy: 초안 제목 + 본문 (본문을 지운 초안은 없음).
+    /// 복사하고 완료 문구를 잠깐 보여 주되 런처를 유지한다.
     func copyDraft() {
         guard case .draft(_, let artifact) = screen, !artifact.isPurged else { return }
         Clipboard.copy("\(artifact.title)\n\n\(artifact.body)", to: pasteboard)
-        showDoneAndClose("Copied")
+        showFeedback("Copied")
     }
 
     /// Stop Taskforce (⌘. · ⌘K): 그 할 일의 끝나지 않은 run을 모두 멈춘다. ⌘K 패널이면 목록으로 돌아가 갈래를 보인다

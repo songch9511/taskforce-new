@@ -1,8 +1,6 @@
 import { EXTRACT_PROMPT_VERSION } from "@/lib/ai/prompts/extract";
-import { JUDGE_PROMPT_VERSION } from "@/lib/ai/prompts/judge";
-
 import { extractCandidates, type ActionCandidate, type CompleteJson, type ExtractInput } from "./extract";
-import { judgeCandidate, type Decide, type JudgeResult } from "./judge";
+import { judgeCandidate, judgePromptVersionForSource, type Decide, type JudgeResult } from "./judge";
 import { verifyCandidates, type VerifiedCandidate } from "./verify";
 
 // 원문 하나를 파이프라인 끝까지 돌린다: ① 추출 → ② 기계적 검증 → ③ Jev 판정.
@@ -66,7 +64,7 @@ export async function runPipeline(input: ExtractInput, deps: PipelineDeps): Prom
       reject: count("reject"),
       dueCorrected: verified.kept.filter((c) => c.due_check === "corrected").length,
       models: { extract: extracted.model, judge: judged[0]?.judge.model ?? null },
-      promptVersions: { extract: EXTRACT_PROMPT_VERSION, judge: JUDGE_PROMPT_VERSION },
+      promptVersions: { extract: EXTRACT_PROMPT_VERSION, judge: judgePromptVersionForSource(input) },
       cost,
       // 추출이 한도를 넘겨 추론량을 제한해 다시 물은 답이면 true (품질이 조금 낮을 수 있다, 제품 원칙 6)
       reasoningLimited: extracted.reasoningLimited,

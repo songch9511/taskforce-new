@@ -49,6 +49,76 @@ public struct SectionLimits: Decodable, Sendable, Hashable {
     }
 }
 
+/// User-selected visible row count for one launcher section. `all` is the default;
+/// selecting a number is the only way to add a Show More row.
+public enum SectionDisplayLimit: Int, CaseIterable, Identifiable, Sendable, Hashable {
+    case all = 0
+    case five = 5
+    case ten = 10
+    case twenty = 20
+    case fifty = 50
+
+    public var id: Int { rawValue }
+
+    public var displayName: String { self == .all ? "All" : "\(rawValue)" }
+
+    public var count: Int? { self == .all ? nil : rawValue }
+}
+
+/// Mac launcher presentation preferences, stored locally and independently from the
+/// server's `section_limits` contract.
+public struct SectionDisplayPreferences: Sendable, Hashable {
+    public static let defaultsKey = "launcher.section-display.v1"
+    public static let all = SectionDisplayPreferences()
+
+    public var review: SectionDisplayLimit
+    public var inProgress: SectionDisplayLimit
+    public var toDo: SectionDisplayLimit
+    public var doneToday: SectionDisplayLimit
+
+    public init(
+        review: SectionDisplayLimit = .all,
+        inProgress: SectionDisplayLimit = .all,
+        toDo: SectionDisplayLimit = .all,
+        doneToday: SectionDisplayLimit = .all
+    ) {
+        self.review = review
+        self.inProgress = inProgress
+        self.toDo = toDo
+        self.doneToday = doneToday
+    }
+
+    public static func load(from defaults: UserDefaults = .standard) -> SectionDisplayPreferences {
+        func value(_ group: TaskGroup) -> SectionDisplayLimit {
+            guard let rawValue = defaults.object(forKey: key(for: group)) as? Int,
+                  let limit = SectionDisplayLimit(rawValue: rawValue) else { return .all }
+            return limit
+        }
+        return SectionDisplayPreferences(
+            review: value(.review), inProgress: value(.inProgress), toDo: value(.toDo), doneToday: value(.doneToday)
+        )
+    }
+
+    public func save(to defaults: UserDefaults = .standard) {
+        for group in TaskGroup.allCases {
+            defaults.set(limit(for: group).rawValue, forKey: Self.key(for: group))
+        }
+    }
+
+    public func limit(for group: TaskGroup) -> SectionDisplayLimit {
+        switch group {
+        case .review: review
+        case .inProgress: inProgress
+        case .toDo: toDo
+        case .doneToday: doneToday
+        }
+    }
+
+    private static func key(for group: TaskGroup) -> String {
+        "\(defaultsKey).\(group.rawValue)"
+    }
+}
+
 /// 섹션 하나를 어떻게 보이나
 public enum SectionFold: Sendable, Hashable {
     /// 다 보인다
@@ -72,10 +142,31 @@ public enum SectionFold: Sendable, Hashable {
 /// 찾는 중이거나 범위를 고른 동안에는 접지 않는다: 찾기가 접힌 행도 찾고, 범위는 그 섹션 전체를 보인다.
 public struct SectionCaps: Sendable, Hashable {
     public var limits: SectionLimits
+    /// Non-nil preferences override server limits and cover Done Today as well.
+    public var displayPreferences: SectionDisplayPreferences?
     public private(set) var expanded: Set<TaskGroup> = []
 
-    public init(limits: SectionLimits = .standard) {
+    /// User-facing launcher default: show every section in full.
+    public init(displayPreferences: SectionDisplayPreferences = .all) {
+        self.limits = .standard
+        self.displayPreferences = displayPreferences
+    }
+
+    /// Compatibility path for callers that still want the `/now` server limits.
+    public init(limits: SectionLimits) {
         self.limits = limits
+        self.displayPreferences = nil
+    }
+
+    public init(limits: SectionLimits, displayPreferences: SectionDisplayPreferences) {
+        self.limits = limits
+        self.displayPreferences = displayPreferences
+    }
+
+    /// Apply a local settings change to an already-presented launcher.
+    public mutating func apply(displayPreferences: SectionDisplayPreferences) {
+        self.displayPreferences = displayPreferences
+        expanded = []
     }
 
     /// 접지 않는 때: 찾는 중 · All Tasks가 아닌 범위
@@ -85,6 +176,10 @@ public struct SectionCaps: Sendable, Hashable {
 
     public func fold(_ group: TaskGroup, count: Int, query: String = "", scope: TaskScope = .allTasks) -> SectionFold {
         if Self.isUnfolded(query: query, scope: scope) || expanded.contains(group) { return .all }
+        if let preference = displayPreferences?.limit(for: group) {
+            guard let limit = preference.count else { return .all }
+            return count > limit ? .capped(visible: limit, hidden: count - limit) : .all
+        }
         guard let limit = limits.limit(for: group) else { return count == 0 ? .all : .collapsed }
         return count > limit ? .capped(visible: limit, hidden: count - limit) : .all
     }

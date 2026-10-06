@@ -1,4 +1,5 @@
 import SwiftUI
+import TaskforceKit
 
 /// Mac list row (Figma 158:3908, 4차 수정): 상태 표시 없이 제목 한 줄 + 오른쪽 기한(또는 Review의 동사) + 바뀜 점.
 /// 높이 36, r8, 안쪽 10. 선택 행은 bg/selected + 제목 semibold, 오른쪽 글자는 선택 전용 색(4.5:1)으로 바꾼다.
@@ -9,14 +10,19 @@ import SwiftUI
 public struct MacListRow: View {
     let title: String
     let accessory: String?
+    let sourceServices: [SourceService]
     let urgent: Bool
     let changed: Bool
     let selected: Bool
     let dimmed: Bool
 
-    public init(title: String, accessory: String? = nil, urgent: Bool = false, changed: Bool = false, selected: Bool = false, dimmed: Bool = false) {
+    public init(
+        title: String, accessory: String? = nil, sourceServices: [SourceService] = [], urgent: Bool = false,
+        changed: Bool = false, selected: Bool = false, dimmed: Bool = false
+    ) {
         self.title = title
         self.accessory = accessory
+        self.sourceServices = sourceServices
         self.urgent = urgent
         self.changed = changed
         self.selected = selected
@@ -31,6 +37,9 @@ public struct MacListRow: View {
                 .lineLimit(1)
                 .truncationMode(.tail)
                 .frame(maxWidth: .infinity, alignment: .leading)
+            if !sourceServices.isEmpty {
+                SourceStack(services: sourceServices)
+            }
             if let accessory {
                 Text(accessory)
                     .font(TFFont.meta)
@@ -49,12 +58,16 @@ public struct MacListRow: View {
         .background(selected ? TFColor.bgSelected : .clear, in: RoundedRectangle(cornerRadius: TFRadius.md, style: .continuous))
         .contentShape(Rectangle())
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(Self.accessibilityLabel(title: title, accessory: accessory, changed: changed))
+        .accessibilityLabel(Self.accessibilityLabel(title: title, accessory: accessory, changed: changed, sourceServices: sourceServices))
+        .accessibilityAddTraits(.isButton)
         .accessibilityAddTraits(selected ? .isSelected : [])
     }
 
-    nonisolated static func accessibilityLabel(title: String, accessory: String?, changed: Bool) -> String {
-        [title, accessory, changed ? "Changed" : nil].compactMap { $0 }.joined(separator: ", ")
+    nonisolated static func accessibilityLabel(
+        title: String, accessory: String?, changed: Bool, sourceServices: [SourceService] = []
+    ) -> String {
+        let sources = sourceServices.isEmpty ? nil : "Sources: " + sourceServices.map(\.accessibilityName).joined(separator: ", ")
+        return [title, sources, accessory, changed ? "Changed" : nil].compactMap { $0 }.joined(separator: ", ")
     }
 
     private var titleColor: Color {

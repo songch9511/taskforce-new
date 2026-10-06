@@ -187,10 +187,10 @@ struct LauncherRunTests {
         #expect(model.laneFocusTarget == nil)
     }
 
-    /// 초안 Copy(⌘C · 막대): 제목 + 본문을 복사하고 `Copied`를 잠깐 보인 뒤 런처를 닫는다 (사용자 결정, Raycast Copy to Clipboard).
+    /// 초안 Copy(⌘C · 막대): 제목 + 본문을 복사하고 `Copied`를 잠깐 보여 주되 런처와 초안 화면을 유지한다.
     /// 본문을 지운 초안은 Copy가 없다
     @Test(arguments: [false, true])
-    func copyDraftCopiesThenCloses(_ fromBar: Bool) async throws {
+    func copyDraftKeepsTheLauncherOpen(_ fromBar: Bool) async throws {
         let harness = try await RunLauncherHarness.make(toDo: ["T1"])
         let model = harness.model
         let t1 = RunLauncherHarness.actionID("T1")
@@ -211,8 +211,11 @@ struct LauncherRunTests {
             #expect(model.handleKey(.run(kVK_ANSI_C, [.command])))
         }
         #expect(pasteboard.string(forType: .string) == "회신 초안\n\n안녕하세요\n본문")
-        #expect(model.screen == .done("Copied"))
-        await harness.waitUntil { closed == 1 }
+        #expect(model.screen == .draft(target, draft))
+        #expect(model.feedbackMessage == "Copied")
+        try await Task.sleep(for: .milliseconds(800))
+        #expect(closed == 0)
+        #expect(model.screen == .draft(target, draft))
 
         let purged = Artifact(id: UUID(), runID: run.id, stepID: UUID(), actionID: t1, title: "옛 초안", body: "", retainUntil: Date(),
                               bodyPurgedAt: Date(), createdAt: Date())
@@ -283,6 +286,7 @@ struct LauncherRunTests {
         let model = harness.model
         model.prepareForShow()
         harness.select("T1")
+        model.openDetail(for: try #require(model.selectedItem))
         #expect(model.runSubject == t1)
         model.runs?.watch([t1])
         await harness.waitUntil { model.lane(for: t1)?.state == .working }
@@ -341,6 +345,7 @@ struct LauncherRunTests {
     @Test func commandRInPanelAndOnOtherRows() async throws {
         let harness = try await RunLauncherHarness.make(toDo: ["T1", "T2", "T3", "T4", "T5", "T6"])
         let model = harness.model
+        model.applySectionDisplayPreferences(SectionDisplayPreferences(toDo: .five))
         let more = try #require(model.items.firstIndex { if case .showMore = $0 { true } else { false } })
         model.select(more)
         var before = await harness.router.nowRequests()

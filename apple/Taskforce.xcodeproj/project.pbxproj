@@ -20,6 +20,7 @@
 		3620F367D9B7666BE0D25E58 /* TaskforceKit in Frameworks */ = {isa = PBXBuildFile; productRef = 2A771618579B2627F65408E5 /* TaskforceKit */; };
 		463B3B9643F7288FE0FDD9B7 /* AccountDeletion.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8F35BE01B9CE310854A11A47 /* AccountDeletion.swift */; };
 		497A72C80C3F5A62742FA119 /* TaskforceApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2DD246DFD55D3C8EB54CDCF0 /* TaskforceApp.swift */; };
+		49860D5AA10B47E94115ACA7 /* LauncherPresentationFixtureRendersTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB6C40E329E6EAB3368F0C0B /* LauncherPresentationFixtureRendersTests.swift */; };
 		51DD873085D1961D40AC7681 /* TaskforceUI in Frameworks */ = {isa = PBXBuildFile; productRef = 80B175BF4CA400FA877FD5AF /* TaskforceUI */; };
 		578284CEF0A8A1DD0672CB7E /* LauncherSnapshot.swift in Sources */ = {isa = PBXBuildFile; fileRef = 524FC1544A0E35537AE10E50 /* LauncherSnapshot.swift */; };
 		581217CC14A2D6D2EB1107D4 /* Supabase in Frameworks */ = {isa = PBXBuildFile; productRef = A1C5FE529FB0C309AD76DA12 /* Supabase */; };
@@ -33,6 +34,7 @@
 		7BE3D371436C7BFC7B67A63F /* RunStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 67FA98B6AD5F48FCE46EAB29 /* RunStoreTests.swift */; };
 		7D30F03CB0E36223457C4BA9 /* PrivacySettingsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 29973AAF33CBAF50B52E623E /* PrivacySettingsTests.swift */; };
 		8996B663E7EE249A08383C19 /* LauncherStateView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F9CA2946F6A830979A66143B /* LauncherStateView.swift */; };
+		959174039B7582454891C897 /* NowStoreSourceMetadataTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C163B11C1DF9E018538C4257 /* NowStoreSourceMetadataTests.swift */; };
 		9731E4E4A9B4D4EC556F263B /* MacAppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = D553D4AC83AD95CD5BD8CBF7 /* MacAppDelegate.swift */; };
 		A4261CCE0661340A86AA7AE8 /* TaskDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E8C9F31E468AFC305D9E9EF /* TaskDetailView.swift */; };
 		AF947F2BD43B557FCF6EAACA /* LauncherListPane.swift in Sources */ = {isa = PBXBuildFile; fileRef = C314FCA48C9C473BEC0F5388 /* LauncherListPane.swift */; };
@@ -88,8 +90,10 @@
 		9E5447C917C7443CACB72BD8 /* AccountStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccountStore.swift; sourceTree = "<group>"; };
 		AB01D992A7923CAF4414A91D /* LauncherDraftPane.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LauncherDraftPane.swift; sourceTree = "<group>"; };
 		AB26C2543E88F763B3553D02 /* SignIn.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SignIn.swift; sourceTree = "<group>"; };
+		AB6C40E329E6EAB3368F0C0B /* LauncherPresentationFixtureRendersTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LauncherPresentationFixtureRendersTests.swift; sourceTree = "<group>"; };
 		B585CF3FD7B78EDC16427DEF /* Taskforce.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = Taskforce.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		BBB841970EC9F4B0554357BF /* UsageCreditsPane.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UsageCreditsPane.swift; sourceTree = "<group>"; };
+		C163B11C1DF9E018538C4257 /* NowStoreSourceMetadataTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NowStoreSourceMetadataTests.swift; sourceTree = "<group>"; };
 		C269834CACB1135D6F14018F /* LauncherActionBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LauncherActionBar.swift; sourceTree = "<group>"; };
 		C314FCA48C9C473BEC0F5388 /* LauncherListPane.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LauncherListPane.swift; sourceTree = "<group>"; };
 		C4A28A214EF045FAF600AC14 /* MacSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacSettingsView.swift; sourceTree = "<group>"; };
@@ -191,9 +195,11 @@
 			isa = PBXGroup;
 			children = (
 				D30BD73A1EB36763CBA0B37E /* LauncherModelSessionTests.swift */,
+				AB6C40E329E6EAB3368F0C0B /* LauncherPresentationFixtureRendersTests.swift */,
 				8CB05D753291715B60E890FF /* LauncherRunTests.swift */,
 				65D96844CFEE5E58206572EF /* LauncherShellModelTests.swift */,
 				3D43D09D38ACB649AE46CFE3 /* MacSettingsTabTests.swift */,
+				C163B11C1DF9E018538C4257 /* NowStoreSourceMetadataTests.swift */,
 				29973AAF33CBAF50B52E623E /* PrivacySettingsTests.swift */,
 				67FA98B6AD5F48FCE46EAB29 /* RunStoreTests.swift */,
 			);
@@ -348,9 +354,11 @@
 			buildActionMask = 2147483647;
 			files = (
 				1D21B5CFAA41940E0383FCBE /* LauncherModelSessionTests.swift in Sources */,
+				49860D5AA10B47E94115ACA7 /* LauncherPresentationFixtureRendersTests.swift in Sources */,
 				7985AF2095DB0B6C7E070C31 /* LauncherRunTests.swift in Sources */,
 				DE51DA1610314BCE5A25CE45 /* LauncherShellModelTests.swift in Sources */,
 				34AC3C55914B7872E39BC5BD /* MacSettingsTabTests.swift in Sources */,
+				959174039B7582454891C897 /* NowStoreSourceMetadataTests.swift in Sources */,
 				7D30F03CB0E36223457C4BA9 /* PrivacySettingsTests.swift in Sources */,
 				7BE3D371436C7BFC7B67A63F /* RunStoreTests.swift in Sources */,
 			);

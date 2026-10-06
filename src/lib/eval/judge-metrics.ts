@@ -28,7 +28,7 @@ export function labeledItems(golden: GoldenCase): LabeledItem[] {
   const positives: LabeledItem[] = golden.expected_actions.map((action) => ({
     caseId: golden.id,
     kind: action.needs_review ? "REVIEW" : "ACTION",
-    candidate: { title: action.title, quote: action.evidence[0].quote, due_text: null },
+    candidate: { title: action.title, quote: action.evidence[0].quote, due_text: null, signal: "commitment" },
     labels: {
       // 담당이 unknown인 정답과 확인 요청이 맞는 정답은 "내 약속인가 · 확정인가"를 사람도 정하지 못한 것이라 채점하지 않는다.
       ...(action.owner === "me" && !action.needs_review ? { is_my_commitment: true, firm: true } : {}),
@@ -40,7 +40,7 @@ export function labeledItems(golden: GoldenCase): LabeledItem[] {
   const negatives: LabeledItem[] = golden.must_not_extract.map((trap) => ({
     caseId: golden.id,
     kind: trap.reason,
-    candidate: { title: trap.quote, quote: trap.quote, due_text: null },
+    candidate: { title: trap.quote, quote: trap.quote, due_text: null, signal: trap.reason === "ALREADY_DONE" ? "completion" : "commitment" },
     labels:
       trap.reason === "NOT_MY_ACTION"
         ? { is_my_commitment: false }

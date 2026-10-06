@@ -4,13 +4,16 @@ import type { JevQuestion } from "@/lib/ai/jev";
 // 질문은 영어, state의 원문은 한국어 그대로 둔다 (한국어 질문과의 비교는 이후 과제).
 
 /**
- * 판정 질문 전체(JUDGE_QUESTIONS · WRITTEN_BY_ME_QUESTIONS)의 버전. 어느 쪽 문구를 바꿔도 올린다 (eval 결과 파일 이름 · 요약에 쓴다).
+ * 판정 질문 묶음의 버전. 문서 판정과 회의 판정은 각각 별도 버전을 쓴다 (eval 결과 파일 이름 · 요약에 쓴다).
  * 판정 한 건에 남기는 버전(judge_logs.model_version, JudgeResult.promptVersion)은 어느 질문 묶음으로 물었는지까지 가른다:
  * JUDGE_QUESTIONS는 이 값 그대로("judge-v5"), WRITTEN_BY_ME_QUESTIONS는 WRITTEN_BY_ME_PROMPT_VERSION("judge-v5-self").
  * judge-v5: speaker_role이 코드가 읽은 인용 줄의 화자(state.candidate.quote_speaker)를 보고, directness는 이유만 전해 들은 말이면 직접 발언으로 본다 (Slack 골든셋 F2).
  */
 export const JUDGE_PROMPT_VERSION = "judge-v5";
 export const WRITTEN_BY_ME_PROMPT_VERSION = `${JUDGE_PROMPT_VERSION}-self`;
+export const MEETING_JUDGE_PROMPT_VERSION = "judge-v6-meeting";
+export const DOCUMENT_JUDGE_PROMPT_VERSION = "judge-v7-document";
+export const WRITTEN_BY_ME_DOCUMENT_PROMPT_VERSION = `${DOCUMENT_JUDGE_PROMPT_VERSION}-self`;
 
 export const JUDGE_QUESTIONS = {
   is_my_commitment: {
@@ -93,3 +96,56 @@ export const WRITTEN_BY_ME_QUESTIONS = {
     },
   },
 } as const satisfies Record<JudgeQuestionKey, JevQuestion>;
+
+/**
+ * 회의 원문은 참석·문서 접근·작성만으로 후보 담당을 정하지 않는다. 후보 구절에 붙은 담당 관계만 묻고,
+ * 연결 사람이 없거나 메타데이터가 빠졌다는 이유만으로 참석하지 않았다고 판정하지 않는다.
+ */
+export const MEETING_JUDGE_QUESTIONS = {
+  ...JUDGE_QUESTIONS,
+  meeting_owner: {
+    type: "choice",
+    instructions:
+      "Classify who this specific candidate says should do the action. Judge only the candidate quote and its immediate context, not unrelated mentions elsewhere in the meeting. A name or @mention alone does not assign the action: use it as ownership evidence only when the action is requested of that person or assigned to them. If a speaker addresses the user but explicitly commits to do the action themselves, the speaker owns it. Do not infer ownership from document access, document creation, or being listed as a meeting participant. Participant metadata may be incomplete or may describe related people; a missing user entry is not proof the user was absent. Use ambiguous only when a concrete person reference could refer to the user or another person, not merely because no user link is stated.",
+    criteria: {
+      user: "The quote itself clearly ties the action to the user: it explicitly assigns the action to them or requests that they do it, or it is a first-person commitment with quote_speaker identified as the user. A mention used only to address the user does not count if the speaker says they will do the action.",
+      someone_else: "The quote itself clearly says another named person is responsible for the action, even if the user appears elsewhere in the meeting.",
+      unassigned: "The quote contains an action but does not tie its owner to the user or clearly identify another doer.",
+      ambiguous: "The quote assigns the action to a concrete name or reference that could identify either the user or another person, and the source cannot resolve which one.",
+    },
+  },
+} as const satisfies Record<string, JevQuestion>;
+
+const DOCUMENT_OWNER_QUESTION = {
+  type: "choice",
+  instructions:
+    "Classify who this specific candidate says should do the action. Use the candidate quote, its nearby context, and document_context to identify whether this is a personal checklist or shared notes with multiple speakers. source.written_by_me means the connected user is recorded as the document creator; it does not prove that every action in the document belongs to them. When source.written_by_me is true and the document context clearly shows a personal checklist or personal notes, an unassigned next step can belong to the user. For meeting summaries, transcripts, or shared notes with multiple speakers, do not infer ownership from document creation, access, a checklist marker, or being listed among related people; require an explicit assignment to the user or a first-person commitment by the user. A name or @mention alone is not an assignment. If another person is named or is the identified speaker committing to do the action, classify that person as the owner. Use unassigned when no person is tied to the action and ambiguous only when a concrete person reference could mean the user or someone else.",
+  criteria: {
+    user: "The candidate is explicitly assigned or requested of the user, the quote is a first-person commitment by the user, or source.written_by_me is true and document_context clearly shows that this is the user's personal checklist or personal notes rather than shared meeting notes.",
+    someone_else: "The action is explicitly assigned to another person or a different identified speaker says they will do it.",
+    unassigned: "The action appears in shared notes, a meeting summary, or a document with no user-specific ownership link and no clearly identified other doer.",
+    ambiguous: "A concrete assignment name or reference could refer to the user or another person, and the source cannot resolve which one.",
+  },
+} as const satisfies JevQuestion;
+
+export const DOCUMENT_JUDGE_QUESTIONS = {
+  ...JUDGE_QUESTIONS,
+  document_owner: DOCUMENT_OWNER_QUESTION,
+} as const satisfies Record<string, JevQuestion>;
+
+export const WRITTEN_BY_ME_DOCUMENT_JUDGE_QUESTIONS = {
+  ...JUDGE_QUESTIONS,
+  is_my_commitment: {
+    type: "noul",
+    instructions:
+      "Did the user personally commit to, or get assigned and accept, this action? source.written_by_me means the connected user is recorded as the document creator, not that every action belongs to them. For a clearly personal checklist, an unassigned next step may be the user's; for multi-speaker or shared notes, use only explicit candidate-level evidence of user ownership.",
+  },
+  certainty: {
+    ...JUDGE_QUESTIONS.certainty,
+    criteria: {
+      ...JUDGE_QUESTIONS.certainty.criteria,
+      firm: "Explicit promise, accepted assignment, direct request to the user that they have not declined, or a next step in a clearly personal checklist; not an unassigned item in shared meeting notes",
+    },
+  },
+  document_owner: DOCUMENT_OWNER_QUESTION,
+} as const satisfies Record<string, JevQuestion>;

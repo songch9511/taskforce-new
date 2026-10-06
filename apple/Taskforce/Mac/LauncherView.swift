@@ -3,10 +3,8 @@ import SwiftUI
 import TaskforceKit
 import TaskforceUI
 
-/// 런처 창 내용 (Figma 156:6 M1 · M20, 760×480 고정): 검색줄 62(`LauncherSearchBar`, 오른쪽 범위 `All Tasks ⌄`) →
-/// 본문 카드(r12, settings/line 테두리) → 액션 바 44(`LauncherActionBar`). 가로 구분선 없음.
-/// 본문 카드는 목록 | 상세(`LauncherListPane` · `LauncherDetailPane`), 상태 화면(`LauncherStateView`: M20 · M21 · 불러오는 중),
-/// 또는 한 열(로그인 줄 · ⌘K 패널 · 기한 · 원문 고르기 등 Figma에 없는 화면은 지금 부품 그대로)을 담는다.
+/// 런처 창 내용 (Figma 156:6 M1 · M20, 760×480 고정): 검색줄 → full-width 목록과 펼친 상세 → 액션 바.
+/// Run with AI · 초안은 목록을 대신해 한 열로 보인다.
 struct LauncherRootView: View {
     @Bindable var model: LauncherModel
 
@@ -52,13 +50,6 @@ struct LauncherRootView: View {
         .onChange(of: model.items.map(\.id)) { model.reconcileSelection() }
         // 고른 할 일이 바뀌면 바뀜 점 · seen (화살표로 지나가기 포함)
         .onChange(of: model.seenSubject, initial: true) { model.syncSeen() }
-        // 상세 칸의 근거: 화살표로 빠르게 지나갈 때는 읽지 않게 잠깐 기다린다
-        .task(id: model.detailTarget?.action.id) {
-            guard let id = model.detailTarget?.action.id else { return }
-            try? await Task.sleep(for: .milliseconds(120))
-            guard !Task.isCancelled else { return }
-            await model.now?.loadEvidence(id)
-        }
         .task(id: model.signedInUserID) {
             // 로그인해 있는 동안 Realtime 구독 하나 (런처가 숨어 있어도 목록을 새로 둔다)
             guard let userID = model.signedInUserID, let services = model.services else { return }
@@ -93,6 +84,14 @@ struct LauncherRootView: View {
             guard let text else { return }
             AccessibilityNotification.Announcement(text).post()
         }
+        .onChange(of: model.feedbackMessage) { _, text in
+            guard let text else { return }
+            AccessibilityNotification.Announcement(text).post()
+        }
+        .onChange(of: model.now?.sourceServicesFailed) { _, failed in
+            guard failed == true else { return }
+            AccessibilityNotification.Announcement("Source icons unavailable. Retry is available in the task list.").post()
+        }
     }
 
     private var inputLocked: Bool {
@@ -111,15 +110,10 @@ struct LauncherRootView: View {
         return Group {
             switch model.bodyState {
             case .list:
-                HStack(spacing: 0) {
-                    // Run with AI · 초안: 목록은 흐리게 두고 누르지 않는다 (Figma M8 List viewport 40%)
-                    LauncherListPane(model: model)
-                        .frame(width: 300)
-                        .opacity(model.isSubScreen ? 0.4 : 1)
-                        .allowsHitTesting(!model.isSubScreen)
-                        .accessibilityHidden(model.isSubScreen)
-                    TFColor.settingsLine.frame(width: 1)
+                if model.isSubScreen {
                     LauncherDetailPane(model: model)
+                } else {
+                    LauncherListPane(model: model)
                 }
             case .single:
                 LauncherFlowView(model: model)

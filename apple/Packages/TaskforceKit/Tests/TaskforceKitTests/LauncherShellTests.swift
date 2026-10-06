@@ -4,7 +4,7 @@ import Testing
 
 /// Mac 런처 셸 (U1 PR4): 접기 · 범위 · 실패 원문 줄 · 저장본 목록 · 상태 문장 · 원문 열기
 struct LauncherShellTests {
-    /// Figma M1: Review 4 · In Progress 5 · To Do 14 (/now) + Done Today 6
+    /// Review · In Progress · To Do · Done Today: default All shows every listed item.
     let now = NowResponse(
         now: ListFixture.inProgress.map { RankedAction(action: $0, score: 1, reasons: [], daysUntilDue: nil) }
             + ListFixture.toDo.map { RankedAction(action: $0, score: 1, reasons: [], daysUntilDue: nil) },
@@ -19,29 +19,37 @@ struct LauncherShellTests {
 
     // MARK: 접기 (M1)
 
-    /// 빈 입력창: Review 2 + Show 2 More · In Progress 5 · To Do 5 + Show 9 More · Done Today 접힌 한 줄. 명령 구역 없음
-    @Test func emptyListFoldsLikeFigma() {
+    /// 기본은 전체 항목이며, 설정이 직접 제한하지 않으면 Show More를 만들지 않는다.
+    @Test func emptyListShowsAllSectionsByDefault() {
         let list = sections()
-        #expect(list.map(\.title) == ["Review", "In Progress", "To Do", nil])
-        #expect(list.map(\.count) == [4, 5, 14, nil])
-        #expect(list[0].items.last == .showMore(.review, hidden: 2))
-        #expect(list[0].items.count == 3)
+        #expect(list.map(\.title) == ["Review", "In Progress", "To Do", "Done Today"])
+        #expect(list.map(\.count) == [4, 5, 14, 6])
+        #expect(list[0].items.count == 4)
         #expect(list[1].items.count == 5)
-        #expect(list[2].items.last == .showMore(.toDo, hidden: 9))
-        #expect(list[3].items == [.doneToday(count: 6, expanded: false)])
+        #expect(list[2].items.count == 14)
+        #expect(list[3].items.count == 6)
+        #expect(!list.flatMap(\.items).contains { if case .showMore = $0 { true } else { false } })
         #expect(!list.flatMap(\.items).contains { if case .command = $0 { true } else { false } })
     }
 
-    /// 펼치면 그 섹션만 다 보인다. Done Today는 머리 + 행
-    @Test func expandingShowsTheRest() {
-        var caps = SectionCaps()
+    /// 설정한 제한은 각 구역에 적용되고 펼치면 나머지를 보인다.
+    @Test func explicitCapsShowMoreUntilExpanded() {
+        var caps = SectionCaps(displayPreferences: SectionDisplayPreferences(toDo: .five, doneToday: .five))
         caps.expand(.toDo)
-        caps.toggle(.doneToday)
         let list = sections(layout: .init(caps: caps))
-        #expect(list[0].items.last == .showMore(.review, hidden: 2))
+        #expect(list[0].items.count == 4)
         #expect(list[2].items.count == 14)
-        #expect(list[3].items.first == .doneToday(count: 6, expanded: true))
-        #expect(list[3].items.count == 7)
+        #expect(list[3].items.last == .showMore(.doneToday, hidden: 1))
+        #expect(list[3].count == 6)
+    }
+
+    @Test func expandingDoneTodayShowsRowsWithoutAnImplicitCollapsedHeader() {
+        var caps = SectionCaps(displayPreferences: SectionDisplayPreferences(doneToday: .five))
+        caps.expand(.doneToday)
+        let list = sections(layout: .init(caps: caps))
+        #expect(list[3].title == "Done Today")
+        #expect(list[3].items.count == 6)
+        #expect(list[3].items.allSatisfy { $0.group == .doneToday })
     }
 
     /// 서버 기준값(`section_limits`)을 따른다
@@ -71,8 +79,9 @@ struct LauncherShellTests {
 
     /// 회귀 ⑤: 찾기는 접힌 행도 찾는다 (찾는 동안은 접지 않는다)
     @Test func searchFindsFoldedRows() {
-        // To Do 마지막 행(할 일 34)은 빈 입력창에서는 Show 9 More 안에 있다
-        #expect(!sections().flatMap(\.items).contains { $0.action?.id == ListFixture.id(34) })
+        // 설정으로 To Do를 5개로 제한하면 마지막 행은 숨지만, 찾기 중에는 보인다.
+        let capped = SectionCaps(displayPreferences: SectionDisplayPreferences(toDo: .five))
+        #expect(!sections(layout: .init(caps: capped)).flatMap(\.items).contains { $0.action?.id == ListFixture.id(34) })
         let found = sections(.query("할 일 34")).flatMap(\.items)
         #expect(found.contains { $0.group == .toDo && $0.action?.id == ListFixture.id(34) })
         #expect(!found.contains { if case .showMore = $0 { true } else { false } })
@@ -104,6 +113,15 @@ struct LauncherShellTests {
         #expect(tasks.compactMap(\.action?.id) == [ListFixture.id(3)])
     }
 
+    @Test func handoffQueryResultDoesNotOwnDuplicateInlineDetails() {
+        let items = sections(.query("할 일")).flatMap(\.items)
+        let handoff = items.first { if case .handoff = $0 { true } else { false } }
+        let task = items.first { $0.action?.id == handoff?.action?.id && $0.group != nil }
+
+        #expect(handoff?.inlineDetailActionID == nil)
+        #expect(task?.inlineDetailActionID == handoff?.action?.id)
+    }
+
     // MARK: 실패 원문 줄 (W4)
 
     @Test func failedSourcesLineOnTopOnlyWhenSomethingFailed() {
@@ -122,18 +140,17 @@ struct LauncherShellTests {
         SavedNow(sections: ListFixture.sections, savedAt: Date(timeIntervalSince1970: 1_791_000_000))
     }
 
-    /// 저장본도 같은 접기 규칙, 행은 읽기만 하는 저장본 줄
+    /// 저장본도 같은 기본 전체 표시 규칙, 행은 읽기만 하는 저장본 줄
     @Test func savedListFoldsLikeTheLiveList() {
         let list = LauncherContent.savedSections(saved, for: .empty, layout: .init(), now: saved.savedAt)
-        #expect(list.map(\.title) == ["Review", "In Progress", "To Do", nil])
-        #expect(list.map(\.count) == [4, 5, 14, nil])
-        #expect(list[0].items.last == .showMore(.review, hidden: 2))
+        #expect(list.map(\.title) == ["Review", "In Progress", "To Do", "Done Today"])
+        #expect(list.map(\.count) == [4, 5, 14, 6])
         guard case .saved(let first) = list[0].items[0] else {
             Issue.record("저장본 줄이어야 함")
             return
         }
         #expect(first.task.title == "할 일 1")
-        #expect(list[3].items == [.doneToday(count: 6, expanded: false)])
+        #expect(list[3].items.count == 6)
         #expect(list.flatMap(\.items).allSatisfy { $0.action == nil && $0.group == nil })
     }
 

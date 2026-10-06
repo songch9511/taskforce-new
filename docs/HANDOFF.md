@@ -1,5 +1,12 @@
 # 에이전트 핸드오프 (2026-10-02, 방향 변경·U0)
 
+## 통합 QA 인계 (2026-10-06 KST)
+
+- PR #98 병합 main `fb1f5bf`에서 `codex/taskforce-integrated-qa-20261006`을 분리했다. 기존 dirty checkout은 보존했다. 구현은 GPT 6 Luna / max 서브 에이전트가 담당했고 주 에이전트가 계획·통합 검증을 맡았다.
+- 사용자 보고에 따라 무관한 Notion 회의 Action의 담당 판정, 섹션 구분선, Review Confirm/Dismiss, 내부 작업 후 런처 유지, 기본 전체 표시 및 섹션별 개수 설정, 전체 폭 행·하단 상세/Source·우측 출처/Due를 수정했다.
+- 변경과 실패 기록, 실제 모델 평가 및 실제 앱 검증의 남은 범위는 [통합 QA 보고](go-live/integrated-qa-2026-10-06.md)를 기준으로 한다. 로컬 테스트·offscreen 화면 렌더·unsigned Release 빌드를 서명 설치본이나 운영 동기화 검증으로 취급하지 않는다.
+- 이 단계는 검토 가능한 변경까지이며 main 병합·운영 배포, 기존 운영 Action 삭제·재처리, 서명 설치본 업데이트를 포함하지 않는다. 아래 날짜별 내용은 당시 기록이다.
+
 ## 현재 인계 (2026-10-05 KST)
 
 이 문서의 아래 기록은 각 날짜의 당시 상태다. 현재 Mac beta 재사용 베이스와 통합 경계는 [Taskforce Mac 재사용 베이스](REUSE_BASE.md), 서명·DMG·설치 절차는 [Mac beta DMG 준비와 설치 확인](go-live/mac-dmg.md)을 기준으로 한다.

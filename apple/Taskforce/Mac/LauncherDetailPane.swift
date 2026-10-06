@@ -9,6 +9,8 @@ import TaskforceUI
 /// 저장본 행(오프라인)은 저장된 제목 · 기한만 있다. Run with AI(M8) · 초안 화면이면 이 칸이 그 화면이 된다.
 struct LauncherDetailPane: View {
     @Bindable var model: LauncherModel
+    /// Inserted below its row in the full-width task list.
+    var inline = false
 
     /// 아래에 더 있는지 (아래 흐림)
     @State private var hasMoreBelow = false
@@ -17,27 +19,25 @@ struct LauncherDetailPane: View {
         switch model.screen {
         case .runWithAI(let target): LauncherRunPane(model: model, target: target)
         case .draft(_, let artifact): LauncherDraftPane(artifact: artifact)
-        default: detail
+        default:
+            if inline {
+                detailContent
+                    .padding(.horizontal, TFSpace.md)
+                    .padding(.vertical, TFSpace.md)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(TFColor.bgElevated, in: RoundedRectangle(cornerRadius: TFRadius.md, style: .continuous))
+            } else {
+                detail
+            }
         }
     }
 
     private var detail: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
-                if let target = model.detailTarget {
-                    header(title: target.action.title, due: target.group == .doneToday ? nil : target.action.dueDate,
-                           reason: target.group == .review ? ConfirmReasonText.label(target.action.confirmReasons) : nil)
-                    // 갈래 자리 (Taskforce: U2 Mac, 나머지는 U5 · U6a)
-                    LauncherLaneView(model: model, target: target)
-                    sources(target.action.id)
-                } else if let row = model.detailSavedRow {
-                    header(title: row.task.title, due: row.task.status == .doneToday ? nil : row.task.dueDate, reason: nil)
-                }
-            }
-            .padding(.horizontal, TFSpace.xl)
-            .padding(.top, 18)
-            .padding(.bottom, TFSpace.xl)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            detailContent
+                .padding(.horizontal, TFSpace.xl)
+                .padding(.top, 18)
+                .padding(.bottom, TFSpace.xl)
         }
         .onScrollGeometryChange(for: Bool.self) { geometry in
             geometry.contentOffset.y + geometry.containerSize.height < geometry.contentSize.height - 1
@@ -46,6 +46,22 @@ struct LauncherDetailPane: View {
         }
         .background(TFColor.bgElevated)
         .scrollEdgeFade(TFColor.bgElevated, isActive: hasMoreBelow)
+    }
+
+    @ViewBuilder
+    private var detailContent: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            if let target = model.detailTarget {
+                header(title: target.action.title, due: target.group == .doneToday ? nil : target.action.dueDate,
+                       reason: target.group == .review ? ConfirmReasonText.label(target.action.confirmReasons) : nil)
+                // 갈래 자리 (Taskforce: U2 Mac, 나머지는 U5 · U6a)
+                LauncherLaneView(model: model, target: target)
+                sources(target.action.id)
+            } else if let row = model.detailSavedRow {
+                header(title: row.task.title, due: row.task.status == .doneToday ? nil : row.task.dueDate, reason: nil)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var today: LocalDate { DueDateFormat.today() }

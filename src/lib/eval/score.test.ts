@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import type { GoldenCase } from "./golden";
 import { normalizeForMatch } from "@/lib/pipeline/text";
+import { withJudgeOwnership } from "@/lib/pipeline/merge";
 
 import { labelQuotesOverlap, scoreCase, totals, type ScoredCandidate } from "./score";
 
@@ -78,6 +79,34 @@ describe("scoreCase", () => {
     expect(score.ownerCorrect).toBe(0);
     expect(score.dueCorrect).toBe(0);
     expect(score.fieldErrors.map((e) => e.field)).toEqual(["owner", "due"]);
+  });
+
+  it("Jev가 담당을 모른다고 표시한 후보는 제품 병합과 같은 unknown 담당으로 채점한다", () => {
+    const quote = "Send updated DPA draft by Monday";
+    const ownershipGolden: GoldenCase = {
+      ...golden,
+      id: "doc-owner-confirmation",
+      sources: [{ ...golden.sources[0], kind: "doc", text: `Meeting notes\n${quote}` }],
+      expected_actions: [{
+        title: "Send updated DPA draft",
+        owner: "unknown",
+        status: "open",
+        needs_review: true,
+        evidence: [{ source: "s1", quote }],
+      }],
+      must_not_extract: [],
+    };
+    const rawCandidate = candidate(quote);
+    const judge = { ownerAmbiguous: true as const };
+
+    expect(scoreCase(ownershipGolden, [rawCandidate]).fieldErrors).toMatchObject([
+      { field: "owner", expected: "unknown", actual: "me" },
+    ]);
+
+    const score = scoreCase(ownershipGolden, [withJudgeOwnership(rawCandidate, judge)]);
+    expect(score.truePositives).toBe(1);
+    expect(score.ownerCorrect).toBe(1);
+    expect(score.fieldErrors).toEqual([]);
   });
 
   it("함정 문장을 뽑으면 사유별 오탐으로 센다", () => {

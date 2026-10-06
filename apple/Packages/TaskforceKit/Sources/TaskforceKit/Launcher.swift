@@ -108,6 +108,16 @@ public enum LauncherItem: Hashable, Sendable, Identifiable {
         }
     }
 
+    /// Rows that own an inline details disclosure. Assist rows such as Hand off may
+    /// reference the same action, but they are commands and must not duplicate details.
+    public var inlineDetailActionID: UUID? {
+        switch self {
+        case .review(let action), .done(let action): action.id
+        case .task(let ranked): ranked.action.id
+        default: nil
+        }
+    }
+
     /// 할 일 행의 구역 (왼쪽 상태 표시). 할 일 행이 아니면 nil (Hand off 행도 nil)
     public var group: TaskGroup? {
         switch self {
@@ -256,16 +266,18 @@ public enum LauncherContent {
         return sections
     }
 
-    /// 한 구역을 접기 규칙대로: 앞 몇 행 + "Show N More", Done Today는 머리 한 줄(펼치면 머리 + 행).
-    /// `layout`이 없으면 다 보인다. 찾는 중 · 범위를 고른 동안은 Done Today도 제목 머리 아래 다 보인다.
+    /// 한 구역을 접기 규칙대로: 앞 몇 행 + "Show N More". Done Today도 기본은 모두 보이고
+    /// 직접 개수 제한을 고른 경우에만 나머지를 펼친다. `layout`이 없으면 다 보인다.
     private static func folded(_ group: TaskGroup, _ items: [LauncherItem], layout: Layout?, query: String) -> LauncherSection {
         guard let layout else { return LauncherSection(title: group.title, items: items) }
-        let unfolded = SectionCaps.isUnfolded(query: query, scope: layout.scope)
-        if group == .doneToday, !unfolded, !items.isEmpty {
+        let fold = layout.caps.fold(group, count: items.count, query: query, scope: layout.scope)
+        // Keep the legacy server-limit behavior available to explicit SectionCaps(limits:)
+        // callers; the user preference path defaults Done Today to `.all`.
+        if group == .doneToday, case .collapsed = fold, !items.isEmpty {
             let expanded = layout.caps.expanded.contains(.doneToday)
             return LauncherSection(title: nil, items: [.doneToday(count: items.count, expanded: expanded)] + (expanded ? items : []))
         }
-        switch layout.caps.fold(group, count: items.count, query: query, scope: layout.scope) {
+        switch fold {
         case .capped(let visible, let hidden):
             return LauncherSection(title: group.title, items: Array(items.prefix(visible)) + [.showMore(group, hidden: hidden)], count: items.count)
         case .all, .collapsed:

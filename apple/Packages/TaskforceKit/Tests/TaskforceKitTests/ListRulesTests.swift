@@ -35,11 +35,11 @@ enum ListFixture {
 struct SectionCapsTests {
     let caps = SectionCaps()
 
-    @Test func capsFollowFigmaDefaults() {
-        #expect(caps.fold(.review, count: 4) == .capped(visible: 2, hidden: 2))
+    @Test func capsShowAllByDefault() {
+        #expect(caps.fold(.review, count: 4) == .all)
         #expect(caps.fold(.inProgress, count: 5) == .all)
-        #expect(caps.fold(.toDo, count: 14) == .capped(visible: 5, hidden: 9))
-        #expect(caps.fold(.doneToday, count: 6) == .collapsed)
+        #expect(caps.fold(.toDo, count: 14) == .all)
+        #expect(caps.fold(.doneToday, count: 6) == .all)
     }
 
     @Test func atOrUnderTheLimitShowsAll() {
@@ -56,14 +56,14 @@ struct SectionCapsTests {
     }
 
     @Test func expandingIsPerSection() {
-        var caps = caps
+        var caps = SectionCaps(displayPreferences: SectionDisplayPreferences(review: .five, inProgress: .five, toDo: .five, doneToday: .five))
         caps.expand(.toDo)
         #expect(caps.fold(.toDo, count: 14) == .all)
-        #expect(caps.fold(.review, count: 4) == .capped(visible: 2, hidden: 2))
+        #expect(caps.fold(.review, count: 14) == .capped(visible: 5, hidden: 9))
         caps.toggle(.doneToday)
         #expect(caps.fold(.doneToday, count: 6) == .all)
         caps.toggle(.doneToday)
-        #expect(caps.fold(.doneToday, count: 6) == .collapsed)
+        #expect(caps.fold(.doneToday, count: 6) == .capped(visible: 5, hidden: 1))
         caps.reset()
         #expect(caps.fold(.toDo, count: 14) == .capped(visible: 5, hidden: 9))
     }
@@ -77,7 +77,8 @@ struct SectionCapsTests {
     }
 
     @Test func blankQueryStillFolds() {
-        #expect(caps.fold(.toDo, count: 14, query: "  ", scope: .allTasks) == .capped(visible: 5, hidden: 9))
+        let capped = SectionCaps(displayPreferences: SectionDisplayPreferences(toDo: .five))
+        #expect(capped.fold(.toDo, count: 14, query: "  ", scope: .allTasks) == .capped(visible: 5, hidden: 9))
     }
 
     /// 펼침을 포함하면 보이는 행 합계 = 열린 할 일 수 (회귀 ⑤)

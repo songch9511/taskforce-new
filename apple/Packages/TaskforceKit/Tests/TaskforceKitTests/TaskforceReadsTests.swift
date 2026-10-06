@@ -120,6 +120,65 @@ struct TaskforceReadsExecutionTests {
     }
 }
 
+/// Launcher reads preserve the public Done Today limit while fetching the complete list and provider-only metadata in bounded calls.
+struct TaskforceReadsLauncherListTests {
+    let host = "launcher-reads-\(UUID().uuidString.lowercased()).supabase.test"
+    let reads: TaskforceReads
+
+    init() {
+        LauncherListReadStubProtocol.configure(host: host, doneCount: 501)
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [LauncherListReadStubProtocol.self]
+        let supabase = SupabaseClient(
+            supabaseURL: URL(string: "https://\(host)")!,
+            supabaseKey: "test-public-key",
+            options: SupabaseClientOptions(
+                auth: .init(storage: EmptyAuthStorage(), autoRefreshToken: false),
+                global: .init(session: URLSession(configuration: configuration))
+            )
+        )
+        reads = TaskforceReads(supabase: supabase)
+    }
+
+    private func query(_ recorded: LauncherListReadStubProtocol.Recorded) -> [String: String] {
+        Dictionary(grouping: recorded.query, by: \.name).mapValues { $0.compactMap(\.value).joined(separator: ",") }
+    }
+
+    @Test func allDoneTodayUsesStablePagination() async throws {
+        let rows = try await reads.allDoneToday(since: Date(timeIntervalSince1970: 0))
+        #expect(rows.count == 501)
+        #expect(rows.first?.id != rows.last?.id)
+
+        let requests = LauncherListReadStubProtocol.requests(host: host)
+        #expect(requests.map(\.range) == ["0-499", "500-999"])
+        #expect(requests.map { query($0)["order"] } == [
+            "updated_at.desc.nullslast,id.desc.nullslast", "updated_at.desc.nullslast,id.desc.nullslast"
+        ])
+    }
+
+    @Test func explicitDoneTodayLimitRemainsSupported() async throws {
+        let rows = try await reads.doneToday(since: Date(timeIntervalSince1970: 0), limit: 3)
+        #expect(rows.count == 3)
+        let request = try #require(LauncherListReadStubProtocol.requests(host: host).first)
+        #expect(query(request)["limit"] == "3")
+    }
+
+    @Test func sourceServicesReadOnlyReferencesAndProviderMetadata() async throws {
+        let action2 = UUID(uuidString: "22222222-2222-4222-8222-222222222222")!
+        let result = try await reads.actionSourceServices(actionIDs: [action2, Fixtures.actionID, Fixtures.actionID])
+
+        #expect(result[Fixtures.actionID] == [.notion])
+        #expect(result[action2] == [.notion, .slack])
+        let requests = LauncherListReadStubProtocol.requests(host: host)
+        let evidence = try #require(requests.first { $0.path.hasSuffix("/evidence") })
+        let sources = try #require(requests.first { $0.path.hasSuffix("/sources") })
+        #expect(query(evidence)["select"] == "id,action_id,source_id,created_at")
+        #expect(query(sources)["select"] == "id,kind,external_url")
+        #expect(!query(evidence)["select", default: ""].contains("quote"))
+        #expect(!query(sources)["select", default: ""].contains("raw_text"))
+    }
+}
+
 /// 실행 표마다 답하는 가짜 PostgREST. `withoutStoppedAt`이면 `stopped_at`을 고른 run 읽기에 42703(없는 열)으로 답한다
 final class ExecutionStubProtocol: URLProtocol {
     struct Recorded: Sendable {
@@ -214,6 +273,109 @@ private final class PathStubProtocol: URLProtocol {
     }
 
     override func stopLoading() {}
+}
+
+/// Small PostgREST stub for launcher provider metadata and paginated Done Today rows.
+private final class LauncherListReadStubProtocol: URLProtocol {
+    struct Recorded: Sendable {
+        let path: String
+        let query: [URLQueryItem]
+        let range: String?
+    }
+
+    private struct HostState {
+        var requests: [String: [Recorded]] = [:]
+        var doneCount: [String: Int] = [:]
+    }
+
+    private static let state = Mutex(HostState())
+    private static let action1 = Fixtures.actionID.uuidString.lowercased()
+    private static let action2 = "22222222-2222-4222-8222-222222222222"
+    private static let notionID = "33333333-3333-4333-8333-333333333333"
+    private static let slackID = "44444444-4444-4444-8444-444444444444"
+    private static let receiptID = "55555555-5555-4555-8555-555555555555"
+
+    static func configure(host: String, doneCount: Int) {
+        state.withLock { $0.doneCount[host] = doneCount }
+    }
+
+    static func requests(host: String) -> [Recorded] {
+        state.withLock { $0.requests[host] ?? [] }
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        let url = request.url!
+        let host = url.host ?? ""
+        let query = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+        let rangeHeader = request.value(forHTTPHeaderField: "Range")
+        let rangeBounds = rangeHeader?.split(whereSeparator: { !$0.isNumber }).compactMap { Int($0) } ?? []
+        let queryOffset = query.first(where: { $0.name == "offset" })?.value.flatMap(Int.init)
+        let queryLimit = query.first(where: { $0.name == "limit" })?.value.flatMap(Int.init)
+        let range: String?
+        if rangeBounds.count == 2 {
+            range = "\(rangeBounds[0])-\(rangeBounds[1])"
+        } else if let queryOffset, let queryLimit {
+            range = "\(queryOffset)-\(queryOffset + queryLimit - 1)"
+        } else {
+            range = nil
+        }
+        let total = Self.state.withLock { hostState -> Int in
+            hostState.requests[host, default: []].append(Recorded(path: url.path, query: query, range: range))
+            return hostState.doneCount[host] ?? 0
+        }
+        var body = "[]"
+        switch url.path {
+        case "/rest/v1/actions":
+            let bounds = rangeHeader?.split(whereSeparator: { !$0.isNumber }).compactMap { Int($0) } ?? []
+            let queryOffset = query.first(where: { $0.name == "offset" })?.value.flatMap(Int.init) ?? 0
+            let start = bounds.first ?? queryOffset
+            let count: Int
+            if bounds.count == 2 {
+                count = max(0, min(total, bounds[1] + 1) - start)
+            } else if let limit = query.first(where: { $0.name == "limit" })?.value.flatMap(Int.init) {
+                count = max(0, min(total - start, limit))
+            } else {
+                count = total
+            }
+            body = "[" + (start..<start + count).map(Self.doneAction).joined(separator: ",") + "]"
+        case "/rest/v1/evidence":
+            body = """
+            [
+              {"id":"66666666-6666-4666-8666-666666666666","action_id":"\(Self.action1)","source_id":"\(Self.notionID)","created_at":"2026-10-01T00:00:00Z"},
+              {"id":"77777777-7777-4777-8777-777777777777","action_id":"\(Self.action1)","source_id":"\(Self.receiptID)","created_at":"2026-10-01T00:00:00Z"},
+              {"id":"88888888-8888-4888-8888-888888888888","action_id":"\(Self.action2)","source_id":"\(Self.notionID)","created_at":"2026-10-02T00:00:00Z"},
+              {"id":"99999999-9999-4999-8999-999999999999","action_id":"\(Self.action2)","source_id":"\(Self.slackID)","created_at":"2026-10-03T00:00:00Z"}
+            ]
+            """
+        case "/rest/v1/sources":
+            body = """
+            [
+              {"id":"\(Self.notionID)","kind":"doc","external_url":"https://www.notion.so/workspace/page"},
+              {"id":"\(Self.slackID)","kind":"message","external_url":"https://app.slack.com/archives/channel"},
+              {"id":"\(Self.receiptID)","kind":"execution","external_url":null}
+            ]
+            """
+        default:
+            break
+        }
+        let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "application/json"])!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Data(body.utf8))
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
+
+    private static func doneAction(_ index: Int) -> String {
+        let id = String(format: "00000000-0000-4000-8000-%012d", index + 1)
+        return """
+        {"id":"\(id)","title":"Done \(index + 1)","owner":"me","status":"done","due_date":null,"counterpart":null,
+         "needs_confirmation":false,"confirm_reasons":[],"started_at":null,"last_activity_at":"2026-10-06T10:00:00Z"}
+        """
+    }
 }
 
 /// 로그인 세션 없는 저장소 (anon 키로 읽는다)

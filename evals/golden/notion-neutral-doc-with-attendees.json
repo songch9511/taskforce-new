@@ -1,0 +1,54 @@
+{
+  "id": "notion-neutral-doc-with-attendees",
+  "origin": "synthetic",
+  "description": "중립 제목의 일반 Notion 문서에 사용자가 관련 인물로 명시됐지만 액션 담당은 원문에 없다. 참석자 메타데이터만으로 자동 소유 처리하지 않고 담당 unknown 확인에 남긴다.",
+  "tags": ["notion", "ownership", "document"],
+  "user": {
+    "name": "Alex Kim",
+    "aliases": ["Alex"],
+    "emails": ["alex@lumenfield.example"]
+  },
+  "sources": [
+    {
+      "id": "notion-contract-renewal-summary",
+      "kind": "doc",
+      "occurred_at": "2026-10-07T16:00:00+09:00",
+      "written_by_me": true,
+      "participants": {
+        "attendees": [
+          { "name": "Alex Kim", "email": "alex@lumenfield.example" },
+          { "name": "Casey Nolan", "email": "casey@brightforge.example" }
+        ]
+      },
+      "text": "# Contract renewal summary\n\n## Summary\n- Brightforge wants to renew for another year and add 20 seats.\n- Their legal team needs the updated DPA before signing.\n\n## Action items\n- [ ] Send updated DPA draft (Monday)"
+    }
+  ],
+  "expected_actions": [
+    {
+      "title": "업데이트한 DPA 초안 발송",
+      "owner": "unknown",
+      "counterpart": "Casey Nolan",
+      "due": "2026-10-12",
+      "status": "open",
+      "needs_review": true,
+      "evidence": [
+        {
+          "source": "notion-contract-renewal-summary",
+          "quote": "Send updated DPA draft (Monday)"
+        }
+      ]
+    }
+  ],
+  "must_not_extract": [
+    {
+      "source": "notion-contract-renewal-summary",
+      "quote": "Brightforge wants to renew for another year and add 20 seats.",
+      "reason": "INFO_ONLY"
+    },
+    {
+      "source": "notion-contract-renewal-summary",
+      "quote": "Their legal team needs the updated DPA before signing.",
+      "reason": "INFO_ONLY"
+    }
+  ]
+}

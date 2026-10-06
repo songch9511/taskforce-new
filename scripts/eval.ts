@@ -7,6 +7,7 @@
 //   npm run eval -- --draft       초안 골든셋(evals/draft, E1)만 채점 (--case로 그 세트의 케이스를 주면 저절로)
 //   npm run eval -- --plan        다음 단계 골든셋(evals/plan, E2)만 채점
 //   npm run eval -- --all         기존 채점 + E1 + E2 (기본 실행은 기존 채점만, E1 · E2는 따로 보고 · 따로 저장)
+//   npm run eval -- --llm-concurrency 2 --jev-concurrency 4  제공자 속도 제한이 있을 때 eval 호출량만 낮춤 (기본 4 · 8)
 // 키(OPENROUTER_API_KEY, LLM_MODEL, JEV_MODEL)는 환경변수나 .env.local에서 읽는다.
 import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -24,7 +25,6 @@ import { DRAFT_PROMPT_VERSION } from "../src/lib/ai/prompts/draft";
 import { DRAFT_JUDGE_PROMPT_VERSION, DRAFT_JUDGE_QUESTIONS, type DraftJudgeQuestionKey } from "../src/lib/ai/prompts/draft-judge";
 import { PLAN_PROMPT_VERSION } from "../src/lib/ai/prompts/plan";
 import { EXTRACT_PROMPT_VERSION } from "../src/lib/ai/prompts/extract";
-import { JUDGE_PROMPT_VERSION } from "../src/lib/ai/prompts/judge";
 import { projectAction } from "../src/lib/actions/project";
 import { askCaseSchema, askContextOf, findAskLabelErrors, scoreAskCase, type AskCase, type AskScore } from "../src/lib/eval/ask-golden";
 import { draftCaseSchema, draftJudgeState, draftTotals, findDraftLabelErrors, humanSample, scoreDraftCase, type DraftCase, type DraftScore } from "../src/lib/eval/draft-golden";
@@ -38,8 +38,8 @@ import { scoreCase, totals, type CaseScore, type ScoredCandidate, type Totals } 
 import { scoreSequence, sequenceTotals, type FinalAction, type SequenceScore } from "../src/lib/eval/sequence-score";
 import { answerQuestion, type AskResult } from "../src/lib/pipeline/ask";
 import { extractCandidates, type ActionCandidate, type CompleteJson } from "../src/lib/pipeline/extract";
-import { judgeCandidate, type JudgeResult, type JudgeSource } from "../src/lib/pipeline/judge";
-import { InMemoryActionStore, mergeJudged, type MergeOutcome } from "../src/lib/pipeline/merge";
+import { judgeCandidate, judgePromptVersionForSource, type JudgeCandidate, type JudgeResult, type JudgeSource } from "../src/lib/pipeline/judge";
+import { InMemoryActionStore, mergeJudged, withJudgeOwnership, type MergeOutcome } from "../src/lib/pipeline/merge";
 import { resolveAction } from "../src/lib/pipeline/resolve";
 import { runPipeline } from "../src/lib/pipeline/run";
 import { JUDGE_THRESHOLDS } from "../src/lib/pipeline/judge.config";
@@ -51,8 +51,9 @@ const ASK_DIR = path.join(ROOT, "evals/ask");
 const DRAFT_DIR = path.join(ROOT, "evals/draft");
 const PLAN_DIR = path.join(ROOT, "evals/plan");
 const RESULTS_DIR = path.join(ROOT, "evals/results");
-const LLM_CONCURRENCY = 4;
-const JEV_CONCURRENCY = 8;
+const DEFAULT_LLM_CONCURRENCY = 4;
+const DEFAULT_JEV_CONCURRENCY = 8;
+const MAX_EVAL_CONCURRENCY = 16;
 
 async function loadGolden(): Promise<{ cases: GoldenCase[]; failed: number }> {
   const files = (await readdir(GOLDEN_DIR)).filter((f) => f.endsWith(".json")).sort();
@@ -137,6 +138,15 @@ async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promis
   return results;
 }
 
+function evalConcurrency(value: string | undefined, fallback: number, option: string): number {
+  if (value === undefined) return fallback;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 1 || parsed > MAX_EVAL_CONCURRENCY) {
+    throw new Error(`--${option} 값은 1~${MAX_EVAL_CONCURRENCY} 사이의 정수여야 합니다.`);
+  }
+  return parsed;
+}
+
 const pct = (value: number | null) => (value === null ? "    -" : `${(value * 100).toFixed(1).padStart(5)}%`);
 
 function summaryRow(label: string, t: Totals): string {
@@ -198,13 +208,13 @@ function attemptCost(attempts: LlmAttempt[]): { cost: number; unconfirmed: numbe
  * 응답의 비용을 generation 조회(generation.ts)로 확인한다 (A51). 생성 직후에는 404라 10초 간격으로 몇 번 더 묻는다.
  * 채점과 상관없는 확인이라 실패해도 eval을 실패로 두지 않는다.
  */
-async function reconcileAttempts(apiKey: string, attempts: LlmAttempt[]) {
+async function reconcileAttempts(apiKey: string, attempts: LlmAttempt[], concurrency: number) {
   const pending = new Map(attempts.filter((a) => a.generationId !== null).map((a) => [a.generationId!, a]));
   const found = new Map<string, Generation>();
   const failures: string[] = [];
   for (let round = 0; round < 6 && pending.size > 0; round++) {
     await new Promise((resolve) => setTimeout(resolve, 10_000));
-    await mapLimit([...pending.keys()], JEV_CONCURRENCY, async (id) => {
+    await mapLimit([...pending.keys()], concurrency, async (id) => {
       try {
         const lookup = await fetchGeneration({ apiKey }, id);
         if (lookup.status === "found") {
@@ -230,7 +240,14 @@ async function reconcileAttempts(apiKey: string, attempts: LlmAttempt[]) {
  * 실행 eval: E2(다음 단계 고르기, evals/plan)와 E1(초안, evals/draft). 기존 추출 · 물어보기 숫자와 섞지 않고 따로 보고 · 따로 저장한다.
  * 기준(docs 계획 9장): E2 스키마 유효 ≥95% · 단계 종류 일치 ≥90%, E1 전 항목 ≥90% · 지어낸 사실 0 (+ 사람이 25% 표본을 본다).
  */
-async function runExecutionEvals(llm: LlmConfig, jev: JevConfig | null, planCases: PlanCase[], draftCases: DraftCase[]): Promise<string[]> {
+async function runExecutionEvals(
+  llm: LlmConfig,
+  jev: JevConfig | null,
+  planCases: PlanCase[],
+  draftCases: DraftCase[],
+  llmConcurrency: number,
+  jevConcurrency: number,
+): Promise<string[]> {
   if (planCases.length + draftCases.length === 0) return [];
   const errors: string[] = [];
   const allAttempts: LlmAttempt[] = [];
@@ -255,7 +272,7 @@ async function runExecutionEvals(llm: LlmConfig, jev: JevConfig | null, planCase
   // E2: 다음 단계
   type PlanRun = { golden: PlanCase; result: PlanResult | null; score: PlanScore; attempts: LlmAttempt[]; invalidReason?: string };
   const planRuns = (
-    await mapLimit(planCases, LLM_CONCURRENCY, async (golden): Promise<PlanRun | null> => {
+    await mapLimit(planCases, llmConcurrency, async (golden): Promise<PlanRun | null> => {
       const attempts: LlmAttempt[] = [];
       try {
         const result = await planNextStep(
@@ -302,7 +319,7 @@ async function runExecutionEvals(llm: LlmConfig, jev: JevConfig | null, planCase
   // E1: 초안
   type DraftRun = { golden: DraftCase; result: DraftResult; score: DraftScore; excludedSlack: number; attempts: LlmAttempt[] };
   const draftRuns = (
-    await mapLimit(draftCases, LLM_CONCURRENCY, async (golden): Promise<DraftRun | null> => {
+    await mapLimit(draftCases, llmConcurrency, async (golden): Promise<DraftRun | null> => {
       const attempts: LlmAttempt[] = [];
       try {
         const context = executionContextOf(golden);
@@ -373,7 +390,7 @@ async function runExecutionEvals(llm: LlmConfig, jev: JevConfig | null, planCase
       ` · generation id 없는 시도 ${cost.unconfirmed}회 · 비용 없는 응답 ${cost.noCost}회`,
   );
   console.log("generation 조회로 비용 확인 중 (생성 직후는 404라 10초씩 기다림)...");
-  const reconcile = await reconcileAttempts(llm.apiKey, allAttempts).catch((error: unknown) => ({ error: error instanceof Error ? error.message : String(error) }));
+  const reconcile = await reconcileAttempts(llm.apiKey, allAttempts, jevConcurrency).catch((error: unknown) => ({ error: error instanceof Error ? error.message : String(error) }));
   if ("error" in reconcile) console.log(`  조회 실패: ${reconcile.error}`);
   else {
     console.log(
@@ -419,8 +436,12 @@ async function main() {
       draft: { type: "boolean" },
       plan: { type: "boolean" },
       all: { type: "boolean" },
+      "llm-concurrency": { type: "string" },
+      "jev-concurrency": { type: "string" },
     },
   });
+  const llmConcurrency = evalConcurrency(values["llm-concurrency"], DEFAULT_LLM_CONCURRENCY, "llm-concurrency");
+  const jevConcurrency = evalConcurrency(values["jev-concurrency"], DEFAULT_JEV_CONCURRENCY, "jev-concurrency");
 
   const { cases, failed } = await loadGolden();
   const actions = cases.reduce((n, c) => n + c.expected_actions.length, 0);
@@ -465,7 +486,7 @@ async function main() {
   const runExisting = values.all ? !caseIn(draftSet.cases) && !caseIn(planSet.cases) : !runDraft && !runPlan;
   const planPicked = runPlan ? pick(planSet.cases) : [];
   const draftPicked = runDraft ? pick(draftSet.cases) : [];
-  const runExecution = () => runExecutionEvals(llm, jev, planPicked, draftPicked);
+  const runExecution = () => runExecutionEvals(llm, jev, planPicked, draftPicked, llmConcurrency, jevConcurrency);
   const runExecutionOnly = async () => {
     if (planPicked.length + draftPicked.length === 0) {
       console.error(values.tag ? `태그 ${values.tag}가 붙은 실행 케이스가 없습니다.` : "채점할 케이스가 없습니다.");
@@ -483,6 +504,9 @@ async function main() {
   const selected = cases.filter((c) => (!values.case || c.id === values.case) && (!values.tag || c.tags?.includes(values.tag)));
   const single = selected.filter((c) => c.sources.length === 1);
   const sequences = selected.filter((c) => c.sources.length > 1);
+  const judgePromptVersions = [...new Set(selected.flatMap((golden) => golden.sources.map((source) =>
+    judgePromptVersionForSource({ kind: source.kind, writtenByMe: source.written_by_me }),
+  )))].sort();
   // 물어보기 케이스에는 태그가 없다: --tag를 주면 건너뛴다.
   const askSelected = values.tag ? [] : ask.cases.filter((c) => !values.case || c.id === values.case);
   // --all인데 기존 세트에 고를 케이스가 없으면(예: --all --tag done-trap) 실행 eval만 돌린다
@@ -503,7 +527,7 @@ async function main() {
 
   console.log(
     `추출 ${llm.model} · ${EXTRACT_PROMPT_VERSION}` +
-      (jev ? ` / 판정 ${jev.model} · ${JUDGE_PROMPT_VERSION}` : "") +
+      (jev ? ` / 판정 ${jev.model} · ${judgePromptVersions.join(" + ")}` : "") +
       ` · 원문 하나 ${single.length}건` +
       (sequences.length ? ` · 시퀀스 ${sequences.length}건${jev ? "" : " (Jev가 없어 건너뜀)"}` : "") +
       "\n",
@@ -512,14 +536,14 @@ async function main() {
   let llmCost = 0;
   let jevCost = 0;
   const errors: string[] = [];
-  const judge = (candidate: { title: string; quote: string; due_text: string | null }, golden: GoldenCase) =>
+  const judge = (candidate: JudgeCandidate, golden: GoldenCase) =>
     judgeCandidate(candidate, sourceOf(golden), golden.user, (request) => decide(jev!, request)).then((result) => {
       jevCost += result.cost ?? 0;
       return result;
     });
 
   // 1) 추출 → 기계 검증 → Jev 판정
-  const runs = await mapLimit(single, LLM_CONCURRENCY, async (golden): Promise<CaseRun | null> => {
+  const runs = await mapLimit(single, llmConcurrency, async (golden): Promise<CaseRun | null> => {
     const source = sourceOf(golden);
     try {
       const extracted = await extractCandidates(
@@ -556,11 +580,11 @@ async function main() {
       ? [
           {
             label: "+ Jev (자동+확인)",
-            pick: (r: CaseRun) => commitments(r.judged!.filter((j) => j.result.decision !== "reject").map((j) => j.candidate)),
+            pick: (r: CaseRun) => commitments(r.judged!.filter((j) => j.result.decision !== "reject").map((j) => withJudgeOwnership(j.candidate, j.result))),
           },
           {
             label: "+ Jev (자동만)",
-            pick: (r: CaseRun) => commitments(r.judged!.filter((j) => j.result.decision === "auto").map((j) => j.candidate)),
+            pick: (r: CaseRun) => commitments(r.judged!.filter((j) => j.result.decision === "auto").map((j) => withJudgeOwnership(j.candidate, j.result))),
             autoOnly: true,
           },
         ]
@@ -617,7 +641,7 @@ async function main() {
   let judgedItems: JudgedItem[] = [];
   if (jev) {
     const items = single.flatMap((golden) => labeledItems(golden).map((item) => ({ item, golden })));
-    const judgedOrNull = await mapLimit(items, JEV_CONCURRENCY, async ({ item, golden }) => {
+    const judgedOrNull = await mapLimit(items, jevConcurrency, async ({ item, golden }) => {
       try {
         return { ...item, result: await judge(item.candidate, golden) };
       } catch (error) {
@@ -651,7 +675,7 @@ async function main() {
   let sequenceCost = 0;
   if (jev && sequences.length > 0) {
     const embedConfig = embedConfigFromEnv();
-    const runsOrNull = await mapLimit(sequences, LLM_CONCURRENCY, async (golden): Promise<SequenceRun | null> => {
+    const runsOrNull = await mapLimit(sequences, llmConcurrency, async (golden): Promise<SequenceRun | null> => {
       try {
         const store = new InMemoryActionStore();
         let claimSeq = 0;
@@ -725,7 +749,7 @@ async function main() {
   // 호출이 실패한 질문(시간 초과 포함): 통과하지 못한 것으로 세어 분모에 넣는다 (앱에서도 답을 받지 못한다)
   const askFailed: { golden: AskCase; error: string; deadline: boolean }[] = [];
   const askRuns = (
-    await mapLimit(askSelected, LLM_CONCURRENCY, async (golden): Promise<{ golden: AskCase; result: AskResult; score: AskScore } | null> => {
+    await mapLimit(askSelected, llmConcurrency, async (golden): Promise<{ golden: AskCase; result: AskResult; score: AskScore } | null> => {
       const deadline = interactiveDeadline(INTERACTIVE_MAX_DURATION_S);
       try {
         const result = await answerQuestion(
@@ -784,12 +808,12 @@ async function main() {
   await mkdir(RESULTS_DIR, { recursive: true });
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
   await writeFile(
-    path.join(RESULTS_DIR, `${stamp}-${EXTRACT_PROMPT_VERSION}${jev ? `-${JUDGE_PROMPT_VERSION}` : ""}.json`),
+    path.join(RESULTS_DIR, `${stamp}-${EXTRACT_PROMPT_VERSION}${jev ? `-${judgePromptVersions.join("+")}` : ""}.json`),
     JSON.stringify(
       {
         at: new Date().toISOString(),
         models: { extract: llm.model, judge: jev?.model ?? null },
-        promptVersions: { extract: EXTRACT_PROMPT_VERSION, judge: jev ? JUDGE_PROMPT_VERSION : null, ask: ASK_PROMPT_VERSION },
+        promptVersions: { extract: EXTRACT_PROMPT_VERSION, judge: jev ? judgePromptVersions : null, ask: ASK_PROMPT_VERSION },
         thresholds: jev ? JUDGE_THRESHOLDS : null,
         stages: stageTotals,
         judgeAgreement: jev ? agreement(judgedItems) : null,
