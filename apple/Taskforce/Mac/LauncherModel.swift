@@ -15,6 +15,11 @@ final class LauncherModel {
         let group: TaskGroup
     }
 
+    private struct SavedDisclosure: Equatable {
+        let snapshot: SavedNow
+        let row: SavedNow.Row
+    }
+
     enum Screen: Equatable {
         case list
         /// ⌘K 동작 패널
@@ -142,6 +147,7 @@ final class LauncherModel {
         didSet { if text != oldValue { textChanged() } }
     }
     var selection = 0
+    private var savedDisclosure: SavedDisclosure?
     private(set) var screen: Screen = .list
     /// 바뀌면 입력창에 포커스를 준다
     private(set) var focusRequest = 0
@@ -432,6 +438,33 @@ final class LauncherModel {
         return row
     }
 
+    func isSavedRowExpanded(_ row: SavedNow.Row) -> Bool {
+        guard screen == .list,
+              case .saved(let selectedRow)? = selectedItem,
+              selectedRow == row,
+              let savedList,
+              savedDisclosure?.snapshot == savedList
+        else { return false }
+        return savedDisclosure?.row == row
+    }
+
+    func toggleSavedRow(_ row: SavedNow.Row) {
+        guard screen == .list,
+              case .saved(let selectedRow)? = selectedItem,
+              selectedRow == row,
+              let savedList
+        else { return }
+        if savedDisclosure?.row == row, savedDisclosure?.snapshot == savedList {
+            savedDisclosure = nil
+        } else {
+            savedDisclosure = SavedDisclosure(snapshot: savedList, row: row)
+        }
+    }
+
+    func clearSavedDisclosure() {
+        savedDisclosure = nil
+    }
+
     // MARK: 액션 바
 
     /// Action bar primary: list Review is `Confirm ⌘↩`; other task rows show details with `↩`.
@@ -442,6 +475,9 @@ final class LauncherModel {
         }
         switch screen {
         case .list:
+            if case .saved(let row)? = selectedItem {
+                return BarAction(title: isSavedRowExpanded(row) ? "Hide details" : "Show details", keys: "↩")
+            }
             guard let item = selectedItem, item.group != nil, let target = target(for: item) else { return nil }
             if target.group == .review { return BarAction(title: "Confirm", keys: "⌘↩") }
             return BarAction(title: "Show details", keys: "↩")
@@ -490,7 +526,9 @@ final class LauncherModel {
         switch screen {
         case .list:
             guard let item = selectedItem else { return }
-            if item.group == .review { confirmReview() } else { openDetail(for: item) }
+            if case .saved(let row) = item { toggleSavedRow(row) }
+            else if item.group == .review { confirmReview() }
+            else { openDetail(for: item) }
         case .detail:
             guard !leaveIfStale() else { return }
             if laneFocusTarget != nil { openFocusedDraft() } else { confirmReview() }
@@ -554,6 +592,7 @@ final class LauncherModel {
     func chooseScope(_ choice: TaskScope) {
         scopeMenuSelection = nil
         guard choice != scope else { return }
+        clearSavedDisclosure()
         chosenScope = choice
         reconcileSelection()
     }
@@ -702,6 +741,7 @@ final class LauncherModel {
 
     func prepareForShow() {
         isShown = true
+        clearSavedDisclosure()
         clearFeedback()
         clearUndo()
         focusRequest += 1
@@ -773,6 +813,7 @@ final class LauncherModel {
         work?.cancel()
         work = nil
         now?.reset()
+        clearSavedDisclosure()
         account?.reset()
         clearUndo()
         recentSources = []
@@ -898,7 +939,8 @@ final class LauncherModel {
                 focusLane()
                 return true
             }
-            guard screen == .list, caretAtEnd(in: event.window), selectedItem?.action != nil else { return false }
+            guard screen == .list, caretAtEnd(in: event.window) else { return false }
+            guard selectedItem?.action != nil || detailSavedRow != nil else { return false }
             expand()
             return true
         case kVK_ANSI_K where command:
@@ -1080,7 +1122,22 @@ final class LauncherModel {
     /// 행 고르기 (목록이면 그 행의 id도 기억한다)
     func select(_ index: Int) {
         selection = index
-        if screen == .list { selectedID = selectedItem?.id }
+        if screen == .list {
+            selectedID = selectedItem?.id
+            reconcileSavedDisclosure()
+        }
+    }
+
+    func reconcileSavedDisclosure() {
+        guard let savedDisclosure,
+              case .saved(let row)? = selectedItem,
+              savedDisclosure.row == row,
+              let savedList,
+              savedDisclosure.snapshot == savedList
+        else {
+            clearSavedDisclosure()
+            return
+        }
     }
 
     /// 목록이 새로 왔을 때: 고르던 행이 아직 있으면 그 행을, 없으면 같은 자리(끝을 넘지 않게)를 가리킨다 (`LauncherContent.reselect`)
@@ -1244,7 +1301,9 @@ final class LauncherModel {
 
     /// Tab/→ (Review 행은 ↩도): Sources 묶음 펼치기
     func expand() {
-        guard screen == .list, let item = selectedItem, let target = target(for: item) else { return }
+        guard screen == .list, let item = selectedItem else { return }
+        if case .saved(let row) = item { toggleSavedRow(row); return }
+        guard let target = target(for: item) else { return }
         showSources(target)
     }
 
@@ -1336,6 +1395,7 @@ final class LauncherModel {
     }
 
     private func textChanged() {
+        clearSavedDisclosure()
         viewed = nil
         switch screen {
         case .list, .pickSource:
@@ -1367,9 +1427,11 @@ final class LauncherModel {
         case .doneToday:
             caps.toggle(.doneToday)
             reconcileSelection()
-        case .failedSources, .saved:
-            // 알리기만 · 읽기만 하는 줄
+        case .failedSources:
+            // 알리기만 하는 줄
             break
+        case .saved(let row):
+            toggleSavedRow(row)
         case .review(let action):
             // 제목만 보고 확정하지 않게 근거를 먼저 보인다. 확정은 별도 Confirm 동작이다.
             openDetail(for: .review(action))

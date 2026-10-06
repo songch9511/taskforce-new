@@ -51,7 +51,7 @@ struct LauncherListPane: View {
                                 let index = offsets[sectionIndex] + itemIndex
                                 itemRow(item, selected: index == model.selection, at: index)
                                     .padding(.horizontal, TFSpace.sm)
-                                    .id(index)
+                                    .id(item.id)
                             }
                         } header: {
                             if let title = section.title {
@@ -77,22 +77,31 @@ struct LauncherListPane: View {
             }
             .onChange(of: model.selection) { old, index in
                 lastSelection = old
+                model.reconcileSavedDisclosure()
                 guard model.screen == .list else { return }
                 withAnimation(.easeOut(duration: 0.1)) { scroll(proxy, to: index, from: old) }
             }
+            .onChange(of: model.items.map(\.id)) {
+                model.reconcileSavedDisclosure()
+            }
+            .onChange(of: model.savedList) { model.clearSavedDisclosure() }
+            .onChange(of: model.text) { model.clearSavedDisclosure() }
+            .onChange(of: model.scope) { model.clearSavedDisclosure() }
+            .onChange(of: model.focusRequest) { model.clearSavedDisclosure() }
             .task(id: model.screen) {
                 guard case let .detail(target) = model.screen else { return }
                 // Let the lazy rows enter the scroll view before resolving the row target.
                 await Task.yield()
+                let items = model.items
                 guard !Task.isCancelled,
-                      let index = model.items.firstIndex(where: { $0.inlineDetailActionID == target.action.id })
+                      let index = items.firstIndex(where: { $0.inlineDetailActionID == target.action.id })
                 else { return }
                 // Leave one row of clearance for the pinned section header. For index zero,
                 // the top sentinel puts the first row just below its pinned header.
                 if index == 0 {
                     proxy.scrollTo(Self.top, anchor: .top)
                 } else {
-                    proxy.scrollTo(index - 1, anchor: .top)
+                    proxy.scrollTo(items[index - 1].id, anchor: .top)
                 }
             }
         }
@@ -104,14 +113,18 @@ struct LauncherListPane: View {
 
     /// 고른 줄이 보이게: 한 칸 아래면 그 줄까지, 한 칸 위면 그 위 줄까지(고정 머리 30이 행 36을 가리지 않게), 맨 위 줄이면 맨 위, 멀리 뛰면 가운데
     private func scroll(_ proxy: ScrollViewProxy, to index: Int, from old: Int) {
+        let items = model.items
         if index <= 0 {
             proxy.scrollTo(Self.top, anchor: .top)
         } else if index == old - 1 {
-            proxy.scrollTo(index - 1)
+            guard items.indices.contains(index - 1) else { return }
+            proxy.scrollTo(items[index - 1].id)
         } else if index == old + 1 {
-            proxy.scrollTo(index)
+            guard items.indices.contains(index) else { return }
+            proxy.scrollTo(items[index].id)
         } else {
-            proxy.scrollTo(index, anchor: .center)
+            guard items.indices.contains(index) else { return }
+            proxy.scrollTo(items[index].id, anchor: .center)
         }
     }
 
@@ -134,9 +147,10 @@ struct LauncherListPane: View {
             }
             if model.screen != .list { model.back() }
             model.openDetail(for: item)
-        case .saved:
+        case .saved(let row):
             if model.screen != .list { model.back() }
             model.select(index)
+            model.toggleSavedRow(row)
         case .showMore, .doneToday:
             model.run(item)
         default:
@@ -180,7 +194,7 @@ struct LauncherListPane: View {
             return model.detailTarget?.action.id == id
         }
         if case .saved(let savedRow) = item {
-            return model.screen == .list && model.detailSavedRow?.id == savedRow.id
+            return model.isSavedRowExpanded(savedRow)
         }
         return false
     }

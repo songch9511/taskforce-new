@@ -83,6 +83,25 @@ struct LauncherModelSessionTests {
         #expect(now.evidence.isEmpty)
     }
 
+    @Test func accountChangeClearsSavedDisclosure() async throws {
+        let harness = try await LauncherHarness.make()
+        let now = try #require(harness.model.now)
+        now.applySampleState(saved: SavedNow(savedAt: Date(), tasks: [
+            .init(title: "Saved Alpha", dueDate: nil, status: .review),
+        ]), offlineSince: nil, failedAt: nil)
+        let row = try #require(harness.model.items.compactMap { item -> SavedNow.Row? in
+            if case .saved(let row) = item { return row }
+            return nil
+        }.first)
+        harness.model.toggleSavedRow(row)
+        #expect(harness.model.isSavedRowExpanded(row))
+
+        try harness.signInAsOtherAccount()
+        harness.model.sessionChanged()
+
+        #expect(!harness.model.isSavedRowExpanded(row))
+    }
+
     /// 로그아웃 직전에 보낸 `/now` · 근거 읽기가 로그아웃 뒤에 도착해도 화면 · 저장소에 남지 않는다
     @Test func lateNowAndEvidenceAfterSignOutStayHidden() async throws {
         let harness = try await LauncherHarness.make()
