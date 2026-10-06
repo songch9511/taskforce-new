@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 
-import type { ActionProgressState, ActionSummary, EditActionRequest, HandoffResponse } from "@/lib/api/contract";
+import type { ActionProgressState, ActionSummary, EditActionRequest, HandoffAssessment, HandoffResponse } from "@/lib/api/contract";
 import { readAll } from "@/lib/read-all";
 import { SLACK_DISCONNECTED_QUOTE } from "@/lib/retention";
 
@@ -231,7 +231,13 @@ export async function markActionSeen(client: SupabaseClient, admin: SupabaseClie
  * AI에게 넘기기: 사용자 권한(RLS)으로 Action · 근거 · 원문 정보를 읽어 문서를 만들고, 서버가 handoff_used 지표를 남긴다 (지표 2).
  * 원문 전체가 아니라 근거 인용만 담는다.
  */
-export async function handoffAction(client: SupabaseClient, admin: SupabaseClient, userId: string, actionId: string): Promise<HandoffResponse> {
+export async function handoffAction(
+  client: SupabaseClient,
+  admin: SupabaseClient,
+  userId: string,
+  actionId: string,
+  assist?: (deterministicMarkdown: string) => Promise<{ markdown: string; assessment: HandoffAssessment }>,
+): Promise<HandoffResponse> {
   const { data: action } = await client
     .from("actions")
     .select("title, owner, status, due_date, counterpart, confirm_reasons, resolution")
@@ -286,9 +292,16 @@ export async function handoffAction(client: SupabaseClient, admin: SupabaseClien
       occurredAt: c.occurred_at,
     })),
   };
-  const markdown = buildHandoff(input);
+  const deterministicMarkdown = buildHandoff(input);
+  // Assisted generation receives only the bounded deterministic document, never raw source rows.
+  const generated = assist ? await assist(deterministicMarkdown) : undefined;
 
-  // 지표 2(착수 시간): app_opened → 첫 action_started / handoff_used
+  // Successful legacy handoffs and completed assisted drafts both count; failed generation does not.
   await admin.from("metric_events").insert({ user_id: userId, type: "handoff_used", action_id: actionId }).throwOnError();
-  return { action_id: actionId, title: input.action.title, markdown };
+  return {
+    action_id: actionId,
+    title: input.action.title,
+    markdown: generated?.markdown ?? deterministicMarkdown,
+    ...(generated ? { assessment: generated.assessment } : {}),
+  };
 }
