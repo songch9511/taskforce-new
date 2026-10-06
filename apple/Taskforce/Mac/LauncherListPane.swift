@@ -16,6 +16,7 @@ struct LauncherListPane: View {
     var body: some View {
         let sections = model.sections
         let offsets = Self.offsets(sections)
+        let firstTitledSectionIndex = sections.firstIndex { $0.title != nil }
         ScrollViewReader { proxy in
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
@@ -48,9 +49,11 @@ struct LauncherListPane: View {
                     ForEach(Array(sections.enumerated()), id: \.element.id) { sectionIndex, section in
                         if let title = section.title {
                             VStack(spacing: 0) {
-                                Rectangle()
-                                    .fill(TFColor.settingsLine)
-                                    .frame(height: 1)
+                                if sectionIndex != firstTitledSectionIndex {
+                                    Rectangle()
+                                        .fill(TFColor.settingsLine)
+                                        .frame(height: 1)
+                                }
                                 SectionHeader(title, count: section.count ?? section.items.count)
                                     .padding(.horizontal, TFSpace.sm)
                             }
