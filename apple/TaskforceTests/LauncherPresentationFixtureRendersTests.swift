@@ -557,6 +557,8 @@ struct LauncherPresentationFixtureRendersTests {
             ("top interior", NSPoint(x: point.x, y: menuControlFrame.minY + 1)),
             ("bottom interior", NSPoint(x: point.x, y: menuControlFrame.maxY - 1))
         ]
+        let hoverPoint = NSPoint(x: row.midX * window.frame.width, y: row.midY * window.frame.height)
+        let outsidePoint = NSPoint(x: hoverPoint.x, y: max(4, hoverPoint.y - 48))
         let oldTarget = hitTestView(at: previousPoint, in: contentView)
         print("Native row-menu control: \(type(of: menuControl)) frame=\(menuControlFrame), old OCR point=\(previousPoint) hit=\(hitTargetDescription(oldTarget))")
         #expect(menuControlFrame.width >= 24 && menuControlFrame.height >= 16,
@@ -605,7 +607,26 @@ struct LauncherPresentationFixtureRendersTests {
             return
         }
 
+        window.acceptsMouseMovedEvents = true
+        try moveMouse(to: outsidePoint, in: window)
+        await settlePanel(window)
+        let hiddenRender = try capturePanel(window, name: "native-row-menu-hidden")
+        let titleBeforeHover = try #require(rowBounds(title, in: hiddenRender))
+        #expect(!hasVisibleAncestors(of: menuControl), "The row action stays hidden while the pointer is outside its row")
+        try moveMouse(to: hoverPoint, in: window)
+        await settlePanel(window)
+        let hoveredRender = try capturePanel(window, name: "native-row-menu-hovered")
+        let titleAfterHover = try #require(rowBounds(title, in: hoveredRender))
+        let frameAfterHover = menuControl.convert(menuControl.bounds, to: nil)
+        #expect(hasVisibleAncestors(of: menuControl), "Hovering the row title reveals its action menu without moving the row")
+        #expect(frameAfterHover == menuControlFrame, "Showing the menu preserves its reserved native control frame")
+        #expect(abs(titleAfterHover.midX - titleBeforeHover.midX) < 0.002 && abs(titleAfterHover.midY - titleBeforeHover.midY) < 0.002,
+                "Showing the menu does not move the row title")
+
         for (name, clickPoint) in clickPoints {
+            try moveMouse(to: hoverPoint, in: window)
+            await settlePanel(window)
+            #expect(hasVisibleAncestors(of: menuControl), "Hovering the row reveals the native menu before the \(name) click")
             let target = hitTestView(at: clickPoint, in: contentView)
             #expect(target === menuControl, "The \(name) point \(clickPoint) hits the native menu button, got \(hitTargetDescription(target)); bounds=\(menuControlFrame)")
             #expect(menuControlFrame.contains(clickPoint), "The \(name) point \(clickPoint) remains inside the native visible control \(menuControlFrame)")
@@ -622,12 +643,17 @@ struct LauncherPresentationFixtureRendersTests {
             tracker.record("before-menu-click-\(name)")
             NSApp.postEvent(escape, atStart: false)
             NSApp.sendEvent(down)
+            await settlePanel(window)
 
             #expect(tracker.didBegin, "Clicking the native menu \(name) opens its menu: \(tracker.trace)")
             #expect(tracker.didEnd, "Queued Escape dismisses the native menu \(name): \(tracker.trace)")
             #expect(model.screen == .list, "The native menu \(name) point must not activate a row action")
             #expect(controller.isVisible, "Escape from the native menu \(name) leaves the launcher visible: \(tracker.trace)")
         }
+
+        try moveMouse(to: outsidePoint, in: window)
+        await settlePanel(window)
+        #expect(!hasVisibleAncestors(of: menuControl), "The row action hides again after Escape when the pointer leaves the row")
 
         let menuItems = tracker.trackedMenuItems
         let confirmIndex = menuItems.firstIndex(of: "Confirm")
@@ -873,6 +899,31 @@ struct LauncherPresentationFixtureRendersTests {
         guard let view else { return "<none>" }
         let frame = view.convert(view.bounds, to: nil)
         return "\(type(of: view)) frame=\(frame) role=\(String(describing: view.accessibilityRole()))"
+    }
+
+    private func mouseMovedEvent(to point: NSPoint, in window: NSWindow) -> NSEvent? {
+        NSEvent.mouseEvent(
+            with: .mouseMoved, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 0, pressure: 0
+        )
+    }
+
+    private func moveMouse(to point: NSPoint, in window: NSWindow) throws {
+        guard let event = mouseMovedEvent(to: point, in: window) else {
+            throw FixtureRenderError.missingRenderedText("mouse movement to \(point)")
+        }
+        NSApp.sendEvent(event)
+        pumpMainRunLoop()
+    }
+
+    private func hasVisibleAncestors(of view: NSView) -> Bool {
+        var current: NSView? = view
+        while let candidate = current {
+            if candidate.isHidden || candidate.alphaValue <= 0.01 { return false }
+            if let opacity = candidate.layer?.opacity, opacity <= 0.01 { return false }
+            current = candidate.superview
+        }
+        return true
     }
 
     @discardableResult

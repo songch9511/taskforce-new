@@ -1,4 +1,5 @@
 #if os(macOS)
+import AppKit
 import SwiftUI
 import TaskforceKit
 import TaskforceUI
@@ -14,6 +15,8 @@ struct LauncherListPane: View {
     /// 직전에 고른 줄 (한 칸 위로 옮길 때 고정 머리에 가리지 않게 한 줄 더 보인다)
     @State private var lastSelection = 0
     @State private var pointerSelection: Int?
+    @State private var hoveredActionID: UUID?
+    @State private var menuTrackingActionID: UUID?
 
     var body: some View {
         let sections = model.sections
@@ -121,6 +124,12 @@ struct LauncherListPane: View {
           }
         }
         .background(TFColor.settingsSidebar)
+        .onReceive(NotificationCenter.default.publisher(for: NSMenu.didBeginTrackingNotification)) { _ in
+            menuTrackingActionID = hoveredActionID
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSMenu.didEndTrackingNotification)) { _ in
+            menuTrackingActionID = nil
+        }
     }
 
     private static let top = "list-top"
@@ -221,11 +230,21 @@ struct LauncherListPane: View {
                 .help(Text(fullTitle(for: item)))
                 .accessibilityHint(isLiveExpanded(item) ? "Hide details" : "Show details")
                 rowActionsMenu(item)
+                    .opacity(isRowActionVisible(item) ? 1 : 0)
             }
             .background(
                 selected ? TFColor.bgSelected : .clear,
                 in: RoundedRectangle(cornerRadius: TFRadius.md, style: .continuous)
             )
+            .contentShape(Rectangle())
+            .onHover { isHovering in
+                guard let actionID = item.action?.id else { return }
+                if isHovering {
+                    hoveredActionID = actionID
+                } else if hoveredActionID == actionID {
+                    hoveredActionID = nil
+                }
+            }
         case .saved:
             Button { tap(item, at: index) } label: {
                 row(item, selected: selected)
@@ -242,6 +261,11 @@ struct LauncherListPane: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .onTapGesture { tap(item, at: index) }
         }
+    }
+
+    private func isRowActionVisible(_ item: LauncherItem) -> Bool {
+        guard let actionID = item.action?.id else { return false }
+        return hoveredActionID == actionID || menuTrackingActionID == actionID
     }
 
     private func isSavedExpanded(_ item: LauncherItem) -> Bool {
