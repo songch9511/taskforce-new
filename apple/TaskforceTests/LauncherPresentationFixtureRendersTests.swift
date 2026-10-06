@@ -602,6 +602,13 @@ struct LauncherPresentationFixtureRendersTests {
 
         // AppKit enters native menu tracking synchronously from mouse-down; queue Escape first so this stays bounded.
         #expect(controller.isVisible, "The launcher panel is visible before opening a row menu")
+        NSApp.activate(ignoringOtherApps: true)
+        await settlePanel(window)
+        window.makeKeyAndOrderFront(nil)
+        await settlePanel(window)
+        print("Native row-menu interaction focus: appActive=\(NSApp.isActive), windowIsKey=\(window.isKeyWindow)")
+        #expect(NSApp.isActive, "The fixture app is active before testing native row hover")
+        #expect(window.isKeyWindow, "The fixture panel is key before testing native row hover")
         guard window.isKeyWindow else {
             #expect(window.isKeyWindow, "Native menu input needs the fixture panel to be key")
             return
