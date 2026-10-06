@@ -235,7 +235,8 @@ struct LauncherListPane: View {
     private func itemRowContent(_ item: LauncherItem, selected: Bool, at index: Int) -> some View {
         switch item {
         case .review, .task, .done:
-            HStack(spacing: 2) {
+            let showsActions = isRowActionVisible(item)
+            HStack(spacing: showsActions ? 2 : 0) {
                 Button { tap(item, at: index) } label: {
                     row(item, selected: selected, drawSelectionBackground: false)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -244,7 +245,9 @@ struct LauncherListPane: View {
                 .help(Text(fullTitle(for: item)))
                 .accessibilityHint(isLiveExpanded(item) ? "Hide details" : "Show details")
                 rowActionsMenu(item)
-                    .opacity(isRowActionVisible(item) ? 1 : 0)
+                    .frame(width: showsActions ? 32 : 0, height: 28, alignment: .trailing)
+                    .opacity(showsActions ? 1 : 0)
+                    .allowsHitTesting(showsActions)
             }
             .background(
                 selected ? TFColor.bgSelected : .clear,
