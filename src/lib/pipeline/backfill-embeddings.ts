@@ -1,3 +1,4 @@
+import { AiBudgetError } from "@/lib/ai/budget-error";
 import { actionEmbedText } from "./merge";
 
 // 임베딩이 없는 열린 Action 채우기. match_open_actions는 embedding이 없는 Action을 후보로 보지 않아서,
@@ -33,6 +34,7 @@ export async function backfillEmbeddings(
     for (const [i, action] of actions.entries()) await store.saveEmbedding(action.id, vectors[i]);
     return actions.length;
   } catch (error) {
+    if (error instanceof AiBudgetError) throw error;
     console.error("임베딩 채우기 실패:", error instanceof Error ? error.message : error);
     return 0;
   }

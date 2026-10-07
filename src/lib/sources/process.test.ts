@@ -19,11 +19,13 @@ import { extractMissing, type MissingResult } from "@/lib/pipeline/missing";
 
 import {
   AFTER_EXTRACT_MS,
+  budgetPauseSummary,
   failureSummary,
   MERGE_MIN_MS,
   MERGE_NO_TIME_MESSAGE,
   processDepsFromEnv,
   processSource,
+  processTaskSource,
   recordSourceFailed,
   replaceJudgeLogs,
   reportMissing,
@@ -236,6 +238,25 @@ describe("processSource: 실패 기록 (W4)", () => {
     vi.spyOn(console, "error").mockImplementation(() => undefined);
   });
   afterEach(() => vi.mocked(console.error).mockRestore());
+
+  it("budget stops retain the original source pending without failed metrics", async () => {
+    vi.mocked(runPipeline).mockRejectedValueOnce(new AiBudgetError("ai_global_daily_budget_exhausted"));
+    const { admin, updates, inserts } = failingAdmin();
+    await processSource(admin, { id: "s1", userId: "u1", attempt: 2, budgetDeferrals: 1, retry: true }, input, deps);
+    expect(updates.at(-1)).toMatchObject({ processing_status: "pending", processing_error_code: "ai_global_daily_budget_exhausted", processing_summary: { attempt: 1, budget_deferrals: 2, retryable: true } });
+    expect(updates.every(update => !("raw_text" in update))).toBe(true);
+    expect(inserts).toEqual([]);
+  });
+
+  it("task sources preserve deferral counts and pause manual after the third stop", async () => {
+    const { admin, updates } = failingAdmin({ sources: { processing_summary: { budget_deferrals: 2 } } });
+    vi.mocked(backfillEmbeddings).mockRejectedValueOnce(new AiBudgetError("ai_user_daily_budget_exhausted"));
+    await processTaskSource(admin, { id: "s1", userId: "u1", connectionId: "c1" }, {
+      externalId: "t1", snapshot: { title: "task", owner: "me", due: null, status: "open", assignees: [], statusLabel: "Open" }, prev: null,
+      edit: { editedByUser: true, occurredAt: input.occurredAt }, identity: input.identity,
+    }, deps);
+    expect(updates.at(-1)).toMatchObject({ processing_status: "pending", processing_summary: { budget_deferrals: 3, retryable: false, manual_retry_required: true } });
+  });
 
   it("다시 해 볼 만한 실패는 까닭 코드만 남기고, 닫힌 실패로 세지 않는다", async () => {
     vi.mocked(runPipeline).mockRejectedValueOnce(new LlmError("OpenRouter 요청 실패 (402)", "{}"));
@@ -641,4 +662,12 @@ it("budget failures keep distinct safe reason codes", () => {
   expect(sourceFailureCode(new AiBudgetError("ai_price_bound_unavailable"))).toBe("ai_pricing_unavailable");
   expect(sourceFailureCode(new AiBudgetError("ai_provider_bound_breached"))).toBe("ai_provider_bound_violation");
   expect(sourceFailureCode(new AiBudgetError("private database detail"))).toBe("ai_budget_unavailable");
+});
+
+it("daily budget pauses preserve failure attempts and stop after three deferrals", () => {
+  const error = new AiBudgetError("ai_user_daily_budget_exhausted");
+  expect(budgetPauseSummary(error, 2, 0)).toMatchObject({ attempt: 1, budget_deferred: true, budget_deferrals: 1, retryable: true, retry_at: expect.any(String) });
+  expect(budgetPauseSummary(error, 2, 2)).toMatchObject({ attempt: 1, budget_deferrals: 3, retryable: false, retry_at: null, manual_retry_required: true });
+  expect(budgetPauseSummary(new AiBudgetError("ai_global_budget_exhausted"), 1)).toMatchObject({ retryable: false, manual_retry_required: true });
+  expect(budgetPauseSummary(new AiBudgetError("ai_budget_exhausted"), 1)).toBeNull();
 });

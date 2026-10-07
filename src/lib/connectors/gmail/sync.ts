@@ -1,3 +1,4 @@
+import { initialSyncLookbackDays } from "../initial-sync";
 import { z } from "zod";
 
 import { ingestItems, type IngestDeps } from "../ingest";
@@ -45,7 +46,7 @@ export type GmailSyncOptions = {
 const DAY_MS = 86_400_000;
 
 export const DEFAULT_GMAIL_SYNC: Omit<GmailSyncOptions, "now"> = {
-  lookbackDays: 14,
+  lookbackDays: 3,
   maxGapDays: 30,
   overlapMs: 3_600_000,
   windowMs: DAY_MS,
@@ -54,6 +55,10 @@ export const DEFAULT_GMAIL_SYNC: Omit<GmailSyncOptions, "now"> = {
   concurrency: 4,
   maxSeen: 2_000,
 };
+
+export function defaultGmailSyncOptions(): Omit<GmailSyncOptions, "now"> {
+  return { ...DEFAULT_GMAIL_SYNC, lookbackDays: initialSyncLookbackDays() };
+}
 
 /** 이번 동기화가 결정한 메일 수: 남긴 이유 · 버린 이유별 (본문 · 주소 없이 연결 설정 stats에 더한다) */
 export type GmailDecisionCounts = Partial<Record<GmailKeepReason | GmailDropReason, number>>;

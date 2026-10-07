@@ -8,6 +8,9 @@ public enum APIErrorCode: String, Decodable, Sendable {
     case conflict
     case rateLimited = "rate_limited"
     case internalError = "internal_error"
+    case aiUserDailyBudgetExhausted = "ai_user_daily_budget_exhausted"
+    case aiGlobalDailyBudgetExhausted = "ai_global_daily_budget_exhausted"
+    case aiGlobalBudgetExhausted = "ai_global_budget_exhausted"
     case aiBudgetExhausted = "ai_budget_exhausted"
     case aiPricingUnavailable = "ai_pricing_unavailable"
     case aiProviderBoundViolation = "ai_provider_bound_violation"
@@ -46,6 +49,12 @@ public enum APIError: Error, Equatable, Sendable, CustomStringConvertible {
     /// 화면에 보여줄 한 줄 (화면 틀은 영어, docs/BRAND.md "UI 문구"). 서버의 한국어 설명은 보이지 않는다.
     public var userMessage: String {
         switch self {
+        case .server(_, .aiUserDailyBudgetExhausted, _):
+            "Your daily AI allowance cannot cover this request. Try again after the next UTC day. Pending reservations still count."
+        case .server(_, .aiGlobalDailyBudgetExhausted, _):
+            "AI has reached the shared daily beta allowance. Try again after the next UTC day. Your tasks remain available."
+        case .server(_, .aiGlobalBudgetExhausted, _):
+            "AI has reached the shared beta allowance and is paused. You can still manage tasks and connections."
         case .server(_, .aiBudgetExhausted, _):
             "Your $10 beta AI allowance cannot cover this request. Reservations count until confirmed. You can still manage tasks and connections."
         case .server(_, .aiPricingUnavailable, _):

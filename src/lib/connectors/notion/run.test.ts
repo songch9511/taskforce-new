@@ -32,7 +32,7 @@ vi.mock("./api", async (importOriginal) => ({
   notionClient: (accessToken: string) => ({ accessToken }) as unknown as NotionClient,
 }));
 vi.mock("./data-sources", () => ({ notionCoverage: vi.fn() }));
-vi.mock("./sync", () => ({ DEFAULT_NOTION_SYNC: {}, syncNotion: vi.fn() }));
+vi.mock("./sync", () => ({ defaultNotionSyncOptions: () => ({ lookbackDays: 3 }), syncNotion: vi.fn() }));
 
 // 동기화 실패를 연결 상태로 남기는 규칙: 갱신 토큰이 거절되면 다시 연결 필요(reauth), 잠깐 문제면 error.
 

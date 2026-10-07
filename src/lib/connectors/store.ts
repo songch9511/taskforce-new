@@ -465,7 +465,6 @@ export async function disconnectConnection(admin: SupabaseClient, userId: string
 const TASK_PROCESSING_STALE_MINUTES = 10;
 /** 처리를 마치지 못한 할 일은 이 기간 안에서만 다시 처리한다. 한 번에 이만큼씩 */
 const TASK_RETRY_DAYS = 3;
-const TASK_RETRY_BATCH = 20;
 /** 상태 함수 한 번에 넘기는 항목 수 (결과 행 수 한도 1,000 아래로: 항목마다 최대 2행) */
 const TASK_STATE_CHUNK = 200;
 
@@ -526,16 +525,7 @@ export function taskDeps(admin: SupabaseClient): NotionTaskDeps {
     pendingTasks: async (connection) => {
       const since = new Date(Date.now() - TASK_RETRY_DAYS * 86_400_000).toISOString();
       const { data } = await admin
-        .from("sources")
-        .select("id, external_id, external_version, structured, occurred_at, external_url")
-        .eq("user_id", connection.userId)
-        .eq("connection_id", connection.id)
-        .eq("kind", "task")
-        .neq("processing_status", "done")
-        .or("processing_summary->>retryable.is.null,processing_summary->>retryable.eq.true")
-        .gte("created_at", since)
-        .order("occurred_at")
-        .limit(TASK_RETRY_BATCH)
+        .rpc("pending_task_sources", { p_user_id: connection.userId, p_connection_id: connection.id, p_since: since })
         .throwOnError();
       const rows = (data ?? []) as { id: string; external_id: string; external_version: string; structured: StoredTask; occurred_at: string; external_url: string | null }[];
       if (rows.length === 0) return [];

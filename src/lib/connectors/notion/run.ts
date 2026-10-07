@@ -23,7 +23,7 @@ import {
   type NotionToken,
 } from "./api";
 import { notionCoverage } from "./data-sources";
-import { DEFAULT_NOTION_SYNC, syncNotion, type NotionSyncResult } from "./sync";
+import { defaultNotionSyncOptions, syncNotion, type NotionSyncResult } from "./sync";
 
 // Notion 연결을 실제로 동기화한다: 토큰을 풀고, 만료됐으면 갱신하고, 결과와 커서를 남긴다.
 
@@ -109,7 +109,7 @@ export async function syncNotionConnection(
       syncNotion(connection, client, { ...ingestDeps(admin), tasks: taskDeps(admin), meetingEvent: calendar?.lookup }, {
         now,
         deadline: options.deadline,
-        ...DEFAULT_NOTION_SYNC,
+        ...defaultNotionSyncOptions(),
       });
     const result = await withNotionClient(admin, connection.id, run);
     // 일정 잇기 결과(붙음 · 애매 · 없음 · 실패)를 google 연결 설정 stats에 센다 (글자 · 주소 없이, 8장)

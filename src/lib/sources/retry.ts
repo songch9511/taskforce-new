@@ -73,6 +73,10 @@ const failureRetryable = (row: Pick<RetryCandidate, "processing_summary" | "proc
 export function retryPlan(row: RetryCandidate, now: Date): RetryPlan | null {
   const summary = row.processing_summary ?? {};
   const attempt = attemptOf(row);
+  if (summary.budget_deferred === true) {
+    if (summary.retryable !== true || typeof summary.retry_at !== "string" || !(Date.parse(summary.retry_at) <= now.getTime())) return null;
+    return { kind: "retry", attempt: attempt + 1 };
+  }
   // 기록된 시각이 없으면 들어온 시각으로 본다
   const elapsed = (at: unknown) => now.getTime() - new Date(typeof at === "string" ? at : row.created_at).getTime();
   if (row.processing_status === "failed") {
@@ -93,7 +97,7 @@ export function retryPlan(row: RetryCandidate, now: Date): RetryPlan | null {
  * 닫을 때 기록할 시도 번호를 돌려준다 (아니면 null). 처리 창 안의 원문 · 아직 돌고 있을 수 있는 원문 · 할 일 DB 항목 · 이미 닫힌 실패는 건드리지 않는다.
  */
 export function expiredAttempt(row: ExpiredCandidate, now: Date): number | null {
-  if (row.kind === "task") return null;
+  if (row.kind === "task" || row.processing_summary?.budget_deferred === true) return null;
   const age = (at: string) => now.getTime() - new Date(at).getTime();
   // 창 안(candidates의 created_at >= 창 시작)이면 다시 처리 대상이다
   if (age(row.created_at) <= RETRY_WINDOW_MS) return null;
@@ -289,19 +293,9 @@ export function retryDeps(admin: SupabaseClient, limit = 50): RetryDeps {
   };
   return {
     candidates: async (since) => {
+      // Consent is filtered before LIMIT in SQL; rechecked below and before each model call.
       const { data } = await admin
-        .from("sources")
-        .select(
-          "id, user_id, connection_id, external_id, kind, raw_text, occurred_at, participants, written_by_me, processing_status, processing_summary, processing_error, created_at",
-        )
-        .in("processing_status", ["pending", "processing", "failed"])
-        .neq("kind", "task")
-        .is("raw_text_purged_at", null)
-        .gte("created_at", since.toISOString())
-        // 더 다시 하지 않기로 한 실패(동의 철회 · 마지막 시도)는 뺀다: 후보 자리를 차지하지 않게
-        .or("processing_summary->>retryable.is.null,processing_summary->>retryable.eq.true")
-        .order("created_at", { ascending: true })
-        .limit(limit)
+        .rpc("ai_budget_retry_candidates", { p_since: since.toISOString(), p_limit: limit })
         .throwOnError();
       return (data ?? []) as RetryCandidate[];
     },
@@ -312,12 +306,12 @@ export function retryDeps(admin: SupabaseClient, limit = 50): RetryDeps {
     },
     identity: (userId) => loadIdentity(admin, userId),
     claim: (row, attempt) =>
-      updateIfUnchanged(admin, row, { processing_status: "processing", processing_summary: { attempt, started_at: new Date().toISOString() } }),
+      updateIfUnchanged(admin, row, { processing_status: "processing", processing_summary: { attempt, budget_deferrals: row.processing_summary?.budget_deferrals ?? 0, started_at: new Date().toISOString() } }),
     // 동의를 철회하면 원문은 failed로 남긴다. 동기화와 달리 지우지 않는다: 이때쯤이면 Slack 대기 메시지 본문은 비었고
     // Notion은 그 뒤에 고친 페이지만 다시 가져오므로, 지우면 원문을 다시 얻을 수 없다
     process: async (row, identity, attempt) => {
       const notify = await notifies(row);
-      const { ok } = await processSource(admin, { id: row.id, userId: row.user_id, attempt, retry: true, notify }, {
+      const { ok } = await processSource(admin, { id: row.id, userId: row.user_id, attempt, retry: true, notify, budgetDeferrals: Number(row.processing_summary?.budget_deferrals ?? 0) }, {
         text: row.raw_text,
         kind: row.kind,
         occurredAt: new Date(row.occurred_at),
@@ -338,6 +332,7 @@ export function retryDeps(admin: SupabaseClient, limit = 50): RetryDeps {
         .in("processing_status", ["pending", "processing"])
         .neq("kind", "task")
         .lt("created_at", createdBefore.toISOString())
+        .is("processing_summary->>budget_deferred", null)
         .or(`processing_summary->>started_at.is.null,processing_summary->>started_at.lt.${startedBefore.toISOString()}`)
         .order("created_at", { ascending: true })
         .limit(limit)
@@ -349,6 +344,7 @@ export function retryDeps(admin: SupabaseClient, limit = 50): RetryDeps {
         .eq("processing_status", "failed")
         .neq("kind", "task")
         .lt("created_at", createdBefore.toISOString())
+        .is("processing_summary->>budget_deferred", null)
         .eq("processing_summary->>retryable", "true")
         .order("created_at", { ascending: true })
         .limit(limit)
@@ -360,6 +356,7 @@ export function retryDeps(admin: SupabaseClient, limit = 50): RetryDeps {
         .eq("processing_status", "failed")
         .neq("kind", "task")
         .lt("created_at", createdBefore.toISOString())
+        .is("processing_summary->>budget_deferred", null)
         .is("processing_summary->>retryable", null)
         .neq("processing_error", CONSENT_WITHDRAWN_MESSAGE)
         .order("created_at", { ascending: true })

@@ -130,6 +130,13 @@ describe("syncNotion", () => {
     expect(result.cursor.after).toBe(minutesAgo(40));
   });
 
+  it("three-day initial range excludes older pages even when a new DB is discovered", async () => {
+    const { client, markdownCalls } = fakeClient([[page("recent", 60 * 24 * 2), page("older", 60 * 24 * 4)]]);
+    const result = await syncNotion(connection(), client, fakeIngest().deps, { ...options, lookbackDays: 3 });
+    expect(markdownCalls).toEqual(["recent"]);
+    expect(result.rewound).toBe(false);
+  });
+
   it("첫 동기화는 lookbackDays만큼 거슬러 본다", async () => {
     const { client, markdownCalls } = fakeClient([[page("recent", 60 * 24 * 3), page("ancient", 60 * 24 * 30)]]);
     await syncNotion(connection(), client, fakeIngest().deps, options);
@@ -526,24 +533,24 @@ describe("syncNotion: 확인 전 DB와 공유 상태", () => {
   });
 
   it("새로 공유된 DB가 있으면 이번만 최근 기간을 다시 훑는다 (공유가 끊겨 있던 동안의 회의록을 놓치지 않게)", async () => {
-    const old = inDb("m-old", "ds-meeting", 60 * 24 * 3); // 커서보다 오래됐지만 14일 안
+    const old = inDb("m-old", "ds-meeting", 60 * 24 * 7); // 커서보다 오래됐지만 14일 안
     const known = { ...connection(minutesAgo(60)), settings: { dataSources: { "ds-meeting": { role: "text", title: "Meeting", seenAt: "2026-09-20T00:00:00Z" } } } };
 
     const first = fakeClient([[old]], [], { visible: [ds("ds-meeting", "Meeting")] });
-    const rewound = await syncNotion(connection(minutesAgo(60)), first.client, fakeIngest().deps, options);
+    const rewound = await syncNotion(connection(minutesAgo(60)), first.client, fakeIngest().deps, { ...options, lookbackDays: 3 });
     expect(rewound.rewound).toBe(true);
     expect(first.markdownCalls).toEqual(["m-old"]);
 
     // 이미 아는 DB뿐이면 커서대로
     const second = fakeClient([[old]], [], { visible: [ds("ds-meeting", "Meeting")] });
-    const normal = await syncNotion(known, second.client, fakeIngest().deps, options);
+    const normal = await syncNotion(known, second.client, fakeIngest().deps, { ...options, lookbackDays: 3 });
     expect(normal.rewound).toBe(false);
     expect(second.markdownCalls).toEqual([]);
 
     // 공유가 끊겼다가 되돌아온 DB도 다시 훑는다
     const recovered = { ...known, settings: { ...known.settings, health: { unreachable: [{ id: "ds-meeting", title: "Meeting" }], checkedAt: "2026-09-26T00:00:00Z" } } };
     const third = fakeClient([[old]], [], { visible: [ds("ds-meeting", "Meeting")] });
-    expect((await syncNotion(recovered, third.client, fakeIngest().deps, options)).rewound).toBe(true);
+    expect((await syncNotion(recovered, third.client, fakeIngest().deps, { ...options, lookbackDays: 3 })).rewound).toBe(true);
     expect(third.markdownCalls).toEqual(["m-old"]);
   });
 

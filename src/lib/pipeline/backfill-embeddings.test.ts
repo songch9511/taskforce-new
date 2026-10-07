@@ -1,3 +1,4 @@
+import { AiBudgetError } from "@/lib/ai/budget-error";
 import { describe, expect, it, vi } from "vitest";
 
 import { backfillEmbeddings, EMBEDDING_BACKFILL_LIMIT, type EmbeddingBackfillStore, type UnembeddedAction } from "./backfill-embeddings";
@@ -73,4 +74,10 @@ describe("backfillEmbeddings", () => {
     expect(logged).not.toContain("견적서");
     log.mockRestore();
   });
+});
+
+it("propagates budget stops instead of continuing with incomplete match evidence", async () => {
+  const { store } = fakeStore([withQuote]);
+  const error = new AiBudgetError("ai_user_daily_budget_exhausted");
+  await expect(backfillEmbeddings(store, async () => { throw error; })).rejects.toBe(error);
 });

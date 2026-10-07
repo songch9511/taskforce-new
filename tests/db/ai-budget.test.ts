@@ -15,6 +15,7 @@ const settle = (user: string, id: string, cost: number | null, generation: strin
   db.query("select settle_ai_spend($1,$2,$3,$4)", [user, id, cost, generation]);
 beforeAll(async () => {
   db = await createLocalSupabase();
+  await db.query("update ai_budget_policy set user_daily_usd=1000, global_daily_usd=1000, global_total_usd=1000");
   await db.query("insert into auth.users(id) values ($1),($2)", [alice, bob]);
 }, 60_000);
 afterAll(async () => { await db?.close(); });

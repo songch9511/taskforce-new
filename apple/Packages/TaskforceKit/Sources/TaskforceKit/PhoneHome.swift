@@ -60,7 +60,8 @@ extension RefreshState {
 extension FailedSources {
     /// 실패 원문 줄 (U1 PR4에서 채택한 문구): "Couldn’t read 2 sources"
     public var title: String {
-        if reason == .aiBudgetExhausted { return "Beta AI allowance reached" }
+        if reason == .aiUserDailyBudgetExhausted || reason == .aiGlobalDailyBudgetExhausted { return "Daily AI allowance reached" }
+        if reason == .aiBudgetExhausted || reason == .aiGlobalBudgetExhausted { return "Beta AI allowance reached" }
         return count == 1 ? "Couldn’t read 1 source" : "Couldn’t read \(count) sources"
     }
 }
