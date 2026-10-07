@@ -8,7 +8,7 @@ import TaskforceKit
 enum AccountDeletion {
     static let contactURL = URL(string: "mailto:privacy@taskforcelabs.dev")!
     static let unavailableMessage = "Apple sign-in verification is required or could not be ruled out. Account deletion is unavailable in this Google-only Mac app. Your account and data have not been deleted. Contact privacy@taskforcelabs.dev for account access or deletion help."
-    static let confirmationMessage = "Taskforce deletes your stored sources, tasks, drafts, and history; original items in connected services stay. Accounts requiring Apple sign-in verification cannot be deleted here; contact privacy@taskforcelabs.dev for help. For eligible accounts, we try to remove Google and connected-service access, but it may remain. Check those account settings to remove any access left. This can't be undone."
+    static let confirmationMessage = "Taskforce cancels future subscription renewals before deleting your stored sources, tasks, drafts, and history. An open checkout or unconfirmed cancellation can delay deletion. Deletion does not request a refund; payment records remain with the payment provider; original items in connected services stay. Accounts requiring Apple sign-in verification cannot be deleted here; contact privacy@taskforcelabs.dev for help. For eligible accounts, we try to remove Google and connected-service access, but it may remain. Check those account settings to remove any access left. This can't be undone."
 
     static func delete(services: AppServices, session: SessionStore) async -> String? {
         await delete(

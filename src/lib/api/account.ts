@@ -11,6 +11,8 @@ export const REVOCATION_TIMEOUT_MS = 20_000;
 
 export type DeleteAccountDeps<User extends { id: string }> = {
   authenticate: (request: Request) => Promise<User | null>;
+  /** Billing cancellation is required before revoking connections or deleting identity. */
+  beforeDelete?: (user: User) => Promise<void>;
   /** 연동 토큰을 서비스 쪽에서도 폐기한다 (폐기 API가 있는 서비스만) */
   revokeConnectorTokens?: (user: User) => Promise<void>;
   /** Sign in with Apple 토큰 폐기. 앱이 보낸 authorization code가 있으면 그것으로 토큰을 받아 폐기한다 */
@@ -28,6 +30,13 @@ export async function handleDeleteAccount<User extends { id: string }>(
   if (!user) return unauthorized();
   const body = await parseBody(request, deleteAccountRequestSchema);
   if ("error" in body) return body.error;
+
+  try {
+    await deps.beforeDelete?.(user);
+  } catch (error) {
+    if (error instanceof Error && error.message === "billing_deletion_busy") return errorResponse(409, "conflict", "Account deletion is already in progress. Please wait and retry.");
+    return errorResponse(503, "internal_error", "Subscription cancellation could not be confirmed. Your account has not been deleted; please retry.");
+  }
 
   // 폐기 실패는 로그(오류 메시지만, 토큰 · code 없이)에만 남기고 삭제를 계속한다.
   const bestEffort = async (label: string, task: (() => Promise<void>) | undefined) => {

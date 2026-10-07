@@ -677,6 +677,7 @@ private struct MacAccountPane: View {
             } footer: {
                 Text("Used to find what you promised in meeting notes and messages.")
             }
+            MacBillingSection(userID: userID).id(userID)
             Section {
                 if let email {
                     LabeledContent(session.signInMethods.accountLabel, value: email)
@@ -749,6 +750,96 @@ private struct MacAccountPane: View {
         Task {
             message = await AccountDeletion.delete(services: services, session: session)
             deleting = false
+        }
+    }
+}
+
+private struct MacBillingSection: View {
+    let userID: UUID
+    @Environment(\.services) private var services
+    @Environment(SessionStore.self) private var session
+    @Environment(\.openURL) private var openURL
+    @State private var billing: BillingSummary?
+    @State private var loading = false
+    @State private var message: String?
+    @State private var requestID = UUID()
+    @State private var acceptedTerms = false
+
+    var body: some View {
+        Section {
+            if let billing {
+                Text(billing.label)
+                if let end = billing.currentPeriodEndsAt ?? billing.trialEndsAt {
+                    Text("Access until \(String(end.prefix(10))) (UTC)").foregroundStyle(.secondary)
+                }
+                if let allowance = billing.aiAllowance {
+                    LabeledContent("AI allowance remaining", value: AiSpendSummary.dollars(allowance.remainingUSD))
+                }
+                if billing.canCheckout {
+                    Toggle("I agree to the subscription terms and have read the billing privacy information. I am 14 or older and do not live in the EEA or UK.", isOn: $acceptedTerms)
+                        .font(.caption)
+                    HStack {
+                        Link("Subscription terms", destination: URL(string: "https://www.taskforcelabs.dev/en/terms")!)
+                        Link("Billing privacy", destination: URL(string: "https://www.taskforcelabs.dev/en/privacy")!)
+                    }.font(.caption)
+                    Button("Subscribe monthly — $9.99 / month") { open(.monthly) }.disabled(!acceptedTerms)
+                    Button("Subscribe yearly — $101.90 / year · Save 15%") { open(.annual) }.disabled(!acceptedTerms)
+                    Text("Payment starts immediately at checkout, including during your trial. Automatically renews until cancelled. Applicable tax is extra.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                if billing.plan != nil { Button("Manage subscription") { open(nil) } }
+                if billing.status == "legacy_beta" {
+                    Text("Your free beta access remains available. A future paid transition requires 30 days’ notice and your separate agreement.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            } else if loading { ProgressView() }
+            if let message { Text(message).font(.caption).foregroundStyle(.secondary) }
+            Button("Refresh subscription") { Task { await refresh() } }
+        } header: { Text("Subscription") } footer: {
+            Text("Plans include $3 of AI processing per UTC calendar month, reset on the first day. The 7-day trial includes $1 total. AI pauses at the limit; no automatic overage charges. Return here and refresh after checkout.")
+        }
+        .disabled(loading)
+        .task(id: userID) { billing = nil; message = nil; acceptedTerms = false; await refresh() }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            Task { await refresh() }
+        }
+        .onDisappear { requestID = UUID() }
+    }
+
+    private var isCurrentAccount: Bool {
+        if case .signedIn(let id, _) = session.state { return id == userID }
+        return false
+    }
+
+    private func refresh() async {
+        guard let services else { return }
+        let id = UUID(); requestID = id; loading = true
+        defer { if requestID == id { loading = false } }
+        do {
+            let value = try await services.api.billing()
+            guard !Task.isCancelled, requestID == id, isCurrentAccount else { return }
+            billing = value; message = nil
+        } catch {
+            guard !Task.isCancelled, requestID == id, isCurrentAccount else { return }
+            message = "Could not load your subscription. Try refreshing."
+        }
+    }
+
+    private func open(_ plan: BillingPlan?) {
+        guard let services, !loading else { return }
+        let id = UUID(); requestID = id; loading = true
+        Task {
+            defer { if requestID == id { loading = false } }
+            do {
+                let url: URL
+                if let plan { url = try await services.api.billingCheckout(plan: plan) }
+                else { url = try await services.api.billingPortal() }
+                guard !Task.isCancelled, requestID == id, isCurrentAccount else { return }
+                openURL(url)
+            } catch {
+                guard requestID == id, isCurrentAccount else { return }
+                message = "Could not open billing. An existing checkout may still be open. Try again or contact support."
+            }
         }
     }
 }

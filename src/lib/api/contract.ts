@@ -116,7 +116,7 @@ export const weeklyCheckPromptSchema = z.object({ week_start: z.iso.date() });
  * ai_quota: AI 공급자가 한도 · 잔액으로 거절, ai_timeout: AI 응답 시간 초과, ai_output: AI 응답 형식이 깨짐,
  * consent: 처리 도중 외부 AI 처리 동의 철회, expired: 하루가 지나도록 멈춰 다시 처리하지 않고 닫음, internal: 그 밖.
  */
-export const SOURCE_FAILURE_CODES = ["ai_quota", "ai_timeout", "ai_output", "consent", "expired", "internal", "ai_budget_exhausted", "ai_user_daily_budget_exhausted", "ai_global_daily_budget_exhausted", "ai_global_budget_exhausted", "ai_pricing_unavailable", "ai_provider_bound_violation", "ai_budget_unavailable"] as const;
+export const SOURCE_FAILURE_CODES = ["ai_quota", "ai_timeout", "ai_output", "consent", "expired", "internal", "ai_budget_exhausted", "ai_user_daily_budget_exhausted", "ai_global_daily_budget_exhausted", "ai_global_budget_exhausted", "ai_pricing_unavailable", "ai_provider_bound_violation", "ai_budget_unavailable", "billing_required"] as const;
 export const sourceFailureCodeSchema = z.enum(SOURCE_FAILURE_CODES);
 export type SourceFailureCode = z.infer<typeof sourceFailureCodeSchema>;
 
@@ -646,7 +646,7 @@ export const creditsResponseSchema = z.object({
 });
 export type CreditsResponse = z.infer<typeof creditsResponseSchema>;
 
-export const apiErrorCodeSchema = z.enum(["unauthorized", "invalid_request", "not_found", "conflict", "rate_limited", "internal_error", "ai_budget_exhausted", "ai_user_daily_budget_exhausted", "ai_global_daily_budget_exhausted", "ai_global_budget_exhausted", "ai_pricing_unavailable", "ai_provider_bound_violation", "ai_budget_unavailable", "ai_timeout", "ai_unavailable"]);
+export const apiErrorCodeSchema = z.enum(["unauthorized", "invalid_request", "not_found", "conflict", "rate_limited", "internal_error", "ai_budget_exhausted", "ai_user_daily_budget_exhausted", "ai_global_daily_budget_exhausted", "ai_global_budget_exhausted", "ai_pricing_unavailable", "ai_provider_bound_violation", "ai_budget_unavailable", "billing_required", "ai_timeout", "ai_unavailable"]);
 
 export const apiErrorSchema = z.object({
   error: z.object({ code: apiErrorCodeSchema, message: z.string() }),
@@ -655,8 +655,19 @@ export type ApiError = z.infer<typeof apiErrorSchema>;
 
 // Supplier USD is separate from execution product credits; cumulative for this beta period.
 export const aiSpendSummarySchema = z.object({
-  cap_usd: z.literal(10), confirmed_usd: z.number().finite().nonnegative(),
+  cap_usd: z.number().finite().positive(), confirmed_usd: z.number().finite().nonnegative(),
   reserved_usd: z.number().finite().nonnegative(), pending_count: z.number().int().nonnegative(),
   remaining_usd: z.number().finite().nonnegative().max(10),
   status: z.enum(["available", "exhausted", "provider_bound_violation"]),
 });
+
+// Account billing is authoritative on the server; checkout redirects never grant access.
+export const billingCheckoutRequestSchema = z.object({ plan: z.enum(["monthly", "annual"]), terms_version: z.literal("2026-10-08") }).strict();
+export const billingStatusSchema = z.object({
+  status: z.string(), plan: z.enum(["monthly", "annual"]).nullable(),
+  trial_ends_at: z.string().nullable(), current_period_ends_at: z.string().nullable(),
+  can_use_ai: z.boolean(), can_checkout: z.boolean(),
+  monthly_price_usd: z.literal(9.99), annual_price_usd: z.literal(101.9),
+  ai_allowance: aiSpendSummarySchema.nullable(), allowance_resets_at: z.string().nullable(),
+});
+export type BillingStatus = z.infer<typeof billingStatusSchema>;

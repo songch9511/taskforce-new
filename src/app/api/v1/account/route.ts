@@ -1,3 +1,4 @@
+import { cancelBeforeDeletion, rollbackDeletion } from '@/lib/billing/service';
 import { handleDeleteAccount } from "@/lib/api/account";
 import { authenticateRequest } from "@/lib/api/auth";
 import { appleSignInConfigFromEnv, revokeAppleSignIn } from "@/lib/apple/sign-in";
@@ -11,8 +12,10 @@ export const maxDuration = 60;
 
 export async function DELETE(request: Request) {
   const admin = createAdminClient();
+  let deletionToken: string | null = null;
   return handleDeleteAccount(request, {
     authenticate: async (req) => (await authenticateRequest(req))?.user ?? null,
+    beforeDelete: async (user) => { deletionToken = await cancelBeforeDeletion(admin, user.id); },
     revokeConnectorTokens: async (user) => {
       const { failed } = await revokeConnectorTokens(admin, user.id);
       if (failed > 0) console.error(`연동 토큰 ${failed}개를 폐기하지 못했습니다 (계정 삭제는 계속).`);
@@ -34,9 +37,13 @@ export async function DELETE(request: Request) {
       if (result !== "revoked") console.warn(`Sign in with Apple 토큰 폐기를 건너뜀 (${reasons[result]})`);
     },
     deleteUser: async (userId) => {
-      const { error } = await admin.auth.admin.deleteUser(userId);
-      // 이미 지워진 계정 (앞선 요청의 응답만 못 받은 재시도): 성공으로 본다
-      if (error && error.status !== 404) throw error;
+      try {
+        const { error } = await admin.auth.admin.deleteUser(userId);
+        if (error && error.status !== 404) throw error;
+      } catch(error) {
+        if (deletionToken) await rollbackDeletion(admin, userId, deletionToken);
+        throw error;
+      }
     },
   });
 }

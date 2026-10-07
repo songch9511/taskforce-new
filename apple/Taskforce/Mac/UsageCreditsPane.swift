@@ -13,13 +13,13 @@ struct UsageCreditsPane: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
-                section("Beta AI allowance · USD") {
+                section("Included AI allowance · USD") {
                     Text(AiSpendSummary.explanation)
                         .font(TFFont.footnote)
                         .foregroundStyle(TFColor.textSecondary)
                     if let budget {
                         SettingsCard {
-                            budgetRow("Beta cap", budget.capUSD)
+                            budgetRow("Allowance cap", budget.capUSD)
                             SettingsDivider()
                             budgetRow("Confirmed spend", budget.confirmedUSD)
                             SettingsDivider()
@@ -36,7 +36,7 @@ struct UsageCreditsPane: View {
                     }
                 }
                 if case .available = runs.credits {
-                    Text("Execution credits are separate units for AI drafts. They are not dollars and do not increase the beta AI allowance.")
+                    Text("Execution credits are separate units for AI drafts. They are not dollars and do not increase the included AI allowance.")
                         .font(TFFont.footnote)
                         .foregroundStyle(TFColor.textSecondary)
                     content(runs.creditsRows(titles: Self.taskTitles))

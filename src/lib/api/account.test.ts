@@ -133,3 +133,15 @@ describe("account API — 토큰 폐기", () => {
     expect(steps).toEqual([]);
   });
 });
+
+it("billing cancellation failure preserves identity and connected-service tokens", async () => {
+  const { d, deleted } = deps({ id: "user-1" });
+  d.beforeDelete = vi.fn(async () => { throw new Error("provider unavailable"); });
+  d.revokeConnectorTokens = vi.fn();
+  d.revokeAppleToken = vi.fn();
+  const response = await handleDeleteAccount(request(), d);
+  expect(response.status).toBe(503);
+  expect(deleted).toEqual([]);
+  expect(d.revokeConnectorTokens).not.toHaveBeenCalled();
+  expect(d.revokeAppleToken).not.toHaveBeenCalled();
+});

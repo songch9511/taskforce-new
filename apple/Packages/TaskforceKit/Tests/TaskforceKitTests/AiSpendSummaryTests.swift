@@ -11,7 +11,7 @@ struct AiSpendSummaryTests {
         #expect(summary.pendingCount == 2)
         #expect(summary.remainingUSD == Decimal(string: "5.75"))
         #expect(summary.notice == nil)
-        #expect(AiSpendSummary.explanation.contains("No billing and no monthly reset"))
+        #expect(AiSpendSummary.explanation.contains("No automatic overage charges"))
         #expect(AiSpendSummary.explanation.contains("stays reserved until the provider confirms the cost"))
         #expect(AiSpendSummary.explanation.contains("an upper bound, not confirmed spend"))
     }

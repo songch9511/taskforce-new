@@ -2,8 +2,8 @@
 
 Taskforce (AI project manager) · Beta
 
-- Effective date: 2026-10-07
-- Version: Beta 1.5
+- Effective date: 2026-10-08
+- Version: Beta 1.6
 - 한국어: [개인정보 처리방침](privacy.ko.md) (the Korean version prevails if the two differ)
 
 태스크포스 ("we", "us") operates the Taskforce app (iOS and macOS), its server, and the website (www.taskforcelabs.dev). We process your personal information under the Personal Information Protection Act of the Republic of Korea (PIPA) and other applicable laws.
@@ -13,9 +13,19 @@ This policy explains what we process, why, where, and for how long, and how you 
 
 - Taskforce reads meeting notes, messages, and email from the services **you connect** (Notion, Google, Slack) and finds the work you committed to. When you start a draft for that work (such as an email or document), it writes the draft and saves it in the app. We use your source text only for this. We do not send drafts to their recipients; you send them yourself.
 - To find that work and write drafts, we send source text to external AI models. **We do not send anything until you agree in the app.** AI requests go only to providers that keep no data (Zero Data Retention), and nothing is used to train any AI model.
-- Your data is stored on servers and a database in Sydney, Australia. We keep no database backups, so **deleting your account deletes your stored data right away.**
+- Your data is stored on servers and a database in Sydney, Australia. We keep no database backups, so **completed account deletion removes your app data right away.** Limited billing retry records and the merchant’s records are described above.
 - We read your source text **only when you ask us to, or while responding to a security incident.** If we want to look at a source to analyze an extraction error, we ask for your consent first.
-- We do not sell your information or use it for advertising. The website has no analytics and no cookies.
+- We do not sell your information or use it for advertising. The marketing website has no analytics or cookies. The optional billing page uses necessary sign-in cookies.
+
+## Optional subscription and billing data
+
+When you choose checkout, we send Lemon Squeezy a random checkout reference, your selected plan, and the price variant needed to connect payment to your Taskforce account. We do not send your connected-source text, tasks, Google tokens, or AI prompts. You provide your email, billing details, and payment information directly on Lemon Squeezy's checkout. Taskforce does not receive or store full card numbers or security codes.
+
+Lemon Squeezy acts as merchant of record and processes payment, fraud prevention, tax, receipts, and transaction retention under its [Privacy Policy](https://www.lemonsqueezy.com/privacy) and [Buyer Terms](https://www.lemonsqueezy.com/buyer-terms). Its policy identifies processing in the USA and countries where its providers operate. This optional checkout is separate from source integrations and AI consent; you can decline it and continue any remaining free access.
+
+Our server stores your account identifier, trial and subscription dates, selected plan, customer/subscription/order identifiers, payment status and paid-through date, checkout reference/URL/expiry, accepted subscription terms version and time, and a webhook digest and processing time to prevent duplicate processing. A retry inbox stores only the payment event type, provider object identifier, checkout reference, mode flag, and receipt/processing times for up to 7 days. The purpose is to provide purchased access, prevent duplicate charges, manage cancellation, and respond to billing issues. We do not retain raw payment webhook bodies. These records are stored with our app database in Sydney. Account-linked billing records are deleted when account deletion completes. A pseudonymous checkout retry record, with its account link and checkout URL removed, is retained for late-payment cancellation and removed by the daily cleanup after its expiry plus 7 days. Lemon Squeezy's own transaction records follow its retention obligations and are not deleted by deleting Taskforce.
+
+The billing page at api.taskforcelabs.dev uses necessary Supabase sign-in cookies to connect payment to your account. It does not use advertising or analytics cookies. Lemon Squeezy's checkout and portal use their own cookies under their policy.
 
 ## Contents
 
@@ -51,7 +61,7 @@ This policy explains what we process, why, where, and for how long, and how you 
 | Information derived from source text | Task title, scope, due date, owner, counterpart name, evidence quotes, a record of who said what and when, change history, AI judgment records (candidates and probabilities), numeric vectors used to find similar tasks (embeddings) | When the server processes a source |
 | Drafts | What you asked for on a task; the title and body of the draft the AI wrote; and, while writing it, the instructions the AI set, suggested recipients (names and email addresses from the material), and questions it asks you back | When you start a draft in the app, and when the server writes it |
 | Run records | Status, outcome type, and times of each draft run and its steps; the model and prompt version used; error type; a record of status changes (no text); and the draft record attached to the task (the evidence line "초안 저장: [draft title]" ("Draft saved") and an in-app link to the draft) | When the server writes a draft |
-| AI usage and credits | For each AI request that writes a draft, OpenRouter's request identifier, the model, token counts, and cost (no text); credits we grant you and the records of reserving, using, and releasing them (credit amounts, rate, confirmed cost). We do not receive any purchase or payment information | When the server writes a draft, and when we grant credits |
+| AI usage and credits | For each AI request, OpenRouter's request identifier, the model, token counts, and cost (no text); credits we grant you and the records of reserving, using, and releasing them (credit amounts, rate, confirmed cost). Subscription records are described in the billing section above | When the server writes a draft, and when we grant credits |
 | Usage records | App opens; starting, completing, editing, deleting, or confirming a task; use of "Hand off to AI"; weekly question answers; times you reported a missing task; requests for services we do not support yet; records of completing a connection, of a connection expiring so that you need to reconnect, of sending a reconnect notice, and of closing a source as failed (service name and time only) | When you use the app, or when the server syncs your connections or processes a source |
 | Device and notifications | Push notification device token (APNs), platform (iOS or macOS), app version, last seen time | After the app receives notification permission |
 | Task list stored on your device | The last task list, so the app can show it until a fresh list arrives (for example, while you are offline) (task title, due date, and status only; no source text or evidence), kept separately for each account | When the app receives your tasks from the server (stored only on your device) |
@@ -70,7 +80,7 @@ This policy explains what we process, why, where, and for how long, and how you 
 | Identify you, keep you signed in, delete your account | Account, automatically generated | Performance of our agreement with you (PIPA Art. 15(1)(4)) |
 | Find the work you committed to, merge it with existing tasks, and apply changes to due dates and scope | Connections, source text, derived information, profile | Performance of our agreement. Sending to external AI also requires your in-app consent (section 4). For other people's information inside your sources, see "Other people's information inside your sources" below |
 | Write a draft you start for a task (such as an email, document, or list of questions) and save it in the app (during the beta, only on accounts we enable) | Derived information (tasks and evidence quotes), excerpts of source text with their titles, dates, and people involved, your name, drafts, run records | Performance of our agreement (your request). Sending to external AI also requires your in-app consent (section 4) |
-| Count the credits a draft uses, and check AI costs | AI usage and credits | Counting credits: performance of our agreement; checking AI costs: our legitimate interest (PIPA Art. 15(1)(6)). We grant credits free of charge; there are no purchases or payments |
+| Count the credits a draft uses, and check AI costs | AI usage and credits | Counting credits: performance of our agreement; checking AI costs: our legitimate interest (PIPA Art. 15(1)(6)). Execution credits are separate from the optional subscription and included AI allowance |
 | Send review requests, due-date notifications, and connection-expiry (reconnect) notices | Device and notifications | Performance of our agreement |
 | Show your last task list until a fresh list arrives (while you are offline or the list cannot be refreshed) | Task list stored on your device (on your device only) | Performance of our agreement |
 | Measure whether the service works (share of tasks the AI got wrong, share of missed tasks, return visits) | Usage records | Our legitimate interest in improving the service (PIPA Art. 15(1)(6)). Not used to profile you for advertising |
@@ -257,7 +267,7 @@ When we look at a source or draft, we record the date, what we looked at, and wh
 
 - The app does not use cookies. Your sign-in session is stored in the device Keychain.
 - The website (www.taskforcelabs.dev) has no analytics, no advertising tools, and no cookies.
-- Our internal admin screens use a cookie only for the operator's sign-in. Users do not use these screens.
+- Our internal admin screens use a cookie only for the operator's sign-in. The separate user billing page also uses necessary sign-in cookies.
 
 ## 11. Your rights and how to use them
 
@@ -330,6 +340,8 @@ The beta is not offered to people who live in the European Economic Area (EEA, i
 - **Whether you must provide data:** account information is needed to use the service. Connecting services and consenting to AI transfer are optional, but without them no tasks are created automatically and drafts cannot be written.
 - **Automated decisions:** we make no decisions with legal or similarly significant effects under Art. 22 (section 12).
 
+- [Previous Beta 1.5 policy](https://www.taskforcelabs.dev/en/privacy/beta-1.5) · 2026-10-07
+
 ## 17. Changes to this policy
 
 - We announce changes in the app and on this page at least 7 days before they take effect. Changes that are less favorable to you, such as new items, purposes, or recipients, are announced 30 days in advance, and we ask for consent again where needed.
@@ -344,4 +356,4 @@ Change history
 - Beta 1.1 (effective 2026-09-30, [view previous version](https://www.taskforcelabs.dev/en/privacy/beta-1.1)): The Gmail section now matches how the service works (which mail is skipped and why, one message stored at a time, the IDs and received times of fetched or skipped mail and per-reason counts, and the account-identification permissions). When a connection expires, we send one reminder to reconnect and keep a record of connections, expirations, and reminders. Baseten was removed from the source-analysis providers.
 - Beta 1.0 (effective 2026-09-29): [View previous version](https://www.taskforcelabs.dev/en/privacy/beta-1.0)
 
-This policy takes effect on 2026-10-07.
+This policy takes effect on 2026-10-08 for new accounts and optional subscription use. Existing source-processing conditions remain unchanged.
