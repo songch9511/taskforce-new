@@ -96,6 +96,7 @@ struct LauncherDetailPane: View {
                 .buttonStyle(.plain)
                 .help("Close task details")
                 .accessibilityLabel("Close task details")
+                .padding(.trailing, -TFSpace.sm)
             }
         }
     }
