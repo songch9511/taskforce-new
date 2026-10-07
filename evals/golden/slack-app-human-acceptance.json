@@ -1,0 +1,40 @@
+{
+  "id": "slack-app-human-acceptance",
+  "description": "앱 알림에 사용자가 직접 확정적으로 답한 약속은 사람의 일반 약속과 같은 규칙으로 반영한다.",
+  "origin": "synthetic",
+  "tags": ["slack"],
+  "user": {
+    "name": "윤지호",
+    "aliases": [],
+    "emails": []
+  },
+  "sources": [
+    {
+      "id": "slack-app-accept-1007",
+      "kind": "message",
+      "occurred_at": "2026-10-07T10:00:00+09:00",
+      "text": "[DM · Slack app]\nSlack app: 셀프 평가 제출을 완료해 주세요.\n윤지호: 네, 오늘 셀프 평가를 제출할게요.",
+      "participants": {
+        "attendees": [
+          { "name": "Slack app" },
+          { "name": "윤지호" }
+        ]
+      }
+    }
+  ],
+  "expected_actions": [
+    {
+      "title": "셀프 평가 제출",
+      "owner": "me",
+      "due": "2026-10-07",
+      "status": "open",
+      "evidence": [
+        {
+          "source": "slack-app-accept-1007",
+          "quote": "네, 오늘 셀프 평가를 제출할게요."
+        }
+      ]
+    }
+  ],
+  "must_not_extract": []
+}

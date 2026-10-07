@@ -1,0 +1,55 @@
+{
+  "id": "seq-gmail-slack-app-reminder",
+  "description": "Gmail의 기존 제안서 제출 약속과 Slack 앱의 미완료 조건부 알림은 같은 Action으로 합쳐져 Slack 근거가 추가된다. 미완료 여부가 확인되지 않아 검토 상태는 유지한다.",
+  "origin": "synthetic",
+  "tags": ["slack", "gmail"],
+  "user": {
+    "name": "윤지호",
+    "aliases": [],
+    "emails": ["jiho@lumenfield.example"]
+  },
+  "sources": [
+    {
+      "id": "gmail-proposal-1006",
+      "kind": "email",
+      "occurred_at": "2026-10-06T10:00:00+09:00",
+      "text": "제목: 제안서 제출 일정\n\n금요일까지 제안서를 제출하겠습니다.\n\n윤지호",
+      "participants": {
+        "from": { "name": "윤지호", "email": "jiho@lumenfield.example" },
+        "to": [{ "name": "박지훈", "email": "park@saebyeok.example" }]
+      },
+      "from_connector": true
+    },
+    {
+      "id": "slack-proposal-1007",
+      "kind": "message",
+      "occurred_at": "2026-10-07T10:00:00+09:00",
+      "text": "[DM · Slack app]\nSlack app: 제안서 제출 알림이야.\nSlack app: 아직 제출 전이라면 상태를 확인해 줘.\nSlack app: 이미 완료했는지는 확인되지 않았어.",
+      "participants": {
+        "attendees": [
+          { "name": "Slack app" },
+          { "name": "윤지호" }
+        ]
+      }
+    }
+  ],
+  "expected_actions": [
+    {
+      "title": "제안서 제출",
+      "owner": "me",
+      "due": "2026-10-09",
+      "status": "open",
+      "evidence": [
+        {
+          "source": "gmail-proposal-1006",
+          "quote": "금요일까지 제안서를 제출하겠습니다."
+        },
+        {
+          "source": "slack-proposal-1007",
+          "quote": "아직 제출 전이라면 상태를 확인해 줘."
+        }
+      ]
+    }
+  ],
+  "must_not_extract": []
+}

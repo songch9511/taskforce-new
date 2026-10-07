@@ -7,6 +7,8 @@ import {
   JUDGE_QUESTIONS,
   MEETING_JUDGE_PROMPT_VERSION,
   MEETING_JUDGE_QUESTIONS,
+  SLACK_JUDGE_PROMPT_VERSION,
+  SLACK_JUDGE_QUESTIONS,
   WRITTEN_BY_ME_DOCUMENT_PROMPT_VERSION,
   WRITTEN_BY_ME_DOCUMENT_JUDGE_QUESTIONS,
   WRITTEN_BY_ME_PROMPT_VERSION,
@@ -58,6 +60,7 @@ export type JudgeSource = {
 export function judgePromptVersionForSource(source: Pick<JudgeSource, "kind" | "writtenByMe">): string {
   if (source.kind === "meeting") return MEETING_JUDGE_PROMPT_VERSION;
   if (source.kind === "doc") return source.writtenByMe === true ? WRITTEN_BY_ME_DOCUMENT_PROMPT_VERSION : DOCUMENT_JUDGE_PROMPT_VERSION;
+  if (source.kind === "message") return SLACK_JUDGE_PROMPT_VERSION;
   return source.writtenByMe === true ? WRITTEN_BY_ME_PROMPT_VERSION : JUDGE_PROMPT_VERSION;
 }
 
@@ -69,6 +72,15 @@ function boundedDocumentContext(text: string, quote: string): string {
   const prefix = text.slice(0, Math.max(0, maxChars - local.length - 12));
   if (local.startsWith(prefix)) return local.slice(0, maxChars);
   return `${prefix}\n[…]\n${local}`;
+}
+
+/** Keep Slack's first-line header and a bounded region around the candidate, even when the quote is late in a long bucket. */
+function boundedMessageContext(text: string, quote: string): string {
+  const maxChars = 3800;
+  const header = text.split("\n", 1)[0]?.slice(0, 500) ?? "";
+  const nearby = quoteContext(text, quote, 12, 3000, Number.POSITIVE_INFINITY) ?? quote;
+  const withHeader = header && !nearby.startsWith(header) ? `${header}\n[…]\n${nearby}` : nearby;
+  return withHeader.length <= maxChars ? withHeader : withHeader.slice(0, maxChars);
 }
 
 type Choice<K extends string> = { choice: K; probabilities: Partial<Record<K, number>> };
@@ -88,6 +100,8 @@ export type JudgeSignals = {
   meeting_owner?: Choice<"user" | "someone_else" | "unassigned" | "ambiguous">;
   /** 문서 후보 구절 자체가 사용자의 할 일인지 가리는 의미 판단 */
   document_owner?: Choice<"user" | "someone_else" | "unassigned" | "ambiguous">;
+  /** Slack 후보 구절 자체가 사용자 · 독자 전체 · 다른 사람의 일인지 가리는 의미 판단 */
+  message_owner?: Choice<"user" | "everyone_individually" | "someone_else" | "unassigned" | "ambiguous">;
 };
 
 export type JudgeOutcome = {
@@ -100,7 +114,15 @@ export type JudgeOutcome = {
    * identity_ambiguous: 참석자 중 동명이인과 겹치는 이름이 있어 화자·담당 확인이 필요하다.
    * meeting_assignment · document_assignment: 원문에서 사용자에게 직접 할당됐지만 수락 여부만 불확실하다.
    */
-  rule?: "addressed_request" | "sole_recipient_request" | "identity_ambiguous" | "meeting_assignment" | "document_assignment";
+  rule?:
+    | "addressed_request"
+    | "sole_recipient_request"
+    | "identity_ambiguous"
+    | "meeting_assignment"
+    | "document_assignment"
+    | "slack_app_reminder"
+    | "slack_broadcast"
+    | "slack_audience_ambiguous";
 };
 
 
@@ -152,10 +174,11 @@ export function buildJudgeState(candidate: JudgeStateCandidate, source: JudgeSou
       ...(source.kind !== "meeting" && source.writtenByMe === true ? { written_by_me: true } : {}),
     },
     ...(source.kind === "doc" ? { document_context: boundedDocumentContext(source.text, candidate.quote) } : {}),
+    ...(source.kind === "message" ? { message_context: boundedMessageContext(source.text, candidate.quote) } : {}),
   };
 }
 
-export function parseJudgeAnswers(answers: JevDecision["answers"], ownership: "meeting" | "document" | null = null): JudgeSignals {
+export function parseJudgeAnswers(answers: JevDecision["answers"], ownership: "meeting" | "document" | "message" | null = null): JudgeSignals {
   const noul = (key: string) => {
     const answer = answers[key];
     if (answer?.type !== "noul") throw new Error(`Jev 답 형식 오류: ${key}`);
@@ -178,6 +201,7 @@ export function parseJudgeAnswers(answers: JevDecision["answers"], ownership: "m
     audience: choice("audience", ["shared", "private"]),
     ...(ownership === "meeting" ? { meeting_owner: choice("meeting_owner", ["user", "someone_else", "unassigned", "ambiguous"]) } : {}),
     ...(ownership === "document" ? { document_owner: choice("document_owner", ["user", "someone_else", "unassigned", "ambiguous"]) } : {}),
+    ...(ownership === "message" ? { message_owner: choice("message_owner", ["user", "everyone_individually", "someone_else", "unassigned", "ambiguous"]) } : {}),
   };
 }
 
@@ -198,6 +222,12 @@ export type DecideContext = {
   meetingAssignment?: boolean;
   /** 문서 후보 자체가 사용자에게 명시적으로 할당되거나 사용자 개인 체크리스트로 판정된다는 Jev의 의미 판단 */
   documentAssignment?: boolean;
+  /** Slack app DM이 사용자의 구체적인 개인 의무를 상기시키는 후보 */
+  slackAppReminder?: boolean;
+  /** @channel/@everyone의 독자별 의무는 항상 사용자 검토를 거친다 */
+  slackBroadcast?: boolean;
+  /** 원문에서 사용자의 broadcast audience 포함 여부를 알 수 없다 */
+  slackAudienceAmbiguous?: boolean;
 };
 
 /** 확률을 임계값과 비교해 자동 반영 / 확인 요청 / 기각을 정한다 (docs/TRUTH_RULES.md 1장 표). */
@@ -217,13 +247,19 @@ export function decideOutcome(
   const soleRecipient = context.soleRecipient === true && signals.is_my_commitment >= SOLE_RECIPIENT_MIN_MINE;
   const pendingRule = context.addressedToUser === true
     ? "addressed_request"
-    : context.meetingAssignment === true
-      ? "meeting_assignment"
-      : context.documentAssignment === true
-        ? "document_assignment"
-        : soleRecipient
-          ? "sole_recipient_request"
-          : null;
+    : context.slackAppReminder === true
+      ? "slack_app_reminder"
+      : context.slackBroadcast === true
+        ? "slack_broadcast"
+        : context.slackAudienceAmbiguous === true
+          ? "slack_audience_ambiguous"
+          : context.meetingAssignment === true
+            ? "meeting_assignment"
+            : context.documentAssignment === true
+              ? "document_assignment"
+              : soleRecipient
+                ? "sole_recipient_request"
+                : null;
   const pendingRequest = pendingRule !== null && rejects.length === 1 && rejects[0] === "NOT_MY_ACTION";
   if (rejects.length > 0 && !pendingRequest) return { decision: "reject", reasons: rejects };
 
@@ -234,6 +270,15 @@ export function decideOutcome(
   if (signals.already_done >= thresholds.doneAcceptBelow) doubts.push("ALREADY_DONE");
   // 규칙으로 살린 요청은 임계값 설정과 상관없이 확인 요청까지만 간다 (자동 반영하지 않는다).
   if (pendingRequest) return { decision: "confirm", reasons: [...new Set<RejectReason>(["NOT_MY_ACTION", ...doubts])], rule: pendingRule };
+  if (context.slackAppReminder === true) {
+    return { decision: "confirm", reasons: [...new Set<RejectReason>([...doubts, "TENTATIVE"])], rule: "slack_app_reminder" };
+  }
+  if (context.slackBroadcast === true) {
+    return { decision: "confirm", reasons: [...new Set<RejectReason>([...doubts, "NOT_MY_ACTION"])], rule: "slack_broadcast" };
+  }
+  if (context.slackAudienceAmbiguous === true) {
+    return { decision: "confirm", reasons: [...new Set<RejectReason>([...doubts, "NOT_MY_ACTION"])], rule: "slack_audience_ambiguous" };
+  }
   return doubts.length > 0 ? { decision: "confirm", reasons: doubts } : { decision: "auto", reasons: [] };
 }
 
@@ -248,6 +293,7 @@ export async function judgeCandidate(
   // 그 밖의 원문은 사용자가 직접 쓴 문서일 때만 그에 맞춘 질문을 묻는다.
   const meeting = source.kind === "meeting";
   const document = source.kind === "doc";
+  const message = source.kind === "message";
   const self = !meeting && source.writtenByMe === true;
   const questions = meeting
     ? MEETING_JUDGE_QUESTIONS
@@ -255,17 +301,20 @@ export async function judgeCandidate(
       ? self
         ? WRITTEN_BY_ME_DOCUMENT_JUDGE_QUESTIONS
         : DOCUMENT_JUDGE_QUESTIONS
-      : self
-        ? WRITTEN_BY_ME_QUESTIONS
-        : JUDGE_QUESTIONS;
+      : message
+        ? SLACK_JUDGE_QUESTIONS
+        : self
+          ? WRITTEN_BY_ME_QUESTIONS
+          : JUDGE_QUESTIONS;
   const response = await decide({ state: buildJudgeState(candidate, source, identity), questions });
-  const ownership = meeting ? "meeting" : document ? "document" : null;
+  const ownership = meeting ? "meeting" : document ? "document" : message ? "message" : null;
   const signals = parseJudgeAnswers(response.answers, ownership);
   const speaker = quoteSpeaker(source.text, candidate.quote, identity, source.participants);
   const speakerAmbiguous = Boolean(speaker && isAmbiguousUserName(speaker, identity, source.participants));
   const sourceLines = source.text.split("\n");
   const quoteLines = quoteLineIndexes(source.text, candidate.quote).map((index) => sourceLines[index]);
   const semanticOwner = meeting ? signals.meeting_owner?.choice : document ? signals.document_owner?.choice : undefined;
+  const messageOwner = message ? signals.message_owner?.choice : undefined;
   const gatedCommitment = (meeting || document) && candidate.signal === "commitment";
   const explicitOtherOwner = gatedCommitment && semanticOwner === "someone_else";
   const ambiguousAddress = addressedAmbiguouslyToUser(source.text, candidate.quote, identity, source.participants);
@@ -278,17 +327,25 @@ export async function judgeCandidate(
   ) || relatedUserWithUnassignedAction);
   const identityAmbiguous = !explicitOtherOwner && (speakerAmbiguous || ownerAmbiguous);
   const addressed = addressedToUser(source.text, candidate.quote, identity, source.participants);
+  const messageCommitment = message && candidate.signal === "commitment";
+  const messageOwnerAmbiguous = messageCommitment && messageOwner === "ambiguous";
+  const slackAppReminder = messageCommitment && speaker === "Slack app" && messageOwner === "user";
+  const slackBroadcast = messageCommitment && messageOwner === "everyone_individually";
+  const unrelatedMessageCommitment = messageCommitment && (messageOwner === "someone_else" || messageOwner === "unassigned");
   const outcome = decideOutcome(signals, thresholds, {
-    addressedToUser: addressed,
+    addressedToUser: addressed && !unrelatedMessageCommitment,
     soleRecipient: source.kind === "email" && userPosition(identity, source.participants) === "sole_recipient",
     meetingAssignment: meeting && candidate.signal === "commitment" && semanticOwner === "user",
     documentAssignment: document && candidate.signal === "commitment" && semanticOwner === "user",
+    slackAppReminder,
+    slackBroadcast,
+    slackAudienceAmbiguous: messageOwnerAmbiguous,
   });
-  const unrelatedCommitment = gatedCommitment && (explicitOtherOwner || (
-    !identityAmbiguous && !relatedUserWithUnassignedAction && semanticOwner === "unassigned"
-  ));
   const semanticOwnerAmbiguous = gatedCommitment && !explicitOtherOwner && (semanticOwner === "ambiguous" || relatedUserWithUnassignedAction);
-  const canConfirmAmbiguous = identityAmbiguous || semanticOwnerAmbiguous;
+  const canConfirmAmbiguous = identityAmbiguous || semanticOwnerAmbiguous || messageOwnerAmbiguous;
+  const unrelatedCommitment = (gatedCommitment && (explicitOtherOwner || (
+    !identityAmbiguous && !relatedUserWithUnassignedAction && semanticOwner === "unassigned"
+  ))) || unrelatedMessageCommitment;
   const judgedOutcome = unrelatedCommitment
     ? { decision: "reject" as const, reasons: [...new Set<RejectReason>([...outcome.reasons, "NOT_MY_ACTION"])] }
     : canConfirmAmbiguous && (outcome.decision !== "reject" || (semanticOwnerAmbiguous && outcome.reasons.every((reason) => reason === "NOT_MY_ACTION")))
@@ -296,7 +353,7 @@ export async function judgeCandidate(
           ...outcome,
           decision: "confirm" as const,
           reasons: [...new Set<RejectReason>([...outcome.reasons, "NOT_MY_ACTION"])],
-          ...(identityAmbiguous ? { rule: "identity_ambiguous" as const } : {}),
+          ...(identityAmbiguous ? { rule: "identity_ambiguous" as const } : messageOwnerAmbiguous ? { rule: "slack_audience_ambiguous" as const } : {}),
         }
       : outcome;
   return {
@@ -304,7 +361,7 @@ export async function judgeCandidate(
     signals,
     ...(speaker ? { speaker } : {}),
     ...(speakerAmbiguous ? { speakerAmbiguous: true as const } : {}),
-    ...(ownerAmbiguous || semanticOwnerAmbiguous ? { ownerAmbiguous: true as const } : {}),
+    ...(ownerAmbiguous || semanticOwnerAmbiguous || messageOwnerAmbiguous ? { ownerAmbiguous: true as const } : {}),
     promptVersion: judgePromptVersionForSource(source),
     model: response.model,
     cost: response.usage?.cost,

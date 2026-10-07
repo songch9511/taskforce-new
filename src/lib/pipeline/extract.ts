@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 import type { JsonCompletion, JsonCompletionRequest } from "@/lib/ai/llm";
-import { buildExtractUserPrompt, EXTRACT_PROMPT_VERSION, EXTRACT_SYSTEM_PROMPT } from "@/lib/ai/prompts/extract";
+import { buildExtractSystemPrompt, buildExtractUserPrompt, EXTRACT_PROMPT_VERSION } from "@/lib/ai/prompts/extract";
 
 import type { Participants, UserIdentity } from "./identity";
 
@@ -75,7 +75,7 @@ export type CompleteJson = <T extends z.ZodType>(request: JsonCompletionRequest<
 
 export async function extractCandidates(input: ExtractInput, complete: CompleteJson): Promise<ExtractResult> {
   const result = await complete({
-    system: EXTRACT_SYSTEM_PROMPT,
+    system: buildExtractSystemPrompt(input.kind),
     user: buildExtractUserPrompt(input),
     schemaName: "action_candidates",
     schema: extractResponseSchema,

@@ -1,0 +1,44 @@
+{
+  "id": "slack-app-flex-self-eval",
+  "description": "Flex 앱 DM이 셀프 평가와 동료 평가자 지정을 구체적으로 상기시킨다. 제출 여부와 10/8 00:59의 시간대는 확인되지 않아 검토 요청으로 남기고 마감 시각을 만들지 않는다.",
+  "origin": "synthetic",
+  "tags": ["slack"],
+  "user": {
+    "name": "윤지호",
+    "aliases": [],
+    "emails": []
+  },
+  "sources": [
+    {
+      "id": "slack-flex-1007",
+      "kind": "message",
+      "occurred_at": "2026-10-07T10:00:00+09:00",
+      "text": "[DM · Slack app]\nSlack app: Flex 'PR 8월' 셀프 평가와 동료 평가자 지정 마감이 메일에는 10/8 00:59로 적혀 있어.\nSlack app: 한국 시간 기준이면 오늘 밤 자정이 지난 뒤라,\nSlack app: 아직 제출 전이라면 오늘 확인해두면 좋겠어.\nSlack app: 이미 완료했는지와 Flex의 마감 시간대는 확인되지 않았어.",
+      "participants": {
+        "attendees": [
+          { "name": "Slack app" },
+          { "name": "윤지호" }
+        ]
+      }
+    }
+  ],
+  "expected_actions": [
+    {
+      "title": "셀프 평가 제출 및 동료 평가자 지정",
+      "owner": "me",
+      "status": "open",
+      "needs_review": true,
+      "evidence": [
+        {
+          "source": "slack-flex-1007",
+          "quote": "Flex 'PR 8월' 셀프 평가와 동료 평가자 지정"
+        },
+        {
+          "source": "slack-flex-1007",
+          "quote": "아직 제출 전이라면 오늘 확인해두면 좋겠어."
+        }
+      ]
+    }
+  ],
+  "must_not_extract": []
+}

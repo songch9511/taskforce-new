@@ -78,6 +78,105 @@ describe("receiveSlackEvent", () => {
     expect(log.stored).toEqual([]);
   });
 
+  it("bot DM과 직접 언급은 synthetic sender id로 저장하며, 바깥 api_app_id만으로는 버리지 않는다", async () => {
+    const { deps, log } = fakeDeps([ALICE]);
+    const bot = { channel: "C1", channel_type: "channel", bot_id: "B123", app_id: "A_OTHER", text: "<@U_A|Alice> Friday launch", ts: "7.0" };
+    const result = await receiveSlackEvent(envelope(bot, { api_app_id: "A_TASKFORCE" }), deps);
+    expect(result).toMatchObject({ kept: 1, dropped: 0 });
+    expect(log.stored).toEqual([
+      [
+        "conn-a",
+        { channelId: "C1", channelType: "channel", ts: "7.0", threadTs: null, senderId: "bot:B123", text: "<@U_A|Alice> Friday launch" },
+      ],
+    ]);
+
+    const appBot = { channel: "D1", channel_type: "im", app_id: "A_OTHER", user: undefined, text: "Release Friday", ts: "8.0" };
+    await receiveSlackEvent(envelope(appBot, { api_app_id: "A_TASKFORCE" }), deps);
+    expect(log.stored[1][1].senderId).toBe("app:A_OTHER");
+  });
+
+  it("broadcast는 기존 authorized 비봇 연결과 AI 동의가 확인된 이용자에게만 저장하고 스레드를 새로 추적하지 않는다", async () => {
+    const connections = fakeDeps([ALICE, BOB]);
+    const event = { channel: "C1", channel_type: "channel", bot_id: "B123", text: "<!channel> 일정은 금요일입니다", ts: "9.0", thread_ts: "8.0" };
+    await receiveSlackEvent(
+      envelope(event, { authorizations: [], event_context: "ctx" }),
+      {
+        ...connections.deps,
+        authorizedUsers: async () => ["U_A"],
+      },
+    );
+    expect(connections.log.stored.map(([id]) => id)).toEqual(["conn-a"]);
+    expect(connections.log.tracked).toEqual([]);
+
+    const noAuthorization = fakeDeps([ALICE], { authorizedUsers: async () => null });
+    await receiveSlackEvent(envelope(event, { authorizations: [] }), noAuthorization.deps);
+    expect(noAuthorization.log.stored).toEqual([]);
+
+    const noConsent = fakeDeps([ALICE], { consented: async () => false });
+    await receiveSlackEvent(envelope(event), noConsent.deps);
+    expect(noConsent.log.stored).toEqual([]);
+  });
+
+  it("비봇 여부가 확인되지 않은 authorization은 사용자 연결을 허용하지 않는다", async () => {
+    const { deps, log } = fakeDeps([ALICE], { authorizedUsers: async () => null });
+    await receiveSlackEvent(
+      envelope({ channel: "C1", channel_type: "channel", bot_id: "B_ANNOUNCER", text: "<!here> Friday handoff", ts: "9.1" }, {
+        authorizations: [{ user_id: "U_A", team_id: "T1" }],
+        event_context: undefined,
+      }),
+      deps,
+    );
+    expect(log.stored).toEqual([]);
+  });
+
+  it("Taskforce 자체 앱 메시지만 api_app_id와 비교해 버리고, 같은 api_app_id의 사용자 메시지는 받는다", async () => {
+    const { deps, log } = fakeDeps([ALICE]);
+    await receiveSlackEvent(
+      envelope({ channel: "C1", channel_type: "channel", user: "U_X", bot_id: "B_OWN", app_id: "A_TASKFORCE", text: "<!channel> self", ts: "10.0" }, { api_app_id: "A_TASKFORCE" }),
+      deps,
+    );
+    await receiveSlackEvent(
+      envelope({ channel: "C1", channel_type: "channel", user: "U_A", text: "I will send it Friday", ts: "11.0" }, { api_app_id: "A_TASKFORCE" }),
+      deps,
+    );
+    expect(log.stored).toHaveLength(1);
+    expect(log.stored[0][1].senderId).toBe("U_A");
+
+    const selfEdit = fakeDeps([ALICE]);
+    await receiveSlackEvent(
+      envelope(
+        { channel: "C1", channel_type: "channel", subtype: "message_changed", ts: "12.0", message: { ts: "11.0", bot_profile: { app_id: "A_TASKFORCE" }, bot_id: "B_OWN", text: "<!channel> self edit" } },
+        { api_app_id: "A_TASKFORCE" },
+      ),
+      selfEdit.deps,
+    );
+    expect(selfEdit.log.edited).toEqual([]);
+  });
+
+  it("같은 bot 이벤트를 재전송해도 pending row와 원래 bot sender identity는 하나다", async () => {
+    const rows = new Map<string, PendingSlackMessage>();
+    const { deps } = fakeDeps([ALICE], {
+      storeMessage: async (_connection, message) => {
+        const key = message.channelId + ":" + message.ts;
+        if (!rows.has(key)) rows.set(key, message);
+      },
+      editMessage: async (_connectionId, channelId, ts, text) => {
+        const row = rows.get(channelId + ":" + ts);
+        if (row) row.text = text;
+      },
+    });
+    const event = envelope({ channel: "D1", channel_type: "im", bot_id: "B_RETRY", user: "U_A", text: "Deploy is Friday", ts: "13.0" });
+    await receiveSlackEvent(event, deps);
+    await receiveSlackEvent(
+      envelope({ channel: "D1", channel_type: "im", subtype: "message_changed", ts: "14.0", message: { ts: "13.0", bot_id: "B_RETRY", user: "U_A", text: "Deploy moved to Monday" } }),
+      deps,
+    );
+    await receiveSlackEvent(event, deps);
+    expect([...rows.values()]).toEqual([
+      { channelId: "D1", channelType: "im", ts: "13.0", threadTs: null, senderId: "bot:B_RETRY", text: "Deploy moved to Monday" },
+    ]);
+  });
+
   it("채널에서 나와 무관한 글은 버리고, 추적 중인 스레드의 답글은 남기며 추적을 갱신한다", async () => {
     const channel = { channel: "C1", channel_type: "channel", user: "U_X", text: "참고로 금요일까지예요", ts: "1727678400.000200" };
     const plain = fakeDeps([ALICE]);

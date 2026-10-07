@@ -1,0 +1,48 @@
+{
+  "id": "slack-app-info-other-work",
+  "description": "앱 DM의 기능 안내, 선택적 제안, 다른 사람의 작업, 앱이 직접 하겠다는 업무는 사용자의 Action이 아니다.",
+  "origin": "synthetic",
+  "tags": ["slack"],
+  "user": {
+    "name": "윤지호",
+    "aliases": [],
+    "emails": []
+  },
+  "sources": [
+    {
+      "id": "slack-app-info-1007",
+      "kind": "message",
+      "occurred_at": "2026-10-07T10:00:00+09:00",
+      "text": "[DM · Slack app]\nSlack app: Flex의 새 대시보드가 출시됐어요.\nSlack app: 원하면 구경해보세요.\nSlack app: 박지훈님이 제안서를 제출하기로 했습니다.\nSlack app: 저는 보고서 업로드를 진행할게요.",
+      "participants": {
+        "attendees": [
+          { "name": "Slack app" },
+          { "name": "윤지호" }
+        ]
+      }
+    }
+  ],
+  "expected_actions": [],
+  "must_not_extract": [
+    {
+      "source": "slack-app-info-1007",
+      "quote": "Flex의 새 대시보드가 출시됐어요",
+      "reason": "INFO_ONLY"
+    },
+    {
+      "source": "slack-app-info-1007",
+      "quote": "원하면 구경해보세요",
+      "reason": "TENTATIVE"
+    },
+    {
+      "source": "slack-app-info-1007",
+      "quote": "박지훈님이 제안서를 제출하기로 했습니다",
+      "reason": "NOT_MY_ACTION"
+    },
+    {
+      "source": "slack-app-info-1007",
+      "quote": "저는 보고서 업로드를 진행할게요",
+      "reason": "NOT_MY_ACTION"
+    }
+  ]
+}

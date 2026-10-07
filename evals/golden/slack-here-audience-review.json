@@ -1,0 +1,41 @@
+{
+  "id": "slack-here-audience-review",
+  "description": "@here 보안 지침은 당시 활동 중인 사람을 대상으로 한다. 메시지만으로 사용자의 활동 여부를 알 수 없어 검토 요청으로 둔다.",
+  "origin": "synthetic",
+  "tags": ["slack"],
+  "user": {
+    "name": "윤지호",
+    "aliases": [],
+    "emails": []
+  },
+  "sources": [
+    {
+      "id": "slack-here-1007",
+      "kind": "message",
+      "occurred_at": "2026-10-07T10:00:00+09:00",
+      "text": "[#security]\n박지훈: @here 오늘 각자 보안 교육 완료 여부를 확인해 주세요.",
+      "participants": {
+        "attendees": [
+          { "name": "박지훈" },
+          { "name": "윤지호" }
+        ]
+      }
+    }
+  ],
+  "expected_actions": [
+    {
+      "title": "보안 교육 완료 여부 확인",
+      "owner": "unknown",
+      "due": "2026-10-07",
+      "status": "open",
+      "needs_review": true,
+      "evidence": [
+        {
+          "source": "slack-here-1007",
+          "quote": "@here 오늘 각자 보안 교육 완료 여부를 확인해 주세요."
+        }
+      ]
+    }
+  ],
+  "must_not_extract": []
+}

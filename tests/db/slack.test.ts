@@ -106,6 +106,25 @@ describe("Slack 표 (20261011000000_slack)", () => {
     expect(rows).toEqual([{ source_id: null }]);
   });
 
+  it("synthetic bot sender id는 기존 sender_id 칸에 그대로 저장되고 재전송 · 편집에도 유지된다", async () => {
+    const ts = "1727678400.000900";
+    await db.query(
+      `insert into public.slack_messages (user_id, connection_id, channel_id, channel_type, ts, sender_id, text)
+       values ($1, $2, 'D1', 'im', $3, 'bot:B123', 'Deploy is Friday')
+       on conflict (connection_id, channel_id, ts) do nothing`,
+      [ALICE, connection, ts],
+    );
+    await db.query(
+      `insert into public.slack_messages (user_id, connection_id, channel_id, channel_type, ts, sender_id, text)
+       values ($1, $2, 'D1', 'im', $3, 'U2', 'late retry')
+       on conflict (connection_id, channel_id, ts) do nothing`,
+      [ALICE, connection, ts],
+    );
+    await db.query(`update public.slack_messages set text = 'Deploy moved to Monday' where connection_id = $1 and channel_id = 'D1' and ts = $2`, [connection, ts]);
+    const { rows } = await db.query<{ sender_id: string; text: string }>(`select sender_id, text from public.slack_messages where connection_id = $1 and ts = $2`, [connection, ts]);
+    expect(rows).toEqual([{ sender_id: "bot:B123", text: "Deploy moved to Monday" }]);
+  });
+
   it("연결을 지우면 대기 메시지 · 추적 스레드 · 이름 캐시가 함께 지워진다", async () => {
     await db.query(`delete from public.connections where id = $1`, [connection]);
     for (const table of ["slack_messages", "slack_threads", "slack_people"]) {

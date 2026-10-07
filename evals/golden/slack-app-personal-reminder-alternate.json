@@ -1,0 +1,44 @@
+{
+  "id": "slack-app-personal-reminder-alternate",
+  "description": "다른 표현의 앱 DM이 사용자 이름이 붙은 출장 정산 task와 미완료 시 필요한 다음 행동을 함께 알린다. 제출 여부가 불명확하므로 검토로 남긴다.",
+  "origin": "synthetic",
+  "tags": ["slack"],
+  "user": {
+    "name": "윤지호",
+    "aliases": [],
+    "emails": []
+  },
+  "sources": [
+    {
+      "id": "slack-expense-app-1007",
+      "kind": "message",
+      "occurred_at": "2026-10-07T10:00:00+09:00",
+      "text": "[DM · Slack app]\nSlack app: 윤지호님의 출장 비용 정산에 교통비 영수증이 아직 등록되지 않았어요.\nSlack app: 이미 제출했다면 넘어가고, 미제출이면 영수증을 등록해 주세요.\nSlack app: 실제 제출 여부는 확인되지 않았어요.",
+      "participants": {
+        "attendees": [
+          { "name": "Slack app" },
+          { "name": "윤지호" }
+        ]
+      }
+    }
+  ],
+  "expected_actions": [
+    {
+      "title": "출장 교통비 영수증 등록",
+      "owner": "me",
+      "status": "open",
+      "needs_review": true,
+      "evidence": [
+        {
+          "source": "slack-expense-app-1007",
+          "quote": "윤지호님의 출장 비용 정산에 교통비 영수증이 아직 등록되지 않았어요."
+        },
+        {
+          "source": "slack-expense-app-1007",
+          "quote": "이미 제출했다면 넘어가고, 미제출이면 영수증을 등록해 주세요."
+        }
+      ]
+    }
+  ],
+  "must_not_extract": []
+}

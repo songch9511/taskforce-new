@@ -177,6 +177,39 @@ describe("mergeJudged", () => {
     expect(store.all()[0].evidence.map((e) => e.role)).toEqual(["created", "duplicate"]);
   });
 
+  it("Gmail 약속과 Slack 앱의 미완료 알림은 같은 Action에 두 번째 근거로 붙는다", async () => {
+    const store = new InMemoryActionStore();
+    const d = deps();
+    await mergeJudged(
+      store,
+      [judged({ signal: "commitment", title: "제안서 제출", quote: "금요일까지 제안서를 제출하겠습니다", due: "2026-10-09" })],
+      source("gmail-proposal", "email", "2026-10-06T10:00:00+09:00"),
+      identity,
+      d,
+    );
+
+    const reminder = judged(
+      { signal: "commitment", title: "제안서 제출", quote: "제안서가 아직 제출 전이라면 상태를 확인해 줘", owner: "me" },
+      signals({ speaker: "third_party", firm: false }),
+      "confirm",
+    );
+    reminder.judge = { ...reminder.judge, reasons: ["TENTATIVE"], speaker: "Slack app" };
+    const outcomes = await mergeJudged(
+      store,
+      [reminder],
+      source("slack-proposal", "message", "2026-10-07T10:00:00+09:00"),
+      identity,
+      d,
+    );
+
+    expect(outcomes[0]).toMatchObject({ relation: "duplicate", actionId: "a1" });
+    expect(store.all()).toHaveLength(1);
+    expect(store.all()[0].evidence).toEqual([
+      { sourceId: "gmail-proposal", quote: "금요일까지 제안서를 제출하겠습니다", role: "created" },
+      { sourceId: "slack-proposal", quote: "제안서가 아직 제출 전이라면 상태를 확인해 줘", role: "duplicate" },
+    ]);
+  });
+
   it("동명이인 화자는 코드에서 사용자로 덮어쓰지 않고 새 Action의 화자·담당을 확인한다", async () => {
     const store = new InMemoryActionStore();
     const identity = { name: "김도윤", aliases: [], emails: [] };

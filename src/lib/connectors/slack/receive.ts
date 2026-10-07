@@ -1,5 +1,11 @@
 import {
   classifySlackMessage,
+  isSlackSelfAppMessage,
+  slackBotSenderId,
+  slackMessageContent,
+  slackMessageHasBroadcast,
+  slackMessageHasUserMention,
+  slackMessageText,
   slackMessageEventSchema,
   slackTokensRevokedSchema,
   type PendingSlackMessage,
@@ -61,7 +67,15 @@ const emptyResult = (): SlackReceiveResult => ({ noConnection: false, kept: 0, d
 function mayInvolve(event: SlackMessageEvent, slackUserId: string): boolean {
   if (event.subtype === "message_changed" || event.subtype === "message_deleted") return true;
   if (event.channel_type === "im" || event.channel_type === "mpim") return true;
-  return event.user === slackUserId || (event.text ?? "").includes(`<@${slackUserId}>`) || Boolean(event.thread_ts);
+  const content = slackMessageContent(event);
+  const text = slackMessageText(content);
+  const humanSelf = !slackBotSenderId(content) && content.subtype !== "bot_message" && content.user === slackUserId;
+  return (
+    humanSelf ||
+    slackMessageHasUserMention(text, slackUserId) ||
+    slackMessageHasBroadcast(text) ||
+    Boolean(content.thread_ts ?? event.thread_ts)
+  );
 }
 
 export async function receiveSlackEvent(envelope: SlackEventCallback, deps: SlackReceiveDeps): Promise<SlackReceiveResult> {
@@ -84,12 +98,15 @@ export async function receiveSlackEvent(envelope: SlackEventCallback, deps: Slac
   const parsed = slackMessageEventSchema.safeParse(envelope.event);
   if (!parsed.success) return { ...result, dropped: 1 };
   const event = parsed.data;
+  // api_app_id alone is not a reason to drop the event: compare it with the authored message identity.
+  const content = slackMessageContent(event);
+  if (isSlackSelfAppMessage(content, envelope.api_app_id)) return { ...result, dropped: 1 };
 
   const connections = await deps.connectionsForTeam(envelope.team_id);
   if (connections.length === 0) return { ...result, noConnection: true };
 
   // 받을 연결: 이벤트가 이름을 댄 설치 + (이 메시지와 관계있을 수 있는 다른 연결이 있으면) 이 이벤트를 볼 수 있는 나머지 이용자 (D4)
-  const authorized = new Set((envelope.authorizations ?? []).filter((a) => a.user_id && !a.is_bot).map((a) => a.user_id!));
+  const authorized = new Set((envelope.authorizations ?? []).filter((a) => a.user_id && a.is_bot === false).map((a) => a.user_id!));
   const outside = connections.filter((c) => !authorized.has(c.slackUserId));
   if (envelope.event_context && outside.some((c) => mayInvolve(event, c.slackUserId))) {
     for (const user of (await deps.authorizedUsers(envelope.event_context)) ?? []) authorized.add(user);
@@ -106,7 +123,7 @@ export async function receiveSlackEvent(envelope: SlackEventCallback, deps: Slac
           return;
         }
         const tracked = channelMessage && threadTs ? await deps.isThreadTracked(connection.id, event.channel, threadTs) : false;
-        const decision = classifySlackMessage(event, connection.slackUserId, tracked);
+        const decision = classifySlackMessage(event, connection.slackUserId, tracked, envelope.api_app_id);
         switch (decision.action) {
           case "keep":
             await deps.storeMessage(connection, decision.message);

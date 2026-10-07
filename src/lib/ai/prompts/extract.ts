@@ -1,9 +1,9 @@
 import { describeIdentity, findNameVariants, type Participants, type UserIdentity } from "@/lib/pipeline/identity";
 
 // Action 후보 추출 프롬프트. 문구를 바꾸면 버전을 올리고 `npm run eval` 결과를 PR에 적는다.
-// extract-v5: 상대가 늦춰 준 기한은 상대의 말을 근거로 뽑고(F1), @이름으로 부른 기한 있는 요청은 대상을 몰라도 뽑는다(F3). Slack 골든셋.
+// extract-v7: message app reminders connect task/status and next-step lines; declined or transferred work is excluded.
 
-export const EXTRACT_PROMPT_VERSION = "extract-v5";
+export const EXTRACT_PROMPT_VERSION = "extract-v7";
 
 export const EXTRACT_SYSTEM_PROMPT = `당신은 회의록·메시지·메일·메모에서 "사용자 본인이 해야 할 일"만 골라내는 추출기입니다.
 
@@ -93,6 +93,21 @@ export function calendarAround(occurredAt: Date): string {
       return `${label}: ${days.join(" ")}`;
     })
     .join("\n");
+}
+
+export const MESSAGE_EXTRACT_POLICY = [
+  "## Slack 메시지에서만 적용하는 좁은 예외",
+  "일반적인 공지·안내·참고 정보 제외 규칙은 그대로 유지합니다. 아래 기준은 원문 종류가 message일 때만 적용합니다.",
+  '- 한 줄이 "Slack app:"으로 시작하는 앱 DM은 사용자의 발언이나 약속이 아니어도, 사용자 개인에게 명확히 맡긴 구체적인 의무성 작업 알림이면 commitment 후보로 뽑습니다. 예: 셀프 평가 제출과 동료 평가자 지정. 작업명·상태·마감과 실제로 완료하거나 확인하라는 지시가 서로 인접한 앱 줄에 나뉘어 있을 수 있습니다. quote는 마감 안내만이 아니라 구체적인 작업이나 필요한 다음 행동을 담은 원문 줄을 고릅니다. 사용자가 이미 거절하거나 다른 사람에게 넘긴 업무는 현재 사용자 작업으로 뽑지 않습니다. 앱이 자기 일을 하겠다고 말한 것, 일반 기능 안내·홍보·상태 정보, 남의 업무, 선택 사항은 뽑지 않습니다.',
+  '- 앱 알림이 "아직 안 했다면"처럼 조건을 달거나 완료 여부가 불명확해도 완료로 추정하지 않습니다. 구체적인 작업만 후보로 남기며, 확실한 사용자의 수락으로 꾸미지 않습니다. Jev가 검토하도록 owner는 "me"가 확실할 때만 "me", 그 밖에는 "unknown"으로 둡니다.',
+  "- 명시적으로 인용된 마감 표현은 원문 그대로 quote에 보존합니다. 시간대가 확인되지 않은 시각을 한국 시간으로 바꾸거나 due 날짜·시각을 추정하지 않습니다. 시간대가 필요한 날짜라면 due와 due_text를 null로 둡니다.",
+  "- 사용자 이름을 직접 부른 구체적인 요청은 사용자가 아직 수락하지 않았어도 후보로 뽑을 수 있습니다. 단순히 이름이나 채널이 언급된 것만으로는 담당이 되지 않습니다.",
+  '- "@channel" 또는 "@everyone"에서 모든 독자가 각자 해야 하는 구체적인 의무만 후보로 뽑고 owner는 "unknown"으로 둡니다. "@here"는 당시 활동 중인 이용자만 대상으로 하므로 이 원문만으로 사용자가 포함됐다고 추정하지 말고 owner를 "unknown"으로 둡니다. Jev가 두 경우를 자동 반영하지 않도록 판정합니다.',
+  '- 누군가 이미 했다고 명시한 작업은 새 commitment가 아니라 completion 신호로만 뽑습니다. "이미 했는지 확인되지 않았다"는 말은 완료 증거가 아닙니다.',
+].join("\n");
+
+export function buildExtractSystemPrompt(kind: string): string {
+  return kind === "message" ? `${EXTRACT_SYSTEM_PROMPT}\n\n${MESSAGE_EXTRACT_POLICY}` : EXTRACT_SYSTEM_PROMPT;
 }
 
 export function buildExtractUserPrompt(input: ExtractPromptInput): string {

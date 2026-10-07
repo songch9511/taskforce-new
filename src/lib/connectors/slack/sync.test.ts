@@ -101,6 +101,19 @@ describe("syncSlack", () => {
     expect(stale.log.apiCalls).toContain("conversation:D1");
   });
 
+  it("synthetic bot sender는 users.info 조회에서 건너뛰고 실제 사람 mention은 계속 푼다", async () => {
+    const bot = fakes([dm("14:30", "bot:B123", "<@UKIM> 배포는 금요일까지 확인해 주세요")]);
+    await syncSlack(connection, bot.api, bot.deps, { now: NOW });
+    expect(bot.log.apiCalls).not.toContain("user:bot:B123");
+    expect(bot.log.apiCalls).toContain("user:UKIM");
+    expect(bot.log.inserted[0].item.text).toContain("Slack app: @김대표 배포는 금요일까지 확인해 주세요");
+
+    const app = fakes([dm("14:30", "app:A123", "일정은 금요일입니다")]);
+    await syncSlack(connection, app.api, app.deps, { now: NOW });
+    expect(app.log.apiCalls).not.toContain("user:app:A123");
+    expect(app.log.inserted[0].item.text).toContain("Slack app: 일정은 금요일입니다");
+  });
+
   it("Slack이 그 id가 없다고 하면 이름 없이 넣고, 그 밖의 오류(토큰 · 속도 제한 · 장애)는 동기화를 멈춘다", async () => {
     const missing = fakes([dm("14:30", "UGONE", "금요일까지 부탁드려요")]);
     missing.api.userName = async () => {
