@@ -349,9 +349,7 @@ private struct LauncherNotesComposer: View {
                 }
             }
         }
-        .padding(.horizontal, TFSpace.xl)
-        .padding(.top, TFSpace.sm)
-        .padding(.bottom, TFSpace.sm)
+        .padding(TFSpace.sm)
         .background(TFColor.bgElevated)
         .overlay(alignment: .top) { Rectangle().fill(TFColor.settingsLine).frame(height: 1) }
         .task(id: actionID) { await model.loadActionNotes(actionID) }
