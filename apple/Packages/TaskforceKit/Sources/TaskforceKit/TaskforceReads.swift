@@ -64,6 +64,18 @@ public struct TaskforceReads: Sendable {
         )
     }
 
+    /// Read only the note fields for one action. The composer does not need evidence or event history.
+    public func actionNotes(id: UUID) async throws -> ActionNotes? {
+        let rows: [ActionNotesRow] = try await rows(
+            supabase.from("actions")
+                .select("id,notes_markdown,notes_revision")
+                .eq("id", value: id.lowercased)
+                .limit(1)
+        )
+        guard let row = rows.first else { return nil }
+        return ActionNotes(actionID: row.id, markdown: row.markdown, revision: row.revision)
+    }
+
     /// 오늘 끝낸 할 일 (Done Today): `since`(기기 시간대의 오늘 0시) 뒤에 바뀐 완료 행, 최근 것이 위.
     /// 다른 사람 몫은 GET /now 목록에 보인 적이 없어 뺀다.
     public func doneToday(since start: Date, limit: Int = 10) async throws -> [ActionSummary] {
@@ -265,6 +277,18 @@ private struct ActionEvidenceSource: Decodable {
         case id
         case actionID = "action_id"
         case sourceID = "source_id"
+    }
+}
+
+private struct ActionNotesRow: Decodable {
+    let id: UUID
+    let markdown: String
+    let revision: Int
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case markdown = "notes_markdown"
+        case revision = "notes_revision"
     }
 }
 

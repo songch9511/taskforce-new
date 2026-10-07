@@ -359,6 +359,21 @@ struct LauncherShellModelTests {
         #expect(closed)
     }
 
+    @Test func notesEditorFocusLeavesLauncherShortcutsToTextEditor() async throws {
+        let harness = try await ShellHarness.make(now: ShellNow.body(toDo: ["T1", "T2"]))
+        let model = harness.model
+        let selected = model.selectedItem?.id
+        model.setNotesEditorFocused(true)
+
+        #expect(!model.handleKey(.key(kVK_ANSI_R, command: true)))
+        #expect(!model.handleKey(.key(kVK_DownArrow)))
+        #expect(!model.handleKey(.key(kVK_Return)))
+        #expect(model.screen == .list)
+        #expect(model.selectedItem?.id == selected)
+
+        model.setNotesEditorFocused(false)
+    }
+
     /// 범위 메뉴에서 ↩: 고른 범위로
     @Test func returnInTheScopeMenuChoosesTheScope() async throws {
         let harness = try await ShellHarness.make(now: ShellNow.body(reviews: ["R1"], toDo: ["T1"]))
@@ -641,6 +656,90 @@ struct LauncherShellModelTests {
         #expect(model.handoffStates[a.action.id]?.copied == true)
     }
 
+    @Test func handoffWaitsForLatestActionNotesSave() async throws {
+        let harness = try await ShellHarness.make(now: ShellNow.body(toDo: ["A"]))
+        let model = harness.model
+        let item = try #require(model.items.first { $0.action?.title == "A" })
+        let target = LauncherModel.Target(action: try #require(item.action), group: try #require(item.group))
+        let notes = "Latest task notes, including the final handoff context."
+        await model.loadActionNotes(target.action.id)
+        #expect(model.actionNotesEntry(target.action.id).isLoaded)
+        #expect(model.editActionNotes(target.action.id, markdown: notes))
+        await harness.router.holdNextNotesWrite()
+
+        model.perform(.handoff, on: target)
+        await harness.waitUntil { await harness.router.pendingNotesWriteCount() == 1 }
+        #expect(await harness.router.handoffRequestCount() == 0)
+
+        await harness.router.releaseHeldNotesWrite()
+        await harness.waitUntil { model.handoffPaneState?.response != nil }
+        #expect(await harness.router.handoffNotesSnapshots(for: target.action.id) == [notes])
+        #expect(await harness.router.handoffRequestCount() == 1)
+    }
+
+    @Test func mountedNotesEditorEscapeRetainsDraftAndCancelsMarkedTextFirst() async throws {
+        let harness = try await ShellHarness.make(now: ShellNow.body(toDo: ["T1"]))
+        let model = harness.model
+        let item = try #require(model.items.first { $0.action?.title == "T1" })
+        let actionID = try #require(item.action?.id)
+        let draft = "## Keep this draft\n\nAdd a final Korean review note."
+        model.notesStore?.applySample(draft, for: actionID)
+
+        let controller = LauncherPanelController(model: model)
+        controller.show()
+        let window = try #require(model.presentationAnchor())
+        let previousDelegate = window.delegate
+        window.delegate = nil
+        defer {
+            controller.hide()
+            window.delegate = previousDelegate
+            model.notesStore?.setOwner(nil)
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+        await settlePanel(window)
+        await harness.waitUntil { controller.isVisible && window.isKeyWindow && model.items.contains { $0.action?.id == actionID } }
+        model.openDetail(for: item)
+        await settlePanel(window)
+        let host = try #require(panelHostingView(window))
+        let candidate = try #require(textViews(in: host).first {
+            $0.isEditable && $0.convert($0.bounds, to: nil).midX > LauncherPanelController.size.width / 2
+        })
+        await harness.waitUntil { candidate.string == draft }
+        try click(candidate, in: window)
+        await settlePanel(window)
+
+        await harness.waitUntil { model.notesEditorFocused && window.firstResponder is NSTextView }
+        let editor = try #require(window.firstResponder as? NSTextView)
+        #expect(editor.string == draft, "The live first responder is the mounted notes editor")
+        #expect(model.notesEditorFocused)
+        guard editor.string == draft, model.notesEditorFocused else { return }
+
+        editor.setSelectedRange(NSRange(location: (editor.string as NSString).length, length: 0))
+        editor.setMarkedText(
+            "한", selectedRange: NSRange(location: 1, length: 0),
+            replacementRange: NSRange(location: NSNotFound, length: 0)
+        )
+        #expect(editor.hasMarkedText())
+        try sendEscape(to: window)
+        await settlePanel(window)
+        #expect(!editor.hasMarkedText(), "Escape cancels Korean composition before leaving the detail pane")
+        #expect(model.screen.isDetail)
+        #expect(model.actionNotesEntry(actionID).markdown == draft)
+
+        await harness.waitUntil { model.notesEditorFocused && window.firstResponder is NSTextView }
+        let focusedEditor = try #require(window.firstResponder as? NSTextView)
+        #expect(focusedEditor.string == draft)
+        #expect(model.notesEditorFocused)
+        guard focusedEditor.string == draft, model.notesEditorFocused else { return }
+
+        try sendEscape(to: window)
+        await settlePanel(window)
+        #expect(model.screen == .list, "An unmarked Escape keeps the launcher’s existing back behavior")
+        #expect(controller.isVisible)
+        #expect(model.actionNotesEntry(actionID).markdown == draft, "Leaving the editor retains its in-memory draft")
+    }
+
     @Test func handoffTimeoutCanBeRetriedSuccessfully() async throws {
         let harness = try await ShellHarness.make(now: ShellNow.body(toDo: ["T1"]))
         let model = harness.model
@@ -715,7 +814,60 @@ struct LauncherShellModelTests {
         #expect(model.handoffStates.isEmpty)
         #expect(clipboard.string(forType: .string) == "keep after sign out")
     }
+
+    private func panelHostingView(_ window: NSWindow) -> NSView? {
+        guard let root = window.contentView else { return nil }
+        if #available(macOS 26.0, *), let glass = root as? NSGlassEffectView, let hosted = glass.contentView {
+            return hosted
+        }
+        func find(_ view: NSView) -> NSView? {
+            if String(describing: type(of: view)).contains("NSHostingView") { return view }
+            for child in view.subviews {
+                if let host = find(child) { return host }
+            }
+            return nil
+        }
+        return find(root)
+    }
+
+    private func textViews(in view: NSView) -> [NSTextView] {
+        let current = (view as? NSTextView).map { [$0] } ?? []
+        return current + view.subviews.flatMap { textViews(in: $0) }
+    }
+
+    private func click(_ view: NSView, in window: NSWindow) throws {
+        let frame = view.convert(view.bounds, to: nil)
+        let point = NSPoint(x: frame.midX, y: frame.midY)
+        guard let down = NSEvent.mouseEvent(
+            with: .leftMouseDown, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1
+        ), let up = NSEvent.mouseEvent(
+            with: .leftMouseUp, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1
+        ) else { throw NotesEventCreationError() }
+        NSApp.postEvent(up, atStart: false)
+        NSApp.sendEvent(down)
+    }
+
+    private func sendEscape(to window: NSWindow) throws {
+        guard let event = NSEvent.keyEvent(
+            with: .keyDown, location: .zero, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: window.windowNumber, context: nil, characters: "\u{1B}",
+            charactersIgnoringModifiers: "\u{1B}", isARepeat: false, keyCode: UInt16(kVK_Escape)
+        ) else { throw NotesEventCreationError() }
+        NSApp.sendEvent(event)
+    }
+
+    private func settlePanel(_ window: NSWindow) async {
+        await Task.yield()
+        try? await Task.sleep(for: .milliseconds(100))
+        window.displayIfNeeded()
+        panelHostingView(window)?.layoutSubtreeIfNeeded()
+        panelHostingView(window)?.displayIfNeeded()
+    }
 }
+
+private struct NotesEventCreationError: Error {}
 
 // MARK: - 하네스
 
@@ -904,12 +1056,17 @@ private actor ShellRouter {
     private var handoffCount = 0
     private var handoffTimeouts = 0
     private var handoffResponses = 0
+    private var actionNotes: [UUID: ActionNotes] = [:]
+    private var notesWriteCount = 0
+    private var holdingNextNotesWrite = false
+    private var heldNotesWrites: [(id: UUID, markdown: String, revision: Int, continuation: CheckedContinuation<ShellResponse, Never>)] = []
+    private var handoffNotes: [UUID: [String]] = [:]
 
     init(now: Data?) {
         self.now = now
     }
 
-    func response(method: String, path: String) async -> ShellResponse {
+    func response(method: String, path: String, queryItems: [URLQueryItem], body: Data?) async -> ShellResponse {
         if method == "POST", path == "/api/v1/consent" {
             consentCount += 1
             if holdingConsent { return await withCheckedContinuation { heldConsent.append($0) } }
@@ -950,6 +1107,7 @@ private actor ShellRouter {
                 return ShellResponse(status: 400, body: Data("{}".utf8))
             }
             handoffCount += 1
+            handoffNotes[id, default: []].append(actionNotes[id]?.markdown ?? "")
             if handoffTimeouts > 0 {
                 handoffTimeouts -= 1
                 return ShellResponse(status: 504, body: Data("""
@@ -960,6 +1118,29 @@ private actor ShellRouter {
                 return await withCheckedContinuation { heldHandoffs[id, default: []].append($0) }
             }
             return handoffResponse(id)
+        }
+        if method == "PUT", path.hasPrefix("/api/v1/actions/"), path.hasSuffix("/notes") {
+            let rawID = path.dropFirst("/api/v1/actions/".count).dropLast("/notes".count)
+            guard let id = UUID(uuidString: String(rawID)),
+                  let body,
+                  let payload = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
+                  let markdown = payload["markdown"] as? String,
+                  let revision = payload["expected_revision"] as? Int
+            else { return ShellResponse(status: 400, body: Data("{}".utf8)) }
+            notesWriteCount += 1
+            if holdingNextNotesWrite {
+                holdingNextNotesWrite = false
+                return await withCheckedContinuation {
+                    heldNotesWrites.append((id, markdown, revision, $0))
+                }
+            }
+            return saveNotes(id: id, markdown: markdown, revision: revision)
+        }
+        if method == "GET", path == "/rest/v1/actions",
+           let value = queryItems.first(where: { $0.name == "id" })?.value,
+           let id = UUID(uuidString: String(value.dropFirst(value.hasPrefix("eq.") ? 3 : 0))) {
+            let notes = actionNotes[id] ?? ActionNotes(actionID: id, markdown: "", revision: 0)
+            return ShellResponse(status: 200, body: Data("[{\"id\":\"\(id.uuidString.lowercased())\",\"notes_markdown\":\(Self.jsonString(notes.markdown)),\"notes_revision\":\(notes.revision)}]".utf8))
         }
         if method == "PATCH", path.hasPrefix("/api/v1/actions/") {
             dueCount += 1
@@ -1038,6 +1219,32 @@ private actor ShellRouter {
     func holdHandoffs() { holdingHandoffs = true }
     func timeoutNextHandoff() { handoffTimeouts += 1 }
     func handoffRequestCount() -> Int { handoffCount }
+    func handoffNotesSnapshots(for id: UUID) -> [String] { handoffNotes[id] ?? [] }
+    func holdNextNotesWrite() { holdingNextNotesWrite = true }
+    func pendingNotesWriteCount() -> Int { heldNotesWrites.count }
+    func notesWritesCount() -> Int { notesWriteCount }
+
+    func releaseHeldNotesWrite() {
+        guard let held = heldNotesWrites.first else { return }
+        heldNotesWrites.removeFirst()
+        held.continuation.resume(returning: saveNotes(id: held.id, markdown: held.markdown, revision: held.revision))
+    }
+
+    private func saveNotes(id: UUID, markdown: String, revision: Int) -> ShellResponse {
+        guard (actionNotes[id]?.revision ?? 0) == revision else {
+            return ShellResponse(status: 409, body: Data("{\"error\":{\"code\":\"conflict\",\"message\":\"Changed\"}}".utf8))
+        }
+        let saved = ActionNotes(actionID: id, markdown: markdown, revision: revision + 1)
+        actionNotes[id] = saved
+        return ShellResponse(status: 200, body: Data("{\"action_id\":\"\(id.uuidString.lowercased())\",\"markdown\":\(Self.jsonString(markdown)),\"revision\":\(saved.revision)}".utf8))
+    }
+
+    private static func jsonString(_ value: String) -> String {
+        let data = try! JSONSerialization.data(withJSONObject: [value], options: [.fragmentsAllowed])
+        let array = String(decoding: data, as: UTF8.self)
+        return String(array.dropFirst().dropLast())
+    }
+
     func handoffResponseCount() -> Int { handoffResponses }
     func pendingHandoffCount() -> Int { heldHandoffs.values.reduce(0) { $0 + $1.count } }
 
@@ -1090,19 +1297,38 @@ private final class ShellStubURLProtocol: URLProtocol, @unchecked Sendable {
         }
         let method = request.httpMethod ?? "GET"
         let path = url.path
+        let queryItems = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+        let body = Self.body(from: request)
         let box = ShellCompletion(self)
         Task {
             guard let router = await ShellRouterRegistry.shared.router(for: host) else {
                 box.fail(URLError(.cannotFindHost))
                 return
             }
-            let result = await router.response(method: method, path: path)
+            let result = await router.response(
+                method: method, path: path, queryItems: queryItems, body: body
+            )
             let response = HTTPURLResponse(url: url, statusCode: result.status, httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "application/json"])!
             box.succeed(response, body: result.body)
         }
     }
 
     override func stopLoading() {}
+
+    private static func body(from request: URLRequest) -> Data? {
+        if let body = request.httpBody { return body }
+        guard let stream = request.httpBodyStream else { return nil }
+        stream.open()
+        defer { stream.close() }
+        var data = Data()
+        var buffer = [UInt8](repeating: 0, count: 4_096)
+        while true {
+            let count = stream.read(&buffer, maxLength: buffer.count)
+            guard count > 0 else { break }
+            data.append(contentsOf: buffer.prefix(count))
+        }
+        return data.isEmpty ? nil : data
+    }
 }
 
 // URLProtocolClient is not Sendable, so the task uses this one-shot unchecked box to retain the protocol.

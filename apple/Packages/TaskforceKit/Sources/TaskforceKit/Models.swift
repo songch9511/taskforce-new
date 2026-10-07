@@ -438,9 +438,12 @@ public struct ActionRecord: Decodable, Sendable, Hashable, Identifiable {
     public let startedAt: Date?
     public let lastActivityAt: Date
     public let createdAt: Date
+    /// Per-action Markdown notes are intentionally not part of ActionSummary or the offline list cache.
+    public let notesMarkdown: String
+    public let notesRevision: Int
 
     public static let columns =
-        "id, title, scope_summary, owner, counterpart, due_date, status, needs_confirmation, confirm_reasons, started_at, last_activity_at, created_at"
+        "id, title, scope_summary, owner, counterpart, due_date, status, needs_confirmation, confirm_reasons, started_at, last_activity_at, created_at, notes_markdown, notes_revision"
 
     enum CodingKeys: String, CodingKey {
         case id, title, owner, counterpart, status
@@ -451,6 +454,44 @@ public struct ActionRecord: Decodable, Sendable, Hashable, Identifiable {
         case startedAt = "started_at"
         case lastActivityAt = "last_activity_at"
         case createdAt = "created_at"
+        case notesMarkdown = "notes_markdown"
+        case notesRevision = "notes_revision"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(UUID.self, forKey: .id)
+        title = try values.decode(String.self, forKey: .title)
+        scopeSummary = try values.decodeIfPresent(String.self, forKey: .scopeSummary)
+        owner = try values.decode(ActionOwner.self, forKey: .owner)
+        counterpart = try values.decodeIfPresent(String.self, forKey: .counterpart)
+        dueDate = try values.decodeIfPresent(LocalDate.self, forKey: .dueDate)
+        status = try values.decode(ActionStatus.self, forKey: .status)
+        needsConfirmation = try values.decode(Bool.self, forKey: .needsConfirmation)
+        confirmReasons = try values.decode([String].self, forKey: .confirmReasons)
+        startedAt = try values.decodeIfPresent(Date.self, forKey: .startedAt)
+        lastActivityAt = try values.decode(Date.self, forKey: .lastActivityAt)
+        createdAt = try values.decode(Date.self, forKey: .createdAt)
+        notesMarkdown = try values.decodeIfPresent(String.self, forKey: .notesMarkdown) ?? ""
+        notesRevision = try values.decodeIfPresent(Int.self, forKey: .notesRevision) ?? 0
+    }
+}
+
+/// Per-action notes read through RLS or written through the API.
+public struct ActionNotes: Decodable, Sendable, Hashable {
+    public let actionID: UUID
+    public let markdown: String
+    public let revision: Int
+
+    enum CodingKeys: String, CodingKey {
+        case markdown, revision
+        case actionID = "action_id"
+    }
+
+    public init(actionID: UUID, markdown: String, revision: Int) {
+        self.actionID = actionID
+        self.markdown = markdown
+        self.revision = revision
     }
 }
 

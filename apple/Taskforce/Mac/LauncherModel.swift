@@ -164,6 +164,7 @@ final class LauncherModel {
     private(set) var screen: Screen = .list
     /// 바뀌면 입력창에 포커스를 준다
     private(set) var focusRequest = 0
+    private(set) var notesEditorFocused = false
     private(set) var recentSources: [SourceSummary] = []
     private(set) var sourceText: SourceText?
     var lineSelection = LineSelection()
@@ -175,6 +176,7 @@ final class LauncherModel {
     let services: AppServices?
     let now: NowStore?
     let account: AccountStore?
+    let notesStore: ActionNotesStore?
     let changes = ActionChangeFeed()
     /// 이 기기의 저장본 (계정별 폴더). 없으면 저장본 없이 둔다 (테스트 · 설정 오류)
     let saved: SavedNowStore?
@@ -252,6 +254,10 @@ final class LauncherModel {
         self.session = session
         self.services = services
         self.account = account
+        notesStore = ActionNotesStore(
+            read: { try await services.reads.actionNotes(id: $0) },
+            write: { try await services.api.saveActionNotes(id: $0, markdown: $1, expectedRevision: $2) }
+        )
         self.saved = saved
         self.displayPreferencesDefaults = displayPreferencesDefaults
         caps = SectionCaps(displayPreferences: .load(from: displayPreferencesDefaults))
@@ -269,6 +275,7 @@ final class LauncherModel {
         self.now = now
         self.runs = runs
         configurationError = nil
+        notesStore?.setOwner(signedInUserID)
         // 지켜보던 run이 끝나면 `/now`를 다시 받는다 (바뀜 점은 초안 receipt로 서버가 켠다, 앱이 만들지 않는다)
         runs.onRunsFinished = { [weak now] in Task { await now?.load() } }
         // 계정이 떠나면 (로그아웃 · 만료 · 계정 삭제 · 전환) 그 자리에서 이 기기의 저장본(할 일 제목 · 기한 · 상태)을 모두 지운다:
@@ -297,6 +304,7 @@ final class LauncherModel {
         services = nil
         now = nil
         account = nil
+        notesStore = nil
         saved = nil
         runs = nil
         self.configurationError = configurationError
@@ -463,6 +471,54 @@ final class LauncherModel {
             state.copyError = nil
             handoffStates[target.action.id] = state
         }
+    }
+
+    func actionNotesEntry(_ id: UUID) -> ActionNotesStore.Entry {
+        notesStore?.entry(for: id) ?? .init()
+    }
+
+    func loadActionNotes(_ id: UUID) async {
+        await notesStore?.load(id)
+    }
+
+    @discardableResult
+    func editActionNotes(_ id: UUID, markdown: String) -> Bool {
+        guard let notesStore else { return false }
+        let previous = notesStore.entry(for: id).markdown
+        guard notesStore.edit(markdown, for: id) else { return false }
+        if previous != markdown { invalidateHandoffForNoteEdit(id) }
+        return true
+    }
+
+    func retryActionNotes(_ id: UUID) {
+        guard let notesStore else { return }
+        Task { _ = await notesStore.retry(id) }
+    }
+
+    func keepMyActionNotes(_ id: UUID) {
+        guard let notesStore else { return }
+        Task { _ = await notesStore.retryMine(id) }
+    }
+
+    func useServerActionNotes(_ id: UUID) {
+        notesStore?.useServerVersion(id)
+        invalidateHandoffForNoteEdit(id)
+    }
+
+    func setNotesEditorFocused(_ focused: Bool) { notesEditorFocused = focused }
+
+    private func invalidateHandoffForNoteEdit(_ id: UUID) {
+        guard var state = handoffStates[id], state.response != nil || state.isLoading else { return }
+        handoffRequestTokens[id] = nil
+        state.ownerID = nil
+        state.requestTarget = nil
+        state.response = nil
+        state.prompt = ""
+        state.isLoading = false
+        state.error = "Notes changed. Retry to prepare an updated handoff."
+        state.copied = false
+        state.copyError = nil
+        handoffStates[id] = state
     }
 
     /// 상세 칸에 보일 저장본 한 줄 (저장본 목록에서 고른 행)
@@ -862,6 +918,8 @@ final class LauncherModel {
         // 첫 로그인 · 시작 때의 세션(nil → 계정)이면 로그인 전에 받은 알림 대상 · 입력은 둔다
         let accountLeft = lastUserID != nil
         lastUserID = userID
+        notesStore?.setOwner(userID)
+        notesEditorFocused = false
         work?.cancel()
         work = nil
         handoffRequestTokens.removeAll()
@@ -922,15 +980,22 @@ final class LauncherModel {
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         let command = flags.contains(.command)
         let keyCode = Int(event.keyCode)
+        let textView = event.window?.firstResponder as? NSTextView
+        // Korean and other marked-text composition owns Escape and the navigation keys until composition ends.
+        if textView?.hasMarkedText() == true, Self.compositionKeys.contains(keyCode) { return false }
+        // Keep Escape on the established launcher back/close route. All other keys remain native editor input.
+        if notesEditorFocused {
+            if keyCode == kVK_Escape {
+                back()
+                return true
+            }
+            return false
+        }
         // 기한 고치기의 날짜 칸에 포커스가 있으면 방향키 · Tab은 날짜 칸이 쓰고, ↩는 그 날짜로 저장한다
         if event.window?.firstResponder is NSDatePicker, keyCode != kVK_Escape {
             guard keyCode == kVK_Return || keyCode == kVK_ANSI_KeypadEnter, isChoosingDue else { return false }
             chooseDue(LocalDate(date: pickedDate, timeZone: .current))
             return true
-        }
-        // 한글 등 입력기가 글자를 조합하는 중이면 ↩ · esc · 방향키 · Tab은 입력기가 쓴다 (조합을 끝내는 ↩가 행을 실행하지 않게)
-        if (event.window?.firstResponder as? NSTextView)?.hasMarkedText() == true, Self.compositionKeys.contains(keyCode) {
-            return false
         }
         if scopeMenuSelection != nil, handleScopeMenuKey(keyCode, command: command) { return true }
         if let handled = handleSubScreenKey(event, keyCode: keyCode, flags: flags) { return handled }
@@ -1609,6 +1674,18 @@ final class LauncherModel {
         Task { @MainActor [weak self] in
             guard let self else { return }
             do {
+                await notesStore?.load(id)
+                let notesSaved = await notesStore?.flush(id) ?? false
+                guard handoffRequestTokens[id] == requestToken,
+                      signedInUserID == requestUserID
+                else { return }
+                guard notesSaved else {
+                    var failed = handoffStates[id] ?? HandoffPaneState()
+                    failed.isLoading = false
+                    failed.error = notesStore?.entry(for: id).error ?? "Save notes before preparing this handoff."
+                    handoffStates[id] = failed
+                    return
+                }
                 guard let response = try await now.handoff(id) else {
                     guard handoffRequestTokens[id] == requestToken,
                           signedInUserID == requestUserID

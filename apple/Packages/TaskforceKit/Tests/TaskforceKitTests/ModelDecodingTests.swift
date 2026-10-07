@@ -30,6 +30,25 @@ struct ModelDecodingTests {
         #expect(now.weeklyCheck == WeeklyCheckPrompt(weekStart: LocalDate(year: 2026, month: 9, day: 21)!))
     }
 
+    @Test func actionRecordNotesDefaultForOlderRowsAndDecodeWhenPresent() throws {
+        let legacy = try decode(ActionRecord.self, """
+            {"id":"11111111-1111-4111-8111-111111111111","title":"자료 보내기","scope_summary":null,"owner":"me",
+             "counterpart":null,"due_date":null,"status":"open","needs_confirmation":false,"confirm_reasons":[],
+             "started_at":null,"last_activity_at":"2026-10-07T00:00:00Z","created_at":"2026-10-01T00:00:00Z"}
+            """)
+        #expect(legacy.notesMarkdown.isEmpty)
+        #expect(legacy.notesRevision == 0)
+
+        let current = try decode(ActionRecord.self, """
+            {"id":"11111111-1111-4111-8111-111111111111","title":"자료 보내기","scope_summary":null,"owner":"me",
+             "counterpart":null,"due_date":null,"status":"open","needs_confirmation":false,"confirm_reasons":[],
+             "started_at":null,"last_activity_at":"2026-10-07T00:00:00Z","created_at":"2026-10-01T00:00:00Z",
+             "notes_markdown":"## 다음 단계\\n- [ ] 자료 보내기","notes_revision":6}
+            """)
+        #expect(current.notesMarkdown == "## 다음 단계\n- [ ] 자료 보내기")
+        #expect(current.notesRevision == 6)
+    }
+
     @Test(arguments: [Fixtures.nowOlderServer, Fixtures.nowNullWeeklyCheck])
     func weeklyCheckIsOptional(_ json: String) throws {
         let now = try decode(NowResponse.self, json)

@@ -29,6 +29,29 @@ struct TaskforceReadsTests {
         #expect(query["type"] == ["neq.user_seen"])
         #expect(query["action_id"] == ["eq.11111111-1111-4111-8111-111111111111"])
     }
+
+    @Test func actionNotesReadsOnlyNoteColumnsForOneAction() async throws {
+        let host = "notes-\(UUID().uuidString.lowercased()).supabase.test"
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [PathStubProtocol.self]
+        let supabase = SupabaseClient(
+            supabaseURL: URL(string: "https://\(host)")!,
+            supabaseKey: "test-public-key",
+            options: SupabaseClientOptions(
+                auth: .init(storage: EmptyAuthStorage(), autoRefreshToken: false),
+                global: .init(session: URLSession(configuration: configuration))
+            )
+        )
+
+        let notes = try #require(try await TaskforceReads(supabase: supabase).actionNotes(id: Fixtures.actionID))
+        #expect(notes.actionID == Fixtures.actionID)
+        #expect(notes.markdown == "## Next steps\n- [ ] Send the deck")
+        #expect(notes.revision == 7)
+        let requests = PathStubProtocol.requests(host: host)
+        #expect(requests.count == 1)
+        #expect(requests[0].path.hasSuffix("/actions"))
+        #expect(requests[0].query.first(where: { $0.name == "select" })?.value == "id,notes_markdown,notes_revision")
+    }
 }
 
 /// 실행 읽기 (RLS `execution_*`): 경로 · 필터 · 순서, `stopped_at` 열이 없는 DB면 그 열 없이 다시 읽는다
@@ -255,6 +278,7 @@ private final class PathStubProtocol: URLProtocol {
       "started_at": null, "last_activity_at": "2026-10-03T00:00:00Z", "created_at": "2026-10-01T00:00:00Z"
     }]
     """
+    static let notesRow = ###"[{"id":"11111111-1111-4111-8111-111111111111","notes_markdown":"## Next steps\n- [ ] Send the deck","notes_revision":7}]"###
 
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
@@ -265,7 +289,8 @@ private final class PathStubProtocol: URLProtocol {
         Self.recorded.withLock {
             $0[url.host ?? "", default: []].append(Recorded(path: url.path, query: components?.queryItems ?? []))
         }
-        let body = url.path.hasSuffix("/actions") ? Self.actionRow : "[]"
+        let notesRead = components?.queryItems?.contains { $0.name == "select" && $0.value == "id,notes_markdown,notes_revision" } == true
+        let body = url.path.hasSuffix("/actions") ? (notesRead ? Self.notesRow : Self.actionRow) : "[]"
         let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "application/json"])!
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
         client?.urlProtocol(self, didLoad: Data(body.utf8))

@@ -42,10 +42,10 @@ struct LauncherRootView: View {
                     .strokeBorder(TFColor.borderDefault, lineWidth: 1)
             }
         }
-        .onChange(of: model.focusRequest, initial: true) { searchFocused = true }
+        .onChange(of: model.focusRequest, initial: true) { if !model.notesEditorFocused { searchFocused = true } }
         // 줄 고르기 · 기한 고르기 · Run with AI · 초안에서 돌아오면 다시 입력창으로
-        .onChange(of: inputLocked) { _, locked in if !locked { searchFocused = true } }
-        .onChange(of: model.isSubScreen) { _, sub in if !sub { searchFocused = true } }
+        .onChange(of: inputLocked) { _, locked in if !locked && !model.notesEditorFocused { searchFocused = true } }
+        .onChange(of: model.isSubScreen) { _, sub in if !sub && !model.notesEditorFocused { searchFocused = true } }
         // Realtime · 다시 불러오기 · 범위 · 펼침으로 목록이 바뀌어도 고르던 행을 그대로
         .onChange(of: model.items.map(\.id)) { model.reconcileSelection() }
         // 고른 할 일이 바뀌면 바뀜 점 · seen (화살표로 지나가기 포함)

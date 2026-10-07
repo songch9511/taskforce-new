@@ -111,6 +111,30 @@ struct APIClientTests {
         #expect(body["due_date"] is NSNull)
     }
 
+    @Test func actionNotesUseRevisionCheckedPutAndPreserveMarkdownWhitespace() async throws {
+        let response = try await client(body: ###"{"action_id":"11111111-1111-4111-8111-111111111111","markdown":"## Next steps\n- [ ] Send the deck  ","revision":4}"###)
+            .saveActionNotes(id: Fixtures.actionID, markdown: "## Next steps\n- [ ] Send the deck  ", expectedRevision: 3)
+        #expect(response.actionID == Fixtures.actionID)
+        #expect(response.markdown == "## Next steps\n- [ ] Send the deck  ")
+        #expect(response.revision == 4)
+        let request = try #require(last)
+        #expect(request.method == "PUT")
+        #expect(request.url.path == "/api/v1/actions/11111111-1111-4111-8111-111111111111/notes")
+        #expect(try json(request.body) as NSDictionary == [
+            "markdown": "## Next steps\n- [ ] Send the deck  ", "expected_revision": 3
+        ] as NSDictionary)
+    }
+
+    @Test func actionNotesConflictRemainsVisibleToCaller() async throws {
+        do {
+            _ = try await client(status: 409, body: #"{"error":{"code":"conflict","message":"Notes changed"}}"#)
+                .saveActionNotes(id: Fixtures.actionID, markdown: "mine", expectedRevision: 2)
+            Issue.record("Expected a revision conflict")
+        } catch let error as APIError {
+            #expect(error.isConflict)
+        }
+    }
+
     @Test func actionEndpointsUseRightPaths() async throws {
         let api = client(body: #"{"action":\#(Fixtures.actionSummary)}"#)
         _ = try await api.deleteAction(id: Fixtures.actionID)

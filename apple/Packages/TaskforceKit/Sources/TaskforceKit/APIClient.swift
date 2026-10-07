@@ -122,6 +122,14 @@ public struct APIClient: Sendable {
         return response.action
     }
 
+    /// Persist the per-action Markdown notes with optimistic revision checking.
+    public func saveActionNotes(id: UUID, markdown: String, expectedRevision: Int) async throws -> ActionNotes {
+        try await send(
+            .put, "actions/\(id.lowercased)/notes",
+            body: ActionNotesRequest(markdown: markdown, expectedRevision: expectedRevision)
+        )
+    }
+
     /// 실제로 지우지 않고 취소(dropped)로 둔다 (서버). 확인 요청에 "아니에요"도 이것.
     public func deleteAction(id: UUID) async throws -> ActionSummary {
         let response: ActionResponse = try await send(.delete, "actions/\(id.lowercased)")
@@ -417,6 +425,16 @@ public struct APIClient: Sendable {
 /// POST /api/v1/actions/:id/progress 본문
 struct ProgressRequest: Encodable {
     let state: WorkState
+}
+
+struct ActionNotesRequest: Encodable {
+    let markdown: String
+    let expectedRevision: Int
+
+    enum CodingKeys: String, CodingKey {
+        case markdown
+        case expectedRevision = "expected_revision"
+    }
 }
 
 struct MissingReportRequest: Encodable {
