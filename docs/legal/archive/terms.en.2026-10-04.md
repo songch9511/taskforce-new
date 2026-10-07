@@ -2,7 +2,7 @@
 
 Taskforce (AI project manager)
 
-- Effective date: 2026-10-07
+- Effective date: 2026-10-04
 - 한국어: [이용약관](terms.ko.md) (the Korean version prevails if the two differ)
 
 ## 1. Purpose
@@ -34,7 +34,7 @@ These terms set out how you may use the Taskforce app (iOS and macOS) and its se
 
 1. **Connect only accounts and data you are authorized to use.** When you connect data belonging to your company, clients, or other people, you are responsible for confirming that it may be used this way, including processing by external AI. Do not connect a service if your organization's rules prohibit connecting it to outside services.
 2. The Service only reads from connected services. It never sends email or changes events, documents, or messages.
-3. Your use of connected services (such as Notion, Google, and Slack) is also subject to their terms. Connections may stop working because of their policy changes, outages, or revoked or expired permissions (for example, a Gmail connection may need to be reconnected if Google authorization is revoked or expires).
+3. Your use of connected services (such as Notion, Google, and Slack) is also subject to their terms. Connections may stop working because of their policy changes, outages, or expired permissions (for example, during the beta Gmail must be reconnected every 7 days).
 4. How we process source text, send it to external AI, and retain and delete it is described in our [Privacy Policy](privacy.en.md).
 
 ## 6. AI results
@@ -85,4 +85,4 @@ If we find such conduct, we may restrict your use after notifying you. In urgent
 - Address: 262-20, Galma-dong, Seo-gu, Daejeon, Republic of Korea
 - Email: privacy@taskforcelabs.dev
 
-These terms take effect on 2026-10-07.
+These terms take effect on 2026-10-04.

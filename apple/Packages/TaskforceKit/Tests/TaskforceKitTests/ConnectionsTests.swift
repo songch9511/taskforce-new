@@ -130,7 +130,7 @@ struct ConnectionsTests {
         #expect(ConnectionState.syncFailed(failing).statusLine(for: .notion, syncing: true, comingSoon: false, now: now)?.text == "Syncing…")
         #expect(ConnectionState.needsReconnect(record("gmail", .reauth)).statusLine(for: .gmail, syncing: true, comingSoon: false, now: now)
             == ConnectionStatusLine("Reconnect to keep syncing", isAlert: true))
-        #expect(ConnectionState.notConnected.statusLine(for: .gmail, syncing: false, comingSoon: false) == ConnectionStatusLine("Beta · Reconnect every 7 days"))
+        #expect(ConnectionState.notConnected.statusLine(for: .gmail, syncing: false, comingSoon: false) == ConnectionStatusLine("Beta · Google verification pending"))
         #expect(ConnectionState.notConnected.statusLine(for: .notion, syncing: false, comingSoon: false) == nil)
         #expect(ConnectionState.notConnected.statusLine(for: .slack, syncing: false, comingSoon: true) == ConnectionStatusLine("Coming soon"))
         let unnamed = ConnectionRecord(id: UUID(), provider: "slack", displayName: nil, status: .active, lastSyncedAt: nil, lastError: nil)
@@ -199,7 +199,7 @@ struct ConnectionsTests {
     @Test func providerStages() {
         #expect(ConnectionProvider.stageOne == [.notion, .google, .gmail, .slack])
         #expect(ConnectionProvider.stageTwo.allSatisfy { !$0.isStageOne })
-        #expect(ConnectionProvider.gmail.note == "Beta · Reconnect every 7 days")
+        #expect(ConnectionProvider.gmail.note == "Beta · Google verification pending")
         #expect(ConnectionProvider.google.readsBeforeConnecting.count == 3)
         #expect(ConnectionProvider.stageTwo.allSatisfy { $0.logo == nil })
     }
@@ -208,9 +208,9 @@ struct ConnectionsTests {
     @Test func googleAndGmailDisclosureCopy() {
         let aiDisclosure = "Read-only. Sent to AI only after your consent. Taskforce asks AI providers not to use your text for training or keep it after a request. If no provider meets those conditions, we don't send it."
         #expect(ConnectionProvider.gmail.readsBeforeConnecting == [
-            "Email you sent or received. Newsletters and promotions are skipped.",
+            "Read-only email access: messages you sent or received. Newsletters and promotions are skipped. Taskforce never sends or changes email.",
             aiDisclosure,
-            "Beta: reconnect every 7 days.",
+            "Google verification is pending. Google may show an unverified app warning before you connect.",
         ])
         // Meet 줄은 G2 dev 회의 시험 결과에 맞춰 고친다 (서버 LIST_ATTENDED_MEETINGS와 같이): 그때까지 그대로
         #expect(ConnectionProvider.google.readsBeforeConnecting == [
