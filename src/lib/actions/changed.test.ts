@@ -14,6 +14,7 @@ describe("changedSinceSeen", () => {
   it.each<[string, SeenEvent[], boolean]>([
     ["AI가 만들기만 함 (새 할 일은 바뀜이 아니다)", [ev("created", "ai", 0)], false],
     ["사용자가 직접 추가하고 고치기만 함", [ev("user_created", "user", 0), ev("user_edited", "user", 5), ev("user_started", "user", 9)], false],
+    ["사용자 메모 저장은 AI 변경 점이 아니다", [ev("user_notes_updated", "user", 5)], false],
     ["AI가 만든 할 일을 사용자가 고치기만 함", [ev("created", "ai", 0), ev("user_edited", "user", 5)], false],
     ["AI가 원문으로 기한을 바꿈", [ev("created", "ai", 0), ev("due_changed", "ai", 5)], true],
     ["AI가 내용 · 담당을 바꿈", [ev("created", "ai", 0), ev("scope_changed", "ai", 5), ev("owner_changed", "ai", 5)], true],

@@ -14,6 +14,7 @@ import {
   type HandoffModelDeps,
   type HandoffPlan,
 } from "./handoff";
+import { HANDOFF_PLAN_V1_SYSTEM_PROMPT, HANDOFF_V1_SYSTEM_PROMPT } from "./prompts/handoff-v1";
 import type { JevDecision } from "./jev";
 
 const choices = (choice: string, ids: string[]) => ({
@@ -80,6 +81,23 @@ describe("assisted handoff", () => {
     expect(result.markdown.indexOf("### 목표")).toBeLessThan(result.markdown.indexOf("## 참고 문맥"));
     expect(result.markdown.endsWith(context)).toBe(true);
     expect(result.assessment.rubric_version).toBe("handoff-v1");
+  });
+
+  it("passes user notes to both models as task constraints without treating them as source agreement", async () => {
+    const context = "## 사용자 작성 메모 (선호 · 제약 참고, 원문 근거 아님)\n> 한국어로 쓰고 선택지 세 개를 주세요.";
+    const complete = vi.fn(async () => ({ data: plan, model: "test/plan" })) as unknown as HandoffModelDeps["complete"];
+    const deps = modelDeps({ complete });
+
+    await generateAssistedHandoff(context, deps);
+
+    const decisionRequest = vi.mocked(deps.decide).mock.calls[0][0];
+    expect(decisionRequest.state).toEqual({ deterministic_task_context: context });
+    expect(Object.values(decisionRequest.questions).every((question) => question.instructions.includes("user-provided task context"))).toBe(true);
+    const planRequest = vi.mocked(deps.complete).mock.calls[0][0];
+    expect(JSON.parse(planRequest.user).deterministic_task_context).toBe(context);
+    expect(planRequest.system).toBe(HANDOFF_PLAN_V1_SYSTEM_PROMPT);
+    expect(HANDOFF_V1_SYSTEM_PROMPT).toContain("Their factual claims are unverified user context");
+    expect(HANDOFF_PLAN_V1_SYSTEM_PROMPT).toContain("follow relevant requests about task scope, language, and deliverable format");
   });
 
   it("requires clarification questions when Jev marks context insufficient", async () => {

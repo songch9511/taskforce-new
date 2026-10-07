@@ -2,6 +2,9 @@ import { describe, expect, it } from "vitest";
 
 import {
   createActionResponseSchema,
+  ACTION_NOTES_MAX_UTF16,
+  actionNotesRequestSchema,
+  actionNotesResponseSchema,
   createSourceRequestSchema,
   MAX_SOURCE_TEXT,
   missingReportRequestSchema,
@@ -30,6 +33,24 @@ describe("createSourceRequestSchema", () => {
     [{ kind: "note", text: "a", external_url: "not a url" }],
   ])("잘못된 요청은 거부한다 %#", (body) => {
     expect(createSourceRequestSchema.safeParse(body).success).toBe(false);
+  });
+});
+
+describe("Action notes contract", () => {
+  it("accepts exact Markdown, including empty and whitespace-only values, up to 10,000 UTF-16 code units", () => {
+    expect(actionNotesRequestSchema.parse({ markdown: "", expected_revision: 0 })).toEqual({ markdown: "", expected_revision: 0 });
+    expect(actionNotesRequestSchema.parse({ markdown: " \n\t ", expected_revision: 4 })).toEqual({ markdown: " \n\t ", expected_revision: 4 });
+    expect(actionNotesRequestSchema.safeParse({ markdown: "x".repeat(ACTION_NOTES_MAX_UTF16), expected_revision: 0 }).success).toBe(true);
+    expect(actionNotesRequestSchema.safeParse({ markdown: "x".repeat(ACTION_NOTES_MAX_UTF16 + 1), expected_revision: 0 }).success).toBe(false);
+    expect(actionNotesRequestSchema.safeParse({ markdown: "🧭".repeat(ACTION_NOTES_MAX_UTF16 / 2), expected_revision: 0 }).success).toBe(true);
+    expect(actionNotesRequestSchema.safeParse({ markdown: "🧭".repeat(ACTION_NOTES_MAX_UTF16 / 2 + 1), expected_revision: 0 }).success).toBe(false);
+  });
+
+  it("requires a nonnegative integer revision and validates save responses", () => {
+    expect(actionNotesRequestSchema.safeParse({ markdown: "x", expected_revision: -1 }).success).toBe(false);
+    expect(actionNotesRequestSchema.safeParse({ markdown: "x", expected_revision: 1.5 }).success).toBe(false);
+    expect(actionNotesRequestSchema.safeParse({ markdown: "x", expected_revision: 0, extra: true }).success).toBe(false);
+    expect(actionNotesResponseSchema.safeParse({ action_id: "11111111-1111-4111-8111-111111111111", markdown: "x", revision: 1 }).success).toBe(true);
   });
 });
 
