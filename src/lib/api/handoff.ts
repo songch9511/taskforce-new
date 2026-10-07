@@ -35,7 +35,7 @@ export async function handleHandoff(request: Request, deps: HandoffHandlerDeps):
       return response;
     }
     if (error instanceof AiBudgetError) {
-      return errorResponse(error.code === "ai_budget_exhausted" ? 403 : 503, error.code, error.userMessage);
+      return errorResponse(["ai_budget_exhausted", "billing_required"].includes(error.code) ? 403 : 503, error.code, error.userMessage);
     }
     if (error instanceof DeadlineExceededError) {
       deps.onDeadlineExceeded?.(error);

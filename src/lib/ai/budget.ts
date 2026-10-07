@@ -1,3 +1,6 @@
+import { inBillingSync } from '@/lib/billing/sync-context';
+import { billingEnabled, billingBudgets } from '@/lib/billing/state';
+import { requireBillingAccess } from '@/lib/billing/service';
 import "server-only";
 import { AiBudgetError } from "./budget-error";
 export { AiBudgetError } from "./budget-error";
@@ -58,6 +61,7 @@ const decisionRequest = z.object({ model: z.literal("typesafe/jev-1.13"), state:
 export function budgetFetch(admin: SupabaseClient, userId: string, send: typeof fetch = fetch): typeof fetch {
   return async (url, init) => {
     if (!userId) throw new AiBudgetError("ai_user_required");
+    await requireBillingAccess(admin, userId);
     const endpoint = String(url) === CHAT ? "chat" : String(url) === EMBEDDINGS ? "embeddings" : String(url) === DECISIONS ? "decisions" : null;
     if (!endpoint) throw new AiBudgetError("ai_price_bound_unavailable");
     if (init?.method !== "POST" || typeof init.body !== "string" || Buffer.byteLength(init.body) > MAX_BODY_BYTES) throw new AiBudgetError("ai_request_bound_unavailable");
@@ -119,7 +123,7 @@ export function budgetFetch(admin: SupabaseClient, userId: string, send: typeof 
     // Round UP plus one micro-dollar for floating conversion error (< $10 admission); DB uses exact numeric.
     const reserved = (Math.ceil(model.context_length * items * (price.prompt + price.completion + cacheReadPrice)) + 1) / 1_000_000;
     const id = crypto.randomUUID();
-    const reservation = await admin.rpc("reserve_ai_spend", { p_user_id: userId, p_id: id, p_endpoint: endpoint, p_model: body.model, p_reserved_usd: reserved });
+    const reservation = await admin.rpc(billingEnabled() ? "reserve_billing_ai_spend" : "reserve_ai_spend", { p_user_id: userId, p_id: id, p_endpoint: endpoint, p_model: body.model, p_reserved_usd: reserved, ...(billingEnabled() ? { ...billingBudgets(), p_initial_sync: inBillingSync(userId) } : {}) });
     if (reservation.error) throw new AiBudgetError(reservation.error.message);
     // No finally/release: any abort, network/read failure or process death keeps the hold.
     const result = await send(url, { ...init, body: JSON.stringify({ ...body, provider: { ...body.provider, max_price: price } }) });

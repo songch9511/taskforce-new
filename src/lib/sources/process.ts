@@ -195,7 +195,7 @@ export const RETRY_MAX_ATTEMPTS = 3;
 
 /** 실패 기록 (processing_summary): 몇 번째 시도였고 다시 해 볼 만한지. 동의 철회 · 마지막 시도는 다시 하지 않는다 */
 export function failureSummary(error: unknown, attempt: number, now = new Date()): { attempt: number; retryable: boolean; failed_at: string } {
-  return { attempt, retryable: !(error instanceof ConsentRequiredError) && !(error instanceof AiBudgetError && error.code === "ai_budget_exhausted") && attempt < RETRY_MAX_ATTEMPTS, failed_at: now.toISOString() };
+  return { attempt, retryable: !(error instanceof ConsentRequiredError) && !(error instanceof AiBudgetError && ["ai_budget_exhausted", "billing_required"].includes(error.code)) && attempt < RETRY_MAX_ATTEMPTS, failed_at: now.toISOString() };
 }
 
 export type ProcessResult = {
@@ -410,7 +410,7 @@ export async function processTaskSource(
         processed_at: new Date().toISOString(),
         processing_error: userFacingError(error),
         processing_error_code: sourceFailureCode(error),
-        processing_summary: { retryable: !(error instanceof AiBudgetError && error.code === "ai_budget_exhausted") },
+        processing_summary: { retryable: !(error instanceof AiBudgetError && ["ai_budget_exhausted", "billing_required"].includes(error.code)) },
       }),
     );
     // 처리를 마치지 못한 할 일은 동의한 뒤 동기화가 다시 처리한다 (pendingTasks). 닫힌 실패가 아니라 source_failed는 남기지 않는다.

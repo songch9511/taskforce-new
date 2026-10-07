@@ -1,3 +1,4 @@
+import { billingEnabled } from '@/lib/billing/state';
 import { cronAuthorized, cronUnauthorized } from "@/lib/api/cron";
 import { checkSlackConnectionTokens } from "@/lib/connectors/slack/run";
 import { EXECUTION_TEXT_RETENTION_DAYS, retentionCutoff, SLACK_PENDING_RETENTION_DAYS, SLACK_THREAD_RETENTION_DAYS } from "@/lib/retention";
@@ -29,6 +30,9 @@ export async function GET(request: Request) {
   if (!cronAuthorized(request)) return cronUnauthorized();
 
   const admin = createAdminClient();
+  const billingCleanup = billingEnabled()
+    ? await admin.rpc("purge_billing_checkout_intents").then(({ data, error }) => error ? null : Number(data))
+    : 0;
   const now = new Date();
   const before = retentionCutoff(now).toISOString();
   const totals: PurgeCounts = { sources_purged: 0, judge_logs_deleted: 0, rate_limit_events_deleted: 0, missing_reports_deleted: 0 };
@@ -94,6 +98,7 @@ export async function GET(request: Request) {
   return Response.json(
     {
       ...totals,
+      billing_checkouts_purged: billingCleanup,
       artifacts_purged: artifactsPurged,
       execution_text_purged: executionTextPurged,
       slack_tokens_checked: slackTokens?.checked ?? 0,
@@ -103,6 +108,6 @@ export async function GET(request: Request) {
       slack_sources_repurged: slack.sources_repurged,
       calls,
     },
-    { status: artifactsPurged === null || executionTextPurged === null ? 500 : 200 },
+    { status: billingCleanup === null || artifactsPurged === null || executionTextPurged === null ? 500 : 200 },
   );
 }

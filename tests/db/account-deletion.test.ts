@@ -17,6 +17,9 @@ const USER_TABLES = [
   "action_links",
   "actions",
   "ai_spend_attempts",
+  "billing_accounts",
+  "billing_checkout_intents",
+  "billing_webhook_events",
   "claims",
   "connection_requests",
   "connections",
@@ -53,6 +56,9 @@ let db: PGlite;
 async function seed(userId: string, tokenHex: string) {
   const one = async (sql: string, params: unknown[]) => (await db.query<{ id: string }>(sql, params)).rows[0].id;
 
+  await db.query("insert into billing_accounts(user_id) values($1)",[userId]);
+  await db.query("insert into billing_checkout_intents(user_id,plan,accepted_terms_version) values($1,'monthly','2026-10-08')",[userId]);
+  await db.query("insert into billing_webhook_events(id,user_id) values($1,$2)",[randomUUID(),userId]);
   await db.query("select reserve_ai_spend($1,$2,'chat','m',0.1)", [userId, randomUUID()]);
   const connectionId = await one(
     `insert into public.connections (user_id, provider, external_account_id) values ($1, 'notion', 'ws') returning id`,
@@ -248,6 +254,8 @@ describe("계정 삭제 (auth.users on delete cascade)", () => {
     const aliceAfter = await rowCounts(ALICE);
     expect(aliceAfter).toEqual(Object.fromEntries(USER_TABLES.map((t) => [t, 0])));
     expect(await secretCount(aliceConnection)).toBe(0);
+    // Only a pseudonymous intent remains to cancel a delayed post-deletion purchase.
+    expect((await db.query("select count(*)::int n from billing_checkout_intents where user_id is null")).rows).toEqual([{n:1}]);
 
     expect(await rowCounts(BOB)).toEqual(bobBefore);
     expect(await secretCount(bobConnection)).toBe(1);

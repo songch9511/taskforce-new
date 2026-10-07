@@ -2,7 +2,7 @@
 
 Taskforce (AI project manager)
 
-- Effective date: 2026-10-07
+- Effective date: 2026-10-08
 - 한국어: [이용약관](terms.ko.md) (the Korean version prevails if the two differ)
 
 ## 1. Purpose
@@ -13,8 +13,19 @@ These terms set out how you may use the Taskforce app (iOS and macOS) and its se
 
 1. The Service finds the work you committed to in meeting notes, messages, and email from services you connect (such as Notion, Google, and Slack), keeps it organized, updates it when due dates or scope change, and shows the quote each task came from. When you ask for a draft for a task (such as an email or document), the AI writes it and saves it in the app (during the beta, only on accounts we enable).
 2. The Service is a **beta**. Features may change or be removed, it may contain errors, and we may end the beta.
-3. The Service is **free** during the beta. If we introduce fees, we will tell you at least 30 days in advance and will not charge you unless you separately agree.
+3. New accounts can try the Service free and then choose an optional paid subscription as described below. Existing free beta access is preserved under section 2A.8.
 4. The Service is distributed through TestFlight or as a Mac installer file the Company provides directly. If you use TestFlight, Apple's terms also apply.
+
+## 2A. Optional paid subscriptions
+
+1. New accounts receive a 7-day, card-free trial starting with their first successful source sync. The trial includes $1 of AI processing in total and does not convert to a paid subscription automatically.
+2. Subscriptions cost **USD $9 per account per month** or **USD $91.80 per account per year** (15% less than twelve monthly payments), plus applicable taxes shown at checkout. Annual subscriptions are charged in one payment. Payment starts immediately when you complete checkout, including during a trial, and renews automatically until cancelled.
+3. Both plans include $3 of AI processing per UTC calendar month, resetting on the first day of each month. Unused allowance does not roll over. AI requests reserve their verified maximum cost until the provider confirms the actual cost; reserved and confirmed costs count toward the allowance. AI processing pauses if the remaining allowance cannot cover a request. There are no automatic overage charges. Saved tasks remain available to view and manage.
+4. Payments are sold and processed by **Lemon Squeezy as merchant of record** under its [Buyer Terms](https://www.lemonsqueezy.com/buyer-terms). Taskforce receives the payment confirmation and subscription status, and enables access for the Taskforce account that opened checkout. Use the same account on the website and Mac app.
+5. Cancel future renewals in **Account → Manage subscription**, or at [Manage subscription](https://api.taskforcelabs.dev/billing), before your renewal date. Access continues until the paid period ends unless the payment is refunded. Cancellation alone does not refund an unused period. If you need help cancelling, contact us at least 48 hours before renewal.
+6. For a refund request, duplicate charge, or failure to receive paid access, contact privacy@taskforcelabs.dev with your order number. Requests are reviewed according to the circumstances, Lemon Squeezy's buyer terms and refund procedures, and applicable law. No clause limits a statutory withdrawal, cancellation, or refund right. A refund may end the paid access it covered.
+7. Account deletion first cancels future renewal. Deletion may be delayed while an open checkout expires or cancellation is confirmed, so that billing is not left active. Deleting an account does not itself request a refund and does not erase transaction records that Lemon Squeezy must retain. Deleting only the app does not cancel a subscription.
+8. This optional subscription offer applies to new accounts and existing users who separately choose it. Existing free beta users keep their free access unless we give at least 30 days' notice and they separately agree to pay. No existing user is enrolled or charged automatically.
 
 ## 3. Agreement and changes
 
@@ -28,7 +39,7 @@ These terms set out how you may use the Taskforce app (iOS and macOS) and its se
 2. You must be at least 14 years old to use the Service.
 3. The beta is not offered to people who live in the European Economic Area (EEA, including the European Union) or the United Kingdom. Please do not sign up from these regions.
 4. Keep your account and devices secure. Tell us right away if you learn your account has been used without permission.
-5. You can delete your account at any time in app → Settings → Delete Account (Mac: Settings → Account → Delete Account). Deletion removes your stored data immediately and cannot be undone.
+5. You can delete your account at any time in app → Settings → Delete Account (Mac: Settings → Account → Delete Account). Once deletion completes, it removes your stored app data and cannot be undone. Billing cancellation and limited payment records are described in section 2A and the Privacy Policy.
 
 ## 5. Connections and permissions
 
@@ -66,7 +77,7 @@ If we find such conduct, we may restrict your use after notifying you. In urgent
 
 ## 10. Limitation of liability
 
-1. The Service is provided free of charge as a beta, without any warranty that it is fit for a particular purpose or free of errors.
+1. The Service is provided as a beta, without any warranty that it is fit for a particular purpose or free of errors.
 2. We are not liable for damage caused by the following, except damage caused by our intent or gross negligence:
    - Following an AI result that was wrong or incomplete without checking it
    - Outages, policy changes, or expired permissions of connected services
@@ -85,4 +96,4 @@ If we find such conduct, we may restrict your use after notifying you. In urgent
 - Address: 262-20, Galma-dong, Seo-gu, Daejeon, Republic of Korea
 - Email: privacy@taskforcelabs.dev
 
-These terms take effect on 2026-10-07.
+These terms take effect on 2026-10-08.

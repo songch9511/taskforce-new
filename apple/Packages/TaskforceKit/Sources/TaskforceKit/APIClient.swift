@@ -12,6 +12,7 @@ public enum APIErrorCode: String, Decodable, Sendable {
     case aiPricingUnavailable = "ai_pricing_unavailable"
     case aiProviderBoundViolation = "ai_provider_bound_violation"
     case aiBudgetUnavailable = "ai_budget_unavailable"
+    case billingRequired = "billing_required"
 }
 
 public enum APIError: Error, Equatable, Sendable, CustomStringConvertible {
@@ -46,8 +47,10 @@ public enum APIError: Error, Equatable, Sendable, CustomStringConvertible {
     /// 화면에 보여줄 한 줄 (화면 틀은 영어, docs/BRAND.md "UI 문구"). 서버의 한국어 설명은 보이지 않는다.
     public var userMessage: String {
         switch self {
+        case .server(_, .billingRequired, _):
+            "Your trial or subscription has ended. Open Settings → Account → Subscription to continue AI processing."
         case .server(_, .aiBudgetExhausted, _):
-            "Your $10 beta AI allowance cannot cover this request. Reservations count until confirmed. You can still manage tasks and connections."
+            "Your included AI allowance cannot cover this request. Reservations count until confirmed. You can still manage tasks and connections."
         case .server(_, .aiPricingUnavailable, _):
             "AI is unavailable because its price limit cannot be verified."
         case .server(_, .aiProviderBoundViolation, _):
@@ -302,6 +305,27 @@ public struct APIClient: Sendable {
 
     public func aiBudget() async throws -> AiSpendSummary {
         try await send(.get, "ai-budget")
+    }
+
+    public func billing() async throws -> BillingSummary {
+        try await send(.get, "billing")
+    }
+
+    public func billingCheckout(plan: BillingPlan) async throws -> URL {
+        struct Request: Encodable {
+            let plan: BillingPlan
+            let termsVersion = "2026-10-08"
+            enum CodingKeys: String, CodingKey { case plan; case termsVersion = "terms_version" }
+        }
+        struct Response: Decodable { let url: URL }
+        let response: Response = try await send(.post, "billing/checkout", body: Request(plan: plan))
+        return try BillingSummary.validatedURL(response.url)
+    }
+
+    public func billingPortal() async throws -> URL {
+        struct Response: Decodable { let url: URL }
+        let response: Response = try await send(.post, "billing/portal")
+        return try BillingSummary.validatedURL(response.url)
     }
 
     // MARK: 요청

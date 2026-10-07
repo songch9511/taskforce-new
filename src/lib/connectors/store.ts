@@ -1,3 +1,4 @@
+import { requireSyncBillingAccess } from '@/lib/billing/service';
 import "server-only";
 
 import type { SupabaseClient } from "@supabase/supabase-js";
@@ -290,6 +291,7 @@ export function ingestDeps(admin: SupabaseClient, options: { notifyFrom?: Date |
     },
 
     insertSource: async (connection, item) => {
+      await requireSyncBillingAccess(admin, connection.userId);
       const row: Record<string, unknown> = {
         user_id: connection.userId,
         connection_id: connection.id,
@@ -557,6 +559,7 @@ export function taskDeps(admin: SupabaseClient): NotionTaskDeps {
     },
 
     insertTaskSource: async (connection, item) => {
+      await requireSyncBillingAccess(admin, connection.userId);
       const { data, error } = await admin
         .from("sources")
         .insert({

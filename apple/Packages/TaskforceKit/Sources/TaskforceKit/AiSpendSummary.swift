@@ -14,10 +14,10 @@ public struct AiSpendSummary: Decodable, Equatable, Sendable {
         case pendingCount = "pending_count", remainingUSD = "remaining_usd", status
     }
 
-    public static let explanation = "Free beta. No billing and no monthly reset. This allowance covers cumulative AI supplier costs during the beta, separately from execution credits. The verified worst-case amount stays reserved until the provider confirms the cost. A reservation is an upper bound, not confirmed spend."
+    public static let explanation = "AI processing is included in your plan, separately from execution credits. See Account for your trial or subscription. Paid plans reset their allowance each UTC calendar month; free legacy beta access retains its original cumulative allowance. The verified worst-case amount stays reserved until the provider confirms the cost. A reservation is an upper bound, not confirmed spend. No automatic overage charges."
     public var notice: String? {
         switch status {
-        case "exhausted": "Your $10 beta AI allowance is fully spent or reserved. You can still manage tasks and connections."
+        case "exhausted": "Your AI allowance is fully spent or reserved. You can still manage saved tasks and connections."
         case "provider_bound_violation": "AI is paused because a provider exceeded its reserved cost."
         default: nil
         }

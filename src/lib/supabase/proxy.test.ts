@@ -27,11 +27,11 @@ afterEach(() => {
 });
 
 describe("isPublicPath", () => {
-  it.each(["/login", "/auth/confirm", "/auth/signout"])("%s는 로그인 없이 열린다", (path) => {
+  it.each(["/login", "/auth/confirm", "/auth/signout", "/auth/billing", "/billing", "/billing/sign-in"])("%s는 로그인 없이 열린다", (path) => {
     expect(isPublicPath(path)).toBe(true);
   });
 
-  it.each(["/", "/actions/1", "/loginx", "/authx"])("%s는 로그인이 필요하다", (path) => {
+  it.each(["/", "/actions/1", "/loginx", "/authx", "/billingx"])("%s는 로그인이 필요하다", (path) => {
     expect(isPublicPath(path)).toBe(false);
   });
 });
