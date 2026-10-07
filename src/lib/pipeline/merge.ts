@@ -258,7 +258,8 @@ export async function mergeJudged(
   const outcomes: MergeOutcome[] = [];
   for (const { candidate, judge } of judged) {
     // Jev가 기각한 새 약속은 버린다. 변화 발언(완료 · 연장 등)은 "내 새 약속"이 아니어서 기각되기 쉬우므로 매칭까지 보낸다.
-    if (candidate.signal === "commitment" && judge.decision === "reject") {
+    // 명시된 다른 담당자의 일은 변화 발언이어도 기존 내 Action에 붙이지 않는다.
+    if (judge.decision === "reject" && (candidate.signal === "commitment" || judge.rule === "explicit_other_assignee")) {
       outcomes.push({ quote: candidate.quote, signal: candidate.signal, relation: "rejected", actionId: null, confidence: 1 });
       continue;
     }

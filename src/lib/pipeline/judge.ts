@@ -27,6 +27,7 @@ import {
 import { JUDGE_THRESHOLDS, type JudgeThresholds } from "./judge.config";
 import { quoteContext, quoteLineIndexes } from "./text";
 import type { CandidateSignal } from "./extract";
+import { hasExplicitOtherAssignee } from "./ownership";
 
 // ③ Jev 판정 (docs/TRUTH_RULES.md 1장). 후보 하나에 질문 여러 개를 한 번에 묻고,
 // 돌아온 확률을 임계값과 비교해 자동 반영 / 확인 요청 / 기각으로 나눈다. 판정 규칙은 순수 함수라 단위 테스트로 고정한다.
@@ -99,8 +100,9 @@ export type JudgeOutcome = {
    * addressed_request: 사용자를 @이름으로 불렀다. sole_recipient_request: 사용자가 유일한 받는 사람인 메일이다.
    * identity_ambiguous: 참석자 중 동명이인과 겹치는 이름이 있어 화자·담당 확인이 필요하다.
    * meeting_assignment · document_assignment: 원문에서 사용자에게 직접 할당됐지만 수락 여부만 불확실하다.
+   * explicit_other_assignee: 문서 항목에 명시된 다른 담당자. 확인 요청과 기존 Action 병합도 막는다.
    */
-  rule?: "addressed_request" | "sole_recipient_request" | "identity_ambiguous" | "meeting_assignment" | "document_assignment";
+  rule?: "addressed_request" | "sole_recipient_request" | "identity_ambiguous" | "meeting_assignment" | "document_assignment" | "explicit_other_assignee";
 };
 
 
@@ -299,8 +301,12 @@ export async function judgeCandidate(
           ...(identityAmbiguous ? { rule: "identity_ambiguous" as const } : {}),
         }
       : outcome;
+  const explicitOtherAssignee = (meeting || document) && hasExplicitOtherAssignee(source.text, candidate.quote, identity);
+  const finalOutcome: JudgeOutcome = explicitOtherAssignee
+    ? { decision: "reject", reasons: ["NOT_MY_ACTION"], rule: "explicit_other_assignee" }
+    : judgedOutcome;
   return {
-    ...judgedOutcome,
+    ...finalOutcome,
     signals,
     ...(speaker ? { speaker } : {}),
     ...(speakerAmbiguous ? { speakerAmbiguous: true as const } : {}),
