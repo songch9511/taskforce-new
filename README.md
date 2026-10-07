@@ -51,9 +51,9 @@ Taskforce는 회의록·메시지·메일에서 내가 맡은 일을 찾아 정�
 
 ## 다운로드와 설치
 
-**[Mac 베타 다운로드 · 0.1.0 (25)](https://github.com/songch9511/taskforce-new/releases/download/v0.1.0-beta.25/Taskforce-0.1.0-25.dmg)**
+**[Mac 베타 다운로드 · 0.1.0 (26)](https://github.com/songch9511/taskforce-new/releases/download/v0.1.0-beta.26/Taskforce-0.1.0-26.dmg)**
 
-macOS 15 이상에서 사용할 수 있는 베타입니다. [릴리스 노트와 체크섬](https://github.com/songch9511/taskforce-new/releases/tag/v0.1.0-beta.25)을 확인해 주세요.
+macOS 15 이상에서 사용할 수 있는 베타입니다. [릴리스 노트와 체크섬](https://github.com/songch9511/taskforce-new/releases/tag/v0.1.0-beta.26)을 확인해 주세요.
 
 | 확인할 내용 | 안내 |
 |---|---|
@@ -64,7 +64,7 @@ macOS 15 이상에서 사용할 수 있는 베타입니다. [릴리스 노트와
 
 다음 순서로 설치합니다.
 
-1. 다운로드한 `Taskforce-0.1.0-25.dmg`를 엽니다.
+1. 다운로드한 `Taskforce-0.1.0-26.dmg`를 엽니다.
 2. `Taskforce.app`을 `Applications` 폴더로 옮깁니다.
 3. `Applications`에서 Taskforce를 실행하고 Google로 로그인합니다.
 4. `Settings → Connections`에서 사용할 수 있는 서비스를 연결한 뒤 `⌥ Space`로 할 일을 확인합니다.
