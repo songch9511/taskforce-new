@@ -44,3 +44,14 @@ it.each(["update", "lookup", "settlement", "list"])("counts %s infrastructure fa
   if (stage === "settlement") expect(rpc).toHaveBeenCalledOnce();
   else expect(rpc).not.toHaveBeenCalled();
 });
+
+it("reconciles anonymous spend retained after account deletion",async()=>{
+  vi.stubEnv("OPENROUTER_API_KEY","key");
+  const rows=[{id:"orphan",user_id:null,generation_id:"gen-orphan",model:"m"}];
+  const q={select:()=>q,is:vi.fn(()=>q),not:()=>q,order:()=>q,limit:()=>q,update:()=>q,eq:()=>q,throwOnError:vi.fn(async()=>({data:rows}))};
+  const rpc=vi.fn(async()=>({error:null}));
+  vi.stubGlobal("fetch",async()=>new Response(JSON.stringify({data:{id:"gen-orphan",model:"m",total_cost:.01,created_at:"2026-10-05T00:00:00Z"}})));
+  expect(await reconcileAiSpend({from:()=>q,rpc} as unknown as SupabaseClient)).toEqual({attempted:1,settled:1,deferred:0,errors:0});
+  expect(q.is).toHaveBeenCalledWith("user_id",null);
+  expect(rpc).toHaveBeenCalledWith("settle_ai_spend",{p_user_id:null,p_id:"orphan",p_cost_usd:.01,p_generation_id:"gen-orphan"});
+});

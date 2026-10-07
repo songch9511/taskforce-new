@@ -16,10 +16,20 @@ struct AiSpendSummaryTests {
         #expect(AiSpendSummary.explanation.contains("an upper bound, not confirmed spend"))
     }
     @Test func budgetErrorsAreDistinctAndNotConsent() throws {
-        let codes: [APIErrorCode] = [.aiBudgetExhausted, .aiPricingUnavailable, .aiProviderBoundViolation, .aiBudgetUnavailable]
+        let codes: [APIErrorCode] = [.aiUserDailyBudgetExhausted, .aiGlobalDailyBudgetExhausted, .aiGlobalBudgetExhausted, .aiBudgetExhausted, .aiPricingUnavailable, .aiProviderBoundViolation, .aiBudgetUnavailable]
         let errors = codes.map { APIError.server(status: 503, code: $0, message: "private") }
-        #expect(Set(errors.map(\.userMessage)).count == 4)
+        #expect(Set(errors.map(\.userMessage)).count == 7)
         #expect(errors.allSatisfy { !$0.isConsentRequired && !$0.userMessage.contains("private") })
+    }
+    @Test func dailyBudgetCodesDecodeAndHaveDistinctRunMessages() throws {
+        for code in [APIErrorCode.aiUserDailyBudgetExhausted, .aiGlobalDailyBudgetExhausted, .aiGlobalBudgetExhausted] {
+            let json = try JSONEncoder().encode(code.rawValue)
+            #expect(try JSONDecoder().decode(APIErrorCode.self, from: json) == code)
+            #expect(try JSONDecoder().decode(SourceFailureCode.self, from: json).rawValue == code.rawValue)
+        }
+        #expect(RunLane.FailureKind("ai_user_daily_budget_exhausted") == .aiDailyBudgetExhausted)
+        #expect(RunLane.FailureKind("ai_global_daily_budget_exhausted") == .aiDailyBudgetExhausted)
+        #expect(RunLane.FailureKind("ai_global_budget_exhausted") == .aiGlobalBudgetExhausted)
     }
     @Test func summaryIsAuthenticatedReadWithoutCreditGate() async throws {
         let fixture = APIClientExecutionTests()

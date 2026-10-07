@@ -6,6 +6,7 @@ import { processSource } from "@/lib/sources/process";
 
 import {
   addConnectionStats,
+  taskDeps,
   ingestDeps,
   loadIdentity,
   markBackfilled,
@@ -696,4 +697,10 @@ describe("saveConnection: 다시 연결", () => {
       expect(rpcs).toEqual([]);
     }
   });
+});
+
+it("pending tasks use the bounded SQL queue before loading task states", async () => {
+  const { admin, rpcs } = fakeAdmin({}, []);
+  await taskDeps(admin).pendingTasks({ id: "c1", userId: "u1" } as Connection);
+  expect(rpcs).toEqual([{ name: "pending_task_sources", args: { p_user_id: "u1", p_connection_id: "c1", p_since: expect.any(String) } }]);
 });

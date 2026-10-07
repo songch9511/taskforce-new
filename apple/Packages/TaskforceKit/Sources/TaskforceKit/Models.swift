@@ -114,6 +114,9 @@ public struct WeeklyCheckPrompt: Codable, Sendable, Hashable {
 
 /// contract.ts `SOURCE_FAILURE_CODES`: 원문 처리 실패 까닭
 public enum SourceFailureCode: String, Codable, Sendable, CaseIterable {
+    case aiUserDailyBudgetExhausted = "ai_user_daily_budget_exhausted"
+    case aiGlobalDailyBudgetExhausted = "ai_global_daily_budget_exhausted"
+    case aiGlobalBudgetExhausted = "ai_global_budget_exhausted"
     case aiBudgetExhausted = "ai_budget_exhausted"
     case aiPricingUnavailable = "ai_pricing_unavailable"
     case aiProviderBoundViolation = "ai_provider_bound_violation"

@@ -108,9 +108,9 @@ afterEach(() => {
 });
 
 describe("기본값 (문서 2-6)", () => {
-  it("첫 14일 · 최대 30일 · 겹침 1시간 · 하루 창 · 머리글 200 · 본문 20 · 동시 4 · seen 2,000", () => {
+  it("첫 3일 · 최대 30일 · 겹침 1시간 · 하루 창 · 머리글 200 · 본문 20 · 동시 4 · seen 2,000", () => {
     expect(DEFAULT_GMAIL_SYNC).toEqual({
-      lookbackDays: 14,
+      lookbackDays: 3,
       maxGapDays: 30,
       overlapMs: HOUR,
       windowMs: DAY,
@@ -131,11 +131,11 @@ describe("기본값 (문서 2-6)", () => {
 });
 
 describe("syncGmail: 커서 · 창", () => {
-  it("첫 동기화는 14일 전부터, after − 1시간에서 시작하는 하루 창을 오래된 것부터 받고 지금까지 따라잡는다", async () => {
+  it("첫 동기화는 3일 전부터, after − 1시간에서 시작하는 하루 창을 오래된 것부터 받고 지금까지 따라잡는다", async () => {
     const gmail = fakeGmail([]);
     const result = await syncGmail(connection(), gmail.client, fakeIngest().deps, input, options());
 
-    const start = NOW - 14 * DAY - HOUR;
+    const start = NOW - 3 * DAY - HOUR;
     expect(gmail.queries[0]).toBe(`after:${seconds(start)} before:${seconds(start + DAY)} -in:chats -in:drafts -category:promotions -category:social`);
     const windows = gmail.queries.map(windowOf);
     for (let i = 1; i < windows.length; i++) {
@@ -144,8 +144,8 @@ describe("syncGmail: 커서 · 창", () => {
     }
     for (const [after, before] of windows.slice(0, -1)) expect(before - after).toBe(86_400);
     expect(windows.at(-1)![1]).toBe(seconds(NOW));
-    // 14일을 23시간씩 나아가므로 창 15개
-    expect(windows).toHaveLength(15);
+    // 3일을 23시간씩 나아가므로 창 4개
+    expect(windows).toHaveLength(4);
     expect(result.cursor).toEqual({ after: iso(NOW), seen: {} });
     expect(result.rateLimited).toBe(false);
   });
@@ -162,10 +162,10 @@ describe("syncGmail: 커서 · 창", () => {
     expect(windowOf(gmail.queries[0])[0]).toBe(seconds(NOW - 3 * DAY - HOUR));
   });
 
-  it("커서 모양이 다르면 첫 동기화처럼 14일 전부터", async () => {
+  it("커서 모양이 다르면 첫 동기화처럼 3일 전부터", async () => {
     const gmail = fakeGmail([]);
     await syncGmail(connection({ since: "2026-09-01T00:00:00Z" }), gmail.client, fakeIngest().deps, input, options());
-    expect(windowOf(gmail.queries[0])[0]).toBe(seconds(NOW - 14 * DAY - HOUR));
+    expect(windowOf(gmail.queries[0])[0]).toBe(seconds(NOW - 3 * DAY - HOUR));
   });
 
   it("창 하나를 다 결정하면 after를 창 끝으로 옮기고, 다음 창에서 멈추면 거기 그대로 둔다", async () => {

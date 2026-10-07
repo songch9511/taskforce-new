@@ -1,3 +1,4 @@
+import { aiBudgetErrorResponse } from "@/lib/api/ai-budget";
 import { AiBudgetError } from "@/lib/ai/budget-error";
 import { z } from "zod";
 
@@ -95,7 +96,7 @@ export async function POST(request: Request, { params }: Params) {
     }
     return Response.json(result satisfies MissingReportResponse);
   } catch (error) {
-    if (error instanceof AiBudgetError) return errorResponse(error.code === "ai_budget_exhausted" ? 403 : 503, error.code, error.userMessage);
+    if (error instanceof AiBudgetError) return aiBudgetErrorResponse(error);
     if (error instanceof QuoteNotInSourceError) return errorResponse(400, "invalid_request", error.message);
     // 처리 도중에 동의를 철회함 (모델 호출 직전 확인)
     if (error instanceof ConsentRequiredError) return consentRequired();

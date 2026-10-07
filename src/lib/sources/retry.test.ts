@@ -404,15 +404,7 @@ describe("retryDeps: DB 조건", () => {
     const { admin, queries } = fakeAdmin([[row({ id: "a" })]]);
     const since = new Date(NOW.getTime() - RETRY_WINDOW_MS);
     expect((await retryDeps(admin).candidates(since)).map((c) => c.id)).toEqual(["a"]);
-    expect(queries[0].slice(2)).toEqual([
-      'in processing_status ["pending","processing","failed"]',
-      "neq kind task",
-      "is raw_text_purged_at null",
-      `gte created_at ${since.toISOString()}`,
-      "or processing_summary->>retryable.is.null,processing_summary->>retryable.eq.true",
-      'order created_at {"ascending":true}',
-      "limit 50",
-    ]);
+    expect(queries[0]).toEqual([`rpc ai_budget_retry_candidates ${JSON.stringify({ p_since: since.toISOString(), p_limit: 50 })}`]);
   });
 
   it("가져가기: 읽은 뒤 상태 · 처리 기록이 그대로일 때만 이번 시도로 바꾼다", async () => {
@@ -422,7 +414,7 @@ describe("retryDeps: DB 조건", () => {
     expect(await deps.claim(failed, 2)).toBe(true);
     expect(queries[0]).toContain(`contains processing_summary ${JSON.stringify(failed.processing_summary)}`);
     expect(queries[0]).toContain("eq processing_status failed");
-    expect(queries[0][1]).toMatch(/^update \{"processing_status":"processing","processing_summary":\{"attempt":2,"started_at":"/);
+    expect(queries[0][1]).toMatch(/^update \{"processing_status":"processing","processing_summary":\{"attempt":2,"budget_deferrals":0,"started_at":"/);
 
     // 기록이 없던 원문은 여전히 없을 때만. 다른 실행이 먼저 바꿨으면(0행) 가져가지 않는다
     expect(await deps.claim(row({ processing_status: "pending", processing_summary: null }), 1)).toBe(false);
@@ -463,13 +455,14 @@ describe("retryDeps: DB 조건", () => {
     // 멈춘 원문을 앞에 둔다 (실패 목록이 길어도 시간 한도 안에서 먼저 닫는다)
     expect((await retryDeps(admin).expired({ createdBefore, startedBefore, limit: EXPIRE_BATCH })).map((r) => r.id)).toEqual(["a", "c", "b", "d"]);
     const columns = "select id, user_id, kind, processing_status, processing_summary, processing_error, processed_at, created_at";
-    const failedBase = ["from sources", columns, "eq processing_status failed", "neq kind task", `lt created_at ${createdBefore.toISOString()}`];
+    const failedBase = ["from sources", columns, "eq processing_status failed", "neq kind task", `lt created_at ${createdBefore.toISOString()}`, "is processing_summary->>budget_deferred null"];
     expect(queries[0]).toEqual([
       "from sources",
       columns,
       'in processing_status ["pending","processing"]',
       "neq kind task",
       `lt created_at ${createdBefore.toISOString()}`,
+      "is processing_summary->>budget_deferred null",
       `or processing_summary->>started_at.is.null,processing_summary->>started_at.lt.${startedBefore.toISOString()}`,
       'order created_at {"ascending":true}',
       `limit ${EXPIRE_BATCH}`,
@@ -659,10 +652,19 @@ describe("retryDeps: DB 조건", () => {
     const identity = { name: "나", aliases: [], emails: [] };
     vi.mocked(processSource).mockResolvedValueOnce({ ok: false, needsConfirmation: [] });
     expect(await deps.process(row(), identity, 2)).toBe(false);
-    expect(vi.mocked(processSource).mock.calls[0][1]).toEqual({ id: "s1", userId: "u1", attempt: 2, retry: true, notify: true });
+    expect(vi.mocked(processSource).mock.calls[0][1]).toEqual({ id: "s1", userId: "u1", attempt: 2, retry: true, notify: true, budgetDeferrals: 0 });
 
     vi.mocked(processSource).mockRejectedValueOnce(new ConsentRequiredError());
     await expect(deps.process(row(), identity, 2)).rejects.toBeInstanceOf(ConsentRequiredError);
     expect(queries).toEqual([]);
   });
+});
+
+it("budget pauses wait for reset, preserve attempt count, and outlive the retry window", () => {
+  const summary = { attempt: 0, budget_deferred: true, budget_deferrals: 1, retryable: true, retry_at: NOW.toISOString() };
+  const paused = row({ processing_status: "pending", processing_summary: summary, created_at: minutesAgo(3 * DAY) });
+  expect(retryPlan(paused, new Date(NOW.getTime() - 1))).toBeNull();
+  expect(retryPlan(paused, NOW)).toEqual({ kind: "retry", attempt: 1 });
+  expect(expiredAttempt({ ...paused, processed_at: null }, NOW)).toBeNull();
+  expect(retryPlan({ ...paused, processing_summary: { ...summary, retryable: false, retry_at: null } }, NOW)).toBeNull();
 });
