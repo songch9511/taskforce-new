@@ -10,6 +10,7 @@
 		025F33A82A421DE1FC6CC896 /* AppEnvironment.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9B61143ECDB3A70FF32355F0 /* AppEnvironment.swift */; };
 		03921D74809B28972F7A6762 /* LauncherPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = D29FF94F9BE621AF3A6095B4 /* LauncherPanel.swift */; };
 		03F3AC43B3737F9107E22981 /* UsageCreditsPane.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBB841970EC9F4B0554357BF /* UsageCreditsPane.swift */; };
+		08C389069FFE570DF202D982 /* ActionNotesStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7319870688FB5695CA3F1DA /* ActionNotesStore.swift */; };
 		1D21B5CFAA41940E0383FCBE /* LauncherModelSessionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D30BD73A1EB36763CBA0B37E /* LauncherModelSessionTests.swift */; };
 		205EDA554EE2E30B65C54E07 /* LauncherLane.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20348734D46E428BDA04EE04 /* LauncherLane.swift */; };
 		25515FBF682CB243F81947D9 /* SettingsSnapshot.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4980BC09AD044F0F918D864B /* SettingsSnapshot.swift */; };
@@ -37,6 +38,7 @@
 		959174039B7582454891C897 /* NowStoreSourceMetadataTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C163B11C1DF9E018538C4257 /* NowStoreSourceMetadataTests.swift */; };
 		9731E4E4A9B4D4EC556F263B /* MacAppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = D553D4AC83AD95CD5BD8CBF7 /* MacAppDelegate.swift */; };
 		A4261CCE0661340A86AA7AE8 /* TaskDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E8C9F31E468AFC305D9E9EF /* TaskDetailView.swift */; };
+		ACCC9ACC163CFBE6998F9F90 /* ActionNotesStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 40D8861E6E171D9B69BBECEB /* ActionNotesStoreTests.swift */; };
 		AF947F2BD43B557FCF6EAACA /* LauncherListPane.swift in Sources */ = {isa = PBXBuildFile; fileRef = C314FCA48C9C473BEC0F5388 /* LauncherListPane.swift */; };
 		B12630859AFFAB6A88E428E6 /* GoogleSignIn.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0EEFD4BECF876565725DFA15 /* GoogleSignIn.swift */; };
 		B1CC59880F2E7DB9E145834B /* AccountViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9E2BFF6EF4C37CFDCEBD88DB /* AccountViews.swift */; };
@@ -73,6 +75,7 @@
 		29973AAF33CBAF50B52E623E /* PrivacySettingsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PrivacySettingsTests.swift; sourceTree = "<group>"; };
 		2DD246DFD55D3C8EB54CDCF0 /* TaskforceApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TaskforceApp.swift; sourceTree = "<group>"; };
 		3D43D09D38ACB649AE46CFE3 /* MacSettingsTabTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacSettingsTabTests.swift; sourceTree = "<group>"; };
+		40D8861E6E171D9B69BBECEB /* ActionNotesStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ActionNotesStoreTests.swift; sourceTree = "<group>"; };
 		4575E663CCDD3F320C873CBA /* TaskforceTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = TaskforceTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		4980BC09AD044F0F918D864B /* SettingsSnapshot.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsSnapshot.swift; sourceTree = "<group>"; };
 		524FC1544A0E35537AE10E50 /* LauncherSnapshot.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LauncherSnapshot.swift; sourceTree = "<group>"; };
@@ -105,6 +108,7 @@
 		DE37FA5998D1A9FB0C6A9AF2 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		E0E7EEAC44B716850440D045 /* LauncherSearchBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LauncherSearchBar.swift; sourceTree = "<group>"; };
 		E188CB78A16E96E9EFA7B9FA /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		E7319870688FB5695CA3F1DA /* ActionNotesStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ActionNotesStore.swift; sourceTree = "<group>"; };
 		F0C3F69D6A673231631FB11C /* NowStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NowStore.swift; sourceTree = "<group>"; };
 		F8F4C0A94A16821764C38281 /* LauncherDetailPane.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LauncherDetailPane.swift; sourceTree = "<group>"; };
 		F9CA2946F6A830979A66143B /* LauncherStateView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LauncherStateView.swift; sourceTree = "<group>"; };
@@ -147,6 +151,7 @@
 		484E126A92686BFB7FB4C5FC /* Mac */ = {
 			isa = PBXGroup;
 			children = (
+				E7319870688FB5695CA3F1DA /* ActionNotesStore.swift */,
 				2069D753238A9DAE1E390CB3 /* HotKeyCenter.swift */,
 				C269834CACB1135D6F14018F /* LauncherActionBar.swift */,
 				F8F4C0A94A16821764C38281 /* LauncherDetailPane.swift */,
@@ -194,6 +199,7 @@
 		8E2E91C6463591C5FAE186CB /* TaskforceTests */ = {
 			isa = PBXGroup;
 			children = (
+				40D8861E6E171D9B69BBECEB /* ActionNotesStoreTests.swift */,
 				D30BD73A1EB36763CBA0B37E /* LauncherModelSessionTests.swift */,
 				AB6C40E329E6EAB3368F0C0B /* LauncherPresentationFixtureRendersTests.swift */,
 				8CB05D753291715B60E890FF /* LauncherRunTests.swift */,
@@ -353,6 +359,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				ACCC9ACC163CFBE6998F9F90 /* ActionNotesStoreTests.swift in Sources */,
 				1D21B5CFAA41940E0383FCBE /* LauncherModelSessionTests.swift in Sources */,
 				49860D5AA10B47E94115ACA7 /* LauncherPresentationFixtureRendersTests.swift in Sources */,
 				7985AF2095DB0B6C7E070C31 /* LauncherRunTests.swift in Sources */,
@@ -371,6 +378,7 @@
 				463B3B9643F7288FE0FDD9B7 /* AccountDeletion.swift in Sources */,
 				E2E22004841EC931D746713B /* AccountStore.swift in Sources */,
 				B1CC59880F2E7DB9E145834B /* AccountViews.swift in Sources */,
+				08C389069FFE570DF202D982 /* ActionNotesStore.swift in Sources */,
 				025F33A82A421DE1FC6CC896 /* AppEnvironment.swift in Sources */,
 				B12630859AFFAB6A88E428E6 /* GoogleSignIn.swift in Sources */,
 				BDD2EC4FA6C9D0C3A53DD751 /* HotKeyCenter.swift in Sources */,

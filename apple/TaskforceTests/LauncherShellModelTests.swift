@@ -268,7 +268,7 @@ struct LauncherShellModelTests {
         model.syncSeen()
         #expect(await harness.router.seenIDs().isEmpty)
 
-        model.move(1)
+        #expect(model.handleKey(.key(kVK_DownArrow)))
         model.syncSeen()
         await harness.waitUntil { await harness.router.seenIDs() == [t1] }
         #expect(!model.showsDot(t1))
@@ -357,6 +357,21 @@ struct LauncherShellModelTests {
         #expect(!closed)
         #expect(model.handleKey(.key(kVK_Escape)))
         #expect(closed)
+    }
+
+    @Test func notesEditorFocusLeavesLauncherShortcutsToTextEditor() async throws {
+        let harness = try await ShellHarness.make(now: ShellNow.body(toDo: ["T1", "T2"]))
+        let model = harness.model
+        let selected = model.selectedItem?.id
+        model.setNotesEditorFocused(true)
+
+        #expect(!model.handleKey(.key(kVK_ANSI_R, command: true)))
+        #expect(!model.handleKey(.key(kVK_DownArrow)))
+        #expect(!model.handleKey(.key(kVK_Return)))
+        #expect(model.screen == .list)
+        #expect(model.selectedItem?.id == selected)
+
+        model.setNotesEditorFocused(false)
     }
 
     /// 범위 메뉴에서 ↩: 고른 범위로
@@ -592,7 +607,642 @@ struct LauncherShellModelTests {
         #expect(harness.model.items.contains { if case .saved(let row) = $0 { row.task.title == "Saved T1" } else { false } })
         #expect(harness.model.bodyState == .list)
     }
+
+    @Test func handoffKeepsPerActionRequestsAndCopiesOnlyWhenReady() async throws {
+        let harness = try await ShellHarness.make(now: ShellNow.body(toDo: ["A", "B"]))
+        let model = harness.model
+        let now = try #require(model.now)
+        let aItem = try #require(model.items.first { $0.action?.title == "A" })
+        let bItem = try #require(model.items.first { $0.action?.title == "B" })
+        let a = LauncherModel.Target(action: try #require(aItem.action), group: try #require(aItem.group))
+        let b = LauncherModel.Target(action: try #require(bItem.action), group: try #require(bItem.group))
+        let clipboard = NSPasteboard(name: NSPasteboard.Name("TaskforceHandoff-\(UUID().uuidString)"))
+        clipboard.clearContents()
+        #expect(clipboard.setString("keep until explicit copy", forType: .string))
+        model.pasteboard = clipboard
+        await harness.router.holdHandoffs()
+
+        model.perform(.handoff, on: a)
+        await harness.waitUntil { await harness.router.pendingHandoffCount() == 1 }
+        model.perform(.handoff, on: a)
+        #expect(await harness.router.handoffRequestCount() == 1)
+        #expect(model.handoffPaneState?.isLoading == true)
+        model.copyHandoffPrompt()
+        #expect(model.handoffPaneState?.isLoading == true)
+        #expect(clipboard.string(forType: .string) == "keep until explicit copy")
+
+        model.perform(.handoff, on: b)
+        await harness.waitUntil { await harness.router.pendingHandoffCount() == 2 }
+        await harness.router.releaseHandoff(a.action.id)
+        await harness.waitUntil {
+            !now.handoffBusy.contains(a.action.id) && model.handoffStates[a.action.id]?.isLoading == false
+        }
+        #expect(model.screen == .handoff(b))
+        #expect(model.handoffStates[a.action.id]?.response == nil)
+
+        await harness.router.releaseHandoff(b.action.id)
+        await harness.waitUntil { model.handoffStates[b.action.id]?.response != nil }
+        model.perform(.handoff, on: a)
+        await harness.waitUntil { await harness.router.pendingHandoffCount() == 1 }
+        #expect(await harness.router.handoffRequestCount() == 3)
+        await harness.router.releaseHandoff(a.action.id)
+        await harness.waitUntil { model.screen == .handoff(a) && model.handoffStates[a.action.id]?.response != nil }
+        #expect(clipboard.string(forType: .string) == "keep until explicit copy")
+
+        let editedPrompt = "Edited prompt for the receiving assistant."
+        model.handoffPrompt = editedPrompt
+        model.copyHandoffPrompt()
+        #expect(clipboard.string(forType: .string) == editedPrompt)
+        #expect(model.handoffStates[a.action.id]?.copied == true)
+    }
+
+    @Test func handoffWaitsForLatestActionNotesSave() async throws {
+        let harness = try await ShellHarness.make(now: ShellNow.body(toDo: ["A"]))
+        let model = harness.model
+        let item = try #require(model.items.first { $0.action?.title == "A" })
+        let target = LauncherModel.Target(action: try #require(item.action), group: try #require(item.group))
+        let notes = "Latest task notes, including the final handoff context."
+        await model.loadActionNotes(target.action.id)
+        #expect(model.actionNotesEntry(target.action.id).isLoaded)
+        #expect(model.editActionNotes(target.action.id, markdown: notes))
+        await harness.router.holdNextNotesWrite()
+
+        model.perform(.handoff, on: target)
+        await harness.waitUntil { await harness.router.pendingNotesWriteCount() == 1 }
+        #expect(await harness.router.handoffRequestCount() == 0)
+
+        await harness.router.releaseHeldNotesWrite()
+        await harness.waitUntil { model.handoffPaneState?.response != nil }
+        #expect(await harness.router.handoffNotesSnapshots(for: target.action.id) == [notes])
+        #expect(await harness.router.handoffRequestCount() == 1)
+    }
+
+    @Test func mountedNotesEditorEscapeRetainsDraftAndCancelsMarkedTextFirst() async throws {
+        let harness = try await ShellHarness.make(now: ShellNow.body(toDo: ["T1"]))
+        let model = harness.model
+        let item = try #require(model.items.first { $0.action?.title == "T1" })
+        let actionID = try #require(item.action?.id)
+        let draft = "## Keep this draft\n\nAdd a final Korean review note."
+        model.notesStore?.applySample(draft, for: actionID)
+
+        let controller = LauncherPanelController(model: model)
+        controller.show()
+        let window = try #require(model.presentationAnchor())
+        let previousDelegate = window.delegate
+        window.delegate = nil
+        defer {
+            controller.hide()
+            window.delegate = previousDelegate
+            model.notesStore?.setOwner(nil)
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+        await settlePanel(window)
+        await harness.waitUntil { controller.isVisible && window.isKeyWindow && model.items.contains { $0.action?.id == actionID } }
+        model.openDetail(for: item)
+        await settlePanel(window)
+        let host = try #require(panelHostingView(window))
+        let candidate = try #require(textViews(in: host).first {
+            $0.isEditable && $0.convert($0.bounds, to: nil).midX > LauncherPanelController.size.width / 2
+        })
+        await harness.waitUntil { candidate.string == draft }
+        try click(candidate, in: window)
+        await settlePanel(window)
+
+        await harness.waitUntil { model.notesEditorFocused && window.firstResponder is NSTextView }
+        let editor = try #require(window.firstResponder as? NSTextView)
+        #expect(editor.string == draft, "The live first responder is the mounted notes editor")
+        #expect(model.notesEditorFocused)
+        guard editor.string == draft, model.notesEditorFocused else { return }
+
+        editor.setSelectedRange(NSRange(location: (editor.string as NSString).length, length: 0))
+        editor.setMarkedText(
+            "한", selectedRange: NSRange(location: 1, length: 0),
+            replacementRange: NSRange(location: NSNotFound, length: 0)
+        )
+        #expect(editor.hasMarkedText())
+        try sendEscape(to: window)
+        await settlePanel(window)
+        #expect(!editor.hasMarkedText(), "Escape cancels Korean composition before leaving the detail pane")
+        #expect(model.screen.isDetail)
+        #expect(model.actionNotesEntry(actionID).markdown == draft)
+
+        await harness.waitUntil { model.notesEditorFocused && window.firstResponder is NSTextView }
+        let focusedEditor = try #require(window.firstResponder as? NSTextView)
+        #expect(focusedEditor.string == draft)
+        #expect(model.notesEditorFocused)
+        guard focusedEditor.string == draft, model.notesEditorFocused else { return }
+
+        try sendEscape(to: window)
+        await settlePanel(window)
+        #expect(model.screen == .list, "An unmarked Escape keeps the launcher’s existing back behavior")
+        #expect(controller.isVisible)
+        #expect(model.actionNotesEntry(actionID).markdown == draft, "Leaving the editor retains its in-memory draft")
+    }
+
+    @Test func handoffTimeoutCanBeRetriedSuccessfully() async throws {
+        let harness = try await ShellHarness.make(now: ShellNow.body(toDo: ["T1"]))
+        let model = harness.model
+        let item = try #require(model.items.first { $0.action?.title == "T1" })
+        let target = LauncherModel.Target(action: try #require(item.action), group: try #require(item.group))
+        await harness.router.timeoutNextHandoff()
+
+        model.perform(.handoff, on: target)
+        await harness.waitUntil { model.handoffPaneState?.error != nil && model.handoffPaneState?.isLoading == false }
+        #expect(model.handoffPaneState?.error == "AI took too long to prepare this handoff. Try again.")
+        #expect(await harness.router.handoffRequestCount() == 1)
+
+        model.retryHandoff()
+        await harness.waitUntil { model.handoffPaneState?.response != nil }
+        #expect(await harness.router.handoffRequestCount() == 2)
+        #expect(model.handoffPaneState?.error == nil)
+    }
+
+    @Test func handoffCannotCopyPromptAfterTheActionChanges() async throws {
+        let harness = try await ShellHarness.make(now: ShellNow.body(toDo: ["T1"]))
+        let model = harness.model
+        let now = try #require(model.now)
+        let item = try #require(model.items.first { $0.action?.title == "T1" })
+        let target = LauncherModel.Target(action: try #require(item.action), group: try #require(item.group))
+        let clipboard = NSPasteboard(name: NSPasteboard.Name("TaskforceHandoff-\(UUID().uuidString)"))
+        clipboard.clearContents()
+        #expect(clipboard.setString("preserve this text", forType: .string))
+        model.pasteboard = clipboard
+
+        model.perform(.handoff, on: target)
+        await harness.waitUntil { model.handoffStates[target.action.id]?.response != nil }
+        #expect(model.handoffStates[target.action.id]?.prompt.isEmpty == false)
+
+        let renamedNow = String(decoding: ShellNow.body(toDo: ["T1"]), as: UTF8.self)
+            .replacingOccurrences(of: "\"title\":\"T1\"", with: "\"title\":\"T1 renamed\"")
+        await harness.router.setNow(Data(renamedNow.utf8))
+        await now.load()
+        await harness.waitUntil {
+            guard case .handoff(let current) = model.screen else { return false }
+            return current.action.title == "T1 renamed" && model.handoffPaneState?.error != nil
+        }
+
+        #expect(model.handoffPaneState?.response == nil)
+        #expect(model.handoffPrompt.isEmpty)
+        model.copyHandoffPrompt()
+        #expect(clipboard.string(forType: .string) == "preserve this text")
+    }
+
+    @Test func heldHandoffCannotSurfaceAfterSignOut() async throws {
+        let harness = try await ShellHarness.make(now: ShellNow.body(toDo: ["T1"]))
+        let model = harness.model
+        let item = try #require(model.items.first { $0.action?.title == "T1" })
+        let target = LauncherModel.Target(action: try #require(item.action), group: try #require(item.group))
+        let clipboard = NSPasteboard(name: NSPasteboard.Name("TaskforceHandoff-\(UUID().uuidString)"))
+        clipboard.clearContents()
+        #expect(clipboard.setString("keep after sign out", forType: .string))
+        model.pasteboard = clipboard
+        await harness.router.holdHandoffs()
+
+        model.perform(.handoff, on: target)
+        await harness.waitUntil { await harness.router.pendingHandoffCount() == 1 }
+        harness.session.apply(event: .signedOut, session: nil)
+        model.sessionChanged()
+        #expect(model.screen == .list)
+        #expect(model.handoffStates.isEmpty)
+
+        await harness.router.releaseHandoff(target.action.id)
+        await harness.waitUntil { await harness.router.handoffResponseCount() == 1 }
+        try await Task.sleep(for: .milliseconds(100))
+        model.copyHandoffPrompt()
+        #expect(model.screen == .list)
+        #expect(model.handoffStates.isEmpty)
+        #expect(clipboard.string(forType: .string) == "keep after sign out")
+    }
+
+    @Test func failedBulkUndoDoesNotOfferForwardRetryAgain() async throws {
+        let harness = try await ShellHarness.make(now: ShellNow.body(toDo: ["A", "B"]))
+        await harness.router.reflectSuccessfulDeletesInNow()
+        let model = harness.model
+        let a = try #require(model.items.first { $0.action?.title == "A" })
+        let b = try #require(model.items.first { $0.action?.title == "B" })
+        let aID = try #require(a.action?.id)
+        let bID = try #require(b.action?.id)
+        await harness.router.failDeleteAction(bID)
+
+        model.handleTaskClick(b, modifiers: [.command])
+        #expect(model.selectedActionIDs == [aID, bID])
+        model.performBulkAction(.remove)
+        await harness.waitUntil {
+            !model.bulkBusy && model.bulkUndoCount == 1 && model.bulkStatus?.contains("retry is available") == true
+        }
+        #expect(await harness.router.deleteIDs() == [aID, bID])
+        #expect(model.canRetryBulkAction)
+        #expect(model.canUndo)
+
+        await harness.router.failPatchAction(aID)
+        model.undo()
+        await harness.waitUntil {
+            !model.bulkBusy && model.bulkStatus?.hasPrefix("Restored 0 of 1") == true
+        }
+        #expect(await harness.router.patchIDs() == [aID])
+        #expect(!model.canRetryBulkAction)
+
+        model.retryBulkAction()
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(await harness.router.deleteIDs() == [aID, bID])
+        #expect(model.bulkStatus == "Restored 0 of 1 tasks.")
+    }
+
+    @Test func commandClickSeedsFocusedTaskAndPlainClickReturnsToDetail() async throws {
+        let harness = try await ShellHarness.make(now: ShellNow.body(toDo: ["A", "B", "C"]))
+        let model = harness.model
+        let focused = try #require(model.selectedItem)
+        let focusedID = try #require(focused.action?.id)
+        let second = try #require(model.items.first { $0.action?.title == "B" })
+        let secondID = try #require(second.action?.id)
+
+        model.handleTaskClick(second, modifiers: [.command])
+
+        #expect(model.selectedActionIDs == [focusedID, secondID])
+        #expect(model.anchorID == secondID)
+        #expect(model.screen == .list)
+        #expect(model.selectedItem?.action?.id == secondID)
+
+        model.handleTaskClick(second, modifiers: [.command])
+        #expect(model.selectedActionIDs == [focusedID])
+        #expect(model.isMultiSelecting)
+
+        model.handleTaskClick(second, modifiers: [])
+        #expect(!model.isMultiSelecting)
+        #expect(model.selectedActionIDs.isEmpty)
+        #expect(model.screen.isDetail)
+        #expect(model.detailTarget?.action.id == secondID)
+    }
+
+    @Test func shiftClickSelectsVisibleTaskRangeAcrossShowMoreRow() async throws {
+        let harness = try await ShellHarness.make(
+            now: ShellNow.body(reviews: (1...6).map { "R\($0)" }, toDo: ["T1"]),
+            displayPreferences: SectionDisplayPreferences(review: .five)
+        )
+        let model = harness.model
+        let firstID = try #require(model.items.first { $0.action?.title == "R1" }?.action?.id)
+        let last = try #require(model.items.first { $0.action?.title == "T1" })
+        #expect(model.items.contains { if case .showMore(.review, 1) = $0 { true } else { false } })
+
+        model.handleTaskClick(last, modifiers: [.shift])
+
+        let expected = Set((1...5).compactMap { n in model.items.first { $0.action?.title == "R\(n)" }?.action?.id }
+            + [try #require(last.action?.id)])
+        #expect(model.isMultiSelecting)
+        #expect(model.anchorID == firstID)
+        #expect(model.selectedActionIDs == expected)
+        #expect(model.selectedActionCount == 6)
+        #expect(model.screen == .list)
+    }
+
+    @Test func shiftKeyboardRangeRespectsNotesFocusAndEscClearsBeforeClose() async throws {
+        let harness = try await ShellHarness.make(now: ShellNow.body(reviews: ["R1"], toDo: ["T1", "T2"]))
+        let model = harness.model
+        var closeCount = 0
+        model.close = { closeCount += 1 }
+        let anchor = try #require(model.selectedItem?.action?.id)
+        let next = try #require(model.items.first { $0.action?.title == "T1" }?.action?.id)
+
+        #expect(model.handleKey(.key(kVK_DownArrow, shift: true)))
+        #expect(model.selectedActionIDs == [anchor, next])
+        #expect(model.anchorID == anchor)
+        model.move(1)
+        #expect(model.selectedActionIDs == [anchor, next])
+
+        model.setNotesEditorFocused(true)
+        #expect(!model.handleKey(.key(kVK_UpArrow, shift: true)))
+        #expect(model.selectedActionIDs == [anchor, next])
+        model.setNotesEditorFocused(false)
+
+        #expect(model.handleKey(.key(kVK_Escape)))
+        #expect(!model.isMultiSelecting)
+        #expect(model.selectedActionIDs.isEmpty)
+        #expect(closeCount == 0)
+        #expect(model.handleKey(.key(kVK_Escape)))
+        #expect(closeCount == 1)
+    }
+
+    @Test func searchAndScopeClearSelectionWhileRefreshKeepsOnlyVisibleIDs() async throws {
+        let harness = try await ShellHarness.make(now: ShellNow.body(reviews: ["R1"], toDo: ["A", "B"]))
+        let model = harness.model
+        let b = try #require(model.items.first { $0.action?.title == "B" })
+        let aID = try #require(model.items.first { $0.action?.title == "A" }?.action?.id)
+        let bID = try #require(b.action?.id)
+        model.select(try #require(model.items.firstIndex { $0.action?.id == aID }))
+        model.handleTaskClick(b, modifiers: [.command])
+        #expect(model.selectedActionIDs == [aID, bID])
+
+        model.text = "A"
+        #expect(!model.isMultiSelecting)
+        #expect(model.selectedActionIDs.isEmpty)
+        model.text = ""
+        let currentA = try #require(model.items.first { $0.action?.title == "A" })
+        let currentB = try #require(model.items.first { $0.action?.title == "B" })
+        model.select(try #require(model.items.firstIndex(of: currentA)))
+        model.handleTaskClick(currentB, modifiers: [.command])
+        model.chooseScope(.toDo)
+        #expect(!model.isMultiSelecting)
+        #expect(model.selectedActionIDs.isEmpty)
+
+        model.chooseScope(.allTasks)
+        let allTasksA = try #require(model.items.first { $0.action?.title == "A" })
+        let allTasksB = try #require(model.items.first { $0.action?.title == "B" })
+        model.select(try #require(model.items.firstIndex { $0.id == allTasksA.id }))
+        model.handleTaskClick(allTasksB, modifiers: [.command])
+        #expect(model.selectedActionIDs == [aID, bID])
+
+        await harness.router.setNow(ShellNow.body(reviews: ["R1"], toDo: ["A"]))
+        try await #require(model.now).load()
+        #expect(model.selectedActionIDs == [aID])
+        #expect(model.isMultiSelecting)
+    }
+
+    @Test func reviewBulkConfirmAndDismissUseTheirOwnRequests() async throws {
+        let harness = try await ShellHarness.make(now: ShellNow.body(reviews: ["R1", "R2"]))
+        await harness.router.reflectSuccessfulDeletesInNow()
+        let model = harness.model
+        let ids = model.items.compactMap(\.action?.id)
+        #expect(ids.count == 2)
+        let second = try #require(model.items.first { $0.action?.title == "R2" })
+        model.handleTaskClick(second, modifiers: [.shift])
+        #expect(model.bulkActionEntries == [.confirm, .remove])
+
+        model.performBulkAction(.confirm)
+        await harness.waitUntil { !model.bulkBusy && model.bulkStatus == "Confirmed 2 review requests." }
+        #expect(await harness.router.confirmIDs() == ids)
+        #expect(model.bulkUndoCount == 0)
+
+        let first = try #require(model.items.first { $0.action?.title == "R1" })
+        model.select(try #require(model.items.firstIndex(of: first)))
+        model.handleTaskClick(try #require(model.items.first { $0.action?.title == "R2" }), modifiers: [.shift])
+        model.performBulkAction(.remove)
+        await harness.waitUntil { !model.bulkBusy && model.bulkStatus == "Dismissed 2 review requests." }
+        #expect(await harness.router.deleteIDs() == ids)
+        #expect(model.bulkUndoCount == 0)
+    }
+
+    @Test func mixedRemoveDismissesReviewAndDeletesOnlyNormalTaskForUndo() async throws {
+        let harness = try await ShellHarness.make(now: ShellNow.body(reviews: ["R1"], toDo: ["T1"]))
+        await harness.router.reflectSuccessfulDeletesInNow()
+        let model = harness.model
+        let reviewID = try #require(model.items.first { $0.action?.title == "R1" }?.action?.id)
+        let taskID = try #require(model.items.first { $0.action?.title == "T1" }?.action?.id)
+        model.handleTaskClick(try #require(model.items.first { $0.action?.title == "T1" }), modifiers: [.shift])
+        #expect(model.selectedActionIDs == [reviewID, taskID])
+        #expect(model.bulkActionEntries == [.remove])
+        #expect(model.bulkActionTitle(.remove) == "Remove 2 selected tasks")
+
+        model.performBulkAction(.remove)
+        await harness.waitUntil { !model.bulkBusy && model.bulkUndoCount == 1 }
+
+        #expect(await harness.router.confirmRequests() == 0)
+        #expect(await harness.router.deleteIDs() == [reviewID, taskID])
+        #expect(model.bulkStatus?.contains("Deleted 1 tasks and dismissed 1 review requests.") == true)
+        #expect(model.bulkStatus?.contains("Undo restores 1 deleted task only") == true)
+        #expect(model.bulkUndoCount == 1)
+    }
+
+    @Test func mixedNormalMoveSkipsAlreadyInDestinationWithoutRequest() async throws {
+        let harness = try await ShellHarness.make(now: ShellNow.body(toDo: ["T1"], inProgress: ["P1"]))
+        let model = harness.model
+        let progressID = try #require(model.items.first { $0.action?.title == "P1" }?.action?.id)
+        let todoID = try #require(model.items.first { $0.action?.title == "T1" }?.action?.id)
+        model.handleTaskClick(try #require(model.items.first { $0.action?.title == "T1" }), modifiers: [.shift])
+        #expect(model.selectedActionIDs == [progressID, todoID])
+
+        model.performBulkAction(.state(.inProgress))
+        await harness.waitUntil {
+            !model.bulkBusy && model.bulkStatus?.contains("1 already in that status") == true
+        }
+
+        #expect(await harness.router.progressRequests() == 1)
+        #expect(model.bulkStatus?.contains("Moved 1 tasks to In Progress") == true)
+        #expect(model.bulkUndoCount == 1)
+    }
+
+    @Test func retryRunsOnlyFailedTargetsAndKeepsItsSuccessUndo() async throws {
+        let harness = try await ShellHarness.make(now: ShellNow.body(toDo: ["A", "B"]))
+        await harness.router.reflectSuccessfulDeletesInNow()
+        let model = harness.model
+        let aID = try #require(model.items.first { $0.action?.title == "A" }?.action?.id)
+        let b = try #require(model.items.first { $0.action?.title == "B" })
+        let bID = try #require(b.action?.id)
+        await harness.router.failNextDeleteAction(bID)
+        model.handleTaskClick(b, modifiers: [.command])
+        model.performBulkAction(.remove)
+
+        await harness.waitUntil {
+            !model.bulkBusy && model.canRetryBulkAction && model.bulkUndoCount == 1
+        }
+        #expect(await harness.router.deleteIDs() == [aID, bID])
+        #expect(model.selectedActionIDs == [bID])
+
+        model.retryBulkAction()
+        await harness.waitUntil { !model.bulkBusy && !model.canRetryBulkAction && model.bulkUndoCount == 1 }
+        #expect(await harness.router.deleteIDs() == [aID, bID, bID])
+        #expect(model.selectedActionIDs.isEmpty)
+
+        model.undo()
+        await harness.waitUntil {
+            let patchIDs = await harness.router.patchIDs()
+            return !model.bulkBusy && patchIDs == [bID]
+        }
+        #expect(await harness.router.deleteIDs() == [aID, bID, bID])
+        #expect(await harness.router.patchIDs() == [bID])
+    }
+
+    @Test func staleReviewMenuAndRetryCannotDeleteAfterGroupChanges() async throws {
+        let harness = try await ShellHarness.make(now: ShellNow.body(reviews: ["R1", "R2"]))
+        await harness.router.reflectSuccessfulDeletesInNow()
+        let model = harness.model
+        let r1 = try #require(model.items.first { $0.action?.title == "R1" }?.action?.id)
+        let r2 = try #require(model.items.first { $0.action?.title == "R2" })
+        model.handleTaskClick(r2, modifiers: [.command])
+        #expect(model.selectedActionIDs == [r1, try #require(r2.action?.id)])
+        model.handleTaskClick(r2, modifiers: [.command])
+        #expect(model.selectedActionIDs == [r1])
+        let menuIDs = model.selectedActionIDs
+        let menuGroups: [UUID: TaskGroup] = [r1: .review]
+        let menuSelectionGeneration = model.bulkSelectionGeneration
+        let menuSessionGeneration = model.bulkSessionGeneration
+
+        model.handleTaskClick(r2, modifiers: [.command])
+        model.handleTaskClick(r2, modifiers: [.command])
+        #expect(model.selectedActionIDs == menuIDs)
+        model.performBulkAction(
+            .remove, expectedIDs: menuIDs, accountID: harness.firstAccount,
+            expectedSessionGeneration: menuSessionGeneration,
+            expectedSelectionGeneration: menuSelectionGeneration, expectedGroups: menuGroups
+        )
+        #expect(await harness.router.deleteIDs().isEmpty)
+        let currentMenuSelectionGeneration = model.bulkSelectionGeneration
+        await harness.router.failDeleteAction(r1)
+
+        model.performBulkAction(
+            .remove, expectedIDs: menuIDs, accountID: harness.firstAccount,
+            expectedSessionGeneration: menuSessionGeneration,
+            expectedSelectionGeneration: currentMenuSelectionGeneration, expectedGroups: menuGroups
+        )
+        await harness.waitUntil { !model.bulkBusy && model.canRetryBulkAction }
+        #expect(await harness.router.deleteIDs() == [r1])
+
+        await harness.router.setNow(ShellNow.body(reviews: ["R2"], toDo: ["R1"]))
+        try await #require(model.now).load()
+        #expect(model.now?.sections.find(r1)?.group == .toDo)
+        let freshMenuGeneration = model.bulkSelectionGeneration
+        model.performBulkAction(
+            .remove, expectedIDs: menuIDs, accountID: harness.firstAccount,
+            expectedSessionGeneration: menuSessionGeneration,
+            expectedSelectionGeneration: freshMenuGeneration, expectedGroups: menuGroups
+        )
+        #expect(await harness.router.deleteIDs() == [r1])
+
+        model.retryBulkAction()
+        #expect(!model.canRetryBulkAction)
+        #expect(model.bulkStatus == "Some tasks changed. Select them again and choose a fresh action.")
+        #expect(await harness.router.deleteIDs() == [r1])
+    }
+
+    @Test func heldBatchIgnoresDuplicateDispatchAndFinishesAfterSearchAndHide() async throws {
+        let harness = try await ShellHarness.make(now: ShellNow.body(toDo: ["A", "B"]))
+        await harness.router.reflectSuccessfulDeletesInNow()
+        let model = harness.model
+        let aID = try #require(model.items.first { $0.action?.title == "A" }?.action?.id)
+        let b = try #require(model.items.first { $0.action?.title == "B" })
+        let bID = try #require(b.action?.id)
+        model.handleTaskClick(b, modifiers: [.command])
+        await harness.router.holdNextDelete()
+
+        model.performBulkAction(.remove)
+        await harness.waitUntil { await harness.router.pendingDeleteCount() == 1 }
+        model.performBulkAction(.remove)
+        #expect(await harness.router.deleteIDs() == [aID])
+
+        model.text = "A"
+        model.didHide()
+        await harness.router.releaseHeldDeletes()
+        await harness.waitUntil { !model.bulkBusy }
+
+        #expect(model.bulkStatus == "Deleted 2 tasks. Undo 2 tasks.")
+        #expect(model.bulkUndoCount == 2)
+        #expect(await harness.router.deleteIDs() == [aID, bID])
+        #expect(model.selectedActionIDs.isEmpty)
+        #expect(!model.isMultiSelecting)
+    }
+
+    @Test func accountReturnDoesNotResumeAnOlderInFlightBatch() async throws {
+        let harness = try await ShellHarness.make(now: ShellNow.body(toDo: ["A", "B"]))
+        let model = harness.model
+        let aID = try #require(model.items.first { $0.action?.title == "A" }?.action?.id)
+        let b = try #require(model.items.first { $0.action?.title == "B" })
+        model.handleTaskClick(b, modifiers: [.command])
+        await harness.router.holdNextDelete()
+        model.performBulkAction(.remove)
+        await harness.waitUntil { await harness.router.pendingDeleteCount() == 1 }
+        let startingGeneration = model.bulkSessionGeneration
+
+        harness.session.apply(event: .signedIn, session: shellSession(userID: UUID()))
+        model.sessionChanged()
+        harness.session.apply(event: .signedIn, session: shellSession(userID: harness.firstAccount))
+        model.sessionChanged()
+        #expect(model.bulkSessionGeneration == startingGeneration + 2)
+        #expect(!model.bulkBusy)
+        #expect(model.bulkStatus == nil)
+        #expect(model.selectedActionIDs.isEmpty)
+
+        await harness.router.releaseHeldDeletes()
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(await harness.router.deleteIDs() == [aID])
+        #expect(model.bulkStatus == nil)
+        #expect(model.bulkFailureMessage == nil)
+    }
+
+    @Test func undoCannotStartAnotherWriteWhileBulkActionIsInFlight() async throws {
+        let harness = try await ShellHarness.make(now: ShellNow.body(toDo: ["A", "B"]))
+        await harness.router.reflectSuccessfulDeletesInNow()
+        let model = harness.model
+        let aID = try #require(model.items.first { $0.action?.title == "A" }?.action?.id)
+        let bID = try #require(model.items.first { $0.action?.title == "B" }?.action?.id)
+        let b = try #require(model.items.first { $0.action?.id == bID })
+        model.setState(try #require(b.action), to: .done)
+        await harness.waitUntil { await harness.router.progressRequests() == 1 && model.canUndo }
+
+        let currentB = try #require(model.items.first { $0.action?.id == bID })
+        let currentA = try #require(model.items.first { $0.action?.id == aID })
+        model.select(try #require(model.items.firstIndex(of: currentB)))
+        model.handleTaskClick(currentA, modifiers: [.command])
+        #expect(model.selectedActionIDs == [aID, bID])
+
+        await harness.router.holdNextDelete()
+        model.performBulkAction(.remove)
+        await harness.waitUntil { await harness.router.pendingDeleteCount() == 1 }
+        #expect(model.bulkBusy)
+        #expect(!model.canUndo)
+
+        model.undo()
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(await harness.router.progressRequests() == 1)
+        #expect(await harness.router.patchIDs().isEmpty)
+
+        await harness.router.releaseHeldDeletes()
+        await harness.waitUntil { !model.bulkBusy }
+        #expect(await harness.router.progressRequests() == 1)
+    }
+
+    private func panelHostingView(_ window: NSWindow) -> NSView? {
+        guard let root = window.contentView else { return nil }
+        if #available(macOS 26.0, *), let glass = root as? NSGlassEffectView, let hosted = glass.contentView {
+            return hosted
+        }
+        func find(_ view: NSView) -> NSView? {
+            if String(describing: type(of: view)).contains("NSHostingView") { return view }
+            for child in view.subviews {
+                if let host = find(child) { return host }
+            }
+            return nil
+        }
+        return find(root)
+    }
+
+    private func textViews(in view: NSView) -> [NSTextView] {
+        let current = (view as? NSTextView).map { [$0] } ?? []
+        return current + view.subviews.flatMap { textViews(in: $0) }
+    }
+
+    private func click(_ view: NSView, in window: NSWindow) throws {
+        let frame = view.convert(view.bounds, to: nil)
+        let point = NSPoint(x: frame.midX, y: frame.midY)
+        guard let down = NSEvent.mouseEvent(
+            with: .leftMouseDown, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1
+        ), let up = NSEvent.mouseEvent(
+            with: .leftMouseUp, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1
+        ) else { throw NotesEventCreationError() }
+        NSApp.postEvent(up, atStart: false)
+        NSApp.sendEvent(down)
+    }
+
+    private func sendEscape(to window: NSWindow) throws {
+        guard let event = NSEvent.keyEvent(
+            with: .keyDown, location: .zero, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: window.windowNumber, context: nil, characters: "\u{1B}",
+            charactersIgnoringModifiers: "\u{1B}", isARepeat: false, keyCode: UInt16(kVK_Escape)
+        ) else { throw NotesEventCreationError() }
+        NSApp.sendEvent(event)
+    }
+
+    private func settlePanel(_ window: NSWindow) async {
+        await Task.yield()
+        try? await Task.sleep(for: .milliseconds(100))
+        window.displayIfNeeded()
+        panelHostingView(window)?.layoutSubtreeIfNeeded()
+        panelHostingView(window)?.displayIfNeeded()
+    }
 }
+
+private struct NotesEventCreationError: Error {}
 
 // MARK: - 하네스
 
@@ -603,9 +1253,12 @@ extension LauncherModel.Screen {
 }
 
 extension NSEvent {
-    static func key(_ code: Int, command: Bool = false, isRepeat: Bool = false) -> NSEvent {
-        NSEvent.keyEvent(
-            with: .keyDown, location: .zero, modifierFlags: command ? [.command] : [], timestamp: 0, windowNumber: 0, context: nil,
+    static func key(_ code: Int, command: Bool = false, shift: Bool = false, isRepeat: Bool = false) -> NSEvent {
+        var flags: NSEvent.ModifierFlags = []
+        if command { flags.insert(.command) }
+        if shift { flags.insert(.shift) }
+        return NSEvent.keyEvent(
+            with: .keyDown, location: .zero, modifierFlags: flags, timestamp: 0, windowNumber: 0, context: nil,
             characters: "", charactersIgnoringModifiers: "", isARepeat: isRepeat, keyCode: UInt16(code)
         )!
     }
@@ -614,20 +1267,24 @@ extension NSEvent {
 /// `/now` 응답 본문
 enum ShellNow {
     static func body(
-        reviews: [String] = [], toDo: [String] = [], changed: Set<String> = [], limits: (Int, Int, Int) = (2, 5, 5)
+        reviews: [String] = [], toDo: [String] = [], inProgress: [String] = [],
+        changed: Set<String> = [], limits: (Int, Int, Int) = (2, 5, 5)
     ) -> Data {
-        func row(_ title: String, review: Bool, index: Int) -> String {
+        func row(_ title: String, review: Bool, started: Bool = false, index: Int) -> String {
             // id는 제목으로 정한다 (목록 자리가 바뀌어도 같은 할 일)
             let number = title.utf8.reduce(3) { ($0 &* 31 &+ Int($1)) % 1_000_000_000 }
             let id = String(format: "00000000-0000-4000-8000-%012d", number)
             let ranked = review ? "" : #","score":1,"reasons":[],"days_until_due":null"#
+            let startedAt = started ? #""2026-09-28T10:00:00Z""# : "null"
             return """
             {"id":"\(id)","title":"\(title)","owner":"me","status":"open","due_date":null,"counterpart":null,\
-            "needs_confirmation":\(review),"confirm_reasons":\(review ? #"["담당 확인"]"# : "[]"),"started_at":null,\
+            "needs_confirmation":\(review),"confirm_reasons":\(review ? #"["담당 확인"]"# : "[]"),"started_at":\(review ? "null" : startedAt),\
             "last_activity_at":"2026-09-29T10:00:00Z","changed":\(changed.contains(title))\(ranked)}
             """
         }
-        let now = toDo.enumerated().map { row($1, review: false, index: $0) }.joined(separator: ",")
+        let normal = inProgress.enumerated().map { row($1, review: false, started: true, index: $0) }
+            + toDo.enumerated().map { row($1, review: false, index: $0) }
+        let now = normal.joined(separator: ",")
         let confirmations = reviews.enumerated().map { row($1, review: true, index: $0) }.joined(separator: ",")
         return Data("""
         {"now":[\(now)],"confirmations":[\(confirmations)],\
@@ -767,6 +1424,15 @@ private actor ShellRouter {
     private var confirmCount = 0
     private var confirmedActionIDs: [UUID] = []
     private var dismissCount = 0
+    private var deletedActionIDs: Set<UUID> = []
+    private var reflectsSuccessfulDeletesInNow = false
+    private var deleteAttempts: [UUID] = []
+    private var failedDeleteIDs: Set<UUID> = []
+    private var failOnceDeleteIDs: Set<UUID> = []
+    private var patchAttempts: [UUID] = []
+    private var failedPatchIDs: Set<UUID> = []
+    private var holdingNextDelete = false
+    private var heldDeletes: [(id: UUID, continuation: CheckedContinuation<ShellResponse, Never>)] = []
     private var progressCount = 0
     private var dueCount = 0
     private var confirmStatus = 200
@@ -776,12 +1442,22 @@ private actor ShellRouter {
     private var seen: [UUID] = []
     private var holding = false
     private var held: [CheckedContinuation<ShellResponse, Never>] = []
+    private var holdingHandoffs = false
+    private var heldHandoffs: [UUID: [CheckedContinuation<ShellResponse, Never>]] = [:]
+    private var handoffCount = 0
+    private var handoffTimeouts = 0
+    private var handoffResponses = 0
+    private var actionNotes: [UUID: ActionNotes] = [:]
+    private var notesWriteCount = 0
+    private var holdingNextNotesWrite = false
+    private var heldNotesWrites: [(id: UUID, markdown: String, revision: Int, continuation: CheckedContinuation<ShellResponse, Never>)] = []
+    private var handoffNotes: [UUID: [String]] = [:]
 
     init(now: Data?) {
         self.now = now
     }
 
-    func response(method: String, path: String) async -> ShellResponse {
+    func response(method: String, path: String, queryItems: [URLQueryItem], body: Data?) async -> ShellResponse {
         if method == "POST", path == "/api/v1/consent" {
             consentCount += 1
             if holdingConsent { return await withCheckedContinuation { heldConsent.append($0) } }
@@ -816,15 +1492,69 @@ private actor ShellRouter {
             let id = path.split(separator: "/").dropLast().last.map(String.init) ?? "00000000-0000-4000-8000-000000000001"
             return actionResponse(id)
         }
+        if method == "POST", path.hasPrefix("/api/v1/actions/"), path.hasSuffix("/handoff") {
+            let rawID = path.dropFirst("/api/v1/actions/".count).dropLast("/handoff".count)
+            guard let id = UUID(uuidString: String(rawID)) else {
+                return ShellResponse(status: 400, body: Data("{}".utf8))
+            }
+            handoffCount += 1
+            handoffNotes[id, default: []].append(actionNotes[id]?.markdown ?? "")
+            if handoffTimeouts > 0 {
+                handoffTimeouts -= 1
+                return ShellResponse(status: 504, body: Data("""
+                {"error":{"code":"ai_timeout","message":"Timed out"}}
+                """.utf8))
+            }
+            if holdingHandoffs {
+                return await withCheckedContinuation { heldHandoffs[id, default: []].append($0) }
+            }
+            return handoffResponse(id)
+        }
+        if method == "PUT", path.hasPrefix("/api/v1/actions/"), path.hasSuffix("/notes") {
+            let rawID = path.dropFirst("/api/v1/actions/".count).dropLast("/notes".count)
+            guard let id = UUID(uuidString: String(rawID)),
+                  let body,
+                  let payload = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
+                  let markdown = payload["markdown"] as? String,
+                  let revision = payload["expected_revision"] as? Int
+            else { return ShellResponse(status: 400, body: Data("{}".utf8)) }
+            notesWriteCount += 1
+            if holdingNextNotesWrite {
+                holdingNextNotesWrite = false
+                return await withCheckedContinuation {
+                    heldNotesWrites.append((id, markdown, revision, $0))
+                }
+            }
+            return saveNotes(id: id, markdown: markdown, revision: revision)
+        }
+        if method == "GET", path == "/rest/v1/actions",
+           let value = queryItems.first(where: { $0.name == "id" })?.value,
+           let id = UUID(uuidString: String(value.dropFirst(value.hasPrefix("eq.") ? 3 : 0))) {
+            let notes = actionNotes[id] ?? ActionNotes(actionID: id, markdown: "", revision: 0)
+            return ShellResponse(status: 200, body: Data("[{\"id\":\"\(id.uuidString.lowercased())\",\"notes_markdown\":\(Self.jsonString(notes.markdown)),\"notes_revision\":\(notes.revision)}]".utf8))
+        }
         if method == "PATCH", path.hasPrefix("/api/v1/actions/") {
             dueCount += 1
             let id = path.split(separator: "/").last.map(String.init) ?? "00000000-0000-4000-8000-000000000001"
+            if let actionID = UUID(uuidString: id) {
+                patchAttempts.append(actionID)
+                if failedPatchIDs.contains(actionID) {
+                    return ShellResponse(status: 500, body: Data("{\"error\":{\"code\":\"internal_error\",\"message\":\"Restore unavailable\"}}".utf8))
+                }
+                deletedActionIDs.remove(actionID)
+            }
             return actionResponse(id)
         }
         if method == "DELETE", path.hasPrefix("/api/v1/actions/") {
             dismissCount += 1
             let id = path.split(separator: "/").last.map(String.init) ?? "00000000-0000-4000-8000-000000000001"
-            return actionResponse(id)
+            guard let actionID = UUID(uuidString: id) else { return actionResponse(id) }
+            deleteAttempts.append(actionID)
+            if holdingNextDelete {
+                holdingNextDelete = false
+                return await withCheckedContinuation { heldDeletes.append((actionID, $0)) }
+            }
+            return deleteResponse(actionID)
         }
         if path == "/api/v1/now" {
             nowCount += 1
@@ -844,7 +1574,25 @@ private actor ShellRouter {
 
     private func currentNow() -> ShellResponse {
         guard let now else { return ShellResponse(status: 500, body: Data("{}".utf8)) }
-        return ShellResponse(status: 200, body: now)
+        guard reflectsSuccessfulDeletesInNow, !deletedActionIDs.isEmpty,
+              var payload = try? JSONSerialization.jsonObject(with: now) as? [String: Any]
+        else { return ShellResponse(status: 200, body: now) }
+        for key in ["now", "confirmations"] {
+            guard let rows = payload[key] as? [[String: Any]] else { continue }
+            payload[key] = rows.filter { row in
+                guard let rawID = row["id"] as? String, let id = UUID(uuidString: rawID) else { return true }
+                return !deletedActionIDs.contains(id)
+            }
+        }
+        return ShellResponse(status: 200, body: (try? JSONSerialization.data(withJSONObject: payload)) ?? now)
+    }
+
+    private func deleteResponse(_ id: UUID) -> ShellResponse {
+        if failOnceDeleteIDs.remove(id) != nil || failedDeleteIDs.contains(id) {
+            return ShellResponse(status: 500, body: Data("{\"error\":{\"code\":\"internal_error\",\"message\":\"Delete unavailable\"}}".utf8))
+        }
+        deletedActionIDs.insert(id)
+        return actionResponse(id.uuidString.lowercased())
     }
 
     private func consentResponse() -> ShellResponse {
@@ -859,15 +1607,29 @@ private actor ShellRouter {
     }
 
     func setConsentStatus(_ status: Int) { consentStatus = status }
+    func reflectSuccessfulDeletesInNow() { reflectsSuccessfulDeletesInNow = true }
     func setStartStatus(_ status: Int) { startStatus = status }
     func consentRequests() -> Int { consentCount }
     func completeRequests() -> Int { completeCount }
     func confirmRequests() -> Int { confirmCount }
     func confirmIDs() -> [UUID] { confirmedActionIDs }
     func dismissRequests() -> Int { dismissCount }
+    func deleteIDs() -> [UUID] { deleteAttempts }
+    func patchIDs() -> [UUID] { patchAttempts }
     func progressRequests() -> Int { progressCount }
     func dueRequests() -> Int { dueCount }
     func setConfirmStatus(_ status: Int) { confirmStatus = status }
+    func failDeleteAction(_ id: UUID) { failedDeleteIDs.insert(id) }
+    func failNextDeleteAction(_ id: UUID) { failOnceDeleteIDs.insert(id) }
+    func failPatchAction(_ id: UUID) { failedPatchIDs.insert(id) }
+    func holdNextDelete() { holdingNextDelete = true }
+    func pendingDeleteCount() -> Int { heldDeletes.count }
+
+    func releaseHeldDeletes() {
+        let pending = heldDeletes
+        heldDeletes = []
+        for held in pending { held.continuation.resume(returning: deleteResponse(held.id)) }
+    }
     func holdConsent() { holdingConsent = true }
     func hasPendingConsent() -> Bool { !heldConsent.isEmpty }
 
@@ -888,6 +1650,50 @@ private actor ShellRouter {
         let response = currentNow()
         for continuation in held { continuation.resume(returning: response) }
         held = []
+    }
+
+    func holdHandoffs() { holdingHandoffs = true }
+    func timeoutNextHandoff() { handoffTimeouts += 1 }
+    func handoffRequestCount() -> Int { handoffCount }
+    func handoffNotesSnapshots(for id: UUID) -> [String] { handoffNotes[id] ?? [] }
+    func holdNextNotesWrite() { holdingNextNotesWrite = true }
+    func pendingNotesWriteCount() -> Int { heldNotesWrites.count }
+    func notesWritesCount() -> Int { notesWriteCount }
+
+    func releaseHeldNotesWrite() {
+        guard let held = heldNotesWrites.first else { return }
+        heldNotesWrites.removeFirst()
+        held.continuation.resume(returning: saveNotes(id: held.id, markdown: held.markdown, revision: held.revision))
+    }
+
+    private func saveNotes(id: UUID, markdown: String, revision: Int) -> ShellResponse {
+        guard (actionNotes[id]?.revision ?? 0) == revision else {
+            return ShellResponse(status: 409, body: Data("{\"error\":{\"code\":\"conflict\",\"message\":\"Changed\"}}".utf8))
+        }
+        let saved = ActionNotes(actionID: id, markdown: markdown, revision: revision + 1)
+        actionNotes[id] = saved
+        return ShellResponse(status: 200, body: Data("{\"action_id\":\"\(id.uuidString.lowercased())\",\"markdown\":\(Self.jsonString(markdown)),\"revision\":\(saved.revision)}".utf8))
+    }
+
+    private static func jsonString(_ value: String) -> String {
+        let data = try! JSONSerialization.data(withJSONObject: [value], options: [.fragmentsAllowed])
+        let array = String(decoding: data, as: UTF8.self)
+        return String(array.dropFirst().dropLast())
+    }
+
+    func handoffResponseCount() -> Int { handoffResponses }
+    func pendingHandoffCount() -> Int { heldHandoffs.values.reduce(0) { $0 + $1.count } }
+
+    func releaseHandoff(_ id: UUID) {
+        let continuations = heldHandoffs.removeValue(forKey: id) ?? []
+        for continuation in continuations { continuation.resume(returning: handoffResponse(id)) }
+    }
+
+    private func handoffResponse(_ id: UUID) -> ShellResponse {
+        handoffResponses += 1
+        return ShellResponse(status: 200, body: Data("""
+        {"action_id":"\(id.uuidString.lowercased())","title":"Handoff for task","markdown":"# Handoff prompt\\n\\nReview the task and prepare the requested deliverable.","assessment":{"effort":"low","difficulty":"medium","context":"sufficient","model":"test/model","rubric_version":"handoff-v1"}}
+        """.utf8))
     }
 
     private func actionResponse(_ id: String) -> ShellResponse {
@@ -927,19 +1733,38 @@ private final class ShellStubURLProtocol: URLProtocol, @unchecked Sendable {
         }
         let method = request.httpMethod ?? "GET"
         let path = url.path
+        let queryItems = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+        let body = Self.body(from: request)
         let box = ShellCompletion(self)
         Task {
             guard let router = await ShellRouterRegistry.shared.router(for: host) else {
                 box.fail(URLError(.cannotFindHost))
                 return
             }
-            let result = await router.response(method: method, path: path)
+            let result = await router.response(
+                method: method, path: path, queryItems: queryItems, body: body
+            )
             let response = HTTPURLResponse(url: url, statusCode: result.status, httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "application/json"])!
             box.succeed(response, body: result.body)
         }
     }
 
     override func stopLoading() {}
+
+    private static func body(from request: URLRequest) -> Data? {
+        if let body = request.httpBody { return body }
+        guard let stream = request.httpBodyStream else { return nil }
+        stream.open()
+        defer { stream.close() }
+        var data = Data()
+        var buffer = [UInt8](repeating: 0, count: 4_096)
+        while true {
+            let count = stream.read(&buffer, maxLength: buffer.count)
+            guard count > 0 else { break }
+            data.append(contentsOf: buffer.prefix(count))
+        }
+        return data.isEmpty ? nil : data
+    }
 }
 
 // URLProtocolClient is not Sendable, so the task uses this one-shot unchecked box to retain the protocol.

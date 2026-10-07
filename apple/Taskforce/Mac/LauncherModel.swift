@@ -15,6 +15,11 @@ final class LauncherModel {
         let group: TaskGroup
     }
 
+    private struct SavedDisclosure: Equatable {
+        let snapshot: SavedNow
+        let row: SavedNow.Row
+    }
+
     enum Screen: Equatable {
         case list
         /// ⌘K 동작 패널
@@ -39,6 +44,8 @@ final class LauncherModel {
         case consentNeeded
         /// Run with AI (Figma M8, U2 Mac): Goal을 적고 ⌘↩로 시작. 목록은 흐리게 두고 상세 칸이 폼이 된다
         case runWithAI(Target)
+        /// AI handoff generation and editable result in the detail pane.
+        case handoff(Target)
         /// 초안 보기 (Figma 없음, U2 Mac 계획 열린 질문 5). 목록에 없는 할 일(오늘 전에 끝냄)의 초안이면 대상이 nil
         case draft(Target?, Artifact)
     }
@@ -91,6 +98,10 @@ final class LauncherModel {
         }
     }
 
+    enum BulkActionEntry: Hashable {
+        case confirm, remove, state(WorkState)
+    }
+
     /// ⌘K 패널의 묶음 ("Status" · "Actions"). Review는 제목 없이 한 묶음
     struct ActionGroup: Equatable {
         let title: String?
@@ -110,6 +121,17 @@ final class LauncherModel {
     struct Draft: Equatable {
         let title: String
         let due: LocalDate?
+    }
+
+    struct HandoffPaneState: Equatable {
+        var ownerID: UUID?
+        var requestTarget: Target?
+        var response: HandoffResponse?
+        var prompt = ""
+        var isLoading = true
+        var error: String?
+        var copied = false
+        var copyError: String?
     }
 
     /// 액션 바 Return 동작 · 보조 동작 (이름 + 단축키, `ActionBar`)
@@ -142,9 +164,29 @@ final class LauncherModel {
         didSet { if text != oldValue { textChanged() } }
     }
     var selection = 0
+    private(set) var selectedActionIDs: Set<UUID> = []
+    private(set) var anchorID: UUID?
+    private(set) var isMultiSelecting = false
+    private(set) var bulkBusy = false
+    private(set) var bulkStatus: String?
+    private(set) var bulkFailureMessage: String?
+    var bulkMenuRequested = false
+    private(set) var bulkSessionGeneration = 0
+    private(set) var bulkSelectionGeneration = 0
+    private var bulkGeneration = 0
+    private var bulkTask: Task<Void, Never>?
+    private var lastFailedBulkAction: BulkActionEntry?
+    private var bulkRetryGroups: [UUID: TaskGroup] = [:]
+    private var bulkUndo: [TaskUndo]?
+    private var bulkUndoState: WorkState?
+    private var bulkUndoAccountID: UUID?
+    private var bulkUndoSessionGeneration: Int?
+    private var bulkUndoSerial = 0
+    private var savedDisclosure: SavedDisclosure?
     private(set) var screen: Screen = .list
     /// 바뀌면 입력창에 포커스를 준다
     private(set) var focusRequest = 0
+    private(set) var notesEditorFocused = false
     private(set) var recentSources: [SourceSummary] = []
     private(set) var sourceText: SourceText?
     var lineSelection = LineSelection()
@@ -156,6 +198,7 @@ final class LauncherModel {
     let services: AppServices?
     let now: NowStore?
     let account: AccountStore?
+    let notesStore: ActionNotesStore?
     let changes = ActionChangeFeed()
     /// 이 기기의 저장본 (계정별 폴더). 없으면 저장본 없이 둔다 (테스트 · 설정 오류)
     let saved: SavedNowStore?
@@ -163,6 +206,8 @@ final class LauncherModel {
     let runs: RunStore?
     /// Run with AI의 Goal: 할 일마다 런처를 닫을 때까지 남는다 (사용자 글: 메모리에만)
     private var goals: [UUID: String] = [:]
+    /// Editable handoff drafts stay in memory only and are cleared when the account changes.
+    private(set) var handoffStates: [UUID: HandoffPaneState] = [:]
     /// Run with AI의 Use 칩 (읽는 중이면 nil)
     private(set) var draftSources: [DraftSource]?
     /// 상세에서 Tab · →로 갈래 버튼(`View Draft`)에 옮긴 할 일 (`laneFocusTarget`)
@@ -195,6 +240,8 @@ final class LauncherModel {
     @ObservationIgnored private var feedbackTimer: Task<Void, Never>?
     /// 쓰기마다 오른다: 끝난 쓰기가 그사이 바뀐 화면을 덮지 않게
     private var writeGeneration = 0
+    private var handoffRequestCounter = 0
+    private var handoffRequestTokens: [UUID: Int] = [:]
     /// 보내는 중인 직접 추가 · 빠진 할 일 신고의 쓰기 번호. 한 흐름에 한 번만 보낸다 (`isSubmitting`).
     private var submission: Int?
     /// 목록이 바뀌어도 같은 행을 가리키게 (Realtime · 다시 불러오기)
@@ -229,6 +276,10 @@ final class LauncherModel {
         self.session = session
         self.services = services
         self.account = account
+        notesStore = ActionNotesStore(
+            read: { try await services.reads.actionNotes(id: $0) },
+            write: { try await services.api.saveActionNotes(id: $0, markdown: $1, expectedRevision: $2) }
+        )
         self.saved = saved
         self.displayPreferencesDefaults = displayPreferencesDefaults
         caps = SectionCaps(displayPreferences: .load(from: displayPreferencesDefaults))
@@ -246,6 +297,7 @@ final class LauncherModel {
         self.now = now
         self.runs = runs
         configurationError = nil
+        notesStore?.setOwner(signedInUserID)
         // 지켜보던 run이 끝나면 `/now`를 다시 받는다 (바뀜 점은 초안 receipt로 서버가 켠다, 앱이 만들지 않는다)
         runs.onRunsFinished = { [weak now] in Task { await now?.load() } }
         // 계정이 떠나면 (로그아웃 · 만료 · 계정 삭제 · 전환) 그 자리에서 이 기기의 저장본(할 일 제목 · 기한 · 상태)을 모두 지운다:
@@ -274,6 +326,7 @@ final class LauncherModel {
         services = nil
         now = nil
         account = nil
+        notesStore = nil
         saved = nil
         runs = nil
         self.configurationError = configurationError
@@ -311,16 +364,141 @@ final class LauncherModel {
 
     var items: [LauncherItem] { sections.flatMap(\.items) }
 
+    private var visibleActionTargets: [Target] {
+        var seen = Set<UUID>()
+        return items.compactMap { item in
+            guard let group = item.group, let action = item.action, seen.insert(action.id).inserted,
+                  let current = now?.sections.find(action.id), current.group == group
+            else { return nil }
+            return Target(action: current.action, group: current.group)
+        }
+    }
+
+    func handleTaskClick(_ item: LauncherItem, modifiers: NSEvent.ModifierFlags) {
+        guard !bulkBusy, (screen == .list || screen.isDetail),
+              let id = item.action?.id, let group = item.group,
+              visibleActionTargets.contains(where: { $0.action.id == id && $0.group == group })
+        else { return }
+
+        let flags = modifiers.intersection(.deviceIndependentFlagsMask)
+        let command = flags.contains(.command)
+        let shift = flags.contains(.shift)
+        let enteringMultiSelection = !isMultiSelecting
+        let focusedID: UUID? = selectedItem.flatMap { selected in
+            guard selected.group != nil else { return nil }
+            return selected.action?.id
+        }
+
+        if command || shift {
+            if screen.isDetail { returnToList() }
+        } else if case .detail(let opened) = screen, opened.action.id == id {
+            closeDetailPane()
+            return
+        } else if screen.isDetail {
+            closeDetailPane()
+        }
+        guard let index = items.firstIndex(where: { $0.id == item.id }) else { return }
+        select(index)
+
+        if command || shift {
+            bulkStatus = nil
+            bulkFailureMessage = nil
+            lastFailedBulkAction = nil
+            bulkRetryGroups = [:]
+            isMultiSelecting = true
+            if enteringMultiSelection {
+                anchorID = shift ? (focusedID ?? id) : id
+                if command, let focusedID,
+                   visibleActionTargets.contains(where: { $0.action.id == focusedID }) {
+                    selectedActionIDs.insert(focusedID)
+                }
+            }
+            if shift {
+                if anchorID == nil || !visibleActionTargets.contains(where: { $0.action.id == anchorID }) {
+                    anchorID = focusedID ?? id
+                }
+                selectRange(to: id, additive: command)
+            } else {
+                if selectedActionIDs.contains(id) { selectedActionIDs.remove(id) }
+                else { selectedActionIDs.insert(id) }
+                if anchorID == nil { anchorID = id }
+            }
+            bulkMenuRequested = false
+            bulkSelectionGeneration += 1
+            return
+        }
+
+        clearMultiSelection()
+        openDetail(for: items[index])
+    }
+
+    func clearMultiSelection() {
+        bulkSelectionGeneration += 1
+        selectedActionIDs = []
+        anchorID = nil
+        isMultiSelecting = false
+        bulkMenuRequested = false
+        // Clearing the visible selection cannot cancel an already-authorized batch.
+        if !bulkBusy {
+            bulkStatus = nil
+            bulkFailureMessage = nil
+            lastFailedBulkAction = nil
+            bulkRetryGroups = [:]
+        }
+    }
+
+    private func selectRange(to id: UUID, additive: Bool) {
+        let ids = visibleActionTargets.map(\.action.id)
+        guard let anchorID, let lower = ids.firstIndex(of: anchorID), let upper = ids.firstIndex(of: id) else {
+            selectedActionIDs = additive ? selectedActionIDs.union([id]) : [id]
+            return
+        }
+        let range = Set(ids[min(lower, upper)...max(lower, upper)])
+        if additive { selectedActionIDs.formUnion(range) }
+        else { selectedActionIDs = range }
+    }
+
+    private func selectRangeByKeyboard(_ delta: Int, additive: Bool) {
+        let rows = visibleActionTargets
+        guard !rows.isEmpty else { return }
+        bulkStatus = nil
+        bulkFailureMessage = nil
+        lastFailedBulkAction = nil
+        bulkRetryGroups = [:]
+        bulkMenuRequested = false
+        let focusedID = selectedItem.flatMap { item in item.group == nil ? nil : item.action?.id }
+        let current = focusedID.flatMap { id in rows.firstIndex(where: { $0.action.id == id }) }
+            ?? (delta > 0 ? -1 : rows.count)
+        let next = min(rows.count - 1, max(0, current + delta))
+        let id = rows[next].action.id
+        if !isMultiSelecting {
+            isMultiSelecting = true
+            anchorID = focusedID ?? id
+        } else if anchorID == nil {
+            anchorID = focusedID ?? id
+        }
+        if let index = items.firstIndex(where: { $0.action?.id == id && $0.group != nil }) { select(index) }
+        selectRange(to: id, additive: additive)
+        bulkSelectionGeneration += 1
+    }
+
+    private func reconcileMultiSelection() {
+        let visibleIDs = Set(visibleActionTargets.map(\.action.id))
+        selectedActionIDs.formIntersection(visibleIDs)
+        if let anchorID, !visibleIDs.contains(anchorID) { self.anchorID = nil }
+        bulkRetryGroups = bulkRetryGroups.filter { visibleIDs.contains($0.key) }
+    }
+
     /// Settings may apply a new section preference while this launcher model is alive.
     func applySectionDisplayPreferences(_ preferences: SectionDisplayPreferences) {
         caps = SectionCaps(displayPreferences: preferences)
         reconcileSelection()
     }
 
-    /// 목록 모양: 표시 설정은 Mac에 저장하고, 범위 · 바뀜 · 실패 원문은 서버 응답을 따른다.
+    /// 목록 모양: 표시 설정은 Mac에 저장하고, 범위 · 바뀜은 서버 응답을 따른다. 실패 원문은 응답 · 설정 진단에 유지한다.
     private var listLayout: LauncherContent.Layout {
         return LauncherContent.Layout(
-            caps: caps, scope: scope, changed: changedIDs, working: workingIDs, failedSources: now?.response?.failedSources ?? .empty
+            caps: caps, scope: scope, changed: changedIDs, working: workingIDs, failedSources: .empty
         )
     }
 
@@ -354,7 +532,7 @@ final class LauncherModel {
         switch screen {
         case .list: break
         // Run with AI · 초안: 목록은 흐리게 두고 상세 칸이 바뀐다 (Figma M8)
-        case .detail, .runWithAI, .draft: return .list
+        case .detail, .runWithAI, .handoff, .draft: return .list
         default: return .single
         }
         guard isSignedIn else { return session?.state == .loading ? .loading : .single }
@@ -383,6 +561,293 @@ final class LauncherModel {
         return items.indices.contains(selection) ? items[selection] : nil
     }
 
+    var selectedActionCount: Int { selectedActionIDs.count }
+
+    func isActionSelected(_ id: UUID) -> Bool { selectedActionIDs.contains(id) }
+
+    var bulkUndoCount: Int { bulkUndo?.count ?? 0 }
+
+    var canRetryBulkAction: Bool {
+        !bulkBusy && lastFailedBulkAction != nil && !bulkRetryGroups.isEmpty
+    }
+
+    var bulkActionEntries: [BulkActionEntry] {
+        let targets = visibleActionTargets.filter { selectedActionIDs.contains($0.action.id) }
+        guard isMultiSelecting, !targets.isEmpty, targets.count == selectedActionIDs.count else { return [] }
+        let groups = Set(targets.map(\.group))
+        if groups == [.review] { return [.confirm, .remove] }
+        if groups.contains(.review) { return [.remove] }
+
+        return WorkState.allCases.compactMap { state in
+            targets.allSatisfy { WorkState($0.group) == state } ? nil : .state(state)
+        } + [.remove]
+    }
+
+    func bulkActionTitle(_ entry: BulkActionEntry) -> String {
+        let count = selectedActionCount
+        let noun = count == 1 ? "task" : "tasks"
+        switch entry {
+        case .confirm: return "Confirm \(count) \(noun)"
+        case .remove:
+            let groups = Set(visibleActionTargets.filter { selectedActionIDs.contains($0.action.id) }.map(\.group))
+            if groups == [.review] { return "Dismiss \(count) review requests" }
+            if groups.contains(.review) { return "Remove \(count) selected \(noun)" }
+            return "Delete \(count) \(noun)"
+        case .state(let state): return "Move \(count) to \(state.title)"
+        }
+    }
+
+    func bulkActionSymbolName(_ entry: BulkActionEntry) -> String {
+        switch entry {
+        case .confirm: "checkmark"
+        case .remove: "trash"
+        case .state(.toDo): "circle"
+        case .state(.inProgress): "play.circle"
+        case .state(.done): "checkmark.circle"
+        }
+    }
+
+    func performBulkAction(
+        _ entry: BulkActionEntry,
+        expectedIDs: Set<UUID>? = nil,
+        accountID: UUID? = nil,
+        expectedSessionGeneration: Int? = nil,
+        expectedSelectionGeneration: Int? = nil,
+        expectedGroups: [UUID: TaskGroup]? = nil
+    ) {
+        let selectedGroups = Dictionary(uniqueKeysWithValues: visibleActionTargets.compactMap { target in
+            selectedActionIDs.contains(target.action.id) ? (target.action.id, target.group) : nil
+        })
+        guard !bulkBusy, isMultiSelecting, screen == .list,
+              let ownerID = signedInUserID, let now,
+              !selectedActionIDs.isEmpty,
+              expectedIDs == nil || expectedIDs == selectedActionIDs,
+              expectedGroups == nil || expectedGroups == selectedGroups,
+              accountID == nil || accountID == ownerID,
+              expectedSessionGeneration == nil || expectedSessionGeneration == bulkSessionGeneration,
+              expectedSelectionGeneration == nil || expectedSelectionGeneration == bulkSelectionGeneration,
+              bulkActionEntries.contains(entry)
+        else { return }
+
+        let orderedIDs = visibleActionTargets.compactMap { selectedActionIDs.contains($0.action.id) ? $0.action.id : nil }
+        guard orderedIDs.count == selectedActionIDs.count else { return }
+        let snapshots = orderedIDs.compactMap { id -> (id: UUID, group: TaskGroup)? in
+            guard let found = now.sections.find(id) else { return nil }
+            return (id, found.group)
+        }
+        guard snapshots.count == orderedIDs.count else { return }
+        startBulkAction(
+            entry, snapshots: snapshots, ownerID: ownerID,
+            sessionGeneration: bulkSessionGeneration, selectionGeneration: bulkSelectionGeneration
+        )
+    }
+
+    func retryBulkAction() {
+        guard !bulkBusy else { return }
+        guard lastFailedBulkAction != nil || !bulkRetryGroups.isEmpty else { return }
+        guard let entry = lastFailedBulkAction, !bulkRetryGroups.isEmpty,
+              let ownerID = signedInUserID, let now
+        else {
+            invalidateBulkRetry()
+            return
+        }
+        let orderedIDs = visibleActionTargets.compactMap { bulkRetryGroups[$0.action.id] == nil ? nil : $0.action.id }
+        guard orderedIDs.count == bulkRetryGroups.count else {
+            invalidateBulkRetry()
+            return
+        }
+        let snapshots = orderedIDs.compactMap { id -> (id: UUID, group: TaskGroup)? in
+            guard let expectedGroup = bulkRetryGroups[id],
+                  let found = now.sections.find(id), found.group == expectedGroup,
+                  Self.bulkActionAvailable(entry, group: expectedGroup, state: WorkState(found.group))
+            else { return nil }
+            return (id, expectedGroup)
+        }
+        guard snapshots.count == orderedIDs.count else {
+            invalidateBulkRetry()
+            return
+        }
+        startBulkAction(
+            entry, snapshots: snapshots, ownerID: ownerID,
+            sessionGeneration: bulkSessionGeneration, selectionGeneration: bulkSelectionGeneration
+        )
+    }
+
+    private func invalidateBulkRetry() {
+        lastFailedBulkAction = nil
+        bulkRetryGroups = [:]
+        bulkFailureMessage = "Some tasks changed. Select them again and choose a fresh action."
+        bulkStatus = bulkFailureMessage
+    }
+
+    private func startBulkAction(
+        _ entry: BulkActionEntry,
+        snapshots: [(id: UUID, group: TaskGroup)],
+        ownerID: UUID,
+        sessionGeneration: Int,
+        selectionGeneration: Int
+    ) {
+        guard let now, !snapshots.isEmpty else { return }
+        bulkGeneration += 1
+        let generation = bulkGeneration
+        bulkBusy = true
+        bulkMenuRequested = false
+        bulkFailureMessage = nil
+        bulkStatus = "Working on \(snapshots.count) tasks…"
+        bulkTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            var taskSuccesses = 0
+            var reviewSuccesses = 0
+            var movedSuccesses = 0
+            var alreadyInState = 0
+            var failures: [(id: UUID, group: TaskGroup, message: String)] = []
+            var undos: [TaskUndo] = []
+
+            for snapshot in snapshots {
+                guard self.bulkGeneration == generation,
+                      self.bulkSessionGeneration == sessionGeneration,
+                      self.signedInUserID == ownerID,
+                      !Task.isCancelled
+                else { return }
+
+                guard let current = now.sections.find(snapshot.id), current.group == snapshot.group,
+                      Self.bulkActionAvailable(entry, group: current.group, state: WorkState(current.group))
+                else {
+                    failures.append((snapshot.id, snapshot.group, "This task changed before the action could be applied."))
+                    continue
+                }
+
+                if case .state(let destination) = entry, WorkState(current.group) == destination {
+                    alreadyInState += 1
+                    continue
+                }
+
+                if entry == .state(.done) || (entry == .remove && current.group.isDeletable) {
+                    self.stopRunsBeforeLeaving(snapshot.id)
+                }
+
+                let outcome: NowStore.BulkMutationOutcome
+                var undo: TaskUndo?
+                switch entry {
+                case .confirm:
+                    outcome = await now.confirmForBulk(snapshot.id, expectedGroup: snapshot.group)
+                case .remove where snapshot.group == .review:
+                    outcome = await now.dismissForBulk(snapshot.id, expectedGroup: snapshot.group)
+                case .remove:
+                    guard let write = now.deleteForBulk(snapshot.id, expectedGroup: snapshot.group) else {
+                        failures.append((snapshot.id, snapshot.group, "This task is already being updated."))
+                        continue
+                    }
+                    undo = write.undo
+                    outcome = await write.task.value
+                case .state(let state):
+                    guard let write = now.moveForBulk(snapshot.id, expectedGroup: snapshot.group, to: state) else {
+                        failures.append((snapshot.id, snapshot.group, "This task is already being updated."))
+                        continue
+                    }
+                    undo = write.undo
+                    outcome = await write.task.value
+                }
+
+                guard self.bulkGeneration == generation,
+                      self.bulkSessionGeneration == sessionGeneration,
+                      self.signedInUserID == ownerID,
+                      !Task.isCancelled
+                else { return }
+
+                switch outcome {
+                case .success:
+                    switch entry {
+                    case .confirm:
+                        reviewSuccesses += 1
+                    case .remove where snapshot.group == .review:
+                        reviewSuccesses += 1
+                    case .remove:
+                        if let undo { undos.append(undo) }
+                        taskSuccesses += 1
+                    case .state:
+                        if let undo { undos.append(undo) }
+                        movedSuccesses += 1
+                    }
+                case .failure(let message):
+                    failures.append((snapshot.id, snapshot.group, message))
+                case .stale:
+                    failures.append((snapshot.id, snapshot.group, "This task changed before the action could be applied."))
+                case .cancelled:
+                    return
+                }
+            }
+
+            guard self.bulkGeneration == generation,
+                  self.bulkSessionGeneration == sessionGeneration,
+                  self.signedInUserID == ownerID
+            else { return }
+            self.bulkBusy = false
+            self.bulkTask = nil
+            self.lastFailedBulkAction = failures.isEmpty ? nil : entry
+            self.bulkRetryGroups = Dictionary(failures.map { ($0.id, $0.group) }, uniquingKeysWith: { first, _ in first })
+            self.bulkFailureMessage = failures.first?.message
+            self.bulkStatus = self.bulkStatusText(
+                entry, taskSuccesses: taskSuccesses, reviewSuccesses: reviewSuccesses,
+                movedSuccesses: movedSuccesses, alreadyInState: alreadyInState,
+                failures: failures.count, undoCount: undos.count,
+                mixedSelection: Set(snapshots.map(\.group)).contains(.review) && Set(snapshots.map(\.group)).count > 1
+            )
+            if !undos.isEmpty {
+                let undoState: WorkState? = if case .state(let state) = entry { state } else { nil }
+                self.offerBulkUndo(undos, state: undoState, accountID: ownerID, sessionGeneration: sessionGeneration)
+            }
+
+            // Selection and search may have changed while the approved, frozen batch ran.
+            // Reconcile only when it is still the same visible selection snapshot.
+            if self.bulkSelectionGeneration == selectionGeneration {
+                let liveIDs = Set(self.visibleActionTargets.map(\.action.id))
+                let failedIDs = Set(failures.map(\.id)).intersection(liveIDs)
+                self.selectedActionIDs = failedIDs
+                self.isMultiSelecting = !failedIDs.isEmpty
+                if let anchorID = self.anchorID, !failedIDs.contains(anchorID) {
+                    self.anchorID = failedIDs.first
+                } else if self.anchorID == nil {
+                    self.anchorID = failedIDs.first
+                }
+                self.bulkSelectionGeneration += 1
+            }
+        }
+    }
+
+    private static func bulkActionAvailable(_ entry: BulkActionEntry, group: TaskGroup, state: WorkState?) -> Bool {
+        switch entry {
+        case .confirm: group == .review
+        case .remove: group == .review || group.isDeletable
+        case .state: state != nil
+        }
+    }
+
+    private func bulkStatusText(
+        _ entry: BulkActionEntry, taskSuccesses: Int, reviewSuccesses: Int, movedSuccesses: Int,
+        alreadyInState: Int, failures: Int, undoCount: Int, mixedSelection: Bool
+    ) -> String {
+        let result: String
+        switch entry {
+        case .confirm:
+            result = "Confirmed \(reviewSuccesses) review requests."
+        case .remove where mixedSelection:
+            result = "Deleted \(taskSuccesses) tasks and dismissed \(reviewSuccesses) review requests."
+        case .remove where reviewSuccesses > 0:
+            result = "Dismissed \(reviewSuccesses) review requests."
+        case .remove:
+            result = "Deleted \(taskSuccesses) tasks."
+        case .state(let state):
+            let unchanged = alreadyInState > 0 ? " \(alreadyInState) already in that status." : ""
+            result = "Moved \(movedSuccesses) tasks to \(state.title)." + unchanged
+        }
+        let completion = failures == 0 ? result : "\(result) \(failures) failed; retry is available."
+        let undo = undoCount > 0 && mixedSelection
+            ? " Undo restores \(undoCount) deleted task\(undoCount == 1 ? "" : "s") only; dismissed review requests cannot be restored."
+            : undoCount > 0 ? " Undo \(undoCount) task\(undoCount == 1 ? "" : "s")." : ""
+        return completion + undo
+    }
+
     var filteredSources: [SourceSummary] {
         // 직접 추가 중에는 입력창에 제목이 있어서 거르지 않는다
         guard case .pickSource(.reportMissing) = screen else { return recentSources }
@@ -404,9 +869,10 @@ final class LauncherModel {
 
     /// ⌘K로 동작 패널을 열 수 있는지 (아래 "Actions ⌘K"). 할 일 행이 아니면 명령 패널 (로그인한 동안)
     var canOpenActions: Bool {
-        switch screen {
+        if isMultiSelecting { return !bulkActionEntries.isEmpty }
+        return switch screen {
         case .list: selectedItem?.action != nil || (isSignedIn && configurationError == nil)
-        case .detail, .runWithAI, .draft(.some, _): true
+        case .detail, .runWithAI, .handoff, .draft(.some, _): true
         default: false
         }
     }
@@ -419,11 +885,75 @@ final class LauncherModel {
             return target(for: item)
         case .detail(let target):
             return focusedTarget ?? target
-        case .runWithAI(let target), .draft(let target?, _):
+        case .runWithAI(let target), .handoff(let target), .draft(let target?, _):
             return target
         default:
             return nil
         }
+    }
+
+    var handoffPaneState: HandoffPaneState? {
+        guard case .handoff(let target) = screen else { return nil }
+        return handoffStates[target.action.id]
+    }
+
+    var handoffPrompt: String {
+        get { handoffPaneState?.prompt ?? "" }
+        set {
+            guard case .handoff(let target) = screen, var state = handoffStates[target.action.id] else { return }
+            state.prompt = newValue
+            state.copied = false
+            state.copyError = nil
+            handoffStates[target.action.id] = state
+        }
+    }
+
+    func actionNotesEntry(_ id: UUID) -> ActionNotesStore.Entry {
+        notesStore?.entry(for: id) ?? .init()
+    }
+
+    func loadActionNotes(_ id: UUID) async {
+        await notesStore?.load(id)
+    }
+
+    @discardableResult
+    func editActionNotes(_ id: UUID, markdown: String) -> Bool {
+        guard let notesStore else { return false }
+        let previous = notesStore.entry(for: id).markdown
+        guard notesStore.edit(markdown, for: id) else { return false }
+        if previous != markdown { invalidateHandoffForNoteEdit(id) }
+        return true
+    }
+
+    func retryActionNotes(_ id: UUID) {
+        guard let notesStore else { return }
+        Task { _ = await notesStore.retry(id) }
+    }
+
+    func keepMyActionNotes(_ id: UUID) {
+        guard let notesStore else { return }
+        Task { _ = await notesStore.retryMine(id) }
+    }
+
+    func useServerActionNotes(_ id: UUID) {
+        notesStore?.useServerVersion(id)
+        invalidateHandoffForNoteEdit(id)
+    }
+
+    func setNotesEditorFocused(_ focused: Bool) { notesEditorFocused = focused }
+
+    private func invalidateHandoffForNoteEdit(_ id: UUID) {
+        guard var state = handoffStates[id], state.response != nil || state.isLoading else { return }
+        handoffRequestTokens[id] = nil
+        state.ownerID = nil
+        state.requestTarget = nil
+        state.response = nil
+        state.prompt = ""
+        state.isLoading = false
+        state.error = "Notes changed. Retry to prepare an updated handoff."
+        state.copied = false
+        state.copyError = nil
+        handoffStates[id] = state
     }
 
     /// 상세 칸에 보일 저장본 한 줄 (저장본 목록에서 고른 행)
@@ -432,16 +962,47 @@ final class LauncherModel {
         return row
     }
 
+    func isSavedRowExpanded(_ row: SavedNow.Row) -> Bool {
+        guard screen == .list,
+              case .saved(let selectedRow)? = selectedItem,
+              selectedRow == row,
+              let savedList,
+              savedDisclosure?.snapshot == savedList
+        else { return false }
+        return savedDisclosure?.row == row
+    }
+
+    func toggleSavedRow(_ row: SavedNow.Row) {
+        guard screen == .list,
+              case .saved(let selectedRow)? = selectedItem,
+              selectedRow == row,
+              let savedList
+        else { return }
+        if savedDisclosure?.row == row, savedDisclosure?.snapshot == savedList {
+            savedDisclosure = nil
+        } else {
+            savedDisclosure = SavedDisclosure(snapshot: savedList, row: row)
+        }
+    }
+
+    func clearSavedDisclosure() {
+        savedDisclosure = nil
+    }
+
     // MARK: 액션 바
 
     /// Action bar primary: list Review is `Confirm ⌘↩`; other task rows show details with `↩`.
     /// Expanded Review stays `Confirm ⌘↩`; an open scope menu shows `Show <scope>`. Otherwise nil.
     var primaryAction: BarAction? {
+        if isMultiSelecting || bulkBusy { return nil }
         if let index = scopeMenuSelection, scopeChoices.indices.contains(index) {
             return BarAction(title: "Show \(scopeChoices[index].title)", keys: "↩")
         }
         switch screen {
         case .list:
+            if case .saved(let row)? = selectedItem {
+                return BarAction(title: isSavedRowExpanded(row) ? "Hide details" : "Show details", keys: "↩")
+            }
             guard let item = selectedItem, item.group != nil, let target = target(for: item) else { return nil }
             if target.group == .review { return BarAction(title: "Confirm", keys: "⌘↩") }
             return BarAction(title: "Show details", keys: "↩")
@@ -462,6 +1023,11 @@ final class LauncherModel {
 
     /// 보조 동작: 방금 옮긴 · 지운 할 일 `Undo ⌘Z`, 상세의 Review `Dismiss ⌘⌫`, 고른 안내 줄 `Dismiss ⌘⌫`, 새로고침 실패 `Try Again ⌘R` (M19)
     var secondaryAction: BarAction? {
+        if isMultiSelecting || bulkBusy {
+            guard canUndo else { return nil }
+            let title = bulkUndo == nil ? "Undo" : "Undo \(bulkUndoCount) tasks"
+            return BarAction(title: title, keys: "⌘Z")
+        }
         guard scopeMenuSelection == nil else { return nil }
         switch screen {
         case .list, .detail:
@@ -483,6 +1049,7 @@ final class LauncherModel {
 
     /// 액션 바 버튼을 누름 (같은 키를 누른 것과 같다)
     func performPrimary() {
+        guard !bulkBusy, !isMultiSelecting else { return }
         if let index = scopeMenuSelection, scopeChoices.indices.contains(index) {
             chooseScope(scopeChoices[index])
             return
@@ -490,7 +1057,9 @@ final class LauncherModel {
         switch screen {
         case .list:
             guard let item = selectedItem else { return }
-            if item.group == .review { confirmReview() } else { openDetail(for: item) }
+            if case .saved(let row) = item { toggleSavedRow(row) }
+            else if item.group == .review { confirmReview() }
+            else { openDetail(for: item) }
         case .detail:
             guard !leaveIfStale() else { return }
             if laneFocusTarget != nil { openFocusedDraft() } else { confirmReview() }
@@ -502,6 +1071,7 @@ final class LauncherModel {
     }
 
     func performSecondary() {
+        guard !bulkBusy else { return }
         switch secondaryAction?.keys {
         case "⌘Z": undo()
         case "⌘R": retry()
@@ -554,6 +1124,8 @@ final class LauncherModel {
     func chooseScope(_ choice: TaskScope) {
         scopeMenuSelection = nil
         guard choice != scope else { return }
+        clearMultiSelection()
+        clearSavedDisclosure()
         chosenScope = choice
         reconcileSelection()
     }
@@ -567,7 +1139,7 @@ final class LauncherModel {
         case .list:
             guard let item = selectedItem, item.group != nil else { return nil }
             return item.action?.id
-        case .detail(let target), .actions(let target), .editDue(let target), .runWithAI(let target), .draft(let target?, _):
+        case .detail(let target), .actions(let target), .editDue(let target), .runWithAI(let target), .handoff(let target), .draft(let target?, _):
             return target.action.id
         default:
             return nil
@@ -578,7 +1150,7 @@ final class LauncherModel {
     var runSubject: UUID? {
         guard isShown else { return nil }
         switch screen {
-        case .actions(let target), .detail(let target), .runWithAI(let target), .draft(let target?, _):
+        case .actions(let target), .detail(let target), .runWithAI(let target), .handoff(let target), .draft(let target?, _):
             return target.action.id
         default:
             return nil
@@ -606,6 +1178,25 @@ final class LauncherModel {
         }
         // M8을 연 뒤 그 할 일이 지워졌거나 끝났거나 Review로 갔으면(다른 기기) 목록으로 (Goal은 남는다)
         if case .runWithAI = screen, runTarget == nil { returnToList() }
+        if case .handoff(let opened) = screen {
+            guard let current = currentHandoffTarget(for: opened) else {
+                handoffStates.removeValue(forKey: opened.action.id)
+                returnToList()
+                return
+            }
+            if var state = handoffStates[opened.action.id],
+               state.response != nil, state.requestTarget != current {
+                state.ownerID = nil
+                state.requestTarget = current
+                state.response = nil
+                state.prompt = ""
+                state.isLoading = false
+                state.error = "This task changed. Retry to prepare a current handoff."
+                state.copied = false
+                handoffStates[opened.action.id] = state
+            }
+            screen = .handoff(current)
+        }
     }
 
     // MARK: 연결 · 저장본
@@ -661,11 +1252,12 @@ final class LauncherModel {
     }
 
     /// 방금 옮기거나 지운 할 일을 ⌘Z로 되돌릴 수 있는지 (목록에서만)
-    var canUndo: Bool { screen == .list && undoOffer.pending != nil }
+    var canUndo: Bool { !bulkBusy && screen == .list && (bulkUndo != nil || undoOffer.pending != nil) }
 
     /// 고른 Review 행 · 펼친 Review를 ⌘↩로 확정할 수 있는지 (아래 "Confirm ⌘↩")
     var canConfirmReview: Bool {
-        switch screen {
+        guard !isMultiSelecting, !bulkBusy else { return false }
+        return switch screen {
         case .list: focusedTarget?.group == .review
         case .detail(let viewing): focusedTarget?.group == .review && viewing.group == .review
         default: false
@@ -674,7 +1266,7 @@ final class LauncherModel {
 
     /// 고른 Review 행 · 펼친 Review를 ⌘⌫로 넘길 수 있는지 (아래 "Dismiss ⌘⌫"). 입력이 있으면 ⌘⌫는 입력창의 줄 지우기
     var canDismissReview: Bool {
-        guard canConfirmReview, case (.dismiss, _)? = deleteShortcut else { return false }
+        guard !isMultiSelecting, !bulkBusy, canConfirmReview, case (.dismiss, _)? = deleteShortcut else { return false }
         return true
     }
 
@@ -702,6 +1294,8 @@ final class LauncherModel {
 
     func prepareForShow() {
         isShown = true
+        clearMultiSelection()
+        clearSavedDisclosure()
         clearFeedback()
         clearUndo()
         focusRequest += 1
@@ -740,6 +1334,7 @@ final class LauncherModel {
 
     func didHide() {
         isShown = false
+        clearMultiSelection()
         clearFeedback()
         suspendsAutoClose = false
         scopeMenuSelection = nil
@@ -770,15 +1365,30 @@ final class LauncherModel {
         // 첫 로그인 · 시작 때의 세션(nil → 계정)이면 로그인 전에 받은 알림 대상 · 입력은 둔다
         let accountLeft = lastUserID != nil
         lastUserID = userID
+        bulkSessionGeneration += 1
+        bulkGeneration += 1
+        bulkTask?.cancel()
+        bulkTask = nil
+        bulkBusy = false
+        clearMultiSelection()
+        bulkStatus = nil
+        bulkFailureMessage = nil
+        lastFailedBulkAction = nil
+        bulkRetryGroups = [:]
+        notesStore?.setOwner(userID)
+        notesEditorFocused = false
         work?.cancel()
         work = nil
+        handoffRequestTokens.removeAll()
         now?.reset()
+        clearSavedDisclosure()
         account?.reset()
         clearUndo()
         recentSources = []
         sourcesLoaded = false
         sourceText = nil
         goals = [:]
+        handoffStates = [:]
         draftSources = nil
         clearFeedback()
         laneFocus = nil
@@ -827,15 +1437,62 @@ final class LauncherModel {
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         let command = flags.contains(.command)
         let keyCode = Int(event.keyCode)
+        let textView = event.window?.firstResponder as? NSTextView
+        // Korean and other marked-text composition owns Escape and the navigation keys until composition ends.
+        if textView?.hasMarkedText() == true, Self.compositionKeys.contains(keyCode) { return false }
+        // Keep Escape on the established launcher back/close route. All other keys remain native editor input.
+        if notesEditorFocused {
+            if keyCode == kVK_Escape {
+                back()
+                return true
+            }
+            return false
+        }
         // 기한 고치기의 날짜 칸에 포커스가 있으면 방향키 · Tab은 날짜 칸이 쓰고, ↩는 그 날짜로 저장한다
         if event.window?.firstResponder is NSDatePicker, keyCode != kVK_Escape {
             guard keyCode == kVK_Return || keyCode == kVK_ANSI_KeypadEnter, isChoosingDue else { return false }
             chooseDue(LocalDate(date: pickedDate, timeZone: .current))
             return true
         }
-        // 한글 등 입력기가 글자를 조합하는 중이면 ↩ · esc · 방향키 · Tab은 입력기가 쓴다 (조합을 끝내는 ↩가 행을 실행하지 않게)
-        if (event.window?.firstResponder as? NSTextView)?.hasMarkedText() == true, Self.compositionKeys.contains(keyCode) {
+        if bulkBusy {
+            if keyCode == kVK_Escape {
+                if isMultiSelecting { clearMultiSelection() }
+                else { back() }
+                return true
+            }
+            if keyCode == kVK_ANSI_K && command { return true }
             return false
+        }
+        if (screen == .list || screen.isDetail), !isMultiSelecting, flags.contains(.shift),
+           (keyCode == kVK_UpArrow || keyCode == kVK_DownArrow) {
+            if screen.isDetail { returnToList() }
+            selectRangeByKeyboard(keyCode == kVK_UpArrow ? -1 : 1, additive: command)
+            return true
+        }
+        if isMultiSelecting {
+            switch keyCode {
+            case kVK_Escape:
+                clearMultiSelection()
+                return true
+            case kVK_UpArrow, kVK_DownArrow:
+                if flags.contains(.shift) {
+                    selectRangeByKeyboard(keyCode == kVK_UpArrow ? -1 : 1, additive: command)
+                } else {
+                    move(keyCode == kVK_UpArrow ? -1 : 1)
+                }
+                return true
+            case kVK_ANSI_K where command:
+                bulkMenuRequested = true
+                return true
+            case kVK_ANSI_Z where command && !flags.contains(.shift):
+                guard canUndo else { return false }
+                undo()
+                return true
+            default:
+                // Keep the search field's editing shortcuts, including ⌘A, native.
+                // This also prevents single-task destructive and AI shortcuts.
+                return false
+            }
         }
         if scopeMenuSelection != nil, handleScopeMenuKey(keyCode, command: command) { return true }
         if let handled = handleSubScreenKey(event, keyCode: keyCode, flags: flags) { return handled }
@@ -898,7 +1555,8 @@ final class LauncherModel {
                 focusLane()
                 return true
             }
-            guard screen == .list, caretAtEnd(in: event.window), selectedItem?.action != nil else { return false }
+            guard screen == .list, caretAtEnd(in: event.window) else { return false }
+            guard selectedItem?.action != nil || detailSavedRow != nil else { return false }
             expand()
             return true
         case kVK_ANSI_K where command:
@@ -1006,8 +1664,23 @@ final class LauncherModel {
             case kVK_ANSI_K where command:
                 openActions()
                 return true
-            case kVK_Return, kVK_ANSI_KeypadEnter, kVK_UpArrow, kVK_DownArrow, kVK_Tab:
+            default:
+                return nil
+            }
+        case .handoff:
+            switch keyCode {
+            case kVK_Escape:
+                back()
                 return true
+            case kVK_ANSI_C where command:
+                if let editor = event.window?.firstResponder as? NSTextView, editor.selectedRange().length > 0 { return false }
+                copyHandoffPrompt()
+                return true
+            case kVK_ANSI_K where command:
+                openActions()
+                return true
+            case kVK_Return, kVK_ANSI_KeypadEnter, kVK_UpArrow, kVK_DownArrow, kVK_LeftArrow, kVK_RightArrow, kVK_Tab:
+                return false
             default:
                 return nil
             }
@@ -1018,6 +1691,7 @@ final class LauncherModel {
 
     /// ⌘⌫: 목록에서 고른 할 일 행 · 펼친 Review · ⌘K 패널의 할 일. Review는 Dismiss, 나머지(In Progress · To Do · Done Today)는 Delete
     private var deleteShortcut: (ActionEntry, Target)? {
+        guard !isMultiSelecting, !bulkBusy else { return nil }
         switch screen {
         // 목록에서 입력이 있으면 ⌘⌫는 입력창의 줄 지우기
         case .list: guard text.isEmpty else { return nil }
@@ -1057,7 +1731,8 @@ final class LauncherModel {
 
     /// ⌘↩: 고른 Review 행 · 펼친 Review · ⌘K 패널의 Review를 확정 (패널에서 고른 줄과 상관없이)
     private func confirmReview() {
-        guard !leaveIfStale(), let target = focusedTarget, target.group == .review else { return }
+        guard !isMultiSelecting, !bulkBusy,
+              !leaveIfStale(), let target = focusedTarget, target.group == .review else { return }
         perform(.confirm, on: target)
     }
 
@@ -1080,11 +1755,27 @@ final class LauncherModel {
     /// 행 고르기 (목록이면 그 행의 id도 기억한다)
     func select(_ index: Int) {
         selection = index
-        if screen == .list { selectedID = selectedItem?.id }
+        if screen == .list {
+            selectedID = selectedItem?.id
+            reconcileSavedDisclosure()
+        }
+    }
+
+    func reconcileSavedDisclosure() {
+        guard let savedDisclosure,
+              case .saved(let row)? = selectedItem,
+              savedDisclosure.row == row,
+              let savedList,
+              savedDisclosure.snapshot == savedList
+        else {
+            clearSavedDisclosure()
+            return
+        }
     }
 
     /// 목록이 새로 왔을 때: 고르던 행이 아직 있으면 그 행을, 없으면 같은 자리(끝을 넘지 않게)를 가리킨다 (`LauncherContent.reselect`)
     func reconcileSelection() {
+        defer { reconcileMultiSelection() }
         if case .detail = screen {
             reconcileDetailSelection()
             return
@@ -1154,6 +1845,12 @@ final class LauncherModel {
         returnToList(focusing: nil)
     }
 
+    /// The detail-pane close button is an explicit dismissal, even if focus moved into a lane draft.
+    func closeDetailPane() {
+        guard case let .detail(target) = screen else { return }
+        returnToList(focusing: target.action.id)
+    }
+
     private func returnToList(focusing id: UUID?) {
         screen = .list
         laneFocus = nil
@@ -1190,6 +1887,7 @@ final class LauncherModel {
 
     /// return
     func primary() {
+        guard !isMultiSelecting, !bulkBusy else { return }
         switch screen {
         case .list:
             if let item = selectedItem { run(item) }
@@ -1227,7 +1925,7 @@ final class LauncherModel {
             back()
         case .consentNeeded:
             openSettings(.ai)
-        case .working, .runWithAI, .draft:
+        case .working, .runWithAI, .handoff, .draft:
             // M8의 ↩는 Goal 줄바꿈 · 초안의 ↩는 할 일이 없다 (`handleSubScreenKey`)
             break
         }
@@ -1235,6 +1933,7 @@ final class LauncherModel {
 
     /// ⌘↩: 줄을 고른 뒤 신고 · 추가
     func commandReturn() {
+        guard !isMultiSelecting, !bulkBusy else { return }
         if case .pickLines = screen {
             submitLines()
         } else {
@@ -1244,12 +1943,15 @@ final class LauncherModel {
 
     /// Tab/→ (Review 행은 ↩도): Sources 묶음 펼치기
     func expand() {
-        guard screen == .list, let item = selectedItem, let target = target(for: item) else { return }
+        guard !isMultiSelecting, !bulkBusy, screen == .list, let item = selectedItem else { return }
+        if case .saved(let row) = item { toggleSavedRow(row); return }
+        guard let target = target(for: item) else { return }
         showSources(target)
     }
 
     /// 목록 행을 눌렀을 때 근거 상세를 연다. 이 동작은 Review를 확정하지 않는다.
     func openDetail(for item: LauncherItem) {
+        guard !isMultiSelecting, !bulkBusy else { return }
         let currentItems = items
         guard screen == .list,
               let index = currentItems.firstIndex(where: { $0.id == item.id }) else { return }
@@ -1268,6 +1970,11 @@ final class LauncherModel {
 
     /// ⌘K: 할 일 행이면 그 할 일의 동작, 아니면 명령 (빈 화면 · 안내 · 저장본 줄)
     func openActions() {
+        if isMultiSelecting {
+            bulkMenuRequested = true
+            return
+        }
+        guard !bulkBusy else { return }
         switch screen {
         case .list:
             guard let item = selectedItem, let target = target(for: item) else {
@@ -1278,7 +1985,7 @@ final class LauncherModel {
         case .detail(let target):
             guard !leaveIfStale() else { return }
             openActions(target)
-        case .runWithAI(let target), .draft(let target?, _):
+        case .runWithAI(let target), .handoff(let target), .draft(let target?, _):
             openActions(target)
         default:
             break
@@ -1316,7 +2023,7 @@ final class LauncherModel {
         case .pickLines(_, let purpose):
             screen = .pickSource(purpose)
             selection = 0
-        case .runWithAI(let target), .draft(let target?, _):
+        case .runWithAI(let target), .handoff(let target), .draft(let target?, _):
             // M8 · 초안 → 상세 (입력한 Goal은 런처를 닫을 때까지 할 일별로 남는다)
             work?.cancel()
             screen = .detail(target)
@@ -1336,6 +2043,8 @@ final class LauncherModel {
     }
 
     private func textChanged() {
+        clearMultiSelection()
+        clearSavedDisclosure()
         viewed = nil
         switch screen {
         case .list, .pickSource:
@@ -1345,7 +2054,7 @@ final class LauncherModel {
             screen = .list
             selection = 0
             selectedID = nil
-        case .editDue, .addDue, .working, .pickLines, .runWithAI, .draft:
+        case .editDue, .addDue, .working, .pickLines, .runWithAI, .handoff, .draft:
             break
         }
     }
@@ -1367,9 +2076,11 @@ final class LauncherModel {
         case .doneToday:
             caps.toggle(.doneToday)
             reconcileSelection()
-        case .failedSources, .saved:
-            // 알리기만 · 읽기만 하는 줄
+        case .failedSources:
+            // 알리기만 하는 줄
             break
+        case .saved(let row):
+            toggleSavedRow(row)
         case .review(let action):
             // 제목만 보고 확정하지 않게 근거를 먼저 보인다. 확정은 별도 Confirm 동작이다.
             openDetail(for: .review(action))
@@ -1417,7 +2128,7 @@ final class LauncherModel {
 
     func perform(_ entry: ActionEntry, on target: Target) {
         // ⌘K 패널 줄을 누름 · ↩: 그사이 바뀐 할 일에는 실행하지 않는다
-        guard let now, !leaveIfStale() else { return }
+        guard !isMultiSelecting, !bulkBusy, let now, !leaveIfStale() else { return }
         let id = target.action.id
         switch entry {
         case .state(let state):
@@ -1426,7 +2137,7 @@ final class LauncherModel {
             setState(target.action, to: state)
         case .confirm: finish("Confirmed", focusing: id) { await now.confirm(id) }
         case .dismiss: finish("Dismissed", focusing: id) { await now.dismiss(id) }
-        case .handoff: finish("Copied", focusing: id) { _ = await now.handoff(id) }
+        case .handoff: startHandoff(for: target)
         case .openSource: openSource(target.action)
         case .editDue:
             screen = .editDue(target)
@@ -1438,11 +2149,182 @@ final class LauncherModel {
         }
     }
 
+    private func currentHandoffTarget(for opened: Target) -> Target? {
+        guard let found = now?.sections.find(opened.action.id) else { return nil }
+        let current = Target(action: found.action, group: found.group)
+        guard actionGroups(for: current).contains(where: { $0.entries.contains(.handoff) }),
+              items.contains(where: { $0.inlineDetailActionID == current.action.id && $0.group == current.group })
+        else { return nil }
+        return current
+    }
+
+    private func startHandoff(for opened: Target) {
+        guard let now, !now.handoffBusy.contains(opened.action.id),
+              handoffStates[opened.action.id]?.isLoading != true,
+              let requestUserID = signedInUserID,
+              let target = currentHandoffTarget(for: opened)
+        else { return }
+
+        let id = target.action.id
+        if screen == .list { viewed = (id, selection) }
+        laneFocus = nil
+        screen = .handoff(target)
+        var state = handoffStates[id] ?? HandoffPaneState()
+        state.requestTarget = target
+        state.isLoading = true
+        state.error = nil
+        state.copyError = nil
+        state.copied = false
+        handoffStates[id] = state
+        handoffRequestCounter += 1
+        let requestToken = handoffRequestCounter
+        handoffRequestTokens[id] = requestToken
+
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                await notesStore?.load(id)
+                let notesSaved = await notesStore?.flush(id) ?? false
+                guard handoffRequestTokens[id] == requestToken,
+                      signedInUserID == requestUserID
+                else { return }
+                guard notesSaved else {
+                    var failed = handoffStates[id] ?? HandoffPaneState()
+                    failed.isLoading = false
+                    failed.error = notesStore?.entry(for: id).error ?? "Save notes before preparing this handoff."
+                    handoffStates[id] = failed
+                    return
+                }
+                guard let response = try await now.handoff(id) else {
+                    guard handoffRequestTokens[id] == requestToken,
+                          signedInUserID == requestUserID
+                    else { return }
+                    guard case .handoff(let visible) = screen, visible.action.id == id else {
+                        clearHandoffLoading(id, requestToken: requestToken)
+                        return
+                    }
+                    var failed = handoffStates[id] ?? HandoffPaneState()
+                    failed.isLoading = false
+                    failed.error = "Couldn't prepare this handoff. Try again."
+                    handoffStates[id] = failed
+                    return
+                }
+                guard handoffRequestTokens[id] == requestToken,
+                      signedInUserID == requestUserID
+                else { return }
+                guard case .handoff(let visible) = screen, visible.action.id == id else {
+                    clearHandoffLoading(id, requestToken: requestToken)
+                    return
+                }
+                guard let current = currentHandoffTarget(for: visible) else {
+                    handoffStates.removeValue(forKey: id)
+                    returnToList(focusing: id)
+                    return
+                }
+                guard current == target else {
+                    handoffStates[id] = HandoffPaneState(isLoading: false, error: "This task changed while preparing the handoff. Retry to use its latest details.")
+                    screen = .handoff(current)
+                    return
+                }
+                screen = .handoff(current)
+                handoffStates[id] = HandoffPaneState(
+                    ownerID: requestUserID, requestTarget: target, response: response, prompt: response.markdown, isLoading: false
+                )
+            } catch {
+                guard handoffRequestTokens[id] == requestToken,
+                      signedInUserID == requestUserID
+                else { return }
+                guard case .handoff(let visible) = screen, visible.action.id == id else {
+                    clearHandoffLoading(id, requestToken: requestToken)
+                    return
+                }
+                if (error as? APIError)?.isConsentRequired == true {
+                    var failed = handoffStates[id] ?? HandoffPaneState()
+                    failed.isLoading = false
+                    failed.error = "Allow AI processing to prepare this handoff."
+                    handoffStates[id] = failed
+                    screen = .consentNeeded
+                    return
+                }
+                var failed = handoffStates[id] ?? HandoffPaneState()
+                failed.isLoading = false
+                failed.error = error.userMessage
+                handoffStates[id] = failed
+            }
+        }
+    }
+
+    private func clearHandoffLoading(_ id: UUID, requestToken: Int) {
+        guard handoffRequestTokens[id] == requestToken, var state = handoffStates[id] else { return }
+        state.isLoading = false
+        handoffStates[id] = state
+    }
+
+    func retryHandoff() {
+        guard case .handoff(let target) = screen,
+              handoffStates[target.action.id]?.isLoading != true
+        else { return }
+        startHandoff(for: target)
+    }
+
+    func copyHandoffPrompt() {
+        guard case .handoff(let target) = screen,
+              var state = handoffStates[target.action.id],
+              !state.isLoading, state.error == nil,
+              state.response != nil, !state.prompt.isEmpty
+        else { return }
+        guard let current = currentHandoffTarget(for: target) else {
+            handoffStates.removeValue(forKey: target.action.id)
+            returnToList(focusing: target.action.id)
+            return
+        }
+        guard current == target, state.requestTarget == target,
+              state.ownerID == signedInUserID
+        else {
+            state.ownerID = nil
+            state.requestTarget = current
+            state.response = nil
+            state.prompt = ""
+            state.isLoading = false
+            state.error = "This task changed. Retry to prepare a current handoff."
+            state.copied = false
+            handoffStates[target.action.id] = state
+            screen = .handoff(current)
+            return
+        }
+        pasteboard.clearContents()
+        guard pasteboard.setString(state.prompt, forType: .string) else {
+            state.copyError = "Couldn't copy the handoff prompt."
+            state.copied = false
+            handoffStates[target.action.id] = state
+            return
+        }
+        state.copyError = nil
+        state.copied = true
+        handoffStates[target.action.id] = state
+    }
+
+    /// A native list menu can outlive the row value used to build it. Re-resolve its
+    /// account, visible row, group, and available action before using the normal guarded dispatcher.
+    func performRowMenuAction(_ entry: ActionEntry, actionID: UUID, group: TaskGroup, accountID: UUID?) {
+        guard !isMultiSelecting, !bulkBusy, signedInUserID == accountID,
+              screen == .list || screen.isDetail,
+              let now,
+              let current = now.sections.find(actionID),
+              current.group == group,
+              items.contains(where: { $0.inlineDetailActionID == actionID && $0.group == group }),
+              actionGroups(for: Target(action: current.action, group: current.group))
+                .contains(where: { $0.entries.contains(entry) })
+        else { return }
+
+        perform(entry, on: Target(action: current.action, group: current.group))
+    }
+
     // MARK: 진행 상태 (런처를 닫지 않는다)
 
     /// To Do · In Progress · Done으로 옮김: 그 행을 옮긴 구역에서 고른 채 두고, 잠시 ⌘Z로 그 전 상태로 되돌린다
     func setState(_ action: ActionSummary, to state: WorkState, undoable: Bool = true) {
-        guard let now else { return }
+        guard !isMultiSelecting, !bulkBusy, let now else { return }
         let previous = now.state(of: action.id)
         // Done으로 옮기면 끝나지 않은 run을 먼저 멈춘다 (옮기기 쓰기와 함께 보낸다)
         if state == .done, previous != nil, previous != .done { stopRunsBeforeLeaving(action.id) }
@@ -1459,7 +2341,7 @@ final class LauncherModel {
 
     /// 삭제 (⌘K Delete · ⌘⌫): 런처를 닫지 않고 그 행을 빼고 같은 자리의 다음 행을 고른다. 잠시 ⌘Z로 되살린다.
     func delete(_ action: ActionSummary) {
-        guard let now else { return }
+        guard !isMultiSelecting, !bulkBusy, let now else { return }
         let row = items.firstIndex { $0.group != nil && $0.action?.id == action.id }
         // 끝나지 않은 run을 먼저 멈춘다 (지우기 쓰기와 함께 보낸다)
         if now.sections.find(action.id)?.group.isDeletable == true { stopRunsBeforeLeaving(action.id) }
@@ -1475,7 +2357,16 @@ final class LauncherModel {
 
     /// ⌘Z: 방금 옮긴 할 일을 그 전 상태로, 지운 할 일은 지우기 전 구역으로
     func undo() {
-        guard canUndo, let undo = undoOffer.take() else {
+        guard !bulkBusy, canUndo else { return }
+        lastFailedBulkAction = nil
+        bulkRetryGroups = [:]
+        bulkFailureMessage = nil
+        bulkStatus = nil
+        if bulkUndo != nil {
+            undoBulk()
+            return
+        }
+        guard let undo = undoOffer.take() else {
             clearUndo()
             return
         }
@@ -1495,7 +2386,77 @@ final class LauncherModel {
         }
     }
 
+    private func undoBulk() {
+        guard !bulkBusy, let undos = bulkUndo, !undos.isEmpty,
+              let accountID = bulkUndoAccountID,
+              let sessionGeneration = bulkUndoSessionGeneration,
+              accountID == signedInUserID, sessionGeneration == bulkSessionGeneration,
+              let now
+        else {
+            clearUndo()
+            return
+        }
+        let destination = bulkUndoState
+        clearUndo()
+        bulkGeneration += 1
+        let generation = bulkGeneration
+        bulkBusy = true
+        bulkStatus = "Undoing \(undos.count) tasks…"
+        bulkFailureMessage = nil
+        bulkTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            var restored = 0
+            var failures: [String] = []
+            for undo in undos.reversed() {
+                guard self.bulkGeneration == generation,
+                      self.bulkSessionGeneration == sessionGeneration,
+                      self.signedInUserID == accountID,
+                      !Task.isCancelled
+                else { return }
+
+                let write: Task<NowStore.BulkMutationOutcome, Never>?
+                switch undo.change {
+                case .moved:
+                    guard let destination,
+                          now.sections.find(undo.action.id)?.group == destination.group
+                    else {
+                        failures.append("\(undo.action.title) changed before Undo.")
+                        continue
+                    }
+                    write = now.moveForBulk(undo.action.id, expectedGroup: destination.group, to: undo.state)?.task
+                case .deleted:
+                    write = now.restoreForBulk(undo)
+                }
+                guard let write else {
+                    failures.append("\(undo.action.title) could not be restored.")
+                    continue
+                }
+                let outcome = await write.value
+                guard self.bulkGeneration == generation,
+                      self.bulkSessionGeneration == sessionGeneration,
+                      self.signedInUserID == accountID,
+                      !Task.isCancelled
+                else { return }
+                switch outcome {
+                case .success: restored += 1
+                case .failure(let message): failures.append(message)
+                case .stale: failures.append("\(undo.action.title) changed before Undo.")
+                case .cancelled: return
+                }
+            }
+            guard self.bulkGeneration == generation,
+                  self.bulkSessionGeneration == sessionGeneration,
+                  self.signedInUserID == accountID
+            else { return }
+            self.bulkBusy = false
+            self.bulkTask = nil
+            self.bulkStatus = "Restored \(restored) of \(undos.count) tasks."
+            self.bulkFailureMessage = failures.first
+        }
+    }
+
     private func offerUndo(_ undo: TaskUndo) {
+        clearBulkUndo()
         undoOffer.offer(undo)
         let serial = undoOffer.serial
         undoTimer?.cancel()
@@ -1506,9 +2467,36 @@ final class LauncherModel {
         }
     }
 
+    private func offerBulkUndo(
+        _ undos: [TaskUndo], state: WorkState?, accountID: UUID, sessionGeneration: Int
+    ) {
+        undoTimer?.cancel()
+        undoOffer.clear()
+        bulkUndo = undos
+        bulkUndoState = state
+        bulkUndoAccountID = accountID
+        bulkUndoSessionGeneration = sessionGeneration
+        bulkUndoSerial += 1
+        let serial = bulkUndoSerial
+        undoTimer = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: UndoOffer.window)
+            guard let self, !Task.isCancelled, self.bulkUndoSerial == serial else { return }
+            self.clearBulkUndo()
+        }
+    }
+
+    private func clearBulkUndo() {
+        bulkUndoSerial += 1
+        bulkUndo = nil
+        bulkUndoState = nil
+        bulkUndoAccountID = nil
+        bulkUndoSessionGeneration = nil
+    }
+
     private func clearUndo() {
         undoTimer?.cancel()
         undoTimer = nil
+        clearBulkUndo()
         undoOffer.clear()
     }
 
@@ -1875,6 +2863,7 @@ final class LauncherModel {
     var crumb: (task: String?, screen: String)? {
         switch screen {
         case .runWithAI(let target): (target.action.title, "Run with AI")
+        case .handoff(let target): (target.action.title, "Hand off to AI")
         case .draft(let target, _): (target?.action.title, "Draft")
         default: nil
         }

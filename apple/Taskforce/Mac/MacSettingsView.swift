@@ -338,30 +338,57 @@ struct SectionDisplaySettingsPane: View {
     }
 
     var body: some View {
-        Form {
-            Section {
-                Text("All shows every task. Choose a number to show fewer rows and add Show More when needed.")
-                    .font(TFFont.footnote)
-                    .foregroundStyle(TFColor.textSecondary)
-            }
-            Section("Sections") {
-                picker("Review", selection: $preferences.review)
-                picker("In Progress", selection: $preferences.inProgress)
-                picker("To Do", selection: $preferences.toDo)
-                picker("Done Today", selection: $preferences.doneToday)
+        VStack(alignment: .leading, spacing: 0) {
+            Text("All shows every task. Choose a number to show fewer rows and add Show More when needed.")
+                .font(TFFont.footnote)
+                .foregroundStyle(TFColor.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.bottom, TFSpace.md)
+
+            VStack(spacing: 0) {
+                settingRow("Review", selection: $preferences.review)
+                settingRow("In Progress", selection: $preferences.inProgress)
+                settingRow("To Do", selection: $preferences.toDo)
+                settingRow("Done Today", selection: $preferences.doneToday, isLast: true)
             }
         }
-        .modifier(SettingsFormPage())
+        .padding(.top, TFSpace.md)
+        .frame(maxWidth: MacSettingsView.column, alignment: .leading)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .onChange(of: preferences) { _, value in
             value.save()
             MacAppDelegate.shared?.launcher?.model.applySectionDisplayPreferences(value)
         }
     }
 
-    private func picker(_ title: String, selection: Binding<SectionDisplayLimit>) -> some View {
-        Picker(title, selection: selection) {
-            ForEach(SectionDisplayLimit.allCases) { limit in
-                Text(limit.displayName).tag(limit)
+    private func settingRow(
+        _ title: String, selection: Binding<SectionDisplayLimit>, isLast: Bool = false
+    ) -> some View {
+        HStack(spacing: TFSpace.md) {
+            Text(title)
+                .font(TFFont.footnote)
+                .foregroundStyle(TFColor.textPrimary)
+                .lineLimit(1)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .accessibilityHidden(true)
+
+            Picker(title, selection: selection) {
+                ForEach(SectionDisplayLimit.allCases) { limit in
+                    Text(limit.displayName).tag(limit)
+                }
+            }
+            .labelsHidden()
+            .pickerStyle(.menu)
+            .frame(width: 168, alignment: .trailing)
+            .accessibilityLabel(title)
+        }
+        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+        .overlay(alignment: .bottom) {
+            if !isLast {
+                Rectangle()
+                    .fill(TFColor.settingsLine)
+                    .frame(height: 1)
+                    .accessibilityHidden(true)
             }
         }
     }

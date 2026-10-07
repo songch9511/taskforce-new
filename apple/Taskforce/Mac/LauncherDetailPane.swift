@@ -3,14 +3,13 @@ import SwiftUI
 import TaskforceKit
 import TaskforceUI
 
-/// 상세 칸 (Figma M1 `Detail viewport`, bg/elevated, 안쪽 위 18 · 좌우 24): U1은 임시 상세다.
+/// 상세 칸 (Figma M1 `Detail viewport`, bg/elevated, 안쪽 16): U1은 임시 상세다.
 /// 제목(자르지 않음) · 기한 · Review 이유 · Taskforce 갈래(U2 Mac, `LauncherLaneView`) · 원문(`EvidenceDigest`의 근거 줄, 종이 위 인용).
 /// 나머지 갈래(`You` · `Waiting on` · `Done when`)는 U5 · U6a가 갈래 자리에 끼운다.
 /// 저장본 행(오프라인)은 저장된 제목 · 기한만 있다. Run with AI(M8) · 초안 화면이면 이 칸이 그 화면이 된다.
 struct LauncherDetailPane: View {
     @Bindable var model: LauncherModel
-    /// Inserted below its row in the full-width task list.
-    var inline = false
+    var onClose: (() -> Void)? = nil
 
     /// 아래에 더 있는지 (아래 흐림)
     @State private var hasMoreBelow = false
@@ -18,34 +17,32 @@ struct LauncherDetailPane: View {
     var body: some View {
         switch model.screen {
         case .runWithAI(let target): LauncherRunPane(model: model, target: target)
+        case .handoff(let target): LauncherHandoffPane(model: model, target: target)
         case .draft(_, let artifact): LauncherDraftPane(artifact: artifact)
         default:
-            if inline {
-                detailContent
-                    .padding(.horizontal, TFSpace.md)
-                    .padding(.vertical, TFSpace.md)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(TFColor.bgElevated, in: RoundedRectangle(cornerRadius: TFRadius.md, style: .continuous))
-            } else {
-                detail
-            }
+            detail
         }
     }
 
     private var detail: some View {
-        ScrollView {
-            detailContent
-                .padding(.horizontal, TFSpace.xl)
-                .padding(.top, 18)
-                .padding(.bottom, TFSpace.xl)
+        VStack(spacing: 0) {
+            ScrollView {
+                detailContent
+                    .padding(TFSpace.lg)
+            }
+            .onScrollGeometryChange(for: Bool.self) { geometry in
+                geometry.contentOffset.y + geometry.containerSize.height < geometry.contentSize.height - 1
+            } action: { _, more in
+                hasMoreBelow = more
+            }
+            .scrollEdgeFade(TFColor.bgElevated, isActive: hasMoreBelow)
+
+            if let id = model.detailTarget?.action.id {
+                LauncherNotesComposer(model: model, actionID: id).id(id)
+            }
         }
-        .onScrollGeometryChange(for: Bool.self) { geometry in
-            geometry.contentOffset.y + geometry.containerSize.height < geometry.contentSize.height - 1
-        } action: { _, more in
-            hasMoreBelow = more
-        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(TFColor.bgElevated)
-        .scrollEdgeFade(TFColor.bgElevated, isActive: hasMoreBelow)
     }
 
     @ViewBuilder
@@ -59,6 +56,9 @@ struct LauncherDetailPane: View {
                 sources(target.action.id)
             } else if let row = model.detailSavedRow {
                 header(title: row.task.title, due: row.task.status == .doneToday ? nil : row.task.dueDate, reason: nil)
+                Text("Saved · \(row.task.status.group.title)")
+                    .font(TFFont.meta)
+                    .foregroundStyle(TFColor.textSecondary)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -68,47 +68,300 @@ struct LauncherDetailPane: View {
 
     /// 제목 20 semibold (자르지 않음) + 기한 · 확인 이유 12
     private func header(title: String, due: LocalDate?, reason: String?) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(title)
-                .font(TFFont.title)
-                .foregroundStyle(TFColor.textPrimary)
-                .fixedSize(horizontal: false, vertical: true)
-                .textSelection(.enabled)
-            if due != nil || reason != nil {
-                VStack(alignment: .leading, spacing: TFSpace.xs) {
-                    if let due {
-                        Text("Due \(DueText.short(due, today: today))")
-                            .foregroundStyle(DueText.isUrgent(due: due, reasons: [], today: today) ? TFColor.statusOverdue : TFColor.textSecondary)
+        HStack(alignment: .top, spacing: TFSpace.sm) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text(title)
+                    .font(TFFont.title)
+                    .foregroundStyle(TFColor.textPrimary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+                if due != nil || reason != nil {
+                    VStack(alignment: .leading, spacing: TFSpace.xs) {
+                        if let due {
+                            Text("Due \(DueText.short(due, today: today))")
+                                .foregroundStyle(DueText.isUrgent(due: due, reasons: [], today: today) ? TFColor.statusOverdue : TFColor.textSecondary)
+                        }
+                        if let reason {
+                            Text(reason).foregroundStyle(TFColor.textSecondary)
+                        }
                     }
-                    if let reason {
-                        Text(reason).foregroundStyle(TFColor.textSecondary)
-                    }
+                    .font(TFFont.meta)
                 }
-                .font(TFFont.meta)
+            }
+            .accessibilityElement(children: .combine)
+            Spacer(minLength: 0)
+            if let onClose {
+                Button(action: onClose) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(TFColor.textSecondary)
+                        .frame(width: 26, height: 26)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("Close task details")
+                .accessibilityLabel("Close task details")
+                .padding(.trailing, -TFSpace.sm)
             }
         }
-        .accessibilityElement(children: .combine)
     }
 
     @ViewBuilder
     private func sources(_ id: UUID) -> some View {
-        if let digest = model.now?.evidence[id] {
-            if !digest.isEmpty {
-                VStack(alignment: .leading, spacing: TFSpace.sm) {
-                    Text(digest.lines.count == 1 ? "Source" : "Sources")
-                        .font(TFFont.footnoteEmphasis)
-                        .foregroundStyle(TFColor.textPrimary)
-                        .accessibilityAddTraits(.isHeader)
-                    // 가장 최근 근거(지금 상태를 만든 말)가 위
-                    ForEach(digest.lines.reversed()) { line in
-                        SourceSlip(line: line) { url in model.open(url) }
-                    }
+        if let digest = model.now?.evidence[id], !digest.isEmpty {
+            VStack(alignment: .leading, spacing: TFSpace.sm) {
+                Text(digest.lines.count == 1 ? "Source" : "Sources")
+                    .font(TFFont.footnoteEmphasis)
+                    .foregroundStyle(TFColor.textPrimary)
+                    .accessibilityAddTraits(.isHeader)
+                // 가장 최근 근거(지금 상태를 만든 말)가 위
+                ForEach(digest.lines.reversed()) { line in
+                    SourceSlip(line: line) { url in model.open(url) }
                 }
             }
+        } else if model.now?.evidenceLoading.contains(id) == true {
+            HStack(spacing: TFSpace.xs) {
+                ProgressView().controlSize(.small)
+                Text("Loading source details…")
+            }
+            .font(TFFont.meta)
+            .foregroundStyle(TFColor.textSecondary)
         } else if model.now?.evidenceFailed.contains(id) == true {
-            Text("Couldn't load sources.")
+            HStack(spacing: TFSpace.sm) {
+                Text("Couldn't load sources.")
+                    .font(TFFont.meta)
+                    .foregroundStyle(TFColor.textSecondary)
+                Button("Retry") { Task { await model.now?.loadEvidence(id, force: true) } }
+                    .buttonStyle(.plain)
+            }
+        } else {
+            Text("No source details available.")
                 .font(TFFont.meta)
                 .foregroundStyle(TFColor.textSecondary)
+        }
+    }
+}
+
+private struct LauncherHandoffPane: View {
+    @Bindable var model: LauncherModel
+    let target: LauncherModel.Target
+
+    @State private var hasMoreBelow = false
+
+    var body: some View {
+        VStack(spacing: 0) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Hand off to AI")
+                        .font(TFFont.title)
+                        .foregroundStyle(TFColor.textPrimary)
+                        .accessibilityAddTraits(.isHeader)
+                    Text(target.action.title)
+                        .font(TFFont.meta)
+                        .foregroundStyle(TFColor.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                if let state = model.handoffPaneState {
+                    if state.isLoading {
+                        HStack(spacing: TFSpace.xs) {
+                            ProgressView().controlSize(.small)
+                            Text("Preparing handoff…")
+                        }
+                        .font(TFFont.meta)
+                        .foregroundStyle(TFColor.textSecondary)
+                    }
+
+                    if let error = state.error {
+                        Label(error, systemImage: "exclamationmark.circle")
+                            .font(TFFont.meta)
+                            .foregroundStyle(TFColor.textSecondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+
+                    if let response = state.response {
+                        assessment(response.assessment)
+                        Text("Prompt")
+                            .font(TFFont.footnoteEmphasis)
+                            .foregroundStyle(TFColor.textPrimary)
+                        TextEditor(text: $model.handoffPrompt)
+                            .font(TFFont.footnote)
+                            .scrollContentBackground(.hidden)
+                            .padding(TFSpace.xs)
+                            .frame(minHeight: 230)
+                            .background(TFColor.settingsFill, in: RoundedRectangle(cornerRadius: TFRadius.md, style: .continuous))
+                            .overlay {
+                                RoundedRectangle(cornerRadius: TFRadius.md, style: .continuous)
+                                    .strokeBorder(TFColor.settingsLine, lineWidth: 1)
+                            }
+                            .accessibilityLabel("Editable handoff prompt")
+                            .disabled(state.isLoading)
+
+                        if let copyError = state.copyError {
+                            Text(copyError)
+                                .font(TFFont.meta)
+                                .foregroundStyle(TFColor.textSecondary)
+                        }
+
+                        HStack {
+                            if state.error != nil {
+                                Button("Retry") { model.retryHandoff() }
+                                    .disabled(state.isLoading)
+                                    .accessibilityLabel("Retry handoff preparation")
+                            }
+                            Spacer(minLength: TFSpace.sm)
+                            Button(state.copied ? "Copied" : "Copy prompt") { model.copyHandoffPrompt() }
+                                .disabled(state.isLoading || model.handoffPrompt.isEmpty || state.error != nil)
+                                .accessibilityLabel(state.copied ? "Prompt copied" : "Copy handoff prompt")
+                        }
+                        .buttonStyle(.bordered)
+                    } else if !state.isLoading {
+                        Button("Retry") { model.retryHandoff() }
+                            .buttonStyle(.bordered)
+                            .accessibilityLabel("Retry handoff preparation")
+                    }
+                }
+                }
+                .padding(.horizontal, TFSpace.xl)
+                .padding(.top, 18)
+                .padding(.bottom, TFSpace.xl)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .onScrollGeometryChange(for: Bool.self) { geometry in
+                geometry.contentOffset.y + geometry.containerSize.height < geometry.contentSize.height - 1
+            } action: { _, more in
+                hasMoreBelow = more
+            }
+            .scrollEdgeFade(TFColor.bgElevated, isActive: hasMoreBelow)
+
+            LauncherNotesComposer(model: model, actionID: target.action.id).id(target.action.id)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(TFColor.bgElevated)
+    }
+
+    @ViewBuilder
+    private func assessment(_ result: HandoffAssessment?) -> some View {
+        if let result {
+            VStack(alignment: .leading, spacing: TFSpace.xs) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text("Effort")
+                        .foregroundStyle(TFColor.textSecondary)
+                    Text(result.effort.label)
+                        .foregroundStyle(TFColor.textPrimary)
+                    Spacer(minLength: TFSpace.sm)
+                    Text("Difficulty")
+                        .foregroundStyle(TFColor.textSecondary)
+                    Text(result.difficulty.label)
+                        .foregroundStyle(TFColor.textPrimary)
+                }
+                .font(TFFont.meta)
+
+                if result.context == .needsClarification {
+                    Label("Needs clarification", systemImage: "questionmark.circle")
+                        .font(TFFont.meta)
+                        .foregroundStyle(TFColor.textSecondary)
+                }
+            }
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("AI assessment. Effort \(result.effort.label), difficulty \(result.difficulty.label), context \(result.context == .sufficient ? "sufficient" : "needs clarification").")
+        } else {
+            Label("Context only", systemImage: "text.alignleft")
+                .font(TFFont.meta)
+                .foregroundStyle(TFColor.textSecondary)
+                .accessibilityHint("This server returned task context without an AI assessment.")
+        }
+    }
+}
+
+private struct LauncherNotesComposer: View {
+    @Bindable var model: LauncherModel
+    let actionID: UUID
+
+    @FocusState private var editorFocused: Bool
+    @State private var selection: TextSelection?
+
+    private var entry: ActionNotesStore.Entry { model.actionNotesEntry(actionID) }
+    private var text: Binding<String> {
+        Binding(
+            get: { model.actionNotesEntry(actionID).markdown },
+            set: { model.editActionNotes(actionID, markdown: $0) }
+        )
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: TFSpace.xs) {
+            TextEditor(text: text, selection: $selection)
+                .font(TFFont.meta)
+                .scrollContentBackground(.hidden)
+                .padding(TFSpace.sm)
+                .frame(height: 88)
+                .background(TFColor.settingsFill, in: RoundedRectangle(cornerRadius: TFRadius.md, style: .continuous))
+                .focused($editorFocused)
+                .simultaneousGesture(TapGesture().onEnded { editorFocused = true })
+                .accessibilityLabel("Task notes")
+                .disabled(entry.isLoading && !entry.isDirty)
+                .overlay(alignment: .topLeading) {
+                    if entry.markdown.isEmpty && !editorFocused {
+                        Text("Write a note…")
+                            .font(TFFont.meta)
+                            .foregroundStyle(TFColor.textSecondary)
+                            .padding(.leading, TFSpace.md)
+                            .padding(.top, TFSpace.md)
+                            .allowsHitTesting(false)
+                    }
+                }
+
+            if let server = entry.serverVersion {
+                VStack(alignment: .leading, spacing: TFSpace.xs) {
+                    Text("Server version: \(server.markdown.isEmpty ? "(empty)" : server.markdown)")
+                        .font(TFFont.meta)
+                        .foregroundStyle(TFColor.textSecondary)
+                        .lineLimit(2)
+                        .textSelection(.enabled)
+                    HStack(spacing: TFSpace.xs) {
+                        Text("Notes changed elsewhere.")
+                            .font(TFFont.meta)
+                            .foregroundStyle(TFColor.textSecondary)
+                        Spacer(minLength: TFSpace.xs)
+                        Button("Use server") { model.useServerActionNotes(actionID) }
+                        Button("Keep mine") { model.keepMyActionNotes(actionID) }
+                    }
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.mini)
+                .accessibilityElement(children: .contain)
+                .accessibilityLabel("Resolve notes conflict; server revision \(server.revision)")
+            } else if let error = entry.error {
+                HStack(spacing: TFSpace.xs) {
+                    Text(error)
+                        .font(TFFont.meta)
+                        .foregroundStyle(TFColor.statusOverdue)
+                        .lineLimit(2)
+                    Spacer(minLength: TFSpace.xs)
+                    Button(entry.isLoaded ? "Retry" : "Reload") { model.retryActionNotes(actionID) }
+                        .buttonStyle(.bordered)
+                        .controlSize(.mini)
+                }
+            }
+        }
+        .padding(TFSpace.sm)
+        .background(TFColor.bgElevated)
+        .overlay(alignment: .top) { Rectangle().fill(TFColor.settingsLine).frame(height: 1) }
+        .task(id: actionID) { await model.loadActionNotes(actionID) }
+        .onChange(of: editorFocused) { _, focused in model.setNotesEditorFocused(focused) }
+        .onDisappear { model.setNotesEditorFocused(false) }
+    }
+}
+
+private extension HandoffAssessment.Level {
+    var label: String {
+        switch self {
+        case .low: "Low"
+        case .medium: "Medium"
+        case .high: "High"
+        case .unknown: "Unknown"
         }
     }
 }
