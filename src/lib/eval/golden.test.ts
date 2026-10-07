@@ -92,7 +92,7 @@ describe("evals/golden", () => {
           const domain = userEmail.split("@")[1];
           const viaGroup = source.participants?.to?.every((p) => p.email?.endsWith(`@${domain}`) && p.email !== userEmail);
           if (!viaGroup) expect(people.map((p) => p?.email), where).toContain(userEmail);
-        } else if (lines[0].startsWith("[Google Meet · ")) {
+        } else if (source.kind === "meeting" && lines[0].startsWith("[Google Meet · ")) {
           // 머리줄 + "이름: 글", 같은 화자의 이어진 항목은 한 줄로
           expect(lines[0], where).toMatch(/^\[Google Meet · [^\]]+\]$/);
           const speakers = lines.slice(1).map((line) => line.match(/^([^:]+): \S/)?.[1]);
@@ -102,7 +102,7 @@ describe("evals/golden", () => {
           // 사용자는 참석자에 프로필 이름 + 연결한 주소로 한 번만
           const me = (source.participants?.attendees ?? []).filter((p) => p.email === userEmail || p.name === golden.user.name);
           expect(me, where).toEqual([{ name: golden.user.name, email: userEmail }]);
-        } else {
+        } else if (source.kind === "meeting") {
           // Notion 회의록 (pageToItem): "# 제목" + 정리한 본문, 일정 참석자가 붙음
           expect(source.kind, where).toBe("meeting");
           expect(lines[0], where).toMatch(/^# \S/);

@@ -190,7 +190,7 @@ export async function eventAuthorizedUsers(
       { fetch: fetchImpl, timeoutMs: options.timeoutMs ?? 1500 },
     );
     for (const authorization of body.authorizations ?? []) {
-      if (authorization.user_id && !authorization.is_bot) users.add(authorization.user_id);
+      if (authorization.user_id && authorization.is_bot === false) users.add(authorization.user_id);
     }
     cursor = body.response_metadata?.next_cursor ?? "";
     if (!cursor) break;

@@ -2,7 +2,7 @@ import type { ParticipantsInput } from "@/lib/api/contract";
 
 import type { IngestItem } from "../types";
 
-import { slackTsDate, type PendingSlackMessage } from "./events";
+import { isSyntheticSlackBotSender, slackTsDate, type PendingSlackMessage } from "./events";
 
 // 대기 메시지(slack_messages)를 대화 묶음으로 나눠 원문(IngestItem)으로 만든다 (docs/go-live/slack-integration.md 2-5, D1).
 // 순수 함수: 이름 · 이미 넣은 스레드는 인자로 받는다. 본문 형식은 골든셋(evals/golden/slack-*.json)과 글자까지 같다.
@@ -60,10 +60,11 @@ const MENTION = /<@([^|<>]+)(?:\|[^<>]*)?>/g;
 export function slackIdsToName(messages: PendingSlackMessage[], meSlackId: string): { users: string[]; conversations: string[] } {
   const users = new Set<string>();
   const conversations = new Set<string>();
+  const botDmChannels = new Set(messages.filter((m) => m.channelType === "im" && isSyntheticSlackBotSender(m.senderId)).map((m) => m.channelId));
   for (const m of messages) {
-    if (m.senderId && m.senderId !== meSlackId) users.add(m.senderId);
+    if (m.senderId && m.senderId !== meSlackId && !isSyntheticSlackBotSender(m.senderId)) users.add(m.senderId);
     for (const [, id] of m.text.matchAll(MENTION)) if (id !== meSlackId) users.add(id);
-    if (m.channelType !== "mpim") conversations.add(m.channelId);
+    if (m.channelType !== "mpim" && !(m.channelType === "im" && botDmChannels.has(m.channelId))) conversations.add(m.channelId);
   }
   return { users: [...users], conversations: [...conversations] };
 }
@@ -146,7 +147,8 @@ export function bucketSlackMessages(messages: StoredSlackMessage[], context: Sla
   }
 
   const settledAt = context.now.getTime() - SLACK_BUCKET_LIMITS.quietMinutes * 60_000;
-  const speaker = (senderId: string) => (senderId === context.me.slackId ? context.me.name : (context.people.get(senderId) ?? UNKNOWN_PERSON));
+  const speaker = (senderId: string) =>
+    isSyntheticSlackBotSender(senderId) ? "Slack app" : senderId === context.me.slackId ? context.me.name : (context.people.get(senderId) ?? UNKNOWN_PERSON);
 
   const buckets: SlackBucket[] = [];
   for (const [key, all] of byKey) {
@@ -156,13 +158,21 @@ export function bucketSlackMessages(messages: StoredSlackMessage[], context: Sla
       const last = part[part.length - 1];
       const lines = part.flatMap((m) => {
         const text = renderSlackText(m.text, context).trim();
-        return text ? [`${speaker(m.senderId)}: ${text}`] : [];
+        if (!text) return [];
+        if (isSyntheticSlackBotSender(m.senderId)) {
+          return text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).map((line) => `Slack app: ${line}`);
+        }
+        return [`${speaker(m.senderId)}: ${text}`];
       });
 
       // 머리줄 · 제목
+      const hasBotSender = part.some((m) => isSyntheticSlackBotSender(m.senderId));
+      const botDirectMessage = first.channelType === "im" && hasBotSender;
       const counterpart =
         first.channelType === "im"
-          ? (context.conversations.get(first.channelId) ?? part.map((m) => context.people.get(m.senderId)).find((name) => name && name !== context.me.name) ?? null)
+          ? botDirectMessage
+            ? "Slack app"
+            : (context.conversations.get(first.channelId) ?? part.map((m) => context.people.get(m.senderId)).find((name) => name && name !== context.me.name) ?? null)
           : null;
       const channelName = context.conversations.get(first.channelId) ?? "channel";
       const place = first.channelType === "im" ? (counterpart ? `DM · ${counterpart}` : "DM") : first.channelType === "mpim" ? "그룹 DM" : `#${channelName}`;
@@ -184,10 +194,15 @@ export function bucketSlackMessages(messages: StoredSlackMessage[], context: Sla
       };
       if (first.channelType === "im") {
         add(counterpart);
+        if (botDirectMessage) {
+          for (const m of part) if (!isSyntheticSlackBotSender(m.senderId)) add(speaker(m.senderId));
+          for (const m of part) for (const [, id] of m.text.matchAll(MENTION)) add(id === context.me.slackId ? context.me.name : context.people.get(id));
+        }
       } else {
-        for (const m of part) add(speaker(m.senderId));
+        for (const m of part) if (!isSyntheticSlackBotSender(m.senderId)) add(speaker(m.senderId));
         for (const m of part) for (const [, id] of m.text.matchAll(MENTION)) add(id === context.me.slackId ? context.me.name : context.people.get(id));
       }
+      if (hasBotSender) add("Slack app");
       add(context.me.name);
       const participants: ParticipantsInput = { attendees: names.map((name) => ({ name })) };
 

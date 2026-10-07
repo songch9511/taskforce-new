@@ -23,9 +23,9 @@ function fakeFetch(...bodies: (unknown | Response)[]) {
 }
 
 describe("eventAuthorizedUsers", () => {
-  it("여러 쪽을 이어 받아 봇이 아닌 이용자 id만 모은다", async () => {
+  it("여러 쪽을 이어 받아 비봇 여부가 확인된 이용자 id만 모은다", async () => {
     const pages = [
-      { ok: true, authorizations: [{ user_id: "U1", is_bot: false }, { user_id: "B1", is_bot: true }], response_metadata: { next_cursor: "next" } },
+      { ok: true, authorizations: [{ user_id: "U1", is_bot: false }, { user_id: "B1", is_bot: true }, { user_id: "U_UNKNOWN" }], response_metadata: { next_cursor: "next" } },
       { ok: true, authorizations: [{ user_id: "U2", is_bot: false }, { user_id: "U1", is_bot: false }], response_metadata: { next_cursor: "" } },
     ];
     const requests: RequestInit[] = [];

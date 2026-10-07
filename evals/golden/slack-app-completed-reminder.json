@@ -1,0 +1,33 @@
+{
+  "id": "slack-app-completed-reminder",
+  "description": "앱이 이미 완료됐다고 알린 작업은 새로운 Action으로 남기지 않는다.",
+  "origin": "synthetic",
+  "tags": ["slack"],
+  "user": {
+    "name": "윤지호",
+    "aliases": [],
+    "emails": []
+  },
+  "sources": [
+    {
+      "id": "slack-app-done-1007",
+      "kind": "message",
+      "occurred_at": "2026-10-07T10:00:00+09:00",
+      "text": "[DM · Slack app]\nSlack app: 셀프 평가를 이미 제출했습니다.",
+      "participants": {
+        "attendees": [
+          { "name": "Slack app" },
+          { "name": "윤지호" }
+        ]
+      }
+    }
+  ],
+  "expected_actions": [],
+  "must_not_extract": [
+    {
+      "source": "slack-app-done-1007",
+      "quote": "셀프 평가를 이미 제출했습니다",
+      "reason": "ALREADY_DONE"
+    }
+  ]
+}

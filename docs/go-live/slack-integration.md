@@ -83,12 +83,14 @@ cron 15분 · Sync Now · 연결 직후 ──▶ syncConnections ──▶ slac
 | 서명 | `verify.ts`. 틀리면 401. 본문 · 헤더는 로그에 남기지 않는다 |
 | `url_verification` | `challenge`를 그대로 돌려준다 |
 | 받을 연결 찾기 | `team_id`와 `authorizations[].user_id`로 `provider = slack`, `external_account_id = team:user`, **`status`가 `active` 또는 `error`**인 연결을 찾는다. `recordSync`는 동기화가 한 번 실패해도 `error`로 바꾸고(`store.ts`), `error` 연결도 동기화는 계속된다. `active`만 받으면 일시 오류 동안의 메시지가 영영 사라진다(과거를 다시 가져올 방법이 없다). `revoked`만 뺀다. 이벤트의 `authorizations`에 없는 연결이 그 워크스페이스에 있으면 D4. 동의(`ai_consent_at`)가 없는 이용자는 저장하지 않는다 |
-| 가르기 (연결마다) | DM(`im`) · 그룹 DM(`mpim`): 모두 남김. 채널(`channel` · `group`): 본문에 `<@이용자id>`가 있거나, 보낸 사람이 이용자거나, **추적 중인 스레드**의 답글일 때만. 이용자가 쓰거나 언급된 글이 스레드 첫 글이거나 스레드 안이면 그 스레드를 추적에 올린다(처리방침 3장 문장을 여기에 맞춘다, 5장). 봇 · 시스템 하위 유형(`bot_message` · `channel_join` · `channel_leave` 등)은 버린다 |
+| 가르기 (연결마다) | DM(`im`) · 그룹 DM(`mpim`): 이용자 계정에서 보이는 일반 메시지를 남긴다. 채널(`channel` · `group`): 이용자 직접 언급(`<@id>`), 이용자 본인의 글, 기존 추적 스레드의 답글, 실제 방송 언급(`<!channel>` · `<!here>` · `<!everyone>`) 중 하나가 있을 때만. 사람과 외부 앱 · 봇 작성 글 모두 조건을 적용한다. `<#C…|name>` 채널 링크는 방송 언급이 아니다. 방송 언급만으로 받은 메시지는 저장하지만 새 스레드를 추적하지 않는다. `bot_id`가 있으면 사용자 필드보다 우선해 synthetic sender로 저장한다. Taskforce 자체 글은 메시지의 `app_id` 또는 `bot_profile.app_id`가 envelope의 `api_app_id`와 같을 때만 버린다. 시스템 하위 유형(`channel_join` · `channel_leave` 등)은 버린다 |
 | 저장 · 재전송 | 보통 메시지는 `slack_messages`에 `(connection_id, channel_id, ts)`로 넣되 **이미 있으면 아무것도 하지 않는다.** 행은 원문으로 넣은 뒤에도 받은 지 3일까지 표시만 남기므로(2-6), Slack이 늦게 다시 보낸 이벤트(`X-Slack-Retry-Num`, Delayed Events)가 이미 넣은 메시지를 다시 넣거나 고친 글을 옛 글로 덮지 않는다 |
 | 고침 · 지움 | `message_changed`: 아직 넣지 않은 행이면 본문을 바꾼다. `message_deleted`: 아직 넣지 않은 행이면 지운다. 이미 원문으로 넣었으면 그대로 둔다(본문은 90일 뒤 지움, slack-app.md 7장 검토 3) |
 | 답 | 저장까지 동기로 하고 200. 저장이 실패하면 5xx로 답해 Slack이 다시 보내게 한다. 받을 연결이 없는 이벤트 · 버린 이벤트도 200 (60분 동안 95% 넘게 실패하면 Slack이 구독을 끈다) |
 | 앱 해제 | `tokens_revoked`: 이벤트에 든 사용자 id의 연결만. `app_uninstalled`: **그 워크스페이스의 모든 Taskforce 연결.** 두 이벤트는 순서 없이 온다. 연결의 `connected_at`이 이벤트 시각(`event_time`)보다 뒤면(그 사이 다시 연결) 건드리지 않는다. `created_at`은 다시 연결해도 그대로이고(`saveConnection`이 기존 행을 고친다), `updated_at`은 동기화마다 바뀌어서 둘 다 쓸 수 없다 → 새 열(2-6). 해당 연결은 `revoked`로 바꾸고 D3대로 지운다 |
 | 로그 | 이벤트 종류 · 결정(남김/버림/연결 없음) 개수만. 본문 · 이름 · Slack id는 남기지 않는다 |
+
+**수집 범위 문구 검토 전:** 구현은 연결된 Slack 계정이 볼 수 있는 실제 방송 언급과 그 메시지를 보낸 외부 앱 · 봇까지 대기 표에 넣을 수 있다. `@here`가 누구에게 알림을 보냈는지는 이벤트만으로 확인할 수 없다. 메시지를 받았다는 사실만으로 할 일의 소유자를 정하지 않는다. 제품 연결 안내 · 공개 처리방침 · 네이티브 문구는 아직 개인 언급 · 본인 작성 글만 설명하므로, 확장된 방송 수집을 운영에 켜기 전에 검토용 문구 초안([Slack 공지 수집 범위 초안](../legal/slack-notices-scope-draft.md))에 맞춰 세 곳을 함께 정렬한다. 이 초안은 정책 버전 · 시행일을 정하거나 공개하지 않는다.
 
 ### 2-5. 묶기와 넣기 (`sync`)
 

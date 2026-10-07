@@ -4,10 +4,11 @@ import type { JevDecision } from "@/lib/ai/jev";
 import {
   DOCUMENT_JUDGE_PROMPT_VERSION,
   DOCUMENT_JUDGE_QUESTIONS,
-  JUDGE_PROMPT_VERSION,
   JUDGE_QUESTIONS,
   MEETING_JUDGE_PROMPT_VERSION,
   MEETING_JUDGE_QUESTIONS,
+  SLACK_JUDGE_PROMPT_VERSION,
+  SLACK_JUDGE_QUESTIONS,
   WRITTEN_BY_ME_DOCUMENT_PROMPT_VERSION,
   WRITTEN_BY_ME_DOCUMENT_JUDGE_QUESTIONS,
   WRITTEN_BY_ME_PROMPT_VERSION,
@@ -38,6 +39,7 @@ const answers: JevDecision["answers"] = {
   audience: { type: "choice", choice: "shared", probabilities: { shared: 1 } },
   meeting_owner: { type: "choice", choice: "user", probabilities: { user: 0.95 } },
   document_owner: { type: "choice", choice: "user", probabilities: { user: 0.95 } },
+  message_owner: { type: "choice", choice: "user", probabilities: { user: 0.95 } },
 };
 
 const source = {
@@ -191,6 +193,248 @@ describe("buildJudgeState의 작성자", () => {
 });
 
 describe("judgeCandidate", () => {
+  it("앱 DM 개인 작업은 Review로 낮추고 다중 줄의 Slack app 화자도 보존한다", async () => {
+    const appReminder = {
+      text: [
+        "[DM · Flex]",
+        "Slack app: Flex 'PR 8월' 셀프 평가와 동료 평가자 지정 마감이 메일에는 10/8 00:59로 적혀 있어.",
+        "Slack app: 한국 시간 기준이면 오늘 밤 자정이 지난 뒤라,",
+        "Slack app: 아직 제출 전이라면 오늘 확인해두면 좋겠어.",
+        "Slack app: 이미 완료했는지와 Flex의 마감 시간대는 확인되지 않았어.",
+      ].join("\n"),
+      kind: "message",
+      occurredAt: new Date("2026-10-07T10:00:00+09:00"),
+      participants: { attendees: [{ name: "Slack app" }, { name: "윤지호" }] },
+    };
+    const task = {
+      title: "셀프 평가 제출 및 동료 평가자 지정",
+      quote: "아직 제출 전이라면 오늘 확인해두면 좋겠어",
+      due_text: null,
+      signal: "commitment" as const,
+    };
+    const result = await judgeCandidate(task, appReminder, { name: "윤지호", aliases: [], emails: [] }, async () => ({
+      model: "m",
+      answers: {
+        ...answers,
+        message_owner: { type: "choice", choice: "user", probabilities: { user: 0.96 } },
+      },
+    }));
+
+    expect(result).toMatchObject({
+      decision: "confirm",
+      reasons: ["TENTATIVE"],
+      rule: "slack_app_reminder",
+      speaker: "Slack app",
+      promptVersion: SLACK_JUDGE_PROMPT_VERSION,
+      signals: { message_owner: { choice: "user" } },
+    });
+    const state = buildJudgeState(task, appReminder, { name: "윤지호", aliases: [], emails: [] });
+    expect(state.message_context).toContain("[DM · Flex]");
+    expect(state.message_context).toContain("Slack app: Flex 'PR 8월'");
+    expect(state.message_context).toContain("Slack app: 아직 제출 전이라면 오늘 확인해두면 좋겠어.");
+    expect(SLACK_JUDGE_QUESTIONS.message_owner.criteria).toHaveProperty("everyone_individually");
+  });
+
+  it("앱 자신의 작업이나 다른 사람의 약속은 사용자에게 넣지 않는다", async () => {
+    const source = {
+      text: "[DM · Flex]\nSlack app: 제가 PR 초안을 제출할게요.",
+      kind: "message",
+      occurredAt: new Date("2026-10-07T10:00:00+09:00"),
+      participants: { attendees: [{ name: "Slack app" }, { name: "윤지호" }] },
+    };
+    const result = await judgeCandidate(
+      { title: "PR 초안 제출", quote: "제가 PR 초안을 제출할게요", due_text: null, signal: "commitment" },
+      source,
+      { name: "윤지호", aliases: [], emails: [] },
+      async () => ({
+        model: "m",
+        answers: {
+          ...answers,
+          message_owner: { type: "choice", choice: "someone_else", probabilities: { someone_else: 0.96 } },
+        },
+      }),
+    );
+
+    expect(result).toMatchObject({ decision: "reject", reasons: ["NOT_MY_ACTION"], speaker: "Slack app" });
+  });
+
+  it("사용자가 명확히 거절하거나 넘긴 직접 요청은 현재 사용자 작업으로 되살리지 않는다", async () => {
+    const declined = {
+      text: [
+        "[DM · 최유나]",
+        "최유나: @윤지호 이번 주 안에 투자자 업데이트 메일 초안 봐주실 수 있어요?",
+        "윤지호: 이번 주는 IR 준비 때문에 어렵겠어요.",
+        "윤지호: 다음 주에 여유 생기면 다시 말씀드릴게요.",
+      ].join("\n"),
+      kind: "message",
+      occurredAt: new Date("2026-10-07T10:00:00+09:00"),
+      participants: { attendees: [{ name: "최유나" }, { name: "윤지호" }] },
+    };
+    const request = {
+      title: "투자자 업데이트 메일 초안 검토",
+      quote: "이번 주 안에 투자자 업데이트 메일 초안 봐주실 수 있어요?",
+      due_text: "이번 주 안에",
+      signal: "commitment" as const,
+    };
+    let sentQuestions: Record<string, unknown> | undefined;
+    const result = await judgeCandidate(request, declined, { name: "윤지호", aliases: [], emails: [] }, async (call) => {
+      sentQuestions = call.questions;
+      return {
+        model: "m",
+        answers: {
+          ...answers,
+          is_my_commitment: { type: "noul", noul: 0.1 },
+          certainty: { type: "choice", choice: "none", probabilities: { none: 0.96 } },
+          message_owner: { type: "choice", choice: "unassigned", probabilities: { unassigned: 0.96 } },
+        },
+      };
+    });
+
+    expect(sentQuestions?.message_owner).toMatchObject({
+      instructions: expect.stringContaining("clearly declines this request"),
+    });
+    expect(result).toMatchObject({
+      decision: "reject",
+      reasons: ["NOT_MY_ACTION", "TENTATIVE"],
+      signals: { certainty: { choice: "none" }, message_owner: { choice: "unassigned" } },
+    });
+    expect(result.rule).toBeUndefined();
+  });
+
+  it("독자마다 해야 하는 broadcast와 @here audience 불확실성은 Review로 보낸다", async () => {
+    const identity = { name: "윤지호", aliases: [], emails: [] };
+    const source = {
+      text: "[#team]\n박지훈: @channel 오늘까지 각자 보안 교육을 완료해 주세요.",
+      kind: "message",
+      occurredAt: new Date("2026-10-07T10:00:00+09:00"),
+      participants: { attendees: [{ name: "박지훈" }, { name: "윤지호" }] },
+    };
+    const candidate = { title: "보안 교육 완료", quote: "오늘까지 각자 보안 교육을 완료해 주세요", due_text: null, signal: "commitment" as const };
+    const broadcast = await judgeCandidate(candidate, source, identity, async () => ({
+      model: "m",
+      answers: {
+        ...answers,
+        message_owner: { type: "choice", choice: "everyone_individually", probabilities: { everyone_individually: 0.96 } },
+      },
+    }));
+    const here = await judgeCandidate(
+      candidate,
+      { ...source, text: "[#team]\n박지훈: @here 오늘까지 각자 보안 교육을 완료해 주세요." },
+      identity,
+      async () => ({
+        model: "m",
+        answers: {
+          ...answers,
+          message_owner: { type: "choice", choice: "ambiguous", probabilities: { ambiguous: 0.96 } },
+        },
+      }),
+    );
+
+    expect(broadcast).toMatchObject({ decision: "confirm", rule: "slack_broadcast", signals: { message_owner: { choice: "everyone_individually" } } });
+    expect(here).toMatchObject({ decision: "confirm", rule: "slack_audience_ambiguous", ownerAmbiguous: true });
+  });
+
+  it("긴 Slack 원문에서도 header와 후보 적용 범위에 가까운 @here·담당자 문맥을 보존한다", async () => {
+    const identity = { name: "윤지호", aliases: [], emails: [] };
+    const hereText = [
+      "[#security]",
+      "박지훈: @here 아래 단계는 현재 활동 중인 담당자들이 각자 확인해 주세요.",
+      "먼저 보안 포털에 로그인하고 최신 공지를 열어 주세요.",
+      "새 교육 항목은 계정 메뉴의 학습 탭에서 찾을 수 있습니다.",
+      "진행 중인 캠페인 목록과 관계없이 보안 교육을 확인해 주세요.",
+      "필요하면 팀 리드에게 시스템 접근 권한을 요청해 주세요.",
+      "중간에 멈췄으면 다음 영업일에 다시 시작할 수 있습니다.",
+      "여러 기기를 쓰는 경우 각 기기에서 안내를 읽어 주세요.",
+      "교육을 마친 뒤 완료 표시를 남겨 주세요.",
+    ].join("\n");
+    const hereCandidate = { title: "보안 교육 완료 표시", quote: "교육을 마친 뒤 완료 표시를 남겨 주세요", due_text: null, signal: "commitment" as const };
+    const hereState = buildJudgeState(hereCandidate, {
+      text: hereText,
+      kind: "message",
+      occurredAt: new Date("2026-10-07T10:00:00+09:00"),
+    }, identity);
+
+    expect(hereState.message_context).toContain("[#security]");
+    expect(hereState.message_context).toContain("@here");
+    expect(hereState.message_context).toContain(hereCandidate.quote);
+
+    const namedOtherLines = [
+      "[#ops]",
+      "박지훈: @최유나, 아래 자료 정리와 공유는 최유나님이 맡아 주세요.",
+      "먼저 지난 분기 문서에서 변경된 항목을 확인해 주세요.",
+      "미팅 내용은 기존 폴더의 운영 기록 페이지에 모여 있습니다.",
+      "중복 항목은 표의 비고 칸에 이유를 적어 주세요.",
+      "자료 이름은 서비스명과 날짜 순으로 맞춰 주세요.",
+      "누락된 수치는 담당 부서에 확인한 뒤 채워 주세요.",
+      "초안 링크는 검토가 끝난 뒤 채널에 공유해 주세요.",
+      "마지막으로 산출물 표를 팀 문서에 정리해 주세요.",
+    ];
+    for (let i = 0; i < 20; i++) namedOtherLines.push(`박지훈: 후보와 관계없는 뒷 대화 ${i + 1}`);
+    namedOtherLines.push("DISTANT_UNRELATED_MARKER: 뒤쪽의 다른 Action");
+    const namedOtherText = namedOtherLines.join("\n");
+    const namedCandidate = { title: "산출물 표 정리", quote: "마지막으로 산출물 표를 팀 문서에 정리해 주세요", due_text: null, signal: "commitment" as const };
+    const namedState = buildJudgeState(namedCandidate, {
+      text: namedOtherText,
+      kind: "message",
+      occurredAt: new Date("2026-10-07T10:00:00+09:00"),
+      participants: { attendees: [{ name: "박지훈" }, { name: "최유나" }, { name: "윤지호" }] },
+    }, identity);
+
+    expect(namedState.message_context).toContain("[#ops]");
+    expect(namedState.message_context).toContain("@최유나");
+    expect(namedState.message_context).toContain(namedCandidate.quote);
+    expect((namedState.message_context ?? "").length).toBeLessThanOrEqual(3800);
+    expect(namedState.message_context).not.toContain("DISTANT_UNRELATED_MARKER");
+  });
+
+  it("이미 완료된 앱 알림은 Review cap으로 되살리지 않는다", async () => {
+    const app = {
+      text: "[DM · Flex]\nSlack app: 셀프 평가를 이미 제출했습니다.",
+      kind: "message",
+      occurredAt: new Date("2026-10-07T10:00:00+09:00"),
+      participants: { attendees: [{ name: "Slack app" }, { name: "윤지호" }] },
+    };
+    const result = await judgeCandidate(
+      { title: "셀프 평가 제출", quote: "셀프 평가를 이미 제출했습니다", due_text: null, signal: "commitment" },
+      app,
+      { name: "윤지호", aliases: [], emails: [] },
+      async () => ({
+        model: "m",
+        answers: {
+          ...answers,
+          already_done: { type: "noul", noul: 0.95 },
+          message_owner: { type: "choice", choice: "user", probabilities: { user: 0.96 } },
+        },
+      }),
+    );
+
+    expect(result).toMatchObject({ decision: "reject", reasons: ["ALREADY_DONE"] });
+  });
+
+  it("앱 알림에 대한 사용자의 직접 수락은 일반 human commitment처럼 자동 반영할 수 있다", async () => {
+    const source = {
+      text: "[DM · Flex]\nSlack app: 셀프 평가 제출을 완료해 주세요.\n윤지호: 넵 오늘 제출할게요.",
+      kind: "message",
+      occurredAt: new Date("2026-10-07T10:00:00+09:00"),
+      participants: { attendees: [{ name: "Slack app" }, { name: "윤지호" }] },
+    };
+    const result = await judgeCandidate(
+      { title: "셀프 평가 제출", quote: "넵 오늘 제출할게요", due_text: null, signal: "commitment" },
+      source,
+      { name: "윤지호", aliases: [], emails: [] },
+      async () => ({
+        model: "m",
+        answers: {
+          ...answers,
+          speaker_role: { type: "choice", choice: "me", probabilities: { me: 0.96 } },
+          message_owner: { type: "choice", choice: "user", probabilities: { user: 0.96 } },
+        },
+      }),
+    );
+
+    expect(result).toMatchObject({ decision: "auto", speaker: "윤지호" });
+  });
+
   it("질문을 한 번에 묻고 판정을 돌려준다", async () => {
     const calls: unknown[] = [];
     const decide: Decide = async (request) => {

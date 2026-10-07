@@ -6,10 +6,11 @@ import type { JevQuestion } from "@/lib/ai/jev";
 /**
  * 판정 질문 묶음의 버전. 문서 판정과 회의 판정은 각각 별도 버전을 쓴다 (eval 결과 파일 이름 · 요약에 쓴다).
  * 판정 한 건에 남기는 버전(judge_logs.model_version, JudgeResult.promptVersion)은 어느 질문 묶음으로 물었는지까지 가른다:
- * JUDGE_QUESTIONS는 이 값 그대로("judge-v5"), WRITTEN_BY_ME_QUESTIONS는 WRITTEN_BY_ME_PROMPT_VERSION("judge-v5-self").
+ * JUDGE_QUESTIONS는 이 값 그대로("judge-v5"), Slack message는 SLACK_JUDGE_PROMPT_VERSION, WRITTEN_BY_ME_QUESTIONS는 WRITTEN_BY_ME_PROMPT_VERSION("judge-v5-self").
  * judge-v5: speaker_role이 코드가 읽은 인용 줄의 화자(state.candidate.quote_speaker)를 보고, directness는 이유만 전해 들은 말이면 직접 발언으로 본다 (Slack 골든셋 F2).
  */
 export const JUDGE_PROMPT_VERSION = "judge-v5";
+export const SLACK_JUDGE_PROMPT_VERSION = "judge-v2-slack";
 export const WRITTEN_BY_ME_PROMPT_VERSION = `${JUDGE_PROMPT_VERSION}-self`;
 export const MEETING_JUDGE_PROMPT_VERSION = "judge-v6-meeting";
 export const DOCUMENT_JUDGE_PROMPT_VERSION = "judge-v7-document";
@@ -70,6 +71,44 @@ export const JUDGE_QUESTIONS = {
     type: "choice",
     instructions: "Was this said to the counterpart or written as a private note?",
     criteria: { shared: "Communicated to the counterpart", private: "User's own note or internal" },
+  },
+} as const satisfies Record<string, JevQuestion>;
+
+/**
+ * Slack message만 쓰는 질문 묶음. 앱 DM의 개인별 의무와 명시적 broadcast 의무를 좁게 인식하되,
+ * 일반 공지·사람/앱이 자기 일을 하겠다는 말은 사용자 소유로 돌리지 않는다.
+ */
+export const SLACK_JUDGE_QUESTIONS = {
+  ...JUDGE_QUESTIONS,
+  is_my_commitment: {
+    type: "noul",
+    instructions:
+      "Is this the user's own current action? The user is state.user.name / aliases. An individualized Slack app DM can remind the user of a concrete task without a user-authored promise or formal acceptance: read the task and its required next step together across nearby app-authored lines in state.message_context. A task-specific deadline/status plus an instruction to complete or check it if still outstanding is a personal reminder even when the candidate quote is only the task or deadline line. If completion is uncertain, the task remains the user's but is tentative and must go to Review. Do not infer ownership from an app DM or a deadline alone when there is no concrete required step. A direct request to the user also counts before acceptance only while it remains outstanding; if the user clearly declines or passes it to someone else, it is no longer the user's current task. Do not count work that the app or another person says they will do, a task assigned to someone else, or a generic announcement. Use message_owner to distinguish a duty for every reader from a personal assignment.",
+  },
+  is_actionable: {
+    type: "noul",
+    instructions:
+      "Is this a concrete required step for the candidate owner? A personal app reminder can be actionable even though it is formatted as a notice: the task name and required next step may appear in adjacent Slack app lines. An instruction to check or finish a named task if it is still outstanding is actionable but tentative when completion is unknown. General announcements, status information, product tips, promotions, optional suggestions, and channel references are not actionable.",
+  },
+  certainty: {
+    ...JUDGE_QUESTIONS.certainty,
+    criteria: {
+      firm: "A clear user promise, accepted assignment, direct required request, explicit per-reader broadcast duty, or unconditional individualized app reminder that states a concrete required action",
+      tentative: "Optional advice, a vague suggestion, a condition whose fulfillment is unknown, or a personal app reminder that says to act only if the named task is still outstanding",
+      none: "No current user or per-reader duty, including an announcement, a task owned by someone else or the app, a request the user clearly declined, or a task the user passed to another person",
+    },
+  },
+  message_owner: {
+    type: "choice",
+    instructions:
+      "Classify ownership of this specific candidate as it stands now, using its quote and state.message_context, which contains the Slack header and a bounded nearby excerpt. Use only evidence that applies to this candidate; do not transfer ownership from unrelated messages elsewhere in the excerpt. A Slack header identifies the DM/channel but does not prove audience membership or assignment. A mention or channel name alone is not an assignment. If the user clearly declines this request, classify it as unassigned; if the user passes it to a named person, use someone_else. If quote_speaker is exactly 'Slack app', treat it as an app-authored statement: the app's first-person work is not the user's. In an individualized app DM, task-specific deadline/status information plus a nearby instruction to complete or check that named task if it remains outstanding establishes a personal reminder for the recipient even if the task and instruction are on different app-authored lines. The completion condition makes it tentative, not unassigned. A deadline, app delivery, generic progress note, or optional suggestion by itself does not establish a personal task. @channel/@everyone plus an explicit requirement for every reader to act individually is everyone_individually. @here targets people active at send time; without evidence that the user was active, use ambiguous, not user or everyone_individually. An announcement, optional suggestion, or unassigned channel item is unassigned.",
+    criteria: {
+      user: "The quote and nearby app-authored lines in an individualized DM establish a named concrete required task and a next step the recipient must complete/check if it remains outstanding, even if those facts are on separate lines; it is tentative when completion is unknown. The user's promise/acceptance or a direct required request to them also qualifies only if the user has not declined or passed it to someone else.",
+      everyone_individually: "The message explicitly requires every reader to complete the concrete action individually, such as an @channel or @everyone obligation. Do not use this for @here.",
+      someone_else: "A named person other than the user or the app itself owns the action; this includes a non-user human or app speaker saying they will do it.",
+      unassigned: "The message is informational, an announcement, an optional suggestion, a deadline/status without a concrete required step, a channel reference, a task without a user-specific/per-reader assignment, or a request the user clearly declined without assigning another owner.",
+      ambiguous: "A concrete owner or audience could include the user, but the message does not establish whether it does; @here without evidence of the user's active presence is an example.",
+    },
   },
 } as const satisfies Record<string, JevQuestion>;
 

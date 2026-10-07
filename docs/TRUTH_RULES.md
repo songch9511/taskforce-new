@@ -90,6 +90,22 @@ Jev의 확률은 보정을 목표로 학습되어 있어서 **"P(내 약속) < 0
 
 `certainty`, `speaker_role`, `directness`, `audience`는 2장 진실 판정 규칙의 입력(Claim 속성)으로 그대로 씁니다.
 
+#### Slack 메시지 알림·멘션·broadcast (extract-v7 · judge-v2-slack)
+
+Slack 버킷은 `kind = message`입니다. 이 종류에만 별도 추출 지침과 Jev 질문(`message_owner`)을 보냅니다. 예외는 구체적으로 사용자에게 맡긴 앱 알림, 사용자를 직접 부른 요청, 또는 모든 독자가 각자 해야 하는 명시적 의무입니다. 일반 공지·상태 정보·홍보·선택적 제안은 계속 제외합니다. `Slack app:` 화자가 자기 일을 하겠다는 문장은 사용자 업무가 아닙니다.
+
+Jev는 후보마다 소유자를 `user` · `everyone_individually` · `someone_else` · `unassigned` · `ambiguous` 중 하나로 분류합니다. 코드 규칙은 다음과 같습니다.
+
+메시지 판정에는 머리줄과 후보 주변을 담은 제한된 `message_context`도 전달합니다. 후보에 적용되는 가까운 지시만 소유권 근거로 쓰고, 같은 발췌에 우연히 함께 들어온 다른 대화의 담당자를 옮기지 않습니다. 머리줄은 DM · 채널을 식별할 뿐 사용자 포함 여부나 담당을 증명하지 않습니다.
+
+- 후보의 인용 화자가 정확히 `Slack app`이고 `message_owner = user`이면 앱 DM 알림이어도 구체적인 commitment 후보를 버리지 않고 Review로 보냅니다(`slack_app_reminder`, `TENTATIVE`). 원문에 완료 표시가 있거나 정보성·비실행성 점수가 기각선 아래면 그대로 기각합니다. 완료 여부가 불명확하다는 표현은 완료 증거가 아닙니다. 시간대가 모호한 시각에서 due 날짜를 추정하지 않습니다.
+- `@channel` · `@everyone`에 모든 독자가 각자 해야 하는 업무는 Review로 보냅니다(`slack_broadcast`, `NOT_MY_ACTION`). 메시지가 들어온 사실만으로 사용자의 포함을 단정해 자동 반영하지 않습니다.
+- `@here`는 당시 활동 중인 사람만 대상이므로 활동 여부를 모르면 `message_owner = ambiguous`로 두고 담당 확인 Review로 보냅니다(`slack_audience_ambiguous`). 일반적인 채널 이름 언급이나 멘션만으로는 담당을 정하지 않습니다.
+- 사용자가 같은 요청을 명확히 거절하거나 다른 사람에게 넘겼으면 현재 사용자 할 일이 아닙니다. Jev는 거절된 요청을 `certainty = none`과 `unassigned`로, 다른 사람에게 넘어간 일을 `someone_else`로 봅니다. 직접 @언급 요청 규칙은 거절 · 위임 뒤에는 확인 요청으로 되살리지 않습니다.
+- `someone_else` · `unassigned`인 새 commitment는 거부합니다. 사람의 직접 약속·수락과 사용자를 특정한 요청은 기본 임계값과 기존 확인 규칙을 따릅니다. 앱 메시지 뒤에 사용자가 직접 수락한 후보는 인용 화자가 사용자이므로 앱 알림의 Review 제한을 적용하지 않습니다.
+
+`message_owner` 질문은 모든 message 후보에 적용합니다. 아래 코드 게이트와 앱 알림 Review 제한은 새 commitment에만 적용합니다. 기존 update · completion · cancellation의 merge 및 코드 처리 규칙과 임계값은 바꾸지 않습니다.
+
 #### 사용자가 직접 쓴 문서 (`written_by_me`, judge-v4)
 
 질문은 대화를 전제로 합니다("명시적 약속 · 수락한 할당 · 사용자에게 한 요청"). 사용자가 자기 문서에 적어 둔 할 일 · 다음 단계에는

@@ -133,6 +133,22 @@ describe("bucketSlackMessages — 골든셋과 같은 본문 (slack-integration.
     expect(bucket.item.participants).toEqual(expected.participants);
     expect(bucket.item.title).toBe("Slack · Group DM");
   });
+
+  it("앱 메시지는 sender id를 이름 조회에 보내지 않고, DM에서도 Slack app 화자를 관련자로 보존한다", () => {
+    const botMessage = msg({
+      ts: ts("2026-10-06 21:00"),
+      senderId: "bot:B123",
+      text: "배포 일정은 금요일입니다.\n\n담당자는 <@U_KIM>이며 <@U_PARK>에게 넘겨요.",
+    });
+    const humanMessage = { ...botMessage, ts: ts("2026-10-06 21:01"), senderId: KIM, text: "네, 확인할게요." };
+    const [bucket] = bucketSlackMessages([botMessage, humanMessage], context());
+
+    expect(bucket.item.text).toBe(
+      "[DM · Slack app]\nSlack app: 배포 일정은 금요일입니다.\nSlack app: 담당자는 @김대표이며 @박지훈에게 넘겨요.\n김대표: 네, 확인할게요.",
+    );
+    expect(bucket.item.participants).toEqual({ attendees: [{ name: "Slack app" }, { name: "김대표" }, { name: "박지훈" }, { name: "윤지호" }] });
+    expect(slackIdsToName([botMessage, humanMessage], ME)).toEqual({ users: [KIM, PARK], conversations: [] });
+  });
 });
 
 describe("bucketSlackMessages — 자르기 (D1)", () => {

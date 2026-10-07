@@ -1,0 +1,47 @@
+{
+  "id": "slack-everyone-obligation-review",
+  "description": "@everyone이 모든 독자에게 구체적인 개인별 보안 교육 의무를 알린다. 사용자별 포함 여부와 소유권은 자동 단정하지 않고 검토한다.",
+  "origin": "synthetic",
+  "tags": ["slack"],
+  "user": {
+    "name": "윤지호",
+    "aliases": [],
+    "emails": []
+  },
+  "sources": [
+    {
+      "id": "slack-everyone-1007",
+      "kind": "message",
+      "occurred_at": "2026-10-07T10:00:00+09:00",
+      "text": "[#security]\n박지훈: @everyone 오늘까지 각자 보안 교육을 완료해 주세요.\n박지훈: 관리자 점검표는 제가 마무리하겠습니다.",
+      "participants": {
+        "attendees": [
+          { "name": "박지훈" },
+          { "name": "윤지호" }
+        ]
+      }
+    }
+  ],
+  "expected_actions": [
+    {
+      "title": "보안 교육 완료",
+      "owner": "unknown",
+      "due": "2026-10-07",
+      "status": "open",
+      "needs_review": true,
+      "evidence": [
+        {
+          "source": "slack-everyone-1007",
+          "quote": "@everyone 오늘까지 각자 보안 교육을 완료해 주세요."
+        }
+      ]
+    }
+  ],
+  "must_not_extract": [
+    {
+      "source": "slack-everyone-1007",
+      "quote": "관리자 점검표는 제가 마무리하겠습니다",
+      "reason": "NOT_MY_ACTION"
+    }
+  ]
+}

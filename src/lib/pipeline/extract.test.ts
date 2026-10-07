@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
+import { z } from "zod";
 
-import { buildExtractUserPrompt, calendarAround, kstDate } from "@/lib/ai/prompts/extract";
+import { buildExtractSystemPrompt, buildExtractUserPrompt, calendarAround, EXTRACT_SYSTEM_PROMPT, kstDate, MESSAGE_EXTRACT_POLICY } from "@/lib/ai/prompts/extract";
+import type { JsonCompletionRequest } from "@/lib/ai/llm";
 
 import { extractCandidates, type CompleteJson } from "./extract";
 
@@ -12,7 +14,10 @@ const input = {
 };
 
 function fakeComplete(candidates: unknown[]): CompleteJson {
-  return (async () => ({ data: { candidates }, model: "test/model" })) as CompleteJson;
+  return async <T extends z.ZodType>(request: JsonCompletionRequest<T>) => ({
+    data: request.schema.parse({ candidates }),
+    model: "test/model",
+  });
 }
 
 const raw = {
@@ -29,6 +34,22 @@ const raw = {
 };
 
 describe("extractCandidates", () => {
+  it("Slack 메시지에만 알림 예외를 시스템 지침으로 덧붙인다", async () => {
+    const systems: string[] = [];
+    const complete: CompleteJson = async <T extends z.ZodType>(request: JsonCompletionRequest<T>) => {
+      systems.push(request.system);
+      return { data: request.schema.parse({ candidates: [] }), model: "test/model" };
+    };
+
+    await extractCandidates({ ...input, kind: "message" }, complete);
+    await extractCandidates(input, complete);
+
+    expect(systems[0]).toContain(MESSAGE_EXTRACT_POLICY);
+    expect(systems[0]).not.toBe(EXTRACT_SYSTEM_PROMPT);
+    expect(systems[1]).toBe(EXTRACT_SYSTEM_PROMPT);
+    expect(buildExtractSystemPrompt("meeting")).toBe(EXTRACT_SYSTEM_PROMPT);
+  });
+
   it("모델 응답을 정리해 후보로 돌려준다", async () => {
     const result = await extractCandidates(input, fakeComplete([raw]));
     expect(result.model).toBe("test/model");

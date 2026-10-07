@@ -8,15 +8,17 @@
 
 | 항목 | 결정 |
 |---|---|
-| 토큰 | **사용자 토큰**(`xoxp-`). 봇 없음. 이용자 본인이 속한 대화만 받는다 |
+| 토큰 | **사용자 토큰**(`xoxp-`). Taskforce 봇 토큰은 쓰지 않는다. 외부 앱 · 봇 메시지도 연결 이용자 계정이 볼 수 있는 대화에서 일반 메시지 이벤트로 받을 수 있다 |
 | 받는 방식 | **Events API**. 대화 기록 API(`conversations.history` · `replies`)로 주기 조회하지 않는다(4장 속도 제한) |
 | 받는 이벤트 | `message.im` · `message.mpim` · `message.channels` · `message.groups` (사용자 이벤트) |
-| 남기는 메시지 | 이용자와의 DM, 그룹 DM, 이용자를 언급한 메시지, 이용자가 쓴 메시지와 그 스레드. **나머지는 받는 즉시 버린다** |
+| 현재 구현이 남기는 메시지 | 이용자와의 DM · 그룹 DM, 이용자를 직접 언급하거나 이용자가 쓴 채널 메시지와 그 스레드, 기존 추적 스레드의 답글, 실제 `@channel` · `@here` · `@everyone` 방송 언급. 외부 앱 · 봇 메시지도 같은 조건을 적용한다. **나머지는 받는 즉시 버린다** |
 | 권한 | `im:history` · `mpim:history` · `channels:history` · `groups:history` · `users:read` + 대화 이름 `im:read` · `mpim:read` · `channels:read` · `groups:read` (모두 user scope, 9개. 대화 이름 4개는 2026-09-28 결정, [slack-integration.md](slack-integration.md) D7) |
 | redirect URL | `https://api.taskforcelabs.dev/api/connectors/slack/callback` |
 | 이벤트 URL | `https://api.taskforcelabs.dev/api/connectors/slack/events` |
 | 배포 | 공개 배포(Public Distribution)를 켠 **비Marketplace 앱**으로 시작. Marketplace는 설치 워크스페이스가 10곳을 넘고 법률 검토(7장)가 끝난 뒤. 단, 사용자 토큰 `*:history`는 Marketplace 승인이 어렵다(8장, 2026-09-28 확인) |
 | 서버 환경변수 | `SLACK_CLIENT_ID` · `SLACK_CLIENT_SECRET` · `SLACK_SIGNING_SECRET` (+ 3-3의 `SLACK_APP_TOKEN`이 필요하면) |
+
+현재 요약 표는 코드의 처리 범위다. 앱 매니페스트의 공개 설명, 연결 전 안내, 공개 처리방침은 이전 범위로 남아 있다. 검토 전 초안은 [Slack 공지 수집 범위 초안](../legal/slack-notices-scope-draft.md)이다. 공개 배포·운영 활성화 전에 사용자에게 보이는 세 문구를 검토하고 함께 갱신한다. 이 변경은 과거 기록 조회나 메시지 쓰기 권한을 더하지 않는다.
 
 ## 2. 앱 매니페스트
 
@@ -95,7 +97,7 @@ settings:
 - `users:read.email`: 이메일로 Google 쪽 참석자와 사람을 맞출 수 있지만, 베타에서는 이름으로 충분한지 먼저 본다. 필요해지면 처리방침 3장과 함께 더한다.
 - ~~`channels:read` · `groups:read` · `im:read` · `mpim:read`~~: **더했다 (2026-09-28, D7).** 이 권한 없이는 DM 상대가 글을 쓰기 전까지 상대를 모르고, 채널 이름도 모른다.
 - `search:read`: 과거 메시지를 검색해 오는 것은 이벤트 방식의 목적(쌓아 두지 않기)과 맞지 않는다.
-- 봇 권한 `app_mentions:read`와 이벤트 `app_mention`: 이 이벤트는 **Taskforce 봇**이 언급됐을 때만 온다. 이용자가 언급된 메시지는 `message.channels` · `message.groups`에서 `<@이용자id>`로 찾는다. 그래서 봇을 두지 않는다.
+- 봇 권한 `app_mentions:read`와 이벤트 `app_mention`: 이 이벤트는 **Taskforce 봇**이 언급됐을 때만 온다. Taskforce 봇을 설치하지 않고, 이용자 계정의 `message.channels` · `message.groups` 이벤트에서 이용자 직접 언급과 방송 언급을 확인한다. 외부 앱 · 봇 작성 글도 이 user event 안에서 조건에 맞으면 받을 수 있다.
 
 **채널 권한을 좁히는 선택지:** `channels:history` · `groups:history`를 빼면 DM과 그룹 DM만 받는다. 권한 화면이 가벼워지는 대신 채널의 언급 · 약속을 놓친다. go live는 네 권한 모두로 시작하고, 연결 화면에 "DMs, group DMs, and channel messages that mention you or that you write"라고 먼저 알린다.
 
@@ -105,10 +107,12 @@ settings:
 
 | 이벤트 | 남기는 조건 |
 |---|---|
-| `message.im` · `message.mpim` | 모두 (봇 · 시스템 메시지 하위 유형 제외) |
-| `message.channels` · `message.groups` | 본문에 `<@이용자id>`가 있음, 또는 보낸 사람이 이용자, 또는 이용자가 쓴 · 언급된 스레드의 답글 |
-| 하위 유형 `message_changed` | 이미 남긴 메시지면 고친 내용으로 바꿈 |
+| `message.im` · `message.mpim` | 이용자 계정에 보이는 일반 메시지. 외부 앱 · 봇 작성 글 포함. 시스템 메시지 하위 유형은 제외 |
+| `message.channels` · `message.groups` | 본문에 이용자 직접 언급 `<@id>`, 이용자 본인의 글, 기존 추적 스레드 답글, 또는 실제 `<!channel>` · `<!here>` · `<!everyone>` 방송 언급이 있음. 외부 앱 · 봇 작성 글에도 같은 조건을 적용 |
+| 하위 유형 `message_changed` | 중첩된 `event.message` 본문을 정규화한 뒤 같은 관련성 · 자기 앱 · 시스템 하위 유형 규칙을 적용하고, 이미 남긴 메시지만 고침 |
 | 하위 유형 `message_deleted` | 아직 원문으로 넣기 전이면 지움. 이미 넣었으면 원문 처리 규칙을 정한다(아래 7장) |
+
+`<#C…|channel-name>`은 채널 링크이며 방송 언급이 아니다. 방송만으로 받은 채널 글은 저장하지만 스레드 추적을 시작하지 않는다. 메시지 `bot_id`가 `user`와 함께 오면 `bot_id`를 sender identity로 보존한다. Taskforce 자체 메시지는 `app_id` 또는 `bot_profile.app_id`가 요청의 `api_app_id`와 일치할 때만 제외한다. `api_app_id`가 있다는 이유만으로 이벤트를 전부 버리지 않는다. 공개 설명 문구는 위의 검토용 수집 범위 초안과 정렬할 때까지 이전 문구로 둔다.
 
 - 대화 · 스레드 단위로 묶고, 대화가 멈춘 뒤(안정화 시간) 원문 하나로 넣는다(계획 2-4). 묶는 동안의 메시지 보관 위치(DB 표)도 RLS · 계정 삭제 cascade를 따른다.
 - 이벤트는 3초 안에 200으로 답하고 처리는 뒤에서 한다. Slack은 실패하면 다시 보내므로(`X-Slack-Retry-Num`) `event_id`로 중복을 거른다.
