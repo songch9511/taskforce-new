@@ -25,7 +25,7 @@ This implements the owner's explicit request to open account subscriptions and a
 
 Store: Task Force labs (`taskforcelabs.lemonsqueezy.com`). Identity verification is active and bank connection/setup steps are complete. This is an existing live store, not a new pending store approval.
 
-Test product `1420342` is a draft with Monthly variant `2218838` ($9.99/month) and Annual variant `2218883` ($101.90/year). Storefront disabled. Tax category: AI as a Service (AIaaS) - Cloud Based & Downloaded. Product description discloses included allowance and no overage. Latest price screenshot: `evidence/lemonsqueezy-plans-test-999-2026-10-08.jpg`.
+Test product `1420342` is published in test mode with Monthly variant `2218838` ($9.99/month) and Annual variant `2218883` ($101.90/year). Storefront disabled. Tax category: AI as a Service (AIaaS) - Cloud Based & Downloaded. Product description discloses included allowance and no overage. Latest price screenshot: `evidence/lemonsqueezy-plans-test-999-2026-10-08.jpg`.
 
 Live product `1420403` is also a draft, with Monthly variant `2218942` ($9.99/month) and Annual variant `2218943` ($101.90/year). Live/test mode and both prices were verified in the dashboard. Latest price screenshot: `evidence/lemonsqueezy-plans-live-999-2026-10-08.jpg`. Earlier screenshots document superseded $9/$91.80 drafts. Do not publish a buyable live checkout before account binding and delivery are verified.
 
@@ -39,13 +39,13 @@ Use `.env.example` for exact variable names. API key and webhook secret are serv
 4. Configure live keys/IDs/webhook and exact Supabase OAuth redirect. Verify price objects remain USD 999/month and USD 10190/year; no product trial or setup fee. Publish live catalog, then enable the server billing flag only when entitlement delivery is verified.
 5. Deploy server and website from reviewed commits. Confirm Google login, both checkout amounts/tax disclosure, portal and status refresh through the real domains. Publish signed/notarized Mac build with verified metadata, then download/install/launch it from the website.
 
-The owner authorized opening billing and deploying these surfaces. Browser policy separately requires action-time confirmation for creating API access; that confirmation was requested before creating either key. No key was created merely because the general launch task was authorized.
+The owner explicitly approved test/live API key creation and Vercel server secret storage on 2026-10-08 KST. Both keys were created (expiry 2027-04-08), authenticated successfully, and saved as Secret values: test scoped to the billing Preview branch and live to Production. Webhook secrets, store 474964, variant IDs, mode, budgets and the initially disabled billing flag were saved in the same scopes. Live webhook 140533 targets the production billing endpoint; test webhook 140532 uses a temporary isolated local endpoint. The exact production OAuth callback was added to the existing same-origin allowlist.
 
 ## Verification status
 
 Local evidence only, not provider/production completion. Fresh checks below include integration with upstream beta cost controls (`f19b96d`).
 
-- Backend final: lint (0 errors; 1 pre-existing unused-import warning), typecheck, 2,439 tests across 194 files, label-only eval, and Next production build passed. Runtime npm audit: 0 vulnerabilities. A default eval invocation detected inherited provider configuration and was stopped before producing scores; only label validation is complete. No live quality result is claimed.
+- Backend final: lint (0 errors; 1 pre-existing unused-import warning), typecheck, 2,446 tests across 194 files, label-only eval, and Next production build passed. Runtime npm audit: 0 vulnerabilities. A default eval invocation detected inherited provider configuration and was stopped before producing scores; only label validation is complete. No live quality result is claimed.
 - Real PostgreSQL final: 31 contention/locking tests across 5 files passed, including two concurrent $2 reservations under a $3 cap, simultaneous monthly/annual checkout, exclusive deletion claims, and shared global contention between legacy and paid accounts.
 - Swift package final: 528 tests / 62 suites passed, including checkout consent and safe provider URLs.
 - macOS final: unsigned Debug build and 107 app tests / 12 suites passed. This does not establish signed installer or live checkout behavior.
@@ -73,3 +73,11 @@ Independent integration review found no new blocking issue. Account usage shows 
 ## Price revision
 
 The owner subsequently changed prices to USD 9.99/month and USD 101.90/year. App, API, current legal terms and test/live draft variants were updated; allowance budgets remain unchanged. Signed/notarized build 29 passed at source `e0f6592` but contains the previous display prices and must not be published for this offer. Replacement build 30 at source `5c3b9e22d4c7f90c7c197b78821868cf3a10743d` passed app/DMG signing, notarization, stapling and Gatekeeper validation. Local artifact: `/Users/daniel/.codex/releases/taskforce/billing/Taskforce-0.1.0-30/Taskforce-0.1.0-30.dmg`; SHA-256 `56dd3668fcb04d8cc6eab5bdc87fc4de1a8f88f3b8ab8d73866c0b50db581c06`. It is not published or installed; provider configuration and checkout verification remain release gates. Pricing now appears on the home page and its dedicated page, preserving the cream/sand website design, with USD 119.88 struck through next to the annual offer.
+
+## Provider E2E and deployment checkpoint (2026-10-08 KST)
+
+Real Lemon Squeezy TEST checkouts succeeded at $9.99 monthly and $101.90 yearly using official test cards and synthetic accounts on a disposable local Supabase stack. Both account mappings became active with $3 monthly allowance and UTC month reset; six initial signed events were processed. Portal API and portal UI worked. Monthly cancellation preserved paid-through access; full annual initial-order refund revoked paid access. A declined card did not grant a paid plan. Signed duplicate delivery returned 200 twice; unsigned webhook returned 401. No real card was charged.
+
+The refund flow exposed a trial fallback defect; regression tests reproduced it before a fix in application state and SQL spending/trial functions. Repeating the actual refunded account check confirmed can_use_ai=false, no allowance, and database subscription_required. Focused checks: 48 billing tests and 9 PostgreSQL billing tests; full tests 2,446 across 194 files, lint and typecheck passed. The isolated production build passed. Native source is unchanged from signed build 30.
+
+Only the billing migration was applied to production in an explicit transaction; existing beta access is grandfathered. Production activation, live Google/checkout verification, publication and installation of build 30 remain subsequent gates. Test mode evidence does not prove a live charge. Raw credentials and synthetic access tokens remain outside Git and are removed after setup verification.
