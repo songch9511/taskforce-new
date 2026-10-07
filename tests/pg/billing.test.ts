@@ -67,3 +67,29 @@ it("legacy and paid requests serialize against the same global cap",async()=>{
  const pending=b.query("select reserve_ai_spend($1,$2,'chat','m',2)",[legacy,randomUUID()]).then(()=>"admitted",(error:Error)=>error.message);
  await a.query('commit');expect(await pending).toMatch(/ai_global_daily_budget_exhausted/);
 });
+
+it.each(['refunded', 'expired', 'past_due', 'cancelled'])('%s subscription cannot restart trial or reserve its allowance', async status => {
+    const account = randomUUID();
+    await a.query('insert into auth.users(id) values($1)', [account]);
+    await a.query('insert into billing_accounts(user_id, subscription_id, status) values($1,$2,$3)', [account, randomUUID(), status]);
+    await a.query('select billing_start_trial($1)', [account]);
+    expect((await a.query('select trial_ends_at from billing_accounts where user_id=$1', [account])).rows[0].trial_ends_at).toBeNull();
+    for (const previousTrial of [false, true]) {
+        if (previousTrial) await a.query("update billing_accounts set trial_ends_at=now()+interval '7 days' where user_id=$1", [account]);
+        await expect(a.query('select billing_spend_summary($1,3,1)', [account])).rejects.toThrow(/subscription_required/);
+        for (const initialSync of [false, true]) {
+            await expect(a.query("select reserve_billing_ai_spend($1,$2,'chat','m',0.01,3,1,$3)", [account, randomUUID(), initialSync])).rejects.toThrow(/subscription_required/);
+        }
+    }
+});
+
+it('keeps genuine trial, legacy notice, and cancelled paid-through windows', async () => {
+    const trial = randomUUID(), legacy = randomUUID(), cancelled = randomUUID();
+    await a.query('insert into auth.users(id) values($1),($2),($3)', [trial, legacy, cancelled]);
+    await a.query('select billing_start_trial($1)', [trial]);
+    await a.query('insert into billing_accounts(user_id,legacy_beta) values($1,true)', [legacy]);
+    await a.query("insert into billing_accounts(user_id,subscription_id,status,current_period_ends_at) values($1,$2,'cancelled',now()+interval '1 day')", [cancelled, randomUUID()]);
+    for (const [account, cap] of [[trial, '1'], [legacy, '10'], [cancelled, '3']]) {
+        expect((await a.query('select cap from billing_spend_window($1,3,1)', [account])).rows[0].cap).toBe(cap);
+    }
+});

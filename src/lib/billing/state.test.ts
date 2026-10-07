@@ -12,11 +12,11 @@ describe('billing entitlement', () => {
         expect(billingState({ ...base, trial_ends_at: past }, now).can_use_ai).toBe(false);
     });
     it.each(['active', 'cancelled'])('%s grants only through paid-through', status => {
-        expect(billingState({ ...base, status, current_period_ends_at: future }, now).can_use_ai).toBe(true);
-        expect(billingState({ ...base, status, current_period_ends_at: past }, now).can_use_ai).toBe(false);
+        expect(billingState({ ...base, subscription_id: 'paid-sub', status, current_period_ends_at: future }, now).can_use_ai).toBe(true);
+        expect(billingState({ ...base, subscription_id: 'paid-sub', status, current_period_ends_at: past }, now).can_use_ai).toBe(false);
     });
     it.each(['past_due', 'unpaid', 'paused', 'expired', 'refunded', 'on_trial'])('%s never uses retry dates as paid entitlement', status => {
-        expect(billingState({ ...base, status, current_period_ends_at: future }, now).can_use_ai).toBe(false);
+        expect(billingState({ ...base, subscription_id: 'paid-sub', status, current_period_ends_at: future }, now).can_use_ai).toBe(false);
     });
     it('preserves legacy free consent/notice and disables deleting accounts', () => {
         expect(billingState({ ...base, legacy_beta: true }, now).can_use_ai).toBe(true);
@@ -42,4 +42,10 @@ it('returns the approved prices with the annual discount rounded to cents', asyn
     expect(status.annual_price_usd).toBe(Math.round(999 * 12 * 0.85) / 100);
     expect(billingStatusSchema.parse(status).annual_price_usd).toBe(101.9);
     expect(billingStatusSchema.safeParse({ ...status, monthly_price_usd: 9, annual_price_usd: 91.8 }).success).toBe(false);
+});
+
+it.each(['refunded', 'expired', 'past_due', 'unpaid', 'paused', 'cancelled', 'active'])('%s subscription cannot regain onboarding or an old trial', status => {
+    for (const trial_ends_at of [null, future]) {
+        expect(billingState({ ...base, subscription_id: 'paid-sub', status, onboarding_started_at: null, trial_ends_at }, now).can_use_ai).toBe(false);
+    }
 });

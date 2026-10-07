@@ -47,7 +47,7 @@ language plpgsql security definer set search_path=public as $$
 begin
  insert into billing_accounts(user_id) values(p_user_id) on conflict do nothing;
  update billing_accounts set trial_ends_at=now()+interval '7 days'
- where user_id=p_user_id and trial_ends_at is null and not legacy_beta
+ where user_id=p_user_id and subscription_id is null and trial_ends_at is null and not legacy_beta
  and not deleting;
 end $$;
 
@@ -85,7 +85,7 @@ begin
   return query select p_monthly_cap,date_trunc('month',now() at time zone 'UTC') at time zone 'UTC';
  elsif a.legacy_beta and (a.notice_ends_at is null or a.notice_ends_at > now()) then
   return query select 10::numeric,'-infinity'::timestamptz;
- elsif a.trial_ends_at > now() or (a.trial_ends_at is null and (a.onboarding_started_at is null or a.onboarding_started_at > now()-interval '1 day' or (p_initial_sync and a.subscription_id is null))) then
+ elsif a.subscription_id is null and (a.trial_ends_at > now() or (a.trial_ends_at is null and (a.onboarding_started_at is null or a.onboarding_started_at > now()-interval '1 day' or p_initial_sync))) then
   return query select p_trial_cap,coalesce(a.onboarding_started_at,now());
  else raise exception 'subscription_required'; end if;
 end $$;

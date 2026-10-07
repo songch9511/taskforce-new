@@ -16,8 +16,8 @@ export function billingState(account: BillingAccount, now = Date.now()) {
     const future = (value: string | null) => !!value && Date.parse(value) > now;
     const paid = ['active', 'cancelled'].includes(account.status) && future(account.current_period_ends_at);
     const legacy = account.legacy_beta && (!account.notice_ends_at || future(account.notice_ends_at));
-    const trial = future(account.trial_ends_at);
-    const onboarding = !account.trial_ends_at && (!account.onboarding_started_at || Date.parse(account.onboarding_started_at) + 86400000 > now);
+    const trial = !account.subscription_id && future(account.trial_ends_at);
+    const onboarding = !account.subscription_id && !account.trial_ends_at && (!account.onboarding_started_at || Date.parse(account.onboarding_started_at) + 86400000 > now);
     return {
         status: account.deleting ? 'deleting' : paid ? account.status : legacy ? 'legacy_beta' : trial ? 'trialing' : onboarding ? 'trial_pending' : account.subscription_id && !['active', 'cancelled'].includes(account.status) ? account.status : 'expired',
         plan: account.plan, trial_ends_at: account.trial_ends_at, current_period_ends_at: account.current_period_ends_at,
