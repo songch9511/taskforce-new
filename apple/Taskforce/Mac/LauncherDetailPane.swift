@@ -3,7 +3,7 @@ import SwiftUI
 import TaskforceKit
 import TaskforceUI
 
-/// 상세 칸 (Figma M1 `Detail viewport`, bg/elevated, 안쪽 위 18 · 좌우 24): U1은 임시 상세다.
+/// 상세 칸 (Figma M1 `Detail viewport`, bg/elevated, 안쪽 16): U1은 임시 상세다.
 /// 제목(자르지 않음) · 기한 · Review 이유 · Taskforce 갈래(U2 Mac, `LauncherLaneView`) · 원문(`EvidenceDigest`의 근거 줄, 종이 위 인용).
 /// 나머지 갈래(`You` · `Waiting on` · `Done when`)는 U5 · U6a가 갈래 자리에 끼운다.
 /// 저장본 행(오프라인)은 저장된 제목 · 기한만 있다. Run with AI(M8) · 초안 화면이면 이 칸이 그 화면이 된다.
@@ -28,9 +28,7 @@ struct LauncherDetailPane: View {
         VStack(spacing: 0) {
             ScrollView {
                 detailContent
-                    .padding(.horizontal, TFSpace.xl)
-                    .padding(.top, 18)
-                    .padding(.bottom, TFSpace.xl)
+                    .padding(TFSpace.lg)
             }
             .onScrollGeometryChange(for: Bool.self) { geometry in
                 geometry.contentOffset.y + geometry.containerSize.height < geometry.contentSize.height - 1
@@ -297,8 +295,7 @@ private struct LauncherNotesComposer: View {
             TextEditor(text: text, selection: $selection)
                 .font(TFFont.meta)
                 .scrollContentBackground(.hidden)
-                .padding(.horizontal, TFSpace.xs)
-                .padding(.vertical, 2)
+                .padding(TFSpace.sm)
                 .frame(height: 88)
                 .background(TFColor.settingsFill, in: RoundedRectangle(cornerRadius: TFRadius.md, style: .continuous))
                 .focused($editorFocused)
@@ -310,8 +307,8 @@ private struct LauncherNotesComposer: View {
                         Text("Write a note…")
                             .font(TFFont.meta)
                             .foregroundStyle(TFColor.textSecondary)
-                            .padding(.leading, TFSpace.sm)
-                            .padding(.top, TFSpace.sm)
+                            .padding(.leading, TFSpace.md)
+                            .padding(.top, TFSpace.md)
                             .allowsHitTesting(false)
                     }
                 }
