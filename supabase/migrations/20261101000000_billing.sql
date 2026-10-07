@@ -91,14 +91,31 @@ begin
 end $$;
 create function public.reserve_billing_ai_spend(p_user_id uuid,p_id uuid,p_endpoint text,p_model text,p_reserved_usd numeric,p_monthly_cap numeric,p_trial_cap numeric,p_initial_sync boolean default false)
 returns void language plpgsql security definer set search_path=public as $$
-declare w record; v_total numeric;
+declare w record; v_total numeric; v_policy ai_budget_policy; v_global_total numeric; v_global_daily numeric;
+ v_day timestamptz := date_trunc('day',now() at time zone 'UTC') at time zone 'UTC';
 begin
  if p_reserved_usd is null or p_reserved_usd<=0 or p_reserved_usd>10 then raise exception 'ai_invalid_reservation'; end if;
+ -- Match upstream reserve/settle ordering; free beta and billing share the global ledger.
+ perform pg_advisory_xact_lock(hashtextextended('ai_spend:global',0));
  perform pg_advisory_xact_lock(hashtextextended('ai_spend:'||p_user_id::text,0));
  select * into w from billing_spend_window(p_user_id,p_monthly_cap,p_trial_cap,p_initial_sync);
+ -- Grandfathered accounts keep the exact upstream daily/lifetime policy.
+ if w.starts_at='-infinity'::timestamptz then
+  perform reserve_ai_spend(p_user_id,p_id,p_endpoint,p_model,p_reserved_usd);
+  return;
+ end if;
+ select * into v_policy from ai_budget_policy where singleton for share;
+ if not found then raise exception 'ai_budget_policy_unavailable'; end if;
  if exists(select 1 from ai_spend_attempts where user_id=p_user_id and cost_usd>reserved_usd) then raise exception 'ai_provider_bound_breached'; end if;
  select coalesce(sum(coalesce(cost_usd,reserved_usd)),0) into v_total from ai_spend_attempts where user_id=p_user_id and (created_at>=w.starts_at or cost_usd is null);
  if v_total+p_reserved_usd>w.cap then raise exception 'ai_budget_exhausted'; end if;
+ -- Paid/trial accounts use their own period/total cap, not the legacy user cap.
+ -- Shared operator circuit breakers still count every account and deleted-account holds.
+ select coalesce(sum(coalesce(cost_usd,reserved_usd)),0),
+ coalesce(sum(coalesce(cost_usd,reserved_usd)) filter(where cost_usd is null or created_at>=v_day),0)
+ into v_global_total,v_global_daily from ai_spend_attempts;
+ if v_global_total+p_reserved_usd>v_policy.global_total_usd then raise exception 'ai_global_budget_exhausted'; end if;
+ if v_global_daily+p_reserved_usd>v_policy.global_daily_usd then raise exception 'ai_global_daily_budget_exhausted'; end if;
  insert into ai_spend_attempts(id,user_id,endpoint,model,reserved_usd) values(p_id,p_user_id,p_endpoint,p_model,p_reserved_usd);
 end $$;
 create function public.billing_spend_summary(p_user_id uuid,p_monthly_cap numeric,p_trial_cap numeric)
@@ -161,7 +178,8 @@ grant execute on function public.purge_billing_checkout_intents() to service_rol
 alter table public.sources drop constraint sources_processing_error_code_check;
 alter table public.sources add constraint sources_processing_error_code_check check (
  processing_error_code in ('ai_quota','ai_timeout','ai_output','consent','expired','internal',
- 'ai_budget_exhausted','ai_pricing_unavailable','ai_provider_bound_violation','ai_budget_unavailable','billing_required')
+ 'ai_budget_exhausted','ai_user_daily_budget_exhausted','ai_global_daily_budget_exhausted','ai_global_budget_exhausted',
+ 'ai_pricing_unavailable','ai_provider_bound_violation','ai_budget_unavailable','billing_required')
 );
 
 -- Sanitized provider routing metadata only; no raw payload or personal/card fields.

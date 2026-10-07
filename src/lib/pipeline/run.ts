@@ -40,12 +40,24 @@ export async function runPipeline(input: ExtractInput, deps: PipelineDeps): Prom
   const verified = verifyCandidates(extracted.candidates, { text: input.text, occurredAt: input.occurredAt, kind: input.kind, fromConnector: input.fromConnector });
 
   const source = { text: input.text, kind: input.kind, occurredAt: input.occurredAt, participants: input.participants, writtenByMe: input.writtenByMe };
-  const judged = await Promise.all(
-    verified.kept.map(async (candidate) => ({
-      candidate,
-      judge: await judgeCandidate(candidate, source, input.identity, deps.decide),
-    })),
-  );
+  // Bound provider reservations and finish in-flight calls before recording a pause.
+  const judged: JudgedCandidate[] = new Array(verified.kept.length);
+  let next = 0;
+  let failed = false;
+  let failure: unknown;
+  await Promise.all(Array.from({ length: Math.min(3, verified.kept.length) }, async () => {
+    while (!failed && next < verified.kept.length) {
+      const index = next++;
+      const candidate = verified.kept[index];
+      try {
+        judged[index] = { candidate, judge: await judgeCandidate(candidate, source, input.identity, deps.decide) };
+      } catch (error) {
+        if (!failed) failure = error;
+        failed = true;
+      }
+    }
+  }));
+  if (failed) throw failure;
 
   const quotedHistory = verified.dropped.filter((d) => d.reason === "QUOTED_HISTORY");
   const count = (decision: JudgeResult["decision"]) => judged.filter((j) => j.judge.decision === decision).length;

@@ -149,7 +149,8 @@ export async function reconcileAiSpend(admin: SupabaseClient): Promise<AiSpendRe
     await Promise.all(data.map(async (row) => {
       result.attempted++;
       try {
-        await admin.from("ai_spend_attempts").update({ reconcile_checked_at: new Date().toISOString() }).eq("id", row.id).eq("user_id", row.user_id).throwOnError();
+        const update = admin.from("ai_spend_attempts").update({ reconcile_checked_at: new Date().toISOString() }).eq("id", row.id);
+        await (row.user_id === null ? update.is("user_id", null) : update.eq("user_id", row.user_id)).throwOnError();
         const lookup = await fetchGeneration(config, row.generation_id);
         if (lookup.status !== "found" || !cost.safeParse(lookup.generation.costUsd).success) {
           result.deferred++;

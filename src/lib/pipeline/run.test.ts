@@ -398,3 +398,33 @@ describe("runPipeline의 메일 인용", () => {
     expect(result.droppedCount).toBe(1);
   });
 });
+
+it("limits judges to three, preserves order and settles started calls before rejecting", async () => {
+  const quotes = Array.from({ length: 8 }, (_, i) => `task ${i}`);
+  const many = (async () => ({ model: "test/llm", data: { candidates: quotes.map(q => raw(q)) } })) as CompleteJson;
+  const source = { ...input, text: quotes.join("\n") };
+  let active = 0;
+  let peak = 0;
+  const bounded: Decide = async (request) => {
+    peak = Math.max(peak, ++active);
+    await new Promise(resolve => setTimeout(resolve, 1));
+    active--;
+    return decide(request);
+  };
+  const result = await runPipeline(source, { complete: many, decide: bounded });
+  expect(peak).toBe(3);
+  expect(result.judged.map(j => j.candidate.quote)).toEqual(quotes);
+  let calls = 0;
+  const error = new Error("budget stop");
+  const failing: Decide = async (request) => {
+    const call = calls++;
+    active++;
+    await new Promise(resolve => setTimeout(resolve, call === 0 ? 1 : 10));
+    active--;
+    if (call === 0) throw error;
+    return decide(request);
+  };
+  await expect(runPipeline(source, { complete: many, decide: failing })).rejects.toBe(error);
+  expect(calls).toBe(3);
+  expect(active).toBe(0);
+});

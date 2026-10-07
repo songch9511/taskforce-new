@@ -34,7 +34,7 @@ Live product `1420403` is also a draft, with Monthly variant `2218942` ($9/month
 Use `.env.example` for exact variable names. API key and webhook secret are server secrets, never NEXT_PUBLIC values or committed files. Set `LEMONSQUEEZY_TEST_MODE` explicitly. Test and live must use separate keys, product IDs and webhook registrations. Production allowance values: monthly `3`, trial `1`. `BILLING_ENABLED` defaults off.
 
 1. Finish regression, PostgreSQL contention, auth/client, Mac build and website checks. Review the billing migration and isolate any test account/data from production.
-2. Apply only `supabase/migrations/20261030000000_billing.sql` to the linked project using `supabase db query --linked --project-ref tirtdojsahotjfgdsryi -f <exact file>`. Never `db push`. Migration seeds existing auth users as legacy beta and leaves new accounts on the new offer.
+2. Apply only `supabase/migrations/20261101000000_billing.sql` to the linked project using `supabase db query --linked --project-ref tirtdojsahotjfgdsryi -f <exact file>`. Never `db push`. Migration seeds existing auth users as legacy beta and leaves new accounts on the new offer.
 3. Configure test keys/webhook on an isolated test deployment/database, publish the test product, and complete monthly/yearly test checkout. Verify account-bound activation, retry/idempotence, failed payment, cancellation, refund, expiry and deletion with an open checkout.
 4. Configure live keys/IDs/webhook and exact Supabase OAuth redirect. Verify price objects remain USD 900/month and USD 9180/year; no product trial or setup fee. Publish live catalog, then enable the server billing flag only when entitlement delivery is verified.
 5. Deploy server and website from reviewed commits. Confirm Google login, both checkout amounts/tax disclosure, portal and status refresh through the real domains. Publish signed/notarized Mac build with verified metadata, then download/install/launch it from the website.
@@ -43,11 +43,11 @@ The owner authorized opening billing and deploying these surfaces. Browser polic
 
 ## Verification status
 
-Local evidence only, not provider/production completion:
+Local evidence only, not provider/production completion. Fresh checks below include integration with upstream beta cost controls (`f19b96d`).
 
-- Backend final: lint (0 errors; 1 pre-existing unused-import warning), typecheck, 2,389 tests across 188 files, label-only eval, and Next production build passed. Runtime npm audit: 0 vulnerabilities. A default eval invocation detected inherited provider configuration and was stopped before producing scores; only label validation is complete. No live quality result is claimed.
-- Real PostgreSQL final: 27 contention/locking tests across 5 files passed, including two concurrent $2 reservations under a $3 cap, simultaneous monthly/annual checkout, and exclusive deletion claims.
-- Swift package final: 527 tests / 62 suites passed, including checkout consent and safe provider URLs.
+- Backend final: lint (0 errors; 1 pre-existing unused-import warning), typecheck, 2,438 tests across 194 files, label-only eval, and Next production build passed. Runtime npm audit: 0 vulnerabilities. A default eval invocation detected inherited provider configuration and was stopped before producing scores; only label validation is complete. No live quality result is claimed.
+- Real PostgreSQL final: 31 contention/locking tests across 5 files passed, including two concurrent $2 reservations under a $3 cap, simultaneous monthly/annual checkout, exclusive deletion claims, and shared global contention between legacy and paid accounts.
+- Swift package final: 528 tests / 62 suites passed, including checkout consent and safe provider URLs.
 - macOS final: unsigned Debug build and 107 app tests / 12 suites passed. This does not establish signed installer or live checkout behavior.
 - Website: 38 tests passed and production build passed; Next.js patched from 16.3.4 to 16.3.6 and transitive security updates applied. Website npm audit reported 0 vulnerabilities after patching.
 - Web auth: fixed-return PKCE callback, failed-code handling, CSRF-protected local signout; no client account ID is accepted for checkout.
@@ -63,3 +63,9 @@ Pending: provider test flow, live credentials/webhook configuration, production 
 - https://docs.lemonsqueezy.com/help/payments/refunds-chargebacks
 - https://www.lemonsqueezy.com/privacy
 - https://www.lemonsqueezy.com/buyer-terms
+
+## Integration checkpoint
+
+PR #110 was initially based on `4a6c319`. Upstream #109 added beta cost controls and two migrations (`20261030000000_ai_beta_budget_limits.sql`, `20261031000000_ai_budget_retry_candidates.sql`). Billing now follows them as `20261101000000_billing.sql`. Fresh production read-only checks confirmed `ai_budget_policy`, `pending_task_sources` and `ai_budget_retry_candidates` already exist, with USD 3/user/day, USD 5/global/day and USD 50/global lifetime policy. Billing tables remain absent. Apply only the billing migration after integration verification; do not replay the upstream migrations. Preserve these operator circuit breakers alongside subscription allowances. The unsigned/partially archived build 28 at source `c9ae304` was stopped after this conflict was found; it is not a release artifact.
+
+Independent integration review found no new blocking issue. Account usage shows personal allowance; shared operator caps may still pause processing with a separate error. PRs: https://github.com/songch9511/taskforce-new/pull/110 and https://github.com/songch9511/taskforce/pull/35. Website hosted CI and Vercel Preview passed; production remains unchanged.

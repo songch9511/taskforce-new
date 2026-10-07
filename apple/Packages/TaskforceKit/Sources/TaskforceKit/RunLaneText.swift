@@ -120,6 +120,8 @@ public struct RunLaneText: Equatable, Sendable {
         case .rejected: "The AI provider declined this request."
         case .aiPricingUnavailable: "AI is unavailable because its price limit cannot be verified."
         case .aiProviderBoundViolation: "AI is paused because a provider exceeded its reserved cost."
+        case .aiDailyBudgetExhausted: "Daily AI allowance reached. Try again after the next UTC day."
+        case .aiGlobalBudgetExhausted: "AI has reached the shared beta allowance and is paused."
         case .aiBudgetExhausted: "Your beta AI allowance cannot cover this request. Check Usage & Credits."
         case .retriesExhausted: "Stopped after too many retries."
         case .actionMissing: "The task was deleted."

@@ -1,3 +1,4 @@
+import { aiBudgetErrorResponse } from "@/lib/api/ai-budget";
 import { AiBudgetError } from "@/lib/ai/budget-error";
 import { DeadlineExceededError } from "@/lib/ai/deadline";
 import { HandoffGenerationError } from "@/lib/ai/handoff-error";
@@ -35,7 +36,7 @@ export async function handleHandoff(request: Request, deps: HandoffHandlerDeps):
       return response;
     }
     if (error instanceof AiBudgetError) {
-      return errorResponse(["ai_budget_exhausted", "billing_required"].includes(error.code) ? 403 : 503, error.code, error.userMessage);
+      return aiBudgetErrorResponse(error);
     }
     if (error instanceof DeadlineExceededError) {
       deps.onDeadlineExceeded?.(error);

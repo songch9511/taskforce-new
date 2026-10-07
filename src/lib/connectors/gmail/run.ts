@@ -24,7 +24,7 @@ import { GoogleApiError, googleAccess, GoogleReauthError } from "../google/token
 
 import { gmailClient } from "./client";
 import { companyDomain } from "./filter";
-import { DEFAULT_GMAIL_SYNC, syncGmail } from "./sync";
+import { defaultGmailSyncOptions, syncGmail } from "./sync";
 
 // Gmail 연동을 연결 틀(registry.ts)에 올린다: 권한 화면 · 연결 · 동기화 · 토큰 폐기 (docs/go-live/google-integration.md 2-3 · 2-6 · 2-8).
 // Google이 갱신 토큰을 만료·폐기하면 invalid_grant → reauth로 처리하고 앱이 다시 연결을 안내한다.
@@ -75,10 +75,10 @@ export async function syncGmailConnection(
     const result = await syncGmail(
       connection,
       gmailClient(access),
-      // 연결(다시 연결) 전 시각의 메일은 확인 요청 알림을 보내지 않는다: 첫 14일 · 끊긴 동안의 메일
+      // 연결(다시 연결) 전 시각의 메일은 확인 요청 알림을 보내지 않는다: 첫 동기화 · 끊긴 동안의 메일
       ingestDeps(admin, { notifyFrom: since }),
       { filter: { userEmails: identity.emails, companyDomain: companyDomain(accountEmail) }, accountEmail },
-      { now, deadline: options.deadline, ...DEFAULT_GMAIL_SYNC },
+      { now, deadline: options.deadline, ...defaultGmailSyncOptions() },
     );
     await recordSync(admin, connection, { claimedAt: now, cursor: result.cursor, error: result.rateLimited ? RATE_LIMITED_MESSAGE : null });
     // 커서를 남긴 뒤에 센다: 커서 기록이 실패하면 다음 동기화가 같은 메일을 다시 결정해 두 번 세지 않게

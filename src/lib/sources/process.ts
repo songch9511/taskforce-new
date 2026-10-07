@@ -198,6 +198,18 @@ export function failureSummary(error: unknown, attempt: number, now = new Date()
   return { attempt, retryable: !(error instanceof ConsentRequiredError) && !(error instanceof AiBudgetError && ["ai_budget_exhausted", "billing_required"].includes(error.code)) && attempt < RETRY_MAX_ATTEMPTS, failed_at: now.toISOString() };
 }
 
+/** Budget pauses keep source data and do not consume ordinary failure attempts. */
+export function budgetPauseSummary(error: unknown, attempt: number, deferrals = 0) {
+  if (!(error instanceof AiBudgetError) || !["ai_user_daily_budget_exhausted", "ai_global_daily_budget_exhausted", "ai_global_budget_exhausted"].includes(error.code)) return null;
+  const count = deferrals + 1;
+  const retryable = error.code !== "ai_global_budget_exhausted" && count < 3;
+  return {
+    attempt: Math.max(0, attempt - 1), budget_deferred: true, budget_deferrals: count,
+    retryable, retry_at: retryable ? error.retryAt : null,
+    ...(retryable ? {} : { manual_retry_required: true }),
+  };
+}
+
 export type ProcessResult = {
   /** 끝까지 처리했는가 (아니면 원문은 failed로 남는다) */
   ok: boolean;
@@ -234,7 +246,7 @@ export async function processSource(
    * attempt: 몇 번째 처리인가 (처음 1, cron이 다시 처리하면 2 · 3).
    * retry: 재처리 cron이 다시 처리한다 (대기에 멈춘 원문은 attempt 1이어도 다시 처리다, lib/sources/retry.ts)
    */
-  source: { id: string; userId: string; attempt?: number; retry?: boolean; notify?: boolean },
+  source: { id: string; userId: string; attempt?: number; retry?: boolean; notify?: boolean; budgetDeferrals?: number },
   input: ExtractInput,
   deps: ProcessDeps = processDepsFromEnv(admin, source.userId),
 ): Promise<ProcessResult> {
@@ -245,7 +257,7 @@ export async function processSource(
   const attempt = source.attempt ?? 1;
   // 시작 시각을 남겨, 처리 도중 함수가 끊겨 멈춘 원문을 cron이 알아보고 다시 처리한다 (retry.ts)
   await scoped(
-    admin.from("sources").update({ processing_status: "processing", processing_summary: { attempt, started_at: new Date().toISOString() } }),
+    admin.from("sources").update({ processing_status: "processing", processing_summary: { attempt, budget_deferrals: source.budgetDeferrals ?? 0, started_at: new Date().toISOString() } }),
   ).throwOnError();
 
   try {
@@ -328,10 +340,11 @@ export async function processSource(
   } catch (error) {
     // 서버 로그에는 원인을, 사용자에게는 원문 · 내부 정보가 없는 문구만 남긴다.
     console.error(`원문 처리 실패 (${sourceId}):`, error instanceof Error ? error.message : error);
-    const summary = failureSummary(error, attempt);
+    const pause = budgetPauseSummary(error, attempt, source.budgetDeferrals);
+    const summary = pause ?? { ...failureSummary(error, attempt), budget_deferrals: source.budgetDeferrals ?? 0 };
     const { error: recordError } = await scoped(
       admin.from("sources").update({
-        processing_status: "failed",
+        processing_status: pause ? "pending" : "failed",
         processed_at: new Date().toISOString(),
         processing_error: userFacingError(error),
         processing_error_code: sourceFailureCode(error),
@@ -340,7 +353,7 @@ export async function processSource(
     );
     if (recordError) console.error(`원문 실패 기록 실패 (${sourceId}):`, recordError.message);
     // 더 다시 하지 않는 실패(동의 철회 · 마지막 시도)는 닫힌 실패로 센다. 실패로 기록하지 못했으면 닫히지 않은 것이라 세지 않는다
-    else if (!summary.retryable) await recordSourceFailed(admin, source);
+    else if (!pause && !summary.retryable) await recordSourceFailed(admin, source);
     if (error instanceof ConsentRequiredError) throw error;
     return { ok: false, needsConfirmation: [] };
   }
@@ -365,9 +378,11 @@ export async function processTaskSource(
   const scoped = <T extends { eq: (column: string, value: string) => T }>(query: T) => query.eq("id", source.id).eq("user_id", source.userId);
   const check = consentCheck(admin, source.userId);
   const ai = withConsentGate(deps, check);
+  const { data: previous } = await admin.from("sources").select("processing_summary").eq("id", source.id).eq("user_id", source.userId).maybeSingle().throwOnError();
+  const deferrals = Number(previous?.processing_summary?.budget_deferrals ?? 0);
   // 시작 시각을 남긴다: 중간에 멈춘 처리를 가려 다시 처리한다 (connectors/tasks-ingest.ts).
   await scoped(
-    admin.from("sources").update({ processing_status: "processing", processing_summary: { started_at: new Date().toISOString() } }),
+    admin.from("sources").update({ processing_status: "processing", processing_summary: { budget_deferrals: deferrals, started_at: new Date().toISOString() } }),
   ).throwOnError();
 
   try {
@@ -404,13 +419,14 @@ export async function processTaskSource(
     return { ok: true, needsConfirmation };
   } catch (error) {
     console.error(`할 일 처리 실패 (${source.id}):`, error instanceof Error ? error.message : error);
+    const pause = budgetPauseSummary(error, 1, deferrals);
     await scoped(
       admin.from("sources").update({
-        processing_status: "failed",
+        processing_status: pause ? "pending" : "failed",
         processed_at: new Date().toISOString(),
         processing_error: userFacingError(error),
         processing_error_code: sourceFailureCode(error),
-        processing_summary: { retryable: !(error instanceof AiBudgetError && ["ai_budget_exhausted", "billing_required"].includes(error.code)) },
+        processing_summary: pause ?? { budget_deferrals: deferrals, retryable: !(error instanceof AiBudgetError && ["ai_budget_exhausted", "billing_required"].includes(error.code)) },
       }),
     );
     // 처리를 마치지 못한 할 일은 동의한 뒤 동기화가 다시 처리한다 (pendingTasks). 닫힌 실패가 아니라 source_failed는 남기지 않는다.

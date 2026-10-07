@@ -57,3 +57,13 @@ it("simultaneous deletion claims cannot overwrite the active operation token",as
  await b.query('update billing_accounts set deleting=false,deleting_token=null where user_id=$1 and deleting_token=$2',[account,second]);
  expect((await a.query('select deleting,deleting_token from billing_accounts where user_id=$1',[account])).rows).toEqual([{deleting:true,deleting_token:first}]);
 });
+it("legacy and paid requests serialize against the same global cap",async()=>{
+ const paid=randomUUID(),legacy=randomUUID();
+ await a.query('insert into auth.users(id) values($1),($2)',[paid,legacy]);
+ await a.query("insert into billing_accounts(user_id,status,current_period_ends_at) values($1,'active',now()+interval '1 month')",[paid]);
+ await a.query('update ai_budget_policy set global_daily_usd=(select coalesce(sum(coalesce(cost_usd,reserved_usd)),0)+3 from ai_spend_attempts)');
+ await a.query('begin');
+ await a.query("select reserve_billing_ai_spend($1,$2,'chat','m',2,3,1)",[paid,randomUUID()]);
+ const pending=b.query("select reserve_ai_spend($1,$2,'chat','m',2)",[legacy,randomUUID()]).then(()=>"admitted",(error:Error)=>error.message);
+ await a.query('commit');expect(await pending).toMatch(/ai_global_daily_budget_exhausted/);
+});

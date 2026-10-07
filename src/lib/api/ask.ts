@@ -1,3 +1,4 @@
+import { aiBudgetErrorResponse } from "@/lib/api/ai-budget";
 import { AiBudgetError } from "@/lib/ai/budget-error";
 import { ConsentRequiredError } from "@/lib/consent/gate";
 
@@ -35,7 +36,7 @@ export async function handleAsk<User>(request: Request, deps: AskHandlerDeps<Use
     }
     return Response.json((await deps.answer(user, body.data.question)) satisfies AskResponse);
   } catch (error) {
-    if (error instanceof AiBudgetError) return errorResponse(["ai_budget_exhausted", "billing_required"].includes(error.code) ? 403 : 503, error.code, error.userMessage);
+    if (error instanceof AiBudgetError) return aiBudgetErrorResponse(error);
     // 답을 만드는 도중에 동의를 철회함 (모델 호출 직전 확인, lib/consent)
     if (error instanceof ConsentRequiredError) return consentRequired();
     console.error("물어보기 실패:", error instanceof Error ? error.message : error);

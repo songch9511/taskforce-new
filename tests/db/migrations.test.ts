@@ -42,6 +42,7 @@ describe("초기 마이그레이션", () => {
       "action_events",
       "action_links",
       "actions",
+      "ai_budget_policy",
       "ai_spend_attempts",
   "billing_accounts",
   "billing_checkout_intents",

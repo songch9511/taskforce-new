@@ -1,3 +1,4 @@
+import { initialSyncLookbackDays } from "../initial-sync";
 import { connectionSettingsSchema, type DataSourceSetting } from "@/lib/api/contract";
 import type { UserIdentity } from "@/lib/pipeline/identity";
 
@@ -82,7 +83,11 @@ export type NotionSyncOptions = {
   meetingEventTotalMs?: number;
 };
 
-export const DEFAULT_NOTION_SYNC: Omit<NotionSyncOptions, "now"> = { lookbackDays: 14, maxScan: 300, ...DEFAULT_INGEST_OPTIONS };
+export const DEFAULT_NOTION_SYNC: Omit<NotionSyncOptions, "now"> = { lookbackDays: 3, maxScan: 300, ...DEFAULT_INGEST_OPTIONS };
+
+export function defaultNotionSyncOptions(): Omit<NotionSyncOptions, "now"> {
+  return { ...DEFAULT_NOTION_SYNC, lookbackDays: initialSyncLookbackDays() };
+}
 
 export type NotionSyncResult = IngestResult & {
   scanned: number;
@@ -183,8 +188,9 @@ export async function syncNotion(
   let after = cursor?.after ? new Date(cursor.after) : lookback;
   // 새로 공유됐거나 공유가 되돌아온 DB가 있으면 이번만 최근 기간을 다시 훑는다: 공유되지 않은 동안에도 커서는 지나갔으므로
   // 그 사이 고친 페이지(예: 끊겨 있던 동안의 회의록)를 놓치지 않게. 이미 넣은 페이지는 ingestedIds로 걸러진다.
-  const rewound = (seen.length > 0 || recovered) && after > lookback;
-  if (rewound) after = lookback;
+  const recoveryLookback = new Date(options.now.getTime() - 14 * 86_400_000);
+  const rewound = Boolean(cursor?.after) && (seen.length > 0 || recovered) && after > recoveryLookback;
+  if (rewound) after = recoveryLookback;
   const settledBefore = options.now.getTime() - options.settleMinutes * 60_000;
 
   // 1) 최근 수정순으로 훑다가 커서보다 오래된 페이지가 나오면 멈춘다.

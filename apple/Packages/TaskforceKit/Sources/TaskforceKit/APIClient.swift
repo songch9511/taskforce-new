@@ -8,6 +8,9 @@ public enum APIErrorCode: String, Decodable, Sendable {
     case conflict
     case rateLimited = "rate_limited"
     case internalError = "internal_error"
+    case aiUserDailyBudgetExhausted = "ai_user_daily_budget_exhausted"
+    case aiGlobalDailyBudgetExhausted = "ai_global_daily_budget_exhausted"
+    case aiGlobalBudgetExhausted = "ai_global_budget_exhausted"
     case aiBudgetExhausted = "ai_budget_exhausted"
     case aiPricingUnavailable = "ai_pricing_unavailable"
     case aiProviderBoundViolation = "ai_provider_bound_violation"
@@ -49,6 +52,12 @@ public enum APIError: Error, Equatable, Sendable, CustomStringConvertible {
         switch self {
         case .server(_, .billingRequired, _):
             "Your trial or subscription has ended. Open Settings → Account → Subscription to continue AI processing."
+        case .server(_, .aiUserDailyBudgetExhausted, _):
+            "Your daily AI allowance cannot cover this request. Try again after the next UTC day. Pending reservations still count."
+        case .server(_, .aiGlobalDailyBudgetExhausted, _):
+            "AI has reached the shared daily beta allowance. Try again after the next UTC day. Your tasks remain available."
+        case .server(_, .aiGlobalBudgetExhausted, _):
+            "AI has reached the shared beta allowance and is paused. You can still manage tasks and connections."
         case .server(_, .aiBudgetExhausted, _):
             "Your included AI allowance cannot cover this request. Reservations count until confirmed. You can still manage tasks and connections."
         case .server(_, .aiPricingUnavailable, _):

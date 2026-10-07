@@ -6,7 +6,7 @@ let db: PGlite;
 const alice = randomUUID();
 const bob = randomUUID();
 const intent = randomUUID();
-beforeAll(async () => { db = await createLocalSupabase(); await db.query('insert into auth.users(id) values($1),($2)', [alice, bob]); await db.query('insert into billing_checkout_intents(id,user_id,plan,accepted_terms_version) values($1,$2,$3,$4)', [intent, alice, 'monthly','2026-10-08']); }, 60000);
+beforeAll(async () => { db = await createLocalSupabase(); await db.query("update ai_budget_policy set global_daily_usd=200,global_total_usd=200"); await db.query('insert into auth.users(id) values($1),($2)', [alice, bob]); await db.query('insert into billing_checkout_intents(id,user_id,plan,accepted_terms_version) values($1,$2,$3,$4)', [intent, alice, 'monthly','2026-10-08']); }, 60000);
 afterAll(async () => { await db?.close(); });
 const apply = (event: string, status: string, updated: string, sub = '123') => db.query('select billing_apply_subscription($1,$2,$3,$4,$5,$6,$7,$8,$9)', [alice, event, intent, sub, '12', 'monthly', status, '2026-11-08T00:00:00Z', updated]);
 it('starts trial once and restricts mutations / cross-account reads', async () => {
@@ -97,4 +97,32 @@ it('first sync retry after onboarding expiry uses the same total dollar; standal
  const account=(await db.query<{onboarding_started_at:Date;trial_ends_at:Date}>('select onboarding_started_at,trial_ends_at from billing_accounts where user_id=$1',[user])).rows[0];
  expect(new Date(account.onboarding_started_at).toISOString()).toBe(old);
  expect(new Date(account.trial_ends_at).getTime()).toBeGreaterThan(Date.now()+6.9*86400_000);
+});
+
+it('paid and trial caps do not inherit beta user daily or lifetime limits',async()=>{
+ const paid=randomUUID(),trial=randomUUID();
+ await db.query('insert into auth.users(id) values($1),($2)',[paid,trial]);
+ await db.query("insert into billing_accounts(user_id,status,current_period_ends_at,onboarding_started_at,trial_ends_at) values($1,'active',now()+interval '1 month',now(),null),($2,'none',null,now(),now()+interval '7 days')",[paid,trial]);
+ await db.query("insert into ai_spend_attempts(id,user_id,endpoint,model,reserved_usd,cost_usd,created_at) values($1,$2,'chat','m',10,10,now()-interval '2 months'),($3,$2,'chat','m',10,10,now()-interval '2 months')",[randomUUID(),paid,randomUUID()]);
+ await db.query('update ai_budget_policy set user_daily_usd=0.1');
+ try{
+  await db.query("select reserve_billing_ai_spend($1,$2,'chat','m',3,3,1)",[paid,randomUUID()]);
+  await db.query("select reserve_billing_ai_spend($1,$2,'chat','m',0.713033,3,1)",[trial,randomUUID()]);
+ }finally{await db.query('update ai_budget_policy set user_daily_usd=3');}
+});
+it('grandfathered beta keeps daily cap and all plans share operator limits including deleted holds',async()=>{
+ const legacy=randomUUID(),paid=randomUUID(),deleted=randomUUID();
+ await db.query('insert into auth.users(id) values($1),($2),($3)',[legacy,paid,deleted]);
+ await db.query("insert into billing_accounts(user_id,legacy_beta,status,current_period_ends_at) values($1,true,'none',null),($2,false,'active',now()+interval '1 month')",[legacy,paid]);
+ await db.query('update ai_budget_policy set user_daily_usd=0.1');
+ try{await expect(db.query("select reserve_billing_ai_spend($1,$2,'chat','m',0.2,3,1)",[legacy,randomUUID()])).rejects.toThrow(/ai_user_daily_budget_exhausted/);}
+ finally{await db.query('update ai_budget_policy set user_daily_usd=3');}
+ await db.query("insert into ai_spend_attempts(id,user_id,endpoint,model,reserved_usd,created_at) values($1,$2,'chat','m',2,now()-interval '2 months')",[randomUUID(),deleted]);
+ await db.query('delete from auth.users where id=$1',[deleted]);
+ await db.query("update ai_budget_policy set global_daily_usd=(select sum(coalesce(cost_usd,reserved_usd)) from ai_spend_attempts where cost_usd is null or created_at>=date_trunc('day',now() at time zone 'UTC') at time zone 'UTC')");
+ try{await expect(db.query("select reserve_billing_ai_spend($1,$2,'chat','m',0.1,3,1)",[paid,randomUUID()])).rejects.toThrow(/ai_global_daily_budget_exhausted/);}
+ finally{await db.query('update ai_budget_policy set global_daily_usd=200');}
+ await db.query('update ai_budget_policy set global_total_usd=(select sum(coalesce(cost_usd,reserved_usd)) from ai_spend_attempts)');
+ try{await expect(db.query("select reserve_billing_ai_spend($1,$2,'chat','m',0.1,3,1)",[paid,randomUUID()])).rejects.toThrow(/ai_global_budget_exhausted/);}
+ finally{await db.query('update ai_budget_policy set global_total_usd=200');}
 });
