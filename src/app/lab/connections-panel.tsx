@@ -43,10 +43,10 @@ const SLACK_CALLBACK_MESSAGES: Record<string, string> = {
 
 const GMAIL_CALLBACK_MESSAGES: Record<string, string> = {
   connected:
-    "Gmail을 연결했습니다. '지금 동기화'를 누르면 최근 2주 메일을 오래된 것부터 가져옵니다 (한 번에 머리글 200통 · 넣기 20통). 뉴스레터 · 프로모션 · 자동 알림은 머리글만 보고 거르며 본문을 받지 않습니다. 테스트 상태라 7일마다 다시 연결해야 합니다.",
+    "Gmail을 연결했습니다. '지금 동기화'를 누르면 최근 2주 메일을 오래된 것부터 가져옵니다 (한 번에 머리글 200통 · 넣기 20통). 뉴스레터 · 프로모션 · 자동 알림은 머리글만 보고 거르며 본문을 받지 않습니다. Gmail 범위의 Google 검증은 아직 끝나지 않아 연결할 때 '확인되지 않은 앱' 경고가 표시될 수 있습니다.",
   missing_scope: "Gmail 권한 화면에서 'Gmail 메일 보기' 체크가 빠져 연결하지 않았습니다. 다시 연결할 때 체크해 주세요.",
   denied: "Gmail 연결을 취소했습니다.",
-  unavailable: "Gmail 연결은 아직 운영자만 시험할 수 있습니다 (GMAIL_CONNECT_ENABLED · ADMIN_EMAILS).",
+  unavailable: "Gmail 연결을 시작할 수 없습니다. 잠시 후 다시 시도해 주세요.",
   invalid_state: CALLBACK_MESSAGES.invalid_state,
   error: "Gmail 연결에 실패했습니다. 서버 로그를 확인해 주세요. '관리자가 차단' 오류였다면 Workspace 관리 콘솔 → 보안 → API 제어에서 이 앱을 허용해야 합니다.",
   consent_required: CALLBACK_MESSAGES.consent_required,

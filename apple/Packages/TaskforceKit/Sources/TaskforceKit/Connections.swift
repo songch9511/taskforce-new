@@ -29,7 +29,7 @@ public enum ConnectionProvider: String, CaseIterable, Sendable, Codable, Hashabl
     /// 목록에 붙는 짧은 안내 (없으면 nil)
     public var note: String? {
         switch self {
-        case .gmail: "Beta · Reconnect every 7 days"
+        case .gmail: "Beta · Google verification pending"
         default: nil
         }
     }
@@ -48,9 +48,9 @@ public enum ConnectionProvider: String, CaseIterable, Sendable, Codable, Hashabl
             ]
         case .gmail:
             [
-                "Email you sent or received. Newsletters and promotions are skipped.",
+                "Read-only email access: messages you sent or received. Newsletters and promotions are skipped. Taskforce never sends or changes email.",
                 "Read-only. Sent to AI only after your consent. Taskforce asks AI providers not to use your text for training or keep it after a request. If no provider meets those conditions, we don't send it.",
-                "Beta: reconnect every 7 days.",
+                "Google verification is pending. Google may show an unverified app warning before you connect.",
             ]
         case .slack:
             [

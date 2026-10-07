@@ -2,8 +2,8 @@
 
 Taskforce (AI project manager) · Beta
 
-- Effective date: 2026-10-07
-- Version: Beta 1.5
+- Effective date: 2026-10-04
+- Version: Beta 1.4
 - 한국어: [개인정보 처리방침](privacy.ko.md) (the Korean version prevails if the two differ)
 
 태스크포스 ("we", "us") operates the Taskforce app (iOS and macOS), its server, and the website (www.taskforcelabs.dev). We process your personal information under the Personal Information Protection Act of the Republic of Korea (PIPA) and other applicable laws.
@@ -111,7 +111,7 @@ When you disconnect (app → Settings → Connections → Disconnect), the servi
 
 ### Gmail
 
-- During the beta, Gmail is **connected separately** from Google Calendar and Meet. Gmail is available through the OAuth app in Production, so users do not need to be registered as test users. Google has not yet verified the gmail.readonly scope. Until it is verified, Google displays an unverified-app warning during authorization and limits the OAuth app to 100 users over its lifetime. Newly issued Production refresh tokens are not subject to Testing mode's seven-day expiration. Existing connections may still need to be reconnected, and access may stop working if Google authorization is revoked or expires. We notify you in the app and by notification when a connection expires.
+- During the beta, Gmail is **connected separately** from Google Calendar and Meet. While Google reviews it, Gmail runs in Google's Testing mode: only users registered as test users can connect it, and **you need to reconnect every 7 days.** We tell you in the app and by notification when the connection expires.
 - **What we read:** the subject; sender, recipients, and CC (names and email addresses); date; and body of emails you sent or received. We do not read attachments (we only recognize them in order to skip them, and we do not store their names or types). Other headers that arrive with the body (such as BCC on email you sent; other than format headers used to decode the body) are not used or stored. When you first connect, we import the last 14 days of email (the same applies if you disconnect and connect again, or connect a different account). If the connection expired and you reconnect the same account, we resume from the last time we imported, or from 30 days ago if that gap is longer.
 - **What we filter out:** we filter out newsletters, promotions, and automated notifications by the rules below and do not store them. Email that matches none of these rules is imported.
   - Mail in the Promotions or Social category, and spam, trash, drafts, and chats, is left out of the list we fetch, so we do not read it.
@@ -337,11 +337,10 @@ The beta is not offered to people who live in the European Economic Area (EEA, i
 
 Change history
 
-- Beta 1.5 (effective 2026-10-07, [view previous version](https://www.taskforcelabs.dev/en/privacy/beta-1.4)): We corrected the Gmail OAuth status: Gmail is offered in Production without test-user registration; Google has not verified the gmail.readonly scope, so authorization shows an unverified-app warning and is limited to 100 users over the app's lifetime. Newly issued Production refresh tokens do not have Testing mode's seven-day expiration, though existing connections may still need to be reconnected.
 - Beta 1.4 (effective 2026-10-04): When you start a draft for a task (such as an email or document), we now send that task and excerpts of its evidence sources (excluding source text from Slack) to the same external AI providers used for source analysis, write the draft, and save it in the app. We do not send drafts to their recipients. Drafts, run records, AI usage, and credits (granted by us free of charge; no purchases) are now listed among the information we process, with their retention periods (draft body text, what you asked for, and the instructions, suggested recipients, and questions the AI set: 90 days after they are stored; if the draft run is still in progress at that point, what you asked for and the instructions, suggested recipients, and questions are deleted as soon as it ends). We also describe that OpenRouter keeps usage records with no content and that we look them up; that we record when a source is closed as failed; and that the app stores the last task list (title, due date, status) on your device for each account so it can show it until a fresh list arrives (for example, while offline), and deletes it when you sign out or delete your account (if the account is deleted on another device, the next time this device's app reaches our server). We also state that the titles and picked source lines of tasks you add yourself, and your Ask questions, also go to the embedding provider (Microsoft) to find similar tasks. AI data consent is now changed in Settings → Privacy & AI Data, and the paths for your profile, disconnecting a service, and deleting your account now match the app's Settings screen.
 - Beta 1.3 (effective 2026-10-02, [view previous version](https://www.taskforcelabs.dev/en/privacy/beta-1.3)): Text you paste into the Mac launcher (body and title) is now listed among the information we process. Like source text from connected services, it is sent to external AI only after you give AI data consent, and its body text is deleted 90 days after it is stored. We also describe what happens when you delete an account that signs in with Apple and you cancel the Apple confirmation, or the confirmation or revocation fails.
 - Beta 1.2 (effective 2026-09-30, [view previous version](https://www.taskforcelabs.dev/en/privacy/beta-1.2)): You can now sign in with Google. At sign-in we receive your Google account identifier, email address, name, and profile photo URL (and your organization's domain for Google Workspace accounts), and when you delete your account we ask Google to revoke that sign-in access.
 - Beta 1.1 (effective 2026-09-30, [view previous version](https://www.taskforcelabs.dev/en/privacy/beta-1.1)): The Gmail section now matches how the service works (which mail is skipped and why, one message stored at a time, the IDs and received times of fetched or skipped mail and per-reason counts, and the account-identification permissions). When a connection expires, we send one reminder to reconnect and keep a record of connections, expirations, and reminders. Baseten was removed from the source-analysis providers.
 - Beta 1.0 (effective 2026-09-29): [View previous version](https://www.taskforcelabs.dev/en/privacy/beta-1.0)
 
-This policy takes effect on 2026-10-07.
+This policy takes effect on 2026-10-04.

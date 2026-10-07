@@ -5,6 +5,10 @@
 작성: 2026-09-29. [GO_LIVE.md](../GO_LIVE.md) 진행 순서 4(체크리스트 C4, 다른 문서의 "트랙 2-3")를 코드로 옮기기 전에 **정할 것 · 만들 것 · 끝난 기준**을 적는다.
 Google 프로젝트 · 범위 · 동의 화면 · 심사는 [google-verification.md](google-verification.md)가 기준이다. 이 문서는 서버 · 앱 · eval 쪽이다. 형식은 [slack-integration.md](slack-integration.md)를 따른다. Google API · 범위 · 정책은 공식 문서 원문으로 확인했고(9장), 초안을 코드와 대조해 검토해 지적 13건을 반영했다(2026-09-29).
 
+## 현재 Gmail 베타 상태 (2026-10-07 KST)
+
+이 메모가 아래 계획의 당시 상태를 갱신하며, 나머지 계획과 작성 당시 기록은 그대로 둔다. Google Cloud에서 `taskforce-gmail-beta`는 **External · In production**, 브랜드는 검증되어 게시됐고 OAuth 사용자 계수기는 **3/100**이다. `gmail.readonly` 범위 검증과 데모 영상은 아직 미완료다. 따라서 Google의 "확인되지 않은 앱" 경고와 누적 100명 한도는 남아 있지만, Production 상태에서는 테스터 이메일 allowlist가 필요하지 않다. Testing 중 발급된 기존 refresh token은 회전하지 않아 계속 만료되거나 재연결이 필요할 수 있다. 새로 발급되는 refresh token에는 의무 7일 만료가 적용되지 않으며, 일반 만료·접근 철회에 대한 재연결 처리는 유지한다.
+
 ## 0. 한눈에
 
 | 항목 | 내용 |

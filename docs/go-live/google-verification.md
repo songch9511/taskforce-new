@@ -4,6 +4,10 @@
 
 작성: 2026-09-27. 9/13에 만든 심사 묶음(`Side Kick worktrees/lean-mvp/Docs/google-oauth-review-2026-09-13/`)을 지금 제품 구조로 다시 썼다. 콘솔 설정 · 제출은 하지 않았다.
 
+## 현재 Gmail 베타 상태 (2026-10-07 KST)
+
+이 상태 메모가 아래 계획의 당시 상태를 갱신하며, 계획과 이전 기록은 작성 당시 기록으로 보존한다. Google Cloud에서 `taskforce-gmail-beta`를 **External · In production**으로 확인했고 브랜드는 검증되어 게시됐다. OAuth 사용자 계수기는 **3/100**이다. `gmail.readonly` 범위 검증은 아직 미완료이고 데모 영상도 없어, 연결 과정에서 Google의 "확인되지 않은 앱" 경고가 표시될 수 있으며 누적 100명 한도는 남아 있다. Production 상태에서는 새 사용자를 위한 테스터 이메일 allowlist가 필요하지 않다. Testing 중 발급된 기존 refresh token은 회전하지 않았으므로 계속 만료되거나 재연결이 필요할 수 있다. 새로 발급되는 refresh token에는 Testing의 의무 7일 만료가 적용되지 않으며, 토큰 만료나 접근 철회에 따른 일반 재연결 처리는 유지한다.
+
 **9/13 묶음과 달라진 것.** 그 묶음은 이전 제품(로컬 Mac 앱이 Google을 직접 읽고, Codex로 OpenAI에 보내고, 서버는 토큰 교환만 하는 iad1 브로커, Gmail 중지) 기준이다. 지금 제품은 다르다.
 
 | 항목 | 9/13 (이전 제품) | 지금 |

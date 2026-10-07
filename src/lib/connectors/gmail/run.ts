@@ -27,7 +27,7 @@ import { companyDomain } from "./filter";
 import { DEFAULT_GMAIL_SYNC, syncGmail } from "./sync";
 
 // Gmail 연동을 연결 틀(registry.ts)에 올린다: 권한 화면 · 연결 · 동기화 · 토큰 폐기 (docs/go-live/google-integration.md 2-3 · 2-6 · 2-8).
-// Google 프로젝트 B(Testing)라 갱신 토큰이 7일마다 만료된다: invalid_grant → reauth, 앱이 다시 연결을 안내한다.
+// Google이 갱신 토큰을 만료·폐기하면 invalid_grant → reauth로 처리하고 앱이 다시 연결을 안내한다.
 
 export const GMAIL_READONLY = "https://www.googleapis.com/auth/gmail.readonly";
 /** 요청하는 범위 (google-verification.md 1장 B, 처리방침 3장 Gmail과 같아야 한다) */
@@ -90,7 +90,7 @@ export async function syncGmailConnection(
       await recordSync(admin, connection, { claimedAt: now });
       return { connectionId: connection.id, ok: false, error: CONSENT_WITHDRAWN_MESSAGE, revoked: false };
     }
-    // 갱신 토큰 만료 (테스트 상태 7일 · 이용자가 Google 계정에서 접근을 거둠 등): 다시 연결할 때까지 동기화하지 않는다
+    // 갱신 토큰 만료·접근 권한 철회 등: 다시 연결할 때까지 동기화하지 않는다
     if (error instanceof GoogleReauthError) {
       const changed = await recordSync(admin, connection, { claimedAt: now, error: REAUTH_MESSAGE, reauth: true });
       // 상태를 실제로 reauth로 바꾼 동기화에서만 알림 한 번 (G9). 알림이 실패해도 동기화 결과는 그대로다
