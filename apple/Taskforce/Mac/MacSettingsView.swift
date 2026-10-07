@@ -475,20 +475,36 @@ struct SectionDisplaySettingsPane: View {
     }
 
     var body: some View {
-        Form {
-            Section {
+        ScrollView {
+            VStack(alignment: .leading, spacing: TFSpace.lg) {
                 Text("All shows every task. Choose a number to show fewer rows and add Show More when needed.")
                     .font(TFFont.footnote)
                     .foregroundStyle(TFColor.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                VStack(alignment: .leading, spacing: TFSpace.xs) {
+                    Text("Sections")
+                        .font(TFFont.footnoteEmphasis)
+                        .foregroundStyle(TFColor.textPrimary)
+                        .accessibilityAddTraits(.isHeader)
+                    SettingsCard {
+                        picker("Review", selection: $preferences.review)
+                        SettingsDivider()
+                        picker("In Progress", selection: $preferences.inProgress)
+                        SettingsDivider()
+                        picker("To Do", selection: $preferences.toDo)
+                        SettingsDivider()
+                        picker("Done Today", selection: $preferences.doneToday)
+                    }
+                }
             }
-            Section("Sections") {
-                picker("Review", selection: $preferences.review)
-                picker("In Progress", selection: $preferences.inProgress)
-                picker("To Do", selection: $preferences.toDo)
-                picker("Done Today", selection: $preferences.doneToday)
-            }
+            .frame(width: MacSettingsView.column, alignment: .leading)
+            .padding(.horizontal, MacSettingsView.columnInset)
+            .padding(.top, TFSpace.md)
+            .padding(.bottom, TFSpace.md)
         }
-        .modifier(SettingsFormPage())
+        .contentMargins(.top, 2, for: .scrollContent)
+        .contentMargins(.bottom, 12, for: .scrollContent)
         .onChange(of: preferences) { _, value in
             value.save()
             MacAppDelegate.shared?.launcher?.model.applySectionDisplayPreferences(value)
@@ -496,10 +512,16 @@ struct SectionDisplaySettingsPane: View {
     }
 
     private func picker(_ title: String, selection: Binding<SectionDisplayLimit>) -> some View {
-        Picker(title, selection: selection) {
-            ForEach(SectionDisplayLimit.allCases) { limit in
-                Text(limit.displayName).tag(limit)
+        SettingsRow(title) {
+            Picker(title, selection: selection) {
+                ForEach(SectionDisplayLimit.allCases) { limit in
+                    Text(limit.displayName).tag(limit)
+                }
             }
+            .labelsHidden()
+            .pickerStyle(.menu)
+            .accessibilityLabel(title)
+            .fixedSize()
         }
     }
 }

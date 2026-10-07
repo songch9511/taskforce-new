@@ -4,6 +4,7 @@ import Foundation
 import SwiftUI
 import Supabase
 import Testing
+import TaskforceUI
 @testable import TaskforceKit
 @testable import Taskforce
 
@@ -49,17 +50,21 @@ struct LauncherPresentationFixtureRendersTests {
             )
         }
 
-        let settings = VStack(alignment: .leading, spacing: 8) {
-            Text("Fixture · Settings / Task List")
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
+        let settings = VStack(alignment: .leading, spacing: 0) {
             Text("Task List")
-                .font(.system(size: 22, weight: .semibold))
+                .font(TFFont.pageTitle)
+                .foregroundStyle(TFColor.textPrimary)
+                .frame(width: MacSettingsView.column, height: 28, alignment: .leading)
+                .frame(maxWidth: .infinity)
+                .padding(.top, 26)
             SectionDisplaySettingsPane(preferences: .all)
         }
-        .padding(20)
-        .frame(width: 752, height: 440, alignment: .topLeading)
-        .background(Color(nsColor: .windowBackgroundColor))
+        .frame(
+            width: MacSettingsView.windowSize.width - 2 * TFSpace.xs - MacSettingsView.sidebarWidth,
+            height: 404,
+            alignment: .topLeading
+        )
+        .background(TFColor.settingsContent)
         for (scheme, appearance) in appearances {
             try await render(settings, name: "fixture-settings-section-counts-\(appearance)", scheme: scheme, to: directory)
         }
