@@ -96,7 +96,7 @@ struct LauncherPresentationFixtureRendersTests {
         #expect(model.items.count > 1)
         #expect(model.bodyState == .list)
         model.notesStore?.setOwner(SampleData.userID)
-        model.notesStore?.applySample("## 데모 준비\n- [ ] 결제 화면 시연 확인\n- [ ] 새 온보딩 흐름 점검\n\n민서 님과 금요일 리허설", for: SampleData.demoID)
+        model.notesStore?.applySample("데모 전에 결제 화면과 온보딩 흐름 확인\n민서 님과 금요일 리허설", for: SampleData.demoID)
 
         for (scheme, appearance) in appearances {
             try await render(LauncherRootView(model: model), name: "fixture-launcher-collapsed-\(appearance)", scheme: scheme, to: directory)
