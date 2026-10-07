@@ -242,6 +242,21 @@ export type ActionProgressState = z.infer<typeof actionProgressStateSchema>;
 export const actionProgressRequestSchema = z.object({ state: actionProgressStateSchema });
 export type ActionProgressRequest = z.infer<typeof actionProgressRequestSchema>;
 
+// PUT /api/v1/actions/:id/notes — notes are preserved verbatim and versioned independently of Action fields.
+export const ACTION_NOTES_MAX_UTF16 = 10_000;
+export const actionNotesRequestSchema = z.object({
+  markdown: z.string().refine((value) => value.length <= ACTION_NOTES_MAX_UTF16, { message: "메모는 10,000자까지 저장할 수 있습니다" }),
+  expected_revision: z.number().int().min(0).max(2_147_483_647),
+}).strict();
+export type ActionNotesRequest = z.infer<typeof actionNotesRequestSchema>;
+
+export const actionNotesResponseSchema = z.object({
+  action_id: z.uuid(),
+  markdown: z.string(),
+  revision: z.number().int().nonnegative(),
+});
+export type ActionNotesResponse = z.infer<typeof actionNotesResponseSchema>;
+
 // POST /api/v1/actions/:id/seen — 본 것 표시 (U1 바뀜 점). 본문 없음(보내도 읽지 않는다), 204.
 // 지금 /now에 바뀜(changed)으로 보일 할 일일 때만 user_seen 이벤트 한 줄을 남기고, 아니면 아무것도 쓰지 않는다:
 // 다시 보내도 · 바뀌지 않은 할 일을 보내도 204 그대로라 화살표로 지나가도 이벤트가 쌓이지 않는다. actions 행은 바뀌지 않는다.

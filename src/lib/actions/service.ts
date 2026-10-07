@@ -4,12 +4,12 @@ import { randomUUID } from "node:crypto";
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 
-import type { ActionProgressState, ActionSummary, EditActionRequest, HandoffAssessment, HandoffResponse } from "@/lib/api/contract";
+import { actionNotesResponseSchema, type ActionNotesRequest, type ActionNotesResponse, type ActionProgressState, type ActionSummary, type EditActionRequest, type HandoffAssessment, type HandoffResponse } from "@/lib/api/contract";
 import { readAll } from "@/lib/read-all";
 import { SLACK_DISCONNECTED_QUOTE } from "@/lib/retention";
 
 import { changedActionIds, changedSinceSeen, type SeenEvent } from "./changed";
-import { loadClaims, loadStoredRow, retryOnConflict, writeAction, writeProgress, type ActionWrite, type StoredRow } from "./db-store";
+import { loadClaims, loadStoredRow, retryOnConflict, WriteConflictError, writeAction, writeProgress, type ActionWrite, type StoredRow } from "./db-store";
 import { quoteContext } from "@/lib/pipeline/text";
 
 import { buildHandoff, HANDOFF_LIMITS, type HandoffEvidence, type HandoffInput, type HandoffUserEdit } from "./handoff";
@@ -228,6 +228,34 @@ export async function markActionSeen(client: SupabaseClient, admin: SupabaseClie
 }
 
 /**
+ * Save user-authored Markdown without changing judged Action fields. Ownership is checked with the user's RLS client;
+ * the service-role RPC then locks the row and compares the independent notes revision before saving and emitting an event.
+ */
+export async function saveActionNotes(
+  client: SupabaseClient,
+  admin: SupabaseClient,
+  userId: string,
+  actionId: string,
+  input: ActionNotesRequest,
+): Promise<ActionNotesResponse> {
+  const { data: action } = await client.from("actions").select("id").eq("id", actionId).maybeSingle().throwOnError();
+  if (!action) throw new ActionNotFoundError();
+
+  const { data } = await admin.rpc("save_action_notes", {
+    p_user_id: userId,
+    p_action_id: actionId,
+    p_markdown: input.markdown,
+    p_expected_revision: input.expected_revision,
+  }).throwOnError();
+  const row = (Array.isArray(data) ? data[0] : data) as { status?: unknown; action_id?: unknown; markdown?: unknown; revision?: unknown } | null;
+  if (!row || row.status === "not_found") throw new ActionNotFoundError();
+  if (row.status === "conflict") throw new WriteConflictError();
+  const parsed = actionNotesResponseSchema.safeParse({ action_id: row.action_id, markdown: row.markdown, revision: row.revision });
+  if (!parsed.success) throw new Error("Action notes save returned an invalid response");
+  return parsed.data;
+}
+
+/**
  * AI에게 넘기기: 사용자 권한(RLS)으로 Action · 근거 · 원문 정보를 읽어 문서를 만들고, 서버가 handoff_used 지표를 남긴다 (지표 2).
  * 원문 전체가 아니라 근거 인용만 담는다.
  */
@@ -240,7 +268,7 @@ export async function handoffAction(
 ): Promise<HandoffResponse> {
   const { data: action } = await client
     .from("actions")
-    .select("title, owner, status, due_date, counterpart, confirm_reasons, resolution")
+    .select("title, owner, status, due_date, counterpart, confirm_reasons, resolution, notes_markdown")
     .eq("id", actionId)
     .maybeSingle()
     .throwOnError();
@@ -278,6 +306,7 @@ export async function handoffAction(
 
   const input: HandoffInput = {
     action: action as HandoffInput["action"],
+    userNotesMarkdown: action.notes_markdown,
     evidence: evidenceRows.flatMap((e) => {
       const s = sourceById.get(e.source_id);
       if (!s) return [];

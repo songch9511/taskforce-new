@@ -175,7 +175,7 @@ flowchart LR
 - service-role client는 서버 전용이다. connector token, ingestion과 API 쓰기에서 쓰는 경우 user_id 또는 user-scoped lookup으로 행을 제한한다. 연결 비밀은 서버의 encrypted secret 저장 경로에 둔다.
 - AI 동의는 UI의 버튼 상태만으로 보장하지 않는다. [서버 consent gate](../src/lib/consent/gate.ts#L4)는 source 처리, 동기화, 누락 신고, Ask, plan/draft 호출에 적용되고 모델 호출 직전에 다시 읽는다. 동의를 철회하면 뒤이은 모델 호출을 중단한다.
 - OAuth callback은 서명·만료·nonce 검증과 handoff 완료를 분리한다. callback을 완료한 브라우저만으로 다른 사용자 계정에 연결할 수 있는 흐름이 아니다.
-- Action은 상태 한 칸이 아니라 Claim, Evidence, Event의 이력이다. 완료/삭제/사용자 수정은 별도 이벤트와 사용자 Claim으로 보존되므로 이를 단순 row overwrite로 바꾸면 안 된다.
+- Action의 판정 필드는 Claim, Evidence, Event 이력으로 계산한다. 사용자 작성 Markdown 메모는 그 판정 이력과 별도인 실행 맥락이며 `save_action_notes`가 독립 revision과 `user_notes_updated` metadata event만 원자적으로 저장한다. 메모는 핸드오프 AI의 사용자 선호·제약 맥락으로 전달하지만 source-backed agreement가 아니다.
 - 외부 AI 처리 비용의 계량은 아직 모든 경로를 덮지 않는다. pipeline summary는 추출·판정 비용을 계산하지만, [processDepsFromEnv](../src/lib/sources/process.ts#L63)는 embedding 비용을 버리고, merge의 matching Jev 비용도 summary에 합산하지 않는다. 실행 usage/credit 원장과 이 수집 비용은 다른 회계 경로다. 사용자당 누적 $10 한도 정책은 정해져 있으나 모든 AI 비용을 포함한 집행 방식과 집계는 이 문서에서 완료로 간주하지 않는다. 제품/계량 작업으로 분리한다.
 
 ## 현재 타깃과 미구현 경계
