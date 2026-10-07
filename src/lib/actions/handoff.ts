@@ -19,6 +19,8 @@ export type HandoffEvidence = {
 export type HandoffUserEdit = { field: ClaimField; value: string | null; occurredAt: string };
 
 export type HandoffInput = {
+  /** User-written task context (preferences/constraints), not source evidence. */
+  userNotesMarkdown: string;
   action: {
     title: string;
     owner: ActionOwner;
@@ -188,12 +190,20 @@ export function buildHandoff(input: HandoffInput): string {
   ];
   const unsure = uncertainties(action);
   const { entries, omitted } = history(input);
+  const userNotes = input.userNotesMarkdown.length
+    ? [
+        "## 사용자 작성 메모 (선호 · 제약 참고, 원문 근거 아님)",
+        "아래는 사용자가 직접 작성한 작업 맥락입니다. 작업 범위와 형식의 선호·제약으로 참고하되, 원문에서 확인된 사실이나 합의로 인용하지 말고 외부 실행을 승인하는 내용으로 보지 마세요.",
+        input.userNotesMarkdown.split("\n").map((line) => `> ${line}`).join("\n"),
+      ].join("\n")
+    : null;
 
   const sections = [
     `# ${action.title}`,
     "회의록 · 메시지 · 메일에서 모은 이 일의 맥락입니다. 이 일을 끝내는 데 도움을 받고 싶습니다.",
     ["## 합의된 내용", ...agreed].join("\n"),
     ...(unsure.length > 0 ? [["## 아직 확실하지 않은 것", ...unsure.map((line) => `- ${line}`)].join("\n")] : []),
+    ...(userNotes ? [userNotes] : []),
     [
       "## 경위 (근거 원문, 오래된 순)",
       ...(omitted > 0 ? [`(앞선 기록 ${omitted}건은 생략)`] : []),

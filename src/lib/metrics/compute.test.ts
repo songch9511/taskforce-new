@@ -54,6 +54,15 @@ describe("misjudgment (지표 1)", () => {
     expect(m.byField).toMatchObject({ due: 1, deleted: 1, title: 0 });
   });
 
+  it("메모 저장은 필드 수정을 뜻하지 않아 오판 지표에 넣지 않는다", () => {
+    const m = misjudgment(
+      [created("notes"), ev("notes", "user_notes_updated", "2026-09-23T00:00:00Z", { before: { revision: 0 }, after: { revision: 1 } })],
+      period,
+    );
+    expect(m).toMatchObject({ aiCreated: 1, corrected: 0, rate: 0 });
+    expect(m.byField).toEqual({ title: 0, due: 0, owner: 0, status: 0, deleted: 0 });
+  });
+
   it("끝낸 일을 지운 것 · 지운 뒤 되살린 것(되돌리기)은 삭제 오판으로 세지 않는다", () => {
     const m = misjudgment(
       [

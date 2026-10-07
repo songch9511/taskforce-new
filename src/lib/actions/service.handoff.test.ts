@@ -18,6 +18,7 @@ function client(options: { action?: boolean; metricError?: boolean; onMetric?: (
     counterpart: null,
     confirm_reasons: [],
     resolution: null,
+    notes_markdown: "한국어로 작성해 주세요.",
   };
   const db = {
     from(table: string) {
@@ -51,6 +52,7 @@ describe("handoffAction assisted service ordering", () => {
     const result = await handoffAction(user.db, admin.db, USER_ID, ACTION_ID, async (markdown) => {
       sequence.push("generate");
       expect(markdown).toContain("# Proposal");
+      expect(markdown).toContain("> 한국어로 작성해 주세요.");
       return {
         markdown: "# Draft\n\n## Reference\n\n" + markdown,
         assessment: { effort: "low", difficulty: "medium", context: "sufficient", model: "typesafe/jev-1.13", rubric_version: "handoff-v1" },
