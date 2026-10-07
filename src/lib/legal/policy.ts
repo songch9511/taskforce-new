@@ -14,7 +14,7 @@ export type PrivacyPolicy = { current: PolicyVersion; upcoming: PolicyVersion | 
 const PRIVACY_URL = { ko: "https://www.taskforcelabs.dev/ko/privacy", en: "https://www.taskforcelabs.dev/en/privacy" };
 
 export const PRIVACY_POLICY: PrivacyPolicy = {
-  current: { version: "beta-1.4", effective_date: "2026-10-04", url: PRIVACY_URL },
+  current: { version: "beta-1.5", effective_date: "2026-10-07", url: PRIVACY_URL },
   upcoming: null,
 };
 

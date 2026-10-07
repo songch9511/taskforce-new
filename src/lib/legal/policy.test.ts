@@ -15,9 +15,9 @@ const now = new Date("2026-10-01T03:00:00Z");
 const oldAccount = new Date("2026-09-20T00:00:00Z");
 
 describe("PRIVACY_POLICY", () => {
-  it("현재 판은 베타 1.4 (2026-10-04 시행)이고 계약 형식을 따른다", () => {
-    expect(PRIVACY_POLICY.current.version).toBe("beta-1.4");
-    expect(PRIVACY_POLICY.current.effective_date).toBe("2026-10-04");
+  it("현재 판은 베타 1.5 (2026-10-07 시행)이고 계약 형식을 따른다", () => {
+    expect(PRIVACY_POLICY.current.version).toBe("beta-1.5");
+    expect(PRIVACY_POLICY.current.effective_date).toBe("2026-10-07");
     expect(policyVersionSchema.parse(PRIVACY_POLICY.current)).toEqual(PRIVACY_POLICY.current);
     if (PRIVACY_POLICY.upcoming) expect(policyVersionSchema.parse(PRIVACY_POLICY.upcoming)).toEqual(PRIVACY_POLICY.upcoming);
   });
