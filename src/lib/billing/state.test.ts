@@ -34,3 +34,12 @@ it('uses a dedicated actionable error for expired billing access',async()=>{
  expect(new AiBudgetError('subscription_required').code).toBe('billing_required');
  expect(new AiBudgetError('billing_required').userMessage).toContain('Account → Subscription');
 });
+
+it('returns the approved prices with the annual discount rounded to cents', async () => {
+    const { billingStatusSchema } = await import('../api/contract');
+    const status = { ...billingState(base, now), ai_allowance: null, allowance_resets_at: null };
+    expect(status.monthly_price_usd).toBe(9.99);
+    expect(status.annual_price_usd).toBe(Math.round(999 * 12 * 0.85) / 100);
+    expect(billingStatusSchema.parse(status).annual_price_usd).toBe(101.9);
+    expect(billingStatusSchema.safeParse({ ...status, monthly_price_usd: 9, annual_price_usd: 91.8 }).success).toBe(false);
+});

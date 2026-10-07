@@ -782,8 +782,8 @@ private struct MacBillingSection: View {
                         Link("Subscription terms", destination: URL(string: "https://www.taskforcelabs.dev/en/terms")!)
                         Link("Billing privacy", destination: URL(string: "https://www.taskforcelabs.dev/en/privacy")!)
                     }.font(.caption)
-                    Button("Subscribe monthly — $9 / month") { open(.monthly) }.disabled(!acceptedTerms)
-                    Button("Subscribe yearly — $91.80 / year · Save 15%") { open(.annual) }.disabled(!acceptedTerms)
+                    Button("Subscribe monthly — $9.99 / month") { open(.monthly) }.disabled(!acceptedTerms)
+                    Button("Subscribe yearly — $101.90 / year · Save 15%") { open(.annual) }.disabled(!acceptedTerms)
                     Text("Payment starts immediately at checkout, including during your trial. Automatically renews until cancelled. Applicable tax is extra.")
                         .font(.caption).foregroundStyle(.secondary)
                 }

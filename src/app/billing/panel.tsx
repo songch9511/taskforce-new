@@ -53,8 +53,8 @@ export function BillingPanel({ email }: { email: string }) {
     {status?.can_checkout && <>
       <label className="billing-consent"><input type="checkbox" checked={accepted} onChange={event => setAccepted(event.target.checked)} /> I agree to the <a href="https://www.taskforcelabs.dev/en/terms" target="_blank" rel="noreferrer">subscription terms</a> and have read the <a href="https://www.taskforcelabs.dev/en/privacy" target="_blank" rel="noreferrer">billing privacy information</a>. I am at least 14 and do not live in the EEA or UK.</label>
       <div className="billing-plans">
-        <div><h3>Monthly</h3><p className="billing-price">$9 <span>/ month</span></p><button disabled={busy || !accepted} onClick={() => void open("checkout", "monthly")}>Subscribe monthly</button></div>
-        <div><h3>Yearly · Save 15%</h3><p className="billing-price">$91.80 <span>/ year</span></p><button disabled={busy || !accepted} onClick={() => void open("checkout", "annual")}>Subscribe yearly</button></div>
+        <div><h3>Monthly</h3><p className="billing-price">$9.99 <span>/ month</span></p><button disabled={busy || !accepted} onClick={() => void open("checkout", "monthly")}>Subscribe monthly</button></div>
+        <div><h3>Yearly · Save 15%</h3><p className="billing-price"><span><s aria-label="Twelve monthly payments: $119.88">$119.88</s></span>{" "}$101.90 <span>/ year</span></p><button disabled={busy || !accepted} onClick={() => void open("checkout", "annual")}>Subscribe yearly</button></div>
       </div>
       <p>Payment starts immediately when you complete checkout, including during a free trial. Your plan renews automatically until cancelled. Cancel in Manage subscription before renewal. Taxes are shown at checkout.</p>
       <p>Both plans include $3 of AI processing per UTC calendar month, reset on the first day of each month. Unused allowance does not roll over. AI pauses at the limit; there are no automatic extra charges. The 7-day trial includes $1 total AI processing.</p>

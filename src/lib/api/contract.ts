@@ -667,7 +667,7 @@ export const billingStatusSchema = z.object({
   status: z.string(), plan: z.enum(["monthly", "annual"]).nullable(),
   trial_ends_at: z.string().nullable(), current_period_ends_at: z.string().nullable(),
   can_use_ai: z.boolean(), can_checkout: z.boolean(),
-  monthly_price_usd: z.literal(9), annual_price_usd: z.literal(91.8),
+  monthly_price_usd: z.literal(9.99), annual_price_usd: z.literal(101.9),
   ai_allowance: aiSpendSummarySchema.nullable(), allowance_resets_at: z.string().nullable(),
 });
 export type BillingStatus = z.infer<typeof billingStatusSchema>;

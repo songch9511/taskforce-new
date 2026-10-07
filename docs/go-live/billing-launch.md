@@ -4,8 +4,8 @@ This implements the owner's explicit request to open account subscriptions and a
 
 ## Approved offer
 
-- Monthly: USD 9 per account, recurring monthly.
-- Annual: USD 91.80, charged yearly (108 × 0.85; USD 7.65/month equivalent).
+- Monthly: USD 9.99 per account, recurring monthly.
+- Annual: USD 101.90, charged yearly (119.88 × 0.85 = 101.898, rounded to cents; approximately USD 8.49/month).
 - Applicable taxes are extra; Lemon Squeezy store tax-inclusive pricing is off.
 - Card-free trial: 7 days from first successful source sync; USD 1 total AI supplier cost allowance. Initially proposed USD 0.50 was rejected after the existing model's conservative USD 0.713033 reservation was measured; owner explicitly approved USD 1.
 - Both paid plans: USD 3 AI supplier cost allowance per UTC calendar month, reset on day 1. No rollover or automatic overage. Every unresolved older reservation still counts. Saved task viewing/management remains available at the cap or after subscription expiry.
@@ -25,9 +25,9 @@ This implements the owner's explicit request to open account subscriptions and a
 
 Store: Task Force labs (`taskforcelabs.lemonsqueezy.com`). Identity verification is active and bank connection/setup steps are complete. This is an existing live store, not a new pending store approval.
 
-Test product `1420342` is a draft with Monthly variant `2218838` ($9/month) and Annual variant `2218883` ($91.80/year). Storefront disabled. Tax category: AI as a Service (AIaaS) - Cloud Based & Downloaded. Product description discloses included allowance and no overage. Screenshot: `evidence/lemonsqueezy-plans-test-2026-10-08.jpg`.
+Test product `1420342` is a draft with Monthly variant `2218838` ($9.99/month) and Annual variant `2218883` ($101.90/year). Storefront disabled. Tax category: AI as a Service (AIaaS) - Cloud Based & Downloaded. Product description discloses included allowance and no overage. Latest price screenshot: `evidence/lemonsqueezy-plans-test-999-2026-10-08.jpg`.
 
-Live product `1420403` is also a draft, with Monthly variant `2218942` ($9/month) and Annual variant `2218943` ($91.80/year). Live/test mode and both prices were verified in the dashboard. Screenshot: `evidence/lemonsqueezy-plans-live-draft-2026-10-08.jpg`. Do not publish a buyable live checkout before account binding and delivery are verified.
+Live product `1420403` is also a draft, with Monthly variant `2218942` ($9.99/month) and Annual variant `2218943` ($101.90/year). Live/test mode and both prices were verified in the dashboard. Latest price screenshot: `evidence/lemonsqueezy-plans-live-999-2026-10-08.jpg`. Earlier screenshots document superseded $9/$91.80 drafts. Do not publish a buyable live checkout before account binding and delivery are verified.
 
 ## Server configuration and release sequence
 
@@ -36,7 +36,7 @@ Use `.env.example` for exact variable names. API key and webhook secret are serv
 1. Finish regression, PostgreSQL contention, auth/client, Mac build and website checks. Review the billing migration and isolate any test account/data from production.
 2. Apply only `supabase/migrations/20261101000000_billing.sql` to the linked project using `supabase db query --linked --project-ref tirtdojsahotjfgdsryi -f <exact file>`. Never `db push`. Migration seeds existing auth users as legacy beta and leaves new accounts on the new offer.
 3. Configure test keys/webhook on an isolated test deployment/database, publish the test product, and complete monthly/yearly test checkout. Verify account-bound activation, retry/idempotence, failed payment, cancellation, refund, expiry and deletion with an open checkout.
-4. Configure live keys/IDs/webhook and exact Supabase OAuth redirect. Verify price objects remain USD 900/month and USD 9180/year; no product trial or setup fee. Publish live catalog, then enable the server billing flag only when entitlement delivery is verified.
+4. Configure live keys/IDs/webhook and exact Supabase OAuth redirect. Verify price objects remain USD 999/month and USD 10190/year; no product trial or setup fee. Publish live catalog, then enable the server billing flag only when entitlement delivery is verified.
 5. Deploy server and website from reviewed commits. Confirm Google login, both checkout amounts/tax disclosure, portal and status refresh through the real domains. Publish signed/notarized Mac build with verified metadata, then download/install/launch it from the website.
 
 The owner authorized opening billing and deploying these surfaces. Browser policy separately requires action-time confirmation for creating API access; that confirmation was requested before creating either key. No key was created merely because the general launch task was authorized.
@@ -45,7 +45,7 @@ The owner authorized opening billing and deploying these surfaces. Browser polic
 
 Local evidence only, not provider/production completion. Fresh checks below include integration with upstream beta cost controls (`f19b96d`).
 
-- Backend final: lint (0 errors; 1 pre-existing unused-import warning), typecheck, 2,438 tests across 194 files, label-only eval, and Next production build passed. Runtime npm audit: 0 vulnerabilities. A default eval invocation detected inherited provider configuration and was stopped before producing scores; only label validation is complete. No live quality result is claimed.
+- Backend final: lint (0 errors; 1 pre-existing unused-import warning), typecheck, 2,439 tests across 194 files, label-only eval, and Next production build passed. Runtime npm audit: 0 vulnerabilities. A default eval invocation detected inherited provider configuration and was stopped before producing scores; only label validation is complete. No live quality result is claimed.
 - Real PostgreSQL final: 31 contention/locking tests across 5 files passed, including two concurrent $2 reservations under a $3 cap, simultaneous monthly/annual checkout, exclusive deletion claims, and shared global contention between legacy and paid accounts.
 - Swift package final: 528 tests / 62 suites passed, including checkout consent and safe provider URLs.
 - macOS final: unsigned Debug build and 107 app tests / 12 suites passed. This does not establish signed installer or live checkout behavior.
@@ -69,3 +69,7 @@ Pending: provider test flow, live credentials/webhook configuration, production 
 PR #110 was initially based on `4a6c319`. Upstream #109 added beta cost controls and two migrations (`20261030000000_ai_beta_budget_limits.sql`, `20261031000000_ai_budget_retry_candidates.sql`). Billing now follows them as `20261101000000_billing.sql`. Fresh production read-only checks confirmed `ai_budget_policy`, `pending_task_sources` and `ai_budget_retry_candidates` already exist, with USD 3/user/day, USD 5/global/day and USD 50/global lifetime policy. Billing tables remain absent. Apply only the billing migration after integration verification; do not replay the upstream migrations. Preserve these operator circuit breakers alongside subscription allowances. The unsigned/partially archived build 28 at source `c9ae304` was stopped after this conflict was found; it is not a release artifact.
 
 Independent integration review found no new blocking issue. Account usage shows personal allowance; shared operator caps may still pause processing with a separate error. PRs: https://github.com/songch9511/taskforce-new/pull/110 and https://github.com/songch9511/taskforce/pull/35. Website hosted CI and Vercel Preview passed; production remains unchanged.
+
+## Price revision
+
+The owner subsequently changed prices to USD 9.99/month and USD 101.90/year. App, API, current legal terms and test/live draft variants were updated; allowance budgets remain unchanged. Signed/notarized build 29 passed at source `e0f6592` but contains the previous display prices and must not be published for this offer. A new signed build is required. Pricing now appears on the home page and its dedicated page, preserving the cream/sand website design, with USD 119.88 struck through next to the annual offer.

@@ -22,7 +22,7 @@ export default async function BillingPage({ searchParams }: { searchParams: Prom
       <p>New to Taskforce? Download the Mac app and try it free for 7 days from your first successful source sync. No card required.</p>
       <a href="https://www.taskforcelabs.dev/en/download">Download for Mac</a>
     </section>}
-    <p className="billing-fine">$9 monthly or $91.80 yearly (15% less than 12 monthly payments), plus applicable tax. Each plan includes $3 of AI processing per UTC calendar month. No automatic overage charges.</p>
+    <p className="billing-fine">$9.99 monthly or $101.90 yearly (15% off $119.88 for 12 monthly payments, rounded to the nearest cent), plus applicable tax. Each plan includes $3 of AI processing per UTC calendar month. No automatic overage charges.</p>
     <footer><a href="https://www.taskforcelabs.dev/en/terms">Terms</a> · <a href="https://www.taskforcelabs.dev/en/privacy">Privacy</a> · <a href="mailto:privacy@taskforcelabs.dev">Contact</a></footer>
   </main>;
 }

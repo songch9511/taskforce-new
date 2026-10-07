@@ -23,7 +23,7 @@ export function billingState(account: BillingAccount, now = Date.now()) {
         plan: account.plan, trial_ends_at: account.trial_ends_at, current_period_ends_at: account.current_period_ends_at,
         can_use_ai: !account.deleting && (paid || legacy || trial || onboarding),
         can_checkout: !account.deleting && (!account.subscription_id || account.status === 'expired'),
-        monthly_price_usd: 9, annual_price_usd: 91.8,
+        monthly_price_usd: 9.99, annual_price_usd: 101.9,
     };
 }
 export function billingBudgets() {

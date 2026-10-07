@@ -5,7 +5,7 @@ import Testing
 struct BillingTests {
     @Test func statusUsesAuthenticatedAccount() async throws {
         let fixture = APIClientExecutionTests()
-        let value = try await fixture.client(body: #"{"status":"trialing","plan":null,"trial_ends_at":"2026-10-15T00:00:00Z","current_period_ends_at":null,"can_use_ai":true,"can_checkout":true}"#).billing()
+        let value = try await fixture.client(body: #"{"status":"trialing","plan":null,"trial_ends_at":"2026-10-15T00:00:00Z","current_period_ends_at":null,"can_use_ai":true,"can_checkout":true,"monthly_price_usd":9.99,"annual_price_usd":101.90}"#).billing()
         #expect(value.label == "7-day free trial")
         #expect(value.aiAllowance == nil)
         #expect(fixture.last?.url.path == "/api/v1/billing")
