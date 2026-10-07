@@ -34,4 +34,20 @@
 
 ## 검증 기록
 
-통합 검증과 실제 배포 결과는 PR 및 최종 배포 기록에 남긴다. 로컬 테스트와 공증은 실제 사용자 OAuth·연결·AI 처리 E2E를 대신하지 않는다.
+2026-10-08 KST, 최신 main `4a6c319`에서 분리한 구현 commit `59ed5f3`에서 다음을 확인했다.
+
+- lint: 오류 0, 기존 경고 1. typecheck와 Next production build 통과.
+- 전체 188파일 / 2,388 테스트, disposable PostgreSQL 4파일 / 27 테스트 통과.
+- TaskforceKit 61 suites / 524 테스트, Mac 앱 12 suites / 107 테스트 통과.
+- 실제 provider 평가: 정밀도 94.4%, 재현율 89.3%, 담당자·기한 정확도 100%, 시퀀스 필드 29/29(추가 확인 항목 1, 자동 오탐 0), Ask 8/8. 보고된 원가 약 $0.157. 확률적 측정값이며 과거 스냅샷 대비 품질이 유지됐다고 단정하지 않는다.
+- 독립 검토에서 계정 삭제 중 정산과 두 재시도 대기열 정체를 발견해 수정하고 회귀 테스트를 추가했다.
+
+로컬 테스트는 실제 사용자 OAuth·연결·AI 처리 E2E를 대신하지 않는다.
+
+## 운영 반영 상태 — 미적용
+
+2026-10-08 00:14 KST 무렵 GitHub가 HTTPS push에 반복적으로 Internal Server Error를 반환했다. HTTP/1.1·완전한 pack 전송도 같은 결과였고, Git data tree API는 HTTP 502, blob API는 빈 JSON 응답 오류로 실패했다. SSH 경로는 이 환경에 사용할 인증 키가 없어 사용할 수 없었다. 기존 자격 증명이나 전역 SSH 설정을 바꾸지 않았다.
+
+원격 작업 브랜치 `codex/beta-cost-controls-20261007` 생성만 성공해 아직 기준 main `4a6c319`을 가리킨다. 구현 commit은 이 격리 작업본에 보존됐으며 PR·호스팅 CI·merge·Vercel 배포는 아직 없다. 운영 DB에는 새 정책과 두 RPC가 없음을 읽기로 확인했고, 두 마이그레이션은 실행하지 않았다. 기존 원본 dirty checkout도 보존했다.
+
+재개 시 현재 main과 이 브랜치를 확인하고 `git push -u origin codex/beta-cost-controls-20261007` 후 PR과 필수 CI를 진행한다. CI 통과 후 위의 두 마이그레이션만 transaction으로 적용하고 merge SHA의 Production Ready를 확인한다. 사용자 승인 정책은 $3/사용자/일, $5/전체/일, $50/전체 누적이다. 기존 $10/사용자 누적과 미확정 예약액을 유지한다.
