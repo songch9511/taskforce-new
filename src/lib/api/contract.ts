@@ -250,12 +250,26 @@ export type ActionProgressRequest = z.infer<typeof actionProgressRequestSchema>;
 // PATCH · DELETE · confirm · start · progress 응답
 export const actionResponseSchema = z.object({ action: actionSummarySchema });
 
-// POST /api/v1/actions/:id/handoff — "AI에게 넘기기": 맥락 · 근거 인용을 묶은 마크다운. 서버가 handoff_used 지표를 남긴다.
+// POST /api/v1/actions/:id/handoff — 본문 없음은 결정론적 문서, { mode: "assisted" }는 평가와 실행 계획 초안까지 만든다.
+export const handoffRequestSchema = z.object({ mode: z.literal("assisted") }).strict();
+export type HandoffRequest = z.infer<typeof handoffRequestSchema>;
+
+export const handoffAssessmentSchema = z.object({
+  effort: z.enum(["low", "medium", "high", "unknown"]),
+  difficulty: z.enum(["low", "medium", "high", "unknown"]),
+  context: z.enum(["sufficient", "needs_clarification"]),
+  model: z.string().trim().min(1).max(200),
+  rubric_version: z.literal("handoff-v1"),
+});
+export type HandoffAssessment = z.infer<typeof handoffAssessmentSchema>;
+
 export const handoffResponseSchema = z.object({
   action_id: z.uuid(),
   title: z.string(),
   /** 그대로 복사해 AI 도구에 붙여 넣는 문서 */
   markdown: z.string(),
+  /** 예전 서버는 보내지 않는다. 값이 없으면 클라이언트는 평가 없는 문맥 문서로 표시한다. */
+  assessment: handoffAssessmentSchema.optional(),
 });
 export type HandoffResponse = z.infer<typeof handoffResponseSchema>;
 
@@ -617,7 +631,7 @@ export const creditsResponseSchema = z.object({
 });
 export type CreditsResponse = z.infer<typeof creditsResponseSchema>;
 
-export const apiErrorCodeSchema = z.enum(["unauthorized", "invalid_request", "not_found", "conflict", "rate_limited", "internal_error", "ai_budget_exhausted", "ai_pricing_unavailable", "ai_provider_bound_violation", "ai_budget_unavailable"]);
+export const apiErrorCodeSchema = z.enum(["unauthorized", "invalid_request", "not_found", "conflict", "rate_limited", "internal_error", "ai_budget_exhausted", "ai_pricing_unavailable", "ai_provider_bound_violation", "ai_budget_unavailable", "ai_timeout", "ai_unavailable"]);
 
 export const apiErrorSchema = z.object({
   error: z.object({ code: apiErrorCodeSchema, message: z.string() }),
