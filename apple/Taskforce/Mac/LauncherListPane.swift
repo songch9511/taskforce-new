@@ -88,7 +88,7 @@ struct LauncherListPane: View {
                             ForEach(Array(section.items.enumerated()), id: \.element.id) { itemIndex, item in
                                 let index = offsets[sectionIndex] + itemIndex
                                 itemRow(item, selected: index == model.selection, at: index)
-                                    .padding(.horizontal, TFSpace.sm)
+                                    .padding(.horizontal, TFSpace.xs)
                             }
                         }
                     }
@@ -229,8 +229,23 @@ struct LauncherListPane: View {
     @ViewBuilder
     private func itemRow(_ item: LauncherItem, selected: Bool, at index: Int) -> some View {
         itemRowContent(item, selected: selected, at: index)
+            // Keep text in its existing position while letting selection use the narrower outer gutter.
+            .padding(.horizontal, TFSpace.xs)
+            .background {
+                if !hasEmbeddedSelection(item) {
+                    RoundedRectangle(cornerRadius: TFRadius.md, style: .continuous)
+                        .fill(selected ? TFColor.bgSelected : .clear)
+                }
+            }
             .id(item.id)
             .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func hasEmbeddedSelection(_ item: LauncherItem) -> Bool {
+        switch item {
+        case .showMore, .doneToday: true
+        default: false
+        }
     }
 
     @ViewBuilder
@@ -251,10 +266,6 @@ struct LauncherListPane: View {
                     .opacity(showsActions ? 1 : 0)
                     .allowsHitTesting(showsActions)
             }
-            .background(
-                selected ? TFColor.bgSelected : .clear,
-                in: RoundedRectangle(cornerRadius: TFRadius.md, style: .continuous)
-            )
             .contentShape(Rectangle())
             .onHover { isHovering in
                 guard let actionID = item.action?.id else { return }
@@ -374,7 +385,7 @@ struct LauncherListPane: View {
 
     /// 상세로 포커스를 옮겨도(Tab · →) 목록에서 고른 행은 그대로 보인다
     @ViewBuilder
-    private func row(_ item: LauncherItem, selected: Bool, drawSelectionBackground: Bool = true) -> some View {
+    private func row(_ item: LauncherItem, selected: Bool, drawSelectionBackground: Bool = false) -> some View {
         switch item {
         case .review(let action):
             MacListRow(
@@ -420,21 +431,39 @@ struct LauncherListPane: View {
                 model.run(item)
             }
         case .failedSources(let failed):
-            MacListRow(title: failed.title, accessory: failed.latestAt.map { WhenText.label($0) }, selected: selected)
+            MacListRow(
+                title: failed.title, accessory: failed.latestAt.map { WhenText.label($0) }, selected: selected,
+                drawSelectionBackground: drawSelectionBackground
+            )
         case .policyNotice(let notice):
-            MacListRow(title: notice.title(today: today), accessory: "View", selected: selected)
+            MacListRow(
+                title: notice.title(today: today), accessory: "View", selected: selected,
+                drawSelectionBackground: drawSelectionBackground
+            )
         case .allowAI:
-            MacListRow(title: "Allow AI processing to keep your list up to date", selected: selected)
+            MacListRow(
+                title: "Allow AI processing to keep your list up to date", selected: selected,
+                drawSelectionBackground: drawSelectionBackground
+            )
         case .command(let command):
-            MacListRow(title: command.title, selected: selected)
+            MacListRow(title: command.title, selected: selected, drawSelectionBackground: drawSelectionBackground)
         case .ask(let question):
-            MacListRow(title: "Ask “\(LauncherFlowView.oneLine(question))”", selected: selected)
+            MacListRow(
+                title: "Ask “\(LauncherFlowView.oneLine(question))”", selected: selected,
+                drawSelectionBackground: drawSelectionBackground
+            )
         case .handoff(let action):
-            MacListRow(title: "Hand off “\(action.title)” to AI", selected: selected)
+            MacListRow(
+                title: "Hand off “\(action.title)” to AI", selected: selected,
+                drawSelectionBackground: drawSelectionBackground
+            )
         case .sendAsSource(let text):
-            MacListRow(title: "Send as source", accessory: LauncherFlowView.oneLine(text), selected: selected)
+            MacListRow(
+                title: "Send as source", accessory: LauncherFlowView.oneLine(text), selected: selected,
+                drawSelectionBackground: drawSelectionBackground
+            )
         case .addAction(let title):
-            MacListRow(title: "Add “\(title)”", selected: selected)
+            MacListRow(title: "Add “\(title)”", selected: selected, drawSelectionBackground: drawSelectionBackground)
         case .signInWithGoogle:
             // 로그아웃 목록은 한 열 (`LauncherFlowView`)
             EmptyView()
