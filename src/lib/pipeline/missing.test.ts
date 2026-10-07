@@ -46,6 +46,17 @@ function fakeComplete(data: Record<string, unknown>, extra: { reasoningLimited?:
 const judgeDecide: Decide = async () => ({ model: "test/jev", answers: answers(0.1), usage: { input_tokens: 1, cost: 0.0005 } });
 
 describe("extractMissing", () => {
+  it("사용자가 직접 내 일이라고 신고하면 자동 담당자 기각 규칙을 해제한다", async () => {
+    const quote = "준혁님 PR 전부 머지 후 현재 데브 브랜치 업데이트";
+    const { complete } = fakeComplete({ title: "데브 브랜치 업데이트", counterpart: null, due_text: null, due: null, due_confidence: null });
+    const result = await extractMissing({ ...input, kind: "doc", text: quote, quote }, { complete, decide: async () => ({
+      model: "test/jev",
+      answers: { ...answers(0.1), document_owner: { type: "choice", choice: "someone_else", probabilities: { someone_else: 0.95 } } },
+    }) });
+    expect(result.judged.judge).toMatchObject({ decision: "auto", reasons: [] });
+    expect(result.judged.judge.rule).toBeUndefined();
+  });
+
   it("신고한 구절로 후보 하나를 만든다: 인용 · 담당 · 신호는 고정, 기한은 코드가 다시 계산, 결정은 auto", async () => {
     const { complete, requests } = fakeComplete({
       title: "김대표에게 견적서 전달",

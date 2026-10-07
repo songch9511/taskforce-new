@@ -191,6 +191,67 @@ describe("buildJudgeState의 작성자", () => {
 });
 
 describe("judgeCandidate", () => {
+  describe("문서에 명시된 다른 담당자", () => {
+    const identity = { name: "김도윤", aliases: ["다니엘"], emails: [] };
+    const task = "PR 전부 머지 후 현재 데브 브랜치 업데이트";
+    const todo = { title: task, quote: task, due_text: null, signal: "commitment" as const };
+    const judge = (text: string, mine = 0.95, kind = "doc", quote = task) => judgeCandidate(
+      { ...todo, quote }, { ...source, text, kind, writtenByMe: true }, identity,
+      async () => ({ model: "m", answers: { ...answers, is_my_commitment: { type: "noul", noul: mine } } }),
+    );
+
+    it.each([0.6, 0.95])("준혁님 업무는 AI 점수 %s여도 확인 요청이나 자동 반영으로 남기지 않는다", async (mine) => {
+      const result = await judge(`준혁님 ${task}`, mine, "doc", `준혁님 ${task}`);
+      expect(result).toMatchObject({ decision: "reject", reasons: ["NOT_MY_ACTION"], rule: "explicit_other_assignee" });
+      expect(result.signals.is_my_commitment).toBe(mine); // 모델 답 자체를 조작하지 않는다.
+    });
+
+    it.each(["준혁님", "- 준혁님", "- [ ] **준혁님**", "1. @준혁님 -"])("인용에서 이름이 빠져도 원문 %s의 담당자를 확인한다", async (prefix) => {
+      expect(await judge(`${prefix} ${task}`, 0.95, "meeting")).toMatchObject({ decision: "reject", rule: "explicit_other_assignee" });
+    });
+
+    it.each(["도윤님", "김도윤님", "다니엘님"])("본인 이름·별칭 %s는 차단하지 않는다", async (name) => {
+      expect((await judge(`- [ ] ${name} ${task}`)).decision).toBe("auto");
+    });
+
+    it.each([
+      "준혁님께 PR 검토 요청하기", "준혁님에게 PR 전달하기", "준혁님과 PR 검토하기",
+      "준혁님: 다니엘님 PR 검토 부탁드려요", "준혁님 요청으로 PR 검토하기",
+      "준혁님, 다니엘님 PR 함께 검토하기",
+      "준혁님 제가 금요일까지 PR 검토할게요",
+      "준혁님 PR 확인해 주셔서 감사합니다. 제가 금요일까지 수정할게요",
+      "준혁님 PR 검토하셨나요?",
+    ])("상대방·화자·공동 담당자를 다른 단독 담당자로 오인하지 않는다: %s", async (text) => {
+      expect((await judge(text, 0.95, "meeting", text)).decision).toBe("auto");
+    });
+
+    it("동일 인용이 본인 항목과 다른 담당자 항목에 반복되면 강제 기각하지 않는다", async () => {
+      expect((await judge(`- 준혁님 ${task}\n- 다니엘님 ${task}`)).decision).toBe("auto");
+    });
+
+    it("이름이 비슷해도 등록된 별칭이 아니면 다른 담당자를 본인으로 추정하지 않는다", async () => {
+      const text = "- [ ] 도연님 - 스펙 기반 생성 UX 기획 진행";
+      const identity = { name: "도윤", aliases: [], emails: [] };
+      const decide: Decide = async () => ({ model: "m", answers: { ...answers, is_my_commitment: { type: "noul", noul: 0.6 } } });
+      const todo = { title: "스펙 기반 생성 UX 기획", quote: "스펙 기반 생성 UX 기획 진행", due_text: null, signal: "commitment" as const };
+      const meeting = { ...source, text };
+      expect(await judgeCandidate(todo, meeting, identity, decide)).toMatchObject({ decision: "reject", rule: "explicit_other_assignee" });
+      expect(await judgeCandidate(todo, meeting, { ...identity, aliases: ["도연"] }, decide)).toMatchObject({ decision: "confirm" });
+      const knownOther = { ...meeting, participants: { attendees: [{ name: "도윤" }, { name: "도연" }] } };
+      expect(await judgeCandidate(todo, knownOther, identity, decide)).toMatchObject({ decision: "reject", rule: "explicit_other_assignee" });
+    });
+
+    it("준혁을 청혁의 오타로 추정해 살리지 않는다", async () => {
+      const result = await judgeCandidate(todo, { ...source, text: `준혁님 ${task}` },
+        { name: "송청혁", aliases: ["Daniel"], emails: [] }, async () => ({ model: "m", answers }));
+      expect(result).toMatchObject({ decision: "reject", rule: "explicit_other_assignee" });
+    });
+
+    it("대화·메일의 호칭을 문서 담당자 규칙으로 기각하지 않는다", async () => {
+      for (const kind of ["email", "message"]) expect((await judge(`준혁님 ${task}`, 0.95, kind)).decision).toBe("auto");
+    });
+  });
+
   it("질문을 한 번에 묻고 판정을 돌려준다", async () => {
     const calls: unknown[] = [];
     const decide: Decide = async (request) => {

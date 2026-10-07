@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import type { JevDecision } from "@/lib/ai/jev";
 import { DOCUMENT_JUDGE_PROMPT_VERSION, MEETING_JUDGE_PROMPT_VERSION, WRITTEN_BY_ME_DOCUMENT_PROMPT_VERSION } from "@/lib/ai/prompts/judge";
@@ -71,6 +71,41 @@ const decide: Decide = async (request) => {
     usage: { input_tokens: 1, cost: 0.0001 },
   };
 };
+
+describe("명시된 다른 담당자 — 추출부터 저장까지", () => {
+  it.each(["commitment", "update", "completion", "cancellation"])("%s를 내 할 일로 만들거나 기존 할 일에 병합하지 않는다", async (signal) => {
+    const task = "PR 전부 머지 후 현재 데브 브랜치 업데이트";
+    const identity = { name: "다니엘", aliases: [], emails: [] };
+    const store = new InMemoryActionStore();
+    const mergeDeps = {
+      embed: vi.fn(async () => [[1, 0]]),
+      decide: vi.fn<Decide>(async () => { throw new Error("다른 담당자 업무는 매칭까지 도달하면 안 된다"); }),
+      newId: (() => { let id = 0; return () => `claim-${++id}`; })(),
+    };
+    const extract = (signal: string) => (async () => ({
+      model: "test/llm", data: { candidates: [{ ...raw(task), signal }] },
+    })) as CompleteJson;
+    const judge: Decide = async () => ({ model: "test/jev", answers: answers(0.95) });
+    const selfSource = { ...input, identity, kind: "doc" as const, text: `다니엘님 ${task}`, writtenByMe: true };
+    const own = await runPipeline(selfSource, { complete: extract("commitment"), decide: judge });
+    await mergeJudged(store, own.judged, { ...selfSource, id: "mine" }, identity, mergeDeps);
+    expect(store.all()).toHaveLength(1);
+    const before = JSON.stringify(store.all());
+    mergeDeps.embed.mockClear();
+
+    const otherSource = { ...selfSource, text: `준혁님 ${task}` };
+    const other = await runPipeline(otherSource, { complete: extract(signal), decide: judge });
+    expect(other.summary).toMatchObject({ auto: 0, confirm: 0, reject: 1 });
+    // 빈 목록과 기존 내 업무가 있는 목록 양쪽 모두 보호한다.
+    for (const target of [new InMemoryActionStore(), store]) {
+      const outcome = await mergeJudged(target, other.judged, { ...otherSource, id: "other" }, identity, mergeDeps);
+      expect(outcome).toMatchObject([{ relation: "rejected", actionId: null }]);
+    }
+    expect(JSON.stringify(store.all())).toBe(before);
+    expect(mergeDeps.embed).not.toHaveBeenCalled();
+    expect(mergeDeps.decide).not.toHaveBeenCalled();
+  });
+});
 
 describe("runPipeline", () => {
   it("추출 → 기계 검증 → Jev 판정을 거쳐 후보와 요약을 돌려준다", async () => {

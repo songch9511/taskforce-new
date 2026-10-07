@@ -1,0 +1,24 @@
+{
+  "id": "notion-explicit-other-assignee",
+  "description": "문서 작성자가 사용자여도 준혁님에게 명시된 업무는 자동 반영과 확인 요청 모두 제외한다. 본인의 업무와 상대에게 전달하는 업무는 유지한다.",
+  "origin": "synthetic",
+  "tags": ["notion", "ownership"],
+  "user": { "name": "김도윤", "aliases": ["다니엘"], "emails": ["doyun@example.com"] },
+  "sources": [{
+    "id": "discussion",
+    "kind": "doc",
+    "occurred_at": "2026-10-07T00:00:00+09:00",
+    "written_by_me": true,
+    "text": "# Discussion\n\n## Action items\n- [ ] 준혁님 PR 전부 머지 후 현재 데브 브랜치 업데이트\n- [ ] 다니엘님 금요일까지 온보딩 화면 수정\n- [ ] 다니엘님 준혁님께 디자인 파일 전달"
+  }],
+  "expected_actions": [{
+    "title": "온보딩 화면 수정", "owner": "me", "due": "2026-10-09", "status": "open",
+    "evidence": [{ "source": "discussion", "quote": "다니엘님 금요일까지 온보딩 화면 수정" }]
+  }, {
+    "title": "준혁님께 디자인 파일 전달", "owner": "me", "counterpart": "준혁", "status": "open",
+    "evidence": [{ "source": "discussion", "quote": "다니엘님 준혁님께 디자인 파일 전달" }]
+  }],
+  "must_not_extract": [{
+    "source": "discussion", "quote": "준혁님 PR 전부 머지 후 현재 데브 브랜치 업데이트", "reason": "NOT_MY_ACTION"
+  }]
+}
