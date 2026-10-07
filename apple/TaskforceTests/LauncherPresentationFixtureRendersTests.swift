@@ -64,9 +64,20 @@ struct LauncherPresentationFixtureRendersTests {
             try await render(settings, name: "fixture-settings-section-counts-\(appearance)", scheme: scheme, to: directory)
         }
 
+        let about = AboutSettingsPane(buildInfo: AboutBuildInfo(infoDictionary: [
+            "CFBundleShortVersionString": "0.1.0",
+            "CFBundleVersion": "23",
+            AboutBuildInfo.releaseChannelKey: "Development",
+            AboutBuildInfo.sourceCommitKey: "Not available",
+            AboutBuildInfo.buildTimeUTCKey: "Not available",
+        ]))
+        for (scheme, appearance) in appearances {
+            try await render(about, name: "fixture-settings-about-\(appearance)", scheme: scheme, to: directory)
+        }
+
         let names = [
             "fixture-launcher-collapsed", "fixture-launcher-expanded-sources", "fixture-launcher-expanded-initial",
-            "fixture-settings-section-counts"
+            "fixture-settings-section-counts", "fixture-settings-about"
         ]
         #expect(names.allSatisfy { name in
             appearances.allSatisfy { appearance in

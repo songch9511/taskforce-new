@@ -4,3 +4,8 @@
 BUNDLE_ID_PREFIX = dev.taskforcelabs
 APP_BUNDLE_ID = $(BUNDLE_ID_PREFIX).taskforce
 APP_GROUP_ID = group.$(APP_BUNDLE_ID)
+
+// Local builds identify themselves honestly; the DMG helper overrides these at archive time.
+TF_RELEASE_CHANNEL = Development
+TF_SOURCE_COMMIT = NotAvailable
+TF_BUILD_TIME_UTC = NotAvailable

@@ -162,6 +162,7 @@ enum MacSettingsTab: String, CaseIterable {
     case usage
     /// 페이지가 아니라 계정 시트 (↗)
     case account
+    case about
     case connections
     /// Privacy & AI Data (저장값은 예전 AI data 탭과 같은 `ai`)
     case ai
@@ -192,6 +193,7 @@ enum MacSettingsTab: String, CaseIterable {
         Item(tab: .taskList, title: "Task List", systemImage: "list.bullet", group: .personal),
         Item(tab: .usage, title: "Usage & Credits", systemImage: "gauge.open.with.lines.needle.33percent", group: .personal),
         Item(tab: .account, title: "Account", systemImage: "person", group: .personal),
+        Item(tab: .about, title: "About", systemImage: "info.circle", group: .personal),
         Item(tab: .connections, title: "Connections", systemImage: "link", group: .work),
         Item(tab: .ai, title: "Privacy & AI Data", systemImage: "shield", group: .work),
     ]

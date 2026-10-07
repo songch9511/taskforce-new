@@ -111,10 +111,12 @@ else
   echo "공증 프로필: $PROFILE 유효"
 fi
 
-if [[ -n "$(git status --porcelain --untracked-files=no 2>/dev/null)" ]]; then
-  echo "경고: 커밋하지 않은 변경이 있는 채로 빌드합니다."
-fi
-echo "커밋: $(git rev-parse --short HEAD 2>/dev/null || echo unknown) / 버전 $VERSION ($BUILD) / 출력 $RUN_DIR"
+[[ -z "$(git status --porcelain --untracked-files=all 2>/dev/null)" ]] \
+  || fail "앱 source commit을 정확히 기록하려면 Git 작업 트리가 깨끗해야 합니다 (ignored Secrets.xcconfig은 제외됨)"
+SOURCE_COMMIT="$(git rev-parse HEAD 2>/dev/null)" || fail "빌드 source commit을 읽을 수 없습니다"
+BUILD_TIME_UTC="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+echo "커밋: $(git rev-parse --short HEAD) / 버전 $VERSION ($BUILD) / 출력 $RUN_DIR"
+echo "앱 빌드 정보: Beta / $SOURCE_COMMIT / $BUILD_TIME_UTC UTC"
 
 mkdir -p "$OUT"
 mkdir "$RUN_DIR" || fail "출력 경로를 만들 수 없습니다 (기존 경로는 보존됨): $RUN_DIR"
@@ -133,7 +135,10 @@ run_logged "아카이브" "$LOG_DIR/archive.log" \
     -derivedDataPath "$DERIVED" \
     -allowProvisioningUpdates \
     MARKETING_VERSION="$VERSION" \
-    CURRENT_PROJECT_VERSION="$BUILD"
+    CURRENT_PROJECT_VERSION="$BUILD" \
+    TF_RELEASE_CHANNEL=Beta \
+    TF_SOURCE_COMMIT="$SOURCE_COMMIT" \
+    TF_BUILD_TIME_UTC="$BUILD_TIME_UTC"
 echo "아카이브 완료: $ARCHIVE"
 
 # ---------------------------------------------------------------- Developer ID 내보내기
@@ -174,10 +179,14 @@ host_of() { local rest="${1#*://}"; printf '%s' "${rest%%[/:?]*}"; }
 API_HOST="$(host_of "$(plist_value APIBaseURL)")"
 SUPABASE_HOST="$(host_of "$(plist_value SupabaseURL)")"
 echo "버전: $(plist_value CFBundleShortVersionString) ($(plist_value CFBundleVersion))"
+echo "앱 빌드 정보: $(plist_value TaskforceReleaseChannel) / $(plist_value TaskforceSourceCommit) / $(plist_value TaskforceBuildTimeUTC) UTC"
 echo "APIBaseURL 호스트: ${API_HOST:-(비어 있음)}"
 echo "SupabaseURL 호스트: ${SUPABASE_HOST:-(비어 있음)}"
 [[ "$(plist_value CFBundleShortVersionString)" == "$VERSION" && "$(plist_value CFBundleVersion)" == "$BUILD" ]] \
   || fail "앱 Info.plist의 버전 · 빌드 번호가 요청과 다릅니다"
+[[ "$(plist_value TaskforceReleaseChannel)" == "Beta" ]] || fail "앱 Info.plist의 출시 채널이 Beta가 아닙니다"
+[[ "$(plist_value TaskforceSourceCommit)" == "$SOURCE_COMMIT" ]] || fail "앱 Info.plist의 source commit이 아카이브와 다릅니다"
+[[ "$(plist_value TaskforceBuildTimeUTC)" == "$BUILD_TIME_UTC" ]] || fail "앱 Info.plist의 UTC build time이 아카이브와 다릅니다"
 [[ "$API_HOST" == "$PROD_API_HOST" ]] || fail "APIBaseURL이 운영 주소($PROD_API_HOST)가 아닙니다"
 [[ -n "$SUPABASE_HOST" ]] || fail "SupabaseURL이 비어 있습니다 (apple/Config/Secrets.xcconfig 확인)"
 [[ -n "$(plist_value SupabaseKey)" ]] || fail "SupabaseKey가 비어 있습니다 (apple/Config/Secrets.xcconfig 확인)"

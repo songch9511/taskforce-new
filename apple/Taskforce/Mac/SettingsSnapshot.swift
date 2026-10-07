@@ -109,6 +109,7 @@ enum SettingsSnapshot {
         case .taskList: "task-list"
         case .usage: "usage"
         case .account: "account"
+        case .about: "about"
         case .connections: "connections"
         case .ai: "privacy"
         }

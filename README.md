@@ -1,91 +1,78 @@
-# Taskforce
+<p align="center">
+  <img src="apple/Taskforce/Assets.xcassets/AppIcon.appiconset/icon-mac-128.png" width="80" alt="Taskforce 앱 아이콘" />
+</p>
 
-AI 프로젝트 매니저 — 회의록·메시지·메일에서 내가 약속한 Action을 자동으로 추적하고, 맥락과 함께 "지금 할 일"을 보여줍니다.
+<h1 align="center">Taskforce</h1>
 
-사용자용 앱은 iOS · macOS 네이티브이고, 이 저장소의 Next.js는 서버 API와 내부 도구(시험대 · eval · 지표)입니다.
+<p align="center"><strong>약속한 일을 놓치지 않도록.</strong><br />AI project manager for founders.</p>
 
-- [PRD](docs/PRD.md)
-- [시스템 아키텍처](docs/ARCHITECTURE.md)
-- [플랫폼 전략: iOS · macOS](docs/PLATFORMS.md)
-- [오탐 방지와 진실 판정 기준](docs/TRUTH_RULES.md)
-- [바이브코딩 플랜](docs/VIBE_CODING_PLAN.md)
-- [피처맵: 기능 → 코드](docs/FEATURE_MAP.md)
-- [에이전트 작업 규칙](CLAUDE.md)
-- [에이전트 핸드오프: 현재 상태 · 확인된 문제 · 이어서 할 일](docs/HANDOFF.md)
+<p align="center">
+  <a href="https://www.taskforcelabs.dev">웹사이트</a> ·
+  <a href="#다운로드와-설치">다운로드 안내</a> ·
+  <a href="https://github.com/songch9511/taskforce-new/issues">피드백</a>
+</p>
 
-## 로컬 실행
+Taskforce는 회의록·메시지·메일에서 내가 맡은 일을 찾아 정리하고 관리하는 AI 프로젝트 매니저입니다. 미팅이 많은 창업자와 컨설턴트가 직접 목록을 관리하는 부담을 줄이고, 약속한 일을 맥락과 함께 확인하도록 돕습니다.
 
-필요한 것: Node.js 22 이상, [Supabase](https://supabase.com) 프로젝트 (무료 플랜으로 충분)
+**macOS 베타.** 연결 서비스는 베타 계정과 서비스별 승인 상태에 따라 달라집니다.
 
-### 1. 설치
+<p align="center">
+  <img src="docs/screenshots/mac-tasks-light.png" width="760" alt="Taskforce Mac 런처: 검색창, 확인이 필요한 항목과 진행 중인 할 일, 출처와 기한" />
+</p>
 
-```bash
-npm install
-cp .env.example .env.local
-```
+*예시 데이터로 구성한 앱 화면입니다. 실제 사용자 계정이나 업무 내용은 포함하지 않습니다.*
 
-### 2. Supabase 준비
+## 할 일과 그 이유를 함께
 
-1. Supabase에서 새 프로젝트를 만듭니다.
-2. **Project Settings → API Keys**에서 Project URL과 Publishable key를 `.env.local`에 넣습니다.
-3. 스키마를 적용합니다. 둘 중 하나를 고르세요.
-   - SQL Editor에 `supabase/migrations/`의 파일을 **이름 순서대로** 하나씩 붙여넣고 실행
-     (`20260925000000_init.sql` → `20260926000000_source_processing.sql` → `20260927000000_profiles_participants.sql` → `20260928000000_connections.sql` → …)
-   - 또는 Supabase CLI: `npx supabase link --project-ref <프로젝트 ref>` 후 `npx supabase db push`
-   - 이미 SQL Editor로 적용해 온 프로젝트는 원격에 마이그레이션 기록이 없어 `db push`가 처음 파일부터 다시 실행하려 합니다. 새 파일만 `npx supabase db query --linked -f supabase/migrations/<파일>`로 적용하세요.
-4. **Authentication → URL Configuration**
-   - Site URL: `http://localhost:3000`
-   - Redirect URLs에 `http://localhost:3000/auth/confirm` 추가 (배포 후에는 배포 주소도 추가)
+- **원문을 바로 확인합니다.** AI가 찾은 할 일에는 인용 구절과 출처가 붙어, 어디서 약속했는지 되짚을 수 있습니다.
+- **변경을 이어서 추적합니다.** 새 원문의 기한·상태 변경을 기존 할 일과 연결해 갱신하고 중복을 줄입니다.
+- **애매한 항목은 확인합니다.** 담당자나 기한이 불확실한 항목은 `Review`에서 확인하거나 제외합니다.
+- **Mac에서 빠르게 엽니다.** `⌥ Space`로 런처를 열고 검색, 상태 변경, 원문 확인을 이어갑니다. 직접 할 일을 추가할 수도 있습니다.
 
-### 3. 실행
+## 화면 둘러보기
 
-```bash
-npm run dev
-```
+### 원문과 출처
 
-http://localhost:3000 에 접속하면 로그인 화면이 나옵니다. 이메일로 받은 링크를 **같은 브라우저에서** 열면 로그인됩니다.
-Supabase 기본 메일 발송은 시간당 횟수 제한이 있으니, 베타 테스터를 받기 전에 Authentication → SMTP Settings에서 자체 SMTP를 연결하세요.
+할 일을 펼치면 약속한 문장과 출처를 함께 볼 수 있습니다.
 
-Notion 등 연동을 쓰려면 [`docs/INTEGRATIONS.md`](docs/INTEGRATIONS.md)의 "Notion 연결 만들기"를 따라 `.env.local`을 더 채웁니다.
+<img src="docs/screenshots/mac-source-light.png" width="760" alt="펼친 할 일 아래에 표시된 원문 인용과 Notion 회의록 출처" />
 
-## 명령어
+### 다크 모드
 
-| 명령어 | 설명 |
+<img src="docs/screenshots/mac-tasks-dark.png" width="760" alt="다크 모드의 Taskforce Mac 할 일 목록" />
+
+## 이렇게 사용합니다
+
+1. **로그인하고 연결하기** — 베타 앱에서 Google로 로그인한 뒤 `Settings → Connections`에서 사용할 수 있는 서비스를 연결합니다. AI 처리 동의와 접근 범위를 확인합니다.
+2. **내 할 일 확인하기** — `⌥ Space`로 런처를 엽니다. `Review`, `In Progress`, `To Do`, `Done Today`로 상태를 구분합니다.
+3. **원문 보고 정리하기** — 항목을 펼쳐 근거를 확인하고, 필요한 항목을 확정하거나 상태를 바꿉니다.
+
+사용할 수 있는 서비스는 `Settings → Connections`에서 확인할 수 있습니다. Google 로그인과 서비스 연결은 별도로 진행합니다.
+
+## 다운로드와 설치
+
+**[Mac 베타 다운로드 · 0.1.0 (25)](https://github.com/songch9511/taskforce-new/releases/download/v0.1.0-beta.25/Taskforce-0.1.0-25.dmg)**
+
+macOS 15 이상에서 사용할 수 있는 베타입니다. [릴리스 노트와 체크섬](https://github.com/songch9511/taskforce-new/releases/tag/v0.1.0-beta.25)을 확인해 주세요.
+
+| 확인할 내용 | 안내 |
 |---|---|
-| `npm run dev` | 개발 서버 |
-| `npm run lint` | ESLint |
-| `npm run typecheck` | 라우트 타입 생성 후 TypeScript 검사 |
-| `npm run test` | 단위 테스트 + DB 마이그레이션·RLS 테스트 (PGlite, 별도 DB 불필요) |
-| `npm run eval` | 골든셋 검증 (Phase 1부터 추출 품질 측정) |
-| `npm run build` | 프로덕션 빌드 |
+| 제품 소개·출시 안내 | [taskforcelabs.dev](https://www.taskforcelabs.dev) |
+| GitHub 공개 릴리스 | [Releases](https://github.com/songch9511/taskforce-new/releases) |
+| 현재 앱 대상 | macOS 15 이상 · Google 로그인 |
+| iPhone | 현재 공개 베타 배포 대상에 포함되지 않음 |
 
-## 구조
+다음 순서로 설치합니다.
 
-기능별 코드 위치 · 거쳐야 하는 정식 구현 · 테스트는 [피처맵](docs/FEATURE_MAP.md)에 있습니다.
+1. 다운로드한 `Taskforce-0.1.0-25.dmg`를 엽니다.
+2. `Taskforce.app`을 `Applications` 폴더로 옮깁니다.
+3. `Applications`에서 Taskforce를 실행하고 Google로 로그인합니다.
+4. `Settings → Connections`에서 사용할 수 있는 서비스를 연결한 뒤 `⌥ Space`로 할 일을 확인합니다.
 
-```
-src/
-  app/
-    api/v1/            앱이 부르는 서버 API (Route Handler)
-    api/connectors/    OAuth callback (앱 · 웹 공용) · 웹(lab) 연결 시작 · Slack 이벤트
-    api/cron/          동기화 · 알림 · 원문 보존기간 (vercel.json)
-    lab/ admin/        내부 도구: 시험대 · 지표 대시보드
-    login/ auth/       웹 로그인 (이메일 링크)
-  components/ui/       shadcn/ui 컴포넌트
-  lib/
-    pipeline/          추출 → 검증 → 판정 → 매칭 · 병합 → 진실 판정 (순수 함수)
-    sources/           원문 처리 (파이프라인 + DB)
-    actions/           Action 쓰기 · 지금 할 일 순서 · AI에게 넘기기
-    connectors/        연동: 연결 · 동기화 · Notion
-    ai/                LLM · Jev · 임베딩 호출 (여기서만)
-    api/               API 인증 · 계약(contract.ts) · 속도 제한
-    consent/ notify/ metrics/ apple/ supabase/ eval/
-    auth.ts            requireUser(): 화면에서 로그인 사용자 확인 (API는 api/auth.ts)
-    env.ts             환경변수 검증
-  proxy.ts             세션 갱신 + 비로그인 사용자 리다이렉트 (Next.js 16의 middleware)
-supabase/migrations/   DB 스키마 (RLS 포함)
-evals/                 골든셋 (golden/) · 물어보기 (ask/)
-tests/                 DB 마이그레이션 · RLS 테스트 (db/) · 보안 헤더
-scripts/               eval · 원문 재처리 · 심사용 계정
-apple/                 iOS · macOS 앱 (apple/README.md)
-```
+`Settings → About`에서 설치된 버전·빌드 번호, 소스 커밋, 빌드 시각을 확인하고 복사할 수 있습니다.
+
+## 개인정보와 피드백
+
+연결하는 데이터와 AI 처리 방식은 [개인정보 처리방침](https://www.taskforcelabs.dev/en/privacy), 이용 조건은 [이용약관](https://www.taskforcelabs.dev/en/terms)에서 확인할 수 있습니다.
+
+버그나 사용성 의견은 [GitHub Issues](https://github.com/songch9511/taskforce-new/issues)에 남겨 주세요. 재현 단계, macOS·앱 버전, 기대한 동작을 적어 주시면 도움이 됩니다. 스크린샷에는 개인 업무 원문, 이메일 주소, 계정 정보가 드러나지 않도록 해 주세요.

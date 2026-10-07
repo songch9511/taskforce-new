@@ -298,6 +298,8 @@ struct MacSettingsView: View {
             SectionDisplaySettingsPane()
         case .usage:
             signedInOnly { UsageCreditsPane().id(signedInUserID) }
+        case .about:
+            AboutSettingsPane()
         case .connections:
             signedInOnly { ConnectionsView().modifier(SettingsFormPage()) }
         case .ai:
@@ -327,6 +329,141 @@ struct MacSettingsView: View {
         false
         #endif
     }
+}
+
+/// Immutable metadata embedded in the app bundle. Release builds set the channel, source revision,
+/// and UTC build time in the archive command; local builds keep explicit development fallbacks.
+struct AboutBuildInfo: Equatable {
+    static let releaseChannelKey = "TaskforceReleaseChannel"
+    static let sourceCommitKey = "TaskforceSourceCommit"
+    static let buildTimeUTCKey = "TaskforceBuildTimeUTC"
+
+    let version: String
+    let build: String
+    let releaseChannel: String
+    let sourceCommit: String
+    let buildTimeUTC: String
+
+    static var current: AboutBuildInfo {
+        AboutBuildInfo(infoDictionary: Bundle.main.infoDictionary ?? [:])
+    }
+
+    init(infoDictionary: [String: Any]) {
+        version = Self.value("CFBundleShortVersionString", in: infoDictionary, fallback: "Not available")
+        build = Self.value("CFBundleVersion", in: infoDictionary, fallback: "Not available")
+        releaseChannel = Self.value(Self.releaseChannelKey, in: infoDictionary, fallback: "Development")
+        sourceCommit = Self.value(Self.sourceCommitKey, in: infoDictionary, fallback: "Not available")
+        buildTimeUTC = Self.value(Self.buildTimeUTCKey, in: infoDictionary, fallback: "Not available")
+    }
+
+    var copyText: String {
+        [
+            "Taskforce",
+            "Version: \(version)",
+            "Build: \(build)",
+            "Release channel: \(releaseChannel)",
+            "Source commit: \(sourceCommit)",
+            "Built (UTC): \(buildTimeUTC)",
+        ].joined(separator: "\n")
+    }
+
+    @MainActor
+    func copy(to pasteboard: NSPasteboard) {
+        Clipboard.copy(copyText, to: pasteboard)
+    }
+
+    private static func value(_ key: String, in dictionary: [String: Any], fallback: String) -> String {
+        guard let raw = dictionary[key] as? String else { return fallback }
+        let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty, !value.contains("$("), value != "NotAvailable" else { return fallback }
+        return value
+    }
+}
+
+/// Build details are useful in bug reports; they stay separate from account and connection settings.
+struct AboutSettingsPane: View {
+    private let buildInfo: AboutBuildInfo
+    @State private var copied = false
+
+    init(buildInfo: AboutBuildInfo = .current) {
+        self.buildInfo = buildInfo
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: TFSpace.lg) {
+                SettingsCard {
+                    HStack(spacing: TFSpace.md) {
+                        TFImage.logoMark
+                            .resizable()
+                            .scaledToFit()
+                            .frame(width: 42, height: 30)
+                            .accessibilityHidden(true)
+                        Text("Taskforce")
+                            .font(TFFont.footnoteEmphasis)
+                            .foregroundStyle(TFColor.textPrimary)
+                        Spacer(minLength: 0)
+                    }
+                    .padding(TFSpace.lg)
+                }
+
+                VStack(alignment: .leading, spacing: TFSpace.xs) {
+                    Text("Build info")
+                        .font(TFFont.footnoteEmphasis)
+                        .foregroundStyle(TFColor.textPrimary)
+                        .accessibilityAddTraits(.isHeader)
+                    SettingsCard {
+                        valueRow("Version", value: buildInfo.version)
+                        SettingsDivider()
+                        valueRow("Build", value: buildInfo.build)
+                        SettingsDivider()
+                        valueRow("Release channel", value: buildInfo.releaseChannel)
+                        SettingsDivider()
+                        valueRow("Source commit", value: buildInfo.sourceCommit, monospaced: true)
+                        SettingsDivider()
+                        valueRow("Built (UTC)", value: buildInfo.buildTimeUTC, monospaced: true)
+                        SettingsDivider()
+                        SettingsRow("Copy build info", subtitle: "Useful when reporting a bug") {
+                            QuietButton(copied ? "Copied" : "Copy") {
+                                buildInfo.copy(to: .general)
+                                copied = true
+                            }
+                        }
+                    }
+                }
+
+                HStack(spacing: TFSpace.sm) {
+                    Link("Website", destination: Self.websiteURL)
+                    Text("·").foregroundStyle(TFColor.textSecondary)
+                    Link("GitHub", destination: Self.githubURL)
+                }
+                .font(TFFont.footnote)
+                .tint(TFColor.textSecondary)
+            }
+            .frame(width: MacSettingsView.column, alignment: .leading)
+            .padding(.horizontal, MacSettingsView.columnInset)
+            .padding(.top, TFSpace.md)
+            .padding(.bottom, TFSpace.md)
+        }
+        .contentMargins(.top, 2, for: .scrollContent)
+        .contentMargins(.bottom, 12, for: .scrollContent)
+    }
+
+    private func valueRow(_ title: String, value: String, monospaced: Bool = false) -> some View {
+        SettingsRow(title) {
+            Text(value)
+                .font(monospaced ? .system(size: 11, design: .monospaced) : TFFont.footnote)
+                .foregroundStyle(TFColor.textSecondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .frame(maxWidth: 255, alignment: .trailing)
+                .textSelection(.enabled)
+                .help(value)
+        }
+    }
+
+    private static let websiteURL = URL(string: "https://www.taskforcelabs.dev")!
+    private static let githubURL = URL(string: "https://github.com/songch9511/taskforce-new")!
 }
 
 /// Local per-section maximums for the launcher. The task list remains complete by default.
