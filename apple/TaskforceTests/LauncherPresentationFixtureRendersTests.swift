@@ -102,6 +102,23 @@ struct LauncherPresentationFixtureRendersTests {
             try await render(LauncherRootView(model: model), name: "fixture-launcher-collapsed-\(appearance)", scheme: scheme, to: directory)
         }
 
+        let selectionModel = try fixtureModel()
+        let selectableItems = Array(selectionModel.items.filter { $0.group != nil && $0.action != nil }.prefix(2))
+        #expect(selectableItems.count == 2)
+        if selectableItems.count == 2 {
+            selectionModel.handleTaskClick(selectableItems[0], modifiers: [])
+            selectionModel.handleTaskClick(selectableItems[1], modifiers: [.command])
+            #expect(selectionModel.selectedActionCount == 2)
+            for (scheme, appearance) in appearances {
+                try await render(
+                    LauncherRootView(model: selectionModel),
+                    name: "fixture-launcher-multi-selected-\(appearance)",
+                    scheme: scheme,
+                    to: directory
+                )
+            }
+        }
+
         let demo = try #require(model.items.first { $0.inlineDetailActionID == SampleData.demoID })
         for (scheme, appearance) in appearances {
             try await render(
@@ -142,7 +159,7 @@ struct LauncherPresentationFixtureRendersTests {
         }
 
         let names = [
-            "fixture-launcher-collapsed", "fixture-launcher-expanded-sources", "fixture-launcher-expanded-initial",
+            "fixture-launcher-collapsed", "fixture-launcher-multi-selected", "fixture-launcher-expanded-sources", "fixture-launcher-expanded-initial",
             "fixture-settings-section-counts"
         ]
         #expect(names.allSatisfy { name in
@@ -289,6 +306,151 @@ struct LauncherPresentationFixtureRendersTests {
         #expect(filteredCharlie.contains { $0.text == "Task Charlie" })
         #expect(!filteredCharlie.contains { $0.text == targetTitle })
         #expect(!filteredCharlie.contains { $0.text == reviewTitle })
+    }
+
+    @Test func mountedModifierClicksSelectTasksWithoutOpeningDetailAndClear() async throws {
+        let model = try fixtureModel()
+        let now = try #require(model.now)
+        now.applySample(inlineFixtureResponse(), doneToday: [], evidence: [:])
+        let actionItems = model.items.filter { $0.group != nil && $0.action != nil }
+        let first = try #require(actionItems.first)
+        let second = try #require(actionItems.dropFirst().first)
+        let third = try #require(actionItems.dropFirst(2).first)
+        let firstID = try #require(first.action?.id)
+        let secondID = try #require(second.action?.id)
+        let thirdID = try #require(third.action?.id)
+        let firstTitle = try #require(first.action?.title)
+        let secondTitle = try #require(second.action?.title)
+        let thirdTitle = try #require(third.action?.title)
+        let firstIndex = try #require(model.items.firstIndex(where: { $0.id == first.id }))
+        model.select(firstIndex)
+
+        let controller = LauncherPanelController(model: model)
+        controller.show()
+        defer { controller.hide() }
+        let window = try #require(model.presentationAnchor())
+        let panelDelegate = window.delegate
+        window.delegate = nil
+        defer { window.delegate = panelDelegate }
+        await settlePanel(window)
+
+        try clickPanel(title: firstTitle, in: try capturePanel(window, name: "bulk-focus-first-before"), window: window)
+        await settlePanel(window)
+        if case .detail = model.screen {
+            #expect(model.detailTarget?.action.id == firstID)
+        } else {
+            #expect(Bool(false), "A plain click keeps its established detail-opening behavior before selection")
+        }
+
+        try clickPanel(title: secondTitle, in: try capturePanel(window, name: "bulk-command-add-before"), window: window, modifiers: .command)
+        await settlePanel(window)
+        #expect(model.isMultiSelecting)
+        #expect(model.selectedActionIDs == [firstID, secondID], "Command-click adds a task to the selection")
+        #expect(model.screen == .list, "Command-click enters selection without leaving details open")
+        let twoSelected = try capturePanel(window, name: "bulk-two-selected")
+        let contentView = try #require(window.contentView)
+        #expect(accessibilityView(label: "2 selected", in: contentView) != nil, "The mounted bulk footer exposes the selected count to VoiceOver")
+        let rowMenuLabels = nativeMenuControlViews(in: contentView).compactMap { $0.accessibilityLabel() }
+            .filter { $0.hasPrefix("Actions for ") }
+        #expect(rowMenuLabels.isEmpty, "Per-row actions stay hidden while the bulk selection is active")
+
+        try clickPanel(title: secondTitle, in: twoSelected, window: window, modifiers: .command)
+        await settlePanel(window)
+        #expect(model.selectedActionIDs == [firstID], "Command-click toggles an already selected task off")
+
+        try clickPanel(title: thirdTitle, in: try capturePanel(window, name: "bulk-shift-before"), window: window, modifiers: .shift)
+        await settlePanel(window)
+        #expect(model.selectedActionIDs == [secondID, thirdID], "Shift-click selects the visible range from the Command-click anchor")
+        #expect(model.screen == .list, "Shift-click does not open task details")
+
+        let firstAX = accessibilityView(label: firstTitle, in: contentView)
+        let secondAX = accessibilityView(label: secondTitle, in: contentView)
+        let thirdAX = accessibilityView(label: thirdTitle, in: contentView)
+        #expect(accessibilityIsSelected(firstAX) == false)
+        #expect(accessibilityIsSelected(secondAX) == true)
+        #expect(accessibilityIsSelected(thirdAX) == true)
+
+        guard let clearButton = accessibilityView(label: "Clear selection", in: contentView) as? NSAccessibilityButton else {
+            #expect(Bool(false), "The footer clear control is available to VoiceOver")
+            return
+        }
+        #expect(clearButton.accessibilityPerformPress(), "The accessible clear control can be activated")
+        await settlePanel(window)
+        #expect(model.selectedActionIDs.isEmpty)
+        #expect(!model.isMultiSelecting)
+
+        try clickPanel(title: firstTitle, in: try capturePanel(window, name: "bulk-single-click-after-clear"), window: window)
+        await settlePanel(window)
+        #expect(!model.isMultiSelecting)
+        if case .detail = model.screen {
+            #expect(model.detailTarget?.action.id == firstID, "A normal click returns to the established detail-opening behavior")
+        } else {
+            #expect(Bool(false), "A normal click opens the task detail")
+        }
+    }
+
+    @Test func commandKOpensNativeBulkMenuAndEscapeKeepsSelectionAndLauncher() async throws {
+        let model = try fixtureModel()
+        let now = try #require(model.now)
+        now.applySample(inlineFixtureResponse(), doneToday: [], evidence: [:])
+        let taskItems = model.items.filter { $0.group != nil && $0.action != nil }
+        let first = try #require(taskItems.first)
+        let second = try #require(taskItems.dropFirst().first)
+        let firstID = try #require(first.action?.id)
+        let title = try #require(first.action?.title)
+        let secondTitle = try #require(second.action?.title)
+
+        let controller = LauncherPanelController(model: model)
+        controller.show()
+        defer { controller.hide() }
+        let window = try #require(model.presentationAnchor())
+        let panelDelegate = window.delegate
+        window.delegate = nil
+        defer { window.delegate = panelDelegate }
+        await settlePanel(window)
+        try clickPanel(title: title, in: try capturePanel(window, name: "bulk-menu-focus"), window: window)
+        await settlePanel(window)
+        try clickPanel(title: secondTitle, in: try capturePanel(window, name: "bulk-menu-command-add"), window: window, modifiers: .command)
+        await settlePanel(window)
+        try clickPanel(title: secondTitle, in: try capturePanel(window, name: "bulk-menu-command-remove"), window: window, modifiers: .command)
+        await settlePanel(window)
+        #expect(model.selectedActionIDs == [firstID])
+
+        let tracker = MenuTrackingRecorder()
+        let beganObserver = NotificationCenter.default.addObserver(
+            forName: NSMenu.didBeginTrackingNotification, object: nil, queue: nil
+        ) { notification in
+            if let menu = notification.object as? NSMenu { tracker.recordMenuItems(menu) }
+            tracker.recordBegin()
+            MainActor.assumeIsolated {
+                guard let escape = NSEvent.keyEvent(
+                    with: .keyDown, location: .zero, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                    windowNumber: 0, context: nil, characters: "\u{1B}",
+                    charactersIgnoringModifiers: "\u{1B}", isARepeat: false, keyCode: UInt16(kVK_Escape)
+                ) else { return }
+                NSApp.postEvent(escape, atStart: false)
+            }
+        }
+        let endedObserver = NotificationCenter.default.addObserver(
+            forName: NSMenu.didEndTrackingNotification, object: nil, queue: nil
+        ) { _ in tracker.recordEnd() }
+        defer {
+            NotificationCenter.default.removeObserver(beganObserver)
+            NotificationCenter.default.removeObserver(endedObserver)
+        }
+
+        try pressKey(kVK_ANSI_K, characters: "k", modifiers: .command, model: model, window: window)
+        await settlePanel(window)
+
+        #expect(tracker.didBegin, "Command-K presents the native bulk menu: \(tracker.trace)")
+        #expect(tracker.didEnd, "Escape dismisses the native menu: \(tracker.trace)")
+        let expectedMenuItems = model.bulkActionEntries.enumerated().flatMap { index, entry in
+            (entry == .remove && index > 0 ? ["<separator>"] : []) + [model.bulkActionTitle(entry)]
+        }
+        #expect(tracker.trackedMenuItems == expectedMenuItems)
+        #expect(model.selectedActionIDs == [firstID], "Escape leaves the selection intact")
+        #expect(model.screen == .list, "Escape closes only the menu")
+        #expect(controller.isVisible, "Escape from the native menu leaves the launcher visible")
     }
 
     @Test func mountedLongListLowerRowExpansionAndEvidenceStayResponsive() async throws {
@@ -828,17 +990,19 @@ struct LauncherPresentationFixtureRendersTests {
         }
     }
 
-    private func clickPanel(title: String, in texts: [RenderedText], window: NSWindow) throws {
+    private func clickPanel(
+        title: String, in texts: [RenderedText], window: NSWindow, modifiers: NSEvent.ModifierFlags = []
+    ) throws {
         let matches = texts.filter { $0.text == title && $0.bounds.midX < 0.5 }
         guard let frame = matches.max(by: { $0.bounds.midY < $1.bounds.midY })?.bounds else {
             throw FixtureRenderError.missingRenderedText(title)
         }
         let point = NSPoint(x: frame.midX * LauncherPanelController.size.width, y: frame.midY * LauncherPanelController.size.height)
         guard let down = NSEvent.mouseEvent(
-            with: .leftMouseDown, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+            with: .leftMouseDown, location: point, modifierFlags: modifiers, timestamp: ProcessInfo.processInfo.systemUptime,
             windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1
         ), let up = NSEvent.mouseEvent(
-            with: .leftMouseUp, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+            with: .leftMouseUp, location: point, modifierFlags: modifiers, timestamp: ProcessInfo.processInfo.systemUptime,
             windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1
         ) else { throw FixtureRenderError.missingRenderedText(title) }
         // Queue mouse-up before dispatching mouse-down so AppKit's native tracking loop stays bounded.
@@ -877,10 +1041,10 @@ struct LauncherPresentationFixtureRendersTests {
     }
 
     private func pressKey(
-        _ keyCode: Int, characters: String, model: LauncherModel, window: NSWindow
+        _ keyCode: Int, characters: String, modifiers: NSEvent.ModifierFlags = [], model: LauncherModel, window: NSWindow
     ) throws {
         guard let event = NSEvent.keyEvent(
-            with: .keyDown, location: .zero, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+            with: .keyDown, location: .zero, modifierFlags: modifiers, timestamp: ProcessInfo.processInfo.systemUptime,
             windowNumber: window.windowNumber, context: nil, characters: characters,
             charactersIgnoringModifiers: characters, isARepeat: false, keyCode: UInt16(keyCode)
         ) else { throw FixtureRenderError.missingRenderedText("key \(keyCode)") }
@@ -897,6 +1061,39 @@ struct LauncherPresentationFixtureRendersTests {
         let isMenuControl = view is NSPopUpButton || typeName.contains("PopupButton") || role.contains("AXMenuButton") || role.contains("AXPopUpButton")
         let descendants = view.subviews.flatMap(nativeMenuControlViews)
         return isMenuControl ? [view] + descendants : descendants
+    }
+
+    private func accessibilityView(label: String, in element: AnyObject) -> AnyObject? {
+        let elementLabel: String?
+        let children: [AnyObject]
+        if let view = element as? NSView {
+            elementLabel = view.accessibilityLabel()
+            children = view.accessibilityChildren() as? [AnyObject] ?? []
+        } else if let accessibilityElement = element as? NSAccessibilityElement {
+            elementLabel = accessibilityElement.accessibilityLabel()
+            children = accessibilityElement.accessibilityChildren() as? [AnyObject] ?? []
+        } else {
+            return nil
+        }
+
+        if elementLabel == label || elementLabel?.hasPrefix("\(label),") == true { return element }
+        for child in children {
+            if let match = accessibilityView(label: label, in: child) { return match }
+        }
+        return nil
+    }
+
+    private func accessibilityView(label: String, in view: NSView) -> AnyObject? {
+        if let match = accessibilityView(label: label, in: view as AnyObject) { return match }
+        for child in view.subviews {
+            if let match = accessibilityView(label: label, in: child) { return match }
+        }
+        return nil
+    }
+
+    private func accessibilityIsSelected(_ element: AnyObject?) -> Bool? {
+        if let view = element as? NSView { return view.isAccessibilitySelected() }
+        return (element as? NSAccessibilityElement)?.isAccessibilitySelected()
     }
 
     private func hitTestView(at point: NSPoint, in view: NSView) -> NSView? {

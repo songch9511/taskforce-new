@@ -11,6 +11,18 @@ import TaskforceKit
 @MainActor
 @Observable
 final class NowStore {
+    enum BulkMutationOutcome: Equatable, Sendable {
+        case success
+        case failure(String)
+        case stale
+        case cancelled
+    }
+
+    struct BulkWrite {
+        let undo: TaskUndo
+        let task: Task<BulkMutationOutcome, Never>
+    }
+
     private(set) var response: NowResponse?
     /// 오늘 끝낸 할 일 (Supabase 직접 읽기, 최근 것이 위)
     private(set) var doneToday: [ActionSummary] = []
@@ -271,6 +283,19 @@ final class NowStore {
         return write(id, TaskChange(found.action, to: state, at: Date())) { try await $0.setProgress(id, state: state) }
     }
 
+    /// Start a guarded, optimistic state write for a bulk operation with a per-action result.
+    func moveForBulk(_ id: UUID, expectedGroup: TaskGroup, to state: WorkState) -> BulkWrite? {
+        guard !busy.contains(id), writes[id] == nil,
+              let found = sections.find(id), found.group == expectedGroup,
+              let current = WorkState(found.group), current != state
+        else { return nil }
+        stateBeforeDone[id] = state == .done ? current : nil
+        let task = writeResult(id, TaskChange(found.action, to: state, at: Date()), reportsMessage: false) {
+            try await $0.setProgress(id, state: state)
+        }
+        return BulkWrite(undo: TaskUndo(found.action, was: current, change: .moved), task: task)
+    }
+
     /// 지금 상태 (Review · 목록에 없음은 nil)
     func state(of id: UUID) -> WorkState? {
         sections.find(id).flatMap { WorkState($0.group) }
@@ -297,6 +322,29 @@ final class NowStore {
         return (TaskUndo(found.action, was: state, change: .deleted), task)
     }
 
+    /// Start a guarded, optimistic deletion for a bulk operation with a per-action result.
+    func deleteForBulk(_ id: UUID, expectedGroup: TaskGroup) -> BulkWrite? {
+        guard !busy.contains(id), writes[id] == nil, expectedGroup.isDeletable,
+              let found = sections.find(id), found.group == expectedGroup,
+              let state = WorkState(found.group)
+        else { return nil }
+        let task = writeResult(id, .deleting(found.action, at: Date()), reportsMessage: false) {
+            try await $0.deleteAction(id: id)
+        }
+        return BulkWrite(undo: TaskUndo(found.action, was: state, change: .deleted), task: task)
+    }
+
+    /// Restore one deleted row as part of a typed bulk undo, without routing its error through the shared message.
+    func restoreForBulk(_ undo: TaskUndo) -> Task<BulkMutationOutcome, Never>? {
+        let id = undo.action.id
+        guard undo.change == .deleted, !busy.contains(id), writes[id] == nil,
+              sections.find(id) == nil
+        else { return nil }
+        return writeResult(id, undo.restoring(at: Date()), reportsMessage: false) {
+            try await $0.editAction(id: id, undo.restoreEdit)
+        }
+    }
+
     /// 삭제 되돌리기 (`PATCH /actions/:id` status): 지우기 전 구역으로 곧바로 되살린다 (`TaskUndo.restoreEdit`)
     @discardableResult
     func restore(_ undo: TaskUndo) -> Task<Void, Never> {
@@ -308,35 +356,48 @@ final class NowStore {
     private func write(
         _ id: UUID, _ change: TaskChange, _ call: @escaping @Sendable (APIClient) async throws -> ActionSummary
     ) -> Task<Void, Never> {
+        let task = writeResult(id, change, reportsMessage: true, call)
+        return Task { _ = await task.value }
+    }
+
+    private func writeResult(
+        _ id: UUID, _ change: TaskChange, reportsMessage: Bool,
+        _ call: @escaping @Sendable (APIClient) async throws -> ActionSummary
+    ) -> Task<BulkMutationOutcome, Never> {
         changeCount += 1
         let token = changeCount
         pending[id] = Pending(change: change, token: token)
         #if DEBUG
         if sampleMode {
             commitSample()
-            return Task {}
+            return Task { .success }
         }
         #endif
         let previous = writes[id]?.task
         let api = services.api
         let generation = generation
-        let task = Task {
+        let task = Task { @MainActor [weak self] () -> BulkMutationOutcome in
+            guard let self else { return .cancelled }
             await previous?.value
             // 로그아웃 · 계정 전환 뒤에는 전 계정의 남은 쓰기를 보내지 않고, 끝난 쓰기의 결과도 알리지 않는다
-            guard generation == self.generation else { return }
+            guard generation == self.generation else { return .cancelled }
+            var outcome: BulkMutationOutcome = .success
             do {
                 _ = try await call(api)
                 // 이제부터 시작하는 불러오기가 반영되면 지운다
-                if pending[id]?.token == token { pending[id]?.settledBy = loadSequence + 1 }
+                if self.pending[id]?.token == token { self.pending[id]?.settledBy = self.loadSequence + 1 }
             } catch {
-                if pending[id]?.token == token { pending[id] = nil }
-                if generation == self.generation { message = error.userMessage }
+                if self.pending[id]?.token == token { self.pending[id] = nil }
+                if reportsMessage, generation == self.generation { self.message = error.userMessage }
+                outcome = .failure(error.userMessage)
             }
-            guard generation == self.generation else { return }
-            if writes[id]?.token == token { writes[id] = nil }
-            await load()
+            guard generation == self.generation else { return .cancelled }
+            if self.writes[id]?.token == token { self.writes[id] = nil }
+            await self.load()
+            guard generation == self.generation else { return .cancelled }
+            return outcome
         }
-        writes[id] = (token, task)
+        writes[id] = (token, Task { _ = await task.value })
         return task
     }
 
@@ -344,6 +405,16 @@ final class NowStore {
     func confirm(_ id: UUID) async { await act(id) { try await $0.confirmAction(id: id) } }
     /// 확인 요청 Dismiss = 삭제 (서버가 취소로 둔다)
     func dismiss(_ id: UUID) async { await act(id) { try await $0.deleteAction(id: id) } }
+
+    func confirmForBulk(_ id: UUID, expectedGroup: TaskGroup) async -> BulkMutationOutcome {
+        guard expectedGroup == .review, sections.find(id)?.group == expectedGroup else { return .stale }
+        return await actForBulk(id) { try await $0.confirmAction(id: id) }
+    }
+
+    func dismissForBulk(_ id: UUID, expectedGroup: TaskGroup) async -> BulkMutationOutcome {
+        guard expectedGroup == .review, sections.find(id)?.group == expectedGroup else { return .stale }
+        return await actForBulk(id) { try await $0.deleteAction(id: id) }
+    }
 
     func setDue(_ id: UUID, _ due: LocalDate?) async {
         await act(id) { try await $0.editAction(id: id, ActionEdit(due: due.map(ActionEdit.DueChange.set) ?? .clear)) }
@@ -447,5 +518,22 @@ final class NowStore {
         }
         guard generation == self.generation else { return }
         await load()
+    }
+
+    private func actForBulk(_ id: UUID, _ call: (APIClient) async throws -> ActionSummary) async -> BulkMutationOutcome {
+        guard !busy.contains(id), writes[id] == nil else { return .failure("This task is already being updated.") }
+        busy.insert(id)
+        let generation = generation
+        defer { if generation == self.generation { busy.remove(id) } }
+        var outcome: BulkMutationOutcome = .success
+        do {
+            _ = try await call(services.api)
+        } catch {
+            outcome = .failure(error.userMessage)
+        }
+        guard generation == self.generation else { return .cancelled }
+        await load()
+        guard generation == self.generation else { return .cancelled }
+        return outcome
     }
 }

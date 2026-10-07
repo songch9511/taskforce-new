@@ -87,7 +87,7 @@ struct LauncherListPane: View {
                             }
                             ForEach(Array(section.items.enumerated()), id: \.element.id) { itemIndex, item in
                                 let index = offsets[sectionIndex] + itemIndex
-                                itemRow(item, selected: index == model.selection, at: index)
+                                itemRow(item, selected: isSelected(item, at: index), at: index)
                                     .padding(.horizontal, TFSpace.xs)
                             }
                         }
@@ -200,19 +200,21 @@ struct LauncherListPane: View {
 
     /// Action rows open their right-side detail; tapping the same row closes it.
     private func tap(_ item: LauncherItem, at index: Int) {
+        guard !model.bulkBusy else { return }
+
+        if item.group != nil, item.action != nil {
+            let previousSelection = model.selection
+            pointerSelection = index
+            defer { if model.selection == previousSelection { pointerSelection = nil } }
+            model.handleTaskClick(item, modifiers: NSApp.currentEvent?.modifierFlags ?? [])
+            return
+        }
+
+        if model.isMultiSelecting { model.clearMultiSelection() }
         let previousSelection = model.selection
         pointerSelection = index
         defer { if model.selection == previousSelection { pointerSelection = nil } }
         switch item {
-        case .review, .task, .done:
-            let targetID = item.action?.id
-            if case .detail = model.screen, model.detailTarget?.action.id == targetID {
-                model.closeDetailPane()
-                return
-            }
-            if case .detail = model.screen { model.closeDetailPane() }
-            else if model.screen != .list { model.back() }
-            model.openDetail(for: item)
         case .saved(let row):
             if model.screen != .list { model.back() }
             model.select(index)
@@ -224,6 +226,13 @@ struct LauncherListPane: View {
             model.select(index)
             model.run(item)
         }
+    }
+
+    private func isSelected(_ item: LauncherItem, at index: Int) -> Bool {
+        guard model.isMultiSelecting, item.group != nil, let actionID = item.action?.id else {
+            return index == model.selection
+        }
+        return model.isActionSelected(actionID)
     }
 
     @ViewBuilder
@@ -260,11 +269,13 @@ struct LauncherListPane: View {
                 }
                 .buttonStyle(.plain)
                 .help(Text(fullTitle(for: item)))
-                .accessibilityHint(isLiveExpanded(item) ? "Hide details" : "Show details")
-                rowActionsMenu(item)
-                    .frame(width: showsActions ? 32 : 0, height: 28, alignment: .trailing)
-                    .opacity(showsActions ? 1 : 0)
-                    .allowsHitTesting(showsActions)
+                .accessibilityHint(taskRowHint(item, selected: selected))
+                if !model.isMultiSelecting && !model.bulkBusy {
+                    rowActionsMenu(item)
+                        .frame(width: showsActions ? 32 : 0, height: 28, alignment: .trailing)
+                        .opacity(showsActions ? 1 : 0)
+                        .allowsHitTesting(showsActions)
+                }
             }
             .contentShape(Rectangle())
             .onHover { isHovering in
@@ -297,8 +308,16 @@ struct LauncherListPane: View {
     }
 
     private func isRowActionVisible(_ item: LauncherItem) -> Bool {
+        guard !model.isMultiSelecting, !model.bulkBusy else { return false }
         guard let actionID = item.action?.id else { return false }
         return hoveredActionID == actionID || menuTrackingActionID == actionID
+    }
+
+    private func taskRowHint(_ item: LauncherItem, selected: Bool) -> String {
+        if model.isMultiSelecting {
+            return selected ? "Selected for bulk actions" : "Not selected for bulk actions"
+        }
+        return isLiveExpanded(item) ? "Hide details" : "Show details"
     }
 
     private func isSavedExpanded(_ item: LauncherItem) -> Bool {
@@ -361,12 +380,14 @@ struct LauncherListPane: View {
             }
             if entry == .delete {
                 Button(role: .destructive) {
+                    guard !model.bulkBusy, !model.isMultiSelecting else { return }
                     model.performRowMenuAction(entry, actionID: target.action.id, group: target.group, accountID: accountID)
                 } label: {
                     Label(entry.title, systemImage: entry.symbolName ?? "trash")
                 }
             } else {
                 Button {
+                    guard !model.bulkBusy, !model.isMultiSelecting else { return }
                     model.performRowMenuAction(entry, actionID: target.action.id, group: target.group, accountID: accountID)
                 } label: {
                     if case .state(let state) = entry, state == WorkState(target.group) {

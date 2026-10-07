@@ -268,7 +268,7 @@ struct LauncherShellModelTests {
         model.syncSeen()
         #expect(await harness.router.seenIDs().isEmpty)
 
-        model.move(1)
+        #expect(model.handleKey(.key(kVK_DownArrow)))
         model.syncSeen()
         await harness.waitUntil { await harness.router.seenIDs() == [t1] }
         #expect(!model.showsDot(t1))
@@ -815,6 +815,381 @@ struct LauncherShellModelTests {
         #expect(clipboard.string(forType: .string) == "keep after sign out")
     }
 
+    @Test func failedBulkUndoDoesNotOfferForwardRetryAgain() async throws {
+        let harness = try await ShellHarness.make(now: ShellNow.body(toDo: ["A", "B"]))
+        await harness.router.reflectSuccessfulDeletesInNow()
+        let model = harness.model
+        let a = try #require(model.items.first { $0.action?.title == "A" })
+        let b = try #require(model.items.first { $0.action?.title == "B" })
+        let aID = try #require(a.action?.id)
+        let bID = try #require(b.action?.id)
+        await harness.router.failDeleteAction(bID)
+
+        model.handleTaskClick(b, modifiers: [.command])
+        #expect(model.selectedActionIDs == [aID, bID])
+        model.performBulkAction(.remove)
+        await harness.waitUntil {
+            !model.bulkBusy && model.bulkUndoCount == 1 && model.bulkStatus?.contains("retry is available") == true
+        }
+        #expect(await harness.router.deleteIDs() == [aID, bID])
+        #expect(model.canRetryBulkAction)
+        #expect(model.canUndo)
+
+        await harness.router.failPatchAction(aID)
+        model.undo()
+        await harness.waitUntil {
+            !model.bulkBusy && model.bulkStatus?.hasPrefix("Restored 0 of 1") == true
+        }
+        #expect(await harness.router.patchIDs() == [aID])
+        #expect(!model.canRetryBulkAction)
+
+        model.retryBulkAction()
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(await harness.router.deleteIDs() == [aID, bID])
+        #expect(model.bulkStatus == "Restored 0 of 1 tasks.")
+    }
+
+    @Test func commandClickSeedsFocusedTaskAndPlainClickReturnsToDetail() async throws {
+        let harness = try await ShellHarness.make(now: ShellNow.body(toDo: ["A", "B", "C"]))
+        let model = harness.model
+        let focused = try #require(model.selectedItem)
+        let focusedID = try #require(focused.action?.id)
+        let second = try #require(model.items.first { $0.action?.title == "B" })
+        let secondID = try #require(second.action?.id)
+
+        model.handleTaskClick(second, modifiers: [.command])
+
+        #expect(model.selectedActionIDs == [focusedID, secondID])
+        #expect(model.anchorID == secondID)
+        #expect(model.screen == .list)
+        #expect(model.selectedItem?.action?.id == secondID)
+
+        model.handleTaskClick(second, modifiers: [.command])
+        #expect(model.selectedActionIDs == [focusedID])
+        #expect(model.isMultiSelecting)
+
+        model.handleTaskClick(second, modifiers: [])
+        #expect(!model.isMultiSelecting)
+        #expect(model.selectedActionIDs.isEmpty)
+        #expect(model.screen.isDetail)
+        #expect(model.detailTarget?.action.id == secondID)
+    }
+
+    @Test func shiftClickSelectsVisibleTaskRangeAcrossShowMoreRow() async throws {
+        let harness = try await ShellHarness.make(
+            now: ShellNow.body(reviews: (1...6).map { "R\($0)" }, toDo: ["T1"]),
+            displayPreferences: SectionDisplayPreferences(review: .five)
+        )
+        let model = harness.model
+        let firstID = try #require(model.items.first { $0.action?.title == "R1" }?.action?.id)
+        let last = try #require(model.items.first { $0.action?.title == "T1" })
+        #expect(model.items.contains { if case .showMore(.review, 1) = $0 { true } else { false } })
+
+        model.handleTaskClick(last, modifiers: [.shift])
+
+        let expected = Set((1...5).compactMap { n in model.items.first { $0.action?.title == "R\(n)" }?.action?.id }
+            + [try #require(last.action?.id)])
+        #expect(model.isMultiSelecting)
+        #expect(model.anchorID == firstID)
+        #expect(model.selectedActionIDs == expected)
+        #expect(model.selectedActionCount == 6)
+        #expect(model.screen == .list)
+    }
+
+    @Test func shiftKeyboardRangeRespectsNotesFocusAndEscClearsBeforeClose() async throws {
+        let harness = try await ShellHarness.make(now: ShellNow.body(reviews: ["R1"], toDo: ["T1", "T2"]))
+        let model = harness.model
+        var closeCount = 0
+        model.close = { closeCount += 1 }
+        let anchor = try #require(model.selectedItem?.action?.id)
+        let next = try #require(model.items.first { $0.action?.title == "T1" }?.action?.id)
+
+        #expect(model.handleKey(.key(kVK_DownArrow, shift: true)))
+        #expect(model.selectedActionIDs == [anchor, next])
+        #expect(model.anchorID == anchor)
+        model.move(1)
+        #expect(model.selectedActionIDs == [anchor, next])
+
+        model.setNotesEditorFocused(true)
+        #expect(!model.handleKey(.key(kVK_UpArrow, shift: true)))
+        #expect(model.selectedActionIDs == [anchor, next])
+        model.setNotesEditorFocused(false)
+
+        #expect(model.handleKey(.key(kVK_Escape)))
+        #expect(!model.isMultiSelecting)
+        #expect(model.selectedActionIDs.isEmpty)
+        #expect(closeCount == 0)
+        #expect(model.handleKey(.key(kVK_Escape)))
+        #expect(closeCount == 1)
+    }
+
+    @Test func searchAndScopeClearSelectionWhileRefreshKeepsOnlyVisibleIDs() async throws {
+        let harness = try await ShellHarness.make(now: ShellNow.body(reviews: ["R1"], toDo: ["A", "B"]))
+        let model = harness.model
+        let b = try #require(model.items.first { $0.action?.title == "B" })
+        let aID = try #require(model.items.first { $0.action?.title == "A" }?.action?.id)
+        let bID = try #require(b.action?.id)
+        model.select(try #require(model.items.firstIndex { $0.action?.id == aID }))
+        model.handleTaskClick(b, modifiers: [.command])
+        #expect(model.selectedActionIDs == [aID, bID])
+
+        model.text = "A"
+        #expect(!model.isMultiSelecting)
+        #expect(model.selectedActionIDs.isEmpty)
+        model.text = ""
+        let currentA = try #require(model.items.first { $0.action?.title == "A" })
+        let currentB = try #require(model.items.first { $0.action?.title == "B" })
+        model.select(try #require(model.items.firstIndex(of: currentA)))
+        model.handleTaskClick(currentB, modifiers: [.command])
+        model.chooseScope(.toDo)
+        #expect(!model.isMultiSelecting)
+        #expect(model.selectedActionIDs.isEmpty)
+
+        model.chooseScope(.allTasks)
+        let allTasksA = try #require(model.items.first { $0.action?.title == "A" })
+        let allTasksB = try #require(model.items.first { $0.action?.title == "B" })
+        model.select(try #require(model.items.firstIndex { $0.id == allTasksA.id }))
+        model.handleTaskClick(allTasksB, modifiers: [.command])
+        #expect(model.selectedActionIDs == [aID, bID])
+
+        await harness.router.setNow(ShellNow.body(reviews: ["R1"], toDo: ["A"]))
+        try await #require(model.now).load()
+        #expect(model.selectedActionIDs == [aID])
+        #expect(model.isMultiSelecting)
+    }
+
+    @Test func reviewBulkConfirmAndDismissUseTheirOwnRequests() async throws {
+        let harness = try await ShellHarness.make(now: ShellNow.body(reviews: ["R1", "R2"]))
+        await harness.router.reflectSuccessfulDeletesInNow()
+        let model = harness.model
+        let ids = model.items.compactMap(\.action?.id)
+        #expect(ids.count == 2)
+        let second = try #require(model.items.first { $0.action?.title == "R2" })
+        model.handleTaskClick(second, modifiers: [.shift])
+        #expect(model.bulkActionEntries == [.confirm, .remove])
+
+        model.performBulkAction(.confirm)
+        await harness.waitUntil { !model.bulkBusy && model.bulkStatus == "Confirmed 2 review requests." }
+        #expect(await harness.router.confirmIDs() == ids)
+        #expect(model.bulkUndoCount == 0)
+
+        let first = try #require(model.items.first { $0.action?.title == "R1" })
+        model.select(try #require(model.items.firstIndex(of: first)))
+        model.handleTaskClick(try #require(model.items.first { $0.action?.title == "R2" }), modifiers: [.shift])
+        model.performBulkAction(.remove)
+        await harness.waitUntil { !model.bulkBusy && model.bulkStatus == "Dismissed 2 review requests." }
+        #expect(await harness.router.deleteIDs() == ids)
+        #expect(model.bulkUndoCount == 0)
+    }
+
+    @Test func mixedRemoveDismissesReviewAndDeletesOnlyNormalTaskForUndo() async throws {
+        let harness = try await ShellHarness.make(now: ShellNow.body(reviews: ["R1"], toDo: ["T1"]))
+        await harness.router.reflectSuccessfulDeletesInNow()
+        let model = harness.model
+        let reviewID = try #require(model.items.first { $0.action?.title == "R1" }?.action?.id)
+        let taskID = try #require(model.items.first { $0.action?.title == "T1" }?.action?.id)
+        model.handleTaskClick(try #require(model.items.first { $0.action?.title == "T1" }), modifiers: [.shift])
+        #expect(model.selectedActionIDs == [reviewID, taskID])
+        #expect(model.bulkActionEntries == [.remove])
+        #expect(model.bulkActionTitle(.remove) == "Remove 2 selected tasks")
+
+        model.performBulkAction(.remove)
+        await harness.waitUntil { !model.bulkBusy && model.bulkUndoCount == 1 }
+
+        #expect(await harness.router.confirmRequests() == 0)
+        #expect(await harness.router.deleteIDs() == [reviewID, taskID])
+        #expect(model.bulkStatus?.contains("Deleted 1 tasks and dismissed 1 review requests.") == true)
+        #expect(model.bulkStatus?.contains("Undo restores 1 deleted task only") == true)
+        #expect(model.bulkUndoCount == 1)
+    }
+
+    @Test func mixedNormalMoveSkipsAlreadyInDestinationWithoutRequest() async throws {
+        let harness = try await ShellHarness.make(now: ShellNow.body(toDo: ["T1"], inProgress: ["P1"]))
+        let model = harness.model
+        let progressID = try #require(model.items.first { $0.action?.title == "P1" }?.action?.id)
+        let todoID = try #require(model.items.first { $0.action?.title == "T1" }?.action?.id)
+        model.handleTaskClick(try #require(model.items.first { $0.action?.title == "T1" }), modifiers: [.shift])
+        #expect(model.selectedActionIDs == [progressID, todoID])
+
+        model.performBulkAction(.state(.inProgress))
+        await harness.waitUntil {
+            !model.bulkBusy && model.bulkStatus?.contains("1 already in that status") == true
+        }
+
+        #expect(await harness.router.progressRequests() == 1)
+        #expect(model.bulkStatus?.contains("Moved 1 tasks to In Progress") == true)
+        #expect(model.bulkUndoCount == 1)
+    }
+
+    @Test func retryRunsOnlyFailedTargetsAndKeepsItsSuccessUndo() async throws {
+        let harness = try await ShellHarness.make(now: ShellNow.body(toDo: ["A", "B"]))
+        await harness.router.reflectSuccessfulDeletesInNow()
+        let model = harness.model
+        let aID = try #require(model.items.first { $0.action?.title == "A" }?.action?.id)
+        let b = try #require(model.items.first { $0.action?.title == "B" })
+        let bID = try #require(b.action?.id)
+        await harness.router.failNextDeleteAction(bID)
+        model.handleTaskClick(b, modifiers: [.command])
+        model.performBulkAction(.remove)
+
+        await harness.waitUntil {
+            !model.bulkBusy && model.canRetryBulkAction && model.bulkUndoCount == 1
+        }
+        #expect(await harness.router.deleteIDs() == [aID, bID])
+        #expect(model.selectedActionIDs == [bID])
+
+        model.retryBulkAction()
+        await harness.waitUntil { !model.bulkBusy && !model.canRetryBulkAction && model.bulkUndoCount == 1 }
+        #expect(await harness.router.deleteIDs() == [aID, bID, bID])
+        #expect(model.selectedActionIDs.isEmpty)
+
+        model.undo()
+        await harness.waitUntil {
+            let patchIDs = await harness.router.patchIDs()
+            return !model.bulkBusy && patchIDs == [bID]
+        }
+        #expect(await harness.router.deleteIDs() == [aID, bID, bID])
+        #expect(await harness.router.patchIDs() == [bID])
+    }
+
+    @Test func staleReviewMenuAndRetryCannotDeleteAfterGroupChanges() async throws {
+        let harness = try await ShellHarness.make(now: ShellNow.body(reviews: ["R1", "R2"]))
+        await harness.router.reflectSuccessfulDeletesInNow()
+        let model = harness.model
+        let r1 = try #require(model.items.first { $0.action?.title == "R1" }?.action?.id)
+        let r2 = try #require(model.items.first { $0.action?.title == "R2" })
+        model.handleTaskClick(r2, modifiers: [.command])
+        #expect(model.selectedActionIDs == [r1, try #require(r2.action?.id)])
+        model.handleTaskClick(r2, modifiers: [.command])
+        #expect(model.selectedActionIDs == [r1])
+        let menuIDs = model.selectedActionIDs
+        let menuGroups: [UUID: TaskGroup] = [r1: .review]
+        let menuSelectionGeneration = model.bulkSelectionGeneration
+        let menuSessionGeneration = model.bulkSessionGeneration
+
+        model.handleTaskClick(r2, modifiers: [.command])
+        model.handleTaskClick(r2, modifiers: [.command])
+        #expect(model.selectedActionIDs == menuIDs)
+        model.performBulkAction(
+            .remove, expectedIDs: menuIDs, accountID: harness.firstAccount,
+            expectedSessionGeneration: menuSessionGeneration,
+            expectedSelectionGeneration: menuSelectionGeneration, expectedGroups: menuGroups
+        )
+        #expect(await harness.router.deleteIDs().isEmpty)
+        let currentMenuSelectionGeneration = model.bulkSelectionGeneration
+        await harness.router.failDeleteAction(r1)
+
+        model.performBulkAction(
+            .remove, expectedIDs: menuIDs, accountID: harness.firstAccount,
+            expectedSessionGeneration: menuSessionGeneration,
+            expectedSelectionGeneration: currentMenuSelectionGeneration, expectedGroups: menuGroups
+        )
+        await harness.waitUntil { !model.bulkBusy && model.canRetryBulkAction }
+        #expect(await harness.router.deleteIDs() == [r1])
+
+        await harness.router.setNow(ShellNow.body(reviews: ["R2"], toDo: ["R1"]))
+        try await #require(model.now).load()
+        #expect(model.now?.sections.find(r1)?.group == .toDo)
+        let freshMenuGeneration = model.bulkSelectionGeneration
+        model.performBulkAction(
+            .remove, expectedIDs: menuIDs, accountID: harness.firstAccount,
+            expectedSessionGeneration: menuSessionGeneration,
+            expectedSelectionGeneration: freshMenuGeneration, expectedGroups: menuGroups
+        )
+        #expect(await harness.router.deleteIDs() == [r1])
+
+        model.retryBulkAction()
+        #expect(!model.canRetryBulkAction)
+        #expect(model.bulkStatus == "Some tasks changed. Select them again and choose a fresh action.")
+        #expect(await harness.router.deleteIDs() == [r1])
+    }
+
+    @Test func heldBatchIgnoresDuplicateDispatchAndFinishesAfterSearchAndHide() async throws {
+        let harness = try await ShellHarness.make(now: ShellNow.body(toDo: ["A", "B"]))
+        await harness.router.reflectSuccessfulDeletesInNow()
+        let model = harness.model
+        let aID = try #require(model.items.first { $0.action?.title == "A" }?.action?.id)
+        let b = try #require(model.items.first { $0.action?.title == "B" })
+        let bID = try #require(b.action?.id)
+        model.handleTaskClick(b, modifiers: [.command])
+        await harness.router.holdNextDelete()
+
+        model.performBulkAction(.remove)
+        await harness.waitUntil { await harness.router.pendingDeleteCount() == 1 }
+        model.performBulkAction(.remove)
+        #expect(await harness.router.deleteIDs() == [aID])
+
+        model.text = "A"
+        model.didHide()
+        await harness.router.releaseHeldDeletes()
+        await harness.waitUntil { !model.bulkBusy }
+
+        #expect(model.bulkStatus == "Deleted 2 tasks. Undo 2 tasks.")
+        #expect(model.bulkUndoCount == 2)
+        #expect(await harness.router.deleteIDs() == [aID, bID])
+        #expect(model.selectedActionIDs.isEmpty)
+        #expect(!model.isMultiSelecting)
+    }
+
+    @Test func accountReturnDoesNotResumeAnOlderInFlightBatch() async throws {
+        let harness = try await ShellHarness.make(now: ShellNow.body(toDo: ["A", "B"]))
+        let model = harness.model
+        let aID = try #require(model.items.first { $0.action?.title == "A" }?.action?.id)
+        let b = try #require(model.items.first { $0.action?.title == "B" })
+        model.handleTaskClick(b, modifiers: [.command])
+        await harness.router.holdNextDelete()
+        model.performBulkAction(.remove)
+        await harness.waitUntil { await harness.router.pendingDeleteCount() == 1 }
+        let startingGeneration = model.bulkSessionGeneration
+
+        harness.session.apply(event: .signedIn, session: shellSession(userID: UUID()))
+        model.sessionChanged()
+        harness.session.apply(event: .signedIn, session: shellSession(userID: harness.firstAccount))
+        model.sessionChanged()
+        #expect(model.bulkSessionGeneration == startingGeneration + 2)
+        #expect(!model.bulkBusy)
+        #expect(model.bulkStatus == nil)
+        #expect(model.selectedActionIDs.isEmpty)
+
+        await harness.router.releaseHeldDeletes()
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(await harness.router.deleteIDs() == [aID])
+        #expect(model.bulkStatus == nil)
+        #expect(model.bulkFailureMessage == nil)
+    }
+
+    @Test func undoCannotStartAnotherWriteWhileBulkActionIsInFlight() async throws {
+        let harness = try await ShellHarness.make(now: ShellNow.body(toDo: ["A", "B"]))
+        await harness.router.reflectSuccessfulDeletesInNow()
+        let model = harness.model
+        let aID = try #require(model.items.first { $0.action?.title == "A" }?.action?.id)
+        let bID = try #require(model.items.first { $0.action?.title == "B" }?.action?.id)
+        let b = try #require(model.items.first { $0.action?.id == bID })
+        model.setState(try #require(b.action), to: .done)
+        await harness.waitUntil { await harness.router.progressRequests() == 1 && model.canUndo }
+
+        let currentB = try #require(model.items.first { $0.action?.id == bID })
+        let currentA = try #require(model.items.first { $0.action?.id == aID })
+        model.select(try #require(model.items.firstIndex(of: currentB)))
+        model.handleTaskClick(currentA, modifiers: [.command])
+        #expect(model.selectedActionIDs == [aID, bID])
+
+        await harness.router.holdNextDelete()
+        model.performBulkAction(.remove)
+        await harness.waitUntil { await harness.router.pendingDeleteCount() == 1 }
+        #expect(model.bulkBusy)
+        #expect(!model.canUndo)
+
+        model.undo()
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(await harness.router.progressRequests() == 1)
+        #expect(await harness.router.patchIDs().isEmpty)
+
+        await harness.router.releaseHeldDeletes()
+        await harness.waitUntil { !model.bulkBusy }
+        #expect(await harness.router.progressRequests() == 1)
+    }
+
     private func panelHostingView(_ window: NSWindow) -> NSView? {
         guard let root = window.contentView else { return nil }
         if #available(macOS 26.0, *), let glass = root as? NSGlassEffectView, let hosted = glass.contentView {
@@ -878,9 +1253,12 @@ extension LauncherModel.Screen {
 }
 
 extension NSEvent {
-    static func key(_ code: Int, command: Bool = false, isRepeat: Bool = false) -> NSEvent {
-        NSEvent.keyEvent(
-            with: .keyDown, location: .zero, modifierFlags: command ? [.command] : [], timestamp: 0, windowNumber: 0, context: nil,
+    static func key(_ code: Int, command: Bool = false, shift: Bool = false, isRepeat: Bool = false) -> NSEvent {
+        var flags: NSEvent.ModifierFlags = []
+        if command { flags.insert(.command) }
+        if shift { flags.insert(.shift) }
+        return NSEvent.keyEvent(
+            with: .keyDown, location: .zero, modifierFlags: flags, timestamp: 0, windowNumber: 0, context: nil,
             characters: "", charactersIgnoringModifiers: "", isARepeat: isRepeat, keyCode: UInt16(code)
         )!
     }
@@ -889,20 +1267,24 @@ extension NSEvent {
 /// `/now` 응답 본문
 enum ShellNow {
     static func body(
-        reviews: [String] = [], toDo: [String] = [], changed: Set<String> = [], limits: (Int, Int, Int) = (2, 5, 5)
+        reviews: [String] = [], toDo: [String] = [], inProgress: [String] = [],
+        changed: Set<String> = [], limits: (Int, Int, Int) = (2, 5, 5)
     ) -> Data {
-        func row(_ title: String, review: Bool, index: Int) -> String {
+        func row(_ title: String, review: Bool, started: Bool = false, index: Int) -> String {
             // id는 제목으로 정한다 (목록 자리가 바뀌어도 같은 할 일)
             let number = title.utf8.reduce(3) { ($0 &* 31 &+ Int($1)) % 1_000_000_000 }
             let id = String(format: "00000000-0000-4000-8000-%012d", number)
             let ranked = review ? "" : #","score":1,"reasons":[],"days_until_due":null"#
+            let startedAt = started ? #""2026-09-28T10:00:00Z""# : "null"
             return """
             {"id":"\(id)","title":"\(title)","owner":"me","status":"open","due_date":null,"counterpart":null,\
-            "needs_confirmation":\(review),"confirm_reasons":\(review ? #"["담당 확인"]"# : "[]"),"started_at":null,\
+            "needs_confirmation":\(review),"confirm_reasons":\(review ? #"["담당 확인"]"# : "[]"),"started_at":\(review ? "null" : startedAt),\
             "last_activity_at":"2026-09-29T10:00:00Z","changed":\(changed.contains(title))\(ranked)}
             """
         }
-        let now = toDo.enumerated().map { row($1, review: false, index: $0) }.joined(separator: ",")
+        let normal = inProgress.enumerated().map { row($1, review: false, started: true, index: $0) }
+            + toDo.enumerated().map { row($1, review: false, index: $0) }
+        let now = normal.joined(separator: ",")
         let confirmations = reviews.enumerated().map { row($1, review: true, index: $0) }.joined(separator: ",")
         return Data("""
         {"now":[\(now)],"confirmations":[\(confirmations)],\
@@ -1042,6 +1424,15 @@ private actor ShellRouter {
     private var confirmCount = 0
     private var confirmedActionIDs: [UUID] = []
     private var dismissCount = 0
+    private var deletedActionIDs: Set<UUID> = []
+    private var reflectsSuccessfulDeletesInNow = false
+    private var deleteAttempts: [UUID] = []
+    private var failedDeleteIDs: Set<UUID> = []
+    private var failOnceDeleteIDs: Set<UUID> = []
+    private var patchAttempts: [UUID] = []
+    private var failedPatchIDs: Set<UUID> = []
+    private var holdingNextDelete = false
+    private var heldDeletes: [(id: UUID, continuation: CheckedContinuation<ShellResponse, Never>)] = []
     private var progressCount = 0
     private var dueCount = 0
     private var confirmStatus = 200
@@ -1145,12 +1536,25 @@ private actor ShellRouter {
         if method == "PATCH", path.hasPrefix("/api/v1/actions/") {
             dueCount += 1
             let id = path.split(separator: "/").last.map(String.init) ?? "00000000-0000-4000-8000-000000000001"
+            if let actionID = UUID(uuidString: id) {
+                patchAttempts.append(actionID)
+                if failedPatchIDs.contains(actionID) {
+                    return ShellResponse(status: 500, body: Data("{\"error\":{\"code\":\"internal_error\",\"message\":\"Restore unavailable\"}}".utf8))
+                }
+                deletedActionIDs.remove(actionID)
+            }
             return actionResponse(id)
         }
         if method == "DELETE", path.hasPrefix("/api/v1/actions/") {
             dismissCount += 1
             let id = path.split(separator: "/").last.map(String.init) ?? "00000000-0000-4000-8000-000000000001"
-            return actionResponse(id)
+            guard let actionID = UUID(uuidString: id) else { return actionResponse(id) }
+            deleteAttempts.append(actionID)
+            if holdingNextDelete {
+                holdingNextDelete = false
+                return await withCheckedContinuation { heldDeletes.append((actionID, $0)) }
+            }
+            return deleteResponse(actionID)
         }
         if path == "/api/v1/now" {
             nowCount += 1
@@ -1170,7 +1574,25 @@ private actor ShellRouter {
 
     private func currentNow() -> ShellResponse {
         guard let now else { return ShellResponse(status: 500, body: Data("{}".utf8)) }
-        return ShellResponse(status: 200, body: now)
+        guard reflectsSuccessfulDeletesInNow, !deletedActionIDs.isEmpty,
+              var payload = try? JSONSerialization.jsonObject(with: now) as? [String: Any]
+        else { return ShellResponse(status: 200, body: now) }
+        for key in ["now", "confirmations"] {
+            guard let rows = payload[key] as? [[String: Any]] else { continue }
+            payload[key] = rows.filter { row in
+                guard let rawID = row["id"] as? String, let id = UUID(uuidString: rawID) else { return true }
+                return !deletedActionIDs.contains(id)
+            }
+        }
+        return ShellResponse(status: 200, body: (try? JSONSerialization.data(withJSONObject: payload)) ?? now)
+    }
+
+    private func deleteResponse(_ id: UUID) -> ShellResponse {
+        if failOnceDeleteIDs.remove(id) != nil || failedDeleteIDs.contains(id) {
+            return ShellResponse(status: 500, body: Data("{\"error\":{\"code\":\"internal_error\",\"message\":\"Delete unavailable\"}}".utf8))
+        }
+        deletedActionIDs.insert(id)
+        return actionResponse(id.uuidString.lowercased())
     }
 
     private func consentResponse() -> ShellResponse {
@@ -1185,15 +1607,29 @@ private actor ShellRouter {
     }
 
     func setConsentStatus(_ status: Int) { consentStatus = status }
+    func reflectSuccessfulDeletesInNow() { reflectsSuccessfulDeletesInNow = true }
     func setStartStatus(_ status: Int) { startStatus = status }
     func consentRequests() -> Int { consentCount }
     func completeRequests() -> Int { completeCount }
     func confirmRequests() -> Int { confirmCount }
     func confirmIDs() -> [UUID] { confirmedActionIDs }
     func dismissRequests() -> Int { dismissCount }
+    func deleteIDs() -> [UUID] { deleteAttempts }
+    func patchIDs() -> [UUID] { patchAttempts }
     func progressRequests() -> Int { progressCount }
     func dueRequests() -> Int { dueCount }
     func setConfirmStatus(_ status: Int) { confirmStatus = status }
+    func failDeleteAction(_ id: UUID) { failedDeleteIDs.insert(id) }
+    func failNextDeleteAction(_ id: UUID) { failOnceDeleteIDs.insert(id) }
+    func failPatchAction(_ id: UUID) { failedPatchIDs.insert(id) }
+    func holdNextDelete() { holdingNextDelete = true }
+    func pendingDeleteCount() -> Int { heldDeletes.count }
+
+    func releaseHeldDeletes() {
+        let pending = heldDeletes
+        heldDeletes = []
+        for held in pending { held.continuation.resume(returning: deleteResponse(held.id)) }
+    }
     func holdConsent() { holdingConsent = true }
     func hasPendingConsent() -> Bool { !heldConsent.isEmpty }
 
