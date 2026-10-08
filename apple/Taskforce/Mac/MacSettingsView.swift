@@ -5,14 +5,12 @@ import TaskforceKit
 import TaskforceUI
 
 /// Mac 설정 창 (Figma S1 239:1614 · S7 269:5822): 760×480, 왼쪽 사이드바 196 + 가운데 본문 열 468.
-/// 연결 · 동의 화면은 iPhone과 같은 것을 쓰고, Account는 페이지가 아니라 시트다.
+/// 연결 · 동의 화면은 iPhone과 같은 것을 쓰고, Account도 본문 페이지로 표시한다.
 struct MacSettingsView: View {
     @Environment(SessionStore.self) private var session
     @Environment(RunStore.self) private var runs
     @AppStorage(SettingsOpener.tabKey) private var stored: String?
     @State private var query = ""
-    /// ↑↓로 시트 항목(Account)에 올라섰을 때만 있다. 페이지는 그대로 두고 ↩로 시트를 연다
-    @State private var cursor: MacSettingsTab?
     /// 키보드는 검색칸에서 시작한다: 글자는 거르고 ↑↓는 항목을 옮기고 ↩는 연다 (⌘F로 돌아온다)
     @FocusState private var searchFocused: Bool
     /// 신호등이 있는 제목 막대 높이 (macOS 버전마다 다르다). 처음은 보통 창의 값, 창에 붙으면 그 창에서 다시 잰다
@@ -22,11 +20,12 @@ struct MacSettingsView: View {
     static let windowSize = CGSize(width: 760, height: 480)
     static let sidebarWidth: CGFloat = 196
     static let column: CGFloat = 468
+    static let contentWidth = windowSize.width - 2 * TFSpace.xs - sidebarWidth
     /// 본문 칸(창 - 안쪽 4 × 2 - 사이드바 = 556) 가운데 열의 좌우 여백 44
     static let columnInset = (windowSize.width - 2 * TFSpace.xs - sidebarWidth - column) / 2
 
     private var page: MacSettingsTab { MacSettingsTab.page(stored: stored, execution: execution, signedIn: signedInUserID != nil) }
-    private var highlighted: MacSettingsTab { cursor ?? page }
+    private var highlighted: MacSettingsTab { page }
     /// Every signed-in beta account can see USD usage, independently of execution credits.
     private var items: [MacSettingsTab.Item] {
         MacSettingsTab.sidebar(matching: query, executionAvailable: execution == .available || page == .usage, signedIn: signedInUserID != nil)
@@ -47,7 +46,7 @@ struct MacSettingsView: View {
     }
 
     var body: some View {
-        @Bindable var route = SettingsRoute.shared
+        let route = SettingsRoute.shared
         HStack(spacing: 0) {
             sidebar
             Rectangle()
@@ -71,19 +70,9 @@ struct MacSettingsView: View {
         .toolbar(removing: .title)
         .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
         .defaultFocus($searchFocused, true)
-        .sheet(isPresented: $route.showsAccount) {
-            MacAccountSheet()
-        }
-        // 시트가 닫히면 창에 키보드 자리가 없으므로 검색칸으로 돌려준다 (알약은 보던 페이지로)
-        .onChange(of: route.showsAccount) { _, shows in
-            guard !shows else { return }
-            cursor = nil
-            searchFocused = true
-        }
         // 창 밖에서 열면 (메뉴 · 런처 · 알림) 지난 검색어 · 키보드 자리를 지운다: 연 페이지가 걸러져 숨지 않게.
         // 설정 창은 닫아도 남아 있어 상태가 이어진다
         .onChange(of: route.openCount) {
-            cursor = nil
             query = ""
             // 다시 열 때마다 실행을 쓸 수 있는지 · 멈춘 run을 다시 본다 (지급 · 켜기 뒤 다시 열면 숫자 · 카드가 바로 바뀌게.
             // 설정 창은 닫아도 남아 있어 Usage 페이지의 `.task`가 다시 돌지 않는다)
@@ -198,13 +187,7 @@ struct MacSettingsView: View {
     private func row(_ item: MacSettingsTab.Item) -> some View {
         let isHighlighted = highlighted == item.tab
         return Button {
-            if item.tab.opensSheet {
-                // 눌러서 연 시트는 선택을 옮기지 않는다 (닫으면 보던 페이지가 그대로 선택)
-                cursor = nil
-                SettingsRoute.shared.showsAccount = true
-            } else {
-                choose(item.tab, openingSheet: false)
-            }
+            choose(item.tab)
         } label: {
             HStack(spacing: 9) {
                 Image(systemName: item.systemImage)
@@ -216,12 +199,6 @@ struct MacSettingsView: View {
                     .foregroundStyle(TFColor.textPrimary)
                     .lineLimit(1)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                if item.tab.opensSheet {
-                    Image(systemName: "arrow.up.right")
-                        .font(.system(size: 10, weight: .medium))
-                        .foregroundStyle(TFColor.textSecondary)
-                        .frame(width: 12, height: 12)
-                }
             }
             .padding(.horizontal, TFSpace.sm)
             .frame(height: 28)
@@ -231,7 +208,6 @@ struct MacSettingsView: View {
         .buttonStyle(.plain)
         .accessibilityLabel(item.title)
         .accessibilityAddTraits(isHighlighted ? .isSelected : [])
-        .accessibilityHint(item.tab.opensSheet ? "Opens in a sheet" : "")
     }
 
     /// 거른 항목을 그룹 순서대로 (항목이 없는 그룹은 이름도 숨긴다)
@@ -247,27 +223,21 @@ struct MacSettingsView: View {
         return result
     }
 
-    /// 페이지는 고르고(마지막 페이지로 저장), 시트 항목은 키보드 자리만 옮긴다. `openingSheet`이면 시트를 띄운다
-    private func choose(_ tab: MacSettingsTab, openingSheet: Bool) {
-        if tab.opensSheet {
-            cursor = tab
-            if openingSheet { SettingsRoute.shared.showsAccount = true }
-        } else {
-            cursor = nil
-            stored = tab.rawValue
-        }
+    /// 모든 항목은 같은 본문에서 열고 마지막 페이지로 저장한다.
+    private func choose(_ tab: MacSettingsTab) {
+        stored = tab.rawValue
     }
 
     private func move(_ offset: Int) -> KeyPress.Result {
         guard let next = MacSettingsTab.step(from: highlighted, by: offset, in: items) else { return .ignored }
-        choose(next, openingSheet: false)
+        choose(next)
         return .handled
     }
 
     /// 검색칸에서 ↩: 고른 항목이 결과에 있으면 그것, 없으면 첫 결과를 연다
     private func submitSearch() {
         guard let tab = items.first(where: { $0.tab == highlighted })?.tab ?? items.first?.tab else { return }
-        choose(tab, openingSheet: true)
+        choose(tab)
     }
 
     // MARK: 본문
@@ -285,7 +255,10 @@ struct MacSettingsView: View {
             pageBody
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        // Bound each page before HStack measures it; long text and scroll content cannot expand the shell.
+        .frame(width: Self.contentWidth)
+        .frame(maxHeight: .infinity, alignment: .top)
+        .clipped()
         .scrollEdgeFade(TFColor.settingsContent)
     }
 
@@ -293,7 +266,7 @@ struct MacSettingsView: View {
     private var pageBody: some View {
         switch page {
         case .keyboardShortcuts:
-            HotKeyPane()
+            KeyboardShortcutsPane()
         case .taskList:
             SectionDisplaySettingsPane()
         case .usage:
@@ -305,8 +278,7 @@ struct MacSettingsView: View {
         case .ai:
             signedInOnly { ConsentSettingsView() }
         case .account:
-            // 시트 항목이라 페이지가 되지 않는다 (`MacSettingsTab.page(stored:)`)
-            EmptyView()
+            MacAccountPane().modifier(SettingsFormPage())
         }
     }
 
@@ -441,7 +413,7 @@ struct AboutSettingsPane: View {
                 .tint(TFColor.textSecondary)
             }
             .frame(width: MacSettingsView.column, alignment: .leading)
-            .padding(.horizontal, MacSettingsView.columnInset)
+            .frame(maxWidth: .infinity)
             .padding(.top, TFSpace.md)
             .padding(.bottom, TFSpace.md)
         }
@@ -456,7 +428,7 @@ struct AboutSettingsPane: View {
                 .foregroundStyle(TFColor.textSecondary)
                 .lineLimit(1)
                 .truncationMode(.middle)
-                .frame(maxWidth: 255, alignment: .trailing)
+                .frame(width: 255, alignment: .trailing)
                 .textSelection(.enabled)
                 .help(value)
         }
@@ -499,7 +471,7 @@ struct SectionDisplaySettingsPane: View {
                 }
             }
             .frame(width: MacSettingsView.column, alignment: .leading)
-            .padding(.horizontal, MacSettingsView.columnInset)
+            .frame(maxWidth: .infinity)
             .padding(.top, TFSpace.md)
             .padding(.bottom, TFSpace.md)
         }
@@ -606,25 +578,6 @@ private struct ScrollableSignIn: View {
                     .frame(minHeight: proxy.size.height)
             }
         }
-    }
-}
-
-/// Account ↗: 지금 계정 화면을 설정 창 위 시트로
-private struct MacAccountSheet: View {
-    @Environment(\.dismiss) private var dismiss
-
-    var body: some View {
-        VStack(spacing: 0) {
-            MacAccountPane()
-            HStack {
-                Spacer()
-                QuietButton("Done", size: .large) { dismiss() }
-                    .keyboardShortcut(.cancelAction)
-            }
-            .padding(TFSpace.lg)
-        }
-        .frame(width: 460, height: 420)
-        .background(TFColor.settingsContent)
     }
 }
 
@@ -844,74 +797,4 @@ private struct MacBillingSection: View {
     }
 }
 
-/// 런처 단축키 (기본 ⌥Space). 다른 앱이 이미 쓰는 조합이면 이전 것을 그대로 둔다.
-private struct HotKeyPane: View {
-    @State private var shortcut = HotKeyShortcut.load()
-    @State private var recording = false
-    @State private var monitor: Any?
-    @State private var message: String?
-
-    var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: TFSpace.sm) {
-                SettingsCard {
-                    SettingsRow("Open launcher") {
-                        HStack(spacing: TFSpace.sm) {
-                            Keycap(recording ? "…" : shortcut.displayLabel)
-                            QuietButton(recording ? "Press a shortcut" : "Change") { recording ? stop() : record() }
-                            if shortcut != .default {
-                                QuietButton("Reset") {
-                                    MacAppDelegate.shared?.resetHotKey()
-                                    shortcut = .default
-                                }
-                            }
-                        }
-                    }
-                }
-                if let message {
-                    Text(message)
-                        .font(TFFont.meta)
-                        .foregroundStyle(TFColor.statusOverdue)
-                }
-            }
-            .frame(width: MacSettingsView.column, alignment: .leading)
-            .padding(.top, 20)
-            .padding(.bottom, 32)
-            .frame(maxWidth: .infinity)
-        }
-        .onDisappear { stop() }
-    }
-
-    private func record() {
-        message = nil
-        recording = true
-        monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
-            let consumed = MainActor.assumeIsolated { () -> Bool in
-                guard recording else { return false }
-                if event.keyCode == 53 {  // esc: 그만
-                    stop()
-                    return true
-                }
-                guard let candidate = HotKeyShortcut(event: event), candidate.isValid else {
-                    message = "Include ⌘, ⌥, or ⌃."
-                    return true
-                }
-                if MacAppDelegate.shared?.changeHotKey(to: candidate) == true {
-                    shortcut = candidate
-                } else {
-                    message = "That shortcut is in use. Try another."
-                }
-                stop()
-                return true
-            }
-            return consumed ? nil : event
-        }
-    }
-
-    private func stop() {
-        recording = false
-        if let monitor { NSEvent.removeMonitor(monitor) }
-        monitor = nil
-    }
-}
 #endif

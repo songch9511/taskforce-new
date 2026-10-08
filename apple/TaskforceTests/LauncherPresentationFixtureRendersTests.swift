@@ -73,8 +73,8 @@ struct LauncherPresentationFixtureRendersTests {
             "CFBundleShortVersionString": "0.1.0",
             "CFBundleVersion": "23",
             AboutBuildInfo.releaseChannelKey: "Development",
-            AboutBuildInfo.sourceCommitKey: "Not available",
-            AboutBuildInfo.buildTimeUTCKey: "Not available",
+            AboutBuildInfo.sourceCommitKey: "0123456789abcdef0123456789abcdef01234567",
+            AboutBuildInfo.buildTimeUTCKey: "2026-10-08T00:00:00Z",
         ]))
         for (scheme, appearance) in appearances {
             try await render(about, name: "fixture-settings-about-\(appearance)", scheme: scheme, to: directory)
@@ -90,6 +90,83 @@ struct LauncherPresentationFixtureRendersTests {
             }
         })
         print("Wrote synthetic fixture renders to \(directory.path)")
+    }
+
+    @Test func writesFullSettingsShellFixturesWithStableSidebar() async throws {
+        let directory = FileManager.default.temporaryDirectory.appending(path: "TaskforceLauncherPresentationFixtures")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let previous = UserDefaults.standard.object(forKey: SettingsOpener.tabKey)
+        defer {
+            if let previous { UserDefaults.standard.set(previous, forKey: SettingsOpener.tabKey) }
+            else { UserDefaults.standard.removeObject(forKey: SettingsOpener.tabKey) }
+        }
+        let userID = UUID()
+        let user = User(id: userID, appMetadata: [:], userMetadata: [:], aud: "authenticated", email: "fixture@example.com", createdAt: Date(), updatedAt: Date())
+        let authSession = Session(accessToken: "fixture-only", tokenType: "bearer", expiresIn: 3600,
+                                  expiresAt: Date().addingTimeInterval(3600).timeIntervalSince1970,
+                                  refreshToken: "fixture-only", user: user)
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [SettingsFixtureURLProtocol.self]
+        let urlSession = URLSession(configuration: configuration)
+        defer { urlSession.invalidateAndCancel() }
+        let config = AppConfig(supabaseURL: URL(string: "https://settings-fixture.invalid")!, supabaseKey: "fixture-only",
+                               appGroupID: "group.test.settings.fixture", apiBaseURL: URL(string: "https://settings-fixture.invalid")!)
+        let supabase = SupabaseClient(supabaseURL: config.supabaseURL, supabaseKey: config.supabaseKey,
+            options: SupabaseClientOptions(
+                auth: .init(storage: SettingsFixtureAuthStorage(data: try AuthClient.Configuration.jsonEncoder.encode(authSession)),
+                            autoRefreshToken: false, emitLocalSessionAsInitialSession: true),
+                global: .init(session: urlSession)))
+        let session = SessionStore(auth: supabase.auth)
+        session.apply(event: .signedIn, session: authSession)
+        let services = AppServices(config: config, supabase: supabase, session: urlSession)
+        let account = AccountStore(services: services, session: session)
+        account.useSampleData(connections: [])
+        let runs = RunStore(services: services, session: session)
+        runs.applySample(credits: .available(CreditsSummary(available: 480, reserved: 20,
+            used: .init(credits: 120, since: Date()), draftEstimateCredits: 10), checkedAt: Date()), runs: [], steps: [], drafts: [])
+        // Prove these reads resolve locally before using them as screenshot evidence.
+        #expect(try await services.api.billing().label == "Monthly subscription")
+        #expect(try await services.api.aiBudget().remainingUSD == Decimal(string: "2.25"))
+
+        for (scheme, appearance) in [(ColorScheme.light, "light"), (.dark, "dark")] {
+            UserDefaults.standard.set(MacSettingsTab.keyboardShortcuts.rawValue, forKey: SettingsOpener.tabKey)
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 760, height: 480),
+                                  styleMask: [.titled, .closable], backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false
+            window.appearance = NSAppearance(named: scheme == .dark ? .darkAqua : .aqua)
+            let host = NSHostingView(rootView: MacSettingsView().environment(session).environment(account).environment(runs)
+                .environment(\.services, services).environment(\.colorScheme, scheme))
+            window.contentView = host
+            window.setFrame(NSRect(x: 0, y: 0, width: 760, height: 480), display: true)
+            defer { window.close() }
+            var baseline: [NSColor]?
+            var baselineSize: NSSize?
+            for tab in [MacSettingsTab.keyboardShortcuts, .about, .account, .usage] {
+                UserDefaults.standard.set(tab.rawValue, forKey: SettingsOpener.tabKey)
+                try await Task.sleep(for: .milliseconds(500))
+                window.displayIfNeeded()
+                host.layoutSubtreeIfNeeded()
+                host.displayIfNeeded()
+                #expect(window.attachedSheet == nil, "Account must remain inline in the same shell")
+                #expect(window.frame.width == 760)
+                let bitmap = try #require(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+                host.cacheDisplay(in: host.bounds, to: bitmap)
+                let data = try #require(bitmap.representation(using: .png, properties: [:]))
+                try data.write(to: directory.appending(path: "fixture-settings-shell-\(tab.rawValue)-\(appearance).png"))
+                // Header strip includes both shell edges and the sidebar divider, above selectable rows.
+                // An intrinsic-width expansion shifts these pixels even when the outer window stays fixed.
+                let scale = CGFloat(bitmap.pixelsWide) / host.bounds.width
+                let strip = (0..<204).compactMap { bitmap.colorAt(x: Int(CGFloat($0) * scale), y: Int(60 * scale)) }
+                if let baseline, let baselineSize {
+                    #expect(host.bounds.size == baselineSize)
+                    #expect(strip == baseline, "Sidebar header and divider must not move when switching to \(tab)")
+                } else {
+                    baseline = strip
+                    baselineSize = host.bounds.size
+                }
+            }
+        }
+        print("Wrote synthetic full settings shells to \(directory.path)")
     }
 
     private func render<Content: View>(
@@ -172,4 +249,47 @@ private final class FixtureAuthStorage: AuthLocalStorage, @unchecked Sendable {
     func store(key: String, value: Data) throws {}
     func retrieve(key: String) throws -> Data? { nil }
     func remove(key: String) throws {}
+}
+
+private final class SettingsFixtureAuthStorage: AuthLocalStorage, @unchecked Sendable {
+    private let lock = NSLock()
+    private var data: Data
+    init(data: Data) { self.data = data }
+    func store(key: String, value: Data) throws {
+        lock.lock()
+        defer { lock.unlock() }
+        data = value
+    }
+    func retrieve(key: String) throws -> Data? {
+        lock.lock()
+        defer { lock.unlock() }
+        return data
+    }
+    // Auth migrates old storage keys; removing them must not remove this fixture session.
+    func remove(key: String) throws {}
+}
+
+/// Every request on this fixture session is intercepted; unexpected routes fail without network access.
+private final class SettingsFixtureURLProtocol: URLProtocol, @unchecked Sendable {
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        guard let url = request.url, request.httpMethod == "GET" else {
+            client?.urlProtocol(self, didFailWithError: URLError(.unsupportedURL)); return
+        }
+        let allowance = #"{"cap_usd":3,"confirmed_usd":0.5,"reserved_usd":0.25,"pending_count":1,"remaining_usd":2.25,"status":"available"}"#
+        let body: String
+        if url.path.hasSuffix("/billing") {
+            body = #"{"status":"active","plan":"monthly","can_use_ai":true,"can_checkout":false,"current_period_ends_at":"2026-11-08T00:00:00Z","allowance_resets_at":"2026-11-01T00:00:00Z","ai_allowance":\#(allowance)}"#
+        } else if url.path.hasSuffix("/ai-budget") {
+            body = allowance
+        } else {
+            client?.urlProtocol(self, didFailWithError: URLError(.unsupportedURL)); return
+        }
+        let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "application/json"])!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Data(body.utf8))
+        client?.urlProtocolDidFinishLoading(self)
+    }
+    override func stopLoading() {}
 }

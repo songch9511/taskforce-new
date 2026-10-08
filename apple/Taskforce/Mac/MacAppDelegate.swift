@@ -12,6 +12,7 @@ final class MacAppDelegate: NSObject, NSApplicationDelegate {
 
     private(set) var launcher: LauncherPanelController?
     let hotKeys = HotKeyCenter()
+    let settingsHotKeys = HotKeyCenter(id: 2)
 
     override init() {
         super.init()
@@ -19,6 +20,12 @@ final class MacAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Hosted unit tests construct their own sessions and stores. Do not start the real
+        // account, cache pruning, notifications, or global shortcuts in the test host.
+        #if DEBUG
+        guard ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil,
+              NSClassFromString("XCTestCase") == nil else { return }
+        #endif
         // 알림을 눌러 앱이 열린 경우도 받을 수 있게 가장 먼저
         PushCenter.shared.install()
         let model: LauncherModel
@@ -45,6 +52,12 @@ final class MacAppDelegate: NSObject, NSApplicationDelegate {
         hotKeys.onPress = { [weak launcher] in launcher?.toggle() }
         hotKeys.install()
         hotKeys.register(HotKeyShortcut.load())
+        settingsHotKeys.onPress = { SettingsOpener.open() }
+        settingsHotKeys.install()
+        if let shortcut = HotKeyShortcut.load(for: .settings),
+           !shortcut.matches(HotKeyShortcut.load()) {
+            settingsHotKeys.register(shortcut)
+        }
 
         // 스크린샷 · 수동 확인용: 실행하자마자 런처를 연다
         if ProcessInfo.processInfo.arguments.contains("--show-launcher") {
@@ -111,17 +124,51 @@ final class MacAppDelegate: NSObject, NSApplicationDelegate {
         if let id = target.actionID { launcher.model.focus(actionID: id) }
     }
 
-    /// 설정에서 단축키를 바꿀 때. 다른 앱이 쓰는 조합이면 false.
+    /// Stored preferences change only after successful registration.
     func changeHotKey(to shortcut: HotKeyShortcut) -> Bool {
-        guard hotKeys.register(shortcut) else { return false }
-        shortcut.save()
+        changeHotKey(to: shortcut, for: .launcher)
+    }
+
+    func changeHotKey(to shortcut: HotKeyShortcut, for action: HotKeyShortcut.Action) -> Bool {
+        let other = HotKeyShortcut.load(for: action == .launcher ? .settings : .launcher)
+        guard other?.matches(shortcut) != true else { return false }
+        let center = action == .launcher ? hotKeys : settingsHotKeys
+        guard center.register(shortcut) else { return false }
+        shortcut.save(for: action)
         return true
     }
 
-    func resetHotKey() {
+    @discardableResult
+    func resetHotKey() -> Bool {
+        guard changeHotKey(to: .default) else { return false }
         HotKeyShortcut.reset()
-        hotKeys.register(.default)
+        return true
     }
+
+    func removeSettingsHotKey() {
+        settingsHotKeys.remove()
+        HotKeyShortcut.reset(for: .settings)
+    }
+
+    func isHotKeyRegistered(for action: HotKeyShortcut.Action) -> Bool {
+        let center = action == .launcher ? hotKeys : settingsHotKeys
+        guard let saved = HotKeyShortcut.load(for: action),
+              let current = center.current else { return false }
+        return center.isRegistered && current.matches(saved)
+    }
+
+    func suspendHotKeys() {
+        hotKeys.suspend()
+        settingsHotKeys.suspend()
+    }
+
+    @discardableResult
+    func resumeHotKeys() -> Bool {
+        let launcherRestored = hotKeys.resume()
+        let settingsRestored = settingsHotKeys.resume()
+        return launcherRestored && settingsRestored
+    }
+
 }
 
 /// 메뉴 막대 아이콘의 메뉴: Open Launcher · Settings · Quit
@@ -160,7 +207,6 @@ enum MacSettingsTab: String, CaseIterable {
     case taskList
     /// Beta USD usage for signed-in accounts; execution credits are separately gated.
     case usage
-    /// 페이지가 아니라 계정 시트 (↗)
     case account
     case about
     case connections
@@ -206,15 +252,13 @@ enum MacSettingsTab: String, CaseIterable {
     /// 실행을 쓸 수 없는 계정의 사이드바 (U1 항목)
     static var sidebar: [Item] { sidebar(executionAvailable: false) }
 
-    var opensSheet: Bool { self == .account }
-
     /// 설정 창이 보일 페이지. 저장값은 예전 탭 값(`account` · `connections` · `ai` · `shortcut`)도 받는다:
-    /// `shortcut`은 Keyboard Shortcuts, 저장값 없음 · `account`(이제 시트) · 모르는 값 · 사이드바에 없는 항목은 Connections (사용자 결정 2026-10-03).
+    /// `shortcut`은 Keyboard Shortcuts, 저장값 없음 · 모르는 값 · 사이드바에 없는 항목은 Connections (사용자 결정 2026-10-03).
     /// 저장된 `usage`는 실행을 쓸 수 없으면 Connections, 아직 모르면(앱을 막 열어 credits를 읽는 중) 그대로 둔다: 읽는 동안 Connections로 떨어지지 않게
     static func page(stored: String?, execution: Execution = .unavailable, signedIn: Bool = false) -> MacSettingsTab {
         let tab = stored.flatMap { $0 == "shortcut" ? .keyboardShortcuts : MacSettingsTab(rawValue: $0) }
         if tab == .usage { return execution == .unavailable && !signedIn ? .connections : .usage }
-        if let tab, !tab.opensSheet, all.contains(where: { $0.tab == tab }) { return tab }
+        if let tab, all.contains(where: { $0.tab == tab }) { return tab }
         return .connections
     }
 
@@ -233,14 +277,12 @@ enum MacSettingsTab: String, CaseIterable {
     }
 }
 
-/// 설정 창 위 시트. 사이드바와 창 밖(런처 · 메뉴)이 같이 쓴다: 창이 없을 때 요청해도 창이 뜨면서 띄운다
+/// 설정 창을 다시 열 때 검색과 데이터를 갱신하는 공유 신호.
 @MainActor
 @Observable
 final class SettingsRoute {
     static let shared = SettingsRoute()
 
-    /// Account 시트 (사이드바 Account ↗ · `SettingsOpener.open(.account)`)
-    var showsAccount = false
     /// 창 밖에서 연 횟수 (`SettingsOpener.open`). 창이 지난 검색어 · 키보드 자리를 지운다
     private(set) var openCount = 0
 
@@ -258,12 +300,10 @@ enum SettingsOpener {
     /// Settings 장면의 openSettings를 아직 받지 못했을 때 쓰는 같은 내용의 창
     private static var fallbackWindow: NSWindow?
 
-    /// `tab`이 없으면 마지막에 본 페이지. Account는 창 위에 시트로 연다
+    /// `tab`이 없으면 마지막에 본 페이지.
     static func open(_ tab: MacSettingsTab? = nil) {
         SettingsRoute.shared.opened()
-        if let tab, tab.opensSheet {
-            SettingsRoute.shared.showsAccount = true
-        } else if let tab {
+        if let tab {
             UserDefaults.standard.set(tab.rawValue, forKey: tabKey)
         }
         NSApplication.shared.activate()

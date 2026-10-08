@@ -1,5 +1,6 @@
 import AppKit
 import Testing
+import TaskforceKit
 @testable import Taskforce
 
 /// 설정 사이드바 (U1 PR5a): 저장된 예전 탭 값 → 페이지, 검색칸 거르기, ↑↓ 한 칸
@@ -10,8 +11,8 @@ struct MacSettingsTabTests {
     }
 
     @Test(arguments: [
-        // 예전 TabView 값: Account 탭은 이제 시트라 Connections, Shortcut 탭은 Keyboard Shortcuts
-        ("account", MacSettingsTab.connections),
+        // Account remains an inline page; the legacy Shortcut value maps to Keyboard Shortcuts.
+        ("account", MacSettingsTab.account),
         ("shortcut", .keyboardShortcuts),
         ("connections", .connections),
         ("ai", .ai),
@@ -35,7 +36,7 @@ struct MacSettingsTabTests {
     @Test func sidebarShowsTheU1ItemsInFigmaOrder() {
         #expect(MacSettingsTab.sidebar.map(\.title) == ["Keyboard Shortcuts", "Task List", "Account", "About", "Connections", "Privacy & AI Data"])
         #expect(MacSettingsTab.sidebar.map(\.group) == [.personal, .personal, .personal, .personal, .work, .work])
-        #expect(MacSettingsTab.sidebar.filter(\.tab.opensSheet).map(\.tab) == [.account])
+        #expect(MacSettingsTab.page(stored: "account", signedIn: false) == .account)
     }
 
     @Test func aboutIsSearchablePersistedAndAvailableWhileSignedOut() {
@@ -109,7 +110,7 @@ struct MacSettingsTabTests {
         #expect(MacSettingsTab.page(stored: "keyboardShortcuts", execution: execution) == .keyboardShortcuts)
         #expect(MacSettingsTab.page(stored: "taskList", execution: execution) == .taskList)
         #expect(MacSettingsTab.page(stored: "about", execution: execution) == .about)
-        #expect(MacSettingsTab.page(stored: "account", execution: execution) == .connections)
+        #expect(MacSettingsTab.page(stored: "account", execution: execution) == .account)
         #expect(MacSettingsTab.page(stored: nil, execution: execution) == .connections)
     }
 
@@ -185,5 +186,34 @@ struct AboutBuildInfoTests {
         """
         #expect(info.copyText == expected)
         #expect(pasteboard.string(forType: .string) == expected)
+    }
+}
+
+@MainActor
+struct UsageSettingsDisplayTests {
+    private func budget(cap: Double, confirmed: Double, reserved: Double) throws -> TaskforceKit.AiSpendSummary {
+        let data = try JSONSerialization.data(withJSONObject: [
+            "cap_usd": cap, "confirmed_usd": confirmed, "reserved_usd": reserved,
+            "pending_count": 1, "remaining_usd": max(0, cap - confirmed - reserved), "status": "available",
+        ])
+        return try JSONDecoder().decode(TaskforceKit.AiSpendSummary.self, from: data)
+    }
+
+    @Test func progressIncludesReservationsAndClampsToTheAllowance() throws {
+        #expect(UsageCreditsPane.allowanceFraction(try budget(cap: 10, confirmed: 2, reserved: 3)) == 0.5)
+        #expect(UsageCreditsPane.allowanceFraction(try budget(cap: 10, confirmed: 9, reserved: 3)) == 1)
+        #expect(UsageCreditsPane.allowanceFraction(try budget(cap: 0, confirmed: 0, reserved: 0)) == 0)
+    }
+
+    @Test func resetUsesServerDateAndDoesNotInventBetaOrTrialRenewals() throws {
+        func billing(_ status: String, reset: String? = nil) throws -> TaskforceKit.BillingSummary {
+            var json: [String: Any] = ["status": status, "can_use_ai": true, "can_checkout": false]
+            if let reset { json["allowance_resets_at"] = reset }
+            return try JSONDecoder().decode(TaskforceKit.BillingSummary.self, from: JSONSerialization.data(withJSONObject: json))
+        }
+        #expect(UsageCreditsPane.resetDescription(try billing("active", reset: "2026-11-01T00:00:00Z")) == "Resets 2026-11-01 (UTC)")
+        #expect(UsageCreditsPane.resetDescription(try billing("legacy_beta")) == "Cumulative beta allowance · no scheduled reset")
+        #expect(UsageCreditsPane.resetDescription(try billing("trialing")) == "Total trial allowance · no recurring reset")
+        #expect(UsageCreditsPane.resetDescription(try billing("active")) == "No scheduled reset available")
     }
 }

@@ -38,25 +38,52 @@ public struct HotKeyShortcut: Codable, Equatable, Sendable {
 
     /// Shift만으로는 글자 입력과 겹치므로 ⌘ · ⌥ · ⌃ 중 하나는 있어야 한다
     public var isValid: Bool {
-        modifiers & (Modifier.command | Modifier.option | Modifier.control) != 0 && !keyLabel.isEmpty
+        keyCode <= 0x7F && modifiers & ~Modifier.all == 0
+            && modifiers & (Modifier.command | Modifier.option | Modifier.control) != 0
+            && !keyLabel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
-    static let defaultsKey = "launcher.hotKey"
+    public func matches(_ other: HotKeyShortcut) -> Bool {
+        keyCode == other.keyCode && modifiers == other.modifiers
+    }
 
-    public static func load(from defaults: UserDefaults = .standard) -> HotKeyShortcut {
-        guard let data = defaults.data(forKey: defaultsKey),
+    public enum Action: Sendable {
+        case launcher, settings
+
+        var defaultsKey: String {
+            switch self {
+            case .launcher: "launcher.hotKey"
+            case .settings: "settings.hotKey"
+            }
+        }
+    }
+
+    public static func load(for action: Action, from defaults: UserDefaults = .standard) -> HotKeyShortcut? {
+        guard let data = defaults.data(forKey: action.defaultsKey),
               let shortcut = try? JSONDecoder().decode(HotKeyShortcut.self, from: data),
               shortcut.isValid
-        else { return .default }
+        else { return action == .launcher ? .default : nil }
         return shortcut
     }
 
+    public func save(for action: Action, to defaults: UserDefaults = .standard) {
+        guard isValid, let data = try? JSONEncoder().encode(self) else { return }
+        defaults.set(data, forKey: action.defaultsKey)
+    }
+
+    public static func reset(for action: Action, in defaults: UserDefaults = .standard) {
+        defaults.removeObject(forKey: action.defaultsKey)
+    }
+
+    public static func load(from defaults: UserDefaults = .standard) -> HotKeyShortcut {
+        load(for: .launcher, from: defaults) ?? .default
+    }
+
     public func save(to defaults: UserDefaults = .standard) {
-        guard let data = try? JSONEncoder().encode(self) else { return }
-        defaults.set(data, forKey: Self.defaultsKey)
+        save(for: .launcher, to: defaults)
     }
 
     public static func reset(in defaults: UserDefaults = .standard) {
-        defaults.removeObject(forKey: defaultsKey)
+        reset(for: .launcher, in: defaults)
     }
 }
