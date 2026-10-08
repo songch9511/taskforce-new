@@ -45,6 +45,7 @@ describe("초기 마이그레이션", () => {
       "ai_budget_policy",
       "ai_spend_attempts",
   "billing_accounts",
+  "billing_beta_email_grants",
   "billing_checkout_intents",
   "billing_webhook_events",
   "billing_webhook_inbox",
