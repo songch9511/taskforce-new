@@ -3,7 +3,7 @@ import AppKit
 
 /// 설정 창 확인용 (Debug 빌드): `--show-settings`로 실행하면 설정 창을 연다. `-TFSampleData -TFSnapshot <폴더>`를 더하면
 /// 사이드바의 보이는 항목마다 Light · Dark PNG(`mac-settings-<항목>-light.png` · `-dark.png`)를 남기고 끝낸다.
-/// Account는 열린 시트 창을 담는다. Usage & Credits(`-TFSampleCredits`일 때 보임) · Privacy & AI Data는 끝까지 스크롤한 모습(`-end`)도,
+/// Account도 설정 본문을 담는다. Usage & Credits(`-TFSampleCredits`일 때 보임) · Privacy & AI Data는 끝까지 스크롤한 모습(`-end`)도,
 /// 동의 화면(460×440 시트)은 처음 · 끝(`consent-prompt` · `consent-prompt-end`)을, Usage의 멈춘 카드 ›로 연 런처(`usage-working`)도 담는다.
 /// `LauncherSnapshot`처럼 화면 녹화 권한 없이 자기 창만 그린다 (신호등 · 창 그림자는 담기지 않는다).
 @MainActor
@@ -30,12 +30,7 @@ enum SettingsSnapshot {
                     SettingsOpener.open(item.tab)
                     try? await Task.sleep(for: .seconds(1.5))
                     guard let window = settingsWindow else { continue }
-                    let target = item.tab.opensSheet ? (window.attachedSheet ?? window) : window
-                    capture(target, to: directory.appending(path: "mac-settings-\(fileName(item.tab))-\(name).png"))
-                    if item.tab.opensSheet {
-                        SettingsRoute.shared.showsAccount = false
-                        try? await Task.sleep(for: .seconds(1))
-                    }
+                    capture(window, to: directory.appending(path: "mac-settings-\(fileName(item.tab))-\(name).png"))
                     if item.tab == .usage || item.tab == .ai, scrollToEnd(window) {
                         try? await Task.sleep(for: .seconds(0.5))
                         capture(window, to: directory.appending(path: "mac-settings-\(fileName(item.tab))-end-\(name).png"))

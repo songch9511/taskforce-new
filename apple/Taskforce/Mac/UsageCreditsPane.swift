@@ -9,36 +9,70 @@ struct UsageCreditsPane: View {
     @Environment(\.services) private var services
     @State private var budget: AiSpendSummary?
     @State private var budgetFailed = false
+    @State private var billing: BillingSummary?
+    @State private var billingFailed = false
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
-                section("Included AI allowance · USD") {
-                    Text(AiSpendSummary.explanation)
-                        .font(TFFont.footnote)
-                        .foregroundStyle(TFColor.textSecondary)
+            VStack(alignment: .leading, spacing: 28) {
+                section("Your plan") {
+                    SettingsCard {
+                        if let billing {
+                            SettingsRow(billing.label, subtitle: accessEnd(billing)) {
+                                QuietButton("Manage") { SettingsOpener.open(.account) }
+                            }
+                        } else if billingFailed {
+                            SettingsRow("Plan unavailable", subtitle: "Refresh to try again.") {
+                                QuietButton("Refresh") { Task { await loadBilling() } }
+                            }
+                        } else {
+                            SettingsRow("Loading plan") { ProgressView().controlSize(.small) }
+                        }
+                    }
+                }
+                section("Plan limits") {
                     if let budget {
                         SettingsCard {
-                            budgetRow("Allowance cap", budget.capUSD)
+                            VStack(alignment: .leading, spacing: TFSpace.md) {
+                                HStack {
+                                    Text("AI allowance").font(TFFont.footnoteEmphasis)
+                                    Spacer()
+                                    Text("\(AiSpendSummary.dollars(budget.remainingUSD)) remaining")
+                                        .font(TFFont.footnote)
+                                }
+                                ProgressView(value: Self.allowanceFraction(budget))
+                                    .tint(TFColor.textPrimary)
+                                    .accessibilityLabel("AI allowance spent or reserved")
+                                Text("\(AiSpendSummary.dollars(budget.confirmedUSD + budget.reservedUSD)) of \(AiSpendSummary.dollars(budget.capUSD)) spent or reserved")
+                                    .font(TFFont.meta)
+                                    .foregroundStyle(TFColor.textSecondary)
+                                if let billing {
+                                    Text(Self.resetDescription(billing))
+                                        .font(TFFont.meta)
+                                        .foregroundStyle(TFColor.textSecondary)
+                                }
+                            }
+                            .padding(TFSpace.lg)
                             SettingsDivider()
                             budgetRow("Confirmed spend", budget.confirmedUSD)
                             SettingsDivider()
-                            budgetRow("Worst-case reserved · \(budget.pendingCount) pending", budget.reservedUSD)
-                            SettingsDivider()
-                            budgetRow("Remaining after reservations", budget.remainingUSD)
+                            budgetRow("Reserved · \(budget.pendingCount) pending", budget.reservedUSD)
                         }
+                        Text("Reservations are worst-case estimates, not confirmed spend. AI pauses at the limit with no automatic overage charges.")
+                            .font(TFFont.meta)
+                            .foregroundStyle(TFColor.textSecondary)
                         if let notice = budget.notice { Text(notice).font(TFFont.footnote) }
                     } else if budgetFailed {
-                        Text("Couldn't load your AI allowance.").font(TFFont.footnote)
-                        Button("Try Again") { Task { await loadBudget() } }
+                        SettingsCard {
+                            SettingsRow("Allowance unavailable") {
+                                QuietButton("Refresh") { Task { await loadBudget() } }
+                            }
+                        }
                     } else {
                         ProgressView().accessibilityLabel("Loading AI allowance")
                     }
                 }
                 if case .available = runs.credits {
-                    Text("Execution credits are separate units for AI drafts. They are not dollars and do not increase the included AI allowance.")
-                        .font(TFFont.footnote)
-                        .foregroundStyle(TFColor.textSecondary)
                     content(runs.creditsRows(titles: Self.taskTitles))
                 }
             }
@@ -49,6 +83,7 @@ struct UsageCreditsPane: View {
         }
         // 이 페이지를 열 때마다 새로 읽는다 (지급 · 정산 뒤 다시 열면 숫자 · 멈춘 카드가 바뀐다)
         .task(id: SettingsRoute.shared.openCount) {
+            await loadBilling()
             await loadBudget()
             await runs.loadCredits()
             await runs.refreshActive()
@@ -69,13 +104,47 @@ struct UsageCreditsPane: View {
         }
     }
 
+    private func loadBilling() async {
+        billing = nil
+        billingFailed = false
+        do {
+            guard let services else { billingFailed = true; return }
+            let result = try await services.api.billing()
+            guard !Task.isCancelled else { return }
+            billing = result
+        } catch {
+            guard !Task.isCancelled else { return }
+            billingFailed = true
+        }
+    }
+
+    private func accessEnd(_ billing: BillingSummary) -> String? {
+        (billing.currentPeriodEndsAt ?? billing.trialEndsAt).map { "Access until \(String($0.prefix(10))) (UTC)" }
+    }
+
+    static func allowanceFraction(_ budget: AiSpendSummary) -> Double {
+        guard budget.capUSD > 0 else { return 0 }
+        let value = NSDecimalNumber(decimal: (budget.confirmedUSD + budget.reservedUSD) / budget.capUSD).doubleValue
+        return min(max(value, 0), 1)
+    }
+
+    static func resetDescription(_ billing: BillingSummary) -> String {
+        if let reset = billing.allowanceResetsAt { return "Resets \(String(reset.prefix(10))) (UTC)" }
+        if billing.status == "legacy_beta" { return "Cumulative beta allowance · no scheduled reset" }
+        if billing.status == "trialing" || billing.status == "trial_pending" { return "Total trial allowance · no recurring reset" }
+        return "No scheduled reset available"
+    }
+
     private func budgetRow(_ title: String, _ amount: Decimal) -> some View {
         SettingsRow(title) { SettingsValue(AiSpendSummary.dollars(amount)) }
     }
 
     @ViewBuilder
     private func content(_ rows: CreditsRows) -> some View {
-        section("Balance") {
+        section("Credits") {
+            Text("Execution credits fund AI drafts. They are separate from your plan’s USD allowance.")
+                .font(TFFont.meta)
+                .foregroundStyle(TFColor.textSecondary)
             SettingsCard {
                 row(rows.available)
                 SettingsDivider()

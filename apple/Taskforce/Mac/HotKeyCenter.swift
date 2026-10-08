@@ -8,59 +8,98 @@ import TaskforceKit
 final class HotKeyCenter {
     var onPress: (() -> Void)?
     private(set) var current: HotKeyShortcut?
+    private(set) var isSuspended = false
+    var isRegistered: Bool { hotKeyRef != nil && !isSuspended }
 
+    private let identifier: EventHotKeyID
     private var hotKeyRef: EventHotKeyRef?
     private var handlerRef: EventHandlerRef?
+    private let registerKey: (HotKeyShortcut, EventHotKeyID) -> EventHotKeyRef?
+    private let unregisterKey: (EventHotKeyRef) -> Void
 
-    /// 앱 이벤트 대상에 단축키 처리기를 한 번 붙인다. Carbon은 이 처리기를 메인 스레드에서 부른다.
+    init(id: UInt32 = 1,
+         register: @escaping (HotKeyShortcut, EventHotKeyID) -> EventHotKeyRef? = { shortcut, identifier in
+             var reference: EventHotKeyRef?
+             let status = RegisterEventHotKey(
+                 shortcut.keyCode, shortcut.modifiers, identifier, GetApplicationEventTarget(), 0, &reference
+             )
+             return status == noErr ? reference : nil
+         },
+         unregister: @escaping (EventHotKeyRef) -> Void = { UnregisterEventHotKey($0) }) {
+        identifier = EventHotKeyID(signature: OSType(0x5446_4C4E), id: id)
+        registerKey = register
+        unregisterKey = unregister
+    }
+
     func install() {
         guard handlerRef == nil else { return }
         var eventType = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
         InstallEventHandler(
             GetApplicationEventTarget(),
-            { _, _, userData in
-                guard let userData else { return OSStatus(eventNotHandledErr) }
-                MainActor.assumeIsolated {
-                    Unmanaged<HotKeyCenter>.fromOpaque(userData).takeUnretainedValue().onPress?()
+            { _, event, userData in
+                guard let event, let userData else { return OSStatus(eventNotHandledErr) }
+                var identifier = EventHotKeyID()
+                let status = GetEventParameter(
+                    event, EventParamName(kEventParamDirectObject), EventParamType(typeEventHotKeyID),
+                    nil, MemoryLayout<EventHotKeyID>.size, nil, &identifier
+                )
+                guard status == noErr else { return OSStatus(eventNotHandledErr) }
+                return MainActor.assumeIsolated {
+                    Unmanaged<HotKeyCenter>.fromOpaque(userData).takeUnretainedValue()
+                        .handle(signature: identifier.signature, id: identifier.id)
                 }
-                return noErr
             },
-            1,
-            &eventType,
-            Unmanaged.passUnretained(self).toOpaque(),
-            &handlerRef
+            1, &eventType, Unmanaged.passUnretained(self).toOpaque(), &handlerRef
         )
     }
 
-    /// 단축키를 바꾼다. 다른 앱이 이미 쓰고 있으면 false (이전 단축키는 그대로 둔다).
+    func handle(signature: OSType, id: UInt32) -> OSStatus {
+        guard signature == identifier.signature, id == identifier.id,
+              !isSuspended, hotKeyRef != nil else { return OSStatus(eventNotHandledErr) }
+        onPress?()
+        return noErr
+    }
+
+    /// Attach the replacement first, so a failed registration never removes the working shortcut.
     @discardableResult
     func register(_ shortcut: HotKeyShortcut) -> Bool {
-        let previous = current
-        unregister()
-        if attach(shortcut) {
+        guard shortcut.isValid else { return false }
+        if current?.matches(shortcut) == true, hotKeyRef != nil {
             current = shortcut
             return true
         }
-        if let previous, attach(previous) { current = previous }
-        return false
-    }
-
-    private func attach(_ shortcut: HotKeyShortcut) -> Bool {
-        var reference: EventHotKeyRef?
-        // 'TFLN' (Taskforce launcher)
-        let identifier = EventHotKeyID(signature: OSType(0x5446_4C4E), id: 1)
-        let status = RegisterEventHotKey(
-            shortcut.keyCode, shortcut.modifiers, identifier, GetApplicationEventTarget(), 0, &reference
-        )
-        guard status == noErr, let reference else { return false }
-        hotKeyRef = reference
+        guard let replacement = registerKey(shortcut, identifier) else { return false }
+        if let hotKeyRef { unregisterKey(hotKeyRef) }
+        hotKeyRef = replacement
+        current = shortcut
+        isSuspended = false
         return true
     }
 
-    private func unregister() {
-        if let hotKeyRef { UnregisterEventHotKey(hotKeyRef) }
+    func remove() {
+        if let hotKeyRef { unregisterKey(hotKeyRef) }
         hotKeyRef = nil
+        current = nil
+        isSuspended = false
     }
+
+    func suspend() {
+        guard !isSuspended else { return }
+        if let hotKeyRef { unregisterKey(hotKeyRef) }
+        hotKeyRef = nil
+        isSuspended = true
+    }
+
+    @discardableResult
+    func resume() -> Bool {
+        guard isSuspended else { return true }
+        guard let current else { isSuspended = false; return true }
+        guard let reference = registerKey(current, identifier) else { return false }
+        hotKeyRef = reference
+        isSuspended = false
+        return true
+    }
+
 }
 
 extension HotKeyShortcut {
