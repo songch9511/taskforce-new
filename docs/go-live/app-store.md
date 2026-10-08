@@ -24,7 +24,7 @@
 | 계정 삭제 때 Sign in with Apple 토큰 폐기 | 5.1.1(v), Apple 계정 삭제 안내 | 구현됨: Apple 로그인이 붙은 계정은 Apple 확인을 한 번 더 받아 code를 보내고, 이메일 · Google로만 가입한 계정(데모 계정 포함)은 건너뛴다. 삭제 직전에 서버에서 사용자를 읽지 못하면 이 계정에도 뜬다. 새로 읽은 사용자에 Apple이 없어도 세션에 있으면 뜬다 (6장 3번, `AccountDeletionPlan`) | 실기기 확인 (6장 6번) |
 | 앱 안 처리방침 링크 | 5.1.1(i) | 있음: iPhone 설정 시트 · Mac 설정 · 로그인 화면 · Privacy & AI Data 화면의 "Privacy Policy" · "Terms of Use" (`apple/Taskforce/iOS/AccountSheet.swift`, `LegalLinksRow`) | — |
 | 심사원이 들어갈 수 있는 데모 계정 | 2.1 | 있음: 로그인 화면의 "Sign in with email" → 이메일 + 비밀번호(`SessionStore.signInWithEmail`, 가입 화면 없음). 허용 목록(`review_accounts`) 밖 이메일 가입은 DB 훅이 막는다 (3장) | 사용자: 훅 켜기 · 데모 계정 만들기 (7장 1번) |
-| 수출 규정 | — | HTTPS만 쓰면 면제 | `Info.plist`에 `ITSAppUsesNonExemptEncryption = NO` 확인 |
+| 수출 규정 | — | 있음: `Info.plist`에 `ITSAppUsesNonExemptEncryption = NO` (iOS · macOS 공통). HTTPS · 해시(CryptoKit) · Keychain만 써서 면제라, 빌드마다 수출 규정 질문이 뜨지 않는다 | — |
 
 ## 2. TestFlight 외부 테스트 정보
 
