@@ -12,6 +12,34 @@ import TaskforceUI
 @Suite(.serialized)
 @MainActor
 struct LauncherPresentationFixtureRendersTests {
+    @Test func searchSuggestionsKeepEqualTopAndSideInsets() async throws {
+        let directory = FileManager.default.temporaryDirectory.appending(path: "TaskforceLauncherPresentationFixtures")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        for (query, label) in [("오", "korean"), ("unmatched task", "english")] {
+            let model = try fixtureModel()
+            model.now?.applySample(NowResponse(now: [], confirmations: [], weeklyCheck: nil), doneToday: [], evidence: [:])
+            model.text = query
+            #expect(model.items == [.addAction(query), .ask(query)])
+            for (scheme, appearance) in [(ColorScheme.light, "light"), (.dark, "dark")] {
+                let name = "fixture-search-insets-\(label)-\(appearance)"
+                try await render(LauncherListPane(model: model), name: name, scheme: scheme, to: directory)
+                let data = try Data(contentsOf: directory.appending(path: "\(name).png"))
+                let bitmap = try #require(NSBitmapImageRep(data: data))
+                let scale = CGFloat(bitmap.pixelsWide) / 760
+                let background = try #require(bitmap.colorAt(x: 0, y: Int(100 * scale)))
+                let top = try #require((0..<Int(36 * scale)).first {
+                    bitmap.colorAt(x: bitmap.pixelsWide / 2, y: $0) != background
+                })
+                let left = try #require((0..<Int(36 * scale)).first {
+                    bitmap.colorAt(x: $0, y: Int(26 * scale)) != background
+                })
+                #expect(top == left, "The first selected suggestion must have equal top and side padding")
+                #expect(top == Int(8 * scale))
+                try await render(LauncherRootView(model: model), name: "fixture-search-\(label)-\(appearance)", scheme: scheme, to: directory)
+            }
+        }
+    }
+
     @Test func writesLightAndDarkFixtureRenders() async throws {
         let directory = FileManager.default.temporaryDirectory.appending(path: "TaskforceLauncherPresentationFixtures")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)

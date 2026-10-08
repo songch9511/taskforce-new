@@ -67,7 +67,7 @@ struct LauncherListPane: View {
                         }
                     }
                 }
-                .padding(.top, TFSpace.xs)
+                .padding(.top, TFSpace.sm)
                 .padding(.bottom, TFSpace.sm)
             }
             .onScrollGeometryChange(for: Bool.self) { geometry in
