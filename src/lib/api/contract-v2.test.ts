@@ -241,6 +241,13 @@ describe("기억 (memory_items)", () => {
     expect(memoryItemSchema.safeParse({ ...row, origin: "user" }).success).toBe(false);
   });
 
+  it("subject(같은 사실의 열쇠, B1)는 문자열 · null · 없음 모두 읽는다 (B1 전 행 · 옛 응답)", () => {
+    expect(memoryItemSchema.parse({ ...row, subject: "start" })).toEqual({ ...row, subject: "start" });
+    expect(memoryItemSchema.parse({ ...row, subject: null })).toEqual({ ...row, subject: null });
+    expect(memoryItemSchema.parse(row)).not.toHaveProperty("subject");
+    expect(memoryItemSchema.safeParse({ ...row, subject: 42 }).success).toBe(false);
+  });
+
   it("지금 쓰는 기억 = 정정 · 잊기 시각이 모두 없음. 정정한 새 항목이 지워져 포인터가 비어도 옛 항목은 지금 것이 아니다", () => {
     expect(isCurrentMemoryItem(row)).toBe(true);
     const corrected = { ...row, superseded_by: U.context, superseded_at: "2026-10-09T06:00:00Z" };

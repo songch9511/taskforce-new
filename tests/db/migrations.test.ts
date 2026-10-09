@@ -81,6 +81,7 @@ describe("초기 마이그레이션", () => {
       "oauth_handoffs",
       "oauth_nonces",
       "people",
+      "people_handles",
       "profiles",
       "rate_limit_events",
       "review_accounts",

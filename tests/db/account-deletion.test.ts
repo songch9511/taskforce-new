@@ -48,6 +48,7 @@ const USER_TABLES = [
   "oauth_handoffs",
   "oauth_nonces",
   "people",
+  "people_handles",
   "profiles",
   "rate_limit_events",
   "slack_messages",
@@ -147,14 +148,17 @@ async function seed(userId: string, tokenHex: string) {
     `insert into public.conversation_messages (user_id, conversation_id, seq, role, client_message_id, text) values ($1, $2, 1, 'user', gen_random_uuid(), '기억해') returning id`,
     [userId, conversationId],
   );
+  // 정정 사슬은 같은 범위 · 같은 사실 안에서만 (B1, 20261104000000_context_layer): 범위 안 조건을 사용자가 정정한 이력
   const newerMemory = await one(
-    `insert into public.memory_items (user_id, kind, scope_kind, context_id, statement, origin, source_ref) values ($1, 'condition', 'context', $2, '지금 조건', 'explicit', $3) returning id`,
+    `insert into public.memory_items (user_id, kind, scope_kind, context_id, subject, statement, origin, source_ref) values ($1, 'condition', 'context', $2, 'start', '지금 조건', 'explicit', $3) returning id`,
     [userId, contextId, JSON.stringify({ message_id: messageId })],
   );
   await db.query(
-    `insert into public.memory_items (user_id, kind, scope_kind, statement, origin, source_ref, superseded_by) values ($1, 'fact', 'global', '옛 사실', 'observed', $2, $3)`,
-    [userId, JSON.stringify({ source_id: sourceId, quote: "원문" }), newerMemory],
+    `insert into public.memory_items (user_id, kind, scope_kind, context_id, subject, statement, origin, source_ref, superseded_by) values ($1, 'condition', 'context', $2, 'start', '옛 조건', 'observed', $3, $4)`,
+    [userId, contextId, JSON.stringify({ source_id: sourceId, quote: "원문" }), newerMemory],
   );
+  // 사람 계정(B1): 연결이 본 계정 하나 (출처 사람 · 계정 행이 함께 생긴다)
+  await db.query(`select public.observe_person_handle($1, 'notion', 'notion-peer', '상대 2', 'peer2@example.com', $2)`, [userId, connectionId]);
   await db.query(`insert into public.identity_links (user_id, provider, account_ref, connection_id, verified_via) values ($1, 'notion', 'notion-user', $2, 'oauth')`, [
     userId,
     connectionId,
