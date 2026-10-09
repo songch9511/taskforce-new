@@ -19,7 +19,8 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
     private let launcher: LauncherModel
     private var clickMonitors: [Any] = []
     private var keyMonitor: Any?
-    private var reduceMotionObserver: NSObjectProtocol?
+    private var observers: [NSObjectProtocol] = []
+    private var wasSignedIn = false
     #if DEBUG
     /// 디자인 비교 스냅샷이 견본 데이터를 줄일 때 (`EdgeSnapshot`). 바꾸면 바로 다시 읽는다
     var workOverride: ((EdgeWorkSnapshot) -> EdgeWorkSnapshot)? {
@@ -48,12 +49,32 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
         rail.show()
         followWork()
         followPanel()
-        reduceMotionObserver = NSWorkspace.shared.notificationCenter.addObserver(
+        // 시작할 때 세션은 아직 읽는 중이다: 로그인이 확인되면 그때 목록 · run을 읽는다 (런처는 열 때마다 읽는다)
+        followSession()
+        observers.append(NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, object: nil, queue: .main
         ) { [weak self] _ in
             MainActor.assumeIsolated { self?.shell.reduceMotion = Self.systemReduceMotion }
+        })
+        // 해상도 · 화면 구성이 바뀌면 레일을 다시 화면 모서리에 붙이고, 열린 패널도 그 옆으로
+        observers.append(NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.rail.show()
+                self?.panel.fitToContent()
+            }
+        })
+    }
+
+    private func followSession() {
+        let signedIn = withObservationTracking {
+            launcher.isSignedIn
+        } onChange: { [weak self] in
+            Task { @MainActor in self?.followSession() }
         }
-        load()
+        if signedIn, !wasSignedIn { load() }
+        wasSignedIn = signedIn
     }
 
     /// ⌥ Space
@@ -96,6 +117,8 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
             Task { @MainActor in self?.followWork() }
         }
         if work != shell.work { shell.update(work) }
+        // 포인터 아래 칸이 사라지면 툴팁도 내린다
+        if shell.tooltip == nil { rail.hideTooltip() }
     }
 
     // MARK: 패널
@@ -110,23 +133,25 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
         if open {
             if panel.presentation.shown, panel.isVisible {
                 panel.fitToContent()
-            } else {
-                panel.show()
+            } else if panel.show() {
+                rail.hideTooltip()
                 installMonitors()
                 load()
             }
-        } else if panel.presentation.shown {
+        } else if panel.presentation.shown || hasMonitors {
             panel.hide()
             removeMonitors()
         }
     }
 
+    private var hasMonitors: Bool { !clickMonitors.isEmpty || keyMonitor != nil }
+
     private func installMonitors() {
-        guard clickMonitors.isEmpty else { return }
+        guard !hasMonitors else { return }
         let mask: NSEvent.EventTypeMask = [.leftMouseDown, .rightMouseDown, .otherMouseDown]
         // 다른 앱을 누름 (전역 마우스 모니터는 손쉬운 사용 권한이 필요 없다)
         if let global = NSEvent.addGlobalMonitorForEvents(matching: mask, handler: { [weak self] _ in
-            MainActor.assumeIsolated { self?.shell.dismiss(.outside) }
+            MainActor.assumeIsolated { self?.shell.dismiss() }
         }) {
             clickMonitors.append(global)
         }
@@ -135,7 +160,7 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
             MainActor.assumeIsolated {
                 guard let self else { return }
                 if event.window !== self.panel.panel, event.window !== self.rail.panel {
-                    self.shell.dismiss(.outside)
+                    self.shell.dismiss()
                 }
             }
             return event
@@ -163,7 +188,7 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         switch Int(event.keyCode) {
         case kVK_Escape:
-            shell.dismiss(.escape)
+            shell.dismiss()
             return true
         case kVK_ANSI_2 where flags == .command:
             shell.openAllWork()
@@ -181,7 +206,7 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
     func windowDidResignKey(_ notification: Notification) {
         // ⌘Tab 등으로 키를 잃으면 접는다 (More 메뉴를 연 동안은 빼고)
         guard shell.panelOpen, !shell.menuOpen else { return }
-        shell.dismiss(.outside)
+        shell.dismiss()
     }
 }
 #endif

@@ -107,6 +107,20 @@ struct EdgeShellModelTests {
         #expect(RailOrdering.accessibilityLabel([Self.entry(1, .needsYou)]) == "Taskforce — 0 running, 1 needs you")
     }
 
+    @Test func railCountsEveryLiveItemNotOnlyTheFourSlots() {
+        let shell = model()
+        let reviews = (1...3).map { n in
+            ActionSummary(
+                id: Self.action(n).id, title: "Review \(n)", owner: .me, status: .open, dueDate: nil, counterpart: nil,
+                needsConfirmation: true, confirmReasons: [], startedAt: nil, lastActivityAt: Date(timeIntervalSinceReferenceDate: 0)
+            )
+        }
+        let running = (4...6).map { Self.action($0, started: true) }
+        shell.update(EdgeWorkSnapshot(review: reviews, open: running, working: Set(running.map(\.id))))
+        #expect(shell.slots.count == 4)
+        #expect(shell.railAccessibilityLabel == "Taskforce — 3 running, 3 need you")
+    }
+
     @Test func railItemNameIsTitleStateActivity() {
         let entry = RailEntry(id: UUID(), title: "Pricing page", kind: .running, state: .inProgress, activity: "AI reviewing")
         #expect(entry.accessibilityLabel == "Pricing page · In Progress · AI reviewing")
@@ -216,7 +230,7 @@ struct EdgeShellModelTests {
         shell.pointer(inside: false)
         time.advance(1)
         #expect(shell.isExpanded)
-        shell.dismiss(.outside)
+        shell.dismiss()
         #expect(!shell.panelOpen)
         #expect(!shell.isExpanded)
     }
@@ -246,7 +260,7 @@ struct EdgeShellModelTests {
         shell.pointer(inside: true)
         time.advance(0.2)
         shell.openAllWork()
-        shell.dismiss(.escape)
+        shell.dismiss()
         #expect(!shell.panelOpen)
         #expect(shell.isExpanded)
     }
@@ -343,6 +357,12 @@ struct EdgeShellModelTests {
     }
 
     // MARK: 플래그
+
+    /// 앱은 launch argument로만 켠다: 테스트 실행(인자 없음)에서는 꺼져 있다
+    @Test func edgeShellIsOffWithoutTheLaunchArgument() {
+        #expect(!ProcessInfo.processInfo.arguments.contains("-\(EdgeShellFlag.key)"))
+        #expect(!EdgeShellFlag.isEnabled())
+    }
 
     @Test func edgeShellIsOffUnlessTurnedOnInAnIsolatedSuite() throws {
         let name = "dev.taskforcelabs.tests.edge-shell.\(UUID().uuidString)"

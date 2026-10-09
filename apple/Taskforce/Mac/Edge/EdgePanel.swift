@@ -88,7 +88,7 @@ struct EdgeWorkList: View {
         } else {
             LazyVStack(alignment: .leading, spacing: 0) {
                 ForEach(open, id: \.action.id) { row in
-                    EdgeWorkRow(row: row, today: today, current: row.action.id == currentID || row.action.id == highlightedID)
+                    EdgeWorkRow(row: row, today: today, current: row.action.id == currentID, highlighted: row.action.id == highlightedID)
                 }
                 if !work.doneToday.isEmpty {
                     Text("Done today")
@@ -97,7 +97,7 @@ struct EdgeWorkList: View {
                         .padding(EdgeInsets(top: 18, leading: TFSpace.sm, bottom: TFSpace.xs, trailing: TFSpace.sm))
                         .accessibilityAddTraits(.isHeader)
                     ForEach(work.doneToday, id: \.id) { action in
-                        EdgeWorkRow(row: .init(action: action, state: .done, activity: nil), today: today, current: action.id == highlightedID)
+                        EdgeWorkRow(row: .init(action: action, state: .done, activity: nil), today: today, current: action.id == currentID, highlighted: action.id == highlightedID)
                     }
                 }
             }
@@ -127,7 +127,10 @@ struct EdgeWorkRow: View {
 
     let row: Row
     let today: LocalDate
+    /// 레일에서 연 일 (선택된 행)
     let current: Bool
+    /// 패널이 열린 채 레일에서 그 일에 포인터를 올림 (표시만, 선택이 아니다)
+    var highlighted = false
 
     static func accessibilityLabel(title: String, state: TaskStatusMark.State, activity: String?, due: String?, overdue: Bool) -> String {
         var label = "\(title) — \(state.label)"
@@ -168,14 +171,14 @@ struct EdgeWorkRow: View {
         }
         .padding(EdgeInsets(top: 10, leading: TFSpace.sm, bottom: 10, trailing: TFSpace.sm))
         .background {
-            RoundedRectangle(cornerRadius: TFRadius.md, style: .continuous).fill(current ? TFColor.bgSelected : .clear)
+            RoundedRectangle(cornerRadius: TFRadius.md, style: .continuous).fill(current || highlighted ? TFColor.bgSelected : .clear)
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(Self.accessibilityLabel(title: row.action.title, state: row.state, activity: row.activity, due: due, overdue: overdue))
         .accessibilityAddTraits(current ? .isSelected : [])
     }
 
-    private var secondary: Color { current ? TFColor.textSecondarySelected : TFColor.textSecondary }
+    private var secondary: Color { current || highlighted ? TFColor.textSecondarySelected : TFColor.textSecondary }
 }
 
 /// 패널 안 빈 화면의 제목 (설명 문단 없음). "All caught up"은 쓰지 않는다 (디자인 EmptyState)
@@ -210,6 +213,8 @@ final class EdgePanelController {
     let presentation = EdgePanelPresentation()
     private let hosting: NSHostingView<EdgePanelView>
     private var generation = 0
+    /// 여는 움직임 중 (그동안 높이 맞추기는 끝난 뒤로 미룬다)
+    private var opening = false
 
     init(shell: EdgeShellModel) {
         self.shell = shell
@@ -247,17 +252,23 @@ final class EdgePanelController {
         )
     }
 
-    func show() {
-        guard let target = targetFrame() else { return }
+    /// 열었으면 true (화면을 찾지 못하면 false)
+    @discardableResult
+    func show() -> Bool {
+        // 처음 열 때도 본문 높이를 알고 자리를 잡는다
+        hosting.layoutSubtreeIfNeeded()
+        guard let target = targetFrame() else { return false }
         generation += 1
+        let current = generation
         let reduceMotion = shell.reduceMotion
-        let wasVisible = panel.isVisible && presentation.shown
-        if !wasVisible {
+        // 닫히는 중에 다시 열면 지금 모습에서 이어서 연다 (투명도 · 자리를 처음으로 되돌리지 않는다)
+        if !panel.isVisible {
             panel.alphaValue = 0
             panel.setFrame(reduceMotion ? target : target.offsetBy(dx: TFMotion.panelHiddenOffset, dy: 0), display: false)
         }
         panel.makeKeyAndOrderFront(nil)
         presentation.shown = true
+        opening = true
         NSAnimationContext.runAnimationGroup { context in
             context.duration = TFMotion.panelFade
             context.timingFunction = Self.timing
@@ -268,8 +279,14 @@ final class EdgePanelController {
             context.timingFunction = Self.timing
             panel.animator().setFrame(target, display: true)
         } completionHandler: { [weak self] in
-            MainActor.assumeIsolated { self?.panel.invalidateShadow() }
+            MainActor.assumeIsolated {
+                guard let self, self.generation == current else { return }
+                self.opening = false
+                self.fitToContent()
+                self.panel.invalidateShadow()
+            }
         }
+        return true
     }
 
     func hide() {
@@ -277,6 +294,7 @@ final class EdgePanelController {
         generation += 1
         let current = generation
         let reduceMotion = shell.reduceMotion
+        opening = false
         presentation.shown = false
         let frame = panel.frame
         NSAnimationContext.runAnimationGroup { context in
@@ -302,7 +320,7 @@ final class EdgePanelController {
 
     /// 본문 높이가 바뀌면 위 모서리를 둔 채로 높이만 맞춘다
     func fitToContent() {
-        guard panel.isVisible, presentation.shown, let target = targetFrame(), target.size != panel.frame.size else { return }
+        guard !opening, panel.isVisible, presentation.shown, let target = targetFrame(), target != panel.frame else { return }
         panel.setFrame(target, display: true)
         panel.invalidateShadow()
     }

@@ -1,18 +1,26 @@
 #if os(macOS)
-import AppKit
 import Foundation
 import Observation
 import TaskforceKit
 import TaskforceUI
 
 /// 0.2.0 Edge 셸(EdgeRail + EdgePanel)을 켜는 플래그. 기본은 꺼짐 → 기존 ⌥Space 런처(`LauncherPanelController`).
-/// 이 PR은 셸의 뼈대라 켜는 길은 격리된 Debug 실행뿐이다: launch argument `-TF_EDGE_SHELL YES`(인자 영역, 저장되지 않는다)
-/// 또는 테스트 · 스냅샷의 전용 UserDefaults suite. 설치된 앱의 설정에 쓰지 않는다 (구현 계획 7장 플래그 경계).
+/// 이 PR은 셸의 뼈대라 켜는 길은 격리된 Debug 실행뿐이다 (구현 계획 7장 플래그 경계):
+/// - 앱: launch argument `-TF_EDGE_SHELL YES`만 (인자 영역. 저장된 defaults로는 켜지지 않는다)
+/// - 테스트: 전용 UserDefaults suite를 넘긴다
+/// Release 빌드는 늘 꺼짐이다. 실사용 켜기(출시 gate)는 그때 이 함수를 바꾼다.
 enum EdgeShellFlag {
     static let key = "TF_EDGE_SHELL"
 
-    static func isEnabled(_ defaults: UserDefaults = .standard) -> Bool {
-        defaults.bool(forKey: key)
+    static func isEnabled(_ defaults: UserDefaults? = nil) -> Bool {
+        #if DEBUG
+        if let defaults { return defaults.bool(forKey: key) }
+        let arguments = UserDefaults.standard.volatileDomain(forName: UserDefaults.argumentDomain)
+        guard let value = arguments[key] else { return false }
+        return (value as? Bool) ?? (value as? String).map { NSString(string: $0).boolValue } ?? false
+        #else
+        return false
+        #endif
     }
 }
 
@@ -110,14 +118,6 @@ final class EdgeShellModel {
         }
     }
 
-    enum DismissReason: Equatable {
-        /// 패널 · 레일 밖을 누름 (누른 곳으로도 그대로 간다)
-        case outside
-        case escape
-        /// ⌥ Space를 다시 누름
-        case hotKey
-    }
-
     private(set) var slots: [RailEntry] = []
     /// 노치에 120ms 머물러 펼친 레일 (패널이 열려 있으면 `isExpanded`가 따로 참)
     private(set) var railHovered = false
@@ -130,11 +130,11 @@ final class EdgeShellModel {
     private(set) var hoveredControl: Control?
     private(set) var menuOpen = false
     private(set) var work = EdgeWorkSnapshot.empty
+    /// 레일에 오를 수 있는 일 전부 (칸은 넷까지지만 접근성 이름의 개수는 전부를 센다)
+    private(set) var live: [RailEntry] = []
     /// 움직임 줄이기 (시스템 설정 · Debug 스냅샷의 `-TFReduceMotion YES`)
     var reduceMotion: Bool
 
-    /// 패널을 닫기 직전 키를 가졌던 앱 (Esc로 접으면 그 앱으로 돌려준다)
-    @ObservationIgnored var previousApp: NSRunningApplication?
     @ObservationIgnored private let schedule: EdgeSchedule
     @ObservationIgnored private let clock: () -> Date
     @ObservationIgnored private var enterTimer: EdgeTimer?
@@ -160,7 +160,7 @@ final class EdgeShellModel {
     var rest: [RailEntry] { Array(slots.dropFirst(notch.count)) }
     /// 보일 링도 없고 펼치지도 않음: 6 × 36pt 가는 줄 (그래도 호버 대상)
     var isIdle: Bool { notch.isEmpty && !isExpanded }
-    var railAccessibilityLabel: String { RailOrdering.accessibilityLabel(slots) }
+    var railAccessibilityLabel: String { RailOrdering.accessibilityLabel(live) }
 
     /// 레일 툴팁 ("Title · State · Activity", 고정 칸은 "All work ⌘2"). 패널이 열리면 끈다
     var tooltip: (title: String, detail: String)? {
@@ -218,7 +218,7 @@ final class EdgeShellModel {
     /// ⌥ Space: 열려 있으면 접고, 아니면 마지막에 본 것을 연다 (Review가 생기면 S4에서 newest Review 먼저)
     func togglePanel() {
         if panelOpen {
-            dismiss(.hotKey)
+            dismiss()
         } else {
             openPanel(view)
         }
@@ -247,8 +247,8 @@ final class EdgeShellModel {
         openPanel(.allWork)
     }
 
-    /// 밖 클릭 · Esc · ⌥ Space. 접어도 일은 멈추지 않고 초안은 남는다
-    func dismiss(_ reason: DismissReason) {
+    /// 밖 클릭(클릭은 누른 곳으로도 그대로 간다) · Esc · ⌥ Space. 접어도 일은 멈추지 않고 초안은 남는다
+    func dismiss() {
         guard panelOpen else { return }
         panelOpen = false
         // 포인터가 레일에 없으면 바로 숨는다 (호버로 펼친 상태가 아니었으면)
@@ -290,6 +290,7 @@ final class EdgeShellModel {
     private func refreshSlots(at now: Date) {
         recentlyDone = recentlyDone.filter { now.timeIntervalSince($0.value) < TFMotion.doneHold }
         let entries = Self.entries(work, recentlyDone: recentlyDone)
+        live = entries
         slots = RailOrdering.slots(previous: slots.map(\.id), entries: entries)
         if let hoveredID, !slots.contains(where: { $0.id == hoveredID }) { self.hoveredID = nil }
         scheduleDoneExpiry(now: now)

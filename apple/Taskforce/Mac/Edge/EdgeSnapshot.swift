@@ -16,7 +16,8 @@ enum EdgeSnapshot {
     }
 
     static func runIfRequested(_ edge: EdgeShellController) {
-        guard let directory else { return }
+        // 견본 데이터에서만: 실제 계정의 할 일 제목을 PNG로 남기지 않는다
+        guard let directory, SampleData.isEnabled else { return }
         let arguments = ProcessInfo.processInfo.arguments
         let dark = arguments.contains("-TFSnapshotDark")
         if dark { NSApplication.shared.appearance = NSAppearance(named: .darkAqua) }

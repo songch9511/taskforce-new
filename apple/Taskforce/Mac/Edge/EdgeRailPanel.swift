@@ -183,7 +183,9 @@ struct EdgeRailView: View {
             }
             Group {
                 ForEach(Array(shell.rest.enumerated()), id: \.element.id) { index, entry in
-                    item(entry, layout: layout).offset(x: layout.restFrame(index).minX, y: layout.restFrame(index).minY)
+                    item(entry, layout: layout)
+                        .offset(x: layout.restFrame(index).minX, y: layout.restFrame(index).minY)
+                        .accessibilityHidden(!layout.expanded)
                 }
                 Rectangle()
                     .fill(TFColor.bezelTrack)
@@ -203,8 +205,8 @@ struct EdgeRailView: View {
                     .accessibilityHidden(!layout.expanded)
                 }
             }
-            .opacity(layout.expanded ? 1 : 0)
-            .animation(TFMotion.ease(TFMotion.ringFade), value: layout.expanded)
+            // 나타남은 투명도만 움직인다 (자리 · 크기는 레일의 미끄러짐을 따르고, 움직임 줄이기면 그것도 없다)
+            .animation(TFMotion.ease(TFMotion.ringFade)) { $0.opacity(layout.expanded ? 1 : 0) }
         }
         .frame(width: EdgeRailLayout.railWidth, height: EdgeRailLayout.windowHeight, alignment: .topLeading)
     }
@@ -339,6 +341,10 @@ final class EdgeRailPanelController {
         tooltip.hide()
     }
 
+    func hideTooltip() {
+        tooltip.hide()
+    }
+
     private var layout: EdgeRailLayout {
         EdgeRailLayout(notchCount: shell.notch.count, restCount: shell.rest.count, expanded: shell.isExpanded, idle: shell.isIdle)
     }
@@ -380,11 +386,18 @@ final class EdgeRailPanelController {
         }
         shell.setMenuOpen(true)
         tooltip.hide()
-        // 메뉴 오른쪽 위를 레일 왼쪽 10pt에 둔다 (화면 오른쪽이라 macOS가 왼쪽으로 펼친다)
-        let point = NSPoint(x: frame.minX - 10, y: hosting.isFlipped ? frame.maxY : hosting.bounds.height - frame.maxY)
+        // 메뉴 오른쪽 끝을 레일 왼쪽 10pt에 둔다 (메뉴가 레일을 덮지 않게)
+        let point = NSPoint(
+            x: frame.minX - 10 - menu.size.width,
+            y: hosting.isFlipped ? frame.minY : hosting.bounds.height - frame.minY
+        )
         menu.popUp(positioning: nil, at: point, in: hosting)
         withExtendedLifetime(target) {}
         shell.setMenuOpen(false)
+        // 메뉴를 쓰는 동안은 포인터 이벤트가 오지 않는다: 지금 포인터 자리로 다시 판단한다
+        let local = hosting.convert(panel.convertPoint(fromScreen: NSEvent.mouseLocation), from: nil)
+        let inside = hosting.bounds.contains(local)
+        pointer(inside ? (hosting.isFlipped ? local : CGPoint(x: local.x, y: hosting.bounds.height - local.y)) : nil)
     }
 
     private final class MenuTarget: NSObject {
@@ -407,6 +420,8 @@ final class RailTooltipController {
     private let shell: EdgeShellModel
     private let panel: EdgePassivePanel
     private let hosting: NSHostingView<RailTooltipView>
+    /// 지금 보이는 툴팁 (같으면 다시 그리지 않는다)
+    private var shown: (anchor: CGRect, title: String, detail: String)?
 
     init(shell: EdgeShellModel) {
         self.shell = shell
@@ -426,6 +441,8 @@ final class RailTooltipController {
             hide()
             return
         }
+        if let shown, shown.anchor == anchor, shown.title == text.title, shown.detail == text.detail, panel.isVisible { return }
+        shown = (anchor, text.title, text.detail)
         hosting.rootView = RailTooltipView(title: text.title, detail: text.detail)
         let size = hosting.fittingSize
         // 레일 창 좌표(위가 0) → 화면 좌표
@@ -437,6 +454,7 @@ final class RailTooltipController {
     }
 
     func hide() {
+        shown = nil
         panel.orderOut(nil)
     }
 }

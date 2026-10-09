@@ -52,9 +52,8 @@ public struct RailItem: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityElement()
+        // 버튼의 이름이 링의 이름을 덮는다 (누르기 동작은 버튼 그대로)
         .accessibilityLabel(Self.accessibilityLabel(title: title, state: state, activity: activity))
-        .accessibilityAddTraits(.isButton)
     }
 }
 

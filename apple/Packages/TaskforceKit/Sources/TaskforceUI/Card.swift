@@ -14,8 +14,9 @@ public struct Card<Content: View, Action: View>: View {
         self.content = content()
     }
 
+    @ViewBuilder
     public var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
+        let tray = VStack(alignment: .leading, spacing: 0) {
             if let title {
                 HStack(spacing: TFSpace.sm) {
                     Text(title)
@@ -33,7 +34,12 @@ public struct Card<Content: View, Action: View>: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(TFColor.bgField, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         .accessibilityElement(children: .contain)
-        .accessibilityLabel(title ?? "")
+        // 캡션이 있는 카드만 그 이름으로 묶는다 (캡션 없는 카드에 빈 이름을 붙이지 않는다)
+        if let title {
+            tray.accessibilityLabel(title)
+        } else {
+            tray
+        }
     }
 }
 
