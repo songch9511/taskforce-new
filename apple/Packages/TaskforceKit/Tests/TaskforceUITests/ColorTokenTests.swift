@@ -67,6 +67,20 @@ enum FigmaColor {
         "settings/fill": ("#EBEBED", "#3A3A3C"),
         "settings/line": ("#ECECEC", "#38383A"),
         "settings/content": ("#FFFFFF", "#1C1C1E"),
+        // 0.2.0 디자인 시스템 아티팩트 "Taskforce" tokens.json (2026-10-09). Figma에는 아직 없다.
+        "fill/marker": ("#FBE49A", "#FBE49A"),
+        "fill/segment": ("#FFFFFF", "#636366"),
+        "text/on-marker": ("#1D1D1F", "#1D1D1F"),
+        "bg/field": ("#F5F5F7", "#FFFFFF12"),
+        "bg/tooltip": ("#FFFFFF", "#3A3A3C"),
+        "bg/panel": ("#FFFFFFF7", "#2C2C2EF7"),
+        "status/activity": ("#6A8CC7", "#6A8CC7"),
+        "status/step-inactive": ("#8E8E93", "#8E8E93"),
+        "bezel/base": ("#000000", "#000000"),
+        "bezel/ink": ("#FFFFFF", "#FFFFFF"),
+        "bezel/ink-secondary": ("#9A9AA0", "#9A9AA0"),
+        "bezel/track": ("#FFFFFF2E", "#FFFFFF2E"),
+        "bezel/hover": ("#FFFFFF1F", "#FFFFFF1F"),
     ]
 
     static func shipped(_ name: String) -> (light: RGBA, dark: RGBA)? {
