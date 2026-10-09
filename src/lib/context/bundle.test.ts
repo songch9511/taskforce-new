@@ -137,6 +137,21 @@ describe("buildContextBundle", () => {
     expect(bundle.materials).toEqual([{ ref: `source:${NOTION}#0`, source_id: NOTION, version: "v2", tier: "T1", text: "노션 조각" }]);
   });
 
+  it("상태를 모르는 원문(다른 사용자 · 지워진 원문)의 조각 · observed 기억은 넣지 않는다 (사용자가 저장한 explicit은 넣는다)", () => {
+    const UNKNOWN = "dddddddd-0000-4000-8000-000000000009";
+    const { bundle } = buildContextBundle(
+      input({
+        memory: [
+          memory({ id: "m-unknown", origin: "observed", statement: "모르는 원문에서", source_ref: { source_id: UNKNOWN } }),
+          memory({ id: "m-said", statement: "내가 저장", source_ref: { source_id: UNKNOWN } }),
+        ],
+        chunks: [{ id: "c-unknown", source_id: UNKNOWN, source_revision: "v1", seq: 0, text: "모르는 조각" }],
+      }),
+    );
+    expect(bundle.memory.map((m) => m.id)).toEqual(["m-said"]);
+    expect(bundle.materials).toEqual([]);
+  });
+
   it("manifest는 넣은 것의 id만 (글 없음). hash는 같은 내용이면 같고 내용이 바뀌면 다르다", () => {
     const built = buildContextBundle(input());
     expect(built.manifest).toEqual({

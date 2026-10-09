@@ -65,6 +65,7 @@ describe("normalizeMemorySubject · sameFact · memoryWriteRow", () => {
     expect(() => memoryWriteRow({ kind: "fact", scope: { kind: "global" }, statement: "x", origin: "inferred" })).toThrow(/confidence/);
     expect(() => memoryWriteRow({ kind: "fact", scope: { kind: "global" }, statement: "x", origin: "explicit", confidence: 0.5 })).toThrow(/confidence/);
     expect(() => memoryWriteRow({ kind: "fact", scope: { kind: "agent", agentAdapter: "claude" }, statement: "x", origin: "explicit" })).toThrow();
+    expect(() => memoryWriteRow({ kind: "fact", scope: { kind: "global" }, subject: " Memory:abc ", statement: "x", origin: "explicit" })).toThrow(/memory:/);
     expect(() =>
       memoryWriteRow({ kind: "fact", scope: { kind: "global" }, statement: "x", origin: "explicit", valid_from: "2026-10-10T00:00:00Z", valid_until: "2026-10-09T00:00:00Z" }),
     ).toThrow(/valid_from/);

@@ -95,7 +95,7 @@ describe("gate 꺼짐: 아무것도 쓰거나 부르지 않는다", () => {
     );
     await recordOAuthIdentityLink(admin, { userId: "u1", connectionId: "c1", provider: "slack", accountRef: "T1:U1", email: null }, {});
     expect(await loadScopeMemory(admin, "u1", { contextId: CONTEXT }, {})).toEqual([]);
-    await setSourcesAccessLost(admin, "u1", ["s1"], true, new Date(), {});
+    await setSourcesAccessLost(admin, "u1", ["s1"], true, {});
     expect(calls).toEqual([]);
   });
 
@@ -150,8 +150,8 @@ describe("gate 켜짐: DB 함수 인자", () => {
     await recordOAuthIdentityLink(admin, { userId: "u1", connectionId: "c1", provider: "slack", accountRef: "T1:U1", email: null }, MEMORY);
     expect(calls.map((c) => c.name)).toEqual(["identity_links", "identity_links"]);
     const promote = calls[0].ops;
-    // 연결 결과에 주소가 없으면(Slack) 추정 링크의 주소를 지우지 않는다
-    expect(promote.find((o) => o.op === "update")!.args[0]).toEqual({ verified_via: "oauth", connection_id: "c1" });
+    // 연결 결과에 주소가 없으면(Slack) 추정 링크의 주소를 지우지 않고, 추정 때의 공용 표시는 푼다
+    expect(promote.find((o) => o.op === "update")!.args[0]).toEqual({ verified_via: "oauth", connection_id: "c1", shared_account: false });
     expect(promote.filter((o) => o.op === "eq").map((o) => o.args)).toEqual([
       ["user_id", "u1"],
       ["provider", "slack"],
@@ -163,16 +163,10 @@ describe("gate 켜짐: DB 함수 인자", () => {
     expect(upsert[1]).toEqual({ onConflict: "user_id,provider,account_ref", ignoreDuplicates: true });
   });
 
-  it("접근 상실 표시는 맥락층 gate 하나라도 켜져 있을 때 그 사용자의 원문에만", async () => {
+  it("접근 상실 표시는 맥락층 gate 하나라도 켜져 있을 때 set_sources_access 한 번 (같은 문서의 revision은 DB가 함께 바꾼다)", async () => {
     const { admin, calls } = recordingAdmin();
-    await setSourcesAccessLost(admin, "u1", ["s1", "s2"], true, new Date("2026-10-10T00:00:00Z"), CHUNKS);
-    expect(calls).toHaveLength(1);
-    expect(calls[0].ops.map((o) => [o.op, ...o.args])).toEqual([
-      ["update", { access_lost_at: "2026-10-10T00:00:00.000Z" }],
-      ["eq", "user_id", "u1"],
-      ["in", "id", ["s1", "s2"]],
-      ["throwOnError"],
-    ]);
+    await setSourcesAccessLost(admin, "u1", ["s1", "s2"], true, CHUNKS);
+    expect(calls.map((c) => [c.name, c.ops[0].args[0]])).toEqual([["set_sources_access", { p_user_id: "u1", p_source_ids: ["s1", "s2"], p_lost: true }]]);
   });
 
   it("범위 기억 읽기: 전체 + 요청 대상만 (id 모양이 아닌 값은 필터에 넣지 않는다)", async () => {

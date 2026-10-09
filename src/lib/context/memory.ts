@@ -127,6 +127,8 @@ export const memoryWriteSchema = z
   })
   .strict()
   .refine((w) => w.origin !== "observed" || Boolean(w.source_ref), { message: "observed 기억은 출처가 필요합니다", path: ["source_ref"] })
+  // 'memory:<id>' 주제는 정정이 만든다 (DB remember_memory_item도 막는다)
+  .refine((w) => !normalizeMemorySubject(w.subject)?.startsWith("memory:"), { message: "memory:로 시작하는 주제는 정정에만 씁니다", path: ["subject"] })
   .refine((w) => (w.origin === "inferred") === (w.confidence != null), { message: "confidence는 inferred에만, inferred에는 반드시", path: ["confidence"] })
   .refine((w) => !w.valid_from || !w.valid_until || Date.parse(w.valid_from) <= Date.parse(w.valid_until), {
     message: "valid_from이 valid_until보다 늦습니다",

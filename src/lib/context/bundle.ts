@@ -11,7 +11,7 @@ import { effectiveMemory, unavailableSources, type ScopeTarget, type SourceState
 // - 기억: 요청 범위에서 지금 쓰는 것만(effectiveMemory). 추정(inferred) · 다른 범위 · 정정 · 잊은 · 글이 지워진 항목,
 //   접근을 잃었거나 글이 지워졌거나 Slack에서 온 원문의 observed 기억은 넣지 않는다.
 // - 사람: 이름이 있는 사람만, 이메일은 넣지 않는다(필요한 단계만 따로). role은 그 사람 범위의 relationship 기억.
-// - 자료: 쓸 수 있는 원문(글 있음 · 접근 가능 · Slack 아님)의 조각만, 등급 T1(원문 인용).
+// - 자료: 상태를 아는 쓸 수 있는 원문(글 있음 · 접근 가능 · Slack 아님)의 조각만, 등급 T1(원문 인용).
 // - manifest: 넣은 것의 id만 (글 없음). 이미 보낸 묶음은 회수할 수 없으므로 "어디까지 나갔는지"를 이것으로 남긴다(ARCH08).
 
 export type BundlePerson = { id: string; display_name: string | null };
@@ -28,7 +28,7 @@ export type ContextBundleInput = {
   memory: readonly MemoryLike[];
   people: readonly BundlePerson[];
   chunks: readonly BundleChunk[];
-  /** 기억 · 조각이 가리키는 원문들의 상태 (없는 원문은 쓸 수 있는 것으로 본다: 원문이 지워졌으면 조각도 없다) */
+  /** 기억 · 조각이 가리키는 원문들의 상태. 여기 없는 원문의 조각 · observed 기억은 넣지 않는다 (상태를 모르는 원문을 쓸 수 있는 것으로 보지 않는다) */
   sources: readonly SourceState[];
   now: Date;
   limits?: { memory?: number; materials?: number };
@@ -72,10 +72,11 @@ function canonical(value: unknown): string {
 export function buildContextBundle(input: ContextBundleInput): { bundle: ContextBundle; manifest: BundleManifest; hash: string } {
   const limits = { ...DEFAULT_LIMITS, ...input.limits };
   const unavailable = unavailableSources(input.sources);
+  const known = new Set(input.sources.map((source) => source.id.toLowerCase()));
   const target: ScopeTarget = { ...input.target, contextId: input.context?.id ?? null };
   const personIds = new Set(input.people.map((p) => p.id));
   const memoryTarget: ScopeTarget = { ...target, personIds: [...new Set([...(target.personIds ?? []), ...personIds])] };
-  const effective = effectiveMemory(input.memory, memoryTarget, { now: input.now, unavailableSourceIds: unavailable });
+  const effective = effectiveMemory(input.memory, memoryTarget, { now: input.now, unavailableSourceIds: unavailable, knownSourceIds: known });
 
   // 상대의 역할: 그 사람 범위의 relationship 기억 (좁은 범위 우선 해석을 거친 것)
   const roles = new Map<string, string>();
@@ -94,7 +95,9 @@ export function buildContextBundle(input: ContextBundleInput): { bundle: Context
   const people = input.people
     .filter((person): person is BundlePerson & { display_name: string } => Boolean(person.display_name))
     .map((person) => ({ id: person.id, display_name: person.display_name, role: roles.get(person.id.toLowerCase()) ?? null }));
-  const chunks = input.chunks.filter((chunk) => !unavailable.has(chunk.source_id.toLowerCase())).slice(0, limits.materials);
+  const chunks = input.chunks
+    .filter((chunk) => known.has(chunk.source_id.toLowerCase()) && !unavailable.has(chunk.source_id.toLowerCase()))
+    .slice(0, limits.materials);
   const materials = chunks.map((chunk) => ({
     ref: `source:${chunk.source_id}#${chunk.seq}`,
     source_id: chunk.source_id,

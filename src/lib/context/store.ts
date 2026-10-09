@@ -213,7 +213,8 @@ export async function recordOAuthIdentityLink(
   if (!flagEnabled("MEMORY_ENABLED", env)) return;
   await admin
     .from("identity_links")
-    .update({ verified_via: "oauth", connection_id: link.connectionId, ...(link.email ? { email: link.email } : {}) })
+    // 추정 때의 공용 계정 표시도 추정이었다: 사용자가 그 계정으로 연결했으므로 "나"의 계정으로 둔다
+    .update({ verified_via: "oauth", connection_id: link.connectionId, shared_account: false, ...(link.email ? { email: link.email } : {}) })
     .eq("user_id", link.userId)
     .eq("provider", link.provider)
     .eq("account_ref", link.accountRef)
@@ -305,24 +306,18 @@ export async function searchContextChunks(
 }
 
 /**
- * 접근 상실(403 · 삭제 감지) 표시 · 되찾음. 행 · 기억 · 조각은 그대로 두고 검색 · 묶음에서만 뺀다 (아키텍처 6.5).
- * 맥락층 gate(MEMORY_ENABLED 또는 SOURCE_CHUNKS_ENABLED)가 모두 꺼져 있으면 쓰지 않는다
+ * 접근 상실(403 · 삭제 감지) 표시 · 되찾음 (set_sources_access: 같은 문서의 모든 revision을 함께). 행 · 기억 · 조각은 그대로 두고
+ * 검색 · 묶음에서만 뺀다 (아키텍처 6.5). 맥락층 gate(MEMORY_ENABLED 또는 SOURCE_CHUNKS_ENABLED)가 모두 꺼져 있으면 쓰지 않는다
  */
 export async function setSourcesAccessLost(
   admin: SupabaseClient,
   userId: string,
   sourceIds: string[],
   lost: boolean,
-  now = new Date(),
   env: Env = process.env,
 ): Promise<void> {
   if (sourceIds.length === 0 || !(flagEnabled("MEMORY_ENABLED", env) || flagEnabled("SOURCE_CHUNKS_ENABLED", env))) return;
-  await admin
-    .from("sources")
-    .update({ access_lost_at: lost ? now.toISOString() : null })
-    .eq("user_id", userId)
-    .in("id", sourceIds)
-    .throwOnError();
+  await admin.rpc("set_sources_access", { p_user_id: userId, p_source_ids: sourceIds, p_lost: lost }).throwOnError();
 }
 
 type SourceStateRow = {

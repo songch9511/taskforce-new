@@ -50,6 +50,8 @@ export type UsableOptions = {
   includeInferred?: boolean;
   /** 접근을 잃었거나(access_lost_at) 글이 지워진 원문 id: 그 원문에서 온 observed 기억은 쓰지 않는다 (소문자 uuid) */
   unavailableSourceIds?: ReadonlySet<string>;
+  /** 주면, 상태를 아는 원문(소문자 uuid)에서 온 observed 기억만 쓴다: 모르는 원문(다른 사용자 · 지워진 원문)을 쓸 수 있는 것으로 보지 않는다 */
+  knownSourceIds?: ReadonlySet<string>;
 };
 
 /** 지금 쓸 수 있는 항목인가: 정정 · 잊기 전, 글이 남음, 유효 구간 안, 추정 제외(기본), 출처 원문을 읽을 수 있음 */
@@ -64,6 +66,7 @@ export function isUsableMemory(item: MemoryLike, options: UsableOptions): boolea
   if (until !== null && until < now) return false;
   const sourceId = typeof item.source_ref?.source_id === "string" ? item.source_ref.source_id.toLowerCase() : null;
   if (item.origin === "observed" && sourceId && options.unavailableSourceIds?.has(sourceId)) return false;
+  if (item.origin === "observed" && sourceId && options.knownSourceIds && !options.knownSourceIds.has(sourceId)) return false;
   return true;
 }
 
