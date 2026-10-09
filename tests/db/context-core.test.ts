@@ -3,7 +3,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 
 import { asUser, createLocalSupabase } from "./local-supabase";
 
-// 0.2.0 맥락층 · 대화 뼈대 (20261102000000_context_core): 표 9개의 RLS · 권한 · 복합 외래키 · CHECK · on delete.
+// 0.2.0 맥락층 · 대화 뼈대 (20261103000000_context_core): 표 9개의 RLS · 권한 · 복합 외래키 · CHECK · on delete.
 // 앱은 자기 행을 읽기만 하고(owner_all + select 권한), 쓰기는 서버(service role)만 한다. 아직 이 표를 쓰는 코드는 없다.
 
 const ALICE = "00000000-0000-0000-0000-00000000000a";
@@ -109,7 +109,7 @@ beforeAll(async () => {
   bob = await seed(BOB);
 }, 60_000);
 
-describe("맥락층 · 대화 표 RLS · 권한 (20261102000000_context_core)", () => {
+describe("맥락층 · 대화 표 RLS · 권한 (20261103000000_context_core)", () => {
   it("9개 표 모두 RLS가 켜져 있고 정책은 owner_all 하나다 (authenticated, 본인 행)", async () => {
     const { rows } = await db.query<{ tablename: string; policyname: string; cmd: string; roles: string[]; qual: string; with_check: string }>(
       `select tablename, policyname, cmd, roles, qual, with_check from pg_policies where schemaname = 'public' and tablename = any($1) order by tablename`,

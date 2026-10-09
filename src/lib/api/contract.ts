@@ -676,7 +676,7 @@ export type BillingStatus = z.infer<typeof billingStatusSchema>;
 // 0.2.0 계약 뼈대 (구현 계획 A2) — 타입 · zod만, route는 아직 없다.
 // 위의 /api/v1 스키마는 동결이다 (contract-v1-freeze.test.ts): 모양 · literal · enum을 바꾸지 않고, 새 값 · 새 기능은 아래에만 둔다.
 // 대화 · 기억 · 범위 · 결제 v2는 /api/v2/*(B1 · B2 · G1), bridge는 설계대로 /api/v1/bridge/*의 새 route(D2)가 쓴다.
-// 근거: 0.2.0 아키텍처 5 · 8 · 9 · 10.1장, 런타임 계약 2 · 5 · 10장. 표는 20261102000000_context_core.sql.
+// 근거: 0.2.0 아키텍처 5 · 8 · 9 · 10.1장, 런타임 계약 2 · 5 · 10장. 표는 20261103000000_context_core.sql.
 // Swift 짝: TaskforceKit AgentBridgeContracts.swift (사건 봉투 · capability · bridge 명령 · heartbeat).
 // ════════════════════════════════════════════════════════════
 

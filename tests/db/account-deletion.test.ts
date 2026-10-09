@@ -131,7 +131,7 @@ async function seed(userId: string, tokenHex: string) {
   );
   await db.query(`insert into public.slack_threads (connection_id, user_id, channel_id, thread_ts) values ($1, $2, 'C1', '1.0')`, [slack, userId]);
   await db.query(`insert into public.slack_people (connection_id, user_id, slack_id, kind, name) values ($1, $2, 'U2', 'user', 'x')`, [slack, userId]);
-  // 0.2.0 맥락층 · 대화 (20261102000000_context_core): 범위 · 멤버(Action · 원문 · 사람) · 기억(정정 사슬) · 신원 링크(연결) · 조각 · 사건 · 대화 · 메시지.
+  // 0.2.0 맥락층 · 대화 (20261103000000_context_core): 범위 · 멤버(Action · 원문 · 사람) · 기억(정정 사슬) · 신원 링크(연결) · 조각 · 사건 · 대화 · 메시지.
   // 여러 부모(auth.users · 범위 · Action · 원문 · 연결)를 가리키는 행도 계정 삭제 한 번에 함께 지워져야 한다
   const personId = await one(`insert into public.people (user_id, display_name, emails, origin) values ($1, '상대', '{peer@example.com}', 'source') returning id`, [userId]);
   const contextId = await one(`insert into public.work_contexts (user_id, name, kind) values ($1, '범위', 'project') returning id`, [userId]);

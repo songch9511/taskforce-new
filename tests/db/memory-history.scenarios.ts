@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import { expect, it } from "vitest";
 
-// 기억의 정정 · 잊기 이력 (20261102000000_context_core, 아키텍처 5.3): 정정된 옛 항목과 잊은 항목은 어떤 삭제 경로로도 "지금 쓰는 기억"으로 돌아오지 않는다.
+// 기억의 정정 · 잊기 이력 (20261103000000_context_core, 아키텍처 5.3): 정정된 옛 항목과 잊은 항목은 어떤 삭제 경로로도 "지금 쓰는 기억"으로 돌아오지 않는다.
 // 같은 시나리오를 PGlite(tests/db/memory-history.test.ts)와 실제 Postgres(tests/pg/memory-history.test.ts)에서 돌린다.
 
 export type Rows = Record<string, unknown>[];
