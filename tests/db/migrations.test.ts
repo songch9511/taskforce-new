@@ -83,6 +83,8 @@ describe("초기 마이그레이션", () => {
       "people",
       "profiles",
       "rate_limit_events",
+      "report_deliveries",
+      "report_preferences",
       "review_accounts",
       "slack_messages",
       "slack_people",
