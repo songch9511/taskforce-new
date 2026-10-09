@@ -23,6 +23,9 @@ const USER_TABLES = [
   "claims",
   "connection_requests",
   "connections",
+  "context_members",
+  "conversation_messages",
+  "conversations",
   "credit_accounts",
   "credit_ledger",
   "devices",
@@ -36,18 +39,24 @@ const USER_TABLES = [
   "execution_runs",
   "execution_steps",
   "execution_usage",
+  "identity_links",
+  "inbox_events",
   "judge_logs",
+  "memory_items",
   "metric_events",
   "missing_reports",
   "oauth_handoffs",
   "oauth_nonces",
+  "people",
   "profiles",
   "rate_limit_events",
   "slack_messages",
   "slack_people",
   "slack_threads",
+  "source_chunks",
   "sources",
   "weekly_checks",
+  "work_contexts",
 ];
 
 let db: PGlite;
@@ -122,6 +131,36 @@ async function seed(userId: string, tokenHex: string) {
   );
   await db.query(`insert into public.slack_threads (connection_id, user_id, channel_id, thread_ts) values ($1, $2, 'C1', '1.0')`, [slack, userId]);
   await db.query(`insert into public.slack_people (connection_id, user_id, slack_id, kind, name) values ($1, $2, 'U2', 'user', 'x')`, [slack, userId]);
+  // 0.2.0 맥락층 · 대화 (20261102000000_context_core): 범위 · 멤버(Action · 원문 · 사람) · 기억(정정 사슬) · 신원 링크(연결) · 조각 · 사건 · 대화 · 메시지.
+  // 여러 부모(auth.users · 범위 · Action · 원문 · 연결)를 가리키는 행도 계정 삭제 한 번에 함께 지워져야 한다
+  const personId = await one(`insert into public.people (user_id, display_name, emails, origin) values ($1, '상대', '{peer@example.com}', 'source') returning id`, [userId]);
+  const contextId = await one(`insert into public.work_contexts (user_id, name, kind) values ($1, '범위', 'project') returning id`, [userId]);
+  await db.query(`insert into public.context_members (user_id, context_id, member_kind, action_id, origin) values ($1, $2, 'action', $3, 'user')`, [userId, contextId, actionId]);
+  await db.query(`insert into public.context_members (user_id, context_id, member_kind, source_id, origin, confidence) values ($1, $2, 'source', $3, 'inferred', 0.7)`, [
+    userId,
+    contextId,
+    sourceId,
+  ]);
+  await db.query(`insert into public.context_members (user_id, context_id, member_kind, person_id, origin) values ($1, $2, 'person', $3, 'auto')`, [userId, contextId, personId]);
+  const conversationId = await one(`insert into public.conversations (user_id, title, context_id) values ($1, '대화', $2) returning id`, [userId, contextId]);
+  const messageId = await one(
+    `insert into public.conversation_messages (user_id, conversation_id, seq, role, client_message_id, text) values ($1, $2, 1, 'user', gen_random_uuid(), '기억해') returning id`,
+    [userId, conversationId],
+  );
+  const newerMemory = await one(
+    `insert into public.memory_items (user_id, kind, scope_kind, context_id, statement, origin, source_ref) values ($1, 'condition', 'context', $2, '지금 조건', 'explicit', $3) returning id`,
+    [userId, contextId, JSON.stringify({ message_id: messageId })],
+  );
+  await db.query(
+    `insert into public.memory_items (user_id, kind, scope_kind, statement, origin, source_ref, superseded_by) values ($1, 'fact', 'global', '옛 사실', 'observed', $2, $3)`,
+    [userId, JSON.stringify({ source_id: sourceId, quote: "원문" }), newerMemory],
+  );
+  await db.query(`insert into public.identity_links (user_id, provider, account_ref, connection_id, verified_via) values ($1, 'notion', 'notion-user', $2, 'oauth')`, [
+    userId,
+    connectionId,
+  ]);
+  await db.query(`insert into public.source_chunks (user_id, source_id, source_revision, seq, text) values ($1, $2, 'v1', 0, '원문')`, [userId, sourceId]);
+  await db.query(`insert into public.inbox_events (user_id, type, dedup_key) values ($1, 'source_processed', $2)`, [userId, `source:${sourceId}`]);
   // 실행 코어: run(정책 · 첫 단계 · 이벤트가 함께 생긴다), 연결을 쓰는 끝난 · 준비된 외부 단계(연결 삭제의 set null 경로,
   // 준비된 단계는 다시 계획되며 이벤트를 남긴다), 승인 · intent, 실행 주체
   await db.query(`insert into public.execution_actors (user_id) values ($1)`, [userId]);
