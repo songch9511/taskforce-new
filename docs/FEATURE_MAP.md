@@ -196,6 +196,24 @@ flowchart TD
 | 운영 (켜기 · 끄기 · 점검) | [런북](go-live/runbook.md) 9장, 승인된 `npx supabase db query --linked` (한 명령에 한 문장) | 차단 스위치 `execution_controls`(긴급은 `global` 한 행, Manual만은 global 먼저) · 실행 주체 `execution_actors` · `grant_credits` · 하루 지난 청구 대상 미확정 원가 `reconcile_usage` · 오래 막힌 run `stop_run`(run마다) · 점검 쿼리(개수만: lease 만료 · 결과 불명 · 막힌 이유 · gate · 미확정 원가 · 열린 예약 · 빠진 receipt · 실패 까닭) · 되돌리기 · 운영 켜기 순서 · U2 완료 확인 | 운영자 | 없음 (SQL은 운영 마이그레이션을 적용한 PGlite에서 돌려 확인, U2 PR8) |
 | 과금 경계 (A37 · A44) | 할 일 쓰기 · 원문 처리 경로 | 실행 · 크레딧을 확인하지도 부르지도 않는다. eslint `no-restricted-imports`(원문 처리 → 실행) | — | `lib/execution/boundary.test.ts` |
 
+### 3-7. 0.2.0 뼈대 (A2 · 런타임 없음)
+
+표 · 계약 · gate만 있고 읽거나 쓰는 코드 · route는 아직 없다. 기능은 각 PR(B1 맥락층 · B2 대화 v2 · C2 코디네이터 · D1–D3 에이전트 · bridge · G1 결제 v2)에서 붙는다.
+
+| 무엇 | 위치 | 비고 | 테스트 |
+|---|---|---|---|
+| 표 9개 | `supabase/migrations/20261103000000_context_core.sql`: `work_contexts` · `context_members` · `memory_items` · `identity_links` · `people` · `source_chunks` · `inbox_events` · `conversations` · `conversation_messages` | RLS `owner_all` + select 권한만(앱은 읽기, 쓰기는 서버만), 부모와 `(id, user_id)` 복합 외래키, `set_updated_at` 트리거. 새 함수는 `memory_items_keep_history` 하나(정정 · 잊기는 한 방향: `superseded_at` · `revoked_at`은 지우거나 바꾸지 못하고, 정정한 새 항목이 지워져도 옛 항목은 지금 것으로 돌아오지 않는다. 지금 쓰는 기억 = 둘 다 없음, `isCurrentMemoryItem`). 범위에서 사용자가 뺀 멤버는 `context_members.removed_at`으로 남는다. 운영 적용 전 | `tests/db/context-core.test.ts`, `tests/db/memory-history.test.ts` · `tests/pg/memory-history.test.ts`(같은 시나리오를 PGlite · 실제 Postgres), `migrations.test.ts` · `account-deletion.test.ts` 표 목록 |
+| v2 계약 | `src/lib/api/contract.ts` 끝 "0.2.0 계약 뼈대": 대화(메시지 4,000자 · `client_message_id` · refs `memory_item_ids` · `context_ids` · proposal · segments `T1`–`T5` · 의도 `inform` · `correct`) · 기억 · 범위 · 에이전트 capability · 사건 봉투 · bridge · 결제 v2(`lifetime` · PlanSummary 8 상태 · 토큰 사용량 · 환불) | v1 스키마는 동결: 바꾸면 `contract-v1-freeze.test.ts`가 실패한다 | `src/lib/api/contract-v2.test.ts`, `contract-v1-freeze.test.ts` |
+| gate | `src/lib/flags.ts` `SERVER_FLAGS` · `flagEnabled`: `CONVERSATIONS_V2_ENABLED` · `MEMORY_ENABLED` · `SOURCE_CHUNKS_ENABLED` · `COORDINATOR_ENABLED` · `AGENT_ADAPTER_CLAUDE_CODE_ENABLED` · `BYOK_ENABLED` · `REPORTS_V2_ENABLED` | 모두 기본 꺼짐, 정확히 `"true"`일 때만. 기존 `EXECUTION_ENABLED` · `BILLING_ENABLED`는 그대로 | `src/lib/flags.test.ts` |
+| Swift 짝 | `TaskforceKit/AgentBridgeContracts.swift`: `AgentCapability` · `AgentEventEnvelope` · `AgentTaskState` · `BridgeCommand` · `BridgeHeartbeat` · 등록 · 사건 요청 | 모르는 값은 `.unknown(raw)`로 읽고 그대로 보낸다 | `TaskforceKitTests/AgentBridgeContractsTests` |
+
+**gate를 켜기 전에 (B1 이후의 선행 조건, A2 리뷰에서 나옴):**
+- 원문 글 지우기(`purge_expired_source_text` · Slack `purge_slack_sources` · `purge_slack_data`)가 새 글 열에 닿지 않는다: `source_chunks.text`, `memory_items.statement` · `source_ref.quote`, `people.display_name` · `handles.slack`. `SOURCE_CHUNKS_ENABLED` · `MEMORY_ENABLED` 전에 전파를 넣는다(아키텍처 6.5, CLAUDE.md 원칙 2의 Slack 예외). 지운 원문에 조각을 넣지 못하게 막는 것도 같이.
+- `people.handles`(서비스 계정 = 1차 키)에 유일성이 없다: 같은 Slack 사용자가 두 행일 수 있다. 쓰기 전에 계정별 표 또는 유일 인덱스.
+- `identity_links.verified_via = 'oauth'`에 연결이 없어도 된다(로그인 계정 신원을 어떻게 적을지와 함께 정한다). Slack 앱 제거(`revoke_slack_connections`)는 연결 행을 지우지 않아 링크가 남는다.
+- 범위가 다른 정정: DB는 다른 범위의 새 항목으로 `superseded_by`를 허용한다(아키텍처 5.3 "좁은 범위가 이긴다"). 6.4 "다른 범위로 일반화하지 않는다"와 맞추려면 정정은 같은 범위 안에서만 쓰고, 범위 간 우선은 읽을 때 정한다 — B1이 정한다.
+- 합친 사람(`people.merged_into`)의 대상을 지우면 합침이 풀린다(on delete set null).
+
 ## 4. 실행과 검증
 
 | 항목 | 명령 | 참고 |
