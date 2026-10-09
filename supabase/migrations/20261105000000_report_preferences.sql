@@ -8,6 +8,7 @@
 --   행이 없으면 API가 기본값을 돌려주고 일일 보고는 보내지 않는다 (시간대를 모르므로).
 --   시각은 "HH:MM" 글자(계약 reportClockSchema와 같은 모양). 조용한 시간 끄기(Off) = quiet_start · quiet_end 모두 null.
 --   같은 시작 · 끝은 0시간인지 24시간인지 모호해서 받지 않는다.
+--   version: 고칠 때마다 1씩 오른다(트리거). PUT은 읽은 version을 expected_version으로 보내고 다르면 409 — 여러 기기의 덮어쓰기를 막는다.
 -- - report_deliveries: 보낸(또는 보내려던) 일일 보고 원장. 유일 키 (user_id, kind, time_zone, report_date)와 claim 함수의 사용자 잠금이
 --   cron이 겹쳐 돌아도 같은 날 보고를 두 번 잡지 못하게 한다. 실패 내용은 짧은 코드(last_error)만 남기고 알림 문구 · 원문은 남기지 않는다.
 -- - 권한: 앱은 자기 행을 RLS로 읽기만 한다(owner_all + select). 쓰기는 서버(service role)만 한다 — 20261103000000_context_core와 같은 모양.
@@ -31,6 +32,8 @@ create table public.report_preferences (
   time_zone text not null check (char_length(time_zone) <= 64 and time_zone ~ '^[A-Za-z][A-Za-z0-9_+-]*(/[A-Za-z0-9_+-]+)*$'),
   -- 일정에 닿는 값(mode · daily_time · quiet_* · time_zone)이 바뀐 시각. 트리거만 쓴다 (오늘 보고를 잃지 않는 규칙, src/lib/reports/schedule.ts)
   schedule_changed_at timestamptz not null default now(),
+  -- 낙관적 동시성: 처음 1, 고칠 때마다 트리거가 1 올린다 (서버 코드도 직접 정하지 못한다)
+  version integer not null default 1 check (version >= 1),
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   constraint report_preferences_quiet_pair check ((quiet_start is null) = (quiet_end is null)),
@@ -78,12 +81,15 @@ create trigger report_deliveries_set_updated_at
   before update on public.report_deliveries
   for each row execute function public.set_updated_at();
 
--- 일정에 닿는 값이 바뀌었을 때만 schedule_changed_at을 지금으로. 그 밖에는 이전 값을 지킨다 (서버 코드도 직접 바꾸지 못한다)
+-- 고칠 때마다 version을 1 올리고, 일정에 닿는 값이 바뀌었을 때만 schedule_changed_at을 지금으로 (그 밖에는 이전 값을 지킨다).
+-- 두 열 모두 서버 코드도 직접 정하지 못한다. created_at도 바뀌지 않는다
 create function public.report_preferences_schedule_changed() returns trigger
 language plpgsql
 set search_path = ''
 as $$
 begin
+  new.version = old.version + 1;
+  new.created_at = old.created_at;
   if (new.mode, new.daily_time, new.quiet_start, new.quiet_end, new.time_zone)
      is distinct from (old.mode, old.daily_time, old.quiet_start, old.quiet_end, old.time_zone) then
     new.schedule_changed_at = now();
@@ -176,17 +182,22 @@ end;
 $$;
 
 -- 더 보낼 수 없는 대기 행을 닫는다: 늦었거나(expires_at 지남) 시도를 다 썼고, 지금 보내는 중이 아니다(임대가 끝남).
+-- 그 사이 일일 보고를 끈(mode meaningful) 사용자의 행은 skipped · mode_changed. 나머지는 failed:
 -- 이미 남긴 실패 코드는 그대로, 없으면 stale (보내다 멈춘 실행). 닫은 행 수를 돌려준다
 create function public.finish_stale_report_deliveries(p_now timestamptz, p_max_attempts integer) returns integer
 language sql
 set search_path = ''
 as $$
   with done as (
-    update public.report_deliveries
-       set status = 'failed', next_attempt_at = null, last_error = coalesce(last_error, 'stale')
-     where status = 'pending'
-       and next_attempt_at <= p_now
-       and (p_now > expires_at or attempts >= p_max_attempts)
+    update public.report_deliveries d
+       set status = case when p.mode = 'meaningful' then 'skipped' else 'failed' end,
+           next_attempt_at = null,
+           last_error = case when p.mode = 'meaningful' then 'mode_changed' else coalesce(d.last_error, 'stale') end
+      from public.report_preferences p
+     where p.user_id = d.user_id
+       and d.status = 'pending'
+       and d.next_attempt_at <= p_now
+       and (p_now > d.expires_at or d.attempts >= p_max_attempts)
     returning 1
   )
   select count(*)::integer from done;

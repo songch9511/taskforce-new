@@ -101,6 +101,21 @@ describe("report_preferences", () => {
       await db.query(`insert into public.report_preferences (user_id, time_zone, created_at, schedule_changed_at) values ($1, 'Asia/Seoul', '2026-01-01Z', '2026-01-01Z')`, [CAROL]);
     }
   });
+
+  it("version은 1에서 시작해 고칠 때마다 트리거가 1 올린다. version · created_at은 직접 정하지 못한다 (낙관적 동시성의 근거)", async () => {
+    const row = async () => (await db.query<{ version: number; created_at: Date }>(`select version, created_at from public.report_preferences where user_id = $1`, [ALICE])).rows[0];
+    const before = await row();
+    expect(before.version).toBe(1);
+    await db.query(`update public.report_preferences set respect_focus = false where user_id = $1`, [ALICE]);
+    expect((await row()).version).toBe(2);
+    await db.query(`update public.report_preferences set version = 99, created_at = '2000-01-01Z' where user_id = $1`, [ALICE]);
+    const after = await row();
+    expect(after.version).toBe(3);
+    expect(after.created_at.toISOString()).toBe(before.created_at.toISOString());
+    // 조건부 갱신: 읽은 version이 아니면 0행 (PUT의 409)
+    expect((await db.query(`update public.report_preferences set daily_time = '09:00' where user_id = $1 and version = 2`, [ALICE])).affectedRows).toBe(0);
+    expect((await db.query(`update public.report_preferences set daily_time = '09:00' where user_id = $1 and version = 3`, [ALICE])).affectedRows).toBe(1);
+  });
 });
 
 describe("RLS · 권한 (앱은 자기 행을 읽기만, 쓰기는 서버만)", () => {
@@ -264,6 +279,16 @@ describe("claim_report_retry · finish_stale_report_deliveries", () => {
       [stale!.id, "failed", "stale"],
       [exhausted!.id, "failed", "apns_503"],
       [inFlight!.id, "pending", null],
+    ]);
+  });
+
+  it("그 사이 일일 보고를 끈(meaningful) 사용자의 닫힌 대기 행은 failed가 아니라 skipped · mode_changed", async () => {
+    const row = await claim(ALICE);
+    await db.query(`update public.report_deliveries set last_error = 'apns_503' where id = $1`, [row!.id]);
+    await db.query(`update public.report_preferences set mode = 'meaningful' where user_id = $1`, [ALICE]);
+    expect((await db.query<{ n: number }>(`select public.finish_stale_report_deliveries('2026-10-10T02:00:00Z', 3) as n`)).rows[0].n).toBe(1);
+    expect((await db.query(`select status, last_error, next_attempt_at from public.report_deliveries where id = $1`, [row!.id])).rows).toEqual([
+      { status: "skipped", last_error: "mode_changed", next_attempt_at: null },
     ]);
   });
 });
