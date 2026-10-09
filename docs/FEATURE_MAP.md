@@ -214,6 +214,34 @@ flowchart TD
 - 범위가 다른 정정: DB는 다른 범위의 새 항목으로 `superseded_by`를 허용한다(아키텍처 5.3 "좁은 범위가 이긴다"). 6.4 "다른 범위로 일반화하지 않는다"와 맞추려면 정정은 같은 범위 안에서만 쓰고, 범위 간 우선은 읽을 때 정한다 — B1이 정한다.
 - 합친 사람(`people.merged_into`)의 대상을 지우면 합침이 풀린다(on delete set null).
 
+### 3-8. 보고 설정 · 일일 보고 (0.2.0 H1, 서버만)
+
+`REPORTS_V2_ENABLED`(기본 꺼짐) 뒤에만 돈다. 꺼져 있으면 route는 404, cron은 `{ enabled: false }`만 돌려주고 DB · APNs에 닿지 않는다. 기존 알림(확인 요청 · 기한 `cron/reminders` · 재연결)은 gate와 상관없이 그대로다. Mac Reports 탭은 H2.
+
+| 무엇 | 위치 | 비고 | 테스트 |
+|---|---|---|---|
+| 표 · 함수 | `supabase/migrations/20261105000000_report_preferences.sql`: `report_preferences`(사용자당 한 행, 기본값 D06 Both · 08:30 · 조용한 시간 22:00–08:00 · Respect Focus 켬, 시간대 기본값 없음 · 시각은 `"HH:MM"`, 조용한 시간 끄기 = 둘 다 null, 시작 == 끝 거부) · `report_deliveries`(일일 보고 원장: 상태 pending · sent · failed · skipped, attempts, next_attempt_at, last_error 코드만, 유일 키 `(user_id, kind, time_zone, report_date)`) | RLS `owner_all` + select만(쓰기는 서버만), 계정 삭제 cascade(auth.users → 설정 → 원장). 트리거 `report_preferences_schedule_changed`가 일정에 닿는 값이 바뀐 시각을 남긴다. 서버 전용 함수(service_role만): `claim_report_delivery`(설정 행 잠금 + 그 현지 날짜 이후 예정 보고가 없을 때만), `claim_report_retry`, `finish_stale_report_deliveries`, `report_status_counts`(열린 할 일 숫자 넷만, 글 열을 읽지 않는다). 운영 적용 전 | `tests/db/report-preferences.test.ts`, `tests/pg/report-deliveries.test.ts`(겹친 잡기 · 다시 잡기 · RLS를 실제 Postgres에서), `migrations.test.ts` · `account-deletion.test.ts` 표 목록 |
+| 설정 API | `src/app/api/v2/reports/preferences/route.ts` GET · PUT → `lib/reports/preferences.ts` → `lib/reports/store.ts` `loadReportPreferences`(RLS) · `saveReportPreferences`(service role upsert) | 계약 `contract.ts` "보고 (H1)": `reportPreferencesRequestSchema`(전부 보낸다, strict) · `reportPreferencesSchema`(`saved` false = 기본값 + `time_zone` null) · `REPORT_PREFERENCE_DEFAULTS`. 인증 `authenticateRequest`(Bearer · 쿠키, 쿠키 쓰기는 CSRF). 시간대는 Mac이 보낸 IANA 이름을 받은 그대로 저장: 모양(DB check와 같은 정규식) + 서버 Intl이 아는 이름만, 고정 오프셋(`+09:00`) 거부 | `lib/reports/preferences.test.ts`, `v2/reports/preferences/route.test.ts`, `lib/api/contract-v2.test.ts` |
+| 일일 보고 job | `src/app/api/cron/reports/route.ts`(cron 인증 · gate · APNs 키 없으면 `configured: false`) → `lib/reports/job.ts` `runDailyReports` | ① `finish_stale_report_deliveries` ② 다시 보낼 대기 행(조용한 시간 · 일일 보고 끈 사용자는 둔다) → `claim_report_retry` ③ 설정마다 `lib/reports/schedule.ts` `planDailyReport` → `claim_report_delivery` ④ `report_status_counts` → 모두 0이면 skipped `empty`, 기기 없으면 `no_devices` → `lib/reports/payload.ts` `dailyReportPayload` → `lib/notify/apns.ts` `sendPush`(collapse id `daily-report`, 410 · BadDeviceToken은 기기 삭제). 일시 오류(5xx · 429 · 연결)는 5분 · 15분 뒤 최대 3번, 창 안에서만. 결과는 잡을 때의 attempts를 펜스로 기록. 응답 · 로그는 숫자만 | `lib/reports/{job,schedule,payload}.test.ts`, `cron/reports/route.test.ts`, `cron/reminders/route.test.ts`(gate와 상관없이 그대로) |
+
+**일일 보고 시각 규칙** (`lib/reports/schedule.ts` 머리 주석이 원본, 테스트 `schedule.test.ts`):
+1. 예정 시각 = 현지 날짜의 `daily_time`. 조용한 시간 `[start, end)` 안이면 그날 `quiet_end`로 미룬다(자정을 넘는 창 포함, 시작 경계 포함 · 끝 경계 제외).
+2. DST: 없는 현지 시각(봄 앞당김)은 시계가 건너뛴 직후(예: 뉴욕 2026-03-08 02:30 → 03:00 EDT)에 한 번, 두 번 오는 시각(가을 되돌림)은 처음 것(뉴욕 2026-11-01 01:30 EDT)에 한 번.
+3. 밀린 보고 없음: 예정에서 2시간(`REPORT_STALE_MS`)이 지나면 그날은 건너뛴다. 후보는 어제(자정 직전 예정이 자정 뒤 실행에 걸릴 때) · 오늘 · 다음 이틀뿐, 한 번에 하나. job이 며칠 멈췄다 돌아와도 많아야 그날 보고 하나. 조용한 시간에는 보내지 않고(재시도 포함), 기다리다 창이 닫히면 건너뛴다.
+4. 하루에 하나: 지금 시간대의 현지 날짜가 시작한 뒤(또는 더 뒤)로 예정된 보고가 원장에 있으면 그날은 보내지 않는다(상태와 상관없이). 날짜는 예정 시각을 지금 시간대로 읽어 센다 — 시간대를 바꿔도 같은 현지 날에 두 번 오지 않고, 서쪽으로 옮겨 날짜가 되돌아가도 다음 날을 잃지 않는다. DB 함수가 사용자 잠금 안에서 같은 확인을 다시 한다.
+5. 설정 · 시간대를 바꾸면 남은 일정만 다시 계산한다. 오늘 보고가 아직 안 갔고 바뀐 예정 시각이 이미 지났으면 바꾼 때부터 2시간 안에 보낸다(바꿔서 오늘을 잃지 않는다, 조용한 시간이면 기다린다). 처음 만든 설정은 이미 지난 오늘 시각의 보고를 보내지 않는다.
+6. 모드 `meaningful`은 일일 보고가 없다. 설정 행이 없거나 런타임이 모르는 시간대면 보내지 않는다(추측하지 않는다).
+
+**알림 내용**: 제목 `Daily report`, 본문은 숫자 + 고정 낱말(`2 to review · 1 overdue · 3 due today · 1 in progress`, 0은 뺀다), `kind: "daily_report"`, `url: "taskforce://work"`. 원문 · 인용 · 할 일 제목 · 메모 · 사람 이름 · 이메일 · action id를 싣지 않는다(`tests/db/report-preferences.test.ts`가 그런 글을 심고 알림 JSON에 없음을 본다). 지금 앱은 모르는 `kind`면 앱만 연다(`NotificationTarget` `.other`). `url` 처리는 H2.
+
+**서버 · 앱이 맡는 것 (Respect Focus · 시간대)**:
+- 서버는 사용자의 집중 모드(Focus) 상태를 읽지 못한다. 서버가 하는 일은 하나다: `respect_focus`가 켜져 있으면 `interruption-level: active`만 보낸다(집중 모드를 뚫는 `time-sensitive` · `critical`을 쓰지 않는다 → OS 집중 필터가 붙잡을 수 있다). 꺼져 있으면 `time-sensitive`를 요청한다.
+- 실제로 붙잡히는지 · 뚫는지는 OS와 앱이 정한다: 앱에 Time Sensitive Notifications 권한(entitlement)이 아직 없어서 지금은 꺼도 `active`처럼 다뤄진다(꺼짐이 켜짐보다 더 방해하지 못한다). H2에서 권한을 더할지와 App Review 문구를 정하고, 기기에서 집중 모드 켬 · 끔 × Respect Focus 켬 · 끔 네 경우를 확인한다(확인 전: 미검증).
+- 시간대: 서버는 추측하지 않는다. H2(Mac)가 첫 실행에 D06 기본값 + `TimeZone.current.identifier`로 PUT하고, Mac 시간대가 바뀌면(`NSSystemTimeZoneDidChange`) 다시 PUT한다(GET의 `time_zone`과 자기 값을 비교). iPhone은 시간대를 보내지 않는다. 설정 행이 생기기 전에는 일일 보고가 없다.
+- 조용한 시간은 일일 보고에만 적용된다. "Meaningful updates"(실시간 알림: 확인 요청 · 재연결 · 기한)에 모드 · 조용한 시간을 적용하는 일은 H1에 넣지 않았다: 조용한 시간 동안 붙잡았다 보내려면 미룬 알림 대기열(원장 `kind` 추가)이 필요하고, 일일 보고가 켜졌을 때 09:00 KST 기한 알림을 계속 보낼지 제품 결정이 필요하다 → H2 이후. 지금은 gate와 상관없이 기존 알림이 그대로 간다.
+
+**출시 단계 (gate 켜기 전, 별도 승인)**: ① 운영 DB에 `20261105000000_report_preferences.sql` 적용(`npx supabase db query --linked -f …`, 런북) ② `vercel.json` `crons`에 `{ "path": "/api/cron/reports", "schedule": "*/5 * * * *" }` 추가(5분 간격: 30 · 45분 오프셋 시간대도 예정 5분 안에 잡는다. 지금은 일부러 넣지 않았다) ③ Vercel env `REPORTS_V2_ENABLED=true`(테스트 계정 → Daniel → 외부 순서, 구현 계획 7장) ④ H2 Mac이 PUT으로 시간대를 보내야 보고가 시작된다.
+
 ## 4. 실행과 검증
 
 | 항목 | 명령 | 참고 |
@@ -235,7 +263,7 @@ flowchart TD
   - `lib/connectors/registry.ts`의 `syncConnections` · `afterConnected` · `revokeConnectorTokens` (`registry.test.ts`는 Slack 열기와 `tokenRevokerFor`만 본다).
   - `lib/connectors/notion/data-sources.ts` (저장할 때의 오류 처리만 `data-sources.test.ts`가 본다), `lib/connectors/slack/run.ts` · `store.ts` (SQL 함수는 `tests/db/slack*.test.ts`가 본다).
   - 연결 route들 (끊기는 `handleConnectionDelete`를 `lib/api/connections.test.ts`가, lab callback의 동의 확인은 `lib/connectors/callback.test.ts`가, Slack events route는 `route.test.ts`가 본다), Slack start · callback route.
-  - `metric-events` · `weekly-check` · `devices` route, sync · reminders cron route (retention은 `route.test.ts`가 본다), `lib/notify/service.ts`의 `notifyConfirmations` · `notifyDueSoon`(`notifyReconnect`만 `service.test.ts`가 본다), `lib/api/auth.ts` `authenticateRequest`, `scripts/reprocess-sources.ts`.
+  - `metric-events` · `weekly-check` · `devices` route, sync cron route (retention · reminders는 `route.test.ts`가 본다), `lib/notify/service.ts`의 `notifyConfirmations` · `notifyDueSoon`(`notifyReconnect`만 `service.test.ts`가 본다), `lib/api/auth.ts` `authenticateRequest`, `scripts/reprocess-sources.ts`.
 - 앱: `TaskforceReads`, `ActionChanges`, `SharedKeychainStorage`, `TaskforceUI` 전체, 앱 타깃(`NowStore` · `AccountStore` · `LauncherModel` · `PushCenter`). CI는 앱 타깃을 빌드만 한다.
 
 ## 5. 새 연동(Google 등)을 붙이는 자리
