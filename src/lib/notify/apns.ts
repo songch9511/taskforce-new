@@ -7,9 +7,19 @@ import { connect } from "node:http2";
 export type ApnsConfig = { keyId: string; teamId: string; key: KeyObject; bundleId: string };
 export type ApnsDevice = { token: string; environment: "sandbox" | "production" };
 export type ApnsPayload = {
-  aps: { alert: { title: string; body: string }; sound?: string; "thread-id"?: string; "mutable-content"?: 1 };
+  aps: {
+    alert: { title: string; body: string };
+    sound?: string;
+    "thread-id"?: string;
+    "mutable-content"?: 1;
+    /** OS 집중 모드 · 요약과의 관계. 없으면 OS 기본(active). critical은 쓰지 않는다 (일일 보고: src/lib/reports/payload.ts) */
+    "interruption-level"?: "passive" | "active" | "time-sensitive";
+  };
   [key: string]: unknown;
 };
+
+/** 보낼 때만 붙는 APNs 헤더. collapseId: 같은 값의 알림은 기기에서 앞의 것을 바꾼다 (64바이트 이하) */
+export type PushOptions = { collapseId?: string };
 
 export function apnsConfigFromEnv(env: Record<string, string | undefined> = process.env): ApnsConfig | null {
   const { APNS_KEY_ID: keyId, APNS_TEAM_ID: teamId, APNS_PRIVATE_KEY: pem } = env;
@@ -72,7 +82,13 @@ export const http2Transport: Transport = ({ host, path, headers, body }) =>
     req.end(body);
   });
 
-export async function sendPush(config: ApnsConfig, device: ApnsDevice, payload: ApnsPayload, transport: Transport = http2Transport): Promise<PushResult> {
+export async function sendPush(
+  config: ApnsConfig,
+  device: ApnsDevice,
+  payload: ApnsPayload,
+  transport: Transport = http2Transport,
+  options: PushOptions = {},
+): Promise<PushResult> {
   const host = device.environment === "sandbox" ? "api.sandbox.push.apple.com" : "api.push.apple.com";
   const response = await transport({
     host,
@@ -83,6 +99,7 @@ export async function sendPush(config: ApnsConfig, device: ApnsDevice, payload: 
       "apns-push-type": "alert",
       "apns-priority": "10",
       "content-type": "application/json",
+      ...(options.collapseId ? { "apns-collapse-id": options.collapseId } : {}),
     },
     body: JSON.stringify(payload),
   });

@@ -50,6 +50,18 @@ describe("sendPush", () => {
     expect(body).toMatchObject({ aps: { alert: { title: "Review", body: "New tasks to confirm" }, "mutable-content": 1 }, action_id: "a1" });
   });
 
+  it("collapse id는 줄 때만 apns-collapse-id 헤더로 붙는다 (기존 알림의 헤더는 그대로)", async () => {
+    const sent: Parameters<Transport>[0][] = [];
+    const transport: Transport = async (request) => {
+      sent.push(request);
+      return { status: 200, body: "" };
+    };
+    await sendPush(config, device, confirmationPayload({ id: "a1" }), transport);
+    await sendPush(config, device, confirmationPayload({ id: "a1" }), transport, { collapseId: "daily-report" });
+    expect(Object.keys(sent[0].headers).sort()).toEqual(["apns-priority", "apns-push-type", "apns-topic", "authorization", "content-type"]);
+    expect(sent[1].headers["apns-collapse-id"]).toBe("daily-report");
+  });
+
   it("만료된 토큰(410)은 지울 대상으로 알려준다", async () => {
     const transport: Transport = async () => ({ status: 410, body: JSON.stringify({ reason: "Unregistered" }) });
     expect(await sendPush(config, device, confirmationPayload({ id: "a1" }), transport)).toEqual({
