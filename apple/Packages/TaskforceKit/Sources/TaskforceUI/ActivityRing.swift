@@ -56,11 +56,17 @@ public struct ActivityRing: View {
 
     let kind: Kind
     let size: Size
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// 시스템 설정 대신 쓸 움직임 줄이기 값 (nil이면 시스템 설정). `accessibilityReduceMotion` 환경값은 덮어쓸 수 없어서
+    /// 레일 모델 · 디자인 비교 스냅샷이 같은 값을 넘긴다
+    let reduceMotionOverride: Bool?
+    @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
 
-    public init(_ kind: Kind, size: Size = .small) {
+    private var reduceMotion: Bool { reduceMotionOverride ?? systemReduceMotion }
+
+    public init(_ kind: Kind, size: Size = .small, reduceMotion: Bool? = nil) {
         self.kind = kind
         self.size = size
+        reduceMotionOverride = reduceMotion
     }
 
     /// 디자인 시스템은 16 단위 viewBox에 반지름 6.5 · 선 2로 그린다
