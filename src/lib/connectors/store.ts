@@ -6,6 +6,9 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { connectionSettingsSchema, profileInputSchema, type DataSourceSetting } from "@/lib/api/contract";
 import { accountDisplayName, resolveIdentity } from "@/lib/api/profile";
 import { ConsentRequiredError } from "@/lib/consent/gate";
+import { identityEmails, oauthIdentityFromConnection } from "@/lib/context/identity-links";
+import { indexSourceAfterIngest, loadIdentityLinks, recordOAuthIdentityLink } from "@/lib/context/store";
+import { flagEnabled } from "@/lib/flags";
 import type { UserIdentity } from "@/lib/pipeline/identity";
 import { renderSnapshot, type TaskSnapshot } from "@/lib/pipeline/structured";
 import { processSource, processTaskSource } from "@/lib/sources/process";
@@ -53,6 +56,15 @@ export async function saveConnection(
   // 그 사람이 쓴 문서가 written_by_me = true가 된다. 그 키만 지운다 (다음 동기화가 새 토큰의 봇 주인으로 다시 알아낸다). 없으면 쓰지 않는다.
   const settings = data.settings as Record<string, unknown> | null;
   if (settings && "notionUserId" in settings) await mergeConnectionSettings(admin, { id: data.id, userId: input.userId }, { remove: ["notionUserId"] });
+
+  // 맥락층(MEMORY_ENABLED): 연결 결과의 "나" 링크 (oauth, 연결을 끊으면 함께 지워진다). 꺼져 있으면 쓰지 않는다.
+  // 링크는 보조 정보라 실패해도 연결은 맺는다 (loadIdentity는 연결 설정의 주소를 그대로 본다)
+  const link = oauthIdentityFromConnection(input);
+  if (link) {
+    await recordOAuthIdentityLink(admin, { userId: input.userId, connectionId: data.id as string, ...link }).catch((error: unknown) =>
+      console.error(`신원 링크 저장 실패 (${input.provider} ${data.id}):`, error instanceof Error ? error.message : error),
+    );
+  }
   return data.id as string;
 }
 
@@ -342,6 +354,14 @@ export function ingestDeps(admin: SupabaseClient, options: { notifyFrom?: Date |
         if (error instanceof ConsentRequiredError) await forgetUnprocessedSource(admin, connection, sourceId);
         throw error;
       }
+      // 맥락층(SOURCE_CHUNKS_ENABLED): 처리한 원문의 조각 임베딩. 꺼져 있으면 아무것도 부르지 않고, 실패해도 던지지 않는다 (Slack 원문은 만들지 않는다)
+      await indexSourceAfterIngest(admin, {
+        userId: connection.userId,
+        sourceId,
+        text: item.text,
+        provider: connection.provider,
+        externalUrl: item.externalUrl,
+      });
     },
   };
 }
@@ -361,12 +381,22 @@ async function forgetUnprocessedSource(admin: SupabaseClient, connection: Connec
  * 사용자 프로필(이름 · 별칭 · 이메일)과 계정으로 "원문 속 나"를 정한다.
  * 연결한 Google 계정 주소(google · gmail 연결의 settings.email)도 사용자 주소로 본다: 로그인 주소와 다른 회사 Gmail이어도
  * "보낸 사람 = 나"를 알아본다.
+ * 맥락층(MEMORY_ENABLED)이 켜져 있으면 신원 링크(identity_links)도 합친다: oauth · profile · user_confirmed이고 공용 계정이 아닌 링크의 주소만
+ * "나"이고, 추정(inferred) · 공용 계정은 더하지 않는다 (공용으로 표시한 주소는 연결 설정의 주소에서도 뺀다, context/identity-links.ts).
+ * 꺼져 있으면 링크를 읽지 않는다 (지금과 같다). isUser 규칙은 그대로다: 주소 목록만 바뀐다.
  */
-export async function loadIdentity(admin: SupabaseClient, userId: string): Promise<UserIdentity> {
-  const [{ data: profileRow }, { data: account }, { data: googleRows }] = await Promise.all([
+export async function loadIdentity(admin: SupabaseClient, userId: string, env: Record<string, string | undefined> = process.env): Promise<UserIdentity> {
+  const [{ data: profileRow }, { data: account }, { data: googleRows }, links] = await Promise.all([
     admin.from("profiles").select("display_name, aliases, emails").eq("user_id", userId).maybeSingle(),
     admin.auth.admin.getUserById(userId),
     admin.from("connections").select("settings").eq("user_id", userId).in("provider", ["google", "gmail"]),
+    // 링크는 "나"의 주소를 더하는 보조 정보다: 읽지 못하면 로그만 남기고 지금처럼(링크 없이) 처리를 이어 간다
+    flagEnabled("MEMORY_ENABLED", env)
+      ? loadIdentityLinks(admin, userId).catch((error: unknown) => {
+          console.error("신원 링크 읽기 실패:", error instanceof Error ? error.message : error);
+          return [];
+        })
+      : Promise.resolve([]),
   ]);
   const email = account.user?.email ?? null;
   const identity = resolveIdentity(profileInputSchema.safeParse(profileRow).data ?? null, {
@@ -376,7 +406,7 @@ export async function loadIdentity(admin: SupabaseClient, userId: string): Promi
   const googleEmails = ((googleRows ?? []) as { settings: { email?: unknown } | null }[]).flatMap(({ settings }) =>
     typeof settings?.email === "string" ? [settings.email.trim().toLowerCase()] : [],
   );
-  return { ...identity, emails: [...new Set([...identity.emails, ...googleEmails])] };
+  return { ...identity, emails: identityEmails(identity.emails, googleEmails, links) };
 }
 
 /** 연결을 (다시) 맺은 시각. 없으면 null */
