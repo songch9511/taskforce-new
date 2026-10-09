@@ -53,6 +53,7 @@ describe("초기 마이그레이션", () => {
       "connection_secrets",
       "connections",
       "context_members",
+      "context_version_bumps",
       "conversation_messages",
       "conversations",
       "credit_accounts",

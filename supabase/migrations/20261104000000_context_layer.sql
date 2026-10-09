@@ -1,4 +1,4 @@
--- 0.2.0 맥락층 (구현 계획 B1): 20261103000000_context_core의 표 위에 규칙 · 전파를 더한다. 표 하나(people_handles)와 열 둘만 새로 만든다.
+-- 0.2.0 맥락층 (구현 계획 B1): 20261103000000_context_core의 표 위에 규칙 · 전파를 더한다. 새 표는 people_handles와 내부 큐 context_version_bumps, 새 열은 둘이다.
 -- 결정 기록: docs/context-layer.md. 코드: src/lib/context/. gate(MEMORY_ENABLED · SOURCE_CHUNKS_ENABLED)가 꺼져 있으면 서버 코드는 아무것도 쓰지 않는다.
 --
 -- 1) 기억 정정은 같은 범위 · 같은 사실 안에서만 (사용자 결정 2026-10-10):
@@ -13,7 +13,7 @@
 -- 3) 사람 계정(1차 키)의 유일성 + 출처: people_handles (user, provider, account_ref) unique. people.handles · 출처 사람의 이름 · 이메일은 이 표에서 계산한다.
 -- 4) 신원 링크: oauth · inferred 링크는 연결에 묶이고(연결을 끊으면 함께 지워진다), profile · user_confirmed는 연결에 묶이지 않는다.
 -- 5) 조각 교체(replace_source_chunks)와 범위 version(work_contexts.context_version): 멤버 추가 · 제거, 범위 기억 변경, 멤버 원문의 새 revision · 글 지움 · 접근 상실에
---    오른다(commit 직전 한 번에, 범위 id 순).
+--    오른다(commit 직전 한 번에, 범위 id 순). 모델 후보(inferred)는 올리지 않는다. 내부 큐 표 context_version_bumps(앱 권한 없음)
 --
 -- 기억 · 범위는 실행 권한에 닿지 않는다(I04 · I14): 이 파일의 함수 · 트리거는 execution_* 표를 읽거나 쓰지 않는다 (tests/db/context-layer.test.ts가 확인).
 -- 적용: 운영 DB에는 병합 직전 승인을 받고 `supabase db query --linked -f`로 한다(db push 금지). 20261103000000_context_core 뒤에 적용한다.
@@ -72,6 +72,10 @@ begin
   end if;
   if new.superseded_by is not null and (tg_op = 'INSERT' or new.superseded_by is distinct from old.superseded_by) then
     select * into v_target from public.memory_items m where m.id = new.superseded_by and m.user_id = new.user_id;
+    -- 추정(inferred) 후보는 사용자가 말한 것 · 자료에서 읽은 것을 정정하지 못한다 (확인되면 explicit 새 행이 정정한다)
+    if found and v_target.origin = 'inferred' and new.origin <> 'inferred' then
+      raise exception 'memory_items_keep_history: an inferred item cannot supersede an explicit or observed item' using errcode = 'check_violation';
+    end if;
     if found and (
       new.subject is null
       or v_target.subject is distinct from new.subject
@@ -91,6 +95,66 @@ $$;
 -- 2) 접근 상실 (아키텍처 6.5: 403 · 삭제 감지). 행 · 기억 · 조각은 남기고 검색 · 묶음에서만 뺀다. 다시 읽히면 null로 되돌린다
 -- ─────────────────────────────────────────────
 alter table public.sources add column access_lost_at timestamptz;
+
+-- 같은 문서(revision들): 같은 사용자 · 같은 외부 id이고, 같은 연결이거나 한쪽 연결이 끊겨 비었다 (연결을 끊어도 원문 · 조각은 보관 정책대로 남고,
+-- 다시 연결하면 새 연결이 된다: 수집의 "이미 넣은 원문"과 같은 기준, src/lib/connectors/store.ts ingestedIds). 외부 id가 없는 원문은 자기 하나.
+-- 서로 다른 두 살아 있는 연결의 같은 외부 id는 다른 문서로 둔다 (연결이 다른 같은 자료의 수렴은 D0 ARCH-V04)
+create index sources_user_external_idx on public.sources (user_id, external_id) where external_id is not null;
+
+create function public.source_document_ids(p_user_id uuid, p_source_id uuid)
+returns uuid[]
+language sql
+stable
+set search_path = ''
+as $$
+  select coalesce(array_agg(s.id), '{}')
+    from public.sources me
+    join public.sources s on s.user_id = me.user_id
+     and (s.id = me.id
+          or (me.external_id is not null and s.external_id = me.external_id
+              and (s.connection_id = me.connection_id or s.connection_id is null or me.connection_id is null)))
+   where me.id = p_source_id and me.user_id = p_user_id;
+$$;
+
+-- 서버가 정하는 원문 열(글 지운 시각 · 이유 · 접근 상실)은 앱 역할이 바꾸지 못한다: 바꾸면 지운 원문 가드 · 검색 제외가 풀린다.
+-- 앱은 원문 행에 owner_all 정책이 있어(20260925000000) update 자체는 된다. 서버(service role) · 소유자 권한 함수는 그대로 쓴다
+create function public.sources_server_columns_guard() returns trigger
+language plpgsql
+set search_path = ''
+as $$
+begin
+  if current_user in ('authenticated', 'anon')
+     and (new.raw_text_purged_at, new.raw_text_purge_reason, new.access_lost_at)
+         is distinct from (old.raw_text_purged_at, old.raw_text_purge_reason, old.access_lost_at) then
+    raise exception 'sources_server_columns: raw_text_purged_at, raw_text_purge_reason and access_lost_at are set by the server only'
+      using errcode = 'insufficient_privilege';
+  end if;
+  return new;
+end;
+$$;
+
+create trigger sources_server_columns_guard
+  before update of raw_text_purged_at, raw_text_purge_reason, access_lost_at on public.sources
+  for each row execute function public.sources_server_columns_guard();
+
+-- 접근 상실 표시 · 되찾음 (서버). 같은 문서의 모든 revision을 함께 바꾼다: 접근은 문서의 성질이다. 바꾼 행 수
+create function public.set_sources_access(p_user_id uuid, p_source_ids uuid[], p_lost boolean)
+returns integer
+language plpgsql
+set search_path = ''
+as $$
+declare
+  v_count integer;
+begin
+  update public.sources s
+     set access_lost_at = case when p_lost then now() end
+   where s.user_id = p_user_id
+     and s.id in (select unnest(public.source_document_ids(p_user_id, x)) from unnest(p_source_ids) as x)
+     and (s.access_lost_at is null) = p_lost;
+  get diagnostics v_count = row_count;
+  return v_count;
+end;
+$$;
 
 -- ─────────────────────────────────────────────
 -- 3) 지운 원문 가드: 원문 글이 지워진 뒤에는 그 원문의 조각 · 기억 글을 새로 쓰지 못한다.
@@ -139,7 +203,14 @@ begin
     from public.sources s
    where s.id = (new.source_ref ->> 'source_id')::uuid and s.user_id = new.user_id
    for share;
-  if not found or v_purged is null then
+  if not found then
+    -- 새로 가리키는 출처는 이 사용자의 원문이어야 한다. 이미 가리키던 원문이 지워진 행은 그대로 고칠 수 있다 (원문 삭제 전파 · 잊기)
+    if tg_op = 'INSERT' or lower(new.source_ref ->> 'source_id') is distinct from lower(old.source_ref ->> 'source_id') then
+      raise exception 'memory_items_purged_source: source not found for this user' using errcode = 'foreign_key_violation';
+    end if;
+    return new;
+  end if;
+  if v_purged is null then
     return new;
   end if;
   if new.origin = 'inferred'
@@ -420,14 +491,24 @@ $$;
 
 -- ─────────────────────────────────────────────
 -- 8) 범위 version (아키텍처 5.4 · 6.3): 멤버 추가 · 제거 · 후보 확인, 범위 기억 추가 · 정정 · 잊기 · 삭제 · 비움,
---    멤버 원문의 새 revision · 글 지움 · 접근 상실에 오른다.
---    행 트리거는 바뀐 범위 id를 트랜잭션 변수(taskforce.context_bumps, set_config(..., true): 트랜잭션이 끝나면 사라진다)에 모으기만 하고,
---    commit 직전(deferred constraint trigger) 한 번에 id 순으로 올린다. 범위 행 잠금을 트랜잭션의 마지막에, 언제나 같은 순서로만 잡으므로
---    기억 · 원문 쓰기(remember_memory_item · 원문 글 지움)와 서로 기다리다 교착하지 않는다 (실행 코어의 execution.gate와 같은 트랜잭션 변수).
---    한 문장 update라 동시에 올려도 잃지 않는다(행 잠금). 한 트랜잭션은 범위마다 1 올린다. 묶음은 만들 때의 값과 같은지 · 작은지만 비교한다.
+--    멤버 원문의 새 revision · 글 지움 · 접근 상실에 오른다. 모델 후보(inferred 멤버 · inferred 기억)는 묶음에 들지 않으므로 올리지 않는다
+--    (stale 신호를 거짓으로 만들지 않게, CTX12). 후보가 확인되면(origin이 inferred에서 바뀜) 오른다.
+--    행 트리거는 바뀐 범위 id를 큐 표(context_version_bumps, 이 트랜잭션의 txid로)에 모으기만 하고, commit 직전(deferred constraint trigger)
+--    그 트랜잭션의 것을 꺼내 한 번에 id 순으로 올린다. 범위 행 잠금을 트랜잭션의 마지막에, 언제나 같은 순서로만 잡으므로
+--    기억 · 원문 쓰기(remember_memory_item · 원문 글 지움)와 서로 기다리다 교착하지 않는다. 한 트랜잭션은 범위마다 1 올린다.
+--    큐는 소유자 권한 함수만 쓰는 표다(앱 · 익명 권한 없음): 다른 역할이 남의 범위를 큐에 넣어 올리게 할 수 없다.
 --    트리거 함수는 소유자 권한이다: 계정 삭제(Supabase Auth의 supabase_auth_admin) · 앱의 원문 쓰기에서 cascade · 트리거로 불려도 돌게. new · old 행의 범위만 본다.
---    taskforce.context_bumps는 이 파일의 트리거 함수만 트랜잭션 안에서(is_local) 쓴다. 다른 코드가 세션 단위로 쓰지 않는다 (앱 역할은 쓸 수 없다)
+--    묶음을 만드는 쪽(B2 · C2)은 context_version을 기억 · 멤버와 같은 스냅샷에서(또는 먼저) 읽는다 (docs/context-layer.md 4장)
 -- ─────────────────────────────────────────────
+create table public.context_version_bumps (
+  txid bigint not null,
+  context_id uuid not null,
+  primary key (txid, context_id)
+);
+
+alter table public.context_version_bumps enable row level security;
+revoke all on public.context_version_bumps from anon, authenticated;
+
 create function public.bump_context_versions(p_context_ids uuid[])
 returns void
 language sql
@@ -442,34 +523,29 @@ $$;
 
 create function public.queue_context_bumps(p_context_ids uuid[])
 returns void
-language plpgsql
+language sql
 set search_path = ''
 as $$
-declare
-  v_queue text := coalesce(current_setting('taskforce.context_bumps', true), '');
-  v_id uuid;
-begin
-  foreach v_id in array coalesce(p_context_ids, '{}'::uuid[]) loop
-    if v_id is not null and position(v_id::text in v_queue) = 0 then
-      v_queue := v_queue || v_id::text || ',';
-    end if;
-  end loop;
-  perform set_config('taskforce.context_bumps', v_queue, true);
-end;
+  insert into public.context_version_bumps (txid, context_id)
+  select txid_current(), c from unnest(p_context_ids) as c where c is not null
+  on conflict do nothing;
 $$;
 
--- commit 직전: 모은 범위를 한 번에 올리고 목록을 비운다 (같은 트랜잭션의 다음 호출은 빈 목록이라 아무것도 하지 않는다)
+-- commit 직전: 이 트랜잭션이 모은 범위를 꺼내 한 번에 올린다 (같은 트랜잭션의 다음 호출은 꺼낼 것이 없어 아무것도 하지 않는다)
 create function public.flush_context_bumps() returns trigger
 language plpgsql
 security definer
 set search_path = ''
 as $$
 declare
-  v_queue text := coalesce(current_setting('taskforce.context_bumps', true), '');
+  v_ids uuid[];
 begin
-  if v_queue <> '' then
-    perform set_config('taskforce.context_bumps', '', true);
-    perform public.bump_context_versions(array(select x::uuid from unnest(string_to_array(rtrim(v_queue, ','), ',')) as x));
+  with taken as (
+    delete from public.context_version_bumps b where b.txid = txid_current() returning b.context_id
+  )
+  select array_agg(context_id) into v_ids from taken;
+  if v_ids is not null then
+    perform public.bump_context_versions(v_ids);
   end if;
   return null;
 end;
@@ -482,10 +558,14 @@ set search_path = ''
 as $$
 begin
   if tg_op = 'INSERT' then
-    perform public.queue_context_bumps(array[new.context_id]);
+    if new.origin <> 'inferred' then
+      perform public.queue_context_bumps(array[new.context_id]);
+    end if;
   elsif tg_op = 'DELETE' then
-    perform public.queue_context_bumps(array[old.context_id]);
-  else
+    if old.origin <> 'inferred' then
+      perform public.queue_context_bumps(array[old.context_id]);
+    end if;
+  elsif old.origin <> 'inferred' or new.origin <> 'inferred' then
     perform public.queue_context_bumps(array[old.context_id, new.context_id]);
   end if;
   return null;
@@ -512,10 +592,12 @@ security definer
 set search_path = ''
 as $$
 begin
-  if tg_op in ('UPDATE', 'DELETE') and old.scope_kind = 'context' then
+  if tg_op = 'INSERT' then
+    if new.scope_kind = 'context' and new.origin <> 'inferred' then
+      perform public.queue_context_bumps(array[new.context_id]);
+    end if;
+  elsif old.scope_kind = 'context' and (old.origin <> 'inferred' or (tg_op = 'UPDATE' and new.origin <> 'inferred')) then
     perform public.queue_context_bumps(array[old.context_id]);
-  elsif tg_op = 'INSERT' and new.scope_kind = 'context' then
-    perform public.queue_context_bumps(array[new.context_id]);
   end if;
   return null;
 end;
@@ -544,8 +626,7 @@ create constraint trigger memory_items_flush_context_version_on_delete
   for each row when (old.scope_kind = 'context')
   execute function public.flush_context_bumps();
 
--- 멤버 원문의 변화: 같은 문서(같은 연결 · 같은 외부 id)의 새 revision이 들어오거나, 글이 지워지거나, 접근을 잃거나 되찾을 때.
--- 그 원문 · 같은 문서의 원문을 먼저 고르고(인덱스) 그 멤버십만 본다
+-- 멤버 원문의 변화: 같은 문서(source_document_ids)의 새 revision이 들어오거나, 글이 지워지거나, 접근을 잃거나 되찾을 때
 create function public.sources_bump_member_contexts() returns trigger
 language plpgsql
 security definer
@@ -555,14 +636,8 @@ begin
   perform public.queue_context_bumps(array(
     select distinct cm.context_id
       from public.context_members cm
-     where cm.user_id = new.user_id and cm.removed_at is null
-       and cm.source_id = any (array(
-         select new.id
-         union
-         select s.id from public.sources s
-          where new.connection_id is not null and new.external_id is not null
-            and s.connection_id = new.connection_id and s.external_id = new.external_id and s.user_id = new.user_id
-       ))
+     where cm.user_id = new.user_id and cm.removed_at is null and cm.origin <> 'inferred'
+       and cm.source_id = any (public.source_document_ids(new.user_id, new.id))
   ));
   return null;
 end;
@@ -571,7 +646,7 @@ $$;
 create trigger sources_bump_member_contexts
   after insert on public.sources
   for each row
-  when (new.connection_id is not null and new.external_id is not null)
+  when (new.external_id is not null)
   execute function public.sources_bump_member_contexts();
 create trigger sources_bump_member_contexts_on_update
   after update of external_version, raw_text_purged_at, raw_text_purge_reason, access_lost_at on public.sources
@@ -583,7 +658,7 @@ create constraint trigger sources_flush_context_version
   after insert on public.sources
   deferrable initially deferred
   for each row
-  when (new.connection_id is not null and new.external_id is not null)
+  when (new.external_id is not null)
   execute function public.flush_context_bumps();
 create constraint trigger sources_flush_context_version_on_update
   after update of external_version, raw_text_purged_at, raw_text_purge_reason, access_lost_at on public.sources
@@ -594,9 +669,10 @@ create constraint trigger sources_flush_context_version_on_update
   execute function public.flush_context_bumps();
 
 -- ─────────────────────────────────────────────
--- 9) 원문 조각 교체 (아키텍처 6.2): 한 원문의 조각을 한 트랜잭션에서 바꾼다. 같은 문서(같은 연결 · 같은 외부 id)의 옛 revision 조각도 함께 지운다.
+-- 9) 원문 조각 교체 (아키텍처 6.2): 한 원문의 조각을 한 트랜잭션에서 바꾼다. 같은 문서(source_document_ids)의 옛 revision 조각도 함께 지운다.
 --    - 원문 행을 for share로 잠근다 (글 지우기와 한 줄로. 지운 원문이면 넣지 않고 purged)
---    - 같은 문서의 교체는 advisory 잠금으로 한 번에 하나씩. 이 원문보다 새 revision이 이미 있으면 넣지 않는다(stale): 늦게 끝난 옛 처리가 새 조각을 덮지 않게
+--    - 같은 문서의 교체는 advisory 잠금으로 한 번에 하나씩. 이 revision보다 나중에 들어온(created_at, id) revision이 있으면 넣지 않는다(stale):
+--      늦게 끝난 옛 처리가 새 조각을 덮지 않게. 순서는 수집 순서다 (occurred_at은 Notion에서 날짜 속성 · 만든 시각이라 고친 순서가 아니다)
 --    - p_embeddings는 '[…]' 문자열(1536차원) 또는 null. 순번(seq)은 0부터
 --    돌려주는 값: status(replaced · purged · stale)와 넣은 조각 수
 -- ─────────────────────────────────────────────
@@ -606,18 +682,17 @@ language plpgsql
 set search_path = ''
 as $$
 declare
-  v_connection uuid;
   v_external text;
   v_revision text;
   v_purged timestamptz;
-  v_occurred timestamptz;
   v_created timestamptz;
+  v_document uuid[];
 begin
   if coalesce(cardinality(p_texts), 0) <> coalesce(cardinality(p_embeddings), 0) then
     raise exception 'replace_source_chunks: texts and embeddings differ in length' using errcode = '22023';
   end if;
-  select s.connection_id, s.external_id, s.external_version, s.raw_text_purged_at, s.occurred_at, s.created_at
-    into v_connection, v_external, v_revision, v_purged, v_occurred, v_created
+  select s.external_id, s.external_version, s.raw_text_purged_at, s.created_at
+    into v_external, v_revision, v_purged, v_created
     from public.sources s
    where s.id = p_source_id and s.user_id = p_user_id
    for share;
@@ -629,25 +704,17 @@ begin
     return;
   end if;
 
-  perform pg_advisory_xact_lock(hashtextextended(
-    'source_chunks:' || p_user_id::text || ':' || coalesce(v_connection::text || ':' || v_external, p_source_id::text), 0));
-  if v_connection is not null and v_external is not null and exists (
+  perform pg_advisory_xact_lock(hashtextextended('source_chunks:' || p_user_id::text || ':' || coalesce(v_external, p_source_id::text), 0));
+  v_document := public.source_document_ids(p_user_id, p_source_id);
+  if exists (
     select 1 from public.sources n
-     where n.user_id = p_user_id and n.connection_id = v_connection and n.external_id = v_external and n.id <> p_source_id
-       and (n.occurred_at, n.created_at, n.id) > (v_occurred, v_created, p_source_id)
+     where n.id = any (v_document) and n.id <> p_source_id and (n.created_at, n.id) > (v_created, p_source_id)
   ) then
     return query select 'stale'::text, 0;
     return;
   end if;
 
-  delete from public.source_chunks c
-   where c.user_id = p_user_id
-     and c.source_id in (
-       select s.id from public.sources s
-        where s.user_id = p_user_id
-          and (s.id = p_source_id
-               or (v_connection is not null and v_external is not null and s.connection_id = v_connection and s.external_id = v_external))
-     );
+  delete from public.source_chunks c where c.user_id = p_user_id and c.source_id = any (v_document);
   insert into public.source_chunks (user_id, source_id, source_revision, seq, text, embedding)
   select p_user_id, p_source_id, v_revision, (t.ord - 1)::int, t.body, (p_embeddings[t.ord::int])::extensions.vector
     from unnest(p_texts) with ordinality as t (body, ord);
@@ -655,27 +722,33 @@ begin
 end;
 $$;
 
--- 범위 안 조각 검색 (아키텍처 6.1: 관계형 조건이 먼저, 벡터는 범위 안 보완). 지금 멤버(빠지지 않음 · 후보 아님)인 원문과
--- 같은 문서의 다른 revision(조각은 최신 revision에 붙는다: replace_source_chunks) 중 글이 남아 있고(보관 기간 · Slack 끊기 전)
--- 접근을 잃지 않은 원문의 조각만. Slack 원문은 조각을 만들지 않지만 여기서도 뺀다
+-- 범위 안 조각 검색 (아키텍처 6.1: 관계형 조건이 먼저, 벡터는 범위 안 보완). 지금 멤버(빠지지 않음 · 후보 아님)인 원문의 문서
+-- (source_document_ids: 조각은 최신 revision에 붙고, 연결을 끊은 뒤에도 같은 문서로 묶인다)에서 글이 남은(보관 기간 · Slack 끊기 전) revision의 조각만.
+-- 문서의 revision 하나라도 접근을 잃었으면 그 문서는 뺀다 (접근은 문서의 성질). Slack 원문은 조각을 만들지 않지만 여기서도 뺀다
 create function public.match_context_chunks(p_user_id uuid, p_context_id uuid, p_embedding extensions.vector(1536), p_count int default 8)
 returns table (id uuid, source_id uuid, source_revision text, seq integer, text text, similarity double precision)
 language sql
 stable
 set search_path = ''
 as $$
-  with candidates as materialized (
-    select distinct on (c.id) c.id, c.source_id, c.source_revision, c.seq, c.text, c.embedding
+  with documents as (
+    select public.source_document_ids(p_user_id, m.source_id) as ids
       from public.context_members m
-      join public.sources member on member.id = m.source_id and member.user_id = m.user_id
-      join public.sources s on s.user_id = member.user_id
-                           and (s.id = member.id
-                                or (member.connection_id is not null and member.external_id is not null
-                                    and s.connection_id = member.connection_id and s.external_id = member.external_id))
-      join public.source_chunks c on c.source_id = s.id and c.user_id = s.user_id
      where m.user_id = p_user_id and m.context_id = p_context_id and m.member_kind = 'source'
        and m.removed_at is null and m.origin <> 'inferred'
-       and s.raw_text_purged_at is null and s.access_lost_at is null
+  ),
+  usable as (
+    select distinct r.id
+      from documents d
+      cross join lateral unnest(d.ids) as r (id)
+     where not exists (select 1 from public.sources lost where lost.id = any (d.ids) and lost.access_lost_at is not null)
+  ),
+  candidates as materialized (
+    select c.id, c.source_id, c.source_revision, c.seq, c.text, c.embedding
+      from usable u
+      join public.sources s on s.id = u.id and s.user_id = p_user_id
+      join public.source_chunks c on c.source_id = s.id and c.user_id = p_user_id
+     where s.raw_text_purged_at is null
        and not exists (select 1 from public.connections k where k.id = s.connection_id and k.provider = 'slack')
        and c.embedding is not null
   )
@@ -737,6 +810,11 @@ begin
     v_subject := coalesce(v_old.subject, 'memory:' || v_old.id::text);
   end if;
 
+  -- 'memory:<id>' 주제는 정정이 만든다 (주제 없던 항목을 가리켜 고칠 때). 새 기억이 이 모양을 쓰면 남의 사실 열쇠에 끼어든다
+  if p_corrects is null and v_subject like 'memory:%' then
+    raise exception 'remember_memory_item: subjects starting with memory: are reserved' using errcode = '22023';
+  end if;
+
   if v_subject is not null then
     -- 같은 범위 · 같은 사실의 쓰기는 한 번에 하나씩
     perform pg_advisory_xact_lock(hashtextextended(concat_ws(':', 'memory_fact', p_user_id, v_kind, v_subject, v_scope,
@@ -749,6 +827,9 @@ begin
     perform 1 from public.sources s
      where s.id = (p_item -> 'source_ref' ->> 'source_id')::uuid and s.user_id = p_user_id
      for share;
+    if not found then
+      raise exception 'remember_memory_item: source not found for this user' using errcode = 'foreign_key_violation';
+    end if;
   end if;
 
   if p_corrects is not null then
@@ -849,6 +930,9 @@ begin
     'public.bump_context_versions(uuid[])',
     'public.queue_context_bumps(uuid[])',
     'public.flush_context_bumps()',
+    'public.source_document_ids(uuid, uuid)',
+    'public.sources_server_columns_guard()',
+    'public.set_sources_access(uuid, uuid[], boolean)',
     'public.context_members_bump_version()',
     'public.memory_items_bump_context_version()',
     'public.sources_bump_member_contexts()',
@@ -865,6 +949,8 @@ grant execute on function public.observe_person_handle(uuid, text, text, text, t
 -- 서버 경로(service role)가 부르는 내부 함수 (Supabase 기본 권한에 기대지 않는다): Slack D3(purge_slack_data → purge_slack_identity),
 -- 트리거 · RPC 안에서 부르는 전파 · version · 사람 계산
 grant execute on function public.purge_slack_identity(uuid[]) to service_role;
+grant execute on function public.set_sources_access(uuid, uuid[], boolean) to service_role;
+grant execute on function public.source_document_ids(uuid, uuid) to service_role;
 grant execute on function public.purge_source_context(uuid, uuid[], boolean) to service_role;
 grant execute on function public.queue_context_bumps(uuid[]) to service_role;
 grant execute on function public.bump_context_versions(uuid[]) to service_role;

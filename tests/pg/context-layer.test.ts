@@ -345,17 +345,18 @@ describe("맥락층 경합 (실제 Postgres, 연결 둘 이상)", () => {
     expect(await old).toEqual({ status: "stale", chunks: 0 });
     expect(await texts()).toEqual(["v2"]);
 
-    // 옛 것이 먼저 잡혀도 (지운 뒤 다시 넣는 v1 처리), 새 것이 기다렸다가 옛 조각을 지우고 바꾼다
-    await setup.query(`delete from public.source_chunks where source_id = any ($1::uuid[])`, [[v1, v2]]);
-    await setup.query(`update public.sources set occurred_at = '2026-09-30T00:00:00Z' where id = $1`, [v2]); // 잠깐 v1이 최신
+    // 옛 것이 먼저 잡혀도 (v1 처리 중에 새 revision v2가 들어옴), 새 것이 기다렸다가 옛 조각을 지우고 바꾼다.
+    // 순서는 수집 순서다: v2의 날짜(occurred_at)가 v1보다 앞서도 v2가 최신이다
+    const d1 = await f.source(me, { connectionId: notion, externalId: "doc-2", version: "v1", occurredAt: "2026-10-01T00:00:00Z" });
+    const texts2 = async () => (await setup.query(`select c.text from public.source_chunks c join public.sources s on s.id = c.source_id where s.external_id = 'doc-2' and s.user_id = $1`, [me])).rows.map((r) => r.text);
     await a.query("begin");
-    expect(await replace(a, v1, "v1")).toEqual({ status: "replaced", chunks: 1 });
-    await setup.query(`update public.sources set occurred_at = '2026-10-02T00:00:00Z' where id = $1`, [v2]); // v2가 다시 최신 (A는 아직 commit 전)
-    const newer = replace(b, v2, "v2");
+    expect(await replace(a, d1, "v1")).toEqual({ status: "replaced", chunks: 1 });
+    const d2 = await f.source(me, { connectionId: notion, externalId: "doc-2", version: "v2", occurredAt: "2026-09-01T00:00:00Z" });
+    const newer = replace(b, d2, "v2");
     await waitForLockWait(bPid);
     await a.query("commit");
     expect(await newer).toEqual({ status: "replaced", chunks: 1 });
-    expect(await texts()).toEqual(["v2"]);
+    expect(await texts2()).toEqual(["v2"]);
   });
 });
 
