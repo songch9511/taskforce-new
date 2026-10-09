@@ -271,6 +271,20 @@ describe("CHECK · unique 제약", () => {
     await expect(memory({ origin: "observed" })).rejects.toThrow(/memory_items_observed_source/);
     await expect(memory({ origin: "observed", source_ref: JSON.stringify({ quote: "인용만" }) })).rejects.toThrow(/memory_items_source_ref_check/);
     await expect(memory({ origin: "observed", source_ref: JSON.stringify(["source_id"]) })).rejects.toThrow(/memory_items_source_ref_check/);
+    // 키만 있고 값이 null · 빈 문자열 · 문자열이 아님 (앱이 읽지 못하는 출처)
+    await expect(memory({ origin: "observed", source_ref: JSON.stringify({ source_id: null }) })).rejects.toThrow(/memory_items_source_ref_check/);
+    await expect(memory({ origin: "observed", source_ref: JSON.stringify({ source_id: "" }) })).rejects.toThrow(/memory_items_source_ref_check/);
+    await expect(memory({ origin: "observed", source_ref: JSON.stringify({ event_id: 42 }) })).rejects.toThrow(/memory_items_source_ref_check/);
+    await expect(memory({ origin: "observed", source_ref: JSON.stringify({ source_id: alice.source, message_id: null }) })).rejects.toThrow(
+      /memory_items_source_ref_check/,
+    );
+    // id 모양 (앱의 memorySourceRefSchema와 같은 모양): uuid가 아닌 id · 빈 보조 키 · 100자를 넘는 event_id
+    await expect(memory({ origin: "observed", source_ref: JSON.stringify({ source_id: "page-1" }) })).rejects.toThrow(/memory_items_source_ref_check/);
+    await expect(memory({ origin: "observed", source_ref: JSON.stringify({ source_id: alice.source, message_id: "" }) })).rejects.toThrow(
+      /memory_items_source_ref_check/,
+    );
+    await expect(memory({ origin: "observed", source_ref: JSON.stringify({ event_id: "e".repeat(101) }) })).rejects.toThrow(/memory_items_source_ref_check/);
+    expect((await memory({ origin: "observed", source_ref: JSON.stringify({ event_id: "12345" }) })).rows).toHaveLength(1);
     const ok = await memory({ origin: "observed", source_ref: JSON.stringify({ source_id: alice.source, quote: "Shape 출시 준비" }) });
     expect(ok.rows).toHaveLength(1);
   });
@@ -288,6 +302,9 @@ describe("CHECK · unique 제약", () => {
     await expect(memory({ scope_kind: "action", context_id: alice.work_contexts })).rejects.toThrow(/memory_items_scope_target/);
     await expect(memory({ scope_kind: "agent" })).rejects.toThrow(/memory_items_scope_target/);
     expect((await memory({ scope_kind: "agent", kind: "working_rule", agent_adapter: "agent:claude-code" })).rows).toHaveLength(1);
+    // 대상 이름은 계약(agentAdapterIdSchema)과 같은 모양: agent:<소문자 이름>, 64자 이하
+    await expect(memory({ scope_kind: "agent", kind: "working_rule", agent_adapter: "claude-code" })).rejects.toThrow(/memory_items_agent_adapter_check/);
+    await expect(memory({ scope_kind: "agent", kind: "working_rule", agent_adapter: "agent:Claude Code" })).rejects.toThrow(/memory_items_agent_adapter_check/);
     expect((await memory({ scope_kind: "counterpart", kind: "relationship", person_id: alice.people })).rows).toHaveLength(1);
     expect((await memory({ scope_kind: "action", kind: "outcome_criteria", action_id: alice.action })).rows).toHaveLength(1);
   });
@@ -336,6 +353,26 @@ describe("CHECK · unique 제약", () => {
     await member("member_kind, source_id, origin, confidence", ["source", alice.source, "inferred", 0.7]);
     await member("member_kind, person_id, origin", ["person", alice.people, "auto"]);
     await expect(member("member_kind, person_id, origin", ["person", alice.people, "user"])).rejects.toThrow(/context_members_context_id_person_id_key/);
+  });
+
+  it("context_members: 사용자가 뺀 멤버는 removed_at으로 남고(origin user만), 자동 규칙이 같은 멤버를 다시 넣지 못한다", async () => {
+    const action = await one(`insert into public.actions (user_id, title) values ($1, '뺄 할 일') returning id`, [ALICE]);
+    const insert = (origin: string) =>
+      db.query(`insert into public.context_members (user_id, context_id, member_kind, action_id, origin) values ($1, $2, 'action', $3, $4) returning id`, [
+        ALICE,
+        alice.work_contexts,
+        action,
+        origin,
+      ]);
+    const auto = (await insert("auto")).rows[0] as { id: string };
+    // 자동 멤버를 그대로 "뺌"으로 표시할 수는 없다: 사용자의 선택이면 origin도 user
+    await expect(db.query(`update public.context_members set removed_at = now() where id = $1`, [auto.id])).rejects.toThrow(
+      /context_members_removed_by_user/,
+    );
+    await db.query(`update public.context_members set removed_at = now(), origin = 'user' where id = $1`, [auto.id]);
+    await expect(insert("auto")).rejects.toThrow(/context_members_context_id_action_id_key/);
+    const current = await db.query(`select id from public.context_members where action_id = $1 and removed_at is null`, [action]);
+    expect(current.rows).toEqual([]);
   });
 
   it("conversation_messages: 같은 대화에서 client_message_id · seq는 한 번, 사용자 메시지는 id가 있고 4,000자 이하", async () => {
@@ -464,6 +501,35 @@ describe("on delete: 부모를 지우면", () => {
     expect((await db.query(`select 1 from public.actions where id = $1`, [alice.action])).rows).toHaveLength(1);
   });
 
+  it("할 일 · 사람을 지우면 그 멤버십 · 그 대상의 기억이 지워진다", async () => {
+    const action = await one(`insert into public.actions (user_id, title) values ($1, '지울 할 일') returning id`, [ALICE]);
+    const person = await one(`insert into public.people (user_id, display_name, origin) values ($1, '지울 사람', 'user') returning id`, [ALICE]);
+    await db.query(`insert into public.context_members (user_id, context_id, member_kind, action_id, origin) values ($1, $2, 'action', $3, 'user')`, [
+      ALICE,
+      alice.work_contexts,
+      action,
+    ]);
+    await db.query(`insert into public.context_members (user_id, context_id, member_kind, person_id, origin) values ($1, $2, 'person', $3, 'user')`, [
+      ALICE,
+      alice.work_contexts,
+      person,
+    ]);
+    await db.query(`insert into public.memory_items (user_id, kind, scope_kind, action_id, statement, origin) values ($1, 'outcome_criteria', 'action', $2, '표 포함', 'explicit')`, [
+      ALICE,
+      action,
+    ]);
+    await db.query(`insert into public.memory_items (user_id, kind, scope_kind, person_id, statement, origin) values ($1, 'relationship', 'counterpart', $2, '결정권자', 'explicit')`, [
+      ALICE,
+      person,
+    ]);
+    await db.query(`delete from public.actions where id = $1`, [action]);
+    await db.query(`delete from public.people where id = $1`, [person]);
+    expect((await db.query(`select 1 from public.context_members where action_id = $1 or person_id = $2`, [action, person])).rows).toHaveLength(0);
+    expect((await db.query(`select 1 from public.memory_items where action_id = $1 or person_id = $2`, [action, person])).rows).toHaveLength(0);
+    // 범위 자체 · 다른 멤버는 그대로
+    expect((await db.query(`select 1 from public.context_members where id = $1`, [alice.context_members])).rows).toHaveLength(1);
+  });
+
   it("원문을 지우면 그 조각 · 멤버십이 지워진다", async () => {
     const source = await one(`insert into public.sources (user_id, kind, raw_text, occurred_at) values ($1, 'note', '메모', now()) returning id`, [ALICE]);
     await db.query(`insert into public.source_chunks (user_id, source_id, seq, text) values ($1, $2, 0, '메모')`, [ALICE, source]);
@@ -489,7 +555,7 @@ describe("on delete: 부모를 지우면", () => {
     expect(rows).toEqual([{ account_ref: "T9:U8" }]);
   });
 
-  it("합친 대상 사람 · 정정한 새 기억을 지우면 가리키던 쪽은 null이 된다 (옛 행은 남는다)", async () => {
+  it("합친 대상 사람 · 정정한 새 기억을 지우면 가리키던 쪽은 null이 된다 (옛 행은 남고, 정정된 기억은 지금 것으로 돌아오지 않는다)", async () => {
     const target = await one(`insert into public.people (user_id, display_name, origin) values ($1, '대상', 'user') returning id`, [ALICE]);
     const merged = await one(`insert into public.people (user_id, display_name, origin, merged_into) values ($1, '합쳐진 사람', 'source', $2) returning id`, [
       ALICE,
@@ -506,7 +572,17 @@ describe("on delete: 부모를 지우면", () => {
       [ALICE, newer],
     );
     await db.query(`delete from public.memory_items where id = $1`, [newer]);
-    expect((await db.query(`select superseded_by from public.memory_items where id = $1`, [older])).rows).toEqual([{ superseded_by: null }]);
+    const { rows } = await db.query<{ superseded_by: string | null; superseded_at: Date | null; revoked_at: Date | null }>(
+      `select superseded_by, superseded_at, revoked_at from public.memory_items where id = $1`,
+      [older],
+    );
+    expect(rows[0].superseded_by).toBeNull();
+    expect(rows[0].superseded_at).toBeInstanceOf(Date);
+    // 지금 쓰는 기억(앱이 RLS로 읽는 조건)에 옛 행이 없다. 시나리오 전체는 memory-history.test.ts
+    const current = await asUser(db, ALICE, () =>
+      db.query<{ id: string }>(`select id from public.memory_items where superseded_at is null and revoked_at is null`),
+    );
+    expect(current.rows.map((row) => row.id)).not.toContain(older);
   });
 
   it("대화를 지우면 메시지가 지워진다", async () => {
@@ -523,14 +599,18 @@ describe("on delete: 부모를 지우면", () => {
 describe("updated_at · 트리거", () => {
   const UPDATED = ["people", "work_contexts", "context_members", "memory_items", "identity_links"] as const;
 
-  it("updated_at이 있는 표는 기존 set_updated_at 트리거만 쓴다 (새 함수 없음)", async () => {
+  it("updated_at이 있는 표는 기존 set_updated_at 트리거를 쓰고, 새 함수는 기억 이력 보호 하나다", async () => {
     const { rows } = await db.query<{ table: string; fn: string }>(
       `select c.relname as table, p.proname as fn from pg_trigger t
        join pg_class c on c.oid = t.tgrelid join pg_proc p on p.oid = t.tgfoid
-       where not t.tgisinternal and c.relname = any($1) order by c.relname`,
+       where not t.tgisinternal and c.relname = any($1) order by c.relname, p.proname`,
       [[...TABLES]],
     );
-    expect(rows).toEqual([...UPDATED].sort().map((table) => ({ table, fn: "set_updated_at" })));
+    expect(rows).toEqual(
+      [...[...UPDATED].map((table) => ({ table, fn: "set_updated_at" })), { table: "memory_items", fn: "memory_items_keep_history" }].sort(
+        (a, b) => a.table.localeCompare(b.table) || a.fn.localeCompare(b.fn),
+      ),
+    );
   });
 
   it.each(UPDATED)("%s: 고치면 updated_at이 갱신된다", async (table) => {

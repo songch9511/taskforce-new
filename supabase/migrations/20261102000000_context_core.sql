@@ -2,7 +2,7 @@
 -- source_chunks · inbox_events · conversations · conversation_messages. 필드 계약은 0.2.0 아키텍처 5장 · 런타임 계약 2장.
 --
 -- - 표만 만든다. 코드는 아직 이 표를 읽거나 쓰지 않는다 (src/lib/flags.ts의 gate가 모두 꺼짐, route 없음).
---   새 함수는 없다: updated_at은 기존 public.set_updated_at()을 트리거로 쓴다.
+--   updated_at은 기존 public.set_updated_at()을 트리거로 쓴다. 새 함수는 기억 이력 보호 트리거 public.memory_items_keep_history() 하나다.
 -- - 모든 행은 user_id를 갖고, 자식은 부모와 (id, user_id) 복합 외래키로 묶여 다른 사용자의 부모를 가리키지 못한다.
 --   기존 표(actions · sources · connections)에는 이미 unique (id, user_id)가 있어 바꾸지 않는다.
 -- - 권한: 앱은 자기 행을 RLS로 읽기만 한다(owner_all 정책 + select 권한). 쓰기는 서버(service role)만 한다
@@ -62,6 +62,7 @@ create index work_contexts_user_status_idx on public.work_contexts (user_id, sta
 -- 3) context_members: 범위의 멤버. 멤버 종류마다 외래키 열 하나(id만 담는 다형 열을 두지 않는다). 정확히 하나만 채우고 member_kind와 맞아야 한다.
 --    agent session 멤버는 agent_sessions가 생기는 PR(D1)에서 열 · 종류를 더한다.
 --    origin: user(사용자가 정함, 자동 규칙이 덮지 않는다) · auto(코드 규칙) · inferred(모델 후보, confidence 필수)
+--    사용자가 뺀 멤버는 행을 지우지 않고 removed_at을 남긴다(origin user): 같은 멤버를 자동 규칙이 다시 넣지 못한다(unique). 지금 멤버 = removed_at이 없는 행
 -- ─────────────────────────────────────────────
 create table public.context_members (
   id uuid primary key default gen_random_uuid(),
@@ -73,8 +74,10 @@ create table public.context_members (
   person_id uuid,
   origin text not null check (origin in ('user', 'auto', 'inferred')),
   confidence numeric check (confidence >= 0 and confidence <= 1),
+  removed_at timestamptz,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
+  constraint context_members_removed_by_user check (removed_at is null or origin = 'user'),
   constraint context_members_one_member check (
     (member_kind = 'action') = (action_id is not null)
     and (member_kind = 'source') = (source_id is not null)
@@ -93,11 +96,14 @@ create table public.context_members (
 create index context_members_action_idx on public.context_members (action_id) where action_id is not null;
 create index context_members_source_idx on public.context_members (source_id) where source_id is not null;
 create index context_members_person_idx on public.context_members (person_id) where person_id is not null;
+create index context_members_user_idx on public.context_members (user_id);
 
 -- ─────────────────────────────────────────────
 -- 4) memory_items: 사용자 또는 자료가 말한 한 가지 (아키텍처 5.3). Action 필드를 바꾸지 않는다(I01), 실행 권한에 닿지 않는다(I04).
 --    origin: explicit(사용자가 직접 말함) > observed(자료 · 검증된 결과에서 읽음, source_ref 필수) > inferred(모델 추정, confidence 필수).
 --    정정은 새 행 + 옛 행 superseded_by (옛 행은 지우지 않는다). 잊기는 revoked_at.
+--    현재 항목 = superseded_at · revoked_at이 모두 없는 행. superseded_at은 정정된 사실 자체를 남기는 한 방향 표시라서,
+--    정정한 새 행이 지워져도(직접 삭제 · 범위 cascade) 포인터 superseded_by만 비고 옛 행은 현재로 돌아오지 않는다 (트리거 memory_items_keep_history)
 --    범위: global(대상 없음) · context · action · counterpart(person) · agent(adapter 이름, 예: agent:claude-code). 대상 열은 범위와 맞아야 한다.
 --    observed 항목의 출처 원문 글이 지워지면 statement를 비우고 source_purged = true (빈 statement ⇔ source_purged)
 -- ─────────────────────────────────────────────
@@ -111,19 +117,32 @@ create table public.memory_items (
   context_id uuid,
   action_id uuid,
   person_id uuid,
-  agent_adapter text check (char_length(agent_adapter) between 1 and 100),
+  agent_adapter text check (agent_adapter ~ '^agent:[a-z0-9][a-z0-9_-]*$' and char_length(agent_adapter) <= 64), -- contract agentAdapterIdSchema
   statement text not null check (char_length(statement) <= 1000),               -- 한 줄, 사용자 언어
   value jsonb not null default '{}' check (jsonb_typeof(value) = 'object'),      -- 구조화 값 (예: {"start_after": {"kind": "design_approved"}})
   origin text not null check (origin in ('explicit', 'observed', 'inferred')),
-  -- 출처: message_id | source_id + quote | artifact_id | event_id 중 하나 이상 (id만, 원문 글은 quote뿐)
-  source_ref jsonb check (
-    jsonb_typeof(source_ref) = 'object' and source_ref ?| array['message_id', 'source_id', 'artifact_id', 'event_id']
-  ),
+  -- 출처: message_id | source_id + quote | artifact_id | event_id 중 하나 이상 (id만, 원문 글은 quote뿐).
+  -- 있는 키는 모양이 맞아야 한다: message_id · source_id · artifact_id는 uuid 문자열, event_id는 1–100자 문자열, quote는 문자열
+  -- (앱의 memorySourceRefSchema와 같은 모양. uuid 변형 비트 같은 세부까지 같지는 않다)
+  source_ref jsonb check (source_ref is null or (
+    jsonb_typeof(source_ref) = 'object'
+    and source_ref ?| array['message_id', 'source_id', 'artifact_id', 'event_id']
+    and (source_ref -> 'message_id' is null or (jsonb_typeof(source_ref -> 'message_id') = 'string'
+      and source_ref ->> 'message_id' ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'))
+    and (source_ref -> 'source_id' is null or (jsonb_typeof(source_ref -> 'source_id') = 'string'
+      and source_ref ->> 'source_id' ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'))
+    and (source_ref -> 'artifact_id' is null or (jsonb_typeof(source_ref -> 'artifact_id') = 'string'
+      and source_ref ->> 'artifact_id' ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'))
+    and (source_ref -> 'event_id' is null or (jsonb_typeof(source_ref -> 'event_id') = 'string'
+      and char_length(source_ref ->> 'event_id') between 1 and 100))
+    and (source_ref -> 'quote' is null or jsonb_typeof(source_ref -> 'quote') = 'string')
+  )),
   observed_at timestamptz not null default now(),                               -- 말한 · 읽은 시각
   valid_from timestamptz,                                                       -- 사실의 유효 구간 (알 때만)
   valid_until timestamptz,
   superseded_by uuid,
-  revoked_at timestamptz,
+  superseded_at timestamptz,                                                    -- 정정된 시각. 한 번 남기면 지우거나 바꾸지 않는다
+  revoked_at timestamptz,                                                       -- 잊은 시각. 한 번 남기면 지우거나 바꾸지 않는다
   confidence numeric check (confidence >= 0 and confidence <= 1),
   source_purged boolean not null default false,
   version integer not null default 1 check (version >= 1),
@@ -142,15 +161,17 @@ create table public.memory_items (
   constraint memory_items_purged_observed check (not source_purged or origin = 'observed'),
   constraint memory_items_valid_range check (valid_from is null or valid_until is null or valid_from <= valid_until),
   constraint memory_items_not_superseded_by_self check (superseded_by <> id),
+  constraint memory_items_superseded_marked check (superseded_by is null or superseded_at is not null),
   foreign key (context_id, user_id) references public.work_contexts (id, user_id) on delete cascade,
   foreign key (action_id, user_id) references public.actions (id, user_id) on delete cascade,
   foreign key (person_id, user_id) references public.people (id, user_id) on delete cascade,
-  -- 정정한 새 행을 지우면(범위 삭제 cascade 포함) 옛 행이 다시 현재 항목이 된다
+  -- 정정한 새 행을 지우면(범위 삭제 cascade 포함) 포인터만 비운다. superseded_at이 남아 옛 행은 현재 항목이 되지 않는다
   foreign key (superseded_by, user_id) references public.memory_items (id, user_id) on delete set null (superseded_by)
 );
 
+create index memory_items_user_idx on public.memory_items (user_id);
 create index memory_items_user_current_idx on public.memory_items (user_id, scope_kind)
-  where superseded_by is null and revoked_at is null;
+  where superseded_at is null and revoked_at is null;
 create index memory_items_context_idx on public.memory_items (context_id) where context_id is not null;
 create index memory_items_action_idx on public.memory_items (action_id) where action_id is not null;
 create index memory_items_person_idx on public.memory_items (person_id) where person_id is not null;
@@ -258,6 +279,8 @@ create table public.conversation_messages (
   foreign key (conversation_id, user_id) references public.conversations (id, user_id) on delete cascade
 );
 
+create index conversation_messages_user_idx on public.conversation_messages (user_id);
+
 -- ─────────────────────────────────────────────
 -- 10) updated_at 자동 갱신 (기존 public.set_updated_at)
 -- ─────────────────────────────────────────────
@@ -273,6 +296,34 @@ create trigger context_members_set_updated_at
 create trigger memory_items_set_updated_at
   before update on public.memory_items
   for each row execute function public.set_updated_at();
+
+-- 기억의 정정 · 잊기는 한 방향이다 (아키텍처 5.3: 옛 행은 이력으로 남고, 사용자의 정정 · 잊기를 되돌리지 않는다).
+-- superseded_by를 쓰면 superseded_at을 남기고, 한 번 남긴 superseded_at · revoked_at은 서버(service role)도 지우거나 바꾸지 못한다.
+-- 서버의 잊기 · 정정은 `where revoked_at is null` · `where superseded_at is null`로 써서 다시 보낸 요청이 오류가 아니라 0행이 되게 한다.
+create function public.memory_items_keep_history() returns trigger
+language plpgsql
+set search_path = ''
+as $$
+begin
+  if new.superseded_by is not null and new.superseded_at is null then
+    new.superseded_at = now();
+  end if;
+  if tg_op = 'UPDATE' then
+    if old.superseded_at is not null and new.superseded_at is distinct from old.superseded_at then
+      raise exception 'memory_items_keep_history: superseded_at is permanent' using errcode = 'check_violation';
+    end if;
+    if old.revoked_at is not null and new.revoked_at is distinct from old.revoked_at then
+      raise exception 'memory_items_keep_history: revoked_at is permanent' using errcode = 'check_violation';
+    end if;
+  end if;
+  return new;
+end;
+$$;
+
+create trigger memory_items_keep_history
+  before insert or update on public.memory_items
+  for each row execute function public.memory_items_keep_history();
+revoke all on function public.memory_items_keep_history() from public, anon, authenticated;
 create trigger identity_links_set_updated_at
   before update on public.identity_links
   for each row execute function public.set_updated_at();

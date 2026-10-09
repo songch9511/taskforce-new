@@ -95,6 +95,8 @@ const FROZEN_V1: Record<string, string> = {
   weeklyCheckRequestSchema: "7dbb6b240b323270",
 };
 
+// 지문은 JSON Schema로 본 모양 · literal · enum만 고정한다. .refine · .transform · .superRefine 안의 규칙 변화는 지문에 보이지 않는다
+// (그 규칙은 아래 v1 본문 왕복 테스트와 각 route 테스트가 지킨다).
 function fingerprint(value: unknown): string {
   const shape =
     value instanceof z.ZodType

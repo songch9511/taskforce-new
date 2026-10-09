@@ -31,6 +31,7 @@ import {
   postConversationMessageResponseSchema,
   updateWorkContextRequestSchema,
   workContextSchema,
+  isCurrentMemoryItem,
 } from "./contract";
 
 // 0.2.0 계약 뼈대 (A2): route가 붙기 전에 모양을 고정한다. 에이전트 · bridge 본문(AGENT_* · BRIDGE_*)은
@@ -222,6 +223,7 @@ describe("기억 (memory_items)", () => {
     valid_from: null,
     valid_until: null,
     superseded_by: null,
+    superseded_at: null,
     revoked_at: null,
     confidence: null,
     source_purged: false,
@@ -237,6 +239,16 @@ describe("기억 (memory_items)", () => {
     expect(memoryItemSchema.safeParse({ ...row, kind: "preference" }).success).toBe(false);
     expect(memoryItemSchema.safeParse({ ...row, scope_kind: "team" }).success).toBe(false);
     expect(memoryItemSchema.safeParse({ ...row, origin: "user" }).success).toBe(false);
+  });
+
+  it("지금 쓰는 기억 = 정정 · 잊기 시각이 모두 없음. 정정한 새 항목이 지워져 포인터가 비어도 옛 항목은 지금 것이 아니다", () => {
+    expect(isCurrentMemoryItem(row)).toBe(true);
+    const corrected = { ...row, superseded_by: U.context, superseded_at: "2026-10-09T06:00:00Z" };
+    expect(isCurrentMemoryItem(memoryItemSchema.parse(corrected))).toBe(false);
+    // 새 항목이 지워진 뒤 (on delete set null)
+    expect(isCurrentMemoryItem(memoryItemSchema.parse({ ...corrected, superseded_by: null }))).toBe(false);
+    expect(isCurrentMemoryItem(memoryItemSchema.parse({ ...row, revoked_at: "2026-10-09T06:00:00Z" }))).toBe(false);
+    expect(memoryItemSchema.safeParse({ ...row, superseded_at: undefined }).success).toBe(false);
   });
 
   it("출처는 원문 id를 하나 이상", () => {
@@ -289,10 +301,14 @@ describe("범위 (work_contexts · context_members)", () => {
       person_id: null,
       origin: "auto",
       confidence: null,
+      removed_at: null,
       created_at: "2026-10-09T05:00:00Z",
       updated_at: "2026-10-09T05:00:00Z",
     };
     expect(contextMemberSchema.parse(member)).toEqual(member);
+    // 사용자가 뺀 멤버도 행으로 읽힌다 (자동 규칙이 다시 넣지 않게)
+    const removed = { ...member, origin: "user", removed_at: "2026-10-09T06:00:00Z" };
+    expect(contextMemberSchema.parse(removed)).toEqual(removed);
   });
 
   it("앱의 멤버십 변경에는 origin이 없다 (언제나 user). 서버 쪽 변경은 origin · confidence를 싣는다", () => {

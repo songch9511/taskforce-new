@@ -683,6 +683,9 @@ export type BillingStatus = z.infer<typeof billingStatusSchema>;
 const idListSchema = z.array(z.uuid()).max(100);
 const jsonObjectSchema = z.record(z.string(), z.unknown());
 
+/** capability · 사건의 adapter 이름: "agent:<이름>" (예: agent:claude-code) */
+export const agentAdapterIdSchema = z.string().max(64).regex(/^agent:[a-z0-9][a-z0-9_-]*$/);
+
 // ─── 대화 v2 (런타임 계약 2장 · 아키텍처 5.6) ──────────────────
 
 /** 사용자 메시지 상한 (런타임 계약 12장). 위임 지시는 질문(Ask 500자)보다 길다 */
@@ -734,7 +737,7 @@ export type MessageRefs = z.infer<typeof messageRefsSchema>;
 /** conversations 행. context_id: 대화의 기본 범위 (null = All work). 글 보관 기한 뒤 메시지 text만 비운다(text_purged_at) */
 export const conversationSchema = z.object({
   id: z.uuid(),
-  title: z.string().max(200).nullable(),
+  title: z.string().nullable(),
   context_id: z.uuid().nullable(),
   created_at: z.string(),
   last_message_at: z.string().nullable(),
@@ -810,7 +813,7 @@ export const memorySourceRefSchema = z
   .object({
     message_id: z.uuid().optional(),
     source_id: z.uuid().optional(),
-    quote: z.string().max(2000).optional(),
+    quote: z.string().optional(),
     artifact_id: z.uuid().optional(),
     event_id: z.string().min(1).max(100).optional(),
   })
@@ -826,15 +829,20 @@ export const memoryItemSchema = z.object({
   action_id: z.uuid().nullable(),
   person_id: z.uuid().nullable(),
   /** scope_kind agent의 대상 (capability.adapter, 예: agent:claude-code) */
-  agent_adapter: z.string().nullable(),
-  statement: z.string().max(MEMORY_STATEMENT_MAX_CHARS),
+  agent_adapter: agentAdapterIdSchema.nullable(),
+  // 읽기 스키마에는 길이 상한을 두지 않는다: DB는 char_length(코드 포인트), zod .max는 UTF-16 단위라 이모지가 든 행을 못 읽게 된다
+  statement: z.string(),
   value: jsonObjectSchema,
   origin: memoryOriginSchema,
   source_ref: memorySourceRefSchema.nullable(),
   observed_at: z.string(),
   valid_from: z.string().nullable(),
   valid_until: z.string().nullable(),
+  /** 정정한 새 항목. 그 항목이 지워지면 null이 되지만 superseded_at은 남는다 */
   superseded_by: z.uuid().nullable(),
+  /** 정정된 시각 (한 번 남으면 지워지지 않는다) */
+  superseded_at: z.string().nullable(),
+  /** 잊은 시각 (한 번 남으면 지워지지 않는다) */
   revoked_at: z.string().nullable(),
   confidence: z.number().min(0).max(1).nullable(),
   source_purged: z.boolean(),
@@ -843,6 +851,15 @@ export const memoryItemSchema = z.object({
   updated_at: z.string(),
 });
 export type MemoryItem = z.infer<typeof memoryItemSchema>;
+
+/**
+ * 지금 쓰는 기억인지: 정정되지 않았고(superseded_at) 잊지 않은(revoked_at) 항목 (DB 인덱스 memory_items_user_current_idx와 같은 조건).
+ * superseded_by로 판단하지 않는다: 정정한 새 항목이 지워지면 포인터는 비지만 옛 항목은 정정된 채로 남는다.
+ * 사실의 유효 구간(valid_from · valid_until)과 범위는 보지 않는다: 묶음에 넣을지는 맥락층(B1)이 시각 · 범위로 따로 고른다.
+ */
+export function isCurrentMemoryItem(item: Pick<MemoryItem, "superseded_at" | "revoked_at">): boolean {
+  return item.superseded_at === null && item.revoked_at === null;
+}
 
 /** 추정(inferred) 항목 확인: 새 explicit 행을 만들고 옛 행은 superseded_by. expected_version이 다르면 409 (동시 수정) */
 export const memoryConfirmRequestSchema = z.object({ expected_version: z.number().int().positive() }).strict();
@@ -911,6 +928,8 @@ export const contextMemberSchema = z.object({
   person_id: z.uuid().nullable(),
   origin: contextMemberOriginSchema,
   confidence: z.number().min(0).max(1).nullable(),
+  /** 사용자가 뺀 멤버 (origin user). 자동 규칙이 다시 넣지 않도록 행이 남는다. 지금 멤버 = null */
+  removed_at: z.string().nullable(),
   created_at: z.string(),
   updated_at: z.string(),
 });
@@ -931,8 +950,6 @@ export type ContextMembershipChange = z.infer<typeof contextMembershipChangeSche
 
 // ─── 에이전트 adapter (런타임 계약 5장 · 아키텍처 8.2 · 8.3) ─────
 
-/** capability · 사건의 adapter 이름: "agent:<이름>" (예: agent:claude-code) */
-export const agentAdapterIdSchema = z.string().max(64).regex(/^agent:[a-z0-9][a-z0-9_-]*$/);
 
 /** 권한 경계 하나. verified는 D0 통제 테스트에서 실제로 막힘을 본 것만 true (프롬프트에 범위를 적는 것은 통로가 아니다) */
 export const boundarySchema = z.object({
