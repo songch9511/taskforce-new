@@ -6,6 +6,7 @@ import {
   isSupportedTimeZone,
   localInstants,
   localWall,
+  nextQuietStart,
   planDailyReport,
   quietNow,
   REPORT_STALE_MS,
@@ -126,6 +127,19 @@ describe("조용한 시간", () => {
     expect(effectiveDailyMinutes({ dailyTime: "21:59", ...q })).toBe(21 * 60 + 59);
     expect(effectiveDailyMinutes({ dailyTime: "03:00", quietStart: "03:00", quietEnd: "03:00" })).toBe(3 * 60);
     expect(effectiveDailyMinutes({ dailyTime: "03:00", quietStart: null, quietEnd: null })).toBe(3 * 60);
+  });
+
+  it("nextQuietStart: 다음 조용한 시간 시작 순간 (APNs 만료의 상한). 끔 · 빈 창 · 모르는 시간대는 null", () => {
+    expect(iso(nextQuietStart(Date.parse("2026-10-10T01:00:00Z"), prefs()))).toBe("2026-10-10T13:00:00.000Z"); // 10:00 KST → 22:00 KST
+    expect(iso(nextQuietStart(Date.parse("2026-10-10T13:30:00Z"), prefs()))).toBe("2026-10-11T13:00:00.000Z"); // 22:30 KST → 다음 날 22:00
+    expect(iso(nextQuietStart(Date.parse("2026-10-10T13:00:00Z"), prefs()))).toBe("2026-10-11T13:00:00.000Z"); // 시작 순간 자체는 지난 것으로
+    expect(nextQuietStart(Date.parse("2026-10-10T01:00:00Z"), prefs({ quietStart: null, quietEnd: null }))).toBeNull();
+    expect(nextQuietStart(Date.parse("2026-10-10T01:00:00Z"), prefs({ quietStart: "03:00", quietEnd: "03:00" }))).toBeNull();
+    expect(nextQuietStart(Date.parse("2026-10-10T01:00:00Z"), prefs({ timeZone: "Mars/Base" }))).toBeNull();
+    // 런던 GMT 복귀 날(10-25)에도 현지 22:00 = 22:00Z
+    expect(iso(nextQuietStart(Date.parse("2026-10-25T12:00:00Z"), prefs({ timeZone: "Europe/London" })))).toBe("2026-10-25T22:00:00.000Z");
+    // 뉴욕 되돌림 날 두 번 오는 01:30: 첫 번째가 지났으면 두 번째
+    expect(iso(nextQuietStart(Date.parse("2026-11-01T05:35:00Z"), prefs({ timeZone: "America/New_York", quietStart: "01:30", quietEnd: "06:00" })))).toBe("2026-11-01T06:30:00.000Z");
   });
 
   it("quietNow는 사용자 시간대의 지금 시각으로 본다. 모르는 시간대면 보내지 않도록 조용한 시간으로 친다", () => {
@@ -348,6 +362,36 @@ describe("planDailyReport: 설정 · 시간대를 바꿀 때 (두 번 보내지 
     expect(plan.next).toEqual({ reportDate: "2026-10-11", at: at("2026-10-10T23:30:00Z") });
     const early = at("2026-10-09T23:00:00Z");
     expect(planDailyReport(at("2026-10-09T23:30:00Z"), prefs({ createdAt: early, scheduleChangedAt: early }), null).due?.reportDate).toBe("2026-10-10");
+  });
+
+  it("처음 저장한 뒤 일정을 바꾸면 처음 저장 예외 대신 '오늘을 잃지 않는다'를 따른다 (08:00 저장 → 08:10에 07:55로 → 바로)", () => {
+    const created = at("2026-10-09T23:00:00Z"); // 08:00 KST
+    // 조용한 시간을 끈다 (켜져 있으면 07:55는 08:00으로 미뤄진다)
+    const untouched = prefs({ dailyTime: "07:55", quietStart: null, quietEnd: null, createdAt: created, scheduleChangedAt: created });
+    expect(planDailyReport(at("2026-10-09T23:10:00Z"), untouched, null).due).toBeNull(); // 바꾸지 않았으면 처음 저장 예외
+    const changed = prefs({ dailyTime: "07:55", quietStart: null, quietEnd: null, createdAt: created, scheduleChangedAt: at("2026-10-09T23:10:00Z") });
+    expect(planDailyReport(at("2026-10-09T23:10:00Z"), changed, null).due).toEqual({
+      reportDate: "2026-10-10",
+      dayStart: at("2026-10-09T15:00:00Z"),
+      scheduledAt: at("2026-10-09T22:55:00Z"),
+      expiresAt: at("2026-10-10T01:10:00Z"),
+    });
+  });
+
+  it("늦게 켜면 같은 달력 날에 두 번 받을 수 있다 (조용한 시간 끔, 23:30에 켬 → 00:10 그날 보고 · 08:30 다음 날 보고)", () => {
+    // 10-10 23:30 KST(14:30Z)에 meaningful → both. 23:30 실행이 실패하고 다음 실행이 00:10 KST(15:10Z)
+    const p = prefs({ quietStart: null, quietEnd: null, scheduleChangedAt: at("2026-10-10T14:30:00Z") });
+    const sends = simulate({
+      prefsAt: () => p,
+      from: "2026-10-10T14:30:00Z",
+      to: "2026-10-11T14:55:00Z",
+      up: (now) => now >= at("2026-10-10T15:10:00Z"),
+      last: at("2026-10-08T23:30:00Z"),
+    });
+    expect(sends).toEqual([
+      { date: "2026-10-10", at: "2026-10-10T15:10:00.000Z" },
+      { date: "2026-10-11", at: "2026-10-10T23:30:00.000Z" },
+    ]);
   });
 
   it("조용한 시간에 바꾸면 끝났을 때 창이 닫혀 그 날은 건너뛴다 (23:00 KST에 바꿈 → 다음 날 08:30)", () => {

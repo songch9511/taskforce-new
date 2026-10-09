@@ -7,7 +7,7 @@ import type { ApnsPayload } from "@/lib/notify/apns";
 //
 // interruption-level: Respect Focus가 켜져 있으면 active(집중 모드가 붙잡을 수 있는 보통 수준)만 쓴다.
 // 꺼져 있으면 time-sensitive를 요청한다 — 실제로 집중 모드를 뚫는지는 앱의 Time Sensitive Notifications 권한(entitlement, 아직 없음)과
-// 사용자의 집중 모드 설정이 정한다. 권한이 없으면 OS는 active로 다룬다. critical은 쓰지 않는다.
+// 사용자의 집중 모드 설정이 정한다. 권한이 없을 때 OS가 active로 낮춰 다루는지는 미검증이다(H2 기기 확인 전). critical은 쓰지 않는다.
 
 /** 열린 할 일 개수 (report_status_counts). 겹치지 않는다: review는 확인 요청, 나머지는 내 일 */
 export type ReportStatusCounts = { review: number; overdue: number; due_today: number; in_progress: number };
@@ -15,7 +15,10 @@ export type ReportStatusCounts = { review: number; overdue: number; due_today: n
 /** 누르면 여는 곳: All work (H2가 처리한다) */
 export const DAILY_REPORT_URL = "taskforce://work";
 
-/** 새 일일 보고는 기기에서 앞의 보고를 바꾼다 (어제 상태가 남지 않고, 보내다 멈춰 다시 보낸 것도 하나로 보인다) */
+/**
+ * 같은 collapse id의 새 알림은 알림 센터에서 앞의 보고 항목을 바꾼다 (어제 상태가 남지 않고, 보내다 멈춰 다시 보낸 것도 항목은 하나).
+ * 기기가 다시 울리지 않는다는 보장은 아니다
+ */
 export const DAILY_REPORT_COLLAPSE_ID = "daily-report";
 
 const count = (n: number) => (Number.isSafeInteger(n) && n > 0 ? n : 0);

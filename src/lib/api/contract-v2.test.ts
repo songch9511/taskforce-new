@@ -441,10 +441,16 @@ describe("보고 설정 (H1)", () => {
     }
   });
 
-  it("요청 · 응답 모양: 조용한 시간 끄기는 둘 다 null, 응답의 시간대는 저장 전이면 null", () => {
-    const request = { mode: "both", daily_time: "08:30", quiet_start: null, quiet_end: null, respect_focus: true, time_zone: "Asia/Seoul" };
+  it("요청 · 응답 모양: 조용한 시간 끄기는 둘 다 null, 응답의 시간대 · version은 저장 전이면 null", () => {
+    const request = { mode: "both", daily_time: "08:30", quiet_start: null, quiet_end: null, respect_focus: true, time_zone: "Asia/Seoul", expected_version: null };
     expect(reportPreferencesRequestSchema.parse(request)).toEqual(request);
+    expect(reportPreferencesRequestSchema.parse({ ...request, expected_version: 3 }).expected_version).toBe(3);
     expect(reportPreferencesRequestSchema.safeParse({ ...request, quiet_start: "22:00" }).success).toBe(false);
-    expect(reportPreferencesSchema.parse({ ...REPORT_PREFERENCE_DEFAULTS, time_zone: null, saved: false })).toMatchObject({ time_zone: null, saved: false });
+    // expected_version은 꼭 보낸다 (처음이면 null). 0 · 소수는 거부
+    const { expected_version: _omitted, ...withoutVersion } = request;
+    void _omitted;
+    expect(reportPreferencesRequestSchema.safeParse(withoutVersion).success).toBe(false);
+    for (const bad of [0, 1.5, "1"]) expect(reportPreferencesRequestSchema.safeParse({ ...request, expected_version: bad }).success, String(bad)).toBe(false);
+    expect(reportPreferencesSchema.parse({ ...REPORT_PREFERENCE_DEFAULTS, time_zone: null, saved: false, version: null })).toMatchObject({ time_zone: null, saved: false, version: null });
   });
 });

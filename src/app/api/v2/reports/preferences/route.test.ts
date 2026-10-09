@@ -15,7 +15,7 @@ import { GET, PUT } from "./route";
 // route 연결: gate는 REPORTS_V2_ENABLED, 인증은 authenticateRequest(Bearer · 쿠키 + CSRF), 저장소는 store.ts.
 
 const ENDPOINT = "https://app.example.test/api/v2/reports/preferences";
-const BODY = { mode: "daily", daily_time: "07:00", quiet_start: null, quiet_end: null, respect_focus: true, time_zone: "Europe/London" };
+const BODY = { mode: "daily", daily_time: "07:00", quiet_start: null, quiet_end: null, respect_focus: true, time_zone: "Europe/London", expected_version: null };
 
 beforeEach(() => {
   vi.clearAllMocks();

@@ -18,12 +18,8 @@ export async function GET(request: Request) {
   // APNs 키가 없으면 보낼 수 없으니 원장도 만들지 않는다 (기존 알림과 같다)
   if (!config) return Response.json({ enabled: true, configured: false });
 
-  const started = Date.now();
-  const result = await runDailyReports(supabaseReportStore(createAdminClient()), { config }, {
-    now: new Date(started),
-    // 응답할 시간을 남긴다
-    deadline: started + (maxDuration - 15) * 1000,
-  });
-  (result.failed > 0 ? console.error : console.info)(JSON.stringify({ event: "daily_reports", ...result }));
+  // 시각은 잡기 · 보내기마다 다시 읽는다 (job 안의 시계). 응답할 시간을 남긴다
+  const result = await runDailyReports(supabaseReportStore(createAdminClient()), { config }, { deadline: Date.now() + (maxDuration - 15) * 1000 });
+  (result.failed > 0 || result.errors > 0 || result.fence_missed > 0 ? console.error : console.info)(JSON.stringify({ event: "daily_reports", ...result }));
   return Response.json({ enabled: true, configured: true, ...result });
 }

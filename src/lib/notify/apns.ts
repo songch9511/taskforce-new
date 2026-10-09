@@ -18,8 +18,12 @@ export type ApnsPayload = {
   [key: string]: unknown;
 };
 
-/** 보낼 때만 붙는 APNs 헤더. collapseId: 같은 값의 알림은 기기에서 앞의 것을 바꾼다 (64바이트 이하) */
-export type PushOptions = { collapseId?: string };
+/**
+ * 줄 때만 붙는 APNs 헤더 (안 주면 헤더가 없다: 기존 알림 요청은 그대로).
+ * collapseId: 같은 값의 알림은 알림 센터에서 앞의 항목을 바꾼다 (64바이트 이하. 기기는 다시 울릴 수 있다).
+ * expiration: 이 시각(UNIX 초)까지만 APNs가 보관했다 전한다 — 기기가 꺼져 있으면 그때까지 늦게 갈 수 있고, 지나면 버린다. 0은 보관하지 않고 한 번만
+ */
+export type PushOptions = { collapseId?: string; expiration?: number };
 
 export function apnsConfigFromEnv(env: Record<string, string | undefined> = process.env): ApnsConfig | null {
   const { APNS_KEY_ID: keyId, APNS_TEAM_ID: teamId, APNS_PRIVATE_KEY: pem } = env;
@@ -100,6 +104,7 @@ export async function sendPush(
       "apns-priority": "10",
       "content-type": "application/json",
       ...(options.collapseId ? { "apns-collapse-id": options.collapseId } : {}),
+      ...(options.expiration !== undefined ? { "apns-expiration": String(options.expiration) } : {}),
     },
     body: JSON.stringify(payload),
   });

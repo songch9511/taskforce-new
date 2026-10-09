@@ -13,6 +13,7 @@
 --   cron이 겹쳐 돌아도 같은 날 보고를 두 번 잡지 못하게 한다. 실패 내용은 짧은 코드(last_error)만 남기고 알림 문구 · 원문은 남기지 않는다.
 -- - 권한: 앱은 자기 행을 RLS로 읽기만 한다(owner_all + select). 쓰기는 서버(service role)만 한다 — 20261103000000_context_core와 같은 모양.
 -- - 계정 삭제: auth.users → report_preferences → report_deliveries 로 on delete cascade.
+--   그래서 설정 행은 계정 삭제 말고는 지우지 않는다 (지우면 원장도 지워져 같은 날 보고를 다시 잡을 수 있다). 기본값으로 되돌리기는 PUT으로.
 --
 -- 적용: 운영 DB에는 병합 직전 승인을 받고 `supabase db query --linked -f`로 한다(db push 금지). 한 트랜잭션으로 돈다.
 

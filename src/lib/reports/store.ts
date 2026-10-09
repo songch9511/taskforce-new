@@ -12,8 +12,8 @@ import type { ReportStatusCounts } from "./payload";
 
 // 보고 표 읽기 · 쓰기 (20261105000000_report_preferences). 설정 읽기는 사용자 권한(RLS), 쓰기와 job은 service role.
 
-const PREFERENCE_API_COLUMNS = "mode, daily_time, quiet_start, quiet_end, respect_focus, time_zone";
-const PREFERENCE_JOB_COLUMNS = `user_id, ${PREFERENCE_API_COLUMNS}, created_at, schedule_changed_at`;
+const PREFERENCE_API_COLUMNS = "mode, daily_time, quiet_start, quiet_end, respect_focus, time_zone, version";
+const PREFERENCE_JOB_COLUMNS = "user_id, mode, daily_time, quiet_start, quiet_end, respect_focus, time_zone, created_at, schedule_changed_at";
 const DELIVERY_COLUMNS = "id, user_id, kind, time_zone, report_date, scheduled_at, expires_at, status, attempts, next_attempt_at";
 
 /** GET /api/v2/reports/preferences: 자기 설정 행 (RLS). 없으면 null */
@@ -22,15 +22,32 @@ export async function loadReportPreferences({ supabase }: ApiContext): Promise<R
   return data ? reportPreferencesSchema.parse({ ...data, saved: true }) : null;
 }
 
-/** PUT: 앱은 쓰기 권한이 없다 — 서버가 사용자 id로 upsert한다. schedule_changed_at은 DB 트리거가 정한다 */
-export async function saveReportPreferences({ user }: ApiContext, prefs: ReportPreferencesRequest): Promise<ReportPreferences> {
-  const { data } = await createAdminClient()
+/**
+ * PUT: 앱은 쓰기 권한이 없다 — 서버가 사용자 id로 쓴다. 비교 후 쓰기(compare-and-set):
+ * expected_version null = 처음 만들기(insert, 이미 있으면 유일 키 위반 → null), 숫자 = 그 version일 때만 고치기(0행 → null).
+ * version · schedule_changed_at은 DB 트리거가 정한다. null이면 route가 409
+ */
+export async function saveReportPreferences({ user }: ApiContext, prefs: ReportPreferencesRequest): Promise<ReportPreferences | null> {
+  return writeReportPreferences(createAdminClient(), user.id, prefs);
+}
+
+export async function writeReportPreferences(admin: SupabaseClient, userId: string, prefs: ReportPreferencesRequest): Promise<ReportPreferences | null> {
+  const { expected_version: expected, ...fields } = prefs;
+  if (expected === null) {
+    const { data, error } = await admin.from("report_preferences").insert({ user_id: userId, ...fields }).select(PREFERENCE_API_COLUMNS).maybeSingle();
+    if (error?.code === "23505") return null;
+    if (error) throw new Error(`보고 설정 만들기 실패 (${error.code})`);
+    return data ? reportPreferencesSchema.parse({ ...data, saved: true }) : null;
+  }
+  const { data } = await admin
     .from("report_preferences")
-    .upsert({ user_id: user.id, ...prefs }, { onConflict: "user_id" })
+    .update(fields)
+    .eq("user_id", userId)
+    .eq("version", expected)
     .select(PREFERENCE_API_COLUMNS)
-    .single()
     .throwOnError();
-  return reportPreferencesSchema.parse({ ...data, saved: true });
+  const row = ((data ?? []) as Record<string, unknown>[])[0];
+  return row ? reportPreferencesSchema.parse({ ...row, saved: true }) : null;
 }
 
 /** cron/reports의 저장소 (service role). DB 함수는 service_role만 실행할 수 있다 */
@@ -111,8 +128,16 @@ export function supabaseReportStore(admin: SupabaseClient): ReportStore {
           : outcome.status === "pending"
             ? { status: "pending", next_attempt_at: outcome.nextAttemptAt.toISOString(), last_error: outcome.lastError }
             : { status: outcome.status, next_attempt_at: null, last_error: outcome.lastError };
-      // 잡을 때의 attempts가 펜스다: 그 사이 다른 실행이 다시 잡았으면 0행 (덮지 않는다)
-      await admin.from("report_deliveries").update(fields).eq("id", delivery.id).eq("attempts", delivery.attempts).eq("status", "pending").throwOnError();
+      // 잡을 때의 attempts가 펜스다: 그 사이 다른 실행이 다시 잡았거나 닫혔으면 0행 (덮지 않는다). 바뀐 행 수를 돌려준다
+      const { data } = await admin
+        .from("report_deliveries")
+        .update(fields)
+        .eq("id", delivery.id)
+        .eq("attempts", delivery.attempts)
+        .eq("status", "pending")
+        .select("id")
+        .throwOnError();
+      return (data ?? []).length;
     },
   };
 }

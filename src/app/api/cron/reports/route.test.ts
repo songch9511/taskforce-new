@@ -30,6 +30,8 @@ const RESULT = {
   expired: 0,
   invalid_time_zone: 0,
   deferred_for_time: 0,
+  fence_missed: 0,
+  errors: 0,
 };
 const CONFIG = { keyId: "k" };
 const cron = (authorization = "Bearer s3cret") => GET(new Request("https://api.example.test/api/cron/reports", { headers: { authorization } }));
@@ -78,18 +80,19 @@ describe("GET /api/cron/reports", () => {
     const after = Date.now();
     expect(await response.json()).toEqual({ enabled: true, configured: true, ...RESULT });
     expect(mocks.supabaseReportStore).toHaveBeenCalledWith({ admin: true });
-    const [store, push, options] = mocks.runDailyReports.mock.calls[0] as unknown as [unknown, unknown, { now: Date; deadline: number }];
+    const [store, push, options] = mocks.runDailyReports.mock.calls[0] as unknown as [unknown, unknown, { deadline: number; clock?: unknown }];
     expect(store).toEqual({ store: true });
     expect(push).toEqual({ config: CONFIG });
-    expect(options.now.getTime()).toBeGreaterThanOrEqual(before);
-    expect(options.deadline).toBe(options.now.getTime() + 45_000);
+    // 고정 시각을 넘기지 않는다: job이 잡기 · 보내기마다 시계를 읽는다
+    expect(Object.keys(options)).toEqual(["deadline"]);
+    expect(options.deadline).toBeGreaterThanOrEqual(before + 45_000);
     expect(options.deadline).toBeLessThanOrEqual(after + 45_000);
     expect(console.info).toHaveBeenCalledWith(JSON.stringify({ event: "daily_reports", ...RESULT }));
   });
 
-  it("실패가 있으면 오류 로그로 남긴다 (응답은 200, 다음 실행이 다시 돈다)", async () => {
-    mocks.runDailyReports.mockResolvedValueOnce({ ...RESULT, failed: 2 });
+  it.each([{ failed: 2 }, { errors: 1 }, { fence_missed: 1 }])("실패 · 오류 · 펜스 불일치(%o)가 있으면 오류 로그로 남긴다 (응답은 200, 다음 실행이 다시 돈다)", async (extra) => {
+    mocks.runDailyReports.mockResolvedValueOnce({ ...RESULT, ...extra });
     expect((await cron()).status).toBe(200);
-    expect(console.error).toHaveBeenCalledWith(JSON.stringify({ event: "daily_reports", ...RESULT, failed: 2 }));
+    expect(console.error).toHaveBeenCalledWith(JSON.stringify({ event: "daily_reports", ...RESULT, ...extra }));
   });
 });

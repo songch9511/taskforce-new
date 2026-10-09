@@ -1145,7 +1145,8 @@ export const REPORT_PREFERENCE_DEFAULTS = {
 /**
  * PUT 본문: 전부 보낸다(부분 수정 없음). 조용한 시간 끄기(Off) = quiet_start · quiet_end 모두 null.
  * 시작 == 끝은 0시간인지 24시간인지 모호해서 받지 않는다. respect_focus는 OS 집중 모드가 알림을 붙잡을 수 있게 둔다는 뜻이다
- * (서버는 집중 모드를 읽지 못한다. 켜져 있으면 집중 모드를 뚫는 interruption-level을 쓰지 않는다)
+ * (서버는 집중 모드를 읽지 못한다. 켜져 있으면 집중 모드를 뚫는 interruption-level을 쓰지 않는다).
+ * expected_version: GET에서 읽은 version (처음 만들 때는 null). 서버의 version과 다르면(다른 기기가 먼저 바꿈 · 이미 만들어짐) 409 conflict
  */
 export const reportPreferencesRequestSchema = z
   .object({
@@ -1155,6 +1156,7 @@ export const reportPreferencesRequestSchema = z
     quiet_end: reportClockSchema.nullable(),
     respect_focus: z.boolean(),
     time_zone: reportTimeZoneSchema,
+    expected_version: z.number().int().positive().nullable(),
   })
   .strict()
   .superRefine((value, ctx) => {
@@ -1166,7 +1168,10 @@ export const reportPreferencesRequestSchema = z
   });
 export type ReportPreferencesRequest = z.infer<typeof reportPreferencesRequestSchema>;
 
-/** GET · PUT 응답. saved false = 아직 저장한 적 없음: 기본값과 time_zone null (일일 보고는 Mac이 시간대를 보낼 때까지 가지 않는다) */
+/**
+ * GET · PUT 응답. saved false = 아직 저장한 적 없음: 기본값 · time_zone null · version null (일일 보고는 Mac이 시간대를 보낼 때까지 가지 않는다).
+ * version은 다음 PUT의 expected_version으로 그대로 보낸다
+ */
 export const reportPreferencesSchema = z.object({
   mode: reportModeSchema,
   daily_time: reportClockSchema,
@@ -1175,5 +1180,6 @@ export const reportPreferencesSchema = z.object({
   respect_focus: z.boolean(),
   time_zone: z.string().nullable(),
   saved: z.boolean(),
+  version: z.number().int().positive().nullable(),
 });
 export type ReportPreferences = z.infer<typeof reportPreferencesSchema>;

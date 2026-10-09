@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ApnsConfig, Transport } from "@/lib/notify/apns";
 
 import {
+  pushErrorCode,
   REPORT_LEASE_SECONDS,
   REPORT_MAX_ATTEMPTS,
   runDailyReports,
@@ -58,14 +59,22 @@ function fakeStore(init: { prefs: ReportPreferenceRow[]; devices?: ReportDevice[
     devices: [...(init.devices ?? [])],
     deliveries: [...(init.deliveries ?? [])],
     records: [] as { id: string; outcome: DeliveryOutcome }[],
+    recordTimes: [] as Date[],
     claims: [] as ClaimInput[],
     removed: [] as string[],
     failRecordFor: new Set<string>(),
     failCountsFor: new Set<string>(),
+    failClaimFor: new Set<string>(),
+    /** 이 사용자의 행은 기록 직전에 다른 실행이 다시 잡은 것처럼 attempts를 올린다 (펜스 불일치) */
+    reclaimBeforeRecord: new Set<string>(),
+    failFinish: false,
+    /** statusCounts가 받은 현지 날짜 */
+    countDays: [] as string[],
   };
   let seq = 0;
   const store: ReportStore = {
     async finishStale(now, max) {
+      if (state.failFinish) throw new Error("statement timeout");
       let n = 0;
       for (const d of state.deliveries) {
         if (d.status === "pending" && Date.parse(d.next_attempt_at!) <= now.getTime() && (now.getTime() > Date.parse(d.expires_at) || d.attempts >= max)) {
@@ -90,6 +99,7 @@ function fakeStore(init: { prefs: ReportPreferenceRow[]; devices?: ReportDevice[
         (d) => d.status === "pending" && Date.parse(d.next_attempt_at!) <= now.getTime() && now.getTime() <= Date.parse(d.expires_at) && d.attempts < max,
       ),
     async claim(input) {
+      if (state.failClaimFor.has(input.userId)) throw new Error("connection reset");
       state.claims.push(input);
       if (state.deliveries.some((d) => d.user_id === input.userId && Date.parse(d.scheduled_at) >= input.dayStart.getTime())) return null;
       const row: ReportDeliveryRow = {
@@ -110,12 +120,15 @@ function fakeStore(init: { prefs: ReportPreferenceRow[]; devices?: ReportDevice[
     async claimRetry(id, now, leaseSeconds, max) {
       const d = state.deliveries.find((x) => x.id === id);
       if (!d || d.status !== "pending" || Date.parse(d.next_attempt_at!) > now.getTime() || d.attempts >= max || now.getTime() > Date.parse(d.expires_at)) return null;
+      // 더 늦게 예정된 보고가 있으면 앞 날짜를 다시 잡지 않는다 (claim_report_retry와 같다)
+      if (state.deliveries.some((o) => o.user_id === d.user_id && o.id !== d.id && Date.parse(o.scheduled_at) > Date.parse(d.scheduled_at))) return null;
       d.attempts++;
       d.next_attempt_at = new Date(now.getTime() + leaseSeconds * 1000).toISOString();
       return { ...d };
     },
     async statusCounts(userId, today): Promise<ReportStatusCounts> {
       if (state.failCountsFor.has(userId)) throw new Error("connection reset");
+      state.countDays.push(today);
       const open = init.actions?.[userId] ?? [{ title: "기본 할 일", counterpart: "", notes: "", needs_confirmation: true, due_date: null }];
       return {
         review: open.filter((a) => a.needs_confirmation).length,
@@ -129,13 +142,16 @@ function fakeStore(init: { prefs: ReportPreferenceRow[]; devices?: ReportDevice[
       state.removed.push(d.id);
       state.devices = state.devices.filter((x) => x.id !== d.id);
     },
-    async record(delivery, outcome) {
+    async record(delivery, outcome, now) {
       if (state.failRecordFor.has(delivery.user_id)) throw new Error("timeout");
-      state.records.push({ id: delivery.id, outcome });
+      if (state.reclaimBeforeRecord.has(delivery.user_id)) state.deliveries.find((x) => x.id === delivery.id)!.attempts++;
+      state.recordTimes.push(now);
       const d = state.deliveries.find((x) => x.id === delivery.id && x.attempts === delivery.attempts && x.status === "pending");
-      if (!d) return;
+      if (!d) return 0;
+      state.records.push({ id: delivery.id, outcome });
       d.status = outcome.status;
       d.next_attempt_at = outcome.status === "pending" ? outcome.nextAttemptAt.toISOString() : null;
+      return 1;
     },
   };
   return { store, state };
@@ -153,8 +169,9 @@ function fakeApns(responses: Record<string, (() => { status: number; body: strin
   return { transport, sent };
 }
 
-const run = (store: ReportStore, transport: Transport, now: Date, deadline = Number.POSITIVE_INFINITY) =>
-  runDailyReports(store, { config, transport }, { now, deadline });
+/** now가 Date면 멈춘 시계, 함수면 그 시계 */
+const run = (store: ReportStore, transport: Transport, now: Date | (() => number), deadline = Number.POSITIVE_INFINITY) =>
+  runDailyReports(store, { config, transport }, { deadline, clock: typeof now === "function" ? now : () => now.getTime() });
 
 beforeEach(() => {
   vi.restoreAllMocks();
@@ -298,7 +315,7 @@ describe("runDailyReports", () => {
     expect(state.records[0].outcome).toEqual({ status: "failed", lastError: "apns_500" });
   });
 
-  it("다시 보낼 차례여도 지금 조용한 시간이거나 일일 보고를 끈 사용자면 두고(held), 보내지 않는다", async () => {
+  it("다시 보낼 차례여도 지금 조용한 시간이면 두고(held), 일일 보고를 끈(meaningful) 사용자 것은 skipped · mode_changed로 닫는다. 보내지 않는다", async () => {
     const pending = (userId: string): ReportDeliveryRow => ({
       id: `pending-${userId}`,
       user_id: userId,
@@ -311,7 +328,7 @@ describe("runDailyReports", () => {
       attempts: 1,
       next_attempt_at: "2026-10-10T12:55:00Z",
     });
-    const { store } = fakeStore({
+    const { store, state } = fakeStore({
       prefs: [pref(ALICE, { daily_time: "21:50" }), pref(BOB, { mode: "meaningful" })],
       devices: [device(ALICE, "d1", "a".repeat(64)), device(BOB, "d2", "b".repeat(64))],
       deliveries: [pending(ALICE), pending(BOB)],
@@ -319,14 +336,42 @@ describe("runDailyReports", () => {
     const apns = fakeApns();
     // 22:05 KST: 조용한 시간
     const result = await run(store, apns.transport, new Date("2026-10-10T13:05:00Z"));
-    expect(result).toMatchObject({ held: 2, retried: 0, claimed: 0 });
+    expect(result).toMatchObject({ held: 1, skipped: 1, retried: 0, claimed: 0 });
+    expect(apns.sent).toHaveLength(0);
+    expect(state.records).toEqual([{ id: `pending-${BOB}`, outcome: { status: "skipped", lastError: "mode_changed" } }]);
+    expect(state.deliveries.map((d) => [d.user_id, d.status])).toEqual([
+      [ALICE, "pending"],
+      [BOB, "skipped"],
+    ]);
+  });
+
+  it("더 늦게 예정된 보고가 있으면 앞 날짜의 대기 행을 다시 잡지 않는다", async () => {
+    const row = (id: string, date: string, scheduled: string): ReportDeliveryRow => ({
+      id,
+      user_id: ALICE,
+      kind: "daily",
+      time_zone: "Asia/Seoul",
+      report_date: date,
+      scheduled_at: scheduled,
+      expires_at: new Date(Date.parse(scheduled) + minutes(120)).toISOString(),
+      status: "pending",
+      attempts: 1,
+      next_attempt_at: scheduled,
+    });
+    const { store } = fakeStore({
+      prefs: [pref(ALICE)],
+      devices: [device(ALICE, "d1", "a".repeat(64))],
+      deliveries: [row("older", "2026-10-10", "2026-10-09T23:30:00Z"), { ...row("newer", "2026-10-11", "2026-10-10T23:30:00Z"), status: "sent", next_attempt_at: null }],
+    });
+    const apns = fakeApns();
+    expect(await run(store, apns.transport, after(SEOUL_0830, minutes(10)))).toMatchObject({ retried: 0, claimed: 0 });
     expect(apns.sent).toHaveLength(0);
   });
 
   it("실행 시간이 모자라면 새로 잡지 않는다 (deferred_for_time, 다음 실행이 창 안에서 잡는다)", async () => {
     const { store, state } = fakeStore({ prefs: [pref(ALICE)], devices: [device(ALICE, "d1", "a".repeat(64))] });
     const apns = fakeApns();
-    const result = await run(store, apns.transport, SEOUL_0830, Date.now() - 1);
+    const result = await run(store, apns.transport, SEOUL_0830, SEOUL_0830.getTime() - 1);
     expect(result).toMatchObject({ due: 1, claimed: 0, deferred_for_time: 1 });
     expect(state.claims).toHaveLength(0);
     expect(apns.sent).toHaveLength(0);
@@ -339,7 +384,7 @@ describe("runDailyReports", () => {
     expect(apns.sent).toHaveLength(0);
   });
 
-  it("숫자를 읽지 못하면 internal로 다시 시도하고, 기록이 실패해도 다른 사용자는 계속 보낸다", async () => {
+  it("숫자를 읽지 못하면 internal로 다시 시도하고, 기록이 실패하면 보냈어도 세지 않고 errors로 (원장이 그대로라 임대 뒤 다시 잡힌다)", async () => {
     const { store, state } = fakeStore({
       prefs: [pref(ALICE), pref(BOB)],
       devices: [device(ALICE, "d1", "a".repeat(64)), device(BOB, "d2", "b".repeat(64))],
@@ -348,10 +393,10 @@ describe("runDailyReports", () => {
     state.failRecordFor.add(BOB);
     const apns = fakeApns();
     const result = await run(store, apns.transport, SEOUL_0830);
-    expect(result).toMatchObject({ claimed: 2, retrying: 1, sent: 1 });
+    expect(result).toMatchObject({ claimed: 2, retrying: 1, sent: 0, errors: 1 });
     expect(state.records).toEqual([{ id: "delivery-1", outcome: { status: "pending", lastError: "internal", nextAttemptAt: after(SEOUL_0830, minutes(5)) } }]);
     expect(apns.sent.map((r) => r.path)).toEqual([`/3/device/${"b".repeat(64)}`]);
-    expect(console.error).toHaveBeenCalledWith("일일 보고 기록 실패 (delivery-2):", "timeout");
+    expect(console.error).toHaveBeenCalledWith(`일일 보고 보내기 실패 (${BOB}):`, "timeout");
   });
 
   it("예정 전 · meaningful 사용자는 잡지 않는다", async () => {
@@ -359,5 +404,82 @@ describe("runDailyReports", () => {
     const apns = fakeApns();
     expect(await run(store, apns.transport, after(SEOUL_0830, -minutes(1)))).toMatchObject({ preferences: 1, due: 0 });
     expect(state.claims).toHaveLength(0);
+  });
+  it("APNs 만료는 창 끝과 다음 조용한 시간 시작 중 이른 쪽 (늦게 켜진 기기에 조용한 시간 · 창 밖 보고가 가지 않게)", async () => {
+    const expirationOf = async (overrides: Partial<ReportPreferenceRow>, now: Date) => {
+      const { store } = fakeStore({ prefs: [pref(ALICE, overrides)], devices: [device(ALICE, "d1", "a".repeat(64))] });
+      const apns = fakeApns();
+      await run(store, apns.transport, now);
+      expect(apns.sent, JSON.stringify(overrides)).toHaveLength(1);
+      return apns.sent[0].headers["apns-expiration"];
+    };
+    const seconds = (iso: string) => String(Date.parse(iso) / 1000);
+    // 08:30 KST 보고: 창 끝 10:30 KST가 22:00보다 이르다
+    expect(await expirationOf({}, SEOUL_0830)).toBe(seconds("2026-10-10T01:30:00Z"));
+    // 21:00 KST 보고: 창 끝 23:00 KST보다 조용한 시간 시작 22:00 KST가 이르다
+    expect(await expirationOf({ daily_time: "21:00" }, new Date("2026-10-10T12:00:00Z"))).toBe(seconds("2026-10-10T13:00:00Z"));
+    // 조용한 시간을 끄면 창 끝 (23:00 보고 → 다음 날 01:00 KST)
+    expect(await expirationOf({ daily_time: "23:00", quiet_start: null, quiet_end: null }, new Date("2026-10-10T14:00:00Z"))).toBe(seconds("2026-10-10T16:00:00Z"));
+  });
+
+  it("사용자 하나의 실패(잡기 오류)는 errors로 세고 다음 사용자는 보낸다. 대기 행 닫기가 실패해도 계속한다", async () => {
+    const { store, state } = fakeStore({
+      prefs: [pref(ALICE), pref(BOB)],
+      devices: [device(ALICE, "d1", "a".repeat(64)), device(BOB, "d2", "b".repeat(64))],
+    });
+    state.failClaimFor.add(ALICE);
+    state.failFinish = true;
+    const apns = fakeApns();
+    const result = await run(store, apns.transport, SEOUL_0830);
+    expect(result).toMatchObject({ errors: 2, due: 2, claimed: 1, sent: 1 });
+    expect(apns.sent.map((r) => r.path)).toEqual([`/3/device/${"b".repeat(64)}`]);
+    expect(console.error).toHaveBeenCalledWith(`일일 보고 보내기 실패 (${ALICE}):`, "connection reset");
+  });
+
+  it("시각은 잡기 · 보내기 · 기록마다 시계를 다시 읽는다 (실행이 길어도 낡은 시각을 쓰지 않는다)", async () => {
+    let t = SEOUL_0830.getTime();
+    const clock = () => (t += 1_000);
+    const { store, state } = fakeStore({
+      prefs: [pref(ALICE), pref(BOB)],
+      devices: [device(ALICE, "d1", "a".repeat(64)), device(BOB, "d2", "b".repeat(64))],
+    });
+    const apns = fakeApns({ ["b".repeat(64)]: () => ({ status: 503, body: "" }) });
+    await run(store, apns.transport, clock);
+    const [aliceClaim, bobClaim] = state.claims;
+    expect(bobClaim.now.getTime()).toBeGreaterThan(aliceClaim.now.getTime());
+    expect(state.recordTimes[0].getTime()).toBeGreaterThan(aliceClaim.now.getTime());
+    expect(state.recordTimes[1].getTime()).toBeGreaterThan(bobClaim.now.getTime());
+    // 다시 보낼 시각은 실패를 본 뒤의 시계로부터 5분
+    const bobRetry = state.records[1].outcome as { nextAttemptAt: Date };
+    expect(bobRetry.nextAttemptAt.getTime() - minutes(5)).toBeGreaterThan(bobClaim.now.getTime());
+  });
+
+  it("기록할 때 펜스가 맞지 않으면(그 사이 다른 실행이 다시 잡음) sent로 세지 않고 id만 로그로 남긴다", async () => {
+    const { store, state } = fakeStore({ prefs: [pref(ALICE)], devices: [device(ALICE, "d1", "a".repeat(64))] });
+    state.reclaimBeforeRecord.add(ALICE);
+    const apns = fakeApns();
+    const result = await run(store, apns.transport, SEOUL_0830);
+    expect(apns.sent).toHaveLength(1);
+    expect(result).toMatchObject({ claimed: 1, sent: 0, fence_missed: 1 });
+    expect(state.records).toEqual([]);
+    expect(console.error).toHaveBeenCalledWith("일일 보고 기록 펜스 불일치 (delivery-1, attempts 1)");
+  });
+  it("숫자는 보내는 순간의 현지 날짜로 센다: 자정 직전(23:50) 보고를 00:00에 보내면 '오늘 마감'은 새 날짜 기준 (원장 날짜는 그대로)", async () => {
+    const { store, state } = fakeStore({
+      prefs: [pref(ALICE, { daily_time: "23:50", quiet_start: null, quiet_end: null })],
+      devices: [device(ALICE, "d1", "a".repeat(64))],
+    });
+    const apns = fakeApns();
+    // 10-10 23:50 KST 보고를 10-11 00:00 KST(10-10 15:00Z) 실행이 잡는다
+    await run(store, apns.transport, new Date("2026-10-10T15:00:00Z"));
+    expect(state.claims[0].reportDate).toBe("2026-10-10");
+    expect(state.countDays).toEqual(["2026-10-11"]);
+  });
+
+  it("APNs 응답에 상태가 없으면(NaN) DB check에 맞는 apns_0으로, 일시 오류로 다룬다", () => {
+    expect(pushErrorCode({ ok: false, status: Number.NaN, reason: null, unregistered: false })).toEqual({ transient: true, code: "apns_0" });
+    expect(pushErrorCode({ ok: false, status: 429, reason: "TooManyRequests", unregistered: false })).toEqual({ transient: true, code: "apns_429_toomanyrequests" });
+    expect(pushErrorCode({ ok: false, status: 400, reason: "Bad Topic!", unregistered: false })).toEqual({ transient: false, code: "apns_400" });
+    for (const { code } of [pushErrorCode({ ok: false, status: Number.NaN, reason: "x".repeat(200), unregistered: false })]) expect(code).toMatch(/^[a-z0-9_]{1,64}$/);
   });
 });
