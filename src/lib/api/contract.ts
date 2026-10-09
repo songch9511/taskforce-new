@@ -671,3 +671,418 @@ export const billingStatusSchema = z.object({
   ai_allowance: aiSpendSummarySchema.nullable(), allowance_resets_at: z.string().nullable(),
 });
 export type BillingStatus = z.infer<typeof billingStatusSchema>;
+
+// ════════════════════════════════════════════════════════════
+// 0.2.0 계약 뼈대 (구현 계획 A2) — 타입 · zod만, route는 아직 없다.
+// 위의 /api/v1 스키마는 동결이다 (contract-v1-freeze.test.ts): 모양 · literal · enum을 바꾸지 않고, 새 값 · 새 기능은 아래에만 둔다.
+// 대화 · 기억 · 범위 · 결제 v2는 /api/v2/*(B1 · B2 · G1), bridge는 설계대로 /api/v1/bridge/*의 새 route(D2)가 쓴다.
+// 근거: 0.2.0 아키텍처 5 · 8 · 9 · 10.1장, 런타임 계약 2 · 5 · 10장. 표는 20261102000000_context_core.sql.
+// Swift 짝: TaskforceKit AgentBridgeContracts.swift (사건 봉투 · capability · bridge 명령 · heartbeat).
+// ════════════════════════════════════════════════════════════
+
+const idListSchema = z.array(z.uuid()).max(100);
+const jsonObjectSchema = z.record(z.string(), z.unknown());
+
+// ─── 대화 v2 (런타임 계약 2장 · 아키텍처 5.6) ──────────────────
+
+/** 사용자 메시지 상한 (런타임 계약 12장). 위임 지시는 질문(Ask 500자)보다 길다 */
+export const CONVERSATION_MESSAGE_MAX_CHARS = 4000;
+
+/** 응답 근거의 신뢰 등급 (런타임 계약 10장): T1 확인 사실 · T2 사용자 발화 · T3 실행 결과 · T4 에이전트 주장 · T5 제안/가정 */
+export const contextTierSchema = z.enum(["T1", "T2", "T3", "T4", "T5"]);
+export type ContextTier = z.infer<typeof contextTierSchema>;
+
+/** 의도 (Jev choice로 가른다). inform · correct는 memory_items에만 쓰고 run · Action을 만들지 않는다 (아키텍처 5.6) */
+export const intentKindSchema = z.enum([
+  "lookup", "consult", "adopt", "instruct", "modify", "answer", "stop", "preference", "inform", "correct", "other",
+]);
+export type IntentKind = z.infer<typeof intentKindSchema>;
+
+/** conversation_messages.intent */
+export const messageIntentSchema = z.object({
+  kind: intentKindSchema,
+  confidence: z.number().min(0).max(1),
+  judge_version: z.string().min(1).max(100),
+});
+export type MessageIntent = z.infer<typeof messageIntentSchema>;
+
+/** assistant 메시지의 제안. 채택은 proposal id로 멱등이다 (같은 제안을 두 번 채택해도 Action · run은 하나) */
+export const proposalSchema = z.object({
+  id: z.uuid(),
+  kind: z.enum(["create_action", "run", "modify", "stop", "preference"]),
+  payload_hash: z.string().min(1).max(128),
+  state: z.enum(["open", "adopted", "superseded", "dismissed"]),
+});
+export type Proposal = z.infer<typeof proposalSchema>;
+
+/**
+ * conversation_messages.refs: 이 메시지가 가리키거나 만든 것. 서버가 쓴다 (모델 출력의 id를 그대로 믿지 않는다).
+ * memory_item_ids · context_ids: 무엇을 기억했는지 · 어느 범위에 적용했는지 (ARCH01). 없는 목록은 빈 목록으로 읽는다
+ */
+export const messageRefsSchema = z.object({
+  action_ids: idListSchema.default([]),
+  run_ids: idListSchema.default([]),
+  artifact_ids: idListSchema.default([]),
+  suggestion_ids: idListSchema.default([]),
+  dependency_ids: idListSchema.default([]),
+  memory_item_ids: idListSchema.default([]),
+  context_ids: idListSchema.default([]),
+  proposal: proposalSchema.nullable().default(null),
+});
+export type MessageRefs = z.infer<typeof messageRefsSchema>;
+
+/** conversations 행. context_id: 대화의 기본 범위 (null = All work). 글 보관 기한 뒤 메시지 text만 비운다(text_purged_at) */
+export const conversationSchema = z.object({
+  id: z.uuid(),
+  title: z.string().max(200).nullable(),
+  context_id: z.uuid().nullable(),
+  created_at: z.string(),
+  last_message_at: z.string().nullable(),
+  last_read_at: z.string().nullable(),
+  archived_at: z.string().nullable(),
+  text_purged_at: z.string().nullable(),
+});
+export type Conversation = z.infer<typeof conversationSchema>;
+
+export const createConversationRequestSchema = z
+  .object({ title: z.string().trim().min(1).max(200).optional(), context_id: z.uuid().nullable().optional() })
+  .strict();
+export type CreateConversationRequest = z.infer<typeof createConversationRequestSchema>;
+
+/**
+ * 메시지 보내기. client_message_id가 같으면 같은 제출이다: 두 번 저장 · 실행하지 않는다 (unique (conversation_id, client_message_id)).
+ * refs: 앱에서 고른 대상 (지시 대상 규칙 1번: 선택된 Action · run · 산출물)
+ */
+export const postConversationMessageRequestSchema = z
+  .object({
+    client_message_id: z.uuid(),
+    text: z.string().trim().min(1).max(CONVERSATION_MESSAGE_MAX_CHARS),
+    refs: z
+      .object({ action_ids: z.array(z.uuid()).max(20).optional(), run_ids: z.array(z.uuid()).max(20).optional(), artifact_ids: z.array(z.uuid()).max(20).optional() })
+      .strict()
+      .optional(),
+  })
+  .strict();
+export type PostConversationMessageRequest = z.infer<typeof postConversationMessageRequestSchema>;
+
+/** conversation_messages 행. role event: run · 에이전트 사건 중 사용자가 알아야 할 것만 (heartbeat 없음) */
+export const conversationMessageSchema = z.object({
+  id: z.uuid(),
+  conversation_id: z.uuid(),
+  seq: z.number().int().positive(),
+  role: z.enum(["user", "assistant", "event"]),
+  client_message_id: z.uuid().nullable(),
+  text: z.string(),
+  refs: messageRefsSchema,
+  intent: messageIntentSchema.nullable(),
+  created_at: z.string(),
+});
+export type ConversationMessage = z.infer<typeof conversationMessageSchema>;
+
+/** 응답 구간. 이어 붙이면 응답 text다. 앱은 등급이 다른 구간만 구별해 보인다 (모든 문장에 배지를 붙이지 않는다) */
+export const responseSegmentSchema = z.object({ text: z.string(), tier: contextTierSchema });
+export type ResponseSegment = z.infer<typeof responseSegmentSchema>;
+
+/** 메시지 보내기 응답: 저장한 사용자 메시지 + assistant 답 ({text, segments[], citations[], refs}, 런타임 계약 2장) */
+export const postConversationMessageResponseSchema = z.object({
+  message: conversationMessageSchema,
+  reply: conversationMessageSchema.extend({
+    role: z.literal("assistant"),
+    segments: z.array(responseSegmentSchema),
+    citations: z.array(askCitationSchema),
+  }),
+});
+export type PostConversationMessageResponse = z.infer<typeof postConversationMessageResponseSchema>;
+
+// ─── 기억 (memory_items, 아키텍처 5.3) ─────────────────────────
+// 기억은 Action 필드를 바꾸지 않고(I01) 실행 권한에 닿지 않는다(I04). 정정은 새 행 + 옛 행 superseded_by, 잊기는 revoked_at.
+
+export const MEMORY_STATEMENT_MAX_CHARS = 1000;
+export const memoryKindSchema = z.enum([
+  "identity_link", "goal", "condition", "outcome_criteria", "relationship", "fact", "working_rule", "plan",
+]);
+export const memoryScopeKindSchema = z.enum(["global", "context", "action", "counterpart", "agent"]);
+/** explicit(사용자가 직접 말함) > observed(자료 · 검증된 결과에서 읽음, source_ref 필수) > inferred(모델 추정, confidence 필수) */
+export const memoryOriginSchema = z.enum(["explicit", "observed", "inferred"]);
+
+/** 출처: message_id | source_id + quote | artifact_id | event_id 중 하나 이상. event_id는 execution_events(bigint) · inbox_events(uuid)를 문자열로 */
+export const memorySourceRefSchema = z
+  .object({
+    message_id: z.uuid().optional(),
+    source_id: z.uuid().optional(),
+    quote: z.string().max(2000).optional(),
+    artifact_id: z.uuid().optional(),
+    event_id: z.string().min(1).max(100).optional(),
+  })
+  .refine((ref) => ref.message_id || ref.source_id || ref.artifact_id || ref.event_id, { message: "출처 id가 하나는 필요합니다" });
+export type MemorySourceRef = z.infer<typeof memorySourceRefSchema>;
+
+/** memory_items 행 (앱은 RLS로 읽는다: Settings › Remembered). 빈 statement ⇔ source_purged (출처 원문 글이 지워진 observed 항목) */
+export const memoryItemSchema = z.object({
+  id: z.uuid(),
+  kind: memoryKindSchema,
+  scope_kind: memoryScopeKindSchema,
+  context_id: z.uuid().nullable(),
+  action_id: z.uuid().nullable(),
+  person_id: z.uuid().nullable(),
+  /** scope_kind agent의 대상 (capability.adapter, 예: agent:claude-code) */
+  agent_adapter: z.string().nullable(),
+  statement: z.string().max(MEMORY_STATEMENT_MAX_CHARS),
+  value: jsonObjectSchema,
+  origin: memoryOriginSchema,
+  source_ref: memorySourceRefSchema.nullable(),
+  observed_at: z.string(),
+  valid_from: z.string().nullable(),
+  valid_until: z.string().nullable(),
+  superseded_by: z.uuid().nullable(),
+  revoked_at: z.string().nullable(),
+  confidence: z.number().min(0).max(1).nullable(),
+  source_purged: z.boolean(),
+  version: z.number().int().positive(),
+  created_at: z.string(),
+  updated_at: z.string(),
+});
+export type MemoryItem = z.infer<typeof memoryItemSchema>;
+
+/** 추정(inferred) 항목 확인: 새 explicit 행을 만들고 옛 행은 superseded_by. expected_version이 다르면 409 (동시 수정) */
+export const memoryConfirmRequestSchema = z.object({ expected_version: z.number().int().positive() }).strict();
+export type MemoryConfirmRequest = z.infer<typeof memoryConfirmRequestSchema>;
+
+/** 정정 (correct): 새 explicit 행 + 옛 행 superseded_by. 옛 행은 지우지 않는다 */
+export const memoryEditRequestSchema = z
+  .object({
+    expected_version: z.number().int().positive(),
+    statement: z.string().trim().min(1).max(MEMORY_STATEMENT_MAX_CHARS),
+    value: jsonObjectSchema.optional(),
+    valid_from: z.iso.datetime({ offset: true }).nullable().optional(),
+    valid_until: z.iso.datetime({ offset: true }).nullable().optional(),
+  })
+  .strict()
+  .refine((r) => !r.valid_from || !r.valid_until || Date.parse(r.valid_from) <= Date.parse(r.valid_until), {
+    message: "valid_from이 valid_until보다 늦습니다",
+    path: ["valid_until"],
+  });
+export type MemoryEditRequest = z.infer<typeof memoryEditRequestSchema>;
+
+/** 잊기: revoked_at. 이미 에이전트에게 보낸 묶음은 회수하지 못한다 (아키텍처 6.5) */
+export const memoryForgetRequestSchema = z.object({ expected_version: z.number().int().positive() }).strict();
+export type MemoryForgetRequest = z.infer<typeof memoryForgetRequestSchema>;
+
+// ─── 범위 (work_contexts · context_members, 아키텍처 5.4) ───────
+// 범위는 어떤 gate · 전이 · 판정에도 입력이 아니다(I14). 멤버십을 바꿔도 권한은 바뀌지 않는다.
+
+export const workContextKindSchema = z.enum(["project", "client", "goal", "personal"]);
+export const workContextStatusSchema = z.enum(["active", "archived"]);
+
+/** work_contexts 행 */
+export const workContextSchema = z.object({
+  id: z.uuid(),
+  name: z.string(),
+  kind: workContextKindSchema,
+  status: workContextStatusSchema,
+  context_version: z.number().int().positive(),
+  last_activity_at: z.string(),
+  created_at: z.string(),
+  updated_at: z.string(),
+});
+export type WorkContext = z.infer<typeof workContextSchema>;
+
+export const createWorkContextRequestSchema = z.object({ name: z.string().trim().min(1).max(200), kind: workContextKindSchema }).strict();
+export type CreateWorkContextRequest = z.infer<typeof createWorkContextRequestSchema>;
+
+/** 이름 바꾸기 · 보관(archive). 분할 · 병합은 사용자만 (자동 병합 없음) */
+export const updateWorkContextRequestSchema = z
+  .object({ name: z.string().trim().min(1).max(200).optional(), status: workContextStatusSchema.optional() })
+  .strict()
+  .refine((r) => r.name !== undefined || r.status !== undefined, { message: "바꿀 값이 없습니다" });
+export type UpdateWorkContextRequest = z.infer<typeof updateWorkContextRequestSchema>;
+
+export const contextMemberKindSchema = z.enum(["action", "source", "person"]);
+/** user(사용자가 정함, 자동 규칙이 덮지 않는다) · auto(코드 규칙) · inferred(모델 후보, confidence 필수) */
+export const contextMemberOriginSchema = z.enum(["user", "auto", "inferred"]);
+
+/** context_members 행: 멤버 종류마다 열 하나 (member_kind에 맞는 열만 채워진다) */
+export const contextMemberSchema = z.object({
+  id: z.uuid(),
+  context_id: z.uuid(),
+  member_kind: contextMemberKindSchema,
+  action_id: z.uuid().nullable(),
+  source_id: z.uuid().nullable(),
+  person_id: z.uuid().nullable(),
+  origin: contextMemberOriginSchema,
+  confidence: z.number().min(0).max(1).nullable(),
+  created_at: z.string(),
+  updated_at: z.string(),
+});
+export type ContextMember = z.infer<typeof contextMemberSchema>;
+
+const membershipTargetSchema = z.object({ op: z.enum(["add", "remove"]), member_kind: contextMemberKindSchema, member_id: z.uuid() });
+
+/** 앱이 보내는 멤버십 변경. origin은 언제나 user다 (Set by you · Undo) */
+export const contextMembershipRequestSchema = membershipTargetSchema.strict();
+export type ContextMembershipRequest = z.infer<typeof contextMembershipRequestSchema>;
+
+/** 서버 쪽 멤버십 변경 (코드 규칙 auto · 모델 후보 inferred · 사용자 user). confidence는 inferred에만, inferred에는 반드시 */
+export const contextMembershipChangeSchema = membershipTargetSchema
+  .extend({ origin: contextMemberOriginSchema, confidence: z.number().min(0).max(1).nullable().default(null) })
+  .strict()
+  .refine((c) => (c.origin === "inferred") === (c.confidence !== null), { message: "confidence는 inferred에만 붙습니다", path: ["confidence"] });
+export type ContextMembershipChange = z.infer<typeof contextMembershipChangeSchema>;
+
+// ─── 에이전트 adapter (런타임 계약 5장 · 아키텍처 8.2 · 8.3) ─────
+
+/** capability · 사건의 adapter 이름: "agent:<이름>" (예: agent:claude-code) */
+export const agentAdapterIdSchema = z.string().max(64).regex(/^agent:[a-z0-9][a-z0-9_-]*$/);
+
+/** 권한 경계 하나. verified는 D0 통제 테스트에서 실제로 막힘을 본 것만 true (프롬프트에 범위를 적는 것은 통로가 아니다) */
+export const boundarySchema = z.object({
+  channel: z.string().min(1).max(200).nullable(),
+  verified: z.boolean(),
+  evidence: z.string().max(2000).optional(),
+});
+export type Boundary = z.infer<typeof boundarySchema>;
+
+/**
+ * adapter capability 서술자. 쓰기는 동작 × 모드의 경계(approval_gate · target_scope · revocation)가 모두 verified일 때만 (I05).
+ * budget만 verified인 adapter는 쓰기 0이다. 확인하지 못한 항목은 unsupported로 둔다
+ */
+export const agentCapabilitySchema = z.object({
+  adapter: agentAdapterIdSchema,
+  transport: z.enum(["remote_api", "local_bridge"]),
+  session: z.object({ list: z.boolean(), attach_existing: z.boolean(), create: z.boolean(), workspace_scoped: z.boolean() }),
+  dispatch: z.object({ ack_level: z.enum(["transport", "agent"]), max_instruction_chars: z.number().int().positive() }),
+  events: z.enum(["push", "poll", "none"]),
+  question: z.object({ receive: z.boolean(), answer: z.boolean() }),
+  cancel: z.enum(["confirmed", "requested_only", "unsupported"]),
+  resume: z.enum(["supported", "unsupported"]),
+  enforcement: z.object({ approval_gate: boundarySchema, target_scope: boundarySchema, revocation: boundarySchema, budget: boundarySchema }),
+  cost: z.enum(["observable", "estimated", "unknown"]),
+  artifacts: z.array(z.enum(["files", "diff", "url", "text"])),
+});
+export type AgentCapability = z.infer<typeof agentCapabilitySchema>;
+
+/**
+ * 사건 종류. 런타임 계약 5장의 아홉 값 + unsupported(bridge가 모르는 명령 kind를 받았을 때, 아키텍처 9.3 → run needs_capability).
+ * question의 payload.kind: approval(도구 승인 콜백) · input(사용자 질문). 끝: completed · failed · cancelled
+ */
+export const agentEventTypeSchema = z.enum([
+  "accepted", "progress", "question", "artifact", "completed", "failed", "cancelled", "unreachable", "reconcile", "unsupported",
+]);
+export type AgentEventType = z.infer<typeof agentEventTypeSchema>;
+
+/**
+ * 사건 봉투 (inbound). (bridge_id 또는 session, event_id)로 한 번만 적용한다(I07). seq가 없으면 observed_at은 도착 순서일 뿐이다.
+ * payload에는 글을 담지 않는다: 질문 글은 agent_tasks.pending_question, 결과 글은 산출물에만
+ */
+export const agentEventEnvelopeSchema = z.object({
+  adapter: agentAdapterIdSchema,
+  session_id: z.string().min(1).max(200),
+  external_task_id: z.string().min(1).max(200),
+  event_id: z.string().min(1).max(200),
+  seq: z.number().int().nonnegative().optional(),
+  type: agentEventTypeSchema,
+  directive_version: z.number().int().positive().optional(),
+  result_revision: z.number().int().nonnegative().optional(),
+  payload: jsonObjectSchema,
+  observed_at: z.iso.datetime({ offset: true }),
+});
+export type AgentEventEnvelope = z.infer<typeof agentEventEnvelopeSchema>;
+
+/** agent_tasks.state (런타임 계약 5장). unreachable은 실패가 아니다: reconcile 뒤 last_live_state로 돌아갈 수 있다 */
+export const agentTaskStateSchema = z.enum([
+  "dispatched", "accepted", "running", "awaiting_answer", "completed", "failed", "cancelled", "unreachable",
+]);
+export type AgentTaskState = z.infer<typeof agentTaskStateSchema>;
+
+// ─── Mac bridge (아키텍처 9.1). bridge는 끌어온다: 명령 long-poll ≤ 25초, heartbeat 30초 (3회 누락 → unreachable) ───
+
+/** bridge_commands.kind. bridge가 모르는 kind는 실행하지 않고 unsupported 사건으로 답한다 */
+export const bridgeCommandKindSchema = z.enum(["dispatch", "message", "cancel", "reconcile", "check"]);
+export type BridgeCommandKind = z.infer<typeof bridgeCommandKindSchema>;
+
+/** POST /api/v1/bridge/register — 기기당 하나. 다른 Mac은 다른 bridge이고 세션은 만든 bridge에 묶인다 */
+export const bridgeRegisterRequestSchema = z
+  .object({
+    device_id: z.string().min(1).max(200),
+    app_version: z.string().min(1).max(50),
+    capabilities: z.array(agentCapabilitySchema).max(20),
+  })
+  .strict();
+export type BridgeRegisterRequest = z.infer<typeof bridgeRegisterRequestSchema>;
+export const bridgeRegisterResponseSchema = z.object({ bridge_id: z.uuid(), heartbeat_interval_seconds: z.number().int().positive() });
+export type BridgeRegisterResponse = z.infer<typeof bridgeRegisterResponseSchema>;
+
+/** 명령 (서버 → bridge). GET /api/v1/bridge/commands?since= 로 가져가고 ack로 lease를 잡는다. payload의 묶음은 그대로 에이전트에 넣는다 */
+export const bridgeCommandSchema = z.object({
+  id: z.uuid(),
+  bridge_id: z.uuid(),
+  kind: bridgeCommandKindSchema,
+  payload: jsonObjectSchema,
+  lease_until: z.string().nullable(),
+  acked_at: z.string().nullable(),
+  created_at: z.string(),
+});
+export type BridgeCommand = z.infer<typeof bridgeCommandSchema>;
+export const bridgeCommandsResponseSchema = z.object({ commands: z.array(bridgeCommandSchema) });
+export type BridgeCommandsResponse = z.infer<typeof bridgeCommandsResponseSchema>;
+
+/** POST /api/v1/bridge/events — 사건 배열 (outbox 재생 포함). 이미 받은 event_id도 accepted로 돌려줘 bridge가 outbox에서 지운다 */
+export const bridgeEventsRequestSchema = z.object({ bridge_id: z.uuid(), events: z.array(agentEventEnvelopeSchema).min(1).max(100) }).strict();
+export type BridgeEventsRequest = z.infer<typeof bridgeEventsRequestSchema>;
+export const bridgeEventsResponseSchema = z.object({ accepted_event_ids: z.array(z.string()) });
+export type BridgeEventsResponse = z.infer<typeof bridgeEventsResponseSchema>;
+
+/** POST /api/v1/bridge/heartbeat — 30초마다, 살아 있는 agent_tasks의 (task_id, process_alive, last_seq) */
+export const bridgeHeartbeatRequestSchema = z
+  .object({
+    bridge_id: z.uuid(),
+    sent_at: z.iso.datetime({ offset: true }),
+    tasks: z.array(z.object({ task_id: z.uuid(), process_alive: z.boolean(), last_seq: z.number().int().nonnegative() }).strict()).max(50),
+  })
+  .strict();
+export type BridgeHeartbeatRequest = z.infer<typeof bridgeHeartbeatRequestSchema>;
+
+// ─── 결제 v2 (아키텍처 10.1 · 디자인 준비도 5.1: 새 표 없이 billing_accounts 확장, G1) ───
+// v1(billingStatusSchema · billingCheckoutRequestSchema)은 그대로다: lifetime 계정은 v1에서 plan null · status active ·
+// can_use_ai true · can_checkout false로 매핑한다 (구현 계획 8장). 가격은 출시 전 확정이라 여기 두지 않는다.
+
+export const billingPlanV2Schema = z.enum(["monthly", "annual", "lifetime"]);
+export type BillingPlanV2 = z.infer<typeof billingPlanV2Schema>;
+
+/** PlanSummary 8 상태. beta = billing_accounts.legacy_beta (유료 전환 고지 전 기존 계정) */
+export const planStateSchema = z.enum(["none", "trial", "pro", "cancelled", "past_due", "lapsed", "lifetime", "beta"]);
+export type PlanState = z.infer<typeof planStateSchema>;
+
+/** 이번 달(UTC 1일부터) Taskforce 자체 AI 호출의 토큰 사용량. 참고값이고 상한이 아니다 */
+export const aiUsageTokensSchema = z.object({
+  since: z.string(),
+  prompt_tokens: z.number().int().nonnegative(),
+  completion_tokens: z.number().int().nonnegative(),
+  total_tokens: z.number().int().nonnegative(),
+});
+export type AiUsageTokens = z.infer<typeof aiUsageTokensSchema>;
+
+/** GET /api/v2/billing. 자격은 결제 제공자 webhook으로만 바뀐다 (I15, 클라이언트 신고 없음) */
+export const billingStatusV2Schema = z.object({
+  state: planStateSchema,
+  plan: billingPlanV2Schema.nullable(),
+  trial_ends_at: z.string().nullable(),
+  current_period_ends_at: z.string().nullable(),
+  /** 해지했지만 이 시각까지 쓸 수 있다 (state cancelled) */
+  cancel_at: z.string().nullable(),
+  /** 환불 요청을 받는 마지막 시각 (결제 3일 안). 지났거나 해당 없으면 null */
+  refund_until: z.string().nullable(),
+  can_use_ai: z.boolean(),
+  can_checkout: z.boolean(),
+  ai_usage_this_month: aiUsageTokensSchema.nullable(),
+});
+export type BillingStatusV2 = z.infer<typeof billingStatusV2Schema>;
+
+/** POST /api/v2/billing/checkout. terms_version 값은 G1이 정한다 (여기서 새 literal을 만들지 않는다) */
+export const billingCheckoutRequestV2Schema = z.object({ plan: billingPlanV2Schema, terms_version: z.string().min(1).max(32) }).strict();
+export type BillingCheckoutRequestV2 = z.infer<typeof billingCheckoutRequestV2Schema>;
+
+/** POST /api/v2/billing/refund — 본문 없음. 서버가 3일 창을 확인하고 환불을 요청한다. 확정은 webhook이 오면 (자격은 그때 바뀐다) */
+export const billingRefundRequestV2Schema = z.object({}).strict();
+export const billingRefundResponseV2Schema = z.object({ requested: z.literal(true) });
+export type BillingRefundResponseV2 = z.infer<typeof billingRefundResponseV2Schema>;
