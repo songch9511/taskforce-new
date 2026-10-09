@@ -358,6 +358,18 @@ describe("에이전트 · bridge", () => {
     expect(bridgeHeartbeatRequestSchema.parse(BRIDGE_HEARTBEAT)).toEqual(BRIDGE_HEARTBEAT);
     expect(bridgeHeartbeatRequestSchema.safeParse({ ...BRIDGE_HEARTBEAT, tasks: [{ ...BRIDGE_HEARTBEAT.tasks[0], last_seq: -1 }] }).success).toBe(false);
   });
+
+  it("Swift(TaskforceKit)가 보내는 모양도 받는다: 대문자 UUID, 밀리초가 붙은 UTC 시각", () => {
+    const fromSwift = {
+      bridge_id: U.bridge.toUpperCase(),
+      sent_at: "2026-10-09T05:00:30.000Z",
+      tasks: [{ task_id: U.task.toUpperCase(), process_alive: true, last_seq: 42 }],
+    };
+    expect(bridgeHeartbeatRequestSchema.safeParse(fromSwift).success).toBe(true);
+    expect(agentEventEnvelopeSchema.safeParse({ ...AGENT_EVENT_QUESTION, observed_at: "2026-10-09T05:00:00.000Z" }).success).toBe(true);
+    // Swift AgentBoundary는 channel이 없으면 null을 보낸다 (키를 빼지 않는다)
+    expect(agentCapabilitySchema.safeParse({ ...AGENT_CAPABILITY, enforcement: { ...AGENT_CAPABILITY.enforcement, budget: { channel: null, verified: false } } }).success).toBe(true);
+  });
 });
 
 describe("결제 v2", () => {
