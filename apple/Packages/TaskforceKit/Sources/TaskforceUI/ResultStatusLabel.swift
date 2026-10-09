@@ -34,9 +34,7 @@ public struct ResultStatusLabel: View {
     public var body: some View {
         HStack(spacing: 4) {
             if state.showsCheck {
-                Image(systemName: "checkmark")
-                    .font(.system(size: 10, weight: .semibold))
-                    .accessibilityHidden(true)
+                TFIcon.check.image(size: 14)
             }
             Text(state.label)
         }
