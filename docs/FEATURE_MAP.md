@@ -196,6 +196,17 @@ flowchart TD
 | 운영 (켜기 · 끄기 · 점검) | [런북](go-live/runbook.md) 9장, 승인된 `npx supabase db query --linked` (한 명령에 한 문장) | 차단 스위치 `execution_controls`(긴급은 `global` 한 행, Manual만은 global 먼저) · 실행 주체 `execution_actors` · `grant_credits` · 하루 지난 청구 대상 미확정 원가 `reconcile_usage` · 오래 막힌 run `stop_run`(run마다) · 점검 쿼리(개수만: lease 만료 · 결과 불명 · 막힌 이유 · gate · 미확정 원가 · 열린 예약 · 빠진 receipt · 실패 까닭) · 되돌리기 · 운영 켜기 순서 · U2 완료 확인 | 운영자 | 없음 (SQL은 운영 마이그레이션을 적용한 PGlite에서 돌려 확인, U2 PR8) |
 | 과금 경계 (A37 · A44) | 할 일 쓰기 · 원문 처리 경로 | 실행 · 크레딧을 확인하지도 부르지도 않는다. eslint `no-restricted-imports`(원문 처리 → 실행) | — | `lib/execution/boundary.test.ts` |
 
+### 3-7. 0.2.0 뼈대 (A2 · 런타임 없음)
+
+표 · 계약 · gate만 있고 읽거나 쓰는 코드 · route는 아직 없다. 기능은 각 PR(B1 맥락층 · B2 대화 v2 · C2 코디네이터 · D1–D3 에이전트 · bridge · G1 결제 v2)에서 붙는다.
+
+| 무엇 | 위치 | 비고 | 테스트 |
+|---|---|---|---|
+| 표 9개 | `supabase/migrations/20261102000000_context_core.sql`: `work_contexts` · `context_members` · `memory_items` · `identity_links` · `people` · `source_chunks` · `inbox_events` · `conversations` · `conversation_messages` | RLS `owner_all` + select 권한만(앱은 읽기, 쓰기는 서버만), 부모와 `(id, user_id)` 복합 외래키, 새 함수 없음(`set_updated_at` 트리거). 운영 적용 전 | `tests/db/context-core.test.ts`, `migrations.test.ts` · `account-deletion.test.ts` 표 목록 |
+| v2 계약 | `src/lib/api/contract.ts` 끝 "0.2.0 계약 뼈대": 대화(메시지 4,000자 · `client_message_id` · refs `memory_item_ids` · `context_ids` · proposal · segments `T1`–`T5` · 의도 `inform` · `correct`) · 기억 · 범위 · 에이전트 capability · 사건 봉투 · bridge · 결제 v2(`lifetime` · PlanSummary 8 상태 · 토큰 사용량 · 환불) | v1 스키마는 동결: 바꾸면 `contract-v1-freeze.test.ts`가 실패한다 | `src/lib/api/contract-v2.test.ts`, `contract-v1-freeze.test.ts` |
+| gate | `src/lib/flags.ts` `SERVER_FLAGS` · `flagEnabled`: `CONVERSATIONS_V2_ENABLED` · `MEMORY_ENABLED` · `SOURCE_CHUNKS_ENABLED` · `COORDINATOR_ENABLED` · `AGENT_ADAPTER_CLAUDE_CODE_ENABLED` · `BYOK_ENABLED` · `REPORTS_V2_ENABLED` | 모두 기본 꺼짐, 정확히 `"true"`일 때만. 기존 `EXECUTION_ENABLED` · `BILLING_ENABLED`는 그대로 | `src/lib/flags.test.ts` |
+| Swift 짝 | `TaskforceKit/AgentBridgeContracts.swift`: `AgentCapability` · `AgentEventEnvelope` · `AgentTaskState` · `BridgeCommand` · `BridgeHeartbeat` · 등록 · 사건 요청 | 모르는 값은 `.unknown(raw)`로 읽고 그대로 보낸다 | `TaskforceKitTests/AgentBridgeContractsTests` |
+
 ## 4. 실행과 검증
 
 | 항목 | 명령 | 참고 |
