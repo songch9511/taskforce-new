@@ -336,7 +336,7 @@ enum SettingsOpener {
             return
         }
         guard case .ready(let session, let services) = AppRuntime.startup else { return }
-        let root = MacSettingsView()
+        let root = MacSettingsRoot()
             .environment(session)
             .environment(\.services, services)
             .environment(AppRuntime.account(services: services))

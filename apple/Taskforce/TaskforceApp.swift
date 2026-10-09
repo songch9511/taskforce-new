@@ -16,7 +16,8 @@ struct TaskforceApp: App {
         Settings {
             switch AppRuntime.startup {
             case .ready(let session, let services):
-                MacSettingsView()
+                // `TF_EDGE_SHELL`이 꺼져 있으면(기본) 기존 `MacSettingsView`, 켜져 있으면 0.2.0 탭 창 (`MacSettingsRoot`)
+                MacSettingsRoot()
                     .environment(session)
                     .environment(\.services, services)
                     .environment(AppRuntime.account(services: services))
