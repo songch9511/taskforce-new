@@ -45,4 +45,16 @@ struct HotKeyShortcutTests {
         #expect(translated.matches(.default))
         #expect(!HotKeyShortcut(keyCode: 49, modifiers: HotKeyShortcut.Modifier.command, keyLabel: "Space").matches(.default))
     }
+
+    /// 0.2.0 설정 창의 키캡: 수식키는 macOS 순서(⌃ ⌥ ⇧ ⌘)로 하나씩, 끝에 키. 이어 붙이면 기존 표기와 같다
+    @Test func keyCapsSplitModifiersInMacOrder() {
+        #expect(HotKeyShortcut.default.keyCaps == ["⌥", "Space"])
+        let all = HotKeyShortcut(keyCode: 40, modifiers: HotKeyShortcut.Modifier.all, keyLabel: "K")
+        #expect(all.keyCaps == ["⌃", "⌥", "⇧", "⌘", "K"])
+        let settings = HotKeyShortcut(keyCode: 43, modifiers: HotKeyShortcut.Modifier.command | HotKeyShortcut.Modifier.shift, keyLabel: ",")
+        #expect(settings.keyCaps == ["⇧", "⌘", ","])
+        for shortcut in [HotKeyShortcut.default, all, settings] {
+            #expect(shortcut.keyCaps.joined() == shortcut.displayLabel)
+        }
+    }
 }
