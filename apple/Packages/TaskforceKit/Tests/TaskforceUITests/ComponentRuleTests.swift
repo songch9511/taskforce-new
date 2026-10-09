@@ -57,4 +57,42 @@ struct ComponentRuleTests {
         #expect(MacListRow.accessibilityLabel(title: "데모 환경 배포", accessory: "Fri", changed: true) == "데모 환경 배포, Fri, Changed")
         #expect(MacListRow.accessibilityLabel(title: "데모 환경 배포", accessory: nil, changed: false) == "데모 환경 배포")
     }
+
+    // 0.2.0 디자인 시스템 Atoms
+
+    /// Activity ring: 움직이는 것은 running · stopping뿐이고, 연결 끊김은 멈춘 반 링이다 (waiting과 다르다)
+    @Test func activityRingMotion() {
+        #expect(ActivityRing.Kind.running.period == 1.1)
+        #expect(ActivityRing.Kind.stopping.period == 2.4)
+        #expect(ActivityRing.Kind.unreachable.period == nil)
+        #expect(ActivityRing.Kind.unreachable.arcLength(reduceMotion: false) == 0.5)
+        #expect(ActivityRing.Kind.waiting.arcLength(reduceMotion: false) == nil)
+        // 움직임 줄이기: running(반)과 stopping(3/4)이 멈춘 길이로 구분된다
+        #expect(ActivityRing.Kind.running.arcLength(reduceMotion: true) != ActivityRing.Kind.stopping.arcLength(reduceMotion: true))
+    }
+
+    @Test func activityRingLabels() {
+        #expect(ActivityRing.Kind.allCases.map(\.accessibilityLabel) == [
+            "Running", "Stop requested", "Connection lost", "Needs your answer", "Waiting", "Done just now",
+        ])
+    }
+
+    /// Result status: 체크는 검토 통과 · 받음에만. 완료 보고(Unconfirmed)는 체크도 굵기도 없다
+    @Test func resultStatusRules() {
+        #expect(ResultStatusLabel.State.allCases.filter(\.showsCheck) == [.passedReview, .accepted])
+        #expect(ResultStatusLabel.State.unconfirmed.isQuiet)
+        #expect(!ResultStatusLabel.State.unconfirmed.showsCheck)
+        #expect(ResultStatusLabel.State.allCases.filter(\.isEmphasized) == [.revisionRequested, .accepted])
+        #expect(ResultStatusLabel.State.allCases.map(\.label) == [
+            "Draft", "Unconfirmed", "In review", "Revision requested", "Passed review", "Accepted",
+        ])
+    }
+
+    /// 형광펜은 문장 안에 있는 구절만 칠한다
+    @Test func markerPhrase() {
+        #expect(MarkerText.contains("Could we do Thursday instead?", phrase: "Thursday"))
+        #expect(!MarkerText.contains("Could we do Thursday instead?", phrase: "Friday"))
+        #expect(!MarkerText.contains("Anything", phrase: nil))
+        #expect(!MarkerText.contains("Anything", phrase: ""))
+    }
 }

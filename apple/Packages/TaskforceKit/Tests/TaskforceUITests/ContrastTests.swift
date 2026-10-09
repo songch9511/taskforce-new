@@ -116,6 +116,37 @@ struct ContrastTests {
         #expect(ratio >= 3, "\(token) on bg/elevated \(dark ? "Dark" : "Light"): \(ratio)")
     }
 
+    /// 0.2.0 디자인 시스템: 형광펜 글자, 레일 위 글자 · 표시, 패널 안 채움 위 보조 글자
+    @Test(arguments: [
+        ("text/on-marker", "fill/marker"),
+        ("bezel/ink", "bezel/base"),
+        ("bezel/ink-secondary", "bezel/base"),
+        ("text/primary", "fill/segment"),
+        ("text/primary", "bg/tooltip"),
+    ], appearances)
+    func edgeText(_ pair: (text: String, background: String), _ dark: Bool) {
+        let ratio = Contrast.ratio(Contrast.shipped(pair.text, dark: dark), Contrast.shipped(pair.background, dark: dark))
+        #expect(ratio >= 4.5, "\(pair.text) on \(pair.background) \(dark ? "Dark" : "Light"): \(ratio)")
+    }
+
+    /// 패널(bg/panel, 반투명) 안의 채움(bg/field, 반투명) 위 글자. 패널 뒤는 bg/canvas로 가정한다
+    @Test(arguments: ["text/primary", "text/secondary-selected"], appearances)
+    func textOnPanelField(_ token: String, _ dark: Bool) {
+        let panel = Contrast.composite(Contrast.shipped("bg/panel", dark: dark), over: Contrast.shipped("bg/canvas", dark: dark))
+        let field = Contrast.composite(Contrast.shipped("bg/field", dark: dark), over: panel)
+        let ratio = Contrast.ratio(Contrast.shipped(token, dark: dark), field)
+        #expect(ratio >= 4.5, "\(token) on bg/field over bg/panel \(dark ? "Dark" : "Light"): \(ratio)")
+    }
+
+    /// 비문자 3:1 (WCAG 1.4.11): 레일의 실행 중 호, 꺼진 토글 트랙
+    @Test(arguments: appearances)
+    func edgeMarks(_ dark: Bool) {
+        let activity = Contrast.ratio(Contrast.shipped("status/activity", dark: dark), Contrast.shipped("bezel/base", dark: dark))
+        #expect(activity >= 3, "status/activity on bezel/base: \(activity)")
+        let track = Contrast.ratio(Contrast.shipped("status/step-inactive", dark: dark), Contrast.shipped("bg/elevated", dark: dark))
+        #expect(track >= 3, "status/step-inactive on bg/elevated: \(track)")
+    }
+
     /// 계산이 맞는지: 검정/흰색 21:1, 같은 색 1:1
     @Test func ratioSanity() {
         #expect(abs(Contrast.ratio(RGBA("#000000"), RGBA("#FFFFFF")) - 21) < 0.001)
