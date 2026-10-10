@@ -1,4 +1,5 @@
 import Foundation
+import Supabase
 import Testing
 @testable import TaskforceKit
 
@@ -85,6 +86,20 @@ struct ChatStoreTests {
         gateway.conversationsHandler = { throw URLError(.notConnectedToInternet) }
         await chat.refresh()
         #expect(chat.listScreen == .ready(problem: .offline) && chat.entries.count == 1)
+    }
+
+    /// 대화 테이블이 서버 DB에 아직 없다: "Couldn't load your chats"가 아니라 기능이 아직 없다고 말한다
+    @Test func missingTablesAreUnavailableNotAFailure() async throws {
+        gateway.conversationsHandler = { throw PostgrestError(code: "PGRST205", message: "Could not find the table 'public.conversations'") }
+        let chat = store()
+        await chat.refresh()
+        #expect(chat.isUnavailable && chat.listScreen == .ready(problem: nil) && chat.listIsEmpty)
+        #expect(chat.composerPlaceholder == "Chats aren't available yet.")
+        // 서버가 켜지면 Try again으로 다시 읽는다
+        serve([Chats.conversation(1, title: "Back", last: 10)])
+        chat.retryUnavailable()
+        await chat.settle()
+        #expect(!chat.isUnavailable && chat.entries.map(\.title) == ["Back"])
     }
 
     @Test func aThreadThatCouldNotBeReadSaysSoInsteadOfLookingEmpty() async throws {
@@ -244,7 +259,7 @@ struct ChatStoreTests {
         #expect(!turns[0].status.canRetry)
     }
 
-    /// 같은 쌍이 두 번 와도(재시도 응답이 겹침) 한 번만 반영한다
+    /// 같은 쌍이 두 번 와도 한 번만 반영한다: 응답이 오기 전에 서버를 다시 읽어 이미 그 쌍이 들어왔는데 (늦은 응답이) 같은 쌍을 또 가져온다
     @Test func duplicateResponsesApplyOnce() async throws {
         let existing = Chats.conversation(1, title: "Chat", last: 10)
         serve([existing])
@@ -252,18 +267,26 @@ struct ChatStoreTests {
         await chat.refresh()
         chat.open(existing.id)
         await chat.settle()
-        let attempts = Counter()
+        let stored = Box<[ChatMessage]>([])
+        gateway.messagesHandler = { _ in stored.value }
+        let latch = Latch()
         gateway.postHandler = { conversation, cmid, text in
-            _ = attempts.next()
-            return Chats.pair(1, in: conversation, seq: 1, cmid: cmid, text: text)
+            let pair = Chats.pair(1, in: conversation, seq: 1, cmid: cmid, text: text)
+            stored.value = [pair.message, pair.reply]
+            await latch.wait()
+            return pair
         }
-        await chat.send("Once")
-        // 같은 제출을 다시 보내 같은 쌍을 받는다
-        let cmid = try #require(chat.turns(for: existing.id).first?.clientMessageID)
-        gateway.messagesHandler = { _ in [] }
-        await chat.retry(cmid)
+        let sending = Task { await chat.send("Once") }
+        while await latch.arrivals == 0 { await Task.yield() }
+        // 응답을 기다리는 사이 서버를 읽어 그 쌍이 먼저 들어온다 (보내는 중 표시는 응답이 올 때까지 둔다)
+        await chat.loadThread(existing.id)
         #expect(chat.turns(for: existing.id).map(\.text) == ["Once", "Noted."])
-        #expect(attempts.next() == 1 + 1, "두 번째 retry는 이미 답이 있어 보내지 않는다")
+        await latch.open()
+        await sending.value
+        // 같은 쌍을 또 받아도 줄이 늘지 않고 한 번만 있다
+        #expect(chat.turns(for: existing.id).map(\.text) == ["Once", "Noted."])
+        #expect(chat.turns(for: existing.id).map(\.status) == [.sent, .sent])
+        #expect(chat.threads[existing.id]?.messages.count == 2 && chat.threads[existing.id]?.pending.isEmpty == true)
     }
 
     /// 대화를 옮긴 뒤 늦게 온 응답은 그 대화에 반영된다 (지금 보는 대화를 건드리지 않는다)

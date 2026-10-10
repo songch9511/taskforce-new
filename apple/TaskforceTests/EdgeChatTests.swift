@@ -226,6 +226,7 @@ struct EdgeChatTests {
         #expect(SettingsRememberedList.screen(load: .loading, isEmpty: true) == .blank)
         #expect(SettingsRememberedList.screen(load: .offline, isEmpty: true) == .offline)
         #expect(SettingsRememberedList.screen(load: .failed, isEmpty: true) == .failed)
+        #expect(SettingsRememberedList.screen(load: .unavailable, isEmpty: true) == .unavailable, "서버에 아직 없는 기능은 실패도 비어 있음도 아니다")
         #expect(SettingsRememberedList.screen(load: .loaded, isEmpty: true) == .empty)
         #expect(SettingsRememberedList.screen(load: .loaded, isEmpty: false) == .list)
         // 받은 행이 있으면 그 뒤의 읽기 실패가 목록을 가리지 않는다

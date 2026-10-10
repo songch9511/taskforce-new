@@ -41,6 +41,8 @@ public enum MemoryCopy {
     public static let tryAgain = "Try again"
     /// 서버 gate가 꺼져 쓰기가 막혀 있다 (읽기는 된다)
     public static let writesUnavailable = "Changes aren't available yet."
+    /// 서버에 기억 테이블이 아직 없다 (읽기도 아직): 기존 "X isn't available yet." 방식
+    public static let unavailable = "Remembered isn't available yet."
     /// 서버가 글을 그대로 저장하지 못하게 했다 (Slack 원문 후보를 글자 그대로 저장하려 함): 글을 고쳐 써야 한다
     public static let rewriteToSave = "Change the wording to save it."
     /// 범위 이름 (디자인은 프로젝트와 All work만 안다): 읽기만 하는 나머지 범위

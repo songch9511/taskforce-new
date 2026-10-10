@@ -417,12 +417,17 @@ public final class ChatStore {
                 // 마지막 대화로 되살린다 (앱을 다시 켠 뒤)
                 currentID = latest.id
                 mode = .chat
+                focusRequest += 1
             }
             await loadPreviews(token: token)
             if let id = currentID, conversations.contains(where: { $0.id == id }) { await loadThread(id) }
         } catch {
             guard scope.isCurrent(token), sequence == listSequence, let failure = ReadFailure.from(error, online: isOnline) else { return }
-            if case .loaded = listLoad {
+            if failure == .unavailable {
+                // 서버에 대화 테이블이 아직 없다: 실패가 아니라 기능이 아직 없는 것 ("Chats aren't available yet.")
+                isUnavailable = true
+                listLoad = .loaded(problem: nil)
+            } else if case .loaded = listLoad {
                 listLoad = .loaded(problem: failure == .offline ? .offline : .failed)
             } else {
                 listLoad = failure == .offline ? .offline : .failed
@@ -465,6 +470,11 @@ public final class ChatStore {
                 return
             } catch {
                 guard scope.isCurrent(token), let failure = ReadFailure.from(error, online: isOnline), threads[id] != nil else { return }
+                if failure == .unavailable {
+                    isUnavailable = true
+                    threads[id]?.load = .loaded(problem: nil)
+                    return
+                }
                 let hasContent = !(threads[id]?.messages.isEmpty ?? true)
                 let problem: WorkLoad.Problem = failure == .offline ? .offline : .failed
                 threads[id]?.load = hasContent ? .loaded(problem: problem) : (failure == .offline ? .offline : .failed)
@@ -512,9 +522,10 @@ public final class ChatStore {
         await deliver(clientMessageID, in: id)
     }
 
-    /// 기능 꺼짐 안내를 걷고 다시 시도할 수 있게 한다 (Try again)
+    /// 기능 꺼짐 안내를 걷고 다시 시도할 수 있게 한다 (Try again): 목록도 다시 읽는다
     public func retryUnavailable() {
         isUnavailable = false
+        spawn { await self.refresh() }
     }
 
     private func deliver(_ turnID: UUID, in conversationID: UUID) async {

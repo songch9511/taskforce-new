@@ -1,13 +1,20 @@
 import Foundation
 import Observation
+import Supabase
 
-/// 읽기가 왜 안 됐나: 연결이 없다(오프라인) · 그 밖(실패). 취소는 아무 상태도 바꾸지 않는다 (nil)
+/// 읽기가 왜 안 됐나: 연결이 없다(오프라인) · 서버에 아직 없는 기능(테이블이 없음) · 그 밖(실패). 취소는 아무 상태도 바꾸지 않는다 (nil)
 public enum ReadFailure: Sendable, Equatable {
     case offline, failed
+    /// 서버 DB에 대화 · 기억 테이블이 아직 없다 (마이그레이션 적용 전): "실패"가 아니라 기능이 아직 없는 것이다
+    case unavailable
+
+    /// PostgREST: 스키마 캐시에 테이블이 없음 · Postgres undefined_table
+    static let missingTableCodes: Set<String> = ["PGRST205", "42P01"]
 
     /// - online: 연결 경로 (`Connectivity`). 끊겨 있으면 어떤 오류도 오프라인으로 본다
     public static func from(_ error: Error, online: Bool) -> ReadFailure? {
         if error is CancellationError { return nil }
+        if let postgrest = error as? PostgrestError, let code = postgrest.code, missingTableCodes.contains(code) { return .unavailable }
         if let urlError = error as? URLError {
             if urlError.code == .cancelled { return nil }
             if Self.offlineCodes.contains(urlError.code) { return .offline }
@@ -52,6 +59,8 @@ public enum MemoryWriteResult: Equatable, Sendable {
 public final class MemoryStore {
     public enum Load: Equatable, Sendable {
         case idle, loading, loaded, offline, failed
+        /// 서버에 기억 테이블이 아직 없다 (읽기도 쓰기도 아직)
+        case unavailable
     }
 
     /// 한 항목의 쓰기 안내 (화면이 이것만 보고 말한다)
@@ -143,7 +152,12 @@ public final class MemoryStore {
         } catch {
             guard scope.isCurrent(token), sequence == listSequence, let failure = ReadFailure.from(error, online: isOnline) else { return }
             // 받은 목록이 있으면 그대로 두고, 없을 때만 실패 화면
-            if items.isEmpty || load != .loaded { load = failure == .offline ? .offline : .failed }
+            if failure == .unavailable {
+                load = .unavailable
+                writesUnavailable = true
+            } else if items.isEmpty || load != .loaded {
+                load = failure == .offline ? .offline : .failed
+            }
         }
     }
 

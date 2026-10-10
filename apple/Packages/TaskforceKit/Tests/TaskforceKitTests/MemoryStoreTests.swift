@@ -1,4 +1,5 @@
 import Foundation
+import Supabase
 import Testing
 @testable import TaskforceKit
 
@@ -63,6 +64,22 @@ struct MemoryStoreTests {
         gateway.currentMemoryHandler = { throw URLError(.timedOut) }
         await memory.loadList()
         #expect(memory.items.count == 1 && memory.load == .loaded)
+    }
+
+    /// 서버 DB에 기억 테이블이 아직 없다 (마이그레이션 적용 전): 실패가 아니라 기능이 아직 없다고 말한다
+    @Test func missingTablesAreUnavailableNotAFailureNorEmpty() async throws {
+        gateway.currentMemoryHandler = { throw PostgrestError(code: "PGRST205", message: "Could not find the table 'public.memory_items'") }
+        let memory = store()
+        await memory.loadList()
+        #expect(memory.load == .unavailable && memory.writesUnavailable && memory.items.isEmpty)
+        gateway.currentMemoryHandler = { throw PostgrestError(code: "42P01", message: "relation does not exist") }
+        await memory.loadList()
+        #expect(memory.load == .unavailable)
+        // 다른 오류는 실패다
+        gateway.currentMemoryHandler = { throw PostgrestError(code: "XX000", message: "boom") }
+        let other = store()
+        await other.loadList()
+        #expect(other.load == .failed && !other.writesUnavailable)
     }
 
     // MARK: 쓰기: 성공은 서버 응답 뒤에만

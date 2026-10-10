@@ -125,7 +125,11 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
         }
         // 계정이 바뀌면 All work의 검색어 · 필터 · 고정을 그 계정 것으로 (전 계정 것을 보이지 않는다)
         shell.accountChanged(Self.workAccount(account))
-        if signedIn, !wasSignedIn { load() }
+        if signedIn, !wasSignedIn {
+            load()
+            // 로그인이 확인됐을 때 Chats가 열려 있으면 그 계정의 대화를 읽는다 (패널을 다시 열 때마다도 읽는다)
+            if shell.panelOpen, shell.view == .chats { chat?.chat.openChats() }
+        }
         wasSignedIn = signedIn
     }
 

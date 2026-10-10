@@ -37,6 +37,11 @@ struct SettingsRememberedList: View {
             stateRow(MemoryCopy.offline, memory: memory)
         case .failed:
             stateRow(MemoryCopy.couldNotLoad, memory: memory)
+        case .unavailable:
+            // 서버에 아직 없는 기능: 실패도 "비어 있음"도 아니다
+            SettingsSection(footnote: MemoryCopy.listFootnote) {
+                SettingsTrayRow(MemoryCopy.unavailable)
+            }
         case .empty:
             SettingsSection(footnote: MemoryCopy.listFootnote) {
                 SettingsTrayRow(MemoryCopy.emptyList)
@@ -62,7 +67,7 @@ struct SettingsRememberedList: View {
     }
 
     enum Screen: Equatable {
-        case blank, offline, failed, empty, list
+        case blank, offline, failed, unavailable, empty, list
     }
 
     /// 목록 화면: 받은 행이 있으면 목록, 없으면 읽기 상태가 화면이다 (읽는 중에는 "Nothing remembered yet."이라고 하지 않는다)
@@ -72,6 +77,7 @@ struct SettingsRememberedList: View {
         case .idle, .loading: return .blank
         case .offline: return .offline
         case .failed: return .failed
+        case .unavailable: return .unavailable
         case .loaded: return .empty
         }
     }
