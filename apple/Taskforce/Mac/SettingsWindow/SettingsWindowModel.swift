@@ -100,6 +100,8 @@ enum SettingsWindowConfirm: Hashable {
 final class SettingsWindowModel {
     static let shared = SettingsWindowModel()
 
+    /// Account › Profile 칸의 편집 상태 (탭 · 창이 사라져도 남는다)
+    let profile = ProfileDraft()
     private(set) var detail: SettingsWindowDetail?
     var confirming: SettingsWindowConfirm?
     /// 연결을 시작하라는 요청 (줄 · 상세의 Connect · Reconnect). Connections 탭의 `ConnectionFlow`가 받아 시작한다
@@ -124,6 +126,112 @@ final class SettingsWindowModel {
     func close() {
         detail = nil
         confirming = nil
+    }
+}
+
+/// 프로필 저장 결과 (서버 PUT /profile)
+enum ProfileSaveOutcome: Equatable {
+    case saved(Profile)
+    /// 칸은 그대로 두고 이 오류를 보인다 (nil이면 기본 문구)
+    case failed(String?)
+}
+
+/// Account › Profile 칸(이름 · 다른 이름)의 편집 상태. 설정 창 모델에 있어 탭을 옮기거나 창을 닫아도 쓰던 칸 · 오류 · 보내는 중인 저장이 남는다.
+/// - 칸은 그 칸을 채운 프로필(`baseline`)과 비교한다: 손대지 않은 칸만 새로 읽은 프로필을 따라간다 (보내는 중에는 따라가지 않는다)
+/// - 보내는 중에 저장하라고 하면(칸이 처음 값으로 돌아갔어도) 그 뜻을 남긴다. 응답이 오면 지금 칸을 저장된 값과 다시 맞추고, 다르면 한 번 더 저장한다
+/// - 실패하면 칸은 그대로 두고 오류를 남긴다. 실패 뒤에는 그 사이 저장하라는 뜻이 있었을 때만 다시 보낸다 (끝없이 보내지 않게)
+@MainActor
+@Observable
+final class ProfileDraft {
+    typealias Save = @MainActor @Sendable (_ name: String, _ aliases: [String]) async -> ProfileSaveOutcome
+
+    static let emptyNameMessage = "Add your name."
+    static let failedMessage = "Couldn't save your profile. Try again."
+
+    var name = ""
+    var aliases = ""
+    /// 칸을 채운 프로필 (처음 채우기 전에는 nil: 칸을 끈다. 읽지 못한 프로필로 저장하면 이메일 목록이 지워진다)
+    private(set) var baseline: Profile?
+    private(set) var userID: UUID?
+    private(set) var saving = false
+    private(set) var message: String?
+    @ObservationIgnored private var saveRequested = false
+    /// 계정이 바뀔 때마다 오른다: 전 계정의 늦은 응답을 버린다
+    @ObservationIgnored private var generation = 0
+
+    /// 칸이 그 프로필과 같은 값인지 (저장할 때와 같은 다듬기: 앞뒤 공백 · 이름과 같은 별칭 · 중복)
+    nonisolated static func matches(name: String, aliases: String, profile: Profile) -> Bool {
+        let edited = Profile.edited(name: name, aliases: Profile.aliases(fromList: aliases), keeping: profile)
+        return edited.displayName == profile.displayName && edited.aliases == profile.aliases
+    }
+
+    /// 칸을 채운 프로필과 다른가 (저장할 것이 있다)
+    var isDirty: Bool {
+        baseline.map { !Self.matches(name: name, aliases: aliases, profile: $0) } ?? false
+    }
+
+    /// 지금 프로필로 칸을 채운다 (창이 보일 때 · 읽은 뒤 · 프로필이 바뀔 때). 손댄 칸은 그대로 둔다. 계정이 바뀌면 처음부터
+    func follow(userID: UUID, profile: Profile?) {
+        if userID != self.userID { reset(for: userID) }
+        guard let profile, !saving else { return }
+        if baseline != nil, isDirty { return }
+        baseline = profile
+        name = profile.displayName ?? ""
+        aliases = profile.aliases.joined(separator: ", ")
+    }
+
+    /// 저장 (Return · 다른 칸 · 탭 · 창을 떠날 때)
+    func requestSave(using save: @escaping Save) {
+        guard let baseline, userID != nil else { return }
+        // 보내는 중이면 비교하기 전에 뜻부터 남긴다: 응답이 오면 그때의 칸으로 다시 맞춘다 (A → B 저장 중 A로 되돌린 경우)
+        guard !saving else {
+            saveRequested = true
+            return
+        }
+        guard isDirty else {
+            message = nil
+            return
+        }
+        let list = Profile.aliases(fromList: aliases)
+        guard Profile.edited(name: name, aliases: list, keeping: baseline).displayName != nil else {
+            message = Self.emptyNameMessage
+            return
+        }
+        saving = true
+        let generation = generation
+        let sentName = name
+        Task {
+            let outcome = await save(sentName, list)
+            finish(outcome, generation: generation, using: save)
+        }
+    }
+
+    private func finish(_ outcome: ProfileSaveOutcome, generation: Int, using save: @escaping Save) {
+        guard generation == self.generation else { return }
+        saving = false
+        let requested = saveRequested
+        saveRequested = false
+        switch outcome {
+        case .saved(let profile):
+            baseline = profile
+            message = nil
+            // 기다리는 사이 칸이 바뀌었으면(되돌린 것 포함) 지금 칸을 저장한다. 같으면 아무것도 보내지 않는다
+            requestSave(using: save)
+        case .failed(let text):
+            message = text ?? Self.failedMessage
+            if requested { requestSave(using: save) }
+        }
+    }
+
+    private func reset(for userID: UUID) {
+        generation += 1
+        self.userID = userID
+        baseline = nil
+        name = ""
+        aliases = ""
+        saving = false
+        saveRequested = false
+        message = nil
     }
 }
 

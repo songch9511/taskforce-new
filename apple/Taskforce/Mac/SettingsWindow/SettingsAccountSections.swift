@@ -8,44 +8,37 @@ import TaskforceUI
 // 기존 창의 Account(프로필 · 로그인 계정 · Sign Out · 계정 삭제 · 링크)와 About(빌드 정보)을 옮겼다.
 // Plan & usage · Remembered · 구독(Subscription)은 아직 넣지 않는다 (`SettingsWindowHidden`).
 
-/// 이름 · 다른 이름 (서버 PUT /profile). Return을 누르거나 다른 칸 · 탭으로 옮기면 바뀐 것만 저장한다.
-/// 칸은 그 칸을 채운 프로필(`baseline`)과 비교한다: 손대지 않은 칸은 새로 읽은 프로필을 따라가고(다른 기기 · 늦은 응답),
-/// 손댄 칸은 저장할 때까지 덮지 않는다. 처음 채우기 전에는 칸을 끈다 (기존 Save와 같다: 읽지 못한 프로필로 저장하면 이메일 목록이 지워진다).
-/// 저장하는 사이 또 바꾸면 그 저장이 끝난 뒤 한 번 더 저장한다
+/// 이름 · 다른 이름 (서버 PUT /profile). Return을 누르거나 다른 칸 · 탭 · 창을 떠나면 바뀐 것만 저장한다.
+/// 편집 상태(칸 · 오류 · 보내는 중인 저장)는 `ProfileDraft`(설정 창 모델)에 있어 이 화면이 사라져도 남는다
 struct SettingsProfileSection: View {
     @Environment(SessionStore.self) private var session
     @Environment(AccountStore.self) private var account
-    @State private var name = ""
-    @State private var aliases = ""
-    /// 칸을 채운 프로필과 그 사용자
-    @State private var baseline: Profile?
-    @State private var baselineFor: UUID?
-    @State private var saving = false
-    @State private var saveAgain = false
-    @State private var message: String?
     @FocusState private var focus: Field?
 
     private enum Field: Hashable {
         case name, aliases
     }
 
+    private var draft: ProfileDraft { SettingsWindowModel.shared.profile }
+
     var body: some View {
         let userID = SettingsWindowSession.accountUserID(session)
+        @Bindable var draft = draft
         SettingsSection("Profile", footnote: "Used to find what you promised in meeting notes and messages.") {
-            SettingsTrayRow("Name", message: message) {
-                TextField("Name", text: $name, prompt: Text("Your name"))
+            SettingsTrayRow("Name", message: draft.message) {
+                TextField("Name", text: $draft.name, prompt: Text("Your name"))
                     .focused($focus, equals: .name)
                     .onSubmit(save)
                     .settingsField(focused: focus == .name)
             }
             SettingsTrayRow("Other names") {
-                TextField("Other names", text: $aliases, prompt: Text("Nicknames, English name…"))
+                TextField("Other names", text: $draft.aliases, prompt: Text("Nicknames, English name…"))
                     .focused($focus, equals: .aliases)
                     .onSubmit(save)
                     .settingsField(focused: focus == .aliases)
             }
         }
-        .disabled(baseline == nil || baselineFor != userID)
+        .disabled(draft.baseline == nil || draft.userID != userID)
         .onAppear { follow(userID) }
         .task(id: userID) {
             guard userID != nil else { return }
@@ -61,58 +54,22 @@ struct SettingsProfileSection: View {
         .onDisappear { save() }
     }
 
-    private func fieldsMatch(_ profile: Profile) -> Bool {
-        Self.fieldsMatch(name: name, aliases: aliases, profile: profile)
-    }
-
-    /// 칸이 그 프로필과 같은 값인지 (저장할 때와 같은 다듬기: 앞뒤 공백 · 이름과 같은 별칭 · 중복)
-    nonisolated static func fieldsMatch(name: String, aliases: String, profile: Profile) -> Bool {
-        let edited = Profile.edited(name: name, aliases: Profile.aliases(fromList: aliases), keeping: profile)
-        return edited.displayName == profile.displayName && edited.aliases == profile.aliases
-    }
-
-    /// 지금 프로필로 칸을 채운다. 사용자가 손댄 칸은 그대로 둔다 (계정이 바뀌면 처음부터)
     private func follow(_ userID: UUID?) {
-        guard let userID, let profile = account.profile else { return }
-        if baselineFor != userID {
-            baselineFor = userID
-            baseline = nil
-        }
-        if let baseline, !fieldsMatch(baseline) { return }
-        baseline = profile
-        name = profile.displayName ?? ""
-        aliases = profile.aliases.joined(separator: ", ")
+        guard let userID else { return }
+        draft.follow(userID: userID, profile: account.profile)
     }
 
     private func save() {
-        guard let baseline, baselineFor == SettingsWindowSession.accountUserID(session) else { return }
-        guard !fieldsMatch(baseline) else {
-            message = nil
-            return
-        }
-        let list = Profile.aliases(fromList: aliases)
-        guard Profile.edited(name: name, aliases: list, keeping: baseline).displayName != nil else {
-            message = "Add your name."
-            return
-        }
-        guard !saving else {
-            saveAgain = true
-            return
-        }
-        saving = true
-        Task {
-            if await account.saveProfile(name: name, aliases: list), let saved = account.profile {
-                self.baseline = saved
-                message = nil
-            } else {
-                message = account.message
-                account.message = nil
+        guard draft.userID == SettingsWindowSession.accountUserID(session) else { return }
+        let account = account
+        draft.requestSave { name, aliases in
+            if await account.saveProfile(name: name, aliases: aliases), let saved = account.profile {
+                return .saved(saved)
             }
-            saving = false
-            if saveAgain {
-                saveAgain = false
-                save()
-            }
+            // 오류는 그 칸 아래에 둔다 (Connections 탭의 알림으로 다시 뜨지 않게)
+            let text = account.message
+            account.message = nil
+            return .failed(text)
         }
     }
 }

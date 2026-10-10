@@ -115,16 +115,200 @@ struct SettingsProfileFieldTests {
 
     /// 저장할 때와 같은 다듬기로 비교한다: 공백 · 같은 별칭은 바뀐 것이 아니다 (손대지 않은 칸은 새 프로필을 따라간다)
     @Test func untouchedFieldsMatchTheirProfile() {
-        #expect(SettingsProfileSection.fieldsMatch(name: "Alex Kim", aliases: "Alex, AK", profile: Self.profile))
-        #expect(SettingsProfileSection.fieldsMatch(name: "  Alex Kim ", aliases: "Alex,AK, ", profile: Self.profile))
-        #expect(SettingsProfileSection.fieldsMatch(name: "Alex Kim", aliases: "Alex, AK, Alex Kim", profile: Self.profile))
+        #expect(ProfileDraft.matches(name: "Alex Kim", aliases: "Alex, AK", profile: Self.profile))
+        #expect(ProfileDraft.matches(name: "  Alex Kim ", aliases: "Alex,AK, ", profile: Self.profile))
+        #expect(ProfileDraft.matches(name: "Alex Kim", aliases: "Alex, AK, Alex Kim", profile: Self.profile))
     }
 
     /// 이름 · 별칭을 바꾸거나 지우면 저장할 것이 있다
     @Test func editedFieldsDiffer() {
-        #expect(!SettingsProfileSection.fieldsMatch(name: "Alex", aliases: "Alex, AK", profile: Self.profile))
-        #expect(!SettingsProfileSection.fieldsMatch(name: "Alex Kim", aliases: "Alex", profile: Self.profile))
-        #expect(!SettingsProfileSection.fieldsMatch(name: "", aliases: "Alex, AK", profile: Self.profile))
+        #expect(!ProfileDraft.matches(name: "Alex", aliases: "Alex, AK", profile: Self.profile))
+        #expect(!ProfileDraft.matches(name: "Alex Kim", aliases: "Alex", profile: Self.profile))
+        #expect(!ProfileDraft.matches(name: "", aliases: "Alex, AK", profile: Self.profile))
+    }
+}
+
+/// 손으로 응답하는 PUT /profile: 요청을 받아 두고, 테스트가 차례로 답한다 (응답이 늦는 경우)
+@MainActor
+final class FakeProfileServer {
+    private(set) var requests: [String] = []
+    private var waiting: [CheckedContinuation<ProfileSaveOutcome, Never>] = []
+
+    var save: ProfileDraft.Save {
+        { [self] name, _ in
+            await withCheckedContinuation { continuation in
+                requests.append(name)
+                waiting.append(continuation)
+            }
+        }
+    }
+
+    /// 가장 오래 기다린 요청에 답하고, 그 뒤 이어지는 일(다시 저장)이 돌게 한다
+    func respond(_ outcome: ProfileSaveOutcome) async {
+        guard !waiting.isEmpty else {
+            Issue.record("No profile request is waiting")
+            return
+        }
+        waiting.removeFirst().resume(returning: outcome)
+        await settle()
+    }
+
+    func settle() async {
+        for _ in 0..<20 { await Task.yield() }
+    }
+}
+
+/// Account › Profile 저장 흐름 (모델 · 흐름 테스트: 실제 포인터 · 키보드 · VoiceOver 확인이 아니다).
+/// 뷰는 Return · 다른 칸으로 옮김 · 탭 · 창을 떠남(onDisappear)에 `requestSave`, 창이 보일 때 · 프로필이 바뀔 때 `follow`를 부른다
+@MainActor
+struct SettingsProfileSaveFlowTests {
+    static let user = UUID()
+
+    static func profile(_ name: String) -> Profile {
+        Profile(displayName: name, aliases: [], emails: ["alex@example.com"], aiConsentAt: nil, reportsConsent: false)
+    }
+
+    /// A → B 저장(응답 늦음) → 칸을 A로 되돌림 → 다른 칸으로 옮김: B가 저장된 뒤 A를 다시 저장한다
+    @Test func revertedDraftIsSavedAfterBlur() async {
+        let server = FakeProfileServer()
+        let draft = ProfileDraft()
+        draft.follow(userID: Self.user, profile: Self.profile("Alex"))
+        draft.name = "Bea"
+        draft.requestSave(using: server.save)
+        await server.settle()
+        #expect(server.requests == ["Bea"])
+        draft.name = "Alex"
+        draft.requestSave(using: server.save)
+        await server.respond(.saved(Self.profile("Bea")))
+        #expect(server.requests == ["Bea", "Alex"])
+        await server.respond(.saved(Self.profile("Alex")))
+        #expect(draft.baseline == Self.profile("Alex"))
+        #expect(draft.name == "Alex" && !draft.isDirty && !draft.saving)
+    }
+
+    /// 같은 순서에서 칸을 되돌린 뒤 탭을 옮김(onDisappear) · 돌아옴(follow), 그사이 저장소가 B를 먼저 받음: 칸은 A로 남고 A를 저장한다
+    @Test func revertedDraftIsSavedAfterTabSwitch() async {
+        let server = FakeProfileServer()
+        let draft = ProfileDraft()
+        draft.follow(userID: Self.user, profile: Self.profile("Alex"))
+        draft.name = "Bea"
+        draft.requestSave(using: server.save)
+        await server.settle()
+        draft.name = "Alex"
+        draft.requestSave(using: server.save)
+        draft.follow(userID: Self.user, profile: Self.profile("Alex"))
+        #expect(draft.name == "Alex")
+        // `AccountStore.saveProfile`은 답하기 전에 저장된 프로필을 둔다 (onChange → follow)
+        draft.follow(userID: Self.user, profile: Self.profile("Bea"))
+        #expect(draft.name == "Alex")
+        await server.respond(.saved(Self.profile("Bea")))
+        #expect(server.requests == ["Bea", "Alex"])
+        await server.respond(.saved(Self.profile("Alex")))
+        draft.follow(userID: Self.user, profile: Self.profile("Alex"))
+        #expect(draft.name == "Alex" && draft.baseline == Self.profile("Alex") && !draft.isDirty)
+    }
+
+    /// 같은 순서에서 칸을 되돌리고 창을 닫음(onDisappear, 다시 보이지 않음): 응답 뒤 A를 저장하고, 다시 열면 A
+    @Test func revertedDraftIsSavedAfterWindowClose() async {
+        let server = FakeProfileServer()
+        let draft = ProfileDraft()
+        draft.follow(userID: Self.user, profile: Self.profile("Alex"))
+        draft.name = "Bea"
+        draft.requestSave(using: server.save)
+        await server.settle()
+        draft.name = "Alex"
+        draft.requestSave(using: server.save)
+        await server.respond(.saved(Self.profile("Bea")))
+        #expect(server.requests == ["Bea", "Alex"])
+        await server.respond(.saved(Self.profile("Alex")))
+        draft.follow(userID: Self.user, profile: Self.profile("Alex"))
+        #expect(draft.name == "Alex" && !draft.isDirty && draft.message == nil)
+    }
+
+    /// 응답을 기다리는 사이 칸을 바꾸기만 하고 떠나지 않아도, 응답 뒤 지금 칸과 다시 맞춘다
+    @Test func responseReconcilesWithTheCurrentDraft() async {
+        let server = FakeProfileServer()
+        let draft = ProfileDraft()
+        draft.follow(userID: Self.user, profile: Self.profile("Alex"))
+        draft.name = "Bea"
+        draft.requestSave(using: server.save)
+        await server.settle()
+        draft.name = "Cy"
+        await server.respond(.saved(Self.profile("Bea")))
+        #expect(server.requests == ["Bea", "Cy"])
+        await server.respond(.saved(Self.profile("Cy")))
+        #expect(!draft.isDirty && !draft.saving)
+    }
+
+    /// 늦게 실패하고 사용자가 탭을 떠났다 돌아와도 칸과 오류가 남는다. 다시 떠나면 다시 보낸다
+    @Test func failedSaveKeepsDraftAndErrorAcrossTabSwitch() async {
+        let server = FakeProfileServer()
+        let draft = ProfileDraft()
+        draft.follow(userID: Self.user, profile: Self.profile("Alex"))
+        draft.name = "Bea"
+        draft.requestSave(using: server.save)
+        await server.settle()
+        await server.respond(.failed("You're offline. Try again when you're connected."))
+        #expect(draft.name == "Bea" && draft.isDirty)
+        #expect(draft.message == "You're offline. Try again when you're connected.")
+        // 탭으로 돌아옴: 저장소의 프로필은 여전히 A
+        draft.follow(userID: Self.user, profile: Self.profile("Alex"))
+        #expect(draft.name == "Bea" && draft.message == "You're offline. Try again when you're connected.")
+        draft.requestSave(using: server.save)
+        await server.settle()
+        #expect(server.requests == ["Bea", "Bea"])
+        await server.respond(.saved(Self.profile("Bea")))
+        #expect(draft.message == nil && !draft.isDirty)
+    }
+
+    /// 오류 글이 없는 실패도 말로 보인다. 실패 뒤에는 다시 저장하라는 뜻이 있을 때만 한 번 더 보낸다 (끝없이 보내지 않는다)
+    @Test func failureRetriesOnlyWhenAskedAgain() async {
+        let server = FakeProfileServer()
+        let draft = ProfileDraft()
+        draft.follow(userID: Self.user, profile: Self.profile("Alex"))
+        draft.name = "Bea"
+        draft.requestSave(using: server.save)
+        await server.settle()
+        await server.respond(.failed(nil))
+        #expect(draft.message == ProfileDraft.failedMessage)
+        #expect(server.requests == ["Bea"])
+        draft.name = "Cy"
+        draft.requestSave(using: server.save)
+        await server.settle()
+        draft.requestSave(using: server.save)
+        await server.respond(.failed(nil))
+        #expect(server.requests == ["Bea", "Cy", "Cy"])
+        await server.respond(.failed(nil))
+        #expect(server.requests == ["Bea", "Cy", "Cy"])
+        #expect(draft.name == "Cy" && draft.isDirty && !draft.saving)
+    }
+
+    /// 계정이 바뀌면 칸을 새 계정으로 채우고, 전 계정의 늦은 응답은 버린다
+    @Test func accountSwitchDropsTheOldDraftAndLateResponse() async {
+        let server = FakeProfileServer()
+        let draft = ProfileDraft()
+        draft.follow(userID: Self.user, profile: Self.profile("Alex"))
+        draft.name = "Bea"
+        draft.requestSave(using: server.save)
+        await server.settle()
+        let other = UUID()
+        draft.follow(userID: other, profile: Self.profile("Dana"))
+        #expect(draft.name == "Dana" && !draft.saving)
+        await server.respond(.saved(Self.profile("Bea")))
+        #expect(draft.baseline == Self.profile("Dana") && draft.name == "Dana")
+        #expect(server.requests == ["Bea"])
+    }
+
+    /// 빈 이름은 보내지 않고 고칠 길을 말한다
+    @Test func emptyNameIsNotSent() async {
+        let server = FakeProfileServer()
+        let draft = ProfileDraft()
+        draft.follow(userID: Self.user, profile: Self.profile("Alex"))
+        draft.name = "  "
+        draft.requestSave(using: server.save)
+        await server.settle()
+        #expect(server.requests.isEmpty)
+        #expect(draft.message == ProfileDraft.emptyNameMessage)
     }
 }
 
