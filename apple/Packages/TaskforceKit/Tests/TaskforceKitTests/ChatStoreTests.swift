@@ -427,6 +427,115 @@ struct ChatStoreTests {
         #expect(chat.entries.contains { $0.id == id })
     }
 
+    // MARK: 겹친 읽기 (Codex 읽기 검토 P2 B)
+
+    func citation(_ quote: String) -> ChatCitation {
+        ChatCitation(sourceID: "synthetic-source", sourceTitle: "Synthetic", sourceKind: "doc", occurredAt: nil, externalURL: nil, quote: quote)
+    }
+
+    /// 같은 대화의 겹친 읽기: 새 응답(인용 0) 뒤에 늦게 끝난 옛 응답(인용 1)이 화면을 되돌리지 않는다 (인용 부활 0)
+    @Test func aLateOlderThreadReadDoesNotRevertANewerOne() async throws {
+        let chatRow = Chats.conversation(701, title: "Synthetic chat", last: 1)
+        let old = Chats.message(702, in: chatRow.id, seq: 2, role: .assistant, text: "Synthetic reply", citations: [citation("Synthetic old quote")])
+        let new = Chats.message(702, in: chatRow.id, seq: 2, role: .assistant, text: "Synthetic reply", citations: [])
+        serve([chatRow], messages: [chatRow.id: [old]])
+        let chat = store()
+        await chat.refresh()
+        #expect(chat.turns(for: chatRow.id).first?.citations.count == 1)
+        let latch = Latch()
+        gateway.messagesHandler = { _ in
+            await latch.wait()
+            return [old]
+        }
+        let stale = Task { await chat.loadThread(chatRow.id) }
+        while await latch.arrivals == 0 { await Task.yield() }
+        // 원문 정리 뒤의 새 읽기(같은 답, 인용 0)가 먼저 끝난다
+        gateway.messagesHandler = { _ in [new] }
+        await chat.loadThread(chatRow.id)
+        #expect(chat.turns(for: chatRow.id).first?.citations.isEmpty == true)
+        await latch.open()
+        await stale.value
+        #expect(chat.turns(for: chatRow.id).first?.citations.isEmpty == true, "늦게 끝난 옛 읽기가 지운 인용을 되살리지 않는다")
+    }
+
+    /// 서로 다른 대화의 읽기는 서로 막지 않는다
+    @Test func readsOfDifferentConversationsDoNotBlockEachOther() async throws {
+        let a = Chats.conversation(711, title: "A", last: 2)
+        let b = Chats.conversation(712, title: "B", last: 1)
+        let aMessage = Chats.message(711, in: a.id, seq: 1, role: .assistant, text: "From A")
+        let bMessage = Chats.message(712, in: b.id, seq: 1, role: .assistant, text: "From B")
+        serve([a, b], messages: [a.id: [], b.id: []])
+        let chat = store()
+        await chat.refresh()
+        let latch = Latch()
+        gateway.messagesHandler = { id in
+            if id == a.id {
+                await latch.wait()
+                return [aMessage]
+            }
+            return [bMessage]
+        }
+        let slowA = Task { await chat.loadThread(a.id) }
+        while await latch.arrivals == 0 { await Task.yield() }
+        await chat.loadThread(b.id)
+        #expect(chat.turns(for: b.id).map(\.text) == ["From B"], "A의 느린 읽기가 B를 막지 않는다")
+        await latch.open()
+        await slowA.value
+        #expect(chat.turns(for: a.id).map(\.text) == ["From A"] && chat.turns(for: b.id).map(\.text) == ["From B"])
+    }
+
+    /// 기존 보호 유지: 읽기를 시작한 뒤 로컬에서 POST 결과를 반영했으면 그 옛 읽기(보내기 전 상태)가 덮지 않고 다시 읽는다
+    @Test func aReadStartedBeforeASendDoesNotEraseTheSentPair() async throws {
+        let existing = Chats.conversation(721, title: "Chat", last: 10)
+        serve([existing])
+        let chat = store()
+        await chat.refresh()
+        chat.open(existing.id)
+        await chat.settle()
+        let stored = Box<[ChatMessage]>([])
+        let latch = Latch()
+        let calls = Counter()
+        gateway.messagesHandler = { _ in
+            if calls.next() == 1 {
+                await latch.wait()
+                return []
+            }
+            return stored.value
+        }
+        gateway.postHandler = { conversation, cmid, text in
+            let pair = Chats.pair(1, in: conversation, seq: 1, cmid: cmid, text: text)
+            stored.value = [pair.message, pair.reply]
+            return pair
+        }
+        let stale = Task { await chat.loadThread(existing.id) }
+        while await latch.arrivals == 0 { await Task.yield() }
+        await chat.send("Sent while reading")
+        #expect(chat.turns(for: existing.id).map(\.status) == [.sent, .sent])
+        await latch.open()
+        await stale.value
+        #expect(chat.turns(for: existing.id).map(\.text) == ["Sent while reading", "Noted."])
+    }
+
+    /// 계정이 바뀐 뒤 늦게 온 읽기는 반영하지 않는다
+    @Test func aLateThreadReadAfterTheAccountLeftIsDropped() async throws {
+        let account = try ChatTestAccount.make()
+        let row = Chats.conversation(731, title: "Mine", last: 1)
+        serve([row], messages: [row.id: []])
+        let chat = ChatStore(gateway: gateway, scope: account.scope, now: { .test(500) })
+        await chat.refresh()
+        let latch = Latch()
+        gateway.messagesHandler = { id in
+            await latch.wait()
+            return [Chats.message(731, in: id, seq: 1, role: .assistant, text: "Private words of the previous session")]
+        }
+        let late = Task { await chat.loadThread(row.id) }
+        while await latch.arrivals == 0 { await Task.yield() }
+        account.relogin()
+        await latch.open()
+        await late.value
+        #expect(chat.threads.isEmpty && chat.turns(for: row.id).isEmpty)
+    }
+
     // MARK: 초안
 
     @Test func draftsStayPerConversationAndWinThePreview() async throws {

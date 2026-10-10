@@ -436,6 +436,177 @@ struct MemoryStoreTests {
         #expect(memory.noteState(for: ChatContractFixtures.id(99)) == .notRemembered, "읽을 수 없는 행도 이유를 지어내지 않는다")
     }
 
+    // MARK: 목록 캐시와 참조 캐시: 더 새로 읽은 행이 이긴다 (Codex 읽기 검토 P2 A)
+
+    /// 목록으로 받은 옛 "현재" 행이 대화 쪽에서 새로 읽은 행(잊음 → 원문 지움)을 가리지 않는다
+    @Test func aNewerReferencedRowBeatsTheOlderListedRow() async throws {
+        let v1 = Memories.item(701, "Synthetic old memory", origin: .observed)
+        let memory = store()
+        gateway.currentMemoryHandler = { [v1] }
+        await memory.loadList()
+        #expect(memory.noteState(for: v1.id) == .current(v1))
+        // 다른 기기가 잊은 뒤 대화 쪽 읽기가 revoked v2를 받는다
+        let v2 = Memories.item(701, "Synthetic old memory", origin: .observed, version: 2, revoked: true)
+        gateway.memoryItemsHandler = { _ in [v2] }
+        await memory.loadReferenced(ids: [v1.id])
+        #expect(memory.item(v1.id)?.isCurrent == false && memory.item(v1.id)?.version == 2)
+        #expect(memory.noteState(for: v1.id) == .notRemembered)
+        #expect(!memory.items.contains { $0.id == v1.id }, "Settings 목록에서도 빠진다")
+        // 이어서 원문이 지워져 version 3 · 빈 글: 옛 글을 다시 보이지 않는다
+        let v3 = Memories.item(701, origin: .observed, version: 3, revoked: true, purged: true)
+        gateway.memoryItemsHandler = { _ in [v3] }
+        await memory.loadReferenced(ids: [v1.id])
+        #expect(memory.item(v1.id)?.statement == "" && memory.item(v1.id)?.version == 3)
+        #expect(MemoryText.statement(try #require(memory.item(v1.id))) == "Original text deleted")
+    }
+
+    /// 반대 순서: 노트가 읽은 "현재" 행을, 그 뒤에 읽은 목록(거기 없음)이 가린다 · 목록에도 있으면 그대로
+    @Test func aNewerListReadBeatsTheOlderReferencedRow() async throws {
+        let v1 = Memories.item(702, "Synthetic memory", origin: .observed)
+        let memory = store()
+        gateway.memoryItemsHandler = { _ in [v1] }
+        await memory.loadReferenced(ids: [v1.id])
+        #expect(memory.noteState(for: v1.id) == .current(v1))
+        // 목록을 읽어 보니 그 행이 없다 (그 사이 잊었거나 대체됐다): 옛 "현재" 행을 보이지 않는다
+        gateway.currentMemoryHandler = { [] }
+        await memory.loadList()
+        #expect(memory.item(v1.id) == nil)
+        #expect(memory.noteState(for: v1.id) == .notRemembered)
+        // 목록에 그대로 있으면 현재다
+        gateway.currentMemoryHandler = { [v1] }
+        await memory.loadList()
+        #expect(memory.noteState(for: v1.id) == .current(v1))
+    }
+
+    /// 정정 · 옮김의 후속 행도 새로 읽은 쪽을 따른다
+    @Test func successorsFollowTheNewerRead() async throws {
+        let edited = Memories.item(703, "Synthetic old", version: 1)
+        let rows = ServerRows([edited])
+        serve(rows)
+        let memory = store()
+        await memory.loadList()
+        // 다른 기기가 정정: 옛 행은 대체, 새 행이 현재
+        let successor = Memories.item(704, "Synthetic new", at: 20)
+        rows.replace([Memories.item(703, "Synthetic old", version: 2, superseded: true, supersededBy: successor.id), successor])
+        await memory.loadReferenced(ids: [edited.id])
+        #expect(memory.noteState(for: edited.id) == .current(successor))
+        #expect(!memory.items.contains { $0.id == edited.id })
+        // 옮김: 옛 행은 잊히고 후속 행(moved_from)이 목록에 있다
+        let source = Memories.item(705, "Synthetic scoped", scope: .context, context: project)
+        let other = ServerRows([source])
+        serve(other)
+        let moving = store()
+        await moving.loadList()
+        let moved = Memories.item(706, "Synthetic scoped", scope: .context, context: otherProject, value: .object(["moved_from": .string(source.id.uuidString.lowercased())]), at: 30)
+        other.replace([Memories.item(705, "Synthetic scoped", scope: .context, context: project, version: 2, revoked: true), moved])
+        await moving.loadReferenced(ids: [source.id])
+        await moving.loadList()
+        #expect(moving.noteState(for: source.id) == .current(moved))
+    }
+
+    /// 행 없음(지워짐)도 새로 읽은 쪽이 이긴다: 옛 목록 행이 되살아나지 않고, 그 뒤 목록에 다시 있으면 그 행
+    @Test func aRowReadAsMissingBeatsTheOlderListedRow() async throws {
+        let v1 = Memories.item(707, "Synthetic memory")
+        let memory = store()
+        gateway.currentMemoryHandler = { [v1] }
+        await memory.loadList()
+        gateway.memoryItemsHandler = { _ in [] }
+        await memory.loadReferenced(ids: [v1.id])
+        #expect(memory.item(v1.id) == nil && memory.noteState(for: v1.id) == .notRemembered)
+        #expect(!memory.items.contains { $0.id == v1.id })
+        gateway.currentMemoryHandler = { [v1] }
+        await memory.loadList()
+        #expect(memory.item(v1.id)?.id == v1.id)
+    }
+
+    /// 늦게 끝난 옛 참조 읽기는 더 새 행을 덮지 못한다
+    @Test func aLateOlderReferencedReadDoesNotOverwriteANewerRow() async throws {
+        let v1 = Memories.item(708, "Synthetic memory", origin: .observed)
+        let v2 = Memories.item(708, "Synthetic memory", origin: .observed, version: 2, revoked: true)
+        let latch = Latch()
+        let calls = Counter()
+        gateway.memoryItemsHandler = { _ in
+            if calls.next() == 1 {
+                await latch.wait()
+                return [v1]
+            }
+            return [v2]
+        }
+        let memory = store()
+        let old = Task { await memory.loadReferenced(ids: [v1.id]) }
+        while await latch.arrivals == 0 { await Task.yield() }
+        await memory.loadReferenced(ids: [v1.id])
+        #expect(memory.item(v1.id)?.isCurrent == false)
+        await latch.open()
+        await old.value
+        #expect(memory.item(v1.id)?.isCurrent == false && memory.item(v1.id)?.version == 2)
+        #expect(memory.noteState(for: v1.id) == .notRemembered)
+    }
+
+    /// 늦게 끝난 옛 목록 읽기도 새로 읽은 행을 되살리지 못한다
+    @Test func aLateOlderListReadDoesNotResurrectANewerRow() async throws {
+        let v1 = Memories.item(709, "Synthetic memory", origin: .observed)
+        let v2 = Memories.item(709, "Synthetic memory", origin: .observed, version: 2, revoked: true)
+        let latch = Latch()
+        gateway.currentMemoryHandler = {
+            await latch.wait()
+            return [v1]
+        }
+        let memory = store()
+        let old = Task { await memory.loadList() }
+        while await latch.arrivals == 0 { await Task.yield() }
+        gateway.memoryItemsHandler = { _ in [v2] }
+        await memory.loadReferenced(ids: [v1.id])
+        await latch.open()
+        await old.value
+        #expect(memory.item(v1.id)?.isCurrent == false)
+        #expect(!memory.items.contains { $0.id == v1.id })
+        #expect(memory.noteState(for: v1.id) == .notRemembered)
+    }
+
+    /// 계정이 바뀐 뒤 늦게 온 참조 읽기는 반영하지 않는다
+    @Test func aLateReferencedReadAfterTheAccountLeftIsIgnored() async throws {
+        let v1 = Memories.item(710, "Private words of the previous account")
+        let latch = Latch()
+        gateway.memoryItemsHandler = { _ in
+            await latch.wait()
+            return [v1]
+        }
+        let memory = store()
+        let late = Task { await memory.loadReferenced(ids: [v1.id]) }
+        while await latch.arrivals == 0 { await Task.yield() }
+        scope.accountLeft()
+        await latch.open()
+        await late.value
+        #expect(memory.referenced.isEmpty && memory.item(v1.id) == nil && memory.noteState(for: v1.id) == .loading)
+    }
+
+    /// 출처 상태 읽기도 늦게 끝난 옛 응답(접근 있음)이 새 응답(접근 상실)을 덮지 않는다
+    @Test func aLateOlderSourceReadDoesNotUndoANewAccessLoss() async throws {
+        let ref = MemorySourceRef(sourceID: ChatContractFixtures.sourceID, quote: "Thursday")
+        let item = Memories.item(711, "Jordan decides", origin: .inferred, sourceRef: ref)
+        serve(ServerRows([item]))
+        let latch = Latch()
+        let calls = Counter()
+        gateway.sourceHandler = { _ in
+            if calls.next() == 1 {
+                await latch.wait()
+                return TestSources.make()
+            }
+            return TestSources.make(accessLost: true)
+        }
+        let memory = store()
+        await memory.loadList()
+        let old = Task { await memory.loadSource(for: item) }
+        while await latch.arrivals == 0 { await Task.yield() }
+        await memory.loadSource(for: item)
+        #expect(!memory.canConfirm(item) && memory.sourceDisplay(for: item) == .unavailable("Can't open the original"))
+        await latch.open()
+        await old.value
+        #expect(!memory.canConfirm(item), "옛 응답(접근 있음)이 Confirm을 되살리지 않는다")
+        #expect(memory.sourceDisplay(for: item) == .unavailable("Can't open the original"))
+    }
+
     // MARK: 출처
 
     @Test func sourceLookupStatesAreFactual() async throws {

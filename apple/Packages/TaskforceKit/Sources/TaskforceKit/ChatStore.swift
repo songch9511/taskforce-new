@@ -134,6 +134,8 @@ public final class ChatStore {
     private var previews: [UUID: String] = [:]
     /// 서버에 이름이 없는 대화의 이름: 읽은 첫 사용자 글 (대화 이름은 만들 때만 정할 수 있어, 다른 길로 만든 빈 대화를 다시 쓸 때도 첫 글이 이름으로 보인다)
     private var derivedTitles: [UUID: String] = [:]
+    /// 대화마다 읽기를 시작할 때 하나씩 올리는 순번: **마지막에 시작한 읽기만** 반영한다 (늦게 끝난 옛 읽기가 새 읽기 결과를 되돌리지 못한다)
+    @ObservationIgnored private var threadReadSeq: [UUID: Int] = [:]
     private var drafts: [UUID: String] = [:]
     var threads: [UUID: ChatThread] = [:]
     private var projectUndo: [UUID: UUID?] = [:]
@@ -181,6 +183,7 @@ public final class ChatStore {
         contexts = [:]
         previews = [:]
         derivedTitles = [:]
+        threadReadSeq = [:]
         drafts = [:]
         threads = [:]
         projectUndo = [:]
@@ -426,7 +429,7 @@ public final class ChatStore {
                 mode = .chat
                 focusRequest += 1
             }
-            await loadPreviews(token: token)
+            await loadPreviews(token: token, sequence: sequence)
             if let id = currentID, conversations.contains(where: { $0.id == id }) { await loadThread(id) }
         } catch {
             guard scope.isCurrent(token), sequence == listSequence, let failure = ReadFailure.from(error, online: isOnline) else { return }
@@ -452,31 +455,36 @@ public final class ChatStore {
         }
     }
 
-    private func loadPreviews(token: AccountScope.Token) async {
+    private func loadPreviews(token: AccountScope.Token, sequence: Int) async {
         let ids = conversations.filter { !$0.isUntouched }.map(\.id)
-        guard !ids.isEmpty, let last = try? await gateway.lastMessages(conversationIDs: ids), scope.isCurrent(token) else { return }
+        guard !ids.isEmpty, let last = try? await gateway.lastMessages(conversationIDs: ids), scope.isCurrent(token), sequence == listSequence else { return }
         var next: [UUID: String] = [:]
         for (id, message) in last { next[id] = message.text }
         previews = next
     }
 
-    /// 한 대화의 메시지를 읽는다. 읽는 사이 로컬에서 응답을 반영했으면(`revision`) 오래된 읽기로 덮지 않고 다시 읽는다
+    /// 한 대화의 메시지를 읽는다.
+    /// - 읽는 사이 로컬에서 응답을 반영했으면(`revision`) 오래된 읽기로 덮지 않고 다시 읽는다 (POST 결과 보호)
+    /// - 같은 대화의 읽기가 겹치면 **마지막에 시작한 읽기만** 반영한다 (`threadReadSeq`): 늦게 끝난 옛 읽기가 새 읽기를 되돌리지 않는다.
+    ///   다른 대화의 읽기는 서로 막지 않는다. 계정이 바뀌었으면 어느 쪽도 반영하지 않는다
     public func loadThread(_ id: UUID) async {
         guard let token = scope.token, conversations.contains(where: { $0.id == id }) else { return }
+        let seq = (threadReadSeq[id] ?? 0) + 1
+        threadReadSeq[id] = seq
         if threads[id] == nil { threads[id] = ChatThread() }
         if case .loaded = threads[id]?.load ?? .loading {} else { threads[id]?.load = .loading }
         for _ in 0..<3 {
             let revision = threads[id]?.revision ?? 0
             do {
                 let messages = try await gateway.messages(conversationID: id)
-                guard scope.isCurrent(token), threads[id] != nil else { return }
+                guard scope.isCurrent(token), threads[id] != nil, threadReadSeq[id] == seq else { return }
                 guard threads[id]?.revision == revision else { continue }
                 applyServerMessages(messages, to: id)
                 threads[id]?.load = .loaded(problem: nil)
                 if let memory { await memory.loadReferenced(ids: messages.flatMap(\.rememberedIDs)) }
                 return
             } catch {
-                guard scope.isCurrent(token), let failure = ReadFailure.from(error, online: isOnline), threads[id] != nil else { return }
+                guard scope.isCurrent(token), threadReadSeq[id] == seq, let failure = ReadFailure.from(error, online: isOnline), threads[id] != nil else { return }
                 if failure == .unavailable {
                     isUnavailable = true
                     threads[id]?.load = .loaded(problem: nil)

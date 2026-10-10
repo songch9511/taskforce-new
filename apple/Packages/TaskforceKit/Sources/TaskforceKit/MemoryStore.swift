@@ -101,6 +101,14 @@ public final class MemoryStore {
     private var successors: [UUID: UUID] = [:]
     private var sourceLookups: [UUID: MemorySourceRules.Lookup] = [:]
     public private(set) var isOnline = true
+    /// 읽기 순번: 읽기를 시작할 때 하나씩 올린다. 더 늦게 시작한 읽기가 더 새 서버 상태를 본다 (끝나는 순서가 아니다)
+    private var readCounter = 0
+    /// 마지막으로 반영한 목록 읽기를 시작한 순번
+    private var listStamp = 0
+    /// 노트가 가리키는 행(또는 "없음")을 마지막으로 반영한 읽기의 시작 순번
+    private var referencedStamp: [UUID: Int] = [:]
+    /// 출처 읽기를 마지막으로 반영한 읽기의 시작 순번 (항목마다)
+    private var sourceStamp: [UUID: Int] = [:]
 
     @ObservationIgnored private let gateway: any ChatGateway
     @ObservationIgnored private let scope: AccountScope
@@ -127,6 +135,14 @@ public final class MemoryStore {
         missing = []
         successors = [:]
         sourceLookups = [:]
+        listStamp = 0
+        referencedStamp = [:]
+        sourceStamp = [:]
+    }
+
+    private func nextStamp() -> Int {
+        readCounter += 1
+        return readCounter
     }
 
     public func pathChanged(online: Bool) {
@@ -140,6 +156,7 @@ public final class MemoryStore {
         guard let token = scope.token else { return }
         listSequence += 1
         let sequence = listSequence
+        let stamp = nextStamp()
         if items.isEmpty { load = .loading }
         do {
             async let current = gateway.currentMemoryItems()
@@ -147,6 +164,8 @@ public final class MemoryStore {
             let (rows, projects) = try await (current, named)
             guard scope.isCurrent(token), sequence == listSequence else { return }
             items = Self.sorted(rows.filter(\.isCurrent))
+            listStamp = stamp
+            reconcileItems()
             contexts = Dictionary(projects.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
             load = .loaded
         } catch {
@@ -161,18 +180,20 @@ public final class MemoryStore {
         }
     }
 
-    /// 대화 노트가 가리키는 행을 읽는다 (잊은 · 정정된 행도). 정정으로 대체된 행은 후속 행을 세 번까지 따라간다
+    /// 대화 노트가 가리키는 행을 읽는다 (잊은 · 정정된 행도). 정정으로 대체된 행은 후속 행을 세 번까지 따라간다.
+    /// 읽은 행은 **더 새 읽기가 이긴다**: 늦게 끝난 옛 읽기는 더 새 행(version · 잊음 · 대체 · 원문 지움 · 행 없음)을 덮지 못하고,
+    /// 목록을 읽어 둔 행도 더 새로 읽은 이 행에 가려지지 않는다 (`item`)
     public func loadReferenced(ids: [UUID]) async {
         guard let token = scope.token, !ids.isEmpty else { return }
         var pending = Array(Set(ids))
         var hops = 0
         do {
             while !pending.isEmpty, hops < 4 {
+                let stamp = nextStamp()
                 let rows = try await gateway.memoryItems(ids: pending)
                 guard scope.isCurrent(token) else { return }
                 let found = Set(rows.map(\.id))
-                for row in rows { referenced[row.id] = row }
-                missing.formUnion(pending.filter { !found.contains($0) })
+                absorb(rows: rows, absent: pending.filter { !found.contains($0) }, stamp: stamp)
                 // 대체된 행의 후속 행을 따라간다
                 pending = rows.compactMap { $0.supersededAt != nil ? $0.supersededBy : nil }.filter { referenced[$0] == nil && !missing.contains($0) }
                 hops += 1
@@ -190,6 +211,31 @@ public final class MemoryStore {
         }
     }
 
+    /// 참조 읽기 결과를 반영한다: 이 행을 이미 더 늦게 시작한 읽기가 반영했거나 version이 더 낮으면 버린다
+    private func absorb(rows: [MemoryItem], absent: [UUID], stamp: Int) {
+        for row in rows {
+            guard stamp > (referencedStamp[row.id] ?? 0), row.version >= (referenced[row.id]?.version ?? 0) else { continue }
+            referenced[row.id] = row
+            referencedStamp[row.id] = stamp
+            missing.remove(row.id)
+        }
+        for id in absent where stamp > (referencedStamp[id] ?? 0) {
+            referenced[id] = nil
+            referencedStamp[id] = stamp
+            missing.insert(id)
+        }
+        reconcileItems()
+    }
+
+    /// 목록 캐시에서 더 새로 읽은 행이 "지금 기억이 아니다"라고 한 것을 뺀다 (잊음 · 대체 · 원문 지움으로 version이 오른 행, 지워진 행)
+    private func reconcileItems() {
+        items.removeAll { listed in
+            if missing.contains(listed.id), (referencedStamp[listed.id] ?? 0) > listStamp { return true }
+            if let known = referenced[listed.id], known.version > listed.version, !known.isCurrent { return true }
+            return false
+        }
+    }
+
     private func readContextNames(token: AccountScope.Token) async throws {
         let projects = try await gateway.workContexts()
         guard scope.isCurrent(token) else { return }
@@ -202,9 +248,19 @@ public final class MemoryStore {
 
     // MARK: 조회
 
-    /// 가장 최근에 읽은 그 id의 행 (목록 → 노트 캐시)
+    /// 가장 새로 읽은 그 id의 행. 목록 캐시와 노트(참조) 캐시 중 **더 새 것이 이긴다**:
+    /// version이 더 높은 행, 읽어 보니 없는 행, 목록을 더 늦게 읽었는데 거기 없는 "현재" 행(= 이제 지금 기억이 아니다)은 옛 행을 가린다
     public func item(_ id: UUID) -> MemoryItem? {
-        items.first { $0.id == id } ?? referenced[id]
+        let listed = items.first { $0.id == id }
+        let knownStamp = referencedStamp[id] ?? 0
+        // 읽어 보니 없다 (지워짐): 그 뒤에 읽은 목록에 다시 있으면 그 행
+        if missing.contains(id) { return listStamp > knownStamp ? listed : nil }
+        guard let known = referenced[id] else { return listed }
+        guard let listed else {
+            // 목록에 없다: 그 행이 현재로 읽혔는데 목록을 더 늦게 읽었다면 그 사이 지금 기억이 아니게 된 것이다
+            return known.isCurrent && listStamp > knownStamp ? nil : known
+        }
+        return known.version > listed.version ? known : listed
     }
 
     /// 서버가 대체한 행을 따라가 지금 보이는 id (정정 · 확인 · 옮기기 뒤 상세가 새 행을 따라간다)
@@ -220,7 +276,8 @@ public final class MemoryStore {
         var current = resolve(id)
         var seen: Set<UUID> = []
         while seen.insert(current).inserted {
-            guard let row = item(current) else { return missing.contains(current) ? .notRemembered : .loading }
+            // 읽은 적이 있는데 보일 행이 없다 = 지워졌거나 그 사이 지금 기억이 아니게 됐다. 읽은 적이 없으면 읽는 중
+            guard let row = item(current) else { return missing.contains(current) || referenced[current] != nil ? .notRemembered : .loading }
             if row.isCurrent { return .current(row) }
             // 범위를 옮겨 잊힌 행이면 옮긴 후속 행 (다른 기기가 옮긴 것도): 그 사실은 아직 기억이다
             if row.supersededAt == nil, let moved = items.first(where: { $0.movedFrom == row.id }) {
@@ -266,15 +323,19 @@ public final class MemoryStore {
     public func loadSource(for item: MemoryItem) async {
         guard let token = scope.token, needsLookup(item), let ref = item.sourceRef else { return }
         if sourceLookups[item.id] == nil || sourceLookups[item.id] == .failed { sourceLookups[item.id] = .loading }
+        let stamp = nextStamp()
         do {
             var message: ChatMessage?
             var source: MemorySource?
             if let id = ref.messageID { message = try await gateway.message(id: id) }
             if let id = ref.sourceID { source = try await gateway.memorySource(id: id) }
-            guard scope.isCurrent(token) else { return }
+            // 더 늦게 시작한 읽기가 이미 반영됐으면 이 옛 응답은 버린다 (새 삭제 · 접근 상실 응답을 덮지 않는다)
+            guard scope.isCurrent(token), stamp > (sourceStamp[item.id] ?? 0) else { return }
+            sourceStamp[item.id] = stamp
             sourceLookups[item.id] = .loaded(message: message, source: source)
         } catch {
-            guard scope.isCurrent(token), ReadFailure.from(error, online: isOnline) != nil else { return }
+            guard scope.isCurrent(token), stamp > (sourceStamp[item.id] ?? 0), ReadFailure.from(error, online: isOnline) != nil else { return }
+            sourceStamp[item.id] = stamp
             sourceLookups[item.id] = .failed
         }
     }
@@ -333,10 +394,13 @@ public final class MemoryStore {
     }
 
     private func applied(_ response: MemoryItem, replacing row: MemoryItem, kind: WriteKind) async -> MemoryWriteResult {
+        // 이 쓰기보다 먼저 시작한 목록 읽기의 옛 결과가 방금 바뀐 행을 되살리지 않게 한다
+        listSequence += 1
         if kind == .forget {
             // 같은 요청을 다시 보내도 200이다. 다른 기기가 옮겨서 잊힌 것이면 옮긴 후속 행이 지금 기억으로 남아 있다:
             // 그때는 잊었다고 말하지 않고 지금 상태를 다시 읽어 보인다
             referenced[row.id] = response
+            referencedStamp[row.id] = nextStamp()
             await loadList()
             if items.contains(where: { $0.movedFrom == row.id }) {
                 feedback[row.id] = .conflict
@@ -348,6 +412,7 @@ public final class MemoryStore {
         // 확인 · 정정 · 옮기기: 응답의 새 행이 지금 상태다
         successors[row.id] = response.id
         referenced[response.id] = response
+        referencedStamp[response.id] = nextStamp()
         items.removeAll { $0.id == row.id }
         if !items.contains(where: { $0.id == response.id }) { items = Self.sorted(items + [response]) }
         // 서버 상태와 맞춘다 (실패해도 방금 받은 행은 그대로)
