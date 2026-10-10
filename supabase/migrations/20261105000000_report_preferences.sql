@@ -10,7 +10,8 @@
 --   같은 시작 · 끝은 0시간인지 24시간인지 모호해서 받지 않는다.
 --   version: 고칠 때마다 1씩 오른다(트리거). PUT은 읽은 version을 expected_version으로 보내고 다르면 409 — 여러 기기의 덮어쓰기를 막는다.
 --   schedule_version: 일정에 닿는 값(mode · daily_time · quiet_* · time_zone)이 바뀔 때만 1씩 오른다(트리거, respect_focus만 바뀌면 그대로).
---   cron이 읽은 일정과 잡는 순간의 일정이 다르면 잡지 않고, 옛 일정으로 잡힌 대기 행은 다시 보내지 않는다 (claim 함수들).
+--   옛 일정으로 잡힌 대기 행은 다시 보내지 않는다 (claim_report_retry · finish_stale). cron이 읽은 설정과 잡는 순간의 설정이 다른지는
+--   version으로 본다 (claim 함수들의 p_preferences_version).
 -- - report_deliveries: 보낸(또는 보내려던) 일일 보고 원장. 유일 인덱스 (user_id, kind, time_zone, report_date)(보내지 않고 닫힌 일정 변경 ·
 --   모드 변경 행 제외)와 claim 함수의 사용자 잠금이
 --   cron이 겹쳐 돌아도 같은 날 보고를 두 번 잡지 못하게 한다. 실패 내용은 짧은 코드(last_error)만 남기고 알림 문구 · 원문은 남기지 않는다.
@@ -54,6 +55,7 @@ create table public.report_preferences (
 --    pending: 잡혀서 보내는 중이거나 다시 보낼 차례를 기다린다(next_attempt_at). sent · failed · skipped는 끝.
 --    attempts는 잡을 때마다 오른다(보내는 쪽의 펜스 토큰). last_error는 코드만 (예: no_devices · empty · stale · network · apns_500)
 --    "그날 보고가 있다"(하루 한 번)는 보내지 않고 닫힌 skipped · schedule_changed / mode_changed 행을 빼고 센다.
+--    결과를 모르는 행을 일정 · 모드 변경으로 닫으면 failed · *_unknown이라 그날을 막는다(갔을 수 있다).
 -- ─────────────────────────────────────────────
 create table public.report_deliveries (
   id uuid primary key default gen_random_uuid(),
@@ -74,7 +76,9 @@ create table public.report_deliveries (
   updated_at timestamptz not null default now(),
   constraint report_deliveries_window check (expires_at >= scheduled_at),
   constraint report_deliveries_pending_next check ((status = 'pending') = (next_attempt_at is not null)),
-  constraint report_deliveries_sent_at check ((status = 'sent') = (sent_at is not null))
+  constraint report_deliveries_sent_at check ((status = 'sent') = (sent_at is not null)),
+  -- skipped에는 언제나 까닭 코드가 있다 (TS isBlockingDelivery와 SQL "막는 행" 규칙이 null에서 갈라지지 않게)
+  constraint report_deliveries_skipped_code check (status <> 'skipped' or last_error is not null)
 );
 
 -- 유일 키: (사용자, 종류, 시간대, 현지 날짜)마다 그날을 막는 행 하나. 보내지 않고 닫힌 일정 변경 · 모드 변경 행은 빼서,
@@ -124,11 +128,16 @@ revoke all on function public.report_preferences_schedule_changed() from public,
 -- 4) 서버 전용 함수 (cron/reports, src/lib/reports/store.ts). 호출자 권한 · search_path = '' · service_role만 실행
 -- ─────────────────────────────────────────────
 
+-- 결과를 모르는 대기 행: 지난 시도가 연결 오류 · 응답 시간 초과(network) · 상태 없는 응답(apns_0)으로 끝났거나, 잡힌 뒤 결과를 남기지 못한 채
+-- 임대가 끝났다(last_error 없음, 다시 잡을 때도 비운다). APNs가 이미 받았을 수 있어 "갔을 수 있다"로 다룬다:
+-- 일정 · 모드가 바뀌어 닫을 때 skipped(그날을 막지 않음)가 아니라 failed *_unknown(그날을 막음)으로 닫아 그날 두 번째 보고를 막는다.
+-- 응답 코드가 있는 거절(apns_5xx · apns_429 · 4xx)과 보내기 전 오류(internal)만 "안 갔다"로 보고 skipped로 닫는다.
+
 -- 새 일일 보고 잡기. 같은 사용자의 잡기는 설정 행 잠금으로 한 줄로 선다: 동시에 도는 cron 둘이 같은 날을 두 번 잡지 못한다.
--- 잠근 뒤 설정의 schedule_version이 호출자가 계획에 쓴 값(p_schedule_version)과 다르면 잡지 않는다: cron이 읽은 뒤 PUT이 일정을 바꿨다
--- (다음 실행이 새 일정으로 다시 계산한다).
--- 지금 시간대의 이 현지 날짜(p_day_start부터) 또는 그 뒤로 예정된 보고가 이미 있으면(어느 시간대로 잡았든) 잡지 않는다:
--- 하루에 보고는 하나, 늦은 날짜를 보낸 뒤에 앞 날짜를 보내지 않는다. 보내지 않고 닫힌 행(skipped · schedule_changed / mode_changed)은 세지 않는다.
+-- 잠근 뒤 설정의 version이 호출자가 계획에 쓴 값(p_preferences_version, cron이 읽은 설정)과 다르면 잡지 않는다: 그 사이 PUT이 설정을
+-- 바꿨다(일정 · 조용한 시간 · 시간대 · Respect Focus 무엇이든). 다음 실행이 새 설정으로 다시 계산한다. 잡은 행에는 지금 schedule_version을 남긴다.
+-- 지금 시간대의 이 현지 날짜(p_day_start부터) 또는 그 뒤로 명목 시각이 있는 "막는 행"이 이미 있으면(어느 시간대로 잡았든) 잡지 않는다:
+-- 하루에 보고는 하나, 늦은 날짜를 보낸 뒤에 앞 날짜를 보내지 않는다. 막지 않는 행 = 보내지 않고 닫힌 skipped · schedule_changed / mode_changed.
 -- 잡으면 attempts 1 · 임대(p_lease_seconds) 동안 다른 실행이 다시 잡지 못한다.
 create function public.claim_report_delivery(
   p_user_id uuid,
@@ -140,16 +149,18 @@ create function public.claim_report_delivery(
   p_expires_at timestamptz,
   p_now timestamptz,
   p_lease_seconds integer,
-  p_schedule_version integer
+  p_preferences_version integer
 ) returns setof public.report_deliveries
 language plpgsql
 set search_path = ''
 as $$
 declare
+  v_version integer;
   v_schedule_version integer;
 begin
-  select p.schedule_version into v_schedule_version from public.report_preferences p where p.user_id = p_user_id for update;
-  if not found or v_schedule_version <> p_schedule_version then
+  select p.version, p.schedule_version into v_version, v_schedule_version
+    from public.report_preferences p where p.user_id = p_user_id for update;
+  if not found or v_version <> p_preferences_version then
     return;
   end if;
   if exists (
@@ -161,36 +172,47 @@ begin
   end if;
   return query
     insert into public.report_deliveries (user_id, kind, time_zone, report_date, scheduled_at, expires_at, status, attempts, claimed_at, next_attempt_at, schedule_version)
-    values (p_user_id, p_kind, p_time_zone, p_report_date, p_scheduled_at, p_expires_at, 'pending', 1, p_now, p_now + make_interval(secs => p_lease_seconds), p_schedule_version)
+    values (p_user_id, p_kind, p_time_zone, p_report_date, p_scheduled_at, p_expires_at, 'pending', 1, p_now, p_now + make_interval(secs => p_lease_seconds), v_schedule_version)
     on conflict (user_id, kind, time_zone, report_date) where not (status = 'skipped' and last_error in ('schedule_changed', 'mode_changed')) do nothing
     returning *;
 end;
 $$;
 
--- 실패한(또는 보내다 멈춘) 보고 다시 잡기: 대기 중 · 차례가 됨 · 시도 횟수가 남음 · 아직 늦지 않음 · 더 뒤에 예정된 보고가 없음.
+-- 실패한(또는 보내다 멈춘) 보고 다시 잡기: 대기 중 · 차례가 됨 · 시도 횟수가 남음 · 아직 늦지 않음 · 더 뒤에 예정된 막는 행이 없음.
 -- 잡기와 같은 사용자 잠금을 잡고, 행 잠금으로 다시 확인하므로 겹친 실행 중 하나만 잡는다.
--- 잠근 뒤 이 행의 schedule_version이 설정과 다르면(실패 뒤 일정을 바꿈) 다시 보내지 않고 skipped · schedule_changed로 닫는다:
--- 그날은 보낸 것으로 세지 않아 새 일정의 보고가 그날 갈 수 있다.
+-- 잠근 뒤 설정의 version이 호출자가 읽은 값(p_preferences_version)과 다르면 아무것도 하지 않는다(닫지도 잡지도 않음): 겹친 실행이 낡은
+-- 조용한 시간 · 시간대 · Respect Focus로 보내지 않게. 다음 실행이 새 설정으로 다시 본다.
+-- 설정이 최신인데 이 행의 schedule_version이 설정과 다르면(실패 뒤 일정을 바꿈) 다시 보내지 않고 닫는다: 결과를 아는 실패는
+-- skipped · schedule_changed(그날을 막지 않아 새 일정의 보고가 그날 갈 수 있다), 결과를 모르면 failed · schedule_changed_unknown(그날은 보낸 것으로).
+-- 다시 잡으면 last_error를 비운다: 이 시도의 결과를 남기기 전에 멈추면 "결과를 모름"으로 남는다.
 create function public.claim_report_retry(
   p_id uuid,
   p_now timestamptz,
   p_lease_seconds integer,
-  p_max_attempts integer
+  p_max_attempts integer,
+  p_preferences_version integer
 ) returns setof public.report_deliveries
 language plpgsql
 set search_path = ''
 as $$
 declare
   v_user_id uuid;
+  v_version integer;
   v_schedule_version integer;
 begin
   select d.user_id into v_user_id from public.report_deliveries d where d.id = p_id;
   if not found then
     return;
   end if;
-  select p.schedule_version into v_schedule_version from public.report_preferences p where p.user_id = v_user_id for update;
+  select p.version, p.schedule_version into v_version, v_schedule_version
+    from public.report_preferences p where p.user_id = v_user_id for update;
+  if not found or v_version <> p_preferences_version then
+    return;
+  end if;
   update public.report_deliveries d
-     set status = 'skipped', next_attempt_at = null, last_error = 'schedule_changed'
+     set status = case when d.last_error is null or d.last_error in ('network', 'apns_0') then 'failed' else 'skipped' end,
+         last_error = case when d.last_error is null or d.last_error in ('network', 'apns_0') then 'schedule_changed_unknown' else 'schedule_changed' end,
+         next_attempt_at = null
    where d.id = p_id
      and d.status = 'pending'
      and d.next_attempt_at <= p_now
@@ -201,7 +223,8 @@ begin
   return query
     update public.report_deliveries d
        set attempts = d.attempts + 1,
-           next_attempt_at = p_now + make_interval(secs => p_lease_seconds)
+           next_attempt_at = p_now + make_interval(secs => p_lease_seconds),
+           last_error = null
      where d.id = p_id
        and d.status = 'pending'
        and d.next_attempt_at <= p_now
@@ -217,20 +240,40 @@ end;
 $$;
 
 -- 더 보낼 수 없는 대기 행을 닫는다: 늦었거나(expires_at 지남) 시도를 다 썼고, 지금 보내는 중이 아니다(임대가 끝남).
--- 그 사이 일일 보고를 끈(mode meaningful) 사용자의 행은 skipped · mode_changed, 일정을 바꾼(schedule_version이 다른) 행은
--- skipped · schedule_changed (둘 다 그날을 보낸 것으로 세지 않는다). 나머지는 failed:
--- 이미 남긴 실패 코드는 그대로, 없으면 stale (보내다 멈춘 실행). 닫은 행 수를 돌려준다
+-- 먼저 닫을 행이 있는 사용자의 설정 행을 사용자 순서로 잠근다: 겹친 PUT이 끝나기를 기다린 뒤 새 값으로 판단한다.
+-- 그 사이 일일 보고를 끈(mode meaningful) 사용자의 행은 mode_changed, 일정을 바꾼(schedule_version이 다른) 행은 schedule_changed:
+-- 결과를 아는 실패면 skipped(그날을 막지 않는다), 결과를 모르면 failed *_unknown(그날을 막는다).
+-- 나머지는 failed: 이미 남긴 실패 코드는 그대로, 없으면 stale (보내다 멈춘 실행). 닫은 행 수를 돌려준다
 create function public.finish_stale_report_deliveries(p_now timestamptz, p_max_attempts integer) returns integer
-language sql
+language plpgsql
 set search_path = ''
 as $$
+declare
+  v_closed integer;
+begin
+  perform 1 from public.report_preferences p
+   where exists (
+     select 1 from public.report_deliveries d
+      where d.user_id = p.user_id
+        and d.status = 'pending'
+        and d.next_attempt_at <= p_now
+        and (p_now > d.expires_at or d.attempts >= p_max_attempts)
+   )
+   order by p.user_id
+   for update;
   with done as (
     update public.report_deliveries d
-       set status = case when p.mode = 'meaningful' or d.schedule_version <> p.schedule_version then 'skipped' else 'failed' end,
+       set status = case
+             when (p.mode = 'meaningful' or d.schedule_version <> p.schedule_version)
+                  and not (d.last_error is null or d.last_error in ('network', 'apns_0')) then 'skipped'
+             else 'failed'
+           end,
            next_attempt_at = null,
            last_error = case
-             when p.mode = 'meaningful' then 'mode_changed'
-             when d.schedule_version <> p.schedule_version then 'schedule_changed'
+             when p.mode = 'meaningful' then
+               case when d.last_error is null or d.last_error in ('network', 'apns_0') then 'mode_changed_unknown' else 'mode_changed' end
+             when d.schedule_version <> p.schedule_version then
+               case when d.last_error is null or d.last_error in ('network', 'apns_0') then 'schedule_changed_unknown' else 'schedule_changed' end
              else coalesce(d.last_error, 'stale')
            end
       from public.report_preferences p
@@ -240,7 +283,9 @@ as $$
        and (p_now > d.expires_at or d.attempts >= p_max_attempts)
     returning 1
   )
-  select count(*)::integer from done;
+  select count(*)::integer into v_closed from done;
+  return v_closed;
+end;
 $$;
 
 -- 일일 보고의 상태 숫자: 열린 할 일의 개수만 센다 (제목 · 상대 · 원문 · 메모 열을 읽지 않는다, 알림에는 숫자만 실린다).
@@ -263,11 +308,11 @@ as $$
 $$;
 
 revoke all on function public.claim_report_delivery(uuid, text, text, date, timestamptz, timestamptz, timestamptz, timestamptz, integer, integer) from public, anon, authenticated;
-revoke all on function public.claim_report_retry(uuid, timestamptz, integer, integer) from public, anon, authenticated;
+revoke all on function public.claim_report_retry(uuid, timestamptz, integer, integer, integer) from public, anon, authenticated;
 revoke all on function public.finish_stale_report_deliveries(timestamptz, integer) from public, anon, authenticated;
 revoke all on function public.report_status_counts(uuid, date) from public, anon, authenticated;
 grant execute on function public.claim_report_delivery(uuid, text, text, date, timestamptz, timestamptz, timestamptz, timestamptz, integer, integer) to service_role;
-grant execute on function public.claim_report_retry(uuid, timestamptz, integer, integer) to service_role;
+grant execute on function public.claim_report_retry(uuid, timestamptz, integer, integer, integer) to service_role;
 grant execute on function public.finish_stale_report_deliveries(timestamptz, integer) to service_role;
 grant execute on function public.report_status_counts(uuid, date) to service_role;
 

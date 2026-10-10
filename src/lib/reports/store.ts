@@ -14,8 +14,9 @@ import { isBlockingDelivery } from "./schedule";
 // 보고 표 읽기 · 쓰기 (20261105000000_report_preferences). 설정 읽기는 사용자 권한(RLS), 쓰기와 job은 service role.
 
 const PREFERENCE_API_COLUMNS = "mode, daily_time, quiet_start, quiet_end, respect_focus, time_zone, version";
-const PREFERENCE_JOB_COLUMNS = "user_id, mode, daily_time, quiet_start, quiet_end, respect_focus, time_zone, created_at, schedule_changed_at, schedule_version";
-const DELIVERY_COLUMNS = "id, user_id, kind, time_zone, report_date, scheduled_at, expires_at, status, attempts, next_attempt_at";
+const PREFERENCE_JOB_COLUMNS =
+  "user_id, mode, daily_time, quiet_start, quiet_end, respect_focus, time_zone, created_at, schedule_changed_at, schedule_version, version";
+const DELIVERY_COLUMNS = "id, user_id, kind, time_zone, report_date, scheduled_at, expires_at, status, attempts, next_attempt_at, last_error";
 
 /** GET /api/v2/reports/preferences: 자기 설정 행 (RLS). 없으면 null */
 export async function loadReportPreferences({ supabase }: ApiContext): Promise<ReportPreferences | null> {
@@ -107,14 +108,20 @@ export function supabaseReportStore(admin: SupabaseClient): ReportStore {
           p_expires_at: input.expiresAt.toISOString(),
           p_now: input.now.toISOString(),
           p_lease_seconds: input.leaseSeconds,
-          p_schedule_version: input.scheduleVersion,
+          p_preferences_version: input.preferencesVersion,
         })
         .throwOnError();
       return first(data);
     },
-    async claimRetry(id, now, leaseSeconds, maxAttempts) {
+    async claimRetry(id, now, leaseSeconds, maxAttempts, preferencesVersion) {
       const { data } = await admin
-        .rpc("claim_report_retry", { p_id: id, p_now: now.toISOString(), p_lease_seconds: leaseSeconds, p_max_attempts: maxAttempts })
+        .rpc("claim_report_retry", {
+          p_id: id,
+          p_now: now.toISOString(),
+          p_lease_seconds: leaseSeconds,
+          p_max_attempts: maxAttempts,
+          p_preferences_version: preferencesVersion,
+        })
         .throwOnError();
       return first(data);
     },

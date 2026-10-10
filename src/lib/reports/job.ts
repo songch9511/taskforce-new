@@ -8,14 +8,18 @@ import { isSupportedTimeZone, localWall, nextQuietStart, planDailyReport, quietN
 //
 // 한 번 돌 때:
 // 1. 더 보낼 수 없는 대기 행을 닫는다 (늦음 · 시도를 다 씀, DB 함수 finish_stale_report_deliveries. 일일 보고를 끈 사용자 것은 skipped mode_changed).
-// 2. 다시 보낼 차례인 대기 행: 일일 보고를 끈(meaningful) 사용자면 skipped mode_changed로 닫고, 지금 조용한 시간이면 두고(창이 닫히면 1이 닫는다),
-//    아니면 다시 잡아(claim_report_retry) 보낸다. 실패 뒤 일정을 바꿨으면(schedule_version이 다름) DB 함수가 다시 잡지 않고
-//    skipped schedule_changed로 닫는다 — 옛 일정의 보고는 가지 않고, 그날은 새 일정의 보고가 갈 수 있다.
+// 2. 다시 보낼 차례인 대기 행: 일일 보고를 끈(meaningful) 사용자면 닫고(결과를 아는 실패는 skipped mode_changed, 결과를 모르면
+//    failed mode_changed_unknown), 지금 조용한 시간이면 두고(창이 닫히면 1이 닫는다), 아니면 다시 잡아(claim_report_retry) 보낸다.
+//    다시 잡기는 이번 실행이 읽은 설정 version을 넘긴다: 그 사이 설정이 바뀌었으면 DB 함수가 아무것도 하지 않는다(낡은 조용한 시간 ·
+//    시간대 · Respect Focus로 보내지 않는다). 실패 뒤 일정을 바꿨으면(schedule_version이 다름) DB 함수가 다시 보내지 않고 닫는다:
+//    결과를 아는 실패는 skipped schedule_changed(그날 새 일정의 보고가 갈 수 있다), 결과를 모르면 failed schedule_changed_unknown(그날은 보낸 날).
 // 3. 일일 보고가 켜진 사용자마다 planDailyReport로 지금 보낼 날짜를 정하고, 잡히면(claim_report_delivery) 보낸다.
-//    잡기는 DB 함수가 사용자 잠금 안에서 원장과 일정 세대를 다시 확인하므로 cron이 겹쳐 돌아도 하루 한 번이고,
-//    cron이 설정을 읽은 뒤 PUT이 일정을 바꿨으면 잡지 않는다(다음 실행이 새 일정으로 계산한다).
-// 경계: 일정 변경이 잡기 · 다시 잡기의 설정 행 잠금보다 먼저 커밋되면 지켜진다. 이미 잡혀 보내는 중(임대 중, APNs 요청 중)이던 보고는
-//    그 뒤 일정을 바꿔도 한 번 갈 수 있고, sent로 남으면 그 현지 날은 보낸 날이다(두 번째 보고 없음).
+//    잡기는 DB 함수가 사용자 잠금 안에서 원장과 설정 version을 다시 확인하므로 cron이 겹쳐 돌아도 하루 한 번이고,
+//    cron이 설정을 읽은 뒤 PUT이 설정을 바꿨으면 잡지 않는다(다음 실행이 새 설정으로 계산한다).
+// 결과를 모름(UNKNOWN_OUTCOME_CODES): 연결 오류 · 응답 시간 초과 · 상태 없는 응답, 또는 잡힌 뒤 결과를 남기지 못하고 멈춤(last_error 없음).
+//    APNs가 이미 받았을 수 있어 그날은 보낸 날로 센다. 기기 여럿 중 하나라도 결과를 모르면 그 코드를 남긴다(분명한 거절보다 앞선다).
+// 경계: 설정 변경이 잡기 · 다시 잡기의 설정 행 잠금보다 먼저 커밋되면 지켜진다. 이미 잡혀 보내는 중(임대 중, APNs 요청 중)이던 보고와
+//    결과를 모르는 보고는 그 뒤 일정을 바꿔도 갔을 수 있고, 그 현지 날은 보낸 날이다(두 번째 보고 없음).
 // 4. 보내기: 숫자 상태(report_status_counts)가 모두 0이면 보내지 않고(skipped empty), 기기가 없으면 skipped no_devices.
 //    기기 하나라도 받으면 sent. 등록이 끊긴 토큰(410 · BadDeviceToken)은 기존 알림처럼 기기 행을 지운다.
 //    APNs 만료(apns-expiration)는 창 끝과 다음 조용한 시간 시작 중 이른 쪽: 기기가 꺼져 있어도 그 뒤로는 APNs가 버린다(그 전까지는 늦게 갈 수 있다).
@@ -30,6 +34,9 @@ export const REPORT_MAX_ATTEMPTS = 3;
 export const REPORT_LEASE_SECONDS = 300;
 /** n번째 시도가 일시 오류로 실패한 뒤 기다리는 시간 (n = 1, 2) */
 export const REPORT_RETRY_DELAYS_MS = [5 * 60_000, 15 * 60_000] as const;
+/** APNs가 받았는지 모르는 실패 코드: 연결 오류 · 응답 시간 초과(network), 상태 없는 응답(apns_0). 원장 last_error null(잡힌 뒤 결과 없음)도 같다 */
+export const UNKNOWN_OUTCOME_CODES = ["network", "apns_0"] as const;
+export const isUnknownOutcome = (lastError: string | null) => lastError === null || (UNKNOWN_OUTCOME_CODES as readonly string[]).includes(lastError);
 /** 원장에서 마지막 예정 시각을 찾는 범위: 후보 날짜(어제 ~ 모레)보다 넉넉히 */
 const LEDGER_LOOKBACK_MS = 3 * 24 * 60 * 60_000;
 
@@ -43,8 +50,10 @@ export type ReportPreferenceRow = {
   time_zone: string;
   created_at: string;
   schedule_changed_at: string;
-  /** 일정 세대 (일정에 닿는 값이 바뀔 때만 오른다). 잡을 때 DB 함수가 다시 비교한다 */
+  /** 일정 세대 (일정에 닿는 값이 바뀔 때만 오른다) */
   schedule_version: number;
+  /** 설정 version (고칠 때마다 오른다). 잡기 · 다시 잡기에 넘겨 이번 실행이 읽은 설정이 아직 최신인지 DB 함수가 본다 */
+  version: number;
 };
 
 export type ReportDeliveryStatus = "pending" | "sent" | "failed" | "skipped";
@@ -60,6 +69,8 @@ export type ReportDeliveryRow = {
   status: ReportDeliveryStatus;
   attempts: number;
   next_attempt_at: string | null;
+  /** 지난 시도의 실패 코드. 대기 행에서 null이면 잡힌 뒤 결과를 남기지 못한 것(결과를 모름) */
+  last_error: string | null;
 };
 
 export type ReportDevice = ApnsDevice & { id: string; user_id: string };
@@ -78,8 +89,8 @@ export type ClaimInput = {
   expiresAt: Date;
   now: Date;
   leaseSeconds: number;
-  /** 계획에 쓴 설정의 일정 세대: 잡는 순간 설정과 다르면 DB 함수가 잡지 않는다 */
-  scheduleVersion: number;
+  /** 계획에 쓴 설정의 version: 잡는 순간 설정과 다르면 DB 함수가 잡지 않는다 */
+  preferencesVersion: number;
 };
 
 export type ReportStore = {
@@ -91,7 +102,8 @@ export type ReportStore = {
   /** 다시 보낼 차례인 대기 행 (next_attempt_at ≤ now ≤ expires_at, 시도가 남음) */
   retryable(now: Date, maxAttempts: number): Promise<ReportDeliveryRow[]>;
   claim(input: ClaimInput): Promise<ReportDeliveryRow | null>;
-  claimRetry(id: string, now: Date, leaseSeconds: number, maxAttempts: number): Promise<ReportDeliveryRow | null>;
+  /** preferencesVersion = 이번 실행이 읽은 설정 version. 다르면 DB 함수가 아무것도 하지 않는다 */
+  claimRetry(id: string, now: Date, leaseSeconds: number, maxAttempts: number, preferencesVersion: number): Promise<ReportDeliveryRow | null>;
   statusCounts(userId: string, today: string): Promise<ReportStatusCounts>;
   devices(userId: string): Promise<ReportDevice[]>;
   removeDevice(device: ReportDevice): Promise<void>;
@@ -191,6 +203,7 @@ async function deliver(
   const payload = dailyReportPayload(counts, { respectFocus: pref.respect_focus });
   let delivered = 0;
   let transient: string | null = null;
+  let unknown: string | null = null;
   let rejected: string | null = null;
   for (const device of devices) {
     let result: PushResult;
@@ -198,7 +211,8 @@ async function deliver(
       const options = { collapseId: DAILY_REPORT_COLLAPSE_ID, expiration: reportExpiration(delivery, pref, clock()) };
       result = await sendPush(push.config, device, payload, push.transport, options);
     } catch {
-      transient ??= "network";
+      // 요청이 나간 뒤의 응답 시간 초과일 수 있다: 갔는지 모른다
+      unknown ??= "network";
       continue;
     }
     if (result.ok) {
@@ -212,12 +226,14 @@ async function deliver(
       }
     } else {
       const { transient: retry, code } = pushErrorCode(result);
-      if (retry) transient ??= code;
+      if (isUnknownOutcome(code)) unknown ??= code;
+      else if (retry) transient ??= code;
       else rejected ??= code;
     }
   }
   if (delivered > 0) return { status: "sent" };
-  if (transient) return retryOrFail(delivery, transient, new Date(clock()));
+  // 결과를 모르는 기기가 있으면 그 코드가 앞선다 (일정이 바뀌어도 그날을 보낸 날로 센다)
+  if (unknown ?? transient) return retryOrFail(delivery, (unknown ?? transient)!, new Date(clock()));
   return { status: "failed", lastError: rejected ?? "rejected" };
 }
 
@@ -280,8 +296,8 @@ export async function runDailyReports(store: ReportStore, push: ReportPush, opti
     try {
       const pref = byUser.get(row.user_id);
       if (!pref) {
-        // 일일 보고를 껐다 (dailyPreferences는 both · daily만): 다시 보내지 않고 닫는다
-        await record(row, { status: "skipped", lastError: "mode_changed" });
+        // 일일 보고를 껐다 (dailyPreferences는 both · daily만): 다시 보내지 않고 닫는다. 갔는지 모르면 그날은 보낸 날로 (failed)
+        await record(row, isUnknownOutcome(row.last_error) ? { status: "failed", lastError: "mode_changed_unknown" } : { status: "skipped", lastError: "mode_changed" });
         continue;
       }
       if (quietNow(now(), schedulePrefs(pref))) {
@@ -292,7 +308,7 @@ export async function runDailyReports(store: ReportStore, push: ReportPush, opti
         result.deferred_for_time++;
         continue;
       }
-      const claimed = await store.claimRetry(row.id, now(), REPORT_LEASE_SECONDS, REPORT_MAX_ATTEMPTS);
+      const claimed = await store.claimRetry(row.id, now(), REPORT_LEASE_SECONDS, REPORT_MAX_ATTEMPTS, pref.version);
       if (!claimed) continue;
       result.retried++;
       await record(claimed, await deliver(store, push, claimed, pref, clock));
@@ -324,7 +340,7 @@ export async function runDailyReports(store: ReportStore, push: ReportPush, opti
         expiresAt: plan.due.expiresAt,
         now: now(),
         leaseSeconds: REPORT_LEASE_SECONDS,
-        scheduleVersion: pref.schedule_version,
+        preferencesVersion: pref.version,
       });
       if (!claimed) continue;
       result.claimed++;

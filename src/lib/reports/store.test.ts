@@ -61,6 +61,7 @@ const DELIVERY: ReportDeliveryRow = {
   status: "pending",
   attempts: 2,
   next_attempt_at: "2026-10-09T23:35:00Z",
+  last_error: null,
 };
 
 const NOW = new Date("2026-10-09T23:30:00Z");
@@ -78,7 +79,7 @@ describe("supabaseReportStore: DB 함수 호출", () => {
       expiresAt: new Date("2026-10-10T01:30:00Z"),
       now: NOW,
       leaseSeconds: 300,
-      scheduleVersion: 4,
+      preferencesVersion: 4,
     };
     expect(await store.claim(input)).toEqual(DELIVERY);
     expect(calls[0]).toMatchObject({
@@ -93,7 +94,7 @@ describe("supabaseReportStore: DB 함수 호출", () => {
         p_expires_at: "2026-10-10T01:30:00.000Z",
         p_now: "2026-10-09T23:30:00.000Z",
         p_lease_seconds: 300,
-        p_schedule_version: 4,
+        p_preferences_version: 4,
       },
     });
     expect(calls[0].ops).toContainEqual(["throwOnError"]);
@@ -107,11 +108,11 @@ describe("supabaseReportStore: DB 함수 호출", () => {
       return { data: [] };
     });
     const store = supabaseReportStore(admin);
-    expect(await store.claimRetry("d-1", NOW, 300, 3)).toBeNull();
+    expect(await store.claimRetry("d-1", NOW, 300, 3, 7)).toBeNull();
     expect(await store.finishStale(NOW, 3)).toBe(3);
     expect(await store.statusCounts("u-1", "2026-10-10")).toEqual({ review: 1, overdue: 0, due_today: 2, in_progress: 0 });
     expect(calls.map((c) => [c.rpc, c.args])).toEqual([
-      ["claim_report_retry", { p_id: "d-1", p_now: "2026-10-09T23:30:00.000Z", p_lease_seconds: 300, p_max_attempts: 3 }],
+      ["claim_report_retry", { p_id: "d-1", p_now: "2026-10-09T23:30:00.000Z", p_lease_seconds: 300, p_max_attempts: 3, p_preferences_version: 7 }],
       ["finish_stale_report_deliveries", { p_now: "2026-10-09T23:30:00.000Z", p_max_attempts: 3 }],
       ["report_status_counts", { p_user_id: "u-1", p_today: "2026-10-10" }],
     ]);
@@ -120,7 +121,7 @@ describe("supabaseReportStore: DB 함수 호출", () => {
 
   it("DB 함수 오류는 던진다 (job이 사용자별로 errors로 센다)", async () => {
     const { admin } = fakeAdmin(() => ({ error: { code: "42501", message: "permission denied" } }));
-    await expect(supabaseReportStore(admin).claimRetry("d-1", NOW, 300, 3)).rejects.toMatchObject({ code: "42501" });
+    await expect(supabaseReportStore(admin).claimRetry("d-1", NOW, 300, 3, 1)).rejects.toMatchObject({ code: "42501" });
   });
 });
 
@@ -145,13 +146,29 @@ describe("supabaseReportStore: 원장 · 설정 읽기", () => {
     await store.dailyPreferences();
     expect(calls[0].table).toBe("report_preferences");
     expect(calls[0].ops).toContainEqual(["in", "mode", ["both", "daily"]]);
-    expect(String(calls[0].ops.find(([op]) => op === "select")?.[1])).toContain("schedule_version");
+    expect(String(calls[0].ops.find(([op]) => op === "select")?.[1])).toMatch(/schedule_version, version$/);
     const last = await store.lastScheduled(new Date("2026-10-07T00:00:00Z"));
     expect(calls[1].ops).toEqual(expect.arrayContaining([["eq", "kind", "daily"], ["gte", "scheduled_at", "2026-10-07T00:00:00.000Z"]]));
     expect([...last.entries()]).toEqual([
       ["a", new Date("2026-10-09T23:30:00Z")],
       ["b", new Date("2026-10-09T07:30:00Z")],
     ]);
+  });
+});
+
+describe("supabaseReportStore.retryable", () => {
+  it("다시 보낼 차례인 대기 행을 last_error와 함께 읽는다 (결과를 모르는 행을 job이 가린다)", async () => {
+    const { admin, calls } = fakeAdmin(() => ({ data: [DELIVERY] }));
+    expect(await supabaseReportStore(admin).retryable(NOW, 3)).toEqual([DELIVERY]);
+    expect(String(calls[0].ops.find(([op]) => op === "select")?.[1])).toMatch(/last_error$/);
+    expect(calls[0].ops).toEqual(
+      expect.arrayContaining([
+        ["eq", "status", "pending"],
+        ["lte", "next_attempt_at", NOW.toISOString()],
+        ["gte", "expires_at", NOW.toISOString()],
+        ["lt", "attempts", 3],
+      ]),
+    );
   });
 });
 

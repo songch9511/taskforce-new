@@ -17,7 +17,7 @@ const FUNCTIONS = ["claim_report_delivery", "claim_report_retry", "finish_stale_
 let db: PGlite;
 
 /**
- * 서울 10-10 일일 보고를 잡는다 (기본: 08:30 KST 예정, 2시간 창, 임대 300초, 일정 세대는 지금 설정의 값 — cron이 막 읽은 것처럼).
+ * 서울 10-10 일일 보고를 잡는다 (기본: 08:30 KST 예정, 2시간 창, 임대 300초, 설정 version은 지금 값 — cron이 막 읽은 것처럼).
  * 잡힌 행 또는 null
  */
 async function claim(
@@ -33,7 +33,7 @@ async function claim(
     now: "2026-10-09T23:30:00Z",
     ...overrides,
   };
-  const current = (await db.query<{ v: number }>(`select schedule_version as v from public.report_preferences where user_id = $1`, [userId])).rows[0]?.v ?? 1;
+  const current = await versionOf(userId);
   const { rows } = await db.query<Record<string, unknown>>(
     `select * from public.claim_report_delivery($1, 'daily', $2, $3, $4, $5, $6, $7, 300, $8)`,
     [userId, a.tz, a.date, a.dayStart, a.scheduled, a.expires, a.now, overrides.version ?? current],
@@ -41,18 +41,29 @@ async function claim(
   return rows[0] ?? null;
 }
 
-/** 실패한 것처럼: 다음 시도 시각과 실패 코드를 남긴 대기 행 */
-async function failed(id: unknown, nextAttemptAt: string) {
-  await db.query(`update public.report_deliveries set last_error = 'apns_503', next_attempt_at = $2 where id = $1`, [id, nextAttemptAt]);
+/** 설정 version (없으면 1) */
+async function versionOf(userId: string): Promise<number> {
+  return (await db.query<{ v: number }>(`select version as v from public.report_preferences where user_id = $1`, [userId])).rows[0]?.v ?? 1;
+}
+
+/** 실패한 것처럼: 다음 시도 시각과 실패 코드를 남긴 대기 행 (기본 apns_503 = APNs가 분명히 거절, 안 감) */
+async function failed(id: unknown, nextAttemptAt: string, code: string | null = "apns_503") {
+  await db.query(`update public.report_deliveries set last_error = $3, next_attempt_at = $2 where id = $1`, [id, nextAttemptAt, code]);
 }
 
 const stateOf = async (id: unknown) =>
   (await db.query<{ status: string; last_error: string | null; schedule_version: number }>(`select status, last_error, schedule_version from public.report_deliveries where id = $1`, [id])).rows[0];
 
-async function retry(id: unknown, now: string, maxAttempts = 3) {
-  const { rows } = await db.query<Record<string, unknown>>(`select * from public.claim_report_retry($1, $2, 300, $3)`, [id, now, maxAttempts]);
+/** 다시 잡기 (설정 version은 기본으로 지금 값 — 이번 실행이 막 읽은 것처럼) */
+async function retry(id: unknown, now: string, maxAttempts = 3, preferencesVersion?: number) {
+  const owner = (await db.query<{ user_id: string }>(`select user_id from public.report_deliveries where id = $1`, [id])).rows[0]?.user_id;
+  const version = preferencesVersion ?? (owner ? await versionOf(owner) : 1);
+  const { rows } = await db.query<Record<string, unknown>>(`select * from public.claim_report_retry($1, $2, 300, $3, $4)`, [id, now, maxAttempts, version]);
   return rows[0] ?? null;
 }
+
+/** 서울 10-10 18:00 KST 보고 잡기 (일정을 18:00으로 바꾼 뒤) */
+const claimEvening = (userId: string) => claim(userId, { scheduled: "2026-10-10T09:00:00Z", expires: "2026-10-10T11:00:00Z", now: "2026-10-10T09:00:00Z" });
 
 async function asService<T>(fn: () => Promise<T>): Promise<T> {
   await db.exec("set role service_role");
@@ -254,7 +265,7 @@ describe("claim_report_delivery: 하루 한 번", () => {
     expect(await claim(CAROL)).toBeNull();
   });
 
-  it("잠근 뒤 일정 세대가 계획과 다르면 잡지 않는다 (cron이 읽은 뒤 PUT이 일정을 바꿈). 새 세대로는 잡는다", async () => {
+  it("잠근 뒤 설정 version이 계획(cron이 읽은 값)과 다르면 잡지 않는다 (그 사이 PUT). 지금 version으로는 잡고, 행에는 지금 일정 세대가 남는다", async () => {
     await db.query(`update public.report_preferences set daily_time = '18:00' where user_id = $1`, [ALICE]);
     expect(await claim(ALICE, { version: 1 })).toBeNull();
     expect(await claim(ALICE, { version: 3 })).toBeNull();
@@ -277,6 +288,7 @@ describe("claim_report_delivery: 하루 한 번", () => {
       `next_attempt_at = null`, // pending인데 다음 시도 없음
       `expires_at = scheduled_at - interval '1 minute'`,
       `kind = 'weekly'`,
+      `status = 'skipped', next_attempt_at = null, last_error = null`, // skipped에는 언제나 까닭 코드
     ]) {
       await expect(db.query(`update public.report_deliveries set ${set} where id = $1`, [row!.id]), set).rejects.toThrow(/check constraint|violates/);
     }
@@ -323,11 +335,52 @@ describe("claim_report_retry · finish_stale_report_deliveries", () => {
     expect(await stateOf(old!.id)).toMatchObject({ status: "pending", last_error: null });
   });
 
-  it("Respect Focus만 바꾸면 일정 세대가 그대로라 다시 잡는다", async () => {
+  it("Respect Focus만 바꾸면 일정 세대가 그대로라 다시 잡는다 (다시 잡으면 last_error를 비운다: 이번 시도의 결과는 아직 모른다)", async () => {
     const old = await claim(ALICE);
     await failed(old!.id, "2026-10-09T23:35:00Z");
     await db.query(`update public.report_preferences set respect_focus = false where user_id = $1`, [ALICE]);
-    expect(await retry(old!.id, "2026-10-09T23:35:00Z")).toMatchObject({ attempts: 2 });
+    expect(await retry(old!.id, "2026-10-09T23:35:00Z")).toMatchObject({ attempts: 2, last_error: null });
+  });
+
+  it("이번 실행이 읽은 설정 version이 낡았으면 다시 잡기는 아무것도 하지 않는다 (닫지도 잡지도 않음: 낡은 조용한 시간 · 시간대 · Respect Focus로 보내지 않는다)", async () => {
+    const old = await claim(ALICE);
+    await failed(old!.id, "2026-10-09T23:35:00Z");
+    await db.query(`update public.report_preferences set respect_focus = false where user_id = $1`, [ALICE]);
+    expect(await retry(old!.id, "2026-10-09T23:35:00Z", 3, 1)).toBeNull();
+    expect(await stateOf(old!.id)).toEqual({ status: "pending", last_error: "apns_503", schedule_version: 1 });
+    // 일정까지 바뀌었어도 낡은 실행은 닫지 않는다 (최신 설정을 읽은 실행이 판단한다)
+    await db.query(`update public.report_preferences set daily_time = '18:00' where user_id = $1`, [ALICE]);
+    expect(await retry(old!.id, "2026-10-09T23:35:00Z", 3, 2)).toBeNull();
+    expect(await stateOf(old!.id)).toMatchObject({ status: "pending" });
+    expect(await retry(old!.id, "2026-10-09T23:35:00Z", 3, 3)).toBeNull();
+    expect(await stateOf(old!.id)).toMatchObject({ status: "skipped", last_error: "schedule_changed" });
+  });
+
+  it.each([
+    ["연결 오류 · 응답 시간 초과(network)", "network"],
+    ["상태 없는 응답(apns_0)", "apns_0"],
+    ["잡힌 뒤 결과를 남기지 못하고 멈춤(last_error 없음)", null],
+  ])("결과를 모르는 보고(%s) 뒤 일정을 바꾸면 failed · schedule_changed_unknown으로 닫혀 그날을 막는다 — 18:00 보고는 잡히지 않는다", async (_name, code) => {
+    const old = await claim(ALICE);
+    await failed(old!.id, "2026-10-09T23:35:00Z", code);
+    await db.query(`update public.report_preferences set daily_time = '18:00' where user_id = $1`, [ALICE]);
+    expect(await retry(old!.id, "2026-10-09T23:35:00Z")).toBeNull();
+    expect(await stateOf(old!.id)).toEqual({ status: "failed", last_error: "schedule_changed_unknown", schedule_version: 1 });
+    expect(await claimEvening(ALICE)).toBeNull();
+  });
+
+  it.each([
+    ["APNs 503", "apns_503"],
+    ["APNs 429", "apns_429_toomanyrequests"],
+    ["보내기 전 DB 오류", "internal"],
+  ])("결과를 아는 실패(%s) 뒤 일정을 바꾸면 skipped · schedule_changed로 닫혀 18:00 보고가 한 번 잡힌다", async (_name, code) => {
+    const old = await claim(ALICE);
+    await failed(old!.id, "2026-10-09T23:35:00Z", code);
+    await db.query(`update public.report_preferences set daily_time = '18:00' where user_id = $1`, [ALICE]);
+    expect(await retry(old!.id, "2026-10-09T23:35:00Z")).toBeNull();
+    expect(await stateOf(old!.id)).toMatchObject({ status: "skipped", last_error: "schedule_changed" });
+    expect(await claimEvening(ALICE)).toMatchObject({ schedule_version: 2 });
+    expect(await claimEvening(ALICE)).toBeNull();
   });
 
   it("이미 보낸 날은 일정을 바꿔도 그날 다시 잡지 않는다 (sent는 그날을 막는다)", async () => {
@@ -372,21 +425,27 @@ describe("claim_report_retry · finish_stale_report_deliveries", () => {
     ]);
   });
 
-  it("그 사이 일정을 바꾼 사용자의 닫힌 대기 행은 failed가 아니라 skipped · schedule_changed (그날을 막지 않는다)", async () => {
-    const row = await claim(ALICE);
-    await db.query(`update public.report_preferences set daily_time = '18:00' where user_id = $1`, [ALICE]);
-    expect((await db.query<{ n: number }>(`select public.finish_stale_report_deliveries('2026-10-10T02:00:00Z', 3) as n`)).rows[0].n).toBe(1);
-    expect(await stateOf(row!.id)).toEqual({ status: "skipped", last_error: "schedule_changed", schedule_version: 1 });
+  it("그 사이 일정을 바꾼 사용자의 닫힌 대기 행: 결과를 아는 실패는 skipped · schedule_changed(그날을 막지 않음), 결과를 모르면 failed · schedule_changed_unknown", async () => {
+    const known = await claim(ALICE);
+    await failed(known!.id, "2026-10-09T23:35:00Z");
+    const unknown = await claim(BOB, { tz: "Europe/London", dayStart: "2026-10-09T23:00:00Z", scheduled: "2026-10-10T07:30:00Z", expires: "2026-10-10T09:30:00Z", now: "2026-10-10T07:30:00Z" });
+    await failed(unknown!.id, "2026-10-10T07:35:00Z", "network");
+    await db.query(`update public.report_preferences set daily_time = '18:00' where user_id = any($1)`, [[ALICE, BOB]]);
+    expect((await db.query<{ n: number }>(`select public.finish_stale_report_deliveries('2026-10-10T10:00:00Z', 3) as n`)).rows[0].n).toBe(2);
+    expect(await stateOf(known!.id)).toEqual({ status: "skipped", last_error: "schedule_changed", schedule_version: 1 });
+    expect(await stateOf(unknown!.id)).toEqual({ status: "failed", last_error: "schedule_changed_unknown", schedule_version: 1 });
   });
 
-  it("그 사이 일일 보고를 끈(meaningful) 사용자의 닫힌 대기 행은 failed가 아니라 skipped · mode_changed", async () => {
+  it("그 사이 일일 보고를 끈(meaningful) 사용자의 닫힌 대기 행: 결과를 아는 실패는 skipped · mode_changed, 결과를 모르면(last_error 없음) failed · mode_changed_unknown", async () => {
     const row = await claim(ALICE);
     await db.query(`update public.report_deliveries set last_error = 'apns_503' where id = $1`, [row!.id]);
-    await db.query(`update public.report_preferences set mode = 'meaningful' where user_id = $1`, [ALICE]);
-    expect((await db.query<{ n: number }>(`select public.finish_stale_report_deliveries('2026-10-10T02:00:00Z', 3) as n`)).rows[0].n).toBe(1);
+    const crashed = await claim(BOB, { tz: "Europe/London", dayStart: "2026-10-09T23:00:00Z", scheduled: "2026-10-10T07:30:00Z", expires: "2026-10-10T09:30:00Z", now: "2026-10-10T07:30:00Z" });
+    await db.query(`update public.report_preferences set mode = 'meaningful' where user_id = any($1)`, [[ALICE, BOB]]);
+    expect((await db.query<{ n: number }>(`select public.finish_stale_report_deliveries('2026-10-10T10:00:00Z', 3) as n`)).rows[0].n).toBe(2);
     expect((await db.query(`select status, last_error, next_attempt_at from public.report_deliveries where id = $1`, [row!.id])).rows).toEqual([
       { status: "skipped", last_error: "mode_changed", next_attempt_at: null },
     ]);
+    expect(await stateOf(crashed!.id)).toMatchObject({ status: "failed", last_error: "mode_changed_unknown" });
   });
 });
 

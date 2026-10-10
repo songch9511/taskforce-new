@@ -44,12 +44,14 @@ function pref(userId: string, overrides: Partial<ReportPreferenceRow> = {}): Rep
     created_at: "2026-01-01T00:00:00Z",
     schedule_changed_at: "2026-01-01T00:00:00Z",
     schedule_version: 1,
+    version: 1,
     ...overrides,
   };
 }
 
 /** 원장 행 + 가짜가 따로 들고 있는 DB 열 (job은 읽지 않는다) */
-type FakeRow = ReportDeliveryRow & { schedule_version: number; last_error: string | null };
+type FakeRow = ReportDeliveryRow & { schedule_version: number };
+const unknownOutcome = (d: FakeRow) => d.last_error === null || d.last_error === "network" || d.last_error === "apns_0";
 const SCHEDULE_FIELDS = ["mode", "daily_time", "quiet_start", "quiet_end", "time_zone"] as const;
 /** report_deliveries 행이 그날을 막는가 (claim_report_delivery · isBlockingDelivery와 같다) */
 const blocking = (d: FakeRow) => !(d.status === "skipped" && (d.last_error === "schedule_changed" || d.last_error === "mode_changed"));
@@ -64,7 +66,7 @@ function fakeStore(init: { prefs: ReportPreferenceRow[]; devices?: ReportDevice[
   const state = {
     prefs: init.prefs,
     devices: [...(init.devices ?? [])],
-    deliveries: (init.deliveries ?? []).map((d): FakeRow => ({ schedule_version: 1, last_error: null, ...d })),
+    deliveries: (init.deliveries ?? []).map((d): FakeRow => ({ schedule_version: 1, ...d })),
     records: [] as { id: string; outcome: DeliveryOutcome }[],
     recordTimes: [] as Date[],
     claims: [] as ClaimInput[],
@@ -80,14 +82,17 @@ function fakeStore(init: { prefs: ReportPreferenceRow[]; devices?: ReportDevice[
   };
   let seq = 0;
   const prefOf = (userId: string) => state.prefs.find((p) => p.user_id === userId);
-  /** PUT 흉내: 일정에 닿는 값이 바뀌면 트리거처럼 schedule_version을 올리고 schedule_changed_at을 남긴다 */
+  /** PUT 흉내 (트리거처럼): version은 언제나 +1, 일정에 닿는 값이 바뀌면 schedule_version +1 · schedule_changed_at */
   const put = (userId: string, patch: Partial<ReportPreferenceRow>, at: Date) => {
     const i = state.prefs.findIndex((p) => p.user_id === userId);
     const old = state.prefs[i];
-    const next = { ...old, ...patch };
+    const next = { ...old, ...patch, version: old.version + 1 };
     const changed = SCHEDULE_FIELDS.some((f) => next[f] !== old[f]);
     state.prefs[i] = changed ? { ...next, schedule_version: old.schedule_version + 1, schedule_changed_at: at.toISOString() } : next;
   };
+  /** 일정 · 모드 변경으로 닫기: 결과를 아는 실패는 skipped(그날을 막지 않음), 결과를 모르면 failed *_unknown (DB 함수와 같다) */
+  const closeChanged = (d: FakeRow, reason: "schedule_changed" | "mode_changed") =>
+    Object.assign(d, unknownOutcome(d) ? { status: "failed", last_error: `${reason}_unknown` } : { status: "skipped", last_error: reason }, { next_attempt_at: null });
   const store: ReportStore = {
     async finishStale(now, max) {
       if (state.failFinish) throw new Error("statement timeout");
@@ -95,10 +100,9 @@ function fakeStore(init: { prefs: ReportPreferenceRow[]; devices?: ReportDevice[
       for (const d of state.deliveries) {
         if (d.status === "pending" && Date.parse(d.next_attempt_at!) <= now.getTime() && (now.getTime() > Date.parse(d.expires_at) || d.attempts >= max)) {
           const p = prefOf(d.user_id)!;
-          const code = p.mode === "meaningful" ? "mode_changed" : d.schedule_version !== p.schedule_version ? "schedule_changed" : null;
-          d.status = code ? "skipped" : "failed";
-          d.last_error = code ?? d.last_error ?? "stale";
-          d.next_attempt_at = null;
+          if (p.mode === "meaningful") closeChanged(d, "mode_changed");
+          else if (d.schedule_version !== p.schedule_version) closeChanged(d, "schedule_changed");
+          else Object.assign(d, { status: "failed", last_error: d.last_error ?? "stale", next_attempt_at: null });
           n++;
         }
       }
@@ -120,8 +124,9 @@ function fakeStore(init: { prefs: ReportPreferenceRow[]; devices?: ReportDevice[
     async claim(input) {
       if (state.failClaimFor.has(input.userId)) throw new Error("connection reset");
       state.claims.push(input);
-      // 잠근 뒤 일정 세대가 계획과 다르면 잡지 않는다
-      if (prefOf(input.userId)?.schedule_version !== input.scheduleVersion) return null;
+      // 잠근 뒤 설정 version이 계획과 다르면 잡지 않는다
+      const current = prefOf(input.userId);
+      if (!current || current.version !== input.preferencesVersion) return null;
       if (state.deliveries.some((d) => d.user_id === input.userId && blocking(d) && Date.parse(d.scheduled_at) >= input.dayStart.getTime())) return null;
       const row: FakeRow = {
         id: `delivery-${++seq}`,
@@ -134,18 +139,21 @@ function fakeStore(init: { prefs: ReportPreferenceRow[]; devices?: ReportDevice[
         status: "pending",
         attempts: 1,
         next_attempt_at: new Date(input.now.getTime() + input.leaseSeconds * 1000).toISOString(),
-        schedule_version: input.scheduleVersion,
+        schedule_version: current.schedule_version,
         last_error: null,
       };
       state.deliveries.push(row);
       return { ...row };
     },
-    async claimRetry(id, now, leaseSeconds, max) {
+    async claimRetry(id, now, leaseSeconds, max, preferencesVersion) {
       const d = state.deliveries.find((x) => x.id === id);
       if (!d) return null;
-      // 실패 뒤 일정을 바꿨으면 다시 보내지 않고 닫는다 (claim_report_retry와 같다)
-      if (d.status === "pending" && Date.parse(d.next_attempt_at!) <= now.getTime() && d.schedule_version !== prefOf(d.user_id)!.schedule_version) {
-        Object.assign(d, { status: "skipped", next_attempt_at: null, last_error: "schedule_changed" });
+      const current = prefOf(d.user_id)!;
+      // 이번 실행이 읽은 설정이 낡았으면 아무것도 하지 않는다 (claim_report_retry와 같다)
+      if (current.version !== preferencesVersion) return null;
+      // 실패 뒤 일정을 바꿨으면 다시 보내지 않고 닫는다
+      if (d.status === "pending" && Date.parse(d.next_attempt_at!) <= now.getTime() && d.schedule_version !== current.schedule_version) {
+        closeChanged(d, "schedule_changed");
         return null;
       }
       if (d.status !== "pending" || Date.parse(d.next_attempt_at!) > now.getTime() || d.attempts >= max || now.getTime() > Date.parse(d.expires_at)) return null;
@@ -153,6 +161,7 @@ function fakeStore(init: { prefs: ReportPreferenceRow[]; devices?: ReportDevice[
       if (state.deliveries.some((o) => o.user_id === d.user_id && o.id !== d.id && blocking(o) && Date.parse(o.scheduled_at) > Date.parse(d.scheduled_at))) return null;
       d.attempts++;
       d.next_attempt_at = new Date(now.getTime() + leaseSeconds * 1000).toISOString();
+      d.last_error = null;
       return { ...d };
     },
     async statusCounts(userId, today): Promise<ReportStatusCounts> {
@@ -297,6 +306,18 @@ describe("runDailyReports", () => {
     expect(result.sent).toBe(1);
   });
 
+  it("기기 하나라도 결과를 모르면(연결 오류 · 응답 시간 초과) 다른 기기의 분명한 거절보다 앞서 network로 남긴다 (갔을 수 있다)", async () => {
+    const { store, state } = fakeStore({ prefs: [pref(ALICE)], devices: [device(ALICE, "d1", "a".repeat(64)), device(ALICE, "d2", "b".repeat(64))] });
+    const apns = fakeApns({
+      ["a".repeat(64)]: () => ({ status: 503, body: JSON.stringify({ reason: "ServiceUnavailable" }) }),
+      ["b".repeat(64)]: () => {
+        throw new Error("APNs 응답 시간 초과");
+      },
+    });
+    await run(store, apns.transport, SEOUL_0830);
+    expect(state.records[0].outcome).toEqual({ status: "pending", lastError: "network", nextAttemptAt: after(SEOUL_0830, minutes(5)) });
+  });
+
   it("모든 기기가 끊겼거나 영구 거절이면 failed (코드만 남긴다)", async () => {
     const { store, state } = fakeStore({ prefs: [pref(ALICE)], devices: [device(ALICE, "d1", "a".repeat(64))] });
     const apns = fakeApns({ ["a".repeat(64)]: () => ({ status: 403, body: JSON.stringify({ reason: "InvalidProviderToken" }) }) });
@@ -357,6 +378,7 @@ describe("runDailyReports", () => {
       status: "pending",
       attempts: 1,
       next_attempt_at: "2026-10-10T12:55:00Z",
+      last_error: "apns_503",
     });
     const { store, state } = fakeStore({
       prefs: [pref(ALICE, { daily_time: "21:50" }), pref(BOB, { mode: "meaningful" })],
@@ -387,6 +409,7 @@ describe("runDailyReports", () => {
       status: "pending",
       attempts: 1,
       next_attempt_at: scheduled,
+      last_error: "apns_503",
     });
     const { store } = fakeStore({
       prefs: [pref(ALICE)],
@@ -571,10 +594,10 @@ describe("runDailyReports", () => {
       };
       const apns = fakeApns();
       expect(await run(store, apns.transport, SEOUL_0830)).toMatchObject({ due: 1, claimed: 0 });
-      expect(state.claims[0].scheduleVersion).toBe(1);
+      expect(state.claims[0].preferencesVersion).toBe(1);
       expect(state.deliveries).toEqual([]);
       expect(await run(store, apns.transport, new Date("2026-10-10T09:00:00Z"))).toMatchObject({ claimed: 1, sent: 1 });
-      expect(state.claims[1].scheduleVersion).toBe(2);
+      expect(state.claims[1].preferencesVersion).toBe(2);
       expect(apns.sent).toHaveLength(1);
     });
 
@@ -612,6 +635,72 @@ describe("runDailyReports", () => {
       t = Date.parse("2026-10-09T23:35:00Z");
       expect(await run(store, apns.transport, () => t)).toMatchObject({ retried: 1, sent: 1 });
       expect(apns.sentAt).toEqual(["2026-10-09T23:30:00.000Z", "2026-10-09T23:35:00.000Z"]);
+    });
+      it("08:30 보내기의 결과를 모름(응답 시간 초과) → 08:31 18:00으로 → 옛 행은 failed schedule_changed_unknown, 그날 18:00 보고는 없다 (갔을 수 있다)", async () => {
+      const { store, state, put } = fakeStore({ prefs: [pref(ALICE)], devices: [device(ALICE, "d1", TOKEN)] });
+      let t = SEOUL_0830.getTime();
+      let calls = 0;
+      const transport: Transport = async () => {
+        calls++;
+        if (calls === 1) throw new Error("APNs 응답 시간 초과");
+        return { status: 200, body: "" };
+      };
+      await run(store, transport, () => t);
+      expect(state.deliveries[0]).toMatchObject({ status: "pending", last_error: "network" });
+      put(ALICE, { daily_time: "18:00" }, new Date("2026-10-09T23:31:00Z"));
+      for (let ms = Date.parse("2026-10-09T23:35:00Z"); ms <= Date.parse("2026-10-10T10:00:00Z"); ms += minutes(5)) {
+        t = ms;
+        await run(store, transport, () => t);
+      }
+      expect(calls).toBe(1);
+      expect(state.deliveries).toHaveLength(1);
+      expect(state.deliveries[0]).toMatchObject({ status: "failed", last_error: "schedule_changed_unknown" });
+    });
+
+    it("결과를 모르는 대기 행의 사용자가 일일 보고를 끄면 failed mode_changed_unknown (그날을 막는다), 분명한 실패면 skipped mode_changed", async () => {
+      const row = (id: string, userId: string, lastError: string): ReportDeliveryRow => ({
+        id,
+        user_id: userId,
+        kind: "daily",
+        time_zone: "Asia/Seoul",
+        report_date: "2026-10-10",
+        scheduled_at: "2026-10-09T23:30:00Z",
+        expires_at: "2026-10-10T01:30:00Z",
+        status: "pending",
+        attempts: 1,
+        next_attempt_at: "2026-10-09T23:35:00Z",
+        last_error: lastError,
+      });
+      const { store, state } = fakeStore({
+        prefs: [pref(ALICE, { mode: "meaningful" }), pref(BOB, { mode: "meaningful" })],
+        deliveries: [row("a", ALICE, "network"), row("b", BOB, "apns_503")],
+      });
+      await run(store, fakeApns().transport, after(SEOUL_0830, minutes(5)));
+      expect(state.records).toEqual([
+        { id: "a", outcome: { status: "failed", lastError: "mode_changed_unknown" } },
+        { id: "b", outcome: { status: "skipped", lastError: "mode_changed" } },
+      ]);
+    });
+
+    it("겹친 실행이 낡은 설정(Respect Focus 켬)을 읽은 뒤 PUT이 끄면, 그 실행의 다시 보내기는 아무것도 하지 않고(닫지도 잡지도 않음) 다음 실행이 새 설정으로 보낸다", async () => {
+      const { store, state, put } = fakeStore({ prefs: [pref(ALICE)], devices: [device(ALICE, "d1", TOKEN)] });
+      let t = SEOUL_0830.getTime();
+      const apns = flaky(1, () => t);
+      await run(store, apns.transport, () => t);
+      const read = store.dailyPreferences;
+      let putOnRead = true;
+      store.dailyPreferences = async () => {
+        const rows = structuredClone(await read());
+        if (putOnRead) put(ALICE, { respect_focus: false }, new Date("2026-10-09T23:35:00Z"));
+        putOnRead = false;
+        return rows;
+      };
+      t = Date.parse("2026-10-09T23:35:00Z");
+      expect(await run(store, apns.transport, () => t)).toMatchObject({ retried: 0, sent: 0 });
+      expect(state.deliveries[0]).toMatchObject({ status: "pending", attempts: 1 });
+      t = Date.parse("2026-10-09T23:40:00Z");
+      expect(await run(store, apns.transport, () => t)).toMatchObject({ retried: 1, sent: 1 });
+      expect(apns.sentAt).toHaveLength(2);
     });
   });
 });
