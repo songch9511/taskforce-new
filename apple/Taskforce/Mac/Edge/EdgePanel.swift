@@ -48,9 +48,10 @@ struct EdgePanelView: View {
                 Group {
                     switch shell.view {
                     case .allWork:
-                        EdgeWorkList(work: shell.work, currentID: shell.currentID, highlightedID: shell.hoveredID)
+                        workList
                     case .chats:
-                        EdgeEmptyText(title: EdgeEmptyText.noChats)
+                        // 대화 목록 · New chat은 B3
+                        PanelEmptyState(title: Self.noChats)
                     }
                 }
                 .padding(EdgeInsets(top: 0, leading: TFSpace.lg, bottom: TFSpace.md, trailing: TFSpace.lg))
@@ -72,130 +73,30 @@ struct EdgePanelView: View {
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Taskforce")
     }
-}
 
-/// All work (뼈대): 기존 목록(`/api/v1/now`)의 일. 프로젝트 묶음 · 검색 · 필터 · 빈 화면 5종은 S3에서.
-/// 열린 일(Review · In Progress · To Do) 다음에 조용한 Done today. 활동이 바뀌어도 줄 순서는 서버 순서 그대로.
-struct EdgeWorkList: View {
-    let work: EdgeWorkSnapshot
-    let currentID: UUID?
-    let highlightedID: UUID?
-    var today = DueDateFormat.today()
-
-    var body: some View {
-        if work.isEmpty {
-            if work.isLoaded { EdgeEmptyText(title: EdgeEmptyText.noWork) }
-        } else {
-            LazyVStack(alignment: .leading, spacing: 0) {
-                ForEach(open, id: \.action.id) { row in
-                    EdgeWorkRow(row: row, today: today, current: row.action.id == currentID, highlighted: row.action.id == highlightedID)
-                }
-                if !work.doneToday.isEmpty {
-                    Text("Done today")
-                        .font(TFFont.caption)
-                        .foregroundStyle(TFColor.textSecondary)
-                        .padding(EdgeInsets(top: 18, leading: TFSpace.sm, bottom: TFSpace.xs, trailing: TFSpace.sm))
-                        .accessibilityAddTraits(.isHeader)
-                    ForEach(work.doneToday, id: \.id) { action in
-                        EdgeWorkRow(row: .init(action: action, state: .done, activity: nil), today: today, current: action.id == currentID, highlighted: action.id == highlightedID)
-                    }
-                }
-            }
-        }
-    }
-
-    private var open: [EdgeWorkRow.Row] {
-        let review = work.review.map { EdgeWorkRow.Row(action: $0, state: .review, activity: ActivityRing.Kind.needsYou.accessibilityLabel) }
-        let rest = work.open.map { action in
-            let activity: String? = work.working.contains(action.id)
-                ? (work.stopping.contains(action.id) ? "Stop requested · not confirmed" : ActivityRing.Kind.running.accessibilityLabel)
-                : nil
-            return EdgeWorkRow.Row(action: action, state: TaskStatusMark.State(TaskGroup.open(action)), activity: activity)
-        }
-        return review + rest
-    }
-}
-
-/// 일 한 줄 (디자인 WorkRow의 뼈대): 상태 표시 · 제목 · 활동 · 기한. 줄 머리선은 글자에서 시작, 끝난 일은 조용하게(취소선 없음).
-/// 접근성 이름 "Title — State · Activity, due Day" (기한이 지났으면 "overdue")
-struct EdgeWorkRow: View {
-    struct Row {
-        let action: ActionSummary
-        let state: TaskStatusMark.State
-        let activity: String?
-    }
-
-    let row: Row
-    let today: LocalDate
-    /// 레일에서 연 일 (선택된 행)
-    let current: Bool
-    /// 패널이 열린 채 레일에서 그 일에 포인터를 올림 (표시만, 선택이 아니다)
-    var highlighted = false
-
-    static func accessibilityLabel(title: String, state: TaskStatusMark.State, activity: String?, due: String?, overdue: Bool) -> String {
-        var label = "\(title) — \(state.label)"
-        if let activity { label += " · \(activity)" }
-        if let due { label += overdue ? ", overdue, due \(due)" : ", due \(due)" }
-        return label
-    }
-
-    var body: some View {
-        // 기한이 지나도 날짜를 쓴다 (빨강 · 굵게, "overdue"는 접근성 이름에만)
-        let due = row.action.dueDate.map { DueText.short($0, today: today) }
-        let overdue = row.state != .done && row.action.dueDate.map { DueText.isOverdue($0, today: today) } == true
-        HStack(alignment: .top, spacing: TFSpace.md) {
-            TaskStatusMark(row.state)
-                .padding(.top, 2)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(row.action.title)
-                    .font(TFFont.callout)
-                    .tracking(-0.24)
-                    .foregroundStyle(row.state == .done ? secondary : TFColor.textPrimary)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                if let activity = row.activity {
-                    Text(activity)
-                        .font(TFFont.footnote)
-                        .foregroundStyle(secondary)
-                        .lineLimit(1)
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            if let due {
-                Text(due)
-                    .font(overdue ? TFFont.footnoteEmphasis : TFFont.footnote)
-                    .monospacedDigit()
-                    .foregroundStyle(overdue ? TFColor.statusOverdue : secondary)
-                    .padding(.top, 1)
-            }
-        }
-        .padding(EdgeInsets(top: 10, leading: TFSpace.sm, bottom: 10, trailing: TFSpace.sm))
-        .background {
-            RoundedRectangle(cornerRadius: TFRadius.md, style: .continuous).fill(current || highlighted ? TFColor.bgSelected : .clear)
-        }
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(Self.accessibilityLabel(title: row.action.title, state: row.state, activity: row.activity, due: due, overdue: overdue))
-        .accessibilityAddTraits(current ? .isSelected : [])
-    }
-
-    private var secondary: Color { current || highlighted ? TFColor.textSecondarySelected : TFColor.textSecondary }
-}
-
-/// 패널 안 빈 화면의 제목 (설명 문단 없음). "All caught up"은 쓰지 않는다 (디자인 EmptyState)
-struct EdgeEmptyText: View {
-    /// All work에 일이 하나도 없음 (Add task · Connect a source 버튼은 S3)
-    static let noWork = "Nothing on your plate yet."
     /// Chats에 대화가 없음 (New chat은 B3)
     static let noChats = "No conversations yet."
 
-    let title: String
-
-    var body: some View {
-        Text(title)
-            .font(TFFont.calloutEmphasis)
-            .foregroundStyle(TFColor.textPrimary)
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, TFSpace.xl)
+    /// All work (S3): 기존 목록(`/api/v1/now` + 오늘 끝낸 할 일)을 WorkList로. 검색어 · 필터 · 고정은 셸 모델이 가진다.
+    /// `shell.workItems`가 시각 신호(`timeEpoch`)를 읽으므로, 열린 채 자정 · 시간대 변경을 지나면 이 화면이 다시 그려져 Done today · today도 새로 정해진다
+    private var workList: some View {
+        WorkList(
+            items: shell.workItems,
+            load: shell.work.load,
+            syncing: shell.work.syncing,
+            filter: Binding(get: { shell.workFilter }, set: { shell.setFilter($0) }),
+            filtersOpen: Binding(get: { shell.filtersOpen }, set: { shell.setFiltersOpen($0) }),
+            pins: shell.pins,
+            currentID: shell.currentID,
+            highlightedID: shell.hoveredID,
+            today: DueDateFormat.today(),
+            onOpen: { shell.open(itemID: $0) },
+            onPin: { shell.pin($0) },
+            onUnpin: { shell.unpin($0) },
+            onAddTask: { shell.onAddTask() },
+            onConnect: shell.work.canConnect ? { shell.onConnect() } : nil,
+            onRetry: { shell.onRetry() }
+        )
     }
 }
 

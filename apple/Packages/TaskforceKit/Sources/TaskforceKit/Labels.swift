@@ -69,6 +69,12 @@ public enum ConfirmReasonText {
         reasons.flatMap(kinds).min()?.label ?? fallback
     }
 
+    /// 담당을 묻는 이유가 있는가 ("판정 확인: NOT_MY_ACTION" · "담당 확인" = "Not sure it's yours"). 이유 분류는 `kinds` 그대로 쓴다.
+    /// All work가 담당이 불확실한 일의 수행자를 "You"로 단정하지 않게 (`WorkItem.performer`)
+    static func questionsOwner(_ reasons: [String]) -> Bool {
+        reasons.flatMap(kinds).contains(.owner)
+    }
+
     static func kinds(_ reason: String) -> [Kind] {
         if let kind = derived[reason] { return [kind] }
         if reason.hasPrefix("판정 확인:") {

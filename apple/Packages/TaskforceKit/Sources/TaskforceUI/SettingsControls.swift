@@ -48,49 +48,79 @@ private struct TFSwitch: View {
     }
 }
 
-/// Button size sm (0.2.0 Atoms): 24pt 캡슐, 12 semibold. `primary` = 잉크 면(화면의 주 동작 하나), `secondary` = `bg/field` 면.
-/// 누르면 .98로 줄고, secondary는 호버 때 `bg/selected`. 꺼지면 글자는 그대로 두고 흐려진다.
+/// Button (0.2.0 Atoms). `primary` = 잉크 면(화면의 주 동작 하나), `secondary` = `bg/field` 면, `text` = 면 없는 글자 버튼(호버 때 `bg/selected`).
+/// - sm: 24pt, 12. 설정 행 · Notice · 필터 요약의 Clear
+/// - md: 32pt, 13. 패널의 빈 화면 (Add task · Try again · Clear filters)
+/// primary · secondary는 캡슐 semibold, text는 모서리 5 · medium. 누르면 .98로 줄고, 꺼지면 글자는 그대로 두고 흐려진다.
 public struct TFButtonStyle: ButtonStyle {
     public enum Kind: Sendable, Hashable {
-        case primary, secondary
+        case primary, secondary, text
+    }
+
+    public enum Size: Sendable, Hashable {
+        case sm, md
+
+        /// 버튼 높이 (디자인 `.tf-btn` 32 · `.is-sm` 24 · `.is-text` 28)
+        public func height(_ kind: Kind) -> CGFloat {
+            switch (self, kind) {
+            case (.sm, _): SettingsTray.controlHeight
+            case (.md, .text): 28
+            case (.md, _): 32
+            }
+        }
     }
 
     let kind: Kind
+    let size: Size
 
-    public init(_ kind: Kind = .secondary) {
+    public init(_ kind: Kind = .secondary, size: Size = .sm) {
         self.kind = kind
+        self.size = size
     }
 
     public func makeBody(configuration: Configuration) -> some View {
-        TFButtonBody(configuration: configuration, kind: kind)
+        TFButtonBody(configuration: configuration, kind: kind, size: size)
     }
 }
 
 private struct TFButtonBody: View {
     let configuration: ButtonStyleConfiguration
     let kind: TFButtonStyle.Kind
+    let size: TFButtonStyle.Size
     @Environment(\.isEnabled) private var isEnabled
     @State private var hovering = false
 
     var body: some View {
+        let shape = kind == .text
+            ? AnyShape(RoundedRectangle(cornerRadius: TFRadius.sm, style: .continuous))
+            : AnyShape(Capsule())
         configuration.label
-            .font(.system(size: 12, weight: .semibold))
+            .font(.system(size: size == .sm ? 12 : 13, weight: kind == .text ? .medium : .semibold))
             .foregroundStyle(kind == .primary ? TFColor.textInverse : TFColor.textPrimary)
             .lineLimit(1)
-            .padding(.horizontal, 11)
-            .frame(minHeight: SettingsTray.controlHeight)
-            .background(background, in: Capsule())
-            .contentShape(Capsule())
+            .padding(.horizontal, horizontalPadding)
+            .frame(minHeight: size.height(kind))
+            .background(background, in: shape)
+            .contentShape(shape)
             .opacity(isEnabled ? 1 : 0.45)
             .scaleEffect(configuration.isPressed && isEnabled ? TFMotion.pressScale : 1)
             .onHover { hovering = $0 }
             .animation(TFMotion.ease(TFMotion.hoverFade), value: hovering)
     }
 
+    private var horizontalPadding: CGFloat {
+        switch (kind, size) {
+        case (.text, _): TFSpace.sm
+        case (_, .sm): 11
+        case (_, .md): 14
+        }
+    }
+
     private var background: Color {
         switch kind {
         case .primary: TFColor.fillInverse
         case .secondary: hovering && isEnabled ? TFColor.bgSelected : TFColor.bgField
+        case .text: hovering && isEnabled ? TFColor.bgSelected : .clear
         }
     }
 }

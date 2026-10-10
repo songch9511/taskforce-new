@@ -34,28 +34,57 @@ struct EdgeWorkSnapshot: Equatable {
     var working: Set<UUID> = []
     /// 멈춤을 요청했고 아직 끝나지 않은 할 일
     var stopping: Set<UUID> = []
-    var isLoaded = false
+    /// 열린 할 일의 서버 순서 이유 (기한 빨강)
+    var reasons: [UUID: [RankReason]] = [:]
+    /// 목록을 보일 수 있는 상태 (읽는 중 · 받음 · 오프라인 · 실패)
+    var load: WorkLoad = .loading
+    /// Done today를 읽은 기기 시간대의 그날 0시 (`NowStore.doneTodaySince`)
+    var doneSince: Date?
+    /// 할 일 없음 화면에 Connect a source를 보일지 (연결을 읽었고 연결된 원문이 없을 때)
+    var canConnect = false
+    /// 연결 중 하나라도 동기화 중 (`AccountStore.anySyncing`): 빈 목록이어도 할 일 없음을 말하지 않는다
+    var syncing = false
 
     static let empty = EdgeWorkSnapshot()
 
     init(review: [ActionSummary] = [], open: [ActionSummary] = [], doneToday: [ActionSummary] = [],
-         working: Set<UUID> = [], stopping: Set<UUID> = [], isLoaded: Bool = false) {
+         working: Set<UUID> = [], stopping: Set<UUID> = [], reasons: [UUID: [RankReason]] = [:],
+         load: WorkLoad = .loading, doneSince: Date? = nil, canConnect: Bool = false, syncing: Bool = false) {
         self.review = review
         self.open = open
         self.doneToday = doneToday
         self.working = working
         self.stopping = stopping
-        self.isLoaded = isLoaded
+        self.reasons = reasons
+        self.load = load
+        self.doneSince = doneSince
+        self.canConnect = canConnect
+        self.syncing = syncing
     }
 
-    init(sections: TaskSections, working: Set<UUID>, stopping: Set<UUID>, isLoaded: Bool) {
+    init(
+        sections: TaskSections, working: Set<UUID>, stopping: Set<UUID>, load: WorkLoad, doneSince: Date?, canConnect: Bool, syncing: Bool = false
+    ) {
+        let open = sections.inProgress + sections.toDo
         self.init(
-            review: sections.review, open: sections.inProgress.map(\.action) + sections.toDo.map(\.action),
-            doneToday: sections.doneToday, working: working, stopping: stopping, isLoaded: isLoaded
+            review: sections.review, open: open.map(\.action), doneToday: sections.doneToday, working: working, stopping: stopping,
+            reasons: Dictionary(open.map { ($0.id, $0.reasons) }, uniquingKeysWith: { first, _ in first }),
+            load: load, doneSince: doneSince, canConnect: canConnect, syncing: syncing
         )
     }
 
     var isEmpty: Bool { review.isEmpty && open.isEmpty && doneToday.isEmpty }
+
+    /// Connect a source를 보일지: 연결을 읽었고 active 연결이 하나도 없을 때만 (아직 모르면 보이지 않는다)
+    static func canConnect(connectionsLoaded: Bool, connections: [ConnectionRecord]) -> Bool {
+        connectionsLoaded && !connections.contains { $0.status == .active }
+    }
+
+    /// All work의 줄 (`WorkItem.list`). Done today는 읽은 날이 기기 시간대의 오늘일 때만 (자정 · 시간대가 바뀌면 다시 읽을 때까지 없음)
+    func items(now: Date, calendar: Calendar = .current) -> [WorkItem] {
+        let done = DoneTodayWindow.isCurrent(since: doneSince, now: now, calendar: calendar) ? doneToday : []
+        return WorkItem.list(reviews: review, open: open, doneToday: done, working: working, stopping: stopping, reasons: reasons)
+    }
 }
 
 /// 미루어 부르기 (호버 120ms · 떠남 400ms · Done 3초). 테스트는 손으로 돌리는 것을 넣는다
@@ -84,13 +113,14 @@ enum EdgeScheduler {
 @MainActor
 @Observable
 final class EdgeShellModel {
-    /// 패널이 보이는 것 (한 번에 하나). Review · 일 상세 · 대화는 다음 PR(S3 · S4 · B3)에서 더한다
+    /// 패널이 보이는 것 (한 번에 하나). Review · 일 상세 · 대화는 다음 PR(S4 · B3)에서 더한다
     enum View: String, CaseIterable {
         case allWork, chats
 
+        /// 패널 머리 제목. All work 화면의 머리는 "Your work"다 (디자인 WorkPage · WorkList 견본). 레일 칸 이름은 그대로 All work
         var title: String {
             switch self {
-            case .allWork: "All work"
+            case .allWork: "Your work"
             case .chats: "Chats"
             }
         }
@@ -135,8 +165,26 @@ final class EdgeShellModel {
     /// 움직임 줄이기 (시스템 설정 · Debug 스냅샷의 `-TFReduceMotion YES`)
     var reduceMotion: Bool
 
+    // All work (S3): 검색어 · 필터 · 열린 필터 · 고정. 계정이 바뀌면 비우고, 레일의 All work(⌘2)로 열면 검색어 · 필터를 비운다
+    private(set) var workFilter = WorkFilter()
+    private(set) var filtersOpen = false
+    /// 지금 계정의 고정 (셋까지, `pinStore`에 계정별로 둔다)
+    private(set) var pins = WorkPins()
+    /// 지금 로그인한 계정 (고정을 읽고 쓰는 기준). 로그아웃이면 nil
+    private(set) var account: UUID?
+    /// 로컬 날짜 · 시간대 · 시스템 시계가 바뀌었을 수 있다는 신호 (`timeChanged()`, 컨트롤러의 `EdgeTimeWatcher`가 올린다).
+    /// `workItems`가 읽어서, 자정 · 시간대 변경 뒤에도 열린 채인 패널이 다시 계산한다. 값 자체에는 뜻이 없다
+    private(set) var timeEpoch = 0
+    /// All work의 버튼이 가는 곳 (컨트롤러가 채운다): Add task = 기존 런처(직접 추가의 정식 입구) · Connect a source = 설정 Connections ·
+    /// Try again = 목록 다시 읽기
+    @ObservationIgnored var onAddTask: () -> Void = {}
+    @ObservationIgnored var onConnect: () -> Void = {}
+    @ObservationIgnored var onRetry: () -> Void = {}
+
     @ObservationIgnored private let schedule: EdgeSchedule
     @ObservationIgnored private let clock: () -> Date
+    @ObservationIgnored private let calendar: () -> Calendar
+    @ObservationIgnored private let pinStore: WorkPinStore
     @ObservationIgnored private var enterTimer: EdgeTimer?
     @ObservationIgnored private var leaveTimer: EdgeTimer?
     @ObservationIgnored private var doneTimer: EdgeTimer?
@@ -144,10 +192,17 @@ final class EdgeShellModel {
     /// 레일에서 막 끝난 일 → 끝난 시각 (3초 동안 Done 링)
     @ObservationIgnored private var recentlyDone: [UUID: Date] = [:]
 
-    init(reduceMotion: Bool = false, schedule: @escaping EdgeSchedule = EdgeScheduler.live, clock: @escaping () -> Date = Date.init) {
+    /// - calendar: Done today가 오늘인지 가를 달력 · 시간대 (`NowStore`가 읽은 날을 적는 `Calendar.current`와 같다)
+    /// - pinStore: 고정 저장 (앱은 전용 suite, 테스트 · 견본은 메모리)
+    init(
+        reduceMotion: Bool = false, schedule: @escaping EdgeSchedule = EdgeScheduler.live, clock: @escaping () -> Date = Date.init,
+        calendar: @escaping () -> Calendar = { Calendar.current }, pinStore: WorkPinStore = WorkPinStore(defaults: nil)
+    ) {
         self.reduceMotion = reduceMotion
         self.schedule = schedule
         self.clock = clock
+        self.calendar = calendar
+        self.pinStore = pinStore
     }
 
     // MARK: 레일 모양
@@ -230,9 +285,11 @@ final class EdgeShellModel {
         menuOpen = false
     }
 
-    /// All work: 레일의 All work · ⌘2. 고른 행 · 필터를 비운다
+    /// All work: 레일의 All work · ⌘2. 고른 행 · 검색어 · 필터를 비우고 필터 카드를 닫는다 (디자인 "opens it with filters cleared")
     func openAllWork() {
         currentID = nil
+        workFilter = WorkFilter()
+        filtersOpen = false
         openPanel(.allWork)
     }
 
@@ -241,10 +298,23 @@ final class EdgeShellModel {
         openPanel(.chats)
     }
 
-    /// 레일의 일: 그 일을 연다. 일 상세 · Review 화면은 다음 PR이라 지금은 All work에서 그 행을 표시한다
+    /// 레일의 일: 그 일을 연다. 일 상세 · Review 화면은 다음 PR이라 지금은 All work에서 그 행을 표시한다.
+    /// 남은 검색어 · 필터가 그 일을 가리면 검색어 · 필터를 비운다 (연 일이 목록에 보여야 한다)
     func open(itemID: UUID) {
         currentID = itemID
+        if let item = workItems.first(where: { $0.id == itemID }), !workFilter.matches(item) {
+            workFilter = WorkFilter()
+        }
         openPanel(.allWork)
+    }
+
+    /// Esc: 안쪽 것(열린 필터 카드)을 먼저 닫고, 그다음 패널을 접는다 (디자인 Focus and keys)
+    func escape() {
+        if panelOpen, view == .allWork, filtersOpen {
+            filtersOpen = false
+        } else {
+            dismiss()
+        }
     }
 
     /// 밖 클릭(클릭은 누른 곳으로도 그대로 간다) · Esc · ⌥ Space. 접어도 일은 멈추지 않고 초안은 남는다
@@ -264,6 +334,55 @@ final class EdgeShellModel {
         if !open, !pointerInside, !panelOpen {
             railHovered = false
         }
+    }
+
+    // MARK: All work
+
+    /// All work의 줄 (지금 시각의 기기 시간대로 Done today를 정한다). `timeEpoch`를 읽어, 시각 신호(`timeChanged`)가 오면 이 값을 읽은 화면이 다시 계산한다
+    var workItems: [WorkItem] {
+        _ = timeEpoch
+        return work.items(now: clock(), calendar: calendar())
+    }
+
+    /// 로컬 날짜 · 시간대 · 시스템 시계가 바뀌었거나 Mac이 깨어났다: 열린 채 기다리던 패널이 "오늘"을 다시 계산한다.
+    /// 목록을 새로 읽지는 않는다: 지난 Done today는 허용된 새로 읽기(로그인 · 패널 열기 · Try again · 동기화 끝) 전까지 빠진 채로 둔다
+    func timeChanged() {
+        timeEpoch &+= 1
+    }
+
+    func setFilter(_ filter: WorkFilter) {
+        workFilter = filter
+    }
+
+    func setFiltersOpen(_ open: Bool) {
+        filtersOpen = open
+    }
+
+    /// 고정 (셋까지, 지금 목록의 일만). 고정한 일은 그 묶음 맨 앞
+    func pin(_ id: UUID) {
+        guard let account else { return }
+        var pins = self.pins
+        guard pins.pin(id, known: Set(workItems.map(\.id))) else { return }
+        self.pins = pins
+        pinStore.save(pins, account: account)
+    }
+
+    func unpin(_ id: UUID) {
+        guard let account, pins.isPinned(id) else { return }
+        pins.unpin(id)
+        pinStore.save(pins, account: account)
+    }
+
+    /// 로그인 계정이 바뀜 (로그아웃 · 다른 계정 · 같은 계정의 첫 로그인): 전 계정의 검색어 · 필터 · 열린 필터 · 고른 행을 비우고 그 계정의 고정을 읽는다.
+    /// 토큰 갱신처럼 같은 계정이면 그대로 둔다
+    func accountChanged(_ account: UUID?) {
+        guard account != self.account else { return }
+        self.account = account
+        workFilter = WorkFilter()
+        filtersOpen = false
+        currentID = nil
+        hoveredID = nil
+        pins = account.map { pinStore.load(account: $0) } ?? WorkPins()
     }
 
     // MARK: 데이터
