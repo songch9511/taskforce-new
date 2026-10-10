@@ -269,6 +269,14 @@ struct EdgeWorkListTests {
         #expect(EdgeShellController.needsReloadAfterSync(stale, finishedAt: finishedAt))
     }
 
+    /// 패널 열기 · 로그인은 이미 읽는 중이면 겹쳐 읽지 않지만, Try again은 늘 새로 읽는다 (리뷰 R2: 취소된 읽기가 "읽는 중"으로 남아도)
+    @Test func tryAgainAlwaysReadsTheList() {
+        #expect(EdgeShellController.readsList(.retry, isLoading: true))
+        #expect(EdgeShellController.readsList(.retry, isLoading: false))
+        #expect(!EdgeShellController.readsList(.refresh, isLoading: true))
+        #expect(EdgeShellController.readsList(.refresh, isLoading: false))
+    }
+
     /// 첫 고정 정리(`prune`)는 로그인 상태를 안 뒤에만: 읽는 중이면 미룬다
     @Test func firstPinPruneWaitsForTheSession() {
         #expect(EdgeShellController.knownAccount(nil) == nil)

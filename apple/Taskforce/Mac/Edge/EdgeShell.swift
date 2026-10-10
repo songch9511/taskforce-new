@@ -45,7 +45,8 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
         super.init()
         panel.panel.delegate = self
         shell.onConnect = { [weak self] in self?.rail.onConnections() }
-        shell.onRetry = { [weak self] in self?.load() }
+        // Try again은 읽는 중이어도 새로 읽는다 (읽기가 취소돼 "읽는 중"이 남아도 버튼이 무반응이 되지 않게)
+        shell.onRetry = { [weak self] in self?.load(.retry) }
     }
 
     /// All work 고정의 저장: 앱 설정과 다른 전용 suite(계정별 할 일 id만). 견본 · 번들 id를 모를 때는 메모리만 (디스크에 쓰지 않는다,
@@ -138,10 +139,22 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
 
     // MARK: 데이터
 
-    private func load() {
+    /// 목록 · run을 읽는 까닭
+    enum LoadReason {
+        /// 로그인 · 패널 열기: 이미 읽는 중이면 겹쳐 부르지 않는다 (그 응답이 곧 온다)
+        case refresh
+        /// 사용자가 누른 Try again: 늘 새로 읽는다
+        case retry
+    }
+
+    /// 목록(`/now`)을 새로 읽을지
+    static func readsList(_ reason: LoadReason, isLoading: Bool) -> Bool {
+        reason == .retry || !isLoading
+    }
+
+    private func load(_ reason: LoadReason = .refresh) {
         guard launcher.isSignedIn else { return }
-        // 이미 읽는 중이면 겹쳐 부르지 않는다 (그 응답이 곧 온다)
-        if let now = launcher.now, !now.refresh.isLoading { Task { await now.load() } }
+        if let now = launcher.now, Self.readsList(reason, isLoading: now.refresh.isLoading) { Task { await now.load() } }
         if let runs = launcher.runs {
             Task {
                 await runs.loadCredits()
