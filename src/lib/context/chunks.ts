@@ -78,7 +78,7 @@ export type ChunkIndexDeps = {
 
 export type ChunkIndexResult = {
   /** failed: 임베딩 · 저장이 실패했다 (수집 경로는 던지지 않고 이것으로 남긴다, store.ts indexSourceAfterIngest) */
-  status: "gate_off" | "slack" | "empty" | "no_consent" | "replaced" | "purged" | "stale" | "failed";
+  status: "gate_off" | "slack" | "empty" | "no_consent" | "replaced" | "unchanged" | "purged" | "stale" | "failed";
   chunks: number;
 };
 

@@ -711,6 +711,47 @@ export function contextLayerTests(db: () => ContextLayerDb) {
     });
   });
 
+  describe("조각이 바뀌면 범위 version이 오른다 (묶음의 자료가 바뀐다)", () => {
+    it("멤버 문서의 조각이 실제로 바뀔 때만 1 오른다: 같은 조각을 다시 넣으면(unchanged) · 옛 revision(stale) · 지운 원문(purged) · 멤버가 아닌 문서 · 후보 멤버는 오르지 않는다", async () => {
+      const me = await f.user();
+      const notion = await f.connection(me, "notion");
+      const v1 = await f.source(me, { connectionId: notion, externalId: "doc-v", version: "v1" });
+      const outside = await f.source(me, { connectionId: notion, externalId: "doc-out", version: "v1" });
+      const guessed = await f.source(me, { connectionId: notion, externalId: "doc-guess", version: "v1" });
+      const context = await f.context(me);
+      await f.member(me, context, v1);
+      await f.member(me, context, guessed, "inferred");
+      const v = () => f.version(context);
+      let at = await v();
+
+      expect(await f.chunks(me, v1, ["첫 조각"], [vector(1)])).toEqual({ status: "replaced", chunks: 1 });
+      expect(await v()).toBe(at + 1);
+      at = await v();
+      expect(await f.chunks(me, v1, ["첫 조각"], [vector(1)])).toEqual({ status: "unchanged", chunks: 1 });
+      expect(await v()).toBe(at);
+      expect(await f.chunks(me, v1, ["첫 조각"], [vector(2)])).toEqual({ status: "replaced", chunks: 1 }); // 임베딩만 달라도 바뀐 것
+      expect(await v()).toBe(at + 1);
+      at = await v();
+
+      const v2 = await f.source(me, { connectionId: notion, externalId: "doc-v", version: "v2" });
+      expect(await v()).toBe(at + 1); // 새 revision (기존 규칙)
+      at = await v();
+      expect(await f.chunks(me, v2, ["둘째 revision 조각"])).toEqual({ status: "replaced", chunks: 1 });
+      expect(await v()).toBe(at + 1);
+      at = await v();
+      expect(await f.chunks(me, v1, ["늦은 옛 조각"])).toEqual({ status: "stale", chunks: 0 });
+      expect(await f.chunks(me, outside, ["멤버 아닌 문서"])).toEqual({ status: "replaced", chunks: 1 });
+      expect(await f.chunks(me, guessed, ["후보 멤버 문서"])).toEqual({ status: "replaced", chunks: 1 });
+      expect(await v()).toBe(at);
+
+      await db().query(`update public.sources set raw_text = '', raw_text_purged_at = now() where id = $1`, [v2]);
+      at = await v();
+      expect(await f.chunks(me, v2, ["지운 원문"])).toEqual({ status: "purged", chunks: 0 });
+      expect(await v()).toBe(at);
+      expect(await db().query(`select 1 from public.context_version_bumps`)).toEqual([]);
+    });
+  });
+
   describe("범위 version: 멤버 · 범위 기억 변화에 오르고 관계없는 변화에는 오르지 않는다", () => {
     it("멤버 추가 · 빼기 · 다시 넣기 · 후보 확인, 범위 기억 추가 · 정정에 오른다. 다른 범위 · 전체 기억 · updated_at만 바뀐 것에는 오르지 않는다", async () => {
       const me = await f.user();
@@ -783,6 +824,7 @@ export function contextLayerTests(db: () => ContextLayerDb) {
         "flush_context_bumps",
         "memory_items_bump_context_version",
         "people_handles_refresh",
+        "queue_context_bumps",
         "sources_bump_member_contexts",
         "sources_purge_context",
       ]);

@@ -609,15 +609,12 @@ describe("updated_at · 트리거", () => {
        where not t.tgisinternal and c.relname = any($1) order by c.relname, p.proname`,
       [[...TABLES]],
     );
-    // B1(20261104000000_context_layer): 범위 version(멤버 · 범위 기억: 모으는 트리거 insert · delete와 update 둘씩 + commit 직전 올리는 트리거,
-    // 기억은 범위 기억 행만 보도록 insert · update와 delete 둘)과
+    // B1(20261104000000_context_layer): 범위 version(멤버 · 범위 기억: 큐에 모으는 트리거 insert · delete와 update 둘씩.
+    // commit 직전 올리는 트리거는 큐 표 context_version_bumps에 있다)과
     // 지운 원문 가드(조각 · 기억). 트리거마다 한 행이라 같은 함수를 쓰는 트리거 둘은 두 번 나온다. 함수 · 동작은 tests/db/context-layer.test.ts가 본다
     const B1 = [
       { table: "context_members", fn: "context_members_bump_version" },
       { table: "context_members", fn: "context_members_bump_version" },
-      { table: "context_members", fn: "flush_context_bumps" },
-      { table: "memory_items", fn: "flush_context_bumps" },
-      { table: "memory_items", fn: "flush_context_bumps" },
       { table: "memory_items", fn: "memory_items_bump_context_version" },
       { table: "memory_items", fn: "memory_items_bump_context_version" },
       { table: "memory_items", fn: "memory_items_purged_source_guard" },

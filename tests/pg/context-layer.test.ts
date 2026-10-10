@@ -255,6 +255,29 @@ describe("맥락층 경합 (실제 Postgres, 연결 둘 이상)", () => {
     }
   });
 
+  it("한 범위의 두 문서 조각을 동시에 바꿔도 version은 정확히 2 오르고, 조각 교체는 commit 전까지 범위 행을 잡지 않는다", async () => {
+    const me = await f.user();
+    const notion = await f.connection(me, "notion");
+    const d1 = await f.source(me, { connectionId: notion, externalId: "cc-1", version: "v1" });
+    const d2 = await f.source(me, { connectionId: notion, externalId: "cc-2", version: "v1" });
+    const context = await f.context(me);
+    await f.member(me, context, d1);
+    await f.member(me, context, d2);
+    const before = await f.version(context);
+    const replace = (client: pg.Client, sourceId: string) =>
+      client.query(`select * from public.replace_source_chunks($1, $2, $3, $4)`, [me, sourceId, ["조각"], [vector(3)]]).then((r) => r.rows[0]);
+    await a.query("begin");
+    await b.query("begin");
+    expect(await replace(a, d1)).toEqual({ status: "replaced", chunks: 1 });
+    expect(await replace(b, d2)).toEqual({ status: "replaced", chunks: 1 }); // A가 commit 전이어도 기다리지 않는다
+    await Promise.all([a.query("commit"), b.query("commit")]);
+    expect(await f.version(context)).toBe(before + 2);
+    // 같은 조각을 동시에 다시 넣으면 둘 다 unchanged, version 그대로
+    const again = await Promise.all(burst.slice(0, 4).map((client, i) => replace(client, i % 2 ? d1 : d2)));
+    expect(again.map((r) => r.status)).toEqual(["unchanged", "unchanged", "unchanged", "unchanged"]);
+    expect(await f.version(context)).toBe(before + 2);
+  });
+
   it("같은 사실의 기억 쓰기와 그 출처 원문의 글 지우기가 겹쳐도 교착하지 않는다 (어느 쪽이 먼저든)", async () => {
     for (const first of ["remember", "purge"] as const) {
       const me = await f.user();

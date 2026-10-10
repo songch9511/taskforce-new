@@ -493,8 +493,8 @@ $$;
 -- 8) 범위 version (아키텍처 5.4 · 6.3): 멤버 추가 · 제거 · 후보 확인, 범위 기억 추가 · 정정 · 잊기 · 삭제 · 비움,
 --    멤버 원문의 새 revision · 글 지움 · 접근 상실에 오른다. 모델 후보(inferred 멤버 · inferred 기억)는 묶음에 들지 않으므로 올리지 않는다
 --    (stale 신호를 거짓으로 만들지 않게, CTX12). 후보가 확인되면(origin이 inferred에서 바뀜) 오른다.
---    행 트리거는 바뀐 범위 id를 큐 표(context_version_bumps, 이 트랜잭션의 txid로)에 모으기만 하고, commit 직전(deferred constraint trigger)
---    그 트랜잭션의 것을 꺼내 한 번에 id 순으로 올린다. 범위 행 잠금을 트랜잭션의 마지막에, 언제나 같은 순서로만 잡으므로
+--    행 트리거 · 조각 교체는 바뀐 범위 id를 큐 표(context_version_bumps, 이 트랜잭션의 txid로)에 모으기만 하고, 큐에 들어간 행마다 걸린
+--    deferred constraint trigger가 commit 직전 그 트랜잭션의 것을 꺼내 한 번에 id 순으로 올린다(큐에 넣는 길이 어디든 commit 때 비워진다). 범위 행 잠금을 트랜잭션의 마지막에, 언제나 같은 순서로만 잡으므로
 --    기억 · 원문 쓰기(remember_memory_item · 원문 글 지움)와 서로 기다리다 교착하지 않는다. 한 트랜잭션은 범위마다 1 올린다.
 --    큐는 소유자 권한 함수만 쓰는 표다(앱 · 익명 권한 없음): 다른 역할이 남의 범위를 큐에 넣어 올리게 할 수 없다.
 --    트리거 함수는 소유자 권한이다: 계정 삭제(Supabase Auth의 supabase_auth_admin) · 앱의 원문 쓰기에서 cascade · 트리거로 불려도 돌게. new · old 행의 범위만 본다.
@@ -524,6 +524,7 @@ $$;
 create function public.queue_context_bumps(p_context_ids uuid[])
 returns void
 language sql
+security definer
 set search_path = ''
 as $$
   insert into public.context_version_bumps (txid, context_id)
@@ -550,6 +551,11 @@ begin
   return null;
 end;
 $$;
+
+create constraint trigger context_version_bumps_flush
+  after insert on public.context_version_bumps
+  deferrable initially deferred
+  for each row execute function public.flush_context_bumps();
 
 create function public.context_members_bump_version() returns trigger
 language plpgsql
@@ -581,10 +587,6 @@ create trigger context_members_bump_version_on_update
   for each row
   when ((old.context_id, old.removed_at, old.origin) is distinct from (new.context_id, new.removed_at, new.origin))
   execute function public.context_members_bump_version();
-create constraint trigger context_members_flush_context_version
-  after insert or update or delete on public.context_members
-  deferrable initially deferred
-  for each row execute function public.flush_context_bumps();
 
 create function public.memory_items_bump_context_version() returns trigger
 language plpgsql
@@ -614,17 +616,6 @@ create trigger memory_items_bump_context_version_on_update
         and (old.statement, old.value, old.origin, old.superseded_at, old.revoked_at, old.valid_from, old.valid_until, old.source_purged)
             is distinct from (new.statement, new.value, new.origin, new.superseded_at, new.revoked_at, new.valid_from, new.valid_until, new.source_purged))
   execute function public.memory_items_bump_context_version();
--- 범위 기억 행만 (전체 · 할 일 · 상대 · 에이전트 기억은 범위 version과 관계없다: commit까지 쌓이는 deferred 사건을 줄인다)
-create constraint trigger memory_items_flush_context_version
-  after insert or update on public.memory_items
-  deferrable initially deferred
-  for each row when (new.scope_kind = 'context')
-  execute function public.flush_context_bumps();
-create constraint trigger memory_items_flush_context_version_on_delete
-  after delete on public.memory_items
-  deferrable initially deferred
-  for each row when (old.scope_kind = 'context')
-  execute function public.flush_context_bumps();
 
 -- 멤버 원문의 변화: 같은 문서(source_document_ids)의 새 revision이 들어오거나, 글이 지워지거나, 접근을 잃거나 되찾을 때
 create function public.sources_bump_member_contexts() returns trigger
@@ -654,19 +645,6 @@ create trigger sources_bump_member_contexts_on_update
   when ((old.external_version, old.raw_text_purged_at, old.raw_text_purge_reason, old.access_lost_at)
         is distinct from (new.external_version, new.raw_text_purged_at, new.raw_text_purge_reason, new.access_lost_at))
   execute function public.sources_bump_member_contexts();
-create constraint trigger sources_flush_context_version
-  after insert on public.sources
-  deferrable initially deferred
-  for each row
-  when (new.external_id is not null)
-  execute function public.flush_context_bumps();
-create constraint trigger sources_flush_context_version_on_update
-  after update of external_version, raw_text_purged_at, raw_text_purge_reason, access_lost_at on public.sources
-  deferrable initially deferred
-  for each row
-  when ((old.external_version, old.raw_text_purged_at, old.raw_text_purge_reason, old.access_lost_at)
-        is distinct from (new.external_version, new.raw_text_purged_at, new.raw_text_purge_reason, new.access_lost_at))
-  execute function public.flush_context_bumps();
 
 -- ─────────────────────────────────────────────
 -- 9) 원문 조각 교체 (아키텍처 6.2): 한 원문의 조각을 한 트랜잭션에서 바꾼다. 같은 문서(source_document_ids)의 옛 revision 조각도 함께 지운다.
@@ -674,7 +652,9 @@ create constraint trigger sources_flush_context_version_on_update
 --    - 같은 문서의 교체는 advisory 잠금으로 한 번에 하나씩. 이 revision보다 나중에 들어온(created_at, id) revision이 있으면 넣지 않는다(stale):
 --      늦게 끝난 옛 처리가 새 조각을 덮지 않게. 순서는 수집 순서다 (occurred_at은 Notion에서 날짜 속성 · 만든 시각이라 고친 순서가 아니다)
 --    - p_embeddings는 '[…]' 문자열(1536차원) 또는 null. 순번(seq)은 0부터
---    돌려주는 값: status(replaced · purged · stale)와 넣은 조각 수
+--    - 문서의 지금 조각과 똑같으면(같은 revision · 순번 · 글 · 임베딩, 개수까지) 바꾸지 않는다(unchanged). 바꿨으면 그 문서를 멤버로 둔
+--      범위의 version을 올린다(묶음의 자료가 바뀌었다: commit 직전 큐로, 후보 멤버 제외)
+--    돌려주는 값: status(replaced · unchanged · purged · stale)와 조각 수
 -- ─────────────────────────────────────────────
 create function public.replace_source_chunks(p_user_id uuid, p_source_id uuid, p_texts text[], p_embeddings text[])
 returns table (status text, chunks integer)
@@ -714,10 +694,28 @@ begin
     return;
   end if;
 
+  if (select count(*) from public.source_chunks c where c.user_id = p_user_id and c.source_id = any (v_document)) = coalesce(cardinality(p_texts), 0)
+     and not exists (
+       select 1 from unnest(p_texts, p_embeddings) with ordinality as t (body, emb, ord)
+        where not exists (
+          select 1 from public.source_chunks c
+           where c.user_id = p_user_id and c.source_id = p_source_id and c.source_revision is not distinct from v_revision
+             and c.seq = t.ord - 1 and c.text = t.body
+             and ((c.embedding is null and t.emb is null) or c.embedding operator(extensions.=) (t.emb)::extensions.vector)
+        )
+     ) then
+    return query select 'unchanged'::text, coalesce(cardinality(p_texts), 0);
+    return;
+  end if;
+
   delete from public.source_chunks c where c.user_id = p_user_id and c.source_id = any (v_document);
   insert into public.source_chunks (user_id, source_id, source_revision, seq, text, embedding)
   select p_user_id, p_source_id, v_revision, (t.ord - 1)::int, t.body, (p_embeddings[t.ord::int])::extensions.vector
     from unnest(p_texts) with ordinality as t (body, ord);
+  perform public.queue_context_bumps(array(
+    select distinct cm.context_id from public.context_members cm
+     where cm.user_id = p_user_id and cm.removed_at is null and cm.origin <> 'inferred' and cm.source_id = any (v_document)
+  ));
   return query select 'replaced'::text, coalesce(cardinality(p_texts), 0);
 end;
 $$;
