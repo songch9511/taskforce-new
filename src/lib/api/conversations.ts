@@ -12,11 +12,13 @@ import { consentRequired } from "./consent";
 import {
   createConversationRequestSchema,
   postConversationMessageRequestSchema,
+  updateConversationRequestSchema,
   type Conversation,
   type ConversationMessage,
   type CreateConversationRequest,
   type CreateConversationResponse,
   type PostConversationMessageResponse,
+  type UpdateConversationResponse,
 } from "./contract";
 import { retryAfterSeconds } from "./rate-limit";
 import { errorResponse, parseBody, unauthorized } from "./respond";
@@ -62,6 +64,49 @@ export async function handleCreateConversation<User extends AppUser>(request: Re
   } catch (error) {
     console.error(JSON.stringify({ event: "conversation_create_failed", error: error instanceof Error ? error.name : "unknown" }));
     return errorResponse(500, "internal_error", "대화를 만들지 못했습니다.");
+  }
+}
+
+// ─── 대화 범위 바꾸기 (B3) ─────────────────────────────
+
+export type UpdateConversationDeps<User extends AppUser> = {
+  enabled: () => boolean;
+  authenticate: (request: Request) => Promise<User | null>;
+  /** 범위를 고른 것으로 바꾼다. 남의 · 없는 대화 not_found, 내 active 범위가 아니면 context_not_found, 범위 기능이 꺼져 있으면 context_off (null로 되돌리기는 늘 된다) */
+  update: (
+    user: User,
+    conversationId: string,
+    contextId: string | null,
+  ) => Promise<{ status: "updated" | "unchanged"; conversation: Conversation } | { status: "not_found" | "context_not_found" | "context_off" }>;
+};
+
+/**
+ * PATCH /api/v2/conversations/{id}: 대화 헤더 ProjectLink에서 사용자가 명시적으로 고른 범위 ({ context_id: uuid | null }, null = All work).
+ * 자동 범위 추정 · 멤버십 쓰기 · 기억 쓰기가 없다. gate CONVERSATIONS_V2_ENABLED가 꺼져 있으면 404 (인증 · DB를 부르지 않는다)
+ */
+export async function handleUpdateConversation<User extends AppUser>(request: Request, conversationId: string, deps: UpdateConversationDeps<User>): Promise<Response> {
+  if (!deps.enabled()) return errorResponse(404, "not_found", "없는 경로입니다.");
+  const user = await deps.authenticate(request);
+  if (!user) return unauthorized();
+  if (!UUID.test(conversationId)) return errorResponse(404, "not_found", NOT_FOUND);
+  const body = await parseBody(request, updateConversationRequestSchema);
+  if ("error" in body) return body.error;
+  try {
+    const result = await deps.update(user, conversationId, body.data.context_id);
+    switch (result.status) {
+      case "updated":
+      case "unchanged":
+        return Response.json({ conversation: result.conversation } satisfies UpdateConversationResponse);
+      case "not_found":
+        return errorResponse(404, "not_found", NOT_FOUND);
+      case "context_not_found":
+        return errorResponse(404, "not_found", "범위가 없습니다.");
+      case "context_off":
+        return errorResponse(400, "invalid_request", "범위 기능이 꺼져 있습니다.");
+    }
+  } catch (error) {
+    console.error(JSON.stringify({ event: "conversation_update_failed", error: error instanceof Error ? error.name : "unknown" }));
+    return errorResponse(500, "internal_error", "대화를 바꾸지 못했습니다.");
   }
 }
 
