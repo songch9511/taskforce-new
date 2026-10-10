@@ -145,6 +145,28 @@ describe("gate 켜짐", () => {
     expect((await loadIdentity(brokenAdmin, "u1", {})).emails).toEqual(["login@example.com", "work@company.dev", "me@example.com", "team@example.com"]);
   });
 
+  it("신원 링크를 읽지 못해 처리를 미뤄도 조각은 지금 만든다 (재처리 경로는 조각을 만들지 않는다): 처리는 하지 않고 한 번만 넣는다", async () => {
+    vi.stubEnv("MEMORY_ENABLED", "true");
+    vi.stubEnv("SOURCE_CHUNKS_ENABLED", "true");
+    vi.stubEnv("OPENROUTER_API_KEY", "test-key");
+    const base = recordingAdmin({ profiles: profile, connections: [], replace_source_chunks: { status: "replaced", chunks: 3 } });
+    const admin = {
+      auth: (base.admin as unknown as { auth: unknown }).auth,
+      rpc: base.admin.rpc.bind(base.admin),
+      from: (name: string) => {
+        if (name !== "identity_links") return base.admin.from(name);
+        const failing: Record<string, unknown> = {};
+        for (const op of ["select", "eq"]) failing[op] = () => failing;
+        failing.throwOnError = () => Promise.reject(new Error("identity_links read failed"));
+        return failing;
+      },
+    } as unknown as SupabaseClient;
+    await expect(ingestDeps(admin).process(connection, "s1", item)).rejects.toThrow(/identity_links read failed/);
+    expect(processSource).not.toHaveBeenCalled();
+    expect(base.names().filter((name) => name === "replace_source_chunks")).toHaveLength(1);
+    expect(embed).toHaveBeenCalledTimes(1);
+  });
+
   it("SOURCE_CHUNKS_ENABLED: 처리한 원문의 조각을 동의 확인 뒤 임베딩해 replace_source_chunks로 넣는다. Slack 원문은 만들지 않는다", async () => {
     vi.stubEnv("SOURCE_CHUNKS_ENABLED", "true");
     vi.stubEnv("OPENROUTER_API_KEY", "test-key");

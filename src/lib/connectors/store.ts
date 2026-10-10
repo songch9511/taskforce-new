@@ -335,7 +335,17 @@ export function ingestDeps(admin: SupabaseClient, options: { notifyFrom?: Date |
     },
 
     process: async (connection, sourceId, item) => {
-      const identity = await loadIdentity(admin, connection.userId);
+      // 맥락층(SOURCE_CHUNKS_ENABLED): 원문의 조각 임베딩. 꺼져 있으면 아무것도 부르지 않고, 실패해도 던지지 않는다 (Slack 원문은 만들지 않는다)
+      const index = () =>
+        indexSourceAfterIngest(admin, { userId: connection.userId, sourceId, text: item.text, provider: connection.provider, externalUrl: item.externalUrl });
+      let identity: UserIdentity;
+      try {
+        identity = await loadIdentity(admin, connection.userId);
+      } catch (error) {
+        // 신원을 읽지 못하면 처리는 미루지만(원문은 대기로 남아 재처리), 조각은 신원과 상관없어 지금 만든다: 재처리 경로는 조각을 만들지 않는다
+        await index();
+        throw error;
+      }
       try {
         const notify = !options.notifyFrom || item.occurredAt >= options.notifyFrom;
         await processSource(admin, { id: sourceId, userId: connection.userId, notify }, {
@@ -354,14 +364,7 @@ export function ingestDeps(admin: SupabaseClient, options: { notifyFrom?: Date |
         if (error instanceof ConsentRequiredError) await forgetUnprocessedSource(admin, connection, sourceId);
         throw error;
       }
-      // 맥락층(SOURCE_CHUNKS_ENABLED): 처리한 원문의 조각 임베딩. 꺼져 있으면 아무것도 부르지 않고, 실패해도 던지지 않는다 (Slack 원문은 만들지 않는다)
-      await indexSourceAfterIngest(admin, {
-        userId: connection.userId,
-        sourceId,
-        text: item.text,
-        provider: connection.provider,
-        externalUrl: item.externalUrl,
-      });
+      await index();
     },
   };
 }
