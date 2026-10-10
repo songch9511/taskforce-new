@@ -16,7 +16,6 @@ import {
   type ConversationMessage,
   type CreateConversationRequest,
   type CreateConversationResponse,
-  type PostConversationMessageRequest,
   type PostConversationMessageResponse,
 } from "./contract";
 import { retryAfterSeconds } from "./rate-limit";
@@ -84,7 +83,8 @@ export type PostMessageDeps<User extends AppUser> = {
   /** 한도에 찼으면 다시 할 수 있는 시각, 아니면 시도를 남기고 null (모델을 부르기 전에) */
   rateLimit: (user: User) => Promise<Date | null>;
   loadConversation: (user: User, conversationId: string) => Promise<{ id: string; contextId: string | null; contextName: string | null } | null>;
-  verifySelected: (user: User, refs: PostConversationMessageRequest["refs"]) => Promise<{ targets: Target[] } | { missing: true }>;
+  /** refs: 정규화한 선택(normalizeSelected). 하나라도 내 것이 아니면 missing */
+  verifySelected: (user: User, refs: SelectedRefs) => Promise<{ targets: Target[] } | { missing: true }>;
   /** 이 대화에 같은 client_message_id의 사용자 메시지가 이미 있는가 (한도를 저장 전에 셀지 정한다) */
   messageExists: (user: User, conversationId: string, clientMessageId: string) => Promise<boolean>;
   /** selected: 앱이 고른 대상(정렬 · 중복 제거). 같은 client_message_id라도 글이나 대상이 다르면 mismatch */
@@ -119,9 +119,11 @@ export async function handlePostConversationMessage<User extends AppUser>(
   try {
     const conversation = await deps.loadConversation(user, conversationId);
     if (!conversation) return errorResponse(404, "not_found", NOT_FOUND);
-    // 앱이 보낸 대상은 모두 내 것이어야 한다: 남의 id로 대상 · 권한을 얻지 못한다
-    const selected = await deps.verifySelected(user, body.data.refs);
-    if ("missing" in selected) return errorResponse(404, "not_found", "대상을 찾지 못했습니다.");
+    // 앱이 보낸 대상은 모두 내 것이어야 한다: 남의 id로 대상 · 권한을 얻지 못한다.
+    // 소유를 확인하기 전에 한 번 정규화한다(소문자 · 중복 제거 · 정렬): 대소문자만 다른 같은 uuid를 두 대상으로 세어 404를 내지 않고, 확인 · 저장 · 답이 같은 선택을 쓴다
+    const refs = normalizeSelected(body.data.refs);
+    const verified = await deps.verifySelected(user, refs);
+    if ("missing" in verified) return errorResponse(404, "not_found", "대상을 찾지 못했습니다.");
 
     // 한도: 새 제출이면 저장하기 전에 센다(한도에 걸린 메시지를 남기지 않는다). 같은 제출의 재전송(저장된 답 · 처리 중)은 세지 않고,
     // 답을 못 받은 같은 제출을 다시 처리할 때(retry)만 저장 뒤에 센다
@@ -137,7 +139,7 @@ export async function handlePostConversationMessage<User extends AppUser>(
     }
 
     // 고른 대상도 같은 제출의 일부다: 처음 고른 대상이 메시지에 남고, 다시 보낼 때 다르면 mismatch (다시 처리할 때도 처음 대상과 같은 것만 받는다)
-    const posted = await deps.post(user, conversation.id, body.data.client_message_id, body.data.text, normalizeSelected(body.data.refs));
+    const posted = await deps.post(user, conversation.id, body.data.client_message_id, body.data.text, refs);
     switch (posted.status) {
       case "not_found":
         return errorResponse(404, "not_found", NOT_FOUND);
@@ -180,7 +182,7 @@ export async function handlePostConversationMessage<User extends AppUser>(
         message: { id: messageId, seq, text: current.text, createdAt: current.createdAt },
         window: window.messages,
         omitted: window.omitted,
-        selected: selected.targets,
+        selected: verified.targets,
         flags: { memory: deps.memoryEnabled() },
         now: deps.now?.() ?? new Date(),
       });

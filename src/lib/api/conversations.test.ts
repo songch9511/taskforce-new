@@ -135,7 +135,7 @@ describe("POST /api/v2/conversations/{id}/messages", () => {
 
     const injected = makeDeps({ verifySelected: vi.fn(async () => ({ missing: true as const })) });
     expect((await send(injected, { client_message_id: CLIENT, text: TEXT, refs: { action_ids: [id(9, "99999999")] } })).status).toBe(404);
-    expect(injected.verifySelected).toHaveBeenCalledWith(USER, { action_ids: [id(9, "99999999")] });
+    expect(injected.verifySelected).toHaveBeenCalledWith(USER, { action_ids: [id(9, "99999999")], run_ids: [], artifact_ids: [] }); // 정규화한 선택으로 확인한다
     expect(injected.post).not.toHaveBeenCalled();
     expect(injected.respond).not.toHaveBeenCalled();
   });

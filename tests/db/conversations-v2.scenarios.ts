@@ -842,6 +842,43 @@ export function conversationsTests(db: () => ConversationsDb) {
       expect((await send({ client_message_id: noRefs, text: "이건?", refs: { action_ids: [a] } })).status).toBe(409); // 처음엔 대상 없음 → 대상 추가도 다른 제출
     });
 
+    it("Codex 최종 delta P2: 대소문자만 다른 같은 id를 함께 보내도 유효한 대상 1개 (404 아님) — 재시도는 같은 제출, 내 다른 대상은 409, 남의 · 없는 대상은 404 · 저장 0", async () => {
+      // 이 어댑터(sqlAdmin)의 .in은 id::text 견주기라 실제 uuid 열의 대소문자 무시와 다르다. 그래서 여기서는 소유 확인에 정규화한(소문자) 선택이 가는지를 보이고,
+      // uuid 열 비교 자체(대문자도 한 행)는 tests/conversation/refs-canonical.test.ts의 작은 PGlite(id = any($::uuid[]))로 본다
+      const me = await f.user();
+      const them = await f.user();
+      const admin = sqlAdmin((sql, params) => db().query(sql, params));
+      const created = await createConversation(admin, me, {});
+      const conversationId = created.status === "created" ? created.conversation.id : "";
+      const action = async (owner: string, title: string) => (await f.one(`insert into public.actions (user_id, title) values ($1, $2) returning id`, [owner, title])).id as string;
+      const a = await action(me, "견적서 보내기");
+      const b = await action(me, "회의록 정리");
+      const theirs = await action(them, "남의 할 일");
+      const send = sender(admin, me, conversationId, () => ({ decide: fakeDecide({ intent: "modify" }), complete: fakeComplete(reply()) }));
+      const messages = () => f.count(`select count(*)::int as n from public.conversation_messages where conversation_id = $1`, [conversationId]);
+      const client = randomUUID();
+      const text = "이거 마무리해줘";
+
+      const first = await send({ client_message_id: client, text, refs: { action_ids: [a, a.toUpperCase()] } });
+      expect(first.status).toBe(200);
+      expect(first.body.message.refs.action_ids).toEqual([a]);
+      expect(await messages()).toBe(2);
+
+      const retry = await send({ client_message_id: client, text, refs: { action_ids: [a.toUpperCase()] } }); // 대문자만 다름 = 같은 제출
+      expect(retry.status).toBe(200);
+      expect(retry.body.reply.id).toBe(first.body.reply.id);
+
+      const other = await send({ client_message_id: client, text, refs: { action_ids: [b, b.toUpperCase()] } }); // 내 다른 대상
+      expect(other.status).toBe(409);
+      expect(other.body.error.message).toBe("같은 client_message_id로 다른 대상을 보냈습니다.");
+
+      for (const ids of [[theirs], [theirs.toUpperCase()], [a, theirs], [randomUUID()], [a, a.toUpperCase(), randomUUID()]]) {
+        const rejected = await send({ client_message_id: randomUUID(), text, refs: { action_ids: ids } });
+        expect(rejected.status, ids.join()).toBe(404);
+      }
+      expect(await messages()).toBe(2);
+    });
+
     it("A04: 열린 할 일이 많아도 조건 조회로 전체 수를 센다 (top-k 검색이 아님) · 남의 할 일 id를 대상으로 보내면 404 · 저장 0", async () => {
       const me = await f.user();
       const them = await f.user();

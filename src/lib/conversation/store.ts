@@ -119,9 +119,8 @@ export async function verifySelected(
   userId: string,
   refs: { action_ids?: string[]; run_ids?: string[]; artifact_ids?: string[] } | undefined,
 ): Promise<{ targets: Target[] } | { missing: true }> {
-  const actionIds = [...new Set(refs?.action_ids ?? [])];
-  const runIds = [...new Set(refs?.run_ids ?? [])];
-  const artifactIds = [...new Set(refs?.artifact_ids ?? [])];
+  // uuid는 대소문자 없이 같은 값이다: 소문자로 모아 중복을 지운 뒤 행 수와 견준다 (대소문자만 다른 같은 id를 두 개로 세지 않는다)
+  const { action_ids: actionIds, run_ids: runIds, artifact_ids: artifactIds } = normalizeSelected(refs);
   const targets: Target[] = [];
   if (actionIds.length) {
     const { data } = await admin.from("actions").select("id, title").eq("user_id", userId).in("id", actionIds).throwOnError();
