@@ -263,4 +263,22 @@ struct EdgeChatTests {
         let lost = SettingsMemoryDetail.content(for: inferred, memory: runtime.memory)
         #expect(!lost.canConfirm && lost.source == .unavailable("Can't open the original"))
     }
+
+    /// 화면에 쓰지 않는 말 · 자산 (S3 방식을 앱 쪽 새 파일까지, 글은 대부분 `ChatCopy` · `MemoryCopy` 상수라 그쪽은 `nothingInTheCopyIsBanned`가 본다): "All caught up" · "Nothing here" · Claude/Anthropic · 색 점 · SF Symbol 아이콘
+    @Test func appSourcesAvoidBannedCopyAndAssets() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().appending(path: "Taskforce/Mac")
+        let files = ["Edge/EdgeChat.swift", "SettingsWindow/SettingsRememberedSections.swift"]
+        let literal = try NSRegularExpression(pattern: #""(?:[^"\\\n]|\\.)*""#)
+        for file in files {
+            let source = try String(contentsOf: root.appending(path: file), encoding: .utf8)
+            let code = source.split(separator: "\n").filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("//") }.joined(separator: "\n")
+            let literals = literal.matches(in: code, range: NSRange(code.startIndex..., in: code)).compactMap { Range($0.range, in: code).map { String(code[$0]) } }
+            for text in literals {
+                for banned in ["caught up", "nothing here", "claude", "anthropic", "●", "•", "✨"] {
+                    #expect(!text.localizedCaseInsensitiveContains(banned), "\(file): \(text)")
+                }
+            }
+            #expect(!code.contains("Image(systemName:") && !code.contains("systemImage:"), "\(file)")
+        }
+    }
 }
