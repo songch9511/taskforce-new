@@ -1,0 +1,48 @@
+{
+  "id": "arch01-consult-condition-unmet",
+  "description": "ARCH01 (2): 며칠 뒤 Action 0건에서 '이제 개발 어떻게 하지?'. 조건 미충족을 사용자 발화로 말하고 확정 여부만 묻는다. 확정됐다고 가정하지 않는다. 쓰기 0",
+  "maps_to": [
+    "ARCH01",
+    "A02"
+  ],
+  "asked_at": "2026-10-10T10:00:00+09:00",
+  "message": "이제 개발 어떻게 하지?",
+  "memory": [
+    {
+      "id": "m1",
+      "kind": "condition",
+      "subject": "개발 착수 조건",
+      "statement": "디자인 확정 뒤 개발 시작"
+    },
+    {
+      "id": "m2",
+      "kind": "plan",
+      "subject": "개발 에이전트",
+      "statement": "개발은 Opus 5.5로"
+    }
+  ],
+  "expect": {
+    "intent_any": [
+      "consult"
+    ],
+    "route_any": [
+      "consult"
+    ],
+    "reply_contains_any": [
+      "확정"
+    ],
+    "reply_must_not_match": [
+      "확정(됐|되었|이 됐)(으니|으므로|기 때문)",
+      "확정된 상태"
+    ],
+    "tiers_include": [
+      "T2"
+    ],
+    "memory_writes": {
+      "min": 0,
+      "max": 0
+    },
+    "adopt": false
+  },
+  "origin": "synthetic"
+}

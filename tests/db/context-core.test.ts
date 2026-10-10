@@ -602,7 +602,7 @@ describe("on delete: 부모를 지우면", () => {
 describe("updated_at · 트리거", () => {
   const UPDATED = ["people", "work_contexts", "context_members", "memory_items", "identity_links"] as const;
 
-  it("updated_at이 있는 표는 기존 set_updated_at 트리거를 쓰고, A2의 새 함수는 기억 이력 보호 하나다 (B1이 더한 트리거는 따로 적는다)", async () => {
+  it("updated_at이 있는 표는 기존 set_updated_at 트리거를 쓰고, A2의 새 함수는 기억 이력 보호 하나다 (B1 · B2가 더한 트리거는 따로 적는다)", async () => {
     const { rows } = await db.query<{ table: string; fn: string }>(
       `select c.relname as table, p.proname as fn from pg_trigger t
        join pg_class c on c.oid = t.tgrelid join pg_proc p on p.oid = t.tgfoid
@@ -620,8 +620,10 @@ describe("updated_at · 트리거", () => {
       { table: "memory_items", fn: "memory_items_purged_source_guard" },
       { table: "source_chunks", fn: "source_chunks_purged_source_guard" },
     ];
+    // B2(20261106000000_conversations_v2): 답 인용 가드(Slack D3 · 원문 삭제). 동작은 tests/db/conversations-v2.scenarios.ts가 본다
+    const B2 = [{ table: "conversation_messages", fn: "conversation_messages_citation_guard" }];
     expect(rows).toEqual(
-      [...[...UPDATED].map((table) => ({ table, fn: "set_updated_at" })), { table: "memory_items", fn: "memory_items_keep_history" }, ...B1].sort(
+      [...[...UPDATED].map((table) => ({ table, fn: "set_updated_at" })), { table: "memory_items", fn: "memory_items_keep_history" }, ...B1, ...B2].sort(
         (a, b) => a.table.localeCompare(b.table) || a.fn.localeCompare(b.fn),
       ),
     );

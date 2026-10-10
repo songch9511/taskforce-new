@@ -1,0 +1,51 @@
+{
+  "id": "a34-mixed-read-and-delegate",
+  "description": "A34: 조회와 위임이 섞인 '남은 일 알려주고 견적서는 네가 보내줘'. 조회 부분은 바로 답하고, 보내기는 하지 않는다(보냈다고 말하지 않음)",
+  "maps_to": [
+    "A34",
+    "A05"
+  ],
+  "asked_at": "2026-10-10T15:00:00+09:00",
+  "message": "남은 일 알려주고 견적서는 네가 보내줘",
+  "selected": [
+    "a1"
+  ],
+  "records": {
+    "open_actions": [
+      {
+        "id": "a1",
+        "title": "견적서 보내기",
+        "counterpart": "김대표"
+      },
+      {
+        "id": "a2",
+        "title": "회의록 정리"
+      }
+    ]
+  },
+  "expect": {
+    "intent_any": [
+      "instruct",
+      "lookup"
+    ],
+    "route_any": [
+      "execution",
+      "consult"
+    ],
+    "reply_contains_any": [
+      "회의록"
+    ],
+    "reply_must_not_match": [
+      "보냈어요",
+      "보냈습니다",
+      "보낼게요",
+      "발송했"
+    ],
+    "memory_writes": {
+      "min": 0,
+      "max": 0
+    },
+    "adopt": false
+  },
+  "origin": "synthetic"
+}

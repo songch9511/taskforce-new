@@ -747,14 +747,24 @@ export const conversationSchema = z.object({
 });
 export type Conversation = z.infer<typeof conversationSchema>;
 
+/**
+ * 대화 만들기 (POST /api/v2/conversations). id: 앱이 정한 대화 id (B2, 선택). 같은 id로 다시 보내면 새로 만들지 않고 그 대화를 돌려준다(멱등).
+ * 다른 사용자가 이미 쓴 id면 409. context_id는 내 범위여야 한다(아니면 404)
+ */
 export const createConversationRequestSchema = z
-  .object({ title: z.string().trim().min(1).max(200).optional(), context_id: z.uuid().nullable().optional() })
+  .object({ id: z.uuid().optional(), title: z.string().trim().min(1).max(200).optional(), context_id: z.uuid().nullable().optional() })
   .strict();
 export type CreateConversationRequest = z.infer<typeof createConversationRequestSchema>;
 
+/** 대화 만들기 응답 (201 새로 만듦 · 200 같은 id의 대화가 이미 있음) */
+export const createConversationResponseSchema = z.object({ conversation: conversationSchema });
+export type CreateConversationResponse = z.infer<typeof createConversationResponseSchema>;
+
 /**
  * 메시지 보내기. client_message_id가 같으면 같은 제출이다: 두 번 저장 · 실행하지 않는다 (unique (conversation_id, client_message_id)).
- * refs: 앱에서 고른 대상 (지시 대상 규칙 1번: 선택된 Action · run · 산출물)
+ * refs: 앱에서 고른 대상 (지시 대상 규칙 1번: 선택된 Action · run · 산출물).
+ * 같은 제출이려면 text와 refs(서버가 소문자 · 중복 제거 · 정렬해 견준다)가 모두 같아야 한다 (B2): 같은 client_message_id에
+ * 다른 text면 409("다른 글"), 다른 refs면 409("다른 대상"). 다시 보낼 때는 처음과 같은 text · refs를 보낸다
  */
 export const postConversationMessageRequestSchema = z
   .object({
@@ -768,6 +778,37 @@ export const postConversationMessageRequestSchema = z
   .strict();
 export type PostConversationMessageRequest = z.infer<typeof postConversationMessageRequestSchema>;
 
+/** 응답 구간. 이어 붙이면 응답 text다. 앱은 등급이 다른 구간만 구별해 보인다 (모든 문장에 배지를 붙이지 않는다) */
+export const responseSegmentSchema = z.object({ text: z.string(), tier: contextTierSchema });
+export type ResponseSegment = z.infer<typeof responseSegmentSchema>;
+
+/**
+ * assistant 답의 내용 (conversation_messages.content, B2). 앱이 RLS로 읽어 대화를 복원한다. 글(구간 · 인용 · 제안 글)이 들어 있어
+ * 대화 글 보관 기한에 text와 함께 비운다. 빠진 값은 기본값으로 읽는다 (옛 행 · 사용자 메시지는 content가 없다)
+ */
+export const conversationMessageContentSchema = z.object({
+  segments: z.array(responseSegmentSchema).default([]),
+  citations: z.array(askCitationSchema).default([]),
+  /** refs.proposal의 내용. payload_hash = 이 객체의 sha256 (채택할 때 서버가 다시 견준다) */
+  proposal: z.object({ kind: z.literal("create_action"), title: z.string() }).nullable().default(null),
+  /** 이 답이 사용자에게 물은 것: remember(기억해 둘까요) · referent(어느 일인가요, 후보 ≤ 3) · clarify(무엇을 원하나요) · adopt(추가할까요) */
+  asks: z.enum(["remember", "referent", "clarify", "adopt"]).nullable().default(null),
+  /** 답을 만들 때 본 범위 · 기억 · 원문 · 할 일 (id만, 글 없음). context_version은 그때의 범위 version */
+  used: z
+    .object({
+      context_id: z.uuid().nullable(),
+      context_version: z.number().int().positive().nullable(),
+      memory_item_ids: z.array(z.uuid()).default([]),
+      source_ids: z.array(z.uuid()).default([]),
+      action_ids: z.array(z.uuid()).default([]),
+    })
+    .nullable()
+    .default(null),
+  /** 모델에 넣은 메시지 수와 넣지 않은 앞 메시지 수 (런타임 계약 12장: 최근 20개) */
+  window: z.object({ shown: z.number().int().nonnegative(), omitted: z.number().int().nonnegative() }).nullable().default(null),
+});
+export type ConversationMessageContent = z.infer<typeof conversationMessageContentSchema>;
+
 /** conversation_messages 행. role event: run · 에이전트 사건 중 사용자가 알아야 할 것만 (heartbeat 없음) */
 export const conversationMessageSchema = z.object({
   id: z.uuid(),
@@ -779,12 +820,12 @@ export const conversationMessageSchema = z.object({
   refs: messageRefsSchema,
   intent: messageIntentSchema.nullable(),
   created_at: z.string(),
+  /** 이 답이 답한 사용자 메시지 (assistant만, B2). 사용자 메시지 하나에 답 하나 */
+  reply_to: z.uuid().nullable().optional(),
+  /** assistant 답의 내용 (B2) */
+  content: conversationMessageContentSchema.nullable().optional(),
 });
 export type ConversationMessage = z.infer<typeof conversationMessageSchema>;
-
-/** 응답 구간. 이어 붙이면 응답 text다. 앱은 등급이 다른 구간만 구별해 보인다 (모든 문장에 배지를 붙이지 않는다) */
-export const responseSegmentSchema = z.object({ text: z.string(), tier: contextTierSchema });
-export type ResponseSegment = z.infer<typeof responseSegmentSchema>;
 
 /** 메시지 보내기 응답: 저장한 사용자 메시지 + assistant 답 ({text, segments[], citations[], refs}, 런타임 계약 2장) */
 export const postConversationMessageResponseSchema = z.object({
