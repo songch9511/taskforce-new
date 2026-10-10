@@ -48,7 +48,7 @@ export type EditWrite = { statement: string; value: Record<string, unknown>; val
 export type EditPlan = { ok: true; write: EditWrite } | { ok: false; reason: "conflict" | "unavailable" | "invalid" };
 
 /**
- * 정정(Edit). 요청에 없는 값(value · valid_from · valid_until)은 옛 행의 것을 그대로 쓰고, null이면 비운다.
+ * 정정(Edit). 요청에 없는 값(value · valid_from · valid_until)은 옛 행의 것을 그대로 쓴다. 비우기: value는 {}(null은 계약상 400), valid_from · valid_until은 null.
  * 출처(source_ref)는 잇지 않는다: 새 글은 사용자가 쓴 것이고 옛 행이 이력으로 출처를 남긴다.
  * Slack에서 온 observed · inferred 항목은 옛 행의 값도 잇지 않고(Slack 글에서 읽은 구조화 값이다) 글이 달라야 한다(확인의 우회 막기).
  */

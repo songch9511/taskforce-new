@@ -613,6 +613,68 @@ export function memoryWritesTests(db: () => MemoryWritesDb) {
     });
   });
 
+  describe("409는 성공의 증거가 아니다 (Codex 첫 독립 검토): 다른 기기의 Edit · Move · Forget도 같은 표시를 남긴다", () => {
+    it("다른 기기의 Edit가 먼저 성공하면 내 Edit는 409다: 옛 행의 superseded_by는 서 있지만 후속 행의 글은 내 것이 아니다 (내 글은 어디에도 저장되지 않는다)", async () => {
+      const me = await f.user();
+      const id = await f.explicit(me, { statement: "Original date" });
+      const other = itemOf(await f.edit(me, id, { expected_version: 1, statement: "Other device edit" }));
+      expect(await f.edit(me, id, { expected_version: 1, statement: "This device edit" })).toEqual({ status: "conflict" });
+      const old = await f.row(id);
+      expect(old.superseded_by).toBe(other.id); // 내 요청이 성공했다는 표시와 구별되지 않는다
+      expect((await f.row(old.superseded_by!)).statement).toBe("Other device edit");
+      expect(await f.count(`select count(*)::int as n from public.memory_items where user_id = $1 and statement = 'This device edit'`, [me])).toBe(0);
+      expect((await f.current(me)).map((r) => r.statement)).toEqual(["Other device edit"]);
+    });
+
+    it("다른 기기의 확인(또는 정정)이 먼저 성공하면 내 확인도 409다: 후보의 superseded_by는 다른 요청이 만든 행이다", async () => {
+      const me = await f.user();
+      const candidate = await f.candidate(me, { statement: "출시는 목요일인 듯" });
+      const other = itemOf(await f.edit(me, candidate, { expected_version: 1, statement: "다른 기기에서 고쳐 쓴 글" }));
+      expect(await f.confirm(me, candidate, 1)).toEqual({ status: "conflict" });
+      expect((await f.row(candidate)).superseded_by).toBe(other.id);
+      expect((await f.current(me)).map((r) => r.statement)).toEqual(["다른 기기에서 고쳐 쓴 글"]);
+    });
+
+    it("다른 기기가 범위 B로 먼저 옮기면 내 범위 A로의 옮기기는 409다: revoked_at과 moved_from 후속 행은 서 있지만 그 범위는 B다", async () => {
+      const me = await f.user();
+      const a = await f.context(me, "Synthetic A");
+      const b = await f.context(me, "Synthetic B");
+      const id = await f.explicit(me);
+      const other = itemOf(await f.move(me, id, 1, { scope_kind: "context", context_id: b }));
+      expect(await f.move(me, id, 1, { scope_kind: "context", context_id: a })).toEqual({ status: "conflict" });
+      expect((await f.row(id)).revoked_at).not.toBeNull();
+      const successors = await db().query(
+        `select id, context_id from public.memory_items where user_id = $1 and value ->> 'moved_from' = $2 and superseded_at is null and revoked_at is null`,
+        [me, id],
+      );
+      expect(successors).toEqual([{ id: other.id, context_id: b }]); // A에는 후속 행이 없다
+      expect(await f.current(me, a)).toEqual([]);
+    });
+
+    it("forget의 200은 '이 항목은 지금 기억이 아니다'만 뜻한다: 다른 기기가 옮겨서 잊힌 항목에 보낸 forget도 200이고, 옮긴 후속 행은 여전히 지금 기억이다", async () => {
+      const me = await f.user();
+      const b = await f.context(me, "Synthetic B");
+      const id = await f.explicit(me);
+      const moved = itemOf(await f.move(me, id, 1, { scope_kind: "context", context_id: b }));
+      const retry = itemOf(await f.forget(me, id, 1));
+      expect(retry.revoked_at).not.toBeNull();
+      expect((await f.current(me)).map((r) => r.id)).toEqual([moved.id]); // 내가 잊으려던 사실은 B에 그대로 살아 있다
+      expect(await f.row(moved.id)).toMatchObject({ revoked_at: null, superseded_at: null });
+    });
+
+    it("Edit 비우기: value는 생략 = 상속, {} = 비움 (null은 400이라 서버까지 오지 않는다). valid_from · valid_until만 null = 비움", async () => {
+      const me = await f.user();
+      const id = await f.explicit(me, { value: { day: "thu" }, valid_from: "2026-10-01T00:00:00Z", valid_until: "2026-12-31T00:00:00Z" });
+      const kept = itemOf(await f.edit(me, id, { expected_version: 1, statement: "상속" }));
+      expect(kept.value).toEqual({ day: "thu" });
+      expect(kept.valid_from).not.toBeNull();
+      const cleared = itemOf(await f.edit(me, kept.id, { expected_version: 1, statement: "비움", value: {}, valid_from: null }));
+      expect(cleared.value).toEqual({});
+      expect(cleared.valid_from).toBeNull();
+      expect(cleared.valid_until).not.toBeNull(); // 생략한 valid_until은 이어받는다
+    });
+  });
+
   describe("권한 · 격리 · gate", () => {
     it("기억·범위 쓰기는 Action · run · 정책 · 승인 · 사건 · 크레딧 · 대화 메시지 · 멤버를 한 줄도 만들지 않는다 (I04 · I14)", async () => {
       const me = await f.user();

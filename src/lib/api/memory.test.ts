@@ -87,6 +87,8 @@ const CASES: Case[] = [
       { expected_version: 1, statement: "x".repeat(1001) },
       { expected_version: 1, statement: "x", scope_kind: "global" },
       { expected_version: 1, statement: "x", origin: "inferred" },
+      { expected_version: 1, statement: "x", value: null }, // 비우려면 {} (value는 nullable이 아니다, valid_from · valid_until만 null)
+      { expected_version: 1, statement: "x", value: "{}" },
       { expected_version: 1, statement: "x", valid_from: "2026-10-10T00:00:00Z", valid_until: "2026-10-01T00:00:00Z" },
     ],
   },
@@ -212,6 +214,15 @@ describe("정정 route 처리의 고유 규칙", () => {
     const { deps, write } = makeDeps();
     await handleEditMemory(req("PATCH", { expected_version: 2, statement: "  출시는 금요일  ", value: { day: "fri" }, valid_until: null }), ID, deps);
     expect(write).toHaveBeenCalledWith(USER, ID, { expected_version: 2, statement: "출시는 금요일", value: { day: "fri" }, valid_until: null });
+  });
+});
+
+describe("정정 비우기 계약", () => {
+  it("value를 비우려면 {}를 보낸다(그대로 쓰기에 간다). 생략한 키는 쓰기 입력에 없다(상속은 규칙에서). valid_from · valid_until만 null로 비운다", async () => {
+    const { deps, write } = makeDeps();
+    await handleEditMemory(req("PATCH", { expected_version: 2, statement: "x", value: {}, valid_from: null }), ID, deps);
+    await handleEditMemory(req("PATCH", { expected_version: 2, statement: "x" }), ID, deps);
+    expect(write.mock.calls.map((call) => call[2])).toEqual([{ expected_version: 2, statement: "x", value: {}, valid_from: null }, { expected_version: 2, statement: "x" }]);
   });
 });
 
