@@ -19,7 +19,7 @@ public struct SourceDetail: Sendable, Hashable {
 
 /// Supabase 직접 읽기 (RLS로 본인 행만, 읽기 전용). 쓰기는 `APIClient`로만 한다.
 public struct TaskforceReads: Sendable {
-    private let supabase: SupabaseClient
+    let supabase: SupabaseClient
     /// `execution_runs.stopped_at` 열이 없음을 이번 실행에서 알았나 (서버 U2 Mac PR1 마이그레이션 전 DB: 매 읽기마다 실패 응답을 받지 않게)
     private let missingStoppedAt = MissingColumnMemo()
 
@@ -250,7 +250,7 @@ public struct TaskforceReads: Sendable {
     static let undefinedColumn = "42703"
 
     /// 응답 본문을 앱의 디코더(마이크로초 시각 · 날짜)로 읽는다.
-    private func rows<T: Decodable>(_ builder: PostgrestTransformBuilder) async throws -> [T] {
+    func rows<T: Decodable>(_ builder: PostgrestTransformBuilder) async throws -> [T] {
         let data = try await builder.execute().data
         return try TaskforceJSON.decoder().decode([T].self, from: data)
     }
