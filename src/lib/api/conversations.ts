@@ -68,7 +68,12 @@ export async function handleCreateConversation<User extends AppUser>(request: Re
 
 // ─── 메시지 보내기 ───────────────────────────────────
 
-export type PostResult = { status: "created" | "retry" | "answered" | "in_progress" | "mismatch" | "stale" | "not_found"; messageId: string | null; seq: number | null; replyId: string | null };
+export type PostResult = {
+  status: "created" | "retry" | "answered" | "in_progress" | "mismatch" | "refs_mismatch" | "stale" | "not_found";
+  messageId: string | null;
+  seq: number | null;
+  replyId: string | null;
+};
 export type FinishResult = { status: "written" | "answered" | "stale" | "conflict" | "not_found"; replyId: string | null };
 
 export type PostMessageDeps<User extends AppUser> = {
@@ -142,6 +147,8 @@ export async function handlePostConversationMessage<User extends AppUser>(
         return conflict("같은 메시지를 처리하고 있습니다.");
       case "mismatch":
         return conflict("같은 client_message_id로 다른 글을 보냈습니다.");
+      case "refs_mismatch":
+        return conflict("같은 client_message_id로 다른 대상을 보냈습니다.");
       case "stale":
         return conflict("이 메시지 뒤에 새 메시지가 있어 답하지 않았습니다.");
     }

@@ -144,7 +144,7 @@ export async function verifySelected(
 
 // ─── 메시지 ─────────────────────────────────────────
 
-export type PostStatus = "created" | "retry" | "answered" | "in_progress" | "mismatch" | "stale" | "not_found";
+export type PostStatus = "created" | "retry" | "answered" | "in_progress" | "mismatch" | "refs_mismatch" | "stale" | "not_found";
 
 /** 사용자 메시지 쓰기 (conversation_post_message: 원자적 seq · client_message_id + 글 + 고른 대상으로 멱등 · 처리 중 표시) */
 export async function postUserMessage(

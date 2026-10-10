@@ -167,7 +167,7 @@ describe("판정 (Jev): 인용이 문장을 그대로 말하는가", () => {
       candidate(),
     ]);
     const decide = vi.fn(async (): Promise<JevDecision> => ({ model: "fake", answers: { support_0: { type: "noul", noul: 0.2 }, support_1: { type: "noul", noul: 0.91 } }, usage: { input_tokens: 1, cost: 0.001 } }));
-    const support = await checkMemorySupport(result.planned, decide, { previousReply: "확정됐나요?", currentMessage: { id: MESSAGE.id, text: MESSAGE.text } });
+    const support = await checkMemorySupport(result.planned, decide, { previousReply: "확정됐나요?", previousAsked: null, currentMessage: { id: MESSAGE.id, text: MESSAGE.text } });
     const request = decide.mock.calls[0] as unknown as [
       { state: { previous_reply: string; current_message: string; candidates: Record<string, unknown>[] }; questions: Record<string, { type: string }> },
     ];
@@ -189,7 +189,7 @@ describe("판정 (Jev): 인용이 문장을 그대로 말하는가", () => {
 
   it("후보가 없으면 판정을 부르지 않는다", async () => {
     const decide = vi.fn();
-    expect(await checkMemorySupport([], decide as never, { previousReply: null, currentMessage: { id: MESSAGE.id, text: MESSAGE.text } })).toEqual({ verdicts: [], cost: 0 });
+    expect(await checkMemorySupport([], decide as never, { previousReply: null, previousAsked: null, currentMessage: { id: MESSAGE.id, text: MESSAGE.text } })).toEqual({ verdicts: [], cost: 0 });
     expect(decide).not.toHaveBeenCalled();
   });
 });
@@ -201,7 +201,7 @@ describe("판정: 정정의 옛 기억 · \"기억해 둘까요?\"에 대한 동
   it("정정이면 판정 state에 옛 기억 문장(previous_statement)을 넣는다", async () => {
     const result = plan([candidate({ statement: "개발은 Sonnet 5.5로", quote: "개발은 Opus 5.5로 할 거야", corrects: "M1" })], { shownMemory: [shown()] });
     const decide = vi.fn(async (): Promise<JevDecision> => ({ model: "fake", answers: { support_0: { type: "noul", noul: 0.9 } } }));
-    await checkMemorySupport(result.planned, decide, { previousReply: null, currentMessage: { id: MESSAGE.id, text: MESSAGE.text } });
+    await checkMemorySupport(result.planned, decide, { previousReply: null, previousAsked: null, currentMessage: { id: MESSAGE.id, text: MESSAGE.text } });
     const request = decide.mock.calls[0] as unknown as [{ state: { candidates: { previous_statement: string | null }[] } }];
     expect(request[0].state.candidates[0].previous_statement).toBe("개발은 Opus 5.5로");
   });
@@ -223,7 +223,7 @@ describe("판정: 정정의 옛 기억 · \"기억해 둘까요?\"에 대한 동
       scope: { kind: "global" },
     });
     const decide = vi.fn(async (): Promise<JevDecision> => ({ model: "fake", answers: { support_0: { type: "noul", noul: 0.95 }, agrees: { type: "noul", noul: agrees } } }));
-    const support = await checkMemorySupport(result.planned, decide, { previousReply: "이 내용을 기억해 둘까요?", currentMessage: { id: NOW.id, text: answer } });
+    const support = await checkMemorySupport(result.planned, decide, { previousReply: "이 내용을 기억해 둘까요?", previousAsked: "remember", currentMessage: { id: NOW.id, text: answer } });
     const request = decide.mock.calls[0] as unknown as [{ state: { current_message: string }; questions: Record<string, unknown> }];
     expect(Object.keys(request[0].questions)).toEqual(["support_0", "agrees"]);
     expect(request[0].state.current_message).toBe(answer);
@@ -261,5 +261,28 @@ describe("Codex P2-3 · M1: 가리킨 정정 대상이 다른 사실이면 덮�
   it("대조: 프로젝트(범위) 대화의 정정은 전체 Alpha를 고치지 않고 그 범위의 새 행 (전역 보존)", () => {
     const result = run("이 프로젝트에선 Alpha 마감이 수요일이야", { kind: "fact", subject: "", statement: "Alpha의 마감은 수요일", corrects: "M1" }, { kind: "context", contextId: CONTEXT });
     expect(result.writes).toEqual([{ item: expect.objectContaining({ scope_kind: "context", context_id: CONTEXT, subject: "alpha 마감" }), corrects: null, expected_version: null }]);
+  });
+});
+
+describe("N7: 앞 답이 길어도 판정 · 동의가 '기억해 둘까요?'를 본다", () => {
+  it("앞 답은 뒤쪽 600자를 넘기고(끝의 질문이 남는다), 물은 것은 구조 값(previous_asked)으로 따로 넘긴다", async () => {
+    const result = planMemoryWrites({
+      candidates: [candidate({ message: "U1" })],
+      allowed: true,
+      quotable: new Map([
+        ["U1", MESSAGE],
+        ["U2", { id: "aaaaaaaa-0000-4000-8000-000000000009", text: "응", createdAt: MESSAGE.createdAt }],
+      ]),
+      shown: new Map(),
+      scope: { kind: "global" },
+    });
+    const longReply = `${"앞 설명. ".repeat(200)}이 내용을 기억해 둘까요?`;
+    const decide = vi.fn(async (): Promise<JevDecision> => ({ model: "fake", answers: { support_0: { type: "noul", noul: 0.95 }, agrees: { type: "noul", noul: 0.95 } } }));
+    await checkMemorySupport(result.planned, decide, { previousReply: longReply, previousAsked: "remember", currentMessage: { id: "aaaaaaaa-0000-4000-8000-000000000009", text: "응" } });
+    const request = decide.mock.calls[0] as unknown as [{ state: { previous_reply: string; previous_asked: string | null } }];
+    expect(request[0].state.previous_reply.endsWith("이 내용을 기억해 둘까요?")).toBe(true);
+    expect([...request[0].state.previous_reply].length).toBeLessThanOrEqual(600);
+    expect(request[0].state.previous_reply.startsWith("…")).toBe(true);
+    expect(request[0].state.previous_asked).toBe("remember");
   });
 });

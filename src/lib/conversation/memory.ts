@@ -289,14 +289,14 @@ export type SupportVerdict = null | "not_supported" | "declined";
 export async function checkMemorySupport(
   planned: readonly PlannedWrite[],
   decide: Decide,
-  context: { previousReply: string | null; currentMessage: { id: string; text: string } },
+  context: { previousReply: string | null; previousAsked: string | null; currentMessage: { id: string; text: string } },
 ): Promise<{ verdicts: SupportVerdict[]; cost: number }> {
   if (planned.length === 0) return { verdicts: [], cost: 0 };
   const fromEarlier = planned.map((p) => p.check.messageId !== context.currentMessage.id);
   const response = await decide(
     buildMemorySupportRequest(
       planned.map((p) => ({ statement: p.check.statement, quote: p.check.quote, message: p.check.message, previous_statement: p.check.previous })),
-      { previousReply: context.previousReply, currentMessage: context.currentMessage.text, askAgreement: fromEarlier.some(Boolean) },
+      { previousReply: context.previousReply, previousAsked: context.previousAsked, currentMessage: context.currentMessage.text, askAgreement: fromEarlier.some(Boolean) },
     ),
   );
   const yes = (key: string) => {

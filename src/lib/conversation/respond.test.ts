@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { CONSULT_SYSTEM_PROMPT } from "@/lib/ai/prompts/consult";
 import { ConsentRequiredError } from "@/lib/consent/gate";
@@ -354,7 +354,7 @@ describe("기억 (inform · correct, J7은 J2와 같은 호출)", () => {
     expect(Object.keys(supportRequest.questions)).toContain("agrees");
   });
 
-  it("L3: 기억 판정(Jev)만 실패하면 기억은 버리고(저장 0) 답은 남긴다 — '기억했어요' 확인만 빠지고 새 설명은 붙지 않는다", async () => {
+  it("L3 · N1 · N8: 기억 판정(Jev)만 실패하면 기억은 버리고(저장 0) 답은 남기고, '기억하지 못했어요' 한 줄을 붙인다. 로그에는 오류 이름만", async () => {
     const decide = fakeDecide({ intent: "inform", supportError: new Error("Decisions API 요청 실패 (503)") });
     const complete = fakeComplete(
       reply({
@@ -363,10 +363,19 @@ describe("기억 (inform · correct, J7은 J2와 같은 호출)", () => {
       }),
     );
     const t = deps({ decide, complete });
-    const plan = await respondToMessage(respondInput("개발은 Opus 5.5로 할 거야"), t.deps);
-    expect(plan.memory).toEqual([]);
-    expect(plan.summary.memoryDropped).toEqual(["not_checked"]);
-    expect(plan.reply.text).toBe("알겠어요.");
+    const errors = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      const plan = await respondToMessage(respondInput("개발은 Opus 5.5로 할 거야"), t.deps);
+      expect(plan.memory).toEqual([]);
+      expect(plan.summary.memoryDropped).toEqual(["not_checked"]);
+      expect(plan.reply.text).toBe("알겠어요.\n\n기억하지 못했어요. 다시 말해 주세요.");
+      expect(plan.reply.segments.at(-1)).toEqual({ text: "\n\n기억하지 못했어요. 다시 말해 주세요.", tier: "T1" });
+      const logged = errors.mock.calls.flat().map(String).join("\n");
+      expect(logged).toBe(JSON.stringify({ event: "memory_support_failed", error: "Error" }));
+      expect(logged).not.toContain("Opus");
+    } finally {
+      errors.mockRestore();
+    }
   });
 
   it("L3: 판정 중 동의를 철회하면 turn 전체를 멈춘다 (ConsentRequiredError)", async () => {

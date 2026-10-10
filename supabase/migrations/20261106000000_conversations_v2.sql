@@ -3,7 +3,7 @@
 --
 -- 1) 같은 제출을 두 번 저장 · 실행하지 않는다 (런타임 계약 2장 · 10장, A03 · D1):
 --    - 사용자 메시지는 conversation_post_message 하나로만 쓴다. 대화 행을 잠그고 seq를 매긴다(max + 1, 대화마다 한 줄).
---      같은 client_message_id면 새로 쓰지 않는다: 글이나 고른 대상(selected)이 다르면 mismatch, 답이 있으면 answered(모델을 다시 부르지 않는다),
+--      같은 client_message_id면 새로 쓰지 않는다: 글이 다르면 mismatch, 고른 대상(selected)이 다르면 refs_mismatch, 답이 있으면 answered(모델을 다시 부르지 않는다),
 --      그 뒤에 새 사용자 메시지가 이미 있으면 stale, 처리 중이면 in_progress, 처리 표시가 풀렸으면 retry(다시 처리).
 --    - reply_lease_until: 처리 중 표시(사용자 메시지에만). 처리가 실패하면 서버가 풀고(conversation_release_lease), 서버가 죽으면 시각이 지나 풀린다.
 --    - reply_to: 이 답이 답한 사용자 메시지. 사용자 메시지 하나에 답은 하나다(unique). 같은 대화 · 같은 사용자의 메시지만 가리킨다(복합 외래키).
@@ -48,7 +48,7 @@ create unique index conversation_messages_reply_to_key on public.conversation_me
 -- ─────────────────────────────────────────────
 -- 2) 사용자 메시지 쓰기 (서버). 결과:
 --    created(새로 씀) · retry(같은 제출, 답 없음, 처리 표시가 풀려 다시 처리) · answered(같은 제출, 답 있음) ·
---    in_progress(같은 제출을 처리 중) · mismatch(같은 client_message_id에 다른 글 · 다른 대상) · stale(같은 제출이지만 그 뒤 새 사용자 메시지가 있음) ·
+--    in_progress(같은 제출을 처리 중) · mismatch(같은 client_message_id에 다른 글) · refs_mismatch(같은 client_message_id에 다른 대상) · stale(같은 제출이지만 그 뒤 새 사용자 메시지가 있음) ·
 --    not_found(대화가 없거나 남의 대화)
 -- ─────────────────────────────────────────────
 create function public.conversation_post_message(
@@ -83,9 +83,14 @@ begin
     from public.conversation_messages m
    where m.conversation_id = p_conversation_id and m.client_message_id = p_client_message_id;
   if found then
-    -- 글이나 고른 대상이 다르면 같은 제출이 아니다 (답이 있어도 그 답을 돌려주지 않는다. 대상은 서버가 정렬 · 중복 제거해 넘긴다)
-    if v_message.text is distinct from p_text or coalesce(v_message.selected, '{}'::jsonb) is distinct from coalesce(p_selected, '{}'::jsonb) then
+    -- 글이나 고른 대상이 다르면 같은 제출이 아니다 (답이 있어도 그 답을 돌려주지 않는다. 대상은 서버가 정렬 · 중복 제거해 넘긴다).
+    -- 앱이 고칠 곳을 알 수 있게 글 불일치(mismatch)와 대상 불일치(refs_mismatch)를 나눈다
+    if v_message.text is distinct from p_text then
       return query select 'mismatch'::text, v_message.id, v_message.seq, null::uuid;
+      return;
+    end if;
+    if coalesce(v_message.selected, '{}'::jsonb) is distinct from coalesce(p_selected, '{}'::jsonb) then
+      return query select 'refs_mismatch'::text, v_message.id, v_message.seq, null::uuid;
       return;
     end if;
     select r.id into v_reply from public.conversation_messages r where r.reply_to = v_message.id;

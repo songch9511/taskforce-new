@@ -4,7 +4,7 @@ import type { JevQuestion } from "@/lib/ai/jev";
 // 코드는 후보를 그대로 믿지 않는다: 인용을 사용자 메시지와 대조하고(이어진 한 덩어리 · 4자 이상) 문장 ↔ 인용 연결을 확인한 뒤,
 // Jev 판정(memorySupportQuestion: 인용이 문장을 그대로 말하는가)을 통과한 것만 explicit로 저장한다 (src/lib/conversation/memory.ts). 문구를 바꾸면 버전을 올리고 consult 골든셋(evals/consult) 실제 모델 결과를 PR에 적는다.
 
-export const MEMORY_EXTRACT_PROMPT_VERSION = "memory-extract-v2";
+export const MEMORY_EXTRACT_PROMPT_VERSION = "memory-extract-v3";
 
 /** 저장할 수 있는 기억 종류와 뜻 (identity_link는 대화에서 만들지 않는다: 신원은 연결 · 설정이 정한다) */
 export const MEMORY_KIND_GUIDE = {
@@ -57,17 +57,34 @@ export function memorySupportQuestion(index: number): JevQuestion {
 export const MEMORY_AGREE_QUESTION: JevQuestion = {
   type: "noul",
   instructions:
-    "Taskforce asked state.previous_reply, offering to remember something the user said earlier. Does the user's reply state.current_message clearly agree that Taskforce should remember it? " +
+    "Taskforce asked state.previous_reply (state.previous_asked is \"remember\" when it offered to remember something the user said earlier). Does the user's reply state.current_message clearly agree that Taskforce should remember it? " +
     "Answer no if the user declines, hesitates, changes the subject, or the reply is unclear.",
 };
 
-/** 기억 판정 요청: 앞 답(600자) · 지금 답 · 후보들(+ 옛 기억 문장). 앞 메시지를 인용한 후보가 있으면 동의 판정도 함께. 원문 · 할 일은 보내지 않는다 */
+/** 앞 답을 넘길 때의 글자 상한. 질문은 답 끝에 오므로 뒤쪽을 남긴다 */
+export const PREVIOUS_REPLY_CHARS = 600;
+
+/** 글의 뒤쪽 max자 (코드 포인트, 넘치면 앞에 "…") */
+export function tailText(text: string, max = PREVIOUS_REPLY_CHARS): string {
+  const chars = [...text];
+  return chars.length <= max ? text : `…${chars.slice(-(max - 1)).join("")}`;
+}
+
+/**
+ * 기억 판정 요청: 앞 답(뒤쪽 600자) · 앞 답이 물은 것(previous_asked, 예: "remember") · 지금 답 · 후보들(+ 옛 기억 문장).
+ * 앞 메시지를 인용한 후보가 있으면 동의 판정도 함께. 원문 · 할 일은 보내지 않는다
+ */
 export function buildMemorySupportRequest(
   candidates: { statement: string; quote: string; message: string; previous_statement: string | null }[],
-  context: { previousReply: string | null; currentMessage: string; askAgreement: boolean },
+  context: { previousReply: string | null; previousAsked: string | null; currentMessage: string; askAgreement: boolean },
 ) {
   return {
-    state: { previous_reply: context.previousReply ? context.previousReply.slice(0, 600) : null, current_message: context.currentMessage, candidates },
+    state: {
+      previous_reply: context.previousReply ? tailText(context.previousReply) : null,
+      previous_asked: context.previousAsked,
+      current_message: context.currentMessage,
+      candidates,
+    },
     questions: {
       ...Object.fromEntries(candidates.map((_, i) => [`support_${i}`, memorySupportQuestion(i)])),
       ...(context.askAgreement ? { agrees: MEMORY_AGREE_QUESTION } : {}),

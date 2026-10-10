@@ -163,6 +163,7 @@ const TEXT = {
   rememberAsk: { ko: "이 내용을 기억해 둘까요?", en: "Should I remember this?" },
   memoryOff: { ko: "기억 기능이 꺼져 있어 저장하지 않았어요.", en: "Memory is off, so nothing was saved." },
   memoryNone: { ko: "말씀에서 그대로 확인할 수 있는 내용이 없어 기억하지 않았어요.", en: "Nothing was saved: I couldn't match it to your exact words." },
+  memoryFailed: { ko: "기억하지 못했어요. 다시 말해 주세요.", en: "Couldn't save that. Please say it again." },
   execution: { ko: "아직 실행을 맡길 연결이 없어요.", en: "There's no connected agent to run this yet." },
   preference: { ko: "선호 저장은 아직 지원하지 않아요.", en: "Saving preferences isn't supported yet." },
   noProposal: { ko: "추가할 제안이 없어요.", en: "There's nothing to add yet." },
@@ -349,25 +350,32 @@ export async function respondToMessage(input: RespondInput, deps: RespondDeps): 
       // 기계 확인을 통과한 후보만 판정(Jev): 인용이 문장을 그대로 말하는가. 후보가 없으면 부르지 않는다.
       // 판정만 실패하면(공급자 오류 · 마감 · 한도) 기억은 버리고(저장 0) 답은 남긴다. 동의 철회는 turn 전체를 멈춘다
       let memory: MemoryPlan;
+      let supportFailed = false;
       try {
         const support = await checkMemorySupport(result.memory.planned, deps.decide, {
           previousReply: previous?.text ?? null,
+          previousAsked: previous?.content?.asks ?? null,
           currentMessage: { id: input.message.id, text: input.message.text },
         });
         memory = withSupport(result.memory, support.verdicts);
         result.cost += support.cost;
       } catch (error) {
         if (error instanceof ConsentRequiredError) throw error;
+        // 오류 이름만 남긴다 (원문 · 사용자 글 없음)
+        console.error(JSON.stringify({ event: "memory_support_failed", error: error instanceof Error ? error.name : "unknown" }));
         memory = withSupport(result.memory, "not_checked");
+        supportFailed = true;
       }
       result.memory = memory;
-      // 판정이 실패했거나 사용자가 "기억해 둘까요?"를 거절했으면 "기억하지 않았어요"를 덧붙이지 않는다 (기억 확인 문구만 빠진다)
-      const quietDrop = memory.dropped.includes("not_checked") || memory.dropped.includes("declined");
+      // 사용자가 "기억해 둘까요?"를 거절했으면 아무 말도 덧붙이지 않는다. 판정이 실패했으면 기억하지 못했다고 짧게 알린다(아래)
+      const quietDrop = supportFailed || memory.dropped.includes("declined");
       memoryWrites = memory.writes;
       userRefs.memory_item_ids = memory.targets;
       replyRefs.memory_item_ids = memory.existing;
       if (memory.writes.length > 0 && input.conversation.contextId) replyRefs.context_ids = [input.conversation.contextId];
       for (const note of memoryNoteTexts(lang, memory.notes, scopeLabel(input))) push(note, "T2");
+      // 판정이 실패해 버린 기억이 있으면 사용자가 기억된 줄 알지 않게 한 줄 (확인 문구와 같은 자리)
+      if (supportFailed) push(TEXT.memoryFailed[lang], "T1");
       if (route.kind === "remember") {
         // 저장하지 않았다고 말하는 것은 사용자가 기억을 알려 줬을 때만 (알림 · 정정, "기억해 둘까요?"에 대한 답)
         const toldToRemember = intent.kind === "inform" || intent.kind === "correct" || previous?.content?.asks === "remember";

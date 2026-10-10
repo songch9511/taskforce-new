@@ -153,6 +153,7 @@ describe("POST /api/v2/conversations/{id}/messages", () => {
   it.each([
     ["in_progress", "같은 메시지를 처리하고 있습니다."],
     ["mismatch", "같은 client_message_id로 다른 글을 보냈습니다."],
+    ["refs_mismatch", "같은 client_message_id로 다른 대상을 보냈습니다."],
     ["stale", "이 메시지 뒤에 새 메시지가 있어 답하지 않았습니다."],
   ] as const)("같은 제출이 %s면 409 · 모델 호출 0", async (status, text) => {
     const deps = makeDeps({ post: vi.fn(async () => ({ status, messageId: MESSAGE, seq: 1, replyId: null })) });

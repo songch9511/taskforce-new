@@ -762,7 +762,9 @@ export type CreateConversationResponse = z.infer<typeof createConversationRespon
 
 /**
  * 메시지 보내기. client_message_id가 같으면 같은 제출이다: 두 번 저장 · 실행하지 않는다 (unique (conversation_id, client_message_id)).
- * refs: 앱에서 고른 대상 (지시 대상 규칙 1번: 선택된 Action · run · 산출물)
+ * refs: 앱에서 고른 대상 (지시 대상 규칙 1번: 선택된 Action · run · 산출물).
+ * 같은 제출이려면 text와 refs(서버가 소문자 · 중복 제거 · 정렬해 견준다)가 모두 같아야 한다 (B2): 같은 client_message_id에
+ * 다른 text면 409("다른 글"), 다른 refs면 409("다른 대상"). 다시 보낼 때는 처음과 같은 text · refs를 보낸다
  */
 export const postConversationMessageRequestSchema = z
   .object({

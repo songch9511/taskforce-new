@@ -506,6 +506,29 @@ export function conversationsTests(db: () => ConversationsDb) {
       expect(citationsOf(await f.message(theirReply.reply_id!))).toEqual([[theirSlack, "private Slack quote", "private channel"]]);
     });
 
+    it("N4: 남의 원문 id를 인용한 답은 넣을 때 · 고칠 때 모두 인용 · 제목 · 링크를 비운다 (끊긴 남의 원문도 그 상태를 보지 않는다)", async () => {
+      const me = await f.user();
+      const them = await f.user();
+      const conversation = await f.conversation(me);
+      const theirs = await f.connectionSource(them, "notion", "그들의 문서: 계약 조건");
+      const theirSlack = await f.connectionSource(them, "slack", "그들의 Slack 글");
+      await db().query(`select public.purge_slack_sources($1::uuid[])`, [[theirSlack]]);
+      const posted = await f.post(me, conversation, randomUUID(), "질문");
+      const done = await f.finish(me, posted.message_id!, {
+        reply: { content: { segments: [{ text: "답", tier: "T1" }], citations: [slackCitation(theirs, "계약 조건", "그들의 문서"), slackCitation(theirSlack, "그들의 Slack 글", "#theirs")] } },
+      });
+      expect(citationsOf(await f.message(done.reply_id!))).toEqual([
+        [theirs, "", null],
+        [theirSlack, "", null],
+      ]);
+      // 고칠 때도 같다 (가드는 UPDATE OF content에도 돈다)
+      await db().query(`update public.conversation_messages set content = $2::jsonb where id = $1`, [
+        done.reply_id,
+        JSON.stringify({ segments: [], citations: [slackCitation(theirs, "계약 조건", "그들의 문서")] }),
+      ]);
+      expect(citationsOf(await f.message(done.reply_id!))).toEqual([[theirs, "", null]]);
+    });
+
     it("원문 행이 지워지면 답 내용의 그 원문 인용 · 제목을 비운다 (A16)", async () => {
       const me = await f.user();
       const conversation = await f.conversation(me);
@@ -798,7 +821,7 @@ export function conversationsTests(db: () => ConversationsDb) {
       models = working;
       const swapped = await send({ client_message_id: client, text, refs: { action_ids: [b] } });
       expect(swapped.status).toBe(409);
-      expect(swapped.body.error.message).toBe("같은 client_message_id로 다른 글을 보냈습니다.");
+      expect(swapped.body.error.message).toBe("같은 client_message_id로 다른 대상을 보냈습니다."); // 글 불일치와 구분
       expect(working.decide).not.toHaveBeenCalled();
 
       const same = await send({ client_message_id: client, text, refs: { action_ids: [a, a] } }); // 중복만 다름 = 같은 제출
