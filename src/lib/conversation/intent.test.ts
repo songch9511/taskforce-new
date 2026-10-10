@@ -66,10 +66,12 @@ describe("routeIntent: 임계값 (런타임 계약 12장 0.8 / 0.5)", () => {
     for (const kind of intentKindSchema.options) expect(route(kind, 0.49)).toEqual({ kind: "clarify" });
   });
 
-  it("조회 · 상담 · 그 밖은 0.5 이상이면 답한다. 함께 말한 사실은 remember ≥ 0.8일 때만 저장 가능", () => {
+  it("조회 · 상담 · 그 밖은 0.5 이상이면 답한다. 함께 말한 사실은 의도 확신 ≥ 0.8 이고 remember ≥ 0.8일 때만 저장 가능 (M3: 쓰기는 확신 ≥ 0.8)", () => {
     expect(route("lookup", 0.5)).toEqual({ kind: "consult", memory: false });
     expect(route("consult", 0.95, { remember: 0.79 })).toEqual({ kind: "consult", memory: false });
-    expect(route("other", 0.6, { remember: 0.8 })).toEqual({ kind: "consult", memory: true });
+    expect(route("other", 0.6, { remember: 0.95 })).toEqual({ kind: "consult", memory: false });
+    expect(route("consult", 0.79, { remember: 0.95 })).toEqual({ kind: "consult", memory: false });
+    expect(route("consult", 0.8, { remember: 0.8 })).toEqual({ kind: "consult", memory: true });
   });
 
   it("알림 · 정정 · 답: ≥ 0.8이면 저장 가능, 0.5–0.8이면 저장하지 않고 묻는다", () => {
@@ -87,6 +89,7 @@ describe("routeIntent: 임계값 (런타임 계약 12장 0.8 / 0.5)", () => {
     expect(answer("adopt", false)).toEqual({ kind: "remember", memory: true });
     expect(answer("referent")).toEqual({ kind: "execution", confirm: false, alsoRead: false });
     expect(answer("clarify")).toEqual({ kind: "consult", memory: false });
+    expect(routeIntent({ kind: "answer", confidence: 0.7, remember: 0.95, read: 0 }, { asked: "clarify", openProposal: false })).toEqual({ kind: "consult", memory: false });
     expect(answer("remember")).toEqual({ kind: "remember", memory: true });
     expect(answer(null)).toEqual({ kind: "remember", memory: true });
   });

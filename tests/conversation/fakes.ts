@@ -15,19 +15,27 @@ export const id = (n: number, prefix = "aaaaaaaa") => `${prefix}-0000-4000-8000-
 export const USER = id(1, "11111111");
 export const CONVERSATION = id(1, "cccccccc");
 
-/** support: 기억 판정(support_i, 인용이 문장을 그대로 말하는가)의 답. 숫자 하나면 모든 후보, 배열이면 후보 순서대로 (기본 0.95) */
-export type FakeIntent = { intent: IntentKind; confidence?: number; remember?: number; read?: number; support?: number | number[] };
+/**
+ * support: 기억 판정(support_i, 인용이 문장을 그대로 말하는가)의 답. 숫자 하나면 모든 후보, 배열이면 후보 순서대로 (기본 0.95).
+ * agrees: "기억해 둘까요?"에 대한 지금 답이 동의하는가 (기본 0.95). supportError: 판정 요청이 실패한다
+ */
+export type FakeIntent = { intent: IntentKind; confidence?: number; remember?: number; read?: number; support?: number | number[]; agrees?: number; supportError?: Error };
 
 /** 가짜 Jev: J1 질문 셋(intent · remember · read)과 기억 판정(support_i)에 정해 둔 답 */
 export function fakeDecide(answer: FakeIntent | ((request: Parameters<Decide>[0]) => FakeIntent)) {
   return vi.fn(async (request: Parameters<Decide>[0]): Promise<JevDecision> => {
     const a = typeof answer === "function" ? answer(request) : answer;
     const keys = Object.keys(request.questions);
-    if (keys.every((key) => key.startsWith("support_"))) {
-      const value = (i: number) => (Array.isArray(a.support) ? (a.support[i] ?? 0.95) : (a.support ?? 0.95));
+    if (keys.every((key) => key.startsWith("support_") || key === "agrees")) {
+      if (a.supportError) throw a.supportError;
+      const value = (key: string) => {
+        if (key === "agrees") return a.agrees ?? 0.95;
+        const i = Number(key.slice("support_".length));
+        return Array.isArray(a.support) ? (a.support[i] ?? 0.95) : (a.support ?? 0.95);
+      };
       return {
         model: "fake-jev",
-        answers: Object.fromEntries(keys.map((key) => [key, { type: "noul" as const, noul: value(Number(key.slice("support_".length))) }])),
+        answers: Object.fromEntries(keys.map((key) => [key, { type: "noul" as const, noul: value(key) }])),
         usage: { input_tokens: 1, output_tokens: 1, cost: 0 },
       };
     }

@@ -69,7 +69,7 @@ export type IntentRoute =
 /**
  * 의도 → 분기 (런타임 계약 2장 임계값). 쓰기는 확신 ≥ 0.8에서만 한다.
  * - 확신 < 0.5: 묻는다.
- * - 조회 · 상담 · 그 밖: 0.5 이상이면 답한다. 발화에 기억할 내용이 확실하면(remember ≥ 0.8) 함께 저장할 수 있다.
+ * - 조회 · 상담 · 그 밖: 0.5 이상이면 답한다. 의도 확신 ≥ 0.8이고 발화에 기억할 내용이 확실하면(remember ≥ 0.8) 함께 저장할 수 있다.
  * - 알림 · 정정 · 답: ≥ 0.8이면 저장할 수 있다. 0.5–0.8이면 답하되 저장하지 않고 기억해 둘지 묻는다.
  */
 export function routeIntent(
@@ -85,14 +85,14 @@ export function routeIntent(
     // "추가할까요?"에 "응" = 채택, "어느 일인가요?"에 답 = 실행 의도의 대상(실행 연결은 없다), "무엇을 원하나요?"에 답 = 다시 읽어 답한다
     if (previous.asked === "adopt" && previous.openProposal) return { kind: "adopt", confirm: !sure };
     if (previous.asked === "referent") return { kind: "execution", confirm: !sure, alsoRead };
-    if (previous.asked === "clarify") return { kind: "consult", memory: result.remember >= INTENT_THRESHOLDS.act };
+    if (previous.asked === "clarify") return { kind: "consult", memory: sure && result.remember >= INTENT_THRESHOLDS.act };
   }
   if (MEMORY_KINDS.has(kind)) return { kind: "remember", memory: sure };
   if (kind === "adopt") return { kind: "adopt", confirm: !sure };
   if (EXECUTION_KINDS.has(kind)) return { kind: "execution", confirm: !sure, alsoRead };
   if (kind === "preference") return { kind: "preference", alsoRead };
-  // lookup · consult · other
-  return { kind: "consult", memory: result.remember >= INTENT_THRESHOLDS.act };
+  // lookup · consult · other: 함께 말한 사실의 저장도 쓰기라 의도 확신 ≥ 0.8이 먼저다 (런타임 계약 2장)
+  return { kind: "consult", memory: sure && result.remember >= INTENT_THRESHOLDS.act };
 }
 
 export function isWriteIntent(kind: IntentKind): boolean {

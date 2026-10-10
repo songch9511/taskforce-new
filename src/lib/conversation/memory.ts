@@ -10,7 +10,9 @@ import { MEMORY_SUPPORT_ACCEPT, MEMORY_WRITES_PER_TURN } from "./conversation.co
 //
 // - explicit 기억은 실제 사용자 발화의 인용을 확인한 것만 저장한다:
 //   1) 기계 확인: 인용이 허락된 사용자 메시지에 이어진 한 덩어리로 있고(findQuoteSpan) 너무 짧지 않으며, 기억 문장이 인용과 글자쌍 하나 이상을 나눈다.
-//   2) 판정(Jev, 예/아니오): 그 인용이 기억 문장을 그대로 말하는가(덧붙임 · 부정 뒤집기 · 일반화 · 남의 말 아님). MEMORY_SUPPORT_ACCEPT 미만이면 버린다.
+//   2) 판정(Jev, 예/아니오): 그 인용이 기억 문장을 그대로 말하는가(덧붙임 · 부정 뒤집기 · 일반화 · 남의 말 아님), 정정이면 같은 대상의 이전 기억을 바꾸는가.
+//      "기억해 둘까요?"에 답한 경우 앞 메시지 인용은 지금 답이 동의할 때만. MEMORY_SUPPORT_ACCEPT 미만이면 버린다.
+// - 가리킨 정정 대상(M번호)은 kind가 같고, 둘 다 주제가 있으면 주제도 같아야 한다 (모델 혼자 무관한 사실을 덮지 못하게).
 //   확인에 실패한 후보는 저장하지 않는다. inferred로 바꿔 저장하지도 않는다 (ARCH04).
 // - 범위: 대화의 범위(범위 또는 전체)에만 쓴다. 다른 범위로 일반화하지 않는다 (6.4 · A06).
 // - 정정: 모델이 가리킨 기억(M번호, 보여 준 것만)이나 보여 준 기억과 같은 범위 · 같은 사실(kind + subject)을 다시 말한 것이면 그 행을 version과 함께 정정한다
@@ -76,10 +78,12 @@ export type MemoryDropReason =
   | "unknown_memory"
   | "duplicate"
   | "limit"
-  | "not_supported";
+  | "not_supported"
+  | "declined"
+  | "not_checked";
 
-/** 판정(Jev)에 넘기는 것: 기억 문장 · 인용 · 인용한 메시지 글 */
-export type SupportCheck = { statement: string; quote: string; message: string };
+/** 판정(Jev)에 넘기는 것: 기억 문장 · 인용 · 인용한 메시지 글 · 정정이면 옛 기억 문장 */
+export type SupportCheck = { statement: string; quote: string; message: string; messageId: string; previous: string | null };
 
 /** 저장할 후보 하나 (판정 전) */
 export type PlannedWrite = { write: MemoryWritePlan; note: MemoryNote; target: string | null; check: SupportCheck; lockKey: string };
@@ -180,7 +184,6 @@ export function planMemoryWrites(input: {
       continue;
     }
     const sourceRef = { message_id: message.id, quote: span.quote };
-    const check: SupportCheck = { statement, quote: span.quote, message: message.text };
     const row = (kind: MemoryKind, subject: string | null) =>
       memoryWriteRow({ kind, scope: input.scope, subject, statement, origin: "explicit", source_ref: sourceRef, observed_at: message.createdAt });
 
@@ -192,12 +195,16 @@ export function planMemoryWrites(input: {
     if (pointed) {
       const alias = aliasNumber(candidate.corrects, "M");
       target = alias ? input.shown.get(alias) : undefined;
-      if (!target) {
+      // 가리킨 대상은 같은 사실이어야 한다: kind가 같고, 둘 다 주제가 있으면 주제도 같다 (모델 혼자 무관한 사실을 덮지 못하게)
+      const candidateKind = memoryKindSchema.safeParse(candidate.kind);
+      const candidateSubject = normalizeMemorySubject(candidate.subject);
+      const targetSubject = target?.subject && !target.subject.startsWith("memory:") ? target.subject : null;
+      if (!target || !candidateKind.success || candidateKind.data !== target.kind || (targetSubject && candidateSubject && candidateSubject !== targetSubject)) {
         dropped.push("unknown_memory");
         continue;
       }
       kind = target.kind as MemoryKind;
-      subject = target.subject && !target.subject.startsWith("memory:") ? target.subject : normalizeMemorySubject(candidate.subject);
+      subject = targetSubject ?? candidateSubject;
     } else {
       const parsed = memoryKindSchema.safeParse(candidate.kind);
       if (!parsed.success || parsed.data === "identity_link") {
@@ -213,6 +220,8 @@ export function planMemoryWrites(input: {
       continue;
     }
 
+    // 판정에 넘길 것: 정정이면 옛 기억 문장도 (인용이 같은 대상의 이전 기억을 바꾸는가)
+    const check: SupportCheck = { statement, quote: span.quote, message: message.text, messageId: message.id, previous: target?.statement ?? null };
     const sameScopeTarget = target !== undefined && sameScope(target, scopeRow);
     const factKey = sameScopeTarget ? `id:${target!.id}` : subject ? `${kind}\u0000${subject}` : null;
     if (factKey && (seenFacts.has(factKey) || (target && seenTargets.has(target.id)))) {
@@ -269,23 +278,41 @@ export function planMemoryWrites(input: {
   return summarize(planned, already, dropped);
 }
 
+/** 판정 결과 (후보마다): null = 통과, not_supported = 인용이 문장을 뒷받침하지 않음, declined = "기억해 둘까요?"에 동의하지 않음 */
+export type SupportVerdict = null | "not_supported" | "declined";
+
 /**
- * 판정: 인용이 기억 문장을 그대로 말하는가 (Jev noul, 후보마다 질문 하나 · 한 번에). 후보가 없으면 부르지 않는다.
- * 돌려주는 값은 planned와 같은 순서의 통과 여부.
+ * 판정: 인용이 기억 문장을 그대로 말하는가 (Jev noul, 후보마다 질문 하나 · 한 번에). 정정이면 같은 대상의 이전 기억을 바꾸는지도.
+ * 지금 메시지가 아닌 앞 메시지를 인용한 후보가 있으면("기억해 둘까요?"에 대한 답) 지금 답이 기억에 동의하는지(agrees)도 같은 요청에서 묻고,
+ * 동의하지 않으면 그 후보들은 저장하지 않는다(declined). 후보가 없으면 부르지 않는다. 결과는 planned와 같은 순서.
  */
-export async function checkMemorySupport(planned: readonly PlannedWrite[], decide: Decide, previousReply: string | null): Promise<{ keep: boolean[]; cost: number }> {
-  if (planned.length === 0) return { keep: [], cost: 0 };
-  const response = await decide(buildMemorySupportRequest(planned.map((p) => p.check), previousReply));
-  const keep = planned.map((_, i) => {
-    const answer = response.answers[`support_${i}`];
+export async function checkMemorySupport(
+  planned: readonly PlannedWrite[],
+  decide: Decide,
+  context: { previousReply: string | null; currentMessage: { id: string; text: string } },
+): Promise<{ verdicts: SupportVerdict[]; cost: number }> {
+  if (planned.length === 0) return { verdicts: [], cost: 0 };
+  const fromEarlier = planned.map((p) => p.check.messageId !== context.currentMessage.id);
+  const response = await decide(
+    buildMemorySupportRequest(
+      planned.map((p) => ({ statement: p.check.statement, quote: p.check.quote, message: p.check.message, previous_statement: p.check.previous })),
+      { previousReply: context.previousReply, currentMessage: context.currentMessage.text, askAgreement: fromEarlier.some(Boolean) },
+    ),
+  );
+  const yes = (key: string) => {
+    const answer = response.answers[key];
     return answer?.type === "noul" && answer.noul >= MEMORY_SUPPORT_ACCEPT;
-  });
-  return { keep, cost: response.usage?.cost ?? 0 };
+  };
+  const agrees = yes("agrees");
+  return {
+    verdicts: planned.map((_, i) => (fromEarlier[i] && !agrees ? "declined" : yes(`support_${i}`) ? null : "not_supported")),
+    cost: response.usage?.cost ?? 0,
+  };
 }
 
-/** 판정을 통과한 후보만 남긴다 (떨어진 것은 not_supported) */
-export function withSupport(plan: MemoryPlan, keep: readonly boolean[]): MemoryPlan {
-  const kept = plan.planned.filter((_, i) => keep[i] === true);
-  const rejected = plan.planned.length - kept.length;
-  return summarize(kept, plan.already, [...plan.dropped, ...Array.from({ length: rejected }, () => "not_supported" as const)]);
+/** 판정을 통과한 후보만 남긴다. 판정 자체가 실패했으면(공급자 오류 등) 모두 not_checked로 버린다 */
+export function withSupport(plan: MemoryPlan, verdicts: readonly SupportVerdict[] | "not_checked"): MemoryPlan {
+  const reasons = plan.planned.map((_, i): MemoryDropReason | null => (verdicts === "not_checked" ? "not_checked" : (verdicts[i] ?? null)));
+  const kept = plan.planned.filter((_, i) => reasons[i] === null);
+  return summarize(kept, plan.already, [...plan.dropped, ...reasons.filter((r): r is MemoryDropReason => r !== null)]);
 }

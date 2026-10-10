@@ -7,6 +7,7 @@ import { MEMORY_EXTRACT_PROMPT_VERSION } from "@/lib/ai/prompts/memory-extract";
 import type { AskCitation, ConversationMessageContent, MessageIntent, MessageRefs, Proposal, ResponseSegment } from "@/lib/api/contract";
 import type { MemoryScope } from "@/lib/context/memory";
 import { verifyCitations, type AskAction, type AskSource } from "@/lib/pipeline/ask";
+import { ConsentRequiredError } from "@/lib/consent/gate";
 import type { CompleteJson } from "@/lib/pipeline/extract";
 import type { Decide } from "@/lib/pipeline/judge";
 
@@ -345,11 +346,23 @@ export async function respondToMessage(input: RespondInput, deps: RespondDeps): 
       const allowMemory = route.memory && input.flags.memory;
       const context = await deps.retrieve({ text: input.message.text, chunks: true });
       const result = await runConsult({ context, allowMemory, allowProposal: route.kind === "consult", executionRequested: false });
-      // 기계 확인을 통과한 후보만 판정(Jev): 인용이 문장을 그대로 말하는가. 후보가 없으면 부르지 않는다
-      const support = await checkMemorySupport(result.memory.planned, deps.decide, previous?.text ?? null);
-      const memory = withSupport(result.memory, support.keep);
+      // 기계 확인을 통과한 후보만 판정(Jev): 인용이 문장을 그대로 말하는가. 후보가 없으면 부르지 않는다.
+      // 판정만 실패하면(공급자 오류 · 마감 · 한도) 기억은 버리고(저장 0) 답은 남긴다. 동의 철회는 turn 전체를 멈춘다
+      let memory: MemoryPlan;
+      try {
+        const support = await checkMemorySupport(result.memory.planned, deps.decide, {
+          previousReply: previous?.text ?? null,
+          currentMessage: { id: input.message.id, text: input.message.text },
+        });
+        memory = withSupport(result.memory, support.verdicts);
+        result.cost += support.cost;
+      } catch (error) {
+        if (error instanceof ConsentRequiredError) throw error;
+        memory = withSupport(result.memory, "not_checked");
+      }
       result.memory = memory;
-      result.cost += support.cost;
+      // 판정이 실패했거나 사용자가 "기억해 둘까요?"를 거절했으면 "기억하지 않았어요"를 덧붙이지 않는다 (기억 확인 문구만 빠진다)
+      const quietDrop = memory.dropped.includes("not_checked") || memory.dropped.includes("declined");
       memoryWrites = memory.writes;
       userRefs.memory_item_ids = memory.targets;
       replyRefs.memory_item_ids = memory.existing;
@@ -363,7 +376,7 @@ export async function respondToMessage(input: RespondInput, deps: RespondDeps): 
           // 확신 0.5–0.8: 쓰지 않고 한 번 묻는다. 다음 "응"은 이 앞 사용자 메시지를 인용해 기억할 수 있다
           push(TEXT.rememberAsk[lang], "T5");
           content.asks = "remember";
-        } else if (memory.notes.length === 0 && toldToRemember) push(TEXT.memoryNone[lang], "T5");
+        } else if (memory.notes.length === 0 && toldToRemember && !quietDrop) push(TEXT.memoryNone[lang], "T5");
       }
       break;
     }
@@ -578,7 +591,9 @@ async function consult(input: RespondInput, deps: RespondDeps, intent: IntentRes
   }
   if (segments.length === 0) throw new ConsultOutputError("모델이 답 구간을 내지 않았습니다");
 
-  const proposal = options.allowProposal ? proposalFromModel(result.data.proposal, context.openActions.map((a) => a.title), deps.newId) : null;
+  // 열린 할 일 · 최근 끝낸 할 일과 같은 제목은 제안하지 않는다 (원칙 4 중복 없음, A01 끝낸 일을 다시 만들지 않음)
+  const knownTitles = [...context.openActions, ...context.doneRecent].map((a) => a.title);
+  const proposal = options.allowProposal ? proposalFromModel(result.data.proposal, knownTitles, deps.newId) : null;
 
   const scope: MemoryScope = input.conversation.contextId ? { kind: "context", contextId: input.conversation.contextId } : { kind: "global" };
   const memory = planMemoryWrites({ candidates: result.data.memory_candidates, allowed: options.allowMemory, quotable, shown: memoryAliases, scope });

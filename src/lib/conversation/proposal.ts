@@ -21,17 +21,18 @@ export function payloadHash(payload: ProposalPayload): string {
 }
 
 /**
- * 모델이 낸 제안 → 저장할 제안. 제목이 비었거나 길거나, 이미 열려 있는 할 일과 같은 제목이면 내지 않는다 (원칙 4: 중복을 만들지 않는다).
+ * 모델이 낸 제안 → 저장할 제안. 제목이 비었거나 길거나, 이미 있는 할 일(열린 것 · 최근 끝낸 것)과 같은 제목이면 내지 않는다
+ * (원칙 4: 중복을 만들지 않는다, A01: 끝낸 일을 다시 만들지 않는다).
  */
 export function proposalFromModel(
   raw: { title: string } | null,
-  openActionTitles: readonly string[],
+  knownTitles: readonly string[],
   newId: () => string,
 ): { ref: Proposal; payload: ProposalPayload } | null {
   const title = raw?.title.replace(/\s+/g, " ").trim() ?? "";
   if (!title || [...title].length > PROPOSAL_TITLE_MAX_CHARS) return null;
   const key = normalizeForMatch(title);
-  if (!key || openActionTitles.some((existing) => normalizeForMatch(existing) === key)) return null;
+  if (!key || knownTitles.some((existing) => normalizeForMatch(existing) === key)) return null;
   const payload: ProposalPayload = { kind: "create_action", title };
   return { ref: { id: newId(), kind: "create_action", payload_hash: payloadHash(payload), state: "open" }, payload };
 }

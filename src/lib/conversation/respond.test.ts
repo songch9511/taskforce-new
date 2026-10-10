@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { CONSULT_SYSTEM_PROMPT } from "@/lib/ai/prompts/consult";
+import { ConsentRequiredError } from "@/lib/consent/gate";
 import { payloadHash } from "@/lib/conversation/proposal";
 import { notFoundAnswer } from "@/lib/pipeline/ask";
 
@@ -75,13 +76,21 @@ describe("상담 (consult · lookup): 원문 검색 실패만으로 끝내지 �
     expect(plan.adopt).toBeNull();
   });
 
-  it("A01: 끝낸 할 일과 같은 제목의 제안은 내지 않는다 (끝낸 일을 다시 만들지 않음)는 열린 할 일 기준 — 열린 할 일과 같은 제목도 내지 않는다", async () => {
-    const decide = fakeDecide({ intent: "consult" });
-    const complete = fakeComplete(reply({ proposal: { title: "제안서 초안 쓰기" } }));
-    const t = deps({ decide, complete }, emptyContext({ openActions: [action(1, "제안서 초안 쓰기")], openTotal: 1 }));
-    const plan = await respondToMessage(respondInput("뭐부터 하지?"), t.deps);
-    expect(plan.reply.refs.proposal).toBeNull();
-    expect(plan.reply.content.proposal).toBeNull();
+  it("A01 · 원칙 4: 열린 할 일 · 최근 끝낸 할 일과 같은 제목의 제안은 내지 않는다 (끝낸 일을 다시 만들지 않음, 중복 없음)", async () => {
+    const open = deps(
+      { decide: fakeDecide({ intent: "consult" }), complete: fakeComplete(reply({ proposal: { title: "제안서 초안 쓰기" } })) },
+      emptyContext({ openActions: [action(1, "제안서 초안 쓰기")], openTotal: 1 }),
+    );
+    const openPlan = await respondToMessage(respondInput("뭐부터 하지?"), open.deps);
+    expect(openPlan.reply.refs.proposal).toBeNull();
+    expect(openPlan.reply.content.proposal).toBeNull();
+
+    const done = deps(
+      { decide: fakeDecide({ intent: "consult" }), complete: fakeComplete(reply({ proposal: { title: "주간 보고서 보내기" } })) },
+      emptyContext({ doneRecent: [action(2, "주간 보고서 보내기", { status: "done" })], doneRecentTotal: 1 }),
+    );
+    const donePlan = await respondToMessage(respondInput("오늘 뭘 하면 좋을까?"), done.deps);
+    expect(donePlan.reply.refs.proposal).toBeNull();
   });
 
   it("A02: Source · Task가 없는 '오늘 Shape 디자인을 마무리하면 어떨까?' — 모델 답으로 방향을 의논하고, 기록이 없는데 T1이라고 한 구간은 T5로 내린다(일정 · 진행률을 확인된 사실로 꾸미지 않음)", async () => {
@@ -248,7 +257,7 @@ describe("기억 (inform · correct, J7은 J2와 같은 호출)", () => {
     const context = id(9, "cdcdcdcd");
     const global = memory(2, "plan", "개발 에이전트", "개발은 Opus 5.5로");
     const complete = fakeComplete(
-      reply({ memory_candidates: [{ kind: "plan", subject: "아무거나", statement: "개발은 Sonnet 5.5로", message: "U1", quote: "Sonnet 5.5로 바꿔", corrects: "M1" }] }),
+      reply({ memory_candidates: [{ kind: "plan", subject: "", statement: "개발은 Sonnet 5.5로", message: "U1", quote: "Sonnet 5.5로 바꿔", corrects: "M1" }] }),
     );
     const t = deps({ decide: fakeDecide({ intent: "correct" }), complete }, emptyContext({ memory: [global] }));
     const plan = await respondToMessage(respondInput("이 프로젝트는 개발 Sonnet 5.5로 바꿔", { contextId: context, contextName: "Shape" }), t.deps);
@@ -325,6 +334,47 @@ describe("기억 (inform · correct, J7은 J2와 같은 호출)", () => {
     expect(materialOf(secondTurn.complete.mock.calls[0][0]).memory_messages).toEqual(["U2", "U1"]);
     expect(saved.memory).toHaveLength(1);
     expect(saved.memory[0].item.source_ref).toEqual({ message_id: history[0].id, quote: text });
+  });
+
+  it("M2: '기억해 둘까요?'에 '아니, 됐어'라고 답하면 앞 메시지를 인용한 후보도 저장하지 않는다 (동의 판정, 조용히 버림)", async () => {
+    const text = "개발은 Opus 5.5로 할 거야";
+    const history = [
+      windowMessage(1, "user", text),
+      windowMessage(2, "assistant", "이 내용을 기억해 둘까요?", { content: { segments: [], citations: [], proposal: null, asks: "remember", used: null, window: null } }),
+    ];
+    const candidates = [{ kind: "plan" as const, subject: "개발 에이전트", statement: "개발은 Opus 5.5로", message: "U1", quote: text, corrects: null }];
+    const decide = fakeDecide({ intent: "answer", agrees: 0.05 });
+    const t = deps({ decide, complete: fakeComplete(reply({ segments: [{ text: "알겠어요.", tier: "T5" }], memory_candidates: candidates })) });
+    const plan = await respondToMessage(respondInput("아니, 됐어", { history }), t.deps);
+    expect(plan.memory).toEqual([]);
+    expect(plan.summary.memoryDropped).toEqual(["declined"]);
+    expect(plan.reply.text).toBe("알겠어요.");
+    const supportRequest = decide.mock.calls[1][0] as { state: { current_message: string }; questions: Record<string, unknown> };
+    expect(supportRequest.state.current_message).toBe("아니, 됐어");
+    expect(Object.keys(supportRequest.questions)).toContain("agrees");
+  });
+
+  it("L3: 기억 판정(Jev)만 실패하면 기억은 버리고(저장 0) 답은 남긴다 — '기억했어요' 확인만 빠지고 새 설명은 붙지 않는다", async () => {
+    const decide = fakeDecide({ intent: "inform", supportError: new Error("Decisions API 요청 실패 (503)") });
+    const complete = fakeComplete(
+      reply({
+        segments: [{ text: "알겠어요.", tier: "T2" }],
+        memory_candidates: [{ kind: "plan", subject: "개발 에이전트", statement: "개발은 Opus 5.5로", message: "U1", quote: "개발은 Opus 5.5로 할 거야", corrects: null }],
+      }),
+    );
+    const t = deps({ decide, complete });
+    const plan = await respondToMessage(respondInput("개발은 Opus 5.5로 할 거야"), t.deps);
+    expect(plan.memory).toEqual([]);
+    expect(plan.summary.memoryDropped).toEqual(["not_checked"]);
+    expect(plan.reply.text).toBe("알겠어요.");
+  });
+
+  it("L3: 판정 중 동의를 철회하면 turn 전체를 멈춘다 (ConsentRequiredError)", async () => {
+    const decide = fakeDecide({ intent: "inform", supportError: new ConsentRequiredError() });
+    const complete = fakeComplete(
+      reply({ memory_candidates: [{ kind: "plan", subject: "개발 에이전트", statement: "개발은 Opus 5.5로", message: "U1", quote: "개발은 Opus 5.5로 할 거야", corrects: null }] }),
+    );
+    await expect(respondToMessage(respondInput("개발은 Opus 5.5로 할 거야"), deps({ decide, complete }).deps)).rejects.toBeInstanceOf(ConsentRequiredError);
   });
 
   it("MEMORY_ENABLED가 꺼져 있으면 기억을 받지 않고(allow_memory false) 꺼져 있다고 말한다", async () => {

@@ -98,6 +98,17 @@ describe("planMemoryWrites: 범위 · 같은 사실 (ARCH02, B1 규칙)", () => 
     expect(result.notes).toEqual([{ kind: "corrected", statement: "개발은 Sonnet 5.5로", previous: "개발은 Opus 5.5로" }]);
   });
 
+  it("M1: 모델이 가리킨 정정 대상의 kind · 주제가 후보와 다르면 그 행을 덮지 않는다 (무관한 사실이 superseded되지 않게, unknown_memory)", () => {
+    const target = shown(); // plan · 개발 에이전트
+    const otherKind = plan([candidate({ kind: "fact", subject: "디자인 확정 여부", statement: "개발 시작 전 디자인 확정", quote: "디자인 확정되면 개발 시작하고", corrects: "M1" })], { shownMemory: [target] });
+    expect(otherKind.writes).toEqual([]);
+    expect(otherKind.dropped).toEqual(["unknown_memory"]);
+    const otherSubject = plan([candidate({ subject: "디자인 에이전트", statement: "개발은 Opus 5.5로 진행", corrects: "M1" })], { shownMemory: [target] });
+    expect(otherSubject.dropped).toEqual(["unknown_memory"]);
+    // 주제를 비워 보내면 대상의 주제를 따른다 (kind는 같아야 한다)
+    expect(plan([candidate({ subject: "", statement: "개발은 Opus 5.5로 진행", corrects: "M1" })], { shownMemory: [target] }).writes[0].corrects).toBe(target.id);
+  });
+
   it("범위 대화에서 전체 기억을 정정하면 전체 행은 그대로 두고 대화 범위의 같은 사실을 새로 쓴다", () => {
     const result = plan([candidate({ statement: "개발은 Sonnet 5.5로", corrects: "M1" })], { shownMemory: [shown()], contextId: CONTEXT });
     expect(result.writes).toEqual([{ item: expect.objectContaining({ scope_kind: "context", context_id: CONTEXT, subject: "개발 에이전트", kind: "plan" }), corrects: null, expected_version: null }]);
@@ -134,8 +145,8 @@ describe("planMemoryWrites: 범위 · 같은 사실 (ARCH02, B1 규칙)", () => 
   it("쓰기는 잠금 순서(같은 사실 열쇠)로 정렬한다: 두 turn이 같은 기억 둘을 반대 순서로 고쳐도 교착하지 않게", () => {
     const a = shown({ id: "acacacac-0000-4000-8000-00000000000a", subject: "가 주제", statement: "가 옛" });
     const b = shown({ id: "acacacac-0000-4000-8000-00000000000b", subject: "나 주제", statement: "나 옛" });
-    const forward = plan([candidate({ statement: "개발 가", corrects: "M1" }), candidate({ statement: "개발 나", corrects: "M2" })], { shownMemory: [a, b] });
-    const backward = plan([candidate({ statement: "개발 나", corrects: "M2" }), candidate({ statement: "개발 가", corrects: "M1" })], { shownMemory: [a, b] });
+    const forward = plan([candidate({ subject: "가 주제", statement: "개발 가", corrects: "M1" }), candidate({ subject: "나 주제", statement: "개발 나", corrects: "M2" })], { shownMemory: [a, b] });
+    const backward = plan([candidate({ subject: "나 주제", statement: "개발 나", corrects: "M2" }), candidate({ subject: "가 주제", statement: "개발 가", corrects: "M1" })], { shownMemory: [a, b] });
     expect(forward.writes.map((w) => w.corrects)).toEqual([a.id, b.id]);
     expect(backward.writes.map((w) => w.corrects)).toEqual([a.id, b.id]);
   });
@@ -156,21 +167,99 @@ describe("판정 (Jev): 인용이 문장을 그대로 말하는가", () => {
       candidate(),
     ]);
     const decide = vi.fn(async (): Promise<JevDecision> => ({ model: "fake", answers: { support_0: { type: "noul", noul: 0.2 }, support_1: { type: "noul", noul: 0.91 } }, usage: { input_tokens: 1, cost: 0.001 } }));
-    const support = await checkMemorySupport(result.planned, decide, "확정됐나요?");
-    const request = decide.mock.calls[0] as unknown as [{ state: { previous_reply: string; candidates: { statement: string; quote: string; message: string }[] }; questions: Record<string, { type: string }> }];
-    expect(Object.keys(request[0].questions)).toEqual(["support_0", "support_1"]);
+    const support = await checkMemorySupport(result.planned, decide, { previousReply: "확정됐나요?", currentMessage: { id: MESSAGE.id, text: MESSAGE.text } });
+    const request = decide.mock.calls[0] as unknown as [
+      { state: { previous_reply: string; current_message: string; candidates: Record<string, unknown>[] }; questions: Record<string, { type: string }> },
+    ];
+    expect(Object.keys(request[0].questions)).toEqual(["support_0", "support_1"]); // 지금 메시지 인용뿐이라 동의 판정은 묻지 않는다
     expect(request[0].state.previous_reply).toBe("확정됐나요?");
-    expect(request[0].state.candidates[1]).toEqual({ statement: "개발은 Opus 5.5로", quote: "개발은 Opus 5.5로 할 거야", message: MESSAGE.text });
-    expect(support).toEqual({ keep: [false, true], cost: 0.001 });
-    const kept = withSupport(result, support.keep);
+    expect(request[0].state.current_message).toBe(MESSAGE.text);
+    expect(request[0].state.candidates[1]).toEqual({ statement: "개발은 Opus 5.5로", quote: "개발은 Opus 5.5로 할 거야", message: MESSAGE.text, previous_statement: null });
+    expect(support).toEqual({ verdicts: ["not_supported", null], cost: 0.001 });
+    const kept = withSupport(result, support.verdicts);
     expect(kept.writes.map((w) => w.item.statement)).toEqual(["개발은 Opus 5.5로"]);
     expect(kept.notes).toEqual([{ kind: "new", statement: "개발은 Opus 5.5로" }]);
     expect(kept.dropped).toEqual(["not_supported"]);
   });
 
+  it("판정이 실패하면 모두 not_checked로 버린다 (저장 0)", () => {
+    const result = plan([candidate()]);
+    expect(withSupport(result, "not_checked")).toMatchObject({ writes: [], notes: [], dropped: ["not_checked"] });
+  });
+
   it("후보가 없으면 판정을 부르지 않는다", async () => {
     const decide = vi.fn();
-    expect(await checkMemorySupport([], decide as never, null)).toEqual({ keep: [], cost: 0 });
+    expect(await checkMemorySupport([], decide as never, { previousReply: null, currentMessage: { id: MESSAGE.id, text: MESSAGE.text } })).toEqual({ verdicts: [], cost: 0 });
     expect(decide).not.toHaveBeenCalled();
+  });
+});
+
+describe("판정: 정정의 옛 기억 · \"기억해 둘까요?\"에 대한 동의 (M1 · M2)", () => {
+  const EARLIER = { id: "aaaaaaaa-0000-4000-8000-000000000009", text: "개발은 Opus 5.5로 할 거야", createdAt: "2026-10-10T00:59:00.000Z" };
+  const NOW = { id: MESSAGE.id, text: "아니, 됐어" };
+
+  it("정정이면 판정 state에 옛 기억 문장(previous_statement)을 넣는다", async () => {
+    const result = plan([candidate({ statement: "개발은 Sonnet 5.5로", quote: "개발은 Opus 5.5로 할 거야", corrects: "M1" })], { shownMemory: [shown()] });
+    const decide = vi.fn(async (): Promise<JevDecision> => ({ model: "fake", answers: { support_0: { type: "noul", noul: 0.9 } } }));
+    await checkMemorySupport(result.planned, decide, { previousReply: null, currentMessage: { id: MESSAGE.id, text: MESSAGE.text } });
+    const request = decide.mock.calls[0] as unknown as [{ state: { candidates: { previous_statement: string | null }[] } }];
+    expect(request[0].state.candidates[0].previous_statement).toBe("개발은 Opus 5.5로");
+  });
+
+  it.each([
+    ["아니, 됐어", 0.05, false],
+    ["됐어", 0.1, false],
+    ["음… 글쎄", 0.5, false],
+    ["응, 기억해 줘", 0.97, true],
+  ] as const)("앞 메시지를 인용한 후보는 지금 답(%s)이 동의할 때만 (agrees %d)", async (answer, agrees, kept) => {
+    const result = planMemoryWrites({
+      candidates: [candidate({ message: "U1", quote: "개발은 Opus 5.5로 할 거야" })],
+      allowed: true,
+      quotable: new Map([
+        ["U1", EARLIER],
+        ["U2", { ...NOW, text: answer, createdAt: MESSAGE.createdAt }],
+      ]),
+      shown: new Map(),
+      scope: { kind: "global" },
+    });
+    const decide = vi.fn(async (): Promise<JevDecision> => ({ model: "fake", answers: { support_0: { type: "noul", noul: 0.95 }, agrees: { type: "noul", noul: agrees } } }));
+    const support = await checkMemorySupport(result.planned, decide, { previousReply: "이 내용을 기억해 둘까요?", currentMessage: { id: NOW.id, text: answer } });
+    const request = decide.mock.calls[0] as unknown as [{ state: { current_message: string }; questions: Record<string, unknown> }];
+    expect(Object.keys(request[0].questions)).toEqual(["support_0", "agrees"]);
+    expect(request[0].state.current_message).toBe(answer);
+    expect(support.verdicts).toEqual([kept ? null : "declined"]);
+  });
+});
+
+describe("Codex P2-3 · M1: 가리킨 정정 대상이 다른 사실이면 덮지 않는다 (fail-closed, inferred 우회 0)", () => {
+  const ALPHA = shown({ id: "acacacac-0000-4000-8000-0000000000a1", kind: "fact", subject: "alpha 마감", statement: "Alpha의 마감은 월요일이다" });
+  const say = (text: string) => new Map([["U1", { id: "aaaaaaaa-0000-4000-8000-000000000002", text, createdAt: "2026-10-10T01:00:00.000Z" }]]);
+  const run = (text: string, c: Partial<MemoryCandidate>, scope: { kind: "global" } | { kind: "context"; contextId: string } = { kind: "global" }) =>
+    planMemoryWrites({ candidates: [candidate({ message: "U1", quote: text, statement: text, ...c })], allowed: true, quotable: say(text), shown: new Map([["M1", ALPHA]]), scope });
+
+  it("Codex 사례: 'Beta의 마감은 금요일이야'(subject beta 마감)가 corrects=M1(Alpha)을 가리키면 버린다 — Alpha는 정정되지 않는다", () => {
+    const result = run("Beta의 마감은 금요일이야", { kind: "fact", subject: "beta 마감", corrects: "M1" });
+    expect(result.writes).toEqual([]);
+    expect(result.dropped).toEqual(["unknown_memory"]);
+    expect(result.writes.some((w) => w.corrects === ALPHA.id)).toBe(false);
+  });
+
+  it("대조: 대명사 정정('그거 금요일로 바뀌었어', 주제 비움 · 같은 kind)은 Alpha를 정정하고, 판정에 옛 문장을 넘긴다", () => {
+    const result = run("그거 금요일로 바뀌었어", { kind: "fact", subject: "", statement: "Alpha의 마감은 금요일", quote: "그거 금요일로 바뀌었어", corrects: "M1" });
+    expect(result.writes).toEqual([{ item: expect.objectContaining({ subject: null }), corrects: ALPHA.id, expected_version: ALPHA.version }]);
+    expect(result.planned[0].check.previous).toBe("Alpha의 마감은 월요일이다");
+  });
+
+  it("대조: 같은 사실 재진술(같은 주제, 번호 없이)은 그 행을 version과 함께 정정, 다른 사실(Beta, 번호 없이)은 새 행으로 Alpha를 남긴다", () => {
+    const restated = run("Alpha 마감은 화요일로 바뀌었어", { kind: "fact", subject: "Alpha 마감", statement: "Alpha의 마감은 화요일" });
+    expect(restated.writes[0].corrects).toBe(ALPHA.id);
+    const beta = run("Beta의 마감은 금요일이야", { kind: "fact", subject: "beta 마감" });
+    expect(beta.writes).toEqual([{ item: expect.objectContaining({ subject: "beta 마감", kind: "fact" }), corrects: null, expected_version: null }]);
+    expect(beta.notes).toEqual([{ kind: "new", statement: "Beta의 마감은 금요일이야" }]);
+  });
+
+  it("대조: 프로젝트(범위) 대화의 정정은 전체 Alpha를 고치지 않고 그 범위의 새 행 (전역 보존)", () => {
+    const result = run("이 프로젝트에선 Alpha 마감이 수요일이야", { kind: "fact", subject: "", statement: "Alpha의 마감은 수요일", corrects: "M1" }, { kind: "context", contextId: CONTEXT });
+    expect(result.writes).toEqual([{ item: expect.objectContaining({ scope_kind: "context", context_id: CONTEXT, subject: "alpha 마감" }), corrects: null, expected_version: null }]);
   });
 });
