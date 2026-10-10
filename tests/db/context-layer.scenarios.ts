@@ -1,10 +1,11 @@
 import { randomUUID } from "node:crypto";
 
+import type { SupabaseClient } from "@supabase/supabase-js";
 import { describe, expect, it } from "vitest";
 
 import { buildContextBundle } from "@/lib/context/bundle";
 import type { MemoryLike } from "@/lib/context/memory";
-import type { SourceState } from "@/lib/context/retrieve";
+import { loadSourceStates } from "@/lib/context/store";
 
 // 0.2.0 맥락층 (20261104000000_context_layer, 구현 계획 B1): 정정 규칙 · 삭제 전파(아키텍처 6.5) · 사람 계정 · 신원 링크 · 조각 교체 · 범위 version.
 // 같은 시나리오를 PGlite(tests/db/context-layer.test.ts)와 실제 Postgres(tests/pg/context-layer.test.ts)에서 돌린다. 동시성은 실제 Postgres 파일에만 있다.
@@ -823,12 +824,19 @@ export function contextLayerTests(db: () => ContextLayerDb) {
       await observed(v2, "새 revision에서 읽음");
       await observed(fine, "다른 문서에서 읽음");
 
-      const states = async (userId: string, ids: string[]) =>
-        (await db().query(`select * from public.context_source_states($1, $2::uuid[]) order by id`, [userId, ids])).map(
-          (r): SourceState => ({ id: r.id as string, provider: r.provider as string | null, purged: r.purged as boolean, purgeReason: r.purge_reason as string | null, accessLost: r.access_lost as boolean, externalUrl: r.external_url as string | null }),
-        );
+      // 서버 코드(store.ts loadSourceStates)를 실제 SQL로 부른다: supabase-js의 rpc(…).throwOnError()를 이름 붙인 인자 호출로 바꾼 얇은 대역
+      const rpcAdmin = {
+        rpc: (fn: string, args: Record<string, unknown>) => ({
+          throwOnError: async () => ({
+            data: await db().query(`select * from public.${fn}(${Object.keys(args).map((key, i) => `${key} => $${i + 1}`).join(", ")})`, Object.values(args)),
+          }),
+        }),
+      } as unknown as SupabaseClient;
+      const states = (userId: string, ids: string[]) => loadSourceStates(rpcAdmin, userId, ids);
       const lostOf = async (userId: string, ids: string[]) => Object.fromEntries((await states(userId, ids)).map((st) => [st.id, st.accessLost]));
       expect(await lostOf(me, [v1, v2, fine])).toEqual({ [v1]: true, [v2]: true, [fine]: false });
+      // 열 이름 → SourceState 모양까지 실제 행으로 (연결의 서비스 · 글 지움 · 링크)
+      expect((await states(me, [fine]))[0]).toEqual({ id: fine, provider: "notion", purged: false, purgeReason: null, accessLost: false, externalUrl: null });
       expect(await lostOf(other, [theirs, v2])).toEqual({ [theirs]: false }); // 남의 원문은 보이지 않고, 같은 외부 id여도 다른 사용자는 그대로
 
       const bundleMemory = async () => {

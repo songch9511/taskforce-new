@@ -1,8 +1,11 @@
 import pg from "pg";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 import { contextLayerFixtures, contextLayerTests, vector } from "../db/context-layer.scenarios";
 import { supabaseSchemaScripts } from "../db/local-supabase";
+
+// 시나리오가 서버 코드(src/lib/context/store.ts)를 실제 SQL로 부른다
+vi.mock("server-only", () => ({}));
 
 // 0.2.0 맥락층 (20261104000000_context_layer) — 실제 Postgres. PGlite와 같은 시나리오 + 연결 둘 이상이 겹치는 경합:
 // 원문 글 지우기와 조각 · 기억 쓰기(가드의 for share), 범위 version 동시 증가(행 잠금), 같은 사실 · 같은 계정 · 같은 문서의 동시 쓰기(advisory 잠금).
