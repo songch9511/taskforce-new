@@ -617,18 +617,28 @@ create trigger memory_items_bump_context_version_on_update
             is distinct from (new.statement, new.value, new.origin, new.superseded_at, new.revoked_at, new.valid_from, new.valid_until, new.source_purged))
   execute function public.memory_items_bump_context_version();
 
--- 멤버 원문의 변화: 같은 문서(source_document_ids)의 새 revision이 들어오거나, 글이 지워지거나, 접근을 잃거나 되찾을 때
+-- 멤버 원문의 변화: 같은 문서(source_document_ids)의 새 revision이 들어오거나, 글이 지워지거나, 접근을 잃거나 되찾을 때.
+-- 그 문서를 멤버로 둔 범위와, 그 문서의 revision을 인용한 지금 쓰는 범위 observed 기억이 있는 범위(멤버가 아니어도 묶음의 기억이 바뀐다)
 create function public.sources_bump_member_contexts() returns trigger
 language plpgsql
 security definer
 set search_path = ''
 as $$
+declare
+  v_document uuid[] := public.source_document_ids(new.user_id, new.id);
+  v_document_text text[] := array(select lower(d::text) from unnest(v_document) as d);
 begin
   perform public.queue_context_bumps(array(
-    select distinct cm.context_id
+    select cm.context_id
       from public.context_members cm
      where cm.user_id = new.user_id and cm.removed_at is null and cm.origin <> 'inferred'
-       and cm.source_id = any (public.source_document_ids(new.user_id, new.id))
+       and cm.source_id = any (v_document)
+    union
+    select m.context_id
+      from public.memory_items m
+     where m.user_id = new.user_id and m.scope_kind = 'context' and m.origin = 'observed'
+       and m.superseded_at is null and m.revoked_at is null and not m.source_purged
+       and m.source_ref ? 'source_id' and lower(m.source_ref ->> 'source_id') = any (v_document_text)
   ));
   return null;
 end;

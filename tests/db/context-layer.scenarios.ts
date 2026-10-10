@@ -752,6 +752,31 @@ export function contextLayerTests(db: () => ContextLayerDb) {
     });
   });
 
+  describe("멤버가 아닌 원문을 인용한 범위 기억도 원문의 변화에 version이 오른다", () => {
+    it("범위 observed 기억이 인용한 문서(멤버 아님)의 접근 상실 · 되찾음에 오르고, 관계없는 범위 · 쓰지 않는 기억(잊음 · 후보)은 오르지 않는다", async () => {
+      const me = await f.user();
+      const notion = await f.connection(me, "notion");
+      const v1 = await f.source(me, { connectionId: notion, externalId: "cited", version: "v1" });
+      const v2 = await f.source(me, { connectionId: notion, externalId: "cited", version: "v2" });
+      const elsewhere = await f.source(me, { connectionId: notion, externalId: "other-doc", version: "v1" });
+      const [context, unrelated, forgotten, guessed] = [await f.context(me), await f.context(me, "관계없음"), await f.context(me, "잊음"), await f.context(me, "후보")];
+      const cite = (contextId: string, sourceId: string, extra: Record<string, unknown> = {}) =>
+        f.remember(me, { kind: "fact", scope_kind: "context", context_id: contextId, statement: "자료에서 읽음", origin: "observed", source_ref: { source_id: sourceId }, ...extra });
+      await cite(context, v1); // 옛 revision을 인용
+      await cite(unrelated, elsewhere);
+      const gone = await cite(forgotten, v2);
+      await db().query(`update public.memory_items set revoked_at = now() where id = $1`, [gone.id]);
+      await f.remember(me, { kind: "fact", scope_kind: "context", context_id: guessed, statement: "추정", origin: "inferred", confidence: 0.5, source_ref: { source_id: v2 } });
+      const versions = async () => Promise.all([context, unrelated, forgotten, guessed].map((id) => f.version(id)));
+      const [c0, u0, f0, g0] = await versions();
+
+      await db().query(`select public.set_sources_access($1, $2::uuid[], true)`, [me, [v2]]);
+      expect(await versions()).toEqual([c0 + 1, u0, f0, g0]);
+      await db().query(`select public.set_sources_access($1, $2::uuid[], false)`, [me, [v2]]);
+      expect(await versions()).toEqual([c0 + 2, u0, f0, g0]);
+    });
+  });
+
   describe("범위 version: 멤버 · 범위 기억 변화에 오르고 관계없는 변화에는 오르지 않는다", () => {
     it("멤버 추가 · 빼기 · 다시 넣기 · 후보 확인, 범위 기억 추가 · 정정에 오른다. 다른 범위 · 전체 기억 · updated_at만 바뀐 것에는 오르지 않는다", async () => {
       const me = await f.user();
