@@ -2,7 +2,7 @@
 
 0.2.0 구현 계획 B1. 기억 · 범위 · 사람 · 신원 링크 · 원문 조각 · 맥락 묶음을 서버 코드와 DB 규칙으로 붙였다. 보이는 행동은 없다:
 gate `MEMORY_ENABLED` · `SOURCE_CHUNKS_ENABLED`(`src/lib/flags.ts`)가 기본 꺼짐이고, 꺼져 있으면 서버는 새 표를 읽지도 쓰지도 않고 임베딩을 부르지 않는다.
-route(대화 v2 · 기억 편집 API)는 B2가 붙인다.
+대화 v2 route는 B2가 붙였다(7장, gate `CONVERSATIONS_V2_ENABLED` 기본 꺼짐). 기억 편집 API는 아직 없다.
 
 | 무엇 | 위치 |
 |---|---|
@@ -88,3 +88,18 @@ route(대화 v2 · 기억 편집 API)는 B2가 붙인다.
 - 앱의 `inbox_events` · `source_chunks` 읽기 권한(지금 A2대로 select 허용)을 둘지 정하기.
 - 합친 사람(`people.merged_into`)의 대상을 지우면 합침이 풀리는 것 (사람 합치기 기능이 생길 때).
 - 접근 상실 감지 연결, inferred 기억 보관 기한 정리, 멤버 Action Claim 변경의 version, Notion user id oauth 링크.
+
+## 7. 대화 v2 (B2)가 이 층을 쓰는 방식 · 처리한 것 · 남긴 것
+
+B2(대화 v2, gate `CONVERSATIONS_V2_ENABLED`, 기본 꺼짐)는 이 층을 **읽고**, 기억은 `remember_memory_item`으로만 **쓴다**. 위치와 정식 경로는 [FEATURE_MAP](FEATURE_MAP.md) 2장 "대화 v2" · 3-7.
+
+- **읽기 (상담 근거):** `src/lib/conversation/store.ts` `loadConsultContext`가 범위 version을 먼저 읽고(4장 끝 규칙), `loadScopeMemory` + `buildContextBundle`로 기억 · 조각을 고른다: 요청 범위(대화 범위 + 전체)의 지금 explicit · observed만, 추정 · 다른 범위 · 정정 · 잊음 · 유효 구간 밖 · 접근을 잃었거나 글이 지워졌거나 Slack에서 온 원문의 observed 기억 · 조각은 빠진다. 할 일 근거 원문도 문서 단위 접근 상실(`context_source_states`)이면 넣지 않는다. 답에는 본 것의 id와 그때의 version만 남긴다(`conversation_messages.content.used`, 글 없음).
+- **쓰기 (기억):** 사용자 메시지에서 나온 explicit만, 인용을 그 메시지와 기계로 대조한 것만(`src/lib/conversation/memory.ts`). 출처는 `source_ref.message_id` + 인용(원문 id가 아니다: Slack D3 · 보관 기간 전파와 상관없다). 범위는 대화 범위(범위가 없으면 전체). 같은 범위 기억의 정정은 그 행을 `p_corrects`로(version 확인), 더 넓은 범위(전체) 기억의 정정은 전체 행을 두고 대화 범위에 같은 사실(kind + subject)의 새 행을 쓴다 — 읽을 때 그 범위 안에서만 이긴다(1장 규칙 그대로). 모델이 만든 인용 · 기억은 저장하지 않고 inferred로도 쓰지 않는다.
+- **Slack D3:** 답 내용(`conversation_messages.content.citations`)에 저장한 Slack 원문 인용 · 제목은 원문이 지워질 때(`raw_text_purge_reason = 'disconnected'`) 트리거가 근거 인용과 같은 자리 표시 · `Slack`으로 바꾼다. 보관 기간 정리는 근거 인용처럼 남긴다. 답 글(text · segments)은 모델이 만든 요약이라 할 일 제목처럼 남는다.
+- **B1 코드에 더한 것 (additive):** `loadScopeMemory`가 `version`도 읽는다(정정의 `p_expected_version`), `searchContextChunks`가 마감(`options.deadline`)을 받는다(사용자가 기다리는 요청).
+- **6장에서 처리:** 대화 만들기 멱등(앱이 정한 대화 id, 같은 사용자의 같은 id면 그 대화) · `client_message_id`는 사용자 메시지에만(답은 `reply_to`로 잇고 사용자 메시지 하나에 답 하나).
+- **5장 열린 질문 — B2가 정하지 않았다 (그대로 열림):**
+  - (a) Slack 후보에서 확인한 explicit 기억: B2는 추정 확인(confirm) route를 만들지 않았고, 대화에서 쓰는 기억은 사용자 메시지 출처뿐이라 Slack 글자를 기억 글로 옮기지 않는다. 확인 경로를 붙일 때(B3 Remembered · 기억 편집 API) 정한다.
+  - (b) 조각 교체와 보관 기간 정리의 교착 · (c) 두 Slack 연결이 본 같은 계정 · (d) 같은 문서 판정의 추이성 · (e) `loadIdentity`가 조용히 좁아짐: B2는 이 경로를 바꾸지 않는다(신원을 쓰지 않고 조각을 만들지 않는다).
+- **6장에서 남긴 것 (B2 밖):** 앱의 `inbox_events` · `source_chunks` 읽기 권한, 접근 상실 감지 연결, inferred 기억 보관 기한 정리, 멤버 Action Claim 변경의 범위 version, Notion user id oauth 링크.
+- **B2가 새로 남긴 것:** 기억 편집 · 잊기 · 추정 확인 route(계약 `memoryEditRequestSchema` 등은 있음, B3 Remembered와 함께), 대화의 범위 추정(첫 발화에 프로젝트 이름이 없을 때 `inferred` 멤버십 — 아키텍처 11장 ①, S3b), 대화 글 보관 기한과 정리(`text` · `content`를 함께 비움, 처리방침 V08), `last_read_at` 쓰기, 기억 · 재설명 지표 이벤트(ARCH26 `memory_corrected` 등, 지표 묶음 I).
