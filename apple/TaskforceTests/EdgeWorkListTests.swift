@@ -1,4 +1,6 @@
+import Auth
 import Foundation
+import Supabase
 import Testing
 @testable import Taskforce
 @testable import TaskforceKit
@@ -222,6 +224,99 @@ struct EdgeWorkListTests {
         }
     }
 
+    // MARK: 연결 코드 (리뷰 후속 N2 · N3 · N4)
+
+    /// 동기화 따라 읽기는 하나만 돌고, 조건이 거짓이 되면(패널이 안 보임 · 동기화 끝) 스스로 취소한다 (N3)
+    @Test func syncFollowerRunsOnceAndStopsItself() async {
+        final class Box {
+            var started = 0
+            var cancelled = false
+        }
+        let box = Box()
+        let follower = EdgeSyncFollower()
+        let follow: @MainActor () async -> Void = {
+            box.started += 1
+            while !Task.isCancelled { try? await Task.sleep(for: .milliseconds(5)) }
+            box.cancelled = true
+        }
+        follower.update(shouldFollow: true, follow: follow)
+        follower.update(shouldFollow: true, follow: follow)
+        for _ in 0..<20 { await Task.yield() }
+        #expect(box.started == 1)
+        #expect(follower.isFollowing)
+        follower.update(shouldFollow: false, follow: follow)
+        #expect(!follower.isFollowing)
+        for _ in 0..<200 where !box.cancelled { try? await Task.sleep(for: .milliseconds(5)) }
+        #expect(box.cancelled)
+        // 따라 읽기가 스스로 끝나면(동기화 끝) 다음에 다시 켤 수 있다
+        follower.update(shouldFollow: true) {}
+        for _ in 0..<200 where follower.isFollowing { try? await Task.sleep(for: .milliseconds(5)) }
+        #expect(!follower.isFollowing)
+    }
+
+    /// 동기화가 끝난 뒤 다시 읽기는 이미 읽는 중이거나 끝난 뒤 받은 목록이 있으면 하지 않는다 (N2, 구 런처 화면과 겹치지 않게)
+    @Test func reloadAfterSyncSkipsOverlappingLoads() {
+        let finishedAt = Date(timeIntervalSince1970: 1_000)
+        #expect(EdgeShellController.needsReloadAfterSync(RefreshTracker(), finishedAt: finishedAt))
+        var loading = RefreshTracker()
+        loading.loadStarted()
+        #expect(!EdgeShellController.needsReloadAfterSync(loading, finishedAt: finishedAt))
+        var fresh = RefreshTracker()
+        fresh.loadSucceeded(at: finishedAt.addingTimeInterval(1))
+        #expect(!EdgeShellController.needsReloadAfterSync(fresh, finishedAt: finishedAt))
+        var stale = RefreshTracker()
+        stale.loadSucceeded(at: finishedAt.addingTimeInterval(-10))
+        #expect(EdgeShellController.needsReloadAfterSync(stale, finishedAt: finishedAt))
+    }
+
+    /// 첫 고정 정리(`prune`)는 로그인 상태를 안 뒤에만: 읽는 중이면 미룬다
+    @Test func firstPinPruneWaitsForTheSession() {
+        #expect(EdgeShellController.knownAccount(nil) == nil)
+        #expect(EdgeShellController.knownAccount(.loading) == nil)
+        #expect(EdgeShellController.knownAccount(.signedOut) == .some(nil))
+        #expect(EdgeShellController.knownAccount(.signedIn(userID: alice, email: nil)) == .some(alice))
+    }
+
+    /// 연결 상태에서 syncing · Connect a source를 옮긴다 (N4: `snapshot`). 견본 값을 넣고 서버는 부르지 않는다
+    @Test func snapshotReadsSyncingAndConnectFromTheAccount() throws {
+        let services = try Self.offlineServices()
+        let session = ProfileTestAccounts().session
+        let now = NowStore(services: services)
+        now.applySample(NowResponse(now: [], confirmations: [], weeklyCheck: nil), doneToday: [], evidence: [:])
+        let syncing = ConnectionRecord(
+            id: UUID(), provider: "notion", displayName: "Acme", status: .active, lastSyncedAt: nil, lastError: nil, syncStartedAt: Date()
+        )
+        let busy = AccountStore(services: services, session: session)
+        busy.useSampleData(connections: [syncing])
+        let work = EdgeShellController.snapshot(now: now, runs: nil, account: busy)
+        #expect(work.syncing && !work.canConnect)
+        #expect(work.load == .loaded(problem: nil))
+        #expect(WorkListScreen.of(load: work.load, isEmpty: work.items(now: Date()).isEmpty, syncing: work.syncing) == .waitingForSync(problem: nil))
+        // 연결을 읽었고 없음 → Connect a source
+        let none = AccountStore(services: services, session: session)
+        none.useSampleData(connections: [])
+        #expect(EdgeShellController.snapshot(now: now, runs: nil, account: none).canConnect)
+        // 아직 읽지 않음 · 계정 저장소 없음 → 보이지 않음
+        let unread = AccountStore(services: services, session: session)
+        #expect(!EdgeShellController.snapshot(now: now, runs: nil, account: unread).canConnect)
+        #expect(!EdgeShellController.snapshot(now: now, runs: nil, account: nil).canConnect)
+        #expect(EdgeShellController.snapshot(now: nil, runs: nil, account: busy) == .empty)
+    }
+
+    /// 네트워크 없는 서비스 (`.invalid` 주소, 견본 값만 쓰는 테스트용)
+    static func offlineServices() throws -> AppServices {
+        let config = AppConfig(
+            supabaseURL: URL(string: "https://edge-worklist.invalid")!, supabaseKey: "test-key", appGroupID: "group.test.taskforce",
+            apiBaseURL: URL(string: "https://edge-worklist-api.invalid")!
+        )
+        let urlSession = URLSession(configuration: .ephemeral)
+        let supabase = SupabaseClient(
+            supabaseURL: config.supabaseURL, supabaseKey: config.supabaseKey,
+            options: SupabaseClientOptions(auth: .init(storage: EmptyAuthStorage(), autoRefreshToken: false), global: .init(session: urlSession))
+        )
+        return AppServices(config: config, supabase: supabase, session: urlSession)
+    }
+
     /// 서버 이유(기한 빨강)는 열린 할 일에서 옮겨 온다. 수행자는 담당 값에서만
     @Test func snapshotCarriesServerReasonsAndOwnerOnly() {
         let late = RankedAction(action: Self.action(1, started: true), score: 9, reasons: [.overdue], daysUntilDue: -1)
@@ -250,4 +345,11 @@ enum BannedCopy {
     static func violation(in literal: String) -> String? {
         phrases.first { literal.localizedCaseInsensitiveContains($0) } ?? glyphs.first { literal.contains($0) }
     }
+}
+
+/// 세션을 두지 않는 인증 저장소 (키체인을 건드리지 않는다)
+private final class EmptyAuthStorage: AuthLocalStorage, @unchecked Sendable {
+    func store(key: String, value: Data) throws {}
+    func retrieve(key: String) throws -> Data? { nil }
+    func remove(key: String) throws {}
 }

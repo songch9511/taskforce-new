@@ -10,7 +10,9 @@ import TaskforceUI
 /// - ⌥ Space(`HotKeyCenter`, 손쉬운 사용 권한 불필요)는 패널을 토글한다
 /// - 패널 · 레일 밖 클릭은 패널을 접고, 클릭은 누른 곳으로 그대로 간다(마우스 모니터는 이벤트를 먹지 않는다. 키 모니터는 쓰지 않는다)
 /// - Esc · ⌘2 · ⌘3은 패널이 키를 가졌을 때만
-/// - 데이터는 런처와 같은 `NowStore` · `RunStore`를 읽는다(서버 호출을 늘리지 않는다)
+/// - 데이터는 런처와 같은 `NowStore` · `RunStore` · `AccountStore`를 읽는다. Edge가 더하는 서버 호출은 둘뿐이다:
+///   패널이 보이는 동안 동기화 중이면 연결 다시 읽기(6초마다, 구 런처가 떠 있을 때 하는 것과 같다)와 동기화가 끝난 뒤 `/now` 한 번.
+///   목록 읽기는 이미 읽는 중이거나(숨은 구 런처 화면이 먼저 읽음) 끝난 뒤 받은 목록이 있으면 겹쳐 부르지 않는다
 @MainActor
 final class EdgeShellController: NSObject, NSWindowDelegate {
     let shell: EdgeShellModel
@@ -21,9 +23,8 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
     private var keyMonitor: Any?
     private var observers: [NSObjectProtocol] = []
     private var wasSignedIn = false
-    /// 패널이 열린 동안 동기화 중인 연결을 따라 읽는 작업 (`AccountStore.followSync`)
-    private var syncTask: Task<Void, Never>?
-    private var syncGeneration = 0
+    /// 패널이 보이는 동안 동기화 중인 연결을 따라 읽는 작업 (`AccountStore.followSync`)
+    private let syncFollower = EdgeSyncFollower()
     /// 앱을 연 뒤 로그인 상태를 처음 알게 되면 한 번: 지금 계정이 아닌 고정을 지운다 (`SavedNowStore.prune`과 같다)
     private var prunedPins = false
     private let pinStore: WorkPinStore
@@ -103,14 +104,23 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
             Task { @MainActor in self?.followSession() }
         }
         // 앱이 돌지 않는 동안 떠난 계정의 고정은 `onSignedOut`에 오지 않는다: 로그인 상태를 처음 알면 지금 계정 것만 남긴다
-        if !prunedPins, let state = launcher.session?.state, state != .loading {
+        if !prunedPins, let keep = Self.knownAccount(launcher.session?.state) {
             prunedPins = true
-            pinStore.prune(keeping: account)
+            pinStore.prune(keeping: keep)
         }
         // 계정이 바뀌면 All work의 검색어 · 필터 · 고정을 그 계정 것으로 (전 계정 것을 보이지 않는다)
         shell.accountChanged(Self.workAccount(account))
         if signedIn, !wasSignedIn { load() }
         wasSignedIn = signedIn
+    }
+
+    /// 로그인 상태를 알면 그 계정(로그아웃이면 `.some(nil)`), 아직 읽는 중 · 세션 없음이면 nil (첫 `prune`을 미룬다)
+    static func knownAccount(_ state: SessionStore.State?) -> UUID?? {
+        switch state {
+        case nil, .loading?: nil
+        case .signedIn(let userID, _)?: .some(userID)
+        case .signedOut?: .some(nil)
+        }
     }
 
     /// 고정을 둘 계정. 견본은 로그인 없이 견본 계정 (메모리 저장)
@@ -130,7 +140,8 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
 
     private func load() {
         guard launcher.isSignedIn else { return }
-        if let now = launcher.now { Task { await now.load() } }
+        // 이미 읽는 중이면 겹쳐 부르지 않는다 (그 응답이 곧 온다)
+        if let now = launcher.now, !now.refresh.isLoading { Task { await now.load() } }
         if let runs = launcher.runs {
             Task {
                 await runs.loadCredits()
@@ -140,13 +151,20 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
     }
 
     private func snapshot() -> EdgeWorkSnapshot {
-        guard let now = launcher.now else { return .empty }
-        let runs = launcher.runs
+        let work = Self.snapshot(now: launcher.now, runs: launcher.runs, account: launcher.account)
+        #if DEBUG
+        if let workOverride { return workOverride(work) }
+        #endif
+        return work
+    }
+
+    /// 레일 · 패널이 읽을 지금의 일 (목록 · run · 연결 상태에서)
+    static func snapshot(now: NowStore?, runs: RunStore?, account: AccountStore?) -> EdgeWorkSnapshot {
+        guard let now else { return .empty }
         let active = runs?.active ?? []
         let stopping = (runs?.stopping ?? []).union(active.filter { $0.isOpen && $0.stoppedAt != nil }.map(\.actionID))
         // 받은 목록이 없으면(읽는 중 · 오프라인 · 실패) 할 일이 없다고 하지 않는다 (`WorkLoad`). 저장본은 이번 실행의 목록이 아니다
-        let account = launcher.account
-        let work = EdgeWorkSnapshot(
+        return EdgeWorkSnapshot(
             sections: now.sections, working: runs?.workingActionIDs ?? [], stopping: stopping,
             load: WorkLoad.from(refresh: now.refreshState, hasList: now.response != nil),
             doneSince: now.doneTodaySince,
@@ -154,10 +172,6 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
             canConnect: account.map { EdgeWorkSnapshot.canConnect(connectionsLoaded: $0.connectionsLoaded, connections: $0.connections) } ?? false,
             syncing: account?.anySyncing == true
         )
-        #if DEBUG
-        if let workOverride { return workOverride(work) }
-        #endif
-        return work
     }
 
     /// 목록 · run이 바뀔 때마다 레일 · 패널에 옮긴다
@@ -192,51 +206,54 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
         } else if panel.presentation.shown || hasMonitors {
             panel.hide()
             removeMonitors()
-            stopFollowingSync()
         }
     }
 
     // MARK: 동기화
 
-    /// 패널이 열린 동안 동기화 중인 연결을 몇 초마다 다시 읽는다 (구 런처는 자기가 떠 있는 동안만 `followSync`를 돌려 Edge 모드에서는 돌지 않는다).
-    /// 패널을 열거나 동기화가 시작되면(설정에서 연결 등) 그때 따라간다. `start()`에서 한 번 걸면 패널 열림 · 동기화 상태를 계속 지켜본다
+    /// 패널이 실제로 보이는 동안 동기화 중인 연결을 몇 초마다 다시 읽는다 (구 런처는 자기가 떠 있는 동안만 `followSync`를 돌려 Edge 모드에서는 돌지 않는다).
+    /// `start()`에서 한 번 걸면 패널이 보이는지(`presentation.shown`: 창을 띄우지 못하면 거짓) · 동기화 중인지를 계속 지켜보고,
+    /// 둘 중 하나가 거짓이 되면 스스로 멈춘다
     private func followSync() {
-        let syncing = withObservationTracking {
-            launcher.account?.anySyncing == true && shell.panelOpen
+        let follow = withObservationTracking {
+            launcher.account?.anySyncing == true && panel.presentation.shown
         } onChange: { [weak self] in
             Task { @MainActor in self?.followSync() }
         }
-        guard syncing, syncTask == nil, let account = launcher.account else { return }
-        syncGeneration += 1
-        let generation = syncGeneration
-        syncTask = Task { [weak self] in
+        let account = launcher.account
+        syncFollower.update(shouldFollow: follow && account != nil) {
+            guard let account else { return }
             // 패널을 열 때 연결 상태가 오래됐으면 바로 한 번 읽는다 (끝난 동기화를 6초 기다리지 않게)
             if Date().timeIntervalSince(account.connectionsReadAt) >= 3 { await account.reloadConnections() }
             await account.followSync()
-            guard let self, self.syncGeneration == generation else { return }
-            self.syncTask = nil
         }
     }
 
-    private func stopFollowingSync() {
-        syncGeneration += 1
-        syncTask?.cancel()
-        syncTask = nil
-    }
-
     /// 동기화가 끝나면 지금 할 일을 다시 불러온다 (구 런처의 `syncFinished` 처리와 같다).
-    /// 숨은 구 런처 화면의 `.onChange(of: syncFinished)`도 같은 때 다시 읽을 수 있다 (`NowStore`는 마지막 응답만 반영)
+    /// 숨은 구 런처 화면의 `.onChange(of: syncFinished)`가 먼저 읽기 시작했거나 끝냈으면 겹쳐 부르지 않는다 (`needsReloadAfterSync`)
     private func followSyncFinished() {
         let finished = withObservationTracking {
             launcher.account?.syncFinished
         } onChange: { [weak self] in
+            let finishedAt = Date()
             Task { @MainActor in
                 guard let self else { return }
                 self.followSyncFinished()
-                if let now = self.launcher.now, self.launcher.isSignedIn { await now.load() }
+                // 같은 변화를 받은 숨은 구 런처 화면이 먼저 읽기 시작할 틈
+                try? await Task.sleep(for: .milliseconds(300))
+                guard let now = self.launcher.now, self.launcher.isSignedIn,
+                      Self.needsReloadAfterSync(now.refresh, finishedAt: finishedAt) else { return }
+                await now.load()
             }
         }
         _ = finished
+    }
+
+    /// 동기화가 끝난 뒤 Edge가 `/now`를 다시 읽을지: 이미 읽는 중이거나 끝난 뒤 받은 목록이 있으면 읽지 않는다
+    static func needsReloadAfterSync(_ refresh: RefreshTracker, finishedAt: Date) -> Bool {
+        if refresh.isLoading { return false }
+        if refresh.isLive, let shown = refresh.shownAt, shown >= finishedAt { return false }
+        return true
     }
 
     private var hasMonitors: Bool { !clickMonitors.isEmpty || keyMonitor != nil }
@@ -303,6 +320,35 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
         // ⌘Tab 등으로 키를 잃으면 접는다 (More 메뉴를 연 동안은 빼고)
         guard shell.panelOpen, !shell.menuOpen else { return }
         shell.dismiss()
+    }
+}
+/// 패널이 보이는 동안 동기화를 따라 읽는 작업 하나: 켜면 하나만 돌고, 꺼지면(`shouldFollow` 거짓) 스스로 취소한다
+@MainActor
+final class EdgeSyncFollower {
+    private var task: Task<Void, Never>?
+    private var generation = 0
+
+    var isFollowing: Bool { task != nil }
+
+    func update(shouldFollow: Bool, follow: @escaping @MainActor () async -> Void) {
+        guard shouldFollow else {
+            stop()
+            return
+        }
+        guard task == nil else { return }
+        generation += 1
+        let current = generation
+        task = Task { [weak self] in
+            await follow()
+            guard let self, self.generation == current else { return }
+            self.task = nil
+        }
+    }
+
+    func stop() {
+        generation += 1
+        task?.cancel()
+        task = nil
     }
 }
 #endif
