@@ -6,6 +6,9 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { connectionSettingsSchema, profileInputSchema, type DataSourceSetting } from "@/lib/api/contract";
 import { accountDisplayName, resolveIdentity } from "@/lib/api/profile";
 import { ConsentRequiredError } from "@/lib/consent/gate";
+import { identityEmails, oauthIdentityFromConnection } from "@/lib/context/identity-links";
+import { indexSourceAfterIngest, loadIdentityLinks, recordOAuthIdentityLink } from "@/lib/context/store";
+import { flagEnabled } from "@/lib/flags";
 import type { UserIdentity } from "@/lib/pipeline/identity";
 import { renderSnapshot, type TaskSnapshot } from "@/lib/pipeline/structured";
 import { processSource, processTaskSource } from "@/lib/sources/process";
@@ -53,6 +56,15 @@ export async function saveConnection(
   // 그 사람이 쓴 문서가 written_by_me = true가 된다. 그 키만 지운다 (다음 동기화가 새 토큰의 봇 주인으로 다시 알아낸다). 없으면 쓰지 않는다.
   const settings = data.settings as Record<string, unknown> | null;
   if (settings && "notionUserId" in settings) await mergeConnectionSettings(admin, { id: data.id, userId: input.userId }, { remove: ["notionUserId"] });
+
+  // 맥락층(MEMORY_ENABLED): 연결 결과의 "나" 링크 (oauth, 연결을 끊으면 함께 지워진다). 꺼져 있으면 쓰지 않는다.
+  // 링크는 보조 정보라 실패해도 연결은 맺는다 (loadIdentity는 연결 설정의 주소를 그대로 본다)
+  const link = oauthIdentityFromConnection(input);
+  if (link) {
+    await recordOAuthIdentityLink(admin, { userId: input.userId, connectionId: data.id as string, ...link }).catch((error: unknown) =>
+      console.error(`신원 링크 저장 실패 (${input.provider} ${data.id}):`, error instanceof Error ? error.message : error),
+    );
+  }
   return data.id as string;
 }
 
@@ -323,7 +335,17 @@ export function ingestDeps(admin: SupabaseClient, options: { notifyFrom?: Date |
     },
 
     process: async (connection, sourceId, item) => {
-      const identity = await loadIdentity(admin, connection.userId);
+      // 맥락층(SOURCE_CHUNKS_ENABLED): 원문의 조각 임베딩. 꺼져 있으면 아무것도 부르지 않고, 실패해도 던지지 않는다 (Slack 원문은 만들지 않는다)
+      const index = () =>
+        indexSourceAfterIngest(admin, { userId: connection.userId, sourceId, text: item.text, provider: connection.provider, externalUrl: item.externalUrl });
+      let identity: UserIdentity;
+      try {
+        identity = await loadIdentity(admin, connection.userId);
+      } catch (error) {
+        // 신원을 읽지 못하면 처리는 미루지만(원문은 대기로 남아 재처리), 조각은 신원과 상관없어 지금 만든다: 재처리 경로는 조각을 만들지 않는다
+        await index();
+        throw error;
+      }
       try {
         const notify = !options.notifyFrom || item.occurredAt >= options.notifyFrom;
         await processSource(admin, { id: sourceId, userId: connection.userId, notify }, {
@@ -342,6 +364,7 @@ export function ingestDeps(admin: SupabaseClient, options: { notifyFrom?: Date |
         if (error instanceof ConsentRequiredError) await forgetUnprocessedSource(admin, connection, sourceId);
         throw error;
       }
+      await index();
     },
   };
 }
@@ -361,22 +384,43 @@ async function forgetUnprocessedSource(admin: SupabaseClient, connection: Connec
  * 사용자 프로필(이름 · 별칭 · 이메일)과 계정으로 "원문 속 나"를 정한다.
  * 연결한 Google 계정 주소(google · gmail 연결의 settings.email)도 사용자 주소로 본다: 로그인 주소와 다른 회사 Gmail이어도
  * "보낸 사람 = 나"를 알아본다.
+ * 맥락층(MEMORY_ENABLED)이 켜져 있으면 신원 링크(identity_links)도 합친다: oauth · profile · user_confirmed이고 공용 계정이 아닌 링크의 주소만
+ * "나"이고, 추정(inferred) · 공용 계정은 더하지 않는다 (공용으로 표시한 주소는 연결 설정의 주소에서도 뺀다, context/identity-links.ts).
+ * 꺼져 있으면 링크를 읽지 않는다 (지금과 같다). 켜져 있는데 링크를 읽지 못하면 던진다(넓히지 않는다). isUser 규칙은 그대로다: 주소 목록만 바뀐다.
  */
-export async function loadIdentity(admin: SupabaseClient, userId: string): Promise<UserIdentity> {
-  const [{ data: profileRow }, { data: account }, { data: googleRows }] = await Promise.all([
-    admin.from("profiles").select("display_name, aliases, emails").eq("user_id", userId).maybeSingle(),
-    admin.auth.admin.getUserById(userId),
+export async function loadIdentity(admin: SupabaseClient, userId: string, env: Record<string, string | undefined> = process.env): Promise<UserIdentity> {
+  const [identity, { data: googleRows }, links] = await Promise.all([
+    profileIdentity(admin, userId),
     admin.from("connections").select("settings").eq("user_id", userId).in("provider", ["google", "gmail"]),
+    // 링크를 읽지 못하면 던진다: 링크 없이 이어 가면 공용으로 확인한 계정의 제외가 사라져 "나"가 넓어진다.
+    // 수집은 그 원문을 처리하지 않고 대기로 남겨(src/lib/sources/retry.ts가 다시 처리한다) 다음 동기화 · 재처리가 다시 읽는다
+    flagEnabled("MEMORY_ENABLED", env) ? loadIdentityLinks(admin, userId) : Promise.resolve([]),
   ]);
-  const email = account.user?.email ?? null;
-  const identity = resolveIdentity(profileInputSchema.safeParse(profileRow).data ?? null, {
-    name: accountDisplayName(account.user?.user_metadata, email),
-    email,
-  });
   const googleEmails = ((googleRows ?? []) as { settings: { email?: unknown } | null }[]).flatMap(({ settings }) =>
     typeof settings?.email === "string" ? [settings.email.trim().toLowerCase()] : [],
   );
-  return { ...identity, emails: [...new Set([...identity.emails, ...googleEmails])] };
+  return { ...identity, emails: identityEmails(identity.emails, googleEmails, links) };
+}
+
+/** 프로필 · 로그인 계정으로 정한 "나" (이름 · 별칭 · 프로필 · 로그인 주소). 연결 설정 · 신원 링크는 보지 않는다 */
+async function profileIdentity(admin: SupabaseClient, userId: string): Promise<UserIdentity> {
+  const [{ data: profileRow }, { data: account }] = await Promise.all([
+    admin.from("profiles").select("display_name, aliases, emails").eq("user_id", userId).maybeSingle(),
+    admin.auth.admin.getUserById(userId),
+  ]);
+  const email = account.user?.email ?? null;
+  return resolveIdentity(profileInputSchema.safeParse(profileRow).data ?? null, {
+    name: accountDisplayName(account.user?.user_metadata, email),
+    email,
+  });
+}
+
+/**
+ * 사용자 이름만 필요한 곳(실행 초안의 이름 · Calendar 일정 잇기의 사용자 이름): 연결 설정 · 신원 링크를 읽지 않는다.
+ * 링크는 이름을 바꾸지 않으므로, 링크 읽기 실패(loadIdentity가 던짐)에 이 경로가 함께 멈추지 않게 따로 둔다
+ */
+export async function loadUserName(admin: SupabaseClient, userId: string): Promise<string> {
+  return (await profileIdentity(admin, userId)).name;
 }
 
 /** 연결을 (다시) 맺은 시각. 없으면 null */

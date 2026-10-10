@@ -9,6 +9,8 @@
 // 같은 cron이 본문만 비운다(purge_expired_artifacts, 20261022000000). 제목 · 기록 · 원가 · 원장은 남긴다. 기간을 바꾸려면 새 마이그레이션으로 열 기본값을 바꾼다.
 // 실행의 글(요청 · 지시 · 받는 사람 후보 · 되묻는 질문)은 run을 만든 지 EXECUTION_TEXT_RETENTION_DAYS일이 지나면 같은 cron이 지운다
 // (purge_expired_execution_text, 20261024000000). 그때 끝나지 않은 run은 건드리지 않고 끝난 뒤 첫 정리에서 지운다. run · 단계의 상태 · 기록 · 원가는 남긴다.
+// 0.2.0 맥락층(20261104000000_context_layer): 원문 글이 지워지면(위 두 경로 모두) sources 트리거가 같은 트랜잭션에서 그 원문의 조각(source_chunks)을 지우고
+// observed 기억의 글 · 인용 · 값을 비운다(inferred는 지우고, 사용자가 저장한 explicit은 남긴다). 사건별 표는 docs/context-layer.md 2장.
 
 export const RAW_TEXT_RETENTION_DAYS = 90;
 

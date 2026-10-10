@@ -830,6 +830,11 @@ export const memoryItemSchema = z.object({
   person_id: z.uuid().nullable(),
   /** scope_kind agent의 대상 (capability.adapter, 예: agent:claude-code) */
   agent_adapter: agentAdapterIdSchema.nullable(),
+  /**
+   * 같은 사실의 열쇠 (B1, 20261104000000_context_layer). 같은 범위 · 같은 kind · 같은 subject끼리만 정정한다. null = 주제 없음(아무것도 덮지 않는다).
+   * B1 전에 만든 행 · 옛 서버 응답에는 없을 수 있다
+   */
+  subject: z.string().nullable().optional(),
   // 읽기 스키마에는 길이 상한을 두지 않는다: DB는 char_length(코드 포인트), zod .max는 UTF-16 단위라 이모지가 든 행을 못 읽게 된다
   statement: z.string(),
   value: jsonObjectSchema,

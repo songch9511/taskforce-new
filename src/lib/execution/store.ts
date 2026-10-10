@@ -4,7 +4,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 
 import type { RunSummary } from "@/lib/api/contract";
 import { hasConsentFor } from "@/lib/consent/store";
-import { loadIdentity } from "@/lib/connectors/store";
+import { loadUserName } from "@/lib/connectors/store";
 import { readAll } from "@/lib/read-all";
 
 import type { ExecutionContextInput } from "./context";
@@ -133,7 +133,7 @@ export function supabaseExecutionStore(admin: SupabaseClient): ExecutionStore {
     },
 
     hasConsent: (userId) => hasConsentFor(admin, userId),
-    userName: async (userId) => (await loadIdentity(admin, userId)).name,
+    userName: (userId) => loadUserName(admin, userId),
 
     prepareStep: (stepId, version) => rpc<boolean>("prepare_step", { p_step: stepId, p_version: version }),
     beginCall: (stepId, owner, version) => rpc("begin_call", { p_step: stepId, p_owner: owner, p_version: version }),
