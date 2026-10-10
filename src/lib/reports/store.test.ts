@@ -78,6 +78,7 @@ describe("supabaseReportStore: DB 함수 호출", () => {
       expiresAt: new Date("2026-10-10T01:30:00Z"),
       now: NOW,
       leaseSeconds: 300,
+      scheduleVersion: 4,
     };
     expect(await store.claim(input)).toEqual(DELIVERY);
     expect(calls[0]).toMatchObject({
@@ -92,6 +93,7 @@ describe("supabaseReportStore: DB 함수 호출", () => {
         p_expires_at: "2026-10-10T01:30:00.000Z",
         p_now: "2026-10-09T23:30:00.000Z",
         p_lease_seconds: 300,
+        p_schedule_version: 4,
       },
     });
     expect(calls[0].ops).toContainEqual(["throwOnError"]);
@@ -123,14 +125,18 @@ describe("supabaseReportStore: DB 함수 호출", () => {
 });
 
 describe("supabaseReportStore: 원장 · 설정 읽기", () => {
-  it("dailyPreferences는 일일 보고가 켜진 모드만, lastScheduled는 사용자별 가장 늦은 예정 시각", async () => {
+  it("dailyPreferences는 일일 보고가 켜진 모드만 (일정 세대 포함), lastScheduled는 그날을 막는 행 중 사용자별 가장 늦은 명목 시각", async () => {
     const { admin, calls } = fakeAdmin((call) =>
       call.table === "report_deliveries"
         ? {
             data: [
-              { user_id: "a", scheduled_at: "2026-10-08T23:30:00Z" },
-              { user_id: "a", scheduled_at: "2026-10-09T23:30:00Z" },
-              { user_id: "b", scheduled_at: "2026-10-09T07:30:00Z" },
+              { user_id: "a", scheduled_at: "2026-10-08T23:30:00Z", status: "sent", last_error: null },
+              { user_id: "a", scheduled_at: "2026-10-09T23:30:00Z", status: "skipped", last_error: "empty" },
+              // 보내지 않고 닫힌 일정 변경 · 모드 변경 행은 그날을 막지 않는다
+              { user_id: "a", scheduled_at: "2026-10-10T23:30:00Z", status: "skipped", last_error: "schedule_changed" },
+              { user_id: "b", scheduled_at: "2026-10-09T07:30:00Z", status: "pending", last_error: null },
+              { user_id: "b", scheduled_at: "2026-10-10T07:30:00Z", status: "skipped", last_error: "mode_changed" },
+              { user_id: "c", scheduled_at: "2026-10-10T07:30:00Z", status: "skipped", last_error: "schedule_changed" },
             ],
           }
         : { data: [] },
@@ -139,6 +145,7 @@ describe("supabaseReportStore: 원장 · 설정 읽기", () => {
     await store.dailyPreferences();
     expect(calls[0].table).toBe("report_preferences");
     expect(calls[0].ops).toContainEqual(["in", "mode", ["both", "daily"]]);
+    expect(String(calls[0].ops.find(([op]) => op === "select")?.[1])).toContain("schedule_version");
     const last = await store.lastScheduled(new Date("2026-10-07T00:00:00Z"));
     expect(calls[1].ops).toEqual(expect.arrayContaining([["eq", "kind", "daily"], ["gte", "scheduled_at", "2026-10-07T00:00:00.000Z"]]));
     expect([...last.entries()]).toEqual([

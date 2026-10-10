@@ -9,9 +9,13 @@ import { isSupportedTimeZone, localWall, nextQuietStart, planDailyReport, quietN
 // 한 번 돌 때:
 // 1. 더 보낼 수 없는 대기 행을 닫는다 (늦음 · 시도를 다 씀, DB 함수 finish_stale_report_deliveries. 일일 보고를 끈 사용자 것은 skipped mode_changed).
 // 2. 다시 보낼 차례인 대기 행: 일일 보고를 끈(meaningful) 사용자면 skipped mode_changed로 닫고, 지금 조용한 시간이면 두고(창이 닫히면 1이 닫는다),
-//    아니면 다시 잡아(claim_report_retry) 보낸다.
+//    아니면 다시 잡아(claim_report_retry) 보낸다. 실패 뒤 일정을 바꿨으면(schedule_version이 다름) DB 함수가 다시 잡지 않고
+//    skipped schedule_changed로 닫는다 — 옛 일정의 보고는 가지 않고, 그날은 새 일정의 보고가 갈 수 있다.
 // 3. 일일 보고가 켜진 사용자마다 planDailyReport로 지금 보낼 날짜를 정하고, 잡히면(claim_report_delivery) 보낸다.
-//    잡기는 DB 함수가 사용자 잠금 안에서 원장을 다시 확인하므로 cron이 겹쳐 돌아도 하루 한 번이다.
+//    잡기는 DB 함수가 사용자 잠금 안에서 원장과 일정 세대를 다시 확인하므로 cron이 겹쳐 돌아도 하루 한 번이고,
+//    cron이 설정을 읽은 뒤 PUT이 일정을 바꿨으면 잡지 않는다(다음 실행이 새 일정으로 계산한다).
+// 경계: 일정 변경이 잡기 · 다시 잡기의 설정 행 잠금보다 먼저 커밋되면 지켜진다. 이미 잡혀 보내는 중(임대 중, APNs 요청 중)이던 보고는
+//    그 뒤 일정을 바꿔도 한 번 갈 수 있고, sent로 남으면 그 현지 날은 보낸 날이다(두 번째 보고 없음).
 // 4. 보내기: 숫자 상태(report_status_counts)가 모두 0이면 보내지 않고(skipped empty), 기기가 없으면 skipped no_devices.
 //    기기 하나라도 받으면 sent. 등록이 끊긴 토큰(410 · BadDeviceToken)은 기존 알림처럼 기기 행을 지운다.
 //    APNs 만료(apns-expiration)는 창 끝과 다음 조용한 시간 시작 중 이른 쪽: 기기가 꺼져 있어도 그 뒤로는 APNs가 버린다(그 전까지는 늦게 갈 수 있다).
@@ -39,6 +43,8 @@ export type ReportPreferenceRow = {
   time_zone: string;
   created_at: string;
   schedule_changed_at: string;
+  /** 일정 세대 (일정에 닿는 값이 바뀔 때만 오른다). 잡을 때 DB 함수가 다시 비교한다 */
+  schedule_version: number;
 };
 
 export type ReportDeliveryStatus = "pending" | "sent" | "failed" | "skipped";
@@ -72,13 +78,15 @@ export type ClaimInput = {
   expiresAt: Date;
   now: Date;
   leaseSeconds: number;
+  /** 계획에 쓴 설정의 일정 세대: 잡는 순간 설정과 다르면 DB 함수가 잡지 않는다 */
+  scheduleVersion: number;
 };
 
 export type ReportStore = {
   finishStale(now: Date, maxAttempts: number): Promise<number>;
   /** 일일 보고가 켜진(mode both · daily) 설정 행 전부 */
   dailyPreferences(): Promise<ReportPreferenceRow[]>;
-  /** since 뒤로 예정된 일일 보고 원장의 사용자별 가장 늦은 예정 시각 (상태와 상관없이) */
+  /** since 뒤로 명목 시각이 있는 일일 보고 원장의 사용자별 가장 늦은 명목 시각 (그날을 막는 행만, isBlockingDelivery) */
   lastScheduled(since: Date): Promise<Map<string, Date>>;
   /** 다시 보낼 차례인 대기 행 (next_attempt_at ≤ now ≤ expires_at, 시도가 남음) */
   retryable(now: Date, maxAttempts: number): Promise<ReportDeliveryRow[]>;
@@ -316,6 +324,7 @@ export async function runDailyReports(store: ReportStore, push: ReportPush, opti
         expiresAt: plan.due.expiresAt,
         now: now(),
         leaseSeconds: REPORT_LEASE_SECONDS,
+        scheduleVersion: pref.schedule_version,
       });
       if (!claimed) continue;
       result.claimed++;

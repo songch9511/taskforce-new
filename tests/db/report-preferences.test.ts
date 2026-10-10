@@ -16,8 +16,14 @@ const FUNCTIONS = ["claim_report_delivery", "claim_report_retry", "finish_stale_
 
 let db: PGlite;
 
-/** 서울 10-10 일일 보고를 잡는다 (기본: 08:30 KST 예정, 2시간 창, 임대 300초). 잡힌 행 또는 null */
-async function claim(userId: string, overrides: Partial<Record<"tz" | "date" | "dayStart" | "scheduled" | "expires" | "now", string>> = {}) {
+/**
+ * 서울 10-10 일일 보고를 잡는다 (기본: 08:30 KST 예정, 2시간 창, 임대 300초, 일정 세대는 지금 설정의 값 — cron이 막 읽은 것처럼).
+ * 잡힌 행 또는 null
+ */
+async function claim(
+  userId: string,
+  overrides: Partial<Record<"tz" | "date" | "dayStart" | "scheduled" | "expires" | "now", string>> & { version?: number } = {},
+) {
   const a = {
     tz: "Asia/Seoul",
     date: "2026-10-10",
@@ -27,12 +33,21 @@ async function claim(userId: string, overrides: Partial<Record<"tz" | "date" | "
     now: "2026-10-09T23:30:00Z",
     ...overrides,
   };
+  const current = (await db.query<{ v: number }>(`select schedule_version as v from public.report_preferences where user_id = $1`, [userId])).rows[0]?.v ?? 1;
   const { rows } = await db.query<Record<string, unknown>>(
-    `select * from public.claim_report_delivery($1, 'daily', $2, $3, $4, $5, $6, $7, 300)`,
-    [userId, a.tz, a.date, a.dayStart, a.scheduled, a.expires, a.now],
+    `select * from public.claim_report_delivery($1, 'daily', $2, $3, $4, $5, $6, $7, 300, $8)`,
+    [userId, a.tz, a.date, a.dayStart, a.scheduled, a.expires, a.now, overrides.version ?? current],
   );
   return rows[0] ?? null;
 }
+
+/** 실패한 것처럼: 다음 시도 시각과 실패 코드를 남긴 대기 행 */
+async function failed(id: unknown, nextAttemptAt: string) {
+  await db.query(`update public.report_deliveries set last_error = 'apns_503', next_attempt_at = $2 where id = $1`, [id, nextAttemptAt]);
+}
+
+const stateOf = async (id: unknown) =>
+  (await db.query<{ status: string; last_error: string | null; schedule_version: number }>(`select status, last_error, schedule_version from public.report_deliveries where id = $1`, [id])).rows[0];
 
 async function retry(id: unknown, now: string, maxAttempts = 3) {
   const { rows } = await db.query<Record<string, unknown>>(`select * from public.claim_report_retry($1, $2, 300, $3)`, [id, now, maxAttempts]);
@@ -116,6 +131,22 @@ describe("report_preferences", () => {
     expect((await db.query(`update public.report_preferences set daily_time = '09:00' where user_id = $1 and version = 2`, [ALICE])).affectedRows).toBe(0);
     expect((await db.query(`update public.report_preferences set daily_time = '09:00' where user_id = $1 and version = 3`, [ALICE])).affectedRows).toBe(1);
   });
+
+  it("schedule_version은 일정에 닿는 값(모드 · 시각 · 조용한 시간 · 시간대)이 바뀔 때만 오르고, Respect Focus만 바꾸면 그대로다. 직접 정하지 못한다", async () => {
+    const sv = async () => (await db.query<{ v: number }>(`select schedule_version as v from public.report_preferences where user_id = $1`, [ALICE])).rows[0].v;
+    expect(await sv()).toBe(1);
+    await db.query(`update public.report_preferences set respect_focus = false where user_id = $1`, [ALICE]);
+    await db.query(`update public.report_preferences set schedule_version = 9 where user_id = $1`, [ALICE]);
+    expect(await sv()).toBe(1);
+    let expected = 1;
+    for (const set of [`daily_time = '18:00'`, `mode = 'daily'`, `quiet_start = '23:00'`, `quiet_end = '07:00'`, `time_zone = 'Europe/London'`, `quiet_start = null, quiet_end = null`]) {
+      await db.query(`update public.report_preferences set ${set} where user_id = $1`, [ALICE]);
+      expect(await sv(), set).toBe(++expected);
+    }
+    // 같은 값으로 다시 쓰면 오르지 않는다 (PUT이 같은 일정을 다시 보내도 대기 행이 닫히지 않는다)
+    await db.query(`update public.report_preferences set time_zone = 'Europe/London' where user_id = $1`, [ALICE]);
+    expect(await sv()).toBe(expected);
+  });
 });
 
 describe("RLS · 권한 (앱은 자기 행을 읽기만, 쓰기는 서버만)", () => {
@@ -183,7 +214,7 @@ describe("RLS · 권한 (앱은 자기 행을 읽기만, 쓰기는 서버만)", 
     }
     await asUser(db, ALICE, async () => {
       await expect(db.query(`select * from public.report_status_counts($1, '2026-10-10')`, [ALICE])).rejects.toThrow(/permission denied/);
-      await expect(db.query(`select * from public.claim_report_delivery($1, 'daily', 'Asia/Seoul', '2026-10-11', now(), now(), now(), now(), 300)`, [ALICE])).rejects.toThrow(/permission denied/);
+      await expect(db.query(`select * from public.claim_report_delivery($1, 'daily', 'Asia/Seoul', '2026-10-11', now(), now(), now(), now(), 300, 1)`, [ALICE])).rejects.toThrow(/permission denied/);
     });
     // service_role은 RLS를 우회해 잡을 수 있다
     expect(await asService(() => claim(ALICE, { date: "2026-10-11", dayStart: "2026-10-10T15:00:00Z", scheduled: "2026-10-10T23:30:00Z", expires: "2026-10-11T01:30:00Z", now: "2026-10-10T23:30:00Z" }))).not.toBeNull();
@@ -223,11 +254,19 @@ describe("claim_report_delivery: 하루 한 번", () => {
     expect(await claim(CAROL)).toBeNull();
   });
 
-  it("유일 키 (user_id, kind, time_zone, report_date)와 원장 CHECK", async () => {
+  it("잠근 뒤 일정 세대가 계획과 다르면 잡지 않는다 (cron이 읽은 뒤 PUT이 일정을 바꿈). 새 세대로는 잡는다", async () => {
+    await db.query(`update public.report_preferences set daily_time = '18:00' where user_id = $1`, [ALICE]);
+    expect(await claim(ALICE, { version: 1 })).toBeNull();
+    expect(await claim(ALICE, { version: 3 })).toBeNull();
+    const row = await claim(ALICE, { scheduled: "2026-10-10T09:00:00Z", expires: "2026-10-10T11:00:00Z", now: "2026-10-10T09:00:00Z", version: 2 });
+    expect(row).toMatchObject({ schedule_version: 2 });
+  });
+
+  it("유일 키 (user_id, kind, time_zone, report_date, 보내지 않고 닫힌 일정 · 모드 변경 행 제외)와 원장 CHECK", async () => {
     const row = await claim(ALICE);
     await expect(
       db.query(
-        `insert into public.report_deliveries (user_id, kind, time_zone, report_date, scheduled_at, expires_at, status, attempts, next_attempt_at) values ($1, 'daily', 'Asia/Seoul', '2026-10-10', now(), now(), 'pending', 1, now())`,
+        `insert into public.report_deliveries (user_id, kind, time_zone, report_date, scheduled_at, expires_at, status, attempts, next_attempt_at, schedule_version) values ($1, 'daily', 'Asia/Seoul', '2026-10-10', now(), now(), 'pending', 1, now(), 1)`,
         [ALICE],
       ),
     ).rejects.toThrow(/duplicate key/);
@@ -257,6 +296,57 @@ describe("claim_report_retry · finish_stale_report_deliveries", () => {
     expect(await retry(row!.id, "2026-10-09T23:45:00Z")).toBeNull(); // 더 늦은 보고가 있다
   });
 
+  it("08:30 실패 → 08:31 daily 18:00 → 08:35 다시 잡기: 옛 행은 skipped · schedule_changed로 닫히고, 그날 18:00 보고는 잡힌다", async () => {
+    const old = await claim(ALICE);
+    await failed(old!.id, "2026-10-09T23:35:00Z");
+    await db.query(`update public.report_preferences set daily_time = '18:00' where user_id = $1`, [ALICE]);
+    expect(await retry(old!.id, "2026-10-09T23:35:00Z")).toBeNull();
+    expect(await stateOf(old!.id)).toEqual({ status: "skipped", last_error: "schedule_changed", schedule_version: 1 });
+    // 닫힌 행은 그날을 막지 않는다
+    const evening = await claim(ALICE, { scheduled: "2026-10-10T09:00:00Z", expires: "2026-10-10T11:00:00Z", now: "2026-10-10T09:00:00Z" });
+    expect(evening).toMatchObject({ schedule_version: 2, status: "pending" });
+  });
+
+  it("시간대를 바꿔도 같다: 서울 대기 행은 닫히고, 같은 현지 날(런던 10-10)의 보고가 잡힌다", async () => {
+    const old = await claim(ALICE);
+    await failed(old!.id, "2026-10-09T23:35:00Z");
+    await db.query(`update public.report_preferences set time_zone = 'Europe/London' where user_id = $1`, [ALICE]);
+    expect(await retry(old!.id, "2026-10-09T23:35:00Z")).toBeNull();
+    expect(await stateOf(old!.id)).toMatchObject({ status: "skipped", last_error: "schedule_changed" });
+    expect(await claim(ALICE, { tz: "Europe/London", dayStart: "2026-10-09T23:00:00Z", scheduled: "2026-10-10T07:30:00Z", expires: "2026-10-10T09:30:00Z", now: "2026-10-10T07:30:00Z" })).not.toBeNull();
+  });
+
+  it("차례가 되기 전(임대 · 대기 중)에는 일정이 바뀌어도 닫지 않는다 (보내는 중일 수 있다)", async () => {
+    const old = await claim(ALICE); // 임대: 23:35Z까지
+    await db.query(`update public.report_preferences set daily_time = '18:00' where user_id = $1`, [ALICE]);
+    expect(await retry(old!.id, "2026-10-09T23:31:00Z")).toBeNull();
+    expect(await stateOf(old!.id)).toMatchObject({ status: "pending", last_error: null });
+  });
+
+  it("Respect Focus만 바꾸면 일정 세대가 그대로라 다시 잡는다", async () => {
+    const old = await claim(ALICE);
+    await failed(old!.id, "2026-10-09T23:35:00Z");
+    await db.query(`update public.report_preferences set respect_focus = false where user_id = $1`, [ALICE]);
+    expect(await retry(old!.id, "2026-10-09T23:35:00Z")).toMatchObject({ attempts: 2 });
+  });
+
+  it("이미 보낸 날은 일정을 바꿔도 그날 다시 잡지 않는다 (sent는 그날을 막는다)", async () => {
+    const sent = await claim(ALICE);
+    await db.query(`update public.report_deliveries set status = 'sent', sent_at = now(), next_attempt_at = null where id = $1`, [sent!.id]);
+    await db.query(`update public.report_preferences set daily_time = '18:00' where user_id = $1`, [ALICE]);
+    expect(await claim(ALICE, { scheduled: "2026-10-10T09:00:00Z", expires: "2026-10-10T11:00:00Z", now: "2026-10-10T09:00:00Z" })).toBeNull();
+  });
+
+  it("보내지 않고 닫힌 empty · failed는 그날을 막는다 (평가했거나 시도한 날), mode_changed는 막지 않는다", async () => {
+    for (const [status, code, blocks] of [["skipped", "empty", true], ["failed", "apns_500", true], ["skipped", "mode_changed", false]] as const) {
+      await db.exec("delete from public.report_deliveries");
+      const row = await claim(ALICE);
+      await db.query(`update public.report_deliveries set status = $2, last_error = $3, next_attempt_at = null where id = $1`, [row!.id, status, code]);
+      const again = await claim(ALICE, { tz: "Europe/London", dayStart: "2026-10-09T23:00:00Z", scheduled: "2026-10-10T07:30:00Z", expires: "2026-10-10T09:30:00Z", now: "2026-10-10T07:30:00Z" });
+      expect(again === null, `${status} ${code}`).toBe(blocks);
+    }
+  });
+
   it("끝난 행(sent)은 다시 잡지 않는다", async () => {
     const row = await claim(ALICE);
     await db.query(`update public.report_deliveries set status = 'sent', sent_at = now(), next_attempt_at = null where id = $1`, [row!.id]);
@@ -280,6 +370,13 @@ describe("claim_report_retry · finish_stale_report_deliveries", () => {
       [exhausted!.id, "failed", "apns_503"],
       [inFlight!.id, "pending", null],
     ]);
+  });
+
+  it("그 사이 일정을 바꾼 사용자의 닫힌 대기 행은 failed가 아니라 skipped · schedule_changed (그날을 막지 않는다)", async () => {
+    const row = await claim(ALICE);
+    await db.query(`update public.report_preferences set daily_time = '18:00' where user_id = $1`, [ALICE]);
+    expect((await db.query<{ n: number }>(`select public.finish_stale_report_deliveries('2026-10-10T02:00:00Z', 3) as n`)).rows[0].n).toBe(1);
+    expect(await stateOf(row!.id)).toEqual({ status: "skipped", last_error: "schedule_changed", schedule_version: 1 });
   });
 
   it("그 사이 일일 보고를 끈(meaningful) 사용자의 닫힌 대기 행은 failed가 아니라 skipped · mode_changed", async () => {

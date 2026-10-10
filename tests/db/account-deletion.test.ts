@@ -166,7 +166,7 @@ async function seed(userId: string, tokenHex: string) {
   // 0.2.0 보고 (20261105000000_report_preferences): 설정 한 행과, 서버 함수로 잡은 일일 보고 원장 한 행 (원장 → 설정 → auth.users cascade)
   await db.query(`insert into public.report_preferences (user_id, time_zone) values ($1, 'Asia/Seoul')`, [userId]);
   const claimed = await db.query(
-    `select id from public.claim_report_delivery($1, 'daily', 'Asia/Seoul', '2026-10-10', '2026-10-09T15:00:00Z', '2026-10-09T23:30:00Z', '2026-10-10T01:30:00Z', '2026-10-09T23:30:00Z', 300)`,
+    `select id from public.claim_report_delivery($1, 'daily', 'Asia/Seoul', '2026-10-10', '2026-10-09T15:00:00Z', '2026-10-09T23:30:00Z', '2026-10-10T01:30:00Z', '2026-10-09T23:30:00Z', 300, 1)`,
     [userId],
   );
   expect(claimed.rows).toHaveLength(1);

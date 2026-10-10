@@ -43,9 +43,16 @@ function pref(userId: string, overrides: Partial<ReportPreferenceRow> = {}): Rep
     time_zone: "Asia/Seoul",
     created_at: "2026-01-01T00:00:00Z",
     schedule_changed_at: "2026-01-01T00:00:00Z",
+    schedule_version: 1,
     ...overrides,
   };
 }
+
+/** 원장 행 + 가짜가 따로 들고 있는 DB 열 (job은 읽지 않는다) */
+type FakeRow = ReportDeliveryRow & { schedule_version: number; last_error: string | null };
+const SCHEDULE_FIELDS = ["mode", "daily_time", "quiet_start", "quiet_end", "time_zone"] as const;
+/** report_deliveries 행이 그날을 막는가 (claim_report_delivery · isBlockingDelivery와 같다) */
+const blocking = (d: FakeRow) => !(d.status === "skipped" && (d.last_error === "schedule_changed" || d.last_error === "mode_changed"));
 
 const device = (userId: string, id: string, token: string): ReportDevice => ({ id, user_id: userId, token, environment: "sandbox" });
 
@@ -57,7 +64,7 @@ function fakeStore(init: { prefs: ReportPreferenceRow[]; devices?: ReportDevice[
   const state = {
     prefs: init.prefs,
     devices: [...(init.devices ?? [])],
-    deliveries: [...(init.deliveries ?? [])],
+    deliveries: (init.deliveries ?? []).map((d): FakeRow => ({ schedule_version: 1, last_error: null, ...d })),
     records: [] as { id: string; outcome: DeliveryOutcome }[],
     recordTimes: [] as Date[],
     claims: [] as ClaimInput[],
@@ -72,13 +79,25 @@ function fakeStore(init: { prefs: ReportPreferenceRow[]; devices?: ReportDevice[
     countDays: [] as string[],
   };
   let seq = 0;
+  const prefOf = (userId: string) => state.prefs.find((p) => p.user_id === userId);
+  /** PUT 흉내: 일정에 닿는 값이 바뀌면 트리거처럼 schedule_version을 올리고 schedule_changed_at을 남긴다 */
+  const put = (userId: string, patch: Partial<ReportPreferenceRow>, at: Date) => {
+    const i = state.prefs.findIndex((p) => p.user_id === userId);
+    const old = state.prefs[i];
+    const next = { ...old, ...patch };
+    const changed = SCHEDULE_FIELDS.some((f) => next[f] !== old[f]);
+    state.prefs[i] = changed ? { ...next, schedule_version: old.schedule_version + 1, schedule_changed_at: at.toISOString() } : next;
+  };
   const store: ReportStore = {
     async finishStale(now, max) {
       if (state.failFinish) throw new Error("statement timeout");
       let n = 0;
       for (const d of state.deliveries) {
         if (d.status === "pending" && Date.parse(d.next_attempt_at!) <= now.getTime() && (now.getTime() > Date.parse(d.expires_at) || d.attempts >= max)) {
-          d.status = "failed";
+          const p = prefOf(d.user_id)!;
+          const code = p.mode === "meaningful" ? "mode_changed" : d.schedule_version !== p.schedule_version ? "schedule_changed" : null;
+          d.status = code ? "skipped" : "failed";
+          d.last_error = code ?? d.last_error ?? "stale";
           d.next_attempt_at = null;
           n++;
         }
@@ -88,7 +107,7 @@ function fakeStore(init: { prefs: ReportPreferenceRow[]; devices?: ReportDevice[
     dailyPreferences: async () => state.prefs.filter((p) => p.mode !== "meaningful"),
     async lastScheduled(since) {
       const last = new Map<string, Date>();
-      for (const d of state.deliveries) {
+      for (const d of state.deliveries.filter(blocking)) {
         const at = new Date(d.scheduled_at);
         if (at >= since && (!last.get(d.user_id) || at > last.get(d.user_id)!)) last.set(d.user_id, at);
       }
@@ -101,8 +120,10 @@ function fakeStore(init: { prefs: ReportPreferenceRow[]; devices?: ReportDevice[
     async claim(input) {
       if (state.failClaimFor.has(input.userId)) throw new Error("connection reset");
       state.claims.push(input);
-      if (state.deliveries.some((d) => d.user_id === input.userId && Date.parse(d.scheduled_at) >= input.dayStart.getTime())) return null;
-      const row: ReportDeliveryRow = {
+      // 잠근 뒤 일정 세대가 계획과 다르면 잡지 않는다
+      if (prefOf(input.userId)?.schedule_version !== input.scheduleVersion) return null;
+      if (state.deliveries.some((d) => d.user_id === input.userId && blocking(d) && Date.parse(d.scheduled_at) >= input.dayStart.getTime())) return null;
+      const row: FakeRow = {
         id: `delivery-${++seq}`,
         user_id: input.userId,
         kind: "daily",
@@ -113,15 +134,23 @@ function fakeStore(init: { prefs: ReportPreferenceRow[]; devices?: ReportDevice[
         status: "pending",
         attempts: 1,
         next_attempt_at: new Date(input.now.getTime() + input.leaseSeconds * 1000).toISOString(),
+        schedule_version: input.scheduleVersion,
+        last_error: null,
       };
       state.deliveries.push(row);
       return { ...row };
     },
     async claimRetry(id, now, leaseSeconds, max) {
       const d = state.deliveries.find((x) => x.id === id);
-      if (!d || d.status !== "pending" || Date.parse(d.next_attempt_at!) > now.getTime() || d.attempts >= max || now.getTime() > Date.parse(d.expires_at)) return null;
+      if (!d) return null;
+      // 실패 뒤 일정을 바꿨으면 다시 보내지 않고 닫는다 (claim_report_retry와 같다)
+      if (d.status === "pending" && Date.parse(d.next_attempt_at!) <= now.getTime() && d.schedule_version !== prefOf(d.user_id)!.schedule_version) {
+        Object.assign(d, { status: "skipped", next_attempt_at: null, last_error: "schedule_changed" });
+        return null;
+      }
+      if (d.status !== "pending" || Date.parse(d.next_attempt_at!) > now.getTime() || d.attempts >= max || now.getTime() > Date.parse(d.expires_at)) return null;
       // 더 늦게 예정된 보고가 있으면 앞 날짜를 다시 잡지 않는다 (claim_report_retry와 같다)
-      if (state.deliveries.some((o) => o.user_id === d.user_id && o.id !== d.id && Date.parse(o.scheduled_at) > Date.parse(d.scheduled_at))) return null;
+      if (state.deliveries.some((o) => o.user_id === d.user_id && o.id !== d.id && blocking(o) && Date.parse(o.scheduled_at) > Date.parse(d.scheduled_at))) return null;
       d.attempts++;
       d.next_attempt_at = new Date(now.getTime() + leaseSeconds * 1000).toISOString();
       return { ...d };
@@ -151,10 +180,11 @@ function fakeStore(init: { prefs: ReportPreferenceRow[]; devices?: ReportDevice[
       state.records.push({ id: delivery.id, outcome });
       d.status = outcome.status;
       d.next_attempt_at = outcome.status === "pending" ? outcome.nextAttemptAt.toISOString() : null;
+      d.last_error = outcome.status === "sent" ? null : outcome.lastError;
       return 1;
     },
   };
-  return { store, state };
+  return { store, state, put };
 }
 
 /** 토큰마다 정한 응답을 돌려주는 가짜 APNs. 기본은 200 */
@@ -481,5 +511,107 @@ describe("runDailyReports", () => {
     expect(pushErrorCode({ ok: false, status: 429, reason: "TooManyRequests", unregistered: false })).toEqual({ transient: true, code: "apns_429_toomanyrequests" });
     expect(pushErrorCode({ ok: false, status: 400, reason: "Bad Topic!", unregistered: false })).toEqual({ transient: false, code: "apns_400" });
     for (const { code } of [pushErrorCode({ ok: false, status: Number.NaN, reason: "x".repeat(200), unregistered: false })]) expect(code).toMatch(/^[a-z0-9_]{1,64}$/);
+  });
+
+  describe("일정 변경과 보내기의 경합 (schedule_version)", () => {
+    const TOKEN = "a".repeat(64);
+    /** 처음 n번은 503, 그다음은 200. 보낸 시각을 남긴다 */
+    function flaky(failFirst: number, clock: () => number) {
+      const sentAt: string[] = [];
+      const transport: Transport = async () => {
+        sentAt.push(new Date(clock()).toISOString());
+        return sentAt.length <= failFirst ? { status: 503, body: "" } : { status: 200, body: "" };
+      };
+      return { transport, sentAt };
+    }
+
+    it("08:30 실패 → 08:31 daily 18:00으로 바꿈 → 08:35 다시 보내기: 옛 08:30 보고는 가지 않고(skipped schedule_changed), 18:00 보고가 한 번", async () => {
+      const { store, state, put } = fakeStore({ prefs: [pref(ALICE)], devices: [device(ALICE, "d1", TOKEN)] });
+      let t = SEOUL_0830.getTime();
+      const apns = flaky(1, () => t);
+      const tick = (iso: string) => ((t = Date.parse(iso)), run(store, apns.transport, () => t));
+      await tick("2026-10-09T23:30:00Z"); // 08:30 KST: 503 → 대기
+      put(ALICE, { daily_time: "18:00" }, new Date("2026-10-09T23:31:00Z"));
+      for (let m = 35; m < 60; m += 5) await tick(`2026-10-09T23:${m}:00Z`);
+      expect(apns.sentAt).toEqual(["2026-10-09T23:30:00.000Z"]);
+      expect(state.deliveries[0]).toMatchObject({ status: "skipped", last_error: "schedule_changed" });
+      for (let h = 0; h <= 10; h++) await tick(`2026-10-10T${String(h).padStart(2, "0")}:00:00Z`);
+      for (let m = 5; m < 60; m += 5) await tick(`2026-10-10T09:${m}:00Z`);
+      expect(apns.sentAt).toEqual(["2026-10-09T23:30:00.000Z", "2026-10-10T09:00:00.000Z"]); // 18:00 KST 한 번
+      expect(state.deliveries.map((d) => [d.report_date, d.status])).toEqual([
+        ["2026-10-10", "skipped"],
+        ["2026-10-10", "sent"],
+      ]);
+    });
+
+    it("08:30 실패 → 08:31 시간대를 런던으로 → 옛 서울 보고는 가지 않고, 런던 10-10 08:30 BST(07:30Z) 보고가 한 번", async () => {
+      const { store, state, put } = fakeStore({ prefs: [pref(ALICE)], devices: [device(ALICE, "d1", TOKEN)] });
+      let t = SEOUL_0830.getTime();
+      const apns = flaky(1, () => t);
+      const tick = (ms: number) => ((t = ms), run(store, apns.transport, () => t));
+      await tick(SEOUL_0830.getTime());
+      put(ALICE, { time_zone: "Europe/London" }, new Date("2026-10-09T23:31:00Z"));
+      for (let ms = Date.parse("2026-10-09T23:35:00Z"); ms <= Date.parse("2026-10-10T10:00:00Z"); ms += minutes(5)) await tick(ms);
+      expect(apns.sentAt).toEqual(["2026-10-09T23:30:00.000Z", "2026-10-10T07:30:00.000Z"]);
+      expect(state.deliveries.map((d) => [d.time_zone, d.report_date, d.status, d.last_error])).toEqual([
+        ["Asia/Seoul", "2026-10-10", "skipped", "schedule_changed"],
+        ["Europe/London", "2026-10-10", "sent", null],
+      ]);
+    });
+
+    it("cron이 설정을 읽은 뒤 PUT이 일정을 바꾸면 옛 계획으로는 잡지 않고, 다음 실행이 새 일정으로 보낸다", async () => {
+      const { store, state, put } = fakeStore({ prefs: [pref(ALICE)], devices: [device(ALICE, "d1", TOKEN)] });
+      const read = store.dailyPreferences;
+      let putOnRead = true;
+      store.dailyPreferences = async () => {
+        const rows = structuredClone(await read());
+        if (putOnRead) put(ALICE, { daily_time: "18:00" }, new Date("2026-10-09T23:30:00Z"));
+        putOnRead = false;
+        return rows;
+      };
+      const apns = fakeApns();
+      expect(await run(store, apns.transport, SEOUL_0830)).toMatchObject({ due: 1, claimed: 0 });
+      expect(state.claims[0].scheduleVersion).toBe(1);
+      expect(state.deliveries).toEqual([]);
+      expect(await run(store, apns.transport, new Date("2026-10-10T09:00:00Z"))).toMatchObject({ claimed: 1, sent: 1 });
+      expect(state.claims[1].scheduleVersion).toBe(2);
+      expect(apns.sent).toHaveLength(1);
+    });
+
+    it("이미 보낸 날은 일정을 바꿔도 다시 보내지 않는다 (08:30 보냄 → 09:00에 18:00으로 → 18:00에 없음)", async () => {
+      const { store, put } = fakeStore({ prefs: [pref(ALICE)], devices: [device(ALICE, "d1", TOKEN)] });
+      const apns = fakeApns();
+      await run(store, apns.transport, SEOUL_0830);
+      put(ALICE, { daily_time: "18:00" }, new Date("2026-10-10T00:00:00Z"));
+      expect(await run(store, apns.transport, new Date("2026-10-10T09:00:00Z"))).toMatchObject({ due: 0, claimed: 0 });
+      expect(apns.sent).toHaveLength(1);
+    });
+
+    it("보내는 중(임대 중)에 일정을 바꾸면 그 보고는 한 번 가고, 그 현지 날은 보낸 날이다 (두 번째 없음)", async () => {
+      const { store, state, put } = fakeStore({ prefs: [pref(ALICE)], devices: [device(ALICE, "d1", TOKEN)] });
+      const sent: string[] = [];
+      const transport: Transport = async () => {
+        put(ALICE, { daily_time: "18:00" }, new Date("2026-10-09T23:30:30Z")); // APNs 요청 중에 PUT이 커밋
+        sent.push("x");
+        return { status: 200, body: "" };
+      };
+      await run(store, transport, SEOUL_0830);
+      expect(state.deliveries[0]).toMatchObject({ status: "sent", schedule_version: 1 });
+      expect(state.prefs[0].schedule_version).toBe(2);
+      expect(await run(store, transport, new Date("2026-10-10T09:00:00Z"))).toMatchObject({ due: 0, claimed: 0 });
+      expect(sent).toHaveLength(1);
+    });
+
+    it("Respect Focus만 바꾸면 일정 세대가 그대로라 실패한 보고를 그대로 다시 보낸다", async () => {
+      const { store, state, put } = fakeStore({ prefs: [pref(ALICE)], devices: [device(ALICE, "d1", TOKEN)] });
+      let t = SEOUL_0830.getTime();
+      const apns = flaky(1, () => t);
+      await run(store, apns.transport, () => t);
+      put(ALICE, { respect_focus: false }, new Date("2026-10-09T23:31:00Z"));
+      expect(state.prefs[0].schedule_version).toBe(1);
+      t = Date.parse("2026-10-09T23:35:00Z");
+      expect(await run(store, apns.transport, () => t)).toMatchObject({ retried: 1, sent: 1 });
+      expect(apns.sentAt).toEqual(["2026-10-09T23:30:00.000Z", "2026-10-09T23:35:00.000Z"]);
+    });
   });
 });

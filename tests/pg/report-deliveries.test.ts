@@ -24,8 +24,12 @@ const LONDON = ["Europe/London", "2026-10-10", "2026-10-09T23:00:00Z", "2026-10-
  */
 const LA = ["America/Los_Angeles", "2026-10-09", "2026-10-09T07:00:00Z", "2026-10-09T15:30:00Z", "2026-10-10T01:40:00Z", "2026-10-09T23:40:00Z"] as const;
 
-const claimSql = `select id from public.claim_report_delivery($1, 'daily', $2, $3, $4, $5, $6, $7, 300)`;
-const claim = (client: pg.Client, userId: string, args: readonly string[]) => client.query(claimSql, [userId, ...args]).then((r) => r.rows.length);
+/** 마지막 인자는 계획에 쓴 일정 세대 (기본 1 = 처음 설정) */
+const claimSql = `select id from public.claim_report_delivery($1, 'daily', $2, $3, $4, $5, $6, $7, 300, $8)`;
+const claim = (client: pg.Client, userId: string, args: readonly string[], scheduleVersion = 1) =>
+  client.query(claimSql, [userId, ...args, scheduleVersion]).then((r) => r.rows.length);
+/** 서울 10-10 18:00 KST 보고 (일정을 18:00으로 바꾼 뒤) */
+const SEOUL_EVENING = ["Asia/Seoul", "2026-10-10", "2026-10-09T15:00:00Z", "2026-10-10T09:00:00Z", "2026-10-10T11:00:00Z", "2026-10-10T09:00:00Z"] as const;
 
 async function newUser(timeZone = "Asia/Seoul"): Promise<string> {
   const id = randomUUID();
@@ -121,7 +125,7 @@ describe("겹친 cron의 잡기 (실제 Postgres)", () => {
 
   it("다시 잡기도 겹친 실행 중 하나만: attempts가 한 번만 오른다", async () => {
     const user = await newUser();
-    const { rows } = await clients[0].query(claimSql, [user, ...SEOUL]);
+    const { rows } = await clients[0].query(claimSql, [user, ...SEOUL, 1]);
     const id = rows[0].id as string;
     const retrySql = `select id from public.claim_report_retry($1, '2026-10-09T23:40:00Z', 300, 3)`;
     const [a, b] = clients;
@@ -137,6 +141,53 @@ describe("겹친 cron의 잡기 (실제 Postgres)", () => {
     const results = await Promise.all(clients.map((c) => c.query(`select id from public.claim_report_retry($1, '2026-10-09T23:45:00Z', 300, 3)`, [id])));
     expect(results.reduce((sum, r) => sum + r.rows.length, 0)).toBe(1);
     expect((await clients[0].query("select attempts from public.report_deliveries where id = $1", [id])).rows).toEqual([{ attempts: 3 }]);
+  });
+});
+
+describe("일정 변경과 잡기의 경합 (실제 Postgres, schedule_version)", () => {
+  const scheduleVersionOf = async (user: string) =>
+    (await clients[0].query<{ v: number }>("select schedule_version as v from public.report_preferences where user_id = $1", [user])).rows[0].v;
+
+  it("cron이 설정을 읽은 뒤(세대 1) 다른 연결의 PUT이 일정을 바꿔 커밋하면, 옛 계획으로 잡기는 거절되고 새 세대로는 잡힌다", async () => {
+    const user = await newUser();
+    const [cron, api] = clients;
+    const read = (await cron.query("select daily_time, schedule_version from public.report_preferences where user_id = $1", [user])).rows[0];
+    expect(read).toEqual({ daily_time: "08:30", schedule_version: 1 });
+    await api.query("update public.report_preferences set daily_time = '18:00' where user_id = $1", [user]);
+    expect(await claim(cron, user, SEOUL, read.schedule_version)).toBe(0);
+    expect((await cron.query("select count(*)::int as n from public.report_deliveries where user_id = $1", [user])).rows[0].n).toBe(0);
+    expect(await claim(cron, user, SEOUL_EVENING, await scheduleVersionOf(user))).toBe(1);
+  });
+
+  it("잡기가 설정 행 잠금을 쥔 동안 PUT은 기다린다. 잡힌 보고는 옛 세대로 남고, sent가 되면 그날 새 일정의 보고는 잡히지 않는다 (경계)", async () => {
+    const user = await newUser();
+    const [cron, api] = clients;
+    const [cronPid, apiPid] = [await pidOf(cron), await pidOf(api)];
+    await cron.query("begin");
+    const { rows } = await cron.query(claimSql, [user, ...SEOUL, 1]);
+    const put = api.query("update public.report_preferences set daily_time = '18:00' where user_id = $1", [user]);
+    expect(await blockersOf(apiPid)).toEqual([cronPid]);
+    await cron.query("commit");
+    await put;
+    expect(await scheduleVersionOf(user)).toBe(2);
+    expect((await cron.query("select schedule_version, status from public.report_deliveries where id = $1", [rows[0].id])).rows).toEqual([{ schedule_version: 1, status: "pending" }]);
+    // 이미 APNs로 나간 보고가 sent로 남으면 그 현지 날은 보낸 날이다
+    await cron.query("update public.report_deliveries set status = 'sent', sent_at = now(), next_attempt_at = null where id = $1", [rows[0].id]);
+    expect(await claim(cron, user, SEOUL_EVENING, 2)).toBe(0);
+  });
+
+  it("잡힌 보고가 일시 오류로 실패한 뒤 일정이 바뀌면, 다시 잡기는 옛 행을 skipped · schedule_changed로 닫고 새 일정의 보고가 그날 잡힌다", async () => {
+    const user = await newUser();
+    const [cron, api] = clients;
+    const { rows } = await cron.query(claimSql, [user, ...SEOUL, 1]);
+    const id = rows[0].id as string;
+    await cron.query("update public.report_deliveries set last_error = 'apns_503', next_attempt_at = '2026-10-09T23:35:00Z' where id = $1", [id]);
+    await api.query("update public.report_preferences set daily_time = '18:00' where user_id = $1", [user]);
+    expect((await cron.query("select id from public.claim_report_retry($1, '2026-10-09T23:35:00Z', 300, 3)", [id])).rows).toHaveLength(0);
+    expect((await cron.query("select status, last_error from public.report_deliveries where id = $1", [id])).rows).toEqual([{ status: "skipped", last_error: "schedule_changed" }]);
+    expect(await claim(cron, user, SEOUL_EVENING, 2)).toBe(1);
+    // 같은 날 · 같은 시간대의 두 번째 행이지만 닫힌 행은 유일 인덱스에서 빠진다. 세 번째는 막힌다
+    expect(await claim(cron, user, SEOUL_EVENING, 2)).toBe(0);
   });
 });
 
@@ -156,7 +207,7 @@ describe("RLS (실제 Postgres)", () => {
         await expect(c.query(`update public.${table} set user_id = user_id where user_id = $1`, [alice]), table).rejects.toThrow(/permission denied/);
       }
       await expect(c.query(`insert into public.report_preferences (user_id, time_zone) values ($1, 'Asia/Seoul')`, [alice])).rejects.toThrow(/permission denied/);
-      await expect(c.query(claimSql, [alice, ...SEOUL])).rejects.toThrow(/permission denied/);
+      await expect(c.query(claimSql, [alice, ...SEOUL, 1])).rejects.toThrow(/permission denied/);
     } finally {
       await c.query("reset role");
       await c.query("select set_config('request.jwt.claim.sub', '', false)");

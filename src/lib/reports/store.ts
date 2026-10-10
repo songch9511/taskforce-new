@@ -9,11 +9,12 @@ import { createAdminClient } from "@/lib/supabase/admin";
 
 import type { ReportDeliveryRow, ReportDevice, ReportPreferenceRow, ReportStore } from "./job";
 import type { ReportStatusCounts } from "./payload";
+import { isBlockingDelivery } from "./schedule";
 
 // 보고 표 읽기 · 쓰기 (20261105000000_report_preferences). 설정 읽기는 사용자 권한(RLS), 쓰기와 job은 service role.
 
 const PREFERENCE_API_COLUMNS = "mode, daily_time, quiet_start, quiet_end, respect_focus, time_zone, version";
-const PREFERENCE_JOB_COLUMNS = "user_id, mode, daily_time, quiet_start, quiet_end, respect_focus, time_zone, created_at, schedule_changed_at";
+const PREFERENCE_JOB_COLUMNS = "user_id, mode, daily_time, quiet_start, quiet_end, respect_focus, time_zone, created_at, schedule_changed_at, schedule_version";
 const DELIVERY_COLUMNS = "id, user_id, kind, time_zone, report_date, scheduled_at, expires_at, status, attempts, next_attempt_at";
 
 /** GET /api/v2/reports/preferences: 자기 설정 행 (RLS). 없으면 null */
@@ -63,11 +64,18 @@ export function supabaseReportStore(admin: SupabaseClient): ReportStore {
         admin.from("report_preferences").select(PREFERENCE_JOB_COLUMNS).in("mode", ["both", "daily"]).order("user_id").range(from, to),
       ),
     async lastScheduled(since) {
-      const rows = await readAll<{ user_id: string; scheduled_at: string }>((from, to) =>
-        admin.from("report_deliveries").select("user_id, scheduled_at").eq("kind", "daily").gte("scheduled_at", since.toISOString()).order("id").range(from, to),
+      const rows = await readAll<{ user_id: string; scheduled_at: string; status: string; last_error: string | null }>((from, to) =>
+        admin
+          .from("report_deliveries")
+          .select("user_id, scheduled_at, status, last_error")
+          .eq("kind", "daily")
+          .gte("scheduled_at", since.toISOString())
+          .order("id")
+          .range(from, to),
       );
       const last = new Map<string, Date>();
-      for (const row of rows) {
+      // 보내지 않고 닫힌 일정 변경 · 모드 변경 행은 그날을 막지 않는다 (claim_report_delivery와 같은 규칙)
+      for (const row of rows.filter(isBlockingDelivery)) {
         const at = new Date(row.scheduled_at);
         const seen = last.get(row.user_id);
         if (!seen || at > seen) last.set(row.user_id, at);
@@ -99,6 +107,7 @@ export function supabaseReportStore(admin: SupabaseClient): ReportStore {
           p_expires_at: input.expiresAt.toISOString(),
           p_now: input.now.toISOString(),
           p_lease_seconds: input.leaseSeconds,
+          p_schedule_version: input.scheduleVersion,
         })
         .throwOnError();
       return first(data);
