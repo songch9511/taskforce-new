@@ -322,28 +322,26 @@ export async function setSourcesAccessLost(
 
 type SourceStateRow = {
   id: string;
-  raw_text_purged_at: string | null;
-  raw_text_purge_reason: string | null;
-  access_lost_at: string | null;
+  provider: string | null;
+  purged: boolean;
+  purge_reason: string | null;
+  access_lost: boolean;
   external_url: string | null;
-  connections: { provider: string } | null;
 };
 
-/** 기억 · 조각이 가리키는 원문들의 상태 (retrieve.ts unavailableSources · bundle.ts가 거른다) */
+/**
+ * 기억 · 조각이 가리키는 원문들의 상태 (retrieve.ts unavailableSources · bundle.ts가 거른다). context_source_states 하나로:
+ * 접근 상실은 문서 단위다(같은 문서의 revision 하나라도 잃었으면, 범위 검색과 같은 기준). 다른 사용자의 원문은 돌아오지 않는다
+ */
 export async function loadSourceStates(admin: SupabaseClient, userId: string, sourceIds: string[]): Promise<SourceState[]> {
   if (sourceIds.length === 0) return [];
-  const { data } = await admin
-    .from("sources")
-    .select("id, raw_text_purged_at, raw_text_purge_reason, access_lost_at, external_url, connections(provider)")
-    .eq("user_id", userId)
-    .in("id", sourceIds)
-    .throwOnError();
-  return ((data ?? []) as unknown as SourceStateRow[]).map((row) => ({
+  const { data } = await admin.rpc("context_source_states", { p_user_id: userId, p_source_ids: sourceIds }).throwOnError();
+  return ((data ?? []) as SourceStateRow[]).map((row) => ({
     id: row.id,
-    provider: row.connections?.provider ?? null,
-    purged: row.raw_text_purged_at !== null,
-    purgeReason: row.raw_text_purge_reason,
-    accessLost: row.access_lost_at !== null,
+    provider: row.provider,
+    purged: row.purged,
+    purgeReason: row.purge_reason,
+    accessLost: row.access_lost,
     externalUrl: row.external_url,
   }));
 }

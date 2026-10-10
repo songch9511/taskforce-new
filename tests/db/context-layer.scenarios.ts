@@ -2,6 +2,10 @@ import { randomUUID } from "node:crypto";
 
 import { describe, expect, it } from "vitest";
 
+import { buildContextBundle } from "@/lib/context/bundle";
+import type { MemoryLike } from "@/lib/context/memory";
+import type { SourceState } from "@/lib/context/retrieve";
+
 // 0.2.0 맥락층 (20261104000000_context_layer, 구현 계획 B1): 정정 규칙 · 삭제 전파(아키텍처 6.5) · 사람 계정 · 신원 링크 · 조각 교체 · 범위 version.
 // 같은 시나리오를 PGlite(tests/db/context-layer.test.ts)와 실제 Postgres(tests/pg/context-layer.test.ts)에서 돌린다. 동시성은 실제 Postgres 파일에만 있다.
 
@@ -777,6 +781,54 @@ export function contextLayerTests(db: () => ContextLayerDb) {
     });
   });
 
+  describe("접근 상실은 문서 단위로 기억 · 묶음에도 (검색과 같은 기준)", () => {
+    it("옛 revision이 접근을 잃은 문서는 늦게 들어온 새 revision을 인용한 기억도 묶음에서 빠지고, 서버가 되찾음을 표시해야 다시 들어온다. 다른 문서 · 다른 사용자는 그대로", async () => {
+      const [me, other] = [await f.user(), await f.user()];
+      const notion = await f.connection(me, "notion");
+      const v1 = await f.source(me, { connectionId: notion, externalId: "doc-acl", version: "v1" });
+      const fine = await f.source(me, { connectionId: notion, externalId: "doc-fine", version: "v1" });
+      const theirs = await f.source(other, { connectionId: await f.connection(other, "notion"), externalId: "doc-acl", version: "v1" });
+      await db().query(`select public.set_sources_access($1, $2::uuid[], true)`, [me, [v1]]);
+      const v2 = await f.source(me, { connectionId: notion, externalId: "doc-acl", version: "v2" }); // 늦게 들어온 새 revision (접근 표시 없음)
+      const context = await f.context(me);
+      const observed = (sourceId: string, statement: string) =>
+        f.remember(me, { kind: "fact", scope_kind: "context", context_id: context, statement, origin: "observed", source_ref: { source_id: sourceId } });
+      await observed(v2, "새 revision에서 읽음");
+      await observed(fine, "다른 문서에서 읽음");
+
+      const states = async (userId: string, ids: string[]) =>
+        (await db().query(`select * from public.context_source_states($1, $2::uuid[]) order by id`, [userId, ids])).map(
+          (r): SourceState => ({ id: r.id as string, provider: r.provider as string | null, purged: r.purged as boolean, purgeReason: r.purge_reason as string | null, accessLost: r.access_lost as boolean, externalUrl: r.external_url as string | null }),
+        );
+      const lostOf = async (userId: string, ids: string[]) => Object.fromEntries((await states(userId, ids)).map((st) => [st.id, st.accessLost]));
+      expect(await lostOf(me, [v1, v2, fine])).toEqual({ [v1]: true, [v2]: true, [fine]: false });
+      expect(await lostOf(other, [theirs, v2])).toEqual({ [theirs]: false }); // 남의 원문은 보이지 않고, 같은 외부 id여도 다른 사용자는 그대로
+
+      const bundleMemory = async () => {
+        const rows = (await db().query(
+          `select id, kind, scope_kind, context_id, action_id, person_id, agent_adapter, subject, statement, origin, source_ref, observed_at,
+                  valid_from, valid_until, superseded_at, revoked_at, source_purged from public.memory_items where user_id = $1`,
+          [me],
+        )) as MemoryLike[];
+        const { bundle } = buildContextBundle({
+          context: { id: context, context_version: await f.version(context) },
+          me: { display_name: "나", emails: [] },
+          memory: rows,
+          people: [],
+          chunks: [],
+          sources: await states(me, [v1, v2, fine]),
+          now: new Date(),
+        });
+        return bundle.memory.map((m) => m.statement).sort();
+      };
+      expect(await bundleMemory()).toEqual(["다른 문서에서 읽음"]);
+      // 서버가 되찾음을 표시하면 (문서의 모든 revision) 다시 들어온다
+      await db().query(`select public.set_sources_access($1, $2::uuid[], false)`, [me, [v2]]);
+      expect(await lostOf(me, [v1, v2])).toEqual({ [v1]: false, [v2]: false });
+      expect(await bundleMemory()).toEqual(["다른 문서에서 읽음", "새 revision에서 읽음"]);
+    });
+  });
+
   describe("범위 version: 멤버 · 범위 기억 변화에 오르고 관계없는 변화에는 오르지 않는다", () => {
     it("멤버 추가 · 빼기 · 다시 넣기 · 후보 확인, 범위 기억 추가 · 정정에 오른다. 다른 범위 · 전체 기억 · updated_at만 바뀐 것에는 오르지 않는다", async () => {
       const me = await f.user();
@@ -824,7 +876,7 @@ export function contextLayerTests(db: () => ContextLayerDb) {
 
   describe("권한 · 경계 (I04 · I14 · D-13)", () => {
     it("B1의 함수는 서버만 부른다(search_path 고정). 소유자 권한은 cascade · 앱의 원문 쓰기로도 도는 트리거 함수뿐이다", async () => {
-      const rpc = ["observe_person_handle", "replace_source_chunks", "match_context_chunks", "remember_memory_item", "set_sources_access"];
+      const rpc = ["observe_person_handle", "replace_source_chunks", "match_context_chunks", "remember_memory_item", "set_sources_access", "context_source_states"];
       const internal = [
         "source_chunks_purged_source_guard", "memory_items_purged_source_guard", "purge_source_context", "sources_purge_context",
         "people_refresh_from_handles", "people_handles_refresh", "purge_slack_identity", "bump_context_versions", "queue_context_bumps",

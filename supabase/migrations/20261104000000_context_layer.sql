@@ -137,6 +137,22 @@ create trigger sources_server_columns_guard
   before update of raw_text_purged_at, raw_text_purge_reason, access_lost_at on public.sources
   for each row execute function public.sources_server_columns_guard();
 
+-- 기억 · 묶음이 원문을 거를 때 보는 상태 (src/lib/context/store.ts loadSourceStates). 접근 상실은 문서 단위다: 같은 문서의 revision 하나라도
+-- 잃었으면 잃은 것으로 본다(범위 검색 match_context_chunks와 같은 기준). 늦게 들어온 새 revision은 되찾음이 아니다: 서버가 set_sources_access(…, false)로 표시해야 한다
+create function public.context_source_states(p_user_id uuid, p_source_ids uuid[])
+returns table (id uuid, provider text, purged boolean, purge_reason text, access_lost boolean, external_url text)
+language sql
+stable
+set search_path = ''
+as $$
+  select s.id, k.provider, s.raw_text_purged_at is not null, s.raw_text_purge_reason,
+         exists (select 1 from public.sources d where d.id = any (public.source_document_ids(p_user_id, s.id)) and d.access_lost_at is not null),
+         s.external_url
+    from public.sources s
+    left join public.connections k on k.id = s.connection_id and k.user_id = s.user_id
+   where s.user_id = p_user_id and s.id = any (p_source_ids);
+$$;
+
 -- 접근 상실 표시 · 되찾음 (서버). 같은 문서의 모든 revision을 함께 바꾼다: 접근은 문서의 성질이다. 바꾼 행 수
 create function public.set_sources_access(p_user_id uuid, p_source_ids uuid[], p_lost boolean)
 returns integer
@@ -941,6 +957,7 @@ begin
     'public.source_document_ids(uuid, uuid)',
     'public.sources_server_columns_guard()',
     'public.set_sources_access(uuid, uuid[], boolean)',
+    'public.context_source_states(uuid, uuid[])',
     'public.context_members_bump_version()',
     'public.memory_items_bump_context_version()',
     'public.sources_bump_member_contexts()',
@@ -958,6 +975,7 @@ grant execute on function public.observe_person_handle(uuid, text, text, text, t
 -- 트리거 · RPC 안에서 부르는 전파 · version · 사람 계산
 grant execute on function public.purge_slack_identity(uuid[]) to service_role;
 grant execute on function public.set_sources_access(uuid, uuid[], boolean) to service_role;
+grant execute on function public.context_source_states(uuid, uuid[]) to service_role;
 grant execute on function public.source_document_ids(uuid, uuid) to service_role;
 grant execute on function public.purge_source_context(uuid, uuid[], boolean) to service_role;
 grant execute on function public.queue_context_bumps(uuid[]) to service_role;

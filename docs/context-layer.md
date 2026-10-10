@@ -34,7 +34,7 @@ route(대화 v2 · 기억 편집 API)는 B2가 붙인다.
 | (a) 보관 기간 90일 | 지움 | 글 · 인용 · 원문에서 읽은 값 · 주제 비움, `source_purged` | 지움 | 그대로 (인용 포함, 근거 인용처럼) | 그대로 (관련자는 보관 기간에 남는다) | 그대로 | 빠짐 (조각 없음 · 글 없음) | 오름 |
 | (b) Slack 끊기 · 앱 제거 (D3) | 지움 | 위와 같음 | 지움 | 글 · 값 그대로, **인용(Slack 글자)만 뺌** | 그 연결이 본 Slack 계정을 지우고 다시 계산: Slack에서만 온 이름 · 이메일 · `handles.slack`은 없어지고, 다른 출처가 보여 준 값과 사용자가 만든 사람(origin user)의 이름 · 이메일은 남는다 | 그 연결의 oauth · inferred 지움, profile · user_confirmed 남김 | 빠짐. Slack 원문은 처음부터 조각을 만들지 않고 묶음에 넣지 않는다 | 오름 |
 | (c) 그 밖의 연결 끊기 | 남음 (원문은 보관 정책대로, 범위 검색도 그대로: 아래 "같은 문서") | 남음 | 남음 | 남음 | 남음 (계정 행의 `connection_id`만 빔) | 그 연결의 oauth · inferred 지움 (외래키 cascade, inferred도 그 연결의 자료에서 본 후보라서. 6.5 "그 provider 링크"), profile · user_confirmed 남김 | 남음 | — |
-| (d) 접근 상실 (403 · 삭제 감지) | 남음 | 남음 | 남음 | 남음 | 남음 | 남음 | `sources.access_lost_at`(서버 `set_sources_access`가 같은 문서의 모든 revision에 함께 쓴다. revision 하나라도 잃으면 그 문서를 뺀다): 범위 검색(`match_context_chunks`) · 묶음에서 빠짐. 되찾으면(null) 다시 나옴 | 오름 (잃을 때 · 되찾을 때) |
+| (d) 접근 상실 (403 · 삭제 감지) | 남음 | 남음 | 남음 | 남음 | 남음 | 남음 | `sources.access_lost_at`(서버 `set_sources_access`가 같은 문서의 모든 revision에 함께 쓴다. revision 하나라도 잃으면 그 문서를 뺀다. 늦게 들어온 새 revision은 되찾음이 아니다): 범위 검색(`match_context_chunks`)과 기억 · 묶음(`context_source_states` → `loadSourceStates`)에서 같은 기준으로 빠짐. 되찾으면(null) 다시 나옴 | 오름 (잃을 때 · 되찾을 때) |
 | (e) 사용자가 기억을 지움 · 잊음 | — | 행 삭제 또는 `revoked_at` | 〃 | 〃 | — | — | 다음 묶음에서 빠짐. 이미 보낸 묶음은 회수할 수 없다: manifest(id만, 글 없음)로 어디까지 나갔는지 남긴다 | 오름 (범위 기억이면) |
 | (f) 계정 삭제 | cascade | cascade | cascade | cascade | cascade (`people_handles` 포함) | cascade | — | — |
 | 원문 행 삭제 | 외래키 cascade | 비움 | 지움 | 인용만 뺌 | — | — | — | 오름 |

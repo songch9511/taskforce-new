@@ -11,6 +11,7 @@ import {
   forgetMemory,
   indexSourceAfterIngest,
   loadScopeMemory,
+  loadSourceStates,
   observePerson,
   recordOAuthIdentityLink,
   rememberMemory,
@@ -167,6 +168,18 @@ describe("gate 켜짐: DB 함수 인자", () => {
     const { admin, calls } = recordingAdmin();
     await setSourcesAccessLost(admin, "u1", ["s1", "s2"], true, CHUNKS);
     expect(calls.map((c) => [c.name, c.ops[0].args[0]])).toEqual([["set_sources_access", { p_user_id: "u1", p_source_ids: ["s1", "s2"], p_lost: true }]]);
+  });
+
+  it("원문 상태는 문서 단위 접근 상실을 담은 context_source_states 하나로 읽는다", async () => {
+    const { admin, calls } = recordingAdmin({
+      context_source_states: [
+        { id: "s2", provider: "notion", purged: false, purge_reason: null, access_lost: true, external_url: "https://notion.so/x" },
+      ],
+    });
+    expect(await loadSourceStates(admin, "u1", ["s2"])).toEqual([
+      { id: "s2", provider: "notion", purged: false, purgeReason: null, accessLost: true, externalUrl: "https://notion.so/x" },
+    ]);
+    expect(calls.map((c) => [c.kind, c.name, c.ops[0].args[0]])).toEqual([["rpc", "context_source_states", { p_user_id: "u1", p_source_ids: ["s2"] }]]);
   });
 
   it("범위 기억 읽기: 전체 + 요청 대상만 (id 모양이 아닌 값은 필터에 넣지 않는다)", async () => {
