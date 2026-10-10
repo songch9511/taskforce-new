@@ -1,6 +1,14 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  apiErrorCodeSchema,
+  apiErrorV2CodeSchema,
+  apiErrorV2Schema,
+  memoryItemResponseSchema,
+  memoryScopeRequestSchema,
+  memoryUnavailableCodeSchema,
+  updateConversationRequestSchema,
+  updateConversationResponseSchema,
   agentCapabilitySchema,
   agentEventEnvelopeSchema,
   agentEventTypeSchema,
@@ -323,6 +331,58 @@ describe("기억 (memory_items)", () => {
     ).toBe(false);
     expect(memoryEditRequestSchema.safeParse({ expected_version: 2, statement: "x".repeat(1001) }).success).toBe(false);
     expect(memoryEditRequestSchema.safeParse({ expected_version: 2, statement: "x", origin: "explicit" }).success).toBe(false);
+  });
+});
+
+describe("기억 쓰기 · 대화 범위 바꾸기 (B3)", () => {
+  it("범위 옮기기 요청: 전체(context_id 없음 · null) 또는 범위(context_id). 정정 요청과 같은 expected_version을 싣고 모르는 키는 거절한다", () => {
+    expect(memoryScopeRequestSchema.parse({ expected_version: 2, scope_kind: "context", context_id: U.context })).toEqual({ expected_version: 2, scope_kind: "context", context_id: U.context });
+    expect(memoryScopeRequestSchema.parse({ expected_version: 2, scope_kind: "global" })).toEqual({ expected_version: 2, scope_kind: "global", context_id: null });
+    expect(memoryScopeRequestSchema.parse({ expected_version: 2, scope_kind: "global", context_id: null }).context_id).toBeNull();
+    for (const bad of [
+      {},
+      { expected_version: 2 },
+      { scope_kind: "global" },
+      { expected_version: 0, scope_kind: "global" },
+      { expected_version: 2, scope_kind: "context" },
+      { expected_version: 2, scope_kind: "context", context_id: null },
+      { expected_version: 2, scope_kind: "global", context_id: U.context },
+      { expected_version: 2, scope_kind: "action", context_id: null },
+      { expected_version: 2, scope_kind: "context", context_id: "x" },
+      { expected_version: 2, scope_kind: "global", origin: "explicit" },
+    ]) {
+      expect(memoryScopeRequestSchema.safeParse(bad).success, JSON.stringify(bad)).toBe(false);
+    }
+  });
+
+  it("기억 쓰기 응답은 { item: MemoryItem } 하나다", () => {
+    const item = {
+      id: U.memory, kind: "fact", scope_kind: "global", context_id: null, action_id: null, person_id: null, agent_adapter: null, subject: "launch day", statement: "출시는 목요일",
+      value: { moved_from: U.reply }, origin: "explicit", source_ref: null, observed_at: "2026-10-10T01:00:00Z", valid_from: null, valid_until: null, superseded_by: null,
+      superseded_at: null, revoked_at: null, confidence: null, source_purged: false, version: 1, created_at: "2026-10-10T01:00:00Z", updated_at: "2026-10-10T01:00:00Z",
+    };
+    expect(memoryItemResponseSchema.parse({ item })).toEqual({ item });
+    expect(memoryItemResponseSchema.safeParse({ memory: item }).success).toBe(false);
+    expect(memoryItemResponseSchema.safeParse({ item: { ...item, origin: "user" } }).success).toBe(false);
+  });
+
+  it("대화 범위 바꾸기: { context_id: uuid | null }뿐 (제목 · 보관 · 소유자는 바꾸지 못한다). 응답은 { conversation }", () => {
+    expect(updateConversationRequestSchema.parse({ context_id: U.context })).toEqual({ context_id: U.context });
+    expect(updateConversationRequestSchema.parse({ context_id: null })).toEqual({ context_id: null });
+    for (const bad of [{}, { context_id: "x" }, { context_id: U.context, title: "x" }, { context_id: U.context, user_id: U.action }, { title: "x" }]) {
+      expect(updateConversationRequestSchema.safeParse(bad).success, JSON.stringify(bad)).toBe(false);
+    }
+    const conversation = { id: U.conversation, title: null, context_id: U.context, created_at: "2026-10-10T01:00:00Z", last_message_at: null, last_read_at: null, archived_at: null, text_purged_at: null };
+    expect(updateConversationResponseSchema.parse({ conversation })).toEqual({ conversation });
+  });
+
+  it("v2 오류 코드 = v1 코드 전부 + 정책 보류 이유 둘. v1 apiErrorCodeSchema는 동결이라 새 코드를 받지 않는다", () => {
+    expect(memoryUnavailableCodeSchema.options).toEqual(["confirm_unavailable", "scope_unavailable"]);
+    expect(apiErrorV2CodeSchema.options).toEqual([...apiErrorCodeSchema.options, "confirm_unavailable", "scope_unavailable"]);
+    expect(apiErrorCodeSchema.safeParse("confirm_unavailable").success).toBe(false);
+    expect(apiErrorV2Schema.parse({ error: { code: "scope_unavailable", message: "x" } }).error.code).toBe("scope_unavailable");
+    expect(apiErrorV2Schema.parse({ error: { code: "conflict", message: "x" } }).error.code).toBe("conflict");
+    expect(apiErrorV2Schema.safeParse({ error: { code: "other", message: "x" } }).success).toBe(false);
   });
 });
 
