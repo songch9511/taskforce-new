@@ -22,7 +22,7 @@ public struct WorkItem: Sendable, Hashable, Identifiable {
     public let state: WorkState
     /// 프로젝트. 지금 `actions`에는 프로젝트가 없어 늘 nil(Ungrouped). S3b가 `work_contexts` 멤버십으로 채운다
     public let project: String?
-    /// 수행자. 담당이 나(`owner = me`)면 "You", 모름(`unknown`)이면 없음 (지어내지 않는다)
+    /// 수행자. 담당이 나(`owner = me`)이고 담당을 묻는 확인 이유가 없을 때만 "You". 모름 · 담당 확인 중이면 없음 (지어내지 않는다)
     public let performer: String?
     /// 지금 하는 일 (`WorkActivity`). 없으면 nil
     public let activity: String?
@@ -46,9 +46,10 @@ public struct WorkItem: Sendable, Hashable, Identifiable {
         self.reasons = reasons
     }
 
-    /// 수행자: 담당이 나면 "You"
-    public static func performer(_ owner: ActionOwner) -> String? {
-        owner == .me ? "You" : nil
+    /// 수행자: 담당이 나이고 담당을 묻는 확인 이유("Not sure it's yours": 판정 NOT_MY_ACTION · 담당 확인)가 없을 때만 "You".
+    /// 이유 분류는 기존 `ConfirmReasonText`를 그대로 쓴다 (판정 문자열을 여기서 따로 해석하지 않는다)
+    public static func performer(_ action: ActionSummary) -> String? {
+        action.owner == .me && !ConfirmReasonText.questionsOwner(action.confirmReasons) ? "You" : nil
     }
 
     /// 받은 목록을 줄로: 확인 요청(서버 순서) → 열린 할 일(서버 순서) → 오늘 끝낸 할 일(최근 것이 위).
@@ -61,7 +62,7 @@ public struct WorkItem: Sendable, Hashable, Identifiable {
         var items: [WorkItem] = []
         for action in reviews where seen.insert(action.id).inserted {
             items.append(WorkItem(
-                action: action, state: openState(action), performer: performer(action.owner), activity: WorkActivity.needsAnswer
+                action: action, state: openState(action), performer: performer(action), activity: WorkActivity.needsAnswer
             ))
         }
         for action in open where seen.insert(action.id).inserted {
@@ -69,12 +70,12 @@ public struct WorkItem: Sendable, Hashable, Identifiable {
                 ? (stopping.contains(action.id) ? WorkActivity.stopRequested : WorkActivity.running)
                 : nil
             items.append(WorkItem(
-                action: action, state: openState(action), performer: performer(action.owner), activity: activity,
+                action: action, state: openState(action), performer: performer(action), activity: activity,
                 reasons: reasons[action.id] ?? []
             ))
         }
         for action in doneToday where seen.insert(action.id).inserted {
-            items.append(WorkItem(action: action, state: .done, performer: performer(action.owner)))
+            items.append(WorkItem(action: action, state: .done, performer: performer(action)))
         }
         return items
     }
@@ -300,6 +301,40 @@ public enum WorkLoad: Sendable, Hashable {
             hasList ? .loaded(problem: .failed) : .failed
         case .live, .loading:
             hasList ? .loaded(problem: nil) : .loading
+        }
+    }
+}
+
+/// All work 본문에 무엇을 보일지 (디자인 D-14 + "할 일이 없다"를 섣불리 말하지 않기)
+public enum WorkListScreen: Sendable, Hashable {
+    /// 아무 주장도 하지 않는다: 이번 실행의 목록이 아직 없음 (읽는 중 · 로그아웃)
+    case blank
+    /// 목록 없이 오프라인
+    case offline
+    /// 목록 없이 읽기 실패
+    case failed
+    /// 받은 목록이 비었는데 연결이 동기화 중: 할 일을 아직 찾는 중일 수 있어 "Nothing on your plate yet."를 보이지 않는다
+    /// (`problem`이 있으면 그 Notice만)
+    case waitingForSync(problem: WorkLoad.Problem?)
+    /// 받은 목록이 비었고 동기화 중도 아님: "Nothing on your plate yet."
+    case noWork(problem: WorkLoad.Problem?)
+    /// 목록 (검색 · 필터 · 묶음)
+    case list(problem: WorkLoad.Problem?)
+
+    /// - isEmpty: 모든 줄(필터 전)이 없음, syncing: 연결 중 하나라도 동기화 중 (`AccountStore.anySyncing`)
+    public static func of(load: WorkLoad, isEmpty: Bool, syncing: Bool) -> WorkListScreen {
+        switch load {
+        case .loading: .blank
+        case .offline: .offline
+        case .failed: .failed
+        case .loaded(let problem):
+            if !isEmpty {
+                .list(problem: problem)
+            } else if syncing {
+                .waitingForSync(problem: problem)
+            } else {
+                .noWork(problem: problem)
+            }
         }
     }
 }

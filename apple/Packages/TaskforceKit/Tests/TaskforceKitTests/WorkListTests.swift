@@ -6,11 +6,11 @@ import Testing
 struct WorkListTests {
     static func action(
         _ n: Int, _ title: String = "", owner: ActionOwner = .me, started: Bool = false, status: ActionStatus = .open,
-        needsConfirmation: Bool = false
+        needsConfirmation: Bool = false, reasons: [String] = []
     ) -> ActionSummary {
         ActionSummary(
             id: id(n), title: title.isEmpty ? "Work \(n)" : title, owner: owner, status: status, dueDate: nil, counterpart: nil,
-            needsConfirmation: needsConfirmation, confirmReasons: [], startedAt: started ? Date(timeIntervalSince1970: 0) : nil,
+            needsConfirmation: needsConfirmation, confirmReasons: reasons, startedAt: started ? Date(timeIntervalSince1970: 0) : nil,
             lastActivityAt: Date(timeIntervalSince1970: 0)
         )
     }
@@ -104,6 +104,28 @@ struct WorkListTests {
         let items = WorkItem.list(reviews: [], open: [Self.action(1, owner: .me), Self.action(2, owner: .unknown)], doneToday: [])
         #expect(items.map(\.performer) == ["You", nil])
         #expect(WorkActivity.needsAnswer == "Needs your answer")
+    }
+
+    /// 담당을 묻는 확인 요청("Not sure it's yours")은 owner가 me여도 "You"라고 단정하지 않는다 (리뷰 F1)
+    @Test func ownerInQuestionHasNoPerformer() {
+        let items = WorkItem.list(
+            reviews: [
+                Self.action(1, needsConfirmation: true, reasons: ["판정 확인: NOT_MY_ACTION", "기한 확인"]),
+                Self.action(2, needsConfirmation: true, reasons: ["담당 확인"]),
+                Self.action(3, needsConfirmation: true, reasons: ["판정 확인: TENTATIVE, NOT_MY_ACTION"]),
+                // 담당이 아닌 이유는 수행자를 그대로 둔다
+                Self.action(4, needsConfirmation: true, reasons: ["기한 확인", "병합 확인 (55%)"]),
+                Self.action(5, needsConfirmation: true, reasons: ["판정 확인: ALREADY_DONE"]),
+            ],
+            open: [], doneToday: []
+        )
+        #expect(items.map(\.performer) == [nil, nil, nil, "You", "You"])
+        // 앱의 이유 분류(`ConfirmReasonText`)와 같은 판단: 그 이유들이 "Not sure it's yours"로 읽힌다
+        #expect(ConfirmReasonText.label(["판정 확인: NOT_MY_ACTION"]) == "Not sure it's yours")
+        #expect(ConfirmReasonText.label(["담당 확인"]) == "Not sure it's yours")
+        #expect(ConfirmReasonText.questionsOwner(["판정 확인: NOT_MY_ACTION"]))
+        #expect(ConfirmReasonText.questionsOwner(["담당 확인"]))
+        #expect(!ConfirmReasonText.questionsOwner(["기한 확인", "판정 확인: INFO_ONLY"]))
     }
 
     /// 지금 데이터에는 기다림의 근거가 없다: Waiting 필터는 아무것도 고르지 않는다
@@ -223,6 +245,22 @@ struct WorkListTests {
         #expect(WorkLoad.from(refresh: .refreshFailed(at: at, savedAt: at), hasList: true) == .loaded(problem: .failed))
     }
 
+    // MARK: 본문 (빈 목록 · 동기화 중)
+
+    /// 첫 동기화 중 빈 목록이면 "할 일이 없다"고 말하지 않는다 (리뷰 F2)
+    @Test func emptyListWhileSyncingMakesNoClaim() {
+        #expect(WorkListScreen.of(load: .loaded(problem: nil), isEmpty: true, syncing: true) == .waitingForSync(problem: nil))
+        #expect(WorkListScreen.of(load: .loaded(problem: .offline), isEmpty: true, syncing: true) == .waitingForSync(problem: .offline))
+        #expect(WorkListScreen.of(load: .loaded(problem: nil), isEmpty: true, syncing: false) == .noWork(problem: nil))
+        // 목록이 있으면 동기화 중이어도 목록
+        #expect(WorkListScreen.of(load: .loaded(problem: nil), isEmpty: false, syncing: true) == .list(problem: nil))
+        #expect(WorkListScreen.of(load: .loaded(problem: .failed), isEmpty: false, syncing: false) == .list(problem: .failed))
+        // 목록이 없으면 동기화와 상관없이 읽는 중 · 오프라인 · 실패
+        #expect(WorkListScreen.of(load: .loading, isEmpty: true, syncing: true) == .blank)
+        #expect(WorkListScreen.of(load: .offline, isEmpty: true, syncing: false) == .offline)
+        #expect(WorkListScreen.of(load: .failed, isEmpty: true, syncing: true) == .failed)
+    }
+
     // MARK: Done today 날짜 경계 (기기 시간대)
 
     static func calendar(_ identifier: String) -> Calendar {
@@ -259,25 +297,43 @@ struct WorkListTests {
     }
 }
 
-/// 고정 저장: 계정마다 따로, 전용 suite에 id만
+/// 고정 저장: 계정마다 따로, id만. 테스트는 메모리 저장으로 `~/Library/Preferences`에 파일을 남기지 않는다 (리뷰 L3)
 @MainActor
 struct WorkPinStoreTests {
-    @Test func pinsAreKeptPerAccount() throws {
-        let name = "dev.taskforcelabs.tests.work-pins.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: name))
-        defer { defaults.removePersistentDomain(forName: name) }
-        let store = WorkPinStore(defaults: defaults)
+    @Test func pinsAreKeptPerAccount() {
+        let disk = MemoryPinStorage()
+        let store = WorkPinStore(storage: disk)
         let alice = UUID(), bob = UUID()
         store.save(WorkPins([WorkListTests.id(1), WorkListTests.id(2)]), account: alice)
         #expect(store.load(account: alice).ids == [WorkListTests.id(1), WorkListTests.id(2)])
         #expect(store.load(account: bob).ids.isEmpty)
         // 다른 저장소(앱을 다시 연 것)도 같은 값을 읽는다
-        #expect(WorkPinStore(defaults: defaults).load(account: alice).ids == [WorkListTests.id(1), WorkListTests.id(2)])
+        #expect(WorkPinStore(storage: disk).load(account: alice).ids == [WorkListTests.id(1), WorkListTests.id(2)])
         // 할 일 id만 적는다
-        let saved = try #require(defaults.stringArray(forKey: WorkPinStore.key(alice)))
-        #expect(saved == [WorkListTests.id(1), WorkListTests.id(2)].map { $0.uuidString.lowercased() })
+        #expect(disk.values == [WorkPinStore.key(alice): [WorkListTests.id(1), WorkListTests.id(2)].map { $0.uuidString.lowercased() }])
         store.save(WorkPins(), account: alice)
-        #expect(defaults.object(forKey: WorkPinStore.key(alice)) == nil)
+        #expect(disk.values.isEmpty)
+    }
+
+    /// 계정이 떠나면 모두 지우고, 앱을 열 때 지금 계정 것만 남긴다 (`SavedNowStore`와 같은 정리, 리뷰 L5)
+    @Test func pinsAreRemovedLikeTheSavedCopy() {
+        let disk = MemoryPinStorage()
+        let store = WorkPinStore(storage: disk)
+        let alice = UUID(), bob = UUID()
+        store.save(WorkPins([WorkListTests.id(1)]), account: alice)
+        store.save(WorkPins([WorkListTests.id(2)]), account: bob)
+        disk.set(["keep"], forKey: "unrelated")
+        store.prune(keeping: bob)
+        #expect(store.load(account: alice).ids.isEmpty)
+        #expect(store.load(account: bob).ids == [WorkListTests.id(2)])
+        store.save(WorkPins([WorkListTests.id(1)]), account: alice)
+        store.removeAll()
+        #expect(store.load(account: alice).ids.isEmpty && store.load(account: bob).ids.isEmpty)
+        // 고정 말고 다른 키는 건드리지 않는다
+        #expect(disk.values == ["unrelated": ["keep"]])
+        store.save(WorkPins([WorkListTests.id(3)]), account: alice)
+        store.prune(keeping: nil)
+        #expect(store.load(account: alice).ids.isEmpty)
     }
 
     @Test func memoryStoreNeverTouchesDisk() {

@@ -5,12 +5,14 @@ import TaskforceKit
 /// - 도구 줄은 검색칸 하나. 필터는 칸 끝 `list-filter` 아이콘 뒤에 있고, 열면 그 자리에 Project · Status ChoiceChips 카드.
 ///   닫혀 있을 때 고른 필터는 한 줄("Shape launch · Waiting") + Clear
 /// - 묶음 이름에 개수가 없다. 고정한 일(셋까지)이 그 묶음 앞. 활동이 바뀌어도 줄 순서는 그대로 (`WorkListLayout`)
-/// - 빈 화면은 서로 다르다 (`WorkLoad`, `PanelEmptyState.Kind`): 목록 없음(읽는 중이면 아무것도 보이지 않는다) · 오프라인 · 읽기 실패 ·
-///   할 일 없음 · 맞는 일 없음. 받은 목록 뒤에 끊기거나 실패하면 목록은 두고 위에 Notice 하나
+/// - 빈 화면은 서로 다르다 (`WorkListScreen`, `PanelEmptyKind`): 목록 없음(읽는 중이면 아무것도 보이지 않는다) · 오프라인 · 읽기 실패 ·
+///   할 일 없음 · 맞는 일 없음. 받은 목록이 비었어도 연결이 동기화 중이면 할 일 없음을 말하지 않는다(아무것도 보이지 않음).
+///   받은 목록 뒤에 끊기거나 실패하면 목록은 두고 위에 Notice 하나
 /// - 검색어 · 필터 · 열린 필터 · 고정은 쓰는 쪽(셸 모델)이 가진다: 계정이 바뀌거나 레일의 All work로 열면 거기서 비운다
 public struct WorkList: View {
     let items: [WorkItem]
     let load: WorkLoad
+    let syncing: Bool
     @Binding var filter: WorkFilter
     @Binding var filtersOpen: Bool
     let pins: WorkPins
@@ -27,15 +29,17 @@ public struct WorkList: View {
     @Environment(\.colorSchemeContrast) private var contrast
 
     /// - items: 모든 줄(필터 전, `WorkItem.list`), today: 기한 글자의 오늘 (`DueDateFormat.today()`)
-    /// - onConnect: 있으면 할 일 없음 화면에 Connect a source (연결된 원문이 없을 때)
+    /// - syncing: 연결 중 하나라도 동기화 중 (`AccountStore.anySyncing`)
+    /// - onConnect: 있으면 할 일 없음 화면에 Connect a source (연결된 원문이 없다고 확인됐을 때)
     public init(
-        items: [WorkItem], load: WorkLoad, filter: Binding<WorkFilter>, filtersOpen: Binding<Bool>, pins: WorkPins,
+        items: [WorkItem], load: WorkLoad, syncing: Bool = false, filter: Binding<WorkFilter>, filtersOpen: Binding<Bool>, pins: WorkPins,
         currentID: UUID? = nil, highlightedID: UUID? = nil, today: LocalDate,
         onOpen: @escaping (UUID) -> Void = { _ in }, onPin: @escaping (UUID) -> Void = { _ in }, onUnpin: @escaping (UUID) -> Void = { _ in },
         onAddTask: @escaping () -> Void = {}, onConnect: (() -> Void)? = nil, onRetry: @escaping () -> Void = {}
     ) {
         self.items = items
         self.load = load
+        self.syncing = syncing
         _filter = filter
         _filtersOpen = filtersOpen
         self.pins = pins
@@ -60,16 +64,34 @@ public struct WorkList: View {
     }
 
     public var body: some View {
-        switch load {
-        case .loading:
+        switch WorkListScreen.of(load: load, isEmpty: items.isEmpty, syncing: syncing) {
+        case .blank:
             // 이번 실행의 목록이 아직 없다: 할 일이 없다고 말하지 않는다
             Color.clear.frame(height: 0)
         case .offline:
             PanelEmptyState(.offline) { tryAgain(.md) }
         case .failed:
             PanelEmptyState(.couldNotLoad) { tryAgain(.md) }
-        case .loaded(let problem):
-            loaded(problem)
+        case .waitingForSync(let problem):
+            // 첫 동기화 중: 할 일을 아직 찾는 중일 수 있다. 읽는 중처럼 아무 주장도 하지 않는다 (문제가 있으면 그 Notice만)
+            VStack(alignment: .leading, spacing: 0) { notice(problem) }
+        case .noWork(let problem):
+            VStack(alignment: .leading, spacing: 0) {
+                notice(problem)
+                PanelEmptyState(.noWork) {
+                    Button("Add task", action: onAddTask).buttonStyle(TFButtonStyle(.primary, size: .md))
+                    if let onConnect {
+                        Button("Connect a source", action: onConnect).buttonStyle(TFButtonStyle(.secondary, size: .md))
+                    }
+                }
+            }
+        case .list(let problem):
+            VStack(alignment: .leading, spacing: 0) {
+                notice(problem)
+                list
+            }
+            // 필터로 사라진 행의 호버 표시가 남지 않게
+            .onChange(of: filter) { hovered = nil }
         }
     }
 
@@ -77,26 +99,14 @@ public struct WorkList: View {
         Button("Try again", action: onRetry).buttonStyle(TFButtonStyle(.secondary, size: size))
     }
 
+    /// 받은 목록 뒤의 문제: 패널의 Notice는 제목과 동작만 (설명은 Settings에만)
     @ViewBuilder
-    private func loaded(_ problem: WorkLoad.Problem?) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
-            if let problem {
-                // 패널의 Notice는 제목과 동작만 (설명은 Settings에만)
-                Notice(title: problem == .offline ? PanelEmptyKind.offline.title : PanelEmptyKind.couldNotLoad.title) {
-                    tryAgain(.sm)
-                }
-                .padding(.bottom, TFSpace.md)
+    private func notice(_ problem: WorkLoad.Problem?) -> some View {
+        if let problem {
+            Notice(title: problem == .offline ? PanelEmptyKind.offline.title : PanelEmptyKind.couldNotLoad.title) {
+                tryAgain(.sm)
             }
-            if items.isEmpty {
-                PanelEmptyState(.noWork) {
-                    Button("Add task", action: onAddTask).buttonStyle(TFButtonStyle(.primary, size: .md))
-                    if let onConnect {
-                        Button("Connect a source", action: onConnect).buttonStyle(TFButtonStyle(.secondary, size: .md))
-                    }
-                }
-            } else {
-                list
-            }
+            .padding(.bottom, TFSpace.md)
         }
     }
 
