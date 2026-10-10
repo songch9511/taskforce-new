@@ -77,7 +77,7 @@ struct ComposerIMETests {
         var count = 0
     }
 
-    func makeEditor() throws -> (coordinator: ComposerTextField.Coordinator, field: NSTextField, editor: NSTextView, submissions: Submissions) {
+    func makeEditor() throws -> (coordinator: ComposerTextField.Coordinator, field: ComposerNSTextField, editor: NSTextView, submissions: Submissions) {
         let submissions = Submissions()
         let composer = ComposerTextField(
             text: .constant(""), placeholder: "Ask Taskforce…", label: "Reply to Taskforce", isEnabled: true, focusRequest: 0, onFocusChange: { _ in },
@@ -104,6 +104,19 @@ struct ComposerIMETests {
         #expect(!editor.hasMarkedText())
         let sent = coordinator.control(field, textView: editor, doCommandBy: #selector(NSResponder.insertNewline(_:)))
         #expect(sent && submissions.count == 1)
+    }
+
+    /// 포커스가 와도 쓰던 초안을 전부 선택하지 않는다 (다음 글자가 초안을 지우지 않게): 커서는 글 끝
+    @Test func focusKeepsTheDraftAndPutsTheCaretAtTheEnd() throws {
+        let (_, field, editor, _) = try makeEditor()
+        field.stringValue = "Can you compare plan B with"
+        field.placeCaretAtEnd()
+        #expect(editor.selectedRange == NSRange(location: field.stringValue.utf16.count, length: 0))
+        // 조합 중에는 커서를 옮기지 않는다
+        editor.setMarkedText("ㅎ", selectedRange: NSRange(location: 1, length: 0), replacementRange: NSRange(location: NSNotFound, length: 0))
+        let before = editor.selectedRange
+        field.placeCaretAtEnd()
+        #expect(editor.selectedRange == before)
     }
 
     @Test func onlyReturnSubmitsNotOtherCommands() throws {

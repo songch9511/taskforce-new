@@ -416,14 +416,19 @@ struct ComposerTextField: NSViewRepresentable {
     }
 }
 
-/// 포커스를 알리고, 창에 붙으면 요청대로 포커스를 가져가는 입력칸
+/// 포커스를 알리고, 창에 붙으면 요청대로 포커스를 가져가는 입력칸. 포커스가 와도 쓰던 글을 전부 선택하지 않는다: 커서는 글 끝에 둔다
+/// (선택된 채면 다음 글자가 쓰던 초안을 지운다)
 final class ComposerNSTextField: NSTextField {
     var onFocusChange: (Bool) -> Void = { _ in }
     private var wantsFocus = false
 
     override func becomeFirstResponder() -> Bool {
         let accepted = super.becomeFirstResponder()
-        if accepted { onFocusChange(true) }
+        if accepted {
+            onFocusChange(true)
+            // 필드 에디터가 전부 선택한 뒤에 커서를 끝으로 (바로 하면 다시 전부 선택된다)
+            DispatchQueue.main.async { [weak self] in self?.placeCaretAtEnd() }
+        }
         return accepted
     }
 
@@ -431,6 +436,12 @@ final class ComposerNSTextField: NSTextField {
         let accepted = super.resignFirstResponder()
         if accepted { onFocusChange(false) }
         return accepted
+    }
+
+    /// 조합 중이 아닐 때만 커서를 옮긴다
+    func placeCaretAtEnd() {
+        guard let editor = currentEditor() as? NSTextView, !editor.hasMarkedText() else { return }
+        editor.setSelectedRange(NSRange(location: editor.string.utf16.count, length: 0))
     }
 
     func requestFocus() {
@@ -447,6 +458,7 @@ final class ComposerNSTextField: NSTextField {
         guard wantsFocus, let window else { return }
         wantsFocus = false
         window.makeFirstResponder(self)
+        placeCaretAtEnd()
     }
 }
 #endif
