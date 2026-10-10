@@ -122,7 +122,7 @@ final class FakeChatGateway: ChatGateway, @unchecked Sendable {
     nonisolated(unsafe) var contextsHandler: @Sendable () async throws -> [WorkContext] = { [] }
     nonisolated(unsafe) var currentMemoryHandler: @Sendable () async throws -> [MemoryItem] = { [] }
     nonisolated(unsafe) var memoryItemsHandler: @Sendable ([UUID]) async throws -> [MemoryItem] = { _ in [] }
-    nonisolated(unsafe) var sourceHandler: @Sendable (UUID) async throws -> SourceSummary? = { _ in nil }
+    nonisolated(unsafe) var sourceHandler: @Sendable (UUID) async throws -> MemorySource? = { _ in nil }
     // 쓰기 스크립트
     nonisolated(unsafe) var createHandler: @Sendable (UUID, String?, UUID?) async throws -> ChatConversation = { id, title, context in
         ChatConversation(id: id, title: title, contextID: context, createdAt: .test())
@@ -143,7 +143,7 @@ final class FakeChatGateway: ChatGateway, @unchecked Sendable {
     func workContexts() async throws -> [WorkContext] { record("contexts"); return try await contextsHandler() }
     func currentMemoryItems() async throws -> [MemoryItem] { record("currentMemory"); return try await currentMemoryHandler() }
     func memoryItems(ids: [UUID]) async throws -> [MemoryItem] { record("memoryItems"); return try await memoryItemsHandler(ids) }
-    func sourceSummary(id: UUID) async throws -> SourceSummary? { record("source:\(id.uuidString)"); return try await sourceHandler(id) }
+    func memorySource(id: UUID) async throws -> MemorySource? { record("source:\(id.uuidString)"); return try await sourceHandler(id) }
 
     func createConversation(id: UUID, title: String?, contextID: UUID?) async throws -> ChatConversation {
         record("create:\(id.uuidString)"); return try await createHandler(id, title, contextID)
@@ -269,5 +269,19 @@ enum Chats {
         let user = message(n, in: conversation, seq: seq, role: .user, text: text, cmid: cmid, at: Double(seq))
         let answer = message(n + 1, in: conversation, seq: seq + 1, role: .assistant, text: reply, replyTo: user.id, memory: memory, at: Double(seq + 1))
         return ChatPostedMessage(message: user, reply: answer)
+    }
+}
+
+enum TestSources {
+    /// 기억의 출처 원문 상태 (RLS `sources` 한 행)
+    static func make(url: String? = "https://www.notion.so/launch", accessLost: Bool = false, purgedReason: String? = nil) -> MemorySource {
+        func string(_ value: String?) -> String { value.map { "\"\($0)\"" } ?? "null" }
+        let json = """
+        {"id":"\(ChatContractFixtures.sourceID.uuidString.lowercased())","kind":"doc","title":"Launch brief","occurred_at":"2026-10-10T01:00:00Z",
+         "external_url":\(string(url)),"created_at":"2026-10-10T01:00:00Z","processing_status":"done","meeting":null,
+         "access_lost_at":\(string(accessLost ? "2026-10-10T03:00:00Z" : nil)),"raw_text_purged_at":\(string(purgedReason == nil ? nil : "2026-10-10T04:00:00Z")),
+         "raw_text_purge_reason":\(string(purgedReason))}
+        """
+        return try! TaskforceJSON.decoder().decode(MemorySource.self, from: Data(json.utf8))
     }
 }

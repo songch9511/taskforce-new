@@ -101,10 +101,10 @@ extension TaskforceReads {
         return result
     }
 
-    /// 원문 요약 하나 (기억의 출처). 없으면(지워짐 · 연결 끊김) nil
-    public func sourceSummary(id: UUID) async throws -> SourceSummary? {
-        let found: [SourceSummary] = try await rows(
-            supabase.from("sources").select(SourceSummary.columns).eq("id", value: id.lowercased).limit(1)
+    /// 기억의 출처 원문 상태 하나 (접근 상실 · 글 지움 포함, 본문은 읽지 않는다). 없으면(지워짐 · 연결 끊김) nil
+    public func memorySource(id: UUID) async throws -> MemorySource? {
+        let found: [MemorySource] = try await rows(
+            supabase.from("sources").select(MemorySource.columns).eq("id", value: id.lowercased).limit(1)
         )
         return found.first
     }

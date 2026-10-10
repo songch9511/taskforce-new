@@ -105,6 +105,8 @@ public struct SettingsTrayRow<Lead: View, Control: View>: View {
     let attention: Bool
     let message: String?
     let external: Bool
+    /// 라벨을 보조 색으로 (확인 전 추정 문장, 디자인 RememberedRow). 호버 · 선택 면 위에서는 4.5:1을 지키는 색으로 올린다
+    let mutedLabel: Bool
     let onOpen: (() -> Void)?
     let lead: Lead
     let control: Control
@@ -112,9 +114,10 @@ public struct SettingsTrayRow<Lead: View, Control: View>: View {
 
     public init(
         _ label: String, aside: String? = nil, detail: String? = nil, attention: Bool = false, message: String? = nil,
-        external: Bool = false, onOpen: (() -> Void)? = nil,
+        external: Bool = false, mutedLabel: Bool = false, onOpen: (() -> Void)? = nil,
         @ViewBuilder lead: () -> Lead, @ViewBuilder control: () -> Control
     ) {
+        self.mutedLabel = mutedLabel
         self.label = label
         self.aside = aside
         self.detail = detail
@@ -180,7 +183,7 @@ public struct SettingsTrayRow<Lead: View, Control: View>: View {
         VStack(alignment: .leading, spacing: 1) {
             HStack(spacing: 0) {
                 Text(label)
-                    .foregroundStyle(TFColor.textPrimary)
+                    .foregroundStyle(mutedLabel ? secondary : TFColor.textPrimary)
                 if let aside {
                     Text(" · \(aside)")
                         .foregroundStyle(secondary)
@@ -222,17 +225,17 @@ private struct RowFrame: ViewModifier {
 extension SettingsTrayRow where Lead == EmptyView {
     public init(
         _ label: String, aside: String? = nil, detail: String? = nil, attention: Bool = false, message: String? = nil,
-        external: Bool = false, onOpen: (() -> Void)? = nil, @ViewBuilder control: () -> Control
+        external: Bool = false, mutedLabel: Bool = false, onOpen: (() -> Void)? = nil, @ViewBuilder control: () -> Control
     ) {
-        self.init(label, aside: aside, detail: detail, attention: attention, message: message, external: external, onOpen: onOpen, lead: { EmptyView() }, control: control)
+        self.init(label, aside: aside, detail: detail, attention: attention, message: message, external: external, mutedLabel: mutedLabel, onOpen: onOpen, lead: { EmptyView() }, control: control)
     }
 }
 
 extension SettingsTrayRow where Lead == EmptyView, Control == EmptyView {
     /// 여는 행 (상세 › · 밖 ↗) 또는 글자만 있는 행
     public init(_ label: String, aside: String? = nil, detail: String? = nil, attention: Bool = false, message: String? = nil,
-                external: Bool = false, onOpen: (() -> Void)? = nil) {
-        self.init(label, aside: aside, detail: detail, attention: attention, message: message, external: external, onOpen: onOpen, lead: { EmptyView() }, control: { EmptyView() })
+                external: Bool = false, mutedLabel: Bool = false, onOpen: (() -> Void)? = nil) {
+        self.init(label, aside: aside, detail: detail, attention: attention, message: message, external: external, mutedLabel: mutedLabel, onOpen: onOpen, lead: { EmptyView() }, control: { EmptyView() })
     }
 }
 

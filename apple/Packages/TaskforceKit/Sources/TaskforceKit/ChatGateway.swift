@@ -11,7 +11,7 @@ public protocol ChatGateway: Sendable {
     func workContexts() async throws -> [WorkContext]
     func currentMemoryItems() async throws -> [MemoryItem]
     func memoryItems(ids: [UUID]) async throws -> [MemoryItem]
-    func sourceSummary(id: UUID) async throws -> SourceSummary?
+    func memorySource(id: UUID) async throws -> MemorySource?
 
     // 쓰기 (서버 API, Bearer)
     func createConversation(id: UUID, title: String?, contextID: UUID?) async throws -> ChatConversation
@@ -46,7 +46,7 @@ public struct LiveChatGateway: ChatGateway {
     public func workContexts() async throws -> [WorkContext] { try await reads.workContexts() }
     public func currentMemoryItems() async throws -> [MemoryItem] { try await reads.currentMemoryItems() }
     public func memoryItems(ids: [UUID]) async throws -> [MemoryItem] { try await reads.memoryItems(ids: ids) }
-    public func sourceSummary(id: UUID) async throws -> SourceSummary? { try await reads.sourceSummary(id: id) }
+    public func memorySource(id: UUID) async throws -> MemorySource? { try await reads.memorySource(id: id) }
 
     public func createConversation(id: UUID, title: String?, contextID: UUID?) async throws -> ChatConversation {
         try await api.createConversation(id: id, title: title, contextID: contextID)

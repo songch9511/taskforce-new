@@ -76,12 +76,17 @@ struct MemoryRulesTests {
 
     // MARK: 출처
 
-    func source(kind: SourceKind = .message, url: String? = "https://app.slack.com/client/T1/C1", title: String? = "#launch") -> SourceSummary {
+    func source(
+        kind: SourceKind = .message, url: String? = "https://app.slack.com/client/T1/C1", title: String? = "#launch", accessLost: Bool = false,
+        purgedAt: String? = nil, reason: String? = nil
+    ) -> MemorySource {
+        func string(_ value: String?) -> String { value.map { "\"\($0)\"" } ?? "null" }
         let json = """
-        {"id":"\(ChatContractFixtures.sourceID.uuidString.lowercased())","kind":"\(kind.rawValue)","title":\(title.map { "\"\($0)\"" } ?? "null"),"occurred_at":"2026-10-10T01:00:00Z",
-         "external_url":\(url.map { "\"\($0)\"" } ?? "null"),"created_at":"2026-10-10T01:00:00Z","processing_status":"done","meeting":null}
+        {"id":"\(ChatContractFixtures.sourceID.uuidString.lowercased())","kind":"\(kind.rawValue)","title":\(string(title)),"occurred_at":"2026-10-10T01:00:00Z",
+         "external_url":\(string(url)),"created_at":"2026-10-10T01:00:00Z","processing_status":"done","meeting":null,
+         "access_lost_at":\(string(accessLost ? "2026-10-10T03:00:00Z" : nil)),"raw_text_purged_at":\(string(purgedAt)),"raw_text_purge_reason":\(string(reason))}
         """
-        return try! TaskforceJSON.decoder().decode(SourceSummary.self, from: Data(json.utf8))
+        return try! TaskforceJSON.decoder().decode(MemorySource.self, from: Data(json.utf8))
     }
 
     @Test func sourceWithQuoteShowsServiceTitleAndTime() {
@@ -119,6 +124,40 @@ struct MemoryRulesTests {
         // Slack이 아닌 원문에 인용이 없으면 그 사실만 말한다
         let notion = source(url: "https://www.notion.so/x")
         #expect(MemorySourceRules.display(item: noQuote, lookup: .loaded(message: nil, source: notion)) == .unavailable("No quote to show"))
+    }
+
+    /// 접근을 잃은 원문 · 글이 지워진 원문 · Slack 끊김은 옛 인용을 다시 보이지 않고 사실대로 말한다
+    @Test func sourceThatLostAccessOrWasPurgedShowsNoOldQuote() {
+        let item = Memories.item(1, origin: .inferred, sourceRef: MemorySourceRef(sourceID: ChatContractFixtures.sourceID, quote: "Thursday works"))
+        let lost = MemorySourceRules.display(item: item, lookup: .loaded(message: nil, source: source(url: "https://www.notion.so/x", accessLost: true)))
+        #expect(lost == .unavailable("Can't open the original"))
+        let retention = MemorySourceRules.display(
+            item: item, lookup: .loaded(message: nil, source: source(url: "https://www.notion.so/x", purgedAt: "2026-10-10T04:00:00Z", reason: "retention"))
+        )
+        #expect(retention == .unavailable("Original text deleted"))
+        let disconnected = MemorySourceRules.display(
+            item: item, lookup: .loaded(message: nil, source: source(purgedAt: "2026-10-10T04:00:00Z", reason: "disconnected"))
+        )
+        #expect(disconnected == .unavailable("Removed when Slack was disconnected"))
+        // 원문 행 자체가 없다 (지워짐)
+        #expect(MemorySourceRules.display(item: item, lookup: .loaded(message: nil, source: nil)) == .unavailable("The source is no longer available"))
+    }
+
+    /// Confirm: 정상 출처만 보이고, 접근 상실 · 글 지워짐 · Slack 유래 · 읽는 중 · 원문 없음은 감춘다 (서버도 보류한다)
+    @Test func confirmIsOfferedOnlyForAHealthyReadableSource() {
+        let ref = MemorySourceRef(sourceID: ChatContractFixtures.sourceID, quote: "Thursday")
+        let item = Memories.item(1, origin: .inferred, sourceRef: ref)
+        let notion = "https://www.notion.so/x"
+        func allows(_ lookup: MemorySourceRules.Lookup?) -> Bool { MemorySourceRules.allowsConfirm(item: item, lookup: lookup) }
+        #expect(allows(.loaded(message: nil, source: source(url: notion))))
+        #expect(!allows(.loaded(message: nil, source: source(url: notion, accessLost: true))))
+        #expect(!allows(.loaded(message: nil, source: source(url: notion, purgedAt: "2026-10-10T04:00:00Z", reason: "retention"))))
+        #expect(!allows(.loaded(message: nil, source: source())), "Slack 유래")
+        #expect(!allows(.loaded(message: nil, source: source(url: nil, purgedAt: "2026-10-10T04:00:00Z", reason: "disconnected"))))
+        #expect(!allows(.loaded(message: nil, source: nil)))
+        #expect(!allows(.loading) && !allows(.failed) && !allows(nil), "상태를 모르면 주지 않는다")
+        // 대화 발화가 출처인 추정은 서버가 정한다
+        #expect(MemorySourceRules.allowsConfirm(item: Memories.item(2, origin: .inferred, sourceRef: MemorySourceRef(messageID: UUID())), lookup: nil))
     }
 
     @Test func chatUtterancesHaveNoSourceMark() {

@@ -53,9 +53,23 @@ public enum MemoryCopy {
     // 출처
     public static let sourceMissing = "The source is no longer available"
     public static let sourceNoQuote = "No quote to show"
+    /// 서비스에서 원문에 접근할 수 없게 됐다 (접근 상실): 원문을 열 수 없다는 상태
+    public static let originalUnavailable = "Can't open the original"
     public static let chatPlace = "Chat"
     public static let you = "You"
     public static let taskforce = "Taskforce"
+}
+
+extension MemoryStore.Feedback {
+    /// 한 줄 (영어 틀). 충돌은 기존 문구 그대로 ("This changed somewhere else. It's been refreshed.")
+    public var text: String {
+        switch self {
+        case .conflict: APIError.server(status: 409, code: .conflict, message: "").userMessage
+        case .failed(let message): message
+        case .rewriteToSave: MemoryCopy.rewriteToSave
+        case .gone: APIError.server(status: 404, code: .notFound, message: "").userMessage
+        }
+    }
 }
 
 public enum MemoryText {
@@ -165,17 +179,17 @@ public enum MemorySourceDisplay: Sendable, Hashable {
     case loading
     /// 읽지 못했다 (오프라인 · 실패): 인용을 지어내지 않는다
     case failed
-    /// 인용을 보일 수 없다: 이유를 한 줄로
+    /// 인용을 보일 수 없다: 이유를 한 줄로 (원문이 지워짐 · Slack 끊김 · 접근 상실 · 원문이 없음)
     case unavailable(String)
     case quote(MemoryQuote)
 }
 
 public enum MemorySourceRules {
-    /// - message: `source_ref.message_id`의 대화 메시지 (읽은 것), source: `source_ref.source_id`의 원문 요약 (읽은 것)
-    /// - 읽은 결과가 없으면(`nil`) 지워졌거나 닿을 수 없는 것이다 (읽기 자체의 실패는 `lookup`이 `.failed`)
+    /// - message: `source_ref.message_id`의 대화 메시지, source: `source_ref.source_id`의 원문 상태 (읽은 것)
+    /// - 읽은 결과가 없으면(`nil`) 지워졌거나 닿을 수 없는 것이다 (읽기 자체의 실패는 `.failed`)
     public enum Lookup: Sendable, Hashable {
         case loading, failed
-        case loaded(message: ChatMessage?, source: SourceSummary?)
+        case loaded(message: ChatMessage?, source: MemorySource?)
     }
 
     public static func display(item: MemoryItem, lookup: Lookup) -> MemorySourceDisplay {
@@ -185,7 +199,7 @@ public enum MemorySourceRules {
         }
         if item.sourcePurged { return .unavailable(MemoryCopy.purgedStatement) }
         let hasLookup = ref.messageID != nil || ref.sourceID != nil
-        let (message, source): (ChatMessage?, SourceSummary?)
+        let (message, source): (ChatMessage?, MemorySource?)
         switch lookup {
         case .loading where hasLookup: return .loading
         case .failed where hasLookup: return .failed
@@ -202,18 +216,33 @@ public enum MemorySourceRules {
             ))
         }
         if ref.sourceID != nil {
-            let service = source.map { SourceService.infer(externalURL: $0.externalURL, kind: $0.kind) }
+            // 원문 행이 없다 (지워짐 · 연결 끊김): 옛 인용을 다시 보이지 않는다
+            guard let source else { return .unavailable(MemoryCopy.sourceMissing) }
+            // 글이 지워졌다: Slack 끊김은 기존 문구, 보관 기한은 글이 지워졌다고만
+            if source.isTextPurged {
+                return .unavailable(source.purgeReason == .disconnected ? RemovedQuote.label : MemoryCopy.purgedStatement)
+            }
+            // 접근을 잃었다: 원문을 열 수 없다 (옛 인용을 근거로 보이지 않는다)
+            if source.isAccessLost { return .unavailable(MemoryCopy.originalUnavailable) }
             let quote = ref.quote.flatMap { $0.isEmpty ? nil : $0 }
             // Slack 연결을 끊으면 인용이 사라진다 (D3): 그렇게 지웠다고 말한다
             if quote == nil || quote.map(RemovedQuote.isRemoved) == true {
-                if service == .slack || quote != nil { return .unavailable(RemovedQuote.label) }
-                return source == nil ? .unavailable(MemoryCopy.sourceMissing) : .unavailable(MemoryCopy.sourceNoQuote)
+                return source.isSlackDerived || quote != nil ? .unavailable(RemovedQuote.label) : .unavailable(MemoryCopy.sourceNoQuote)
             }
             return .quote(MemoryQuote(
-                service: service, from: nil, place: source?.title, time: source?.occurredAt,
-                text: quote ?? "", url: source?.externalURL
+                service: source.service, from: nil, place: source.summary.title, time: source.summary.occurredAt, text: quote ?? "",
+                url: source.summary.externalURL
             ))
         }
         return .unavailable(MemoryCopy.sourceNoQuote)
+    }
+
+    /// Confirm을 줄 수 있나 (서버 정책 보류의 앱 쪽 미리 감추기): 출처 원문 상태를 읽었고 접근 상실 · 글 지워짐 · Slack 유래가 아닐 때만.
+    /// 출처가 원문이면 읽는 중 · 읽지 못함 · 원문 행 없음은 줄 수 없다 (서버도 상태를 읽지 못하면 쓰지 않는다). 최종 판정은 서버가 하고,
+    /// 서버가 `confirm_unavailable`을 주면 그 항목의 Confirm을 감춘다
+    public static func allowsConfirm(item: MemoryItem, lookup: Lookup?) -> Bool {
+        guard item.sourceRef?.sourceID != nil else { return true }
+        guard case .loaded(_, let source?)? = lookup else { return false }
+        return !(source.isAccessLost || source.isTextPurged || source.isSlackDerived)
     }
 }

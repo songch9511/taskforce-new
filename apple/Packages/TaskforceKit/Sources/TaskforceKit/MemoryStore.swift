@@ -165,6 +165,12 @@ public final class MemoryStore {
             }
             // 범위 이름은 노트의 둘째 줄에 쓴다 (목록을 읽지 않은 채 대화만 열었을 때)
             if contexts.isEmpty { try await readContextNames(token: token) }
+            // 확인 전 추정은 출처 원문 상태를 읽어 둔다: 접근 상실 · 글 지워짐 · Slack 유래면 Confirm을 미리 감춘다
+            for id in ids.map(resolve) {
+                if let row = item(id), row.isUnconfirmedInference, row.sourceRef?.sourceID != nil, sourceLookups[row.id] == nil {
+                    await loadSource(for: row)
+                }
+            }
         } catch {
             // 읽지 못한 노트는 읽는 중으로 둔다 (다음에 다시 읽는다). 아무것도 지어내지 않는다
         }
@@ -222,8 +228,10 @@ public final class MemoryStore {
         feedback[resolve(id)] = nil
     }
 
+    /// Confirm을 줄 수 있나: 지금 기억인 추정이고, 서버가 보류하지 않았고, 출처 원문이 접근 상실 · 글 지워짐 · Slack 유래가 아니다
     public func canConfirm(_ item: MemoryItem) -> Bool {
         !writesUnavailable && !hidingConfirm.contains(item.id) && MemoryText.canConfirm(item)
+            && MemorySourceRules.allowsConfirm(item: item, lookup: sourceLookups[item.id])
     }
 
     public func canChangeScope(_ item: MemoryItem) -> Bool {
@@ -246,9 +254,9 @@ public final class MemoryStore {
         if sourceLookups[item.id] == nil || sourceLookups[item.id] == .failed { sourceLookups[item.id] = .loading }
         do {
             var message: ChatMessage?
-            var source: SourceSummary?
+            var source: MemorySource?
             if let id = ref.messageID { message = try await gateway.message(id: id) }
-            if let id = ref.sourceID { source = try await gateway.sourceSummary(id: id) }
+            if let id = ref.sourceID { source = try await gateway.memorySource(id: id) }
             guard scope.isCurrent(token) else { return }
             sourceLookups[item.id] = .loaded(message: message, source: source)
         } catch {
@@ -343,7 +351,10 @@ public final class MemoryStore {
                 // 글자 그대로는 저장할 수 없다: 글을 고쳐 써야 한다 (Edit는 막히지 않는다)
                 feedback[row.id] = .rewriteToSave
             } else {
+                // 이 항목의 Confirm을 감춘 채 지금 상태를 다시 읽어 보인다 (성공 표시 0, 실패로 꾸미지 않는다)
                 hidingConfirm.insert(row.id)
+                await refresh(row.id)
+                await loadSource(for: row)
             }
             return .unavailable
         }

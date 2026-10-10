@@ -334,6 +334,75 @@ struct MemoryStoreTests {
         #expect(memory.items.count == 1, "바뀐 것이 없다")
     }
 
+    // MARK: 접근 상실 · 글 지워짐 · Slack 유래 출처의 추정 (서버 정책 보류 (d))
+
+    @Test func confirmFollowsTheSourcesState() async throws {
+        let ref = MemorySourceRef(sourceID: ChatContractFixtures.sourceID, quote: "Thursday")
+        let item = Memories.item(1, "Jordan decides", origin: .inferred, sourceRef: ref)
+        serve(ServerRows([item]))
+        let memory = store()
+        await memory.loadList()
+        // 출처 상태를 읽기 전에는 주지 않는다
+        #expect(!memory.canConfirm(item))
+        gateway.sourceHandler = { _ in TestSources.make() }
+        await memory.loadSource(for: item)
+        #expect(memory.canConfirm(item), "정상 출처의 추정은 Confirm이 보인다")
+        for (label, source) in [
+            ("접근 상실", TestSources.make(accessLost: true)),
+            ("글 지워짐", TestSources.make(purgedReason: "retention")),
+            ("Slack 끊김", TestSources.make(url: nil, purgedReason: "disconnected")),
+            ("Slack 유래", TestSources.make(url: "https://app.slack.com/client/T1/C1")),
+        ] {
+            gateway.sourceHandler = { _ in source }
+            await memory.loadSource(for: item)
+            #expect(!memory.canConfirm(item), "\(label)")
+        }
+        // 원문 행이 사라졌다
+        gateway.sourceHandler = { _ in nil }
+        await memory.loadSource(for: item)
+        #expect(!memory.canConfirm(item))
+    }
+
+    /// 노트는 확인 전 추정의 출처 상태를 미리 읽어 접근 상실이면 처음부터 Confirm을 감춘다
+    @Test func noteHidesConfirmUpFrontForAnAccessLostSource() async throws {
+        let ref = MemorySourceRef(sourceID: ChatContractFixtures.sourceID)
+        let lost = Memories.item(1, origin: .inferred, sourceRef: ref)
+        let healthy = Memories.item(2, origin: .inferred, sourceRef: ref)
+        serve(ServerRows([lost, healthy]))
+        let memory = store()
+        gateway.sourceHandler = { _ in TestSources.make(accessLost: true) }
+        await memory.loadReferenced(ids: [lost.id])
+        #expect(!memory.canConfirm(lost))
+        gateway.sourceHandler = { _ in TestSources.make() }
+        await memory.loadReferenced(ids: [healthy.id])
+        #expect(memory.canConfirm(healthy))
+    }
+
+    /// 서버가 `confirm_unavailable`을 주면 (앱이 미리 몰랐던 접근 상실 등) 그 항목의 Confirm을 감추고 지금 상태를 다시 읽는다 — 성공도 실패도 아님
+    @Test func serverRefusalHidesConfirmAndRereadsWithoutPretending() async throws {
+        let ref = MemorySourceRef(sourceID: ChatContractFixtures.sourceID, quote: "Thursday")
+        let item = Memories.item(1, "Jordan decides", origin: .inferred, sourceRef: ref)
+        let rows = ServerRows([item])
+        serve(rows)
+        let lostNow = Box(false)
+        gateway.sourceHandler = { _ in TestSources.make(accessLost: lostNow.value) }
+        gateway.confirmHandler = { _, _ in
+            lostNow.value = true
+            throw APIError.server(status: 409, code: .confirmUnavailable, message: "x")
+        }
+        let memory = store()
+        await memory.loadList()
+        await memory.loadSource(for: item)
+        #expect(memory.canConfirm(item))
+        let listReads = gateway.calls(prefix: "currentMemory").count
+        #expect(await memory.confirm(item.id) == .unavailable)
+        #expect(!memory.canConfirm(item))
+        #expect(gateway.calls(prefix: "currentMemory").count > listReads, "지금 상태를 다시 읽었다")
+        #expect(memory.feedback(for: item.id) == nil, "실패로 꾸미지 않는다")
+        #expect(memory.resolve(item.id) == item.id && memory.items.map(\.id) == [item.id])
+        #expect(memory.sourceDisplay(for: item) == .unavailable("Can't open the original"))
+    }
+
     // MARK: 대화 노트가 가리키는 행
 
     @Test func notesFollowCorrectionsAndNeverShowReplacedOrForgottenAsCurrent() async throws {

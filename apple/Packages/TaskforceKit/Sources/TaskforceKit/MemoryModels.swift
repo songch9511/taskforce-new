@@ -162,6 +162,61 @@ public struct MemoryItem: Decodable, Sendable, Hashable, Identifiable {
     }
 }
 
+/// 기억의 출처 원문 상태 (RLS `sources`): 요약 + 서버가 정하는 열 (접근 상실 · 글 지운 시각 · 이유). 글 본문은 읽지 않는다
+public struct MemorySource: Decodable, Sendable, Hashable {
+    public enum PurgeReason: Sendable, Hashable {
+        /// 보관 기한이 지나 글이 지워졌다
+        case retention
+        /// Slack 연결을 끊거나 앱을 지워 글이 지워졌다 (D3)
+        case disconnected
+        case other(String)
+
+        init(raw: String) {
+            switch raw {
+            case "retention": self = .retention
+            case "disconnected": self = .disconnected
+            default: self = .other(raw)
+            }
+        }
+    }
+
+    public let summary: SourceSummary
+    /// 서비스에서 원문에 접근할 수 없게 되었다 (403 · 삭제 감지). 행 · 이력은 남는다
+    public let accessLostAt: Date?
+    public let rawTextPurgedAt: Date?
+    public let purgeReason: PurgeReason?
+
+    public static let columns = SourceSummary.columns + ", access_lost_at, raw_text_purged_at, raw_text_purge_reason"
+
+    enum CodingKeys: String, CodingKey {
+        case accessLostAt = "access_lost_at"
+        case rawTextPurgedAt = "raw_text_purged_at"
+        case purgeReason = "raw_text_purge_reason"
+    }
+
+    public init(summary: SourceSummary, accessLostAt: Date? = nil, rawTextPurgedAt: Date? = nil, purgeReason: PurgeReason? = nil) {
+        self.summary = summary
+        self.accessLostAt = accessLostAt
+        self.rawTextPurgedAt = rawTextPurgedAt
+        self.purgeReason = purgeReason
+    }
+
+    public init(from decoder: Decoder) throws {
+        summary = try SourceSummary(from: decoder)
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        accessLostAt = try c.decodeIfPresent(Date.self, forKey: .accessLostAt)
+        rawTextPurgedAt = try c.decodeIfPresent(Date.self, forKey: .rawTextPurgedAt)
+        purgeReason = (try? c.decodeIfPresent(String.self, forKey: .purgeReason)).flatMap { $0.map(PurgeReason.init(raw:)) }
+    }
+
+    public var service: SourceService { SourceService.infer(externalURL: summary.externalURL, kind: summary.kind) }
+
+    /// Slack 유래 (링크가 Slack이거나 Slack 끊기로 지운 원문): 확인을 서버가 보류한다 (D3 · Slack associated data)
+    public var isSlackDerived: Bool { service == .slack || purgeReason == .disconnected }
+    public var isAccessLost: Bool { accessLostAt != nil }
+    public var isTextPurged: Bool { rawTextPurgedAt != nil || purgeReason != nil }
+}
+
 public struct MemoryItemResponse: Decodable, Sendable {
     public let item: MemoryItem
 }
