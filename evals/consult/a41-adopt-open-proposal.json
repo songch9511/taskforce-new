@@ -1,0 +1,39 @@
+{
+  "id": "a41-adopt-open-proposal",
+  "description": "A41 (2): 직전 답이 'Shape 출시 준비'를 할 일로 추가할지 물었고 사용자가 '그렇게 해'. 채택(Action 1 + note 원문 + 사용자 Claim)이고 LLM 답은 필요 없다",
+  "maps_to": [
+    "A41"
+  ],
+  "asked_at": "2026-10-10T09:05:00+09:00",
+  "history": [
+    {
+      "role": "user",
+      "text": "이번 달 안에 Shape 출시 준비를 끝내고 싶어"
+    },
+    {
+      "role": "assistant",
+      "text": "'Shape 출시 준비'를 할 일로 추가할까요?",
+      "proposal": {
+        "title": "Shape 출시 준비"
+      }
+    }
+  ],
+  "message": "그렇게 해",
+  "expect": {
+    "intent_any": [
+      "adopt"
+    ],
+    "route_any": [
+      "adopt"
+    ],
+    "adopt": true,
+    "memory_writes": {
+      "min": 0,
+      "max": 0
+    },
+    "reply_contains_any": [
+      "추가했어요"
+    ]
+  },
+  "origin": "synthetic"
+}

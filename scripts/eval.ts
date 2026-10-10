@@ -6,9 +6,11 @@
 //   npm run eval -- --labels      라벨 검사만 (CI처럼 키가 없을 때와 같음)
 //   npm run eval -- --draft       초안 골든셋(evals/draft, E1)만 채점 (--case로 그 세트의 케이스를 주면 저절로)
 //   npm run eval -- --plan        다음 단계 골든셋(evals/plan, E2)만 채점
-//   npm run eval -- --all         기존 채점 + E1 + E2 (기본 실행은 기존 채점만, E1 · E2는 따로 보고 · 따로 저장)
+//   npm run eval -- --consult     대화 상담 골든셋(evals/consult, B2)만 채점: 실제 Jev(J1) + LLM(J2 · J7)로 respondToMessage
+//   npm run eval -- --all         기존 채점 + E1 + E2 + 대화 상담 (기본 실행은 기존 채점만, E1 · E2 · 대화는 따로 보고 · 따로 저장)
 //   npm run eval -- --llm-concurrency 2 --jev-concurrency 4  제공자 속도 제한이 있을 때 eval 호출량만 낮춤 (기본 4 · 8)
 // 키(OPENROUTER_API_KEY, LLM_MODEL, JEV_MODEL)는 환경변수나 .env.local에서 읽는다.
+import { randomUUID } from "node:crypto";
 import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { parseArgs } from "node:util";
@@ -27,6 +29,11 @@ import { PLAN_PROMPT_VERSION } from "../src/lib/ai/prompts/plan";
 import { EXTRACT_PROMPT_VERSION } from "../src/lib/ai/prompts/extract";
 import { projectAction } from "../src/lib/actions/project";
 import { askCaseSchema, askContextOf, findAskLabelErrors, scoreAskCase, type AskCase, type AskScore } from "../src/lib/eval/ask-golden";
+import { consultCaseSchema, consultInputOf, findConsultLabelErrors, scoreConsultCase, type ConsultCase, type ConsultScore } from "../src/lib/eval/consult-golden";
+import { CONSULT_PROMPT_VERSION } from "../src/lib/ai/prompts/consult";
+import { INTENT_PROMPT_VERSION } from "../src/lib/ai/prompts/intent";
+import { MEMORY_EXTRACT_PROMPT_VERSION } from "../src/lib/ai/prompts/memory-extract";
+import { respondToMessage, type TurnPlan } from "../src/lib/conversation/respond";
 import { draftCaseSchema, draftJudgeState, draftTotals, findDraftLabelErrors, humanSample, scoreDraftCase, type DraftCase, type DraftScore } from "../src/lib/eval/draft-golden";
 import { executionContextOf } from "../src/lib/eval/execution-golden";
 import { findPlanLabelErrors, planCaseSchema, planTotals, scorePlanCase, type PlanCase, type PlanScore } from "../src/lib/eval/plan-golden";
@@ -50,6 +57,7 @@ const GOLDEN_DIR = path.join(ROOT, "evals/golden");
 const ASK_DIR = path.join(ROOT, "evals/ask");
 const DRAFT_DIR = path.join(ROOT, "evals/draft");
 const PLAN_DIR = path.join(ROOT, "evals/plan");
+const CONSULT_DIR = path.join(ROOT, "evals/consult");
 const RESULTS_DIR = path.join(ROOT, "evals/results");
 const DEFAULT_LLM_CONCURRENCY = 4;
 const DEFAULT_JEV_CONCURRENCY = 8;
@@ -426,6 +434,65 @@ async function runExecutionEvals(
   return errors;
 }
 
+/**
+ * 대화 상담 골든셋 (evals/consult, B2): 실제 Jev(J1 의도) + LLM(J2 답 · J7 기억 후보)로 respondToMessage를 돌려 채점한다.
+ * 기록 읽기(retrieve)는 케이스의 할 일 · 기억 · 원문이다. 동의 확인 · 저장은 하지 않는다 (DB 없음). 마감은 운영 route와 같다. 결과는 evals/results에 따로 남긴다.
+ */
+async function runConsultEvals(llm: LlmConfig, jev: JevConfig, cases: ConsultCase[], concurrency: number): Promise<string[]> {
+  if (cases.length === 0) return [];
+  const errors: string[] = [];
+  type ConsultRun = { golden: ConsultCase; plan: TurnPlan; score: ConsultScore };
+  const runs = (
+    await mapLimit(cases, concurrency, async (golden): Promise<ConsultRun | null> => {
+      const { input, context, ids } = consultInputOf(golden);
+      // 운영 route와 같은 마감 (사용자가 기다리는 요청: LLM은 첫 호출부터 추론량 제한, Jev · LLM 모두 실행 한도 안에)
+      const deadline = interactiveDeadline(INTERACTIVE_MAX_DURATION_S);
+      try {
+        const plan = await respondToMessage(input, {
+          decide: (request) => decide({ ...jev, deadline }, request),
+          complete: (request) => completeJson({ ...llm, deadline }, request),
+          retrieve: async () => context,
+          newId: randomUUID,
+        });
+        return { golden, plan, score: scoreConsultCase(golden, plan, ids) };
+      } catch (error) {
+        errors.push(`${golden.id} 대화: ${error instanceof Error ? error.message : String(error)}`);
+        return null;
+      }
+    })
+  ).filter((r): r is ConsultRun => r !== null);
+
+  console.log(`
+대화 상담 (${INTENT_PROMPT_VERSION} · ${CONSULT_PROMPT_VERSION} · ${MEMORY_EXTRACT_PROMPT_VERSION}, LLM ${llm.model} · Jev ${jev.model})`);
+  for (const { golden, plan, score } of runs) {
+    const failed = Object.entries(score.checks).filter(([, ok]) => ok === false).map(([key]) => key);
+    console.log(`  ${score.pass ? "✓" : "✗"} ${golden.id} [${golden.maps_to.join(" ")}] 의도 ${plan.intent.kind}(${plan.intent.confidence.toFixed(2)}) · ${plan.route}${failed.length ? ` · 미달: ${failed.join(", ")}` : ""}`);
+  }
+  const passed = runs.filter((r) => r.score.pass).length;
+  const cost = runs.reduce((n, r) => n + r.plan.summary.cost, 0);
+  console.log(`통과 ${passed}/${cases.length} · 호출 실패 ${errors.length}건 · 비용 약 $${cost.toFixed(4)}`);
+
+  await mkdir(RESULTS_DIR, { recursive: true });
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  await writeFile(
+    path.join(RESULTS_DIR, `${stamp}-consult-${INTENT_PROMPT_VERSION}-${CONSULT_PROMPT_VERSION}-${MEMORY_EXTRACT_PROMPT_VERSION}.json`),
+    JSON.stringify(
+      {
+        at: new Date().toISOString(),
+        models: { llm: llm.model, judge: jev.model },
+        promptVersions: { intent: INTENT_PROMPT_VERSION, consult: CONSULT_PROMPT_VERSION, memoryExtract: MEMORY_EXTRACT_PROMPT_VERSION },
+        cases: runs.map((r) => ({ id: r.golden.id, maps_to: r.golden.maps_to, score: r.score, reply: r.plan.reply.text, segments: r.plan.reply.segments, summary: r.plan.summary })),
+        passed,
+        total: cases.length,
+        errors,
+      },
+      null,
+      2,
+    ),
+  );
+  return errors;
+}
+
 async function main() {
   const { values } = parseArgs({
     options: {
@@ -436,6 +503,7 @@ async function main() {
       draft: { type: "boolean" },
       plan: { type: "boolean" },
       all: { type: "boolean" },
+      consult: { type: "boolean" },
       "llm-concurrency": { type: "string" },
       "jev-concurrency": { type: "string" },
     },
@@ -457,7 +525,10 @@ async function main() {
     `초안 골든셋(E1) ${draftSet.cases.length + draftSet.failed}건 · Slack 섞인 케이스 ${draftSet.cases.filter((c) => c.tags?.includes("slack")).length}건` +
       ` / 다음 단계 골든셋(E2) ${planSet.cases.length + planSet.failed}건 · 기대 ${expectedKinds.join(" · ")}`,
   );
-  const labelFailures = failed + ask.failed + draftSet.failed + planSet.failed;
+  const consultSet = await loadExecutionSet(CONSULT_DIR, consultCaseSchema, findConsultLabelErrors);
+  const consultMaps = [...new Set(consultSet.cases.flatMap((c) => c.maps_to))].sort();
+  console.log(`대화 상담 골든셋(B2) ${consultSet.cases.length + consultSet.failed}건 · 기준 ${consultMaps.join(" ")}`);
+  const labelFailures = failed + ask.failed + draftSet.failed + planSet.failed + consultSet.failed;
   if (labelFailures > 0) {
     console.error(`${labelFailures}건에 오류가 있습니다.`);
     process.exit(1);
@@ -474,6 +545,21 @@ async function main() {
     return;
   }
   const llm = llmConfigFromEnv();
+  const consultPicked = values.consult || values.all ? consultSet.cases.filter((c) => !values.case || c.id === values.case) : [];
+  // 대화 상담은 J1(Jev)이 꼭 필요하다 (--consult는 --no-judge와 상관없이 Jev를 쓴다)
+  const runConsult = () => runConsultEvals(llm, jevConfigFromEnv(), consultPicked, llmConcurrency);
+  if (values.consult) {
+    if (consultPicked.length === 0) {
+      console.error(values.case ? `대화 케이스 ${values.case}가 없습니다.` : "채점할 대화 케이스가 없습니다.");
+      process.exit(1);
+    }
+    const consultErrors = await runConsult();
+    if (consultErrors.length > 0) {
+      console.error(`\n${consultErrors.length}건 호출 실패:\n${consultErrors.map((e) => `  - ${e}`).join("\n")}`);
+      process.exit(1);
+    }
+    return;
+  }
   const useJudge = !values["no-judge"];
   const jev = useJudge ? jevConfigFromEnv() : null;
 
@@ -837,6 +923,9 @@ async function main() {
   );
 
   if (runDraft || runPlan) errors.push(...(await runExecution()));
+  // 대화 상담은 J1(Jev)이 꼭 필요하다: --no-judge면 건너뛴다
+  if (values.all && !values["no-judge"]) errors.push(...(await runConsult()));
+  else if (values.all) console.log("--no-judge라 대화 상담 채점은 건너뜁니다 (J1 의도 분류에 Jev가 필요).");
 
   if (errors.length > 0) {
     console.error(`\n${errors.length}건 호출 실패:\n${errors.map((e) => `  - ${e}`).join("\n")}`);

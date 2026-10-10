@@ -1,0 +1,49 @@
+{
+  "id": "en-consult-focus",
+  "description": "English: 'What should I focus on today?' with three open tasks. Answer in English from registered tasks without claiming there is nothing to do",
+  "maps_to": [
+    "A01",
+    "A04"
+  ],
+  "asked_at": "2026-10-10T09:00:00+09:00",
+  "message": "What should I focus on today?",
+  "records": {
+    "open_actions": [
+      {
+        "id": "a1",
+        "title": "Send the quote to Kim",
+        "due_date": "2026-10-10"
+      },
+      {
+        "id": "a2",
+        "title": "Review the contract"
+      },
+      {
+        "id": "a3",
+        "title": "Prepare weekly sync"
+      }
+    ]
+  },
+  "expect": {
+    "intent_any": [
+      "consult",
+      "lookup"
+    ],
+    "route_any": [
+      "consult"
+    ],
+    "reply_contains_any": [
+      "quote",
+      "Kim"
+    ],
+    "reply_must_not_match": [
+      "[\\uac00-\\ud7a3]{3,}",
+      "nothing (left )?to do"
+    ],
+    "memory_writes": {
+      "min": 0,
+      "max": 0
+    }
+  },
+  "origin": "synthetic"
+}

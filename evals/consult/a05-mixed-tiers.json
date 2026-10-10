@@ -1,0 +1,60 @@
+{
+  "id": "a05-mixed-tiers",
+  "description": "확인된 기록(할 일 값 · 원문), 사용자가 말해 둔 것(기억), 추천이 섞인 질문. 등급(T1 기록 · T2 사용자 발화 · T5 제안)을 나눠 답한다",
+  "maps_to": [
+    "A05"
+  ],
+  "asked_at": "2026-10-10T14:00:00+09:00",
+  "message": "출시 전에 뭐가 남았고 순서는 어떻게 할까?",
+  "sources": [
+    {
+      "id": "s1",
+      "kind": "meeting",
+      "title": "출시 회의",
+      "occurred_at": "2026-10-08T10:00:00+09:00",
+      "text": "도윤: QA는 금요일까지 제가 끝낼게요.\n민지: 앱스토어 스크린샷은 다음 주에 준비합니다."
+    }
+  ],
+  "records": {
+    "open_actions": [
+      {
+        "id": "a1",
+        "title": "QA 끝내기",
+        "due_date": "2026-10-16",
+        "quotes": [
+          {
+            "source": "s1",
+            "quote": "QA는 금요일까지 제가 끝낼게요"
+          }
+        ]
+      }
+    ]
+  },
+  "memory": [
+    {
+      "id": "m1",
+      "kind": "condition",
+      "subject": "출시 조건",
+      "statement": "QA가 끝나야 출시"
+    }
+  ],
+  "expect": {
+    "intent_any": [
+      "consult",
+      "lookup"
+    ],
+    "route_any": [
+      "consult"
+    ],
+    "tiers_include": [
+      "T1",
+      "T2",
+      "T5"
+    ],
+    "memory_writes": {
+      "min": 0,
+      "max": 0
+    }
+  },
+  "origin": "synthetic"
+}

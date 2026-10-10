@@ -1,0 +1,29 @@
+{
+  "id": "arch01-inform-two-memories",
+  "description": "ARCH01 (1): '디자인 확정되면 개발 시작하고, 개발은 Opus 5.5로 할 거야.' → 조건 · 계획 기억 2건(explicit, 발화 인용). Action · 제안 0",
+  "maps_to": [
+    "ARCH01",
+    "A41"
+  ],
+  "asked_at": "2026-10-07T10:00:00+09:00",
+  "message": "디자인 확정되면 개발 시작하고, 개발은 Opus 5.5로 할 거야.",
+  "expect": {
+    "intent_any": [
+      "inform"
+    ],
+    "route_any": [
+      "remember"
+    ],
+    "memory_writes": {
+      "min": 2,
+      "max": 2
+    },
+    "memory_statements_contain": [
+      "Opus 5.5",
+      "디자인"
+    ],
+    "adopt": false,
+    "proposal": "none"
+  },
+  "origin": "synthetic"
+}

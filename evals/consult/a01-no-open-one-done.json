@@ -1,0 +1,44 @@
+{
+  "id": "a01-no-open-one-done",
+  "description": "열린 할 일 0건, 오늘 끝낸 할 일 1건. '오늘 뭘 하면 좋을까?'에 등록 범위만 말하고, 할 일 없음으로 단정하거나 끝낸 일을 다시 제안하지 않고 쓸모 있는 질문이나 조건부 제안을 한다 (0.1.0 실패 재현)",
+  "maps_to": [
+    "A01"
+  ],
+  "asked_at": "2026-10-10T09:30:00+09:00",
+  "message": "오늘 뭘 하면 좋을까?",
+  "records": {
+    "open_actions": [],
+    "done_recent": [
+      {
+        "id": "a1",
+        "title": "주간 보고서 보내기"
+      }
+    ]
+  },
+  "expect": {
+    "intent_any": [
+      "consult",
+      "lookup"
+    ],
+    "route_any": [
+      "consult"
+    ],
+    "reply_must_not_match": [
+      "(?<!등록된 )(?<!등록한 )할 일이 (하나도 )?없(어|습|다)",
+      "남은 (일|할 일)이 (하나도 )?없",
+      "할 게 없",
+      "nothing (left )?to do",
+      "no tasks left",
+      "찾지 못했",
+      "모르겠어요\\.?$"
+    ],
+    "proposal_not_titles": [
+      "주간 보고서"
+    ],
+    "memory_writes": {
+      "min": 0,
+      "max": 0
+    }
+  },
+  "origin": "synthetic"
+}
