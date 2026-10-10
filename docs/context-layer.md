@@ -61,7 +61,7 @@ route(대화 v2 · 기억 편집 API)는 B2가 붙인다.
 - CHECK `identity_links_connection_bound`: oauth · inferred는 연결이 있어야 하고 profile · user_confirmed는 연결이 없다. 그래서 연결을 끊으면(행 삭제) 그 연결의 링크만 지워지고 사용자가 적거나 확인한 링크는 남는다. Slack 앱 제거는 연결 행을 지우지 않으므로 `purge_slack_identity`가 지운다.
 - **로그인 계정**(Sign in with Apple · Google)은 연결이 아니어서 링크로 쓰지 않는다: `loadIdentity`가 로그인 주소를 그대로 "나"로 본다. 적어야 하면 profile(연결 없음)이다.
 - oauth 링크는 `saveConnection`이 쓴다(`MEMORY_ENABLED`): Slack "팀:사용자", Google · Gmail 계정 sub + 주소. Notion 연결 id는 워크스페이스라 쓰지 않는다(Notion user id 링크는 B2 이후). 같은 계정의 inferred 링크는 oauth로 올리고, profile · user_confirmed 링크는 바꾸지 않는다(사용자가 확인한 링크를 연결에 묶지 않게). 실패해도 연결은 맺는다.
-- 공용 표시는 inferred 링크의 것이면 보지 않는다(확인 전 후보가 확인된 주소를 빼지 않게). 링크를 읽지 못하면 로그만 남기고 링크 없이(지금처럼) 처리를 이어 간다.
+- 공용 표시는 inferred 링크의 것이면 보지 않는다(확인 전 후보가 확인된 주소를 빼지 않게). 링크를 읽지 못하면 던진다(넓히지 않는다): 링크 없이 이어 가면 공용으로 확인한 계정의 제외가 사라져 그 주소가 다시 "나"가 된다. 수집은 그 원문을 처리하지 않고 대기로 남기고, 재처리(`src/lib/sources/retry.ts`) · 다음 동기화가 다시 읽는다.
 
 ## 4. 원문 조각 · 범위 version · 묶음
 

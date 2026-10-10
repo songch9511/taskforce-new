@@ -110,26 +110,39 @@ describe("gate 켜짐", () => {
     });
     const identity = await loadIdentity(admin, "u1", { MEMORY_ENABLED: "true" });
     expect(identity.emails).toEqual(["login@example.com", "work@company.dev", "me@company.dev", "me@home.dev"]);
-    // 링크를 읽지 못해도 처리는 이어 간다 (링크 없이 지금처럼)
-    const broken = recordingAdmin({ profiles: profile, connections: [{ settings: { email: "me@company.dev" } }] });
+    // 꺼져 있으면 링크를 읽지 않는다
+    const off = recordingAdmin({ profiles: profile, connections: [{ settings: { email: "team@company.dev" } }] });
+    expect((await loadIdentity(off.admin, "u1", {})).emails).toEqual(["login@example.com", "work@company.dev", "team@company.dev"]);
+    expect(off.names()).not.toContain("identity_links");
+  });
+
+  it("MEMORY_ENABLED: 신원 링크를 읽지 못하면 넓히지 않고 실패한다 — 공용으로 확인한 연결 주소가 나로 돌아오지 않고, 원문 처리는 시작하지 않는다(대기로 남아 재처리)", async () => {
+    const connections = [{ settings: { email: "me@example.com" } }, { settings: { email: "team@example.com" } }];
+    const links = [{ provider: "gmail", account_ref: "team", email: "team@example.com", verified_via: "user_confirmed", shared_account: true }];
+    // 정상: 공용으로 확인한 주소는 나가 아니다
+    const ok = recordingAdmin({ profiles: profile, connections, identity_links: links });
+    expect((await loadIdentity(ok.admin, "u1", { MEMORY_ENABLED: "true" })).emails).toEqual(["login@example.com", "work@company.dev", "me@example.com"]);
+
+    // 링크 읽기 실패: 링크 없이(= 공용 제외를 잃고) 넓히지 않는다
+    const broken = recordingAdmin({ profiles: profile, connections });
     const brokenAdmin = {
       auth: (broken.admin as unknown as { auth: unknown }).auth,
       from: (name: string) => {
         if (name !== "identity_links") return broken.admin.from(name);
         const failing: Record<string, unknown> = {};
         for (const op of ["select", "eq"]) failing[op] = () => failing;
-        failing.throwOnError = () => Promise.reject(new Error("relation missing"));
+        failing.throwOnError = () => Promise.reject(new Error("identity_links read failed"));
         return failing;
       },
     } as unknown as SupabaseClient;
-    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
-    expect((await loadIdentity(brokenAdmin, "u1", { MEMORY_ENABLED: "true" })).emails).toEqual(["login@example.com", "work@company.dev", "me@company.dev"]);
-    expect(errors).toHaveBeenCalled();
-    errors.mockRestore();
-    // 꺼져 있으면 링크를 읽지 않는다
-    const off = recordingAdmin({ profiles: profile, connections: [{ settings: { email: "team@company.dev" } }] });
-    expect((await loadIdentity(off.admin, "u1", {})).emails).toEqual(["login@example.com", "work@company.dev", "team@company.dev"]);
-    expect(off.names()).not.toContain("identity_links");
+    await expect(loadIdentity(brokenAdmin, "u1", { MEMORY_ENABLED: "true" })).rejects.toThrow(/identity_links read failed/);
+    // 수집: 처리를 시작하지 않고 실패한다 (원문은 대기로 남아 sources/retry.ts가 다시 처리한다)
+    vi.stubEnv("MEMORY_ENABLED", "true");
+    await expect(ingestDeps(brokenAdmin).process(connection, "s1", item)).rejects.toThrow(/identity_links read failed/);
+    expect(processSource).not.toHaveBeenCalled();
+    vi.unstubAllEnvs();
+    // gate 꺼짐: 링크를 읽지 않고 지금과 같다
+    expect((await loadIdentity(brokenAdmin, "u1", {})).emails).toEqual(["login@example.com", "work@company.dev", "me@example.com", "team@example.com"]);
   });
 
   it("SOURCE_CHUNKS_ENABLED: 처리한 원문의 조각을 동의 확인 뒤 임베딩해 replace_source_chunks로 넣는다. Slack 원문은 만들지 않는다", async () => {

@@ -383,20 +383,16 @@ async function forgetUnprocessedSource(admin: SupabaseClient, connection: Connec
  * "보낸 사람 = 나"를 알아본다.
  * 맥락층(MEMORY_ENABLED)이 켜져 있으면 신원 링크(identity_links)도 합친다: oauth · profile · user_confirmed이고 공용 계정이 아닌 링크의 주소만
  * "나"이고, 추정(inferred) · 공용 계정은 더하지 않는다 (공용으로 표시한 주소는 연결 설정의 주소에서도 뺀다, context/identity-links.ts).
- * 꺼져 있으면 링크를 읽지 않는다 (지금과 같다). isUser 규칙은 그대로다: 주소 목록만 바뀐다.
+ * 꺼져 있으면 링크를 읽지 않는다 (지금과 같다). 켜져 있는데 링크를 읽지 못하면 던진다(넓히지 않는다). isUser 규칙은 그대로다: 주소 목록만 바뀐다.
  */
 export async function loadIdentity(admin: SupabaseClient, userId: string, env: Record<string, string | undefined> = process.env): Promise<UserIdentity> {
   const [{ data: profileRow }, { data: account }, { data: googleRows }, links] = await Promise.all([
     admin.from("profiles").select("display_name, aliases, emails").eq("user_id", userId).maybeSingle(),
     admin.auth.admin.getUserById(userId),
     admin.from("connections").select("settings").eq("user_id", userId).in("provider", ["google", "gmail"]),
-    // 링크는 "나"의 주소를 더하는 보조 정보다: 읽지 못하면 로그만 남기고 지금처럼(링크 없이) 처리를 이어 간다
-    flagEnabled("MEMORY_ENABLED", env)
-      ? loadIdentityLinks(admin, userId).catch((error: unknown) => {
-          console.error("신원 링크 읽기 실패:", error instanceof Error ? error.message : error);
-          return [];
-        })
-      : Promise.resolve([]),
+    // 링크를 읽지 못하면 던진다: 링크 없이 이어 가면 공용으로 확인한 계정의 제외가 사라져 "나"가 넓어진다.
+    // 수집은 그 원문을 처리하지 않고 대기로 남겨(src/lib/sources/retry.ts가 다시 처리한다) 다음 동기화 · 재처리가 다시 읽는다
+    flagEnabled("MEMORY_ENABLED", env) ? loadIdentityLinks(admin, userId) : Promise.resolve([]),
   ]);
   const email = account.user?.email ?? null;
   const identity = resolveIdentity(profileInputSchema.safeParse(profileRow).data ?? null, {
