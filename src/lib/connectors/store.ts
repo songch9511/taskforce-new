@@ -389,23 +389,38 @@ async function forgetUnprocessedSource(admin: SupabaseClient, connection: Connec
  * 꺼져 있으면 링크를 읽지 않는다 (지금과 같다). 켜져 있는데 링크를 읽지 못하면 던진다(넓히지 않는다). isUser 규칙은 그대로다: 주소 목록만 바뀐다.
  */
 export async function loadIdentity(admin: SupabaseClient, userId: string, env: Record<string, string | undefined> = process.env): Promise<UserIdentity> {
-  const [{ data: profileRow }, { data: account }, { data: googleRows }, links] = await Promise.all([
-    admin.from("profiles").select("display_name, aliases, emails").eq("user_id", userId).maybeSingle(),
-    admin.auth.admin.getUserById(userId),
+  const [identity, { data: googleRows }, links] = await Promise.all([
+    profileIdentity(admin, userId),
     admin.from("connections").select("settings").eq("user_id", userId).in("provider", ["google", "gmail"]),
     // 링크를 읽지 못하면 던진다: 링크 없이 이어 가면 공용으로 확인한 계정의 제외가 사라져 "나"가 넓어진다.
     // 수집은 그 원문을 처리하지 않고 대기로 남겨(src/lib/sources/retry.ts가 다시 처리한다) 다음 동기화 · 재처리가 다시 읽는다
     flagEnabled("MEMORY_ENABLED", env) ? loadIdentityLinks(admin, userId) : Promise.resolve([]),
   ]);
-  const email = account.user?.email ?? null;
-  const identity = resolveIdentity(profileInputSchema.safeParse(profileRow).data ?? null, {
-    name: accountDisplayName(account.user?.user_metadata, email),
-    email,
-  });
   const googleEmails = ((googleRows ?? []) as { settings: { email?: unknown } | null }[]).flatMap(({ settings }) =>
     typeof settings?.email === "string" ? [settings.email.trim().toLowerCase()] : [],
   );
   return { ...identity, emails: identityEmails(identity.emails, googleEmails, links) };
+}
+
+/** 프로필 · 로그인 계정으로 정한 "나" (이름 · 별칭 · 프로필 · 로그인 주소). 연결 설정 · 신원 링크는 보지 않는다 */
+async function profileIdentity(admin: SupabaseClient, userId: string): Promise<UserIdentity> {
+  const [{ data: profileRow }, { data: account }] = await Promise.all([
+    admin.from("profiles").select("display_name, aliases, emails").eq("user_id", userId).maybeSingle(),
+    admin.auth.admin.getUserById(userId),
+  ]);
+  const email = account.user?.email ?? null;
+  return resolveIdentity(profileInputSchema.safeParse(profileRow).data ?? null, {
+    name: accountDisplayName(account.user?.user_metadata, email),
+    email,
+  });
+}
+
+/**
+ * 사용자 이름만 필요한 곳(실행 초안의 이름 · Calendar 일정 잇기의 사용자 이름): 연결 설정 · 신원 링크를 읽지 않는다.
+ * 링크는 이름을 바꾸지 않으므로, 링크 읽기 실패(loadIdentity가 던짐)에 이 경로가 함께 멈추지 않게 따로 둔다
+ */
+export async function loadUserName(admin: SupabaseClient, userId: string): Promise<string> {
+  return (await profileIdentity(admin, userId)).name;
 }
 
 /** 연결을 (다시) 맺은 시각. 없으면 null */

@@ -2,7 +2,7 @@ import "server-only";
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 
-import { loadIdentity, loadToken, saveToken } from "../store";
+import { loadToken, loadUserName, saveToken } from "../store";
 
 import { calendarClient, lookupMeetingEvent, type MeetingLookup } from "./calendar";
 import { googleOAuthConfig, grantedFeatures } from "./run";
@@ -48,7 +48,8 @@ export async function googleCalendarLookup(admin: SupabaseClient, userId: string
     const client = calendarClient(googleAccess({ load: () => loadToken(admin, row.id), save: (token) => saveToken(admin, row.id, token) }, googleOAuthConfig()));
     // 프로필 이름은 처음 조회할 때 읽는다: 이번 동기화에 붙일 회의록이 없으면 읽지 않는다
     let me: Promise<{ name: string; email: string | null }> | null = null;
-    const user = () => (me ??= loadIdentity(admin, userId).then((identity) => ({ name: identity.name, email: settings.data.email })));
+    // 이름만 쓴다: 신원 링크를 읽지 않는 loadUserName (링크 읽기 실패로 남은 회의록의 일정 잇기가 멈추지 않게)
+    const user = () => (me ??= loadUserName(admin, userId).then((name) => ({ name, email: settings.data.email })));
     return { connectionId: row.id, lookup: async (target) => lookupMeetingEvent(client, { kind: "notion", ...target }, await user()) };
   } catch (error) {
     // Notion 동기화를 막지 않는다 (env 누락 · 연결 조회 실패 등)

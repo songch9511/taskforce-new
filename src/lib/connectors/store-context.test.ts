@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { embed } from "@/lib/ai/embed";
 import { processSource } from "@/lib/sources/process";
 
-import { ingestDeps, loadIdentity, saveConnection } from "./store";
+import { ingestDeps, loadIdentity, loadUserName, saveConnection } from "./store";
 import type { Connection, IngestItem } from "./types";
 
 vi.mock("server-only", () => ({}));
@@ -143,6 +143,13 @@ describe("gate 켜짐", () => {
     vi.unstubAllEnvs();
     // gate 꺼짐: 링크를 읽지 않고 지금과 같다
     expect((await loadIdentity(brokenAdmin, "u1", {})).emails).toEqual(["login@example.com", "work@company.dev", "me@example.com", "team@example.com"]);
+  });
+
+  it("이름만 필요하면 loadUserName: 신원 링크 · 연결을 읽지 않아 링크 읽기 실패와 상관없다", async () => {
+    vi.stubEnv("MEMORY_ENABLED", "true");
+    const { admin, names } = recordingAdmin({ profiles: profile });
+    expect(await loadUserName(admin, "u1")).toBe("Me");
+    expect(names()).toEqual(["profiles"]);
   });
 
   it("신원 링크를 읽지 못해 처리를 미뤄도 조각은 지금 만든다 (재처리 경로는 조각을 만들지 않는다): 처리는 하지 않고 한 번만 넣는다", async () => {
