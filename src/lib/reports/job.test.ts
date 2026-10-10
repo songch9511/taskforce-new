@@ -51,7 +51,9 @@ function pref(userId: string, overrides: Partial<ReportPreferenceRow> = {}): Rep
 
 /** 원장 행 + 가짜가 따로 들고 있는 DB 열 (job은 읽지 않는다) */
 type FakeRow = ReportDeliveryRow & { schedule_version: number };
-const unknownOutcome = (d: FakeRow) => d.last_error === null || d.last_error === "network" || d.last_error === "apns_0";
+const unknownCode = (code: string | null) => code === null || code === "network" || code === "apns_0";
+/** DB와 같다: 한 번이라도 결과를 몰랐거나(outcome_unknown) 지금 last_error가 결과 모름 */
+const unknownOutcome = (d: FakeRow) => d.outcome_unknown || unknownCode(d.last_error);
 const SCHEDULE_FIELDS = ["mode", "daily_time", "quiet_start", "quiet_end", "time_zone"] as const;
 /** report_deliveries 행이 그날을 막는가 (claim_report_delivery · isBlockingDelivery와 같다) */
 const blocking = (d: FakeRow) => !(d.status === "skipped" && (d.last_error === "schedule_changed" || d.last_error === "mode_changed"));
@@ -141,6 +143,7 @@ function fakeStore(init: { prefs: ReportPreferenceRow[]; devices?: ReportDevice[
         next_attempt_at: new Date(input.now.getTime() + input.leaseSeconds * 1000).toISOString(),
         schedule_version: current.schedule_version,
         last_error: null,
+        outcome_unknown: false,
       };
       state.deliveries.push(row);
       return { ...row };
@@ -161,6 +164,8 @@ function fakeStore(init: { prefs: ReportPreferenceRow[]; devices?: ReportDevice[
       if (state.deliveries.some((o) => o.user_id === d.user_id && o.id !== d.id && blocking(o) && Date.parse(o.scheduled_at) > Date.parse(d.scheduled_at))) return null;
       d.attempts++;
       d.next_attempt_at = new Date(now.getTime() + leaseSeconds * 1000).toISOString();
+      // 지난 시도가 결과 없이 끝났으면 갔을 수 있다 (claim_report_retry와 같다)
+      d.outcome_unknown = d.outcome_unknown || d.last_error === null;
       d.last_error = null;
       return { ...d };
     },
@@ -190,6 +195,8 @@ function fakeStore(init: { prefs: ReportPreferenceRow[]; devices?: ReportDevice[
       d.status = outcome.status;
       d.next_attempt_at = outcome.status === "pending" ? outcome.nextAttemptAt.toISOString() : null;
       d.last_error = outcome.status === "sent" ? null : outcome.lastError;
+      // 트리거 report_deliveries_keep_unknown과 같다: 결과 모름 코드면 켜고, 끄지 않는다
+      if (outcome.status !== "sent" && unknownCode(outcome.lastError)) d.outcome_unknown = true;
       return 1;
     },
   };
@@ -379,6 +386,7 @@ describe("runDailyReports", () => {
       attempts: 1,
       next_attempt_at: "2026-10-10T12:55:00Z",
       last_error: "apns_503",
+      outcome_unknown: false,
     });
     const { store, state } = fakeStore({
       prefs: [pref(ALICE, { daily_time: "21:50" }), pref(BOB, { mode: "meaningful" })],
@@ -410,6 +418,7 @@ describe("runDailyReports", () => {
       attempts: 1,
       next_attempt_at: scheduled,
       last_error: "apns_503",
+      outcome_unknown: false,
     });
     const { store } = fakeStore({
       prefs: [pref(ALICE)],
@@ -657,6 +666,81 @@ describe("runDailyReports", () => {
       expect(state.deliveries[0]).toMatchObject({ status: "failed", last_error: "schedule_changed_unknown" });
     });
 
+    /** 토큰마다 시도 순서대로 응답(200 · 503 · "timeout"). 다 쓰면 200 */
+    function scripted(plan: Record<string, (number | "timeout")[]>) {
+      const sent: string[] = [];
+      const transport: Transport = async (request) => {
+        const token = request.path.split("/").pop()!;
+        const next = plan[token]?.shift() ?? 200;
+        sent.push(`${token.slice(0, 1)}:${next}`);
+        if (next === "timeout") throw new Error("APNs 응답 시간 초과");
+        return next === 200 ? { status: 200, body: "" } : { status: next, body: JSON.stringify({ reason: "ServiceUnavailable" }) };
+      };
+      return { transport, sent };
+    }
+
+    /** 08:30 · 08:35 두 번 실패한 뒤 08:36에 18:00으로 바꾸고 그날 22:00 KST까지 5분마다 돈다 */
+    async function failTwiceThenChange(devices: ReportDevice[], plan: Record<string, (number | "timeout")[]>, patch: Partial<ReportPreferenceRow> = { daily_time: "18:00" }) {
+      const { store, state, put } = fakeStore({ prefs: [pref(ALICE)], devices });
+      const apns = scripted(plan);
+      let t = SEOUL_0830.getTime();
+      const tick = async (ms: number) => {
+        t = ms;
+        await run(store, apns.transport, () => t);
+      };
+      await tick(SEOUL_0830.getTime());
+      await tick(Date.parse("2026-10-09T23:35:00Z"));
+      put(ALICE, patch, new Date("2026-10-09T23:36:00Z"));
+      for (let ms = Date.parse("2026-10-09T23:40:00Z"); ms <= Date.parse("2026-10-10T13:00:00Z"); ms += minutes(5)) await tick(ms);
+      return { state, sent: apns.sent, put, store, tick };
+    }
+
+    it("시도 1 응답 시간 초과(갔을 수 있음) → 시도 2 503 → 18:00으로 바꿈: 옛 행은 failed schedule_changed_unknown, 그날 18:00 보고 없음", async () => {
+      const { state, sent } = await failTwiceThenChange([device(ALICE, "d1", TOKEN)], { [TOKEN]: ["timeout", 503] });
+      expect(sent).toEqual(["a:timeout", "a:503"]);
+      expect(state.deliveries).toHaveLength(1);
+      expect(state.deliveries[0]).toMatchObject({ status: "failed", last_error: "schedule_changed_unknown" });
+    });
+
+    it("기기 둘: 시도 1 한 기기 응답 시간 초과 · 한 기기 503 → 시도 2 둘 다 503 → 18:00으로 바꿈: 여전히 결과 모름, 그날 18:00 보고 없음", async () => {
+      const other = "b".repeat(64);
+      const { state, sent } = await failTwiceThenChange([device(ALICE, "d1", TOKEN), device(ALICE, "d2", other)], {
+        [TOKEN]: ["timeout", 503],
+        [other]: [503, 503],
+      });
+      expect(sent).toEqual(["a:timeout", "b:503", "a:503", "b:503"]);
+      expect(state.deliveries).toHaveLength(1);
+      expect(state.deliveries[0]).toMatchObject({ status: "failed", last_error: "schedule_changed_unknown" });
+    });
+
+    it("시도 1 응답 시간 초과 → 시도 2 503 → meaningful로 껐다가 다시 both로: 그날을 막아 두 번째 보고 없음", async () => {
+      const { store, state, put } = fakeStore({ prefs: [pref(ALICE)], devices: [device(ALICE, "d1", TOKEN)] });
+      const apns = scripted({ [TOKEN]: ["timeout", 503] });
+      let t = SEOUL_0830.getTime();
+      const tick = async (ms: number) => {
+        t = ms;
+        await run(store, apns.transport, () => t);
+      };
+      await tick(SEOUL_0830.getTime());
+      await tick(Date.parse("2026-10-09T23:35:00Z"));
+      put(ALICE, { mode: "meaningful" }, new Date("2026-10-09T23:36:00Z"));
+      await tick(Date.parse("2026-10-09T23:50:00Z")); // job이 일일 보고를 끈 사용자의 대기 행을 닫는다
+      expect(state.deliveries[0]).toMatchObject({ status: "failed", last_error: "mode_changed_unknown" });
+      put(ALICE, { mode: "both", daily_time: "18:00" }, new Date("2026-10-09T23:51:00Z"));
+      for (let ms = Date.parse("2026-10-09T23:55:00Z"); ms <= Date.parse("2026-10-10T13:00:00Z"); ms += minutes(5)) await tick(ms);
+      expect(apns.sent).toEqual(["a:timeout", "a:503"]);
+      expect(state.deliveries).toHaveLength(1);
+    });
+
+    it("대조: 처음부터 분명한 거절(503 → 503) → 18:00으로 바꿈: skipped schedule_changed, 18:00 보고가 그날 한 번", async () => {
+      const { state, sent } = await failTwiceThenChange([device(ALICE, "d1", TOKEN)], { [TOKEN]: [503, 503] });
+      expect(sent).toEqual(["a:503", "a:503", "a:200"]);
+      expect(state.deliveries.map((d) => [d.status, d.last_error])).toEqual([
+        ["skipped", "schedule_changed"],
+        ["sent", null],
+      ]);
+    });
+
     it("결과를 모르는 대기 행의 사용자가 일일 보고를 끄면 failed mode_changed_unknown (그날을 막는다), 분명한 실패면 skipped mode_changed", async () => {
       const row = (id: string, userId: string, lastError: string): ReportDeliveryRow => ({
         id,
@@ -670,6 +754,7 @@ describe("runDailyReports", () => {
         attempts: 1,
         next_attempt_at: "2026-10-09T23:35:00Z",
         last_error: lastError,
+        outcome_unknown: false,
       });
       const { store, state } = fakeStore({
         prefs: [pref(ALICE, { mode: "meaningful" }), pref(BOB, { mode: "meaningful" })],

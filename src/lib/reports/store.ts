@@ -16,7 +16,8 @@ import { isBlockingDelivery } from "./schedule";
 const PREFERENCE_API_COLUMNS = "mode, daily_time, quiet_start, quiet_end, respect_focus, time_zone, version";
 const PREFERENCE_JOB_COLUMNS =
   "user_id, mode, daily_time, quiet_start, quiet_end, respect_focus, time_zone, created_at, schedule_changed_at, schedule_version, version";
-const DELIVERY_COLUMNS = "id, user_id, kind, time_zone, report_date, scheduled_at, expires_at, status, attempts, next_attempt_at, last_error";
+const DELIVERY_COLUMNS =
+  "id, user_id, kind, time_zone, report_date, scheduled_at, expires_at, status, attempts, next_attempt_at, last_error, outcome_unknown";
 
 /** GET /api/v2/reports/preferences: 자기 설정 행 (RLS). 없으면 null */
 export async function loadReportPreferences({ supabase }: ApiContext): Promise<ReportPreferences | null> {

@@ -227,6 +227,34 @@ describe("결과를 모르는 보고와 일정 변경 (실제 Postgres)", () => 
     expect(await claim(cron, user, SEOUL_EVENING, await versionOf(user))).toBe(0);
   });
 
+  /** 08:30 잡기 → 시도 1 결과(code1, null이면 기록 없이 임대가 끝남) → 다시 잡기 → 시도 2 결과(code2) → 18:00으로 바꿈 → 다시 잡기 */
+  async function twoAttemptsThenChange(code1: string | null, code2: string) {
+    const user = await newUser();
+    const [cron, api] = clients;
+    const id = (await cron.query(claimSql, [user, ...SEOUL, 1])).rows[0].id as string;
+    if (code1 !== null) await cron.query("update public.report_deliveries set last_error = $2, next_attempt_at = '2026-10-09T23:35:00Z' where id = $1", [id, code1]);
+    expect((await cron.query("select id from public.claim_report_retry($1, '2026-10-09T23:35:00Z', 300, 3, 1)", [id])).rows).toHaveLength(1);
+    await cron.query("update public.report_deliveries set last_error = $2, next_attempt_at = '2026-10-09T23:50:00Z' where id = $1", [id, code2]);
+    await api.query("update public.report_preferences set daily_time = '18:00' where user_id = $1", [user]);
+    expect((await cron.query("select id from public.claim_report_retry($1, '2026-10-09T23:50:00Z', 300, 3, $2)", [id, await versionOf(user)])).rows).toHaveLength(0);
+    return { user, id, evening: await claim(cron, user, SEOUL_EVENING, await versionOf(user)) };
+  }
+
+  it.each([
+    ["network → 503", "network", "apns_503"],
+    ["결과 없이 임대 끝남 → internal", null, "internal"],
+  ])("앞 시도가 결과를 몰랐으면(%s) 마지막이 분명한 실패여도 일정 변경으로 닫을 때 failed schedule_changed_unknown, 그날 두 번째 보고 없음", async (_name, code1, code2) => {
+    const { id, evening } = await twoAttemptsThenChange(code1, code2);
+    expect(await stateOf(id)).toEqual({ status: "failed", last_error: "schedule_changed_unknown" });
+    expect(evening).toBe(0);
+  });
+
+  it("대조: 503 → 503 → 일정 변경이면 skipped schedule_changed, 새 일정의 보고가 그날 한 번", async () => {
+    const { id, evening } = await twoAttemptsThenChange("apns_503", "apns_503");
+    expect(await stateOf(id)).toEqual({ status: "skipped", last_error: "schedule_changed" });
+    expect(evening).toBe(1);
+  });
+
   it("finish_stale은 닫을 행 사용자의 설정 행을 잠근다: 커밋 전인 PUT(18:00)을 기다렸다가 새 일정으로 판단한다(skipped schedule_changed)", async () => {
     const user = await newUser();
     const [cron, api] = clients;

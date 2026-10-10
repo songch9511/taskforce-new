@@ -62,6 +62,7 @@ const DELIVERY: ReportDeliveryRow = {
   attempts: 2,
   next_attempt_at: "2026-10-09T23:35:00Z",
   last_error: null,
+  outcome_unknown: false,
 };
 
 const NOW = new Date("2026-10-09T23:30:00Z");
@@ -157,10 +158,10 @@ describe("supabaseReportStore: 원장 · 설정 읽기", () => {
 });
 
 describe("supabaseReportStore.retryable", () => {
-  it("다시 보낼 차례인 대기 행을 last_error와 함께 읽는다 (결과를 모르는 행을 job이 가린다)", async () => {
+  it("다시 보낼 차례인 대기 행을 last_error · outcome_unknown과 함께 읽는다 (결과를 모른 적이 있는 행을 job이 가린다)", async () => {
     const { admin, calls } = fakeAdmin(() => ({ data: [DELIVERY] }));
     expect(await supabaseReportStore(admin).retryable(NOW, 3)).toEqual([DELIVERY]);
-    expect(String(calls[0].ops.find(([op]) => op === "select")?.[1])).toMatch(/last_error$/);
+    expect(String(calls[0].ops.find(([op]) => op === "select")?.[1])).toMatch(/last_error, outcome_unknown$/);
     expect(calls[0].ops).toEqual(
       expect.arrayContaining([
         ["eq", "status", "pending"],

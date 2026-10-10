@@ -449,6 +449,93 @@ describe("claim_report_retry · finish_stale_report_deliveries", () => {
   });
 });
 
+describe("결과를 모른 적이 있는 보고 (한 번이라도 갔을 수 있으면 끝까지 그날은 보낸 날)", () => {
+  /** 다시 잡기(이번 시도)를 끝낸 것처럼: 실패 코드와 다음 시도 시각 */
+  async function attemptFailed(id: unknown, code: string, nextAttemptAt: string) {
+    await db.query(`update public.report_deliveries set last_error = $2, next_attempt_at = $3 where id = $1`, [id, code, nextAttemptAt]);
+  }
+
+  it("outcome_unknown은 한 방향: 결과 모름 코드(network · apns_0)를 남기면 켜지고, 다시 잡기가 결과 없이 끝난 시도를 남기며, 어느 쓰기도 끄지 못한다", async () => {
+    const flag = async (id: unknown) => (await db.query<{ u: boolean }>(`select outcome_unknown as u from public.report_deliveries where id = $1`, [id])).rows[0].u;
+    const a = await claim(ALICE);
+    expect(await flag(a!.id)).toBe(false);
+    await attemptFailed(a!.id, "apns_0", "2026-10-09T23:35:00Z");
+    expect(await flag(a!.id)).toBe(true);
+    await db.query(`update public.report_deliveries set outcome_unknown = false, last_error = 'apns_503' where id = $1`, [a!.id]);
+    expect(await flag(a!.id)).toBe(true);
+    // 결과 없이 임대가 끝난 시도: 다시 잡을 때 켠다 (그 전까지는 last_error 없음으로 보인다)
+    const b = await claim(BOB, { tz: "Europe/London", dayStart: "2026-10-09T23:00:00Z", scheduled: "2026-10-10T07:30:00Z", expires: "2026-10-10T09:30:00Z", now: "2026-10-10T07:30:00Z" });
+    expect(await flag(b!.id)).toBe(false);
+    expect(await retry(b!.id, "2026-10-10T07:35:00Z")).toMatchObject({ attempts: 2, last_error: null, outcome_unknown: true });
+    // 처음부터 분명한 거절만 있었으면 꺼진 채다
+    await db.query(`delete from public.report_deliveries where user_id = $1`, [ALICE]);
+    const c = await claim(ALICE);
+    await attemptFailed(c!.id, "apns_503", "2026-10-09T23:35:00Z");
+    expect(await retry(c!.id, "2026-10-09T23:35:00Z")).toMatchObject({ attempts: 2, outcome_unknown: false });
+  });
+
+  it("network → 다시 잡기 → 503 → 18:00으로 바꿈 → 다시 잡기: failed schedule_changed_unknown, 그날 18:00 보고 없음", async () => {
+    const row = await claim(ALICE);
+    await attemptFailed(row!.id, "network", "2026-10-09T23:35:00Z");
+    expect(await retry(row!.id, "2026-10-09T23:35:00Z")).toMatchObject({ attempts: 2 });
+    await attemptFailed(row!.id, "apns_503", "2026-10-09T23:50:00Z");
+    await db.query(`update public.report_preferences set daily_time = '18:00' where user_id = $1`, [ALICE]);
+    expect(await retry(row!.id, "2026-10-09T23:50:00Z")).toBeNull();
+    expect(await stateOf(row!.id)).toMatchObject({ status: "failed", last_error: "schedule_changed_unknown" });
+    expect(await claimEvening(ALICE)).toBeNull();
+  });
+
+  it("임대가 결과 없이 끝남(중단) → 다시 잡기 → internal → 18:00으로 바꿈 → 다시 잡기: failed schedule_changed_unknown, 그날 18:00 보고 없음", async () => {
+    const row = await claim(ALICE); // 임대 23:35까지, 결과를 남기지 않음
+    expect(await retry(row!.id, "2026-10-09T23:35:00Z")).toMatchObject({ attempts: 2 });
+    await attemptFailed(row!.id, "internal", "2026-10-09T23:40:00Z");
+    await db.query(`update public.report_preferences set daily_time = '18:00' where user_id = $1`, [ALICE]);
+    expect(await retry(row!.id, "2026-10-09T23:40:00Z")).toBeNull();
+    expect(await stateOf(row!.id)).toMatchObject({ status: "failed", last_error: "schedule_changed_unknown" });
+    expect(await claimEvening(ALICE)).toBeNull();
+  });
+
+  it("network → 다시 잡기 → 503 → meaningful로 끄고 다시 both로: 그날을 막아 두 번째 보고 없음", async () => {
+    const row = await claim(ALICE);
+    await attemptFailed(row!.id, "network", "2026-10-09T23:35:00Z");
+    await retry(row!.id, "2026-10-09T23:35:00Z");
+    await attemptFailed(row!.id, "apns_503", "2026-10-09T23:50:00Z");
+    await db.query(`update public.report_preferences set mode = 'meaningful' where user_id = $1`, [ALICE]);
+    await db.query(`update public.report_preferences set mode = 'both', daily_time = '18:00' where user_id = $1`, [ALICE]);
+    expect(await retry(row!.id, "2026-10-09T23:50:00Z")).toBeNull();
+    expect(await stateOf(row!.id)).toMatchObject({ status: "failed" });
+    expect(await claimEvening(ALICE)).toBeNull();
+  });
+
+  it("finish_stale: 앞 시도가 결과를 몰랐으면 마지막이 503이어도 일정 · 모드 변경으로 닫을 때 failed *_unknown", async () => {
+    const changed = await claim(ALICE);
+    await attemptFailed(changed!.id, "network", "2026-10-09T23:35:00Z");
+    await retry(changed!.id, "2026-10-09T23:35:00Z");
+    await attemptFailed(changed!.id, "apns_503", "2026-10-09T23:50:00Z");
+    await db.query(`update public.report_preferences set daily_time = '18:00' where user_id = $1`, [ALICE]);
+    const off = await claim(BOB, { tz: "Europe/London", dayStart: "2026-10-09T23:00:00Z", scheduled: "2026-10-10T07:30:00Z", expires: "2026-10-10T09:30:00Z", now: "2026-10-10T07:30:00Z" });
+    await attemptFailed(off!.id, "network", "2026-10-10T07:35:00Z");
+    await retry(off!.id, "2026-10-10T07:35:00Z");
+    await attemptFailed(off!.id, "apns_503", "2026-10-10T07:50:00Z");
+    await db.query(`update public.report_preferences set mode = 'meaningful' where user_id = $1`, [BOB]);
+    expect((await db.query<{ n: number }>(`select public.finish_stale_report_deliveries('2026-10-10T10:00:00Z', 3) as n`)).rows[0].n).toBe(2);
+    expect(await stateOf(changed!.id)).toMatchObject({ status: "failed", last_error: "schedule_changed_unknown" });
+    expect(await stateOf(off!.id)).toMatchObject({ status: "failed", last_error: "mode_changed_unknown" });
+  });
+
+  it("대조: 처음부터 모든 시도가 분명한 거절(503 → 503)이면 skipped schedule_changed, 새 일정의 보고가 그날 한 번", async () => {
+    const row = await claim(ALICE);
+    await attemptFailed(row!.id, "apns_503", "2026-10-09T23:35:00Z");
+    await retry(row!.id, "2026-10-09T23:35:00Z");
+    await attemptFailed(row!.id, "apns_503", "2026-10-09T23:50:00Z");
+    await db.query(`update public.report_preferences set daily_time = '18:00' where user_id = $1`, [ALICE]);
+    expect(await retry(row!.id, "2026-10-09T23:50:00Z")).toBeNull();
+    expect(await stateOf(row!.id)).toMatchObject({ status: "skipped", last_error: "schedule_changed" });
+    expect(await claimEvening(ALICE)).not.toBeNull();
+    expect(await claimEvening(ALICE)).toBeNull();
+  });
+});
+
 describe("report_status_counts: 숫자만 (알림에 사용자 글이 실리지 않는다)", () => {
   /** 알림에 실리면 안 되는 글: 원문 · 제목 · 인용 · 메모 · 상대 이름 · 이메일 */
   const SECRETS = ["ZEBRA-원문-회의록", "QUOKKA-할일-제목", "AXOLOTL-인용", "NARWHAL-메모", "PANGOLIN-상대", "okapi@secret.example", "TAPIR-범위", "IBIS-별칭"];

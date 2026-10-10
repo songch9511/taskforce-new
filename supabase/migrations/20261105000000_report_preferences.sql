@@ -55,7 +55,8 @@ create table public.report_preferences (
 --    pending: 잡혀서 보내는 중이거나 다시 보낼 차례를 기다린다(next_attempt_at). sent · failed · skipped는 끝.
 --    attempts는 잡을 때마다 오른다(보내는 쪽의 펜스 토큰). last_error는 코드만 (예: no_devices · empty · stale · network · apns_500)
 --    "그날 보고가 있다"(하루 한 번)는 보내지 않고 닫힌 skipped · schedule_changed / mode_changed 행을 빼고 센다.
---    결과를 모르는 행을 일정 · 모드 변경으로 닫으면 failed · *_unknown이라 그날을 막는다(갔을 수 있다).
+--    결과를 모른 적이 있는 행(outcome_unknown, 또는 지금 last_error가 결과 모름)을 일정 · 모드 변경으로 닫으면 failed · *_unknown이라
+--    그날을 막는다(갔을 수 있다). 뒤 시도의 분명한 실패가 앞 시도의 "모름"을 지우지 않는다.
 -- ─────────────────────────────────────────────
 create table public.report_deliveries (
   id uuid primary key default gen_random_uuid(),
@@ -72,6 +73,8 @@ create table public.report_deliveries (
   sent_at timestamptz,
   last_error text check (last_error ~ '^[a-z0-9_]{1,64}$'),
   schedule_version integer not null check (schedule_version >= 1),
+  -- 이 보고의 어느 시도든 결과를 몰랐던 적이 있다(갔을 수 있다). 한 번 켜지면 끄지 못한다 (트리거 report_deliveries_keep_unknown)
+  outcome_unknown boolean not null default false,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   constraint report_deliveries_window check (expires_at >= scheduled_at),
@@ -97,6 +100,23 @@ create trigger report_preferences_set_updated_at
 create trigger report_deliveries_set_updated_at
   before update on public.report_deliveries
   for each row execute function public.set_updated_at();
+
+-- outcome_unknown은 한 방향이다: 결과 모름 코드(network · apns_0)를 남기면 켜지고, 한 번 켜지면 어느 쓰기도 끄지 못한다.
+-- (잡힌 뒤 결과 없이 임대가 끝난 시도는 claim_report_retry가 다시 잡을 때 켠다)
+create function public.report_deliveries_keep_unknown() returns trigger
+language plpgsql
+set search_path = ''
+as $$
+begin
+  new.outcome_unknown = old.outcome_unknown or new.outcome_unknown or coalesce(new.last_error in ('network', 'apns_0'), false);
+  return new;
+end;
+$$;
+
+create trigger report_deliveries_keep_unknown
+  before update on public.report_deliveries
+  for each row execute function public.report_deliveries_keep_unknown();
+revoke all on function public.report_deliveries_keep_unknown() from public, anon, authenticated;
 
 -- 고칠 때마다 version을 1 올리고, 일정에 닿는 값이 바뀌었을 때만 schedule_changed_at을 지금으로 · schedule_version을 1 올린다
 -- (그 밖에는 이전 값을 지킨다). 세 열 모두 서버 코드도 직접 정하지 못한다. created_at도 바뀌지 않는다
@@ -128,8 +148,9 @@ revoke all on function public.report_preferences_schedule_changed() from public,
 -- 4) 서버 전용 함수 (cron/reports, src/lib/reports/store.ts). 호출자 권한 · search_path = '' · service_role만 실행
 -- ─────────────────────────────────────────────
 
--- 결과를 모르는 대기 행: 지난 시도가 연결 오류 · 응답 시간 초과(network) · 상태 없는 응답(apns_0)으로 끝났거나, 잡힌 뒤 결과를 남기지 못한 채
--- 임대가 끝났다(last_error 없음, 다시 잡을 때도 비운다). APNs가 이미 받았을 수 있어 "갔을 수 있다"로 다룬다:
+-- 결과를 모른 적이 있는 대기 행: 이 보고의 어느 시도든 연결 오류 · 응답 시간 초과(network) · 상태 없는 응답(apns_0)으로 끝났거나,
+-- 잡힌 뒤 결과를 남기지 못한 채 임대가 끝났다(last_error 없음). outcome_unknown으로 남아 뒤 시도의 분명한 실패가 지우지 못한다.
+-- APNs가 이미 받았을 수 있어 "갔을 수 있다"로 다룬다:
 -- 일정 · 모드가 바뀌어 닫을 때 skipped(그날을 막지 않음)가 아니라 failed *_unknown(그날을 막음)으로 닫아 그날 두 번째 보고를 막는다.
 -- 응답 코드가 있는 거절(apns_5xx · apns_429 · 4xx)과 보내기 전 오류(internal)만 "안 갔다"로 보고 skipped로 닫는다.
 
@@ -182,9 +203,10 @@ $$;
 -- 잡기와 같은 사용자 잠금을 잡고, 행 잠금으로 다시 확인하므로 겹친 실행 중 하나만 잡는다.
 -- 잠근 뒤 설정의 version이 호출자가 읽은 값(p_preferences_version)과 다르면 아무것도 하지 않는다(닫지도 잡지도 않음): 겹친 실행이 낡은
 -- 조용한 시간 · 시간대 · Respect Focus로 보내지 않게. 다음 실행이 새 설정으로 다시 본다.
--- 설정이 최신인데 이 행의 schedule_version이 설정과 다르면(실패 뒤 일정을 바꿈) 다시 보내지 않고 닫는다: 결과를 아는 실패는
--- skipped · schedule_changed(그날을 막지 않아 새 일정의 보고가 그날 갈 수 있다), 결과를 모르면 failed · schedule_changed_unknown(그날은 보낸 것으로).
--- 다시 잡으면 last_error를 비운다: 이 시도의 결과를 남기기 전에 멈추면 "결과를 모름"으로 남는다.
+-- 설정이 최신인데 이 행의 schedule_version이 설정과 다르면(실패 뒤 일정을 바꿈) 다시 보내지 않고 닫는다: 모든 시도가 결과를 아는 실패였으면
+-- skipped · schedule_changed(그날을 막지 않아 새 일정의 보고가 그날 갈 수 있다), 한 번이라도 결과를 몰랐으면 failed · schedule_changed_unknown
+-- (그날은 보낸 것으로). 다시 잡으면 지난 시도가 결과 없이 끝났는지 outcome_unknown에 남긴 뒤 last_error를 비운다:
+-- 이 시도의 결과를 남기기 전에 멈추면 "결과를 모름"으로 남는다.
 create function public.claim_report_retry(
   p_id uuid,
   p_now timestamptz,
@@ -210,8 +232,8 @@ begin
     return;
   end if;
   update public.report_deliveries d
-     set status = case when d.last_error is null or d.last_error in ('network', 'apns_0') then 'failed' else 'skipped' end,
-         last_error = case when d.last_error is null or d.last_error in ('network', 'apns_0') then 'schedule_changed_unknown' else 'schedule_changed' end,
+     set status = case when d.outcome_unknown or d.last_error is null or d.last_error in ('network', 'apns_0') then 'failed' else 'skipped' end,
+         last_error = case when d.outcome_unknown or d.last_error is null or d.last_error in ('network', 'apns_0') then 'schedule_changed_unknown' else 'schedule_changed' end,
          next_attempt_at = null
    where d.id = p_id
      and d.status = 'pending'
@@ -224,6 +246,8 @@ begin
     update public.report_deliveries d
        set attempts = d.attempts + 1,
            next_attempt_at = p_now + make_interval(secs => p_lease_seconds),
+           -- 지난 시도가 결과 없이 끝났으면(last_error 없음) 그 시도는 갔을 수 있다: 비우기 전에 남긴다
+           outcome_unknown = d.outcome_unknown or d.last_error is null,
            last_error = null
      where d.id = p_id
        and d.status = 'pending'
@@ -242,7 +266,7 @@ $$;
 -- 더 보낼 수 없는 대기 행을 닫는다: 늦었거나(expires_at 지남) 시도를 다 썼고, 지금 보내는 중이 아니다(임대가 끝남).
 -- 먼저 닫을 행이 있는 사용자의 설정 행을 사용자 순서로 잠근다: 겹친 PUT이 끝나기를 기다린 뒤 새 값으로 판단한다.
 -- 그 사이 일일 보고를 끈(mode meaningful) 사용자의 행은 mode_changed, 일정을 바꾼(schedule_version이 다른) 행은 schedule_changed:
--- 결과를 아는 실패면 skipped(그날을 막지 않는다), 결과를 모르면 failed *_unknown(그날을 막는다).
+-- 모든 시도가 결과를 아는 실패였으면 skipped(그날을 막지 않는다), 한 번이라도 결과를 몰랐으면 failed *_unknown(그날을 막는다).
 -- 나머지는 failed: 이미 남긴 실패 코드는 그대로, 없으면 stale (보내다 멈춘 실행). 닫은 행 수를 돌려준다
 create function public.finish_stale_report_deliveries(p_now timestamptz, p_max_attempts integer) returns integer
 language plpgsql
@@ -265,15 +289,15 @@ begin
     update public.report_deliveries d
        set status = case
              when (p.mode = 'meaningful' or d.schedule_version <> p.schedule_version)
-                  and not (d.last_error is null or d.last_error in ('network', 'apns_0')) then 'skipped'
+                  and not (d.outcome_unknown or d.last_error is null or d.last_error in ('network', 'apns_0')) then 'skipped'
              else 'failed'
            end,
            next_attempt_at = null,
            last_error = case
              when p.mode = 'meaningful' then
-               case when d.last_error is null or d.last_error in ('network', 'apns_0') then 'mode_changed_unknown' else 'mode_changed' end
+               case when d.outcome_unknown or d.last_error is null or d.last_error in ('network', 'apns_0') then 'mode_changed_unknown' else 'mode_changed' end
              when d.schedule_version <> p.schedule_version then
-               case when d.last_error is null or d.last_error in ('network', 'apns_0') then 'schedule_changed_unknown' else 'schedule_changed' end
+               case when d.outcome_unknown or d.last_error is null or d.last_error in ('network', 'apns_0') then 'schedule_changed_unknown' else 'schedule_changed' end
              else coalesce(d.last_error, 'stale')
            end
       from public.report_preferences p

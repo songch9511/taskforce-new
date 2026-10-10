@@ -18,6 +18,7 @@ import { isSupportedTimeZone, localWall, nextQuietStart, planDailyReport, quietN
 //    cron이 설정을 읽은 뒤 PUT이 설정을 바꿨으면 잡지 않는다(다음 실행이 새 설정으로 계산한다).
 // 결과를 모름(UNKNOWN_OUTCOME_CODES): 연결 오류 · 응답 시간 초과 · 상태 없는 응답, 또는 잡힌 뒤 결과를 남기지 못하고 멈춤(last_error 없음).
 //    APNs가 이미 받았을 수 있어 그날은 보낸 날로 센다. 기기 여럿 중 하나라도 결과를 모르면 그 코드를 남긴다(분명한 거절보다 앞선다).
+//    한 번이라도 결과를 몰랐던 보고는 원장 outcome_unknown으로 남아, 뒤 시도의 분명한 실패(503 등)가 그 가능성을 지우지 못한다.
 // 경계: 설정 변경이 잡기 · 다시 잡기의 설정 행 잠금보다 먼저 커밋되면 지켜진다. 이미 잡혀 보내는 중(임대 중, APNs 요청 중)이던 보고와
 //    결과를 모르는 보고는 그 뒤 일정을 바꿔도 갔을 수 있고, 그 현지 날은 보낸 날이다(두 번째 보고 없음).
 // 4. 보내기: 숫자 상태(report_status_counts)가 모두 0이면 보내지 않고(skipped empty), 기기가 없으면 skipped no_devices.
@@ -71,6 +72,8 @@ export type ReportDeliveryRow = {
   next_attempt_at: string | null;
   /** 지난 시도의 실패 코드. 대기 행에서 null이면 잡힌 뒤 결과를 남기지 못한 것(결과를 모름) */
   last_error: string | null;
+  /** 이 보고의 어느 시도든 결과를 몰랐던 적이 있다 (DB 트리거 · claim_report_retry가 켜고, 끄지 못한다) */
+  outcome_unknown: boolean;
 };
 
 export type ReportDevice = ApnsDevice & { id: string; user_id: string };
@@ -297,7 +300,8 @@ export async function runDailyReports(store: ReportStore, push: ReportPush, opti
       const pref = byUser.get(row.user_id);
       if (!pref) {
         // 일일 보고를 껐다 (dailyPreferences는 both · daily만): 다시 보내지 않고 닫는다. 갔는지 모르면 그날은 보낸 날로 (failed)
-        await record(row, isUnknownOutcome(row.last_error) ? { status: "failed", lastError: "mode_changed_unknown" } : { status: "skipped", lastError: "mode_changed" });
+        const unknown = row.outcome_unknown || isUnknownOutcome(row.last_error);
+        await record(row, unknown ? { status: "failed", lastError: "mode_changed_unknown" } : { status: "skipped", lastError: "mode_changed" });
         continue;
       }
       if (quietNow(now(), schedulePrefs(pref))) {
