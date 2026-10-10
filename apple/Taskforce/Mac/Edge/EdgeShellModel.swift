@@ -40,14 +40,16 @@ struct EdgeWorkSnapshot: Equatable {
     var load: WorkLoad = .loading
     /// Done today를 읽은 기기 시간대의 그날 0시 (`NowStore.doneTodaySince`)
     var doneSince: Date?
-    /// 할 일 없음 화면에 Connect a source를 보일지 (연결된 원문이 없을 때)
+    /// 할 일 없음 화면에 Connect a source를 보일지 (연결을 읽었고 연결된 원문이 없을 때)
     var canConnect = false
+    /// 연결 중 하나라도 동기화 중 (`AccountStore.anySyncing`): 빈 목록이어도 할 일 없음을 말하지 않는다
+    var syncing = false
 
     static let empty = EdgeWorkSnapshot()
 
     init(review: [ActionSummary] = [], open: [ActionSummary] = [], doneToday: [ActionSummary] = [],
          working: Set<UUID> = [], stopping: Set<UUID> = [], reasons: [UUID: [RankReason]] = [:],
-         load: WorkLoad = .loading, doneSince: Date? = nil, canConnect: Bool = false) {
+         load: WorkLoad = .loading, doneSince: Date? = nil, canConnect: Bool = false, syncing: Bool = false) {
         self.review = review
         self.open = open
         self.doneToday = doneToday
@@ -57,18 +59,26 @@ struct EdgeWorkSnapshot: Equatable {
         self.load = load
         self.doneSince = doneSince
         self.canConnect = canConnect
+        self.syncing = syncing
     }
 
-    init(sections: TaskSections, working: Set<UUID>, stopping: Set<UUID>, load: WorkLoad, doneSince: Date?, canConnect: Bool) {
+    init(
+        sections: TaskSections, working: Set<UUID>, stopping: Set<UUID>, load: WorkLoad, doneSince: Date?, canConnect: Bool, syncing: Bool = false
+    ) {
         let open = sections.inProgress + sections.toDo
         self.init(
             review: sections.review, open: open.map(\.action), doneToday: sections.doneToday, working: working, stopping: stopping,
             reasons: Dictionary(open.map { ($0.id, $0.reasons) }, uniquingKeysWith: { first, _ in first }),
-            load: load, doneSince: doneSince, canConnect: canConnect
+            load: load, doneSince: doneSince, canConnect: canConnect, syncing: syncing
         )
     }
 
     var isEmpty: Bool { review.isEmpty && open.isEmpty && doneToday.isEmpty }
+
+    /// Connect a source를 보일지: 연결을 읽었고 active 연결이 하나도 없을 때만 (아직 모르면 보이지 않는다)
+    static func canConnect(connectionsLoaded: Bool, connections: [ConnectionRecord]) -> Bool {
+        connectionsLoaded && !connections.contains { $0.status == .active }
+    }
 
     /// All work의 줄 (`WorkItem.list`). Done today는 읽은 날이 기기 시간대의 오늘일 때만 (자정 · 시간대가 바뀌면 다시 읽을 때까지 없음)
     func items(now: Date, calendar: Calendar = .current) -> [WorkItem] {
@@ -282,9 +292,13 @@ final class EdgeShellModel {
         openPanel(.chats)
     }
 
-    /// 레일의 일: 그 일을 연다. 일 상세 · Review 화면은 다음 PR이라 지금은 All work에서 그 행을 표시한다
+    /// 레일의 일: 그 일을 연다. 일 상세 · Review 화면은 다음 PR이라 지금은 All work에서 그 행을 표시한다.
+    /// 남은 검색어 · 필터가 그 일을 가리면 검색어 · 필터를 비운다 (연 일이 목록에 보여야 한다)
     func open(itemID: UUID) {
         currentID = itemID
+        if let item = workItems.first(where: { $0.id == itemID }), !workFilter.matches(item) {
+            workFilter = WorkFilter()
+        }
         openPanel(.allWork)
     }
 

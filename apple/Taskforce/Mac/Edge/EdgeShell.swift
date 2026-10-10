@@ -21,6 +21,12 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
     private var keyMonitor: Any?
     private var observers: [NSObjectProtocol] = []
     private var wasSignedIn = false
+    /// 패널이 열린 동안 동기화 중인 연결을 따라 읽는 작업 (`AccountStore.followSync`)
+    private var syncTask: Task<Void, Never>?
+    private var syncGeneration = 0
+    /// 앱을 연 뒤 로그인 상태를 처음 알게 되면 한 번: 지금 계정이 아닌 고정을 지운다 (`SavedNowStore.prune`과 같다)
+    private var prunedPins = false
+    private let pinStore: WorkPinStore
     #if DEBUG
     /// 디자인 비교 스냅샷이 견본 데이터를 줄일 때 (`EdgeSnapshot`). 바꾸면 바로 다시 읽는다
     var workOverride: ((EdgeWorkSnapshot) -> EdgeWorkSnapshot)? {
@@ -30,7 +36,9 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
 
     init(launcher: LauncherModel) {
         self.launcher = launcher
-        shell = EdgeShellModel(reduceMotion: Self.systemReduceMotion, pinStore: Self.pinStore())
+        let pinStore = Self.pinStore()
+        self.pinStore = pinStore
+        shell = EdgeShellModel(reduceMotion: Self.systemReduceMotion, pinStore: pinStore)
         rail = EdgeRailPanelController(shell: shell)
         panel = EdgePanelController(shell: shell)
         super.init()
@@ -39,13 +47,19 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
         shell.onRetry = { [weak self] in self?.load() }
     }
 
-    /// All work 고정의 저장: 앱 설정과 다른 전용 suite(계정별 할 일 id만). 견본은 메모리만 (디스크에 쓰지 않는다)
+    /// All work 고정의 저장: 앱 설정과 다른 전용 suite(계정별 할 일 id만). 견본 · 번들 id를 모를 때는 메모리만 (디스크에 쓰지 않는다,
+    /// 실사용 앱의 id로 대신 쓰지 않는다)
     private static func pinStore() -> WorkPinStore {
         #if DEBUG
         if SampleData.isEnabled { return WorkPinStore(defaults: nil) }
         #endif
-        let bundleID = Bundle.main.bundleIdentifier ?? "dev.taskforcelabs.taskforce"
+        guard let bundleID = Bundle.main.bundleIdentifier else { return WorkPinStore(defaults: nil) }
         return WorkPinStore(defaults: UserDefaults(suiteName: WorkPinStore.suiteName(bundleID: bundleID)))
+    }
+
+    /// 계정이 떠나면(로그아웃 · 만료 · 계정 삭제 · 전환) 이 Mac의 고정을 모두 지운다 (`SessionStore.onSignedOut`, 저장본과 같은 정리)
+    static func removePinsWhenAccountLeaves(_ session: SessionStore?, store: WorkPinStore) {
+        session?.onSignedOut { [store] _ in store.removeAll() }
     }
 
     /// 움직임 줄이기: 시스템 설정. Debug 스냅샷은 `-TFReduceMotion YES`(인자 영역)로 시스템 설정을 바꾸지 않고 켠다
@@ -58,8 +72,12 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
 
     func start() {
         rail.show()
+        // 계정이 떠나면(로그아웃 · 만료 · 계정 삭제 · 전환) 이 Mac의 고정을 모두 지운다 (이 기기 저장본 `SavedNowStore`와 같은 정리)
+        Self.removePinsWhenAccountLeaves(launcher.session, store: pinStore)
         followWork()
         followPanel()
+        followSync()
+        followSyncFinished()
         // 시작할 때 세션은 아직 읽는 중이다: 로그인이 확인되면 그때 목록 · run을 읽는다 (런처는 열 때마다 읽는다)
         followSession()
         observers.append(NSWorkspace.shared.notificationCenter.addObserver(
@@ -83,6 +101,11 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
             (launcher.isSignedIn, launcher.signedInUserID)
         } onChange: { [weak self] in
             Task { @MainActor in self?.followSession() }
+        }
+        // 앱이 돌지 않는 동안 떠난 계정의 고정은 `onSignedOut`에 오지 않는다: 로그인 상태를 처음 알면 지금 계정 것만 남긴다
+        if !prunedPins, let state = launcher.session?.state, state != .loading {
+            prunedPins = true
+            pinStore.prune(keeping: account)
         }
         // 계정이 바뀌면 All work의 검색어 · 필터 · 고정을 그 계정 것으로 (전 계정 것을 보이지 않는다)
         shell.accountChanged(Self.workAccount(account))
@@ -122,11 +145,14 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
         let active = runs?.active ?? []
         let stopping = (runs?.stopping ?? []).union(active.filter { $0.isOpen && $0.stoppedAt != nil }.map(\.actionID))
         // 받은 목록이 없으면(읽는 중 · 오프라인 · 실패) 할 일이 없다고 하지 않는다 (`WorkLoad`). 저장본은 이번 실행의 목록이 아니다
+        let account = launcher.account
         let work = EdgeWorkSnapshot(
             sections: now.sections, working: runs?.workingActionIDs ?? [], stopping: stopping,
             load: WorkLoad.from(refresh: now.refreshState, hasList: now.response != nil),
             doneSince: now.doneTodaySince,
-            canConnect: !(launcher.account?.connections.contains { $0.status == .active } ?? false)
+            // 연결을 아직 못 읽었으면 "연결 없음"으로 보지 않는다 (연결된 사용자에게 Connect a source를 잠깐 보이지 않게)
+            canConnect: account.map { EdgeWorkSnapshot.canConnect(connectionsLoaded: $0.connectionsLoaded, connections: $0.connections) } ?? false,
+            syncing: account?.anySyncing == true
         )
         #if DEBUG
         if let workOverride { return workOverride(work) }
@@ -166,7 +192,51 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
         } else if panel.presentation.shown || hasMonitors {
             panel.hide()
             removeMonitors()
+            stopFollowingSync()
         }
+    }
+
+    // MARK: 동기화
+
+    /// 패널이 열린 동안 동기화 중인 연결을 몇 초마다 다시 읽는다 (구 런처는 자기가 떠 있는 동안만 `followSync`를 돌려 Edge 모드에서는 돌지 않는다).
+    /// 패널을 열거나 동기화가 시작되면(설정에서 연결 등) 그때 따라간다. `start()`에서 한 번 걸면 패널 열림 · 동기화 상태를 계속 지켜본다
+    private func followSync() {
+        let syncing = withObservationTracking {
+            launcher.account?.anySyncing == true && shell.panelOpen
+        } onChange: { [weak self] in
+            Task { @MainActor in self?.followSync() }
+        }
+        guard syncing, syncTask == nil, let account = launcher.account else { return }
+        syncGeneration += 1
+        let generation = syncGeneration
+        syncTask = Task { [weak self] in
+            // 패널을 열 때 연결 상태가 오래됐으면 바로 한 번 읽는다 (끝난 동기화를 6초 기다리지 않게)
+            if Date().timeIntervalSince(account.connectionsReadAt) >= 3 { await account.reloadConnections() }
+            await account.followSync()
+            guard let self, self.syncGeneration == generation else { return }
+            self.syncTask = nil
+        }
+    }
+
+    private func stopFollowingSync() {
+        syncGeneration += 1
+        syncTask?.cancel()
+        syncTask = nil
+    }
+
+    /// 동기화가 끝나면 지금 할 일을 다시 불러온다 (구 런처의 `syncFinished` 처리와 같다).
+    /// 숨은 구 런처 화면의 `.onChange(of: syncFinished)`도 같은 때 다시 읽을 수 있다 (`NowStore`는 마지막 응답만 반영)
+    private func followSyncFinished() {
+        let finished = withObservationTracking {
+            launcher.account?.syncFinished
+        } onChange: { [weak self] in
+            Task { @MainActor in
+                guard let self else { return }
+                self.followSyncFinished()
+                if let now = self.launcher.now, self.launcher.isSignedIn { await now.load() }
+            }
+        }
+        _ = finished
     }
 
     private var hasMonitors: Bool { !clickMonitors.isEmpty || keyMonitor != nil }

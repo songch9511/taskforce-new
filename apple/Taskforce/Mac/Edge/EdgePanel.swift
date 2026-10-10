@@ -82,6 +82,7 @@ struct EdgePanelView: View {
         WorkList(
             items: shell.workItems,
             load: shell.work.load,
+            syncing: shell.work.syncing,
             filter: Binding(get: { shell.workFilter }, set: { shell.setFilter($0) }),
             filtersOpen: Binding(get: { shell.filtersOpen }, set: { shell.setFiltersOpen($0) }),
             pins: shell.pins,

@@ -7,7 +7,7 @@ import TaskforceKit
 /// 시스템 설정은 바꾸지 않는다: Dark는 `-TFSnapshotDark`(앱 모양만), 움직임 줄이기는 셸 모델 값.
 /// `-TFEdgeSnapshotMix`: 견본의 확인 요청을 하나로 줄여 needs you · running 링이 함께 보이게 한다(`-TFSampleRunWorking`과 같이).
 /// 남기는 것: hidden(숨은 레일) · expanded(호버로 펼친 레일) · panel(All work 패널) · All work 상태(S3: filters-open · filter-summary ·
-/// no-match · pinned · done-today) · reduce-motion(움직임 줄이기, 패널) · chats.
+/// no-match · pinned · done-today · rail-open-clears-filter) · reduce-motion(움직임 줄이기, 패널) · chats.
 /// `-TFEdgeSnapshotState <이름>`: All work 패널 하나만 `mac-edge-worklist-<이름>.png`로 (빈 · 오프라인 · 실패 같은 견본 상태 인자와 함께)
 @MainActor
 enum EdgeSnapshot {
@@ -86,6 +86,12 @@ enum EdgeSnapshot {
         shell.setFilter(WorkFilter(status: .done))
         await settle()
         capture(edge, to: file("done-today"))
+        // 레일의 Running 칸을 연다: Done 필터가 그 일을 가리므로 필터를 비우고 그 행을 고른 채 보인다
+        if let running = shell.slots.first(where: { $0.kind == .running }) {
+            shell.open(itemID: running.id)
+            await settle()
+            capture(edge, to: file("rail-open-clears-filter"))
+        }
         shell.openAllWork()
         await settle()
     }
