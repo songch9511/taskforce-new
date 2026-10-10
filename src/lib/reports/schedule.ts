@@ -22,9 +22,10 @@
 //    (바꿔서 오늘을 잃지 않는다). 처음 만든 설정은 예외다: 그 뒤로 일정을 바꾸지 않았으면(schedule_changed_at == created_at)
 //    명목 시각이 설정이 생기기 전인 보고는 보내지 않는다 (켜자마자 "오늘 보고"가 오지 않는다).
 //    만든 뒤 일정을 바꿨으면 위의 "바꿔서 오늘을 잃지 않는다"를 따른다.
-//    이미 잡혀 보내는 중(임대 중)이던 보고는 일정을 바꿔도 한 번 갈 수 있고, 가면 그날은 보낸 것이다 (job.ts · FEATURE_MAP 3-8 경계).
-//    늦게 바꾸면 하루에 두 번 받을 수 있다: 예정 시각으로 날짜를 세기 때문에, 그날 보고가 자정을 넘겨 가면(늦은 변경 · 자정 직전 예정)
-//    다음 날 정시 보고가 같은 달력 날에 또 간다 (docs/FEATURE_MAP.md 3-8).
+//    이미 잡혀 보내는 중(임대 중)이던 보고와 결과를 모르는 보고(응답 시간 초과 등)는 일정을 바꿔도 갔을 수 있어 그날은 보낸 날로 센다
+//    (job.ts · DB 함수 · FEATURE_MAP 3-8 경계).
+//    명목 시각으로 날짜를 세기 때문에, 보고가 다음 날로 넘어가 도착하면(늦은 변경 · 자정 직전 예정 · 조용한 시간으로 미룸) 한 달력 날에
+//    두 번 올 수 있고, 일정을 늦추거나 조용한 시간을 끄면 한 달력 날에 하나도 오지 않을 수 있다 (docs/FEATURE_MAP.md 3-8, schedule.test.ts).
 // 6. 모드 meaningful은 일일 보고가 없다. 시간대를 런타임이 모르면(Intl 오류) 아무 일정도 만들지 않는다.
 
 import type { ReportMode } from "@/lib/api/contract";
@@ -42,7 +43,7 @@ export type ReportSchedulePrefs = {
   scheduleChangedAt: Date;
 };
 
-/** 예정 시각에서 이만큼 지나면 그 날 보고는 보내지 않는다 (밀린 보고를 몰아 보내지 않는다) */
+/** 보내는 순간(sendAt, 조용한 시간으로 미룬 뒤)에서 이만큼 지나면 그 날 보고는 보내지 않는다 (밀린 보고를 몰아 보내지 않는다) */
 export const REPORT_STALE_MS = 2 * 60 * 60_000;
 
 const MINUTE_MS = 60_000;
@@ -199,7 +200,7 @@ export type DailyReportPlan = {
 
 /**
  * 지금(now) 일일 보고를 보낼 차례인가, 어느 날짜의 보고인가, 다음은 언제인가.
- * lastScheduledAt = 이 사용자의 일일 보고 원장에서 가장 늦은 예정 시각 (상태와 상관없이, 없으면 null) — 규칙 4.
+ * lastScheduledAt = 이 사용자의 일일 보고 원장에서 그날을 막는 행(isBlockingDelivery) 중 가장 늦은 명목 시각 (없으면 null) — 규칙 4.
  */
 export function planDailyReport(now: Date, prefs: ReportSchedulePrefs, lastScheduledAt: Date | null): DailyReportPlan {
   const none: DailyReportPlan = { due: null, next: null };

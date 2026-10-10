@@ -475,6 +475,27 @@ describe("planDailyReport: 설정 · 시간대를 바꿀 때 (두 번 보내지 
     ]);
   });
 
+  it("한 달력 날에 보고가 없는 경우 A: D 07:00 KST에 08:30 → 23:00(조용한 시간 22–08)으로 바꾸면 D 보고는 D+1 08:00이라 달력 D에는 없다", () => {
+    const p = prefs({ dailyTime: "23:00", scheduleChangedAt: at("2026-10-09T22:00:00Z") });
+    const sends = simulate({ prefsAt: () => p, from: "2026-10-09T22:00:00Z", to: "2026-10-11T14:55:00Z", last: at("2026-10-08T23:30:00Z") });
+    expect(sends).toEqual([{ date: "2026-10-10", at: "2026-10-10T23:00:00.000Z" }]); // 10-11 08:00 KST
+    expect(sends.filter((s) => localWall(at(s.at), "Asia/Seoul").date === "2026-10-10")).toEqual([]);
+  });
+
+  it("한 달력 날에 보고가 없는 경우 B: D 08:30 보고를 보낸 뒤 23:00으로 바꾸면 D+1 보고는 D+2 08:00이라 달력 D+1에는 없다", () => {
+    const p = prefs({ dailyTime: "23:00", scheduleChangedAt: at("2026-10-10T00:00:00Z") });
+    const sends = simulate({ prefsAt: () => p, from: "2026-10-10T00:00:00Z", to: "2026-10-12T00:00:00Z", last: at("2026-10-09T23:30:00Z") });
+    expect(sends).toEqual([{ date: "2026-10-11", at: "2026-10-11T23:00:00.000Z" }]); // 10-12 08:00 KST
+    expect(sends.filter((s) => localWall(at(s.at), "Asia/Seoul").date === "2026-10-11")).toEqual([]);
+  });
+
+  it("한 달력 날에 보고가 없는 경우 C: daily 23:00 · 22–08로 D+1 08:00에 갈 D 보고가, D+1 02:00 KST에 조용한 시간을 끄면 사라진다", () => {
+    const p = prefs({ dailyTime: "23:00", quietStart: null, quietEnd: null, scheduleChangedAt: at("2026-10-10T17:00:00Z") });
+    const sends = simulate({ prefsAt: () => p, from: "2026-10-10T17:00:00Z", to: "2026-10-11T15:00:00Z", last: at("2026-10-09T14:00:00Z") });
+    // 10-10 보고는 명목 23:00 KST(14:00Z)로 돌아가 이미 창이 닫혔고, 바꾼 때(10-11)는 그 sendAt(10-10)과 다른 날이라 다시 열리지 않는다
+    expect(sends).toEqual([{ date: "2026-10-11", at: "2026-10-11T14:00:00.000Z" }]);
+  });
+
   it("조용한 시간에 바꾸면 끝났을 때 창이 닫혀 그 날은 건너뛴다 (23:00 KST에 바꿈 → 다음 날 08:30)", () => {
     const changed = prefs({ dailyTime: "09:00", scheduleChangedAt: at("2026-10-10T14:00:00Z") });
     const plan = planDailyReport(at("2026-10-10T14:00:00Z"), changed, at("2026-10-08T23:30:00Z"));
