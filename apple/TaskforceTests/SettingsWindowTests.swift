@@ -1,6 +1,7 @@
+import Auth
 import Foundation
 import Testing
-import TaskforceKit
+@testable import TaskforceKit
 import TaskforceUI
 @testable import Taskforce
 
@@ -128,16 +129,24 @@ struct SettingsProfileFieldTests {
     }
 }
 
-/// 손으로 응답하는 PUT /profile: 요청을 받아 두고, 테스트가 차례로 답한다 (응답이 늦는 경우)
+/// 손으로 응답하는 PUT /profile: 요청을 받아 두고, 테스트가 차례로 답한다 (응답이 늦는 경우).
+/// 요청마다 그때 로그인해 있던 계정을 적는다 (`writes`, 서버는 그 계정의 토큰으로 쓴다)
 @MainActor
 final class FakeProfileServer {
     private(set) var requests: [String] = []
+    private(set) var writes: [(account: UUID?, name: String)] = []
     private var waiting: [CheckedContinuation<ProfileSaveOutcome, Never>] = []
+    private let accounts: ProfileTestAccounts?
+
+    init(accounts: ProfileTestAccounts? = nil) {
+        self.accounts = accounts
+    }
 
     var save: ProfileDraft.Save {
         { [self] name, _ in
             await withCheckedContinuation { continuation in
                 requests.append(name)
+                writes.append((accounts?.current, name))
                 waiting.append(continuation)
             }
         }
@@ -158,8 +167,76 @@ final class FakeProfileServer {
     }
 }
 
+/// 실제 `SessionStore`를 이 기기 저장소만으로 로그인 · 로그아웃한다 (인증 서버 · 네트워크 없음, `apply`로 이벤트를 넣는다)
+@MainActor
+final class ProfileTestAccounts {
+    private let storage = ProfileTestAuthStorage()
+    let session: SessionStore
+
+    init() {
+        let auth = AuthClient(
+            url: URL(string: "https://profile-boundary.invalid/auth/v1")!, localStorage: storage,
+            fetch: { _ in
+                Issue.record("Test must not contact an auth server")
+                throw URLError(.badURL)
+            },
+            autoRefreshToken: false
+        )
+        session = SessionStore(auth: auth)
+    }
+
+    convenience init(signedIn userID: UUID) throws {
+        self.init()
+        try signIn(userID)
+    }
+
+    var current: UUID? {
+        if case .signedIn(let userID, _) = session.state { userID } else { nil }
+    }
+
+    func signIn(_ userID: UUID) throws {
+        let user = User(id: userID, appMetadata: [:], userMetadata: [:], aud: "authenticated", email: "\(userID.uuidString)@example.com",
+                        createdAt: Date(), updatedAt: Date())
+        let value = Session(accessToken: "access-\(userID)", tokenType: "bearer", expiresIn: 3600,
+                            expiresAt: Date().addingTimeInterval(3600).timeIntervalSince1970, refreshToken: "refresh-\(userID)", user: user)
+        try storage.store(key: "session", value: AuthClient.Configuration.jsonEncoder.encode(value))
+        session.apply(event: .signedIn, session: value)
+    }
+
+    func signOut() {
+        storage.clear()
+        session.apply(event: .signedOut, session: nil)
+    }
+}
+
+private final class ProfileTestAuthStorage: AuthLocalStorage, @unchecked Sendable {
+    private let lock = NSLock()
+    private var data: Data?
+
+    func store(key: String, value: Data) throws {
+        lock.lock()
+        defer { lock.unlock() }
+        data = value
+    }
+
+    func retrieve(key: String) throws -> Data? {
+        lock.lock()
+        defer { lock.unlock() }
+        return data
+    }
+
+    func remove(key: String) throws {}
+
+    func clear() {
+        lock.lock()
+        defer { lock.unlock() }
+        data = nil
+    }
+}
+
 /// Account › Profile 저장 흐름 (모델 · 흐름 테스트: 실제 포인터 · 키보드 · VoiceOver 확인이 아니다).
-/// 뷰는 Return · 다른 칸으로 옮김 · 탭 · 창을 떠남(onDisappear)에 `requestSave`, 창이 보일 때 · 프로필이 바뀔 때 `follow`를 부른다
+/// 뷰는 Return · 다른 칸으로 옮김 · 탭 · 창을 떠남(onDisappear)에 `requestSave`, 창이 보일 때 · 프로필이 바뀔 때 `follow`를 부른다.
+/// 앱처럼 실제 `SessionStore`에 붙인다(`bind`, 앱은 실행할 때 붙인다)
 @MainActor
 struct SettingsProfileSaveFlowTests {
     static let user = UUID()
@@ -169,9 +246,11 @@ struct SettingsProfileSaveFlowTests {
     }
 
     /// A → B 저장(응답 늦음) → 칸을 A로 되돌림 → 다른 칸으로 옮김: B가 저장된 뒤 A를 다시 저장한다
-    @Test func revertedDraftIsSavedAfterBlur() async {
-        let server = FakeProfileServer()
+    @Test func revertedDraftIsSavedAfterBlur() async throws {
+        let accounts = try ProfileTestAccounts(signedIn: Self.user)
+        let server = FakeProfileServer(accounts: accounts)
         let draft = ProfileDraft()
+        draft.bind(to: accounts.session)
         draft.follow(userID: Self.user, profile: Self.profile("Alex"))
         draft.name = "Bea"
         draft.requestSave(using: server.save)
@@ -187,9 +266,11 @@ struct SettingsProfileSaveFlowTests {
     }
 
     /// 같은 순서에서 칸을 되돌린 뒤 탭을 옮김(onDisappear) · 돌아옴(follow), 그사이 저장소가 B를 먼저 받음: 칸은 A로 남고 A를 저장한다
-    @Test func revertedDraftIsSavedAfterTabSwitch() async {
-        let server = FakeProfileServer()
+    @Test func revertedDraftIsSavedAfterTabSwitch() async throws {
+        let accounts = try ProfileTestAccounts(signedIn: Self.user)
+        let server = FakeProfileServer(accounts: accounts)
         let draft = ProfileDraft()
+        draft.bind(to: accounts.session)
         draft.follow(userID: Self.user, profile: Self.profile("Alex"))
         draft.name = "Bea"
         draft.requestSave(using: server.save)
@@ -209,9 +290,11 @@ struct SettingsProfileSaveFlowTests {
     }
 
     /// 같은 순서에서 칸을 되돌리고 창을 닫음(onDisappear, 다시 보이지 않음): 응답 뒤 A를 저장하고, 다시 열면 A
-    @Test func revertedDraftIsSavedAfterWindowClose() async {
-        let server = FakeProfileServer()
+    @Test func revertedDraftIsSavedAfterWindowClose() async throws {
+        let accounts = try ProfileTestAccounts(signedIn: Self.user)
+        let server = FakeProfileServer(accounts: accounts)
         let draft = ProfileDraft()
+        draft.bind(to: accounts.session)
         draft.follow(userID: Self.user, profile: Self.profile("Alex"))
         draft.name = "Bea"
         draft.requestSave(using: server.save)
@@ -226,9 +309,11 @@ struct SettingsProfileSaveFlowTests {
     }
 
     /// 응답을 기다리는 사이 칸을 바꾸기만 하고 떠나지 않아도, 응답 뒤 지금 칸과 다시 맞춘다
-    @Test func responseReconcilesWithTheCurrentDraft() async {
-        let server = FakeProfileServer()
+    @Test func responseReconcilesWithTheCurrentDraft() async throws {
+        let accounts = try ProfileTestAccounts(signedIn: Self.user)
+        let server = FakeProfileServer(accounts: accounts)
         let draft = ProfileDraft()
+        draft.bind(to: accounts.session)
         draft.follow(userID: Self.user, profile: Self.profile("Alex"))
         draft.name = "Bea"
         draft.requestSave(using: server.save)
@@ -241,9 +326,11 @@ struct SettingsProfileSaveFlowTests {
     }
 
     /// 늦게 실패하고 사용자가 탭을 떠났다 돌아와도 칸과 오류가 남는다. 다시 떠나면 다시 보낸다
-    @Test func failedSaveKeepsDraftAndErrorAcrossTabSwitch() async {
-        let server = FakeProfileServer()
+    @Test func failedSaveKeepsDraftAndErrorAcrossTabSwitch() async throws {
+        let accounts = try ProfileTestAccounts(signedIn: Self.user)
+        let server = FakeProfileServer(accounts: accounts)
         let draft = ProfileDraft()
+        draft.bind(to: accounts.session)
         draft.follow(userID: Self.user, profile: Self.profile("Alex"))
         draft.name = "Bea"
         draft.requestSave(using: server.save)
@@ -262,9 +349,11 @@ struct SettingsProfileSaveFlowTests {
     }
 
     /// 오류 글이 없는 실패도 말로 보인다. 실패 뒤에는 다시 저장하라는 뜻이 있을 때만 한 번 더 보낸다 (끝없이 보내지 않는다)
-    @Test func failureRetriesOnlyWhenAskedAgain() async {
-        let server = FakeProfileServer()
+    @Test func failureRetriesOnlyWhenAskedAgain() async throws {
+        let accounts = try ProfileTestAccounts(signedIn: Self.user)
+        let server = FakeProfileServer(accounts: accounts)
         let draft = ProfileDraft()
+        draft.bind(to: accounts.session)
         draft.follow(userID: Self.user, profile: Self.profile("Alex"))
         draft.name = "Bea"
         draft.requestSave(using: server.save)
@@ -284,9 +373,11 @@ struct SettingsProfileSaveFlowTests {
     }
 
     /// 계정이 바뀌면 칸을 새 계정으로 채우고, 전 계정의 늦은 응답은 버린다
-    @Test func accountSwitchDropsTheOldDraftAndLateResponse() async {
-        let server = FakeProfileServer()
+    @Test func accountSwitchDropsTheOldDraftAndLateResponse() async throws {
+        let accounts = try ProfileTestAccounts(signedIn: Self.user)
+        let server = FakeProfileServer(accounts: accounts)
         let draft = ProfileDraft()
+        draft.bind(to: accounts.session)
         draft.follow(userID: Self.user, profile: Self.profile("Alex"))
         draft.name = "Bea"
         draft.requestSave(using: server.save)
@@ -300,15 +391,124 @@ struct SettingsProfileSaveFlowTests {
     }
 
     /// 빈 이름은 보내지 않고 고칠 길을 말한다
-    @Test func emptyNameIsNotSent() async {
-        let server = FakeProfileServer()
+    @Test func emptyNameIsNotSent() async throws {
+        let accounts = try ProfileTestAccounts(signedIn: Self.user)
+        let server = FakeProfileServer(accounts: accounts)
         let draft = ProfileDraft()
+        draft.bind(to: accounts.session)
         draft.follow(userID: Self.user, profile: Self.profile("Alex"))
         draft.name = "  "
         draft.requestSave(using: server.save)
         await server.settle()
         #expect(server.requests.isEmpty)
         #expect(draft.message == ProfileDraft.emptyNameMessage)
+    }
+}
+
+/// 프로필 칸의 계정 경계 (모델 · 픽스처 테스트: 실제 로그인 · 포인터 · 키보드 · VoiceOver 확인이 아니다).
+/// Account 화면이 없는 동안(다른 탭 · 창을 닫음) 계정이 떠나거나 바뀌어도, 전 계정의 칸 · 오류 · 남은 저장은 지워지고
+/// 다른 계정 · 다른 세션으로는 하나도 쓰지 않는다. 여기서는 `follow`를 다른 계정으로 부르지 않는다 (화면이 없는 실제 길)
+@MainActor
+struct SettingsProfileAccountBoundaryTests {
+    static let u = UUID()
+    static let v = UUID()
+
+    static func profile(_ name: String) -> Profile {
+        SettingsProfileSaveFlowTests.profile(name)
+    }
+
+    /// U: A → B 저장(응답 늦음) → 칸을 C로 바꾸고 탭을 떠남(저장 뜻이 남음)
+    static func pendingEdit() throws -> (ProfileTestAccounts, FakeProfileServer, ProfileDraft) {
+        let accounts = try ProfileTestAccounts(signedIn: u)
+        let server = FakeProfileServer(accounts: accounts)
+        let draft = ProfileDraft()
+        draft.bind(to: accounts.session)
+        draft.follow(userID: u, profile: profile("Alex"))
+        draft.name = "Bea"
+        draft.requestSave(using: server.save)
+        return (accounts, server, draft)
+    }
+
+    static func expectCleared(_ draft: ProfileDraft) {
+        #expect(draft.name.isEmpty && draft.aliases.isEmpty)
+        #expect(draft.baseline == nil && draft.message == nil && !draft.saving && !draft.isDirty)
+    }
+
+    /// 다른 탭에 있는 동안 U → V. U의 늦은 응답이 실패로 와도(저장소가 버린 응답) V로 C를 보내지 않는다
+    @Test func delayedFailureAfterSwitchingAccountsOnAnotherTabWritesNothingForV() async throws {
+        let (accounts, server, draft) = try Self.pendingEdit()
+        await server.settle()
+        draft.name = "Cy"
+        draft.requestSave(using: server.save)
+        accounts.signOut()
+        try accounts.signIn(Self.v)
+        Self.expectCleared(draft)
+        await server.respond(.failed(nil))
+        await server.settle()
+        #expect(server.writes.map(\.account) == [Self.u])
+        #expect(server.requests == ["Bea"])
+        Self.expectCleared(draft)
+    }
+
+    /// 창을 닫은 동안 U → V. U의 늦은 응답이 성공으로 와도 V로 다시 맞추지 않고, 칸은 V의 것이 아니다
+    @Test func delayedSuccessAfterSwitchingAccountsWithTheWindowClosedWritesNothingForV() async throws {
+        let (accounts, server, draft) = try Self.pendingEdit()
+        await server.settle()
+        draft.name = "Cy"
+        draft.requestSave(using: server.save)
+        // 다른 계정으로 바로 전환 (로그아웃 이벤트 없이)
+        try accounts.signIn(Self.v)
+        await server.respond(.saved(Self.profile("Bea")))
+        await server.settle()
+        #expect(server.writes.map(\.account) == [Self.u])
+        Self.expectCleared(draft)
+        // 창을 다시 열면 V의 프로필로 채운다
+        draft.follow(userID: Self.v, profile: Self.profile("Dana"))
+        #expect(draft.name == "Dana" && !draft.isDirty && draft.message == nil)
+    }
+
+    /// 같은 사용자가 로그아웃했다 다시 로그인해도 다른 세션이다: 전 세션의 칸 · 남은 저장은 보내지 않는다
+    @Test func sameUserSigningBackInDropsTheOldSessionsDraft() async throws {
+        let (accounts, server, draft) = try Self.pendingEdit()
+        await server.settle()
+        draft.name = "Cy"
+        draft.requestSave(using: server.save)
+        accounts.signOut()
+        try accounts.signIn(Self.u)
+        await server.respond(.failed(nil))
+        await server.settle()
+        #expect(server.requests == ["Bea"])
+        Self.expectCleared(draft)
+        // 새 세션에서 Account를 열고 고치면 그대로 저장된다
+        draft.follow(userID: Self.u, profile: Self.profile("Alex"))
+        draft.name = "Dee"
+        draft.requestSave(using: server.save)
+        await server.settle()
+        #expect(server.requests == ["Bea", "Dee"])
+        #expect(server.writes.allSatisfy { $0.account == Self.u })
+    }
+
+    /// 실패 오류와 쓰던 칸은 Account 화면이 없어도 로그아웃하면 지워진다. 그 뒤 V로 쓰는 것은 없다
+    @Test func signOutClearsTheDraftAndErrorWithoutTheAccountView() async throws {
+        let (accounts, server, draft) = try Self.pendingEdit()
+        await server.settle()
+        await server.respond(.failed("You're offline. Try again when you're connected."))
+        #expect(draft.message != nil && draft.name == "Bea")
+        accounts.signOut()
+        Self.expectCleared(draft)
+        try accounts.signIn(Self.v)
+        draft.requestSave(using: server.save)
+        await server.settle()
+        #expect(server.writes.map(\.account) == [Self.u])
+    }
+
+    /// 저장을 시작한 직후(보내기 전) 계정이 떠나면 보내지 않는다: 보낼 때마다 주인 계정 · 세션을 다시 본다
+    @Test func queuedSaveIsNotSentAfterTheAccountLeaves() async throws {
+        let (accounts, server, draft) = try Self.pendingEdit()
+        accounts.signOut()
+        await server.settle()
+        #expect(server.writes.isEmpty)
+        Self.expectCleared(draft)
     }
 }
 

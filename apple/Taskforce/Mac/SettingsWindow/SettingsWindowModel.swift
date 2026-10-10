@@ -140,6 +140,9 @@ enum ProfileSaveOutcome: Equatable {
 /// - 칸은 그 칸을 채운 프로필(`baseline`)과 비교한다: 손대지 않은 칸만 새로 읽은 프로필을 따라간다 (보내는 중에는 따라가지 않는다)
 /// - 보내는 중에 저장하라고 하면(칸이 처음 값으로 돌아갔어도) 그 뜻을 남긴다. 응답이 오면 지금 칸을 저장된 값과 다시 맞추고, 다르면 한 번 더 저장한다
 /// - 실패하면 칸은 그대로 두고 오류를 남긴다. 실패 뒤에는 그 사이 저장하라는 뜻이 있었을 때만 다시 보낸다 (끝없이 보내지 않게)
+/// - 칸은 그 칸을 채운 계정 · 세션의 것이다. 앱이 실행할 때 세션에 붙여(`bind`) Account 화면이 없어도 계정이 떠나면(로그아웃 · 만료 ·
+///   계정 삭제 · 다른 계정) 칸 · 오류 · 남은 저장을 지우고 늦은 응답을 버린다. 같은 사용자가 다시 로그인해도 다른 세션이다.
+///   보낼 때마다(다시 보내기 포함) 주인 계정이 지금 로그인한 계정이고 세션이 그대로인지 다시 본다. 다르면 쓰지 않고 칸을 지운다
 @MainActor
 @Observable
 final class ProfileDraft {
@@ -158,6 +161,12 @@ final class ProfileDraft {
     @ObservationIgnored private var saveRequested = false
     /// 계정이 바뀔 때마다 오른다: 전 계정의 늦은 응답을 버린다
     @ObservationIgnored private var generation = 0
+    /// 지금 로그인한 계정 (`bind`). 붙기 전에는 아무것도 보내지 않는다
+    @ObservationIgnored private var currentAccount: (@MainActor () -> UUID?)?
+    /// 세션 세대: 계정이 이 기기를 떠날 때마다 오른다 (같은 사용자가 다시 로그인해도 새 세대)
+    @ObservationIgnored private var sessionEpoch = 0
+    /// 칸을 채운 세션 세대
+    @ObservationIgnored private var draftEpoch = 0
 
     /// 칸이 그 프로필과 같은 값인지 (저장할 때와 같은 다듬기: 앞뒤 공백 · 이름과 같은 별칭 · 중복)
     nonisolated static func matches(name: String, aliases: String, profile: Profile) -> Bool {
@@ -170,9 +179,22 @@ final class ProfileDraft {
         baseline.map { !Self.matches(name: name, aliases: aliases, profile: $0) } ?? false
     }
 
+    /// 세션에 붙는다 (앱이 실행할 때 한 번, `MacAppDelegate`). 지금 계정을 읽고, 계정이 떠나면 `accountLeft()`
+    func bind(to session: SessionStore) {
+        guard currentAccount == nil else { return }
+        currentAccount = { [weak session] in session.flatMap { SettingsWindowSession.accountUserID($0) } }
+        session.onSignedOut { [weak self] _ in self?.accountLeft() }
+    }
+
+    /// 계정이 이 기기를 떠남: 칸 · 오류 · 보내는 중 · 남은 저장 뜻을 지우고, 늦은 응답은 버린다 (Account 화면이 없어도)
+    func accountLeft() {
+        sessionEpoch += 1
+        reset(for: nil)
+    }
+
     /// 지금 프로필로 칸을 채운다 (창이 보일 때 · 읽은 뒤 · 프로필이 바뀔 때). 손댄 칸은 그대로 둔다. 계정이 바뀌면 처음부터
     func follow(userID: UUID, profile: Profile?) {
-        if userID != self.userID { reset(for: userID) }
+        if userID != self.userID || draftEpoch != sessionEpoch { reset(for: userID) }
         guard let profile, !saving else { return }
         if baseline != nil, isDirty { return }
         baseline = profile
@@ -182,7 +204,11 @@ final class ProfileDraft {
 
     /// 저장 (Return · 다른 칸 · 탭 · 창을 떠날 때)
     func requestSave(using save: @escaping Save) {
-        guard let baseline, userID != nil else { return }
+        guard let baseline, let owner = userID else { return }
+        guard isCurrent(owner: owner, epoch: draftEpoch) else {
+            reset(for: nil)
+            return
+        }
         // 보내는 중이면 비교하기 전에 뜻부터 남긴다: 응답이 오면 그때의 칸으로 다시 맞춘다 (A → B 저장 중 A로 되돌린 경우)
         guard !saving else {
             saveRequested = true
@@ -199,11 +225,24 @@ final class ProfileDraft {
         }
         saving = true
         let generation = generation
+        let epoch = draftEpoch
         let sentName = name
         Task {
+            // 보내기 직전에 다시 본다: 그사이 계정 · 세션이 바뀌었으면 쓰지 않는다
+            guard generation == self.generation else { return }
+            guard isCurrent(owner: owner, epoch: epoch) else {
+                reset(for: nil)
+                return
+            }
             let outcome = await save(sentName, list)
             finish(outcome, generation: generation, using: save)
         }
+    }
+
+    /// 칸의 주인 계정이 지금 로그인한 계정이고 칸을 채운 세션이 그대로인가
+    private func isCurrent(owner: UUID, epoch: Int) -> Bool {
+        guard let currentAccount else { return false }
+        return userID == owner && draftEpoch == epoch && epoch == sessionEpoch && currentAccount() == owner
     }
 
     private func finish(_ outcome: ProfileSaveOutcome, generation: Int, using save: @escaping Save) {
@@ -223,8 +262,9 @@ final class ProfileDraft {
         }
     }
 
-    private func reset(for userID: UUID) {
+    private func reset(for userID: UUID?) {
         generation += 1
+        draftEpoch = sessionEpoch
         self.userID = userID
         baseline = nil
         name = ""
