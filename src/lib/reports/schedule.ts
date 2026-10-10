@@ -2,21 +2,27 @@
 // 시간대 계산은 런타임 Intl(IANA tz 데이터)로 한다. 규칙 요약은 docs/FEATURE_MAP.md 3-8 "일일 보고 시각 규칙".
 //
 // 규칙
-// 1. 예정 시각: 현지 날짜 D의 daily_time. daily_time이 조용한 시간 안이면 그 날의 quiet_end로 미룬다 (시각만 옮긴다, 날짜는 D 그대로).
-// 2. DST: 없는 현지 시각(봄 앞당김)은 그 뒤 첫 실제 시각(시계가 건너뛴 직후)에 보낸다. 두 번 오는 현지 시각(가을 되돌림)은 처음 것.
-//    어느 쪽이든 그 날 보고는 한 번이다 (아래 4).
-// 3. 늦은 보고: 예정 시각에서 REPORT_STALE_MS(2시간)가 지나면 그 날은 보내지 않는다. 지난 날짜를 몰아서 보내지 않는다 —
+// 1. 날짜 D의 보고: 명목 시각(nominal) = D의 daily_time(아래 2). 보내는 순간(sendAt) = 명목 시각 이후 조용한 시간이 아닌 첫 순간 —
+//    명목 시각이 조용한 시간 안이면 그 창이 끝나는 quiet_end로 미룬다(자정을 넘는 창이면 D+1 아침). 명목보다 앞당기지 않는다.
+//    원장의 scheduled_at은 명목 시각, report_date는 D, 늦음 창(expires)은 sendAt부터 잰다.
+// 2. DST: 없는 현지 시각(봄 앞당김)은 그 뒤 첫 실제 시각(시계가 건너뛴 직후)으로, 두 번 오는 현지 시각(가을 되돌림)은 처음 것으로 정한다
+//    (명목 시각과 미룬 quiet_end 모두). 어느 쪽이든 그 날 보고는 한 번이다 (아래 4).
+// 3. 늦은 보고: sendAt에서 REPORT_STALE_MS(2시간)가 지나면 그 날은 보내지 않는다. 지난 날짜를 몰아서 보내지 않는다 —
 //    후보는 어제 · 오늘 · 다음 이틀뿐이고(어제는 자정 직전 예정이 자정 뒤 실행에 걸릴 때만), 한 번에 하나만 고른다.
 //    서버는 조용한 시간에 보내지 않는다: 늦어서 조용한 시간에 걸리면 끝날 때까지 기다리고, 그 사이 창이 닫히면 그 날은 건너뛴다.
 //    APNs는 기기가 꺼져 있으면 보관했다 늦게 줄 수 있어서, job은 만료(apns-expiration)를 창 끝 · 다음 조용한 시간 시작 중 이른 쪽으로 둔다
 //    (nextQuietStart). 그 뒤 실제로 버려지는지는 APNs가 정한다.
-// 4. 하루에 하나: 원장에 지금 시간대의 현지 날짜 D가 시작한 뒤(또는 더 뒤)로 예정된 보고가 있으면 D는 보내지 않는다.
-//    날짜는 "그 보고의 예정 시각이 지금 시간대로 어느 날인가"로 센다. 그래서 시간대를 바꿔도 같은 현지 날에 두 번 오지 않고,
-//    서쪽으로 옮겨 날짜가 되돌아가도 하루를 잃지 않는다. 원장 확인은 DB 함수 claim_report_delivery가 사용자 잠금 안에서 다시 한다.
+// 4. 하루에 하나: 원장에 지금 시간대의 현지 날짜 D가 시작한 뒤(또는 더 뒤)로 명목 시각이 있는 보고가 있으면 D는 보내지 않는다.
+//    날짜는 "그 보고의 명목 시각이 지금 시간대로 어느 날인가"로 센다. 그래서 시간대를 바꿔도 같은 현지 날에 두 번 오지 않고,
+//    서쪽으로 옮겨 날짜가 되돌아가도 하루를 잃지 않고, D+1 아침으로 미룬 D 보고가 D+1을 막지 않는다.
+//    보내지 않고 닫힌 행(skipped · schedule_changed / mode_changed)은 세지 않는다 (lastScheduledAt을 줄 때 빼고 준다, isBlockingDelivery).
+//    원장 확인은 DB 함수 claim_report_delivery가 사용자 잠금 안에서 다시 한다.
 // 5. 설정 · 시간대를 바꾸면 남은 일정만 새로 계산한다. 이미 보낸 날은 다시 보내지 않는다(4).
-//    오늘 보고가 아직 안 갔는데 바뀐 예정 시각이 이미 지났으면, 바꾼 시각부터 REPORT_STALE_MS 안에 보낸다 (바꿔서 오늘을 잃지 않는다).
-//    처음 만든 설정은 예외다: 그 뒤로 일정을 바꾸지 않았으면(schedule_changed_at == created_at) 설정이 생기기 전 예정 시각의 보고는
-//    보내지 않는다 (켜자마자 "오늘 보고"가 오지 않는다). 만든 뒤 일정을 바꿨으면 위의 "바꿔서 오늘을 잃지 않는다"를 따른다.
+//    보고가 아직 안 갔는데 바뀐 일정의 sendAt이 이미 지났고 바꾼 때가 sendAt과 같은 현지 날이면, 바꾼 시각부터 REPORT_STALE_MS 안에 보낸다
+//    (바꿔서 오늘을 잃지 않는다). 처음 만든 설정은 예외다: 그 뒤로 일정을 바꾸지 않았으면(schedule_changed_at == created_at)
+//    명목 시각이 설정이 생기기 전인 보고는 보내지 않는다 (켜자마자 "오늘 보고"가 오지 않는다).
+//    만든 뒤 일정을 바꿨으면 위의 "바꿔서 오늘을 잃지 않는다"를 따른다.
+//    이미 잡혀 보내는 중(임대 중)이던 보고는 일정을 바꿔도 한 번 갈 수 있고, 가면 그날은 보낸 것이다 (job.ts · FEATURE_MAP 3-8 경계).
 //    늦게 바꾸면 하루에 두 번 받을 수 있다: 예정 시각으로 날짜를 세기 때문에, 그날 보고가 자정을 넘겨 가면(늦은 변경 · 자정 직전 예정)
 //    다음 날 정시 보고가 같은 달력 날에 또 간다 (docs/FEATURE_MAP.md 3-8).
 // 6. 모드 meaningful은 일일 보고가 없다. 시간대를 런타임이 모르면(Intl 오류) 아무 일정도 만들지 않는다.
@@ -157,12 +163,6 @@ export function inQuietHours(minutes: number, quietStart: string | null, quietEn
   return start < end ? minutes >= start && minutes < end : minutes >= start || minutes < end;
 }
 
-/** 일일 보고를 보낼 현지 시각(분): daily_time, 조용한 시간 안이면 quiet_end (규칙 1) */
-export function effectiveDailyMinutes(prefs: Pick<ReportSchedulePrefs, "dailyTime" | "quietStart" | "quietEnd">): number {
-  const daily = clockMinutes(prefs.dailyTime);
-  return inQuietHours(daily, prefs.quietStart, prefs.quietEnd) ? clockMinutes(prefs.quietEnd!) : daily;
-}
-
 /** 이 순간 이후(포함) 조용한 시간이 아닌 첫 순간 */
 export function firstSendableInstant(start: number, prefs: Pick<ReportSchedulePrefs, "quietStart" | "quietEnd" | "timeZone">): number | null {
   const wall = localWall(start, prefs.timeZone);
@@ -178,12 +178,15 @@ export function firstSendableInstant(start: number, prefs: Pick<ReportSchedulePr
 // ─── 일일 보고 계획 ─────────────────────────────────────
 
 export type DailyReportDue = {
-  /** 지금 시간대의 현지 날짜 */
+  /** 지금 시간대의 현지 날짜 D (보고가 속한 날) */
   reportDate: string;
-  /** 그 날짜가 시작하는 순간 (원장 확인: 이 뒤로 예정된 보고가 있으면 잡지 않는다) */
+  /** 그 날짜가 시작하는 순간 (원장 확인: 이 뒤로 명목 시각이 있는 보고가 있으면 잡지 않는다) */
   dayStart: Date;
+  /** 명목 시각: D의 daily_time (원장 scheduled_at) */
   scheduledAt: Date;
-  /** 이 뒤로는 보내지 않는다 (재시도 포함) */
+  /** 보내는 순간: 명목 시각 이후 조용한 시간이 아닌 첫 순간 (D+1일 수 있다) */
+  sendAt: Date;
+  /** 이 뒤로는 보내지 않는다 (재시도 포함). sendAt + REPORT_STALE_MS, 일정을 바꿨으면 바꾼 때 + REPORT_STALE_MS까지 */
   expiresAt: Date;
 };
 
@@ -205,34 +208,43 @@ export function planDailyReport(now: Date, prefs: ReportSchedulePrefs, lastSched
   const created = prefs.createdAt.getTime();
   const changed = prefs.scheduleChangedAt.getTime();
   const today = localWall(t, prefs.timeZone).date;
-  const minutes = effectiveDailyMinutes(prefs);
+  const daily = clockMinutes(prefs.dailyTime);
 
+  // 어제부터: 어제의 명목 시각이 조용한 시간에 걸려 오늘 아침으로 미뤄졌거나, 자정 직전 보고가 자정 뒤 실행에 걸린다
   for (const offset of [-1, 0, 1, 2]) {
     const date = addDays(today, offset);
     const dayStart = resolveLocalTime(date, 0, prefs.timeZone);
-    const scheduled = resolveLocalTime(date, minutes, prefs.timeZone);
-    if (dayStart === null || scheduled === null) continue;
+    const nominal = resolveLocalTime(date, daily, prefs.timeZone);
+    if (dayStart === null || nominal === null) continue;
     // 규칙 4: 이 날(또는 더 뒤)의 보고가 이미 원장에 있다
     if (lastScheduledAt !== null && lastScheduledAt.getTime() >= dayStart) continue;
-    // 규칙 5: 만든 뒤 일정을 바꾸지 않았으면 설정이 생기기 전의 예정 시각은 보내지 않는다
-    if (changed <= created && scheduled < created) continue;
-    let expires = scheduled + REPORT_STALE_MS;
-    // 규칙 5: 그 날 일정을 바꿔 예정 시각이 이미 지났으면 바꾼 시각부터 다시 창을 연다 (처음 만든 설정은 아니다)
-    if (changed > created && changed > scheduled && localWall(changed, prefs.timeZone).date === date) {
+    // 규칙 5: 만든 뒤 일정을 바꾸지 않았으면 명목 시각이 설정이 생기기 전인 보고는 보내지 않는다
+    if (changed <= created && nominal < created) continue;
+    // 규칙 1: 명목 시각 이후 조용한 시간이 아닌 첫 순간 (앞당기지 않는다)
+    const sendAt = firstSendableInstant(nominal, prefs);
+    if (sendAt === null) continue;
+    let expires = sendAt + REPORT_STALE_MS;
+    // 규칙 5: 보내는 날에 일정을 바꿔 sendAt이 이미 지났으면 바꾼 시각부터 다시 창을 연다 (처음 만든 설정은 아니다)
+    if (changed > created && changed > sendAt && localWall(changed, prefs.timeZone).date === localWall(sendAt, prefs.timeZone).date) {
       expires = Math.max(expires, changed + REPORT_STALE_MS);
     }
     if (t > expires) continue;
-    const at = firstSendableInstant(Math.max(scheduled, t), prefs);
+    const at = firstSendableInstant(Math.max(sendAt, t), prefs);
     if (at === null || at > expires) continue;
     if (at <= t) {
       return {
-        due: { reportDate: date, dayStart: new Date(dayStart), scheduledAt: new Date(scheduled), expiresAt: new Date(expires) },
+        due: { reportDate: date, dayStart: new Date(dayStart), scheduledAt: new Date(nominal), sendAt: new Date(sendAt), expiresAt: new Date(expires) },
         next: { reportDate: date, at: now },
       };
     }
     return { due: null, next: { reportDate: date, at: new Date(at) } };
   }
   return none;
+}
+
+/** 이 원장 행이 그날을 "보고가 있는 날"로 만드는가 (규칙 4). 보내지 않고 닫힌 일정 변경 · 모드 변경 행은 아니다 */
+export function isBlockingDelivery(row: { status: string; last_error: string | null }): boolean {
+  return !(row.status === "skipped" && (row.last_error === "schedule_changed" || row.last_error === "mode_changed"));
 }
 
 /** from 뒤 첫 조용한 시간 시작 순간. 조용한 시간이 꺼져 있거나(빈 창 포함) 시간대를 모르면 null */
