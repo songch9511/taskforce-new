@@ -3,11 +3,12 @@ import Foundation
 import Synchronization
 @testable import TaskforceKit
 
-/// 서버 JSON 계약 fixture: 서버 head `60a73b1` (B3 PR1 = B2 `aa017bd` + 6 커밋, `handoffs/b3-server-notes.md`) × 이 브랜치.
+/// 서버 JSON 계약 fixture: 서버 head `7328e93` (B3 PR1 #123 = B2 `aa017bd` + 커밋 8개, `handoffs/b3-server-notes.md`) × 이 브랜치.
+/// JSON 모양은 첫 head `60a73b1`과 같다 (그 뒤: 재시도 안내 정정 `1d82710` · 접근 상실 출처 Confirm 보류 `7328e93`).
 /// 이 모양이 바뀌면 `ChatContractTests`가 먼저 깨진다.
 enum ChatContractFixtures {
     /// 이 fixture가 맞춘 서버 head
-    static let serverHead = "60a73b150cd45ff29bb7085729d3da9577cb0702"
+    static let serverHead = "7328e9360acff2f7013fa2c4ff641669b8e7f778"
     static let serverBase = "aa017bd7f18f3e06c2fda43321719ce36d455ba0"
 
     static let userID = UUID(uuidString: "00000000-0000-4000-8000-0000000000aa")!

@@ -10,6 +10,7 @@
 		025F33A82A421DE1FC6CC896 /* AppEnvironment.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9B61143ECDB3A70FF32355F0 /* AppEnvironment.swift */; };
 		03921D74809B28972F7A6762 /* LauncherPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = D29FF94F9BE621AF3A6095B4 /* LauncherPanel.swift */; };
 		03F3AC43B3737F9107E22981 /* UsageCreditsPane.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBB841970EC9F4B0554357BF /* UsageCreditsPane.swift */; };
+		1C155DEDD5DBDE44C0F106D1 /* EdgeChatTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 95937722FDD5FA1D25CAF396 /* EdgeChatTests.swift */; };
 		1D21B5CFAA41940E0383FCBE /* LauncherModelSessionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D30BD73A1EB36763CBA0B37E /* LauncherModelSessionTests.swift */; };
 		1D320494D52534D188026379 /* HotKeyCenterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1AE065BCE63FAD6180201421 /* HotKeyCenterTests.swift */; };
 		205EDA554EE2E30B65C54E07 /* LauncherLane.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20348734D46E428BDA04EE04 /* LauncherLane.swift */; };
@@ -37,13 +38,16 @@
 		68DFF761D14327138E4CB5F4 /* MacSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4A28A214EF045FAF600AC14 /* MacSettingsView.swift */; };
 		6D563AFBBD0CFBB89C4A680E /* LauncherDetailPane.swift in Sources */ = {isa = PBXBuildFile; fileRef = F8F4C0A94A16821764C38281 /* LauncherDetailPane.swift */; };
 		6F10622C562E0391D495F882 /* SettingsWindowModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 134F521E8E76DDDFA13086B3 /* SettingsWindowModel.swift */; };
+		6F914C7C908ADCA8F7630CA8 /* SampleChat.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5521012014BA2024927E6EAE /* SampleChat.swift */; };
 		7985AF2095DB0B6C7E070C31 /* LauncherRunTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8CB05D753291715B60E890FF /* LauncherRunTests.swift */; };
 		79F9066EF922D90C473539BF /* LauncherActionBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = C269834CACB1135D6F14018F /* LauncherActionBar.swift */; };
 		7B16E71BE7CE882E8FEEF020 /* LauncherSearchBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0E7EEAC44B716850440D045 /* LauncherSearchBar.swift */; };
 		7BE3D371436C7BFC7B67A63F /* RunStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 67FA98B6AD5F48FCE46EAB29 /* RunStoreTests.swift */; };
 		7D30F03CB0E36223457C4BA9 /* PrivacySettingsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 29973AAF33CBAF50B52E623E /* PrivacySettingsTests.swift */; };
+		8023CD7267734164B80C81A3 /* EdgeChat.swift in Sources */ = {isa = PBXBuildFile; fileRef = F823AF6F2877FB4E575A589D /* EdgeChat.swift */; };
 		8996B663E7EE249A08383C19 /* LauncherStateView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F9CA2946F6A830979A66143B /* LauncherStateView.swift */; };
 		8DC06F852C344BE3D90E03A8 /* EdgePanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6A0A3424B28B328F9AB5DA43 /* EdgePanel.swift */; };
+		953C19132B183915A94B73C8 /* SettingsRememberedSections.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5B1D957FA5DBFDD25C89C1FD /* SettingsRememberedSections.swift */; };
 		959174039B7582454891C897 /* NowStoreSourceMetadataTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C163B11C1DF9E018538C4257 /* NowStoreSourceMetadataTests.swift */; };
 		972A49085FBF899E1A1D0405 /* SettingsStatusSections.swift in Sources */ = {isa = PBXBuildFile; fileRef = 563DEE45C51F335959952F5F /* SettingsStatusSections.swift */; };
 		9731E4E4A9B4D4EC556F263B /* MacAppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = D553D4AC83AD95CD5BD8CBF7 /* MacAppDelegate.swift */; };
@@ -98,8 +102,10 @@
 		4980BC09AD044F0F918D864B /* SettingsSnapshot.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsSnapshot.swift; sourceTree = "<group>"; };
 		51264FB99BA762FFB8DD94E3 /* SettingsWindowView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsWindowView.swift; sourceTree = "<group>"; };
 		524FC1544A0E35537AE10E50 /* LauncherSnapshot.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LauncherSnapshot.swift; sourceTree = "<group>"; };
+		5521012014BA2024927E6EAE /* SampleChat.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SampleChat.swift; sourceTree = "<group>"; };
 		563DEE45C51F335959952F5F /* SettingsStatusSections.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsStatusSections.swift; sourceTree = "<group>"; };
 		599D903AD6A4CA63031CAE4D /* SampleData.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SampleData.swift; sourceTree = "<group>"; };
+		5B1D957FA5DBFDD25C89C1FD /* SettingsRememberedSections.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsRememberedSections.swift; sourceTree = "<group>"; };
 		5E8C9F31E468AFC305D9E9EF /* TaskDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TaskDetailView.swift; sourceTree = "<group>"; };
 		603292F5B4100FD37C53E2CD /* EdgeRailPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EdgeRailPanel.swift; sourceTree = "<group>"; };
 		65D96844CFEE5E58206572EF /* LauncherShellModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LauncherShellModelTests.swift; sourceTree = "<group>"; };
@@ -111,6 +117,7 @@
 		8C3103BEF535AF3D545FD7E9 /* EdgeShell.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EdgeShell.swift; sourceTree = "<group>"; };
 		8CB05D753291715B60E890FF /* LauncherRunTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LauncherRunTests.swift; sourceTree = "<group>"; };
 		8F35BE01B9CE310854A11A47 /* AccountDeletion.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccountDeletion.swift; sourceTree = "<group>"; };
+		95937722FDD5FA1D25CAF396 /* EdgeChatTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EdgeChatTests.swift; sourceTree = "<group>"; };
 		997F7CDADCE1B82032C6E3C9 /* EdgeShellModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EdgeShellModelTests.swift; sourceTree = "<group>"; };
 		9B61143ECDB3A70FF32355F0 /* AppEnvironment.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppEnvironment.swift; sourceTree = "<group>"; };
 		9E2BFF6EF4C37CFDCEBD88DB /* AccountViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccountViews.swift; sourceTree = "<group>"; };
@@ -138,6 +145,7 @@
 		E188CB78A16E96E9EFA7B9FA /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		F0C3F69D6A673231631FB11C /* NowStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NowStore.swift; sourceTree = "<group>"; };
 		F0D8F27321B3759BDC933C9C /* EdgeSnapshot.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EdgeSnapshot.swift; sourceTree = "<group>"; };
+		F823AF6F2877FB4E575A589D /* EdgeChat.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EdgeChat.swift; sourceTree = "<group>"; };
 		F8F4C0A94A16821764C38281 /* LauncherDetailPane.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LauncherDetailPane.swift; sourceTree = "<group>"; };
 		F9CA2946F6A830979A66143B /* LauncherStateView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LauncherStateView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -179,6 +187,7 @@
 		314BC367CD7A9EFBD41AF7E7 /* Edge */ = {
 			isa = PBXGroup;
 			children = (
+				F823AF6F2877FB4E575A589D /* EdgeChat.swift */,
 				6A0A3424B28B328F9AB5DA43 /* EdgePanel.swift */,
 				603292F5B4100FD37C53E2CD /* EdgeRailPanel.swift */,
 				8C3103BEF535AF3D545FD7E9 /* EdgeShell.swift */,
@@ -244,6 +253,7 @@
 			children = (
 				1CE5508A0255614CB54FCF96 /* SettingsAccountSections.swift */,
 				06B1DA1B50E9C9E6A7A0479C /* SettingsConnectionsSections.swift */,
+				5B1D957FA5DBFDD25C89C1FD /* SettingsRememberedSections.swift */,
 				563DEE45C51F335959952F5F /* SettingsStatusSections.swift */,
 				134F521E8E76DDDFA13086B3 /* SettingsWindowModel.swift */,
 				51264FB99BA762FFB8DD94E3 /* SettingsWindowView.swift */,
@@ -254,6 +264,7 @@
 		8E2E91C6463591C5FAE186CB /* TaskforceTests */ = {
 			isa = PBXGroup;
 			children = (
+				95937722FDD5FA1D25CAF396 /* EdgeChatTests.swift */,
 				997F7CDADCE1B82032C6E3C9 /* EdgeShellModelTests.swift */,
 				C58F5AE03837589EB835718F /* EdgeWorkListTests.swift */,
 				1AE065BCE63FAD6180201421 /* HotKeyCenterTests.swift */,
@@ -281,6 +292,7 @@
 				F0C3F69D6A673231631FB11C /* NowStore.swift */,
 				7439B64C561B831037F0D2E2 /* PushCenter.swift */,
 				19530AF9617AD254389374F2 /* RunStore.swift */,
+				5521012014BA2024927E6EAE /* SampleChat.swift */,
 				599D903AD6A4CA63031CAE4D /* SampleData.swift */,
 				AB26C2543E88F763B3553D02 /* SignIn.swift */,
 			);
@@ -417,6 +429,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				1C155DEDD5DBDE44C0F106D1 /* EdgeChatTests.swift in Sources */,
 				51A41EC52940EB555842641B /* EdgeShellModelTests.swift in Sources */,
 				A8ED53988256E090313DF71C /* EdgeWorkListTests.swift in Sources */,
 				1D320494D52534D188026379 /* HotKeyCenterTests.swift in Sources */,
@@ -440,6 +453,7 @@
 				E2E22004841EC931D746713B /* AccountStore.swift in Sources */,
 				B1CC59880F2E7DB9E145834B /* AccountViews.swift in Sources */,
 				025F33A82A421DE1FC6CC896 /* AppEnvironment.swift in Sources */,
+				8023CD7267734164B80C81A3 /* EdgeChat.swift in Sources */,
 				8DC06F852C344BE3D90E03A8 /* EdgePanel.swift in Sources */,
 				6609B3AD0BE3071B4C236771 /* EdgeRailPanel.swift in Sources */,
 				DCBC154B87836CE0E180CFC1 /* EdgeShell.swift in Sources */,
@@ -466,9 +480,11 @@
 				3498CC69345186E53C0CC66E /* PushCenter.swift in Sources */,
 				5020EF0FA3E7F009DF938515 /* RailOrdering.swift in Sources */,
 				FD7CC1296F85732599DE1AFC /* RunStore.swift in Sources */,
+				6F914C7C908ADCA8F7630CA8 /* SampleChat.swift in Sources */,
 				5AADF7819C0656F5D1C3C1C1 /* SampleData.swift in Sources */,
 				437067DA0504B907D3FE96EA /* SettingsAccountSections.swift in Sources */,
 				F1054E03F7CEFB293B46966C /* SettingsConnectionsSections.swift in Sources */,
+				953C19132B183915A94B73C8 /* SettingsRememberedSections.swift in Sources */,
 				25515FBF682CB243F81947D9 /* SettingsSnapshot.swift in Sources */,
 				972A49085FBF899E1A1D0405 /* SettingsStatusSections.swift in Sources */,
 				6F10622C562E0391D495F882 /* SettingsWindowModel.swift in Sources */,

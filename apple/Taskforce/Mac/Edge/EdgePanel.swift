@@ -15,9 +15,9 @@ enum EdgePanelMetrics {
     /// 머리 줄: 위 12 + 제목 20 + 아래 8
     static let headerHeight: CGFloat = 40
 
-    /// 본문 높이에 맞춘 패널 높이
-    static func height(body: CGFloat) -> CGFloat {
-        min(maxHeight, max(minHeight, headerHeight + body))
+    /// 본문(+아래 입력칸) 높이에 맞춘 패널 높이
+    static func height(body: CGFloat, footer: CGFloat = 0) -> CGFloat {
+        min(maxHeight, max(minHeight, headerHeight + body + footer))
     }
 
     /// 패널 창의 자리 (화면 좌표, 아래가 0). 오른쪽은 펼친 레일 왼쪽에서 12pt, 위는 레일 위 모서리
@@ -31,6 +31,8 @@ enum EdgePanelMetrics {
 @Observable
 final class EdgePanelPresentation {
     var bodyHeight: CGFloat = 0
+    /// 아래 입력칸(Chats)의 높이: 패널 높이에 더한다
+    var footerHeight: CGFloat = 0
     var shown = false
 }
 
@@ -38,26 +40,56 @@ final class EdgePanelPresentation {
 struct EdgePanelView: View {
     @Bindable var shell: EdgeShellModel
     @Bindable var presentation: EdgePanelPresentation
+    /// Chats · Remembered (B3). 없으면 Chats는 빈 화면
+    var chat: ChatRuntime?
+
+    /// 대화가 바뀌었는지 보는 서명: 새 글 · 상태가 바뀌면 맨 아래로 내린다
+    private struct TranscriptSignature: Equatable {
+        let id: UUID?
+        let count: Int
+        let last: ChatTurn.Status?
+    }
+
+    private var transcript: TranscriptSignature {
+        guard let chat, shell.view == .chats, let id = chat.chat.currentID else { return TranscriptSignature(id: nil, count: 0, last: nil) }
+        let turns = chat.chat.turns(for: id)
+        return TranscriptSignature(id: id, count: turns.count, last: turns.last?.status)
+    }
 
     var body: some View {
         // 이동(16pt)은 창이 움직이고, 크기(.975 → 1)는 여기서. 움직임 줄이기면 둘 다 없다
         let scale = TFMotion.panelTransform(shown: presentation.shown, reduceMotion: shell.reduceMotion).scale
+        let inConversation = shell.view == .chats && chat?.chat.mode == .chat
         VStack(spacing: 0) {
-            PanelHeader(title: shell.view.title)
-            ScrollView {
-                Group {
-                    switch shell.view {
-                    case .allWork:
-                        workList
-                    case .chats:
-                        // 대화 목록 · New chat은 B3
-                        PanelEmptyState(title: Self.noChats)
+            header
+            ScrollViewReader { proxy in
+                ScrollView {
+                    Group {
+                        switch shell.view {
+                        case .allWork:
+                            workList
+                        case .chats:
+                            if let chat {
+                                ChatPanelBody(runtime: chat, shell: shell)
+                            } else {
+                                PanelEmptyState(title: Self.noChats)
+                            }
+                        }
                     }
+                    .padding(EdgeInsets(top: 0, leading: TFSpace.lg, bottom: TFSpace.md, trailing: TFSpace.lg))
+                    .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { presentation.bodyHeight = $0 }
                 }
-                .padding(EdgeInsets(top: 0, leading: TFSpace.lg, bottom: TFSpace.md, trailing: TFSpace.lg))
-                .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { presentation.bodyHeight = $0 }
+                .defaultScrollAnchor(inConversation ? .bottom : .top)
+                .scrollIndicators(.automatic)
+                .onChange(of: transcript) {
+                    if inConversation { proxy.scrollTo(EdgeChatScreen.bottomAnchor, anchor: .bottom) }
+                }
             }
-            .scrollIndicators(.automatic)
+            if shell.view == .chats, let chat {
+                ChatPanelFooter(chat: chat.chat)
+                    .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { presentation.footerHeight = $0 }
+                    .onDisappear { presentation.footerHeight = 0 }
+            }
         }
         .frame(width: EdgePanelMetrics.width)
         .frame(maxHeight: .infinity, alignment: .top)
@@ -74,8 +106,17 @@ struct EdgePanelView: View {
         .accessibilityLabel("Taskforce")
     }
 
-    /// Chats에 대화가 없음 (New chat은 B3)
-    static let noChats = "No conversations yet."
+    @ViewBuilder
+    private var header: some View {
+        if shell.view == .chats, let chat {
+            ChatPanelHeader(chat: chat.chat)
+        } else {
+            PanelHeader(title: shell.view.title)
+        }
+    }
+
+    /// Chats에 대화가 없음 (이 셸을 대화 저장소 없이 만들었을 때)
+    static let noChats = ChatCopy.noConversations
 
     /// All work (S3): 기존 목록(`/api/v1/now` + 오늘 끝낸 할 일)을 WorkList로. 검색어 · 필터 · 고정은 셸 모델이 가진다.
     /// `shell.workItems`가 시각 신호(`timeEpoch`)를 읽으므로, 열린 채 자정 · 시간대 변경을 지나면 이 화면이 다시 그려져 Done today · today도 새로 정해진다
@@ -117,7 +158,7 @@ final class EdgePanelController {
     /// 여는 움직임 중 (그동안 높이 맞추기는 끝난 뒤로 미룬다)
     private var opening = false
 
-    init(shell: EdgeShellModel) {
+    init(shell: EdgeShellModel, chat: ChatRuntime? = nil) {
         self.shell = shell
         panel = EdgeKeyPanel(
             contentRect: NSRect(x: 0, y: 0, width: EdgePanelMetrics.width, height: EdgePanelMetrics.maxHeight),
@@ -125,7 +166,7 @@ final class EdgePanelController {
             backing: .buffered,
             defer: false
         )
-        hosting = NSHostingView(rootView: EdgePanelView(shell: shell, presentation: presentation))
+        hosting = NSHostingView(rootView: EdgePanelView(shell: shell, presentation: presentation, chat: chat))
         hosting.sizingOptions = []
         panel.isFloatingPanel = true
         panel.level = .statusBar
@@ -147,7 +188,7 @@ final class EdgePanelController {
     private func targetFrame() -> NSRect? {
         guard let screen = EdgeRailPanelController.screen else { return nil }
         return EdgePanelMetrics.frame(
-            height: EdgePanelMetrics.height(body: presentation.bodyHeight),
+            height: EdgePanelMetrics.height(body: presentation.bodyHeight, footer: presentation.footerHeight),
             railTop: EdgeRailPanelController.railTop(on: screen),
             screenMaxX: screen.frame.maxX
         )

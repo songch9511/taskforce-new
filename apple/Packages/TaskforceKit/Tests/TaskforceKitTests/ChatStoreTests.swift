@@ -345,6 +345,24 @@ struct ChatStoreTests {
         #expect(chat.canCompose)
     }
 
+    /// 꺼짐 안내 뒤 사용자가 Try again을 누르면 안내를 걷고 같은 글을 다시 보낸다 (아직 꺼져 있으면 다시 404로 안다)
+    @Test func tryAgainAfterFeatureOffAsksTheServerAgain() async throws {
+        let existing = Chats.conversation(1, title: "Chat", last: 10)
+        serve([existing])
+        let chat = store()
+        await chat.refresh()
+        gateway.postHandler = { _, _, _ in throw APIError.server(status: 404, code: .notFound, message: "없는 경로입니다.") }
+        await chat.send("Hello")
+        #expect(chat.isUnavailable)
+        let cmid = try #require(chat.turns(for: existing.id).first?.clientMessageID)
+        await chat.retry(cmid)
+        #expect(gateway.calls(prefix: "post").count == 2 && chat.isUnavailable, "다시 물었고 아직 꺼져 있다")
+        // 켜졌다
+        gateway.postHandler = { conversation, id, text in Chats.pair(1, in: conversation, seq: 1, cmid: id, text: text) }
+        await chat.retry(cmid)
+        #expect(!chat.isUnavailable && chat.turns(for: existing.id).map(\.status) == [.sent, .sent])
+    }
+
     // MARK: 초안
 
     @Test func draftsStayPerConversationAndWinThePreview() async throws {

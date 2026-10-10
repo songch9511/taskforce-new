@@ -136,6 +136,8 @@ public final class ChatStore {
     var threads: [UUID: ChatThread] = [:]
     private var projectUndo: [UUID: UUID?] = [:]
     private var projectMessage: [UUID: String] = [:]
+    /// 입력칸이 포커스를 가져가야 할 때마다 오른다 (대화를 열었을 때 · 새 대화)
+    public private(set) var focusRequest = 0
     /// 사용자가 목록 · 새 대화로 직접 옮겼나 (아니면 목록을 읽은 뒤 마지막 대화로 자동 복원)
     private var navigated = false
 
@@ -336,6 +338,7 @@ public final class ChatStore {
     /// 레일의 Chats(⌘3): 마지막 대화로 돌아간다 (이번 실행에서 연 적 없으면 서버 대화에서 마지막 것을 읽어 되살린다). 대화가 하나도 없으면 목록
     public func openChats() {
         mode = currentID == nil ? .history : .chat
+        if mode == .chat { focusRequest += 1 }
         spawn { await self.refresh() }
     }
 
@@ -350,6 +353,14 @@ public final class ChatStore {
         }
     }
 
+    /// Esc: 목록을 보는 중이면 대화로 돌아간다 (열린 대화가 있을 때). 처리했으면 true — 아니면 패널이 접힌다
+    public func escapeInner() -> Bool {
+        guard mode == .history, currentID != nil else { return false }
+        mode = .chat
+        focusRequest += 1
+        return true
+    }
+
     public func showHistory() {
         navigated = true
         mode = .history
@@ -360,6 +371,7 @@ public final class ChatStore {
         navigated = true
         currentID = id
         mode = .chat
+        focusRequest += 1
         spawn { await self.loadThread(id) }
     }
 
@@ -368,6 +380,7 @@ public final class ChatStore {
     @discardableResult
     public func newChat() -> UUID {
         navigated = true
+        focusRequest += 1
         let occupied = Set(threads.filter { !$0.value.pending.isEmpty }.keys)
         if let reused = ChatHistoryRules.reusableEmptyChat(current: currentID, conversations: conversations, locals: locals, occupied: occupied) {
             currentID = reused
@@ -483,7 +496,9 @@ public final class ChatStore {
 
     /// 보내지 못한 글(또는 답이 없는 마지막 글)을 같은 `client_message_id` · 같은 글로 다시 보낸다
     public func retry(_ clientMessageID: UUID) async {
-        guard let id = currentID, let token = scope.token, !isUnavailable, !(threads[id]?.isSending ?? false) else { return }
+        guard let id = currentID, let token = scope.token, !(threads[id]?.isSending ?? false) else { return }
+        // 사용자가 직접 다시 시도했다: 꺼짐 안내를 걷고 서버에 다시 묻는다 (아직 꺼져 있으면 다시 404로 알게 된다)
+        isUnavailable = false
         if let index = threads[id]?.pending.firstIndex(where: { $0.id == clientMessageID }) {
             guard let old = threads[id]?.pending[index], old.owner == token else { return }
             threads[id]?.pending[index].status = .sending

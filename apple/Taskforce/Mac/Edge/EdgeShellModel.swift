@@ -113,7 +113,7 @@ enum EdgeScheduler {
 @MainActor
 @Observable
 final class EdgeShellModel {
-    /// 패널이 보이는 것 (한 번에 하나). Review · 일 상세 · 대화는 다음 PR(S4 · B3)에서 더한다
+    /// 패널이 보이는 것 (한 번에 하나). Review · 일 상세는 다음 PR(S4)에서 더한다
     enum View: String, CaseIterable {
         case allWork, chats
 
@@ -180,6 +180,10 @@ final class EdgeShellModel {
     @ObservationIgnored var onAddTask: () -> Void = {}
     @ObservationIgnored var onConnect: () -> Void = {}
     @ObservationIgnored var onRetry: () -> Void = {}
+    /// Chats (B3): 패널이 Chats로 열릴 때 (⌘3 · ⌥ Space로 마지막 화면 · 레일) 마지막 대화를 되살린다 · ⌘N은 새 대화 · Esc는 목록에서 대화로 먼저
+    @ObservationIgnored var onChatsOpened: () -> Void = {}
+    @ObservationIgnored var onNewChat: () -> Void = {}
+    @ObservationIgnored var onChatEscape: () -> Bool = { false }
 
     @ObservationIgnored private let schedule: EdgeSchedule
     @ObservationIgnored private let clock: () -> Date
@@ -283,6 +287,7 @@ final class EdgeShellModel {
         self.view = view
         panelOpen = true
         menuOpen = false
+        if view == .chats { onChatsOpened() }
     }
 
     /// All work: 레일의 All work · ⌘2. 고른 행 · 검색어 · 필터를 비우고 필터 카드를 닫는다 (디자인 "opens it with filters cleared")
@@ -293,9 +298,15 @@ final class EdgeShellModel {
         openPanel(.allWork)
     }
 
-    /// Chats: 레일의 Chats · ⌘3 (마지막 대화. 대화는 B3)
+    /// Chats: 레일의 Chats · ⌘3 (마지막 대화로 돌아간다)
     func openChats() {
         openPanel(.chats)
+    }
+
+    /// 새 대화: ⌘N · 대화 머리의 `square-pen`. 손대지 않은 빈 대화가 있으면 그것을 다시 쓴다
+    func newChat() {
+        openPanel(.chats)
+        onNewChat()
     }
 
     /// 레일의 일: 그 일을 연다. 일 상세 · Review 화면은 다음 PR이라 지금은 All work에서 그 행을 표시한다.
@@ -308,10 +319,12 @@ final class EdgeShellModel {
         openPanel(.allWork)
     }
 
-    /// Esc: 안쪽 것(열린 필터 카드)을 먼저 닫고, 그다음 패널을 접는다 (디자인 Focus and keys)
+    /// Esc: 안쪽 것(열린 필터 카드 · Chats의 대화 목록)을 먼저 닫고, 그다음 패널을 접는다 (디자인 Focus and keys)
     func escape() {
         if panelOpen, view == .allWork, filtersOpen {
             filtersOpen = false
+        } else if panelOpen, view == .chats, onChatEscape() {
+            return
         } else {
             dismiss()
         }

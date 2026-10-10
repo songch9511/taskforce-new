@@ -1,7 +1,7 @@
 import Foundation
 
 // 대화 v2 (B2)와 기억 (B3 PR1)의 앱 쪽 모양. 서버 `contract.ts`의 같은 이름 스키마를 읽는다:
-// 서버 head `60a73b1`(B3 PR1 = B2 `aa017bd` + 6 커밋) × 이 브랜치 (`ChatContractFixtures`가 그 JSON을 고정한다).
+// 서버 head `7328e93`(B3 PR1 #123 = B2 `aa017bd` + 커밋 8개) × 이 브랜치 (`ChatContractFixtures`가 그 JSON을 고정한다).
 // 앱은 RLS로 읽는 행(`conversations` · `conversation_messages` · `memory_items` · `work_contexts`)과 서버 쓰기 응답을 같은 타입으로 읽는다.
 // 모르는 값은 실패로 만들지 않고(목록 전체를 못 읽게 되는 것을 막는다) 가장 덜 주장하는 쪽으로 읽는다.
 
@@ -223,6 +223,11 @@ public struct ChatMessage: Decodable, Sendable, Hashable, Identifiable {
 public struct ChatPostedMessage: Decodable, Sendable, Hashable {
     public let message: ChatMessage
     public let reply: ChatMessage
+
+    public init(message: ChatMessage, reply: ChatMessage) {
+        self.message = message
+        self.reply = reply
+    }
 }
 
 /// `work_contexts` 행 (범위 = 프로젝트). popup에는 active만 (보관된 범위는 서버가 404)

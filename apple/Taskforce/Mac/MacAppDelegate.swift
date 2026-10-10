@@ -13,6 +13,8 @@ final class MacAppDelegate: NSObject, NSApplicationDelegate {
     private(set) var launcher: LauncherPanelController?
     /// 0.2.0 Edge 셸 (`TF_EDGE_SHELL`이 켜진 격리 Debug 실행에서만, 기본은 nil → 기존 런처)
     private(set) var edge: EdgeShellController?
+    /// 대화 · 기억 상태 (`TF_EDGE_SHELL`이 켜졌을 때만)
+    private(set) var chatRuntime: ChatRuntime?
     let hotKeys = HotKeyCenter()
     let settingsHotKeys = HotKeyCenter(id: 2)
 
@@ -35,6 +37,8 @@ final class MacAppDelegate: NSObject, NSApplicationDelegate {
         case .ready(let session, let services):
             // 설정 창 프로필 칸은 화면과 상관없이 세션을 따라간다 (계정이 떠나면 쓰던 칸 · 남은 저장을 지운다)
             SettingsWindowModel.shared.profile.bind(to: session)
+            // 대화 · 기억도 같다: 세션이 시작되기 전에 붙어 처음 로그인부터 계정 경계를 지킨다 (0.2.0 셸이 켜진 격리 Debug 실행만)
+            if EdgeShellFlag.isEnabled() { chatRuntime = AppRuntime.chatRuntime(session: session, services: services) }
             session.start()
             model = LauncherModel(
                 session: session, services: services, account: AppRuntime.account(services: services), saved: AppRuntime.savedNow,
@@ -54,7 +58,7 @@ final class MacAppDelegate: NSObject, NSApplicationDelegate {
         if let target = PushCenter.shared.take() { openNotification(target) }
 
         if EdgeShellFlag.isEnabled() {
-            let edge = EdgeShellController(launcher: model)
+            let edge = EdgeShellController(launcher: model, chat: chatRuntime)
             self.edge = edge
             // All work의 Add task: 패널을 접고 기존 런처(제목 → 없으면 추가, 직접 추가의 정식 입구)를 연다
             edge.shell.onAddTask = { [weak edge, weak launcher] in

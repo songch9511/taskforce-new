@@ -19,6 +19,8 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
     let rail: EdgeRailPanelController
     let panel: EdgePanelController
     private let launcher: LauncherModel
+    /// Chats · Remembered (B3). 앱 시작 때 세션에 붙은 것을 받는다
+    let chat: ChatRuntime?
     private var clickMonitors: [Any] = []
     private var keyMonitor: Any?
     private var observers: [NSObjectProtocol] = []
@@ -37,16 +39,22 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
     }
     #endif
 
-    init(launcher: LauncherModel) {
+    init(launcher: LauncherModel, chat: ChatRuntime? = nil) {
         self.launcher = launcher
+        self.chat = chat
         let pinStore = Self.pinStore()
         self.pinStore = pinStore
         shell = EdgeShellModel(reduceMotion: Self.systemReduceMotion, pinStore: pinStore)
         rail = EdgeRailPanelController(shell: shell)
-        panel = EdgePanelController(shell: shell)
+        panel = EdgePanelController(shell: shell, chat: chat)
         super.init()
         panel.panel.delegate = self
         shell.onConnect = { [weak self] in self?.rail.onConnections() }
+        if let chat {
+            shell.onChatsOpened = { chat.chat.openChats() }
+            shell.onNewChat = { _ = chat.chat.newChat() }
+            shell.onChatEscape = { chat.chat.escapeInner() }
+        }
         // Try again은 읽는 중이어도 새로 읽는다 (읽기가 취소돼 "읽는 중"이 남아도 버튼이 무반응이 되지 않게)
         shell.onRetry = { [weak self] in self?.load(.retry) }
     }
@@ -210,6 +218,7 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
     private func followPanel() {
         let open = withObservationTracking {
             _ = panel.presentation.bodyHeight
+            _ = panel.presentation.footerHeight
             return shell.panelOpen
         } onChange: { [weak self] in
             Task { @MainActor in self?.followPanel() }
@@ -314,23 +323,21 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
         keyMonitor = nil
     }
 
-    /// 패널의 키: Esc 접기 · ⌘2 All work · ⌘3 Chats. 처리했으면 true
+    /// 패널의 키: Esc 접기 · ⌘2 All work · ⌘3 Chats · ⌘N New chat. 처리했으면 true
     func handleKey(_ event: NSEvent) -> Bool {
-        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-        switch Int(event.keyCode) {
-        case kVK_Escape:
-            // 열린 필터 카드를 먼저 닫고, 그다음 패널을 접는다
+        guard let command = EdgeKeyCommand.of(keyCode: Int(event.keyCode), flags: event.modifierFlags) else { return false }
+        switch command {
+        case .escape:
+            // 안쪽 것(열린 필터 카드 · Chats의 대화 목록)을 먼저 닫고, 그다음 패널을 접는다
             shell.escape()
-            return true
-        case kVK_ANSI_2 where flags == .command:
+        case .allWork:
             shell.openAllWork()
-            return true
-        case kVK_ANSI_3 where flags == .command:
+        case .chats:
             shell.openChats()
-            return true
-        default:
-            return false
+        case .newChat:
+            shell.newChat()
         }
+        return true
     }
 
     // MARK: NSWindowDelegate
@@ -339,6 +346,22 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
         // ⌘Tab 등으로 키를 잃으면 접는다 (More 메뉴를 연 동안은 빼고)
         guard shell.panelOpen, !shell.menuOpen else { return }
         shell.dismiss()
+    }
+}
+
+/// 패널이 키를 가졌을 때 듣는 키 (디자인 Focus and keys): Esc · ⌘2 · ⌘3 · ⌘N. 이 밖의 키는 지나간다
+enum EdgeKeyCommand: Equatable {
+    case escape, allWork, chats, newChat
+
+    static func of(keyCode: Int, flags: NSEvent.ModifierFlags) -> EdgeKeyCommand? {
+        let flags = flags.intersection(.deviceIndependentFlagsMask)
+        switch keyCode {
+        case kVK_Escape: return .escape
+        case kVK_ANSI_2 where flags == .command: return .allWork
+        case kVK_ANSI_3 where flags == .command: return .chats
+        case kVK_ANSI_N where flags == .command: return .newChat
+        default: return nil
+        }
     }
 }
 

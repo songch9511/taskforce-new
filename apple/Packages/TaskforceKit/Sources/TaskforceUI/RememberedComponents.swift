@@ -27,17 +27,14 @@ public struct SettingsPopup<Value: Hashable>: View {
     public var body: some View {
         let shape = RoundedRectangle(cornerRadius: TFRadius.sm, style: .continuous)
         Menu {
-            ForEach(Array(choices.enumerated()), id: \.offset) { _, choice in
-                Button {
-                    onSelect(choice.value)
-                } label: {
-                    if choice.value == selection {
-                        Label(choice.name, systemImage: "checkmark")
-                    } else {
-                        Text(choice.name)
-                    }
+            // 시스템 메뉴의 고른 줄 표시 (자체 기호를 그리지 않는다)
+            Picker(label, selection: Binding(get: { selection }, set: { if let value = $0 { onSelect(value) } })) {
+                ForEach(Array(choices.enumerated()), id: \.offset) { _, choice in
+                    Text(choice.name).tag(Optional(choice.value))
                 }
             }
+            .pickerStyle(.inline)
+            .labelsHidden()
         } label: {
             HStack(spacing: 6) {
                 Text(selectedName)
@@ -285,20 +282,27 @@ public struct RememberedDetail: View {
     let onEdit: (String) -> Void
     let onMove: (MemoryTarget) -> Void
     let onForget: () -> Void
+    let isConfirmingForget: Bool
+    let onAskForget: () -> Void
+    let onCancelForget: () -> Void
     let onRetrySource: () -> Void
     let onOpenURL: (URL) -> Void
     @State private var editing = false
     @State private var draft = ""
-    @State private var forgetting = false
 
+    /// - isConfirmingForget: Forget의 제자리 확인이 열려 있나. 쓰는 쪽(설정 창 모델)이 가진다: 탭 · 상세를 옮기면 닫힌다
     public init(
-        content: Content, onConfirm: @escaping () -> Void, onEdit: @escaping (String) -> Void, onMove: @escaping (MemoryTarget) -> Void,
+        content: Content, isConfirmingForget: Bool = false, onConfirm: @escaping () -> Void, onEdit: @escaping (String) -> Void,
+        onMove: @escaping (MemoryTarget) -> Void, onAskForget: @escaping () -> Void = {}, onCancelForget: @escaping () -> Void = {},
         onForget: @escaping () -> Void, onRetrySource: @escaping () -> Void = {}, onOpenURL: @escaping (URL) -> Void = { _ in }
     ) {
         self.content = content
+        self.isConfirmingForget = isConfirmingForget
         self.onConfirm = onConfirm
         self.onEdit = onEdit
         self.onMove = onMove
+        self.onAskForget = onAskForget
+        self.onCancelForget = onCancelForget
         self.onForget = onForget
         self.onRetrySource = onRetrySource
         self.onOpenURL = onOpenURL
@@ -322,14 +326,14 @@ public struct RememberedDetail: View {
             sourceSection
             if content.isCurrent, content.canChange, !content.writesUnavailable {
                 SettingsSection {
-                    if forgetting {
+                    if isConfirmingForget {
                         ConfirmRow(
                             MemoryCopy.forgetTitle, detail: MemoryCopy.forgetDetail, confirmLabel: MemoryCopy.forgetConfirm, busy: content.isBusy,
-                            onConfirm: onForget, onCancel: { forgetting = false }
+                            onConfirm: onForget, onCancel: onCancelForget
                         )
                     } else {
                         SettingsTrayRow("Forget") {
-                            Button(MemoryCopy.forgetOpen) { forgetting = true }
+                            Button(MemoryCopy.forgetOpen, action: onAskForget)
                                 .buttonStyle(TFButtonStyle())
                                 .disabled(content.isBusy)
                         }
@@ -339,11 +343,8 @@ public struct RememberedDetail: View {
                 SettingsSection(footnote: MemoryCopy.writesUnavailable) {}
             }
         }
-        // 다른 항목으로 바뀌면 열린 편집 · 확인을 닫는다
-        .onChange(of: content.statement) {
-            editing = false
-            forgetting = false
-        }
+        // 다른 항목으로 바뀌면 열린 편집을 닫는다
+        .onChange(of: content.statement) { editing = false }
     }
 
     // MARK: 문장

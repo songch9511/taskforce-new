@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import TaskforceKit
 
-/// 서버 JSON 계약 (서버 head `60a73b1`): 응답 해석 · 요청 본문 · v2 경로 · 오류 코드. 서버 모양이 바뀌면 여기서 먼저 깨진다
+/// 서버 JSON 계약 (서버 head `7328e93`): 응답 해석 · 요청 본문 · v2 경로 · 오류 코드. 서버 모양이 바뀌면 여기서 먼저 깨진다
 struct ChatContractTests {
     let host = "t\(UUID().uuidString.lowercased().prefix(8)).test"
 
@@ -23,7 +23,7 @@ struct ChatContractTests {
     // MARK: 응답 해석
 
     @Test func fixturePinsTheServerHead() {
-        #expect(ChatContractFixtures.serverHead.hasPrefix("60a73b1"))
+        #expect(ChatContractFixtures.serverHead.hasPrefix("7328e93"))
         #expect(ChatContractFixtures.serverBase.hasPrefix("aa017bd"))
     }
 

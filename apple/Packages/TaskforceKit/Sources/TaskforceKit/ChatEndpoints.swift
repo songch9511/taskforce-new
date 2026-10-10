@@ -1,14 +1,14 @@
 import Foundation
 
-// 대화 v2 · 기억 쓰기 (`/api/v2`, 서버 head `60a73b1`). v1은 동결이라 이 파일의 호출만 v2 경로를 쓴다.
+// 대화 v2 · 기억 쓰기 (`/api/v2`, 서버 head `7328e93`). v1은 동결이라 이 파일의 호출만 v2 경로를 쓴다.
 // 오류는 모두 `{"error":{"code","message"}}`. 알 수 없는 코드는 `APIError`가 상태로 짐작한다 (v2 이유 코드 둘은 `APIErrorCode`가 안다).
 
 extension APIError {
     /// 서버 gate(`CONVERSATIONS_V2_ENABLED` · `MEMORY_ENABLED`)가 꺼졌을 때 404의 메시지. 다른 404(없는 대화 · 기억 · 범위)와 이것으로만 가른다
     /// (서버가 따로 코드를 주면 거기로 옮긴다: `b3-mac-notes.md` 열린 질문)
-    static let featureOffMessage = "없는 경로입니다."
+    public static let featureOffMessage = "없는 경로입니다."
     /// 외부 AI 처리 동의가 먼저 필요함 (메시지 보내기의 409). 같은 409 `conflict`에 `mismatch` · 처리 중 · 뒤 메시지 있음이 함께 있어 메시지로만 가른다
-    static let consentRequiredMessage = "외부 AI 처리 동의가 필요해요."
+    public static let consentRequiredMessage = "외부 AI 처리 동의가 필요해요."
 
     /// 기능이 꺼져 있다 (gate 꺼짐 404 · route가 없는 옛 서버의 404). "실패"가 아니다
     public var isFeatureOff: Bool {

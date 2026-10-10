@@ -8,6 +8,8 @@ import TaskforceKit
 /// `-TFEdgeSnapshotMix`: 견본의 확인 요청을 하나로 줄여 needs you · running 링이 함께 보이게 한다(`-TFSampleRunWorking`과 같이).
 /// 남기는 것: hidden(숨은 레일) · expanded(호버로 펼친 레일) · panel(All work 패널) · All work 상태(S3: filters-open · filter-summary ·
 /// no-match · pinned · done-today · rail-open-clears-filter) · reduce-motion(움직임 줄이기, 패널) · chats.
+/// `-TFEdgeSnapshotChats`: Chats 상태 (B3, 견본 가짜 서버): 목록 · 초안 · 대화(인용 · 기억 노트 explicit/inferred) · 보내는 중 · 실패 · 동의 전 · 기능 꺼짐 · 빈 목록 · 오프라인 · 읽기 실패 ·
+/// 노트 확인 · 잊기 뒤. 서버 응답은 가짜(`SampleChatGateway`)라 렌더 fixture일 뿐이다 (실제 서버 · 계정 · AI 호출 없음).
 /// `-TFEdgeSnapshotState <이름>`: All work 패널 하나만 `mac-edge-worklist-<이름>.png`로 (빈 · 오프라인 · 실패 같은 견본 상태 인자와 함께)
 @MainActor
 enum EdgeSnapshot {
@@ -39,6 +41,11 @@ enum EdgeSnapshot {
         Task { @MainActor in
             func settle(_ seconds: Double = 0.8) async { try? await Task.sleep(for: .seconds(seconds)) }
             await settle(1.5)
+            if arguments.contains("-TFEdgeSnapshotChats") {
+                await captureChats(edge, file: file, settle: { await settle() })
+                NSApplication.shared.terminate(nil)
+                return
+            }
             if let state {
                 edge.shell.openAllWork()
                 await settle()
@@ -63,6 +70,92 @@ enum EdgeSnapshot {
             capture(edge, to: file("chats"))
             NSApplication.shared.terminate(nil)
         }
+    }
+
+    /// Chats 상태 (B3): 가짜 서버를 시나리오대로 바꿔 가며 같은 패널에서 담는다
+    private static func captureChats(_ edge: EdgeShellController, file: (String) -> URL, settle: () async -> Void) async {
+        guard let runtime = edge.chat, let gateway = runtime.sampleGateway else { return }
+        let chat = runtime.chat
+        let memory = runtime.memory
+        /// 다른 계정이 막 로그인한 것처럼 저장소를 비우고 새로 읽는다 (가짜 서버 시나리오를 바꾼 뒤)
+        func restart(_ scenario: SampleChatGateway.Scenario) async {
+            await gateway.setScenario(scenario)
+            runtime.scope.accountLeft()
+            edge.shell.openChats()
+            await chat.settle()
+            await settle()
+        }
+        func shoot(_ name: String) { capture(edge, to: file("chats-\(name)")) }
+
+        // 목록: 새 것이 위, 실제 날짜, 초안이 미리보기를 이긴다
+        await restart(.full)
+        chat.setDraft("Can you compare plan B with", for: SampleChatIDs.copy)
+        chat.showHistory()
+        await settle()
+        shoot("history")
+        // 짧은 대화: 사용자 글(들여씀) · Taskforce 답(전폭)
+        chat.open(SampleChatIDs.copy)
+        await chat.settle()
+        await settle()
+        shoot("conversation-short")
+        // 대화: 사용자 글 · Taskforce 답(전폭) · 인용 · 기억 노트(explicit, inferred)
+        chat.open(SampleChatIDs.shape)
+        await chat.settle()
+        await memory.loadList()
+        await settle()
+        await settle()
+        shoot("conversation")
+        // 노트에서 추정을 확인한다 (서버 200 뒤에만 바뀐다) → explicit 노트
+        _ = await memory.confirm(SampleChatIDs.jordan)
+        await settle()
+        shoot("note-confirmed")
+        _ = await memory.forget(SampleChatIDs.keepsShort)
+        await settle()
+        shoot("note-forgotten")
+        // 보내는 중 · 실패 · 동의 전
+        await restart(.sendHangs)
+        chat.open(SampleChatIDs.shape)
+        await chat.settle()
+        Task { await chat.send("Draft the pricing FAQ again, shorter") }
+        await settle()
+        shoot("sending")
+        await restart(.sendFails)
+        chat.open(SampleChatIDs.shape)
+        await chat.settle()
+        await chat.send("Draft the pricing FAQ again, shorter")
+        await settle()
+        shoot("failed")
+        await restart(.consentNeeded)
+        chat.open(SampleChatIDs.shape)
+        await chat.settle()
+        await chat.send("Draft the pricing FAQ again, shorter")
+        await settle()
+        shoot("consent")
+        // 서버 gate 꺼짐: 실패로 꾸미지 않는다
+        await restart(.featureOff)
+        _ = chat.newChat()
+        await chat.send("Hello")
+        await settle()
+        shoot("unavailable")
+        chat.showHistory()
+        await settle()
+        shoot("unavailable-history")
+        // 읽기 상태: 없음 · 오프라인 · 읽기 실패
+        await restart(.empty)
+        chat.showHistory()
+        await settle()
+        shoot("empty")
+        await restart(.offline)
+        await settle()
+        shoot("offline")
+        await restart(.failed)
+        await settle()
+        shoot("load-failed")
+        // 새 대화: 빈 대화 (입력칸만)
+        await restart(.full)
+        _ = chat.newChat()
+        await settle()
+        shoot("new-chat")
     }
 
     /// All work 상태 (S3): 필터 카드 · 닫힌 필터 요약 · 맞는 일 없음(Waiting: 지금 데이터에 근거가 없다) · 고정 · Done today(Done 필터)
