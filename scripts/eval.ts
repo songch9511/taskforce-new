@@ -540,6 +540,10 @@ async function main() {
   } catch {
     // .env.local이 없으면 환경변수만 쓴다 (CI)
   }
+  if (values.consult && (!process.env.OPENROUTER_API_KEY || !process.env.LLM_MODEL || !process.env.JEV_MODEL)) {
+    console.log("OPENROUTER_API_KEY · LLM_MODEL · JEV_MODEL 중 없는 값이 있어 대화 상담 채점은 건너뜁니다.");
+    return;
+  }
   if (!process.env.OPENROUTER_API_KEY || !process.env.LLM_MODEL) {
     console.log("OPENROUTER_API_KEY 또는 LLM_MODEL이 없어 추출 채점은 건너뜁니다.");
     return;
