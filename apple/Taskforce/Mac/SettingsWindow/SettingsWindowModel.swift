@@ -75,15 +75,31 @@ enum SettingsWindowDetail: Hashable {
     case privacy
     /// Connections › 서비스 하나: Sync Now · Disconnect
     case connection(ConnectionProvider)
+    /// Account › Remembered: 기억 목록 (B3)
+    case remembered
+    /// Account › Remembered › 기억 하나 (RememberedDetail). 정정 · 확인 · 옮기기로 새 행이 생기면 `MemoryStore.resolve`가 따라간다
+    case memory(UUID)
 
     var title: String {
         switch self {
         case .privacy: "Privacy & AI Data"
         case .connection(let provider): SettingsConnectionLine.name(provider)
+        case .remembered, .memory: "Remembered"
         }
     }
 
-    var tab: SettingsWindowTab { .connections }
+    var tab: SettingsWindowTab {
+        switch self {
+        case .privacy, .connection: .connections
+        case .remembered, .memory: .account
+        }
+    }
+
+    /// Back 링크 이름: 기억 하나에서는 Remembered 목록으로, 나머지는 탭으로
+    func backTitle(tab: SettingsWindowTab) -> String {
+        if case .memory = self { return "Remembered" }
+        return tab.title
+    }
 }
 
 /// 트레이 안에서 확인 중인 지우기 (`ConfirmRow`). 한 번에 하나, 탭 · 상세를 옮기면 닫힌다
@@ -91,6 +107,8 @@ enum SettingsWindowConfirm: Hashable {
     case deleteAccount
     case withdrawConsent
     case disconnect(ConnectionProvider)
+    /// Account › Remembered › 기억 하나: Forget
+    case forgetMemory(UUID)
 }
 
 /// 창의 상세 · 확인 상태. 탭은 `settings.tab`에 저장되고(마지막 탭을 기억), 상세 · 확인은 창 밖에서 열면 지운다.
@@ -126,6 +144,25 @@ final class SettingsWindowModel {
     func close() {
         detail = nil
         confirming = nil
+    }
+
+    /// Back 링크: 기억 하나에서는 목록으로, 그 밖은 탭 첫 화면으로
+    func back() {
+        if case .memory = detail {
+            open(.remembered)
+        } else {
+            close()
+        }
+    }
+
+    /// 대화 · 기억 상태 (앱 시작 때 `AppRuntime.chatRuntime`이 붙인다). 플래그가 꺼져 있으면 nil
+    private(set) var chatRuntime: ChatRuntime?
+
+    /// 대화 · 기억 상태에 붙는다: 계정이 떠나면 열린 기억 상세를 닫는다 (다른 계정의 기억 id로 상세가 남지 않게)
+    func bind(to runtime: ChatRuntime) {
+        guard chatRuntime == nil else { return }
+        chatRuntime = runtime
+        runtime.scope.onLeft { [weak self] in self?.close() }
     }
 }
 
@@ -277,7 +314,7 @@ final class ProfileDraft {
 
 /// 탭의 주제. 제목이 없는 것은 앞 주제에 12로 이어지는 트레이 · 링크 줄
 enum SettingsWindowSection: String, CaseIterable, Identifiable {
-    case profile, signIn, deleteAccount, about, legal
+    case profile, signIn, remembered, deleteAccount, about, legal
     case aiProcessing, sources, moreServices
     case runWithAI
     case notifications
@@ -298,7 +335,7 @@ enum SettingsWindowSection: String, CaseIterable, Identifiable {
         case .notifications: "Notifications"
         case .launcher: "Launcher"
         case .panelKeys: "In the panel"
-        case .deleteAccount, .legal, .moreServices, .signInRequired: nil
+        case .deleteAccount, .legal, .moreServices, .signInRequired, .remembered: nil
         }
     }
 }
@@ -312,7 +349,7 @@ extension SettingsWindowTab {
     /// 탭의 주제, 위에서부터. 아직 연결되지 않은 것(`SettingsWindowHidden`)은 넣지 않는다
     func sections(_ access: SettingsWindowAccess) -> [SettingsWindowSection] {
         switch (self, access) {
-        case (.account, .signedIn): [.profile, .signIn, .deleteAccount, .about, .legal]
+        case (.account, .signedIn): [.profile, .signIn, .remembered, .deleteAccount, .about, .legal]
         // 로그아웃: 로그인 화면, 그 아래 About · 링크는 그대로 (읽는 중이면 로그인 자리에 진행 표시)
         case (.account, _): [.signIn, .about, .legal]
         case (.connections, .signedIn): [.aiProcessing, .sources, .moreServices]
@@ -330,7 +367,6 @@ enum SettingsWindowHidden: String, CaseIterable {
     case planAndUsage = "Plan & usage"
     case usageAndCredits = "Usage & Credits"
     case subscription = "Subscription"
-    case remembered = "Remembered"
     case yourAgents = "Your agents"
     case policyDefault = "Default for new work"
     case policyOverrides = "Overrides"
@@ -340,7 +376,7 @@ enum SettingsWindowHidden: String, CaseIterable {
 
     var tab: SettingsWindowTab {
         switch self {
-        case .planAndUsage, .usageAndCredits, .subscription, .remembered, .taskList: .account
+        case .planAndUsage, .usageAndCredits, .subscription, .taskList: .account
         case .yourAgents: .connections
         case .policyDefault, .policyOverrides, .externalCosts: .execution
         case .reportsDelivery: .reports
@@ -352,7 +388,6 @@ enum SettingsWindowHidden: String, CaseIterable {
         switch self {
         case .planAndUsage, .usageAndCredits, .subscription, .externalCosts:
             "G2: 10-09 가격(Lemon Squeezy v2)이 $9.99 구독 · credits를 대신한다. UsageCreditsPane · 구독은 기존 창에 남는다"
-        case .remembered: "B3: memory_items 읽기 · RememberedDetail"
         case .yourAgents: "D4: 에이전트 adapter gate가 꺼져 있다"
         case .policyDefault, .policyOverrides: "실행 정책 데이터 · API가 아직 없다"
         case .reportsDelivery: "H2: 보고 설정을 아직 저장 · 보내지 않는다"
@@ -457,12 +492,14 @@ struct SettingsConnectionLine: Equatable {
 }
 
 /// Shortcuts › In the panel: Edge 패널에서 지금 실제로 동작하는 키만 (`EdgeShellModel.Control.shortcut` · `EdgeShellController.handleKey`).
-/// 디자인의 ⌘1 Review · ⌘N New chat · 1–3 답하기는 그 화면이 생길 때(S3 · B3) 더한다
+/// 디자인의 ⌘1 Review · 1–3 답하기는 그 화면이 생길 때(S4) 더한다. ⌘N New chat은 B3
 enum SettingsPanelKeys {
+    static let newChat = (label: "New chat", shortcut: "⌘N")
+
     static var rows: [(label: String, keys: [String])] {
         EdgeShellModel.Control.allCases.compactMap { control in
             control.shortcut.map { (control.label, keyCaps($0)) }
-        }
+        } + [(newChat.label, keyCaps(newChat.shortcut))]
     }
 
     /// "⌘2" → ["⌘", "2"] (수식키는 하나씩, 나머지는 키 하나)

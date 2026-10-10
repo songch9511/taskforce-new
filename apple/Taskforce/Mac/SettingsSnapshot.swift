@@ -93,7 +93,34 @@ enum SettingsSnapshot {
             await settle()
             await shoot("account-delete")
             model.close()
+            await captureRemembered(model: model, shoot: { name, end in await shoot(name, end: end) }, settle: { await settle($0) })
         }
+    }
+
+    /// Account › Remembered (B3): 입구 · 목록 · 상세(explicit, 추정) · Forget 제자리 확인. 가짜 서버(`SampleChatGateway`)의 렌더 fixture
+    private static func captureRemembered(
+        model: SettingsWindowModel, shoot: (String, Bool) async -> Void, settle: (Double) async -> Void
+    ) async {
+        guard let runtime = model.chatRuntime else { return }
+        await show(.account)
+        await shoot("remembered-entry", true)
+        model.open(.remembered)
+        await runtime.memory.loadList()
+        await settle(1.2)
+        await shoot("remembered-list", false)
+        model.open(.memory(SampleChatIDs.keepsShort))
+        await settle(1.2)
+        await shoot("remembered-detail-explicit", false)
+        model.confirming = .forgetMemory(SampleChatIDs.keepsShort)
+        await settle(1.2)
+        await shoot("remembered-detail-forget", false)
+        model.open(.memory(SampleChatIDs.jordan))
+        await settle(1.2)
+        await shoot("remembered-detail-inferred", false)
+        model.open(.memory(SampleChatIDs.thursdays))
+        await settle(1.2)
+        await shoot("remembered-detail-observed", false)
+        model.close()
     }
 
     /// 그 탭을 마지막 탭으로 적고 창 밖에서 연다 (More 메뉴와 같은 길)
