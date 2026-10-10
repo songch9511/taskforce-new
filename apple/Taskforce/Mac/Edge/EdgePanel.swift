@@ -77,7 +77,8 @@ struct EdgePanelView: View {
     /// Chats에 대화가 없음 (New chat은 B3)
     static let noChats = "No conversations yet."
 
-    /// All work (S3): 기존 목록(`/api/v1/now` + 오늘 끝낸 할 일)을 WorkList로. 검색어 · 필터 · 고정은 셸 모델이 가진다
+    /// All work (S3): 기존 목록(`/api/v1/now` + 오늘 끝낸 할 일)을 WorkList로. 검색어 · 필터 · 고정은 셸 모델이 가진다.
+    /// `shell.workItems`가 시각 신호(`timeEpoch`)를 읽으므로, 열린 채 자정 · 시간대 변경을 지나면 이 화면이 다시 그려져 Done today · today도 새로 정해진다
     private var workList: some View {
         WorkList(
             items: shell.workItems,

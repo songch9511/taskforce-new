@@ -28,6 +28,8 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
     /// 앱을 연 뒤 로그인 상태를 처음 알게 되면 한 번: 지금 계정이 아닌 고정을 지운다 (`SavedNowStore.prune`과 같다)
     private var prunedPins = false
     private let pinStore: WorkPinStore
+    /// 로컬 날짜 · 시간대 · 시스템 시계가 바뀌거나 Mac이 깨어나면 All work의 "오늘"을 다시 계산하게 셸 모델에 알린다 (서버 호출 없음)
+    private var timeWatcher: EdgeTimeWatcher?
     #if DEBUG
     /// 디자인 비교 스냅샷이 견본 데이터를 줄일 때 (`EdgeSnapshot`). 바꾸면 바로 다시 읽는다
     var workOverride: ((EdgeWorkSnapshot) -> EdgeWorkSnapshot)? {
@@ -96,6 +98,10 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
                 self?.panel.fitToContent()
             }
         })
+        // 자정 · 시간대 변경 · 시계 조정 · 깨어남을 열린 채 지나도 All work의 "오늘"(지난 Done today · Today 표기)을 다시 계산한다 (`start`가 겹쳐 불려도 구독은 하나)
+        let timeWatcher = timeWatcher ?? EdgeTimeWatcher { [weak shell] in shell?.timeChanged() }
+        self.timeWatcher = timeWatcher
+        timeWatcher.start()
     }
 
     private func followSession() {
@@ -335,6 +341,79 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
         shell.dismiss()
     }
 }
+
+/// 로컬 날짜 · 시간대 · 시스템 시계가 바뀌거나 Mac이 깨어나면 알린다 (All work의 "오늘"이 바뀌었을 수 있다: 열린 채 기다리는 패널의 지난 Done today · Today 표기).
+/// 알리기만 한다: 서버 호출 · 목록 읽기 · 폴링 · 타이머가 없다. 구독은 `start`로 한 번만 걸리고(겹쳐 불려도 한 번), `stop` · 해제 때 모두 걷힌다.
+/// 알림 센터 · 큐 · 시간대 캐시 비우기는 시험이 가짜로 바꾼다 (실제 시스템 시계 · 시간대는 바꾸지 않는다)
+@MainActor
+final class EdgeTimeWatcher {
+    private let center: NotificationCenter
+    private let workspaceCenter: NotificationCenter
+    private let queue: OperationQueue?
+    private let resetTimeZone: () -> Void
+    private let onChange: @MainActor () -> Void
+    private var registrations: Registrations?
+
+    var isWatching: Bool { registrations != nil }
+
+    /// - center: 날짜 · 시간대 · 시계 알림이 오는 곳 (앱은 `.default`)
+    /// - workspaceCenter: 깨어남 알림이 오는 곳 (앱은 `NSWorkspace.shared.notificationCenter`)
+    /// - resetTimeZone: 시간대가 바뀌면 알리기 전에 먼저 부른다. Foundation이 캐시한 시스템 시간대(`Calendar.current`가 쓴다)를 비워, 알림을 받은 쪽이 새 시간대로 읽게 한다
+    init(
+        center: NotificationCenter = .default, workspaceCenter: NotificationCenter = NSWorkspace.shared.notificationCenter,
+        queue: OperationQueue? = .main, resetTimeZone: @escaping () -> Void = { NSTimeZone.resetSystemTimeZone() },
+        onChange: @escaping @MainActor () -> Void
+    ) {
+        self.center = center
+        self.workspaceCenter = workspaceCenter
+        self.queue = queue
+        self.resetTimeZone = resetTimeZone
+        self.onChange = onChange
+    }
+
+    func start() {
+        guard registrations == nil else { return }
+        let registrations = Registrations()
+        func observe(_ center: NotificationCenter, _ name: Notification.Name, resetsTimeZone: Bool = false) {
+            let token = center.addObserver(forName: name, object: nil, queue: queue) { [weak self] _ in
+                MainActor.assumeIsolated { self?.changed(resetsTimeZone: resetsTimeZone) }
+            }
+            registrations.add(center, token)
+        }
+        observe(center, .NSCalendarDayChanged)
+        observe(center, .NSSystemTimeZoneDidChange, resetsTimeZone: true)
+        observe(center, .NSSystemClockDidChange)
+        observe(workspaceCenter, NSWorkspace.didWakeNotification)
+        self.registrations = registrations
+    }
+
+    func stop() {
+        registrations?.removeAll()
+        registrations = nil
+    }
+
+    private func changed(resetsTimeZone: Bool) {
+        if resetsTimeZone { resetTimeZone() }
+        onChange()
+    }
+
+    /// 건 구독들: 비우거나 해제되면 알림 센터에서 걷는다 (해제는 격리 밖에서 불리므로 격리가 없는 작은 객체가 맡는다)
+    private final class Registrations: @unchecked Sendable {
+        private var entries: [(center: NotificationCenter, token: NSObjectProtocol)] = []
+
+        func add(_ center: NotificationCenter, _ token: NSObjectProtocol) {
+            entries.append((center, token))
+        }
+
+        func removeAll() {
+            for entry in entries { entry.center.removeObserver(entry.token) }
+            entries = []
+        }
+
+        deinit { removeAll() }
+    }
+}
+
 /// 패널이 보이는 동안 동기화를 따라 읽는 작업 하나: 켜면 하나만 돌고, 꺼지면(`shouldFollow` 거짓) 스스로 취소한다
 @MainActor
 final class EdgeSyncFollower {

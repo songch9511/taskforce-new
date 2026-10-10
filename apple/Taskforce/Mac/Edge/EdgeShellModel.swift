@@ -172,6 +172,9 @@ final class EdgeShellModel {
     private(set) var pins = WorkPins()
     /// 지금 로그인한 계정 (고정을 읽고 쓰는 기준). 로그아웃이면 nil
     private(set) var account: UUID?
+    /// 로컬 날짜 · 시간대 · 시스템 시계가 바뀌었을 수 있다는 신호 (`timeChanged()`, 컨트롤러의 `EdgeTimeWatcher`가 올린다).
+    /// `workItems`가 읽어서, 자정 · 시간대 변경 뒤에도 열린 채인 패널이 다시 계산한다. 값 자체에는 뜻이 없다
+    private(set) var timeEpoch = 0
     /// All work의 버튼이 가는 곳 (컨트롤러가 채운다): Add task = 기존 런처(직접 추가의 정식 입구) · Connect a source = 설정 Connections ·
     /// Try again = 목록 다시 읽기
     @ObservationIgnored var onAddTask: () -> Void = {}
@@ -180,6 +183,7 @@ final class EdgeShellModel {
 
     @ObservationIgnored private let schedule: EdgeSchedule
     @ObservationIgnored private let clock: () -> Date
+    @ObservationIgnored private let calendar: () -> Calendar
     @ObservationIgnored private let pinStore: WorkPinStore
     @ObservationIgnored private var enterTimer: EdgeTimer?
     @ObservationIgnored private var leaveTimer: EdgeTimer?
@@ -188,14 +192,16 @@ final class EdgeShellModel {
     /// 레일에서 막 끝난 일 → 끝난 시각 (3초 동안 Done 링)
     @ObservationIgnored private var recentlyDone: [UUID: Date] = [:]
 
+    /// - calendar: Done today가 오늘인지 가를 달력 · 시간대 (`NowStore`가 읽은 날을 적는 `Calendar.current`와 같다)
     /// - pinStore: 고정 저장 (앱은 전용 suite, 테스트 · 견본은 메모리)
     init(
         reduceMotion: Bool = false, schedule: @escaping EdgeSchedule = EdgeScheduler.live, clock: @escaping () -> Date = Date.init,
-        pinStore: WorkPinStore = WorkPinStore(defaults: nil)
+        calendar: @escaping () -> Calendar = { Calendar.current }, pinStore: WorkPinStore = WorkPinStore(defaults: nil)
     ) {
         self.reduceMotion = reduceMotion
         self.schedule = schedule
         self.clock = clock
+        self.calendar = calendar
         self.pinStore = pinStore
     }
 
@@ -332,8 +338,17 @@ final class EdgeShellModel {
 
     // MARK: All work
 
-    /// All work의 줄 (지금 시각의 기기 시간대로 Done today를 정한다)
-    var workItems: [WorkItem] { work.items(now: clock()) }
+    /// All work의 줄 (지금 시각의 기기 시간대로 Done today를 정한다). `timeEpoch`를 읽어, 시각 신호(`timeChanged`)가 오면 이 값을 읽은 화면이 다시 계산한다
+    var workItems: [WorkItem] {
+        _ = timeEpoch
+        return work.items(now: clock(), calendar: calendar())
+    }
+
+    /// 로컬 날짜 · 시간대 · 시스템 시계가 바뀌었거나 Mac이 깨어났다: 열린 채 기다리던 패널이 "오늘"을 다시 계산한다.
+    /// 목록을 새로 읽지는 않는다: 지난 Done today는 허용된 새로 읽기(로그인 · 패널 열기 · Try again · 동기화 끝) 전까지 빠진 채로 둔다
+    func timeChanged() {
+        timeEpoch &+= 1
+    }
 
     func setFilter(_ filter: WorkFilter) {
         workFilter = filter
