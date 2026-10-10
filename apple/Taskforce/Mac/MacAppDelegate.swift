@@ -33,6 +33,8 @@ final class MacAppDelegate: NSObject, NSApplicationDelegate {
         let model: LauncherModel
         switch AppRuntime.startup {
         case .ready(let session, let services):
+            // 설정 창 프로필 칸은 화면과 상관없이 세션을 따라간다 (계정이 떠나면 쓰던 칸 · 남은 저장을 지운다)
+            SettingsWindowModel.shared.profile.bind(to: session)
             session.start()
             model = LauncherModel(
                 session: session, services: services, account: AppRuntime.account(services: services), saved: AppRuntime.savedNow,
@@ -336,7 +338,7 @@ enum SettingsOpener {
             return
         }
         guard case .ready(let session, let services) = AppRuntime.startup else { return }
-        let root = MacSettingsView()
+        let root = MacSettingsRoot()
             .environment(session)
             .environment(\.services, services)
             .environment(AppRuntime.account(services: services))
