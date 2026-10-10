@@ -15,6 +15,7 @@ import {
   loadWindow,
   postUserMessage,
   releaseLease,
+  userMessageExists,
   verifySelected,
 } from "@/lib/conversation/store";
 import { takeRateLimit } from "@/lib/api/rate-limit-store";
@@ -46,6 +47,9 @@ export type Turn = {
 
 const intent = (kind: IntentKind) => ({ kind, confidence: 0.95, judge_version: "intent-v1" });
 
+/** 고른 대상 없음 (store.ts normalizeSelected(undefined)와 같은 모양) */
+export const NO_SELECTION = { action_ids: [], run_ids: [], artifact_ids: [] };
+
 /** 시나리오 · 동시성 테스트가 함께 쓰는 시드 · 호출 */
 export function conversationFixtures(db: () => ConversationsDb) {
   const one = async (sql: string, params: unknown[] = []) => (await db().query(sql, params))[0];
@@ -70,8 +74,8 @@ export function conversationFixtures(db: () => ConversationsDb) {
     async conversation(userId: string, contextId: string | null = null): Promise<string> {
       return (await one(`insert into public.conversations (user_id, context_id) values ($1, $2) returning id`, [userId, contextId])).id as string;
     },
-    post: async (userId: string, conversationId: string, clientId: string, text: string, leaseSeconds = 75) =>
-      (await one(`select * from public.conversation_post_message($1, $2, $3, $4, $5)`, [userId, conversationId, clientId, text, leaseSeconds])) as {
+    post: async (userId: string, conversationId: string, clientId: string, text: string, selected: Record<string, unknown> = NO_SELECTION) =>
+      (await one(`select * from public.conversation_post_message($1, $2, $3, $4, $5::jsonb, 75)`, [userId, conversationId, clientId, text, JSON.stringify(selected)])) as {
         status: string;
         message_id: string | null;
         seq: number | null;
@@ -132,6 +136,21 @@ export function conversationFixtures(db: () => ConversationsDb) {
   return f;
 }
 
+/** 답 내용의 인용 하나 (기본: Slack 채널 글) */
+export const slackCitation = (sourceId: string, quote = "견적서 금요일까지 보내주세요", title = "#sales") => ({
+  action_id: null,
+  source_id: sourceId,
+  source_title: title,
+  source_kind: "message",
+  occurred_at: null,
+  external_url: null,
+  quote,
+});
+
+/** 답 메시지의 인용 [원문 id, 인용, 제목] */
+export const citationsOf = (message: { content: Record<string, unknown> | null }) =>
+  ((message.content?.citations ?? []) as { source_id: string; quote: string; source_title: string | null }[]).map((c) => [c.source_id, c.quote, c.source_title]);
+
 /** 채택 쓰기 계획 (proposal.ts adoptPlan과 같은 모양을 SQL에 직접) */
 function adoptTurn(userId: string, proposal: { messageId: string; proposalId: string; payloadHash: string }, title = "Shape 출시 준비", conversationId = "x") {
   const actionId = randomUUID();
@@ -176,6 +195,41 @@ const explicitItem = (overrides: Record<string, unknown> = {}) => ({
   confidence: null,
   ...overrides,
 });
+
+type Models = { decide: ReturnType<typeof fakeDecide>; complete: ReturnType<typeof fakeComplete> };
+
+/** 운영 handler → store → SQL로 메시지를 보낸다 (가짜 모델). 본문은 요청 그대로 */
+function sender(admin: ReturnType<typeof sqlAdmin>, me: string, conversationId: string, models: () => Models) {
+  return async (body: Record<string, unknown>) => {
+    const response = await handlePostConversationMessage(
+      new Request(`http://localhost/api/v2/conversations/${conversationId}/messages`, { method: "POST", body: JSON.stringify(body) }),
+      conversationId,
+      {
+        enabled: () => true,
+        memoryEnabled: () => true,
+        authenticate: async () => ({ user: { id: me } }),
+        hasConsent: async () => true,
+        rateLimit: () => takeRateLimit(admin, me, "ask", ASK_LIMIT),
+        loadConversation: (_u, id) => loadConversation(admin, me, id),
+        verifySelected: (_u, refs) => verifySelected(admin, me, refs),
+        messageExists: (_u, id, client) => userMessageExists(admin, me, id, client),
+        post: (_u, id, client, text, selected) => postUserMessage(admin, me, id, client, text, selected),
+        loadMessage: (_u, id) => loadMessage(admin, me, id),
+        loadWindow: (_u, id, upto) => loadWindow(admin, me, id, upto),
+        respond: (_u, input) =>
+          respondToMessage(input, {
+            decide: models().decide,
+            complete: models().complete,
+            retrieve: (q) => loadConsultContext(admin, me, { contextId: input.conversation.contextId, query: q.text, chunks: q.chunks, deadline: Date.now() + 60_000, now: input.now }),
+            newId: randomUUID,
+          }),
+        finish: (_u, id, plan) => finishTurn(admin, me, id, plan),
+        release: (_u, id) => releaseLease(admin, me, id),
+      },
+    );
+    return { status: response.status, body: await response.json() };
+  };
+}
 
 export function conversationsTests(db: () => ConversationsDb) {
   const f = conversationFixtures(db);
@@ -294,6 +348,18 @@ export function conversationsTests(db: () => ConversationsDb) {
       expect((await f.message(written.reply_id!)).refs.memory_item_ids).toEqual(written.memory_ids);
     });
 
+    it("기억의 범위가 turn 도중 지워지면 500이 아니라 conflict (아무것도 쓰지 않고 처리 표시 풀림)", async () => {
+      const me = await f.user();
+      const context = await f.context(me);
+      const conversation = await f.conversation(me, context);
+      const posted = await f.post(me, conversation, randomUUID(), "이 프로젝트 개발은 Opus 5.5로");
+      await db().query(`delete from public.work_contexts where id = $1`, [context]);
+      const done = await f.finish(me, posted.message_id!, { memory: [{ item: explicitItem({ scope_kind: "context", context_id: context }) }] });
+      expect(done.status).toBe("conflict");
+      expect(await f.count(`select count(*)::int as n from public.memory_items where user_id = $1`, [me])).toBe(0);
+      expect(await f.message(posted.message_id!)).toMatchObject({ reply_lease_until: null });
+    });
+
     it("새 제안이 나오면 같은 대화의 앞 열린 제안은 superseded (다른 대화의 제안은 그대로)", async () => {
       const me = await f.user();
       const conversation = await f.conversation(me);
@@ -384,6 +450,77 @@ export function conversationsTests(db: () => ConversationsDb) {
       expect(reply.text).toBe("김대표가 금요일까지 보내 달라고 했어요.");
       expect((reply.content as { segments: unknown[] }).segments).toEqual([{ text: "김대표가 금요일까지 보내 달라고 했어요.", tier: "T1" }]);
     });
+
+    it("이미 끊어 지운 Slack 원문을 인용한 답을 나중에 써도(모델이 도는 동안 끊김) 인용 · 제목은 자리 표시로 저장된다", async () => {
+      const me = await f.user();
+      const conversation = await f.conversation(me);
+      const slack = await f.connectionSource(me, "slack", "#sales\n김대표: 견적서 금요일까지 보내주세요");
+      const posted = await f.post(me, conversation, randomUUID(), "김대표 견적 건 어떻게 됐어?");
+      await db().query(`select public.purge_slack_sources($1::uuid[])`, [[slack]]);
+      const done = await f.finish(me, posted.message_id!, { reply: { content: { segments: [{ text: "답", tier: "T1" }], citations: [slackCitation(slack)] } } });
+      expect(done.status).toBe("written");
+      expect(citationsOf(await f.message(done.reply_id!))).toEqual([[slack, SLACK_DISCONNECTED_QUOTE, "Slack"]]);
+    });
+
+    it("L7: 끊기 · 삭제 때 인용한 답을 원문 id 인덱스로 찾는다 (원문마다 사용자 메시지 전체를 훑지 않게)", async () => {
+      const rows = await db().query(`select indexdef from pg_indexes where schemaname = 'public' and indexname = 'conversation_messages_citations_idx'`);
+      expect(rows).toHaveLength(1);
+      expect(String(rows[0].indexdef)).toMatch(/gin \(\(\(?content -> 'citations'::text\)?\) jsonb_path_ops\)/i);
+    });
+
+    it("Codex P1: 끊기 커밋 → 끊기 전 자료로 만든 늦은 답 → 끊기 다시 실행에도 그 원문 인용만 자리 표시 (다른 연결 · 일반 원문 · 다른 사용자는 그대로)", async () => {
+      const me = await f.user();
+      const them = await f.user();
+      const mine = await f.conversation(me);
+      const theirs = await f.conversation(them);
+      const purged = await f.connectionSource(me, "slack", "private Slack quote");
+      const otherSlack = await f.connectionSource(me, "slack", "다른 워크스페이스 글");
+      const doc = await f.connectionSource(me, "notion", "회의록: 디자인 확정 뒤 개발 시작");
+      const theirSlack = await f.connectionSource(them, "slack", "private Slack quote");
+      const theirMessage = await f.post(them, theirs, randomUUID(), "question");
+      const theirReply = await f.finish(them, theirMessage.message_id!, {
+        reply: { content: { segments: [{ text: "답", tier: "T1" }], citations: [slackCitation(theirSlack, "private Slack quote", "private channel")] } },
+      });
+      const message = await f.post(me, mine, randomUUID(), "question");
+      await db().query(`select public.purge_slack_sources($1::uuid[])`, [[purged]]);
+      const late = await f.finish(me, message.message_id!, {
+        reply: {
+          text: "summary",
+          content: {
+            segments: [{ text: "summary", tier: "T1" }],
+            citations: [
+              slackCitation(purged, "private Slack quote", "private channel"),
+              slackCitation(otherSlack, "다른 워크스페이스 글", "#general"),
+              slackCitation(doc, "디자인 확정 뒤 개발 시작", "회의록"),
+            ],
+          },
+        },
+      });
+      expect(late.status).toBe("written");
+      await db().query(`select public.purge_slack_sources($1::uuid[])`, [[purged]]);
+      expect(citationsOf(await f.message(late.reply_id!))).toEqual([
+        [purged, SLACK_DISCONNECTED_QUOTE, "Slack"],
+        [otherSlack, "다른 워크스페이스 글", "#general"],
+        [doc, "디자인 확정 뒤 개발 시작", "회의록"],
+      ]);
+      expect(citationsOf(await f.message(theirReply.reply_id!))).toEqual([[theirSlack, "private Slack quote", "private channel"]]);
+    });
+
+    it("원문 행이 지워지면 답 내용의 그 원문 인용 · 제목을 비운다 (A16)", async () => {
+      const me = await f.user();
+      const conversation = await f.conversation(me);
+      const doc = await f.connectionSource(me, "notion", "회의록: 디자인 확정 뒤 개발 시작");
+      const keep = await f.connectionSource(me, "notion", "다른 문서: 예산 3천만 원");
+      const posted = await f.post(me, conversation, randomUUID(), "디자인 언제 확정돼?");
+      const done = await f.finish(me, posted.message_id!, {
+        reply: { content: { segments: [{ text: "답", tier: "T1" }], citations: [slackCitation(doc, "디자인 확정 뒤 개발 시작", "회의록"), slackCitation(keep, "예산 3천만 원", "다른 문서")] } },
+      });
+      await db().query(`delete from public.sources where id = $1`, [doc]);
+      expect(citationsOf(await f.message(done.reply_id!))).toEqual([
+        [doc, "", null],
+        [keep, "예산 3천만 원", "다른 문서"],
+      ]);
+    });
   });
 
   describe("다른 사용자 · 다른 대화의 권한 (주입)", () => {
@@ -427,9 +564,22 @@ export function conversationsTests(db: () => ConversationsDb) {
       expect(await db().asUser(them, () => db().query(`select id from public.conversation_messages where conversation_id = $1`, [conversation]))).toEqual([]);
 
       await expect(db().asUser(me, () => db().query(`update public.conversation_messages set text = '고침' where id = $1`, [posted.message_id]))).rejects.toThrow(/permission denied/i);
-      await expect(db().asUser(me, () => db().query(`select * from public.conversation_post_message($1, $2, $3, 'x', 75)`, [me, conversation, randomUUID()]))).rejects.toThrow(/permission denied/i);
+      await expect(db().asUser(me, () => db().query(`select * from public.conversation_post_message($1, $2, $3, 'x', '{}'::jsonb, 75)`, [me, conversation, randomUUID()]))).rejects.toThrow(/permission denied/i);
       await expect(db().asUser(me, () => db().query(`select * from public.conversation_finish_turn($1, $2, '{}'::jsonb)`, [me, posted.message_id]))).rejects.toThrow(/permission denied/i);
       await expect(db().asUser(me, () => db().query(`select public.conversation_release_lease($1, $2)`, [me, posted.message_id]))).rejects.toThrow(/permission denied/i);
+      // 로그인하지 않은 역할(anon)도 서버 함수를 부르지 못한다
+      await db().query(`set role anon`);
+      try {
+        for (const call of [
+          `select * from public.conversation_post_message('${me}', '${conversation}', '${randomUUID()}', 'x', '{}'::jsonb, 75)`,
+          `select * from public.conversation_finish_turn('${me}', '${posted.message_id}', '{}'::jsonb)`,
+          `select public.conversation_release_lease('${me}', '${posted.message_id}')`,
+        ]) {
+          await expect(db().query(call)).rejects.toThrow(/permission denied/i);
+        }
+      } finally {
+        await db().query(`reset role`);
+      }
     });
 
     it("서버 역할(service_role)로 세 함수를 모두 부를 수 있다: 안에서 부르는 remember_memory_item · write_action 권한까지", async () => {
@@ -474,37 +624,9 @@ export function conversationsTests(db: () => ConversationsDb) {
         const created = await createConversation(admin, me, {});
         expect(created.status).toBe("created");
         const conversationId = created.status === "created" ? created.conversation.id : "";
-        let models: { decide: ReturnType<typeof fakeDecide>; complete: ReturnType<typeof fakeComplete> } = { decide: fakeDecide({ intent: "consult" }), complete: fakeComplete(reply()) };
-        const user = { user: { id: me } };
-        const send = async (text: string, clientId = randomUUID()) => {
-          const response = await handlePostConversationMessage(
-            new Request(`http://localhost/api/v2/conversations/${conversationId}/messages`, { method: "POST", body: JSON.stringify({ client_message_id: clientId, text }) }),
-            conversationId,
-            {
-              enabled: () => true,
-              memoryEnabled: () => true,
-              authenticate: async () => user,
-              hasConsent: async () => true,
-              rateLimit: () => takeRateLimit(admin, me, "ask", ASK_LIMIT),
-              loadConversation: (_u, id) => loadConversation(admin, me, id),
-              verifySelected: (_u, refs) => verifySelected(admin, me, refs),
-              post: (_u, id, client, body) => postUserMessage(admin, me, id, client, body),
-              loadMessage: (_u, id) => loadMessage(admin, me, id),
-              loadWindow: (_u, id, upto) => loadWindow(admin, me, id, upto),
-              respond: (_u, input) =>
-                respondToMessage(input, {
-                  decide: models.decide,
-                  complete: models.complete,
-                  retrieve: (q) => loadConsultContext(admin, me, { contextId: input.conversation.contextId, query: q.text, chunks: q.chunks, deadline: Date.now() + 60_000, now: input.now }),
-                  newId: randomUUID,
-                }),
-              finish: (_u, id, plan) => finishTurn(admin, me, id, plan),
-              release: (_u, id) => releaseLease(admin, me, id),
-            },
-          );
-          const body = await response.json();
-          return { status: response.status, body };
-        };
+        let models: Models = { decide: fakeDecide({ intent: "consult" }), complete: fakeComplete(reply()) };
+        const http = sender(admin, me, conversationId, () => models);
+        const send = (text: string, clientId = randomUUID()) => http({ client_message_id: clientId, text });
         const currentMemory = () => db().query(`select id, kind, subject, statement, origin, source_ref, superseded_by from public.memory_items where user_id = $1 and superseded_at is null order by kind`, [me]);
 
         // (1) ARCH01: 기억 2건 (explicit, 출처 = 그 메시지, 범위 = All work)
@@ -655,6 +777,46 @@ export function conversationsTests(db: () => ConversationsDb) {
       expect(await f.memoryItem(done.memory_ids[0])).toMatchObject({ statement: "개발은 Opus 5.5로", source_ref: { message_id: posted.message_id, quote: "개발은 Opus 5.5로 할 거야" } });
       const window = await loadWindow(sqlAdmin((sql, params) => db().query(sql, params)), me, conversation, 99);
       expect(window.messages.map((m) => m.textExpired)).toEqual([true, true]);
+    });
+
+    it("Codex P2: 같은 client_message_id를 다시 보낼 때 고른 대상(refs)이 다르면 409 mismatch — 순서 · 중복만 다르면 같은 제출, 다시 처리할 때는 처음 고른 대상", async () => {
+      const me = await f.user();
+      const admin = sqlAdmin((sql, params) => db().query(sql, params));
+      const created = await createConversation(admin, me, {});
+      const conversationId = created.status === "created" ? created.conversation.id : "";
+      const action = async (title: string) => (await f.one(`insert into public.actions (user_id, title) values ($1, $2) returning id`, [me, title])).id as string;
+      const a = await action("견적서 보내기");
+      const b = await action("회의록 정리");
+      const failing = { decide: fakeDecide(() => { throw new Error("공급자 오류"); }), complete: fakeComplete(reply()) };
+      const working = { decide: fakeDecide({ intent: "modify" }), complete: fakeComplete(reply()) };
+      let models: Models = failing;
+      const send = sender(admin, me, conversationId, () => models);
+      const client = randomUUID();
+      const text = "이거 마무리해줘";
+
+      expect((await send({ client_message_id: client, text, refs: { action_ids: [a] } })).status).toBe(500); // 모델 실패: 메시지는 남고 처리 표시는 풀림
+      models = working;
+      const swapped = await send({ client_message_id: client, text, refs: { action_ids: [b] } });
+      expect(swapped.status).toBe(409);
+      expect(swapped.body.error.message).toBe("같은 client_message_id로 다른 글을 보냈습니다.");
+      expect(working.decide).not.toHaveBeenCalled();
+
+      const same = await send({ client_message_id: client, text, refs: { action_ids: [a, a] } }); // 중복만 다름 = 같은 제출
+      expect(same.status).toBe(200);
+      expect(same.body.message.refs.action_ids).toEqual([a]);
+      expect((await send({ client_message_id: client, text, refs: { action_ids: [b] } })).status).toBe(409); // 완료 뒤에도 다른 대상은 그 답을 받지 못한다
+      expect((await send({ client_message_id: client, text, refs: { action_ids: [a] } })).body.reply.id).toBe(same.body.reply.id);
+
+      const other = randomUUID();
+      models = failing;
+      expect((await send({ client_message_id: other, text: "둘 다 해줘", refs: { action_ids: [a, b] } })).status).toBe(500);
+      models = working;
+      expect((await send({ client_message_id: other, text: "둘 다 해줘", refs: { action_ids: [b, a] } })).status).toBe(200); // 순서만 다름 = 같은 제출
+      const noRefs = randomUUID();
+      models = failing;
+      expect((await send({ client_message_id: noRefs, text: "이건?" })).status).toBe(500);
+      models = working;
+      expect((await send({ client_message_id: noRefs, text: "이건?", refs: { action_ids: [a] } })).status).toBe(409); // 처음엔 대상 없음 → 대상 추가도 다른 제출
     });
 
     it("A04: 열린 할 일이 많아도 조건 조회로 전체 수를 센다 (top-k 검색이 아님) · 남의 할 일 id를 대상으로 보내면 404 · 저장 0", async () => {

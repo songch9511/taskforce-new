@@ -16,13 +16,14 @@ import {
   loadWindow,
   postUserMessage,
   releaseLease,
+  userMessageExists,
   verifySelected,
 } from "@/lib/conversation/store";
 import { flagEnabled } from "@/lib/flags";
 import { createAdminClient } from "@/lib/supabase/admin";
 
 // 메시지 보내기 (대화 v2, 구현 계획 B2): 저장 → 의도(Jev) → 필요하면 기록 읽기 + 상담(LLM 한 번, 기억 후보 포함) → 한 트랜잭션으로 답 · 기억 · 채택 쓰기.
-// gate CONVERSATIONS_V2_ENABLED가 꺼져 있으면 404 (인증 · DB · 모델을 부르지 않는다). 동의 전 409, 횟수는 물어보기와 같은 한도(10분 20번).
+// gate CONVERSATIONS_V2_ENABLED가 꺼져 있으면 404 (인증 · DB · 모델을 부르지 않는다). 동의 전 409, 횟수는 물어보기와 같은 한도(10분 20번, 새 제출은 저장 전에 센다).
 // 같은 client_message_id는 같은 제출: 답이 있으면 저장된 답을 그대로(모델 호출 없음), 처리 중이면 409.
 // 앱도 60초 기다린다 (lib/ai/deadline.ts INTERACTIVE_MAX_DURATION_S와 같아야 한다, route.test.ts). 메시지 · 답은 로그에 남기지 않는다.
 export const maxDuration = 60;
@@ -39,7 +40,8 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     rateLimit: ({ user }) => takeRateLimit(createAdminClient(), user.id, "ask", ASK_LIMIT),
     loadConversation: ({ user }, conversationId) => loadConversation(createAdminClient(), user.id, conversationId),
     verifySelected: ({ user }, refs) => verifySelected(createAdminClient(), user.id, refs),
-    post: ({ user }, conversationId, clientMessageId, text) => postUserMessage(createAdminClient(), user.id, conversationId, clientMessageId, text),
+    messageExists: ({ user }, conversationId, clientMessageId) => userMessageExists(createAdminClient(), user.id, conversationId, clientMessageId),
+    post: ({ user }, conversationId, clientMessageId, text, selected) => postUserMessage(createAdminClient(), user.id, conversationId, clientMessageId, text, selected),
     loadMessage: ({ user }, messageId) => loadMessage(createAdminClient(), user.id, messageId),
     loadWindow: ({ user }, conversationId, uptoSeq) => loadWindow(createAdminClient(), user.id, conversationId, uptoSeq),
     respond: ({ user }, input) => {

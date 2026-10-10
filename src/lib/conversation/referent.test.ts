@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { resolveReferent, type Target } from "./referent";
+import { normalizeSelected, resolveReferent, type Target } from "./referent";
 
 // 지시 대상 규칙 1–4 (런타임 계약 2장, A34): 순서대로 하나만, 둘 이상이면 후보 ≤ 3개로 묻는다. 제목 유사도로 고르지 않는다.
 
@@ -41,5 +41,15 @@ describe("resolveReferent", () => {
 
   it("대상이 없으면 none", () => {
     expect(resolveReferent({ selected: [], previousProposal: proposal, linkedOpenActions: [], wants: "work" })).toEqual({ kind: "none" });
+  });
+});
+
+describe("normalizeSelected (같은 제출 비교, Codex P2)", () => {
+  it("소문자 · 중복 제거 · 정렬: 순서 · 중복 · 대소문자만 다르면 같다. 없으면 빈 목록 셋", () => {
+    const A = "AAAAAAAA-0000-4000-8000-000000000001";
+    const b = "bbbbbbbb-0000-4000-8000-000000000002";
+    expect(normalizeSelected({ action_ids: [b, A, A.toLowerCase()] })).toEqual({ action_ids: [A.toLowerCase(), b], run_ids: [], artifact_ids: [] });
+    expect(normalizeSelected({ action_ids: [A.toLowerCase(), b] })).toEqual(normalizeSelected({ action_ids: [b, A] }));
+    expect(normalizeSelected(undefined)).toEqual({ action_ids: [], run_ids: [], artifact_ids: [] });
   });
 });

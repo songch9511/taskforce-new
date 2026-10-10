@@ -4,7 +4,7 @@ import { JevError } from "@/lib/ai/jev";
 import { LlmError } from "@/lib/ai/llm";
 import { ConsentRequiredError } from "@/lib/consent/gate";
 import type { RespondInput, TurnPlan, WindowMessage } from "@/lib/conversation/respond";
-import type { Target } from "@/lib/conversation/referent";
+import { normalizeSelected, type SelectedRefs, type Target } from "@/lib/conversation/referent";
 import { ConsultOutputError } from "@/lib/conversation/respond";
 
 import { aiBudgetErrorResponse } from "./ai-budget";
@@ -80,7 +80,10 @@ export type PostMessageDeps<User extends AppUser> = {
   rateLimit: (user: User) => Promise<Date | null>;
   loadConversation: (user: User, conversationId: string) => Promise<{ id: string; contextId: string | null; contextName: string | null } | null>;
   verifySelected: (user: User, refs: PostConversationMessageRequest["refs"]) => Promise<{ targets: Target[] } | { missing: true }>;
-  post: (user: User, conversationId: string, clientMessageId: string, text: string) => Promise<PostResult>;
+  /** 이 대화에 같은 client_message_id의 사용자 메시지가 이미 있는가 (한도를 저장 전에 셀지 정한다) */
+  messageExists: (user: User, conversationId: string, clientMessageId: string) => Promise<boolean>;
+  /** selected: 앱이 고른 대상(정렬 · 중복 제거). 같은 client_message_id라도 글이나 대상이 다르면 mismatch */
+  post: (user: User, conversationId: string, clientMessageId: string, text: string, selected: SelectedRefs) => Promise<PostResult>;
   loadMessage: (user: User, messageId: string) => Promise<ConversationMessage | null>;
   loadWindow: (user: User, conversationId: string, uptoSeq: number) => Promise<{ messages: WindowMessage[]; omitted: number }>;
   /** 답 만들기 (모델 · 기록 읽기를 묶은 respondToMessage) */
@@ -115,7 +118,21 @@ export async function handlePostConversationMessage<User extends AppUser>(
     const selected = await deps.verifySelected(user, body.data.refs);
     if ("missing" in selected) return errorResponse(404, "not_found", "대상을 찾지 못했습니다.");
 
-    const posted = await deps.post(user, conversation.id, body.data.client_message_id, body.data.text);
+    // 한도: 새 제출이면 저장하기 전에 센다(한도에 걸린 메시지를 남기지 않는다). 같은 제출의 재전송(저장된 답 · 처리 중)은 세지 않고,
+    // 답을 못 받은 같은 제출을 다시 처리할 때(retry)만 저장 뒤에 센다
+    const tooMany = (retryAt: Date) => {
+      const response = errorResponse(429, "rate_limited", "메시지가 너무 잦습니다. 잠시 뒤 다시 시도해 주세요.");
+      response.headers.set("Retry-After", String(retryAfterSeconds(retryAt, deps.now?.() ?? new Date())));
+      return response;
+    };
+    const known = await deps.messageExists(user, conversation.id, body.data.client_message_id);
+    if (!known) {
+      const retryAt = await deps.rateLimit(user);
+      if (retryAt) return tooMany(retryAt);
+    }
+
+    // 고른 대상도 같은 제출의 일부다: 처음 고른 대상이 메시지에 남고, 다시 보낼 때 다르면 mismatch (다시 처리할 때도 처음 대상과 같은 것만 받는다)
+    const posted = await deps.post(user, conversation.id, body.data.client_message_id, body.data.text, normalizeSelected(body.data.refs));
     switch (posted.status) {
       case "not_found":
         return errorResponse(404, "not_found", NOT_FOUND);
@@ -132,13 +149,13 @@ export async function handlePostConversationMessage<User extends AppUser>(
     const seq = posted.seq!;
     leased = messageId;
 
-    const retryAt = await deps.rateLimit(user);
-    if (retryAt) {
-      await deps.release(user, messageId);
-      leased = null;
-      const response = errorResponse(429, "rate_limited", "메시지가 너무 잦습니다. 잠시 뒤 다시 시도해 주세요.");
-      response.headers.set("Retry-After", String(retryAfterSeconds(retryAt, deps.now?.() ?? new Date())));
-      return response;
+    if (known && posted.status === "retry") {
+      const retryAt = await deps.rateLimit(user);
+      if (retryAt) {
+        await deps.release(user, messageId);
+        leased = null;
+        return tooMany(retryAt);
+      }
     }
 
     // 채택 경합(그 사이 같은 제안이 채택됨)이면 한 번 다시 읽어 답한다. 기억 경합은 다시 보내게 한다(모델을 다시 부르지 않는다)

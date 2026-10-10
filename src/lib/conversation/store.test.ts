@@ -128,7 +128,7 @@ describe("RPC 인자", () => {
     };
     expect(await finishTurn(admin, USER, "m", plan)).toEqual({ status: "written", replyId: "r", memoryIds: ["x"], actionId: null });
     expect(calls.map((c) => [c.name, c.ops[0].args[0]])).toEqual([
-      ["conversation_post_message", { p_user_id: USER, p_conversation_id: "c", p_client_message_id: "client", p_text: "안녕", p_lease_seconds: 75 }],
+      ["conversation_post_message", { p_user_id: USER, p_conversation_id: "c", p_client_message_id: "client", p_text: "안녕", p_selected: { action_ids: [], run_ids: [], artifact_ids: [] }, p_lease_seconds: 75 }],
       ["conversation_release_lease", { p_user_id: USER, p_message_id: "m" }],
       ["conversation_finish_turn", { p_user_id: USER, p_message_id: "m", p_turn: { user: { intent: plan.intent, refs: {} }, reply: { text: "답", refs: {}, content: {} }, memory: [], adopt: null } }],
     ]);

@@ -1,9 +1,9 @@
 -- 0.2.0 대화 v2 (구현 계획 B2): 20261103000000_context_core의 conversations · conversation_messages 위에 메시지 쓰기 규칙을 더한다.
--- 새 표는 없다. 새 열 셋 · 서버 전용 함수 셋 · Slack D3 트리거 하나다. 코드: src/lib/conversation/store.ts. gate CONVERSATIONS_V2_ENABLED가 꺼져 있으면 route가 없다(404).
+-- 새 표는 없다. 새 열 넷 · 서버 전용 함수 셋 · 답 인용 가드(Slack D3 · 원문 삭제)다. 코드: src/lib/conversation/store.ts. gate CONVERSATIONS_V2_ENABLED가 꺼져 있으면 route가 없다(404).
 --
 -- 1) 같은 제출을 두 번 저장 · 실행하지 않는다 (런타임 계약 2장 · 10장, A03 · D1):
 --    - 사용자 메시지는 conversation_post_message 하나로만 쓴다. 대화 행을 잠그고 seq를 매긴다(max + 1, 대화마다 한 줄).
---      같은 client_message_id면 새로 쓰지 않는다: 글이 다르면 mismatch, 답이 있으면 answered(모델을 다시 부르지 않는다),
+--      같은 client_message_id면 새로 쓰지 않는다: 글이나 고른 대상(selected)이 다르면 mismatch, 답이 있으면 answered(모델을 다시 부르지 않는다),
 --      그 뒤에 새 사용자 메시지가 이미 있으면 stale, 처리 중이면 in_progress, 처리 표시가 풀렸으면 retry(다시 처리).
 --    - reply_lease_until: 처리 중 표시(사용자 메시지에만). 처리가 실패하면 서버가 풀고(conversation_release_lease), 서버가 죽으면 시각이 지나 풀린다.
 --    - reply_to: 이 답이 답한 사용자 메시지. 사용자 메시지 하나에 답은 하나다(unique). 같은 대화 · 같은 사용자의 메시지만 가리킨다(복합 외래키).
@@ -15,7 +15,7 @@
 --    - 채택은 proposal id로 멱등이다(A41): 제안 메시지 행을 잠그고 state가 open이고 id · payload_hash가 같을 때만 Action을 만든다.
 -- 3) content: assistant 답의 구간(segments, 신뢰 등급) · 인용 · 제안 글 · 사용한 기억 · 원문 id. 앱이 RLS로 읽어 대화를 복원한다.
 --    글이므로 대화 글 보관 기한(V08, 아직 정하지 않음)에 text와 함께 비워야 한다. refs에는 id만 둔다.
---    Slack 끊기 · 앱 제거(D3)는 인용 · 제목을 자리 표시로 바꾼다 (4장 트리거).
+--    Slack 끊기 · 앱 제거(D3)는 인용 · 제목을 자리 표시로, 원문 행 삭제는 인용 · 제목을 비운다 (4장 가드).
 --
 -- 대화 · 기억 · 제안은 실행 권한에 닿지 않는다(I04): 이 파일의 함수는 execution_* 표 · 함수를 읽거나 쓰지 않는다 (tests/db/conversations-v2.test.ts).
 -- 적용: 운영 DB에는 병합 직전 승인을 받고 `supabase db query --linked -f`로 한다(db push 금지). 20261104000000_context_layer 뒤에 적용한다.
@@ -31,6 +31,9 @@ alter table public.conversation_messages
   add column reply_to uuid,
   add column content jsonb constraint conversation_messages_content_shape check (content is null or jsonb_typeof(content) = 'object'),
   add column reply_lease_until timestamptz,
+  -- 사용자 메시지에서 앱이 고른 대상(정렬 · 중복 제거한 {action_ids, run_ids, artifact_ids}): 같은 제출의 동일성에 들어간다 (다르면 mismatch)
+  add column selected jsonb constraint conversation_messages_selected_shape check (selected is null or jsonb_typeof(selected) = 'object'),
+  add constraint conversation_messages_selected_role check (selected is null or role = 'user'),
   -- (id, conversation_id, user_id): reply_to가 같은 대화 · 같은 사용자의 메시지만 가리키게 하는 외래키 대상
   add constraint conversation_messages_id_conversation_user_key unique (id, conversation_id, user_id),
   add constraint conversation_messages_reply_role check (reply_to is null or role = 'assistant'),
@@ -45,7 +48,7 @@ create unique index conversation_messages_reply_to_key on public.conversation_me
 -- ─────────────────────────────────────────────
 -- 2) 사용자 메시지 쓰기 (서버). 결과:
 --    created(새로 씀) · retry(같은 제출, 답 없음, 처리 표시가 풀려 다시 처리) · answered(같은 제출, 답 있음) ·
---    in_progress(같은 제출을 처리 중) · mismatch(같은 client_message_id에 다른 글) · stale(같은 제출이지만 그 뒤 새 사용자 메시지가 있음) ·
+--    in_progress(같은 제출을 처리 중) · mismatch(같은 client_message_id에 다른 글 · 다른 대상) · stale(같은 제출이지만 그 뒤 새 사용자 메시지가 있음) ·
 --    not_found(대화가 없거나 남의 대화)
 -- ─────────────────────────────────────────────
 create function public.conversation_post_message(
@@ -53,6 +56,7 @@ create function public.conversation_post_message(
   p_conversation_id uuid,
   p_client_message_id uuid,
   p_text text,
+  p_selected jsonb,
   p_lease_seconds integer
 ) returns table (status text, message_id uuid, seq integer, reply_id uuid)
 language plpgsql
@@ -79,8 +83,8 @@ begin
     from public.conversation_messages m
    where m.conversation_id = p_conversation_id and m.client_message_id = p_client_message_id;
   if found then
-    -- 글이 다르면 같은 제출이 아니다 (답이 있어도 그 답을 돌려주지 않는다)
-    if v_message.text is distinct from p_text then
+    -- 글이나 고른 대상이 다르면 같은 제출이 아니다 (답이 있어도 그 답을 돌려주지 않는다. 대상은 서버가 정렬 · 중복 제거해 넘긴다)
+    if v_message.text is distinct from p_text or coalesce(v_message.selected, '{}'::jsonb) is distinct from coalesce(p_selected, '{}'::jsonb) then
       return query select 'mismatch'::text, v_message.id, v_message.seq, null::uuid;
       return;
     end if;
@@ -108,8 +112,8 @@ begin
   end if;
 
   select coalesce(max(m.seq), 0) + 1 into v_seq from public.conversation_messages m where m.conversation_id = p_conversation_id;
-  insert into public.conversation_messages (user_id, conversation_id, seq, role, client_message_id, text, reply_lease_until)
-  values (p_user_id, p_conversation_id, v_seq, 'user', p_client_message_id, p_text, now() + make_interval(secs => p_lease_seconds))
+  insert into public.conversation_messages (user_id, conversation_id, seq, role, client_message_id, text, selected, reply_lease_until)
+  values (p_user_id, p_conversation_id, v_seq, 'user', p_client_message_id, p_text, p_selected, now() + make_interval(secs => p_lease_seconds))
   returning id into v_id;
   update public.conversations c set last_message_at = now() where c.id = p_conversation_id;
   return query select 'created'::text, v_id, v_seq, null::uuid;
@@ -184,10 +188,29 @@ begin
   end if;
 
   begin
+    -- 답이 인용한 원문을 먼저 잠근다 (id 순, for share): 원문 글 지우기 · B1 기억 쓰기와 같은 순서(원문 → 기억 · 메시지 행)로 선다.
+    -- 답을 넣을 때 가드(conversation_messages_citation_guard)가 같은 원문의 지금 상태로 인용을 고친다 (4장)
+    perform 1
+       from public.sources s
+      where s.user_id = p_user_id
+        and s.id in (
+          select (c ->> 'source_id')::uuid
+            from jsonb_array_elements(case when jsonb_typeof(p_turn -> 'reply' -> 'content' -> 'citations') = 'array'
+                                           then p_turn -> 'reply' -> 'content' -> 'citations' else '[]'::jsonb end) c
+           where coalesce(c ->> 'source_id', '') ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$')
+      order by s.id
+      for share;
+
     -- 기억: 같은 범위 · 같은 사실 규칙은 remember_memory_item이 지킨다. 하나라도 conflict면 이 turn 전체를 되돌린다
     for v_item in select value from jsonb_array_elements(case when jsonb_typeof(p_turn -> 'memory') = 'array' then p_turn -> 'memory' else '[]'::jsonb end) loop
-      select * into v_written
-        from public.remember_memory_item(p_user_id, v_item -> 'item', (v_item ->> 'corrects')::uuid, (v_item ->> 'expected_version')::integer);
+      begin
+        select * into v_written
+          from public.remember_memory_item(p_user_id, v_item -> 'item', (v_item ->> 'corrects')::uuid, (v_item ->> 'expected_version')::integer);
+      exception
+        -- 기억의 범위(work_contexts)가 그 사이 지워짐: 다시 보내게 conflict (복합 외래키 (context_id, user_id))
+        when foreign_key_violation then
+          raise exception 'conversation_finish_turn: memory scope is gone' using errcode = 'TF409';
+      end;
       if v_written.status is distinct from 'written' then
         raise exception 'conversation_finish_turn: memory conflict' using errcode = 'TF409';
       end if;
@@ -269,45 +292,108 @@ end;
 $$;
 
 -- ─────────────────────────────────────────────
--- 4) Slack 끊기 · 앱 제거 (D3, CLAUDE.md 원칙 2 예외): 답 내용(content.citations)에 남은 Slack 원문 인용 · 제목을 지운다.
---    purge_slack_sources가 원문을 비우는 것(raw_text_purge_reason = 'disconnected')과 같은 트랜잭션에서, 근거 인용과 같은 자리 표시
---    ('Slack 연결을 끊어 지웠어요' = src/lib/retention.ts SLACK_DISCONNECTED_QUOTE · purge_slack_sources)와 원문 제목('Slack')으로 바꾼다.
---    보관 기간(90일) 정리는 근거 인용처럼 인용을 남긴다(원문 글만 지운다). 답 글(text · segments)은 모델이 만든 요약이라 할 일 제목처럼 남는다.
---    여러 번 불러도 같다 (이유가 처음 disconnected가 될 때만 돈다)
+-- 4) 답 인용과 원문 상태 (Slack D3 = CLAUDE.md 원칙 2 예외, 원문 행 삭제 = A16):
+--    답 내용(content.citations)의 인용 · 제목은 그 원문의 지금 상태를 따른다. 가드 트리거 하나가 정한다(쓸 때마다):
+--    - Slack 끊기 · 앱 제거로 지운 원문(raw_text_purge_reason = 'disconnected'): 근거 인용과 같은 자리 표시
+--      ('Slack 연결을 끊어 지웠어요' = src/lib/retention.ts SLACK_DISCONNECTED_QUOTE · purge_slack_sources)와 원문 제목('Slack')
+--    - 없는 원문(지워진 행 · 이 사용자의 것이 아님): 인용 · 제목 · 링크를 비운다
+--    - 보관 기간(90일) 정리 · 접근 상실은 근거 인용처럼 그대로 둔다 (원문 글만 지운다 / 검색에서만 뺀다)
+--    가드는 원문 행을 for share로 잠근다: 원문 글 지우기(update)와 한 줄로 선다 (B1 memory_items_purged_source_guard와 같은 방식).
+--    - 끊기가 먼저 잠그면 답 쓰기는 그 commit을 기다렸다가 지운 값을 읽고 자리 표시로 쓴다
+--    - 답 쓰기가 먼저 잠그면 끊기는 그 commit을 기다렸다가, 원문 쪽 트리거가 커밋된 답을 다시 쓰게 해(가드가 다시 돈다) 지운다
+--    답 글(text · segments)은 모델이 만든 요약이라 할 일 제목처럼 남는다 (Slack 글자가 남을 수 있는 범위는 출시 gate의 제품 · 법무 결정, docs/context-layer.md 7장).
 -- ─────────────────────────────────────────────
-create function public.conversation_purge_slack_citations() returns trigger
+create function public.conversation_messages_citation_guard() returns trigger
 language plpgsql
 security definer
 set search_path = ''
 as $$
+declare
+  v_citation jsonb;
+  v_citations jsonb := '[]'::jsonb;
+  v_reason text;
+  v_found boolean;
+  v_changed boolean := false;
 begin
+  if new.content is null or jsonb_typeof(new.content -> 'citations') is distinct from 'array' then
+    return new;
+  end if;
+  for v_citation in select value from jsonb_array_elements(new.content -> 'citations') loop
+    v_found := false;
+    v_reason := null;
+    if coalesce(v_citation ->> 'source_id', '') ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$' then
+      select true, s.raw_text_purge_reason into v_found, v_reason
+        from public.sources s
+       where s.id = (v_citation ->> 'source_id')::uuid and s.user_id = new.user_id
+       for share;
+    end if;
+    if not coalesce(v_found, false) then
+      if v_citation ->> 'quote' is distinct from '' or v_citation -> 'source_title' is distinct from 'null'::jsonb or v_citation -> 'external_url' is distinct from 'null'::jsonb then
+        v_citation := v_citation || jsonb_build_object('quote', '', 'source_title', null, 'external_url', null);
+        v_changed := true;
+      end if;
+    elsif v_reason = 'disconnected' then
+      if v_citation ->> 'quote' is distinct from 'Slack 연결을 끊어 지웠어요' or v_citation ->> 'source_title' is distinct from 'Slack' then
+        v_citation := v_citation || jsonb_build_object('quote', 'Slack 연결을 끊어 지웠어요', 'source_title', 'Slack');
+        v_changed := true;
+      end if;
+    end if;
+    v_citations := v_citations || jsonb_build_array(v_citation);
+  end loop;
+  if v_changed then
+    new.content := jsonb_set(new.content, '{citations}', v_citations);
+  end if;
+  return new;
+end;
+$$;
+
+create trigger conversation_messages_citation_guard
+  before insert or update of content on public.conversation_messages
+  for each row execute function public.conversation_messages_citation_guard();
+
+-- 원문 쪽: Slack 끊기(이유가 처음 disconnected가 될 때) · 원문 행 삭제에 그 원문을 인용한 답을 다시 쓴다 (가드가 인용을 고친다).
+-- 답 찾기는 인용의 원문 id 인덱스(아래)로 한다: 끊기가 원문 수천 개를 지워도 원문마다 인용한 답만 본다
+create function public.sources_refresh_conversation_citations() returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  v_source public.sources%rowtype;
+begin
+  if tg_op = 'DELETE' then
+    v_source := old;
+  else
+    v_source := new;
+  end if;
   update public.conversation_messages m
-     set content = jsonb_set(m.content, '{citations}', (
-       select coalesce(jsonb_agg(
-                case when c ->> 'source_id' = new.id::text
-                  then c || jsonb_build_object('quote', 'Slack 연결을 끊어 지웠어요', 'source_title', 'Slack')
-                  else c end
-                order by t.ord), '[]'::jsonb)
-         from jsonb_array_elements(m.content -> 'citations') with ordinality as t(c, ord)))
-   where m.user_id = new.user_id and m.role = 'assistant'
-     and jsonb_typeof(m.content -> 'citations') = 'array'
-     and m.content -> 'citations' @> jsonb_build_array(jsonb_build_object('source_id', new.id::text));
+     set content = m.content
+   where m.user_id = v_source.user_id and m.role = 'assistant'
+     and m.content -> 'citations' @> jsonb_build_array(jsonb_build_object('source_id', v_source.id::text));
   return null;
 end;
 $$;
 
-create trigger sources_purge_conversation_citations
+create index conversation_messages_citations_idx on public.conversation_messages using gin ((content -> 'citations') jsonb_path_ops)
+  where role = 'assistant';
+
+create trigger sources_refresh_conversation_citations
   after update of raw_text_purged_at, raw_text_purge_reason on public.sources
   for each row
   when (new.raw_text_purge_reason = 'disconnected' and old.raw_text_purge_reason is distinct from 'disconnected')
-  execute function public.conversation_purge_slack_citations();
+  execute function public.sources_refresh_conversation_citations();
+
+create trigger sources_refresh_conversation_citations_on_delete
+  after delete on public.sources
+  for each row execute function public.sources_refresh_conversation_citations();
 
 -- 함수는 모두 서버(service role) 전용이다 (write_action 패턴). 트리거 함수도 막는다 (트리거로 불릴 때는 권한을 보지 않는다)
-revoke all on function public.conversation_purge_slack_citations() from public, anon, authenticated;
-revoke all on function public.conversation_post_message(uuid, uuid, uuid, text, integer) from public, anon, authenticated;
+revoke all on function public.conversation_messages_citation_guard() from public, anon, authenticated;
+revoke all on function public.sources_refresh_conversation_citations() from public, anon, authenticated;
+revoke all on function public.conversation_post_message(uuid, uuid, uuid, text, jsonb, integer) from public, anon, authenticated;
 revoke all on function public.conversation_release_lease(uuid, uuid) from public, anon, authenticated;
 revoke all on function public.conversation_finish_turn(uuid, uuid, jsonb) from public, anon, authenticated;
-grant execute on function public.conversation_post_message(uuid, uuid, uuid, text, integer) to service_role;
+grant execute on function public.conversation_post_message(uuid, uuid, uuid, text, jsonb, integer) to service_role;
 grant execute on function public.conversation_release_lease(uuid, uuid) to service_role;
 grant execute on function public.conversation_finish_turn(uuid, uuid, jsonb) to service_role;
 

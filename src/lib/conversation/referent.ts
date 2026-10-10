@@ -49,3 +49,14 @@ function dedupe<T extends { id: string }>(items: T[]): T[] {
     return true;
   });
 }
+
+export type SelectedRefs = { action_ids: string[]; run_ids: string[]; artifact_ids: string[] };
+
+/**
+ * 앱이 고른 대상(규칙 1)을 같은 제출 비교용으로 정규화한다: 소문자 · 중복 제거 · 정렬. 순서 · 중복 · 대소문자만 다르면 같은 제출이고,
+ * 대상 자체가 다르면 같은 client_message_id라도 다른 제출이다 (conversation_post_message가 mismatch)
+ */
+export function normalizeSelected(refs: { action_ids?: string[]; run_ids?: string[]; artifact_ids?: string[] } | undefined): SelectedRefs {
+  const norm = (ids: string[] | undefined) => [...new Set((ids ?? []).map((id) => id.toLowerCase()))].sort();
+  return { action_ids: norm(refs?.action_ids), run_ids: norm(refs?.run_ids), artifact_ids: norm(refs?.artifact_ids) };
+}

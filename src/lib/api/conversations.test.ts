@@ -69,6 +69,7 @@ function makeDeps(overrides: Partial<PostMessageDeps<User>> = {}) {
     rateLimit: vi.fn(async () => null),
     loadConversation: vi.fn(async () => ({ id: CONVERSATION, contextId: null, contextName: null })),
     verifySelected: vi.fn(async () => ({ targets: [] })),
+    messageExists: vi.fn(async () => false),
     post: vi.fn(async () => ({ status: "created" as const, messageId: MESSAGE, seq: 1, replyId: null })),
     loadMessage: vi.fn(async (_u: User, messageId: string) => (messageId === REPLY ? replyRow : message())),
     loadWindow: vi.fn(async () => ({
@@ -119,6 +120,14 @@ describe("POST /api/v2/conversations/{id}/messages", () => {
     expect((await send(makeDeps(), { client_message_id: CLIENT, text: TEXT, refs: { memory_item_ids: [id(1)] } })).status).toBe(400);
   });
 
+  it("Codex P2: 고른 대상은 정렬 · 중복 제거해 저장 함수에 넘긴다 (같은 제출 비교에 들어간다)", async () => {
+    const deps = makeDeps();
+    const a = id(2, "abababab");
+    const b = id(1, "abababab");
+    await send(deps, { client_message_id: CLIENT, text: TEXT, refs: { action_ids: [a, b, a.toUpperCase()] } });
+    expect(vi.mocked(deps.post).mock.calls[0][4]).toEqual({ action_ids: [b, a], run_ids: [], artifact_ids: [] });
+  });
+
   it("남의 대화 · 남의 대상(id 주입)이면 404: 저장 · 모델 호출 0", async () => {
     const theirs = makeDeps({ loadConversation: vi.fn(async () => null) });
     expect((await send(theirs)).status).toBe(404);
@@ -132,7 +141,7 @@ describe("POST /api/v2/conversations/{id}/messages", () => {
   });
 
   it("같은 제출(client_message_id)에 답이 있으면 저장된 답 그대로: 한도 · 모델 호출 0", async () => {
-    const deps = makeDeps({ post: vi.fn(async () => ({ status: "answered" as const, messageId: MESSAGE, seq: 1, replyId: REPLY })) });
+    const deps = makeDeps({ messageExists: vi.fn(async () => true), post: vi.fn(async () => ({ status: "answered" as const, messageId: MESSAGE, seq: 1, replyId: REPLY })) });
     const response = await send(deps);
     expect(response.status).toBe(200);
     const body = postConversationMessageResponseSchema.parse(await response.json());
@@ -153,13 +162,28 @@ describe("POST /api/v2/conversations/{id}/messages", () => {
     expect(deps.respond).not.toHaveBeenCalled();
   });
 
-  it("한도에 찼으면 429 + 처리 표시를 푼다 (모델 호출 0)", async () => {
+  it("L1: 새 제출이 한도에 찼으면 저장 전에 429 (메시지를 남기지 않는다, 모델 호출 0)", async () => {
     const deps = makeDeps({ rateLimit: vi.fn(async () => new Date(Date.now() + 30_000)) });
     const response = await send(deps);
     expect(response.status).toBe(429);
     expect(response.headers.get("Retry-After")).toBeTruthy();
-    expect(deps.release).toHaveBeenCalledWith(USER, MESSAGE);
+    expect(deps.post).not.toHaveBeenCalled();
     expect(deps.respond).not.toHaveBeenCalled();
+  });
+
+  it("L1: 답을 못 받은 같은 제출을 다시 처리할 때(retry)는 저장 뒤에 세고, 한도면 처리 표시를 푼다. 새 제출은 한 번만 센다", async () => {
+    const retry = makeDeps({
+      messageExists: vi.fn(async () => true),
+      post: vi.fn(async () => ({ status: "retry" as const, messageId: MESSAGE, seq: 1, replyId: null })),
+      rateLimit: vi.fn(async () => new Date(Date.now() + 30_000)),
+    });
+    expect((await send(retry)).status).toBe(429);
+    expect(retry.release).toHaveBeenCalledWith(USER, MESSAGE);
+    expect(retry.respond).not.toHaveBeenCalled();
+    const fresh = makeDeps();
+    expect((await send(fresh)).status).toBe(200);
+    expect(fresh.rateLimit).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(fresh.rateLimit).mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(fresh.post).mock.invocationCallOrder[0]);
   });
 
   it("새 메시지: 창 → 답 계획 → 한 트랜잭션 쓰기 → 저장된 사용자 메시지 + 답 (응답 계약)", async () => {
@@ -168,6 +192,7 @@ describe("POST /api/v2/conversations/{id}/messages", () => {
     expect(response.status).toBe(200);
     expect(postConversationMessageResponseSchema.safeParse(await response.json()).success).toBe(true);
     expect(deps.loadWindow).toHaveBeenCalledWith(USER, CONVERSATION, 1);
+    expect(deps.post).toHaveBeenCalledWith(USER, CONVERSATION, CLIENT, TEXT, { action_ids: [], run_ids: [], artifact_ids: [] });
     const input = vi.mocked(deps.respond).mock.calls[0] as unknown as [User, { message: { id: string; text: string }; flags: { memory: boolean }; selected: unknown[] }];
     expect(input[1]).toMatchObject({ message: { id: MESSAGE, text: TEXT }, flags: { memory: true }, selected: [] });
     expect(deps.finish).toHaveBeenCalledWith(USER, MESSAGE, expect.objectContaining({ route: "consult" }));

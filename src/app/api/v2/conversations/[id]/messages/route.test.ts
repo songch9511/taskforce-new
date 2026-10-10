@@ -48,6 +48,7 @@ vi.mock("@/lib/conversation/store", () => ({
   loadConsultContext: vi.fn(async () => ({})),
   loadConversation: vi.fn(async () => ({ id: "cccccccc-0000-4000-8000-000000000001", contextId: null, contextName: null })),
   verifySelected: vi.fn(async () => ({ targets: [] })),
+  userMessageExists: vi.fn(async () => false),
   postUserMessage: vi.fn(async () => ({ status: "created", messageId: MESSAGE, seq: 1, replyId: null })),
   loadMessage: vi.fn(async (_admin: unknown, _user: string, id: string) => row(id, id === REPLY ? "assistant" : "user")),
   loadWindow: vi.fn(async () => ({ messages: [{ id: MESSAGE, seq: 1, role: "user", text: "x", textExpired: false, createdAt: "2026-10-10T01:00:00.000Z", refs: {}, content: null }], omitted: 0 })),

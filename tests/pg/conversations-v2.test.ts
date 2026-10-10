@@ -5,7 +5,9 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 
 import { payloadHash } from "@/lib/conversation/proposal";
 
-import { conversationFixtures, conversationsTests } from "../db/conversations-v2.scenarios";
+import { SLACK_DISCONNECTED_QUOTE } from "@/lib/retention";
+
+import { citationsOf, conversationFixtures, conversationsTests, NO_SELECTION, slackCitation } from "../db/conversations-v2.scenarios";
 import { supabaseSchemaScripts } from "../db/local-supabase";
 
 // 시나리오가 서버 코드(src/lib/conversation/store.ts)를 실제 SQL로 부른다
@@ -30,6 +32,7 @@ let admin: pg.Client;
 let setup: pg.Client;
 let a: pg.Client;
 let b: pg.Client;
+let aPid: number;
 let bPid: number;
 
 function urlFor(database: string) {
@@ -51,6 +54,7 @@ beforeAll(async () => {
   for (const sql of await supabaseSchemaScripts()) await setup.query(sql);
   a = await connect(urlFor(DB_NAME));
   b = await connect(urlFor(DB_NAME));
+  aPid = (await a.query<{ pid: number }>("select pg_backend_pid() as pid")).rows[0].pid;
   bPid = (await b.query<{ pid: number }>("select pg_backend_pid() as pid")).rows[0].pid;
 });
 
@@ -104,7 +108,7 @@ async function waitForLockWait(pid: number) {
 }
 
 const post = (client: pg.Client, userId: string, conversationId: string, clientId: string, text: string) =>
-  client.query(`select * from public.conversation_post_message($1, $2, $3, $4, 75)`, [userId, conversationId, clientId, text]).then((r) => r.rows[0]);
+  client.query(`select * from public.conversation_post_message($1, $2, $3, $4, $5::jsonb, 75)`, [userId, conversationId, clientId, text, JSON.stringify(NO_SELECTION)]).then((r) => r.rows[0]);
 const finish = (client: pg.Client, userId: string, messageId: string, turn: Record<string, unknown>) =>
   client
     .query(`select * from public.conversation_finish_turn($1, $2, $3::jsonb)`, [
@@ -217,5 +221,77 @@ describe("대화 v2 경합 (실제 Postgres, 연결 둘)", () => {
     await a.query("commit");
     expect(answered).toMatchObject({ status: "written", reply_seq: 2 });
     expect(await next).toMatchObject({ status: "created", seq: 3 });
+  });
+
+  describe("Slack D3 경합: 끊기와 답 쓰기가 겹쳐도 Slack 인용이 남지 않는다", () => {
+    const answer = (userId: string, messageId: string, sourceId: string) =>
+      finish(b, userId, messageId, { reply: { text: "답", refs: {}, content: { segments: [{ text: "답", tier: "T1" }], citations: [slackCitation(sourceId)] } } });
+    const purge = (client: pg.Client, sourceId: string) => client.query(`select public.purge_slack_sources($1::uuid[])`, [[sourceId]]);
+
+    it("끊기가 먼저 잠그면(커밋 전) 답 쓰기는 기다렸다가 지운 값을 읽고 자리 표시로 쓴다", async () => {
+      const me = await f.user();
+      const conversation = await f.conversation(me);
+      const slack = await f.connectionSource(me, "slack", "#sales\n김대표: 견적서 금요일까지 보내주세요");
+      const message = await f.post(me, conversation, randomUUID(), "견적 건 어떻게 됐어?");
+      await a.query("begin");
+      await purge(a, slack);
+      const writing = answer(me, message.message_id!, slack);
+      await waitForLockWait(bPid);
+      await a.query("commit");
+      const done = await writing;
+      expect(done.status).toBe("written");
+      expect(citationsOf(await f.message(done.reply_id))).toEqual([[slack, SLACK_DISCONNECTED_QUOTE, "Slack"]]);
+    });
+
+    it("답 쓰기가 먼저 잠그면 끊기는 그 커밋을 기다렸다가 커밋된 답의 인용까지 지운다", async () => {
+      const me = await f.user();
+      const conversation = await f.conversation(me);
+      const slack = await f.connectionSource(me, "slack", "#sales\n김대표: 견적서 금요일까지 보내주세요");
+      const message = await f.post(me, conversation, randomUUID(), "견적 건 어떻게 됐어?");
+      await b.query("begin");
+      const done = await answer(me, message.message_id!, slack);
+      const purging = purge(a, slack);
+      await waitForLockWait(aPid);
+      await b.query("commit");
+      await purging;
+      expect(citationsOf(await f.message(done.reply_id))).toEqual([[slack, SLACK_DISCONNECTED_QUOTE, "Slack"]]);
+    });
+  });
+});
+
+// 계정 삭제는 Supabase Auth가 supabase_auth_admin으로 한다: cascade로 도는 원문 쪽 트리거(답 인용 다시 쓰기 · 가드)가 그 역할의 권한 때문에
+// 실패하지 않아야 한다 (소유자 권한 트리거). PGlite 시나리오는 superuser로 지워 이 문제가 드러나지 않는다
+describe("계정 삭제 (supabase_auth_admin, 실제 Postgres)", () => {
+  it("인용 · 채택 · 기억이 있는 대화의 사용자도 지워지고, 다른 사용자의 대화는 그대로다", async () => {
+    await setup.query(`
+      grant usage on schema auth to supabase_auth_admin;
+      grant select, delete on auth.users to supabase_auth_admin;
+    `);
+    const f = conversationFixtures(db);
+    const seed = async () => {
+      const userId = await f.user();
+      const conversation = await f.conversation(userId);
+      const slack = await f.connectionSource(userId, "slack", "#sales\n김대표: 견적서 금요일까지 보내주세요");
+      const message = await f.post(userId, conversation, randomUUID(), "견적 건?");
+      await f.finish(userId, message.message_id!, {
+        reply: { content: { segments: [{ text: "답", tier: "T1" }], citations: [slackCitation(slack)] } },
+        memory: [{ item: { kind: "plan", scope_kind: "global", subject: "개발 에이전트", statement: "개발은 Opus 5.5로", origin: "explicit", value: {}, source_ref: { message_id: message.message_id, quote: "견적 건" } } }],
+      });
+      return userId;
+    };
+    const leaving = await seed();
+    const staying = await seed();
+    const tables = ["conversations", "conversation_messages", "memory_items", "sources"];
+    const count = async (userId: string) =>
+      Object.fromEntries(await Promise.all(tables.map(async (t) => [t, await f.count(`select count(*)::int as n from public.${t} where user_id = $1`, [userId])])));
+    const stayingBefore = await count(staying);
+    await setup.query("set role supabase_auth_admin");
+    try {
+      expect((await setup.query("delete from auth.users where id = $1", [leaving])).rowCount).toBe(1);
+    } finally {
+      await setup.query("reset role");
+    }
+    expect(await count(leaving)).toEqual(Object.fromEntries(tables.map((t) => [t, 0])));
+    expect(await count(staying)).toEqual(stayingBefore);
   });
 });

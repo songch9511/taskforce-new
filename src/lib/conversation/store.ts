@@ -39,7 +39,7 @@ import {
   SOURCES_SHOWN,
 } from "./conversation.config";
 import type { ShownMemory } from "./memory";
-import type { Target } from "./referent";
+import { normalizeSelected, type SelectedRefs, type Target } from "./referent";
 import type { ConsultAction, ConsultContext, ConsultMemory, ConsultSource, TurnPlan, WindowMessage } from "./respond";
 
 // 대화 v2의 DB 쪽 (service role). 모든 쿼리를 user_id로 좁힌다. 규칙은 순수 모듈(respond · intent · referent · proposal · memory)과
@@ -146,13 +146,14 @@ export async function verifySelected(
 
 export type PostStatus = "created" | "retry" | "answered" | "in_progress" | "mismatch" | "stale" | "not_found";
 
-/** 사용자 메시지 쓰기 (conversation_post_message: 원자적 seq · client_message_id 멱등 · 처리 중 표시) */
+/** 사용자 메시지 쓰기 (conversation_post_message: 원자적 seq · client_message_id + 글 + 고른 대상으로 멱등 · 처리 중 표시) */
 export async function postUserMessage(
   admin: SupabaseClient,
   userId: string,
   conversationId: string,
   clientMessageId: string,
   text: string,
+  selected: SelectedRefs = normalizeSelected(undefined),
 ): Promise<{ status: PostStatus; messageId: string | null; seq: number | null; replyId: string | null }> {
   const { data } = await admin
     .rpc("conversation_post_message", {
@@ -160,11 +161,25 @@ export async function postUserMessage(
       p_conversation_id: conversationId,
       p_client_message_id: clientMessageId,
       p_text: text,
+      p_selected: selected,
       p_lease_seconds: REPLY_LEASE_SECONDS,
     })
     .single<{ status: PostStatus; message_id: string | null; seq: number | null; reply_id: string | null }>()
     .throwOnError();
   return { status: data.status, messageId: data.message_id, seq: data.seq, replyId: data.reply_id };
+}
+
+/** 이 대화(내 것)에 같은 client_message_id의 사용자 메시지가 이미 있는가 */
+export async function userMessageExists(admin: SupabaseClient, userId: string, conversationId: string, clientMessageId: string): Promise<boolean> {
+  const { data } = await admin
+    .from("conversation_messages")
+    .select("id")
+    .eq("user_id", userId)
+    .eq("conversation_id", conversationId)
+    .eq("client_message_id", clientMessageId)
+    .maybeSingle()
+    .throwOnError();
+  return Boolean(data);
 }
 
 /** 처리 표시 풀기 (실패 뒤): 같은 client_message_id로 다시 보내면 다시 처리한다 */
