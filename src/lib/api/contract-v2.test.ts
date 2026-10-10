@@ -29,6 +29,11 @@ import {
   planStateSchema,
   postConversationMessageRequestSchema,
   postConversationMessageResponseSchema,
+  REPORT_PREFERENCE_DEFAULTS,
+  reportModeSchema,
+  reportPreferencesRequestSchema,
+  reportPreferencesSchema,
+  reportTimeZoneSchema,
   updateWorkContextRequestSchema,
   workContextSchema,
   isCurrentMemoryItem,
@@ -417,5 +422,35 @@ describe("결제 v2", () => {
     expect(billingRefundRequestV2Schema.parse({})).toEqual({});
     expect(billingRefundRequestV2Schema.safeParse({ order_id: "1" }).success).toBe(false);
     expect(billingRefundResponseV2Schema.parse({ requested: true })).toEqual({ requested: true });
+  });
+});
+
+describe("보고 설정 (H1)", () => {
+  it("모드 셋과 D06 기본값 (Both · 08:30 · 22:00–08:00 · Respect Focus 켬, 시간대 기본값 없음)", () => {
+    expect(reportModeSchema.options).toEqual(["both", "daily", "meaningful"]);
+    expect(REPORT_PREFERENCE_DEFAULTS).toEqual({ mode: "both", daily_time: "08:30", quiet_start: "22:00", quiet_end: "08:00", respect_focus: true });
+    expect("time_zone" in REPORT_PREFERENCE_DEFAULTS).toBe(false);
+  });
+
+  it("시간대는 IANA 이름을 받은 그대로 (고정 오프셋 · 없는 이름은 거부)", () => {
+    for (const tz of ["Asia/Seoul", "Europe/London", "America/Argentina/Buenos_Aires", "America/Port-au-Prince", "UTC", "Etc/GMT+9"]) {
+      expect(reportTimeZoneSchema.parse(tz), tz).toBe(tz);
+    }
+    for (const tz of ["+09:00", "-05:00", "UTC+9", "Mars/Base", "", "Asia/Seoul ", "../etc/passwd", "a".repeat(65)]) {
+      expect(reportTimeZoneSchema.safeParse(tz).success, tz).toBe(false);
+    }
+  });
+
+  it("요청 · 응답 모양: 조용한 시간 끄기는 둘 다 null, 응답의 시간대 · version은 저장 전이면 null", () => {
+    const request = { mode: "both", daily_time: "08:30", quiet_start: null, quiet_end: null, respect_focus: true, time_zone: "Asia/Seoul", expected_version: null };
+    expect(reportPreferencesRequestSchema.parse(request)).toEqual(request);
+    expect(reportPreferencesRequestSchema.parse({ ...request, expected_version: 3 }).expected_version).toBe(3);
+    expect(reportPreferencesRequestSchema.safeParse({ ...request, quiet_start: "22:00" }).success).toBe(false);
+    // expected_version은 꼭 보낸다 (처음이면 null). 0 · 소수는 거부
+    const { expected_version: _omitted, ...withoutVersion } = request;
+    void _omitted;
+    expect(reportPreferencesRequestSchema.safeParse(withoutVersion).success).toBe(false);
+    for (const bad of [0, 1.5, "1"]) expect(reportPreferencesRequestSchema.safeParse({ ...request, expected_version: bad }).success, String(bad)).toBe(false);
+    expect(reportPreferencesSchema.parse({ ...REPORT_PREFERENCE_DEFAULTS, time_zone: null, saved: false, version: null })).toMatchObject({ time_zone: null, saved: false, version: null });
   });
 });

@@ -1103,3 +1103,83 @@ export type BillingCheckoutRequestV2 = z.infer<typeof billingCheckoutRequestV2Sc
 export const billingRefundRequestV2Schema = z.object({}).strict();
 export const billingRefundResponseV2Schema = z.object({ requested: z.literal(true) });
 export type BillingRefundResponseV2 = z.infer<typeof billingRefundResponseV2Schema>;
+
+// ─── 보고 (H1, 구현 계획 M8 · 디자인 준비도 D06 · 5.5) ─────────────
+// GET · PUT /api/v2/reports/preferences (REPORTS_V2_ENABLED가 꺼져 있으면 404). 표는 20261105000000_report_preferences.sql.
+// 알림 본문은 짧은 상태 + deep link만 싣는다 (원문 · 인용 · 할 일 제목 · 사람 이름 · 이메일 없음, src/lib/reports/payload.ts).
+
+/** Send: Daily · Meaningful updates · Both */
+export const reportModeSchema = z.enum(["both", "daily", "meaningful"]);
+export type ReportMode = z.infer<typeof reportModeSchema>;
+
+/** 현지 벽시계 시각 "HH:MM" (24시간, 분 단위). DB check와 같은 모양 */
+export const reportClockSchema = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/);
+
+/** IANA 시간대 이름 모양 (DB check와 같다). "+09:00" 같은 고정 오프셋은 받지 않는다 */
+const IANA_TIME_ZONE = /^[A-Za-z][A-Za-z0-9_+-]*(\/[A-Za-z0-9_+-]+)*$/;
+
+const runtimeKnowsTimeZone = (timeZone: string) => {
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone });
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * 사용자 시간대: Mac이 보낸 IANA 이름(`TimeZone.current.identifier`)을 받은 그대로 저장한다 (앱이 자기 값과 비교해 바뀐 것을 안다).
+ * 모양 + 서버 런타임(Intl, 일정 계산과 같은 tz 데이터)이 아는 이름만. 서버가 시간대를 추측하지 않는다
+ */
+export const reportTimeZoneSchema = z.string().max(64).regex(IANA_TIME_ZONE).refine(runtimeKnowsTimeZone, { message: "알 수 없는 시간대입니다" });
+
+/** 처음 기본값 (D06: Both · 8:30 AM · 조용한 시간 10 PM – 8 AM · Respect Focus 켬). 시간대는 기본값이 없다 */
+export const REPORT_PREFERENCE_DEFAULTS = {
+  mode: "both",
+  daily_time: "08:30",
+  quiet_start: "22:00",
+  quiet_end: "08:00",
+  respect_focus: true,
+} as const;
+
+/**
+ * PUT 본문: 전부 보낸다(부분 수정 없음). 조용한 시간 끄기(Off) = quiet_start · quiet_end 모두 null.
+ * 시작 == 끝은 0시간인지 24시간인지 모호해서 받지 않는다. respect_focus는 OS 집중 모드가 알림을 붙잡을 수 있게 둔다는 뜻이다
+ * (서버는 집중 모드를 읽지 못한다. 켜져 있으면 집중 모드를 뚫는 interruption-level을 쓰지 않는다).
+ * expected_version: GET에서 읽은 version (처음 만들 때는 null). 서버의 version과 다르면(다른 기기가 먼저 바꿈 · 이미 만들어짐) 409 conflict
+ */
+export const reportPreferencesRequestSchema = z
+  .object({
+    mode: reportModeSchema,
+    daily_time: reportClockSchema,
+    quiet_start: reportClockSchema.nullable(),
+    quiet_end: reportClockSchema.nullable(),
+    respect_focus: z.boolean(),
+    time_zone: reportTimeZoneSchema,
+    expected_version: z.number().int().positive().nullable(),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    if ((value.quiet_start === null) !== (value.quiet_end === null)) {
+      ctx.addIssue({ code: "custom", message: "조용한 시간은 시작과 끝을 함께 보내거나 둘 다 null입니다", path: ["quiet_end"] });
+    } else if (value.quiet_start !== null && value.quiet_start === value.quiet_end) {
+      ctx.addIssue({ code: "custom", message: "조용한 시간의 시작과 끝이 같습니다", path: ["quiet_end"] });
+    }
+  });
+export type ReportPreferencesRequest = z.infer<typeof reportPreferencesRequestSchema>;
+
+/**
+ * GET · PUT 응답. saved false = 아직 저장한 적 없음: 기본값 · time_zone null · version null (일일 보고는 Mac이 시간대를 보낼 때까지 가지 않는다).
+ * version은 다음 PUT의 expected_version으로 그대로 보낸다
+ */
+export const reportPreferencesSchema = z.object({
+  mode: reportModeSchema,
+  daily_time: reportClockSchema,
+  quiet_start: reportClockSchema.nullable(),
+  quiet_end: reportClockSchema.nullable(),
+  respect_focus: z.boolean(),
+  time_zone: z.string().nullable(),
+  saved: z.boolean(),
+  version: z.number().int().positive().nullable(),
+});
+export type ReportPreferences = z.infer<typeof reportPreferencesSchema>;

@@ -50,6 +50,26 @@ describe("sendPush", () => {
     expect(body).toMatchObject({ aps: { alert: { title: "Review", body: "New tasks to confirm" }, "mutable-content": 1 }, action_id: "a1" });
   });
 
+  it("collapse id · 만료는 줄 때만 헤더로 붙는다 (기존 알림의 요청은 헤더 · 본문이 그대로)", async () => {
+    const sent: Parameters<Transport>[0][] = [];
+    const transport: Transport = async (request) => {
+      sent.push(request);
+      return { status: 200, body: "" };
+    };
+    await sendPush(config, device, confirmationPayload({ id: "a1" }), transport);
+    await sendPush(config, device, confirmationPayload({ id: "a1" }), transport, {});
+    await sendPush(config, device, confirmationPayload({ id: "a1" }), transport, { collapseId: "daily-report", expiration: 1791595800 });
+    await sendPush(config, device, confirmationPayload({ id: "a1" }), transport, { expiration: 0 });
+    const base = ["apns-priority", "apns-push-type", "apns-topic", "authorization", "content-type"];
+    expect(Object.keys(sent[0].headers).sort()).toEqual(base);
+    expect(Object.keys(sent[1].headers).sort()).toEqual(base);
+    expect(sent[1].body).toBe(sent[0].body);
+    expect(sent[2].headers).toMatchObject({ "apns-collapse-id": "daily-report", "apns-expiration": "1791595800" });
+    expect(Object.keys(sent[2].headers).sort()).toEqual(["apns-collapse-id", "apns-expiration", ...base].sort());
+    expect(sent[3].headers["apns-expiration"]).toBe("0");
+    expect(sent[3].headers["apns-collapse-id"]).toBeUndefined();
+  });
+
   it("만료된 토큰(410)은 지울 대상으로 알려준다", async () => {
     const transport: Transport = async () => ({ status: 410, body: JSON.stringify({ reason: "Unregistered" }) });
     expect(await sendPush(config, device, confirmationPayload({ id: "a1" }), transport)).toEqual({

@@ -7,9 +7,23 @@ import { connect } from "node:http2";
 export type ApnsConfig = { keyId: string; teamId: string; key: KeyObject; bundleId: string };
 export type ApnsDevice = { token: string; environment: "sandbox" | "production" };
 export type ApnsPayload = {
-  aps: { alert: { title: string; body: string }; sound?: string; "thread-id"?: string; "mutable-content"?: 1 };
+  aps: {
+    alert: { title: string; body: string };
+    sound?: string;
+    "thread-id"?: string;
+    "mutable-content"?: 1;
+    /** OS 집중 모드 · 요약과의 관계. 없으면 OS 기본(active). critical은 쓰지 않는다 (일일 보고: src/lib/reports/payload.ts) */
+    "interruption-level"?: "passive" | "active" | "time-sensitive";
+  };
   [key: string]: unknown;
 };
+
+/**
+ * 줄 때만 붙는 APNs 헤더 (안 주면 헤더가 없다: 기존 알림 요청은 그대로).
+ * collapseId: 같은 값의 알림은 알림 센터에서 앞의 항목을 바꾼다 (64바이트 이하. 기기는 다시 울릴 수 있다).
+ * expiration: 이 시각(UNIX 초)까지만 APNs가 보관했다 전한다 — 기기가 꺼져 있으면 그때까지 늦게 갈 수 있고, 지나면 버린다. 0은 보관하지 않고 한 번만
+ */
+export type PushOptions = { collapseId?: string; expiration?: number };
 
 export function apnsConfigFromEnv(env: Record<string, string | undefined> = process.env): ApnsConfig | null {
   const { APNS_KEY_ID: keyId, APNS_TEAM_ID: teamId, APNS_PRIVATE_KEY: pem } = env;
@@ -72,7 +86,13 @@ export const http2Transport: Transport = ({ host, path, headers, body }) =>
     req.end(body);
   });
 
-export async function sendPush(config: ApnsConfig, device: ApnsDevice, payload: ApnsPayload, transport: Transport = http2Transport): Promise<PushResult> {
+export async function sendPush(
+  config: ApnsConfig,
+  device: ApnsDevice,
+  payload: ApnsPayload,
+  transport: Transport = http2Transport,
+  options: PushOptions = {},
+): Promise<PushResult> {
   const host = device.environment === "sandbox" ? "api.sandbox.push.apple.com" : "api.push.apple.com";
   const response = await transport({
     host,
@@ -83,6 +103,8 @@ export async function sendPush(config: ApnsConfig, device: ApnsDevice, payload: 
       "apns-push-type": "alert",
       "apns-priority": "10",
       "content-type": "application/json",
+      ...(options.collapseId ? { "apns-collapse-id": options.collapseId } : {}),
+      ...(options.expiration !== undefined ? { "apns-expiration": String(options.expiration) } : {}),
     },
     body: JSON.stringify(payload),
   });

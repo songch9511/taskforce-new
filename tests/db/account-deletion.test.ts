@@ -50,6 +50,8 @@ const USER_TABLES = [
   "people",
   "profiles",
   "rate_limit_events",
+  "report_deliveries",
+  "report_preferences",
   "slack_messages",
   "slack_people",
   "slack_threads",
@@ -161,6 +163,13 @@ async function seed(userId: string, tokenHex: string) {
   ]);
   await db.query(`insert into public.source_chunks (user_id, source_id, source_revision, seq, text) values ($1, $2, 'v1', 0, '원문')`, [userId, sourceId]);
   await db.query(`insert into public.inbox_events (user_id, type, dedup_key) values ($1, 'source_processed', $2)`, [userId, `source:${sourceId}`]);
+  // 0.2.0 보고 (20261105000000_report_preferences): 설정 한 행과, 서버 함수로 잡은 일일 보고 원장 한 행 (원장 → 설정 → auth.users cascade)
+  await db.query(`insert into public.report_preferences (user_id, time_zone) values ($1, 'Asia/Seoul')`, [userId]);
+  const claimed = await db.query(
+    `select id from public.claim_report_delivery($1, 'daily', 'Asia/Seoul', '2026-10-10', '2026-10-09T15:00:00Z', '2026-10-09T23:30:00Z', '2026-10-10T01:30:00Z', '2026-10-09T23:30:00Z', 300, 1)`,
+    [userId],
+  );
+  expect(claimed.rows).toHaveLength(1);
   // 실행 코어: run(정책 · 첫 단계 · 이벤트가 함께 생긴다), 연결을 쓰는 끝난 · 준비된 외부 단계(연결 삭제의 set null 경로,
   // 준비된 단계는 다시 계획되며 이벤트를 남긴다), 승인 · intent, 실행 주체
   await db.query(`insert into public.execution_actors (user_id) values ($1)`, [userId]);

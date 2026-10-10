@@ -214,6 +214,60 @@ flowchart TD
 - 범위가 다른 정정: DB는 다른 범위의 새 항목으로 `superseded_by`를 허용한다(아키텍처 5.3 "좁은 범위가 이긴다"). 6.4 "다른 범위로 일반화하지 않는다"와 맞추려면 정정은 같은 범위 안에서만 쓰고, 범위 간 우선은 읽을 때 정한다 — B1이 정한다.
 - 합친 사람(`people.merged_into`)의 대상을 지우면 합침이 풀린다(on delete set null).
 
+### 3-8. 보고 설정 · 일일 보고 (0.2.0 H1, 서버만)
+
+`REPORTS_V2_ENABLED`(기본 꺼짐) 뒤에만 돈다. 꺼져 있으면 route는 404, cron은 `{ enabled: false }`만 돌려주고 DB · APNs에 닿지 않는다. 기존 알림(확인 요청 · 기한 `cron/reminders` · 재연결)은 gate와 상관없이 그대로다(아래 "남은 부채"). Mac Reports 탭은 H2.
+
+| 무엇 | 위치 | 비고 | 테스트 |
+|---|---|---|---|
+| 표 · 함수 | `supabase/migrations/20261105000000_report_preferences.sql`: `report_preferences`(사용자당 한 행, 기본값 D06 Both · 08:30 · 조용한 시간 22:00–08:00 · Respect Focus 켬, 시간대 기본값 없음 · 시각은 `"HH:MM"`, 조용한 시간 끄기 = 둘 다 null, 시작 == 끝 거부, `version` · `schedule_version`) · `report_deliveries`(일일 보고 원장: 상태 pending · sent · failed · skipped, attempts, next_attempt_at, last_error 코드만(skipped에는 언제나 코드 — CHECK), `schedule_version`, `outcome_unknown`(이 보고의 어느 시도든 결과를 몰랐던 적이 있음 — 한 번 켜지면 트리거 `report_deliveries_keep_unknown`이 끄지 못하게 한다). 유일 인덱스 `report_deliveries_one_per_day` `(user_id, kind, time_zone, report_date)` — 보내지 않고 닫힌 skipped `schedule_changed` · `mode_changed` 행은 빠진다) | RLS `owner_all` + select만(쓰기는 서버만), 계정 삭제 cascade(auth.users → 설정 → 원장. 그래서 설정 행은 계정 삭제 말고는 지우지 않는다). 트리거 `report_preferences_schedule_changed`: 고칠 때마다 `version` +1, 일정에 닿는 값(mode · 시각 · 조용한 시간 · 시간대)이 바뀔 때만 `schedule_changed_at` = 지금 · `schedule_version` +1(Respect Focus만 바뀌면 그대로), `created_at`을 지킨다. 서버 전용 함수(service_role만): `claim_report_delivery`(설정 행 잠금 → 설정 `version`이 cron이 읽은 값과 다르면 잡지 않음 → 그 현지 날짜 이후 명목 시각의 막는 행이 없을 때만, 행에는 지금 `schedule_version`), `claim_report_retry`(같은 잠금, `version`이 낡았으면 아무것도 하지 않음, 실패 뒤 일정이 바뀐 행은 보내지 않고 닫음: 모든 시도가 결과를 아는 실패였으면 skipped `schedule_changed`, 한 번이라도 결과를 몰랐으면 failed `schedule_changed_unknown`. 다시 잡을 때 지난 시도가 결과 없이 끝났으면 `outcome_unknown`을 켠 뒤 `last_error`를 비운다), `finish_stale_report_deliveries`(닫을 행 사용자의 설정 행을 사용자 순서로 잠근 뒤: 일일 보고를 끈 사용자 것은 `mode_changed`, 일정이 바뀐 것은 `schedule_changed` — 모든 시도가 결과를 아는 실패였으면 skipped, 한 번이라도 몰랐으면 failed `*_unknown` — 나머지 failed), `report_status_counts`(열린 할 일 숫자 넷만, 글 열을 읽지 않는다). 운영 적용 전 | `tests/db/report-preferences.test.ts`, `tests/pg/report-deliveries.test.ts`(설정 행 잠금 · 겹친 잡기 · 다른 시간대의 같은 현지 날 · 다시 잡기 · cron 읽기 → PUT → 잡기 · 잡기 중 PUT · 실패 뒤 일정 변경 · RLS를 실제 Postgres에서, 막힘은 `pg_blocking_pids`로 확인), `migrations.test.ts` · `account-deletion.test.ts` 표 목록 |
+| 설정 API | `src/app/api/v2/reports/preferences/route.ts` GET · PUT → `lib/reports/preferences.ts` → `lib/reports/store.ts` `loadReportPreferences`(RLS) · `saveReportPreferences` → `writeReportPreferences`(service role, 비교 후 쓰기) | 계약 `contract.ts` "보고 (H1)": `reportPreferencesRequestSchema`(전부 보낸다, strict, `expected_version` 필수: 처음 만들기는 null) · `reportPreferencesSchema`(`saved` · `version`. 저장 전이면 `saved` false · 기본값 · `time_zone` null · `version` null) · `REPORT_PREFERENCE_DEFAULTS`. `expected_version`이 서버 `version`과 다르면(다른 기기가 먼저 바꿈 · null인데 이미 있음) 409 `conflict`. `expected_version`은 설정 저장끼리의 경합만 막는다 — 저장과 보내기의 경합은 잡기 함수의 `version` · `schedule_version` 확인이 막는다. 인증 `authenticateRequest`(Bearer · 쿠키, 쿠키 쓰기는 CSRF). 시간대는 Mac이 보낸 IANA 이름을 받은 그대로 저장: 모양(DB check와 같은 정규식) + 서버 Intl이 아는 이름만, 고정 오프셋(`+09:00`) 거부 | `lib/reports/{preferences,store}.test.ts`, `v2/reports/preferences/route.test.ts`, `lib/api/contract-v2.test.ts` |
+| 일일 보고 job | `src/app/api/cron/reports/route.ts`(cron 인증 · gate · APNs 키 없으면 `configured: false`) → `lib/reports/job.ts` `runDailyReports` | ① `finish_stale_report_deliveries` ② 다시 보낼 대기 행: 일일 보고를 끈 사용자 것은 닫는다(결과를 아는 실패는 skipped `mode_changed`, 모르면 failed `mode_changed_unknown`), 지금 조용한 시간이면 둔다, 아니면 `claim_report_retry`(이번 실행이 읽은 설정 `version`과 함께. 일정이 바뀐 행은 여기서 닫힌다) ③ 설정마다 `lib/reports/schedule.ts` `planDailyReport` → `claim_report_delivery`(계획에 쓴 설정 `version`과 함께) ④ `report_status_counts`(보내는 순간의 현지 날짜) → 모두 0이면 skipped `empty`, 기기 없으면 `no_devices` → `lib/reports/payload.ts` `dailyReportPayload` → `lib/notify/apns.ts` `sendPush`(collapse id `daily-report`, `apns-expiration` = 창 끝 · 다음 조용한 시간 시작 중 이른 쪽, 410 · BadDeviceToken은 기기 삭제). 일시 오류(5xx · 429 · 연결)는 5분 · 15분 뒤 최대 3번, 창 안에서만. 기기 여럿 중 하나라도 결과를 모르면(연결 오류 · 응답 시간 초과 `network`, 상태 없는 응답 `apns_0`) 그 코드를 남긴다(분명한 거절보다 앞선다). 결과는 잡을 때의 attempts를 펜스로 기록하고 실제로 바뀐 행만 센다(0행이면 `fence_missed`, id만 로그). 사용자 하나의 실패는 `errors`로 세고 다음 사용자로 넘어간다. 시각은 잡기 · 보내기 · 기록마다 시계를 다시 읽는다. 응답 · 로그는 숫자 · id만 | `lib/reports/{job,schedule,payload,store}.test.ts`, `cron/reports/route.test.ts`, `cron/reminders/route.test.ts`(gate와 상관없이 그대로) |
+
+**일일 보고 시각 규칙** (`lib/reports/schedule.ts` 머리 주석이 원본, 테스트 `schedule.test.ts`):
+1. 날짜 D의 보고: 명목 시각 = D의 `daily_time`(원장 `scheduled_at`, `report_date` = D). 보내는 순간(sendAt) = 명목 시각 이후 조용한 시간이 아닌 첫 순간: 명목 시각이 조용한 시간 `[start, end)` 안이면 그 창이 끝나는 `quiet_end`로 미룬다 — 자정을 넘는 창이면 D+1 아침이다(예: daily 23:00 · 22:00–08:00 → D 보고는 D+1 08:00). 명목 시각보다 앞당기지 않는다. 시작 경계는 조용한 시간, 끝 경계는 아니다.
+2. DST: 없는 현지 시각(봄 앞당김)은 시계가 건너뛴 직후(예: 뉴욕 2026-03-08 02:30 → 03:00 EDT), 두 번 오는 시각(가을 되돌림)은 처음 것(뉴욕 2026-11-01 01:30 EDT). 명목 시각과 미룬 `quiet_end` 모두 같다. 어느 쪽이든 그날 보고는 한 번.
+3. 밀린 보고 없음: sendAt에서 2시간(`REPORT_STALE_MS`)이 지나면 그날은 건너뛴다. 후보는 어제(어제 보고가 오늘 아침으로 미뤄졌거나 자정 직전 예정이 자정 뒤 실행에 걸릴 때) · 오늘 · 다음 이틀뿐, 한 번에 하나. job이 며칠 멈췄다 돌아와도 많아야 그날 보고 하나. 서버는 조용한 시간에 보내지 않고(재시도 포함), 기다리다 창이 닫히면 건너뛴다.
+   - 서버가 보낸 뒤의 일은 APNs가 정한다: 기기가 꺼져 있으면 APNs가 보관했다 늦게 줄 수 있다. 그래서 `apns-expiration`을 창 끝과 다음 조용한 시간 시작 중 이른 쪽으로 둔다 — Apple 문서상 그 뒤로는 버린다. 그 전까지는 늦게(예: 창 안에서 1시간 뒤) 도착할 수 있다. 기기에서 확인한 것은 아니다(미검증).
+4. 하루에 하나: 지금 시간대의 현지 날짜가 시작한 뒤(또는 더 뒤)로 명목 시각이 있는 "막는 행"이 원장에 있으면 그날은 보내지 않는다. 막는 행 = sent · failed · skipped(`empty` · `no_devices` 등) · pending. 보내지 않고 닫힌 skipped `schedule_changed` · `mode_changed`는 막지 않는다. 날짜는 명목 시각을 지금 시간대로 읽어 센다 — 시간대를 바꿔도 같은 현지 날에 두 번 오지 않고, 서쪽으로 옮겨 날짜가 되돌아가도 다음 날을 잃지 않고, D+1 아침으로 미룬 D 보고가 D+1을 막지 않는다. DB 함수가 사용자 잠금 안에서 같은 확인을 다시 한다.
+5. 설정 · 시간대를 바꾸면 남은 일정만 다시 계산한다. 보고가 아직 안 갔고 바뀐 일정의 sendAt이 이미 지났으며 바꾼 때가 sendAt과 같은 현지 날이면, 바꾼 때부터 2시간 안에 보낸다(바꿔서 오늘을 잃지 않는다, 조용한 시간이면 기다리다 창이 닫히면 건너뛴다). 처음 저장한 뒤 일정을 바꾸지 않았으면(`schedule_changed_at == created_at`) 명목 시각이 저장 전인 보고는 보내지 않는다(켜자마자 "오늘 보고"가 오지 않는다. 예: 07:30에 만든 daily 07:00 설정은 그날 08:00이 아니라 다음 날 08:00). 저장 뒤 일정을 바꿨으면 바로 앞 문장을 따른다(예: 08:00 저장, 08:10에 07:55로 → 08:10에 보낸다).
+6. 모드 `meaningful`은 일일 보고가 없다. 설정 행이 없거나 런타임이 모르는 시간대면 보내지 않는다(추측하지 않는다).
+
+**일정 변경과 보내기의 경계** (`version` · `schedule_version`, `tests/pg/report-deliveries.test.ts` · `tests/db/report-preferences.test.ts` · `job.test.ts` "일정 변경과 보내기의 경합"):
+- 설정 변경(PUT)이 잡기 · 다시 잡기가 설정 행 잠금을 잡기 전에 커밋되면 지켜진다: cron이 옛 설정을 읽었어도 그 실행은 잡지도 다시 보내지도 않고(설정 `version`이 다름 — 낡은 조용한 시간 · 시간대 · Respect Focus로 보내지 않는다) 다음 실행이 새 설정으로 계산한다. 다시 보낼 차례인 옛 일정의 보고는 보내지 않고 닫는다.
+- 닫을 때 "안 갔다"가 확실한 보고만 그날을 비운다: 이 보고의 **모든** 시도가 APNs 응답 코드로 거절됐거나(`apns_5xx` · `apns_429` · 4xx) 보내기 전 오류(`internal`)였으면 skipped `schedule_changed` → 그날을 막지 않아 새 일정의 보고가 그날 간다(예: 08:30 503 → 08:35 503 → 08:36 18:00으로 → 옛 보고 없음 → 18:00 한 번).
+- 한 번이라도 결과를 몰랐던 보고는 갔을 수 있어 그 현지 날을 보낸 날로 센다 — 뒤 시도가 분명한 실패여도 그 가능성은 지워지지 않는다(`outcome_unknown`). 결과를 모름 = 연결 오류 · 응답 시간 초과(`network`, 요청을 보낸 뒤 10초 한도에 걸린 것 포함), 상태 없는 응답(`apns_0`), 잡힌 뒤 결과를 남기지 못하고 임대가 끝난 시도(다시 잡을 때 기록한다). 기기 여럿 중 하나라도 결과를 모르면 그 시도는 결과를 모른 것이다. 이런 행은 failed `schedule_changed_unknown` · `mode_changed_unknown`으로 닫고 새 일정의 두 번째 보고는 그날 없다(예: 08:30 응답 시간 초과 → 08:35 503 → 08:36 18:00으로 → 그날 보고 더 없음, 일일 보고를 껐다 켜도 같다).
+- 이미 잡혀 보내는 중(임대 중, APNs 요청 중)이던 보고는 그 뒤 커밋된 일정 변경과 상관없이 한 번 갈 수 있다. sent로 남거나 결과를 모르면 그 현지 날은 보낸 날이다(두 번째 보고 없음). 응답 코드로 거절돼 대기로 남은 것만 다음 다시 잡기에서 skipped로 닫히고 새 일정의 보고가 갈 수 있다. 잡기가 잠금을 쥔 동안의 PUT은 그 잡기가 끝날 때까지 기다린다.
+- 실패 뒤 다시 보낼 차례가 아직 안 된(임대 · 대기 중) 옛 행은 닫힐 때까지 그날을 막는다: 다음 시도 시각(실패 뒤 5분 · 15분, 임대는 5분)이 지난 뒤 첫 cron 실행(5분 간격, 그 실행의 시간이 모자라면 다음 실행)까지 — 대략 최대 20–25분. 그 사이 새 일정의 보고는 그만큼 늦게 간다(창 2시간 안).
+- `finish_stale_report_deliveries`도 닫기 전에 그 사용자의 설정 행을 잠가, 커밋 중인 PUT을 기다린 뒤 새 값으로 판단한다.
+- Respect Focus만 바꾸면 일정 세대가 그대로라 실패한 보고를 그대로 다시 보낸다(새 설정을 읽은 다음 실행에서). `expected_version`(PUT 409)은 설정 저장끼리의 경합만 막고 이 경계와는 별개다.
+
+**같은 달력 날에 두 번 받는 경우 (알고 둔 것)**: 규칙 4는 보고를 *명목 시각*의 날짜로 센다. 그래서 그날 보고가 다음 날로 넘어가 도착하면 다음 날 보고가 같은 달력 날에 또 갈 수 있다. 날짜마다 보고는 하나다.
+- 늦게 켜기(조용한 시간 끔): 23:30에 일일 보고를 켬 → 23:30 실행이 실패하고 00:10 실행이 그날(어제) 보고를 보냄 → 08:30에 오늘 보고 (`schedule.test.ts` "늦게 켜면 같은 달력 날에 두 번").
+- 자정 직전 예정(예: 23:50, 조용한 시간 끔, 5분 cron): 매일 00:00쯤 어제 보고가 간다.
+- 조용한 시간으로 미룬 보고 뒤 일정을 앞당기면: daily 23:00(22:00–08:00)이라 D 보고가 D+1 08:00에 간 뒤 D+1 09:00에 21:00으로 바꾸면 D+1 21:00에 D+1 보고가 또 간다 (`schedule.test.ts` "미룬 보고 다음 날의 정시 보고").
+
+**한 달력 날에 보고가 없는 경우 (알고 둔 것)**: 같은 까닭(명목 시각으로 날짜를 센다, 미룬 보고는 다음 날 도착)으로 일정을 늦추거나 조용한 시간을 끄면 한 달력 날을 건너뛸 수 있다 (`schedule.test.ts` "한 달력 날에 보고가 없는 경우 A · B · C"):
+- A: D 07:00에 08:30 → 23:00(조용한 시간 22–08)으로 바꾸면 D 보고는 D+1 08:00에 가서 달력 D에는 보고가 없다.
+- B: D 08:30 보고를 보낸 뒤 같은 변경을 하면 D+1 보고가 D+2 08:00에 가서 달력 D+1에는 보고가 없다.
+- C: daily 23:00 · 22–08로 D+1 08:00에 갈 D 보고가, D+1 02:00에 조용한 시간을 끄면 명목 D 23:00으로 돌아가 이미 늦었고(바꾼 날이 그 보내는 날과 달라 다시 열리지 않는다) 사라진다.
+
+**알림 내용**: 제목 `Daily report`, 본문은 숫자 + 고정 낱말(`2 to review · 1 overdue · 3 due today · 1 in progress`, 0은 뺀다, 보내는 순간의 현지 날짜 기준), `kind: "daily_report"`, `url: "taskforce://work"`. 원문 · 인용 · 할 일 제목 · 메모 · 사람 이름 · 이메일 · action id를 싣지 않는다(`tests/db/report-preferences.test.ts`가 그런 글을 심고 알림 JSON에 없음을 본다). 지금 앱은 모르는 `kind`면 앱만 연다(`NotificationTarget` `.other`). `url` 처리는 H2. collapse id가 같아서 알림 센터에서는 새 보고가 앞 항목을 바꾸지만, 다시 보낸 보고에 기기가 다시 울리지 않는다는 보장은 없다.
+
+**서버 · 앱이 맡는 것 (Respect Focus)**:
+- 서버는 사용자의 집중 모드(Focus) 상태를 읽지 못한다. 서버가 하는 일은 하나다: `respect_focus`가 켜져 있으면 `interruption-level: active`만 보낸다(집중 모드를 뚫는 `time-sensitive` · `critical`을 쓰지 않는다 → OS 집중 필터가 붙잡을 수 있다). 꺼져 있으면 `time-sensitive`를 요청한다.
+- 실제로 붙잡히는지 · 뚫는지는 OS와 앱이 정한다. 앱에 Time Sensitive Notifications 권한(entitlement)이 아직 없다. 권한 없이 `time-sensitive`를 보내면 OS가 `active`로 낮춰 다룰 것으로 보지만 미검증이다. H2에서 권한을 더할지와 App Review 문구를 정하고, 기기에서 집중 모드 켬 · 끔 × Respect Focus 켬 · 끔 네 경우를 확인한다.
+
+**H2(Mac)가 할 일 (설정 · 시간대)**: 서버는 시간대를 추측하지 않는다. 설정 행이 생기기 전에는 일일 보고가 없다. iPhone은 시간대를 보내지 않는다.
+- Reports 탭을 열 때 · 앱을 시작할 때: GET. `saved: false`일 때만 D06 기본값 + `TimeZone.current.identifier`로 PUT(`expected_version: null`). 409면 다른 Mac이 먼저 만든 것이다: 다시 GET해서 그 값을 보여 주고 덮어쓰지 않는다. `saved: true`면 아무것도 보내지 않는다(실행할 때마다 시간대를 보내지 않는다).
+- 사용자가 값을 바꾸면: 마지막 GET의 `version`을 `expected_version`으로 전체 값을 PUT. 409면 다시 GET해서 최신 값을 보여 주고, 사용자가 다시 바꾸게 한다(자동으로 덮어쓰지 않는다).
+- 시간대는 이 Mac의 시스템 시간대가 실제로 바뀌었을 때만 보낸다: `NSSystemTimeZoneDidChange`를 받았을 때, 그리고 앱이 꺼져 있는 동안 바뀐 경우를 위해 "이 Mac이 마지막으로 보낸 시간대"를 기기에 저장해 두고 시작할 때 시스템 시간대와 비교한다(서버 값과 비교하지 않는다). 보낼 때는 새로 GET한 `version`으로, 409면 다시 GET 후 한 번 더.
+- Mac이 여럿이면: 각 Mac은 자기 시간대가 실제로 바뀔 때만 보내므로, 마지막으로 실제 시간대가 바뀐 Mac이 이긴다. 시간대를 바꾸지 않은 다른 Mac은 덮어쓰지 않는다.
+
+**남은 부채 (H2 · `REPORTS_V2_ENABLED`를 켜기 전에 정할 것)**: H1은 일일 보고만 다룬다. 기존 실시간 알림(확인 요청 `notifyConfirmations` · 재연결 `notifyReconnect`)과 09:00 KST 기한 알림(`cron/reminders` `notifyDueSoon`)은 보고 모드(Daily · Meaningful updates · Both)와 조용한 시간을 따르지 않는다 — 모드가 Daily여도, 조용한 시간이어도 지금처럼 간다. H1은 이것을 고치지 않았다. 고치려면 조용한 시간 동안 붙잡았다 보낼 대기열(원장 `kind` 추가)과, 일일 보고가 켜졌을 때 기한 알림을 계속 보낼지 제품 결정이 필요하다. 그전까지 H2 화면은 "Daily"나 조용한 시간이 실시간 알림을 끄거나 미루는 것처럼 보이게 하지 않는다.
+
+**출시 단계 (gate 켜기 전, 별도 승인)**: ① 운영 DB에 `20261105000000_report_preferences.sql` 적용(`npx supabase db query --linked -f …`, 런북) ② `vercel.json` `crons`에 `{ "path": "/api/cron/reports", "schedule": "*/5 * * * *" }` 추가(5분 간격: 30 · 45분 오프셋 시간대도 예정 5분 안에 잡는다. 지금은 일부러 넣지 않았다) ③ Vercel env `REPORTS_V2_ENABLED=true`(테스트 계정 → Daniel → 외부 순서, 구현 계획 7장) — 위 "남은 부채"를 정한 뒤 ④ H2 Mac이 PUT으로 시간대를 보내야 보고가 시작된다.
+
 ## 4. 실행과 검증
 
 | 항목 | 명령 | 참고 |
@@ -235,7 +289,7 @@ flowchart TD
   - `lib/connectors/registry.ts`의 `syncConnections` · `afterConnected` · `revokeConnectorTokens` (`registry.test.ts`는 Slack 열기와 `tokenRevokerFor`만 본다).
   - `lib/connectors/notion/data-sources.ts` (저장할 때의 오류 처리만 `data-sources.test.ts`가 본다), `lib/connectors/slack/run.ts` · `store.ts` (SQL 함수는 `tests/db/slack*.test.ts`가 본다).
   - 연결 route들 (끊기는 `handleConnectionDelete`를 `lib/api/connections.test.ts`가, lab callback의 동의 확인은 `lib/connectors/callback.test.ts`가, Slack events route는 `route.test.ts`가 본다), Slack start · callback route.
-  - `metric-events` · `weekly-check` · `devices` route, sync · reminders cron route (retention은 `route.test.ts`가 본다), `lib/notify/service.ts`의 `notifyConfirmations` · `notifyDueSoon`(`notifyReconnect`만 `service.test.ts`가 본다), `lib/api/auth.ts` `authenticateRequest`, `scripts/reprocess-sources.ts`.
+  - `metric-events` · `weekly-check` · `devices` route, sync cron route (retention · reminders는 `route.test.ts`가 본다), `lib/notify/service.ts`의 `notifyConfirmations` · `notifyDueSoon`(`notifyReconnect`만 `service.test.ts`가 본다), `lib/api/auth.ts` `authenticateRequest`, `scripts/reprocess-sources.ts`.
 - 앱: `TaskforceReads`, `ActionChanges`, `SharedKeychainStorage`, `TaskforceUI` 전체, 앱 타깃(`NowStore` · `AccountStore` · `LauncherModel` · `PushCenter`). CI는 앱 타깃을 빌드만 한다.
 
 ## 5. 새 연동(Google 등)을 붙이는 자리
