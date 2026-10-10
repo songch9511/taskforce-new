@@ -35,6 +35,9 @@ alter table public.memory_items
 create index memory_items_fact_idx on public.memory_items (user_id, kind, subject) where subject is not null;
 -- 원문 글이 지워질 때 그 원문에서 온 기억 찾기 (uuid 대소문자를 가리지 않는다)
 create index memory_items_source_idx on public.memory_items ((lower(source_ref ->> 'source_id'))) where source_ref ? 'source_id';
+-- 원문의 접근 상실 · 글 지움에 그 원문을 인용한 범위 observed 기억 찾기 (sources_bump_member_contexts와 같은 조건)
+create index memory_items_context_observed_source_idx on public.memory_items (user_id, (lower(source_ref ->> 'source_id')))
+  where scope_kind = 'context' and origin = 'observed' and superseded_at is null and revoked_at is null and not source_purged and source_ref ? 'source_id';
 
 -- 기억 이력 보호 (20261103000000의 함수를 바꿔 만든다: 같은 트리거가 부르는 함수 하나에 규칙을 모은다).
 -- 그대로 두는 것: superseded_by를 쓰면 superseded_at을 남기고, 한 번 남긴 superseded_at · revoked_at은 지우거나 바꾸지 못한다.
@@ -633,8 +636,9 @@ create trigger memory_items_bump_context_version_on_update
             is distinct from (new.statement, new.value, new.origin, new.superseded_at, new.revoked_at, new.valid_from, new.valid_until, new.source_purged))
   execute function public.memory_items_bump_context_version();
 
--- 멤버 원문의 변화: 같은 문서(source_document_ids)의 새 revision이 들어오거나, 글이 지워지거나, 접근을 잃거나 되찾을 때.
--- 그 문서를 멤버로 둔 범위와, 그 문서의 revision을 인용한 지금 쓰는 범위 observed 기억이 있는 범위(멤버가 아니어도 묶음의 기억이 바뀐다)
+-- 멤버 원문의 변화: 같은 문서(source_document_ids)의 새 revision이 들어오거나, 글이 지워지거나, 접근을 잃거나 되찾을 때 그 문서를 멤버로 둔 범위.
+-- 접근 상실 · 되찾음 · 글 지움(update)에는 그 문서의 revision을 인용한 지금 쓰는 범위 observed 기억이 있는 범위도(멤버가 아니어도 묶음의 기억이
+-- 빠지거나 돌아온다). 새 revision · external_version 변경은 인용한 기억을 바꾸지 않으므로 그 범위는 올리지 않는다 (거짓 stale, CTX12)
 create function public.sources_bump_member_contexts() returns trigger
 language plpgsql
 security definer
@@ -652,7 +656,9 @@ begin
     union
     select m.context_id
       from public.memory_items m
-     where m.user_id = new.user_id and m.scope_kind = 'context' and m.origin = 'observed'
+     where tg_op = 'UPDATE'
+       and (old.access_lost_at, old.raw_text_purged_at) is distinct from (new.access_lost_at, new.raw_text_purged_at)
+       and m.user_id = new.user_id and m.scope_kind = 'context' and m.origin = 'observed'
        and m.superseded_at is null and m.revoked_at is null and not m.source_purged
        and m.source_ref ? 'source_id' and lower(m.source_ref ->> 'source_id') = any (v_document_text)
   ));

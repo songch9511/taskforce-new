@@ -778,6 +778,24 @@ export function contextLayerTests(db: () => ContextLayerDb) {
       expect(await versions()).toEqual([c0 + 1, u0, f0, g0]);
       await db().query(`select public.set_sources_access($1, $2::uuid[], false)`, [me, [v2]]);
       expect(await versions()).toEqual([c0 + 2, u0, f0, g0]);
+
+      // 새 revision · external_version 변경은 인용한 기억(묶음에 든 글)을 바꾸지 않는다: 멤버가 아닌 범위는 오르지 않는다 (CTX12)
+      await f.source(me, { connectionId: notion, externalId: "cited", version: "v3" });
+      await db().query(`update public.sources set external_version = 'v1b' where id = $1`, [v1]);
+      expect(await versions()).toEqual([c0 + 2, u0, f0, g0]);
+
+      // 정정된 기억 · 글이 지워진(비운) 기억은 쓰지 않으므로 그 범위는 오르지 않는다
+      const [corrected, blanked] = [await f.context(me, "정정됨"), await f.context(me, "비움")];
+      const fact = { kind: "fact", scope_kind: "context", subject: "launch", origin: "observed", source_ref: { source_id: v2 } };
+      await f.remember(me, { ...fact, context_id: corrected, statement: "자료: 목요일" });
+      await f.remember(me, { kind: "fact", scope_kind: "context", context_id: corrected, subject: "launch", statement: "내가 정함: 금요일", origin: "explicit" });
+      const purgedDoc = await f.source(me, { connectionId: notion, externalId: "purged-doc", version: "v1" });
+      await cite(blanked, purgedDoc);
+      await db().query(`update public.sources set raw_text = '', raw_text_purged_at = now() where id = $1`, [purgedDoc]);
+      const [k0, b0] = [await f.version(corrected), await f.version(blanked)];
+      await db().query(`select public.set_sources_access($1, $2::uuid[], true)`, [me, [v2, purgedDoc]]);
+      expect([await f.version(corrected), await f.version(blanked)]).toEqual([k0, b0]);
+      expect(await f.version(context)).toBe(c0 + 3); // 쓰는 기억이 있는 범위는 오른다
     });
   });
 
