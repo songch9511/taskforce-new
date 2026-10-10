@@ -56,6 +56,11 @@ final class MacAppDelegate: NSObject, NSApplicationDelegate {
         if EdgeShellFlag.isEnabled() {
             let edge = EdgeShellController(launcher: model)
             self.edge = edge
+            // All work의 Add task: 패널을 접고 기존 런처(제목 → 없으면 추가, 직접 추가의 정식 입구)를 연다
+            edge.shell.onAddTask = { [weak edge, weak launcher] in
+                edge?.shell.dismiss()
+                launcher?.show()
+            }
             edge.start()
             hotKeys.onPress = { [weak edge] in edge?.togglePanel() }
         } else {

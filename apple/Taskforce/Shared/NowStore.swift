@@ -14,6 +14,8 @@ final class NowStore {
     private(set) var response: NowResponse?
     /// 오늘 끝낸 할 일 (Supabase 직접 읽기, 최근 것이 위)
     private(set) var doneToday: [ActionSummary] = []
+    /// `doneToday`를 읽은 기준: 그때 기기 시간대의 그날 0시 (그 뒤에 끝낸 것). 자정 · 시간대가 바뀌면 Edge All work가 다시 읽을 때까지 Done today를 비운다 (`DoneTodayWindow`)
+    private(set) var doneTodaySince: Date?
     private(set) var loadError: String?
     private(set) var loaded = false
     /// 요청 중인 확인 요청 (Confirm · Dismiss 버튼을 잠근다)
@@ -69,6 +71,7 @@ final class NowStore {
     ) {
         self.response = response
         self.doneToday = doneToday
+        doneTodaySince = Calendar.current.startOfDay(for: Date())
         self.evidence = evidence
         sourceServicesByAction = sourceServices
         loaded = true
@@ -79,6 +82,7 @@ final class NowStore {
     func applySampleState(saved copy: SavedNow?, offlineSince: Date?, failedAt: Date?) {
         response = nil
         doneToday = []
+        doneTodaySince = nil
         loaded = false
         savedCopy = copy
         if let copy { refresh.restoredSaved(savedAt: copy.savedAt) }
@@ -132,6 +136,7 @@ final class NowStore {
         sourceServicesTask = nil
         response = nil
         doneToday = []
+        doneTodaySince = nil
         loadError = nil
         loaded = false
         busy = []
@@ -197,7 +202,8 @@ final class NowStore {
         let reads = services.reads
         refresh.loadStarted()
         // 오늘 끝낸 할 일은 읽지 못해도 목록은 보여 준다 (전에 읽은 것을 둔다)
-        async let doneRows = try? reads.allDoneToday(since: Calendar.current.startOfDay(for: Date()))
+        let doneSince = Calendar.current.startOfDay(for: Date())
+        async let doneRows = try? reads.allDoneToday(since: doneSince)
         do {
             let response = try await services.api.now()
             let done = await doneRows
@@ -205,6 +211,7 @@ final class NowStore {
             self.response = response
             if let done {
                 doneToday = done
+                doneTodaySince = doneSince
                 // 두 목록을 모두 새로 읽었으면 반영된 내 변경은 지운다
                 pending = pending.filter { $0.value.settledBy.map { $0 > sequence } ?? true }
             }

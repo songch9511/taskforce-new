@@ -30,11 +30,22 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
 
     init(launcher: LauncherModel) {
         self.launcher = launcher
-        shell = EdgeShellModel(reduceMotion: Self.systemReduceMotion)
+        shell = EdgeShellModel(reduceMotion: Self.systemReduceMotion, pinStore: Self.pinStore())
         rail = EdgeRailPanelController(shell: shell)
         panel = EdgePanelController(shell: shell)
         super.init()
         panel.panel.delegate = self
+        shell.onConnect = { [weak self] in self?.rail.onConnections() }
+        shell.onRetry = { [weak self] in self?.load() }
+    }
+
+    /// All work 고정의 저장: 앱 설정과 다른 전용 suite(계정별 할 일 id만). 견본은 메모리만 (디스크에 쓰지 않는다)
+    private static func pinStore() -> WorkPinStore {
+        #if DEBUG
+        if SampleData.isEnabled { return WorkPinStore(defaults: nil) }
+        #endif
+        let bundleID = Bundle.main.bundleIdentifier ?? "dev.taskforcelabs.taskforce"
+        return WorkPinStore(defaults: UserDefaults(suiteName: WorkPinStore.suiteName(bundleID: bundleID)))
     }
 
     /// 움직임 줄이기: 시스템 설정. Debug 스냅샷은 `-TFReduceMotion YES`(인자 영역)로 시스템 설정을 바꾸지 않고 켠다
@@ -68,13 +79,23 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
     }
 
     private func followSession() {
-        let signedIn = withObservationTracking {
-            launcher.isSignedIn
+        let (signedIn, account) = withObservationTracking {
+            (launcher.isSignedIn, launcher.signedInUserID)
         } onChange: { [weak self] in
             Task { @MainActor in self?.followSession() }
         }
+        // 계정이 바뀌면 All work의 검색어 · 필터 · 고정을 그 계정 것으로 (전 계정 것을 보이지 않는다)
+        shell.accountChanged(Self.workAccount(account))
         if signedIn, !wasSignedIn { load() }
         wasSignedIn = signedIn
+    }
+
+    /// 고정을 둘 계정. 견본은 로그인 없이 견본 계정 (메모리 저장)
+    private static func workAccount(_ account: UUID?) -> UUID? {
+        #if DEBUG
+        if SampleData.isEnabled { return SampleData.userID }
+        #endif
+        return account
     }
 
     /// ⌥ Space
@@ -100,8 +121,12 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
         let runs = launcher.runs
         let active = runs?.active ?? []
         let stopping = (runs?.stopping ?? []).union(active.filter { $0.isOpen && $0.stoppedAt != nil }.map(\.actionID))
+        // 받은 목록이 없으면(읽는 중 · 오프라인 · 실패) 할 일이 없다고 하지 않는다 (`WorkLoad`). 저장본은 이번 실행의 목록이 아니다
         let work = EdgeWorkSnapshot(
-            sections: now.sections, working: runs?.workingActionIDs ?? [], stopping: stopping, isLoaded: now.refreshState != .loading
+            sections: now.sections, working: runs?.workingActionIDs ?? [], stopping: stopping,
+            load: WorkLoad.from(refresh: now.refreshState, hasList: now.response != nil),
+            doneSince: now.doneTodaySince,
+            canConnect: !(launcher.account?.connections.contains { $0.status == .active } ?? false)
         )
         #if DEBUG
         if let workOverride { return workOverride(work) }
@@ -188,7 +213,8 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         switch Int(event.keyCode) {
         case kVK_Escape:
-            shell.dismiss()
+            // 열린 필터 카드를 먼저 닫고, 그다음 패널을 접는다
+            shell.escape()
             return true
         case kVK_ANSI_2 where flags == .command:
             shell.openAllWork()
