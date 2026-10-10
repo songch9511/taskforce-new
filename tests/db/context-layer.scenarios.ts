@@ -733,7 +733,13 @@ export function contextLayerTests(db: () => ContextLayerDb) {
       at = await v();
       expect(await f.chunks(me, v1, ["첫 조각"], [vector(1)])).toEqual({ status: "unchanged", chunks: 1 });
       expect(await v()).toBe(at);
-      expect(await f.chunks(me, v1, ["첫 조각"], [vector(2)])).toEqual({ status: "replaced", chunks: 1 }); // 임베딩만 달라도 바뀐 것
+      // 다시 임베딩한 값이 조금 달라도(공급자 흔들림) 글 · 순번 · revision이 같으면 그대로: 저장된 임베딩을 두고 올리지 않는다
+      expect(await f.chunks(me, v1, ["첫 조각"], [vector(2)])).toEqual({ status: "unchanged", chunks: 1 });
+      expect(await v()).toBe(at);
+      expect(await f.one(`select embedding operator(extensions.=) $2::extensions.vector as kept from public.source_chunks where source_id = $1`, [v1, vector(1)])).toEqual({
+        kept: true,
+      });
+      expect(await f.chunks(me, v1, ["고친 조각"], [vector(2)])).toEqual({ status: "replaced", chunks: 1 }); // 글이 바뀌면 바뀐 것
       expect(await v()).toBe(at + 1);
       at = await v();
 
@@ -744,7 +750,10 @@ export function contextLayerTests(db: () => ContextLayerDb) {
       expect(await v()).toBe(at + 1);
       at = await v();
       expect(await f.chunks(me, v1, ["늦은 옛 조각"])).toEqual({ status: "stale", chunks: 0 });
+      // 저장된 임베딩이 없으면 같은 글이어도 채운다 (replaced)
+      expect(await f.chunks(me, outside, ["멤버 아닌 문서"], [null])).toEqual({ status: "replaced", chunks: 1 });
       expect(await f.chunks(me, outside, ["멤버 아닌 문서"])).toEqual({ status: "replaced", chunks: 1 });
+      expect(await f.chunks(me, outside, ["멤버 아닌 문서"], [null])).toEqual({ status: "unchanged", chunks: 1 });
       expect(await f.chunks(me, guessed, ["후보 멤버 문서"])).toEqual({ status: "replaced", chunks: 1 });
       expect(await v()).toBe(at);
 

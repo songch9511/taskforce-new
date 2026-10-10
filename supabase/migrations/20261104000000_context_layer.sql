@@ -684,7 +684,9 @@ create trigger sources_bump_member_contexts_on_update
 --    - 같은 문서의 교체는 advisory 잠금으로 한 번에 하나씩. 이 revision보다 나중에 들어온(created_at, id) revision이 있으면 넣지 않는다(stale):
 --      늦게 끝난 옛 처리가 새 조각을 덮지 않게. 순서는 수집 순서다 (occurred_at은 Notion에서 날짜 속성 · 만든 시각이라 고친 순서가 아니다)
 --    - p_embeddings는 '[…]' 문자열(1536차원) 또는 null. 순번(seq)은 0부터
---    - 문서의 지금 조각과 똑같으면(같은 revision · 순번 · 글 · 임베딩, 개수까지) 바꾸지 않는다(unchanged). 바꿨으면 그 문서를 멤버로 둔
+--    - 문서의 지금 조각과 글이 같으면(같은 revision · 순번 · 글, 개수까지) 바꾸지 않는다(unchanged): 저장된 임베딩을 그대로 둔다.
+--      같은 글을 다시 임베딩한 값은 공급자에 따라 조금씩 달라 임베딩으로 견주면 늘 바뀐 것이 된다. 저장된 임베딩이 없고 새 것이 있으면 채운다(replaced).
+--      바꿨으면 그 문서를 멤버로 둔
 --      범위의 version을 올린다(묶음의 자료가 바뀌었다: commit 직전 큐로, 후보 멤버 제외)
 --    돌려주는 값: status(replaced · unchanged · purged · stale)와 조각 수
 -- ─────────────────────────────────────────────
@@ -733,7 +735,7 @@ begin
           select 1 from public.source_chunks c
            where c.user_id = p_user_id and c.source_id = p_source_id and c.source_revision is not distinct from v_revision
              and c.seq = t.ord - 1 and c.text = t.body
-             and ((c.embedding is null and t.emb is null) or c.embedding operator(extensions.=) (t.emb)::extensions.vector)
+             and (c.embedding is not null or t.emb is null)
         )
      ) then
     return query select 'unchanged'::text, coalesce(cardinality(p_texts), 0);
