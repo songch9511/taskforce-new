@@ -189,6 +189,12 @@ enum EdgeSnapshot {
         await settle()
     }
 
+    /// `EdgeInteraction`이 단계마다 담는다 (`-TFEdgeInteractShots <폴더>`가 있을 때만)
+    static func captureForInteraction(_ edge: EdgeShellController, name: String) {
+        guard let directory = value(after: "-TFEdgeInteractShots").map({ URL(fileURLWithPath: $0, isDirectory: true) }) else { return }
+        capture(edge, to: directory.appending(path: "mac-edge-\(name).png"))
+    }
+
     /// 보이는 창(레일 · 패널)을 화면 자리대로, 데스크톱 견본 위에 그린다
     private static func capture(_ edge: EdgeShellController, to url: URL) {
         let windows = [edge.panel.panel, edge.rail.panel].filter(\.isVisible)

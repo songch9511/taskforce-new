@@ -138,6 +138,20 @@ struct ChatStoreTests {
         #expect(other.entries.contains { $0.id == empty.id && $0.previewText == "No messages yet" && $0.title == "New chat" })
     }
 
+    /// 서버에 이름이 없는 (다른 길로 만든) 빈 대화를 다시 써도 첫 글이 이름으로 보인다
+    @Test func reusedUntitledEmptyChatIsNamedByItsFirstMessage() async throws {
+        let empty = Chats.conversation(3, at: 5)
+        serve([Chats.conversation(1, title: "Used", last: 10), empty])
+        let chat = store()
+        await chat.refresh()
+        #expect(chat.newChat() == empty.id)
+        gateway.postHandler = { conversation, cmid, text in Chats.pair(1, in: conversation, seq: 1, cmid: cmid, text: text) }
+        #expect(chat.entries.first { $0.id == empty.id }?.title == "New chat")
+        await chat.send("Use the shorter FAQ on both pricing pages")
+        #expect(chat.entries.first { $0.id == empty.id }?.title == "Use the shorter FAQ on both pricing pages")
+        #expect(gateway.calls(prefix: "create").isEmpty, "이미 서버에 있는 대화는 다시 만들지 않는다")
+    }
+
     // MARK: 보내기
 
     /// 첫 메시지가 이름이 되고, 대화는 첫 보내기에서 서버에 만들어진다
@@ -384,6 +398,33 @@ struct ChatStoreTests {
         gateway.postHandler = { conversation, id, text in Chats.pair(1, in: conversation, seq: 1, cmid: id, text: text) }
         await chat.retry(cmid)
         #expect(!chat.isUnavailable && chat.turns(for: existing.id).map(\.status) == [.sent, .sent])
+    }
+
+    /// 목록을 읽는 사이 이 기기가 첫 보내기로 만든 대화는 (그 읽기에 없어도) 서버가 지운 것이 아니다: 닫히지 않는다
+    @Test func aChatCreatedWhileTheListIsBeingReadIsNotDropped() async throws {
+        serve([Chats.conversation(1, title: "Old", last: 10)])
+        let chat = store()
+        await chat.refresh()
+        let id = chat.newChat()
+        // 다음 읽기는 늦게 끝나고, 그 결과에는 새 대화가 없다
+        let latch = Latch()
+        gateway.conversationsHandler = { await latch.wait(); return [Chats.conversation(1, title: "Old", last: 10)] }
+        let reading = Task { await chat.refresh() }
+        while await latch.arrivals == 0 { await Task.yield() }
+        let stored = Box<[ChatMessage]>([])
+        gateway.messagesHandler = { _ in stored.value }
+        gateway.postHandler = { conversation, cmid, text in
+            let pair = Chats.pair(1, in: conversation, seq: 1, cmid: cmid, text: text)
+            stored.value = [pair.message, pair.reply]
+            return pair
+        }
+        await chat.send("First words")
+        #expect(chat.turns(for: id).map(\.status) == [.sent, .sent])
+        await latch.open()
+        await reading.value
+        #expect(chat.currentID == id && chat.mode == .chat)
+        #expect(chat.turns(for: id).map(\.text) == ["First words", "Noted."])
+        #expect(chat.entries.contains { $0.id == id })
     }
 
     // MARK: 초안

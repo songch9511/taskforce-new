@@ -132,6 +132,8 @@ public final class ChatStore {
     public private(set) var contexts: [UUID: WorkContext] = [:]
     public private(set) var isOnline = true
     private var previews: [UUID: String] = [:]
+    /// 서버에 이름이 없는 대화의 이름: 읽은 첫 사용자 글 (대화 이름은 만들 때만 정할 수 있어, 다른 길로 만든 빈 대화를 다시 쓸 때도 첫 글이 이름으로 보인다)
+    private var derivedTitles: [UUID: String] = [:]
     private var drafts: [UUID: String] = [:]
     var threads: [UUID: ChatThread] = [:]
     private var projectUndo: [UUID: UUID?] = [:]
@@ -178,6 +180,7 @@ public final class ChatStore {
         isUnavailable = false
         contexts = [:]
         previews = [:]
+        derivedTitles = [:]
         drafts = [:]
         threads = [:]
         projectUndo = [:]
@@ -192,7 +195,7 @@ public final class ChatStore {
     // MARK: 보이는 것
 
     public var entries: [ChatListEntry] {
-        ChatHistoryRules.entries(conversations: conversations, locals: locals, previews: previews, drafts: drafts)
+        ChatHistoryRules.entries(conversations: conversations, locals: locals, previews: previews, drafts: drafts, titles: derivedTitles)
     }
 
     /// 목록 화면: 읽는 중이면 아무것도 보이지 않고, 오프라인 · 실패는 각자 화면, 비어 있으면 "No conversations yet."
@@ -404,15 +407,19 @@ public final class ChatStore {
         listSequence += 1
         let sequence = listSequence
         if case .loaded = listLoad {} else { listLoad = .loading }
+        // 읽는 사이 이 기기가 만든 대화(첫 보내기)는 그 읽기에 없을 수 있다: 서버가 지운 것이 아니다
+        let knownBefore = Set(conversations.map(\.id))
         do {
             async let rows = gateway.conversations()
             async let projects = gateway.workContexts()
             let (chats, named) = try await (rows, projects)
             guard scope.isCurrent(token), sequence == listSequence else { return }
-            conversations = chats.filter { $0.archivedAt == nil }
+            let live = Set(chats.map(\.id))
+            let createdMeanwhile = conversations.filter { !knownBefore.contains($0.id) && !live.contains($0.id) }
+            conversations = chats.filter { $0.archivedAt == nil } + createdMeanwhile
             contexts = Dictionary(named.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
             listLoad = .loaded(problem: nil)
-            dropThreads(missingFrom: Set(chats.map(\.id)))
+            dropThreads(missingFrom: live.union(createdMeanwhile.map(\.id)))
             if currentID == nil, !navigated, let latest = entries.first(where: { !$0.isLocal }) {
                 // 마지막 대화로 되살린다 (앱을 다시 켠 뒤)
                 currentID = latest.id
@@ -487,6 +494,7 @@ public final class ChatStore {
     private func applyServerMessages(_ messages: [ChatMessage], to id: UUID) {
         let stored = Set(messages.compactMap(\.clientMessageID))
         threads[id]?.messages = messages
+        deriveTitle(for: id)
         threads[id]?.textPurged = conversations.first { $0.id == id }?.textPurgedAt != nil
         // 보내는 중이 아니면서 서버에 이미 저장된 보내기는 기록에서 뺀다 (보내는 중인 것은 응답이 올 때까지 둔다)
         threads[id]?.pending.removeAll { stored.contains($0.id) && $0.status != .sending }
@@ -564,6 +572,7 @@ public final class ChatStore {
             }
         }
         threads[id]?.messages = messages.sorted { $0.seq < $1.seq }
+        deriveTitle(for: id)
         threads[id]?.pending.removeAll { $0.id == posted.message.clientMessageID }
         threads[id]?.revision += 1
         previews[id] = posted.reply.text
@@ -574,6 +583,14 @@ public final class ChatStore {
                 lastReadAt: old.lastReadAt, archivedAt: old.archivedAt, textPurgedAt: old.textPurgedAt
             )
         }
+    }
+
+    /// 이름이 없는 대화는 읽은 첫 사용자 글로 이름을 보인다
+    private func deriveTitle(for id: UUID) {
+        guard conversations.first(where: { $0.id == id })?.title?.isEmpty ?? true,
+              let first = threads[id]?.messages.sorted(by: { $0.seq < $1.seq }).first(where: { $0.role.isUser && !$0.text.isEmpty }),
+              let title = ChatTitle.make(from: first.text) else { return }
+        derivedTitles[id] = title
     }
 
     private func upsert(_ conversation: ChatConversation) {

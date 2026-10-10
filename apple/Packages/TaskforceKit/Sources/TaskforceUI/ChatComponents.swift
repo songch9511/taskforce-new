@@ -224,7 +224,7 @@ public struct SourceQuote: View {
             let meta = Self.metaLine(from: from, place: place, time: time)
             if service != nil || !meta.isEmpty {
                 HStack(spacing: 6) {
-                    if let service { SourceIcon(service, size: .s) }
+                    if let service { SourceIcon(service, size: .m) }
                     if !meta.isEmpty {
                         Text(meta)
                             .font(TFFont.meta)

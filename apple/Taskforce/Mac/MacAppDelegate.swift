@@ -91,6 +91,8 @@ final class MacAppDelegate: NSObject, NSApplicationDelegate {
         SettingsSnapshot.runIfRequested()
         // Edge 셸 확인용: `-TF_EDGE_SHELL YES -TFEdgeSnapshot <폴더>`
         if let edge { EdgeSnapshot.runIfRequested(edge) }
+        // Edge 셸 합성 조작 확인용: `-TF_EDGE_SHELL YES -TFSampleData -TFEdgeInteract <로그 파일>`
+        if let edge { EdgeInteraction.runIfRequested(edge) }
         #endif
     }
 

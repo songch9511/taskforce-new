@@ -114,13 +114,14 @@ public struct ChatListEntry: Sendable, Hashable, Identifiable {
 
 public enum ChatHistoryRules {
     /// 목록: 새 것이 위 (마지막 활동 = 마지막 메시지, 없으면 만든 때). 같은 시각이면 id로 고정한다
+    /// - titles: 서버에 이름이 없는 대화의 이름 (읽은 첫 사용자 글로 만든 `ChatTitle`: 이름을 정할 길이 서버에 없어 앱이 그렇게 보인다)
     public static func entries(
-        conversations: [ChatConversation], locals: [LocalChat], previews: [UUID: String], drafts: [UUID: String]
+        conversations: [ChatConversation], locals: [LocalChat], previews: [UUID: String], drafts: [UUID: String], titles: [UUID: String] = [:]
     ) -> [ChatListEntry] {
         var result: [ChatListEntry] = []
         for chat in conversations where chat.archivedAt == nil {
             let hasMessages = !chat.isUntouched
-            let title = chat.title.flatMap { $0.isEmpty ? nil : $0 } ?? (hasMessages ? ChatCopy.untitled : ChatCopy.newChat)
+            let title = chat.title.flatMap { $0.isEmpty ? nil : $0 } ?? titles[chat.id] ?? (hasMessages ? ChatCopy.untitled : ChatCopy.newChat)
             result.append(ChatListEntry(
                 id: chat.id, title: title, date: chat.lastMessageAt ?? chat.createdAt,
                 preview: preview(hasMessages: hasMessages, last: previews[chat.id], draft: drafts[chat.id]), isLocal: false
