@@ -59,7 +59,7 @@ describe("확인 (planConfirm)", () => {
     expect(planConfirm(row({ origin: "observed", confidence: null, statement: "", source_purged: true }), 3, false)).toEqual({ ok: false, reason: "unavailable" });
   });
 
-  it("정책 보류 (a): Slack 원문에서 온 후보는 확인할 수 없다", () => {
+  it("정책 보류 (a) (d): 출처가 막힌 상태(Slack 원문 · 접근을 잃은 원문 · 상태를 알 수 없음)인 후보는 확인할 수 없다", () => {
     expect(planConfirm(row(), 3, true)).toEqual({ ok: false, reason: "unavailable" });
   });
 });
@@ -86,7 +86,7 @@ describe("정정 (planEdit)", () => {
     expect(planEdit(row(), request({ valid_from: "2026-12-01T00:00:00Z", valid_until: "2026-11-01T00:00:00Z" }), false)).toEqual({ ok: false, reason: "invalid" });
   });
 
-  it("정책 보류 (a): Slack에서 온 후보 · observed는 글자 그대로 정정하면 확인의 우회라 거절하고, 새 글이면 옛 값을 잇지 않는다", () => {
+  it("정책 보류 (a) (d): 출처가 막힌 후보 · observed는 글자 그대로 정정하면 확인의 우회라 거절하고, 새 글이면 옛 값을 잇지 않는다", () => {
     for (const statement of ["출시는 목요일인 듯", "  출시는   목요일인 듯  ", "ＡＢＣ" /* 다른 글 */]) {
       const plan = planEdit(row(), request({ statement }), true);
       expect(plan.ok, statement).toBe(statement === "ＡＢＣ");

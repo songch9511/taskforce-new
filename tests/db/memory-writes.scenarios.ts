@@ -5,9 +5,10 @@ import { describe, expect, it } from "vitest";
 import { apiErrorV2Schema, memoryItemResponseSchema, updateConversationResponseSchema, type MemoryItem } from "@/lib/api/contract";
 import { handleUpdateConversation } from "@/lib/api/conversations";
 import { handleConfirmMemory, handleEditMemory, handleForgetMemory, handleMoveMemory } from "@/lib/api/memory";
+import { buildContextBundle } from "@/lib/context/bundle";
 import type { MemoryWriteOutcome } from "@/lib/context/memory-edit";
 import { confirmMemoryItem, editMemoryItem, forgetMemoryItem, loadMemoryItem, moveMemoryItem } from "@/lib/context/memory-writes";
-import { ContextGateOffError, loadScopeMemory } from "@/lib/context/store";
+import { ContextGateOffError, loadScopeMemory, loadSourceStates } from "@/lib/context/store";
 import { loadConsultContext, setConversationContext } from "@/lib/conversation/store";
 
 import { sqlAdmin } from "../conversation/sql-admin";
@@ -231,7 +232,7 @@ export function memoryWritesTests(db: () => MemoryWritesDb) {
       expect(await authorityCounts()).toEqual(counts);
     });
 
-    it("보관 기간으로 원문이 지워지면 그 후보는 지워져 404, 지워지기 전에 확인한 explicit은 정리 뒤에도 글 · 인용이 남는다. 접근을 잃은 원문의 후보는 확인된다(남은 결정)", async () => {
+    it("보관 기간으로 원문이 지워지면 그 후보는 지워져 404, 지워지기 전에 확인한 explicit은 정리 뒤에도 글 · 인용이 남는다", async () => {
       const me = await f.user();
       const source = await f.source(me, { connectionId: await f.connection(me, "gmail"), externalId: "m-1", version: "1" });
       const stays = await f.candidate(me, { subject: "stays", statement: "남는 후보", source_ref: { source_id: source, quote: "원문 구절" } });
@@ -242,10 +243,158 @@ export function memoryWritesTests(db: () => MemoryWritesDb) {
       expect(await f.confirm(me, pending, 1)).toEqual({ status: "not_found" });
       expect(await f.row(confirmed.id)).toMatchObject({ statement: "남는 후보", source_ref: { source_id: source, quote: "원문 구절" } });
 
-      const lost = await f.source(me, { connectionId: await f.connection(me, "gmail"), externalId: "m-2", version: "1" });
-      const lostCandidate = await f.candidate(me, { subject: "lost", statement: "접근 잃은 원문의 후보", source_ref: { source_id: lost, quote: "구절" } });
-      await db().query(`select public.set_sources_access($1, array[$2]::uuid[], true)`, [me, lost]);
-      expect(itemOf(await f.confirm(me, lostCandidate, 1))).toMatchObject({ origin: "explicit", statement: "접근 잃은 원문의 후보" });
+    });
+  });
+
+  describe("정책 보류 (d): 접근을 잃은 원문(access_lost_at, 문서 단위)에서 온 후보는 확인할 수 없다 (Codex 출처 경계 검토)", () => {
+    const lose = (userId: string, sourceId: string) => db().query(`select public.set_sources_access($1, array[$2]::uuid[], true)`, [userId, sourceId]);
+    const restore = (userId: string, sourceId: string) => db().query(`select public.set_sources_access($1, array[$2]::uuid[], false)`, [userId, sourceId]);
+    /** 새 묶음이 담는 기억 (production loadScopeMemory · loadSourceStates · buildContextBundle) */
+    async function bundleMemory(userId: string, sourceIds: string[]) {
+      const bundle = buildContextBundle({
+        context: null,
+        me: { display_name: "Synthetic", emails: [] },
+        memory: await loadScopeMemory(f.admin(), userId, {}, ON),
+        people: [],
+        chunks: [],
+        sources: await loadSourceStates(f.admin(), userId, sourceIds),
+        now: new Date(),
+      }).bundle;
+      return bundle.memory.map((m) => m.id);
+    }
+    const documentSource = async (userId: string, externalId: string, version = "1", connectionId?: string) =>
+      f.source(userId, { connectionId: connectionId ?? (await f.connection(userId, "gmail")), externalId, version });
+
+    it("접근을 잃은 문서의 후보는 확인할 수 없다: 쓰기 없음 · 묶음 memory 0 유지. 접근이 있는 후보는 확인되고 묶음에 들어간다", async () => {
+      const me = await f.user();
+      const lost = await documentSource(me, "lost-doc");
+      const healthy = await documentSource(me, "healthy-doc");
+      const lostCandidate = await f.candidate(me, { subject: "lost fact", statement: "접근 잃은 문서의 후보", source_ref: { source_id: lost, quote: "구절" } });
+      const healthyCandidate = await f.candidate(me, { subject: "healthy fact", statement: "접근 있는 문서의 후보", source_ref: { source_id: healthy, quote: "구절" } });
+      await lose(me, lost);
+      expect((await loadSourceStates(f.admin(), me, [lost]))[0].accessLost).toBe(true);
+      expect(await bundleMemory(me, [lost, healthy])).toEqual([]);
+
+      const snapshot = await f.snapshot(me);
+      expect(await f.confirm(me, lostCandidate, 1)).toEqual({ status: "unavailable" });
+      expect(await f.snapshot(me)).toEqual(snapshot);
+      expect(await bundleMemory(me, [lost, healthy])).toEqual([]);
+
+      const confirmed = itemOf(await f.confirm(me, healthyCandidate, 1));
+      expect(confirmed).toMatchObject({ origin: "explicit", statement: "접근 있는 문서의 후보" });
+      expect(await bundleMemory(me, [lost, healthy])).toEqual([confirmed.id]);
+    });
+
+    it("문서 단위: 같은 문서의 다른 revision 후보도 막히고, 잃은 뒤 들어온 새 revision은 되찾음이 아니다. 명시 복원(access_lost null) 뒤에는 다시 확인된다", async () => {
+      const me = await f.user();
+      const connection = await f.connection(me, "gmail");
+      const r1 = await documentSource(me, "doc-1", "1", connection);
+      const r2 = await documentSource(me, "doc-1", "2", connection);
+      const c1 = await f.candidate(me, { subject: "r1", statement: "revision 1의 후보", source_ref: { source_id: r1, quote: "구절" } });
+      const c2 = await f.candidate(me, { subject: "r2", statement: "revision 2의 후보", source_ref: { source_id: r2, quote: "구절" } });
+      await lose(me, r2); // 문서 전체(모든 revision)를 잃는다
+      const r3 = await documentSource(me, "doc-1", "3", connection); // 잃은 뒤에 들어온 새 revision: access_lost_at은 비어 있지만 문서는 여전히 잃은 상태
+      const c3 = await f.candidate(me, { subject: "r3", statement: "새 revision의 후보", source_ref: { source_id: r3, quote: "구절" } });
+      expect((await f.one(`select access_lost_at from public.sources where id = $1`, [r3])).access_lost_at).toBeNull();
+      for (const candidate of [c1, c2, c3]) expect(await f.confirm(me, candidate, 1), candidate).toEqual({ status: "unavailable" });
+
+      await restore(me, r1);
+      expect((await loadSourceStates(f.admin(), me, [r1, r2, r3])).map((state) => state.accessLost)).toEqual([false, false, false]);
+      for (const candidate of [c1, c2, c3]) expect(itemOf(await f.confirm(me, candidate, 1)).origin, candidate).toBe("explicit");
+    });
+
+    it("다른 문서 · 다른 계정은 영향이 없다: 같은 사용자의 다른 문서 후보 · 같은 외부 id를 가진 다른 계정의 후보는 확인된다", async () => {
+      const me = await f.user();
+      const them = await f.user();
+      const lost = await documentSource(me, "shared-external-id");
+      const other = await documentSource(me, "other-doc");
+      const theirs = await documentSource(them, "shared-external-id");
+      const lostCandidate = await f.candidate(me, { subject: "a", statement: "잃은 문서", source_ref: { source_id: lost, quote: "구절" } });
+      const otherCandidate = await f.candidate(me, { subject: "b", statement: "다른 문서", source_ref: { source_id: other, quote: "구절" } });
+      const theirCandidate = await f.candidate(them, { subject: "c", statement: "남의 문서", source_ref: { source_id: theirs, quote: "구절" } });
+      await lose(me, lost);
+      expect(await f.confirm(me, lostCandidate, 1)).toEqual({ status: "unavailable" });
+      expect(itemOf(await f.confirm(me, otherCandidate, 1)).origin).toBe("explicit");
+      expect(itemOf(await f.confirm(them, theirCandidate, 1)).origin).toBe("explicit");
+      expect((await loadSourceStates(f.admin(), them, [theirs]))[0].accessLost).toBe(false);
+    });
+
+    it("원래 explicit 사용자 기억은 그대로다(B1 보존): 잃기 전에 확인한 explicit은 묶음에 남고, 잃은 원문을 인용한 explicit도 같은 글로 고치고 잊을 수 있다", async () => {
+      const me = await f.user();
+      const source = await documentSource(me, "doc-then-lost");
+      const candidate = await f.candidate(me, { subject: "kept", statement: "잃기 전에 확인", source_ref: { source_id: source, quote: "구절" } });
+      const confirmed = itemOf(await f.confirm(me, candidate, 1));
+      const own = await f.explicit(me, { subject: "own", statement: "내가 말한 사실", source_ref: { source_id: source, quote: "구절" } });
+      await lose(me, source);
+      expect((await bundleMemory(me, [source])).sort()).toEqual([confirmed.id, own].sort()); // B1 기존 동작: 확인된 explicit은 접근을 잃은 뒤에도 묶음에 든다
+      const edited = itemOf(await f.edit(me, own, { expected_version: (await f.row(own)).version, statement: "내가 말한 사실" })); // 글자 그대로여도 explicit은 가드 대상이 아니다
+      expect(edited).toMatchObject({ origin: "explicit", statement: "내가 말한 사실" });
+      expect(itemOf(await f.forget(me, confirmed.id, confirmed.version)).revoked_at).not.toBeNull();
+    });
+
+    it("출처 상태를 읽지 못하면 쓰지 않는다 (fail-closed): 읽기 오류는 그대로 던지고, 상태가 비어 돌아와도 확인 · 글자 그대로 정정은 보류다. 쓰기 0", async () => {
+      const me = await f.user();
+      const source = await documentSource(me, "unreadable-doc");
+      const candidate = await f.candidate(me, { subject: "x", statement: "상태를 못 읽는 후보", source_ref: { source_id: source, quote: "구절" } });
+      const snapshot = await f.snapshot(me);
+      const failing = sqlAdmin(async (sql, params) => {
+        if (sql.includes("context_source_states")) throw new Error("source state unavailable");
+        return db().query(sql, params);
+      });
+      await expect(confirmMemoryItem(failing, me, candidate, 1, ON)).rejects.toThrow(/source state unavailable/);
+      await expect(editMemoryItem(failing, me, candidate, { expected_version: 1, statement: "다른 글" }, ON)).rejects.toThrow(/source state unavailable/);
+      expect(await f.snapshot(me)).toEqual(snapshot);
+
+      const empty = sqlAdmin(async (sql, params) => (sql.includes("context_source_states") ? [] : db().query(sql, params)));
+      expect(await confirmMemoryItem(empty, me, candidate, 1, ON)).toEqual({ status: "unavailable" });
+      expect(await editMemoryItem(empty, me, candidate, { expected_version: 1, statement: "상태를 못 읽는 후보" }, ON)).toEqual({ status: "unavailable" });
+      expect(await f.snapshot(me)).toEqual(snapshot);
+      expect(itemOf(await f.confirm(me, candidate, 1)).origin).toBe("explicit"); // 읽을 수 있으면 확인된다
+    });
+
+    it("확인과 접근 상실이 겹칠 때의 보장 범위: 상실이 먼저 커밋되면 보류, 확인이 먼저 끝나면 확인된 explicit은 B1대로 보존된다. 출처 상태 읽기(트랜잭션 밖)와 쓰기 사이에 상실이 커밋되면 확인이 통과한다 — 알려진 한계", async () => {
+      const me = await f.user();
+      const first = await documentSource(me, "race-before");
+      const second = await documentSource(me, "race-after");
+      const third = await documentSource(me, "race-window");
+      const candidate = (source: string, subject: string) => f.candidate(me, { subject, statement: `후보 ${subject}`, source_ref: { source_id: source, quote: "구절" } });
+      const [c1, c2, c3] = [await candidate(first, "before"), await candidate(second, "after"), await candidate(third, "window")];
+
+      await lose(me, first); // 상실이 먼저 → 보류
+      expect(await f.confirm(me, c1, 1)).toEqual({ status: "unavailable" });
+
+      const confirmed = itemOf(await f.confirm(me, c2, 1)); // 확인이 먼저 → 이후 상실에도 explicit은 보존 (B1)
+      await lose(me, second);
+      expect(await f.row(confirmed.id)).toMatchObject({ origin: "explicit", superseded_at: null, revoked_at: null });
+
+      // 알려진 한계: 읽기와 쓰기가 한 트랜잭션이 아니다. 읽은 직후 상실이 커밋되면 "상실 직전에 끝난 확인"과 같은 결과가 된다 (창은 두 문장 사이)
+      const racing = sqlAdmin(async (sql, params) => {
+        const rows = await db().query(sql, params);
+        if (sql.includes("context_source_states")) await lose(me, third);
+        return rows;
+      });
+      expect(itemOf(await confirmMemoryItem(racing, me, c3, 1, ON)).origin).toBe("explicit");
+      expect((await loadSourceStates(f.admin(), me, [third]))[0].accessLost).toBe(true);
+    });
+
+    it("글자 그대로 Edit하는 승격 우회도 막는다(대소문자 · 공백만 달라도). 새 글 Edit는 허용하고 옛 값 · 유효 구간 · 출처를 잇지 않는다. 잃은 원문의 observed도 같다", async () => {
+      const me = await f.user();
+      const source = await documentSource(me, "bypass-doc");
+      const candidate = await f.candidate(me, {
+        subject: "bypass", statement: "Lost Source Statement", value: { k: 1 }, valid_from: "2026-10-01T00:00:00Z", source_ref: { source_id: source, quote: "구절" },
+      });
+      const observed = await f.observed(me, source, { subject: "bypass obs", statement: "Observed Statement" });
+      await lose(me, source);
+      const snapshot = await f.snapshot(me);
+      for (const statement of ["Lost Source Statement", "  lost   SOURCE statement "]) {
+        expect(await f.edit(me, candidate, { expected_version: 1, statement }), statement).toEqual({ status: "unavailable" });
+      }
+      expect(await f.edit(me, observed, { expected_version: 1, statement: "observed statement" })).toEqual({ status: "unavailable" });
+      expect(await f.snapshot(me)).toEqual(snapshot);
+
+      const written = itemOf(await f.edit(me, candidate, { expected_version: 1, statement: "내가 새로 쓴 글" }));
+      expect(written).toMatchObject({ origin: "explicit", statement: "내가 새로 쓴 글", value: {}, valid_from: null, source_ref: null });
+      expect(itemOf(await f.edit(me, observed, { expected_version: 1, statement: "내가 새로 쓴 observed 대체 글" })).origin).toBe("explicit");
     });
   });
 

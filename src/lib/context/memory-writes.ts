@@ -31,14 +31,20 @@ export async function loadMemoryItem(admin: SupabaseClient, userId: string, id: 
 }
 
 /**
- * 출처 원문이 Slack에서 왔는가: 맥락층의 기준(retrieve.ts isSlackDerived) 그대로 — 연결이 Slack이거나, Slack 끊기로 지운 원문이거나, 링크가 Slack이다.
- * Slack 끊기(D3)는 연결을 지우기 전에 원문을 지워 표시하므로 연결이 비어도 알아본다. 원문이 없으면(지워짐) false: 그런 후보는 이미 지워졌다
+ * 출처 원문이 확인(승격)을 막는 상태인가 — 출처 기반 확인 경로의 정책 보류 (docs/context-layer.md 8장 (a) (d)):
+ *  - (a) Slack에서 왔다: 맥락층의 기준(retrieve.ts isSlackDerived) 그대로 — 연결이 Slack이거나, Slack 끊기로 지운 원문이거나, 링크가 Slack이다
+ *  - (d) 접근을 잃었다: B1 loadSourceStates의 accessLost(문서 단위: 같은 문서의 revision 하나라도 잃으면 잃은 문서, 명시 복원 전 새 revision도 마찬가지)
+ * 출처 상태를 읽지 못하면 던지고(쓰기 0), 상태가 비어 돌아와도(원문이 없다) 막는다: 확인할 수 없는 출처를 근거로 explicit을 만들지 않는다 (fail-closed).
+ * 출처 id가 없는 항목(대화 메시지 · 산출물 · 사건 출처)은 막지 않는다.
+ * 한계: 이 읽기는 쓰기 트랜잭션 밖이다. 읽은 뒤 쓰기 전에 접근 상실이 커밋되면 확인이 통과할 수 있다 — 그 결과는 "접근 상실 직전에 끝난 확인"과 구별되지 않고
+ * (B1은 확인된 explicit을 접근 상실 뒤에도 보존한다) 창은 두 문장 사이(밀리초)다. 접근 상실을 쓰는 연동 쪽은 아직 없다.
  */
-async function fromSlack(admin: SupabaseClient, userId: string, sourceRef: MemoryItem["source_ref"]): Promise<boolean> {
+async function restrictedSource(admin: SupabaseClient, userId: string, sourceRef: MemoryItem["source_ref"]): Promise<boolean> {
   const sourceId = sourceRef?.source_id;
   if (!sourceId) return false;
   const [state] = await loadSourceStates(admin, userId, [sourceId]);
-  return state ? isSlackDerived(state) : false;
+  if (!state) return true;
+  return isSlackDerived(state) || state.accessLost;
 }
 
 function scopeOf(row: MemoryItem): MemoryScope {
@@ -91,13 +97,13 @@ async function correctWith(
 
 /**
  * 후보(inferred) 확인: 새 explicit 행이 후보를 정정한다(글 · 값 · 유효 구간 · 출처 그대로, 같은 범위 · kind · subject).
- * Slack 원문에서 온 후보 · 추정이 아닌 항목은 unavailable(정책 보류), 낡은 version · 이미 정정 · 잊은 항목은 conflict
+ * Slack 원문 · 접근을 잃은 원문에서 온 후보 · 추정이 아닌 항목은 unavailable(정책 보류), 낡은 version · 이미 정정 · 잊은 항목은 conflict
  */
 export async function confirmMemoryItem(admin: SupabaseClient, userId: string, id: string, expectedVersion: number, env: Env = process.env): Promise<MemoryWriteOutcome> {
   requireMemoryGate(env);
   const row = await loadMemoryItem(admin, userId, id);
   if (!row) return { status: "not_found" };
-  const plan = planConfirm(row, expectedVersion, row.origin === "inferred" ? await fromSlack(admin, userId, row.source_ref) : false);
+  const plan = planConfirm(row, expectedVersion, row.origin === "inferred" ? await restrictedSource(admin, userId, row.source_ref) : false);
   if (!plan.ok) return { status: plan.reason };
   return correctWith(
     admin,
@@ -114,7 +120,7 @@ export async function editMemoryItem(admin: SupabaseClient, userId: string, id: 
   requireMemoryGate(env);
   const row = await loadMemoryItem(admin, userId, id);
   if (!row) return { status: "not_found" };
-  const plan = planEdit(row, request, row.origin !== "explicit" ? await fromSlack(admin, userId, row.source_ref) : false);
+  const plan = planEdit(row, request, row.origin !== "explicit" ? await restrictedSource(admin, userId, row.source_ref) : false);
   if (!plan.ok) return { status: plan.reason };
   return correctWith(admin, userId, row, request.expected_version, { ...plan.write, source_ref: null }, env);
 }
