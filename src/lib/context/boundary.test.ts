@@ -19,12 +19,16 @@ function files(dir: string, includeTests = false): string[] {
 }
 
 const CONTEXT_FILES = files(path.join(ROOT, "src/lib/context"));
-const CONTEXT_MIGRATION = path.join(ROOT, "supabase/migrations/20261104000000_context_layer.sql");
+const CONTEXT_MIGRATIONS = [
+  path.join(ROOT, "supabase/migrations/20261104000000_context_layer.sql"),
+  // B3: 기억 잊기 · 범위 옮기기도 실행 표를 건드리지 않는다
+  path.join(ROOT, "supabase/migrations/20261107000000_memory_writes.sql"),
+];
 
 describe("맥락층 ↔ 실행 권한 경계 (I04 · I14)", () => {
   it("src/lib/context는 실행 코드(정책 · 승인 · 도구 · 스위치 · 저장소 포함)를 가져오지 않는다", () => {
     expect(CONTEXT_FILES.map((f) => path.basename(f)).sort()).toEqual(
-      ["bundle.ts", "chunks.ts", "contexts.ts", "identity-links.ts", "memory.ts", "people.ts", "retrieve.ts", "store.ts"].sort(),
+      ["bundle.ts", "chunks.ts", "contexts.ts", "identity-links.ts", "memory-edit.ts", "memory-writes.ts", "memory.ts", "people.ts", "retrieve.ts", "store.ts"].sort(),
     );
     const offenders = CONTEXT_FILES.flatMap((file) => {
       const text = readFileSync(file, "utf8");
@@ -47,11 +51,13 @@ describe("맥락층 ↔ 실행 권한 경계 (I04 · I14)", () => {
   });
 
   it("맥락층 마이그레이션은 실행 표를 만들거나 고치거나 가리키지 않는다", () => {
-    const sql = readFileSync(CONTEXT_MIGRATION, "utf8")
-      .split("\n")
-      .filter((line) => !line.trim().startsWith("--"))
-      .join("\n");
-    expect(sql).not.toMatch(/execution_|credit_|approval/);
+    for (const migration of CONTEXT_MIGRATIONS) {
+      const sql = readFileSync(migration, "utf8")
+        .split("\n")
+        .filter((line) => !line.trim().startsWith("--"))
+        .join("\n");
+      expect(sql, path.basename(migration)).not.toMatch(/execution_|credit_|approval/);
+    }
   });
 
   it("실행 쪽 정책 · 승인 · 계획 코드는 맥락층(범위 · 기억)을 입력으로 가져오지 않는다 (범위는 어떤 gate · 판정에도 입력이 아니다)", () => {

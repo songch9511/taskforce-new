@@ -931,6 +931,46 @@ export type MemoryEditRequest = z.infer<typeof memoryEditRequestSchema>;
 export const memoryForgetRequestSchema = z.object({ expected_version: z.number().int().positive() }).strict();
 export type MemoryForgetRequest = z.infer<typeof memoryForgetRequestSchema>;
 
+/**
+ * 범위 옮기기 (POST /api/v2/memory/{id}/scope, B3): explicit 항목만. 같은 kind · subject · 글로 대상 범위에 새 explicit 행을 만들고 옛 행은 잊는다(한 트랜잭션).
+ * 정정(superseded)과 다르다: 새 행의 value.moved_from이 옮긴 출처 id다. 대상은 전체(global, context_id null) 또는 내 active 범위(context, context_id)
+ */
+export const memoryScopeRequestSchema = z
+  .object({
+    expected_version: z.number().int().positive(),
+    scope_kind: z.enum(["global", "context"]),
+    context_id: z.uuid().nullable().default(null),
+  })
+  .strict()
+  .refine((r) => (r.scope_kind === "context") === (r.context_id !== null), {
+    message: "context_id는 scope_kind가 context일 때만 필요합니다",
+    path: ["context_id"],
+  });
+export type MemoryScopeRequest = z.infer<typeof memoryScopeRequestSchema>;
+
+/** 기억 쓰기(확인 · 정정 · 잊기 · 범위 옮기기) 응답: 지금 상태의 항목. 확인 · 정정 · 옮기기는 새 지금 행, 잊기는 revoked_at이 선 그 행 */
+export const memoryItemResponseSchema = z.object({ item: memoryItemSchema });
+export type MemoryItemResponse = z.infer<typeof memoryItemResponseSchema>;
+
+/**
+ * 기억 쓰기의 409 이유 코드 (B3). 둘 다 "다시 읽어도 소용없는" 거절이다(version 충돌 conflict와 다르다): 앱은 해당 동작을 감춘다.
+ * v1 apiErrorCodeSchema는 동결이라 값을 더하지 않고 v2 오류 코드를 따로 둔다 (모양은 { error: { code, message } }로 같다)
+ */
+export const memoryUnavailableCodeSchema = z.enum(["confirm_unavailable", "scope_unavailable"]);
+export const apiErrorV2CodeSchema = z.enum([...apiErrorCodeSchema.options, ...memoryUnavailableCodeSchema.options]);
+export type ApiErrorV2Code = z.infer<typeof apiErrorV2CodeSchema>;
+export const apiErrorV2Schema = z.object({ error: z.object({ code: apiErrorV2CodeSchema, message: z.string() }) });
+export type ApiErrorV2 = z.infer<typeof apiErrorV2Schema>;
+
+/**
+ * 대화의 범위 바꾸기 (PATCH /api/v2/conversations/{id}, B3): 헤더 ProjectLink에서 사용자가 명시적으로 고른 범위. null = All work.
+ * 내 active 범위만(아니면 404). 자동 범위 추정 · 멤버십 쓰기는 없다 (S3b)
+ */
+export const updateConversationRequestSchema = z.object({ context_id: z.uuid().nullable() }).strict();
+export type UpdateConversationRequest = z.infer<typeof updateConversationRequestSchema>;
+export const updateConversationResponseSchema = z.object({ conversation: conversationSchema });
+export type UpdateConversationResponse = z.infer<typeof updateConversationResponseSchema>;
+
 // ─── 범위 (work_contexts · context_members, 아키텍처 5.4) ───────
 // 범위는 어떤 gate · 전이 · 판정에도 입력이 아니다(I14). 멤버십을 바꿔도 권한은 바뀌지 않는다.
 
