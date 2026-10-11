@@ -299,9 +299,10 @@ public final class WorkContextStore {
             absorb(r.fromMember, version: r.fromContextVersion)
             change = r.change
         }
-        let plan = Self.undoPlan(for: change)
-        if recordsUndo { undo[actionID] = plan }
-        return plan != nil
+        // Undo의 응답에는 다시 Undo를 걸지 않는다 (한 단계)
+        guard recordsUndo, let plan = Self.undoPlan(for: change) else { return false }
+        undo[actionID] = plan
+        return true
     }
 
     /// 쓴 뒤의 행을 지금 멤버 목록에 반영하고 (뺀 행이면 목록에서 뺀다), 그 범위 version은 더 높은 쪽으로만 올린다

@@ -143,11 +143,16 @@ final class FakeContextServer: ContextGateway, @unchecked Sendable {
     private var _hold: Latch?
     private var _readHold: Latch?
     private var _readFailure: Error?
+    /// 쓰기를 처리하기 전에 던진다 (서버가 돌려주는 다른 오류 흉내)
+    nonisolated(unsafe) var changeOverride: (@Sendable () async throws -> Void)?
 
     struct Pair: Hashable { let context: UUID; let action: UUID }
 
     var calls: [FakeContextGateway.Call] { lock.withLock { _calls } }
     var writes: [FakeContextGateway.Call] { calls.filter { if case .contexts = $0 { false } else if case .members = $0 { false } else { true } } }
+
+    /// 범위 읽기 횟수 (한 번 다시 읽을 때마다 하나)
+    var reads: Int { calls.filter { $0 == .contexts }.count }
 
     init(contexts: [WorkContext]) {
         _contexts = Dictionary(contexts.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
@@ -271,6 +276,7 @@ final class FakeContextServer: ContextGateway, @unchecked Sendable {
         lock.withLock { _calls.append(.change(context: contextID, op: op, action: actionID, version: expectedVersion)) }
         if let hold = lock.withLock({ _hold }) { await hold.wait() }
         try gate()
+        try await changeOverride?()
         let response: ContextMemberWriteResponse = try lock.withLock {
             guard let context = _contexts[contextID], context.isActive else { throw missingContext() }
             guard context.contextVersion == expectedVersion else { throw conflict() }
