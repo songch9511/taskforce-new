@@ -131,7 +131,7 @@ export function okOf(outcome: ContextMemberOutcome): Ok {
 const AUTHORITY_TABLES = [
   "actions", "claims", "evidence", "action_events", "execution_policies", "execution_runs", "execution_steps", "execution_approvals", "execution_intents",
   "execution_events", "execution_artifacts", "execution_usage", "execution_controls", "execution_tools", "execution_actors", "execution_recipient_allowlist",
-  "credit_accounts", "credit_ledger", "memory_items", "conversations", "conversation_messages", "inbox_events", "sources",
+  "credit_accounts", "credit_ledger", "memory_items", "conversations", "conversation_messages", "sources",
 ];
 
 export function contextMembersTests(db: () => ContextMembersDb) {
@@ -140,6 +140,9 @@ export function contextMembersTests(db: () => ContextMembersDb) {
   async function authorityCounts() {
     const counts: Record<string, number> = {};
     for (const table of AUTHORITY_TABLES) counts[table] = await f.count(`select count(*)::int as n from public.${table}`);
+    // C2(20261110000000_coordinator_core): 범위 version이 오르는 쓰기는 사건함에 memory_changed 한 줄(id만)을 더한다 — 코디네이터가 읽는 사건이다.
+    // 그 밖의 종류의 사건은 이 쓰기가 한 줄도 더하지 않는다 (사건함은 권한 표가 아니라 읽는 큐라서 memory_changed만 예외로 둔다)
+    counts["inbox_events (memory_changed 제외)"] = await f.count(`select count(*)::int as n from public.inbox_events where type <> 'memory_changed'`);
     return counts;
   }
 

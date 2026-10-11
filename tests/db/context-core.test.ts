@@ -622,8 +622,14 @@ describe("updated_at · 트리거", () => {
     ];
     // B2(20261106000000_conversations_v2): 답 인용 가드(Slack D3 · 원문 삭제). 동작은 tests/db/conversations-v2.scenarios.ts가 본다
     const B2 = [{ table: "conversation_messages", fn: "conversation_messages_citation_guard" }];
+    // C2(20261110000000_coordinator_core): 생산자 트리거 둘(사용자 메시지 · 범위 version 상승)과 사건 보호 트리거. 동작은 tests/db/coordinator-core.scenarios.ts가 본다
+    const C2 = [
+      { table: "conversation_messages", fn: "coordinator_on_user_message" },
+      { table: "inbox_events", fn: "inbox_events_guard" },
+      { table: "work_contexts", fn: "coordinator_on_context_version" },
+    ];
     expect(rows).toEqual(
-      [...[...UPDATED].map((table) => ({ table, fn: "set_updated_at" })), { table: "memory_items", fn: "memory_items_keep_history" }, ...B1, ...B2].sort(
+      [...[...UPDATED].map((table) => ({ table, fn: "set_updated_at" })), { table: "memory_items", fn: "memory_items_keep_history" }, ...B1, ...B2, ...C2].sort(
         (a, b) => a.table.localeCompare(b.table) || a.fn.localeCompare(b.fn),
       ),
     );
