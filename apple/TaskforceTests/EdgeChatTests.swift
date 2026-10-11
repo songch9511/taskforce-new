@@ -7,8 +7,27 @@ import Testing
 @testable import TaskforceKit
 @testable import TaskforceUI
 
+/// 요청을 붙잡았다 놓는 문 (옛 세션의 요청이 새 세션이 열린 뒤에 끝나게 한다)
+private actor AppLatch {
+    private var opened = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+    private(set) var arrivals = 0
+    func wait() async {
+        arrivals += 1
+        if opened { return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+    func open() {
+        opened = true
+        waiters.forEach { $0.resume() }
+        waiters = []
+    }
+}
+
 /// 가짜 서버 (앱 테스트용 최소판): 응답을 값으로 정한다
 private final class AppStubGateway: ChatGateway, @unchecked Sendable {
+    /// 있으면 잊기 요청이 이 문이 열릴 때까지 서버에서 기다린다
+    var forgetGate: AppLatch?
     var conversationRows: [ChatConversation] = []
     var memoryRows: [MemoryItem] = []
     var sources: [UUID: MemorySource] = [:]
@@ -30,7 +49,10 @@ private final class AppStubGateway: ChatGateway, @unchecked Sendable {
     func postChatMessage(conversationID: UUID, clientMessageID: UUID, text: String) async throws -> ChatPostedMessage { record("post"); throw URLError(.timedOut) }
     func confirmMemory(id: UUID, expectedVersion: Int) async throws -> MemoryItem { throw URLError(.badURL) }
     func editMemory(id: UUID, edit: MemoryEdit) async throws -> MemoryItem { throw URLError(.badURL) }
-    func forgetMemory(id: UUID, expectedVersion: Int) async throws -> MemoryItem { throw URLError(.badURL) }
+    func forgetMemory(id: UUID, expectedVersion: Int) async throws -> MemoryItem {
+        if let forgetGate { await forgetGate.wait() }
+        throw URLError(.badURL)
+    }
     func moveMemory(id: UUID, expectedVersion: Int, to target: MemoryTarget) async throws -> MemoryItem { throw URLError(.badURL) }
 }
 
@@ -234,6 +256,54 @@ struct EdgeChatTests {
     }
 
     /// 상세는 서버가 정한 사실만: 추정은 Confirm과 각주, explicit은 범위 popup, 출처 접근 상실이면 Confirm이 없다
+    /// 잊기가 끝난 뒤 창은 요청을 시작한 세션 · 화면일 때만 바뀐다 (Codex f9c5362: 옛 세션의 완료가 새 세션의 상세를 뒤로 보내지 않는다)
+    @Test func forgetFollowUpOnlyTouchesTheWindowThatStartedIt() {
+        let followUp = SettingsMemoryDetail.forgetFollowUp
+        // 같은 세션 · 같은 화면: 잊었으면 목록으로, 그 밖에는 제자리 확인만 닫는다 (동작은 전과 같다)
+        #expect(followUp(.forgotten, true, true, true) == .back)
+        for other in [MemoryWriteResult.refreshed, .unavailable, .failed, .ignored] {
+            #expect(followUp(other, true, true, true) == .clearConfirmation)
+        }
+        // 세션이 바뀌었으면(저장소는 `.ignored`, 옛 코드는 `.forgotten`도) 새 세션의 화면 · 확인을 건드리지 않는다
+        for result in [MemoryWriteResult.forgotten, .ignored, .refreshed, .unavailable, .failed] {
+            #expect(followUp(result, false, true, true) == .leaveAlone, "\(result)")
+        }
+        // 같은 세션이어도 그 사이 다른 상세로 옮겼으면 뒤로 보내지 않고, 다른 확인을 열었으면 닫지 않는다
+        #expect(followUp(.forgotten, true, false, true) == .leaveAlone)
+        #expect(followUp(.refreshed, true, true, false) == .leaveAlone)
+    }
+
+    /// 실제 창 모델과 저장소로: 옛 세션의 잊기가 늦게 끝나도 새 세션이 연 상세 · 확인은 그대로다
+    @Test func anOldSessionsForgetDoesNotMoveTheNewSessionsDetail() async throws {
+        let gateway = AppStubGateway()
+        let forgotten = AppFixtures.memory(1, "Keeps pricing-page FAQs short")
+        gateway.memoryRows = [forgotten]
+        let model = SettingsWindowModel()
+        let (runtime, account) = try runtime(gateway)
+        model.bind(to: runtime)
+        await runtime.memory.loadList()
+        model.open(.memory(forgotten.id))
+        model.confirming = .forgetMemory(forgotten.id)
+        let started = runtime.scope.token
+        let gate = AppLatch()
+        gateway.forgetGate = gate
+        let forgetting = Task { await runtime.memory.forget(forgotten.id) }
+        while await gate.arrivals == 0 { await Task.yield() }
+        // 요청이 서버에서 기다리는 동안 같은 사용자가 다시 로그인해 다른 상세 · 확인을 연다
+        account.relogin()
+        let other = AppFixtures.id(2)
+        model.open(.memory(other))
+        model.confirming = .forgetMemory(other)
+        await gate.open()
+        let result = await forgetting.value
+        let follow = SettingsMemoryDetail.forgetFollowUp(
+            result, sessionIsCurrent: started.map(runtime.scope.isCurrent) ?? false,
+            stillShowing: model.detail == .memory(forgotten.id), stillConfirming: model.confirming == .forgetMemory(forgotten.id)
+        )
+        #expect(result == .ignored && follow == .leaveAlone)
+        #expect(model.detail == .memory(other) && model.confirming == .forgetMemory(other))
+    }
+
     @Test func detailContentFollowsTheStoreNotAGuess() async throws {
         let gateway = AppStubGateway()
         let ref = MemorySourceRef(sourceID: AppFixtures.sourceID, quote: "Thursday")

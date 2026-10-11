@@ -104,9 +104,19 @@ struct SettingsMemoryDetail: View {
                         onCancelForget: { SettingsWindowModel.shared.confirming = nil },
                         onForget: {
                             Task {
-                                // 잊기 200은 "지금 기억이 아님"이다: 목록으로 돌아간다. 충돌이면 지금 상태를 보이고 머문다
+                                // 잊기 200은 "지금 기억이 아님"이다: 목록으로 돌아간다. 충돌이면 지금 상태를 보이고 머문다.
+                                // 요청을 시작한 세션 · 화면일 때만 창을 바꾼다 (그 사이 재로그인했거나 다른 상세를 열었으면 건드리지 않는다)
+                                let started = runtime.scope.token
                                 let result = await memory.forget(current)
-                                if result == .forgotten { SettingsWindowModel.shared.back() } else { SettingsWindowModel.shared.confirming = nil }
+                                let model = SettingsWindowModel.shared
+                                switch Self.forgetFollowUp(
+                                    result, sessionIsCurrent: started.map(runtime.scope.isCurrent) ?? false,
+                                    stillShowing: model.detail == .memory(id), stillConfirming: model.confirming == .forgetMemory(current)
+                                ) {
+                                case .back: model.back()
+                                case .clearConfirmation: model.confirming = nil
+                                case .leaveAlone: break
+                                }
                             }
                         },
                         onRetrySource: { Task { await memory.loadSource(for: item) } },
@@ -121,6 +131,26 @@ struct SettingsMemoryDetail: View {
                 if let item = memory.item(current) { await memory.loadSource(for: item) }
             }
         }
+    }
+
+    /// 잊기가 끝난 뒤 창에 할 일
+    enum ForgetFollowUp: Equatable {
+        /// 목록으로 돌아간다
+        case back
+        /// 제자리 확인만 닫는다 (충돌 · 거절 · 실패 · 보내지 않음: 상세에 머문다)
+        case clearConfirmation
+        /// 아무것도 바꾸지 않는다
+        case leaveAlone
+    }
+
+    /// 요청을 시작한 세션이 지금도 그 세션이고(`sessionIsCurrent`), 창이 아직 그 기억의 상세(`stillShowing`) · 그 확인(`stillConfirming`)일 때만 창을 바꾼다.
+    /// 세션이 바뀌었으면(저장소가 `.ignored`로 돌려준다) 새 세션의 화면 · 확인을 건드리지 않는다
+    static func forgetFollowUp(
+        _ result: MemoryWriteResult, sessionIsCurrent: Bool, stillShowing: Bool, stillConfirming: Bool
+    ) -> ForgetFollowUp {
+        guard sessionIsCurrent else { return .leaveAlone }
+        if result == .forgotten { return stillShowing ? .back : .leaveAlone }
+        return stillConfirming ? .clearConfirmation : .leaveAlone
     }
 
     static func content(for item: MemoryItem, memory: MemoryStore, now: Date = Date()) -> RememberedDetail.Content {
