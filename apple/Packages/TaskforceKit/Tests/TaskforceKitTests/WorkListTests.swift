@@ -19,17 +19,27 @@ struct WorkListTests {
         UUID(uuidString: String(format: "F0000000-0000-4000-8000-%012d", n))!
     }
 
+    /// 실제 범위(id)를 만든다: 같은 이름이면 같은 범위 (테스트가 이름 일치로 추정하는 길을 만들지 않도록 id는 이름과 따로 센다)
+    static func project(_ name: String, archived: Bool = false) -> WorkProject {
+        let ids = ["Shape launch": 1, "Acme website": 2, "Old project": 3]
+        return WorkProject(id: UUID(uuidString: String(format: "C0000000-0000-4000-8000-%012d", ids[name] ?? 99))!, name: name, isArchived: archived)
+    }
+
     static func item(
         _ n: Int, _ title: String = "", project: String? = nil, state: WorkState = .toDo, performer: String? = nil,
-        activity: String? = nil, waiting: Bool = false
+        activity: String? = nil, waiting: Bool = false, links: [WorkLink]? = nil, candidates: [WorkCandidate] = [],
+        memberships: WorkMemberships? = nil
     ) -> WorkItem {
-        WorkItem(
-            action: action(n, title, status: state == .done ? .done : .open), state: state, project: project, performer: performer,
+        let resolved = memberships ?? .known(
+            links: links ?? project.map { [WorkLink(project: Self.project($0), origin: .user)] } ?? [], candidates: candidates
+        )
+        return WorkItem(
+            action: action(n, title, status: state == .done ? .done : .open), state: state, memberships: resolved, performer: performer,
             activity: activity, waiting: waiting
         )
     }
 
-    /// 디자인 WorkList 견본과 같은 모양 (프로젝트가 있는 미래 데이터: S3b가 채울 때도 같은 규칙)
+    /// 디자인 WorkList 견본과 같은 모양 (프로젝트가 있는 데이터: 실제 멤버십일 때도 같은 규칙)
     static let designed: [WorkItem] = [
         item(1, "Launch design", project: "Shape launch", state: .inProgress, performer: "Design agent", activity: "Revising"),
         item(2, "Pricing page", project: "Shape launch", state: .inProgress, performer: "Coding agent + AI review", activity: "Needs your direction"),
@@ -64,7 +74,7 @@ struct WorkListTests {
             reviews: [Self.action(1, needsConfirmation: true)], open: [Self.action(2), Self.action(3, started: true)],
             doneToday: [Self.action(4, status: .done)]
         )
-        #expect(items.allSatisfy { $0.project == nil })
+        #expect(items.allSatisfy { $0.memberships == .none })
         let groups = WorkListLayout.groups(items, filter: WorkFilter(), pinned: [])
         #expect(groups.map(\.title) == ["Ungrouped", "Done today"])
         #expect(WorkListLayout.projectOptions(items) == [.all, .ungrouped])
@@ -154,21 +164,21 @@ struct WorkListTests {
 
     @Test func projectAndStatusFiltersCombineWithSearch() {
         func found(_ filter: WorkFilter) -> [[Int]] { ids(WorkListLayout.groups(Self.designed, filter: filter, pinned: [])) }
-        #expect(found(WorkFilter(project: .project("Shape launch"))) == [[1, 2, 4], [7]])
+        #expect(found(WorkFilter(project: .project(Self.project("Shape launch")))) == [[1, 2, 4], [7]])
         #expect(found(WorkFilter(project: .ungrouped)) == [[5, 6]])
         #expect(found(WorkFilter(status: .inProgress)) == [[1, 2], [3], [5]])
         #expect(found(WorkFilter(status: .toDo)) == [[4], [6]])
         #expect(found(WorkFilter(status: .done)) == [[7]])
         // Waiting은 기다림 조건으로 거르고 상태는 그대로 둔다
         #expect(found(WorkFilter(status: .waiting)) == [[3], [5]])
-        #expect(found(WorkFilter(project: .project("Acme website"), status: .waiting)) == [[3]])
+        #expect(found(WorkFilter(project: .project(Self.project("Acme website")), status: .waiting)) == [[3]])
         #expect(found(WorkFilter(query: "invoice", project: .ungrouped, status: .waiting)) == [[5]])
-        #expect(found(WorkFilter(query: "invoice", project: .project("Shape launch"))).isEmpty)
+        #expect(found(WorkFilter(query: "invoice", project: .project(Self.project("Shape launch")))).isEmpty)
         #expect(found(WorkFilter(project: .ungrouped, status: .done)).isEmpty)
     }
 
     @Test func activeFiltersReadAsOneLineAndClearKeepsTheSearch() {
-        var filter = WorkFilter(query: "launch", project: .project("Shape launch"), status: .waiting)
+        var filter = WorkFilter(query: "launch", project: .project(Self.project("Shape launch")), status: .waiting)
         #expect(filter.activeLabels == ["Shape launch", "Waiting"])
         #expect(filter.hasActiveFilters)
         filter.clearFilters()

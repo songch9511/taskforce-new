@@ -4,6 +4,8 @@ import Foundation
 // 프로젝트 묶음 → Ungrouped → Done today로, 검색 · 필터 · 고정과 함께 보인다 (화면 없는 순수 규칙).
 // 순서 계산은 서버에만 있다: 묶음 안의 순서는 받은 그대로이고, 고정한 일만 그 묶음 앞으로 올린다. 활동이 바뀌어도 줄 순서는 그대로다.
 // 데이터에 없는 의미는 만들지 않는다 (`WorkItem`의 필드마다 무엇에서 왔는지 적는다).
+// 프로젝트 묶음은 실제 범위 멤버십이다 (S3b, `WorkMembership.swift`): 한 할 일이 여러 범위면 여러 묶음에 나오고, 멤버십이 없으면 Ungrouped,
+// 아직 읽지 못했으면 묶음을 주장하지 않는다.
 
 /// 행의 활동 글 (디자인 ActivityRing · WorkRow와 같은 말)
 public enum WorkActivity {
@@ -20,8 +22,8 @@ public struct WorkItem: Sendable, Hashable, Identifiable {
     public let action: ActionSummary
     /// 세 상태(디자인 StatusMark ○ ◉ ✓). 확인 요청(Review)은 상태가 아니라 활동이다: 착수 시각으로 To Do · In Progress
     public let state: WorkState
-    /// 프로젝트. 지금 `actions`에는 프로젝트가 없어 늘 nil(Ungrouped). S3b가 `work_contexts` 멤버십으로 채운다
-    public let project: String?
+    /// 실제 범위 멤버십 (`work_contexts` · `context_members`를 RLS로 읽은 것). 확인된 멤버 / 후보 / 없음 / 아직 모름
+    public let memberships: WorkMemberships
     /// 수행자. 담당이 나(`owner = me`)이고 담당을 묻는 확인 이유가 없을 때만 "You". 모름 · 담당 확인 중이면 없음 (지어내지 않는다)
     public let performer: String?
     /// 지금 하는 일 (`WorkActivity`). 없으면 nil
@@ -34,12 +36,12 @@ public struct WorkItem: Sendable, Hashable, Identifiable {
     public var id: UUID { action.id }
 
     public init(
-        action: ActionSummary, state: WorkState, project: String? = nil, performer: String? = nil, activity: String? = nil,
+        action: ActionSummary, state: WorkState, memberships: WorkMemberships = .none, performer: String? = nil, activity: String? = nil,
         waiting: Bool = false, reasons: [RankReason] = []
     ) {
         self.action = action
         self.state = state
-        self.project = project
+        self.memberships = memberships
         self.performer = performer
         self.activity = activity
         self.waiting = waiting
@@ -54,15 +56,18 @@ public struct WorkItem: Sendable, Hashable, Identifiable {
 
     /// 받은 목록을 줄로: 확인 요청(서버 순서) → 열린 할 일(서버 순서) → 오늘 끝낸 할 일(최근 것이 위).
     /// `working`: 끝나지 않은 run이 있는 할 일, `stopping`: 그중 멈춤을 요청한 할 일, `reasons`: 열린 할 일의 서버 순서 이유
+    /// `memberships`: 범위 멤버십 색인 (기본은 읽었고 멤버십이 없음 → 모두 Ungrouped). 멤버십은 줄의 상태 · 활동 · 수행자 · 순서를 바꾸지 않는다
     public static func list(
         reviews: [ActionSummary], open: [ActionSummary], doneToday: [ActionSummary],
-        working: Set<UUID> = [], stopping: Set<UUID> = [], reasons: [UUID: [RankReason]] = [:]
+        working: Set<UUID> = [], stopping: Set<UUID> = [], reasons: [UUID: [RankReason]] = [:],
+        memberships: WorkMembershipIndex = .empty
     ) -> [WorkItem] {
         var seen = Set<UUID>()
         var items: [WorkItem] = []
         for action in reviews where seen.insert(action.id).inserted {
             items.append(WorkItem(
-                action: action, state: openState(action), performer: performer(action), activity: WorkActivity.needsAnswer
+                action: action, state: openState(action), memberships: memberships.memberships(of: action.id), performer: performer(action),
+                activity: WorkActivity.needsAnswer
             ))
         }
         for action in open where seen.insert(action.id).inserted {
@@ -70,12 +75,14 @@ public struct WorkItem: Sendable, Hashable, Identifiable {
                 ? (stopping.contains(action.id) ? WorkActivity.stopRequested : WorkActivity.running)
                 : nil
             items.append(WorkItem(
-                action: action, state: openState(action), performer: performer(action), activity: activity,
-                reasons: reasons[action.id] ?? []
+                action: action, state: openState(action), memberships: memberships.memberships(of: action.id), performer: performer(action),
+                activity: activity, reasons: reasons[action.id] ?? []
             ))
         }
         for action in doneToday where seen.insert(action.id).inserted {
-            items.append(WorkItem(action: action, state: .done, performer: performer(action)))
+            items.append(WorkItem(
+                action: action, state: .done, memberships: memberships.memberships(of: action.id), performer: performer(action)
+            ))
         }
         return items
     }
@@ -84,32 +91,58 @@ public struct WorkItem: Sendable, Hashable, Identifiable {
         action.startedAt == nil ? .toDo : .inProgress
     }
 
-    /// 검색이 보는 글: 제목 · 프로젝트 · 수행자 · 활동 (디자인 WorkList)
+    /// 검색이 보는 글: 제목 · 프로젝트 · 수행자 · 활동 (디자인 WorkList).
+    /// 프로젝트 = 확인된 멤버십의 범위 이름 전부(보관된 것 포함), 없으면 "Ungrouped". 후보(inferred)의 이름은 넣지 않는다 (아직 이 할 일의 프로젝트가 아니다).
+    /// 멤버십을 아직 읽지 못했으면 "Ungrouped"도 넣지 않는다 (모르는 것을 말하지 않는다)
     var searchText: String {
-        [action.title, project ?? WorkListGroup.ungroupedTitle, performer ?? "", activity ?? ""].joined(separator: " ")
+        let projects: [String]
+        switch memberships {
+        case .unknown: projects = []
+        case .known(let links, _): projects = links.isEmpty ? [WorkListGroup.ungroupedTitle] : links.map(\.project.name)
+        }
+        return ([action.title] + projects + [performer ?? "", activity ?? ""]).joined(separator: " ")
     }
 }
 
-/// Project 필터의 값
+/// Project 필터의 값. 프로젝트는 실제 범위(id)로 가른다: 이름이 같은 두 범위를 한 칩으로 합치지 않는다
 public enum WorkProjectFilter: Sendable, Hashable {
     case all
-    case project(String)
+    case project(WorkProject)
     case ungrouped
 
     /// 칩 글자
     public var title: String {
         switch self {
         case .all: "All"
-        case .project(let name): name
+        case .project(let project): project.title
         case .ungrouped: WorkListGroup.ungroupedTitle
         }
     }
 
+    public static func == (lhs: Self, rhs: Self) -> Bool {
+        switch (lhs, rhs) {
+        case (.all, .all), (.ungrouped, .ungrouped): true
+        case (.project(let a), .project(let b)): a.id == b.id
+        default: false
+        }
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        switch self {
+        case .all: hasher.combine(0)
+        case .project(let project):
+            hasher.combine(1)
+            hasher.combine(project.id)
+        case .ungrouped: hasher.combine(2)
+        }
+    }
+
+    /// 아직 읽지 못한 멤버십은 어느 프로젝트에도 속한다고 하지 않는다 (All만 모두를 보인다)
     func matches(_ item: WorkItem) -> Bool {
         switch self {
         case .all: true
-        case .project(let name): item.project == name
-        case .ungrouped: item.project == nil
+        case .project(let project): item.memberships.links.contains { $0.project.id == project.id }
+        case .ungrouped: item.memberships.isUngrouped
         }
     }
 }
@@ -175,8 +208,10 @@ public struct WorkFilter: Sendable, Hashable {
 /// 한 묶음: 프로젝트 · Ungrouped · Done today. 묶음 이름에 개수를 쓰지 않는다
 public struct WorkListGroup: Sendable, Hashable, Identifiable {
     public enum Kind: Sendable, Hashable {
-        case project(String)
+        case project(WorkProject)
         case ungrouped
+        /// 멤버십을 아직 읽지 못했다: 어느 프로젝트에도 Ungrouped에도 넣지 않고 이름 없이 둔다
+        case unsorted
         case doneToday
     }
 
@@ -191,48 +226,60 @@ public struct WorkListGroup: Sendable, Hashable, Identifiable {
         self.items = items
     }
 
+    /// 머리글. `unsorted`는 이름이 없다
     public var title: String {
         switch kind {
-        case .project(let name): name
+        case .project(let project): project.title
         case .ungrouped: Self.ungroupedTitle
+        case .unsorted: ""
         case .doneToday: Self.doneTodayTitle
         }
     }
 
     public var id: String {
         switch kind {
-        case .project(let name): "project:\(name)"
+        case .project(let project): "project:\(project.id.uuidString)"
         case .ungrouped: "ungrouped"
+        case .unsorted: "unsorted"
         case .doneToday: "done-today"
         }
     }
 }
 
 public enum WorkListLayout {
-    /// 묶음: 프로젝트(처음 나온 차례) → Ungrouped → Done today(끝낸 일 전부, 프로젝트와 상관없이). 빈 묶음은 뺀다.
+    /// 묶음: 활성 프로젝트(처음 나온 차례) → Ungrouped → (멤버십을 아직 모르면 이름 없는 한 묶음) → 보관된 프로젝트 → Done today(끝낸 일 전부, 프로젝트와 상관없이).
+    /// 빈 묶음은 뺀다. 한 할 일이 여러 프로젝트의 확인된 멤버면 각 묶음에 나온다 (하나로 지어내지 않는다) — 단 Project 필터가 프로젝트 하나면 그 묶음에만.
     /// 고정한 일은 그 묶음 맨 앞(고정한 일끼리 · 나머지끼리는 받은 순서)
     public static func groups(_ items: [WorkItem], filter: WorkFilter, pinned: Set<UUID>) -> [WorkListGroup] {
         let shown = items.filter(filter.matches)
         let open = shown.filter { $0.state != .done }
-        var groups = projects(items).map { name in
-            WorkListGroup(kind: .project(name), items: open.filter { $0.project == name })
+        var onlyProject: UUID?
+        if case .project(let project) = filter.project { onlyProject = project.id }
+        func projectGroup(_ project: WorkProject) -> WorkListGroup {
+            WorkListGroup(kind: .project(project), items: open.filter { item in item.memberships.links.contains { $0.project.id == project.id } })
         }
-        groups.append(WorkListGroup(kind: .ungrouped, items: open.filter { $0.project == nil }))
+        let all = projects(items).filter { onlyProject == nil || $0.id == onlyProject }
+        var groups = all.filter { !$0.isArchived }.map(projectGroup)
+        groups.append(WorkListGroup(kind: .ungrouped, items: open.filter { $0.memberships.isUngrouped }))
+        groups.append(WorkListGroup(kind: .unsorted, items: open.filter { !$0.memberships.isKnown }))
+        groups += all.filter(\.isArchived).map(projectGroup)
         groups.append(WorkListGroup(kind: .doneToday, items: shown.filter { $0.state == .done }))
         return groups.filter { !$0.items.isEmpty }.map { group in
             WorkListGroup(kind: group.kind, items: group.items.filter { pinned.contains($0.id) } + group.items.filter { !pinned.contains($0.id) })
         }
     }
 
-    /// Project 칩: All · 프로젝트(처음 나온 차례) · Ungrouped
+    /// Project 칩: All · 프로젝트(처음 나온 차례) · Ungrouped. 멤버십을 아직 읽지 못했으면 All뿐이다 (프로젝트도 Ungrouped도 지어내지 않는다)
     public static func projectOptions(_ items: [WorkItem]) -> [WorkProjectFilter] {
-        [.all] + projects(items).map(WorkProjectFilter.project) + [.ungrouped]
+        guard items.contains(where: { $0.memberships.isKnown }) else { return [.all] }
+        return [.all] + projects(items).map(WorkProjectFilter.project) + [.ungrouped]
     }
 
-    /// 프로젝트 이름 (처음 나온 차례, 겹침 없음). 필터와 상관없이 전체 목록에서 정해 묶음 순서가 흔들리지 않는다
-    static func projects(_ items: [WorkItem]) -> [String] {
-        var seen = Set<String>()
-        return items.compactMap(\.project).filter { seen.insert($0).inserted }
+    /// 프로젝트 (처음 나온 차례, 겹침 없음). 필터와 상관없이 전체 목록에서 정해 묶음 순서가 흔들리지 않는다.
+    /// 활성 프로젝트가 먼저가 아니라 처음 나온 차례 그대로다 (보관된 묶음은 `groups`가 뒤로 보낸다)
+    static func projects(_ items: [WorkItem]) -> [WorkProject] {
+        var seen = Set<UUID>()
+        return items.flatMap { $0.memberships.links.map(\.project) }.filter { seen.insert($0.id).inserted }
     }
 }
 
