@@ -76,15 +76,29 @@ jobs:
           -destination 'platform=macOS'
           -only-testing:TaskforceUITests
           -derivedDataPath "$RUNNER_TEMP/DerivedDataKit"
+      # 기본 명령 그대로 돈다: Taskforce 스킴의 Test 액션이 Debug-Test 설정을 써서 테스트 호스트가 dev.taskforcelabs.unittest.taskforce로 뜬다
+      # (apple/README.md "테스트 격리"). -configuration · BUNDLE_ID_PREFIX · CODE_SIGNING_ALLOWED를 주지 않는다: 기본 격리가 이 단계의 시험이다.
       - name: Test macOS launcher
         run: >-
           xcodebuild test
           -project apple/Taskforce.xcodeproj
           -scheme Taskforce
-          -configuration Debug
           -destination 'platform=macOS'
           -derivedDataPath "$RUNNER_TEMP/DerivedData"
-          CODE_SIGNING_ALLOWED=NO
+      # 실사용 번들 ID(dev.taskforcelabs.taskforce)로는 테스트 호스트를 만들 수 없다: 호스트가 뜨기 전 빌드 단계가 거부해야 한다.
+      # build-for-testing이라 테스트는 돌지 않는다. 거부 문구까지 확인해서 다른 이유로 실패한 것과 구별한다.
+      - name: Reject a test host with the real app ID
+        run: |
+          if xcodebuild build-for-testing \
+            -project apple/Taskforce.xcodeproj \
+            -scheme Taskforce \
+            -destination 'platform=macOS' \
+            -derivedDataPath "$RUNNER_TEMP/DerivedData" \
+            BUNDLE_ID_PREFIX=dev.taskforcelabs > "$RUNNER_TEMP/unsafe-host.log" 2>&1; then
+            echo "실사용 번들 ID로 테스트 호스트가 빌드됐다. 거부돼야 한다."
+            exit 1
+          fi
+          grep -q "테스트 호스트가 실사용 앱과 같은 ID입니다" "$RUNNER_TEMP/unsafe-host.log"
       - name: Build macOS
         run: >-
           xcodebuild build
