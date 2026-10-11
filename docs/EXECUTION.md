@@ -301,7 +301,7 @@ step: `pending → prepared → calling → called | unknown_outcome | failed | 
 | `directive_version` | `integer not null default 1`, ≥ 1 | 사용자 지시가 바뀐 횟수 |
 | `bundle_context_version` | `integer null`, ≥ 1 | 맥락 묶음을 만들 때의 `work_contexts.context_version`. 범위를 지워도 그때 묶은 버전의 기록으로 남는다 |
 
-`directive_version`과 `context_version`은 별개다(서로 파생하지 않는다). 이 열을 읽거나 쓰는 코드는 아직 없다(코디네이터 C2 · 게이트웨이 D1). `agent_session_id` · `message_id` · `target_at` · `acceptance`는 이 묶음에 없다. 부모와 같은 사용자여야 가리킬 수 있다(복합 외래키). 계정 삭제는 `auth.users` cascade로 run · 대화 · 범위 · 정책을 한 문장에서 함께 지운다(서로 막지 않는다, `tests/db/account-deletion.test.ts`).
+`directive_version`과 `context_version`은 별개다(서로 파생하지 않는다). 이 열을 쓰는 코드는 아직 없다(게이트웨이 D1). 코디네이터(C2)는 `context_id` · `bundle_context_version` · `directive_version`을 **읽기만** 한다(영향 후보를 찾으려고, [coordinator.md](coordinator.md) 6장). `agent_session_id` · `message_id` · `target_at` · `acceptance`는 이 묶음에 없다. 부모와 같은 사용자여야 가리킬 수 있다(복합 외래키). 계정 삭제는 `auth.users` cascade로 run · 대화 · 범위 · 정책을 한 문장에서 함께 지운다(서로 막지 않는다, `tests/db/account-deletion.test.ts`).
 
 **ARCH06 · ARCH07 (I04 · I14).** 이 열은 "어디서 시작했나"의 기록이다. 어떤 gate · 전이 · 판정에도 입력이 아니다: 범위의 멤버십 · 보관 · 이동 · 기억 · `context_version`, run의 `conversation_id` · `context_id` · `bundle_context_version` · `directive_version`이 어떻게 바뀌어도 `begin_call` 결과 · 승인 hash · `auto_allowed` · 사용자 정책 · Action 행 · 열린 Action 확인이 한 글자도 달라지지 않는다(`tests/db/execution-additive-contract.scenarios.ts`). 실행 코드는 이 열과 범위 표를 가리키지 않는다(`src/lib/execution/boundary.test.ts`). 실행 → 맥락층 방향의 외래키는 위 둘뿐이고 반대 방향(맥락층 → 실행)은 없다(`tests/db/context-layer.scenarios.ts` "권한 · 경계").
 
@@ -315,7 +315,7 @@ step: `pending → prepared → calling → called | unknown_outcome | failed | 
 | 실행기 `advance` | goal이 `types.ts` `EXECUTABLE_GOALS`(`draft`) 밖이면 단계를 읽기 전에, 단계 종류가 `EXECUTABLE_STEP_KINDS`(`plan` · `draft`) 밖이면 준비 · `begin_call` 전에 `{ status: "unsupported" }`로 멈춘다. 아무것도 바꾸지 않는다(준비 · 예약 · intent · 이벤트 · run 닫기 · 모델 호출 · 네트워크 호출 0). `external`은 예전처럼 `busy`. 이전에는 plan이 아닌 종류가 모두 초안(모델 호출)으로 갔으므로, DB에 새 값을 직접 넣으면 실행기가 실제로 모델을 불렀다(`tests/db/execution-additive-executor.test.ts`가 수정 전에 실패한다) |
 | sweep `wakeableRuns` | `EXECUTABLE_GOALS` 밖 goal의 run은 깨우지 않는다. 깨워도 `advance`가 아무것도 하지 않고, 오래된 순으로 깨우기 한도(20)의 앞자리만 차지하기 때문이다 |
 
-새 goal · 단계 종류 · outcome / hold 값을 실행하는 단계(C2 · D1 · E1)가 `create_run` · `append_step`의 확인과 `types.ts`의 두 목록을 함께 넓힌다. DB의 `begin_call`은 단계 종류를 보지 않는다(바꾸지 않았다): 새 종류를 부르게 하는 단계가 효과 종류와 도구 목록(`execution_tools`)에 맞춰 정한다.
+새 goal · 단계 종류 · outcome / hold 값을 실행하는 단계(D1 · E1, C2 코디네이터는 실행하지 않는다)가 `create_run` · `append_step`의 확인과 `types.ts`의 두 목록을 함께 넓힌다. DB의 `begin_call`은 단계 종류를 보지 않는다(바꾸지 않았다): 새 종류를 부르게 하는 단계가 효과 종류와 도구 목록(`execution_tools`)에 맞춰 정한다.
 
 **연결별 정책 `execution_connection_policies` (DR07 최소형): 저장 계약뿐이다.**
 
@@ -330,10 +330,19 @@ step: `pending → prepared → calling → called | unknown_outcome | failed | 
 
 - 권한 모양은 `execution_policies`와 같다: RLS `owner_all` + select 권한만(앱은 자기 행을 읽기만, 쓰기는 서버). 연결을 지우면 정책도 함께 지워진다(같은 계정을 다시 연결해도 옛 정책을 물려받지 않는다). 다른 사용자의 연결은 복합 외래키가 막는다.
 - 트리거 `execution_connection_policies_guard`(몰래 바꾸기 막기): `id` · `user_id` · `connection_id` · `created_at`은 못 바꾼다(정책을 다른 연결로 옮겨 권한이 번지지 않게). 내용(`mode` · `allowed_tools` · `allowed_targets` · `standing_budget_credits`)이 바뀌면 `version`은 정확히 + 1이어야 한다(그대로 · 건너뜀 · 내림 거절). 내용이 그대로면 `version`은 그대로이거나 + 1(승인을 무효로 만드는 올림)이다. 동시 갱신은 `update … set version = version + 1 where version = <읽은 값>`로 한 쪽만 이긴다(`tests/pg/execution-additive-contract.test.ts`).
-- **실제 런타임 소비는 없다.** 표가 있거나 행이 있어도 `begin_call` · `approval_hash` · `auto_allowed` · `prepare_step` · 실행기 · sweep은 이 표를 읽지 않는다. 연결별 `mode` · `allowed_tools` · `allowed_targets` · `standing_budget_credits`는 실행 허용 · 크레딧 예약 · 승인 필요 판단에 쓰이지 않는다. 사용자 정책(`execution_policies`)이 그대로 기본이고, 차단 스위치(`execution_controls`) · 도구 목록 · 수신자 허용 목록 · 실행 주체 확인도 그대로다. 승인 hash의 정책 버전에 연결별 `version`을 넣는 것, `begin_call`이 연결별 정책을 소비하는 것은 뒤 단계(C2 · D1 · E1)이고 그때 승인 hash가 바뀌므로 대기 중인 승인은 모두 무효가 된다(`tests/db/execution-additive-contract.scenarios.ts`가 지금은 같은 hash · 같은 gate임을 고정한다). 이 표를 언급하는 함수는 보호 트리거 하나뿐이다(카탈로그 확인).
+- **실제 런타임 소비는 없다.** 표가 있거나 행이 있어도 `begin_call` · `approval_hash` · `auto_allowed` · `prepare_step` · 실행기 · sweep은 이 표를 읽지 않는다. 연결별 `mode` · `allowed_tools` · `allowed_targets` · `standing_budget_credits`는 실행 허용 · 크레딧 예약 · 승인 필요 판단에 쓰이지 않는다. 사용자 정책(`execution_policies`)이 그대로 기본이고, 차단 스위치(`execution_controls`) · 도구 목록 · 수신자 허용 목록 · 실행 주체 확인도 그대로다. 승인 hash의 정책 버전에 연결별 `version`을 넣는 것, `begin_call`이 연결별 정책을 소비하는 것은 뒤 단계(D1 · E1)이고(C2 코디네이터는 소비하지 않았다) 그때 승인 hash가 바뀌므로 대기 중인 승인은 모두 무효가 된다(`tests/db/execution-additive-contract.scenarios.ts`가 지금은 같은 hash · 같은 gate임을 고정한다). 이 표를 언급하는 함수는 보호 트리거 하나뿐이다(카탈로그 확인).
 
-**한도 상수** (`limits.ts`, 값만 — 이 묶음에서는 어디서도 읽지 않는다): `MAX_STEPS_BY_GOAL` = `draft` 4(기존 `MAX_STEPS`) · `agent` 12 · `send` 4 · `followup` 3. 동시성: `MAX_CONCURRENT_COST_STEPS` 3(사용자당 동시에 `calling`인 비용 단계) · `MAX_LIVE_EXTERNAL_TASKS` 5 · `WAITING_RUN_RETENTION_DAYS` 30 · `MAX_OPEN_RUNS_PER_ACTION` 2(intent가 다를 때만). 세는 쪽은 C2 · D1이다.
+**한도 상수** (`limits.ts`, 값만 — 이 묶음에서는 어디서도 읽지 않는다): `MAX_STEPS_BY_GOAL` = `draft` 4(기존 `MAX_STEPS`) · `agent` 12 · `send` 4 · `followup` 3. 동시성: `MAX_CONCURRENT_COST_STEPS` 3(사용자당 동시에 `calling`인 비용 단계) · `MAX_LIVE_EXTERNAL_TASKS` 5 · `WAITING_RUN_RETENTION_DAYS` 30 · `MAX_OPEN_RUNS_PER_ACTION` 2(intent가 다를 때만). 세는 쪽은 D1이다(C2 코디네이터도 세지 않았다: 에이전트 run을 만드는 곳이 없다).
 
 **앱 호환.** Swift `TaskforceKit`은 모르는 상태 · 이유 · 결과를 `.unknown`으로 받고 `goal`은 문자열이며 읽을 열을 이름으로 고른다(`Execution.swift`): 새 열 · 새 값이 있어도 읽기가 깨지지 않는다. 지금은 새 값을 가진 run이 만들어지지도 않는다. 서버 쪽 `/api/v1` 응답 타입(`RunSummary`)은 v1 동결이라 그대로고, `POST …/stop`은 DB 행을 검증 없이 돌려주므로 새 값을 가진 run을 멈춰도 오류가 나지 않는다(`src/lib/api/runs.test.ts`).
 
 **되돌리기 (rollback).** 새 열 · 새 표 · 두 함수의 확인이 전부라 코드는 병합 전이면 PR을 닫으면 된다. 운영에 적용한 뒤에는 새 값을 가진 행이 없는지 확인하고(`select count(*) from execution_runs where goal <> 'draft' or conversation_id is not null or context_id is not null`, 다른 열도 같이) 새 파일을 만들어 CHECK를 이전 값으로 되돌리고, 열 · 표를 지운다. 기존 마이그레이션 파일은 고치지 않는다.
+
+## 15. 코디네이터(0.2.0 C2)와의 경계
+
+코디네이터([coordinator.md](coordinator.md))는 실행 상태 머신 밖의 **사건 반응기**다. 이 장은 실행 쪽에서 본 경계만 적는다.
+
+- **실행기 · `begin_call` · 승인 hash · intent · lease · `unknown_outcome` · 크레딧 · stopped/action_closed는 한 글자도 바뀌지 않았다.** C2 마이그레이션은 기존 함수를 다시 만들지 않고(`create or replace` 0), `execution_*` 표에는 읽기 트리거(적재)만 붙는다.
+- 코디네이터가 실행에 닿는 곳: ① 승인 · 승인 철회 · 사용자 멈춤이 `inbox_events`에 `decision_made` 한 줄을 남긴다(AFTER 트리거, 예외는 삼켜 승인 · 멈춤의 성공 · 실패는 같다). ② `coordinator_pending_inputs`(읽기 전용)가 승인 대기 단계를 `begin_call`과 **같은 기준**(철회 · 만료 · hash 불일치는 유효한 승인이 아니다)으로 읽는다. ③ 영향 계산이 살아 있는 run을 후보로 **기록**한다. 코디네이터는 run을 만들거나 재dispatch하거나 단계를 붙이거나 멈추지 않는다.
+- 1분 `execution-sweep`은 `COORDINATOR_ENABLED`일 때만 응답 뒤에 코디네이터를 깨우는 자기 호출 하나를 더한다. 응답 · 호출 · 실패 의미(승인 · gate · 원가 조정)는 같다.
+- 정책 · 도구 · 승인을 코디네이터가 가져오지 않고(eslint), 범위 · 기억 · version은 어떤 gate · 판정의 입력이 아니다(ARCH06/07).
