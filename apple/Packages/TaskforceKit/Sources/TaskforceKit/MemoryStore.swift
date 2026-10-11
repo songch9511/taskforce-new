@@ -93,6 +93,9 @@ public final class MemoryStore {
     public private(set) var hidingConfirm: Set<UUID> = []
     public private(set) var hidingScope: Set<UUID> = []
     public private(set) var busy: Set<UUID> = []
+    /// busy를 잡은 쓰기의 번호 (항목마다). 쓰기가 끝날 때 자기 것일 때만 풀어, 세션이 바뀐 뒤 새 요청의 busy를 옛 요청이 지우지 않게 한다
+    private var writeOwner: [UUID: Int] = [:]
+    private var writeCounter = 0
     public private(set) var feedback: [UUID: Feedback] = [:]
     /// 노트가 가리키는 행 (정정 · 잊음으로 지금 기억이 아닌 것도)
     public private(set) var referenced: [UUID: MemoryItem] = [:]
@@ -130,6 +133,7 @@ public final class MemoryStore {
         hidingConfirm = []
         hidingScope = []
         busy = []
+        writeOwner = [:]
         feedback = [:]
         referenced = [:]
         missing = []
@@ -385,15 +389,27 @@ public final class MemoryStore {
         let id = resolve(requestedID)
         guard let token = scope.token, !busy.contains(id), !writesUnavailable, let row = item(id), row.isCurrent else { return .ignored }
         busy.insert(id)
+        writeCounter += 1
+        let owner = writeCounter
+        writeOwner[id] = owner
         feedback[id] = nil
-        defer { busy.remove(id) }
+        // 세션이 바뀌면 `reset()`이 busy를 비우고 새 세션이 같은 항목에 새 요청을 잡을 수 있다: 이 요청이 잡은 busy일 때만 푼다
+        defer {
+            if writeOwner[id] == owner {
+                writeOwner[id] = nil
+                busy.remove(id)
+            }
+        }
+        // 후속 읽기(`await`)를 기다리는 사이 세션이 바뀌었으면 어떤 결과든 `.ignored`: 호출부가 새 세션의 화면을 건드리지 않게 한다
         do {
             let response = try await send(gateway, row)
             guard scope.isCurrent(token) else { return .ignored }
-            return await applied(response, replacing: row, kind: kind)
+            let result = await applied(response, replacing: row, kind: kind, token: token)
+            return scope.isCurrent(token) ? result : .ignored
         } catch let error as APIError {
             guard scope.isCurrent(token) else { return .ignored }
-            return await failed(error, row: row, kind: kind)
+            let result = await failed(error, row: row, kind: kind)
+            return scope.isCurrent(token) ? result : .ignored
         } catch {
             guard scope.isCurrent(token), ReadFailure.from(error, online: isOnline) != nil else { return .ignored }
             feedback[id] = .failed(ReadFailure.userMessage(error))
@@ -401,7 +417,7 @@ public final class MemoryStore {
         }
     }
 
-    private func applied(_ response: MemoryItem, replacing row: MemoryItem, kind: WriteKind) async -> MemoryWriteResult {
+    private func applied(_ response: MemoryItem, replacing row: MemoryItem, kind: WriteKind, token: AccountScope.Token) async -> MemoryWriteResult {
         // 이 쓰기보다 먼저 시작한 목록 읽기의 옛 결과가 방금 바뀐 행을 되살리지 않게 한다
         listSequence += 1
         if kind == .forget {
@@ -410,6 +426,8 @@ public final class MemoryStore {
             referenced[row.id] = response
             referencedStamp[row.id] = nextStamp()
             await loadList()
+            // 후속 읽기 사이 세션이 바뀌었으면 새 세션의 목록 · 안내를 건드리지 않는다
+            guard scope.isCurrent(token) else { return .ignored }
             if items.contains(where: { $0.movedFrom == row.id }) {
                 feedback[row.id] = .conflict
                 return .refreshed
