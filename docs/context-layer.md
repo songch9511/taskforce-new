@@ -3,6 +3,7 @@
 0.2.0 구현 계획 B1. 기억 · 범위 · 사람 · 신원 링크 · 원문 조각 · 맥락 묶음을 서버 코드와 DB 규칙으로 붙였다. 보이는 행동은 없다:
 gate `MEMORY_ENABLED` · `SOURCE_CHUNKS_ENABLED`(`src/lib/flags.ts`)가 기본 꺼짐이고, 꺼져 있으면 서버는 새 표를 읽지도 쓰지도 않고 임베딩을 부르지 않는다.
 대화 v2 route는 B2가 붙였다(7장, gate `CONVERSATIONS_V2_ENABLED` 기본 꺼짐). 기억 확인 · 정정 · 잊기 · 범위 옮기기 route와 대화 범위 바꾸기는 B3 PR1이 붙였다(8장, gate `MEMORY_ENABLED` · `CONVERSATIONS_V2_ENABLED` 기본 꺼짐).
+사용자의 범위 멤버십 넣기 · 빼기 · 옮기기 route는 S3b 서버가 붙였다(9장, gate `MEMORY_ENABLED` 기본 꺼짐).
 
 | 무엇 | 위치 |
 |---|---|
@@ -149,3 +150,40 @@ B3 PR1(서버)은 Remembered(Settings › Account)와 대화 헤더 ProjectLink�
 - 대화 글 보관 기한(V08)과 B3 대화 범위 바꾸기의 관계 없음(범위는 글이 아니다).
 - 대화 범위를 바꿔도 이미 진행 중인 답은 시작할 때의 범위를 쓴다(답의 `content.used.context_id`가 그때의 범위를 남긴다).
 - Mac 쪽(Chats · Remembered 화면, DTO)은 PR2.
+
+## 9. 범위 멤버십 쓰기 (S3b 서버) — 처리한 것 · 조건부 쓰기 · 실제 변화 · 남은 것
+
+S3b(WorkList의 실제 `work_contexts` 멤버십 · ProjectLink "Set by you")가 쓰는 **쓰기**만 붙인다. 읽기(범위 목록 · 범위 version · 지금 멤버 · origin)는 앱이 Supabase에서 직접 한다(RLS select, 새 읽기 route 없음).
+새 SQL은 하나다(`20261108000000_context_member_user_writes.sql`의 `change_context_membership_by_user`, 서버(service role)만 부름 · `search_path` 고정). 새 표 · 새 열 없음, 기존 SQL 변경 없음.
+S3b는 **할 일(action) 멤버**만 받는다(source · person은 400). 범위 만들기 · 이름 바꾸기 · 보관 route는 만들지 않았다: S3b 화면에 필요한 것은 기존 범위 위의 ProjectLink뿐이고,
+범위가 없으면 선택지가 없다("No clear link"는 사실대로). 그 route의 스키마(`createWorkContextRequestSchema` · `updateWorkContextRequestSchema`)는 A2 그대로 남아 있다.
+AI를 부르지 않고 run · Action · Claim · 정책 · 승인을 만들지 않는다(I04 · I14 · D13: `tests/db/context-members.scenarios.ts`가 실행 · 정책 · 승인 · Claim · Action · 기억 · 대화 · 사건함 표의 행 수와 Action · Claim 행이 그대로임을 확인한다).
+
+| route | 요청 | 동작 | 응답 |
+|---|---|---|---|
+| `POST /api/v2/contexts/{id}/members` | `{ op: "add" \| "remove", member_kind: "action", member_id, expected_context_version }` | add = 그 범위에 origin **user** 멤버(auto · inferred 행이면 같은 행을 user로 승격 · confidence 비움, 사용자가 뺀 행이면 되살림). remove = 행을 지우지 않고 `removed_at`(origin user): 자동 규칙은 `unique (context_id, action_id)`에 막혀 다시 넣지 못한다. 멤버가 아니었어도 뺀 표시를 남긴다. 이미 그 상태면 행을 쓰지 않는다 | `200 { member, context_version, change }` |
+| `POST /api/v2/contexts/{to}/members/move` | `{ member_kind: "action", member_id, from_context_id, expected_context_version, expected_from_context_version }` | 한 트랜잭션에서 from 범위에서 빼고(removed_at) 경로의 범위(도착)에 넣는다(origin user). 두 범위와 할 일을 모두 검증한 뒤에만 쓴다(하나라도 아니면 아무것도 쓰지 않는다). **전체 교체가 아니다**: 그 할 일의 다른 범위 멤버십은 그대로. 같은 범위로는 옮기지 않는다(400) | `200 { member, from_member, context_version, from_context_version, change }` |
+
+- **공통:** gate `MEMORY_ENABLED` 꺼짐 = 404(인증 · DB 0, 대화 범위 선택과 같은 범위 기능 gate). 인증은 Bearer + 쿠키(쿠키 쓰기는 CSRF 확인). 남의 · 없는 · **보관된(archived)** 범위와 남의 · 없는 할 일은 404(존재를 드러내지 않는다; 범위는 넣기 · 빼기 · 옮기기의 모든 쪽이 내 active 범위여야 한다 — 보관 해제 route가 이 묶음에 없어 보관된 범위의 멤버십은 읽기 전용으로 동결). 잘못된 본문 · 조건 필드 없음 = 400.
+- **조건부 쓰기 (Codex P2-A).** 요청이 본 범위 version(`work_contexts.context_version`: 앱이 RLS로 읽은 값, 또는 앞 응답의 `context_version` · `change`의 version)이 지금과 다르면 **쓰기 0 + 409 `conflict`**(옮기기는 두 범위 중 하나라도). 같은 (사용자, 할 일)의 쓰기는 advisory 잠금으로 한 줄로 서므로 앞 쓰기의 version 올림이 먼저 커밋되고 뒤따르는 옛 요청은 새 version을 읽어 409가 된다. advisory 잠금은 순서만 세우고 옛 의도를 구별하지 못한다 — 구별하는 것은 version 조건이다. 반례 회귀: 응답을 잃은 `add A` → 다른 기기 `remove A` → 옛 `add A` 재전송(A가 되살아나지 않는다), 응답을 잃은 `A → B` → 다른 기기 `B → C` → 옛 `A → B` 재전송(B+C가 되지 않는다).
+  - **새 멱등성 저장소는 없다.** 그래서 응답을 잃은 *성공* 요청의 재전송도 다른 기기가 없어도 409다(첫 요청이 version을 올렸다). 즉시 중복(더블 탭)의 두 번째도 409. **409는 "내 요청이 이미 적용됨"을 뜻하지 않는다**: 앱은 409를 성공으로 승격하지 않고 범위 · 멤버십을 RLS로 다시 읽어 지금 상태를 보이며 충돌 · 재확인으로 둔다(B3와 같은 규칙). 앱이 성공으로 보는 것은 200 응답뿐이다.
+  - **거짓 충돌(허용).** version은 범위 전체의 신호라 무관한 변경 — 같은 범위에 다른 할 일이 들어옴 · 범위 기억 변경 · 멤버 원문의 새 revision · auto → user 승격 — 에도 올라 낡은 version의 요청이 거절될 수 있다. 다시 읽고 다시 하면 된다. 다른 범위의 변화 · 다른 계정의 쓰기는 version을 올리지 않는다. 모델 후보(inferred)의 추가 · 삭제도 올리지 않는다.
+  - 조건은 사용자 쓰기끼리 지킨다. 자동 규칙의 멤버 추가(`addContextMember`, `insert … on conflict do nothing`)는 잠금 없이 unique 인덱스에서 한 줄로 서므로, 자동 행이 아직 커밋되지 않은 채 겹친 사용자 쓰기는 version 조건이 그 행을 보기 전에 통과하고 그 행이 커밋된 뒤 같은 행을 user로 바꾼다(사용자의 선택이 이긴다: 빼기는 뺀 표시, 넣기는 승격). 자동 규칙이 사용자의 뺀 선택을 덮는 일은 없다.
+- **실제 변화 `change` · Undo (Codex P2-B).** 응답의 `change`는 **확인된 멤버**(`removed_at is null and origin <> 'inferred'`)가 실제로 바뀐 범위만 담는다: `added` = 이 요청으로 확인된 멤버가 된 범위(inferred 후보를 넣기로 확인한 것 · 뺀 행을 되살린 것 · 새 멤버), `removed` = 확인된 멤버가 아니게 된 범위. 각 항목은 그 범위의 **쓰기 직후 version**을 싣는다. 이미 멤버였던 도착 범위, 멤버가 아니던 출발 범위(뺀 표시만 남음), auto → user 승격, inferred 후보를 뺀 것, 이미 그 상태인 요청은 바뀐 멤버가 아니라 목록에 없다. 둘 다 비면 **되돌릴 것이 없다**.
+  - Undo는 이 변화의 **역연산만** 조건부로 보낸다(원래 있던 대상 · 무관한 멤버십을 지우지 않는다): `added`만 → 그 범위에 `remove`, `removed`만 → 그 범위에 `add`, 둘 다 → `move`(added 범위 → removed 범위). 조건 version은 그 `change` 항목의 `context_version`. 그 사이 다른 기기가 그 범위를 바꿨다면 Undo는 409다. 반례 회귀: 처음 A+B에서 `A → B`는 `removed: [A]`만(B는 원래 있었다) — Undo는 A만 다시 넣고 B를 지우지 않는다. 맹목적인 역이동(`B → A`)은 요청받은 대로 B를 빼므로 앱은 쓰지 않는다(회귀 "맹목적 역이동은 원래 있던 B를 지운다"가 이유를 고정).
+  - Undo로 돌아온 멤버는 origin **user**다(Auto-linked로 돌아오지 않는다 — 사용자가 고른 것). inferred 후보를 확인한 것을 Undo하면 후보가 돌아오는 것이 아니라 그 범위에서 빠진다(뺀 표시). 서버는 Undo를 특별 취급하지 않는다(일반 add · remove · move).
+  - 응답의 행 · version은 쓰기와 같은 트랜잭션에서 읽은 값이다: 함수가 commit 직전에 도는 B1 version 올림 큐를 트랜잭션 안에서 먼저 비우고(범위 행을 id 순으로 잠그고 올림) 읽는다. 그래서 응답을 받은 앱이 그 값으로 보내는 Undo는, 응답을 만든 직후에 일어난 다른 기기의 변경도 놓치지 않는다.
+- **바꾸기 A → B를 한 요청으로 둔 이유.** 두 요청(remove A · add B)은 중간 실패 · 응답 유실에서 "A는 빠졌는데 B는 안 들어간" 상태가 앱에 보이고(되돌릴 실제 변화를 식별하기도 어렵다), 두 요청의 version 조건이 서로 어긋난다(앞 요청의 version 올림이 뒤 요청의 조건을 깬다). 서버가 `move` 하나를 주면 두 범위를 모두 검증한 뒤에만 한 번에 쓴다. 단일 멤버십 가정(전체 교체)은 두지 않는다: `move`는 from을 빼고 to를 넣을 뿐 다른 범위 · 이미 멤버였던 to를 건드리지 않는다.
+- **version 조건을 요청이 받는 이유(선택지 비교).** 멤버 행 `updated_at`은 마이크로초 문자열을 앱이 그대로 되보내야 하고(Date 변환으로 잃기 쉽다), 행 상태(현재 멤버인지)만 보내는 조건은 ABA(다른 기기가 지웠다가 다시 넣음)를 못 잡으며, 새 행 version 열은 A2 표에 열 + 트리거가 필요하다. 이미 앱이 RLS로 읽고 B1 트리거가 올리는 `context_version`이 가장 작다.
+- **잠그는 순서:** (사용자, 할 일) advisory 잠금 → 범위 `for key share`(id 순) → 할 일 `for key share` → 멤버 행 → 범위 version 올림(id 순). 같은 할 일의 반대 방향 옮기기가 멤버 행을 반대 순서로 잡아 교착하는 것을 막는다(실제 Postgres 경합 테스트, 40회 반복). 범위 · 할 일 행은 `for key share`만 잡아 삭제와는 한 줄로 서고(삭제가 먼저면 not_found, 넣기가 먼저면 삭제가 cascade), 서로 다른 할 일 둘의 쓰기는 범위 version 올림에서만 직렬이다.
+- **알려진 한계 (고정한 테스트):** 보관(archive)이 먼저 범위 행을 잡고 있으면 그 직전에 active를 확인한 넣기가 보관 뒤에 이어서 쓴다(보관의 `for no key update`는 `for key share`와 충돌하지 않는다, B3 `move_memory_item`과 같은 수용). 멤버십은 보관과 무관하게 남고 이후 요청은 404.
+- **영향 받는 B1 규칙:** 사용자 쓰기도 B1 트리거를 따른다 — `context_id · removed_at · origin`이 바뀌면 version이 한 번 오른다(넣기 · 빼기 · 후보 확인 · auto → user 승격). 새 SQL로 트리거를 고치지 않았다.
+- **앱이 읽는 것 (RLS):** `work_contexts`(id · name · kind · status · context_version · last_activity_at · created_at · updated_at), `context_members`(id · context_id · member_kind · action_id · source_id · person_id · origin · confidence · removed_at · created_at · updated_at). **지금 멤버 = `removed_at is null`** (inferred 후보 포함). 확인된 멤버 = `removed_at is null and origin <> 'inferred'`. inferred는 "확인되지 않은 후보"로 보이고 사용자 선택처럼 꾸미지 않는다. 한 할 일이 여러 범위의 멤버일 수 있고 하나로 합치지 않는다.
+
+### 남긴 것 (S3b 서버 밖)
+
+- 범위 만들기 · 이름 바꾸기 · 보관(해제) route: S3b에 필요하지 않아 만들지 않았다. 보관된 범위의 멤버십을 빼거나 옮기려면 보관 해제가 먼저인데 그 route가 없다(지금은 보관된 범위의 멤버십이 읽기 전용).
+- 멤버십 수정의 지표 이벤트(수동 수정 = 오판 신호, ARCH26 · 지표 묶음 I): 이벤트 표가 없어 기록하지 않았다(B3와 같다). "측정할 수 없으면 출시하지 않는다"의 대상.
+- auto · inferred 멤버십을 **만드는** 코드는 아직 없다(B1/B2/B3/S3b 모두). 자동 연결은 `addContextMember`가 있을 뿐 호출하는 쪽이 없다(대화의 범위 추정 · C2 코디네이터가 붙일 자리).
+- 운영 DB 적용 안 함(새 마이그레이션 `20261108000000`은 적용 전, 병합 직전 승인 후 `db query --linked -f`).
+
