@@ -151,7 +151,11 @@ export async function addContextMember(
     .throwOnError();
 }
 
-/** 사용자의 넣기 · 빼기 (origin user). 뺀 멤버는 행을 남겨 자동 규칙이 다시 넣지 못한다 */
+/**
+ * 사용자의 넣기 · 빼기 (origin user). 뺀 멤버는 행을 남겨 자동 규칙이 다시 넣지 못한다.
+ * 조건 없는 B1 저장소 함수다(범위 소유 · active · version 확인 없음) — 사용자 요청(S3b ProjectLink)은 이것이 아니라
+ * member-writes.ts changeContextMembership(조건부 쓰기, change_context_membership_by_user)로 쓴다
+ */
 export async function setContextMemberByUser(
   admin: SupabaseClient,
   userId: string,
