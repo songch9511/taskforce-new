@@ -125,6 +125,11 @@ public enum ReviewCopy {
         return names.isEmpty ? needsYourAnswer : needsYourAnswer + " · " + names.joined(separator: ", ")
     }
 
+    /// 확인할 기한 한 줄 (iPhone Review card · 런처 상세와 같은 `Due Fri`). 기한이 없으면 nil
+    public static func due(_ action: ActionSummary, today: LocalDate) -> String? {
+        action.dueDate.map { "Due \(DueText.short($0, today: today))" }
+    }
+
     /// 질문 자리: 서버가 남긴 확인 이유를 앱의 기존 분류 · 문구로 (`ConfirmReasonText`). 새 판정 · 새 문장이 아니다
     public static func question(_ action: ActionSummary) -> String {
         ConfirmReasonText.label(action.confirmReasons)

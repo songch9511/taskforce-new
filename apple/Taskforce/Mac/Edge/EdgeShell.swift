@@ -18,7 +18,7 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
     let shell: EdgeShellModel
     let rail: EdgeRailPanelController
     let panel: EdgePanelController
-    private let launcher: LauncherModel
+    let launcher: LauncherModel
     /// Chats · Remembered (B3). 앱 시작 때 세션에 붙은 것을 받는다
     let chat: ChatRuntime?
     private var clickMonitors: [Any] = []
@@ -339,8 +339,8 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
             // 안쪽 것(열린 필터 카드 · Chats의 대화 목록)을 먼저 닫고, 그다음 패널을 접는다
             shell.escape()
         case .review:
-            // S4 gate가 꺼져 있으면 이 키는 연결이 없다: 지금처럼 지나간다
-            guard shell.review != nil else { return false }
+            // S4 gate가 꺼져 있으면 이 키는 연결이 없다: 지금처럼 지나간다. ⌘1도 텍스트 편집(입력칸 · IME 조합) · 메뉴 · 시트 밖에서만 듣는다 (⌘2 · ⌘3 · ⌘N은 그대로)
+            guard reviewKeysAllowed else { return false }
             shell.openNewestReview()
         case .allWork:
             shell.openAllWork()
@@ -352,11 +352,15 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
         return true
     }
 
+    /// Review 키(⌘1 · ← → · 1 · 2)를 받아도 되는가: S4가 켜져 있고, 메뉴 · 시트가 떠 있지 않고, 글을 편집하는 중(입력칸 · 검색 · IME 조합)이 아닐 때
+    private var reviewKeysAllowed: Bool {
+        shell.review != nil && !shell.menuOpen && panel.panel.attachedSheet == nil && !EdgeReviewKeys.isTextEditing(panel.panel.firstResponder)
+    }
+
     /// Review 페이지의 키 (S4): ← → 단계, 1 · 2 답. 텍스트를 편집하는 중이거나(Chats 입력칸 · 검색 · IME 조합) 시트 · 메뉴가 떠 있으면 지나간다.
     /// 번호 키는 사용자가 지금 본 항목의 id에만 간다. 누르고 있어 반복된 키는 먹기만 하고 다시 보내지 않는다 (한 번의 선택은 한 번의 요청)
     private func handleReviewKey(_ event: NSEvent) -> Bool {
-        guard shell.review != nil, shell.view == .review, shell.panelOpen, !shell.menuOpen, panel.panel.attachedSheet == nil,
-              !EdgeReviewKeys.isTextEditing(panel.panel.firstResponder),
+        guard reviewKeysAllowed, shell.view == .review, shell.panelOpen,
               let key = EdgeReviewKeys.of(keyCode: Int(event.keyCode), characters: event.characters, flags: event.modifierFlags) else { return false }
         switch key {
         case .previous:

@@ -301,3 +301,137 @@ struct NowStoreAnswerReviewTests {
         #expect(harness.store.sections.review.map(\.id).contains(Self.id1), "새 세션은 옛 세션의 답 표시에 가려지지 않는다")
     }
 }
+
+// MARK: 근거 읽기: 항목별 읽기 소유권 (Codex b52443b 검토 A)
+
+@Suite(.serialized)
+@MainActor
+struct NowStoreEvidenceTests {
+    static let id1 = ReviewHarness.id(1)
+    static let at = Date(timeIntervalSince1970: 1_791_000_000)
+
+    static func lines(_ quotes: String...) -> [FakeNowServer.Evidence] {
+        quotes.map { FakeNowServer.Evidence(quote: $0, sourceTitle: "Thread", url: nil, at: at) }
+    }
+
+    func quote(_ harness: ReviewHarness) -> [String] {
+        harness.store.evidence[Self.id1]?.lines.map(\.quote) ?? []
+    }
+
+    /// 읽기 둘을 겹쳐 붙잡아 둔다: 둘째(`second`)가 먼저 끝나고 첫째가 나중에 끝나는 순서
+    func overlap(
+        _ harness: ReviewHarness, first firstStatus: Int = 200, second secondStatus: Int = 200, secondLines: [FakeNowServer.Evidence]
+    ) async throws -> (first: Task<EvidenceDigest?, Never>, second: Task<EvidenceDigest?, Never>) {
+        await harness.server.scriptEvidence(firstStatus, secondStatus)
+        await harness.server.holdEvidence()
+        let first = Task { await harness.store.loadEvidence(Self.id1, force: true) }
+        #expect(await harness.wait { await harness.server.pendingEvidenceReads() == 1 })
+        await harness.server.setEvidence(Self.id1, secondLines)
+        let second = Task { await harness.store.loadEvidence(Self.id1, force: true) }
+        #expect(await harness.wait { await harness.server.pendingEvidenceReads() == 2 })
+        return (first, second)
+    }
+
+    @Test func aLateOldSuccessCannotOverwriteANewerRemovedResult() async throws {
+        let harness = try await ReviewHarness.make()
+        await harness.server.setEvidence(Self.id1, Self.lines("OLD_QUOTE"))
+        let (first, second) = try await overlap(harness, secondLines: Self.lines(RemovedQuote.slackDisconnected))
+
+        await harness.server.releaseEvidenceWaiter(1)
+        _ = await second.value
+        #expect(quote(harness) == [RemovedQuote.slackDisconnected])
+        await harness.server.releaseEvidenceWaiter(0)
+        _ = await first.value
+
+        #expect(quote(harness) == [RemovedQuote.slackDisconnected], "늦게 끝난 옛 인용이 새 결과를 되돌리지 못한다")
+        #expect(harness.store.evidenceFailed.isEmpty && harness.store.evidenceRefreshing.isEmpty)
+    }
+
+    @Test func aLateOldFailureCannotMarkANewerSuccessFailed() async throws {
+        let harness = try await ReviewHarness.make()
+        await harness.server.setEvidence(Self.id1, Self.lines("OLD_QUOTE"))
+        let (first, second) = try await overlap(harness, first: 500, secondLines: Self.lines("NEW_QUOTE"))
+
+        await harness.server.releaseEvidenceWaiter(1)
+        _ = await second.value
+        await harness.server.releaseEvidenceWaiter(0)
+        _ = await first.value
+
+        #expect(quote(harness) == ["NEW_QUOTE"] && harness.store.evidenceFailed.isEmpty, "옛 읽기의 실패가 새 읽기의 성공을 실패로 바꾸지 못한다")
+    }
+
+    @Test func aLateOldSuccessCannotClearANewerFailure() async throws {
+        let harness = try await ReviewHarness.make()
+        await harness.server.setEvidence(Self.id1, Self.lines("OLD_QUOTE"))
+        await harness.store.loadEvidence(Self.id1)
+        #expect(quote(harness) == ["OLD_QUOTE"])
+        let (first, second) = try await overlap(harness, second: 500, secondLines: Self.lines("OLD_QUOTE"))
+
+        await harness.server.releaseEvidenceWaiter(1)
+        _ = await second.value
+        #expect(harness.store.evidenceFailed.contains(Self.id1))
+        await harness.server.releaseEvidenceWaiter(0)
+        _ = await first.value
+
+        #expect(harness.store.evidenceFailed.contains(Self.id1) && harness.store.evidenceRefreshing.isEmpty, "옛 성공이 새 실패 표시를 지우지 못한다")
+    }
+
+    @Test func anOldReplyAfterTheItemWasDeletedOrDeniedDoesNotBringTheQuoteBack() async throws {
+        let harness = try await ReviewHarness.make()
+        await harness.server.setEvidence(Self.id1, Self.lines("OLD_QUOTE"))
+        await harness.store.loadEvidence(Self.id1)
+        await harness.server.holdEvidence()
+        let old = Task { await harness.store.loadEvidence(Self.id1, force: true) }
+        #expect(await harness.wait { await harness.server.pendingEvidenceReads() == 1 })
+        try await Task.sleep(for: .milliseconds(60))
+        // 그 사이 항목이 서버에서 사라졌다 (삭제 · 접근 거절): 새 읽기는 404
+        await harness.server.removeFromServer(Self.id1)
+        _ = await harness.store.loadEvidence(Self.id1, force: true)
+        #expect(harness.store.evidenceFailed.contains(Self.id1))
+
+        await harness.server.releaseAllEvidence()
+        _ = await old.value
+        #expect(harness.store.evidenceFailed.contains(Self.id1) && harness.store.evidenceRefreshing.isEmpty, "늦은 옛 응답이 실패를 지우지 못한다")
+    }
+
+    @Test func aRetryAfterAFailedRevalidationDoesNotReExposeTheCachedQuote() async throws {
+        let harness = try await ReviewHarness.make()
+        await harness.server.setEvidence(Self.id1, Self.lines("OLD_QUOTE"))
+        await harness.store.loadEvidence(Self.id1)
+        await harness.server.scriptEvidence(500)
+        _ = await harness.store.loadEvidence(Self.id1, force: true)
+        #expect(harness.store.evidenceFailed.contains(Self.id1) && !harness.store.evidenceRefreshing.contains(Self.id1))
+
+        // 다시 시도하는 동안: 실패 표시는 거두지만 전에 읽은 인용은 "확인 중"이라 지금 근거가 아니다
+        await harness.server.holdEvidence()
+        await harness.server.setEvidence(Self.id1, Self.lines("NEW_QUOTE"))
+        let retry = Task { await harness.store.loadEvidence(Self.id1, force: true) }
+        #expect(await harness.wait { await harness.server.pendingEvidenceReads() == 1 })
+        #expect(harness.store.evidenceRefreshing.contains(Self.id1) && !harness.store.evidenceFailed.contains(Self.id1))
+        await harness.server.releaseAllEvidence()
+        _ = await retry.value
+        #expect(quote(harness) == ["NEW_QUOTE"] && harness.store.evidenceRefreshing.isEmpty && harness.store.evidenceFailed.isEmpty)
+    }
+
+    @Test func aReadFinishingAfterTheAccountLeftStoresNothing() async throws {
+        let harness = try await ReviewHarness.make()
+        await harness.server.setEvidence(Self.id1, Self.lines("OLD_QUOTE"))
+        await harness.server.holdEvidence()
+        let task = Task { await harness.store.loadEvidence(Self.id1, force: true) }
+        #expect(await harness.wait { await harness.server.pendingEvidenceReads() == 1 })
+        harness.reloginSameUser()
+        await harness.server.releaseAllEvidence()
+        _ = await task.value
+        #expect(harness.store.evidence.isEmpty && harness.store.evidenceFailed.isEmpty && harness.store.evidenceRefreshing.isEmpty, "떠난 계정의 근거가 새 세션에 들어오지 않는다")
+    }
+
+    @Test func legacyLoadsStillReturnTheirDigestAndTheCacheIsKept() async throws {
+        let harness = try await ReviewHarness.make()
+        await harness.server.setEvidence(Self.id1, Self.lines("Q"))
+        let first = await harness.store.loadEvidence(Self.id1)
+        #expect(first?.lines.map(\.quote) == ["Q"])
+        let again = await harness.store.loadEvidence(Self.id1)
+        #expect(again == first)
+        #expect(await harness.server.evidenceReadCount(Self.id1) == 1, "구 소비자: 있으면 다시 읽지 않는다")
+    }
+}

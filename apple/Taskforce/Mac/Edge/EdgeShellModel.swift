@@ -239,6 +239,9 @@ final class EdgeShellModel {
     let review: ReviewDesk?
     /// Review 페이지가 보이는 결정의 stable action id. 몇 번째인지(index)가 아니라 id로 가리킨다: 큐가 바뀌어도 키 · 클릭은 이 id의 항목에만 간다
     private(set) var reviewID: UUID?
+    /// Review 페이지에 들어온 차례: 패널을 다시 열거나 다른 화면에서 Review로 들어올 때마다 오른다 (단계를 옮기는 것은 아니다).
+    /// 근거가 같은 방문 안에서는 다시 읽지 않고, 다시 들어오면 항목의 활동 시각과 상관없이 다시 확인한다 (`ReviewDesk.loadSource`)
+    private(set) var reviewPresentation = 0
 
     @ObservationIgnored private let schedule: EdgeSchedule
     @ObservationIgnored private let clock: () -> Date
@@ -344,6 +347,7 @@ final class EdgeShellModel {
     func openPanel(_ view: View) {
         // Review를 떠나면 그 결정에 대한 안내는 거둔다 (돌아오면 지금 상태가 말한다)
         if view != .review { review?.clearNotice() }
+        if view == .review, review != nil, !(panelOpen && self.view == .review) { reviewPresentation += 1 }
         self.view = view
         panelOpen = true
         menuOpen = false

@@ -67,6 +67,10 @@ final class MacAppDelegate: NSObject, NSApplicationDelegate {
                 launcher?.show()
             }
             edge.start()
+            #if DEBUG
+            // 견본(`-TFSampleData`)에서 Review 답은 서버 없이 가짜 서버(`SampleReviewServer`)가 받는다
+            if SampleData.isEnabled, edge.shell.review != nil { model.now?.installSampleReview(SampleReviewServer()) }
+            #endif
             hotKeys.onPress = { [weak edge] in edge?.togglePanel() }
         } else {
             hotKeys.onPress = { [weak launcher] in launcher?.toggle() }

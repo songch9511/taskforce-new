@@ -73,6 +73,11 @@ actor FakeNowServer {
     private var evidence: [UUID: [Evidence]] = [:]
     private var evidenceStatus = 200
     private var evidenceReads: [UUID: Int] = [:]
+    /// 근거 읽기(`actionDetail`)마다 그 읽기가 **도착한 때** 정해지는 동작 (없으면 `evidenceStatus`): 도착 순서대로 하나씩 쓴다
+    private var evidenceScript: [Int] = []
+    private var holdEvidenceReads = false
+    private var evidenceWaiters: [CheckedContinuation<Void, Never>] = []
+    private var heldEvidenceCount = 0
 
     init(items: [Item]) { self.items = items }
 
@@ -110,6 +115,33 @@ actor FakeNowServer {
     }
 
     func setEvidence(_ id: UUID, _ lines: [Evidence]) { evidence[id] = lines }
+
+    /// 다음 근거 읽기들의 HTTP 상태를 도착 순서대로 (200이면 그 순간의 근거를 돌려준다. 아니면 그 오류)
+    func scriptEvidence(_ statuses: Int...) { evidenceScript = statuses }
+    func holdEvidence() { holdEvidenceReads = true }
+    func pendingEvidenceReads() -> Int { heldEvidenceCount }
+
+    /// 붙잡힌 근거 읽기 중 가장 먼저 온 것 하나를 보낸다 (그 읽기는 **도착한 때**의 근거 · 상태로 답한다)
+    func releaseNextEvidence() {
+        guard !evidenceWaiters.isEmpty else { return }
+        heldEvidenceCount -= 1
+        evidenceWaiters.removeFirst().resume()
+    }
+
+    /// 붙잡힌 근거 읽기 중 `index`번째(도착 순서, 0부터)를 보낸다: 나중에 도착한 읽기가 먼저 끝나는 순서를 만든다
+    func releaseEvidenceWaiter(_ index: Int) {
+        guard evidenceWaiters.indices.contains(index) else { return }
+        heldEvidenceCount -= 1
+        evidenceWaiters.remove(at: index).resume()
+    }
+
+    func releaseAllEvidence() {
+        holdEvidenceReads = false
+        heldEvidenceCount = 0
+        let waiting = evidenceWaiters
+        evidenceWaiters = []
+        waiting.forEach { $0.resume() }
+    }
     func setEvidenceStatus(_ status: Int) { evidenceStatus = status }
     func evidenceReadCount(_ id: UUID) -> Int { evidenceReads[id] ?? 0 }
 
@@ -141,6 +173,7 @@ actor FakeNowServer {
     func respond(method: String, url: URL) async -> FakeReply {
         let path = url.path
         if path == "/api/v1/now" { return await nowReply() }
+        if path == "/rest/v1/evidence", (url.query ?? "").lowercased().contains("action_id=eq.") { return await evidenceDetailReply(url: url) }
         if let write = Self.write(method: method, path: path) { return await writeReply(write.id, kind: write.kind, method: method) }
         if path.hasPrefix("/rest/v1/") { return restReply(path: path, url: url) }
         return .http(404, Data("{}".utf8))
@@ -240,6 +273,34 @@ actor FakeNowServer {
             String(summaryJSON(item).dropLast()) + ",\"score\":1,\"reasons\":[],\"days_until_due\":null}"
         }
         return Data("{\"now\":[\(openJSON.joined(separator: ","))],\"confirmations\":[\(reviews.map(summaryJSON).joined(separator: ","))]}".utf8)
+    }
+
+    /// `actionDetail`의 근거 읽기: 도착한 때의 근거 · 동작으로 답하고, 붙잡혀 있으면 풀릴 때까지 기다린다
+    private func evidenceDetailReply(url: URL) async -> FakeReply {
+        let queryText = (URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? [])
+            .map { "\($0.name)=\($0.value ?? "")" }.joined(separator: "&").lowercased()
+        let ids = evidence.keys.filter { queryText.contains($0.uuidString.lowercased()) }
+        for id in ids { evidenceReads[id, default: 0] += 1 }
+        let status = evidenceScript.isEmpty ? evidenceStatus : evidenceScript.removeFirst()
+        var rows: [String] = []
+        for id in ids {
+            for (index, line) in (evidence[id] ?? []).enumerated() {
+                rows.append(Self.evidenceRow(id, index, line))
+            }
+        }
+        if holdEvidenceReads {
+            heldEvidenceCount += 1
+            await withCheckedContinuation { evidenceWaiters.append($0) }
+        }
+        guard status == 200 else { return .http(status, Self.error(status == 404 ? "not_found" : "internal_error")) }
+        return .http(200, Data("[\(rows.joined(separator: ","))]".utf8))
+    }
+
+    private static func evidenceRow(_ id: UUID, _ index: Int, _ line: Evidence) -> String {
+        """
+        {"id":"\(evidenceID(id, index))","action_id":"\(id.uuidString.lowercased())","source_id":"\(sourceID(id, index))",\
+        "quote":"\(line.quote)","role":"updated","created_at":"\(iso(line.at))"}
+        """
     }
 
     private func restReply(path: String, url: URL) -> FakeReply {

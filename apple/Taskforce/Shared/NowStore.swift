@@ -35,6 +35,9 @@ final class NowStore {
     private(set) var sourceServicesFailed = false
     /// 근거를 읽지 못한 할 일 (계속 "읽는 중"으로 두지 않게)
     private(set) var evidenceFailed: Set<UUID> = []
+    /// 읽어 둔 근거를 다시 확인하는 중인 할 일 (`loadEvidence(force:)`). 확인이 끝날 때까지 전에 읽은 근거는 지금 근거로 보이지 않는다 (Review가 이 상태를 "읽는 중"으로 보인다):
+    /// 그 사이 원문이 지워지거나 접근이 바뀌었을 수 있다. 읽지 못하면 `evidenceFailed`가 되고, 전에 읽은 근거는 `evidence`에 남아 있어도 지금 근거가 아니다
+    private(set) var evidenceRefreshing: Set<UUID> = []
     var message: String?
     /// 직접 추가 실패 문구. iPhone New Task 시트가 자기 알림으로 보여 준다 (시트가 떠 있는 동안 홈 화면 알림은 뜨지 않는다).
     var addError: String?
@@ -54,6 +57,10 @@ final class NowStore {
     /// 새 세션이 같은 할 일에 새 요청을 잡았을 때, 옛 요청이 늦게 끝나며 새 요청의 busy를 지우지 않게 한다 (B3 `MemoryStore` · S3b `WorkContextStore`와 같은 방식)
     @ObservationIgnored private var busyOwner: [UUID: Int] = [:]
     @ObservationIgnored private var busyCounter = 0
+    /// 근거 읽기의 번호 (할 일마다): **마지막에 시작한 읽기만** 반영한다 (B3 `ChatStore` · S3b `WorkContextStore`의 읽기 순번과 같은 방식).
+    /// 같은 항목의 읽기가 겹쳐도(다시 확인 · Try again) 늦게 끝난 옛 읽기의 성공 · 실패가 새 읽기의 결과를 되돌리지 못한다. 계정 generation과는 따로 지킨다
+    @ObservationIgnored private var evidenceReadOwner: [UUID: Int] = [:]
+    @ObservationIgnored private var evidenceReadCounter = 0
     /// 서버가 200으로 받은 Review 답(`answerReview`): 그 뒤 시작한 불러오기(값 = 그 번호)가 반영되기 전에는 Review에 다시 보이지 않는다.
     /// 아직 가진 목록이 이 답보다 오래된 것이어서, 이미 처리한 항목을 다시 답할 수 있게 두지 않으려는 것이다. 새 목록이 오면 그 목록이 진실이다 (다시 있으면 다시 보인다)
     private var answered: [UUID: Int] = [:]
@@ -129,6 +136,26 @@ final class NowStore {
         return result
     }
 
+    /// 견본: Review 답 표시 · 진행 중 표시를 지운다 (스냅샷이 상태를 바꿔 가며 담는다)
+    func resetSampleReview() {
+        answered = [:]
+        busy = []
+        busyOwner = [:]
+    }
+
+    /// 견본: 연결이 돌아온 상태로 둔다 (오프라인 · 읽기 실패 견본을 거둔다)
+    func applySampleOnline() {
+        refresh.reset()
+        refresh.loadSucceeded(at: Date())
+        savedCopy = nil
+    }
+
+    /// 견본: 이 할 일들의 근거를 읽지 못한 상태로 둔다 (`Couldn't load the source`)
+    func applySampleEvidenceFailed(_ ids: Set<UUID>) {
+        for id in ids { evidence[id] = nil }
+        evidenceFailed = ids
+    }
+
     /// 견본: 서버 없이 진행 상태 바꾸기를 바로 목록에 반영한다
     private func commitSample() {
         let board = self.board
@@ -172,6 +199,8 @@ final class NowStore {
         busy = []
         busyOwner = [:]
         answered = [:]
+        evidenceReadOwner = [:]
+        evidenceRefreshing = []
         pending = [:]
         writes = [:]
         stateBeforeDone = [:]
@@ -456,7 +485,9 @@ final class NowStore {
         }
     }
 
-    /// 근거를 읽어 둔다 (이미 있으면 다시 읽지 않는다, `force`면 다시)
+    /// 근거를 읽어 둔다 (이미 있으면 다시 읽지 않는다, `force`면 다시).
+    /// - 다시 읽는 동안 전에 읽은 근거는 `evidenceRefreshing`으로 표시한다: 지금 근거로 보이지 않게 (읽지 못하면 `evidenceFailed`)
+    /// - 같은 할 일의 읽기가 겹치면 마지막에 시작한 읽기만 반영한다. 옛 읽기는 결과를 돌려주기만 하고 저장 · 실패 표시를 하지 않는다
     @discardableResult
     func loadEvidence(_ id: UUID, force: Bool = false) async -> EvidenceDigest? {
         if !force, let cached = evidence[id] { return cached }
@@ -464,19 +495,31 @@ final class NowStore {
         if sampleMode { return nil }
         #endif
         evidenceFailed.remove(id)
+        if evidence[id] != nil { evidenceRefreshing.insert(id) }
         // 읽는 사이 로그아웃 · 계정 전환했으면 전 계정의 근거를 두지 않는다
         let generation = generation
+        evidenceReadCounter += 1
+        let read = evidenceReadCounter
+        evidenceReadOwner[id] = read
         do {
             let detail = try await services.reads.actionDetail(id: id)
             guard generation == self.generation else { return nil }
             let digest = EvidenceDigest(evidence: detail.evidence, sources: detail.sources)
+            // 더 늦게 시작한 읽기가 있다: 이 옛 결과는 저장하지 않는다
+            guard evidenceReadOwner[id] == read else { return digest }
             evidence[id] = digest
+            evidenceRefreshing.remove(id)
             sourceServicesByAction[id] = digest.withoutReceipts.services
             return digest
         } catch is CancellationError {
+            // 중단된 확인: 결과를 모르니 전에 읽은 근거를 지금 근거로 되살리지 않는다
+            if generation == self.generation, evidenceReadOwner[id] == read, evidenceRefreshing.remove(id) != nil { evidenceFailed.insert(id) }
             return nil
         } catch {
-            if generation == self.generation { evidenceFailed.insert(id) }
+            if generation == self.generation, evidenceReadOwner[id] == read {
+                evidenceFailed.insert(id)
+                evidenceRefreshing.remove(id)
+            }
             return nil
         }
     }

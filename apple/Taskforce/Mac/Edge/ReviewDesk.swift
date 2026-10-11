@@ -29,8 +29,15 @@ final class ReviewDesk {
     @ObservationIgnored private let scope: AccountScope
     @ObservationIgnored private var owners: [UUID: Int] = [:]
     @ObservationIgnored private var counter = 0
-    /// 근거를 읽은 때의 그 항목 `last_activity_at`: 달라졌으면(근거가 더해졌을 수 있다) 다시 읽는다
-    @ObservationIgnored private var evidenceStamp: [UUID: Date] = [:]
+    /// 근거를 마지막으로 확인한 때: 항목의 `last_activity_at`(근거가 더해졌을 수 있다)과 Review 페이지에 들어온 차례(`presentation`).
+    /// 원문만 지워지거나 접근이 바뀌는 일은 항목의 활동 시각을 바꾸지 않는다 (예: Slack 연결 끊기 `purge_slack_sources`): 활동 시각만 믿으면
+    /// 다시 열어도 옛 인용이 그대로 보인다. 그래서 확인은 활동 시각과 따로 **페이지에 다시 들어올 때마다** 한다 (폴링 없음, 서버 계약 변경 없음)
+    private struct Freshness: Hashable {
+        let activity: Date
+        let presentation: Int
+    }
+
+    @ObservationIgnored private var evidenceStamp: [UUID: Freshness] = [:]
     /// 읽는 중인 근거 읽기: 화면의 `.task`가 취소돼도(다른 결정으로 옮김) 읽기는 끝까지 가서 "읽는 중"으로 멈춰 서지 않게 한다
     @ObservationIgnored private var evidenceReads: [UUID: Task<Void, Never>] = [:]
 
@@ -83,15 +90,18 @@ final class ReviewDesk {
         return result
     }
 
-    /// 이 항목의 근거를 읽어 둔다. 이미 읽었고 그 뒤 항목이 달라지지 않았으면 다시 읽지 않는다 (읽기일 뿐 해결이 아니다).
-    /// 읽지 못하면 사용자가 Try again을 누를 때까지 다시 부르지 않는다 (`retrySource`)
-    func loadSource(for action: ActionSummary) async {
+    /// 이 항목의 근거를 확인한다 (읽기일 뿐 해결이 아니다). 같은 페이지 방문(`presentation`) 안에서 이미 확인했고 항목이 달라지지 않았으면 다시 읽지 않는다:
+    /// 단계를 옮겼다 돌아와도 같은 방문이면 다시 읽지 않지만, 패널을 다시 열거나 Review로 다시 들어오면 다시 읽는다.
+    /// 다시 확인하는 동안 · 확인하지 못했을 때 전에 읽은 근거는 지금 근거로 보이지 않는다 (`source(for:)`).
+    /// 읽지 못하면 사용자가 Try again을 누르거나 다시 들어올 때까지 다시 부르지 않는다 (`retrySource`)
+    func loadSource(for action: ActionSummary, presentation: Int) async {
         let id = action.id
-        if evidenceStamp[id] == action.lastActivityAt {
+        let freshness = Freshness(activity: action.lastActivityAt, presentation: presentation)
+        if evidenceStamp[id] == freshness {
             await evidenceReads[id]?.value
             return
         }
-        evidenceStamp[id] = action.lastActivityAt
+        evidenceStamp[id] = freshness
         let read = Task { [now] in _ = await now.loadEvidence(id, force: true) }
         evidenceReads[id] = read
         await read.value
@@ -99,13 +109,15 @@ final class ReviewDesk {
     }
 
     /// Try again: 근거를 다시 읽는다
-    func retrySource(for action: ActionSummary) async {
+    func retrySource(for action: ActionSummary, presentation: Int) async {
         evidenceStamp[action.id] = nil
-        await loadSource(for: action)
+        await loadSource(for: action, presentation: presentation)
     }
 
+    /// 결정 아래 보일 원문. 다시 확인하는 중이면 전에 읽은 인용을 보이지 않고 "읽는 중"이다 (지금 근거가 아닐 수 있다), 확인하지 못했으면 실패다
     func source(for id: UUID) -> ReviewSource {
-        ReviewSource.of(digest: now.evidence[id], failed: now.evidenceFailed.contains(id))
+        if now.evidenceRefreshing.contains(id) { return .loading }
+        return ReviewSource.of(digest: now.evidence[id], failed: now.evidenceFailed.contains(id))
     }
 }
 #endif

@@ -65,9 +65,17 @@ struct ReviewPanelBody: View {
 
     private func decision(_ action: ActionSummary) -> some View {
         let id = action.id
+        let presentation = shell.reviewPresentation
         let canAnswer = shell.reviewScreen.canAnswer
         let sending = desk.sending[id]
         let memberships = shell.contexts?.index.memberships(of: id) ?? .unknown
+        let today = DueDateFormat.today()
+        // 질문이 확인 이유뿐이라(바뀐 사실이 아니다) 결정의 대상 · 값이 사라지지 않게: 머리에서 잘린 전체 제목, 확인할 기한 (`Due Fri`)
+        var facts: [DecisionBlock<ReviewSourceView>.Fact] = []
+        if ReviewHeaderFit.truncates(action.title, steps: shell.reviewQueue.count) { facts.append(.init(action.title, .subject)) }
+        if let due = ReviewCopy.due(action, today: today) {
+            facts.append(.init(due, DueText.isUrgent(due: action.dueDate, reasons: [], today: today) ? .urgent : .value))
+        }
         let answers = ReviewAnswer.allCases.map { answer in
             DecisionBlock<ReviewSourceView>.Answer(
                 index: answer.key, label: answer.label,
@@ -75,7 +83,7 @@ struct ReviewPanelBody: View {
             )
         }
         return DecisionBlock(
-            meta: ReviewCopy.meta(memberships: memberships), question: ReviewCopy.question(action), answers: answers,
+            meta: ReviewCopy.meta(memberships: memberships), question: ReviewCopy.question(action), facts: facts, answers: answers,
             note: desk.notice.flatMap { $0.id == id ? $0.text : nil },
             // 누른 답은 render 때의 id(`id`)에만 간다: 큐가 바뀌어 다른 항목이 이 자리에 와도 그 항목에 가지 않는다
             onAnswer: { key in
@@ -84,17 +92,21 @@ struct ReviewPanelBody: View {
             }
         ) {
             ReviewSourceView(
-                source: desk.source(for: id), open: { openURL($0) }, retry: { Task { await desk.retrySource(for: action) } }
+                source: desk.source(for: id), open: { openURL($0) },
+                retry: { Task { await desk.retrySource(for: action, presentation: presentation) } }
             )
         }
-        // 이 항목의 근거를 읽는다 (읽기일 뿐 해결이 아니다). 항목이 달라지거나(`last_activity_at`) 다른 결정으로 옮기면 다시
-        .task(id: SourceKey(id: id, activity: action.lastActivityAt)) { await desk.loadSource(for: action) }
+        // 이 항목의 근거를 확인한다 (읽기일 뿐 해결이 아니다). 항목이 달라지거나(`last_activity_at`) 이 페이지에 다시 들어오면 다시
+        .task(id: SourceKey(id: id, activity: action.lastActivityAt, presentation: presentation)) {
+            await desk.loadSource(for: action, presentation: presentation)
+        }
         .id(id)
     }
 
     private struct SourceKey: Hashable {
         let id: UUID
         let activity: Date
+        let presentation: Int
     }
 
     // MARK: 안내
@@ -166,6 +178,19 @@ struct ReviewSourceView: View {
         .padding(EdgeInsets(top: 10, leading: TFSpace.md, bottom: 10, trailing: TFSpace.md))
         .background(TFColor.bgField, in: shape)
         .accessibilityElement(children: .combine)
+    }
+}
+
+/// 머리 제목이 한 줄에 다 들어가는가 (디자인 PanelHeader: 앞 16 · 뒤 10, 단계 점은 둘 이상일 때 24pt씩, 사이 4, 제목은 callout-strong 15 semibold).
+/// 넘치면 머리는 …로 줄이므로, 결정의 대상이 가려지지 않게 본문에 전체 제목을 한 줄 더한다
+enum ReviewHeaderFit {
+    static func truncates(_ title: String, steps: Int) -> Bool {
+        let stepsWidth = steps > 1 ? CGFloat(steps) * 24 + 4 : 0
+        let available = EdgePanelMetrics.width - 16 - 10 - stepsWidth
+        let font = NSFont.systemFont(ofSize: 15, weight: .semibold)
+        let width = (title as NSString).size(withAttributes: [.font: font, .kern: -0.24]).width
+        // 글자 폭 측정과 SwiftUI의 배치가 1~2pt 어긋날 수 있다: 가장자리에서는 더하는 쪽으로
+        return width > available - 6
     }
 }
 

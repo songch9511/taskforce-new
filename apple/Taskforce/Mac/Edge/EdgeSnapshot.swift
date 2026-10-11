@@ -13,6 +13,8 @@ import TaskforceKit
 /// `-TFEdgeSnapshotContexts`(`-TF_S3B YES`와 함께: S3b 기본은 꺼짐): 범위(프로젝트) 멤버십 상태 (S3b, 견본 가짜 서버 `SampleContextGateway`): 묶음(여러 프로젝트 · 보관됨 · Ungrouped) · 검색 · Project 칩 ·
 /// ProjectLink 줄(Set by you · Auto-linked · Not confirmed 후보 · No clear link · 여러 프로젝트 · 보관됨) · 바꾼 뒤 Undo · 충돌 · 응답 유실 · gate 꺼짐 · 진행 중 ·
 /// 읽는 중 · 오프라인 · 읽기 실패 · 프로젝트 없음 · 테이블 없음. 서버 응답은 가짜라 렌더 fixture일 뿐이다 (실제 서버 · 계정 · AI 호출 없음).
+/// `-TFEdgeSnapshotReview`(`-TF_S4 YES`와 함께: S4 기본은 꺼짐, 범위 이름은 `-TF_S3B YES`): Review 페이지 상태 (S4, 견본 가짜 답 서버 `SampleReviewServer`): 여러 개 · 하나 · 없음 · 긴 제목 · 원문(여럿 · 지워짐 · 없음 ·
+/// 읽는 중 · 읽지 못함) · 보내는 중 · 충돌 · 응답 유실 · 오프라인 · 읽기 실패 · 순서 바뀜 · 처리됨. 서버 응답은 가짜라 렌더 fixture일 뿐이다 (실제 서버 · 계정 · AI 호출 없음).
 /// `-TFEdgeSnapshotState <이름>`: All work 패널 하나만 `mac-edge-worklist-<이름>.png`로 (빈 · 오프라인 · 실패 같은 견본 상태 인자와 함께)
 @MainActor
 enum EdgeSnapshot {
@@ -51,6 +53,11 @@ enum EdgeSnapshot {
             }
             if arguments.contains("-TFEdgeSnapshotContexts") {
                 await captureContexts(edge, file: file, settle: { await settle() })
+                NSApplication.shared.terminate(nil)
+                return
+            }
+            if arguments.contains("-TFEdgeSnapshotReview") {
+                await ReviewSnapshot.capture(edge, file: file, settle: { await settle() })
                 NSApplication.shared.terminate(nil)
                 return
             }
@@ -345,7 +352,7 @@ enum EdgeSnapshot {
     }
 
     /// 보이는 창(레일 · 패널)을 화면 자리대로, 데스크톱 견본 위에 그린다
-    private static func capture(_ edge: EdgeShellController, to url: URL) {
+    static func capture(_ edge: EdgeShellController, to url: URL) {
         let windows = [edge.panel.panel, edge.rail.panel].filter(\.isVisible)
         guard let first = windows.first else { return }
         let margin: CGFloat = 24

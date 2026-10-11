@@ -22,4 +22,10 @@ struct DecisionBlockTests {
         #expect(answers.map(\.id) == [1, 2])
         #expect(answers[0].phase == .ready && answers[1].phase == .locked && answers[0].hint == nil)
     }
+
+    @Test func factsAreIdentifiedByStyleAndText() {
+        let facts: [DecisionBlock<EmptyView>.Fact] = [.init("Full title", .subject), .init("Due Fri"), .init("Due Yesterday", .urgent)]
+        #expect(Set(facts.map(\.id)).count == 3)
+        #expect(facts[1].style == .value)
+    }
 }

@@ -122,6 +122,20 @@ struct ReviewQueueTests {
         #expect(ReviewCopy.question(Self.review(1, activity: 0, reasons: ["unknown-code"])) == "Needs review")
     }
 
+    @Test func theDueLineIsTheExistingDueWordingOrNothing() {
+        let today = LocalDate(year: 2026, month: 10, day: 11)!
+        func action(due: LocalDate?) -> ActionSummary {
+            ActionSummary(
+                id: Self.id(1), title: "t", owner: .me, status: .open, dueDate: due, counterpart: nil, needsConfirmation: true,
+                confirmReasons: [], startedAt: nil, lastActivityAt: Date(timeIntervalSince1970: 0)
+            )
+        }
+        #expect(ReviewCopy.due(action(due: today), today: today) == "Due Today")
+        #expect(ReviewCopy.due(action(due: today.adding(days: 1)), today: today) == "Due Tomorrow")
+        #expect(ReviewCopy.due(action(due: today.adding(days: 30)), today: today) == "Due Nov 10")
+        #expect(ReviewCopy.due(action(due: nil), today: today) == nil, "기한이 없으면 지어내지 않는다")
+    }
+
     @Test func theMetaNamesAProjectOnlyForConfirmedMemberships() {
         #expect(ReviewCopy.meta(memberships: .unknown) == "Needs your answer")
         #expect(ReviewCopy.meta(memberships: .none) == "Needs your answer")

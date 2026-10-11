@@ -218,6 +218,60 @@ struct S4GateTests {
         #expect(await rig.harness.server.arrived(rig.id(3)) == 0)
     }
 
+    /// Codex b52443b 검토 C: ⌘1도 텍스트 편집(입력칸 · IME 조합) · 메뉴 · 시트 밖에서만 듣는다. 기존 ⌘2 · ⌘3 · ⌘N은 입력칸에서도 그대로다
+    @MainActor
+    @Test func commandOneIsHeardOnlyOutsideTextEditingMenusAndSheets() async throws {
+        let rig = try await ReviewRig.make()
+        let controller = Self.controller(review: rig.desk)
+        controller.shell.update(EdgeWorkSnapshot(sections: rig.harness.store.sections, working: [], stopping: [], load: .loaded(problem: nil), doneSince: nil, canConnect: false))
+        controller.shell.openAllWork()
+        let commandOne = Self.key("1", code: kVK_ANSI_1, flags: .command)
+        let window = controller.panel.panel
+
+        // 편집할 수 있는 텍스트가 첫 응답자: ⌘1은 지나가고 화면은 그대로
+        let field = NSTextView(frame: NSRect(x: 0, y: 0, width: 100, height: 20))
+        window.contentView?.addSubview(field)
+        #expect(window.makeFirstResponder(field))
+        #expect(!controller.handleKey(commandOne))
+        #expect(controller.shell.view == .allWork && controller.shell.reviewPresentation == 0)
+        // 기존 키는 입력칸에서도 그대로 (이 PR이 바꾸지 않는다)
+        #expect(controller.handleKey(Self.key("3", code: kVK_ANSI_3, flags: .command)) && controller.shell.view == .chats)
+        #expect(controller.handleKey(Self.key("2", code: kVK_ANSI_2, flags: .command)) && controller.shell.view == .allWork)
+        #expect(controller.handleKey(Self.key("n", code: kVK_ANSI_N, flags: .command)) && controller.shell.view == .chats)
+        controller.shell.openAllWork()
+        field.removeFromSuperview()
+        _ = window.makeFirstResponder(nil)
+
+        // IME 조합 중인 입력
+        let composing = MarkedTextView(frame: NSRect(x: 0, y: 0, width: 100, height: 20))
+        composing.marked = true
+        window.contentView?.addSubview(composing)
+        #expect(window.makeFirstResponder(composing))
+        #expect(!controller.handleKey(commandOne) && controller.shell.view == .allWork)
+        composing.marked = false
+        #expect(controller.handleKey(commandOne) && controller.shell.view == .review, "조합이 아닌 입력이면 ⌘1이 듣는다")
+        composing.removeFromSuperview()
+        _ = window.makeFirstResponder(nil)
+        controller.shell.openAllWork()
+
+        // 열린 메뉴
+        controller.shell.setMenuOpen(true)
+        #expect(!controller.handleKey(commandOne) && controller.shell.view == .allWork)
+        controller.shell.setMenuOpen(false)
+
+        // 시트
+        let sheet = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 80, height: 60), styleMask: [.titled], backing: .buffered, defer: true)
+        window.beginSheet(sheet, completionHandler: nil)
+        try #require(window.attachedSheet != nil, "시트가 붙어야 이 시험이 뜻이 있다")
+        #expect(!controller.handleKey(commandOne) && controller.shell.view == .allWork)
+        window.endSheet(sheet)
+
+        // 편집 밖: 가장 새 항목
+        #expect(controller.handleKey(commandOne))
+        #expect(controller.shell.view == .review && controller.shell.shownReview?.id == rig.id(3))
+        #expect(await rig.harness.server.writeCount() == 0)
+    }
+
     @MainActor
     @Test func theKeyTableMatchesTheContract() {
         #expect(EdgeKeyCommand.of(keyCode: kVK_ANSI_1, flags: .command) == .review)
@@ -241,6 +295,7 @@ struct S4GateTests {
 
     final class MarkedTextView: NSView, @preconcurrency NSTextInputClient {
         var marked = false
+        override var acceptsFirstResponder: Bool { true }
         func insertText(_ string: Any, replacementRange: NSRange) {}
         func setMarkedText(_ string: Any, selectedRange: NSRange, replacementRange: NSRange) {}
         func unmarkText() {}
@@ -470,6 +525,18 @@ struct EdgeReviewModelTests {
         #expect(rig.shell.reviewID == nil)
     }
 
+    // MARK: 머리 제목이 가려지지 않게
+
+    @Test func theFullTitleJoinsTheBodyOnlyWhenTheHeaderCannotShowIt() {
+        #expect(!ReviewHeaderFit.truncates("제안서 v2 보내기", steps: 1))
+        #expect(!ReviewHeaderFit.truncates("계약서 변경 사항 검토", steps: 4), "단계 점 넷 옆에서도 이 정도는 들어간다")
+        #expect(ReviewHeaderFit.truncates("금요일 고객 데모 준비 (새 온보딩, 결제 화면 포함)", steps: 4))
+        #expect(ReviewHeaderFit.truncates(String(repeating: "Long title ", count: 8), steps: 1))
+        // 단계 점이 많을수록 제목 자리가 줄어든다
+        let title = "Send the revised proposal to the Acme team"
+        #expect(!ReviewHeaderFit.truncates(title, steps: 1) && ReviewHeaderFit.truncates(title, steps: 9))
+    }
+
     // MARK: 원문
 
     @Test func theSourceIsReadWhenTheDecisionIsShownAndReadAgainOnlyWhenTheItemChanged() async throws {
@@ -478,22 +545,110 @@ struct EdgeReviewModelTests {
         await rig.harness.server.setEvidence(rig.id(2), [.init(quote: "Could we do Thursday instead?", sourceTitle: "Thread", url: "https://mail.google.com/mail/u/0/#inbox/x", at: Date(timeIntervalSince1970: 1_791_000_000))])
         #expect(rig.desk.source(for: rig.id(2)) == .loading)
 
-        await rig.desk.loadSource(for: action)
+        await rig.desk.loadSource(for: action, presentation: rig.shell.reviewPresentation)
         guard case .lines(let lines) = rig.desk.source(for: rig.id(2)) else {
             Issue.record("quote expected: \(rig.desk.source(for: rig.id(2)))")
             return
         }
         #expect(lines.map(\.text) == ["Could we do Thursday instead?"] && lines[0].place == "Thread" && lines[0].url?.host == "mail.google.com")
         // 다시 보여도(단계를 옮겼다 돌아옴) 다시 읽지 않는다
-        await rig.desk.loadSource(for: action)
+        await rig.desk.loadSource(for: action, presentation: rig.shell.reviewPresentation)
         #expect(await rig.harness.server.evidenceReadCount(rig.id(2)) == 1)
         // 항목이 달라졌으면(`last_activity_at`) 다시 읽는다: 지금 근거가 아니면 보이지 않게
         await rig.harness.server.bump(rig.id(2), to: Date(timeIntervalSince1970: 1_791_500_000))
         await rig.harness.store.load()
         rig.sync()
         let changed = try #require(rig.shell.reviewQueue.item(rig.id(2)))
-        await rig.desk.loadSource(for: changed)
+        await rig.desk.loadSource(for: changed, presentation: rig.shell.reviewPresentation)
         #expect(await rig.harness.server.evidenceReadCount(rig.id(2)) == 2)
+    }
+
+    // MARK: 원문 신선도 (Codex b52443b 검토 B): 활동 시각과 따로, 다시 들어올 때마다 확인
+
+    @Test func aSourceRemovedWithoutAnyActionActivityIsNotShownAgainWhenTheUserComesBack() async throws {
+        let rig = try await ReviewRig.make()
+        let id = rig.id(2)
+        let at = Date(timeIntervalSince1970: 1_791_000_000)
+        await rig.harness.server.setEvidence(id, [.init(quote: "OLD_QUOTE", sourceTitle: "Thread", url: nil, at: at)])
+        rig.shell.openReview(itemID: id)
+        let action = try #require(rig.shell.shownReview)
+        let visit = rig.shell.reviewPresentation
+        await rig.desk.loadSource(for: action, presentation: visit)
+        guard case .lines(let before) = rig.desk.source(for: id) else {
+            Issue.record("quote expected")
+            return
+        }
+        #expect(before.map(\.text) == ["OLD_QUOTE"])
+
+        // 원문만 지워졌다 (Slack 연결 끊기처럼 `actions.last_activity_at`은 그대로)
+        await rig.harness.server.setEvidence(id, [.init(quote: RemovedQuote.slackDisconnected, sourceTitle: "Thread", url: nil, at: at)])
+        // 같은 방문 안에서 단계를 옮겼다 돌아와도 다시 읽지 않는다
+        rig.shell.stepReview(1)
+        rig.shell.openReview(itemID: id)
+        #expect(rig.shell.reviewPresentation == visit)
+        await rig.desk.loadSource(for: action, presentation: rig.shell.reviewPresentation)
+        #expect(await rig.harness.server.evidenceReadCount(id) == 1)
+
+        // 패널을 닫았다 다시 연다 = 다시 들어옴: 활동 시각이 같아도 다시 확인한다
+        rig.shell.dismiss()
+        rig.shell.openReview(itemID: id)
+        let revisit = rig.shell.reviewPresentation
+        #expect(revisit == visit + 1 && rig.shell.shownReview?.lastActivityAt == action.lastActivityAt)
+        await rig.harness.server.holdEvidence()
+        let reload = Task { await rig.desk.loadSource(for: action, presentation: revisit) }
+        #expect(await rig.harness.wait { await rig.harness.server.pendingEvidenceReads() == 1 })
+        #expect(rig.desk.source(for: id) == .loading, "확인하는 동안 전에 읽은 인용을 보이지 않는다")
+        await rig.harness.server.releaseAllEvidence()
+        await reload.value
+        guard case .lines(let after) = rig.desk.source(for: id) else {
+            Issue.record("a removed line expected")
+            return
+        }
+        #expect(after.count == 1 && after[0].removed && after[0].text.isEmpty, "옛 인용은 나오지 않는다")
+        #expect(await rig.harness.server.evidenceReadCount(id) == 2)
+    }
+
+    @Test func ifTheRevisitCannotVerifyItShowsFailedNotTheOldQuote() async throws {
+        let rig = try await ReviewRig.make()
+        let id = rig.id(2)
+        await rig.harness.server.setEvidence(id, [.init(quote: "OLD_QUOTE", sourceTitle: nil, url: nil, at: Date(timeIntervalSince1970: 1_791_000_000))])
+        rig.shell.openReview(itemID: id)
+        let action = try #require(rig.shell.shownReview)
+        await rig.desk.loadSource(for: action, presentation: rig.shell.reviewPresentation)
+        rig.shell.dismiss()
+        rig.shell.openReview(itemID: id)
+        await rig.harness.server.scriptEvidence(500)
+        await rig.desk.loadSource(for: action, presentation: rig.shell.reviewPresentation)
+        #expect(rig.desk.source(for: id) == .failed)
+        // Try again이 새로 확인한다
+        await rig.desk.retrySource(for: action, presentation: rig.shell.reviewPresentation)
+        guard case .lines(let lines) = rig.desk.source(for: id) else {
+            Issue.record("quote expected after Try again")
+            return
+        }
+        #expect(lines.map(\.text) == ["OLD_QUOTE"])
+    }
+
+    @Test func thePresentationRisesOnlyWhenTheUserEntersTheReviewPage() async throws {
+        let rig = try await ReviewRig.make()
+        #expect(rig.shell.reviewPresentation == 0)
+        rig.shell.openNewestReview()
+        #expect(rig.shell.reviewPresentation == 1)
+        rig.shell.stepReview(-1)
+        rig.shell.openReview(itemID: rig.id(1))
+        rig.shell.openNewestReview()
+        #expect(rig.shell.reviewPresentation == 1, "열린 Review 안의 이동 · 다시 누르기는 다시 들어온 것이 아니다")
+        rig.shell.dismiss()
+        rig.shell.togglePanel()
+        #expect(rig.shell.view == .review && rig.shell.reviewPresentation == 2, "⌥ Space로 다시 열면 다시 들어온 것")
+        rig.shell.openAllWork()
+        rig.shell.openReview(itemID: rig.id(2))
+        #expect(rig.shell.reviewPresentation == 3)
+        // S4가 꺼진 셸은 Review에 들어올 수 없다
+        let off = EdgeShellModel(schedule: { _, _ in EdgeTimer() })
+        off.openNewestReview()
+        off.togglePanel()
+        #expect(off.reviewPresentation == 0 && off.view == .allWork)
     }
 
     @Test func aFailedSourceReadIsNotRetriedOnItsOwnAndRetryIsExplicit() async throws {
@@ -502,13 +657,13 @@ struct EdgeReviewModelTests {
         await rig.harness.server.setEvidence(rig.id(1), [.init(quote: "Hello", sourceTitle: nil, url: nil, at: Date(timeIntervalSince1970: 1_791_000_000))])
         await rig.harness.server.setEvidenceStatus(500)
 
-        await rig.desk.loadSource(for: action)
+        await rig.desk.loadSource(for: action, presentation: rig.shell.reviewPresentation)
         #expect(rig.desk.source(for: rig.id(1)) == .failed)
-        await rig.desk.loadSource(for: action)
+        await rig.desk.loadSource(for: action, presentation: rig.shell.reviewPresentation)
         #expect(await rig.harness.server.evidenceReadCount(rig.id(1)) == 1, "스스로 다시 읽지 않는다")
 
         await rig.harness.server.setEvidenceStatus(200)
-        await rig.desk.retrySource(for: action)
+        await rig.desk.retrySource(for: action, presentation: rig.shell.reviewPresentation)
         guard case .lines(let lines) = rig.desk.source(for: rig.id(1)) else {
             Issue.record("quote expected after Try again")
             return
@@ -520,7 +675,7 @@ struct EdgeReviewModelTests {
         let rig = try await ReviewRig.make()
         let action = try #require(rig.shell.reviewQueue.item(rig.id(1)))
         await rig.harness.server.setEvidence(rig.id(1), [.init(quote: RemovedQuote.slackDisconnected, sourceTitle: "#sales", url: nil, at: Date(timeIntervalSince1970: 1_791_000_000))])
-        await rig.desk.loadSource(for: action)
+        await rig.desk.loadSource(for: action, presentation: rig.shell.reviewPresentation)
         guard case .lines(let lines) = rig.desk.source(for: rig.id(1)) else {
             Issue.record("a removed line expected")
             return
@@ -533,7 +688,7 @@ struct EdgeReviewModelTests {
         rig.shell.openNewestReview()
         let action = try #require(rig.shell.shownReview)
         await rig.harness.server.setEvidence(action.id, [.init(quote: "q", sourceTitle: nil, url: nil, at: Date(timeIntervalSince1970: 1_791_000_000))])
-        await rig.desk.loadSource(for: action)
+        await rig.desk.loadSource(for: action, presentation: rig.shell.reviewPresentation)
         rig.shell.stepReview(-1)
         rig.shell.dismiss()
         rig.shell.openNewestReview()

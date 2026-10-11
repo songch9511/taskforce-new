@@ -103,6 +103,7 @@ public struct AnswerOption: View {
 /// 답을 읽는 것은 해결이 아니다: 해결은 사용자가 답을 골랐을 때뿐이고, 이 부품은 보내는 일을 하지 않는다 (`onAnswer`만 부른다).
 /// 디자인에 있는 "답한 뒤 outcome + Undo"는 S4b(C3)의 몫이라 여기에 없다: v1에는 되돌리기 의미가 없다.
 /// `note`: 보낸 답이 거절됐거나 결과를 확인하지 못했을 때의 한 줄 (성공 안내가 아니다)
+/// `facts`(디자인에 없는 한 가지 더함, `s4-mac-notes.md`): 질문이 v1의 확인 이유뿐이라(바뀐 사실이 아니다) 결정의 대상 · 값이 사라지지 않게, 머리에서 잘린 전체 제목과 확인할 기한을 질문 아래에 둔다.
 public struct DecisionBlock<Source: View>: View {
     public struct Answer: Identifiable, Sendable, Hashable {
         public let index: Int
@@ -120,19 +121,43 @@ public struct DecisionBlock<Source: View>: View {
         }
     }
 
+    /// 질문 아래 한두 줄의 사실: v1 확인 요청의 전체 제목(머리에 다 들어가지 않을 때) · 확인할 기한. 디자인에는 없다 (아래 문서)
+    public struct Fact: Identifiable, Sendable, Hashable {
+        public enum Style: Sendable, Hashable {
+            /// 결정의 대상 (전체 제목)
+            case subject
+            /// 값 (`Due Fri`)
+            case value
+            /// 지났거나 오늘인 기한 (빨강, 서버 이유가 없을 때 같은 기준 `DueText.isUrgent`)
+            case urgent
+        }
+
+        public let text: String
+        public let style: Style
+
+        public var id: String { "\(style)-\(text)" }
+
+        public init(_ text: String, _ style: Style = .value) {
+            self.text = text
+            self.style = style
+        }
+    }
+
     let meta: String
     let question: String
+    let facts: [Fact]
     let answers: [Answer]
     let note: String?
     let onAnswer: (Int) -> Void
     let source: Source
 
     public init(
-        meta: String, question: String, answers: [Answer], note: String? = nil, onAnswer: @escaping (Int) -> Void,
+        meta: String, question: String, facts: [Fact] = [], answers: [Answer], note: String? = nil, onAnswer: @escaping (Int) -> Void,
         @ViewBuilder source: () -> Source
     ) {
         self.meta = meta
         self.question = question
+        self.facts = facts
         self.answers = answers
         self.note = note
         self.onAnswer = onAnswer
@@ -152,8 +177,20 @@ public struct DecisionBlock<Source: View>: View {
                 .foregroundStyle(TFColor.textPrimary)
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.bottom, TFSpace.md)
+                .padding(.bottom, facts.isEmpty ? TFSpace.md : TFSpace.xs)
                 .accessibilityAddTraits(.isHeader)
+            if !facts.isEmpty {
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(facts) { fact in
+                        Text(fact.text)
+                            .font(fact.style == .subject ? TFFont.callout : TFFont.footnote)
+                            .foregroundStyle(fact.style == .subject ? TFColor.textPrimary : (fact.style == .urgent ? TFColor.statusOverdue : TFColor.textSecondary))
+                            .fixedSize(horizontal: false, vertical: true)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+                .padding(.bottom, TFSpace.md)
+            }
             source
                 .padding(.bottom, TFSpace.md)
             VStack(spacing: Self.answerGap) {
