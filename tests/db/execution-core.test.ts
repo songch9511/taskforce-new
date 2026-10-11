@@ -85,7 +85,8 @@ describe("run · 단계 만들기", () => {
   it("create_run: 본인의 열린 Action에만 만들고, 정책이 없으면 Manual로 만들고, 첫 단계는 계획(내부 효과)이다", async () => {
     await expect(db.query("select public.create_run($1, $2, 'draft', 'x')", [BOB, await newAction(ALICE)])).rejects.toThrow(/open action not found/);
     await expect(db.query("select public.create_run($1, $2, 'draft', 'x')", [ALICE, await newAction(ALICE, "done")])).rejects.toThrow(/open action not found/);
-    await expect(db.query("select public.create_run($1, $2, 'send', 'x')", [ALICE, await newAction(ALICE)])).rejects.toThrow(/check constraint/);
+    // DB의 goal CHECK는 0.2.0 C1(20261109000000)부터 send를 받지만, run 만들기는 draft만 받는다 (자세한 검사는 execution-additive-contract.test.ts)
+    await expect(db.query("select public.create_run($1, $2, 'send', 'x')", [ALICE, await newAction(ALICE)])).rejects.toThrow(/goal send .* 아직 실행하지 않는다/);
 
     const user = "00000000-0000-0000-0000-00000000000c";
     await db.query("insert into auth.users (id, email) values ($1, 'carol@example.com')", [user]);

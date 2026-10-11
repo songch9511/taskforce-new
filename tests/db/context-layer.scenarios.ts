@@ -942,18 +942,28 @@ export function contextLayerTests(db: () => ContextLayerDb) {
       ]);
     });
 
-    it("맥락층 표는 실행 표를 가리키지 않고 실행 표도 맥락층 표를 가리키지 않는다 (외래키 · 트리거). 맥락층 함수 본문은 execution_* 표를 쓰지 않는다", async () => {
+    it("맥락층 표는 실행 표를 가리키지 않고, 실행 표가 맥락층 표를 가리키는 것은 run의 출처 기록 둘뿐이다 (외래키 · 트리거). 맥락층 함수 본문은 execution_* 표를 쓰지 않는다", async () => {
       const contextTables = [
         "people", "people_handles", "work_contexts", "context_members", "memory_items", "identity_links", "source_chunks", "inbox_events",
         "conversations", "conversation_messages", "context_version_bumps",
       ];
       const fks = await db().query(
-        `select c.conrelid::regclass::text as from_table, c.confrelid::regclass::text as to_table from pg_constraint c
-          where c.contype = 'f' and (c.conrelid::regclass::text = any ($1) or c.confrelid::regclass::text = any ($1))`,
+        `select c.conrelid::regclass::text as from_table, c.confrelid::regclass::text as to_table, c.confdeltype as on_delete,
+                (select array_agg(a.attname::text order by a.attname) from pg_attribute a where a.attrelid = c.conrelid and a.attnum = any (c.conkey)) as columns
+           from pg_constraint c
+          where c.contype = 'f' and (c.conrelid::regclass::text = any ($1) or c.confrelid::regclass::text = any ($1))
+          order by 1, 2`,
         [contextTables],
       );
       const touching = fks.filter((r) => /execution_|credit_/.test(String(r.from_table)) || /execution_|credit_/.test(String(r.to_table)));
-      expect(touching).toEqual([]);
+      // 맥락층 → 실행 방향은 없다 (범위 · 기억 · 대화는 실행 표를 가리키지 못한다)
+      expect(touching.filter((r) => contextTables.includes(String(r.from_table)))).toEqual([]);
+      // 실행 → 맥락층 방향은 0.2.0 C1(20261109000000)이 허락한 출처 기록 둘뿐이다: run이 어느 대화 · 범위에서 시작했나. 어떤 gate · 전이 · 판정에도 입력이 아니고
+      // (I04 · I14, tests/db/execution-additive-contract.scenarios.ts), 부모를 지워도 run 기록은 남고 참조만 비운다 (on delete set null = 'n')
+      expect(touching).toEqual([
+        { from_table: "execution_runs", to_table: "conversations", on_delete: "n", columns: ["conversation_id", "user_id"] },
+        { from_table: "execution_runs", to_table: "work_contexts", on_delete: "n", columns: ["context_id", "user_id"] },
+      ]);
       const bodies = await db().query(
         `select p.proname as name, p.prosrc as body from pg_proc p join pg_namespace n on n.oid = p.pronamespace
           where n.nspname = 'public' and (

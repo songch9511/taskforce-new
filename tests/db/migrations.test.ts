@@ -64,6 +64,7 @@ describe("초기 마이그레이션", () => {
       "execution_actors",
       "execution_approvals",
       "execution_artifacts",
+      "execution_connection_policies",
       "execution_controls",
       "execution_events",
       "execution_intents",

@@ -25,6 +25,8 @@ const RETENTION_FUNCTIONS = ["purge_expired_execution_text"];
 const HELPER_FUNCTIONS = [
   "execution_hold", "execution_recipients_valid", "execution_retry_internal", "execution_runs_log", "execution_skip", "execution_steps_log",
   "execution_steps_replan",
+  // 0.2.0 C1(20261109000000_execution_additive_contract): 연결별 정책의 version · 소유자 보호 트리거
+  "execution_connection_policies_guard",
 ];
 const SERVER_TABLES = ["execution_intents", "execution_controls", "execution_tools", "execution_actors", "execution_recipient_allowlist", "execution_events"];
 
