@@ -42,3 +42,25 @@ describe("과금 경계 (A37 · A44)", () => {
     expect(offenders).toEqual([]);
   });
 });
+
+// 맥락 경계 (ARCH06 · ARCH07, 불변식 I04 · I14): execution_runs의 conversation_id · context_id · bundle_context_version · directive_version(0.2.0 C1)은 "어느 대화 · 범위에서
+// 시작했나"의 기록이다. 실행 코드(run 만들기 · 실행기 · sweep · 판단 함수를 부르는 곳)와 Action 판정(resolve)은 범위 · 대화 · 기억 · 그 버전을 읽지도 쓰지도 않는다.
+// 이 열을 읽거나 쓰는 코드는 이 묶음에 없다(코디네이터 C2 · 게이트웨이 D1). DB 쪽(begin_call · 승인 hash · 정책 · Action이 범위를 바꿔도 그대로)은 tests/db/execution-additive-contract.scenarios.ts.
+describe("맥락 경계 (ARCH06 · ARCH07)", () => {
+  const CONTEXT_IDENTIFIERS = /\b(context_id|bundle_context_version|conversation_id|context_version|directive_version|work_contexts|context_members|memory_items|conversations)\b/;
+  const EXECUTION_PATHS = [
+    ...files(path.join(ROOT, "src/lib/execution")),
+    ...files(path.join(ROOT, "src/app/api/v1/runs")),
+    ...files(path.join(ROOT, "src/app/api/cron")).filter((file) => /execution-/.test(file)),
+    path.join(ROOT, "src/lib/api/runs.ts"),
+    // Action 판정: 값은 Claim에서만 나온다 (원칙 5, I01)
+    path.join(ROOT, "src/lib/pipeline/resolve.ts"),
+    path.join(ROOT, "src/lib/actions/project.ts"),
+  ];
+
+  it("실행 코드 · run API · Action 판정은 범위 · 대화 · 기억 · 그 버전을 가리키지 않는다", () => {
+    expect(EXECUTION_PATHS.length).toBeGreaterThan(20);
+    const offenders = EXECUTION_PATHS.filter((file) => CONTEXT_IDENTIFIERS.test(readFileSync(file, "utf8"))).map((file) => path.relative(ROOT, file));
+    expect(offenders).toEqual([]);
+  });
+});

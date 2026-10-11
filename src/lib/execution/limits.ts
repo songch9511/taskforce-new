@@ -19,6 +19,23 @@ export const LEASE_SECONDS = EXECUTION_MAX_DURATION_S + LEASE_MARGIN_S;
  */
 export const MAX_STEPS = 4;
 
+/**
+ * goal별 단계 상한 (런타임 계약 4장). draft는 위 MAX_STEPS 그대로다. 나머지는 값만 정해 둔 것이다: 이 goal을 실행하는 코드는 아직 없고
+ * (실행기는 types.ts EXECUTABLE_GOALS의 goal만 돌린다), 이 상한을 읽는 곳도 draft의 MAX_STEPS뿐이다. 값을 바꾸려면 상수와 테스트를 함께 바꾼다.
+ * agent = dispatch 1 + 메시지 왕복 ≤ 3×2 + 검토 ≤ 2 + 계획 단계. 상한은 비용 · 무한 반복 방지
+ */
+export const MAX_STEPS_BY_GOAL = { draft: MAX_STEPS, agent: 12, send: 4, followup: 3 } as const;
+
+// 동시성 한도 (런타임 계약 4장). 세 가지를 나눈다. 값만 정해 둔 것이고 이 묶음에서는 어디서도 세지 않는다(코디네이터 C2 · 게이트웨이 D1이 센다).
+/** ① 실행 동시성: 사용자당 동시에 calling인 비용 단계(모델 · 에이전트 호출) */
+export const MAX_CONCURRENT_COST_STEPS = 3;
+/** ② 살아 있는 외부 작업: 실행 중이거나 실행 가능성이 남은 원격 작업 (dispatched · accepted · running, 실행 여부가 불명인 unreachable) */
+export const MAX_LIVE_EXTERNAL_TASKS = 5;
+/** ③ 대기 보관: 승인 · 질문 · 회신을 기다리는 run은 ①을 차지하지 않고, 이만큼(일) 지나면 정리를 제안한다 */
+export const WAITING_RUN_RETENTION_DAYS = 30;
+/** 한 Action의 열린 run: intent가 다를 때만 이만큼까지 */
+export const MAX_OPEN_RUNS_PER_ACTION = 2;
+
 /** 지금 쓰는 크레딧 요율 (credit_rates의 active, 1 크레딧 = $0.001). GET /api/v1/credits는 DB 값을 돌려준다 */
 export const RATE_VERSION = "c3-v1";
 
