@@ -85,6 +85,8 @@ describe("[현재 실제] 승인 대기 · 확인 요청 · 실패한 run이 같
     expect(matchPendingVersion(after, { itemId: seen.id, version: seen.version })).toBe("gone");
     expect(matchPendingVersion(after, { itemId: other.id, version: other.version })).toBe("current");
     expect(after.map((g) => [g.kind, g.items.length]).sort()).toEqual([["approval", 1], ["confirm", 1]]);
+    // 실제 approve_step이 같은 트랜잭션에서 사건을 남겼다 (decision_made 승인). 읽기(계산)는 사건을 만들지 않았다
+    expect((await db.query("select refs from public.inbox_events where type = 'decision_made'")).rows).toEqual([{ refs: { step_id: seen.stepId, run_id: a.run, kind: "approval" } }]);
     // 승인을 철회하면 같은 항목이 같은 version으로 돌아온다 (같은 계획이므로)
     await driver.revoke(seen.stepId!);
     const restored = await load();

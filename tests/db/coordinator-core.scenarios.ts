@@ -388,6 +388,24 @@ export function coordinatorCoreTests(db: () => CoordinatorDb) {
     });
   });
 
+  describe("[실제 연결] 실제 Action 쓰기 경로(write_action)의 사용자 결정", () => {
+    it("사용자가 확인한 쓰기(write_action의 user_confirmed · actor user)가 같은 트랜잭션에서 decision_made 한 건을 남긴다. AI 이벤트는 남기지 않는다", async () => {
+      const user = await f.user();
+      const action = randomUUID();
+      const row = JSON.stringify({ title: "제안서 발송", counterpart: null, owner: "me", due_date: null, due_at: null, status: "open", needs_confirmation: true, confirm_reasons: ["담당 확인"], resolution: null, embedding: null });
+      const write = (expected: number | null, type: string, actor: string, confirmed = false) =>
+        q(`select public.write_action($1, $2, $3, $4::jsonb, '[]'::jsonb, '[]'::jsonb, $5::jsonb)`, [
+          user, action, expected, confirmed ? row.replace('"needs_confirmation":true', '"needs_confirmation":false') : row, JSON.stringify([{ type, before: null, after: null, actor, rule: actor === "user" ? "user" : null }]),
+        ]);
+      await write(null, "created", "ai");
+      expect(await f.events(user)).toEqual([]);
+      await write(0, "user_confirmed", "user", true);
+      const events = await f.events(user);
+      expect(events).toHaveLength(1);
+      expect(events[0]).toMatchObject({ type: "decision_made", refs: { action_id: action, kind: "user_confirmed" } });
+    });
+  });
+
   describe("[실제 연결] 범위 version 변화(기억 · 멤버십 · 멤버 revision) → memory_changed", () => {
     it("범위 context_version이 오를 때마다 사건 1건 (같은 version은 한 번), 오르지 않는 갱신은 사건이 아니다", async () => {
       const user = await f.user();
@@ -454,6 +472,27 @@ export function coordinatorCoreTests(db: () => CoordinatorDb) {
       expect((await f.events(user)).map((e) => e.type).sort()).toEqual(["decision_made", "source_processed", "user_message"]);
       expect(Number((await f.one(`select public.coordinator_recover_missing(7200, 100) as n`)).n)).toBe(0);
       expect(await f.count(`select 1 from public.inbox_events where user_id = $1`, [user])).toBe(3);
+    });
+
+    it("승인 · 승인 철회 · 사용자 멈춤 · 범위 version 올림의 적재가 실패해도 그 쓰기들은 그대로 성공한다 (사건만 없다)", async () => {
+      const user = await f.user();
+      const action = await f.action(user);
+      const run = await f.run(user, action);
+      const context = await f.context(user);
+      const step = (await f.one(`select id from public.execution_steps where run_id = $1 and seq = 1`, [run])).id as string;
+      await q(`delete from public.inbox_events where user_id = $1`, [user]);
+      await q(`alter table public.inbox_events add constraint force_fail check (false) not valid`);
+      try {
+        const approval = await f.id(`insert into public.execution_approvals (user_id, step_id, hash, expires_at) values ($1, $2, 'h', now() + interval '1 hour') returning id`, [user, step]);
+        await q(`update public.execution_approvals set revoked_at = now() where id = $1`, [approval]);
+        expect((await f.one(`select public.stop_run($1, $2) as state`, [user, run])).state).toBe("stopped");
+        await q(`select public.bump_context_versions(array[$1::uuid])`, [context]);
+        expect((await f.one(`select context_version from public.work_contexts where id = $1`, [context])).context_version).toBe(2);
+        expect((await f.one(`select revoked_at is not null as revoked from public.execution_approvals where id = $1`, [approval])).revoked).toBe(true);
+      } finally {
+        await q(`alter table public.inbox_events drop constraint force_fail`);
+      }
+      expect(await f.events(user)).toEqual([]);
     });
 
     it("회수는 실패한 원문 · 기간 밖 · assistant 답 · 읽음 이벤트 · 처리 요약 없는 done(note)을 만들지 않는다", async () => {
