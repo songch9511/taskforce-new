@@ -58,7 +58,8 @@ final class MacAppDelegate: NSObject, NSApplicationDelegate {
         if let target = PushCenter.shared.take() { openNotification(target) }
 
         if EdgeShellFlag.isEnabled() {
-            let edge = EdgeShellController(launcher: model, chat: chatRuntime)
+            // Review 페이지(S4)는 `-TF_S4 YES`일 때만 연결된다 (기본 꺼짐: nil이면 지금 그대로)
+            let edge = EdgeShellController(launcher: model, chat: chatRuntime, review: AppRuntime.reviewDesk(now: model.now, scope: chatRuntime?.scope))
             self.edge = edge
             // All work의 Add task: 패널을 접고 기존 런처(제목 → 없으면 추가, 직접 추가의 정식 입구)를 연다
             edge.shell.onAddTask = { [weak edge, weak launcher] in

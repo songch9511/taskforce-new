@@ -214,10 +214,10 @@ struct EdgeRailView: View {
     private func item(_ entry: RailEntry, layout: EdgeRailLayout) -> some View {
         RailItem(
             kind: entry.kind, title: entry.title, state: entry.state, activity: entry.activity, expanded: layout.expanded,
-            highlighted: entry.id == shell.hoveredID || (shell.panelOpen && entry.id == shell.currentID),
+            highlighted: entry.id == shell.hoveredID || (shell.panelOpen && entry.id == shell.railCurrentID),
             notchShift: layout.notchShift, reduceMotion: shell.reduceMotion
         ) {
-            shell.open(itemID: entry.id)
+            shell.openRailEntry(entry)
         }
         .transition(.opacity.animation(TFMotion.ease(TFMotion.ringFade)))
     }

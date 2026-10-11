@@ -46,6 +46,28 @@ enum S3bFlag {
     }
 }
 
+/// 0.2.0 S4(Mac Review 페이지)를 켜는 플래그. **기본은 꺼짐** → Review 페이지 · ⌘1 · ← → · 1 · 2 연결이 만들어지지 않고 지금(S3b/B3/Edge) 그대로다:
+/// 실제 앱 생성 경로(`AppRuntime.reviewDesk`)가 `ReviewDesk`를 아예 만들지 않아 `EdgeShellModel.review == nil`이다. 확인 요청은 All work의 줄로만 보이고,
+/// 레일의 Needs-you 링은 All work에서 그 행을 표시하며, 단축키는 ⌘2 · ⌘3 · ⌘N · Esc뿐이다.
+/// (`TF_EDGE_SHELL`을 끄면 구 런처로 돌아가는 것이지 S4만 끄는 것이 아니다: 두 플래그는 다른 축이다.)
+/// - 앱: launch argument `-TF_S4 YES`만 (인자 영역. 저장된 defaults로는 켜지지 않는다). `TF_EDGE_SHELL`이 켜진 격리 Debug 실행에서만 뜻이 있다
+/// - 테스트: 전용 UserDefaults suite를 넘긴다
+/// Release 빌드는 늘 꺼짐이다. 실사용 켜기(출시 gate)는 그때 이 함수를 바꾼다.
+enum S4Flag {
+    static let key = "TF_S4"
+
+    static func isEnabled(_ defaults: UserDefaults? = nil) -> Bool {
+        #if DEBUG
+        if let defaults { return defaults.bool(forKey: key) }
+        let arguments = UserDefaults.standard.volatileDomain(forName: UserDefaults.argumentDomain)
+        guard let value = arguments[key] else { return false }
+        return (value as? Bool) ?? (value as? String).map { NSString(string: $0).boolValue } ?? false
+        #else
+        return false
+        #endif
+    }
+}
+
 /// 레일 · 패널이 읽는 지금의 일 (NowStore · RunStore에서 옮겨 담는다. 모델 테스트는 이 값을 직접 넣는다)
 struct EdgeWorkSnapshot: Equatable {
     var review: [ActionSummary] = []
@@ -138,15 +160,17 @@ enum EdgeScheduler {
 @MainActor
 @Observable
 final class EdgeShellModel {
-    /// 패널이 보이는 것 (한 번에 하나). Review · 일 상세는 다음 PR(S4)에서 더한다
+    /// 패널이 보이는 것 (한 번에 하나). `review`는 S4 gate가 켜졌을 때만 열린다 (`review != nil`). 일 상세는 다음 PR에서 더한다
     enum View: String, CaseIterable {
-        case allWork, chats
+        case allWork, chats, review
 
-        /// 패널 머리 제목. All work 화면의 머리는 "Your work"다 (디자인 WorkPage · WorkList 견본). 레일 칸 이름은 그대로 All work
+        /// 패널 머리 제목. All work 화면의 머리는 "Your work"다 (디자인 WorkPage · WorkList 견본). 레일 칸 이름은 그대로 All work.
+        /// Review의 머리는 그 결정의 항목 이름이다 (디자인 PanelHeader "Launch timing"): 이 값은 항목이 없을 때(빈 · 읽는 중 · 오프라인)의 머리다
         var title: String {
             switch self {
             case .allWork: "Your work"
             case .chats: "Chats"
+            case .review: "Review"
             }
         }
     }
@@ -211,6 +235,10 @@ final class EdgeShellModel {
     @ObservationIgnored var onChatEscape: () -> Bool = { false }
     /// 실제 범위(프로젝트) 멤버십 (S3b). 없으면 모든 할 일이 Ungrouped (범위를 읽지 않는다)
     let contexts: WorkContextStore?
+    /// Review(S4)의 답을 보내는 곳. **없으면 S4 gate가 꺼진 것이다**: Review 페이지 · 단축키 연결이 없다 (`S4Flag`)
+    let review: ReviewDesk?
+    /// Review 페이지가 보이는 결정의 stable action id. 몇 번째인지(index)가 아니라 id로 가리킨다: 큐가 바뀌어도 키 · 클릭은 이 id의 항목에만 간다
+    private(set) var reviewID: UUID?
 
     @ObservationIgnored private let schedule: EdgeSchedule
     @ObservationIgnored private let clock: () -> Date
@@ -228,9 +256,10 @@ final class EdgeShellModel {
     init(
         reduceMotion: Bool = false, schedule: @escaping EdgeSchedule = EdgeScheduler.live, clock: @escaping () -> Date = Date.init,
         calendar: @escaping () -> Calendar = { Calendar.current }, pinStore: WorkPinStore = WorkPinStore(defaults: nil),
-        contexts: WorkContextStore? = nil
+        contexts: WorkContextStore? = nil, review: ReviewDesk? = nil
     ) {
         self.contexts = contexts
+        self.review = review
         self.reduceMotion = reduceMotion
         self.schedule = schedule
         self.clock = clock
@@ -303,7 +332,7 @@ final class EdgeShellModel {
 
     // MARK: 패널
 
-    /// ⌥ Space: 열려 있으면 접고, 아니면 마지막에 본 것을 연다 (Review가 생기면 S4에서 newest Review 먼저)
+    /// ⌥ Space: 열려 있으면 접고, 아니면 마지막에 본 것을 연다. (Review는 마지막에 본 화면일 때만 열린다: ⌥ Space는 어떤 결정도 열지 않는다. ⌘1 · Needs-you 링이 연다)
     func togglePanel() {
         if panelOpen {
             dismiss()
@@ -313,6 +342,8 @@ final class EdgeShellModel {
     }
 
     func openPanel(_ view: View) {
+        // Review를 떠나면 그 결정에 대한 안내는 거둔다 (돌아오면 지금 상태가 말한다)
+        if view != .review { review?.clearNotice() }
         self.view = view
         panelOpen = true
         menuOpen = false
@@ -346,6 +377,63 @@ final class EdgeShellModel {
             workFilter = WorkFilter()
         }
         openPanel(.allWork)
+    }
+
+    // MARK: Review (S4)
+
+    /// Review 큐: 서버 순서 그대로 (`work.review`는 서버가 받았다고 답한 답을 이미 뺀 것이다, `NowStore.sections`)
+    var reviewQueue: ReviewQueue { ReviewQueue(work.review) }
+
+    /// 지금 Review 페이지가 보이는 결정. 보던 id가 큐에 없으면 nil
+    var shownReview: ActionSummary? { reviewID.flatMap { reviewQueue.item($0) } }
+
+    /// 본문에 무엇을 보일지: 받은 목록이 없으면 "결정이 없다"고 말하지 않는다
+    var reviewScreen: ReviewScreen { ReviewScreen.of(load: work.load, hasDecision: shownReview != nil) }
+
+    /// 레일에서 "지금 보는 일"로 표시할 id: Review 페이지가 보이면 그 결정, 아니면 All work에서 연 일
+    var railCurrentID: UUID? { view == .review ? reviewID : currentID }
+
+    /// 레일의 일을 누름. S4가 켜져 있고 Needs-you 링이면 그 Review 항목 (그 밖의 링은 그 일, 기존 동작 그대로)
+    func openRailEntry(_ entry: RailEntry) {
+        if review != nil, entry.kind == .needsYou {
+            openReview(itemID: entry.id)
+        } else {
+            open(itemID: entry.id)
+        }
+    }
+
+    /// 그 Review 항목을 연다 (Needs-you 링 · 단계 점). 큐에 없으면(그사이 처리됨) 가장 새 항목. 열기는 어떤 답도 아니다
+    func openReview(itemID: UUID) {
+        guard review != nil else { return }
+        reviewID = reviewQueue.contains(itemID) ? itemID : reviewQueue.newest?.id
+        openPanel(.review)
+    }
+
+    /// ⌘1: 가장 새 Review 항목 (없으면 "No decisions waiting")
+    func openNewestReview() {
+        guard review != nil else { return }
+        reviewID = reviewQueue.newest?.id
+        openPanel(.review)
+    }
+
+    /// ← →: 큐에서 한 칸 (끝에서 돌지 않는다). 항목은 id로 옮긴다
+    func stepReview(_ offset: Int) {
+        guard review != nil, view == .review, let id = reviewID, let next = reviewQueue.neighbor(of: id, offset: offset) else { return }
+        reviewID = next
+    }
+
+    /// 목록이 바뀐 뒤 보던 결정을 맞춘다: 보던 id가 그대로 있으면 순서가 바뀌어도 그 항목, 빠졌으면 그 뒤를 이은 항목(같은 index의 다른 항목이 아니라), 보던 것이 없으면 가장 새 항목
+    private func reconcileReview(previous: [UUID]) {
+        guard review != nil else { return }
+        reviewID = reviewQueue.resolving(reviewID, previous: previous)
+    }
+
+    /// 사용자가 고른 답 하나 (클릭 · 1/2 키). `id`는 사용자가 본 항목의 id다: 큐가 바뀌었어도 그 항목에만 가고, 이제 큐에 없으면 아무것도 보내지 않는다.
+    /// 오프라인이거나 Review가 보이지 않으면 보내지 않는다 (나중에 보내려고 모아 두지 않는다)
+    @discardableResult
+    func answer(_ answer: ReviewAnswer, for id: UUID) -> Task<ReviewWriteResult, Never>? {
+        guard let review, panelOpen, view == .review, reviewScreen.canAnswer, reviewQueue.contains(id) else { return nil }
+        return Task { await review.answer(answer, for: id) }
     }
 
     /// Esc: 안쪽 것(열린 필터 카드 · Chats의 대화 목록)을 먼저 닫고, 그다음 패널을 접는다 (디자인 Focus and keys)
@@ -427,6 +515,7 @@ final class EdgeShellModel {
         filtersOpen = false
         currentID = nil
         hoveredID = nil
+        reviewID = nil
         pins = account.map { pinStore.load(account: $0) } ?? WorkPins()
     }
 
@@ -435,6 +524,7 @@ final class EdgeShellModel {
     /// 목록 · run이 바뀔 때마다. 레일의 칸은 남아 있는 일의 순서를 지킨다 (`RailOrdering`)
     func update(_ work: EdgeWorkSnapshot) {
         let now = clock()
+        let previousReview = self.work.review.map(\.id)
         let wasOnRail = Set(slots.filter { $0.kind != .done }.map(\.id))
         let doneIDs = Set(work.doneToday.map(\.id))
         let liveIDs = Set(work.review.map(\.id)).union(work.working)
@@ -443,6 +533,7 @@ final class EdgeShellModel {
             recentlyDone[id] = now
         }
         self.work = work
+        reconcileReview(previous: previousReview)
         refreshSlots(at: now)
     }
 
