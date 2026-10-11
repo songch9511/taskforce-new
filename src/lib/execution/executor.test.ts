@@ -8,12 +8,12 @@ import type { CompleteJson } from "@/lib/pipeline/extract";
 
 import { advance, definitiveFailure } from "./executor";
 import { ExecutionInputError } from "./material";
-import type { ExecutionStore, StepRow } from "./types";
+import { RUN_GOALS, STEP_KINDS, type ExecutionStore, type RunRow, type StepRow } from "./types";
 
 // 실행기의 순서 · 오류 처리 (가짜 store). 실제 SQL 함수와의 흐름은 tests/db/execution-executor.test.ts가 본다.
 
 const REQUEST = "비밀-요청-글 견적 회신 메일 초안 써 줘";
-const RUN = { id: "r1", user_id: "u1", action_id: "a1", state: "running" as const, request: REQUEST };
+const RUN = { id: "r1", user_id: "u1", action_id: "a1", goal: "draft" as const, state: "running" as const, request: REQUEST };
 const DRAFT_STEP: StepRow = { id: "s2", run_id: "r1", seq: 2, kind: "draft", state: "prepared", version: 3 };
 const ATTEMPTS: LlmAttempt[] = [{ generationId: "gen-1", model: "m", usage: { prompt_tokens: 1, completion_tokens: 1, cost: 0.0001 } }];
 
@@ -71,6 +71,16 @@ const draftReply = (async (request) => ({
   model: "m",
   attempts: ATTEMPTS,
 })) as CompleteJson;
+
+/** 모델 호출 횟수를 세는 draftReply */
+function countingReply() {
+  const calls = { n: 0 };
+  const complete = (async (request) => {
+    calls.n += 1;
+    return draftReply(request);
+  }) as CompleteJson;
+  return { complete, calls };
+}
 
 const failWith = (error: Error) => (async () => {
   throw error;
@@ -272,6 +282,33 @@ describe("advance", () => {
     expect(store.prepareStep).not.toHaveBeenCalled();
     expect(store.beginCall).not.toHaveBeenCalled();
   });
+
+  // 0.2.0 C1: DB가 받는 새 goal · 단계 종류는 이 실행기가 아직 실행하지 않는다. 어느 쪽이든 준비 · begin_call · 모델 호출 · run 닫기 0
+  it.each(RUN_GOALS.filter((goal) => goal !== "draft"))("goal %s인 run은 단계를 읽기 전에 멈춘다 (준비 · begin_call · 모델 · run 닫기 0)", async (goal) => {
+    const { complete, calls } = countingReply();
+    const { store } = fakeStore({ loadRun: vi.fn(async () => ({ ...RUN, goal }) satisfies RunRow), nextOpenStep: vi.fn(async () => null) });
+    expect(await advance({ store, complete, owner: "fn-1" }, "r1")).toEqual({ status: "unsupported", reason: "goal", step: null });
+    expect(store.nextOpenStep).not.toHaveBeenCalled();
+    for (const touched of [store.prepareStep, store.beginCall, store.appendStep, store.completeInternalStep, store.settleFailed, store.markUnknown, store.finishRun, store.recordUsage]) {
+      expect(touched).not.toHaveBeenCalled();
+    }
+    expect(calls.n).toBe(0);
+  });
+
+  it.each(STEP_KINDS.filter((kind) => !["plan", "draft", "external"].includes(kind)))(
+    "단계 종류 %s는 pending이어도 prepared여도 준비 · begin_call 없이 멈춘다 (plan이 아니면 초안으로 보는 갈래로 새지 않는다)",
+    async (kind) => {
+      for (const state of ["pending", "prepared"] as const) {
+        const { complete, calls } = countingReply();
+        const { store } = fakeStore({ nextOpenStep: vi.fn(async () => ({ ...DRAFT_STEP, kind, state })) });
+        expect(await advance({ store, complete, owner: "fn-1" }, "r1")).toEqual({ status: "unsupported", reason: "kind", step: "s2" });
+        for (const touched of [store.prepareStep, store.beginCall, store.appendStep, store.completeInternalStep, store.settleFailed, store.markUnknown, store.finishRun, store.recordUsage]) {
+          expect(touched).not.toHaveBeenCalled();
+        }
+        expect(calls.n).toBe(0);
+      }
+    },
+  );
 
   it("로그에는 id · 상태만 남긴다 (요청 글 없음)", async () => {
     await advance({ store: fakeStore().store, complete: draftReply, owner: "fn-1" }, "r1");

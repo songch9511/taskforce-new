@@ -20,7 +20,7 @@ import {
 import { withDeadlockRetry } from "./deadlock";
 import { materialFromRows, type ActionRow, type ConnectionRow, type EvidenceRow, type SourceRow } from "./material";
 import { supabaseReceiptStore } from "./receipt-store";
-import { OPEN_RUN_STATES, RunActionNotFoundError, type ExecutionStore, type StepRow } from "./types";
+import { EXECUTABLE_GOALS, OPEN_RUN_STATES, RunActionNotFoundError, type ExecutionStore, type StepRow } from "./types";
 
 // 실행기의 DB 쪽 (service role). 판단(스위치 · 허용 목록 · 크레딧 · CAS)은 SQL 함수에만 있고(20261021000000 · 20261022000000), 여기는 RPC와 읽기뿐이다.
 // 모든 RPC는 교착(40P01)이면 다시 부른다(deadlock.ts): stop · begin_call · complete_internal_step · 예약 해제가 같은 run · 계정을 잠근다.
@@ -40,7 +40,7 @@ export function supabaseExecutionStore(admin: SupabaseClient): ExecutionStore {
     ...supabaseReceiptStore(admin),
 
     async loadRun(runId) {
-      const { data } = await admin.from("execution_runs").select("id, user_id, action_id, state, request").eq("id", runId).maybeSingle().throwOnError();
+      const { data } = await admin.from("execution_runs").select("id, user_id, action_id, goal, state, request").eq("id", runId).maybeSingle().throwOnError();
       return data;
     },
 
@@ -181,8 +181,9 @@ export function supabaseExecutionStore(admin: SupabaseClient): ExecutionStore {
 
     async wakeableRuns(limit) {
       // 막히지 않은 run 먼저(오래된 순), 막힌 run(hold_reason)은 뒤에 새것부터: 운영자만 풀 수 있는 오래된 hold(actor · blocked)가 쌓여도
-      // 지급으로 풀린 새 run(credit)이 그 뒤에 굶지 않게
-      const open = () => admin.from("execution_runs").select("id, hold_reason").in("state", [...OPEN_RUN_STATES]);
+      // 지급으로 풀린 새 run(credit)이 그 뒤에 굶지 않게.
+      // 실행기가 아직 실행하지 않는 goal(types.ts EXECUTABLE_GOALS 밖)의 run은 깨우지 않는다: 깨워도 advance가 아무것도 하지 않고, 오래된 순으로 앞자리만 차지한다
+      const open = () => admin.from("execution_runs").select("id, hold_reason").in("state", [...OPEN_RUN_STATES]).in("goal", [...EXECUTABLE_GOALS]);
       const [{ data: free }, { data: held }] = await Promise.all([
         open().is("hold_reason", null).order("created_at").limit(limit * 2).throwOnError(),
         open().not("hold_reason", "is", null).order("created_at", { ascending: false }).limit(limit * 2).throwOnError(),

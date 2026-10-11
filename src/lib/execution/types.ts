@@ -12,8 +12,19 @@ export type RunState = OpenRunState | "done" | "failed" | "stopped";
 export type StepState = "pending" | "prepared" | "calling" | "called" | "unknown_outcome" | "failed" | "skipped";
 export type RunOutcome = "draft_ready" | "needs_connection" | "needs_input";
 
-export type RunRow = { id: string; user_id: string; action_id: string; state: RunState; request: string };
-export type StepRow = { id: string; run_id: string; seq: number; kind: "plan" | "draft" | "external"; state: StepState; version: number };
+// DB가 받는 goal · 단계 종류 (20261109000000_execution_additive_contract의 CHECK, 런타임 계약 4장). DB가 받는다고 실행하는 것은 아니다:
+// 실행기가 실제로 하는 것은 아래 EXECUTABLE_*뿐이고, 나머지는 읽기만 하고 부르지 않는다(fail closed). 새 goal · 종류를 실행하는 단계가 이 두 목록을 넓힌다.
+export const RUN_GOALS = ["draft", "agent", "send", "followup"] as const;
+export type RunGoal = (typeof RUN_GOALS)[number];
+export const STEP_KINDS = ["plan", "draft", "external", "agent_dispatch", "agent_message", "agent_cancel", "review", "check", "send", "observe"] as const;
+export type StepKind = (typeof STEP_KINDS)[number];
+/** 실행기가 단계를 돌리는 goal. 다른 goal의 run은 깨우지도(sweep) 돌리지도(advance) 않는다 */
+export const EXECUTABLE_GOALS = ["draft"] as const satisfies readonly RunGoal[];
+/** 실행기가 준비하고 부르는 단계 종류(내장 계획 · 초안). external은 준비도 부르기도 하지 않고(발송은 U6a), 나머지는 아직 실행하는 코드가 없다 */
+export const EXECUTABLE_STEP_KINDS = ["plan", "draft"] as const satisfies readonly StepKind[];
+
+export type RunRow = { id: string; user_id: string; action_id: string; goal: RunGoal; state: RunState; request: string };
+export type StepRow = { id: string; run_id: string; seq: number; kind: StepKind; state: StepState; version: number };
 
 /** begin_call 결과. ok면 검증한 그대로의 내용 (실행기는 이것만 쓴다) */
 export type BeginCallResult = { gate: string; marker?: string; args?: Record<string, unknown> };

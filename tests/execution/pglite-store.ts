@@ -1,7 +1,7 @@
 import type { PGlite } from "@electric-sql/pglite";
 
 import { materialFromRows, type ActionRow, type ConnectionRow, type EvidenceRow, type SourceRow } from "@/lib/execution/material";
-import type { BeginCallResult, DraftHistoryRow, ExecutionStore, RunRow, StepRow } from "@/lib/execution/types";
+import { EXECUTABLE_GOALS, type BeginCallResult, type DraftHistoryRow, type ExecutionStore, type RunRow, type StepRow } from "@/lib/execution/types";
 
 import { pgliteReceiptStore } from "./pglite-receipt-store";
 
@@ -17,7 +17,7 @@ export function pgliteExecutionStore(db: PGlite, options: { userName?: string } 
 
   return {
     ...pgliteReceiptStore(db),
-    loadRun: async (runId) => (await one<RunRow>("select id, user_id, action_id, state, request from public.execution_runs where id = $1", [runId])) ?? null,
+    loadRun: async (runId) => (await one<RunRow>("select id, user_id, action_id, goal, state, request from public.execution_runs where id = $1", [runId])) ?? null,
     nextOpenStep: async (runId) =>
       (await one<StepRow>(
         "select id, run_id, seq, kind, state, version from public.execution_steps where run_id = $1 and state not in ('called', 'skipped') order by seq limit 1",
@@ -87,11 +87,12 @@ export function pgliteExecutionStore(db: PGlite, options: { userName?: string } 
       (
         await db.query<{ id: string; held: boolean }>(
           `select r.id, r.hold_reason is not null as held from public.execution_runs r where r.state in ${OPEN_RUN_STATES}
+             and r.goal = any($2::text[])
              and not exists (select 1 from public.execution_steps s where s.run_id = r.id and s.state = 'calling')
            order by r.hold_reason is not null,
                     case when r.hold_reason is null then extract(epoch from r.created_at) else -extract(epoch from r.created_at) end
            limit $1`,
-          [limit],
+          [limit, [...EXECUTABLE_GOALS]],
         )
       ).rows,
   };

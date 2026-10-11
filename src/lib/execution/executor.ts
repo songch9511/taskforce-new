@@ -7,13 +7,23 @@ import { draftEffect } from "./effects/draft";
 import { planEffect } from "./effects/plan";
 import { ExecutionInputError } from "./material";
 import { ReceiptWriteError, writeDraftReceipt } from "./receipt";
-import { OPEN_RUN_STATES, type EffectInput, type EffectResult, type ExecutionStore, type RunRow, type StepRow } from "./types";
+import {
+  EXECUTABLE_GOALS,
+  EXECUTABLE_STEP_KINDS,
+  OPEN_RUN_STATES,
+  type EffectInput,
+  type EffectResult,
+  type ExecutionStore,
+  type RunRow,
+  type StepRow,
+} from "./types";
 
 // 실행기 (B2, docs/EXECUTION.md 2 · 3 · 13장). advance(runId) 한 번 = 단계 하나. 모든 상태는 DB에 있어 함수가 어디서 죽어도 DB만 보고 이어 간다.
 // 흐름은 A29 드라이버(tests/execution/driver.ts)와 같다: 다음 단계 준비(prepare_step) → begin_call(스위치 · 허용 목록 · 크레딧 예약 · lease)
 // → 효과(계획 · 초안의 AI 호출) → complete_internal_step(called + 산출물 + 원가 + 정산, 한 트랜잭션).
 // 모든 입구(route의 after() · 자기 호출 · sweep)가 이 함수 하나를 지나고, 부르기 전 판단은 begin_call 하나가 한다.
 // 외부 효과는 없다: 외부 단계(kind external)는 부르지 않고 그대로 둔다 (발송은 U6a).
+// DB가 받는 새 goal · 단계 종류(types.ts RUN_GOALS · STEP_KINDS, 0.2.0 C1)는 EXECUTABLE_*에 없으면 준비도 부르기도 하지 않는다(unsupported).
 // 원가: 받은 시도는 어느 길로 끝나든 남긴다 (끝내면 complete_internal_step, 그 밖은 record_usage를 단계를 내보내기 전에).
 // receipt: 초안 단계를 끝내면 receipt(원문 · Claim · 근거 · 이벤트)를 Action에 붙인다(receipt.ts, EXECUTION 9장). Action은 바꾸지 않는다.
 // 로그에는 id · 상태 · gate만 남긴다 (요청 · 원문 · 초안 · 모델의 이유는 남기지 않는다).
@@ -46,7 +56,12 @@ export type AdvanceResult =
   /** 응답을 못 받았다: 내부 효과라 다시 준비했다 (2번을 넘으면 SQL이 실패로 끝낸다). sweep이 다시 깨운다 */
   | { status: "retry"; step: string }
   /** 그 사이 lease를 잃었다 (lease 만료 뒤 다른 함수가 다시 준비함). 결과를 쓰지 않았다 */
-  | { status: "lost"; step: string };
+  | { status: "lost"; step: string }
+  /**
+   * 이 실행기가 아직 실행하지 않는 goal · 단계 종류다 (types.ts EXECUTABLE_*). 아무것도 바꾸지도 부르지도 않았다:
+   * 준비 · begin_call · 모델 · 외부 호출 · 크레딧 예약 · run 닫기 모두 0. step은 goal이 안 맞으면 null
+   */
+  | { status: "unsupported"; reason: "goal" | "kind"; step: string | null };
 
 /** 받은 뒤의 쓰기(다음 단계 붙이기 · 결과 쓰기)를 해 보는 횟수 (EXECUTION 4장: 다시 쓰고, 그래도 안 되면 오류) */
 const WRITE_TRIES = 3;
@@ -55,6 +70,11 @@ export async function advance(deps: ExecutorDeps, runId: string): Promise<Advanc
   const { store } = deps;
   const run = await store.loadRun(runId);
   if (!run || !(OPEN_RUN_STATES as readonly string[]).includes(run.state)) return { status: "closed" };
+  // 새 goal의 run은 단계를 읽기 전에 멈춘다: 남은 단계가 없다고 run을 닫지도(finishRun) 않는다
+  if (!(EXECUTABLE_GOALS as readonly string[]).includes(run.goal)) {
+    log({ event: "execution_step", run: run.id, status: "unsupported", reason: "goal", goal: run.goal });
+    return { status: "unsupported", reason: "goal", step: null };
+  }
 
   let step = await store.nextOpenStep(runId);
   if (!step) {
@@ -63,6 +83,11 @@ export async function advance(deps: ExecutorDeps, runId: string): Promise<Advanc
   }
   // 외부 단계는 준비도 부르기도 하지 않는다 (발송은 U6a)
   if (step.kind === "external") return { status: "busy", step: step.id };
+  // 구현되지 않은 단계 종류는 준비 · begin_call 전에 멈춘다 (아래 runEffect는 plan이 아니면 초안으로 보므로 새 종류가 모델 호출로 새지 않게)
+  if (!(EXECUTABLE_STEP_KINDS as readonly string[]).includes(step.kind)) {
+    log({ event: "execution_step", run: run.id, step: step.id, kind: step.kind, status: "unsupported", reason: "kind" });
+    return { status: "unsupported", reason: "kind", step: step.id };
+  }
   if (step.state === "pending") {
     if (!(await store.prepareStep(step.id, step.version))) return { status: "busy", step: step.id };
     // prepare_step은 CAS로 version을 하나 올린다. 그 사이 다른 함수가 바꿨으면 begin_call이 stale로 막는다

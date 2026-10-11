@@ -147,13 +147,17 @@ describe("supabaseExecutionStore 읽기", () => {
     expect(await supabaseExecutionStore(client).userName("u1")).toBe("김도윤");
   });
 
-  it("wakeableRuns: 끝나지 않은 run 중 부르는 중인 단계가 없는 것만, 막히지 않은 run 먼저(오래된 순) · 막힌 run은 새것부터, 상한까지", async () => {
+  it("wakeableRuns: 끝나지 않은 draft run 중 부르는 중인 단계가 없는 것만, 막히지 않은 run 먼저(오래된 순) · 막힌 run은 새것부터, 상한까지. 실행기가 아직 실행하지 않는 goal의 run은 깨우지 않는다", async () => {
     const { client, queries } = fakeAdmin({
       execution_runs: [
-        { id: "r1", state: "running", hold_reason: null },
-        { id: "r2", state: "queued", hold_reason: null },
-        { id: "r3", state: "waiting_approval", hold_reason: "credit" },
-        { id: "r4", state: "done", hold_reason: null },
+        { id: "r1", state: "running", hold_reason: null, goal: "draft" },
+        { id: "r2", state: "queued", hold_reason: null, goal: "draft" },
+        { id: "r3", state: "waiting_approval", hold_reason: "credit", goal: "draft" },
+        { id: "r4", state: "done", hold_reason: null, goal: "draft" },
+        // 0.2.0 C1: DB가 받는 새 goal의 run (서버가 직접 넣은 행). 깨워도 advance가 아무것도 하지 않아 앞자리만 차지한다
+        { id: "r5", state: "running", hold_reason: null, goal: "agent" },
+        { id: "r6", state: "queued", hold_reason: "resource", goal: "send" },
+        { id: "r7", state: "queued", hold_reason: null, goal: "followup" },
       ],
       execution_steps: [{ run_id: "r2", state: "calling" }],
     });
@@ -166,6 +170,7 @@ describe("supabaseExecutionStore 읽기", () => {
     const runQueries = queries.filter((q) => q.table === "execution_runs").slice(0, 2);
     expect(runQueries[0].ops).toContainEqual(["order", ["created_at"]]);
     expect(runQueries[1].ops).toContainEqual(["order", ["created_at", { ascending: false }]]);
+    for (const query of runQueries) expect(query.ops).toContainEqual(["in", ["goal", ["draft"]]]);
   });
 
   it("draftHistory: 끝낸 · 실패한 초안 단계의 지시와 산출물 제목", async () => {
