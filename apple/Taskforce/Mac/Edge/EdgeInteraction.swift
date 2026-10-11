@@ -16,7 +16,15 @@ enum EdgeInteraction {
         return arguments[index + 1]
     }
 
+    /// `-TFEdgeInteractContexts <로그 파일>`: 범위 멤버십 흐름 (S3b)을 같은 방식으로
+    static var contextsLogPath: String? {
+        let arguments = ProcessInfo.processInfo.arguments
+        guard let index = arguments.firstIndex(of: "-TFEdgeInteractContexts"), arguments.indices.contains(index + 1) else { return nil }
+        return arguments[index + 1]
+    }
+
     static func runIfRequested(_ edge: EdgeShellController) {
+        runContextsIfRequested(edge)
         guard let logPath, SampleData.isEnabled, let runtime = edge.chat else { return }
         Task { @MainActor in
             var lines: [String] = ["합성 조작(앱 프로세스 안 NSApp.sendEvent) — OS 수준 포인터 · 키보드 · VoiceOver 아님"]
@@ -91,6 +99,96 @@ enum EdgeInteraction {
             sendKey("\u{1B}", code: kVK_Escape, to: panelWindow)
             await settle(0.5)
             check("Esc collapses the panel", !edge.shell.panelOpen, "panelOpen=\(edge.shell.panelOpen)")
+
+            try? lines.joined(separator: "\n").appending("\n").write(toFile: logPath, atomically: true, encoding: .utf8)
+            NSApplication.shared.terminate(nil)
+        }
+    }
+
+    /// 범위 멤버십 합성 조작 (S3b): 줄 · 줄 아래 ProjectLink를 펼치기 · Confirm · Undo · Dismiss · 충돌. 팝업(시스템 메뉴)은 합성 이벤트로 열 수 없어 모델 테스트로만 확인한다.
+    /// 한글 제목은 글자 인식이 어려워 이 실행에서만 영문 제목으로 바꿔 보인다 (제목은 화면 글자일 뿐, 멤버십은 id로 따른다)
+    private static func runContextsIfRequested(_ edge: EdgeShellController) {
+        guard let logPath = contextsLogPath, SampleData.isEnabled, let runtime = edge.chat,
+              let store = runtime.contexts, let gateway = runtime.sampleContextGateway else { return }
+        Task { @MainActor in
+            var lines: [String] = ["합성 조작(앱 프로세스 안 NSApp.sendEvent) — OS 수준 포인터 · 키보드 · VoiceOver 아님. 팝업(시스템 메뉴)은 눌러 보지 못함"]
+            func settle(_ seconds: Double = 0.6) async { try? await Task.sleep(for: .seconds(seconds)) }
+            func check(_ name: String, _ ok: Bool, _ seen: String) { lines.append("\(ok ? "PASS" : "FAIL") \(name) — \(seen)") }
+            func id(_ n: Int) -> UUID { SampleData.id(n) }
+            let titles: [UUID: String] = [id(10): "Customer demo prep", id(14): "Deploy demo environment", id(21): "Review contract changes"]
+            edge.workOverride = { work in
+                var work = work
+                work.review = []
+                work.doneToday = []
+                work.open = work.open.filter { titles[$0.id] != nil }.map {
+                    ActionSummary(
+                        id: $0.id, title: titles[$0.id] ?? $0.title, owner: $0.owner, status: $0.status, dueDate: $0.dueDate, counterpart: $0.counterpart,
+                        needsConfirmation: false, confirmReasons: [], startedAt: $0.startedAt, lastActivityAt: $0.lastActivityAt
+                    )
+                }
+                return work
+            }
+            let panelWindow = edge.panel.panel
+            await settle(1.5)
+            edge.shell.togglePanel()
+            await store.refresh()
+            await settle(0.8)
+            @MainActor func names(_ n: Int) -> String { store.index.memberships(of: id(n)).links.map { "\($0.project.name):\($0.origin)" }.joined(separator: ",") }
+
+            // 1) 후보 행을 눌러 열고 ProjectLink(Not confirmed)를 펼친다
+            await click(text: "Deploy demo environment", in: panelWindow)
+            await settle(0.8)
+            check("click a work row opens it", edge.shell.currentID == id(14), "currentID=\(String(describing: edge.shell.currentID)) | \(lastClick)")
+            check("candidate is not grouped as a confirmed member", names(14).isEmpty && store.index.memberships(of: id(14)).candidates.count == 1, "links=[\(names(14))] candidates=\(store.index.memberships(of: id(14)).candidates.map(\.project.name))")
+            capture(edge, "contexts-1-row-opened")
+            await click(text: "Not confirmed", in: panelWindow)
+            await settle(0.8)
+            capture(edge, "contexts-2-candidate-open")
+
+            // 2) Confirm → 서버 200 뒤에만 Set by you, Undo가 보인다
+            await click(text: "Confirm", in: panelWindow)
+            await settle(1.2)
+            check("click Confirm links it as Set by you after the 200", names(14) == "Shape launch:user" && store.canUndo(id(14)), "links=[\(names(14))] undo=\(store.canUndo(id(14))) | \(lastClick)")
+            capture(edge, "contexts-3-confirmed-undo")
+
+            // 3) Undo → 후보를 확인한 것을 되돌리면 후보가 돌아오지 않고 그 범위에서 빠진다
+            await click(text: "Undo", in: panelWindow)
+            await settle(1.2)
+            let memberships = store.index.memberships(of: id(14))
+            check("click Undo removes it again and the candidate does not return", memberships.links.isEmpty && memberships.candidates.isEmpty && !store.canUndo(id(14)), "links=[\(names(14))] candidates=\(memberships.candidates.count) undo=\(store.canUndo(id(14))) | \(lastClick)")
+            capture(edge, "contexts-4-undone")
+
+            // 4) 충돌: 다른 기기가 그 범위를 먼저 바꾼 뒤 Dismiss/Confirm이 아닌 "Set by you" 줄의 안내 (후보가 사라진 줄 대신 10번 줄로)
+            await gateway.setScenario(.full)
+            runtime.scope.accountLeft()
+            edge.shell.openAllWork()
+            await store.refresh()
+            await settle(0.6)
+            await click(text: "Deploy demo environment", in: panelWindow)
+            await settle(0.8)
+            await click(text: "Not confirmed", in: panelWindow)
+            await settle(0.8)
+            await gateway.otherDevice(.add, context: SampleContextIDs.shape, action: id(21))
+            await click(text: "Confirm", in: panelWindow)
+            await settle(1.2)
+            check("click Confirm after another device changed the project is a conflict, refreshed, never success", store.feedback(for: id(14)) == .conflict && names(14).isEmpty && !store.canUndo(id(14)), "feedback=\(String(describing: store.feedback(for: id(14)))) links=[\(names(14))] other=[\(names(21))] | \(lastClick)")
+            capture(edge, "contexts-5-conflict")
+
+            // 5) Dismiss (새 시작): 후보를 거절하면 뺀 표시만 남고 Undo는 없다
+            await gateway.setScenario(.full)
+            runtime.scope.accountLeft()
+            edge.shell.openAllWork()
+            await store.refresh()
+            await settle(0.6)
+            await click(text: "Deploy demo environment", in: panelWindow)
+            await settle(0.8)
+            await click(text: "Not confirmed", in: panelWindow)
+            await settle(0.8)
+            await click(text: "Dismiss", in: panelWindow)
+            await settle(1.2)
+            let dismissed = store.index.memberships(of: id(14))
+            check("click Dismiss drops the candidate with no Undo", dismissed.candidates.isEmpty && dismissed.links.isEmpty && !store.canUndo(id(14)), "candidates=\(dismissed.candidates.count) undo=\(store.canUndo(id(14))) | \(lastClick)")
+            capture(edge, "contexts-6-dismissed")
 
             try? lines.joined(separator: "\n").appending("\n").write(toFile: logPath, atomically: true, encoding: .utf8)
             NSApplication.shared.terminate(nil)

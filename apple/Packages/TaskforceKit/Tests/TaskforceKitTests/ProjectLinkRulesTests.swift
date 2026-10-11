@@ -132,4 +132,31 @@ struct ProjectLinkRulesTests {
         let linked = links(.known(links: [WorkLink(project: shape, origin: .auto)], candidates: [])).first!
         #expect(ProjectChange.confirming(linked) == nil && ProjectChange.dismissing(linked) == nil)
     }
+
+    /// 안내는 사용자가 동작한 줄에 놓인다 (후보를 확인하다 실패하면 후보 줄에)
+    @Test func aNoteSitsOnTheRowTheUserActedOn() {
+        let memberships = WorkMemberships.known(links: [], candidates: [WorkCandidate(project: shape, confidence: 0.5)])
+        let rows = ProjectLinkRules.links(
+            memberships: memberships, active: [shape], writesUnavailable: false, isBusy: false, undo: nil, message: "note", messageAnchor: .project(shape.id)
+        ) ?? []
+        #expect(rows.map(\.basis) == [.none, .candidate] && rows.map(\.message) == [nil, "note"])
+        // 범위 없음 줄에서 시작했거나 줄을 못 찾으면 첫 줄
+        let fallback = ProjectLinkRules.links(
+            memberships: memberships, active: [shape], writesUnavailable: false, isBusy: false, undo: nil, message: "note", messageAnchor: .unlinked
+        ) ?? []
+        #expect(fallback.map(\.message) == ["note", nil])
+    }
+
+    /// 대화 헤더의 ProjectLink도 같은 줄 모양이다 (명시적 선택만: Set by you · No clear link)
+    @Test func theChatHeaderUsesTheSameRowShape() {
+        let project = ChatProject(
+            contextID: shape.id, name: "Shape launch", basis: .user, reason: ChatCopy.projectReasonUser,
+            choices: [.init(contextID: nil, name: "Ungrouped"), .init(contextID: shape.id, name: "Shape launch")], canUndo: true, message: "m"
+        )
+        let content = project.content
+        #expect(content.basis == .user && content.meta == "Project · Set by you" && content.canUndo && content.message == "m")
+        #expect(content.choices.map(\.contextID) == [nil, shape.id] && content.contextID == shape.id)
+        let none = ChatProject(contextID: nil, name: "Ungrouped", basis: .none, reason: ChatCopy.projectReasonNone, choices: [], canUndo: false, message: nil)
+        #expect(none.content.basis == .none && none.content.meta == "Project · No clear link")
+    }
 }

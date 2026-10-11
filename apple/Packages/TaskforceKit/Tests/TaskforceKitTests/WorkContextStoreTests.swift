@@ -202,6 +202,17 @@ struct WorkContextStoreTests {
         #expect(store.index.memberships(of: a) == .none, "후보를 확인한 것을 Undo하면 후보가 돌아오지 않고 그 범위에서 빠진다")
     }
 
+    /// 후보를 확인하다 충돌하면 안내는 후보 줄에 놓인다 (범위 없음 줄이 아니라)
+    @Test func aConflictOnConfirmingACandidateIsShownOnTheCandidateRow() async {
+        let (store, server) = make()
+        server.seed(shape.id, a, origin: .inferred, confidence: 0.6)
+        await store.refresh()
+        server.otherDevice(.add, ctx: shape.id, action: b)
+        #expect(await store.add(a, to: shape.id) == .conflict)
+        let rows = store.projectLinks(for: a) ?? []
+        #expect(rows.map(\.basis) == [.none, .candidate] && rows.map(\.message) == [nil, WorkProjectCopy.conflict])
+    }
+
     /// 다른 기기가 원래 있던 B를 지웠어도 A 넣기 Undo는 A의 version만 조건이라 그 결정을 덮지 않는다
     @Test func undoDoesNotOverrideAnotherDevicesDecisionOnTheOtherContext() async {
         let (store, server) = make()

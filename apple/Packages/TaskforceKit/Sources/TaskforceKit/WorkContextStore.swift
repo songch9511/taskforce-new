@@ -44,7 +44,7 @@ public final class WorkContextStore {
 
         public var text: String {
             switch self {
-            case .conflict: APIError.server(status: 409, code: .conflict, message: "").userMessage
+            case .conflict: WorkProjectCopy.conflict
             case .unconfirmed: WorkProjectCopy.unconfirmed
             case .contextGone: WorkProjectCopy.contextGone
             case .workGone: WorkProjectCopy.workGone
@@ -85,6 +85,8 @@ public final class WorkContextStore {
     public private(set) var feedback: [UUID: Feedback] = [:]
     public private(set) var isOnline = true
     private var undo: [UUID: UndoPlan] = [:]
+    /// 안내를 놓을 줄: 사용자가 동작한 줄 (실패한 요청이 어느 줄에서 시작됐나)
+    private var feedbackAnchor: [UUID: ProjectLinkRules.UndoAnchor] = [:]
     /// busy를 잡은 쓰기의 번호 (할 일마다). 쓰기가 끝날 때 자기 것일 때만 풀어, 세션이 바뀐 뒤 새 요청의 busy를 옛 요청이 지우지 않게 한다
     private var writeOwner: [UUID: Int] = [:]
     private var writeCounter = 0
@@ -92,7 +94,7 @@ public final class WorkContextStore {
     @ObservationIgnored private let gateway: any ContextGateway
     @ObservationIgnored private let scope: AccountScope
     /// 읽기 순번: 읽기를 시작할 때 하나씩 올린다. **마지막에 시작한 읽기만** 반영한다 (늦게 끝난 옛 읽기가 새 상태를 되돌리지 않는다).
-    /// 쓰기 200을 반영할 때도 올려 그 전에 시작한 읽기를 버린다
+    /// 쓰기 200 뒤의 다시 읽기도 읽기라서, 쓰기 전에 시작한 읽기는 그것이 버린다
     @ObservationIgnored private var readSequence = 0
 
     public init(gateway: any ContextGateway, scope: AccountScope) {
@@ -114,6 +116,7 @@ public final class WorkContextStore {
         writeOwner = [:]
         feedback = [:]
         undo = [:]
+        feedbackAnchor = [:]
     }
 
     public func pathChanged(online: Bool) {
@@ -157,7 +160,8 @@ public final class WorkContextStore {
     public func projectLinks(for actionID: UUID) -> [ProjectLinkContent]? {
         ProjectLinkRules.links(
             memberships: index.memberships(of: actionID), active: activeProjects, writesUnavailable: writesUnavailable,
-            isBusy: busy.contains(actionID), undo: undo[actionID]?.anchor, message: feedback[actionID]?.text
+            isBusy: busy.contains(actionID), undo: undo[actionID]?.anchor, message: feedback[actionID]?.text,
+            messageAnchor: feedbackAnchor[actionID]
         )
     }
 
@@ -227,7 +231,7 @@ public final class WorkContextStore {
         guard fromContextID != toContextID,
               let from = contexts[fromContextID], from.isActive, let fromVersion = from.contextVersion,
               let to = contexts[toContextID], to.isActive, let toVersion = to.contextVersion else { return .ignored }
-        return await write(actionID, clearsUndo: true) { gateway in
+        return await write(actionID, anchor: .project(fromContextID), clearsUndo: true) { gateway in
             .moved(try await gateway.moveContextMember(
                 actionID: actionID, from: fromContextID, to: toContextID, expectedToVersion: toVersion, expectedFromVersion: fromVersion
             ))
@@ -236,7 +240,9 @@ public final class WorkContextStore {
 
     private func change(_ actionID: UUID, op: ContextMemberOp, context contextID: UUID) async -> ProjectWriteResult {
         guard let context = contexts[contextID], context.isActive, let version = context.contextVersion else { return .ignored }
-        return await write(actionID, clearsUndo: true) { gateway in
+        // 후보를 확인 · 거절하거나 범위에서 뺄 때는 그 범위의 줄에, 범위 없음 줄에서 넣을 때는 그 줄에 안내를 놓는다
+        let isOnItsRow = op == .remove || index.memberships(of: actionID).candidates.contains { $0.id == contextID }
+        return await write(actionID, anchor: isOnItsRow ? .project(contextID) : .unlinked, clearsUndo: true) { gateway in
             .changed(try await gateway.changeContextMember(contextID: contextID, op: op, actionID: actionID, expectedVersion: version))
         }
     }
@@ -245,7 +251,7 @@ public final class WorkContextStore {
     @discardableResult
     public func undoLast(_ actionID: UUID) async -> ProjectWriteResult {
         guard let plan = undo[actionID], !busy.contains(actionID) else { return .ignored }
-        return await write(actionID, clearsUndo: true, recordsUndo: false) { gateway in
+        return await write(actionID, anchor: plan.anchor, clearsUndo: true, recordsUndo: false) { gateway in
             switch plan.step {
             case .remove(let context, let version):
                 .changed(try await gateway.changeContextMember(contextID: context, op: .remove, actionID: actionID, expectedVersion: version))
@@ -265,7 +271,8 @@ public final class WorkContextStore {
     }
 
     private func write(
-        _ actionID: UUID, clearsUndo: Bool, recordsUndo: Bool = true, _ send: (any ContextGateway) async throws -> Response
+        _ actionID: UUID, anchor: ProjectLinkRules.UndoAnchor, clearsUndo: Bool, recordsUndo: Bool = true,
+        _ send: (any ContextGateway) async throws -> Response
     ) async -> ProjectWriteResult {
         guard let token = scope.token, !busy.contains(actionID), !writesUnavailable else { return .ignored }
         busy.insert(actionID)
@@ -273,6 +280,7 @@ public final class WorkContextStore {
         let owner = writeCounter
         writeOwner[actionID] = owner
         feedback[actionID] = nil
+        feedbackAnchor[actionID] = anchor
         if clearsUndo { undo[actionID] = nil }
         // 세션이 바뀌면 `reset()`이 busy를 비우고 새 세션이 같은 할 일에 새 요청을 잡을 수 있다: 이 요청이 잡은 busy일 때만 푼다
         defer {
@@ -296,9 +304,8 @@ public final class WorkContextStore {
         }
     }
 
-    /// 200: 서버가 돌려준 행과 version을 반영하고, 실제로 바뀐 것으로 Undo를 만든다. 그 전에 시작한 읽기는 버린다
+    /// 200: 서버가 돌려준 행과 version을 반영하고, 실제로 바뀐 것으로 Undo를 만든다. 곧바로 부르는 다시 읽기가 순번을 올려 그 전에 시작한 읽기를 버린다
     private func applied(_ response: Response, actionID: UUID, recordsUndo: Bool) -> Bool {
-        readSequence += 1
         let change: ContextChange
         switch response {
         case .changed(let r):

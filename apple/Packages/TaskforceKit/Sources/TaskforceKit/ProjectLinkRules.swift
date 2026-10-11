@@ -101,6 +101,8 @@ public enum WorkProjectCopy {
     public static let ungrouped = WorkListGroup.ungroupedTitle
     public static func removeFrom(_ name: String) -> String { "Remove from \(name)" }
     // 쓰기 안내 (한 줄)
+    /// 409: 기존 문구 그대로 ("This changed somewhere else. It's been refreshed.")
+    public static let conflict = APIError.server(status: 409, code: .conflict, message: "").userMessage
     public static let unconfirmed = "Couldn't confirm that change. Showing what's saved."
     public static let contextGone = "That project is archived or no longer exists."
     public static let workGone = "This work isn't available anymore."
@@ -120,7 +122,8 @@ public enum ProjectLinkRules {
     /// - active: 고를 수 있는 범위 (status active만, 이름 순)
     /// - message/undo: 이 할 일의 마지막 쓰기 안내 · 방금 쓴 것의 Undo가 놓일 줄
     public static func links(
-        memberships: WorkMemberships, active: [WorkProject], writesUnavailable: Bool, isBusy: Bool, undo: UndoAnchor?, message: String?
+        memberships: WorkMemberships, active: [WorkProject], writesUnavailable: Bool, isBusy: Bool, undo: UndoAnchor?, message: String?,
+        messageAnchor: UndoAnchor? = nil
     ) -> [ProjectLinkContent]? {
         guard case .known(let links, let candidates) = memberships else { return nil }
         let confirmedIDs = Set(links.map(\.id))
@@ -164,15 +167,22 @@ public enum ProjectLinkRules {
             ))
         }
 
-        // Undo와 안내는 한 줄에 놓는다
-        var anchor = 0
-        if case .project(let id)? = undo, let index = result.firstIndex(where: { $0.contextID == id && $0.basis != .candidate }) { anchor = index }
-        if undo != nil || message != nil, result.indices.contains(anchor) {
-            let row = result[anchor]
-            result[anchor] = ProjectLinkContent(
-                contextID: row.contextID, name: row.name, basis: row.basis, reason: row.reason, choices: row.choices, canUndo: undo != nil,
-                message: message, note: row.note, isArchived: row.isArchived, isBusy: row.isBusy
-            )
+        // Undo는 방금 확인된 범위의 줄에, 안내는 사용자가 동작한 줄에 놓는다 (없으면 첫 줄)
+        func index(of anchor: UndoAnchor?, allowsCandidate: Bool) -> Int {
+            guard case .project(let id)? = anchor else { return 0 }
+            return result.firstIndex { $0.contextID == id && (allowsCandidate || $0.basis != .candidate) } ?? 0
+        }
+        if undo != nil || message != nil {
+            let undoIndex = index(of: undo, allowsCandidate: false)
+            let messageIndex = message == nil ? undoIndex : index(of: messageAnchor ?? undo, allowsCandidate: true)
+            for position in Set([undoIndex, messageIndex]) where result.indices.contains(position) {
+                let row = result[position]
+                result[position] = ProjectLinkContent(
+                    contextID: row.contextID, name: row.name, basis: row.basis, reason: row.reason, choices: row.choices,
+                    canUndo: undo != nil && position == undoIndex, message: position == messageIndex ? message : nil, note: row.note,
+                    isArchived: row.isArchived, isBusy: row.isBusy
+                )
+            }
         }
         return result
     }

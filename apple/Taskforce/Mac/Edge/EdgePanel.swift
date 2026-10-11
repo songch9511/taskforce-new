@@ -132,7 +132,11 @@ struct EdgePanelView: View {
             highlightedID: shell.hoveredID,
             today: DueDateFormat.today(),
             projectsProblem: shell.projectsProblem,
-            detail: { id in shell.contexts.map { AnyView(WorkRowProjectLinks(actionID: id, store: $0)) } },
+            detail: { id in
+                // 멤버십을 아직 읽지 못했으면 아무것도 그리지 않는다 (빈 자리도 만들지 않는다)
+                guard let store = shell.contexts, store.projectLinks(for: id) != nil else { return nil }
+                return AnyView(WorkRowProjectLinks(actionID: id, store: store))
+            },
             onOpen: { shell.open(itemID: $0) },
             onPin: { shell.pin($0) },
             onUnpin: { shell.unpin($0) },
