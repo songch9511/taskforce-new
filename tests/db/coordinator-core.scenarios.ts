@@ -687,7 +687,7 @@ export function coordinatorCoreTests(db: () => CoordinatorDb) {
       await q(`delete from public.inbox_events`);
       await q(`set role service_role`);
       try {
-        const { event_id } = await f.one(`select * from public.coordinator_enqueue($1, 'source_revised', 'svc-1', $2)`, [user, JSON.stringify({ source_id: randomUUID() })]);
+        const event_id = (await f.one(`select * from public.coordinator_enqueue($1, 'source_revised', 'svc-1', $2)`, [user, JSON.stringify({ source_id: randomUUID() })])).event_id as string;
         const [claimed] = await f.claim("svc", 60, 5, 3);
         expect(claimed.event_id).toBe(event_id);
         expect((await f.one(`select public.coordinator_reserve_model_call($1, $2) as ok`, [event_id, claimed.claim_token])).ok).toBe(true);
