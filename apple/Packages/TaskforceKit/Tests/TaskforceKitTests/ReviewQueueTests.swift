@@ -153,6 +153,8 @@ struct ReviewQueueTests {
         #expect(ReviewSource.of(digest: nil, failed: false) == .loading)
         #expect(ReviewSource.of(digest: nil, failed: true) == .failed)
         #expect(ReviewSource.of(digest: EvidenceDigest(lines: []), failed: false) == .noQuote)
+        // 다시 읽다 실패하면 전에 읽은 근거를 지금 근거처럼 보이지 않는다
+        #expect(ReviewSource.of(digest: EvidenceDigest(lines: [Self.line(1, quote: "old", at: 1)]), failed: true) == .failed)
     }
 
     @Test func quotesAreShownNewestFirstAsTheyWereSaid() {

@@ -165,9 +165,11 @@ public enum ReviewSource: Equatable, Sendable {
     /// 근거 줄들 (가장 최근 것이 위: 지금 상태를 만든 말)
     case lines([Line])
 
-    /// `digest`가 nil이고 `failed`가 아니면 읽는 중. 실행 receipt(초안 저장 기록)는 원문이 아니라 뺀다
+    /// `digest`가 nil이고 `failed`가 아니면 읽는 중. 실행 receipt(초안 저장 기록)는 원문이 아니라 뺀다.
+    /// 읽지 못했으면(`failed`) 전에 읽은 근거가 있어도 그것을 지금 근거처럼 보이지 않는다 (그 뒤 항목이 달라졌을 수 있다)
     public static func of(digest: EvidenceDigest?, failed: Bool) -> ReviewSource {
-        guard let digest else { return failed ? .failed : .loading }
+        if failed { return .failed }
+        guard let digest else { return .loading }
         let lines = digest.withoutReceipts.lines.reversed().map { line in
             let removed = RemovedQuote.isRemoved(line.quote)
             return Line(
