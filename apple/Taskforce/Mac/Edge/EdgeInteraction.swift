@@ -108,8 +108,11 @@ enum EdgeInteraction {
     /// 범위 멤버십 합성 조작 (S3b): 줄 · 줄 아래 ProjectLink를 펼치기 · Confirm · Undo · Dismiss · 충돌. 팝업(시스템 메뉴)은 합성 이벤트로 열 수 없어 모델 테스트로만 확인한다.
     /// 한글 제목은 글자 인식이 어려워 이 실행에서만 영문 제목으로 바꿔 보인다 (제목은 화면 글자일 뿐, 멤버십은 id로 따른다)
     private static func runContextsIfRequested(_ edge: EdgeShellController) {
-        guard let logPath = contextsLogPath, SampleData.isEnabled, let runtime = edge.chat,
-              let store = runtime.contexts, let gateway = runtime.sampleContextGateway else { return }
+        guard let logPath = contextsLogPath, SampleData.isEnabled, let runtime = edge.chat else { return }
+        guard let store = runtime.contexts, let gateway = runtime.sampleContextGateway else {
+            runContextsOff(edge, logPath: logPath)
+            return
+        }
         Task { @MainActor in
             var lines: [String] = ["합성 조작(앱 프로세스 안 NSApp.sendEvent) — OS 수준 포인터 · 키보드 · VoiceOver 아님. 팝업(시스템 메뉴)은 눌러 보지 못함"]
             func settle(_ seconds: Double = 0.6) async { try? await Task.sleep(for: .seconds(seconds)) }
@@ -190,6 +193,42 @@ enum EdgeInteraction {
             check("click Dismiss drops the candidate with no Undo", dismissed.candidates.isEmpty && dismissed.links.isEmpty && !store.canUndo(id(14)), "candidates=\(dismissed.candidates.count) undo=\(store.canUndo(id(14))) | \(lastClick)")
             capture(edge, "contexts-6-dismissed")
 
+            try? lines.joined(separator: "\n").appending("\n").write(toFile: logPath, atomically: true, encoding: .utf8)
+            NSApplication.shared.terminate(nil)
+        }
+    }
+
+    /// S3b가 꺼진 실행(`-TF_S3B`가 없다): All work는 S3 그대로여야 한다 — 멤버십 저장소 · 연결이 없고, 모든 할 일이 Ungrouped이며, 줄을 눌러도 ProjectLink가 없다
+    private static func runContextsOff(_ edge: EdgeShellController, logPath: String) {
+        Task { @MainActor in
+            var lines: [String] = ["합성 조작(앱 프로세스 안 NSApp.sendEvent) — S3b 꺼짐(-TF_S3B 없음). OS 수준 포인터 · 키보드 · VoiceOver 아님"]
+            func settle(_ seconds: Double = 0.6) async { try? await Task.sleep(for: .seconds(seconds)) }
+            func check(_ name: String, _ ok: Bool, _ seen: String) { lines.append("\(ok ? "PASS" : "FAIL") \(name) — \(seen)") }
+            edge.workOverride = { work in
+                var work = work
+                work.review = []
+                work.doneToday = []
+                work.open = work.open.filter { [SampleData.id(10), SampleData.id(14), SampleData.id(21)].contains($0.id) }.map {
+                    ActionSummary(
+                        id: $0.id, title: $0.id == SampleData.id(14) ? "Deploy demo environment" : $0.title, owner: $0.owner, status: $0.status, dueDate: $0.dueDate,
+                        counterpart: $0.counterpart, needsConfirmation: false, confirmReasons: [], startedAt: $0.startedAt, lastActivityAt: $0.lastActivityAt
+                    )
+                }
+                return work
+            }
+            let panelWindow = edge.panel.panel
+            await settle(1.5)
+            edge.shell.togglePanel()
+            await settle(0.8)
+            let items = edge.shell.workItems
+            check("no membership store or gateway is created", edge.chat?.contexts == nil && edge.shell.contexts == nil && edge.chat?.sampleContextGateway == nil, "contexts=\(String(describing: edge.chat?.contexts)) shell=\(String(describing: edge.shell.contexts))")
+            check("every work item is Ungrouped (S3)", !items.isEmpty && items.allSatisfy { $0.memberships == .none }, "items=\(items.count) groups=\(WorkListLayout.groups(items, filter: WorkFilter(), pinned: []).map(\.title))")
+            check("project chips are All · Ungrouped only", WorkListLayout.projectOptions(items) == [.all, .ungrouped], "chips=\(WorkListLayout.projectOptions(items).map(\.title))")
+            await click(text: "Deploy demo environment", in: panelWindow)
+            await settle(0.8)
+            check("click a work row opens it", edge.shell.currentID == SampleData.id(14), "currentID=\(String(describing: edge.shell.currentID)) | \(lastClick)")
+            check("no ProjectLink appears under the row", locate("No clear link", in: panelWindow) == nil && locate("Not confirmed", in: panelWindow) == nil && locate("Why this project", in: panelWindow) == nil, "OCR found none of: No clear link · Not confirmed · Why this project")
+            capture(edge, "contexts-off-row-opened")
             try? lines.joined(separator: "\n").appending("\n").write(toFile: logPath, atomically: true, encoding: .utf8)
             NSApplication.shared.terminate(nil)
         }

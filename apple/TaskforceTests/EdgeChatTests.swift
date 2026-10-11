@@ -59,7 +59,7 @@ private final class AppStubGateway: ChatGateway, @unchecked Sendable {
 
 /// 앱 테스트용 계정: 실제 `SessionStore` + 앱 시작 때처럼 먼저 붙은 `AccountScope` (같은 UUID 재로그인 포함)
 @MainActor
-private struct AppChatAccount {
+struct AppChatAccount {
     static let userID = UUID(uuidString: "00000000-0000-4000-8000-0000000000aa")!
     let session: SessionStore
     let scope: AccountScope

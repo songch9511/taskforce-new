@@ -10,7 +10,7 @@ import TaskforceKit
 /// no-match · pinned · done-today · rail-open-clears-filter) · reduce-motion(움직임 줄이기, 패널) · chats.
 /// `-TFEdgeSnapshotChats`: Chats 상태 (B3, 견본 가짜 서버): 목록 · 초안 · 대화(인용 · 기억 노트 explicit/inferred) · 보내는 중 · 실패 · 동의 전 · 기능 꺼짐 · 빈 목록 · 오프라인 · 읽기 실패 ·
 /// 노트 확인 · 잊기 뒤. 서버 응답은 가짜(`SampleChatGateway`)라 렌더 fixture일 뿐이다 (실제 서버 · 계정 · AI 호출 없음).
-/// `-TFEdgeSnapshotContexts`: 범위(프로젝트) 멤버십 상태 (S3b, 견본 가짜 서버 `SampleContextGateway`): 묶음(여러 프로젝트 · 보관됨 · Ungrouped) · 검색 · Project 칩 ·
+/// `-TFEdgeSnapshotContexts`(`-TF_S3B YES`와 함께: S3b 기본은 꺼짐): 범위(프로젝트) 멤버십 상태 (S3b, 견본 가짜 서버 `SampleContextGateway`): 묶음(여러 프로젝트 · 보관됨 · Ungrouped) · 검색 · Project 칩 ·
 /// ProjectLink 줄(Set by you · Auto-linked · Not confirmed 후보 · No clear link · 여러 프로젝트 · 보관됨) · 바꾼 뒤 Undo · 충돌 · 응답 유실 · gate 꺼짐 · 진행 중 ·
 /// 읽는 중 · 오프라인 · 읽기 실패 · 프로젝트 없음 · 테이블 없음. 서버 응답은 가짜라 렌더 fixture일 뿐이다 (실제 서버 · 계정 · AI 호출 없음).
 /// `-TFEdgeSnapshotState <이름>`: All work 패널 하나만 `mac-edge-worklist-<이름>.png`로 (빈 · 오프라인 · 실패 같은 견본 상태 인자와 함께)

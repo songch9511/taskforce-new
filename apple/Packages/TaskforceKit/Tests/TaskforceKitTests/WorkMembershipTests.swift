@@ -162,12 +162,15 @@ struct WorkMembershipTests {
         let members = [
             ContextFx.member(1, ctx: a.id, action: Self.id(1), origin: .user),
             ContextFx.member(2, ctx: b.id, action: Self.id(2), origin: .user),
+            ContextFx.member(3, ctx: b.id, action: Self.id(3), origin: .user),
         ]
-        let list = items([a, b], members, count: 2)
+        let list = items([a, b], members, count: 3, done: [3])
         let groups = WorkListLayout.groups(list, filter: WorkFilter(), pinned: [])
-        #expect(groups.count == 2 && ids(groups).sorted { $0[0] < $1[0] } == [[1], [2]])
+        #expect(groups.count == 3 && ids(groups).sorted { $0[0] < $1[0] } == [[1], [2], [3]])
+        // 같은 이름의 다른 범위(a)를 고르면 b의 열린 일 · 끝낸 일이 섞이지 않는다
         let only = WorkListLayout.groups(list, filter: WorkFilter(project: WorkListLayout.projectOptions(list)[1]), pinned: [])
-        #expect(only.count == 1 && only[0].items.count == 1)
+        #expect(only.count == 1 && ids(only) == [[1]])
+        #expect(WorkListLayout.projectOptions(list)[1].matches(list[0]) && !WorkListLayout.projectOptions(list)[1].matches(list[2]))
     }
 
     // MARK: 검색

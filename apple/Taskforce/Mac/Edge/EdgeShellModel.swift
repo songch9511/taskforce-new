@@ -24,6 +24,28 @@ enum EdgeShellFlag {
     }
 }
 
+/// 0.2.0 S3b(범위 멤버십 · ProjectLink)를 켜는 플래그. **기본은 꺼짐** → All work는 S3 그대로다:
+/// 실제 앱 생성 경로(`AppRuntime.makeChatRuntime`)가 범위 멤버십 게이트웨이 · 저장소를 아예 만들지 않아 RLS 멤버십 읽기 · 멤버십 쓰기 · ProjectLink 연결이 없고,
+/// 모든 할 일은 Ungrouped이며 검색 · 필터는 기존 그대로다. B3 Chats · Remembered와 Edge 셸은 그대로 유지된다.
+/// (`TF_EDGE_SHELL`을 끄면 구 런처로 돌아가는 것이지 S3로 돌아가는 것이 아니다: 두 플래그는 다른 축이다. 서버 `MEMORY_ENABLED`도 POST만 막는 또 다른 축이다.)
+/// - 앱: launch argument `-TF_S3B YES`만 (인자 영역. 저장된 defaults로는 켜지지 않는다). `TF_EDGE_SHELL`이 켜진 격리 Debug 실행에서만 뜻이 있다
+/// - 테스트: 전용 UserDefaults suite를 넘긴다
+/// Release 빌드는 늘 꺼짐이다. 실사용 켜기(출시 gate)는 그때 이 함수를 바꾼다.
+enum S3bFlag {
+    static let key = "TF_S3B"
+
+    static func isEnabled(_ defaults: UserDefaults? = nil) -> Bool {
+        #if DEBUG
+        if let defaults { return defaults.bool(forKey: key) }
+        let arguments = UserDefaults.standard.volatileDomain(forName: UserDefaults.argumentDomain)
+        guard let value = arguments[key] else { return false }
+        return (value as? Bool) ?? (value as? String).map { NSString(string: $0).boolValue } ?? false
+        #else
+        return false
+        #endif
+    }
+}
+
 /// 레일 · 패널이 읽는 지금의 일 (NowStore · RunStore에서 옮겨 담는다. 모델 테스트는 이 값을 직접 넣는다)
 struct EdgeWorkSnapshot: Equatable {
     var review: [ActionSummary] = []

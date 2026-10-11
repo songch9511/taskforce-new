@@ -322,11 +322,12 @@ public final class WorkContextStore {
         return true
     }
 
-    /// 쓴 뒤의 행을 지금 멤버 목록에 반영하고 (뺀 행이면 목록에서 뺀다), 그 범위 version은 더 높은 쪽으로만 올린다
+    /// 쓴 뒤의 행을 지금 멤버 목록에 반영하고 (뺀 행이면 목록에서 뺀다), 그 범위 version을 200이 준 쓰기 직후 값으로 둔다.
+    /// 더 낡은 값이어도 안전하다 (다음 요청이 409로 막힐 뿐): 곧바로 이어지는 다시 읽기가 서버의 지금 값으로 맞춘다
     private func absorb(_ member: ContextMember, version: Int) {
         members.removeAll { $0.id == member.id || ($0.contextID == member.contextID && $0.actionID == member.actionID) }
         if !member.isRemoved, member.actionID != nil { members.append(member) }
-        if let context = contexts[member.contextID], (context.contextVersion ?? 0) < version {
+        if let context = contexts[member.contextID] {
             contexts[member.contextID] = WorkContext(id: context.id, name: context.name, status: context.status, contextVersion: version)
         }
     }
