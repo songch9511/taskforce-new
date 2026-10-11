@@ -305,12 +305,17 @@ struct WorkContextStoreTests {
         let first = Task { await store.add(a, to: shape.id) }
         while await latch.arrivals == 0 { await Task.yield() }
         #expect(store.isBusy(a))
-        #expect(await store.add(a, to: acme.id) == .ignored)
-        #expect(await store.remove(a, from: shape.id) == .ignored)
-        #expect(store.projectLinks(for: a)?.allSatisfy(\.isBusy) == true)
+        // 두 번째 · 세 번째 요청은 서버에 닿지 않는다 (붙잡힌 첫 요청 하나만 도착해 있다)
+        let second = Task { await store.add(a, to: acme.id) }
+        let third = Task { await store.remove(a, from: shape.id) }
+        for _ in 0..<100 { await Task.yield() }
+        #expect(await latch.arrivals == 1)
+        #expect(store.projectLinks(for: a)?.allSatisfy { $0.isBusy } == true)
         // 다른 할 일은 막지 않는다
         #expect(!store.isBusy(b))
         await latch.open()
+        #expect(await second.value == .ignored)
+        #expect(await third.value == .ignored)
         #expect(await first.value == .applied(canUndo: true))
         #expect(server.writes.count == 1 && !store.isBusy(a))
     }

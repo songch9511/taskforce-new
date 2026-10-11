@@ -109,4 +109,27 @@ struct ProjectLinkRulesTests {
         let rows = links(.known(links: [WorkLink(project: shape, origin: .user)], candidates: [WorkCandidate(project: acme, confidence: nil)]), isBusy: true)
         #expect(rows.allSatisfy { $0.isBusy })
     }
+
+    // MARK: 고른 것 → 서버 쓰기 하나
+
+    @Test func choosingMapsToExactlyOneServerWrite() {
+        let linked = links(.known(links: [WorkLink(project: shape, origin: .user)], candidates: [])).first!
+        #expect(ProjectChange.choosing(acme.id, in: linked) == .move(from: shape.id, to: acme.id), "바꾸기는 한 요청 (넣기 + 빼기 두 요청이 아니다)")
+        #expect(ProjectChange.choosing(nil, in: linked) == .remove(shape.id))
+        #expect(ProjectChange.choosing(shape.id, in: linked) == nil, "이미 그 값")
+        let none = links(.none).first!
+        #expect(ProjectChange.choosing(acme.id, in: none) == .add(acme.id))
+        #expect(ProjectChange.choosing(nil, in: none) == nil)
+    }
+
+    @Test func archivedAndCandidateRowsNeverChooseThroughThePopup() {
+        let archived = links(.known(links: [WorkLink(project: old, origin: .user)], candidates: [])).first!
+        #expect(ProjectChange.choosing(shape.id, in: archived) == nil && ProjectChange.choosing(nil, in: archived) == nil)
+        let candidate = links(.known(links: [], candidates: [WorkCandidate(project: shape, confidence: 0.5)]))[1]
+        #expect(ProjectChange.choosing(acme.id, in: candidate) == nil)
+        #expect(ProjectChange.confirming(candidate) == .add(shape.id) && ProjectChange.dismissing(candidate) == .remove(shape.id))
+        // 확인된 링크는 Confirm / Dismiss 대상이 아니다
+        let linked = links(.known(links: [WorkLink(project: shape, origin: .auto)], candidates: [])).first!
+        #expect(ProjectChange.confirming(linked) == nil && ProjectChange.dismissing(linked) == nil)
+    }
 }

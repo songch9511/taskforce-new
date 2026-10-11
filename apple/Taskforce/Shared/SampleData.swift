@@ -186,7 +186,7 @@ enum SampleData {
         )
     }
 
-    private static func id(_ n: Int) -> UUID {
+    static func id(_ n: Int) -> UUID {
         UUID(uuidString: String(format: "5A000000-0000-4000-8000-%012d", n))!
     }
 

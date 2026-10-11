@@ -103,8 +103,11 @@ struct WorkContextAccountBoundaryTests {
         await old.open()
         _ = await oldWrite.value
         #expect(store.isBusy(a), "옛 요청의 정리가 새 요청의 busy를 지우지 않는다")
-        #expect(await store.remove(a, from: acme.id) == .ignored, "셋째 요청은 서버로 나가지 않는다")
+        let third = Task { await store.remove(a, from: acme.id) }
+        for _ in 0..<100 { await Task.yield() }
+        #expect(await fresh.arrivals == 1, "셋째 요청은 서버로 나가지 않는다")
         await fresh.open()
+        #expect(await third.value == .ignored)
         #expect(await newWrite.value != .ignored)
         #expect(!store.isBusy(a))
     }

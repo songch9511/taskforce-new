@@ -62,16 +62,18 @@ enum AppRuntime {
         #if DEBUG
         if SampleData.isEnabled {
             let gateway = SampleChatGateway(scenario: SampleData.chatScenario)
-            runtime = ChatRuntime(gateway: gateway)
+            let contexts = SampleContextGateway(scenario: SampleData.contextScenario)
+            runtime = ChatRuntime(gateway: gateway, contextGateway: contexts)
             runtime.sampleGateway = gateway
+            runtime.sampleContextGateway = contexts
             runtime.scope.bind(to: session, account: { SampleData.userID })
         } else {
-            runtime = ChatRuntime(gateway: LiveChatGateway(services: services))
+            runtime = ChatRuntime(gateway: LiveChatGateway(services: services), contextGateway: LiveContextGateway(services: services))
             runtime.scope.bind(to: session)
             runtime.followConnectivity(Connectivity.updates())
         }
         #else
-        runtime = ChatRuntime(gateway: LiveChatGateway(services: services))
+        runtime = ChatRuntime(gateway: LiveChatGateway(services: services), contextGateway: LiveContextGateway(services: services))
         runtime.scope.bind(to: session)
         runtime.followConnectivity(Connectivity.updates())
         #endif

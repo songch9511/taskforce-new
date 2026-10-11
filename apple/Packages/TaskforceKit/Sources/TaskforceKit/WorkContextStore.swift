@@ -199,6 +199,16 @@ public final class WorkContextStore {
 
     // MARK: 쓰기
 
+    /// ProjectLink에서 고른 동작 하나를 보낸다 (`ProjectChange`)
+    @discardableResult
+    public func perform(_ change: ProjectChange, for actionID: UUID) async -> ProjectWriteResult {
+        switch change {
+        case .add(let context): await add(actionID, to: context)
+        case .remove(let context): await remove(actionID, from: context)
+        case .move(let from, let to): await move(actionID, from: from, to: to)
+        }
+    }
+
     /// 그 범위에 넣는다 (origin user). 후보(inferred)를 확인하는 것도 같은 요청이다
     @discardableResult
     public func add(_ actionID: UUID, to contextID: UUID) async -> ProjectWriteResult {
@@ -375,5 +385,34 @@ public final class WorkContextStore {
         feedback[actionID] = .unconfirmed
         await refresh()
         return .unconfirmed
+    }
+}
+
+/// ProjectLink 한 줄에서 사용자가 고른 동작 (서버 쓰기 하나에 대응한다)
+public enum ProjectChange: Equatable, Sendable {
+    case add(UUID)
+    case remove(UUID)
+    case move(from: UUID, to: UUID)
+
+    /// 팝업에서 `choice`를 골랐다 (nil = 이 범위에서 빼기). 이미 그 값이거나 할 수 없는 선택이면 nil.
+    /// - "No clear link" 줄(범위 없음)에서 범위를 고르면 넣기, 범위가 있는 줄에서 다른 범위를 고르면 바꾸기(한 요청), 빼기를 고르면 빼기
+    public static func choosing(_ choice: UUID?, in link: ProjectLinkContent) -> ProjectChange? {
+        guard link.basis != .candidate, !link.isArchived, choice != link.contextID else { return nil }
+        switch (link.contextID, choice) {
+        case (nil, let target?): return .add(target)
+        case (let current?, nil): return .remove(current)
+        case (let current?, let target?): return .move(from: current, to: target)
+        case (nil, nil): return nil
+        }
+    }
+
+    /// 후보 Confirm: 그 범위에 넣는다 (서버가 후보 행을 user로 승격한다)
+    public static func confirming(_ link: ProjectLinkContent) -> ProjectChange? {
+        link.basis == .candidate ? link.contextID.map(ProjectChange.add) : nil
+    }
+
+    /// 후보 Dismiss: 그 범위에서 뺀다 (뺀 표시가 남아 후보가 다시 보이지 않는다, 바뀐 멤버가 아니라 Undo는 없다)
+    public static func dismissing(_ link: ProjectLinkContent) -> ProjectChange? {
+        link.basis == .candidate ? link.contextID.map(ProjectChange.remove) : nil
     }
 }

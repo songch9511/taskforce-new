@@ -65,13 +65,16 @@
 		D872654C1DF62819BA31E385 /* NowStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0C3F69D6A673231631FB11C /* NowStore.swift */; };
 		DCBC154B87836CE0E180CFC1 /* EdgeShell.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8C3103BEF535AF3D545FD7E9 /* EdgeShell.swift */; };
 		DE51DA1610314BCE5A25CE45 /* LauncherShellModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 65D96844CFEE5E58206572EF /* LauncherShellModelTests.swift */; };
+		DE88C408782D388398BAF3F4 /* SampleContexts.swift in Sources */ = {isa = PBXBuildFile; fileRef = B419DF6CD9E3FFA75C5ABB95 /* SampleContexts.swift */; };
 		E1126617A47FD961B4920E4A /* EdgeShellModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBD3E7D1D9EE7600950CF52C /* EdgeShellModel.swift */; };
+		E147D7CE5FF4219D93669F16 /* EdgeWorkLinks.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3F2E137BDCFE54052D520EA3 /* EdgeWorkLinks.swift */; };
 		E2E22004841EC931D746713B /* AccountStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9E5447C917C7443CACB72BD8 /* AccountStore.swift */; };
 		E9FF4630E2A023E47E3CBE13 /* GoogleSignIn in Frameworks */ = {isa = PBXBuildFile; productRef = 61502A661BD123C408697237 /* GoogleSignIn */; };
 		EEF31FD388053B5863C030DB /* LauncherDraftPane.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB01D992A7923CAF4414A91D /* LauncherDraftPane.swift */; };
 		EF810C02C820D340DC1EB4F7 /* LauncherModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6EE4BF508E321D0E6BBC09B1 /* LauncherModel.swift */; };
 		F1054E03F7CEFB293B46966C /* SettingsConnectionsSections.swift in Sources */ = {isa = PBXBuildFile; fileRef = 06B1DA1B50E9C9E6A7A0479C /* SettingsConnectionsSections.swift */; };
 		FD7CC1296F85732599DE1AFC /* RunStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 19530AF9617AD254389374F2 /* RunStore.swift */; };
+		FE7873A58E4B39A8927CD2FC /* EdgeWorkContextsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 610A9DE84A54D9724C3CDAEE /* EdgeWorkContextsTests.swift */; };
 		FF68550675704B842603A326 /* LauncherRunPane.swift in Sources */ = {isa = PBXBuildFile; fileRef = CB475A9C43FB5DA64D5B10A4 /* LauncherRunPane.swift */; };
 /* End PBXBuildFile section */
 
@@ -103,6 +106,7 @@
 		29973AAF33CBAF50B52E623E /* PrivacySettingsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PrivacySettingsTests.swift; sourceTree = "<group>"; };
 		2DD246DFD55D3C8EB54CDCF0 /* TaskforceApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TaskforceApp.swift; sourceTree = "<group>"; };
 		3D43D09D38ACB649AE46CFE3 /* MacSettingsTabTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacSettingsTabTests.swift; sourceTree = "<group>"; };
+		3F2E137BDCFE54052D520EA3 /* EdgeWorkLinks.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EdgeWorkLinks.swift; sourceTree = "<group>"; };
 		4575E663CCDD3F320C873CBA /* TaskforceTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = TaskforceTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		4980BC09AD044F0F918D864B /* SettingsSnapshot.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsSnapshot.swift; sourceTree = "<group>"; };
 		51264FB99BA762FFB8DD94E3 /* SettingsWindowView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsWindowView.swift; sourceTree = "<group>"; };
@@ -114,6 +118,7 @@
 		5B1D957FA5DBFDD25C89C1FD /* SettingsRememberedSections.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsRememberedSections.swift; sourceTree = "<group>"; };
 		5E8C9F31E468AFC305D9E9EF /* TaskDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TaskDetailView.swift; sourceTree = "<group>"; };
 		603292F5B4100FD37C53E2CD /* EdgeRailPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EdgeRailPanel.swift; sourceTree = "<group>"; };
+		610A9DE84A54D9724C3CDAEE /* EdgeWorkContextsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EdgeWorkContextsTests.swift; sourceTree = "<group>"; };
 		65D96844CFEE5E58206572EF /* LauncherShellModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LauncherShellModelTests.swift; sourceTree = "<group>"; };
 		67FA98B6AD5F48FCE46EAB29 /* RunStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RunStoreTests.swift; sourceTree = "<group>"; };
 		6A0A3424B28B328F9AB5DA43 /* EdgePanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EdgePanel.swift; sourceTree = "<group>"; };
@@ -132,6 +137,7 @@
 		AB01D992A7923CAF4414A91D /* LauncherDraftPane.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LauncherDraftPane.swift; sourceTree = "<group>"; };
 		AB26C2543E88F763B3553D02 /* SignIn.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SignIn.swift; sourceTree = "<group>"; };
 		AB6C40E329E6EAB3368F0C0B /* LauncherPresentationFixtureRendersTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LauncherPresentationFixtureRendersTests.swift; sourceTree = "<group>"; };
+		B419DF6CD9E3FFA75C5ABB95 /* SampleContexts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SampleContexts.swift; sourceTree = "<group>"; };
 		B585CF3FD7B78EDC16427DEF /* Taskforce.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = Taskforce.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		BBB841970EC9F4B0554357BF /* UsageCreditsPane.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UsageCreditsPane.swift; sourceTree = "<group>"; };
 		BBD3E7D1D9EE7600950CF52C /* EdgeShellModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EdgeShellModel.swift; sourceTree = "<group>"; };
@@ -201,6 +207,7 @@
 				8C3103BEF535AF3D545FD7E9 /* EdgeShell.swift */,
 				BBD3E7D1D9EE7600950CF52C /* EdgeShellModel.swift */,
 				F0D8F27321B3759BDC933C9C /* EdgeSnapshot.swift */,
+				3F2E137BDCFE54052D520EA3 /* EdgeWorkLinks.swift */,
 				23F7BF891037000F11537653 /* RailOrdering.swift */,
 			);
 			path = Edge;
@@ -274,6 +281,7 @@
 			children = (
 				95937722FDD5FA1D25CAF396 /* EdgeChatTests.swift */,
 				997F7CDADCE1B82032C6E3C9 /* EdgeShellModelTests.swift */,
+				610A9DE84A54D9724C3CDAEE /* EdgeWorkContextsTests.swift */,
 				C58F5AE03837589EB835718F /* EdgeWorkListTests.swift */,
 				1AE065BCE63FAD6180201421 /* HotKeyCenterTests.swift */,
 				D30BD73A1EB36763CBA0B37E /* LauncherModelSessionTests.swift */,
@@ -303,6 +311,7 @@
 				7439B64C561B831037F0D2E2 /* PushCenter.swift */,
 				19530AF9617AD254389374F2 /* RunStore.swift */,
 				5521012014BA2024927E6EAE /* SampleChat.swift */,
+				B419DF6CD9E3FFA75C5ABB95 /* SampleContexts.swift */,
 				599D903AD6A4CA63031CAE4D /* SampleData.swift */,
 				AB26C2543E88F763B3553D02 /* SignIn.swift */,
 			);
@@ -467,6 +476,7 @@
 			files = (
 				1C155DEDD5DBDE44C0F106D1 /* EdgeChatTests.swift in Sources */,
 				51A41EC52940EB555842641B /* EdgeShellModelTests.swift in Sources */,
+				FE7873A58E4B39A8927CD2FC /* EdgeWorkContextsTests.swift in Sources */,
 				A8ED53988256E090313DF71C /* EdgeWorkListTests.swift in Sources */,
 				1D320494D52534D188026379 /* HotKeyCenterTests.swift in Sources */,
 				1D21B5CFAA41940E0383FCBE /* LauncherModelSessionTests.swift in Sources */,
@@ -498,6 +508,7 @@
 				DCBC154B87836CE0E180CFC1 /* EdgeShell.swift in Sources */,
 				E1126617A47FD961B4920E4A /* EdgeShellModel.swift in Sources */,
 				64CF456FF4FB0B30279CA261 /* EdgeSnapshot.swift in Sources */,
+				E147D7CE5FF4219D93669F16 /* EdgeWorkLinks.swift in Sources */,
 				B12630859AFFAB6A88E428E6 /* GoogleSignIn.swift in Sources */,
 				BDD2EC4FA6C9D0C3A53DD751 /* HotKeyCenter.swift in Sources */,
 				2968707A8D04FE217A0AFB5E /* KeyboardShortcutsPane.swift in Sources */,
@@ -520,6 +531,7 @@
 				5020EF0FA3E7F009DF938515 /* RailOrdering.swift in Sources */,
 				FD7CC1296F85732599DE1AFC /* RunStore.swift in Sources */,
 				6F914C7C908ADCA8F7630CA8 /* SampleChat.swift in Sources */,
+				DE88C408782D388398BAF3F4 /* SampleContexts.swift in Sources */,
 				5AADF7819C0656F5D1C3C1C1 /* SampleData.swift in Sources */,
 				437067DA0504B907D3FE96EA /* SettingsAccountSections.swift in Sources */,
 				F1054E03F7CEFB293B46966C /* SettingsConnectionsSections.swift in Sources */,

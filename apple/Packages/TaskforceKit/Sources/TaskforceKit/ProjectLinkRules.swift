@@ -177,3 +177,13 @@ public enum ProjectLinkRules {
         return result
     }
 }
+
+extension ChatProject {
+    /// 대화 헤더의 ProjectLink도 같은 줄 모양으로 그린다 (대화의 범위는 사용자가 명시적으로 고른 것뿐: Set by you · No clear link)
+    public var content: ProjectLinkContent {
+        ProjectLinkContent(
+            contextID: contextID, name: name, basis: basis == .user ? .user : .none, reason: reason,
+            choices: choices.map { ProjectLinkContent.Choice(contextID: $0.contextID, name: $0.name) }, canUndo: canUndo, message: message
+        )
+    }
+}

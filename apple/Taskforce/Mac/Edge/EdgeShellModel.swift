@@ -80,10 +80,13 @@ struct EdgeWorkSnapshot: Equatable {
         connectionsLoaded && !connections.contains { $0.status == .active }
     }
 
-    /// All work의 줄 (`WorkItem.list`). Done today는 읽은 날이 기기 시간대의 오늘일 때만 (자정 · 시간대가 바뀌면 다시 읽을 때까지 없음)
-    func items(now: Date, calendar: Calendar = .current) -> [WorkItem] {
+    /// All work의 줄 (`WorkItem.list`). Done today는 읽은 날이 기기 시간대의 오늘일 때만 (자정 · 시간대가 바뀌면 다시 읽을 때까지 없음).
+    /// `memberships`: 실제 범위 멤버십 (S3b). 줄의 상태 · 활동 · 수행자 · 순서는 멤버십과 상관없다
+    func items(now: Date, calendar: Calendar = .current, memberships: WorkMembershipIndex = .empty) -> [WorkItem] {
         let done = DoneTodayWindow.isCurrent(since: doneSince, now: now, calendar: calendar) ? doneToday : []
-        return WorkItem.list(reviews: review, open: open, doneToday: done, working: working, stopping: stopping, reasons: reasons)
+        return WorkItem.list(
+            reviews: review, open: open, doneToday: done, working: working, stopping: stopping, reasons: reasons, memberships: memberships
+        )
     }
 }
 
@@ -184,6 +187,8 @@ final class EdgeShellModel {
     @ObservationIgnored var onChatsOpened: () -> Void = {}
     @ObservationIgnored var onNewChat: () -> Void = {}
     @ObservationIgnored var onChatEscape: () -> Bool = { false }
+    /// 실제 범위(프로젝트) 멤버십 (S3b). 없으면 모든 할 일이 Ungrouped (범위를 읽지 않는다)
+    let contexts: WorkContextStore?
 
     @ObservationIgnored private let schedule: EdgeSchedule
     @ObservationIgnored private let clock: () -> Date
@@ -200,8 +205,10 @@ final class EdgeShellModel {
     /// - pinStore: 고정 저장 (앱은 전용 suite, 테스트 · 견본은 메모리)
     init(
         reduceMotion: Bool = false, schedule: @escaping EdgeSchedule = EdgeScheduler.live, clock: @escaping () -> Date = Date.init,
-        calendar: @escaping () -> Calendar = { Calendar.current }, pinStore: WorkPinStore = WorkPinStore(defaults: nil)
+        calendar: @escaping () -> Calendar = { Calendar.current }, pinStore: WorkPinStore = WorkPinStore(defaults: nil),
+        contexts: WorkContextStore? = nil
     ) {
+        self.contexts = contexts
         self.reduceMotion = reduceMotion
         self.schedule = schedule
         self.clock = clock
@@ -354,8 +361,11 @@ final class EdgeShellModel {
     /// All work의 줄 (지금 시각의 기기 시간대로 Done today를 정한다). `timeEpoch`를 읽어, 시각 신호(`timeChanged`)가 오면 이 값을 읽은 화면이 다시 계산한다
     var workItems: [WorkItem] {
         _ = timeEpoch
-        return work.items(now: clock(), calendar: calendar())
+        return work.items(now: clock(), calendar: calendar(), memberships: contexts?.index ?? .empty)
     }
+
+    /// 프로젝트(범위 멤버십)를 읽다 생긴 문제: 목록 위 Notice (할 일 목록의 문제가 먼저)
+    var projectsProblem: WorkLoad.Problem? { contexts?.problem }
 
     /// 로컬 날짜 · 시간대 · 시스템 시계가 바뀌었거나 Mac이 깨어났다: 열린 채 기다리던 패널이 "오늘"을 다시 계산한다.
     /// 목록을 새로 읽지는 않는다: 지난 Done today는 허용된 새로 읽기(로그인 · 패널 열기 · Try again · 동기화 끝) 전까지 빠진 채로 둔다

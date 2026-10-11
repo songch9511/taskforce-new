@@ -131,6 +131,8 @@ struct EdgePanelView: View {
             currentID: shell.currentID,
             highlightedID: shell.hoveredID,
             today: DueDateFormat.today(),
+            projectsProblem: shell.projectsProblem,
+            detail: { id in shell.contexts.map { AnyView(WorkRowProjectLinks(actionID: id, store: $0)) } },
             onOpen: { shell.open(itemID: $0) },
             onPin: { shell.pin($0) },
             onUnpin: { shell.unpin($0) },
