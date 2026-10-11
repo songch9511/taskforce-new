@@ -23,6 +23,7 @@
 		3498CC69345186E53C0CC66E /* PushCenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7439B64C561B831037F0D2E2 /* PushCenter.swift */; };
 		34AC3C55914B7872E39BC5BD /* MacSettingsTabTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3D43D09D38ACB649AE46CFE3 /* MacSettingsTabTests.swift */; };
 		3620F367D9B7666BE0D25E58 /* TaskforceKit in Frameworks */ = {isa = PBXBuildFile; productRef = 2A771618579B2627F65408E5 /* TaskforceKit */; };
+		41484BB8902B538679446BFD /* TestDefaults.swift in Sources */ = {isa = PBXBuildFile; fileRef = 516C0E3EF4D6AD4CB963BEF3 /* TestDefaults.swift */; };
 		437067DA0504B907D3FE96EA /* SettingsAccountSections.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1CE5508A0255614CB54FCF96 /* SettingsAccountSections.swift */; };
 		463B3B9643F7288FE0FDD9B7 /* AccountDeletion.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8F35BE01B9CE310854A11A47 /* AccountDeletion.swift */; };
 		497A72C80C3F5A62742FA119 /* TaskforceApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2DD246DFD55D3C8EB54CDCF0 /* TaskforceApp.swift */; };
@@ -37,6 +38,7 @@
 		64CF456FF4FB0B30279CA261 /* EdgeSnapshot.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0D8F27321B3759BDC933C9C /* EdgeSnapshot.swift */; };
 		6609B3AD0BE3071B4C236771 /* EdgeRailPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 603292F5B4100FD37C53E2CD /* EdgeRailPanel.swift */; };
 		68DFF761D14327138E4CB5F4 /* MacSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4A28A214EF045FAF600AC14 /* MacSettingsView.swift */; };
+		6B35CA03A69323AE3020B979 /* TestIsolationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2228AE0F074A7B31AB710D77 /* TestIsolationTests.swift */; };
 		6D563AFBBD0CFBB89C4A680E /* LauncherDetailPane.swift in Sources */ = {isa = PBXBuildFile; fileRef = F8F4C0A94A16821764C38281 /* LauncherDetailPane.swift */; };
 		6F10622C562E0391D495F882 /* SettingsWindowModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 134F521E8E76DDDFA13086B3 /* SettingsWindowModel.swift */; };
 		6F914C7C908ADCA8F7630CA8 /* SampleChat.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5521012014BA2024927E6EAE /* SampleChat.swift */; };
@@ -87,6 +89,7 @@
 		010DF3CB9AFFABF74B07F0F2 /* Release.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Release.xcconfig; sourceTree = "<group>"; };
 		06B1DA1B50E9C9E6A7A0479C /* SettingsConnectionsSections.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsConnectionsSections.swift; sourceTree = "<group>"; };
 		0EEFD4BECF876565725DFA15 /* GoogleSignIn.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GoogleSignIn.swift; sourceTree = "<group>"; };
+		0F5FBC5A58A3F5819C9F9CC3 /* DebugTest.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = DebugTest.xcconfig; sourceTree = "<group>"; };
 		134F521E8E76DDDFA13086B3 /* SettingsWindowModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsWindowModel.swift; sourceTree = "<group>"; };
 		19530AF9617AD254389374F2 /* RunStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RunStore.swift; sourceTree = "<group>"; };
 		1ADEC50CCCD6DD9A67EAA50B /* Base.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Base.xcconfig; sourceTree = "<group>"; };
@@ -95,6 +98,7 @@
 		1FCAEE30F5C476D81D71E869 /* Taskforce-macOS.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = "Taskforce-macOS.entitlements"; sourceTree = "<group>"; };
 		20348734D46E428BDA04EE04 /* LauncherLane.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LauncherLane.swift; sourceTree = "<group>"; };
 		2069D753238A9DAE1E390CB3 /* HotKeyCenter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HotKeyCenter.swift; sourceTree = "<group>"; };
+		2228AE0F074A7B31AB710D77 /* TestIsolationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TestIsolationTests.swift; sourceTree = "<group>"; };
 		23F7BF891037000F11537653 /* RailOrdering.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RailOrdering.swift; sourceTree = "<group>"; };
 		29973AAF33CBAF50B52E623E /* PrivacySettingsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PrivacySettingsTests.swift; sourceTree = "<group>"; };
 		2DD246DFD55D3C8EB54CDCF0 /* TaskforceApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TaskforceApp.swift; sourceTree = "<group>"; };
@@ -102,6 +106,7 @@
 		4575E663CCDD3F320C873CBA /* TaskforceTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = TaskforceTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		4980BC09AD044F0F918D864B /* SettingsSnapshot.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsSnapshot.swift; sourceTree = "<group>"; };
 		51264FB99BA762FFB8DD94E3 /* SettingsWindowView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsWindowView.swift; sourceTree = "<group>"; };
+		516C0E3EF4D6AD4CB963BEF3 /* TestDefaults.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TestDefaults.swift; sourceTree = "<group>"; };
 		524FC1544A0E35537AE10E50 /* LauncherSnapshot.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LauncherSnapshot.swift; sourceTree = "<group>"; };
 		5521012014BA2024927E6EAE /* SampleChat.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SampleChat.swift; sourceTree = "<group>"; };
 		563DEE45C51F335959952F5F /* SettingsStatusSections.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsStatusSections.swift; sourceTree = "<group>"; };
@@ -280,6 +285,8 @@
 				29973AAF33CBAF50B52E623E /* PrivacySettingsTests.swift */,
 				67FA98B6AD5F48FCE46EAB29 /* RunStoreTests.swift */,
 				CE1F0073D4EF8BAC2345440F /* SettingsWindowTests.swift */,
+				516C0E3EF4D6AD4CB963BEF3 /* TestDefaults.swift */,
+				2228AE0F074A7B31AB710D77 /* TestIsolationTests.swift */,
 			);
 			path = TaskforceTests;
 			sourceTree = "<group>";
@@ -306,6 +313,7 @@
 			isa = PBXGroup;
 			children = (
 				1ADEC50CCCD6DD9A67EAA50B /* Base.xcconfig */,
+				0F5FBC5A58A3F5819C9F9CC3 /* DebugTest.xcconfig */,
 				010DF3CB9AFFABF74B07F0F2 /* Release.xcconfig */,
 			);
 			path = Config;
@@ -334,6 +342,7 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = F3FB80DDDAD2CA29093A2E63 /* Build configuration list for PBXNativeTarget "TaskforceTests" */;
 			buildPhases = (
+				F781A41ABFD8B14AD7CB5D3D /* Check test host isolation */,
 				1A1231F1DD6BD2AB52B14579 /* Sources */,
 				077BECEE37FED2C0BD2A1A6F /* Frameworks */,
 			);
@@ -427,6 +436,30 @@
 		};
 /* End PBXResourcesBuildPhase section */
 
+/* Begin PBXShellScriptBuildPhase section */
+		F781A41ABFD8B14AD7CB5D3D /* Check test host isolation */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"$(BUILT_PRODUCTS_DIR)/Taskforce.app/Contents/Info.plist",
+				"$(SRCROOT)/Config/Base.xcconfig",
+			);
+			name = "Check test host isolation";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "\"$SRCROOT/Scripts/check-test-host-isolation.sh\"";
+		};
+/* End PBXShellScriptBuildPhase section */
+
 /* Begin PBXSourcesBuildPhase section */
 		1A1231F1DD6BD2AB52B14579 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
@@ -445,6 +478,8 @@
 				7D30F03CB0E36223457C4BA9 /* PrivacySettingsTests.swift in Sources */,
 				7BE3D371436C7BFC7B67A63F /* RunStoreTests.swift in Sources */,
 				2C916DBA7153033831398162 /* SettingsWindowTests.swift in Sources */,
+				41484BB8902B538679446BFD /* TestDefaults.swift in Sources */,
+				6B35CA03A69323AE3020B979 /* TestIsolationTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -511,6 +546,74 @@
 /* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
+		03AA57EA647CBC1DE952BB33 /* Debug-Test */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = 0F5FBC5A58A3F5819C9F9CC3 /* DebugTest.xcconfig */;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 1;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				DEVELOPMENT_TEAM = U9DWQKQFMW;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
+				MARKETING_VERSION = 0.1.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = auto;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 6.0;
+			};
+			name = "Debug-Test";
+		};
 		1C2DC0F5723F1BC552B07C3F /* Release */ = {
 			isa = XCBuildConfiguration;
 			baseConfigurationReference = 010DF3CB9AFFABF74B07F0F2 /* Release.xcconfig */;
@@ -642,6 +745,49 @@
 			};
 			name = Release;
 		};
+		708FEB0DC4A09893F4FA5749 /* Debug-Test */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = "Taskforce/Taskforce-macOS.entitlements";
+				COMBINE_HIDPI_IMAGES = YES;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Taskforce/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = Taskforce;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity";
+				INFOPLIST_KEY_LSUIElement = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "$(APP_BUNDLE_ID)";
+				PRODUCT_NAME = Taskforce;
+				SDKROOT = auto;
+				SUPPORTED_PLATFORMS = macosx;
+				SUPPORTS_MACCATALYST = NO;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
+				TARGETED_DEVICE_FAMILY = "";
+			};
+			name = "Debug-Test";
+		};
+		926497563718447EF51C117D /* Debug-Test */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				COMBINE_HIDPI_IMAGES = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = dev.taskforcelabs.TaskforceTests;
+				SDKROOT = macosx;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Taskforce.app/Contents/MacOS/Taskforce";
+			};
+			name = "Debug-Test";
+		};
 		BD13A67FFE196063AF3C2C08 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -733,6 +879,7 @@
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				EA63A1716FAF9ABE83D47BAA /* Debug */,
+				03AA57EA647CBC1DE952BB33 /* Debug-Test */,
 				1C2DC0F5723F1BC552B07C3F /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
@@ -742,6 +889,7 @@
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				43840FB099F81F247E505689 /* Debug */,
+				708FEB0DC4A09893F4FA5749 /* Debug-Test */,
 				488D357F044D676A08C13AA5 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
@@ -751,6 +899,7 @@
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				BD13A67FFE196063AF3C2C08 /* Debug */,
+				926497563718447EF51C117D /* Debug-Test */,
 				30BE20E51797734425613534 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;

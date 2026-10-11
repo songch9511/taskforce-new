@@ -18,9 +18,9 @@ struct SettingsWindowFlagTests {
 
     /// 격리된 suite에서 켤 때만 새 탭 창
     @Test func flagOnSelectsTheTabbedWindow() throws {
-        let name = "dev.taskforcelabs.tests.settings-window.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: name))
-        defer { defaults.removePersistentDomain(forName: name) }
+        let store = try TestDefaults()
+        defer { store.cleanup() }
+        let defaults = store.defaults
         #expect(MacSettingsRootKind(edgeShell: EdgeShellFlag.isEnabled(defaults)) == .legacy)
         defaults.set(true, forKey: EdgeShellFlag.key)
         #expect(MacSettingsRootKind(edgeShell: EdgeShellFlag.isEnabled(defaults)) == .window)

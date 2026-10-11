@@ -123,11 +123,10 @@ struct LauncherPresentationFixtureRendersTests {
     @Test func writesFullSettingsShellFixturesWithStableSidebar() async throws {
         let directory = FileManager.default.temporaryDirectory.appending(path: "TaskforceLauncherPresentationFixtures")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let previous = UserDefaults.standard.object(forKey: SettingsOpener.tabKey)
-        defer {
-            if let previous { UserDefaults.standard.set(previous, forKey: SettingsOpener.tabKey) }
-            else { UserDefaults.standard.removeObject(forKey: SettingsOpener.tabKey) }
-        }
+        // 설정 창의 마지막 탭(`settings.tab`)은 테스트 소유 suite에 둔다: 호스트의 UserDefaults.standard를 쓰지도 복원하지도 않는다
+        let store = try TestDefaults()
+        defer { store.cleanup() }
+        let defaults = store.defaults
         let userID = UUID()
         let user = User(id: userID, appMetadata: [:], userMetadata: [:], aud: "authenticated", email: "fixture@example.com", createdAt: Date(), updatedAt: Date())
         let authSession = Session(accessToken: "fixture-only", tokenType: "bearer", expiresIn: 3600,
@@ -157,20 +156,20 @@ struct LauncherPresentationFixtureRendersTests {
         #expect(try await services.api.aiBudget().remainingUSD == Decimal(string: "2.25"))
 
         for (scheme, appearance) in [(ColorScheme.light, "light"), (.dark, "dark")] {
-            UserDefaults.standard.set(MacSettingsTab.keyboardShortcuts.rawValue, forKey: SettingsOpener.tabKey)
+            defaults.set(MacSettingsTab.keyboardShortcuts.rawValue, forKey: SettingsOpener.tabKey)
             let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 760, height: 480),
                                   styleMask: [.titled, .closable], backing: .buffered, defer: false)
             window.isReleasedWhenClosed = false
             window.appearance = NSAppearance(named: scheme == .dark ? .darkAqua : .aqua)
             let host = NSHostingView(rootView: MacSettingsView().environment(session).environment(account).environment(runs)
-                .environment(\.services, services).environment(\.colorScheme, scheme))
+                .environment(\.services, services).environment(\.colorScheme, scheme).defaultAppStorage(defaults))
             window.contentView = host
             window.setFrame(NSRect(x: 0, y: 0, width: 760, height: 480), display: true)
             defer { window.close() }
             var baseline: [NSColor]?
             var baselineSize: NSSize?
             for tab in [MacSettingsTab.keyboardShortcuts, .about, .account, .usage] {
-                UserDefaults.standard.set(tab.rawValue, forKey: SettingsOpener.tabKey)
+                defaults.set(tab.rawValue, forKey: SettingsOpener.tabKey)
                 try await Task.sleep(for: .milliseconds(500))
                 window.displayIfNeeded()
                 host.layoutSubtreeIfNeeded()
