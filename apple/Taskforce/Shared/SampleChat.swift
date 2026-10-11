@@ -89,6 +89,17 @@ actor SampleChatGateway: ChatGateway {
 
     // MARK: 쓰기
 
+    /// 서버 쪽 B1이 출처 원문을 지운 모습을 만든다 (스냅샷 전용): 행은 현재로 남고 글 · 값만 비고 version이 오른다
+    func purgeObserved(id: UUID) {
+        guard let index = memory.firstIndex(where: { $0.id == id }) else { return }
+        let item = memory[index]
+        memory[index] = MemoryItem(
+            id: item.id, scopeKind: item.scopeKind, contextID: item.contextID, statement: "", value: .object([:]), origin: item.origin,
+            sourceRef: item.sourceRef, observedAt: item.observedAt, confidence: item.confidence, sourcePurged: true,
+            version: item.version + 1, createdAt: item.createdAt
+        )
+    }
+
     private func writeGate() throws {
         if scenario == .featureOff { throw APIError.server(status: 404, code: .notFound, message: APIError.featureOffMessage) }
     }

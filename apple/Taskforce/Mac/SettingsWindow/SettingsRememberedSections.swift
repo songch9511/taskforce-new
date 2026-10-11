@@ -131,7 +131,7 @@ struct SettingsMemoryDetail: View {
             scopeChoices: memory.canChangeScope(item) ? MemoryText.scopeChoices(for: item, contexts: memory.contexts) : [],
             selectedScope: MemoryText.currentTarget(item), when: WhenText.label(item.observedAt, now: now), source: memory.sourceDisplay(for: item),
             canConfirm: memory.canConfirm(item), canChange: true, isBusy: memory.isBusy(item.id), notice: memory.feedback(for: item.id)?.text,
-            writesUnavailable: memory.writesUnavailable
+            writesUnavailable: memory.writesUnavailable, isInferred: item.origin == .inferred
         )
     }
 }

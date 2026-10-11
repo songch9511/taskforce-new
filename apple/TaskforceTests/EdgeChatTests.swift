@@ -247,6 +247,7 @@ struct EdgeChatTests {
         await runtime.memory.loadSource(for: inferred)
         let tentative = SettingsMemoryDetail.content(for: inferred, memory: runtime.memory)
         #expect(tentative.isTentative && tentative.canConfirm && tentative.kind == "Inferred · Unconfirmed")
+        #expect(tentative.isInferred && RememberedDetail.footnote(for: tentative) != nil)
         #expect(tentative.scopeChoices.isEmpty, "추정의 범위는 바꿀 수 없다 (읽기 전용 Value)")
         #expect(tentative.scopeName == "Shape launch")
         guard case .quote(let quote) = tentative.source else {
@@ -257,6 +258,14 @@ struct EdgeChatTests {
         let plain = SettingsMemoryDetail.content(for: explicit, memory: runtime.memory)
         #expect(!plain.canConfirm && !plain.isTentative && plain.scopeChoices.map(\.name) == ["All work", "Shape launch"])
         #expect(plain.selectedScope == .global && plain.source == .hidden)
+        #expect(!plain.isInferred && RememberedDetail.footnote(for: plain) == nil)
+        // 원문이 지워진 observed(지금 기억): 흐린 글은 그대로, 추정 각주는 없다
+        let purged = MemoryItem(id: AppFixtures.id(3), statement: "", origin: .observed, observedAt: Date(timeIntervalSince1970: 1_791_709_200), sourcePurged: true, version: 2)
+        gateway.memoryRows.append(purged)
+        await runtime.memory.loadList()
+        let purgedContent = SettingsMemoryDetail.content(for: purged, memory: runtime.memory)
+        #expect(purgedContent.isTentative && !purgedContent.isInferred && purgedContent.isCurrent)
+        #expect(RememberedDetail.footnote(for: purgedContent) == nil && purgedContent.statement == "Original text deleted")
         // 접근을 잃은 출처: Confirm이 없고 원문을 열 수 없다고 말한다
         gateway.sources[AppFixtures.sourceID] = AppFixtures.source(accessLost: true)
         await runtime.memory.loadSource(for: inferred)

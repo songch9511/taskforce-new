@@ -120,6 +120,14 @@ enum SettingsSnapshot {
         model.open(.memory(SampleChatIDs.thursdays))
         await settle(1.2)
         await shoot("remembered-detail-observed", false)
+        // 서버 쪽 B1이 출처 원문을 지운 뒤: 같은 행이 목록 · 상세에서 같게 보이고, 추정 각주는 없다
+        await runtime.sampleGateway?.purgeObserved(id: SampleChatIDs.thursdays)
+        await runtime.memory.loadList()
+        await settle(1.2)
+        await shoot("remembered-detail-observed-purged", false)
+        model.open(.remembered)
+        await settle(1.2)
+        await shoot("remembered-list-observed-purged", false)
         model.close()
     }
 

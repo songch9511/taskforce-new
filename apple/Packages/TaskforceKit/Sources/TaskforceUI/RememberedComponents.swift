@@ -238,7 +238,11 @@ public struct RememberedRow: View {
 public struct RememberedDetail: View {
     public struct Content: Equatable {
         public var statement: String
+        /// 문장을 보조 색으로 (확인 전 추정 · 글이 지워진 항목 · 빈 문장)
         public var isTentative: Bool
+        /// origin이 추정이다: 추정 전용 각주("not used … until you confirm")의 조건. 흐린 글 색(`isTentative`)과 다르다 —
+        /// 원문이 지워진 observed도 흐리게 보이지만 확인할 추정이 아니므로 그 각주를 붙이지 않는다
+        public var isInferred: Bool
         /// 지금 기억이 아니다 (충돌 뒤 다시 읽었더니 잊었거나 대체됨): 동작 없이 사실만
         public var isCurrent: Bool
         public var kind: String
@@ -258,10 +262,11 @@ public struct RememberedDetail: View {
         public init(
             statement: String, isTentative: Bool, isCurrent: Bool = true, kind: String, scopeName: String, scopeChoices: [MemoryScopeChoice] = [],
             selectedScope: MemoryTarget? = nil, when: String, source: MemorySourceDisplay, canConfirm: Bool = false, canChange: Bool = true,
-            isBusy: Bool = false, notice: String? = nil, writesUnavailable: Bool = false
+            isBusy: Bool = false, notice: String? = nil, writesUnavailable: Bool = false, isInferred: Bool = false
         ) {
             self.statement = statement
             self.isTentative = isTentative
+            self.isInferred = isInferred
             self.isCurrent = isCurrent
             self.kind = kind
             self.scopeName = scopeName
@@ -308,12 +313,18 @@ public struct RememberedDetail: View {
         self.onOpenURL = onOpenURL
     }
 
+    /// 첫 트레이의 각주: 지금 기억인 **추정**에만 ("Inferred items are not used in any work until you confirm them.").
+    /// 흐린 글(`isTentative`)과 별개다: 원문이 지워진 observed · 빈 문장은 흐리게 보이되 이 각주는 없다
+    nonisolated public static func footnote(for content: Content) -> String? {
+        content.isInferred && content.isCurrent ? MemoryCopy.inferredFootnote : nil
+    }
+
     public var body: some View {
         VStack(alignment: .leading, spacing: SettingsTray.topicGap) {
             if let notice = content.notice {
                 Notice(title: notice)
             }
-            SettingsSection(footnote: content.isTentative && content.isCurrent ? MemoryCopy.inferredFootnote : nil) {
+            SettingsSection(footnote: Self.footnote(for: content)) {
                 statementRow
                 if content.isCurrent {
                     SettingsTrayRow(MemoryCopy.kindLabel) { SettingsValue(content.kind) }

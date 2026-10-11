@@ -37,6 +37,25 @@ struct ChatComponentTests {
         #expect(SourceQuote.metaLine(from: nil, place: nil, time: nil).isEmpty)
     }
 
+    /// 추정 전용 각주는 지금 기억인 inferred에만: 원문이 지워진 observed는 흐리게 보이지만 각주가 없다
+    @Test func inferredFootnoteIsOnlyForCurrentInferredItems() {
+        func content(origin: MemoryOrigin, current: Bool = true, tentative: Bool) -> RememberedDetail.Content {
+            RememberedDetail.Content(
+                statement: "s", isTentative: tentative, isCurrent: current, kind: "k", scopeName: "All work", when: "Oct 6", source: .hidden,
+                isInferred: origin == .inferred
+            )
+        }
+        let note = "Inferred items are not used in any work until you confirm them."
+        #expect(RememberedDetail.footnote(for: content(origin: .inferred, tentative: true)) == note)
+        // 원문이 지워진 observed: 흐린 글은 유지(isTentative), 각주는 없다
+        let purged = content(origin: .observed, tentative: true)
+        #expect(purged.isTentative && RememberedDetail.footnote(for: purged) == nil)
+        #expect(RememberedDetail.footnote(for: content(origin: .explicit, tentative: false)) == nil)
+        #expect(RememberedDetail.footnote(for: content(origin: .observed, tentative: false)) == nil)
+        // 지금 기억이 아닌 추정에는 없다
+        #expect(RememberedDetail.footnote(for: content(origin: .inferred, current: false, tentative: true)) == nil)
+    }
+
     @Test func iconsComeFromTheRoleTable() {
         #expect(TFIcon.newChat.rawValue == "square-pen" && TFIcon.chatHistory.rawValue == "history")
         #expect(TFIcon.send.rawValue == "arrow-up" && TFIcon.project.rawValue == "folder" && TFIcon.popupButton.rawValue == "chevrons-up-down")
