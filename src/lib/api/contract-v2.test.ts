@@ -22,9 +22,14 @@ import {
   bridgeHeartbeatRequestSchema,
   bridgeRegisterRequestSchema,
   CONVERSATION_MESSAGE_MAX_CHARS,
+  contextMemberMoveRequestSchema,
+  contextMemberMoveResponseSchema,
   contextMemberSchema,
   contextMembershipChangeSchema,
+  contextMembershipEffectSchema,
   contextMembershipRequestSchema,
+  contextMembershipResponseSchema,
+  contextMembershipWriteRequestSchema,
   conversationMessageContentSchema,
   conversationMessageSchema,
   conversationSchema,
@@ -436,6 +441,60 @@ describe("범위 (work_contexts · context_members)", () => {
     expect(contextMembershipChangeSchema.safeParse({ ...target, origin: "inferred" }).success).toBe(false);
     expect(contextMembershipChangeSchema.safeParse({ ...target, origin: "auto", confidence: 0.5 }).success).toBe(false);
     expect(contextMembershipChangeSchema.safeParse({ ...target, member_kind: "session", origin: "user" }).success).toBe(false);
+  });
+});
+
+describe("사용자 멤버십 쓰기 (S3b): 조건부 요청 · 실제 변화 응답", () => {
+  const write = { op: "add", member_kind: "action", member_id: U.action, expected_context_version: 4 };
+  const member = {
+    id: U.memory, context_id: U.context, member_kind: "action", action_id: U.action, source_id: null, person_id: null,
+    origin: "user", confidence: null, removed_at: null, created_at: "2026-10-11T05:00:00Z", updated_at: "2026-10-11T05:00:00Z",
+  };
+
+  it("넣기 · 빼기 요청은 본 범위 version을 싣고(필수), origin · confidence는 싣지 않으며, S3b는 할 일(action)만 받는다. A2의 조건 없는 스키마는 그대로다", () => {
+    expect(contextMembershipWriteRequestSchema.parse(write)).toEqual(write);
+    expect(contextMembershipWriteRequestSchema.parse({ ...write, op: "remove" }).op).toBe("remove");
+    for (const bad of [
+      { op: "add", member_kind: "action", member_id: U.action },
+      { ...write, expected_context_version: 0 },
+      { ...write, expected_context_version: 1.5 },
+      { ...write, expected_context_version: "4" },
+      { ...write, op: "move" },
+      { ...write, member_kind: "source" },
+      { ...write, member_kind: "person" },
+      { ...write, origin: "user" },
+    ]) {
+      expect(contextMembershipWriteRequestSchema.safeParse(bad).success, JSON.stringify(bad)).toBe(false);
+    }
+    const unconditional = { op: "add", member_kind: "source", member_id: U.source };
+    expect(contextMembershipRequestSchema.parse(unconditional)).toEqual(unconditional);
+  });
+
+  it("옮기기 요청은 도착(경로) · 출발 범위의 version 둘을 모두 싣는다", () => {
+    const move = { member_kind: "action", member_id: U.action, from_context_id: U.context, expected_context_version: 4, expected_from_context_version: 2 };
+    expect(contextMemberMoveRequestSchema.parse(move)).toEqual(move);
+    for (const bad of [
+      { ...move, expected_from_context_version: undefined },
+      { ...move, expected_context_version: undefined },
+      { ...move, expected_from_context_version: 0 },
+      { ...move, member_kind: "source" },
+      { ...move, op: "remove" },
+    ]) {
+      expect(contextMemberMoveRequestSchema.safeParse(bad).success, JSON.stringify(bad)).toBe(false);
+    }
+  });
+
+  it("응답: member + 쓰기 직후 version + 실제 변화(change). 옮기기 응답은 두 행 · 두 version. change의 version은 양의 정수", () => {
+    const change = { added: [{ context_id: U.context, context_version: 5 }], removed: [] };
+    expect(contextMembershipEffectSchema.parse(change)).toEqual(change);
+    expect(contextMembershipEffectSchema.safeParse({ added: [] }).success).toBe(false);
+    expect(contextMembershipEffectSchema.safeParse({ added: [{ context_id: U.context, context_version: 0 }], removed: [] }).success).toBe(false);
+    const response = { member, context_version: 5, change };
+    expect(contextMembershipResponseSchema.parse(response)).toEqual(response);
+    expect(contextMembershipResponseSchema.safeParse({ member, context_version: 5 }).success).toBe(false);
+    const moved = { member, from_member: { ...member, removed_at: "2026-10-11T06:00:00Z" }, context_version: 5, from_context_version: 3, change: { added: [], removed: [{ context_id: U.context, context_version: 3 }] } };
+    expect(contextMemberMoveResponseSchema.parse(moved)).toEqual(moved);
+    expect(contextMemberMoveResponseSchema.safeParse({ ...moved, from_member: undefined }).success).toBe(false);
   });
 });
 
