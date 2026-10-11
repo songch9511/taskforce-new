@@ -620,8 +620,13 @@ struct EdgeReviewModelTests {
         await rig.harness.server.scriptEvidence(500)
         await rig.desk.loadSource(for: action, presentation: rig.shell.reviewPresentation)
         #expect(rig.desk.source(for: id) == .failed)
-        // Try again이 새로 확인한다
-        await rig.desk.retrySource(for: action, presentation: rig.shell.reviewPresentation)
+        // Try again이 새로 확인한다: 다시 시도하는 동안에도 전에 읽은 인용을 보이지 않는다
+        await rig.harness.server.holdEvidence()
+        let retry = Task { await rig.desk.retrySource(for: action, presentation: rig.shell.reviewPresentation) }
+        #expect(await rig.harness.wait { await rig.harness.server.pendingEvidenceReads() == 1 })
+        #expect(rig.desk.source(for: id) == .loading, "retry 중에 옛 인용이 다시 나오지 않는다")
+        await rig.harness.server.releaseAllEvidence()
+        await retry.value
         guard case .lines(let lines) = rig.desk.source(for: id) else {
             Issue.record("quote expected after Try again")
             return
