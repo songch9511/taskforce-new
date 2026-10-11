@@ -425,7 +425,7 @@ struct EdgeReviewModelTests {
         // 보내는 중: 항목은 그대로, 진행 표시, 완료 표시 없음
         #expect(rig.shell.shownReview?.id == rig.id(2) && rig.desk.sending[rig.id(2)] == .confirm)
         // 같은 항목에 반복 · 다른 답 · 다시 클릭: 보내지 않는다
-        #expect(rig.shell.answer(.confirm, for: rig.id(2)) != nil, "셸은 막지 않는다: 책상이 항목당 하나를 지킨다")
+        #expect(rig.shell.answer(.confirm, for: rig.id(2)) == nil, "받는 경계에서 이미 보내는 항목은 거절된다 (반복 키 · 중복 클릭)")
         await rig.harness.server.release(rig.id(2))
         #expect(await task.value == .applied)
         rig.sync()
@@ -483,6 +483,146 @@ struct EdgeReviewModelTests {
         #expect(again == .applied)
         #expect(rig.desk.notice == nil)
         #expect(await rig.harness.server.arrived(rig.id(1)) == 2)
+    }
+
+    // MARK: 클릭 · 키를 받은 뒤 전송 직전까지 (Codex 9d0cc95 검토 P2-D): 동기 경계에서 계정 · 화면 · 항목 소유권을 잡고 보내기 직전에 다시 본다
+
+    /// 클릭을 받아 예약만 된 상태(Task는 아직 시작하지 않았다)를 만든다: 테스트는 MainActor라 이 함수 안에서 양보하지 않는 한 예약된 Task가 시작하지 않는다
+    private func queued(_ rig: ReviewRig, _ answer: ReviewAnswer = .confirm, for id: UUID) throws -> Task<ReviewWriteResult, Never> {
+        try #require(rig.shell.answer(answer, for: id))
+    }
+
+    @Test(arguments: [false, true])
+    func aClickQueuedBeforeAnAccountChangeSendsNothingUnderTheNewSession(differentAccount: Bool) async throws {
+        let rig = try await ReviewRig.make()
+        rig.shell.openReview(itemID: rig.id(2))
+        let task = try queued(rig, for: rig.id(2))
+        // Task가 시작하기 전에 계정이 떠났다 (같은 UUID 재로그인 · 다른 계정)
+        if differentAccount { try rig.harness.switchAccount() } else { rig.harness.reloginSameUser() }
+
+        #expect(await task.value == .ignored)
+        #expect(await rig.harness.server.arrived(rig.id(2)) == 0, "옛 세션의 클릭이 새 세션으로 나가지 않는다")
+        #expect(rig.desk.sending.isEmpty && rig.desk.notice == nil && rig.harness.store.busy.isEmpty)
+        // 새 세션은 영향이 없다: 같은 항목은 아직 Review에 있고, 새 세션의 사용자 선택은 그대로 한 번 나간다
+        await rig.harness.store.load()
+        rig.sync()
+        #expect(rig.ids.contains(rig.id(2)))
+        rig.shell.openReview(itemID: rig.id(2))
+        #expect(try await rig.answered(.confirm, rig.id(2)) == .applied)
+        #expect(await rig.harness.server.arrived(rig.id(2)) == 1)
+    }
+
+    @Test func aClickQueuedBeforeTheItemLeavesTheQueueOrThePanelClosesSendsNothing() async throws {
+        // 큐에서 항목이 빠졌다 (다른 기기가 처리)
+        var rig = try await ReviewRig.make()
+        rig.shell.openReview(itemID: rig.id(2))
+        var task = try queued(rig, for: rig.id(2))
+        rig.shell.update(EdgeWorkSnapshot(review: rig.shell.reviewQueue.items.filter { $0.id != rig.id(2) }, load: .loaded(problem: nil)))
+        #expect(await task.value == .ignored)
+        #expect(await rig.harness.server.arrived(rig.id(2)) == 0 && rig.desk.sending.isEmpty)
+
+        // 패널이 닫혔다
+        rig = try await ReviewRig.make()
+        rig.shell.openReview(itemID: rig.id(2))
+        task = try queued(rig, for: rig.id(2))
+        rig.shell.dismiss()
+        #expect(await task.value == .ignored)
+        #expect(await rig.harness.server.arrived(rig.id(2)) == 0 && rig.desk.sending.isEmpty)
+
+        // 다른 화면으로 옮겼다
+        rig = try await ReviewRig.make()
+        rig.shell.openReview(itemID: rig.id(2))
+        task = try queued(rig, for: rig.id(2))
+        rig.shell.openAllWork()
+        #expect(await task.value == .ignored)
+        #expect(await rig.harness.server.arrived(rig.id(2)) == 0 && rig.desk.sending.isEmpty)
+
+        // 닫았다 다시 열었다 = 다른 방문: 옛 클릭은 새 방문의 것이 아니다
+        rig = try await ReviewRig.make()
+        rig.shell.openReview(itemID: rig.id(2))
+        task = try queued(rig, for: rig.id(2))
+        rig.shell.dismiss()
+        rig.shell.openReview(itemID: rig.id(2))
+        #expect(await task.value == .ignored)
+        #expect(await rig.harness.server.arrived(rig.id(2)) == 0)
+
+        // 오프라인이 됐다
+        rig = try await ReviewRig.make()
+        rig.shell.openReview(itemID: rig.id(2))
+        task = try queued(rig, for: rig.id(2))
+        rig.shell.update(EdgeWorkSnapshot(review: rig.shell.reviewQueue.items, load: .loaded(problem: .offline)))
+        #expect(await task.value == .ignored)
+        #expect(await rig.harness.server.arrived(rig.id(2)) == 0)
+    }
+
+    @Test func aClickQueuedBeforeAnotherItemTookTheScreenSendsNothingToAnyItem() async throws {
+        let rig = try await ReviewRig.make()
+        rig.shell.openReview(itemID: rig.id(2))
+        let task = try queued(rig, for: rig.id(2))
+        // 큐가 바뀌어 보이는 항목이 다른 것이 됐다 (보던 2가 빠지고 3이 이어받음): 3에도 가지 않는다
+        rig.shell.update(EdgeWorkSnapshot(review: rig.shell.reviewQueue.items.filter { $0.id != rig.id(2) }, load: .loaded(problem: nil)))
+        #expect(rig.shell.shownReview?.id == rig.id(3))
+        #expect(await task.value == .ignored)
+        #expect(await rig.harness.server.arrived(rig.id(2)) == 0)
+        #expect(await rig.harness.server.arrived(rig.id(3)) == 0)
+    }
+
+    // 대조: 같은 상황이어도 유효한 상호작용은 그대로 한 번 나간다
+
+    @Test func aTokenRefreshOrAReorderBeforeDispatchStillSendsExactlyOnce() async throws {
+        let rig = try await ReviewRig.make()
+        rig.shell.openReview(itemID: rig.id(2))
+        let task = try queued(rig, for: rig.id(2))
+        // 같은 계정의 토큰 갱신(epoch 그대로) + 큐 순서 변화(보던 항목은 id 그대로)
+        try rig.harness.refreshToken()
+        rig.shell.update(EdgeWorkSnapshot(review: rig.shell.reviewQueue.items.reversed(), load: .loaded(problem: nil)))
+        #expect(rig.shell.shownReview?.id == rig.id(2))
+        #expect(await task.value == .applied)
+        #expect(await rig.harness.server.arrived(rig.id(2)) == 1)
+        #expect(await rig.harness.server.writeCount("confirm", for: rig.id(2)) == 1)
+    }
+
+    @Test func steppingAwayAndBackBeforeDispatchStillSendsAndOrdinaryFollowUpsEachSendOnce() async throws {
+        let rig = try await ReviewRig.make()
+        rig.shell.openReview(itemID: rig.id(2))
+        let task = try queued(rig, for: rig.id(2))
+        rig.shell.stepReview(1)
+        rig.shell.stepReview(-1)
+        #expect(rig.shell.shownReview?.id == rig.id(2))
+        #expect(await task.value == .applied)
+        rig.sync()
+        // 정상 연속 상호작용: 다음 항목에 다시 고르면 그 항목으로 한 번
+        #expect(rig.shell.shownReview?.id == rig.id(3))
+        #expect(try await rig.answered(.dismiss, rig.id(3)) == .applied)
+        #expect(await rig.harness.server.writeCount() == 2)
+        #expect(await rig.harness.server.arrived(rig.id(2)) == 1)
+        #expect(await rig.harness.server.arrived(rig.id(3)) == 1)
+    }
+
+    @Test func twoClicksInTheSameTurnQueueOneWrite() async throws {
+        let rig = try await ReviewRig.make()
+        rig.shell.openReview(itemID: rig.id(2))
+        let first = rig.shell.answer(.confirm, for: rig.id(2))
+        let second = rig.shell.answer(.dismiss, for: rig.id(2))
+        let third = rig.shell.answer(.confirm, for: rig.id(2))
+        #expect(first != nil && second == nil && third == nil, "예약된 항목에는 겹쳐 받지 않는다")
+        #expect(await first?.value == .applied)
+        #expect(await rig.harness.server.arrived(rig.id(2)) == 1)
+    }
+
+    @Test func aRequestThatAlreadyStartedKeepsItsTruthfulResultWhateverHappensToTheScreenAfterward() async throws {
+        let rig = try await ReviewRig.make()
+        rig.shell.openReview(itemID: rig.id(2))
+        await rig.harness.server.hold(rig.id(2))
+        let task = try queued(rig, for: rig.id(2))
+        #expect(await rig.harness.wait { await rig.harness.server.arrived(rig.id(2)) == 1 })
+        // 이미 서버로 나간 뒤에는 패널을 닫고 화면을 옮겨도 취소하지 않는다 (서버가 받았는지 모를 요청을 버리지 않는다)
+        rig.shell.dismiss()
+        rig.shell.openAllWork()
+        await rig.harness.server.release(rig.id(2))
+        #expect(await task.value == .applied)
+        #expect(rig.desk.sending.isEmpty && rig.harness.store.busy.isEmpty)
+        #expect(await rig.harness.server.writeCount("confirm", for: rig.id(2)) == 1)
     }
 
     // MARK: 계정 · 세션

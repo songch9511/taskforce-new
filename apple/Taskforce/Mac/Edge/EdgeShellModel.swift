@@ -432,12 +432,22 @@ final class EdgeShellModel {
         reviewID = reviewQueue.resolving(reviewID, previous: previous)
     }
 
-    /// 사용자가 고른 답 하나 (클릭 · 1/2 키). `id`는 사용자가 본 항목의 id다: 큐가 바뀌었어도 그 항목에만 가고, 이제 큐에 없으면 아무것도 보내지 않는다.
-    /// 오프라인이거나 Review가 보이지 않으면 보내지 않는다 (나중에 보내려고 모아 두지 않는다)
+    /// 사용자가 고른 답 하나 (클릭 · 1/2 키). `id`는 사용자가 본 항목의 id다: 지금 보이는 결정이 아니면(큐가 바뀌어 빠졌거나 다른 항목이 보임) 아무것도 하지 않는다.
+    /// 오프라인이거나 Review가 보이지 않으면 보내지 않는다 (나중에 보내려고 모아 두지 않는다).
+    /// **받는 이 동기 경계에서** 계정 token · 항목 · 이 방문(`reviewPresentation`)을 잡고, 예약된 작업이 실제로 보내기 직전에 다시 본다 (`ReviewDesk.send`):
+    /// 그 사이 계정이 바뀌었거나(같은 UUID 재로그인 포함) 패널이 닫히고 화면이 옮겨지고 항목이 큐에서 빠지거나 더는 보이는 결정이 아니면 쓰기 0이다
     @discardableResult
     func answer(_ answer: ReviewAnswer, for id: UUID) -> Task<ReviewWriteResult, Never>? {
-        guard let review, panelOpen, view == .review, reviewScreen.canAnswer, reviewQueue.contains(id) else { return nil }
-        return Task { await review.answer(answer, for: id) }
+        guard let review, panelOpen, view == .review, reviewScreen.canAnswer, shownReview?.id == id,
+              let ticket = review.begin(answer, for: id) else { return nil }
+        let presentation = reviewPresentation
+        return Task { [weak self] in
+            await review.send(ticket) {
+                guard let self else { return false }
+                return self.panelOpen && self.view == .review && self.reviewPresentation == presentation
+                    && self.reviewScreen.canAnswer && self.shownReview?.id == id
+            }
+        }
     }
 
     /// Esc: 안쪽 것(열린 필터 카드 · Chats의 대화 목록)을 먼저 닫고, 그다음 패널을 접는다 (디자인 Focus and keys)

@@ -10,8 +10,10 @@ import TaskforceKit
 /// - 항목당 요청 하나: 이미 보내는 항목에는 보내지 않는다 (반복 키 · 중복 클릭 → 1회). `NowStore.answerReview`가 같은 규칙을 한 번 더 지킨다.
 /// - 성공은 서버가 받았다는 응답뿐이다. 실패 · 409 · 응답 유실은 자동으로 다시 보내지 않고 `/now`를 다시 읽어 지금 상태를 보이며, 안내를 남긴다.
 ///   목록에서 항목이 사라졌다는 사실은 내 요청의 성공 증거가 아니다 (그래서 안내는 항목이 사라져도 남는다).
-/// - 계정 경계: 쓰기를 시작할 때 `AccountScope` token을 잡고, 응답 뒤 · 후속 읽기 뒤에 다시 본다. 같은 UUID 재로그인 · 다른 계정 · 로그아웃이면 옛 요청의 결과는
+/// - 계정 경계: 선택을 **받는 동기 경계**(`begin`)에서 `AccountScope` token · 항목 · 쓰기 번호를 잡고, **보내기 직전**(`send`)과 응답 뒤 · 후속 읽기 뒤에 다시 본다.
+///   받은 뒤 예약된 작업이 시작하기 전에 같은 UUID 재로그인 · 다른 계정 · 로그아웃이 있었거나 화면이 달라졌으면 쓰기 0이고, 옛 요청의 결과는
 ///   새 세션의 진행 표시 · 안내를 건드리지 못한다 (항목마다 쓰기 번호, B3 `MemoryStore` · S3b `WorkContextStore`와 같은 방식).
+///   이미 서버로 나간 요청은 취소하지 않는다: 같은 epoch의 토큰 갱신 · 화면 이동에도 정직한 결과를 돌려준다
 @MainActor
 @Observable
 final class ReviewDesk {
@@ -60,25 +62,43 @@ final class ReviewDesk {
 
     func clearNotice() { notice = nil }
 
-    /// 고른 답 하나를 보낸다. 보내지 않았으면 `.ignored`
-    @discardableResult
-    func answer(_ answer: ReviewAnswer, for id: UUID) async -> ReviewWriteResult {
-        guard let token = scope.token, sending[id] == nil else { return .ignored }
+    /// 사용자가 고른 답 하나를 **받은 순간**(클릭 · 키, 동기 경계)에 잡아 둔 것: 그때의 계정 token · 항목 · 쓰기 번호.
+    /// 예약된 작업이 나중에 시작해도 그동안 계정이 바뀌었거나 화면이 달라졌다면 옛 선택은 새 상태로 나가지 않는다 (`send`가 보내기 직전에 다시 본다)
+    struct Ticket {
+        let id: UUID
+        let answer: ReviewAnswer
+        fileprivate let token: AccountScope.Token
+        fileprivate let owner: Int
+    }
+
+    /// 선택을 받는 동기 경계: 계정 token을 잡고 이 항목을 "보내는 중"으로 올린다. 이미 보내는 항목이거나 로그인 세션이 없으면 nil (반복 키 · 중복 클릭은 여기서 한 번만 통과)
+    func begin(_ answer: ReviewAnswer, for id: UUID) -> Ticket? {
+        guard let token = scope.token, sending[id] == nil else { return nil }
         counter += 1
         let owner = counter
         owners[id] = owner
         sending[id] = answer
         notice = nil
+        return Ticket(id: id, answer: answer, token: token, owner: owner)
+    }
+
+    /// 받아 둔 선택을 보낸다. **보내기 직전에** 다시 본다: 계정 token이 그대로(같은 UUID 재로그인 · 다른 계정이면 달라진다, 같은 계정의 토큰 갱신은 그대로)이고,
+    /// 이 선택의 쓰기 번호가 살아 있고(`reset()`이 비우면 죽는다), 호출한 쪽의 `isStillValid`(패널 · Review 화면 · 이 항목이 아직 보이는 결정인지)가 참일 때만 보낸다.
+    /// 하나라도 어긋나면 쓰기 0 · `.ignored`다 (자기 번호일 때만 진행 표시를 거둔다). 이미 시작한 요청은 취소하지 않는다: 서버가 받았는지 모르는 요청을 버리지 않고 정직한 결과를 돌려준다
+    @discardableResult
+    func send(_ ticket: Ticket, isStillValid: () -> Bool) async -> ReviewWriteResult {
+        let id = ticket.id
         // 세션이 바뀌면 `reset()`이 진행 표시를 비우고 새 세션이 같은 항목에 새 요청을 잡을 수 있다: 이 요청이 잡은 것일 때만 푼다
         defer {
-            if owners[id] == owner {
+            if owners[id] == ticket.owner {
                 owners[id] = nil
                 sending[id] = nil
             }
         }
-        let result = await now.answerReview(id, answer)
+        guard scope.isCurrent(ticket.token), owners[id] == ticket.owner, isStillValid() else { return .ignored }
+        let result = await now.answerReview(id, ticket.answer)
         // 응답이 오는 사이(후속 `/now` 읽기 포함) 계정이 떠났거나 이 항목에 더 새 요청이 잡혔다면 어떤 결과도 반영하지 않는다
-        guard scope.isCurrent(token), owners[id] == owner else { return .ignored }
+        guard scope.isCurrent(ticket.token), owners[id] == ticket.owner else { return .ignored }
         switch result {
         case .applied, .ignored:
             break
