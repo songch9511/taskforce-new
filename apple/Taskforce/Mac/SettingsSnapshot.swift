@@ -128,7 +128,10 @@ enum SettingsSnapshot {
         model.open(.remembered)
         await settle(1.2)
         await shoot("remembered-list-observed-purged", false)
+        // 다음 바퀴(Dark)가 처음 데이터에서 시작하도록: 가짜 서버 기억을 되돌리고 저장소 캐시를 비운다
         model.close()
+        await runtime.sampleGateway?.restoreMemory()
+        runtime.memory.reset()
     }
 
     /// 그 탭을 마지막 탭으로 적고 창 밖에서 연다 (More 메뉴와 같은 길)

@@ -100,6 +100,11 @@ actor SampleChatGateway: ChatGateway {
         )
     }
 
+    /// 스냅샷이 Light · Dark 두 번 돌 때 두 번째 바퀴가 처음 데이터에서 시작하게 기억을 되돌린다 (대화는 건드리지 않는다)
+    func restoreMemory() {
+        memory = SampleChatIDs.memory
+    }
+
     private func writeGate() throws {
         if scenario == .featureOff { throw APIError.server(status: 404, code: .notFound, message: APIError.featureOffMessage) }
     }
