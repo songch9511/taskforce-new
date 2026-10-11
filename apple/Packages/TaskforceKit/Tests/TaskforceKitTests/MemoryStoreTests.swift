@@ -519,6 +519,77 @@ struct MemoryStoreTests {
         #expect(memory.item(v1.id)?.id == v1.id)
     }
 
+    // MARK: 원문을 지워도 지금 기억인 행 (실제 B1 observed purge: `revoked_at` 없이 글 · value 비움 · source_purged · version++)
+
+    func observedPurge(_ n: Int, version: Int = 2) -> MemoryItem {
+        Memories.item(n, origin: .observed, sourceRef: MemorySourceRef(sourceID: ChatContractFixtures.sourceID, quote: "Synthetic quote"), version: version, purged: true)
+    }
+
+    /// 비-revoked observed purge: 목록 · 노트 · 상세가 같은 행(빈 글 · source_purged)을 보이고, 그 행을 잊은 것처럼 빼지 않는다 (서버 의미 불변)
+    @Test func anActiveObservedPurgeShowsTheSameRowInListNoteAndDetail() async throws {
+        let other = Memories.item(802, "Other memory", at: -50)
+        let original = Memories.item(801, "Synthetic observed source text", origin: .observed, sourceRef: MemorySourceRef(sourceID: ChatContractFixtures.sourceID, quote: "Synthetic quote"))
+        let purged = observedPurge(801)
+        gateway.currentMemoryHandler = { [original, other] }
+        let memory = store()
+        await memory.loadList()
+        #expect(memory.items.map(\.id) == [original.id, other.id])
+        gateway.memoryItemsHandler = { _ in [purged] }
+        await memory.loadReferenced(ids: [original.id])
+        // 목록: 같은 자리에서 새 행으로 (정렬 유지, 빠지지 않는다)
+        #expect(memory.items.map(\.id) == [original.id, other.id])
+        let listed = try #require(memory.items.first { $0.id == original.id })
+        #expect(listed.version == 2 && listed.statement.isEmpty && listed.sourcePurged && listed.isCurrent && listed.revokedAt == nil)
+        // 노트 · 상세
+        #expect(memory.noteState(for: original.id) == .current(purged))
+        #expect(memory.item(original.id) == purged)
+        for row in [listed, try #require(memory.item(original.id))] {
+            #expect(MemoryText.statement(row) == "Original text deleted")
+        }
+        #expect(memory.sourceDisplay(for: purged) == .unavailable("Original text deleted"))
+    }
+
+    /// 늦게 끝난 옛 목록 응답(글이 남은 v1)이 더 새 purged 행을 되돌리지 않는다
+    @Test func aLateOlderListResponseDoesNotRevertANewerPurgedRow() async throws {
+        let original = Memories.item(803, "Synthetic observed source text", origin: .observed)
+        let purged = observedPurge(803)
+        let latch = Latch()
+        gateway.currentMemoryHandler = {
+            await latch.wait()
+            return [original]
+        }
+        let memory = store()
+        let old = Task { await memory.loadList() }
+        while await latch.arrivals == 0 { await Task.yield() }
+        gateway.memoryItemsHandler = { _ in [purged] }
+        await memory.loadReferenced(ids: [original.id])
+        await latch.open()
+        await old.value
+        #expect(memory.items.map(\.statement) == [""], "목록이 옛 글을 되살리지 않는다")
+        #expect(memory.items.first?.sourcePurged == true && memory.item(original.id) == purged)
+        #expect(memory.noteState(for: original.id) == .current(purged))
+    }
+
+    /// 반대 순서: 늦게 끝난 옛 참조 응답(v1)이 더 새로 읽은 목록 행(purged v2)을 되돌리지 않는다
+    @Test func aLateOlderReferencedResponseDoesNotRevertANewerListedPurgedRow() async throws {
+        let original = Memories.item(804, "Synthetic observed source text", origin: .observed)
+        let purged = observedPurge(804)
+        let latch = Latch()
+        gateway.memoryItemsHandler = { _ in
+            await latch.wait()
+            return [original]
+        }
+        let memory = store()
+        let old = Task { await memory.loadReferenced(ids: [original.id]) }
+        while await latch.arrivals == 0 { await Task.yield() }
+        gateway.currentMemoryHandler = { [purged] }
+        await memory.loadList()
+        await latch.open()
+        await old.value
+        #expect(memory.items.map(\.statement) == [""] && memory.item(original.id) == purged)
+        #expect(memory.noteState(for: original.id) == .current(purged))
+    }
+
     /// 늦게 끝난 옛 참조 읽기는 더 새 행을 덮지 못한다
     @Test func aLateOlderReferencedReadDoesNotOverwriteANewerRow() async throws {
         let v1 = Memories.item(708, "Synthetic memory", origin: .observed)

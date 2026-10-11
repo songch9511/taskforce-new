@@ -227,13 +227,21 @@ public final class MemoryStore {
         reconcileItems()
     }
 
-    /// 목록 캐시에서 더 새로 읽은 행이 "지금 기억이 아니다"라고 한 것을 뺀다 (잊음 · 대체 · 원문 지움으로 version이 오른 행, 지워진 행)
+    /// 목록 캐시를 더 새로 읽은 행에 맞춘다 (`items`는 Settings 목록이 그대로 그린다):
+    /// - 더 새로 읽은 행이 지금 기억이 아니면(잊음 · 대체) 뺀다, 읽어 보니 없는 행도 뺀다
+    /// - 더 새로 읽은 행이 **여전히 지금 기억이면**(예: 원문을 지운 observed는 `revoked_at` 없이 글만 비우고 version이 오른다) 그 행으로 갈아 끼운다.
+    ///   빼거나 잊은 것처럼 다루지 않는다 (서버 의미 불변). 그래야 목록 · 노트 · 상세가 같은 행을 보인다
     private func reconcileItems() {
-        items.removeAll { listed in
-            if missing.contains(listed.id), (referencedStamp[listed.id] ?? 0) > listStamp { return true }
-            if let known = referenced[listed.id], known.version > listed.version, !known.isCurrent { return true }
-            return false
+        var next: [MemoryItem] = []
+        for listed in items {
+            if missing.contains(listed.id), (referencedStamp[listed.id] ?? 0) > listStamp { continue }
+            if let known = referenced[listed.id], known.version > listed.version {
+                if known.isCurrent { next.append(known) }
+                continue
+            }
+            next.append(listed)
         }
+        if next != items { items = Self.sorted(next) }
     }
 
     private func readContextNames(token: AccountScope.Token) async throws {
