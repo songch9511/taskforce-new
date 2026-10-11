@@ -50,6 +50,13 @@ final class NowStore {
 
     /// 겹쳐 부른 불러오기 중 마지막 것만 반영한다 (늦게 온 옛 응답이 새 응답을 덮지 않게)
     private var loadSequence = 0
+    /// busy를 잡은 쓰기의 번호 (할 일마다). 쓰기가 끝날 때 자기 것일 때만 busy를 푼다: 같은 UUID로 다시 로그인해 `reset()`이 busy를 비운 뒤
+    /// 새 세션이 같은 할 일에 새 요청을 잡았을 때, 옛 요청이 늦게 끝나며 새 요청의 busy를 지우지 않게 한다 (B3 `MemoryStore` · S3b `WorkContextStore`와 같은 방식)
+    @ObservationIgnored private var busyOwner: [UUID: Int] = [:]
+    @ObservationIgnored private var busyCounter = 0
+    /// 서버가 200으로 받은 Review 답(`answerReview`): 그 뒤 시작한 불러오기(값 = 그 번호)가 반영되기 전에는 Review에 다시 보이지 않는다.
+    /// 아직 가진 목록이 이 답보다 오래된 것이어서, 이미 처리한 항목을 다시 답할 수 있게 두지 않으려는 것이다. 새 목록이 오면 그 목록이 진실이다 (다시 있으면 다시 보인다)
+    private var answered: [UUID: Int] = [:]
     /// `reset()`마다 오른다: 로그아웃 · 계정 전환 전에 보낸 요청의 늦은 결과(근거 · 오류 문구 · 클립보드)를 버린다
     private var generation = 0
     @ObservationIgnored private var sourceServicesTask: Task<Void, Never>?
@@ -99,6 +106,29 @@ final class NowStore {
         refresh.pathChanged(online: false, at: since)
     }
 
+    /// 견본(`-TFSampleData`)의 Review 답: 서버 없이 `sampleReview` 시나리오대로 결과를 정한다 (실제 서버 · 계정 호출 없음, 렌더 fixture).
+    /// 받았다고 하면 그 항목을 Review에서 뺀다 (견본은 목록을 다시 읽지 않으므로 계속)
+    @ObservationIgnored var sampleReview: (@MainActor (UUID, ReviewAnswer) async -> ReviewWriteResult)?
+
+    private func sampleReviewAnswer(_ id: UUID, _ answer: ReviewAnswer) async -> ReviewWriteResult {
+        guard !busy.contains(id) else { return .ignored }
+        busy.insert(id)
+        busyCounter += 1
+        let owner = busyCounter
+        busyOwner[id] = owner
+        defer {
+            if busyOwner[id] == owner {
+                busyOwner[id] = nil
+                busy.remove(id)
+            }
+        }
+        let generation = generation
+        let result = await sampleReview?(id, answer) ?? .applied
+        guard generation == self.generation else { return .ignored }
+        if result == .applied { answered[id] = Int.max }
+        return result
+    }
+
     /// 견본: 서버 없이 진행 상태 바꾸기를 바로 목록에 반영한다
     private func commitSample() {
         let board = self.board
@@ -140,6 +170,8 @@ final class NowStore {
         loadError = nil
         loaded = false
         busy = []
+        busyOwner = [:]
+        answered = [:]
         pending = [:]
         writes = [:]
         stateBeforeDone = [:]
@@ -185,8 +217,15 @@ final class NowStore {
         TaskBoard(now: response, doneToday: doneToday).applying(pending.mapValues(\.change))
     }
 
-    /// Review · In Progress · To Do · Done Today
-    var sections: TaskSections { board.sections() }
+    /// Review · In Progress · To Do · Done Today.
+    /// 서버가 받았다고 답한 Review 답(`answered`)의 항목은 더 새 목록이 올 때까지 Review에서 뺀다
+    var sections: TaskSections {
+        let sections = board.sections()
+        guard !answered.isEmpty else { return sections }
+        return TaskSections(
+            review: sections.review.filter { answered[$0.id] == nil }, inProgress: sections.inProgress, toDo: sections.toDo, doneToday: sections.doneToday
+        )
+    }
 
     func load() async {
         #if DEBUG
@@ -209,6 +248,8 @@ final class NowStore {
             let done = await doneRows
             guard sequence == loadSequence else { return }
             self.response = response
+            // 이 불러오기 이후에 시작된(같거나 더 큰 번호) 목록이 반영됐으니, 그 전의 Review 답은 이 목록이 말해 준다
+            answered = answered.filter { $0.value > sequence }
             if let done {
                 doneToday = done
                 doneTodaySince = doneSince
@@ -344,6 +385,19 @@ final class NowStore {
     /// 확인 요청 Dismiss = 삭제 (서버가 취소로 둔다)
     func dismiss(_ id: UUID) async { await act(id) { try await $0.deleteAction(id: id) } }
 
+    /// Review(S4)의 답 하나: 위 `confirm` · `dismiss`와 같은 v1 쓰기 둘뿐이다. 다른 점은 결과를 돌려주고, 항목당 요청 하나를 지키고,
+    /// 서버가 받았으면 그 항목을 더 새 목록이 올 때까지 Review에서 빼는 것이다 (`answered`).
+    /// 자동으로 다시 보내지 않는다. 실패 · 409 · 응답 유실이어도 `/now`를 다시 읽어 지금 상태를 보이고, 결과는 호출한 쪽이 정직하게 말한다
+    func answerReview(_ id: UUID, _ answer: ReviewAnswer) async -> ReviewWriteResult {
+        #if DEBUG
+        if sampleMode { return await sampleReviewAnswer(id, answer) }
+        #endif
+        switch answer {
+        case .confirm: return await act(id, review: true) { try await $0.confirmAction(id: id) }
+        case .dismiss: return await act(id, review: true) { try await $0.deleteAction(id: id) }
+        }
+    }
+
     func setDue(_ id: UUID, _ due: LocalDate?) async {
         await act(id) { try await $0.editAction(id: id, ActionEdit(due: due.map(ActionEdit.DueChange.set) ?? .clear)) }
     }
@@ -427,16 +481,69 @@ final class NowStore {
         }
     }
 
-    private func act(_ id: UUID, _ call: (APIClient) async throws -> ActionSummary) async {
+    /// 확인 요청 쓰기 하나. 요청이 끝나면(성공이든 실패든) 목록을 다시 읽는다.
+    /// - review: Review(S4)의 답이다: 항목당 요청 하나(이미 보내는 항목이면 보내지 않는다)를 지키고, 안내는 호출한 쪽이 하므로 `message`를 건드리지 않으며,
+    ///   서버가 받았으면 그 항목을 Review에서 뺀다 (`answered`). 아니면 구 소비자(구 런처)의 동작 그대로다
+    /// - 계정이 떠났으면(`reset()`) 어떤 결과든 `.ignored`: 옛 요청의 후속 조회 · 결과가 새 세션의 busy · 목록 · 메시지를 건드리지 않는다
+    @discardableResult
+    private func act(_ id: UUID, review: Bool = false, _ call: (APIClient) async throws -> ActionSummary) async -> ReviewWriteResult {
+        if review, busy.contains(id) { return .ignored }
         busy.insert(id)
-        defer { busy.remove(id) }
+        busyCounter += 1
+        let owner = busyCounter
+        busyOwner[id] = owner
+        defer {
+            if busyOwner[id] == owner {
+                busyOwner[id] = nil
+                busy.remove(id)
+            }
+        }
         let generation = generation
+        var result = ReviewWriteResult.applied
         do {
             _ = try await call(services.api)
+            // 이 답이 서버에 적용됐다: 이제부터 시작하는 불러오기가 반영되기 전까지 옛 목록의 이 항목은 Review에 보이지 않는다
+            if review, generation == self.generation { answered[id] = loadSequence + 1 }
         } catch {
-            if generation == self.generation { message = error.userMessage }
+            if generation == self.generation {
+                if !review { message = error.userMessage }
+                result = ReviewWriteResult(failure: error)
+            }
         }
-        guard generation == self.generation else { return }
+        guard generation == self.generation else { return .ignored }
         await load()
+        return generation == self.generation ? result : .ignored
+    }
+}
+
+/// Review 답 하나를 보낸 결과 (`NowStore.answerReview`). 성공은 서버가 받았다는 응답뿐이다: 목록에서 항목이 사라졌다는 것은 성공의 증거가 아니다
+enum ReviewWriteResult: Equatable {
+    /// 서버가 받았다 (2xx + 읽을 수 있는 응답)
+    case applied
+    /// 서버가 이 요청을 적용하지 않았다 (4xx: 409 · 404 · 권한 · 한도 · 로그인): 보일 한 줄
+    case rejected(String)
+    /// 서버가 처리했는지 알 수 없다 (응답 유실 · 서버 오류 · 읽을 수 없는 응답 · 중단): 자동으로 다시 보내지 않는다
+    case unverified
+    /// 보내지 않았다 (이미 보내는 항목) 또는 그사이 계정이 떠났다
+    case ignored
+
+    init(failure error: Error) {
+        if let api = error as? APIError {
+            switch api {
+            case .notSignedIn:
+                // 요청을 보내지 못했다 (로그인 세션이 없음)
+                self = .rejected(api.userMessage)
+                return
+            case .server(let status, _, _), .unexpectedStatus(let status):
+                // 4xx = 서버(또는 앞단)가 이 요청을 적용하지 않았다. 5xx는 처리한 뒤의 오류일 수 있다
+                if (400..<500).contains(status) {
+                    self = .rejected(api.userMessage)
+                    return
+                }
+            case .decoding, .transport:
+                break
+            }
+        }
+        self = .unverified
     }
 }
