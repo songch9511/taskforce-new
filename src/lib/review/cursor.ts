@@ -8,7 +8,7 @@ import { RETURN_SUMMARY_MAX_WORKS } from "./review.config";
 //  - p: 조회가 **잘렸을 때만**, 보인 작업의 id(최대 RETURN_SUMMARY_MAX_WORKS개, 16바이트 id를 base64url 22글자씩 이어 붙인다). Clear는 그 작업들의 사건만 읽음으로 표시한다 —
 //    보이지 않은 작업은 읽음이 아니다. 집합을 Clear 때 다시 계산하지 않고 실어 나르는 이유: 순위가 읽음 표시에 의존하므로 Clear가 적용된 뒤의 재시도 · 다른 기기의 Clear가 끼면
 //    같은 집합이 다시 나오지 않는다(응답 유실 재시도가 409가 된다). 실어 나르면 digest가 읽음 여부와 무관해 재시도 · 두 기기에서도 같다. 커서 길이는 약 6.4KB를 넘지 않는다.
-//  - b: 조회 때 Clear한 적이 없었다(읽음 기준 없음). 첫 Clear가 run · 대화 이력도 기준으로 삼는다.
+//  - b: 조회 때 읽음 기준이 없었다(Clear한 적도 첫 정상 표시 기준점도 없음). 이때의 Clear가 run · 대화 이력도 기준으로 삼는다. 기준점이 있으면 꺼져 있다(기준점 이력을 다시 다루지 않는다).
 //  - u: 사용자 id. 남의 커서는 받지 않는다. 커서는 권한 증거가 아니다: 서버가 사용자별로 집합을 다시 세어 digest가 같을 때만 Clear한다.
 
 const USER = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -26,7 +26,7 @@ export type SummaryCursor = {
   digest: string;
   /** 잘린 조회가 보인 작업 id (Clear 범위). 잘리지 않았으면 null = 후보 전부 */
   page: string[] | null;
-  /** 조회 때 Clear한 적이 없었다 */
+  /** 조회 때 읽음 기준이 없었다 (Clear한 적도 기준점도 없음) */
   baseline: boolean;
 };
 
