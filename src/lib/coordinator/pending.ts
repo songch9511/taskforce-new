@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 
-import { PENDING_ITEMS_MAX, URGENT_WINDOW_HOURS } from "./coordinator.config";
+import { URGENT_WINDOW_HOURS } from "./coordinator.config";
 
 // 결정 대기 목록 pending_decisions (런타임 계약 6장, A39): 서버가 그때그때 계산하는 값이다. 표도 사용자 API도 없다.
 //  - 읽기 · 계산은 해결 · 승인 · Action 완료가 아니다: 이 모듈은 아무것도 쓰지 않는다 (loadPendingDecisions는 읽기 전용 SQL 함수 하나만 부른다).
@@ -78,7 +78,8 @@ const itemId = (input: PendingInput) => `${input.kind}:${input.step_id ?? input.
 /**
  * 입력 행 → 묶음 목록 (순수). 안정 순서: 긴급 묶음이 먼저, 그다음 오래 기다린 묶음, 같으면 종류 · action id · 묶음 키.
  * 같은 item id가 두 번 오면 하나만 남긴다 (한 항목은 version 하나: 사전순으로 큰 쪽 — 입력 순서와 무관한 결정적 규칙).
- * 목록이 PENDING_ITEMS_MAX를 넘으면 오래 기다린 것부터 남긴다. 입력 순서는 결과에 영향이 없다.
+ * 실제 대기 항목은 하나도 버리지 않는다 (개수 상한 없음): 상한으로 잘린 항목은 호출한 쪽에서 "처리돼 사라진 것"(matchPendingVersion의 gone)과 구별되지 않는다.
+ * 입력 순서는 결과에 영향이 없다.
  */
 export function computePendingDecisions(input: { rows: PendingInput[]; future?: FutureInputs; now: Date }): PendingGroup[] {
   const all = [...input.rows, ...(input.future?.agentQuestions ?? []), ...(input.future?.openSuggestions ?? []), ...(input.future?.blockedDependencies ?? [])];
@@ -100,7 +101,7 @@ export function computePendingDecisions(input: { rows: PendingInput[]; future?: 
     const previous = items.get(item.id);
     if (!previous || cmp(item.version, previous.version) > 0) items.set(item.id, item);
   }
-  const kept = [...items.values()].sort((a, b) => cmp(a.createdAt, b.createdAt) || cmp(a.id, b.id)).slice(0, PENDING_ITEMS_MAX);
+  const kept = [...items.values()].sort((a, b) => cmp(a.createdAt, b.createdAt) || cmp(a.id, b.id));
 
   const groups = new Map<string, PendingGroup>();
   for (const item of kept) {

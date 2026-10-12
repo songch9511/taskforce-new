@@ -46,6 +46,3 @@ export const MAX_JEV_CALLS_PER_EVENT = 8;
 
 /** 사건 하나의 관리(생성) 모델 호출 상한: 확정 (아키텍처 7.1, DB model_calls ∈ {0, 1}) */
 export const MANAGEMENT_CALLS_PER_EVENT = 1;
-
-/** 결정 대기 목록 상한 (제안): 계산 · 응답 크기를 묶는다. 넘으면 오래 기다린 것부터 남긴다 */
-export const PENDING_ITEMS_MAX = 200;

@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
 
-import { PENDING_ITEMS_MAX, URGENT_WINDOW_HOURS } from "./coordinator.config";
+import { URGENT_WINDOW_HOURS } from "./coordinator.config";
 import { computePendingDecisions, matchPendingVersion, urgency, type FutureInputs, type PendingInput } from "./pending";
 
 // 결정 대기 목록 계산 (A39, 런타임 계약 6장). 순수 함수 시험. [현재 실제] 원천(승인 · run 결과 · 확인 요청)은 tests/coordinator/pending.test.ts가 실제 DB로 본다.
@@ -125,14 +125,46 @@ describe("[미래 fixture] 아직 원천이 없는 종류: 입력 타입으로�
   });
 });
 
-describe("크기 상한 · 같은 항목 중복", () => {
-  it("항목이 상한을 넘으면 오래 기다린 것부터 남긴다", () => {
-    const rows = Array.from({ length: PENDING_ITEMS_MAX + 20 }, (_, i) =>
-      row({ kind: "confirm", action_id: id(i + 1), version: "v", created_at: new Date(Date.UTC(2026, 9, 1, 0, 0, i)).toISOString() }),
+describe("계산은 실제 대기 항목을 하나도 버리지 않는다 (개수 상한 없음 — 상한 때문에 항목이 gone으로 보이면 안 된다)", () => {
+  // 오래된 긴급 아닌 확인 요청이 많이 쌓인 사용자에게 새 긴급 확인 요청이 생겼다 (P2-A 재현)
+  const OLD = 200;
+  const rowsWithNewUrgent = () => [
+    ...Array.from({ length: OLD }, (_, i) =>
+      row({ kind: "confirm", action_id: id(i + 1), version: `action:old-${i + 1}:1`, created_at: new Date(Date.UTC(2026, 8, 1, 0, 0, i)).toISOString(), due_at: hours(24 * 30) }),
+    ),
+    row({ kind: "confirm", action_id: id(9999), version: "action:urgent:1", created_at: "2026-10-11T23:00:00Z", due_at: hours(2) }),
+  ];
+
+  it("오래된 긴급 아닌 확인 요청 200건 + 새 긴급 1건: 긴급 항목이 목록에 있고 맨 앞이다 (뒤쪽 항목 때문에 밀려나지 않는다)", () => {
+    const groups = computePendingDecisions({ rows: rowsWithNewUrgent(), now: NOW });
+    expect(groups).toHaveLength(OLD + 1);
+    expect(groups[0]).toMatchObject({ actionId: id(9999), kind: "confirm", urgent: true });
+    expect(groups[0].items.map((i) => i.id)).toEqual([`confirm:${id(9999)}`]);
+    expect(groups.slice(1).every((g) => !g.urgent)).toBe(true);
+    // 입력 순서와 무관하다 (긴급 항목이 입력 끝에 있든 앞에 있든)
+    expect(computePendingDecisions({ rows: [...rowsWithNewUrgent()].reverse(), now: NOW })).toEqual(groups);
+  });
+
+  it("matchPendingVersion: 바뀌지 않은 긴급 항목 · 예전 상한 밖이던 항목(201번째)은 current, version이 바뀌었으면 stale, 정말 없는 id만 gone", () => {
+    const groups = computePendingDecisions({ rows: rowsWithNewUrgent(), now: NOW });
+    expect(matchPendingVersion(groups, { itemId: `confirm:${id(9999)}`, version: "action:urgent:1" })).toBe("current");
+    expect(matchPendingVersion(groups, { itemId: `confirm:${id(OLD)}`, version: `action:old-${OLD}:1` })).toBe("current");
+    expect(matchPendingVersion(groups, { itemId: `confirm:${id(OLD + 1)}`, version: "action:old-201:1" })).toBe("gone"); // 입력에 없는 id
+    expect(matchPendingVersion(groups, { itemId: `confirm:${id(9999)}`, version: "action:urgent:2" })).toBe("stale");
+    expect(matchPendingVersion(groups, { itemId: `confirm:${id(1)}`, version: "action:old-1:0" })).toBe("stale");
+    expect(matchPendingVersion(groups, { itemId: "confirm:00000000-0000-4000-8000-0000000000ff", version: "x" })).toBe("gone");
+  });
+
+  it("입력의 모든 서로 다른 항목이 결과에 있다 (몇 건이든): 450건이어도 하나도 빠지지 않고 어느 것도 gone이 아니다", () => {
+    const rows = Array.from({ length: 450 }, (_, i) =>
+      row({ kind: "confirm", action_id: id(i + 1), version: `action:${i + 1}:1`, created_at: new Date(Date.UTC(2026, 8, 1, 0, 0, i)).toISOString(), due_at: i % 50 === 0 ? hours(1) : null }),
     );
     const groups = computePendingDecisions({ rows, now: NOW });
-    expect(groups).toHaveLength(PENDING_ITEMS_MAX);
-    expect(groups[0].actionId).toBe(id(1));
+    expect(groups.flatMap((g) => g.items)).toHaveLength(450);
+    for (const r of rows) expect(matchPendingVersion(groups, { itemId: `confirm:${r.action_id}`, version: r.version })).toBe("current");
+    // 긴급 9건이 모두 비긴급보다 앞이다
+    expect(groups.slice(0, 9).every((g) => g.urgent)).toBe(true);
+    expect(groups.slice(9).some((g) => g.urgent)).toBe(false);
   });
 
   it("같은 항목이 두 번 들어오면 하나만, 입력 순서와 무관하게 같은 version", () => {
