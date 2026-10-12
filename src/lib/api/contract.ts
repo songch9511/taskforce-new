@@ -1246,7 +1246,7 @@ export const billingRefundResponseV2Schema = z.object({ requested: z.literal(tru
 export type BillingRefundResponseV2 = z.infer<typeof billingRefundResponseV2Schema>;
 
 // ─── Review · 복귀 요약 · 제안 (0.2.0 C3, 런타임 계약 6 · 8장, 디자인 D-12) ───────────────────
-// 새 경로는 모두 /api/v2/ 아래이고 gate REVIEW_V2_ENABLED가 꺼져 있으면 404다 (v1 동결 지문은 그대로).
+// 새 경로는 모두 /api/v2/ 아래이고 gate가 꺼져 있으면 404다 (복귀 요약 세 경로는 RETURN_SUMMARY_ENABLED 또는 REVIEW_V2_ENABLED, 나머지는 REVIEW_V2_ENABLED; v1 동결 지문은 그대로).
 // 서버는 토큰(코드가 정한 짧은 이름)과 id · 시각만 내린다. 사용자에게 보일 문구는 앱이 토큰에서 만든다 — 서버가 문구를 지어내지 않는다.
 // 읽기(GET)는 아무것도 지우지 않는다. 시각은 마이크로초까지 있는 UTC 글자("...123456Z")이고 앱은 Date로 바꾸지 않고 그대로 돌려준다(커서).
 

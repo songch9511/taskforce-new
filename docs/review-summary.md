@@ -1,7 +1,7 @@
 # Review · 복귀 요약 · 제안 서버 (0.2.0 C3) — 결정 기록과 위치
 
 2026-10-12 · 구현 계획 C3 · 근거: 런타임 계약 1장(복귀 요약 = 기존 이벤트 계산) · 6장(`pending_decisions`) · 8장(`suggestions`) · 12장 상수, 아키텍처 I04 · I13 · I14 · ARCH06/07/25, 개발 계획 A08 · A09 · A16 · A39 · A40, 디자인 D-12(ReturnSummary) · D-8(Receipts 틀은 Mac 몫).
-**gate `REVIEW_V2_ENABLED` 기본 꺼짐. 꺼져 있으면 새 경로 여섯 개는 404(인증 · DB 호출 없음, 새 쓰기 0), 기존 API · 쓰기 · 실행 의미는 그대로다. 운영 DB 적용 전.** 이 문서는 "무엇을 만들었고, 무엇을 일부러 안 만들었고, 어디 있는가"만 적는다. 일반 규칙은 [FEATURE_MAP.md](FEATURE_MAP.md), 코디네이터는 [coordinator.md](coordinator.md).
+**gate 둘 모두 기본 꺼짐: `REVIEW_V2_ENABLED`는 새 경로 여섯 개 전부, `RETURN_SUMMARY_ENABLED`는 복귀 요약 세 경로만 연다(둘 중 하나로 복귀 요약이 열리고 Review · 제안은 `REVIEW_V2_ENABLED`만 본다, JSON 계약 "공통" 표). 꺼진 경로는 404(인증 · DB 호출 없음, 새 쓰기 0), 기존 API · 쓰기 · 실행 의미는 그대로다. 운영 DB 적용 전.** 이 문서는 "무엇을 만들었고, 무엇을 일부러 안 만들었고, 어디 있는가"만 적는다. 일반 규칙은 [FEATURE_MAP.md](FEATURE_MAP.md), 코디네이터는 [coordinator.md](coordinator.md).
 
 ## 1. 한눈에
 
@@ -14,7 +14,7 @@
 | Review (결정 대기 + 열린 제안) | `src/lib/review/review.ts` · `time-zone.ts` · `day.ts` · `dto.ts` · `review.config.ts` |
 | API 처리 (인증 · gate · 오류 매핑) | `src/lib/api/review.ts` · zod `src/lib/api/contract.ts` 끝(C3 절) |
 | route | `src/app/api/v2/{review,return-summary,return-summary/clear,return-summary/baseline,suggestions/[id]/snooze,suggestions/[id]/dismiss}/route.ts` |
-| gate | `src/lib/flags.ts` `REVIEW_V2_ENABLED` |
+| gate | `src/lib/flags.ts` `REVIEW_V2_ENABLED`(여섯 경로) · `RETURN_SUMMARY_ENABLED`(복귀 요약 세 경로만) · `returnSummaryEnabled()` |
 | 바뀜 규칙 한 곳 | `src/lib/actions/changed.ts` (`changesAfterSeen`은 `changedSinceSeen`과 같은 뜻) |
 
 ## 2. 읽음 = (사건 id, 작업 id) 쌍 (P2-A · P2-C 보완 포함)
@@ -109,7 +109,17 @@
 ### 공통
 
 - 모든 경로는 `/api/v2/…`, 인증은 `Authorization: Bearer <Supabase access token>` 또는 웹 쿠키(쿠키로 인증하는 **POST**는 같은 출처만 — 아니면 401). 앱은 Bearer.
-- **gate `REVIEW_V2_ENABLED`**(서버 env, 기본 꺼짐, 정확히 `"true"`): 꺼져 있으면 **여섯 경로 모두 404** `{"error":{"code":"not_found","message":"없는 경로입니다."}}`. 인증도 DB도 부르지 않고 새 쓰기 0. 앱은 404를 "이 서버는 아직 이 기능이 없다"로 읽고 기존 화면으로 둔다(오류 토스트 금지).
+- **gate 둘**(서버 env, 모두 기본 꺼짐, 정확히 `"true"`만 켠다 — `TRUE` · `1` · 앞뒤 공백은 꺼짐):
+  - `RETURN_SUMMARY_ENABLED`는 **복귀 요약 세 경로만** 연다: `GET /api/v2/return-summary` · `POST …/clear` · `POST …/baseline`.
+  - `REVIEW_V2_ENABLED`는 **여섯 경로 전부**(위 셋 + `GET /api/v2/review` + 제안 `snooze` · `dismiss`; Review GET이 제안 생산 · 노출 표시를 한다)를 연다. 상위 집합이다.
+  - 복귀 요약 세 경로는 **둘 중 하나라도 켜져 있으면** 열린다. Review · 제안 세 경로는 `REVIEW_V2_ENABLED`만 본다 — `RETURN_SUMMARY_ENABLED`만 켜면 Review · 제안은 계속 404이고 제안 생산 · 노출 · snooze · dismiss는 0이다.
+  - | REVIEW_V2 | RETURN_SUMMARY | 복귀 요약 3경로 | Review GET · snooze · dismiss |
+    |---|---|---|---|
+    | off | off | 404 | 404 |
+    | on | off | 열림 | 열림 |
+    | off | on | **열림** | 404 |
+    | on | on | 열림 | 열림 |
+  - 닫힌 경로는 **404** `{"error":{"code":"not_found","message":"없는 경로입니다."}}`, 인증도 DB도 부르지 않고 새 쓰기 0 (열린 경로의 인증 · 쿠키 CSRF는 그대로). 앱은 404를 "이 서버는 아직 이 기능이 없다"로 읽고 기존 화면으로 둔다(오류 토스트 금지).
 - 오류 본문은 항상 `{"error":{"code","message"}}` (code ∈ 기존 `apiErrorCodeSchema`: `unauthorized` 401 · `invalid_request` 400 · `not_found` 404 · `conflict` 409 · `internal_error` 500). 새 오류 코드는 없다. `message`는 한국어 진단문이라 화면에 그대로 쓰지 않는다. 오류 본문에는 요청 값이 없다.
 - 시각은 두 종류다: **마이크로초 UTC 글자** `2026-10-12T00:00:00.123456Z`(`since` · 변화 `at` · 커서 · `cleared_through`)는 **Date로 바꿔서 서버에 돌려주지 않는다**(커서는 불투명 글자 그대로). 나머지(`generated_at` · `created_at` · `shown_at` · `snooze_until`)는 `toISOString()` 모양(밀리초) ISO 8601.
 - GET 응답은 `Cache-Control: no-store`. **`GET /api/v2/return-summary`는 아무것도 쓰지 않는다. `GET /api/v2/review`는 멱등 쓰기를 한다**(제안 생산 · 노출 표시, 아래 1절) — Action · run · Claim은 만들지 않는다.
