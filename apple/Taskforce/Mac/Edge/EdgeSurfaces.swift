@@ -24,6 +24,7 @@ struct EdgeSurfaces: Equatable {
     /// Release에서 켜는 표면: 셸 + All work + S4 + C3만
     static let release = EdgeSurfaces(shell: true, review: true, summary: true, chats: false, projects: false, settingsWindow: false)
 
+    #if DEBUG
     static let releaseKey = "TF_RELEASE_SURFACES"
 
     /// 격리 Debug 실행의 표면. `defaults`가 있으면(시험) 그 suite만 읽는다
@@ -36,6 +37,7 @@ struct EdgeSurfaces: Equatable {
             chats: shell, projects: bool(S3bFlag.key, defaults), settingsWindow: shell
         )
     }
+    #endif
 
     /// 이 빌드의 표면: Release는 `release`, Debug는 launch argument
     static var current: EdgeSurfaces {
@@ -46,6 +48,7 @@ struct EdgeSurfaces: Equatable {
         #endif
     }
 
+    #if DEBUG
     /// 인자 영역(`-KEY YES`)만: 저장된 defaults로는 켜지지 않는다
     private static func bool(_ key: String, _ defaults: UserDefaults?) -> Bool {
         if let defaults { return defaults.bool(forKey: key) }
@@ -53,6 +56,7 @@ struct EdgeSurfaces: Equatable {
         guard let value = arguments[key] else { return false }
         return (value as? Bool) ?? (value as? String).map { NSString(string: $0).boolValue } ?? false
     }
+    #endif
 }
 
 /// 0.2.0 Chats(B3)를 켜는 플래그: 런타임(`ChatRuntime` · 서버 대화 v2 · 기억) · 레일 Chats 칸 · ⌘3 · ⌘N. **Release는 늘 꺼짐**(`EdgeSurfaces.release.chats`).
