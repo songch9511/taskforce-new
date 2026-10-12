@@ -294,6 +294,31 @@ struct ReturnSummaryStoreTests {
         #expect(gateway.clears.count == 1 && !store.isClearing)
     }
 
+    /// 쓴 커서는 새 조회가 실제로 반영되기 전에는 다시 받지 않는다: Clear 뒤 조회가 더 새 읽기에 밀려 버려져도 옛 줄의 옛 커서로 다시 보내지 못한다
+    @Test func aSpentCursorIsNotOfferedAgainBeforeTheNewReadLands() async throws {
+        let (store, gateway, _) = try make()
+        await store.refresh()
+        let afterClear = Latch()
+        let newerVisit = Latch()
+        gateway.onRead = { number in
+            if number == 2 { await afterClear.wait() }
+            if number == 3 { await newerVisit.wait() }
+            return Fx.withChanges
+        }
+        let ticket = try #require(store.beginClear())
+        let sending = Task { await store.sendClear(ticket, isStillValid: { true }) }
+        await waitForArrival(afterClear)
+        let visit = Task { await store.refresh() }
+        await waitForArrival(newerVisit)
+        await afterClear.open()
+        #expect(await sending.value == .cleared(applied: true))
+        #expect(!store.isClearing && store.beginClear() == nil, "옛 줄 · 옛 커서로 다시 보내지 않는다")
+        #expect(store.content()?.canClear == false)
+        await newerVisit.open()
+        await visit.value
+        #expect(store.beginClear() != nil, "새 조회가 반영되면 새 커서로 다시 받을 수 있다")
+    }
+
     /// 보내기 직전 확인: 화면이 더는 그 소유가 아니면 쓰기 0 (그리고 진행 표시는 거둔다)
     @Test func ifTheScreenNoLongerOwnsTheClearNothingIsSent() async throws {
         let (store, gateway, _) = try make()
@@ -402,6 +427,19 @@ struct ReturnSummaryStoreTests {
         account.relogin()
         let result = await store.sendClear(ticket, isStillValid: { true })
         #expect(result == .ignored && gateway.clears.isEmpty && !store.isClearing)
+    }
+
+    /// 새 세션이 같은 줄 · 같은 커서를 다시 읽었어도 옛 세션에서 받은 선택은 새 세션으로 나가지 않는다 (줄 · 커서가 같아 보여도 계정 token · 소유 번호가 다른 세션이다)
+    @Test func anOldSessionsTicketIsNotSentEvenIfTheNewSessionReadsTheSameCursor() async throws {
+        let (store, gateway, account) = try make()
+        await store.refresh()
+        let ticket = try #require(store.beginClear())
+        account.relogin()
+        await store.refresh()
+        #expect(store.summary?.cursor == cursor, "새 세션이 같은 커서를 읽었다")
+        let result = await store.sendClear(ticket, isStillValid: { true })
+        #expect(result == .ignored && gateway.clears.isEmpty)
+        #expect(store.beginClear() != nil, "새 세션은 자기 선택을 따로 받을 수 있다")
     }
 
     /// 이미 서버로 나간 Clear의 늦은 200은 새 세션에 반영되지 않는다 (다시 읽지도, 메시지도, 성공 표시도 없다)
