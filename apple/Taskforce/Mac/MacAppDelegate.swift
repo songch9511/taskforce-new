@@ -59,7 +59,9 @@ final class MacAppDelegate: NSObject, NSApplicationDelegate {
 
         if EdgeShellFlag.isEnabled() {
             // Review 페이지(S4)는 `-TF_S4 YES`일 때만 연결된다 (기본 꺼짐: nil이면 지금 그대로)
-            let edge = EdgeShellController(launcher: model, chat: chatRuntime, review: AppRuntime.reviewDesk(now: model.now, scope: chatRuntime?.scope))
+            // 복귀 요약(C3)은 `-TF_C3 YES`일 때만 연결된다 (기본 꺼짐: nil이면 All work 위 카드도 서버 읽기도 없이 지금 그대로)
+            let summary = AppRuntime.returnSummary(services: model.services, scope: chatRuntime?.scope)
+            let edge = EdgeShellController(launcher: model, chat: chatRuntime, review: AppRuntime.reviewDesk(now: model.now, scope: chatRuntime?.scope), summary: summary)
             self.edge = edge
             // All work의 Add task: 패널을 접고 기존 런처(제목 → 없으면 추가, 직접 추가의 정식 입구)를 연다
             edge.shell.onAddTask = { [weak edge, weak launcher] in

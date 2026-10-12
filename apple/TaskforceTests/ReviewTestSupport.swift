@@ -81,6 +81,70 @@ actor FakeNowServer {
 
     init(items: [Item]) { self.items = items }
 
+    // MARK: 복귀 요약 (C3, 서버 head 6cfd382의 JSON을 흉내 낸다: `GET /api/v2/return-summary` · `POST /api/v2/return-summary/clear`)
+
+    struct SummaryRequest: Sendable, Equatable {
+        let method: String
+        let path: String
+        let body: String?
+        let authorization: String?
+    }
+
+    /// 두 경로로 온 요청 전부 (순서대로)
+    private(set) var summaryRequests: [SummaryRequest] = []
+    private var summaryReplies: [FakeReply] = []
+    private var summaryDefault: FakeReply = .http(200, Data(FakeNowServer.summaryEmptyJSON.utf8))
+    private var clearReplies: [FakeReply] = []
+    private var holdClears = false
+    private var clearWaiters: [CheckedContinuation<Void, Never>] = []
+    private var heldClearArrivals = 0
+
+    static let summaryEmptyJSON = """
+    {"generated_at":"2026-10-12T21:00:00.000Z","since":null,"baseline":"never_cleared","cursor":"c3.empty","complete":true,"empty":true,"sources":{"changes":"ok","decisions":"ok"},"items":[]}
+    """
+
+    /// 다음 `GET`들의 응답 (하나씩 쓰고, 다 쓰면 마지막 것을 계속)
+    func scriptSummary(_ replies: FakeReply...) {
+        summaryReplies = Array(replies.dropLast())
+        summaryDefault = replies.last ?? summaryDefault
+    }
+
+    /// 다음 Clear들의 응답 (없으면 200 applied)
+    func scriptClear(_ replies: FakeReply...) { clearReplies = replies }
+    func holdClearRequests() { holdClears = true }
+    func pendingClears() -> Int { heldClearArrivals }
+
+    func releaseClears() {
+        holdClears = false
+        heldClearArrivals = 0
+        let waiting = clearWaiters
+        clearWaiters = []
+        waiting.forEach { $0.resume() }
+    }
+
+    func summaryReadCount() -> Int { summaryRequests.filter { $0.method == "GET" }.count }
+    func clearCursors() -> [String] {
+        summaryRequests.filter { $0.method == "POST" }.compactMap { request in
+            request.body.flatMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any] }?["cursor"] as? String
+        }
+    }
+
+    private func summaryReply(method: String, path: String, body: Data?, authorization: String?) async -> FakeReply {
+        summaryRequests.append(SummaryRequest(method: method, path: path, body: body.flatMap { String(data: $0, encoding: .utf8) }, authorization: authorization))
+        if method == "POST", path == "/api/v2/return-summary/clear" {
+            if holdClears {
+                heldClearArrivals += 1
+                await withCheckedContinuation { clearWaiters.append($0) }
+            }
+            if !clearReplies.isEmpty { return clearReplies.removeFirst() }
+            return .http(200, Data("{\"cleared_through\":\"2026-10-12T20:00:00.000000Z\",\"applied\":true}".utf8))
+        }
+        if method == "GET", path == "/api/v2/return-summary" {
+            return summaryReplies.isEmpty ? summaryDefault : summaryReplies.removeFirst()
+        }
+        return .http(404, Data("{}".utf8))
+    }
+
     // MARK: 시나리오
 
     func script(_ id: UUID, _ behaviors: FakeWrite...) { self.behaviors[id] = behaviors }
@@ -170,9 +234,10 @@ actor FakeNowServer {
 
     // MARK: 응답
 
-    func respond(method: String, url: URL) async -> FakeReply {
+    func respond(method: String, url: URL, body: Data? = nil, authorization: String? = nil) async -> FakeReply {
         let path = url.path
         if path == "/api/v1/now" { return await nowReply() }
+        if path.hasPrefix("/api/v2/return-summary") { return await summaryReply(method: method, path: path, body: body, authorization: authorization) }
         if path == "/rest/v1/evidence", (url.query ?? "").lowercased().contains("action_id=eq.") { return await evidenceDetailReply(url: url) }
         if let write = Self.write(method: method, path: path) { return await writeReply(write.id, kind: write.kind, method: method) }
         if path.hasPrefix("/rest/v1/") { return restReply(path: path, url: url) }
@@ -373,13 +438,15 @@ private final class FakeServerURLProtocol: URLProtocol, @unchecked Sendable {
             return
         }
         let method = request.httpMethod ?? "GET"
+        let body = request.httpBody ?? request.httpBodyStream.map(Self.read)
+        let authorization = request.value(forHTTPHeaderField: "Authorization")
         let box = Completion(self)
         Task {
             guard let server = await FakeServerRegistry.shared.server(for: host) else {
                 box.fail(URLError(.cannotFindHost))
                 return
             }
-            switch await server.respond(method: method, url: url) {
+            switch await server.respond(method: method, url: url, body: body, authorization: authorization) {
             case .http(let status, let body):
                 let response = HTTPURLResponse(url: url, statusCode: status, httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "application/json"])!
                 box.succeed(response, body: body)
@@ -390,6 +457,19 @@ private final class FakeServerURLProtocol: URLProtocol, @unchecked Sendable {
     }
 
     override func stopLoading() {}
+
+    private static func read(_ stream: InputStream) -> Data {
+        stream.open()
+        defer { stream.close() }
+        var data = Data()
+        var buffer = [UInt8](repeating: 0, count: 4096)
+        while stream.hasBytesAvailable {
+            let count = stream.read(&buffer, maxLength: buffer.count)
+            guard count > 0 else { break }
+            data.append(buffer, count: count)
+        }
+        return data
+    }
 }
 
 private final class Completion: @unchecked Sendable {

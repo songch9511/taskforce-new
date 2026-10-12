@@ -109,6 +109,37 @@ enum AppRuntime {
         return ReviewDesk(now: now, scope: scope)
     }
 
+    /// 복귀 요약(C3)을 읽고 Clear하는 곳 (`MacAppDelegate`가 Edge 셸을 만들 때 부른다). `-TF_C3 YES`일 때만 만든다 (`C3Flag`, 기본 꺼짐).
+    /// 견본(`-TFSampleData`)은 서버를 부르지 않고 가짜 서버(`SampleReturnSummaryGateway`)가 답한다
+    static func returnSummary(services: AppServices?, scope: AccountScope?) -> ReturnSummaryStore? {
+        makeReturnSummaryStore(
+            makeGateway: {
+                #if DEBUG
+                if SampleData.isEnabled {
+                    let sample = SampleReturnSummaryGateway(scenario: SampleData.summaryScenario, clear: SampleData.summaryClearBehavior)
+                    sampleSummaryGateway = sample
+                    return sample
+                }
+                #endif
+                return services.map { LiveReturnSummaryGateway(services: $0) }
+            },
+            scope: scope, c3: C3Flag.isEnabled()
+        )
+    }
+
+    #if DEBUG
+    /// 견본이면 가짜 서버 (스냅샷 · 합성 조작이 시나리오를 바꿔 가며 담는다)
+    static var sampleSummaryGateway: SampleReturnSummaryGateway?
+    #endif
+
+    /// 실제 생성 경로의 본체 (`returnSummary`가 부르고, 테스트가 같은 함수를 기본 / off / on으로 부른다).
+    /// `c3`가 꺼져 있으면 게이트웨이도 `ReturnSummaryStore`도 **만들지 않는다**: 셸에 카드 자리 · 읽기가 없고 지금(S4/S3b/B3/Edge) 그대로다.
+    /// 게이트웨이나 계정 경계(`AccountScope`)가 없어도 만들지 않는다
+    static func makeReturnSummaryStore(makeGateway: () -> (any ReturnSummaryGateway)?, scope: AccountScope?, c3: Bool) -> ReturnSummaryStore? {
+        guard c3, let scope, let gateway = makeGateway() else { return nil }
+        return ReturnSummaryStore(gateway: gateway, scope: scope)
+    }
+
     private static var runStore: RunStore?
 
     /// 실행(U2) 상태: credits · run · 초안 (Mac 설정 Usage & Credits와 런처가 같은 것을 본다). 계정이 떠나면 스스로 비운다 (`RunStore.reset`).

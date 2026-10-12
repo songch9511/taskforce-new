@@ -40,12 +40,13 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
     #endif
 
     /// - review: Review 페이지의 답을 보내는 곳 (S4). nil이면 S4 gate가 꺼진 것이다: Review 페이지 · ⌘1 · ← → · 1 · 2 연결이 없다 (`AppRuntime.reviewDesk`)
-    init(launcher: LauncherModel, chat: ChatRuntime? = nil, review: ReviewDesk? = nil) {
+    /// - summary: 복귀 요약(C3)을 읽고 Clear하는 곳. nil이면 C3 gate가 꺼진 것이다: All work 위 카드도 서버 읽기도 없다 (`AppRuntime.returnSummary`)
+    init(launcher: LauncherModel, chat: ChatRuntime? = nil, review: ReviewDesk? = nil, summary: ReturnSummaryStore? = nil) {
         self.launcher = launcher
         self.chat = chat
         let pinStore = Self.pinStore()
         self.pinStore = pinStore
-        shell = EdgeShellModel(reduceMotion: Self.systemReduceMotion, pinStore: pinStore, contexts: chat?.contexts, review: review)
+        shell = EdgeShellModel(reduceMotion: Self.systemReduceMotion, pinStore: pinStore, contexts: chat?.contexts, review: review, summary: summary)
         rail = EdgeRailPanelController(shell: shell)
         panel = EdgePanelController(shell: shell, chat: chat)
         super.init()
@@ -175,6 +176,8 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
         guard launcher.isSignedIn else { return }
         // 범위 멤버십도 같이 읽는다 (RLS 두 번, 서버 쓰기 없음). 마지막에 시작한 읽기만 반영된다
         if let contexts = chat?.contexts { Task { await contexts.refresh() } }
+        // 복귀 요약(C3)도 같이 읽는다 (서버 읽기 한 번, 읽음 처리 없음). 마지막에 시작한 읽기만 반영된다. C3가 꺼져 있으면 읽지 않는다
+        if let summary = shell.summary { Task { await summary.refresh() } }
         if let now = launcher.now, Self.readsList(reason, isLoading: now.refresh.isLoading) { Task { await now.load() } }
         if let runs = launcher.runs {
             Task {
