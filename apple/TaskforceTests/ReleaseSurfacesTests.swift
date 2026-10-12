@@ -249,20 +249,20 @@ struct EdgeShellWithoutChatsTests {
     @Test func theRealControllerPassesCommandThreeAndNThroughWhenThereIsNoChatsRuntime() {
         let controller = EdgeShellController(launcher: LauncherModel(configurationError: "test"), chat: nil)
         #expect(!controller.shell.chatsEnabled && controller.shell.controls == [.allWork, .more])
-        #expect(controller.handleKey(EdgeReviewTests.key("2", code: kVK_ANSI_2, flags: .command)) && controller.shell.view == .allWork && controller.shell.panelOpen)
-        #expect(!controller.handleKey(EdgeReviewTests.key("3", code: kVK_ANSI_3, flags: .command)), "⌘3은 먹지 않는다")
-        #expect(!controller.handleKey(EdgeReviewTests.key("n", code: kVK_ANSI_N, flags: .command)), "⌘N도 먹지 않는다")
+        #expect(controller.handleKey(S4GateTests.key("2", code: kVK_ANSI_2, flags: .command)) && controller.shell.view == .allWork && controller.shell.panelOpen)
+        #expect(!controller.handleKey(S4GateTests.key("3", code: kVK_ANSI_3, flags: .command)), "⌘3은 먹지 않는다")
+        #expect(!controller.handleKey(S4GateTests.key("n", code: kVK_ANSI_N, flags: .command)), "⌘N도 먹지 않는다")
         #expect(controller.shell.view == .allWork && controller.shell.panelOpen, "화면은 그대로")
-        #expect(controller.handleKey(EdgeReviewTests.key("\u{1B}", code: kVK_Escape)) && !controller.shell.panelOpen)
+        #expect(controller.handleKey(S4GateTests.key("\u{1B}", code: kVK_Escape)) && !controller.shell.panelOpen)
     }
 
     /// DEBUG에서 셸이 켜진 지금의 구성(Chats 런타임이 있다): ⌘3 · ⌘N은 지금처럼 Chats로 간다
     @Test func theRealControllerStillSendsCommandThreeAndNToChatsWhenThereIsAChatsRuntime() {
-        let controller = EdgeReviewTests.controller(review: nil)
+        let controller = S4GateTests.controller(review: nil)
         #expect(controller.shell.chatsEnabled && controller.shell.controls == [.allWork, .chats, .more])
-        #expect(controller.handleKey(EdgeReviewTests.key("3", code: kVK_ANSI_3, flags: .command)) && controller.shell.view == .chats)
-        #expect(controller.handleKey(EdgeReviewTests.key("2", code: kVK_ANSI_2, flags: .command)) && controller.shell.view == .allWork)
-        #expect(controller.handleKey(EdgeReviewTests.key("n", code: kVK_ANSI_N, flags: .command)) && controller.shell.view == .chats)
+        #expect(controller.handleKey(S4GateTests.key("3", code: kVK_ANSI_3, flags: .command)) && controller.shell.view == .chats)
+        #expect(controller.handleKey(S4GateTests.key("2", code: kVK_ANSI_2, flags: .command)) && controller.shell.view == .allWork)
+        #expect(controller.handleKey(S4GateTests.key("n", code: kVK_ANSI_N, flags: .command)) && controller.shell.view == .chats)
     }
 
     @Test func chatsStillOpensWhenTheShellHasIt() {
