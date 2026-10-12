@@ -24,7 +24,13 @@ const PGLITE_VERSION = (JSON.parse(readFileSync(path.resolve(__dirname, "../../n
 
 export const templatesEnabled = () => process.env.TASKFORCE_PGLITE_TEMPLATE !== "0";
 
-const key = (kind: string, scripts: string[]) => createHash("sha256").update(PGLITE_VERSION).update("\0").update(kind).update("\0").update(scripts.join("\0\0")).digest("hex").slice(0, 24);
+// PGlite 기본 shared_buffers는 128MB라 인스턴스마다 RSS가 약 120MB 더 상주한다(측정: 템플릿 복제 부팅 605–620MB → shared_buffers=16MB 489–490MB, 약 20% 감소).
+// 시험 DB에는 16MB로 충분하다. 테스트 인프라 설정이며 의미는 같다: shared_buffers는 캐시 크기일 뿐 쿼리 결과를 바꾸지 않고, 계획 비용 모델은 effective_cache_size를 쓴다.
+// TASKFORCE_PGLITE_SHARED_BUFFERS=default면 PGlite 기본값(128MB)으로 돌린다 (전후 비교 · 되돌리기용), 다른 값은 그대로 shared_buffers에 쓴다.
+export const PGLITE_SHARED_BUFFERS = process.env.TASKFORCE_PGLITE_SHARED_BUFFERS || "16MB";
+const confOptions = (): { postgresqlconf?: string[] } => (PGLITE_SHARED_BUFFERS === "default" ? {} : { postgresqlconf: [`shared_buffers=${PGLITE_SHARED_BUFFERS}`] });
+
+const key = (kind: string, scripts: string[]) => createHash("sha256").update(PGLITE_VERSION).update("\0").update(PGLITE_SHARED_BUFFERS).update("\0").update(kind).update("\0").update(scripts.join("\0\0")).digest("hex").slice(0, 24);
 
 function readCache(file: string): Buffer | null {
   try {
@@ -56,7 +62,7 @@ export function clusterTemplate(scripts: string[]): Promise<Blob> {
       const file = path.join(CACHE_DIR, `${k}.tar`);
       const cached = readCache(file);
       if (cached) return new Blob([new Uint8Array(cached)]);
-      const db = new PGlite({ extensions: { vector } });
+      const db = new PGlite({ extensions: { vector }, ...confOptions() });
       for (const sql of scripts) await db.exec(sql);
       const tarball = await db.dumpDataDir("none");
       await db.close();
@@ -73,14 +79,14 @@ export function clusterTemplate(scripts: string[]): Promise<Blob> {
 export async function openPglite(scripts: string[] = []): Promise<PGlite> {
   if (templatesEnabled()) {
     try {
-      const db = new PGlite({ extensions: { vector }, loadDataDir: await clusterTemplate(scripts) });
+      const db = new PGlite({ extensions: { vector }, ...confOptions(), loadDataDir: await clusterTemplate(scripts) });
       await db.waitReady;
       return db;
     } catch {
       // 템플릿을 못 읽으면 아래의 예전 방식으로
     }
   }
-  const db = new PGlite({ extensions: { vector } });
+  const db = new PGlite({ extensions: { vector }, ...confOptions() });
   for (const sql of scripts) await db.exec(sql);
   return db;
 }

@@ -4,7 +4,7 @@ import type { PGlite } from "@electric-sql/pglite";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { supabaseSchemaScripts } from "./local-supabase";
-import { openPglite } from "./pglite-template";
+import { openPglite, PGLITE_SHARED_BUFFERS } from "./pglite-template";
 
 // PGlite 템플릿 복제(tests/db/pglite-template.ts)가 처음부터 만든 DB와 같은 상태를 주는지, 복제본끼리 격리되는지, 템플릿을 못 쓰면 예전 방식으로 돌아가는지 본다.
 // 새 DB를 여러 번 만드는 시험이라 이 파일에만 제한을 늘렸다 (다른 시험의 제한은 그대로).
@@ -53,6 +53,11 @@ describe("PGlite 템플릿 복제", { timeout: 120_000 }, () => {
     expect(JSON.parse(expected.functions).length).toBeGreaterThan(50);
     expect(await fingerprint(cloneA)).toEqual(expected);
     expect(await fingerprint(cloneB)).toEqual(expected);
+  });
+
+  it("시험 DB의 shared_buffers 설정이 적용된다 (복제본 · 처음부터 만든 DB 모두): 기본 16MB, default면 PGlite 기본값", async () => {
+    const expected = PGLITE_SHARED_BUFFERS === "default" ? "128MB" : PGLITE_SHARED_BUFFERS;
+    for (const db of [scratch, cloneA, cloneB]) expect(((await db.query("show shared_buffers")) as Q).rows).toEqual([{ shared_buffers: expected }]);
   });
 
   it("복제본은 서로 격리된다: 한 복제본에 쓴 행이 다른 복제본 · 새 복제본에 보이지 않는다", async () => {
