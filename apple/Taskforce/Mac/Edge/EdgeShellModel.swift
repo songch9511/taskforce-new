@@ -8,18 +8,15 @@ import TaskforceUI
 /// 이 PR은 셸의 뼈대라 켜는 길은 격리된 Debug 실행뿐이다 (구현 계획 7장 플래그 경계):
 /// - 앱: launch argument `-TF_EDGE_SHELL YES`만 (인자 영역. 저장된 defaults로는 켜지지 않는다)
 /// - 테스트: 전용 UserDefaults suite를 넘긴다
-/// Release 빌드는 늘 꺼짐이다. 실사용 켜기(출시 gate)는 그때 이 함수를 바꾼다.
+/// Release 빌드는 `EdgeSurfaces.release`를 따른다: Edge 셸은 켜진다 (⌥ Space는 Edge 패널을 연다). DEBUG는 위 인자 그대로.
 enum EdgeShellFlag {
     static let key = "TF_EDGE_SHELL"
 
     static func isEnabled(_ defaults: UserDefaults? = nil) -> Bool {
         #if DEBUG
-        if let defaults { return defaults.bool(forKey: key) }
-        let arguments = UserDefaults.standard.volatileDomain(forName: UserDefaults.argumentDomain)
-        guard let value = arguments[key] else { return false }
-        return (value as? Bool) ?? (value as? String).map { NSString(string: $0).boolValue } ?? false
+        return EdgeSurfaces.debug(defaults).shell
         #else
-        return false
+        return EdgeSurfaces.release.shell
         #endif
     }
 }
@@ -30,18 +27,15 @@ enum EdgeShellFlag {
 /// (`TF_EDGE_SHELL`을 끄면 구 런처로 돌아가는 것이지 S3로 돌아가는 것이 아니다: 두 플래그는 다른 축이다. 서버 `MEMORY_ENABLED`도 POST만 막는 또 다른 축이다.)
 /// - 앱: launch argument `-TF_S3B YES`만 (인자 영역. 저장된 defaults로는 켜지지 않는다). `TF_EDGE_SHELL`이 켜진 격리 Debug 실행에서만 뜻이 있다
 /// - 테스트: 전용 UserDefaults suite를 넘긴다
-/// Release 빌드는 늘 꺼짐이다. 실사용 켜기(출시 gate)는 그때 이 함수를 바꾼다.
+/// Release 빌드는 늘 꺼짐이다 (`EdgeSurfaces.release.projects`, Chats 런타임이 없어 범위 멤버십도 없다).
 enum S3bFlag {
     static let key = "TF_S3B"
 
     static func isEnabled(_ defaults: UserDefaults? = nil) -> Bool {
         #if DEBUG
-        if let defaults { return defaults.bool(forKey: key) }
-        let arguments = UserDefaults.standard.volatileDomain(forName: UserDefaults.argumentDomain)
-        guard let value = arguments[key] else { return false }
-        return (value as? Bool) ?? (value as? String).map { NSString(string: $0).boolValue } ?? false
+        return EdgeSurfaces.debug(defaults).projects
         #else
-        return false
+        return EdgeSurfaces.release.projects
         #endif
     }
 }
@@ -52,18 +46,15 @@ enum S3bFlag {
 /// (`TF_EDGE_SHELL`을 끄면 구 런처로 돌아가는 것이지 S4만 끄는 것이 아니다: 두 플래그는 다른 축이다.)
 /// - 앱: launch argument `-TF_S4 YES`만 (인자 영역. 저장된 defaults로는 켜지지 않는다). `TF_EDGE_SHELL`이 켜진 격리 Debug 실행에서만 뜻이 있다
 /// - 테스트: 전용 UserDefaults suite를 넘긴다
-/// Release 빌드는 늘 꺼짐이다. 실사용 켜기(출시 gate)는 그때 이 함수를 바꾼다.
+/// Release 빌드는 켜진다 (`EdgeSurfaces.release.review`): confirm 요청에 Confirm · Dismiss, 기존 v1 경로.
 enum S4Flag {
     static let key = "TF_S4"
 
     static func isEnabled(_ defaults: UserDefaults? = nil) -> Bool {
         #if DEBUG
-        if let defaults { return defaults.bool(forKey: key) }
-        let arguments = UserDefaults.standard.volatileDomain(forName: UserDefaults.argumentDomain)
-        guard let value = arguments[key] else { return false }
-        return (value as? Bool) ?? (value as? String).map { NSString(string: $0).boolValue } ?? false
+        return EdgeSurfaces.debug(defaults).review
         #else
-        return false
+        return EdgeSurfaces.release.review
         #endif
     }
 }
@@ -74,18 +65,15 @@ enum S4Flag {
 /// (`TF_EDGE_SHELL`을 끄면 구 런처로 돌아가는 것이지 C3만 끄는 것이 아니다: 플래그는 서로 다른 축이다. 서버 `REVIEW_V2_ENABLED`도 또 다른 축이다 — 서버가 꺼져 있으면 404로 읽어 아무것도 보이지 않는다.)
 /// - 앱: launch argument `-TF_C3 YES`만 (인자 영역. 저장된 defaults로는 켜지지 않는다). `TF_EDGE_SHELL`이 켜진 격리 Debug 실행에서만 뜻이 있다
 /// - 테스트: 전용 UserDefaults suite를 넘긴다
-/// Release 빌드는 늘 꺼짐이다. 실사용 켜기(출시 gate)는 그때 이 함수를 바꾼다.
+/// Release 빌드는 켜진다 (`EdgeSurfaces.release.summary`): 서버 gate가 꺼져 있으면 404로 조용히 사라진다.
 enum C3Flag {
     static let key = "TF_C3"
 
     static func isEnabled(_ defaults: UserDefaults? = nil) -> Bool {
         #if DEBUG
-        if let defaults { return defaults.bool(forKey: key) }
-        let arguments = UserDefaults.standard.volatileDomain(forName: UserDefaults.argumentDomain)
-        guard let value = arguments[key] else { return false }
-        return (value as? Bool) ?? (value as? String).map { NSString(string: $0).boolValue } ?? false
+        return EdgeSurfaces.debug(defaults).summary
         #else
-        return false
+        return EdgeSurfaces.release.summary
         #endif
     }
 }
@@ -219,6 +207,19 @@ final class EdgeShellModel {
         }
     }
 
+    /// 이 셸의 레일 고정 칸 (Chats가 꺼져 있으면 Chats 칸이 없다)
+    var controls: [Control] {
+        chatsEnabled ? Control.allCases : Control.allCases.filter { $0 != .chats }
+    }
+
+    /// 이 셸이 듣는 키 명령인가: Chats가 꺼져 있으면 ⌘3 · ⌘N은 연결이 없어 지나간다 (먹지 않는다)
+    func listens(to command: EdgeKeyCommand) -> Bool {
+        switch command {
+        case .chats, .newChat: chatsEnabled
+        case .escape, .review, .allWork: true
+        }
+    }
+
     private(set) var slots: [RailEntry] = []
     /// 노치에 120ms 머물러 펼친 레일 (패널이 열려 있으면 `isExpanded`가 따로 참)
     private(set) var railHovered = false
@@ -261,6 +262,9 @@ final class EdgeShellModel {
     let review: ReviewDesk?
     /// 복귀 요약(C3)을 읽고 Clear하는 곳. **없으면 C3 gate가 꺼진 것이다**: All work 위 카드가 없고 서버를 읽지 않는다 (`C3Flag`)
     let summary: ReturnSummaryStore?
+    /// Chats(B3)가 이 셸에 있는가 (`ChatsFlag`, 컨트롤러는 `ChatRuntime`이 있을 때만 켠다). **꺼져 있으면(Release) Chats는 아무 데도 없다**: 레일 Chats 칸 · ⌘3 · ⌘N · `.chats` 화면이 없고
+    /// `openChats` · `newChat` · `openPanel(.chats)`는 아무것도 하지 않는다 (대화 읽기 · 기억 · 연결 복귀 읽기도 만들어지지 않는다)
+    let chatsEnabled: Bool
     /// Review 페이지가 보이는 결정의 stable action id. 몇 번째인지(index)가 아니라 id로 가리킨다: 큐가 바뀌어도 키 · 클릭은 이 id의 항목에만 간다
     private(set) var reviewID: UUID?
     /// Review 페이지에 들어온 차례: 패널을 다시 열거나 다른 화면에서 Review로 들어올 때마다 오른다 (단계를 옮기는 것은 아니다).
@@ -287,11 +291,12 @@ final class EdgeShellModel {
     init(
         reduceMotion: Bool = false, schedule: @escaping EdgeSchedule = EdgeScheduler.live, clock: @escaping () -> Date = Date.init,
         calendar: @escaping () -> Calendar = { Calendar.current }, pinStore: WorkPinStore = WorkPinStore(defaults: nil),
-        contexts: WorkContextStore? = nil, review: ReviewDesk? = nil, summary: ReturnSummaryStore? = nil
+        contexts: WorkContextStore? = nil, review: ReviewDesk? = nil, summary: ReturnSummaryStore? = nil, chatsEnabled: Bool = true
     ) {
         self.contexts = contexts
         self.review = review
         self.summary = summary
+        self.chatsEnabled = chatsEnabled
         self.reduceMotion = reduceMotion
         self.schedule = schedule
         self.clock = clock
@@ -376,6 +381,8 @@ final class EdgeShellModel {
     }
 
     func openPanel(_ view: View) {
+        // Chats가 없는 셸은 Chats 화면으로 열지 않는다 (⌥ Space의 마지막 화면 · 레일 · 키 어느 길로도)
+        guard view != .chats || chatsEnabled else { return }
         // Review를 떠나면 그 결정에 대한 안내는 거둔다 (돌아오면 지금 상태가 말한다)
         if view != .review { review?.clearNotice() }
         if view == .review, review != nil, !(panelOpen && self.view == .review) { reviewPresentation += 1 }
@@ -403,6 +410,7 @@ final class EdgeShellModel {
 
     /// 새 대화: ⌘N · 대화 머리의 `square-pen`. 손대지 않은 빈 대화가 있으면 그것을 다시 쓴다
     func newChat() {
+        guard chatsEnabled else { return }
         openPanel(.chats)
         onNewChat()
     }

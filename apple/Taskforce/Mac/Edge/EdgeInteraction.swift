@@ -32,6 +32,7 @@ enum EdgeInteraction {
 
     static func runIfRequested(_ edge: EdgeShellController) {
         runSummaryIfRequested(edge)
+        runReleaseIfRequested(edge)
         runReviewIfRequested(edge)
         runContextsIfRequested(edge)
         guard let logPath, SampleData.isEnabled, let runtime = edge.chat else { return }

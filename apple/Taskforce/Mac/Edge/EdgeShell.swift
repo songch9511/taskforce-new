@@ -46,7 +46,7 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
         self.chat = chat
         let pinStore = Self.pinStore()
         self.pinStore = pinStore
-        shell = EdgeShellModel(reduceMotion: Self.systemReduceMotion, pinStore: pinStore, contexts: chat?.contexts, review: review, summary: summary)
+        shell = EdgeShellModel(reduceMotion: Self.systemReduceMotion, pinStore: pinStore, contexts: chat?.contexts, review: review, summary: summary, chatsEnabled: chat != nil)
         rail = EdgeRailPanelController(shell: shell)
         panel = EdgePanelController(shell: shell, chat: chat)
         super.init()
@@ -337,6 +337,8 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
     /// 처리했으면 true
     func handleKey(_ event: NSEvent) -> Bool {
         guard let command = EdgeKeyCommand.of(keyCode: Int(event.keyCode), flags: event.modifierFlags) else { return handleReviewKey(event) }
+        // Chats가 없는 셸(Release)의 ⌘3 · ⌘N은 연결이 없다: 지나간다
+        guard shell.listens(to: command) else { return false }
         switch command {
         case .escape:
             // 안쪽 것(열린 필터 카드 · Chats의 대화 목록)을 먼저 닫고, 그다음 패널을 접는다
