@@ -120,7 +120,7 @@ describe.each(WRITES)("%s: 쿠키 CSRF", (_name, call, body) => {
 });
 
 describe.each(READS)("%s", (_name, call) => {
-  it("읽기는 CSRF 대상이 아니다 (다른 사이트에서 온 쿠키 GET도 통과: 읽기만 한다)", async () => {
+  it("GET은 CSRF 검사 대상이 아니다 (다른 사이트에서 온 쿠키 GET도 통과). 복귀 요약 GET은 읽기만 하지만 Review GET은 멱등 쓰기(제안 생산 · 노출 표시: 그날의 비긴급 묶음 소비)를 한다 — D-4", async () => {
     const response = await call(req("GET", undefined, { "sec-fetch-site": "cross-site" }));
     expect(response.status).toBe(200);
     expect(response.headers.get("cache-control")).toBe("no-store");

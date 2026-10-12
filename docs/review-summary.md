@@ -16,19 +16,21 @@
 | gate | `src/lib/flags.ts` `REVIEW_V2_ENABLED` |
 | 바뀜 규칙 한 곳 | `src/lib/actions/changed.ts` (`changesAfterSeen`은 `changedSinceSeen`과 같은 뜻) |
 
-## 2. 읽음 = 사건 id (P2-A 보완 포함)
+## 2. 읽음 = (사건 id, 작업 id) 쌍 (P2-A · P2-C 보완 포함)
 
 `action_events.created_at` · `execution_events.at` · `conversation_messages.created_at`은 **트랜잭션 시작 시각**이라 commit 순서와 다르다. "지평 이전은 다 봤다"를 시각으로는 증명할 수 없다 — 아직 commit하지 않았거나 BEGIN만 하고 아직 쓰지 않은 트랜잭션의 행이 나중에 그 시각으로 나타난다. grace 시간도 잠금도 이것을 막지 못한다(writer와 잠금을 공유하지 않는다). 그래서:
 
 - **후보 사건**(`return_summary_candidates`): 지평까지 보이는 세 원천 — `action_events`(ai · agent가 쓴 `changed.ts` 종류) · `execution_events`(run `done` · `failed` 전이) · `conversation_messages`(assistant · event, `refs.action_ids`가 내 Action).
 - **조회**(`return_summary_scan`): 문장 하나(스냅샷 하나)에서 후보 − 읽음 표시(`return_summary_reads`) = 보이는 변화, 그리고 후보 집합의 **digest**(원천마다 개수 + id 해시 합)와 지평을 낸다. 커서 = (사용자, 지평, digest).
-- **Clear**(`return_summary_clear`): 같은 지평으로 후보 집합을 다시 세어 digest가 같을 때만, 그 **집합의 id만** `return_summary_reads`에 쓴다 — digest 확인과 표시가 **한 문장**이다. 조회 뒤 Clear 전에 commit된 사건(트랜잭션 시작 시각이 지평 이전이어도)이 있으면 digest가 달라 `stale`(409, 아무것도 안 씀). Clear 때 **아직 commit되지 않은 사건은 집합에 없으므로 읽음이 되지 않아**, commit된 뒤 다음 조회에 보인다.
+- **Clear**(`return_summary_clear`): 같은 지평으로 후보 집합을 다시 세어 digest가 같을 때만, 그 **집합의 (사건, 작업) 쌍만** `return_summary_reads`에 쓴다 — digest 확인과 표시가 **한 문장**이다. 조회 뒤 Clear 전에 commit된 사건(트랜잭션 시작 시각이 지평 이전이어도)이 있으면 digest가 달라 `stale`(409, 아무것도 안 씀). Clear 때 **아직 commit되지 않은 사건은 집합에 없으므로 읽음이 되지 않아**, commit된 뒤 다음 조회에 보인다.
 - 시각 워터마크는 읽음의 근거가 아니다. `return_summary_state.cleared_through`는 마지막 Clear의 지평(표시용 "Since …" · "Clear한 적이 있다"의 표시)이다 (단조 트리거).
 - 단조: 읽음 표시는 쌓이기만 한다. 같은 커서 재시도 · 겹친 읽기 · 두 기기 · 늦은 Clear는 `applied:false` 성공이다. 같은 사용자의 Clear는 advisory lock으로 직렬이지만 **정확성은 잠금이 아니라 "집합" 규칙이 만든다**.
 - 처음 Clear하면 그때 보이던 이력 전부(보이지 않던 run · 대화 이력 포함)가 기준이 된다(읽음 표시). 한 번도 Clear하지 않은 사용자는 run · 대화 이력을 변화로 올리지 않고(읽음 기준이 없다) 작업 변화만 `changed.ts` 의미로 올린다 — **첫 기준 시각의 제품 결정 전 임시 규칙**이다(결정 항목 P-1).
-- 작업이 300개를 넘으면 `truncated` + 커서 없음(일부를 전체처럼 읽음 처리하지 않는다). 읽음 표시는 지우지 않는다(만료 · 정리 정책 없음 — 결정 항목 P-5).
+- **잘린 조회(작업이 300개를 넘음, P2-C)**: `truncated` + 가장 최근 변화 순(사용자가 이미 본 작업은 순위에 들지 않는다) 앞 300개만 낸다. 커서는 **보인 작업의 id**를 싣고(최대 300 × 22자), Clear는 그 작업들의 사건만 읽음 처리한다 — 보이지 않은 작업은 읽음이 아니라 다음 조회에 나온다. 보인 작업 집합을 Clear 때 다시 계산하지 않고 실어 나르는 이유: 순위가 읽음 표시에 의존하므로 Clear 뒤의 재시도 · 다른 기기의 Clear가 끼면 같은 집합이 다시 나오지 않아 응답 유실 재시도가 409가 된다. 범위(digest)는 읽음 여부와 무관한 후보 id 집합이라 재시도 · 두 기기에서도 같고, 보이지 않은 작업의 사건은 범위 밖이라 불필요한 409도 없다. 읽음의 단위가 (사건, 작업) 쌍이라 여러 작업을 가리키는 메시지(`refs.action_ids`)도 작업마다 따로 읽는다: 보인 작업의 쌍만 읽음이 되고 보이지 않은 작업의 쌍은 안 읽음으로 남아 다음 페이지에 나온다 (사건 단위로 두면 허브 작업 하나를 모두가 가리킬 때 페이지가 멈춘다 — Codex 재현). 300 상한을 올리거나 공유 사건을 버리지 않는다. 첫 Clear(baseline)가 잘린 조회여도 읽음 기준이 없어 올리지 않던 run · 대화 이력은 기준으로 삼는다. `sources.changes`는 `truncated`, `complete:false` · `empty:false`가 유지된다. 읽음 표시는 지우지 않는다(만료 · 정리 정책 없음 — 결정 항목 P-5).
 
 ## 3. 제안 (suggestions)
+
+- **`GET /api/v2/review`는 읽기만 하지 않는다**(결정 항목 D-4): 제안 생산(`suggestions` 행 생성, 멱등) · 노출 표시(`shown_at`, **그날의 비긴급 묶음을 처음 정해 소비**) · snooze가 끝난 제안 다시 열기 · 증거 있는 `expired` 닫기를 같은 호출에서 한다. Action · run · Claim은 만들지 않는다. `GET /api/v2/return-summary`는 아무것도 쓰지 않는다. 쿠키 인증 GET은 CSRF 검사 대상이 아니라(앱은 Bearer) 다른 사이트가 사용자의 오늘 묶음을 앞당겨 소비시킬 수 있다(응답은 읽지 못한다). 스케줄 생산으로 옮기거나 쿠키 교차 사이트 GET을 막을지는 열린 판단이다.
 
 - dedup = `kind + subject_key + revision`(계기). 날짜가 아니다: 같은 계기는 하루가 지나도 다시 제안하지 않는다(A08). `dismiss_scope = 'topic'`은 같은 kind + subject의 새 계기도 막는다. 생산 · 노출 · 전이는 사용자 advisory lock으로 직렬(두 worker · 두 기기).
 - 비긴급 상한: 사용자 현지 날짜마다 **처음 노출 묶음 하나, 3개**(`batch_day`). 그날 한 번이라도 묶음이 있었으면(전부 처리했어도) 새 비긴급을 더 내지 않는다. 긴급(`urgent`)은 상한 밖. 이미 낸 비긴급은 처리하기 전까지 남고 다시 "새로" 나오지 않는다(변화 없는 반복 노출 없음). C2 `pending` 목록에는 상한을 씌우지 않는다(201개면 201개).
@@ -54,7 +56,7 @@
 
 - C2의 한계는 그대로다: 승인 · 철회 · 멈춤 · context version 적재 실패는 복구가 없고, sweep 1분, timer 전체 scan, dead_at 정책, 보관 기한, 전역 기억 생산자. C3는 `inbox_events`로 완전성을 주장하지 않는다.
 - 운영 DB 적용 전, 실제 provider/Jev/eval 호출 없음, `vercel.json`/env/스케줄 변경 없음. 제안 생산은 Review 조회 때(멱등)뿐이다 — 별도 스케줄 생산은 `vercel.json` 변경이 필요해 하지 않았다.
-- 읽기 비용: 후보 집합 digest는 사용자 이력 전체를 센다(`action_events` AI 변화 · run 결과 · 대화 메시지). 인덱스를 새로 만들지 않았다(기존 `action_events_action_idx` 등). 합성 한 번 측정(로컬 PG17 컨테이너 하나, 작업 2,000 · AI 변화 20,000 · 메시지 10,000, 동시성 없음): 조회 약 0.15–0.27초, 첫 Clear(이력 3만 건 표시) 약 0.39초. **운영 규모의 증거가 아니다** — 운영 측정은 하지 않았다.
+- 읽기 비용: 후보 집합 digest는 사용자 이력 전체를 센다(`action_events` AI 변화 · run 결과 · 대화 메시지). 인덱스를 새로 만들지 않았다(기존 `action_events_action_idx` 등). 합성 한 번 측정(로컬 PG17 컨테이너 하나, 작업 2,000 · AI 변화 20,000 · 메시지 10,000, 동시성 없음): 조회 약 0.21–0.24초, 잘린 첫 페이지(300개) Clear 약 1.1초(첫 Clear라 run · 대화 이력 baseline 포함, 쌍 1만 3천 개 쓰기), 남은 전체 Clear 약 1.1초, 3만 쌍이 읽음인 뒤 조회 약 0.6초. **운영 규모의 증거가 아니다** — 운영 측정은 하지 않았다.
 - 이 코드가 모르는 종류의 열린 제안(더 새 서버가 쓴 것)은 내리지 않고 `sources.suggestions: unavailable`로 알린다.
 - 시각 정밀도: 시각 글자는 SQL이 만든 마이크로초 UTC 그대로다. 앱이 Date로 바꿔 돌려주면 digest가 달라져 409가 난다(정직한 거절).
 - 아래 결정 항목은 구현으로 정하지 않았다.
@@ -75,7 +77,7 @@
 
 - 한 트랜잭션 마이그레이션(`lock_timeout` 5초). 기존 표 · 함수 · 제약 · 트리거는 바꾸지 않았다(새 표 3 + 새 함수만): 시험이 적용 전후 객체 지문을 견준다. 적용은 병합 직전 승인을 받고 `supabase db query --linked -f`, `db push` 금지.
 - 되돌리기: 마이그레이션 헤더의 `drop` 문장 3개를 순서대로 실행하면 적용 전 객체 지문으로 돌아간다(시험이 그대로 실행해 확인). 코드는 PR을 닫으면 된다. gate를 끄면 새 경로가 404이고 새 쓰기가 0이다(표는 남아 있어도 읽는 코드가 없다).
-- 점검 쿼리 예(개수만): 제안 `select state, count(*) from suggestions group by 1`, 읽음 `select count(*) from return_summary_reads`.
+- 점검 쿼리 예(개수만): 제안 `select state, count(*) from suggestions group by 1`, 읽음 `select count(*) from return_summary_reads`(쌍 수).
 
 ## 8. 검증
 
@@ -96,7 +98,7 @@
 - **gate `REVIEW_V2_ENABLED`**(서버 env, 기본 꺼짐, 정확히 `"true"`): 꺼져 있으면 **다섯 경로 모두 404** `{"error":{"code":"not_found","message":"없는 경로입니다."}}`. 인증도 DB도 부르지 않고 새 쓰기 0. 앱은 404를 "이 서버는 아직 이 기능이 없다"로 읽고 기존 화면으로 둔다(오류 토스트 금지).
 - 오류 본문은 항상 `{"error":{"code","message"}}` (code ∈ 기존 `apiErrorCodeSchema`: `unauthorized` 401 · `invalid_request` 400 · `not_found` 404 · `conflict` 409 · `internal_error` 500). 새 오류 코드는 없다. `message`는 한국어 진단문이라 화면에 그대로 쓰지 않는다. 오류 본문에는 요청 값이 없다.
 - 시각은 두 종류다: **마이크로초 UTC 글자** `2026-10-12T00:00:00.123456Z`(`since` · 변화 `at` · 커서 · `cleared_through`)는 **Date로 바꿔서 서버에 돌려주지 않는다**(커서는 불투명 글자 그대로). 나머지(`generated_at` · `created_at` · `shown_at` · `snooze_until`)는 `toISOString()` 모양(밀리초) ISO 8601.
-- GET 응답은 `Cache-Control: no-store`. 읽기 요청은 아무것도 지우지 않는다(Review의 제안 노출 표시만 예외 — 아래).
+- GET 응답은 `Cache-Control: no-store`. **`GET /api/v2/return-summary`는 아무것도 쓰지 않는다. `GET /api/v2/review`는 멱등 쓰기를 한다**(제안 생산 · 노출 표시, 아래 1절) — Action · run · Claim은 만들지 않는다.
 - **숫자를 내리지 않는다.** 개수 · 합계 필드가 없다. 앱도 세지 않는다(디자인 D-12).
 - 서버는 문구를 만들지 않는다. 아래 "토큰" 표의 토큰에서 앱이 문구를 만든다.
 
@@ -129,7 +131,7 @@
 - `suggestions` = 지금 보이는 열린 제안(`state`는 늘 `open`): 긴급(상한 밖) + 이미 노출한 비긴급 + 오늘 처음 노출된 비긴급(사용자 현지 날짜마다 **한 묶음 3개**). `offered_on`(YYYY-MM-DD)이 오늘이면 오늘 새로 나온 것. 긴급은 `offered_on: null`. 순서: 긴급 먼저 → 오래된 순.
 - `suggestion_batch.state`: `ready`(시간대를 알아 하루 묶음을 센다) | `needs_time_zone`(**저장된 사용자 시간대가 없다** — 이 서버 스택에 시간대 저장소가 없거나 그 사용자의 값이 없는 **정당한 모름**이고 읽기는 완전하다: **새 비긴급은 아직 내지 않는다**, 긴급과 이미 낸 제안은 보인다) | `unavailable`(시간대를 **읽지 못했다** — 예상 못한 읽기 오류, 아래 `sources.time_zone`도 `unavailable`, `complete:false`: 새 비긴급은 내지 않고 긴급과 이미 낸 제안만 보인다). 앱은 어느 쪽도 "제안 없음"으로 보이면 안 된다.
 - 완전성: `sources` 셋(`decisions` · `suggestions` · `time_zone`)이 모두 `ok`일 때만 `complete`. **`empty`가 true일 때만** "아무것도 없음"을 보여도 된다. 한 쪽이 `unavailable`이면 그 목록은 `null`이거나 **일부**일 수 있고(예: 이 서버가 모르는 종류의 제안이 있어 `suggestions`가 `unavailable`) 비어 있는 것이 아니라 **모르는 것**이다(Try again 상태로). `needs_time_zone`은 `unavailable`이 아니다: 저장된 시간대가 없다는 사실을 완전하게 읽은 것이다.
-- **제안을 보는 것은 Action · run을 만들지 않는다.** 이 GET은 제안 생산(지금 있는 사실에서, 멱등)과 노출 표시(`shown_at` · 하루 묶음)를 쓴다 — 같은 하루 안에서 몇 번을 불러도 같은 묶음이다. 두 기기가 동시에 불러도 묶음은 하나다.
+- **제안을 보는 것은 Action · run · Claim을 만들지 않는다. 그러나 이 GET은 읽기만 하지 않는다**: 제안 생산(지금 있는 사실에서 `suggestions` 행을 만든다, 멱등) · 노출 표시(`shown_at` · **그날의 비긴급 묶음 3개를 처음 정해 소비한다**) · snooze가 끝난 제안을 다시 연다 · 증거가 생긴 제안(기한이 바뀜 · Action이 닫힘 · run이 끝남)을 `expired`로 닫는다. 같은 하루 안에서 몇 번을 불러도 같은 묶음이다. 두 기기가 동시에 불러도 묶음은 하나다. GET이라 쿠키 CSRF 검사 대상이 아니다(앱은 Bearer): 다른 사이트가 쿠키 세션의 GET을 일으켜 그날 묶음을 앞당겨 소비시킬 수는 있다(응답은 읽지 못한다) — 열린 판단 D-4.
 - 401 로그인 필요 · 404 gate 꺼짐 · 500 `internal_error`(전체 실패; 일부 실패는 200 + `unavailable`).
 
 ### 2. `GET /api/v2/return-summary` — 복귀 요약
@@ -141,7 +143,7 @@
   "generated_at": "2026-10-12T21:00:00.000Z",
   "since": "2026-10-12T08:00:00.000000Z",
   "baseline": "cleared",
-  "cursor": "c1.WyIxMTExLi4uIiwiMjAyNi0xMC0xMlQwODowMDowMC4wMDAwMDBaIiwi…",
+  "cursor": "c3.WyIxMTExLi4uIiwiMjAyNi0xMC0xMlQyMDowMDowMC4wMDAwMDBaIiwi…",
   "complete": true,
   "empty": false,
   "sources": { "changes": "ok", "decisions": "ok" },
@@ -164,9 +166,9 @@
 - **한 줄 = 업무 하나**(`action_id`가 안정 id). 줄에는 `StatusMark`(`state`), `title`(**지금 제목** — 옛 제목 · 원문 글 · 변경 전후 값은 절대 내려가지 않는다), 변화(`changes`), `Needs your answer`(`needs_answer`), `Next`(`next`). 줄을 누르면 그 업무 상세. 순서: 답할 결정이 있는 줄(긴급 맨 앞) → 최근 변화 순 → id.
 - `state`: `to_do | in_progress | done | null`(취소된 업무는 null). `status`: `open | done | dropped`.
 - `changes`(시각 순, 안 읽은 것만): `source` ∈ `action_event`(원문 · AI · 실행기 변화 — **사용자 자기 수정 · 사용자가 본 이전 변화는 없다**, `changed.ts`와 같은 뜻) · `run`(실행 결과 전이 `done | failed`, `detail`=run outcome) · `message`(안 읽은 `assistant | event` 메시지가 그 업무를 가리킴). `source_state`(action_event만): `available | deleted | access_lost | text_expired` — **지운 원문 · 접근 상실 · 보관 만료는 글이나 옛 제목으로 되살리지 않고 이 토큰으로만** 보인다.
-- `since`: **마지막 Clear의 지평**(마이크로초, "Since …" 표시용). **읽음의 근거가 아니다** — 무엇이 읽혔는지는 서버가 사건 id로 기억한다. 그래서 Clear 뒤에 commit된 사건은 시각이 `since`보다 이르더라도 다음 조회에 **새 변화로 보인다**(트랜잭션 시작 시각 때문에 숨지 않는다). `baseline`: `cleared`(Clear한 적 있음) | `never_cleared`(`since: null` — **첫 기준 시각은 열린 제품 결정**이다. 이 서버는 이 경우 run · 대화 이력은 변화로 올리지 않고, 업무 변화(`action_event`)는 "사용자가 마지막으로 본 뒤"로만 올린다. 앱이 "Since …" 제목에 쓸 시각이 없으면 문구는 승인이 필요하다) | `unknown`(변화 원천을 읽지 못함).
-- `cursor`: **Clear에 그대로 돌려줄 불투명 글자**(조회가 본 사건 집합의 지문). 열지도 고치지도 시각으로 바꾸지도 않는다. `null`이면 Clear를 보이지 않는다(잘렸거나 변화 원천을 읽지 못함 — 일부를 전체처럼 읽음 처리하지 않는다).
-- 완전성: `sources.changes` ∈ `ok | unavailable | truncated`(작업이 300개를 넘으면 `truncated` + 앞 300개만, 커서 없음), `sources.decisions` ∈ `ok | unavailable`. `complete` = 둘 다 `ok`. **`empty`(= complete이면서 items가 빔)일 때만** "변화 없음 · 모두 처리됨"을 보일 수 있다. `unavailable`/`truncated`는 비어 있는 것이 아니라 일부를 모르는 것이다.
+- `since`: **마지막 Clear의 지평**(마이크로초, "Since …" 표시용). **읽음의 근거가 아니다** — 무엇이 읽혔는지는 서버가 (사건, 작업) 쌍으로 기억한다. 그래서 Clear 뒤에 commit된 사건은 시각이 `since`보다 이르더라도 다음 조회에 **새 변화로 보인다**(트랜잭션 시작 시각 때문에 숨지 않는다). `baseline`: `cleared`(Clear한 적 있음) | `never_cleared`(`since: null` — **첫 기준 시각은 열린 제품 결정**이다. 이 서버는 이 경우 run · 대화 이력은 변화로 올리지 않고, 업무 변화(`action_event`)는 "사용자가 마지막으로 본 뒤"로만 올린다. 앱이 "Since …" 제목에 쓸 시각이 없으면 문구는 승인이 필요하다) | `unknown`(변화 원천을 읽지 못함).
+- `cursor`: **Clear에 그대로 돌려줄 불투명 글자**(조회가 본 사건 집합의 지문, 최대 약 9KB). 열지도 고치지도 시각으로 바꾸지도 않는다. **`cursor`가 있으면 Clear할 수 있다.** `null`은 변화 원천을 읽지 못했을 때뿐이다(`sources.changes: unavailable` — 읽음 처리할 범위를 정할 수 없다). **잘렸어도(`truncated`) 커서가 있다**: 그 커서는 **지금 보인 작업의 사건만** 읽음 처리하고, 보이지 않은 작업은 읽음이 되지 않아 다음 조회에 나온다.
+- 완전성: `sources.changes` ∈ `ok | unavailable | truncated`(작업이 300개를 넘으면 `truncated` + 가장 최근 변화 순 앞 300개만 — 사용자가 이미 본 작업은 세지 않는다), `sources.decisions` ∈ `ok | unavailable`. `complete` = 둘 다 `ok`. **`empty`(= complete이면서 items가 빔)일 때만** "변화 없음 · 모두 처리됨"을 보일 수 있다. `unavailable`/`truncated`는 비어 있는 것이 아니라 일부를 모르는 것이다. `truncated` 페이지를 Clear해도 "모두 처리됨"이 아니다: 다음 GET에 나머지가 나온다(마지막 페이지는 `truncated`가 아니다).
 - 결정(`decisions`)은 Clear와 무관하다 — **읽음은 결정이 아니다.** Clear 뒤에도 `needs_answer` 줄은 남고 ⌥ Space는 Review 먼저다. `decisions[].id/version`은 Review의 항목 `id/version`과 같은 값이다(상세 연결 키).
 - `next.kind`: `answer`(답할 결정이 있음, `decision_kinds`에 종류) · `review_result`(끝난 결과 `draft_ready`/`agent_done`를 볼 차례) · `open`(그 업무를 열어 본다).
 - 줄 `version`: 줄의 변화 · 결정이 바뀌면 달라지는 글자. 같은 `action_id`의 줄을 비교할 때 쓴다.
@@ -174,9 +176,10 @@
 
 ### 3. `POST /api/v2/return-summary/clear` — Clear (읽음 처리)
 
-요청 `{ "cursor": "<GET이 준 글자 그대로>" }` (그 밖의 키는 400). 응답 200 `{ "cleared_through": "2026-10-12T20:00:00.000000Z", "applied": true }`.
+요청 `{ "cursor": "<GET이 준 글자 그대로>" }` (1–10,000자, 그 밖의 키는 400). 응답 200 `{ "cleared_through": "2026-10-12T20:00:00.000000Z", "applied": true }`.
 
-- **Clear = 조회가 본 사건만 읽음 처리한다. 해결 · 승인 · 완료 · 거절이 아니다**(결정 · Action · run · 정책 · 승인 어느 것도 바뀌지 않는다). 기존 `POST /api/v1/actions/{id}/seen`과 다르다 — 그것은 now()를 찍지만 Clear는 **커서가 가리키는 사건 id만** 읽음으로 표시한다(시각 워터마크를 옮기지 않는다).
+- **Clear = 조회가 본 (사건, 작업)만 읽음 처리한다. 해결 · 승인 · 완료 · 거절이 아니다**(결정 · Action · run · 정책 · 승인 어느 것도 바뀌지 않는다). 기존 `POST /api/v1/actions/{id}/seen`과 다르다 — 그것은 now()를 찍지만 Clear는 **커서가 가리키는 (사건, 작업) 쌍만** 읽음으로 표시한다(시각 워터마크를 옮기지 않는다).
+- **잘린 조회의 Clear**: 커서가 보인 작업(최대 300개)을 싣고 있어, Clear는 그 작업들에 대한 (사건, 작업) 쌍만 읽음 처리한다 — 보이지 않은 작업은 읽음이 아니다. **한 메시지가 여러 작업을 가리켜도 작업마다 따로 읽는다**: 보인 작업에서는 읽음이 되고 보이지 않은 작업에는 그 메시지가 안 읽은 변화로 남아 다음 조회에 나온다(조회 → Clear를 되풀이하면 모두 읽음이 된다). 재시도 · 두 기기도 같다(같은 커서 `applied:false`). 보인 작업에 조회 뒤 Clear 전에 늦게 들어온 사건이 있으면 409(다시 조회), 보이지 않은 작업의 사건은 Clear에 영향이 없다.
 - 조회와 Clear 사이에 생긴 새 변화는 **남는다**(다음 조회에 보인다). 조회 때 **아직 commit되지 않았던** 사건도 Clear가 읽음으로 만들지 못한다 — 나중에 commit되면(그 행의 `at`이 조회 지평보다 이르더라도) 다음 조회에 보인다. 읽음은 **줄지 않는다**(단조): 겹친 조회 · 두 기기 · 늦은 Clear · 응답 유실 뒤 같은 커서 재시도는 `200 applied:false`(쓸 것이 없었다 — 성공이다).
 - **409 `conflict`**: 조회한 뒤 Clear 전에 그 범위의 사건이 달라졌다(늦게 들어온 변화 · 삭제). **아무것도 읽음 처리하지 않았다.** 앱은 자동 재전송하지 않고 다시 조회한다(변화가 아직 보인다).
 - **400 `invalid_request`**: 모양이 틀린 · 미래 · 남의 · 옛 커서. 다시 조회한다.
@@ -206,7 +209,7 @@
 
 ### 앱이 하면 안 되는 것 (서버 계약)
 
-1. `unavailable`(`sources`의 어느 값이든, `time_zone` 포함) · `truncated` · `cursor: null` · `complete: false`를 빈 상태로 보이지 않는다. `empty: true`일 때만 "변화 없음 · 아무것도 없음"이다. `needs_time_zone`은 오류가 아니라 정당한 모름이다(읽기는 완전하다).
+1. `unavailable`(`sources`의 어느 값이든, `time_zone` 포함) · `truncated` · `cursor: null` · `complete: false`를 빈 상태로 보이지 않는다. `empty: true`일 때만 "변화 없음 · 아무것도 없음"이다. `needs_time_zone`은 오류가 아니라 정당한 모름이다(읽기는 완전하다). 잘린 페이지의 Clear는 "모두 처리됨"이 아니다(다음 GET을 다시 부른다).
 2. Clear 409를 자동 재전송하지 않는다. 클라이언트 시각 · 마이크로초를 잘라 만든 커서를 보내지 않는다.
 3. 읽음(Clear/열기)을 결정으로 다루지 않는다. 결정은 Review의 항목 `version`으로만 처리하고 옛 version으로 행동하지 않는다.
 4. 제안 처리(snooze/dismiss)의 409를 자동 재시도하지 않는다. 숫자 · 개수를 만들지 않는다.

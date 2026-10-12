@@ -12,7 +12,7 @@ import { errorResponse, parseBody, unauthorized } from "./respond";
 
 // /api/v2/review · /api/v2/return-summary(/clear) · /api/v2/suggestions/{id}/(snooze|dismiss) 처리 (0.2.0 C3). 인증 · gate · 읽기/쓰기를 인자로 받아 Route Handler 밖에서 테스트한다.
 //  - gate REVIEW_V2_ENABLED가 꺼져 있으면 404: 인증 · DB를 부르지 않는다 (새 쓰기 0, 기존 API 그대로).
-//  - 쿠키로 인증하는 쓰기(POST)의 CSRF는 authenticateRequest가 본다. 읽기(GET)는 아무것도 쓰지 않는다(제안 노출 표시만 예외: Review).
+//  - 쿠키로 인증하는 쓰기(POST)의 CSRF는 authenticateRequest가 본다. GET 중 복귀 요약은 아무것도 쓰지 않고, Review는 멱등 쓰기를 한다(제안 생산 · 노출 표시: 그날의 비긴급 묶음을 소비한다. Action · run · Claim은 만들지 않는다). 쿠키 인증 GET은 CSRF 검사 대상이 아니다.
 //  - 오류 본문에 요청 값을 담지 않는다. 로그에는 오류 이름만 남긴다 (원문 · 제목 · 커서를 남기지 않는다).
 
 type AppUser = { user: { id: string } };
