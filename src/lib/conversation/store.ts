@@ -91,6 +91,44 @@ export async function createConversation(
   return raced ? { status: "existing", conversation: raced } : { status: "id_taken" };
 }
 
+export type SetConversationContextResult =
+  | { status: "updated" | "unchanged"; conversation: Conversation }
+  | { status: "not_found" }
+  | { status: "context_not_found" }
+  | { status: "context_off" };
+
+/**
+ * 대화의 범위를 사용자가 명시적으로 고른 것으로 바꾼다 (B3 ProjectLink; null = All work). 멤버십 · 기억 · 범위 version을 쓰지 않는다(자동 범위 추정은 S3b).
+ * 내 대화여야 하고(아니면 not_found), 범위는 내 active 범위여야 한다(context_not_found: 없거나 남의 · 보관된 범위). 범위는 MEMORY_ENABLED일 때만 고른다(context_off, All work로 되돌리기는 늘 된다).
+ * 이미 그 범위면 쓰지 않는다 (unchanged)
+ */
+export async function setConversationContext(
+  admin: SupabaseClient,
+  userId: string,
+  id: string,
+  contextId: string | null,
+  env: Env = process.env,
+): Promise<SetConversationContextResult> {
+  const existing = await readConversation(admin, userId, id);
+  if (!existing) return { status: "not_found" };
+  const target = contextId ? contextId.toLowerCase() : null;
+  if (target) {
+    if (!flagEnabled("MEMORY_ENABLED", env)) return { status: "context_off" };
+    const { data } = await admin.from("work_contexts").select("id").eq("user_id", userId).eq("id", target).eq("status", "active").maybeSingle().throwOnError();
+    if (!data) return { status: "context_not_found" };
+  }
+  if ((existing.context_id?.toLowerCase() ?? null) === target) return { status: "unchanged", conversation: existing };
+  try {
+    const { data } = await admin.from("conversations").update({ context_id: target }).eq("id", id).eq("user_id", userId).select(CONVERSATION_COLUMNS).throwOnError();
+    const updated = (data ?? [])[0];
+    return updated ? { status: "updated", conversation: conversationSchema.parse(updated) } : { status: "not_found" };
+  } catch (error) {
+    // 그 사이 범위가 지워졌다 (복합 외래키 (context_id, user_id))
+    if ((error as { code?: unknown } | null)?.code === "23503") return { status: "context_not_found" };
+    throw error;
+  }
+}
+
 async function readConversation(admin: SupabaseClient, userId: string, id: string): Promise<Conversation | null> {
   const { data } = await admin.from("conversations").select(CONVERSATION_COLUMNS).eq("user_id", userId).eq("id", id).maybeSingle().throwOnError();
   return data ? conversationSchema.parse(data) : null;

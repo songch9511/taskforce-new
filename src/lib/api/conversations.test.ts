@@ -8,8 +8,8 @@ import type { TurnPlan } from "@/lib/conversation/respond";
 
 import { emptyRefs, id } from "../../../tests/conversation/fakes";
 
-import { postConversationMessageResponseSchema, type ConversationMessage } from "./contract";
-import { handleCreateConversation, handlePostConversationMessage, type PostMessageDeps } from "./conversations";
+import { apiErrorV2Schema, postConversationMessageResponseSchema, updateConversationResponseSchema, type ConversationMessage } from "./contract";
+import { handleCreateConversation, handlePostConversationMessage, handleUpdateConversation, type PostMessageDeps } from "./conversations";
 
 // /api/v2/conversations 처리 (B2). 모델 대신 respond를 가짜로 두고 호출 수로 "AI 호출 0"을 증명한다:
 // gate 꺼짐 · 인증 거부 · 동의 없음 · 남의 대화/대상 · 같은 제출의 저장된 답 · 처리 중 · 한도에서는 respond(J1 · J2)를 부르지 않는다.
@@ -263,5 +263,59 @@ describe("POST /api/v2/conversations", () => {
     expect(await run({ status: "context_not_found" })).toBe(404);
     expect(await run({ status: "context_off" })).toBe(400);
     expect(await run({ status: "created", conversation }, { user_id: USER.user.id })).toBe(400);
+  });
+});
+
+describe("PATCH /api/v2/conversations/{id} (B3: 대화 헤더 ProjectLink의 명시적 범위 선택)", () => {
+  const CONTEXT = id(1, "a6a6a6a6");
+  const conversation = { id: CONVERSATION, title: null, context_id: CONTEXT, created_at: "2026-10-10T01:00:00.000Z", last_message_at: null, last_read_at: null, archived_at: null, text_purged_at: null };
+  type UpdateDeps = Parameters<typeof handleUpdateConversation<User>>[2];
+  const patch = (deps: UpdateDeps, body: unknown = { context_id: CONTEXT }, conversationId = CONVERSATION) =>
+    handleUpdateConversation(new Request(`https://api.example.dev/api/v2/conversations/${conversationId}`, { method: "PATCH", body: JSON.stringify(body) }), conversationId, deps);
+  const deps = (update: UpdateDeps["update"] = vi.fn(async () => ({ status: "updated" as const, conversation }))): UpdateDeps => ({ enabled: () => true, authenticate: async () => USER, update });
+
+  it("gate CONVERSATIONS_V2_ENABLED 꺼짐 404 (인증 · 쓰기를 부르지 않는다) · 인증 거부 401 · 잘못된 대화 id 404", async () => {
+    const authenticate = vi.fn(async () => USER);
+    const update = vi.fn();
+    expect((await patch({ enabled: () => false, authenticate, update })).status).toBe(404);
+    expect(authenticate).not.toHaveBeenCalled();
+    expect((await patch({ enabled: () => true, authenticate: async () => null, update })).status).toBe(401);
+    expect((await patch(deps(update), { context_id: CONTEXT }, "not-a-uuid")).status).toBe(404);
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it("본문은 { context_id: uuid | null } 하나뿐이다: 빈 본문 · 모르는 키(user_id · title · archived_at) · uuid가 아닌 값은 400 (쓰기 0)", async () => {
+    const update = vi.fn();
+    for (const bad of [{}, { context_id: "x" }, { context_id: CONTEXT, title: "새 제목" }, { context_id: CONTEXT, user_id: USER.user.id }, { context_id: 7 }, { archived_at: null }]) {
+      expect((await patch(deps(update), bad)).status, JSON.stringify(bad)).toBe(400);
+    }
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it("200 { conversation } (바뀜 · 이미 그 범위). 쓰기에는 인증한 사용자 · 경로의 대화 id · 고른 범위(null = All work)만 간다", async () => {
+    const update = vi.fn<UpdateDeps["update"]>(async () => ({ status: "updated", conversation }));
+    const response = await patch(deps(update));
+    expect(response.status).toBe(200);
+    expect(updateConversationResponseSchema.parse(await response.json()).conversation).toEqual(conversation);
+    await patch(deps(update), { context_id: null });
+    expect(update.mock.calls).toEqual([[USER, CONVERSATION, CONTEXT], [USER, CONVERSATION, null]]);
+    const same = await patch(deps(vi.fn(async () => ({ status: "unchanged" as const, conversation }))));
+    expect(same.status).toBe(200);
+  });
+
+  it("남의 · 없는 대화 404 · 남의 · 없는 · 보관된 범위 404 · 범위 기능(MEMORY_ENABLED) 꺼짐 400 — 존재를 드러내지 않는다", async () => {
+    const run = async (status: "not_found" | "context_not_found" | "context_off") => {
+      const response = await patch(deps(vi.fn(async () => ({ status }))));
+      return [response.status, apiErrorV2Schema.parse(await response.json()).error.code] as const;
+    };
+    expect(await run("not_found")).toEqual([404, "not_found"]);
+    expect(await run("context_not_found")).toEqual([404, "not_found"]);
+    expect(await run("context_off")).toEqual([400, "invalid_request"]);
+  });
+
+  it("예기치 못한 오류는 500이고 로그에 오류 이름만 남는다", async () => {
+    const response = await patch(deps(vi.fn(async () => Promise.reject(new Error(`DB 오류 ${CONTEXT}`)))));
+    expect(response.status).toBe(500);
+    expect(errors.mock.calls.flat().map(String).join("\n")).not.toContain(CONTEXT);
   });
 });

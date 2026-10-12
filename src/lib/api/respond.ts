@@ -1,11 +1,12 @@
 import type { z } from "zod";
 
-import type { ApiError } from "./contract";
+import type { ApiErrorV2 } from "./contract";
 
 // Route Handler 공통: 오류 응답과 본문 검증. 오류 메시지에 요청 값(원문일 수 있음)을 담지 않는다.
+// code는 v1 오류 코드 + v2 이유 코드(confirm_unavailable · scope_unavailable, 기억 쓰기 B3). v1 route는 v1 코드만 쓴다 (apiErrorCodeSchema는 동결).
 
-export function errorResponse(status: number, code: ApiError["error"]["code"], message: string): Response {
-  return Response.json({ error: { code, message } } satisfies ApiError, { status });
+export function errorResponse(status: number, code: ApiErrorV2["error"]["code"], message: string): Response {
+  return Response.json({ error: { code, message } } satisfies ApiErrorV2, { status });
 }
 
 export const unauthorized = () => errorResponse(401, "unauthorized", "로그인이 필요합니다.");

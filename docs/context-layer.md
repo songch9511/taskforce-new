@@ -2,7 +2,7 @@
 
 0.2.0 구현 계획 B1. 기억 · 범위 · 사람 · 신원 링크 · 원문 조각 · 맥락 묶음을 서버 코드와 DB 규칙으로 붙였다. 보이는 행동은 없다:
 gate `MEMORY_ENABLED` · `SOURCE_CHUNKS_ENABLED`(`src/lib/flags.ts`)가 기본 꺼짐이고, 꺼져 있으면 서버는 새 표를 읽지도 쓰지도 않고 임베딩을 부르지 않는다.
-대화 v2 route는 B2가 붙였다(7장, gate `CONVERSATIONS_V2_ENABLED` 기본 꺼짐). 기억 편집 API는 아직 없다.
+대화 v2 route는 B2가 붙였다(7장, gate `CONVERSATIONS_V2_ENABLED` 기본 꺼짐). 기억 확인 · 정정 · 잊기 · 범위 옮기기 route와 대화 범위 바꾸기는 B3 PR1이 붙였다(8장, gate `MEMORY_ENABLED` · `CONVERSATIONS_V2_ENABLED` 기본 꺼짐).
 
 | 무엇 | 위치 |
 |---|---|
@@ -106,4 +106,46 @@ B2(대화 v2, gate `CONVERSATIONS_V2_ENABLED`, 기본 꺼짐)는 이 층을 **�
 - **B2 독립 리뷰에서 기록만 한 것 (고치지 않음):** 다른 대화의 늦은 응답이 새 정정을 덮을 수 있다(같은 대화는 stale로 막고, 보여 준 같은 사실은 version으로 막지만 B1의 "explicit은 늘 이긴다" 규칙상 창 밖 · 다른 대화의 재진술은 version 없이 정정된다) · 채택 경합 뒤 재시도에는 처리 표시가 없어 같은 제출을 겹쳐 보내면 모델 비용만 두 번 든다 · 별개의 "응" 두 개가 겹치면 Action 0(보수적) · 열린 할 일 `limit(500)`은 정렬 없이 읽은 뒤 순서를 매기고 제안 중복 확인은 보여 준 50 + 최근 끝낸 20개 범위 · 채택 note 원문 = 제안 제목, 링크 = "응" 메시지(제품 확인 필요) · 처리 표시 소유 토큰 없음 · 채택 순간 그 사이 추출된 같은 Action을 다시 찾지 않음 · T1 강등은 기록이 하나도 없을 때만(제품 기준 필요) · 보관(archived) 대화도 메시지를 받는다(보관 route가 아직 없음).
 - **Codex 리뷰에서 기록만 한 것 (조건부 우려 · 정책 검토):** 처리 표시가 시간으로 풀려 다른 요청이 다시 처리를 잡은 뒤 옛 요청의 답 쓰기가 늦게 와도 받아들여진다(시도 토큰 없음, 실제 SQL로 재현됨). route 실행 한도 60초 < 처리 표시 75초라 배포 환경에서는 옛 요청이 먼저 끝나야 하지만 보장은 플랫폼 실행 한도에 기댄다. 같은 제출이라 쓰기는 하나(answered)이고 글 · 대상이 같다. / 대화 창은 저장된 앞 답의 글을 그대로 모델에 다시 준다: 새 조회에서 접근 상실 · 기억 gate로 거른 자료에서 나온 문장이 앞 답에 남아 계속 쓰일 수 있다 — Slack D3 범위(위)와 함께 출시 gate 정책 검토.
 - **재검토(APPROVE)에서 기록만 한 것:** 새 교착 가능성(추정 · 드묾): 한 답이 같은 끊기의 Slack 원문 둘 이상을 인용했거나 Slack 연결 둘을 동시에 끊으면 끊기 RPC가 40P01로 되돌려질 수 있다 — 호출부 재시도 또는 끊기 때 원문 id 순 선잠금이 후속 선택지 · 대명사 정정(후보 주제 없음)은 kind 일치 + Jev `previous_statement` 판정으로만 막는다(설계상 수용) · 동시에 같은 새 제출 둘이 오면 한도를 두 번 센다(비용만) · `selected`가 null인 행(운영 미적용이라 없음)은 빈 객체(`{}`)로 견주므로, 그런 행에 같은 client_message_id로 다시 보내면 서버가 늘 빈 목록 셋(`{action_ids: [], run_ids: [], artifact_ids: []}`)을 보내 `refs_mismatch`(409)가 된다 · 처음 고른 대상이 그 사이 지워진 같은 제출의 재전송은 404(의도, 앱은 RLS로 답을 읽을 수 있다).
-- **B2가 새로 남긴 것:** 기억 편집 · 잊기 · 추정 확인 route(계약 `memoryEditRequestSchema` 등은 있음, B3 Remembered와 함께), 대화의 범위 추정(첫 발화에 프로젝트 이름이 없을 때 `inferred` 멤버십 — 아키텍처 11장 ①, S3b), 대화 글 보관 기한과 정리(`text` · `content`를 함께 비움, 처리방침 V08), `last_read_at` 쓰기, 기억 · 재설명 지표 이벤트(ARCH26 `memory_corrected` 등, 지표 묶음 I).
+- **B2가 새로 남긴 것:** 기억 편집 · 잊기 · 추정 확인 route(계약 `memoryEditRequestSchema` 등은 있음, B3 Remembered와 함께 → **B3 PR1에서 처리**, 8장), 대화의 범위 추정(첫 발화에 프로젝트 이름이 없을 때 `inferred` 멤버십 — 아키텍처 11장 ①, S3b), 대화 글 보관 기한과 정리(`text` · `content`를 함께 비움, 처리방침 V08), `last_read_at` 쓰기, 기억 · 재설명 지표 이벤트(ARCH26 `memory_corrected` 등, 지표 묶음 I).
+
+## 8. 기억 쓰기 (B3 PR1) — 처리한 것 · 보류한 정책 · 남은 결정
+
+B3 PR1(서버)은 Remembered(Settings › Account)와 대화 헤더 ProjectLink가 쓰는 **쓰기**만 붙인다. 읽기(목록 · 상세 · 대화 복원)는 앱이 Supabase에서 직접 한다(RLS select, 새 읽기 route 없음). 새 판정 엔진은 없다:
+확인 · 정정은 B1 `remember_memory_item`(`p_corrects` + `p_expected_version`)이고, 잊기 · 옮기기만 한 트랜잭션이 필요해 새 SQL 두 개(`20261107000000_memory_writes.sql`)를 더했다. AI를 부르지 않고 run · Action · 정책 · 승인을 만들지 않는다(I04 · I14: `tests/db/memory-writes.scenarios.ts`가 실행 · 권한 · Action 표의 행 수가 그대로임을 확인한다). 위치는 [FEATURE_MAP](FEATURE_MAP.md) 3-7.
+
+| route | 요청 | 동작 | 응답 |
+|---|---|---|---|
+| `POST /api/v2/memory/{id}/confirm` | `{ expected_version }` | 추정(inferred) 후보만. 새 explicit 행이 후보를 정정한다(같은 범위 · kind · subject 상속, 글 · 값 · 유효 구간 · 출처 그대로, 후보는 `superseded_*` + version + 1) | `200 { item }` 새 지금 행 |
+| `PATCH /api/v2/memory/{id}` | `{ expected_version, statement, value?, valid_from?, valid_until? }` | 같은 사실 · 같은 범위 정정: 새 explicit 행 + 옛 행 정정된 이력. 요청에 없는 값은 옛 행에서 이어받는다. 비우려면 `value`는 `{}`(`null`은 400: `memoryEditRequestSchema`의 value는 nullable이 아니다), `valid_from` · `valid_until`만 `null` = 비움. **출처(source_ref)는 잇지 않는다**(새 글은 사용자의 것, 옛 행이 이력으로 출처를 남긴다). 범위는 바꾸지 않는다 | `200 { item }` |
+| `POST /api/v2/memory/{id}/forget` | `{ expected_version }` | `revoked_at`(되돌릴 수 없음) + version + 1. 범위 기억이면 범위 version이 기존 트리거로 정확히 + 1. 이미 잊은 항목에 다시 보내면 200(멱등). 이미 보낸 묶음은 회수하지 않는다 | `200 { item }` 잊은 그 행 |
+| `POST /api/v2/memory/{id}/scope` | `{ expected_version, scope_kind: "global" \| "context", context_id: uuid \| null }` | explicit 항목만 전체 ↔ 내 active 범위. 같은 kind · subject · 글 · 값 · 유효 구간 · 말한 시각으로 대상 범위에 새 explicit 행(`value.moved_from` = 옮긴 출처 id) + 옛 행 `revoked_at`, 한 트랜잭션. **정정 이력(`superseded_*`)이 아니다**. 대상 범위에 같은 사실의 지금 행이 있으면 B1 규칙대로 그 범위 안에서만 정정된다(전체 · 다른 범위의 같은 사실은 그대로). 이미 그 범위면 쓰지 않고 그 행을 돌려준다 | `200 { item }` 새 지금 행 |
+| `PATCH /api/v2/conversations/{id}` | `{ context_id: uuid \| null }` | 사용자가 ProjectLink에서 명시적으로 고른 범위(null = All work). 내 대화 · 내 active 범위만. 멤버십 · 기억 · 범위 version을 쓰지 않는다(자동 범위 추정은 S3b) | `200 { conversation }` |
+
+- **공통:** gate 꺼짐 = 404(인증 · DB 0). 인증은 Bearer + 쿠키(쿠키 쓰기는 CSRF 확인, PATCH 포함). 남의 · 없는 id(기억 · 대화 · 범위) = 404로 존재를 드러내지 않는다. version이 다르거나 이미 정정 · 잊은 항목 = 409 `conflict`. 정책 보류 = 409 `confirm_unavailable` / `scope_unavailable`(v1 `apiErrorCodeSchema`는 동결이라 v2 코드 `apiErrorV2Schema`를 따로 둔다; 모양 `{ error: { code, message } }`는 같다). 잘못된 본문 = 400, 요청 글은 로그에 남기지 않는다.
+- **재시도 · 409:** 잊기만 같은 요청의 재전송이 200이다(이미 잊은 항목은 요청 version이 행의 version 이하이면 200, 큰 값이면 conflict). 이 200은 **"이 항목은 지금 기억이 아니다"만** 뜻한다: 다른 기기의 Forget · Move(옮김)로 이미 잊힌 항목에 보낸 forget도 200이다. 확인 · 정정 · 옮기기는 재전송하면 이미 정정 · 잊은 옛 행이라 409 `conflict`인데, **409는 "내 요청이 이미 적용됨"과 "다른 기기 · 다른 요청이 먼저 바꿈"을 구분하지 못한다.** 옛 행의 `superseded_by` · `revoked_at` · `value.moved_from` 후속 행은 다른 기기의 Edit · Move · Forget도 똑같이 만들어 내 요청 성공의 증거가 아니다(반례를 회귀로 고정: `tests/db/memory-writes.scenarios.ts` "409는 성공의 증거가 아니다"). 그래서 앱은 409를 성공으로 승격하지 않고, 그 id와 후속 행을 RLS로 다시 읽어 지금 상태를 보여 주며 "충돌 · 다시 확인"으로 둔다(사용자가 지금 값을 보고 다시 할지 정한다). 요청 결과를 식별할 근거(예: 200 응답의 새 행 id)가 없으면 성공으로 표시하지 않는다. 새 멱등성 저장소는 두지 않았다(서버의 version 확인은 그대로 맞다).
+- **늦은 응답 · 동시 수정:** 모든 쓰기가 DB의 version 확인(`remember_memory_item`의 `p_expected_version`, `forget_memory_item` · `move_memory_item`의 행 잠금 뒤 확인)이라, 낡은 화면의 요청이나 B2 대화의 늦은 정정은 conflict가 되고 잊은 · 옮긴 기억을 살리지 못한다. 잠그는 순서는 B1과 같다(같은 사실의 잠금 → 인용 원문 → 기억 행 → commit 직전 범위). 옮기기는 옛 범위 · 새 범위의 같은 사실 잠금을 키 순서로 잡아 반대 방향의 옮기기와 교착하지 않는다(실제 Postgres 경합 테스트).
+- **삭제 안전성:** 새 행은 지운 원문을 가리킬 수 없다. 옮기기는 원문 행이 지워졌으면 새 행에서 그 `source_id` · 인용을 뺀다(B1 지운 원문 가드), Slack 끊기로 인용이 빠진 원문은 인용 없이 잇는다. 옮기기와 Slack 끊기가 겹쳐도 새 행에 Slack 인용이 남지 않는다(끊기가 먼저면 옮기기는 version이 올라 conflict, 옮기기가 먼저면 끊기 전파가 새 행의 인용도 뺀다).
+- **앱이 읽는 것 (RLS):** `memory_items`(id · kind · scope_kind · context_id · action_id · person_id · agent_adapter · subject · statement · value · origin · source_ref · observed_at · valid_from · valid_until · superseded_by · superseded_at · revoked_at · confidence · source_purged · version · created_at · updated_at). **지금 기억 = `superseded_at is null and revoked_at is null`**(범위 사이의 우선은 서버 판정이라 목록에서 흉내 내지 않는다). 옛 답의 `refs.memory_item_ids`가 가리키는 행은 정정 · 잊음으로 지금 기억이 아닐 수 있다: 상태를 그대로 보인다.
+
+### 정책 보류 (활성화하지 않음) — 근거 · 보수안 · 남은 결정
+
+네 경로 모두 코드에 막아 두었고(409 이유 코드), 테스트가 막혔음을 고정한다. 인계(B3)의 기준: 결정이 필요한 출처 기반 확인 경로는 활성화하지 않는다.
+
+- **(a) Slack 원문에서 온 후보(inferred)의 확인 — 5장 (a), D3.** 근거: 확인하면 explicit 새 행이 되고, D3는 explicit의 글 · 값을 남긴다(인용만 뺀다). 그 글은 모델이 Slack 글에서 만든 문장이라 Slack "associated Data"에 드는지(지워야 하는지)는 법무 판단(docs/legal/self-review.md 2번과 같은 방식)이 필요하다. 보수안: `confirm_unavailable`(앱은 Confirm을 감춘다). **같은 이유로** Slack에서 온 observed · inferred 항목을 글자만 그대로(대소문자 · 공백만 달리) Edit하는 것도 막고(확인의 우회), 새 글을 쓰면 옛 행의 구조화 값 · 유효 구간도 잇지 않는다. 새 글을 쓰는 Edit와 Forget은 허용한다(사용자가 직접 쓴 글). "Slack 출처"의 기준은 맥락층의 기존 `isSlackDerived`다(연결이 Slack · Slack 끊기로 지운 원문 · 링크가 Slack). 남은 결정: Slack 출처 표시(확인 전 출처가 Slack이었다는 플래그)를 explicit 행에 남기고 D3가 지울지, 아니면 계속 막을지. 새 글을 쓴 Edit의 `subject`(사실의 열쇠, 후보의 짧은 정규화 문자열)는 후보에서 상속된다 — Slack 글자에서 나온 단어일 수 있다(정책 결정에 함께). 앱의 B2 답이 Slack 인용을 담았을 때 그 답의 글에서 만든 후보(`source_ref.message_id`)는 이 검사가 Slack으로 알아보지 못한다(Slack D3 범위 결정과 함께, 7장).
+- **(b) observed · inferred의 범위 변경.** 근거: 자료에서 읽은 사실(observed)이나 모델 추정(inferred)의 범위는 그 자료 · 추정이 정한다. 사용자가 범위를 바꾸면 출처가 말하지 않은 범위로 자료 기반 사실이 번진다. 보수안: `scope_unavailable`(앱은 explicit만 범위를 바꾸게 한다; 바꾸려면 Edit로 explicit 새 글을 쓴다). 같은 이유로 **할 일 · 상대 · 에이전트 범위의 explicit 기억도 옮기지 않는다**(좁은 대상이 전체 · 프로젝트로 넓어진다). 남은 결정: 그 범위들을 Remembered에서 바꾸게 할지, observed의 범위 변경을 "새 explicit 사실로 확정"으로 볼지.
+- **(c) 글이 지워진(`source_purged`) 항목의 확인.** 근거: 확인할 글이 없다. (이 상태는 observed에서만 생기고, 확인은 inferred만 받으므로 `confirm_unavailable`로 같이 막힌다. 원문이 지워지면 그 원문의 inferred 후보는 지워져 404다.) 보수안: 확인 불가. Edit(사용자가 새 글을 씀, 새 행의 주제는 `memory:<옛 id>`)와 Forget은 허용. 남은 결정 없음(UI 문구는 B3 PR2).
+- **(d) 접근을 잃은(`access_lost_at`, 문서 단위) 원문에서 온 후보의 확인 — Codex 출처 경계 검토(2026-10-11)로 추가.** 근거: 접근 상실 원문은 새 검색 · 묶음에서 빠지는데(아키텍처 6.5 · ARCH08, 2장 (d)), 확인된 explicit은 B1 규칙대로 접근 상실 뒤에도 묶음에 든다. 그래서 접근을 잃은 원문에서 만든 후보를 확인하면 새 묶음의 기억이 0 → 1로 늘어 "빠졌어야 할 출처의 문장"이 승격된다(Codex 진단으로 재현). 처음에는 "남은 결정"으로 적고 허용했으나, 결정이 필요한 출처 기반 확인 경로를 활성화하지 말라는 인계와 어긋나 바로잡았다. 보수안: `confirm_unavailable`(문서 단위: 같은 문서의 revision 하나라도 잃었으면 잃은 문서이고, 잃은 뒤 들어온 새 revision도 마찬가지; B1 `loadSourceStates.accessLost`를 그대로 쓴다). (a)와 같은 방식으로 그 출처의 observed · inferred를 글자 그대로(대소문자 · 공백만 달리) Edit해 같은 승격을 하는 우회도 막고, 새 글 Edit · Forget은 허용한다(새 글 Edit는 옛 값 · 유효 구간 · 출처를 잇지 않는다). **바꾸지 않은 것:** 원래 explicit 사용자 기억(접근 상실 전에 확인한 것 포함)과 사용자가 새로 쓴 정정의 B1 보존 규칙. 복원(`access_lost_at` null)하면 다시 확인할 수 있다. 출처 상태를 읽지 못하면 던지고(쓰기 0), 상태가 비어 돌아와도 막는다(fail-closed). 출처 id가 없는 후보(대화 메시지 · 산출물 · 사건 출처)는 이 검사 대상이 아니다. 남은 결정: 접근을 잃은 원문의 후보를 제품이 확인하게 둘지(그동안 사용자는 새 글을 써서 저장할 수 있다: Edit). **동시성의 보장 범위:** 출처 상태 읽기는 쓰기 트랜잭션 밖이다(확인은 B1 `remember_memory_item`을 그대로 부르며 그 함수는 건드리지 않는다). 상실이 먼저 커밋되면 보류, 확인이 먼저 끝나면 확인된 explicit은 B1대로 보존된다. 읽은 직후 쓰기 전에 상실이 커밋되면 확인이 통과하는데, 그 결과는 "상실 직전에 끝난 확인"과 구별되지 않고 창은 두 문장 사이(밀리초)이며 접근 상실을 쓰는 연동 쪽은 아직 없다 (알려진 한계를 `tests/db/memory-writes.scenarios.ts`가 고정한다). 트랜잭션 안 가드는 B1 함수를 감싸는 새 SQL이 필요해 하지 않았다.
+
+### 정책 밖에서 이번에 정한 것 (되돌리려면 근거 필요)
+
+- **잊은 항목의 version.** 잊은 뒤 원문 삭제 전파가 version을 더 올릴 수 있어(observed 비움 등), 이미 잊은 항목의 재시도는 요청 version이 행 version 이하이면 성공으로 본다(같은 요청의 재전송 구별).
+- **gate 꺼짐 중에는 잊기도 404.** 계약대로다(꺼진 동안 기억은 읽히지도 쓰이지도 않는다). 켜기 전에 사용자가 기억을 지울 수 있어야 하는지는 출시 gate 결정.
+- **보관된 범위로는 기억을 옮기거나 대화 범위를 고를 수 없다(404).** active 범위만.
+- **한도 · 크기.** 기억 쓰기에는 요청 횟수 한도가 없다(AI 비용 0). `value`(구조화 값)의 크기 상한은 B1 계약 그대로 없다(플랫폼 본문 한도에 기댄다): 남은 것.
+
+### 남긴 것 (B3 PR1 밖)
+
+- 기억 · 재설명 지표 이벤트(ARCH26 `memory_corrected` 등, 지표 묶음 I): 이벤트 표가 없어 기록하지 않았다. "측정할 수 없으면 출시하지 않는다"의 대상으로 남는다.
+- 대화 글 보관 기한(V08)과 B3 대화 범위 바꾸기의 관계 없음(범위는 글이 아니다).
+- 대화 범위를 바꿔도 이미 진행 중인 답은 시작할 때의 범위를 쓴다(답의 `content.used.context_id`가 그때의 범위를 남긴다).
+- Mac 쪽(Chats · Remembered 화면, DTO)은 PR2.
