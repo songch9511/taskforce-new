@@ -1,11 +1,15 @@
 import { randomUUID } from "node:crypto";
+import { readdir } from "node:fs/promises";
+import path from "node:path";
 
 import { beforeAll, describe, expect, it } from "vitest";
 
 import { CHANGE_EVENT_TYPES } from "../../src/lib/actions/changed";
+import { supabaseSchemaScripts } from "./local-supabase";
 
 // 0.2.0 C3 (20261111000000_review_summary) — 제안 · 복귀 요약 · Clear 저장 계약.
-// suggestions 표(dedup · 상한 · snooze · topic 억제 · 증거 있는 stale) · return_summary_state(Clear watermark) · 서비스 롤 전용 RPC.
+// suggestions 표(dedup · 상한 · snooze · topic 억제 · 증거 있는 stale) · return_summary_reads(Clear가 읽음으로 표시한 사건 id) · return_summary_state(마지막 Clear 시각) · 서비스 롤 전용 RPC.
+// 읽음은 시각(워터마크)이 아니라 사건 id다: created_at은 트랜잭션 시작 시각이라 commit 순서와 다르다 (P2-A: Clear 뒤 commit되는 사건이 숨지 않는다).
 // 같은 시나리오를 PGlite(tests/db/review-summary.test.ts)와 실제 Postgres(tests/pg/review-summary.test.ts)에서 돈다.
 // 연결이 둘 이상 필요한 경합(같은 하루 묶음 동시 노출 · 동시 Clear · 동시 전이)은 실제 Postgres 파일에만 있다.
 // 표기: [실제 연결] = 지금 코드의 실제 표(action_events · execution_events · conversation_messages · inbox_events 결과)에서 읽는 것.
@@ -118,13 +122,14 @@ export function reviewFixtures(db: () => ReviewDb) {
     suggestionRow: (suggestionId: string) => one(`select * from public.suggestions where id = $1`, [suggestionId]),
     scan: async (userId: string, now: string | null, limit = 300) =>
       (await one(`select public.return_summary_scan($1, $2::text[], $3::timestamptz, $4) as r`, [userId, CHANGE_TYPES, now, limit])).r as ScanResult,
-    clear: async (userId: string, cursor: { since: string | null; horizon: string; digest: string }, now: string | null = null) =>
+    clear: async (userId: string, cursor: { horizon: string; digest: string }, now: string | null = null) =>
       (
-        await one(`select public.return_summary_clear($1, $2::text[], $3::timestamptz, $4::timestamptz, $5, $6::timestamptz) as r`, [
-          userId, CHANGE_TYPES, cursor.since, cursor.horizon, cursor.digest, now,
+        await one(`select public.return_summary_clear($1, $2::text[], $3::timestamptz, $4, $5::timestamptz) as r`, [
+          userId, CHANGE_TYPES, cursor.horizon, cursor.digest, now,
         ])
       ).r as ClearResult,
-    state: (userId: string) => one(`select cleared_through, version from public.return_summary_state where user_id = $1`, [userId]),
+    reads: (userId: string) => count(`select 1 from public.return_summary_reads where user_id = $1`, [userId]),
+    state: (userId: string) => one(`select cleared_through, version::int as version from public.return_summary_state where user_id = $1`, [userId]),
     /** 쓰기가 Clear · 노출 · 제안 처리 안에서 다른 곳에 닿지 않았음을 보는 지문: 업무 · 실행 · 사건 표의 행 수와 Action 내용 */
     async fingerprint(userId: string): Promise<string> {
       const parts = await Promise.all(
@@ -179,6 +184,9 @@ export function reviewSummaryTests(db: () => ReviewDb) {
       await f.suggestion(alice, aa);
       await f.suggestion(bob, ba);
       await q(`insert into public.return_summary_state (user_id, cleared_through) values ($1, now()), ($2, now())`, [alice, bob]);
+      const shared = randomUUID();
+      await q(`insert into public.return_summary_reads (user_id, source, event_ref) values ($1, 'message', $3), ($2, 'message', $3)`, [alice, bob, shared]);
+      expect((await db().asUser(alice, () => q(`select user_id from public.return_summary_reads`))).map((r) => r.user_id)).toEqual([alice]);
       expect((await db().asUser(alice, () => q(`select user_id from public.suggestions`))).map((r) => r.user_id)).toEqual([alice]);
       expect((await db().asUser(alice, () => q(`select user_id from public.return_summary_state`))).map((r) => r.user_id)).toEqual([alice]);
       await db().asUser(alice, async () => {
@@ -191,8 +199,11 @@ export function reviewSummaryTests(db: () => ReviewDb) {
         await rejects(q(`select * from public.suggestions_expose($1, current_date, 3, null)`, [alice]), /permission denied/);
         await rejects(q(`select public.suggestion_transition($1, $2, 1, 'dismiss', null, 'this', null)`, [alice, randomUUID()]), /permission denied/);
         await rejects(q(`select public.return_summary_scan($1, '{completed}'::text[], null, 10)`, [alice]), /permission denied/);
-        await rejects(q(`select public.return_summary_clear($1, '{completed}'::text[], null, now(), 'x', null)`, [alice]), /permission denied/);
-        await rejects(q(`select public.return_summary_digest($1, '{completed}'::text[], null, now())`, [alice]), /permission denied/);
+        await rejects(q(`select public.return_summary_clear($1, '{completed}'::text[], now(), 'x', null)`, [alice]), /permission denied/);
+        await rejects(q(`select public.return_summary_digest($1, '{completed}'::text[], now())`, [alice]), /permission denied/);
+        await rejects(q(`select * from public.return_summary_candidates($1, '{completed}'::text[], now())`, [alice]), /permission denied/);
+        await rejects(q(`insert into public.return_summary_reads (user_id, source, event_ref) values ($1, 'message', gen_random_uuid()::text)`, [alice]), /permission denied/);
+        await rejects(q(`delete from public.return_summary_reads`), /permission denied/);
       });
     });
 
@@ -203,8 +214,9 @@ export function reviewSummaryTests(db: () => ReviewDb) {
         "suggestion_transition(uuid,uuid,integer,text,timestamp with time zone,text,timestamp with time zone)",
         "suggestion_stale_evidence(public.suggestions)",
         "return_summary_scan(uuid,text[],timestamp with time zone,integer)",
-        "return_summary_clear(uuid,text[],timestamp with time zone,timestamp with time zone,text,timestamp with time zone)",
-        "return_summary_digest(uuid,text[],timestamp with time zone,timestamp with time zone)",
+        "return_summary_clear(uuid,text[],timestamp with time zone,text,timestamp with time zone)",
+        "return_summary_digest(uuid,text[],timestamp with time zone)",
+        "return_summary_candidates(uuid,text[],timestamp with time zone)",
       ];
       for (const fn of rpcs) {
         const row = await f.one(
@@ -291,14 +303,28 @@ export function reviewSummaryTests(db: () => ReviewDb) {
       await q(`update public.return_summary_state set cleared_through = $2 where user_id = $1`, [user, at(T0, 1)]);
     });
 
+    it("읽음 표시는 (사용자, 원천, 사건 id)뿐이다: 글 열이 없고, 모르는 원천 · 사건 id가 아닌 글자는 거절, 같은 사건은 한 번만", async () => {
+      const user = await f.user();
+      const columns = (await q(`select column_name from information_schema.columns where table_schema = 'public' and table_name = 'return_summary_reads' order by column_name`)).map((r) => r.column_name);
+      expect(columns).toEqual(["event_ref", "read_at", "source", "user_id"]);
+      const ref = randomUUID();
+      await q(`insert into public.return_summary_reads (user_id, source, event_ref) values ($1, 'action_event', $2)`, [user, ref]);
+      await q(`insert into public.return_summary_reads (user_id, source, event_ref) values ($1, 'run_event', '12345')`, [user]);
+      await rejects(q(`insert into public.return_summary_reads (user_id, source, event_ref) values ($1, 'action_event', $2)`, [user, ref]), /duplicate key|pkey/);
+      await rejects(q(`insert into public.return_summary_reads (user_id, source, event_ref) values ($1, 'inbox_event', $2)`, [user, randomUUID()]), /return_summary_reads_source_check/);
+      await rejects(q(`insert into public.return_summary_reads (user_id, source, event_ref) values ($1, 'message', '회의에서 나온 말')`, [user]), /return_summary_reads_event_ref_check/);
+    });
+
     it("계정을 지우면 제안 · Clear 위치도 함께 지워진다", async () => {
       const user = await f.user();
       const action = await f.action(user);
       await f.suggestion(user, action);
       await q(`insert into public.return_summary_state (user_id, cleared_through) values ($1, now())`, [user]);
+      await q(`insert into public.return_summary_reads (user_id, source, event_ref) values ($1, 'message', $2)`, [user, randomUUID()]);
       await q(`delete from auth.users where id = $1`, [user]);
       expect(await f.count(`select 1 from public.suggestions where user_id = $1`, [user])).toBe(0);
       expect(await f.count(`select 1 from public.return_summary_state where user_id = $1`, [user])).toBe(0);
+      expect(await f.count(`select 1 from public.return_summary_reads where user_id = $1`, [user])).toBe(0);
     });
   });
 
@@ -636,18 +662,22 @@ export function reviewSummaryTests(db: () => ReviewDb) {
       expect(scan.works[0].changes.map((c) => c.at)).toEqual([at(T0, 10), at(T0, 20), at(T0, 30)]);
     });
 
-    it("범위는 (since, horizon] 이다: since와 같은 시각은 이미 지난 범위이고, horizon과 같은 시각은 이번 범위, 그 뒤는 다음 번이다 (같은 시각 tie)", async () => {
+    it("범위는 지평(horizon)까지다: 지평과 같은 시각은 이번 조회, 그 뒤는 다음 번이다 (같은 시각 tie). 읽음으로 표시한 사건은 시각과 상관없이 빠진다", async () => {
       const user = await f.user();
       const action = await f.action(user);
-      await q(`insert into public.return_summary_state (user_id, cleared_through) values ($1, $2)`, [user, at(T0, 100)]);
-      await f.event(user, action, "due_changed", "ai", at(T0, 100));
+      const read = await f.event(user, action, "due_changed", "ai", at(T0, 100));
       await f.event(user, action, "scope_changed", "ai", at(T0, 101));
       await f.event(user, action, "owner_changed", "ai", at(T0, 200));
       await f.event(user, action, "reopened", "ai", at(T0, 201));
+      await q(`insert into public.return_summary_state (user_id, cleared_through) values ($1, $2)`, [user, at(T0, 100)]);
+      await q(`insert into public.return_summary_reads (user_id, source, event_ref) values ($1, 'action_event', $2)`, [user, read]);
       const scan = await f.scan(user, at(T0, 200));
-      expect(scan.since).toBe(at(T0, 100));
+      expect(scan.since).toBe(at(T0, 100)); // 표시용 (마지막 Clear의 지평)
       expect(scan.horizon).toBe(at(T0, 200));
       expect(scan.works[0].changes.map((c) => c.kind)).toEqual(["scope_changed", "owner_changed"]);
+      // 읽음 표시가 없는 사건은 Clear 위치(시각)보다 이른 시각이어도 보인다: 시각은 읽음의 근거가 아니다
+      await q(`update public.return_summary_state set cleared_through = $2 where user_id = $1`, [user, at(T0, 150)]);
+      expect((await f.scan(user, at(T0, 200))).works[0].changes.map((c) => c.kind)).toEqual(["scope_changed", "owner_changed"]);
     });
 
     it("원문 상태는 토큰이다: 지운 원문 · 접근 상실 · 보관 만료 · 정상. 원문 글 · 과거 값(before · after)은 절대 내려가지 않는다", async () => {
@@ -743,7 +773,7 @@ export function reviewSummaryTests(db: () => ReviewDb) {
   });
 
   // ───────────────────────── 6) Clear ─────────────────────────
-  describe("Clear (return_summary_clear): 조회가 본 범위까지만, 단조 증가", () => {
+  describe("Clear (return_summary_clear): 조회가 본 사건 집합의 id만 읽음 처리한다 (시각이 근거가 아니다)", () => {
     async function seed() {
       const user = await f.user();
       const action = await f.action(user);
@@ -752,19 +782,20 @@ export function reviewSummaryTests(db: () => ReviewDb) {
       return { user, action };
     }
 
-    it("조회한 범위를 읽음 처리한다: Clear 뒤 같은 범위는 비어 있고 since가 horizon으로 옮겨 간다", async () => {
+    it("조회한 사건을 읽음 처리한다: Clear 뒤 같은 범위는 비어 있고 since(표시용)가 지평으로 옮겨 간다. 읽음은 사건 id로 남는다", async () => {
       const { user } = await seed();
       const scan = await f.scan(user, at(T0, 100));
       expect(scan.works).toHaveLength(1);
-      const result = await f.clear(user, { since: scan.since, horizon: scan.horizon, digest: scan.digest }, at(T0, 200));
+      const result = await f.clear(user, scan, at(T0, 200));
       expect(result).toEqual({ status: "cleared", applied: true, cleared_through: at(T0, 100) });
+      expect(await f.reads(user)).toBe(2);
       expect(await f.state(user)).toMatchObject({ version: 1 });
       const after = await f.scan(user, at(T0, 300));
       expect(after.since).toBe(at(T0, 100));
       expect(after.works).toEqual([]);
     });
 
-    it("조회와 Clear 사이에 생긴 새 사건은 남는다 (horizon 뒤): 읽음으로 삼키지 않는다", async () => {
+    it("조회와 Clear 사이에 생긴 새 사건(지평 뒤)은 읽음이 아니다: 다음 조회에 보인다", async () => {
       const { user, action } = await seed();
       const scan = await f.scan(user, at(T0, 100));
       await f.event(user, action, "owner_changed", "ai", at(T0, 150));
@@ -773,36 +804,72 @@ export function reviewSummaryTests(db: () => ReviewDb) {
       expect(after.works[0].changes.map((c) => c.kind)).toEqual(["owner_changed"]);
     });
 
-    it("같은 시각 tie: horizon과 정확히 같은 시각의 사건이 조회 뒤에 늦게 commit되면 digest가 달라 409(stale)이고 아무것도 지우지 않는다", async () => {
+    it("P2-A: Clear 뒤에 commit되는 사건은 시각이 지평 이전이어도(트랜잭션 시작 시각) 숨지 않는다 — 읽음은 조회가 본 id만이다", async () => {
+      const { user, action } = await seed();
+      const scan = await f.scan(user, at(T0, 100));
+      expect((await f.clear(user, scan, at(T0, 200))).status).toBe("cleared");
+      // 조회 때 아직 commit되지 않았다가 Clear 뒤에 commit된 행: created_at(트랜잭션 시작)이 지평 이전이다
+      await f.event(user, action, "reopened", "ai", at(T0, 15));
+      await f.event(user, action, "completed", "ai", at(T0, 100)); // 지평과 같은 시각의 늦은 행
+      const after = await f.scan(user, at(T0, 300));
+      expect(after.works[0].changes.map((c) => c.kind)).toEqual(["reopened", "completed"]);
+      // 이제 조회한 것이므로 다시 Clear하면 읽음이 된다 (영구히 잠기지 않는다)
+      expect((await f.clear(user, after, at(T0, 400))).status).toBe("cleared");
+      expect((await f.scan(user, at(T0, 500))).works).toEqual([]);
+      expect(await f.reads(user)).toBe(4);
+    });
+
+    it("P2-A: run 결과 · 대화 메시지도 같다 — 늦게 commit된 행(지평 이전 시각)은 Clear 뒤에도 보인다", async () => {
+      const user = await f.user();
+      const action = await f.action(user);
+      await q(`insert into public.return_summary_state (user_id, cleared_through) values ($1, $2)`, [user, at(T0)]);
+      const conversation = await f.conversation(user, null);
+      await f.message(user, conversation, 1, "assistant", { action_ids: [action] }, at(T0, 10));
+      const scan = await f.scan(user, at(T0, 100));
+      expect(scan.works).toHaveLength(1);
+      expect((await f.clear(user, scan, at(T0, 200))).status).toBe("cleared");
+      await f.message(user, conversation, 2, "event", { action_ids: [action] }, at(T0, 50)); // 늦은 메시지
+      await q(`insert into public.execution_events (user_id, run_id, type, from_state, to_state, at) select $1, r.id, 'run', 'running', 'done', $3 from public.execution_runs r where r.id = $2`, [user, await f.run(user, action), at(T0, 60)]);
+      await q(`update public.execution_runs set state = 'done', outcome = 'draft_ready' where action_id = $1`, [action]);
+      const after = await f.scan(user, at(T0, 300));
+      expect(after.works[0].changes.map((c) => `${c.source}:${c.kind}`).sort()).toEqual(["message:event", "run:done"]);
+    });
+
+    it("같은 시각 tie: 지평과 정확히 같은 시각의 사건이 조회 뒤 Clear 전에 commit되면 digest가 달라 stale이고 아무것도 읽음 처리하지 않는다", async () => {
       const { user, action } = await seed();
       const scan = await f.scan(user, at(T0, 100));
       await f.event(user, action, "scope_changed", "ai", at(T0, 100));
       expect((await f.clear(user, scan, at(T0, 200))).status).toBe("stale");
       expect(await f.state(user)).toBeUndefined();
+      expect(await f.reads(user)).toBe(0);
       expect((await f.scan(user, at(T0, 300))).works[0].changes.map((c) => c.kind)).toEqual(["due_changed", "merged", "scope_changed"]);
     });
 
-    it("늦게 commit된 사건(트랜잭션 시작 시각이 horizon 이전): digest가 달라 stale. 다시 조회하면 보이고 그 뒤 Clear하면 읽음이 된다", async () => {
+    it("늦게 commit된 사건(트랜잭션 시작 시각이 지평 이전)이 조회 뒤 Clear 전에 보이면 stale. 다시 조회하면 보이고 그 뒤 Clear하면 읽음이 된다", async () => {
       const { user, action } = await seed();
       const scan = await f.scan(user, at(T0, 100));
       await f.event(user, action, "reopened", "ai", at(T0, 15));
       expect((await f.clear(user, scan, at(T0, 200))).status).toBe("stale");
+      expect(await f.reads(user)).toBe(0);
       const again = await f.scan(user, at(T0, 300));
       expect(again.works[0].changes.map((c) => c.kind)).toEqual(["due_changed", "reopened", "merged"]);
       expect((await f.clear(user, again, at(T0, 400))).status).toBe("cleared");
       expect((await f.scan(user, at(T0, 500))).works).toEqual([]);
     });
 
-    it("범위 안 사건이 지워져도(Action 삭제) digest가 달라 stale이다: 보이지 않은 것을 읽음으로 삼키는 쪽이 아니라 다시 조회하게 한다", async () => {
+    it("범위 안 사건이 지워져도(Action 삭제) digest가 달라 stale이다: 다시 조회하게 하고, 지운 사건은 읽음 표시와 상관없이 되살아나지 않는다", async () => {
       const { user } = await seed();
       const other = await f.action(user);
       await f.event(user, other, "completed", "ai", at(T0, 30));
       const scan = await f.scan(user, at(T0, 100));
       await q(`delete from public.actions where id = $1`, [other]);
       expect((await f.clear(user, scan, at(T0, 200))).status).toBe("stale");
+      const again = await f.scan(user, at(T0, 300));
+      expect((await f.clear(user, again, at(T0, 400))).status).toBe("cleared");
+      expect((await f.scan(user, at(T0, 500))).works).toEqual([]);
     });
 
-    it("DB 정밀도: 마이크로초 1 차이도 범위를 가른다. 밀리초로 잘린 horizon으로 Clear하려 하면(JS Date 변환) 그 사이 사건 때문에 stale", async () => {
+    it("DB 정밀도: 마이크로초 1 차이도 집합을 가른다. 밀리초로 잘린 지평으로 Clear하려 하면 그 사이 사건 때문에 stale", async () => {
       const user = await f.user();
       const action = await f.action(user);
       await f.event(user, action, "due_changed", "ai", "2026-10-12T00:00:00.123400Z");
@@ -813,26 +880,28 @@ export function reviewSummaryTests(db: () => ReviewDb) {
       const truncatedToMillis = { ...scan, horizon: "2026-10-12T00:00:00.123Z" };
       expect((await f.clear(user, truncatedToMillis, "2026-10-12T00:00:01Z")).status).toBe("stale");
       expect(await f.state(user)).toBeUndefined();
-      // 1µs 뒤의 사건은 같은 horizon의 범위가 아니다
+      expect(await f.reads(user)).toBe(0);
+      // 1µs 뒤의 사건은 같은 지평의 집합이 아니다
       await f.event(user, action, "completed", "ai", "2026-10-12T00:00:00.123701Z");
       expect((await f.clear(user, scan, "2026-10-12T00:00:01Z")).status).toBe("cleared");
       expect((await f.scan(user, "2026-10-12T00:00:02Z")).works[0].changes.map((c) => c.kind)).toEqual(["completed"]);
     });
 
-    it("단조 증가: 더 이른 커서로 늦게 Clear해도(겹친 읽기 · 두 기기) 위치가 뒤로 가지 않는다. 같은 커서를 다시 보내면(응답 유실 뒤 재시도) 성공이지만 새 쓰기는 없다", async () => {
+    it("두 기기 · 겹친 읽기 · 늦은 Clear · 재시도(응답 유실): 읽음은 줄지 않고, 같은 커서를 다시 보내도 성공이지만 새 쓰기는 없다", async () => {
       const { user, action } = await seed();
       const early = await f.scan(user, at(T0, 100));
       await f.event(user, action, "owner_changed", "ai", at(T0, 150));
       const late = await f.scan(user, at(T0, 200));
-      expect((await f.clear(user, late, at(T0, 300)))).toMatchObject({ status: "cleared", applied: true, cleared_through: at(T0, 200) });
+      expect(await f.clear(user, late, at(T0, 300))).toMatchObject({ status: "cleared", applied: true, cleared_through: at(T0, 200) });
       const stale = await f.clear(user, early, at(T0, 300));
       expect(stale).toEqual({ status: "cleared", applied: false, cleared_through: at(T0, 200) });
       const retry = await f.clear(user, late, at(T0, 300));
       expect(retry).toEqual({ status: "cleared", applied: false, cleared_through: at(T0, 200) });
       expect(await f.state(user)).toMatchObject({ version: 1 });
+      expect(await f.reads(user)).toBe(3);
     });
 
-    it("두 기기가 서로 다른 시점에 본 범위를 각각 Clear해도 합쳐서 가장 늦은 것까지만, 그 뒤 사건은 남는다", async () => {
+    it("두 기기가 서로 다른 시점에 본 집합을 각각 Clear해도 합쳐서 본 것까지만, 그 뒤 사건은 남는다", async () => {
       const { user, action } = await seed();
       const deviceA = await f.scan(user, at(T0, 100));
       await f.event(user, action, "owner_changed", "ai", at(T0, 150));
@@ -840,39 +909,60 @@ export function reviewSummaryTests(db: () => ReviewDb) {
       await f.event(user, action, "completed", "ai", at(T0, 250));
       expect((await f.clear(user, deviceB, at(T0, 300))).status).toBe("cleared");
       expect((await f.clear(user, deviceA, at(T0, 300))).status).toBe("cleared");
-      expect((await f.state(user))?.cleared_through).toBeDefined();
       const after = await f.scan(user, at(T0, 400));
       expect(after.since).toBe(at(T0, 200));
       expect(after.works[0].changes.map((c) => c.kind)).toEqual(["completed"]);
     });
 
-    it("미래 horizon은 받지 않는다 (invalid): 서버 시각 기준으로 아직 오지 않은 시각을 읽음으로 만들 수 없다", async () => {
+    it("미래 지평은 받지 않는다 (invalid): 서버 시각 기준으로 아직 오지 않은 시각을 읽음으로 만들 수 없다", async () => {
       const { user } = await seed();
       const scan = await f.scan(user, at(T0, 100));
       expect((await f.clear(user, { ...scan, horizon: at(T0, 100) }, at(T0, 99))).status).toBe("invalid");
       expect((await f.clear(user, { ...scan, horizon: "2999-01-01T00:00:00Z" }, at(T0, 99))).status).toBe("invalid");
       expect(await f.state(user)).toBeUndefined();
+      expect(await f.reads(user)).toBe(0);
     });
 
-    it("현재 위치보다 앞선 since(꾸민 커서)는 invalid, 잘못된 digest는 stale이다", async () => {
-      const { user, action } = await seed();
+    it("잘못된 digest는 stale이다 (아무것도 쓰지 않는다)", async () => {
+      const { user } = await seed();
       const scan = await f.scan(user, at(T0, 100));
-      await f.clear(user, scan, at(T0, 150));
-      await f.event(user, action, "completed", "ai", at(T0, 160));
-      const next = await f.scan(user, at(T0, 200));
-      expect((await f.clear(user, { ...next, since: at(T0, 500) }, at(T0, 300))).status).toBe("invalid");
-      expect((await f.clear(user, { ...next, digest: "a:0:0|r:0:0|m:0:0" }, at(T0, 300))).status).toBe("stale");
-      expect((await f.clear(user, next, at(T0, 300))).status).toBe("cleared");
+      expect((await f.clear(user, { ...scan, digest: "a:0:0|r:0:0|m:0:0" }, at(T0, 300))).status).toBe("stale");
+      expect(await f.reads(user)).toBe(0);
+      expect((await f.clear(user, scan, at(T0, 300))).status).toBe("cleared");
     });
 
-    it("남의 커서로는 아무것도 지우지 못한다: 사용자마다 범위를 다시 세므로 digest가 맞지 않으면 stale, Clear 위치는 사용자별이다", async () => {
+    it("남의 커서로는 아무것도 지우지 못한다: 사용자마다 집합을 다시 세므로 digest가 맞지 않으면 stale, 읽음은 사용자별이다", async () => {
       const { user } = await seed();
       const other = await f.user();
       const scan = await f.scan(user, at(T0, 100));
       expect((await f.clear(other, scan, at(T0, 200))).status).toBe("stale");
       expect(await f.state(other)).toBeUndefined();
+      expect(await f.reads(other)).toBe(0);
       expect((await f.clear(user, scan, at(T0, 200))).status).toBe("cleared");
-      expect(await f.state(other)).toBeUndefined();
+      expect(await f.reads(other)).toBe(0);
+    });
+
+    it("처음 Clear하면 그때 보이던 이력 전부(run · 대화 포함)가 기준이다: 이후에 생긴 결과만 새 변화다. 한 번도 Clear하지 않았다면 이력은 변화로 올리지 않는다", async () => {
+      const user = await f.user();
+      const action = await f.action(user);
+      await f.setClock("2026-10-12T00:00:10Z");
+      const oldRun = await f.run(user, action);
+      await f.setRun(oldRun, "failed");
+      const conversation = await f.conversation(user, null);
+      await f.message(user, conversation, 1, "assistant", { action_ids: [action] }, at(T0, 5));
+      const first = await f.scan(user, "2026-10-12T00:01:00Z");
+      expect(first.since).toBeNull();
+      expect(first.works).toEqual([]); // 읽음 기준이 없다
+      expect((await f.clear(user, first, "2026-10-12T00:02:00Z")).status).toBe("cleared");
+      expect(await f.reads(user)).toBe(2); // 보이지 않던 이력도 기준으로 읽음 처리됐다
+      expect((await f.scan(user, "2026-10-12T00:03:00Z")).works).toEqual([]);
+      // 이후에 도착한 결과 · 메시지는 새 변화다
+      await f.setClock("2026-10-12T00:02:30Z");
+      const newRun = await f.run(user, action);
+      await f.setRun(newRun, "done", "draft_ready");
+      await f.message(user, conversation, 2, "event", { action_ids: [action] }, "2026-10-12T00:02:31Z");
+      const later = await f.scan(user, "2026-10-12T00:05:00Z");
+      expect(later.works[0].changes.map((c) => `${c.source}:${c.kind}`).sort()).toEqual(["message:event", "run:done"]);
     });
 
     it("Clear는 읽음 처리일 뿐이다: Action · Claim · 근거 · run · 단계 · 승인 · intent · 사건함 · 제안 어느 것도 바뀌지 않는다 (해결 · 승인 · 완료 · 거절 아님)", async () => {
@@ -889,13 +979,136 @@ export function reviewSummaryTests(db: () => ReviewDb) {
       expect(await f.count(`select 1 from public.action_events where user_id = $1 and type = 'user_seen'`, [user])).toBe(0);
     });
 
-    it("재로그인 · 같은 UUID: 위치는 계정에 붙는다 (세션이 아니다). 같은 커서는 새 세션에서도 그대로 통한다", async () => {
+    it("재로그인 · 같은 UUID: 읽음은 계정에 붙는다 (세션이 아니다). 같은 커서는 새 세션에서도 그대로 통한다", async () => {
       const { user } = await seed();
       const scan = await f.scan(user, at(T0, 100));
       expect((await f.clear(user, scan, at(T0, 200))).status).toBe("cleared");
-      // 새 세션이어도 같은 user_id면 같은 위치를 읽는다
       expect((await f.scan(user, at(T0, 300))).since).toBe(at(T0, 100));
       expect((await f.clear(user, scan, at(T0, 400)))).toMatchObject({ status: "cleared", applied: false });
+    });
+  });
+}
+
+// ───────────────────────── 업그레이드 · 롤백 ─────────────────────────
+const MIGRATIONS_DIR = path.resolve(__dirname, "../../supabase/migrations");
+export const C3_MIGRATION = "20261111000000_review_summary.sql";
+
+export type FreshDb = {
+  exec: (sql: string) => Promise<unknown>;
+  query: (sql: string, params?: unknown[]) => Promise<Rows>;
+};
+
+/** Supabase 흉내 + C3 앞의 모든 마이그레이션 / C3 */
+async function splitScripts() {
+  const files = (await readdir(MIGRATIONS_DIR)).filter((file) => file.endsWith(".sql")).sort();
+  const index = files.indexOf(C3_MIGRATION);
+  expect(index, `${C3_MIGRATION}이 마이그레이션 목록에 있다`).toBeGreaterThan(0);
+  expect(index, "C3는 마지막 마이그레이션이다 (더 뒤의 마이그레이션이 생기면 이 시험의 분할을 고친다)").toBe(files.length - 1);
+  const scripts = await supabaseSchemaScripts();
+  return { before: scripts.slice(0, 2 + index), c3: scripts[2 + index] };
+}
+
+/** 이 마이그레이션 앞의 객체 지문: public 표 · 열 · 함수 정의 · 트리거 · 제약 */
+async function schemaFingerprint(db: FreshDb): Promise<Record<string, string>> {
+  const one = async (sql: string) => JSON.stringify(await db.query(sql));
+  return {
+    tables: await one(`select table_name from information_schema.tables where table_schema = 'public' order by table_name`),
+    columns: await one(`select table_name, column_name, data_type, is_nullable, column_default from information_schema.columns where table_schema = 'public' order by table_name, ordinal_position`),
+    functions: await one(`select p.oid::regprocedure::text as sig, md5(pg_get_functiondef(p.oid)) as def from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' order by 1`),
+    triggers: await one(`select c.relname, t.tgname, md5(pg_get_triggerdef(t.oid)) as def from pg_trigger t join pg_class c on c.oid = t.tgrelid join pg_namespace n on n.oid = c.relnamespace where n.nspname = 'public' and not t.tgisinternal order by 1, 2`),
+    constraints: await one(`select conrelid::regclass::text as tbl, conname, md5(pg_get_constraintdef(oid)) as def from pg_constraint where connamespace = 'public'::regnamespace order by 1, 2`),
+  };
+}
+
+/**
+ * 새 마이그레이션 전 상태에서 옛 행을 쌓고 적용한 뒤에도 옛 행 · 옛 객체가 그대로인지(additive), 헤더의 되돌리기 문장을 그대로 실행하면 적용 전 객체 지문으로 돌아가는지,
+ * 같은 이름의 객체가 이미 있으면 아무것도 바꾸지 않고 실패하는지(한 트랜잭션 롤백)를 본다.
+ */
+export function reviewSummaryUpgradeTests(fresh: () => Promise<FreshDb>) {
+  describe("업그레이드 · 되돌리기 회귀 (C3 전 상태 → 적용 → 되돌리기)", () => {
+    async function seedLegacy(db: FreshDb) {
+      const alice = randomUUID();
+      await db.query(`insert into auth.users (id, email) values ($1, $2)`, [alice, `${alice}@example.com`]);
+      const action = (await db.query(`insert into public.actions (user_id, title, due_at) values ($1, '제안서', now() + interval '3 hours') returning id`, [alice]))[0].id as string;
+      await db.query(`insert into public.action_events (user_id, action_id, type, actor) values ($1, $2, 'due_changed', 'ai'), ($1, $2, 'user_seen', 'user')`, [alice, action]);
+      const run = (await db.query(`select public.create_run($1, $2, 'draft', '초안') as id`, [alice, action]))[0].id as string;
+      await db.query(`update public.execution_runs set state = 'failed' where id = $1`, [run]);
+      const conversation = (await db.query(`insert into public.conversations (user_id) values ($1) returning id`, [alice]))[0].id as string;
+      await db.query(`insert into public.conversation_messages (user_id, conversation_id, seq, role, text, refs) values ($1, $2, 1, 'assistant', '답', $3)`, [alice, conversation, JSON.stringify({ action_ids: [action] })]);
+      await db.query(`insert into public.inbox_events (user_id, type, dedup_key, refs) values ($1, 'source_revised', 'source:x', $2)`, [alice, JSON.stringify({ run_id: run })]);
+      return { alice, action, run };
+    }
+    const legacySnapshot = async (db: FreshDb) =>
+      JSON.stringify(
+        await Promise.all(
+          ["actions", "action_events", "execution_runs", "execution_events", "conversations", "conversation_messages", "inbox_events"].map((t) =>
+            db.query(`select to_jsonb(x) as row from public.${t} x order by 1`),
+          ),
+        ),
+      );
+
+    it("옛 행이 그대로이고 옛 객체(표 · 열 · 함수 정의 · 트리거 · 제약)는 한 글자도 안 바뀌며, 새 표는 비어 있다", async () => {
+      const { before, c3 } = await splitScripts();
+      const db = await fresh();
+      for (const sql of before) await db.exec(sql);
+      const { alice } = await seedLegacy(db);
+      const rows = await legacySnapshot(db);
+      const objects = await schemaFingerprint(db);
+      await db.exec(c3);
+      expect(await legacySnapshot(db)).toBe(rows);
+      const after = await schemaFingerprint(db);
+      // 옛 객체는 모두 그대로 남아 있다: 새 객체만 늘었다
+      const old = <T>(json: string) => JSON.parse(json) as T[];
+      expect(old<{ table_name: string }>(after.tables).map((r) => r.table_name)).toEqual(
+        expect.arrayContaining(old<{ table_name: string }>(objects.tables).map((r) => r.table_name)),
+      );
+      for (const key of ["functions", "triggers", "constraints"] as const) {
+        const kept = new Set(old<Record<string, string>>(after[key]).map((r) => JSON.stringify(r)));
+        for (const row of old<Record<string, string>>(objects[key])) expect(kept.has(JSON.stringify(row)), `${key}: ${JSON.stringify(row)}`).toBe(true);
+      }
+      const addedTables = old<{ table_name: string }>(after.tables).map((r) => r.table_name).filter((t) => !old<{ table_name: string }>(objects.tables).map((r) => r.table_name).includes(t));
+      expect(addedTables).toEqual(["return_summary_reads", "return_summary_state", "suggestions"]);
+      // 옛 열은 하나도 바뀌지 않았다 (새 표의 열만 늘었다)
+      const oldColumns = new Set(old<Record<string, string>>(objects.columns).map((r) => JSON.stringify(r)));
+      const oldTables = new Set(old<{ table_name: string }>(objects.tables).map((r) => r.table_name));
+      const keptColumns = old<Record<string, string>>(after.columns).filter((r) => oldTables.has(r.table_name)).map((r) => JSON.stringify(r));
+      expect(keptColumns.sort()).toEqual([...oldColumns].sort());
+      for (const t of addedTables) expect(await db.query(`select 1 from public.${t}`)).toEqual([]);
+      // 옛 데이터로 새 기능이 돈다: 읽기와 Clear
+      const scan = (await db.query(`select public.return_summary_scan($1, $2::text[], null, 300) as r`, [alice, CHANGE_TYPES]))[0].r as ScanResult;
+      // 같은 트랜잭션에서 쓴 AI 변화와 user_seen: SQL은 후보와 마지막으로 본 시각을 그대로 주고, 본 것으로 거르는 것은 TS(changed.ts 의미)다
+      expect(scan.works).toHaveLength(1);
+      expect(scan.works[0].last_user_at).not.toBeNull();
+      expect((await db.query(`select public.suggestions_produce($1, now(), 24, false) as n`, [alice]))[0].n).toBe(2); // 기한 임박 · 실패한 run
+    });
+
+    it("헤더에 적힌 되돌리기 문장을 그대로 실행하면 적용 전 객체 지문으로 돌아가고 옛 행은 그대로다", async () => {
+      const { before, c3 } = await splitScripts();
+      const db = await fresh();
+      for (const sql of before) await db.exec(sql);
+      await seedLegacy(db);
+      const objects = await schemaFingerprint(db);
+      const rows = await legacySnapshot(db);
+      await db.exec(c3);
+      const header = c3.split("\nbegin;")[0];
+      const drops = header.split("\n").filter((l) => /^--\s+drop /.test(l)).map((l) => l.replace(/^--\s+/, ""));
+      expect(drops).toHaveLength(3);
+      for (const sql of drops) await db.exec(sql);
+      expect(await schemaFingerprint(db)).toEqual(objects);
+      expect(await legacySnapshot(db)).toBe(rows);
+    });
+
+    it("같은 이름의 객체가 이미 있으면 마이그레이션은 아무것도 바꾸지 않고 실패한다 (한 트랜잭션 롤백)", async () => {
+      const { before, c3 } = await splitScripts();
+      const db = await fresh();
+      for (const sql of before) await db.exec(sql);
+      // 파일 끝쪽 함수와 같은 서명: 앞의 표 · 제약 · 함수를 다 만든 뒤에 실패한다 → 모두 되돌려져야 한다
+      await db.exec(`create function public.return_summary_clear(p_user_id uuid, p_types text[], p_horizon timestamptz, p_digest text, p_now timestamptz) returns int language sql as 'select 1'`);
+      const objects = await schemaFingerprint(db);
+      await expect(db.exec(c3)).rejects.toThrow(/already exists|이미 있/);
+      await db.exec("rollback");
+      expect(await schemaFingerprint(db)).toEqual(objects);
+      expect(await db.query(`select 1 from information_schema.tables where table_name in ('suggestions', 'return_summary_state', 'return_summary_reads')`)).toEqual([]);
     });
   });
 }

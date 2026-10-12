@@ -54,9 +54,9 @@ describe("Review · 복귀 요약 · 제안 ↔ 실행 권한 경계 (I04 · I14
     expect(mentioned).toEqual(["execution_events", "execution_runs"]);
     expect(sql).not.toMatch(/\b(insert\s+into|update|delete\s+from)\s+(public\.)?(execution_|credit_|actions\b|claims\b|evidence\b|action_events\b|inbox_events\b|sources\b|conversations\b|conversation_messages\b)/i);
     expect(sql).not.toMatch(/\b(begin_call|approval_hash|auto_allowed|create_run|append_step|prepare_step|stop_run|write_action|grant_credits)\b/);
-    // 쓰는 곳은 새 표 둘뿐이다
+    // 쓰는 곳은 새 표 셋뿐이다
     const written = [...sql.matchAll(/\b(?:insert\s+into|update|delete\s+from)\s+(?:only\s+)?(?:public\.)?([a-z_]+)/gi)].map((m) => m[1].toLowerCase()).filter((name) => name !== "set" && name !== "on"); // "do update set" · "before update on"은 표 쓰기가 아니다
-    expect([...new Set(written)].sort()).toEqual(["return_summary_state", "suggestions"]);
+    expect([...new Set(written)].sort()).toEqual(["return_summary_reads", "return_summary_state", "suggestions"]);
   });
 
   it("실행 · 코디네이터 · 원문 처리 쪽 코드는 Review 모듈(제안 · 읽음)을 가져오지 않는다 (제안 · 읽음은 어떤 gate · 판정에도 입력이 아니다)", () => {

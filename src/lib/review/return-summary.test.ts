@@ -191,10 +191,10 @@ describe("composeReturnSummary: 완전성 표시 (일부를 못 읽으면 비었
     expect(body.items).toHaveLength(1);
   });
 
-  it("커서는 사용자에 묶이고 조회가 낸 위치 · 지평 · digest를 그대로 담는다. 한 번 Clear했으면 baseline cleared + since", () => {
+  it("커서는 사용자에 묶이고 조회가 낸 지평 · digest를 그대로 담는다 (시각 위치가 아니다). 한 번 Clear했으면 baseline cleared + since(표시용)", () => {
     const body = compose({ scan: scan([], { since: at(100), horizon: at(900), digest: "a:3:-7|r:0:0|m:0:0" }) });
     expect(body).toMatchObject({ baseline: "cleared", since: at(100) });
-    expect(decodeCursor(body.cursor!, USER)).toEqual({ userId: USER, since: at(100), horizon: at(900), digest: "a:3:-7|r:0:0|m:0:0" });
+    expect(decodeCursor(body.cursor!, USER)).toEqual({ userId: USER, horizon: at(900), digest: "a:3:-7|r:0:0|m:0:0" });
     expect(decodeCursor(body.cursor!, "22222222-2222-4222-8222-222222222222")).toBeNull();
   });
 

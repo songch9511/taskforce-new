@@ -181,7 +181,7 @@ describe("Clear: 표시한 범위의 읽음 처리일 뿐 (해결 · 승인 · �
     expect(after.items.find((i) => i.action_id === d)!.changes.map((c) => c.kind)).toEqual(["reopened"]);
   });
 
-  it("같은 시각 tie · 늦게 commit된 사건(지평 이전 시각)이 조회 뒤에 나타나면 409 상당(stale): 아무것도 읽음 처리하지 않고, 다시 조회하면 보인다", async () => {
+  it("같은 시각 tie · 늦게 commit된 사건(지평 이전 시각)이 조회 뒤 Clear 전에 나타나면 409 상당(stale): 아무것도 읽음 처리하지 않고, 다시 조회하면 보인다", async () => {
     const { user, d } = await awayDay();
     const first = await load(user);
     await event(user, d, "scope_changed", "ai", H); // 지평과 정확히 같은 시각
@@ -189,8 +189,12 @@ describe("Clear: 표시한 범위의 읽음 처리일 뿐 (해결 · 승인 · �
     expect((await state(user))?.at).toBe("2026-10-12T08:00:00.000000Z"); // 위치 그대로
     const second = await load(user);
     expect(second.items.find((i) => i.action_id === d)!.changes.map((c) => c.kind)).toEqual(["completed", "scope_changed"]);
-    await event(user, d, "owner_changed", "ai", "2026-10-12T05:00:00.000000Z"); // 위치(08:00) 이전: 이미 지난 범위라 후보가 아니다
-    expect((await clear(user, second.cursor)).status).toBe("cleared");
+    // 마지막 Clear 시각(08:00)보다 이른 시각의 늦은 사건도 시각으로 숨지 않는다: 두 번째 조회가 못 봤으니 stale이고, 세 번째 조회에 보인다
+    await event(user, d, "owner_changed", "ai", "2026-10-12T05:00:00.000000Z");
+    expect(await clear(user, second.cursor)).toEqual({ status: "stale" });
+    const third = await load(user);
+    expect(third.items.find((i) => i.action_id === d)!.changes.map((c) => c.kind)).toEqual(["owner_changed", "completed", "scope_changed"]);
+    expect((await clear(user, third.cursor)).status).toBe("cleared");
   });
 
   it("DB 정밀도: 커서의 시각은 마이크로초 글자 그대로다 (밀리초로 잘리면 stale로 정직하게 거절)", async () => {
@@ -201,9 +205,9 @@ describe("Clear: 표시한 범위의 읽음 처리일 뿐 (해결 · 승인 · �
     const body = await load(user, "2026-10-12T00:00:00.123700Z");
     expect(body.cursor).not.toBeNull();
     const [, payload] = body.cursor!.split(".");
-    const parsed = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as [string, string | null, string, string];
-    expect(parsed[2]).toBe("2026-10-12T00:00:00.123700Z");
-    const naive = encodeCursor({ userId: user, since: null, horizon: new Date(parsed[2]).toISOString().replace(".123Z", ".123000Z"), digest: parsed[3] });
+    const parsed = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as [string, string, string];
+    expect(parsed[1]).toBe("2026-10-12T00:00:00.123700Z");
+    const naive = encodeCursor({ userId: user, horizon: new Date(parsed[1]).toISOString().replace(".123Z", ".123000Z"), digest: parsed[2] });
     expect(await clear(user, naive)).toEqual({ status: "stale" });
     expect((await clear(user, body.cursor)).status).toBe("cleared");
   });
@@ -238,15 +242,14 @@ describe("Clear: 표시한 범위의 읽음 처리일 뿐 (해결 · 승인 · �
     const other = await s.user();
     const mine = await load(user);
     expect(await clear(other, mine.cursor)).toEqual({ status: "invalid" }); // 사용자 id가 다른 커서
-    expect(await clear(user, "c1.garbage")).toEqual({ status: "invalid" });
+    expect(await clear(user, "c2.garbage")).toEqual({ status: "invalid" });
     expect(await clear(user, "")).toEqual({ status: "invalid" });
-    const forgedFuture = encodeCursor({ userId: user, since: "2026-10-12T08:00:00.000000Z", horizon: "2999-01-01T00:00:00.000000Z", digest: "a:0:0|r:0:0|m:0:0" });
+    const forgedFuture = encodeCursor({ userId: user, horizon: "2999-01-01T00:00:00.000000Z", digest: "a:0:0|r:0:0|m:0:0" });
     expect(await clear(user, forgedFuture)).toEqual({ status: "invalid" }); // 미래 지평
-    const forgedSince = encodeCursor({ userId: user, since: "2026-10-12T19:00:00.000000Z", horizon: H, digest: "a:0:0|r:0:0|m:0:0" });
-    expect(await clear(user, forgedSince)).toEqual({ status: "invalid" }); // 지금 위치보다 앞선 since
-    const forgedDigest = encodeCursor({ userId: user, since: "2026-10-12T08:00:00.000000Z", horizon: H, digest: "a:0:0|r:0:0|m:0:0" });
+    const forgedDigest = encodeCursor({ userId: user, horizon: H, digest: "a:0:0|r:0:0|m:0:0" });
     expect(await clear(user, forgedDigest)).toEqual({ status: "stale" });
     expect((await state(user))?.at).toBe("2026-10-12T08:00:00.000000Z");
+    expect(await s.count(`select 1 from public.return_summary_reads where user_id = $1`, [user])).toBe(0);
   });
 
   it("범위 안 작업이 지워지면 stale이다 (보지 못한 것을 읽음으로 삼키는 쪽이 아니라 다시 조회하게 한다)", async () => {

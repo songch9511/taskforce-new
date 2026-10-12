@@ -52,6 +52,7 @@ const USER_TABLES = [
   "people_handles",
   "profiles",
   "rate_limit_events",
+  "return_summary_reads",
   "return_summary_state",
   "slack_messages",
   "slack_people",
@@ -189,6 +190,7 @@ async function seed(userId: string, tokenHex: string) {
     [userId, actionId, runId, `action:${actionId}`, runId, `run_failed:action:${actionId}:${runId}`],
   );
   await db.query(`insert into public.return_summary_state (user_id, cleared_through) values ($1, now())`, [userId]);
+  await db.query(`insert into public.return_summary_reads (user_id, source, event_ref) values ($1, 'action_event', gen_random_uuid()::text)`, [userId]);
   const stepId = await one(
     `insert into public.execution_steps (user_id, run_id, seq, kind, provider, tool, purpose, connection_id, state, policy_version)
      values ($1, $2, 2, 'external', 'gmail', 'send', 'send', $3, 'called', 1) returning id`,

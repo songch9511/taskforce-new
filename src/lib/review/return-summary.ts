@@ -13,7 +13,7 @@ import { decodeCursor, encodeCursor, isDigest, isMicroTimestamp } from "./cursor
 import { RESULT_READY_OUTCOMES, RETURN_SUMMARY_MAX_WORKS } from "./review.config";
 
 // 복귀 요약 (런타임 계약 1장 "복귀 요약", V04 · ARCH25 · A40): 떠나 있던 동안 바뀐 것 · 필요한 결정 · 다음 행동을 **기존 이벤트에서 그때그때 계산**한다.
-//  - 새 영구 원문 · 요약 저장소가 없다. 쓰는 것은 Clear 위치(시각 하나)뿐이다. 응답에는 id · 토큰 · 시각 · 지금 제목만 있고 원문 글 · 옛 제목 · 변경 전후 값이 없다.
+//  - 새 영구 원문 · 요약 저장소가 없다. 쓰는 것은 Clear가 읽음으로 표시한 사건 id와 마지막 Clear 시각 하나뿐이다. 응답에는 id · 토큰 · 시각 · 지금 제목만 있고 원문 글 · 옛 제목 · 변경 전후 값이 없다.
 //  - 변화의 의미는 changed.ts와 같다: 사용자 자기 수정 · 본 것 이전 변화는 변화가 아니다 (changesAfterSeen). 이미 읽은 변화를 다시 올리지 않는다.
 //  - inbox_events(C2)는 읽지 않는다: 적재 실패 누락이 있어 완전성 · 신선도의 근거가 못 된다. 실제 원천 표를 읽는다.
 //  - 어떤 원천이든 읽기에 실패하면 그 부분은 "unavailable"이지 비어 있는 것이 아니다. 잘리면 truncated + 커서 없음. empty는 모든 원천을 읽었고 잘리지 않았을 때만 참이다.
@@ -163,7 +163,7 @@ export function composeReturnSummary(input: {
     since: scan?.since ?? null,
     baseline: !scan ? "unknown" : scan.since ? "cleared" : "never_cleared",
     // 잘렸거나 변화 원천을 읽지 못했으면 읽음 처리할 범위를 정할 수 없다
-    cursor: scan && !scan.truncated ? encodeCursor({ userId: input.userId, since: scan.since, horizon: scan.horizon, digest: scan.digest }) : null,
+    cursor: scan && !scan.truncated ? encodeCursor({ userId: input.userId, horizon: scan.horizon, digest: scan.digest }) : null,
     complete,
     empty: complete && items.length === 0,
     sources: { changes, decisions },
@@ -217,8 +217,9 @@ export async function loadReturnSummary(admin: SupabaseClient, userId: string, n
 export type ClearOutcome = { status: "cleared"; applied: boolean; clearedThrough: string } | { status: "stale" | "invalid" };
 
 /**
- * 조회가 낸 커서의 범위까지 읽음 처리한다 (읽음일 뿐: 해결 · 승인 · 완료 · 거절이 아니다). 기존 seen 함수(now()를 찍는다)를 쓰지 않는다.
- * 커서가 지금도 같은 사건들을 가리킬 때만 위치를 옮긴다 — 조회 뒤에 생긴 사건은 남고, 늦게 들어온 사건이 있으면 stale(아무것도 쓰지 않음).
+ * 조회가 본 사건 집합만 읽음 처리한다 (읽음일 뿐: 해결 · 승인 · 완료 · 거절이 아니다). 기존 seen 함수(now()를 찍는다)를 쓰지 않는다.
+ * 커서가 가리키는 후보 사건 집합(지평까지, digest)이 지금도 같을 때만 그 id를 읽음으로 표시한다. 시각 위치를 옮기지 않는다 — 조회 뒤에 생긴 사건 ·
+ * Clear 때 아직 commit되지 않은 사건은 읽음이 되지 않고, 조회 뒤 Clear 전에 늦게 commit된 사건이 있으면 stale(아무것도 쓰지 않음).
  */
 export async function clearReturnSummary(admin: SupabaseClient, userId: string, rawCursor: string, horizonNow?: string): Promise<ClearOutcome> {
   const cursor = decodeCursor(rawCursor, userId);
@@ -226,7 +227,6 @@ export async function clearReturnSummary(admin: SupabaseClient, userId: string, 
   const args: Record<string, unknown> = {
     p_user_id: userId,
     p_change_types: [...CHANGE_EVENT_TYPES],
-    p_since: cursor.since,
     p_horizon: cursor.horizon,
     p_digest: cursor.digest,
   };
