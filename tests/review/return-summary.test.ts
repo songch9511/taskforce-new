@@ -100,7 +100,7 @@ describe("복귀 요약: 기존 이벤트에서 계산 (A40 · ARCH25)", () => {
     expect(byId[f].changes).toEqual([{ source: "run", kind: "done", at: "2026-10-12T13:00:00.000000Z", detail: "draft_ready", source_state: null }]);
     expect(byId[d]).toMatchObject({ title: "계약 완료 처리", changes: [{ source: "action_event", kind: "completed", source_state: "deleted" }] });
     // 숫자가 없다
-    expect(Object.keys(body).sort()).toEqual(["baseline", "complete", "cursor", "empty", "generated_at", "items", "since", "sources"]);
+    expect(Object.keys(body).sort()).toEqual(["baseline", "complete", "cursor", "empty", "generated_at", "init_token", "items", "since", "sources"]);
   });
 
   it("읽은 변화를 다시 올리지 않는다: 사용자가 본 뒤(user_seen) 그 변화는 Clear 없이도 사라지고, 본 뒤 새 변화만 남는다", async () => {

@@ -7,13 +7,14 @@ vi.mock("server-only", () => ({}));
 vi.mock("@/lib/supabase/server", () => ({ createClient: mocks.createCookieClient }));
 vi.mock("@/lib/supabase/admin", () => ({ createAdminClient: mocks.admin }));
 vi.mock("@/lib/review/review", () => ({ loadReview: vi.fn() }));
-vi.mock("@/lib/review/return-summary", () => ({ loadReturnSummary: vi.fn(), clearReturnSummary: vi.fn() }));
+vi.mock("@/lib/review/return-summary", () => ({ loadReturnSummary: vi.fn(), clearReturnSummary: vi.fn(), initializeReturnSummaryBaseline: vi.fn() }));
 vi.mock("@/lib/review/suggestions", () => ({ snoozeSuggestion: vi.fn(), dismissSuggestion: vi.fn() }));
 
 import * as returnSummary from "@/lib/review/return-summary";
 import * as review from "@/lib/review/review";
 import * as suggestions from "@/lib/review/suggestions";
 
+import { POST as baseline } from "../return-summary/baseline/route";
 import { POST as clear } from "../return-summary/clear/route";
 import { GET as getSummary } from "../return-summary/route";
 import { POST as dismiss } from "../suggestions/[id]/dismiss/route";
@@ -30,6 +31,7 @@ const ctx = { params: Promise.resolve({ id: ID }) };
 type Call = (request: Request) => Promise<Response>;
 const WRITES: [string, Call, unknown][] = [
   ["POST return-summary/clear", (r) => clear(r), { cursor: "c1.AAAA" }],
+  ["POST return-summary/baseline", (r) => baseline(r), { init_token: "i1.AAAA" }],
   ["POST suggestions/snooze", (r) => snooze(r, ctx), { expected_version: 1, snooze_until: new Date(Date.now() + 2 * 86_400_000).toISOString() }],
   ["POST suggestions/dismiss", (r) => dismiss(r, ctx), { expected_version: 1, scope: "this" }],
 ];
@@ -43,6 +45,7 @@ const services = () =>
     vi.mocked(review.loadReview),
     vi.mocked(returnSummary.loadReturnSummary),
     vi.mocked(returnSummary.clearReturnSummary),
+    vi.mocked(returnSummary.initializeReturnSummaryBaseline),
     vi.mocked(suggestions.snoozeSuggestion),
     vi.mocked(suggestions.dismissSuggestion),
   ] as unknown as ReturnType<typeof vi.fn>[];
@@ -60,6 +63,7 @@ beforeEach(() => {
   vi.mocked(review.loadReview).mockResolvedValue({ ok: "review" } as never);
   vi.mocked(returnSummary.loadReturnSummary).mockResolvedValue({ ok: "summary" } as never);
   vi.mocked(returnSummary.clearReturnSummary).mockResolvedValue({ status: "stale" });
+  vi.mocked(returnSummary.initializeReturnSummaryBaseline).mockResolvedValue({ status: "stale" });
   vi.mocked(suggestions.snoozeSuggestion).mockResolvedValue({ status: "not_found" });
   vi.mocked(suggestions.dismissSuggestion).mockResolvedValue({ status: "not_found" });
 });

@@ -7,7 +7,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { CHANGE_EVENT_TYPES } from "../../src/lib/actions/changed";
 import { supabaseSchemaScripts } from "./local-supabase";
 
-// 0.2.0 C3 (20261111000000_review_summary) — 제안 · 복귀 요약 · Clear 저장 계약.
+// 0.2.0 C3 (20261111000000_review_summary + 후속 20261112000000_review_summary_baseline) — 제안 · 복귀 요약 · Clear · 첫 정상 표시 기준점 저장 계약.
 // suggestions 표(dedup · 상한 · snooze · topic 억제 · 증거 있는 stale) · return_summary_reads(Clear가 읽음으로 표시한 사건 id) · return_summary_state(마지막 Clear 시각) · 서비스 롤 전용 RPC.
 // 읽음은 시각(워터마크)이 아니라 사건 id다: created_at은 트랜잭션 시작 시각이라 commit 순서와 다르다 (P2-A: Clear 뒤 commit되는 사건이 숨지 않는다).
 // 같은 시나리오를 PGlite(tests/db/review-summary.test.ts)와 실제 Postgres(tests/pg/review-summary.test.ts)에서 돈다.
@@ -129,6 +129,17 @@ export function reviewFixtures(db: () => ReviewDb) {
           userId, CHANGE_TYPES, cursor.horizon, cursor.digest, now, cursor.page ?? null, cursor.baseline ?? false,
         ])
       ).r as ClearResult,
+    /** 첫 정상 표시 기준점 확정: 토큰 = 조회가 준 지평 + init_digest */
+    init: async (userId: string, token: { horizon: string; init_digest: string | null }, now: string | null = null) =>
+      (
+        await one(`select public.return_summary_baseline_init($1, $2::text[], $3::timestamptz, $4, $5::timestamptz) as r`, [
+          userId, CHANGE_TYPES, token.horizon, token.init_digest, now,
+        ])
+      ).r as BaselineInitResult,
+    baselineRows: (userId: string) => count(`select 1 from public.return_summary_baseline where user_id = $1`, [userId]),
+    /** 기준점 행의 지평 (글자로) */
+    baselineHorizon: async (userId: string) =>
+      (await one(`select to_char(horizon at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as h from public.return_summary_baseline where user_id = $1`, [userId]))?.h as string | undefined,
     reads: (userId: string) => count(`select 1 from public.return_summary_reads where user_id = $1`, [userId]),
     state: (userId: string) => one(`select cleared_through, version::int as version from public.return_summary_state where user_id = $1`, [userId]),
     /** 쓰기가 Clear · 노출 · 제안 처리 안에서 다른 곳에 닿지 않았음을 보는 지문: 업무 · 실행 · 사건 표의 행 수와 Action 내용 */
@@ -147,7 +158,20 @@ export function reviewFixtures(db: () => ReviewDb) {
 
 type ScanChange = { source: "action_event" | "run" | "message"; kind: string; at: string; detail: string | null; source_state: string | null };
 export type ScanWork = { action_id: string; title: string; status: string; started: boolean; last_user_at: string | null; changes: ScanChange[] };
-export type ScanResult = { since: string | null; horizon: string; digest: string; truncated: boolean; page: string[] | null; baseline: boolean; works: ScanWork[] };
+export type ScanResult = {
+  since: string | null;
+  horizon: string;
+  digest: string;
+  truncated: boolean;
+  page: string[] | null;
+  baseline: boolean;
+  /** 응답의 baseline 값: Clear했다 / 기준점이 확정됐다 / 둘 다 아니다 */
+  baseline_state: "cleared" | "initialized" | "never_cleared";
+  /** 기준점 범위의 관찰 digest. 기준점이 아직 없을 때만 (빈 첫 화면 포함) */
+  init_digest: string | null;
+  works: ScanWork[];
+};
+export type BaselineInitResult = { status: "initialized" | "already_initialized" | "stale" | "invalid" };
 export type ClearResult = { status: "cleared" | "stale" | "invalid"; applied?: boolean; cleared_through?: string };
 
 const rejects = (promise: Promise<unknown>, pattern: RegExp) => expect(promise).rejects.toThrow(pattern);
@@ -204,6 +228,7 @@ export function reviewSummaryTests(db: () => ReviewDb) {
         await rejects(q(`select public.return_summary_digest($1, '{completed}'::text[], now())`, [alice]), /permission denied/);
         await rejects(q(`select * from public.return_summary_candidates($1, '{completed}'::text[], now())`, [alice]), /permission denied/);
         await rejects(q(`select * from public.return_summary_scope($1, '{completed}'::text[], now(), null, false)`, [alice]), /permission denied/);
+        await rejects(q(`select public.return_summary_baseline_init($1, '{completed}'::text[], now(), 'x', null)`, [alice]), /permission denied/);
         await rejects(q(`insert into public.return_summary_reads (user_id, source, event_ref, action_id) values ($1, 'message', gen_random_uuid()::text, $2)`, [alice, aa]), /permission denied/);
         await rejects(q(`delete from public.return_summary_reads`), /permission denied/);
       });
@@ -220,6 +245,7 @@ export function reviewSummaryTests(db: () => ReviewDb) {
         "return_summary_digest(uuid,text[],timestamp with time zone,uuid[],boolean)",
         "return_summary_scope(uuid,text[],timestamp with time zone,uuid[],boolean)",
         "return_summary_candidates(uuid,text[],timestamp with time zone)",
+        "return_summary_baseline_init(uuid,text[],timestamp with time zone,text,timestamp with time zone)",
       ];
       for (const fn of rpcs) {
         const row = await f.one(
@@ -1219,25 +1245,224 @@ export function reviewSummaryTests(db: () => ReviewDb) {
     });
   });
   });
+
+  // ───────────────────────── 첫 정상 표시 기준점 (A–D 승인, C) ─────────────────────────
+  describe("첫 정상 표시 기준점 (return_summary_baseline_init): 서버 토큰의 별도 확정 쓰기로만 생긴다 (GET은 읽기만)", () => {
+    const HZ = at(T0, 500_000);
+    const LATER = at(T0, 600_000);
+
+    /** 첫 사용: 지평 전 run 결과 하나 + 읽은 시각이 없는 대화 메시지 하나(같은 작업), 미열람 Action 변화 하나(다른 작업). Clear한 적도 기준점도 없다 */
+    async function first() {
+      const user = await f.user();
+      const action = await f.action(user, { title: "초안" });
+      const other = await f.action(user, { title: "견적" });
+      await f.setClock(at(T0, 10_000));
+      const run = await f.run(user, action);
+      await f.setClock(at(T0, 20_000));
+      await f.setRun(run, "running");
+      await f.setRun(run, "done", "draft_ready");
+      await f.setClock("2026-10-12T00:00:00Z");
+      const conversation = await f.conversation(user, null);
+      await f.message(user, conversation, 1, "assistant", { action_ids: [action] }, at(T0, 30_000));
+      await f.event(user, other, "due_changed", "ai", at(T0, 40_000));
+      return { user, action, other, conversation, run };
+    }
+    const kinds = (scan: ScanResult, action: string) => scan.works.find((w) => w.action_id === action)?.changes.map((c) => `${c.source}:${c.kind}`).sort() ?? null;
+
+    it("첫 조회: never_cleared + init_digest(기준점 범위의 digest). 읽기만이다 — 읽음 · 기준점이 쓰이지 않는다. 옛 run · 메시지는 변화가 아니고 Action 변화는 보인다", async () => {
+      const { user, action, other } = await first();
+      const scan = await f.scan(user, HZ);
+      expect(scan).toMatchObject({ baseline: true, baseline_state: "never_cleared", since: null, truncated: false });
+      expect(typeof scan.init_digest).toBe("string");
+      expect(kinds(scan, other)).toEqual(["action_event:due_changed"]);
+      expect(kinds(scan, action)).toBeNull();
+      await f.scan(user, HZ); // 몇 번을 읽어도 같다
+      expect(await f.reads(user)).toBe(0);
+      expect(await f.baselineRows(user)).toBe(0);
+      expect(await f.state(user)).toBeUndefined();
+    });
+
+    it("확정: initialized. 그때까지의 run · 메시지 쌍만 읽음이고(Action 변화 · 미결정은 그대로) 기준점 행이 토큰의 지평으로 한 줄 생긴다. 업무 · 실행 표는 그대로", async () => {
+      const { user, other } = await first();
+      const scan = await f.scan(user, HZ);
+      const before = await f.fingerprint(user);
+      expect(await f.init(user, scan, LATER)).toEqual({ status: "initialized" });
+      expect(await f.fingerprint(user)).toBe(before);
+      expect((await q(`select source from public.return_summary_reads where user_id = $1 order by 1`, [user])).map((r) => r.source)).toEqual(["message", "run_event"]);
+      expect(await f.baselineRows(user)).toBe(1);
+      expect(await f.baselineHorizon(user)).toBe(scan.horizon);
+      expect(await f.state(user)).toBeUndefined(); // Clear 위치는 만들지 않는다
+      const after = await f.scan(user, LATER);
+      expect(after).toMatchObject({ baseline: false, baseline_state: "initialized", init_digest: null, since: null });
+      expect(kinds(after, other)).toEqual(["action_event:due_changed"]);
+    });
+
+    it("기준점 뒤에는 Clear 없이도 새 run 결과 · 새 메시지가 변화로 오른다. 옛 이력은 계속 과거다", async () => {
+      const { user, action, conversation, run } = await first();
+      const scan = await f.scan(user, HZ);
+      expect((await f.init(user, scan, LATER)).status).toBe("initialized");
+      const second = await f.run(user, action);
+      await f.setClock(at(T0, 700_000));
+      await f.setRun(second, "running");
+      await f.setRun(second, "done", "needs_input");
+      await f.setClock("2026-10-12T00:00:00Z");
+      await f.message(user, conversation, 2, "event", { action_ids: [action] }, at(T0, 710_000));
+      const later = await f.scan(user, at(T0, 800_000));
+      expect(kinds(later, action)).toEqual(["message:event", "run:done"]);
+      expect(later.works.find((w) => w.action_id === action)!.changes.filter((c) => c.source === "run")).toHaveLength(1); // 옛 run(done)은 계속 읽음
+      expect(run).not.toBe(second);
+      expect(await f.state(user)).toBeUndefined();
+    });
+
+    it("빈 첫 화면도 init_digest가 있고 확정되면 기준점이 생긴다 (읽음 쌍은 0)", async () => {
+      const user = await f.user();
+      const scan = await f.scan(user, HZ);
+      expect(scan).toMatchObject({ works: [], baseline_state: "never_cleared" });
+      expect(typeof scan.init_digest).toBe("string");
+      expect(await f.init(user, scan, LATER)).toEqual({ status: "initialized" });
+      expect(await f.reads(user)).toBe(0);
+      expect(await f.baselineRows(user)).toBe(1);
+    });
+
+    it("같은 토큰 재시도 · 두 기기: 두 번째는 already_initialized이고 아무것도 쓰지 않는다 (읽음 쌍 · 기준점 행 그대로)", async () => {
+      const { user } = await first();
+      const scan = await f.scan(user, HZ);
+      expect(await f.init(user, scan, LATER)).toEqual({ status: "initialized" });
+      const reads = await f.reads(user);
+      const horizon = await f.baselineHorizon(user);
+      expect(await f.init(user, scan, at(T0, 650_000))).toEqual({ status: "already_initialized" });
+      expect(await f.init(user, { ...scan, init_digest: "a:0:0|r:9:9|m:9:9" }, at(T0, 650_000))).toEqual({ status: "already_initialized" }); // 다른 기기의 낡은 토큰도 같다
+      expect(await f.reads(user)).toBe(reads);
+      expect(await f.baselineHorizon(user)).toBe(horizon);
+    });
+
+    it("Clear한 적이 있는 사용자(업그레이드 이전 Clear 사용자 포함)는 cleared로 센다: 토큰이 없고, 확정은 already_initialized이며 아무것도 쓰지 않는다", async () => {
+      const { user, action } = await first();
+      await q(`insert into public.return_summary_state (user_id, cleared_through) values ($1, $2)`, [user, at(T0, 1)]);
+      const scan = await f.scan(user, HZ);
+      expect(scan).toMatchObject({ baseline: false, baseline_state: "cleared", init_digest: null, since: at(T0, 1) });
+      expect(kinds(scan, action)).toEqual(["message:assistant", "run:done"]); // 이 사용자는 Clear 기준이 이미 있어 이력이 변화로 오른다 (기존 동작 그대로)
+      expect(await f.init(user, { horizon: HZ, init_digest: "r:0:0" }, LATER)).toEqual({ status: "already_initialized" });
+      expect(await f.reads(user)).toBe(0);
+      expect(await f.baselineRows(user)).toBe(0);
+    });
+
+    it("기준점 전 Clear는 기준점이 아니라 Clear다: 그때의 읽음 처리는 기존 규칙(보인 작업 + 이력)이고, 그 뒤 확정은 already_initialized", async () => {
+      const { user, action, other } = await first();
+      const scan = await f.scan(user, HZ);
+      expect((await f.clear(user, scan, LATER)).status).toBe("cleared");
+      expect(await f.baselineRows(user)).toBe(0);
+      expect((await f.init(user, scan, LATER)).status).toBe("already_initialized");
+      const after = await f.scan(user, at(T0, 700_000));
+      expect(after).toMatchObject({ baseline_state: "cleared", init_digest: null });
+      expect(after.works).toEqual([]);
+      expect(action).not.toBe(other);
+    });
+
+    it("기준점 뒤 Clear는 기준점 이력을 다시 다루지 않는다: 조회의 baseline 표시가 꺼져 있고, 잘린 페이지의 Clear는 보인 작업의 쌍만 읽음으로 더한다", async () => {
+      const { user, action, conversation } = await first();
+      const scan = await f.scan(user, HZ);
+      expect((await f.init(user, scan, LATER)).status).toBe("initialized");
+      const base = await f.reads(user);
+      // 기준점 뒤 새 메시지 두 작업 (limit 1 → 잘림)
+      const second = await f.action(user, { title: "둘째" });
+      await f.message(user, conversation, 2, "assistant", { action_ids: [second] }, at(T0, 700_000));
+      await f.message(user, conversation, 3, "assistant", { action_ids: [action] }, at(T0, 710_000));
+      const page = await f.scan(user, at(T0, 800_000), 1);
+      expect(page).toMatchObject({ truncated: true, baseline: false });
+      expect(page.page).toHaveLength(1);
+      expect((await f.clear(user, page, at(T0, 900_000))).status).toBe("cleared");
+      expect(await f.reads(user)).toBe(base + 1); // 보인 작업의 새 메시지 한 쌍뿐 (run · 옛 이력을 다시 읽음 처리하지 않는다)
+      const rest = await f.scan(user, at(T0, 1_000_000), 1);
+      expect(rest.works).toHaveLength(1); // 보이지 않은 작업은 그대로 남아 있다
+    });
+
+    it("조회 뒤 확정 전에 범위 안 사건이 commit되면(트랜잭션 시작 시각이 지평 이전) stale: 아무것도 쓰지 않는다. 다시 조회하면 새 토큰으로 확정되고 그 사건도 읽음이다", async () => {
+      const { user, action, conversation } = await first();
+      const scan = await f.scan(user, HZ);
+      await f.message(user, conversation, 2, "assistant", { action_ids: [action] }, at(T0, 25_000)); // 늦게 commit된 행
+      expect(await f.init(user, scan, LATER)).toEqual({ status: "stale" });
+      expect(await f.reads(user)).toBe(0);
+      expect(await f.baselineRows(user)).toBe(0);
+      const again = await f.scan(user, HZ);
+      expect(again.init_digest).not.toBe(scan.init_digest);
+      expect(await f.init(user, again, LATER)).toEqual({ status: "initialized" });
+      expect(await f.reads(user)).toBe(3);
+    });
+
+    it("같은 시각 tie: 지평과 정확히 같은 시각의 범위 안 사건은 stale. 지평 +1µs는 범위 밖이라 확정은 되고 기준점 뒤 새 변화로 보인다", async () => {
+      const { user, action, conversation } = await first();
+      const scan = await f.scan(user, HZ);
+      await f.message(user, conversation, 2, "assistant", { action_ids: [action] }, HZ);
+      expect((await f.init(user, scan, LATER)).status).toBe("stale");
+      const control = await first();
+      const controlScan = await f.scan(control.user, HZ);
+      await f.message(control.user, control.conversation, 2, "assistant", { action_ids: [control.action] }, at(HZ, 1));
+      expect((await f.init(control.user, controlScan, LATER)).status).toBe("initialized");
+      const after = await f.scan(control.user, at(T0, 700_000));
+      expect(kinds(after, control.action)).toEqual(["message:assistant"]);
+    });
+
+    it("범위 안 사건이 지워져도(Action 삭제) stale이다. 다시 조회하면 확정되고 지운 쌍은 되살아나지 않는다", async () => {
+      const { user, action } = await first();
+      const scan = await f.scan(user, HZ);
+      await q(`delete from public.actions where id = $1`, [action]);
+      expect((await f.init(user, scan, LATER)).status).toBe("stale");
+      const again = await f.scan(user, HZ);
+      expect((await f.init(user, again, LATER)).status).toBe("initialized");
+      expect(await f.reads(user)).toBe(0);
+    });
+
+    it("지평이 서버 시각보다 미래면 invalid, 꾸민 digest · 다른 사용자의 토큰은 stale이다: 어느 쪽도 아무것도 쓰지 않는다", async () => {
+      const { user } = await first();
+      const other = await f.user();
+      const scan = await f.scan(user, HZ);
+      expect((await f.init(user, { horizon: at(T0, 900_000), init_digest: scan.init_digest }, LATER)).status).toBe("invalid");
+      expect((await f.init(user, { ...scan, init_digest: "a:0:0|r:9:9|m:9:9" }, LATER)).status).toBe("stale");
+      expect((await f.init(other, scan, LATER)).status).toBe("stale"); // 남의 토큰: 그 사용자의 범위로 다시 세면 digest가 다르다
+      expect(await f.reads(user)).toBe(0);
+      expect(await f.reads(other)).toBe(0);
+      expect(await f.baselineRows(user)).toBe(0);
+      expect(await f.baselineRows(other)).toBe(0);
+    });
+
+    it("앱은 자기 기준점 행만 읽고(owner_all + select) 쓰지 못한다. 서버도 한 번 정한 기준점을 바꾸지 못한다 (트리거)", async () => {
+      const [alice, bob] = [await f.user(), await f.user()];
+      await q(`insert into public.return_summary_baseline (user_id, horizon) values ($1, now()), ($2, now())`, [alice, bob]);
+      expect((await db().asUser(alice, () => q(`select user_id from public.return_summary_baseline`))).map((r) => r.user_id)).toEqual([alice]);
+      await db().asUser(alice, async () => {
+        await rejects(q(`insert into public.return_summary_baseline (user_id, horizon) values ($1, now())`, [randomUUID()]), /permission denied/);
+        await rejects(q(`update public.return_summary_baseline set horizon = now()`), /permission denied/);
+        await rejects(q(`delete from public.return_summary_baseline`), /permission denied/);
+      });
+      await rejects(q(`update public.return_summary_baseline set horizon = now() where user_id = $1`, [alice]), /한 번 정해지면|check_violation/);
+      await q(`delete from auth.users where id = $1`, [alice]); // 계정 삭제는 cascade
+      expect(await f.baselineRows(alice)).toBe(0);
+      expect(await f.baselineRows(bob)).toBe(1);
+    });
+  });
 }
 
 // ───────────────────────── 업그레이드 · 롤백 ─────────────────────────
 const MIGRATIONS_DIR = path.resolve(__dirname, "../../supabase/migrations");
 export const C3_MIGRATION = "20261111000000_review_summary.sql";
+/** 후속(A–D 승인, C): 첫 정상 표시 기준점. C3 바로 다음, 지금 마지막 마이그레이션이다 */
+export const BASELINE_MIGRATION = "20261112000000_review_summary_baseline.sql";
 
 export type FreshDb = {
   exec: (sql: string) => Promise<unknown>;
   query: (sql: string, params?: unknown[]) => Promise<Rows>;
 };
 
-/** Supabase 흉내 + C3 앞의 모든 마이그레이션 / C3 */
+/** Supabase 흉내 + C3 앞의 모든 마이그레이션 / C3 / 기준점 마이그레이션 */
 async function splitScripts() {
   const files = (await readdir(MIGRATIONS_DIR)).filter((file) => file.endsWith(".sql")).sort();
   const index = files.indexOf(C3_MIGRATION);
   expect(index, `${C3_MIGRATION}이 마이그레이션 목록에 있다`).toBeGreaterThan(0);
-  expect(index, "C3는 마지막 마이그레이션이다 (더 뒤의 마이그레이션이 생기면 이 시험의 분할을 고친다)").toBe(files.length - 1);
+  expect(files.indexOf(BASELINE_MIGRATION), "기준점 마이그레이션은 C3 바로 다음이다").toBe(index + 1);
+  expect(index + 1, "기준점 마이그레이션은 마지막 마이그레이션이다 (더 뒤의 마이그레이션이 생기면 이 시험의 분할을 고친다)").toBe(files.length - 1);
   const scripts = await supabaseSchemaScripts();
-  return { before: scripts.slice(0, 2 + index), c3: scripts[2 + index] };
+  return { before: scripts.slice(0, 2 + index), c3: scripts[2 + index], baseline: scripts[3 + index] };
 }
 
 /** 이 마이그레이션 앞의 객체 지문: public 표 · 열 · 함수 정의 · 트리거 · 제약 */
@@ -1257,7 +1482,8 @@ async function schemaFingerprint(db: FreshDb): Promise<Record<string, string>> {
  * 같은 이름의 객체가 이미 있으면 아무것도 바꾸지 않고 실패하는지(한 트랜잭션 롤백)를 본다.
  */
 export function reviewSummaryUpgradeTests(fresh: () => Promise<FreshDb>) {
-  describe("업그레이드 · 되돌리기 회귀 (C3 전 상태 → 적용 → 되돌리기)", () => {
+  // 새 데이터베이스에 마이그레이션 수십 개를 적용하는 시험이라 느린 머신에서도 5초 기본 제한에 걸리지 않게 한다
+  describe("업그레이드 · 되돌리기 회귀 (C3 전 상태 → 적용 → 되돌리기)", { timeout: 60_000 }, () => {
     async function seedLegacy(db: FreshDb) {
       const alice = randomUUID();
       await db.query(`insert into auth.users (id, email) values ($1, $2)`, [alice, `${alice}@example.com`]);
@@ -1340,6 +1566,146 @@ export function reviewSummaryUpgradeTests(fresh: () => Promise<FreshDb>) {
       await db.exec("rollback");
       expect(await schemaFingerprint(db)).toEqual(objects);
       expect(await db.query(`select 1 from information_schema.tables where table_name in ('suggestions', 'return_summary_state', 'return_summary_reads')`)).toEqual([]);
+    });
+  });
+
+  // ─── 기준점 마이그레이션 (C3 뒤): 11까지 쌓인 행(이미 Clear한 사용자 포함)과 옛 객체는 그대로, 되돌리면 11 상태로 ───
+  describe("업그레이드 · 되돌리기 회귀 (기준점 마이그레이션: C3 적용 후 상태 → 적용 → 되돌리기)", { timeout: 60_000 }, () => {
+    const scanOf = async (db: FreshDb, user: string, horizon: string) =>
+      (await db.query(`select public.return_summary_scan($1, $2::text[], $3::timestamptz, 300) as r`, [user, CHANGE_TYPES, horizon]))[0].r as Record<string, unknown>;
+
+    /** 11까지 적용한 상태: 한 번도 Clear하지 않은 사용자(alice)와 업그레이드 이전에 Clear한 사용자(bob) */
+    async function seedAfterC3(db: FreshDb) {
+      const mk = async (title: string) => {
+        const user = randomUUID();
+        await db.query(`insert into auth.users (id, email) values ($1, $2)`, [user, `${user}@example.com`]);
+        const action = (await db.query(`insert into public.actions (user_id, title) values ($1, $2) returning id`, [user, title]))[0].id as string;
+        await db.query(`insert into public.action_events (user_id, action_id, type, actor) values ($1, $2, 'due_changed', 'ai')`, [user, action]);
+        const run = (await db.query(`select public.create_run($1, $2, 'draft', '초안') as id`, [user, action]))[0].id as string;
+        await db.query(`update public.execution_runs set state = 'running' where id = $1`, [run]);
+        await db.query(`update public.execution_runs set state = 'done', outcome = 'draft_ready' where id = $1`, [run]);
+        const conversation = (await db.query(`insert into public.conversations (user_id) values ($1) returning id`, [user]))[0].id as string;
+        await db.query(`insert into public.conversation_messages (user_id, conversation_id, seq, role, text, refs) values ($1, $2, 1, 'assistant', '답', $3)`, [user, conversation, JSON.stringify({ action_ids: [action] })]);
+        return { user, action };
+      };
+      const alice = await mk("미확인");
+      const bob = await mk("확인함");
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      const horizon = new Date().toISOString(); // 모든 옛 행(트랜잭션 시작 시각)보다 뒤이고 서버 시각보다 앞이다
+      // bob은 11의 Clear를 한 번 했다 (상태 + 읽음 쌍)
+      const scan = await scanOf(db, bob.user, horizon);
+      const cleared = (
+        await db.query(`select public.return_summary_clear($1, $2::text[], $3::timestamptz, $4, null, $5::uuid[], $6) as r`, [
+          bob.user, CHANGE_TYPES, scan.horizon, scan.digest, scan.page ?? null, scan.baseline ?? false,
+        ])
+      )[0].r as { status: string };
+      expect(cleared.status).toBe("cleared");
+      return { alice, bob, horizon };
+    }
+    const dataSnapshot = async (db: FreshDb) =>
+      JSON.stringify(
+        await Promise.all(
+          ["actions", "action_events", "execution_runs", "execution_events", "conversations", "conversation_messages", "return_summary_state", "return_summary_reads", "suggestions"].map((t) =>
+            db.query(`select to_jsonb(x) as row from public.${t} x order by 1`),
+          ),
+        ),
+      );
+    const omit = (value: Record<string, unknown>, keys: string[]) => Object.fromEntries(Object.entries(value).filter(([key]) => !keys.includes(key)));
+
+    it("옛 행(Clear한 사용자의 상태 · 읽음 포함)이 그대로이고 return_summary_scan 외의 옛 객체는 한 글자도 안 바뀌며, 새 표는 비어 있다. Clear한 사용자는 계속 cleared, 안 한 사용자는 never_cleared + 토큰", async () => {
+      const { before, c3, baseline } = await splitScripts();
+      const db = await fresh();
+      for (const sql of [...before, c3]) await db.exec(sql);
+      const { alice, bob, horizon } = await seedAfterC3(db);
+      const rows = await dataSnapshot(db);
+      const objects = await schemaFingerprint(db);
+      const aliceBefore = await scanOf(db, alice.user, horizon);
+      const bobBefore = await scanOf(db, bob.user, horizon);
+      await db.exec(baseline);
+      expect(await dataSnapshot(db)).toBe(rows);
+      const after = await schemaFingerprint(db);
+      const old = <T>(json: string) => JSON.parse(json) as T[];
+      const tables = (json: string) => old<{ table_name: string }>(json).map((r) => r.table_name);
+      expect(tables(after.tables).filter((t) => !tables(objects.tables).includes(t))).toEqual(["return_summary_baseline"]);
+      // 함수: 기준점 마이그레이션이 만든 것과 return_summary_scan(본문 갱신)만 다르다
+      const fnAfter = new Map(old<{ sig: string; def: string }>(after.functions).map((r) => [r.sig, r.def]));
+      const fnBefore = new Map(old<{ sig: string; def: string }>(objects.functions).map((r) => [r.sig, r.def]));
+      const changed = [...fnBefore].filter(([sig, def]) => fnAfter.get(sig) !== def).map(([sig]) => sig);
+      expect(changed).toEqual(["return_summary_scan(uuid,text[],timestamp with time zone,integer)"]);
+      expect([...fnAfter.keys()].filter((sig) => !fnBefore.has(sig)).sort()).toEqual([
+        "return_summary_baseline_guard()",
+        "return_summary_baseline_init(uuid,text[],timestamp with time zone,text,timestamp with time zone)",
+      ]);
+      for (const key of ["triggers", "constraints"] as const) {
+        const kept = new Set(old<Record<string, string>>(after[key]).map((r) => JSON.stringify(r)));
+        for (const row of old<Record<string, string>>(objects[key])) expect(kept.has(JSON.stringify(row)), `${key}: ${JSON.stringify(row)}`).toBe(true);
+      }
+      // 옛 열은 하나도 바뀌지 않았다
+      const oldTables = new Set(tables(objects.tables));
+      expect(old<Record<string, string>>(after.columns).filter((r) => oldTables.has(r.table_name)).map((r) => JSON.stringify(r)).sort()).toEqual(
+        old<Record<string, string>>(objects.columns).map((r) => JSON.stringify(r)).sort(),
+      );
+      expect(await db.query(`select 1 from public.return_summary_baseline`)).toEqual([]);
+      // 새 키 외에는 11의 조회 결과와 같다 (읽기 규칙은 기준점이 없는 사용자에게 바뀌지 않는다)
+      const aliceAfter = await scanOf(db, alice.user, horizon);
+      const bobAfter = await scanOf(db, bob.user, horizon);
+      expect(omit(aliceAfter, ["baseline_state", "init_digest"])).toEqual(aliceBefore);
+      expect(omit(bobAfter, ["baseline_state", "init_digest"])).toEqual(bobBefore);
+      expect(aliceAfter).toMatchObject({ baseline: true, baseline_state: "never_cleared" });
+      expect(typeof aliceAfter.init_digest).toBe("string");
+      expect(bobAfter).toMatchObject({ baseline: false, baseline_state: "cleared", init_digest: null });
+      // 업그레이드 이전 Clear 사용자는 다시 초기화되지 않는다: 확정은 already_initialized이고 아무것도 쓰지 않는다
+      const confirm = async (user: string, scan: Record<string, unknown>) =>
+        (await db.query(`select public.return_summary_baseline_init($1, $2::text[], $3::timestamptz, $4, null) as r`, [user, CHANGE_TYPES, scan.horizon, scan.init_digest ?? "x"]))[0].r as { status: string };
+      expect(await confirm(bob.user, bobAfter)).toEqual({ status: "already_initialized" });
+      expect(await dataSnapshot(db)).toBe(rows);
+      // 안 한 사용자는 확정할 수 있고, 그 뒤에는 Clear 없이 새 변화가 보인다
+      expect(await confirm(alice.user, aliceAfter)).toEqual({ status: "initialized" });
+      expect(await db.query(`select 1 from public.return_summary_baseline`)).toHaveLength(1);
+    });
+
+    it("헤더에 적힌 되돌리기 문장(+ 11의 return_summary_scan 정의)을 그대로 실행하면 11 적용 후 객체 지문 · 권한으로 돌아가고 옛 행은 그대로다. 되돌려도 읽음 표시는 남는다", async () => {
+      const { before, c3, baseline } = await splitScripts();
+      const db = await fresh();
+      for (const sql of [...before, c3]) await db.exec(sql);
+      const { alice, horizon } = await seedAfterC3(db);
+      const objects = await schemaFingerprint(db);
+      await db.exec(baseline);
+      // 기준점을 확정해 읽음 쌍을 만들어 둔다 (되돌린 뒤에도 남아야 한다)
+      const scan = await scanOf(db, alice.user, horizon);
+      expect((await db.query(`select public.return_summary_baseline_init($1, $2::text[], $3::timestamptz, $4, null) as r`, [alice.user, CHANGE_TYPES, scan.horizon, scan.init_digest]))[0].r).toEqual({ status: "initialized" });
+      const rows = await dataSnapshot(db);
+      // 헤더의 되돌리기 문장을 순서대로: drop / revoke / grant 문장은 그대로, "(…create function public.return_summary_scan(…) …)" 줄은 11의 정의를 실행한다
+      const header = baseline.split("\nbegin;")[0];
+      const steps = header.split("\n").filter((line) => /^--\s+(drop |revoke |grant |\(20261111000000_review_summary\.sql)/.test(line));
+      expect(steps.map((line) => line.replace(/^--\s+/, "").split(" ")[0])).toEqual(["drop", "drop", "(20261111000000_review_summary.sql의", "revoke", "grant", "drop", "drop"]);
+      const a = c3.indexOf("create function public.return_summary_scan(");
+      const scanDefinition = c3.slice(a, c3.indexOf("$$;", c3.indexOf("as $$", a)) + 3);
+      expect(scanDefinition).toContain("return_summary_scan");
+      for (const line of steps) await db.exec(line.startsWith("-- ") && line.includes("(20261111000000") ? scanDefinition : line.replace(/^--\s+/, ""));
+      expect(await schemaFingerprint(db)).toEqual(objects);
+      expect(await dataSnapshot(db)).toBe(rows);
+      expect(await db.query(`select count(*)::int as n from public.return_summary_reads where user_id = $1`, [alice.user])).toEqual([{ n: 2 }]);
+      const priv = await db.query(
+        `select has_function_privilege('anon', f, 'execute') as anon, has_function_privilege('authenticated', f, 'execute') as authenticated, has_function_privilege('service_role', f, 'execute') as service_role
+           from (select 'public.return_summary_scan(uuid,text[],timestamptz,integer)'::text as f) x`,
+      );
+      expect(priv).toEqual([{ anon: false, authenticated: false, service_role: true }]);
+      // 되돌린 11의 조회는 기준점 모르는 옛 모양이다 (baseline_state · init_digest 없음)
+      expect(Object.keys(await scanOf(db, alice.user, horizon))).not.toContain("baseline_state");
+    });
+
+    it("같은 이름의 객체가 이미 있으면 기준점 마이그레이션은 아무것도 바꾸지 않고 실패한다 (한 트랜잭션 롤백): 표 · 갱신한 조회 함수 모두 그대로", async () => {
+      const { before, c3, baseline } = await splitScripts();
+      const db = await fresh();
+      for (const sql of [...before, c3]) await db.exec(sql);
+      // 파일 끝쪽 함수와 같은 서명: 앞의 표 · 트리거 · 조회 갱신을 다 한 뒤에 실패한다 → 모두 되돌려져야 한다
+      await db.exec(`create function public.return_summary_baseline_init(p_user_id uuid, p_types text[], p_horizon timestamptz, p_digest text, p_now timestamptz) returns int language sql as 'select 1'`);
+      const objects = await schemaFingerprint(db);
+      await expect(db.exec(baseline)).rejects.toThrow(/already exists|이미 있/);
+      await db.exec("rollback");
+      expect(await schemaFingerprint(db)).toEqual(objects);
+      expect(await db.query(`select 1 from information_schema.tables where table_name = 'return_summary_baseline'`)).toEqual([]);
     });
   });
 }

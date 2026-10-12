@@ -86,6 +86,7 @@ describe("초기 마이그레이션", () => {
       "people_handles",
       "profiles",
       "rate_limit_events",
+      "return_summary_baseline",
       "return_summary_reads",
       "return_summary_state",
       "review_accounts",

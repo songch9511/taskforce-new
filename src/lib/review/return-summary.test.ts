@@ -6,6 +6,7 @@ import { returnSummaryResponseSchema } from "@/lib/api/contract";
 import { computePendingDecisions, type PendingInput } from "@/lib/coordinator/pending";
 
 import { decodeCursor } from "./cursor";
+import { decodeInitToken } from "./init-token";
 import { buildReturnSummaryItems, composeReturnSummary, type ActionBasics, type ScanResult, type ScanWork } from "./return-summary";
 
 // 복귀 요약 계산 (순수): SQL 스캔 결과 + C2 결정 대기 → 응답. DB 없이 의미만 시험한다 (DB 쪽은 tests/db/review-summary.scenarios.ts, 연결은 tests/review).
@@ -24,7 +25,7 @@ const change = (kind: string, micro: number, over: Partial<ScanWork["changes"][n
   source: "action_event", kind, at: at(micro), detail: null, source_state: "available", ...over,
 });
 const scan = (works: ScanWork[], over: Partial<ScanResult> = {}): ScanResult => ({
-  since: null, horizon: at(900), digest: "a:1:5|r:0:0|m:0:0", truncated: false, page: null, baseline: true, works, ...over,
+  since: null, horizon: at(900), digest: "a:1:5|r:0:0|m:0:0", truncated: false, page: null, baseline: true, baseline_state: "never_cleared", init_digest: "a:0:0|r:2:-9|m:1:4", works, ...over,
 });
 const pendingRow = (over: Partial<PendingInput> = {}): PendingInput => ({
   kind: "confirm", action_id: A, run_id: null, step_id: null, version: "action:A:1", created_at: "2026-10-11T00:00:00Z", due_at: null, ...over,
@@ -198,14 +199,36 @@ describe("composeReturnSummary: 완전성 표시 (일부를 못 읽으면 비었
   });
 
   it("커서는 사용자에 묶이고 조회가 낸 지평 · digest를 그대로 담는다 (시각 위치가 아니다). 한 번 Clear했으면 baseline cleared + since(표시용)", () => {
-    const body = compose({ scan: scan([], { since: at(100), horizon: at(900), digest: "a:3:-7|r:0:0|m:0:0" }) });
+    const body = compose({ scan: scan([], { since: at(100), horizon: at(900), digest: "a:3:-7|r:0:0|m:0:0", baseline_state: "cleared", init_digest: null }) });
     expect(body).toMatchObject({ baseline: "cleared", since: at(100) });
     expect(decodeCursor(body.cursor!, USER)).toEqual({ userId: USER, horizon: at(900), digest: "a:3:-7|r:0:0|m:0:0", page: null, baseline: true });
     expect(decodeCursor(body.cursor!, "22222222-2222-4222-8222-222222222222")).toBeNull();
   });
 
+  it("init_token: 기준점이 없고(never_cleared) 변화 원천을 읽었을 때만 나온다 — 빈 첫 화면 · 잘린 첫 화면 포함. 지평 · 기준점 범위 digest를 싣는다", () => {
+    const empty = compose({});
+    expect(empty).toMatchObject({ empty: true, baseline: "never_cleared" });
+    expect(decodeInitToken(empty.init_token!, USER)).toEqual({ userId: USER, horizon: at(900), digest: "a:0:0|r:2:-9|m:1:4" });
+    const truncated = compose({ scan: scan([work(A, { changes: [change("merged", 1)] })], { truncated: true, page: [A], baseline: true }) });
+    expect(truncated.init_token).not.toBeNull();
+    // 토큰은 Clear 커서가 아니고 커서는 토큰이 아니다
+    expect(decodeInitToken(truncated.cursor!, USER)).toBeNull();
+    expect(decodeCursor(truncated.init_token!, USER)).toBeNull();
+  });
+
+  it("init_token은 읽기에 실패했거나(unknown) 이미 기준점이 있거나(initialized) Clear한 적이 있으면(cleared) null이다", () => {
+    expect(compose({ scan: null })).toMatchObject({ baseline: "unknown", init_token: null });
+    expect(compose({ scan: scan([], { baseline_state: "initialized", baseline: false, init_digest: null }) })).toMatchObject({ baseline: "initialized", since: null, init_token: null });
+    expect(compose({ scan: scan([], { baseline_state: "cleared", since: at(100), baseline: false, init_digest: null }) })).toMatchObject({ baseline: "cleared", init_token: null });
+  });
+
+  it("결정 대기만 못 읽었어도(변화는 정상) 토큰은 나온다: 토큰 조건은 변화 원천이다", () => {
+    expect(compose({ pending: null })).toMatchObject({ complete: false, sources: { changes: "ok", decisions: "unavailable" } });
+    expect(compose({ pending: null }).init_token).not.toBeNull();
+  });
+
   it("숫자를 내리지 않는다: 최상위 키에 개수 · 합계가 없다", () => {
     const keys = Object.keys(compose({ scan: scan([work(A, { changes: [change("merged", 1)] })]) })).sort();
-    expect(keys).toEqual(["baseline", "complete", "cursor", "empty", "generated_at", "items", "since", "sources"]);
+    expect(keys).toEqual(["baseline", "complete", "cursor", "empty", "generated_at", "init_token", "items", "since", "sources"]);
   });
 });

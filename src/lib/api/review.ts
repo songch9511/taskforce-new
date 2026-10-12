@@ -1,7 +1,9 @@
 import {
+  returnSummaryBaselineRequestSchema,
   returnSummaryClearRequestSchema,
   suggestionDismissRequestSchema,
   suggestionSnoozeRequestSchema,
+  type ReturnSummaryBaselineResponse,
   type ReturnSummaryClearResponse,
   type ReturnSummaryResponse,
   type ReviewResponse,
@@ -94,6 +96,39 @@ export async function handleClearReturnSummary<User extends AppUser>(request: Re
   } catch (error) {
     fail("return_summary_clear_failed", error);
     return errorResponse(500, "internal_error", "읽음 처리하지 못했습니다.");
+  }
+}
+
+// ─── POST: 첫 정상 표시 기준점 확정 ─────────────────────
+
+export type BaselineDeps<User extends AppUser> = BaseDeps<User> & {
+  initialize: (user: User, token: string) => Promise<{ status: "initialized"; applied: true } | { status: "already_initialized"; applied: false } | { status: "stale" | "invalid" }>;
+};
+
+/**
+ * POST /api/v2/return-summary/baseline { init_token } — 앱이 복귀 요약을 처음 정상으로 표시했을 때 그 순간의 run 결과 · 대화 메시지 이력을 기준점으로 확정한다 (읽음 표시일 뿐).
+ * 200 { status: initialized | already_initialized, applied } · 409 conflict(조회 뒤 범위가 달라짐: 아무것도 쓰지 않았다, 다음 정상 표시의 새 토큰으로 다시) · 400 잘못된 · 미래 · 남의 토큰.
+ */
+export async function handleInitializeReturnSummaryBaseline<User extends AppUser>(request: Request, deps: BaselineDeps<User>): Promise<Response> {
+  if (!deps.enabled()) return errorResponse(404, "not_found", NOT_FOUND);
+  const user = await deps.authenticate(request);
+  if (!user) return unauthorized();
+  const body = await parseBody(request, returnSummaryBaselineRequestSchema);
+  if ("error" in body) return body.error;
+  try {
+    const result = await deps.initialize(user, body.data.init_token);
+    switch (result.status) {
+      case "initialized":
+      case "already_initialized":
+        return Response.json({ status: result.status, applied: result.applied } as ReturnSummaryBaselineResponse, { headers: NO_STORE });
+      case "stale":
+        return errorResponse(409, "conflict", "조회한 뒤 바뀐 기록이 있어 기준점을 정하지 않았습니다. 다음에 다시 불러온 뒤 시도해 주세요.");
+      case "invalid":
+        return errorResponse(400, "invalid_request", "잘못된 토큰입니다. 다시 불러온 뒤 시도해 주세요.");
+    }
+  } catch (error) {
+    fail("return_summary_baseline_failed", error);
+    return errorResponse(500, "internal_error", "기준점을 정하지 못했습니다.");
   }
 }
 

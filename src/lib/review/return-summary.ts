@@ -10,6 +10,7 @@ import type { ActionProgressState, PendingDecisionKind, ReturnSummaryChange, Ret
 import { loadPendingDecisions, PENDING_KINDS, type PendingGroup } from "@/lib/coordinator/pending";
 
 import { decodeCursor, encodeCursor, isDigest, isMicroTimestamp } from "./cursor";
+import { decodeInitToken, encodeInitToken } from "./init-token";
 import { RESULT_READY_OUTCOMES, RETURN_SUMMARY_MAX_WORKS } from "./review.config";
 
 // 복귀 요약 (런타임 계약 1장 "복귀 요약", V04 · ARCH25 · A40): 떠나 있던 동안 바뀐 것 · 필요한 결정 · 다음 행동을 **기존 이벤트에서 그때그때 계산**한다.
@@ -45,8 +46,12 @@ export const scanResultSchema = z.object({
   truncated: z.boolean(),
   /** 잘렸을 때만: 보인 작업의 id (Clear 범위). 커서가 Clear까지 가져간다 */
   page: z.array(z.uuid()).max(RETURN_SUMMARY_MAX_WORKS).nullable(),
-  /** 조회 때 Clear한 적이 없었다 */
+  /** 읽음 기준이 없다 (Clear도 기준점도 없었다) — 잘린 조회의 Clear가 run · 대화 이력도 기준으로 삼아야 한다 */
   baseline: z.boolean(),
+  /** 응답의 baseline 값: Clear한 적 있음 | 기준점만 있음 | 둘 다 없음 */
+  baseline_state: z.enum(["cleared", "initialized", "never_cleared"]),
+  /** 기준점이 없을 때만: 기준점 범위(run 결과 전부 + 읽은 시각 없는 대화 메시지, 지평까지)의 (사건, 작업) 쌍 digest */
+  init_digest: z.string().refine(isDigest).nullable(),
   works: z.array(scanWorkSchema),
 });
 export type ScanResult = z.infer<typeof scanResultSchema>;
@@ -165,7 +170,12 @@ export function composeReturnSummary(input: {
   return {
     generated_at: input.now.toISOString(),
     since: scan?.since ?? null,
-    baseline: !scan ? "unknown" : scan.since ? "cleared" : "never_cleared",
+    baseline: !scan ? "unknown" : scan.baseline_state,
+    // 아직 기준점이 없고 변화 원천을 읽었을 때만 (빈 첫 화면 · 잘린 첫 화면 포함). 읽기 실패 · 이미 기준점 · Clear한 적 있음이면 null
+    init_token:
+      scan && scan.baseline_state === "never_cleared" && scan.init_digest !== null
+        ? encodeInitToken({ userId: input.userId, horizon: scan.horizon, digest: scan.init_digest })
+        : null,
     // 변화 원천을 읽지 못했으면 읽음 처리할 범위를 정할 수 없다. 잘렸으면 커서는 **보인 작업**만 가리킨다 (보이지 않은 작업은 읽음이 되지 않고 다음 조회에 나온다)
     cursor:
       scan && (!scan.truncated || scan.page !== null)
@@ -247,4 +257,31 @@ export async function clearReturnSummary(admin: SupabaseClient, userId: string, 
   if (result.status !== "cleared") return { status: result.status };
   if (result.applied === undefined || !result.cleared_through) throw new Error("return_summary_clear: 응답 모양이 틀림");
   return { status: "cleared", applied: result.applied, clearedThrough: result.cleared_through };
+}
+
+// ─── 첫 정상 표시 기준점 확정 ───────────────────────────────────────────────
+
+export type BaselineOutcome = { status: "initialized"; applied: true } | { status: "already_initialized"; applied: false } | { status: "stale" | "invalid" };
+
+/**
+ * 서버가 조회 때 낸 토큰으로 첫 정상 표시 기준점을 확정한다 (읽음 표시일 뿐: 결정 · 완료가 아니다). GET은 읽기만 하고 이것이 유일한 쓰기다.
+ * 토큰이 가리키는 기준점 범위(지평까지의 run 결과 전부 + 읽은 시각이 없는 대화 메시지)의 digest가 지금도 같을 때만 그 (사건, 작업) 쌍을 읽음으로 표시하고 기준점 행을 쓴다 —
+ * 한 문장(같은 스냅샷). 지평 뒤 · 확정 때 아직 commit되지 않은 사건은 읽음이 되지 않아 기준점 뒤 새 변화로 보인다. 미열람 Action 변화 · 미결정은 건드리지 않는다.
+ * 이미 기준점이 있거나 Clear한 적이 있으면 아무것도 쓰지 않는다 (재초기화 없음). 조회 뒤 확정 전에 범위가 달라졌으면 stale (아무것도 쓰지 않음, 자동 재시도 없음).
+ */
+export async function initializeReturnSummaryBaseline(admin: SupabaseClient, userId: string, rawToken: string, horizonNow?: string): Promise<BaselineOutcome> {
+  const token = decodeInitToken(rawToken, userId);
+  if (!token) return { status: "invalid" };
+  const args: Record<string, unknown> = {
+    p_user_id: userId,
+    p_change_types: [...CHANGE_EVENT_TYPES],
+    p_horizon: token.horizon,
+    p_digest: token.digest,
+  };
+  if (horizonNow !== undefined) args.p_now = horizonNow;
+  const { data } = await admin.rpc("return_summary_baseline_init", args).throwOnError();
+  const result = z.object({ status: z.enum(["initialized", "already_initialized", "stale", "invalid"]) }).parse(data);
+  if (result.status === "initialized") return { status: "initialized", applied: true };
+  if (result.status === "already_initialized") return { status: "already_initialized", applied: false };
+  return { status: result.status };
 }

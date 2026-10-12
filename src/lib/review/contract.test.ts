@@ -46,7 +46,7 @@ describe("C3 계약 일치", () => {
 
   it("응답 모양의 필수 키 (Mac 디코딩 기준)", () => {
     expect(Object.keys(reviewResponseSchema.shape).sort()).toEqual(["complete", "decisions", "empty", "generated_at", "sources", "suggestion_batch", "suggestions"]);
-    expect(Object.keys(returnSummaryResponseSchema.shape).sort()).toEqual(["baseline", "complete", "cursor", "empty", "generated_at", "items", "since", "sources"]);
+    expect(Object.keys(returnSummaryResponseSchema.shape).sort()).toEqual(["baseline", "complete", "cursor", "empty", "generated_at", "init_token", "items", "since", "sources"]);
     expect(Object.keys(returnSummaryItemSchema.shape).sort()).toEqual(["action_id", "changes", "decisions", "needs_answer", "next", "state", "status", "title", "urgent", "version"]);
     expect(Object.keys(suggestionSchema.shape).sort()).toEqual(["action_id", "created_at", "id", "kind", "offered_on", "run_id", "shown_at", "snooze_until", "state", "urgent", "version"]);
   });

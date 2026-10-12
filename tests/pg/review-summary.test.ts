@@ -5,10 +5,11 @@ import { CHANGE_EVENT_TYPES } from "../../src/lib/actions/changed";
 import { supabaseSchemaScripts } from "../db/local-supabase";
 import { reviewFixtures, reviewSummaryTests, reviewSummaryUpgradeTests, TEST_CLOCK, type ReviewDb } from "../db/review-summary.scenarios";
 
-// 0.2.0 C3 (20261111000000_review_summary) — 실제 Postgres. PGlite와 같은 시나리오 + 연결이 둘 이상 필요한 경합:
+// 0.2.0 C3 (20261111000000_review_summary + 후속 20261112000000_review_summary_baseline) — 실제 Postgres. PGlite와 같은 시나리오 + 연결이 둘 이상 필요한 경합:
 //  - P2-A: Clear가 "조회가 본 사건 id"만 읽음으로 삼는다. 쓰는 트랜잭션이 조회 · Clear 사이에 미커밋이거나 아직 쓰기 전이어도(created_at = 트랜잭션 시작 시각이 지평 이전)
 //    그 행은 Clear 뒤 commit되어 다음 조회에 보인다. 대조: 조회 뒤 Clear 전에 commit되면 stale.
 //  - 같은 하루 묶음 동시 노출 · 동시 생산 · 동시 전이 · 동시 Clear(두 기기).
+//  - 첫 정상 표시 기준점(A–D 후속 C): 조회 · 확정 사이에 commit된 범위 안 사건 → stale, 조회 때 미커밋이던 사건 → 확정 뒤에도 보임, 두 기기 동시 확정 → 하나만 initialized, 확정 vs Clear 동시.
 // DATABASE_URL의 서버에 일회용 데이터베이스를 만들어 마이그레이션을 그대로 적용하고, 끝나면 지운다. DATABASE_URL이 없으면 건너뛰지 않고 실패한다.
 
 const DATABASE_URL = process.env.DATABASE_URL;
@@ -111,6 +112,8 @@ type Scan = {
   truncated: boolean;
   page: string[] | null;
   baseline: boolean;
+  baseline_state: "cleared" | "initialized" | "never_cleared";
+  init_digest: string | null;
   works: { action_id: string; changes: { source: string; kind: string }[] }[];
 };
 
@@ -382,5 +385,176 @@ describe("두 기기 · 동시 Clear · 동시 제안 (실제 Postgres 연결 �
     await setup.query(`select set_config('app.now', '2020-01-01T00:00:00Z', false)`);
     expect((await a.query(`select extract(year from public.db_now())::int as y`)).rows[0].y).toBeGreaterThanOrEqual(2026);
     await setup.query(`select set_config('app.now', '', false)`);
+  });
+});
+
+// ───────────────────────── 첫 정상 표시 기준점 경합 (연결 여럿) ─────────────────────────
+const initOn = async (client: pg.Client, user: string, token: { horizon: string; init_digest: string | null }): Promise<{ status: string }> =>
+  (await client.query(`select public.return_summary_baseline_init($1, $2::text[], $3::timestamptz, $4, null) as r`, [user, TYPES, token.horizon, token.init_digest])).rows[0].r;
+const baselineRowsOf = async (user: string) => Number((await setup.query(`select count(*)::int as n from public.return_summary_baseline where user_id = $1`, [user])).rows[0].n);
+const insertMessage = (client: pg.Client, user: string, conversation: string, seq: number, action: string) =>
+  client.query(`insert into public.conversation_messages (user_id, conversation_id, seq, role, text, refs) values ($1, $2, $3, 'assistant', '답', $4)`, [user, conversation, seq, JSON.stringify({ action_ids: [action] })]);
+
+describe("첫 정상 표시 기준점: 조회 · 확정 · 늦은 commit · 두 기기 (실제 Postgres, writer 연결 따로)", () => {
+  /** 첫 사용: 이미 commit된 run 결과(done) 하나 + 읽은 시각 없는 대화 메시지 하나(같은 작업). Clear한 적도 기준점도 없다 (쌍 2개) */
+  async function firstUse() {
+    await setup.query(`select set_config('app.now', '', false)`);
+    const f = reviewFixtures(db);
+    const user = await f.user();
+    const action = await f.action(user, { title: "제안서" });
+    const run = await f.run(user, action);
+    await f.setRun(run, "running");
+    await f.setRun(run, "done", "draft_ready");
+    const conversation = await f.conversation(user, null);
+    await setup.query(`insert into public.conversation_messages (user_id, conversation_id, seq, role, text, refs) values ($1, $2, 1, 'assistant', '답', $3)`, [user, conversation, JSON.stringify({ action_ids: [action] })]);
+    return { f, user, action, conversation };
+  }
+
+  it("대조(기본): 조회 → 확정은 initialized이고 옛 run · 메시지 쌍 둘만 읽음이다. 읽는 동안 아무것도 쓰지 않는다", async () => {
+    const { user } = await firstUse();
+    const seen = await scanOn(a, user);
+    expect(seen).toMatchObject({ baseline_state: "never_cleared", works: [] });
+    expect(await readsOf(user)).toBe(0);
+    expect(await baselineRowsOf(user)).toBe(0);
+    expect(await initOn(b, user, seen)).toEqual({ status: "initialized" });
+    expect(await readsOf(user)).toBe(2);
+    expect(await baselineRowsOf(user)).toBe(1);
+    expect(await initOn(b, user, seen)).toEqual({ status: "already_initialized" });
+    expect(await readsOf(user)).toBe(2);
+  });
+
+  it("경합 1: writer가 조회 전에 BEGIN, 조회 뒤 확정 전에 범위 안 메시지를 commit → 확정은 stale이고 아무것도 쓰지 않는다. 다시 조회한 새 토큰으로 확정하면 그 메시지도 읽음이다", async () => {
+    const { user, action, conversation } = await firstUse();
+    await writer.query("begin");
+    await writer.query("select 1");
+    const seen = await scanOn(a, user);
+    await insertMessage(writer, user, conversation, 2, action);
+    await writer.query("commit");
+    const stored = (await setup.query(`select (created_at < $2::timestamptz) as before_horizon from public.conversation_messages where user_id = $1 and seq = 2`, [user, seen.horizon])).rows[0];
+    expect(stored.before_horizon).toBe(true); // 재현의 전제: 늦게 commit된 행의 시각이 지평보다 이르다
+    expect(await initOn(b, user, seen)).toEqual({ status: "stale" });
+    expect(await readsOf(user)).toBe(0);
+    expect(await baselineRowsOf(user)).toBe(0);
+    const again = await scanOn(a, user);
+    expect(again.init_digest).not.toBe(seen.init_digest);
+    expect(await initOn(a, user, again)).toEqual({ status: "initialized" });
+    expect(await readsOf(user)).toBe(3);
+    expect(kinds(await scanOn(a, user))).toEqual([]);
+  });
+
+  it("경합 2: writer가 미커밋 메시지를 쥔 채 조회 → 확정 → writer COMMIT: 그 메시지는 확정 때 보이지 않았으므로 읽음이 아니고 기준점 뒤 새 변화로 보인다", async () => {
+    const { user, action, conversation } = await firstUse();
+    await writer.query("begin");
+    await insertMessage(writer, user, conversation, 2, action);
+    const seen = await scanOn(a, user);
+    expect(await initOn(a, user, seen)).toEqual({ status: "initialized" });
+    await writer.query("commit");
+    expect(await readsOf(user)).toBe(2);
+    const after = await scanOn(a, user);
+    expect(after.baseline_state).toBe("initialized");
+    expect(kinds(after)).toEqual(["message:assistant"]);
+    // 이제 Clear는 평소처럼 된다 (기준점은 이력을 다시 다루지 않는다)
+    expect((await clearOn(a, user, after)).status).toBe("cleared");
+    expect(kinds(await scanOn(a, user))).toEqual([]);
+  });
+
+  it("경합 3: run 결과도 같다 — writer가 미커밋 run 전이(done)를 쥔 채 조회 → 확정 → COMMIT하면 다음 조회에 run:done이 보인다", async () => {
+    const { f, user, action } = await firstUse();
+    const second = await f.run(user, action);
+    await writer.query("begin");
+    await writer.query(`update public.execution_runs set state = 'running' where id = $1`, [second]);
+    await writer.query(`update public.execution_runs set state = 'done', outcome = 'needs_input' where id = $1`, [second]);
+    const seen = await scanOn(a, user);
+    expect(await initOn(a, user, seen)).toEqual({ status: "initialized" });
+    await writer.query("commit");
+    expect(kinds(await scanOn(a, user))).toEqual(["run:done"]);
+  });
+
+  it("경합 4: BEGIN이 먼저인 writer가 확정 뒤에 INSERT + COMMIT해도(created_at이 지평 이전) 다음 조회에 보인다", async () => {
+    const { user, action, conversation } = await firstUse();
+    await writer.query("begin");
+    await writer.query("select 1");
+    const seen = await scanOn(a, user);
+    expect(await initOn(a, user, seen)).toEqual({ status: "initialized" });
+    await insertMessage(writer, user, conversation, 2, action);
+    await writer.query("commit");
+    expect(kinds(await scanOn(a, user))).toEqual(["message:assistant"]);
+  });
+
+  it("두 기기가 같은 토큰으로 동시에 확정: 하나만 initialized이고 하나는 already_initialized다. 읽음 쌍은 한 번, 기준점 행은 하나", async () => {
+    const { user } = await firstUse();
+    const seen = await scanOn(a, user);
+    const results = await Promise.all([initOn(a, user, seen), initOn(b, user, seen)]);
+    expect(results.map((r) => r.status).sort()).toEqual(["already_initialized", "initialized"]);
+    expect(await readsOf(user)).toBe(2);
+    expect(await baselineRowsOf(user)).toBe(1);
+  });
+
+  it("서로 다른 시점의 토큰을 두 기기가 동시에 확정: 교착 없이 정확히 하나가 initialized이고 다른 하나는 stale 또는 already_initialized (순서에 따라). 기준점은 하나", async () => {
+    const { user, action, conversation } = await firstUse();
+    const early = await scanOn(a, user);
+    await setup.query(`select pg_sleep(0.01)`);
+    await setup.query(`insert into public.conversation_messages (user_id, conversation_id, seq, role, text, refs, created_at) values ($1, $2, 2, 'assistant', '답', $3, $4::timestamptz - interval '1 millisecond')`, [user, conversation, JSON.stringify({ action_ids: [action] }), early.horizon]);
+    const late = await scanOn(b, user);
+    const results = await Promise.all([initOn(a, user, early), initOn(b, user, late)]);
+    const statuses = results.map((r) => r.status);
+    expect(statuses.filter((status) => status === "initialized")).toHaveLength(1);
+    expect(statuses.filter((status) => status === "stale" || status === "already_initialized")).toHaveLength(1);
+    expect(await baselineRowsOf(user)).toBe(1);
+    // 어느 순서든 일관: 모든 읽음 쌍은 실제 있었던 (사건, 작업)이고 다음 조회는 기준점 상태다
+    expect((await scanOn(a, user)).baseline_state).toBe("initialized");
+  });
+
+  it("확정과 Clear가 동시에 오면(같은 사용자 advisory lock) 어느 순서든 일관: 사용자는 cleared가 되고 옛 이력이 변화로 되살아나지 않는다. Clear가 먼저면 확정은 already_initialized(기준점 행 없음), 확정이 먼저면 둘 다 성공(Clear가 우선)", async () => {
+    const { user } = await firstUse();
+    const seen = await scanOn(a, user);
+    const [initResult, clearResult] = await Promise.all([initOn(a, user, seen), clearOn(b, user, seen)]);
+    const outcome = `${initResult.status}/${clearResult.status}`;
+    expect(["initialized/cleared", "already_initialized/cleared"], outcome).toContain(outcome);
+    expect(await baselineRowsOf(user)).toBe(initResult.status === "initialized" ? 1 : 0);
+    expect(await readsOf(user)).toBe(2); // 어느 순서든 옛 run · 메시지 쌍이 읽음이다 (한 번씩)
+    const after = await scanOn(a, user);
+    expect(after.baseline_state).toBe("cleared");
+    expect(after.init_digest).toBeNull();
+    expect(kinds(after)).toEqual([]); // 옛 이력이 변화로 되살아나지 않는다
+  });
+
+  it("Clear한 사용자는 확정이 already_initialized이고 아무것도 쓰지 않는다 (업그레이드 이전 Clear 사용자)", async () => {
+    const { user } = await firstUse();
+    const seen = await scanOn(a, user);
+    expect((await clearOn(a, user, seen)).status).toBe("cleared");
+    const reads = await readsOf(user);
+    expect(await initOn(b, user, seen)).toEqual({ status: "already_initialized" });
+    expect(await readsOf(user)).toBe(reads);
+    expect(await baselineRowsOf(user)).toBe(0);
+  });
+
+  it("빈 첫 화면: 토큰이 있고 확정되면 읽음 쌍 없이 기준점만 생긴다. 그 뒤 새 메시지는 Clear 없이 보인다", async () => {
+    await setup.query(`select set_config('app.now', '', false)`);
+    const f = reviewFixtures(db);
+    const user = await f.user();
+    const action = await f.action(user);
+    const seen = await scanOn(a, user);
+    expect(seen).toMatchObject({ baseline_state: "never_cleared", works: [] });
+    expect(typeof seen.init_digest).toBe("string");
+    expect(await initOn(b, user, seen)).toEqual({ status: "initialized" });
+    expect(await readsOf(user)).toBe(0);
+    const conversation = await f.conversation(user, null);
+    await insertMessage(setup, user, conversation, 1, action);
+    expect(kinds(await scanOn(a, user))).toEqual(["message:assistant"]);
+  });
+
+  it("꾸민 토큰: 미래 지평은 invalid, 남의 토큰 · 꾸민 digest는 stale — 어느 쪽도 아무것도 쓰지 않는다", async () => {
+    const { user } = await firstUse();
+    const other = await firstUse();
+    const seen = await scanOn(a, user);
+    const future = new Date(Date.now() + 3_600_000).toISOString();
+    expect(await initOn(a, user, { horizon: future, init_digest: seen.init_digest })).toEqual({ status: "invalid" });
+    expect(await initOn(a, user, { horizon: seen.horizon, init_digest: "a:0:0|r:9:9|m:9:9" })).toEqual({ status: "stale" });
+    expect(await initOn(a, other.user, seen)).toEqual({ status: "stale" });
+    expect(await readsOf(user)).toBe(0);
+    expect(await readsOf(other.user)).toBe(0);
+    expect(await baselineRowsOf(user)).toBe(0);
+    expect(await baselineRowsOf(other.user)).toBe(0);
   });
 });

@@ -1374,8 +1374,9 @@ export type ReturnSummaryItem = z.infer<typeof returnSummaryItemSchema>;
 /**
  * GET /api/v2/return-summary — 복귀 요약. 숫자 없음(개수를 내리지 않는다).
  * since: 마지막 Clear의 지평(마이크로초 UTC 글자, 앱이 "Since …" 표시를 위해 시각으로 바꿔도 되지만 커서에는 쓰지 않는다). 표시용이다 — 무엇이 읽혔는지는 시각이 아니라
- *   서버가 (사건, 작업) 쌍으로 기억한다(Clear 뒤에 commit되는 사건은 시각이 이르더라도 새 변화로 보인다). 한 번도 Clear하지 않았으면 null + baseline never_cleared
- *   (이때 run · 대화 변화는 이력 전체를 올리지 않고, 작업 변화는 사용자가 마지막으로 본 뒤의 것만 낸다 — 첫 기준 시각은 열린 제품 결정이다).
+ *   서버가 (사건, 작업) 쌍으로 기억한다(Clear 뒤에 commit되는 사건은 시각이 이르더라도 새 변화로 보인다). 한 번도 Clear하지 않았으면 null.
+ * baseline: cleared(Clear한 적 있음, 업그레이드 이전 Clear 사용자 포함) | initialized(첫 정상 표시 기준점은 있고 Clear는 아직 없음 — 새 run 결과 · 메시지가 Clear 없이 나온다) |
+ *   never_cleared(둘 다 없음 — run · 대화 이력은 변화로 올리지 않고, 작업 변화는 사용자가 마지막으로 본 뒤의 것만 낸다. init_token으로 기준점을 정할 수 있다) | unknown(변화 원천을 읽지 못함).
  * cursor: Clear에 그대로 돌려준다(불투명, 최대 약 9KB). 변화 원천을 읽지 못했으면 null. **잘렸어도(truncated) 커서가 있다** — 그 커서는 보인 작업의 사건만 읽음 처리하고,
  *   보이지 않은 작업은 다음 조회에 나온다 (Clear 가능 = cursor가 있다).
  * complete: 모든 원천을 읽었고 잘리지 않았다. empty: complete이면서 items가 비었다 — "변화 없음 · 모두 처리됨"은 empty일 때만.
@@ -1383,7 +1384,9 @@ export type ReturnSummaryItem = z.infer<typeof returnSummaryItemSchema>;
 export const returnSummaryResponseSchema = z.object({
   generated_at: z.string(),
   since: utcMicroSchema.nullable(),
-  baseline: z.enum(["cleared", "never_cleared", "unknown"]),
+  baseline: z.enum(["cleared", "initialized", "never_cleared", "unknown"]),
+  /** 첫 정상 표시 기준점의 초기화 토큰 (불투명). baseline이 never_cleared이고 변화 원천을 읽었을 때만(빈 첫 화면 · 잘린 첫 화면 포함), 아니면 null */
+  init_token: z.string().max(400).nullable(),
   cursor: z.string().nullable(),
   complete: z.boolean(),
   empty: z.boolean(),
@@ -1391,6 +1394,23 @@ export const returnSummaryResponseSchema = z.object({
   items: z.array(returnSummaryItemSchema),
 });
 export type ReturnSummaryResponse = z.infer<typeof returnSummaryResponseSchema>;
+
+/**
+ * POST /api/v2/return-summary/baseline — 첫 정상 표시 기준점 확정. 요청 { init_token } (GET이 준 글자 그대로, 그 밖의 키는 400).
+ * 앱이 그 응답을 **정상으로 표시했을 때만** 보낸다 (읽기 실패 · 오래됨 · 닫힘 · 다른 계정이면 보내지 않는다). GET은 읽기만 하고 이것이 유일한 쓰기다.
+ * 200 { status: "initialized", applied: true }: 그때까지의 run 결과 · 읽은 시각이 없는 대화 메시지 이력만 읽음으로 삼았다 (미열람 Action 변화 · 미결정은 그대로).
+ *   이후에는 Clear를 누르지 않아도 새 run 결과 · 메시지가 요약에 나온다.
+ * 200 { status: "already_initialized", applied: false }: 이미 기준점이 있거나 Clear한 적이 있다 (두 기기 · 응답 유실 재시도 · 늦은 확정). 아무것도 쓰지 않았다 — 성공이다.
+ * 409 conflict: 조회 뒤 확정 전에 기준점 범위가 달라졌다(늦게 들어온 결과 · 삭제). 아무것도 쓰지 않았다. 앱은 자동 재전송하지 않고 다음 정상 표시(새 GET의 새 토큰)에서 다시 확정한다.
+ * 400 invalid_request: 모양이 틀린 · 미래 · 남의 · 옛 형식 토큰. 404 gate 꺼짐 · 401.
+ */
+export const returnSummaryBaselineRequestSchema = z.object({ init_token: z.string().min(1).max(400) }).strict();
+export type ReturnSummaryBaselineRequest = z.infer<typeof returnSummaryBaselineRequestSchema>;
+export const returnSummaryBaselineResponseSchema = z.discriminatedUnion("status", [
+  z.object({ status: z.literal("initialized"), applied: z.literal(true) }),
+  z.object({ status: z.literal("already_initialized"), applied: z.literal(false) }),
+]);
+export type ReturnSummaryBaselineResponse = z.infer<typeof returnSummaryBaselineResponseSchema>;
 
 /**
  * POST /api/v2/return-summary/clear — 조회가 본 사건을 읽음 처리한다. 읽음일 뿐이다(해결 · 승인 · 완료 · 거절이 아니다: 결정 · Action은 그대로).

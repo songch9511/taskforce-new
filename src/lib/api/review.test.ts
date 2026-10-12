@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   apiErrorV2Schema,
+  returnSummaryBaselineResponseSchema,
   returnSummaryClearResponseSchema,
   returnSummaryResponseSchema,
   reviewResponseSchema,
@@ -10,7 +11,7 @@ import {
   type ReviewResponse,
   type Suggestion,
 } from "./contract";
-import { handleClearReturnSummary, handleDismissSuggestion, handleGetReturnSummary, handleGetReview, handleSnoozeSuggestion } from "./review";
+import { handleClearReturnSummary, handleDismissSuggestion, handleGetReturnSummary, handleGetReview, handleInitializeReturnSummaryBaseline, handleSnoozeSuggestion } from "./review";
 
 // /api/v2/review · return-summary · suggestions 처리 (C3). 인증 · gate · 읽기/쓰기를 가짜로 두고 호출 수로 증명한다:
 // gate 꺼짐에서는 인증도 DB도 부르지 않고(404), 인증 거부에서는 읽기도 쓰기도 부르지 않는다.
@@ -27,7 +28,7 @@ const review: ReviewResponse = {
   suggestion_batch: { state: "ready", local_day: "2026-10-12", size: 3 },
 };
 const summary: ReturnSummaryResponse = {
-  generated_at: NOW.toISOString(), since: null, baseline: "never_cleared", cursor: null, complete: true, empty: true, sources: { changes: "ok", decisions: "ok" }, items: [],
+  generated_at: NOW.toISOString(), since: null, baseline: "never_cleared", init_token: null, cursor: null, complete: true, empty: true, sources: { changes: "ok", decisions: "ok" }, items: [],
 };
 const suggestion: Suggestion = {
   id: ID, kind: "due_window", action_id: "a6666666-6666-4666-8666-666666666666", run_id: null, urgent: true, state: "snoozed", version: 2,
@@ -122,6 +123,54 @@ describe("POST return-summary/clear", () => {
     const clear = vi.fn(async () => { throw new Error("boom"); });
     expect((await handleClearReturnSummary(json({ cursor }), deps(clear))).status).toBe(500);
     expect(clear).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("POST return-summary/baseline (첫 정상 표시 기준점 확정)", () => {
+  const token = "i1.AAAA";
+  const deps = (initialize: ReturnType<typeof vi.fn>) => ({ enabled: () => true, authenticate: async () => USER, initialize }) as never;
+
+  it("gate 꺼짐 404 · 인증 거부 401 · 본문 검증 400: 어느 경우에도 확정을 부르지 않는다", async () => {
+    const initialize = vi.fn();
+    expect((await handleInitializeReturnSummaryBaseline(json({ init_token: token }), { enabled: () => false, authenticate: vi.fn(), initialize } as never)).status).toBe(404);
+    expect((await handleInitializeReturnSummaryBaseline(json({ init_token: token }), { enabled: () => true, authenticate: async () => null, initialize } as never)).status).toBe(401);
+    // 다른 키는 400 (client now · 시각 · 읽음 목록 같은 것을 받지 않는다)
+    for (const body of [{}, { init_token: "" }, { init_token: 1 }, { init_token: token, now: "2026-10-12T00:00:00Z" }, { init_token: token, read_through: "2026-10-12T00:00:00Z" }, { init_token: "x".repeat(401) }, { cursor: token }]) {
+      expect((await handleInitializeReturnSummaryBaseline(json(body), deps(initialize))).status, JSON.stringify(body)).toBe(400);
+    }
+    expect((await handleInitializeReturnSummaryBaseline(new Request("http://localhost/x", { method: "POST", body: "{not json" }), deps(initialize))).status).toBe(400);
+    expect(initialize).not.toHaveBeenCalled();
+  });
+
+  it("initialized → 200 { status, applied: true }, already_initialized → 200 { status, applied: false } (재시도 · 다른 기기도 성공이다). no-store", async () => {
+    for (const [status, applied] of [["initialized", true], ["already_initialized", false]] as const) {
+      const initialize = vi.fn(async () => ({ status, applied }));
+      const response = await handleInitializeReturnSummaryBaseline(json({ init_token: token }), deps(initialize));
+      expect(response.status).toBe(200);
+      expect(response.headers.get("cache-control")).toBe("no-store");
+      expect(returnSummaryBaselineResponseSchema.parse(await response.json())).toEqual({ status, applied });
+      expect(initialize).toHaveBeenCalledWith(USER, token);
+    }
+  });
+
+  it("stale → 409 conflict (아무것도 쓰지 않았다. 앱은 자동 재전송하지 않는다), invalid → 400. 어느 쪽도 본문에 토큰을 담지 않는다", async () => {
+    const stale = await handleInitializeReturnSummaryBaseline(json({ init_token: token }), deps(vi.fn(async () => ({ status: "stale" as const }))));
+    expect(stale.status).toBe(409);
+    expect(apiErrorV2Schema.parse(await stale.clone().json()).error.code).toBe("conflict");
+    expect(await stale.text()).not.toContain(token);
+    const invalid = await handleInitializeReturnSummaryBaseline(json({ init_token: token }), deps(vi.fn(async () => ({ status: "invalid" as const }))));
+    expect(invalid.status).toBe(400);
+    expect(apiErrorV2Schema.parse(await invalid.clone().json()).error.code).toBe("invalid_request");
+    expect(await invalid.text()).not.toContain(token);
+  });
+
+  it("쓰기 중 예외는 500이다 (자동 재시도 없음: 한 번만 부른다). 본문에 예외 글을 담지 않는다", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const initialize = vi.fn(async () => { throw new Error("boom secret"); });
+    const response = await handleInitializeReturnSummaryBaseline(json({ init_token: token }), deps(initialize));
+    expect(response.status).toBe(500);
+    expect(await response.text()).not.toContain("secret");
+    expect(initialize).toHaveBeenCalledTimes(1);
   });
 });
 
