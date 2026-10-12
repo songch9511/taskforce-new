@@ -1,10 +1,14 @@
+import { after } from "next/server";
+
 import { reconcileAiSpend } from "@/lib/ai/budget";
 import { fetchGeneration, generationConfigFromEnv } from "@/lib/ai/generation";
 import { cronAuthorized, cronUnauthorized } from "@/lib/api/cron";
+import { wakeCoordinator } from "@/lib/coordinator/wake";
 import { executionEnabled } from "@/lib/env";
 import { supabaseExecutionStore } from "@/lib/execution/store";
 import { sweep } from "@/lib/execution/sweep";
 import { wakeRun } from "@/lib/execution/wake";
+import { flagEnabled } from "@/lib/flags";
 import { createAdminClient } from "@/lib/supabase/admin";
 
 // 실행 sweep (Vercel Cron 1분, vercel.json). Authorization: Bearer $CRON_SECRET 인 요청만 받는다.
@@ -13,8 +17,20 @@ import { createAdminClient } from "@/lib/supabase/admin";
 // 조회 · 깨우기는 함께 보내고 각각 10초 한도라 60초면 넉넉하다.
 export const maxDuration = 60;
 
+// 코디네이터 1분 회수 (0.2.0 C2): 응답을 보낸 뒤 코디네이터를 깨우는 자기 호출 하나만 한다 (COORDINATOR_ENABLED가 꺼져 있으면 아무것도 하지 않는다).
+// 처리는 받는 쪽(POST /api/cron/coordinator-advance)의 별도 함수에서 돈다: 이 sweep의 시간 · 응답 · 실패 의미를 바꾸지 않는다. 깨우기 실패는 가둔다(wakeCoordinator는 던지지 않는다).
+function scheduleCoordinatorWake() {
+  if (!flagEnabled("COORDINATOR_ENABLED")) return;
+  try {
+    after(() => wakeCoordinator());
+  } catch (error) {
+    console.error(JSON.stringify({ event: "coordinator_wake_schedule_failed", error: error instanceof Error ? error.name : "unknown" }));
+  }
+}
+
 export async function GET(request: Request) {
   if (!cronAuthorized(request)) return cronUnauthorized();
+  scheduleCoordinatorWake();
   const admin = createAdminClient();
   const aiSpend = await reconcileAiSpend(admin);
   // Listing/configuration failures previously aborted the route: retain HTTP 500 for those.

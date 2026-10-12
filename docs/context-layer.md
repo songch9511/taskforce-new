@@ -186,3 +186,12 @@ AI를 부르지 않고 run · Action · Claim · 정책 · 승인을 만들지 �
 - 멤버십 수정의 지표 이벤트(수동 수정 = 오판 신호, ARCH26 · 지표 묶음 I): 이벤트 표가 없어 기록하지 않았다(B3와 같다). "측정할 수 없으면 출시하지 않는다"의 대상.
 - auto · inferred 멤버십을 **만드는** 코드는 아직 없다(B1/B2/B3/S3b 모두). 자동 연결은 `addContextMember`가 있을 뿐 호출하는 쪽이 없다(대화의 범위 추정 · C2 코디네이터가 붙일 자리).
 - 운영 DB 적용 안 함(새 마이그레이션 `20261108000000`은 적용 전, 병합 직전 승인 후 `db query --linked -f`).
+
+## 10. 코디네이터(C2)가 이 층을 쓰는 방식 · 바뀐 것
+
+코디네이터([coordinator.md](coordinator.md))는 이 층을 **읽기만** 한다: 범위 `context_version`, 멤버 원문(`context_members`), 원문 revision(`source_document_ids`), 접근 상실(`access_lost_at`). 기억 · 범위 · version은 권한 · `begin_call` · 정책 · resolve · 실행 순서의 입력이 아니다(ARCH06/07).
+
+- **새로 생긴 것**: 범위 `context_version`이 오를 때마다 `inbox_events`에 `memory_changed` 한 줄(`{context_id, context_version}`)이 쌓인다(`coordinator_on_context_version`, 예외는 삼킨다). 범위 기억(B3) · 사용자 멤버십(S3b) · 멤버 원문 revision이 이 길로 사건이 된다. 범위 없는(global) 기억은 version이 없어 사건이 없다.
+- **B3 PR1 · S3b의 "사건함에 한 줄도 더하지 않는다" 경계 시험을 좁혔다** (`tests/db/memory-writes.scenarios.ts` · `context-members.scenarios.ts`): 다른 표는 그대로 0줄이고 사건함은 `memory_changed`만 예외다(다른 종류는 여전히 0줄). 쓰기 경로 · 반환값 · 권한은 바뀌지 않았다. 되돌리려면 트리거 `coordinator_on_context_version`을 지우고 시험을 되돌린다.
+- 바뀐 트리거 목록 시험: `tests/db/context-core.test.ts`(C2의 트리거 셋을 더함).
+

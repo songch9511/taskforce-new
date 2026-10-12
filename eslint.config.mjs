@@ -45,6 +45,26 @@ const eslintConfig = defineConfig([
     },
   },
   {
+    // 권한 경계 (불변식 I01 · I04 · I14, 0.2.0 C2): 코디네이터는 실행 정책 · 승인 · 도구 · 저장소를 가져오지 않는다. 깨우기 주소(@/lib/execution/wake의 wakeOrigin)만 예외다
+    // (src/lib/coordinator/boundary.test.ts). 반대 방향(실행 · 맥락층 · 원문 처리가 코디네이터를 가져오는 것)도 같은 테스트가 본다.
+    files: ["src/lib/coordinator/**"],
+    ignores: ["src/lib/coordinator/**/*.test.ts"],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          patterns: [
+            {
+              // @/lib/execution과 그 아래 전부, 단 정확히 @/lib/execution/wake만 예외 (gitignore식 !는 부모 폴더가 막히면 다시 허용하지 못해 정규식으로 쓴다). 상대 경로의 execution도 막는다
+              regex: "^(@/lib/execution(/(?!wake$).*)?|(\\.{1,2}/)+(.*/)?execution(/.*)?)$",
+              message: "코디네이터(src/lib/coordinator)는 실행(src/lib/execution)을 가져오지 않는다. 깨우기 주소(wake)만 예외다 (I04 · I14 권한 경계).",
+            },
+          ],
+        },
+      ],
+    },
+  },
+  {
     // 권한 경계 (불변식 I04 · I14): 맥락층(기억 · 범위 · 사람 · 묶음)과 대화 v2(의도 · 제안 · 기억 쓰기)는 실행 정책 · 도구 · 승인을 읽거나 바꾸지 못한다
     // (src/lib/context/boundary.test.ts · src/lib/conversation/boundary.test.ts)
     files: ["src/lib/context/**", "src/lib/conversation/**"],
