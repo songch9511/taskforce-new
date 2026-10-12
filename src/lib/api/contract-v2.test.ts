@@ -17,9 +17,11 @@ import {
   contextMemberSchema,
   contextMembershipChangeSchema,
   contextMembershipRequestSchema,
+  conversationMessageContentSchema,
   conversationMessageSchema,
   conversationSchema,
   createConversationRequestSchema,
+  createConversationResponseSchema,
   createWorkContextRequestSchema,
   memoryConfirmRequestSchema,
   memoryEditRequestSchema,
@@ -203,6 +205,53 @@ describe("대화 v2", () => {
     }
     expect(postConversationMessageResponseSchema.safeParse({ ...body, reply: { ...body.reply, segments: [{ text: "x", tier: "T6" }] } }).success).toBe(false);
     expect(postConversationMessageResponseSchema.safeParse({ ...body, reply: { ...body.reply, role: "event" } }).success).toBe(false);
+  });
+});
+
+describe("대화 v2 — B2에서 더한 것 (additive)", () => {
+  const conversation = {
+    id: U.conversation,
+    title: null,
+    context_id: null,
+    created_at: "2026-10-10T05:00:00Z",
+    last_message_at: null,
+    last_read_at: null,
+    archived_at: null,
+    text_purged_at: null,
+  };
+
+  it("대화 만들기: 앱이 정한 id(선택, 멱등) · 응답 { conversation }", () => {
+    expect(createConversationRequestSchema.parse({ id: U.conversation })).toEqual({ id: U.conversation });
+    expect(createConversationRequestSchema.safeParse({ id: "x" }).success).toBe(false);
+    expect(createConversationResponseSchema.parse({ conversation })).toEqual({ conversation });
+  });
+
+  it("메시지 행의 reply_to · content는 없어도 읽고(옛 행 · A2 응답), 있으면 모양을 본다. content의 빠진 값은 기본값", () => {
+    const base = {
+      id: U.reply,
+      conversation_id: U.conversation,
+      seq: 2,
+      role: "assistant",
+      client_message_id: null,
+      text: "기억했어요",
+      refs: {},
+      intent: null,
+      created_at: "2026-10-10T05:00:00Z",
+    };
+    expect(conversationMessageSchema.parse(base)).not.toHaveProperty("reply_to");
+    const parsed = conversationMessageSchema.parse({ ...base, reply_to: U.message, content: { segments: [{ text: "기억했어요", tier: "T2" }] } });
+    expect(parsed.reply_to).toBe(U.message);
+    expect(parsed.content).toEqual({ segments: [{ text: "기억했어요", tier: "T2" }], citations: [], proposal: null, asks: null, used: null, window: null });
+    expect(conversationMessageContentSchema.safeParse({ asks: "delete" }).success).toBe(false);
+    expect(conversationMessageContentSchema.safeParse({ proposal: { kind: "run", title: "x" } }).success).toBe(false);
+    expect(
+      conversationMessageContentSchema.parse({
+        proposal: { kind: "create_action", title: "Shape 출시 준비" },
+        asks: "adopt",
+        used: { context_id: null, context_version: null, memory_item_ids: [U.memory] },
+        window: { shown: 20, omitted: 3 },
+      }),
+    ).toMatchObject({ used: { memory_item_ids: [U.memory], source_ids: [], action_ids: [] }, window: { shown: 20, omitted: 3 } });
   });
 });
 

@@ -1,0 +1,32 @@
+{
+  "id": "a02-no-records-design",
+  "description": "원문 · 할 일이 하나도 없는 상태에서 'Shape 디자인을 오늘 마무리하면 어떨까?'. 고정된 '모름'으로 끝내지 않고, 모르는 일정 · 진행률을 꾸미지 않고 방향을 의논한다",
+  "maps_to": [
+    "A02"
+  ],
+  "asked_at": "2026-10-10T10:00:00+09:00",
+  "message": "오늘 Shape 디자인을 마무리하면 어떨까?",
+  "expect": {
+    "intent_any": [
+      "consult"
+    ],
+    "route_any": [
+      "consult"
+    ],
+    "reply_must_not_match": [
+      "찾지 못했",
+      "couldn't find",
+      "\\d+ ?%",
+      "\\d+일 남",
+      "마감(은|이) \\d+월"
+    ],
+    "tiers_include": [
+      "T5"
+    ],
+    "memory_writes": {
+      "min": 0,
+      "max": 0
+    }
+  },
+  "origin": "synthetic"
+}

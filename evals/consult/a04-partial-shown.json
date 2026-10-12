@@ -1,0 +1,67 @@
+{
+  "id": "a04-partial-shown",
+  "description": "등록된 열린 할 일은 30건인데 8건만 보인다(보여 준 수 < 전체 수). 답은 일부만 보고 있다고 밝힌다",
+  "maps_to": [
+    "A04"
+  ],
+  "asked_at": "2026-10-10T09:00:00+09:00",
+  "message": "남은 일 전부 알려줘",
+  "records": {
+    "open_total": 30,
+    "open_actions": [
+      {
+        "id": "a1",
+        "title": "할 일 1"
+      },
+      {
+        "id": "a2",
+        "title": "할 일 2"
+      },
+      {
+        "id": "a3",
+        "title": "할 일 3"
+      },
+      {
+        "id": "a4",
+        "title": "할 일 4"
+      },
+      {
+        "id": "a5",
+        "title": "할 일 5"
+      },
+      {
+        "id": "a6",
+        "title": "할 일 6"
+      },
+      {
+        "id": "a7",
+        "title": "할 일 7"
+      },
+      {
+        "id": "a8",
+        "title": "할 일 8"
+      }
+    ]
+  },
+  "expect": {
+    "intent_any": [
+      "lookup",
+      "consult"
+    ],
+    "route_any": [
+      "consult"
+    ],
+    "reply_contains_any": [
+      "30",
+      "일부",
+      "전부는",
+      "8건만",
+      "8개만"
+    ],
+    "memory_writes": {
+      "min": 0,
+      "max": 0
+    }
+  },
+  "origin": "synthetic"
+}

@@ -1,0 +1,33 @@
+{
+  "id": "arch04-no-memory-from-thanks",
+  "description": "ARCH04: 기억할 사실이 없는 발화('고마워, 오늘은 여기까지')에서 기억을 지어내지 않는다 (저장 0)",
+  "maps_to": [
+    "ARCH04"
+  ],
+  "asked_at": "2026-10-10T18:00:00+09:00",
+  "message": "고마워, 오늘은 여기까지 할게",
+  "memory": [
+    {
+      "id": "m1",
+      "kind": "plan",
+      "subject": "개발 에이전트",
+      "statement": "개발은 Sonnet 5.5로"
+    }
+  ],
+  "expect": {
+    "intent_any": [
+      "other",
+      "consult"
+    ],
+    "route_any": [
+      "consult"
+    ],
+    "memory_writes": {
+      "min": 0,
+      "max": 0
+    },
+    "proposal": "none",
+    "adopt": false
+  },
+  "origin": "synthetic"
+}

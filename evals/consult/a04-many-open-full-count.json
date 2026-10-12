@@ -1,0 +1,85 @@
+{
+  "id": "a04-many-open-full-count",
+  "description": "열린 할 일 12건(원문 없는 직접 추가 포함). '오늘 남은 일 뭐야?'에 전체 범위(12건)를 말한다. top-k만 보고 부재를 단정하지 않는다",
+  "maps_to": [
+    "A04"
+  ],
+  "asked_at": "2026-10-10T09:00:00+09:00",
+  "message": "오늘 남은 일 뭐야?",
+  "records": {
+    "open_actions": [
+      {
+        "id": "a1",
+        "title": "견적서 보내기"
+      },
+      {
+        "id": "a2",
+        "title": "회의록 정리"
+      },
+      {
+        "id": "a3",
+        "title": "디자인 리뷰"
+      },
+      {
+        "id": "a4",
+        "title": "계약서 검토"
+      },
+      {
+        "id": "a5",
+        "title": "채용 공고 올리기"
+      },
+      {
+        "id": "a6",
+        "title": "세금계산서 발행"
+      },
+      {
+        "id": "a7",
+        "title": "주간 회의 준비"
+      },
+      {
+        "id": "a8",
+        "title": "고객 인터뷰 일정 잡기"
+      },
+      {
+        "id": "a9",
+        "title": "릴리스 노트 쓰기"
+      },
+      {
+        "id": "a10",
+        "title": "버그 분류"
+      },
+      {
+        "id": "a11",
+        "title": "예산안 정리"
+      },
+      {
+        "id": "a12",
+        "title": "온보딩 문서 고치기"
+      }
+    ]
+  },
+  "expect": {
+    "intent_any": [
+      "lookup",
+      "consult"
+    ],
+    "route_any": [
+      "consult"
+    ],
+    "reply_contains_any": [
+      "12"
+    ],
+    "reply_must_not_match": [
+      "(?<!등록된 )(?<!등록한 )할 일이 (하나도 )?없(어|습|다)",
+      "남은 (일|할 일)이 (하나도 )?없",
+      "할 게 없",
+      "nothing (left )?to do",
+      "no tasks left"
+    ],
+    "memory_writes": {
+      "min": 0,
+      "max": 0
+    }
+  },
+  "origin": "synthetic"
+}

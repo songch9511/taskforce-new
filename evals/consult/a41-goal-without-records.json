@@ -1,0 +1,30 @@
+{
+  "id": "a41-goal-without-records",
+  "description": "A41 (1): Source · Task 없는 첫 대화에서 목표를 말한다. 채택 전 Action 0 (제안 · 기억은 허용하되 실행 · Action 쓰기 없음)",
+  "maps_to": [
+    "A41",
+    "A02"
+  ],
+  "asked_at": "2026-10-10T09:00:00+09:00",
+  "message": "이번 달 안에 Shape 출시 준비를 끝내고 싶은데 어떻게 시작하면 좋을까?",
+  "expect": {
+    "intent_any": [
+      "consult",
+      "inform"
+    ],
+    "route_any": [
+      "consult",
+      "remember"
+    ],
+    "memory_writes": {
+      "min": 0,
+      "max": 1
+    },
+    "adopt": false,
+    "reply_must_not_match": [
+      "찾지 못했",
+      "추가했어요"
+    ]
+  },
+  "origin": "synthetic"
+}

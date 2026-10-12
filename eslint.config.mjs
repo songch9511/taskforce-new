@@ -45,8 +45,9 @@ const eslintConfig = defineConfig([
     },
   },
   {
-    // 권한 경계 (불변식 I04 · I14): 맥락층(기억 · 범위 · 사람 · 묶음)은 실행 정책 · 도구 · 승인을 읽거나 바꾸지 못한다 (src/lib/context/boundary.test.ts)
-    files: ["src/lib/context/**"],
+    // 권한 경계 (불변식 I04 · I14): 맥락층(기억 · 범위 · 사람 · 묶음)과 대화 v2(의도 · 제안 · 기억 쓰기)는 실행 정책 · 도구 · 승인을 읽거나 바꾸지 못한다
+    // (src/lib/context/boundary.test.ts · src/lib/conversation/boundary.test.ts)
+    files: ["src/lib/context/**", "src/lib/conversation/**"],
     rules: {
       "no-restricted-imports": [
         "error",
@@ -54,7 +55,7 @@ const eslintConfig = defineConfig([
           patterns: [
             {
               group: ["@/lib/execution", "@/lib/execution/**", "**/execution", "**/execution/**"],
-              message: "맥락층(src/lib/context)은 실행(src/lib/execution)을 가져오지 않는다 (I04 · I14 권한 경계).",
+              message: "맥락층(src/lib/context) · 대화(src/lib/conversation)는 실행(src/lib/execution)을 가져오지 않는다 (I04 · I14 권한 경계).",
             },
           ],
         },
@@ -63,7 +64,7 @@ const eslintConfig = defineConfig([
         "error",
         {
           selector: "ImportExpression[source.value=/(^|\\x2F)execution(\\x2F|$)/]",
-          message: "맥락층(src/lib/context)은 실행(src/lib/execution)을 가져오지 않는다 (I04 · I14 권한 경계).",
+          message: "맥락층(src/lib/context) · 대화(src/lib/conversation)는 실행(src/lib/execution)을 가져오지 않는다 (I04 · I14 권한 경계).",
         },
       ],
     },

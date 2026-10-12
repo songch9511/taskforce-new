@@ -1,0 +1,55 @@
+{
+  "id": "a34-ambiguous-continue",
+  "description": "A34: 대화에 연결된 열린 할 일 둘에서 '그거 이어서 해줘'. 실행하지 않고(연결 없음 안내) 후보를 들어 한 번 묻는다. 쓰기 0",
+  "maps_to": [
+    "A34"
+  ],
+  "asked_at": "2026-10-10T15:00:00+09:00",
+  "history": [
+    {
+      "role": "user",
+      "text": "남은 일 뭐야?"
+    },
+    {
+      "role": "assistant",
+      "text": "견적서 보내기와 회의록 정리가 남아 있어요.",
+      "action_refs": [
+        "a1",
+        "a2"
+      ]
+    }
+  ],
+  "message": "그거 이어서 해줘",
+  "records": {
+    "open_actions": [
+      {
+        "id": "a1",
+        "title": "견적서 보내기"
+      },
+      {
+        "id": "a2",
+        "title": "회의록 정리"
+      }
+    ]
+  },
+  "expect": {
+    "intent_any": [
+      "instruct",
+      "modify"
+    ],
+    "route_any": [
+      "execution"
+    ],
+    "asks": "referent",
+    "reply_contains_any": [
+      "실행을 맡길 연결이 없어요"
+    ],
+    "memory_writes": {
+      "min": 0,
+      "max": 0
+    },
+    "adopt": false,
+    "proposal": "none"
+  },
+  "origin": "synthetic"
+}

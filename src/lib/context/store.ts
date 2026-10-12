@@ -87,8 +87,9 @@ export async function deleteMemory(admin: SupabaseClient, userId: string, id: st
   return (data ?? []).length > 0;
 }
 
+// version: 대화 v2(B2)가 정정(remember_memory_item p_expected_version)에 쓴다
 const MEMORY_COLUMNS =
-  "id, kind, scope_kind, context_id, action_id, person_id, agent_adapter, subject, statement, origin, source_ref, observed_at, valid_from, valid_until, superseded_at, revoked_at, source_purged";
+  "id, kind, scope_kind, context_id, action_id, person_id, agent_adapter, subject, statement, origin, source_ref, observed_at, valid_from, valid_until, superseded_at, revoked_at, source_purged, version";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const ids = (values: readonly string[] | undefined) => (values ?? []).filter((v) => UUID.test(v));
@@ -264,9 +265,9 @@ export async function replaceSourceChunks(
   return data;
 }
 
-/** 동의 확인을 거친 임베딩 (원문 처리와 같은 모델 · 같은 AI 원가 한도) */
-function gatedEmbed(admin: SupabaseClient, userId: string) {
-  const config = { ...embedConfigFromEnv(), fetch: budgetFetch(admin, userId) };
+/** 동의 확인을 거친 임베딩 (원문 처리와 같은 모델 · 같은 AI 원가 한도). deadline: 사용자가 기다리는 요청의 마감 (lib/ai/deadline.ts, 대화 v2) */
+function gatedEmbed(admin: SupabaseClient, userId: string, deadline?: number) {
+  const config = { ...embedConfigFromEnv(), fetch: budgetFetch(admin, userId), ...(deadline === undefined ? {} : { deadline }) };
   return withConsentGate({ embed: async (texts: string[]) => (await embed(config, texts)).vectors }, consentCheck(admin, userId)).embed!;
 }
 
@@ -288,7 +289,10 @@ export async function indexSourceAfterIngest(admin: SupabaseClient, source: Chun
   }
 }
 
-/** 범위 안 조각 검색 (match_context_chunks). 질의 임베딩도 동의를 거친다. gate가 꺼져 있으면 빈 목록 */
+/**
+ * 범위 안 조각 검색 (match_context_chunks). 질의 임베딩도 동의를 거친다. gate가 꺼져 있으면 빈 목록.
+ * options.deadline: 사용자가 기다리는 요청(대화 v2)이면 임베딩을 마감 안에 끝낸다
+ */
 export async function searchContextChunks(
   admin: SupabaseClient,
   userId: string,
@@ -296,9 +300,10 @@ export async function searchContextChunks(
   query: string,
   count = 8,
   env: Env = process.env,
+  options: { deadline?: number } = {},
 ): Promise<{ id: string; source_id: string; source_revision: string | null; seq: number; text: string; similarity: number }[]> {
   if (!flagEnabled("SOURCE_CHUNKS_ENABLED", env)) return [];
-  const [vector] = await gatedEmbed(admin, userId)([query]);
+  const [vector] = await gatedEmbed(admin, userId, options.deadline)([query]);
   const { data } = await admin
     .rpc("match_context_chunks", { p_user_id: userId, p_context_id: contextId, p_embedding: toPgVector(vector), p_count: count })
     .throwOnError();

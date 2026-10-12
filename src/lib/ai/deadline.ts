@@ -36,6 +36,6 @@ export class DeadlineExceededError extends Error {
 }
 
 /** 마감 실패를 셀 수 있게 한 줄 JSON으로 남긴다. 사용자 글(원문 · 구절 · 질문)은 담지 않는다 */
-export function logDeadlineExceeded(route: "missing" | "ask" | "handoff", error: DeadlineExceededError, startedAt: number, now = Date.now()): void {
+export function logDeadlineExceeded(route: "missing" | "ask" | "handoff" | "conversation", error: DeadlineExceededError, startedAt: number, now = Date.now()): void {
   console.error(JSON.stringify({ event: "deadline_exceeded", route, stage: error.stage, elapsed_ms: now - startedAt }));
 }

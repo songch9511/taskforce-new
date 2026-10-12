@@ -1,0 +1,56 @@
+{
+  "id": "arch02-confirm-and-correct",
+  "description": "ARCH02: 직전 답이 '확정됐나요?'를 물었고 사용자가 '확정됐어. 그리고 그건 바뀌었어, Sonnet 5.5로.' → 사실 1건 + plan 정정(같은 범위 · 같은 사실)",
+  "maps_to": [
+    "ARCH02"
+  ],
+  "asked_at": "2026-10-10T10:05:00+09:00",
+  "history": [
+    {
+      "role": "user",
+      "text": "이제 개발 어떻게 하지?"
+    },
+    {
+      "role": "assistant",
+      "text": "착수 조건은 '디자인 확정'이라고 하셨어요. 디자인은 확정됐나요?"
+    }
+  ],
+  "message": "확정됐어. 그리고 그건 바뀌었어, Sonnet 5.5로.",
+  "memory": [
+    {
+      "id": "m1",
+      "kind": "condition",
+      "subject": "개발 착수 조건",
+      "statement": "디자인 확정 뒤 개발 시작"
+    },
+    {
+      "id": "m2",
+      "kind": "plan",
+      "subject": "개발 에이전트",
+      "statement": "개발은 Opus 5.5로"
+    }
+  ],
+  "expect": {
+    "intent_any": [
+      "inform",
+      "correct",
+      "answer"
+    ],
+    "route_any": [
+      "remember",
+      "consult"
+    ],
+    "memory_writes": {
+      "min": 2,
+      "max": 2
+    },
+    "memory_statements_contain": [
+      "Sonnet 5.5"
+    ],
+    "corrects": [
+      "m2"
+    ],
+    "adopt": false
+  },
+  "origin": "synthetic"
+}
