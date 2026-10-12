@@ -23,7 +23,7 @@ extension EdgeInteraction {
             func settle(_ seconds: Double = 0.6) async { try? await Task.sleep(for: .seconds(seconds)) }
             func check(_ name: String, _ ok: Bool, _ seen: String) { lines.append("\(ok ? "PASS" : "FAIL") \(name) — \(seen)") }
             func id(_ n: Int) -> UUID { SampleData.id(n) }
-            func finish() {
+            @MainActor func finish() {
                 try? lines.joined(separator: "\n").appending("\n").write(toFile: logPath, atomically: true, encoding: .utf8)
                 NSApplication.shared.terminate(nil)
             }
