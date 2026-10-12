@@ -130,6 +130,16 @@ struct ReturnSummaryBaselineTests {
         #expect(store.beginBaseline() == nil)
     }
 
+    /// 아직 한 번도 받지 않은 응답이라도 오래됐으면(받은 뒤 다시 읽지 못했다) 처음부터 받지 않는다 — 보내기 직전 재확인에만 기대지 않는다
+    @Test func aStaleResponseIsNotAcceptedEvenForTheFirstTime() async throws {
+        let (store, gateway, _) = try make()
+        await store.refresh()
+        gateway.onRead = { _ in throw APIError.transport("down") }
+        await store.refresh()
+        #expect(store.isStale && store.summary?.initToken != nil)
+        #expect(store.beginBaseline() == nil && !store.isConfirmingBaseline && gateway.baselines.isEmpty)
+    }
+
     /// 한 응답에 시도는 한 번이다 (받으면 소비한다): 보내지 못했어도 같은 응답으로 다시 받지 않는다 — 다음 정상 표시(새 조회)에서만
     @Test func eachDisplayedResponseGetsOneAttempt() async throws {
         let (store, gateway, _) = try make()

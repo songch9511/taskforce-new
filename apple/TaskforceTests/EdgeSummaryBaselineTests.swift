@@ -27,7 +27,7 @@ struct EdgeSummaryBaselineTests {
 
     /// 서버로 나간 확정 수가 `count`가 되고 진행이 끝날 때까지 기다린다
     func settled(_ rig: SummaryRig, posts count: Int) async -> Bool {
-        await rig.harness.wait { await rig.harness.server.baselineTokens().count == count && !rig.store.isConfirmingBaseline }
+        await rig.harness.wait(seconds: 20) { await rig.harness.server.baselineTokens().count == count && !rig.store.isConfirmingBaseline }
     }
 
     /// 몇 번 양보해도 아무것도 나가지 않는다 (쓰기 0)
@@ -109,6 +109,7 @@ struct EdgeSummaryBaselineTests {
         let blocked: [(String, String)] = [
             ("run done · detail number", SummaryJSON.rawChange("run", "done", detail: "42")),
             ("run done · detail object", SummaryJSON.rawChange("run", "done", detail: "{\"outcome\":\"draft_ready\"}")),
+            ("run failed · detail unknown outcome", SummaryJSON.rawChange("run", "failed", detail: "\"future_outcome\"")),
             ("run done · source_state future_state", SummaryJSON.rawChange("run", "done", detail: "\"draft_ready\"", sourceState: "\"future_state\"")),
             ("message · source_state future_state", SummaryJSON.rawChange("message", "assistant", sourceState: "\"future_state\"")),
             ("action_event · detail future_detail", SummaryJSON.rawChange("action_event", "due_changed", detail: "\"future_detail\"", sourceState: "\"available\"")),
@@ -137,6 +138,7 @@ struct EdgeSummaryBaselineTests {
         let safe: [(String, String, String)] = [
             ("run done · detail null", SummaryJSON.rawChange("run", "done"), "Processing finished"),
             ("message assistant", SummaryJSON.rawChange("message", "assistant"), "New reply"),
+            ("run failed · known outcome", SummaryJSON.rawChange("run", "failed", detail: "\"draft_ready\""), "Couldn't finish the draft"),
         ]
         for (name, raw, phrase) in safe {
             let cleared = try await SummaryRig.make(review: false)
@@ -239,10 +241,10 @@ struct EdgeSummaryBaselineTests {
         await rig.harness.server.holdBaselineRequests()
         rig.shell.openAllWork()
         await rig.store.refresh()
-        #expect(await rig.harness.wait { await rig.harness.server.pendingBaselines() == 1 })
+        #expect(await rig.harness.wait(seconds: 20) { await rig.harness.server.pendingBaselines() == 1 })
         rig.shell.dismiss()
         await rig.harness.server.releaseBaselines()
-        #expect(await rig.harness.wait { rig.store.summary?.baseline == .initialized && !rig.store.isConfirmingBaseline })
+        #expect(await rig.harness.wait(seconds: 20) { rig.store.summary?.baseline == .initialized && !rig.store.isConfirmingBaseline })
         #expect(await rig.harness.server.summaryReadCount() == 2, "나간 요청을 조용히 버리지 않고 결과를 조회로 확인했다")
         #expect(await rig.harness.server.baselineTokens() == [Self.token])
     }
@@ -253,11 +255,11 @@ struct EdgeSummaryBaselineTests {
         await rig.harness.server.holdBaselineRequests()
         rig.shell.openAllWork()
         await rig.store.refresh()
-        #expect(await rig.harness.wait { await rig.harness.server.pendingBaselines() == 1 })
+        #expect(await rig.harness.wait(seconds: 20) { await rig.harness.server.pendingBaselines() == 1 })
         // 같은 UUID로 다시 로그인: 새 세션이 같은 패널에서 새 읽기를 하고 자기 확정을 받는다
         rig.harness.reloginSameUser()
         await rig.store.refresh()
-        #expect(await rig.harness.wait { await rig.harness.server.pendingBaselines() == 2 })
+        #expect(await rig.harness.wait(seconds: 20) { await rig.harness.server.pendingBaselines() == 2 })
         let readsBefore = await rig.harness.server.summaryReadCount()
         // 옛 요청만 먼저 돌려준다: 새 세션의 진행 표시를 풀지 못하고 새 세션의 읽기를 일으키지도 않는다
         await rig.harness.server.releaseBaselines(1)
@@ -265,7 +267,7 @@ struct EdgeSummaryBaselineTests {
         #expect(rig.store.isConfirmingBaseline, "옛 요청의 정리가 새 요청의 진행 표시를 지우지 않는다")
         #expect(await rig.harness.server.summaryReadCount() == readsBefore, "옛 세션의 응답이 새 읽기를 일으키지 않는다")
         await rig.harness.server.releaseBaselines()
-        #expect(await rig.harness.wait { !rig.store.isConfirmingBaseline && rig.store.summary?.baseline == .initialized })
+        #expect(await rig.harness.wait(seconds: 20) { !rig.store.isConfirmingBaseline && rig.store.summary?.baseline == .initialized })
         #expect(await rig.harness.server.baselineTokens() == ["i1.OLD", "i1.NEW"])
     }
 

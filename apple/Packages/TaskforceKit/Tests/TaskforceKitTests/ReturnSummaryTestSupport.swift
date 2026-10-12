@@ -159,11 +159,10 @@ final class FakeReturnSummaryGateway: ReturnSummaryGateway, @unchecked Sendable 
     }
 }
 
-/// 붙잡은 요청이 `count`개 도착할 때까지 양보한다. 오지 않으면 영원히 돌지 않고 시험을 실패시킨다
+/// 붙잡은 요청이 `count`개 도착할 때까지 **도착 사건으로** 기다린다(`Latch.waitForArrivals`). 예전에는 양보를 5만 번 되풀이하고 포기했는데, 그것은 시간이 아니라 반복 횟수라서
+/// 시험 프로세스가 바쁘면(전체 시험을 병렬로 돌리는 CI · 로컬 전체 실행) 요청이 도착하기 전에 1초 만에 바닥나 "도착하지 않았다"고 잘못 실패했다 (제품 경쟁이 아니라 시험 동기화 결함).
+/// 시간 제한은 영영 오지 않을 때 멈추지 않게 하는 안전망일 뿐이다 (60초)
 func waitForArrival(_ latch: Latch, _ count: Int = 1, sourceLocation: SourceLocation = #_sourceLocation) async {
-    for _ in 0..<50_000 {
-        if await latch.arrivals >= count { return }
-        await Task.yield()
-    }
-    Issue.record("붙잡은 요청이 도착하지 않았다", sourceLocation: sourceLocation)
+    if await latch.waitForArrivals(count, timeout: .seconds(60)) { return }
+    Issue.record("붙잡은 요청이 도착하지 않았다 (\(count)개, 60초 안전망)", sourceLocation: sourceLocation)
 }
