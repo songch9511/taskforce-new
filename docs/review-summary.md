@@ -54,7 +54,7 @@
 
 - C2의 한계는 그대로다: 승인 · 철회 · 멈춤 · context version 적재 실패는 복구가 없고, sweep 1분, timer 전체 scan, dead_at 정책, 보관 기한, 전역 기억 생산자. C3는 `inbox_events`로 완전성을 주장하지 않는다.
 - 운영 DB 적용 전, 실제 provider/Jev/eval 호출 없음, `vercel.json`/env/스케줄 변경 없음. 제안 생산은 Review 조회 때(멱등)뿐이다 — 별도 스케줄 생산은 `vercel.json` 변경이 필요해 하지 않았다.
-- 읽기 비용: 후보 집합 digest는 사용자 이력 전체를 센다(`action_events` AI 변화 · run 결과 · 대화 메시지). 인덱스를 새로 만들지 않았다(기존 `action_events_action_idx` 등). 매우 큰 이력은 조회 · Clear가 느릴 수 있다 — 운영 규모 측정은 하지 않았다.
+- 읽기 비용: 후보 집합 digest는 사용자 이력 전체를 센다(`action_events` AI 변화 · run 결과 · 대화 메시지). 인덱스를 새로 만들지 않았다(기존 `action_events_action_idx` 등). 합성 한 번 측정(로컬 PG17 컨테이너 하나, 작업 2,000 · AI 변화 20,000 · 메시지 10,000, 동시성 없음): 조회 약 0.15–0.27초, 첫 Clear(이력 3만 건 표시) 약 0.39초. **운영 규모의 증거가 아니다** — 운영 측정은 하지 않았다.
 - 이 코드가 모르는 종류의 열린 제안(더 새 서버가 쓴 것)은 내리지 않고 `sources.suggestions: unavailable`로 알린다.
 - 시각 정밀도: 시각 글자는 SQL이 만든 마이크로초 UTC 그대로다. 앱이 Date로 바꿔 돌려주면 digest가 달라져 409가 난다(정직한 거절).
 - 아래 결정 항목은 구현으로 정하지 않았다.
