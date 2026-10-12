@@ -68,6 +68,8 @@ final class SampleReturnSummaryGateway: ReturnSummaryGateway, @unchecked Sendabl
     private var cleared = false
     private var initialized = false
     private var lateArrival = false
+    /// `reset`마다 오른다: 붙잡혀 있던 옛 요청이 reset 뒤에 풀려도 새 시나리오의 상태(cleared · initialized)를 바꾸지 못하게 한다
+    private var generation = 0
     private var held: [CheckedContinuation<Void, Never>] = []
     private(set) var reads = 0
     private(set) var clears: [String] = []
@@ -100,6 +102,7 @@ final class SampleReturnSummaryGateway: ReturnSummaryGateway, @unchecked Sendabl
             if let scenario { _scenario = scenario }
             if let clear { _behavior = clear }
             if let baseline { _baselineBehavior = baseline }
+            generation += 1
             cleared = false
             initialized = false
             lateArrival = false
@@ -134,27 +137,27 @@ final class SampleReturnSummaryGateway: ReturnSummaryGateway, @unchecked Sendabl
     }
 
     func clearReturnSummary(cursor: String) async throws -> ReturnSummaryClearResponse {
-        let behavior = lock.withLock { () -> ClearBehavior in
+        let (behavior, started) = lock.withLock { () -> (ClearBehavior, Int) in
             clears.append(cursor)
-            return _behavior
+            return (_behavior, generation)
         }
         let done = ReturnSummaryClearResponse(clearedThrough: Date(), applied: true)
         switch behavior {
         case .apply:
             try? await Task.sleep(for: .milliseconds(250))
-            lock.withLock { cleared = true }
+            lock.withLock { if generation == started { cleared = true } }
             return done
         case .conflict:
             try? await Task.sleep(for: .milliseconds(150))
-            lock.withLock { lateArrival = true }
+            lock.withLock { if generation == started { lateArrival = true } }
             throw APIError.server(status: 409, code: .conflict, message: "변화가 있습니다.")
         case .loseResponse:
             try? await Task.sleep(for: .milliseconds(150))
-            lock.withLock { cleared = true }
+            lock.withLock { if generation == started { cleared = true } }
             throw APIError.transport("sample: response lost")
         case .hang:
             await withCheckedContinuation { continuation in lock.withLock { held.append(continuation) } }
-            lock.withLock { cleared = true }
+            lock.withLock { if generation == started { cleared = true } }
             return done
         case .reject:
             throw APIError.server(status: 429, code: .rateLimited, message: "")
@@ -162,25 +165,25 @@ final class SampleReturnSummaryGateway: ReturnSummaryGateway, @unchecked Sendabl
     }
 
     func confirmReturnSummaryBaseline(initToken: String) async throws -> ReturnSummaryBaselineResponse {
-        let behavior = lock.withLock { () -> BaselineBehavior in
+        let (behavior, started) = lock.withLock { () -> (BaselineBehavior, Int) in
             baselines.append(initToken)
-            return _baselineBehavior
+            return (_baselineBehavior, generation)
         }
         switch behavior {
         case .apply:
             try? await Task.sleep(for: .milliseconds(150))
-            lock.withLock { initialized = true }
+            lock.withLock { if generation == started { initialized = true } }
             return ReturnSummaryBaselineResponse(status: .initialized, applied: true)
         case .conflict:
             try? await Task.sleep(for: .milliseconds(100))
             throw APIError.server(status: 409, code: .conflict, message: "기준점 범위가 달라졌습니다.")
         case .loseResponse:
             try? await Task.sleep(for: .milliseconds(100))
-            lock.withLock { initialized = true }
+            lock.withLock { if generation == started { initialized = true } }
             throw APIError.transport("sample: response lost")
         case .hang:
             await withCheckedContinuation { continuation in lock.withLock { held.append(continuation) } }
-            lock.withLock { initialized = true }
+            lock.withLock { if generation == started { initialized = true } }
             return ReturnSummaryBaselineResponse(status: .initialized, applied: true)
         }
     }

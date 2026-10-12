@@ -24,7 +24,12 @@ extension EdgeInteraction {
             func check(_ name: String, _ ok: Bool, _ seen: String) { lines.append("\(ok ? "PASS" : "FAIL") \(name) — \(seen)") }
             func id(_ n: Int) -> UUID { SampleData.id(n) }
             @MainActor func finish() {
+                // 하나라도 FAIL이면 앱 종료 코드가 실패다: 종료 0이 "통과"로 읽히지 않게 한다 (로그에도 요약 줄을 남긴다)
+                let failed = lines.filter { $0.hasPrefix("FAIL") }.count
+                let passed = lines.filter { $0.hasPrefix("PASS") }.count
+                lines.append("RESULT pass=\(passed) fail=\(failed)")
                 try? lines.joined(separator: "\n").appending("\n").write(toFile: logPath, atomically: true, encoding: .utf8)
+                if failed > 0 { exit(1) }
                 NSApplication.shared.terminate(nil)
             }
             /// 글자 인식(Vision)은 같은 화면에서도 가끔 한 구절을 놓친다: 같은 줄의 다른 구절로도 찾아 본다 (줄 전체가 버튼이라 어느 구절을 눌러도 같은 줄이다)
@@ -159,7 +164,8 @@ extension EdgeInteraction {
             check("account left: the store is empty and the late response read nothing", store.summary == nil && !store.isClearing && store.message == nil && gateway.reads == readsBefore, "summary=\(String(describing: store.summary)) reads \(readsBefore)->\(gateway.reads)")
 
             // 8) B: 질문만 남은 처음부터 — 같은 카드, 캡션 Needs your answer, Clear 없음. 질문은 지워지지 않는다
-            gateway.reset(.questionsOnly)
+            // 앞 단계가 Clear를 붙잡아 두는 동작(.hang)으로 남겨 둔 서버 반응을 이어받지 않는다: 이 뒤 단계들은 Clear · 확정을 정상으로 받는 서버에서 시작한다
+            gateway.reset(.questionsOnly, clear: .apply, baseline: .apply)
             store.reset()
             shell.openAllWork()
             await store.refresh()
@@ -193,7 +199,7 @@ extension EdgeInteraction {
             check("normal truncation says More changes are available and Clear works", more?.notes == [.moreAvailable] && more?.canClear == true, "notes=\(String(describing: more?.notes)) canClear=\(String(describing: more?.canClear))")
             await click(text: "Clear", in: panelWindow)
             await settle(1.2)
-            check("…then the next read shows the rest, never an all-handled message", gateway.clears.count == 1 && shell.summaryContent?.rows.count == 2 && shell.summaryContent?.notes == [], "clears=\(gateway.clears.count) rows=\(shell.summaryContent?.rows.count ?? 0) | \(lastClick)")
+            check("…then the next read shows the rest, never an all-handled message", gateway.clears.count == 1 && shell.summaryContent?.rows.count == 2 && shell.summaryContent?.notes == [], "clears=\(gateway.clears.count) rows=\(shell.summaryContent?.rows.count ?? 0) clearBehavior=\(gateway.behavior) | \(lastClick)")
 
             // 10) C: 첫 사용의 기준점 확정은 정상 표시가 된 뒤에만 한 번
             // a) 패널이 닫힌 동안 반영된 응답은 보이지 않았다: 확정 0. 처음 보이는 그때(⌥ Space) 한 번
@@ -206,7 +212,7 @@ extension EdgeInteraction {
             check("C: a response applied while the panel is closed is not confirmed", gateway.baselines.isEmpty && !shell.panelOpen, "baselines=\(gateway.baselines.count)")
             shell.togglePanel()
             await settle(1.4)
-            check("C: it is confirmed once when it is first shown, then read again (baseline initialized, new run result shown without any Clear)", gateway.baselines == ["i1.sample-first-use"] && store.summary?.baseline == .initialized && (shell.summaryContent?.rows.map(\.title).contains("Onboarding design draft") ?? false) && gateway.clears.isEmpty, "baselines=\(gateway.baselines) baseline=\(String(describing: store.summary?.baseline)) rows=\(shell.summaryContent?.rows.map(\.title) ?? [])")
+            check("C: it is confirmed once when it is first shown, then read again (baseline initialized, new run result shown without any Clear)", gateway.baselines == ["i1.sample-first-use"] && store.summary?.baseline == .initialized && (shell.summaryContent?.rows.map(\.title).contains("Onboarding design draft") ?? false) && gateway.clears.isEmpty, "baselines=\(gateway.baselines) baseline=\(String(describing: store.summary?.baseline)) rows=\(shell.summaryContent?.rows.map(\.title) ?? []) clearBehavior=\(gateway.behavior)")
             capture(edge, "summary-8-first-use-confirmed")
             // b) Chats가 보이는 동안 반영된 응답: 확정 0, All work로 돌아오는 그때 한 번
             gateway.reset(.firstUse)
