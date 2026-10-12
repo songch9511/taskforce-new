@@ -1023,7 +1023,7 @@ export type ContextMember = z.infer<typeof contextMemberSchema>;
 
 const membershipTargetSchema = z.object({ op: z.enum(["add", "remove"]), member_kind: contextMemberKindSchema, member_id: z.uuid() });
 
-/** 앱이 보내는 멤버십 변경. origin은 언제나 user다 (Set by you · Undo) */
+/** 앱이 보내는 멤버십 변경의 대상 (A2 스키마, 조건 없음). S3b route는 조건부 contextMembershipWriteRequestSchema를 받는다. origin은 언제나 user다 (Set by you · Undo) */
 export const contextMembershipRequestSchema = membershipTargetSchema.strict();
 export type ContextMembershipRequest = z.infer<typeof contextMembershipRequestSchema>;
 
@@ -1033,6 +1033,61 @@ export const contextMembershipChangeSchema = membershipTargetSchema
   .strict()
   .refine((c) => (c.origin === "inferred") === (c.confidence !== null), { message: "confidence는 inferred에만 붙습니다", path: ["confidence"] });
 export type ContextMembershipChange = z.infer<typeof contextMembershipChangeSchema>;
+
+// ─── 사용자 멤버십 쓰기 (S3b: ProjectLink "Set by you" · 바꾸기 · Undo) ───
+// 조건부 쓰기다: 요청이 본 범위 version(work_contexts.context_version, 앱이 RLS로 읽은 값 또는 앞 응답의 값)이 지금과 다르면 쓰기 0 + 409 conflict.
+// 옛 요청(응답을 잃은 재전송 · 오래 열린 화면 · 늦은 Undo)이 더 새 사용자 결정을 덮지 못한다. 새 멱등성 저장소는 없다: 응답을 잃은 성공 요청의 재전송도 409일 수 있고,
+// 앱은 409를 성공으로 보지 않고 다시 읽는다(B3와 같다). version은 범위 전체의 신호라 무관한 변경(다른 멤버 · 범위 기억 · 원문 revision)에도 올라 거짓 409가 생길 수 있다.
+
+/** 넣기 · 빼기 요청 (POST /api/v2/contexts/{id}/members). origin은 언제나 user다. S3b는 할 일(action)만 받는다. contextMembershipRequestSchema(A2)에 조건을 더한 것 */
+export const contextMembershipWriteRequestSchema = z
+  .object({ op: z.enum(["add", "remove"]), member_kind: z.literal("action"), member_id: z.uuid(), expected_context_version: z.number().int().positive() })
+  .strict();
+export type ContextMembershipWriteRequest = z.infer<typeof contextMembershipWriteRequestSchema>;
+
+/**
+ * 옮기기 요청 (POST /api/v2/contexts/{to}/members/move): 한 할 일을 from 범위에서 빼고 경로의 범위에 넣는다. 한 트랜잭션, origin user.
+ * ProjectLink "바꾸기 A → B"와 Undo가 쓴다. 전체 교체가 아니다: 그 할 일의 다른 범위 멤버십은 그대로다. 두 범위의 version을 모두 보낸다
+ */
+export const contextMemberMoveRequestSchema = z
+  .object({
+    member_kind: z.literal("action"),
+    member_id: z.uuid(),
+    from_context_id: z.uuid(),
+    expected_context_version: z.number().int().positive(),
+    expected_from_context_version: z.number().int().positive(),
+  })
+  .strict();
+export type ContextMemberMoveRequest = z.infer<typeof contextMemberMoveRequestSchema>;
+
+/**
+ * 실제로 바뀐 것. added = 이 요청으로 확인된 멤버가 된 범위, removed = 확인된 멤버가 아니게 된 범위 (각 범위의 쓰기 직후 version과 함께).
+ * 이미 멤버였던 도착 범위 · 멤버가 아니던 출발 범위 · auto → user 승격 · inferred 후보를 뺀 것은 바뀐 멤버가 아니라 목록에 없다. 둘 다 비면 되돌릴 것이 없다.
+ * Undo는 이 변화의 역연산만 보낸다(원래 있던 대상 · 무관한 멤버십을 지우지 않는다): added만 → 그 범위 빼기, removed만 → 그 범위 넣기, 둘 다 → 옮기기(added → removed 범위로).
+ * 그 version을 expected로 보내므로 그 사이 다른 기기가 그 범위를 바꿨다면 Undo는 409다. Undo로 돌아온 멤버는 origin user다(Auto-linked가 아니라 Set by you)
+ */
+export const contextMembershipEffectSchema = z.object({
+  added: z.array(z.object({ context_id: z.uuid(), context_version: z.number().int().positive() })),
+  removed: z.array(z.object({ context_id: z.uuid(), context_version: z.number().int().positive() })),
+});
+export type ContextMembershipEffect = z.infer<typeof contextMembershipEffectSchema>;
+
+/**
+ * 넣기 · 빼기 응답. member = 쓰고 난 뒤의 그 행 (add: 지금 멤버 · origin user, remove: removed_at이 선 행), context_version = 쓰기 직후의 그 범위 version(트랜잭션 안에서 읽은 정확한 값).
+ * 200만 "이 요청이 처리됨"의 증거다: 오류 · 응답 유실 뒤에 다시 읽은 지금 상태는 성공의 증거가 아니다 (B3 409 교훈)
+ */
+export const contextMembershipResponseSchema = z.object({ member: contextMemberSchema, context_version: z.number().int().positive(), change: contextMembershipEffectSchema });
+export type ContextMembershipResponse = z.infer<typeof contextMembershipResponseSchema>;
+
+/** 옮기기 응답. member = 도착(경로) 범위의 지금 멤버, from_member = 출발 범위에서 사용자가 뺀 행(removed_at). 두 범위의 쓰기 직후 version을 각각 */
+export const contextMemberMoveResponseSchema = z.object({
+  member: contextMemberSchema,
+  from_member: contextMemberSchema,
+  context_version: z.number().int().positive(),
+  from_context_version: z.number().int().positive(),
+  change: contextMembershipEffectSchema,
+});
+export type ContextMemberMoveResponse = z.infer<typeof contextMemberMoveResponseSchema>;
 
 // ─── 에이전트 adapter (런타임 계약 5장 · 아키텍처 8.2 · 8.3) ─────
 

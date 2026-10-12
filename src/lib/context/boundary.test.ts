@@ -23,12 +23,14 @@ const CONTEXT_MIGRATIONS = [
   path.join(ROOT, "supabase/migrations/20261104000000_context_layer.sql"),
   // B3: 기억 잊기 · 범위 옮기기도 실행 표를 건드리지 않는다
   path.join(ROOT, "supabase/migrations/20261107000000_memory_writes.sql"),
+  // S3b: 사용자 멤버십 쓰기(넣기 · 빼기 · 옮기기)도 실행 표를 건드리지 않는다
+  path.join(ROOT, "supabase/migrations/20261108000000_context_member_user_writes.sql"),
 ];
 
 describe("맥락층 ↔ 실행 권한 경계 (I04 · I14)", () => {
   it("src/lib/context는 실행 코드(정책 · 승인 · 도구 · 스위치 · 저장소 포함)를 가져오지 않는다", () => {
     expect(CONTEXT_FILES.map((f) => path.basename(f)).sort()).toEqual(
-      ["bundle.ts", "chunks.ts", "contexts.ts", "identity-links.ts", "memory-edit.ts", "memory-writes.ts", "memory.ts", "people.ts", "retrieve.ts", "store.ts"].sort(),
+      ["bundle.ts", "chunks.ts", "contexts.ts", "identity-links.ts", "member-writes.ts", "memory-edit.ts", "memory-writes.ts", "memory.ts", "people.ts", "retrieve.ts", "store.ts"].sort(),
     );
     const offenders = CONTEXT_FILES.flatMap((file) => {
       const text = readFileSync(file, "utf8");
