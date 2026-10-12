@@ -297,6 +297,8 @@ final class EdgeShellModel {
         self.clock = clock
         self.calendar = calendar
         self.pinStore = pinStore
+        // 읽기가 반영돼 그 응답이 화면에 보일 수 있게 되는 그 자리에서 첫 정상 표시 확정을 받는다 (C)
+        summary?.onDisplayed = { [weak self] in self?.considerSummaryBaseline() }
     }
 
     // MARK: 레일 모양
@@ -382,6 +384,8 @@ final class EdgeShellModel {
         panelOpen = true
         menuOpen = false
         if view == .chats { onChatsOpened() }
+        // All work로 들어오면 지금 들고 있는 응답이 처음 화면에 보인다: 아직 확정을 받지 않은 응답이면 그 표시 시점이다 (이미 받은 응답은 다시 받지 않는다)
+        if view == .allWork { considerSummaryBaseline() }
     }
 
     /// All work: 레일의 All work · ⌘2. 고른 행 · 검색어 · 필터를 비우고 필터 카드를 닫는다 (디자인 "opens it with filters cleared")
@@ -512,6 +516,22 @@ final class EdgeShellModel {
         let presentation = allWorkPresentation
         return Task { [weak self] in
             await summary.sendClear(ticket) {
+                guard let self else { return false }
+                return self.panelOpen && self.view == .allWork && self.allWorkPresentation == presentation
+            }
+        }
+    }
+
+    /// 첫 정상 표시 확정 (C): 복귀 요약 응답이 **정상 표시**됐을 때만 서버가 준 토큰으로 기준점을 확정한다 — 응답이 반영된 자리(`ReturnSummaryStore.onDisplayed`)와 All work로 들어오는 자리(`openPanel`)에서 부른다.
+    /// 표시 시점의 **동기 경계에서** 계정 token · 서버 토큰 · 이 응답(`beginBaseline`)과 이 **All work 방문**(`allWorkPresentation`)을 잡고, 예약된 작업이 보내기 직전에 같은 방문이 아직 이어지는지 다시 본다:
+    /// 그 사이 패널이 닫혔다 다시 열렸거나 Chats에 갔다 돌아왔으면(새 방문) 쓰기 0이다 (Clear · S4 `answer`와 같은 방식). 이미 서버로 나간 요청은 취소하지 않고 정직한 결과를 돌려준다.
+    /// 읽음 표시일 뿐이다: 결정 · Action · run을 바꾸지 않는다. 보낼 수 없으면 nil (C3 꺼짐 · 패널이 닫힘/다른 화면 · 정상 표시가 아님 · 이 응답으로 이미 받음)
+    @discardableResult
+    func considerSummaryBaseline() -> Task<ReturnSummaryBaselineResult, Never>? {
+        guard let summary, panelOpen, view == .allWork, let ticket = summary.beginBaseline() else { return nil }
+        let presentation = allWorkPresentation
+        return Task { [weak self] in
+            await summary.sendBaseline(ticket) {
                 guard let self else { return false }
                 return self.panelOpen && self.view == .allWork && self.allWorkPresentation == presentation
             }

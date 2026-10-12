@@ -14,6 +14,11 @@ enum SummaryJSON {
         "{\"source\":\"\(source)\",\"kind\":\"\(kind)\",\"at\":\"2026-10-12T13:00:00.000000Z\",\"detail\":\(detail.map { "\"\($0)\"" } ?? "null"),\"source_state\":\(sourceState.map { "\"\($0)\"" } ?? "null")}"
     }
 
+    /// 값을 **글자 그대로** 싣는 변화 (타입이 틀리거나 모르는 값 시험, P2-M2): `detail` · `sourceState`는 JSON 조각이다 (`"\"text\""` · `42` · `{}` · `null`)
+    static func rawChange(_ source: String, _ kind: String, detail: String = "null", sourceState: String = "null") -> String {
+        "{\"source\":\"\(source)\",\"kind\":\"\(kind)\",\"at\":\"2026-10-12T13:00:00.000000Z\",\"detail\":\(detail),\"source_state\":\(sourceState)}"
+    }
+
     static func item(
         _ id: UUID, title: String, state: String? = "in_progress", status: String = "open", decision: String? = nil, changes: [String] = [],
         next: String? = nil
@@ -28,13 +33,14 @@ enum SummaryJSON {
     }
 
     static func response(
-        _ items: [String], cursor: String? = cursor, since: String? = "2026-10-12T08:00:00.000000Z", complete: Bool = true, changes: String = "ok",
-        decisions: String = "ok"
+        _ items: [String], cursor: String? = cursor, since: String? = "2026-10-12T08:00:00.000000Z", baseline: String? = nil, initToken: String? = nil,
+        complete: Bool = true, changes: String = "ok", decisions: String = "ok"
     ) -> FakeReply {
-        let baseline = since == nil ? "never_cleared" : "cleared"
+        let baselineValue = baseline ?? (since == nil ? "never_cleared" : "cleared")
         let body = """
-        {"generated_at":"2026-10-12T21:00:00.000Z","since":\(since.map { "\"\($0)\"" } ?? "null"),"baseline":"\(baseline)","cursor":\(cursor.map { "\"\($0)\"" } ?? "null"),\
-        "complete":\(complete),"empty":\(complete && items.isEmpty),"sources":{"changes":"\(changes)","decisions":"\(decisions)"},"items":[\(items.joined(separator: ","))]}
+        {"generated_at":"2026-10-12T21:00:00.000Z","since":\(since.map { "\"\($0)\"" } ?? "null"),"baseline":"\(baselineValue)","cursor":\(cursor.map { "\"\($0)\"" } ?? "null"),\
+        "init_token":\(initToken.map { "\"\($0)\"" } ?? "null"),"complete":\(complete),"empty":\(complete && items.isEmpty),\
+        "sources":{"changes":"\(changes)","decisions":"\(decisions)"},"items":[\(items.joined(separator: ","))]}
         """
         return .http(200, Data(body.utf8))
     }
@@ -127,6 +133,7 @@ struct C3GateTests {
             throw APIError.notSignedIn
         }
         func clearReturnSummary(cursor: String) async throws -> ReturnSummaryClearResponse { throw APIError.notSignedIn }
+        func confirmReturnSummaryBaseline(initToken: String) async throws -> ReturnSummaryBaselineResponse { throw APIError.notSignedIn }
     }
 
     @MainActor
@@ -223,7 +230,7 @@ struct EdgeSummaryTests {
         let content = try #require(rig.shell.summaryContent)
         #expect(content.rows.map(\.title) == ["Review 1", "Open 1", "Gone banner"])
         #expect(content.rows.map(\.canOpen) == [true, true, false], "목록에 없는 작업은 열 곳이 없다")
-        #expect(content.rows.first?.detail == "Needs your answer · Review failed" && content.rows[1].detail == "Draft ready · Next: review the result")
+        #expect(content.rows.first?.detail == "Needs your answer · Needs revision" && content.rows[1].detail == "Draft ready", "Next: …는 만들지 않는다")
         #expect(content.title.hasPrefix("Since "), "마지막 Clear 시각이 있으면 Since …")
         #expect(content.canClear)
     }
@@ -250,7 +257,7 @@ struct EdgeSummaryTests {
         await rig.harness.server.scriptSummary(SummaryJSON.response([SummaryJSON.item(rig.id(101), title: "Open 1", changes: [SummaryJSON.change()])], complete: false, changes: "truncated"))
         await rig.store.refresh()
         let truncated = try #require(rig.shell.summaryContent)
-        #expect(truncated.rows.count == 1 && truncated.notes == [.someNotShown] && truncated.canClear, "서버가 커서를 주면 잘려도 Clear는 보인다")
+        #expect(truncated.rows.count == 1 && truncated.notes == [.moreAvailable] && truncated.canClear, "서버가 커서를 주면 잘려도 Clear는 보인다")
     }
 
     // MARK: Clear (진짜 APIClient, 읽음 처리일 뿐)
@@ -276,6 +283,7 @@ struct EdgeSummaryTests {
         // 읽음은 결정이 아니다: Clear 뒤에도 Needs your answer 줄은 남는다 (Clear 버튼은 없다)
         let after = try #require(rig.shell.summaryContent)
         #expect(after.rows.map(\.title) == ["Review 1"] && after.rows.first?.needsAnswer == true && !after.canClear && !rig.store.isClearing)
+        #expect(after.title == "Needs your answer", "B: 질문만 남은 같은 카드의 캡션")
         #expect(rig.harness.store.sections.review.map(\.id) == [rig.id(1), rig.id(2), rig.id(3)], "Review 큐는 그대로")
     }
 

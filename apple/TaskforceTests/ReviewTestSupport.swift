@@ -98,6 +98,11 @@ actor FakeNowServer {
     private var holdClears = false
     private var clearWaiters: [CheckedContinuation<Void, Never>] = []
     private var heldClearArrivals = 0
+    // 첫 정상 표시 확정 (A–D 후속 계약: `POST /api/v2/return-summary/baseline {init_token}`)
+    private var baselineReplies: [FakeReply] = []
+    private var holdBaselines = false
+    private var baselineWaiters: [CheckedContinuation<Void, Never>] = []
+    private var heldBaselineArrivals = 0
 
     static let summaryEmptyJSON = """
     {"generated_at":"2026-10-12T21:00:00.000Z","since":null,"baseline":"never_cleared","cursor":"c3.empty","complete":true,"empty":true,"sources":{"changes":"ok","decisions":"ok"},"items":[]}
@@ -122,9 +127,37 @@ actor FakeNowServer {
         waiting.forEach { $0.resume() }
     }
 
+    /// 다음 baseline 확정들의 응답 (없으면 200 initialized)
+    func scriptBaseline(_ replies: FakeReply...) { baselineReplies = replies }
+    func holdBaselineRequests() { holdBaselines = true }
+    func pendingBaselines() -> Int { heldBaselineArrivals }
+
+    /// 붙잡힌 확정 중 먼저 온 `count`개만 보낸다 (나머지는 계속 붙잡아 둔다). `count == nil`이면 전부 풀고 더는 붙잡지 않는다
+    func releaseBaselines(_ count: Int? = nil) {
+        guard let count else {
+            holdBaselines = false
+            heldBaselineArrivals = 0
+            let waiting = baselineWaiters
+            baselineWaiters = []
+            waiting.forEach { $0.resume() }
+            return
+        }
+        for _ in 0..<min(count, baselineWaiters.count) {
+            heldBaselineArrivals -= 1
+            baselineWaiters.removeFirst().resume()
+        }
+    }
+
+    /// 확정으로 도착한 토큰들 (순서대로)
+    func baselineTokens() -> [String] {
+        summaryRequests.filter { $0.path == "/api/v2/return-summary/baseline" }.compactMap { request in
+            request.body.flatMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any] }?["init_token"] as? String
+        }
+    }
+
     func summaryReadCount() -> Int { summaryRequests.filter { $0.method == "GET" }.count }
     func clearCursors() -> [String] {
-        summaryRequests.filter { $0.method == "POST" }.compactMap { request in
+        summaryRequests.filter { $0.method == "POST" && $0.path == "/api/v2/return-summary/clear" }.compactMap { request in
             request.body.flatMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any] }?["cursor"] as? String
         }
     }
@@ -138,6 +171,14 @@ actor FakeNowServer {
             }
             if !clearReplies.isEmpty { return clearReplies.removeFirst() }
             return .http(200, Data("{\"cleared_through\":\"2026-10-12T20:00:00.000000Z\",\"applied\":true}".utf8))
+        }
+        if method == "POST", path == "/api/v2/return-summary/baseline" {
+            if holdBaselines {
+                heldBaselineArrivals += 1
+                await withCheckedContinuation { baselineWaiters.append($0) }
+            }
+            if !baselineReplies.isEmpty { return baselineReplies.removeFirst() }
+            return .http(200, Data("{\"status\":\"initialized\",\"applied\":true}".utf8))
         }
         if method == "GET", path == "/api/v2/return-summary" {
             return summaryReplies.isEmpty ? summaryDefault : summaryReplies.removeFirst()

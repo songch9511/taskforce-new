@@ -116,7 +116,7 @@ enum AppRuntime {
             makeGateway: {
                 #if DEBUG
                 if SampleData.isEnabled {
-                    let sample = SampleReturnSummaryGateway(scenario: SampleData.summaryScenario, clear: SampleData.summaryClearBehavior)
+                    let sample = SampleReturnSummaryGateway(scenario: SampleData.summaryScenario, clear: SampleData.summaryClearBehavior, baseline: SampleData.summaryBaselineBehavior)
                     sampleSummaryGateway = sample
                     return sample
                 }

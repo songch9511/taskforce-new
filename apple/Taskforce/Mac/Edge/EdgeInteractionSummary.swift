@@ -64,6 +64,8 @@ extension EdgeInteraction {
             await settle(1.2)
             let rows = shell.summaryContent?.rows.count ?? 0
             check("opening the panel reads the summary and the card is on top of All work", shell.panelOpen && shell.view == .allWork && rows == 5 && gateway.reads >= 1, "rows=\(rows) reads=\(gateway.reads)")
+            let details = shell.summaryContent?.rows.map { $0.detail ?? "" } ?? []
+            check("rows use the approved copy (Needs revision · Result ready · Due date changed · Updated from source · Completed · Canceled), never a Next line", details.prefix(2).elementsEqual(["Needs your answer · Needs revision", "Result ready"]) && details.dropFirst(2).first == "Due date changed · Updated from source" && !details.contains { $0.contains("Next") }, "details=\(details)")
             check("a Clear button is drawn (server cursor + changes to mark read)", locate("Clear", in: panelWindow) != nil && shell.summaryContent?.canClear == true, "clear=\(String(describing: locate("Clear", in: panelWindow)))")
             capture(edge, "summary-1-card")
 
@@ -104,6 +106,7 @@ extension EdgeInteraction {
             await settle(1.2)
             let rest = shell.summaryContent
             check("after the server took it only the decision row stays and Clear is gone", rest?.rows.map(\.needsAnswer) == [true] && rest?.canClear == false && !store.isClearing && locate("Clear", in: panelWindow) == nil, "rows=\(rest?.rows.map(\.title) ?? []) canClear=\(String(describing: rest?.canClear))")
+            check("the same card is now titled Needs your answer (questions only, Clear hidden)", rest?.title == "Needs your answer" && rest?.canClear == false, "title=\(rest?.title ?? "-") canClear=\(String(describing: rest?.canClear))")
             check("Clear changed no decision or work", shell.reviewQueue.contains(SampleData.reviewID) || !s4, "reviewQueue=\(shell.reviewQueue.count)")
             capture(edge, "summary-4-after-clear")
 
@@ -154,6 +157,91 @@ extension EdgeInteraction {
             gateway.releaseHeld()
             await settle(1)
             check("account left: the store is empty and the late response read nothing", store.summary == nil && !store.isClearing && store.message == nil && gateway.reads == readsBefore, "summary=\(String(describing: store.summary)) reads \(readsBefore)->\(gateway.reads)")
+
+            // 8) B: 질문만 남은 처음부터 — 같은 카드, 캡션 Needs your answer, Clear 없음. 질문은 지워지지 않는다
+            gateway.reset(.questionsOnly)
+            store.reset()
+            shell.openAllWork()
+            await store.refresh()
+            await settle()
+            let asking = shell.summaryContent
+            check("B: questions only from the start: the same card titled Needs your answer, no Clear", asking?.title == "Needs your answer" && asking?.canClear == false && asking?.rows.count == 2 && gateway.clears.isEmpty, "title=\(asking?.title ?? "-") rows=\(asking?.rows.count ?? 0) ocrClear=\(String(describing: locate("Clear", in: panelWindow)))")
+            capture(edge, "summary-6-questions-only")
+
+            // 9) D-7: 해석 못 한 변화는 줄을 남기고 Clear를 막는다 / 결정 읽기 실패는 안전한 변화의 Clear를 막지 않는다 / 정상 잘림은 Clear 가능
+            gateway.reset(.uninterpretable)
+            store.reset()
+            shell.openAllWork()
+            await store.refresh()
+            await settle()
+            let hidden = shell.summaryContent
+            check("D-7: an uninterpretable change stays on screen, says so, and Clear is blocked", hidden?.rows.count == 3 && hidden?.notes == [.couldNotShow] && hidden?.canClear == false && shell.clearSummary() == nil && gateway.clears.isEmpty, "rows=\(hidden?.rows.count ?? 0) notes=\(String(describing: hidden?.notes)) canClear=\(String(describing: hidden?.canClear)) ocrClear=\(String(describing: locate("Clear", in: panelWindow)))")
+            capture(edge, "summary-7-uninterpretable")
+            gateway.reset(.decisionsUnavailable)
+            store.reset()
+            shell.openAllWork()
+            await store.refresh()
+            await settle()
+            let noQuestions = shell.summaryContent
+            check("a decisions read failure alone does not block a safe change Clear", noQuestions?.notes == [.couldNotLoadQuestions] && noQuestions?.canClear == true, "notes=\(String(describing: noQuestions?.notes)) canClear=\(String(describing: noQuestions?.canClear))")
+            gateway.reset(.truncated)
+            store.reset()
+            shell.openAllWork()
+            await store.refresh()
+            await settle()
+            let more = shell.summaryContent
+            check("normal truncation says More changes are available and Clear works", more?.notes == [.moreAvailable] && more?.canClear == true, "notes=\(String(describing: more?.notes)) canClear=\(String(describing: more?.canClear))")
+            await click(text: "Clear", in: panelWindow)
+            await settle(1.2)
+            check("…then the next read shows the rest, never an all-handled message", gateway.clears.count == 1 && shell.summaryContent?.rows.count == 2 && shell.summaryContent?.notes == [], "clears=\(gateway.clears.count) rows=\(shell.summaryContent?.rows.count ?? 0) | \(lastClick)")
+
+            // 10) C: 첫 사용의 기준점 확정은 정상 표시가 된 뒤에만 한 번
+            // a) 패널이 닫힌 동안 반영된 응답은 보이지 않았다: 확정 0. 처음 보이는 그때(⌥ Space) 한 번
+            shell.dismiss()
+            await settle(0.4)
+            gateway.reset(.firstUse)
+            store.reset()
+            await store.refresh()
+            await settle(0.6)
+            check("C: a response applied while the panel is closed is not confirmed", gateway.baselines.isEmpty && !shell.panelOpen, "baselines=\(gateway.baselines.count)")
+            shell.togglePanel()
+            await settle(1.4)
+            check("C: it is confirmed once when it is first shown, then read again (baseline initialized, new run result shown without any Clear)", gateway.baselines == ["i1.sample-first-use"] && store.summary?.baseline == .initialized && (shell.summaryContent?.rows.map(\.title).contains("Onboarding design draft") ?? false) && gateway.clears.isEmpty, "baselines=\(gateway.baselines) baseline=\(String(describing: store.summary?.baseline)) rows=\(shell.summaryContent?.rows.map(\.title) ?? [])")
+            capture(edge, "summary-8-first-use-confirmed")
+            // b) Chats가 보이는 동안 반영된 응답: 확정 0, All work로 돌아오는 그때 한 번
+            gateway.reset(.firstUse)
+            store.reset()
+            sendKey("3", code: kVK_ANSI_3, flags: .command, to: panelWindow)
+            await settle(0.8)
+            await store.refresh()
+            await settle(0.5)
+            check("C: a response applied while Chats is shown is not confirmed", shell.view == .chats && gateway.baselines.isEmpty, "view=\(shell.view) baselines=\(gateway.baselines.count)")
+            sendKey("2", code: kVK_ANSI_2, flags: .command, to: panelWindow)
+            await settle(1.2)
+            check("C: it is confirmed once when All work is shown again", shell.view == .allWork && gateway.baselines.count == 1, "view=\(shell.view) baselines=\(gateway.baselines.count)")
+            // c) 확정이 나간 사이 Esc로 접는다: 이미 나간 요청은 정직한 결과를 돌려주고 두 번 보내지 않는다
+            gateway.reset(.firstUse, baseline: .hang)
+            store.reset()
+            shell.openAllWork()
+            await store.refresh()
+            await settle(0.5)
+            check("C: the confirm is out and in progress", gateway.baselines.count == 1 && store.isConfirmingBaseline, "baselines=\(gateway.baselines.count) confirming=\(store.isConfirmingBaseline)")
+            sendKey("\u{1B}", code: kVK_Escape, to: panelWindow)
+            await settle(0.4)
+            gateway.releaseHeld()
+            await settle(1.2)
+            check("C: the request already sent reports its honest result after Esc; no second request", !shell.panelOpen && gateway.baselines.count == 1 && store.summary?.baseline == .initialized && !store.isConfirmingBaseline, "open=\(shell.panelOpen) baselines=\(gateway.baselines.count) baseline=\(String(describing: store.summary?.baseline))")
+            // d) 409: 자동 재전송 없이 보이는 응답 그대로, 다음 정상 표시(새 조회)에서만 다시
+            gateway.reset(.firstUse, baseline: .conflict)
+            store.reset()
+            shell.togglePanel()
+            await settle(1.0)
+            let afterConflict = gateway.baselines.count
+            try? await Task.sleep(for: .milliseconds(800))
+            check("C: 409 is never resent and the visible response stays", afterConflict == 1 && gateway.baselines.count == 1 && store.summary?.baseline == .neverCleared, "baselines=\(gateway.baselines.count) baseline=\(String(describing: store.summary?.baseline))")
+            await store.refresh()
+            await settle(0.8)
+            check("C: the next normal display (a new read) gets one new attempt", gateway.baselines.count == 2, "baselines=\(gateway.baselines.count)")
             finish()
         }
     }
