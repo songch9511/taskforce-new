@@ -309,3 +309,38 @@ struct EdgeShellWithoutChatsTests {
         #expect(EdgeRailLayout.windowHeight >= two.railRect.maxY)
     }
 }
+
+/// 무인 합성 조작 · 스냅샷 실행의 보호(DEBUG): 다른 앱의 클릭 · 키를 잃음이 패널을 접지 못한다 — 하네스 결과가 환경에 좌우되지 않게. 제품 동작(밖 클릭 · 키를 잃으면 접음)은 그 밖에서 그대로다
+@MainActor
+struct UnattendedRunGuardTests {
+    func openController() -> EdgeShellController {
+        let controller = EdgeShellController(launcher: LauncherModel(configurationError: "test"), chat: nil)
+        controller.shell.openAllWork()
+        return controller
+    }
+
+    static var resign: Notification { Notification(name: NSWindow.didResignKeyNotification) }
+
+    @Test func aNormalRunStillCollapsesThePanelOnAnOutsideClickAndOnKeyLoss() {
+        let controller = openController()
+        #expect(!controller.ignoresExternalDismissal, "시험 호스트에는 하네스 인자가 없다")
+        controller.externalInteraction()
+        #expect(!controller.shell.panelOpen, "밖 클릭")
+        controller.shell.openAllWork()
+        controller.windowDidResignKey(Self.resign)
+        #expect(!controller.shell.panelOpen, "키를 잃음")
+    }
+
+    @Test func anUnattendedRunIgnoresExternalClicksAndKeyLossButKeepsItsOwnWays() {
+        let controller = openController()
+        controller.ignoresExternalDismissal = true
+        controller.externalInteraction()
+        controller.windowDidResignKey(Self.resign)
+        #expect(controller.shell.panelOpen && controller.shell.view == .allWork, "외부 사건으로 접히지 않는다")
+        // 하네스 · 사용자가 하는 접기는 그대로: Esc · 직접 dismiss
+        #expect(controller.handleKey(S4GateTests.key("\u{1B}", code: kVK_Escape)) && !controller.shell.panelOpen)
+        controller.shell.openAllWork()
+        controller.shell.dismiss()
+        #expect(!controller.shell.panelOpen)
+    }
+}

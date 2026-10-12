@@ -38,7 +38,7 @@ extension EdgeInteraction {
                     await click(text: phrase, in: panelWindow)
                     return
                 }
-                lastClick = "글자를 찾지 못함 (\(phrases.joined(separator: " | ")))"
+                lastClick = "글자를 찾지 못함 (\(phrases.joined(separator: " | "))) · \(lastLocate) · \(ownership(edge))"
             }
             await settle(1.5)
 
@@ -72,10 +72,14 @@ extension EdgeInteraction {
             let details = shell.summaryContent?.rows.map { $0.detail ?? "" } ?? []
             check("rows use the approved copy (Needs revision · Result ready · Due date changed · Updated from source · Completed · Canceled), never a Next line", details.prefix(2).elementsEqual(["Needs your answer · Needs revision", "Result ready"]) && details.dropFirst(2).first == "Due date changed · Updated from source" && !details.contains { $0.contains("Next") }, "details=\(details)")
             check("a Clear button is drawn (server cursor + changes to mark read)", locate("Clear", in: panelWindow) != nil && shell.summaryContent?.canClear == true, "clear=\(String(describing: locate("Clear", in: panelWindow)))")
+            // 무인 실행 보호: 다른 앱의 클릭 · 키를 잃음이 와도 패널이 접히지 않는다 (이 실행의 결과가 환경이 아니라 하네스에 달리게)
+            edge.externalInteraction()
+            edge.windowDidResignKey(Notification(name: NSWindow.didResignKeyNotification))
+            check("an outside click or key loss cannot collapse the panel during this unattended run", shell.panelOpen && shell.view == .allWork && edge.ignoresExternalDismissal, "panelOpen=\(shell.panelOpen) ignores=\(edge.ignoresExternalDismissal)")
             capture(edge, "summary-1-card")
 
             // 2) 줄 열기 (열기는 어떤 결정도 해결도 아니다)
-            await clickAny(["Onboarding design draft", "Draft ready"])
+            await clickAny(["Onboarding design draft", "Result ready"])
             await settle(0.4)
             check("click a result row opens that work in All work", shell.view == .allWork && shell.currentID == id(11), "view=\(shell.view) currentID=\(String(describing: shell.currentID)) | \(lastClick)")
             await clickAny(["Send proposal v2", "Needs your answer"])

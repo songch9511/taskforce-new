@@ -35,7 +35,7 @@ extension EdgeInteraction {
                     await click(text: phrase, in: panelWindow)
                     return
                 }
-                lastClick = "글자를 찾지 못함 (\(phrases.joined(separator: " | ")))"
+                lastClick = "글자를 찾지 못함 (\(phrases.joined(separator: " | "))) · \(lastLocate) · \(ownership(edge))"
             }
             await settle(1.5)
 
@@ -54,6 +54,9 @@ extension EdgeInteraction {
             await settle(1.2)
             let rows = shell.summaryContent?.rows.count ?? 0
             check("⌥ Space opens the Edge panel on All work with the ReturnSummary card on top", shell.panelOpen && shell.view == .allWork && rows > 0, "view=\(shell.view) rows=\(rows)")
+            edge.externalInteraction()
+            edge.windowDidResignKey(Notification(name: NSWindow.didResignKeyNotification))
+            check("an outside click or key loss cannot collapse the panel during this unattended run", shell.panelOpen && shell.view == .allWork && edge.ignoresExternalDismissal, "panelOpen=\(shell.panelOpen) ignores=\(edge.ignoresExternalDismissal)")
             capture(edge, "release-1-all-work")
 
             // 4) ⌘3 · ⌘N은 연결이 없다: 화면이 바뀌지 않는다

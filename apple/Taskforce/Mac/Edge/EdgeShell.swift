@@ -22,6 +22,12 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
     /// Chats · Remembered (B3). 앱 시작 때 세션에 붙은 것을 받는다
     let chat: ChatRuntime?
     private var clickMonitors: [Any] = []
+    #if DEBUG
+    /// 무인 합성 조작 · 스냅샷 실행(`-TFEdgeInteract*` · `-TFEdgeSnapshot*`)은 사용자 · 다른 앱이 같은 화면을 쓰는 중에도 돈다. 다른 앱의 클릭 · 활성화가 패널을 접으면(제품 동작) 그 실행의 결과가
+    /// 하네스가 아니라 환경에 좌우된다(글자 인식 · 클릭 · 키가 접힌 패널에 간다). 그래서 그런 실행에서만 **밖 클릭 · 키를 잃음으로 접기를 걸지 않는다**
+    /// (Esc · 명령 키 · 안쪽 클릭 · 하네스가 직접 부르는 `dismiss()`는 그대로). 시험은 이 값을 직접 바꾼다. Release 빌드에는 이 값이 없다 — 늘 접는다
+    var ignoresExternalDismissal = ProcessInfo.processInfo.arguments.contains { $0.hasPrefix("-TFEdgeInteract") || $0.hasPrefix("-TFEdgeSnapshot") }
+    #endif
     private var keyMonitor: Any?
     private var observers: [NSObjectProtocol] = []
     private var wasSignedIn = false
@@ -301,7 +307,7 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
         let mask: NSEvent.EventTypeMask = [.leftMouseDown, .rightMouseDown, .otherMouseDown]
         // 다른 앱을 누름 (전역 마우스 모니터는 손쉬운 사용 권한이 필요 없다)
         if let global = NSEvent.addGlobalMonitorForEvents(matching: mask, handler: { [weak self] _ in
-            MainActor.assumeIsolated { self?.shell.dismiss() }
+            MainActor.assumeIsolated { self?.externalInteraction() }
         }) {
             clickMonitors.append(global)
         }
@@ -310,7 +316,7 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
             MainActor.assumeIsolated {
                 guard let self else { return }
                 if event.window !== self.panel.panel, event.window !== self.rail.panel {
-                    self.shell.dismiss()
+                    self.externalInteraction()
                 }
             }
             return event
@@ -324,6 +330,14 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
             }
             return handled ? nil : event
         }
+    }
+
+    /// 패널 밖(다른 앱 · 이 앱의 다른 창)을 눌렀거나 키를 잃었다: 패널을 접는다 (무인 실행의 `ignoresExternalDismissal`이 아니면)
+    func externalInteraction() {
+        #if DEBUG
+        if ignoresExternalDismissal { return }
+        #endif
+        shell.dismiss()
     }
 
     private func removeMonitors() {
@@ -383,7 +397,7 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
     func windowDidResignKey(_ notification: Notification) {
         // ⌘Tab 등으로 키를 잃으면 접는다 (More 메뉴를 연 동안은 빼고)
         guard shell.panelOpen, !shell.menuOpen else { return }
-        shell.dismiss()
+        externalInteraction()
     }
 }
 
