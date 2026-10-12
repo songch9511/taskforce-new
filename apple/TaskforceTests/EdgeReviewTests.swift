@@ -125,9 +125,11 @@ struct S4GateTests {
 
     // MARK: 패널 키 (실제 컨트롤러의 `handleKey`)
 
+    /// Chats가 켜진 셸 (DEBUG에서 셸이 켜진 지금의 구성): ⌘3 · ⌘N이 Chats로 간다. 견본 대화 서버의 실제 `ChatRuntime`을 둔다 (네트워크 · 계정 없음).
+    /// `chat: nil`은 이제 "Chats가 없는 셸"(Release 표면)이다 — 그 구성의 키는 `ReleaseSurfacesTests`가 실제 컨트롤러로 본다
     @MainActor
     static func controller(review: ReviewDesk?) -> EdgeShellController {
-        EdgeShellController(launcher: LauncherModel(configurationError: "test"), chat: nil, review: review)
+        EdgeShellController(launcher: LauncherModel(configurationError: "test"), chat: ChatRuntime(gateway: SampleChatGateway()), review: review)
     }
 
     static func key(_ characters: String, code: Int, flags: NSEvent.ModifierFlags = [], isRepeat: Bool = false) -> NSEvent {
