@@ -27,17 +27,27 @@ extension EdgeInteraction {
                 try? lines.joined(separator: "\n").appending("\n").write(toFile: logPath, atomically: true, encoding: .utf8)
                 NSApplication.shared.terminate(nil)
             }
+            /// 글자 인식(Vision)은 같은 화면에서도 가끔 한 구절을 놓친다: 같은 줄의 다른 구절로도 찾아 본다 (줄 전체가 버튼이라 어느 구절을 눌러도 같은 줄이다)
+            @MainActor func clickAny(_ phrases: [String]) async {
+                for phrase in phrases where locate(phrase, in: panelWindow) != nil {
+                    await click(text: phrase, in: panelWindow)
+                    return
+                }
+                lastClick = "글자를 찾지 못함 (\(phrases.joined(separator: " | ")))"
+            }
             await settle(1.5)
 
             guard let store = shell.summary, let gateway = AppRuntime.sampleSummaryGateway else {
                 // C3 꺼짐: 카드도 서버 읽기도 없고 줄 열기는 지금 그대로다
                 check("no summary store and no sample server are created", shell.summary == nil && AppRuntime.sampleSummaryGateway == nil, "summary=\(String(describing: shell.summary))")
+                // 견본 목록의 한 일을 영문 제목으로 바꿔(글자 인식용) 줄을 눌러 본다
+                if let now = edge.launcher.now { ReviewSnapshot.setQueue(now, ReviewSnapshot.queue, evidence: ReviewSnapshot.baseEvidence, titles: [10: "Customer demo prep"]) }
                 shell.togglePanel()
                 await settle()
                 check("the panel opens on All work without a summary card", shell.panelOpen && shell.view == .allWork && shell.summaryContent == nil, "view=\(shell.view)")
                 check("no Clear button is drawn", locate("Clear", in: panelWindow) == nil, "locate=\(String(describing: locate("Clear", in: panelWindow)))")
                 capture(edge, "summary-off-all-work")
-                await click(text: "Customer demo prep", in: panelWindow)
+                await clickAny(["Customer demo prep"])
                 await settle(0.4)
                 check("a work row still opens as before", shell.currentID == id(10), "currentID=\(String(describing: shell.currentID)) | \(lastClick)")
                 sendKey("2", code: kVK_ANSI_2, flags: .command, to: panelWindow)
@@ -58,10 +68,10 @@ extension EdgeInteraction {
             capture(edge, "summary-1-card")
 
             // 2) 줄 열기 (열기는 어떤 결정도 해결도 아니다)
-            await click(text: "Onboarding design draft", in: panelWindow)
+            await clickAny(["Onboarding design draft", "Draft ready"])
             await settle(0.4)
             check("click a result row opens that work in All work", shell.view == .allWork && shell.currentID == id(11), "view=\(shell.view) currentID=\(String(describing: shell.currentID)) | \(lastClick)")
-            await click(text: "Send proposal v2", in: panelWindow)
+            await clickAny(["Send proposal v2", "Needs your answer"])
             await settle(0.6)
             if s4 {
                 check("S4 on: the confirm row opens its Review page", shell.view == .review && shell.shownReview?.id == SampleData.reviewID, "view=\(shell.view) shown=\(String(describing: shell.shownReview?.title)) | \(lastClick)")
@@ -72,7 +82,7 @@ extension EdgeInteraction {
             }
             await settle(0.8)
             let before = shell.currentID
-            await click(text: "Replace old banner", in: panelWindow)
+            await clickAny(["Replace old banner", "Canceled"])
             await settle(0.4)
             check("a row with nowhere to go (not in the list) does nothing", shell.currentID == before && shell.view == .allWork, "currentID=\(String(describing: shell.currentID)) | \(lastClick)")
             check("opening rows sent nothing", gateway.clears.isEmpty, "clears=\(gateway.clears.count)")
