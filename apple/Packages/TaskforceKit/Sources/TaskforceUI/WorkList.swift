@@ -11,6 +11,7 @@ import TaskforceKit
 /// - 검색어 · 필터 · 열린 필터 · 고정은 쓰는 쪽(셸 모델)이 가진다: 계정이 바뀌거나 레일의 All work로 열면 거기서 비운다
 /// - 묶음은 실제 범위 멤버십이다 (S3b, `WorkListLayout`): 한 할 일이 여러 프로젝트면 각 묶음에 나온다. 멤버십을 아직 읽지 못했으면 이름 없는 한 묶음
 /// - 고른 줄(`currentID`) 바로 아래에 `detail`(ProjectLink 줄들)을 그린다: 일 상세가 아직 없어 행 수준에 둔다. 같은 할 일이 두 묶음에 있어도 첫 묶음에만
+/// - `summary`(C3 ReturnSummary)는 검색칸 **위**에 놓인다 (디자인 README). 목록이 있는 화면(`list` · `noWork`)에서만 보이고, 읽는 중 · 오프라인 · 읽기 실패 화면은 자기 화면이다
 public struct WorkList: View {
     let items: [WorkItem]
     let load: WorkLoad
@@ -22,6 +23,7 @@ public struct WorkList: View {
     let highlightedID: UUID?
     let today: LocalDate
     let projectsProblem: WorkLoad.Problem?
+    let summary: AnyView?
     let detail: (UUID) -> AnyView?
     let onOpen: (UUID) -> Void
     let onPin: (UUID) -> Void
@@ -36,11 +38,12 @@ public struct WorkList: View {
     /// - syncing: 연결 중 하나라도 동기화 중 (`AccountStore.anySyncing`)
     /// - onConnect: 있으면 할 일 없음 화면에 Connect a source (연결된 원문이 없다고 확인됐을 때)
     /// - projectsProblem: 범위 멤버십을 읽다 생긴 문제 (목록 위 Notice 하나: 할 일 목록의 문제가 먼저)
+    /// - summary: 검색칸 위에 놓을 ReturnSummary (C3). 없으면 nil: 지금 All work 그대로
     /// - detail: 고른 줄 아래에 그릴 것 (ProjectLink 줄들). 없으면 nil
     public init(
         items: [WorkItem], load: WorkLoad, syncing: Bool = false, filter: Binding<WorkFilter>, filtersOpen: Binding<Bool>, pins: WorkPins,
         currentID: UUID? = nil, highlightedID: UUID? = nil, today: LocalDate, projectsProblem: WorkLoad.Problem? = nil,
-        detail: @escaping (UUID) -> AnyView? = { _ in nil },
+        summary: AnyView? = nil, detail: @escaping (UUID) -> AnyView? = { _ in nil },
         onOpen: @escaping (UUID) -> Void = { _ in }, onPin: @escaping (UUID) -> Void = { _ in }, onUnpin: @escaping (UUID) -> Void = { _ in },
         onAddTask: @escaping () -> Void = {}, onConnect: (() -> Void)? = nil, onRetry: @escaping () -> Void = {}
     ) {
@@ -54,6 +57,7 @@ public struct WorkList: View {
         self.highlightedID = highlightedID
         self.today = today
         self.projectsProblem = projectsProblem
+        self.summary = summary
         self.detail = detail
         self.onOpen = onOpen
         self.onPin = onPin
@@ -87,6 +91,7 @@ public struct WorkList: View {
         case .noWork(let problem):
             VStack(alignment: .leading, spacing: 0) {
                 notice(problem)
+                summary
                 PanelEmptyState(.noWork) {
                     Button("Add task", action: onAddTask).buttonStyle(TFButtonStyle(.primary, size: .md))
                     if let onConnect {
@@ -97,6 +102,7 @@ public struct WorkList: View {
         case .list(let problem):
             VStack(alignment: .leading, spacing: 0) {
                 notice(problem, projects: projectsProblem)
+                summary
                 list
             }
             // 필터로 사라진 행의 호버 표시가 남지 않게
