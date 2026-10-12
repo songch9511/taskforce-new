@@ -278,3 +278,62 @@ step: `pending → prepared → calling → called | unknown_outcome | failed | 
 **과금 경계 (A37 · A44).** 할 일 직접 추가 · 수정 · 완료와 원문 처리는 실행 · 크레딧을 확인하지도 부르지도 않는다(`src/lib/execution/boundary.test.ts`, eslint `no-restricted-imports`).
 
 **테스트.** 실행기 × 운영 마이그레이션(PGlite, 가짜 LLM) `tests/db/execution-executor.test.ts`: 초안 1건의 산출물 · 원가 · 예약/정산/해제, 다시 물은 시도까지 더한 정산, 단계 상한, A39, 함수가 중간에 죽은 뒤 이어 가기와 늦은 응답(A18), 스위치를 끄면 세 입구 모두 `calling` 0(기준 9), 크레딧 부족 hold → 지급 뒤 이어 가기, 미확정 원가 보류(A46), 멈추기, Slack · 출처 모를 원문 제외, 초안마다 receipt · Action 그대로 · 다음 초안 자료에 receipt 없음 · sweep이 빠진 receipt를 한 번만 이어 씀(9장), 할 일을 끝내거나 지우면 세 입구 모두 다음 단계 0 · run 멈춤 · 예약 해제 · 부르던 단계는 끝까지(5장). 멈춘 시각과 `begin_call`의 할 일 확인 SQL은 `tests/db/execution-core.test.ts`, 크레딧 화면 숫자는 `tests/db/execution-credit-details.test.ts`(운영 `loadCreditDetails`를 PGlite에서 그대로). 순서 · 오류 처리 단위 테스트는 `src/lib/execution/*.test.ts`, route는 `src/app/api/v1/runs/**/route.test.ts` · `credits` · `cron/execution-*`.
+
+## 14. 0.2.0 additive 확장 (C1): 저장 계약만 — 실행은 늘지 않는다
+
+`supabase/migrations/20261109000000_execution_additive_contract.sql` (런타임 계약 4장, 구현 계획 C1). 값 · 열 · 연결별 정책 표를 **더하기만** 했다. 이 묶음에는 새 goal · 새 단계 종류 · 새 outcome / hold를 쓰거나 실행하는 코드가 없다. 기존 `draft` run의 동작(`begin_call` 서명 · gate, intent · lease, 승인 hash, 재시도, `unknown_outcome`, 크레딧 예약 · 정산, 중단, `action_closed`, `MAX_STEPS = 4`)과 A29 · `execution-*` 회귀는 그대로다. `begin_call` · `approval_hash` · `auto_allowed` · `prepare_step`은 이 파일이 다시 만들지 않는다.
+
+**CHECK 교체** (현재 값은 `20261021000000_execution_core.sql` 한 곳에만 정의돼 있었다. 이후 마이그레이션이 바꾸지 않았다). 옛 CHECK는 이름 없는 열 제약이라 카탈로그에서 열마다 찾아 지우고(정확히 하나가 아니면 아무것도 바꾸지 않고 실패한다) 이름 있는 제약으로 다시 만든다.
+
+| 열 | 이전 | 이후 (`<표>_<열>_check`) |
+|---|---|---|
+| `execution_runs.goal` | `draft` | `draft` · `agent` · `send` · `followup` |
+| `execution_steps.kind` | `plan` · `draft` · `external` | + `agent_dispatch` · `agent_message` · `agent_cancel` · `review` · `check` · `send` · `observe` |
+| `execution_runs.outcome` | `draft_ready` · `needs_connection` · `needs_input` (null 허용) | + `needs_capability` · `review_failed` · `agent_done` |
+| `execution_runs.hold_reason` | `blocked` · `actor` · `needs_connection` · `credit` (null 허용) | + `resource` · `agent_unreachable` |
+
+**`execution_runs` 새 열** (모두 서버만 쓴다. 앱은 RLS로 읽기만):
+
+| 열 | 모양 | 뜻 |
+|---|---|---|
+| `conversation_id` | `uuid null`, `(conversation_id, user_id)` → `conversations (id, user_id)` | 어느 대화에서 시작했나. 대화를 지우면 이 참조만 비운다(`on delete set null (conversation_id)`): run 기록은 남는다 |
+| `context_id` | `uuid null`, `(context_id, user_id)` → `work_contexts (id, user_id)` | 어느 범위에서 시작했나. 범위를 지우면 참조만 비운다 |
+| `directive_version` | `integer not null default 1`, ≥ 1 | 사용자 지시가 바뀐 횟수 |
+| `bundle_context_version` | `integer null`, ≥ 1 | 맥락 묶음을 만들 때의 `work_contexts.context_version`. 범위를 지워도 그때 묶은 버전의 기록으로 남는다 |
+
+`directive_version`과 `context_version`은 별개다(서로 파생하지 않는다). 이 열을 읽거나 쓰는 코드는 아직 없다(코디네이터 C2 · 게이트웨이 D1). `agent_session_id` · `message_id` · `target_at` · `acceptance`는 이 묶음에 없다. 부모와 같은 사용자여야 가리킬 수 있다(복합 외래키). 계정 삭제는 `auth.users` cascade로 run · 대화 · 범위 · 정책을 한 문장에서 함께 지운다(서로 막지 않는다, `tests/db/account-deletion.test.ts`).
+
+**ARCH06 · ARCH07 (I04 · I14).** 이 열은 "어디서 시작했나"의 기록이다. 어떤 gate · 전이 · 판정에도 입력이 아니다: 범위의 멤버십 · 보관 · 이동 · 기억 · `context_version`, run의 `conversation_id` · `context_id` · `bundle_context_version` · `directive_version`이 어떻게 바뀌어도 `begin_call` 결과 · 승인 hash · `auto_allowed` · 사용자 정책 · Action 행 · 열린 Action 확인이 한 글자도 달라지지 않는다(`tests/db/execution-additive-contract.scenarios.ts`). 실행 코드는 이 열과 범위 표를 가리키지 않는다(`src/lib/execution/boundary.test.ts`). 실행 → 맥락층 방향의 외래키는 위 둘뿐이고 반대 방향(맥락층 → 실행)은 없다(`tests/db/context-layer.scenarios.ts` "권한 · 경계").
+
+**새 값은 실행으로 새지 않는다.** CHECK가 넓어졌으므로 예전에 CHECK가 하던 막기를 같은 자리에서 한다.
+
+| 자리 | 하는 일 |
+|---|---|
+| `POST /api/v1/runs` (zod) | `goal`은 `z.literal("draft")` 그대로(v1 동결). 다른 goal은 400, `create_run` · 속도 제한 · 첫 단계 모두 0 |
+| `create_run` (RPC) | goal이 `draft`가 아니면 예외(`22023`). run · 단계 · 정책 · 이벤트를 만들지 않는다 |
+| `append_step` (RPC) | 단계 종류가 `plan` · `draft` · `external`이 아니면 예외(`22023`). 한 줄도 붙이지 않는다 |
+| 실행기 `advance` | goal이 `types.ts` `EXECUTABLE_GOALS`(`draft`) 밖이면 단계를 읽기 전에, 단계 종류가 `EXECUTABLE_STEP_KINDS`(`plan` · `draft`) 밖이면 준비 · `begin_call` 전에 `{ status: "unsupported" }`로 멈춘다. 아무것도 바꾸지 않는다(준비 · 예약 · intent · 이벤트 · run 닫기 · 모델 호출 · 네트워크 호출 0). `external`은 예전처럼 `busy`. 이전에는 plan이 아닌 종류가 모두 초안(모델 호출)으로 갔으므로, DB에 새 값을 직접 넣으면 실행기가 실제로 모델을 불렀다(`tests/db/execution-additive-executor.test.ts`가 수정 전에 실패한다) |
+| sweep `wakeableRuns` | `EXECUTABLE_GOALS` 밖 goal의 run은 깨우지 않는다. 깨워도 `advance`가 아무것도 하지 않고, 오래된 순으로 깨우기 한도(20)의 앞자리만 차지하기 때문이다 |
+
+새 goal · 단계 종류 · outcome / hold 값을 실행하는 단계(C2 · D1 · E1)가 `create_run` · `append_step`의 확인과 `types.ts`의 두 목록을 함께 넓힌다. DB의 `begin_call`은 단계 종류를 보지 않는다(바꾸지 않았다): 새 종류를 부르게 하는 단계가 효과 종류와 도구 목록(`execution_tools`)에 맞춰 정한다.
+
+**연결별 정책 `execution_connection_policies` (DR07 최소형): 저장 계약뿐이다.**
+
+| 열 | 모양 |
+|---|---|
+| `id` · `user_id` · `connection_id` | `(connection_id, user_id)` → `connections (id, user_id)` `on delete cascade`, `unique (user_id, connection_id)` · `unique (id, user_id)` |
+| `mode` | `manual`(기본) · `auto` · `full` (`execution_policies.mode`와 같은 값) |
+| `allowed_tools` | `text[]`, 기본 빈 배열(아무것도 허용하지 않는다), NULL · 빈 문자열 원소 거절 |
+| `allowed_targets` | `jsonb` 배열, 기본 `[]`. 원소의 모양은 쓰는 단계(D5 · adapter)가 정한다 |
+| `standing_budget_credits` | `integer`, 기본 0, 음수 거절 (A47의 standing 예산) |
+| `version` · `created_at` · `updated_at` | `version` ≥ 1 |
+
+- 권한 모양은 `execution_policies`와 같다: RLS `owner_all` + select 권한만(앱은 자기 행을 읽기만, 쓰기는 서버). 연결을 지우면 정책도 함께 지워진다(같은 계정을 다시 연결해도 옛 정책을 물려받지 않는다). 다른 사용자의 연결은 복합 외래키가 막는다.
+- 트리거 `execution_connection_policies_guard`(몰래 바꾸기 막기): `id` · `user_id` · `connection_id` · `created_at`은 못 바꾼다(정책을 다른 연결로 옮겨 권한이 번지지 않게). 내용(`mode` · `allowed_tools` · `allowed_targets` · `standing_budget_credits`)이 바뀌면 `version`은 정확히 + 1이어야 한다(그대로 · 건너뜀 · 내림 거절). 내용이 그대로면 `version`은 그대로이거나 + 1(승인을 무효로 만드는 올림)이다. 동시 갱신은 `update … set version = version + 1 where version = <읽은 값>`로 한 쪽만 이긴다(`tests/pg/execution-additive-contract.test.ts`).
+- **실제 런타임 소비는 없다.** 표가 있거나 행이 있어도 `begin_call` · `approval_hash` · `auto_allowed` · `prepare_step` · 실행기 · sweep은 이 표를 읽지 않는다. 연결별 `mode` · `allowed_tools` · `allowed_targets` · `standing_budget_credits`는 실행 허용 · 크레딧 예약 · 승인 필요 판단에 쓰이지 않는다. 사용자 정책(`execution_policies`)이 그대로 기본이고, 차단 스위치(`execution_controls`) · 도구 목록 · 수신자 허용 목록 · 실행 주체 확인도 그대로다. 승인 hash의 정책 버전에 연결별 `version`을 넣는 것, `begin_call`이 연결별 정책을 소비하는 것은 뒤 단계(C2 · D1 · E1)이고 그때 승인 hash가 바뀌므로 대기 중인 승인은 모두 무효가 된다(`tests/db/execution-additive-contract.scenarios.ts`가 지금은 같은 hash · 같은 gate임을 고정한다). 이 표를 언급하는 함수는 보호 트리거 하나뿐이다(카탈로그 확인).
+
+**한도 상수** (`limits.ts`, 값만 — 이 묶음에서는 어디서도 읽지 않는다): `MAX_STEPS_BY_GOAL` = `draft` 4(기존 `MAX_STEPS`) · `agent` 12 · `send` 4 · `followup` 3. 동시성: `MAX_CONCURRENT_COST_STEPS` 3(사용자당 동시에 `calling`인 비용 단계) · `MAX_LIVE_EXTERNAL_TASKS` 5 · `WAITING_RUN_RETENTION_DAYS` 30 · `MAX_OPEN_RUNS_PER_ACTION` 2(intent가 다를 때만). 세는 쪽은 C2 · D1이다.
+
+**앱 호환.** Swift `TaskforceKit`은 모르는 상태 · 이유 · 결과를 `.unknown`으로 받고 `goal`은 문자열이며 읽을 열을 이름으로 고른다(`Execution.swift`): 새 열 · 새 값이 있어도 읽기가 깨지지 않는다. 지금은 새 값을 가진 run이 만들어지지도 않는다. 서버 쪽 `/api/v1` 응답 타입(`RunSummary`)은 v1 동결이라 그대로고, `POST …/stop`은 DB 행을 검증 없이 돌려주므로 새 값을 가진 run을 멈춰도 오류가 나지 않는다(`src/lib/api/runs.test.ts`).
+
+**되돌리기 (rollback).** 새 열 · 새 표 · 두 함수의 확인이 전부라 코드는 병합 전이면 PR을 닫으면 된다. 운영에 적용한 뒤에는 새 값을 가진 행이 없는지 확인하고(`select count(*) from execution_runs where goal <> 'draft' or conversation_id is not null or context_id is not null`, 다른 열도 같이) 새 파일을 만들어 CHECK를 이전 값으로 되돌리고, 열 · 표를 지운다. 기존 마이그레이션 파일은 고치지 않는다.

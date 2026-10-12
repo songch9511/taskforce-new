@@ -33,6 +33,7 @@ const USER_TABLES = [
   "execution_actors",
   "execution_approvals",
   "execution_artifacts",
+  "execution_connection_policies",
   "execution_events",
   "execution_intents",
   "execution_policies",
@@ -169,6 +170,17 @@ async function seed(userId: string, tokenHex: string) {
   // 준비된 단계는 다시 계획되며 이벤트를 남긴다), 승인 · intent, 실행 주체
   await db.query(`insert into public.execution_actors (user_id) values ($1)`, [userId]);
   const runId = await one(`select public.create_run($1, $2, 'draft', '초안') as id`, [userId, actionId]);
+  // 0.2.0 C1(20261109000000): run이 대화 · 범위를 가리키고(복합 외래키, 부모 삭제 시 참조만 비운다), 연결별 정책이 연결을 가리킨다.
+  // 계정 삭제 한 문장 안에서 대화 · 범위 · 연결 · 정책 · run이 함께 지워져 서로 막지 않아야 한다
+  await db.query(`update public.execution_runs set conversation_id = $2, context_id = $3, bundle_context_version = 3, directive_version = 2 where id = $1`, [
+    runId,
+    conversationId,
+    contextId,
+  ]);
+  await db.query(
+    `insert into public.execution_connection_policies (user_id, connection_id, mode, allowed_tools, allowed_targets, standing_budget_credits) values ($1, $2, 'manual', '{send}', '[]', 10)`,
+    [userId, connectionId],
+  );
   const stepId = await one(
     `insert into public.execution_steps (user_id, run_id, seq, kind, provider, tool, purpose, connection_id, state, policy_version)
      values ($1, $2, 2, 'external', 'gmail', 'send', 'send', $3, 'called', 1) returning id`,

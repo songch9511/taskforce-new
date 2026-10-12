@@ -124,6 +124,21 @@ describe("POST /api/v1/runs", () => {
     }
   });
 
+  it("goal이 draft가 아니면 400이다: DB가 다른 goal을 받아도(0.2.0 C1) API는 draft만 받는다. run도 첫 단계도 만들지 않고 속도 제한도 쓰지 않는다", async () => {
+    for (const goal of ["agent", "send", "followup", "review", "DRAFT", "", null, 1, ["draft"]]) {
+      const deps = createDeps();
+      const response = await handleCreateRun(post({ action_id: ACTION_ID, goal, request: "초안" }), deps);
+      expect(response.status, String(goal)).toBe(400);
+      expect(deps.createRun).not.toHaveBeenCalled();
+      expect(deps.schedule).not.toHaveBeenCalled();
+      expect(deps.rateLimit).not.toHaveBeenCalled();
+    }
+    // goal이 없어도 같다 (기본값으로 draft가 되지 않는다)
+    const deps = createDeps();
+    expect((await handleCreateRun(post({ action_id: ACTION_ID, request: "초안" }), deps)).status).toBe(400);
+    expect(deps.createRun).not.toHaveBeenCalled();
+  });
+
   it("저장하지 못하면 500, 로그에 요청 글을 남기지 않는다", async () => {
     const deps = createDeps({
       createRun: vi.fn(async () => {
@@ -157,6 +172,14 @@ describe("POST /api/v1/runs/:id/stop", () => {
     const again = await handleStopRun(stop(), RUN_ID, done);
     expect(again.status).toBe(200);
     expect(((await again.json()) as { run: RunSummary }).run.state).toBe("done");
+  });
+
+  it("DB에 있는 새 값(다른 goal · hold · outcome)의 run도 읽다가 깨지지 않는다: 멈추면 200, 값은 그대로 지나간다 (이 서버가 만들 수 없는 run이라 직접 넣은 행)", async () => {
+    const agentRun = { ...RUN, goal: "agent", state: "stopped", hold_reason: "agent_unreachable", outcome: "agent_done" } as unknown as RunSummary;
+    const deps = stopDeps({ stopRun: vi.fn(async () => "stopped"), loadRun: vi.fn(async () => agentRun) });
+    const response = await handleStopRun(stop(), RUN_ID, deps);
+    expect(response.status).toBe(200);
+    expect(((await response.json()) as { run: unknown }).run).toEqual(agentRun);
   });
 
   it("없거나 남의 run · UUID가 아니면 404, 플래그 꺼짐 · 허용 목록 밖도 404", async () => {
