@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { flagEnabled, SERVER_FLAGS } from "./flags";
 
 describe("0.2.0 서버 gate", () => {
-  it("구현 계획 7장의 일곱 gate다", () => {
+  it("구현 계획 7장의 일곱 gate와 C3의 REVIEW_V2_ENABLED다", () => {
     expect([...SERVER_FLAGS]).toEqual([
       "CONVERSATIONS_V2_ENABLED",
       "MEMORY_ENABLED",
@@ -12,6 +12,7 @@ describe("0.2.0 서버 gate", () => {
       "AGENT_ADAPTER_CLAUDE_CODE_ENABLED",
       "BYOK_ENABLED",
       "REPORTS_V2_ENABLED",
+      "REVIEW_V2_ENABLED",
     ]);
   });
 

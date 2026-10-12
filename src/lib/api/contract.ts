@@ -1244,3 +1244,172 @@ export type BillingCheckoutRequestV2 = z.infer<typeof billingCheckoutRequestV2Sc
 export const billingRefundRequestV2Schema = z.object({}).strict();
 export const billingRefundResponseV2Schema = z.object({ requested: z.literal(true) });
 export type BillingRefundResponseV2 = z.infer<typeof billingRefundResponseV2Schema>;
+
+// ─── Review · 복귀 요약 · 제안 (0.2.0 C3, 런타임 계약 6 · 8장, 디자인 D-12) ───────────────────
+// 새 경로는 모두 /api/v2/ 아래이고 gate REVIEW_V2_ENABLED가 꺼져 있으면 404다 (v1 동결 지문은 그대로).
+// 서버는 토큰(코드가 정한 짧은 이름)과 id · 시각만 내린다. 사용자에게 보일 문구는 앱이 토큰에서 만든다 — 서버가 문구를 지어내지 않는다.
+// 읽기(GET)는 아무것도 지우지 않는다. 시각은 마이크로초까지 있는 UTC 글자("...123456Z")이고 앱은 Date로 바꾸지 않고 그대로 돌려준다(커서).
+
+const tokenSchema = z.string().regex(/^[a-z][a-z0-9_]{0,63}$/);
+const utcMicroSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/);
+
+/** 한 원천을 읽었나. unavailable이면 그 부분은 비어 있는 것이 아니라 모르는 것이다 (앱은 empty · 모두 처리됨으로 보이면 안 된다) */
+export const reviewSourceStatusSchema = z.enum(["ok", "unavailable"]);
+
+/** 결정 대기 종류 (src/lib/coordinator/pending.ts PENDING_KINDS와 같다: 테스트가 견준다). 지금 실제 원천이 있는 것은 앞의 넷이다 */
+export const pendingDecisionKindSchema = z.enum(["approval", "review_failed", "run_input", "confirm", "agent_question", "suggestion", "blocked_dependency"]);
+export type PendingDecisionKind = z.infer<typeof pendingDecisionKindSchema>;
+
+/** 결정 대기 항목 하나. version은 처리되면 바뀌는 식별이다: 다른 기기에서 처리되면 다음 조회에서 사라지거나(gone) version이 달라진다(stale) */
+export const pendingDecisionItemSchema = z.object({
+  id: z.string(),
+  kind: pendingDecisionKindSchema,
+  action_id: z.uuid(),
+  run_id: z.uuid().nullable(),
+  step_id: z.uuid().nullable(),
+  question_id: z.string().nullable(),
+  version: z.string(),
+  urgent: z.boolean(),
+  urgent_reason: z.enum(["due_window", "blocks_other_work"]).nullable(),
+  created_at: z.string(),
+});
+export type PendingDecisionItem = z.infer<typeof pendingDecisionItemSchema>;
+
+/** (업무, 종류) 묶음. version은 항목 version이 하나라도 바뀌면 달라진다. 목록에는 개수 상한이 없다 */
+export const pendingDecisionGroupSchema = z.object({
+  key: z.string(),
+  action_id: z.uuid(),
+  kind: pendingDecisionKindSchema,
+  urgent: z.boolean(),
+  version: z.string(),
+  created_at: z.string(),
+  items: z.array(pendingDecisionItemSchema),
+});
+export type PendingDecisionGroup = z.infer<typeof pendingDecisionGroupSchema>;
+
+/** 제안 종류 (코드 토큰). 문구는 앱이 만든다 */
+export const suggestionKindSchema = z.enum(["due_window", "run_failed", "source_revised_run"]);
+export type SuggestionKind = z.infer<typeof suggestionKindSchema>;
+export const suggestionStateSchema = z.enum(["open", "accepted", "snoozed", "dismissed", "expired"]);
+
+/**
+ * 제안 하나. version은 상태가 바뀔 때마다 오른다(snooze · dismiss · 다시 열림 · 만료): 처리할 때 읽은 version을 expected_version으로 보낸다.
+ * offered_on: 비긴급이 처음 노출된 사용자 현지 날짜(YYYY-MM-DD), 긴급은 null. 이 서버에서 accepted는 쓰이지 않는다(채택은 없다).
+ */
+export const suggestionSchema = z.object({
+  id: z.uuid(),
+  kind: suggestionKindSchema,
+  action_id: z.uuid(),
+  run_id: z.uuid().nullable(),
+  urgent: z.boolean(),
+  state: suggestionStateSchema,
+  version: z.number().int().positive(),
+  snooze_until: z.string().nullable(),
+  offered_on: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable(),
+  created_at: z.string(),
+  shown_at: z.string().nullable(),
+});
+export type Suggestion = z.infer<typeof suggestionSchema>;
+
+/**
+ * GET /api/v2/review — Review: C2 결정 대기 계산(decisions, 개수 상한 없음) + 열린 제안(suggestions).
+ * 제안을 보는 것만으로 Action · run은 생기지 않는다(노출 표시 shown_at · 묶음 batch_day만 쓴다).
+ * complete: 모든 원천을 읽었다. empty: complete이면서 둘 다 비었다 — 비었다는 말은 empty일 때만 해도 된다 (일부 실패 · 잘림을 비었다고 하지 않는다).
+ * suggestion_batch.state: needs_time_zone = 사용자 시간대를 몰라 새 비긴급 제안은 아직 내지 않는다(긴급과 이미 낸 것은 보인다). 하루 상한 size개.
+ */
+export const reviewResponseSchema = z.object({
+  generated_at: z.string(),
+  complete: z.boolean(),
+  empty: z.boolean(),
+  sources: z.object({ decisions: reviewSourceStatusSchema, suggestions: reviewSourceStatusSchema }),
+  decisions: z.array(pendingDecisionGroupSchema).nullable(),
+  suggestions: z.array(suggestionSchema).nullable(),
+  suggestion_batch: z.object({ state: z.enum(["ready", "needs_time_zone"]), local_day: z.string().nullable(), size: z.number().int().positive() }),
+});
+export type ReviewResponse = z.infer<typeof reviewResponseSchema>;
+
+/** 복귀 요약에서 변화가 온 원천: action_event(원문 · AI 변화, 사용자의 자기 수정은 제외) · run(실행 결과 전이) · message(안 읽은 assistant/event 메시지) */
+export const returnSummaryChangeSourceSchema = z.enum(["action_event", "run", "message"]);
+/** 원문 상태 토큰: 지워진 원문 · 접근 상실 · 보관 만료를 글이나 옛 제목으로 되살리지 않고 이 토큰만 낸다. action_event가 아니면 null */
+export const returnSummarySourceStateSchema = z.enum(["available", "deleted", "access_lost", "text_expired"]);
+
+export const returnSummaryChangeSchema = z.object({
+  source: returnSummaryChangeSourceSchema,
+  /** action_event: due_changed · scope_changed · owner_changed · merged · completed · dropped · reopened · artifact_created / run: done · failed / message: assistant · event */
+  kind: tokenSchema,
+  at: utcMicroSchema,
+  /** run done이면 그 run의 outcome(draft_ready · needs_input · …), 아니면 null */
+  detail: tokenSchema.nullable(),
+  source_state: returnSummarySourceStateSchema.nullable(),
+});
+export type ReturnSummaryChange = z.infer<typeof returnSummaryChangeSchema>;
+
+/** Next 토큰: answer(답할 결정이 있다, decision_kinds) · review_result(끝난 결과를 볼 차례) · open(그 작업을 열어 본다) */
+export const returnSummaryNextSchema = z.object({
+  kind: z.enum(["answer", "review_result", "open"]),
+  decision_kinds: z.array(pendingDecisionKindSchema),
+});
+
+export const returnSummaryItemSchema = z.object({
+  action_id: z.uuid(),
+  /** 지금 제목 (옛 제목 · 원문 글이 아니다) */
+  title: z.string(),
+  status: actionStatusSchema,
+  /** StatusMark: 할 일(to_do) · 진행 중(in_progress) · 완료(done). 취소(dropped)는 null */
+  state: actionProgressStateSchema.nullable(),
+  /** 답할 결정이 있다 ("Needs your answer" 강조). 읽음 · Clear는 이것을 지우지 않는다 */
+  needs_answer: z.boolean(),
+  urgent: z.boolean(),
+  decisions: z.array(z.object({ id: z.string(), kind: pendingDecisionKindSchema, version: z.string(), urgent: z.boolean() })),
+  changes: z.array(returnSummaryChangeSchema),
+  next: returnSummaryNextSchema,
+  /** 이 줄의 내용이 바뀌면 달라진다 (변화 · 결정 · version): 앱이 줄을 비교할 때 쓴다. id는 action_id다 */
+  version: z.string(),
+});
+export type ReturnSummaryItem = z.infer<typeof returnSummaryItemSchema>;
+
+/**
+ * GET /api/v2/return-summary — 복귀 요약. 숫자 없음(개수를 내리지 않는다).
+ * since: 마지막 Clear 위치(마이크로초 UTC 글자, 앱이 "Since …" 표시를 위해 시각으로 바꿔도 되지만 커서에는 쓰지 않는다). 한 번도 Clear하지 않았으면 null + baseline never_cleared
+ *   (이때 run · 대화 변화는 이력 전체를 올리지 않고, 작업 변화는 사용자가 마지막으로 본 뒤의 것만 낸다 — 첫 기준 시각은 열린 제품 결정이다).
+ * cursor: Clear에 그대로 돌려준다. 잘렸거나 변화 원천을 읽지 못했으면 null (일부를 전체처럼 읽음 처리하지 않는다).
+ * complete: 모든 원천을 읽었고 잘리지 않았다. empty: complete이면서 items가 비었다 — "변화 없음 · 모두 처리됨"은 empty일 때만.
+ */
+export const returnSummaryResponseSchema = z.object({
+  generated_at: z.string(),
+  since: utcMicroSchema.nullable(),
+  baseline: z.enum(["cleared", "never_cleared", "unknown"]),
+  cursor: z.string().nullable(),
+  complete: z.boolean(),
+  empty: z.boolean(),
+  sources: z.object({ changes: z.enum(["ok", "unavailable", "truncated"]), decisions: reviewSourceStatusSchema }),
+  items: z.array(returnSummaryItemSchema),
+});
+export type ReturnSummaryResponse = z.infer<typeof returnSummaryResponseSchema>;
+
+/**
+ * POST /api/v2/return-summary/clear — 조회한 범위를 읽음 처리한다. 읽음일 뿐이다(해결 · 승인 · 완료 · 거절이 아니다: 결정 · Action은 그대로).
+ * 200 { cleared_through, applied }: applied=false는 이미 그 위치 이후라 쓸 것이 없었다(재시도 · 다른 기기에서 먼저 Clear) — 성공이다.
+ * 409 conflict: 조회한 뒤 그 범위의 사건이 달라졌다(늦게 들어온 변화 · 삭제). 아무것도 읽음 처리하지 않았다: 다시 조회한다 (자동 재시도 없음).
+ * 400 invalid_request: 모양이 틀린 · 미래 · 남의 커서.
+ */
+export const returnSummaryClearRequestSchema = z.object({ cursor: z.string().min(1).max(400) }).strict();
+export type ReturnSummaryClearRequest = z.infer<typeof returnSummaryClearRequestSchema>;
+export const returnSummaryClearResponseSchema = z.object({ cleared_through: utcMicroSchema, applied: z.boolean() });
+export type ReturnSummaryClearResponse = z.infer<typeof returnSummaryClearResponseSchema>;
+
+/** POST /api/v2/suggestions/{id}/snooze — 사용자가 고른 시점까지 숨긴다 (서버가 시점을 정하지 않는다). 지금보다 뒤 · 366일 이내 */
+export const suggestionSnoozeRequestSchema = z
+  .object({ expected_version: z.number().int().positive(), snooze_until: z.iso.datetime({ offset: true }) })
+  .strict();
+export type SuggestionSnoozeRequest = z.infer<typeof suggestionSnoozeRequestSchema>;
+
+/** POST /api/v2/suggestions/{id}/dismiss — this: 이 계기만 / topic: 같은 종류 + 같은 주제의 새 계기도 다시 제안하지 않는다 */
+export const suggestionDismissRequestSchema = z
+  .object({ expected_version: z.number().int().positive(), scope: z.enum(["this", "topic"]) })
+  .strict();
+export type SuggestionDismissRequest = z.infer<typeof suggestionDismissRequestSchema>;
+
+/** 200 { suggestion }: 처리한 뒤의 제안. 404 없는/남의 제안 · 409 conflict(옛 version이거나 이미 끝난 제안: 다시 조회) · 400 잘못된 본문 · 시점 */
+export const suggestionResponseSchema = z.object({ suggestion: suggestionSchema });
+export type SuggestionResponse = z.infer<typeof suggestionResponseSchema>;

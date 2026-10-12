@@ -11,6 +11,7 @@
  * AGENT_ADAPTER_CLAUDE_CODE_ENABLED: Claude Code dispatch · Your agents 행 (끄면 dispatch 0. DB의 execution_controls도 따로 막는다)
  * BYOK_ENABLED: 사용자 OpenRouter 키 입력 · 사용 (끄면 모든 계정 관리형 키)
  * REPORTS_V2_ENABLED: 일일 보고 · 조용한 시간 (끄면 기존 알림)
+ * REVIEW_V2_ENABLED: Review · 복귀 요약 · 제안 (끄면 /api/v2/review · return-summary · suggestions는 404, 새 쓰기 0. 제안 생산은 이 gate AND 코디네이터 결과를 쓰는 종류는 COORDINATOR_ENABLED)
  */
 export const SERVER_FLAGS = [
   "CONVERSATIONS_V2_ENABLED",
@@ -20,6 +21,7 @@ export const SERVER_FLAGS = [
   "AGENT_ADAPTER_CLAUDE_CODE_ENABLED",
   "BYOK_ENABLED",
   "REPORTS_V2_ENABLED",
+  "REVIEW_V2_ENABLED",
 ] as const;
 export type ServerFlag = (typeof SERVER_FLAGS)[number];
 

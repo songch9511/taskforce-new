@@ -65,6 +65,32 @@ const eslintConfig = defineConfig([
     },
   },
   {
+    // 권한 경계 (불변식 I04 · I14, 0.2.0 C3): Review · 복귀 요약 · 제안(src/lib/review)은 실행 정책 · 승인 · 도구 · 저장소를 가져오지 않는다. 결정 대기 계산(코디네이터)은 읽기만 가져온다
+    // (src/lib/review/boundary.test.ts)
+    files: ["src/lib/review/**"],
+    ignores: ["src/lib/review/**/*.test.ts"],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          patterns: [
+            {
+              group: ["@/lib/execution", "@/lib/execution/**", "**/execution", "**/execution/**"],
+              message: "Review · 복귀 요약 · 제안(src/lib/review)은 실행(src/lib/execution)을 가져오지 않는다 (I04 · I14 권한 경계).",
+            },
+          ],
+        },
+      ],
+      "no-restricted-syntax": [
+        "error",
+        {
+          selector: "ImportExpression[source.value=/(^|\\x2F)execution(\\x2F|$)/]",
+          message: "Review · 복귀 요약 · 제안(src/lib/review)은 실행(src/lib/execution)을 가져오지 않는다 (I04 · I14 권한 경계).",
+        },
+      ],
+    },
+  },
+  {
     // 권한 경계 (불변식 I04 · I14): 맥락층(기억 · 범위 · 사람 · 묶음)과 대화 v2(의도 · 제안 · 기억 쓰기)는 실행 정책 · 도구 · 승인을 읽거나 바꾸지 못한다
     // (src/lib/context/boundary.test.ts · src/lib/conversation/boundary.test.ts)
     files: ["src/lib/context/**", "src/lib/conversation/**"],
