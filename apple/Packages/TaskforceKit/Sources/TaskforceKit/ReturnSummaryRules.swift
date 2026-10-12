@@ -68,7 +68,8 @@ public enum ReturnSummaryCopy {
     /// 필드마다 정한 규칙 (P2-M2 — 알 수 없거나 타입이 틀린 값을 지우거나 정상으로 바꾸지 않는다):
     /// - 모르는 source · kind: 해석 못 함. 문자열이어야 하는 `kind` · `detail`이 다른 타입으로 왔으면(`isMalformed`) 해석 못 함.
     /// - run `done`의 `detail`(outcome): 정말 없음(null · 키 없음)은 `Processing finished`, 아는 outcome은 그 말, 모르는 문자열은 해석 못 함 (정상 성공으로 올리지 않는다).
-    /// - run `failed`의 `detail`: 서버가 run의 outcome을 done · failed 사건 모두에 싣는다. 실패 문장은 outcome에 달라지지 않으므로 문자열은 문구를 바꾸지 않는다 (타입이 틀리면 위처럼 해석 못 함).
+    /// - run `failed`의 `detail`: 서버가 run의 outcome을 done · failed 사건 모두에 싣는다(`run.outcome`). 없음(null · 키 없음)과 **아는 outcome**(`knownRunOutcomes`)이면 실패 문장은 outcome에 달라지지 않으므로 그대로다.
+    ///   모르는 문자열은 앱이 모르는 정보라 `done`과 똑같이 해석 못 함 (D-7: 모르는 자유 문자열 detail도 막는다 — 지금 서버가 보내지 않는 미래 토큰이어도 실패 문장으로 덮지 않는다). 타입이 틀리면 위처럼 해석 못 함.
     /// - action_event의 `detail`: 계약상 null이다. 값이 있으면 이 앱이 모르는 정보라 해석 못 함. message의 `detail`도 같다.
     /// - action_event의 `source_state`: 없음 · `available`은 말이 없고, `deleted` · `access_lost` · `text_expired`는 그 말을 덧붙이고, 모르는 값은 해석 못 함.
     /// - run · message의 `source_state`: 계약상 null이다. 없음 · `available`(말이 없는 값)만 받고, 그 밖의 값(모르는 값 포함)은 해석 못 함.
@@ -94,6 +95,9 @@ public enum ReturnSummaryCopy {
         }
     }
 
+    /// 서버가 run에 기록하는 outcome (`execution_runs_outcome_check`): `done`의 말을 정하고, `failed`에 실려도 아는 값이다
+    private static let knownRunOutcomes: Set<String> = ["draft_ready", "needs_input", "needs_connection", "needs_capability", "review_failed", "agent_done"]
+
     private static func base(_ change: ReturnSummaryChange) -> String? {
         switch change.source {
         case .actionEvent:
@@ -110,7 +114,10 @@ public enum ReturnSummaryCopy {
             }
         case .run:
             switch change.kind {
-            case "failed": return runFailed
+            case "failed":
+                // 아는 outcome(서버가 failed 사건에도 싣는다)이거나 없을 때만 실패 문장이다. 모르는 문자열 detail은 해석 못 한 변화 (D-7)
+                guard change.detail.map({ knownRunOutcomes.contains($0) }) ?? true else { return nil }
+                return runFailed
             case "done":
                 switch change.detail {
                 case nil: return runProcessingFinished

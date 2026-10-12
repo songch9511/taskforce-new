@@ -52,6 +52,23 @@ struct ReturnSummaryIllTypedChangeTests {
         }
     }
 
+    /// 모르는 문자열 `detail`은 `failed`에서도 앱이 모르는 정보다 (정보를 잃지 않고 해석 못 한 변화로 둔다). 아는 outcome과 없음(null · 키 없음)은 실패 문장 그대로
+    @Test func anUnknownDetailOnAFailedRunIsUninterpretableButKnownOutcomesAndNothingAreNot() throws {
+        func change(_ json: String) throws -> ReturnSummaryChange {
+            try Fx.decode(Fx.example(items: "[\(Fx.item(1, changes: "[\(json)]"))]")).items[0].changes[0]
+        }
+        let unknown = try change(Fx.change(source: "run", kind: "failed", detail: "future_outcome", sourceState: nil))
+        #expect(!unknown.isMalformed && unknown.detail == "future_outcome", "문자열은 지우지 않고 그대로 읽는다")
+        #expect(!unknown.isInterpretable && ReturnSummaryCopy.change(unknown) == nil)
+        for outcome in ["draft_ready", "needs_input", "needs_connection", "needs_capability", "review_failed", "agent_done"] {
+            let known = try change(Fx.change(source: "run", kind: "failed", detail: outcome, sourceState: nil))
+            #expect(ReturnSummaryCopy.change(known) == ReturnSummaryCopy.runFailed, "\(outcome)")
+        }
+        for nothing in [Fx.change(source: "run", kind: "failed", sourceState: nil), Fx.change(source: "run", kind: "failed", sourceState: nil, omitDetail: true)] {
+            #expect(ReturnSummaryCopy.change(try change(nothing)) == ReturnSummaryCopy.runFailed)
+        }
+    }
+
     @Test func aNonStringKindIsMalformedToo() throws {
         for raw in ["7", "{}", "[]", "false"] {
             let response = try Fx.decode(Fx.example(items: "[\(Fx.item(1, changes: "[\(Fx.change(kindJSON: raw))]"))]"))
@@ -79,6 +96,9 @@ struct ReturnSummaryIllTypedChangeTests {
             ("run done · detail bool", Fx.change(source: "run", kind: "done", sourceState: nil, detailJSON: "true")),
             ("run done · detail unknown outcome", Fx.change(source: "run", kind: "done", detail: "mystery", sourceState: nil)),
             ("run failed · detail object", Fx.change(source: "run", kind: "failed", sourceState: nil, detailJSON: "{}")),
+            ("run failed · detail number", Fx.change(source: "run", kind: "failed", sourceState: nil, detailJSON: "7")),
+            ("run failed · detail unknown outcome", Fx.change(source: "run", kind: "failed", detail: "future_outcome", sourceState: nil)),
+            ("run failed · detail empty text", Fx.change(source: "run", kind: "failed", detail: "", sourceState: nil)),
             ("run done · source_state future_state", Fx.change(source: "run", kind: "done", detail: "draft_ready", sourceState: "future_state")),
             ("run done · source_state deleted", Fx.change(source: "run", kind: "done", detail: "draft_ready", sourceState: "deleted")),
             ("run done · source_state number", Fx.change(source: "run", kind: "done", detail: "draft_ready", sourceStateJSON: "3")),
@@ -146,7 +166,14 @@ struct ReturnSummaryIllTypedChangeTests {
             ("run done · review_failed", Fx.change(source: "run", kind: "done", detail: "review_failed", sourceState: nil), ReturnSummaryCopy.runNeedsRevision),
             ("run done · source_state available", Fx.change(source: "run", kind: "done", detail: "draft_ready", sourceState: "available"), ReturnSummaryCopy.runDraftReady),
             ("run failed · detail null", Fx.change(source: "run", kind: "failed", sourceState: nil), ReturnSummaryCopy.runFailed),
-            ("run failed · outcome text (the server fills run.outcome on both)", Fx.change(source: "run", kind: "failed", detail: "draft_ready", sourceState: nil), ReturnSummaryCopy.runFailed),
+            // 서버가 run의 outcome을 done · failed 사건 모두에 싣는다: 아는 outcome이면 실패 문장은 그대로다
+            ("run failed · known outcome draft_ready", Fx.change(source: "run", kind: "failed", detail: "draft_ready", sourceState: nil), ReturnSummaryCopy.runFailed),
+            ("run failed · known outcome needs_input", Fx.change(source: "run", kind: "failed", detail: "needs_input", sourceState: nil), ReturnSummaryCopy.runFailed),
+            ("run failed · known outcome needs_connection", Fx.change(source: "run", kind: "failed", detail: "needs_connection", sourceState: nil), ReturnSummaryCopy.runFailed),
+            ("run failed · known outcome needs_capability", Fx.change(source: "run", kind: "failed", detail: "needs_capability", sourceState: nil), ReturnSummaryCopy.runFailed),
+            ("run failed · known outcome review_failed", Fx.change(source: "run", kind: "failed", detail: "review_failed", sourceState: nil), ReturnSummaryCopy.runFailed),
+            ("run failed · known outcome agent_done", Fx.change(source: "run", kind: "failed", detail: "agent_done", sourceState: nil), ReturnSummaryCopy.runFailed),
+            ("run failed · detail key absent", Fx.change(source: "run", kind: "failed", sourceState: nil, omitDetail: true), ReturnSummaryCopy.runFailed),
             ("message assistant", Fx.change(source: "message", kind: "assistant", sourceState: nil), ReturnSummaryCopy.messageAssistant),
             ("message event", Fx.change(source: "message", kind: "event", sourceState: nil), ReturnSummaryCopy.messageEvent),
             ("message assistant · detail key absent", Fx.change(source: "message", kind: "assistant", sourceState: nil, omitDetail: true), ReturnSummaryCopy.messageAssistant),
