@@ -1,0 +1,213 @@
+# Review · 복귀 요약 · 제안 서버 (0.2.0 C3) — 결정 기록과 위치
+
+2026-10-12 · 구현 계획 C3 · 근거: 런타임 계약 1장(복귀 요약 = 기존 이벤트 계산) · 6장(`pending_decisions`) · 8장(`suggestions`) · 12장 상수, 아키텍처 I04 · I13 · I14 · ARCH06/07/25, 개발 계획 A08 · A09 · A16 · A39 · A40, 디자인 D-12(ReturnSummary) · D-8(Receipts 틀은 Mac 몫).
+**gate `REVIEW_V2_ENABLED` 기본 꺼짐. 꺼져 있으면 새 경로 다섯 개는 404(인증 · DB 호출 없음, 새 쓰기 0), 기존 API · 쓰기 · 실행 의미는 그대로다. 운영 DB 적용 전.** 이 문서는 "무엇을 만들었고, 무엇을 일부러 안 만들었고, 어디 있는가"만 적는다. 일반 규칙은 [FEATURE_MAP.md](FEATURE_MAP.md), 코디네이터는 [coordinator.md](coordinator.md).
+
+## 1. 한눈에
+
+| 조각 | 위치 |
+|---|---|
+| 저장 계약 (표 3 · 함수 8 · 보호 트리거 2) | `supabase/migrations/20261111000000_review_summary.sql` |
+| 제안 DB 호출 (생산 · 노출 · snooze · dismiss) | `src/lib/review/suggestions.ts` |
+| 복귀 요약 읽기 · 계산(순수) · Clear | `src/lib/review/return-summary.ts` · `cursor.ts` |
+| Review (결정 대기 + 열린 제안) | `src/lib/review/review.ts` · `time-zone.ts` · `day.ts` · `dto.ts` · `review.config.ts` |
+| API 처리 (인증 · gate · 오류 매핑) | `src/lib/api/review.ts` · zod `src/lib/api/contract.ts` 끝(C3 절) |
+| route | `src/app/api/v2/{review,return-summary,return-summary/clear,suggestions/[id]/snooze,suggestions/[id]/dismiss}/route.ts` |
+| gate | `src/lib/flags.ts` `REVIEW_V2_ENABLED` |
+| 바뀜 규칙 한 곳 | `src/lib/actions/changed.ts` (`changesAfterSeen`은 `changedSinceSeen`과 같은 뜻) |
+
+## 2. 읽음 = 사건 id (P2-A 보완 포함)
+
+`action_events.created_at` · `execution_events.at` · `conversation_messages.created_at`은 **트랜잭션 시작 시각**이라 commit 순서와 다르다. "지평 이전은 다 봤다"를 시각으로는 증명할 수 없다 — 아직 commit하지 않았거나 BEGIN만 하고 아직 쓰지 않은 트랜잭션의 행이 나중에 그 시각으로 나타난다. grace 시간도 잠금도 이것을 막지 못한다(writer와 잠금을 공유하지 않는다). 그래서:
+
+- **후보 사건**(`return_summary_candidates`): 지평까지 보이는 세 원천 — `action_events`(ai · agent가 쓴 `changed.ts` 종류) · `execution_events`(run `done` · `failed` 전이) · `conversation_messages`(assistant · event, `refs.action_ids`가 내 Action).
+- **조회**(`return_summary_scan`): 문장 하나(스냅샷 하나)에서 후보 − 읽음 표시(`return_summary_reads`) = 보이는 변화, 그리고 후보 집합의 **digest**(원천마다 개수 + id 해시 합)와 지평을 낸다. 커서 = (사용자, 지평, digest).
+- **Clear**(`return_summary_clear`): 같은 지평으로 후보 집합을 다시 세어 digest가 같을 때만, 그 **집합의 id만** `return_summary_reads`에 쓴다 — digest 확인과 표시가 **한 문장**이다. 조회 뒤 Clear 전에 commit된 사건(트랜잭션 시작 시각이 지평 이전이어도)이 있으면 digest가 달라 `stale`(409, 아무것도 안 씀). Clear 때 **아직 commit되지 않은 사건은 집합에 없으므로 읽음이 되지 않아**, commit된 뒤 다음 조회에 보인다.
+- 시각 워터마크는 읽음의 근거가 아니다. `return_summary_state.cleared_through`는 마지막 Clear의 지평(표시용 "Since …" · "Clear한 적이 있다"의 표시)이다 (단조 트리거).
+- 단조: 읽음 표시는 쌓이기만 한다. 같은 커서 재시도 · 겹친 읽기 · 두 기기 · 늦은 Clear는 `applied:false` 성공이다. 같은 사용자의 Clear는 advisory lock으로 직렬이지만 **정확성은 잠금이 아니라 "집합" 규칙이 만든다**.
+- 처음 Clear하면 그때 보이던 이력 전부(보이지 않던 run · 대화 이력 포함)가 기준이 된다(읽음 표시). 한 번도 Clear하지 않은 사용자는 run · 대화 이력을 변화로 올리지 않고(읽음 기준이 없다) 작업 변화만 `changed.ts` 의미로 올린다 — **첫 기준 시각의 제품 결정 전 임시 규칙**이다(결정 항목 P-1).
+- 작업이 300개를 넘으면 `truncated` + 커서 없음(일부를 전체처럼 읽음 처리하지 않는다). 읽음 표시는 지우지 않는다(만료 · 정리 정책 없음 — 결정 항목 P-5).
+
+## 3. 제안 (suggestions)
+
+- dedup = `kind + subject_key + revision`(계기). 날짜가 아니다: 같은 계기는 하루가 지나도 다시 제안하지 않는다(A08). `dismiss_scope = 'topic'`은 같은 kind + subject의 새 계기도 막는다. 생산 · 노출 · 전이는 사용자 advisory lock으로 직렬(두 worker · 두 기기).
+- 비긴급 상한: 사용자 현지 날짜마다 **처음 노출 묶음 하나, 3개**(`batch_day`). 그날 한 번이라도 묶음이 있었으면(전부 처리했어도) 새 비긴급을 더 내지 않는다. 긴급(`urgent`)은 상한 밖. 이미 낸 비긴급은 처리하기 전까지 남고 다시 "새로" 나오지 않는다(변화 없는 반복 노출 없음). C2 `pending` 목록에는 상한을 씌우지 않는다(201개면 201개).
+- 현지 날짜: `src/lib/review/day.ts`(Intl, 고정 시계로 시험 · DST 시험). 시간대 출처: **이 스택에는 시간대 저장소가 없다.** 보고 설정(H1 `report_preferences.time_zone`)은 별도 스택이다. 표가 없거나 그 사용자의 값이 없으면 **정당한 모름**(`needs_time_zone`, 읽기는 완전): 새 비긴급을 내지 않고 시간대를 추측하지 않는다. 표가 있는데 읽기가 실패하면(예: 57014) **모름이 아니라 읽지 못한 것**이다: `sources.time_zone: unavailable` · `complete:false` · `empty:false`, 긴급과 이미 낸 제안은 그대로 보인다(P2-B).
+- 전이: `snooze`(사용자가 고른 미래 시점만, 366일 이내 — 오타를 막는 기술 한도) · `dismiss`(this | topic). 모두 `state + version` 조건부 쓰기, 실패는 409(자동 재시도 없음). **accept(채택)는 없다**: 채택이 낳는 효과가 아직 정의되지 않았다(B2 proposal 채택 멱등은 그 효과가 정해지면 재사용). 새 결정 outcome · Undo 없음.
+- 만료: 나이로는 만료하지 않는다. 증거가 있을 때만 `expired`(기한이 바뀜 · Action이 닫힘 · run이 새 run으로 바뀜/끝남, `stale_evidence`). 원천(Action)이 지워지면 제안도 cascade로 사라진다(되살리지 않는다).
+
+## 4. 실제 연결 / fixture
+
+| 대상 | 상태 | 원천 / 이유 |
+|---|---|---|
+| 제안 `due_window` | **실제 연결** | `actions.due_at`이 24시간 창 안인 내 열린 Action (지난 기한은 만들지 않는다: 옛 일이 한꺼번에 제안이 되지 않게). 긴급. C2 불필요 |
+| 제안 `run_failed` | **실제 연결** | 그 Action의 가장 최근 `execution_runs.state = 'failed'`. 긴급. C2 불필요 |
+| 제안 `source_revised_run` | **실제 연결 (C2 결과 소비)** | C2가 처리한 `source_revised`(`impact_recorded`)가 가리키는 살아 있는 run. `COORDINATOR_ENABLED`일 때만 `inbox_events`를 읽는다. 비긴급 |
+| 그 밖의 제안 종류 | **미연결** | 원천이 없다(회신 · 에이전트 질문 · 의존 · 연결 상태). 종류는 코드 토큰이고 문구는 서버가 만들지 않는다 |
+| 결정 대기 (Review `decisions`) | **실제 연결 (C2 계산)** | `coordinator_pending_inputs`: 승인 대기 단계 · run `needs_input`/`review_failed` · Action 확인 요청. C2 게이트와 무관하게 실제 표에서 계산 |
+| 결정 대기 `agent_question` · `suggestion` · `blocked_dependency` | **미연결 (계약 값만)** | 원천 표가 없다. 열린 제안은 `decisions`에 합치지 않고 Review의 `suggestions`로 따로 낸다 |
+| 복귀 요약 변화 | **실제 연결** | `action_events`(사용자 자기 수정 · 본 것 이전 제외) · `execution_events`(done/failed) · `conversation_messages`(+ `last_read_at`). `inbox_events`는 읽지 않는다(C2 적재 실패 누락 한계로 완전성의 근거가 못 된다) |
+| `conversations.last_read_at` | 읽기만 | 쓰는 코드는 아직 없다(열만). 쓰는 쪽이 생기면 그 이후 메시지만 변화다 |
+| Receipts | **서버 몫 없음** | 틀은 Mac, 채움은 F2 |
+
+## 5. 하지 않은 것 · 한계 (해결로 표시하지 않음)
+
+- C2의 한계는 그대로다: 승인 · 철회 · 멈춤 · context version 적재 실패는 복구가 없고, sweep 1분, timer 전체 scan, dead_at 정책, 보관 기한, 전역 기억 생산자. C3는 `inbox_events`로 완전성을 주장하지 않는다.
+- 운영 DB 적용 전, 실제 provider/Jev/eval 호출 없음, `vercel.json`/env/스케줄 변경 없음. 제안 생산은 Review 조회 때(멱등)뿐이다 — 별도 스케줄 생산은 `vercel.json` 변경이 필요해 하지 않았다.
+- 읽기 비용: 후보 집합 digest는 사용자 이력 전체를 센다(`action_events` AI 변화 · run 결과 · 대화 메시지). 인덱스를 새로 만들지 않았다(기존 `action_events_action_idx` 등). 매우 큰 이력은 조회 · Clear가 느릴 수 있다 — 운영 규모 측정은 하지 않았다.
+- 이 코드가 모르는 종류의 열린 제안(더 새 서버가 쓴 것)은 내리지 않고 `sources.suggestions: unavailable`로 알린다.
+- 시각 정밀도: 시각 글자는 SQL이 만든 마이크로초 UTC 그대로다. 앱이 Date로 바꿔 돌려주면 digest가 달라져 409가 난다(정직한 거절).
+- 아래 결정 항목은 구현으로 정하지 않았다.
+
+## 6. 열린 제품 결정 (구현하지 않았다)
+
+| # | 결정 | 이 서버의 임시 동작 |
+|---|---|---|
+| P-1 | 복귀 요약의 **첫 기준 시각**(한 번도 Clear하지 않았을 때 "Since …"가 무엇인가) | `since:null` + `baseline:"never_cleared"`. 작업 변화는 사용자가 마지막으로 본 뒤만, run · 대화 이력은 올리지 않는다. 첫 Clear가 이력을 기준으로 삼는다 |
+| P-2 | **새 문구 전부**: 변화 토큰 · `next` · 제안 세 종류 · `needs_time_zone`/`unavailable` 안내 | 서버는 토큰만 낸다(JSON 계약의 토큰 표) |
+| P-3 | **제안 종류**(어떤 사실이 제안이 되는가) | 실제 원천이 분명한 세 가지만 |
+| P-4 | **사용자 시간대의 출처 · 기본값** (H1 `report_preferences`와의 연결, 시간대를 모르는 사용자) | 모르면 새 비긴급을 내지 않는다 |
+| P-5 | 읽음 표시 · 제안 행의 **보관/정리 정책** | 정책 없음: 지우지 않는다 |
+| P-6 | 제안 **accept**가 낳는 효과 | 없음(snooze · dismiss만) |
+| P-7 | `source_revised_run` 등 C2 결과를 쓰는 종류의 **사용자 노출 기준**(비긴급 3개 상한이 맞는가) | 비긴급 일일 묶음에 든다 |
+
+## 7. 적용 · 되돌리기 · 점검
+
+- 한 트랜잭션 마이그레이션(`lock_timeout` 5초). 기존 표 · 함수 · 제약 · 트리거는 바꾸지 않았다(새 표 3 + 새 함수만): 시험이 적용 전후 객체 지문을 견준다. 적용은 병합 직전 승인을 받고 `supabase db query --linked -f`, `db push` 금지.
+- 되돌리기: 마이그레이션 헤더의 `drop` 문장 3개를 순서대로 실행하면 적용 전 객체 지문으로 돌아간다(시험이 그대로 실행해 확인). 코드는 PR을 닫으면 된다. gate를 끄면 새 경로가 404이고 새 쓰기가 0이다(표는 남아 있어도 읽는 코드가 없다).
+- 점검 쿼리 예(개수만): 제안 `select state, count(*) from suggestions group by 1`, 읽음 `select count(*) from return_summary_reads`.
+
+## 8. 검증
+
+| 무엇 | 어디 |
+|---|---|
+| DB 계약 (열 · 제약 · 권한 · search_path · 생산 · 노출 · 전이 · 읽기 · Clear · 업그레이드 · 되돌리기) | `tests/db/review-summary.scenarios.ts` (PGlite `.test.ts` + 실제 Postgres `tests/pg/review-summary.test.ts`) |
+| P2-A 경합 (미커밋 INSERT · BEGIN 먼저 · run · 메시지 · 대조) · 동시 Clear · 하루 묶음 · 생산 · 전이 | `tests/pg/review-summary.test.ts` (연결 둘 이상) |
+| Review · 제안 · 시간대 읽기(P2-B) | `tests/review/review.test.ts` · `tests/review/time-zone.test.ts` |
+| 복귀 요약 · Clear · 완전성 · 권한 경계 (A40 · ARCH06/07) | `tests/review/return-summary.test.ts` · `src/lib/review/*.test.ts` |
+| API 처리 · 쿠키 CSRF · gate | `src/lib/api/review.test.ts` · `src/app/api/v2/review/csrf.test.ts` |
+| v1 동결 | `src/lib/api/contract-v1-freeze.test.ts` (지문 그대로) |
+
+# JSON 계약 (Mac이 읽는다)
+
+### 공통
+
+- 모든 경로는 `/api/v2/…`, 인증은 `Authorization: Bearer <Supabase access token>` 또는 웹 쿠키(쿠키로 인증하는 **POST**는 같은 출처만 — 아니면 401). 앱은 Bearer.
+- **gate `REVIEW_V2_ENABLED`**(서버 env, 기본 꺼짐, 정확히 `"true"`): 꺼져 있으면 **다섯 경로 모두 404** `{"error":{"code":"not_found","message":"없는 경로입니다."}}`. 인증도 DB도 부르지 않고 새 쓰기 0. 앱은 404를 "이 서버는 아직 이 기능이 없다"로 읽고 기존 화면으로 둔다(오류 토스트 금지).
+- 오류 본문은 항상 `{"error":{"code","message"}}` (code ∈ 기존 `apiErrorCodeSchema`: `unauthorized` 401 · `invalid_request` 400 · `not_found` 404 · `conflict` 409 · `internal_error` 500). 새 오류 코드는 없다. `message`는 한국어 진단문이라 화면에 그대로 쓰지 않는다. 오류 본문에는 요청 값이 없다.
+- 시각은 두 종류다: **마이크로초 UTC 글자** `2026-10-12T00:00:00.123456Z`(`since` · 변화 `at` · 커서 · `cleared_through`)는 **Date로 바꿔서 서버에 돌려주지 않는다**(커서는 불투명 글자 그대로). 나머지(`generated_at` · `created_at` · `shown_at` · `snooze_until`)는 `toISOString()` 모양(밀리초) ISO 8601.
+- GET 응답은 `Cache-Control: no-store`. 읽기 요청은 아무것도 지우지 않는다(Review의 제안 노출 표시만 예외 — 아래).
+- **숫자를 내리지 않는다.** 개수 · 합계 필드가 없다. 앱도 세지 않는다(디자인 D-12).
+- 서버는 문구를 만들지 않는다. 아래 "토큰" 표의 토큰에서 앱이 문구를 만든다.
+
+### 1. `GET /api/v2/review` — Review (결정 대기 + 열린 제안)
+
+200 `ReviewResponse`:
+
+```json
+{
+  "generated_at": "2026-10-12T09:00:00.000Z",
+  "complete": true,
+  "empty": false,
+  "sources": { "decisions": "ok", "suggestions": "ok", "time_zone": "ok" },
+  "decisions": [
+    { "key": "<action_id>:approval", "action_id": "<uuid>", "kind": "approval", "urgent": true, "version": "9f2c1a0b3d4e5f60",
+      "created_at": "2026-10-11T00:00:00.000Z",
+      "items": [ { "id": "approval:<step_id>", "kind": "approval", "action_id": "<uuid>", "run_id": "<uuid>", "step_id": "<uuid>", "question_id": null,
+                   "version": "step:<step_id>:3:1", "urgent": true, "urgent_reason": "due_window", "created_at": "2026-10-11T00:00:00.000Z" } ] }
+  ],
+  "suggestions": [
+    { "id": "<uuid>", "kind": "due_window", "action_id": "<uuid>", "run_id": null, "urgent": true, "state": "open", "version": 1,
+      "snooze_until": null, "offered_on": null, "created_at": "2026-10-12T08:59:59.000Z", "shown_at": "2026-10-12T09:00:00.000Z" }
+  ],
+  "suggestion_batch": { "state": "ready", "local_day": "2026-10-12", "size": 3 }
+}
+```
+
+- `decisions` = C2 `pending_decisions` 계산 그대로: **(업무, 종류) 묶음**, 긴급 먼저 → 오래 기다린 순. **개수 상한이 없다**(201개면 201개). `kind`는 `approval | review_failed | run_input | confirm`만 실제로 나온다(`agent_question · suggestion · blocked_dependency`는 계약에만 있는 예약 값 — 지금 원천이 없어 오지 않는다. 모르는 값은 건너뛰되 `complete`를 true로 믿지 않는다). 목록은 계산값이라 표가 없다.
+- `version`(묶음 · 항목)은 **처리되면 바뀌는 식별**이다. 다른 기기에서 처리되면 다음 조회에서 항목이 사라지거나(gone) version이 달라진다(stale). **옛 version으로 행동하지 않는다.** 항목 `id`는 안정 id.
+- `suggestions` = 지금 보이는 열린 제안(`state`는 늘 `open`): 긴급(상한 밖) + 이미 노출한 비긴급 + 오늘 처음 노출된 비긴급(사용자 현지 날짜마다 **한 묶음 3개**). `offered_on`(YYYY-MM-DD)이 오늘이면 오늘 새로 나온 것. 긴급은 `offered_on: null`. 순서: 긴급 먼저 → 오래된 순.
+- `suggestion_batch.state`: `ready`(시간대를 알아 하루 묶음을 센다) | `needs_time_zone`(**저장된 사용자 시간대가 없다** — 이 서버 스택에 시간대 저장소가 없거나 그 사용자의 값이 없는 **정당한 모름**이고 읽기는 완전하다: **새 비긴급은 아직 내지 않는다**, 긴급과 이미 낸 제안은 보인다) | `unavailable`(시간대를 **읽지 못했다** — 예상 못한 읽기 오류, 아래 `sources.time_zone`도 `unavailable`, `complete:false`: 새 비긴급은 내지 않고 긴급과 이미 낸 제안만 보인다). 앱은 어느 쪽도 "제안 없음"으로 보이면 안 된다.
+- 완전성: `sources` 셋(`decisions` · `suggestions` · `time_zone`)이 모두 `ok`일 때만 `complete`. **`empty`가 true일 때만** "아무것도 없음"을 보여도 된다. 한 쪽이 `unavailable`이면 그 목록은 `null`이거나 **일부**일 수 있고(예: 이 서버가 모르는 종류의 제안이 있어 `suggestions`가 `unavailable`) 비어 있는 것이 아니라 **모르는 것**이다(Try again 상태로). `needs_time_zone`은 `unavailable`이 아니다: 저장된 시간대가 없다는 사실을 완전하게 읽은 것이다.
+- **제안을 보는 것은 Action · run을 만들지 않는다.** 이 GET은 제안 생산(지금 있는 사실에서, 멱등)과 노출 표시(`shown_at` · 하루 묶음)를 쓴다 — 같은 하루 안에서 몇 번을 불러도 같은 묶음이다. 두 기기가 동시에 불러도 묶음은 하나다.
+- 401 로그인 필요 · 404 gate 꺼짐 · 500 `internal_error`(전체 실패; 일부 실패는 200 + `unavailable`).
+
+### 2. `GET /api/v2/return-summary` — 복귀 요약
+
+200 `ReturnSummaryResponse`:
+
+```json
+{
+  "generated_at": "2026-10-12T21:00:00.000Z",
+  "since": "2026-10-12T08:00:00.000000Z",
+  "baseline": "cleared",
+  "cursor": "c1.WyIxMTExLi4uIiwiMjAyNi0xMC0xMlQwODowMDowMC4wMDAwMDBaIiwi…",
+  "complete": true,
+  "empty": false,
+  "sources": { "changes": "ok", "decisions": "ok" },
+  "items": [
+    { "action_id": "<uuid>", "title": "확인이 필요한 일", "status": "open", "state": "to_do",
+      "needs_answer": true, "urgent": false,
+      "decisions": [ { "id": "confirm:<action_id>", "kind": "confirm", "version": "action:<id>:4", "urgent": false } ],
+      "changes": [],
+      "next": { "kind": "answer", "decision_kinds": ["confirm"] },
+      "version": "0a1b2c3d4e5f6071" },
+    { "action_id": "<uuid>", "title": "초안 작성", "status": "open", "state": "in_progress",
+      "needs_answer": false, "urgent": false, "decisions": [],
+      "changes": [ { "source": "run", "kind": "done", "at": "2026-10-12T13:00:00.000000Z", "detail": "draft_ready", "source_state": null } ],
+      "next": { "kind": "review_result", "decision_kinds": [] },
+      "version": "7c6b5a4938271605" }
+  ]
+}
+```
+
+- **한 줄 = 업무 하나**(`action_id`가 안정 id). 줄에는 `StatusMark`(`state`), `title`(**지금 제목** — 옛 제목 · 원문 글 · 변경 전후 값은 절대 내려가지 않는다), 변화(`changes`), `Needs your answer`(`needs_answer`), `Next`(`next`). 줄을 누르면 그 업무 상세. 순서: 답할 결정이 있는 줄(긴급 맨 앞) → 최근 변화 순 → id.
+- `state`: `to_do | in_progress | done | null`(취소된 업무는 null). `status`: `open | done | dropped`.
+- `changes`(시각 순, 안 읽은 것만): `source` ∈ `action_event`(원문 · AI · 실행기 변화 — **사용자 자기 수정 · 사용자가 본 이전 변화는 없다**, `changed.ts`와 같은 뜻) · `run`(실행 결과 전이 `done | failed`, `detail`=run outcome) · `message`(안 읽은 `assistant | event` 메시지가 그 업무를 가리킴). `source_state`(action_event만): `available | deleted | access_lost | text_expired` — **지운 원문 · 접근 상실 · 보관 만료는 글이나 옛 제목으로 되살리지 않고 이 토큰으로만** 보인다.
+- `since`: **마지막 Clear의 지평**(마이크로초, "Since …" 표시용). **읽음의 근거가 아니다** — 무엇이 읽혔는지는 서버가 사건 id로 기억한다. 그래서 Clear 뒤에 commit된 사건은 시각이 `since`보다 이르더라도 다음 조회에 **새 변화로 보인다**(트랜잭션 시작 시각 때문에 숨지 않는다). `baseline`: `cleared`(Clear한 적 있음) | `never_cleared`(`since: null` — **첫 기준 시각은 열린 제품 결정**이다. 이 서버는 이 경우 run · 대화 이력은 변화로 올리지 않고, 업무 변화(`action_event`)는 "사용자가 마지막으로 본 뒤"로만 올린다. 앱이 "Since …" 제목에 쓸 시각이 없으면 문구는 승인이 필요하다) | `unknown`(변화 원천을 읽지 못함).
+- `cursor`: **Clear에 그대로 돌려줄 불투명 글자**(조회가 본 사건 집합의 지문). 열지도 고치지도 시각으로 바꾸지도 않는다. `null`이면 Clear를 보이지 않는다(잘렸거나 변화 원천을 읽지 못함 — 일부를 전체처럼 읽음 처리하지 않는다).
+- 완전성: `sources.changes` ∈ `ok | unavailable | truncated`(작업이 300개를 넘으면 `truncated` + 앞 300개만, 커서 없음), `sources.decisions` ∈ `ok | unavailable`. `complete` = 둘 다 `ok`. **`empty`(= complete이면서 items가 빔)일 때만** "변화 없음 · 모두 처리됨"을 보일 수 있다. `unavailable`/`truncated`는 비어 있는 것이 아니라 일부를 모르는 것이다.
+- 결정(`decisions`)은 Clear와 무관하다 — **읽음은 결정이 아니다.** Clear 뒤에도 `needs_answer` 줄은 남고 ⌥ Space는 Review 먼저다. `decisions[].id/version`은 Review의 항목 `id/version`과 같은 값이다(상세 연결 키).
+- `next.kind`: `answer`(답할 결정이 있음, `decision_kinds`에 종류) · `review_result`(끝난 결과 `draft_ready`/`agent_done`를 볼 차례) · `open`(그 업무를 열어 본다).
+- 줄 `version`: 줄의 변화 · 결정이 바뀌면 달라지는 글자. 같은 `action_id`의 줄을 비교할 때 쓴다.
+- 401 · 404 · 500.
+
+### 3. `POST /api/v2/return-summary/clear` — Clear (읽음 처리)
+
+요청 `{ "cursor": "<GET이 준 글자 그대로>" }` (그 밖의 키는 400). 응답 200 `{ "cleared_through": "2026-10-12T20:00:00.000000Z", "applied": true }`.
+
+- **Clear = 조회가 본 사건만 읽음 처리한다. 해결 · 승인 · 완료 · 거절이 아니다**(결정 · Action · run · 정책 · 승인 어느 것도 바뀌지 않는다). 기존 `POST /api/v1/actions/{id}/seen`과 다르다 — 그것은 now()를 찍지만 Clear는 **커서가 가리키는 사건 id만** 읽음으로 표시한다(시각 워터마크를 옮기지 않는다).
+- 조회와 Clear 사이에 생긴 새 변화는 **남는다**(다음 조회에 보인다). 조회 때 **아직 commit되지 않았던** 사건도 Clear가 읽음으로 만들지 못한다 — 나중에 commit되면(그 행의 `at`이 조회 지평보다 이르더라도) 다음 조회에 보인다. 읽음은 **줄지 않는다**(단조): 겹친 조회 · 두 기기 · 늦은 Clear · 응답 유실 뒤 같은 커서 재시도는 `200 applied:false`(쓸 것이 없었다 — 성공이다).
+- **409 `conflict`**: 조회한 뒤 Clear 전에 그 범위의 사건이 달라졌다(늦게 들어온 변화 · 삭제). **아무것도 읽음 처리하지 않았다.** 앱은 자동 재전송하지 않고 다시 조회한다(변화가 아직 보인다).
+- **400 `invalid_request`**: 모양이 틀린 · 미래 · 남의 · 옛 커서. 다시 조회한다.
+- 404 gate 꺼짐 · 401 · 500. 클라이언트 시각을 보내지 않는다 — 서버가 낸 커서만 통한다.
+
+### 4. `POST /api/v2/suggestions/{id}/snooze` · `/dismiss` — 제안 처리
+
+- snooze 요청 `{ "expected_version": 1, "snooze_until": "2026-10-13T09:00:00+09:00" }` — 시점은 **사용자가 고른 것**(오프셋이 있는 ISO). 지금 이후 · 366일 이내(아니면 400). 서버가 시점을 정하지 않는다(자동 snooze 없음). 시점이 지나면 같은 제안이 다시 `open`이 된다(새 제안이 아니다, `version`이 오른다).
+- dismiss 요청 `{ "expected_version": 1, "scope": "this" | "topic" }` — `topic`은 같은 종류 + 같은 주제의 새 계기도 다시 제안하지 않는다.
+- 응답 200 `{ "suggestion": { …Suggestion, "state": "snoozed" | "dismissed", "version": n+1 } }`.
+- `expected_version`은 Review가 준 `suggestions[].version`. **409 `conflict`**: 옛 version이거나 이미 처리된(다른 기기) 제안 — 아무것도 쓰지 않았다. **자동 재시도 금지**, 다시 조회. 404: 없거나 남의 제안(구별하지 않는다). 400: 본문 · 시점 오류. 응답이 유실돼 같은 요청을 다시 보내면 409가 나오는 것이 정상이다(다시 조회하면 처리된 상태).
+- `accept`는 **없다**(채택이 낳는 효과가 아직 정의되지 않았다). `state`의 `accepted`/`expired`는 계약 값이지만 이 서버가 보이는 목록에 내지 않는다.
+
+### 토큰 (앱이 문구로 옮긴다)
+
+| 토큰 | 값 | 앱에 이미 있는 문구 | 승인 필요 |
+|---|---|---|---|
+| `changes[].kind` (`action_event`) | `due_changed · scope_changed · owner_changed · merged · completed · dropped · reopened · artifact_created` | `ActionHistory.swift`의 활동 문구(있는 것) | 복귀 요약 한 줄 변화 문구가 따로 필요하면 |
+| `changes[].kind` (`run`) | `done`(+`detail`: `draft_ready · needs_input · needs_connection · needs_capability · review_failed · agent_done`) · `failed` | `RunLaneText.swift` 결과 문구(있는 것) | `agent_done` 등 새 outcome 문구 |
+| `changes[].kind` (`message`) | `assistant · event` | 없음 | 필요하면 |
+| `changes[].source_state` | `available · deleted · access_lost · text_expired` | `deleted`/`access_lost`/`text_expired` 일부(원문 삭제 · 보관 기간 문구) | 복귀 요약용 문구 |
+| `next.kind` | `answer · review_result · open` | SSOT 예시 "Next: accept the result" | 세 토큰별 문구 |
+| `decisions[].kind` / `decision_kinds` | `approval · review_failed · run_input · confirm` | S4 Review의 확인 요청 문구(`confirm`) | 나머지 셋 |
+| `suggestions[].kind` | `due_window · run_failed · source_revised_run` | 없음 | **세 종류 모두 새 문구** |
+| `suggestion_batch.state` | `ready · needs_time_zone · unavailable` | 없음 | `needs_time_zone` · `unavailable` 안내 문구 |
+| SSOT 고정 문구 | `Since <since>` · `Clear` · `Needs your answer` · `Next: …` | 디자인 SSOT 원문 | 이미 승인된 디자인 |
+
+### 앱이 하면 안 되는 것 (서버 계약)
+
+1. `unavailable`(`sources`의 어느 값이든, `time_zone` 포함) · `truncated` · `cursor: null` · `complete: false`를 빈 상태로 보이지 않는다. `empty: true`일 때만 "변화 없음 · 아무것도 없음"이다. `needs_time_zone`은 오류가 아니라 정당한 모름이다(읽기는 완전하다).
+2. Clear 409를 자동 재전송하지 않는다. 클라이언트 시각 · 마이크로초를 잘라 만든 커서를 보내지 않는다.
+3. 읽음(Clear/열기)을 결정으로 다루지 않는다. 결정은 Review의 항목 `version`으로만 처리하고 옛 version으로 행동하지 않는다.
+4. 제안 처리(snooze/dismiss)의 409를 자동 재시도하지 않는다. 숫자 · 개수를 만들지 않는다.
+5. 원문 글 · 옛 제목을 캐시해 되살리지 않는다(서버도 주지 않는다). 새 영구 원문 캐시 없음.
