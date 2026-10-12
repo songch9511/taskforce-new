@@ -1,8 +1,9 @@
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 
-import { PGlite } from "@electric-sql/pglite";
-import { vector } from "@electric-sql/pglite-pgvector";
+import type { PGlite } from "@electric-sql/pglite";
+
+import { openPglite } from "./pglite-template";
 
 const MIGRATIONS_DIR = path.resolve(__dirname, "../../supabase/migrations");
 
@@ -41,10 +42,9 @@ export async function supabaseSchemaScripts(): Promise<string[]> {
   return [SUPABASE_STUB, SUPABASE_DEFAULT_GRANTS, ...migrations];
 }
 
+/** 마이그레이션까지 적용된 새 PGlite. 같은 스크립트로 만든 템플릿 클러스터를 복제한다(없으면 처음부터 — tests/db/pglite-template.ts) */
 export async function createLocalSupabase(): Promise<PGlite> {
-  const db = new PGlite({ extensions: { vector } });
-  for (const sql of await supabaseSchemaScripts()) await db.exec(sql);
-  return db;
+  return openPglite(await supabaseSchemaScripts());
 }
 
 // 로그인한 사용자로 쿼리를 실행한다. RLS가 적용된다.

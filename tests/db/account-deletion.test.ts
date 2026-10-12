@@ -52,11 +52,15 @@ const USER_TABLES = [
   "people_handles",
   "profiles",
   "rate_limit_events",
+  "return_summary_baseline",
+  "return_summary_reads",
+  "return_summary_state",
   "slack_messages",
   "slack_people",
   "slack_threads",
   "source_chunks",
   "sources",
+  "suggestions",
   "weekly_checks",
   "work_contexts",
 ];
@@ -181,6 +185,15 @@ async function seed(userId: string, tokenHex: string) {
     `insert into public.execution_connection_policies (user_id, connection_id, mode, allowed_tools, allowed_targets, standing_budget_credits) values ($1, $2, 'manual', '{send}', '[]', 10)`,
     [userId, connectionId],
   );
+  // 0.2.0 C3(20261111000000): 제안은 Action · run을 가리키고(복합 외래키 cascade), Clear 위치는 계정에 붙는다. 계정 삭제 한 문장 안에서 함께 지워져야 한다
+  await db.query(
+    `insert into public.suggestions (user_id, kind, action_id, run_id, subject_key, revision, dedup_key, urgent) values ($1, 'run_failed', $2, $3, $4, $5, $6, true)`,
+    [userId, actionId, runId, `action:${actionId}`, runId, `run_failed:action:${actionId}:${runId}`],
+  );
+  await db.query(`insert into public.return_summary_state (user_id, cleared_through) values ($1, now())`, [userId]);
+  // 후속(20261112000000): 첫 정상 표시 기준점 행도 계정 삭제 한 문장 안에서 함께 지워진다
+  await db.query(`insert into public.return_summary_baseline (user_id, horizon) values ($1, now())`, [userId]);
+  await db.query(`insert into public.return_summary_reads (user_id, source, event_ref, action_id) values ($1, 'action_event', gen_random_uuid()::text, $2)`, [userId, actionId]);
   const stepId = await one(
     `insert into public.execution_steps (user_id, run_id, seq, kind, provider, tool, purpose, connection_id, state, policy_version)
      values ($1, $2, 2, 'external', 'gmail', 'send', 'send', $3, 'called', 1) returning id`,

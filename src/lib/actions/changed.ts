@@ -55,6 +55,15 @@ export function changedSinceSeen(events: readonly SeenEvent[]): boolean {
   return changed > seen;
 }
 
+/**
+ * 한 할 일의 바뀜 이벤트(AI · 타인 · 실행기) 중 사용자가 마지막으로 본 시각(lastSeenAt: 사용자 이벤트 중 가장 늦은 것, 없으면 null) 뒤의 것.
+ * changedSinceSeen과 같은 뜻이다: 같은 밀리초는 본 것으로 친다 (복귀 요약이 항목별 변화를 고를 때 쓴다 — 읽은 변화 · 자기 수정을 다시 올리지 않는다).
+ */
+export function changesAfterSeen<T extends { created_at: string }>(changes: readonly T[], lastSeenAt: string | null): T[] {
+  const seen = lastSeenAt === null ? -Infinity : Date.parse(lastSeenAt);
+  return changes.filter((change) => Date.parse(change.created_at) > seen);
+}
+
 /** 여러 할 일의 이벤트 → 바뀐 할 일 id */
 export function changedActionIds(events: readonly SeenEvent[]): Set<string> {
   const byAction = new Map<string, SeenEvent[]>();

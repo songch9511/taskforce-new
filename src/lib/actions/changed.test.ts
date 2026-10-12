@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { changedActionIds, changedSinceSeen, type SeenEvent } from "./changed";
+import { changedActionIds, changedSinceSeen, changesAfterSeen, type SeenEvent } from "./changed";
 
 // 바뀜 점 (U1 PR2): 사용자가 마지막으로 본 뒤 AI · 원문 · 실행기가 바꾼 할 일만 바뀜이다. 사용자 자신의 수정은 바뀜이 아니다.
 
@@ -50,5 +50,40 @@ describe("changedActionIds", () => {
     const events = [ev("created", "ai", 0, A), ev("due_changed", "ai", 5, A), ev("created", "ai", 0, B), ev("due_changed", "ai", 5, B), ev("user_seen", "user", 6, B)];
     expect(changedActionIds(events)).toEqual(new Set([A]));
     expect(changedActionIds([])).toEqual(new Set());
+  });
+});
+
+describe("changesAfterSeen: 복귀 요약이 항목별 변화를 고르는 규칙 (changedSinceSeen과 같은 뜻)", () => {
+  const change = (type: string, minute: number, actor: SeenEvent["actor"] = "ai") => ({ ...ev(type, actor, minute), created_at: at(minute) });
+
+  it("마지막으로 본 시각 뒤의 변화만 남긴다. 같은 시각은 본 것이다", () => {
+    const changes = [change("due_changed", 5), change("merged", 6), change("owner_changed", 8)];
+    expect(changesAfterSeen(changes, at(6)).map((c) => c.type)).toEqual(["owner_changed"]);
+    expect(changesAfterSeen(changes, at(5)).map((c) => c.type)).toEqual(["merged", "owner_changed"]);
+    expect(changesAfterSeen(changes, null)).toHaveLength(3);
+    expect(changesAfterSeen([], at(1))).toEqual([]);
+  });
+
+  it("같은 밀리초 안의 변화는 본 것이다 (DB의 마이크로초는 버린다)", () => {
+    const changes = [{ created_at: "2026-10-02T01:05:00.123456+00:00" }, { created_at: "2026-10-02T01:05:00.124000+00:00" }];
+    expect(changesAfterSeen(changes, "2026-10-02T01:05:00.123900+00:00")).toEqual([changes[1]]);
+  });
+
+  it("changedSinceSeen과 어긋나지 않는다: 같은 이벤트 목록이면 '바뀜이 있다' = '본 뒤의 변화가 남는다'", () => {
+    const cases: SeenEvent[][] = [
+      [ev("created", "ai", 0), ev("due_changed", "ai", 5)],
+      [ev("created", "ai", 0), ev("due_changed", "ai", 5), ev("user_seen", "user", 6)],
+      [ev("created", "ai", 0), ev("due_changed", "ai", 5), ev("user_seen", "user", 6), ev("merged", "ai", 8)],
+      [ev("created", "ai", 0), ev("merged", "ai", 5), ev("user_seen", "user", 5)],
+      [ev("created", "ai", 0), ev("user_edited", "user", 2), ev("due_changed", "ai", 5)],
+      [ev("created", "ai", 0), ev("something_new", "ai", 5)],
+      [ev("artifact_created", "agent", 4), ev("user_notes_updated", "user", 9)],
+    ];
+    const CHANGE = new Set(["due_changed", "scope_changed", "owner_changed", "merged", "completed", "dropped", "reopened", "artifact_created"]);
+    for (const events of cases) {
+      const changes = events.filter((e) => e.actor !== "user" && CHANGE.has(e.type));
+      const lastUser = events.filter((e) => e.actor === "user").map((e) => e.created_at).sort().at(-1) ?? null;
+      expect(changesAfterSeen(changes, lastUser).length > 0, JSON.stringify(events.map((e) => e.type))).toBe(changedSinceSeen(events));
+    }
   });
 });
