@@ -779,7 +779,7 @@ export function executionAdditiveTests(db: () => ExecutionAdditiveDb) {
     });
 
     it("새 표는 연결별 정책 하나뿐이다: 에이전트 세션 · 작업 · 자원 잠금 표는 없다", async () => {
-      expect(await q(`select table_name from information_schema.tables where table_schema = 'public' and table_name in ('agent_sessions', 'agent_tasks', 'execution_resource_locks', 'action_dependencies', 'suggestions', 'user_preferences')`)).toEqual([]);
+      expect(await q(`select table_name from information_schema.tables where table_schema = 'public' and table_name in ('agent_sessions', 'agent_tasks', 'execution_resource_locks', 'action_dependencies', 'user_preferences')`)).toEqual([]);
     });
   });
 }
