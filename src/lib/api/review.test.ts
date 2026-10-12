@@ -23,7 +23,7 @@ const json = (body: unknown, method = "POST") => new Request("http://localhost/a
 const get = () => new Request("http://localhost/api/v2/x");
 
 const review: ReviewResponse = {
-  generated_at: NOW.toISOString(), complete: true, empty: true, sources: { decisions: "ok", suggestions: "ok" }, decisions: [], suggestions: [],
+  generated_at: NOW.toISOString(), complete: true, empty: true, sources: { decisions: "ok", suggestions: "ok", time_zone: "ok" }, decisions: [], suggestions: [],
   suggestion_batch: { state: "ready", local_day: "2026-10-12", size: 3 },
 };
 const summary: ReturnSummaryResponse = {

@@ -29,8 +29,14 @@ export async function produceSuggestions(admin: SupabaseClient, userId: string, 
 /**
  * 지금 보이는 열린 제안. localDay가 null이면(시간대를 모름) 새 비긴급은 내지 않는다.
  * 제안을 보는 것만으로 Action · run은 생기지 않는다 (노출 표시만 쓴다).
+ * unrecognized: 이 코드가 모르는 종류(더 새 서버가 쓴 제안)라 내리지 못한 열린 제안 수 — 0이 아니면 목록이 일부다(호출한 쪽이 완전하다고 말하지 않는다).
  */
-export async function exposeSuggestions(admin: SupabaseClient, userId: string, localDay: string | null, now: Date): Promise<Suggestion[]> {
+export async function exposeSuggestions(
+  admin: SupabaseClient,
+  userId: string,
+  localDay: string | null,
+  now: Date,
+): Promise<{ suggestions: Suggestion[]; unrecognized: number }> {
   const { data } = await admin
     .rpc("suggestions_expose", {
       p_user_id: userId,
@@ -39,7 +45,9 @@ export async function exposeSuggestions(admin: SupabaseClient, userId: string, l
       p_now: now.toISOString(),
     })
     .throwOnError();
-  return ((data ?? []) as SuggestionRow[]).map(suggestionDto).filter((s): s is Suggestion => s !== null);
+  const rows = (data ?? []) as SuggestionRow[];
+  const suggestions = rows.map(suggestionDto).filter((s): s is Suggestion => s !== null);
+  return { suggestions, unrecognized: rows.length - suggestions.length };
 }
 
 export type TransitionOutcome = { status: "ok"; suggestion: Suggestion } | { status: "not_found" | "conflict" | "invalid" };

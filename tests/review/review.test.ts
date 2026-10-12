@@ -118,17 +118,62 @@ describe("Review: 결정 대기(C2 계산) + 열린 제안", () => {
     expect(d.map((x) => x.id)).toEqual(ids);
   });
 
-  it("시간대를 모르면 새 비긴급은 내지 않는다 (needs_time_zone). 긴급은 보인다", async () => {
+  it("시간대를 모르면(저장 없음) 새 비긴급은 내지 않는다 (needs_time_zone). 긴급은 보인다. 완전한 읽기다", async () => {
     const user = await s.user();
     const action = await s.action(user, { dueAt: "2026-10-12T20:00:00Z" });
     await plainSuggestions(user, action, 4);
     const review = await loadReview(admin, user, T("2026-10-12T00:00:00Z"), options({ timeZone: NO_ZONE }));
     expect(review.suggestion_batch).toEqual({ state: "needs_time_zone", local_day: null, size: 3 });
+    expect(review.sources).toEqual({ decisions: "ok", suggestions: "ok", time_zone: "ok" });
+    expect(review).toMatchObject({ complete: true, empty: false });
     expect(review.suggestions!.map((x) => [x.kind, x.urgent])).toEqual([["due_window", true]]);
-    // 시간대를 읽다 오류가 나도 같다 (모르는 것으로 둔다): 추측해서 하루를 정하지 않는다
-    const failing = await loadReview(admin, user, T("2026-10-12T00:00:00Z"), options({ timeZone: async () => { throw new Error("read failed"); } }));
-    expect(failing.suggestion_batch.state).toBe("needs_time_zone");
-    expect(failing.suggestions!.filter((x) => !x.urgent)).toHaveLength(0);
+  });
+
+  it("P2-B: 시간대 읽기가 예상 못한 오류로 실패하면(57014 등) 정상 needs_time_zone · empty가 아니라 time_zone unavailable · complete false · empty false다", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    // 열린 비긴급 제안 1개 · 결정 0: 시간대를 알았다면 보였을 제안이다
+    const user = await s.user();
+    const action = await s.action(user);
+    const [hidden] = await plainSuggestions(user, action, 1);
+    const failing = await loadReview(admin, user, T("2026-10-12T00:00:00Z"), options({ timeZone: async () => { throw Object.assign(new Error("canceling statement due to statement timeout"), { code: "57014" }); } }));
+    expect(reviewResponseSchema.parse(failing)).toEqual(failing);
+    expect(failing).toMatchObject({
+      complete: false,
+      empty: false,
+      sources: { decisions: "ok", suggestions: "ok", time_zone: "unavailable" },
+      suggestion_batch: { state: "unavailable", local_day: null, size: 3 },
+    });
+    expect(failing.suggestions).toEqual([]); // 새 비긴급을 시간대 없이 지어서 내지 않는다
+    // 같은 데이터에 정상 읽기면 같은 제안이 보인다 (실패 때문에 지워진 것이 아니다)
+    const ok = await loadReview(admin, user, T("2026-10-12T00:00:00Z"), options());
+    expect(ok).toMatchObject({ complete: true, empty: false, sources: { time_zone: "ok" } });
+    expect(ok.suggestions!.map((x) => x.id)).toEqual([hidden]);
+    vi.restoreAllMocks();
+  });
+
+  it("P2-B: 시간대 읽기 실패 중에도 긴급과 이미 노출한 제안은 그대로 보인다 (새 비긴급만 안 낸다)", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const user = await s.user();
+    const action = await s.action(user, { dueAt: "2026-10-12T20:00:00Z" });
+    const ids = await plainSuggestions(user, action, 5);
+    const day1 = await loadReview(admin, user, T("2026-10-12T00:00:00Z"), options());
+    expect(day1.suggestions!.map((x) => x.id)).toEqual(expect.arrayContaining(ids.slice(0, 3)));
+    const failing = await loadReview(admin, user, T("2026-10-13T00:00:00Z"), options({ timeZone: async () => { throw new Error("down"); } }));
+    expect(failing).toMatchObject({ complete: false, empty: false, sources: { time_zone: "unavailable" } });
+    // 어제 낸 3개 + 긴급 1개는 그대로, 나머지 2개는 시간대를 알 수 없어 아직 내지 않았다
+    expect(failing.suggestions!.map((x) => x.id).sort()).toEqual([...day1.suggestions!.map((x) => x.id)].sort());
+    vi.restoreAllMocks();
+  });
+
+  it("이 코드가 모르는 종류의 열린 제안(더 새 서버가 쓴 것)은 지어 보이지 않고, 목록이 일부라고 알린다 — 비었다고 하지 않는다", async () => {
+    const user = await s.user();
+    const action = await s.action(user);
+    await s.q(
+      `insert into public.suggestions (user_id, kind, action_id, subject_key, revision, dedup_key, urgent) values ($1, 'from_the_future', $2, $3, 'r1', $4, true)`,
+      [user, action, `action:${action}`, `from_the_future:action:${action}:r1`],
+    );
+    const review = await loadReview(admin, user, T("2026-10-12T00:00:00Z"), options());
+    expect(review).toMatchObject({ complete: false, empty: false, suggestions: [], sources: { decisions: "ok", suggestions: "unavailable", time_zone: "ok" } });
   });
 
   it("긴급은 상한 밖: 비긴급 묶음이 찬 날에도 긴급 4개가 모두 보인다", async () => {

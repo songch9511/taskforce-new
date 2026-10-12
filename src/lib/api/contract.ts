@@ -1315,16 +1315,19 @@ export type Suggestion = z.infer<typeof suggestionSchema>;
  * GET /api/v2/review — Review: C2 결정 대기 계산(decisions, 개수 상한 없음) + 열린 제안(suggestions).
  * 제안을 보는 것만으로 Action · run은 생기지 않는다(노출 표시 shown_at · 묶음 batch_day만 쓴다).
  * complete: 모든 원천을 읽었다. empty: complete이면서 둘 다 비었다 — 비었다는 말은 empty일 때만 해도 된다 (일부 실패 · 잘림을 비었다고 하지 않는다).
- * suggestion_batch.state: needs_time_zone = 사용자 시간대를 몰라 새 비긴급 제안은 아직 내지 않는다(긴급과 이미 낸 것은 보인다). 하루 상한 size개.
+ * sources.time_zone: 사용자 시간대(하루 경계)를 읽었나. unavailable = 예상 못한 읽기 오류 — 모르는 것과 다르다.
+ * suggestion_batch.state: ready = 시간대를 알아 하루 묶음을 센다 · needs_time_zone = 저장된 시간대가 없다(정당한 모름, 완전한 읽기): 새 비긴급 제안은 아직 내지 않는다 ·
+ *   unavailable = 시간대를 읽지 못했다(sources.time_zone도 unavailable, complete false): 새 비긴급은 내지 않는다. 어느 쪽이든 긴급과 이미 낸 제안은 보인다. 하루 상한 size개.
+ * unavailable인 원천의 목록(decisions · suggestions)은 null이거나 일부일 수 있다 — 어느 쪽이든 비어 있다고 말하지 않는다 (empty는 complete일 때만).
  */
 export const reviewResponseSchema = z.object({
   generated_at: z.string(),
   complete: z.boolean(),
   empty: z.boolean(),
-  sources: z.object({ decisions: reviewSourceStatusSchema, suggestions: reviewSourceStatusSchema }),
+  sources: z.object({ decisions: reviewSourceStatusSchema, suggestions: reviewSourceStatusSchema, time_zone: reviewSourceStatusSchema }),
   decisions: z.array(pendingDecisionGroupSchema).nullable(),
   suggestions: z.array(suggestionSchema).nullable(),
-  suggestion_batch: z.object({ state: z.enum(["ready", "needs_time_zone"]), local_day: z.string().nullable(), size: z.number().int().positive() }),
+  suggestion_batch: z.object({ state: z.enum(["ready", "needs_time_zone", "unavailable"]), local_day: z.string().nullable(), size: z.number().int().positive() }),
 });
 export type ReviewResponse = z.infer<typeof reviewResponseSchema>;
 
@@ -1370,7 +1373,8 @@ export type ReturnSummaryItem = z.infer<typeof returnSummaryItemSchema>;
 
 /**
  * GET /api/v2/return-summary — 복귀 요약. 숫자 없음(개수를 내리지 않는다).
- * since: 마지막 Clear 위치(마이크로초 UTC 글자, 앱이 "Since …" 표시를 위해 시각으로 바꿔도 되지만 커서에는 쓰지 않는다). 한 번도 Clear하지 않았으면 null + baseline never_cleared
+ * since: 마지막 Clear의 지평(마이크로초 UTC 글자, 앱이 "Since …" 표시를 위해 시각으로 바꿔도 되지만 커서에는 쓰지 않는다). 표시용이다 — 무엇이 읽혔는지는 시각이 아니라
+ *   서버가 사건 id로 기억한다(Clear 뒤에 commit되는 사건은 시각이 이르더라도 새 변화로 보인다). 한 번도 Clear하지 않았으면 null + baseline never_cleared
  *   (이때 run · 대화 변화는 이력 전체를 올리지 않고, 작업 변화는 사용자가 마지막으로 본 뒤의 것만 낸다 — 첫 기준 시각은 열린 제품 결정이다).
  * cursor: Clear에 그대로 돌려준다. 잘렸거나 변화 원천을 읽지 못했으면 null (일부를 전체처럼 읽음 처리하지 않는다).
  * complete: 모든 원천을 읽었고 잘리지 않았다. empty: complete이면서 items가 비었다 — "변화 없음 · 모두 처리됨"은 empty일 때만.
@@ -1388,9 +1392,10 @@ export const returnSummaryResponseSchema = z.object({
 export type ReturnSummaryResponse = z.infer<typeof returnSummaryResponseSchema>;
 
 /**
- * POST /api/v2/return-summary/clear — 조회한 범위를 읽음 처리한다. 읽음일 뿐이다(해결 · 승인 · 완료 · 거절이 아니다: 결정 · Action은 그대로).
- * 200 { cleared_through, applied }: applied=false는 이미 그 위치 이후라 쓸 것이 없었다(재시도 · 다른 기기에서 먼저 Clear) — 성공이다.
- * 409 conflict: 조회한 뒤 그 범위의 사건이 달라졌다(늦게 들어온 변화 · 삭제). 아무것도 읽음 처리하지 않았다: 다시 조회한다 (자동 재시도 없음).
+ * POST /api/v2/return-summary/clear — 조회가 본 사건을 읽음 처리한다. 읽음일 뿐이다(해결 · 승인 · 완료 · 거절이 아니다: 결정 · Action은 그대로).
+ * 200 { cleared_through, applied }: applied=false는 쓸 것이 없었다(재시도 · 다른 기기에서 먼저 Clear) — 성공이다.
+ * 409 conflict: 조회한 뒤 Clear 전에 그 범위의 사건이 달라졌다(늦게 들어온 변화 · 삭제). 아무것도 읽음 처리하지 않았다: 다시 조회한다 (자동 재시도 없음).
+ * 조회 때 아직 commit되지 않았던 사건은 Clear가 읽음으로 만들지 못한다 — 나중에 commit되면 다음 조회에 보인다.
  * 400 invalid_request: 모양이 틀린 · 미래 · 남의 커서.
  */
 export const returnSummaryClearRequestSchema = z.object({ cursor: z.string().min(1).max(400) }).strict();
