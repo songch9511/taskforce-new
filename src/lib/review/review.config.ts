@@ -15,7 +15,7 @@ export const SUGGESTION_URGENT_WINDOW_HOURS = URGENT_WINDOW_HOURS;
  */
 export const SNOOZE_MAX_DAYS = 366;
 
-/** 복귀 요약 한 번에 내려가는 작업 수 상한 (기술 한도). 넘으면 잘렸다고 알리고 Clear 커서를 내지 않는다 (일부를 전체처럼 읽음 처리하지 않는다) */
+/** 복귀 요약 한 번에 내려가는 작업 수 상한 (기술 한도). 넘으면 잘렸다고 알리고(truncated), Clear 커서는 보인 작업만 가리킨다 (보이지 않은 작업은 읽음이 아니라 다음 조회에 나온다) */
 export const RETURN_SUMMARY_MAX_WORKS = 300;
 
 /** 응답에 내리는 복귀 요약 변화 토큰의 결과 준비 종류: 이 outcome으로 끝난 run만 "결과를 볼 차례"(Next: review_result)다 */

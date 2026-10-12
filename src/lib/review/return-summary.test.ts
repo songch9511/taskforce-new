@@ -24,7 +24,7 @@ const change = (kind: string, micro: number, over: Partial<ScanWork["changes"][n
   source: "action_event", kind, at: at(micro), detail: null, source_state: "available", ...over,
 });
 const scan = (works: ScanWork[], over: Partial<ScanResult> = {}): ScanResult => ({
-  since: null, horizon: at(900), digest: "a:1:5|r:0:0|m:0:0", truncated: false, works, ...over,
+  since: null, horizon: at(900), digest: "a:1:5|r:0:0|m:0:0", truncated: false, page: null, baseline: true, works, ...over,
 });
 const pendingRow = (over: Partial<PendingInput> = {}): PendingInput => ({
   kind: "confirm", action_id: A, run_id: null, step_id: null, version: "action:A:1", created_at: "2026-10-11T00:00:00Z", due_at: null, ...over,
@@ -185,16 +185,22 @@ describe("composeReturnSummary: 완전성 표시 (일부를 못 읽으면 비었
     expect(body.cursor).not.toBeNull();
   });
 
-  it("작업이 너무 많아 잘렸다 → truncated, empty 아님, 커서 없음 (일부만 보고 전체를 읽음 처리하지 않는다)", () => {
-    const body = compose({ scan: scan([work(A, { changes: [change("merged", 1)] })], { truncated: true }) });
-    expect(body).toMatchObject({ complete: false, empty: false, cursor: null, sources: { changes: "truncated" } });
+  it("작업이 너무 많아 잘렸다 → truncated · complete false · empty false, 그래도 커서가 있다: 보인 작업(page)만 가리킨다 (P2-C)", () => {
+    const body = compose({ scan: scan([work(A, { changes: [change("merged", 1)] })], { truncated: true, page: [A], baseline: false }) });
+    expect(body).toMatchObject({ complete: false, empty: false, sources: { changes: "truncated" } });
     expect(body.items).toHaveLength(1);
+    expect(decodeCursor(body.cursor!, USER)).toEqual({ userId: USER, horizon: at(900), digest: "a:1:5|r:0:0|m:0:0", page: [A], baseline: false });
+  });
+
+  it("잘리지 않았으면 커서에 작업 id를 싣지 않는다 (후보 전부가 범위). 잘렸는데 page가 없으면(있을 수 없는 응답) 커서를 내지 않는다", () => {
+    expect(decodeCursor(compose({ scan: scan([], { page: [A] }) }).cursor!, USER)?.page).toBeNull();
+    expect(compose({ scan: scan([], { truncated: true, page: null }) }).cursor).toBeNull();
   });
 
   it("커서는 사용자에 묶이고 조회가 낸 지평 · digest를 그대로 담는다 (시각 위치가 아니다). 한 번 Clear했으면 baseline cleared + since(표시용)", () => {
     const body = compose({ scan: scan([], { since: at(100), horizon: at(900), digest: "a:3:-7|r:0:0|m:0:0" }) });
     expect(body).toMatchObject({ baseline: "cleared", since: at(100) });
-    expect(decodeCursor(body.cursor!, USER)).toEqual({ userId: USER, horizon: at(900), digest: "a:3:-7|r:0:0|m:0:0" });
+    expect(decodeCursor(body.cursor!, USER)).toEqual({ userId: USER, horizon: at(900), digest: "a:3:-7|r:0:0|m:0:0", page: null, baseline: true });
     expect(decodeCursor(body.cursor!, "22222222-2222-4222-8222-222222222222")).toBeNull();
   });
 

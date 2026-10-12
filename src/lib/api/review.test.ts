@@ -90,7 +90,7 @@ describe("POST return-summary/clear", () => {
     const clear = vi.fn();
     expect((await handleClearReturnSummary(json({ cursor }), { enabled: () => false, authenticate: vi.fn(), clear } as never)).status).toBe(404);
     expect((await handleClearReturnSummary(json({ cursor }), { enabled: () => true, authenticate: async () => null, clear } as never)).status).toBe(401);
-    for (const body of [{}, { cursor: "" }, { cursor: 1 }, { cursor, extra: 1 }, { cursor: "x".repeat(401) }]) {
+    for (const body of [{}, { cursor: "" }, { cursor: 1 }, { cursor, extra: 1 }, { cursor: "x".repeat(10_001) }]) {
       expect((await handleClearReturnSummary(json(body), deps(clear))).status, JSON.stringify(body)).toBe(400);
     }
     expect((await handleClearReturnSummary(new Request("http://localhost/x", { method: "POST", body: "{not json" }), deps(clear))).status).toBe(400);

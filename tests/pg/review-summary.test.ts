@@ -104,12 +104,20 @@ reviewSummaryUpgradeTests(async () => {
 // ───────────────────────── 경합 (연결 둘 이상) ─────────────────────────
 const TYPES = [...CHANGE_EVENT_TYPES];
 type Row = Record<string, unknown>;
-type Scan = { since: string | null; horizon: string; digest: string; truncated: boolean; works: { action_id: string; changes: { source: string; kind: string }[] }[] };
+type Scan = {
+  since: string | null;
+  horizon: string;
+  digest: string;
+  truncated: boolean;
+  page: string[] | null;
+  baseline: boolean;
+  works: { action_id: string; changes: { source: string; kind: string }[] }[];
+};
 
-const scanOn = async (client: pg.Client, user: string): Promise<Scan> =>
-  (await client.query(`select public.return_summary_scan($1, $2::text[], null, 300) as r`, [user, TYPES])).rows[0].r as Scan;
-const clearOn = async (client: pg.Client, user: string, cursor: { horizon: string; digest: string }): Promise<{ status: string; applied?: boolean }> =>
-  (await client.query(`select public.return_summary_clear($1, $2::text[], $3::timestamptz, $4, null) as r`, [user, TYPES, cursor.horizon, cursor.digest])).rows[0].r;
+const scanOn = async (client: pg.Client, user: string, limit = 300): Promise<Scan> =>
+  (await client.query(`select public.return_summary_scan($1, $2::text[], null, $3) as r`, [user, TYPES, limit])).rows[0].r as Scan;
+const clearOn = async (client: pg.Client, user: string, cursor: { horizon: string; digest: string; page?: string[] | null; baseline?: boolean }): Promise<{ status: string; applied?: boolean }> =>
+  (await client.query(`select public.return_summary_clear($1, $2::text[], $3::timestamptz, $4, null, $5::uuid[], $6) as r`, [user, TYPES, cursor.horizon, cursor.digest, cursor.page ?? null, cursor.baseline ?? false])).rows[0].r;
 const kinds = (scan: Scan) => scan.works.flatMap((w) => w.changes.map((c) => `${c.source}:${c.kind}`)).sort();
 const readsOf = async (user: string) => Number((await setup.query(`select count(*)::int as n from public.return_summary_reads where user_id = $1`, [user])).rows[0].n);
 
@@ -206,6 +214,89 @@ describe("P2-A: Clear 뒤에 commit되는 사건은 시각이 이르더라도 �
     await setup.query(`insert into public.action_events (user_id, action_id, type, actor) values ($1, $2, 'merged', 'ai')`, [user, action]);
     expect((await clearOn(a, user, seen)).status).toBe("cleared");
     expect(kinds(await scanOn(a, user))).toEqual(["action_event:merged"]);
+  });
+});
+
+describe("P2-C: 잘린 조회의 Clear도 보인 작업의 사건만 읽음 처리하고, 늦게 commit되는 사건은 숨지 않는다 (실제 Postgres, writer 연결 따로)", () => {
+  /** 작업 3개, 변화가 하나씩 (이미 commit). 작업 순서: 일 3(가장 최근) → 일 2 → 일 1. limit 2면 보이는 작업 = 일 3 · 일 2 */
+  async function three() {
+    const f = reviewFixtures(db);
+    const user = await f.user();
+    const actions: string[] = [];
+    for (let i = 1; i <= 3; i++) {
+      const action = await f.action(user, { title: `일 ${i}` });
+      actions.push(action);
+      await setup.query(`insert into public.action_events (user_id, action_id, type, actor, created_at) values ($1, $2, 'due_changed', 'ai', now() - make_interval(secs => $3))`, [user, action, 10 - i]);
+    }
+    return { user, actions };
+  }
+
+  it("경합: 보인 작업(일 3)에 미커밋 INSERT를 쥔 채 조회(limit 2) → Clear → COMMIT: 늦은 사건이 다음 조회에 보이고, 보이지 않은 작업(일 1)도 나온다", async () => {
+    const { user, actions } = await three();
+    await writer.query("begin");
+    await writer.query(`insert into public.action_events (user_id, action_id, type, actor) values ($1, $2, 'merged', 'ai')`, [user, actions[2]]);
+    const seen = await scanOn(a, user, 2);
+    expect(seen.truncated).toBe(true);
+    expect(seen.page).toEqual([actions[2], actions[1]]);
+    expect(await clearOn(a, user, seen)).toMatchObject({ status: "cleared", applied: true });
+    expect(await readsOf(user)).toBe(2); // 보인 작업의 사건 둘뿐 (일 1은 읽음이 아니다)
+    await writer.query("commit");
+    const after = await scanOn(a, user, 2);
+    expect(after.works.map((w) => [w.action_id, w.changes.map((c) => c.kind)])).toEqual([
+      [actions[2], ["merged"]],
+      [actions[0], ["due_changed"]],
+    ]);
+    expect(after.truncated).toBe(false);
+    expect((await clearOn(a, user, after)).status).toBe("cleared");
+    expect(kinds(await scanOn(a, user, 2))).toEqual([]);
+  });
+
+  it("경합: BEGIN이 먼저인 writer가 Clear 뒤에 보인 작업에 INSERT + COMMIT해도 다음 조회에 보인다", async () => {
+    const { user, actions } = await three();
+    await writer.query("begin");
+    await writer.query("select 1");
+    const seen = await scanOn(a, user, 2);
+    expect(await clearOn(a, user, seen)).toMatchObject({ status: "cleared", applied: true });
+    await writer.query(`insert into public.action_events (user_id, action_id, type, actor) values ($1, $2, 'merged', 'ai')`, [user, actions[1]]);
+    await writer.query("commit");
+    const after = await scanOn(a, user, 2);
+    expect(after.works.find((w) => w.action_id === actions[1])!.changes.map((c) => c.kind)).toEqual(["merged"]);
+  });
+
+  it("대조: 조회 뒤 Clear 전에 보인 작업에 commit되면 stale (아무것도 읽음 처리하지 않는다). 다시 조회해 Clear하면 읽음", async () => {
+    const { user, actions } = await three();
+    await writer.query("begin");
+    await writer.query("select 1");
+    const seen = await scanOn(a, user, 2);
+    await writer.query(`insert into public.action_events (user_id, action_id, type, actor) values ($1, $2, 'merged', 'ai')`, [user, actions[2]]);
+    await writer.query("commit");
+    expect(await clearOn(a, user, seen)).toEqual({ status: "stale" });
+    expect(await readsOf(user)).toBe(0);
+    const again = await scanOn(a, user, 2);
+    expect(again.works.find((w) => w.action_id === actions[2])!.changes.map((c) => c.kind)).toEqual(["due_changed", "merged"]);
+    expect((await clearOn(a, user, again)).status).toBe("cleared");
+  });
+
+  it("보이지 않은 작업(일 1)에 조회 뒤 Clear 전에 commit된 사건은 stale을 만들지 않고, 읽음도 되지 않아 다음 조회에 나온다", async () => {
+    const { user, actions } = await three();
+    await writer.query("begin");
+    await writer.query("select 1");
+    const seen = await scanOn(a, user, 2);
+    expect(seen.page).toEqual([actions[2], actions[1]]);
+    await writer.query(`insert into public.action_events (user_id, action_id, type, actor) values ($1, $2, 'scope_changed', 'ai')`, [user, actions[0]]);
+    await writer.query("commit");
+    expect(await clearOn(a, user, seen)).toMatchObject({ status: "cleared", applied: true });
+    const after = await scanOn(a, user, 2);
+    expect(after.works.map((w) => [w.action_id, w.changes.map((c) => c.kind)])).toEqual([[actions[0], ["due_changed", "scope_changed"]]]);
+  });
+
+  it("두 연결이 같은 잘린 커서를 동시에 Clear: 둘 다 cleared이고 쓰기는 한 번이다", async () => {
+    const { user } = await three();
+    const cursor = await scanOn(a, user, 2);
+    const results = await Promise.all([clearOn(a, user, cursor), clearOn(b, user, cursor)]);
+    expect(results.map((r) => r.status)).toEqual(["cleared", "cleared"]);
+    expect(results.filter((r) => r.applied).length).toBe(1);
+    expect(await readsOf(user)).toBe(2);
   });
 });
 

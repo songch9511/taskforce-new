@@ -210,7 +210,7 @@ describe("Review: 결정 대기(C2 계산) + 열린 제안", () => {
     expect(first.decisions!.map((g) => [g.kind, g.action_id])).toEqual([["confirm", action]]);
     const before = await fingerprint(user);
     await loadReview(admin, user, T("2026-10-12T00:00:00Z"), options());
-    expect(await fingerprint(user)).toBe(before); // 읽기만 했다 (제안 노출 표시는 suggestions에만)
+    expect(await fingerprint(user)).toBe(before); // Action · run · Claim은 만들지 않았다 (제안 생산 · 노출 표시는 suggestions에만 쓴다)
     await s.q(`update public.actions set needs_confirmation = false, version = version + 1 where id = $1`, [action]);
     expect((await loadReview(admin, user, T("2026-10-12T00:00:01Z"), options())).decisions).toEqual([]);
   });

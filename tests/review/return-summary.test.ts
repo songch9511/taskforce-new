@@ -7,6 +7,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 vi.mock("server-only", () => ({}));
 
 import { returnSummaryResponseSchema, type ReturnSummaryResponse } from "@/lib/api/contract";
+import { CHANGE_EVENT_TYPES } from "@/lib/actions/changed";
 import { encodeCursor } from "@/lib/review/cursor";
 import { clearReturnSummary, loadReturnSummary } from "@/lib/review/return-summary";
 import { RETURN_SUMMARY_MAX_WORKS } from "@/lib/review/review.config";
@@ -205,9 +206,9 @@ describe("Clear: 표시한 범위의 읽음 처리일 뿐 (해결 · 승인 · �
     const body = await load(user, "2026-10-12T00:00:00.123700Z");
     expect(body.cursor).not.toBeNull();
     const [, payload] = body.cursor!.split(".");
-    const parsed = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as [string, string, string];
+    const parsed = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as [string, string, string, number, string | null];
     expect(parsed[1]).toBe("2026-10-12T00:00:00.123700Z");
-    const naive = encodeCursor({ userId: user, horizon: new Date(parsed[1]).toISOString().replace(".123Z", ".123000Z"), digest: parsed[2] });
+    const naive = encodeCursor({ userId: user, horizon: new Date(parsed[1]).toISOString().replace(".123Z", ".123000Z"), digest: parsed[2], page: null, baseline: true });
     expect(await clear(user, naive)).toEqual({ status: "stale" });
     expect((await clear(user, body.cursor)).status).toBe("cleared");
   });
@@ -242,11 +243,11 @@ describe("Clear: 표시한 범위의 읽음 처리일 뿐 (해결 · 승인 · �
     const other = await s.user();
     const mine = await load(user);
     expect(await clear(other, mine.cursor)).toEqual({ status: "invalid" }); // 사용자 id가 다른 커서
-    expect(await clear(user, "c2.garbage")).toEqual({ status: "invalid" });
+    expect(await clear(user, "c3.garbage")).toEqual({ status: "invalid" });
     expect(await clear(user, "")).toEqual({ status: "invalid" });
-    const forgedFuture = encodeCursor({ userId: user, horizon: "2999-01-01T00:00:00.000000Z", digest: "a:0:0|r:0:0|m:0:0" });
+    const forgedFuture = encodeCursor({ userId: user, horizon: "2999-01-01T00:00:00.000000Z", digest: "a:0:0|r:0:0|m:0:0", page: null, baseline: false });
     expect(await clear(user, forgedFuture)).toEqual({ status: "invalid" }); // 미래 지평
-    const forgedDigest = encodeCursor({ userId: user, horizon: H, digest: "a:0:0|r:0:0|m:0:0" });
+    const forgedDigest = encodeCursor({ userId: user, horizon: H, digest: "a:0:0|r:0:0|m:0:0", page: null, baseline: false });
     expect(await clear(user, forgedDigest)).toEqual({ status: "stale" });
     expect((await state(user))?.at).toBe("2026-10-12T08:00:00.000000Z");
     expect(await s.count(`select 1 from public.return_summary_reads where user_id = $1`, [user])).toBe(0);
@@ -304,16 +305,79 @@ describe("완전성: 일부를 못 읽거나 잘렸는데 비었다 · 모두 �
     vi.restoreAllMocks();
   });
 
-  it(`작업이 ${RETURN_SUMMARY_MAX_WORKS}개를 넘으면 truncated: 커서 없음(Clear 불가), 일부를 전체처럼 내지 않는다`, async () => {
+  it(`P2-C: 작업이 ${RETURN_SUMMARY_MAX_WORKS}개를 넘어 잘려도 Clear할 수 있다 — 보인 작업의 사건만 읽음 처리하고, 나머지는 다음 조회에 나온다`, async () => {
     const user = await s.user();
+    const extra = 5;
+    // 작업마다 AI 변화 하나, 시각이 모두 다르다 (g가 클수록 최근): 앞 페이지 = 가장 최근 300개
     await s.q(
-      `with a as (insert into public.actions (user_id, title) select $1, '일 ' || g from generate_series(1, $2::int) g returning id)
-       insert into public.action_events (user_id, action_id, type, actor, created_at) select $1, id, 'merged', 'ai', '2026-10-12T01:00:00Z' from a`,
-      [user, RETURN_SUMMARY_MAX_WORKS + 1],
+      `with a as (insert into public.actions (user_id, title) select $1, '일 ' || g from generate_series(1, $2::int) g returning id, title)
+       insert into public.action_events (user_id, action_id, type, actor, created_at)
+       select $1, id, 'merged', 'ai', timestamptz '2026-10-12T00:00:00Z' + make_interval(secs => substring(title from 3)::int) from a`,
+      [user, RETURN_SUMMARY_MAX_WORKS + extra],
     );
-    const body = summary(await load(user));
-    expect(body.items).toHaveLength(RETURN_SUMMARY_MAX_WORKS);
-    expect(body).toMatchObject({ complete: false, empty: false, cursor: null, sources: { changes: "truncated" } });
+    const first = summary(await load(user));
+    expect(first.items).toHaveLength(RETURN_SUMMARY_MAX_WORKS);
+    expect(first).toMatchObject({ complete: false, empty: false, sources: { changes: "truncated" } });
+    expect(first.cursor).not.toBeNull(); // Clear 가능: 보인 작업의 집합을 가리키는 커서
+    expect((await clear(user, first.cursor)).status).toBe("cleared");
+    // 보인 작업의 사건만 읽음이다 (보이지 않은 작업은 읽음이 아니다)
+    expect(await s.count(`select 1 from public.return_summary_reads where user_id = $1`, [user])).toBe(RETURN_SUMMARY_MAX_WORKS);
+    const second = summary(await load(user));
+    expect(second.items).toHaveLength(extra);
+    expect(second.items.map((i) => i.title).sort()).toEqual(["일 1", "일 2", "일 3", "일 4", "일 5"]);
+    expect(second).toMatchObject({ complete: true, empty: false, sources: { changes: "ok" } });
+    expect((await clear(user, second.cursor)).status).toBe("cleared");
+    expect(summary(await load(user))).toMatchObject({ complete: true, empty: true, items: [] });
+  });
+});
+
+describe("P2-C: 여러 작업을 가리키는 메시지도 작업별로 읽는다 — 잘린 페이지가 멈추지 않는다", () => {
+  /** 허브 작업 하나를 잎 작업마다 한 메시지가 함께 가리킨다 (같은 시각). 허브의 순위가 동률에서 맨 뒤(301번째)다. 읽음 기준이 있다(Clear한 적 있음) */
+  async function hubFixture(hub: string) {
+    const user = await s.user();
+    await s.q(`insert into public.actions (id, user_id, title) values ($1, $2, '허브')`, [hub, user]);
+    const leaves: string[] = [];
+    for (let i = 0; i < RETURN_SUMMARY_MAX_WORKS; i++) leaves.push(await s.action(user, { title: `잎 ${i}` }));
+    await setCleared(user, "2026-10-12T00:00:00.000000Z");
+    const conversation = await s.conversation(user);
+    for (let i = 0; i < leaves.length; i++) {
+      await s.q(`insert into public.conversation_messages (user_id, conversation_id, seq, role, text, refs, created_at) values ($1, $2, $3, 'assistant', '답', $4, '2026-10-12T01:00:00Z')`, [
+        user, conversation, i + 1, JSON.stringify({ action_ids: [hub, leaves[i]] }),
+      ]);
+    }
+    return { user, hub };
+  }
+
+  it("허브 작업 하나를 300개 메시지가 모두 가리키고 허브의 순위가 301번째여도, 조회 → Clear를 되풀이하면 모두 읽음이 된다 (보이지 않은 작업은 읽음이 아니다)", async () => {
+    const { user, hub } = await hubFixture("ffffffff-ffff-4fff-bfff-ffffffffffff");
+    const first = summary(await load(user));
+    expect(first).toMatchObject({ complete: false, empty: false, sources: { changes: "truncated" } });
+    expect(first.items).toHaveLength(RETURN_SUMMARY_MAX_WORKS);
+    expect(first.items.some((i) => i.action_id === hub)).toBe(false); // 허브는 보이지 않는다
+    expect((await clear(user, first.cursor)).status).toBe("cleared");
+    // 보인 작업(잎)의 쌍만 읽음이다: 허브의 쌍은 읽음이 아니다
+    expect(await s.count(`select 1 from public.return_summary_reads where user_id = $1`, [user])).toBe(RETURN_SUMMARY_MAX_WORKS);
+    expect(await s.count(`select 1 from public.return_summary_reads where user_id = $1 and action_id = $2`, [user, hub])).toBe(0);
+    // 되풀이: 다음 조회에는 허브만 남고 (메시지 300개가 허브의 변화로), 그 Clear로 끝난다
+    const second = summary(await load(user));
+    expect(second.items.map((i) => i.action_id)).toEqual([hub]);
+    expect(second.items[0].changes).toHaveLength(RETURN_SUMMARY_MAX_WORKS);
+    expect(second).toMatchObject({ complete: true, sources: { changes: "ok" } });
+    expect((await clear(user, second.cursor)).status).toBe("cleared");
+    expect(await s.count(`select 1 from public.return_summary_reads where user_id = $1`, [user])).toBe(RETURN_SUMMARY_MAX_WORKS * 2);
+    expect(summary(await load(user))).toMatchObject({ complete: true, empty: true, items: [] });
+  });
+
+  it("대조: 같은 픽스처를 limit 301로 조회하면 잘리지 않고 한 번의 Clear로 모두 읽음이 된다", async () => {
+    const { user, hub } = await hubFixture("ffffffff-ffff-4fff-bfff-fffffffffffe");
+    const scan = (await s.one(`select public.return_summary_scan($1, $2::text[], $3::timestamptz, 301) as r`, [user, [...CHANGE_EVENT_TYPES], H])).r as { horizon: string; digest: string; truncated: boolean; page: string[] | null; baseline: boolean; works: { action_id: string }[] };
+    expect(scan).toMatchObject({ truncated: false, page: null });
+    expect(scan.works).toHaveLength(RETURN_SUMMARY_MAX_WORKS + 1);
+    expect(scan.works.some((w) => w.action_id === hub)).toBe(true);
+    const cursor = encodeCursor({ userId: user, horizon: scan.horizon, digest: scan.digest, page: null, baseline: scan.baseline });
+    expect((await clear(user, cursor)).status).toBe("cleared");
+    expect(await s.count(`select 1 from public.return_summary_reads where user_id = $1`, [user])).toBe(RETURN_SUMMARY_MAX_WORKS * 2);
+    expect(summary(await load(user))).toMatchObject({ complete: true, empty: true });
   });
 });
 

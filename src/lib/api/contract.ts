@@ -1374,9 +1374,10 @@ export type ReturnSummaryItem = z.infer<typeof returnSummaryItemSchema>;
 /**
  * GET /api/v2/return-summary — 복귀 요약. 숫자 없음(개수를 내리지 않는다).
  * since: 마지막 Clear의 지평(마이크로초 UTC 글자, 앱이 "Since …" 표시를 위해 시각으로 바꿔도 되지만 커서에는 쓰지 않는다). 표시용이다 — 무엇이 읽혔는지는 시각이 아니라
- *   서버가 사건 id로 기억한다(Clear 뒤에 commit되는 사건은 시각이 이르더라도 새 변화로 보인다). 한 번도 Clear하지 않았으면 null + baseline never_cleared
+ *   서버가 (사건, 작업) 쌍으로 기억한다(Clear 뒤에 commit되는 사건은 시각이 이르더라도 새 변화로 보인다). 한 번도 Clear하지 않았으면 null + baseline never_cleared
  *   (이때 run · 대화 변화는 이력 전체를 올리지 않고, 작업 변화는 사용자가 마지막으로 본 뒤의 것만 낸다 — 첫 기준 시각은 열린 제품 결정이다).
- * cursor: Clear에 그대로 돌려준다. 잘렸거나 변화 원천을 읽지 못했으면 null (일부를 전체처럼 읽음 처리하지 않는다).
+ * cursor: Clear에 그대로 돌려준다(불투명, 최대 약 9KB). 변화 원천을 읽지 못했으면 null. **잘렸어도(truncated) 커서가 있다** — 그 커서는 보인 작업의 사건만 읽음 처리하고,
+ *   보이지 않은 작업은 다음 조회에 나온다 (Clear 가능 = cursor가 있다).
  * complete: 모든 원천을 읽었고 잘리지 않았다. empty: complete이면서 items가 비었다 — "변화 없음 · 모두 처리됨"은 empty일 때만.
  */
 export const returnSummaryResponseSchema = z.object({
@@ -1398,7 +1399,7 @@ export type ReturnSummaryResponse = z.infer<typeof returnSummaryResponseSchema>;
  * 조회 때 아직 commit되지 않았던 사건은 Clear가 읽음으로 만들지 못한다 — 나중에 commit되면 다음 조회에 보인다.
  * 400 invalid_request: 모양이 틀린 · 미래 · 남의 커서.
  */
-export const returnSummaryClearRequestSchema = z.object({ cursor: z.string().min(1).max(400) }).strict();
+export const returnSummaryClearRequestSchema = z.object({ cursor: z.string().min(1).max(10_000) }).strict();
 export type ReturnSummaryClearRequest = z.infer<typeof returnSummaryClearRequestSchema>;
 export const returnSummaryClearResponseSchema = z.object({ cleared_through: utcMicroSchema, applied: z.boolean() });
 export type ReturnSummaryClearResponse = z.infer<typeof returnSummaryClearResponseSchema>;

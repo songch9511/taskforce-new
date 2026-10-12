@@ -12,9 +12,9 @@ import { exposeSuggestions, produceSuggestions } from "./suggestions";
 import { loadUserTimeZone } from "./time-zone";
 
 // Review (런타임 계약 6장 pending_decisions + 8장 suggestions): C2 결정 대기 계산(개수 상한 없음, 숨긴 항목을 gone으로 만들지 않는다) + 열린 제안.
-//  - 결정 대기는 실제 원천(SQL coordinator_pending_inputs)에서 그때그때 계산한다. 코디네이터 게이트와 무관하다. 읽기는 아무것도 해결하지 않는다.
+//  - 결정 대기는 실제 원천(SQL coordinator_pending_inputs)에서 그때그때 계산한다. 코디네이터 게이트와 무관하다. 계산은 아무것도 해결하지 않는다.
 //  - 제안: 생산(지금 있는 결정적 사실, 멱등) → 노출(비긴급 하루 한 묶음 3개 · 긴급은 상한 밖). 코디네이터 결과를 쓰는 종류는 COORDINATOR_ENABLED일 때만 읽는다.
-//    제안을 보는 것은 Action · run을 만들지 않는다.
+//    이 호출은 읽기만 하지 않는다: 제안 생산 · 노출 표시(shown_at · 그날의 비긴급 묶음 소비 · snooze 끝난 제안 다시 열기 · 증거 있는 expired)를 멱등으로 쓴다. 제안을 보는 것은 Action · run · Claim을 만들지 않는다.
 //  - 한 쪽을 읽지 못하면 그 쪽을 unavailable로 표시한다 — 비었다고 하지 않는다. 시간대(하루 경계)도 같다. empty는 모든 원천을 읽었고 둘 다 비었을 때만이다.
 
 export type ReviewOptions = {

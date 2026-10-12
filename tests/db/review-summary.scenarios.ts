@@ -122,10 +122,11 @@ export function reviewFixtures(db: () => ReviewDb) {
     suggestionRow: (suggestionId: string) => one(`select * from public.suggestions where id = $1`, [suggestionId]),
     scan: async (userId: string, now: string | null, limit = 300) =>
       (await one(`select public.return_summary_scan($1, $2::text[], $3::timestamptz, $4) as r`, [userId, CHANGE_TYPES, now, limit])).r as ScanResult,
-    clear: async (userId: string, cursor: { horizon: string; digest: string }, now: string | null = null) =>
+    /** 커서는 조회 결과(scan) 그대로 넘기면 된다: 잘렸으면 page(보인 작업)와 baseline도 같이 간다 */
+    clear: async (userId: string, cursor: { horizon: string; digest: string; page?: string[] | null; baseline?: boolean }, now: string | null = null) =>
       (
-        await one(`select public.return_summary_clear($1, $2::text[], $3::timestamptz, $4, $5::timestamptz) as r`, [
-          userId, CHANGE_TYPES, cursor.horizon, cursor.digest, now,
+        await one(`select public.return_summary_clear($1, $2::text[], $3::timestamptz, $4, $5::timestamptz, $6::uuid[], $7) as r`, [
+          userId, CHANGE_TYPES, cursor.horizon, cursor.digest, now, cursor.page ?? null, cursor.baseline ?? false,
         ])
       ).r as ClearResult,
     reads: (userId: string) => count(`select 1 from public.return_summary_reads where user_id = $1`, [userId]),
@@ -146,7 +147,7 @@ export function reviewFixtures(db: () => ReviewDb) {
 
 type ScanChange = { source: "action_event" | "run" | "message"; kind: string; at: string; detail: string | null; source_state: string | null };
 export type ScanWork = { action_id: string; title: string; status: string; started: boolean; last_user_at: string | null; changes: ScanChange[] };
-export type ScanResult = { since: string | null; horizon: string; digest: string; truncated: boolean; works: ScanWork[] };
+export type ScanResult = { since: string | null; horizon: string; digest: string; truncated: boolean; page: string[] | null; baseline: boolean; works: ScanWork[] };
 export type ClearResult = { status: "cleared" | "stale" | "invalid"; applied?: boolean; cleared_through?: string };
 
 const rejects = (promise: Promise<unknown>, pattern: RegExp) => expect(promise).rejects.toThrow(pattern);
@@ -185,7 +186,7 @@ export function reviewSummaryTests(db: () => ReviewDb) {
       await f.suggestion(bob, ba);
       await q(`insert into public.return_summary_state (user_id, cleared_through) values ($1, now()), ($2, now())`, [alice, bob]);
       const shared = randomUUID();
-      await q(`insert into public.return_summary_reads (user_id, source, event_ref) values ($1, 'message', $3), ($2, 'message', $3)`, [alice, bob, shared]);
+      await q(`insert into public.return_summary_reads (user_id, source, event_ref, action_id) values ($1, 'message', $3, $4), ($2, 'message', $3, $5)`, [alice, bob, shared, aa, ba]);
       expect((await db().asUser(alice, () => q(`select user_id from public.return_summary_reads`))).map((r) => r.user_id)).toEqual([alice]);
       expect((await db().asUser(alice, () => q(`select user_id from public.suggestions`))).map((r) => r.user_id)).toEqual([alice]);
       expect((await db().asUser(alice, () => q(`select user_id from public.return_summary_state`))).map((r) => r.user_id)).toEqual([alice]);
@@ -202,7 +203,8 @@ export function reviewSummaryTests(db: () => ReviewDb) {
         await rejects(q(`select public.return_summary_clear($1, '{completed}'::text[], now(), 'x', null)`, [alice]), /permission denied/);
         await rejects(q(`select public.return_summary_digest($1, '{completed}'::text[], now())`, [alice]), /permission denied/);
         await rejects(q(`select * from public.return_summary_candidates($1, '{completed}'::text[], now())`, [alice]), /permission denied/);
-        await rejects(q(`insert into public.return_summary_reads (user_id, source, event_ref) values ($1, 'message', gen_random_uuid()::text)`, [alice]), /permission denied/);
+        await rejects(q(`select * from public.return_summary_scope($1, '{completed}'::text[], now(), null, false)`, [alice]), /permission denied/);
+        await rejects(q(`insert into public.return_summary_reads (user_id, source, event_ref, action_id) values ($1, 'message', gen_random_uuid()::text, $2)`, [alice, aa]), /permission denied/);
         await rejects(q(`delete from public.return_summary_reads`), /permission denied/);
       });
     });
@@ -214,8 +216,9 @@ export function reviewSummaryTests(db: () => ReviewDb) {
         "suggestion_transition(uuid,uuid,integer,text,timestamp with time zone,text,timestamp with time zone)",
         "suggestion_stale_evidence(public.suggestions)",
         "return_summary_scan(uuid,text[],timestamp with time zone,integer)",
-        "return_summary_clear(uuid,text[],timestamp with time zone,text,timestamp with time zone)",
-        "return_summary_digest(uuid,text[],timestamp with time zone)",
+        "return_summary_clear(uuid,text[],timestamp with time zone,text,timestamp with time zone,uuid[],boolean)",
+        "return_summary_digest(uuid,text[],timestamp with time zone,uuid[],boolean)",
+        "return_summary_scope(uuid,text[],timestamp with time zone,uuid[],boolean)",
         "return_summary_candidates(uuid,text[],timestamp with time zone)",
       ];
       for (const fn of rpcs) {
@@ -303,16 +306,21 @@ export function reviewSummaryTests(db: () => ReviewDb) {
       await q(`update public.return_summary_state set cleared_through = $2 where user_id = $1`, [user, at(T0, 1)]);
     });
 
-    it("읽음 표시는 (사용자, 원천, 사건 id)뿐이다: 글 열이 없고, 모르는 원천 · 사건 id가 아닌 글자는 거절, 같은 사건은 한 번만", async () => {
-      const user = await f.user();
+    it("읽음 표시는 (사용자, 원천, 사건 id, 작업 id)뿐이다: 글 열이 없고, 모르는 원천 · 사건 id가 아닌 글자는 거절, 같은 쌍은 한 번만, 같은 사건도 작업이 다르면 따로, 남의 작업은 못 가리킨다, 작업이 지워지면 함께 지워진다", async () => {
+      const [user, other] = [await f.user(), await f.user()];
+      const [action, action2, foreign] = [await f.action(user), await f.action(user), await f.action(other)];
       const columns = (await q(`select column_name from information_schema.columns where table_schema = 'public' and table_name = 'return_summary_reads' order by column_name`)).map((r) => r.column_name);
-      expect(columns).toEqual(["event_ref", "read_at", "source", "user_id"]);
+      expect(columns).toEqual(["action_id", "event_ref", "read_at", "source", "user_id"]);
       const ref = randomUUID();
-      await q(`insert into public.return_summary_reads (user_id, source, event_ref) values ($1, 'action_event', $2)`, [user, ref]);
-      await q(`insert into public.return_summary_reads (user_id, source, event_ref) values ($1, 'run_event', '12345')`, [user]);
-      await rejects(q(`insert into public.return_summary_reads (user_id, source, event_ref) values ($1, 'action_event', $2)`, [user, ref]), /duplicate key|pkey/);
-      await rejects(q(`insert into public.return_summary_reads (user_id, source, event_ref) values ($1, 'inbox_event', $2)`, [user, randomUUID()]), /return_summary_reads_source_check/);
-      await rejects(q(`insert into public.return_summary_reads (user_id, source, event_ref) values ($1, 'message', '회의에서 나온 말')`, [user]), /return_summary_reads_event_ref_check/);
+      await q(`insert into public.return_summary_reads (user_id, source, event_ref, action_id) values ($1, 'action_event', $2, $3)`, [user, ref, action]);
+      await q(`insert into public.return_summary_reads (user_id, source, event_ref, action_id) values ($1, 'run_event', '12345', $2)`, [user, action]);
+      await q(`insert into public.return_summary_reads (user_id, source, event_ref, action_id) values ($1, 'action_event', $2, $3)`, [user, ref, action2]); // 같은 사건, 다른 작업
+      await rejects(q(`insert into public.return_summary_reads (user_id, source, event_ref, action_id) values ($1, 'action_event', $2, $3)`, [user, ref, action]), /duplicate key|pkey/);
+      await rejects(q(`insert into public.return_summary_reads (user_id, source, event_ref, action_id) values ($1, 'inbox_event', $2, $3)`, [user, randomUUID(), action]), /return_summary_reads_source_check/);
+      await rejects(q(`insert into public.return_summary_reads (user_id, source, event_ref, action_id) values ($1, 'message', '회의에서 나온 말', $2)`, [user, action]), /return_summary_reads_event_ref_check/);
+      await rejects(q(`insert into public.return_summary_reads (user_id, source, event_ref, action_id) values ($1, 'message', $2, $3)`, [user, randomUUID(), foreign]), /foreign key|return_summary_reads_action_id_user_id_fkey/);
+      await q(`delete from public.actions where id = $1`, [action2]);
+      expect(await f.count(`select 1 from public.return_summary_reads where user_id = $1`, [user])).toBe(2);
     });
 
     it("계정을 지우면 제안 · Clear 위치도 함께 지워진다", async () => {
@@ -320,7 +328,7 @@ export function reviewSummaryTests(db: () => ReviewDb) {
       const action = await f.action(user);
       await f.suggestion(user, action);
       await q(`insert into public.return_summary_state (user_id, cleared_through) values ($1, now())`, [user]);
-      await q(`insert into public.return_summary_reads (user_id, source, event_ref) values ($1, 'message', $2)`, [user, randomUUID()]);
+      await q(`insert into public.return_summary_reads (user_id, source, event_ref, action_id) values ($1, 'message', $2, $3)`, [user, randomUUID(), action]);
       await q(`delete from auth.users where id = $1`, [user]);
       expect(await f.count(`select 1 from public.suggestions where user_id = $1`, [user])).toBe(0);
       expect(await f.count(`select 1 from public.return_summary_state where user_id = $1`, [user])).toBe(0);
@@ -642,24 +650,36 @@ export function reviewSummaryTests(db: () => ReviewDb) {
 
   // ───────────────────────── 5) 복귀 요약 읽기 ─────────────────────────
   describe("복귀 요약 읽기 (return_summary_scan): 실제 원천에서 계산, 새 저장소 없음", () => {
-    it("[action_events] AI · 실행기 변화(changed.ts 종류)만 후보다: 사용자 이벤트 · created · 사용자 종류는 아니다. 한 번도 Clear하지 않은 사용자는 처음부터 본다", async () => {
+    it("[action_events] AI · 실행기 변화(changed.ts 종류)만 후보다: 사용자 이벤트 · created · 사용자 종류는 아니고, 사용자가 같은 밀리초 이후에 손댄 작업의 변화는 본 것이라 빠진다. 한 번도 Clear하지 않은 사용자는 처음부터 본다", async () => {
       const user = await f.user();
       const action = await f.action(user, { title: "제안서 보내기" });
-      await f.event(user, action, "due_changed", "ai", at(T0, 10));
-      await f.event(user, action, "merged", "ai", at(T0, 20));
-      await f.event(user, action, "artifact_created", "agent", at(T0, 30));
-      await f.event(user, action, "created", "ai", at(T0, 5));
-      await f.event(user, action, "user_edited", "user", at(T0, 40));
-      await f.event(user, action, "user_seen", "user", at(T0, 50));
+      const ms = (n: number) => at(T0, n * 1000); // 밀리초 단위 간격
+      await f.event(user, action, "created", "ai", ms(1));
+      await f.event(user, action, "due_changed", "ai", ms(5));
+      await f.event(user, action, "user_edited", "user", ms(10));
+      await f.event(user, action, "merged", "ai", ms(20));
+      await f.event(user, action, "user_seen", "user", ms(25));
+      await f.event(user, action, "artifact_created", "agent", ms(30));
       const scan = await f.scan(user, at(T0, 1_000_000));
       expect(scan.since).toBeNull();
       expect(scan.truncated).toBe(false);
+      expect(scan.page).toBeNull();
+      expect(scan.baseline).toBe(true);
       expect(scan.works).toHaveLength(1);
       expect(scan.works[0]).toMatchObject({ action_id: action, title: "제안서 보내기", status: "open", started: false });
-      expect(scan.works[0].changes.map((c) => `${c.source}:${c.kind}`)).toEqual(["action_event:due_changed", "action_event:merged", "action_event:artifact_created"]);
-      // 사용자가 마지막으로 손댄 시각은 TS가 changed.ts 의미로 비교하도록 그대로 준다 (마이크로초 글자)
-      expect(scan.works[0].last_user_at).toBe(at(T0, 50));
-      expect(scan.works[0].changes.map((c) => c.at)).toEqual([at(T0, 10), at(T0, 20), at(T0, 30)]);
+      // 사용자가 마지막으로 손댄 시각(25ms) 뒤의 agent 변화만 남는다 (본 것 이전의 AI 변화 · created · 사용자 이벤트는 제외)
+      expect(scan.works[0].changes.map((c) => `${c.source}:${c.kind}`)).toEqual(["action_event:artifact_created"]);
+      expect(scan.works[0].last_user_at).toBe(ms(25));
+    });
+
+    it("같은 밀리초 안의 AI 변화와 사용자 이벤트는 본 것이다 (changed.ts: 시각이 같으면 본 것). 1ms 뒤의 변화는 안 읽은 변화", async () => {
+      const user = await f.user();
+      const action = await f.action(user);
+      await f.event(user, action, "user_seen", "user", "2026-10-12T00:00:00.005100Z");
+      await f.event(user, action, "due_changed", "ai", "2026-10-12T00:00:00.005900Z"); // 같은 5ms
+      expect((await f.scan(user, "2026-10-12T00:00:01Z")).works).toEqual([]);
+      await f.event(user, action, "merged", "ai", "2026-10-12T00:00:00.006000Z"); // 6ms
+      expect((await f.scan(user, "2026-10-12T00:00:01Z")).works[0].changes.map((c) => c.kind)).toEqual(["merged"]);
     });
 
     it("범위는 지평(horizon)까지다: 지평과 같은 시각은 이번 조회, 그 뒤는 다음 번이다 (같은 시각 tie). 읽음으로 표시한 사건은 시각과 상관없이 빠진다", async () => {
@@ -670,7 +690,7 @@ export function reviewSummaryTests(db: () => ReviewDb) {
       await f.event(user, action, "owner_changed", "ai", at(T0, 200));
       await f.event(user, action, "reopened", "ai", at(T0, 201));
       await q(`insert into public.return_summary_state (user_id, cleared_through) values ($1, $2)`, [user, at(T0, 100)]);
-      await q(`insert into public.return_summary_reads (user_id, source, event_ref) values ($1, 'action_event', $2)`, [user, read]);
+      await q(`insert into public.return_summary_reads (user_id, source, event_ref, action_id) values ($1, 'action_event', $2, $3)`, [user, read, action]);
       const scan = await f.scan(user, at(T0, 200));
       expect(scan.since).toBe(at(T0, 100)); // 표시용 (마지막 Clear의 지평)
       expect(scan.horizon).toBe(at(T0, 200));
@@ -986,6 +1006,218 @@ export function reviewSummaryTests(db: () => ReviewDb) {
       expect((await f.scan(user, at(T0, 300))).since).toBe(at(T0, 100));
       expect((await f.clear(user, scan, at(T0, 400)))).toMatchObject({ status: "cleared", applied: false });
     });
+
+  // ───────────────────────── 7) 잘린 조회 (P2-C) ─────────────────────────
+  describe("잘린 조회: 커서가 보인 작업만 가리킨다 — Clear는 그 작업의 사건만 읽음 처리하고 나머지는 다음 조회에 나온다", () => {
+    /** 작업 5개, 변화가 하나씩 (A1이 가장 이르고 A5가 가장 최근) */
+    async function five() {
+      const user = await f.user();
+      const actions: string[] = [];
+      const events: string[] = [];
+      for (let i = 1; i <= 5; i++) {
+        const action = await f.action(user, { title: `일 ${i}` });
+        actions.push(action);
+        events.push(await f.event(user, action, "merged", "ai", at(T0, i * 1000)));
+      }
+      return { user, actions, events, [Symbol.iterator]: undefined };
+    }
+    const HZ = at(T0, 100_000);
+    const readRefs = async (user: string) => new Set((await q(`select event_ref from public.return_summary_reads where user_id = $1`, [user])).map((r) => r.event_ref as string));
+    /** (사건, 작업) 쌍 */
+    const readPairs = async (user: string) => new Set((await q(`select event_ref || ':' || action_id as pair from public.return_summary_reads where user_id = $1`, [user])).map((r) => r.pair as string));
+
+    it("limit을 넘으면 truncated + page(보인 작업, 가장 최근 변화 순)를 싣는다. 잘리지 않으면 page는 null", async () => {
+      const { user, actions } = await five();
+      const scan = await f.scan(user, HZ, 3);
+      expect(scan.truncated).toBe(true);
+      expect(scan.page).toEqual([actions[4], actions[3], actions[2]]);
+      expect(scan.works.map((w) => w.action_id)).toEqual(scan.page);
+      expect(scan.baseline).toBe(true);
+      const full = await f.scan(user, HZ, 5);
+      expect(full).toMatchObject({ truncated: false, page: null });
+      expect(full.works).toHaveLength(5);
+    });
+
+    it("Clear는 보인 작업의 사건만 읽음 처리한다: 보이지 않은 작업은 읽음이 아니고 다음 조회에 나온다. 마지막 페이지(잘리지 않음)는 남은 것을 모두", async () => {
+      const { user, actions, events } = await five();
+      const first = await f.scan(user, HZ, 3);
+      expect(await f.clear(user, first, at(T0, 200_000))).toMatchObject({ status: "cleared", applied: true });
+      expect(await readRefs(user)).toEqual(new Set([events[4], events[3], events[2]]));
+      const second = await f.scan(user, at(T0, 300_000), 3);
+      expect(second).toMatchObject({ truncated: false, page: null, since: HZ });
+      expect(second.works.map((w) => w.action_id)).toEqual([actions[1], actions[0]]);
+      expect(await f.clear(user, second, at(T0, 400_000))).toMatchObject({ status: "cleared", applied: true });
+      expect(await readRefs(user)).toEqual(new Set(events));
+      expect((await f.scan(user, at(T0, 500_000), 3)).works).toEqual([]);
+    });
+
+    it("재시도(응답 유실) · 두 기기: 같은 커서를 다시 보내도 성공이지만 쓰기는 없다. 다른 기기가 다음 페이지를 읽은 뒤 옛 커서를 보내도 마찬가지", async () => {
+      const { user, events } = await five();
+      const cursor = await f.scan(user, HZ, 3);
+      const other = await f.scan(user, HZ, 3); // 두 번째 기기가 같은 페이지를 받았다
+      expect((await f.clear(user, cursor, at(T0, 200_000))).applied).toBe(true);
+      expect(await f.clear(user, cursor, at(T0, 200_000))).toMatchObject({ status: "cleared", applied: false }); // 재시도
+      expect(await f.clear(user, other, at(T0, 200_000))).toMatchObject({ status: "cleared", applied: false }); // 두 번째 기기
+      const next = await f.scan(user, at(T0, 300_000), 3); // 다음 페이지
+      expect((await f.clear(user, next, at(T0, 400_000))).applied).toBe(true);
+      expect(await f.clear(user, cursor, at(T0, 400_000))).toMatchObject({ status: "cleared", applied: false }); // 옛 페이지 커서를 한참 뒤에
+      expect((await readRefs(user)).size).toBe(events.length);
+    });
+
+    it("보인 작업에 늦게 commit된 사건(지평 이전 시각)이 조회 뒤 Clear 전에 보이면 stale (아무것도 쓰지 않는다). 보이지 않은 작업의 늦은 사건은 영향이 없다 — 읽음도 안 되고 stale도 아니다", async () => {
+      const { user, actions } = await five();
+      const cursor = await f.scan(user, HZ, 3);
+      await f.event(user, actions[4], "reopened", "ai", at(T0, 500)); // 보인 작업(일 5)에 늦게 들어옴
+      expect(await f.clear(user, cursor, at(T0, 200_000))).toEqual({ status: "stale" });
+      expect((await readRefs(user)).size).toBe(0);
+      const again = await f.scan(user, HZ, 3);
+      expect(again.works[0].changes.map((c) => c.kind)).toEqual(["reopened", "merged"]);
+      // 이제 보이지 않은 작업(일 1)에 늦은 사건: 범위 밖이라 stale이 아니고, 읽음도 되지 않아 다음 조회에 나온다
+      await f.event(user, actions[0], "scope_changed", "ai", at(T0, 600));
+      expect((await f.clear(user, again, at(T0, 200_000))).status).toBe("cleared");
+      const next = await f.scan(user, at(T0, 300_000), 3);
+      expect(next.works.find((w) => w.action_id === actions[0])!.changes.map((c) => c.kind)).toEqual(["scope_changed", "merged"]);
+    });
+
+    it("보인 작업이 조회 뒤 지워지면 stale이고, 다시 조회하면 Clear할 수 있다 (영구히 잠기지 않는다)", async () => {
+      const { user, actions } = await five();
+      const cursor = await f.scan(user, HZ, 3);
+      await q(`delete from public.actions where id = $1`, [actions[3]]);
+      expect(await f.clear(user, cursor, at(T0, 200_000))).toEqual({ status: "stale" });
+      const again = await f.scan(user, at(T0, 300_000), 3);
+      expect(again.page).toEqual([actions[4], actions[2], actions[1]]);
+      expect((await f.clear(user, again, at(T0, 400_000))).status).toBe("cleared");
+    });
+
+    it("첫 Clear(baseline)가 잘린 조회여도 보이지 않은 작업의 run · 대화 이력은 기준으로 삼는다 — 이력이 새 변화로 되살아나지 않는다. 그 뒤에 생긴 결과는 새 변화", async () => {
+      const { user, actions } = await five();
+      await f.setClock("2026-10-12T00:00:00.000500Z");
+      const oldRun = await f.run(user, actions[0]); // 일 1: 보이지 않는 작업
+      await f.setRun(oldRun, "failed");
+      const conversation = await f.conversation(user, null);
+      await f.message(user, conversation, 1, "assistant", { action_ids: [actions[1]] }, at(T0, 700));
+      const first = await f.scan(user, HZ, 3);
+      expect(first.truncated).toBe(true);
+      expect(first.baseline).toBe(true);
+      expect((await f.clear(user, first, at(T0, 200_000))).status).toBe("cleared");
+      const second = await f.scan(user, at(T0, 300_000), 3);
+      // 보이지 않던 작업(일 1 · 일 2)은 변화 하나씩(AI 변화)만 나온다: 옛 run 결과 · 옛 메시지는 기준이다
+      expect(second.works.map((w) => [w.action_id, w.changes.map((c) => `${c.source}:${c.kind}`)])).toEqual([
+        [actions[1], ["action_event:merged"]],
+        [actions[0], ["action_event:merged"]],
+      ]);
+      // 기준 뒤에 도착한 run 결과는 새 변화다
+      await f.setClock("2026-10-12T00:03:00Z");
+      await f.setRun(await f.run(user, actions[0]), "done", "draft_ready");
+      const third = await f.scan(user, "2026-10-12T00:04:00Z", 3);
+      expect(third.works.find((w) => w.action_id === actions[0])!.changes.map((c) => `${c.source}:${c.kind}`)).toEqual(["action_event:merged", "run:done"]);
+    });
+
+    it("한 메시지가 보인 작업과 보이지 않은 작업을 함께 가리키면 (사건, 작업) 쌍마다 따로 읽는다: 보인 작업의 쌍만 읽음이고, 보이지 않은 작업의 쌍은 안 읽음으로 남아 다음 페이지에 나온다", async () => {
+      const { user, actions } = await five();
+      await q(`insert into public.return_summary_state (user_id, cleared_through) values ($1, $2)`, [user, at(T0, 50)]);
+      const conversation = await f.conversation(user, null);
+      // 메시지 시각을 이르게 둬서 순위(가장 최근 변화 순)를 바꾸지 않는다: 보이는 작업 = 일 5 · 일 4 · 일 3
+      const shared = await f.message(user, conversation, 1, "assistant", { action_ids: [actions[4], actions[0]] }, at(T0, 500));
+      const solo = await f.message(user, conversation, 2, "assistant", { action_ids: [actions[3]] }, at(T0, 600));
+      const cursor = await f.scan(user, HZ, 3);
+      expect(cursor.page).toEqual([actions[4], actions[3], actions[2]]);
+      expect((await f.clear(user, cursor, at(T0, 200_000))).status).toBe("cleared");
+      const pairs = await readPairs(user);
+      expect(pairs.has(`${solo}:${actions[3]}`)).toBe(true);
+      expect(pairs.has(`${shared}:${actions[4]}`)).toBe(true); // 보인 작업에 대해서는 읽음
+      expect(pairs.has(`${shared}:${actions[0]}`)).toBe(false); // 보이지 않은 작업에게는 안 읽음
+      const next = await f.scan(user, at(T0, 300_000), 3);
+      // 보이던 작업(일 5)에는 더 이상 그 메시지가 없고, 보이지 않던 작업(일 1)에는 AI 변화와 함께 메시지가 남아 있다
+      expect(next.works.map((w) => w.action_id)).toEqual([actions[1], actions[0]]);
+      expect(next.works[1].changes.map((c) => `${c.source}:${c.kind}`).sort()).toEqual(["action_event:merged", "message:assistant"]);
+      expect((await f.clear(user, next, at(T0, 400_000))).status).toBe("cleared");
+      expect((await f.scan(user, at(T0, 500_000), 3)).works).toEqual([]);
+    });
+
+    it("공유 사건으로 페이지가 멈추지 않는다: 허브 작업 하나를 모든 메시지가 가리키고 허브의 순위가 맨 뒤여도 조회 → Clear를 되풀이하면 정해진 횟수 안에 모두 읽음이 된다", async () => {
+      const user = await f.user();
+      const hub = "ffffffff-ffff-4fff-bfff-ffffffffffff"; // 순위 동률에서 작업 id 순으로 가장 뒤
+      await q(`insert into public.actions (id, user_id, title) values ($1, $2, '허브')`, [hub, user]);
+      const leaves: string[] = [];
+      for (let i = 0; i < 7; i++) leaves.push(await f.action(user, { title: `잎 ${i}` }));
+      await q(`insert into public.return_summary_state (user_id, cleared_through) values ($1, $2)`, [user, at(T0, 1)]);
+      const conversation = await f.conversation(user, null);
+      for (let i = 0; i < leaves.length; i++) await f.message(user, conversation, i + 1, "assistant", { action_ids: [hub, leaves[i]] }, at(T0, 1000));
+      let rounds = 0;
+      for (; rounds < 5; rounds++) {
+        const scan = await f.scan(user, at(T0, 100_000 + rounds * 1000), 7); // 보이는 작업 7개 = 잎 7개, 허브는 8번째
+        if (scan.works.length === 0) break;
+        expect(scan.page === null || !scan.page.includes(hub) || scan.page.length <= 7).toBe(true);
+        expect((await f.clear(user, scan, at(T0, 200_000 + rounds * 1000))).status).toBe("cleared");
+        // 보이지 않은 작업의 쌍은 읽음이 아니다
+        if (scan.truncated) expect((await readPairs(user)).size).toBeLessThan(leaves.length * 2);
+      }
+      expect(rounds).toBe(2); // 잎 한 번, 허브 한 번
+      expect((await readPairs(user)).size).toBe(leaves.length * 2);
+      // 대조: limit이 작업 수 이상이면 한 번에 모두 읽는다
+      const control = await f.user();
+      const hub2 = randomUUID();
+      await q(`insert into public.actions (id, user_id, title) values ($1, $2, '허브')`, [hub2, control]);
+      const leaves2: string[] = [];
+      for (let i = 0; i < 7; i++) leaves2.push(await f.action(control, { title: `잎 ${i}` }));
+      await q(`insert into public.return_summary_state (user_id, cleared_through) values ($1, $2)`, [control, at(T0, 1)]);
+      const conversation2 = await f.conversation(control, null);
+      for (let i = 0; i < leaves2.length; i++) await f.message(control, conversation2, i + 1, "assistant", { action_ids: [hub2, leaves2[i]] }, at(T0, 1000));
+      const all = await f.scan(control, at(T0, 100_000), 8);
+      expect(all).toMatchObject({ truncated: false, page: null });
+      expect((await f.clear(control, all, at(T0, 200_000))).status).toBe("cleared");
+      expect((await readPairs(control)).size).toBe(leaves2.length * 2);
+      expect((await f.scan(control, at(T0, 300_000), 8)).works).toEqual([]);
+    });
+
+    it("꾸민 커서: 남의 작업 id · 너무 많은 id · 다른 작업 집합은 아무것도 읽음 처리하지 못한다 (stale · invalid)", async () => {
+      const { user, actions } = await five();
+      const other = await f.user();
+      const cursor = await f.scan(user, HZ, 3);
+      expect((await f.clear(other, cursor, at(T0, 200_000))).status).toBe("stale"); // 남이 쓴 커서: 그 사용자의 범위로 다시 세면 digest가 다르다
+      const swapped = { ...cursor, page: [actions[0], actions[1], actions[2]] }; // 다른 작업 집합 (digest는 그대로)
+      expect((await f.clear(user, swapped, at(T0, 200_000))).status).toBe("stale");
+      const tooMany = Array.from({ length: 1001 }, () => randomUUID());
+      expect((await f.clear(user, { ...cursor, page: tooMany }, at(T0, 200_000))).status).toBe("invalid");
+      expect((await readRefs(user)).size).toBe(0);
+      expect((await f.clear(user, cursor, at(T0, 200_000))).status).toBe("cleared");
+    });
+
+    it("순위는 결정적이다: 변화 시각이 같은 작업은 작업 id 순. 같은 조회를 두 번 해도 같은 페이지", async () => {
+      const user = await f.user();
+      const actions: string[] = [];
+      for (let i = 0; i < 4; i++) {
+        const action = await f.action(user);
+        actions.push(action);
+        await f.event(user, action, "merged", "ai", at(T0, 1000));
+      }
+      const [one, two] = [await f.scan(user, HZ, 2), await f.scan(user, HZ, 2)];
+      expect(one.page).toEqual(two.page);
+      expect(one.page).toEqual([...actions].sort().slice(0, 2));
+    });
+
+    it("본 작업(사용자가 같은 밀리초 이후에 손댄 작업)은 순위에 들지 않는다: 안 읽은 작업만으로 페이지가 찬다 (본 작업 때문에 빈 잘린 페이지가 생기지 않는다)", async () => {
+      const user = await f.user();
+      const seen: string[] = [];
+      const unread: string[] = [];
+      for (let i = 0; i < 4; i++) {
+        const action = await f.action(user);
+        await f.event(user, action, "merged", "ai", at(T0, 100_000 + i * 1000));
+        await f.event(user, action, "user_seen", "user", at(T0, 200_000 + i * 1000)); // 변화보다 뒤에 봤다
+        seen.push(action);
+      }
+      for (let i = 0; i < 3; i++) {
+        const action = await f.action(user);
+        await f.event(user, action, "merged", "ai", at(T0, 1000 + i * 1000));
+        unread.push(action);
+      }
+      const scan = await f.scan(user, at(T0, 1_000_000), 2);
+      expect(scan.truncated).toBe(true);
+      expect(scan.page!.every((id) => unread.includes(id))).toBe(true);
+      expect(scan.works).toHaveLength(2);
+    });
+  });
   });
 }
 
@@ -1076,9 +1308,8 @@ export function reviewSummaryUpgradeTests(fresh: () => Promise<FreshDb>) {
       for (const t of addedTables) expect(await db.query(`select 1 from public.${t}`)).toEqual([]);
       // 옛 데이터로 새 기능이 돈다: 읽기와 Clear
       const scan = (await db.query(`select public.return_summary_scan($1, $2::text[], null, 300) as r`, [alice, CHANGE_TYPES]))[0].r as ScanResult;
-      // 같은 트랜잭션에서 쓴 AI 변화와 user_seen: SQL은 후보와 마지막으로 본 시각을 그대로 주고, 본 것으로 거르는 것은 TS(changed.ts 의미)다
-      expect(scan.works).toHaveLength(1);
-      expect(scan.works[0].last_user_at).not.toBeNull();
+      // 같은 트랜잭션에서 쓴 AI 변화와 user_seen: 시각이 같으면 본 것이다 (changed.ts)
+      expect(scan.works).toHaveLength(0);
       expect((await db.query(`select public.suggestions_produce($1, now(), 24, false) as n`, [alice]))[0].n).toBe(2); // 기한 임박 · 실패한 run
     });
 
@@ -1103,7 +1334,7 @@ export function reviewSummaryUpgradeTests(fresh: () => Promise<FreshDb>) {
       const db = await fresh();
       for (const sql of before) await db.exec(sql);
       // 파일 끝쪽 함수와 같은 서명: 앞의 표 · 제약 · 함수를 다 만든 뒤에 실패한다 → 모두 되돌려져야 한다
-      await db.exec(`create function public.return_summary_clear(p_user_id uuid, p_types text[], p_horizon timestamptz, p_digest text, p_now timestamptz) returns int language sql as 'select 1'`);
+      await db.exec(`create function public.return_summary_clear(p_user_id uuid, p_types text[], p_horizon timestamptz, p_digest text, p_now timestamptz, p_ids uuid[], p_b boolean) returns int language sql as 'select 1'`);
       const objects = await schemaFingerprint(db);
       await expect(db.exec(c3)).rejects.toThrow(/already exists|이미 있/);
       await db.exec("rollback");
