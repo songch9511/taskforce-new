@@ -17,3 +17,12 @@ extension APIClient {
         try await send(.post, "return-summary/clear", body: ReturnSummaryClearRequest(cursor: cursor), version: .v2)
     }
 }
+
+extension APIClient {
+    /// 첫 정상 표시 확정 (`POST /api/v2/return-summary/baseline`): 그때까지의 run 결과 · 대화 이력만 "본 과거"로 기준점화한다 (Action 변화 · 결정은 건드리지 않는다).
+    /// `initToken`은 조회가 준 글자 **그대로**다. 정상 표시가 된 뒤에만 부른다 (`ReturnSummaryStore.beginBaseline`). 200 `already_initialized`도 성공이다.
+    /// 409 = 확인과 표시 사이에 범위가 달라졌다 · 400 = 모양이 틀린/남의/옛 토큰: 아무것도 쓰지 않았다. 자동으로 다시 보내지 않는다 (다음 정상 표시의 새 토큰으로)
+    public func confirmReturnSummaryBaseline(initToken: String) async throws -> ReturnSummaryBaselineResponse {
+        try await send(.post, "return-summary/baseline", body: ReturnSummaryBaselineRequest(initToken: initToken), version: .v2)
+    }
+}

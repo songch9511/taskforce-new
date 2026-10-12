@@ -66,22 +66,36 @@ struct ReturnSummaryContractTests {
         #expect(response.isComplete)
     }
 
-    // MARK: 모르는 값은 `.unknown` — 완전하다고 주장하지 않는다
+    // MARK: 모르는 값은 `.unknown` — 변화를 해석 못 하면 완전하다고 주장하지 않는다 (줄의 표시용 상태는 그렇지 않다)
 
-    @Test func unknownEnumValuesDecodeAndMakeTheSummaryIncomplete() throws {
-        func incomplete(_ json: String) throws {
+    /// 변화(source · kind · detail · source_state) · 변화 원천의 상태 · 응답 수준의 값을 읽지 못하면 완전하지 않고 빈 상태가 아니다
+    @Test func unknownChangeValuesAndSourceStatusesMakeTheSummaryIncomplete() throws {
+        func incomplete(_ json: String, uninterpretable: Bool = false) throws {
             let response = try Fx.decode(json)
             #expect(!response.isComplete && !response.isEmpty, "\(json.prefix(80))")
+            #expect(response.hasUninterpretableChange == uninterpretable, "\(json.prefix(80))")
         }
         try incomplete(Fx.example(baseline: "someday"))
         try incomplete(Fx.example(changes: "partial"))
         try incomplete(Fx.example(decisions: "maybe"))
-        try incomplete(Fx.example(items: "[\(Fx.item(1, status: "paused"))]"))
-        try incomplete(Fx.example(items: "[\(Fx.item(1, state: "blocked"))]"))
-        try incomplete(Fx.example(items: "[\(Fx.item(1, next: "celebrate"))]"))
-        try incomplete(Fx.example(items: "[\(Fx.item(1, needsAnswer: true, decisionKind: "telepathy"))]"))
-        try incomplete(Fx.example(items: "[\(Fx.item(1, changes: "[\(Fx.change(source: "carrier_pigeon"))]"))]"))
-        try incomplete(Fx.example(items: "[\(Fx.item(1, changes: "[\(Fx.change(sourceState: "vanished"))]"))]"))
+        try incomplete(Fx.example(items: "[\(Fx.item(1, changes: "[\(Fx.change(source: "carrier_pigeon"))]"))]"), uninterpretable: true)
+        try incomplete(Fx.example(items: "[\(Fx.item(1, changes: "[\(Fx.change(sourceState: "vanished"))]"))]"), uninterpretable: true)
+        try incomplete(Fx.example(items: "[\(Fx.item(1, changes: "[\(Fx.change(kind: "teleported"))]"))]"), uninterpretable: true)
+        try incomplete(Fx.example(items: "[\(Fx.item(1, changes: "[\(Fx.change(source: "run", kind: "done", detail: "mystery", sourceState: nil))]"))]"), uninterpretable: true)
+        try incomplete(Fx.example(items: "[\(Fx.item(1, changes: "[\(Fx.change(source: "message", kind: "gossip", sourceState: nil))]"))]"), uninterpretable: true)
+    }
+
+    /// 줄의 표시용 값(status · state · next · 결정 종류)을 몰라도 변화는 그대로 해석된다: 완전성을 해치지 않는다 (마크 · 라우팅만 비어 있다)
+    @Test func unknownRowMetadataDoesNotMakeTheSummaryIncomplete() throws {
+        for json in [
+            Fx.example(items: "[\(Fx.item(1, status: "paused"))]"),
+            Fx.example(items: "[\(Fx.item(1, state: "blocked"))]"),
+            Fx.example(items: "[\(Fx.item(1, next: "celebrate"))]"),
+            Fx.example(items: "[\(Fx.item(1, needsAnswer: true, decisionKind: "telepathy"))]"),
+        ] {
+            let response = try Fx.decode(json)
+            #expect(response.isComplete && !response.hasUninterpretableChange, "\(json.prefix(80))")
+        }
     }
 
     @Test func unknownValuesAreReadAsUnknownNotAsTheNearestKnownOne() throws {
@@ -90,12 +104,72 @@ struct ReturnSummaryContractTests {
         #expect(response.items[0].status == .unknown && response.items[0].state == .unknown && response.items[0].next.kind == .unknown)
     }
 
-    /// 모르는 변화 토큰(`kind` 문자열)은 디코딩을 깨지 않는다: 문구가 없을 뿐이다
+    /// 모르는 변화 토큰(`kind` 문자열)은 디코딩을 깨지 않는다: 줄은 남고 문구는 없고, 해석 못 한 변화다
     @Test func anUnknownChangeKindTokenKeepsTheRowAndHasNoText() throws {
         let item = Fx.item(5, changes: "[\(Fx.change(kind: "teleported"))]")
         let response = try Fx.decode(Fx.example(items: "[\(item)]"))
-        #expect(response.items[0].changes[0].kind == "teleported" && response.isComplete)
+        #expect(response.items[0].changes[0].kind == "teleported" && !response.isComplete && response.hasUninterpretableChange)
         #expect(ReturnSummaryCopy.change(response.items[0].changes[0]) == nil)
+    }
+
+    // MARK: C — 첫 정상 표시 기준점 (A–D 후속 계약: `baseline: initialized` · `init_token` · baseline 확정)
+
+    @Test func theFirstUseResponseCarriesAnOpaqueInitToken() throws {
+        let first = try Fx.decode(Fx.example(since: nil, baseline: "never_cleared", initToken: Fx.initToken))
+        #expect(first.baseline == .neverCleared && first.initToken == Fx.initToken && first.isComplete)
+        // 빈 첫 화면에도 발급된다
+        let empty = try Fx.decode(Fx.example(since: nil, baseline: "never_cleared", initToken: Fx.initToken, complete: true, empty: true, items: "[]"))
+        #expect(empty.isEmpty && empty.initToken == Fx.initToken)
+        // 기준점이 있으면 (initialized · cleared) 토큰이 없다
+        let initialized = try Fx.decode(Fx.example(since: nil, baseline: "initialized"))
+        #expect(initialized.baseline == .initialized && initialized.initToken == nil && initialized.isComplete)
+        let cleared = try Fx.decode(Fx.example())
+        #expect(cleared.baseline == .cleared && cleared.initToken == nil)
+        // 옛 서버(`init_token` 키가 없다)도 읽는다
+        let legacy = try Fx.decode("""
+        {"generated_at":"2026-10-12T21:00:00.000Z","since":null,"baseline":"never_cleared","cursor":null,"complete":true,"empty":true,"sources":{"changes":"ok","decisions":"ok"},"items":[]}
+        """)
+        #expect(legacy.initToken == nil && legacy.baseline == .neverCleared)
+    }
+
+    @Test func theBaselineConfirmIsAPostOnTheV2PathWithTheTokenVerbatimAndNothingElse() async throws {
+        let odd = "i1.dG9rZW4/+==_-.x" + String(repeating: "Zz9", count: 3_000)
+        let api = client(body: Fx.baselineInitialized)
+        let response = try await api.confirmReturnSummaryBaseline(initToken: odd)
+        #expect(response == ReturnSummaryBaselineResponse(status: .initialized, applied: true))
+        #expect(last?.url.path == "/api/v2/return-summary/baseline" && last?.method == "POST")
+        #expect(last?.headers["Authorization"] == "Bearer token-123" && last?.url.query == nil)
+        let body = try #require(last?.body)
+        let object = try #require(try JSONSerialization.jsonObject(with: body) as? [String: Any])
+        #expect(object as NSDictionary == ["init_token": odd], "그 밖의 키 · 시각이 없고 토큰은 자르지 않는다")
+    }
+
+    @Test func alreadyInitializedIsASuccessfulResponseAndAnUnknownStatusDoesNotBreakDecoding() async throws {
+        let already = try await client(body: Fx.baselineAlready).confirmReturnSummaryBaseline(initToken: Fx.initToken)
+        #expect(already == ReturnSummaryBaselineResponse(status: .alreadyInitialized, applied: false))
+        let odd = try await client(body: "{\"status\":\"rebased\",\"applied\":true}").confirmReturnSummaryBaseline(initToken: Fx.initToken)
+        #expect(odd.status == .unknown)
+        await #expect(throws: APIError.self) { try await client(body: "{\"status\":\"initialized\"}").confirmReturnSummaryBaseline(initToken: Fx.initToken) }
+    }
+
+    @Test func baselineErrorsMapToWhatTheServerMeans() async {
+        func failure(_ status: Int, _ code: String, _ message: String) async -> APIError? {
+            let api = client(status: status, body: ChatContractFixtures.error(code, message))
+            do {
+                _ = try await api.confirmReturnSummaryBaseline(initToken: Fx.initToken)
+                return nil
+            } catch {
+                return error as? APIError
+            }
+        }
+        let off = await failure(404, "not_found", "없는 경로입니다.")
+        #expect(off?.isFeatureOff == true)
+        let conflict = await failure(409, "conflict", "기준점 범위가 달라졌습니다.")
+        #expect(conflict?.isConflict == true)
+        let invalid = await failure(400, "invalid_request", "토큰이 올바르지 않습니다.")
+        #expect(invalid?.status == 400 && invalid?.isConflict == false)
+        let broken = await failure(500, "internal_error", "x")
+        #expect(broken?.status == 500)
     }
 
     // MARK: 구조는 엄격하다 (틀리면 읽지 못한 것이지 빈 상태가 아니다)
@@ -194,10 +268,12 @@ struct ReturnSummaryContractTests {
         _ = try await read.returnSummary()
         let clear = client(body: Fx.clearResponse)
         _ = try await clear.clearReturnSummary(cursor: Fx.cursor)
-        let paths = StubProtocol.requests(host: host).map(\.url.path)
-        #expect(Set(paths) == ["/api/v2/return-summary", "/api/v2/return-summary/clear"])
+        let baseline = client(body: Fx.baselineInitialized)
+        _ = try await baseline.confirmReturnSummaryBaseline(initToken: Fx.initToken)
+        let allPaths = StubProtocol.requests(host: host).map(\.url.path)
+        #expect(Set(allPaths) == ["/api/v2/return-summary", "/api/v2/return-summary/clear", "/api/v2/return-summary/baseline"])
         for forbidden in ["runs", "approve", "start", "progress", "policy", "handoff", "confirm", "actions", "seen", "review", "suggestions"] {
-            #expect(paths.allSatisfy { !$0.contains(forbidden) }, "\(forbidden)")
+            #expect(allPaths.allSatisfy { !$0.contains(forbidden) }, "\(forbidden)")
         }
     }
 

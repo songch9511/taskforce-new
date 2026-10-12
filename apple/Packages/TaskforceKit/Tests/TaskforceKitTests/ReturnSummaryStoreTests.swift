@@ -176,7 +176,7 @@ struct ReturnSummaryStoreTests {
         let rest = Fx.response([Fx.item(2, title: "Hidden until now", changes: [Fx.change(.run, "done", detail: "draft_ready")])], cursor: "c3.page2")
         gateway.onRead = { number in number == 1 ? first : rest }
         await store.refresh()
-        #expect(store.content()?.canClear == true && store.content()?.notes == [.someNotShown])
+        #expect(store.content()?.canClear == true && store.content()?.notes == [.moreAvailable])
         #expect(try await clear(store) == .cleared(applied: true))
         #expect(gateway.clears == ["c3.page1"])
         #expect(store.summary == rest && store.summary?.isEmpty == false)

@@ -6,6 +6,8 @@ import Foundation
 public protocol ReturnSummaryGateway: Sendable {
     func returnSummary() async throws -> ReturnSummaryResponse
     func clearReturnSummary(cursor: String) async throws -> ReturnSummaryClearResponse
+    /// 첫 정상 표시 확정 (기준점). 읽음 표시일 뿐이다: 결정 · 완료가 아니다
+    func confirmReturnSummaryBaseline(initToken: String) async throws -> ReturnSummaryBaselineResponse
 }
 
 /// 실제 연결: `APIClient` (Bearer)
@@ -24,5 +26,9 @@ public struct LiveReturnSummaryGateway: ReturnSummaryGateway {
 
     public func clearReturnSummary(cursor: String) async throws -> ReturnSummaryClearResponse {
         try await api.clearReturnSummary(cursor: cursor)
+    }
+
+    public func confirmReturnSummaryBaseline(initToken: String) async throws -> ReturnSummaryBaselineResponse {
+        try await api.confirmReturnSummaryBaseline(initToken: initToken)
     }
 }

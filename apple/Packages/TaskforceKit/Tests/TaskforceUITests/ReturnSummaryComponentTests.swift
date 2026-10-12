@@ -10,7 +10,7 @@ struct ReturnSummaryComponentTests {
     }
 
     @Test func rowNameIsStateTitleThenDetail() {
-        #expect(ReturnSummary.accessibilityLabel(row(needsAnswer: true, detail: "Needs your answer · Review failed")) == "In Progress, Pricing page, Needs your answer · Review failed")
+        #expect(ReturnSummary.accessibilityLabel(row(needsAnswer: true, detail: "Needs your answer · Needs revision")) == "In Progress, Pricing page, Needs your answer · Needs revision")
         #expect(ReturnSummary.accessibilityLabel(row("Launch direction", progress: .done, detail: "Completed")) == "Done, Launch direction, Completed")
         #expect(ReturnSummary.accessibilityLabel(row("Onboarding", progress: .toDo)) == "To Do, Onboarding")
         // 표시가 없는 줄(취소된 작업 · 모르는 상태)은 상태를 지어내지 않는다
@@ -24,9 +24,9 @@ struct ReturnSummaryComponentTests {
 
     /// 형광펜은 `Needs your answer`에만 쓴다 (디자인 Highlight: "당신을 기다림"에만): 줄 글 안에 그 구절이 있을 때만 칠한다
     @Test func onlyNeedsYourAnswerIsHighlighted() {
-        let asking = row(needsAnswer: true, detail: "Needs your answer · Review failed")
+        let asking = row(needsAnswer: true, detail: "Needs your answer · Needs revision")
         #expect(asking.highlight == "Needs your answer" && MarkerText.contains(asking.detail ?? "", phrase: asking.highlight))
-        let plain = row(detail: "Draft ready · Next: review the result")
+        let plain = row(detail: "Draft ready")
         #expect(plain.highlight == nil && !MarkerText.contains(plain.detail ?? "", phrase: plain.highlight))
     }
 

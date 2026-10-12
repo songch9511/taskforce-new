@@ -103,17 +103,20 @@ public struct ReturnSummary: View {
 #Preview("ReturnSummary") {
     // 디자인 SSOT의 견본 줄 (제목 · 상태 · 변화)
     let rows = [
-        ReturnSummaryRow(id: UUID(), title: "Pricing page", progress: .inProgress, needsAnswer: true, detail: "Needs your answer · Review failed"),
-        ReturnSummaryRow(id: UUID(), title: "Launch design", progress: .inProgress, needsAnswer: false, detail: "Draft ready · Next: review the result"),
-        ReturnSummaryRow(id: UUID(), title: "Partner schedule", progress: .inProgress, needsAnswer: false, detail: "Due date changed"),
+        ReturnSummaryRow(id: UUID(), title: "Pricing page", progress: .inProgress, needsAnswer: true, detail: "Needs your answer · Needs revision"),
+        ReturnSummaryRow(id: UUID(), title: "Launch design", progress: .inProgress, needsAnswer: false, detail: "Result ready"),
+        ReturnSummaryRow(id: UUID(), title: "Partner schedule", progress: .inProgress, needsAnswer: false, detail: "Due date changed · Updated from source"),
         ReturnSummaryRow(id: UUID(), title: "Launch direction", progress: .done, needsAnswer: false, detail: "Completed"),
         ReturnSummaryRow(id: UUID(), title: "Old site banner", progress: nil, needsAnswer: false, detail: "Canceled", canOpen: false),
     ]
     VStack(alignment: .leading, spacing: 0) {
         ReturnSummary(content: ReturnSummaryContent(title: "Since yesterday 18:40", rows: rows, canClear: true))
         ReturnSummary(content: ReturnSummaryContent(
-            title: "Changes", rows: Array(rows.prefix(2)), notes: [.someNotShown, .couldNotLoadDecisions], canClear: true, message: "This changed somewhere else. It's been refreshed."
+            title: "Changes", rows: Array(rows.prefix(2)), notes: [.couldNotShow, .moreAvailable, .couldNotLoadQuestions], canClear: true, message: "This changed somewhere else. It's been refreshed."
         ))
+        ReturnSummary(content: ReturnSummaryContent(title: "Needs your answer", rows: [
+            ReturnSummaryRow(id: UUID(), title: "Pricing page", progress: .inProgress, needsAnswer: true, detail: "Needs your answer"),
+        ]))
         ReturnSummary(content: ReturnSummaryContent(title: "Changes", rows: [], notes: [.couldNotLoad]))
     }
     .padding(16)

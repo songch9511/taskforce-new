@@ -2,7 +2,8 @@ import Foundation
 import Testing
 @testable import TaskforceKit
 
-/// 서버 JSON 계약 fixture: 서버 C3 head `6cfd382` (`handoffs/c3-server-notes.md` "Mac에 넘기는 JSON 계약", P2-C 반영본).
+/// 서버 JSON 계약 fixture: 서버 C3 head `6cfd382` (`handoffs/c3-server-notes.md` "Mac에 넘기는 JSON 계약", P2-C 반영본) + A–D 후속 계약
+/// (`handoffs/c3-ad-contract.md` C: `baseline: initialized` · `init_token` · `POST /api/v2/return-summary/baseline`, 서버 레인이 구현 중이라 가짜 전송으로만 시험한다).
 /// 이 head의 서버는 **잘려도(`truncated`) 커서를 낸다** (그 커서는 보인 작업만 읽음 처리한다). 커서는 `null`이 되는 것은 변화 원천을 읽지 못했을 때(`unavailable`)뿐이다.
 /// 커서는 `c3.`로 시작하는 불투명 글자이고 최대 10,000자다. 앱은 열지도 자르지도 않고 그대로 돌려준다 (앞 head `9546daa`의 `truncated + cursor: null`도 같은 규칙으로 읽는다).
 /// 이 모양이 바뀌면 `ReturnSummaryContractTests`가 먼저 깨진다.
@@ -14,13 +15,16 @@ enum ReturnSummaryContractFixtures {
     static func idString(_ n: Int) -> String { id(n).uuidString.lowercased() }
 
     /// 서버 notes 예시 그대로의 모양 (Needs your answer 줄 + 실행 결과 줄)
+    static let initToken = "i1.dG9rZW4tZm9yLXRoZS1maXJzdC1kaXNwbGF5"
+
     static func example(
-        since: String? = "\"2026-10-12T08:00:00.000000Z\"", baseline: String = "cleared", cursor: String? = cursor,
+        since: String? = "\"2026-10-12T08:00:00.000000Z\"", baseline: String = "cleared", cursor: String? = cursor, initToken: String? = nil,
         complete: Bool = true, empty: Bool = false, changes: String = "ok", decisions: String = "ok", items: String? = nil
     ) -> String {
         let cursorJSON = cursor.map { "\"\($0)\"" } ?? "null"
+        let initJSON = initToken.map { "\"\($0)\"" } ?? "null"
         return """
-        {"generated_at":"2026-10-12T21:00:00.000Z","since":\(since ?? "null"),"baseline":"\(baseline)","cursor":\(cursorJSON),
+        {"generated_at":"2026-10-12T21:00:00.000Z","since":\(since ?? "null"),"baseline":"\(baseline)","cursor":\(cursorJSON),"init_token":\(initJSON),
          "complete":\(complete),"empty":\(empty),"sources":{"changes":"\(changes)","decisions":"\(decisions)"},
          "items":\(items ?? defaultItems)}
         """
@@ -49,12 +53,17 @@ enum ReturnSummaryContractFixtures {
         """
     }
 
+    /// 변화 하나의 JSON. `kindJSON` · `detailJSON` · `sourceStateJSON`은 값을 **글자 그대로** 싣는다 (타입이 틀린 값 — 숫자 · 객체 · 배열 — 을 실제 JSON으로 시험한다). `omitDetail`은 `detail` 키 자체를 뺀다
     static func change(
         source: String = "action_event", kind: String = "due_changed", at: String = "2026-10-12T10:00:00.000000Z", detail: String? = nil,
-        sourceState: String? = "available"
+        sourceState: String? = "available", kindJSON: String? = nil, detailJSON: String? = nil, sourceStateJSON: String? = nil, omitDetail: Bool = false
     ) -> String {
-        """
-        {"source":"\(source)","kind":"\(kind)","at":"\(at)","detail":\(detail.map { "\"\($0)\"" } ?? "null"),"source_state":\(sourceState.map { "\"\($0)\"" } ?? "null")}
+        let kindValue = kindJSON ?? "\"\(kind)\""
+        let detailValue = detailJSON ?? detail.map { "\"\($0)\"" } ?? "null"
+        let stateValue = sourceStateJSON ?? sourceState.map { "\"\($0)\"" } ?? "null"
+        let detailPair = omitDetail ? "" : ",\"detail\":\(detailValue)"
+        return """
+        {"source":"\(source)","kind":\(kindValue),"at":"\(at)"\(detailPair),"source_state":\(stateValue)}
         """
     }
 
@@ -63,6 +72,8 @@ enum ReturnSummaryContractFixtures {
     }
 
     static let clearResponse = "{\"cleared_through\":\"2026-10-12T20:00:00.000000Z\",\"applied\":true}"
+    static let baselineInitialized = "{\"status\":\"initialized\",\"applied\":true}"
+    static let baselineAlready = "{\"status\":\"already_initialized\",\"applied\":false}"
 }
 
 /// 모델을 직접 만드는 도우미 (저장소 · 표시 규칙 시험)
@@ -90,11 +101,11 @@ enum ReturnSummaryFx {
 
     static func response(
         _ items: [ReturnSummaryItem], cursor: String? = ReturnSummaryContractFixtures.cursor, since: TimeInterval? = -3_600,
-        baseline: ReturnSummaryBaseline = .cleared, complete: Bool = true, empty: Bool? = nil, changes: ReturnSummarySourceStatus = .ok,
+        baseline: ReturnSummaryBaseline = .cleared, initToken: String? = nil, complete: Bool = true, empty: Bool? = nil, changes: ReturnSummarySourceStatus = .ok,
         decisions: ReturnSummarySourceStatus = .ok
     ) -> ReturnSummaryResponse {
         ReturnSummaryResponse(
-            generatedAt: .test(0), since: since.map { .test($0) }, baseline: baseline, cursor: cursor, complete: complete,
+            generatedAt: .test(0), since: since.map { .test($0) }, baseline: baseline, cursor: cursor, initToken: initToken, complete: complete,
             empty: empty ?? (complete && items.isEmpty), sources: .init(changes: changes, decisions: decisions), items: items
         )
     }
@@ -115,15 +126,19 @@ final class FakeReturnSummaryGateway: ReturnSummaryGateway, @unchecked Sendable 
     private let lock = NSLock()
     private var _reads = 0
     private var _clears: [String] = []
+    private var _baselines: [String] = []
     /// 읽기마다 부르는 응답 (몇 번째 읽기인지 1부터). 기본은 `withChanges`
     var onRead: @Sendable (Int) async throws -> ReturnSummaryResponse = { _ in ReturnSummaryFx.withChanges }
     var onClear: @Sendable (String) async throws -> ReturnSummaryClearResponse = { _ in ReturnSummaryClearResponse(clearedThrough: .test(0), applied: true) }
+    var onBaseline: @Sendable (String) async throws -> ReturnSummaryBaselineResponse = { _ in ReturnSummaryBaselineResponse(status: .initialized, applied: true) }
 
     /// 시험이 만든 계정(`SessionStore`)을 시험이 끝날 때까지 붙든다: `AccountScope`는 세션을 약하게 잡는다
     var retained: Any?
 
     var reads: Int { lock.withLock { _reads } }
     var clears: [String] { lock.withLock { _clears } }
+    /// 첫 정상 표시 확정으로 보낸 토큰들 (순서대로)
+    var baselines: [String] { lock.withLock { _baselines } }
 
     func returnSummary() async throws -> ReturnSummaryResponse {
         let number = lock.withLock { () -> Int in
@@ -136,6 +151,11 @@ final class FakeReturnSummaryGateway: ReturnSummaryGateway, @unchecked Sendable 
     func clearReturnSummary(cursor: String) async throws -> ReturnSummaryClearResponse {
         lock.withLock { _clears.append(cursor) }
         return try await onClear(cursor)
+    }
+
+    func confirmReturnSummaryBaseline(initToken: String) async throws -> ReturnSummaryBaselineResponse {
+        lock.withLock { _baselines.append(initToken) }
+        return try await onBaseline(initToken)
     }
 }
 

@@ -1,8 +1,8 @@
 import Foundation
 
-/// 복귀 요약의 글자. SSOT 고정 문구(`Since …` · `Clear` · `Needs your answer` · `Next: …`)와 앱에 이미 있는 문구를 쓰고,
-/// 새 문구는 최소로 둔다 (`c3-mac-notes.md`에 모두 적고 승인을 받는다). 서버는 토큰만 주고 문구를 만들지 않는다.
-/// 숫자(개수)는 어디에도 없다 (디자인 D-12).
+/// 복귀 요약의 글자. SSOT 고정 문구(`Since …` · `Clear` · `Needs your answer`)와 앱에 이미 있는 문구를 쓰고, 새 문구는 A–D 승인 후속(`handoffs/c3-product-decisions-2026-10-12.md`)의
+/// 확정안 그대로다 (`c3-mac-notes.md`에 목록). 서버는 토큰만 주고 문구를 만들지 않는다. 숫자(개수)는 어디에도 없다 (디자인 D-12).
+/// `Next: review the result`는 이 앱에서 만들지 않는다: 실제 결과에 도달할 길이 아직 없다 (All work 행 이동뿐) — 약속하지 않는다.
 public enum ReturnSummaryCopy {
     // MARK: SSOT 고정 문구
     public static let clear = "Clear"
@@ -24,27 +24,34 @@ public enum ReturnSummaryCopy {
     public static let runNeedsConnection = "Needs a connection"
     public static let runFailed = "Couldn't finish the draft"
 
-    // MARK: 새 문구 (승인 필요)
-    /// 카드 캡션: 마지막 Clear 시각을 모를 때 (`since == nil`). 시각을 지어내지 않는다 (첫 기준 시각은 열린 제품 결정)
+    // MARK: 승인된 새 문구 (A, 최종 17개 + 조건부 `Next: review the result`는 생략)
+    /// 카드 캡션: 마지막 Clear 시각을 모를 때 (`since == nil`, 기준점만 있는 `initialized` 포함). 시각을 지어내지 않는다
     public static let changesTitle = "Changes"
-    /// 변화 원천을 읽지 못했다 (또는 읽은 뒤 다시 읽지 못했다): 비어 있다고 말하지 않는다
+    /// 질문만 남은 카드의 캡션 (B): 기존 `Needs your answer`를 다시 쓴다
+    public static let questionsTitle = ReviewCopy.needsYourAnswer
+    /// 변화 원천을 읽지 못했다 (또는 읽은 뒤 다시 읽지 못했다 · 응답이 앞뒤가 맞지 않는다): 비어 있다고 말하지 않는다
     public static let couldNotLoad = "Couldn't load changes"
-    /// 결정 대기를 읽지 못했다: `Needs your answer`가 빠졌을 수 있다
-    public static let couldNotLoadDecisions = "Couldn't load decisions"
-    /// 잘렸거나 이 앱이 읽지 못하는 값이 있다: 보이지 않는 변화가 있을 수 있다 (개수를 말하지 않는다)
-    public static let someNotShown = "Some changes aren't shown"
-    /// 끝난 결과를 볼 차례. (SSOT 예시는 "Next: accept the result"이지만 accept는 S4b라 지금 할 수 있는 말은 review다)
-    public static let nextReviewResult = "Next: review the result"
+    /// 결정(질문) 목록을 읽지 못했다: `Needs your answer` 줄이 빠졌을 수 있다
+    public static let couldNotLoadQuestions = "Couldn't load items needing your answer"
+    /// 정상 페이지 잘림: 보인 작업을 Clear한 뒤 다음 조회가 나머지를 보인다 (개수를 말하지 않는다)
+    public static let moreAvailable = "More changes are available"
+    /// 앱이 말로 옮기지 못하는 변화가 있다: 줄은 남기고 Clear는 막는다
+    public static let couldNotShow = "Some changes couldn't be shown"
     public static let actionEventDueChanged = "Due date changed"
-    public static let actionEventScopeChanged = "Details changed"
+    /// `scope_changed`의 실제 생산자는 제목 변경이다
+    public static let actionEventTitleChanged = "Title changed"
     public static let actionEventOwnerChanged = "Owner changed"
-    public static let actionEventMerged = "Mentioned again"
+    /// `merged`는 다시 언급됨뿐 아니라 원문 때문에 확인 사유가 달라진 경우도 포함한다
+    public static let actionEventUpdatedFromSource = "Updated from source"
     public static let actionEventCompleted = "Completed"
     public static let actionEventDropped = "Canceled"
     public static let actionEventReopened = "Reopened"
-    public static let runReviewFailed = "Review failed"
-    public static let runAgentDone = "Agent finished"
-    public static let runFinished = "Run finished"
+    /// 검토 기준 미충족 · 수정 왕복 소진(`review_failed`)에만. 검사기 장애 · 검증 불가에 쓰지 않는다
+    public static let runNeedsRevision = "Needs revision"
+    /// 검토를 통과한 결과(`agent_done`)에만. 업무 전체 완료 · 외부 발송을 뜻하지 않는다
+    public static let runResultReady = "Result ready"
+    /// 결과 이름 없이 끝난 처리(`done`에 outcome이 없다)뿐이다. 모르는 outcome을 정상 성공으로 올리지 않는다 (그것은 해석 못 한 변화다)
+    public static let runProcessingFinished = "Processing finished"
     public static let messageAssistant = "New reply"
     public static let messageEvent = "New update"
 
@@ -57,12 +64,34 @@ public enum ReturnSummaryCopy {
         return "Since " + inSentence
     }
 
-    /// 변화 하나의 글 (모르는 토큰은 nil: 줄은 제목만 보인다)
+    /// 변화 하나의 글. **nil = 앱이 말로 옮기지 못하는 변화** (해석 못 한 변화: Clear · 기준점 확정을 막고 `Some changes couldn't be shown`). 어떤 성공 문구로도 바꾸지 않는다.
+    /// 필드마다 정한 규칙 (P2-M2 — 알 수 없거나 타입이 틀린 값을 지우거나 정상으로 바꾸지 않는다):
+    /// - 모르는 source · kind: 해석 못 함. 문자열이어야 하는 `kind` · `detail`이 다른 타입으로 왔으면(`isMalformed`) 해석 못 함.
+    /// - run `done`의 `detail`(outcome): 정말 없음(null · 키 없음)은 `Processing finished`, 아는 outcome은 그 말, 모르는 문자열은 해석 못 함 (정상 성공으로 올리지 않는다).
+    /// - run `failed`의 `detail`: 서버가 run의 outcome을 done · failed 사건 모두에 싣는다. 실패 문장은 outcome에 달라지지 않으므로 문자열은 문구를 바꾸지 않는다 (타입이 틀리면 위처럼 해석 못 함).
+    /// - action_event의 `detail`: 계약상 null이다. 값이 있으면 이 앱이 모르는 정보라 해석 못 함. message의 `detail`도 같다.
+    /// - action_event의 `source_state`: 없음 · `available`은 말이 없고, `deleted` · `access_lost` · `text_expired`는 그 말을 덧붙이고, 모르는 값은 해석 못 함.
+    /// - run · message의 `source_state`: 계약상 null이다. 없음 · `available`(말이 없는 값)만 받고, 그 밖의 값(모르는 값 포함)은 해석 못 함.
     public static func change(_ change: ReturnSummaryChange) -> String? {
-        var parts: [String] = []
-        if let base = base(change) { parts.append(base) }
-        if change.source == .actionEvent, let state = change.sourceState, let phrase = sourceState(state) { parts.append(phrase) }
-        return parts.isEmpty ? nil : parts.joined(separator: separator)
+        guard !change.isMalformed else { return nil }
+        switch change.source {
+        case .actionEvent:
+            guard change.detail == nil, let base = base(change) else { return nil }
+            switch change.sourceState {
+            case nil, .available?: return base
+            case .deleted?: return base + separator + sourceDeleted
+            case .accessLost?: return base + separator + sourceUnavailable
+            case .textExpired?: return base + separator + sourceExpired
+            case .unknown?: return nil
+            }
+        case .run, .message:
+            switch change.sourceState {
+            case nil, .available?: return base(change)
+            default: return nil
+            }
+        case .unknown:
+            return nil
+        }
     }
 
     private static func base(_ change: ReturnSummaryChange) -> String? {
@@ -70,9 +99,9 @@ public enum ReturnSummaryCopy {
         case .actionEvent:
             switch change.kind {
             case "due_changed": return actionEventDueChanged
-            case "scope_changed": return actionEventScopeChanged
+            case "scope_changed": return actionEventTitleChanged
             case "owner_changed": return actionEventOwnerChanged
-            case "merged": return actionEventMerged
+            case "merged": return actionEventUpdatedFromSource
             case "completed": return actionEventCompleted
             case "dropped": return actionEventDropped
             case "reopened": return actionEventReopened
@@ -84,16 +113,18 @@ public enum ReturnSummaryCopy {
             case "failed": return runFailed
             case "done":
                 switch change.detail {
-                case "draft_ready": return runDraftReady
-                case "needs_input": return runQuestion
-                case "needs_connection", "needs_capability": return runNeedsConnection
-                case "review_failed": return runReviewFailed
-                case "agent_done": return runAgentDone
-                default: return runFinished
+                case nil: return runProcessingFinished
+                case "draft_ready"?: return runDraftReady
+                case "needs_input"?: return runQuestion
+                case "needs_connection"?, "needs_capability"?: return runNeedsConnection
+                case "review_failed"?: return runNeedsRevision
+                case "agent_done"?: return runResultReady
+                default: return nil
                 }
             default: return nil
             }
         case .message:
+            guard change.detail == nil else { return nil }
             switch change.kind {
             case "assistant": return messageAssistant
             case "event": return messageEvent
@@ -104,34 +135,26 @@ public enum ReturnSummaryCopy {
         }
     }
 
-    /// 원문 상태 토큰의 글: 지운 원문 · 접근 상실 · 보관 만료를 글이나 옛 제목으로 되살리지 않고 이 말로만. `available`은 말이 없다
-    public static func sourceState(_ state: ReturnSummarySourceState) -> String? {
-        switch state {
-        case .deleted: sourceDeleted
-        case .accessLost: sourceUnavailable
-        case .textExpired: sourceExpired
-        case .available, .unknown: nil
-        }
-    }
-
-    /// Next 줄: 끝난 결과를 볼 차례일 때만. `answer`는 `Needs your answer` 강조가 이미 말하고, `open`은 줄 자체가 이미 그 작업을 연다
-    public static func next(_ next: ReturnSummaryNext) -> String? {
-        next.kind == .reviewResult ? nextReviewResult : nil
-    }
-
-    /// 줄 하나가 말하는 변화 말의 수: 서로 다른 말을 시간 순서대로 모아 가장 최근 셋. 개수는 말하지 않는다 (줄을 열면 그 작업이 있다)
+    /// 줄 하나가 말하는 변화 말의 수: 서로 다른 말 셋. 개수는 말하지 않는다 (줄을 열면 그 작업이 있다).
+    /// **이것은 보이는 문장의 수일 뿐이다: Clear는 이 셋이 아니라 표시된 작업의 서버 커서가 가리키는 변화 전체를 읽음 처리한다** (그래서 해석 못 한 변화가 있으면 Clear를 막는다)
     static let visibleChanges = 3
 
-    /// 줄의 보조 글: [`Needs your answer`] · 변화들 · [`Next: …`]. 변화는 시간 순서 그대로, 같은 말은 한 번만, 가장 최근 셋
-    static func detail(_ item: ReturnSummaryItem) -> String? {
-        var changes: [String] = []
-        for text in item.changes.compactMap(Self.change) where !changes.contains(text) {
-            changes.append(text)
+    /// 서로 다른 변화 말을 **실제 마지막 발생 순**(오름차순)으로 모아 가장 최근 셋 (D-6). 발생 순서는 `at`이고 같은 시각이면 배열 순서가 안정된 tie다 (배열의 뒤가 더 나중).
+    /// 같은 말(두 토큰이 같은 문구로 합쳐지는 경우 포함)은 하나이고 그 말의 위치는 마지막 발생이다: A → B → C → D → A는 C · D · A. 해석 못 한 변화는 말이 없다
+    static func recentPhrases(_ changes: [ReturnSummaryChange]) -> [String] {
+        let ordered = changes.enumerated().sorted { ($0.element.at, $0.offset) < ($1.element.at, $1.offset) }
+        var last: [String: Int] = [:]
+        for (position, entry) in ordered.enumerated() {
+            if let phrase = change(entry.element) { last[phrase] = position }
         }
+        return last.sorted { $0.value < $1.value }.suffix(visibleChanges).map(\.key)
+    }
+
+    /// 줄의 보조 글: [`Needs your answer`] · 최근 서로 다른 변화 말들. (`Next: …`는 만들지 않는다)
+    static func detail(_ item: ReturnSummaryItem) -> String? {
         var parts: [String] = []
         if item.needsAnswer { parts.append(needsYourAnswer) }
-        parts.append(contentsOf: changes.suffix(visibleChanges))
-        if let next = next(item.next) { parts.append(next) }
+        parts.append(contentsOf: recentPhrases(item.changes))
         return parts.isEmpty ? nil : parts.joined(separator: separator)
     }
 }
@@ -162,28 +185,34 @@ public struct ReturnSummaryRow: Equatable, Sendable, Identifiable {
 
 /// 화면이 그릴 복귀 요약. 줄이 있으면 Card, 줄이 없고 노트만 있으면 노트만 (읽지 못했다고 말한다)
 public struct ReturnSummaryContent: Equatable, Sendable {
-    /// 줄 밑의 정직한 한 줄 (비어 있다는 말이 아니라 **모른다 · 일부만 보인다**는 말)
+    /// 줄 밑의 정직한 한 줄 (비어 있다는 말이 아니라 **모른다 · 일부만 보인다 · 더 있다**는 말). 원인이 다르면 말도 다르다
     public enum Note: Equatable, Sendable {
+        /// 변화 원천을 읽지 못했다 (또는 오래된 줄 · 앞뒤가 맞지 않는 응답)
         case couldNotLoad
-        case couldNotLoadDecisions
-        case someNotShown
+        /// 질문 목록을 읽지 못했다
+        case couldNotLoadQuestions
+        /// 앱이 말로 옮기지 못하는 변화가 있다 (Clear 차단)
+        case couldNotShow
+        /// 정상 페이지 잘림 (Clear 가능)
+        case moreAvailable
 
         public var text: String {
             switch self {
             case .couldNotLoad: ReturnSummaryCopy.couldNotLoad
-            case .couldNotLoadDecisions: ReturnSummaryCopy.couldNotLoadDecisions
-            case .someNotShown: ReturnSummaryCopy.someNotShown
+            case .couldNotLoadQuestions: ReturnSummaryCopy.couldNotLoadQuestions
+            case .couldNotShow: ReturnSummaryCopy.couldNotShow
+            case .moreAvailable: ReturnSummaryCopy.moreAvailable
             }
         }
 
         /// 다시 읽을 수 있는 노트 (Try again)
-        public var offersRetry: Bool { self != .someNotShown }
+        public var offersRetry: Bool { self == .couldNotLoad || self == .couldNotLoadQuestions }
     }
 
     public let title: String
     public let rows: [ReturnSummaryRow]
     public let notes: [Note]
-    /// Clear 버튼: 서버가 커서를 줬고 읽음 처리할 변화가 보일 때만 (`ReturnSummaryPresentation.canClear`)
+    /// Clear 버튼: 서버가 커서를 줬고 읽음 처리할 변화가 보이고 그 변화를 안전하게 읽음 처리할 수 있을 때만 (`ReturnSummaryPresentation.canClear`)
     public let canClear: Bool
     public let isClearing: Bool
     /// Clear 뒤 안내 한 줄 (충돌 · 실패)
@@ -202,10 +231,12 @@ public struct ReturnSummaryContent: Equatable, Sendable {
 }
 
 public enum ReturnSummaryPresentation {
-    /// Clear를 보일 조건. 서버 커서가 있어야 한다 (`cursor == nil` ⇒ 보이지 않는다: 잘림에서 짐작하지 않고, 서버가 줄 때만).
-    /// 그리고 이미 쓴 커서(Clear 뒤)가 아니고, 오래된 줄이 아니고(다시 읽지 못했다), 읽음 처리할 변화가 줄에 있을 때 — 결정만 있는 줄은 Clear가 할 일이 없다
+    /// Clear를 보일 조건. 서버 커서가 있어야 하고(`cursor == nil` ⇒ 보이지 않는다: 잘림에서 짐작하지 않고, 서버가 줄 때만), 이미 쓴 커서(Clear 뒤)가 아니고, 오래된 줄이 아니고(다시 읽지 못했다),
+    /// 읽음 처리할 변화가 줄에 있고(결정만 있는 줄은 Clear가 할 일이 없다), 그 변화를 안전하게 읽음 처리할 수 있을 때 — 앱이 말로 옮기지 못한 변화가 표시된 작업에 있으면 막는다 (D-7).
+    /// 정상 잘림 · 결정 읽기 실패 · 모르는 결정 종류는 막지 않는다.
+    /// **Clear는 표시된 작업의 서버 커서가 가리키는 변화 전체를 읽음 처리한다** — 줄이 말하는 최근 셋이 아니라 (그 작업들의 더 오래된 변화도 포함). 읽음일 뿐 해결 · 승인 · 완료 · 거절이 아니다
     public static func canClear(_ summary: ReturnSummaryResponse, isStale: Bool, cursorSpent: Bool) -> Bool {
-        summary.cursor != nil && !isStale && !cursorSpent && summary.hasChangesToClear
+        summary.cursor != nil && !isStale && !cursorSpent && summary.hasChangesToClear && summary.canMarkChangesRead
     }
 
     /// 아무것도 보일 것이 없으면 nil (읽기 전 · 기능 꺼짐 · 완전히 비어 있음). 비어 있다는 말은 만들지 않는다
@@ -224,12 +255,15 @@ public enum ReturnSummaryPresentation {
             )
         }
         var notes: [ReturnSummaryContent.Note] = []
-        if isStale || summary.sources.changes == .unavailable { notes.append(.couldNotLoad) }
-        if summary.sources.decisions == .unavailable { notes.append(.couldNotLoadDecisions) }
-        if summary.isTruncated || (!summary.isComplete && notes.isEmpty) { notes.append(.someNotShown) }
+        if isStale || summary.sources.changes == .unavailable || summary.hasUnreadableChangeStatus { notes.append(.couldNotLoad) }
+        if summary.sources.decisions == .unavailable || summary.sources.decisions == .unknown { notes.append(.couldNotLoadQuestions) }
+        if summary.hasUninterpretableChange { notes.append(.couldNotShow) }
+        if summary.isTruncated { notes.append(.moreAvailable) }
         guard !rows.isEmpty || !notes.isEmpty else { return nil }
+        // B: 읽음 처리할 변화가 없고 질문만 남았으면 같은 카드의 캡션이 `Needs your answer`다 (Clear는 없다). 보이는 변화(해석 못 한 변화 포함)가 하나라도 있으면 지금처럼 Since / Changes
+        let questionsOnly = !rows.isEmpty && !summary.hasChangesToClear
         return ReturnSummaryContent(
-            title: ReturnSummaryCopy.title(since: summary.baseline == .cleared ? summary.since : nil, now: now, timeZone: timeZone),
+            title: questionsOnly ? ReturnSummaryCopy.questionsTitle : ReturnSummaryCopy.title(since: summary.baseline == .cleared ? summary.since : nil, now: now, timeZone: timeZone),
             rows: rows, notes: notes, canClear: canClear(summary, isStale: isStale, cursorSpent: cursorSpent), isClearing: isClearing,
             message: rows.isEmpty ? nil : message
         )
