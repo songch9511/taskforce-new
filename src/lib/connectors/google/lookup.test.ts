@@ -1,12 +1,12 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { loadIdentity, loadToken, saveToken } from "../store";
+import { loadIdentity, loadToken, loadUserName, saveToken } from "../store";
 
 import { googleCalendarLookup } from "./lookup";
 
 vi.mock("server-only", () => ({}));
-vi.mock("../store", () => ({ loadIdentity: vi.fn(), loadToken: vi.fn(), saveToken: vi.fn() }));
+vi.mock("../store", () => ({ loadIdentity: vi.fn(), loadUserName: vi.fn(), loadToken: vi.fn(), saveToken: vi.fn() }));
 
 // Notion 회의록에 붙일 Calendar 일정 조회를 만드는 곳 (docs/go-live/google-integration.md 2-2 notion/sync.ts · 2-4).
 
@@ -53,6 +53,7 @@ beforeEach(() => {
   vi.stubEnv("GOOGLE_REDIRECT_URI", "https://api.example.dev/api/connectors/google/callback");
   vi.spyOn(console, "error").mockImplementation(() => {});
   vi.mocked(loadIdentity).mockResolvedValue({ name: "Alex Kim", aliases: [], emails: ["me@company.dev"] });
+  vi.mocked(loadUserName).mockResolvedValue("Alex Kim");
   vi.mocked(loadToken).mockResolvedValue(stored());
   vi.mocked(saveToken).mockResolvedValue();
 });
@@ -114,10 +115,10 @@ describe("googleCalendarLookup: 조회", () => {
     expect(lookup?.connectionId).toBe("g1");
     // 토큰 · 프로필 이름은 처음 조회할 때 읽는다 (붙일 회의록이 없는 동기화는 읽지 않는다)
     expect(loadToken).not.toHaveBeenCalled();
-    expect(loadIdentity).not.toHaveBeenCalled();
+    expect(loadUserName).not.toHaveBeenCalled();
     const found = await lookup!.lookup(target);
     await lookup!.lookup(target);
-    expect(loadIdentity).toHaveBeenCalledTimes(1);
+    expect(loadUserName).toHaveBeenCalledTimes(1);
 
     expect(loadToken).toHaveBeenCalledWith(expect.anything(), "g1");
     expect(urls).toHaveLength(2);
@@ -143,6 +144,14 @@ describe("googleCalendarLookup: 조회", () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response("{}", { status: 503 })));
     const lookup = await googleCalendarLookup(fakeAdmin([{ id: "g1", settings: settings([CALENDAR]) }]).admin, "u1");
     await expect(lookup!.lookup(target)).rejects.toMatchObject({ name: "GoogleApiError", status: 503 });
+  });
+
+  it("이름만 쓰므로 신원 링크를 읽지 않는다: 링크 읽기가 실패해(loadIdentity가 던져도) 일정 잇기는 그대로 돈다", async () => {
+    vi.mocked(loadIdentity).mockRejectedValue(new Error("identity_links read failed"));
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ items: [event()] }))));
+    const lookup = await googleCalendarLookup(fakeAdmin([{ id: "g1", settings: settings([CALENDAR]) }]).admin, "u1");
+    expect(await lookup!.lookup(target)).toMatchObject({ result: "attached" });
+    expect(loadIdentity).not.toHaveBeenCalled();
   });
 
   it("일정이 없으면 none", async () => {

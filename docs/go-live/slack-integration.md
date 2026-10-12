@@ -152,6 +152,7 @@ cron 15분 · Sync Now · 연결 직후 ──▶ syncConnections ──▶ slac
 | `claims.quote` · `claims.value_text` | 글자만 비움. Claim 행 · 값의 판정 결과(기한 · 상태 · 담당)는 남겨 할 일 값이 바뀌지 않게 한다 (원칙 5 예외: 행은 지우지 않음) |
 | `judge_logs.candidate` | 그 원문의 판정 기록 행을 지움 |
 | `slack_messages` · `slack_threads` · `slack_people` | 행 삭제 |
+| 0.2.0 맥락층 (B1, `20261104000000_context_layer`): `source_chunks` · `memory_items` · `people_handles` · `identity_links` | 그 원문의 조각 삭제, 그 원문에서 온 observed 기억 글 · 인용 · 값 비움 · inferred 삭제, explicit 기억은 인용(Slack 글자)만 뺌, 그 연결이 본 Slack 계정 삭제(사람의 Slack에서만 온 이름 · 이메일 · `handles.slack`이 빠짐), 그 연결의 oauth · inferred 신원 링크 삭제. 사건별 표는 [context-layer.md](../context-layer.md) 2장 |
 | 할 일(`actions`) 제목 · 범위 요약 | **남긴다.** Slack 글에서 만든 요약이지만 이용자의 할 일 목록이다. "associated Data"에 들어가는지는 자체 검토(docs/legal/self-review.md 2번)로 이용자 자신의 할 일 데이터로 봤다 |
 
 ## 3. 앱 (Swift)

@@ -2,7 +2,12 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
-vi.mock("@/lib/connectors/store", () => ({ loadIdentity: vi.fn(async () => ({ name: "김도윤", aliases: [], emails: [] })) }));
+vi.mock("@/lib/connectors/store", () => ({
+  loadIdentity: vi.fn(async () => {
+    throw new Error("identity_links read failed");
+  }),
+  loadUserName: vi.fn(async () => "김도윤"),
+}));
 
 import { buildExecutionContext } from "./context";
 import { createRun, loadCreditDetails, loadCredits, stopRun, supabaseExecutionStore } from "./store";
@@ -137,6 +142,11 @@ describe("supabaseExecutionStore.loadMaterial", () => {
 });
 
 describe("supabaseExecutionStore 읽기", () => {
+  it("userName은 이름만 읽는다: 신원 링크를 읽지 못해도(loadIdentity가 던져도) 실패하지 않는다", async () => {
+    const { client } = fakeAdmin({});
+    expect(await supabaseExecutionStore(client).userName("u1")).toBe("김도윤");
+  });
+
   it("wakeableRuns: 끝나지 않은 run 중 부르는 중인 단계가 없는 것만, 막히지 않은 run 먼저(오래된 순) · 막힌 run은 새것부터, 상한까지", async () => {
     const { client, queries } = fakeAdmin({
       execution_runs: [

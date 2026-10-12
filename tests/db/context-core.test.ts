@@ -451,9 +451,10 @@ describe("CHECK · unique 제약", () => {
       /work_contexts_context_version_check/,
     );
     await expect(db.query(`insert into public.work_contexts (user_id, name, kind) values ($1, '', 'goal')`, [ALICE])).rejects.toThrow(/work_contexts_name_check/);
-    // 같은 이름의 범위 둘은 둘로 둔다 (자동 병합 없음)
-    await db.query(`insert into public.work_contexts (user_id, name, kind) values ($1, 'Shape 출시 준비', 'project')`, [ALICE]);
-    const defaults = await db.query(`select status, context_version from public.work_contexts where id = $1`, [alice.work_contexts]);
+    // 같은 이름의 범위 둘은 둘로 둔다 (자동 병합 없음). 기본값은 새로 만든 범위로 본다:
+    // B1(20261104000000_context_layer)부터 멤버 · 범위 기억이 바뀌면 context_version이 오르므로 시드 범위는 1이 아니다
+    const twin = await one(`insert into public.work_contexts (user_id, name, kind) values ($1, 'Shape 출시 준비', 'project') returning id`, [ALICE]);
+    const defaults = await db.query(`select status, context_version from public.work_contexts where id = $1`, [twin]);
     expect(defaults.rows).toEqual([{ status: "active", context_version: 1 }]);
   });
 
@@ -564,11 +565,13 @@ describe("on delete: 부모를 지우면", () => {
     await db.query(`delete from public.people where id = $1`, [target]);
     expect((await db.query(`select merged_into from public.people where id = $1`, [merged])).rows).toEqual([{ merged_into: null }]);
 
-    const newer = await one(`insert into public.memory_items (user_id, kind, scope_kind, statement, origin) values ($1, 'fact', 'global', '지금은 Y', 'explicit') returning id`, [
-      ALICE,
-    ]);
+    // 정정은 같은 범위 · 같은 사실(subject) 안에서만 (B1, 20261104000000_context_layer)
+    const newer = await one(
+      `insert into public.memory_items (user_id, kind, scope_kind, subject, statement, origin) values ($1, 'fact', 'global', 'x or y', '지금은 Y', 'explicit') returning id`,
+      [ALICE],
+    );
     const older = await one(
-      `insert into public.memory_items (user_id, kind, scope_kind, statement, origin, superseded_by) values ($1, 'fact', 'global', '이전엔 X', 'explicit', $2) returning id`,
+      `insert into public.memory_items (user_id, kind, scope_kind, subject, statement, origin, superseded_by) values ($1, 'fact', 'global', 'x or y', '이전엔 X', 'explicit', $2) returning id`,
       [ALICE, newer],
     );
     await db.query(`delete from public.memory_items where id = $1`, [newer]);
@@ -599,15 +602,26 @@ describe("on delete: 부모를 지우면", () => {
 describe("updated_at · 트리거", () => {
   const UPDATED = ["people", "work_contexts", "context_members", "memory_items", "identity_links"] as const;
 
-  it("updated_at이 있는 표는 기존 set_updated_at 트리거를 쓰고, 새 함수는 기억 이력 보호 하나다", async () => {
+  it("updated_at이 있는 표는 기존 set_updated_at 트리거를 쓰고, A2의 새 함수는 기억 이력 보호 하나다 (B1이 더한 트리거는 따로 적는다)", async () => {
     const { rows } = await db.query<{ table: string; fn: string }>(
       `select c.relname as table, p.proname as fn from pg_trigger t
        join pg_class c on c.oid = t.tgrelid join pg_proc p on p.oid = t.tgfoid
        where not t.tgisinternal and c.relname = any($1) order by c.relname, p.proname`,
       [[...TABLES]],
     );
+    // B1(20261104000000_context_layer): 범위 version(멤버 · 범위 기억: 큐에 모으는 트리거 insert · delete와 update 둘씩.
+    // commit 직전 올리는 트리거는 큐 표 context_version_bumps에 있다)과
+    // 지운 원문 가드(조각 · 기억). 트리거마다 한 행이라 같은 함수를 쓰는 트리거 둘은 두 번 나온다. 함수 · 동작은 tests/db/context-layer.test.ts가 본다
+    const B1 = [
+      { table: "context_members", fn: "context_members_bump_version" },
+      { table: "context_members", fn: "context_members_bump_version" },
+      { table: "memory_items", fn: "memory_items_bump_context_version" },
+      { table: "memory_items", fn: "memory_items_bump_context_version" },
+      { table: "memory_items", fn: "memory_items_purged_source_guard" },
+      { table: "source_chunks", fn: "source_chunks_purged_source_guard" },
+    ];
     expect(rows).toEqual(
-      [...[...UPDATED].map((table) => ({ table, fn: "set_updated_at" })), { table: "memory_items", fn: "memory_items_keep_history" }].sort(
+      [...[...UPDATED].map((table) => ({ table, fn: "set_updated_at" })), { table: "memory_items", fn: "memory_items_keep_history" }, ...B1].sort(
         (a, b) => a.table.localeCompare(b.table) || a.fn.localeCompare(b.fn),
       ),
     );
