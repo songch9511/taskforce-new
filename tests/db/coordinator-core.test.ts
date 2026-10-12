@@ -3,7 +3,7 @@ import { beforeAll, describe } from "vitest";
 
 import { coordinatorCoreTests, coordinatorUpgradeTests } from "./coordinator-core.scenarios";
 import { asUser, createLocalSupabase } from "./local-supabase";
-import { openPglite } from "./pglite-template";
+import { freshPgliteForEachTest } from "./fresh-pglite";
 
 // 0.2.0 코디네이터 1 (20261110000000_coordinator_core, 구현 계획 C2) — PGlite. 같은 시나리오를 실제 Postgres로: tests/pg/coordinator-core.test.ts
 // (두 소비자 · 사용자별 직렬화 경합은 연결이 둘 이상 필요해 거기에만 있다).
@@ -21,8 +21,9 @@ describe("코디네이터 사건 큐 (PGlite)", () => {
 });
 
 // 업그레이드 회귀는 새 PGlite를 마이그레이션 중간까지만 만든다 (위의 db와 따로)
+const freshDb = freshPgliteForEachTest();
 coordinatorUpgradeTests(async () => {
-  const fresh = await openPglite(); // 마이그레이션 전 상태에서 시작하는 시험: initdb만 된 빈 클러스터를 복제한다
+  const fresh = await freshDb(); // 마이그레이션 전 상태에서 시작하는 시험: initdb만 된 빈 클러스터를 복제하고, 시험이 끝나면 닫는다
   return {
     exec: (sql) => fresh.exec(sql),
     query: async (sql, params) => (await fresh.query<Record<string, unknown>>(sql, params)).rows,

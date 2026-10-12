@@ -6,7 +6,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 
 import { C1_MIGRATION, executionAdditiveTests, executionUpgradeTests } from "./execution-additive-contract.scenarios";
 import { asUser, createLocalSupabase } from "./local-supabase";
-import { openPglite } from "./pglite-template";
+import { freshPgliteForEachTest } from "./fresh-pglite";
 
 // 0.2.0 실행 additive 확장 (20261109000000_execution_additive_contract, 구현 계획 C1) — PGlite. 같은 시나리오를 실제 Postgres로: tests/pg/execution-additive-contract.test.ts (동시성 포함).
 // 실행기가 새 goal · 단계 종류를 fail closed로 다루는 것은 tests/db/execution-additive-executor.test.ts.
@@ -24,8 +24,9 @@ describe("실행 additive 확장 (PGlite)", () => {
 });
 
 // 업그레이드 회귀는 새 PGlite를 마이그레이션 중간까지만 만든다 (위의 db와 따로)
+const freshDb = freshPgliteForEachTest();
 executionUpgradeTests(async () => {
-  const fresh = await openPglite(); // 마이그레이션 전 상태에서 시작하는 시험: initdb만 된 빈 클러스터를 복제한다
+  const fresh = await freshDb(); // 마이그레이션 전 상태에서 시작하는 시험: initdb만 된 빈 클러스터를 복제하고, 시험이 끝나면 닫는다
   return {
     exec: (sql) => fresh.exec(sql),
     query: async (sql, params) => (await fresh.query<Record<string, unknown>>(sql, params)).rows,
