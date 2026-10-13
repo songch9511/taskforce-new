@@ -108,7 +108,8 @@ final class PushCenter: NSObject {
 
     // MARK: 시스템
 
-    private static func status() async -> PushPermission.Status {
+    /// 이 기기의 알림 권한 (0.2.0 설정 창 Reports 탭도 읽는다)
+    static func status() async -> PushPermission.Status {
         switch await UNUserNotificationCenter.current().notificationSettings().authorizationStatus {
         case .notDetermined: .notDetermined
         case .denied: .denied

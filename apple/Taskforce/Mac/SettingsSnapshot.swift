@@ -6,6 +6,9 @@ import AppKit
 /// Account도 설정 본문을 담는다. Usage & Credits(`-TFSampleCredits`일 때 보임) · Privacy & AI Data는 끝까지 스크롤한 모습(`-end`)도,
 /// 동의 화면(460×440 시트)은 처음 · 끝(`consent-prompt` · `consent-prompt-end`)을, Usage의 멈춘 카드 ›로 연 런처(`usage-working`)도 담는다.
 /// `LauncherSnapshot`처럼 화면 녹화 권한 없이 자기 창만 그린다 (신호등 · 창 그림자는 담기지 않는다).
+/// `-TF_EDGE_SHELL YES`면 0.2.0 탭 창(`SettingsWindowView`)을 견본 데이터로만 담는다: 탭마다 `mac-settings-window-<탭>-light.png` · `-dark.png`
+/// (스크롤이 있으면 `-end`도), 상세 · 트레이 안 확인(`connections-privacy` · `connections-notion` · `connections-notion-disconnect` ·
+/// `connections-withdraw` · `account-delete`). 렌더된 견본일 뿐이다: 실제 포인터 · 키보드 · VoiceOver 확인이 아니다.
 @MainActor
 enum SettingsSnapshot {
     static func runIfRequested() {
@@ -18,6 +21,12 @@ enum SettingsSnapshot {
             try? await Task.sleep(for: .seconds(1))
             SettingsOpener.open()
             guard let directory else { return }
+            if MacSettingsRootKind.current == .window {
+                // 실제 계정의 이름 · 이메일을 PNG로 남기지 않는다
+                if SampleData.isEnabled { await captureWindow(to: directory) }
+                NSApplication.shared.terminate(nil)
+                return
+            }
             let executionAvailable: Bool
             if case .ready(_, let services) = AppRuntime.startup {
                 executionAvailable = AppRuntime.runs(services: services).isAvailable
@@ -43,6 +52,55 @@ enum SettingsSnapshot {
             }
             NSApplication.shared.terminate(nil)
         }
+    }
+
+    /// 0.2.0 탭 창: 다섯 탭 · 상세 · 트레이 안 확인을 Light · Dark로
+    private static func captureWindow(to directory: URL) async {
+        let model = SettingsWindowModel.shared
+        func settle(_ seconds: Double = 1.2) async { try? await Task.sleep(for: .seconds(seconds)) }
+        for (appearance, name) in [(NSAppearance.Name.aqua, "light"), (.darkAqua, "dark")] {
+            NSApplication.shared.appearance = NSAppearance(named: appearance)
+            func file(_ shot: String) -> URL { directory.appending(path: "mac-settings-window-\(shot)-\(name).png") }
+            func shoot(_ shot: String, end: Bool = false) async {
+                guard let window = settingsWindow else { return }
+                capture(window, to: file(shot))
+                guard end, scrollToEnd(window) else { return }
+                await settle(0.5)
+                capture(window, to: file("\(shot)-end"))
+            }
+            for tab in SettingsWindowTab.allCases {
+                await show(tab)
+                await shoot(tab.rawValue, end: true)
+            }
+            // 창 밖에서 열면 상세 · 확인이 닫힌다 (`SettingsRoute.openCount`): 탭을 연 뒤 상세를 연다
+            await show(.connections)
+            model.open(.privacy)
+            await settle()
+            await shoot("connections-privacy", end: true)
+            await show(.connections)
+            model.open(.connection(.notion))
+            await settle()
+            await shoot("connections-notion")
+            model.confirming = .disconnect(.notion)
+            await settle()
+            await shoot("connections-notion-disconnect")
+            await show(.connections)
+            model.confirming = .withdrawConsent
+            await settle()
+            await shoot("connections-withdraw")
+            await show(.account)
+            model.confirming = .deleteAccount
+            await settle()
+            await shoot("account-delete")
+            model.close()
+        }
+    }
+
+    /// 그 탭을 마지막 탭으로 적고 창 밖에서 연다 (More 메뉴와 같은 길)
+    private static func show(_ tab: SettingsWindowTab) async {
+        UserDefaults.standard.set(tab.storedValue, forKey: SettingsOpener.tabKey)
+        SettingsOpener.open()
+        try? await Task.sleep(for: .seconds(1.5))
     }
 
     /// 동의 화면: Connections 페이지의 동의 시트를 띄워 처음 · 끝까지 스크롤한 모습을 담고 닫는다 (Not Now와 같다)

@@ -36,6 +36,13 @@ public struct HotKeyShortcut: Codable, Equatable, Sendable {
         return label + keyLabel
     }
 
+    /// 키캡 하나씩: 수식키(⌃ ⌥ ⇧ ⌘ 순서) 뒤에 키 (0.2.0 설정 창 `KeyCombo` · `ShortcutRecorder`)
+    public var keyCaps: [String] {
+        [(Modifier.control, "⌃"), (Modifier.option, "⌥"), (Modifier.shift, "⇧"), (Modifier.command, "⌘")]
+            .filter { modifiers & $0.0 != 0 }
+            .map(\.1) + [keyLabel]
+    }
+
     /// Shift만으로는 글자 입력과 겹치므로 ⌘ · ⌥ · ⌃ 중 하나는 있어야 한다
     public var isValid: Bool {
         keyCode <= 0x7F && modifiers & ~Modifier.all == 0

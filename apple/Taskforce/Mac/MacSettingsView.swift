@@ -434,8 +434,8 @@ struct AboutSettingsPane: View {
         }
     }
 
-    private static let websiteURL = URL(string: "https://www.taskforcelabs.dev")!
-    private static let githubURL = URL(string: "https://github.com/songch9511/taskforce-new")!
+    static let websiteURL = URL(string: "https://www.taskforcelabs.dev")!
+    static let githubURL = URL(string: "https://github.com/songch9511/taskforce-new")!
 }
 
 /// Local per-section maximums for the launcher. The task list remains complete by default.
@@ -524,8 +524,8 @@ private struct SettingsFormPage: ViewModifier {
 }
 
 /// 설정 창 틀 (Figma S1): 제목 글자 없이 신호등만, 내용이 제목 막대 아래까지 그린다 (창 바탕 settings/window).
-/// 제목 막대 높이를 알려 준다: 창은 내용 높이에 이 높이를 더해 크기를 정하므로 내용에서 뺀다.
-private struct SettingsWindowChrome: NSViewRepresentable {
+/// 제목 막대 높이를 알려 준다: 창은 내용 높이에 이 높이를 더해 크기를 정하므로 내용에서 뺀다. 0.2.0 설정 창(`SettingsWindowView`)도 같은 틀을 쓴다.
+struct SettingsWindowChrome: NSViewRepresentable {
     @Binding var titlebarHeight: CGFloat
 
     func makeNSView(context: Context) -> NSView {

@@ -48,7 +48,8 @@ extension SettingsRow where Icon == EmptyView, Trailing == EmptyView {
     }
 }
 
-/// 설정 행 오른쪽의 값 글자 (Control=Value)
+/// 설정 행 오른쪽의 값 글자 (Control=Value). 0.2.0 설정 창의 `Value`도 이것을 쓴다(읽기 전용 · 보조 색 · 한 줄 줄임표,
+/// 숫자 폭 고정은 쓰는 쪽이 `.monospacedDigit()`으로). 사용자가 바꿀 수 있는 값이면 Value가 아니다
 public struct SettingsValue: View {
     let text: String
 

@@ -5,13 +5,7 @@ import TaskforceKit
 import TaskforceUI
 
 struct KeyboardShortcutsPane: View {
-    @State private var launcher = HotKeyShortcut.load()
-    @State private var settings = HotKeyShortcut.load(for: .settings)
-    @State private var recording: HotKeyShortcut.Action?
-    @State private var monitor: Any?
-    @State private var message: String?
-    @State private var launcherUnavailable = false
-    @State private var settingsUnavailable = false
+    @State private var recorder = HotKeyRecorder()
 
     var body: some View {
         ScrollView {
@@ -19,59 +13,44 @@ struct KeyboardShortcutsPane: View {
                 SettingsCard {
                     SettingsRow("Open launcher") {
                         HStack(spacing: TFSpace.sm) {
-                            Keycap(recording == .launcher ? "…" : launcher.displayLabel)
-                            QuietButton(recording == .launcher ? "Cancel" : "Change") { toggle(.launcher) }
-                            if launcherUnavailable {
-                                QuietButton("Retry") { retry(.launcher, shortcut: launcher) }
+                            Keycap(recorder.recording == .launcher ? "…" : recorder.launcher.displayLabel)
+                            QuietButton(recorder.recording == .launcher ? "Cancel" : "Change") { recorder.toggle(.launcher) }
+                            if recorder.launcherUnavailable {
+                                QuietButton("Retry") { recorder.retry(.launcher) }
                             }
-                            if !launcher.matches(.default) {
-                                QuietButton("Reset") {
-                                    stop()
-                                    if MacAppDelegate.shared?.resetHotKey() == true {
-                                        launcher = .default
-                                        refreshRegistrationStatus()
-                                    } else {
-                                        message = "That shortcut is in use. Your shortcut has not changed."
-                                    }
-                                }
+                            if !recorder.launcher.matches(.default) {
+                                QuietButton("Reset") { recorder.resetLauncher() }
                             }
                         }
                     }
                     SettingsDivider()
                     SettingsRow("Open Settings") {
                         HStack(spacing: TFSpace.sm) {
-                            Keycap(recording == .settings ? "…" : settings?.displayLabel ?? "Not set")
-                            QuietButton(recording == .settings ? "Cancel" : settings == nil ? "Record" : "Change") {
-                                toggle(.settings)
+                            Keycap(recorder.recording == .settings ? "…" : recorder.settings?.displayLabel ?? "Not set")
+                            QuietButton(recorder.recording == .settings ? "Cancel" : recorder.settings == nil ? "Record" : "Change") {
+                                recorder.toggle(.settings)
                             }
-                            if settingsUnavailable, let settings {
-                                QuietButton("Retry") { retry(.settings, shortcut: settings) }
+                            if recorder.settingsUnavailable, recorder.settings != nil {
+                                QuietButton("Retry") { recorder.retry(.settings) }
                             }
-                            if settings != nil {
-                                QuietButton("Remove") {
-                                    stop()
-                                    MacAppDelegate.shared?.removeSettingsHotKey()
-                                    settings = nil
-                                    refreshRegistrationStatus()
-                                }
+                            if recorder.settings != nil {
+                                QuietButton("Remove") { recorder.removeSettings() }
                             }
                         }
                     }
                 }
-                if launcherUnavailable {
-                    Text("Open launcher shortcut is not active. Retry or record a different shortcut.")
+                if recorder.launcherUnavailable {
+                    Text(HotKeyRecorder.launcherInactive)
                         .font(TFFont.meta).foregroundStyle(TFColor.statusOverdue)
                 }
-                if settingsUnavailable {
-                    Text("Open Settings shortcut is saved but not active. Another app may be using it. Retry or record a different shortcut.")
+                if recorder.settingsUnavailable {
+                    Text(HotKeyRecorder.settingsInactive)
                         .font(TFFont.meta).foregroundStyle(TFColor.statusOverdue)
                 }
-                Text(recording == nil
-                     ? "These shortcuts work from any app. ⌘, also opens Settings while Taskforce is active."
-                     : "Press a shortcut with ⌘, ⌥, or ⌃. Press Esc to cancel.")
+                Text(recorder.recording == nil ? HotKeyRecorder.footnote : HotKeyRecorder.recordingFootnote)
                     .font(TFFont.meta)
                     .foregroundStyle(TFColor.textSecondary)
-                if let message {
+                if let message = recorder.message {
                     Text(message).font(TFFont.meta).foregroundStyle(TFColor.statusOverdue)
                 }
             }
@@ -80,39 +59,57 @@ struct KeyboardShortcutsPane: View {
             .padding(.bottom, 32)
             .frame(maxWidth: .infinity)
         }
-        .onAppear { refreshRegistrationStatus() }
-        .onDisappear { stop() }
-        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didResignKeyNotification)) { _ in stop() }
-        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in stop() }
+        .modifier(HotKeyRecorderLifecycle(recorder: recorder))
     }
+}
 
-    private func toggle(_ action: HotKeyShortcut.Action) {
+/// 전역 단축키(런처 · 설정 창) 기록: 기록하는 동안 두 단축키를 멈추고, 앱 안 키 이벤트를 받아 바꾼다(실패하면 전 것을 되살린다).
+/// 기존 설정 창 `KeyboardShortcutsPane`과 0.2.0 설정 창 Shortcuts 탭이 같이 쓴다
+@MainActor
+@Observable
+final class HotKeyRecorder {
+    static let footnote = "These shortcuts work from any app. ⌘, also opens Settings while Taskforce is active."
+    static let recordingFootnote = "Press a shortcut with ⌘, ⌥, or ⌃. Press Esc to cancel."
+    static let launcherInactive = "Open launcher shortcut is not active. Retry or record a different shortcut."
+    static let settingsInactive = "Open Settings shortcut is saved but not active. Another app may be using it. Retry or record a different shortcut."
+
+    private(set) var launcher = HotKeyShortcut.load()
+    private(set) var settings = HotKeyShortcut.load(for: .settings)
+    private(set) var recording: HotKeyShortcut.Action?
+    private(set) var message: String?
+    /// `message`가 생긴 단축키 (0.2.0 설정 창은 그 행 아래에 보인다)
+    private(set) var messageAction: HotKeyShortcut.Action?
+    private(set) var launcherUnavailable = false
+    private(set) var settingsUnavailable = false
+    @ObservationIgnored private var monitor: Any?
+
+    func toggle(_ action: HotKeyShortcut.Action) {
         let wasRecording = recording == action
         stop()
         guard !wasRecording, let delegate = MacAppDelegate.shared else { return }
         message = nil
         recording = action
         delegate.suspendHotKeys()
-        monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+        monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             let consumed = MainActor.assumeIsolated { () -> Bool in
-                guard let action = recording else { return false }
+                guard let self, let action = self.recording else { return false }
                 if event.keyCode == 53 {
-                    stop()
+                    self.stop()
                     return true
                 }
                 guard !event.isARepeat else { return true }
                 guard let candidate = HotKeyShortcut(event: event), candidate.isValid else {
-                    message = "Include ⌘, ⌥, or ⌃."
+                    self.show("Include ⌘, ⌥, or ⌃.", for: action)
                     return true
                 }
                 // Restore both previous registrations before attempting a transactional replacement.
-                stop()
+                self.stop()
                 if MacAppDelegate.shared?.changeHotKey(to: candidate, for: action) == true {
-                    if action == .launcher { launcher = candidate } else { settings = candidate }
+                    if action == .launcher { self.launcher = candidate } else { self.settings = candidate }
                 } else {
-                    message = "That shortcut is in use. Try another."
+                    self.show("That shortcut is in use. Try another.", for: action)
                 }
-                refreshRegistrationStatus()
+                self.refresh()
                 return true
             }
             return consumed ? nil : event
@@ -120,29 +117,66 @@ struct KeyboardShortcutsPane: View {
         if monitor == nil { stop() }
     }
 
-    private func refreshRegistrationStatus() {
+    func resetLauncher() {
+        stop()
+        if MacAppDelegate.shared?.resetHotKey() == true {
+            launcher = .default
+            refresh()
+        } else {
+            show("That shortcut is in use. Your shortcut has not changed.", for: .launcher)
+        }
+    }
+
+    func removeSettings() {
+        stop()
+        MacAppDelegate.shared?.removeSettingsHotKey()
+        settings = nil
+        refresh()
+    }
+
+    func refresh() {
         launcherUnavailable = MacAppDelegate.shared?.isHotKeyRegistered(for: .launcher) == false
         settingsUnavailable = settings != nil && MacAppDelegate.shared?.isHotKeyRegistered(for: .settings) == false
     }
 
-    private func retry(_ action: HotKeyShortcut.Action, shortcut: HotKeyShortcut) {
+    func retry(_ action: HotKeyShortcut.Action) {
+        guard let shortcut = action == .launcher ? launcher : settings else { return }
         stop()
         message = nil
         if MacAppDelegate.shared?.changeHotKey(to: shortcut, for: action) != true {
-            message = "That shortcut is in use. Try another."
+            show("That shortcut is in use. Try another.", for: action)
         }
-        refreshRegistrationStatus()
+        refresh()
     }
 
-    private func stop() {
+    func stop() {
         guard recording != nil || monitor != nil else { return }
+        let action = recording
         recording = nil
         if let monitor { NSEvent.removeMonitor(monitor) }
         monitor = nil
         if MacAppDelegate.shared?.resumeHotKeys() == false {
-            message = "Could not restore a shortcut. Another app may be using it. Try recording it again."
+            show("Could not restore a shortcut. Another app may be using it. Try recording it again.", for: action)
         }
-        refreshRegistrationStatus()
+        refresh()
+    }
+
+    private func show(_ text: String, for action: HotKeyShortcut.Action?) {
+        message = text
+        messageAction = action
+    }
+}
+
+/// 단축키 칸이 보이는 동안: 처음 등록 상태를 읽고, 사라지거나 창 · 앱이 키를 잃으면 기록을 멈춘다
+struct HotKeyRecorderLifecycle: ViewModifier {
+    let recorder: HotKeyRecorder
+
+    func body(content: Content) -> some View {
+        content
+            .onAppear { recorder.refresh() }
+            .onDisappear { recorder.stop() }
+            .onReceive(NotificationCenter.default.publisher(for: NSWindow.didResignKeyNotification)) { _ in recorder.stop() }
+            .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in recorder.stop() }
     }
 }
 #endif

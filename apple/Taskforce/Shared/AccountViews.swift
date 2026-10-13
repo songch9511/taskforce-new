@@ -328,17 +328,22 @@ struct ConsentSettingsView: View {
             .confirmationDialog("Withdraw AI processing?", isPresented: $confirmingWithdraw, titleVisibility: .visible) {
                 Button("Withdraw", role: .destructive) { withdraw() }
             } message: {
-                Text("Taskforce stops reading new sources and writing drafts until you allow it again.")
+                Text(Self.withdrawMessage)
             }
             .messageAlert($account.message)
     }
 
-    /// 켜져 있으면 끄는 결과를, 꺼져 있으면 지금 상태를 (Figma S7 · S7c)
-    private var switchDetail: String {
-        account.hasConsent
+    /// 켜져 있으면 끄는 결과를, 꺼져 있으면 지금 상태를 (Figma S7 · S7c). 0.2.0 설정 창 AI processing 각주도 같은 글
+    static func switchDetail(hasConsent: Bool) -> String {
+        hasConsent
             ? "Turning this off stops new tasks from sources and new drafts. Your tasks and drafts stay."
             : "New sources aren't read and no drafts are written. Your tasks and drafts stay."
     }
+
+    /// 철회 확인의 한 줄 (확인 대화상자 · 0.2.0 설정 창의 ConfirmRow)
+    static let withdrawMessage = "Taskforce stops reading new sources and writing drafts until you allow it again."
+
+    private var switchDetail: String { Self.switchDetail(hasConsent: account.hasConsent) }
 
     private var useAI: Binding<Bool> {
         Binding(
