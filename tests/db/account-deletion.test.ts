@@ -16,6 +16,7 @@ const USER_TABLES = [
   "action_events",
   "action_links",
   "actions",
+  "agent_artifacts",
   "agent_connections",
   "agent_sessions",
   "agent_tasks",
@@ -226,6 +227,8 @@ async function seed(userId: string, tokenHex: string) {
     agentSessionId,
     messageId,
   ]);
+  await db.query(`insert into public.agent_artifacts (user_id, run_id, agent_task_id, turn_seq, path, content_hash, summary)
+    select user_id, run_id, id, turn_seq, 'src/result.ts', 'hash', 'Changed module' from public.agent_tasks where user_id = $1`, [userId]);
   await db.query(`insert into public.execution_events (user_id, run_id, type, external_event_id, bridge_id) values ($1, $2, 'agent', 'evt-1', $3)`, [userId, runId, bridgeId]);
   // 크레딧 · 산출물 · 원가: 운영자 지급, 다른 run에서 계획 단계 → 초안 단계를 실행기처럼 끝까지 (예약 · 정산 · 해제 · 산출물 · 원가 행).
   // 원장 · 원가의 run · step 외래키는 지울 때 막는다(no action): 계정 삭제는 같은 문장 안에서 원장도 함께 지워 막히지 않아야 한다
