@@ -13,6 +13,7 @@ const BOB = "00000000-0000-0000-0000-00000000000b";
 
 /** user_id 열이 있는 사용자 테이블 전부. 새 테이블을 만들면 여기와 seed()에 더한다 (아래 첫 테스트가 알려 준다). */
 const USER_TABLES = [
+  "action_counters",
   "action_events",
   "action_links",
   "actions",

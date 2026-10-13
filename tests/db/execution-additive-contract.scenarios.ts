@@ -813,6 +813,8 @@ export function executionUpgradeTests(fresh: () => Promise<FreshDb>) {
     "execution_tools", "execution_actors", "execution_recipient_allowlist", "credit_accounts", "credit_ledger", "actions", "connections", "rate_limit_events",
   ];
   const NEW_RUN_KEYS = ["conversation_id", "context_id", "directive_version", "bundle_context_version"];
+  // 뒤의 마이그레이션(20261120000000_action_numbers, D4c-3a)이 actions에 더한 열: 이 시험은 옛 열이 그대로인지만 본다
+  const LATER_ACTION_KEYS = ["number"];
 
   describe("업그레이드 회귀 (새 마이그레이션 전 상태 → 전체 적용)", () => {
     it("옛 draft run · 단계 · outcome · hold · 승인 · intent · 이벤트 · 정책 · 크레딧이 그대로이고, 새 열은 기본값이며, 승인 hash는 같다", async () => {
@@ -884,9 +886,10 @@ export function executionUpgradeTests(fresh: () => Promise<FreshDb>) {
       for (const sql of [c1, ...after]) await db.exec(sql);
 
       const now = await snapshot();
+      const without = (rows: Rows, keys: string[]) => rows.map((r) => ({ row: Object.fromEntries(Object.entries(r.row as Record<string, unknown>).filter(([key]) => !keys.includes(key))) }));
       for (const table of TABLES) {
         if (table === "execution_runs") continue;
-        expect(now[table], table).toEqual(old[table]);
+        expect(table === "actions" ? without(now[table], LATER_ACTION_KEYS) : now[table], table).toEqual(old[table]);
       }
       // run: 옛 열은 그대로, 새 열은 기본값
       const strip = (rows: Rows) => rows.map((r) => Object.fromEntries(Object.entries(r.row as Record<string, unknown>).filter(([key]) => !NEW_RUN_KEYS.includes(key))));
