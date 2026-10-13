@@ -1446,7 +1446,7 @@ export function reviewSummaryTests(db: () => ReviewDb) {
 // ───────────────────────── 업그레이드 · 롤백 ─────────────────────────
 const MIGRATIONS_DIR = path.resolve(__dirname, "../../supabase/migrations");
 export const C3_MIGRATION = "20261111000000_review_summary.sql";
-/** 후속(A–D 승인, C): 첫 정상 표시 기준점. C3 바로 다음, 지금 마지막 마이그레이션이다 */
+/** 후속(A–D 승인, C): 첫 정상 표시 기준점. C3 바로 다음 마이그레이션이다 (더 뒤의 마이그레이션이 있어도 이 시험은 C3 · 기준점만 적용한다) */
 export const BASELINE_MIGRATION = "20261112000000_review_summary_baseline.sql";
 
 export type FreshDb = {
@@ -1460,7 +1460,6 @@ async function splitScripts() {
   const index = files.indexOf(C3_MIGRATION);
   expect(index, `${C3_MIGRATION}이 마이그레이션 목록에 있다`).toBeGreaterThan(0);
   expect(files.indexOf(BASELINE_MIGRATION), "기준점 마이그레이션은 C3 바로 다음이다").toBe(index + 1);
-  expect(index + 1, "기준점 마이그레이션은 마지막 마이그레이션이다 (더 뒤의 마이그레이션이 생기면 이 시험의 분할을 고친다)").toBe(files.length - 1);
   const scripts = await supabaseSchemaScripts();
   return { before: scripts.slice(0, 2 + index), c3: scripts[2 + index], baseline: scripts[3 + index] };
 }

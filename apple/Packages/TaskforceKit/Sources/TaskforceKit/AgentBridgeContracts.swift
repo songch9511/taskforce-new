@@ -430,9 +430,10 @@ public struct AgentEventEnvelope: Codable, Hashable, Sendable {
     }
 }
 
-/// 원격 작업 상태 (`agent_tasks.state`). unreachable은 실패가 아니다 (재접속 reconcile을 기다린다)
+/// 원격 작업 상태 (`agent_tasks.state`). unreachable은 실패가 아니다 (재접속 reconcile을 기다린다).
+/// idle은 직접 대화의 턴이 끝나 다음 사용자 메시지를 기다리는 상태다 — completed가 아니다 (계약 v3 3.4)
 public enum AgentTaskState: OpenStringValue {
-    case dispatched, accepted, running, awaitingAnswer, completed, failed, cancelled, unreachable
+    case dispatched, accepted, running, awaitingAnswer, idle, completed, failed, cancelled, unreachable
     case unknown(String)
 
     public init(raw: String) {
@@ -441,6 +442,7 @@ public enum AgentTaskState: OpenStringValue {
         case "accepted": self = .accepted
         case "running": self = .running
         case "awaiting_answer": self = .awaitingAnswer
+        case "idle": self = .idle
         case "completed": self = .completed
         case "failed": self = .failed
         case "cancelled": self = .cancelled
@@ -455,10 +457,37 @@ public enum AgentTaskState: OpenStringValue {
         case .accepted: "accepted"
         case .running: "running"
         case .awaitingAnswer: "awaiting_answer"
+        case .idle: "idle"
         case .completed: "completed"
         case .failed: "failed"
         case .cancelled: "cancelled"
         case .unreachable: "unreachable"
+        case .unknown(let raw): raw
+        }
+    }
+}
+
+/// 에이전트 세션 상태 (`agent_sessions.status`, 계약 v3 3.8). external은 사용자가 Open in Terminal로 터미널에서 이어 쓰는 중(Taskforce 전달 0)이다
+public enum AgentSessionStatus: OpenStringValue {
+    case bound, external, unreachable, closed
+    case unknown(String)
+
+    public init(raw: String) {
+        switch raw {
+        case "bound": self = .bound
+        case "external": self = .external
+        case "unreachable": self = .unreachable
+        case "closed": self = .closed
+        default: self = .unknown(raw)
+        }
+    }
+
+    public var raw: String {
+        switch self {
+        case .bound: "bound"
+        case .external: "external"
+        case .unreachable: "unreachable"
+        case .closed: "closed"
         case .unknown(let raw): raw
         }
     }

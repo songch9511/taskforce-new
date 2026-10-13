@@ -86,9 +86,10 @@ describe("ARCH11: 변화 없는 24시간 (시계 고정)", () => {
     fetchSpy.mockRestore();
   });
 
-  it("에이전트 · 의존 · pending_decisions 표는 만들지 않았다 (이 묶음 범위 밖: D1 · D6). suggestions는 C3가 만들었다", async () => {
+  it("의존 · pending_decisions · bridge 명령 · 선호 표는 만들지 않았다 (이 묶음 범위 밖: D2a · D6). suggestions는 C3가, agent_tasks · agent_sessions · bridges는 D1a가 만들었다", async () => {
     const tables = (await s.q(`select table_name from information_schema.tables where table_schema = 'public' and table_name = any ($1)`, [["agent_tasks", "agent_sessions", "action_dependencies", "pending_decisions", "bridges", "bridge_commands", "user_preferences"]]))
-      .map((r) => r.table_name);
-    expect(tables).toEqual([]);
+      .map((r) => r.table_name)
+      .sort();
+    expect(tables).toEqual(["agent_sessions", "agent_tasks", "bridges"]);
   });
 });

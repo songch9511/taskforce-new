@@ -330,7 +330,11 @@ describe("실행 이벤트", () => {
     const { rows } = await db.query<{ column_name: string }>(
       "select column_name from information_schema.columns where table_schema = 'public' and table_name = 'execution_events' order by ordinal_position",
     );
-    expect(rows.map((r) => r.column_name)).toEqual(["id", "user_id", "run_id", "step_id", "type", "from_state", "to_state", "gate", "at"]);
+    // 뒤 여섯 열은 에이전트 사건 봉투 (20261113000000_agent_gateway_core): run · step · hold 사건은 쓰지 않는다
+    expect(rows.map((r) => r.column_name)).toEqual([
+      "id", "user_id", "run_id", "step_id", "type", "from_state", "to_state", "gate", "at",
+      "external_event_id", "external_seq", "directive_version", "turn_seq", "bridge_id", "payload",
+    ]);
   });
 });
 
