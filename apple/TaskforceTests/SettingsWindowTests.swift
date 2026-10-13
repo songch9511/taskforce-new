@@ -514,7 +514,7 @@ struct SettingsProfileAccountBoundaryTests {
 
 struct SettingsWindowSectionTests {
     @Test func accountShowsProfileSignInDeleteAboutAndLinks() {
-        #expect(SettingsWindowTab.account.sections(.signedIn) == [.profile, .signIn, .deleteAccount, .about, .legal])
+        #expect(SettingsWindowTab.account.sections(.signedIn) == [.profile, .signIn, .remembered, .deleteAccount, .about, .legal])
         // 로그아웃 · 읽는 중: 로그인 자리 · About · 링크 (프로필 · 삭제는 없다)
         #expect(SettingsWindowTab.account.sections(.signedOut) == [.signIn, .about, .legal])
         #expect(SettingsWindowTab.account.sections(.loading) == [.signIn, .about, .legal])
@@ -538,7 +538,7 @@ struct SettingsWindowSectionTests {
     @Test func gatedTopicsStayHidden() {
         let hidden = Set(SettingsWindowHidden.allCases.map(\.rawValue))
         #expect(hidden.isSuperset(of: [
-            "Plan & usage", "Usage & Credits", "Subscription", "Remembered", "Your agents", "Default for new work",
+            "Plan & usage", "Usage & Credits", "Subscription", "Your agents", "Default for new work",
             "Spending outside Taskforce", "Delivery", "Task List",
         ]))
         for tab in SettingsWindowTab.allCases {
@@ -649,11 +649,11 @@ struct SettingsConnectionLineTests {
 
 @MainActor
 struct SettingsWindowReadOnlyValueTests {
-    /// Edge 패널에서 지금 동작하는 키만 (⌘2 All work · ⌘3 Chats). ⌘1 · ⌘N · 1–3은 그 화면이 생길 때
+    /// Edge 패널에서 지금 동작하는 키만 (⌘2 All work · ⌘3 Chats · ⌘N New chat). ⌘1 · 1–3은 그 화면이 생길 때
     @Test func panelKeysAreOnlyTheOnesThatWork() {
         let rows = SettingsPanelKeys.rows
-        #expect(rows.map(\.label) == ["All work", "Chats"])
-        #expect(rows.map(\.keys) == [["⌘", "2"], ["⌘", "3"]])
+        #expect(rows.map(\.label) == ["All work", "Chats", "New chat"])
+        #expect(rows.map(\.keys) == [["⌘", "2"], ["⌘", "3"], ["⌘", "N"]])
         #expect(SettingsPanelKeys.keyCaps("⌥Space") == ["⌥", "Space"])
         #expect(SettingsPanelKeys.keyCaps("⇧⌘K") == ["⇧", "⌘", "K"])
     }

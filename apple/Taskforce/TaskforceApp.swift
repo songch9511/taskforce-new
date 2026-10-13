@@ -51,6 +51,38 @@ enum AppRuntime {
         return store
     }
 
+    private static var chatRuntimeStore: ChatRuntime?
+
+    /// 대화 · 기억 (`TF_EDGE_SHELL`이 켜진 격리 Debug 실행에서만, `MacAppDelegate`가 `session.start()` 전에 만든다).
+    /// 앱 시작 때 세션 계정 · epoch에 한 번 붙어, 패널 · 설정 창이 떠 있는지와 상관없이 계정이 떠나면 초안 · 캐시 · 대기 전송을 비운다.
+    /// 견본(`-TFSampleData`)은 가짜 서버(`SampleChatGateway`)와 견본 계정으로 서버를 부르지 않는다
+    static func chatRuntime(session: SessionStore, services: AppServices) -> ChatRuntime {
+        if let chatRuntimeStore { return chatRuntimeStore }
+        let runtime: ChatRuntime
+        #if DEBUG
+        if SampleData.isEnabled {
+            let gateway = SampleChatGateway(scenario: SampleData.chatScenario)
+            runtime = ChatRuntime(gateway: gateway)
+            runtime.sampleGateway = gateway
+            runtime.scope.bind(to: session, account: { SampleData.userID })
+        } else {
+            runtime = ChatRuntime(gateway: LiveChatGateway(services: services))
+            runtime.scope.bind(to: session)
+            runtime.followConnectivity(Connectivity.updates())
+        }
+        #else
+        runtime = ChatRuntime(gateway: LiveChatGateway(services: services))
+        runtime.scope.bind(to: session)
+        runtime.followConnectivity(Connectivity.updates())
+        #endif
+        SettingsWindowModel.shared.bind(to: runtime)
+        chatRuntimeStore = runtime
+        return runtime
+    }
+
+    /// 이미 만들어졌으면 그것 (설정 창이 쓴다). 플래그가 꺼져 있으면 nil
+    static var existingChatRuntime: ChatRuntime? { chatRuntimeStore }
+
     private static var runStore: RunStore?
 
     /// 실행(U2) 상태: credits · run · 초안 (Mac 설정 Usage & Credits와 런처가 같은 것을 본다). 계정이 떠나면 스스로 비운다 (`RunStore.reset`).

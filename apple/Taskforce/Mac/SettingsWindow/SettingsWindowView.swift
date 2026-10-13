@@ -117,7 +117,7 @@ struct SettingsWindowView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: SettingsWindowLayout.topicGap) {
                 if let detail {
-                    SettingsBackLink(title: tab.title) { model.close() }
+                    SettingsBackLink(title: detail.backTitle(tab: tab)) { model.back() }
                     SettingsDetailView(detail: detail)
                 } else {
                     ForEach(tab.sections(access)) { section in
@@ -248,6 +248,7 @@ private struct SettingsSectionView: View {
         switch section {
         case .profile: SettingsProfileSection()
         case .signIn: SettingsSignInSection()
+        case .remembered: SettingsRememberedSection()
         case .deleteAccount: SettingsDeleteAccountSection()
         case .about: SettingsAboutSection()
         case .legal: SettingsLegalLinks()
@@ -271,6 +272,8 @@ private struct SettingsDetailView: View {
         switch detail {
         case .privacy: SettingsPrivacyDetail()
         case .connection(let provider): SettingsConnectionDetail(provider: provider)
+        case .remembered: SettingsRememberedList()
+        case .memory(let id): SettingsMemoryDetail(id: id)
         }
     }
 }

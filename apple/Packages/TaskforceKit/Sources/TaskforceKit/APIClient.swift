@@ -16,6 +16,9 @@ public enum APIErrorCode: String, Decodable, Sendable {
     case aiProviderBoundViolation = "ai_provider_bound_violation"
     case aiBudgetUnavailable = "ai_budget_unavailable"
     case billingRequired = "billing_required"
+    /// v2 기억 쓰기의 409 이유 (B3): 정책상 이 항목은 확인할 수 없다 / 범위를 옮길 수 없다. version 충돌(`conflict`)과 달리 다시 읽어도 소용없다: 앱은 그 동작을 감춘다
+    case confirmUnavailable = "confirm_unavailable"
+    case scopeUnavailable = "scope_unavailable"
 }
 
 public enum APIError: Error, Equatable, Sendable, CustomStringConvertible {
@@ -68,6 +71,10 @@ public enum APIError: Error, Equatable, Sendable, CustomStringConvertible {
             "Could not verify your AI allowance. Try again later."
         case .server(_, .conflict, _):
             "This changed somewhere else. It's been refreshed."
+        case .server(_, .confirmUnavailable, _):
+            "This can't be confirmed. Edit it, or forget it."
+        case .server(_, .scopeUnavailable, _):
+            "This can't move to another project."
         case .server(_, .unauthorized, _):
             // 이 서버가 거절했는데 인증 서버는 계정 · 세션이 있다고 함 (없다고 하면 `onUnauthorized`가 이 기기를 로그아웃시키고 `.notSignedIn`이 된다)
             "Couldn't verify your sign-in. Sign out, then sign in again."
@@ -343,10 +350,16 @@ public struct APIClient: Sendable {
         case get = "GET", post = "POST", put = "PUT", patch = "PATCH", delete = "DELETE"
     }
 
+    /// 경로 버전. v1은 동결이다: 새 계약(대화 · 기억)은 `/api/v2`
+    enum Version: String {
+        case v1, v2
+    }
+
     func makeRequest(
-        _ method: Method, _ path: String, query: [URLQueryItem] = [], body: (any Encodable)?, token: String, timeout: TimeInterval? = nil
+        _ method: Method, _ path: String, query: [URLQueryItem] = [], body: (any Encodable)?, token: String, timeout: TimeInterval? = nil,
+        version: Version = .v1
     ) throws -> URLRequest {
-        var url = baseURL.appending(path: "api/v1")
+        var url = baseURL.appending(path: "api/\(version.rawValue)")
         url.append(path: path)
         if !query.isEmpty { url.append(queryItems: query) }
         var request = URLRequest(url: url)
@@ -362,7 +375,8 @@ public struct APIClient: Sendable {
     }
 
     private func perform(
-        _ method: Method, _ path: String, query: [URLQueryItem] = [], body: (any Encodable)?, timeout: TimeInterval? = nil
+        _ method: Method, _ path: String, query: [URLQueryItem] = [], body: (any Encodable)?, timeout: TimeInterval? = nil,
+        version: Version = .v1
     ) async throws -> (Data, HTTPURLResponse) {
         let accessToken: String
         do {
@@ -378,7 +392,7 @@ public struct APIClient: Sendable {
         } catch {
             throw APIError.notSignedIn
         }
-        let request = try makeRequest(method, path, query: query, body: body, token: accessToken, timeout: timeout)
+        let request = try makeRequest(method, path, query: query, body: body, token: accessToken, timeout: timeout, version: version)
         let data: Data
         let response: URLResponse
         do {
@@ -400,8 +414,11 @@ public struct APIClient: Sendable {
         return (data, http)
     }
 
-    private func send<T: Decodable>(_ method: Method, _ path: String, query: [URLQueryItem] = [], body: (any Encodable)? = nil) async throws -> T {
-        let (data, _) = try await perform(method, path, query: query, body: body)
+    func send<T: Decodable>(
+        _ method: Method, _ path: String, query: [URLQueryItem] = [], body: (any Encodable)? = nil, timeout: TimeInterval? = nil,
+        version: Version = .v1
+    ) async throws -> T {
+        let (data, _) = try await perform(method, path, query: query, body: body, timeout: timeout, version: version)
         do {
             return try TaskforceJSON.decoder().decode(T.self, from: data)
         } catch {

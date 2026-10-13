@@ -93,7 +93,45 @@ enum SettingsSnapshot {
             await settle()
             await shoot("account-delete")
             model.close()
+            await captureRemembered(model: model, shoot: { name, end in await shoot(name, end: end) }, settle: { await settle($0) })
         }
+    }
+
+    /// Account › Remembered (B3): 입구 · 목록 · 상세(explicit, 추정) · Forget 제자리 확인. 가짜 서버(`SampleChatGateway`)의 렌더 fixture
+    private static func captureRemembered(
+        model: SettingsWindowModel, shoot: (String, Bool) async -> Void, settle: (Double) async -> Void
+    ) async {
+        guard let runtime = model.chatRuntime else { return }
+        await show(.account)
+        await shoot("remembered-entry", true)
+        model.open(.remembered)
+        await runtime.memory.loadList()
+        await settle(1.2)
+        await shoot("remembered-list", false)
+        model.open(.memory(SampleChatIDs.keepsShort))
+        await settle(1.2)
+        await shoot("remembered-detail-explicit", false)
+        model.confirming = .forgetMemory(SampleChatIDs.keepsShort)
+        await settle(1.2)
+        await shoot("remembered-detail-forget", false)
+        model.open(.memory(SampleChatIDs.jordan))
+        await settle(1.2)
+        await shoot("remembered-detail-inferred", false)
+        model.open(.memory(SampleChatIDs.thursdays))
+        await settle(1.2)
+        await shoot("remembered-detail-observed", false)
+        // 서버 쪽 B1이 출처 원문을 지운 뒤: 같은 행이 목록 · 상세에서 같게 보이고, 추정 각주는 없다
+        await runtime.sampleGateway?.purgeObserved(id: SampleChatIDs.thursdays)
+        await runtime.memory.loadList()
+        await settle(1.2)
+        await shoot("remembered-detail-observed-purged", false)
+        model.open(.remembered)
+        await settle(1.2)
+        await shoot("remembered-list-observed-purged", false)
+        // 다음 바퀴(Dark)가 처음 데이터에서 시작하도록: 가짜 서버 기억을 되돌리고 저장소 캐시를 비운다
+        model.close()
+        await runtime.sampleGateway?.restoreMemory()
+        runtime.memory.reset()
     }
 
     /// 그 탭을 마지막 탭으로 적고 창 밖에서 연다 (More 메뉴와 같은 길)
