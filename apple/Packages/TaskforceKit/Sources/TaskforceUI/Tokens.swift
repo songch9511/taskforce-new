@@ -56,6 +56,31 @@ public enum TFColor {
     /// 설정 본문 · 시트 (카드 bg/elevated가 한 단계 위)
     public static let settingsContent = color(.settingsContent)
 
+    // 0.2.0 디자인 시스템 (claude.ai 아티팩트 "Taskforce", 2026-10-09). 레일 · 엣지 패널 · 결정 표시.
+    /// 형광펜: "당신을 기다림"에만 (Review · 바뀐 구절). 글자는 `textOnMarker`
+    public static let fillMarker = color(.fillMarker)
+    /// Segmented에서 고른 칸 · 팝업 버튼 면 (bg/field보다 한 단계 위, 두 모드 모두)
+    public static let fillSegment = color(.fillSegment)
+    /// 형광펜 위 글자 (두 모드 모두 잉크)
+    public static let textOnMarker = color(.textOnMarker)
+    /// 패널 안 입력칸 · 답 · 카드 면 (한 겹 채움, 테두리 없음)
+    public static let bgField = color(.bgField)
+    /// 레일 툴팁 (다크에서 패널보다 한 단계 위)
+    public static let bgTooltip = color(.bgTooltip)
+    /// 엣지 패널 면 (반투명 + 블러)
+    public static let bgPanel = color(.bgPanel)
+    /// 레일의 실행 중 호 (레일에서만, 늘 움직임)
+    public static let statusActivity = color(.statusActivity)
+    /// 비활성 단계 점 · 꺼진 토글 트랙 (3:1 경계)
+    public static let statusStepInactive = color(.statusStepInactive)
+    /// 화면 베젤에서 자라나는 레일: 두 모드 모두 검정
+    public static let bezelBase = color(.bezelBase)
+    public static let bezelInk = color(.bezelInk)
+    /// 대기(waiting) 점선 · 연결 끊김 반 링 · 중단 요청 호
+    public static let bezelInkSecondary = color(.bezelInkSecondary)
+    public static let bezelTrack = color(.bezelTrack)
+    public static let bezelHover = color(.bezelHover)
+
     /// 색 토큰 이름. 모든 토큰은 여기를 거친다 (TaskforceUITests가 모든 이름의 색 세트 · Light/Dark 값을 확인한다).
     enum Name: String, CaseIterable {
         case bgCanvas = "bg/canvas"
@@ -88,6 +113,19 @@ public enum TFColor {
         case settingsFill = "settings/fill"
         case settingsLine = "settings/line"
         case settingsContent = "settings/content"
+        case fillMarker = "fill/marker"
+        case fillSegment = "fill/segment"
+        case textOnMarker = "text/on-marker"
+        case bgField = "bg/field"
+        case bgTooltip = "bg/tooltip"
+        case bgPanel = "bg/panel"
+        case statusActivity = "status/activity"
+        case statusStepInactive = "status/step-inactive"
+        case bezelBase = "bezel/base"
+        case bezelInk = "bezel/ink"
+        case bezelInkSecondary = "bezel/ink-secondary"
+        case bezelTrack = "bezel/track"
+        case bezelHover = "bezel/hover"
     }
 
     /// 색 세트가 든 번들 (테스트가 같은 번들에서 읽는다)
