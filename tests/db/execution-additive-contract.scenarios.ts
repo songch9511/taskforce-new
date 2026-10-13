@@ -816,6 +816,8 @@ export function executionUpgradeTests(fresh: () => Promise<FreshDb>) {
   // 뒤의 마이그레이션(20261113000000_agent_gateway_core, D1a)이 더한 열: 이 시험은 옛 열이 그대로인지만 본다
   const LATER_RUN_KEYS = ["kind", "agent_session_id", "reviewed_turn_seq"];
   const LATER_EVENT_KEYS = ["external_event_id", "external_seq", "directive_version", "turn_seq", "bridge_id", "payload"];
+  // 뒤의 마이그레이션(20261120000000_action_numbers, D4c-3a)이 actions에 더한 열
+  const LATER_ACTION_KEYS = ["number"];
 
   describe("업그레이드 회귀 (새 마이그레이션 전 상태 → 전체 적용)", () => {
     it("옛 draft run · 단계 · outcome · hold · 승인 · intent · 이벤트 · 정책 · 크레딧이 그대로이고, 새 열은 기본값이며, 승인 hash는 같다", async () => {
@@ -893,7 +895,8 @@ export function executionUpgradeTests(fresh: () => Promise<FreshDb>) {
       const without = (rows: Rows, keys: string[]) => rows.map((r) => ({ row: Object.fromEntries(Object.entries(r.row as Record<string, unknown>).filter(([key]) => !keys.includes(key))) }));
       for (const table of TABLES) {
         if (table === "execution_runs") continue;
-        expect(table === "execution_events" ? without(now[table], LATER_EVENT_KEYS) : now[table], table).toEqual(old[table]);
+        const later = table === "execution_events" ? LATER_EVENT_KEYS : table === "actions" ? LATER_ACTION_KEYS : null;
+        expect(later ? without(now[table], later) : now[table], table).toEqual(old[table]);
       }
       // run: 옛 열은 그대로, 새 열은 기본값
       const strip = (rows: Rows) => without(rows, [...NEW_RUN_KEYS, ...LATER_RUN_KEYS]);
