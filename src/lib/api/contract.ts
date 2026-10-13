@@ -976,6 +976,8 @@ export type UpdateConversationResponse = z.infer<typeof updateConversationRespon
 
 export const workContextKindSchema = z.enum(["project", "client", "goal", "personal"]);
 export const workContextStatusSchema = z.enum(["active", "archived"]);
+export const PROJECT_ICON_POOL = ["rocket", "briefcase", "flask-conical", "palette", "code-xml", "megaphone", "book-open", "building-2", "leaf", "compass", "target", "users"] as const;
+export const projectIconSchema = z.enum(PROJECT_ICON_POOL);
 
 /** work_contexts 행 */
 export const workContextSchema = z.object({
@@ -983,6 +985,8 @@ export const workContextSchema = z.object({
   name: z.string(),
   kind: workContextKindSchema,
   status: workContextStatusSchema,
+  icon: projectIconSchema,
+  version: z.number().int().positive(),
   context_version: z.number().int().positive(),
   last_activity_at: z.string(),
   created_at: z.string(),
@@ -990,14 +994,16 @@ export const workContextSchema = z.object({
 });
 export type WorkContext = z.infer<typeof workContextSchema>;
 
-export const createWorkContextRequestSchema = z.object({ name: z.string().trim().min(1).max(200), kind: workContextKindSchema }).strict();
+export const createWorkContextRequestSchema = z.object({ name: z.string().trim().min(1).max(200), kind: z.literal("project"), icon: projectIconSchema.optional() }).strict();
 export type CreateWorkContextRequest = z.infer<typeof createWorkContextRequestSchema>;
+export const workContextResponseSchema = z.object({ context: workContextSchema });
+export type WorkContextResponse = z.infer<typeof workContextResponseSchema>;
 
-/** 이름 바꾸기 · 보관(archive). 분할 · 병합은 사용자만 (자동 병합 없음) */
+/** 프로젝트 이름 · 아이콘 · 상태 수정. expected_version은 필수다. */
 export const updateWorkContextRequestSchema = z
-  .object({ name: z.string().trim().min(1).max(200).optional(), status: workContextStatusSchema.optional() })
+  .object({ name: z.string().trim().min(1).max(200).optional(), icon: projectIconSchema.optional(), status: workContextStatusSchema.optional(), expected_version: z.number().int().positive().max(2147483647) })
   .strict()
-  .refine((r) => r.name !== undefined || r.status !== undefined, { message: "바꿀 값이 없습니다" });
+  .refine((r) => r.name !== undefined || r.icon !== undefined || r.status !== undefined, { message: "바꿀 값이 없습니다" });
 export type UpdateWorkContextRequest = z.infer<typeof updateWorkContextRequestSchema>;
 
 export const contextMemberKindSchema = z.enum(["action", "source", "person"]);
