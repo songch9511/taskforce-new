@@ -55,28 +55,41 @@ enum AppRuntime {
 
     /// 대화 · 기억 (`TF_EDGE_SHELL`이 켜진 격리 Debug 실행에서만, `MacAppDelegate`가 `session.start()` 전에 만든다).
     /// 앱 시작 때 세션 계정 · epoch에 한 번 붙어, 패널 · 설정 창이 떠 있는지와 상관없이 계정이 떠나면 초안 · 캐시 · 대기 전송을 비운다.
-    /// 견본(`-TFSampleData`)은 가짜 서버(`SampleChatGateway`)와 견본 계정으로 서버를 부르지 않는다
+    /// 견본(`-TFSampleData`)은 가짜 서버(`SampleChatGateway`)와 견본 계정으로 서버를 부르지 않는다.
+    /// 범위 멤버십(S3b)은 `-TF_S3B YES`일 때만 연결된다 (`S3bFlag`, 기본 꺼짐)
     static func chatRuntime(session: SessionStore, services: AppServices) -> ChatRuntime {
         if let chatRuntimeStore { return chatRuntimeStore }
-        let runtime: ChatRuntime
         #if DEBUG
-        if SampleData.isEnabled {
-            let gateway = SampleChatGateway(scenario: SampleData.chatScenario)
-            runtime = ChatRuntime(gateway: gateway)
-            runtime.sampleGateway = gateway
-            runtime.scope.bind(to: session, account: { SampleData.userID })
-        } else {
-            runtime = ChatRuntime(gateway: LiveChatGateway(services: services))
-            runtime.scope.bind(to: session)
-            runtime.followConnectivity(Connectivity.updates())
-        }
+        let sample = SampleData.isEnabled
         #else
-        runtime = ChatRuntime(gateway: LiveChatGateway(services: services))
-        runtime.scope.bind(to: session)
-        runtime.followConnectivity(Connectivity.updates())
+        let sample = false
         #endif
+        let runtime = makeChatRuntime(session: session, services: services, sample: sample, s3b: S3bFlag.isEnabled())
         SettingsWindowModel.shared.bind(to: runtime)
         chatRuntimeStore = runtime
+        return runtime
+    }
+
+    /// 실제 생성 경로의 본체 (`chatRuntime`이 부르고, 테스트가 같은 함수를 기본 / off / on으로 부른다).
+    /// `s3b`가 꺼져 있으면 범위 멤버십 게이트웨이 · 저장소를 **만들지 않는다**: 멤버십 읽기 · 쓰기 · ProjectLink 연결이 없고 All work는 S3 그대로다.
+    /// `connectivity`: 연결 경로 (테스트는 nil로 감시를 만들지 않는다)
+    static func makeChatRuntime(
+        session: SessionStore, services: AppServices, sample: Bool, s3b: Bool, connectivity: AsyncStream<Bool>? = Connectivity.updates()
+    ) -> ChatRuntime {
+        #if DEBUG
+        if sample {
+            let gateway = SampleChatGateway(scenario: SampleData.chatScenario)
+            let contexts = s3b ? SampleContextGateway(scenario: SampleData.contextScenario) : nil
+            let runtime = ChatRuntime(gateway: gateway, contextGateway: contexts)
+            runtime.sampleGateway = gateway
+            runtime.sampleContextGateway = contexts
+            runtime.scope.bind(to: session, account: { SampleData.userID })
+            return runtime
+        }
+        #endif
+        let runtime = ChatRuntime(gateway: LiveChatGateway(services: services), contextGateway: s3b ? LiveContextGateway(services: services) : nil)
+        runtime.scope.bind(to: session)
+        if let connectivity { runtime.followConnectivity(connectivity) }
         return runtime
     }
 

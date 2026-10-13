@@ -9,6 +9,8 @@ import TaskforceKit
 ///   할 일 없음 · 맞는 일 없음. 받은 목록이 비었어도 연결이 동기화 중이면 할 일 없음을 말하지 않는다(아무것도 보이지 않음).
 ///   받은 목록 뒤에 끊기거나 실패하면 목록은 두고 위에 Notice 하나
 /// - 검색어 · 필터 · 열린 필터 · 고정은 쓰는 쪽(셸 모델)이 가진다: 계정이 바뀌거나 레일의 All work로 열면 거기서 비운다
+/// - 묶음은 실제 범위 멤버십이다 (S3b, `WorkListLayout`): 한 할 일이 여러 프로젝트면 각 묶음에 나온다. 멤버십을 아직 읽지 못했으면 이름 없는 한 묶음
+/// - 고른 줄(`currentID`) 바로 아래에 `detail`(ProjectLink 줄들)을 그린다: 일 상세가 아직 없어 행 수준에 둔다. 같은 할 일이 두 묶음에 있어도 첫 묶음에만
 public struct WorkList: View {
     let items: [WorkItem]
     let load: WorkLoad
@@ -19,6 +21,8 @@ public struct WorkList: View {
     let currentID: UUID?
     let highlightedID: UUID?
     let today: LocalDate
+    let projectsProblem: WorkLoad.Problem?
+    let detail: (UUID) -> AnyView?
     let onOpen: (UUID) -> Void
     let onPin: (UUID) -> Void
     let onUnpin: (UUID) -> Void
@@ -31,9 +35,12 @@ public struct WorkList: View {
     /// - items: 모든 줄(필터 전, `WorkItem.list`), today: 기한 글자의 오늘 (`DueDateFormat.today()`)
     /// - syncing: 연결 중 하나라도 동기화 중 (`AccountStore.anySyncing`)
     /// - onConnect: 있으면 할 일 없음 화면에 Connect a source (연결된 원문이 없다고 확인됐을 때)
+    /// - projectsProblem: 범위 멤버십을 읽다 생긴 문제 (목록 위 Notice 하나: 할 일 목록의 문제가 먼저)
+    /// - detail: 고른 줄 아래에 그릴 것 (ProjectLink 줄들). 없으면 nil
     public init(
         items: [WorkItem], load: WorkLoad, syncing: Bool = false, filter: Binding<WorkFilter>, filtersOpen: Binding<Bool>, pins: WorkPins,
-        currentID: UUID? = nil, highlightedID: UUID? = nil, today: LocalDate,
+        currentID: UUID? = nil, highlightedID: UUID? = nil, today: LocalDate, projectsProblem: WorkLoad.Problem? = nil,
+        detail: @escaping (UUID) -> AnyView? = { _ in nil },
         onOpen: @escaping (UUID) -> Void = { _ in }, onPin: @escaping (UUID) -> Void = { _ in }, onUnpin: @escaping (UUID) -> Void = { _ in },
         onAddTask: @escaping () -> Void = {}, onConnect: (() -> Void)? = nil, onRetry: @escaping () -> Void = {}
     ) {
@@ -46,6 +53,8 @@ public struct WorkList: View {
         self.currentID = currentID
         self.highlightedID = highlightedID
         self.today = today
+        self.projectsProblem = projectsProblem
+        self.detail = detail
         self.onOpen = onOpen
         self.onPin = onPin
         self.onUnpin = onUnpin
@@ -87,7 +96,7 @@ public struct WorkList: View {
             }
         case .list(let problem):
             VStack(alignment: .leading, spacing: 0) {
-                notice(problem)
+                notice(problem, projects: projectsProblem)
                 list
             }
             // 필터로 사라진 행의 호버 표시가 남지 않게
@@ -99,11 +108,16 @@ public struct WorkList: View {
         Button("Try again", action: onRetry).buttonStyle(TFButtonStyle(.secondary, size: size))
     }
 
-    /// 받은 목록 뒤의 문제: 패널의 Notice는 제목과 동작만 (설명은 Settings에만)
+    /// 받은 목록 뒤의 문제: 패널의 Notice는 제목과 동작만 (설명은 Settings에만). 맨 위 하나뿐이다: 할 일 목록의 문제가 먼저, 없으면 프로젝트를 읽다 생긴 문제
     @ViewBuilder
-    private func notice(_ problem: WorkLoad.Problem?) -> some View {
+    private func notice(_ problem: WorkLoad.Problem?, projects: WorkLoad.Problem? = nil) -> some View {
         if let problem {
             Notice(title: problem == .offline ? PanelEmptyKind.offline.title : PanelEmptyKind.couldNotLoad.title) {
+                tryAgain(.sm)
+            }
+            .padding(.bottom, TFSpace.md)
+        } else if let projects {
+            Notice(title: projects == .offline ? PanelEmptyKind.offline.title : WorkProjectCopy.couldNotLoad) {
                 tryAgain(.sm)
             }
             .padding(.bottom, TFSpace.md)
@@ -148,34 +162,43 @@ public struct WorkList: View {
                 .buttonStyle(TFButtonStyle(.text, size: .md))
             }
         }
+        // 고른 줄의 상세는 그 할 일이 처음 나오는 묶음에만 (두 묶음에 있어도 같은 컨트롤을 두 번 그리지 않는다)
+        let detailGroup = currentID.flatMap { id in groups.first { $0.items.contains { $0.id == id } }?.id }
         ForEach(groups) { group in
-            section(group)
+            section(group, showsDetail: group.id == detailGroup)
         }
     }
 
-    private func section(_ group: WorkListGroup) -> some View {
+    private func section(_ group: WorkListGroup, showsDetail: Bool) -> some View {
         VStack(alignment: .leading, spacing: 0) {
-            Text(group.title)
-                .font(TFFont.caption)
-                .foregroundStyle(TFColor.textSecondary)
-                .padding(EdgeInsets(top: 18, leading: TFSpace.sm, bottom: TFSpace.xs, trailing: TFSpace.sm))
-                .accessibilityAddTraits(.isHeader)
+            if group.kind != .unsorted {
+                Text(group.title)
+                    .font(TFFont.caption)
+                    .foregroundStyle(TFColor.textSecondary)
+                    .padding(EdgeInsets(top: 18, leading: TFSpace.sm, bottom: TFSpace.xs, trailing: TFSpace.sm))
+                    .accessibilityAddTraits(.isHeader)
+            }
             ForEach(Array(group.items.enumerated()), id: \.element.id) { index, item in
-                row(item)
-                    .overlay(alignment: .top) {
-                        // 줄 사이 머리선은 글자에서 시작한다. 호버 · 고른 줄의 위아래에서는 숨긴다
-                        if index > 0, !isLit(item.id), !isLit(group.items[index - 1].id) {
-                            Rectangle()
-                                .fill(contrast == .increased ? TFColor.borderControl : TFColor.borderDefault)
-                                .frame(height: 1)
-                                .padding(.leading, 36)
-                                .padding(.trailing, TFSpace.sm)
+                VStack(alignment: .leading, spacing: 0) {
+                    row(item)
+                        .overlay(alignment: .top) {
+                            // 줄 사이 머리선은 글자에서 시작한다. 호버 · 고른 줄의 위아래에서는 숨긴다
+                            if index > 0, !isLit(item.id), !isLit(group.items[index - 1].id) {
+                                Rectangle()
+                                    .fill(contrast == .increased ? TFColor.borderControl : TFColor.borderDefault)
+                                    .frame(height: 1)
+                                    .padding(.leading, 36)
+                                    .padding(.trailing, TFSpace.sm)
+                            }
                         }
+                    if showsDetail, item.id == currentID, let detail = detail(item.id) {
+                        detail.padding(.top, 2).padding(.bottom, TFSpace.xs)
                     }
+                }
             }
         }
         .accessibilityElement(children: .contain)
-        .accessibilityLabel(group.title)
+        .accessibilityLabel(group.kind == .unsorted ? "Work" : group.title)
     }
 
     private func isLit(_ id: UUID) -> Bool {

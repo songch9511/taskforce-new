@@ -5,7 +5,7 @@ import SwiftUI
 import TaskforceKit
 import TaskforceUI
 
-/// 대화 · 기억 상태를 한 곳에 묶는다 (`TF_EDGE_SHELL`이 켜진 격리 Debug 실행에서만 만든다, `AppRuntime.chatRuntime`).
+/// 대화 · 기억 · 범위 멤버십 상태를 한 곳에 묶는다 (`TF_EDGE_SHELL`이 켜진 격리 Debug 실행에서만 만든다, `AppRuntime.chatRuntime`).
 /// 앱 시작 때 세션에 한 번 붙어, 패널 · 설정 창이 떠 있는지와 상관없이 로그아웃 · 다른 계정 · 같은 UUID 재로그인에 초안 · 캐시 · 대기 전송을 비운다.
 /// 저장 위치: 초안 · 아직 서버에 없는 빈 대화 · 보내는 중인 글 · 읽은 대화 · 기억은 모두 **이 객체의 메모리**뿐이다 (디스크 · UserDefaults 없음).
 /// 앱을 끄면 사라지고, 다시 켜면 서버 대화에서 마지막 대화 · 범위를 읽어 되살린다 (A03)
@@ -14,18 +14,25 @@ final class ChatRuntime {
     let scope: AccountScope
     let memory: MemoryStore
     let chat: ChatStore
+    /// All work의 실제 범위(프로젝트) 멤버십 (S3b). 없으면 모든 할 일이 Ungrouped (범위를 읽지 않는다)
+    let contexts: WorkContextStore?
     /// 인용의 원문 링크를 연다 (테스트는 가짜로 바꾼다)
     var openURL: (URL) -> Void = { NSWorkspace.shared.open($0) }
     #if DEBUG
     /// 견본이면 가짜 서버 (스냅샷이 상태를 바꿔 가며 담는다)
     var sampleGateway: SampleChatGateway?
+    var sampleContextGateway: SampleContextGateway?
     #endif
     private var connectivityTask: Task<Void, Never>?
 
-    init(gateway: any ChatGateway, scope: AccountScope = AccountScope(), now: @escaping @Sendable () -> Date = { Date() }) {
+    init(
+        gateway: any ChatGateway, contextGateway: (any ContextGateway)? = nil, scope: AccountScope = AccountScope(),
+        now: @escaping @Sendable () -> Date = { Date() }
+    ) {
         self.scope = scope
         memory = MemoryStore(gateway: gateway, scope: scope)
         chat = ChatStore(gateway: gateway, scope: scope, memory: memory, now: now)
+        contexts = contextGateway.map { WorkContextStore(gateway: $0, scope: scope) }
     }
 
     /// 연결 경로를 두 저장소에 알린다 (오프라인에서 돌아오면 대화 목록을 다시 읽는다)
@@ -37,7 +44,11 @@ final class ChatRuntime {
                 guard let self else { return }
                 chat.pathChanged(online: online)
                 memory.pathChanged(online: online)
-                if online, !wasOnline { await chat.refresh() }
+                contexts?.pathChanged(online: online)
+                if online, !wasOnline {
+                    await chat.refresh()
+                    await contexts?.refresh()
+                }
                 wasOnline = online
             }
         }

@@ -248,17 +248,21 @@ public struct WorkContext: Decodable, Sendable, Hashable, Identifiable {
     public let id: UUID
     public let name: String
     public let status: Status
+    /// 멤버십 쓰기의 조건 (`expected_context_version`): 앱이 RLS로 읽은 값. 읽지 못했으면 nil (그 범위에는 쓰지 않는다)
+    public let contextVersion: Int?
 
     public static let columns = "id, name, kind, status, context_version, last_activity_at"
 
     enum CodingKeys: String, CodingKey {
         case id, name, status
+        case contextVersion = "context_version"
     }
 
-    public init(id: UUID, name: String, status: Status = .active) {
+    public init(id: UUID, name: String, status: Status = .active, contextVersion: Int? = nil) {
         self.id = id
         self.name = name
         self.status = status
+        self.contextVersion = contextVersion
     }
 
     public init(from decoder: Decoder) throws {
@@ -266,6 +270,7 @@ public struct WorkContext: Decodable, Sendable, Hashable, Identifiable {
         id = try c.decode(UUID.self, forKey: .id)
         name = try c.decode(String.self, forKey: .name)
         status = Status(raw: (try? c.decode(String.self, forKey: .status)) ?? "")
+        contextVersion = try? c.decodeIfPresent(Int.self, forKey: .contextVersion)
     }
 
     public var isActive: Bool { status == .active }

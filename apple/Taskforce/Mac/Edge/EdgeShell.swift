@@ -44,7 +44,7 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
         self.chat = chat
         let pinStore = Self.pinStore()
         self.pinStore = pinStore
-        shell = EdgeShellModel(reduceMotion: Self.systemReduceMotion, pinStore: pinStore)
+        shell = EdgeShellModel(reduceMotion: Self.systemReduceMotion, pinStore: pinStore, contexts: chat?.contexts)
         rail = EdgeRailPanelController(shell: shell)
         panel = EdgePanelController(shell: shell, chat: chat)
         super.init()
@@ -172,6 +172,8 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
 
     private func load(_ reason: LoadReason = .refresh) {
         guard launcher.isSignedIn else { return }
+        // 범위 멤버십도 같이 읽는다 (RLS 두 번, 서버 쓰기 없음). 마지막에 시작한 읽기만 반영된다
+        if let contexts = chat?.contexts { Task { await contexts.refresh() } }
         if let now = launcher.now, Self.readsList(reason, isLoading: now.refresh.isLoading) { Task { await now.load() } }
         if let runs = launcher.runs {
             Task {

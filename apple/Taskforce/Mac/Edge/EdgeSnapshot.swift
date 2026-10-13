@@ -10,6 +10,9 @@ import TaskforceKit
 /// no-match · pinned · done-today · rail-open-clears-filter) · reduce-motion(움직임 줄이기, 패널) · chats.
 /// `-TFEdgeSnapshotChats`: Chats 상태 (B3, 견본 가짜 서버): 목록 · 초안 · 대화(인용 · 기억 노트 explicit/inferred) · 보내는 중 · 실패 · 동의 전 · 기능 꺼짐 · 빈 목록 · 오프라인 · 읽기 실패 ·
 /// 노트 확인 · 잊기 뒤. 서버 응답은 가짜(`SampleChatGateway`)라 렌더 fixture일 뿐이다 (실제 서버 · 계정 · AI 호출 없음).
+/// `-TFEdgeSnapshotContexts`(`-TF_S3B YES`와 함께: S3b 기본은 꺼짐): 범위(프로젝트) 멤버십 상태 (S3b, 견본 가짜 서버 `SampleContextGateway`): 묶음(여러 프로젝트 · 보관됨 · Ungrouped) · 검색 · Project 칩 ·
+/// ProjectLink 줄(Set by you · Auto-linked · Not confirmed 후보 · No clear link · 여러 프로젝트 · 보관됨) · 바꾼 뒤 Undo · 충돌 · 응답 유실 · gate 꺼짐 · 진행 중 ·
+/// 읽는 중 · 오프라인 · 읽기 실패 · 프로젝트 없음 · 테이블 없음. 서버 응답은 가짜라 렌더 fixture일 뿐이다 (실제 서버 · 계정 · AI 호출 없음).
 /// `-TFEdgeSnapshotState <이름>`: All work 패널 하나만 `mac-edge-worklist-<이름>.png`로 (빈 · 오프라인 · 실패 같은 견본 상태 인자와 함께)
 @MainActor
 enum EdgeSnapshot {
@@ -43,6 +46,11 @@ enum EdgeSnapshot {
             await settle(1.5)
             if arguments.contains("-TFEdgeSnapshotChats") {
                 await captureChats(edge, file: file, settle: { await settle() })
+                NSApplication.shared.terminate(nil)
+                return
+            }
+            if arguments.contains("-TFEdgeSnapshotContexts") {
+                await captureContexts(edge, file: file, settle: { await settle() })
                 NSApplication.shared.terminate(nil)
                 return
             }
@@ -156,6 +164,147 @@ enum EdgeSnapshot {
         _ = chat.newChat()
         await settle()
         shoot("new-chat")
+    }
+
+    /// 범위 멤버십 상태 (S3b): 가짜 서버를 시나리오대로 바꿔 가며 같은 패널에서 담는다
+    private static func captureContexts(_ edge: EdgeShellController, file: (String) -> URL, settle: () async -> Void) async {
+        guard let runtime = edge.chat, let gateway = runtime.sampleContextGateway, let store = runtime.contexts else { return }
+        let shell = edge.shell
+        func shoot(_ name: String) { capture(edge, to: file("projects-\(name)")) }
+        func id(_ n: Int) -> UUID { SampleData.id(n) }
+        /// 패널 높이에 맞게 견본의 일을 고른 몇 개로 줄인다 (확인 요청 · 오늘 끝낸 일은 뺀다)
+        func focus(_ numbers: [Int], done: Bool = false) {
+            let keep = Set(numbers.map(id))
+            edge.workOverride = { work in
+                var work = work
+                work.review = []
+                work.open = work.open.filter { keep.contains($0.id) }
+                work.doneToday = done ? Array(work.doneToday.prefix(1)) : []
+                return work
+            }
+        }
+        /// 다른 계정이 막 로그인한 것처럼 저장소를 비우고 새로 읽는다 (가짜 서버 시나리오를 바꾼 뒤)
+        func restart(_ scenario: SampleContextGateway.Scenario) async {
+            await gateway.setScenario(scenario)
+            runtime.scope.accountLeft()
+            shell.openAllWork()
+            Task { await store.refresh() }
+            await settle()
+        }
+        func open(_ n: Int) async {
+            shell.open(itemID: id(n))
+            await settle()
+        }
+        WorkRowProjectLinks.opensForSnapshot = nil
+
+        // 묶음: 한 할 일이 두 프로젝트면 두 묶음에 (12), 후보(14)와 멤버십 없음(21)은 Ungrouped, 묶음 이름에 개수 없음
+        await restart(.full)
+        focus([10, 12, 14])
+        await settle()
+        shoot("groups")
+        focus([11, 13, 21])
+        await settle()
+        shoot("groups-other")
+        focus([10, 20, 21])
+        await settle()
+        shoot("groups-archived")
+        // Project 칩은 실제 범위 (보관된 것은 그렇게 적는다), 검색은 프로젝트 이름도 본다
+        focus([10, 11, 12, 13, 14, 20, 21])
+        shell.setFiltersOpen(true)
+        await settle()
+        shoot("chips")
+        shell.setFiltersOpen(false)
+        shell.setFilter(WorkFilter(query: "acme"))
+        await settle()
+        shoot("search-acme")
+        if let acme = WorkListLayout.projectOptions(shell.workItems).first(where: { $0.title == "Acme website" }) {
+            shell.setFilter(WorkFilter(project: acme))
+            await settle()
+            shoot("chip-acme")
+        }
+        shell.setFilter(WorkFilter())
+
+        // ProjectLink 줄: 고른 줄 아래 (닫힘이 기본 → 열어 둔 사진 / 닫힌 사진)
+        focus([10])
+        await open(10)
+        shoot("link-collapsed")
+        focus([12])
+        await open(12)
+        shoot("link-multi-collapsed")
+        for (name, number, opens) in [
+            ("user", 10, { (_: ProjectLinkContent) in true }), ("auto", 11, { _ in true }), ("multi", 12, { $0.basis == .auto }),
+            ("candidate", 14, { $0.basis == .candidate }), ("none", 21, { _ in true }), ("archived", 20, { _ in true }),
+        ] as [(String, Int, (ProjectLinkContent) -> Bool)] {
+            WorkRowProjectLinks.opensForSnapshot = opens
+            focus([number])
+            shell.openAllWork()
+            await open(number)
+            shoot("link-\(name)")
+        }
+        WorkRowProjectLinks.opensForSnapshot = { _ in true }
+
+        // 바꾼 뒤: 서버 200 뒤에만 바뀌고 Undo가 보인다 → Undo
+        await restart(.full)
+        focus([10, 13])
+        await open(10)
+        let moved = await store.move(id(10), from: SampleContextIDs.shape, to: SampleContextIDs.acme)
+        await settle()
+        if moved == .applied(canUndo: true) { shoot("link-changed") }
+        _ = await store.undoLast(id(10))
+        await settle()
+        shoot("link-undone")
+        // 후보 확인 → 확인된 멤버 (Set by you), Undo
+        await restart(.full)
+        focus([14])
+        await open(14)
+        _ = await store.add(id(14), to: SampleContextIDs.shape)
+        await settle()
+        shoot("link-candidate-confirmed")
+        // 충돌: 다른 기기가 먼저 그 범위를 바꿨다 → 성공으로 올리지 않고 다시 읽은 상태 + 안내
+        await restart(.full)
+        focus([10, 21])
+        await open(10)
+        await gateway.otherDevice(.add, context: SampleContextIDs.shape, action: id(21))
+        _ = await store.remove(id(10), from: SampleContextIDs.shape)
+        await settle()
+        shoot("link-conflict")
+        // 응답 유실: 서버는 처리했을 수 있다 → 성공이라 하지 않고 다시 읽은 상태 + 안내
+        await restart(.loseResponse)
+        focus([21])
+        await open(21)
+        _ = await store.add(id(21), to: SampleContextIDs.acme)
+        await settle()
+        shoot("link-unconfirmed")
+        // 서버 gate 꺼짐: 실패로 꾸미지 않는다 (읽기는 그대로, 바꾸기만 없다)
+        await restart(.featureOff)
+        focus([10, 21])
+        await open(10)
+        _ = await store.remove(id(10), from: SampleContextIDs.shape)
+        await settle()
+        shoot("link-gate-off")
+        // 요청이 진행 중: 컨트롤이 막힌다
+        await restart(.writeHangs)
+        focus([21])
+        await open(21)
+        Task { _ = await store.add(id(21), to: SampleContextIDs.shape) }
+        await settle()
+        shoot("link-busy")
+
+        // 읽기 상태: 읽는 중(아무 주장 없음) · 오프라인 · 읽기 실패 · 프로젝트 없음 · 테이블 없음
+        WorkRowProjectLinks.opensForSnapshot = nil
+        for (name, scenario) in [
+            ("loading", SampleContextGateway.Scenario.readHangs), ("offline", .offline), ("failed", .failed), ("no-projects", .empty), ("tables-missing", .unavailable),
+        ] {
+            await restart(scenario)
+            focus([10, 11, 21])
+            await settle()
+            shoot("state-\(name)")
+        }
+        WorkRowProjectLinks.opensForSnapshot = { _ in true }
+        await restart(.empty)
+        focus([21])
+        await open(21)
+        shoot("state-no-projects-link")
     }
 
     /// All work 상태 (S3): 필터 카드 · 닫힌 필터 요약 · 맞는 일 없음(Waiting: 지금 데이터에 근거가 없다) · 고정 · Done today(Done 필터)
