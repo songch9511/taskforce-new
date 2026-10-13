@@ -22,6 +22,12 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
     /// Chats · Remembered (B3). 앱 시작 때 세션에 붙은 것을 받는다
     let chat: ChatRuntime?
     private var clickMonitors: [Any] = []
+    #if DEBUG
+    /// 무인 합성 조작 · 스냅샷 실행(`-TFEdgeInteract*` · `-TFEdgeSnapshot*`)은 사용자 · 다른 앱이 같은 화면을 쓰는 중에도 돈다. 다른 앱의 클릭 · 활성화가 패널을 접으면(제품 동작) 그 실행의 결과가
+    /// 하네스가 아니라 환경에 좌우된다(글자 인식 · 클릭 · 키가 접힌 패널에 간다). 그래서 그런 실행에서만 **밖 클릭 · 키를 잃음으로 접기를 걸지 않는다**
+    /// (Esc · 명령 키 · 안쪽 클릭 · 하네스가 직접 부르는 `dismiss()`는 그대로). 시험은 이 값을 직접 바꾼다. Release 빌드에는 이 값이 없다 — 늘 접는다
+    var ignoresExternalDismissal = ProcessInfo.processInfo.arguments.contains { $0.hasPrefix("-TFEdgeInteract") || $0.hasPrefix("-TFEdgeSnapshot") }
+    #endif
     private var keyMonitor: Any?
     private var observers: [NSObjectProtocol] = []
     private var wasSignedIn = false
@@ -40,12 +46,13 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
     #endif
 
     /// - review: Review 페이지의 답을 보내는 곳 (S4). nil이면 S4 gate가 꺼진 것이다: Review 페이지 · ⌘1 · ← → · 1 · 2 연결이 없다 (`AppRuntime.reviewDesk`)
-    init(launcher: LauncherModel, chat: ChatRuntime? = nil, review: ReviewDesk? = nil) {
+    /// - summary: 복귀 요약(C3)을 읽고 Clear하는 곳. nil이면 C3 gate가 꺼진 것이다: All work 위 카드도 서버 읽기도 없다 (`AppRuntime.returnSummary`)
+    init(launcher: LauncherModel, chat: ChatRuntime? = nil, review: ReviewDesk? = nil, summary: ReturnSummaryStore? = nil) {
         self.launcher = launcher
         self.chat = chat
         let pinStore = Self.pinStore()
         self.pinStore = pinStore
-        shell = EdgeShellModel(reduceMotion: Self.systemReduceMotion, pinStore: pinStore, contexts: chat?.contexts, review: review)
+        shell = EdgeShellModel(reduceMotion: Self.systemReduceMotion, pinStore: pinStore, contexts: chat?.contexts, review: review, summary: summary, chatsEnabled: chat != nil)
         rail = EdgeRailPanelController(shell: shell)
         panel = EdgePanelController(shell: shell, chat: chat)
         super.init()
@@ -175,6 +182,8 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
         guard launcher.isSignedIn else { return }
         // 범위 멤버십도 같이 읽는다 (RLS 두 번, 서버 쓰기 없음). 마지막에 시작한 읽기만 반영된다
         if let contexts = chat?.contexts { Task { await contexts.refresh() } }
+        // 복귀 요약(C3)도 같이 읽는다 (서버 읽기 한 번, 읽음 처리 없음). 마지막에 시작한 읽기만 반영된다. C3가 꺼져 있으면 읽지 않는다
+        if let summary = shell.summary { Task { await summary.refresh() } }
         if let now = launcher.now, Self.readsList(reason, isLoading: now.refresh.isLoading) { Task { await now.load() } }
         if let runs = launcher.runs {
             Task {
@@ -298,7 +307,7 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
         let mask: NSEvent.EventTypeMask = [.leftMouseDown, .rightMouseDown, .otherMouseDown]
         // 다른 앱을 누름 (전역 마우스 모니터는 손쉬운 사용 권한이 필요 없다)
         if let global = NSEvent.addGlobalMonitorForEvents(matching: mask, handler: { [weak self] _ in
-            MainActor.assumeIsolated { self?.shell.dismiss() }
+            MainActor.assumeIsolated { self?.externalInteraction() }
         }) {
             clickMonitors.append(global)
         }
@@ -307,7 +316,7 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
             MainActor.assumeIsolated {
                 guard let self else { return }
                 if event.window !== self.panel.panel, event.window !== self.rail.panel {
-                    self.shell.dismiss()
+                    self.externalInteraction()
                 }
             }
             return event
@@ -323,6 +332,14 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
         }
     }
 
+    /// 패널 밖(다른 앱 · 이 앱의 다른 창)을 눌렀거나 키를 잃었다: 패널을 접는다 (무인 실행의 `ignoresExternalDismissal`이 아니면)
+    func externalInteraction() {
+        #if DEBUG
+        if ignoresExternalDismissal { return }
+        #endif
+        shell.dismiss()
+    }
+
     private func removeMonitors() {
         clickMonitors.forEach(NSEvent.removeMonitor)
         clickMonitors = []
@@ -334,6 +351,8 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
     /// 처리했으면 true
     func handleKey(_ event: NSEvent) -> Bool {
         guard let command = EdgeKeyCommand.of(keyCode: Int(event.keyCode), flags: event.modifierFlags) else { return handleReviewKey(event) }
+        // Chats가 없는 셸(Release)의 ⌘3 · ⌘N은 연결이 없다: 지나간다
+        guard shell.listens(to: command) else { return false }
         switch command {
         case .escape:
             // 안쪽 것(열린 필터 카드 · Chats의 대화 목록)을 먼저 닫고, 그다음 패널을 접는다
@@ -378,7 +397,7 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
     func windowDidResignKey(_ notification: Notification) {
         // ⌘Tab 등으로 키를 잃으면 접는다 (More 메뉴를 연 동안은 빼고)
         guard shell.panelOpen, !shell.menuOpen else { return }
-        shell.dismiss()
+        externalInteraction()
     }
 }
 

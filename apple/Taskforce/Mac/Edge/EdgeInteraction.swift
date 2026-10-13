@@ -31,6 +31,8 @@ enum EdgeInteraction {
     }
 
     static func runIfRequested(_ edge: EdgeShellController) {
+        runSummaryIfRequested(edge)
+        runReleaseIfRequested(edge)
         runReviewIfRequested(edge)
         runContextsIfRequested(edge)
         guard let logPath, SampleData.isEnabled, let runtime = edge.chat else { return }
@@ -267,6 +269,16 @@ enum EdgeInteraction {
 
     /// 마지막 클릭의 진단 (로그에 덧붙인다)
     nonisolated(unsafe) static var lastClick = ""
+    /// 마지막 글자 인식의 진단: Vision이 낸 오류 · 읽은 줄 수와 앞 몇 줄 (글자를 찾지 못했을 때 "무엇을 읽었는지"를 로그에 남긴다)
+    nonisolated(unsafe) static var lastLocate = ""
+
+    /// 패널의 소유 상태 진단: 패널이 열려 있는가 · 창이 보이는가 · 투명도 · 키 창인가 · 앱이 활성인가 · 앞에 있는 앱.
+    /// 무인 실행 중 다른 앱의 활성화 · 클릭이 패널을 접으면(`windowDidResignKey` · 밖 클릭 모니터) 글자 인식과 클릭이 실패한다 — 실패 줄이 그 상태를 직접 보인다
+    @MainActor static func ownership(_ edge: EdgeShellController) -> String {
+        let window = edge.panel.panel
+        let frontmost = NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "-"
+        return "ownership panelOpen=\(edge.shell.panelOpen) view=\(edge.shell.view) windowVisible=\(window.isVisible) alpha=\(window.alphaValue) key=\(window.isKeyWindow) appActive=\(NSApp.isActive) frontmost=\(frontmost)"
+    }
 
     /// 패널 안 한 점(왼쪽 위가 0)을 마우스 누름 · 뗌 이벤트로 눌러 본다
     static func clickPanelPoint(_ point: CGPoint, in window: NSWindow) {
@@ -277,7 +289,7 @@ enum EdgeInteraction {
     /// 화면에 그려진 글자를 읽어(Vision 글자 인식) 그 자리를 누른다: 같은 글자가 여럿이면 가장 위의 것. 접근성 트리는 밖에서 묻는 쪽이 없으면 비어 있어 쓰지 않는다
     static func click(text: String, in window: NSWindow) async {
         guard let point = locate(text, in: window) else {
-            lastClick = "글자를 찾지 못함 (\(text))"
+            lastClick = "글자를 찾지 못함 (\(text)) · \(lastLocate)"
             return
         }
         lastClick = "찾음 \(text) windowPoint=\(point)"
@@ -315,7 +327,14 @@ enum EdgeInteraction {
         let request = VNRecognizeTextRequest()
         request.recognitionLevel = .accurate
         request.usesLanguageCorrection = false
-        guard (try? VNImageRequestHandler(cgImage: image).perform([request])) != nil else { return nil }
+        do {
+            try VNImageRequestHandler(cgImage: image).perform([request])
+        } catch {
+            lastLocate = "vision error: \(error)"
+            return nil
+        }
+        let lines = (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }
+        lastLocate = "read \(lines.count) lines: \(lines.prefix(4).joined(separator: " / "))"
         var best: CGRect?
         for observation in request.results ?? [] {
             guard let candidate = observation.topCandidates(1).first, let range = candidate.string.range(of: phrase),

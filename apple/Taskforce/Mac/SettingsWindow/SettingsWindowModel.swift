@@ -5,7 +5,7 @@ import TaskforceKit
 import TaskforceUI
 
 // 0.2.0 설정 창 (S1, 디자인 SSOT `SettingsWindow` · `SettingsPage`)의 순수 규칙: 탭 · 저장값 옮기기 · 창 제목 · 보이는 주제 · 연결 줄.
-// `TF_EDGE_SHELL`이 켜진 격리 Debug 실행에서만 보인다. 꺼져 있으면(기본 · Release 전부) 기존 `MacSettingsView` 그대로다.
+// `TF_EDGE_SHELL`이 켜진 격리 Debug 실행에서만 보인다. 꺼져 있으면(기본 · Release 전부, `EdgeSurfaces.release.settingsWindow == false`) 기존 `MacSettingsView` 그대로다.
 
 /// Settings 장면의 뿌리가 무엇을 보일지: 플래그가 꺼져 있으면 기존 사이드바 창, 켜져 있으면 0.2.0 탭 창
 enum MacSettingsRootKind: Equatable {
@@ -15,8 +15,13 @@ enum MacSettingsRootKind: Equatable {
         self = edgeShell ? .window : .legacy
     }
 
-    /// 앱 실행의 값 (launch argument `-TF_EDGE_SHELL YES`, Debug만)
-    static var current: MacSettingsRootKind { MacSettingsRootKind(edgeShell: EdgeShellFlag.isEnabled()) }
+    /// 표면 값이 정한다: 0.2.0 탭 창은 `settingsWindow`가 켜졌을 때만 (Release는 늘 구 창 — Plan & usage · billing이 그대로)
+    init(surfaces: EdgeSurfaces) {
+        self = surfaces.settingsWindow ? .window : .legacy
+    }
+
+    /// 이 빌드의 값: Release는 구 창, Debug는 launch argument(`-TF_EDGE_SHELL YES`가 0.2.0 창도 함께 켠다)
+    static var current: MacSettingsRootKind { MacSettingsRootKind(edgeShell: SettingsWindowFlag.isEnabled()) }
 }
 
 /// 설정 창의 탭, 디자인 순서 그대로 (Account · Connections · Execution · Reports · Shortcuts). 상세는 탭을 더하지 않는다

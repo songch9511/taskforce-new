@@ -32,6 +32,8 @@ struct EdgeRailLayout: Equatable {
     let restCount: Int
     let expanded: Bool
     let idle: Bool
+    /// 레일의 고정 칸 (Chats가 꺼져 있으면 둘: All work · More). 칸 좌표 · 펼친 높이가 이 수를 따른다
+    var controls: [EdgeShellModel.Control] = EdgeShellModel.Control.allCases
 
     /// 숨은 레일이 밀려난 거리
     var shift: CGFloat {
@@ -58,7 +60,7 @@ struct EdgeRailLayout: Equatable {
     var ruleY: CGFloat { moreTop + CGFloat(restCount) * (Self.item + Self.gap) + 6 }
 
     func controlFrame(_ control: EdgeShellModel.Control) -> CGRect {
-        let index = CGFloat(EdgeShellModel.Control.allCases.firstIndex(of: control) ?? 0)
+        let index = CGFloat(controls.firstIndex(of: control) ?? 0)
         let first = moreTop + CGFloat(restCount) * (Self.item + Self.gap) + Self.ruleBlock + Self.gap
         return CGRect(x: itemX, y: first + index * (Self.item + Self.gap), width: Self.item, height: Self.item)
     }
@@ -66,7 +68,8 @@ struct EdgeRailLayout: Equatable {
     /// 펼친 부분의 높이 (접히면 0)
     var moreHeight: CGFloat {
         guard expanded else { return 0 }
-        return CGFloat(restCount) * (Self.item + Self.gap) + Self.ruleBlock + Self.gap + 3 * Self.item + 2 * Self.gap
+        let count = CGFloat(controls.count)
+        return CGFloat(restCount) * (Self.item + Self.gap) + Self.ruleBlock + Self.gap + count * Self.item + max(count - 1, 0) * Self.gap
     }
 
     /// 검은 레일 모양 (창 좌표, 화면 밖으로 밀린 부분 포함)
@@ -92,7 +95,7 @@ struct EdgeRailLayout: Equatable {
             if frame.contains(point) { return (entry.id, nil) }
         }
         guard expanded else { return (nil, nil) }
-        for control in EdgeShellModel.Control.allCases where controlFrame(control).contains(point) {
+        for control in controls where controlFrame(control).contains(point) {
             return (nil, control)
         }
         return (nil, nil)
@@ -134,7 +137,7 @@ struct EdgeRailView: View {
     let onMore: (CGRect) -> Void
 
     private var layout: EdgeRailLayout {
-        EdgeRailLayout(notchCount: shell.notch.count, restCount: shell.rest.count, expanded: shell.isExpanded, idle: shell.isIdle)
+        EdgeRailLayout(notchCount: shell.notch.count, restCount: shell.rest.count, expanded: shell.isExpanded, idle: shell.isIdle, controls: shell.controls)
     }
 
     private var slide: Animation? { TFMotion.move(TFMotion.railSlide, reduceMotion: shell.reduceMotion) }
@@ -192,7 +195,7 @@ struct EdgeRailView: View {
                     .frame(width: 18, height: 1)
                     .offset(x: layout.shift + (EdgeRailLayout.railWidth - 18) / 2, y: layout.ruleY)
                     .accessibilityHidden(true)
-                ForEach(EdgeShellModel.Control.allCases, id: \.self) { control in
+                ForEach(shell.controls, id: \.self) { control in
                     let frame = layout.controlFrame(control)
                     RailButton(icon: icon(control), label: control.label, highlighted: highlighted(control)) {
                         switch control {
@@ -346,7 +349,7 @@ final class EdgeRailPanelController {
     }
 
     private var layout: EdgeRailLayout {
-        EdgeRailLayout(notchCount: shell.notch.count, restCount: shell.rest.count, expanded: shell.isExpanded, idle: shell.isIdle)
+        EdgeRailLayout(notchCount: shell.notch.count, restCount: shell.rest.count, expanded: shell.isExpanded, idle: shell.isIdle, controls: shell.controls)
     }
 
     private func pointer(_ point: CGPoint?) {

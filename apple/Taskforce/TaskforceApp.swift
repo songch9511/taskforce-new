@@ -96,6 +96,59 @@ enum AppRuntime {
     /// 이미 만들어졌으면 그것 (설정 창이 쓴다). 플래그가 꺼져 있으면 nil
     static var existingChatRuntime: ChatRuntime? { chatRuntimeStore }
 
+    /// Edge 셸이 앱 시작 때 만드는 기초 (`MacAppDelegate`가 `session.start()` 전에 한 번): Chats 런타임(Chats 표면이 켜졌을 때만)과 S4 · C3가 쓰는 계정 경계.
+    /// **S4 · C3는 Chats 런타임의 `AccountScope`를 빌리지 않는다**: Chats가 꺼진 Release에서도 자기 경계(`edgeScope`)를 세션에 붙인다
+    struct EdgeFoundation {
+        let chat: ChatRuntime?
+        let scope: AccountScope?
+    }
+
+    /// 앱 생성 경로: 이 빌드의 표면(`EdgeSurfaces.current`)대로 실제 런타임을 만든다
+    static func edgeFoundation(surfaces: EdgeSurfaces = .current, session: SessionStore, services: AppServices) -> EdgeFoundation {
+        makeEdgeFoundation(
+            surfaces: surfaces,
+            makeChat: { chatRuntime(session: session, services: services) },
+            makeScope: { edgeScope(session: session) }
+        )
+    }
+
+    /// 실제 생성 경로의 본체 (`edgeFoundation`이 부르고, 테스트가 `EdgeSurfaces`마다 부른다).
+    /// 셸이 꺼져 있으면 아무것도 만들지 않는다. Chats가 꺼져 있으면 `makeChat`을 **부르지 않는다**(`ChatRuntime` · 서버 대화 v2 클라이언트 · 연결 복귀 읽기 · 기억 저장소가 없다).
+    /// S4 · C3가 하나라도 켜져 있고 Chats 런타임이 없으면 `makeScope`로 따로 만든 계정 경계를 쓴다
+    static func makeEdgeFoundation(surfaces: EdgeSurfaces, makeChat: () -> ChatRuntime, makeScope: () -> AccountScope) -> EdgeFoundation {
+        guard surfaces.shell else { return EdgeFoundation(chat: nil, scope: nil) }
+        let chat = surfaces.chats ? makeChat() : nil
+        let scope = chat?.scope ?? ((surfaces.review || surfaces.summary) ? makeScope() : nil)
+        return EdgeFoundation(chat: chat, scope: scope)
+    }
+
+    private static var edgeScopeStore: AccountScope?
+
+    /// S4 · C3의 계정 경계 (앱에서 하나, 세션에 한 번 붙는다). 견본(`-TFSampleData`)은 견본 계정
+    static func edgeScope(session: SessionStore) -> AccountScope {
+        if let edgeScopeStore { return edgeScopeStore }
+        #if DEBUG
+        let sample = SampleData.isEnabled
+        #else
+        let sample = false
+        #endif
+        let scope = makeEdgeScope(session: session, sample: sample)
+        edgeScopeStore = scope
+        return scope
+    }
+
+    static func makeEdgeScope(session: SessionStore, sample: Bool) -> AccountScope {
+        let scope = AccountScope()
+        #if DEBUG
+        if sample {
+            scope.bind(to: session, account: { SampleData.userID })
+            return scope
+        }
+        #endif
+        scope.bind(to: session)
+        return scope
+    }
+
     /// Review 페이지(S4)의 답을 보내는 곳 (`MacAppDelegate`가 Edge 셸을 만들 때 부른다). `-TF_S4 YES`일 때만 만든다 (`S4Flag`, 기본 꺼짐)
     static func reviewDesk(now: NowStore?, scope: AccountScope?) -> ReviewDesk? {
         makeReviewDesk(now: now, scope: scope, s4: S4Flag.isEnabled())
@@ -107,6 +160,59 @@ enum AppRuntime {
     static func makeReviewDesk(now: NowStore?, scope: AccountScope?, s4: Bool) -> ReviewDesk? {
         guard s4, let now, let scope else { return nil }
         return ReviewDesk(now: now, scope: scope)
+    }
+
+    /// 복귀 요약(C3)을 읽고 Clear하는 곳 (`MacAppDelegate`가 Edge 셸을 만들 때 부른다). `-TF_C3 YES`일 때만 만든다 (`C3Flag`, 기본 꺼짐).
+    /// 견본(`-TFSampleData`)은 서버를 부르지 않고 가짜 서버(`SampleReturnSummaryGateway`)가 답한다
+    static func returnSummary(services: AppServices?, scope: AccountScope?) -> ReturnSummaryStore? {
+        makeReturnSummaryStore(makeGateway: { summaryGateway(services: services) }, scope: scope, c3: C3Flag.isEnabled())
+    }
+
+    /// 복귀 요약의 서버: 견본(`-TFSampleData`)은 가짜 서버, 아니면 실서버 게이트웨이
+    private static func summaryGateway(services: AppServices?) -> (any ReturnSummaryGateway)? {
+        #if DEBUG
+        if SampleData.isEnabled {
+            let sample = SampleReturnSummaryGateway(scenario: SampleData.summaryScenario, clear: SampleData.summaryClearBehavior, baseline: SampleData.summaryBaselineBehavior)
+            sampleSummaryGateway = sample
+            return sample
+        }
+        #endif
+        return services.map { LiveReturnSummaryGateway(services: $0) }
+    }
+
+    /// Edge 셸이 목록(`NowStore`)이 생긴 뒤 연결하는 것: S4 Review의 답을 보내는 곳과 C3 복귀 요약. 둘 다 Edge 기초의 계정 경계를 쓴다 (Chats 것이 아니다)
+    struct EdgeFeatures {
+        let review: ReviewDesk?
+        let summary: ReturnSummaryStore?
+    }
+
+    /// 앱 생성 경로: 이 빌드의 표면(`EdgeSurfaces.current`)대로
+    static func edgeFeatures(surfaces: EdgeSurfaces = .current, foundation: EdgeFoundation, now: NowStore?, services: AppServices?) -> EdgeFeatures {
+        makeEdgeFeatures(surfaces: surfaces, foundation: foundation, now: now, makeGateway: { summaryGateway(services: services) })
+    }
+
+    /// 실제 생성 경로의 본체 (`edgeFeatures`가 부르고, 테스트가 `EdgeSurfaces`마다 부른다): 꺼진 표면은 만들지 않는다 (`makeReviewDesk` · `makeReturnSummaryStore`가 각자의 가드로)
+    static func makeEdgeFeatures(
+        surfaces: EdgeSurfaces, foundation: EdgeFoundation, now: NowStore?, makeGateway: () -> (any ReturnSummaryGateway)?
+    ) -> EdgeFeatures {
+        guard surfaces.shell else { return EdgeFeatures(review: nil, summary: nil) }
+        return EdgeFeatures(
+            review: makeReviewDesk(now: now, scope: foundation.scope, s4: surfaces.review),
+            summary: makeReturnSummaryStore(makeGateway: makeGateway, scope: foundation.scope, c3: surfaces.summary)
+        )
+    }
+
+    #if DEBUG
+    /// 견본이면 가짜 서버 (스냅샷 · 합성 조작이 시나리오를 바꿔 가며 담는다)
+    static var sampleSummaryGateway: SampleReturnSummaryGateway?
+    #endif
+
+    /// 실제 생성 경로의 본체 (`returnSummary`가 부르고, 테스트가 같은 함수를 기본 / off / on으로 부른다).
+    /// `c3`가 꺼져 있으면 게이트웨이도 `ReturnSummaryStore`도 **만들지 않는다**: 셸에 카드 자리 · 읽기가 없고 지금(S4/S3b/B3/Edge) 그대로다.
+    /// 게이트웨이나 계정 경계(`AccountScope`)가 없어도 만들지 않는다
+    static func makeReturnSummaryStore(makeGateway: () -> (any ReturnSummaryGateway)?, scope: AccountScope?, c3: Bool) -> ReturnSummaryStore? {
+        guard c3, let scope, let gateway = makeGateway() else { return nil }
+        return ReturnSummaryStore(gateway: gateway, scope: scope)
     }
 
     private static var runStore: RunStore?

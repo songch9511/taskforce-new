@@ -137,6 +137,12 @@ struct EdgePanelView: View {
             highlightedID: shell.hoveredID,
             today: DueDateFormat.today(),
             projectsProblem: shell.projectsProblem,
+            // 복귀 요약(C3): 검색칸 위. C3가 꺼져 있으면(`shell.summary == nil`) 늘 nil이라 지금 All work 그대로다
+            summary: shell.summaryContent.map { content in
+                AnyView(ReturnSummary(
+                    content: content, onOpen: { shell.openSummaryRow($0) }, onClear: { shell.clearSummary() }, onRetry: { shell.retrySummary() }
+                ))
+            },
             detail: { id in
                 // 멤버십을 아직 읽지 못했으면 아무것도 그리지 않는다 (빈 자리도 만들지 않는다)
                 guard let store = shell.contexts, store.projectLinks(for: id) != nil else { return nil }

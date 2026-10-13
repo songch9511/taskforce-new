@@ -8,18 +8,15 @@ import TaskforceUI
 /// 이 PR은 셸의 뼈대라 켜는 길은 격리된 Debug 실행뿐이다 (구현 계획 7장 플래그 경계):
 /// - 앱: launch argument `-TF_EDGE_SHELL YES`만 (인자 영역. 저장된 defaults로는 켜지지 않는다)
 /// - 테스트: 전용 UserDefaults suite를 넘긴다
-/// Release 빌드는 늘 꺼짐이다. 실사용 켜기(출시 gate)는 그때 이 함수를 바꾼다.
+/// Release 빌드는 `EdgeSurfaces.release`를 따른다: Edge 셸은 켜진다 (⌥ Space는 Edge 패널을 연다). DEBUG는 위 인자 그대로.
 enum EdgeShellFlag {
     static let key = "TF_EDGE_SHELL"
 
     static func isEnabled(_ defaults: UserDefaults? = nil) -> Bool {
         #if DEBUG
-        if let defaults { return defaults.bool(forKey: key) }
-        let arguments = UserDefaults.standard.volatileDomain(forName: UserDefaults.argumentDomain)
-        guard let value = arguments[key] else { return false }
-        return (value as? Bool) ?? (value as? String).map { NSString(string: $0).boolValue } ?? false
+        return EdgeSurfaces.debug(defaults).shell
         #else
-        return false
+        return EdgeSurfaces.release.shell
         #endif
     }
 }
@@ -30,18 +27,15 @@ enum EdgeShellFlag {
 /// (`TF_EDGE_SHELL`을 끄면 구 런처로 돌아가는 것이지 S3로 돌아가는 것이 아니다: 두 플래그는 다른 축이다. 서버 `MEMORY_ENABLED`도 POST만 막는 또 다른 축이다.)
 /// - 앱: launch argument `-TF_S3B YES`만 (인자 영역. 저장된 defaults로는 켜지지 않는다). `TF_EDGE_SHELL`이 켜진 격리 Debug 실행에서만 뜻이 있다
 /// - 테스트: 전용 UserDefaults suite를 넘긴다
-/// Release 빌드는 늘 꺼짐이다. 실사용 켜기(출시 gate)는 그때 이 함수를 바꾼다.
+/// Release 빌드는 늘 꺼짐이다 (`EdgeSurfaces.release.projects`, Chats 런타임이 없어 범위 멤버십도 없다).
 enum S3bFlag {
     static let key = "TF_S3B"
 
     static func isEnabled(_ defaults: UserDefaults? = nil) -> Bool {
         #if DEBUG
-        if let defaults { return defaults.bool(forKey: key) }
-        let arguments = UserDefaults.standard.volatileDomain(forName: UserDefaults.argumentDomain)
-        guard let value = arguments[key] else { return false }
-        return (value as? Bool) ?? (value as? String).map { NSString(string: $0).boolValue } ?? false
+        return EdgeSurfaces.debug(defaults).projects
         #else
-        return false
+        return EdgeSurfaces.release.projects
         #endif
     }
 }
@@ -52,18 +46,34 @@ enum S3bFlag {
 /// (`TF_EDGE_SHELL`을 끄면 구 런처로 돌아가는 것이지 S4만 끄는 것이 아니다: 두 플래그는 다른 축이다.)
 /// - 앱: launch argument `-TF_S4 YES`만 (인자 영역. 저장된 defaults로는 켜지지 않는다). `TF_EDGE_SHELL`이 켜진 격리 Debug 실행에서만 뜻이 있다
 /// - 테스트: 전용 UserDefaults suite를 넘긴다
-/// Release 빌드는 늘 꺼짐이다. 실사용 켜기(출시 gate)는 그때 이 함수를 바꾼다.
+/// Release 빌드는 켜진다 (`EdgeSurfaces.release.review`): confirm 요청에 Confirm · Dismiss, 기존 v1 경로.
 enum S4Flag {
     static let key = "TF_S4"
 
     static func isEnabled(_ defaults: UserDefaults? = nil) -> Bool {
         #if DEBUG
-        if let defaults { return defaults.bool(forKey: key) }
-        let arguments = UserDefaults.standard.volatileDomain(forName: UserDefaults.argumentDomain)
-        guard let value = arguments[key] else { return false }
-        return (value as? Bool) ?? (value as? String).map { NSString(string: $0).boolValue } ?? false
+        return EdgeSurfaces.debug(defaults).review
         #else
-        return false
+        return EdgeSurfaces.release.review
+        #endif
+    }
+}
+
+/// 0.2.0 C3(All work 위 ReturnSummary)를 켜는 플래그. **기본은 꺼짐** → All work는 지금(S4/S3b/B3/Edge) 그대로다:
+/// 실제 앱 생성 경로(`AppRuntime.returnSummary`)가 `ReturnSummaryStore`를 아예 만들지 않아 `EdgeShellModel.summary == nil`이고, 서버 `/api/v2/return-summary`를 읽지도 않으며
+/// 목록 위 카드 자리(`WorkList.summary`)가 비어 있다. Review(S4) · 프로젝트 묶음(S3b) · Chats(B3)는 각자의 플래그를 따른다.
+/// (`TF_EDGE_SHELL`을 끄면 구 런처로 돌아가는 것이지 C3만 끄는 것이 아니다: 플래그는 서로 다른 축이다. 서버 `REVIEW_V2_ENABLED`도 또 다른 축이다 — 서버가 꺼져 있으면 404로 읽어 아무것도 보이지 않는다.)
+/// - 앱: launch argument `-TF_C3 YES`만 (인자 영역. 저장된 defaults로는 켜지지 않는다). `TF_EDGE_SHELL`이 켜진 격리 Debug 실행에서만 뜻이 있다
+/// - 테스트: 전용 UserDefaults suite를 넘긴다
+/// Release 빌드는 켜진다 (`EdgeSurfaces.release.summary`): 서버 gate가 꺼져 있으면 404로 조용히 사라진다.
+enum C3Flag {
+    static let key = "TF_C3"
+
+    static func isEnabled(_ defaults: UserDefaults? = nil) -> Bool {
+        #if DEBUG
+        return EdgeSurfaces.debug(defaults).summary
+        #else
+        return EdgeSurfaces.release.summary
         #endif
     }
 }
@@ -197,6 +207,19 @@ final class EdgeShellModel {
         }
     }
 
+    /// 이 셸의 레일 고정 칸 (Chats가 꺼져 있으면 Chats 칸이 없다)
+    var controls: [Control] {
+        chatsEnabled ? Control.allCases : Control.allCases.filter { $0 != .chats }
+    }
+
+    /// 이 셸이 듣는 키 명령인가: Chats가 꺼져 있으면 ⌘3 · ⌘N은 연결이 없어 지나간다 (먹지 않는다)
+    func listens(to command: EdgeKeyCommand) -> Bool {
+        switch command {
+        case .chats, .newChat: chatsEnabled
+        case .escape, .review, .allWork: true
+        }
+    }
+
     private(set) var slots: [RailEntry] = []
     /// 노치에 120ms 머물러 펼친 레일 (패널이 열려 있으면 `isExpanded`가 따로 참)
     private(set) var railHovered = false
@@ -237,11 +260,20 @@ final class EdgeShellModel {
     let contexts: WorkContextStore?
     /// Review(S4)의 답을 보내는 곳. **없으면 S4 gate가 꺼진 것이다**: Review 페이지 · 단축키 연결이 없다 (`S4Flag`)
     let review: ReviewDesk?
+    /// 복귀 요약(C3)을 읽고 Clear하는 곳. **없으면 C3 gate가 꺼진 것이다**: All work 위 카드가 없고 서버를 읽지 않는다 (`C3Flag`)
+    let summary: ReturnSummaryStore?
+    /// Chats(B3)가 이 셸에 있는가 (`ChatsFlag`, 컨트롤러는 `ChatRuntime`이 있을 때만 켠다). **꺼져 있으면(Release) Chats는 아무 데도 없다**: 레일 Chats 칸 · ⌘3 · ⌘N · `.chats` 화면이 없고
+    /// `openChats` · `newChat` · `openPanel(.chats)`는 아무것도 하지 않는다 (대화 읽기 · 기억 · 연결 복귀 읽기도 만들어지지 않는다)
+    let chatsEnabled: Bool
     /// Review 페이지가 보이는 결정의 stable action id. 몇 번째인지(index)가 아니라 id로 가리킨다: 큐가 바뀌어도 키 · 클릭은 이 id의 항목에만 간다
     private(set) var reviewID: UUID?
     /// Review 페이지에 들어온 차례: 패널을 다시 열거나 다른 화면에서 Review로 들어올 때마다 오른다 (단계를 옮기는 것은 아니다).
     /// 근거가 같은 방문 안에서는 다시 읽지 않고, 다시 들어오면 항목의 활동 시각과 상관없이 다시 확인한다 (`ReviewDesk.loadSource`)
     private(set) var reviewPresentation = 0
+    /// All work 화면에 들어온 **방문**의 소유 번호 (C3): 패널을 닫았다 다시 열거나 다른 화면(Chats · Review)에서 All work로 돌아올 때마다 오른다.
+    /// 같은 방문 안의 움직임(⌘2를 한 번 더 · 줄 열기 · 필터)은 올리지 않는다. Clear를 **받은 방문**에서만 보내려고 쓴다 (`clearSummary`, S4 `reviewPresentation`과 같은 방식):
+    /// "지금 All work가 보이는가"만으로는 앞 방문에서 받은 선택이 다음 방문에서 나가는 것을 막지 못한다
+    private(set) var allWorkPresentation = 0
 
     @ObservationIgnored private let schedule: EdgeSchedule
     @ObservationIgnored private let clock: () -> Date
@@ -259,15 +291,19 @@ final class EdgeShellModel {
     init(
         reduceMotion: Bool = false, schedule: @escaping EdgeSchedule = EdgeScheduler.live, clock: @escaping () -> Date = Date.init,
         calendar: @escaping () -> Calendar = { Calendar.current }, pinStore: WorkPinStore = WorkPinStore(defaults: nil),
-        contexts: WorkContextStore? = nil, review: ReviewDesk? = nil
+        contexts: WorkContextStore? = nil, review: ReviewDesk? = nil, summary: ReturnSummaryStore? = nil, chatsEnabled: Bool = true
     ) {
         self.contexts = contexts
         self.review = review
+        self.summary = summary
+        self.chatsEnabled = chatsEnabled
         self.reduceMotion = reduceMotion
         self.schedule = schedule
         self.clock = clock
         self.calendar = calendar
         self.pinStore = pinStore
+        // 읽기가 반영돼 그 응답이 화면에 보일 수 있게 되는 그 자리에서 첫 정상 표시 확정을 받는다 (C)
+        summary?.onDisplayed = { [weak self] in self?.considerSummaryBaseline() }
     }
 
     // MARK: 레일 모양
@@ -345,13 +381,18 @@ final class EdgeShellModel {
     }
 
     func openPanel(_ view: View) {
+        // Chats가 없는 셸은 Chats 화면으로 열지 않는다 (⌥ Space의 마지막 화면 · 레일 · 키 어느 길로도)
+        guard view != .chats || chatsEnabled else { return }
         // Review를 떠나면 그 결정에 대한 안내는 거둔다 (돌아오면 지금 상태가 말한다)
         if view != .review { review?.clearNotice() }
         if view == .review, review != nil, !(panelOpen && self.view == .review) { reviewPresentation += 1 }
+        if view == .allWork, !(panelOpen && self.view == .allWork) { allWorkPresentation += 1 }
         self.view = view
         panelOpen = true
         menuOpen = false
         if view == .chats { onChatsOpened() }
+        // All work로 들어오면 지금 들고 있는 응답이 처음 화면에 보인다: 아직 확정을 받지 않은 응답이면 그 표시 시점이다 (이미 받은 응답은 다시 받지 않는다)
+        if view == .allWork { considerSummaryBaseline() }
     }
 
     /// All work: 레일의 All work · ⌘2. 고른 행 · 검색어 · 필터를 비우고 필터 카드를 닫는다 (디자인 "opens it with filters cleared")
@@ -369,6 +410,7 @@ final class EdgeShellModel {
 
     /// 새 대화: ⌘N · 대화 머리의 `square-pen`. 손대지 않은 빈 대화가 있으면 그것을 다시 쓴다
     func newChat() {
+        guard chatsEnabled else { return }
         openPanel(.chats)
         onNewChat()
     }
@@ -442,12 +484,72 @@ final class EdgeShellModel {
               let ticket = review.begin(answer, for: id) else { return nil }
         let presentation = reviewPresentation
         return Task { [weak self] in
-            await review.send(ticket) {
+            let result = await review.send(ticket) {
                 guard let self else { return false }
                 return self.panelOpen && self.view == .review && self.reviewPresentation == presentation
                     && self.reviewScreen.canAnswer && self.shownReview?.id == id
             }
+            // 서버가 받은 답이면 복귀 요약의 `Needs your answer`가 낡았을 수 있다: 서버의 지금 상태를 다시 읽는다 (읽기일 뿐, C3가 켜졌을 때만)
+            if result == .applied { await self?.summary?.refresh() }
+            return result
         }
+    }
+
+    // MARK: 복귀 요약 (C3)
+
+    /// All work 위 카드가 그릴 것 (`C3Flag`가 꺼져 있으면 늘 nil). 줄을 누를 수 있나는 지금 목록에 그 작업이 있는가다: 열 곳이 없는 줄(지난 완료 · 취소)은 거짓 어포던스를 만들지 않는다
+    var summaryContent: ReturnSummaryContent? {
+        guard let summary else { return nil }
+        let known = Set(workItems.map(\.id))
+        return summary.content(canOpen: { known.contains($0) })
+    }
+
+    /// 복귀 요약의 줄을 누름 (열기는 어떤 결정도 해결도 아니다). 답할 결정이 **S4 Review가 답할 수 있는 확인 요청**이고 그 항목이 Review 큐에 있으면 Review로,
+    /// 그 밖에는 지금 All work의 다른 줄처럼 그 작업을 연다 (일 상세는 아직 없다). Review 밖의 결정(approval · review_failed · run_input)은 S4b의 몫이다
+    func openSummaryRow(_ actionID: UUID) {
+        let decisions = summary?.summary?.items.first { $0.actionID == actionID }?.decisions ?? []
+        if review != nil, decisions.contains(where: { $0.kind == .confirm }), reviewQueue.contains(actionID) {
+            openReview(itemID: actionID)
+        } else {
+            open(itemID: actionID)
+        }
+    }
+
+    /// Clear: 읽음 처리일 뿐이다 (해결 · 승인 · 완료 · 거절이 아니다). **받는 동기 경계에서** 계정 token · 커서와 이 **All work 방문**(`allWorkPresentation`)을 잡고,
+    /// 예약된 작업이 보내기 직전에 같은 방문이 아직 이어지는지 다시 본다: 그 사이 패널이 닫혔다 다시 열렸거나 다른 화면에 갔다 돌아왔으면(새 방문) 옛 선택은 쓰기 0이다 (S4 `answer`와 같은 방식).
+    /// 이미 서버로 나간 요청은 취소하지 않는다: 정직한 결과를 돌려준다. 보낼 수 없으면 nil (C3 꺼짐 · 패널이 닫힘/다른 화면 · 커서 없음 · 이미 보내는 중)
+    @discardableResult
+    func clearSummary() -> Task<ReturnSummaryClearResult, Never>? {
+        guard let summary, panelOpen, view == .allWork, let ticket = summary.beginClear() else { return nil }
+        let presentation = allWorkPresentation
+        return Task { [weak self] in
+            await summary.sendClear(ticket) {
+                guard let self else { return false }
+                return self.panelOpen && self.view == .allWork && self.allWorkPresentation == presentation
+            }
+        }
+    }
+
+    /// 첫 정상 표시 확정 (C): 복귀 요약 응답이 **정상 표시**됐을 때만 서버가 준 토큰으로 기준점을 확정한다 — 응답이 반영된 자리(`ReturnSummaryStore.onDisplayed`)와 All work로 들어오는 자리(`openPanel`)에서 부른다.
+    /// 표시 시점의 **동기 경계에서** 계정 token · 서버 토큰 · 이 응답(`beginBaseline`)과 이 **All work 방문**(`allWorkPresentation`)을 잡고, 예약된 작업이 보내기 직전에 같은 방문이 아직 이어지는지 다시 본다:
+    /// 그 사이 패널이 닫혔다 다시 열렸거나 Chats에 갔다 돌아왔으면(새 방문) 쓰기 0이다 (Clear · S4 `answer`와 같은 방식). 이미 서버로 나간 요청은 취소하지 않고 정직한 결과를 돌려준다.
+    /// 읽음 표시일 뿐이다: 결정 · Action · run을 바꾸지 않는다. 보낼 수 없으면 nil (C3 꺼짐 · 패널이 닫힘/다른 화면 · 정상 표시가 아님 · 이 응답으로 이미 받음)
+    @discardableResult
+    func considerSummaryBaseline() -> Task<ReturnSummaryBaselineResult, Never>? {
+        guard let summary, panelOpen, view == .allWork, let ticket = summary.beginBaseline() else { return nil }
+        let presentation = allWorkPresentation
+        return Task { [weak self] in
+            await summary.sendBaseline(ticket) {
+                guard let self else { return false }
+                return self.panelOpen && self.view == .allWork && self.allWorkPresentation == presentation
+            }
+        }
+    }
+
+    /// 복귀 요약 Try again
+    func retrySummary() {
+        guard let summary else { return }
+        Task { await summary.refresh() }
     }
 
     /// Esc: 안쪽 것(열린 필터 카드 · Chats의 대화 목록)을 먼저 닫고, 그다음 패널을 접는다 (디자인 Focus and keys)

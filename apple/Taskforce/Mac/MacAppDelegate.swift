@@ -15,6 +15,8 @@ final class MacAppDelegate: NSObject, NSApplicationDelegate {
     private(set) var edge: EdgeShellController?
     /// 대화 · 기억 상태 (`TF_EDGE_SHELL`이 켜졌을 때만)
     private(set) var chatRuntime: ChatRuntime?
+    /// S4 · C3의 계정 경계를 포함한 Edge 기초 (`EdgeSurfaces.current`대로)
+    private var edgeFoundation = AppRuntime.EdgeFoundation(chat: nil, scope: nil)
     let hotKeys = HotKeyCenter()
     let settingsHotKeys = HotKeyCenter(id: 2)
 
@@ -37,8 +39,10 @@ final class MacAppDelegate: NSObject, NSApplicationDelegate {
         case .ready(let session, let services):
             // 설정 창 프로필 칸은 화면과 상관없이 세션을 따라간다 (계정이 떠나면 쓰던 칸 · 남은 저장을 지운다)
             SettingsWindowModel.shared.profile.bind(to: session)
-            // 대화 · 기억도 같다: 세션이 시작되기 전에 붙어 처음 로그인부터 계정 경계를 지킨다 (0.2.0 셸이 켜진 격리 Debug 실행만)
-            if EdgeShellFlag.isEnabled() { chatRuntime = AppRuntime.chatRuntime(session: session, services: services) }
+            // Edge 셸이 쓰는 기초(Chats 런타임 · S4/C3 계정 경계)도 세션이 시작되기 전에 붙어 처음 로그인부터 계정 경계를 지킨다.
+            // 어느 표면이 켜지는지는 `EdgeSurfaces.current`가 정한다: Release는 셸 + All work + S4 + C3뿐(Chats 런타임 없음), 격리 Debug는 launch argument
+            edgeFoundation = AppRuntime.edgeFoundation(session: session, services: services)
+            chatRuntime = edgeFoundation.chat
             session.start()
             model = LauncherModel(
                 session: session, services: services, account: AppRuntime.account(services: services), saved: AppRuntime.savedNow,
@@ -58,8 +62,9 @@ final class MacAppDelegate: NSObject, NSApplicationDelegate {
         if let target = PushCenter.shared.take() { openNotification(target) }
 
         if EdgeShellFlag.isEnabled() {
-            // Review 페이지(S4)는 `-TF_S4 YES`일 때만 연결된다 (기본 꺼짐: nil이면 지금 그대로)
-            let edge = EdgeShellController(launcher: model, chat: chatRuntime, review: AppRuntime.reviewDesk(now: model.now, scope: chatRuntime?.scope))
+            // Review 페이지(S4) · 복귀 요약(C3)은 각자의 표면 값(`S4Flag` · `C3Flag`)이 켜졌을 때만 연결된다 (nil이면 지금 그대로). 계정 경계는 Chats 것이 아니라 Edge 기초의 것
+            let features = AppRuntime.edgeFeatures(foundation: edgeFoundation, now: model.now, services: model.services)
+            let edge = EdgeShellController(launcher: model, chat: chatRuntime, review: features.review, summary: features.summary)
             self.edge = edge
             // All work의 Add task: 패널을 접고 기존 런처(제목 → 없으면 추가, 직접 추가의 정식 입구)를 연다
             edge.shell.onAddTask = { [weak edge, weak launcher] in

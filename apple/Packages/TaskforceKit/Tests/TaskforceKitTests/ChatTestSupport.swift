@@ -80,14 +80,55 @@ extension Date {
 
 /// 붙잡았다 놓는 문 (응답을 늦게 보내기)
 actor Latch {
+    /// `waitForArrivals`로 기다리는 쪽: 도착이 `count`에 이르면 깨운다. `guardTask`는 영원히 멈추지 않게 하는 안전망(시간 초과)이다
+    private struct ArrivalWaiter {
+        let id: Int
+        let count: Int
+        let continuation: CheckedContinuation<Bool, Never>
+        let guardTask: Task<Void, Never>
+    }
+
     private var opened = false
     private var waiters: [CheckedContinuation<Void, Never>] = []
+    private var arrivalWaiters: [ArrivalWaiter] = []
+    private var nextWaiterID = 0
     private(set) var arrivals = 0
 
     func wait() async {
         arrivals += 1
+        wakeArrivalWaiters()
         if opened { return }
         await withCheckedContinuation { waiters.append($0) }
+    }
+
+    /// 붙잡은 요청이 `count`개 **도착할 때까지 도착 사건으로** 기다린다. 양보 횟수나 시각 추정으로 "아직 안 왔다"를 결론내지 않는다:
+    /// 시험 프로세스가 아무리 바빠도 요청이 도착하면(`wait()`) 그 자리에서 깨어난다. `timeout`은 도착이 영영 오지 않을 때만 멈추지 않게 하는 안전망이고, 넘기면 false.
+    func waitForArrivals(_ count: Int, timeout: Duration) async -> Bool {
+        if arrivals >= count { return true }
+        let id = nextWaiterID
+        nextWaiterID += 1
+        return await withCheckedContinuation { continuation in
+            let guardTask = Task { [weak self] in
+                try? await Task.sleep(for: timeout)
+                await self?.expireArrivalWaiter(id)
+            }
+            arrivalWaiters.append(ArrivalWaiter(id: id, count: count, continuation: continuation, guardTask: guardTask))
+        }
+    }
+
+    private func wakeArrivalWaiters() {
+        let ready = arrivalWaiters.filter { arrivals >= $0.count }
+        guard !ready.isEmpty else { return }
+        arrivalWaiters.removeAll { arrivals >= $0.count }
+        for waiter in ready {
+            waiter.guardTask.cancel()
+            waiter.continuation.resume(returning: true)
+        }
+    }
+
+    private func expireArrivalWaiter(_ id: Int) {
+        guard let index = arrivalWaiters.firstIndex(where: { $0.id == id }) else { return }
+        arrivalWaiters.remove(at: index).continuation.resume(returning: false)
     }
 
     func open() {
