@@ -36,8 +36,13 @@ struct UpdateStartTests {
         }
     }
 
-    @Test func surroundingWhitespaceIsNotPartOfTheValues() {
-        #expect(Self.decide(feed: "  \(Self.goodFeed)\n", key: " \(Self.goodKey) ") == .start)
+    /// Sparkle은 Info.plist의 피드 문자열을 그대로 읽는다(따옴표만 벗긴다): 앞뒤 공백 · 줄바꿈이 있으면 주소가 만들어지지 않아 업데이트를 확인할 때 설정 오류가 된다.
+    /// 검사한 값과 Sparkle이 쓰는 값이 달라지지 않게 그런 피드는 **시작하지 않는다**. 공개 키는 Sparkle도 앞뒤 공백을 지우므로 그대로 받는다
+    @Test func aFeedWithSurroundingWhitespaceIsBlockedButAKeyWithItIsNot() {
+        for feed in ["  \(Self.goodFeed)", "\(Self.goodFeed)\n", " \(Self.goodFeed) ", "\t\(Self.goodFeed)", "\(Self.goodFeed)\r\n"] {
+            #expect(Self.decide(feed: feed) == .notStarted(.noFeedURL), "피드: \(feed.debugDescription)")
+        }
+        #expect(Self.decide(key: " \(Self.goodKey)\n") == .start)
     }
 
     @Test func bothMissingReportsTheFeedFirst() {
@@ -77,12 +82,14 @@ struct UpdateStartTests {
         let good = UpdateConfiguration(feedURL: Self.goodFeed, publicKey: Self.goodKey)
         let cases: [(UpdateConfiguration, Bool, Bool, UpdateConfiguration.Decision)] = [
             (UpdateConfiguration(feedURL: "", publicKey: Self.goodKey), false, false, .notStarted(.noFeedURL)),
+            (UpdateConfiguration(feedURL: " \(Self.goodFeed)\n", publicKey: Self.goodKey), false, false, .notStarted(.noFeedURL)),
             (UpdateConfiguration(feedURL: Self.goodFeed, publicKey: ""), false, false, .notStarted(.noPublicKey)),
             (good, true, false, .notStarted(.testHost)),
             (good, false, true, .notStarted(.debugBuild)),
         ]
+        var created = 0
         for (configuration, isTestHost, isDebugBuild, expected) in cases {
-            let updater = AppUpdater()
+            let updater = AppUpdater(makeController: { created += 1; return nil })
             updater.start(configuration: configuration, isTestHost: isTestHost, isDebugBuild: isDebugBuild)
             #expect(updater.lastDecision == expected)
             #expect(!updater.isRunning)
@@ -90,6 +97,21 @@ struct UpdateStartTests {
             updater.checkForUpdates() // 시작하지 않았으면 아무 일도 없다 (크래시 없음)
             #expect(!updater.isRunning)
         }
+        // 상태 플래그가 아니라 Sparkle 컨트롤러를 만드는 호출 자체가 0번이다 (만들기를 판단 앞으로 옮겨도 잡는다)
+        #expect(created == 0, "막힌 경로에서 컨트롤러를 \(created)번 만들었다")
+    }
+
+    /// 시작해도 되면 컨트롤러를 정확히 한 번 만든다 (두 번째 `start`는 아무것도 하지 않는다). 시험이 넣은 함수는 컨트롤러를 돌려주지 않아 시작된 것으로 치지 않는다
+    @Test @MainActor func aUsableConfigurationCreatesTheControllerExactlyOnce() {
+        var created = 0
+        let updater = AppUpdater(makeController: { created += 1; return nil })
+        let good = UpdateConfiguration(feedURL: Self.goodFeed, publicKey: Self.goodKey)
+        updater.start(configuration: good, isTestHost: false, isDebugBuild: false)
+        updater.start(configuration: good, isTestHost: false, isDebugBuild: false)
+        #expect(created == 1)
+        #expect(updater.lastDecision == .start)
+        #expect(!updater.isRunning)
+        #expect(!updater.canCheckForUpdates)
     }
 
     // MARK: 종료 위임 지점 (bridge WP 몫)

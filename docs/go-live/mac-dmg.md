@@ -34,7 +34,7 @@ Mac 앱은 [Sparkle 2](https://sparkle-project.org/documentation/)로 스스로 
 
 - 의존성: Swift Package `https://github.com/sparkle-project/Sparkle`을 **정확한 버전 2.10.0** 하나로 고정했다(`apple/project.yml`의 `exactVersion` + 커밋된 `Taskforce.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved`). **Mac 앱 타깃(`Taskforce`)에만** 연결하고 `TaskforceKit` · 시험 타깃에는 넣지 않는다(`UpdaterBuildSettingsTests`가 고정 버전 · 연결 타깃을 고정한다). 버전을 올릴 때는 `project.yml`의 숫자를 바꾸고 `cd apple && xcodegen` 뒤 `xcodebuild -resolvePackageDependencies -project apple/Taskforce.xcodeproj -scheme Taskforce`로 `Package.resolved`를 갱신한다. 공개된 지 2주 넘은 정식 2.x만 고른다.
 - 설정값: Info.plist의 `SUFeedURL` · `SUPublicEDKey`는 빌드 설정 `SPARKLE_FEED_URL` · `SPARKLE_PUBLIC_ED_KEY`에서 온다. Debug · Debug-Test(`Config/Base.xcconfig`)는 빈 값이고, 채울 자리는 `Config/Release.xcconfig`다. 둘 다 공개 값이라 커밋한다(비밀 아님).
-- 업데이터가 켜지는 조건(`UpdateConfiguration`): Release 빌드이고, XCTest 호스트가 아니고, 피드 주소가 http(s) 주소이고, 공개 키가 base64 32바이트(ed25519 공개 키 크기)일 때. 하나라도 아니면 Sparkle 객체를 만들지 않는다(크래시 · 오류 창 없음. 시작했는지와 이유만 OSLog `category: updater`에 주소 · 키 없이 남는다).
+- 업데이터가 켜지는 조건(`UpdateConfiguration`): Release 빌드이고, XCTest 호스트가 아니고, 피드 주소가 http(s) 주소이고(**앞뒤 공백 · 줄바꿈이 있으면 안 된다**: Sparkle은 Info.plist 원문을 그대로 읽어서, 검사한 값과 쓰는 값이 달라지지 않게 그런 피드는 켜지 않는다), 공개 키가 base64 32바이트(ed25519 공개 키 크기)일 때(키의 앞뒤 공백은 Sparkle도 지운다). 하나라도 아니면 Sparkle 객체를 만들지 않는다(크래시 · 오류 창 없음. 시작했는지와 이유만 OSLog `category: updater`에 주소 · 키 없이 남는다).
 - 앱 쪽: `SPUStandardUpdaterController` 하나(`AppUpdater`)를 앱 시작 때 만든다. 메뉴 막대 메뉴와 앱 메뉴(설정 창이 앞일 때)에 표준 항목 "Check for Updates…"가 있다. 자동 확인은 Sparkle 기본 동작을 따른다(두 번째 실행에서 사용자에게 자동 확인을 켤지 묻는다). 별도 설정 화면은 없다.
 - 종료 전 확인: 실행 중인 에이전트 턴이 있을 때 업데이트 재시작을 막는 일은 bridge WP 몫이다. 자리는 `AppUpdater`의 `updaterShouldRelaunchApplication` → `UpdateRelaunchPolicy.allowsRelaunchNow()`(지금은 항상 `true`)다.
 
@@ -47,7 +47,7 @@ Mac 앱은 [Sparkle 2](https://sparkle-project.org/documentation/)로 스스로 
 
 ### appcast 만들기 · 올리기
 
-`scripts/release-mac-dmg.sh`가 공증 · Gatekeeper 확인 뒤 **선택 단계**로 `generate_appcast`(Sparkle 도구, 아카이브의 `DerivedData/SourcePackages/artifacts/sparkle/Sparkle/bin/`. 다른 곳에 있으면 환경 변수 `SPARKLE_BIN_DIR`)를 부른다. 다음 중 하나라도 없으면 **건너뛰고 실패하지 않는다**: 앱 Info.plist의 `SUFeedURL` · `SUPublicEDKey`, 도구, Keychain의 Sparkle 서명 키(항목이 있는지만 속성으로 확인한다: 키 값은 읽지도 출력하지도 않는다. 항목이 없을 때 도구를 그냥 부르면 서명하지 못해 실패한다: 2.10.0에서 확인). `--skip-notarize` DMG에는 만들지 않는다. 도구가 돌았는데 실패하면 로그 경로를 보여 주고 멈춘다.
+`scripts/release-mac-dmg.sh`가 공증 · Gatekeeper 확인 뒤 **선택 단계**로 `generate_appcast`(Sparkle 도구, 아카이브의 `DerivedData/SourcePackages/artifacts/sparkle/Sparkle/bin/`. 다른 곳에 있으면 환경 변수 `SPARKLE_BIN_DIR`)를 부른다. 다음 중 하나라도 없으면 **건너뛰고 실패하지 않는다**: 앱 Info.plist의 `SUFeedURL` · `SUPublicEDKey`, 도구, Keychain의 Sparkle 서명 키(항목이 있는지만 속성으로 확인한다: 키 값은 읽지도 출력하지도 않는다. 항목이 없을 때 도구를 그냥 부르면 서명하지 못해 실패한다: 2.10.0에서 확인. 조회 종료 상태 44만 "키 없음"이고, 그 밖의 조회 실패는 "Keychain 조회가 실패했습니다: 종료 상태 N"으로 따로 알리며 이때도 건너뛴다). `--skip-notarize` DMG에는 만들지 않는다. 도구가 돌았는데 실패하면 로그 경로를 보여 주고 멈춘다.
 
 - 서명은 `generate_appcast`가 사용자 Keychain에서 직접 한다. 처음에는 macOS가 "generate_appcast가 Keychain 항목을 쓰려 한다"는 허용 창을 띄울 수 있다.
 - 결과: `<출력 폴더>/Taskforce-<버전>-<빌드>/appcast/appcast.xml`과 DMG 사본(로컬만). 이전 버전 항목을 이어 가려면 `--appcast-dir <폴더>`로 같은 폴더를 계속 쓰고 이전 DMG도 그 폴더에 둔다(도구가 폴더의 아카이브를 훑어 appcast를 다시 만든다. 기본으로 최근 3개 버전을 유지).

@@ -118,8 +118,13 @@ make_appcast() {
   if [[ ! -x "$tool" ]]; then
     echo "appcast: 건너뜀 (generate_appcast를 찾을 수 없습니다: $tool. 환경 변수 SPARKLE_BIN_DIR로 Sparkle bin 폴더를 알려 주세요)"; return 0
   fi
-  if ! security find-generic-password -s "https://sparkle-project.org" -a "ed25519" >/dev/null 2>&1; then
+  # 종료 상태 44(errSecItemNotFound)만 "키 없음"이다. 그 밖의 실패(잠긴 Keychain · 사용자 취소 등)는 키가 없다고 단정하지 않고 종료 상태 숫자만 알린다 (출력은 버린다)
+  local keychain_status=0
+  security find-generic-password -s "https://sparkle-project.org" -a "ed25519" >/dev/null 2>&1 || keychain_status=$?
+  if (( keychain_status == 44 )); then
     echo "appcast: 건너뜀 (로그인 Keychain에 Sparkle 서명 키가 없습니다. docs/go-live/mac-dmg.md \"자동 업데이트\" 1번)"; return 0
+  elif (( keychain_status != 0 )); then
+    echo "appcast: 건너뜀 (Keychain 조회가 실패했습니다: 종료 상태 $keychain_status. 키가 없는 것이 아닐 수 있으니 Keychain을 확인하고 다시 실행하세요)"; return 0
   fi
   prefix="${prefix%/}/"
   mkdir -p "$dir"

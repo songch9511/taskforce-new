@@ -47,9 +47,12 @@ struct UpdateConfiguration: Equatable, Sendable {
         return .start
     }
 
+    /// 피드는 **자르지 않고** 있는 그대로 검사한다: Sparkle은 Info.plist 원문을 그대로 읽으므로(따옴표만 벗긴다) 앞뒤 공백 · 줄바꿈이 있으면 주소가 만들어지지 않는다.
+    /// 검사한 값과 Sparkle이 쓰는 값이 같아야 하므로 그런 피드는 쓸 수 없는 것으로 본다 (공개 키는 Sparkle도 앞뒤 공백을 지운다)
     private var hasUsableFeedURL: Bool {
-        let text = feedURL.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty, !text.hasPrefix("$("), let url = URL(string: text), let scheme = url.scheme?.lowercased() else { return false }
+        let text = feedURL
+        guard !text.isEmpty, text == text.trimmingCharacters(in: .whitespacesAndNewlines), !text.hasPrefix("$("),
+              let url = URL(string: text), let scheme = url.scheme?.lowercased() else { return false }
         return (scheme == "https" || scheme == "http") && url.host(percentEncoded: false)?.isEmpty == false
     }
 

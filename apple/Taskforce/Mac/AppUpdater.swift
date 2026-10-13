@@ -22,11 +22,20 @@ final class AppUpdater {
     private(set) var lastDecision: UpdateConfiguration.Decision?
 
     @ObservationIgnored private var controller: SPUStandardUpdaterController?
-    @ObservationIgnored private let delegate = UpdaterDelegate()
+    @ObservationIgnored private let delegate: UpdaterDelegate
     @ObservationIgnored private var canCheckObservation: NSKeyValueObservation?
+    /// `SPUStandardUpdaterController`를 만드는 **유일한** 곳. `start`가 시작해도 된다고 판단한 뒤에만 부른다.
+    /// 시험이 세는 함수를 넣어 막힌 경로에서 만들기 호출이 0번임을 직접 본다 (진짜 Sparkle은 시험 호스트에서 시작하지 않는다)
+    @ObservationIgnored private let makeController: @MainActor () -> AnyObject?
 
-    /// 시험이 따로 만들 수 있게 열어 둔다. 앱은 `shared` 하나만 쓴다
-    init() {}
+    /// 시험이 따로 만들 수 있게 열어 둔다. 앱은 `shared` 하나만 쓴다. `makeController`가 없으면 진짜 Sparkle 컨트롤러(시작까지)를 만든다
+    init(makeController: (@MainActor () -> AnyObject?)? = nil) {
+        let delegate = UpdaterDelegate()
+        self.delegate = delegate
+        self.makeController = makeController ?? {
+            SPUStandardUpdaterController(startingUpdater: true, updaterDelegate: delegate, userDriverDelegate: nil)
+        }
+    }
 
     /// 앱 시작 때 한 번 (`MacAppDelegate.applicationDidFinishLaunching`, 시험 호스트 가드 뒤). 두 번째부터는 아무것도 하지 않는다
     func start(
@@ -41,7 +50,11 @@ final class AppUpdater {
             log.info("not started: \(String(describing: decision), privacy: .public)")
             return
         }
-        let controller = SPUStandardUpdaterController(startingUpdater: true, updaterDelegate: delegate, userDriverDelegate: nil)
+        guard let controller = makeController() as? SPUStandardUpdaterController else {
+            // 진짜 만들기는 늘 컨트롤러를 돌려준다. 시험이 넣은 함수가 nil을 돌려준 경우만 여기로 온다
+            log.info("controller not created")
+            return
+        }
         self.controller = controller
         log.info("started")
         isRunning = true

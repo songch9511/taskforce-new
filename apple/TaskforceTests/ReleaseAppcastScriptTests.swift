@@ -43,7 +43,7 @@ struct ReleaseAppcastScriptTests {
         feed: String = "https://updates.example.com/taskforce/appcast.xml",
         publicKey: String = "PUBLIC-KEY-PLACEHOLDER",
         prefix: String = "https://updates.example.com/taskforce/",
-        keychainHasKey: Bool = true,
+        keychainStatus: Int = 0,
         toolExists: Bool = true,
         toolStatus: Int = 0
     ) throws -> AppcastRun {
@@ -72,10 +72,9 @@ struct ReleaseAppcastScriptTests {
             try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: tool.path)
         }
 
-        let securityStatus = keychainHasKey ? 0 : 44
         let result = try bash([
             "-c",
-            "set -euo pipefail; fail() { printf '%s\\n' \"$*\" >&2; exit 1; }; security() { return \(securityStatus); }; source \"$1\"; shift; make_appcast \"$@\"",
+            "set -euo pipefail; fail() { printf '%s\\n' \"$*\" >&2; exit 1; }; security() { return \(keychainStatus); }; source \"$1\"; shift; make_appcast \"$@\"",
             "bash", function.path,
             dmg.path, appcastFolder.path, feed, publicKey, prefix, tool.path, directory.appending(path: "appcast.log").path,
         ])
@@ -104,13 +103,14 @@ struct ReleaseAppcastScriptTests {
         #expect(result.stdout.contains("--appcast-dir") && result.stdout.contains("--download-url-prefix"))
     }
 
-    /// 피드 · 공개 키 · 도구 · Keychain 키 중 하나라도 없으면 건너뛰고 실패하지 않는다. 도구는 돌지 않고 appcast도 없다
+    /// 피드 · 공개 키 · 도구 · Keychain 키 중 하나라도 없으면 건너뛰고 실패하지 않는다. 도구는 돌지 않고 appcast도 없다.
+    /// Keychain 항목 없음은 종료 상태 44(errSecItemNotFound)다
     @Test func appcastIsSkippedWhenAnythingItNeedsIsMissing() throws {
         let cases: [(String, AppcastRun)] = [
             ("SUFeedURL", try Self.runMakeAppcast(feed: "")),
             ("SUPublicEDKey", try Self.runMakeAppcast(publicKey: "")),
             ("generate_appcast", try Self.runMakeAppcast(toolExists: false)),
-            ("Keychain", try Self.runMakeAppcast(keychainHasKey: false)),
+            ("Keychain", try Self.runMakeAppcast(keychainStatus: 44)),
         ]
         for (missing, run) in cases {
             defer { Self.cleanup(run) }
@@ -120,6 +120,23 @@ struct ReleaseAppcastScriptTests {
             #expect(!FileManager.default.fileExists(atPath: run.appcastFolder.appending(path: "appcast.xml").path), "\(missing)")
             #expect(run.stderr.isEmpty, "\(missing)")
         }
+    }
+
+    /// Keychain 조회가 "항목 없음"(44)이 아닌 이유로 실패하면 그렇게 안내한다: 키가 없다고 단정하지 않고 종료 상태 숫자만 보여 준다(비밀값 없음).
+    /// 건너뛰는 것은 같다 (도구는 돌지 않고 실패하지 않는다)
+    @Test func aKeychainLookupErrorIsToldApartFromAMissingKey() throws {
+        for status in [36, 51, 1] {
+            let run = try Self.runMakeAppcast(keychainStatus: status)
+            defer { Self.cleanup(run) }
+            #expect(run.status == 0, "\(status): \(run.stderr)")
+            #expect(run.stdout.contains("건너뜀") && run.stdout.contains("Keychain 조회가 실패") && run.stdout.contains("종료 상태 \(status)"), "\(status): \(run.stdout)")
+            #expect(!run.stdout.contains("키가 없습니다"), "\(status): 키 없음으로 단정하지 않는다")
+            #expect(run.toolArguments == nil, "\(status)")
+            #expect(run.stderr.isEmpty, "\(status)")
+        }
+        let missing = try Self.runMakeAppcast(keychainStatus: 44)
+        defer { Self.cleanup(missing) }
+        #expect(missing.stdout.contains("서명 키가 없습니다") && !missing.stdout.contains("조회가 실패"))
     }
 
     /// 모두 있으면 DMG를 로컬 폴더에 복사하고 도구를 정해진 인자로만 부른다 (개인 키 인자 없음). 업로드는 하지 않는다
