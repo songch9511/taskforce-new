@@ -17,6 +17,7 @@
 		1D320494D52534D188026379 /* HotKeyCenterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1AE065BCE63FAD6180201421 /* HotKeyCenterTests.swift */; };
 		205EDA554EE2E30B65C54E07 /* LauncherLane.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20348734D46E428BDA04EE04 /* LauncherLane.swift */; };
 		25515FBF682CB243F81947D9 /* SettingsSnapshot.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4980BC09AD044F0F918D864B /* SettingsSnapshot.swift */; };
+		276894628F1EE9ADE22F4F64 /* MacEntitlementsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8F5DE8B3835D212DAFE17325 /* MacEntitlementsTests.swift */; };
 		2968707A8D04FE217A0AFB5E /* KeyboardShortcutsPane.swift in Sources */ = {isa = PBXBuildFile; fileRef = A22C75B485B3E5A6E4FDC9E1 /* KeyboardShortcutsPane.swift */; };
 		29739753EB293F27ED42C726 /* EdgeInteraction.swift in Sources */ = {isa = PBXBuildFile; fileRef = E98C340690397756C8AC5858 /* EdgeInteraction.swift */; };
 		2C916DBA7153033831398162 /* SettingsWindowTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CE1F0073D4EF8BAC2345440F /* SettingsWindowTests.swift */; };
@@ -156,6 +157,7 @@
 		8C3103BEF535AF3D545FD7E9 /* EdgeShell.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EdgeShell.swift; sourceTree = "<group>"; };
 		8CB05D753291715B60E890FF /* LauncherRunTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LauncherRunTests.swift; sourceTree = "<group>"; };
 		8F35BE01B9CE310854A11A47 /* AccountDeletion.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccountDeletion.swift; sourceTree = "<group>"; };
+		8F5DE8B3835D212DAFE17325 /* MacEntitlementsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacEntitlementsTests.swift; sourceTree = "<group>"; };
 		95937722FDD5FA1D25CAF396 /* EdgeChatTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EdgeChatTests.swift; sourceTree = "<group>"; };
 		997F7CDADCE1B82032C6E3C9 /* EdgeShellModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EdgeShellModelTests.swift; sourceTree = "<group>"; };
 		9B61143ECDB3A70FF32355F0 /* AppEnvironment.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppEnvironment.swift; sourceTree = "<group>"; };
@@ -333,6 +335,7 @@
 				AB6C40E329E6EAB3368F0C0B /* LauncherPresentationFixtureRendersTests.swift */,
 				8CB05D753291715B60E890FF /* LauncherRunTests.swift */,
 				65D96844CFEE5E58206572EF /* LauncherShellModelTests.swift */,
+				8F5DE8B3835D212DAFE17325 /* MacEntitlementsTests.swift */,
 				3D43D09D38ACB649AE46CFE3 /* MacSettingsTabTests.swift */,
 				6CDA036B7DA61843FB9DBDCD /* NowStoreReviewTests.swift */,
 				C163B11C1DF9E018538C4257 /* NowStoreSourceMetadataTests.swift */,
@@ -537,6 +540,7 @@
 				49860D5AA10B47E94115ACA7 /* LauncherPresentationFixtureRendersTests.swift in Sources */,
 				7985AF2095DB0B6C7E070C31 /* LauncherRunTests.swift in Sources */,
 				DE51DA1610314BCE5A25CE45 /* LauncherShellModelTests.swift in Sources */,
+				276894628F1EE9ADE22F4F64 /* MacEntitlementsTests.swift in Sources */,
 				34AC3C55914B7872E39BC5BD /* MacSettingsTabTests.swift in Sources */,
 				AD139F865D5065F4EC89CD97 /* NowStoreReviewTests.swift in Sources */,
 				959174039B7582454891C897 /* NowStoreSourceMetadataTests.swift in Sources */,

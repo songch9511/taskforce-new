@@ -10,6 +10,7 @@
 | 테스트 호스트 번들 ID | `dev.taskforcelabs.unittest.taskforce` (`Debug-Test` 설정, 아래 "테스트 격리") |
 | URL scheme | `taskforce://` (연동 OAuth가 끝나면 `taskforce://connections/{provider}?handoff=…` 또는 `?status=…`로 돌아온다), Google 로그인 `com.googleusercontent.apps.<클라이언트>`(`GOOGLE_IOS_URL_SCHEME`) |
 | 최소 OS | macOS 15 |
+| App Sandbox | **꺼짐** (DEC-1 A, 2026-10-13). 샌드박스 앱이 띄운 자식 프로세스는 샌드박스를 물려받아 사용자의 `claude` · `codex` 로그인과 PATH에 닿지 못해서다. 옛 컨테이너의 UserDefaults는 처음 뜰 때 한 번 새 위치로 옮긴다(`LegacySandboxMigration`). 절차 · 되돌리기 · 서명 빌드에서만 확인되는 것: [`docs/go-live/mac-dmg.md`](../docs/go-live/mac-dmg.md) "샌드박스 끔" |
 
 ## 처음 한 번
 
@@ -112,7 +113,7 @@ Mac 앱 테스트는 앱 자신을 호스트로 띄운다. 호스트의 `UserDef
 ### Mac — 에이전트 앱 + ⌥Space 런처 (Figma 5:57 · 5:90)
 
 - Dock 아이콘 없음(`LSUIElement`, macOS만). 메뉴 막대의 로고 마크: Open Launcher · Settings… · Quit.
-- 전역 단축키 ⌥Space(Carbon `RegisterEventHotKey`, 샌드박스 안에서 동작). Settings → Keyboard Shortcuts에서 바꾼다(UserDefaults).
+- 전역 단축키 ⌥Space(Carbon `RegisterEventHotKey`, 샌드박스 여부와 상관없이 손쉬운 사용 권한 없이 동작). Settings → Keyboard Shortcuts에서 바꾼다(UserDefaults).
 - 런처: 폭 696 · 모서리 26, 바탕은 macOS 26부터 `NSGlassEffectView`(Liquid Glass), 그 전은 `NSVisualEffectView` 유리 재질 + 1pt 테두리. 화면 가운데 위쪽. esc · 다른 곳 클릭 · 동작 완료로 닫힌다.
   - 빈칸 → Review · In Progress · To Do · Done Today(흐리게) · Commands(Send clipboard as source · Report missing action · Connections · Settings · Quit). 빈 구역은 숨김
   - 짧은 글 → 네 구역을 앱에서 거른 결과(순서 계산 아님) + Ask “…” + Hand off “첫 결과” to AI, 그 아래 거른 Done Today

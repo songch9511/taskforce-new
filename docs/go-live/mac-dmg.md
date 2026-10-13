@@ -6,7 +6,22 @@
 
 `scripts/release-mac-dmg.sh`와 `apple/Config/ExportOptions-DeveloperID.plist`는 helper commit `f665bdfe42876d2917bef8d9a6f4cf44295bf464`에서 선별해 가져왔다. 전체 release branch는 합치지 않았다. helper checkout의 비공개 `Secrets.xcconfig`는 읽거나 복사하지 않았다. 원본 checkout의 native 설정은 값 비노출 유형 검사를 거쳐 Supabase URL·publishable key·Taskforce API host만 active ignored 설정 파일에 복사했다. 기본 출력 루트는 저장소 밖 임시 폴더 `${TMPDIR:-/tmp}/taskforce-release`이며 `--out <directory>`로 바꿀 수 있고, 그 아래 생성하는 버전/빌드 출력 폴더가 이미 있으면 중단해 이전 산출물과 로그를 보존한다. 재시도에는 새 build 번호를 사용한다. 내부 작업 폴더 정리는 해당 실행이 새로 만든 output 아래에서만 이뤄진다.
 
-helper는 Release archive/export, Developer ID 서명과 entitlements/profile 확인, 앱·DMG 공증·staple, Gatekeeper 확인, SHA-256 출력을 수행한다. `--skip-notarize`는 설치 배포용이 아니다. helper는 공개 사이트 업로드를 포함하지 않는다.
+helper는 Release archive/export, Developer ID 서명과 entitlements/profile 확인(서명된 앱에 App Sandbox 권한이 있으면 중단, 아래 "샌드박스 끔"), 앱·DMG 공증·staple, Gatekeeper 확인, SHA-256 출력을 수행한다. `--skip-notarize`는 설치 배포용이 아니다. helper는 공개 사이트 업로드를 포함하지 않는다.
+
+## 샌드박스 끔 (DEC-1 A, 2026-10-13)
+
+Mac 앱은 Developer ID DMG 경로를 그대로 두고 **App Sandbox만 끈다.** 이유: 샌드박스 앱이 띄운 자식 프로세스는 샌드박스를 물려받아 사용자의 `claude` · `codex` 로그인(`~/.claude`, Keychain)과 PATH에 닿지 못한다(bridge는 앱 안에서 그 프로세스를 띄운다).
+
+- 권한 파일 `apple/Taskforce/Taskforce-macOS.entitlements`에서 `com.apple.security.app-sandbox`와 샌드박스 전용 `com.apple.security.network.client`를 뺐다. App Group · `keychain-access-groups` · `aps-environment`와 Hardened Runtime(공증에 필요)은 그대로다.
+- 배포 회귀 방지: `scripts/release-mac-dmg.sh`가 서명 뒤 `codesign -d --entitlements :-` 결과에 `com.apple.security.app-sandbox` 키가 있으면(값과 상관없이) 공증 전에 중단한다. 소스 쪽은 `apple/TaskforceTests/MacEntitlementsTests.swift`가 권한 파일 · 빌드 설정 · 이 검사 단계를 가짜 권한 출력으로 확인한다.
+- 설정 1회 이전: 샌드박스를 끄면 UserDefaults 위치가 `~/Library/Containers/<번들 id>/Data/Library/Preferences/`에서 `~/Library/Preferences/`로 바뀐다. 앱 시작의 첫 코드(`TaskforceApp.init`)에서 `LegacySandboxMigration`(TaskforceKit)이 옛 plist를 읽어 **새 도메인에 없는 키만** 쓰고 표식 키 `tf.legacySandboxMigration.v1`을 표준 도메인에 남긴다.
+  - 대상 도메인은 번들 id와 앱이 여는 suite 전부(`AppDefaultsDomains`: 지금은 `<번들 id>.work-pins`). 새 suite를 만들면 이 목록에 더해야 하고, `AppDefaultsDomainsTests`가 소스의 `UserDefaults(suiteName:)` 사용과 맞는지 확인한다.
+  - 옮기지 않는 것: App Group 컨테이너의 저장본(`SavedNow`)과 Keychain 세션은 샌드박스와 상관없이 같은 위치다. URL 캐시 · HTTP 저장소 · 저장된 창 상태는 다시 만들어진다. 지금 앱에는 Application Support · Caches에 직접 쓰는 코드가 없다.
+  - 읽지 못한 도메인(파일 없음 · 깨진 plist · 권한 없음)은 건너뛰고 표식은 쓴다(다시 시도하지 않는다). 결과는 OSLog(카테고리 `legacy-sandbox-migration`)에 키 이름 없이 개수만 남는다. 샌드박스 안에서 돌면 부르지 않고 표식도 쓰지 않는다.
+- 되돌리기: 옛 컨테이너 파일은 지우지도 바꾸지도 않는다. 샌드박스 빌드로 돌아가려면 권한 파일에 두 키를 되돌리면 되고, 샌드박스 앱은 컨테이너의 이전 설정을 그대로 읽는다(샌드박스를 끄고 쓰는 동안 바꾼 설정은 컨테이너에 없다). 이전을 다시 돌리려면 앱을 끈 상태에서 표준 도메인의 표식 키 하나만 지운다.
+- 이 변경 전에 만든 DMG(0.1.0 (3) 포함)는 권한 파일이 샌드박스였던 커밋의 빌드다. 새 DMG를 만들 때 위 검사가 통과해야 한다.
+- 서명된 빌드에서만 확인되는 것(이 단계에서 서명 · 공증 · DMG는 만들지 않았다): (1) 비샌드박스 Developer ID 서명에서도 App Group 컨테이너와 Keychain 접근 그룹이 샌드박스 때와 같이 동작하는지, (2) 비샌드박스 앱이 자기 옛 컨테이너 plist를 읽을 때 macOS가 다른 앱의 데이터 접근 동의를 묻는지(거부되면 읽기 실패 → 그 도메인만 건너뛰고 표식은 쓴다, 옛 파일은 남는다), (3) 권한 파일의 `aps-environment`가 내보내기에서 `production`으로 바뀌는지(기존 검사).
+- 이 단계에 없는 것: 자동 업데이트(M1b) · bridge · 자식 프로세스 실행 · 샌드박스 빌드에서 보일 화면 문구(`AgentRuntimeEnvironment.isSandboxed`는 값만 제공한다).
 
 ## 현재 상태
 

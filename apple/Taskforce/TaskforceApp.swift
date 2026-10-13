@@ -6,6 +6,20 @@ import TaskforceUI
 struct TaskforceApp: App {
     @NSApplicationDelegateAdaptor(MacAppDelegate.self) private var appDelegate
 
+    init() {
+        // App Sandbox를 끈 뒤 처음 뜰 때 한 번: 옛 샌드박스 컨테이너의 설정을 새 위치로 옮긴다 (`LegacySandboxMigration`).
+        // 어떤 UserDefaults 읽기보다 앞이어야 해서 앱의 첫 코드인 여기에 둔다. 샌드박스 안에서 돌면 하지 않는다.
+        // 시험 호스트는 자기 설정 도메인을 만들지 않는다 (`MacAppDelegate.applicationDidFinishLaunching`과 같은 판단)
+        #if DEBUG
+        let isTestHost = ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil || NSClassFromString("XCTestCase") != nil
+        #else
+        let isTestHost = false
+        #endif
+        if !isTestHost {
+            LegacySandboxMigration.runAtLaunch(bundleID: Bundle.main.bundleIdentifier)
+        }
+    }
+
     var body: some Scene {
         // 에이전트 앱: Dock · 창 없이 메뉴 막대 아이콘 + ⌥Space 런처 (MacAppDelegate)
         MenuBarExtra {
