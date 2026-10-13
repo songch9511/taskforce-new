@@ -4,6 +4,7 @@ import path from "node:path";
 
 import { describe, expect, it } from "vitest";
 
+import { agentTurnFixtures } from "./agent-turn-start.scenarios";
 import { supabaseSchemaScripts } from "./local-supabase";
 
 // 0.2.0 OA D4c-3a (20261120000000_action_numbers) — 이슈 번호 "#139": actions.number + 사용자별 카운터 action_counters (서버 저장만).
@@ -554,6 +555,60 @@ export function actionNumbersUpgradeTests(fresh: () => Promise<FreshDb>) {
       expect(await db.query(`select 1 from information_schema.columns where table_name = 'actions' and column_name = 'number'`)).toEqual([]);
       expect(await db.query(`select 1 from information_schema.tables where table_name = 'action_counters'`)).toEqual([]);
       expect((await db.query(`select tgenabled from pg_trigger where tgrelid = 'public.actions'::regclass and tgname = 'actions_set_updated_at'`))[0].tgenabled).toBe("O");
+    });
+  });
+}
+
+// ───────────────────────── 앞선 마이그레이션이 Action을 만드는 길 ─────────────────────────
+
+/**
+ * 이 마이그레이션 앞에 다른 OA 마이그레이션(20261113–20261117)이 들어와도 번호 트리거가 맞게 도는지: D1c-1(20261115)의 start_agent_turn이
+ * write_action으로 Action을 만든다(대화에서 맡긴 일). 그 Action도 사용자의 카운터에서 이어지는 번호를 받아야 하고,
+ * 만들지 않은 길(live_limit으로 미룸)은 번호를 쓰지 않는다.
+ */
+export function actionNumbersAgentTurnTests(db: () => ActionNumbersDb) {
+  const f = agentTurnFixtures(db);
+  const q = (sql: string, params?: unknown[]) => db().query(sql, params);
+  const numberOf = async (actionId: string) => (await q(`select number from public.actions where id = $1`, [actionId]))[0].number as number;
+  const counterOf = async (userId: string) => (await q(`select next from public.action_counters where user_id = $1`, [userId]))[0].next as number;
+
+  describe("D1c-1 start_agent_turn이 만드는 Action도 번호를 받는다", () => {
+    it("대화에서 맡긴 일은 사용자의 카운터에서 이어지는 번호를 받는다 (직접 만든 Action 뒤, 닫은 뒤의 새 일도 이어서)", async () => {
+      const w = await f.turnWorld();
+      const existing = await f.action(w.user); // 직접 만든 Action #1
+      expect(await numberOf(existing)).toBe(1);
+
+      const first = await f.start(w.user, w.message); // 칩 없는 일 → 새 Action
+      expect(first).toMatchObject({ status: "started", created_action: true });
+      expect(await numberOf(first.action_id!)).toBe(2);
+      expect(await counterOf(w.user)).toBe(3);
+
+      // 앞의 일을 닫고 새 메시지를 보내면 또 새 Action
+      await f.idle(first);
+      await f.updateRow("actions", first.action_id!, { status: "done" });
+      await f.q(`select public.stop_run($1,$2)`, [w.user, first.run_id]);
+      const message = String((await f.post(w.user, w.conversation, randomUUID(), "new work")).message_id);
+      const next = await f.start(w.user, message);
+      expect(next).toMatchObject({ status: "started", created_action: true });
+      expect(await numberOf(next.action_id!)).toBe(3);
+      expect(await counterOf(w.user)).toBe(4);
+      expect((await q(`select number from public.actions where user_id = $1 order by number`, [w.user])).map((r) => r.number)).toEqual([1, 2, 3]);
+    });
+
+    it("Action을 만들지 않고 미룬 시작(live_limit)은 번호를 쓰지 않는다", async () => {
+      const w = await f.turnWorld();
+      const session = await f.session(w.user, w.connection);
+      const run = await f.agentRun(w.user, await f.action(w.user), { agent_session_id: session }); // 직접 만든 Action #1
+      const task = await f.task(w.user, run, session, { state: "running" });
+      const deferred = await f.one(`select public.start_agent_turn($1,$2,'{}','{}','read_only',1) as result`, [w.user, w.message]);
+      expect(deferred.result).toEqual({ status: "queued", reason: "live_limit" });
+      expect(await counterOf(w.user)).toBe(2);
+      await f.updateRow("agent_tasks", task, { state: "idle" });
+      const pending = String((await f.one(`select agent_session_id from public.conversations where id=$1`, [w.conversation])).agent_session_id);
+      const started = await f.next(w.user, pending);
+      expect(started).toMatchObject({ status: "started", created_action: true });
+      expect(await numberOf(started.action_id!)).toBe(2);
+      expect(await counterOf(w.user)).toBe(3);
     });
   });
 }

@@ -72,7 +72,7 @@ export function executionAdditiveTests(db: () => ExecutionAdditiveDb) {
 
   // ───────────────────────── 1) 새 열 ─────────────────────────
   describe("execution_runs 새 열 (conversation_id · context_id · directive_version · bundle_context_version)", () => {
-    it("열의 모양: 형 · null 허용 · 기본값. 이 묶음에 없는 열(agent_session_id · message_id · target_at · acceptance)은 없다", async () => {
+    it("열의 모양: 형 · null 허용 · 기본값. 이 묶음에 없는 열(message_id · target_at · acceptance)은 없다 (agent_session_id는 D1a가 더했다 — tests/db/agent-gateway-core.scenarios.ts)", async () => {
       const columns = await q(
         `select column_name, data_type, is_nullable, column_default from information_schema.columns
           where table_schema = 'public' and table_name = 'execution_runs' and column_name = any ($1) order by column_name`,
@@ -86,7 +86,7 @@ export function executionAdditiveTests(db: () => ExecutionAdditiveDb) {
       ]);
       const absent = await q(
         `select column_name from information_schema.columns where table_schema = 'public' and table_name = 'execution_runs' and column_name = any ($1)`,
-        [["agent_session_id", "message_id", "target_at", "acceptance"]],
+        [["message_id", "target_at", "acceptance"]],
       );
       expect(absent).toEqual([]);
     });
@@ -280,7 +280,7 @@ export function executionAdditiveTests(db: () => ExecutionAdditiveDb) {
   });
 
   // ───────────────────────── 3) 실행 입구 ─────────────────────────
-  describe("새 값은 실행으로 새지 않는다: create_run은 draft만, append_step은 plan · draft · external만", () => {
+  describe("새 값은 실행으로 새지 않는다: create_run은 draft만, task run의 append_step은 plan · draft · external만", () => {
     it("create_run: agent · send · followup · 모르는 값 · 빈 값 · null은 거절하고 run · 단계 · 정책 · 이벤트를 한 줄도 만들지 않는다", async () => {
       const user = await f.user();
       const action = await f.action(user);
@@ -311,7 +311,7 @@ export function executionAdditiveTests(db: () => ExecutionAdditiveDb) {
       expect(signature.args).toBe("p_user_id uuid, p_action_id uuid, p_goal text, p_request text, p_budget_credits integer");
     });
 
-    it("append_step: 새 단계 종류는 거절하고 한 줄도 붙이지 않는다. plan · draft · external은 예전처럼 붙고 순번이 오른다", async () => {
+    it("append_step: task run은 새 단계 종류를 거절하고 한 줄도 붙이지 않는다. plan · draft · external은 예전처럼 붙고 순번이 오른다", async () => {
       const user = await f.user();
       const run = await f.run(user, await f.action(user));
       const steps = () => f.count(`select 1 from public.execution_steps where run_id = $1`, [run]);
@@ -751,19 +751,20 @@ export function executionAdditiveTests(db: () => ExecutionAdditiveDb) {
 
   // ───────────────────────── 5-2) C1에 넣지 않은 것은 그대로다 ─────────────────────────
   describe("넣지 않은 것은 켜지지 않았다 (런타임 계약 4장의 나머지는 C2 · D1 · E1 몫)", () => {
-    it("도구 · 스위치 행: 에이전트 · 검토 · 확인 · 관찰 도구와 에이전트 공급자 스위치 행이 없다 (목록 밖이라 begin_call이 막는 그대로)", async () => {
-      expect(await f.count(`select 1 from public.execution_tools where provider like 'agent:%' or tool in ('dispatch', 'message', 'cancel', 'review', 'check', 'observe')`)).toBe(0);
-      expect(await f.count(`select 1 from public.execution_controls where scope = 'provider' and key like 'agent:%'`)).toBe(0);
+    it("D1c-1 message 도구 둘은 external/blocked, 나머지 새 도구는 여전히 없다", async () => {
+      expect(await f.count(`select 1 from public.execution_tools where tool in ('dispatch', 'cancel', 'review', 'check', 'observe')`)).toBe(0);
+      expect(await q(`select key, blocked from public.execution_controls where scope = 'provider' and key like 'agent:%' order by key`)).toEqual([
+        { key: 'agent:claude-code', blocked: true }, { key: 'agent:codex', blocked: true },
+      ]);
       expect(await q(`select provider, tool, effect_class from public.execution_tools order by provider, tool`)).toEqual([
+        { provider: "agent:claude-code", tool: "message", effect_class: "external" },
+        { provider: "agent:codex", tool: "message", effect_class: "external" },
         { provider: "taskforce", tool: "draft", effect_class: "internal" },
         { provider: "taskforce", tool: "plan", effect_class: "internal" },
       ]);
     });
 
-    it("산출물 종류는 draft뿐이고 새 열이 없다. 실행 이벤트 종류는 run · step · hold뿐이고 새 열이 없다", async () => {
-      const user = await f.user();
-      const run = await f.run(user, await f.action(user));
-      await rejects(q(`insert into public.execution_events (user_id, run_id, type) values ($1, $2, 'agent')`, [user, run]), /violates check constraint/);
+    it("산출물 종류는 draft뿐이고 새 열이 없다. C1은 실행 이벤트 종류 · 열을 넓히지 않았다 (type 'agent'와 사건 봉투 열은 뒤의 D1a가 더했다 — tests/db/agent-gateway-core.scenarios.ts)", async () => {
       const kindCheck = await f.one(
         `select pg_get_constraintdef(c.oid) as def from pg_constraint c join pg_attribute a on a.attrelid = c.conrelid and a.attnum = c.conkey[1]
           where c.conrelid = 'public.execution_artifacts'::regclass and c.contype = 'c' and a.attname = 'kind'`,
@@ -771,15 +772,14 @@ export function executionAdditiveTests(db: () => ExecutionAdditiveDb) {
       expect(String(kindCheck.def)).toMatch(/draft/);
       expect(String(kindCheck.def)).not.toMatch(/review|agent_result|message/);
       const added = await q(
-        `select table_name, column_name from information_schema.columns where table_schema = 'public' and (
-           (table_name = 'execution_artifacts' and column_name in ('directive_version', 'result_revision', 'attribution', 'superseded_at'))
-           or (table_name = 'execution_events' and column_name in ('external_event_id', 'external_seq', 'directive_version', 'payload', 'bridge_id')))`,
+        `select table_name, column_name from information_schema.columns where table_schema = 'public' and
+           table_name = 'execution_artifacts' and column_name in ('directive_version', 'result_revision', 'attribution', 'superseded_at')`,
       );
       expect(added).toEqual([]);
     });
 
-    it("새 표는 연결별 정책 하나뿐이다: 에이전트 세션 · 작업 · 자원 잠금 표는 없다", async () => {
-      expect(await q(`select table_name from information_schema.tables where table_schema = 'public' and table_name in ('agent_sessions', 'agent_tasks', 'execution_resource_locks', 'action_dependencies', 'user_preferences')`)).toEqual([]);
+    it("C1의 새 표는 연결별 정책 하나뿐이다: 자원 잠금 · 의존 · 선호 표는 없다 (에이전트 세션 · 작업 표는 뒤의 D1a가 만들었다)", async () => {
+      expect(await q(`select table_name from information_schema.tables where table_schema = 'public' and table_name in ('execution_resource_locks', 'action_dependencies', 'user_preferences')`)).toEqual([]);
     });
   });
 }
@@ -813,7 +813,10 @@ export function executionUpgradeTests(fresh: () => Promise<FreshDb>) {
     "execution_tools", "execution_actors", "execution_recipient_allowlist", "credit_accounts", "credit_ledger", "actions", "connections", "rate_limit_events",
   ];
   const NEW_RUN_KEYS = ["conversation_id", "context_id", "directive_version", "bundle_context_version"];
-  // 뒤의 마이그레이션(20261120000000_action_numbers, D4c-3a)이 actions에 더한 열: 이 시험은 옛 열이 그대로인지만 본다
+  // 뒤의 마이그레이션(20261113000000_agent_gateway_core, D1a)이 더한 열: 이 시험은 옛 열이 그대로인지만 본다
+  const LATER_RUN_KEYS = ["kind", "agent_session_id", "reviewed_turn_seq"];
+  const LATER_EVENT_KEYS = ["external_event_id", "external_seq", "directive_version", "turn_seq", "bridge_id", "payload"];
+  // 뒤의 마이그레이션(20261120000000_action_numbers, D4c-3a)이 actions에 더한 열
   const LATER_ACTION_KEYS = ["number"];
 
   describe("업그레이드 회귀 (새 마이그레이션 전 상태 → 전체 적용)", () => {
@@ -886,13 +889,17 @@ export function executionUpgradeTests(fresh: () => Promise<FreshDb>) {
       for (const sql of [c1, ...after]) await db.exec(sql);
 
       const now = await snapshot();
+      // D1c-1 추가 행만 제외하고 옛 행 전체를 비교한다. 새 행의 정확한 값은 위 도구/스위치 시험이 고정한다.
+      now.execution_tools = now.execution_tools.filter(({ row }) => !["agent:claude-code", "agent:codex"].includes(String((row as Record<string, unknown>).provider)));
+      now.execution_controls = now.execution_controls.filter(({ row }) => !["agent:claude-code", "agent:codex"].includes(String((row as Record<string, unknown>).key)));
       const without = (rows: Rows, keys: string[]) => rows.map((r) => ({ row: Object.fromEntries(Object.entries(r.row as Record<string, unknown>).filter(([key]) => !keys.includes(key))) }));
       for (const table of TABLES) {
         if (table === "execution_runs") continue;
-        expect(table === "actions" ? without(now[table], LATER_ACTION_KEYS) : now[table], table).toEqual(old[table]);
+        const later = table === "execution_events" ? LATER_EVENT_KEYS : table === "actions" ? LATER_ACTION_KEYS : null;
+        expect(later ? without(now[table], later) : now[table], table).toEqual(old[table]);
       }
       // run: 옛 열은 그대로, 새 열은 기본값
-      const strip = (rows: Rows) => rows.map((r) => Object.fromEntries(Object.entries(r.row as Record<string, unknown>).filter(([key]) => !NEW_RUN_KEYS.includes(key))));
+      const strip = (rows: Rows) => without(rows, [...NEW_RUN_KEYS, ...LATER_RUN_KEYS]);
       expect(strip(now.execution_runs)).toEqual(strip(old.execution_runs));
       for (const r of now.execution_runs) {
         expect(r.row).toMatchObject({ conversation_id: null, context_id: null, directive_version: 1, bundle_context_version: null });

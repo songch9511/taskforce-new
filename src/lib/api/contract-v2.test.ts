@@ -12,6 +12,7 @@ import {
   agentCapabilitySchema,
   agentEventEnvelopeSchema,
   agentEventTypeSchema,
+  agentSessionStatusSchema,
   agentTaskStateSchema,
   billingCheckoutRequestV2Schema,
   billingRefundRequestV2Schema,
@@ -36,6 +37,7 @@ import {
   createConversationRequestSchema,
   createConversationResponseSchema,
   createWorkContextRequestSchema,
+  projectIconSchema,
   memoryConfirmRequestSchema,
   memoryEditRequestSchema,
   memoryForgetRequestSchema,
@@ -88,6 +90,21 @@ const AGENT_CAPABILITY = {
   cost: "estimated",
   artifacts: ["files", "diff", "text"],
 };
+
+it("accepts optional direct-chat descriptor fields without changing legacy capability DTOs", () => {
+  expect(agentCapabilitySchema.parse(AGENT_CAPABILITY)).toEqual(AGENT_CAPABILITY);
+  const extended = {
+    ...AGENT_CAPABILITY,
+    display_name: "Claude Code",
+    sign_in: "user_terminal",
+    cancel_scope: "turn_and_processes",
+    version_range: ">=2.1.241 <2.2",
+    question: { ...AGENT_CAPABILITY.question, structured: true },
+    enforcement: { ...AGENT_CAPABILITY.enforcement, read_only: boundary(null) },
+  };
+  expect(agentCapabilitySchema.parse(extended)).toEqual(extended);
+  expect(agentCapabilitySchema.safeParse({ ...extended, cancel_scope: "machine" }).success).toBe(false);
+});
 
 const AGENT_EVENT_QUESTION = {
   adapter: "agent:claude-code",
@@ -398,6 +415,8 @@ describe("범위 (work_contexts · context_members)", () => {
       name: "Shape 출시 준비",
       kind: "project",
       status: "active",
+      icon: "compass",
+      version: 3,
       context_version: 3,
       last_activity_at: "2026-10-09T05:00:00Z",
       created_at: "2026-10-01T05:00:00Z",
@@ -405,11 +424,25 @@ describe("범위 (work_contexts · context_members)", () => {
     };
     expect(workContextSchema.parse(row)).toEqual(row);
     expect(workContextSchema.safeParse({ ...row, kind: "team" }).success).toBe(false);
-    expect(createWorkContextRequestSchema.parse({ name: " Shape ", kind: "client" })).toEqual({ name: "Shape", kind: "client" });
+    expect(createWorkContextRequestSchema.parse({ name: " Shape ", kind: "project" })).toEqual({ name: "Shape", kind: "project" });
+    expect(createWorkContextRequestSchema.safeParse({ name: "Shape", kind: "client" }).success).toBe(false);
     expect(createWorkContextRequestSchema.safeParse({ name: "Shape" }).success).toBe(false);
-    expect(updateWorkContextRequestSchema.parse({ status: "archived" })).toEqual({ status: "archived" });
+    expect(updateWorkContextRequestSchema.parse({ status: "archived", expected_version: 1 })).toEqual({ status: "archived", expected_version: 1 });
     expect(updateWorkContextRequestSchema.safeParse({}).success).toBe(false);
-    expect(updateWorkContextRequestSchema.safeParse({ context_version: 4 }).success).toBe(false);
+    expect(updateWorkContextRequestSchema.safeParse({ context_version: 4, expected_version: 1 }).success).toBe(false);
+  });
+
+  it("프로젝트 아이콘과 optimistic version을 검증한다", () => {
+    const icons = ["rocket", "briefcase", "flask-conical", "palette", "code-xml", "megaphone", "book-open", "building-2", "leaf", "compass", "target", "users"];
+    expect(icons.every((icon) => projectIconSchema.safeParse(icon).success)).toBe(true);
+    expect(projectIconSchema.safeParse("star").success).toBe(false);
+    expect(createWorkContextRequestSchema.parse({ name: "Shape", kind: "project", icon: "rocket" }).icon).toBe("rocket");
+    expect(createWorkContextRequestSchema.safeParse({ name: "Shape", kind: "project", icon: "star" }).success).toBe(false);
+    expect(updateWorkContextRequestSchema.parse({ expected_version: 3, icon: "rocket" })).toEqual({ expected_version: 3, icon: "rocket" });
+    expect(updateWorkContextRequestSchema.safeParse({ name: "Shape" }).success).toBe(false);
+    expect(updateWorkContextRequestSchema.safeParse({ expected_version: 1 }).success).toBe(false);
+    expect(updateWorkContextRequestSchema.safeParse({ expected_version: 0, name: "Shape" }).success).toBe(false);
+    expect(updateWorkContextRequestSchema.safeParse({ expected_version: 2147483648, name: "Shape" }).success).toBe(false);
   });
 
   it("멤버 행: 종류마다 열 하나", () => {
@@ -529,10 +562,12 @@ describe("에이전트 · bridge", () => {
     expect(agentEventEnvelopeSchema.safeParse({ ...AGENT_EVENT_QUESTION, event_id: "" }).success).toBe(false);
   });
 
-  it("원격 작업 상태", () => {
+  it("원격 작업 상태 (idle = 턴의 끝, completed가 아니다) · 세션 상태", () => {
     expect(agentTaskStateSchema.options).toEqual([
-      "dispatched", "accepted", "running", "awaiting_answer", "completed", "failed", "cancelled", "unreachable",
+      "dispatched", "accepted", "running", "awaiting_answer", "idle", "completed", "failed", "cancelled", "unreachable",
     ]);
+    expect(agentSessionStatusSchema.options).toEqual(["bound", "external", "unreachable", "closed"]);
+    expect(agentSessionStatusSchema.safeParse("paused").success).toBe(false);
   });
 
   it("bridge 등록 · 명령 · 사건 · heartbeat", () => {

@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import pg from "pg";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 
-import { actionNumbersLockPrivilegeTests, actionNumbersTests, actionNumbersUpgradeTests, type ActionNumbersDb } from "../db/action-numbers.scenarios";
+import { actionNumbersAgentTurnTests, actionNumbersLockPrivilegeTests, actionNumbersTests, actionNumbersUpgradeTests, type ActionNumbersDb } from "../db/action-numbers.scenarios";
 import { supabaseSchemaScripts } from "../db/local-supabase";
 
 // 0.2.0 OA D4c-3a (20261120000000_action_numbers) — 실제 Postgres. PGlite와 같은 시나리오 + 연결이 둘 이상 필요한 경합 (T7):
@@ -89,6 +89,7 @@ const db = (): ActionNumbersDb => ({
 
 describe("이슈 번호 (실제 Postgres)", () => {
   actionNumbersTests(db);
+  actionNumbersAgentTurnTests(db);
 });
 
 // 업그레이드 · 소유자 권한 시험: 마이그레이션을 아직 적용하지 않은 새 데이터베이스 (실제 Postgres)

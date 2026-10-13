@@ -1,7 +1,7 @@
 import type { PGlite } from "@electric-sql/pglite";
 import { beforeAll, describe } from "vitest";
 
-import { actionNumbersLockPrivilegeTests, actionNumbersTests, actionNumbersUpgradeTests } from "./action-numbers.scenarios";
+import { actionNumbersAgentTurnTests, actionNumbersLockPrivilegeTests, actionNumbersTests, actionNumbersUpgradeTests } from "./action-numbers.scenarios";
 import { freshPgliteForEachTest } from "./fresh-pglite";
 import { asUser, createLocalSupabase } from "./local-supabase";
 
@@ -13,11 +13,14 @@ beforeAll(async () => {
   db = await createLocalSupabase();
 }, 60_000);
 
+const appDb = () => ({
+  query: async (sql: string, params?: unknown[]) => (await db.query<Record<string, unknown>>(sql, params)).rows,
+  asUser: <T,>(userId: string, fn: () => Promise<T>) => asUser(db, userId, fn),
+});
+
 describe("이슈 번호 (PGlite)", () => {
-  actionNumbersTests(() => ({
-    query: async (sql, params) => (await db.query<Record<string, unknown>>(sql, params)).rows,
-    asUser: (userId, fn) => asUser(db, userId, fn),
-  }));
+  actionNumbersTests(appDb);
+  actionNumbersAgentTurnTests(appDb);
 });
 
 // 업그레이드 · 소유자 권한 시험은 새 PGlite를 따로 만든다 (위의 db와 따로)

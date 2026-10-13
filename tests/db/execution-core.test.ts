@@ -40,18 +40,22 @@ beforeAll(async () => {
 }, 60_000);
 
 describe("처음 상태: 닫힌 쪽", () => {
-  it("전체 스위치가 막혀 있고, 풀어도 Manual만, 공급자는 내장(taskforce)만, 도구는 내장 계획 · 초안만이다", async () => {
+  it("전체 스위치가 막혀 있고, 풀어도 Manual만, 내장 공급자는 열리고 에이전트 공급자는 막혀 있으며, 도구는 내장 계획 · 초안과 외부 message다", async () => {
     const controls = await db.query("select scope, key, blocked from public.execution_controls order by scope, key");
     expect(controls.rows).toEqual([
       { scope: "global", key: "*", blocked: true },
       { scope: "mode", key: "auto", blocked: true },
       { scope: "mode", key: "full", blocked: true },
       { scope: "mode", key: "manual", blocked: false },
+      { scope: "provider", key: "agent:claude-code", blocked: true },
+      { scope: "provider", key: "agent:codex", blocked: true },
       { scope: "provider", key: "taskforce", blocked: false },
     ]);
-    const tools = await db.query("select provider, tool, effect_class from public.execution_tools order by tool");
+    const tools = await db.query("select provider, tool, effect_class from public.execution_tools order by tool, provider");
     expect(tools.rows).toEqual([
       { provider: "taskforce", tool: "draft", effect_class: "internal" },
+      { provider: "agent:claude-code", tool: "message", effect_class: "external" },
+      { provider: "agent:codex", tool: "message", effect_class: "external" },
       { provider: "taskforce", tool: "plan", effect_class: "internal" },
     ]);
     expect((await one<{ n: number }>("select count(*)::int as n from public.execution_actors")).n).toBe(0);
@@ -330,7 +334,11 @@ describe("실행 이벤트", () => {
     const { rows } = await db.query<{ column_name: string }>(
       "select column_name from information_schema.columns where table_schema = 'public' and table_name = 'execution_events' order by ordinal_position",
     );
-    expect(rows.map((r) => r.column_name)).toEqual(["id", "user_id", "run_id", "step_id", "type", "from_state", "to_state", "gate", "at"]);
+    // 뒤 여섯 열은 에이전트 사건 봉투 (20261113000000_agent_gateway_core): run · step · hold 사건은 쓰지 않는다
+    expect(rows.map((r) => r.column_name)).toEqual([
+      "id", "user_id", "run_id", "step_id", "type", "from_state", "to_state", "gate", "at",
+      "external_event_id", "external_seq", "directive_version", "turn_seq", "bridge_id", "payload",
+    ]);
   });
 });
 

@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest";
 import { MAX_CONCURRENT_COST_STEPS, MAX_LIVE_EXTERNAL_TASKS, MAX_OPEN_RUNS_PER_ACTION, MAX_STEPS, MAX_STEPS_BY_GOAL, WAITING_RUN_RETENTION_DAYS } from "./limits";
 import { EXECUTABLE_GOALS, RUN_GOALS } from "./types";
 
-// 0.2.0 C1: 런타임 계약 4장의 한도 값. 값만 정해 둔 것이다 — 이 묶음에서는 새 goal을 실행하지 않으므로 draft의 MAX_STEPS 말고는 어디서도 읽지 않는다.
+// 0.2.0 C1 한도 값. D1c-1은 살아 있는 외부 작업 한도만 agents/turns.ts에서 소비한다.
 
 describe("goal별 단계 상한 (런타임 계약 4장)", () => {
   it("draft 4(기존) · agent 12 · send 4 · followup 3, 모든 goal에 상한이 있다", () => {
@@ -26,7 +26,7 @@ describe("동시성 한도 (런타임 계약 4장)", () => {
   });
 });
 
-describe("값만 있다: 새 상수를 읽는 코드가 아직 없다 (센다 · 막는다는 C2 · D1 몫)", () => {
+describe("한도 소비처는 구현된 입구만 허용한다", () => {
   const ROOT = path.resolve(__dirname, "../../..");
   const files = (dir: string): string[] =>
     readdirSync(dir).flatMap((name) => {
@@ -35,11 +35,13 @@ describe("값만 있다: 새 상수를 읽는 코드가 아직 없다 (센다 ·
       return /\.tsx?$/.test(name) && !/\.test\.tsx?$/.test(name) ? [full] : [];
     });
 
-  it("MAX_STEPS_BY_GOAL · 동시성 상수는 limits.ts 밖의 실행 코드에서 쓰지 않는다 (소비하는 단계가 이 목록을 함께 고친다)", () => {
+  it("agents/turns.ts만 MAX_LIVE_EXTERNAL_TASKS를 소비하고 다른 새 상수의 소비처는 없다", () => {
     const consumers = files(path.join(ROOT, "src"))
       .filter((file) => !file.endsWith(path.join("execution", "limits.ts")))
       .filter((file) => /\b(MAX_STEPS_BY_GOAL|MAX_CONCURRENT_COST_STEPS|MAX_LIVE_EXTERNAL_TASKS|WAITING_RUN_RETENTION_DAYS|MAX_OPEN_RUNS_PER_ACTION)\b/.test(readFileSync(file, "utf8")))
       .map((file) => path.relative(ROOT, file));
-    expect(consumers).toEqual([]);
+    expect(consumers).toEqual(["src/lib/agents/turns.ts"]);
+    const turnSource = readFileSync(path.join(ROOT, consumers[0]), "utf8");
+    expect(turnSource.match(/\b(MAX_STEPS_BY_GOAL|MAX_CONCURRENT_COST_STEPS|WAITING_RUN_RETENTION_DAYS|MAX_OPEN_RUNS_PER_ACTION)\b/g)).toBeNull();
   });
 });

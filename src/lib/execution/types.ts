@@ -18,7 +18,11 @@ export const RUN_GOALS = ["draft", "agent", "send", "followup"] as const;
 export type RunGoal = (typeof RUN_GOALS)[number];
 export const STEP_KINDS = ["plan", "draft", "external", "agent_dispatch", "agent_message", "agent_cancel", "review", "check", "send", "observe"] as const;
 export type StepKind = (typeof STEP_KINDS)[number];
+/** execution_runs.kind (20261113000000_agent_gateway_core, 계약 v3 3.4): task = Taskforce가 맡긴 작업, conversation = 에이전트 직접 대화(세션 × 이슈마다 열린 run 하나) */
+export const RUN_KINDS = ["task", "conversation"] as const;
+export type RunKind = (typeof RUN_KINDS)[number];
 /** 실행기가 단계를 돌리는 goal. 다른 goal의 run은 깨우지도(sweep) 돌리지도(advance) 않는다 */
+// 대화 run의 agent_message 준비는 src/lib/agents와 start_agent_turn SQL의 별도 경로다. 실행기 목록은 넓히지 않는다.
 export const EXECUTABLE_GOALS = ["draft"] as const satisfies readonly RunGoal[];
 /** 실행기가 준비하고 부르는 단계 종류(내장 계획 · 초안). external은 준비도 부르기도 하지 않고(발송은 U6a), 나머지는 아직 실행하는 코드가 없다 */
 export const EXECUTABLE_STEP_KINDS = ["plan", "draft"] as const satisfies readonly StepKind[];

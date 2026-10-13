@@ -4,6 +4,7 @@
 gate `MEMORY_ENABLED` · `SOURCE_CHUNKS_ENABLED`(`src/lib/flags.ts`)가 기본 꺼짐이고, 꺼져 있으면 서버는 새 표를 읽지도 쓰지도 않고 임베딩을 부르지 않는다.
 대화 v2 route는 B2가 붙였다(7장, gate `CONVERSATIONS_V2_ENABLED` 기본 꺼짐). 기억 확인 · 정정 · 잊기 · 범위 옮기기 route와 대화 범위 바꾸기는 B3 PR1이 붙였다(8장, gate `MEMORY_ENABLED` · `CONVERSATIONS_V2_ENABLED` 기본 꺼짐).
 사용자의 범위 멤버십 넣기 · 빼기 · 옮기기 route는 S3b 서버가 붙였다(9장, gate `MEMORY_ENABLED` 기본 꺼짐).
+프로젝트 만들기 · 이름 · 아이콘 · 보관 route는 D4c-1s가 붙였다(11장, 같은 gate). 편집은 `version` optimistic lock이고, 보관은 기존 `context_version_bumps` 큐를 사용한다.
 
 | 무엇 | 위치 |
 |---|---|
@@ -98,6 +99,7 @@ B2(대화 v2, gate `CONVERSATIONS_V2_ENABLED`, 기본 꺼짐)는 이 층을 **�
 - **쓰기 (기억):** 사용자 메시지에서 나온 explicit만, 인용을 그 메시지와 기계로 대조하고 Jev 판정(인용이 문장을 그대로 말하는가, 정정이면 같은 대상의 이전 기억을 바꾸는가, "기억해 둘까요?"에 대한 답이면 동의했는가)을 통과한 것만(`src/lib/conversation/memory.ts`). 아키텍처 7.3 J7(기계 검증만)보다 보수적이고, 기억을 쓰는 turn은 모델 호출이 3번(J1 · J2 · 판정)이다. 판정이 실패하면 기억만 버리고 답은 남긴다. 가리킨 정정 대상은 kind(와 주제)가 같아야 한다. 기억 쓰기는 의도 확신 ≥ 0.8에서만(상담 중 함께 말한 사실도). 출처는 `source_ref.message_id` + 인용(원문 id가 아니다: Slack D3 · 보관 기간 전파와 상관없다). 범위는 대화 범위(범위가 없으면 전체). 같은 범위 기억의 정정은 그 행을 `p_corrects`로(version 확인), 더 넓은 범위(전체) 기억의 정정은 전체 행을 두고 대화 범위에 같은 사실(kind + subject)의 새 행을 쓴다 — 읽을 때 그 범위 안에서만 이긴다(1장 규칙 그대로). 모델이 만든 인용 · 기억은 저장하지 않고 inferred로도 쓰지 않는다.
 - **Slack D3 · 원문 삭제:** 답 내용(`conversation_messages.content.citations`)의 인용 · 제목은 가드 `conversation_messages_citation_guard`가 쓸 때마다 원문의 지금 상태로 고친다: Slack 끊기 · 앱 제거로 지운 원문(`raw_text_purge_reason = 'disconnected'`)이면 근거 인용과 같은 자리 표시 · `Slack`, 원문 행이 없으면 인용 · 제목 · 링크를 비운다. 가드는 원문 행을 `for share`로 잠가 원문 글 지우기와 한 줄로 서고(B1 지운 원문 가드와 같은 방식), 원문 쪽 트리거 `sources_refresh_conversation_citations`가 끊기 · 삭제 때 그 원문을 인용한 답을 다시 쓴다(인용 원문 id GIN 인덱스로 찾는다). `conversation_finish_turn`은 답이 인용한 원문을 맨 먼저(id 순) 잠근다. 보관 기간 정리 · 접근 상실은 근거 인용처럼 남긴다.
 - **Slack D3 범위 (출시 gate의 제품 · 법무 결정, 이번에 정하지 않음):** 답 글(text · segments)과 다음 turn 창에 실리는 앞 답에는 Slack에서 온 글자(모델이 옮긴 문장)가 남을 수 있다. 선택지: 끊을 때 Slack 인용이 든 답의 T1 구간을 비우기 / 프롬프트에 원문을 그대로 옮기지 말라고 두기 / 지금처럼 유지(할 일 제목처럼 모델 요약은 남김).
+- **대화 대상 (D1b):** 대화에 상대(`target_kind` = `taskforce` \| `agent`)가 생겼다. 대상 `agent` 대화는 이 층(기억 · 묶음)을 쓰지 않고, 글은 에이전트가 쓰며(`conversation_append_agent_message`), 코디네이터 사건을 만들지 않는다. 열 · 함수 · 대상별 규칙은 [agent-gateway.md](agent-gateway.md) 7장.
 - **B1 코드에 더한 것 (additive):** `loadScopeMemory`가 `version`도 읽는다(정정의 `p_expected_version`), `searchContextChunks`가 마감(`options.deadline`)을 받는다(사용자가 기다리는 요청).
 - **6장에서 처리:** 대화 만들기 멱등(앱이 정한 대화 id, 같은 사용자의 같은 id면 그 대화) · `client_message_id`는 사용자 메시지에만(답은 `reply_to`로 잇고 사용자 메시지 하나에 답 하나).
 - **5장 열린 질문 — B2가 정하지 않았다 (그대로 열림):**
@@ -195,3 +197,10 @@ AI를 부르지 않고 run · Action · Claim · 정책 · 승인을 만들지 �
 - **B3 PR1 · S3b의 "사건함에 한 줄도 더하지 않는다" 경계 시험을 좁혔다** (`tests/db/memory-writes.scenarios.ts` · `context-members.scenarios.ts`): 다른 표는 그대로 0줄이고 사건함은 `memory_changed`만 예외다(다른 종류는 여전히 0줄). 쓰기 경로 · 반환값 · 권한은 바뀌지 않았다. 되돌리려면 트리거 `coordinator_on_context_version`을 지우고 시험을 되돌린다.
 - 바뀐 트리거 목록 시험: `tests/db/context-core.test.ts`(C2의 트리거 셋을 더함).
 
+## 11. 프로젝트 이름 · 아이콘 · 보관 (D4c-1s)
+
+- `POST /api/v2/contexts`는 project만 생성한다. 아이콘은 `PROJECT_ICON_POOL`(12개) 중 선택하고, 생략하면 DB가 무작위로 정한다.
+- `PATCH /api/v2/contexts/{id}`는 `expected_version`이 현재 버전과 같을 때만 이름 · 아이콘 · 상태를 바꾸며, stale 요청은 409다. 변경이 없으면 version을 유지한다.
+- DB 함수는 service role만 실행할 수 있다. 앱은 `work_contexts`를 RLS로 읽고 icon · version을 직접 쓸 수 없다. 최초 보관은 기존 `context_version_bumps` deferred flush를 거쳐 `context_version`을 한 번 올린다.
+- 변경 이벤트는 DB 함수와 같은 트랜잭션에서 남긴다. 자동 프로젝트 생성 경로는 추가하지 않는다.
+- 검증: `tests/db/context-icon-version.test.ts`(PGlite), `tests/pg/context-icon-version.test.ts`(Postgres 경합 시나리오, 코디네이터 실행).

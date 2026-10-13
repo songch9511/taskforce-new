@@ -602,7 +602,7 @@ describe("on delete: 부모를 지우면", () => {
 describe("updated_at · 트리거", () => {
   const UPDATED = ["people", "work_contexts", "context_members", "memory_items", "identity_links"] as const;
 
-  it("updated_at이 있는 표는 기존 set_updated_at 트리거를 쓰고, A2의 새 함수는 기억 이력 보호 하나다 (B1 · B2가 더한 트리거는 따로 적는다)", async () => {
+  it("updated_at이 있는 표는 기존 set_updated_at 트리거를 쓰고, A2의 새 함수는 기억 이력 보호 하나다 (B1 · B2 · D1b가 더한 트리거는 따로 적는다)", async () => {
     const { rows } = await db.query<{ table: string; fn: string }>(
       `select c.relname as table, p.proname as fn from pg_trigger t
        join pg_class c on c.oid = t.tgrelid join pg_proc p on p.oid = t.tgfoid
@@ -628,8 +628,13 @@ describe("updated_at · 트리거", () => {
       { table: "inbox_events", fn: "inbox_events_guard" },
       { table: "work_contexts", fn: "coordinator_on_context_version" },
     ];
+    // D1b(20261114000000_conversation_agent_target): 대화 대상 불변 트리거(conversations)와 대상 일치 백스톱(conversation_messages). 동작은 tests/db/conversation-agent-target.scenarios.ts가 본다
+    const D1B = [
+      { table: "conversation_messages", fn: "conversation_messages_target_guard" },
+      { table: "conversations", fn: "conversations_agent_target_guard" },
+    ];
     expect(rows).toEqual(
-      [...[...UPDATED].map((table) => ({ table, fn: "set_updated_at" })), { table: "memory_items", fn: "memory_items_keep_history" }, ...B1, ...B2, ...C2].sort(
+      [...[...UPDATED].map((table) => ({ table, fn: "set_updated_at" })), { table: "memory_items", fn: "memory_items_keep_history" }, ...B1, ...B2, ...C2, ...D1B].sort(
         (a, b) => a.table.localeCompare(b.table) || a.fn.localeCompare(b.fn),
       ),
     );

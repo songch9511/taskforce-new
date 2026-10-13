@@ -17,10 +17,14 @@ const USER_TABLES = [
   "action_events",
   "action_links",
   "actions",
+  "agent_connections",
+  "agent_sessions",
+  "agent_tasks",
   "ai_spend_attempts",
   "billing_accounts",
   "billing_checkout_intents",
   "billing_webhook_events",
+  "bridges",
   "claims",
   "connection_requests",
   "connections",
@@ -207,6 +211,23 @@ async function seed(userId: string, tokenHex: string) {
   );
   await db.query(`insert into public.execution_approvals (user_id, step_id, hash, expires_at) values ($1, $2, 'h', now())`, [userId, stepId]);
   await db.query(`insert into public.execution_intents (intent_key, user_id, step_id) values ($1, $2, $3)`, [`key-${userId}`, userId, stepId]);
+  // 0.2.0 D1a(20261113000000): bridge · 에이전트 연결 · 세션 · 작업 · 에이전트 사건이 서로와 run · 단계 · 메시지 · Action을 가리킨다(복합 외래키 cascade / set null).
+  // 계정 삭제 한 문장 안에서 함께 지워져 서로 막지 않아야 한다
+  const bridgeId = await one(`insert into public.bridges (user_id, device_ref) values ($1, $2) returning id`, [userId, `device-${userId}`]);
+  const agentConnectionId = await one(`insert into public.agent_connections (user_id, adapter, bridge_id) values ($1, 'agent:claude-code', $2) returning id`, [userId, bridgeId]);
+  const agentSessionId = await one(
+    `insert into public.agent_sessions (user_id, connection_id, external_session_id, workspace_ref, bound_action_id) values ($1, $2, 'ext-1', 'ws-1', $3) returning id`,
+    [userId, agentConnectionId, actionId],
+  );
+  await db.query(`update public.execution_runs set agent_session_id = $2 where id = $1`, [runId, agentSessionId]);
+  await db.query(`insert into public.agent_tasks (user_id, run_id, step_id, agent_session_id, message_id, turn_seq, state) values ($1, $2, $3, $4, $5, 1, 'idle')`, [
+    userId,
+    runId,
+    stepId,
+    agentSessionId,
+    messageId,
+  ]);
+  await db.query(`insert into public.execution_events (user_id, run_id, type, external_event_id, bridge_id) values ($1, $2, 'agent', 'evt-1', $3)`, [userId, runId, bridgeId]);
   // 크레딧 · 산출물 · 원가: 운영자 지급, 다른 run에서 계획 단계 → 초안 단계를 실행기처럼 끝까지 (예약 · 정산 · 해제 · 산출물 · 원가 행).
   // 원장 · 원가의 run · step 외래키는 지울 때 막는다(no action): 계정 삭제는 같은 문장 안에서 원장도 함께 지워 막히지 않아야 한다
   await db.query(`select public.grant_credits($1, 100, gen_random_uuid())`, [userId]);

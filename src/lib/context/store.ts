@@ -3,7 +3,7 @@ import "server-only";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 import { budgetFetch } from "@/lib/ai/budget";
-import { agentAdapterIdSchema } from "@/lib/api/contract";
+import { agentAdapterIdSchema, type WorkContext } from "@/lib/api/contract";
 import { embed, embedConfigFromEnv } from "@/lib/ai/embed";
 import { withConsentGate } from "@/lib/consent/gate";
 import { consentCheck } from "@/lib/consent/store";
@@ -118,12 +118,38 @@ export async function loadScopeMemory(admin: SupabaseClient, userId: string, tar
 export async function createContext(
   admin: SupabaseClient,
   userId: string,
-  input: { name: string; kind: "project" | "client" | "goal" | "personal" },
+  input: { name: string; kind: "project"; icon?: WorkContext["icon"] },
   env: Env = process.env,
-): Promise<string> {
+): Promise<WorkContext> {
   requireGate("MEMORY_ENABLED", env);
-  const { data } = await admin.from("work_contexts").insert({ user_id: userId, name: input.name, kind: input.kind }).select("id").single().throwOnError();
-  return (data as { id: string }).id;
+  const { data } = await admin.rpc("create_work_context", { p_user_id: userId, p_name: input.name, p_kind: input.kind, p_icon: input.icon ?? null }).throwOnError();
+  return data as WorkContext;
+}
+
+export type UpdateContextResult = { status: "ok" | "unchanged"; context: WorkContext } | { status: "conflict" } | { status: "not_found" };
+
+export async function updateContext(
+  admin: SupabaseClient,
+  userId: string,
+  id: string,
+  expectedVersion: number,
+  changes: { name?: string; icon?: WorkContext["icon"]; status?: "active" | "archived" },
+  env: Env = process.env,
+): Promise<UpdateContextResult> {
+  requireGate("MEMORY_ENABLED", env);
+  const { data } = await admin.rpc("update_work_context", {
+      p_user_id: userId,
+      p_id: id,
+      p_expected_version: expectedVersion,
+      p_name: changes.name ?? null,
+      p_icon: changes.icon ?? null,
+      p_status: changes.status ?? null,
+    })
+    .throwOnError();
+  const result = data as { status: UpdateContextResult["status"]; context: WorkContext | null };
+  if (result.status === "not_found" || result.status === "conflict") return { status: result.status };
+  if (!result.context) throw new Error("update_work_context returned no context");
+  return { status: result.status, context: result.context };
 }
 
 /** 코드 규칙(auto) · 모델 후보(inferred)의 멤버 추가. 이미 있으면(사용자가 넣었거나 뺀 멤버 포함) 그대로 둔다: 자동 규칙은 사용자의 선택을 덮지 않는다 */

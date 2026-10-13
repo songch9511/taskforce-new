@@ -26,7 +26,7 @@ export const MAX_STEPS = 4;
  */
 export const MAX_STEPS_BY_GOAL = { draft: MAX_STEPS, agent: 12, send: 4, followup: 3 } as const;
 
-// 동시성 한도 (런타임 계약 4장). 세 가지를 나눈다. 값만 정해 둔 것이고 이 묶음에서는 어디서도 세지 않는다(코디네이터 C2 · 게이트웨이 D1이 센다).
+// 동시성 한도 (런타임 계약 4장). 외부 작업은 agents/turns.ts가 세며 나머지 입구는 C2 · 뒤 게이트웨이 단계가 맡는다.
 /** ① 실행 동시성: 사용자당 동시에 calling인 비용 단계(모델 · 에이전트 호출) */
 export const MAX_CONCURRENT_COST_STEPS = 3;
 /** ② 살아 있는 외부 작업: 실행 중이거나 실행 가능성이 남은 원격 작업 (dispatched · accepted · running, 실행 여부가 불명인 unreachable) */

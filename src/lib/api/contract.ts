@@ -976,6 +976,8 @@ export type UpdateConversationResponse = z.infer<typeof updateConversationRespon
 
 export const workContextKindSchema = z.enum(["project", "client", "goal", "personal"]);
 export const workContextStatusSchema = z.enum(["active", "archived"]);
+export const PROJECT_ICON_POOL = ["rocket", "briefcase", "flask-conical", "palette", "code-xml", "megaphone", "book-open", "building-2", "leaf", "compass", "target", "users"] as const;
+export const projectIconSchema = z.enum(PROJECT_ICON_POOL);
 
 /** work_contexts 행 */
 export const workContextSchema = z.object({
@@ -983,6 +985,8 @@ export const workContextSchema = z.object({
   name: z.string(),
   kind: workContextKindSchema,
   status: workContextStatusSchema,
+  icon: projectIconSchema,
+  version: z.number().int().positive(),
   context_version: z.number().int().positive(),
   last_activity_at: z.string(),
   created_at: z.string(),
@@ -990,14 +994,16 @@ export const workContextSchema = z.object({
 });
 export type WorkContext = z.infer<typeof workContextSchema>;
 
-export const createWorkContextRequestSchema = z.object({ name: z.string().trim().min(1).max(200), kind: workContextKindSchema }).strict();
+export const createWorkContextRequestSchema = z.object({ name: z.string().trim().min(1).max(200), kind: z.literal("project"), icon: projectIconSchema.optional() }).strict();
 export type CreateWorkContextRequest = z.infer<typeof createWorkContextRequestSchema>;
+export const workContextResponseSchema = z.object({ context: workContextSchema });
+export type WorkContextResponse = z.infer<typeof workContextResponseSchema>;
 
-/** 이름 바꾸기 · 보관(archive). 분할 · 병합은 사용자만 (자동 병합 없음) */
+/** 프로젝트 이름 · 아이콘 · 상태 수정. expected_version은 필수다. */
 export const updateWorkContextRequestSchema = z
-  .object({ name: z.string().trim().min(1).max(200).optional(), status: workContextStatusSchema.optional() })
+  .object({ name: z.string().trim().min(1).max(200).optional(), icon: projectIconSchema.optional(), status: workContextStatusSchema.optional(), expected_version: z.number().int().positive().max(2147483647) })
   .strict()
-  .refine((r) => r.name !== undefined || r.status !== undefined, { message: "바꿀 값이 없습니다" });
+  .refine((r) => r.name !== undefined || r.icon !== undefined || r.status !== undefined, { message: "바꿀 값이 없습니다" });
 export type UpdateWorkContextRequest = z.infer<typeof updateWorkContextRequestSchema>;
 
 export const contextMemberKindSchema = z.enum(["action", "source", "person"]);
@@ -1106,14 +1112,18 @@ export type Boundary = z.infer<typeof boundarySchema>;
  */
 export const agentCapabilitySchema = z.object({
   adapter: agentAdapterIdSchema,
+  display_name: z.string().min(1).max(200).optional(),
   transport: z.enum(["remote_api", "local_bridge"]),
+  sign_in: z.enum(["user_terminal", "user_app", "token"]).optional(),
   session: z.object({ list: z.boolean(), attach_existing: z.boolean(), create: z.boolean(), workspace_scoped: z.boolean() }),
   dispatch: z.object({ ack_level: z.enum(["transport", "agent"]), max_instruction_chars: z.number().int().positive() }),
   events: z.enum(["push", "poll", "none"]),
-  question: z.object({ receive: z.boolean(), answer: z.boolean() }),
+  question: z.object({ receive: z.boolean(), answer: z.boolean(), structured: z.boolean().optional() }),
   cancel: z.enum(["confirmed", "requested_only", "unsupported"]),
+  cancel_scope: z.enum(["turn", "turn_and_processes"]).optional(),
+  version_range: z.string().min(1).max(200).optional(),
   resume: z.enum(["supported", "unsupported"]),
-  enforcement: z.object({ approval_gate: boundarySchema, target_scope: boundarySchema, revocation: boundarySchema, budget: boundarySchema }),
+  enforcement: z.object({ approval_gate: boundarySchema, target_scope: boundarySchema, revocation: boundarySchema, budget: boundarySchema, read_only: boundarySchema.optional() }),
   cost: z.enum(["observable", "estimated", "unknown"]),
   artifacts: z.array(z.enum(["files", "diff", "url", "text"])),
 });
@@ -1146,11 +1156,21 @@ export const agentEventEnvelopeSchema = z.object({
 });
 export type AgentEventEnvelope = z.infer<typeof agentEventEnvelopeSchema>;
 
-/** agent_tasks.state (런타임 계약 5장). unreachable은 실패가 아니다: reconcile 뒤 last_live_state로 돌아갈 수 있다 */
+/**
+ * agent_tasks.state (런타임 계약 5장). unreachable은 실패가 아니다: reconcile 뒤 last_live_state로 돌아갈 수 있다.
+ * idle은 직접 대화의 턴이 끝나 다음 사용자 메시지를 기다리는 상태다 — completed가 아니다 (계약 v3 3.4)
+ */
 export const agentTaskStateSchema = z.enum([
-  "dispatched", "accepted", "running", "awaiting_answer", "completed", "failed", "cancelled", "unreachable",
+  "dispatched", "accepted", "running", "awaiting_answer", "idle", "completed", "failed", "cancelled", "unreachable",
 ]);
 export type AgentTaskState = z.infer<typeof agentTaskStateSchema>;
+
+/**
+ * agent_sessions.status (계약 v3 3.8). external = 사용자가 Open in Terminal로 터미널에서 이어 쓰는 중(Taskforce 전달 0), unreachable은 bridge에 닿지 않음,
+ * closed는 끝난 세션이다
+ */
+export const agentSessionStatusSchema = z.enum(["bound", "external", "unreachable", "closed"]);
+export type AgentSessionStatus = z.infer<typeof agentSessionStatusSchema>;
 
 // ─── Mac bridge (아키텍처 9.1). bridge는 끌어온다: 명령 long-poll ≤ 25초, heartbeat 30초 (3회 누락 → unreachable) ───
 
