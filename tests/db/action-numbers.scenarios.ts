@@ -557,3 +557,78 @@ export function actionNumbersUpgradeTests(fresh: () => Promise<FreshDb>) {
     });
   });
 }
+
+// ───────────────────────── 사용자 행 잠금과 소유자 권한 ─────────────────────────
+
+/**
+ * 번호 트리거의 사용자 행 잠금(auth.users for key share, 계정 삭제와의 교착 방지)은 select for key share가 SELECT와 UPDATE 권한을 모두 요구하므로
+ * 트리거 소유자(security definer)에게 그 권한이 있을 때만 건다. 권한이 없는 소유자로 잠그면 모든 Action 생성이 실패하기 때문이다(운영의 postgres 권한은 확인하지 못했다).
+ * 새 데이터베이스에 마이그레이션을 모두 적용하고 번호 부여 함수의 소유자를 auth.users에 UPDATE 권한이 없는 비슈퍼유저 역할로 바꿔 본다
+ * (RLS를 건너뛰는 역할: 운영의 postgres처럼 action_counters의 정책 없는 RLS에 막히지 않는다).
+ * 한계: 잠금을 실제로 걸었는지(교착 방지)는 연결 둘이 필요해 실제 Postgres 경합 시험(tests/pg/action-numbers.test.ts, 소유자 = 슈퍼유저)이 본다. 여기서는 권한 있는 비슈퍼유저 소유자도 생성이 된다는 것만 본다.
+ */
+export function actionNumbersLockPrivilegeTests(fresh: () => Promise<FreshDb>, ownerRole: string) {
+  describe("사용자 행 잠금은 트리거 소유자에게 auth.users 권한이 있을 때만 건다", { timeout: 60_000 }, () => {
+    async function withOwner(): Promise<FreshDb> {
+      const db = await fresh();
+      for (const sql of await supabaseSchemaScripts()) await db.exec(sql);
+      await db.exec(`
+        do $$ begin
+          if not exists (select 1 from pg_roles where rolname = '${ownerRole}') then create role ${ownerRole} nologin bypassrls; end if;
+        end $$;
+        grant usage on schema public, auth to ${ownerRole};
+        grant create on schema public to ${ownerRole};
+        grant select, insert, update on public.action_counters to ${ownerRole};
+        grant select on auth.users to ${ownerRole};
+        alter function public.actions_assign_number() owner to ${ownerRole};
+      `);
+      return db;
+    }
+    const newUser = async (db: FreshDb) => {
+      const id = randomUUID();
+      await db.query(`insert into auth.users (id, email) values ($1, $2)`, [id, `${id}@example.com`]);
+      return id;
+    };
+    const addAction = async (db: FreshDb, userId: string) => (await db.query(`insert into public.actions (user_id, title) values ($1, '할 일') returning number`, [userId]))[0].number as number;
+
+    it("소유자에게 UPDATE 권한이 없으면 잠금을 건너뛰고 번호는 그대로 매긴다 (판정은 호출자가 아니라 소유자 권한으로)", async () => {
+      const db = await withOwner();
+      const user = await newUser(db);
+      // 전제: 이 소유자는 사용자 행을 잠글 수 없다
+      await db.exec(`set role ${ownerRole}`);
+      try {
+        expect((await db.query(`select has_table_privilege('auth.users', 'UPDATE') as has`))[0].has).toBe(false);
+        await expect(db.query(`select 1 from auth.users where id = $1 for key share`, [user])).rejects.toThrow(/permission denied/);
+      } finally {
+        await db.exec(`reset role`);
+      }
+      // 호출자(시험 연결의 슈퍼유저)는 권한이 있다: 판정이 호출자 기준이었다면 잠금을 시도하다 소유자 권한으로 거절되어 생성이 실패한다
+      expect((await db.query(`select has_table_privilege('auth.users', 'UPDATE') as has`))[0].has).toBe(true);
+      expect(await addAction(db, user)).toBe(1);
+      expect(await addAction(db, user)).toBe(2);
+      expect((await db.query(`select next from public.action_counters where user_id = $1`, [user]))[0].next).toBe(3);
+      // 없는 사용자는 이 경로에서도 FK 위반(23503)이다
+      await expect(db.query(`insert into public.actions (user_id, title) values ($1, '유령')`, [randomUUID()])).rejects.toMatchObject({ code: "23503" });
+    });
+
+    it("소유자에게 UPDATE 권한을 주면(SELECT는 이미 있다) 같은 소유자로도 생성이 되고 번호가 이어진다", async () => {
+      const db = await withOwner();
+      const user = await newUser(db);
+      expect(await addAction(db, user)).toBe(1);
+      await db.exec(`grant update on auth.users to ${ownerRole}`);
+      expect(await addAction(db, user)).toBe(2);
+      expect(await addAction(db, user)).toBe(3);
+    });
+
+    it("SELECT 권한만 있어도, UPDATE만 있어도 생성은 막히지 않는다 (잠금은 둘 다 있을 때만)", async () => {
+      const db = await withOwner();
+      const user = await newUser(db);
+      await db.exec(`revoke select on auth.users from ${ownerRole}`);
+      await db.exec(`grant update on auth.users to ${ownerRole}`);
+      expect(await addAction(db, user)).toBe(1); // UPDATE만: select for key share는 SELECT가 없어 실패할 것이므로 잠금을 건너뛴다
+      await db.exec(`revoke update on auth.users from ${ownerRole}`);
+      await db.exec(`grant select on auth.users to ${ownerRole}`);
+      expect(await addAction(db, user)).toBe(2);
+    });
+  });
+}

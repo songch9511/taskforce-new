@@ -64,7 +64,11 @@ select a.user_id, max(a.number) + 1
 --    카운터를 먼저 잡으면 사용자 행 잠금을 뒤의 actions insert FK 검사에서 얻게 되어, 계정 삭제와 서로 기다리다 교착(40P01)한다.
 --    for key share는 그 FK 검사가 어차피 얻는 잠금과 같은 수준이다(일반 갱신 · 로그인 시각 기록과 충돌하지 않고, 행 삭제 · 키 변경과만 충돌한다).
 --    사용자가 없으면(지워졌거나 처음부터 없음) 잠글 행이 없고, 아래 카운터 insert가 FK 위반(23503)으로 거절한다.
---    이 잠금은 select for key share라 트리거 소유자(마이그레이션 실행 역할)에게 auth.users의 select · update 권한이 있어야 한다
+--    **이 잠금은 트리거 소유자(마이그레이션을 실행한 역할)에게 auth.users의 select와 update 권한이 모두 있을 때만 건다.** select for key share가 둘 다 요구하는데,
+--    운영(Supabase)의 postgres 역할 권한은 이 환경에서 확인하지 못했다. 권한이 없는 소유자로 잠그면 모든 Action 생성이 실패하므로(교착은 계정 삭제와
+--    생성이 겹칠 때만 나는 드문 일이다) 권한이 없으면 잠금을 건너뛰고 카운터만 잡는다: 그 경우 교착 보호는 꺼져 있고 드문 교착(40P01)이 남는다.
+--    has_table_privilege는 현재 역할 = 이 security definer 함수의 소유자 기준이다. 운영 적용 전 확인: select has_table_privilege('postgres', 'auth.users', 'update')
+--    (false면 보호가 꺼진 채로 동작한다). 표 권한이 아닌 열 권한만 있는 소유자도 건너뛴다(보호만 빠질 뿐 안전하다)
 -- ─────────────────────────────────────────────
 create function public.actions_assign_number() returns trigger
 language plpgsql
@@ -74,7 +78,9 @@ as $$
 declare
   v_number integer;
 begin
-  perform 1 from auth.users u where u.id = new.user_id for key share;
+  if has_table_privilege('auth.users', 'SELECT') and has_table_privilege('auth.users', 'UPDATE') then
+    perform 1 from auth.users u where u.id = new.user_id for key share;
+  end if;
   insert into public.action_counters as c (user_id, next)
   values (new.user_id, 2)
   on conflict (user_id) do update set next = c.next + 1, updated_at = now()

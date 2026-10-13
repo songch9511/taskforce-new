@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import pg from "pg";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 
-import { actionNumbersTests, actionNumbersUpgradeTests, type ActionNumbersDb } from "../db/action-numbers.scenarios";
+import { actionNumbersLockPrivilegeTests, actionNumbersTests, actionNumbersUpgradeTests, type ActionNumbersDb } from "../db/action-numbers.scenarios";
 import { supabaseSchemaScripts } from "../db/local-supabase";
 
 // 0.2.0 OA D4c-3a (20261120000000_action_numbers) — 실제 Postgres. PGlite와 같은 시나리오 + 연결이 둘 이상 필요한 경합 (T7):
@@ -68,6 +68,7 @@ afterAll(async () => {
   await Promise.allSettled([setup?.end(), ...extraClients.map((client) => client.end())]);
   if (admin) {
     for (const name of [DB_NAME, ...extraDatabases]) await admin.query(`drop database if exists ${name} with (force)`);
+    await admin.query(`drop role if exists ${LOCK_OWNER_ROLE}`); // 소유하던 객체 · 권한은 데이터베이스와 함께 사라졌다
     await admin.end();
   }
 });
@@ -90,15 +91,19 @@ describe("이슈 번호 (실제 Postgres)", () => {
   actionNumbersTests(db);
 });
 
-// 업그레이드 시험: 마이그레이션 직전까지만 적용한 새 데이터베이스 (실제 Postgres)
-actionNumbersUpgradeTests(async () => {
+// 업그레이드 · 소유자 권한 시험: 마이그레이션을 아직 적용하지 않은 새 데이터베이스 (실제 Postgres)
+const freshDatabase = async () => {
   const name = `taskforce_action_numbers_upgrade_${SUFFIX}_${extraDatabases.length}`;
   extraDatabases.push(name);
   await admin.query(`create database ${name}`);
   const client = await connect(urlFor(name));
   extraClients.push(client);
-  return { exec: (sql) => client.query(sql), query: async (sql, params) => (await client.query(sql, params)).rows };
-});
+  return { exec: (sql: string) => client.query(sql), query: async (sql: string, params?: unknown[]) => (await client.query(sql, params)).rows };
+};
+actionNumbersUpgradeTests(freshDatabase);
+// 역할은 클러스터 전체에 남는다: 시험이 끝나면 데이터베이스를 지운 뒤 역할도 지운다 (afterAll)
+const LOCK_OWNER_ROLE = `tf_numbers_nolock_${SUFFIX}`;
+actionNumbersLockPrivilegeTests(freshDatabase, LOCK_OWNER_ROLE);
 
 // ───────────────────────── T7 경합 (연결 둘 이상) ─────────────────────────
 
