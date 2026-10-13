@@ -74,6 +74,9 @@ struct EdgePanelView: View {
                             } else {
                                 PanelEmptyState(title: Self.noChats)
                             }
+                        case .review:
+                            // S4 gate가 꺼져 있으면(`review == nil`) 이 화면은 열리지 않는다
+                            if let desk = shell.review { ReviewPanelBody(shell: shell, desk: desk) }
                         }
                     }
                     .padding(EdgeInsets(top: 0, leading: TFSpace.lg, bottom: TFSpace.md, trailing: TFSpace.lg))
@@ -110,6 +113,8 @@ struct EdgePanelView: View {
     private var header: some View {
         if shell.view == .chats, let chat {
             ChatPanelHeader(chat: chat.chat)
+        } else if shell.view == .review, shell.review != nil {
+            ReviewPanelHeader(shell: shell)
         } else {
             PanelHeader(title: shell.view.title)
         }

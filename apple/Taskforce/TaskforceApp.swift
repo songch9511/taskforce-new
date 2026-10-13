@@ -96,6 +96,19 @@ enum AppRuntime {
     /// 이미 만들어졌으면 그것 (설정 창이 쓴다). 플래그가 꺼져 있으면 nil
     static var existingChatRuntime: ChatRuntime? { chatRuntimeStore }
 
+    /// Review 페이지(S4)의 답을 보내는 곳 (`MacAppDelegate`가 Edge 셸을 만들 때 부른다). `-TF_S4 YES`일 때만 만든다 (`S4Flag`, 기본 꺼짐)
+    static func reviewDesk(now: NowStore?, scope: AccountScope?) -> ReviewDesk? {
+        makeReviewDesk(now: now, scope: scope, s4: S4Flag.isEnabled())
+    }
+
+    /// 실제 생성 경로의 본체 (`reviewDesk`가 부르고, 테스트가 같은 함수를 기본 / off / on으로 부른다).
+    /// `s4`가 꺼져 있으면 `ReviewDesk`를 **만들지 않는다**: 셸에 Review 페이지 · 단축키 연결이 없고 지금(S3b/B3/Edge) 그대로다.
+    /// 목록(`NowStore`)이나 계정 경계(`AccountScope`)가 없어도 만들지 않는다
+    static func makeReviewDesk(now: NowStore?, scope: AccountScope?, s4: Bool) -> ReviewDesk? {
+        guard s4, let now, let scope else { return nil }
+        return ReviewDesk(now: now, scope: scope)
+    }
+
     private static var runStore: RunStore?
 
     /// 실행(U2) 상태: credits · run · 초안 (Mac 설정 Usage & Credits와 런처가 같은 것을 본다). 계정이 떠나면 스스로 비운다 (`RunStore.reset`).

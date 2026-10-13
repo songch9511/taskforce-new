@@ -353,7 +353,8 @@ struct EdgeShellModelTests {
         for title in PanelEmptyKind.allCases.map(\.title) + [EdgePanelView.noChats] {
             #expect(!title.localizedCaseInsensitiveContains("caught up"))
         }
-        #expect(EdgeShellModel.View.allCases.map(\.title) == ["Your work", "Chats"])
+        // Review(S4)는 S4 gate가 켜졌을 때만 열린다 (`S4GateTests`): 이름은 있어도 gate가 꺼진 셸은 열 수 없다
+        #expect(EdgeShellModel.View.allCases.map(\.title) == ["Your work", "Chats", "Review"])
         #expect(EdgeShellModel.Control.allCases.map(\.label) == ["All work", "Chats", "More"])
     }
 

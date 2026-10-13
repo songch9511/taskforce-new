@@ -18,7 +18,7 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
     let shell: EdgeShellModel
     let rail: EdgeRailPanelController
     let panel: EdgePanelController
-    private let launcher: LauncherModel
+    let launcher: LauncherModel
     /// Chats · Remembered (B3). 앱 시작 때 세션에 붙은 것을 받는다
     let chat: ChatRuntime?
     private var clickMonitors: [Any] = []
@@ -39,12 +39,13 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
     }
     #endif
 
-    init(launcher: LauncherModel, chat: ChatRuntime? = nil) {
+    /// - review: Review 페이지의 답을 보내는 곳 (S4). nil이면 S4 gate가 꺼진 것이다: Review 페이지 · ⌘1 · ← → · 1 · 2 연결이 없다 (`AppRuntime.reviewDesk`)
+    init(launcher: LauncherModel, chat: ChatRuntime? = nil, review: ReviewDesk? = nil) {
         self.launcher = launcher
         self.chat = chat
         let pinStore = Self.pinStore()
         self.pinStore = pinStore
-        shell = EdgeShellModel(reduceMotion: Self.systemReduceMotion, pinStore: pinStore, contexts: chat?.contexts)
+        shell = EdgeShellModel(reduceMotion: Self.systemReduceMotion, pinStore: pinStore, contexts: chat?.contexts, review: review)
         rail = EdgeRailPanelController(shell: shell)
         panel = EdgePanelController(shell: shell, chat: chat)
         super.init()
@@ -329,19 +330,45 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
         keyMonitor = nil
     }
 
-    /// 패널의 키: Esc 접기 · ⌘2 All work · ⌘3 Chats · ⌘N New chat. 처리했으면 true
+    /// 패널의 키: Esc 접기 · ⌘1 가장 새 Review(S4) · ⌘2 All work · ⌘3 Chats · ⌘N New chat, 그리고 Review 페이지가 보일 때 ← → 단계 · 1 · 2 답 (S4, 텍스트 편집 밖에서만).
+    /// 처리했으면 true
     func handleKey(_ event: NSEvent) -> Bool {
-        guard let command = EdgeKeyCommand.of(keyCode: Int(event.keyCode), flags: event.modifierFlags) else { return false }
+        guard let command = EdgeKeyCommand.of(keyCode: Int(event.keyCode), flags: event.modifierFlags) else { return handleReviewKey(event) }
         switch command {
         case .escape:
             // 안쪽 것(열린 필터 카드 · Chats의 대화 목록)을 먼저 닫고, 그다음 패널을 접는다
             shell.escape()
+        case .review:
+            // S4 gate가 꺼져 있으면 이 키는 연결이 없다: 지금처럼 지나간다. ⌘1도 텍스트 편집(입력칸 · IME 조합) · 메뉴 · 시트 밖에서만 듣는다 (⌘2 · ⌘3 · ⌘N은 그대로)
+            guard reviewKeysAllowed else { return false }
+            shell.openNewestReview()
         case .allWork:
             shell.openAllWork()
         case .chats:
             shell.openChats()
         case .newChat:
             shell.newChat()
+        }
+        return true
+    }
+
+    /// Review 키(⌘1 · ← → · 1 · 2)를 받아도 되는가: S4가 켜져 있고, 메뉴 · 시트가 떠 있지 않고, 글을 편집하는 중(입력칸 · 검색 · IME 조합)이 아닐 때
+    private var reviewKeysAllowed: Bool {
+        shell.review != nil && !shell.menuOpen && panel.panel.attachedSheet == nil && !EdgeReviewKeys.isTextEditing(panel.panel.firstResponder)
+    }
+
+    /// Review 페이지의 키 (S4): ← → 단계, 1 · 2 답. 텍스트를 편집하는 중이거나(Chats 입력칸 · 검색 · IME 조합) 시트 · 메뉴가 떠 있으면 지나간다.
+    /// 번호 키는 사용자가 지금 본 항목의 id에만 간다. 누르고 있어 반복된 키는 먹기만 하고 다시 보내지 않는다 (한 번의 선택은 한 번의 요청)
+    private func handleReviewKey(_ event: NSEvent) -> Bool {
+        guard reviewKeysAllowed, shell.view == .review, shell.panelOpen,
+              let key = EdgeReviewKeys.of(keyCode: Int(event.keyCode), characters: event.characters, flags: event.modifierFlags) else { return false }
+        switch key {
+        case .previous:
+            shell.stepReview(-1)
+        case .next:
+            shell.stepReview(1)
+        case .answer(let answer):
+            if !event.isARepeat, let id = shell.shownReview?.id { shell.answer(answer, for: id) }
         }
         return true
     }
@@ -355,14 +382,16 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
     }
 }
 
-/// 패널이 키를 가졌을 때 듣는 키 (디자인 Focus and keys): Esc · ⌘2 · ⌘3 · ⌘N. 이 밖의 키는 지나간다
+/// 패널이 키를 가졌을 때 듣는 키 (디자인 Focus and keys): Esc · ⌘1(S4) · ⌘2 · ⌘3 · ⌘N. 이 밖의 키는 지나간다
+/// (Review 페이지의 ← → · 1 · 2는 텍스트 편집 상태를 봐야 해서 `EdgeReviewKeys`가 따로 듣는다)
 enum EdgeKeyCommand: Equatable {
-    case escape, allWork, chats, newChat
+    case escape, review, allWork, chats, newChat
 
     static func of(keyCode: Int, flags: NSEvent.ModifierFlags) -> EdgeKeyCommand? {
         let flags = flags.intersection(.deviceIndependentFlagsMask)
         switch keyCode {
         case kVK_Escape: return .escape
+        case kVK_ANSI_1 where flags == .command: return .review
         case kVK_ANSI_2 where flags == .command: return .allWork
         case kVK_ANSI_3 where flags == .command: return .chats
         case kVK_ANSI_N where flags == .command: return .newChat
