@@ -1106,14 +1106,18 @@ export type Boundary = z.infer<typeof boundarySchema>;
  */
 export const agentCapabilitySchema = z.object({
   adapter: agentAdapterIdSchema,
+  display_name: z.string().min(1).max(200).optional(),
   transport: z.enum(["remote_api", "local_bridge"]),
+  sign_in: z.enum(["user_terminal", "user_app", "token"]).optional(),
   session: z.object({ list: z.boolean(), attach_existing: z.boolean(), create: z.boolean(), workspace_scoped: z.boolean() }),
   dispatch: z.object({ ack_level: z.enum(["transport", "agent"]), max_instruction_chars: z.number().int().positive() }),
   events: z.enum(["push", "poll", "none"]),
-  question: z.object({ receive: z.boolean(), answer: z.boolean() }),
+  question: z.object({ receive: z.boolean(), answer: z.boolean(), structured: z.boolean().optional() }),
   cancel: z.enum(["confirmed", "requested_only", "unsupported"]),
+  cancel_scope: z.enum(["turn", "turn_and_processes"]).optional(),
+  version_range: z.string().min(1).max(200).optional(),
   resume: z.enum(["supported", "unsupported"]),
-  enforcement: z.object({ approval_gate: boundarySchema, target_scope: boundarySchema, revocation: boundarySchema, budget: boundarySchema }),
+  enforcement: z.object({ approval_gate: boundarySchema, target_scope: boundarySchema, revocation: boundarySchema, budget: boundarySchema, read_only: boundarySchema.optional() }),
   cost: z.enum(["observable", "estimated", "unknown"]),
   artifacts: z.array(z.enum(["files", "diff", "url", "text"])),
 });

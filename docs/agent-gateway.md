@@ -1,7 +1,8 @@
-# 에이전트 게이트웨이 저장 계약 (0.2.0 D1a) — 결정 기록과 위치
+# 에이전트 게이트웨이 (0.2.0 D1a–D1c-1) — 결정 기록과 위치
 
 2026-10-13 · 구현 계획 D1a · 근거: Assistant 계약 v3 3.4 · 3.6 · 3.8 · 4.2, 런타임 계약 5장(`agent_tasks` · `agent_sessions` · 사건 봉투), 아키텍처 9.1(bridge), I16 · AC-20.
-**표 · 열 · 제약 · 인덱스 · RLS · 권한뿐이다. 에이전트를 실행하는 코드, route, gate, 앱 화면이 없다. 운영 DB 적용 전.** 이 문서는 "무엇을 만들었고, 무엇을 일부러 안 만들었고, 어디 있는가"만 적는다. 일반 규칙은 [FEATURE_MAP.md](FEATURE_MAP.md), 실행의 기본 계약은 [EXECUTION.md](EXECUTION.md), 같은 원칙의 앞 묶음은 `20261109000000_execution_additive_contract.sql`(C1)이다.
+**1–6장은 D1a 당시 기록이다. 현재 턴 준비 경로는 8장(D1c-1)을 따른다.**
+**D1a는 표 · 열 · 제약 · 인덱스 · RLS · 권한뿐이다. 에이전트를 실행하는 코드, route, gate, 앱 화면이 없다. 운영 DB 적용 전.** 이 문서는 "무엇을 만들었고, 무엇을 일부러 안 만들었고, 어디 있는가"만 적는다. 일반 규칙은 [FEATURE_MAP.md](FEATURE_MAP.md), 실행의 기본 계약은 [EXECUTION.md](EXECUTION.md), 같은 원칙의 앞 묶음은 `20261109000000_execution_additive_contract.sql`(C1)이다.
 
 ## 1. 한눈에
 
@@ -54,7 +55,7 @@
 이 묶음 뒤에도 goal `agent` run은 만들어지지 않고 어떤 에이전트 단계도 실행되지 않는다.
 
 - `create_run`(goal `draft`만) · `append_step`(`plan` · `draft` · `external`만) · `begin_call` · `approve_*` · 실행기는 한 글자도 바꾸지 않았다. 이 파일은 함수를 만들지도 바꾸지도 않는다.
-- `execution_tools` · `execution_controls`에 `agent:*` 행을 더하지 않았다(`create_run`의 goal `agent` 허용과 도구 · 스위치 행은 실행 입구를 실제로 쓰는 D1c-1에서 연다).
+- `execution_tools` · `execution_controls`에 `agent:*` 행을 더하지 않았다(D1c-1은 별도 대화 run 함수와 막힌 message 도구만 더한다. `create_run`의 goal 검사는 유지한다).
 - 이 묶음에 없는 것: `bridge_commands`(D2a) · `agent_path_leases`(D3c) · `context_members`의 agent_session 종류 · `execution_artifacts` 열 · route · gate · 앱 화면. (`conversations` · `conversation_messages` 열은 D1b가 더했다 — 7장.)
 - 사건 `payload`의 "글 없음" 규칙, `pending_question`의 모양, `turn_seq` 직렬화는 서버 코드가 한다(위 4장).
 
@@ -132,3 +133,23 @@
 ### 7-7. 적용
 
 운영 DB에는 병합 직전 승인을 받고 `supabase db query --linked -f supabase/migrations/20261114000000_conversation_agent_target.sql`로 한다(`db push` 금지). `20261113000000_agent_gateway_core` 뒤에 적용한다. 한 트랜잭션이고 `lock_timeout 5s` 뒤에 `conversations` · `conversation_messages`를 정해진 순서로 `NOWAIT`으로 먼저 잠근다 — 두 표 중 하나라도 이미 잠겨 있으면(진행 중인 대화 쓰기 포함) 기다리지 않고 바로 `55P03`으로 실패하고 롤백한다(그대로 다시 적용한다). 기다리면 B2 답 저장(`conversation_finish_turn`: 메시지 표를 먼저 읽고 대화를 잠금)과 순환 대기가 되어 `40P01`이 날 수 있어서다(`lock_timeout`은 교착을 막지 못한다; 시험 `tests/pg` T13). 기존 행은 새 열이 기본값(`taskforce` · null)이라 영향이 없다.
+
+
+## 8. 턴 시작 · 이슈 결정 · 대화 run (D1c-1)
+
+`20261115000000_agent_turn_start.sql`과 `src/lib/agents/{registry,capability,turns,delivery}.ts`가 대화 메시지를 `prepared`까지 만든다. 실제 provider 호출 · bridge 명령 · route는 없다. `create_run`은 여전히 draft만 받으며 `EXECUTABLE_GOALS` · `EXECUTABLE_STEP_KINDS`도 그대로다.
+
+- `start_agent_turn(user, message, added_action_ids, added_context_ids, access, live_limit)`: 메시지 소유자/대상/상태/만료 → 세션 잠금 → 보류 판단 → Action 결정/생성 순서다. 보류 중에는 메시지 상태/정규화 칩과 필요한 pending 세션만 저장한다. 후보가 여럿이면 세션 생성/바인딩도 하위 트랜잭션으로 되돌리고 `refs.referent_candidates` 최대 셋과 응답 `candidates`를 남긴다. `set_agent_message_referent`는 후보 중 내 열린 Action만 저장하며 시작 시 다시 검증한다.
+- 세션이 없으면 `bound`, `external_session_id = pending:<conversation_id>`로 만들고 대화에 한 번 묶는다. 필수 `workspace_ref`도 같은 임시 식별자다. `display_name`은 메시지 첫 비어 있지 않은 줄의 공백 정리 + 80자(없으면 `Untitled`)다. 실제 세션/작업공간 증거는 bridge 사건 WP가 교체한다.
+- 칩 없는 메시지는 직전 턴의 열린 Action을 재사용한다. 직전 Action이 done/dropped이거나 첫 턴이면 실제 시작할 때만 결정적 Action/note id, 위 제목 규칙, scope/owner/status user Claim, 원문 note와 `created` Evidence를 `write_action`으로 쓴다. 이벤트는 `user_created/assistant_agent`, `source_id=null`. 칩 id는 중복을 제거하며 active context 칩 하나만 사용자 멤버십 RPC로 붙인다.
+- `open_agent_conversation_run`은 기존 `create_run`과 같은 정책/예산/초기값을 쓰되 `kind=conversation`, `goal=agent`, 세션과 최초 `conversation_id`를 지정하고 plan을 만들지 않는다. `request=''`, 단계 `body=''`, `args={message_id}`이며 bridge 명령 생성 시 보관 기한 내 메시지 행을 읽는다. 열린 세션×Action 부분 unique 충돌은 기존 run 재조회로 처리한다. conversation의 `append_step`은 `agent_message`만 허용한다.
+- 직접 에이전트에게 보낸 메시지의 전달은 사용자 결정이므로 `prepare_step`의 conversation `agent_message`는 `needs_approval=false`다. task 외부 단계의 승인과 실제 에이전트 도구 호출 정책은 별개다. 접수/실패로 대화 run을 닫지 않으며 task 완료/실패는 유지한다.
+- 잠금 순서는 메시지 → 사용자 advisory → 대화 `FOR NO KEY UPDATE` → 세션 `FOR UPDATE` → run이다. 외부 작업 한도는 TS가 `MAX_LIVE_EXTERNAL_TASKS`를 인자로 넘기고 SQL이 사용자 잠금 안에서 검사한다. `dispatched/accepted/running/unreachable`만 세며 `idle/awaiting_answer`는 제외한다. 진행 중 세션은 `session_busy`, external은 `session_external`, 한도는 `live_limit`, 앞선 메시지는 `queue_order`로 queued다. closed는 `not_sent/session_closed`다.
+- FIFO는 각 대화의 만료 전 queued/not_sent 중 seq가 작은 메시지를 먼저 고른 뒤, 대화 머리끼리 created_at/seq/id로 정한다. `created_at`은 트랜잭션 시작 시각이라 같은 대화의 seq를 뒤집는 데 쓰지 않는다. 미확정 referent와 영구 제외 사유(`invalid_referent/session_closed/not_found/already_dispatched`)는 순서를 막지 않는다.
+- 메시지 `dispatched`, 작업 `dispatched`, 단계 `prepared` + `intent_key`, `agent_message_sent` 지표는 원자 저장한다. `execution_intents` 표식/lease/`calling`은 만들지 않는다. 실패가 확인된 재시도만 purpose `message:<id>:<n>`을 쓰며 unknown 결과는 재전송하지 않는다.
+- `next_queued_agent_message(user,session)`은 id 또는 null만 읽고 반환한다. SQL에 adapter registry는 없다. TS `startNextQueuedTurn`이 현재 registry/정책/연결로 등급을 계산하고 `startAgentTurn`을 부른다. 시작 불가 결과 not_found/already_dispatched는 소유자·대상·상태·만료 검증을 거쳐 같은 reason의 not_sent로 제외한다. 재시도 칩은 `refs.agent_turn`의 added 칩을 우선하고 없으면 `selected`를 쓴다. 호출자는 세션/작업 잠금을 쥐지 않아야 하며 API WP는 selected에 auto 칩을 섞지 않는다.
+- registry S0: Claude Code는 등급 없음/`direct_chat=unsupported`, Codex는 `read_only`. bridge 보고는 검증 증거가 아니다. 버전 범위 자체 점검/프로토콜 hash는 adapter WP 책임이다. 두 adapter의 message 도구는 external, provider control은 blocked다.
+
+모든 새 RPC는 `SECURITY INVOKER`, `search_path=''`, service_role만 실행한다. metric 확장 블록은 코디네이터 원문 그대로이며 앱 insert 정책은 app_opened/assistant_opened만 허용한다. 마이그레이션은 한 트랜잭션, lock_timeout 5초, metric_events 잠금은 NOWAIT이다.
+
+검증 위치: `tests/db/agent-turn-start.scenarios.ts` · `.test.ts`, `tests/pg/agent-turn-start.test.ts`, `src/lib/agents/*.test.ts`. PG 경합 시험은 샌드박스에서 작성만 했으며 실행 증거는 별도다. 질문/중단/사건·bridge API·대화 API 연결은 후속 WP다. 특히 실패 재시도의 앞 failed 단계와 기존 begin_call의 앞 단계 검사는 bridge API에서 맞춰야 한다; 이 WP는 prepared에서 멈춘다.
