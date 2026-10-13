@@ -63,6 +63,17 @@ describe("POST /api/v2/conversations/{id}/stop (route)", () => {
     mocks.admin.mockReturnValue({ admin: true });
   });
 
+  it("롤백 규칙: adapter 플래그가 꺼져 있어도 Stop은 200 — 이미 있는 턴을 멈추고(confirmed) 다음 턴은 시작하지 않는다", async () => {
+    vi.stubEnv("CONVERSATIONS_V2_ENABLED", "true");
+    vi.stubEnv("EXECUTION_ENABLED", "true");
+    mocks.resolveAgentTarget.mockResolvedValue({ enabled: false });
+    const response = await call();
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ tasks: [{ agent_task_id: TASK, cancel: "confirmed" }] });
+    expect(mocks.stopAgentSession).toHaveBeenCalledExactlyOnceWith({ admin: true }, { userId: USER, sessionId: SESSION, surface: "assistant" });
+    expect(mocks.startNextQueuedTurn).not.toHaveBeenCalled();
+  });
+
   it("세션이 없는 대화는 { tasks: [] }이고 중단 · 시작을 부르지 않는다", async () => {
     vi.stubEnv("CONVERSATIONS_V2_ENABLED", "true");
     mocks.readConversationTarget.mockResolvedValue({ id: CONV, targetKind: "agent", connectionId: CONN, sessionId: null });

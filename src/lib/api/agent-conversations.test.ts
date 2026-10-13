@@ -714,28 +714,49 @@ describe("POST …/stop (AC-12): 세션 단위 중단", () => {
     expect((await stopConversation(convDeps({ stop: vi.fn(async () => { throw new Error("x"); }) }))).status).toBe(500);
   });
 
-  it("본문은 {}뿐 · taskforce 대화 409 · 대화 없음 404 · adapter 꺼짐 404", async () => {
+  it("본문은 {}뿐 · taskforce 대화 409 · 대화 없음 404", async () => {
     expect((await stopConversation(convDeps(), { x: 1 })).status).toBe(400);
     expect((await stopConversation(convDeps(), {}, "bad")).status).toBe(404);
     expect((await stopConversation(convDeps({ conversation: vi.fn(async () => ({ ...agentConv, targetKind: "taskforce" as const })) }))).status).toBe(409);
     expect((await stopConversation(convDeps({ conversation: vi.fn(async () => null) }))).status).toBe(404);
-    const closed = convDeps({ adapterOpen: vi.fn(async () => false) });
-    expect((await stopConversation(closed)).status).toBe(404);
-    expect(closed.stop).not.toHaveBeenCalled();
   });
 
-  it("세션 패널 Stop: surface 'session_panel', 세션 없음 · adapter 꺼짐 404", async () => {
+  it("롤백 규칙(코디네이터 결정): adapter 플래그가 꺼져 있어도 Stop은 200으로 돈다 — 이미 있는 턴을 멈추고 결과를 돌려준다. 다음 대기 메시지 시작만 플래그를 따른다(0)", async () => {
+    const closed = convDeps({ adapterOpen: vi.fn(async () => false), stop: vi.fn(async () => confirmed) });
+    const response = await stopConversation(closed);
+    expect(response.status).toBe(200);
+    expect(await body(response)).toEqual(confirmed);
+    expect(closed.stop).toHaveBeenCalledExactlyOnceWith(USER, SESSION, "assistant");
+    expect(closed.afterStop).not.toHaveBeenCalled();
+    // 켜져 있으면 확정된 작업 뒤에 다음 시작을 해 본다 (위 시험)
+    const open = convDeps({ stop: vi.fn(async () => confirmed) });
+    await stopConversation(open);
+    expect(open.afterStop).toHaveBeenCalledTimes(1);
+  });
+
+  it("세션 패널 Stop: surface 'session_panel', 없는 세션 404 (중단 함수가 not_found)", async () => {
     const d: StopSessionDeps<User> = { ...baseDeps(), sessionAdapter: vi.fn(async () => ({ adapter: "agent:codex", enabled: true })), stop: vi.fn(async () => requested), afterStop: vi.fn(async () => undefined) };
     const response = await handleStopSession(json({}), SESSION, d);
     expect(response.status).toBe(200);
     expect(d.stop).toHaveBeenCalledExactlyOnceWith(USER, SESSION, "session_panel");
-    const none = { ...d, sessionAdapter: vi.fn(async () => null), stop: vi.fn() };
+    const none = { ...d, sessionAdapter: vi.fn(async () => null), stop: vi.fn(async () => ({ status: "not_found" as const })) };
     expect((await handleStopSession(json({}), SESSION, none)).status).toBe(404);
-    const off = { ...d, sessionAdapter: vi.fn(async () => ({ adapter: "agent:codex", enabled: false })), stop: vi.fn() };
-    expect((await handleStopSession(json({}), SESSION, off)).status).toBe(404);
-    expect(none.stop).not.toHaveBeenCalled();
-    expect(off.stop).not.toHaveBeenCalled();
     expect((await handleStopSession(json({}), "bad", d)).status).toBe(404);
+  });
+
+  it("롤백 규칙(코디네이터 결정): adapter 플래그가 꺼져 있어도 세션 Stop은 200으로 돈다. 다음 대기 메시지 시작만 플래그를 따른다(0)", async () => {
+    const off: StopSessionDeps<User> = {
+      ...baseDeps(), sessionAdapter: vi.fn(async () => ({ adapter: "agent:codex", enabled: false })), stop: vi.fn(async () => confirmed), afterStop: vi.fn(async () => undefined),
+    };
+    const response = await handleStopSession(json({}), SESSION, off);
+    expect(response.status).toBe(200);
+    expect(await body(response)).toEqual(confirmed);
+    expect(off.stop).toHaveBeenCalledExactlyOnceWith(USER, SESSION, "session_panel");
+    expect(off.afterStop).not.toHaveBeenCalled();
+    // 어느 adapter인지 알 수 없는 세션(연결이 registry 밖)도 멈추기는 한다
+    const unknown = { ...off, sessionAdapter: vi.fn(async () => null) };
+    expect((await handleStopSession(json({}), SESSION, unknown)).status).toBe(200);
+    expect(unknown.afterStop).not.toHaveBeenCalled();
   });
 });
 

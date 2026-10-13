@@ -62,6 +62,7 @@ import { errorResponse, parseBody, unauthorized } from "./respond";
 // 이 파일이 만든 delegate를 route가 주입한다 (I04 · OD-27). 이 경로는 respondToMessage · Jev · LLM을 부르지 않는다 (대상이 명시돼 분류를 건너뛴다).
 // 사용자 글 · 칩 id · 답 · 질문은 로그에 남기지 않는다 (이벤트 이름 · 오류 이름 · 코드만).
 // gate: CONVERSATIONS_V2_ENABLED가 꺼져 있으면 인증 · DB 전에 404. 에이전트 경로는 그 대화 · 세션 · 연결의 adapter 플래그도 켜져 있어야 한다 (꺼져 있으면 404, OD-2).
+// 예외: 대화 Stop · 세션 Stop은 adapter 플래그와 무관하게 돈다 (롤백: 새 전달 gate가 닫혀도 받기 · 멈추기는 계속 된다. 코디네이터 결정). 멈춘 뒤 다음 시작만 adapter 플래그 · EXECUTION_ENABLED를 따른다.
 
 type AppUser = { user: { id: string } };
 type Base<User> = { enabled: () => boolean; authenticate: (request: Request) => Promise<User | null> };
@@ -264,11 +265,16 @@ export async function handleSetReferent<User extends AppUser>(request: Request, 
 type StopFn<User, Surface extends "assistant" | "session_panel"> = (user: User, sessionId: string, surface: Surface) => Promise<StopAgentSessionResult>;
 type AfterStop<User> = (user: User, sessionId: string) => Promise<void>;
 
-/** Stop 응답 만들기 + 로컬에서 확정된 작업이 있으면 commit 뒤 같은 세션의 다음 대기 메시지를 한 번 시작해 본다 (코디네이터 5.1). 그 시작이 실패해도 Stop 결과는 그대로다 */
-async function stopResponse<User, Surface extends "assistant" | "session_panel">(user: User, sessionId: string, surface: Surface, stop: StopFn<User, Surface>, afterStop: AfterStop<User>): Promise<Response> {
+/**
+ * Stop 응답 만들기 + 로컬에서 확정된 작업이 있으면 commit 뒤 같은 세션의 다음 대기 메시지를 한 번 시작해 본다 (코디네이터 5.1). 그 시작이 실패해도 Stop 결과는 그대로다.
+ * Stop 자체는 adapter 플래그와 무관하다(롤백 규칙: 새 전달 gate가 닫혀도 받기 · 멈추기는 계속 된다). 다음 시작(mayStartNext)만 adapter 플래그를 따른다 — 실행 플래그는 startNextAgentMessage가 본다
+ */
+async function stopResponse<User, Surface extends "assistant" | "session_panel">(
+  user: User, sessionId: string, surface: Surface, stop: StopFn<User, Surface>, afterStop: AfterStop<User>, mayStartNext: boolean,
+): Promise<Response> {
   const result = await stop(user, sessionId, surface);
   if ("status" in result) return notFound(SESSION_NOT_FOUND);
-  if (result.tasks.some((task) => task.cancel === "confirmed")) {
+  if (mayStartNext && result.tasks.some((task) => task.cancel === "confirmed")) {
     await afterStop(user, sessionId).catch((error: unknown) => {
       console.error(JSON.stringify({ event: "agent_stop_next_failed", error: error instanceof Error ? error.name : "unknown" }));
     });
@@ -283,7 +289,7 @@ export type StopConversationDeps<User> = Base<User> & {
   afterStop: AfterStop<User>;
 };
 
-/** POST /api/v2/conversations/{id}/stop (계약 5장 · AC-12): 이 대화에 묶인 세션 단위 중단. 세션이 없는 대화는 { tasks: [] } (쓰기 0, OD-19) */
+/** POST /api/v2/conversations/{id}/stop (계약 5장 · AC-12): 이 대화에 묶인 세션 단위 중단. 세션이 없는 대화는 { tasks: [] } (쓰기 0, OD-19). adapter 플래그가 꺼져 있어도 멈춘다 */
 export async function handleStopConversation<User extends AppUser>(request: Request, conversationId: string, deps: StopConversationDeps<User>): Promise<Response> {
   const started = await begin(request, deps);
   if ("response" in started) return started.response;
@@ -295,9 +301,8 @@ export async function handleStopConversation<User extends AppUser>(request: Requ
     const conversation = await deps.conversation(user, conversationId);
     if (!conversation) return notFound();
     if (conversation.targetKind !== "agent") return notAgent();
-    if (!(await deps.adapterOpen(user, conversation.connectionId))) return notFound();
     if (!conversation.sessionId) return Response.json({ tasks: [] });
-    return await stopResponse(user, conversation.sessionId, "assistant", deps.stop, deps.afterStop);
+    return await stopResponse(user, conversation.sessionId, "assistant", deps.stop, deps.afterStop, await deps.adapterOpen(user, conversation.connectionId));
   } catch (error) {
     return failed(error, "agent_stop_failed", "중단하지 못했습니다.");
   }
@@ -309,7 +314,7 @@ export type StopSessionDeps<User> = Base<User> & {
   afterStop: AfterStop<User>;
 };
 
-/** POST /api/v2/agent-sessions/{id}/stop: 세션 패널의 같은 동작 (surface session_panel) */
+/** POST /api/v2/agent-sessions/{id}/stop: 세션 패널의 같은 동작 (surface session_panel). adapter 플래그가 꺼져 있어도 멈춘다 */
 export async function handleStopSession<User extends AppUser>(request: Request, sessionId: string, deps: StopSessionDeps<User>): Promise<Response> {
   const started = await begin(request, deps);
   if ("response" in started) return started.response;
@@ -319,8 +324,7 @@ export async function handleStopSession<User extends AppUser>(request: Request, 
   if ("error" in body) return body.error;
   try {
     const owner = await deps.sessionAdapter(user, sessionId);
-    if (!owner?.enabled) return notFound(SESSION_NOT_FOUND);
-    return await stopResponse(user, sessionId, "session_panel", deps.stop, deps.afterStop);
+    return await stopResponse(user, sessionId, "session_panel", deps.stop, deps.afterStop, owner?.enabled === true);
   } catch (error) {
     return failed(error, "agent_stop_failed", "중단하지 못했습니다.");
   }

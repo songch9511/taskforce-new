@@ -1,7 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const mocks = vi.hoisted(() => ({ createCookieClient: vi.fn(), createSupabaseClient: vi.fn(), admin: vi.fn(), loadSessionAdapter: vi.fn() }));
+const mocks = vi.hoisted(() => ({ createCookieClient: vi.fn(), createSupabaseClient: vi.fn(), admin: vi.fn(), loadSessionAdapter: vi.fn(), stopAgentSession: vi.fn() }));
 
 vi.mock("server-only", () => ({}));
 vi.mock("@/lib/supabase/server", () => ({ createClient: mocks.createCookieClient }));
@@ -9,6 +9,8 @@ vi.mock("@/lib/supabase/admin", () => ({ createAdminClient: mocks.admin }));
 vi.mock("@supabase/supabase-js", async (original) => ({ ...(await original<typeof import("@supabase/supabase-js")>()), createClient: mocks.createSupabaseClient }));
 vi.mock("@/lib/api/profile-store", () => ({ hasAiConsent: vi.fn(async () => true) }));
 vi.mock("@/lib/agents/sessions", async (original) => ({ ...(await original<typeof import("@/lib/agents/sessions")>()), loadSessionAdapter: mocks.loadSessionAdapter }));
+// Stop은 adapter 플래그와 무관하게 돈다(롤백 규칙): 없는 세션이면 중단 함수가 not_found를 돌려준다
+vi.mock("@/lib/agents/tasks", async (original) => ({ ...(await original<typeof import("@/lib/agents/tasks")>()), stopAgentSession: mocks.stopAgentSession }));
 
 import { POST as openExternal } from "./[id]/open-external/route";
 import { POST as resumeHere } from "./[id]/resume-here/route";
@@ -37,6 +39,7 @@ beforeEach(() => {
   mocks.createSupabaseClient.mockReturnValue({ auth: { getClaims: claims() } } as unknown as SupabaseClient);
   mocks.admin.mockReturnValue({ admin: true });
   mocks.loadSessionAdapter.mockResolvedValue(null);
+  mocks.stopAgentSession.mockResolvedValue({ status: "not_found" });
 });
 afterEach(() => {
   vi.clearAllMocks();
@@ -51,6 +54,7 @@ describe.each(ROUTES)("%s: 쿠키 CSRF · 인증", (name, method, call, payload)
     for (const headers of CROSS_SITE) expect((await call(request(headers))).status, `${name} ${JSON.stringify(headers)}`).toBe(401);
     expect(mocks.admin).not.toHaveBeenCalled();
     expect(mocks.loadSessionAdapter).not.toHaveBeenCalled();
+    expect(mocks.stopAgentSession).not.toHaveBeenCalled();
   });
 
   it("같은 출처의 쿠키 쓰기는 통과한다 (handler가 돈다: 없는 세션이라 404)", async () => {
@@ -67,5 +71,6 @@ describe.each(ROUTES)("%s: 쿠키 CSRF · 인증", (name, method, call, payload)
     mocks.createCookieClient.mockResolvedValue({ auth: { getClaims: vi.fn().mockResolvedValue({ data: null, error: new Error("no session") }) } } as unknown as SupabaseClient);
     expect((await call(request({ "sec-fetch-site": "same-origin" }))).status).toBe(401);
     expect(mocks.loadSessionAdapter).not.toHaveBeenCalled();
+    expect(mocks.stopAgentSession).not.toHaveBeenCalled();
   });
 });

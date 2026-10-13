@@ -194,6 +194,7 @@ D1c-2a 정정 2 인계: lease 만료 unknown_outcome 뒤 접수는 bridge API의
 ### 11-1. gate
 
 - 모든 새 route: `CONVERSATIONS_V2_ENABLED`가 꺼져 있으면 인증 · DB 전에 404. 에이전트 경로는 그 대화 · 세션 · 연결의 **adapter 플래그**도 켜져야 한다(꺼져 있으면 404): `AGENT_ADAPTER_CLAUDE_CODE_ENABLED`(기존) · **`AGENT_ADAPTER_CODEX_ENABLED`(새, 기본 꺼짐)**. 꺼진 adapter는 대상 목록에서 빠지고 만들기 · 보내기가 404라 Action · 세션 · run이 생기지 않는다. 이전에는 Codex가 플래그 없이 늘 켜져 있었다(B2 대화를 켜는 순간 열리는 fail-open이라 닫았다).
+- **예외: 대화 Stop · 세션 Stop은 adapter 플래그와 무관하게 돈다**(롤백 규칙 — 새 전달 gate가 닫혀도 받기 · 멈추기는 계속 된다, `CONVERSATIONS_V2_ENABLED` route gate는 그대로). 멈춘 뒤 "다음 대기 메시지 시작"만 adapter 플래그와 `EXECUTION_ENABLED`를 따른다(꺼져 있으면 부르지 않는다).
 - 인증은 `authenticateRequest`(Bearer + 쿠키, 쿠키 쓰기는 CSRF). 로그에는 이벤트 이름 · 오류 이름 · 코드만 남긴다(글 · 칩 id · 답 · 질문 0).
 
 ### 11-2. route
@@ -204,7 +205,7 @@ D1c-2a 정정 2 인계: lease 만료 unknown_outcome 뒤 접수는 bridge API의
 | `POST …/{id}/messages` | `attachments`(≤ 20) 추가. 에이전트 대상은 delegate로 넘어가 칩 정규화 → 소유 확인(없는 · 남의 칩 404, 쓰기 0) → 저장(`selected` = `{action_ids, context_ids, attachments}` — added만 id 목록) → 새 메시지면 `context_attached` → 전달 시작 → 다시 읽은 행으로 응답(`reply: null`, `delivery`, `attachments_dropped`, `created_action`, `agent_task`). taskforce 대상은 칩을 검증 · 저장만 하고 응답 모양 · 답 생성은 그대로 |
 | `POST …/{id}/deliver` | Send again. `requeue_agent_messages`(`not_sent` · `expired` → `queued`, 새 24시간) → commit 뒤 seq 순으로 하나씩 시작 |
 | `POST …/{id}/messages/{message_id}/referent` | `needs_referent` 후보 선택 → 같은 메시지를 한 번 전달 |
-| `POST …/{id}/stop` · `POST /api/v2/agent-sessions/{id}/stop` | 세션 단위 중단(surface `assistant` · `session_panel`). 세션 없는 대화는 `{tasks:[]}`(쓰기 0). 확정(`confirmed`)된 작업이 있으면 commit 뒤 `startNextQueuedTurn` 한 번(실패해도 Stop 결과 유지) |
+| `POST …/{id}/stop` · `POST /api/v2/agent-sessions/{id}/stop` | 세션 단위 중단(surface `assistant` · `session_panel`). 세션 없는 대화는 `{tasks:[]}`(쓰기 0). 확정(`confirmed`)된 작업이 있고 adapter 플래그가 켜져 있으면 commit 뒤 `startNextQueuedTurn` 한 번(실패해도 Stop 결과 유지) |
 | `GET …/{id}/delivery?since_seq=` | 사용자 메시지의 전달 표시를 서버 계산으로(OD-13, ≤ 100, 읽기만) |
 | `PATCH /api/v2/agent-sessions/{id}` | 이름(trim 1–200자) |
 | `POST /api/v2/agent-sessions/{id}/open-external` · `…/resume-here` | `open_agent_session_external` · `resume_agent_session_here`. busy → 409 `session_busy`, `pending:` 세션 · bound 아님 → 409 `conflict`. Resume은 본문 `{confirmed_terminal_closed:true}` 필수, 되돌린 뒤 `startNextQueuedTurn` 한 번(이미 bound여도 한 번 확인) |

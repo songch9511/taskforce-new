@@ -34,6 +34,18 @@ describe("POST /api/v2/agent-sessions/{id}/stop (route)", () => {
     expect(mocks.stopAgentSession).not.toHaveBeenCalled();
   });
 
+  it("롤백 규칙: adapter 플래그가 꺼져 있어도 세션 Stop은 200 — 이미 있는 턴을 멈추고(confirmed) 다음 턴은 시작하지 않는다", async () => {
+    vi.stubEnv("CONVERSATIONS_V2_ENABLED", "true");
+    vi.stubEnv("EXECUTION_ENABLED", "true");
+    mocks.loadSessionAdapter.mockResolvedValue({ adapter: "agent:codex", enabled: false });
+    mocks.stopAgentSession.mockResolvedValue({ tasks: [{ agent_task_id: TASK, cancel: "confirmed" }] });
+    const response = await call();
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ tasks: [{ agent_task_id: TASK, cancel: "confirmed" }] });
+    expect(mocks.stopAgentSession).toHaveBeenCalledExactlyOnceWith({ admin: true }, { userId: USER, sessionId: SESSION, surface: "session_panel" });
+    expect(mocks.startNextQueuedTurn).not.toHaveBeenCalled();
+  });
+
   it("켜져 있으면 세션 패널의 중단 (surface session_panel). requested_only뿐이면 다음 시작을 부르지 않는다", async () => {
     vi.stubEnv("CONVERSATIONS_V2_ENABLED", "true");
     const response = await call();
