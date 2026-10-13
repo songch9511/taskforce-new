@@ -281,6 +281,8 @@ step: `pending → prepared → calling → called | unknown_outcome | failed | 
 
 ## 14. 0.2.0 additive 확장 (C1): 저장 계약만 — 실행은 늘지 않는다
 
+**D1c-1 갱신:** 대화 run은 `start_agent_turn` → `open_agent_conversation_run`으로 열고 `agent_message`를 prepared까지만 만든다. `create_run` goal 검사와 실행기 목록은 그대로다. `finish_run`/`settle_step`은 대화 run을 턴 종료/실패로 닫지 않으며 task 동작은 유지한다. agent message 도구 둘은 external, provider 스위치는 blocked다. `MAX_LIVE_EXTERNAL_TASKS`를 새 턴 RPC에 넘겨 SQL 잠금 안에서 검사한다. Action은 보류 판단을 통과한 턴에서만 만들며 직접 대화 전달은 승인 입력을 만들지 않는다. 실행 run/step에는 원문 사본 없이 message id만 남긴다. 자세한 계약과 후속 WP 경계는 [agent-gateway.md 8장](agent-gateway.md#8-턴-시작--이슈-결정--대화-run-d1c-1). 아래는 C1 당시 저장 확장 기록이다.
+
 `supabase/migrations/20261109000000_execution_additive_contract.sql` (런타임 계약 4장, 구현 계획 C1). 값 · 열 · 연결별 정책 표를 **더하기만** 했다. 이 묶음에는 새 goal · 새 단계 종류 · 새 outcome / hold를 쓰거나 실행하는 코드가 없다. 기존 `draft` run의 동작(`begin_call` 서명 · gate, intent · lease, 승인 hash, 재시도, `unknown_outcome`, 크레딧 예약 · 정산, 중단, `action_closed`, `MAX_STEPS = 4`)과 A29 · `execution-*` 회귀는 그대로다. `begin_call` · `approval_hash` · `auto_allowed` · `prepare_step`은 이 파일이 다시 만들지 않는다.
 
 **CHECK 교체** (현재 값은 `20261021000000_execution_core.sql` 한 곳에만 정의돼 있었다. 이후 마이그레이션이 바꾸지 않았다). 옛 CHECK는 이름 없는 열 제약이라 카탈로그에서 열마다 찾아 지우고(정확히 하나가 아니면 아무것도 바꾸지 않고 실패한다) 이름 있는 제약으로 다시 만든다.

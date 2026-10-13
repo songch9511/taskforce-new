@@ -798,7 +798,7 @@ export function agentGatewayCoreTests(db: () => AgentGatewayDb) {
       expect(await f.one(`select kind, agent_session_id, reviewed_turn_seq from public.execution_runs where id = $1`, [run])).toEqual({ kind: "task", agent_session_id: null, reviewed_turn_seq: 0 });
     });
 
-    it("append_step은 에이전트 단계 종류(agent_dispatch · agent_message · agent_cancel · review · check · send · observe)를 여전히 거절한다. plan · draft는 붙는다", async () => {
+    it("task run의 append_step은 에이전트 단계 종류(agent_dispatch · agent_message · agent_cancel · review · check · send · observe)를 여전히 거절한다. plan · draft는 붙는다", async () => {
       const user = await f.user();
       const run = await f.run(user, await f.action(user));
       const steps = () => count("execution_steps", "run_id = $1", [run]);
@@ -814,23 +814,28 @@ export function agentGatewayCoreTests(db: () => AgentGatewayDb) {
       expect(await steps()).toBe(2);
     });
 
-    it("execution_tools · execution_controls에 agent:* 행이 없다 (목록 밖이라 begin_call이 막는 그대로)", async () => {
-      expect(await count("execution_tools", "provider like 'agent:%' or tool in ('dispatch', 'message', 'cancel', 'review', 'check', 'observe')")).toBe(0);
-      expect(await count("execution_controls", "key like 'agent:%' or key like 'agent_%'")).toBe(0);
+    it("D1c-1 message 도구 둘은 external이고 provider 스위치는 blocked, 다른 새 도구는 없다", async () => {
+      expect(await count("execution_tools", "tool in ('dispatch', 'cancel', 'review', 'check', 'observe')")).toBe(0);
+      expect(await q(`select key, blocked from public.execution_controls where scope = 'provider' and key like 'agent:%' order by key`)).toEqual([
+        { key: "agent:claude-code", blocked: true }, { key: "agent:codex", blocked: true },
+      ]);
       expect(await q(`select provider, tool, effect_class from public.execution_tools order by provider, tool`)).toEqual([
+        { provider: "agent:claude-code", tool: "message", effect_class: "external" },
+        { provider: "agent:codex", tool: "message", effect_class: "external" },
         { provider: "taskforce", tool: "draft", effect_class: "internal" },
         { provider: "taskforce", tool: "plan", effect_class: "internal" },
       ]);
     });
 
-    it("새 표 · 열은 실행 함수를 보지 않는다: 실행 함수 본문에 새 표 · 새 열 이름이 없다", async () => {
+    it("실행 함수는 새 표를 보지 않는다: D1c-1 append_step/prepare_step의 대화 kind 검사만 예외", async () => {
       const functions = await q(
         `select p.proname as name, pg_get_functiondef(p.oid) as body from pg_proc p join pg_namespace n on n.oid = p.pronamespace
           where n.nspname = 'public' and (p.proname like 'execution\\_%' or p.proname in ('create_run', 'append_step', 'begin_call', 'prepare_step', 'approve_step', 'show_plan', 'revoke_approval', 'settle_step', 'complete_internal_step', 'stop_run', 'finish_run', 'approval_hash', 'auto_allowed'))`,
       );
       expect(functions.length).toBeGreaterThan(10);
       for (const row of functions) {
-        expect(String(row.body), String(row.name)).not.toMatch(/agent_tasks|agent_sessions|agent_connections|bridges|reviewed_turn_seq|agent_session_id|external_event_id|\bkind = 'conversation'/);
+        expect(String(row.body), String(row.name)).not.toMatch(/agent_tasks|agent_sessions|agent_connections|bridges|reviewed_turn_seq|agent_session_id|external_event_id/);
+        if (!["append_step", "prepare_step"].includes(String(row.name))) expect(String(row.body), String(row.name)).not.toMatch(/\bkind = 'conversation'/);
       }
     });
   });
@@ -897,6 +902,9 @@ export function agentGatewayUpgradeTests(fresh: () => Promise<FreshDb>) {
       for (const sql of [d1a, ...after]) await db.exec(sql);
 
       const now = await snapshot();
+      // D1c-1의 새 message/blocked 행만 제외한다. 기존 행 보존 비교는 그대로다.
+      now.execution_tools = now.execution_tools.filter(({ row }) => !["agent:claude-code", "agent:codex"].includes(String((row as Record<string, unknown>).provider)));
+      now.execution_controls = now.execution_controls.filter(({ row }) => !["agent:claude-code", "agent:codex"].includes(String((row as Record<string, unknown>).key)));
       for (const table of Object.keys(old)) {
         for (const { old: oldRow, now: nowRow } of onlyOldKeys(old[table], now[table])) expect(nowRow, table).toEqual(oldRow);
         expect(now[table], table).toHaveLength(old[table].length);

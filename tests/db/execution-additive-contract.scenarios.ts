@@ -280,7 +280,7 @@ export function executionAdditiveTests(db: () => ExecutionAdditiveDb) {
   });
 
   // ───────────────────────── 3) 실행 입구 ─────────────────────────
-  describe("새 값은 실행으로 새지 않는다: create_run은 draft만, append_step은 plan · draft · external만", () => {
+  describe("새 값은 실행으로 새지 않는다: create_run은 draft만, task run의 append_step은 plan · draft · external만", () => {
     it("create_run: agent · send · followup · 모르는 값 · 빈 값 · null은 거절하고 run · 단계 · 정책 · 이벤트를 한 줄도 만들지 않는다", async () => {
       const user = await f.user();
       const action = await f.action(user);
@@ -311,7 +311,7 @@ export function executionAdditiveTests(db: () => ExecutionAdditiveDb) {
       expect(signature.args).toBe("p_user_id uuid, p_action_id uuid, p_goal text, p_request text, p_budget_credits integer");
     });
 
-    it("append_step: 새 단계 종류는 거절하고 한 줄도 붙이지 않는다. plan · draft · external은 예전처럼 붙고 순번이 오른다", async () => {
+    it("append_step: task run은 새 단계 종류를 거절하고 한 줄도 붙이지 않는다. plan · draft · external은 예전처럼 붙고 순번이 오른다", async () => {
       const user = await f.user();
       const run = await f.run(user, await f.action(user));
       const steps = () => f.count(`select 1 from public.execution_steps where run_id = $1`, [run]);
@@ -751,10 +751,14 @@ export function executionAdditiveTests(db: () => ExecutionAdditiveDb) {
 
   // ───────────────────────── 5-2) C1에 넣지 않은 것은 그대로다 ─────────────────────────
   describe("넣지 않은 것은 켜지지 않았다 (런타임 계약 4장의 나머지는 C2 · D1 · E1 몫)", () => {
-    it("도구 · 스위치 행: 에이전트 · 검토 · 확인 · 관찰 도구와 에이전트 공급자 스위치 행이 없다 (목록 밖이라 begin_call이 막는 그대로)", async () => {
-      expect(await f.count(`select 1 from public.execution_tools where provider like 'agent:%' or tool in ('dispatch', 'message', 'cancel', 'review', 'check', 'observe')`)).toBe(0);
-      expect(await f.count(`select 1 from public.execution_controls where scope = 'provider' and key like 'agent:%'`)).toBe(0);
+    it("D1c-1 message 도구 둘은 external/blocked, 나머지 새 도구는 여전히 없다", async () => {
+      expect(await f.count(`select 1 from public.execution_tools where tool in ('dispatch', 'cancel', 'review', 'check', 'observe')`)).toBe(0);
+      expect(await q(`select key, blocked from public.execution_controls where scope = 'provider' and key like 'agent:%' order by key`)).toEqual([
+        { key: 'agent:claude-code', blocked: true }, { key: 'agent:codex', blocked: true },
+      ]);
       expect(await q(`select provider, tool, effect_class from public.execution_tools order by provider, tool`)).toEqual([
+        { provider: "agent:claude-code", tool: "message", effect_class: "external" },
+        { provider: "agent:codex", tool: "message", effect_class: "external" },
         { provider: "taskforce", tool: "draft", effect_class: "internal" },
         { provider: "taskforce", tool: "plan", effect_class: "internal" },
       ]);
@@ -883,6 +887,9 @@ export function executionUpgradeTests(fresh: () => Promise<FreshDb>) {
       for (const sql of [c1, ...after]) await db.exec(sql);
 
       const now = await snapshot();
+      // D1c-1 추가 행만 제외하고 옛 행 전체를 비교한다. 새 행의 정확한 값은 위 도구/스위치 시험이 고정한다.
+      now.execution_tools = now.execution_tools.filter(({ row }) => !["agent:claude-code", "agent:codex"].includes(String((row as Record<string, unknown>).provider)));
+      now.execution_controls = now.execution_controls.filter(({ row }) => !["agent:claude-code", "agent:codex"].includes(String((row as Record<string, unknown>).key)));
       const without = (rows: Rows, keys: string[]) => rows.map((r) => ({ row: Object.fromEntries(Object.entries(r.row as Record<string, unknown>).filter(([key]) => !keys.includes(key))) }));
       for (const table of TABLES) {
         if (table === "execution_runs") continue;

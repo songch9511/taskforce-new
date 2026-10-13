@@ -90,6 +90,21 @@ const AGENT_CAPABILITY = {
   artifacts: ["files", "diff", "text"],
 };
 
+it("accepts optional direct-chat descriptor fields without changing legacy capability DTOs", () => {
+  expect(agentCapabilitySchema.parse(AGENT_CAPABILITY)).toEqual(AGENT_CAPABILITY);
+  const extended = {
+    ...AGENT_CAPABILITY,
+    display_name: "Claude Code",
+    sign_in: "user_terminal",
+    cancel_scope: "turn_and_processes",
+    version_range: ">=2.1.241 <2.2",
+    question: { ...AGENT_CAPABILITY.question, structured: true },
+    enforcement: { ...AGENT_CAPABILITY.enforcement, read_only: boundary(null) },
+  };
+  expect(agentCapabilitySchema.parse(extended)).toEqual(extended);
+  expect(agentCapabilitySchema.safeParse({ ...extended, cancel_scope: "machine" }).success).toBe(false);
+});
+
 const AGENT_EVENT_QUESTION = {
   adapter: "agent:claude-code",
   session_id: "c0ffee00-0000-4000-8000-000000000001",
