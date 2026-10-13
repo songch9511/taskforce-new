@@ -40,6 +40,12 @@ struct TaskforceApp: App {
                     .frame(width: 420, height: 240)
             }
         }
+        // 앱 메뉴(설정 창이 앞일 때)의 표준 위치: About 바로 아래. 메뉴 막대 메뉴(`MenuBarMenu`)에도 같은 버튼이 있다
+        .commands {
+            CommandGroup(after: .appInfo) {
+                CheckForUpdatesButton()
+            }
+        }
     }
 }
 

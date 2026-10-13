@@ -6,7 +6,7 @@
 
 `scripts/release-mac-dmg.sh`와 `apple/Config/ExportOptions-DeveloperID.plist`는 helper commit `f665bdfe42876d2917bef8d9a6f4cf44295bf464`에서 선별해 가져왔다. 전체 release branch는 합치지 않았다. helper checkout의 비공개 `Secrets.xcconfig`는 읽거나 복사하지 않았다. 원본 checkout의 native 설정은 값 비노출 유형 검사를 거쳐 Supabase URL·publishable key·Taskforce API host만 active ignored 설정 파일에 복사했다. 기본 출력 루트는 저장소 밖 임시 폴더 `${TMPDIR:-/tmp}/taskforce-release`이며 `--out <directory>`로 바꿀 수 있고, 그 아래 생성하는 버전/빌드 출력 폴더가 이미 있으면 중단해 이전 산출물과 로그를 보존한다. 재시도에는 새 build 번호를 사용한다. 내부 작업 폴더 정리는 해당 실행이 새로 만든 output 아래에서만 이뤄진다.
 
-helper는 Release archive/export, Developer ID 서명과 entitlements/profile 확인(서명된 앱에 App Sandbox 권한이 있으면 중단, 아래 "샌드박스 끔"), 앱·DMG 공증·staple, Gatekeeper 확인, SHA-256 출력을 수행한다. `--skip-notarize`는 설치 배포용이 아니다. helper는 공개 사이트 업로드를 포함하지 않는다.
+helper는 Release archive/export, Developer ID 서명과 entitlements/profile 확인(서명된 앱에 App Sandbox 권한이 있으면 중단, 아래 "샌드박스 끔"), 앱·DMG 공증·staple, Gatekeeper 확인, 선택 단계로 로컬 Sparkle appcast 만들기(아래 "자동 업데이트"), SHA-256 출력을 수행한다. `--skip-notarize`는 설치 배포용이 아니다. helper는 공개 사이트 업로드를 포함하지 않는다(appcast도 올리지 않는다).
 
 ## 샌드박스 끔 (DEC-1 A, 2026-10-13)
 
@@ -26,7 +26,43 @@ Mac 앱은 Developer ID DMG 경로를 그대로 두고 **App Sandbox만 끈다.*
 - 이 변경 전에 만든 DMG(0.1.0 (3) 포함)는 권한 파일이 샌드박스였던 커밋의 빌드다. 새 DMG를 만들 때 위 검사가 통과해야 한다.
 - 서명된 빌드에서만 확인되는 것(이 단계에서 서명 · 공증 · DMG는 만들지 않았다): (1) 비샌드박스 Developer ID 서명에서도 App Group 컨테이너와 Keychain 접근 그룹이 샌드박스 때와 같이 동작하는지, (2) 비샌드박스 앱이 자기 옛 컨테이너 plist를 읽을 때 macOS가 다른 앱의 데이터 접근 동의를 묻는지(거부되면 권한 오류 → 표식 없이 최대 3번 시도, 옛 파일은 남는다), (3) 권한 파일의 `aps-environment`가 내보내기에서 `production`으로 바뀌는지(기존 검사).
 - 남은 위험(PATH): 샌드박스를 꺼도 LaunchServices(Finder · Dock)로 뜬 앱은 launchd의 기본 PATH를 받는다. 사용자의 CLI(`claude` · `codex`)를 찾는 PATH 해석은 bridge(D3a)가 한다.
-- 이 단계에 없는 것: 자동 업데이트(M1b) · bridge · 자식 프로세스 실행 · 샌드박스 빌드에서 보일 화면 문구(`AgentRuntimeEnvironment.isSandboxed`는 값만 제공한다).
+- 이 단계에 없는 것: bridge · 자식 프로세스 실행 · 샌드박스 빌드에서 보일 화면 문구(`AgentRuntimeEnvironment.isSandboxed`는 값만 제공한다). 자동 업데이트는 다음 절.
+
+## 자동 업데이트 (Sparkle 2, OA M1b)
+
+Mac 앱은 [Sparkle 2](https://sparkle-project.org/documentation/)로 스스로 업데이트한다. 샌드박스를 끈 구성(위 절)을 전제로 쓴다. **이 단계에서 키 생성 · 서명 · 공증 · DMG · appcast 게시는 하지 않았다.** 코드는 연결돼 있지만 피드 주소와 공개 키가 비어 있어 **지금 빌드의 업데이터는 꺼져 있다**: 시작하지 않고 메뉴 항목 "Check for Updates…"는 비활성이다. 아래 "출시 전에 사용자가 할 일"을 채워야 켜진다.
+
+- 의존성: Swift Package `https://github.com/sparkle-project/Sparkle`을 **정확한 버전 2.10.0** 하나로 고정했다(`apple/project.yml`의 `exactVersion` + 커밋된 `Taskforce.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved`). **Mac 앱 타깃(`Taskforce`)에만** 연결하고 `TaskforceKit` · 시험 타깃에는 넣지 않는다(`UpdaterBuildSettingsTests`가 고정 버전 · 연결 타깃을 고정한다). 버전을 올릴 때는 `project.yml`의 숫자를 바꾸고 `cd apple && xcodegen` 뒤 `xcodebuild -resolvePackageDependencies -project apple/Taskforce.xcodeproj -scheme Taskforce`로 `Package.resolved`를 갱신한다. 공개된 지 2주 넘은 정식 2.x만 고른다.
+- 설정값: Info.plist의 `SUFeedURL` · `SUPublicEDKey`는 빌드 설정 `SPARKLE_FEED_URL` · `SPARKLE_PUBLIC_ED_KEY`에서 온다. Debug · Debug-Test(`Config/Base.xcconfig`)는 빈 값이고, 채울 자리는 `Config/Release.xcconfig`다. 둘 다 공개 값이라 커밋한다(비밀 아님).
+- 업데이터가 켜지는 조건(`UpdateConfiguration`): Release 빌드이고, XCTest 호스트가 아니고, 피드 주소가 http(s) 주소이고, 공개 키가 base64 32바이트(ed25519 공개 키 크기)일 때. 하나라도 아니면 Sparkle 객체를 만들지 않는다(크래시 · 오류 창 없음. 시작했는지와 이유만 OSLog `category: updater`에 주소 · 키 없이 남는다).
+- 앱 쪽: `SPUStandardUpdaterController` 하나(`AppUpdater`)를 앱 시작 때 만든다. 메뉴 막대 메뉴와 앱 메뉴(설정 창이 앞일 때)에 표준 항목 "Check for Updates…"가 있다. 자동 확인은 Sparkle 기본 동작을 따른다(두 번째 실행에서 사용자에게 자동 확인을 켤지 묻는다). 별도 설정 화면은 없다.
+- 종료 전 확인: 실행 중인 에이전트 턴이 있을 때 업데이트 재시작을 막는 일은 bridge WP 몫이다. 자리는 `AppUpdater`의 `updaterShouldRelaunchApplication` → `UpdateRelaunchPolicy.allowsRelaunchNow()`(지금은 항상 `true`)다.
+
+### 출시 전에 사용자가 할 일
+
+1. **서명 키 만들기** (사용자 Mac에서 한 번). Sparkle 도구는 Xcode가 패키지와 함께 내려받는다: 스크립트 아카이브라면 `<출력 폴더>/Taskforce-<버전>-<빌드>/DerivedData/SourcePackages/artifacts/sparkle/Sparkle/bin/`, Xcode에서 열었다면 `~/Library/Developer/Xcode/DerivedData/Taskforce-*/SourcePackages/artifacts/sparkle/Sparkle/bin/`. 그 안의 `generate_keys`를 인자 없이 실행하면 **개인 키는 로그인 Keychain에만** 저장되고(서비스 `https://sparkle-project.org`, 계정 `ed25519`) 공개 키가 출력된다. 다시 실행하면 같은 공개 키를 보여 주고, `generate_keys -p`는 공개 키만 출력한다. 개인 키를 파일로 내보내거나(`-x`) 채팅 · 저장소 · 로그에 붙이지 않는다. 키를 잃으면 이미 설치된 앱에는 더 이상 업데이트를 줄 수 없으니 백업은 사용자가 정한 안전한 곳에 한다.
+2. **값 넣기**: `apple/Config/Release.xcconfig`의 `SPARKLE_FEED_URL`(appcast의 HTTPS 주소)과 `SPARKLE_PUBLIC_ED_KEY`(위에서 출력된 공개 키). xcconfig에서 `//`는 주석이라 URL은 `https:/$()/…`로 적고, 공개 키에 `//`가 들어 있으면 그 자리도 `/$()/`로 적는다.
+3. **호스팅 정하기**: appcast.xml과 DMG를 올릴 곳(HTTPS)을 사용자가 정한다. 이 저장소의 스크립트는 올리지 않는다.
+4. 업데이터가 들어 있는 첫 빌드부터 업데이트를 받을 수 있다. Sparkle이 없는 기존 DMG(0.1.0 (3) 포함) 사용자는 그 한 번은 새 DMG를 직접 설치한다.
+
+### appcast 만들기 · 올리기
+
+`scripts/release-mac-dmg.sh`가 공증 · Gatekeeper 확인 뒤 **선택 단계**로 `generate_appcast`(Sparkle 도구, 아카이브의 `DerivedData/SourcePackages/artifacts/sparkle/Sparkle/bin/`. 다른 곳에 있으면 환경 변수 `SPARKLE_BIN_DIR`)를 부른다. 다음 중 하나라도 없으면 **건너뛰고 실패하지 않는다**: 앱 Info.plist의 `SUFeedURL` · `SUPublicEDKey`, 도구, Keychain의 Sparkle 서명 키(항목이 있는지만 속성으로 확인한다: 키 값은 읽지도 출력하지도 않는다. 항목이 없을 때 도구를 그냥 부르면 서명하지 못해 실패한다: 2.10.0에서 확인). `--skip-notarize` DMG에는 만들지 않는다. 도구가 돌았는데 실패하면 로그 경로를 보여 주고 멈춘다.
+
+- 서명은 `generate_appcast`가 사용자 Keychain에서 직접 한다. 처음에는 macOS가 "generate_appcast가 Keychain 항목을 쓰려 한다"는 허용 창을 띄울 수 있다.
+- 결과: `<출력 폴더>/Taskforce-<버전>-<빌드>/appcast/appcast.xml`과 DMG 사본(로컬만). 이전 버전 항목을 이어 가려면 `--appcast-dir <폴더>`로 같은 폴더를 계속 쓰고 이전 DMG도 그 폴더에 둔다(도구가 폴더의 아카이브를 훑어 appcast를 다시 만든다. 기본으로 최근 3개 버전을 유지).
+- 다운로드 주소 접두어는 기본이 피드 주소의 폴더(`https://host/path/appcast.xml` → `https://host/path/`)이고 `--download-url-prefix <주소>`로 바꾼다. 도구가 접두어에 파일 이름을 상대 주소로 이어 붙이므로 끝에 `/`가 있어야 하고, 스크립트가 없으면 붙인다. 출력된 appcast의 `enclosure url`을 올리기 전에 눈으로 확인한다.
+- **올리기는 사용자가 한다**: `appcast.xml`을 `SUFeedURL`이 가리키는 주소에, DMG를 접두어 아래에 올린다. 올리기 전에는 새 버전이 사용자에게 보이지 않는다.
+
+### 되돌리기
+
+- 배포 중단: 올린 appcast에서 그 버전 `<item>`을 지우거나 이전 appcast로 바꾼다. 새로 확인하는 사용자는 더 이상 받지 않는다. **이미 설치한 사용자는 낮은 버전으로 자동으로 돌아가지 않는다**(Sparkle은 더 높은 빌드 번호만 업데이트로 본다): 고친 빌드를 더 높은 빌드 번호로 내야 한다.
+- 앱 쪽 끄기: 다음 빌드에서 `SPARKLE_FEED_URL` 또는 `SPARKLE_PUBLIC_ED_KEY`를 비우면 그 빌드는 업데이터를 시작하지 않는다.
+- 코드 되돌리기: Sparkle 연결 커밋을 되돌리고 `cd apple && xcodegen`. 설정 이전 · 샌드박스 끔(위 절)은 그대로 둔다.
+
+### 확인하지 못한 것 (서명 · 공증한 빌드에서만 확인된다)
+
+이 단계는 서명 · 공증 · DMG를 만들지 않았다. 따라서 (1) Developer ID로 다시 서명한 뒤에도 앱 안의 `Sparkle.framework`와 그 보조 도구(`Autoupdate` · `Updater.app` · XPC 서비스)가 Hardened Runtime 아래에서 서명 검증을 통과하는지, (2) 실제 업데이트가 내려받기 · 설치 · 재시작까지 되는지, (3) Dock 아이콘이 없는 에이전트 앱(`LSUIElement`)에서 예약된 확인 창이 다른 창 뒤에 뜨는지(Sparkle은 시작 직후가 아니면 포커스를 가져오지 않는다. 눈에 띄게 하려면 Sparkle의 "gentle reminders"가 필요하고 지금은 만들지 않았다, 화면 설계 빈칸)는 확인하지 못했다. 첫 서명 빌드에서 사람이 한 번 본다.
 
 ## 현재 상태
 

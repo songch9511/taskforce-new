@@ -10,3 +10,10 @@ API_BASE_URL = https:/$()/api.taskforcelabs.dev
 // TestFlight 빌드에서 Google 버튼이 조용히 사라지지 않게 여기서 고정한다. 운영 Supabase → Google 제공자의 Client IDs와 같은 값이다.
 GOOGLE_IOS_CLIENT_ID = 923900348266-iopmhbf1foor213n1jc3a8tv6v4fti82.apps.googleusercontent.com
 GOOGLE_IOS_URL_SCHEME = com.googleusercontent.apps.923900348266-iopmhbf1foor213n1jc3a8tv6v4fti82
+
+// 자동 업데이트(Sparkle). *** 출시 전 채울 것 *** 둘 중 하나라도 비어 있으면 앱은 업데이터를 시작하지 않고 메뉴 "Check for Updates…"는 꺼져 있다.
+// 둘 다 공개 값이라 커밋한다 (EdDSA 개인 키는 사용자 Keychain에만 있다). 만드는 법 · 올리는 법: docs/go-live/mac-dmg.md "자동 업데이트".
+//   SPARKLE_FEED_URL      = appcast.xml의 HTTPS 주소. 위처럼 "//"는 "/$()/"로: https:/$()/<호스트>/<경로>/appcast.xml
+//   SPARKLE_PUBLIC_ED_KEY = Sparkle generate_keys가 출력한 공개 키(base64, 32바이트). 값에 "//"가 들어 있으면 그 자리도 "/$()/"로
+SPARKLE_FEED_URL =
+SPARKLE_PUBLIC_ED_KEY =
