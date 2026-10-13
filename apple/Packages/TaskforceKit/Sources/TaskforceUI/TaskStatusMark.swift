@@ -23,7 +23,7 @@ public struct TaskStatusMark: View {
             }
         }
 
-        var label: String {
+        public var label: String {
             switch self {
             case .toDo: "To Do"
             case .inProgress: "In Progress"

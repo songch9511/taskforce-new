@@ -70,3 +70,18 @@ public enum TFIcon: String, CaseIterable, Sendable {
     .foregroundStyle(TFColor.textPrimary)
     .padding()
 }
+
+#if os(macOS)
+import AppKit
+
+extension TFIcon {
+    /// AppKit 메뉴 항목용 (template: 메뉴가 글자색으로 칠한다)
+    @MainActor
+    public func nsImage(size: CGFloat = 16) -> NSImage? {
+        guard let source = TFColor.bundle.image(forResource: assetName), let image = source.copy() as? NSImage else { return nil }
+        image.size = NSSize(width: size, height: size)
+        image.isTemplate = true
+        return image
+    }
+}
+#endif

@@ -11,6 +11,8 @@ final class MacAppDelegate: NSObject, NSApplicationDelegate {
     private(set) static weak var shared: MacAppDelegate?
 
     private(set) var launcher: LauncherPanelController?
+    /// 0.2.0 Edge 셸 (`TF_EDGE_SHELL`이 켜진 격리 Debug 실행에서만, 기본은 nil → 기존 런처)
+    private(set) var edge: EdgeShellController?
     let hotKeys = HotKeyCenter()
     let settingsHotKeys = HotKeyCenter(id: 2)
 
@@ -49,7 +51,14 @@ final class MacAppDelegate: NSObject, NSApplicationDelegate {
         PushCenter.shared.onOpen = { [weak self] target in self?.openNotification(target) }
         if let target = PushCenter.shared.take() { openNotification(target) }
 
-        hotKeys.onPress = { [weak launcher] in launcher?.toggle() }
+        if EdgeShellFlag.isEnabled() {
+            let edge = EdgeShellController(launcher: model)
+            self.edge = edge
+            edge.start()
+            hotKeys.onPress = { [weak edge] in edge?.togglePanel() }
+        } else {
+            hotKeys.onPress = { [weak launcher] in launcher?.toggle() }
+        }
         hotKeys.install()
         hotKeys.register(HotKeyShortcut.load())
         settingsHotKeys.onPress = { SettingsOpener.open() }
@@ -69,6 +78,8 @@ final class MacAppDelegate: NSObject, NSApplicationDelegate {
         #if DEBUG
         // 설정 창 확인용: `--show-settings` (`-TFSnapshot <폴더>`면 항목마다 PNG를 남기고 끝낸다)
         SettingsSnapshot.runIfRequested()
+        // Edge 셸 확인용: `-TF_EDGE_SHELL YES -TFEdgeSnapshot <폴더>`
+        if let edge { EdgeSnapshot.runIfRequested(edge) }
         #endif
     }
 
