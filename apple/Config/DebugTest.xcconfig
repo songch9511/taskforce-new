@@ -1,0 +1,11 @@
+// Mac 앱 테스트(Taskforce 스킴의 Test 액션)가 쓰는 빌드 설정 "Debug-Test"의 값. Debug와 같고 아래 두 줄만 다르다 (project.yml).
+// 이름에 "Debug"가 들어 있어야 Xcode가 Swift 패키지(TaskforceKit)를 Debug로 빌드해 @testable import가 된다.
+#include "Base.xcconfig"
+
+// 테스트 호스트(Taskforce.app)의 번들 ID가 dev.taskforcelabs.unittest.taskforce가 된다. 실사용 앱(dev.taskforcelabs.taskforce)과 설정 도메인이 다르다.
+// 호스트의 UserDefaults.standard는 이 번들 ID의 도메인이라, 실사용 ID로 테스트를 돌리면 실사용 앱의 설정을 다시 쓴다.
+// 다른 격리 접두어는 명령줄 BUNDLE_ID_PREFIX=...로 덮고, 실사용 ID가 되면 TaskforceTests 빌드가 실패한다 (Scripts/check-test-host-isolation.sh).
+BUNDLE_ID_PREFIX = dev.taskforcelabs.unittest
+
+// 서명하지 않는다 (CI와 같다). 서명하면 Xcode 자동 서명이 이 테스트용 번들 ID · App Group의 프로필을 개발자 계정에 요청할 수 있다.
+CODE_SIGNING_ALLOWED = NO

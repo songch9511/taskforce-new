@@ -7,6 +7,7 @@
 |---|---|
 | 번들 ID | `dev.taskforcelabs.taskforce` |
 | App Group | `group.dev.taskforcelabs.taskforce` |
+| 테스트 호스트 번들 ID | `dev.taskforcelabs.unittest.taskforce` (`Debug-Test` 설정, 아래 "테스트 격리") |
 | URL scheme | `taskforce://` (연동 OAuth가 끝나면 `taskforce://connections/{provider}?handoff=…` 또는 `?status=…`로 돌아온다), Google 로그인 `com.googleusercontent.apps.<클라이언트>`(`GOOGLE_IOS_URL_SCHEME`) |
 | 최소 OS | macOS 15 |
 
@@ -50,6 +51,8 @@ cd apple/Packages/TaskforceKit && swift test
 # 색 토큰을 actool이 컴파일한 카탈로그로 확인 (swift test는 카탈로그를 복사만 한다, CI도 같은 단계). 줄마다 저장소 맨 위에서
 cd apple/Packages/TaskforceKit && TEST_RUNNER_TF_REQUIRE_COMPILED_CATALOG=1 xcodebuild test -scheme TaskforceKit-Package -destination 'platform=macOS' -only-testing:TaskforceUITests
 xcodebuild build -project apple/Taskforce.xcodeproj -scheme Taskforce -destination 'platform=macOS' -derivedDataPath apple/build/dd CODE_SIGNING_ALLOWED=NO
+# Mac 앱 테스트: 이 명령 그대로 돈다 (격리 규칙은 "테스트 격리". -configuration · BUNDLE_ID_PREFIX · CODE_SIGNING_ALLOWED를 주지 않는다)
+xcodebuild test -project apple/Taskforce.xcodeproj -scheme Taskforce -destination 'platform=macOS'
 ```
 
 디자인 비교용 견본 (Debug 빌드만): 실행 인자 `-TFSampleData`를 주면 Figma 견본과 같은 문구로 화면을 채우고 서버를 부르지 않는다.
@@ -60,6 +63,17 @@ Mac은 `--show-launcher -TFSampleData -TFSnapshot <폴더>`로 실행하면 런�
 여기에 `-TF_EDGE_SHELL YES`를 더하면 0.2.0 설정 창(5탭)을 견본 데이터로만 담는다: 탭마다 `mac-settings-window-<탭>-light.png` · `-dark.png`(스크롤이 있으면 `-end`), 상세 · 트레이 안 확인(`connections-privacy` · `connections-notion` · `connections-notion-disconnect` · `connections-withdraw` · `account-delete`). 실행은 격리 번들 id(`BUNDLE_ID_PREFIX=dev.taskforcelabs.edgeqa`) 빌드로만 한다.
 실행(U2) 견본: `-TFSampleCredits`는 S3 Figma 값(Usage & Credits 항목이 보이고 `usage` · `usage-end` PNG), `-TFSampleNoExecution`은 credits 404(실행 UI 없음), `-TFSampleConsent`는 동의한 계정(Privacy & AI Data 스위치 켜짐). 설정 창 PNG에는 Privacy & AI Data 끝까지(`privacy-end`) · 동의 화면 처음과 끝(`consent-prompt` · `consent-prompt-end`)도 남는다. iPhone은 `-TFSampleSettings`(설정 시트) · `-TFSamplePrivacy`(Privacy & AI Data)로 그 화면을 연 채 시작한다.
 0.2.0 Chats · Remembered(B3, `-TF_EDGE_SHELL YES -TFSampleData` 둘 다 있어야 한다): 서버 대신 메모리 가짜 서버(`SampleChatGateway`)가 대화 · 기억을 돌려주고(확인 · 정정 · 잊기 · 옮기기 · 보내기가 서버 계약대로 메모리에서 돈다) 네트워크 · 계정 · AI 호출이 없다. `-TFSampleChat <full|empty|offline|failed|featureOff|sendHangs|sendFails|consentNeeded>`는 시작 상태, `-TFEdgeSnapshot <폴더> -TFEdgeSnapshotChats`는 Chats 상태 PNG(`mac-edge-chats-<이름>.png`: history · conversation · note-confirmed · note-forgotten · sending · failed · consent · unavailable · empty · offline · load-failed · new-chat), `--show-settings -TFSnapshot <폴더>`의 `mac-settings-window-remembered-*`는 Account › Remembered(entry · list · detail-explicit · detail-forget · detail-inferred · detail-observed). 렌더된 견본일 뿐이다. `-TFEdgeInteract <로그 파일> [-TFEdgeInteractShots <폴더>]`는 앱 안 합성 조작 확인(`NSApp.sendEvent`로 ⌘3 · ⌘N · 글자 · Return · Esc · 마우스를 진짜 패널에 흘려 응답 체인을 본다, `PASS|FAIL` 한 줄씩). OS 수준 포인터 · 키보드 · VoiceOver가 아니다.
+
+### 테스트 격리 (Mac 앱 테스트)
+
+Mac 앱 테스트는 앱 자신을 호스트로 띄운다. 호스트의 `UserDefaults.standard`는 그 번들 ID의 설정 도메인이라, 실사용 ID(`dev.taskforcelabs.taskforce`)로 테스트를 돌리면 실사용 앱의 설정 도메인을 다시 쓴다(2026-10-11 B3에서 두 번 있었고 이전 값은 모른다). 그래서 이렇게 막는다.
+
+- **기본 명령이 그대로 격리된다.** 스킴의 Test 액션이 `Debug-Test` 설정(`Config/DebugTest.xcconfig`)을 쓴다. Debug와 같고 `BUNDLE_ID_PREFIX = dev.taskforcelabs.unittest`(호스트 `dev.taskforcelabs.unittest.taskforce`) · 서명 안 함(CI와 같다. 서명하면 Xcode 자동 서명이 테스트용 ID의 프로필을 개발자 계정에 요청할 수 있다)만 다르다. 이름에 `Debug`가 들어 있어야 Xcode가 Swift 패키지를 Debug로 빌드해 `@testable import`가 된다. Xcode의 Test 액션(⌘U)도 같은 설정이다. Run(⌘R) · Release · 아카이브 설정과 제품 번들 ID는 그대로다.
+- 다른 격리 도메인이 필요하면 `BUNDLE_ID_PREFIX=dev.taskforcelabs.<이름>`을 명령줄에 더한다(`b3test` 같은 일회용 이름. `edgeqa`는 격리 QA 실행용이라 값이 들어 있다).
+- **실사용 ID가 되는 값은 호스트가 뜨기 전에 실패한다.** `TaskforceTests` 빌드의 첫 단계(`Scripts/check-test-host-isolation.sh`)가 빌드된 호스트의 Info.plist를 읽어 번들 ID · App Group이 실사용 앱과 같으면(대소문자 무시) 빌드를 실패시킨다: `-configuration Debug`, `BUNDLE_ID_PREFIX=dev.taskforcelabs`, `APP_BUNDLE_ID=…`, `PRODUCT_BUNDLE_IDENTIFIER=…`. 실사용 ID는 `Config/Base.xcconfig`의 `BUNDLE_ID_PREFIX`에서 읽는다. 호스트를 한 번도 띄우지 않고 거부를 확인하려면 `xcodebuild build-for-testing`에 그 값을 준다(CI가 이 거부를 확인한다). 스킴의 test 사전 동작(pre-action)은 실패해도 `xcodebuild test`를 멈추지 못해서 쓰지 않는다.
+- **테스트는 호스트의 `UserDefaults.standard`를 쓰지 않는다.** 테스트가 쓰는 UserDefaults는 `TaskforceTests/TestDefaults.swift`(임시 폴더 안의 plist, 테스트마다 새 것, `defer { store.cleanup() }`로 정상 종료 · 실패 모두에서 폴더째 지움)만 쓴다. 이름 있는 suite(`UserDefaults(suiteName: "이름")`)는 값을 지워도 `~/Library/Preferences`에 빈 plist가 남아서 만들지 않는다. `@AppStorage`를 읽는 화면(설정 창)은 `.defaultAppStorage(defaults)`로 테스트 suite를 준다. 이전에는 설정 창 테스트가 `settings.tab`을 `.standard`에 쓰고 되돌렸고, 그 도메인에 `settings.tab=account`가 저장돼 있으면 호스트가 죽었다(`LauncherRunTests.runWithAIKeepsTheGoalAndStartsOnce`가 140번째 테스트에서 멈춤. 크래시 스택은 `MacBillingSection.refresh` → 이미 닫힌 URLSession이고, 격리 도메인에서 `account`만 있을 때 재현됐다. `connections`나 창 위치만 있으면 재현되지 않았다).
+- 지키지 못하는 길: 빌드 단계는 `TaskforceTests`를 빌드할 때만 돈다. 이미 만든 결과를 다시 쓰는 `xcodebuild test-without-building`은 거치지 않으므로, 실사용 ID로 호스트를 다시 만든 같은 derived data에는 쓰지 않는다. 호스트 앱 안에 늦은 가드는 두지 않았다(제품 코드 변경 없음). Xcode 화면(GUI)의 Test 액션은 같은 스킴 · 설정이지만 직접 돌려 확인하지 않았다.
+- 이전 실행이 `~/Library/Preferences`에 남긴 파일(`LauncherShell-<uuid>.plist` · `dev.taskforcelabs.tests.*.plist` 등)은 자동으로 지우지 않고 이 문서가 지우는 명령도 권하지 않는다. 이 테스트가 만든 것인지 소유권을 확인한 뒤 별도로 정리할 대상이다. Kit 테스트(`swift test`)의 이름 있는 suite(`policy-<uuid>` 등)는 호스트 앱 도메인이 아니라 이 규칙 밖이다.
 
 ## 화면
 

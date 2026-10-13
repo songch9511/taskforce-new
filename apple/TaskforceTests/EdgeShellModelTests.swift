@@ -366,9 +366,9 @@ struct EdgeShellModelTests {
     }
 
     @Test func edgeShellIsOffUnlessTurnedOnInAnIsolatedSuite() throws {
-        let name = "dev.taskforcelabs.tests.edge-shell.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: name))
-        defer { defaults.removePersistentDomain(forName: name) }
+        let store = try TestDefaults()
+        defer { store.cleanup() }
+        let defaults = store.defaults
         #expect(!EdgeShellFlag.isEnabled(defaults))
         defaults.set("NO", forKey: EdgeShellFlag.key)
         #expect(!EdgeShellFlag.isEnabled(defaults))

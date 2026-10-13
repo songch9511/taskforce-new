@@ -647,20 +647,23 @@ private final class ShellHarness {
     let router: ShellRouter
     let saved: SavedNowStore
     let displayPreferencesDefaults: UserDefaults
+    /// `displayPreferencesDefaults`의 저장 폴더 (하네스가 사라질 때 지운다)
+    private let defaultsStore: TestDefaults
     let connectivity: AsyncStream<Bool>.Continuation
     let firstAccount: UUID
     private let storage: ShellSessionStorage
     private let urlSession: URLSession
 
     private init(
-        model: LauncherModel, session: SessionStore, router: ShellRouter, saved: SavedNowStore, displayPreferencesDefaults: UserDefaults,
+        model: LauncherModel, session: SessionStore, router: ShellRouter, saved: SavedNowStore, defaultsStore: TestDefaults,
         connectivity: AsyncStream<Bool>.Continuation, firstAccount: UUID, storage: ShellSessionStorage, urlSession: URLSession
     ) {
         self.model = model
         self.session = session
         self.router = router
         self.saved = saved
-        self.displayPreferencesDefaults = displayPreferencesDefaults
+        self.defaultsStore = defaultsStore
+        self.displayPreferencesDefaults = defaultsStore.defaults
         self.connectivity = connectivity
         self.firstAccount = firstAccount
         self.storage = storage
@@ -704,7 +707,8 @@ private final class ShellHarness {
         let services = AppServices(config: config, supabase: supabase, session: urlSession)
         let account = AccountStore(services: services, session: session)
         let store = saved ?? temporaryStore()
-        let displayPreferencesDefaults = UserDefaults(suiteName: "LauncherShell-\(UUID().uuidString)")!
+        let defaultsStore = try TestDefaults()
+        let displayPreferencesDefaults = defaultsStore.defaults
         displayPreferences.save(to: displayPreferencesDefaults)
         let (stream, continuation) = AsyncStream<Bool>.makeStream()
         let model = LauncherModel(
@@ -716,7 +720,7 @@ private final class ShellHarness {
             try await Task.sleep(for: .milliseconds(10))
         }
         return ShellHarness(
-            model: model, session: session, router: router, saved: store, displayPreferencesDefaults: displayPreferencesDefaults,
+            model: model, session: session, router: router, saved: store, defaultsStore: defaultsStore,
             connectivity: continuation, firstAccount: firstAccount, storage: storage, urlSession: urlSession
         )
     }

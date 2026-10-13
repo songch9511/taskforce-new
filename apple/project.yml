@@ -7,8 +7,14 @@ options:
   deploymentTarget:
     macOS: "15.0"
   createIntermediateGroups: true
+# Debug-Test = Debug + 격리된 테스트 호스트 번들 ID (Config/DebugTest.xcconfig). 스킴의 Test 액션만 쓴다. 이름에 Debug가 있어야 패키지가 Debug로 빌드된다.
+configs:
+  Debug: debug
+  Release: release
+  Debug-Test: debug
 configFiles:
   Debug: Config/Base.xcconfig
+  Debug-Test: Config/DebugTest.xcconfig
   # Mac 직접 배포 Release는 운영 서버 주소로 고정한다 (Release.xcconfig가 Base 뒤 API_BASE_URL만 바꾼다)
   Release: Config/Release.xcconfig
 settings:
@@ -64,6 +70,14 @@ targets:
         product: TaskforceKit
       - package: TaskforceKit
         product: Supabase
+    # 테스트 호스트(Taskforce.app)의 번들 ID가 실사용 앱과 같으면 호스트가 뜨기 전에 빌드를 실패시킨다. 호스트의 Info.plist가 만들어진 뒤에 돈다(입력 파일).
+    preBuildScripts:
+      - name: Check test host isolation
+        script: '"$SRCROOT/Scripts/check-test-host-isolation.sh"'
+        inputFiles:
+          - $(BUILT_PRODUCTS_DIR)/Taskforce.app/Contents/Info.plist
+          - $(SRCROOT)/Config/Base.xcconfig
+        basedOnDependencyAnalysis: false
     settings:
       base:
         TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Taskforce.app/Contents/MacOS/Taskforce"
@@ -73,6 +87,7 @@ schemes:
       targets:
         Taskforce: all
     test:
+      config: Debug-Test
       targets:
         - TaskforceTests
     run:
