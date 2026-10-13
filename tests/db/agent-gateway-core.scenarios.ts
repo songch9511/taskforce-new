@@ -162,6 +162,8 @@ export function agentGatewayCoreTests(db: () => AgentGatewayDb) {
         "agent_tasks.result_refs jsonb not null = '[]'::jsonb",
         "agent_tasks.created_at timestamp with time zone not null = now()",
         "agent_tasks.updated_at timestamp with time zone not null = now()",
+        "agent_tasks.answered_question jsonb null",
+        "agent_tasks.abandoned_question jsonb null",
         "bridges.id uuid not null = gen_random_uuid()",
         "bridges.user_id uuid not null = auth.uid()",
         "bridges.device_ref text not null",
@@ -731,11 +733,11 @@ export function agentGatewayCoreTests(db: () => AgentGatewayDb) {
       expect(await f.one(`select agent_session_id from public.execution_runs where id = $1`, [other.run])).toEqual({ agent_session_id: other.session });
     });
 
-    it("session 삭제 → 작업은 지워지고, run(기록)은 남고 agent_session_id만 비며, 연결은 그대로다", async () => {
+    it("session 삭제 → 작업은 지워지고, 열린 run은 stopped로 남고 agent_session_id가 비며, 연결은 그대로다", async () => {
       const w = await f.world();
       await q(`delete from public.agent_sessions where id = $1`, [w.session]);
       expect(await count("agent_tasks", "id = $1", [w.task])).toBe(0);
-      expect(await f.one(`select state, kind, agent_session_id from public.execution_runs where id = $1`, [w.run])).toEqual({ state: "queued", kind: "conversation", agent_session_id: null });
+      expect(await f.one(`select state, kind, agent_session_id from public.execution_runs where id = $1`, [w.run])).toEqual({ state: "stopped", kind: "conversation", agent_session_id: null });
       expect(await count("agent_connections", "id = $1", [w.connection])).toBe(1);
       expect(await count("execution_events", "id = $1", [w.event])).toBe(1);
     });

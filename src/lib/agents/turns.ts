@@ -14,9 +14,11 @@ export const startAgentTurnResultSchema = z.discriminatedUnion("status", [
     action_id: z.guid(), run_id: z.guid(), agent_task_id: z.guid(), step_id: z.guid(),
     turn_seq: z.number().int().positive(), created_action: z.boolean(),
   }),
-  z.object({ status: z.literal("queued"), reason: z.enum(["session_busy", "session_external", "live_limit", "queue_order"]) }),
+  z.object({ status: z.literal("queued"), reason: z.enum(["session_busy", "session_external", "live_limit", "queue_order", "question_open"]) }),
   z.object({ status: z.literal("not_sent"), reason: notSentReason }),
   z.object({ status: z.enum(["not_found", "wrong_target", "already_dispatched", "expired"]) }),
+  z.strictObject({ status: z.enum(["answered", "duplicate"]), step_id: z.guid() }),
+  z.strictObject({ status: z.enum(["question_stale", "invalid_answer", "secret_requires_local"]) }),
   z.object({ status: z.literal("needs_referent"), candidates: z.array(z.guid()).max(3) }),
 ]);
 export type StartAgentTurnResult = z.infer<typeof startAgentTurnResultSchema>;
@@ -42,7 +44,7 @@ export async function startAgentTurn(admin: SupabaseClient, input: {
     return startAgentTurnResultSchema.parse(data);
   }
 
-  const { data } = await admin.rpc("start_agent_turn", {
+  const { data } = await admin.rpc("route_agent_message", {
     p_user_id: input.userId, p_message_id: input.messageId,
     p_action_ids: input.actionIds ?? [], p_context_ids: input.contextIds ?? [], p_access: access,
     p_live_limit: MAX_LIVE_EXTERNAL_TASKS,

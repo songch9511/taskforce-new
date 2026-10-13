@@ -195,13 +195,15 @@ export function agentTurnStartTests(db: () => ConversationAgentDb) {
       expect(await f.start(w.user,third)).toEqual({status:"not_sent",reason:"invalid_referent"});
       expect(await count("agent_tasks",w.user)).toBe(2);
     });
-    it("T1 only conversation runs accept agent_message; other future kinds stay closed", async () => {
+    it("T1 conversation runs accept agent_message and agent_cancel; other future kinds stay closed", async () => {
       const w = await f.turnWorld(true); const action = await f.action(w.user);
       const run = await f.open(w.user, w.session!, action); const task = await f.run(w.user, action);
       const append = (id: string, seq: number, kind: string) => f.id(`select public.append_step($1,$2,$3::jsonb) as id`, [id, seq, JSON.stringify({ kind, provider: "agent:codex", tool: "message", purpose: "message" })]);
       expect(await append(run, 1, "agent_message")).toEqual(expect.any(String));
       await expect(append(task, 2, "agent_message")).rejects.toThrow(/append_step/);
-      for (const kind of ["plan", "draft", "external", "agent_dispatch", "agent_cancel", "review", "check", "send", "observe"]) await expect(append(run, 2, kind)).rejects.toThrow(/append_step/);
+      for (const kind of ["plan", "draft", "external", "agent_dispatch", "review", "check", "send", "observe"]) await expect(append(run, 2, kind)).rejects.toThrow(/append_step/);
+      expect(await append(run, 2, "agent_cancel")).toEqual(expect.any(String));
+      await expect(append(task, 2, "agent_cancel")).rejects.toThrow(/append_step/);
     });
     it("T2 conversation runs preserve create_run defaults, omit plan and reuse an open run", async () => {
       const w = await f.turnWorld(true); const action = await f.action(w.user);

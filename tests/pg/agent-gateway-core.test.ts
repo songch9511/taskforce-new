@@ -217,7 +217,7 @@ describe("T8 에이전트 게이트웨이 경합 (실제 Postgres, 연결 둘)",
   it("세션 삭제 ↔ run 참조 쓰기: 쓰기가 먼저면 삭제가 기다렸다가 참조를 비우고 run은 남고, 삭제가 먼저면 쓰기는 외래키 위반이다 (고아 참조가 없다)", async () => {
     const s = await setupSession();
     const run = String((await s.run(a, s.session, s.action)).rows[0].id);
-    const read = () => f.one(`select agent_session_id as ref, kind, state from public.execution_runs where id = $1`, [run]);
+    const read = () => f.one(`select agent_session_id as ref, kind, state, stopped_at from public.execution_runs where id = $1`, [run]);
     // 쓰기가 먼저
     const sessionA = await f.session(s.user, s.connection);
     await a.query("begin");
@@ -226,7 +226,8 @@ describe("T8 에이전트 게이트웨이 경합 (실제 Postgres, 연결 둘)",
     await waitForLockWait(bPid);
     await a.query("commit");
     await deletion;
-    expect(await read()).toEqual({ ref: null, kind: "conversation", state: "queued" });
+    expect(await read()).toEqual({ ref: null, kind: "conversation", state: "stopped", stopped_at: null });
+    expect(await f.count(`select 1 from public.inbox_events where user_id = $1 and dedup_key = $2`, [s.user, `run_stop:${run}`])).toBe(0);
     // 삭제가 먼저
     const sessionB = await f.session(s.user, s.connection);
     await b.query("begin");
@@ -236,7 +237,7 @@ describe("T8 에이전트 게이트웨이 경합 (실제 Postgres, 연결 둘)",
     await waitForLockWait(aPid);
     await b.query("commit");
     await rejected;
-    expect(await read()).toEqual({ ref: null, kind: "conversation", state: "queued" });
+    expect(await read()).toEqual({ ref: null, kind: "conversation", state: "stopped", stopped_at: null });
   });
 
   it("연결 삭제 ↔ 세션 만들기: 세션이 먼저면 삭제가 기다렸다가 세션 · 작업도 함께 지우고, 삭제가 먼저면 세션 만들기는 외래키 위반이다 (고아 세션이 없다)", async () => {

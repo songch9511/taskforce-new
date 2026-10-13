@@ -22,7 +22,10 @@ describe("startAgentTurn", () => {
     const d = db();
     expect(await startAgentTurn(d.admin, input, {})).toEqual(started);
     expect(d.from).not.toHaveBeenCalled();
-    expect(d.rpc).toHaveBeenCalledExactlyOnceWith("start_agent_turn", { p_user_id: userId, p_message_id: messageId, p_action_ids: [], p_context_ids: [], p_access: "read_only", p_live_limit: MAX_LIVE_EXTERNAL_TASKS });
+    expect(d.rpc).toHaveBeenCalledExactlyOnceWith("route_agent_message", { p_user_id: userId, p_message_id: messageId, p_action_ids: [], p_context_ids: [], p_access: "read_only", p_live_limit: MAX_LIVE_EXTERNAL_TASKS });
+  });
+  it.each([{ status: "answered", step_id: userId }, { status: "duplicate", step_id: userId }, { status: "secret_requires_local" }, { status: "question_stale" }, { status: "invalid_answer" }])("preserves question routing outcomes", async (response) => {
+    expect(await startAgentTurn(db(0, response).admin, input, {})).toEqual(response);
   });
   it("marks S0 Claude Code not_sent with no dispatch", async () => {
     const d = db(0, { status: "not_sent", reason: "write_gate_closed" });
@@ -49,7 +52,7 @@ describe("startAgentTurn", () => {
     await startAgentTurn(d.admin, { ...input, connectionStatus: reason }, {});
     expect(d.rpc).toHaveBeenCalledExactlyOnceWith("mark_agent_message_not_sent", { p_user_id: userId, p_message_id: messageId, p_reason: reason });
   });
-  it.each(["live_limit", "queue_order"] as const)("preserves SQL admission reason %s without direct updates", async (reason) => {
+  it.each(["live_limit", "queue_order", "question_open"] as const)("preserves SQL admission reason %s without direct updates", async (reason) => {
     const d = db(0, { status: "queued", reason });
     expect(await startAgentTurn(d.admin, input, {})).toEqual({ status: "queued", reason });
     expect(d.from).not.toHaveBeenCalled();
@@ -66,7 +69,7 @@ describe("startAgentTurn", () => {
   it("starts below the live limit and passes normalized added chips", async () => {
     const d = db(4);
     await startAgentTurn(d.admin, { ...input, actionIds: [userId], contextIds: [messageId] }, {});
-    expect(d.rpc).toHaveBeenCalledWith("start_agent_turn", expect.objectContaining({ p_action_ids: [userId], p_context_ids: [messageId] }));
+    expect(d.rpc).toHaveBeenCalledWith("route_agent_message", expect.objectContaining({ p_action_ids: [userId], p_context_ids: [messageId] }));
   });
   it("accepts deterministic Action UUIDs without imposing a random UUID version", async () => {
     const response = { ...started, action_id: "f0000000-0000-f000-f000-000000000001" };
@@ -114,7 +117,7 @@ describe("startNextQueuedTurn", () => {
   it("resolves current registry, policy and connection and resumes retained chips", async () => {
     const d = queuedDb();
     expect(await startNextQueuedTurn(d.admin, { userId, sessionId: userId }, {})).toEqual(started);
-    expect(d.rpc).toHaveBeenLastCalledWith("start_agent_turn", expect.objectContaining({ p_message_id: messageId, p_access: "read_only", p_action_ids: [userId], p_context_ids: [messageId], p_live_limit: MAX_LIVE_EXTERNAL_TASKS }));
+    expect(d.rpc).toHaveBeenLastCalledWith("route_agent_message", expect.objectContaining({ p_message_id: messageId, p_access: "read_only", p_action_ids: [userId], p_context_ids: [messageId], p_live_limit: MAX_LIVE_EXTERNAL_TASKS }));
     for (const table of ["agent_sessions", "agent_connections", "execution_policies", "conversation_messages"]) expect(d.from).toHaveBeenCalledWith(table);
     for (const result of d.from.mock.results) expect(result.value.eq).toHaveBeenCalledWith("user_id", userId);
   });
@@ -132,7 +135,7 @@ describe("startNextQueuedTurn", () => {
     d.rows.conversation_messages = { refs: {}, selected: null };
     d.rows.execution_policies = null;
     expect(await startNextQueuedTurn(d.admin, { userId, sessionId: userId }, {})).toEqual(started);
-    expect(d.rpc).toHaveBeenLastCalledWith("start_agent_turn", expect.objectContaining({ p_action_ids: [], p_context_ids: [] }));
+    expect(d.rpc).toHaveBeenLastCalledWith("route_agent_message", expect.objectContaining({ p_action_ids: [], p_context_ids: [] }));
   });
   it.each(["agent_sessions", "agent_connections", "conversation_messages"])("handles %s disappearing after selection", async (table) => {
     const d = queuedDb();
@@ -150,7 +153,7 @@ describe("startNextQueuedTurn", () => {
   it.each(["not_found", "already_dispatched"] as const)("retires an unusable selected message with truthful %s reason", async (reason) => {
     const d = queuedDb();
     const response = { status: "not_sent", reason };
-    d.rpc.mockImplementation((name) => ({ throwOnError: vi.fn().mockResolvedValue({ data: name === "next_queued_agent_message" ? messageId : name === "start_agent_turn" ? { status: reason } : response }) }));
+    d.rpc.mockImplementation((name) => ({ throwOnError: vi.fn().mockResolvedValue({ data: name === "next_queued_agent_message" ? messageId : name === "route_agent_message" ? { status: reason } : response }) }));
     expect(await startNextQueuedTurn(d.admin, { userId, sessionId: userId }, {})).toEqual(response);
     expect(d.rpc).toHaveBeenLastCalledWith("mark_agent_message_not_sent", { p_user_id: userId, p_message_id: messageId, p_reason: reason });
   });
