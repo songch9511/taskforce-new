@@ -82,6 +82,16 @@ notarize() {
   fi
 }
 
+# 샌드박스 끔 (DEC-1 A, docs/go-live/mac-dmg.md): 서명된 앱의 권한에 App Sandbox가 있으면 멈춘다.
+# 샌드박스 앱이 띄운 자식 프로세스는 샌드박스를 물려받아 사용자의 claude · codex 로그인과 PATH에 닿지 못한다. 인자: codesign -d --entitlements 출력(plist) 파일
+reject_sandbox_entitlement() {
+  local keys
+  keys="$(plutil -p "$1" 2>/dev/null)" || fail "서명된 앱의 권한(entitlement)을 읽을 수 없습니다: $1"
+  if grep -q '"com\.apple\.security\.app-sandbox"' <<<"$keys"; then
+    fail "서명된 앱에 App Sandbox 권한(com.apple.security.app-sandbox)이 있습니다. apple/Taskforce/Taskforce-macOS.entitlements와 빌드 설정 ENABLE_APP_SANDBOX를 확인하세요"
+  fi
+}
+
 # ---------------------------------------------------------------- 사전 점검
 step "사전 점검"
 for tool in xcodebuild hdiutil ditto codesign shasum plutil spctl; do
@@ -161,6 +171,8 @@ ENTITLEMENTS="$RUN_DIR/entitlements.plist"
 codesign -d --entitlements :- "$APP" 2>/dev/null >"$ENTITLEMENTS"
 echo "권한(entitlement) 키:"
 plutil -p "$ENTITLEMENTS" | sed -nE 's/^  "([^"]+)" =>.*/  \1/p'
+reject_sandbox_entitlement "$ENTITLEMENTS"
+echo "App Sandbox 권한: 없음"
 APS_ENV="$(plutil -p "$ENTITLEMENTS" | sed -nE 's/^  "com\.apple\.developer\.aps-environment" => "([^"]*)".*/\1/p')"
 echo "aps-environment: ${APS_ENV:-(없음)}"
 [[ "$APS_ENV" == "production" ]] || fail "aps-environment가 production이 아닙니다 (배포 빌드는 운영 APNs여야 알림이 옵니다)"

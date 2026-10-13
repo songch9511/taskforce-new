@@ -6,6 +6,19 @@ import TaskforceUI
 struct TaskforceApp: App {
     @NSApplicationDelegateAdaptor(MacAppDelegate.self) private var appDelegate
 
+    init() {
+        // App Sandbox를 끈 뒤 처음 뜰 때 한 번: 옛 샌드박스 컨테이너의 설정을 새 위치로 옮긴다 (`LegacySandboxMigration`).
+        // 어떤 UserDefaults 읽기보다 앞이어야 해서 앱의 첫 코드인 여기에 둔다. 샌드박스 안에서 돌면 하지 않는다.
+        // 시험 호스트는 자기 설정 도메인을 만들지 않는다 (`TestHost`: `MacAppDelegate.applicationDidFinishLaunching`과 같은 판단).
+        // Debug 빌드는 실사용 번들 id를 쓰므로 실행 인자 `-TF_LEGACY_MIGRATION YES`가 있을 때만 옮긴다
+        // (개발 실행이 실사용 컨테이너를 읽고 표식을 미리 써서 나중의 DMG 이전을 소모하지 않게. 인자 영역만 읽는다: 저장된 설정으로는 켜지지 않는다).
+        if !TestHost.isTestHost() {
+            LegacySandboxMigration.runAtLaunch(
+                bundleID: Bundle.main.bundleIdentifier, isDebugBuild: AppRuntime.isDebugBuild, debugOptIn: AppRuntime.legacyMigrationDebugOptIn
+            )
+        }
+    }
+
     var body: some Scene {
         // 에이전트 앱: Dock · 창 없이 메뉴 막대 아이콘 + ⌥Space 런처 (MacAppDelegate)
         MenuBarExtra {
@@ -33,6 +46,25 @@ struct TaskforceApp: App {
 /// 앱 전체에서 하나만 두는 것들: 설정 · 로그인 상태 · 서비스. Mac은 SwiftUI 장면 밖(런처 패널)에서도 같은 것을 쓴다.
 @MainActor
 enum AppRuntime {
+    /// 이 빌드가 Debug인지. 설정 이전(`LegacySandboxMigration`)은 Debug 빌드가 실사용 번들 id를 쓰므로 실행 인자 없이는 돌지 않는다.
+    /// `TaskforceApp.init`이 이 값을 그대로 넘긴다 (`TestHostTests`가 Debug 호스트에서 true임을 본다)
+    nonisolated static var isDebugBuild: Bool {
+        #if DEBUG
+        true
+        #else
+        false
+        #endif
+    }
+
+    /// Debug에서 이전을 켜는 실행 인자 `-TF_LEGACY_MIGRATION YES` (인자 영역만 읽는다: 저장된 설정으로는 켜지지 않는다). Release는 늘 false
+    nonisolated static var legacyMigrationDebugOptIn: Bool {
+        #if DEBUG
+        LegacySandboxMigration.debugOptIn(arguments: UserDefaults.standard.volatileDomain(forName: UserDefaults.argumentDomain))
+        #else
+        false
+        #endif
+    }
+
     static let startup = Startup.make()
 
     /// Mac 런처 목록의 계정별 저장본. 로그아웃과 계정 삭제 때 지운다.

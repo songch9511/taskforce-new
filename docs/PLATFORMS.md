@@ -244,6 +244,7 @@ taskforce-new/
   | App Group · 공유 Keychain 접근 그룹 | `group.dev.taskforcelabs.taskforce` |
 
   App ID와 App Group은 Xcode 자동 서명이 개발자 계정에 등록한다 (Phase A0에서 등록됨). 값은 `apple/Config/Base.xcconfig` 한 곳에 있다.
+  Mac 앱은 App Sandbox 없이 Developer ID DMG로 배포한다(DEC-1 A, 2026-10-13: 샌드박스 앱이 띄운 자식 프로세스는 사용자의 `claude` · `codex` 로그인과 PATH에 닿지 못한다). App Group · 공유 Keychain 접근 그룹은 그대로다. 근거 · 1회 이전 · 되돌리기: [mac-dmg.md](go-live/mac-dmg.md) "샌드박스 끔".
 - [ ] Sign in with Apple 설정: Supabase → Authentication → Sign In / Providers → Apple을 켜고 **Client IDs**에 `dev.taskforcelabs.taskforce`를 넣는다.
   앱 안 로그인만 쓰면 Services ID · `.p8` 키는 필요 없다 (웹에 Apple 로그인을 붙일 때 추가).
 - [x] Sign in with Google 설정 (2026-09-30): Google Cloud 프로젝트 A에 iOS 클라이언트, Supabase → Google 제공자 켬(Client IDs = 그 iOS 클라이언트 ID, Skip nonce checks 끔). 순서는 [런북](go-live/runbook.md) 5장.
