@@ -168,9 +168,11 @@ create table public.agent_tasks (
 );
 
 -- DB 백스톱 두 개 (계약 v3 3.4). 실제 직렬화는 서버가 새 턴을 시작할 때 세션 행을 `for update`로 잡고 한다(D1c-1) — 이 인덱스는 마지막 방어선이다.
--- ① 세션당 진행 중 턴은 하나(dispatched · accepted · running · awaiting_answer). idle · completed · failed · cancelled는 여럿 있어도 된다.
+-- ① 세션당 진행 중 턴은 하나(dispatched · accepted · running · awaiting_answer · unreachable). idle · completed · failed · cancelled는 여럿 있어도 된다.
+--    unreachable도 진행 중으로 센다(계약 v3 3.2-5): 끊긴 작업이 있는 동안 그 세션은 reconcile이 끝나길 기다리고, 새 턴을 시작하지 못한다.
+--    그래야 reconcile이 끊긴 작업을 last_live_state(running 등)로 되돌릴 때 새 턴과 부딪히지 않는다. 같은 행을 되돌리는 갱신은 막히지 않는다.
 create unique index agent_tasks_in_progress_idx on public.agent_tasks (agent_session_id)
-  where state in ('dispatched', 'accepted', 'running', 'awaiting_answer');
+  where state in ('dispatched', 'accepted', 'running', 'awaiting_answer', 'unreachable');
 -- ② 같은 세션의 턴 번호는 한 번만 쓴다 (turn_seq가 아직 없는 작업은 제외).
 create unique index agent_tasks_session_turn_idx on public.agent_tasks (agent_session_id, turn_seq) where turn_seq is not null;
 
@@ -208,7 +210,8 @@ alter table public.execution_events
 
 alter table public.execution_events
   add constraint execution_events_type_check check (type in ('run', 'step', 'hold', 'agent')),
-  add constraint execution_events_external_event_id_check check (char_length(external_event_id) <= 200),
+  -- 사건 id는 비어 있지 않다(1–200자). NULL은 통과한다: 다른 type은 이 열을 쓰지 않는다(아래 execution_events_agent_event_id)
+  add constraint execution_events_external_event_id_check check (char_length(external_event_id) between 1 and 200),
   add constraint execution_events_external_seq_check check (external_seq >= 0),
   add constraint execution_events_directive_version_check check (directive_version >= 1),
   add constraint execution_events_turn_seq_check check (turn_seq >= 1),

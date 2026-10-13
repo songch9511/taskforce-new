@@ -20,7 +20,8 @@ export const D1A_MIGRATION = "20261113000000_agent_gateway_core.sql";
 
 /** 계약 v3 3.4 · 런타임 계약 5장의 값. 테스트의 기대값은 마이그레이션이 아니라 이 목록이다 */
 export const TASK_STATES = ["dispatched", "accepted", "running", "awaiting_answer", "idle", "completed", "failed", "cancelled", "unreachable"];
-export const IN_PROGRESS_STATES = ["dispatched", "accepted", "running", "awaiting_answer"];
+// unreachable도 진행 중으로 센다: 끊긴 작업이 있는 동안 세션은 reconcile을 기다린다 (계약 v3 3.2-5)
+export const IN_PROGRESS_STATES = ["dispatched", "accepted", "running", "awaiting_answer", "unreachable"];
 export const SESSION_STATUSES = ["bound", "external", "unreachable", "closed"];
 export const AGENT_TABLES = ["bridges", "agent_connections", "agent_sessions", "agent_tasks"];
 
@@ -524,6 +525,9 @@ export function agentGatewayCoreTests(db: () => AgentGatewayDb) {
       await rejects(f.updateRow("execution_events", w.event, { type: "run" }), /execution_events_agent_event_id/);
 
       await rejects(f.agentEvent(w.user, w.run, "x".repeat(201)), /execution_events_external_event_id_check/);
+      // 빈 사건 id는 거절한다 (멱등 열쇠가 비면 run마다 하나만 저장되고 나머지 사건이 중복으로 버려진다)
+      await rejects(f.agentEvent(w.user, w.run, ""), /execution_events_external_event_id_check/);
+      await f.agentEvent(w.user, w.run, "x");
       await f.agentEvent(w.user, w.run, "x".repeat(200));
       await rejects(f.agentEvent(w.user, w.run, "evt-a", { external_seq: -1 }), /execution_events_external_seq_check/);
       await rejects(f.agentEvent(w.user, w.run, "evt-b", { directive_version: 0 }), /execution_events_directive_version_check/);
@@ -580,7 +584,7 @@ export function agentGatewayCoreTests(db: () => AgentGatewayDb) {
 
   // ───────────────────────── T5) 세션당 진행 중 턴 하나 ─────────────────────────
   describe("T5 세션당 진행 중 턴은 하나 (DB 백스톱)", () => {
-    it("같은 세션에 진행 중 작업(dispatched · accepted · running · awaiting_answer) 둘은 거절한다 — 모든 조합", async () => {
+    it("같은 세션에 진행 중 작업(dispatched · accepted · running · awaiting_answer · unreachable) 둘은 거절한다 — 모든 조합", async () => {
       const w = await f.world();
       for (const first of IN_PROGRESS_STATES) {
         const session = await f.session(w.user, w.connection);
@@ -593,17 +597,41 @@ export function agentGatewayCoreTests(db: () => AgentGatewayDb) {
       }
     });
 
-    it("idle · completed · failed · cancelled · unreachable은 여럿 있어도 된다. 진행 중 하나와도 함께 있을 수 있다", async () => {
+    it("idle · completed · failed · cancelled는 여럿 있어도 된다. 진행 중 하나와도 함께 있을 수 있다", async () => {
       const w = await f.world();
       const session = await f.session(w.user, w.connection);
-      for (const state of ["idle", "completed", "failed", "cancelled", "unreachable"]) {
+      for (const state of ["idle", "completed", "failed", "cancelled"]) {
         await f.task(w.user, w.run, session, { state });
         await f.task(w.user, w.run, session, { state });
       }
       await f.task(w.user, w.run, session, { state: "running" });
-      expect(await count("agent_tasks", "agent_session_id = $1", [session])).toBe(11);
+      expect(await count("agent_tasks", "agent_session_id = $1", [session])).toBe(9);
       // 다른 세션의 진행 중 작업은 서로 막지 않는다
       await f.task(w.user, w.run, await f.session(w.user, w.connection), { state: "running" });
+    });
+
+    it("unreachable 작업이 있는 동안 그 세션에 새 진행 중 작업을 만들 수 없다 (reconcile을 기다린다). 같은 행을 last_live_state로 되돌리는 갱신은 된다", async () => {
+      const w = await f.world();
+      const session = await f.session(w.user, w.connection);
+      const first = await f.task(w.user, w.run, session, { state: "running", turn_seq: 1 });
+      // 끊김: 직전 상태를 적고 unreachable로 (진행 중 → 진행 중이라 자기 자신과 부딪히지 않는다)
+      await f.updateRow("agent_tasks", first, { state: "unreachable", last_live_state: "running" });
+      for (const state of ["dispatched", "accepted", "running", "awaiting_answer", "unreachable"]) {
+        await rejects(
+          f.task(w.user, w.run, session, { state, turn_seq: 2, pending_question: state === "awaiting_answer" ? QUESTION : null }),
+          /agent_tasks_in_progress_idx/,
+        );
+      }
+      // 끝났거나 턴이 끝난 작업은 끊긴 작업과 함께 있어도 된다
+      await f.task(w.user, w.run, session, { state: "idle", turn_seq: 3 });
+      expect(await count("agent_tasks", "agent_session_id = $1", [session])).toBe(2);
+      // reconcile: 같은 행을 직전 상태로 되돌린다
+      await f.updateRow("agent_tasks", first, { state: "running", last_live_state: null });
+      expect(await f.one(`select state from public.agent_tasks where id = $1`, [first])).toEqual({ state: "running" });
+      // 끊긴 작업이 reconcile로 끝 상태가 되면 길이 비어 새 턴을 시작할 수 있다
+      await f.updateRow("agent_tasks", first, { state: "unreachable", last_live_state: "running" });
+      await f.updateRow("agent_tasks", first, { state: "completed", last_live_state: null });
+      await f.task(w.user, w.run, session, { state: "dispatched", turn_seq: 2 });
     });
 
     it("끝난 작업은 길을 비운다: running → idle로 바뀐 뒤에는 새 진행 중 작업이 된다. idle을 다시 running으로 돌릴 때 이미 진행 중이 있으면 거절한다", async () => {
