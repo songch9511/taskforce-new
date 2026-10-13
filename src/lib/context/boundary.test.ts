@@ -25,6 +25,8 @@ const CONTEXT_MIGRATIONS = [
   path.join(ROOT, "supabase/migrations/20261107000000_memory_writes.sql"),
   // S3b: 사용자 멤버십 쓰기(넣기 · 빼기 · 옮기기)도 실행 표를 건드리지 않는다
   path.join(ROOT, "supabase/migrations/20261108000000_context_member_user_writes.sql"),
+  // D4c-1s: 프로젝트 쓰기도 서버 RPC 경계만 통과한다
+  path.join(ROOT, "supabase/migrations/20261117000000_context_icon_version.sql"),
 ];
 
 describe("맥락층 ↔ 실행 권한 경계 (I04 · I14)", () => {
@@ -39,6 +41,25 @@ describe("맥락층 ↔ 실행 권한 경계 (I04 · I14)", () => {
       );
     });
     expect(offenders).toEqual([]);
+  });
+
+  it("프로젝트 생성은 POST route의 store 호출로만 허용되고 테이블 직접 쓰기는 없다", () => {
+    const sourceFiles = files(path.join(ROOT, "src"));
+    const importsCreateContext = sourceFiles.filter((file) =>
+      /import\s*\{[^}]*\bcreateContext\b[^}]*\}\s*from\s*["']@\/lib\/context\/store["']/.test(readFileSync(file, "utf8")),
+    );
+    expect(importsCreateContext.map((file) => path.relative(ROOT, file)).sort()).toEqual([
+      "src/app/api/v2/contexts/route.ts",
+    ]);
+
+    const callsCreateRpc = sourceFiles.filter((file) => /\.rpc\(\s*["']create_work_context["']/.test(readFileSync(file, "utf8")));
+    expect(callsCreateRpc.map((file) => path.relative(ROOT, file))).toEqual(["src/lib/context/store.ts"]);
+
+    const directWrites = sourceFiles.filter((file) => {
+      const text = readFileSync(file, "utf8");
+      return /\.from\(\s*["']work_contexts["']\)(?:(?!;)[\s\S]){0,500}\.(?:insert|upsert)\s*\(/.test(text);
+    });
+    expect(directWrites.map((file) => path.relative(ROOT, file))).toEqual([]);
   });
 
   it("src/lib/context는 실행 정책 · 도구 · 스위치 · 승인 · 크레딧 표를 쓰거나 읽지 않는다", () => {
