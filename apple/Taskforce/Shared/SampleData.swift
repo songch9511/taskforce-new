@@ -84,9 +84,13 @@ enum SampleData {
         )
     }
 
-    /// 연결: Notion 하나 (첫 동기화 화면이면 동기화 중)
+    /// 연결된 원문 없음 (`-TFSampleNoConnections`): Edge All work의 할 일 없음 화면에 Connect a source가 보인다
+    static var hasNoConnections: Bool { ProcessInfo.processInfo.arguments.contains("-TFSampleNoConnections") }
+
+    /// 연결: Notion 하나 (첫 동기화 화면이면 동기화 중, `-TFSampleNoConnections`면 없음)
     static var connections: [ConnectionRecord] {
         let now = Date()
+        if hasNoConnections { return [] }
         return [
             ConnectionRecord(
                 id: id(90), provider: ConnectionProvider.notion.rawValue, displayName: "Acme", status: .active,

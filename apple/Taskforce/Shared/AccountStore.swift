@@ -23,6 +23,8 @@ final class AccountStore {
     /// 동기화 중이던 연결이 끝날 때마다 오른다: 화면이 지금 할 일을 다시 불러온다
     private(set) var syncFinished = 0
     private(set) var loaded = false
+    /// 이 계정의 연결을 한 번이라도 읽었는지 (`loaded`는 연결 읽기가 실패해도 참이다). 모르면 "연결 없음"으로 보지 않는다 (Edge All work의 Connect a source)
+    private(set) var connectionsLoaded = false
     var message: String?
     /// 동의 화면을 띄울지 (연결 · 원문 보내기 · 물어보기 전에)
     var showsConsent = false
@@ -158,6 +160,7 @@ final class AccountStore {
         policyUserID = nil
         policyRefresh = PolicyNoticeRefresh()
         loaded = false
+        connectionsLoaded = false
         showsConsent = false
         pendingProvider = nil
         pendingHandoff = nil
@@ -181,6 +184,7 @@ final class AccountStore {
         let wasSyncing = anySyncing
         let now = Date()
         connections = records
+        connectionsLoaded = true
         connectionsReadAt = now
         syncRequests = ConnectionSync.pending(syncRequests, after: records, at: now)
         if wasSyncing, !anySyncing { syncFinished += 1 }

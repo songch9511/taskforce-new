@@ -150,11 +150,11 @@ struct EdgeShellModelTests {
     @Test func workThatFinishesOnTheRailShowsDoneForThreeSeconds() {
         let shell = model()
         let item = Self.action(1, started: true)
-        shell.update(EdgeWorkSnapshot(open: [item], working: [item.id], isLoaded: true))
+        shell.update(EdgeWorkSnapshot(open: [item], working: [item.id], load: .loaded(problem: nil)))
         #expect(shell.slots.map(\.kind) == [.running])
         let done = Self.action(1, started: true, status: .done)
         time.advance(1)
-        shell.update(EdgeWorkSnapshot(doneToday: [done], isLoaded: true))
+        shell.update(EdgeWorkSnapshot(doneToday: [done], load: .loaded(problem: nil)))
         #expect(shell.slots.map(\.kind) == [.done])
         #expect(shell.slots.first?.id == item.id)
         time.advance(2.9)
@@ -162,7 +162,7 @@ struct EdgeShellModelTests {
         time.advance(0.2)
         #expect(shell.slots.isEmpty)
         // 레일에 없던 일이 끝나면 Done을 띄우지 않는다
-        shell.update(EdgeWorkSnapshot(doneToday: [done, Self.action(9, status: .done)], isLoaded: true))
+        shell.update(EdgeWorkSnapshot(doneToday: [done, Self.action(9, status: .done)], load: .loaded(problem: nil)))
         #expect(shell.slots.isEmpty)
     }
 
@@ -340,19 +340,20 @@ struct EdgeShellModelTests {
     // MARK: 목록 · 문구
 
     @Test func workRowNameMentionsOverdueOnlyInTheAccessibleName() {
-        #expect(EdgeWorkRow.accessibilityLabel(title: "Pricing page", state: .inProgress, activity: "Running", due: "Fri", overdue: false)
+        #expect(WorkRow.accessibilityLabel(title: "Pricing page", state: .inProgress, activity: "Running", due: "Fri", overdue: false)
             == "Pricing page — In Progress · Running, due Fri")
-        #expect(EdgeWorkRow.accessibilityLabel(title: "Report", state: .toDo, activity: nil, due: "Oct 8", overdue: true)
+        #expect(WorkRow.accessibilityLabel(title: "Report", state: .toDo, activity: nil, due: "Oct 8", overdue: true)
             == "Report — To Do, overdue, due Oct 8")
     }
 
+    /// 빈 화면 제목은 디자인 그대로, "caught up"은 없다. All work 패널의 머리는 "Your work"(디자인 WorkPage), 레일 칸 이름은 All work
     @Test func emptyScreensUseTheDesignTitlesNeverAllCaughtUp() {
-        #expect(EdgeEmptyText.noWork == "Nothing on your plate yet.")
-        #expect(EdgeEmptyText.noChats == "No conversations yet.")
-        for title in [EdgeEmptyText.noWork, EdgeEmptyText.noChats] {
+        #expect(PanelEmptyKind.noWork.title == "Nothing on your plate yet.")
+        #expect(EdgePanelView.noChats == "No conversations yet.")
+        for title in PanelEmptyKind.allCases.map(\.title) + [EdgePanelView.noChats] {
             #expect(!title.localizedCaseInsensitiveContains("caught up"))
         }
-        #expect(EdgeShellModel.View.allCases.map(\.title) == ["All work", "Chats"])
+        #expect(EdgeShellModel.View.allCases.map(\.title) == ["Your work", "Chats"])
         #expect(EdgeShellModel.Control.allCases.map(\.label) == ["All work", "Chats", "More"])
     }
 
