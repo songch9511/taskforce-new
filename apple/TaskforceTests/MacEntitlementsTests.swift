@@ -29,11 +29,42 @@ struct MacEntitlementsTests {
         #expect(plist["com.apple.developer.aps-environment"] as? String == "development")
     }
 
-    /// Xcode 15+는 빌드 설정 `ENABLE_APP_SANDBOX = YES`가 있으면 권한 파일과 상관없이 샌드박스 권한을 넣는다
+    /// 빌드 설정 `ENABLE_APP_SANDBOX`를 켜는 줄이 있는지 (주석 줄은 보지 않는다).
+    /// 쓰는 모양: xcconfig `= YES`, project.yml `: YES` · `: true` · `: "YES"`, pbxproj `= YES;` · `= "YES";`
+    static func turnsTheSandboxOn(_ text: String) -> Bool {
+        // 조건부 설정 `ENABLE_APP_SANDBOX[sdk=macosx*] = YES`도 포함. 값 뒤에 영숫자가 이어지면(예: YES_X) 다른 값이다
+        guard let setting = try? Regex(#"^\s*ENABLE_APP_SANDBOX(\[[^\]]*\])?\s*[:=]\s*["']?(YES|true)["']?(?![A-Za-z0-9_])"#).ignoresCase() else { return true }
+        return text.split(separator: "\n").contains { line in
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            return !trimmed.hasPrefix("//") && !trimmed.hasPrefix("#") && line.firstMatch(of: setting) != nil
+        }
+    }
+
+    @Test func theScannerSeesEveryWayToTurnTheSandboxOn() {
+        for line in [
+            "ENABLE_APP_SANDBOX = YES", "ENABLE_APP_SANDBOX=YES", "    ENABLE_APP_SANDBOX: YES", "ENABLE_APP_SANDBOX: true", "ENABLE_APP_SANDBOX: \"YES\"",
+            "ENABLE_APP_SANDBOX: 'YES'", "\t\t\t\tENABLE_APP_SANDBOX = YES;", "ENABLE_APP_SANDBOX = \"YES\";", "ENABLE_APP_SANDBOX = yes", "ENABLE_APP_SANDBOX : TRUE",
+            "ENABLE_APP_SANDBOX[sdk=macosx*] = YES",
+        ] {
+            #expect(Self.turnsTheSandboxOn(line), "켜짐: \(line)")
+        }
+        for line in [
+            "ENABLE_APP_SANDBOX = NO", "ENABLE_APP_SANDBOX: NO", "ENABLE_APP_SANDBOX: false", "ENABLE_APP_SANDBOX: \"NO\"", "ENABLE_APP_SANDBOX = NO;",
+            "// ENABLE_APP_SANDBOX = YES", "# ENABLE_APP_SANDBOX: YES", "  # ENABLE_APP_SANDBOX: true", "ENABLE_APP_SANDBOX_EXTRA = YES", "ENABLE_APP_SANDBOX = $(inherited)", "",
+        ] {
+            #expect(!Self.turnsTheSandboxOn(line), "꺼짐 · 주석: \(line)")
+        }
+    }
+
+    /// Xcode 15+는 빌드 설정 `ENABLE_APP_SANDBOX = YES`가 있으면 권한 파일과 상관없이 샌드박스 권한을 넣는다.
+    /// 설정이 들어올 수 있는 곳 전부: project.yml · 생성된 pbxproj · `Config/*.xcconfig`(로컬 Secrets.xcconfig 포함)
     @Test func noBuildSettingTurnsTheSandboxBackOn() throws {
-        for file in ["project.yml", "Taskforce.xcodeproj/project.pbxproj"] {
-            let text = try String(contentsOf: Self.apple.appending(path: file), encoding: .utf8)
-            #expect(!text.contains("ENABLE_APP_SANDBOX = YES") && !text.contains("ENABLE_APP_SANDBOX: YES"), "\(file)")
+        let configs = try FileManager.default.contentsOfDirectory(at: Self.apple.appending(path: "Config"), includingPropertiesForKeys: nil)
+            .filter { $0.pathExtension == "xcconfig" }
+        #expect(configs.count >= 3, "Base · Release · DebugTest는 늘 있다")
+        let files = [Self.apple.appending(path: "project.yml"), Self.apple.appending(path: "Taskforce.xcodeproj/project.pbxproj")] + configs
+        for file in files {
+            #expect(!Self.turnsTheSandboxOn(try String(contentsOf: file, encoding: .utf8)), "\(file.lastPathComponent)")
         }
     }
 

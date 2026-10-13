@@ -8,8 +8,11 @@ public enum AgentRuntimeEnvironment {
     public static let sandboxContainerKey = "APP_SANDBOX_CONTAINER_ID"
 
     /// 샌드박스 안에서 돌고 있는지: `APP_SANDBOX_CONTAINER_ID`가 있으면 true.
-    /// `environment`는 시험이 넘긴다 (기본: 이 프로세스의 환경)
-    public static func isSandboxed(environment: [String: String] = ProcessInfo.processInfo.environment) -> Bool {
-        environment[sandboxContainerKey] != nil
+    /// 보조 판정: 환경 변수가 비워진 실행이어도 홈 디렉터리가 `…/Library/Containers/…` 안이면 샌드박스의 컨테이너다.
+    /// `environment` · `homeDirectory`는 시험이 넘긴다 (기본: 이 프로세스의 환경과 `NSHomeDirectory()`)
+    public static func isSandboxed(
+        environment: [String: String] = ProcessInfo.processInfo.environment, homeDirectory: String = NSHomeDirectory()
+    ) -> Bool {
+        environment[sandboxContainerKey] != nil || homeDirectory.contains("/Library/Containers/")
     }
 }

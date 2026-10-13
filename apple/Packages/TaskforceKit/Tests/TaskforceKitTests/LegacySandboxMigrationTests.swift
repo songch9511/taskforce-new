@@ -1,4 +1,6 @@
+#if os(macOS)
 import Foundation
+import OSLog
 import Testing
 @testable import TaskforceKit
 
@@ -27,6 +29,8 @@ struct LegacySandboxMigrationTests {
         var container: URL {
             home.appending(path: "Library/Containers/\(bundleID)", directoryHint: .isDirectory)
         }
+
+        var pinsDomain: String { WorkPinStore.suiteName(bundleID: bundleID) }
 
         func oldFile(_ domain: String) -> URL {
             preferences.appending(path: "\(domain).plist")
@@ -61,22 +65,48 @@ struct LegacySandboxMigrationTests {
             for (key, value) in values { made.defaults.set(value, forKey: key) }
         }
 
-        func migration() -> LegacySandboxMigration {
+        func migration(domains: [String]? = nil, read: ((URL) throws -> Data)? = nil) -> LegacySandboxMigration {
             LegacySandboxMigration(
-                homeDirectory: home, bundleID: bundleID, domains: AppDefaultsDomains.all(bundleID: bundleID),
+                homeDirectory: home, bundleID: bundleID, domains: domains ?? AppDefaultsDomains.all(bundleID: bundleID),
+                read: read ?? { try Data(contentsOf: $0) },
                 destination: { [unowned self] in self.destination($0) }
             )
         }
 
         func cleanup() {
             for made in destinations.values { made.defaults.removePersistentDomain(forName: made.persistentDomain) }
+            // 권한을 뺀 시험이 남긴 것을 되돌려야 폴더째 지울 수 있다
+            try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: preferences.path)
             try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: oldFile(bundleID).path)
             try? FileManager.default.removeItem(at: home)
         }
     }
 
+    /// 읽기 상태 상자: 시험이 실행 사이에 바꾼다
+    final class Switch {
+        var denied: Set<String>
+        init(denied: Set<String> = []) { self.denied = denied }
+
+        /// 이름이 `denied`에 있는 도메인의 plist만 권한 오류를 던지고 나머지는 실제로 읽는다
+        func read(_ url: URL) throws -> Data {
+            if denied.contains(url.deletingPathExtension().lastPathComponent) { throw CocoaError(.fileReadNoPermission) }
+            return try Data(contentsOf: url)
+        }
+    }
+
     var standard: String { Self.bundleID }
     var pins: String { WorkPinStore.suiteName(bundleID: Self.bundleID) }
+
+    typealias Report = LegacySandboxMigration.Report
+
+    static func finished(
+        copied: Int = 0, kept: Int = 0, missing: Int = 0, unreadable: Int = 0, denied: Int = 0, attempts: Int = 0, marker: Bool = true
+    ) -> Report {
+        Report(
+            alreadyDone: false, copiedKeys: copied, keptKeys: kept, missingDomains: missing, unreadableDomains: unreadable,
+            deniedDomains: denied, attempts: attempts, markerWritten: marker
+        )
+    }
 
     // MARK: T1 이전
 
@@ -109,7 +139,7 @@ struct LegacySandboxMigrationTests {
         #expect(pinned["pins.bob"] as? [String] == ["newer"])
         #expect(migrated[LegacySandboxMigration.markerKey] != nil, "표식은 표준 도메인에 쓴다")
         #expect(pinned[LegacySandboxMigration.markerKey] == nil)
-        #expect(report == LegacySandboxMigration.Report(alreadyDone: false, copiedKeys: 7 + 1, keptKeys: 2 + 1, missingDomains: 0, unreadableDomains: 0))
+        #expect(report == Self.finished(copied: 7 + 1, kept: 2 + 1))
     }
 
     // MARK: T2 멱등
@@ -129,7 +159,7 @@ struct LegacySandboxMigrationTests {
         try fixture.writeOld(pins, ["pins.alice": ["changed"], "pins.carol": ["x"]])
         let second = fixture.migration().run()
 
-        #expect(second == LegacySandboxMigration.Report(alreadyDone: true))
+        #expect(second == Report(alreadyDone: true))
         var expected = afterFirst
         expected["settings.tab"] = nil
         #expect(NSDictionary(dictionary: fixture.newValues(standard)).isEqual(to: expected))
@@ -144,11 +174,11 @@ struct LegacySandboxMigrationTests {
 
         let report = fixture.migration().run()
 
-        #expect(report == LegacySandboxMigration.Report(alreadyDone: true))
+        #expect(report == Report(alreadyDone: true))
         #expect(fixture.newValues(standard)["settings.tab"] == nil)
     }
 
-    // MARK: T3 실패에 크래시 없음
+    // MARK: T3 실패에 크래시 없음 · 형식 오류와 파일 없음은 표식을 쓴다
 
     @Test func noOldContainerSkipsEveryDomainAndStillWritesTheMarker() throws {
         let fixture = try Fixture()
@@ -156,9 +186,7 @@ struct LegacySandboxMigrationTests {
 
         let report = fixture.migration().run()
 
-        #expect(report == LegacySandboxMigration.Report(
-            alreadyDone: false, copiedKeys: 0, keptKeys: 0, missingDomains: AppDefaultsDomains.all(bundleID: Self.bundleID).count, unreadableDomains: 0
-        ))
+        #expect(report == Self.finished(missing: AppDefaultsDomains.all(bundleID: Self.bundleID).count))
         #expect(fixture.newValues(standard)[LegacySandboxMigration.markerKey] != nil, "다음 시작에 다시 찾지 않는다")
         #expect(fixture.migration().run().alreadyDone)
     }
@@ -172,7 +200,7 @@ struct LegacySandboxMigrationTests {
 
         let report = fixture.migration().run()
 
-        #expect(report == LegacySandboxMigration.Report(alreadyDone: false, copiedKeys: 1, keptKeys: 0, missingDomains: 0, unreadableDomains: 1))
+        #expect(report == Self.finished(copied: 1, unreadable: 1))
         #expect(fixture.newValues(pins)["pins.alice"] as? [String] == ["id-1"])
         #expect(fixture.newValues(standard)[LegacySandboxMigration.markerKey] != nil)
     }
@@ -185,27 +213,12 @@ struct LegacySandboxMigrationTests {
 
         let report = fixture.migration().run()
 
-        #expect(report.unreadableDomains == 1 && report.copiedKeys == 0)
+        #expect(report.unreadableDomains == 1 && report.copiedKeys == 0 && report.markerWritten)
         #expect(fixture.newValues(standard)[LegacySandboxMigration.markerKey] != nil)
     }
 
-    @Test(.disabled(if: getuid() == 0, "root는 읽기 권한 없는 파일도 읽는다"))
-    func aFileWithoutReadPermissionSkipsThatDomain() throws {
-        let fixture = try Fixture()
-        defer { fixture.cleanup() }
-        try fixture.writeOld(standard, ["settings.tab": "account"])
-        try fixture.writeOld(pins, ["pins.alice": ["id-1"]])
-        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: fixture.oldFile(standard).path)
-
-        let report = fixture.migration().run()
-
-        #expect(report == LegacySandboxMigration.Report(alreadyDone: false, copiedKeys: 1, keptKeys: 0, missingDomains: 0, unreadableDomains: 1))
-        #expect(fixture.newValues(standard)["settings.tab"] == nil)
-        #expect(fixture.newValues(standard)[LegacySandboxMigration.markerKey] != nil, "무한 재시도 없음")
-    }
-
-    /// 파일이 아닌 것(폴더)이 그 자리에 있으면 읽지 못한다: 권한과 상관없이 (root여도) 같다
-    @Test func somethingThatIsNotAFileSkipsThatDomain() throws {
+    /// 파일이 아닌 것(폴더)이 그 자리에 있으면 읽지 못한다: 권한 오류가 아니다 (root여도 같다)
+    @Test func somethingThatIsNotAFileSkipsThatDomainLikeABrokenPlist() throws {
         let fixture = try Fixture()
         defer { fixture.cleanup() }
         try FileManager.default.createDirectory(at: fixture.oldFile(standard), withIntermediateDirectories: true)
@@ -213,7 +226,7 @@ struct LegacySandboxMigrationTests {
 
         let report = fixture.migration().run()
 
-        #expect(report == LegacySandboxMigration.Report(alreadyDone: false, copiedKeys: 1, keptKeys: 0, missingDomains: 0, unreadableDomains: 1))
+        #expect(report == Self.finished(copied: 1, unreadable: 1))
         #expect(fixture.newValues(standard)[LegacySandboxMigration.markerKey] != nil)
     }
 
@@ -229,7 +242,123 @@ struct LegacySandboxMigrationTests {
 
         let report = migration.run()
 
-        #expect(report == LegacySandboxMigration.Report(alreadyDone: false, copiedKeys: 1, keptKeys: 0, missingDomains: 0, unreadableDomains: 1))
+        #expect(report == Self.finished(copied: 1, unreadable: 1))
+    }
+
+    /// 읽기 오류의 종류: 권한(EPERM · EACCES · 읽기 권한 없음)은 "완료 아님", 파일 없음은 건너뜀, 그 밖은 읽을 수 없음(형식 오류와 같은 취급)
+    @Test func readErrorsAreToldApartByTheirKind() throws {
+        struct Odd: Error {}
+        func underlying(_ code: POSIXErrorCode, in cocoa: CocoaError.Code) -> NSError {
+            NSError(domain: NSCocoaErrorDomain, code: cocoa.rawValue, userInfo: [NSUnderlyingErrorKey: NSError(domain: NSPOSIXErrorDomain, code: Int(code.rawValue))])
+        }
+        let denied: [any Error] = [
+            CocoaError(.fileReadNoPermission), POSIXError(.EACCES), POSIXError(.EPERM),
+            underlying(.EPERM, in: .fileReadUnknown), underlying(.EACCES, in: .fileReadUnknown),
+        ]
+        let missing: [any Error] = [CocoaError(.fileReadNoSuchFile), CocoaError(.fileNoSuchFile), POSIXError(.ENOENT), underlying(.ENOENT, in: .fileReadUnknown)]
+        let unreadable: [any Error] = [CocoaError(.fileReadCorruptFile), POSIXError(.EIO), POSIXError(.EISDIR), CocoaError(.fileReadUnknown), Odd()]
+
+        func report(throwing error: any Error) throws -> Report {
+            let fixture = try Fixture()
+            defer { fixture.cleanup() }
+            return fixture.migration(domains: [Self.bundleID], read: { _ in throw error }).run()
+        }
+        for error in denied {
+            #expect(try report(throwing: error) == Self.finished(denied: 1, attempts: 1, marker: false), "권한 오류: \(error)")
+        }
+        for error in missing {
+            #expect(try report(throwing: error) == Self.finished(missing: 1), "파일 없음: \(error)")
+        }
+        for error in unreadable {
+            #expect(try report(throwing: error) == Self.finished(unreadable: 1), "읽을 수 없음: \(error)")
+        }
+    }
+
+    // MARK: 권한 오류는 완료가 아니다: 표식 없이 시도 횟수를 올리고, 3번째에 표식
+
+    @Test func aPermissionErrorWritesNoMarkerAndCountsTheAttempt() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        try fixture.writeOld(standard, ["settings.tab": "account"])
+        try fixture.writeOld(pins, ["pins.alice": ["id-1"]])
+        let reads = Switch(denied: [standard])
+
+        let report = fixture.migration(read: reads.read).run()
+
+        #expect(report == Self.finished(copied: 1, denied: 1, attempts: 1, marker: false))
+        let values = fixture.newValues(standard)
+        #expect(values[LegacySandboxMigration.markerKey] == nil)
+        #expect(values[LegacySandboxMigration.attemptsKey] as? Int == 1)
+        #expect(values["settings.tab"] == nil)
+        #expect(fixture.newValues(pins)["pins.alice"] as? [String] == ["id-1"], "읽은 도메인의 키는 그대로 둔다")
+    }
+
+    @Test func theThirdPermissionErrorWritesTheMarkerSoItNeverRetriesForever() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        try fixture.writeOld(standard, ["settings.tab": "account"])
+        try fixture.writeOld(pins, ["pins.alice": ["id-1"]])
+        let reads = Switch(denied: [standard])
+
+        #expect(fixture.migration(read: reads.read).run() == Self.finished(copied: 1, denied: 1, attempts: 1, marker: false))
+        // 다음 시도: 이미 옮긴 키는 중복 없이 그대로(kept), 표식은 아직 없다
+        #expect(fixture.migration(read: reads.read).run() == Self.finished(kept: 1, denied: 1, attempts: 2, marker: false))
+        #expect(fixture.newValues(standard)[LegacySandboxMigration.markerKey] == nil)
+        // 3번째에도 권한 오류면 그때 표식
+        #expect(fixture.migration(read: reads.read).run() == Self.finished(kept: 1, denied: 1, attempts: 3, marker: true))
+        let values = fixture.newValues(standard)
+        #expect(values[LegacySandboxMigration.markerKey] != nil)
+        #expect(values[LegacySandboxMigration.attemptsKey] as? Int == 3)
+        #expect(fixture.migration(read: reads.read).run() == Report(alreadyDone: true))
+        #expect(fixture.newValues(pins)["pins.alice"] as? [String] == ["id-1"])
+    }
+
+    @Test func aDomainThatBecomesReadableOnALaterAttemptIsMigratedWithoutDuplicates() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        try fixture.writeOld(standard, ["settings.tab": "account"])
+        try fixture.writeOld(pins, ["pins.alice": ["id-1"]])
+        let reads = Switch(denied: [standard])
+        fixture.migration(read: reads.read).run()
+
+        reads.denied = []
+        let report = fixture.migration(read: reads.read).run()
+
+        #expect(report == Self.finished(copied: 1, kept: 1))
+        let values = fixture.newValues(standard)
+        #expect(values["settings.tab"] as? String == "account")
+        #expect(values[LegacySandboxMigration.markerKey] != nil)
+        #expect(fixture.newValues(pins)["pins.alice"] as? [String] == ["id-1"])
+        #expect(fixture.migration(read: reads.read).run() == Report(alreadyDone: true))
+    }
+
+    /// 진짜 파일 권한: 읽기 권한을 뺀 plist (root는 읽을 수 있어서 이 시험만 건너뛴다. 같은 동작은 위 시험이 주입한 오류로 root에서도 돈다)
+    @Test(.disabled(if: getuid() == 0, "root는 읽기 권한 없는 파일도 읽는다"))
+    func aFileWithoutReadPermissionIsAPermissionError() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        try fixture.writeOld(standard, ["settings.tab": "account"])
+        try fixture.writeOld(pins, ["pins.alice": ["id-1"]])
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: fixture.oldFile(standard).path)
+
+        let report = fixture.migration().run()
+
+        #expect(report == Self.finished(copied: 1, denied: 1, attempts: 1, marker: false))
+        #expect(fixture.newValues(standard)["settings.tab"] == nil)
+        #expect(fixture.newValues(standard)[LegacySandboxMigration.markerKey] == nil)
+    }
+
+    /// 진짜 폴더 권한: 컨테이너 설정 폴더를 열 수 없는 경우 (macOS가 다른 앱의 데이터를 막을 때와 같은 EACCES · EPERM 모양)
+    @Test(.disabled(if: getuid() == 0, "root는 막힌 폴더도 연다"))
+    func anUnsearchableFolderIsAPermissionErrorForEveryDomain() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        try fixture.writeOld(standard, ["settings.tab": "account"])
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: fixture.preferences.path)
+
+        let report = fixture.migration().run()
+
+        #expect(report == Self.finished(denied: AppDefaultsDomains.all(bundleID: Self.bundleID).count, attempts: 1, marker: false))
     }
 
     // MARK: T5 옛 파일은 그대로
@@ -281,16 +410,24 @@ struct LegacySandboxMigrationTests {
         #expect(suite?.keys.isEmpty == true)
     }
 
-    // MARK: 앱 시작 (샌드박스 감지와 묶인 길)
+    // MARK: 앱 시작 (샌드박스 감지 · Debug 빌드와 묶인 길)
+
+    private func launch(
+        _ fixture: Fixture, bundleID: String? = Self.bundleID, environment: [String: String] = [:], home: URL? = nil,
+        isDebugBuild: Bool = false, debugOptIn: Bool = false
+    ) -> Report? {
+        LegacySandboxMigration.runAtLaunch(
+            bundleID: bundleID, environment: environment, isDebugBuild: isDebugBuild, debugOptIn: debugOptIn,
+            homeDirectory: home ?? fixture.home, destination: { fixture.destination($0) }
+        )
+    }
 
     @Test func launchRunsTheMigrationWhenTheAppIsNotSandboxed() throws {
         let fixture = try Fixture()
         defer { fixture.cleanup() }
         try fixture.writeOld(standard, ["settings.tab": "account"])
 
-        let report = LegacySandboxMigration.runAtLaunch(
-            bundleID: Self.bundleID, environment: [:], homeDirectory: fixture.home, destination: { fixture.destination($0) }
-        )
+        let report = launch(fixture)
 
         #expect(report?.copiedKeys == 1)
         #expect(fixture.newValues(standard)["settings.tab"] as? String == "account")
@@ -301,18 +438,92 @@ struct LegacySandboxMigrationTests {
         defer { fixture.cleanup() }
         try fixture.writeOld(standard, ["settings.tab": "account"])
 
-        let report = LegacySandboxMigration.runAtLaunch(
-            bundleID: Self.bundleID, environment: [AgentRuntimeEnvironment.sandboxContainerKey: Self.bundleID],
-            homeDirectory: fixture.home, destination: { fixture.destination($0) }
-        )
+        let report = launch(fixture, environment: [AgentRuntimeEnvironment.sandboxContainerKey: Self.bundleID])
 
         #expect(report == nil)
         #expect(fixture.newValues(standard).isEmpty, "표식도 쓰지 않는다: 샌드박스를 다시 끄는 날 옮길 수 있게")
     }
 
+    /// 환경 변수가 없어도 홈 디렉터리가 컨테이너 안이면 샌드박스다 (보조 판정)
+    @Test func launchDoesNothingWhenTheHomeDirectoryIsAContainer() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let container = URL(fileURLWithPath: "/Users/someone/Library/Containers/\(Self.bundleID)/Data")
+
+        #expect(launch(fixture, home: container) == nil)
+        #expect(fixture.newValues(standard).isEmpty)
+    }
+
     @Test func launchWithoutABundleIdentifierDoesNothing() throws {
         let fixture = try Fixture()
         defer { fixture.cleanup() }
-        #expect(LegacySandboxMigration.runAtLaunch(bundleID: nil, environment: [:], homeDirectory: fixture.home, destination: { fixture.destination($0) }) == nil)
+        #expect(launch(fixture, bundleID: nil) == nil)
+    }
+
+    /// Debug 빌드는 실사용 번들 id를 쓰므로 개발 실행이 실사용 컨테이너를 읽고 표식을 미리 써서 나중의 DMG 이전을 소모하면 안 된다
+    @Test func aDebugBuildDoesNotMigrateUnlessItIsAskedTo() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        try fixture.writeOld(standard, ["settings.tab": "account"])
+
+        #expect(launch(fixture, isDebugBuild: true, debugOptIn: false) == nil)
+        #expect(fixture.newValues(standard).isEmpty, "표식도 쓰지 않는다")
+
+        let asked = launch(fixture, isDebugBuild: true, debugOptIn: true)
+        #expect(asked?.copiedKeys == 1)
+        #expect(fixture.newValues(standard)["settings.tab"] as? String == "account")
+    }
+
+    @Test func aReleaseBuildMigratesWhateverTheDebugArgumentSays() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        try fixture.writeOld(standard, ["settings.tab": "account"])
+
+        #expect(launch(fixture, isDebugBuild: false, debugOptIn: false)?.copiedKeys == 1)
+    }
+
+    /// 실행 인자 `-TF_LEGACY_MIGRATION YES` (인자 영역의 값은 문자열이다)
+    @Test func theDebugArgumentIsReadFromTheArgumentDomain() {
+        #expect(LegacySandboxMigration.debugOptInKey == "TF_LEGACY_MIGRATION")
+        #expect(LegacySandboxMigration.debugOptIn(arguments: ["TF_LEGACY_MIGRATION": "YES"]))
+        #expect(LegacySandboxMigration.debugOptIn(arguments: ["TF_LEGACY_MIGRATION": "true"]))
+        #expect(LegacySandboxMigration.debugOptIn(arguments: ["TF_LEGACY_MIGRATION": true]))
+        #expect(!LegacySandboxMigration.debugOptIn(arguments: ["TF_LEGACY_MIGRATION": "NO"]))
+        #expect(!LegacySandboxMigration.debugOptIn(arguments: ["TF_LEGACY_MIGRATION": false]))
+        #expect(!LegacySandboxMigration.debugOptIn(arguments: ["TF_EDGE_SHELL": "YES"]))
+        #expect(!LegacySandboxMigration.debugOptIn(arguments: [:]))
+    }
+
+    // MARK: 로그: 결과는 notice(저장됨), 권한 오류는 error, 키 이름 · 값 · 경로 없이 개수만
+
+    @Test func theLogCarriesCountsAtNoticeAndPermissionErrorsAtErrorWithoutKeyNames() async throws {
+        let bundleID = "dev.test.taskforce.log.\(UUID().uuidString)"
+        let fixture = try Fixture(bundleID: bundleID)
+        defer { fixture.cleanup() }
+        try fixture.writeOld(bundleID, ["zz-secret-key-name": "zz-secret-value"])
+        try fixture.writeOld(fixture.pinsDomain, ["zz-other-key-name": 1])
+        let reads = Switch(denied: [fixture.pinsDomain])
+        let started = Date().addingTimeInterval(-1)
+
+        fixture.migration(read: reads.read).run()
+
+        let store = try OSLogStore(scope: .currentProcessIdentifier)
+        // 로그 저장소에 나타나기까지 몇 초 걸릴 수 있다 (읽기 한 번도 느리다). 오류 항목이 보이면 멈추고, 30초가 한계
+        var entries: [OSLogEntryLog] = []
+        let deadline = Date().addingTimeInterval(30)
+        while Date() < deadline {
+            entries = try store.getEntries(at: store.position(date: started), matching: NSPredicate(format: "subsystem == %@", bundleID))
+                .compactMap { $0 as? OSLogEntryLog }
+            if entries.contains(where: { $0.level == .error }) { break }
+            try await Task.sleep(for: .milliseconds(200))
+        }
+        let notice = entries.filter { $0.level == .notice }
+        let errors = entries.filter { $0.level == .error }
+        #expect(notice.count == 1 && errors.count == 1, "notice \(notice.count) · error \(errors.count)")
+        #expect(entries.allSatisfy { $0.category == "legacy-sandbox-migration" })
+        let text = entries.map(\.composedMessage).joined(separator: "\n")
+        #expect(text.contains("copied 1") && text.contains("denied 1"), "\(text)")
+        #expect(!text.contains("zz-") && !text.contains(fixture.home.path) && !text.contains("plist"), "키 이름 · 값 · 경로가 로그에 없다")
     }
 }
+#endif

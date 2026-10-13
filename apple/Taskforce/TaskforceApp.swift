@@ -9,14 +9,18 @@ struct TaskforceApp: App {
     init() {
         // App Sandbox를 끈 뒤 처음 뜰 때 한 번: 옛 샌드박스 컨테이너의 설정을 새 위치로 옮긴다 (`LegacySandboxMigration`).
         // 어떤 UserDefaults 읽기보다 앞이어야 해서 앱의 첫 코드인 여기에 둔다. 샌드박스 안에서 돌면 하지 않는다.
-        // 시험 호스트는 자기 설정 도메인을 만들지 않는다 (`MacAppDelegate.applicationDidFinishLaunching`과 같은 판단)
+        // 시험 호스트는 자기 설정 도메인을 만들지 않는다 (`TestHost`: `MacAppDelegate.applicationDidFinishLaunching`과 같은 판단).
+        // Debug 빌드는 실사용 번들 id를 쓰므로 실행 인자 `-TF_LEGACY_MIGRATION YES`가 있을 때만 옮긴다
+        // (개발 실행이 실사용 컨테이너를 읽고 표식을 미리 써서 나중의 DMG 이전을 소모하지 않게. 인자 영역만 읽는다: 저장된 설정으로는 켜지지 않는다).
         #if DEBUG
-        let isTestHost = ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil || NSClassFromString("XCTestCase") != nil
+        let isDebugBuild = true
+        let debugOptIn = LegacySandboxMigration.debugOptIn(arguments: UserDefaults.standard.volatileDomain(forName: UserDefaults.argumentDomain))
         #else
-        let isTestHost = false
+        let isDebugBuild = false
+        let debugOptIn = false
         #endif
-        if !isTestHost {
-            LegacySandboxMigration.runAtLaunch(bundleID: Bundle.main.bundleIdentifier)
+        if !TestHost.isTestHost() {
+            LegacySandboxMigration.runAtLaunch(bundleID: Bundle.main.bundleIdentifier, isDebugBuild: isDebugBuild, debugOptIn: debugOptIn)
         }
     }
 

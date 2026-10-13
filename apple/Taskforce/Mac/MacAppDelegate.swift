@@ -29,8 +29,7 @@ final class MacAppDelegate: NSObject, NSApplicationDelegate {
         // Hosted unit tests construct their own sessions and stores. Do not start the real
         // account, cache pruning, notifications, or global shortcuts in the test host.
         #if DEBUG
-        guard ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil,
-              NSClassFromString("XCTestCase") == nil else { return }
+        guard !TestHost.isTestHost() else { return }
         #endif
         // 알림을 눌러 앱이 열린 경우도 받을 수 있게 가장 먼저
         PushCenter.shared.install()

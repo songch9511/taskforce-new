@@ -10,7 +10,7 @@
 | 테스트 호스트 번들 ID | `dev.taskforcelabs.unittest.taskforce` (`Debug-Test` 설정, 아래 "테스트 격리") |
 | URL scheme | `taskforce://` (연동 OAuth가 끝나면 `taskforce://connections/{provider}?handoff=…` 또는 `?status=…`로 돌아온다), Google 로그인 `com.googleusercontent.apps.<클라이언트>`(`GOOGLE_IOS_URL_SCHEME`) |
 | 최소 OS | macOS 15 |
-| App Sandbox | **꺼짐** (DEC-1 A, 2026-10-13). 샌드박스 앱이 띄운 자식 프로세스는 샌드박스를 물려받아 사용자의 `claude` · `codex` 로그인과 PATH에 닿지 못해서다. 옛 컨테이너의 UserDefaults는 처음 뜰 때 한 번 새 위치로 옮긴다(`LegacySandboxMigration`). 절차 · 되돌리기 · 서명 빌드에서만 확인되는 것: [`docs/go-live/mac-dmg.md`](../docs/go-live/mac-dmg.md) "샌드박스 끔" |
+| App Sandbox | **꺼짐** (DEC-1 A, 2026-10-13). 샌드박스 앱이 띄운 자식 프로세스는 샌드박스를 물려받아 사용자의 `claude` · `codex` 로그인과 PATH에 닿지 못해서다. 옛 컨테이너의 UserDefaults는 처음 뜰 때 한 번 새 위치로 옮긴다(`LegacySandboxMigration`, macOS 전용 코드. Debug 빌드는 실행 인자 `-TF_LEGACY_MIGRATION YES`가 있을 때만 옮긴다: Debug는 실사용 번들 id를 쓰기 때문). 절차 · 되돌리기 · 서명 빌드에서만 확인되는 것: [`docs/go-live/mac-dmg.md`](../docs/go-live/mac-dmg.md) "샌드박스 끔" |
 
 ## 처음 한 번
 
@@ -49,6 +49,8 @@ cd apple && xcodegen
 
 ```bash
 cd apple/Packages/TaskforceKit && swift test
+# TaskforceKit은 iOS(.iOS(.v18))에서도 컴파일돼야 한다: macOS 전용 코드(예: LegacySandboxMigration)는 #if os(macOS)로 감싼다
+cd apple/Packages/TaskforceKit && xcodebuild -scheme TaskforceKit -destination 'generic/platform=iOS Simulator' build
 # 색 토큰을 actool이 컴파일한 카탈로그로 확인 (swift test는 카탈로그를 복사만 한다, CI도 같은 단계). 줄마다 저장소 맨 위에서
 cd apple/Packages/TaskforceKit && TEST_RUNNER_TF_REQUIRE_COMPILED_CATALOG=1 xcodebuild test -scheme TaskforceKit-Package -destination 'platform=macOS' -only-testing:TaskforceUITests
 xcodebuild build -project apple/Taskforce.xcodeproj -scheme Taskforce -destination 'platform=macOS' -derivedDataPath apple/build/dd CODE_SIGNING_ALLOWED=NO
