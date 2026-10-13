@@ -160,12 +160,33 @@ struct AgentBridgeContractsTests {
 
     @Test(arguments: [
         ("dispatched", AgentTaskState.dispatched), ("accepted", .accepted), ("running", .running), ("awaiting_answer", .awaitingAnswer),
-        ("completed", .completed), ("failed", .failed), ("cancelled", .cancelled), ("unreachable", .unreachable), ("paused", .unknown("paused")),
+        ("idle", .idle), ("completed", .completed), ("failed", .failed), ("cancelled", .cancelled), ("unreachable", .unreachable),
+        ("paused", .unknown("paused")),
     ])
     func taskStates(_ raw: String, _ state: AgentTaskState) throws {
         #expect(AgentTaskState(raw: raw) == state)
         #expect(try decode([AgentTaskState].self, "[\"\(raw)\"]") == [state])
         #expect(state.raw == raw)
+    }
+
+    /// idle(턴의 끝)은 completed가 아니다 — 서로 다른 값으로 읽고 다시 보낼 때도 그대로다
+    @Test func idleIsNotCompleted() throws {
+        #expect(AgentTaskState(raw: "idle") != AgentTaskState(raw: "completed"))
+        let encoded = try JSONEncoder().encode([AgentTaskState.idle])
+        #expect(String(decoding: encoded, as: UTF8.self) == "[\"idle\"]")
+    }
+
+    @Test(arguments: [
+        ("bound", AgentSessionStatus.bound), ("external", .external), ("unreachable", .unreachable), ("closed", .closed),
+        ("archived", .unknown("archived")),
+    ])
+    func sessionStatuses(_ raw: String, _ status: AgentSessionStatus) throws {
+        #expect(AgentSessionStatus(raw: raw) == status)
+        #expect(try decode([AgentSessionStatus].self, "[\"\(raw)\"]") == [status])
+        #expect(status.raw == raw)
+        // 다시 보낼 때는 받은 문자열 그대로 (모르는 값도)
+        let encoded = try JSONEncoder().encode([status])
+        #expect(String(decoding: encoded, as: UTF8.self) == "[\"\(raw)\"]")
     }
 
     // MARK: bridge

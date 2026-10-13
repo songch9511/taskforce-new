@@ -1146,11 +1146,21 @@ export const agentEventEnvelopeSchema = z.object({
 });
 export type AgentEventEnvelope = z.infer<typeof agentEventEnvelopeSchema>;
 
-/** agent_tasks.state (런타임 계약 5장). unreachable은 실패가 아니다: reconcile 뒤 last_live_state로 돌아갈 수 있다 */
+/**
+ * agent_tasks.state (런타임 계약 5장). unreachable은 실패가 아니다: reconcile 뒤 last_live_state로 돌아갈 수 있다.
+ * idle은 직접 대화의 턴이 끝나 다음 사용자 메시지를 기다리는 상태다 — completed가 아니다 (계약 v3 3.4)
+ */
 export const agentTaskStateSchema = z.enum([
-  "dispatched", "accepted", "running", "awaiting_answer", "completed", "failed", "cancelled", "unreachable",
+  "dispatched", "accepted", "running", "awaiting_answer", "idle", "completed", "failed", "cancelled", "unreachable",
 ]);
 export type AgentTaskState = z.infer<typeof agentTaskStateSchema>;
+
+/**
+ * agent_sessions.status (계약 v3 3.8). external = 사용자가 Open in Terminal로 터미널에서 이어 쓰는 중(Taskforce 전달 0), unreachable은 bridge에 닿지 않음,
+ * closed는 끝난 세션이다
+ */
+export const agentSessionStatusSchema = z.enum(["bound", "external", "unreachable", "closed"]);
+export type AgentSessionStatus = z.infer<typeof agentSessionStatusSchema>;
 
 // ─── Mac bridge (아키텍처 9.1). bridge는 끌어온다: 명령 long-poll ≤ 25초, heartbeat 30초 (3회 누락 → unreachable) ───
 

@@ -12,6 +12,7 @@ import {
   agentCapabilitySchema,
   agentEventEnvelopeSchema,
   agentEventTypeSchema,
+  agentSessionStatusSchema,
   agentTaskStateSchema,
   billingCheckoutRequestV2Schema,
   billingRefundRequestV2Schema,
@@ -529,10 +530,12 @@ describe("에이전트 · bridge", () => {
     expect(agentEventEnvelopeSchema.safeParse({ ...AGENT_EVENT_QUESTION, event_id: "" }).success).toBe(false);
   });
 
-  it("원격 작업 상태", () => {
+  it("원격 작업 상태 (idle = 턴의 끝, completed가 아니다) · 세션 상태", () => {
     expect(agentTaskStateSchema.options).toEqual([
-      "dispatched", "accepted", "running", "awaiting_answer", "completed", "failed", "cancelled", "unreachable",
+      "dispatched", "accepted", "running", "awaiting_answer", "idle", "completed", "failed", "cancelled", "unreachable",
     ]);
+    expect(agentSessionStatusSchema.options).toEqual(["bound", "external", "unreachable", "closed"]);
+    expect(agentSessionStatusSchema.safeParse("paused").success).toBe(false);
   });
 
   it("bridge 등록 · 명령 · 사건 · heartbeat", () => {
