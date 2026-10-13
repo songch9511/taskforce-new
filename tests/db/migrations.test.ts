@@ -39,6 +39,7 @@ describe("초기 마이그레이션", () => {
       `select table_name from information_schema.tables where table_schema = 'public' order by table_name`,
     );
     expect(rows.map((r) => r.table_name)).toEqual([
+      "action_counters",
       "action_events",
       "action_links",
       "actions",

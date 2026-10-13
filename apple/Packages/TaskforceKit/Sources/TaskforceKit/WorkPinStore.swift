@@ -18,9 +18,12 @@ public final class WorkPinStore {
         self.storage = storage
     }
 
+    /// suite 이름의 꼬리. macOS에서 샌드박스 컨테이너에서 옮길 도메인 목록(`AppDefaultsDomains`)이 이 값을 쓴다
+    nonisolated static let suiteSuffix = "work-pins"
+
     /// 전용 suite 이름 (앱 번들 id 뒤에 붙인다: 앱의 기본 설정 파일과 섞이지 않는다)
-    public static func suiteName(bundleID: String) -> String {
-        "\(bundleID).work-pins"
+    public nonisolated static func suiteName(bundleID: String) -> String {
+        "\(bundleID).\(suiteSuffix)"
     }
 
     static let keyPrefix = "pins."

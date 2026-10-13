@@ -18,6 +18,7 @@ import {
   searchContextChunks,
   setContextMemberByUser,
   setSourcesAccessLost,
+  updateContext,
 } from "./store";
 
 vi.mock("server-only", () => ({}));
@@ -98,6 +99,31 @@ describe("gate 꺼짐: 아무것도 쓰거나 부르지 않는다", () => {
     expect(await loadScopeMemory(admin, "u1", { contextId: CONTEXT }, {})).toEqual([]);
     await setSourcesAccessLost(admin, "u1", ["s1"], true, {});
     expect(calls).toEqual([]);
+  });
+
+  it("범위 만들기는 서버 함수 하나로 보내고, 이름 · 종류 · 아이콘 입력을 전달한다", async () => {
+    const { admin, calls } = recordingAdmin({ create_work_context: { id: CONTEXT } });
+    expect(await createContext(admin, "u1", { name: "Shape", kind: "project", icon: "rocket" }, MEMORY)).toEqual({ id: CONTEXT });
+    expect(calls[0].name).toBe("create_work_context");
+    expect(calls[0].ops[0].args[0]).toEqual({ p_user_id: "u1", p_name: "Shape", p_kind: "project", p_icon: "rocket" });
+  });
+
+  it("범위 편집은 expected version을 SQL 함수에 전달한다", async () => {
+    const result = { status: "unchanged", context: { id: CONTEXT } };
+    const { admin, calls } = recordingAdmin({ update_work_context: result });
+    expect(await updateContext(admin, "u1", CONTEXT, 4, { icon: "rocket", status: "active" }, MEMORY)).toEqual(result);
+    expect(calls[0].name).toBe("update_work_context");
+    expect(calls[0].ops[0].args[0]).toEqual({ p_user_id: "u1", p_id: CONTEXT, p_expected_version: 4, p_name: null, p_icon: "rocket", p_status: "active" });
+  });
+
+  it.each(["conflict", "not_found"] as const)("편집 %s 결과를 context 없이 매핑한다", async (status) => {
+    const { admin } = recordingAdmin({ update_work_context: { status, context: null } });
+    expect(await updateContext(admin, "u1", CONTEXT, 4, { name: "Next" }, MEMORY)).toEqual({ status });
+  });
+
+  it("ok인데 context가 없으면 저장소 응답 오류를 던진다", async () => {
+    const { admin } = recordingAdmin({ update_work_context: { status: "ok", context: null } });
+    await expect(updateContext(admin, "u1", CONTEXT, 4, { name: "Next" }, MEMORY)).rejects.toThrow("update_work_context returned no context");
   });
 
   it("조각: 수집 뒤 만들기 · 범위 검색 모두 DB · 임베딩 호출 0 (MEMORY_ENABLED만 켜도 조각은 꺼져 있다)", async () => {

@@ -4,6 +4,7 @@
 gate `MEMORY_ENABLED` · `SOURCE_CHUNKS_ENABLED`(`src/lib/flags.ts`)가 기본 꺼짐이고, 꺼져 있으면 서버는 새 표를 읽지도 쓰지도 않고 임베딩을 부르지 않는다.
 대화 v2 route는 B2가 붙였다(7장, gate `CONVERSATIONS_V2_ENABLED` 기본 꺼짐). 기억 확인 · 정정 · 잊기 · 범위 옮기기 route와 대화 범위 바꾸기는 B3 PR1이 붙였다(8장, gate `MEMORY_ENABLED` · `CONVERSATIONS_V2_ENABLED` 기본 꺼짐).
 사용자의 범위 멤버십 넣기 · 빼기 · 옮기기 route는 S3b 서버가 붙였다(9장, gate `MEMORY_ENABLED` 기본 꺼짐).
+프로젝트 만들기 · 이름 · 아이콘 · 보관 route는 D4c-1s가 붙였다(11장, 같은 gate). 편집은 `version` optimistic lock이고, 보관은 기존 `context_version_bumps` 큐를 사용한다.
 
 | 무엇 | 위치 |
 |---|---|
@@ -196,3 +197,10 @@ AI를 부르지 않고 run · Action · Claim · 정책 · 승인을 만들지 �
 - **B3 PR1 · S3b의 "사건함에 한 줄도 더하지 않는다" 경계 시험을 좁혔다** (`tests/db/memory-writes.scenarios.ts` · `context-members.scenarios.ts`): 다른 표는 그대로 0줄이고 사건함은 `memory_changed`만 예외다(다른 종류는 여전히 0줄). 쓰기 경로 · 반환값 · 권한은 바뀌지 않았다. 되돌리려면 트리거 `coordinator_on_context_version`을 지우고 시험을 되돌린다.
 - 바뀐 트리거 목록 시험: `tests/db/context-core.test.ts`(C2의 트리거 셋을 더함).
 
+## 11. 프로젝트 이름 · 아이콘 · 보관 (D4c-1s)
+
+- `POST /api/v2/contexts`는 project만 생성한다. 아이콘은 `PROJECT_ICON_POOL`(12개) 중 선택하고, 생략하면 DB가 무작위로 정한다.
+- `PATCH /api/v2/contexts/{id}`는 `expected_version`이 현재 버전과 같을 때만 이름 · 아이콘 · 상태를 바꾸며, stale 요청은 409다. 변경이 없으면 version을 유지한다.
+- DB 함수는 service role만 실행할 수 있다. 앱은 `work_contexts`를 RLS로 읽고 icon · version을 직접 쓸 수 없다. 최초 보관은 기존 `context_version_bumps` deferred flush를 거쳐 `context_version`을 한 번 올린다.
+- 변경 이벤트는 DB 함수와 같은 트랜잭션에서 남긴다. 자동 프로젝트 생성 경로는 추가하지 않는다.
+- 검증: `tests/db/context-icon-version.test.ts`(PGlite), `tests/pg/context-icon-version.test.ts`(Postgres 경합 시나리오, 코디네이터 실행).
