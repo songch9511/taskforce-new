@@ -1,0 +1,62 @@
+import { describe, expect, it } from "vitest";
+
+import { AnswerInputError, answerFromRoute, loadAnswerTask, recordQuestionAnswered } from "./answers";
+import { fakeAdmin } from "./fake-admin";
+
+const USER = "10000000-0000-4000-8000-000000000001";
+const OTHER = "20000000-0000-4000-8000-000000000002";
+const TASK = "7a000000-0000-4000-8000-000000000001";
+const SESSION = "5e000000-0000-4000-8000-000000000001";
+const STEP = "57000000-0000-4000-8000-000000000001";
+const question = (secret = false) => ({
+  kind: "input" as const,
+  questions: [{ id: "choice", options: [{ label: "Yes" }, { label: "No" }], multi_select: false, allow_other: true, secret }],
+});
+
+describe("loadAnswerTask", () => {
+  it("내 작업의 세션 · 열린 질문 · 이미 답이 간 질문을 읽는다 (남의 작업 · 없는 작업은 null)", async () => {
+    const pending = { question_key: [TASK, "q"], kind: "input" };
+    const fake = fakeAdmin({ tables: { agent_tasks: [{ id: TASK, user_id: USER, agent_session_id: SESSION, pending_question: pending, answered_question: null }] } });
+    expect(await loadAnswerTask(fake.admin, USER, TASK)).toEqual({ id: TASK, sessionId: SESSION, pendingQuestion: pending, answeredQuestion: null });
+    expect(await loadAnswerTask(fake.admin, OTHER, TASK)).toBeNull();
+    expect(await loadAnswerTask(fake.admin, USER, STEP)).toBeNull();
+  });
+});
+
+describe("answerFromRoute: 입력 검증 실패와 DB 오류를 구별한다", () => {
+  const answered = { status: "answered", step_id: STEP };
+  const input = (answers: unknown, q = question()) => ({ userId: USER, agentTaskId: TASK, providerRequestId: "q", answers, question: q });
+
+  it("RPC 앞의 입력 검증 실패는 AnswerInputError (RPC 0)", async () => {
+    const fake = fakeAdmin({ rpc: { answer_agent_question: () => answered } });
+    for (const answers of [{ choice: "" }, { choice: "   " }, {}, { choice: "Yes", extra: "x" }, { choice: 5 }]) {
+      await expect(answerFromRoute(fake.admin, input(answers))).rejects.toBeInstanceOf(AnswerInputError);
+    }
+    // 비밀값 질문의 값은 서버로 올 수 없다
+    await expect(answerFromRoute(fake.admin, input({ choice: "pw" }, question(true)))).rejects.toBeInstanceOf(AnswerInputError);
+    expect(fake.rpcCalls()).toEqual([]);
+  });
+
+  it("검증을 통과하면 answer_agent_question을 부르고 결과를 돌려준다 (answered_locally는 늘 false)", async () => {
+    const fake = fakeAdmin({ rpc: { answer_agent_question: () => answered } });
+    expect(await answerFromRoute(fake.admin, input({ choice: "Yes" }))).toEqual(answered);
+    expect(fake.rpcCalls("answer_agent_question")[0].args).toMatchObject({ p_user_id: USER, p_agent_task_id: TASK, p_provider_request_id: "q", p_answers: { choice: "Yes" }, p_answered_locally: false });
+  });
+
+  it("RPC 이후의 오류(DB 오류 · 예상 밖 출력)는 그대로 던진다 — 입력 오류로 둔갑하지 않는다", async () => {
+    const db = fakeAdmin({ rpc: { answer_agent_question: () => { throw Object.assign(new Error("lock"), { code: "55P03" }); } } });
+    const error = await answerFromRoute(db.admin, input({ choice: "Yes" })).catch((e: unknown) => e);
+    expect(error).not.toBeInstanceOf(AnswerInputError);
+    expect(error).toMatchObject({ code: "55P03" });
+    const odd = fakeAdmin({ rpc: { answer_agent_question: () => ({ status: "mystery" }) } });
+    await expect(answerFromRoute(odd.admin, input({ choice: "Yes" }))).rejects.not.toBeInstanceOf(AnswerInputError);
+  });
+});
+
+describe("recordQuestionAnswered (OD-16)", () => {
+  it("질문 종류와 adapter만 한 줄로 쓴다 (답 값 · 글 0)", async () => {
+    const fake = fakeAdmin();
+    await recordQuestionAnswered(fake.admin, USER, { kind: "input", adapter: "agent:codex" });
+    expect(fake.tables.metric_events).toEqual([{ user_id: USER, type: "question_answered", props: { kind: "input", adapter: "agent:codex" } }]);
+  });
+});

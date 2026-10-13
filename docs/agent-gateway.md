@@ -1,4 +1,4 @@
-# 에이전트 게이트웨이 (0.2.0 D1a–D1c-1) — 결정 기록과 위치
+# 에이전트 게이트웨이 (0.2.0 D1a–D1d) — 결정 기록과 위치
 
 2026-10-13 · 구현 계획 D1a · 근거: Assistant 계약 v3 3.4 · 3.6 · 3.8 · 4.2, 런타임 계약 5장(`agent_tasks` · `agent_sessions` · 사건 봉투), 아키텍처 9.1(bridge), I16 · AC-20.
 **1–6장은 D1a 당시 기록이다. 현재 턴 준비 경로는 8장(D1c-1)을 따른다.**
@@ -186,3 +186,68 @@ D1c-2a 정정 2 인계: lease 만료 unknown_outcome 뒤 접수는 bridge API의
 - Done/dropped는 사용자 status Claim 트리거에서 해당 이슈의 열린 대화 run만 gate `action_closed`, stopped_at=null로 멈춘다. 세션 삭제는 gate `session_deleted`로 같은 중단을 하며 둘 다 stop_run/코디네이터 run_stop 결정을 만들지 않는다. Done은 Action→run→task로 세션을 잠그지 않는다. 미전달 원문·답 메시지를 cancelled로 바꿀 때는 메시지 NOWAIT로 잠금 순환을 피하며 충돌 시 Done 전체가 롤백된다. `writeAction`·`writeProgress`는 SQLSTATE 55P03만 50ms·150ms 뒤 최대 두 번 재시도하고, 세 번째 실패와 다른 오류는 그대로 전달한다. 다른 이슈 턴과 검토 단계는 건드리지 않는다.
 
 후속 대화 API·읽기 모델은 cancelled 메시지 Send again, Stop route/응답, `refs.answer_for` 메시지의 전달 표시와 Codex Stop 뒤 카드 숨김을 연결한다. Done·Stop이 로컬에서 확정한 뒤 같은 세션의 대기 메시지를 이어 보내는 `startNextQueuedTurn` 호출은 대화 API WP가 연결한다. Bridge API는 stopped run에 prepared로 남은 `agent_cancel`도 lease할 수 있어야 한다(Codex 진행 중 취소에 필요). Bridge API의 대화 run lease는 run을 잡은 뒤 Action을 잠그면 안 된다(Done은 Action→run). 답/취소의 실제 전달은 lease가 먼저다. 답이 prepared일 때 프로세스가 죽어 요청이 닫힌 경우를 `failed/agent_error`로 보내면 `step_not_calling`이며, 이 요청 종료 reason과 정산 경로는 후속 bridge WP가 정의해야 한다. 로컬 비밀값 주입과 Claude Code deny 닫기 모드 resume도 후속 구현이다. answered_question은 pending_question과 함께 V08 보관 기한 대상이다. PG 시험은 작성만 했으며 실제 잠금/교착 검증은 코디네이터에게 인계한다.
+
+## 11. 대화 API v2 확장 (OA D1d-s)
+
+`20261121000000_agent_conversation_api.sql`과 route 12개, 대화 handler 확장이다. 계약: Assistant 계약 v3 2–5장 · 8장. **실제 전달은 여전히 막혀 있다**: bridge 명령을 만들지 않고 단계는 `prepared`까지, provider 스위치는 닫혀 있다(D2a가 연다).
+
+### 11-1. gate
+
+- 모든 새 route: `CONVERSATIONS_V2_ENABLED`가 꺼져 있으면 인증 · DB 전에 404. 에이전트 경로는 그 대화 · 세션 · 연결의 **adapter 플래그**도 켜져야 한다(꺼져 있으면 404): `AGENT_ADAPTER_CLAUDE_CODE_ENABLED`(기존) · **`AGENT_ADAPTER_CODEX_ENABLED`(새, 기본 꺼짐)**. 꺼진 adapter는 대상 목록에서 빠지고 만들기 · 보내기가 404라 Action · 세션 · run이 생기지 않는다. 이전에는 Codex가 플래그 없이 늘 켜져 있었다(B2 대화를 켜는 순간 열리는 fail-open이라 닫았다).
+- 인증은 `authenticateRequest`(Bearer + 쿠키, 쿠키 쓰기는 CSRF). 로그에는 이벤트 이름 · 오류 이름 · 코드만 남긴다(글 · 칩 id · 답 · 질문 0).
+
+### 11-2. route
+
+| route | 하는 일 |
+|---|---|
+| `POST /api/v2/conversations` | `target: {kind:"taskforce"} \| {kind:"agent", connection_id, session_id?}`. 같은 id에 다른 대상이면 409 `target_mismatch`. 연결이 내 것 · revoked 아님 · registry · adapter 켜짐, 세션이 같은 연결 · closed 아님이 아니면 404. 응답 대화에 `target_kind` · `agent_connection_id` · `agent_session_id` |
+| `POST …/{id}/messages` | `attachments`(≤ 20) 추가. 에이전트 대상은 delegate로 넘어가 칩 정규화 → 소유 확인(없는 · 남의 칩 404, 쓰기 0) → 저장(`selected` = `{action_ids, context_ids, attachments}` — added만 id 목록) → 새 메시지면 `context_attached` → 전달 시작 → 다시 읽은 행으로 응답(`reply: null`, `delivery`, `attachments_dropped`, `created_action`, `agent_task`). taskforce 대상은 칩을 검증 · 저장만 하고 응답 모양 · 답 생성은 그대로 |
+| `POST …/{id}/deliver` | Send again. `requeue_agent_messages`(`not_sent` · `expired` → `queued`, 새 24시간) → commit 뒤 seq 순으로 하나씩 시작 |
+| `POST …/{id}/messages/{message_id}/referent` | `needs_referent` 후보 선택 → 같은 메시지를 한 번 전달 |
+| `POST …/{id}/stop` · `POST /api/v2/agent-sessions/{id}/stop` | 세션 단위 중단(surface `assistant` · `session_panel`). 세션 없는 대화는 `{tasks:[]}`(쓰기 0). 확정(`confirmed`)된 작업이 있으면 commit 뒤 `startNextQueuedTurn` 한 번(실패해도 Stop 결과 유지) |
+| `GET …/{id}/delivery?since_seq=` | 사용자 메시지의 전달 표시를 서버 계산으로(OD-13, ≤ 100, 읽기만) |
+| `PATCH /api/v2/agent-sessions/{id}` | 이름(trim 1–200자) |
+| `POST /api/v2/agent-sessions/{id}/open-external` · `…/resume-here` | `open_agent_session_external` · `resume_agent_session_here`. busy → 409 `session_busy`, `pending:` 세션 · bound 아님 → 409 `conflict`. Resume은 본문 `{confirmed_terminal_closed:true}` 필수, 되돌린 뒤 `startNextQueuedTurn` 한 번(이미 bound여도 한 번 확인) |
+| `GET /api/v2/assistant/targets` | taskforce + registry 순서(claude-code · codex) 연결별 한 행, 연결 없으면 `not_connected` 한 행. 상태 순서: error · bridge 없음 · revoked → `not_connected`, heartbeat 없음 · 90초 넘음 → `unreachable`, 서버 registry가 직접 대화를 못 하면 `unsupported`, 그 밖 `ready`. 초기 registry: Claude Code `unsupported`/`null`, Codex `ready`/`read_only` |
+| `POST /api/v2/agent-tasks/{id}/answer` | input 질문의 구조화된 답. 열쇠가 다르면 409 `question_stale`, 승인 409 `approval_via_review`, 비밀값 409 `secret_requires_local`(RPC 0). 같은 답은 `duplicate`(같은 step). 답 단계 앞의 입력 오류는 400 |
+| `GET /api/cron/execution-sweep` | 실행 플래그 조기 반환 **앞에서** `conversation_expire_agent_messages`를 1,000행이면 반복(최대 10회). 실패는 가두고 응답 · 상태 코드 불변 |
+
+오류 코드는 `apiErrorV2AgentCodeSchema`(기존 v2 코드 + `target_mismatch` · `question_stale` · `secret_requires_local` · `session_busy` · `approval_via_review` · `busy_retry`). 잠금 경합(55P03) · 직렬화 실패(40001)는 쓰기가 롤백됐으니 409 `busy_retry`(같은 요청을 다시 보내도 된다).
+
+### 11-3. 전달 표시 계산 (`agentDeliveryView`, 순수 함수)
+
+`cancelled` → `cancelled` · `refs.answer_for`(질문에 자유 글로 답한 메시지) → 답 단계가 `failed`면 `not_sent`(+ 단계 receipt 이유), `skipped`면 `cancelled`, 그 밖은 `answered` · `queued` + 후보 + 아직 안 고름 → `needs_referent`(제목 ≤ 3) · `queued`/`not_sent`/`expired` → 그 상태 + 이유 · `dispatched` → 단계 `prepared`/`calling` = `sent`, `called` = `accepted`, `unknown_outcome` = `unknown`, 그 밖 `not_sent`(방어). `prepared` = `sent`는 그대로다 — bridge가 끊긴 때의 표시는 heartbeat · lease를 가진 D2a가 고친다(OD-11). 이유는 계약 9개 + SQL이 쓰는 8개 = 17개(`agentDeliveryReasonSchema`, 마이그레이션 문자열 정적 시험).
+
+### 11-4. 새 SQL (서버 전용 invoker, service_role만 실행)
+
+- `requeue_agent_messages(user, conversation, message_ids|null)`: 대상 상태만(`cancelled`는 끝 상태 · 결과 불명 `unknown_outcome` · 질문의 답 `refs.answer_for` 제외), 메시지를 id 순으로 `for update`. 이름을 준 id가 이 대화의 것이 아니면 `skipped/not_found`.
+- `open_agent_session_external` · `resume_agent_session_here`: 묶인 대화(id 순) → 세션 순으로 잠그고, 대화마다 `event` 줄("Opened in Terminal" · "Resumed here") + 지표. 진행 중 턴이 있으면 busy → `pending:` 세션 not_started → bound 아님 not_bound. 경로 lease 해제는 D3c-2가 `open_agent_session_external`에 건다.
+- 공통 metric 블록 **v2**를 글자 그대로 넣었다: type에 `message_resent` · `question_answered` · `session_renamed` · `session_opened_external` · `session_resumed` 추가. 앱이 직접 쓰는 type은 `app_opened` · `assistant_opened` 그대로.
+
+### 11-5. 쓰기 경로별 기록 (OD-16)
+
+| 쓰기 | 기록 |
+|---|---|
+| 메시지 저장(두 대상) | `context_attached`(칩마다, 새 메시지만, TS insert — 저장 뒤 insert 실패 시 그 지표만 빠질 수 있다) |
+| 전달 시작 | `agent_message_sent`(SQL, 시작될 때만) |
+| Send again | `message_resent`(SQL, 다시 대기시킨 메시지마다) |
+| referent | 시작될 때 `agent_message_sent` |
+| Stop | `stop_requested`(SQL) + 대화에 "Queued messages cancelled" |
+| 질문 답 | 대화 `event` 줄(SQL) + `question_answered`(TS, 종류 · adapter만, `answered`일 때만) |
+| 이름 바꾸기 | `session_renamed`(TS, 실제로 바뀔 때만, adapter만) |
+| Open in Terminal · Resume here | `event` 줄 + `session_opened_external` · `session_resumed`(SQL) |
+
+### 11-6. 경계 · 잠금
+
+- 대화 모듈(`src/lib/conversation`)과 `src/lib/api/conversations.ts`는 `@/lib/agents`도 `agent-conversations`도 가져오지 않는다(I04, `boundary.test.ts`): 에이전트 논리는 `src/lib/api/agent-conversations.ts` + `src/lib/agents/*`에만 있고, v2 대화 route는 그것을 주입된 delegate로만 받는다. 에이전트 경로는 `respondToMessage` · Jev · LLM을 부르지 않는다.
+- 잠금 순서는 D1c와 같다(메시지 → 사용자 advisory → 대화 → 세션 → run → task → step). `startNextQueuedTurn`은 잠금을 쥔 채 부르지 않고, 쓰기 함수가 끝난 뒤에만 부른다. 실제 Postgres 경합 시험: `tests/pg/agent-conversation-api.test.ts`(Send again 동시 · requeue ↔ 만료 sweep · open-external ↔ start/route · resume-here ↔ stop).
+
+### 11-7. 실행 kill switch 방어 (D2a 보안 검토 P1)
+
+`EXECUTION_ENABLED`가 꺼져 있으면 에이전트 대상의 모든 전달 시작 경로(보내기 · Send again · referent · Resume here · Stop 뒤 다음 시작 · `queue_order` 뒤 다음 시작)가 턴을 시작하지 않고, 메시지(대기열 머리)를 기존 `mark_agent_message_not_sent` 경로로 `not_sent`/`write_gate_closed`로 표시한다(HTTP 200, 보통 응답 모양). 꺼진 채 시작하면 전달될 수 없는 task · 단계 · 명령 · `agent_message_sent` 지표가 생기고, bridge가 거둔 것을 자동 계기가 다시 시작하는 끝없는 반복이 되기 때문이다. 확인은 `lib/agents/next-turn.ts`(`markWriteGateClosed` · `startNextAgentMessage`)와 `startAgentMessage`에 있고 `turns.ts`의 함수 본문은 바꾸지 않았다. DB 쪽 gate(`execution_controls` · 실행 주체 · 도구)는 여전히 bridge lease의 몫이다.
+
+### 11-8. 다음 WP 인계
+
+- **D2a(bridge API):** 턴 끝(idle · failed · cancelled) → 다음 대기 메시지 시작은 사건 route가 commit 뒤 `startNextQueuedTurn`으로(D1d는 보내기 · deliver · referent · Stop · Resume 뒤에만 부른다). 세션 없는 대화의 자동 전달 계기 ②, 끊김 표시(`prepared` = `sent` 보정, OD-11), heartbeat 상수(90초는 `targets.ts`), 비밀값 로컬 답(`answered_locally`) 입구, Codex `thread/unsubscribe` 순서(서버가 먼저 `external`로 막고 Mac이 그다음), `sign_in_needed` · `version_unsupported` 보고, 묶음은 added 칩만(AC-6).
+- **D3c-2:** 승인 질문 답(Review의 Allow · Deny), `open_agent_session_external`의 lease 해제. **D4b-s:** Review 답 = `POST /api/v2/agent-tasks/{id}/answer`. **U1 · D4a:** `target_kind`로 대화 거르기, 새 오류 code 처리, 전달 읽기 route. 이슈 Done 뒤 `startNextQueuedTurn` 호출은 Action route 쪽(`writeAction`)이 연결한다(이 WP의 범위 밖).
+- 적용: 운영 DB에는 병합 직전 승인을 받고 7-7의 방법으로만 한다. `metric_events`에 `access exclusive` 잠금을 NOWAIT로 건다(경합이면 마이그레이션만 `55P03`으로 실패하니 그대로 다시 적용).

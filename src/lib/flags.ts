@@ -9,6 +9,8 @@
  * SOURCE_CHUNKS_ENABLED: 원문 조각 임베딩 · 조각 검색 (끄면 조각 0)
  * COORDINATOR_ENABLED: 코디네이터 사건 처리 (끄면 inbox_events 적재만)
  * AGENT_ADAPTER_CLAUDE_CODE_ENABLED: Claude Code dispatch · Your agents 행 (끄면 dispatch 0. DB의 execution_controls도 따로 막는다)
+ * AGENT_ADAPTER_CODEX_ENABLED: Codex 대화 (D1d, OD-2). 끄면 Codex는 대상 목록에서 빠지고 대화 만들기 · 보내기 · 세션 route가 404, 전달 시작 0.
+ *   에이전트 대화 route는 CONVERSATIONS_V2_ENABLED와 이 adapter gate가 모두 켜져야 열린다
  * BYOK_ENABLED: 사용자 OpenRouter 키 입력 · 사용 (끄면 모든 계정 관리형 키)
  * REPORTS_V2_ENABLED: 일일 보고 · 조용한 시간 (끄면 기존 알림)
  * REVIEW_V2_ENABLED: Review · 복귀 요약 · 제안 (끄면 /api/v2/review · return-summary · suggestions는 404, 새 쓰기 0. 제안 생산은 이 gate AND 코디네이터 결과를 쓰는 종류는 COORDINATOR_ENABLED)
@@ -22,6 +24,7 @@ export const SERVER_FLAGS = [
   "SOURCE_CHUNKS_ENABLED",
   "COORDINATOR_ENABLED",
   "AGENT_ADAPTER_CLAUDE_CODE_ENABLED",
+  "AGENT_ADAPTER_CODEX_ENABLED",
   "BYOK_ENABLED",
   "REPORTS_V2_ENABLED",
   "REVIEW_V2_ENABLED",

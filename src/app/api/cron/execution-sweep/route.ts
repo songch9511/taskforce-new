@@ -2,6 +2,7 @@ import { after } from "next/server";
 
 import { reconcileAiSpend } from "@/lib/ai/budget";
 import { fetchGeneration, generationConfigFromEnv } from "@/lib/ai/generation";
+import { expireAgentMessagesQuietly } from "@/lib/agents/messages";
 import { cronAuthorized, cronUnauthorized } from "@/lib/api/cron";
 import { wakeCoordinator } from "@/lib/coordinator/wake";
 import { executionEnabled } from "@/lib/env";
@@ -32,6 +33,8 @@ export async function GET(request: Request) {
   if (!cronAuthorized(request)) return cronUnauthorized();
   scheduleCoordinatorWake();
   const admin = createAdminClient();
+  // 에이전트 대기 메시지 만료 (OA D1d): 실행 플래그와 무관하게 돌고, 실패는 가둔다 (응답 불변)
+  await expireAgentMessagesQuietly(admin);
   const aiSpend = await reconcileAiSpend(admin);
   // Listing/configuration failures previously aborted the route: retain HTTP 500 for those.
   if (aiSpend.errors > 0 && aiSpend.attempted === 0) {

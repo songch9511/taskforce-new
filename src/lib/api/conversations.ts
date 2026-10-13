@@ -10,14 +10,18 @@ import { ConsultOutputError } from "@/lib/conversation/respond";
 import { aiBudgetErrorResponse } from "./ai-budget";
 import { consentRequired } from "./consent";
 import {
-  createConversationRequestSchema,
-  postConversationMessageRequestSchema,
+  createConversationV2RequestSchema,
+  postConversationMessageV2RequestSchema,
   updateConversationRequestSchema,
+  type Attachment,
   type Conversation,
   type ConversationMessage,
+  type ConversationTargetKind,
+  type ConversationWithTarget,
   type CreateConversationRequest,
-  type CreateConversationResponse,
+  type CreateConversationV2Response,
   type PostConversationMessageResponse,
+  type PostConversationMessageV2Request,
   type UpdateConversationResponse,
 } from "./contract";
 import { retryAfterSeconds } from "./rate-limit";
@@ -26,12 +30,25 @@ import { errorResponse, parseBody, unauthorized } from "./respond";
 // /api/v2/conversations 처리 (구현 계획 B2). 인증 · gate · 동의 · 대상 확인 · 저장 · 답을 인자로 받아 Route Handler 밖에서 테스트한다.
 // 사용자 글 · 답은 로그에 남기지 않는다 (오류 이름 · 단계만).
 // gate CONVERSATIONS_V2_ENABLED가 꺼져 있으면 404: 인증 · DB · 모델을 부르지 않는다 (v1 Ask만 있다).
+// 에이전트 대상 대화(OA D1d, Assistant 계약 v3)는 이 파일이 직접 다루지 않는다: 주입된 delegate(deps.agent)로만 넘긴다 (I04 · OD-27 — 대화 모듈은 @/lib/agents를 가져오지 않는다).
+// delegate가 주입되지 않으면 에이전트 대상은 404다. 대상 taskforce의 응답 모양은 그대로다(만들기 응답만 대상 열이 붙는다).
 
 const NOT_FOUND = "대화가 없습니다.";
 
 type AppUser = { user: { id: string } };
 
 // ─── 대화 만들기 ─────────────────────────────────────
+
+export type AgentCreateResult =
+  | { status: "created" | "existing"; conversation: ConversationWithTarget }
+  | { status: "id_taken" | "context_not_found" | "context_off" | "target_mismatch" | "not_found" };
+
+/** 에이전트 대상 만들기 delegate (src/lib/api/agent-conversations.ts가 구현한다) */
+export type AgentCreateDelegate<User> = {
+  create: (user: User, input: { id?: string; title?: string; contextId: string | null; connectionId: string; sessionId?: string }) => Promise<AgentCreateResult>;
+  /** 같은 id의 내 대화가 있으면 그 대상 (taskforce 요청이 기존 에이전트 대화를 가리키면 target_mismatch) */
+  targetKind: (user: User, conversationId: string) => Promise<ConversationTargetKind | null>;
+};
 
 export type CreateConversationDeps<User extends AppUser> = {
   enabled: () => boolean;
@@ -40,20 +57,47 @@ export type CreateConversationDeps<User extends AppUser> = {
     user: User,
     input: CreateConversationRequest,
   ) => Promise<{ status: "created" | "existing"; conversation: Conversation } | { status: "id_taken" | "context_not_found" | "context_off" }>;
+  agent?: AgentCreateDelegate<User>;
 };
 
 export async function handleCreateConversation<User extends AppUser>(request: Request, deps: CreateConversationDeps<User>): Promise<Response> {
   if (!deps.enabled()) return errorResponse(404, "not_found", "없는 경로입니다.");
   const user = await deps.authenticate(request);
   if (!user) return unauthorized();
-  const body = await parseBody(request, createConversationRequestSchema);
+  const body = await parseBody(request, createConversationV2RequestSchema);
   if ("error" in body) return body.error;
+  const { target, ...input } = body.data;
   try {
-    const result = await deps.create(user, body.data);
+    if (target?.kind === "agent") {
+      if (!deps.agent) return errorResponse(404, "not_found", "없는 경로입니다.");
+      const created = await deps.agent.create(user, { id: input.id, title: input.title, contextId: input.context_id ?? null, connectionId: target.connection_id, sessionId: target.session_id });
+      switch (created.status) {
+        case "created":
+        case "existing":
+          return Response.json({ conversation: created.conversation } satisfies CreateConversationV2Response, { status: created.status === "created" ? 201 : 200 });
+        case "id_taken":
+          return errorResponse(409, "conflict", "이미 쓰인 대화 id입니다. 다른 id로 만들어 주세요.");
+        case "target_mismatch":
+          return errorResponse(409, "target_mismatch", "같은 id의 대화가 다른 대상으로 이미 있습니다.");
+        case "not_found":
+          return errorResponse(404, "not_found", "연결이나 세션이 없습니다.");
+        case "context_not_found":
+          return errorResponse(404, "not_found", "범위가 없습니다.");
+        case "context_off":
+          return errorResponse(400, "invalid_request", "범위 기능이 꺼져 있습니다.");
+      }
+    }
+    const result = await deps.create(user, input);
     switch (result.status) {
       case "created":
-      case "existing":
-        return Response.json({ conversation: result.conversation } satisfies CreateConversationResponse, { status: result.status === "created" ? 201 : 200 });
+      case "existing": {
+        // 같은 id의 기존 대화가 에이전트 대상이면 taskforce 요청으로 열 수 없다 (대상은 바뀌지 않는다)
+        if (result.status === "existing" && (await deps.agent?.targetKind(user, result.conversation.id)) === "agent") {
+          return errorResponse(409, "target_mismatch", "같은 id의 대화가 다른 대상으로 이미 있습니다.");
+        }
+        const conversation: ConversationWithTarget = { ...result.conversation, target_kind: "taskforce", agent_connection_id: null, agent_session_id: null };
+        return Response.json({ conversation } satisfies CreateConversationV2Response, { status: result.status === "created" ? 201 : 200 });
+      }
       case "id_taken":
         return errorResponse(409, "conflict", "이미 쓰인 대화 id입니다. 다른 id로 만들어 주세요.");
       case "context_not_found":
@@ -120,6 +164,19 @@ export type PostResult = {
 };
 export type FinishResult = { status: "written" | "answered" | "stale" | "conflict" | "not_found"; replyId: string | null };
 
+/** 에이전트 대상 대화 (OA D1d): 연결 · 세션은 delegate가 gate와 전달에 쓴다 */
+export type AgentConversationRef = { id: string; connectionId: string | null; sessionId: string | null };
+
+/** 에이전트 대상 보내기 delegate (src/lib/api/agent-conversations.ts가 구현한다): 칩 확인 · 저장 · 전달 시작 · 응답까지 맡고 Response를 돌려준다. respondToMessage · Jev · LLM을 부르지 않는다 */
+export type AgentPostDelegate<User> = {
+  post: (user: User, conversation: AgentConversationRef, body: PostConversationMessageV2Request) => Promise<Response>;
+};
+
+/** 대상 taskforce의 칩 준비 결과 (OD-5): refs = 지시 대상 규칙 1에 쓰는 added action · run · artifact, selected = 같은 제출 비교에 저장하는 전체(정규화한 칩 포함) */
+export type PreparedAttachments =
+  | { status: "ok"; refs: SelectedRefs; selected: SelectedRefs & { attachments?: Attachment[] }; attachments: Attachment[] }
+  | { status: "missing" | "context_off" };
+
 export type PostMessageDeps<User extends AppUser> = {
   enabled: () => boolean;
   memoryEnabled: () => boolean;
@@ -127,13 +184,21 @@ export type PostMessageDeps<User extends AppUser> = {
   hasConsent: (user: User) => Promise<boolean>;
   /** 한도에 찼으면 다시 할 수 있는 시각, 아니면 시도를 남기고 null (모델을 부르기 전에) */
   rateLimit: (user: User) => Promise<Date | null>;
-  loadConversation: (user: User, conversationId: string) => Promise<{ id: string; contextId: string | null; contextName: string | null } | null>;
+  /** targetKind가 없으면 taskforce. 에이전트 대화는 연결 · 세션 id를 함께 돌려준다 */
+  loadConversation: (
+    user: User,
+    conversationId: string,
+  ) => Promise<{ id: string; contextId: string | null; contextName: string | null; targetKind?: ConversationTargetKind; agentConnectionId?: string | null; agentSessionId?: string | null } | null>;
   /** refs: 정규화한 선택(normalizeSelected). 하나라도 내 것이 아니면 missing */
   verifySelected: (user: User, refs: SelectedRefs) => Promise<{ targets: Target[] } | { missing: true }>;
+  /** attachments(맥락 칩)를 정규화하고 종류별 소유를 확인한다. 없는 · 남의 칩이 하나라도 있으면 missing, 범위 칩은 MEMORY_ENABLED가 꺼져 있으면 context_off */
+  prepareAttachments?: (user: User, attachments: Attachment[]) => Promise<PreparedAttachments>;
+  /** 새로 저장한 메시지의 칩마다 측정 이벤트 한 줄 (context_attached). 실패해도 메시지는 남는다 */
+  recordAttachments?: (user: User, attachments: Attachment[]) => Promise<void>;
   /** 이 대화에 같은 client_message_id의 사용자 메시지가 이미 있는가 (한도를 저장 전에 셀지 정한다) */
   messageExists: (user: User, conversationId: string, clientMessageId: string) => Promise<boolean>;
   /** selected: 앱이 고른 대상(정렬 · 중복 제거). 같은 client_message_id라도 글이나 대상이 다르면 mismatch */
-  post: (user: User, conversationId: string, clientMessageId: string, text: string, selected: SelectedRefs) => Promise<PostResult>;
+  post: (user: User, conversationId: string, clientMessageId: string, text: string, selected: SelectedRefs & { attachments?: Attachment[] }) => Promise<PostResult>;
   loadMessage: (user: User, messageId: string) => Promise<ConversationMessage | null>;
   loadWindow: (user: User, conversationId: string, uptoSeq: number) => Promise<{ messages: WindowMessage[]; omitted: number }>;
   /** 답 만들기 (모델 · 기록 읽기를 묶은 respondToMessage) */
@@ -142,6 +207,8 @@ export type PostMessageDeps<User extends AppUser> = {
   release: (user: User, messageId: string) => Promise<void>;
   onDeadlineExceeded?: (error: DeadlineExceededError) => void;
   now?: () => Date;
+  /** 에이전트 대상 대화의 보내기. 주입되지 않으면 에이전트 대상은 404 */
+  agent?: AgentPostDelegate<User>;
 };
 
 const conflict = (message: string) => errorResponse(409, "conflict", message);
@@ -155,7 +222,7 @@ export async function handlePostConversationMessage<User extends AppUser>(
   const user = await deps.authenticate(request);
   if (!user) return unauthorized();
   if (!UUID.test(conversationId)) return errorResponse(404, "not_found", NOT_FOUND);
-  const body = await parseBody(request, postConversationMessageRequestSchema);
+  const body = await parseBody(request, postConversationMessageV2RequestSchema);
   if ("error" in body) return body.error;
   // 메시지와 할 일 · 기억 · 원문 발췌를 외부 AI로 보내므로 동의가 먼저다 (동의 전에는 저장도 하지 않는다)
   if (!(await deps.hasConsent(user))) return consentRequired();
@@ -164,9 +231,25 @@ export async function handlePostConversationMessage<User extends AppUser>(
   try {
     const conversation = await deps.loadConversation(user, conversationId);
     if (!conversation) return errorResponse(404, "not_found", NOT_FOUND);
+    // 에이전트 대상: 사용자의 글은 그 에이전트 세션으로 그대로 간다. Taskforce 모델(분류 · 상담)은 부르지 않는다 (계약 3.2) — delegate가 맡는다
+    if (conversation.targetKind === "agent") {
+      if (!deps.agent) return errorResponse(404, "not_found", NOT_FOUND);
+      return await deps.agent.post(user, { id: conversation.id, connectionId: conversation.agentConnectionId ?? null, sessionId: conversation.agentSessionId ?? null }, body.data);
+    }
     // 앱이 보낸 대상은 모두 내 것이어야 한다: 남의 id로 대상 · 권한을 얻지 못한다.
     // 소유를 확인하기 전에 한 번 정규화한다(소문자 · 중복 제거 · 정렬): 대소문자만 다른 같은 uuid를 두 대상으로 세어 404를 내지 않고, 확인 · 저장 · 답이 같은 선택을 쓴다
-    const refs = normalizeSelected(body.data.refs);
+    // attachments(맥락 칩, OD-5)는 종류별 소유를 확인해 저장한다. added action · run · artifact만 지금의 지시 대상 규칙 1에 쓰고, 나머지는 저장만 한다 (답 생성 불변)
+    let refs = normalizeSelected(body.data.refs);
+    let stored: SelectedRefs & { attachments?: Attachment[] } = refs;
+    let chips: Attachment[] = [];
+    if (body.data.attachments?.length) {
+      if (!deps.prepareAttachments) return errorResponse(400, "invalid_request", "맥락 칩을 받지 않습니다.");
+      const prepared = await deps.prepareAttachments(user, body.data.attachments);
+      if (prepared.status !== "ok") {
+        return prepared.status === "context_off" ? errorResponse(400, "invalid_request", "범위 기능이 꺼져 있습니다.") : errorResponse(404, "not_found", "대상을 찾지 못했습니다.");
+      }
+      ({ refs, selected: stored, attachments: chips } = prepared);
+    }
     const verified = await deps.verifySelected(user, refs);
     if ("missing" in verified) return errorResponse(404, "not_found", "대상을 찾지 못했습니다.");
 
@@ -184,7 +267,7 @@ export async function handlePostConversationMessage<User extends AppUser>(
     }
 
     // 고른 대상도 같은 제출의 일부다: 처음 고른 대상이 메시지에 남고, 다시 보낼 때 다르면 mismatch (다시 처리할 때도 처음 대상과 같은 것만 받는다)
-    const posted = await deps.post(user, conversation.id, body.data.client_message_id, body.data.text, refs);
+    const posted = await deps.post(user, conversation.id, body.data.client_message_id, body.data.text, stored);
     switch (posted.status) {
       case "not_found":
         return errorResponse(404, "not_found", NOT_FOUND);
@@ -202,6 +285,13 @@ export async function handlePostConversationMessage<User extends AppUser>(
     const messageId = posted.messageId!;
     const seq = posted.seq!;
     leased = messageId;
+
+    // 칩 측정은 새로 저장한 메시지에서만 한 번 (재전송 · 재처리는 다시 세지 않는다). 실패해도 메시지는 이미 저장됐다
+    if (posted.status === "created" && chips.length && deps.recordAttachments) {
+      await deps.recordAttachments(user, chips).catch((error: unknown) => {
+        console.error(JSON.stringify({ event: "context_attached_failed", error: error instanceof Error ? error.name : "unknown" }));
+      });
+    }
 
     if (known && posted.status === "retry") {
       const retryAt = await deps.rateLimit(user);
