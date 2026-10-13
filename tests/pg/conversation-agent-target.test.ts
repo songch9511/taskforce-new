@@ -1,9 +1,11 @@
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
+import path from "node:path";
 
 import pg from "pg";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 
-import { conversationAgentFixtures, conversationAgentTargetTests, type ConversationAgentDb } from "../db/conversation-agent-target.scenarios";
+import { D1B_MIGRATION, conversationAgentFixtures, conversationAgentTargetTests, type ConversationAgentDb } from "../db/conversation-agent-target.scenarios";
 import { supabaseSchemaScripts } from "../db/local-supabase";
 
 // 0.2.0 대화 대상과 에이전트 글 (20261114000000_conversation_agent_target, 구현 계획 D1b) — 실제 Postgres. PGlite와 같은 시나리오 +
@@ -235,5 +237,54 @@ describe("T10 대화 대상 경합 (실제 Postgres, 연결 둘 이상)", () => 
     await f.q(`update public.conversation_messages set delivery_expires_at = $2 where id = $1`, [second.message_id, past]);
     expect(Number((await f.one(`select public.conversation_expire_agent_messages(now()) as n`)).n)).toBe(1);
     expect((await f.one(`select delivery_state from public.conversation_messages where id = $1`, [second.message_id])).delivery_state).toBe("expired");
+  });
+});
+
+// 독립 검토(Codex) P2: 마이그레이션의 LOCK TABLE(대화 → 메시지)이 진행 중인 B2 답 저장(conversation_finish_turn: 메시지를 먼저 읽고 대화를 잠금)과 순환 대기를 만들 수 있다.
+// lock_timeout은 교착을 막지 않는다(교착 감지가 먼저, 사용자 트랜잭션이 40P01로 중단될 수 있다). 그래서 잠금문은 NOWAIT이다: 경합이면 기다리지 않고 바로 실패(롤백)한다.
+describe("T13 마이그레이션의 표 잠금은 진행 중인 B2 답 저장과 교착하지 않는다 (실제 Postgres)", () => {
+  const f = conversationAgentFixtures(db);
+  /** 마이그레이션 파일의 실제 잠금문 (주석 제외). 문구를 시험에 베끼지 않고 파일에서 읽어, 파일의 잠금문이 바뀌면 이 시험이 그것을 돌린다 */
+  const lockStatement = () => {
+    const sql = readFileSync(path.resolve(__dirname, "../../supabase/migrations", D1B_MIGRATION), "utf8")
+      .split("\n")
+      .filter((line) => !line.trim().startsWith("--"))
+      .join("\n");
+    return sql.match(/^lock table [^;]+;/m)![0];
+  };
+
+  it("답 저장이 메시지를 읽은 채 대화 잠금으로 가는 순간 마이그레이션의 잠금문은 기다리지 않고 55P03으로 실패하고, 답 저장은 성공한다", async () => {
+    const user = await f.user();
+    const conversation = await f.conversation(user);
+    const sent = await f.post(user, conversation, randomUUID(), "질문"); // 대상 taskforce의 사용자 메시지 (B2 경로)
+
+    // A = conversation_finish_turn의 순서: 메시지를 먼저 읽어 ACCESS SHARE를 쥐고(트랜잭션 끝까지), 그 다음에 대화 행을 잠근다
+    await a.query("begin");
+    await a.query(`select id from public.conversation_messages where id = $1`, [sent.message_id]);
+
+    // B = 마이그레이션의 앞부분 (begin; set local lock_timeout; lock table …)
+    await b.query("begin");
+    await b.query("set local lock_timeout = '5s'");
+    const migration = b.query(lockStatement()).then(
+      () => ({ ok: true as const }),
+      (error: { code?: string }) => ({ ok: false as const, code: error.code }),
+    );
+    // NOWAIT이면 바로 실패한다. 아니면 B가 대화 표의 ACCESS EXCLUSIVE를 쥔 채 메시지 표를 기다리고(여기서 'waiting'), A의 다음 문장과 순환 대기가 된다
+    const early = await Promise.race([migration, new Promise<"waiting">((resolve) => setTimeout(() => resolve("waiting"), 1500))]);
+    expect(early).toEqual({ ok: false, code: "55P03" });
+    await b.query("rollback");
+
+    // A가 이어서 대화를 잠그고 답을 쓴다: 막히지 않고 성공 (교착 40P01 없음)
+    const finished = await a.query<{ status: string }>(`select * from public.conversation_finish_turn($1, $2, $3::jsonb)`, [user, sent.message_id, JSON.stringify({ reply: { text: "답" } })]);
+    expect(finished.rows[0].status).toBe("written");
+    await a.query("commit");
+    expect(await f.count(`select 1 from public.conversation_messages where conversation_id = $1`, [conversation])).toBe(2);
+  });
+
+  it("경합이 없으면 같은 잠금문이 바로 잡힌다 (NOWAIT이 정상 적용을 막지 않는다)", async () => {
+    await b.query("begin");
+    await b.query("set local lock_timeout = '5s'");
+    await b.query(lockStatement());
+    await b.query("rollback");
   });
 });

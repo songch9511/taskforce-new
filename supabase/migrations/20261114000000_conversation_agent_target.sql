@@ -24,9 +24,12 @@
 begin;
 -- 대화 두 표를 바꾸며 잠금을 잡는다: 운영에서 오래 기다리지 않고 실패하게 한다 (그때는 그대로 다시 적용)
 set local lock_timeout = '5s';
--- 정해진 순서(대화 → 메시지: conversation_post_message의 잠금 순서와 같다)로 먼저 확보해, 경합하면 5초 안에 빨리 실패하고 쓰기 함수와 교착하지 않게 한다.
--- 새 외래키가 agent_connections · agent_sessions에 거는 잠금은 그 뒤에 잡힌다
-lock table public.conversations, public.conversation_messages in access exclusive mode;
+-- 두 표를 정해진 순서(대화 → 메시지)로 먼저 확보하되 NOWAIT이다: 이미 잠긴 표가 있으면 기다리지 않고 바로 실패(롤백)한다.
+-- 기다리면 안 되는 이유: conversation_finish_turn(B2)은 메시지 표를 먼저 읽고(ACCESS SHARE를 트랜잭션 끝까지 쥔다) 그 뒤에 대화 행을 잠근다. 반대 순서로 두 표를 잡으려는 마이그레이션이
+-- 대화 표의 ACCESS EXCLUSIVE를 쥔 채 메시지 표를 기다리면 순환 대기가 되고, lock_timeout(5s)보다 교착 감지(1s)가 먼저라 둘 중 하나가 40P01로 중단된다 (사용자 트랜잭션일 수 있다).
+-- NOWAIT이면 그 경합에서는 마이그레이션만 55P03(lock_not_available)으로 실패하고 B2 함수는 그대로 성공한다 (그때는 그대로 다시 적용). 시험: tests/pg T13.
+-- 새 외래키가 agent_connections · agent_sessions에 거는 잠금은 이 뒤에 잡힌다 (그 표들은 아직 쓰는 코드가 없다)
+lock table public.conversations, public.conversation_messages in access exclusive mode nowait;
 
 -- ─────────────────────────────────────────────
 -- 1) conversations: 대상

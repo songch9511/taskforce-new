@@ -119,7 +119,7 @@
 
 - (a) 세션이 대화의 연결에 속하는지(`agent_sessions.connection_id = conversations.agent_connection_id`)는 복합 외래키가 보장하지 않는다(같은 사용자의 다른 연결 세션을 묶을 수 있다). 첫 전달에서 묶을 때 확인한다.
 - (b) `agent_session_id`의 값 → null은 DB가 막지 않는다(세션 삭제의 `set null`과 직접 갱신을 구별하지 않는다). 앱은 쓰기 권한이 없고 서버만 쓴다.
-- (c) 연결 삭제는 그 연결의 대화가 있으면 거절된다(`restrict`). 연결 해제 경로는 대화를 먼저 정리하거나(보관 · 삭제) 연결을 `revoked`로만 두고 지우지 않는다(D1c 결정). 계정 삭제(`auth.users`)는 사용자 cascade로 둘 다 지워지며 시험이 확인한다(PGlite · 실제 Postgres).
+- (c) 연결 삭제는 그 연결의 대화가 있으면 거절된다(`restrict`). 대화를 `archived_at`으로 보관해도 대화 행이 남아 있으므로 거절은 그대로다. 그래서 연결 해제 경로는 대화를 삭제하거나, 대화를 보존하려면 연결을 지우지 않고 `revoked`로 둔다(D1c 결정). 계정 삭제(`auth.users`)는 사용자 cascade로 둘 다 지워지며 시험이 확인한다(PGlite · 실제 Postgres).
 - (d) 세션 단위 `event`(중단 확인 · 연결 끊김 · 결과 검토)는 그 세션에 묶인 **모든 대화**에 한 줄씩 쓴다 — append는 대화 하나에만 쓰므로 반복은 D1c-2의 몫이다. 같은 event id는 대화마다 따로 유일하다.
 - (e) `delivery_state` 전이(`queued` → `dispatched` · `not_sent`, 되돌리기, `cancelled`)는 이 묶음에 없다. 전달 단계의 intent를 만드는 트랜잭션(D1c-1 · D1d)이 같은 트랜잭션에서 바꾼다. DB는 값의 모양과 이유 ↔ 상태만 본다.
 - (f) 글 보관 기한 정리(V08)가 `delivery_reason` · `external_event_id`를 어떻게 다룰지는 정하지 않았다(`external_event_id`는 남기는 쪽이 계약 3.5). D1을 켜기 전에 정한다.
@@ -131,4 +131,4 @@
 
 ### 7-7. 적용
 
-운영 DB에는 병합 직전 승인을 받고 `supabase db query --linked -f supabase/migrations/20261114000000_conversation_agent_target.sql`로 한다(`db push` 금지). `20261113000000_agent_gateway_core` 뒤에 적용한다. 한 트랜잭션이고 `lock_timeout 5s`로 `conversations` · `conversation_messages`를 정해진 순서로 먼저 잠근다 — 잠금을 오래 기다리면 실패한다(그대로 다시 적용한다). 기존 행은 새 열이 기본값(`taskforce` · null)이라 영향이 없다.
+운영 DB에는 병합 직전 승인을 받고 `supabase db query --linked -f supabase/migrations/20261114000000_conversation_agent_target.sql`로 한다(`db push` 금지). `20261113000000_agent_gateway_core` 뒤에 적용한다. 한 트랜잭션이고 `lock_timeout 5s` 뒤에 `conversations` · `conversation_messages`를 정해진 순서로 `NOWAIT`으로 먼저 잠근다 — 두 표 중 하나라도 이미 잠겨 있으면(진행 중인 대화 쓰기 포함) 기다리지 않고 바로 `55P03`으로 실패하고 롤백한다(그대로 다시 적용한다). 기다리면 B2 답 저장(`conversation_finish_turn`: 메시지 표를 먼저 읽고 대화를 잠금)과 순환 대기가 되어 `40P01`이 날 수 있어서다(`lock_timeout`은 교착을 막지 못한다; 시험 `tests/pg` T13). 기존 행은 새 열이 기본값(`taskforce` · null)이라 영향이 없다.

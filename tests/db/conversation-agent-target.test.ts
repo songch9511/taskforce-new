@@ -29,17 +29,21 @@ describe("마이그레이션 파일이 건드리는 것", () => {
     .filter((line) => !line.trim().startsWith("--"))
     .join("\n");
 
-  it("한 트랜잭션이고 lock_timeout 바로 뒤에 두 대화 표의 잠금을 정해진 순서(대화 → 메시지)로 한꺼번에 잡는다 (begin … commit)", () => {
+  it("한 트랜잭션이고 lock_timeout 바로 뒤에 두 대화 표의 잠금을 정해진 순서(대화 → 메시지)로 NOWAIT으로 한꺼번에 잡는다 (begin … commit)", () => {
     const body = sql.trim();
+    // NOWAIT은 B2 답 저장(메시지 → 대화 순서)과의 교착을 피한다 — 동작 시험은 tests/pg의 T13. 여기서는 잠금문이 그대로인지만 본다
+    const lock = "lock table public.conversations, public.conversation_messages in access exclusive mode nowait;";
     expect(body.startsWith("begin;")).toBe(true);
     expect(body.endsWith("commit;")).toBe(true);
     expect((body.match(/^begin;$/gm) ?? []).length).toBe(1);
     expect((body.match(/^commit;$/gm) ?? []).length).toBe(1);
-    const order = ["begin;", "set local lock_timeout = '5s';", "lock table public.conversations, public.conversation_messages in access exclusive mode;"].map((statement) => body.indexOf(statement));
+    const order = ["begin;", "set local lock_timeout = '5s';", lock].map((statement) => body.indexOf(statement));
     expect(order.every((index) => index >= 0)).toBe(true);
     expect([...order].sort((a, b) => a - b)).toEqual(order);
     // 잠금 문장 다음이 첫 변경이다 (그 사이에 다른 문장이 없다)
-    expect(body.slice(order[2]).split("\n")[0]).toBe("lock table public.conversations, public.conversation_messages in access exclusive mode;");
+    expect(body.slice(order[2]).split("\n")[0]).toBe(lock);
+    // 이 파일의 lock table 문장은 이 하나뿐이다 (기다리는 잠금문이 따로 없다)
+    expect(body.match(/^lock table .*$/gm)).toEqual([lock]);
   });
 
   it("함수: 서버 함수 둘 + 트리거 함수 둘을 새로 만들고, 기존 셋(post_message · coordinator_on_user_message · coordinator_recover_missing)만 시그니처 그대로 교체한다", () => {
