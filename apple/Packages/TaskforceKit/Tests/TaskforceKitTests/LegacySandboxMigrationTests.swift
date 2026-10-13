@@ -142,6 +142,33 @@ struct LegacySandboxMigrationTests {
         #expect(report == Self.finished(copied: 7 + 1, kept: 2 + 1))
     }
 
+    /// 이전기의 표식 · 시도 키(`tf.legacySandboxMigration.` 접두어)는 옛 plist에 있어도 복사하지 않는다:
+    /// 복사하면 옛 값이 새 도메인의 완료 표식이 되어(권한 오류로 끝나지 않은 이전도 끝난 것으로 보인다) 시도 횟수가 어긋난다
+    @Test func theMigrationsOwnKeysAreNeverCopiedFromTheOldPlist() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        #expect(LegacySandboxMigration.markerKey.hasPrefix("tf.legacySandboxMigration.") && LegacySandboxMigration.attemptsKey.hasPrefix("tf.legacySandboxMigration."))
+        try fixture.writeOld(standard, [
+            "settings.tab": "account", LegacySandboxMigration.markerKey: "old-marker", LegacySandboxMigration.attemptsKey: 7, "tf.legacySandboxMigration.future": 1,
+        ])
+        try fixture.writeOld(pins, ["pins.alice": ["id-1"]])
+        let reads = Switch(denied: [pins])
+
+        let report = fixture.migration(read: reads.read).run()
+
+        // 표식이 옛 값으로 생기지 않는다: 권한 오류가 난 이전은 아직 끝나지 않았다. 시도 횟수는 우리 값(1)이다
+        #expect(report == Self.finished(copied: 1, denied: 1, attempts: 1, marker: false))
+        let values = fixture.newValues(standard)
+        #expect(values["settings.tab"] as? String == "account")
+        #expect(values[LegacySandboxMigration.markerKey] == nil)
+        #expect(values[LegacySandboxMigration.attemptsKey] as? Int == 1)
+        #expect(values["tf.legacySandboxMigration.future"] == nil)
+        // 끝나면 표식은 우리가 쓴 값(true)이다
+        reads.denied = []
+        #expect(fixture.migration(read: reads.read).run().markerWritten)
+        #expect(fixture.newValues(standard)[LegacySandboxMigration.markerKey] as? Bool == true)
+    }
+
     // MARK: T2 멱등
 
     @Test func theSecondRunWritesNothingAndTheMarkerIgnoresChangedOldFiles() throws {

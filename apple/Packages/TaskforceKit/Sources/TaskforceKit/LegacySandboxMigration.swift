@@ -33,10 +33,13 @@ public enum AppDefaultsDomains {
 /// - 샌드박스 안이거나(`AgentRuntimeEnvironment`) Debug 빌드(실행 인자 없이)면 부르지 않는다(`runAtLaunch`).
 /// - 그 밖의 파일(App Group 컨테이너의 저장본 · Keychain)은 샌드박스와 상관없이 같은 위치라 옮기지 않는다. 캐시는 다시 만들어진다.
 public struct LegacySandboxMigration {
+    /// 이 이전기가 새 도메인에 쓰는 키의 접두어. 옛 plist에 이 접두어 키가 있어도 복사하지 않는다
+    /// (복사하면 옛 값이 완료 표식이 되어 권한 오류로 끝나지 않은 이전이 끝난 것으로 보이고, 시도 횟수가 어긋난다)
+    static let ownKeyPrefix = "tf.legacySandboxMigration."
     /// 표준 도메인에 쓰는 완료 표식
-    public static let markerKey = "tf.legacySandboxMigration.v1"
+    public static let markerKey = ownKeyPrefix + "v1"
     /// 권한 오류로 끝난 시도 횟수 (표준 도메인)
-    public static let attemptsKey = "tf.legacySandboxMigration.attempts"
+    public static let attemptsKey = ownKeyPrefix + "attempts"
     /// 권한 오류로 표식 없이 끝낼 수 있는 시도 수. 이 번째 시도에서도 권한 오류면 표식을 쓴다
     public static let maxAttempts = 3
     /// Debug 빌드에서 이전을 켜는 실행 인자 `-TF_LEGACY_MIGRATION YES` (기존 `-TF_EDGE_SHELL YES` 방식, 인자 영역만)
@@ -156,7 +159,7 @@ public struct LegacySandboxMigration {
                 continue
             }
             let existing = target.keys
-            for (key, value) in old {
+            for (key, value) in old where !key.hasPrefix(Self.ownKeyPrefix) {
                 if existing.contains(key) {
                     report.keptKeys += 1
                 } else {
