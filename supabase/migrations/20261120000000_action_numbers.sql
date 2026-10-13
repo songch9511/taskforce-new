@@ -60,6 +60,11 @@ select a.user_id, max(a.number) + 1
 --    카운터 행을 한 문장으로 만들거나 올린다(on conflict do update가 행 잠금을 잡는다). 같은 사용자의 동시 insert는 이 행에서 줄을 서고,
 --    앞 트랜잭션이 commit하면 올린 값을, rollback하면 올리기 전 값을 본다. 그래서 번호는 겹치지 않고 빈틈이 없다.
 --    소유자 권한이다: insert하는 역할(서버)이 카운터 표 권한에 기대지 않는다. 들어온 new.number는 항상 덮어쓴다
+--    잠금 순서: 사용자 행(auth.users, for key share) → 카운터 행. 계정 삭제는 사용자 행을 지운 뒤 카운터를 cascade로 지우므로 같은 순서다.
+--    카운터를 먼저 잡으면 사용자 행 잠금을 뒤의 actions insert FK 검사에서 얻게 되어, 계정 삭제와 서로 기다리다 교착(40P01)한다.
+--    for key share는 그 FK 검사가 어차피 얻는 잠금과 같은 수준이다(일반 갱신 · 로그인 시각 기록과 충돌하지 않고, 행 삭제 · 키 변경과만 충돌한다).
+--    사용자가 없으면(지워졌거나 처음부터 없음) 잠글 행이 없고, 아래 카운터 insert가 FK 위반(23503)으로 거절한다.
+--    이 잠금은 select for key share라 트리거 소유자(마이그레이션 실행 역할)에게 auth.users의 select · update 권한이 있어야 한다
 -- ─────────────────────────────────────────────
 create function public.actions_assign_number() returns trigger
 language plpgsql
@@ -69,6 +74,7 @@ as $$
 declare
   v_number integer;
 begin
+  perform 1 from auth.users u where u.id = new.user_id for key share;
   insert into public.action_counters as c (user_id, next)
   values (new.user_id, 2)
   on conflict (user_id) do update set next = c.next + 1, updated_at = now()

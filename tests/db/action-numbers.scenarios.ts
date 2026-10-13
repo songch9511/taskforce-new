@@ -146,6 +146,13 @@ export function actionNumbersTests(db: () => ActionNumbersDb) {
       expect(await db().asUser(bob, () => q(`select number from public.actions order by number`))).toEqual([{ number: 1 }]);
     });
 
+    it("없는 사용자의 Action은 FK 위반(23503)으로 거절되고 카운터 행도 남지 않는다", async () => {
+      const ghost = randomUUID();
+      await expect(q(`insert into public.actions (user_id, title) values ($1, '유령')`, [ghost])).rejects.toMatchObject({ code: "23503" });
+      expect(await f.counter(ghost)).toBeNull();
+      expect(await f.numbers(ghost)).toEqual([]);
+    });
+
     it("롤백한 insert는 번호를 쓰지 않는다 (트랜잭션 · savepoint)", async () => {
       const me = await f.user();
       await f.action(me); // #1

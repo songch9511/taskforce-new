@@ -119,6 +119,14 @@ const counterOf = async (userId: string) => {
   return rows.length === 0 ? null : (rows[0].next as number);
 };
 
+type Settled = { ok: true } | { ok: false; code: string | undefined };
+/** 쿼리의 결과를 던지지 않고 받는다 (교착처럼 어느 쪽이 중단될지 모르는 시험용): 실패하면 Postgres 오류 코드 */
+const settle = (query: Promise<unknown>): Promise<Settled> =>
+  query.then(
+    () => ({ ok: true as const }),
+    (error: { code?: string }) => ({ ok: false as const, code: error.code }),
+  );
+
 /** 데이터베이스 안에서 잠금을 기다리는 연결 수 (카운터를 쥔 트랜잭션을 기다리는 insert들) */
 async function waitForBlocked(n: number) {
   const deadline = Date.now() + 15_000;
@@ -211,6 +219,50 @@ describe("T7 같은 사용자 동시 insert (실제 Postgres)", () => {
       expect(mine, `트랜잭션 ${i}`).toHaveLength(3);
       expect(mine[2] - mine[0], `트랜잭션 ${i}`).toBe(2);
     }
+  });
+
+  it("계정 삭제(사용자 행 → 카운터 cascade)와 Action 생성(카운터 → 사용자 FK)이 반대 순서로 잠가도 교착(40P01)하지 않는다", async () => {
+    const userId = await newUser();
+    await setup.query(insertSql, [userId, "먼저"]); // 커밋된 카운터 행이 있다
+    const [deleter, creator] = await openRacers(2);
+    await deleter.query("begin");
+    await deleter.query(`select 1 from auth.users where id = $1 for update`, [userId]); // 사용자 행을 먼저 쥔다
+    const creating = settle(creator.query(insertSql, [userId, "삭제와 겹침"]));
+    await waitForBlocked(1); // 생성 쪽이 기다린다
+    const deleting = await settle(deleter.query(`delete from auth.users where id = $1`, [userId])); // 카운터 cascade: 생성 쪽이 카운터를 쥐고 있으면 순환 대기
+    await deleter.query(deleting.ok ? "commit" : "rollback");
+    const created = await creating;
+    expect(deleting, "삭제").toEqual({ ok: true });
+    expect(created, "생성: 사용자가 지워졌으므로 FK 위반으로 끝난다").toEqual({ ok: false, code: "23503" });
+    expect((await setup.query(`select (select count(*)::int from public.actions where user_id = $1) + (select count(*)::int from public.action_counters where user_id = $1) as n`, [userId])).rows[0].n).toBe(0);
+  });
+
+  it("삭제가 사용자 행을 먼저 지우면(미커밋) 생성은 기다렸다가 FK 위반으로 끝난다", async () => {
+    const userId = await newUser();
+    await setup.query(insertSql, [userId, "먼저"]);
+    const [deleter, creator] = await openRacers(2);
+    await deleter.query("begin");
+    await deleter.query(`delete from auth.users where id = $1`, [userId]);
+    const creating = settle(creator.query(insertSql, [userId, "삭제 뒤"]));
+    await waitForBlocked(1);
+    await deleter.query("commit");
+    expect(await creating).toEqual({ ok: false, code: "23503" });
+    expect(await counterOf(userId)).toBeNull();
+    expect(await numbersOf(userId)).toEqual([]);
+  });
+
+  it("생성 트랜잭션이 번호를 쥔 채 있으면 계정 삭제는 기다렸다가 Action · 카운터를 함께 지운다", async () => {
+    const userId = await newUser();
+    await setup.query(insertSql, [userId, "먼저"]);
+    const [deleter, creator] = await openRacers(2);
+    await creator.query("begin");
+    expect((await creator.query(insertSql, [userId, "쥐고 있음"])).rows[0].number).toBe(2);
+    const deleting = settle(deleter.query(`delete from auth.users where id = $1`, [userId]));
+    await waitForBlocked(1);
+    await creator.query("commit");
+    expect(await deleting).toEqual({ ok: true });
+    expect(await counterOf(userId)).toBeNull();
+    expect(await numbersOf(userId)).toEqual([]);
   });
 
   it("number를 바꾸려는 update는 동시에 insert가 도는 중에도 거절된다", async () => {
