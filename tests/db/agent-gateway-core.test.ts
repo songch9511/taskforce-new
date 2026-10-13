@@ -39,10 +39,12 @@ describe("마이그레이션 파일이 건드리는 것", () => {
     .filter((line) => !line.trim().startsWith("--"))
     .join("\n");
 
-  it("한 트랜잭션이고 lock_timeout을 잡는다 (begin … commit)", () => {
+  it("한 트랜잭션이고 lock_timeout 바로 뒤에 기존 실행 표의 잠금을 정해진 순서로 한꺼번에 잡는다 (begin … commit)", () => {
     const statements = sql.split(";").map((statement) => statement.trim()).filter(Boolean);
     expect(statements[0]).toBe("begin");
     expect(statements[1]).toBe("set local lock_timeout = '5s'");
+    // 교착 없이 빨리 실패하려고: 새 표를 만들기 전에, 실행기 · sweep과 같은 순서(runs → steps → events)로
+    expect(statements[2]).toBe("lock table public.execution_runs, public.execution_steps, public.execution_events in access exclusive mode");
     expect(statements.at(-1)).toBe("commit");
     expect(statements.filter((statement) => statement === "begin" || statement === "commit")).toHaveLength(2);
   });

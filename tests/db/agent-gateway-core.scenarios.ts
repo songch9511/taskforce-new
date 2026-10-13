@@ -71,6 +71,9 @@ export function agentGatewayFixtures(db: () => AgentGatewayDb) {
     },
     task: (userId: string, runId: string, sessionId: string, o: Record<string, unknown> = {}) =>
       insertRow("agent_tasks", { user_id: userId, run_id: runId, agent_session_id: sessionId, ...o }),
+    /** 그 run의 단계 하나 (대화 run은 create_run이 첫 단계를 만들지 않아 직접 넣는다). 작업의 step_id는 자기 run의 단계여야 한다(서버 규칙, D1c) */
+    step: (userId: string, runId: string, seq = 1) =>
+      insertRow("execution_steps", { user_id: userId, run_id: runId, seq, kind: "agent_dispatch", provider: "agent:claude-code", tool: "dispatch", purpose: "맡기기" }),
     /** 에이전트 사건 한 줄 (서버가 bridge 사건을 받아 쓰듯). id는 execution_events의 identity */
     agentEvent: (userId: string, runId: string, externalEventId: string | null, o: Record<string, unknown> = {}) =>
       insertRow("execution_events", { user_id: userId, run_id: runId, type: "agent", external_event_id: externalEventId, ...o }),
@@ -83,7 +86,7 @@ export function agentGatewayFixtures(db: () => AgentGatewayDb) {
       const session = await f.session(user, connection, { bound_action_id: action });
       const run = await f.agentRun(user, action, { agent_session_id: session });
       const taskRun = await base.run(user, action);
-      const step = await base.firstStep(taskRun);
+      const step = await f.step(user, run); // 작업의 step_id는 작업의 run(대화 run)의 단계다 — 다른 run의 단계를 가리키는 행은 유효한 행이 아니다
       const conversation = await base.conversation(user);
       const message = await f.message(user, conversation);
       const task = await f.task(user, run, session, { step_id: step, message_id: message, turn_seq: 1, state: "idle" });
@@ -259,8 +262,8 @@ export function agentGatewayCoreTests(db: () => AgentGatewayDb) {
       expect(await checkValues("agent_tasks", "state")).toEqual([...agentTaskStateSchema.options].sort());
       expect(await checkValues("agent_sessions", "status")).toEqual([...agentSessionStatusSchema.options].sort());
       expect(await checkValues("execution_runs", "kind")).toEqual([...RUN_KINDS].sort());
-      // last_live_state는 같은 값에서 unreachable만 뺀 것이다
-      expect(await checkValues("agent_tasks", "last_live_state")).toEqual([...agentTaskStateSchema.options].filter((state) => state !== "unreachable").sort());
+      // last_live_state는 열린 상태 넷뿐이다 (idle · 끝 상태 · unreachable은 끊김의 직전 상태가 아니다)
+      expect(await checkValues("agent_tasks", "last_live_state")).toEqual(["accepted", "awaiting_answer", "dispatched", "running"]);
       // 사건 type은 기존 셋 + agent
       expect(await checkValues("execution_events", "type")).toEqual(["agent", "hold", "run", "step"]);
     });
@@ -453,20 +456,32 @@ export function agentGatewayCoreTests(db: () => AgentGatewayDb) {
       await f.session(w.user, await f.agentConnection(w.user), { external_session_id: "dup" });
     });
 
-    it("agent_tasks: state 아홉 값(idle 포함) · last_live_state(unreachable 제외) · 번호 · jsonb 모양", async () => {
+    it("agent_tasks: state 아홉 값(idle 포함) · last_live_state(열린 상태 넷, unreachable이면 필수) · 번호 · jsonb 모양", async () => {
       const w = await f.world();
       // 상태마다 새 세션: 세션당 진행 중 턴은 하나라서(T5) 같은 세션에 진행 중 상태를 겹쳐 만들지 않는다
       const make = async (o: Record<string, unknown>) => f.task(w.user, w.run, await f.session(w.user, w.connection), o);
-      for (const ok of TASK_STATES) await make({ state: ok, pending_question: ok === "awaiting_answer" ? QUESTION : null });
+      for (const ok of TASK_STATES) await make({ state: ok, pending_question: ok === "awaiting_answer" ? QUESTION : null, last_live_state: ok === "unreachable" ? "running" : null });
       for (const bad of ["done", "Idle", "", "waiting", "stopped", "queued"]) await rejects(make({ state: bad }), /agent_tasks_state_check/);
       await rejects(make({ state: null }), /not-null constraint/);
       // idle은 허용된다 (턴의 끝, completed가 아니다)
       expect(await f.one(`select state from public.agent_tasks where id = $1`, [await make({ state: "idle" })])).toEqual({ state: "idle" });
 
-      // last_live_state: unreachable 직전 상태 — 여덟 값(unreachable 제외)과 null
-      for (const ok of TASK_STATES.filter((s) => s !== "unreachable")) await make({ state: "unreachable", last_live_state: ok });
-      await make({ state: "unreachable", last_live_state: null });
-      for (const bad of ["unreachable", "done", "", "Running"]) await rejects(make({ state: "unreachable", last_live_state: bad }), /agent_tasks_last_live_state_check/);
+      // last_live_state: unreachable 직전 상태 — 열린 상태 넷(dispatched · accepted · running · awaiting_answer)만. idle · 끝 상태 · unreachable은 거절
+      // (런타임 계약 5장: 열린 상태만 unreachable이 된다. AC-21: idle 작업은 끊긴 것으로 바꾸지 않는다)
+      for (const ok of ["dispatched", "accepted", "running", "awaiting_answer"]) await make({ state: "unreachable", last_live_state: ok });
+      for (const bad of ["idle", "completed", "failed", "cancelled", "unreachable", "done", "", "Running"]) {
+        await rejects(make({ state: "unreachable", last_live_state: bad }), /agent_tasks_last_live_state_check/);
+      }
+      // state가 unreachable이면 last_live_state는 반드시 있다 (reconcile이 돌아갈 곳). 만들 때 · 바꿀 때 모두
+      await rejects(make({ state: "unreachable", last_live_state: null }), /agent_tasks_unreachable_live_state/);
+      await rejects(make({ state: "unreachable" }), /agent_tasks_unreachable_live_state/);
+      const live = await make({ state: "running" });
+      await rejects(f.updateRow("agent_tasks", live, { state: "unreachable" }), /agent_tasks_unreachable_live_state/);
+      await f.updateRow("agent_tasks", live, { state: "unreachable", last_live_state: "running" });
+      await rejects(f.updateRow("agent_tasks", live, { last_live_state: null }), /agent_tasks_unreachable_live_state/);
+      // unreachable이 아닌 상태는 last_live_state 없이 된다 (idle 작업은 끊긴 적이 없다)
+      await make({ state: "idle", last_live_state: null });
+      await make({ state: "completed" });
 
       await rejects(make({ directive_version: 0 }), /agent_tasks_directive_version_check/);
       await rejects(make({ result_revision: -1 }), /agent_tasks_result_revision_check/);
@@ -589,9 +604,10 @@ export function agentGatewayCoreTests(db: () => AgentGatewayDb) {
       for (const first of IN_PROGRESS_STATES) {
         const session = await f.session(w.user, w.connection);
         const question = (state: string) => (state === "awaiting_answer" ? QUESTION : null);
-        await f.task(w.user, w.run, session, { state: first, pending_question: question(first) });
+        const live = (state: string) => (state === "unreachable" ? "running" : null); // unreachable은 끊기기 전 상태가 있어야 한다
+        await f.task(w.user, w.run, session, { state: first, pending_question: question(first), last_live_state: live(first) });
         for (const second of IN_PROGRESS_STATES) {
-          await rejects(f.task(w.user, w.run, session, { state: second, pending_question: question(second) }), /agent_tasks_in_progress_idx/);
+          await rejects(f.task(w.user, w.run, session, { state: second, pending_question: question(second), last_live_state: live(second) }), /agent_tasks_in_progress_idx/);
         }
         expect(await count("agent_tasks", "agent_session_id = $1", [session]), first).toBe(1);
       }
@@ -618,7 +634,7 @@ export function agentGatewayCoreTests(db: () => AgentGatewayDb) {
       await f.updateRow("agent_tasks", first, { state: "unreachable", last_live_state: "running" });
       for (const state of ["dispatched", "accepted", "running", "awaiting_answer", "unreachable"]) {
         await rejects(
-          f.task(w.user, w.run, session, { state, turn_seq: 2, pending_question: state === "awaiting_answer" ? QUESTION : null }),
+          f.task(w.user, w.run, session, { state, turn_seq: 2, pending_question: state === "awaiting_answer" ? QUESTION : null, last_live_state: state === "unreachable" ? "running" : null }),
           /agent_tasks_in_progress_idx/,
         );
       }

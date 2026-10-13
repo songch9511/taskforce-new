@@ -25,6 +25,10 @@ begin;
 -- 기존 표(execution_runs · execution_events)에 잠금을 잡는다: 운영에서 오래 기다리지 않고 실패하게 한다
 -- (그때는 그대로 다시 적용한다. 한 트랜잭션이라 남는 객체가 없다).
 set local lock_timeout = '5s';
+-- 기존 실행 표(고치는 execution_runs · execution_events, 새 표의 외래키가 가리키는 execution_steps)의 잠금을 먼저, 정해진 순서로 한꺼번에 잡는다:
+-- 경합하면 위 lock_timeout 안에 바로 실패하고(그때는 그대로 다시 적용한다), 실행기 · sweep 트랜잭션과 잠금을 서로 반대 순서로 기다리는 교착이 생기지 않는다.
+-- 새 표의 외래키가 auth.users · actions 등에 거는 잠금도 바쁜 실행 표를 확보한 뒤에야 잡힌다.
+lock table public.execution_runs, public.execution_steps, public.execution_events in access exclusive mode;
 
 -- ─────────────────────────────────────────────
 -- 1) bridges: Mac bridge 최소 identity (아키텍처 9.1)
@@ -126,7 +130,9 @@ create index execution_runs_agent_session_idx on public.execution_runs (agent_se
 -- ─────────────────────────────────────────────
 -- 작업 하나 = 세션의 턴 하나(직접 대화) 또는 맡긴 작업 하나. 상태 전이는 서버 코드가 한다 — 이 표는 값의 모양만 막는다.
 -- state: dispatched → accepted → running → (awaiting_answer) → idle(턴의 끝, 다음 사용자 메시지를 기다림) | completed | failed | cancelled | unreachable.
---   idle은 completed가 아니다(3.4). unreachable은 실패가 아니다: 직전 상태를 last_live_state에 적고 reconcile을 기다린다(그래서 last_live_state는 unreachable이 아니다).
+--   idle은 completed가 아니다(3.4). unreachable은 실패가 아니다: 직전 상태를 last_live_state에 적고 reconcile을 기다린다.
+--   열린 상태(dispatched · accepted · running · awaiting_answer)만 unreachable이 된다 — 런타임 계약 5장, AC-21: idle 작업은 끊긴 것으로 바꾸지 않는다(프로세스가 없어도 된다).
+--   그래서 last_live_state는 열린 상태 넷 중 하나이고(idle · 끝 상태 · unreachable은 안 된다), state가 unreachable이면 반드시 있다.
 -- pending_question: 모양({question_id, kind, text, ...})은 서버 zod가 검증한다(계약 v3 3.6). DB는 JSON 객체인지와 awaiting_answer일 때 있는지만 본다.
 --   질문 글은 여기에만 둔다(사건 payload에 담지 않는다).
 -- result_revision은 검증된 현재 결과 회차(사건 도착만으로 올리지 않는다), expected_result_revision은 다음 요청에 실어 보낸 결과 회차다.
@@ -144,7 +150,7 @@ create table public.agent_tasks (
   state text not null default 'dispatched'
     check (state in ('dispatched', 'accepted', 'running', 'awaiting_answer', 'idle', 'completed', 'failed', 'cancelled', 'unreachable')),
   last_live_state text
-    check (last_live_state in ('dispatched', 'accepted', 'running', 'awaiting_answer', 'idle', 'completed', 'failed', 'cancelled')),
+    check (last_live_state in ('dispatched', 'accepted', 'running', 'awaiting_answer')),
   directive_version integer not null default 1 check (directive_version >= 1),
   result_revision integer not null default 0 check (result_revision >= 0),
   expected_result_revision integer not null default 1 check (expected_result_revision >= 1),
@@ -157,6 +163,7 @@ create table public.agent_tasks (
   updated_at timestamptz not null default now(),
   unique (id, user_id),
   constraint agent_tasks_awaiting_question check (state <> 'awaiting_answer' or pending_question is not null),
+  constraint agent_tasks_unreachable_live_state check (state <> 'unreachable' or last_live_state is not null),
   constraint agent_tasks_run_fkey foreign key (run_id, user_id)
     references public.execution_runs (id, user_id) on delete cascade,
   constraint agent_tasks_step_fkey foreign key (step_id, user_id)
