@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
+import { AGENT_QUESTION } from "./agent-gateway-core.scenarios";
 import { MAX_LIVE_EXTERNAL_TASKS } from "../../src/lib/execution/limits";
 import { userCreatedAction } from "../../src/lib/actions/user-claims";
 import { conversationAgentFixtures, type ConversationAgentDb } from "./conversation-agent-target.scenarios";
@@ -308,7 +309,7 @@ export function agentTurnStartTests(db: () => ConversationAgentDb) {
       for (const state of ["dispatched", "accepted", "running", "unreachable", "running", "idle", "awaiting_answer"]) {
         const session = await f.session(w.user,w.connection);
         const run = await f.agentRun(w.user,await f.action(w.user),{agent_session_id:session});
-        tasks.push(await f.task(w.user,run,session,{state,...(state === "unreachable" ? {last_live_state:"running"} : {}),...(state === "awaiting_answer" ? {pending_question:{question_id:"q1",kind:"input",text:"Which file?"}} : {})}));
+        tasks.push(await f.task(w.user,run,session,{state,...(state === "unreachable" ? {last_live_state:"running"} : {}),...(state === "awaiting_answer" ? {pending_question:AGENT_QUESTION} : {})}));
       }
       expect((await f.start(w.user,w.message)).status).toBe("queued");
       expect(await f.msg(w.message)).toMatchObject({delivery_state:"queued",delivery_reason:"live_limit"});
@@ -397,7 +398,7 @@ export function agentTurnStartTests(db: () => ConversationAgentDb) {
     it("T5 every in-progress state queues but idle permits a new turn", async () => {
       for (const state of ["dispatched", "accepted", "running", "awaiting_answer", "unreachable"]) {
         const w = await f.turnWorld(); const first = await f.start(w.user, w.message);
-        await f.updateRow("agent_tasks", first.agent_task_id!, { state, pending_question: state === "awaiting_answer" ? {} : null, last_live_state: state === "unreachable" ? "running" : null });
+        await f.updateRow("agent_tasks", first.agent_task_id!, { state, pending_question: state === "awaiting_answer" ? { ...AGENT_QUESTION, question_key: [first.agent_task_id, AGENT_QUESTION.provider_request_id] } : null, last_live_state: state === "unreachable" ? "running" : null });
         const next = String((await f.post(w.user, w.conversation, randomUUID(), "next")).message_id);
         expect((await f.start(w.user, next)).status).toBe("queued");
         expect(await f.msg(next)).toMatchObject({delivery_reason: "session_busy"});

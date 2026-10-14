@@ -43,6 +43,7 @@ describe("초기 마이그레이션", () => {
       "action_events",
       "action_links",
       "actions",
+      "agent_artifacts",
       "agent_connections",
       "agent_sessions",
       "agent_tasks",

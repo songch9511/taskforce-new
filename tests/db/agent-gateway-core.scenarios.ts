@@ -25,7 +25,12 @@ export const IN_PROGRESS_STATES = ["dispatched", "accepted", "running", "awaitin
 export const SESSION_STATUSES = ["bound", "external", "unreachable", "closed"];
 export const AGENT_TABLES = ["bridges", "agent_connections", "agent_sessions", "agent_tasks"];
 
-const QUESTION = { question_id: "q-1", kind: "input", text: "어느 파일부터 볼까요?" };
+export const AGENT_QUESTION = {
+  question_key: ["00000000-0000-0000-0000-000000000001", "q-1"],
+  provider_request_id: "q-1", kind: "input", structured: true,
+  questions: [{ id: "file", header: "파일", text: "어느 파일부터 볼까요?", options: [], multi_select: false, allow_other: true, secret: false }],
+  asked_at: "2026-10-13T12:00:00Z",
+};
 
 /** 에러 메시지가 정규식과 맞는지 (PGlite와 실제 Postgres 모두 같은 문구) */
 const rejects = (promise: Promise<unknown>, pattern: RegExp) => expect(promise).rejects.toThrow(pattern);
@@ -69,8 +74,12 @@ export function agentGatewayFixtures(db: () => AgentGatewayDb) {
       const policy = String((await base.one(`select id from public.execution_policies where user_id = $1`, [userId])).id);
       return insertRow("execution_runs", { user_id: userId, action_id: actionId, policy_id: policy, goal: "agent", request: "대화", kind: "conversation", ...o });
     },
-    task: (userId: string, runId: string, sessionId: string, o: Record<string, unknown> = {}) =>
-      insertRow("agent_tasks", { user_id: userId, run_id: runId, agent_session_id: sessionId, ...o }),
+    task: (userId: string, runId: string, sessionId: string, o: Record<string, unknown> = {}) => {
+      const id = randomUUID();
+      return insertRow("agent_tasks", { id, user_id: userId, run_id: runId, agent_session_id: sessionId, ...o,
+        ...(o.pending_question === AGENT_QUESTION ? { pending_question: { ...AGENT_QUESTION, question_key: [o.id ?? id, AGENT_QUESTION.provider_request_id] } } : {}),
+      });
+    },
     /** 그 run의 단계 하나 (대화 run은 create_run이 첫 단계를 만들지 않아 직접 넣는다). 작업의 step_id는 자기 run의 단계여야 한다(서버 규칙, D1c) */
     step: (userId: string, runId: string, seq = 1) =>
       insertRow("execution_steps", { user_id: userId, run_id: runId, seq, kind: "agent_dispatch", provider: "agent:claude-code", tool: "dispatch", purpose: "맡기기" }),
@@ -460,7 +469,7 @@ export function agentGatewayCoreTests(db: () => AgentGatewayDb) {
       const w = await f.world();
       // 상태마다 새 세션: 세션당 진행 중 턴은 하나라서(T5) 같은 세션에 진행 중 상태를 겹쳐 만들지 않는다
       const make = async (o: Record<string, unknown>) => f.task(w.user, w.run, await f.session(w.user, w.connection), o);
-      for (const ok of TASK_STATES) await make({ state: ok, pending_question: ok === "awaiting_answer" ? QUESTION : null, last_live_state: ok === "unreachable" ? "running" : null });
+      for (const ok of TASK_STATES) await make({ state: ok, pending_question: ok === "awaiting_answer" ? AGENT_QUESTION : null, last_live_state: ok === "unreachable" ? "running" : null });
       for (const bad of ["done", "Idle", "", "waiting", "stopped", "queued"]) await rejects(make({ state: bad }), /agent_tasks_state_check/);
       await rejects(make({ state: null }), /not-null constraint/);
       // idle은 허용된다 (턴의 끝, completed가 아니다)
@@ -503,11 +512,11 @@ export function agentGatewayCoreTests(db: () => AgentGatewayDb) {
       await rejects(f.task(w.user, w.run, await f.session(w.user, w.connection), { state: "awaiting_answer", pending_question: null }), /agent_tasks_awaiting_question/);
       const running = await f.task(w.user, w.run, session, { state: "running" });
       await rejects(f.updateRow("agent_tasks", running, { state: "awaiting_answer" }), /agent_tasks_awaiting_question/);
-      await f.updateRow("agent_tasks", running, { state: "awaiting_answer", pending_question: QUESTION });
+      await f.updateRow("agent_tasks", running, { state: "awaiting_answer", pending_question: { ...AGENT_QUESTION, question_key: [running, AGENT_QUESTION.provider_request_id] } });
       await rejects(f.updateRow("agent_tasks", running, { pending_question: null }), /agent_tasks_awaiting_question/);
       // 답을 받아 running으로 돌아가면 질문을 비울 수 있다. 다른 상태에서는 질문이 있어도 된다 (오래된 질문 기록)
       await f.updateRow("agent_tasks", running, { state: "running", pending_question: null });
-      await f.updateRow("agent_tasks", running, { state: "idle", pending_question: QUESTION });
+      await f.updateRow("agent_tasks", running, { state: "idle", pending_question: { ...AGENT_QUESTION, question_key: [running, AGENT_QUESTION.provider_request_id] } });
     });
 
     it("execution_runs: kind는 task · conversation, conversation은 goal agent뿐, reviewed_turn_seq는 0 이상", async () => {
@@ -603,7 +612,7 @@ export function agentGatewayCoreTests(db: () => AgentGatewayDb) {
       const w = await f.world();
       for (const first of IN_PROGRESS_STATES) {
         const session = await f.session(w.user, w.connection);
-        const question = (state: string) => (state === "awaiting_answer" ? QUESTION : null);
+        const question = (state: string) => (state === "awaiting_answer" ? AGENT_QUESTION : null);
         const live = (state: string) => (state === "unreachable" ? "running" : null); // unreachable은 끊기기 전 상태가 있어야 한다
         await f.task(w.user, w.run, session, { state: first, pending_question: question(first), last_live_state: live(first) });
         for (const second of IN_PROGRESS_STATES) {
@@ -634,7 +643,7 @@ export function agentGatewayCoreTests(db: () => AgentGatewayDb) {
       await f.updateRow("agent_tasks", first, { state: "unreachable", last_live_state: "running" });
       for (const state of ["dispatched", "accepted", "running", "awaiting_answer", "unreachable"]) {
         await rejects(
-          f.task(w.user, w.run, session, { state, turn_seq: 2, pending_question: state === "awaiting_answer" ? QUESTION : null, last_live_state: state === "unreachable" ? "running" : null }),
+          f.task(w.user, w.run, session, { state, turn_seq: 2, pending_question: state === "awaiting_answer" ? AGENT_QUESTION : null, last_live_state: state === "unreachable" ? "running" : null }),
           /agent_tasks_in_progress_idx/,
         );
       }
