@@ -9,7 +9,7 @@ public enum ChatCopy {
     public static let noConversations = "No conversations yet."
     public static let newChat = "New chat"
     public static let emptyChatPreview = "No messages yet"
-    public static let composerPlaceholder = "Ask Taskforce…"
+    public static let composerPlaceholder = "Ask Taskforce"
     public static let composerLabel = "Reply to Taskforce"
     public static let historyTitle = "Chat history"
     public static let chatsTitle = "Chats"

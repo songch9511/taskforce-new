@@ -99,7 +99,20 @@ public struct ChatHistory: View {
     }
 }
 
-/// Message (Molecule): 대화의 한 번. 사용자 글은 `bg/field` 면에 32 들여, Taskforce의 말은 패널 위에 전폭으로. 아바타 · 이름 · 말풍선 없음, 긴 낱말은 줄을 바꾼다.
+/// 사용자 말풍선이 글 폭에 맞춰 줄어드는가 (`Message`가 켠다). Taskforce의 말은 전폭이다
+private struct MessageHugsTextKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
+extension EnvironmentValues {
+    fileprivate var messageHugsText: Bool {
+        get { self[MessageHugsTextKey.self] }
+        set { self[MessageHugsTextKey.self] = newValue }
+    }
+}
+
+/// Message (Molecule): 대화의 한 번. 사용자 글은 `bg/field` 면의 말풍선이 **오른쪽에 붙어 글 폭만큼만** 자라고(왼쪽 32는 늘 비운다), Taskforce의 말은 패널 위에 전폭으로.
+/// 아바타 · 이름 없이, 긴 낱말은 줄을 바꾼다. (Figma 28:1416 배치: 오른쪽 맞춤. 값은 DS bundle.css: 안쪽 10/12 · 모서리 8 · 왼쪽 여백 32)
 public struct Message<Content: View>: View {
     let isUser: Bool
     let content: Content
@@ -112,11 +125,14 @@ public struct Message<Content: View>: View {
     public var body: some View {
         VStack(alignment: .leading, spacing: TFSpace.sm) {
             if isUser {
-                content
-                    .padding(EdgeInsets(top: 10, leading: TFSpace.md, bottom: 10, trailing: TFSpace.md))
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(TFColor.bgField, in: RoundedRectangle(cornerRadius: TFRadius.md, style: .continuous))
-                    .padding(.leading, TFSpace.xxl)
+                HStack(spacing: 0) {
+                    Spacer(minLength: TFSpace.xxl)
+                    content
+                        .environment(\.messageHugsText, true)
+                        .padding(EdgeInsets(top: 10, leading: TFSpace.md, bottom: 10, trailing: TFSpace.md))
+                        .background(TFColor.bgField, in: RoundedRectangle(cornerRadius: TFRadius.md, style: .continuous))
+                }
+                .frame(maxWidth: .infinity, alignment: .trailing)
             } else {
                 content.frame(maxWidth: .infinity, alignment: .leading)
             }
@@ -129,6 +145,7 @@ public struct Message<Content: View>: View {
 public struct MessageText: View {
     let text: String
     let isDeleted: Bool
+    @Environment(\.messageHugsText) private var hugs
 
     public init(_ text: String, isDeleted: Bool = false) {
         self.text = text
@@ -136,18 +153,23 @@ public struct MessageText: View {
     }
 
     public var body: some View {
-        Text(isDeleted ? MemoryCopy.purgedStatement : text)
+        let label = Text(isDeleted ? MemoryCopy.purgedStatement : text)
             .font(TFFont.callout)
             .tracking(-0.24)
             .lineSpacing(3)
             .foregroundStyle(isDeleted ? TFColor.textSecondary : TFColor.textPrimary)
             .fixedSize(horizontal: false, vertical: true)
-            .frame(maxWidth: .infinity, alignment: .leading)
             .textSelection(.enabled)
+        if hugs {
+            label
+        } else {
+            label.frame(maxWidth: .infinity, alignment: .leading)
+        }
     }
 }
 
-/// 보낸 글 아래의 상태 한 줄: 서버가 확인하기 전에는 완료로 보이지 않는다 ("Sending…" · "Not sent · …" · "No reply yet" · "Not answered")
+/// 보낸 글 아래의 상태 한 줄: 서버가 확인하기 전에는 완료로 보이지 않는다 ("Sending…" · **Not sent** · 이유 · "No reply yet" · "Not answered").
+/// DS MessageDelivery처럼 오른쪽 맞춤 footnote 한 줄이고, 막힌 말 "Not sent"는 굵은 `text/primary`다 (빨강이 아니다). 이유는 보조색, Try again은 링크 하나
 public struct ChatStatusLine: View {
     let status: ChatTurn.Status
     let onRetry: () -> Void
@@ -169,22 +191,69 @@ public struct ChatStatusLine: View {
         }
     }
 
+    /// 굵게 보일 앞부분과 보조색 뒷부분 ("Not sent" · 이유)
+    nonisolated public static func parts(_ status: ChatTurn.Status) -> (strong: String?, text: String?)? {
+        switch status {
+        case .sent: nil
+        case .failed(let reason): (ChatCopy.notSent, reason)
+        case .needsConsent: (ChatCopy.notSent, nil)
+        case .sending, .noReply, .notAnswered: (nil, text(status))
+        }
+    }
+
     public var body: some View {
-        if let text = Self.text(status) {
-            HStack(alignment: .firstTextBaseline, spacing: TFSpace.xs) {
-                Text(text)
-                    .font(TFFont.meta)
-                    .foregroundStyle(TFColor.textSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
+        if let parts = Self.parts(status) {
+            HStack(alignment: .firstTextBaseline, spacing: TFSpace.sm) {
+                Group {
+                    if let strong = parts.strong, let text = parts.text {
+                        Text(strong).font(TFFont.footnoteEmphasis).foregroundStyle(TFColor.textPrimary)
+                            + Text(" · \(text)").font(TFFont.footnote).foregroundStyle(TFColor.textSecondary)
+                    } else if let strong = parts.strong {
+                        Text(strong).font(TFFont.footnoteEmphasis).foregroundStyle(TFColor.textPrimary)
+                    } else if let text = parts.text {
+                        Text(text).font(TFFont.footnote).foregroundStyle(TFColor.textSecondary)
+                    }
+                }
+                .tracking(-0.08)
+                .multilineTextAlignment(.trailing)
+                .fixedSize(horizontal: false, vertical: true)
                 if status.canRetry {
                     Button(ChatCopy.tryAgain, action: onRetry)
                         .buttonStyle(TFButtonStyle(.text, size: .sm))
                 }
             }
-            .padding(.leading, TFSpace.xxl)
+            .frame(maxWidth: .infinity, alignment: .trailing)
             .padding(.horizontal, TFSpace.xs)
             .accessibilityElement(children: .combine)
         }
+    }
+}
+
+/// MessageDelivery (Molecule): 에이전트에게 보낸 메시지가 어디까지 갔는지 한 줄 (Received · Sent · Unknown · Queued · **Not sent** · Expired). 단어만: 아이콘 · 스피너 · 색 없음.
+/// 오른쪽 맞춤 footnote, 말풍선 아래 4pt. Not sent만 굵은 `text/primary`고 나머지는 보조색이다. Send again · 이유 문구는 D4a
+public struct MessageDeliveryView: View {
+    let line: MessageDeliveryLine
+
+    public init(_ line: MessageDeliveryLine) {
+        self.line = line
+    }
+
+    public var body: some View {
+        Group {
+            if let strong = line.strong {
+                Text(strong).font(TFFont.footnoteEmphasis).foregroundStyle(TFColor.textPrimary)
+                    + Text(line.text.map { " · \($0)" } ?? "").font(TFFont.footnote).foregroundStyle(TFColor.textSecondary)
+            } else if let text = line.text {
+                Text(text).font(TFFont.footnote).foregroundStyle(TFColor.textSecondary)
+            }
+        }
+        .tracking(-0.08)
+        .multilineTextAlignment(.trailing)
+        .fixedSize(horizontal: false, vertical: true)
+        .frame(maxWidth: .infinity, alignment: .trailing)
+        .padding(.top, TFSpace.xs)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(line.combined)
     }
 }
 
