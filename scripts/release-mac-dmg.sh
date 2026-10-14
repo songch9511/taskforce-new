@@ -2,9 +2,12 @@
 # Mac 앱 DMG 배포: 아카이브 → Developer ID 내보내기 → 공증 · 스테이플 → DMG → 서명 · 공증 · 스테이플 → Gatekeeper 확인.
 # 저장소 맨 위에서 실행한다. 절차 · 일회성 준비(공증 프로필)는 docs/go-live/mac-dmg.md.
 #
-#   scripts/release-mac-dmg.sh --version 0.1.0 --build 2 [--profile taskforce-notary] [--out <directory>] [--skip-notarize]
+#   scripts/release-mac-dmg.sh --version 0.1.0 --build 2 [--profile taskforce-notary] [--out <directory>] [--skip-notarize] [--appcast-dir <directory>] [--download-url-prefix <url>]
 # --out 기본값: ${TMPDIR:-/tmp}/taskforce-release (저장소 밖 임시 폴더).
 # --skip-notarize: 공증 · 스테이플을 건너뛰는 시험용. 만든 DMG는 배포하면 안 된다(Gatekeeper가 막는다).
+# --appcast-dir: 공증 뒤 선택 단계(Sparkle appcast)가 DMG 사본과 appcast.xml을 둘 로컬 폴더. 기본값: <출력>/<이름>/appcast. 올리지는 않는다.
+# --download-url-prefix: appcast 안 DMG 주소의 접두어. 기본값: 앱 SUFeedURL의 폴더.
+# appcast 단계는 앱의 SUFeedURL · SUPublicEDKey, Keychain의 Sparkle 서명 키, generate_appcast(환경 변수 SPARKLE_BIN_DIR)가 모두 있을 때만 돈다. 없으면 건너뛴다(docs/go-live/mac-dmg.md "자동 업데이트").
 set -euo pipefail
 
 TEAM_ID="${TEAM_ID:-U9DWQKQFMW}"
@@ -16,9 +19,11 @@ BUILD=""
 PROFILE="taskforce-notary"
 OUT="${TMPDIR:-/tmp}/taskforce-release"
 SKIP_NOTARIZE=0
+APPCAST_DIR=""
+DOWNLOAD_URL_PREFIX=""
 
 usage() {
-  sed -n '2,7p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 step() { printf '\n==> %s\n' "$*"; }
@@ -31,6 +36,8 @@ while (( $# > 0 )); do
     --profile)  [[ $# -ge 2 ]] || fail "--profile 값이 없습니다"; PROFILE="$2"; shift 2 ;;
     --out)      [[ $# -ge 2 ]] || fail "--out 값이 없습니다"; OUT="$2"; shift 2 ;;
     --skip-notarize) SKIP_NOTARIZE=1; shift ;;
+    --appcast-dir) [[ $# -ge 2 ]] || fail "--appcast-dir 값이 없습니다"; APPCAST_DIR="$2"; shift 2 ;;
+    --download-url-prefix) [[ $# -ge 2 ]] || fail "--download-url-prefix 값이 없습니다"; DOWNLOAD_URL_PREFIX="$2"; shift 2 ;;
     -h|--help)  usage; exit 0 ;;
     *)          usage >&2; fail "모르는 인자: $1" ;;
   esac
@@ -42,6 +49,7 @@ done
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 [[ "$OUT" = /* ]] || OUT="$ROOT/$OUT"
+[[ -z "$APPCAST_DIR" || "$APPCAST_DIR" = /* ]] || APPCAST_DIR="$ROOT/$APPCAST_DIR"
 
 NAME="Taskforce-$VERSION-$BUILD"
 RUN_DIR="$OUT/$NAME"
@@ -51,6 +59,7 @@ DERIVED="$RUN_DIR/DerivedData"
 EXPORT_DIR="$RUN_DIR/export"
 APP="$EXPORT_DIR/Taskforce.app"
 DMG="$RUN_DIR/$NAME.dmg"
+APPCAST_DIR="${APPCAST_DIR:-$RUN_DIR/appcast}"
 
 # Preserve an earlier artifact or log set when the same version/build is retried.
 if [[ -e "$RUN_DIR" || -L "$RUN_DIR" ]]; then
@@ -90,6 +99,43 @@ reject_sandbox_entitlement() {
   if grep -q '"com\.apple\.security\.app-sandbox"' <<<"$keys"; then
     fail "서명된 앱에 App Sandbox 권한(com.apple.security.app-sandbox)이 있습니다. apple/Taskforce/Taskforce-macOS.entitlements와 빌드 설정 ENABLE_APP_SANDBOX를 확인하세요"
   fi
+}
+
+# 선택 단계 (공증 뒤): Sparkle appcast를 **로컬 폴더에만** 만든다. 업로드 · 게시는 하지 않는다 (호스팅 위치는 사용자가 정한다, docs/go-live/mac-dmg.md "자동 업데이트").
+# EdDSA 개인 키는 이 스크립트가 읽거나 출력하지 않는다: generate_appcast가 사용자 Keychain에서 직접 읽는다.
+# 여기서는 그 항목이 있는지만 속성으로 확인한다 (-g · -w 없음, 출력 버림). 항목이 없을 때 도구를 부르면 서명하지 못해 실패하기 때문이다(Sparkle 2.10.0 확인).
+# 피드 · 공개 키 · 도구 · Keychain 키 중 하나라도 없으면 건너뛴다(실패 아님). 도구가 실패하면 멈춘다.
+# 다운로드 URL 접두어는 끝에 "/"가 있어야 파일이 그 폴더 아래로 풀린다(없으면 붙인다: 도구가 RFC 3986 상대 주소로 이어 붙인다).
+# 인자: DMG, appcast 폴더, SUFeedURL, SUPublicEDKey, 다운로드 URL 접두어, generate_appcast 경로, 로그 파일
+make_appcast() {
+  local dmg="$1" dir="$2" feed="$3" pubkey="$4" prefix="$5" tool="$6" log="$7"
+  if [[ -z "$feed" ]]; then
+    echo "appcast: 건너뜀 (앱 Info.plist의 SUFeedURL이 비어 있습니다. apple/Config/Release.xcconfig의 SPARKLE_FEED_URL)"; return 0
+  fi
+  if [[ -z "$pubkey" ]]; then
+    echo "appcast: 건너뜀 (앱 Info.plist의 SUPublicEDKey가 비어 있습니다. apple/Config/Release.xcconfig의 SPARKLE_PUBLIC_ED_KEY)"; return 0
+  fi
+  if [[ ! -x "$tool" ]]; then
+    echo "appcast: 건너뜀 (generate_appcast를 찾을 수 없습니다: $tool. 환경 변수 SPARKLE_BIN_DIR로 Sparkle bin 폴더를 알려 주세요)"; return 0
+  fi
+  # 종료 상태 44(errSecItemNotFound)만 "키 없음"이다. 그 밖의 실패(잠긴 Keychain · 사용자 취소 등)는 키가 없다고 단정하지 않고 종료 상태 숫자만 알린다 (출력은 버린다)
+  local keychain_status=0
+  security find-generic-password -s "https://sparkle-project.org" -a "ed25519" >/dev/null 2>&1 || keychain_status=$?
+  if (( keychain_status == 44 )); then
+    echo "appcast: 건너뜀 (로그인 Keychain에 Sparkle 서명 키가 없습니다. docs/go-live/mac-dmg.md \"자동 업데이트\" 1번)"; return 0
+  elif (( keychain_status != 0 )); then
+    echo "appcast: 건너뜀 (Keychain 조회가 실패했습니다: 종료 상태 $keychain_status. 키가 없는 것이 아닐 수 있으니 Keychain을 확인하고 다시 실행하세요)"; return 0
+  fi
+  prefix="${prefix%/}/"
+  mkdir -p "$dir"
+  ditto "$dmg" "$dir/$(basename "$dmg")"
+  if ! "$tool" --download-url-prefix "$prefix" -o "$dir/appcast.xml" "$dir" >"$log" 2>&1; then
+    printf '\n실패 단계: appcast 만들기\n로그: %s\n' "$log" >&2
+    exit 1
+  fi
+  [[ -s "$dir/appcast.xml" ]] || fail "appcast.xml이 만들어지지 않았습니다 (로그 $log)"
+  echo "appcast 완료 (업로드하지 않음): $dir/appcast.xml"
+  echo "다운로드 주소 접두어: $prefix  (올리기 전에 appcast.xml의 enclosure url을 확인하세요)"
 }
 
 # ---------------------------------------------------------------- 사전 점검
@@ -194,6 +240,8 @@ echo "버전: $(plist_value CFBundleShortVersionString) ($(plist_value CFBundleV
 echo "앱 빌드 정보: $(plist_value TaskforceReleaseChannel) / $(plist_value TaskforceSourceCommit) / $(plist_value TaskforceBuildTimeUTC) UTC"
 echo "APIBaseURL 호스트: ${API_HOST:-(비어 있음)}"
 echo "SupabaseURL 호스트: ${SUPABASE_HOST:-(비어 있음)}"
+UPDATE_FEED_HOST="$(host_of "$(plist_value SUFeedURL)")"
+echo "자동 업데이트(Sparkle): 피드 호스트 ${UPDATE_FEED_HOST:-(비어 있음)} / 공개 키 $([[ -n "$(plist_value SUPublicEDKey)" ]] && echo 설정됨 || echo 비어 있음) (둘 중 하나라도 비면 업데이터는 꺼진 채로 나갑니다)"
 [[ "$(plist_value CFBundleShortVersionString)" == "$VERSION" && "$(plist_value CFBundleVersion)" == "$BUILD" ]] \
   || fail "앱 Info.plist의 버전 · 빌드 번호가 요청과 다릅니다"
 [[ "$(plist_value TaskforceReleaseChannel)" == "Beta" ]] || fail "앱 Info.plist의 출시 채널이 Beta가 아닙니다"
@@ -249,6 +297,15 @@ if (( SKIP_NOTARIZE )); then
 else
   spctl -a -vv "$APP" 2>&1
   spctl -a -t open --context context:primary-signature -vv "$DMG" 2>&1
+fi
+
+# ---------------------------------------------------------------- Sparkle appcast (선택)
+step "Sparkle appcast (선택, 로컬 폴더에만 만들고 올리지 않음)"
+APPCAST_FEED="$(plist_value SUFeedURL)"
+if (( SKIP_NOTARIZE )); then
+  echo "appcast: 건너뜀 (--skip-notarize: 공증하지 않은 DMG는 업데이트로 배포하지 않습니다)"
+else
+  make_appcast "$DMG" "$APPCAST_DIR" "$APPCAST_FEED" "$(plist_value SUPublicEDKey)" "${DOWNLOAD_URL_PREFIX:-${APPCAST_FEED%/*}/}" "${SPARKLE_BIN_DIR:-$DERIVED/SourcePackages/artifacts/sparkle/Sparkle/bin}/generate_appcast" "$LOG_DIR/appcast.log"
 fi
 
 # ---------------------------------------------------------------- 결과

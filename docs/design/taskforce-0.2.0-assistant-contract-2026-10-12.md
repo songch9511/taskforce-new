@@ -476,7 +476,7 @@ Action 생성(3.3)은 `action_events` `user_created`(`rule='assistant_agent'`)�
 **훅과 bridge**
 
 - **설정 파일:** 세션 폴더의 `settings.json`에 SessionStart 훅(표식 출력)과 PreToolUse 훅(matcher `*`) 둘. 명령은 앱 번들의 `Contents/Helpers/tf-agent-hook --session <session id> --nonce <spawn nonce>`(절대 경로, 인터프리터 없음), PreToolUse `timeout` 10초.
-- **bridge 소켓:** 사용자만 읽고 쓰는 Unix 소켓 `~/Library/Application Support/Taskforce/bridge.sock`(0600). 요청 한 줄 JSON `{v: 1, nonce, session_id, hook_event, tool_use_id, tool_name, tool_input, permission_mode}`, 응답 `{decision: "allow" | "deny" | "defer", reason, updated_input?}`. 훅은 응답을 1.5초까지 기다리고, 그 안에 답이 없거나 소켓이 없거나 nonce가 맞지 않으면 deny JSON을 낸다(exit 2도 차단이다). 훅 안에서 사용자를 기다리지 않는다(timeout = fail-open 경로).
+- **bridge 소켓:** 사용자만 읽고 쓰는 Unix 소켓 `~/Library/Application Support/Taskforce/bridge.sock`(0600). 요청 한 줄 JSON `{v: 1, nonce, session_id, hook_event, tool_use_id, tool_name, tool_input, permission_mode, cwd}`(`cwd`는 훅 입력의 `cwd` 그대로, 13.4.1-3), 응답 `{decision: "allow" | "deny" | "defer", reason, updated_input?}`. 훅은 응답을 1.5초까지 기다리고, 그 안에 답이 없거나 소켓이 없거나 nonce가 맞지 않으면 deny JSON을 낸다(exit 2도 차단이다). 훅 안에서 사용자를 기다리지 않는다(timeout = fail-open 경로).
 - **결정표**(bridge가 정한다):
 
 | 입력 | 결정 |
@@ -565,3 +565,18 @@ Action 생성(3.3)은 `action_events` `user_created`(`rule='assistant_agent'`)�
 - 경로 인자는 cwd 기준으로 정규화해 작업 폴더 안이어야 한다(`..`로 벗어나면 실패, 기호 링크는 실제 경로로).
 - 명령 이름은 정확히 일치해야 하고(`./ls` · 경로가 붙은 이름은 실패), PATH에서 찾은 실제 실행 파일이 `/bin` · `/usr/bin`에 있을 때만 통과한다(PATH 앞쪽의 `~/.local/bin`은 사용자가 쓸 수 있는 폴더라 같은 이름의 다른 프로그램일 수 있다).
 - D3c가 이 파서와 적대적 사례 단위 시험(예: `find . -delete`, `sed -i`, `cat a > b`, `ls; rm x`, `ls $(rm x)`, `rg --pre rm .`, `rg --pre=rm .`, `rg -z x`, `git -c core.fsmonitor=x status`, `git diff`, `file -C -m x`, `cat ../../etc/hosts`)을 소유한다. 판정 실패는 "자동 허용 안 함"일 뿐 거절이 아니다: 정책 평가기 → 사용자로 간다.
+
+#### 13.4.1 정정 (D3c-1, 2026-10-14)
+
+적대적 사례 목록(`handoffs/oa-d3c-adversarial-cases.md`)이 찾은 빈칸 P1–P12와 코디네이터가 더 찾은 P13–P15를 정한다. 위 13.4와 다르면 이 절이 이긴다.
+
+1. **나누는 곳.** 판정(문자열 분해 · 명령 · 플래그 · 경로 모양)은 서버의 순수 함수가 한다(`src/lib/agents/command-parser.ts`, 플랫폼 원칙 "판정은 서버"). 파일 시스템 사실 두 가지는 Mac bridge가 확인한다: ① 명령 이름을 넘긴 `PATH`에서 찾은 실행 파일의 실제 경로(`realpath`)가 `/bin` · `/usr/bin` 바로 아래, ② 파서가 돌려준 경로마다 실제 경로(없는 경로는 있는 가장 가까운 조상의 실제 경로 + 나머지)가 작업 폴더의 실제 경로 안. 하나라도 아니면 자동 허용 안 함. bridge는 서버 판정 없이 자동 허용하지 않는다(서버가 1초 안에 답하지 않으면 defer).
+2. **글자는 허용 목록으로 본다**(P3–P9 · P8). 따옴표 밖에 올 수 있는 글자는 영문자 · 숫자 · `-` `_` `.` `/` `,` `:` `@` `%` `+` `=`(단어 첫 글자 `=`는 zsh가 실행 파일 경로로 바꾸므로 실패) · 공백 · 탭뿐이다. 그 밖(`|` `&` `;` `<` `>` `(` `)` `{` `}` `[` `]` `$` 백틱 `\` `*` `?` `~` `!` `#` `^` 등 따옴표가 아닌 모든 기호)은 하나라도 있으면 실패 — 리다이렉트 `>|` · `<>`, 프로세스 치환, `$'…'` · `$"…"` · `$VAR`, 글로브, `~`, 함수 정의가 모두 여기서 막힌다. 작은따옴표 안은 `'` · 줄바꿈 말고 모두 글자 그대로, 큰따옴표 안은 `$` 백틱 `\` `!` 줄바꿈이 있으면 실패. 줄바꿈은 어디든 실패. ASCII가 아닌 글자는 Unicode 문자 · 결합 표시 · 숫자(L · M · N 분류)만 허용(한글 파일 이름), 제어 · 서식(양방향 · 폭 없는 글자) · 다른 공백 · 기호는 어디든 실패. NUL은 실패. 사용자 zsh 설정(Codex `-l`)에 기대지 않도록, 닫는 `'` 바로 뒤에 `'`가 오면 실패(`RC_QUOTES`), 따옴표 밖 `=`의 앞 글자(빈 따옴표 쌍은 건너뜀)가 `=` · `:`이면 실패(`MAGIC_EQUAL_SUBST`). 유니코드 정규화는 하지 않는다(경로 비교는 1-②의 실제 경로로). 문자열 4,096자 · 단어 64개를 넘으면 실패.
+3. **cwd**(P13). 상대 경로는 요청의 `cwd`(Claude Code는 훅 입력 `cwd`, Codex는 승인 요청 `cwd`) 기준이다. `cwd`가 작업 폴더 안이 아니면 실패. 경로 단어에 `..` 성분이 하나라도 있으면 실패(기호 링크가 끼면 글자 정규화로 안팎을 정할 수 없다), `.` · 겹친 `/`는 정리한다. 경로 인자가 없는 `ls` · `rg` · 재귀 `grep`(`-r` · `-R`)은 `cwd`를 경로로 더한다(`index: null`) — macOS `grep -r`은 경로가 없으면 `.`을 뒤진다.
+4. **실행되는 것 = 판정한 것**(P14, Claude Code). 자동 허용할 때 bridge는 `updated_input.command`를 파서가 돌려준 단어로 다시 만든다: 첫 단어는 1-①에서 확인한 실행 파일의 절대 경로, 경로 인자는 절대 경로, `index: null` 경로(3)는 끝에 명시 인자로 덧붙이고, 모든 단어는 작은따옴표로 감싼다. 그래서 사용자 셸의 alias · 함수(Claude Code Bash는 사용자 셸 설정을 가져온다), zsh 확장, cwd 차이가 실행에 끼지 않는다. Codex는 명령을 바꿀 수 없으므로 Manual의 샌드박스(13.3 `WW`)가 경계이고 파서는 그 안의 추가 방어다.
+5. **Codex 래퍼**(P1). 승인 요청 `command` 문자열을 같은 규칙으로 분해해 정확히 `/bin/zsh` · `-lc` · 한 단어일 때만 그 단어를 다시 이 절 전체로 판정한다. 다른 셸(`/bin/bash` 포함) · `-c`만 · 인자 추가 · 중첩은 실패(bash 로그인 셸 사용자는 묻는다 — 실측 뒤 넓힌다). `-l`이 읽는 사용자 셸 설정(alias 포함)은 파서 밖이며 Manual 샌드박스가 쓰기를 막는다.
+6. **명령과 플래그.** 허용 명령은 13.4의 11개 그대로, 첫 단어가 정확히 그 이름일 때만(`command` · `exec` · `time` · `nice` · `timeout` · `builtin` · `noglob` · `nohup` 같은 접두 래퍼는 목록 밖이라 실패, P2). 플래그는 macOS BSD 도구 기준 명령별 허용 표만. **첫 위치 인자(경로 · 패턴) 뒤에 `-`로 시작하는 단어가 오면 실패**(`find`의 식은 예외 — 아래 식 문법), `--`도 첫 위치 인자 앞에서만. 이유: `ls` · `cat` · `head` · `tail` · `wc` · `stat`은 첫 위치 인자에서 플래그 읽기를 멈추므로 뒤의 `-n /etc/hosts`는 플래그가 아니라 읽을 파일이고, `grep` · `file`은 순서를 바꾸지만 `POSIXLY_CORRECT`가 있으면 바꾸지 않는다 — 어느 쪽인지 문자열로 정할 수 없으니 묻는다(보안 검토 2026-10-14, `head a -n /etc/hosts`). 위치 인자 `-`(표준 입력)와 `--` 앞의 `tail` `+…`(옛 형식 `+5f`는 끝나지 않는다)도 실패. 긴 플래그는 정확한 이름만(줄임 불가). 기호 링크를 따라가는 플래그(`ls -L` · `stat -L` · `file -L` · `find -L` · `-H` · `-follow` · `grep -S` · `-O` · `rg -L`/`--follow`), 압축 해제(`grep -Z` · `-z` · `-J` · `file -z` · `-Z`), 끝나지 않는 플래그(`tail -f` · `-F`), 파일을 읽는 값(`grep -f` · `rg -f` · `--ignore-file` · `file -m` · `-f`)은 표에 넣지 않는다. 값이 경로인 플래그(`find -newer`)는 경로로 판정한다.
+7. **Homebrew**(P10). `/opt/homebrew/bin` · `/usr/local/bin`의 실행 파일은 자동 허용하지 않는다(의도). 그래서 macOS에서 `rg`는 사실상 항상 묻는다. 사용자가 한 번 허용하면 세션 동안 허용하는 것은 0.2.x.
+8. **lease 경로**(P11)는 lease 계층(D3c-2)이 실제 경로 + 볼륨이 대소문자를 무시하면 소문자로 정규화한다. 파서는 경로가 작업 폴더 안인지만 본다.
+9. **Codex 교차 확인**(P12). Manual 자동 승인은 13.3의 세 조건 그대로이며 `commandActions`에 `unknown`이나 모르는 종류가 하나라도 있으면 읽기가 아니다. `commandActions`만 믿지 않는다.
+10. **결과 모양**(P15). 성공 `{ok: true, wrapper: "none" | "zsh_lc", command, argv, paths: [{index, absolute}], implicitCwd}`, 실패 `{ok: false, reason}`(정해진 이유 코드만, 명령 글을 담지 않는다 — 로그 · 지표에 원문 0).

@@ -88,6 +88,9 @@ final class MacAppDelegate: NSObject, NSApplicationDelegate {
             settingsHotKeys.register(shortcut)
         }
 
+        // 자동 업데이트(Sparkle): 피드 주소나 공개 키가 비어 있거나 Debug이면 시작하지 않는다 (`AppUpdater` · `UpdateConfiguration`)
+        AppUpdater.shared.start()
+
         // 스크린샷 · 수동 확인용: 실행하자마자 런처를 연다
         if ProcessInfo.processInfo.arguments.contains("--show-launcher") {
             launcher.show()
@@ -204,10 +207,11 @@ final class MacAppDelegate: NSObject, NSApplicationDelegate {
 
 }
 
-/// 메뉴 막대 아이콘의 메뉴: Open Launcher · Settings · Quit
+/// 메뉴 막대 아이콘의 메뉴: Open Launcher · Check for Updates… · Settings · Quit
 struct MenuBarMenu: View {
     var body: some View {
         Button("Open Launcher") { MacAppDelegate.shared?.launcher?.show() }
+        CheckForUpdatesButton()
         Button("Settings…") { SettingsOpener.open() }
             .keyboardShortcut(",")
         Divider()
