@@ -11,6 +11,7 @@
 | URL scheme | `taskforce://` (연동 OAuth가 끝나면 `taskforce://connections/{provider}?handoff=…` 또는 `?status=…`로 돌아온다), Google 로그인 `com.googleusercontent.apps.<클라이언트>`(`GOOGLE_IOS_URL_SCHEME`) |
 | 최소 OS | macOS 15 |
 | App Sandbox | **꺼짐** (DEC-1 A, 2026-10-13). 샌드박스 앱이 띄운 자식 프로세스는 샌드박스를 물려받아 사용자의 `claude` · `codex` 로그인과 PATH에 닿지 못해서다. 옛 컨테이너의 UserDefaults는 처음 뜰 때 한 번 새 위치로 옮긴다(`LegacySandboxMigration`, macOS 전용 코드. Debug 빌드는 실행 인자 `-TF_LEGACY_MIGRATION YES`가 있을 때만 옮긴다: Debug는 실사용 번들 id를 쓰기 때문). 절차 · 되돌리기 · 서명 빌드에서만 확인되는 것: [`docs/go-live/mac-dmg.md`](../docs/go-live/mac-dmg.md) "샌드박스 끔" |
+| 자동 업데이트 | Sparkle 2.10.0(정확한 버전 고정, Mac 앱 타깃에만). Info.plist `SUFeedURL` · `SUPublicEDKey`는 빌드 설정 `SPARKLE_FEED_URL` · `SPARKLE_PUBLIC_ED_KEY`(`Config/Release.xcconfig`, **지금은 빈 값 = 출시 전 채울 것**)에서 온다. 비어 있거나 Debug · 시험 호스트면 업데이터를 시작하지 않고 메뉴 "Check for Updates…"는 꺼진다. 키 만들기 · appcast · 되돌리기: [`docs/go-live/mac-dmg.md`](../docs/go-live/mac-dmg.md) "자동 업데이트" |
 
 ## 처음 한 번
 
@@ -43,7 +44,7 @@ brew install xcodegen
 cd apple && xcodegen
 ```
 
-앱이 쓰는 패키지(TaskforceKit의 supabase-swift, Google Sign-In)의 고정 버전은 `Taskforce.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved`(커밋, xcodegen이 지우지 않음)다. 올릴 때는 Xcode → File → Packages → Update to Latest Package Versions 뒤 이 파일을 커밋한다.
+앱이 쓰는 패키지(TaskforceKit의 supabase-swift, Google Sign-In, Mac 앱 타깃의 Sparkle)의 고정 버전은 `Taskforce.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved`(커밋, xcodegen이 지우지 않음)다. 올릴 때는 Xcode → File → Packages → Update to Latest Package Versions 뒤 이 파일을 커밋한다.
 
 ## 테스트 · 빌드
 
@@ -114,7 +115,7 @@ Mac 앱 테스트는 앱 자신을 호스트로 띄운다. 호스트의 `UserDef
 
 ### Mac — 에이전트 앱 + ⌥Space 런처 (Figma 5:57 · 5:90)
 
-- Dock 아이콘 없음(`LSUIElement`, macOS만). 메뉴 막대의 로고 마크: Open Launcher · Settings… · Quit.
+- Dock 아이콘 없음(`LSUIElement`, macOS만). 메뉴 막대의 로고 마크: Open Launcher · Check for Updates…(업데이터가 꺼져 있으면 비활성) · Settings… · Quit.
 - 전역 단축키 ⌥Space(Carbon `RegisterEventHotKey`, 샌드박스 여부와 상관없이 손쉬운 사용 권한 없이 동작). Settings → Keyboard Shortcuts에서 바꾼다(UserDefaults).
 - 런처: 폭 696 · 모서리 26, 바탕은 macOS 26부터 `NSGlassEffectView`(Liquid Glass), 그 전은 `NSVisualEffectView` 유리 재질 + 1pt 테두리. 화면 가운데 위쪽. esc · 다른 곳 클릭 · 동작 완료로 닫힌다.
   - 빈칸 → Review · In Progress · To Do · Done Today(흐리게) · Commands(Send clipboard as source · Report missing action · Connections · Settings · Quit). 빈 구역은 숨김

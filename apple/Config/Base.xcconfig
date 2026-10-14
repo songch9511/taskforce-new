@@ -9,3 +9,8 @@ APP_GROUP_ID = group.$(APP_BUNDLE_ID)
 TF_RELEASE_CHANNEL = Development
 TF_SOURCE_COMMIT = NotAvailable
 TF_BUILD_TIME_UTC = NotAvailable
+
+// 자동 업데이트(Sparkle) 피드 주소 · 공개 키: Info.plist의 SUFeedURL · SUPublicEDKey로 들어간다. Debug · Debug-Test는 빈 값(업데이터를 시작하지 않는다).
+// Release에서 채운다 (Release.xcconfig, docs/go-live/mac-dmg.md "자동 업데이트").
+SPARKLE_FEED_URL =
+SPARKLE_PUBLIC_ED_KEY =
