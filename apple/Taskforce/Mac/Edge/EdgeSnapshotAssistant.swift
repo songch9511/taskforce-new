@@ -181,19 +181,22 @@ enum AssistantSnapshot {
         _ = front()
 
         // 레일의 Review 타일
-        await captureTile(edge, file: file, pause: pause)
+        await captureTile(edge, manager: manager, file: file, pause: pause)
         await captureTileBoard(edge, to: file("assistant-tile-board"))
     }
 
     /// 레일의 Review 타일 상태: needs-you · changes · 없음 × 숨김 · 펼침 · 호버 · Open
-    private static func captureTile(_ edge: EdgeShellController, file: (String) -> URL, pause: @escaping (Double) async -> Void) async {
+    private static func captureTile(_ edge: EdgeShellController, manager: AssistantWindowManager, file: (String) -> URL, pause: @escaping (Double) async -> Void) async {
         func settle(_ seconds: Double = 0.8) async { await pause(seconds) }
         let shell = edge.shell
         guard shell.summary != nil, shell.review != nil, let gateway = AppRuntime.sampleSummaryGateway else {
             print("AssistantSnapshot: Review 타일은 -TF_S4 YES -TF_C3 YES가 필요하다")
             return
         }
-        func rail(_ name: String) { EdgeSnapshot.capture(edge, to: file("assistant-rail-\(name)")) }
+        func rail(_ name: String) { snapshot(edge, manager: manager, to: file("assistant-rail-\(name)")) }
+        // 레일만: 패널 · 창은 닫는다 (숨은 레일 · 호버 툴팁은 패널이 닫혀 있을 때의 모습이다)
+        manager.closeAll()
+        shell.dismiss()
         // needs you: 견본의 확인 요청 하나만 남긴다 (일 링 한 개와 같이)
         edge.workOverride = { work in
             var work = work
@@ -286,7 +289,9 @@ enum AssistantSnapshot {
         }
         guard let first = windows.first else { return }
         let margin: CGFloat = 24
-        let bounds = windows.map(\.frame).reduce(first.frame) { $0.union($1) }
+        let tooltip = railTooltip(edge)
+        var bounds = windows.map(\.frame).reduce(first.frame) { $0.union($1) }
+        if let tooltip { bounds = bounds.union(tooltip.frame) }
         let canvas = CGRect(x: bounds.minX - margin, y: bounds.minY - margin, width: bounds.width + 2 * margin, height: bounds.height + 2 * margin)
         let scale = first.backingScaleFactor
         guard let context = CGContext(
@@ -305,10 +310,31 @@ enum AssistantSnapshot {
             context.draw(image, in: CGRect(x: window.frame.minX - canvas.minX, y: window.frame.minY - canvas.minY, width: window.frame.width, height: window.frame.height))
             context.restoreGState()
         }
+        if let tooltip {
+            context.draw(tooltip.image, in: CGRect(x: tooltip.frame.minX - canvas.minX, y: tooltip.frame.minY - canvas.minY, width: tooltip.frame.width, height: tooltip.frame.height))
+        }
         guard let image = context.makeImage() else { return }
         let rep = NSBitmapImageRep(cgImage: image)
         rep.size = canvas.size
         try? rep.representation(using: .png, properties: [:])?.write(to: url)
+    }
+
+    /// 레일 툴팁 (타일 호버): 레일 창이 아니라 자기 창이라 따로 그려 타일 왼쪽 14pt에 붙인다 (`RailTooltipController`와 같은 자리)
+    private static func railTooltip(_ edge: EdgeShellController) -> (image: CGImage, frame: CGRect)? {
+        let shell = edge.shell
+        guard let text = shell.tooltip, shell.hoveredTile, edge.rail.panel.isVisible else { return nil }
+        let layout = EdgeRailLayout(
+            notchCount: shell.notch.count, restCount: shell.rest.count, expanded: shell.isExpanded, idle: shell.isIdle, controls: shell.controls, tile: true
+        )
+        guard let anchor = layout.tileFrame else { return nil }
+        let dark = NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        let renderer = ImageRenderer(content: RailTooltipView(title: text.title, detail: text.detail).environment(\.colorScheme, dark ? .dark : .light))
+        renderer.scale = edge.rail.panel.backingScaleFactor
+        guard let image = renderer.cgImage else { return nil }
+        let size = CGSize(width: CGFloat(image.width) / renderer.scale, height: CGFloat(image.height) / renderer.scale)
+        let rail = edge.rail.panel.frame
+        let origin = CGPoint(x: rail.minX + anchor.minX - 14 - size.width, y: rail.maxY - anchor.midY - size.height / 2)
+        return (image, CGRect(origin: origin, size: size))
     }
 
     private static func drawDesktop(in context: CGContext, size: CGSize) {
