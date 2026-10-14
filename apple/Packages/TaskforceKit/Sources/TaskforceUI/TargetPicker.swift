@@ -53,23 +53,48 @@ public struct TargetPill: View {
     }
 }
 
-/// 메뉴의 줄 이동 · 고름 (↑ ↓ Return). 처음과 끝에서 돌지 않는다
+/// 메뉴의 줄 이동 · 고름 (↑ ↓ Return). 처음과 끝에서 돌지 않는다.
+/// 행 · 고른 행 · 읽기 상태는 **저장소를 지켜본다** (복사해 두지 않는다): 메뉴를 읽기가 끝나기 전에 열어도 끝난 뒤 에이전트 행이 나타나고, 실패하면 줄과 다시 시도가 나온다
 @MainActor
 @Observable
 public final class TargetMenuModel {
-    public let options: [AssistantTargetOption]
+    @ObservationIgnored private let optionsSource: () -> [AssistantTargetOption]
+    @ObservationIgnored private let selectedSource: () -> Int?
+    @ObservationIgnored private let statusSource: () -> AssistantTargetMenuStatus
+    public var options: [AssistantTargetOption] { optionsSource() }
     /// 지금 고른 행 (체크)
-    public let selected: Int?
+    public var selected: Int? { selectedSource() }
+    public var status: AssistantTargetMenuStatus { statusSource() }
     /// 호버 · 키보드로 짚은 행
     public var highlighted: Int?
     @ObservationIgnored public var onPick: (AssistantTargetOption) -> Void
+    @ObservationIgnored public var onRetry: () -> Void
 
+    /// 고정된 행 (견본 · 시험)
     public init(options: [AssistantTargetOption], selected: Int?, onPick: @escaping (AssistantTargetOption) -> Void) {
-        self.options = options
-        self.selected = selected
+        optionsSource = { options }
+        selectedSource = { selected }
+        statusSource = { .ready }
         highlighted = nil
         self.onPick = onPick
+        onRetry = {}
     }
+
+    /// 대상 저장소를 지켜보는 메뉴
+    public init(
+        store: AssistantTargetsStore, pick: @escaping () -> AssistantTargetPick,
+        onPick: @escaping (AssistantTargetOption) -> Void, onRetry: @escaping () -> Void
+    ) {
+        optionsSource = { store.options }
+        selectedSource = { AssistantTargetRules.index(of: pick(), in: store.options) }
+        statusSource = { store.menuStatus }
+        highlighted = nil
+        self.onPick = onPick
+        self.onRetry = onRetry
+    }
+
+    /// Try again
+    public func retry() { onRetry() }
 
     /// ↑ ↓: 아직 짚은 행이 없으면 ↓은 고른 행(없으면 첫 행), ↑은 마지막 행에서 시작한다
     public func move(_ delta: Int) {
@@ -110,14 +135,9 @@ public struct TargetMenuView: View {
         VStack(spacing: 0) {
             ForEach(Array(model.options.enumerated()), id: \.element.id) { index, option in
                 row(option, index: index)
-                if index == 0, model.options.count > 1 {
-                    Rectangle()
-                        .fill(TFColor.borderDefault)
-                        .frame(height: 1)
-                        .padding(EdgeInsets(top: 4, leading: TFSpace.sm, bottom: 4, trailing: TFSpace.sm))
-                        .accessibilityHidden(true)
-                }
+                if index == 0, model.options.count > 1 || model.status != .ready { divider }
             }
+            statusRow
         }
         .padding(Self.inset)
         .frame(minWidth: Self.minWidth, maxWidth: Self.maxWidth)
@@ -125,6 +145,57 @@ public struct TargetMenuView: View {
         .background(TFColor.bgElevated, in: RoundedRectangle(cornerRadius: TFRadius.panel, style: .continuous))
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Send to")
+    }
+
+    private var divider: some View {
+        Rectangle()
+            .fill(TFColor.borderDefault)
+            .frame(height: 1)
+            .padding(EdgeInsets(top: 4, leading: TFSpace.sm, bottom: 4, trailing: TFSpace.sm))
+            .accessibilityHidden(true)
+    }
+
+    /// 에이전트 목록을 읽는 중이거나 읽지 못했을 때의 줄 (고를 수 있는 행이 아니다)
+    @ViewBuilder
+    private var statusRow: some View {
+        switch model.status {
+        case .ready:
+            EmptyView()
+        case .loading:
+            HStack(spacing: TFSpace.sm) {
+                Color.clear.frame(width: TargetPill.markSize, height: TargetPill.markSize)
+                Text(AssistantTargetMenuStatus.loadingText)
+                    .font(TFFont.callout)
+                    .tracking(-0.24)
+                    .foregroundStyle(TFColor.textSecondary)
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+            }
+            .padding(EdgeInsets(top: 5, leading: TFSpace.sm, bottom: 5, trailing: TFSpace.sm))
+            .accessibilityElement(children: .combine)
+        case .failed:
+            HStack(spacing: TFSpace.sm) {
+                Color.clear.frame(width: TargetPill.markSize, height: TargetPill.markSize)
+                Text(AssistantTargetMenuStatus.failedText)
+                    .font(TFFont.callout)
+                    .tracking(-0.24)
+                    .foregroundStyle(TFColor.textSecondary)
+                    .lineLimit(1)
+                Spacer(minLength: TFSpace.md)
+                Button { model.retry() } label: {
+                    Text(AssistantTargetMenuStatus.retryText)
+                        .font(TFFont.footnote)
+                        .fontWeight(.semibold)
+                        .foregroundStyle(TFColor.textPrimary)
+                        .padding(EdgeInsets(top: 2, leading: TFSpace.xs, bottom: 2, trailing: TFSpace.xs))
+                        .background(TFColor.bgSelected, in: RoundedRectangle(cornerRadius: ContextChip.radius, style: .continuous))
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(AssistantTargetMenuStatus.retryText)
+            }
+            .padding(EdgeInsets(top: 5, leading: TFSpace.sm, bottom: 5, trailing: TFSpace.sm))
+        }
     }
 
     private func row(_ option: AssistantTargetOption, index: Int) -> some View {

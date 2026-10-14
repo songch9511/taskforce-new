@@ -141,6 +141,8 @@ public final class ChatStore {
     /// 대화마다 읽기를 시작할 때 하나씩 올리는 순번: **마지막에 시작한 읽기만** 반영한다 (늦게 끝난 옛 읽기가 새 읽기 결과를 되돌리지 못한다)
     @ObservationIgnored private var threadReadSeq: [UUID: Int] = [:]
     private var drafts: [UUID: String] = [:]
+    /// 열린 창들이 보이는 대화 (앱이 정한다). 목록 읽기(⌘3 · 온라인 복귀 · Try again)가 공유 `currentID`뿐 아니라 이들의 글도 다시 읽는다
+    @ObservationIgnored public var viewedConversations: () -> Set<UUID> = { [] }
     var threads: [UUID: ChatThread] = [:]
     private var projectUndo: [UUID: UUID?] = [:]
     private var projectMessage: [UUID: String] = [:]
@@ -286,6 +288,9 @@ public final class ChatStore {
     }
 
     public func draft(for id: UUID) -> String { drafts[id] ?? "" }
+
+    /// 쓰던 글이 남은 대화들 (대상을 바꿀 때 새 대화가 이 중 하나를 다시 써서 그 글을 덮지 않게)
+    public var draftConversationIDs: Set<UUID> { Set(drafts.keys) }
 
     public func setDraft(_ text: String, for id: UUID) {
         guard scope.token != nil else { return }
@@ -555,7 +560,7 @@ public final class ChatStore {
                 focusRequest += 1
             }
             await loadPreviews(token: token, sequence: sequence)
-            if let id = currentID, conversations.contains(where: { $0.id == id }) { await loadThread(id) }
+            await loadShownThreads()
         } catch {
             guard scope.isCurrent(token), sequence == listSequence, let failure = ReadFailure.from(error, online: isOnline) else { return }
             if failure == .unavailable {
@@ -567,6 +572,17 @@ public final class ChatStore {
             } else {
                 listLoad = failure == .offline ? .offline : .failed
             }
+        }
+    }
+
+    /// 지금 보이는 대화들의 글을 읽는다: 공유 `currentID`와 창들이 보이는 대화 (서버에 있는 것만, 겹치지 않게)
+    private func loadShownThreads() async {
+        var shown = viewedConversations()
+        if let id = currentID { shown.insert(id) }
+        let ids = shown.filter { id in conversations.contains { $0.id == id } }.sorted { $0.uuidString < $1.uuidString }
+        guard !ids.isEmpty else { return }
+        await withTaskGroup(of: Void.self) { group in
+            for id in ids { group.addTask { await self.loadThread(id) } }
         }
     }
 

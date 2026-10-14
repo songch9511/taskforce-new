@@ -23,6 +23,21 @@ final class AssistantWindowManager {
         /// 위치를 기억하는 화면의 키
         var display: @MainActor () -> String
         var railWidth: CGFloat = EdgeRailLayout.railWidth
+        /// 레일 화면(`visibleFrame` · `display`)이 아닌 다른 화면들 (창은 자기가 있는 화면 기준으로 저장 · 배치된다). 시험은 두 화면 모형을 넣는다
+        var extraScreens: @MainActor () -> [AssistantScreen] = { [] }
+
+        /// 레일이 붙는 화면
+        @MainActor var railScreen: AssistantScreen { AssistantScreen(id: display(), visible: visibleFrame()) }
+
+        /// 이 자리의 창이 있는 화면 (가장 많이 덮는 화면, 어디에도 없으면 가장 가까운 화면)
+        @MainActor func screen(for frame: CGRect) -> AssistantScreen {
+            AssistantWindowGeometry.screen(containing: frame, in: [railScreen] + extraScreens(), fallback: railScreen)
+        }
+
+        /// 레일은 주 화면(레일 화면)에만 있다: 다른 화면은 오른쪽 끝까지 쓴다
+        @MainActor func reservedRailWidth(on screen: AssistantScreen) -> CGFloat {
+            screen.id == display() ? railWidth : 0
+        }
 
         /// 실제 화면: 레일이 붙는 화면, 열린 패널의 창
         static func live(panel: EdgePanelController, shell: EdgeShellModel) -> Environment {
@@ -35,7 +50,11 @@ final class AssistantWindowManager {
                     return CGRect(x: screen.frame.maxX - EdgeRailLayout.railWidth, y: top - height, width: EdgeRailLayout.railWidth, height: height)
                 },
                 panelFrame: { shell.panelOpen && panel.isVisible ? panel.panel.frame : nil },
-                display: { Self.displayKey(EdgeRailPanelController.screen ?? NSScreen.main) }
+                display: { Self.displayKey(EdgeRailPanelController.screen ?? NSScreen.main) },
+                extraScreens: {
+                    let rail = EdgeRailPanelController.screen ?? NSScreen.main
+                    return NSScreen.screens.filter { $0 !== rail }.map { AssistantScreen(id: Self.displayKey($0), visible: $0.visibleFrame) }
+                }
             )
         }
 
@@ -69,6 +88,8 @@ final class AssistantWindowManager {
         self.environment = environment
         self.reduceMotion = reduceMotion
         positions = store.load()
+        // ⌘3 · 온라인 복귀 · Try again의 목록 읽기가 공유 `currentID`뿐 아니라 창들이 보이는 대화도 다시 읽는다
+        runtime.chat.viewedConversations = { [weak self] in self?.openConversations(except: nil) ?? [] }
     }
 
     /// 앱 시작 뒤 한 번: 열린 항목 따라가기 · 키 모니터 · 계정이 떠나면 창을 모두 닫는다
@@ -149,6 +170,7 @@ final class AssistantWindowManager {
             controller.onBecameKey = { [weak self] in self?.registry.touch(id) }
             controller.onOpenConnections = { [weak self] in self?.onOpenConnections() }
             controllers[id] = controller
+            closeTargetMenus(except: id)
             controller.show(makeKey: true)
             refreshFront()
             return id
@@ -159,8 +181,14 @@ final class AssistantWindowManager {
     func bringForward(_ windowID: UUID) {
         registry.touch(windowID)
         registry.setHidden(false, windowID)
+        closeTargetMenus(except: windowID)
         controllers[windowID]?.show(makeKey: true)
         refreshFront()
+    }
+
+    /// 다른 창이 앞으로 오면 열려 있던 대상 메뉴는 닫는다 (남은 메뉴가 새 창의 Return을 가로채지 않게)
+    private func closeTargetMenus(except windowID: UUID) {
+        for (id, controller) in controllers where id != windowID { controller.closeTargetMenu() }
     }
 
     // MARK: 숨기기 · 닫기
@@ -288,7 +316,11 @@ final class AssistantWindowManager {
 
     /// 새 창의 왼쪽 위: 그 대화의 기억된 위치(이 화면), 없으면 앞 창에서 24pt 아래 · 왼쪽, 보이는 창이 없으면 첫 창의 자리 (열린 패널 12pt 왼쪽 · 없으면 레일 12pt 왼쪽)
     private func initialTopLeft(for conversationID: UUID) -> CGPoint {
-        if let remembered = positions.position(conversation: conversationID, display: environment.display()) { return remembered }
+        // 기억은 앞 창이 있는 화면, 없으면 레일 화면에서 찾는다
+        let displays = [registry.frontmost.flatMap { controllers[$0]?.currentScreenID }, environment.display()].compactMap { $0 }
+        for display in displays {
+            if let remembered = positions.position(conversation: conversationID, display: display) { return remembered }
+        }
         if let front = registry.frontmost, let controller = controllers[front] {
             return AssistantWindowGeometry.cascaded(from: controller.topLeft)
         }
@@ -297,13 +329,23 @@ final class AssistantWindowManager {
 
     private func remember(_ topLeft: CGPoint, windowID: UUID) {
         guard let conversation = registry.conversationID(of: windowID) else { return }
-        positions.remember(topLeft, conversation: conversation, display: environment.display())
+        // 그 창이 있는 화면의 키로 기억한다 (보조 화면의 창을 레일 화면 키로 저장하지 않는다)
+        let display = controllers[windowID]?.currentScreenID ?? environment.display()
+        positions.remember(topLeft, conversation: conversation, display: display)
         store.save(positions)
     }
 
     private func rebind(_ windowID: UUID, to conversationID: UUID) -> AssistantWindowRegistry.RebindOutcome {
         let outcome = registry.rebind(windowID, to: conversationID)
-        if case .showsElsewhere(let other) = outcome { bringForward(other) }
+        switch outcome {
+        case .showsElsewhere(let other):
+            bringForward(other)
+        case .rebound:
+            // 그 대화의 저장 위치가 있으면 그리로 간다 (History로 대화를 바꾸면 위치도 그 대화의 것이다)
+            if let controller = controllers[windowID], let remembered = positions.position(conversation: conversationID, display: controller.currentScreenID) {
+                controller.place(topLeft: remembered)
+            }
+        }
         return outcome
     }
 

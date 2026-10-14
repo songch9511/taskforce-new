@@ -83,10 +83,25 @@ struct AssistantTargetRulesTests {
         #expect(rows[1].detail == "Mac mini · Read only" && rows[2].detail == "MacBook Pro · Offline")
         #expect(rows[3].detail == nil)
         #expect(Set(rows.map(\.id)).count == rows.count, "행 id는 겹치지 않는다")
-        // 기기 이름을 모르면(서버가 아직 주지 않는다) 이름 없이 두 행을 그대로 보인다
+        // 기기 이름을 모르면(서버가 아직 주지 않는다) 같은 이름의 다음 행에 "Another Mac"을 붙여 서로 다른 행임을 알린다
         let unnamed = options(targets)
-        #expect(unnamed[1].deviceName == nil && unnamed[2].deviceName == nil && unnamed.count == 4)
-        #expect(unnamed[1].detail == "Read only" && unnamed[2].detail == "Offline")
+        #expect(unnamed[1].deviceName == nil && unnamed[2].deviceName == "Another Mac" && unnamed.count == 4)
+        #expect(unnamed[1].detail == "Read only" && unnamed[2].detail == "Another Mac · Offline")
+        #expect(unnamed[2].accessibilityLabel != unnamed[1].accessibilityLabel, "접근성 이름도 가른다")
+        #expect(unnamed[3].deviceName == nil, "연결이 하나인 adapter는 그대로")
+    }
+
+    @Test func anExtraRowOfTheSameNameIsAnotherMacOnlyWhenTheServerGaveNoDeviceName() {
+        let third = UUID(uuidString: "a3333333-3333-4333-8333-333333333399")!
+        let targets: [AssistantTarget] = [
+            agent("agent:codex", "Codex", codexConnection, .ready, .write),
+            agent("agent:codex", "Codex", otherCodexConnection, .ready, .write),
+            agent("agent:codex", "Codex", third, .ready, .write),
+        ]
+        let rows = options(targets)
+        #expect(rows.dropFirst().map(\.deviceName) == [nil, "Another Mac", "Another Mac"])
+        let named = options(targets, deviceNames: [otherCodexConnection: "Studio"])
+        #expect(named.dropFirst().map(\.deviceName) == [nil, "Studio", "Another Mac"], "받은 이름이 먼저다")
     }
 
     @Test func unknownKindsAndAdaptersAreHandledWithoutBreakingTheList() {

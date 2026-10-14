@@ -26,8 +26,14 @@ final class AssistantWindowController: NSObject, NSWindowDelegate {
     private(set) var topLeft: CGPoint
     /// 우리가 옮기는 중(프로그램): `windowDidMove`가 사용자의 이동으로 기억하지 않게
     private var programmatic = false
-    private var generation = 0
+    /// 창을 올리고(`show`) 내리는(`hide` · `close`) 요청이 올 때마다 오른다 (늦은 숨김이 새 요청을 되돌리지 못하게 · 시험은 화면 없이 `show`가 불렸는지 본다)
+    private(set) var generation = 0
     private var observing = false
+    private var settleTask: Task<Void, Never>?
+    /// 끌기가 멈췄다고 보기까지 움직임이 없어야 하는 시간 (시험은 줄인다)
+    var moveSettleDelay: Duration = .milliseconds(120)
+    /// 마우스 왼쪽 버튼이 눌려 있나 (끌기 도중에는 보정하지 않는다. 시험은 바꾼다)
+    var mouseIsDown: () -> Bool = { NSEvent.pressedMouseButtons & 1 != 0 }
     var onMoved: (CGPoint) -> Void = { _ in }
     var onBecameKey: () -> Void = {}
     var onResignedKey: () -> Void = {}
@@ -87,13 +93,24 @@ final class AssistantWindowController: NSObject, NSWindowDelegate {
     /// 위 가장자리를 둔 채 높이를 맞춘다. 보이는 영역 · 레일 밖으로 넣는다
     func applyFrame() {
         let height = height
-        topLeft = AssistantWindowGeometry.clamped(topLeft: topLeft, height: height, visible: environment.visibleFrame(), railWidth: environment.railWidth)
+        // 창이 있는 화면 기준으로 보정한다 (레일은 레일 화면에만 있다)
+        let screen = environment.screen(for: Self.rect(topLeft: topLeft, height: height))
+        topLeft = AssistantWindowGeometry.clamped(topLeft: topLeft, height: height, visible: screen.visible, railWidth: environment.reservedRailWidth(on: screen))
         let frame = NSRect(x: topLeft.x, y: topLeft.y - height, width: AssistantWindowGeometry.width, height: height)
         guard frame != panel.frame else { return }
         programmatic = true
         panel.setFrame(frame, display: true)
         programmatic = false
         panel.invalidateShadow()
+    }
+
+    private static func rect(topLeft: CGPoint, height: CGFloat) -> CGRect {
+        CGRect(x: topLeft.x, y: topLeft.y - height, width: AssistantWindowGeometry.width, height: height)
+    }
+
+    /// 이 창이 지금 있는 화면의 키 (위치를 기억하는 키)
+    var currentScreenID: String {
+        environment.screen(for: Self.rect(topLeft: topLeft, height: height)).id
     }
 
     /// 내용 높이 · 빈 대화 여부가 바뀔 때마다 높이를 맞춘다 (관찰이 끝나면 다시 건다)
@@ -173,6 +190,7 @@ final class AssistantWindowController: NSObject, NSWindowDelegate {
 
     /// ⌘W · 계정이 떠남: 창을 닫는다 (대화는 Chat history에 남는다)
     func close() {
+        settleTask?.cancel()
         targetMenu.dismiss(notify: false)
         generation += 1
         panel.delegate = nil
@@ -188,21 +206,31 @@ final class AssistantWindowController: NSObject, NSWindowDelegate {
             targetMenu.dismiss()
             return
         }
-        Task { await runtime.targets.refresh() }
-        let options = runtime.targets.options
+        let targets = runtime.targets
+        Task { await targets.refresh() }
+        // 메뉴는 저장소를 지켜본다: 읽기가 끝나기 전에 열어도 끝난 뒤 에이전트 행이 나타나고, 실패하면 다시 시도가 나온다
         let menuModel = TargetMenuModel(
-            options: options, selected: AssistantTargetRules.index(of: model.pick, in: options),
+            store: targets, pick: { [weak self] in self?.model.pick ?? .taskforce },
             onPick: { [weak self] option in
                 guard let self else { return }
                 self.targetMenu.dismiss()
                 self.model.chooseTarget(option)
-            }
+            },
+            onRetry: { Task { await targets.refresh() } }
         )
         presentation.targetMenuOpen = true
+        targetMenu.shows = presents
         targetMenu.present(model: menuModel, pill: pillFrameOnScreen, over: panel) { [weak self] in
             self?.presentation.targetMenuOpen = false
             self?.model.requestFocus()
         }
+    }
+
+    /// 다른 창이 앞으로 와서 이 창의 메뉴를 닫는다 (포커스를 되돌려 달라고 하지 않는다: 키는 새 창이 가져간다)
+    func closeTargetMenu() {
+        guard targetMenu.isOpen else { return }
+        targetMenu.dismiss(notify: false)
+        presentation.targetMenuOpen = false
     }
 
     /// 대상 알약의 자리 (화면 좌표, 아래가 0). 알약의 창 좌표는 위가 0이다
@@ -217,6 +245,28 @@ final class AssistantWindowController: NSObject, NSWindowDelegate {
     func windowDidMove(_ notification: Notification) {
         guard !programmatic else { return }
         topLeft = CGPoint(x: panel.frame.minX, y: panel.frame.maxY)
+        scheduleMoveSettle()
+    }
+
+    /// 끌기가 멈추면(움직임이 잦아들고 마우스를 놓았을 때) 한 번 보정하고 기억한다. 끄는 도중에는 창을 되돌리지 않는다
+    private func scheduleMoveSettle() {
+        settleTask?.cancel()
+        settleTask = Task { @MainActor [weak self] in
+            while let self, !Task.isCancelled {
+                try? await Task.sleep(for: self.moveSettleDelay)
+                guard !Task.isCancelled else { return }
+                if self.mouseIsDown() { continue }
+                self.finishMove()
+                return
+            }
+        }
+    }
+
+    /// 끌기가 끝났다: 보이는 영역 · 레일 밖이면 안으로 넣고 그 자리를 기억한다
+    func finishMove() {
+        settleTask = nil
+        topLeft = CGPoint(x: panel.frame.minX, y: panel.frame.maxY)
+        applyFrame()
         onMoved(topLeft)
     }
 

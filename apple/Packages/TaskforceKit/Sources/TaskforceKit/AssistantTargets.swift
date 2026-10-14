@@ -110,6 +110,8 @@ public enum AssistantTargetRules {
     public static let offline = "Offline"
     /// 이 빌드(샌드박스)가 에이전트를 띄울 수 없다: API에 없고 클라이언트가 안다 (`AgentRuntimeEnvironment`)
     public static let cannotRunInThisBuild = "Can't run agents in this build"
+    /// 같은 이름의 다음 행 (서버가 기기 이름을 주기 전)
+    public static let anotherMac = "Another Mac"
 
     /// 서버 상태 → 단어. 모르는 상태는 아무것도 주장하지 않는다 (nil)
     static func statusWord(state: AgentTargetState, access: AgentAccessLevel?) -> String? {
@@ -136,6 +138,7 @@ public enum AssistantTargetRules {
         let perAdapter = Dictionary(grouping: agents, by: \.adapter).mapValues(\.count)
         var rows = [AssistantTargetOption(id: "taskforce", kind: .taskforce, name: taskforceName, mark: .taskforce, status: nil, deviceName: nil)]
         var used: Set<String> = ["taskforce"]
+        var namesSeen: [String: Int] = [:]
         for agent in agents {
             var id = "agent:\(agent.adapter):\(agent.connectionID?.uuidString.lowercased() ?? "none")"
             var suffix = 2
@@ -143,7 +146,11 @@ public enum AssistantTargetRules {
                 id = "agent:\(agent.adapter):\(agent.connectionID?.uuidString.lowercased() ?? "none"):\(suffix)"
                 suffix += 1
             }
-            let device = (perAdapter[agent.adapter] ?? 0) > 1 ? agent.connectionID.flatMap(deviceName) : nil
+            var device = (perAdapter[agent.adapter] ?? 0) > 1 ? agent.connectionID.flatMap(deviceName) : nil
+            // 서버가 기기 이름을 주기 전에는 같은 이름의 다음 행에 "Another Mac"을 붙여 서로 다른 행임을 알린다 (같은 글이 두 줄이면 어느 쪽이 어디로 가는지 모른다)
+            let seen = namesSeen[agent.displayName, default: 0]
+            namesSeen[agent.displayName] = seen + 1
+            if device == nil, seen > 0 { device = anotherMac }
             rows.append(AssistantTargetOption(
                 id: id, kind: .agent(adapter: agent.adapter, connectionID: agent.connectionID), name: agent.displayName,
                 mark: AgentMarkKind.of(adapter: agent.adapter),
@@ -169,4 +176,14 @@ public enum AssistantTargetRules {
             }
         }
     }
+}
+
+/// 대상 메뉴가 목록 읽기 상태를 어떻게 보이나 (OA U1): 읽는 중이면 에이전트 자리에 "Loading…", 읽지 못했으면 실패 줄과 다시 시도.
+/// 메뉴는 이 값을 지켜볼 뿐 목록을 복사하지 않는다 — 읽기가 끝나면 열려 있는 메뉴에 에이전트 행이 나타난다
+public enum AssistantTargetMenuStatus: Equatable, Sendable {
+    case ready, loading, failed
+
+    public static let loadingText = "Loading…"
+    public static let failedText = "Couldn't load agents"
+    public static let retryText = "Try again"
 }

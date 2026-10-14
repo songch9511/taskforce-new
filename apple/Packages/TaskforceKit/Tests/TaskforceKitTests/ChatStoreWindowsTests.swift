@@ -119,6 +119,31 @@ struct ChatStoreWindowsTests {
         #expect(chat.currentID == navigation.0 && chat.mode == navigation.1 && chat.focusRequest == navigation.2, "창의 대화는 저장소의 currentID · mode · 포커스를 건드리지 않는다")
     }
 
+    @Test func refreshReadsEveryConversationAWindowShowsNotOnlyTheSharedCurrentOne() async throws {
+        let a = Chats.conversation(1, title: "A", last: 20)
+        let b = Chats.conversation(2, title: "B", last: 10)
+        serve([a, b])
+        let chat = store()
+        chat.viewedConversations = { [b.id, UUID()] }
+        await chat.refresh()
+        #expect(chat.currentID == a.id, "공유 currentID는 마지막 대화")
+        #expect(chat.turns(for: b.id).isEmpty)
+        let reply = Chats.message(1, in: b.id, seq: 1, role: .assistant, text: "new reply", at: 5)
+        serve([a, b], messages: [b.id: [reply]])
+        await chat.refresh()
+        #expect(chat.turns(for: b.id).map(\.text) == ["new reply"], "창이 보이는 B도 ⌘3 · 온라인 복귀 때 다시 읽는다")
+        #expect(gateway.calls(prefix: "messages").count >= 2)
+    }
+
+    @Test func refreshWithoutWindowsReadsOnlyTheCurrentConversation() async throws {
+        let a = Chats.conversation(1, title: "A", last: 20)
+        let b = Chats.conversation(2, title: "B", last: 10)
+        serve([a, b], messages: [b.id: [Chats.message(1, in: b.id, seq: 1, role: .assistant, text: "hidden", at: 5)]])
+        let chat = store()
+        await chat.refresh()
+        #expect(chat.currentID == a.id && chat.turns(for: b.id).isEmpty, "창이 안 보이는 대화를 읽지 않는다")
+    }
+
     @Test func sendingInOneConversationDoesNotBlockAnother() async throws {
         let a = Chats.conversation(1, title: "A", last: 10)
         let b = Chats.conversation(2, title: "B", last: 20)

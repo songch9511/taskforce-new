@@ -144,7 +144,8 @@ public final class AssistantWindowModel: Identifiable {
             return
         }
         let text = chat.draft(for: current)
-        let fresh = chat.reserveNewChat(target: wanted, excluding: openElsewhere().union([current]))
+        // 쓰던 글이 남은 다른 대화는 다시 쓰지 않는다: 이 창의 글이 따라오며 그 글을 덮는다
+        let fresh = chat.reserveNewChat(target: wanted, excluding: openElsewhere().union([current]).union(chat.draftConversationIDs))
         guard case .rebound = rebindHandler(fresh) else { return }
         conversationID = fresh
         mode = .chat

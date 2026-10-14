@@ -33,6 +33,20 @@ struct AssistantWindowGeometryTests {
         #expect(origin.x == panel.minX - 24 - 12 - G.width, "패널의 바깥 가장자리(세션 탭 포함)에서 12pt")
     }
 
+    // MARK: 화면 둘 (창은 자기가 있는 화면 기준)
+
+    @Test func aWindowBelongsToTheScreenItCoversMostAndTheNearestWhenOffScreen() {
+        let main = AssistantScreen(id: "1", visible: visible)
+        let side = AssistantScreen(id: "2", visible: CGRect(x: 1440, y: 100, width: 1920, height: 1000))
+        func id(_ frame: CGRect) -> String { G.screen(containing: frame, in: [main, side], fallback: main).id }
+        #expect(id(CGRect(x: 1500, y: 300, width: 380, height: 440)) == "2")
+        #expect(id(CGRect(x: 200, y: 300, width: 380, height: 440)) == "1")
+        #expect(id(CGRect(x: 1440 - 100, y: 300, width: 380, height: 440)) == "2", "걸쳐 있으면 더 많이 덮는 쪽 (280 대 100)")
+        #expect(id(CGRect(x: 1440 - 300, y: 300, width: 380, height: 440)) == "1", "300 대 80")
+        #expect(id(CGRect(x: 9000, y: 300, width: 380, height: 440)) == "2", "어느 화면에도 없으면 가장 가까운 화면")
+        #expect(G.screen(containing: CGRect(x: 0, y: 0, width: 10, height: 10), in: [], fallback: main).id == "1", "화면 목록이 비면 대비책")
+    }
+
     // MARK: 겹쳐 열기
 
     @Test func eachNewWindowCascadesTwentyFourDownAndLeft() {

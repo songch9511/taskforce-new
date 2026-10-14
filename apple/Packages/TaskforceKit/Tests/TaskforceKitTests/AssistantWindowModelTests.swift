@@ -210,6 +210,32 @@ struct AssistantWindowModelTests {
         #expect(r.model.conversationID != held, "다른 창이 쥔 빈 대화는 쓰지 않는다")
     }
 
+    @Test func changingTheTargetNeverTakesAnEmptyChatThatHoldsAnotherDraft() async throws {
+        let b = Chats.conversation(2, title: "Launch", last: 20)
+        let r = await rig(existing: [b])
+        // A: 쓰던 글이 남은 빈 새 대화 (창은 닫혀 있다)
+        let a = r.chat.reserveNewChat(target: .taskforce, excluding: [r.model.conversationID])
+        r.chat.setDraft("A draft", for: a)
+        // B 창에서 글을 쓰고 대상을 바꾼다
+        r.chat.setDraft("B draft", for: r.model.conversationID)
+        r.model.chooseTarget(try #require(r.targets.options.last))
+        #expect(r.model.conversationID != a && r.model.conversationID != b.id, "A는 다른 초안을 쥐고 있어 다시 쓰지 않는다")
+        #expect(r.chat.draft(for: a) == "A draft", "A의 초안은 그대로")
+        #expect(r.chat.pick(for: a) == .taskforce, "A의 대상도 그대로")
+        #expect(r.chat.draft(for: r.model.conversationID) == "B draft", "B의 글은 새 대화로 따라온다")
+        #expect(r.chat.draft(for: b.id) == "")
+    }
+
+    @Test func changingTheTargetStillReusesAnEmptyChatThatHoldsNoDraft() async throws {
+        let b = Chats.conversation(2, title: "Launch", last: 20)
+        let r = await rig(existing: [b])
+        let a = r.chat.reserveNewChat(target: .taskforce, excluding: [r.model.conversationID])
+        r.chat.setDraft("B draft", for: r.model.conversationID)
+        r.model.chooseTarget(try #require(r.targets.options.last))
+        #expect(r.model.conversationID == a, "초안 없는 빈 대화는 다시 쓴다 (빈 대화가 쌓이지 않게)")
+        #expect(r.chat.draft(for: a) == "B draft")
+    }
+
     // MARK: 새 대화 · History
 
     @Test func newChatStartsFreshForTaskforceWithNoChipsInTheSameWindow() async {

@@ -29,6 +29,34 @@ private final class WindowTestGateway: ChatGateway, @unchecked Sendable {
     func moveMemory(id: UUID, expectedVersion: Int, to target: MemoryTarget) async throws -> MemoryItem { throw URLError(.badURL) }
 }
 
+/// 대상 목록을 돌려주는 가짜 (읽기만 한다)
+private final class StubTargetsGateway: AssistantGateway, @unchecked Sendable {
+    nonisolated(unsafe) var reply: @Sendable () async throws -> [AssistantTarget] = { [.taskforce] }
+    func targets() async throws -> [AssistantTarget] { try await reply() }
+    func createConversation(id: UUID, title: String?, contextID: UUID?, target: ChatTarget) async throws -> ChatCreatedConversation { throw URLError(.badURL) }
+    func postChatMessage(conversationID: UUID, clientMessageID: UUID, text: String, attachments: [ChatAttachment]) async throws -> ChatPostedMessage { throw URLError(.badURL) }
+    func postAgentMessage(conversationID: UUID, clientMessageID: UUID, text: String, attachments: [ChatAttachment]) async throws -> AgentPostedMessage { throw URLError(.badURL) }
+}
+
+/// 열 때까지 읽기를 붙잡는 문
+private actor ReadGate {
+    private(set) var arrivals = 0
+    private var opened = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func wait() async {
+        arrivals += 1
+        if opened { return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+
+    func open() {
+        opened = true
+        waiters.forEach { $0.resume() }
+        waiters = []
+    }
+}
+
 /// Assistant 창 관리자 (OA U1): 첫 창의 자리 · 겹쳐 열기 · 같은 대화 재사용 · 상한 · 위치 기억 · 숨김 / 닫기 · 계정 경계 · 키.
 /// 창은 만들되 화면에 올리지 않는다 (`presents = false`): 자리 · 상태만 본다. 위치는 격리 suite에 기억한다 (실사용 설정을 건드리지 않는다)
 @MainActor
@@ -45,7 +73,10 @@ struct AssistantWindowTests {
         let defaults: TestDefaults
     }
 
-    private func rig(panel: CGRect? = nil, defaults: TestDefaults? = nil, rows: [ChatConversation] = [], shell customShell: EdgeShellModel? = nil) throws -> Rig {
+    private func rig(
+        panel: CGRect? = nil, defaults: TestDefaults? = nil, rows: [ChatConversation] = [], shell customShell: EdgeShellModel? = nil,
+        extraScreens: [AssistantScreen] = []
+    ) throws -> Rig {
         let gateway = WindowTestGateway()
         gateway.rows = rows
         let account = try AppChatAccount.make()
@@ -56,7 +87,7 @@ struct AssistantWindowTests {
         let rail = rail
         let manager = AssistantWindowManager(
             runtime: runtime, shell: shell, store: AssistantWindowPositionStore(defaults: store.defaults),
-            environment: .init(visibleFrame: { visible }, railFrame: { rail }, panelFrame: { panel }, display: { "1" })
+            environment: .init(visibleFrame: { visible }, railFrame: { rail }, panelFrame: { panel }, display: { "1" }, extraScreens: { extraScreens })
         )
         manager.presents = false
         return Rig(manager: manager, runtime: runtime, shell: shell, gateway: gateway, account: account, defaults: store)
@@ -312,8 +343,11 @@ struct AssistantWindowTests {
         r.manager.hide(b)
         #expect(r.manager.registry.isHidden(b) && r.manager.registry.frontmost == a)
         let modelA = try #require(r.manager.controllers[a]?.model)
+        let shown = try #require(r.manager.controllers[b]).generation
         modelA.openConversation(rows[1].id)
         #expect(!r.manager.registry.isHidden(b) && r.manager.registry.frontmost == b, "숨은 창이 그 대화를 쥐고 있으면 그 창이 다시 보이고 앞으로 온다")
+        let afterwards = try #require(r.manager.controllers[b]).generation
+        #expect(afterwards > shown, "화면에도 다시 올린다 (show가 불렸다)")
         #expect(modelA.conversationID == rows[0].id)
     }
 
@@ -456,5 +490,185 @@ struct AssistantWindowTests {
         for _ in 0..<10 { await Task.yield() }
         #expect(!controller.shell.panelOpen, "키가 다른 곳(다른 앱 · 창 없음)으로 가면 접는다")
         controller.assistant?.closeAll()
+    }
+    // MARK: 검토 반영 (Astra 독립 검토)
+
+    @Test func theChatStoreReadsTheConversationsTheWindowsShow() throws {
+        let rows = [row(1, "A", age: 20), row(2, "B", age: 10)]
+        let r = try rig(rows: rows)
+        defer { r.defaults.cleanup() }
+        #expect(r.runtime.chat.viewedConversations().isEmpty)
+        let a = try #require(r.manager.openWindow(for: rows[0].id))
+        let b = try #require(r.manager.openWindow(for: rows[1].id))
+        #expect(r.runtime.chat.viewedConversations() == [rows[0].id, rows[1].id], "⌘3 · 온라인 복귀의 읽기가 이 대화들을 다시 읽는다")
+        r.manager.close(a)
+        #expect(r.runtime.chat.viewedConversations() == [rows[1].id])
+        _ = b
+    }
+
+    @Test func aTargetMenuClosesWhenAnotherWindowOpensOnTop() throws {
+        let r = try rig()
+        defer { r.defaults.cleanup() }
+        let a = try #require(r.manager.openNewWindow())
+        let controller = try #require(r.manager.controllers[a])
+        controller.toggleTargetMenu()
+        #expect(controller.targetMenu.isOpen && controller.presentation.targetMenuOpen)
+        _ = try #require(r.manager.openNewWindow())
+        #expect(!controller.targetMenu.isOpen && !controller.presentation.targetMenuOpen, "⌘N으로 새 창이 뜨면 이전 창의 메뉴는 닫힌다")
+    }
+
+    @Test func aTargetMenuClosesWhenAnExistingWindowIsBroughtForward() throws {
+        let rows = [row(1, "A", age: 20), row(2, "B", age: 10)]
+        let r = try rig(rows: rows)
+        defer { r.defaults.cleanup() }
+        let a = try #require(r.manager.openWindow(for: rows[0].id))
+        let b = try #require(r.manager.openWindow(for: rows[1].id))
+        let controller = try #require(r.manager.controllers[a])
+        r.manager.bringForward(a)
+        controller.toggleTargetMenu()
+        #expect(controller.targetMenu.isOpen)
+        r.manager.bringForward(b)
+        #expect(!controller.targetMenu.isOpen)
+    }
+
+    @Test func aTargetMenuOnlyHandlesKeysThatCameToItsOwnWindowAndClosesWhenItLosesTheKey() throws {
+        let r = try rig()
+        defer { r.defaults.cleanup() }
+        let a = try #require(r.manager.openNewWindow())
+        let other = try #require(r.manager.openNewWindow())
+        let controller = try #require(r.manager.controllers[a])
+        let otherWindow = try #require(r.manager.controllers[other]).panel
+        controller.toggleTargetMenu()
+        let menu = controller.targetMenu
+        let menuWindow = try #require(menu.window)
+        var picked: [String] = []
+        menu.model?.onPick = { picked.append($0.name) }
+        func key(_ code: UInt16, in window: NSWindow) throws -> NSEvent {
+            try #require(NSEvent.keyEvent(
+                with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil,
+                characters: "x", charactersIgnoringModifiers: "x", isARepeat: false, keyCode: code
+            ))
+        }
+        let downElsewhere = try key(125, in: otherWindow), returnElsewhere = try key(36, in: otherWindow)
+        let downHere = try key(125, in: menuWindow), returnHere = try key(36, in: menuWindow)
+        #expect(!menu.handle(downElsewhere) && !menu.handle(returnElsewhere), "다른 창의 키는 가로채지 않는다")
+        #expect(picked.isEmpty)
+        #expect(menu.handle(downHere), "자기 창의 ↓은 처리한다")
+        #expect(menu.handle(returnHere) && picked == ["Taskforce"], "자기 창의 Return은 짚은 행을 고른다")
+        // 키를 잃으면 닫힌다
+        NotificationCenter.default.post(name: NSWindow.didResignKeyNotification, object: menuWindow)
+        #expect(!menu.isOpen && !controller.presentation.targetMenuOpen)
+    }
+
+    @Test func theTargetMenuOfAWindowFollowsTheTargetStoreWhileItIsOpen() async throws {
+        let r = try rig()
+        defer { r.defaults.cleanup() }
+        let stub = StubTargetsGateway()
+        let gate = ReadGate()
+        stub.reply = {
+            await gate.wait()
+            return [.taskforce, .agent(.init(adapter: "agent:codex", displayName: "Codex", connectionID: UUID(), state: .ready, access: .write))]
+        }
+        r.runtime.targets.gateway = stub
+        let id = try #require(r.manager.openNewWindow())
+        let controller = try #require(r.manager.controllers[id])
+        controller.toggleTargetMenu()
+        let model = try #require(controller.targetMenu.model)
+        #expect(model.status == .loading && model.options.map(\.name) == ["Taskforce"], "읽는 중에 연 메뉴")
+        for _ in 0..<1000 where await gate.arrivals == 0 { await Task.yield() }
+        await gate.open()
+        for _ in 0..<500 where model.status != .ready { try? await Task.sleep(for: .milliseconds(5)) }
+        #expect(model.status == .ready && model.options.map(\.name) == ["Taskforce", "Codex"], "끝난 뒤 열려 있는 메뉴에 에이전트 행이 나타난다")
+        stub.reply = { throw URLError(.notConnectedToInternet) }
+        await r.runtime.targets.refresh()
+        #expect(model.status == .failed, "실패는 숨기지 않는다")
+        controller.targetMenu.dismiss()
+    }
+
+    @Test func historyRebindAppliesTheOtherConversationsSavedPosition() throws {
+        let rows = [row(1, "A", age: 20), row(2, "B", age: 10)]
+        let r = try rig(rows: rows)
+        defer { r.defaults.cleanup() }
+        let b = try #require(r.manager.openWindow(for: rows[1].id))
+        let bController = try #require(r.manager.controllers[b])
+        bController.move(by: .left)
+        bController.move(by: .up)
+        let saved = bController.topLeft
+        r.manager.close(b)
+        let a = try #require(r.manager.openWindow(for: rows[0].id))
+        let aController = try #require(r.manager.controllers[a])
+        #expect(aController.topLeft != saved)
+        aController.model.openConversation(rows[1].id)
+        #expect(aController.model.conversationID == rows[1].id && aController.topLeft == saved, "History로 연 대화의 저장 위치로 간다")
+        // 저장 위치가 없는 대화는 지금 자리 그대로
+        let place = aController.topLeft
+        aController.model.newChat()
+        #expect(aController.topLeft == place)
+    }
+
+    @Test func aMouseDragIsClampedOnceTheMouseIsUpAndOnlyThenSaved() async throws {
+        let r = try rig()
+        defer { r.defaults.cleanup() }
+        let id = try #require(r.manager.openNewWindow())
+        let controller = try #require(r.manager.controllers[id])
+        let conversation = try #require(r.manager.registry.conversationID(of: id))
+        controller.moveSettleDelay = .milliseconds(1)
+        var down = true
+        controller.mouseIsDown = { down }
+        try? await Task.sleep(for: .milliseconds(50))   // 창을 연 직후의 높이 맞춤이 끝난 뒤에 끈다
+        controller.panel.setFrameOrigin(CGPoint(x: 1380, y: 300))
+        controller.windowDidMove(Notification(name: NSWindow.didMoveNotification))
+        try? await Task.sleep(for: .milliseconds(60))
+        #expect(controller.panel.frame.maxX > rail.minX, "마우스를 누르고 있는 동안은 따라온다 (끌리는 창을 되돌리지 않는다)")
+        #expect(AssistantWindowPositionStore(defaults: r.defaults.defaults).load().position(conversation: conversation, display: "1") == nil, "끝나기 전에는 저장하지 않는다")
+        down = false
+        func savedPosition() -> CGPoint? {
+            AssistantWindowPositionStore(defaults: r.defaults.defaults).load().position(conversation: conversation, display: "1")
+        }
+        for _ in 0..<400 where savedPosition() == nil { try? await Task.sleep(for: .milliseconds(5)) }
+        #expect(controller.panel.frame.maxX <= rail.minX, "마우스를 놓으면 레일 밖으로 들어간다")
+        let saved = try #require(savedPosition())
+        #expect(saved == controller.topLeft && saved.x + AssistantWindowGeometry.width <= rail.minX, "보정한 자리를 저장한다")
+    }
+
+    @Test func aWindowOnASecondScreenIsClampedAndSavedAgainstThatScreen() throws {
+        let side = AssistantScreen(id: "2", visible: CGRect(x: 1440, y: 100, width: 1920, height: 1000))
+        let r = try rig(extraScreens: [side])
+        defer { r.defaults.cleanup() }
+        let id = try #require(r.manager.openNewWindow())
+        let controller = try #require(r.manager.controllers[id])
+        let conversation = try #require(r.manager.registry.conversationID(of: id))
+        controller.place(topLeft: CGPoint(x: 2800, y: 900))
+        #expect(controller.topLeft == CGPoint(x: 2800, y: 900), "보조 화면의 창을 주 화면으로 끌어오지 않는다")
+        controller.applyFrame()
+        #expect(controller.topLeft == CGPoint(x: 2800, y: 900), "높이를 다시 맞춰도 그 자리")
+        controller.place(topLeft: CGPoint(x: side.visible.maxX - 380, y: 900))
+        #expect(controller.topLeft.x == side.visible.maxX - 380, "레일은 주 화면에만 있다: 보조 화면은 오른쪽 끝까지")
+        controller.move(by: .left)
+        let saved = AssistantWindowPositionStore(defaults: r.defaults.defaults).load()
+        #expect(saved.position(conversation: conversation, display: "2") == controller.topLeft && saved.position(conversation: conversation, display: "1") == nil, "그 창이 있는 화면의 키로 저장한다")
+        let before = controller.topLeft
+        r.manager.bringForward(id)
+        #expect(controller.topLeft == before, "앞으로 가져와도 주 화면으로 되돌리지 않는다")
+        // 주 화면에서는 레일을 덮지 않는다
+        controller.place(topLeft: CGPoint(x: 1100, y: 900))
+        #expect(controller.panel.frame.maxX <= rail.minX, "주 화면 쪽에 더 걸친 창은 레일을 덮지 않는다")
+    }
+    @Test func aWindowReopensAtTheSavedSpotOnTheScreenOfTheFrontWindow() throws {
+        let side = AssistantScreen(id: "2", visible: CGRect(x: 1440, y: 100, width: 1920, height: 1000))
+        let rows = [row(1, "A", age: 20)]
+        let r = try rig(rows: rows, extraScreens: [side])
+        defer { r.defaults.cleanup() }
+        let first = try #require(r.manager.openWindow(for: rows[0].id))
+        let controller = try #require(r.manager.controllers[first])
+        controller.place(topLeft: CGPoint(x: 2400, y: 900))
+        controller.move(by: .left)
+        let saved = controller.topLeft
+        r.manager.close(first)
+        // 앞 창이 보조 화면에 있다: 그 대화는 그 화면에서 기억한 자리로 다시 열린다
+        let front = try #require(r.manager.openNewWindow())
+        try #require(r.manager.controllers[front]).place(topLeft: CGPoint(x: 3000, y: 800))
+        let reopened = try #require(r.manager.openWindow(for: rows[0].id))
+        #expect(r.manager.controllers[reopened]?.topLeft == saved, "앞 창의 화면에서 찾은 기억")
     }
 }

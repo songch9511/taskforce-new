@@ -46,6 +46,16 @@ public final class AssistantTargetsStore {
         AssistantTargetRules.options(from: targets, canRunAgents: canRunAgents(), deviceName: deviceName)
     }
 
+    /// 대상 메뉴가 보일 읽기 상태. 실패는 마지막 목록이 남아 있어도 말한다. 기능이 꺼졌거나 이 런타임에 게이트웨이가 없으면 Taskforce뿐이고 기다릴 것이 없다
+    public var menuStatus: AssistantTargetMenuStatus {
+        guard gateway != nil else { return .ready }
+        switch load {
+        case .failed: return .failed
+        case .idle, .loading: return targets.contains { if case .agent = $0 { true } else { false } } ? .ready : .loading
+        case .loaded, .unavailable: return .ready
+        }
+    }
+
     public func option(for pick: AssistantTargetPick) -> AssistantTargetOption? {
         let rows = options
         return AssistantTargetRules.index(of: pick, in: rows).map { rows[$0] }

@@ -1,6 +1,17 @@
 import CoreGraphics
 import Foundation
 
+/// 창이 놓일 수 있는 화면 하나: 위치를 기억하는 키와 메뉴 막대 · Dock을 뺀 보이는 영역 (화면 좌표, 아래가 0)
+public struct AssistantScreen: Equatable, Sendable {
+    public let id: String
+    public let visible: CGRect
+
+    public init(id: String, visible: CGRect) {
+        self.id = id
+        self.visible = visible
+    }
+}
+
 /// Assistant 창의 자리 · 높이 (OA U1, DS "Assistant window" Geometry · Placement). 좌표는 화면 좌표(아래가 0)이고,
 /// 창의 위치는 **왼쪽 위**(top-left)로 다룬다: 높이가 변해도 위 가장자리가 움직이지 않는다.
 public enum AssistantWindowGeometry {
@@ -27,6 +38,25 @@ public enum AssistantWindowGeometry {
             return CGPoint(x: panelFrame.minX - panelOuterInset - gap - width, y: panelFrame.maxY)
         }
         return CGPoint(x: railFrame.minX - gap - width, y: railFrame.maxY)
+    }
+
+    /// 창이 있는 화면: 창을 가장 많이 덮는 화면. 어느 화면에도 걸치지 않으면 가장 가까운 화면, 화면이 없으면 `fallback`.
+    /// 저장 · 배치 · 높이 보정은 모두 창의 지금 화면 기준이다 (보조 화면의 창을 주 화면으로 끌어오지 않는다)
+    public static func screen(containing frame: CGRect, in screens: [AssistantScreen], fallback: AssistantScreen) -> AssistantScreen {
+        var best: (screen: AssistantScreen, area: CGFloat)?
+        for screen in screens {
+            let overlap = screen.visible.intersection(frame)
+            let area = overlap.isNull ? 0 : overlap.width * overlap.height
+            if area > (best?.area ?? 0) { best = (screen, area) }
+        }
+        if let best { return best.screen }
+        let center = CGPoint(x: frame.midX, y: frame.midY)
+        func distance(_ screen: AssistantScreen) -> CGFloat {
+            let dx = max(screen.visible.minX - center.x, 0, center.x - screen.visible.maxX)
+            let dy = max(screen.visible.minY - center.y, 0, center.y - screen.visible.maxY)
+            return dx * dx + dy * dy
+        }
+        return screens.min { distance($0) < distance($1) } ?? fallback
     }
 
     /// 새 창은 앞 창에서 24pt 아래 · 왼쪽으로 겹쳐 연다

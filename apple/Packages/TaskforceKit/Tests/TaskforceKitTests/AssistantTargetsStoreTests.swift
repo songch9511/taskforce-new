@@ -68,6 +68,38 @@ struct AssistantTargetsStoreTests {
         #expect(targets.load == .loaded && targets.options.count == 3)
     }
 
+    @Test func theMenuStatusFollowsTheReadFromLoadingToReadyOrFailed() async {
+        let latch = Latch()
+        assistant.targetsHandler = { await latch.wait(); return Self.served }
+        let targets = store()
+        #expect(targets.menuStatus == .loading, "읽기 전에는 에이전트 목록이 없다: 기다리는 중")
+        let read = Task { await targets.refresh() }
+        _ = await latch.waitForArrivals(1, timeout: .seconds(5))
+        #expect(targets.menuStatus == .loading && targets.options.map(\.name) == ["Taskforce"])
+        await latch.open()
+        await read.value
+        #expect(targets.menuStatus == .ready && targets.options.count == 3, "읽기가 끝나면 같은 저장소의 에이전트 행이 나타난다")
+        assistant.targetsHandler = { throw URLError(.notConnectedToInternet) }
+        await targets.refresh()
+        #expect(targets.menuStatus == .failed, "마지막 목록이 남아 있어도 실패는 말한다")
+        assistant.targetsHandler = { Self.served }
+        await targets.refresh()
+        #expect(targets.menuStatus == .ready, "다시 읽으면 실패 줄이 사라진다")
+    }
+
+    @Test func aFailedFirstReadIsFailedNotLoadingAndAFeatureThatIsOffIsJustTaskforce() async {
+        assistant.targetsHandler = { throw URLError(.timedOut) }
+        let failing = store()
+        await failing.refresh()
+        #expect(failing.menuStatus == .failed && failing.options.map(\.name) == ["Taskforce"])
+        assistant.targetsHandler = { throw APIError.server(status: 404, code: .notFound, message: APIError.featureOffMessage) }
+        let off = store()
+        await off.refresh()
+        #expect(off.menuStatus == .ready, "기능이 꺼진 것은 실패가 아니다: Taskforce뿐")
+        let none = AssistantTargetsStore(gateway: nil, scope: ChatTestAccount.fixedScope(), canRunAgents: { true })
+        #expect(none.menuStatus == .ready, "게이트웨이가 없으면 기다릴 것도 없다")
+    }
+
     @Test func withoutAGatewayThereIsNothingToReadAndNothingIsCalled() async {
         let targets = AssistantTargetsStore(gateway: nil, scope: ChatTestAccount.fixedScope(), canRunAgents: { true })
         await targets.refresh()

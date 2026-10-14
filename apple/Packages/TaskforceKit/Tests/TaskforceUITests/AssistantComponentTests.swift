@@ -99,6 +99,73 @@ struct AssistantComponentTests {
         var names: [String] = []
     }
 
+    /// 대상 목록을 돌려주는 가짜 (읽기만 한다)
+    final class StubTargets: AssistantGateway, @unchecked Sendable {
+        nonisolated(unsafe) var reply: @Sendable () async throws -> [AssistantTarget] = { [.taskforce] }
+        func targets() async throws -> [AssistantTarget] { try await reply() }
+        func createConversation(id: UUID, title: String?, contextID: UUID?, target: ChatTarget) async throws -> ChatCreatedConversation { throw URLError(.badURL) }
+        func postChatMessage(conversationID: UUID, clientMessageID: UUID, text: String, attachments: [ChatAttachment]) async throws -> ChatPostedMessage { throw URLError(.badURL) }
+        func postAgentMessage(conversationID: UUID, clientMessageID: UUID, text: String, attachments: [ChatAttachment]) async throws -> AgentPostedMessage { throw URLError(.badURL) }
+    }
+
+    /// 열 때까지 읽기를 붙잡는 문
+    actor Gate {
+        private(set) var arrivals = 0
+        private var opened = false
+        private var waiters: [CheckedContinuation<Void, Never>] = []
+
+        func wait() async {
+            arrivals += 1
+            if opened { return }
+            await withCheckedContinuation { waiters.append($0) }
+        }
+
+        func open() {
+            opened = true
+            waiters.forEach { $0.resume() }
+            waiters = []
+        }
+    }
+
+    @MainActor
+    @Test func aLiveMenuFollowsTheTargetStoreSoAgentsAppearWhenTheReadEnds() async {
+        let stub = StubTargets()
+        let gate = Gate()
+        let codex = UUID()
+        stub.reply = {
+            await gate.wait()
+            return [.taskforce, .agent(.init(adapter: "agent:codex", displayName: "Codex", connectionID: codex, state: .ready, access: .write))]
+        }
+        let user = UUID()
+        let store = AssistantTargetsStore(gateway: stub, scope: AccountScope(currentAccount: { user }), canRunAgents: { true })
+        let retries = Picks()
+        let model = TargetMenuModel(store: store, pick: { .taskforce }, onPick: { _ in }, onRetry: { retries.names.append("retry") })
+        // 읽기가 끝나기 전에 메뉴를 연다: Taskforce뿐이고 "Loading…"
+        #expect(model.options.map(\.name) == ["Taskforce"] && model.status == .loading && model.selected == 0)
+        let read = Task { await store.refresh() }
+        for _ in 0..<1000 where await gate.arrivals == 0 { await Task.yield() }
+        #expect(model.status == .loading)
+        await gate.open()
+        await read.value
+        // 같은 메뉴가 저장소를 지켜본다: 복사해 둔 목록이 아니라 끝난 뒤의 행이 나타난다
+        #expect(model.status == .ready && model.options.map(\.name) == ["Taskforce", "Codex"] && model.selected == 0)
+        // 실패: 줄과 다시 시도
+        stub.reply = { throw URLError(.notConnectedToInternet) }
+        await store.refresh()
+        #expect(model.status == .failed)
+        model.retry()
+        #expect(retries.names == ["retry"])
+        stub.reply = { [.taskforce] }
+        await store.refresh()
+        #expect(model.status == .ready)
+    }
+
+    @MainActor
+    @Test func aStaticMenuModelIsAlwaysReady() {
+        let (model, _) = menu()
+        #expect(model.status == .ready && model.options.count == 3)
+    }
+
     @MainActor
     @Test func arrowKeysWalkTheRowsWithoutWrapping() {
         let (model, _) = menu(selected: 1)
