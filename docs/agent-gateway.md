@@ -202,13 +202,13 @@ D1c-2a 정정 2 인계: lease 만료 unknown_outcome 뒤 접수는 bridge API의
 | route | 하는 일 |
 |---|---|
 | `POST /api/v2/conversations` | `target: {kind:"taskforce"} \| {kind:"agent", connection_id, session_id?}`. 같은 id에 다른 대상이면 409 `target_mismatch`. 연결이 내 것 · revoked 아님 · registry · adapter 켜짐, 세션이 같은 연결 · closed 아님이 아니면 404. 응답 대화에 `target_kind` · `agent_connection_id` · `agent_session_id` |
-| `POST …/{id}/messages` | `attachments`(≤ 20) 추가. 에이전트 대상은 delegate로 넘어가 칩 정규화 → 소유 확인(없는 · 남의 칩 404, 쓰기 0) → 저장(`selected` = `{action_ids, context_ids, attachments}` — added만 id 목록) → 새 메시지면 `context_attached` → 전달 시작 → 다시 읽은 행으로 응답(`reply: null`, `delivery`, `attachments_dropped`, `created_action`, `agent_task`). taskforce 대상은 칩을 검증 · 저장만 하고 응답 모양 · 답 생성은 그대로 |
-| `POST …/{id}/deliver` | Send again. `requeue_agent_messages`(`not_sent` · `expired` → `queued`, 새 24시간) → commit 뒤 seq 순으로 하나씩 시작 |
+| `POST …/{id}/messages` | `attachments`(≤ 20) 추가. 에이전트 대상은 delegate로 넘어가 칩 정규화 → 소유 확인(없는 · 남의 칩 404, 쓰기 0) → 저장(`selected` = `{action_ids, context_ids, attachments}` — added만 id 목록) → 새 메시지면 `context_attached` → 전달 시작 → 다시 읽은 행으로 응답(`reply: null`, `delivery`, `attachments_dropped`, `created_action`, `agent_task`). 같은 제출 재전송에서 그 사이 지워진 칩은 404가 아니라 `attachments_dropped`(`deleted`)이고, 처리 입력(`start_agent_turn`의 Action 칩)에서 빠진다(저장된 `selected`는 처음 그대로). taskforce 대상은 칩을 검증 · 저장만 하고 응답 모양 · 답 생성은 그대로이며, **같은 제출인지를 칩 존재 확인보다 먼저** 보아(`known`) 재전송이면 지워진 칩이 있어도 저장된 응답을 돌려준다(처리용 refs에서만 뺀다; 첫 제출의 없는 칩은 404) |
+| `POST …/{id}/deliver` | Send again. `requeue_agent_messages`(`not_sent` · `expired` → `queued`, 새 24시간) → commit 뒤 seq 순으로 하나씩 시작. **자동 시작은 `queued` 머리와 이유가 gate 계열(`write_gate_closed` · `not_connected` · `adapter_disabled`)인 `not_sent`뿐이다** — `spawn_failed` · `sign_in_needed` · `usage_limited` · `not_received` · `unsupported` 등으로 실패한 메시지는 이 route(사용자 Send again)로만 다시 시작한다(`autoStartable`, 검토 반영 7-1) |
 | `POST …/{id}/messages/{message_id}/referent` | `needs_referent` 후보 선택 → 같은 메시지를 한 번 전달 |
 | `POST …/{id}/stop` · `POST /api/v2/agent-sessions/{id}/stop` | 세션 단위 중단(surface `assistant` · `session_panel`). 세션 없는 대화는 `{tasks:[]}`(쓰기 0). 확정(`confirmed`)된 작업이 있고 adapter 플래그가 켜져 있으면 commit 뒤 `startNextQueuedTurn` 한 번(실패해도 Stop 결과 유지) |
 | `GET …/{id}/delivery?since_seq=` | 사용자 메시지의 전달 표시를 서버 계산으로(OD-13, ≤ 100, 읽기만) |
-| `PATCH /api/v2/agent-sessions/{id}` | 이름(trim 1–200자) |
-| `POST /api/v2/agent-sessions/{id}/open-external` · `…/resume-here` | `open_agent_session_external` · `resume_agent_session_here`. busy → 409 `session_busy`, `pending:` 세션 · bound 아님 → 409 `conflict`. Resume은 본문 `{confirmed_terminal_closed:true}` 필수, 되돌린 뒤 `startNextQueuedTurn` 한 번(이미 bound여도 한 번 확인) |
+| `PATCH /api/v2/agent-sessions/{id}` | 이름(trim 1–200자). SQL `rename_agent_session`이 이름과 `session_renamed`를 같은 트랜잭션에서 쓴다 |
+| `POST /api/v2/agent-sessions/{id}/open-external` · `…/resume-here` | `open_agent_session_external` · `resume_agent_session_here`. busy → 409 `session_busy`, `pending:` 세션 · bound 아님 → 409 `conflict`. Resume은 본문 `{confirmed_terminal_closed:true}` 필수, 되돌린 뒤 `startNextQueuedTurn` 한 번(이미 bound여도 한 번 확인). 묶인 대화 잠금 경합(`55P03`)은 TS가 세 번까지 다시 부르고 그래도 안 되면 409 `busy_retry` |
 | `GET /api/v2/assistant/targets` | taskforce + registry 순서(claude-code · codex) 연결별 한 행, 연결 없으면 `not_connected` 한 행. 상태 순서: error · bridge 없음 · revoked → `not_connected`, heartbeat 없음 · 90초 넘음 → `unreachable`, 서버 registry가 직접 대화를 못 하면 `unsupported`, 그 밖 `ready`. 초기 registry: Claude Code `unsupported`/`null`, Codex `ready`/`read_only` |
 | `POST /api/v2/agent-tasks/{id}/answer` | input 질문의 구조화된 답. 열쇠가 다르면 409 `question_stale`, 승인 409 `approval_via_review`, 비밀값 409 `secret_requires_local`(RPC 0). 같은 답은 `duplicate`(같은 step). 답 단계 앞의 입력 오류는 400 |
 | `GET /api/cron/execution-sweep` | 실행 플래그 조기 반환 **앞에서** `conversation_expire_agent_messages`를 1,000행이면 반복(최대 10회). 실패는 가두고 응답 · 상태 코드 불변 |
@@ -217,12 +217,15 @@ D1c-2a 정정 2 인계: lease 만료 unknown_outcome 뒤 접수는 bridge API의
 
 ### 11-3. 전달 표시 계산 (`agentDeliveryView`, 순수 함수)
 
+원문 메시지의 단계는 `task.step_id`(질문에 답하면 답 단계로 옮겨 간다)가 아니라 **`args->>'message_id'`가 그 메시지인 `agent_message` 단계 중 seq 최대**로 읽는다(검토 반영 7-4: 원문 `accepted` → 답 단계 실패여도 원문은 `accepted`, 답 메시지만 `not_sent`). 답 메시지는 그 답 단계(`args->>'answer_message_id'`)로 계산한다.
+
 `cancelled` → `cancelled` · `refs.answer_for`(질문에 자유 글로 답한 메시지) → 답 단계가 `failed`면 `not_sent`(+ 단계 receipt 이유), `skipped`면 `cancelled`, 그 밖은 `answered` · `queued` + 후보 + 아직 안 고름 → `needs_referent`(제목 ≤ 3) · `queued`/`not_sent`/`expired` → 그 상태 + 이유 · `dispatched` → 단계 `prepared`/`calling` = `sent`, `called` = `accepted`, `unknown_outcome` = `unknown`, 그 밖 `not_sent`(방어). `prepared` = `sent`는 그대로다 — bridge가 끊긴 때의 표시는 heartbeat · lease를 가진 D2a가 고친다(OD-11). 이유는 계약 9개 + SQL이 쓰는 8개 = 17개(`agentDeliveryReasonSchema`, 마이그레이션 문자열 정적 시험).
 
 ### 11-4. 새 SQL (서버 전용 invoker, service_role만 실행)
 
 - `requeue_agent_messages(user, conversation, message_ids|null)`: 대상 상태만(`cancelled`는 끝 상태 · 결과 불명 `unknown_outcome` · 질문의 답 `refs.answer_for` 제외), 메시지를 id 순으로 `for update`. 이름을 준 id가 이 대화의 것이 아니면 `skipped/not_found`.
-- `open_agent_session_external` · `resume_agent_session_here`: 묶인 대화(id 순) → 세션 순으로 잠그고, 대화마다 `event` 줄("Opened in Terminal" · "Resumed here") + 지표. 진행 중 턴이 있으면 busy → `pending:` 세션 not_started → bound 아님 not_bound. 경로 lease 해제는 D3c-2가 `open_agent_session_external`에 건다.
+- `open_agent_session_external` · `resume_agent_session_here`: 묶인 대화(id 순) → 세션 순으로 잠근 뒤 **세션을 잡은 직후 묶인 대화를 `for update nowait`로 한 번 더 확인한다**(검토 반영 7-2: 첫 조회와 세션 잠금 사이에 새 대화가 연결되고 다른 요청이 그 대화를 쥐면 서로 기다려 교착하므로 `55P03`으로 원자 실패, Stop과 같은 방식). 대화마다 `event` 줄("Opened in Terminal" · "Resumed here") + 지표. 진행 중 턴이 있으면 busy → `pending:` 세션 not_started → bound 아님 not_bound. 경로 lease 해제는 D3c-2가 `open_agent_session_external`에 건다.
+- `answer_agent_question_recorded(…)`: D1c-2b `answer_agent_question`의 본문은 그대로 두고 그 결과가 `answered`일 때만 같은 트랜잭션에서 `question_answered`(kind · adapter만)를 쓴다 — `duplicate` · 잘못된 답 · 낡은 질문은 지표 0. `rename_agent_session(user, session, name)`: 실제로 바뀔 때만 `session_renamed`(adapter만); 같은 이름은 `unchanged`, 없거나 남의 세션은 `not_found`, 1–200자 밖이면 `22023`. 새 지표 다섯은 모두 상태 변경과 같은 트랜잭션이다(지표 insert가 실패하면 상태도 롤백).
 - 공통 metric 블록 **v2**를 글자 그대로 넣었다: type에 `message_resent` · `question_answered` · `session_renamed` · `session_opened_external` · `session_resumed` 추가. 앱이 직접 쓰는 type은 `app_opened` · `assistant_opened` 그대로.
 
 ### 11-5. 쓰기 경로별 기록 (OD-16)
@@ -234,8 +237,8 @@ D1c-2a 정정 2 인계: lease 만료 unknown_outcome 뒤 접수는 bridge API의
 | Send again | `message_resent`(SQL, 다시 대기시킨 메시지마다) |
 | referent | 시작될 때 `agent_message_sent` |
 | Stop | `stop_requested`(SQL) + 대화에 "Queued messages cancelled" |
-| 질문 답 | 대화 `event` 줄(SQL) + `question_answered`(TS, 종류 · adapter만, `answered`일 때만) |
-| 이름 바꾸기 | `session_renamed`(TS, 실제로 바뀔 때만, adapter만) |
+| 질문 답 | 대화 `event` 줄 + `question_answered`(SQL 래퍼 `answer_agent_question_recorded`, 같은 트랜잭션, 종류 · adapter만, `answered`일 때만) |
+| 이름 바꾸기 | `session_renamed`(SQL `rename_agent_session`, 같은 트랜잭션, 실제로 바뀔 때만, adapter만) |
 | Open in Terminal · Resume here | `event` 줄 + `session_opened_external` · `session_resumed`(SQL) |
 
 ### 11-6. 경계 · 잠금
@@ -245,7 +248,7 @@ D1c-2a 정정 2 인계: lease 만료 unknown_outcome 뒤 접수는 bridge API의
 
 ### 11-7. 실행 kill switch 방어 (D2a 보안 검토 P1)
 
-`EXECUTION_ENABLED`가 꺼져 있으면 에이전트 대상의 모든 전달 시작 경로(보내기 · Send again · referent · Resume here · Stop 뒤 다음 시작 · `queue_order` 뒤 다음 시작)가 턴을 시작하지 않고, 메시지(대기열 머리)를 기존 `mark_agent_message_not_sent` 경로로 `not_sent`/`write_gate_closed`로 표시한다(HTTP 200, 보통 응답 모양). 꺼진 채 시작하면 전달될 수 없는 task · 단계 · 명령 · `agent_message_sent` 지표가 생기고, bridge가 거둔 것을 자동 계기가 다시 시작하는 끝없는 반복이 되기 때문이다. 확인은 `lib/agents/next-turn.ts`(`markWriteGateClosed` · `startNextAgentMessage`)와 `startAgentMessage`에 있고 `turns.ts`의 함수 본문은 바꾸지 않았다. DB 쪽 gate(`execution_controls` · 실행 주체 · 도구)는 여전히 bridge lease의 몫이다.
+`EXECUTION_ENABLED`가 꺼져 있으면 에이전트 대상의 모든 전달 시작 경로(보내기 · Send again · referent · Resume here · Stop 뒤 다음 시작 · `queue_order` 뒤 다음 시작)가 턴을 시작하지 않고, 메시지(대기열 머리)를 기존 `mark_agent_message_not_sent` 경로로 `not_sent`/`write_gate_closed`로 표시한다(HTTP 200, 보통 응답 모양). 꺼진 채 시작하면 전달될 수 없는 task · 단계 · 명령 · `agent_message_sent` 지표가 생기고, bridge가 거둔 것을 자동 계기가 다시 시작하는 끝없는 반복이 되기 때문이다. 확인은 `lib/agents/next-turn.ts`(`markWriteGateClosed` · `startNextAgentMessage`)와 `startAgentMessage`에 있고 `turns.ts`의 함수 본문은 바꾸지 않았다. DB 쪽 gate(`execution_controls` · 실행 주체 · 도구)는 여전히 bridge lease의 몫이다. **표시는 지금 시작하려던 `queued` 메시지만 한다** — 이미 `not_sent`인 메시지의 이유(예: `spawn_failed`)는 덮어쓰지 않는다(검토 반영 7-1). 자동 시작 대상은 `queued`와 이유가 gate 계열인 `not_sent`뿐이라(`autoStartable`), 실패한 머리는 Send again 또는 Stop으로 풀 때까지 SQL FIFO(`queue_order`)가 뒤 메시지를 붙잡는다.
 
 ### 11-8. 다음 WP 인계
 

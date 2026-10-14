@@ -46,29 +46,33 @@ describe("loadAgentSession · loadSessionAdapter", () => {
   });
 });
 
-describe("renameAgentSession (R14)", () => {
-  it("이름을 바꾸고 지표 session_renamed 한 줄 (props는 adapter뿐, 이름 글 0)", async () => {
-    const fake = fakeAdmin({ tables: world() });
+describe("renameAgentSession (R14 · 검토 반영 7-5)", () => {
+  const rename = (status: string) => ({ rename_agent_session: () => ({ status }) });
+
+  it("SQL 함수 한 번으로 이름과 지표를 같은 트랜잭션에서 바꾼다: TS는 별도 update · insert를 하지 않고 바뀐 세션을 다시 읽어 돌려준다", async () => {
+    const fake = fakeAdmin({ tables: world({ agent_sessions: [sessionRow({ display_name: "새 이름" })] }), rpc: rename("renamed") });
     const result = await renameAgentSession(fake.admin, USER, SESSION, "새 이름");
     expect(result).toMatchObject({ status: "renamed", session: { id: SESSION, display_name: "새 이름" } });
-    expect(fake.tables.agent_sessions[0].display_name).toBe("새 이름");
-    expect(fake.tables.metric_events).toEqual([{ user_id: USER, type: "session_renamed", props: { adapter: "agent:codex" } }]);
-    expect(JSON.stringify(fake.tables.metric_events)).not.toContain("새 이름");
+    expect(fake.rpcCalls("rename_agent_session")).toHaveLength(1);
+    expect(fake.rpcCalls("rename_agent_session")[0].args).toEqual({ p_user_id: USER, p_session_id: SESSION, p_display_name: "새 이름" });
+    expect(writes(fake)).toEqual([]); // 이름 update · 지표 insert 0 (SQL이 같은 트랜잭션에서 한다)
   });
 
-  it("같은 이름이면 unchanged: 쓰기 0, 지표 0", async () => {
-    const fake = fakeAdmin({ tables: world() });
+  it("unchanged는 세션을 읽어 그대로 돌려준다 (지표 0은 SQL 몫)", async () => {
+    const fake = fakeAdmin({ tables: world(), rpc: rename("unchanged") });
     expect(await renameAgentSession(fake.admin, USER, SESSION, "Pricing copy")).toMatchObject({ status: "unchanged", session: { display_name: "Pricing copy" } });
-    expect(fake.tables.metric_events).toEqual([]);
-    expect(writes(fake).filter((call) => call.target === "metric_events")).toEqual([]);
+    expect(writes(fake)).toEqual([]);
   });
 
-  it("없거나 남의 세션은 not_found: 쓰기 0 (남의 세션 이름이 바뀌지 않는다)", async () => {
-    const fake = fakeAdmin({ tables: world({ agent_sessions: [sessionRow({ user_id: OTHER })] }) });
+  it("없거나 남의 세션은 not_found: 세션을 읽지 않는다", async () => {
+    const fake = fakeAdmin({ tables: world(), rpc: rename("not_found") });
     expect(await renameAgentSession(fake.admin, USER, SESSION, "x")).toEqual({ status: "not_found" });
-    expect(fake.tables.agent_sessions[0].display_name).toBe("Pricing copy");
-    expect(fake.tables.metric_events).toEqual([]);
-    for (const call of fake.calls) expect(call.filters).toContainEqual(["user_id", "eq", USER]);
+    expect(fake.calls.filter((call) => call.kind === "select")).toEqual([]);
+  });
+
+  it("바뀐 직후 세션을 읽지 못하면 not_found, 모르는 결과는 던진다", async () => {
+    expect(await renameAgentSession(fakeAdmin({ tables: world({ agent_sessions: [] }), rpc: rename("renamed") }).admin, USER, SESSION, "x")).toEqual({ status: "not_found" });
+    await expect(renameAgentSession(fakeAdmin({ tables: world(), rpc: rename("later") }).admin, USER, SESSION, "x")).rejects.toThrow();
   });
 });
 
@@ -84,6 +88,26 @@ describe("openAgentSessionExternal (AC-36 서버 몫)", () => {
     expect(await openAgentSessionExternal(fake.admin, USER, SESSION)).toEqual({ status });
   });
 
+  const lock = () => Object.assign(new Error("could not obtain lock"), { code: "55P03" });
+
+  it("검토 반영 7-2: 묶인 대화 잠금 경합(55P03)은 원자 실패이므로 다시 부른다 — 두 번 실패해도 세 번째에 성공하면 그 결과를 돌려준다", async () => {
+    let calls = 0;
+    const fake = fakeAdmin({ tables: world({ agent_sessions: [sessionRow({ status: "external" })] }), rpc: { open_agent_session_external: () => { if (++calls < 3) throw lock(); return { status: "external" }; } } });
+    expect(await openAgentSessionExternal(fake.admin, USER, SESSION)).toMatchObject({ status: "external", session: { status: "external" } });
+    expect(fake.rpcCalls("open_agent_session_external")).toHaveLength(3);
+  });
+
+  it("세 번 모두 경합이면 던진다 (route가 409 busy_retry로 바꾼다). 다른 오류는 다시 부르지 않는다", async () => {
+    const stuck = fakeAdmin({ tables: world(), rpc: { open_agent_session_external: () => { throw lock(); } } });
+    await expect(openAgentSessionExternal(stuck.admin, USER, SESSION)).rejects.toMatchObject({ code: "55P03" });
+    expect(stuck.rpcCalls("open_agent_session_external")).toHaveLength(3);
+    for (const code of ["40001", "XX000"]) {
+      const other = fakeAdmin({ tables: world(), rpc: { open_agent_session_external: () => { throw Object.assign(new Error("db"), { code }); } } });
+      await expect(openAgentSessionExternal(other.admin, USER, SESSION)).rejects.toMatchObject({ code });
+      expect(other.rpcCalls("open_agent_session_external")).toHaveLength(1);
+    }
+  });
+
   it("모르는 결과는 던진다", async () => {
     await expect(openAgentSessionExternal(fakeAdmin({ tables: world(), rpc: { open_agent_session_external: () => ({ status: "later" }) } }).admin, USER, SESSION)).rejects.toThrow();
   });
@@ -96,7 +120,7 @@ describe("resumeAgentSessionHere (AC-36 · ONE-TF-13 서버 몫)", () => {
     const fake = fakeAdmin({
       tables: world({
         agent_sessions: [sessionRow()],
-        conversation_messages: [{ id: MSG, user_id: USER, refs: {}, selected: { action_ids: [], context_ids: [] } }],
+        conversation_messages: [{ id: MSG, user_id: USER, refs: {}, selected: { action_ids: [], context_ids: [] }, delivery_state: "queued", delivery_reason: null }],
         execution_policies: [],
       }),
       rpc: rpc("bound", MSG),
@@ -104,7 +128,22 @@ describe("resumeAgentSessionHere (AC-36 · ONE-TF-13 서버 몫)", () => {
     const result = await resumeAgentSessionHere(fake.admin, USER, SESSION, CODEX);
     expect(result).toMatchObject({ status: "bound", session: { id: SESSION }, startedMessageId: MSG });
     // 순서: 상태 전이(commit) → 다음 시작
-    expect(fake.rpcCalls().map((call) => call.target)).toEqual(["resume_agent_session_here", "next_queued_agent_message", "route_agent_message"]);
+    expect(fake.rpcCalls().map((call) => call.target)).toEqual(["resume_agent_session_here", "next_queued_agent_message", "next_queued_agent_message", "route_agent_message"]);
+  });
+
+  it("검토 반영 7-2: 묶인 대화 잠금 경합(55P03)이면 상태 전이가 롤백됐으니 다시 부른다 — 대기열 시작은 전이가 성공한 뒤 한 번만", async () => {
+    let calls = 0;
+    const fake = fakeAdmin({
+      tables: world(),
+      rpc: { ...rpc("bound", null), resume_agent_session_here: () => { if (++calls < 3) throw Object.assign(new Error("lock"), { code: "55P03" }); return { status: "bound" }; } },
+    });
+    expect(await resumeAgentSessionHere(fake.admin, USER, SESSION, CODEX)).toMatchObject({ status: "bound", startedMessageId: null });
+    expect(fake.rpcCalls("resume_agent_session_here")).toHaveLength(3);
+    expect(fake.rpcCalls("next_queued_agent_message")).toHaveLength(1);
+    const stuck = fakeAdmin({ tables: world(), rpc: { resume_agent_session_here: () => { throw Object.assign(new Error("lock"), { code: "55P03" }); } } });
+    await expect(resumeAgentSessionHere(stuck.admin, USER, SESSION, CODEX)).rejects.toMatchObject({ code: "55P03" });
+    expect(stuck.rpcCalls("resume_agent_session_here")).toHaveLength(3);
+    expect(stuck.rpcCalls("next_queued_agent_message")).toEqual([]);
   });
 
   it("대기 메시지가 없으면 시작 0, started_message_id는 null", async () => {
@@ -127,7 +166,7 @@ describe("resumeAgentSessionHere (AC-36 · ONE-TF-13 서버 몫)", () => {
 
   it("D2a 보안 검토 P1 방어: 실행 kill switch가 꺼져 있으면 되돌려도 턴을 시작하지 않고 대기 메시지를 not_sent/write_gate_closed로 표시한다 (route_agent_message 0)", async () => {
     const fake = fakeAdmin({
-      tables: world(),
+      tables: world({ conversation_messages: [{ id: MSG, user_id: USER, refs: {}, selected: { action_ids: [], context_ids: [] }, delivery_state: "queued", delivery_reason: null }] }),
       rpc: { ...rpc("bound", MSG), mark_agent_message_not_sent: () => ({ status: "not_sent", reason: "write_gate_closed" }) },
     });
     expect(await resumeAgentSessionHere(fake.admin, USER, SESSION, OFF)).toMatchObject({ status: "bound", startedMessageId: null });

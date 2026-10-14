@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { AnswerInputError, answerFromRoute, loadAnswerTask, recordQuestionAnswered } from "./answers";
+import { AnswerInputError, answerFromRoute, loadAnswerTask } from "./answers";
 import { fakeAdmin } from "./fake-admin";
 
 const USER = "10000000-0000-4000-8000-000000000001";
@@ -28,7 +28,7 @@ describe("answerFromRoute: 입력 검증 실패와 DB 오류를 구별한다", (
   const input = (answers: unknown, q = question()) => ({ userId: USER, agentTaskId: TASK, providerRequestId: "q", answers, question: q });
 
   it("RPC 앞의 입력 검증 실패는 AnswerInputError (RPC 0)", async () => {
-    const fake = fakeAdmin({ rpc: { answer_agent_question: () => answered } });
+    const fake = fakeAdmin({ rpc: { answer_agent_question_recorded: () => answered } });
     for (const answers of [{ choice: "" }, { choice: "   " }, {}, { choice: "Yes", extra: "x" }, { choice: 5 }]) {
       await expect(answerFromRoute(fake.admin, input(answers))).rejects.toBeInstanceOf(AnswerInputError);
     }
@@ -37,26 +37,20 @@ describe("answerFromRoute: 입력 검증 실패와 DB 오류를 구별한다", (
     expect(fake.rpcCalls()).toEqual([]);
   });
 
-  it("검증을 통과하면 answer_agent_question을 부르고 결과를 돌려준다 (answered_locally는 늘 false)", async () => {
-    const fake = fakeAdmin({ rpc: { answer_agent_question: () => answered } });
+  it("검증을 통과하면 지표까지 한 트랜잭션에서 남기는 SQL 래퍼 answer_agent_question_recorded를 부르고 결과를 돌려준다 (answered_locally는 늘 false, 별도 TS insert 없음)", async () => {
+    const fake = fakeAdmin({ rpc: { answer_agent_question_recorded: () => answered } });
     expect(await answerFromRoute(fake.admin, input({ choice: "Yes" }))).toEqual(answered);
-    expect(fake.rpcCalls("answer_agent_question")[0].args).toMatchObject({ p_user_id: USER, p_agent_task_id: TASK, p_provider_request_id: "q", p_answers: { choice: "Yes" }, p_answered_locally: false });
+    expect(fake.rpcCalls().map((call) => call.target)).toEqual(["answer_agent_question_recorded"]);
+    expect(fake.calls.filter((call) => call.kind === "insert")).toEqual([]);
+    expect(fake.rpcCalls("answer_agent_question_recorded")[0].args).toMatchObject({ p_user_id: USER, p_agent_task_id: TASK, p_provider_request_id: "q", p_answers: { choice: "Yes" }, p_answered_locally: false });
   });
 
   it("RPC 이후의 오류(DB 오류 · 예상 밖 출력)는 그대로 던진다 — 입력 오류로 둔갑하지 않는다", async () => {
-    const db = fakeAdmin({ rpc: { answer_agent_question: () => { throw Object.assign(new Error("lock"), { code: "55P03" }); } } });
+    const db = fakeAdmin({ rpc: { answer_agent_question_recorded: () => { throw Object.assign(new Error("lock"), { code: "55P03" }); } } });
     const error = await answerFromRoute(db.admin, input({ choice: "Yes" })).catch((e: unknown) => e);
     expect(error).not.toBeInstanceOf(AnswerInputError);
     expect(error).toMatchObject({ code: "55P03" });
-    const odd = fakeAdmin({ rpc: { answer_agent_question: () => ({ status: "mystery" }) } });
+    const odd = fakeAdmin({ rpc: { answer_agent_question_recorded: () => ({ status: "mystery" }) } });
     await expect(answerFromRoute(odd.admin, input({ choice: "Yes" }))).rejects.not.toBeInstanceOf(AnswerInputError);
-  });
-});
-
-describe("recordQuestionAnswered (OD-16)", () => {
-  it("질문 종류와 adapter만 한 줄로 쓴다 (답 값 · 글 0)", async () => {
-    const fake = fakeAdmin();
-    await recordQuestionAnswered(fake.admin, USER, { kind: "input", adapter: "agent:codex" });
-    expect(fake.tables.metric_events).toEqual([{ user_id: USER, type: "question_answered", props: { kind: "input", adapter: "agent:codex" } }]);
   });
 });

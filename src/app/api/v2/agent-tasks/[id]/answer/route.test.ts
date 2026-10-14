@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
-  admin: vi.fn(() => ({ admin: true })), auth: vi.fn(), loadAnswerTask: vi.fn(), loadSessionAdapter: vi.fn(), answerAgentQuestion: vi.fn(), recordQuestionAnswered: vi.fn(),
+  admin: vi.fn(() => ({ admin: true })), auth: vi.fn(), loadAnswerTask: vi.fn(), loadSessionAdapter: vi.fn(), answerAgentQuestion: vi.fn(),
 }));
 
 vi.mock("server-only", () => ({}));
@@ -10,7 +10,7 @@ vi.mock("@/lib/api/auth", () => ({ authenticateRequest: mocks.auth }));
 vi.mock("@/lib/api/profile-store", () => ({ hasAiConsent: vi.fn(async () => true) }));
 vi.mock("@/lib/agents/sessions", async (original) => ({ ...(await original<typeof import("@/lib/agents/sessions")>()), loadSessionAdapter: mocks.loadSessionAdapter }));
 vi.mock("@/lib/agents/questions", async (original) => ({ ...(await original<typeof import("@/lib/agents/questions")>()), answerAgentQuestion: mocks.answerAgentQuestion }));
-vi.mock("@/lib/agents/answers", async (original) => ({ ...(await original<typeof import("@/lib/agents/answers")>()), loadAnswerTask: mocks.loadAnswerTask, recordQuestionAnswered: mocks.recordQuestionAnswered }));
+vi.mock("@/lib/agents/answers", async (original) => ({ ...(await original<typeof import("@/lib/agents/answers")>()), loadAnswerTask: mocks.loadAnswerTask }));
 
 import { POST } from "./route";
 
@@ -31,7 +31,6 @@ beforeEach(() => {
   mocks.loadSessionAdapter.mockResolvedValue({ adapter: "agent:codex", enabled: true });
   mocks.loadAnswerTask.mockResolvedValue({ id: TASK, sessionId: SESSION, pendingQuestion: question(), answeredQuestion: null });
   mocks.answerAgentQuestion.mockResolvedValue({ status: "answered", step_id: STEP });
-  mocks.recordQuestionAnswered.mockResolvedValue(undefined);
 });
 afterEach(() => {
   vi.clearAllMocks();
@@ -46,13 +45,12 @@ describe("POST /api/v2/agent-tasks/{id}/answer (route)", () => {
     expect(mocks.answerAgentQuestion).not.toHaveBeenCalled();
   });
 
-  it("켜져 있으면 열린 질문에 답을 넘기고(answered_locally는 늘 false) 지표는 종류와 adapter만 쓴다", async () => {
+  it("켜져 있으면 열린 질문에 답을 넘기고(answered_locally는 늘 false) 지표는 SQL 래퍼가 같은 트랜잭션에서 쓴다 (recordMetric: true, 별도 insert 없음)", async () => {
     vi.stubEnv("CONVERSATIONS_V2_ENABLED", "true");
     const response = await call();
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ status: "answered", step_id: STEP });
-    expect(mocks.answerAgentQuestion).toHaveBeenCalledExactlyOnceWith(expect.anything(), { userId: USER, agentTaskId: TASK, providerRequestId: "q-1", answers: { choice: "Yes" }, question: question(), answeredLocally: false });
-    expect(mocks.recordQuestionAnswered).toHaveBeenCalledExactlyOnceWith({ admin: true }, USER, { kind: "input", adapter: "agent:codex" });
+    expect(mocks.answerAgentQuestion).toHaveBeenCalledExactlyOnceWith(expect.anything(), { userId: USER, agentTaskId: TASK, providerRequestId: "q-1", answers: { choice: "Yes" }, question: question(), answeredLocally: false, recordMetric: true });
   });
 
   it("승인 · 비밀값 · 옛 열쇠는 RPC 없이 409", async () => {

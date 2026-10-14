@@ -17,6 +17,7 @@ let admin: pg.Client;
 let setup: pg.Client;
 let a: pg.Client;
 let b: pg.Client;
+let c: pg.Client;
 let aPid: number;
 let bPid: number;
 
@@ -36,6 +37,7 @@ beforeAll(async () => {
   for (const sql of await supabaseSchemaScripts()) await setup.query(sql);
   a = await connect(DB_NAME);
   b = await connect(DB_NAME);
+  c = await connect(DB_NAME);
   aPid = (await a.query<{ pid: number }>("select pg_backend_pid() as pid")).rows[0].pid;
   bPid = (await b.query<{ pid: number }>("select pg_backend_pid() as pid")).rows[0].pid;
 }, 120_000);
@@ -44,9 +46,10 @@ afterEach(async () => {
   // A를 먼저 놓아 B의 대기를 풀어 준 뒤 정리한다.
   await a?.query("rollback").catch(() => {});
   await b?.query("rollback").catch(() => {});
+  await c?.query("rollback").catch(() => {});
 });
 afterAll(async () => {
-  await Promise.allSettled([a?.end(), b?.end(), setup?.end()]);
+  await Promise.allSettled([a?.end(), b?.end(), c?.end(), setup?.end()]);
   if (admin) {
     await admin.query(`drop database if exists ${DB_NAME} with (force)`);
     await admin.end();
@@ -275,4 +278,36 @@ describe("P4 resume-here ↔ stop · open-external ↔ route_agent_message", () 
     await b.query("commit");
     expect(await f.count("select 1 from public.agent_tasks where user_id = $1", [w.user])).toBe(0);
   });
+});
+
+describe("P5 세션을 잡은 직후 묶인 대화를 NOWAIT로 다시 확인한다 (검토 반영 7-2)", () => {
+  // 시나리오: 호출이 첫 대화 조회를 끝내고 세션 잠금을 기다리는 동안 새 대화 C2가 같은 세션에 연결 · commit되고, 다른 요청 A가 C2 행 잠금을 쥔다.
+  // 다시 확인이 없으면 호출(세션 → C2)과 A(C2 → 세션)가 서로 기다려 교착한다. NOWAIT이면 호출만 55P03으로 원자 실패한다.
+  const cases = [
+    ["open_agent_session_external", "bound", open, "external"],
+    ["resume_agent_session_here", "external", resume, "bound"],
+  ] as const;
+  for (const [name, status, call, ok] of cases) {
+    it(`${name}: 새로 연결된 대화를 다른 요청이 쥐고 있으면 교착 대신 55P03으로 원자 실패하고, 풀린 뒤 다시 부르면 새 대화까지 포함해 성공한다`, async () => {
+      const w = await world({ bound: true, status });
+      const c2 = await f.agentConversation(w.user, w.connection);
+      await c.query("begin");
+      await c.query("update public.conversations set agent_session_id = $1 where id = $2", [w.session, c2]); // C2 행 + 세션 key-share
+      await a.query("begin");
+      const holdingC2 = a.query("select id from public.conversations where id = $1 for update", [c2]); // c가 commit되면 곧바로 C2를 쥔다
+      await waitForLockWait(aPid);
+      const failing = call(b, w.user, w.session!).then(() => null, (error: unknown) => error);
+      await waitForLockWait(bPid); // 세션 잠금 대기
+      await c.query("commit"); // C2는 A에게, 세션은 호출에게 동시에 넘어간다
+      expect(await failing).toMatchObject({ code: "55P03" });
+      await holdingC2;
+      // A는 이어서 세션을 잡을 수 있다 (호출이 롤백했다: 교착 0)
+      await a.query("select id from public.agent_sessions where id = $1 for update", [w.session]);
+      await a.query("commit");
+      expect((await f.one("select status from public.agent_sessions where id = $1", [w.session])).status).toBe(status);
+      expect(await f.count("select 1 from public.metric_events where user_id = $1 and type in ('session_opened_external', 'session_resumed')", [w.user])).toBe(0);
+      expect(await call(b, w.user, w.session!)).toBe(ok);
+      expect(await f.count("select 1 from public.conversation_messages where conversation_id = $1 and role = 'event'", [c2])).toBe(1);
+    });
+  }
 });

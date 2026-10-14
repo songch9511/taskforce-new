@@ -191,8 +191,11 @@ export type PostMessageDeps<User extends AppUser> = {
   ) => Promise<{ id: string; contextId: string | null; contextName: string | null; targetKind?: ConversationTargetKind; agentConnectionId?: string | null; agentSessionId?: string | null } | null>;
   /** refs: 정규화한 선택(normalizeSelected). 하나라도 내 것이 아니면 missing */
   verifySelected: (user: User, refs: SelectedRefs) => Promise<{ targets: Target[] } | { missing: true }>;
-  /** attachments(맥락 칩)를 정규화하고 종류별 소유를 확인한다. 없는 · 남의 칩이 하나라도 있으면 missing, 범위 칩은 MEMORY_ENABLED가 꺼져 있으면 context_off */
-  prepareAttachments?: (user: User, attachments: Attachment[]) => Promise<PreparedAttachments>;
+  /**
+   * attachments(맥락 칩)를 정규화하고 종류별 소유를 확인한다. 없는 · 남의 칩이 하나라도 있으면 missing, 범위 칩은 MEMORY_ENABLED가 꺼져 있으면 context_off.
+   * known: 같은 client_message_id의 메시지가 이미 있다(같은 제출 재전송) — 그 사이 지워진 칩은 missing으로 막지 않고 처리 입력에서만 뺀다 (검토 반영 7-3)
+   */
+  prepareAttachments?: (user: User, attachments: Attachment[], options: { known: boolean }) => Promise<PreparedAttachments>;
   /** 새로 저장한 메시지의 칩마다 측정 이벤트 한 줄 (context_attached). 실패해도 메시지는 남는다 */
   recordAttachments?: (user: User, attachments: Attachment[]) => Promise<void>;
   /** 이 대화에 같은 client_message_id의 사용자 메시지가 이미 있는가 (한도를 저장 전에 셀지 정한다) */
@@ -242,9 +245,12 @@ export async function handlePostConversationMessage<User extends AppUser>(
     let refs = normalizeSelected(body.data.refs);
     let stored: SelectedRefs & { attachments?: Attachment[] } = refs;
     let chips: Attachment[] = [];
+    let knownEarly: boolean | null = null;
     if (body.data.attachments?.length) {
       if (!deps.prepareAttachments) return errorResponse(400, "invalid_request", "맥락 칩을 받지 않습니다.");
-      const prepared = await deps.prepareAttachments(user, body.data.attachments);
+      // 같은 제출인지를 칩 존재 확인보다 먼저 본다: 재전송이면 그 사이 지워진 칩 때문에 404가 되지 않고 저장된 응답을 돌려준다 (OD-23)
+      knownEarly = await deps.messageExists(user, conversation.id, body.data.client_message_id);
+      const prepared = await deps.prepareAttachments(user, body.data.attachments, { known: knownEarly });
       if (prepared.status !== "ok") {
         return prepared.status === "context_off" ? errorResponse(400, "invalid_request", "범위 기능이 꺼져 있습니다.") : errorResponse(404, "not_found", "대상을 찾지 못했습니다.");
       }
@@ -260,7 +266,7 @@ export async function handlePostConversationMessage<User extends AppUser>(
       response.headers.set("Retry-After", String(retryAfterSeconds(retryAt, deps.now?.() ?? new Date())));
       return response;
     };
-    const known = await deps.messageExists(user, conversation.id, body.data.client_message_id);
+    const known = knownEarly ?? (await deps.messageExists(user, conversation.id, body.data.client_message_id));
     if (!known) {
       const retryAt = await deps.rateLimit(user);
       if (retryAt) return tooMany(retryAt);

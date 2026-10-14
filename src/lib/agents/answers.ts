@@ -2,7 +2,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 
 import { answerAgentQuestion, type AnswerAgentQuestionResult } from "./questions";
 
-// 질문 답 route의 보조 (Assistant 계약 v3 3.6, OA D1d-s). answerAgentQuestion(questions.ts)은 그대로 쓴다.
+// 질문 답 route의 보조 (Assistant 계약 v3 3.6, OA D1d-s). answerAgentQuestion(questions.ts)을 쓰되 지표(question_answered)는 SQL 래퍼가 같은 트랜잭션에서 남긴다 (검토 반영 7-5).
 
 /** 답이 질문과 맞지 않는다 (RPC 앞의 입력 검증 실패 → route는 400). DB 오류와 구별한다 */
 export class AnswerInputError extends Error {
@@ -28,7 +28,7 @@ export async function answerFromRoute(
     },
   } as unknown as SupabaseClient;
   try {
-    return await answerAgentQuestion(probe, { ...input, answeredLocally: false });
+    return await answerAgentQuestion(probe, { ...input, answeredLocally: false, recordMetric: true });
   } catch (error) {
     if (!reachedDatabase) throw new AnswerInputError(error instanceof Error ? error.message : "invalid answer");
     throw error;
@@ -43,9 +43,4 @@ export async function loadAnswerTask(admin: SupabaseClient, userId: string, task
   if (!data) return null;
   const row = data as { id: string; agent_session_id: string; pending_question: unknown; answered_question: unknown };
   return { id: row.id, sessionId: row.agent_session_id, pendingQuestion: row.pending_question ?? null, answeredQuestion: row.answered_question ?? null };
-}
-
-/** question_answered (OD-16): 질문 종류와 adapter만. 답 값 · 글은 담지 않는다 */
-export async function recordQuestionAnswered(admin: SupabaseClient, userId: string, info: { kind: string; adapter: string }): Promise<void> {
-  await admin.from("metric_events").insert({ user_id: userId, type: "question_answered", props: { kind: info.kind, adapter: info.adapter } }).throwOnError();
 }

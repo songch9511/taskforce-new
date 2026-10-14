@@ -36,18 +36,23 @@ export function agentSelected(attachments: readonly Attachment[]) {
 }
 
 /**
- * 대상 taskforce의 selected (OD-5): 기존 { action_ids, run_ids, artifact_ids } + attachments.
- * added action · run · (execution_artifacts의) artifact만 지금의 지시 대상 규칙 1에 쓰고 나머지는 저장만 한다.
- * 칩이 없으면 attachments 키를 만들지 않는다: 옛 제출과 같은 제출로 비교된다
+ * 대상 taskforce의 저장용 selected (OD-5): 기존 { action_ids, run_ids, artifact_ids } + attachments. 칩에서만 정해진다 — 존재 확인과 무관하다.
+ * 같은 제출 비교(멱등)가 칩이 지워진 뒤에도 처음 제출과 같게 하려는 것이다(검토 반영 7-3). 칩이 없으면 attachments 키를 만들지 않는다: 옛 제출과 같은 제출로 비교된다
  */
-export function taskforceSelected(attachments: readonly Attachment[], executionArtifactIds: readonly string[]) {
-  const execution = new Set(executionArtifactIds);
-  const refs = {
-    action_ids: added(attachments, "action"),
-    run_ids: added(attachments, "run"),
-    artifact_ids: added(attachments, "artifact").filter((id) => execution.has(id)),
-  };
+export function taskforceSelected(attachments: readonly Attachment[]) {
+  const refs = { action_ids: added(attachments, "action"), run_ids: added(attachments, "run"), artifact_ids: added(attachments, "artifact") };
   return attachments.length ? { ...refs, attachments: [...attachments] } : refs;
+}
+
+/**
+ * 대상 taskforce의 처리용 refs: 지금의 지시 대상 규칙 1에 쓰는 것. added action · run · (execution_artifacts의) artifact만이고,
+ * 지워진(missing) 칩과 에이전트 산출물은 뺀다 — 저장만 한다 (검토 반영 7-3: 처리 입력에서는 dropped 첨부를 뺀다)
+ */
+export function taskforceRefs(attachments: readonly Attachment[], check: { missing: readonly Attachment[]; executionArtifactIds: readonly string[] }) {
+  const gone = new Set(check.missing.map((item) => `${item.kind}:${item.id.toLowerCase()}`));
+  const execution = new Set(check.executionArtifactIds);
+  const live = (kind: AttachmentKind) => added(attachments, kind).filter((id) => !gone.has(`${kind}:${id}`));
+  return { action_ids: live("action"), run_ids: live("run"), artifact_ids: live("artifact").filter((id) => execution.has(id)) };
 }
 
 export type AttachmentCheck = {

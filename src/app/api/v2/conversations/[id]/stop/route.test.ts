@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { fakeAdmin } from "@/lib/agents/fake-admin";
+
 const mocks = vi.hoisted(() => ({ admin: vi.fn(() => ({ admin: true })), auth: vi.fn(), readConversationTarget: vi.fn(), resolveAgentTarget: vi.fn(), stopAgentSession: vi.fn(), startNextQueuedTurn: vi.fn() }));
 
 vi.mock("server-only", () => ({}));
@@ -18,9 +20,21 @@ const CONV = "cccccccc-0000-4000-8000-000000000001";
 const SESSION = "5e5e5e5e-0000-4000-8000-000000000001";
 const CONN = "c0c0c0c0-0000-4000-8000-000000000001";
 const TASK = "7a7a7a7a-0000-4000-8000-000000000001";
+const MESSAGE = "dddddddd-0000-4000-8000-000000000001";
+/** Stop 뒤 "다음 대기 메시지"를 읽는 표: 대기열 머리(delivery) + 세션 → 연결 */
+const queue = (head: { state: string; reason?: string | null } | null = { state: "queued" }) =>
+  fakeAdmin({
+    tables: {
+      conversation_messages: head ? [{ id: MESSAGE, user_id: USER, delivery_state: head.state, delivery_reason: head.reason ?? null }] : [],
+      agent_sessions: [{ id: SESSION, user_id: USER, connection_id: CONN }],
+      agent_connections: [{ id: CONN, user_id: USER, adapter: "agent:codex", status: "active" }],
+    },
+    rpc: { next_queued_agent_message: () => (head ? MESSAGE : null), mark_agent_message_not_sent: () => ({ status: "not_sent", reason: "write_gate_closed" }) },
+  });
 const call = () => POST(new Request(`https://api.example.dev/api/v2/conversations/${CONV}/stop`, { method: "POST", body: "{}" }), { params: Promise.resolve({ id: CONV }) });
 
 beforeEach(() => {
+  mocks.admin.mockReturnValue({ admin: true });
   mocks.auth.mockResolvedValue({ user: { id: USER } });
   mocks.readConversationTarget.mockResolvedValue({ id: CONV, targetKind: "agent", connectionId: CONN, sessionId: SESSION });
   mocks.resolveAgentTarget.mockResolvedValue({ enabled: true });
@@ -43,24 +57,41 @@ describe("POST /api/v2/conversations/{id}/stop (route)", () => {
   it("그 대화의 세션을 surface 'assistant'로 멈추고, 확정된 작업이 있으면 다음 대기 메시지를 한 번 시작해 본다", async () => {
     vi.stubEnv("CONVERSATIONS_V2_ENABLED", "true");
     vi.stubEnv("EXECUTION_ENABLED", "true");
+    vi.stubEnv("AGENT_ADAPTER_CODEX_ENABLED", "true");
+    const fake = queue();
+    mocks.admin.mockReturnValue(fake.admin as never);
     const response = await call();
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ tasks: [{ agent_task_id: TASK, cancel: "confirmed" }] });
-    expect(mocks.stopAgentSession).toHaveBeenCalledExactlyOnceWith({ admin: true }, { userId: USER, sessionId: SESSION, surface: "assistant" });
-    expect(mocks.startNextQueuedTurn).toHaveBeenCalledExactlyOnceWith({ admin: true }, { userId: USER, sessionId: SESSION }, expect.objectContaining({ EXECUTION_ENABLED: "true" }));
+    expect(mocks.stopAgentSession).toHaveBeenCalledExactlyOnceWith(fake.admin, { userId: USER, sessionId: SESSION, surface: "assistant" });
+    expect(mocks.startNextQueuedTurn).toHaveBeenCalledExactlyOnceWith(fake.admin, { userId: USER, sessionId: SESSION }, expect.objectContaining({ EXECUTION_ENABLED: "true" }));
   });
 
-  it("D2a 보안 검토 P1 방어: 실행 kill switch가 꺼져 있으면 Stop은 그대로 하되 다음 턴을 시작하지 않고 머리를 write_gate_closed로 표시한다", async () => {
+  it("D2a 보안 검토 P1 방어: 실행 kill switch가 꺼져 있으면 Stop은 그대로 하되 다음 턴을 시작하지 않고 queued 머리를 write_gate_closed로 표시한다", async () => {
     vi.stubEnv("CONVERSATIONS_V2_ENABLED", "true");
-    const MESSAGE = "dddddddd-0000-4000-8000-000000000001";
-    const rpc = vi.fn((name: string) => ({ throwOnError: async () => ({ data: name === "next_queued_agent_message" ? MESSAGE : { status: "not_sent", reason: "write_gate_closed" }, error: null }) }));
-    mocks.admin.mockReturnValue({ admin: true, rpc } as never);
+    vi.stubEnv("AGENT_ADAPTER_CODEX_ENABLED", "true");
+    const fake = queue();
+    mocks.admin.mockReturnValue(fake.admin as never);
     const response = await call();
     expect(response.status).toBe(200);
     expect(mocks.stopAgentSession).toHaveBeenCalledTimes(1);
     expect(mocks.startNextQueuedTurn).not.toHaveBeenCalled();
-    expect(rpc.mock.calls.map(([name]) => name)).toEqual(["next_queued_agent_message", "mark_agent_message_not_sent"]);
-    mocks.admin.mockReturnValue({ admin: true });
+    expect(fake.rpcCalls().map((rpc) => rpc.target)).toEqual(["next_queued_agent_message", "mark_agent_message_not_sent"]);
+  });
+
+  it.each(["spawn_failed", "usage_limited", "write_gate_closed"])("검토 반영 7-1: Stop 뒤 대기열 머리가 not_sent/%s이면 시작하지도 이유를 덮어쓰지도 않는다 (실행 플래그가 켜져 있든 꺼져 있든, 실패한 머리는 Send again으로만)", async (reason) => {
+    vi.stubEnv("CONVERSATIONS_V2_ENABLED", "true");
+    vi.stubEnv("AGENT_ADAPTER_CODEX_ENABLED", "true");
+    for (const execution of ["true", "false"]) {
+      vi.stubEnv("EXECUTION_ENABLED", execution);
+      const fake = queue({ state: "not_sent", reason });
+      mocks.admin.mockReturnValue(fake.admin as never);
+      mocks.startNextQueuedTurn.mockClear();
+      expect((await call()).status).toBe(200);
+      expect(fake.rpcCalls("mark_agent_message_not_sent")).toEqual([]);
+      // gate 계열은 플래그가 켜져 있을 때만 다시 시작한다
+      expect(mocks.startNextQueuedTurn).toHaveBeenCalledTimes(reason === "write_gate_closed" && execution === "true" ? 1 : 0);
+    }
   });
 
   it("롤백 규칙: adapter 플래그가 꺼져 있어도 Stop은 200 — 이미 있는 턴을 멈추고(confirmed) 다음 턴은 시작하지 않는다", async () => {

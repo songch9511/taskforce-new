@@ -1,8 +1,8 @@
 -- OA D1d-s: 대화 API v2 확장의 서버 SQL (구현 계획 D1d, Assistant 계약 v3 3.2 · 3.8 · 5장 · 8장). 새 표 · 열 · 트리거 · 인덱스는 없다.
 --
 -- 1) 공통 metric 블록 v2 (아래, 글자 그대로): metric_events type에 새 5개를 더한다 — message_resent(Send again) · question_answered(질문 답) ·
---    session_renamed · session_opened_external · session_resumed. question_answered · session_renamed는 서버 코드(TS)가 쓰고,
---    다시 보내기 · 열기 · 되돌리기는 아래 함수가 같은 트랜잭션에서 쓴다.
+--    session_renamed · session_opened_external · session_resumed. 다섯 type은 모두 상태 변경과 같은 트랜잭션에서 아래 함수가 쓴다
+--    (검토 반영 7-5: 상태만 바뀌고 지표가 빠지거나 지표만 남는 틈을 없앤다). 질문 답 · 이름 바꾸기는 5) · 6)의 래퍼가, 나머지는 2) 3) 4)가 쓴다.
 --    props에는 id · 종류 · 이유 코드만 담는다 (사용자 글 · 답 값 0). 앱(authenticated)이 직접 쓰는 type은 app_opened · assistant_opened 그대로다.
 -- 2) requeue_agent_messages(p_user_id, p_conversation_id, p_message_ids): Send again. 대상 상태(not_sent · expired)의 사용자 메시지를 queued로 되돌리고
 --    delivery_reason을 비우고 보관 기한을 지금부터 24시간으로 새로 준다 (계약 3.2 "Send again"). cancelled는 끝 상태라 받지 않는다(OD-8): 앱은 같은 글을 새 client_message_id로 보낸다.
@@ -14,7 +14,11 @@
 -- 4) resume_agent_session_here(p_user_id, p_session_id): Resume here. external을 bound로 되돌린다(이미 bound이면 unchanged, external이 아니면 not_external). 같은 방식으로 event 줄("Resumed here") · 지표.
 --    대기 메시지를 보낸 순서대로 시작하는 일은 TS가 commit 뒤에 startNextQueuedTurn으로 한다(잠금을 쥔 채 부르지 않는다).
 --    사용자가 터미널 세션을 닫았다고 확인했는지는 route가 본다(본문 confirmed_terminal_closed: true) — 이 함수는 상태 전이만 한다.
--- 잠금 순서(D1c와 같다): 메시지 → 사용자 advisory → 대화 → 세션 → run → task → step. 2번은 메시지만, 3 · 4번은 묶인 대화(id 순) → 세션이다.
+--    3 · 4번은 세션 잠금을 잡은 직후 묶인 대화를 for update nowait로 한 번 더 확인한다(검토 반영 7-2): 첫 조회와 세션 잠금 사이에 새 대화가 연결되고 다른 요청이 그 대화를
+--    쥐면 (세션 → 대화)와 (대화 → 세션)이 서로 기다려 교착하므로, 기다리지 않고 55P03으로 원자 실패한다. TS가 몇 번 다시 시도하고 그래도 안 되면 409 busy_retry.
+-- 5) answer_agent_question_recorded(…): 질문 답 + 지표. D1c-2b의 answer_agent_question 본문은 그대로 두고 그 결과가 answered일 때만 question_answered 한 줄을 같은 트랜잭션에서 쓴다 (duplicate · 잘못된 답 · 낡은 질문은 0).
+-- 6) rename_agent_session(p_user_id, p_session_id, p_display_name): 이름 바꾸기 + 지표. 실제로 바뀔 때만 session_renamed 한 줄(adapter만). 같은 이름은 unchanged, 없거나 남의 세션은 not_found.
+-- 잠금 순서(D1c와 같다): 메시지 → 사용자 advisory → 대화 → 세션 → run → task → step. 2번은 메시지만, 3 · 4번은 묶인 대화(id 순) → 세션 → 묶인 대화 다시 확인이다.
 -- 함수는 모두 서버 전용이다: security invoker, search_path 비움, public · anon · authenticated 실행 거절, service_role만 실행.
 -- 적용: 운영 DB에는 병합 직전 승인을 받고 저장소 문서(docs/agent-gateway.md)의 방법으로만 한다. 20261120000000_action_numbers 뒤에 적용한다.
 
@@ -145,6 +149,8 @@ begin
   perform 1 from public.conversations where agent_session_id = p_session_id and user_id = p_user_id order by id for update;
   select * into v_session from public.agent_sessions where id = p_session_id and user_id = p_user_id for update;
   if not found then return jsonb_build_object('status', 'not_found'); end if;
+  -- 세션을 잡는 동안 새로 연결된 대화가 있을 수 있다: 기다리지 않고 한 번 더 잠근다 (이미 쥔 행은 바로 지나간다)
+  perform 1 from public.conversations where agent_session_id = p_session_id and user_id = p_user_id order by id for update nowait;
   if v_session.status = 'external' then return jsonb_build_object('status', 'unchanged'); end if;
   if exists (select 1 from public.agent_tasks t where t.agent_session_id = p_session_id and t.user_id = p_user_id
                and t.state in ('dispatched', 'accepted', 'running', 'awaiting_answer', 'unreachable')) then
@@ -187,6 +193,7 @@ begin
   perform 1 from public.conversations where agent_session_id = p_session_id and user_id = p_user_id order by id for update;
   select * into v_session from public.agent_sessions where id = p_session_id and user_id = p_user_id for update;
   if not found then return jsonb_build_object('status', 'not_found'); end if;
+  perform 1 from public.conversations where agent_session_id = p_session_id and user_id = p_user_id order by id for update nowait;
   if v_session.status = 'bound' then return jsonb_build_object('status', 'unchanged'); end if;
   if v_session.status <> 'external' then return jsonb_build_object('status', 'not_external'); end if;
 
@@ -206,11 +213,64 @@ begin
 end;
 $$;
 
+-- ─────────────────────────────────────────────
+-- 5) 질문 답 + 지표
+-- ─────────────────────────────────────────────
+create function public.answer_agent_question_recorded(
+  p_user_id uuid, p_agent_task_id uuid, p_provider_request_id text, p_answers jsonb, p_answered_locally boolean,
+  p_answer_message_id uuid default null
+) returns jsonb
+language plpgsql set search_path = ''
+as $$
+declare
+  v_result jsonb;
+  v_kind text;
+  v_adapter text;
+begin
+  v_result := public.answer_agent_question(p_user_id, p_agent_task_id, p_provider_request_id, p_answers, p_answered_locally, p_answer_message_id);
+  if v_result->>'status' = 'answered' then
+    select t.answered_question->>'kind', a.adapter into v_kind, v_adapter
+      from public.agent_tasks t
+      join public.agent_sessions s on s.id = t.agent_session_id and s.user_id = t.user_id
+      left join public.agent_connections a on a.id = s.connection_id and a.user_id = s.user_id
+     where t.id = p_agent_task_id and t.user_id = p_user_id;
+    insert into public.metric_events (user_id, type, props)
+      values (p_user_id, 'question_answered', jsonb_strip_nulls(jsonb_build_object('kind', v_kind, 'adapter', v_adapter)));
+  end if;
+  return v_result;
+end;
+$$;
+
+-- ─────────────────────────────────────────────
+-- 6) 이름 바꾸기 + 지표
+-- ─────────────────────────────────────────────
+create function public.rename_agent_session(p_user_id uuid, p_session_id uuid, p_display_name text) returns jsonb
+language plpgsql set search_path = ''
+as $$
+declare
+  v_session public.agent_sessions;
+  v_adapter text;
+  v_name text := btrim(p_display_name, E' \t\r\n');
+begin
+  if v_name is null or char_length(v_name) not between 1 and 200 then
+    raise exception 'rename_agent_session: display name must be 1-200 characters' using errcode = '22023';
+  end if;
+  select * into v_session from public.agent_sessions where id = p_session_id and user_id = p_user_id for update;
+  if not found then return jsonb_build_object('status', 'not_found'); end if;
+  if v_session.display_name is not distinct from v_name then return jsonb_build_object('status', 'unchanged'); end if;
+  update public.agent_sessions set display_name = v_name where id = p_session_id;
+  select a.adapter into v_adapter from public.agent_connections a where a.id = v_session.connection_id and a.user_id = p_user_id;
+  insert into public.metric_events (user_id, type, props)
+    values (p_user_id, 'session_renamed', jsonb_strip_nulls(jsonb_build_object('adapter', v_adapter)));
+  return jsonb_build_object('status', 'renamed');
+end;
+$$;
+
 -- 서버 전용: 앱은 이 입구를 실행할 수 없다 (기존 함수와 같은 security invoker + 같은 권한 블록).
 do $$
 declare f text;
 begin
-  foreach f in array array['requeue_agent_messages', 'open_agent_session_external', 'resume_agent_session_here'] loop
+  foreach f in array array['requeue_agent_messages', 'open_agent_session_external', 'resume_agent_session_here', 'answer_agent_question_recorded', 'rename_agent_session'] loop
     execute format('revoke all on function public.%I from public, anon, authenticated', f);
     execute format('grant execute on function public.%I to service_role', f);
   end loop;

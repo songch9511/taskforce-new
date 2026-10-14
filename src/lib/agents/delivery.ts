@@ -19,7 +19,7 @@ export function agentMessageDelivery(state: AgentMessageDeliveryState, stepState
 
 export type AgentDeliveryInput = {
   row: { state: AgentMessageDeliveryState; reason: string | null; refs: Record<string, unknown> | null };
-  /** 그 메시지의 마지막 턴 단계 상태 (agent_tasks.message_id → turn_seq 최대 → step_id → execution_steps.state) */
+  /** 그 메시지 자신의 전달 단계 상태 (execution_steps 중 kind agent_message · args->>message_id가 그 메시지 · seq 최대). task.step_id는 답 단계로 옮겨 가므로 쓰지 않는다 */
   stepState: StepState | null;
   /** refs.answer_for인 글(질문에 자유 글로 답한 메시지)의 답 단계. failed의 이유는 단계 receipt.reason */
   answerStep?: { state: StepState; reason: string | null } | null;

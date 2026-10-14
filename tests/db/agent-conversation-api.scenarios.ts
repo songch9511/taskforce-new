@@ -5,15 +5,16 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { AGENT_QUESTION } from "./agent-gateway-core.scenarios";
-import { agentEventFixtures } from "./agent-events.scenarios";
+import { agentQuestionsStopFixtures } from "./agent-questions-stop.scenarios";
 import type { ConversationAgentDb } from "./conversation-agent-target.scenarios";
 
-// OA D1d-s 마이그레이션 (20261121000000_agent_conversation_api): 서버 전용 SQL 함수 셋 —
-// requeue_agent_messages(Send again) · open_agent_session_external(Open in Terminal) · resume_agent_session_here(Resume here) —
-// 과 공통 metric 블록 v2(새 type 5개). 같은 시나리오를 PGlite(tests/db/agent-conversation-api.test.ts)와 실제 Postgres(tests/pg)에서 돌린다.
+// OA D1d-s 마이그레이션 (20261121000000_agent_conversation_api): 서버 전용 SQL 함수 —
+// requeue_agent_messages(Send again) · open_agent_session_external(Open in Terminal) · resume_agent_session_here(Resume here) ·
+// answer_agent_question_recorded(질문 답 + 지표) · rename_agent_session(이름 + 지표) —
+// 과 공통 metric 블록 v2(새 type 5개). 새 지표 다섯은 모두 상태 변경과 같은 트랜잭션에서 쓴다(검토 반영 7-5). 같은 시나리오를 PGlite(tests/db/agent-conversation-api.test.ts)와 실제 Postgres(tests/pg)에서 돌린다.
 
 export const D1D_MIGRATION = "20261121000000_agent_conversation_api.sql";
-export const D1D_FUNCTIONS = ["open_agent_session_external", "requeue_agent_messages", "resume_agent_session_here"];
+export const D1D_FUNCTIONS = ["answer_agent_question_recorded", "open_agent_session_external", "rename_agent_session", "requeue_agent_messages", "resume_agent_session_here"];
 /** 공통 블록 v2(handoffs/oa-metric-events-block.sql)의 SHA-256. 블록은 코디네이터 소유라 글자 그대로 넣는다 */
 export const METRIC_BLOCK_V2_SHA256 = "d39b4566b79607d0057e2c6de53ef309831b4509659e40f8132448fdade4f440";
 export const METRIC_TYPES_V1 = [
@@ -27,7 +28,7 @@ const IN_PROGRESS = ["dispatched", "accepted", "running", "awaiting_answer", "un
 type Requeue = { status: string; messages: { message_id: string; result: string; reason?: string }[] };
 
 export function agentConversationApiFixtures(db: () => ConversationAgentDb) {
-  const base = agentEventFixtures(db);
+  const base = agentQuestionsStopFixtures(db);
   const f = {
     ...base,
     requeue: async (user: string, conversation: string, ids: string[] | null = null) =>
@@ -114,7 +115,7 @@ export function agentConversationApiTests(db: () => ConversationAgentDb) {
            from pg_proc p join pg_namespace n on n.oid=p.pronamespace where n.nspname='public' and p.proname=any($1) order by p.proname`,
         [D1D_FUNCTIONS],
       );
-      expect(rows).toHaveLength(3);
+      expect(rows).toHaveLength(D1D_FUNCTIONS.length);
       for (const row of rows) expect(row).toMatchObject({ prosecdef: false, proconfig: ['search_path=""'], anon: false, app: false, server: true });
     });
 
@@ -124,6 +125,8 @@ export function agentConversationApiTests(db: () => ConversationAgentDb) {
         [`select public.requeue_agent_messages($1,$2,null)`, [w.user, w.conversation]],
         [`select public.open_agent_session_external($1,$2)`, [w.user, w.session]],
         [`select public.resume_agent_session_here($1,$2)`, [w.user, w.session]],
+        [`select public.rename_agent_session($1,$2,'x')`, [w.user, w.session]],
+        [`select public.answer_agent_question_recorded($1,$2,'q','{}'::jsonb,false)`, [w.user, w.session]],
       ];
       for (const [sql, params] of calls) await rejects(db().asUser(w.user, () => db().query(sql, params)), /permission denied/);
     });
@@ -445,6 +448,142 @@ export function agentConversationApiTests(db: () => ConversationAgentDb) {
       expect(await f.one(`select status from public.agent_sessions where id=$1`, [stranger.session])).toEqual({ status: "external" });
       expect(await f.eventLines(w.conversation)).toEqual([]);
       expect(await count("metric_events", w.user)).toBe(0);
+    });
+  });
+
+  describe("S4 새 지표는 상태 변경과 같은 트랜잭션 (검토 반영 7-5)", () => {
+    // 지표 insert만 실패시키는 시험용 트리거 (문장 하나씩: 준비된 문장은 여러 명령을 받지 않는다)
+    const failMetric = async (type: string) => {
+      await f.q(`create function public.test_fail_metric() returns trigger language plpgsql as $$ begin if new.type = '${type}' then raise exception 'metric insert failed'; end if; return new; end; $$`);
+      await f.q(`create trigger test_fail_metric before insert on public.metric_events for each row execute function public.test_fail_metric()`);
+    };
+    const restoreMetric = async () => {
+      await f.q(`drop trigger if exists test_fail_metric on public.metric_events`);
+      await f.q(`drop function if exists public.test_fail_metric()`);
+    };
+    const answerRecorded = async (user: string, task: string, request = "request", answers: unknown = { choice: "A" }) =>
+      (await f.one(`select public.answer_agent_question_recorded($1,$2,$3,$4::jsonb,false) as result`, [user, task, request, JSON.stringify(answers)])).result as { status: string; step_id?: string };
+
+    it("질문 답: 래퍼는 answer_agent_question과 같은 결과를 돌려주고, answered일 때만 question_answered 한 줄(kind · adapter만, 답 값 0)", async () => {
+      const w = await f.questionWorld();
+      const first = await answerRecorded(w.user, w.task);
+      expect(first).toMatchObject({ status: "answered", step_id: expect.any(String) });
+      expect((await f.metrics(w.user, "question_answered")).map((r) => r.props)).toEqual([{ kind: "input", adapter: "agent:codex" }]);
+      expect(JSON.stringify(await f.metrics(w.user, "question_answered"))).not.toContain("choice");
+      // 같은 답을 다시 보내면 duplicate (같은 step) — 지표는 늘지 않는다
+      expect(await answerRecorded(w.user, w.task)).toEqual({ status: "duplicate", step_id: first.step_id });
+      expect(await f.metrics(w.user, "question_answered")).toHaveLength(1);
+    });
+
+    it.each([
+      ["잘못된 답", "request", { choice: "Z" }, "invalid_answer"],
+      ["옛 열쇠", "old-request", { choice: "A" }, "question_stale"],
+    ])("질문 답: %s는 %s 결과 그대로이고 지표 0", async (_name, request, answers, status) => {
+      const w = await f.questionWorld();
+      expect((await answerRecorded(w.user, w.task, request, answers)).status).toBe(status);
+      expect(await f.metrics(w.user, "question_answered")).toEqual([]);
+      expect(await f.answerSteps(w.task)).toEqual([]);
+    });
+
+    it("질문 답: 지표 insert가 실패하면 답도 롤백된다 (질문은 열린 채, 단계 · event 줄 0). 고친 뒤 다시 보내면 한 번 성공한다", async () => {
+      const w = await f.questionWorld();
+      await failMetric("question_answered");
+      try {
+        await rejects(answerRecorded(w.user, w.task), /metric insert failed/);
+        expect(await f.state(w)).toMatchObject({ state: "awaiting_answer" });
+        expect((await f.state(w)).pending_question).not.toBeNull();
+        expect(await f.answerSteps(w.task)).toEqual([]);
+        expect(await f.count(`select 1 from public.conversation_messages where user_id=$1 and external_event_id like 'answer:%'`, [w.user])).toBe(0);
+      } finally {
+        await restoreMetric();
+      }
+      expect((await answerRecorded(w.user, w.task)).status).toBe("answered");
+      expect(await f.metrics(w.user, "question_answered")).toHaveLength(1);
+    });
+
+    it("이름 바꾸기: 실제로 바뀔 때만 session_renamed 한 줄(adapter만, 이름 글 0). 같은 이름은 unchanged, 남의 세션은 not_found (쓰기 0)", async () => {
+      const w = await f.sessionWorld();
+      const rename = async (user: string, session: string, name: string) =>
+        (await f.one(`select public.rename_agent_session($1,$2,$3) as result`, [user, session, name])).result as { status: string };
+      expect(await rename(w.user, w.session, "비밀 새 이름")).toEqual({ status: "renamed" });
+      expect(await f.one(`select display_name from public.agent_sessions where id=$1`, [w.session])).toEqual({ display_name: "비밀 새 이름" });
+      expect((await f.metrics(w.user, "session_renamed")).map((r) => r.props)).toEqual([{ adapter: "agent:codex" }]);
+      expect(JSON.stringify(await f.metrics(w.user, "session_renamed"))).not.toContain("비밀");
+      expect(await rename(w.user, w.session, "비밀 새 이름")).toEqual({ status: "unchanged" });
+      const stranger = await f.user();
+      expect(await rename(stranger, w.session, "남의 이름")).toEqual({ status: "not_found" });
+      expect(await rename(w.user, randomUUID(), "x")).toEqual({ status: "not_found" });
+      expect(await f.one(`select display_name from public.agent_sessions where id=$1`, [w.session])).toEqual({ display_name: "비밀 새 이름" });
+      expect(await f.metrics(w.user, "session_renamed")).toHaveLength(1);
+      for (const bad of ["", "   ", "x".repeat(201)]) await rejects(rename(w.user, w.session, bad), /rename_agent_session: display name must be 1-200 characters/);
+    });
+
+    it("이름 바꾸기: 지표 insert가 실패하면 이름도 롤백된다", async () => {
+      const w = await f.sessionWorld();
+      await failMetric("session_renamed");
+      try {
+        await rejects(f.one(`select public.rename_agent_session($1,$2,'새 이름') as result`, [w.user, w.session]), /metric insert failed/);
+        expect((await f.one(`select display_name from public.agent_sessions where id=$1`, [w.session])).display_name).not.toBe("새 이름");
+      } finally {
+        await restoreMetric();
+      }
+      expect((await f.one(`select public.rename_agent_session($1,$2,'새 이름') as result`, [w.user, w.session])).result).toEqual({ status: "renamed" });
+      expect(await f.metrics(w.user, "session_renamed")).toHaveLength(1);
+    });
+
+    it.each([
+      ["message_resent", async (w: Awaited<ReturnType<typeof f.plainWorld>>) => {
+        const id = String((await f.post(w.user, w.conversation, randomUUID(), "글")).message_id);
+        await f.setMessage(id, "not_sent", "usage_limited");
+        return f.requeue(w.user, w.conversation);
+      }, async (w: Awaited<ReturnType<typeof f.plainWorld>>) => f.one(`select delivery_state from public.conversation_messages where conversation_id=$1`, [w.conversation]), { delivery_state: "not_sent" }],
+    ])("Send again: 지표 %s insert가 실패하면 다시 대기시킨 상태도 롤백된다", async (type, act, read, expected) => {
+      const w = await f.plainWorld();
+      await failMetric(type);
+      try {
+        await rejects(act(w), /metric insert failed/);
+        expect(await read(w)).toEqual(expected);
+      } finally {
+        await restoreMetric();
+      }
+    });
+
+    it("Open in Terminal · Resume here: 지표 insert가 실패하면 세션 상태 · event 줄도 롤백된다", async () => {
+      const w = await f.sessionWorld();
+      await failMetric("session_opened_external");
+      try {
+        await rejects(f.openExternal(w.user, w.session), /metric insert failed/);
+        expect(await f.one(`select status from public.agent_sessions where id=$1`, [w.session])).toEqual({ status: "bound" });
+        expect(await f.eventLines(w.conversation)).toEqual([]);
+      } finally {
+        await restoreMetric();
+      }
+      expect(await f.openExternal(w.user, w.session)).toEqual({ status: "external" });
+      await failMetric("session_resumed");
+      try {
+        await rejects(f.resumeHere(w.user, w.session), /metric insert failed/);
+        expect(await f.one(`select status from public.agent_sessions where id=$1`, [w.session])).toEqual({ status: "external" });
+        expect((await f.eventLines(w.conversation)).map((l) => l.text)).toEqual(["Opened in Terminal"]);
+      } finally {
+        await restoreMetric();
+      }
+    });
+  });
+
+  describe("검토 반영 7-1: 실패한 not_sent 머리는 자동으로 다시 시작되지 않고 FIFO가 뒤를 붙잡는다 (SQL)", () => {
+    it("A not_sent/spawn_failed 상태에서 B를 시작하면 B는 queued/queue_order — A는 Send again으로만 시작하고 그 뒤에야 B가 순서를 얻는다", async () => {
+      const w = await f.plainWorld();
+      const a = String((await f.post(w.user, w.conversation, randomUUID(), "A")).message_id);
+      const b = String((await f.post(w.user, w.conversation, randomUUID(), "B")).message_id);
+      await f.setMessage(a, "not_sent", "spawn_failed");
+      expect(await f.start(w.user, b)).toEqual({ status: "queued", reason: "queue_order" });
+      expect(await count("agent_tasks", w.user)).toBe(0);
+      expect(await f.msg(a)).toMatchObject({ delivery_state: "not_sent", delivery_reason: "spawn_failed" });
+      // 사용자가 A를 Send again
+      expect((await f.requeue(w.user, w.conversation, [a])).messages).toEqual([{ message_id: a, result: "requeued" }]);
+      expect(await f.start(w.user, a)).toMatchObject({ status: "started", turn_seq: 1 });
+      expect(await f.start(w.user, b)).toEqual({ status: "queued", reason: "session_busy" });
+      expect(await count("agent_tasks", w.user)).toBe(1);
     });
   });
 

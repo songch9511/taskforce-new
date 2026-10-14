@@ -1,7 +1,7 @@
 import { z } from "zod";
 
-import { AnswerInputError, answerFromRoute, loadAnswerTask, recordQuestionAnswered, type AnswerTask } from "@/lib/agents/answers";
-import { agentSelected, attachmentsFromLegacyRefs, checkAttachments, normalizeAttachments, taskforceSelected, type AttachmentCheck } from "@/lib/agents/attachments";
+import { AnswerInputError, answerFromRoute, loadAnswerTask, type AnswerTask } from "@/lib/agents/answers";
+import { agentSelected, attachmentsFromLegacyRefs, checkAttachments, normalizeAttachments, taskforceRefs, taskforceSelected, type AttachmentCheck } from "@/lib/agents/attachments";
 import { createAgentConversation, readConversationTarget, type ConversationTargetInfo } from "@/lib/agents/conversations";
 import {
   agentMessageExists,
@@ -167,14 +167,22 @@ export type TaskforceAttachmentDeps<User> = {
   check: (user: User, attachments: Attachment[]) => Promise<AttachmentCheck>;
 };
 
-/** 대상 taskforce의 칩 준비: 정규화 · 범위 기능 확인 · 소유 확인. added action · run · artifact만 지시 대상 규칙 1에 쓰고 나머지는 저장만 한다 (답 생성 불변) */
-export async function prepareTaskforceAttachments<User>(deps: TaskforceAttachmentDeps<User>, user: User, attachments: Attachment[]): Promise<PreparedAttachments> {
+/**
+ * 대상 taskforce의 칩 준비: 정규화 · 범위 기능 확인 · 소유 확인. 저장용 selected는 칩 전체에서(멱등 비교는 처음 제출 그대로),
+ * 처리용 refs는 added action · run · execution artifact 중 지금도 있는 것만 지시 대상 규칙 1에 쓴다 (답 생성 불변).
+ * known(같은 client_message_id의 메시지가 이미 있음)이면 그 사이 지워진 칩을 404로 막지 않는다 — 같은 제출을 먼저 본다 (검토 반영 7-3, OD-23). 첫 제출은 여전히 missing
+ */
+export async function prepareTaskforceAttachments<User>(
+  deps: TaskforceAttachmentDeps<User>,
+  user: User,
+  attachments: Attachment[],
+  options: { known?: boolean } = {},
+): Promise<PreparedAttachments> {
   const chips = normalizeAttachments(attachments);
   if (!deps.memoryEnabled() && chips.some((item) => item.kind === "context")) return { status: "context_off" };
   const check = await deps.check(user, chips);
-  if (check.missing.length) return { status: "missing" };
-  const selected = taskforceSelected(chips, check.executionArtifactIds);
-  return { status: "ok", refs: { action_ids: selected.action_ids, run_ids: selected.run_ids, artifact_ids: selected.artifact_ids }, selected, attachments: chips };
+  if (check.missing.length && !options.known) return { status: "missing" };
+  return { status: "ok", refs: taskforceRefs(chips, check), selected: taskforceSelected(chips), attachments: chips };
 }
 
 // ─────────────────────────── Send again ───────────────────────────
@@ -454,7 +462,6 @@ export async function handleListTargets<User extends AppUser>(request: Request, 
 export type AnswerDeps<User> = SessionDeps<User> & {
   loadTask: (user: User, taskId: string) => Promise<AnswerTask | null>;
   answer: (user: User, input: { taskId: string; providerRequestId: string; answers: Record<string, string | string[]>; question: unknown }) => Promise<AnswerAgentQuestionResult>;
-  recordAnswered: (user: User, info: { kind: string; adapter: string }) => Promise<void>;
 };
 
 const questionShape = z.object({ kind: z.enum(["input", "approval"]), questions: z.array(z.object({ secret: z.boolean() }).passthrough()) }).passthrough();
@@ -498,11 +505,6 @@ export async function handleAnswerQuestion<User extends AppUser>(request: Reques
     switch (result.status) {
       case "answered":
       case "duplicate":
-        if (result.status === "answered") {
-          await deps.recordAnswered(user, { kind: shape.kind, adapter: owner.adapter }).catch((error: unknown) => {
-            console.error(JSON.stringify({ event: "question_answered_metric_failed", error: error instanceof Error ? error.name : "unknown" }));
-          });
-        }
         return Response.json({ status: result.status, step_id: result.step_id });
       case "question_stale":
         return errorResponse(409, "question_stale", "이미 닫히거나 바뀐 질문입니다.");
@@ -572,7 +574,7 @@ export function taskforceAttachmentDeps(): Pick<PostMessageDeps<ApiContext>, "pr
     check: ({ user }, attachments) => checkAttachments(admin(), user.id, attachments),
   };
   return {
-    prepareAttachments: (ctx, attachments) => prepareTaskforceAttachments(deps, ctx, attachments),
+    prepareAttachments: (ctx, attachments, options) => prepareTaskforceAttachments(deps, ctx, attachments, options),
     recordAttachments: ({ user }, attachments) =>
       recordContextAttached(admin(), user.id, "taskforce", attachments.map((item) => ({ kind: item.kind, origin: item.origin, sent: false }))),
   };
@@ -639,5 +641,4 @@ export const realAnswerDeps = (): AnswerDeps<ApiContext> => ({
   sessionAdapter,
   loadTask: ({ user }, taskId) => loadAnswerTask(admin(), user.id, taskId),
   answer: ({ user }, input) => answerFromRoute(admin(), { userId: user.id, agentTaskId: input.taskId, providerRequestId: input.providerRequestId, answers: input.answers, question: input.question }),
-  recordAnswered: ({ user }, info) => recordQuestionAnswered(admin(), user.id, info),
 });

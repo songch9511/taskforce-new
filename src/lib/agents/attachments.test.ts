@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import type { Attachment } from "@/lib/api/contract";
 
-import { agentSelected, attachmentsFromLegacyRefs, checkAttachments, normalizeAttachments, taskforceSelected } from "./attachments";
+import { agentSelected, attachmentsFromLegacyRefs, checkAttachments, normalizeAttachments, taskforceRefs, taskforceSelected } from "./attachments";
 import { fakeAdmin } from "./fake-admin";
 
 const USER = "10000000-0000-4000-8000-000000000001";
@@ -56,15 +56,21 @@ describe("selected 모양 (OD-3 · OD-5)", () => {
     expect(agentSelected([])).toEqual({ action_ids: [], context_ids: [], attachments: [] });
   });
 
-  it("taskforce 대상: 기존 모양 + attachments. added action · run · (execution) artifact만 id 목록에 넣는다", () => {
-    expect(taskforceSelected(chips, [C])).toEqual({ action_ids: [A], run_ids: [B], artifact_ids: [C], attachments: chips });
+  it("taskforce 대상(저장용): 기존 모양 + attachments. added action · run · artifact id 전부 — 존재 확인과 무관하게 칩에서만 정해진다 (같은 제출 비교가 칩이 지워진 뒤에도 같다)", () => {
+    expect(taskforceSelected(chips)).toEqual({ action_ids: [A], run_ids: [B], artifact_ids: [C], attachments: chips });
+  });
+
+  it("taskforce 대상(처리용 refs): added action · run · execution artifact만 지시 대상 규칙 1에 쓴다. 지워진 칩과 에이전트 산출물은 뺀다", () => {
+    expect(taskforceRefs(chips, { missing: [], executionArtifactIds: [C] })).toEqual({ action_ids: [A], run_ids: [B], artifact_ids: [C] });
     // 에이전트 산출물 id는 taskforce의 규칙 1 대상이 아니다 (저장만)
-    expect(taskforceSelected(chips, [])).toMatchObject({ artifact_ids: [], attachments: chips });
+    expect(taskforceRefs(chips, { missing: [], executionArtifactIds: [] })).toEqual({ action_ids: [A], run_ids: [B], artifact_ids: [] });
+    // 지워진 칩은 처리 입력에서 빠진다 (저장된 selected에는 그대로 남는다)
+    expect(taskforceRefs(chips, { missing: [chip("action", A), chip("run", B)], executionArtifactIds: [C] })).toEqual({ action_ids: [], run_ids: [], artifact_ids: [C] });
   });
 
   it("칩이 없으면 taskforce selected에 attachments 키를 만들지 않는다 (옛 제출과 같은 제출로 비교된다)", () => {
-    expect(taskforceSelected([], [])).toEqual({ action_ids: [], run_ids: [], artifact_ids: [] });
-    expect(Object.keys(taskforceSelected([], []))).not.toContain("attachments");
+    expect(taskforceSelected([])).toEqual({ action_ids: [], run_ids: [], artifact_ids: [] });
+    expect(Object.keys(taskforceSelected([]))).not.toContain("attachments");
   });
 });
 

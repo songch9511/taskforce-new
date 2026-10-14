@@ -349,11 +349,29 @@ describe("POST messages · taskforce 대상의 맥락 칩 (OD-5: 저장 · 검�
     const deps = tfDeps({ prepareAttachments: vi.fn(async () => ok(chips)), recordAttachments: vi.fn(async () => undefined) });
     const response = await send(deps, { client_message_id: CLIENT, text: TEXT, attachments: chips });
     expect(response.status).toBe(200);
-    expect(deps.prepareAttachments).toHaveBeenCalledWith(USER, chips);
+    expect(deps.prepareAttachments).toHaveBeenCalledWith(USER, chips, { known: false });
     expect(deps.verifySelected).toHaveBeenCalledWith(USER, { action_ids: [ACTION], run_ids: [], artifact_ids: [] });
     expect(deps.post).toHaveBeenCalledWith(USER, CONV, CLIENT, TEXT, { action_ids: [ACTION], run_ids: [], artifact_ids: [], attachments: chips });
     expect(deps.recordAttachments).toHaveBeenCalledExactlyOnceWith(USER, chips);
     expect(Object.keys(await response.json())).toEqual(["message", "reply"]);
+  });
+
+  it("검토 반영 7-3: 같은 제출 재전송에서 그 사이 지워진 칩은 404가 아니다 — 같은 제출인지를 먼저 보고(known) 저장된 답을 돌려준다. 처리 입력에서는 지워진 칩을 뺀다", async () => {
+    const chips = [chip("action", ACTION)];
+    const dropped = { status: "ok" as const, refs: { action_ids: [], run_ids: [], artifact_ids: [] }, selected: { action_ids: [ACTION], run_ids: [], artifact_ids: [], attachments: chips }, attachments: chips };
+    const deps = tfDeps({
+      messageExists: vi.fn(async () => true), prepareAttachments: vi.fn(async () => dropped), recordAttachments: vi.fn(async () => undefined),
+      post: vi.fn(async () => ({ status: "answered" as const, messageId: MSG, seq: 1, replyId: reply.id })),
+    });
+    const response = await send(deps, { client_message_id: CLIENT, text: TEXT, attachments: chips });
+    expect(response.status).toBe(200);
+    expect(Object.keys(await response.json())).toEqual(["message", "reply"]);
+    expect(deps.prepareAttachments).toHaveBeenCalledWith(USER, chips, { known: true });
+    expect(deps.messageExists).toHaveBeenCalledTimes(1); // 한도 판단과 같은 읽기를 다시 하지 않는다
+    expect(deps.verifySelected).toHaveBeenCalledWith(USER, { action_ids: [], run_ids: [], artifact_ids: [] });
+    expect(deps.post).toHaveBeenCalledWith(USER, CONV, CLIENT, TEXT, dropped.selected); // 멱등 비교에는 처음 제출한 첨부 그대로
+    expect(deps.respond).not.toHaveBeenCalled();
+    expect(deps.recordAttachments).not.toHaveBeenCalled();
   });
 
   it("재처리(retry)는 지표를 다시 세지 않는다. 지표가 실패해도 답은 간다", async () => {
@@ -395,6 +413,22 @@ describe("POST messages · taskforce 대상의 맥락 칩 (OD-5: 저장 · 검�
         attachments: [chip("action", ACTION), chip("artifact", ARTIFACT), chip("run", RUN)],
       });
       expect(check).toHaveBeenCalledWith(USER, [chip("action", ACTION), chip("artifact", ARTIFACT), chip("run", RUN)]);
+    });
+    it("저장용 selected는 칩에서만 정해진다: execution 산출물이 아니어도(에이전트 산출물) artifact_ids에 남고 처리용 refs에서만 빠진다", async () => {
+      const prepared = await prepareTaskforceAttachments({ ...base, check: vi.fn(async () => noneMissing) }, USER, [chip("artifact", ARTIFACT)]);
+      expect(prepared).toMatchObject({ status: "ok", refs: { artifact_ids: [] }, selected: { artifact_ids: [ARTIFACT], attachments: [chip("artifact", ARTIFACT)] } });
+    });
+    it("검토 반영 7-3: 같은 제출(known)이면 지워진 칩을 404로 막지 않는다 — 저장용 selected는 원래 첨부 그대로, 처리용 refs에서만 뺀다. 첫 제출(known 아님)은 여전히 missing", async () => {
+      const check = vi.fn(async (): Promise<AttachmentCheck> => ({ ...noneMissing, missing: [chip("action", ACTION)], executionArtifactIds: [ARTIFACT] }));
+      const chips = [chip("action", ACTION), chip("artifact", ARTIFACT), chip("run", RUN)];
+      const resent = await prepareTaskforceAttachments({ ...base, check }, USER, chips, { known: true });
+      expect(resent).toMatchObject({
+        status: "ok",
+        refs: { action_ids: [], run_ids: [RUN], artifact_ids: [ARTIFACT] },
+        selected: { action_ids: [ACTION], run_ids: [RUN], artifact_ids: [ARTIFACT], attachments: [chip("action", ACTION), chip("artifact", ARTIFACT), chip("run", RUN)] },
+      });
+      expect(await prepareTaskforceAttachments({ ...base, check }, USER, chips, { known: false })).toEqual({ status: "missing" });
+      expect(await prepareTaskforceAttachments({ ...base, check }, USER, chips)).toEqual({ status: "missing" });
     });
     it("없는 칩은 missing, 범위 기능이 꺼진 context 칩은 context_off (확인 전에)", async () => {
       expect(await prepareTaskforceAttachments({ ...base, check: vi.fn(async () => ({ ...noneMissing, missing: [chip("run", RUN)] })) }, USER, [chip("run", RUN)])).toEqual({ status: "missing" });
@@ -503,7 +537,7 @@ describe("R1 · R2: 새 route 공통 — gate 꺼짐 404(인증 · DB 0) · 인�
     { name: "open-external", writes: ["open"], call: (d) => handleOpenExternal(json({}), SESSION, d), make: () => ({ ...baseDeps(), sessionAdapter: vi.fn(async () => ({ adapter: "agent:codex", enabled: true })), open: vi.fn() } satisfies OpenExternalDeps<User>) },
     { name: "resume-here", writes: ["resume"], call: (d) => handleResumeHere(json({ confirmed_terminal_closed: true }), SESSION, d), make: () => ({ ...baseDeps(), sessionAdapter: vi.fn(async () => ({ adapter: "agent:codex", enabled: true })), resume: vi.fn() } satisfies ResumeHereDeps<User>) },
     { name: "targets", writes: [], call: (d) => handleListTargets(json(undefined, "GET"), d), make: () => ({ ...baseDeps(), list: vi.fn(async () => [{ kind: "taskforce" as const }]) } satisfies TargetsDeps<User>) },
-    { name: "answer", writes: ["answer", "recordAnswered"], call: (d) => handleAnswerQuestion(json({ provider_request_id: "q", answers: { a: "x" } }), TASK, d), make: () => answerDeps() },
+    { name: "answer", writes: ["answer"], call: (d) => handleAnswerQuestion(json({ provider_request_id: "q", answers: { a: "x" } }), TASK, d), make: () => answerDeps() },
   ];
 
   it.each(cases)("$name: gate가 꺼져 있으면 404 — 인증 · DB 함수 0", async ({ call, make }) => {
@@ -908,7 +942,6 @@ function answerDeps(overrides: Partial<AnswerDeps<User>> = {}): AnswerDeps<User>
     loadTask: vi.fn(async () => ({ id: TASK, sessionId: SESSION, pendingQuestion: pendingQuestion(), answeredQuestion: null })),
     sessionAdapter: vi.fn(async () => ({ adapter: "agent:codex", enabled: true })),
     answer: vi.fn(async () => ({ status: "answered" as const, step_id: STEP })),
-    recordAnswered: vi.fn(async () => undefined),
     ...overrides,
   } as never;
 }
@@ -916,13 +949,12 @@ function answerDeps(overrides: Partial<AnswerDeps<User>> = {}): AnswerDeps<User>
 describe("POST /api/v2/agent-tasks/{id}/answer (R13)", () => {
   const run = (d: AnswerDeps<User>, payload: unknown = { provider_request_id: "q-1", answers: { choice: "Yes" } }, taskId = TASK) => handleAnswerQuestion(json(payload), taskId, d);
 
-  it("input 질문에 답한다: 정확한 질문(pending_question)과 답을 RPC 래퍼에 넘기고 answered + step_id, 지표는 종류만", async () => {
+  it("input 질문에 답한다: 정확한 질문(pending_question)과 답을 RPC 래퍼에 넘기고 answered + step_id (지표 question_answered는 SQL 래퍼가 같은 트랜잭션에서 남긴다: handler는 쓰지 않는다)", async () => {
     const d = answerDeps();
     const response = await run(d);
     expect(response.status).toBe(200);
     expect(await body(response)).toEqual({ status: "answered", step_id: STEP });
     expect(d.answer).toHaveBeenCalledWith(USER, { taskId: TASK, providerRequestId: "q-1", answers: { choice: "Yes" }, question: pendingQuestion() });
-    expect(d.recordAnswered).toHaveBeenCalledExactlyOnceWith(USER, { kind: "input", adapter: "agent:codex" });
   });
 
   it("다중 선택 · 선택지 밖 입력(Other)도 같은 경로다", async () => {
@@ -941,7 +973,6 @@ describe("POST /api/v2/agent-tasks/{id}/answer (R13)", () => {
     const response = await run(d);
     expect(response.status).toBe(200);
     expect(await body(response)).toEqual({ status: "duplicate", step_id: STEP });
-    expect(d.recordAnswered).not.toHaveBeenCalled();
   });
 
   it("옛 열쇠 · 질문이 없음 · 다른 질문이면 409 question_stale (RPC 0)", async () => {
@@ -964,7 +995,6 @@ describe("POST /api/v2/agent-tasks/{id}/answer (R13)", () => {
     expect(response.status).toBe(409);
     expect((await body(response)).error).toMatchObject({ code: "approval_via_review" });
     expect(d.answer).not.toHaveBeenCalled();
-    expect(d.recordAnswered).not.toHaveBeenCalled();
   });
 
   it("비밀값이 하나라도 섞인 질문은 409 secret_requires_local: RPC 0, 값은 로그에도 없다 (R13)", async () => {
@@ -990,7 +1020,6 @@ describe("POST /api/v2/agent-tasks/{id}/answer (R13)", () => {
     expect((await run(mismatch)).status).toBe(400);
     const sqlInvalid = answerDeps({ answer: vi.fn(async () => ({ status: "invalid_answer" as const })) });
     expect((await run(sqlInvalid)).status).toBe(400);
-    expect(mismatch.recordAnswered).not.toHaveBeenCalled();
   });
 
   it("RPC가 question_stale · secret_requires_local · not_found를 돌려주면 같은 오류로 옮긴다", async () => {
@@ -1019,13 +1048,6 @@ describe("POST /api/v2/agent-tasks/{id}/answer (R13)", () => {
     const broken = await run(answerDeps({ answer: vi.fn(async () => { throw Object.assign(new Error("Private question 비밀 답"), { name: "PostgrestError", code: "XX000" }); }) }));
     expect(broken.status).toBe(500);
     expect(JSON.parse(logged())).toMatchObject({ event: "agent_answer_failed", error: "PostgrestError", code: "XX000" });
-    expectNoUserText();
-  });
-
-  it("지표 기록이 실패해도 답은 이미 갔다: 200 (이름만 로그)", async () => {
-    const d = answerDeps({ recordAnswered: vi.fn(async () => { throw Object.assign(new Error("Private"), { name: "PostgrestError" }); }) });
-    expect((await run(d)).status).toBe(200);
-    expect(JSON.parse(logged())).toEqual({ event: "question_answered_metric_failed", error: "PostgrestError" });
     expectNoUserText();
   });
 });

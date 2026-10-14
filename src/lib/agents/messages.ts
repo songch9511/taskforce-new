@@ -19,7 +19,7 @@ import type { StepState } from "@/lib/execution/types";
 
 import { readConversationTarget } from "./conversations";
 import { agentDeliveryView, type AgentMessageDeliveryState } from "./delivery";
-import { markWriteGateClosed, startNextAgentMessage } from "./next-turn";
+import { autoStartable, markWriteGateClosed, startNextAgentMessage } from "./next-turn";
 import { resolveAgentTarget } from "./targets";
 import { startAgentTurn, type StartAgentTurnResult } from "./turns";
 
@@ -135,18 +135,31 @@ export async function requeueAgentMessages(admin: SupabaseClient, input: { userI
 const chipsSchema = z.object({ action_ids: z.array(z.guid()).default([]), context_ids: z.array(z.guid()).default([]) });
 const pendingSchema = z.object({
   delivery_state: z.string().nullable(),
+  delivery_reason: z.string().nullable(),
   delivery_expires_at: z.string().nullable(),
   refs: z.object({ agent_turn: chipsSchema.optional() }).passthrough().nullable(),
   selected: chipsSchema.nullable(),
 });
 
+/** 칩의 Action 중 지금도 내 것인 것만 (지워진 · 남의 id는 뺀다: SQL이 not_found로 시작을 거절하지 않게). 순서는 그대로 */
+async function existingActionIds(admin: SupabaseClient, userId: string, ids: string[]): Promise<string[]> {
+  if (!ids.length) return [];
+  const { data } = await admin.from("actions").select("id").eq("user_id", userId).in("id", ids).throwOnError();
+  const found = new Set(((data ?? []) as { id: string }[]).map((row) => row.id.toLowerCase()));
+  return ids.filter((id) => found.has(id.toLowerCase()));
+}
+
 export type StartAgentMessageResult = StartAgentTurnResult | { status: "skipped" };
 
 /**
- * 저장된 메시지의 전달을 시작한다 (route_agent_message → start_agent_turn). 보낼 차례를 기다리는(queued · not_sent) 만료 전 메시지만 대상이고, 아니면 건드리지 않는다(skipped, RPC 0).
- * 칩은 앞서 시작을 시도해 저장한 refs.agent_turn, 없으면 저장된 selected의 added 칩이다 (auto 칩은 id 목록에 없다, AC-6).
+ * 저장된 메시지의 전달을 시작한다 (route_agent_message → start_agent_turn). 보낼 차례를 기다리는 만료 전 메시지만 대상이고, 아니면 건드리지 않는다(skipped, RPC 0).
+ * 대상은 queued, 그리고 not_sent인데 이유가 gate 계열(write_gate_closed · not_connected · adapter_disabled)인 것뿐이다 (autoStartable, 검토 반영 7-1):
+ * spawn_failed · sign_in_needed · usage_limited … 로 실패한 not_sent는 사용자의 Send again(deliver)으로만 다시 시작한다.
+ * 칩은 앞서 시작을 시도해 저장한 refs.agent_turn, 없으면 저장된 selected의 added 칩이다 (auto 칩은 id 목록에 없다, AC-6). 그 사이 지워진 Action 칩은 처리 입력에서 뺀다
+ * (저장된 selected는 그대로: 같은 제출 비교가 처음과 같다, 검토 반영 7-3).
  * 대화의 연결 · registry · 정책 mode로 등급을 정하고(resolveAgentTarget) adapter gate가 꺼져 있으면 시작하지 않는다 (OD-2).
- * 실행 kill switch(EXECUTION_ENABLED)가 꺼져 있으면 시작하지 않고 not_sent/write_gate_closed로 표시한다 (D2a 보안 검토 P1 방어).
+ * 실행 kill switch(EXECUTION_ENABLED)가 꺼져 있으면 시작하지 않고, 지금 시작하려는 queued 메시지만 not_sent/write_gate_closed로 표시한다 (D2a 보안 검토 P1 방어).
+ * 이미 not_sent인 메시지의 이유는 덮어쓰지 않는다.
  * queue_order로 밀렸고 세션이 있으면 대기열 머리를 한 번 시작해 본다 (OD-10): 실패해도 첫 시작의 결과는 유효하다 — 다음 계기(D2a)가 이어 간다.
  * 잠금을 쥔 채 부르지 않는다: 호출자는 쓰기 함수가 commit된 뒤 부른다
  */
@@ -158,7 +171,7 @@ export async function startAgentMessage(
 ): Promise<StartAgentMessageResult> {
   const { data } = await admin
     .from("conversation_messages")
-    .select("delivery_state, delivery_expires_at, refs, selected")
+    .select("delivery_state, delivery_reason, delivery_expires_at, refs, selected")
     .eq("user_id", input.userId)
     .eq("conversation_id", input.conversationId)
     .eq("id", input.messageId)
@@ -167,19 +180,19 @@ export async function startAgentMessage(
     .throwOnError();
   if (!data) return { status: "skipped" };
   const message = pendingSchema.parse(data);
-  if ((message.delivery_state !== "queued" && message.delivery_state !== "not_sent") || !message.delivery_expires_at || Date.parse(message.delivery_expires_at) <= now.getTime()) return { status: "skipped" };
+  if (!autoStartable(message.delivery_state, message.delivery_reason) || !message.delivery_expires_at || Date.parse(message.delivery_expires_at) <= now.getTime()) return { status: "skipped" };
 
   const conversation = await readConversationTarget(admin, input.userId, input.conversationId);
   if (!conversation?.connectionId || conversation.targetKind !== "agent") return { status: "skipped" };
   const target = await resolveAgentTarget(admin, input.userId, conversation.connectionId, env);
   if (!target?.enabled) return { status: "skipped" };
-  // 실행 kill switch가 꺼져 있으면 시작하지 않고 표시만 한다 (D2a 보안 검토 P1 방어): task · 단계 · 명령 · 지표 0
-  if (!executionEnabled(env)) return markWriteGateClosed(admin, { userId: input.userId, messageId: input.messageId });
+  // 실행 kill switch가 꺼져 있으면 시작하지 않고 표시만 한다 (D2a 보안 검토 P1 방어): task · 단계 · 명령 · 지표 0. 이미 not_sent인 메시지의 이유는 덮어쓰지 않는다
+  if (!executionEnabled(env)) return message.delivery_state === "queued" ? markWriteGateClosed(admin, { userId: input.userId, messageId: input.messageId }) : { status: "skipped" };
 
   const chips = message.refs?.agent_turn ?? message.selected ?? { action_ids: [], context_ids: [] };
   const result = await startAgentTurn(
     admin,
-    { userId: input.userId, messageId: input.messageId, capability: target.capability, mode: target.mode, connectionStatus: target.connectionStatus, actionIds: chips.action_ids, contextIds: chips.context_ids },
+    { userId: input.userId, messageId: input.messageId, capability: target.capability, mode: target.mode, connectionStatus: target.connectionStatus, actionIds: await existingActionIds(admin, input.userId, chips.action_ids), contextIds: chips.context_ids },
     env,
   );
   if (result.status === "queued" && result.reason === "queue_order") {
@@ -217,7 +230,7 @@ export async function deliverAgentMessages(
 const MESSAGE_COLUMNS = "id, conversation_id, seq, role, client_message_id, text, refs, intent, created_at, reply_to, content, delivery_state, delivery_reason, delivery_expires_at";
 
 type MessageRecord = Record<string, unknown> & { id: string; refs: Record<string, unknown> | null; delivery_state: AgentMessageDeliveryState | null; delivery_reason: string | null };
-type TaskRecord = { id: string; message_id: string; state: AgentTaskState; agent_session_id: string; run_id: string; step_id: string | null; turn_seq: number | null };
+type TaskRecord = { id: string; message_id: string; state: AgentTaskState; agent_session_id: string; run_id: string; turn_seq: number | null };
 
 /** start_agent_turn이 이 메시지에서 만드는 Action의 결정적 id (sha256 앞 32자). 버전 비트가 없다 */
 export function deterministicActionId(messageId: string): string {
@@ -230,16 +243,24 @@ async function deliveryViews(admin: SupabaseClient, userId: string, rows: Messag
   const tasks = new Map<string, TaskRecord>();
   const steps = new Map<string, string>();
   if (ids.length) {
-    const { data } = await admin.from("agent_tasks").select("id, message_id, state, agent_session_id, run_id, step_id, turn_seq").eq("user_id", userId).in("message_id", ids).throwOnError();
+    const { data } = await admin.from("agent_tasks").select("id, message_id, state, agent_session_id, run_id, turn_seq").eq("user_id", userId).in("message_id", ids).throwOnError();
     for (const row of (data ?? []) as TaskRecord[]) {
       const known = tasks.get(row.message_id);
       if (!known || (row.turn_seq ?? 0) > (known.turn_seq ?? 0)) tasks.set(row.message_id, row);
     }
   }
-  const stepIds = [...new Set([...tasks.values()].map((task) => task.step_id).filter((id): id is string => id !== null))];
-  if (stepIds.length) {
-    const { data } = await admin.from("execution_steps").select("id, state").eq("user_id", userId).in("id", stepIds).throwOnError();
-    for (const row of (data ?? []) as { id: string; state: string }[]) steps.set(row.id, row.state);
+  // 원문 메시지의 전달 단계: args->>message_id가 그 메시지인 agent_message 단계 중 seq 최대 (검토 반영 7-4).
+  // task.step_id는 질문에 답하면 답 단계로 옮겨 가므로 쓰지 않는다 — 답 단계가 실패해도 이미 받은 원문은 accepted 그대로다
+  const originIds = rows.filter((row) => row.refs?.answer_for === undefined).map((row) => row.id);
+  if (originIds.length) {
+    const { data } = await admin.from("execution_steps").select("state, seq, args").eq("user_id", userId).eq("kind", "agent_message").in("args->>message_id", originIds).throwOnError();
+    const latest = new Map<string, number>();
+    for (const row of (data ?? []) as { state: string; seq: number; args: { message_id: string } }[]) {
+      if (row.seq > (latest.get(row.args.message_id) ?? -1)) {
+        latest.set(row.args.message_id, row.seq);
+        steps.set(row.args.message_id, row.state);
+      }
+    }
   }
   const answerFor = rows.filter((row) => row.refs?.answer_for !== undefined).map((row) => row.id);
   const answers = new Map<string, { state: string; reason: string | null; seq: number }>();
@@ -259,13 +280,12 @@ async function deliveryViews(admin: SupabaseClient, userId: string, rows: Messag
 
   const views = new Map<string, AgentDelivery>();
   for (const row of rows) {
-    const task = tasks.get(row.id);
     const answer = answers.get(row.id);
     views.set(
       row.id,
       agentDeliveryView({
         row: { state: row.delivery_state ?? "queued", reason: row.delivery_reason, refs: row.refs },
-        stepState: (task?.step_id ? (steps.get(task.step_id) as StepState | undefined) : undefined) ?? null,
+        stepState: (steps.get(row.id) as StepState | undefined) ?? null,
         answerStep: answer ? { state: answer.state as StepState, reason: answer.reason } : null,
         titles,
       }),
