@@ -29,3 +29,23 @@ export class RateLimitedError extends Error {
     this.name = "RateLimitedError";
   }
 }
+
+/** Registration rotates the device credential. */
+export const BRIDGE_REGISTER_LIMIT: RateLimit = { max: 20, windowMs: 60 * 60_000 };
+export async function takeBridgeRegistrationLimit(admin: import("@supabase/supabase-js").SupabaseClient, userId: string): Promise<void> {
+  const { data } = await admin.rpc("take_rate_limit", { p_user_id: userId, p_kind: "bridge_register", p_max: BRIDGE_REGISTER_LIMIT.max, p_window_seconds: BRIDGE_REGISTER_LIMIT.windowMs / 1000 }).throwOnError();
+  if (data) throw new RateLimitedError(new Date(String(data)));
+}
+
+const BRIDGE_REQUEST_LIMITS = { bridge_events: 120, bridge_ack: 240, bridge_poll: 90 } as const;
+export async function takeBridgeRequestLimit(
+  admin: import("@supabase/supabase-js").SupabaseClient,
+  userId: string,
+  bridgeId: string,
+  kind: keyof typeof BRIDGE_REQUEST_LIMITS,
+): Promise<void> {
+  const { data } = await admin.rpc("take_rate_limit", {
+    p_user_id: userId, p_bridge_id: bridgeId, p_kind: kind, p_max: BRIDGE_REQUEST_LIMITS[kind], p_window_seconds: 60,
+  }).throwOnError();
+  if (data) throw new RateLimitedError(new Date(String(data)));
+}

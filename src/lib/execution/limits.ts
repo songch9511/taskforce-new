@@ -69,3 +69,13 @@ export const RECONCILE_WINDOW_HOURS = 24;
  * 자리를 차지하므로 깨우기보다 넉넉히 둔다
  */
 export const SWEEP_RELEASE_LIMIT = 50;
+
+export const BRIDGE_HEARTBEAT_SECONDS = 30;
+export const BRIDGE_UNREACHABLE_AFTER_SECONDS = 90;
+export const BRIDGE_LONG_POLL_MAX_SECONDS = 25;
+export const BRIDGE_LONG_POLL_RECHECK_MS = 2000;
+export const BRIDGE_EVENTS_MAX = 100;
+export const BRIDGE_EVENTS_MAX_BYTES = 1_000_000;
+export const BRIDGE_KICK_LIMIT = 5;
+export const BRIDGE_REDELIVERY_LIMIT = 50;
+export const BRIDGE_COMMAND_RETENTION_DAYS = 30;

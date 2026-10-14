@@ -1460,6 +1460,138 @@ export type SuggestionDismissRequest = z.infer<typeof suggestionDismissRequestSc
 export const suggestionResponseSchema = z.object({ suggestion: suggestionSchema });
 export type SuggestionResponse = z.infer<typeof suggestionResponseSchema>;
 
+// --- D2a ---
+const bridgeV1BoundedText = (max: number) => z.string().refine((value) => Array.from(value).length <= max);
+const bridgeV1Identity = bridgeV1BoundedText(200).refine((value) => value.length > 0);
+const bridgeV1QuestionSchema = z.strictObject({
+  provider_request_id: bridgeV1Identity, kind: z.enum(["input", "approval"]), structured: z.boolean(),
+  questions: z.array(z.strictObject({
+    id: bridgeV1BoundedText(200), header: bridgeV1BoundedText(200), text: bridgeV1BoundedText(4000),
+    options: z.array(z.strictObject({ label: bridgeV1BoundedText(500), description: bridgeV1BoundedText(1000) })).max(10),
+    multi_select: z.boolean(), allow_other: z.boolean(), secret: z.boolean(),
+  })).min(1).max(4).refine((questions) => new Set(questions.map((question) => question.id)).size === questions.length),
+});
+const bridgeV1EmptyPayload = z.strictObject({}).optional();
+const bridgeV1Envelope = {
+  adapter: agentAdapterIdSchema,
+  session_ref: z.strictObject({ agent_session_id: z.guid() }),
+  agent_task_id: z.guid().optional(), external_task_id: bridgeV1Identity.optional(),
+  event_id: bridgeV1Identity, seq: z.number().int().positive().optional(),
+  turn_seq: z.number().int().positive().optional(), observed_at: z.iso.datetime({ offset: true }),
+  text: z.string().optional(),
+};
+const bridgeV1SessionTypes = ["session_bound", "unreachable", "reconcile"];
+
+// Match JSONB's spaces at structural separators, including nested question metadata.
+function bridgeV1JsonbText(value: unknown): string {
+  if (Array.isArray(value)) return "[" + value.map(bridgeV1JsonbText).join(", ") + "]";
+  if (value !== null && typeof value === "object") {
+    return "{" + Object.entries(value).map(([key, item]) => `${JSON.stringify(key)}: ${bridgeV1JsonbText(item)}`).join(", ") + "}";
+  }
+  return JSON.stringify(value);
+}
+
+/** Bridge and internal event application share the same bounded envelope. */
+export const bridgeV1EventSchema = z.discriminatedUnion("type", [
+  z.strictObject({ ...bridgeV1Envelope, type: z.enum(["accepted", "progress", "turn_completed", "cancelled", "unreachable"]), payload: bridgeV1EmptyPayload }),
+  z.strictObject({ ...bridgeV1Envelope, type: z.literal("message"), text: z.string(), payload: bridgeV1EmptyPayload }),
+  z.strictObject({ ...bridgeV1Envelope, type: z.literal("question"), text: z.string(), question: bridgeV1QuestionSchema, payload: bridgeV1EmptyPayload }),
+  z.strictObject({ ...bridgeV1Envelope, type: z.literal("artifact"), payload: z.strictObject({ path: bridgeV1BoundedText(1000).refine((value) => value.length > 0), hash: bridgeV1Identity, summary: bridgeV1BoundedText(2000) }) }),
+  z.strictObject({ ...bridgeV1Envelope, type: z.literal("failed"), payload: z.strictObject({ reason: z.enum(["sign_in_needed", "usage_limited", "spawn_failed", "version_unsupported", "agent_error"]).optional() }).optional() }),
+  z.strictObject({ ...bridgeV1Envelope, type: z.literal("session_bound"), payload: z.strictObject({ external_session_id: bridgeV1Identity.refine((id) => !id.startsWith("pending:")), workspace_ref: bridgeV1BoundedText(500).refine((value) => value.length > 0).optional() }) }),
+  z.strictObject({ ...bridgeV1Envelope, type: z.literal("reconcile"), payload: z.strictObject({ state: z.enum(["dispatched", "accepted", "running", "awaiting_answer", "idle", "failed", "cancelled"]).optional() }).optional() }),
+]).superRefine((event, ctx) => {
+  if (!bridgeV1SessionTypes.includes(event.type) && !event.agent_task_id && !event.external_task_id) {
+    ctx.addIssue({ code: "custom", message: "Task identity is required", path: ["agent_task_id"] });
+  }
+  if (event.text !== undefined && new TextEncoder().encode(event.text).length > 32768) {
+    ctx.addIssue({ code: "custom", message: "Text exceeds 32768 UTF-8 bytes", path: ["text"] });
+  }
+  if (event.text !== undefined && event.type !== "message" && event.type !== "question") {
+    ctx.addIssue({ code: "custom", message: "Text belongs only to messages and questions", path: ["text"] });
+  }
+  if (event.type === "question") {
+    const pending = { ...event.question,
+      question_key: [event.agent_task_id ?? "00000000-0000-0000-0000-000000000000", event.question.provider_request_id],
+      asked_at: event.observed_at,
+    };
+    if (new TextEncoder().encode(bridgeV1JsonbText(pending)).length > 32768) {
+      ctx.addIssue({ code: "custom", message: "Pending question exceeds 32768 UTF-8 bytes", path: ["question"] });
+    }
+  }
+  const payloadText = bridgeV1JsonbText(event.payload ?? {});
+  if (new TextEncoder().encode(payloadText).length > 4096) {
+    ctx.addIssue({ code: "custom", message: "Payload exceeds 4096 UTF-8 bytes", path: ["payload"] });
+  }
+});
+export type BridgeV1Event = z.infer<typeof bridgeV1EventSchema>;
+export const bridgeV1AdapterReportSchema = z.strictObject({
+  adapter: agentAdapterIdSchema, installed: z.boolean(), version: z.string().max(50).nullable(),
+  signed_in: z.enum(["yes", "no", "unknown"]), managed_settings: z.boolean(),
+});
+export const bridgeV1AdapterReportsSchema = z.array(bridgeV1AdapterReportSchema).max(8)
+  .refine((reports) => new Set(reports.map((report) => report.adapter)).size === reports.length);
+import { AGENT_REGISTRY } from "@/lib/agents/registry";
+export const bridgeV1RegisterRequestSchema = z.strictObject({
+  device_id: z.string().min(16).max(200), app_version: z.string().min(1).max(50), adapters: bridgeV1AdapterReportsSchema,
+  connect: z.array(z.enum(Object.keys(AGENT_REGISTRY) as (keyof typeof AGENT_REGISTRY)[])).max(8).default([]), reactivate: z.boolean().default(false),
+});
+export type BridgeV1RegisterRequest = z.infer<typeof bridgeV1RegisterRequestSchema>;
+export const bridgeV1RevokeRequestSchema = z.strictObject({ bridge_id: z.guid() });
+const bridgeV1ConnectionSchema = z.strictObject({ connection_id: z.guid(), adapter: agentAdapterIdSchema, status: z.enum(["active", "error", "revoked"]) });
+export const bridgeV1RegisterResponseSchema = z.strictObject({
+  bridge_id: z.guid(), bridge_secret: z.string().min(1), heartbeat_interval_seconds: z.literal(30),
+  unreachable_after_seconds: z.literal(90), long_poll_max_seconds: z.literal(25), connections: z.array(bridgeV1ConnectionSchema),
+});
+export const bridgeV1RevokeResponseSchema = z.strictObject({ status: z.literal("revoked"), tasks: z.array(z.strictObject({ agent_task_id: z.guid(), cancel: z.enum(["requested_only", "confirmed"]), processes: z.literal("may_continue").optional() })) });
+export const bridgeV1CommandsQuerySchema = z.strictObject({
+  bridge_id: z.guid(), after: z.coerce.number().int().nonnegative().default(0), wait: z.coerce.number().min(0).max(25).default(0),
+});
+const bridgeV1KindSchema = z.enum(["message", "answer", "cancel"]);
+const bridgeV1TaskRef = { agent_session_id: z.guid(), agent_task_id: z.guid(), turn_seq: z.number().int().positive() };
+export const bridgeV1CommandsResponseSchema = z.strictObject({
+  commands: z.array(z.strictObject({ id: z.guid(), cursor: z.number().int().positive(), kind: bridgeV1KindSchema, ...bridgeV1TaskRef, created_at: z.iso.datetime({ offset: true }), leased_by_me: z.boolean() })).max(50),
+  readbacks: z.array(z.strictObject({ command_id: z.guid(), kind: bridgeV1KindSchema, ...bridgeV1TaskRef, marker: z.string().min(1), leased_at: z.iso.datetime({ offset: true }) })).max(50),
+  next_cursor: z.number().int().nonnegative(), server_time: z.iso.datetime({ offset: true }),
+});
+const bridgeV1AckRef = { bridge_id: z.guid(), command_id: z.guid() };
+export const bridgeV1AckRequestSchema = z.discriminatedUnion("op", [
+  z.strictObject({ ...bridgeV1AckRef, op: z.literal("lease") }),
+  z.strictObject({ ...bridgeV1AckRef, op: z.literal("complete"), result: z.enum(["sent", "task_unknown"]) }),
+  z.strictObject({ ...bridgeV1AckRef, op: z.literal("readback"), result: z.enum(["received", "not_received", "unknown"]), process_ended: z.boolean() }),
+  z.strictObject({ ...bridgeV1AckRef, op: z.literal("request_closed") }),
+  z.strictObject({ ...bridgeV1AckRef, op: z.literal("decline"), reason: z.literal("unsupported_kind") }),
+]).refine((ack) => ack.op !== "readback" || ack.result !== "not_received" || ack.process_ended, { message: "A terminated process is required for not_received" });
+export type BridgeV1AckRequest = z.infer<typeof bridgeV1AckRequestSchema>;
+const bridgeV1CommandBase = {
+  id: z.guid(), ...bridgeV1TaskRef, step_id: z.guid(), adapter: agentAdapterIdSchema, marker: z.string().min(1),
+  session: z.strictObject({ external_session_id: z.string().nullable(), workspace_ref: z.string().nullable(), resume: z.boolean() }),
+};
+const bridgeV1DeliveryBase = { access: z.enum(["write", "read_only"]), policy_mode: z.enum(["manual", "auto", "full"]) };
+export const bridgeV1CommandPayloadSchema = z.discriminatedUnion("kind", [
+  z.strictObject({ ...bridgeV1CommandBase, ...bridgeV1DeliveryBase, kind: z.literal("message"), message: z.strictObject({ id: z.guid(), text: bridgeV1BoundedText(4000) }), close_before: z.strictObject({ provider_request_id: bridgeV1Identity }).nullable() }),
+  z.strictObject({ ...bridgeV1CommandBase, ...bridgeV1DeliveryBase, kind: z.literal("answer"), provider_request_id: bridgeV1Identity,
+    question_kind: z.enum(["input", "approval"]), structured: z.boolean(), answers: z.record(z.string(), z.union([z.string(), z.array(z.string())])).nullable(), answer_text: z.string().nullable(), answered_locally: z.boolean(),
+  }).refine((command) => !command.answered_locally || (command.answers === null && command.answer_text === null)),
+  z.strictObject({ ...bridgeV1CommandBase, kind: z.literal("cancel"), abandoned_request_id: bridgeV1Identity.nullable(), cancel_scope: z.enum(["turn", "turn_and_processes"]) }),
+]);
+export const bridgeV1AckResponseSchema = z.discriminatedUnion("status", [
+  z.strictObject({ status: z.enum(["leased", "replay"]), command: bridgeV1CommandPayloadSchema, lease_expires_at: z.iso.datetime({ offset: true }) }),
+  z.strictObject({ status: z.literal("withdrawn"), reason: z.enum(["write_gate_closed", "adapter_disabled", "not_connected", "session_closed", "session_external", "expired", "action_closed", "stale_answer", "unsupported"]) }),
+  z.strictObject({ status: z.literal("stale"), reason: z.enum(["not_prepared", "heartbeat_first", "policy_changed", "run_closed", "wrong_state", "write_gate_closed"]).optional() }),
+  z.strictObject({ status: z.literal("settled"), task_state: agentTaskStateSchema.optional() }),
+]);
+export const bridgeV1EventsRequestSchema = z.strictObject({ bridge_id: z.guid(), events: z.array(z.unknown()).min(1).max(100) });
+export const bridgeV1EventsResponseSchema = z.strictObject({
+  results: z.array(z.strictObject({ event_id: bridgeV1Identity, status: z.enum(["applied", "duplicate", "ignored", "late", "conflict", "question_conflict", "reconcile_conflict", "invalid_state", "step_not_calling", "not_found", "wrong_bridge"]), task_state: agentTaskStateSchema.optional() })),
+  accepted_event_ids: z.array(bridgeV1Identity), retry_event_ids: z.array(bridgeV1Identity), rejected: z.array(z.strictObject({ event_id: z.string(), code: z.literal("invalid") })),
+});
+export const bridgeV1HeartbeatRequestSchema = z.strictObject({
+  bridge_id: z.guid(), sent_at: z.iso.datetime({ offset: true }), app_version: z.string().min(1).max(50).optional(),
+  tasks: z.array(z.strictObject({ task_id: z.guid(), process_alive: z.boolean(), last_seq: z.number().int().nonnegative().nullable() })).max(50), adapters: bridgeV1AdapterReportsSchema.optional(),
+});
+export type BridgeV1HeartbeatRequest = z.infer<typeof bridgeV1HeartbeatRequestSchema>;
+export const bridgeV1HeartbeatResponseSchema = z.strictObject({ throttled: z.literal(true).optional(), heartbeat_interval_seconds: z.literal(30), server_time: z.iso.datetime({ offset: true }), pending_commands: z.number().int().nonnegative(), unknown_task_ids: z.array(z.guid()).max(50), missing_task_ids: z.array(z.guid()).max(50) });
 // --- D1d ---
 // 대화 API v2 확장 (OA D1d-s, Assistant 계약 v3 2–5장). 기존 B2 스키마는 지문 · 모양 그대로 두고, 필요한 확장은 파생 스키마를 새 이름으로 둔다 (OD-26).
 // 에이전트 대화 route(/api/v2/conversations 확장 · agent-sessions · agent-tasks · assistant/targets)만 이 스키마를 쓴다. 결정적 Action id는 UUID 버전 비트가 없어 Action id는 z.guid()다.

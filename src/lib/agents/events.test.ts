@@ -71,7 +71,7 @@ describe("agentEventSchema", () => {
   it("preserves input and approval flags, empty options and full text without payload text", () => {
     for (const kind of ["input", "approval"]) {
       for (const flag of [true, false]) {
-        const input = { ...event, type: "question", text: "가🙂".repeat(10000), question: { ...question, kind, structured: flag, questions: [{ ...questionItem, options: [], multi_select: flag, allow_other: flag, secret: flag }] } };
+        const input = { ...event, type: "question", text: "가🙂".repeat(4000), question: { ...question, kind, structured: flag, questions: [{ ...questionItem, options: [], multi_select: flag, allow_other: flag, secret: flag }] } };
         expect(agentEventSchema.parse(input)).toEqual(input);
       }
     }
@@ -107,9 +107,10 @@ describe("agentEventSchema", () => {
   it.each(["accepted", "progress", "message", "artifact", "turn_completed", "failed", "cancelled"])("requires task identity for %s", (type) => {
     expect(agentEventSchema.safeParse({ ...event, type, agent_task_id: undefined }).success).toBe(false);
   });
-  it("passes message text intact for SQL UTF-8 truncation", () => {
-    const text = "가🙂".repeat(10000);
+  it("passes bounded message text intact and rejects oversized UTF-8", () => {
+    const text = "가🙂".repeat(4000);
     expect(agentEventSchema.parse({ ...event, type: "message", text }).text).toBe(text);
+    expect(agentEventSchema.safeParse({ ...event, type: "message", text: "🙂".repeat(8193) }).success).toBe(false);
     expect(agentEventSchema.safeParse({ ...event, type: "message" }).success).toBe(false);
   });
   it("validates type-specific fields and rejects artifact bodies", () => {
@@ -159,7 +160,7 @@ function db(result: unknown = { status: "applied", applied: true, task_state: "a
   const from = vi.fn((table: string) => queries[table] ??= query(table));
   const rpc = vi.fn((name: string, args: Record<string, unknown>) => {
     void args;
-    return ({ throwOnError: vi.fn().mockResolvedValue({ data: name === "apply_agent_event" ? result : [{ status: "created", message_id: userId, seq: 1 }] }) });
+    return ({ throwOnError: vi.fn().mockResolvedValue({ data: name === "apply_bridge_event" ? result : [{ status: "created", message_id: userId, seq: 1 }] }) });
   });
   return { admin: { rpc, from } as unknown as SupabaseClient, rpc, from, rows, queries };
 }
@@ -168,30 +169,30 @@ describe("applyAgentEvent", () => {
   it("sends question separately to SQL without copying it into payload or fanout", async () => {
     const d = db({ status: "applied", applied: true, task_state: "awaiting_answer" });
     const input = { ...event, type: "question", text: "Q", question };
-    await applyAgentEvent(d.admin, { userId, event: input });
-    expect(d.rpc).toHaveBeenCalledExactlyOnceWith("apply_agent_event", { p_user_id: userId, p_event: input });
+    await applyAgentEvent(d.admin, { userId, bridgeId: userId, event: input });
+    expect(d.rpc).toHaveBeenCalledExactlyOnceWith("apply_bridge_event", { p_user_id: userId, p_bridge_id: userId, p_event: input });
     expect(d.from).not.toHaveBeenCalled();
   });
   it("validates before RPC and sends the internal envelope", async () => {
     const d = db();
-    await expect(applyAgentEvent(d.admin, { userId, event })).resolves.toEqual({ status: "applied", applied: true, task_state: "accepted" });
-    expect(d.rpc).toHaveBeenCalledExactlyOnceWith("apply_agent_event", { p_user_id: userId, p_event: agentEventSchema.parse(event) });
+    await expect(applyAgentEvent(d.admin, { userId, bridgeId: userId, event })).resolves.toEqual({ status: "applied", applied: true, task_state: "accepted" });
+    expect(d.rpc).toHaveBeenCalledExactlyOnceWith("apply_bridge_event", { p_user_id: userId, p_bridge_id: userId, p_event: agentEventSchema.parse(event) });
     expect(d.from).not.toHaveBeenCalled();
-    await expect(applyAgentEvent(d.admin, { userId, event: { ...event, payload: { text: "raw" } } })).rejects.toThrow();
+    await expect(applyAgentEvent(d.admin, { userId, bridgeId: userId, event: { ...event, payload: { text: "raw" } } })).rejects.toThrow();
     expect(d.rpc).toHaveBeenCalledTimes(1);
   });
   it.each([{ status: "unknown", applied: false }, { status: "applied", applied: false }, { status: "late", applied: true }, { status: "applied", applied: true, task_state: "bogus" }])("rejects malformed RPC result %#", async (result) => {
-    await expect(applyAgentEvent(db(result).admin, { userId, event })).rejects.toThrow();
+    await expect(applyAgentEvent(db(result).admin, { userId, bridgeId: userId, event })).rejects.toThrow();
   });
   it.each(["late", "step_not_calling", "conflict", "question_conflict", "reconcile_conflict", "not_found", "invalid_state", "ignored"])("never fans out %s", async (status) => {
     const d = db({ status, applied: false });
-    await applyAgentEvent(d.admin, { userId, event: { ...event, type: "unreachable" } });
+    await applyAgentEvent(d.admin, { userId, bridgeId: userId, event: { ...event, type: "unreachable" } });
     expect(d.from).not.toHaveBeenCalled();
     expect(d.rpc).toHaveBeenCalledTimes(1);
   });
   it.each(["applied", "duplicate"])("fans out persisted %s events to every bound conversation", async (status) => {
     const d = db({ status, applied: status === "applied" });
-    await applyAgentEvent(d.admin, { userId, event: { ...event, type: "unreachable" } });
+    await applyAgentEvent(d.admin, { userId, bridgeId: userId, event: { ...event, type: "unreachable" } });
     expect(d.rpc).toHaveBeenCalledTimes(3);
     for (const id of [conversationId, userId]) expect(d.rpc).toHaveBeenCalledWith("conversation_append_agent_message", expect.objectContaining({
       p_user_id: userId, p_conversation_id: id, p_agent_task_id: taskId, p_turn_seq: 1, p_kind: "event", p_text: "Connection lost · progress unknown",
@@ -210,7 +211,7 @@ describe("applyAgentEvent", () => {
   });
   it("recovers session-only duplicate from its persisted task instead of the latest turn", async () => {
     const d = db({ status: "duplicate", applied: false });
-    await applyAgentEvent(d.admin, { userId, event: { ...event, agent_task_id: undefined, type: "unreachable" } });
+    await applyAgentEvent(d.admin, { userId, bridgeId: userId, event: { ...event, agent_task_id: undefined, type: "unreachable" } });
     expect(d.queries.execution_events.eq).toHaveBeenCalledWith("execution_runs.agent_session_id", sessionId);
     expect(d.queries.agent_tasks.eq).toHaveBeenCalledWith("id", taskId);
     expect(d.rpc).toHaveBeenCalledTimes(3);
@@ -247,7 +248,7 @@ describe("applyAgentEvent", () => {
       };
       return q;
     });
-    await applyAgentEvent(d.admin, { userId, event: { ...event, agent_task_id: undefined, type: "unreachable", turn_seq: turnSeq } });
+    await applyAgentEvent(d.admin, { userId, bridgeId: userId, event: { ...event, agent_task_id: undefined, type: "unreachable", turn_seq: turnSeq } });
     const expected = tasks[turnSeq === 2 ? 1 : 0];
     expect(queries[0].filters["payload->>event_type"]).toBe("unreachable");
     expect(queries[0].filters.turn_seq).toBe(turnSeq);
@@ -258,20 +259,20 @@ describe("applyAgentEvent", () => {
   });
   it("resolves external task identity within the user's session", async () => {
     const d = db();
-    await applyAgentEvent(d.admin, { userId, event: { ...event, agent_task_id: undefined, external_task_id: "turn-1", type: "unreachable" } });
+    await applyAgentEvent(d.admin, { userId, bridgeId: userId, event: { ...event, agent_task_id: undefined, external_task_id: "turn-1", type: "unreachable" } });
     expect(d.queries.agent_tasks.eq).toHaveBeenCalledWith("external_task_id", "turn-1");
     expect(d.rpc).toHaveBeenCalledTimes(3);
   });
   it.each(["agent_tasks", "execution_events"])("does not fan out missing %s", async (table) => {
     const d = db({ status: "duplicate", applied: false });
     d.rows[table] = null;
-    await applyAgentEvent(d.admin, { userId, event: { ...event, type: "unreachable" } });
+    await applyAgentEvent(d.admin, { userId, bridgeId: userId, event: { ...event, type: "unreachable" } });
     expect(d.rpc).toHaveBeenCalledTimes(1);
   });
   it.each(["cancelled", "reconcile"])("uses fixed %s copy instead of bridge text", async (type) => {
     const d = db({ status: "applied", applied: true });
     d.rows.execution_events = { payload: { event_type: type, status: "applied", agent_task_id: taskId }, turn_seq: 1 };
-    await applyAgentEvent(d.admin, { userId, event: { ...event, type } });
+    await applyAgentEvent(d.admin, { userId, bridgeId: userId, event: { ...event, type } });
     expect(d.rpc).toHaveBeenCalledWith("conversation_append_agent_message", expect.objectContaining({
       p_text: type === "cancelled" ? "Agent stopped" : "Connection restored", p_kind: "event",
     }));
@@ -283,19 +284,19 @@ describe("applyAgentEvent", () => {
   ])("does not fan out changed or unapplied duplicate %#", async (payload) => {
     const d = db({ status: "duplicate", applied: false });
     d.rows.execution_events = { payload, turn_seq: 1 };
-    await applyAgentEvent(d.admin, { userId, event: { ...event, type: "unreachable" } });
+    await applyAgentEvent(d.admin, { userId, bridgeId: userId, event: { ...event, type: "unreachable" } });
     expect(d.rpc).toHaveBeenCalledTimes(1);
   });
   it("propagates append failure and retries with identical conversation ids", async () => {
     const d = db({ status: "applied", applied: true });
     let attempt = 0;
     d.rpc.mockImplementation((name: string) => ({ throwOnError: vi.fn().mockImplementation(async () => {
-      if (name === "apply_agent_event") return { data: { status: attempt === 0 ? "applied" : "duplicate", applied: attempt === 0 } };
+      if (name === "apply_bridge_event") return { data: { status: attempt === 0 ? "applied" : "duplicate", applied: attempt === 0 } };
       attempt += 1;
       if (attempt === 2) throw new Error("append failed");
       return { data: [{ status: "duplicate", message_id: userId, seq: 1 }] };
     }) }));
-    const input = { userId, event: { ...event, type: "unreachable", event_id: "x".repeat(200) } };
+    const input = { userId, bridgeId: userId, event: { ...event, type: "unreachable", event_id: "x".repeat(200) } };
     await expect(applyAgentEvent(d.admin, input)).rejects.toThrow("append failed");
     await expect(applyAgentEvent(d.admin, input)).resolves.toEqual({ status: "duplicate", applied: false });
     const calls = d.rpc.mock.calls.filter(([name]) => name === "conversation_append_agent_message");
@@ -306,19 +307,27 @@ describe("applyAgentEvent", () => {
   it("does not fan out a duplicate from a different turn", async () => {
     const d = db({ status: "duplicate", applied: false });
     d.rows.execution_events = { payload: { event_type: "unreachable", status: "applied", agent_task_id: taskId }, turn_seq: 2 };
-    await applyAgentEvent(d.admin, { userId, event: { ...event, type: "unreachable" } });
+    await applyAgentEvent(d.admin, { userId, bridgeId: userId, event: { ...event, type: "unreachable" } });
     expect(d.rpc).toHaveBeenCalledTimes(1);
   });
   it("rejects malformed or rejected append results", async () => {
     for (const response of [null, [], [{ status: "unknown" }], [{ status: "wrong_session", message_id: null, seq: null }]]) {
       const d = db();
-      d.rpc.mockImplementation((name: string) => ({ throwOnError: vi.fn().mockResolvedValue({ data: name === "apply_agent_event" ? { status: "applied", applied: true } : response }) }));
-      await expect(applyAgentEvent(d.admin, { userId, event: { ...event, type: "unreachable" } })).rejects.toThrow();
+      d.rpc.mockImplementation((name: string) => ({ throwOnError: vi.fn().mockResolvedValue({ data: name === "apply_bridge_event" ? { status: "applied", applied: true } : response }) }));
+      await expect(applyAgentEvent(d.admin, { userId, bridgeId: userId, event: { ...event, type: "unreachable" } })).rejects.toThrow();
     }
   });
   it("propagates errors without fanout", async () => {
     const d = db();
     d.rpc.mockImplementation((name: string) => ({ throwOnError: vi.fn().mockRejectedValue(new Error(name)) }));
-    await expect(applyAgentEvent(d.admin, { userId, event })).rejects.toThrow("apply_agent_event");
+    await expect(applyAgentEvent(d.admin, { userId, bridgeId: userId, event })).rejects.toThrow("apply_bridge_event");
   });
+});
+
+it("requires bridge identity at the event application boundary", () => {
+  const input: Parameters<typeof applyAgentEvent>[1] = { userId, bridgeId: userId, event };
+  expect(input.bridgeId).toBe(userId);
+  // @ts-expect-error Bridge callers cannot bypass device ownership.
+  const missingBridge: Parameters<typeof applyAgentEvent>[1] = { userId, event };
+  void missingBridge;
 });

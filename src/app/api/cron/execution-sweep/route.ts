@@ -4,6 +4,7 @@ import { reconcileAiSpend } from "@/lib/ai/budget";
 import { fetchGeneration, generationConfigFromEnv } from "@/lib/ai/generation";
 import { expireAgentMessagesQuietly } from "@/lib/agents/messages";
 import { cronAuthorized, cronUnauthorized } from "@/lib/api/cron";
+import { sweepBridge } from "@/lib/bridge/sweep";
 import { wakeCoordinator } from "@/lib/coordinator/wake";
 import { executionEnabled } from "@/lib/env";
 import { supabaseExecutionStore } from "@/lib/execution/store";
@@ -33,6 +34,7 @@ export async function GET(request: Request) {
   if (!cronAuthorized(request)) return cronUnauthorized();
   scheduleCoordinatorWake();
   const admin = createAdminClient();
+  await sweepBridge(admin).then((result) => console.info(JSON.stringify({ event: "bridge_sweep", ...result }))).catch(() => console.error(JSON.stringify({ event: "bridge_sweep_failed" })));
   // 에이전트 대기 메시지 만료 (OA D1d): 실행 플래그와 무관하게 돌고, 실패는 가둔다 (응답 불변)
   await expireAgentMessagesQuietly(admin);
   const aiSpend = await reconcileAiSpend(admin);

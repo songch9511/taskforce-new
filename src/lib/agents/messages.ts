@@ -8,6 +8,7 @@ import {
   messageRefsSchema,
   type AgentConversationMessage,
   type AgentDelivery,
+  type AgentSessionStatus,
   type AgentTaskState,
   type AttachmentKind,
   type AttachmentOrigin,
@@ -235,6 +236,7 @@ export function deterministicActionId(messageId: string): string {
 async function deliveryViews(admin: SupabaseClient, userId: string, rows: MessageRecord[]) {
   const ids = rows.map((row) => row.id);
   const tasks = new Map<string, TaskRecord>();
+  const sessions = new Map<string, AgentSessionStatus>();
   const steps = new Map<string, string>();
   if (ids.length) {
     const { data } = await admin.from("agent_tasks").select("id, message_id, state, agent_session_id, run_id, turn_seq").eq("user_id", userId).in("message_id", ids).throwOnError();
@@ -242,6 +244,11 @@ async function deliveryViews(admin: SupabaseClient, userId: string, rows: Messag
       const known = tasks.get(row.message_id);
       if (!known || (row.turn_seq ?? 0) > (known.turn_seq ?? 0)) tasks.set(row.message_id, row);
     }
+  }
+  const sessionIds = [...new Set([...tasks.values()].map((task) => task.agent_session_id))];
+  if (sessionIds.length) {
+    const { data } = await admin.from("agent_sessions").select("id, status").eq("user_id", userId).in("id", sessionIds).throwOnError();
+    for (const row of (data ?? []) as { id: string; status: AgentSessionStatus }[]) sessions.set(row.id, row.status);
   }
   // 원문 메시지의 전달 단계: 그 메시지를 가리키는 최신 task의 run 안에서 args->>message_id가 그 메시지인 agent_message 단계 중 seq 최대 (검토 반영 7-4 · 8-3).
   // task.step_id는 질문에 답하면 답 단계로 옮겨 가므로 쓰지 않는다 — 답 단계가 실패해도 이미 받은 원문은 accepted 그대로다.
@@ -283,6 +290,7 @@ async function deliveryViews(admin: SupabaseClient, userId: string, rows: Messag
       agentDeliveryView({
         row: { state: row.delivery_state ?? "queued", reason: row.delivery_reason, refs: row.refs },
         stepState: (steps.get(row.id) as StepState | undefined) ?? null,
+        sessionStatus: sessions.get(tasks.get(row.id)?.agent_session_id ?? ""),
         answerStep: answer ? { state: answer.state as StepState, reason: answer.reason } : null,
         titles,
       }),

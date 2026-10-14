@@ -59,8 +59,12 @@ describe("agentDeliveryView: 계약 2.15 표의 모든 행", () => {
     expect(view({ refs: { referent_candidates: [] } })).toEqual({ state: "queued" });
   });
 
-  it.each([["prepared", "sent"], ["calling", "sent"], ["called", "accepted"], ["unknown_outcome", "unknown"]] as const)("dispatched + 단계 %s → %s (OD-11: 끊김은 D2a가 고친다)", (stepState, state) => {
+  it.each([["prepared", "sent"], ["calling", "sent"], ["called", "accepted"], ["unknown_outcome", "unknown"]] as const)("dispatched + 단계 %s → %s", (stepState, state) => {
     expect(view({ state: "dispatched" }, { stepState })).toEqual({ state });
+  });
+
+  it.each([["prepared", "queued"], ["calling", "sent"], ["called", "accepted"], ["unknown_outcome", "unknown"]] as const)("unreachable + 단계 %s → %s (OD-11)", (stepState, state) => {
+    expect(view({ state: "dispatched" }, { stepState, sessionStatus: "unreachable" })).toEqual({ state });
   });
 
   it.each(["failed", "pending", "skipped", null] as const)("dispatched + 단계 %s는 전달했다고 말하지 않는다 (not_sent, 이유 없음)", (stepState) => {
@@ -106,7 +110,8 @@ describe("R12: SQL이 delivery_reason에 쓸 수 있는 모든 값은 agentDeliv
   const add = (values: string[]) => values.forEach((value) => written.add(value));
   for (const match of sql.matchAll(/delivery_reason\s*=\s*'([a-z][a-z0-9_]*)'/g)) written.add(match[1]);
   for (const match of sql.matchAll(/v_reason\s*:=\s*'([a-z][a-z0-9_]*)'/g)) written.add(match[1]);
-  for (const match of sql.matchAll(/'reason',\s*'([a-z][a-z0-9_]*)'/g)) written.add(match[1]);
+  // Bridge stale/withdrawn 응답의 reason은 메시지 delivery_reason과 다른 계약이다.
+  for (const match of sql.matchAll(/'status',\s*'(?:not_sent|queued)',\s*'reason',\s*'([a-z][a-z0-9_]*)'/g)) written.add(match[1]);
   for (const match of sql.matchAll(/mark_agent_message_not_sent\([^)]*?,\s*'([a-z][a-z0-9_]*)'\)/g)) written.add(match[1]);
   for (const match of sql.matchAll(/p_reason not in \(([^)]*)\)/g)) add(literals(match[1]));
   // bridge가 알린 접수 전 실패 이유는 검증 목록 안에서만 delivery_reason이 된다 (apply_agent_event)

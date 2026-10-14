@@ -490,6 +490,15 @@ describe("loadAgentMessageOutcome: 다시 읽은 행으로 계산한다 (계약 
     for (const call of fake.calls) expect(call.filters).toContainEqual(["user_id", "eq", USER]);
   });
 
+  it.each([["prepared", "queued"], ["calling", "sent"], ["called", "accepted"], ["unknown_outcome", "unknown"]] as const)("끊긴 세션의 %s → %s: 소유 세션을 읽어 lease 전만 대기로 표시한다", async (state, expected) => {
+    const fake = fakeAdmin({ tables: dispatched({
+      agent_sessions: [{ id: SESSION, user_id: USER, status: "unreachable" }],
+      execution_steps: [{ id: STEP, user_id: USER, state, kind: "agent_message", seq: 1, run_id: RUN, args: { message_id: MSG } }],
+    }) });
+    expect((await loadAgentMessageOutcome(fake.admin, USER, CONV, MSG))!.delivery).toEqual({ state: expected });
+    for (const call of fake.calls) expect(call.filters).toContainEqual(["user_id", "eq", USER]);
+  });
+
   it("단계 called → accepted, unknown_outcome → unknown", async () => {
     for (const [state, expected] of [["called", "accepted"], ["unknown_outcome", "unknown"]] as const) {
       const fake = fakeAdmin({ tables: dispatched({ execution_steps: [{ id: STEP, user_id: USER, state, kind: "agent_message", seq: 1, run_id: RUN, args: { message_id: MSG } }] }) });
