@@ -71,12 +71,18 @@ final class AppUpdater {
     }
 }
 
-/// Sparkle이 부르는 곳. 지금은 재시작 허용 판단 하나뿐이다.
+/// Sparkle이 부르는 곳: 업데이트 뒤 재시작 판단 둘 (둘 다 `UpdateRelaunchPolicy`를 지난다).
 @MainActor
 final class UpdaterDelegate: NSObject, SPUUpdaterDelegate {
-    /// 업데이트 뒤 앱 재시작 허용. 지금은 항상 허용: 실행 중인 에이전트 턴이 있을 때의 종료 확인은 bridge WP가 `UpdateRelaunchPolicy`에서 한다
+    /// 재시작을 할 수 있나. 바쁠 때도 true다: Sparkle 2.10.0은 여기서 false를 받으면 설치 자체를 접고 미루기 질문을 하지 않는다.
+    /// 바쁠 때의 지연은 아래 `shouldPostponeRelaunchForUpdate`가 한다 (`UpdateRelaunchPolicy` 주석)
     func updaterShouldRelaunchApplication(_ updater: SPUUpdater) -> Bool {
-        UpdateRelaunchPolicy.allowsRelaunchNow()
+        UpdateRelaunchPolicy.allowsRelaunchNow() || UpdateRelaunchPolicy.postponesRelaunchWhileBusy
+    }
+
+    /// 에이전트 턴이 도는 동안은 재시작을 미룬다: 한가해지면 `BridgeHost`가 `installHandler`를 한 번 부른다 (종료 확인 창은 사용자가 직접 Quit할 때만 뜬다)
+    func updater(_ updater: SPUUpdater, shouldPostponeRelaunchForUpdate item: SUAppcastItem, untilInvokingBlock installHandler: @escaping () -> Void) -> Bool {
+        UpdateRelaunchPolicy.postponeRelaunchWhileBusy(installHandler)
     }
 }
 

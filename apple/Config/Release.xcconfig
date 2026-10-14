@@ -17,3 +17,6 @@ GOOGLE_IOS_URL_SCHEME = com.googleusercontent.apps.923900348266-iopmhbf1foor213n
 //   SPARKLE_PUBLIC_ED_KEY = Sparkle generate_keys가 출력한 공개 키(base64, 32바이트). 값에 "//"가 들어 있으면 그 자리도 "/$()/"로
 SPARKLE_FEED_URL =
 SPARKLE_PUBLIC_ED_KEY =
+
+// Mac bridge (OA D2b): Release도 기본 꺼짐. 켜는 것(L5)은 이 줄을 YES로 바꾸는 것이다 (Base.xcconfig).
+TF_BRIDGE_ENABLED = NO

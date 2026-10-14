@@ -114,10 +114,16 @@ struct UpdateStartTests {
         #expect(!updater.canCheckForUpdates)
     }
 
-    // MARK: 종료 위임 지점 (bridge WP 몫)
+    // MARK: 종료 위임 지점 (OA D2b)
 
-    /// 지금은 항상 허용. 실행 중인 에이전트 턴이 있을 때의 종료 확인은 bridge WP가 `UpdateRelaunchPolicy.allowsRelaunchNow()`에서 한다
-    @Test func relaunchIsAlwaysAllowedForNow() {
+    /// 실행 중인 에이전트 턴(또는 전달하지 않은 비밀값 답)이 있을 때만 지금 재시작하지 않는다. 한가하면 허용한다.
+    /// 실제 호스트와 이어서 미루기까지 보는 시험은 `BridgeHostTests`가 한다
+    @Test @MainActor func relaunchIsBlockedOnlyWhileBusy() {
+        defer { UpdateRelaunchPolicy.resetForTesting() }
+        #expect(UpdateRelaunchPolicy.allowsRelaunchNow())
+        UpdateRelaunchPolicy.isBusy = { true }
+        #expect(!UpdateRelaunchPolicy.allowsRelaunchNow())
+        UpdateRelaunchPolicy.isBusy = { false }
         #expect(UpdateRelaunchPolicy.allowsRelaunchNow())
     }
 }

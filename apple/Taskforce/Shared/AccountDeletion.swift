@@ -15,7 +15,7 @@ enum AccountDeletion {
             session: session,
             fetchUser: { try await services.supabase.auth.user() },
             deleteOnServer: { try await services.api.deleteAccount() },
-            removeSavedData: { try? AppRuntime.savedNow?.remove(account: $0) },
+            removeSavedData: { try? AppRuntime.savedNow?.remove(account: $0); BridgeHost.removeSavedBridgeData(for: $0) },
             disconnectGoogle: { GoogleSignInFlow.disconnect() },
             accountDeleted: { await session.accountDeleted() }
         )
