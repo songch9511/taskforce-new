@@ -7,7 +7,7 @@ import { taskClaims } from "@/lib/pipeline/structured";
 import { rankNow, type RankInput } from "./rank";
 import { SLACK_DISCONNECTED_QUOTE } from "@/lib/retention";
 
-import { SupabaseActionStore } from "./db-store";
+import { SupabaseActionStore, writeAction, writeProgress, type ActionWrite } from "./db-store";
 import { claimToRow } from "./rows";
 
 vi.mock("server-only", () => ({}));
@@ -18,6 +18,51 @@ vi.mock("server-only", () => ({}));
 const USER = "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d";
 const KEPT = "1b2c3d4e-5f6a-4b7c-8d9e-0f1a2b3c4d5e";
 const REMOVED = "2c3d4e5f-6a7b-4c8d-9e0f-1a2b3c4d5e6f";
+
+describe.each(["write_action", "set_action_progress"] as const)("%s lock retry", (name) => {
+  const write: ActionWrite = {
+    expectedVersion: 3, action: { status: "done" }, claims: [],
+    evidence: { sourceId: null, quote: null }, events: [], actor: "user",
+  };
+  const invoke = (admin: SupabaseClient) => name === "write_action"
+    ? writeAction(admin, USER, KEPT, write)
+    : writeProgress(admin, USER, KEPT, 3, write, false);
+
+  it("retries two 55P03 failures after 50ms and 150ms with unchanged arguments", async () => {
+    vi.useFakeTimers();
+    try {
+      const execute = vi.fn().mockRejectedValueOnce({ code: "55P03" }).mockRejectedValueOnce({ code: "55P03" }).mockResolvedValue({ data: true });
+      const rpc = vi.fn(() => ({ throwOnError: execute }));
+      const result = invoke({ rpc } as unknown as SupabaseClient).then((data) => ({ data }), (error: unknown) => ({ error }));
+      await vi.advanceTimersByTimeAsync(49);
+      expect(rpc).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(rpc).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(149);
+      expect(rpc).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(await result).toEqual({ data: true });
+      expect(rpc).toHaveBeenCalledTimes(3);
+      expect(rpc.mock.calls[1]).toEqual(rpc.mock.calls[0]);
+      expect(rpc.mock.calls[2]).toEqual(rpc.mock.calls[0]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([["55P03", 3], ["40001", 1], ["P0002", 1], ["XX000", 1]] as const)("propagates %s after %s calls", async (code, calls) => {
+    const error = { code };
+    const rpc = vi.fn(() => ({ throwOnError: vi.fn().mockRejectedValue(error) }));
+    await expect(invoke({ rpc } as unknown as SupabaseClient)).rejects.toBe(error);
+    expect(rpc).toHaveBeenCalledTimes(calls);
+  });
+
+  it("returns a version conflict without retrying", async () => {
+    const rpc = vi.fn(() => ({ throwOnError: vi.fn().mockResolvedValue({ data: false }) }));
+    await expect(invoke({ rpc } as unknown as SupabaseClient)).resolves.toBe(false);
+    expect(rpc).toHaveBeenCalledTimes(1);
+  });
+});
 
 type Row = Record<string, unknown>;
 

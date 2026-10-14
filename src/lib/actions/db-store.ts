@@ -49,8 +49,20 @@ function writeParams(userId: string, actionId: string, write: ActionWrite) {
 
 /** Action 행 · Claim · 근거 · 이벤트를 한 트랜잭션으로 쓴다 (DB 함수 write_action). 버전이 어긋나면 false. */
 export async function writeAction(admin: SupabaseClient, userId: string, actionId: string, write: ActionWrite): Promise<boolean> {
-  const { data } = await admin.rpc("write_action", writeParams(userId, actionId, write)).throwOnError();
-  return data === true;
+  return writeRpc(admin, "write_action", writeParams(userId, actionId, write));
+}
+
+async function writeRpc(admin: SupabaseClient, name: "write_action" | "set_action_progress", params: Record<string, unknown>): Promise<boolean> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      const { data } = await admin.rpc(name, params).throwOnError();
+      return data === true;
+    } catch (error) {
+      // Done의 NOWAIT 실패는 함수 전체를 롤백하므로 같은 인자로 두 번만 재시도한다.
+      if (attempt >= 2 || typeof error !== "object" || error === null || !("code" in error) || error.code !== "55P03") throw error;
+      await new Promise((resolve) => setTimeout(resolve, attempt === 0 ? 50 : 150));
+    }
+  }
 }
 
 /**
@@ -69,8 +81,7 @@ export async function writeProgress(
   const status = statusWrite
     ? writeParams(userId, actionId, statusWrite)
     : { p_user_id: userId, p_action_id: actionId, p_action: null, p_claims: [], p_evidence: [], p_events: [] };
-  const { data } = await admin.rpc("set_action_progress", { ...status, p_expected_version: expectedVersion, p_started: started }).throwOnError();
-  return data === true;
+  return writeRpc(admin, "set_action_progress", { ...status, p_expected_version: expectedVersion, p_started: started });
 }
 
 export class WriteConflictError extends Error {
