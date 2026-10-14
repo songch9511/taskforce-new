@@ -21,9 +21,11 @@ public final class AssistantTargetsStore {
     /// 같은 adapter의 연결이 둘일 때 행을 가르는 기기 이름. 서버가 아직 주지 않아 지금은 보통 비어 있다
     @ObservationIgnored public var deviceName: (UUID) -> String? = { _ in nil }
 
-    @ObservationIgnored private let gateway: (any AssistantGateway)?
+    /// 대상 목록을 읽는 곳. 없으면 Taskforce뿐이다 (견본이 가짜를 끼운다)
+    @ObservationIgnored public var gateway: (any AssistantGateway)?
     @ObservationIgnored private let scope: AccountScope
-    @ObservationIgnored private let canRunAgents: () -> Bool
+    /// 이 빌드가 에이전트를 띄울 수 있는가 (샌드박스가 아니다). 견본이 바꿔 본다
+    @ObservationIgnored public var canRunAgents: () -> Bool
     @ObservationIgnored private let flight = SingleFlight()
 
     public init(gateway: (any AssistantGateway)?, scope: AccountScope, canRunAgents: @escaping () -> Bool) {

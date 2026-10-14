@@ -14,14 +14,17 @@ public struct ChatItem: View {
     let date: String
     let preview: String?
     let isCurrent: Bool
+    /// 에이전트 대화는 이름 앞에 AgentMark (Taskforce 대화는 nil: 마크 없음)
+    let mark: AgentMarkKind?
     let action: () -> Void
     @State private var hovering = false
 
-    public init(title: String, date: String, preview: String?, isCurrent: Bool = false, action: @escaping () -> Void) {
+    public init(title: String, date: String, preview: String?, isCurrent: Bool = false, mark: AgentMarkKind? = nil, action: @escaping () -> Void) {
         self.title = title
         self.date = date
         self.preview = preview
         self.isCurrent = isCurrent
+        self.mark = mark
         self.action = action
     }
 
@@ -29,13 +32,16 @@ public struct ChatItem: View {
         let selected = hovering || isCurrent
         Button(action: action) {
             VStack(alignment: .leading, spacing: TFSpace.xxs) {
-                HStack(alignment: .firstTextBaseline, spacing: TFSpace.md) {
-                    Text(title)
-                        .font(TFFont.calloutEmphasis)
-                        .tracking(-0.24)
-                        .foregroundStyle(TFColor.textPrimary)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
+                HStack(alignment: .center, spacing: TFSpace.md) {
+                    HStack(spacing: TFSpace.sm) {
+                        if let mark { AgentMark(mark, size: TargetPill.markSize) }
+                        Text(title)
+                            .font(TFFont.calloutEmphasis)
+                            .tracking(-0.24)
+                            .foregroundStyle(TFColor.textPrimary)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    }
                     Spacer(minLength: 0)
                     Text(date)
                         .font(TFFont.meta)
@@ -60,13 +66,13 @@ public struct ChatItem: View {
         .onHover { hovering = $0 }
         .animation(TFMotion.ease(TFMotion.hoverFade), value: hovering)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(Self.accessibilityLabel(title: title, date: date, preview: preview))
+        .accessibilityLabel(Self.accessibilityLabel(title: title, date: date, preview: preview, agent: mark?.accessibilityName))
         .accessibilityAddTraits(isCurrent ? [.isButton, .isSelected] : .isButton)
     }
 
     /// "Pricing copy check, Oct 8, Draft · Can you compare plan B with"
-    nonisolated public static func accessibilityLabel(title: String, date: String, preview: String?) -> String {
-        [title, date, preview].compactMap { $0 }.joined(separator: ", ")
+    nonisolated public static func accessibilityLabel(title: String, date: String, preview: String?, agent: String? = nil) -> String {
+        [title, agent, date, preview].compactMap { $0 }.joined(separator: ", ")
     }
 }
 
@@ -76,12 +82,18 @@ public struct ChatHistory: View {
     let entries: [ChatListEntry]
     let currentID: UUID?
     let now: Date
+    let mark: (ChatListEntry) -> AgentMarkKind?
     let onOpen: (UUID) -> Void
 
-    public init(entries: [ChatListEntry], currentID: UUID? = nil, now: Date = Date(), onOpen: @escaping (UUID) -> Void) {
+    /// - mark: 에이전트 대화에 붙일 마크 (Assistant 창의 History는 두 대상의 대화를 모두 보인다)
+    public init(
+        entries: [ChatListEntry], currentID: UUID? = nil, now: Date = Date(), mark: @escaping (ChatListEntry) -> AgentMarkKind? = { _ in nil },
+        onOpen: @escaping (UUID) -> Void
+    ) {
         self.entries = entries
         self.currentID = currentID
         self.now = now
+        self.mark = mark
         self.onOpen = onOpen
     }
 
@@ -90,7 +102,7 @@ public struct ChatHistory: View {
             ForEach(entries) { entry in
                 ChatItem(
                     title: entry.title, date: ChatHistoryRules.dateLabel(entry.date, now: now), preview: entry.previewText,
-                    isCurrent: entry.id == currentID, action: { onOpen(entry.id) }
+                    isCurrent: entry.id == currentID, mark: mark(entry), action: { onOpen(entry.id) }
                 )
             }
         }

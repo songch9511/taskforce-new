@@ -67,6 +67,12 @@ public final class AssistantWindowModel: Identifiable {
 
     public var isBlocked: Bool { blocked != nil }
 
+    /// 손대지 않은 새 창: 서버에 없는 빈 대화에 쓴 글 · 칩 · 입력이 없다 (⌘3으로 막 연 창이 목록을 읽은 뒤 마지막 대화로 되살려져도 되는가)
+    public var isPristine: Bool {
+        mode == .chat && chat.isLocalChat(conversationID) && !chat.hasMessages(conversationID) && draft.isEmpty && chips.chips.isEmpty && !isBlocked
+            && pick == .taskforce
+    }
+
     public var placeholder: String {
         AssistantPromptRules.placeholder(chips: chips.chips, target: pick, targetName: targetName, blocked: blocked)
     }

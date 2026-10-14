@@ -135,9 +135,22 @@ struct AssistantWindowRegistryTests {
         #expect(positions.position(conversation: conversation(AssistantWindowPositions.capacity + 20), display: "1") != nil)
     }
 
+    @Test func aStoreWithoutDefaultsKeepsPositionsInMemoryOnly() {
+        let store = AssistantWindowPositionStore(defaults: nil)
+        var positions = store.load()
+        positions.remember(CGPoint(x: 5, y: 6), conversation: conversation(1), display: "1")
+        store.save(positions)
+        #expect(store.load().position(conversation: conversation(1), display: "1") == CGPoint(x: 5, y: 6))
+        #expect(AssistantWindowPositionStore(defaults: nil).load().conversationCount == 0, "다른 저장소와 공유하지 않는다 (설정 도메인도 만들지 않는다)")
+        store.clear()
+        #expect(store.load().conversationCount == 0)
+    }
+
     @Test func positionsSurviveRestartThroughAnIsolatedSuite() throws {
-        let name = "dev.taskforcelabs.unittest.u1.\(UUID().uuidString)"
+        // 고정 이름: 실행마다 새 설정 파일이 쌓이지 않게 한다 (시작 · 끝에 비운다)
+        let name = "dev.taskforcelabs.unittest.u1.window-positions"
         let defaults = try #require(UserDefaults(suiteName: name))
+        defaults.removePersistentDomain(forName: name)
         defer { defaults.removePersistentDomain(forName: name) }
         let store = AssistantWindowPositionStore(defaults: defaults)
         var positions = store.load()

@@ -367,6 +367,25 @@ struct ChatStoreWindowsTests {
         }
     }
 
+    /// 범위를 바꾸는 PATCH 응답이 대상 열을 주지 않아도 에이전트 대화가 Taskforce로 바뀌지 않는다
+    @Test func changingTheProjectOfAnAgentChatKeepsItsTarget() async throws {
+        let agentChat = ChatConversation(
+            id: ChatContractFixtures.id(7, prefix: "bcb50000"), title: "Fix the build", createdAt: .test(), lastMessageAt: .test(50),
+            target: ChatConversationTarget(kind: .agent, agentConnectionID: connection)
+        )
+        serve([agentChat])
+        let project = ChatContractFixtures.contextID
+        gateway.updateHandler = { id, context in ChatConversation(id: id, title: "Fix the build", contextID: context, createdAt: .test(), lastMessageAt: .test(50)) }
+        let chat = store()
+        await chat.refresh()
+        await chat.chooseProject(project, in: agentChat.id)
+        #expect(chat.conversationTarget(for: agentChat.id).isAgent && chat.conversationTarget(for: agentChat.id).agentConnectionID == connection)
+        #expect(chat.conversations.first { $0.id == agentChat.id }?.contextID == project)
+        await chat.undoProject(in: agentChat.id)
+        #expect(chat.conversationTarget(for: agentChat.id).isAgent, "되돌려도 대상은 그대로")
+        #expect(chat.currentID != nil, "창의 프로젝트 바꾸기는 저장소의 현재 대화와 상관없다 (refresh가 되살린 대화)")
+    }
+
     // MARK: Taskforce 대상의 칩
 
     @Test func aTaskforceMessageWithChipsUsesTheChipRouteAndWithoutChipsTheOldOne() async throws {

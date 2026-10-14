@@ -152,18 +152,29 @@ public struct AssistantWindowPositions: Codable, Equatable, Sendable {
     private static func key(_ id: UUID) -> String { id.uuidString.lowercased() }
 }
 
-/// 위치 저장소: 앱의 설정 도메인에 한 키로 둔다. 시험은 격리 suite를 넘긴다 (실사용 설정을 건드리지 않는다)
+/// 위치 저장소: 앱의 설정 도메인에 한 키로 둔다. 시험은 격리 suite를 넘긴다 (실사용 설정을 건드리지 않는다).
+/// `defaults`가 nil이면 메모리뿐이다 (디자인 비교 견본은 설정 도메인을 만들지 않는다)
 public struct AssistantWindowPositionStore: @unchecked Sendable {
     public static let key = "tf.assistant.windowPositions"
 
-    private let defaults: UserDefaults
+    /// 메모리 저장소의 본체 (값 타입 복사본이 같은 곳을 본다)
+    private final class Memory {
+        var data: Data?
+    }
 
-    public init(defaults: UserDefaults) {
+    private let defaults: UserDefaults?
+    private let memory = Memory()
+
+    public init(defaults: UserDefaults?) {
         self.defaults = defaults
     }
 
+    private var stored: Data? {
+        defaults.map { $0.data(forKey: Self.key) } ?? memory.data
+    }
+
     public func load() -> AssistantWindowPositions {
-        guard let data = defaults.data(forKey: Self.key), let positions = try? JSONDecoder().decode(AssistantWindowPositions.self, from: data) else {
+        guard let data = stored, let positions = try? JSONDecoder().decode(AssistantWindowPositions.self, from: data) else {
             return AssistantWindowPositions()
         }
         return positions
@@ -171,10 +182,10 @@ public struct AssistantWindowPositionStore: @unchecked Sendable {
 
     public func save(_ positions: AssistantWindowPositions) {
         guard let data = try? JSONEncoder().encode(positions) else { return }
-        defaults.set(data, forKey: Self.key)
+        if let defaults { defaults.set(data, forKey: Self.key) } else { memory.data = data }
     }
 
     public func clear() {
-        defaults.removeObject(forKey: Self.key)
+        if let defaults { defaults.removeObject(forKey: Self.key) } else { memory.data = nil }
     }
 }

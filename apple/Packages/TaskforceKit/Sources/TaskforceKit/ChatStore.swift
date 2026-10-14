@@ -838,7 +838,13 @@ public final class ChatStore {
 
     /// 헤더 ProjectLink에서 고른 프로젝트 (nil = Ungrouped). 서버 대화면 `PATCH`, 아직 서버에 없는 대화면 만들 때 보낸다. 자동 추정은 없다
     public func chooseProject(_ contextID: UUID?) async {
-        guard let id = currentID, let token = scope.token, !isUnavailable else { return }
+        guard let id = currentID else { return }
+        await chooseProject(contextID, in: id)
+    }
+
+    /// 한 대화의 프로젝트 (Assistant 창의 머리 ProjectLink)
+    public func chooseProject(_ contextID: UUID?, in id: UUID) async {
+        guard let token = scope.token, !isUnavailable else { return }
         projectMessage[id] = nil
         if let index = locals.firstIndex(where: { $0.id == id }) {
             projectUndo[id] = .some(locals[index].contextID)
@@ -850,7 +856,8 @@ public final class ChatStore {
             let updated = try await gateway.updateConversation(id: id, contextID: contextID)
             guard scope.isCurrent(token) else { return }
             projectUndo[id] = .some(chat.contextID)
-            upsert(updated)
+            // 범위를 바꾸는 PATCH 응답은 대상 열을 주지 않을 수 있다: 아는 대상을 지키지 않으면 에이전트 대화가 Taskforce로 보인다
+            upsert(updated.with(target: chat.target))
         } catch {
             guard scope.isCurrent(token), ReadFailure.from(error, online: isOnline) != nil else { return }
             if let api = error as? APIError, api.isFeatureOff { isUnavailable = true } else { projectMessage[id] = ReadFailure.userMessage(error) }
@@ -859,9 +866,14 @@ public final class ChatStore {
 
     /// 방금 바꾼 프로젝트를 되돌린다 (Undo)
     public func undoProject() async {
-        guard let id = currentID, let previous = projectUndo[id] else { return }
+        guard let id = currentID else { return }
+        await undoProject(in: id)
+    }
+
+    public func undoProject(in id: UUID) async {
+        guard let previous = projectUndo[id] else { return }
         projectUndo[id] = nil
-        await chooseProject(previous)
+        await chooseProject(previous, in: id)
         // 되돌리기 자체는 되돌릴 것이 없다
         projectUndo[id] = nil
     }

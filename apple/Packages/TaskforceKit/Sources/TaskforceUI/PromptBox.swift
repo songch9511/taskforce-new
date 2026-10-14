@@ -52,6 +52,7 @@ public struct PromptBox: View {
     let onRemoveChip: (String) -> Void
     let onTargetTap: () -> Void
     let onAttach: (() -> Void)?
+    let onTargetFrame: (CGRect) -> Void
     @State private var textHeight: CGFloat = PromptBox.minTextHeight
     @State private var focused = false
     @Environment(\.colorSchemeContrast) private var contrast
@@ -60,7 +61,7 @@ public struct PromptBox: View {
         text: Binding<String>, placeholder: String, chips: [AssistantChip], chipLabel: @escaping (AssistantChip) -> String,
         targetName: String, targetMark: AgentMarkKind, targetOpen: Bool, isBlocked: Bool = false, isRunning: Bool = false, canSend: Bool,
         focusRequest: Int = 0, onSend: @escaping () -> Void, onStop: @escaping () -> Void = {}, onRemoveChip: @escaping (String) -> Void,
-        onTargetTap: @escaping () -> Void, onAttach: (() -> Void)? = nil
+        onTargetTap: @escaping () -> Void, onTargetFrame: @escaping (CGRect) -> Void = { _ in }, onAttach: (() -> Void)? = nil
     ) {
         _text = text
         self.placeholder = placeholder
@@ -78,6 +79,7 @@ public struct PromptBox: View {
         self.onRemoveChip = onRemoveChip
         self.onTargetTap = onTargetTap
         self.onAttach = onAttach
+        self.onTargetFrame = onTargetFrame
     }
 
     /// 보내기 단추의 이름
@@ -117,6 +119,8 @@ public struct PromptBox: View {
     private var bar: some View {
         HStack(spacing: TFSpace.xs) {
             TargetPill(name: targetName, mark: targetMark, isOpen: targetOpen, action: onTargetTap)
+                // 대상 메뉴가 알약 위에 열리도록 알약의 자리를 알린다 (창 좌표, 위가 0)
+                .onGeometryChange(for: CGRect.self, of: { $0.frame(in: .global) }, action: onTargetFrame)
             Spacer(minLength: 0)
             if let onAttach {
                 Button(action: onAttach) {

@@ -74,6 +74,16 @@ struct AssistantTargetsStoreTests {
         #expect(targets.options.map(\.name) == ["Taskforce"] && assistant.calls.isEmpty && targets.load == .unavailable)
     }
 
+    @Test func aGatewayGivenLaterIsUsedByTheNextRead() async {
+        let targets = AssistantTargetsStore(gateway: nil, scope: ChatTestAccount.fixedScope(), canRunAgents: { true })
+        await targets.refresh()
+        #expect(targets.load == .unavailable)
+        assistant.targetsHandler = { Self.served }
+        targets.gateway = assistant
+        await targets.refresh()
+        #expect(targets.load == .loaded && targets.options.count == 3)
+    }
+
     @Test func overlappingReadsShareOneRequest() async {
         let latch = Latch()
         assistant.targetsHandler = {

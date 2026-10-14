@@ -59,6 +59,14 @@ public struct ChatConversation: Decodable, Sendable, Hashable, Identifiable {
         target = try ChatConversationTarget(from: decoder)
     }
 
+    /// 같은 행에 다른 대상 열 (대상을 돌려주지 않는 응답 — 범위를 바꾼 PATCH 같은 — 이 알던 대상을 지우지 않게)
+    func with(target: ChatConversationTarget) -> ChatConversation {
+        ChatConversation(
+            id: id, title: title, contextID: contextID, createdAt: createdAt, lastMessageAt: lastMessageAt, lastReadAt: lastReadAt, archivedAt: archivedAt,
+            textPurgedAt: textPurgedAt, target: target
+        )
+    }
+
     /// 손대지 않은 빈 대화: 메시지가 한 번도 없었다 (`last_message_at`은 메시지를 저장할 때 선다)
     public var isUntouched: Bool { lastMessageAt == nil }
 }
