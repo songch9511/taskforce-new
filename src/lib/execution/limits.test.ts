@@ -35,13 +35,15 @@ describe("한도 소비처는 구현된 입구만 허용한다", () => {
       return /\.tsx?$/.test(name) && !/\.test\.tsx?$/.test(name) ? [full] : [];
     });
 
-  it("agents/turns.ts만 MAX_LIVE_EXTERNAL_TASKS를 소비하고 다른 새 상수의 소비처는 없다", () => {
+  it("agents/turns.ts · agents/next-turn.ts(D1d 자동 시작의 고정 id 시작)만 MAX_LIVE_EXTERNAL_TASKS를 소비하고 다른 새 상수의 소비처는 없다", () => {
     const consumers = files(path.join(ROOT, "src"))
       .filter((file) => !file.endsWith(path.join("execution", "limits.ts")))
       .filter((file) => /\b(MAX_STEPS_BY_GOAL|MAX_CONCURRENT_COST_STEPS|MAX_LIVE_EXTERNAL_TASKS|WAITING_RUN_RETENTION_DAYS|MAX_OPEN_RUNS_PER_ACTION)\b/.test(readFileSync(file, "utf8")))
       .map((file) => path.relative(ROOT, file));
-    expect(consumers).toEqual(["src/lib/agents/turns.ts"]);
-    const turnSource = readFileSync(path.join(ROOT, consumers[0]), "utf8");
-    expect(turnSource.match(/\b(MAX_STEPS_BY_GOAL|MAX_CONCURRENT_COST_STEPS|WAITING_RUN_RETENTION_DAYS|MAX_OPEN_RUNS_PER_ACTION)\b/g)).toBeNull();
+    expect(consumers).toEqual(["src/lib/agents/next-turn.ts", "src/lib/agents/turns.ts"]);
+    for (const consumer of consumers) {
+      const source = readFileSync(path.join(ROOT, consumer), "utf8");
+      expect(source.match(/\b(MAX_STEPS_BY_GOAL|MAX_CONCURRENT_COST_STEPS|WAITING_RUN_RETENTION_DAYS|MAX_OPEN_RUNS_PER_ACTION)\b/g)).toBeNull();
+    }
   });
 });

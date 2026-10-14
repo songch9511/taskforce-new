@@ -10,7 +10,7 @@ import { heartbeatBridge } from "./heartbeat";
 import { sweepBridge } from "./sweep";
 let db: PGlite;
 const f = bridgeCommandFixtures(() => ({ query: async (sql, params) => (await db.query<Record<string, unknown>>(sql, params)).rows, asUser: (user, fn) => asUser(db, user, fn) }));
-beforeAll(async () => { db = await createLocalSupabase(); vi.stubEnv("EXECUTION_ENABLED", "true"); }, 60_000);
+beforeAll(async () => { db = await createLocalSupabase(); vi.stubEnv("EXECUTION_ENABLED", "true"); vi.stubEnv("AGENT_ADAPTER_CODEX_ENABLED", "true"); }, 60_000);
 afterAll(async () => { vi.unstubAllEnvs(); await db?.close(); });
 // Only the PostgREST operations exercised by these production bridge paths.
 function admin(): SupabaseClient {
@@ -44,7 +44,7 @@ async function counts(user: string) {
   return Promise.all(["agent_tasks", "execution_steps", "bridge_commands", "metric_events"].map(async (table) => (await f.one(`select count(*)::int n from public.${table} where user_id=$1`, [user])).n));
 }
 const capabilities = { adapters: { "agent:codex": { installed: true, version: "0.162.1", signed_in: "yes", managed_settings: false } } };
-it("review3 excludes a deleted Action chip head and starts the next message without rewriting the failed head", async () => {
+it("filters a deleted Action chip and delivers the selected message without skipping its FIFO turn", async () => {
   const w = await f.world();
   await f.updateRow("agent_sessions", w.session, { status: "bound", external_session_id: `session:${randomUUID()}` });
   await f.updateRow("bridges", w.bridge, { capabilities });
@@ -53,27 +53,53 @@ it("review3 excludes a deleted Action chip head and starts the next message with
   await f.bridgeEvent(w, f.event(w, "turn_completed"));
   const chip = await f.action(w.user);
   const m2 = String((await f.post(w.user, w.conversation, randomUUID(), "Uses a deleted chip")).message_id);
-  const refs = { agent_turn: { action_ids: [chip], context_ids: [] } };
-  await f.updateRow("conversation_messages", m2, { delivery_state: "queued", delivery_reason: "session_busy", refs });
+  const selected = { action_ids: [chip], context_ids: [] };
+  await f.updateRow("conversation_messages", m2, { delivery_state: "queued", delivery_reason: "session_busy", selected });
   await f.q("delete from public.actions where id=$1", [chip]);
   const m3 = String((await f.post(w.user, w.conversation, randomUUID(), "Plain follow-up")).message_id);
   await f.updateRow("conversation_messages", m3, { delivery_state: "queued", delivery_reason: "queue_order" });
   const before = await counts(w.user), client = admin();
   const rpc = vi.spyOn(client, "rpc");
   await kickBridgeSessions(client, w.user, [w.session]);
-  expect(await f.msg(m2)).toMatchObject({ delivery_state: "not_sent", delivery_reason: "not_found" });
+  expect(await f.msg(m2)).toMatchObject({ delivery_state: "dispatched", delivery_reason: null });
+  expect(await f.one("select selected from public.conversation_messages where id=$1", [m2])).toEqual({ selected });
   expect(await f.msg(m3)).toMatchObject({ delivery_state: "queued" });
-  expect(await counts(w.user)).toEqual(before);
-  const failedHead = await f.one("select *,xmin::text as row_version from public.conversation_messages where id=$1", [m2]);
-  expect(failedHead.refs).toEqual(refs);
-  await kickBridgeSessions(client, w.user, [w.session]);
-  expect(await f.msg(m3)).toMatchObject({ delivery_state: "dispatched", delivery_reason: null });
   const after = await counts(w.user);
   expect(after.slice(0, 3)).toEqual(before.slice(0, 3).map(n => Number(n) + 1));
   await kickBridgeSessions(client, w.user, [w.session]);
   expect(await counts(w.user)).toEqual(after);
-  expect(await f.one("select *,xmin::text as row_version from public.conversation_messages where id=$1", [m2])).toEqual(failedHead);
-  expect(rpc.mock.calls.filter(([name]) => name === "route_agent_message").map(([, args]) => args?.p_message_id)).toEqual([m2, m3]);
+  expect(rpc.mock.calls.filter(([name]) => name === "start_agent_turn_auto").map(([, args]) => args?.p_message_id)).toEqual([m2, m3]);
+  expect(rpc.mock.calls.find(([name]) => name === "start_agent_turn_auto")?.[1]?.p_action_ids).toEqual([]);
+});
+
+it.each(["start", "mark"])("preserves concurrent spawn_failed after selecting a queued head at the %s guard", async (phase) => {
+  const w = await f.world();
+  await f.updateRow("agent_sessions", w.session, { status: "bound", external_session_id: `session:${randomUUID()}` });
+  await f.updateRow("bridges", w.bridge, { capabilities });
+  await f.lease(w);
+  await f.bridgeEvent(w, f.event(w, "accepted"));
+  await f.bridgeEvent(w, f.event(w, "turn_completed"));
+  const messageId = String((await f.post(w.user, w.conversation, randomUUID(), "Queued before a concurrent failure")).message_id);
+  await f.updateRow("conversation_messages", messageId, { delivery_state: "queued", delivery_reason: "session_busy" });
+  const before = await counts(w.user), client = admin();
+  const originalRpc = client.rpc.bind(client);
+  let guarded = false;
+  const rpc = vi.spyOn(client, "rpc").mockImplementation((...args) => {
+    if (args[0] === "start_agent_turn_auto") {
+      return { throwOnError: async () => {
+        guarded = true;
+        await f.updateRow("conversation_messages", messageId, { delivery_state: "not_sent", delivery_reason: "spawn_failed" });
+        return phase === "mark" ? { data: { status: "not_found" } } : originalRpc(...args).throwOnError();
+      } } as unknown as ReturnType<typeof client.rpc>;
+    }
+    return originalRpc(...args);
+  });
+  await kickBridgeSessions(client, w.user, [w.session]);
+  expect(guarded).toBe(true);
+  expect(await f.msg(messageId)).toMatchObject({ delivery_state: "not_sent", delivery_reason: "spawn_failed" });
+  expect(await counts(w.user)).toEqual(before);
+  expect(rpc.mock.calls.some(([name]) => name === "mark_agent_message_not_sent")).toBe(false);
+  if (phase === "mark") expect(rpc).toHaveBeenCalledWith("mark_agent_message_not_sent_auto", expect.objectContaining({ p_message_id: messageId }));
 });
 it.each(["gate", "decline", "preaccept", "not_received"])("%s keeps the failed FIFO head and later messages unchanged through kicks and heartbeat", async (kind) => {
   const w = await f.world();
@@ -97,13 +123,13 @@ it.each(["gate", "decline", "preaccept", "not_received"])("%s keeps the failed F
   expect(await counts(w.user)).toEqual(before);
   expect(await f.one("select delivery_state from public.conversation_messages where id=$1", [next.message_id])).toEqual({ delivery_state: "queued" });
   if (kind === "gate") {
-    await redeliverBridgeMessages(client, { EXECUTION_ENABLED: "true" });
+    await redeliverBridgeMessages(client, { EXECUTION_ENABLED: "true", AGENT_ADAPTER_CODEX_ENABLED: "true" });
     const after = await counts(w.user);
     expect(after.slice(0, 3)).toEqual(before.slice(0, 3).map(n => Number(n) + 1));
-    await redeliverBridgeMessages(client, { EXECUTION_ENABLED: "true" });
+    await redeliverBridgeMessages(client, { EXECUTION_ENABLED: "true", AGENT_ADAPTER_CODEX_ENABLED: "true" });
     expect(await counts(w.user)).toEqual(after);
   } else {
-    await redeliverBridgeMessages(client, { EXECUTION_ENABLED: "true" });
+    await redeliverBridgeMessages(client, { EXECUTION_ENABLED: "true", AGENT_ADAPTER_CODEX_ENABLED: "true" });
     expect(await counts(w.user)).toEqual(before);
   }
 });

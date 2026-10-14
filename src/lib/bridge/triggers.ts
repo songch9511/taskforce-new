@@ -1,7 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { z } from "zod";
 import { AGENT_REGISTRY } from "@/lib/agents/registry";
-import { startAgentTurn } from "@/lib/agents/turns";
+import { chipsSchema, startPinnedAgentMessage } from "@/lib/agents/next-turn";
 import { executionEnabled } from "@/lib/env";
 import { BRIDGE_KICK_LIMIT, BRIDGE_REDELIVERY_LIMIT } from "@/lib/execution/limits";
 import { bridgeDeliveryAccess, bridgePolicyMode } from "./commands";
@@ -41,15 +41,14 @@ async function startUnbound(admin: SupabaseClient, userId: string, connectionId:
 async function startSelectedMessage(admin: SupabaseClient, userId: string, messageId: string, connectionId: string, env: Record<string, string | undefined>, onlyConversationId?: string) {
   const context = await connectionContext(admin, userId, connectionId, env);
   if (!context) return;
-  const { data: message } = await admin.from("conversation_messages").select("refs,selected,conversation_id").eq("user_id", userId).eq("id", messageId).maybeSingle().throwOnError();
+  const { data: message } = await admin.from("conversation_messages").select("delivery_state,delivery_reason,refs,selected,conversation_id").eq("user_id", userId).eq("id", messageId).maybeSingle().throwOnError();
   if (!message || onlyConversationId && message.conversation_id !== onlyConversationId) return;
-  const chipsSchema = z.object({ action_ids: z.array(z.guid()).default([]), context_ids: z.array(z.guid()).default([]) });
-  const row = z.object({ refs: z.object({ agent_turn: chipsSchema.optional() }), selected: chipsSchema.nullable() }).parse(message);
-  const chips = row.refs.agent_turn ?? row.selected ?? { action_ids: [], context_ids: [] };
-  const result = await startAgentTurn(admin, { userId, messageId, capability: AGENT_REGISTRY[context.adapter], mode: context.mode, connectionStatus: "active", actionIds: chips.action_ids, contextIds: chips.context_ids }, env);
-  if (result.status === "not_found" || result.status === "already_dispatched") {
-    await admin.rpc("mark_agent_message_not_sent", { p_user_id: userId, p_message_id: messageId, p_reason: result.status }).throwOnError();
-  }
+  const row = z.object({ delivery_state: z.string().nullable(), delivery_reason: z.string().nullable(), refs: z.object({ agent_turn: chipsSchema.optional() }).nullable(), selected: chipsSchema.nullable() }).parse(message);
+  const chips = row.refs?.agent_turn ?? row.selected ?? { action_ids: [], context_ids: [] };
+  await startPinnedAgentMessage(admin, {
+    userId, messageId, state: row.delivery_state, reason: row.delivery_reason, chips,
+    target: { capability: AGENT_REGISTRY[context.adapter], mode: context.mode, connectionStatus: "active" },
+  }, env);
 }
 export async function kickBridgeConnections(admin: SupabaseClient, userId: string, connectionIds: string[], env: Record<string, string | undefined> = process.env, alreadyKicked: string[] = []) {
   for (const connectionId of [...new Set(connectionIds)].slice(0, BRIDGE_KICK_LIMIT)) {

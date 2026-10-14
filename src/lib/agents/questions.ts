@@ -22,10 +22,13 @@ export const answerAgentQuestionResultSchema = z.discriminatedUnion("status", [
 ]);
 export type AnswerAgentQuestionResult = z.infer<typeof answerAgentQuestionResultSchema>;
 
-/** answeredLocally requires server proof of the session-owning Mac; never copy it from a request body. */
+/**
+ * answeredLocally requires server proof of the session-owning Mac; never copy it from a request body.
+ * recordMetric (D1d): answer_agent_question_recorded — 같은 규칙에 question_answered 지표를 같은 트랜잭션에서 남기는 SQL 래퍼 (route의 답만 쓴다)
+ */
 export async function answerAgentQuestion(admin: SupabaseClient, input: {
   userId: string; agentTaskId: string; providerRequestId: string;
-  answers: unknown; answeredLocally?: boolean; question: unknown;
+  answers: unknown; answeredLocally?: boolean; question: unknown; recordMetric?: boolean;
 }): Promise<AnswerAgentQuestionResult> {
   const userId = z.guid().parse(input.userId);
   const taskId = z.guid().parse(input.agentTaskId);
@@ -48,7 +51,7 @@ export async function answerAgentQuestion(admin: SupabaseClient, input: {
       if (!valid) throw new Error("Answer does not match the question");
     }
   }
-  const { data } = await admin.rpc("answer_agent_question", {
+  const { data } = await admin.rpc(input.recordMetric ? "answer_agent_question_recorded" : "answer_agent_question", {
     p_user_id: userId, p_agent_task_id: taskId, p_provider_request_id: requestId,
     p_answers: answers, p_answered_locally: local,
   }).throwOnError();

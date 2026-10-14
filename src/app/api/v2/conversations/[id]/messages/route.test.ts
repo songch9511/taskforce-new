@@ -13,6 +13,11 @@ vi.mock("@/lib/supabase/admin", () => ({ createAdminClient: vi.fn(() => ({ admin
 vi.mock("@/lib/api/auth", () => ({ authenticateRequest: vi.fn(async () => ({ user: { id: "11111111-0000-4000-8000-000000000001" } })) }));
 vi.mock("@/lib/api/profile-store", () => ({ hasAiConsent: vi.fn(async () => true) }));
 vi.mock("@/lib/api/rate-limit-store", () => ({ takeRateLimit: vi.fn(async () => null) }));
+// OA D1d: 대화 읽기에 대상(taskforce)을 더하는 읽기. 이 시험은 B2 taskforce 경로가 그대로임을 본다
+vi.mock("@/lib/agents/conversations", () => ({
+  readConversationTarget: vi.fn(async () => ({ id: "cccccccc-0000-4000-8000-000000000001", targetKind: "taskforce", connectionId: null, sessionId: null })),
+  createAgentConversation: vi.fn(),
+}));
 vi.mock("@/lib/conversation/respond", async (original) => ({
   ...(await original<typeof import("@/lib/conversation/respond")>()),
   respondToMessage: vi.fn(async (_input: unknown, deps: { retrieve: (q: { text: string; chunks: boolean }) => Promise<unknown> }) => {
