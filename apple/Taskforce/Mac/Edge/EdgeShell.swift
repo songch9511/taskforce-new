@@ -23,6 +23,8 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
     let chat: ChatRuntime?
     /// Assistant 창들 (OA U1). `EdgeSurfaces.assistantWindows`가 꺼져 있으면(Release · 창이 없는 구성) nil이고 Chats는 지금처럼 패널의 한 화면이다
     let assistant: AssistantWindowManager?
+    /// 지금의 키 창 (키를 잃을 때 새 키 창이 Assistant 창인지 본다. 시험은 이 값을 바꾼다)
+    var keyWindow: () -> NSWindow? = { NSApp.keyWindow }
     private var clickMonitors: [Any] = []
     #if DEBUG
     /// 무인 합성 조작 · 스냅샷 실행(`-TFEdgeInteract*` · `-TFEdgeSnapshot*`)은 사용자 · 다른 앱이 같은 화면을 쓰는 중에도 돈다. 다른 앱의 클릭 · 활성화가 패널을 접으면(제품 동작) 그 실행의 결과가
@@ -436,7 +438,7 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
         }
         // 키가 이 앱의 Assistant 창으로 옮겨 가는 것은 패널을 잃은 것이 아니다: 한 틱 뒤 새 키 창을 보고 정한다
         Task { @MainActor [weak self] in
-            guard let self, self.shell.panelOpen, !self.shell.menuOpen, !self.ownsAssistantWindow(NSApp.keyWindow) else { return }
+            guard let self, self.shell.panelOpen, !self.shell.menuOpen, !self.ownsAssistantWindow(self.keyWindow()) else { return }
             self.externalInteraction()
         }
     }

@@ -235,6 +235,19 @@ final class AssistantWindowManager {
         return perform(intent, in: id)
     }
 
+    /// Esc가 하는 일의 차례: 대상 메뉴가 열려 있으면 메뉴만 닫고, IME 조합 중이면 조합을 취소하는 Esc라 지나가고,
+    /// History 같은 안쪽 화면이면 대화로 돌아가고(`leaveInner`가 true), 그 밖에는 창을 숨긴다. 앞 단계가 처리하면 뒤 단계는 보지도 않는다
+    enum EscapeStep: Equatable {
+        case closeMenu, passThrough, leftInner, hide
+    }
+
+    nonisolated static func escapeStep(menuOpen: Bool, composing: Bool, leaveInner: () -> Bool) -> EscapeStep {
+        if menuOpen { return .closeMenu }
+        if composing { return .passThrough }
+        if leaveInner() { return .leftInner }
+        return .hide
+    }
+
     /// IME 조합 중인 Esc는 조합을 취소하는 것이라 지나간다. 대상 메뉴가 열려 있으면 Esc는 메뉴만 닫는다
     func perform(_ intent: KeyIntent, in id: UUID) -> Bool {
         guard let controller = controllers[id] else { return false }
@@ -242,13 +255,18 @@ final class AssistantWindowManager {
         case .close:
             close(id)
         case .escape:
-            if controller.targetMenu.isOpen {
+            let composing = (controller.panel.firstResponder as? NSTextView)?.hasMarkedText() == true
+            switch Self.escapeStep(menuOpen: controller.targetMenu.isOpen, composing: composing, leaveInner: { controller.model.escapeInner() }) {
+            case .closeMenu:
                 controller.targetMenu.dismiss()
                 return true
+            case .passThrough:
+                return false
+            case .leftInner:
+                return true
+            case .hide:
+                hide(id)
             }
-            if let editor = controller.panel.firstResponder as? NSTextView, editor.hasMarkedText() { return false }
-            if controller.model.escapeInner() { return true }
-            hide(id)
         case .review:
             guard shell.review != nil else { return false }
             shell.openNewestReview()

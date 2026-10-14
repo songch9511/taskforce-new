@@ -45,12 +45,12 @@ struct AssistantWindowTests {
         let defaults: TestDefaults
     }
 
-    private func rig(panel: CGRect? = nil, defaults: TestDefaults? = nil, rows: [ChatConversation] = []) throws -> Rig {
+    private func rig(panel: CGRect? = nil, defaults: TestDefaults? = nil, rows: [ChatConversation] = [], shell customShell: EdgeShellModel? = nil) throws -> Rig {
         let gateway = WindowTestGateway()
         gateway.rows = rows
         let account = try AppChatAccount.make()
         let runtime = ChatRuntime(gateway: gateway, scope: account.scope, now: { Date() })
-        let shell = EdgeShellModel(schedule: { _, _ in EdgeTimer() }, chatsEnabled: true, windowsEnabled: true)
+        let shell = customShell ?? EdgeShellModel(schedule: { _, _ in EdgeTimer() }, chatsEnabled: true, windowsEnabled: true)
         let store = try defaults ?? TestDefaults()
         let visible = visible
         let rail = rail
@@ -270,6 +270,18 @@ struct AssistantWindowTests {
         #expect(r.manager.controllers[back]?.model.chips.chips.map(\.title) == ["Pricing"])
     }
 
+    @Test func aNewWindowStartsWithThePanelsOpenItemAsItsAutoChip() async throws {
+        let summary = try await SummaryRig.make()
+        let item = summary.id(101)
+        summary.shell.open(itemID: item)
+        #expect(summary.shell.openItem?.id == item)
+        let r = try rig(shell: summary.shell)
+        defer { r.defaults.cleanup() }
+        let id = try #require(r.manager.openNewWindow())
+        let chips = try #require(r.manager.controllers[id]?.model.chips.chips)
+        #expect(chips.count == 1 && chips[0].itemID == item && chips[0].origin == .auto, "열 때 패널에 열린 항목이 바로 auto 칩이다 (열린 뒤 바뀔 때만이 아니라)")
+    }
+
     // MARK: 대화 바꾸기 · 되살리기
 
     @Test func historyOpeningAChatAnotherWindowShowsRaisesThatWindowAndLeavesThisOne() async throws {
@@ -289,6 +301,20 @@ struct AssistantWindowTests {
         await r.runtime.chat.refresh()
         modelA.openConversation(third.id)
         #expect(modelA.conversationID == third.id && r.manager.registry.conversationID(of: a) == third.id)
+    }
+
+    @Test func historyOpeningAChatAHiddenWindowShowsBringsThatWindowBackVisible() throws {
+        let rows = [row(1, "A", age: 20), row(2, "B", age: 10)]
+        let r = try rig(rows: rows)
+        defer { r.defaults.cleanup() }
+        let a = try #require(r.manager.openWindow(for: rows[0].id))
+        let b = try #require(r.manager.openWindow(for: rows[1].id))
+        r.manager.hide(b)
+        #expect(r.manager.registry.isHidden(b) && r.manager.registry.frontmost == a)
+        let modelA = try #require(r.manager.controllers[a]?.model)
+        modelA.openConversation(rows[1].id)
+        #expect(!r.manager.registry.isHidden(b) && r.manager.registry.frontmost == b, "숨은 창이 그 대화를 쥐고 있으면 그 창이 다시 보이고 앞으로 온다")
+        #expect(modelA.conversationID == rows[0].id)
     }
 
     @Test func chatsOpensTheLastConversationWhenThereIsOne() async throws {
@@ -321,6 +347,17 @@ struct AssistantWindowTests {
     }
 
     // MARK: 키
+
+    @Test func escapeGoesToTheMenuThenTheImeThenTheInnerScreenAndOnlyThenHides() {
+        var asked = 0
+        func step(menu: Bool, composing: Bool, inner: Bool) -> AssistantWindowManager.EscapeStep {
+            AssistantWindowManager.escapeStep(menuOpen: menu, composing: composing, leaveInner: { asked += 1; return inner })
+        }
+        #expect(step(menu: true, composing: true, inner: true) == .closeMenu && asked == 0, "대상 메뉴가 열려 있으면 메뉴만 닫는다 (안쪽 화면은 건드리지 않는다)")
+        #expect(step(menu: false, composing: true, inner: true) == .passThrough && asked == 0, "IME 조합 중인 Esc는 조합 취소다: 지나간다")
+        #expect(step(menu: false, composing: false, inner: true) == .leftInner && asked == 1, "History면 대화로 먼저")
+        #expect(step(menu: false, composing: false, inner: false) == .hide && asked == 2, "그 밖에는 창을 숨긴다")
+    }
 
     @Test func theKeysAWindowListensToAreEscapeCommandWAndTheFourShellCommands() {
         func intent(_ code: Int, _ flags: NSEvent.ModifierFlags = []) -> AssistantWindowManager.KeyIntent? {
@@ -395,6 +432,29 @@ struct AssistantWindowTests {
         #expect(controller.assistant?.owns(window) == true, "창은 패널 밖 클릭으로 세지 않는다")
         #expect(controller.assistant?.owns(controller.panel.panel) == false && controller.assistant?.owns(nil) == false)
         #expect(controller.shell.panelOpen, "창을 열어도 패널은 접히지 않는다")
+        controller.assistant?.closeAll()
+    }
+    @Test func losingTheKeyToAnAssistantWindowKeepsThePanelButAnyOtherKeyWindowFoldsIt() async throws {
+        let launcher = LauncherModel(configurationError: "test")
+        let account = try AppChatAccount.make()
+        let runtime = ChatRuntime(gateway: WindowTestGateway(), scope: account.scope, now: { Date() })
+        let store = try TestDefaults()
+        defer { store.cleanup() }
+        let controller = EdgeShellController(launcher: launcher, chat: runtime, assistantWindows: true, positionStore: AssistantWindowPositionStore(defaults: store.defaults))
+        controller.assistant?.presents = false
+        controller.ignoresExternalDismissal = false
+        controller.shell.openAllWork()
+        let id = try #require(controller.assistant?.openNewWindow())
+        let window = try #require(controller.assistant?.controllers[id]?.panel)
+        let resigned = Notification(name: NSWindow.didResignKeyNotification)
+        controller.keyWindow = { window }
+        controller.windowDidResignKey(resigned)
+        for _ in 0..<10 { await Task.yield() }
+        #expect(controller.shell.panelOpen, "키가 이 앱의 Assistant 창으로 옮겨 간 것은 패널을 잃은 것이 아니다")
+        controller.keyWindow = { nil }
+        controller.windowDidResignKey(resigned)
+        for _ in 0..<10 { await Task.yield() }
+        #expect(!controller.shell.panelOpen, "키가 다른 곳(다른 앱 · 창 없음)으로 가면 접는다")
         controller.assistant?.closeAll()
     }
 }

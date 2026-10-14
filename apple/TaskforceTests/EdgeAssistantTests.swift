@@ -23,6 +23,24 @@ struct EdgeAssistantTests {
         #expect(!EdgeSurfaces.current.assistantWindows)
     }
 
+    @Test func theAssistantWindowSurfaceNeedsBothTheShellAndChats() {
+        func surfaces(shell: Bool, chats: Bool) -> EdgeSurfaces {
+            EdgeSurfaces(shell: shell, review: false, summary: false, chats: chats, projects: false, settingsWindow: false)
+        }
+        #expect(surfaces(shell: true, chats: true).assistantWindows)
+        #expect(!surfaces(shell: false, chats: true).assistantWindows, "셸 없이 창만 있을 수 없다")
+        #expect(!surfaces(shell: true, chats: false).assistantWindows, "Chats가 꺼지면 창도 없다")
+    }
+
+    @Test func theShellUsesWindowsOnlyWhenChatsAreOnToo() {
+        func windows(chats: Bool, windows: Bool) -> Bool {
+            EdgeShellModel(schedule: { _, _ in EdgeTimer() }, chatsEnabled: chats, windowsEnabled: windows).windowsEnabled
+        }
+        #expect(windows(chats: true, windows: true))
+        #expect(!windows(chats: false, windows: true), "Chats가 꺼진 셸은 창을 켤 수 없다")
+        #expect(!windows(chats: true, windows: false))
+    }
+
     // MARK: 타일 상태
 
     @Test func theTileFollowsTheReviewQueueFirstThenTheSummaryChanges() async throws {
@@ -255,6 +273,8 @@ struct EdgeAssistantTests {
         #expect(tiled.hit(ringCenter, slots: [entry]).item == entry.id && !tiled.hitsTile(ringCenter))
         let plain = EdgeRailLayout(notchCount: 1, restCount: 0, expanded: true, idle: false)
         #expect(!plain.hitsTile(tileCenter), "타일이 없으면 그 자리는 타일이 아니다")
+        let idle = EdgeRailLayout(notchCount: 0, restCount: 0, expanded: false, idle: true, tile: true)
+        #expect(!idle.hitsTile(CGPoint(x: idle.tileFrame!.midX, y: idle.tileFrame!.midY)), "가는 줄(idle)은 타일이 아니다")
     }
 
     @Test func aRailWithATileIsNeverTheIdleNub() async throws {
@@ -262,5 +282,15 @@ struct EdgeAssistantTests {
         #expect(rig.shell.reviewTileContent != nil && !rig.shell.isIdle)
         let empty = try await SummaryRig.make(reviews: 0)
         #expect(empty.shell.reviewTileContent == nil && empty.shell.isIdle, "링도 타일도 없으면 가는 줄")
+        // 링이 없어도 타일이 있으면 (changes만) 가는 줄이 아니다
+        let quiet = try await SummaryRig.make(reviews: 0)
+        await quiet.scriptDefault()
+        await quiet.store.refresh()
+        quiet.shell.update(EdgeWorkSnapshot(
+            sections: TaskSections(review: [], inProgress: [], toDo: [], doneToday: []), working: [], stopping: [],
+            load: WorkLoad.from(refresh: quiet.harness.store.refreshState, hasList: true), doneSince: nil, canConnect: false
+        ))
+        #expect(quiet.shell.notch.isEmpty && !quiet.shell.isExpanded, "링이 하나도 없고 접혀 있다")
+        #expect(quiet.shell.reviewTileContent != nil && !quiet.shell.isIdle, "타일이 있으면 가는 줄이 아니다")
     }
 }
