@@ -9,7 +9,8 @@ import TaskforceUI
 /// (창 그림자 · 유리 흐림은 담기지 않는다). 서버 응답은 가짜(`SampleAssistantGateway` · `SampleChatGateway`)라 렌더 fixture일 뿐이다: 실제 서버 · 계정 · AI 호출이 없다.
 /// 남기는 것(`mac-edge-assistant-<이름>.png`): window-empty · window-m6(패널 옆 창, Figma M6) · window-menu(M6b) · menu-not-ready · menu-this-build · window-agent(대상 에이전트) ·
 /// window-delivery(전달 여섯 단어) · window-history · window-long-title · window-long-text · window-chips-20 · window-chip-long · window-send-failed ·
-/// window-offline · window-failed · window-unavailable · window-consent · window-blocked · windows-many · rail-* (Review 타일 상태) · tile-board(Open · Focus 포함).
+/// window-offline · window-failed · window-unavailable · window-consent · window-blocked · windows-many · rail-* (Review 타일 상태) · tile-board(Open · Focus 포함) ·
+/// menu-loading · menu-loaded-late · menu-failed · menu-another-mac (대상 목록 읽기 상태).
 @MainActor
 enum AssistantSnapshot {
     static func capture(_ edge: EdgeShellController, file: (String) -> URL, pause: @escaping (Double) async -> Void) async {
@@ -79,6 +80,32 @@ enum AssistantSnapshot {
             shoot("menu-this-build")
             manager.controllers[id]?.targetMenu.dismiss()
             runtime.targets.canRunAgents = { true }
+            // 읽는 도중에 연 메뉴는 Loading…이고, 읽기가 끝나면 같은 메뉴에 에이전트 행이 나타난다 (아래 끝은 알약 위 6pt 그대로, 위로 자란다)
+            sample.scenario = .held
+            runtime.targets.reset()
+            manager.controllers[id]?.toggleTargetMenu()
+            await settle(0.5)
+            shoot("menu-loading")
+            sample.scenario = .standard
+            await settle(1.2)
+            shoot("menu-loaded-late")
+            manager.controllers[id]?.targetMenu.dismiss()
+            // 읽지 못했다: 실패 줄과 Try again
+            sample.scenario = .failing
+            runtime.targets.reset()
+            manager.controllers[id]?.toggleTargetMenu()
+            await settle(0.8)
+            shoot("menu-failed")
+            manager.controllers[id]?.targetMenu.dismiss()
+            // 같은 이름의 연결이 둘: 서버가 기기 이름을 주기 전에는 다음 행에 Another Mac
+            sample.scenario = .twoMacs
+            await runtime.targets.refresh()
+            manager.controllers[id]?.toggleTargetMenu()
+            await settle()
+            shoot("menu-another-mac")
+            manager.controllers[id]?.targetMenu.dismiss()
+            sample.scenario = .standard
+            await runtime.targets.refresh()
         }
 
         // 대상이 에이전트: 자리표시 "Message Codex" · auto 칩 " · Not sent"
@@ -354,6 +381,12 @@ final class SampleAssistantGateway: AssistantGateway, @unchecked Sendable {
         case standard
         /// Sign in needed · Not connected
         case notReady
+        /// 읽기가 끝나지 않는다 (다른 시나리오로 바꾸면 끝난다)
+        case held
+        /// 읽지 못한다 (오프라인)
+        case failing
+        /// 같은 adapter의 연결이 둘 (기기 이름을 서버가 아직 주지 않는다)
+        case twoMacs
     }
 
     private let lock = NSLock()
@@ -380,21 +413,34 @@ final class SampleAssistantGateway: AssistantGateway, @unchecked Sendable {
 
     static let claude = UUID(uuidString: "A3330000-0000-4000-8000-000000000001")!
     static let codex = UUID(uuidString: "A3330000-0000-4000-8000-000000000002")!
+    static let otherCodex = UUID(uuidString: "A3330000-0000-4000-8000-000000000003")!
 
     func targets() async throws -> [AssistantTarget] {
+        let claudeRow = { (state: AgentTargetState) in
+            AssistantTarget.agent(.init(adapter: "agent:claude-code", displayName: "Claude Code", connectionID: Self.claude, state: state, access: nil))
+        }
         switch scenario {
         case .standard:
-            [
-                .taskforce,
-                .agent(.init(adapter: "agent:claude-code", displayName: "Claude Code", connectionID: Self.claude, state: .unsupported, access: nil)),
+            return [
+                .taskforce, claudeRow(.unsupported),
                 .agent(.init(adapter: "agent:codex", displayName: "Codex", connectionID: Self.codex, state: .ready, access: .readOnly)),
             ]
         case .notReady:
-            [
-                .taskforce,
-                .agent(.init(adapter: "agent:claude-code", displayName: "Claude Code", connectionID: Self.claude, state: .signInNeeded, access: nil)),
+            return [
+                .taskforce, claudeRow(.signInNeeded),
                 .agent(.init(adapter: "agent:codex", displayName: "Codex", connectionID: nil, state: .notConnected, access: .readOnly)),
             ]
+        case .twoMacs:
+            return [
+                .taskforce, claudeRow(.unsupported),
+                .agent(.init(adapter: "agent:codex", displayName: "Codex", connectionID: Self.codex, state: .ready, access: .write)),
+                .agent(.init(adapter: "agent:codex", displayName: "Codex", connectionID: Self.otherCodex, state: .unreachable, access: .write)),
+            ]
+        case .failing:
+            throw URLError(.notConnectedToInternet)
+        case .held:
+            while scenario == .held { try await Task.sleep(for: .milliseconds(40)) }
+            return try await targets()
         }
     }
 
