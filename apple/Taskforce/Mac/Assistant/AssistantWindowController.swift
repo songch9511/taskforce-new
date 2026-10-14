@@ -24,6 +24,9 @@ final class AssistantWindowController: NSObject, NSWindowDelegate {
     private let runtime: ChatRuntime
     private let environment: AssistantWindowManager.Environment
     private(set) var topLeft: CGPoint
+    /// 바라는 자리: 사용자가 옮겼거나 기억에서 가져온 자리. 높이가 변해 보정이 창을 밀어도 이 자리가 원본이라, 높이가 다시 줄면 돌아온다
+    /// (History로 대화를 바꿀 때 앞 대화의 높이로 밀린 자리가 굳지 않게)
+    private(set) var desiredTopLeft: CGPoint
     /// 우리가 옮기는 중(프로그램): `windowDidMove`가 사용자의 이동으로 기억하지 않게
     private var programmatic = false
     /// 창을 올리고(`show`) 내리는(`hide` · `close`) 요청이 올 때마다 오른다 (늦은 숨김이 새 요청을 되돌리지 못하게 · 시험은 화면 없이 `show`가 불렸는지 본다)
@@ -45,6 +48,7 @@ final class AssistantWindowController: NSObject, NSWindowDelegate {
         self.model = model
         self.runtime = runtime
         self.topLeft = topLeft
+        desiredTopLeft = topLeft
         self.environment = environment
         panel = AssistantPanel(
             contentRect: NSRect(x: 0, y: 0, width: AssistantWindowGeometry.width, height: AssistantWindowGeometry.emptyHeight),
@@ -79,7 +83,7 @@ final class AssistantWindowController: NSObject, NSWindowDelegate {
         panel.delegate = self
         panel.setAccessibilityLabel("Assistant")
         panel.title = "Assistant"
-        applyFrame()
+        applyFrame(.placement)
         followLayout()
     }
 
@@ -90,12 +94,19 @@ final class AssistantWindowController: NSObject, NSWindowDelegate {
         AssistantWindowGeometry.height(content: presentation.contentHeight, isEmpty: model.isEmptyConversation)
     }
 
-    /// 위 가장자리를 둔 채 높이를 맞춘다. 보이는 영역 · 레일 밖으로 넣는다
-    func applyFrame() {
+    /// 창을 놓는 두 경우: 실제로 옮기거나 처음 놓을 때(`placement`)는 목적지의 화면을 따르고,
+    /// 높이만 변할 때(`heightChange`)는 변하기 전에 창이 있던 화면에서 보정한다 (세로로 쌓인 화면에서 커진 창이 더 많이 겹친 다른 화면으로 가지 않게)
+    enum Change {
+        case placement, heightChange
+    }
+
+    /// 위 가장자리를 둔 채 높이를 맞춘다. 보이는 영역 · 레일 밖으로 넣는다. 보정은 늘 **바라는 자리**에서 시작한다
+    func applyFrame(_ change: Change = .heightChange) {
         let height = height
         // 창이 있는 화면 기준으로 보정한다 (레일은 레일 화면에만 있다)
-        let screen = environment.screen(for: Self.rect(topLeft: topLeft, height: height))
-        topLeft = AssistantWindowGeometry.clamped(topLeft: topLeft, height: height, visible: screen.visible, railWidth: environment.reservedRailWidth(on: screen))
+        let reference = change == .placement ? Self.rect(topLeft: desiredTopLeft, height: height) : panel.frame
+        let screen = environment.screen(for: reference)
+        topLeft = AssistantWindowGeometry.clamped(topLeft: desiredTopLeft, height: height, visible: screen.visible, railWidth: environment.reservedRailWidth(on: screen))
         let frame = NSRect(x: topLeft.x, y: topLeft.y - height, width: AssistantWindowGeometry.width, height: height)
         guard frame != panel.frame else { return }
         programmatic = true
@@ -110,7 +121,7 @@ final class AssistantWindowController: NSObject, NSWindowDelegate {
 
     /// 이 창이 지금 있는 화면의 키 (위치를 기억하는 키)
     var currentScreenID: String {
-        environment.screen(for: Self.rect(topLeft: topLeft, height: height)).id
+        environment.screen(for: panel.frame).id
     }
 
     /// 내용 높이 · 빈 대화 여부가 바뀔 때마다 높이를 맞춘다 (관찰이 끝나면 다시 건다)
@@ -136,15 +147,16 @@ final class AssistantWindowController: NSObject, NSWindowDelegate {
 
     /// 핸들의 화살표 키: 8pt씩
     func move(by direction: AssistantWindowGeometry.Direction) {
-        topLeft = AssistantWindowGeometry.moved(topLeft, by: direction)
-        applyFrame()
+        desiredTopLeft = AssistantWindowGeometry.moved(topLeft, by: direction)
+        applyFrame(.placement)
+        desiredTopLeft = topLeft
         onMoved(topLeft)
     }
 
-    /// 지금의 위치를 알려 준 위치로 (관리자가 기억한 위치 · 겹쳐 열기)
+    /// 지금의 위치를 알려 준 위치로 (관리자가 기억한 위치 · 겹쳐 열기). 바라는 자리로 남아, 이어지는 높이 변화가 그 자리에서 다시 보정한다
     func place(topLeft: CGPoint) {
-        self.topLeft = topLeft
-        applyFrame()
+        desiredTopLeft = topLeft
+        applyFrame(.placement)
     }
 
     // MARK: 보이기 · 숨기기
@@ -245,6 +257,7 @@ final class AssistantWindowController: NSObject, NSWindowDelegate {
     func windowDidMove(_ notification: Notification) {
         guard !programmatic else { return }
         topLeft = CGPoint(x: panel.frame.minX, y: panel.frame.maxY)
+        desiredTopLeft = topLeft
         scheduleMoveSettle()
     }
 
@@ -265,8 +278,9 @@ final class AssistantWindowController: NSObject, NSWindowDelegate {
     /// 끌기가 끝났다: 보이는 영역 · 레일 밖이면 안으로 넣고 그 자리를 기억한다
     func finishMove() {
         settleTask = nil
-        topLeft = CGPoint(x: panel.frame.minX, y: panel.frame.maxY)
-        applyFrame()
+        desiredTopLeft = CGPoint(x: panel.frame.minX, y: panel.frame.maxY)
+        applyFrame(.placement)
+        desiredTopLeft = topLeft
         onMoved(topLeft)
     }
 

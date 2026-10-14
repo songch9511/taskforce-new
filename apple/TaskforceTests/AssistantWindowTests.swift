@@ -671,4 +671,78 @@ struct AssistantWindowTests {
         let reopened = try #require(r.manager.openWindow(for: rows[0].id))
         #expect(r.manager.controllers[reopened]?.topLeft == saved, "앞 창의 화면에서 찾은 기억")
     }
+    // MARK: 검토 반영 2 (Astra 재검토)
+
+    @Test func historyRebindRestoresTheSavedPositionOnceTheNewConversationsOwnHeightIsLaidOut() throws {
+        let rows = [row(1, "A", age: 20)]
+        let r = try rig(rows: rows)
+        defer { r.defaults.cleanup() }
+        // B: 빈 새 대화(높이 440). 화면 아래 끝(위 가장자리 440)에 두고 옮겨 저장한다
+        let b = try #require(r.manager.openNewWindow())
+        let bController = try #require(r.manager.controllers[b])
+        let bConversation = try #require(r.manager.registry.conversationID(of: b))
+        bController.place(topLeft: CGPoint(x: 500, y: 440))
+        bController.move(by: .left)
+        let saved = bController.topLeft
+        #expect(saved.y == 440 && bController.panel.frame.height == 440)
+        r.manager.close(b)
+        // A: 글이 있는 긴 대화(높이 560)
+        let a = try #require(r.manager.openWindow(for: rows[0].id))
+        let aController = try #require(r.manager.controllers[a])
+        aController.presentation.bodyHeight = 600
+        aController.place(topLeft: CGPoint(x: 900, y: 800))
+        #expect(aController.panel.frame.height == 560)
+        aController.model.openConversation(bConversation)
+        #expect(aController.desiredTopLeft == saved, "저장 위치는 바라는 자리로 남는다 (앞 대화 높이로 보정된 값이 원본이 되지 않는다)")
+        // B의 높이가 반영되면 저장 위치(440)여야 한다
+        aController.presentation.bodyHeight = 0
+        aController.applyFrame()
+        #expect(aController.panel.frame.height == 440)
+        #expect(aController.topLeft == saved, "앞 대화의 높이로 보정한 자리가 아니라 B의 저장 위치")
+        #expect(aController.panel.frame.minY == 0)
+    }
+
+    @Test func aHeightChangeRestoresTheDesiredSpotAfterAnEarlierHeightPushedTheWindowAway() throws {
+        let r = try rig()
+        defer { r.defaults.cleanup() }
+        let id = try #require(r.manager.openNewWindow())
+        let controller = try #require(r.manager.controllers[id])
+        // 560pt 높이일 때 화면 아래 끝(위 가장자리 440)을 바라면 위 가장자리가 560으로 밀린다
+        controller.presentation.bodyHeight = 600
+        controller.place(topLeft: CGPoint(x: 500, y: 440))
+        #expect(controller.panel.frame.height == 560 && controller.topLeft.y == 560 && controller.desiredTopLeft.y == 440)
+        // 높이가 440으로 줄면(다른 대화의 높이) 바라던 자리로 돌아온다
+        controller.presentation.bodyHeight = 0
+        controller.applyFrame()
+        #expect(controller.panel.frame.height == 440 && controller.topLeft.y == 440, "밀려난 자리가 굳지 않는다")
+        // 사용자가 옮긴 자리가 새 바람이다: 높이가 변해도 밀린 자리에서 이어진다
+        controller.move(by: .up)
+        #expect(controller.desiredTopLeft == controller.topLeft)
+    }
+
+    @Test func aHeightChangeStaysOnTheScreenTheWindowWasOnEvenWhenItWouldOverlapAnotherMore() async throws {
+        // 세로로 쌓인 두 화면: 위 화면은 y 875 ..< 1750
+        let upper = AssistantScreen(id: "2", visible: CGRect(x: 0, y: 875, width: 1440, height: 875))
+        let rows = [row(1, "A", age: 20)]
+        let r = try rig(rows: rows, extraScreens: [upper])
+        defer { r.defaults.cleanup() }
+        await r.runtime.chat.refresh()   // 글이 있는 대화: 빈 대화의 바닥 높이(440)가 걸리지 않는다
+        let id = try #require(r.manager.openWindow(for: rows[0].id))
+        let controller = try #require(r.manager.controllers[id])
+        // 창 높이 = 머리 + 본문 + 입력 영역: 220pt로 맞춘다
+        controller.presentation.headHeight = 0
+        controller.presentation.bodyHeight = 220
+        controller.presentation.footerHeight = 0
+        controller.place(topLeft: CGPoint(x: 500, y: 875 + 220))
+        #expect(controller.panel.frame.height == 220 && controller.panel.frame.minY == 875 && controller.currentScreenID == "2", "위 화면 아래 끝의 220pt 창")
+        controller.presentation.bodyHeight = 600
+        controller.applyFrame()
+        #expect(controller.panel.frame.height == 560)
+        #expect(controller.currentScreenID == "2" && controller.panel.frame.minY >= 875, "아래 화면과 더 많이 겹쳐도 위 화면 안에서 위로 밀려 자란다")
+        let expectedTop: CGFloat = 875 + 560
+        #expect(controller.topLeft.y == expectedTop, "위 화면 아래 끝(875)에서 560 높이가 위 화면 안에 들어오게 위 가장자리가 올라간다")
+        // 실제 이동은 목적지의 화면을 따른다
+        controller.place(topLeft: CGPoint(x: 500, y: 500))
+        #expect(controller.currentScreenID == "1" && controller.panel.frame.minY >= 0 && controller.panel.frame.maxY <= 875)
+    }
 }

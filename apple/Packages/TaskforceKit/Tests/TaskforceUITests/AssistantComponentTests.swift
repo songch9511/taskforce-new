@@ -161,6 +161,39 @@ struct AssistantComponentTests {
     }
 
     @MainActor
+    @Test func aHighlightFollowsItsTargetWhenTheListChangesAndClearsWhenTheTargetIsGone() async {
+        let stub = StubTargets()
+        let user = UUID()
+        let store = AssistantTargetsStore(gateway: stub, scope: AccountScope(currentAccount: { user }), canRunAgents: { true })
+        let a = UUID(), b = UUID(), codexConnection = UUID()
+        let claudeA = AssistantTarget.agent(.init(adapter: "agent:claude-code", displayName: "Claude Code", connectionID: a, state: .ready, access: .write))
+        let claudeB = AssistantTarget.agent(.init(adapter: "agent:claude-code", displayName: "Claude Code", connectionID: b, state: .ready, access: .write))
+        let codex = AssistantTarget.agent(.init(adapter: "agent:codex", displayName: "Codex", connectionID: codexConnection, state: .ready, access: .write))
+        stub.reply = { [.taskforce, claudeA, claudeB, codex] }
+        await store.refresh()
+        let picks = Picks()
+        let model = TargetMenuModel(store: store, pick: { .taskforce }, onPick: { picks.names.append($0.id) }, onRetry: {})
+        let bID = model.options[2].id
+        model.highlighted = 2
+        #expect(model.options[2].id == bID && model.options.map(\.name) == ["Taskforce", "Claude Code", "Claude Code", "Codex"])
+        // 조회 결과가 A를 지운다: 강조는 B를 따라가고 Return은 B를 고른다 (자리 번호가 아니라 대상 id)
+        stub.reply = { [.taskforce, claudeB, codex] }
+        await store.refresh()
+        #expect(model.highlighted == 1 && model.options[1].id == bID)
+        model.activate()
+        #expect(picks.names == [bID], "Codex가 아니라 강조했던 B")
+        // B마저 사라지면 강조는 풀리고 Return은 아무 일도 하지 않는다
+        stub.reply = { [.taskforce, codex] }
+        await store.refresh()
+        #expect(model.highlighted == nil)
+        model.activate()
+        #expect(picks.names == [bID], "지워진 대상 자리에 있던 다른 행을 고르지 않는다")
+        // 사라진 뒤 ↓은 고른 행(없으면 첫 행)에서 다시 시작한다
+        model.move(1)
+        #expect(model.highlighted == 0)
+    }
+
+    @MainActor
     @Test func aStaticMenuModelIsAlwaysReady() {
         let (model, _) = menu()
         #expect(model.status == .ready && model.options.count == 3)

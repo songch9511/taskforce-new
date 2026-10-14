@@ -65,8 +65,13 @@ public final class TargetMenuModel {
     /// 지금 고른 행 (체크)
     public var selected: Int? { selectedSource() }
     public var status: AssistantTargetMenuStatus { statusSource() }
-    /// 호버 · 키보드로 짚은 행
-    public var highlighted: Int?
+    /// 호버 · 키보드로 짚은 행의 **대상 id**. 목록이 바뀌어도 같은 대상을 다시 찾고, 그 대상이 없어지면 강조가 풀린다 (Return은 아무 일도 하지 않는다)
+    private var highlightedID: String?
+    /// 짚은 행의 자리 (지금 목록에서 `highlightedID`의 번호, 없으면 nil)
+    public var highlighted: Int? {
+        get { highlightedID.flatMap { id in options.firstIndex { $0.id == id } } }
+        set { highlightedID = newValue.flatMap { options.indices.contains($0) ? options[$0].id : nil } }
+    }
     @ObservationIgnored public var onPick: (AssistantTargetOption) -> Void
     @ObservationIgnored public var onRetry: () -> Void
 
@@ -75,7 +80,6 @@ public final class TargetMenuModel {
         optionsSource = { options }
         selectedSource = { selected }
         statusSource = { .ready }
-        highlighted = nil
         self.onPick = onPick
         onRetry = {}
     }
@@ -88,7 +92,6 @@ public final class TargetMenuModel {
         optionsSource = { store.options }
         selectedSource = { AssistantTargetRules.index(of: pick(), in: store.options) }
         statusSource = { store.menuStatus }
-        highlighted = nil
         self.onPick = onPick
         self.onRetry = onRetry
     }
