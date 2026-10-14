@@ -7,6 +7,7 @@
 //   npm run eval -- --draft       초안 골든셋(evals/draft, E1)만 채점 (--case로 그 세트의 케이스를 주면 저절로)
 //   npm run eval -- --plan        다음 단계 골든셋(evals/plan, E2)만 채점
 //   npm run eval -- --consult     대화 상담 골든셋(evals/consult, B2)만 채점: 실제 Jev(J1) + LLM(J2 · J7)로 respondToMessage
+//   npm run eval -- --consult --baseline <결과.json>  이슈 정리(D4c-2) 요약의 "기존 상담 회귀"를 이전 결과(기준선 SHA의 --consult 결과)와 견준다
 //   npm run eval -- --all         기존 채점 + E1 + E2 + 대화 상담 (기본 실행은 기존 채점만, E1 · E2 · 대화는 따로 보고 · 따로 저장)
 //   npm run eval -- --llm-concurrency 2 --jev-concurrency 4  제공자 속도 제한이 있을 때 eval 호출량만 낮춤 (기본 4 · 8)
 // 키(OPENROUTER_API_KEY, LLM_MODEL, JEV_MODEL)는 환경변수나 .env.local에서 읽는다.
@@ -29,10 +30,11 @@ import { PLAN_PROMPT_VERSION } from "../src/lib/ai/prompts/plan";
 import { EXTRACT_PROMPT_VERSION } from "../src/lib/ai/prompts/extract";
 import { projectAction } from "../src/lib/actions/project";
 import { askCaseSchema, askContextOf, findAskLabelErrors, scoreAskCase, type AskCase, type AskScore } from "../src/lib/eval/ask-golden";
-import { consultCaseSchema, consultInputOf, findConsultLabelErrors, scoreConsultCase, type ConsultCase, type ConsultScore } from "../src/lib/eval/consult-golden";
+import { consultCaseSchema, consultInputOf, findConsultLabelErrors, formatOrganizeMetrics, organizeMetrics, scoreConsultCase, type ConsultCase, type ConsultScore } from "../src/lib/eval/consult-golden";
 import { CONSULT_PROMPT_VERSION } from "../src/lib/ai/prompts/consult";
 import { INTENT_PROMPT_VERSION } from "../src/lib/ai/prompts/intent";
 import { MEMORY_EXTRACT_PROMPT_VERSION } from "../src/lib/ai/prompts/memory-extract";
+import { ORGANIZE_PROMPT_VERSION } from "../src/lib/ai/prompts/organize";
 import { respondToMessage, type TurnPlan } from "../src/lib/conversation/respond";
 import { draftCaseSchema, draftJudgeState, draftTotals, findDraftLabelErrors, humanSample, scoreDraftCase, type DraftCase, type DraftScore } from "../src/lib/eval/draft-golden";
 import { executionContextOf } from "../src/lib/eval/execution-golden";
@@ -438,13 +440,13 @@ async function runExecutionEvals(
  * 대화 상담 골든셋 (evals/consult, B2): 실제 Jev(J1 의도) + LLM(J2 답 · J7 기억 후보)로 respondToMessage를 돌려 채점한다.
  * 기록 읽기(retrieve)는 케이스의 할 일 · 기억 · 원문이다. 동의 확인 · 저장은 하지 않는다 (DB 없음). 마감은 운영 route와 같다. 결과는 evals/results에 따로 남긴다.
  */
-async function runConsultEvals(llm: LlmConfig, jev: JevConfig, cases: ConsultCase[], concurrency: number): Promise<string[]> {
+async function runConsultEvals(llm: LlmConfig, jev: JevConfig, cases: ConsultCase[], concurrency: number, baselinePath?: string): Promise<string[]> {
   if (cases.length === 0) return [];
   const errors: string[] = [];
   type ConsultRun = { golden: ConsultCase; plan: TurnPlan; score: ConsultScore };
   const runs = (
     await mapLimit(cases, concurrency, async (golden): Promise<ConsultRun | null> => {
-      const { input, context, ids } = consultInputOf(golden);
+      const { input, context, ids, lookup } = consultInputOf(golden);
       // 운영 route와 같은 마감 (사용자가 기다리는 요청: LLM은 첫 호출부터 추론량 제한, Jev · LLM 모두 실행 한도 안에)
       const deadline = interactiveDeadline(INTERACTIVE_MAX_DURATION_S);
       try {
@@ -452,6 +454,8 @@ async function runConsultEvals(llm: LlmConfig, jev: JevConfig, cases: ConsultCas
           decide: (request) => decide({ ...jev, deadline }, request),
           complete: (request) => completeJson({ ...llm, deadline }, request),
           retrieve: async () => context,
+          // 이슈 정리(D4c-2): 읽기는 케이스의 이슈 · 프로젝트다 (DB 없음)
+          organizeLookup: async () => lookup,
           newId: randomUUID,
         });
         return { golden, plan, score: scoreConsultCase(golden, plan, ids) };
@@ -471,6 +475,14 @@ async function runConsultEvals(llm: LlmConfig, jev: JevConfig, cases: ConsultCas
   const passed = runs.filter((r) => r.score.pass).length;
   const cost = runs.reduce((n, r) => n + r.plan.summary.cost, 0);
   console.log(`통과 ${passed}/${cases.length} · 호출 실패 ${errors.length}건 · 비용 약 $${cost.toFixed(4)}`);
+  // 이슈 정리 요약 (D4c-2): 거짓 쓰기는 0이어야 하고, 기준선(이전 --consult 결과)에서 통과한 케이스가 지금도 통과해야 한다
+  let baseline: Set<string> | null = null;
+  if (baselinePath) {
+    const previous = JSON.parse(await readFile(baselinePath, "utf8")) as { cases?: { id: string; score?: { pass?: boolean } }[] };
+    baseline = new Set((previous.cases ?? []).filter((c) => c.score?.pass).map((c) => c.id));
+  }
+  const organize = organizeMetrics(runs, baseline);
+  console.log(formatOrganizeMetrics(organize));
 
   await mkdir(RESULTS_DIR, { recursive: true });
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
@@ -480,8 +492,9 @@ async function runConsultEvals(llm: LlmConfig, jev: JevConfig, cases: ConsultCas
       {
         at: new Date().toISOString(),
         models: { llm: llm.model, judge: jev.model },
-        promptVersions: { intent: INTENT_PROMPT_VERSION, consult: CONSULT_PROMPT_VERSION, memoryExtract: MEMORY_EXTRACT_PROMPT_VERSION },
+        promptVersions: { intent: INTENT_PROMPT_VERSION, consult: CONSULT_PROMPT_VERSION, memoryExtract: MEMORY_EXTRACT_PROMPT_VERSION, organize: ORGANIZE_PROMPT_VERSION },
         cases: runs.map((r) => ({ id: r.golden.id, maps_to: r.golden.maps_to, score: r.score, reply: r.plan.reply.text, segments: r.plan.reply.segments, summary: r.plan.summary })),
+        organize,
         passed,
         total: cases.length,
         errors,
@@ -504,6 +517,7 @@ async function main() {
       plan: { type: "boolean" },
       all: { type: "boolean" },
       consult: { type: "boolean" },
+      baseline: { type: "string" },
       "llm-concurrency": { type: "string" },
       "jev-concurrency": { type: "string" },
     },
@@ -551,7 +565,7 @@ async function main() {
   const llm = llmConfigFromEnv();
   const consultPicked = values.consult || values.all ? consultSet.cases.filter((c) => !values.case || c.id === values.case) : [];
   // 대화 상담은 J1(Jev)이 꼭 필요하다 (--consult는 --no-judge와 상관없이 Jev를 쓴다)
-  const runConsult = () => runConsultEvals(llm, jevConfigFromEnv(), consultPicked, llmConcurrency);
+  const runConsult = () => runConsultEvals(llm, jevConfigFromEnv(), consultPicked, llmConcurrency, values.baseline);
   if (values.consult) {
     if (consultPicked.length === 0) {
       console.error(values.case ? `대화 케이스 ${values.case}가 없습니다.` : "채점할 대화 케이스가 없습니다.");

@@ -214,6 +214,43 @@ describe("POST /api/v2/conversations/{id}/messages", () => {
     expect(adoptConflict.respond).toHaveBeenCalledTimes(2);
   });
 
+  it("D4c-2: 말로 이동의 범위 version 경합(conflict)도 한 번 다시 읽어 답하고, 그래도 어긋나면 409. 이동 없는 답의 경합은 다시 읽지 않는다", async () => {
+    const move = [{ action_id: id(1, "abababab"), add: { context_id: id(1, "c1c1c1c1"), expected_version: 3 }, remove: null }];
+    const finish = vi.fn().mockResolvedValueOnce({ status: "conflict", replyId: null }).mockResolvedValueOnce({ status: "written", replyId: REPLY });
+    const retried = makeDeps({ respond: vi.fn(async () => plan({ move })), finish });
+    expect((await send(retried)).status).toBe(200);
+    expect(retried.respond).toHaveBeenCalledTimes(2);
+
+    const stuck = makeDeps({ respond: vi.fn(async () => plan({ move })), finish: vi.fn(async () => ({ status: "conflict" as const, replyId: null })) });
+    const response = await send(stuck);
+    expect(response.status).toBe(409);
+    expect(stuck.respond).toHaveBeenCalledTimes(2);
+
+    const plain = makeDeps({ finish: vi.fn(async () => ({ status: "conflict" as const, replyId: null })) });
+    expect((await send(plain)).status).toBe(409);
+    expect(plain.respond).toHaveBeenCalledTimes(1);
+  });
+
+  it("D4c-2: 앱이 붙인 added context 칩(살아 있는 것)을 respond 입력의 selectedContexts로 넘긴다. 칩이 없으면 빈 목록", async () => {
+    const context = id(7, "c1c1c1c1");
+    const prepared = makeDeps({
+      prepareAttachments: vi.fn(async () => ({
+        status: "ok" as const,
+        refs: { action_ids: [], run_ids: [], artifact_ids: [] },
+        selected: { action_ids: [], run_ids: [], artifact_ids: [], attachments: [{ kind: "context" as const, id: context, origin: "added" as const }] },
+        attachments: [{ kind: "context" as const, id: context, origin: "added" as const }],
+        context_ids: [context],
+      })),
+      recordAttachments: vi.fn(async () => undefined),
+    });
+    expect((await send(prepared, { client_message_id: CLIENT, text: TEXT, attachments: [{ kind: "context", id: context, origin: "added" }] })).status).toBe(200);
+    expect(vi.mocked(prepared.respond).mock.calls[0][1]).toMatchObject({ selectedContexts: [context] });
+
+    const none = makeDeps();
+    await send(none);
+    expect(vi.mocked(none.respond).mock.calls[0][1]).toMatchObject({ selectedContexts: [] });
+  });
+
   it("창에 지금 메시지가 없거나 답 쓰기가 not_found면 처리 표시를 풀고 404", async () => {
     const noWindow = makeDeps({ loadWindow: vi.fn(async () => ({ messages: [], omitted: 0 })) });
     expect((await send(noWindow)).status).toBe(404);

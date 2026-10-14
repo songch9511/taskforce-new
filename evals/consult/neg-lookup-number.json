@@ -1,0 +1,62 @@
+{
+  "id": "neg-lookup-number",
+  "description": "정리가 아니다: '#139 언제까지야?'는 사실을 묻는 조회 — 이슈 번호가 있어도 organize가 아니고 쓰기 0",
+  "maps_to": [
+    "AC-27"
+  ],
+  "asked_at": "2026-10-15T10:00:00+09:00",
+  "message": "#139 언제까지야?",
+  "projects": [
+    {
+      "id": "p_launch",
+      "name": "Launch"
+    },
+    {
+      "id": "p_tf",
+      "name": "Taskforce"
+    }
+  ],
+  "records": {
+    "open_actions": [
+      {
+        "id": "i139",
+        "title": "Shape 디자인 확정",
+        "number": 139,
+        "version": 2,
+        "projects": [
+          "p_tf"
+        ],
+        "open_sessions": 1,
+        "evidence_count": 2,
+        "due_date": "2026-10-20"
+      },
+      {
+        "id": "i140",
+        "title": "견적서 보내기",
+        "number": 140,
+        "version": 2,
+        "projects": [],
+        "open_sessions": 1,
+        "evidence_count": 2
+      }
+    ]
+  },
+  "expect": {
+    "intent_any": [
+      "lookup",
+      "consult"
+    ],
+    "route_any": [
+      "consult"
+    ],
+    "organize": {
+      "op": "none",
+      "targets": []
+    },
+    "memory_writes": {
+      "min": 0,
+      "max": 0
+    }
+  },
+  "origin": "synthetic"
+}

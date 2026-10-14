@@ -4,9 +4,9 @@ import type { IntentKind } from "@/lib/api/contract";
 // 대화 의도 · 기억 · 조회 여부를 묻는 Jev 질문 (J1, 아키텍처 7.3 · 런타임 계약 2장). 생성 모델이 의도를 적어도 코드는 이 답과
 // 임계값(src/lib/conversation/intent.config.ts)으로만 분기한다. 문구를 바꾸면 버전을 올리고 consult 골든셋(evals/consult) 실제 모델 결과를 PR에 적는다.
 
-export const INTENT_PROMPT_VERSION = "intent-v1";
+export const INTENT_PROMPT_VERSION = "intent-v2";
 
-/** 의도 선택지 (계약 intentKindSchema와 같은 11개). 설명은 Jev가 고르는 기준이다 */
+/** 의도 선택지 (계약 intentKindSchema와 같은 12개). 설명은 Jev가 고르는 기준이다 */
 export const INTENT_CRITERIA: Record<IntentKind, string> = {
   lookup: "Asks for a fact about the user's own tasks, records, or past conversation (what is left, when something is due, who said what)",
   consult: "Asks for advice, a recommendation, or help deciding or planning (what to do next, whether an idea is good, how to proceed)",
@@ -18,6 +18,8 @@ export const INTENT_CRITERIA: Record<IntentKind, string> = {
   preference: "States a lasting preference about how Taskforce should work for the user from now on (style, tone, defaults for a person or kind of work)",
   inform: "Tells Taskforce a fact, condition, plan, goal, or decision to keep in mind for later, without asking a question",
   correct: "Says something Taskforce remembered or said is wrong or has changed, and gives the new value",
+  organize:
+    "Asks Taskforce to put an issue into a project, take it out of a project, move it between projects, delete an issue, or merge two issues (issues are written like #139)",
   other: "Greeting, thanks, small talk, or anything else",
 };
 

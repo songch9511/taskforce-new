@@ -1,0 +1,101 @@
+{
+  "id": "org-move-pending-answer",
+  "description": "AC-27: 앞 답이 '어느 프로젝트인가요?'였고 'Launch'라고 답함 — 앞 값에 이번 지칭만 더해 푼다 (한 라운드)",
+  "maps_to": [
+    "AC-27",
+    "A34"
+  ],
+  "asked_at": "2026-10-15T10:00:00+09:00",
+  "message": "Launch",
+  "projects": [
+    {
+      "id": "p_launch",
+      "name": "Launch"
+    },
+    {
+      "id": "p_tf",
+      "name": "Taskforce"
+    }
+  ],
+  "records": {
+    "open_actions": [
+      {
+        "id": "i139",
+        "title": "Shape 디자인 확정",
+        "number": 139,
+        "version": 2,
+        "projects": [
+          "p_tf"
+        ],
+        "open_sessions": 1,
+        "evidence_count": 2
+      },
+      {
+        "id": "i140",
+        "title": "견적서 보내기",
+        "number": 140,
+        "version": 2,
+        "projects": [],
+        "open_sessions": 1,
+        "evidence_count": 2
+      },
+      {
+        "id": "i141",
+        "title": "회의록 정리",
+        "number": 141,
+        "version": 2,
+        "projects": [],
+        "open_sessions": 1,
+        "evidence_count": 2
+      },
+      {
+        "id": "i144",
+        "title": "디자인 확정 (중복)",
+        "number": 144,
+        "version": 2,
+        "projects": [],
+        "open_sessions": 1,
+        "evidence_count": 2
+      }
+    ]
+  },
+  "history": [
+    {
+      "role": "user",
+      "text": "#139 런치로 옮겨줘"
+    },
+    {
+      "role": "assistant",
+      "text": "어느 프로젝트인가요?",
+      "organize_pending": {
+        "op": "move",
+        "targets": [
+          "i139"
+        ],
+        "missing": "project"
+      }
+    }
+  ],
+  "expect": {
+    "intent_any": [
+      "answer",
+      "organize"
+    ],
+    "route_any": [
+      "organize"
+    ],
+    "organize": {
+      "op": "move",
+      "targets": [
+        "i139"
+      ],
+      "outcome": "write",
+      "project": "p_launch"
+    },
+    "memory_writes": {
+      "min": 0,
+      "max": 0
+    }
+  },
+  "origin": "synthetic"
+}

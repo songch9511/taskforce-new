@@ -4,7 +4,15 @@ import { answerLanguage } from "@/lib/ai/prompts/ask";
 import { buildConsultUserPrompt, CONSULT_PROMPT_VERSION, CONSULT_SYSTEM_PROMPT, type ConsultPromptAction } from "@/lib/ai/prompts/consult";
 import { INTENT_PROMPT_VERSION } from "@/lib/ai/prompts/intent";
 import { MEMORY_EXTRACT_PROMPT_VERSION } from "@/lib/ai/prompts/memory-extract";
-import type { AskCitation, ConversationMessageContent, MessageIntent, MessageRefs, Proposal, ResponseSegment } from "@/lib/api/contract";
+import {
+  buildOrganizeState,
+  ORGANIZE_OP_QUESTION,
+  ORGANIZE_OPS,
+  ORGANIZE_PROMPT_VERSION,
+  organizeIntoQuestion,
+} from "@/lib/ai/prompts/organize";
+import type { JevQuestion } from "@/lib/ai/jev";
+import type { AskCitation, ConversationMessageContent, MessageIntent, MessageRefs, OrganizeOp, Proposal, ResponseSegment } from "@/lib/api/contract";
 import type { MemoryScope } from "@/lib/context/memory";
 import { verifyCitations, type AskAction, type AskSource } from "@/lib/pipeline/ask";
 import { ConsentRequiredError } from "@/lib/consent/gate";
@@ -32,7 +40,21 @@ import {
   type QuotableMessage,
   type ShownMemory,
 } from "./memory";
-import { adoptPlan, proposalFromModel, proposalIntact, reissueProposal, type AdoptPlan, type ProposalPayload } from "./proposal";
+import {
+  deletePayload,
+  findIssueMentions,
+  mergePayload,
+  movePayload,
+  moveOps,
+  organizeIssues,
+  resolveMoveAdopt,
+  resolveOrganize,
+  type OrganizeLookup,
+  type OrganizeResolution,
+  type PendingOrganize,
+  type ReplyReason,
+} from "./organize";
+import { adoptPlan, newProposal, proposalFromModel, proposalIntact, reissueProposal, type AdoptPlan, type MoveAdoptPlan, type MovePlanItem, type ProposalPayload } from "./proposal";
 import { resolveReferent, type OpenProposalRef, type Referent, type Target } from "./referent";
 
 // 대화 한 번의 답 (POST /api/v2/conversations/{id}/messages의 본체, 구현 계획 B2). DB와 분리된 함수: 모델(Jev · LLM)과 기록 읽기를 인자로 받아
@@ -87,6 +109,8 @@ export type RespondInput = {
   omitted: number;
   /** 앱이 보낸 대상 (소유를 확인한 것만) */
   selected: Target[];
+  /** 앱이 붙인 added context 칩 (살아 있는 것만, D4c-2): 이슈 정리의 프로젝트 지칭. 없으면 칩 없음 */
+  selectedContexts?: string[];
   flags: { memory: boolean };
   now: Date;
 };
@@ -96,6 +120,8 @@ export type RespondDeps = {
   complete: CompleteJson;
   /** 기록 읽기. chunks: 범위 조각 검색(임베딩)을 할지. 모델 답이 필요 없는 분기에서는 부르지 않거나 chunks false로 부른다 */
   retrieve: (query: { text: string; chunks: boolean }) => Promise<ConsultContext>;
+  /** 이슈 정리(D4c-2)의 읽기: 번호 · id로 이 사용자의 이슈와 확인된 멤버십, 범위 전부 (SQL organize_lookup). 정리 분기에서만 부른다 — 없으면 정리를 못 한다 */
+  organizeLookup?: (query: { numbers: number[]; actionIds: string[] }) => Promise<OrganizeLookup>;
   newId: () => string;
 };
 
@@ -105,7 +131,9 @@ export type TurnPlan = {
   user: { refs: MessageRefs };
   reply: { text: string; segments: ResponseSegment[]; citations: AskCitation[]; refs: MessageRefs; content: ConversationMessageContent };
   memory: MemoryWritePlan[];
-  adopt: AdoptPlan | null;
+  adopt: AdoptPlan | MoveAdoptPlan | null;
+  /** 말로 바로 쓰는 이동 (D4c-2, ≤3): 대상이 하나로 정해졌을 때만. 답과 같은 트랜잭션으로 쓴다 */
+  move?: MovePlanItem[] | null;
   /** 로그 · eval용 (글 없음) */
   summary: {
     intent: { kind: string; confidence: number; remember: number; read: number };
@@ -120,7 +148,9 @@ export type TurnPlan = {
     adopt: boolean;
     model: string | null;
     cost: number;
-    promptVersions: { intent: string; consult: string; memory: string };
+    /** 이슈 정리의 판정 (숫자 · 코드만): 무엇을 · 어떻게 끝났나 · Jev op 확신 */
+    organize?: { op: OrganizeOp | null; outcome: OrganizeResolution["kind"] | "clarify"; op_confidence: number | null } | null;
+    promptVersions: { intent: string; consult: string; memory: string; organize?: string };
   };
 };
 
@@ -184,6 +214,66 @@ const referentAsk = (lang: Lang, candidates: Target[]) => {
   return lang === "ko" ? `어느 일인가요? ${list}` : `Which one? ${list}`;
 };
 
+// ─── 이슈 정리 문구 (D4c-2, 사용자 언어 ko · en). 짧은 관용 표현만 ───────────
+
+const ORGANIZE_TEXT = {
+  asIssue: { ko: "어느 이슈인가요? 이슈를 붙이거나 #번호로 말해 주세요.", en: "Which issue? Attach it or give its #number." },
+  asProject: { ko: "어느 프로젝트인가요?", en: "Which project?" },
+  asFrom: { ko: "어느 프로젝트에서 옮길까요?", en: "Move it from which project?" },
+  asOp: { ko: "무엇을 할까요? 옮기기 · 빼기 · 지우기 · 합치기", en: "What should I do? Move, remove, delete or merge." },
+  memoryOff: { ko: "프로젝트 기능이 꺼져 있어요.", en: "Projects are turned off." },
+  tooMany: { ko: "한 번에 세 개까지 할 수 있어요.", en: "Up to three at a time." },
+} as const;
+
+const labelsOf = (numbers: number[]) => numbers.map((n) => `#${n}`).join(" · ");
+const namesOf = (names: string[] | undefined) => (names ?? []).join(" · ");
+
+const movedText = (lang: Lang, op: "move" | "remove", numbers: number[], to: string, from: string) =>
+  op === "move" ? (lang === "ko" ? `옮겼어요: ${labelsOf(numbers)} → ${to}` : `Moved ${labelsOf(numbers)} to ${to}`) : lang === "ko" ? `뺐어요: ${labelsOf(numbers)} (${from})` : `Removed ${labelsOf(numbers)} from ${from}`;
+const moveAsk = (lang: Lang, op: "move" | "remove", numbers: number[], to: string, from: string) =>
+  op === "move" ? (lang === "ko" ? `${labelsOf(numbers)}을(를) ${to}(으)로 옮길까요?` : `Move ${labelsOf(numbers)} to ${to}?`) : lang === "ko" ? `${labelsOf(numbers)}을(를) ${from}에서 뺄까요?` : `Remove ${labelsOf(numbers)} from ${from}?`;
+const deleteAsk = (lang: Lang, numbers: number[]) => (lang === "ko" ? `${labelsOf(numbers)}을(를) 지울까요?` : `Delete ${labelsOf(numbers)}?`);
+const mergeAsk = (lang: Lang, from: number, into: number) => (lang === "ko" ? `#${from}을(를) #${into}에 합칠까요?` : `Merge #${from} into #${into}?`);
+const alreadyOrganized = (lang: Lang) => (lang === "ko" ? "이미 처리한 제안이에요." : "That was already done.");
+
+function replyText(lang: Lang, reason: ReplyReason, numbers: number[] | undefined, names: string[] | undefined): string {
+  const labels = labelsOf(numbers ?? []);
+  switch (reason) {
+    case "issue_not_found":
+      return lang === "ko" ? `${labels}을(를) 찾지 못했어요.` : `Couldn't find ${labels}.`;
+    case "issue_dropped":
+      return lang === "ko" ? `${labels}은(는) 지운 이슈예요.` : `${labels} is already deleted.`;
+    case "already_deleted":
+      return lang === "ko" ? `이미 지웠어요: ${labels}` : `Already deleted: ${labels}`;
+    case "already_there":
+      return lang === "ko" ? `이미 ${namesOf(names)}에 있어요: ${labels}` : `Already in ${namesOf(names)}: ${labels}`;
+    case "not_member":
+      return lang === "ko" ? `${namesOf(names) || "이 프로젝트"}에 없어요: ${labels}` : `${labels} isn't in ${namesOf(names) || "that project"}.`;
+    case "context_archived":
+      return lang === "ko" ? `보관된 프로젝트예요: ${namesOf(names)}` : `${namesOf(names)} is archived.`;
+    case "too_many":
+      return ORGANIZE_TEXT.tooMany[lang];
+    case "memory_off":
+      return ORGANIZE_TEXT.memoryOff[lang];
+  }
+}
+
+function askText(lang: Lang, pending: PendingOrganize, candidates: { name: string }[] | undefined, numbers: number[]): string {
+  const list = candidates && candidates.length > 0 ? ` ${candidates.map((c, i) => `${i + 1}) ${c.name}`).join(" ")}` : "";
+  switch (pending.missing) {
+    case "issue":
+      return ORGANIZE_TEXT.asIssue[lang];
+    case "project":
+      return `${ORGANIZE_TEXT.asProject[lang]}${list}`;
+    case "from":
+      return `${ORGANIZE_TEXT.asFrom[lang]}${list}`;
+    case "op":
+      return ORGANIZE_TEXT.asOp[lang];
+    case "into":
+      return lang === "ko" ? `어느 쪽을 남길까요? ${numbers.map((n) => `#${n}`).join(" · ")}` : `Which one stays? ${numbers.map((n) => `#${n}`).join(" or ")}`;
+  }
+}
+
 // ─── 본체 ─────────────────────────────────────────────
 
 const emptyRefs = (): MessageRefs => ({
@@ -210,12 +300,36 @@ function previousAssistant(input: RespondInput): WindowMessage | null {
   return null;
 }
 
-function openProposalOf(message: WindowMessage | null): OpenProposalRef | null {
+/** 열린 제안 (종류 · 내용 포함). create_action이 아닌 제안의 title은 비어 있다 — 쓰지 않는다 */
+type OpenProposal = OpenProposalRef & { kind: Proposal["kind"]; payload: ProposalPayload };
+
+function openProposalOf(message: WindowMessage | null): OpenProposal | null {
   const proposal = message?.refs.proposal;
   if (!message || !proposal || proposal.state !== "open") return null;
   const payload = message.content?.proposal ?? null;
   if (!proposalIntact(proposal, payload)) return null;
-  return { messageId: message.id, proposalId: proposal.id, payloadHash: proposal.payload_hash, title: payload.title };
+  return { messageId: message.id, proposalId: proposal.id, payloadHash: proposal.payload_hash, title: payload.kind === "create_action" ? payload.title : "", kind: proposal.kind, payload };
+}
+
+/** Jev에 보내는 열린 제안의 짧은 표시 (create_action은 제목, 정리는 종류 + 이슈 번호만 — 제목 · 프로젝트 이름은 보내지 않는다) */
+function proposalLabel(proposal: OpenProposal): string {
+  const payload = proposal.payload;
+  switch (payload.kind) {
+    case "create_action":
+      return payload.title;
+    case "move":
+      return `${payload.to ? "move" : "remove"} ${labelsOf(payload.targets.map((t) => t.number))}`;
+    case "delete":
+      return `delete ${labelsOf(payload.targets.map((t) => t.number))}`;
+    case "merge":
+      return `merge #${payload.from.number} into #${payload.into.number}`;
+  }
+}
+
+/** 앞 답이 한 번 물은 정리 (asks organize + organize.state pending) */
+function pendingOf(message: WindowMessage | null): PendingOrganize | null {
+  const organize = message?.content?.organize;
+  return message?.content?.asks === "organize" && organize?.state === "pending" ? organize : null;
 }
 
 function targetsToRefs(targets: Target[]): Pick<MessageRefs, "action_ids" | "run_ids" | "artifact_ids"> {
@@ -233,7 +347,7 @@ export async function respondToMessage(input: RespondInput, deps: RespondDeps): 
   const intent = await classifyIntent(
     {
       message: input.message.text,
-      previousReply: previous ? { text: previous.text, asked: previous.content?.asks ?? null, openProposal: previousProposal?.title ?? null } : null,
+      previousReply: previous ? { text: previous.text, asked: previous.content?.asks ?? null, openProposal: previousProposal ? proposalLabel(previousProposal) : null } : null,
       selectedTargets: input.selected.length,
     },
     deps.decide,
@@ -248,7 +362,10 @@ export async function respondToMessage(input: RespondInput, deps: RespondDeps): 
   const segments: ResponseSegment[] = [];
   let citations: AskCitation[] = [];
   let memoryWrites: MemoryWritePlan[] = [];
-  let adopt: AdoptPlan | null = null;
+  let adopt: AdoptPlan | MoveAdoptPlan | null = null;
+  let move: MovePlanItem[] | null = null;
+  let organizeSummary: NonNullable<TurnPlan["summary"]["organize"]> | null = null;
+  let organizeCost = 0;
   let consulted: Consulted | null = null;
   const push = (text: string, tier: ResponseSegment["tier"]) => segments.push({ text: segments.length > 0 ? `\n\n${text}` : text, tier });
 
@@ -265,6 +382,76 @@ export async function respondToMessage(input: RespondInput, deps: RespondDeps): 
     return consulted;
   };
 
+  /** 정리 결과를 답에 싣는다 (이슈 id를 사용자 메시지 · 답 refs에 남기고, 범위 id는 답 refs에) */
+  const referTo = (actionIds: string[], contextIds: string[] = []) => {
+    replyRefs.action_ids = [...new Set([...replyRefs.action_ids, ...actionIds])];
+    userRefs.action_ids = [...new Set([...userRefs.action_ids, ...actionIds])];
+    replyRefs.context_ids = [...new Set([...replyRefs.context_ids, ...contextIds])];
+  };
+  const movedContent = (items: { action: { id: string; number: number }; add: { id: string } | null; remove: { id: string } | null }[]) => {
+    content.organize = {
+      state: "moved",
+      results: items.map((i) => ({ action_id: i.action.id, number: i.action.number, from_context_id: i.remove?.id ?? null, to_context_id: i.add?.id ?? null, change: null })),
+    };
+  };
+  const moveLine = (resolution: Extract<OrganizeResolution, { kind: "move" | "move_ask" }>) => ({
+    numbers: resolution.items.map((i) => i.action.number),
+    to: resolution.to?.name ?? "",
+    from: [...new Set(resolution.items.flatMap((i) => (i.remove ? [i.remove.name] : [])))].join(" · "),
+  });
+
+  /** 이동 제안에 "응": 지금 기록에서 다시 풀어 같은 트랜잭션으로 쓴다. 풀리지 않으면(지움 · 보관 · 이미 옮김) 쓰기 없는 답 */
+  const adoptOrganize = async (proposal: OpenProposal) => {
+    const payload = proposal.payload;
+    if (payload.kind === "create_action") return; // create_action은 이 함수가 아니라 아래 원래 채택 경로가 받는다
+    if (payload.kind !== "move") {
+      // 삭제 · 병합 카드는 버튼(또는 이 글 채택)으로만 쓴다: 같은 카드를 한 번 더 보여 준다
+      const again = reissueProposal(payload, deps.newId);
+      replyRefs.proposal = again.ref;
+      content.proposal = again.payload;
+      content.asks = "confirm";
+      push(payload.kind === "delete" ? deleteAsk(lang, payload.targets.map((t) => t.number)) : mergeAsk(lang, payload.from.number, payload.into.number), "T5");
+      return;
+    }
+    const lookupFn = deps.organizeLookup;
+    if (!lookupFn) throw new ConsultOutputError("정리 읽기(organizeLookup)가 연결되지 않았습니다");
+    const numbers = payload.targets.map((t) => t.number);
+    const op = payload.to ? "move" : "remove";
+    if (route.kind === "adopt" && route.confirm) {
+      // 확신 0.5–0.8: 쓰지 않고 같은 내용을 새 id로 한 번 더 묻는다
+      const again = reissueProposal(payload, deps.newId);
+      replyRefs.proposal = again.ref;
+      content.proposal = again.payload;
+      content.asks = "adopt";
+      push(moveAsk(lang, op, numbers, payload.to?.name ?? "", payload.from?.name ?? ""), "T5");
+      return;
+    }
+    const lookup = await lookupFn({ numbers: [], actionIds: payload.targets.map((t) => t.action_id).slice(0, 10) });
+    const resolution = resolveMoveAdopt(payload, lookup, input.flags.memory);
+    if (resolution.kind === "move") {
+      move = null;
+      const line = moveLine(resolution);
+      adopt = { kind: "move", proposal_message_id: proposal.messageId, proposal_id: proposal.proposalId, payload_hash: proposal.payloadHash, moves: moveOps(resolution.items) };
+      userRefs.proposal = { id: proposal.proposalId, kind: "move", payload_hash: proposal.payloadHash, state: "adopted" };
+      movedContent(resolution.items);
+      referTo(resolution.items.map((i) => i.action.id), resolution.items.flatMap((i) => [i.add?.id, i.remove?.id].filter((v): v is string => Boolean(v))));
+      push(movedText(lang, resolution.op, line.numbers, line.to, line.from), "T1");
+      organizeSummary = { op: resolution.op, outcome: "move", op_confidence: null };
+    } else if (resolution.kind === "reply") {
+      push(replyText(lang, resolution.reason, resolution.numbers, resolution.names), "T1");
+      organizeSummary = { op, outcome: "reply", op_confidence: null };
+    } else if (resolution.kind === "ask") {
+      push(askText(lang, resolution.pending, resolution.candidates, resolution.pending.action_ids.map((id) => lookup.actions.find((a) => a.id === id)?.number ?? 0)), "T5");
+      content.asks = "organize";
+      content.organize = resolution.pending;
+      organizeSummary = { op, outcome: "ask", op_confidence: null };
+    } else {
+      push(TEXT.clarify[lang], "T5");
+      content.asks = "clarify";
+      organizeSummary = { op, outcome: "clarify", op_confidence: null };
+    }
+  };
+
   switch (route.kind) {
     case "clarify": {
       push(TEXT.clarify[lang], "T5");
@@ -274,7 +461,9 @@ export async function respondToMessage(input: RespondInput, deps: RespondDeps): 
 
     case "adopt": {
       const referent: Referent = resolveReferent({ selected: [], previousProposal, linkedOpenActions: [], wants: "proposal" });
-      if (referent.kind === "proposal") {
+      if (referent.kind === "proposal" && previousProposal && previousProposal.kind !== "create_action") {
+        await adoptOrganize(previousProposal);
+      } else if (referent.kind === "proposal") {
         const payload: ProposalPayload = { kind: "create_action", title: referent.proposal.title };
         if (route.confirm) {
           // 확신 0.5–0.8: 쓰지 않고 한 번 묻는다. 같은 내용을 새 id로 다시 낸다(앞 제안은 superseded): 다음 "응"이 이 제안을 가리킨다
@@ -303,7 +492,7 @@ export async function respondToMessage(input: RespondInput, deps: RespondDeps): 
         if (last?.refs.proposal?.state === "adopted" && last.content?.proposal) {
           replyRefs.action_ids = [...last.refs.action_ids];
           userRefs.action_ids = [...new Set([...userRefs.action_ids, ...last.refs.action_ids])];
-          push(alreadyAdopted(lang, last.content.proposal.title), "T1");
+          push(last.content.proposal.kind === "create_action" ? alreadyAdopted(lang, last.content.proposal.title) : alreadyOrganized(lang), "T1");
         } else {
           push(TEXT.noProposal[lang], "T5");
         }
@@ -330,6 +519,124 @@ export async function respondToMessage(input: RespondInput, deps: RespondDeps): 
       if (referent.kind === "ask" && !answeredReferent) {
         push(referentAsk(lang, referent.candidates), "T5");
         content.asks = "referent";
+      }
+      break;
+    }
+
+    case "organize": {
+      // 이슈 정리 (이동 · 빼기 · 삭제 · 병합): 상담 LLM을 부르지 않는다. 이슈 · 프로젝트는 칩 · #번호 · 이름이 정하고(제목 유사도 0), 무엇을 할지 · 남는 쪽만 Jev가 고른다.
+      // read ≥ 0.8이면 execution 분기처럼 기억 · 제안 없이 상담 한 번을 함께 답한다.
+      const lookupFn = deps.organizeLookup;
+      if (!lookupFn) throw new ConsultOutputError("정리 읽기(organizeLookup)가 연결되지 않았습니다");
+      if (route.alsoRead) await runConsult({ context: await deps.retrieve({ text: input.message.text, chunks: true }), allowMemory: false, allowProposal: false, executionRequested: false });
+
+      const pending = pendingOf(previous);
+      const chipActionIds = input.selected.filter((t) => t.kind === "action").map((t) => t.id);
+      const mentions = findIssueMentions(input.message.text);
+      const lookup = await lookupFn({
+        numbers: mentions.map((m) => m.number).slice(0, 10),
+        actionIds: [...new Set([...chipActionIds, ...(pending?.action_ids ?? [])])].slice(0, 10),
+      });
+      const issues = organizeIssues({ text: input.message.text, chipActionIds, lookup, pending });
+
+      // Jev 한 번(질문 둘까지): 무엇을(op) — 앞 pending이 op를 알고 이번 메시지가 자기 이슈를 말하지 않았으면 묻지 않는다 / 남는 쪽(into) — 이슈가 정확히 둘일 때만
+      const needsOp = pending === null || pending.op === null || (issues.ownIds.length > 0 && pending.missing !== "into");
+      const needsInto = issues.actions.length === 2 && pending?.missing !== "into" && (needsOp || pending?.op === "merge");
+      const labels = issues.actions.map((a) => `#${a.number}`);
+      const questions: Record<string, JevQuestion> = {};
+      if (needsOp) questions.op = ORGANIZE_OP_QUESTION;
+      if (needsInto) questions.into = organizeIntoQuestion(labels);
+      const judged: Parameters<typeof resolveOrganize>[0]["judged"] = { op: null, into: null };
+      if (issues.unknown.length === 0 && Object.keys(questions).length > 0) {
+        const response = await deps.decide({ state: buildOrganizeState({ message: input.message.text, issues: labels }), questions });
+        organizeCost = response.usage?.cost ?? 0;
+        const opAnswer = response.answers.op;
+        if (opAnswer?.type === "choice" && (ORGANIZE_OPS as readonly string[]).includes(opAnswer.choice)) {
+          judged.op = { op: opAnswer.choice as OrganizeOp | "other", confidence: clampUnit(opAnswer.confidence ?? opAnswer.probabilities[opAnswer.choice] ?? 0) };
+        }
+        const intoAnswer = response.answers.into;
+        if (intoAnswer?.type === "choice") {
+          const picked = /^#(\d+)$/.exec(intoAnswer.choice);
+          judged.into = { number: picked ? Number(picked[1]) : null, confidence: clampUnit(intoAnswer.confidence ?? intoAnswer.probabilities[intoAnswer.choice] ?? 0) };
+        }
+      }
+
+      const resolution = resolveOrganize({
+        text: input.message.text,
+        chipActionIds,
+        chipContextIds: input.selectedContexts ?? [],
+        lookup,
+        pending,
+        judged,
+        confirm: route.confirm,
+        memoryOn: input.flags.memory,
+      });
+      const opConfidence = judged.op?.confidence ?? null;
+
+      switch (resolution.kind) {
+        case "reply": {
+          push(replyText(lang, resolution.reason, resolution.numbers, resolution.names), "T1");
+          organizeSummary = { op: resolution.op ?? null, outcome: "reply", op_confidence: opConfidence };
+          break;
+        }
+        case "ask": {
+          if (pending) {
+            // 한 번 물었는데 아직 모자란다: 다시 묻지 않고 무엇을 원하는지 묻는다 (한 라운드)
+            push(TEXT.clarify[lang], "T5");
+            content.asks = "clarify";
+            organizeSummary = { op: resolution.pending.op, outcome: "clarify", op_confidence: opConfidence };
+            break;
+          }
+          const numbers = resolution.pending.action_ids.map((id) => lookup.actions.find((a) => a.id === id)?.number ?? 0);
+          push(askText(lang, resolution.pending, resolution.candidates, numbers), "T5");
+          content.asks = "organize";
+          content.organize = resolution.pending;
+          referTo(resolution.pending.action_ids, resolution.pending.context_id ? [resolution.pending.context_id] : []);
+          organizeSummary = { op: resolution.pending.op, outcome: "ask", op_confidence: opConfidence };
+          break;
+        }
+        case "move": {
+          const line = moveLine(resolution);
+          move = moveOps(resolution.items);
+          movedContent(resolution.items);
+          referTo(resolution.items.map((i) => i.action.id), resolution.items.flatMap((i) => [i.add?.id, i.remove?.id].filter((v): v is string => Boolean(v))));
+          push(movedText(lang, resolution.op, line.numbers, line.to, line.from), "T1");
+          organizeSummary = { op: resolution.op, outcome: "move", op_confidence: opConfidence };
+          break;
+        }
+        case "move_ask": {
+          // 확신 0.5–0.8: 쓰지 않고 글로 한 번 묻는다. 다음 "응"이 이 제안을 채택한다 (adopt 분기)
+          const line = moveLine(resolution);
+          const proposal = newProposal(movePayload(resolution), deps.newId);
+          replyRefs.proposal = proposal.ref;
+          content.proposal = proposal.payload;
+          content.asks = "adopt";
+          referTo(resolution.items.map((i) => i.action.id), resolution.items.flatMap((i) => [i.add?.id, i.remove?.id].filter((v): v is string => Boolean(v))));
+          push(moveAsk(lang, resolution.op, line.numbers, line.to, line.from), "T5");
+          organizeSummary = { op: resolution.op, outcome: "move_ask", op_confidence: opConfidence };
+          break;
+        }
+        case "delete": {
+          // 삭제는 늘 카드 한 번 (확신과 무관): 카드 = 제안, 확인은 버튼 또는 글 채택
+          const proposal = newProposal(deletePayload(resolution.targets), deps.newId);
+          replyRefs.proposal = proposal.ref;
+          content.proposal = proposal.payload;
+          content.asks = "confirm";
+          referTo(resolution.targets.map((a) => a.id));
+          push(deleteAsk(lang, resolution.targets.map((a) => a.number)), "T5");
+          organizeSummary = { op: "delete", outcome: "delete", op_confidence: opConfidence };
+          break;
+        }
+        case "merge": {
+          const proposal = newProposal(mergePayload(resolution.from, resolution.into), deps.newId);
+          replyRefs.proposal = proposal.ref;
+          content.proposal = proposal.payload;
+          content.asks = "confirm";
+          referTo([resolution.from.id, resolution.into.id]);
+          push(mergeAsk(lang, resolution.from.number, resolution.into.number), "T5");
+          organizeSummary = { op: "merge", outcome: "merge", op_confidence: opConfidence };
+          break;
+        }
       }
       break;
     }
@@ -401,6 +708,7 @@ export async function respondToMessage(input: RespondInput, deps: RespondDeps): 
     reply: { text: segments.map((s) => s.text).join(""), segments, citations, refs: replyRefs, content },
     memory: memoryWrites,
     adopt,
+    ...(move ? { move } : {}),
     summary: {
       intent: { kind: intent.kind, confidence: intent.confidence, remember: intent.remember, read: intent.read },
       route: route.kind,
@@ -413,11 +721,19 @@ export async function respondToMessage(input: RespondInput, deps: RespondDeps): 
       proposal: replyRefs.proposal !== null,
       adopt: adopt !== null,
       model: done?.model ?? null,
-      cost: intent.cost + (done?.cost ?? 0),
-      promptVersions: { intent: INTENT_PROMPT_VERSION, consult: CONSULT_PROMPT_VERSION, memory: MEMORY_EXTRACT_PROMPT_VERSION },
+      cost: intent.cost + (done?.cost ?? 0) + organizeCost,
+      ...(organizeSummary ? { organize: organizeSummary } : {}),
+      promptVersions: {
+        intent: INTENT_PROMPT_VERSION,
+        consult: CONSULT_PROMPT_VERSION,
+        memory: MEMORY_EXTRACT_PROMPT_VERSION,
+        ...(organizeSummary ? { organize: ORGANIZE_PROMPT_VERSION } : {}),
+      },
     },
   };
 }
+
+const clampUnit = (value: number) => (Number.isFinite(value) ? Math.min(1, Math.max(0, value)) : 0);
 
 function mergeTargetRefs(refs: MessageRefs, target: Target): Pick<MessageRefs, "action_ids" | "run_ids" | "artifact_ids"> {
   const add = targetsToRefs([target]);

@@ -27,11 +27,12 @@ const CONVERSATION_FILES = files(path.join(ROOT, "src/lib/conversation"));
 const ROUTE_FILES = files(path.join(ROOT, "src/app/api/v2/conversations"));
 const API_FILE = path.join(ROOT, "src/lib/api/conversations.ts");
 const MIGRATION = path.join(ROOT, "supabase/migrations/20261106000000_conversations_v2.sql");
+const NEW_MIGRATION = path.join(ROOT, "supabase/migrations/20261125000000_issue_organize.sql");
 
 describe("대화 v2 ↔ 실행 권한 경계 (I04)", () => {
   it("src/lib/conversation 파일 목록 (새 파일이 생기면 이 경계를 다시 본다)", () => {
     expect(CONVERSATION_FILES.map((f) => path.basename(f)).sort()).toEqual(
-      ["conversation.config.ts", "intent.config.ts", "intent.ts", "memory.ts", "proposal.ts", "referent.ts", "respond.ts", "store.ts"].sort(),
+      ["conversation.config.ts", "intent.config.ts", "intent.ts", "memory.ts", "organize.ts", "proposal.ts", "referent.ts", "respond.ts", "store.ts"].sort(),
     );
   });
 
@@ -58,7 +59,8 @@ describe("대화 v2 ↔ 실행 권한 경계 (I04)", () => {
     expect(all).not.toMatch(/from\("(actions|claims|evidence|action_events|memory_items)"\)\s*\.\s*(insert|update|upsert|delete)/);
     expect(all).not.toMatch(/rpc\("(write_action|set_action_progress|start_action|remember_memory_item|create_run)"/);
     const rpcs = [...all.matchAll(/rpc\("([a-z_]+)"/g)].map((m) => m[1]).sort();
-    expect([...new Set(rpcs)]).toEqual(["conversation_finish_turn", "conversation_post_message", "conversation_release_lease"]);
+    // organize_lookup(D4c-2): 이슈 · 범위를 읽기만 하는 함수 (실행 표 이름을 대화 코드가 직접 쓰지 않으려고 SQL로 둔다)
+    expect([...new Set(rpcs)]).toEqual(["conversation_finish_turn", "conversation_post_message", "conversation_release_lease", "organize_lookup"]);
   });
 
   it("대화 마이그레이션은 실행 · 크레딧 표를 만들거나 고치거나 가리키지 않는다 (Action은 기존 write_action으로만)", () => {
@@ -69,6 +71,19 @@ describe("대화 v2 ↔ 실행 권한 경계 (I04)", () => {
     expect(sql).not.toMatch(/execution_|credit_|approval/);
     expect(sql).not.toMatch(/insert into public\.(actions|claims|evidence|action_events)\b/);
     expect(sql).toMatch(/public\.write_action\(/);
+  });
+
+  it("D4c-2 마이그레이션(이슈 정리)도 실행 · 크레딧 표를 만들거나 고치지 않는다: organize_lookup의 execution_runs 읽기 한 곳만 허용한다", () => {
+    const sql = readFileSync(NEW_MIGRATION, "utf8")
+      .split("\n")
+      .filter((line) => !line.trim().startsWith("--"))
+      .join("\n");
+    const withoutLookup = sql.replace(/create function public\.organize_lookup\([\s\S]*?\n\$\$;/, "");
+    expect(withoutLookup).not.toMatch(/execution_|credit_|approval/);
+    expect(sql.match(/execution_runs/g)?.length).toBe(1);
+    expect(sql).not.toMatch(/(insert into|update|delete from) public\.execution_/);
+    // Action은 기존 write_action으로만 쓴다
+    expect(sql).not.toMatch(/insert into public\.(actions|claims|evidence|action_events)\b/);
   });
 
   it("실행 쪽 코드는 대화 모듈을 입력으로 가져오지 않는다", () => {

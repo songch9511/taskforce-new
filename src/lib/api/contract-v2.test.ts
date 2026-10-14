@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 
+import { contextMembershipEffectSchema as effectSchema, conversationMessageContentSchema as contentSchema, intentKindSchema, organizeContentSchema, proposalPayloadSchema, proposalSchema } from "./contract";
+
 import {
   apiErrorCodeSchema,
   apiErrorV2CodeSchema,
@@ -627,5 +629,71 @@ describe("결제 v2", () => {
     expect(billingRefundRequestV2Schema.parse({})).toEqual({});
     expect(billingRefundRequestV2Schema.safeParse({ order_id: "1" }).success).toBe(false);
     expect(billingRefundResponseV2Schema.parse({ requested: true })).toEqual({ requested: true });
+  });
+});
+
+// ─── D4c-2: 이슈 정리의 제안 · 답 내용 ───
+describe("organize 계약 (D4c-2)", () => {
+  const A = "aaaaaaaa-0000-4000-8000-000000000001";
+  const B = "aaaaaaaa-0000-4000-8000-000000000002";
+  const C = "c1c1c1c1-0000-4000-8000-000000000001";
+  const target = (id: string, number: number) => ({ action_id: id, number, title: `이슈 ${number}`, version: 0, contexts: [{ id: C, name: "Launch" }], open_sessions: 1, evidence_count: 2 });
+
+  it("의도 · 제안 종류에 organize · move · delete · merge가 더해졌다. 옛 값은 그대로", () => {
+    expect(intentKindSchema.options).toContain("organize");
+    expect(intentKindSchema.options).toContain("inform");
+    for (const kind of ["create_action", "run", "modify", "stop", "preference", "move", "delete", "merge"]) {
+      expect(proposalSchema.safeParse({ id: A, kind, payload_hash: "sha256:x", state: "open" }).success, kind).toBe(true);
+    }
+    expect(proposalSchema.safeParse({ id: A, kind: "teleport", payload_hash: "sha256:x", state: "open" }).success).toBe(false);
+  });
+
+  it("제안 내용: 옛 create_action 모양은 그대로 읽고, move · delete · merge는 strict (모르는 키 · 0개 · 4개 거절)", () => {
+    expect(proposalPayloadSchema.parse({ kind: "create_action", title: "Shape" })).toEqual({ kind: "create_action", title: "Shape" });
+    expect(proposalPayloadSchema.safeParse({ kind: "create_action", title: "Shape", extra: 1 }).success).toBe(true);
+    const move = { kind: "move", targets: [target(A, 139)], from: { id: C, name: "Taskforce", version: 3 }, to: { id: C, name: "Launch", version: 4 } };
+    expect(proposalPayloadSchema.safeParse(move).success).toBe(true);
+    expect(proposalPayloadSchema.safeParse({ ...move, from: null, to: null }).success).toBe(true);
+    expect(proposalPayloadSchema.safeParse({ ...move, extra: 1 }).success).toBe(false);
+    expect(proposalPayloadSchema.safeParse({ ...move, targets: [] }).success).toBe(false);
+    expect(proposalPayloadSchema.safeParse({ ...move, targets: [1, 2, 3, 4].map((n) => target(A, n)) }).success).toBe(false);
+    expect(proposalPayloadSchema.safeParse({ kind: "delete", targets: [target(A, 1), target(B, 2)] }).success).toBe(true);
+    expect(proposalPayloadSchema.safeParse({ kind: "delete", targets: [{ ...target(A, 1), extra: true }] }).success).toBe(false);
+    expect(proposalPayloadSchema.safeParse({ kind: "merge", from: target(A, 144), into: target(B, 139) }).success).toBe(true);
+    expect(proposalPayloadSchema.safeParse({ kind: "merge", from: target(A, 144) }).success).toBe(false);
+  });
+
+  it("답 내용: asks에 confirm · organize, organize는 없어도 읽는다 (옛 행). state마다 strict", () => {
+    expect(contentSchema.parse({ asks: "confirm" })).toMatchObject({ asks: "confirm" });
+    expect(contentSchema.parse({ asks: "organize" })).toMatchObject({ asks: "organize" });
+    expect(contentSchema.parse({})).not.toHaveProperty("organize", expect.anything());
+    const pending = { state: "pending", op: "move", action_ids: [A], context_id: null, missing: "project" };
+    expect(contentSchema.parse({ asks: "organize", organize: pending }).organize).toEqual(pending);
+    expect(organizeContentSchema.safeParse({ ...pending, op: null }).success).toBe(true);
+    expect(organizeContentSchema.safeParse({ ...pending, missing: "title" }).success).toBe(false);
+    expect(organizeContentSchema.safeParse({ ...pending, action_ids: [A, B, A, B] }).success).toBe(false);
+    const moved = { state: "moved", results: [{ action_id: A, number: 139, from_context_id: null, to_context_id: C, change: null }] };
+    expect(organizeContentSchema.safeParse(moved).success).toBe(true);
+    const filled = { ...moved, results: [{ ...moved.results[0], change: { added: [{ context_id: C, context_version: 5 }], removed: [] } }] };
+    expect(organizeContentSchema.safeParse(filled).success).toBe(true);
+    expect(organizeContentSchema.safeParse({ state: "moved", results: [] }).success).toBe(false);
+    expect(organizeContentSchema.safeParse({ state: "deleted", action_ids: [A] }).success).toBe(true);
+    expect(organizeContentSchema.safeParse({ state: "deleted", action_ids: [] }).success).toBe(false);
+    expect(organizeContentSchema.safeParse({ state: "merged", from_action_id: A, into_action_id: B }).success).toBe(true);
+    expect(organizeContentSchema.safeParse({ state: "merged", from_action_id: A }).success).toBe(false);
+  });
+
+  it("moved.results[].change는 S3b 멤버십 변화(contextMembershipEffectSchema)와 같은 모양이다", () => {
+    const samples = [
+      { added: [{ context_id: C, context_version: 5 }], removed: [{ context_id: B, context_version: 2 }] },
+      { added: [], removed: [] },
+      { added: [{ context_id: C, context_version: 0 }], removed: [] },
+      { added: [{ context_id: "x", context_version: 1 }], removed: [] },
+      { added: [] },
+    ];
+    for (const sample of samples) {
+      const organize = organizeContentSchema.safeParse({ state: "moved", results: [{ action_id: A, number: 1, from_context_id: null, to_context_id: C, change: sample }] }).success;
+      expect(organize, JSON.stringify(sample)).toBe(effectSchema.safeParse(sample).success);
+    }
   });
 });

@@ -1,0 +1,88 @@
+{
+  "id": "org-move-chip",
+  "description": "AC-27: 앱이 붙인 이슈 칩과 프로젝트 칩만으로 '이거 여기로 옮겨' — 칩이 지칭이다",
+  "maps_to": [
+    "AC-27"
+  ],
+  "asked_at": "2026-10-15T10:00:00+09:00",
+  "message": "이거 여기로 옮겨",
+  "projects": [
+    {
+      "id": "p_launch",
+      "name": "Launch"
+    },
+    {
+      "id": "p_tf",
+      "name": "Taskforce"
+    }
+  ],
+  "records": {
+    "open_actions": [
+      {
+        "id": "i139",
+        "title": "Shape 디자인 확정",
+        "number": 139,
+        "version": 2,
+        "projects": [
+          "p_tf"
+        ],
+        "open_sessions": 1,
+        "evidence_count": 2
+      },
+      {
+        "id": "i140",
+        "title": "견적서 보내기",
+        "number": 140,
+        "version": 2,
+        "projects": [],
+        "open_sessions": 1,
+        "evidence_count": 2
+      },
+      {
+        "id": "i141",
+        "title": "회의록 정리",
+        "number": 141,
+        "version": 2,
+        "projects": [],
+        "open_sessions": 1,
+        "evidence_count": 2
+      },
+      {
+        "id": "i144",
+        "title": "디자인 확정 (중복)",
+        "number": 144,
+        "version": 2,
+        "projects": [],
+        "open_sessions": 1,
+        "evidence_count": 2
+      }
+    ]
+  },
+  "selected": [
+    "i140"
+  ],
+  "selected_contexts": [
+    "p_launch"
+  ],
+  "expect": {
+    "intent_any": [
+      "organize"
+    ],
+    "route_any": [
+      "organize"
+    ],
+    "organize": {
+      "op": "move",
+      "targets": [
+        "i140"
+      ],
+      "outcome": "write",
+      "project": "p_launch"
+    },
+    "memory_writes": {
+      "min": 0,
+      "max": 0
+    }
+  },
+  "origin": "synthetic"
+}

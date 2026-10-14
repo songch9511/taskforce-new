@@ -15,6 +15,7 @@ import {
   loadConversation,
   loadMessage,
   loadWindow,
+  organizeLookup,
   postUserMessage,
   releaseLease,
   userMessageExists,
@@ -54,6 +55,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
         ...conversationModelsFromEnv(admin, user.id, deadline),
         retrieve: (query) =>
           loadConsultContext(admin, user.id, { contextId: input.conversation.contextId, query: query.text, chunks: query.chunks, deadline, now: input.now }),
+        organizeLookup: (query) => organizeLookup(admin, user.id, query),
         newId: randomUUID,
       });
     },

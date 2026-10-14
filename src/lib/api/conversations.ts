@@ -172,9 +172,9 @@ export type AgentPostDelegate<User> = {
   post: (user: User, conversation: AgentConversationRef, body: PostConversationMessageV2Request) => Promise<Response>;
 };
 
-/** 대상 taskforce의 칩 준비 결과 (OD-5): refs = 지시 대상 규칙 1에 쓰는 added action · run · artifact, selected = 같은 제출 비교에 저장하는 전체(정규화한 칩 포함) */
+/** 대상 taskforce의 칩 준비 결과 (OD-5): refs = 지시 대상 규칙 1에 쓰는 added action · run · artifact, selected = 같은 제출 비교에 저장하는 전체(정규화한 칩 포함), context_ids = 살아 있는 added context 칩(이슈 정리의 프로젝트 지칭, D4c-2) */
 export type PreparedAttachments =
-  | { status: "ok"; refs: SelectedRefs; selected: SelectedRefs & { attachments?: Attachment[] }; attachments: Attachment[] }
+  | { status: "ok"; refs: SelectedRefs; selected: SelectedRefs & { attachments?: Attachment[] }; attachments: Attachment[]; context_ids?: string[] }
   | { status: "missing" | "context_off" };
 
 export type PostMessageDeps<User extends AppUser> = {
@@ -245,6 +245,7 @@ export async function handlePostConversationMessage<User extends AppUser>(
     let refs = normalizeSelected(body.data.refs);
     let stored: SelectedRefs & { attachments?: Attachment[] } = refs;
     let chips: Attachment[] = [];
+    let contextIds: string[] = [];
     let knownEarly: boolean | null = null;
     if (body.data.attachments?.length) {
       if (!deps.prepareAttachments) return errorResponse(400, "invalid_request", "맥락 칩을 받지 않습니다.");
@@ -255,6 +256,7 @@ export async function handlePostConversationMessage<User extends AppUser>(
         return prepared.status === "context_off" ? errorResponse(400, "invalid_request", "범위 기능이 꺼져 있습니다.") : errorResponse(404, "not_found", "대상을 찾지 못했습니다.");
       }
       ({ refs, selected: stored, attachments: chips } = prepared);
+      contextIds = prepared.context_ids ?? [];
     }
     const verified = await deps.verifySelected(user, refs);
     if ("missing" in verified) return errorResponse(404, "not_found", "대상을 찾지 못했습니다.");
@@ -308,7 +310,7 @@ export async function handlePostConversationMessage<User extends AppUser>(
       }
     }
 
-    // 채택 경합(그 사이 같은 제안이 채택됨)이면 한 번 다시 읽어 답한다. 기억 경합은 다시 보내게 한다(모델을 다시 부르지 않는다)
+    // 채택 경합(그 사이 같은 제안이 채택됨)이면 한 번 다시 읽어 답한다. 말로 이동의 범위 version 경합도 한 번 다시 읽은 version으로 (D4c-2). 기억 경합은 다시 보내게 한다(모델을 다시 부르지 않는다)
     for (let attempt = 0; attempt < 2; attempt++) {
       const window = await deps.loadWindow(user, conversation.id, seq);
       const current = window.messages.find((m) => m.id === messageId);
@@ -324,6 +326,7 @@ export async function handlePostConversationMessage<User extends AppUser>(
         window: window.messages,
         omitted: window.omitted,
         selected: verified.targets,
+        selectedContexts: contextIds,
         flags: { memory: deps.memoryEnabled() },
         now: deps.now?.() ?? new Date(),
       });
@@ -342,7 +345,7 @@ export async function handlePostConversationMessage<User extends AppUser>(
           return errorResponse(404, "not_found", NOT_FOUND);
         case "conflict":
           leased = null;
-          if (plan.adopt && attempt === 0) continue;
+          if ((plan.adopt || plan.move) && attempt === 0) continue;
           return conflict("그 사이 기억이나 제안이 바뀌었습니다. 다시 보내 주세요.");
       }
     }

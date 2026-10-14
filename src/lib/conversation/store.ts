@@ -39,6 +39,7 @@ import {
   SOURCES_SHOWN,
 } from "./conversation.config";
 import type { ShownMemory } from "./memory";
+import { organizeLookupSchema, type OrganizeLookup } from "./organize";
 import { normalizeSelected, type SelectedRefs, type Target } from "./referent";
 import type { ConsultAction, ConsultContext, ConsultMemory, ConsultSource, TurnPlan, WindowMessage } from "./respond";
 
@@ -301,7 +302,7 @@ export async function finishTurn(
   admin: SupabaseClient,
   userId: string,
   messageId: string,
-  plan: Pick<TurnPlan, "intent" | "user" | "reply" | "memory" | "adopt">,
+  plan: Pick<TurnPlan, "intent" | "user" | "reply" | "memory" | "adopt" | "move">,
 ): Promise<{ status: FinishStatus; replyId: string | null; memoryIds: string[]; actionId: string | null }> {
   const { data } = await admin
     .rpc("conversation_finish_turn", {
@@ -312,11 +313,23 @@ export async function finishTurn(
         reply: { text: plan.reply.text, refs: plan.reply.refs, content: plan.reply.content },
         memory: plan.memory,
         adopt: plan.adopt,
+        // 말로 바로 쓰는 이동 (D4c-2): 기억 · 채택과 같은 트랜잭션. 없으면 키를 보내지 않는다 (옛 모양 그대로)
+        ...(plan.move ? { move: plan.move } : {}),
       },
     })
     .single<{ status: FinishStatus; reply_id: string | null; memory_ids: string[] | null; action_id: string | null }>()
     .throwOnError();
   return { status: data.status, replyId: data.reply_id, memoryIds: data.memory_ids ?? [], actionId: data.action_id };
+}
+
+// ─── 이슈 정리 읽기 (D4c-2) ─────────────────────────
+
+/** 번호 · id로 이 사용자의 이슈(확인된 멤버십 · 열린 세션 수 · 근거 수)와 범위 전부 (SQL organize_lookup, 읽기만). 배열은 각각 10개까지 */
+export async function organizeLookup(admin: SupabaseClient, userId: string, query: { numbers: number[]; actionIds: string[] }): Promise<OrganizeLookup> {
+  const { data } = await admin
+    .rpc("organize_lookup", { p_user_id: userId, p_numbers: query.numbers.slice(0, 10), p_action_ids: query.actionIds.slice(0, 10) })
+    .throwOnError();
+  return organizeLookupSchema.parse(data);
 }
 
 // ─── 상담 기록 (조건 조회 · 기억 · 원문) ─────────────────
