@@ -81,4 +81,21 @@ enum SettingsWindowFlag {
         #endif
     }
 }
+
+// --- U1 ---
+extension EdgeSurfaces {
+    /// Assistant 창 (OA U1): 떠 있는 창 · 레일 Chats(⌘3) · ⌘N이 패널의 Chats 화면 대신 창을 연다. **Debug는 셸이 켜지면 켜지고 Release는 늘 꺼짐**이다
+    /// (`release.chats == false`라 Release에는 Chats도 창도 없다). 별도 저장 값이 아니라 셸 · Chats에서 나오므로 두 표면과 어긋나지 않는다
+    var assistantWindows: Bool { shell && chats }
+
+    /// 이 실행에서 Assistant 창을 쓰는가 (`EdgeShellController`의 기본값): 표면 값 그대로다.
+    /// Debug에서 `-TFPanelChats YES`를 주면 창 대신 옛 패널의 Chats(B3)로 연다 — 패널 Chats 화면을 확인하는 옛 합성 조작 · 견본 하네스(`EdgeInteraction` · `EdgeSnapshot`의 Chats 상태)를 위한 인자다
+    static var assistantWindowsForThisRun: Bool {
+        #if DEBUG
+        let arguments = UserDefaults.standard.volatileDomain(forName: UserDefaults.argumentDomain)
+        if let value = arguments["TFPanelChats"], (value as? Bool) ?? (value as? String).map({ NSString(string: $0).boolValue }) ?? false { return false }
+        #endif
+        return current.assistantWindows
+    }
+}
 #endif

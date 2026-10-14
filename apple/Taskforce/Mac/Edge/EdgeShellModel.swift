@@ -265,6 +265,16 @@ final class EdgeShellModel {
     /// Chats(B3)가 이 셸에 있는가 (`ChatsFlag`, 컨트롤러는 `ChatRuntime`이 있을 때만 켠다). **꺼져 있으면(Release) Chats는 아무 데도 없다**: 레일 Chats 칸 · ⌘3 · ⌘N · `.chats` 화면이 없고
     /// `openChats` · `newChat` · `openPanel(.chats)`는 아무것도 하지 않는다 (대화 읽기 · 기억 · 연결 복귀 읽기도 만들어지지 않는다)
     let chatsEnabled: Bool
+    /// Assistant 창(OA U1)이 이 셸에 있는가 (`EdgeSurfaces.assistantWindows`, 컨트롤러가 정한다). 켜져 있으면 레일 Chats · ⌘3 · ⌘N은 **패널이 아니라 창**을 열고 앞으로 가져온다:
+    /// 패널은 Chats 화면을 열지 않는다 (`View.chats`에 들어가지 않는다). 꺼져 있으면(`chatsEnabled`만 켜진 옛 구성) 지금 그대로 패널의 Chats다
+    let windowsEnabled: Bool
+    /// 창을 열거나 앞으로 (⌘3 · 레일 Chats) · 새 창 (⌘N): 컨트롤러의 창 관리자가 채운다
+    @ObservationIgnored var onChats: () -> Void = {}
+    @ObservationIgnored var onNewWindow: () -> Void = {}
+    /// Assistant 창이 앞에 있다 (레일 Chats 칸이 `bezel/hover`로 칠해진다). 창 관리자가 올린다
+    var assistantWindowFront = false
+    /// 포인터가 Review 타일 위에 있다 (툴팁 · 호버 덧칠)
+    private(set) var hoveredTile = false
     /// Review 페이지가 보이는 결정의 stable action id. 몇 번째인지(index)가 아니라 id로 가리킨다: 큐가 바뀌어도 키 · 클릭은 이 id의 항목에만 간다
     private(set) var reviewID: UUID?
     /// Review 페이지에 들어온 차례: 패널을 다시 열거나 다른 화면에서 Review로 들어올 때마다 오른다 (단계를 옮기는 것은 아니다).
@@ -291,8 +301,10 @@ final class EdgeShellModel {
     init(
         reduceMotion: Bool = false, schedule: @escaping EdgeSchedule = EdgeScheduler.live, clock: @escaping () -> Date = Date.init,
         calendar: @escaping () -> Calendar = { Calendar.current }, pinStore: WorkPinStore = WorkPinStore(defaults: nil),
-        contexts: WorkContextStore? = nil, review: ReviewDesk? = nil, summary: ReturnSummaryStore? = nil, chatsEnabled: Bool = true
+        contexts: WorkContextStore? = nil, review: ReviewDesk? = nil, summary: ReturnSummaryStore? = nil, chatsEnabled: Bool = true,
+        windowsEnabled: Bool = false
     ) {
+        self.windowsEnabled = chatsEnabled && windowsEnabled
         self.contexts = contexts
         self.review = review
         self.summary = summary
@@ -315,12 +327,13 @@ final class EdgeShellModel {
     /// 펼쳤을 때만 보이는 나머지 일
     var rest: [RailEntry] { Array(slots.dropFirst(notch.count)) }
     /// 보일 링도 없고 펼치지도 않음: 6 × 36pt 가는 줄 (그래도 호버 대상)
-    var isIdle: Bool { notch.isEmpty && !isExpanded }
+    var isIdle: Bool { notch.isEmpty && !isExpanded && reviewTileContent == nil }
     var railAccessibilityLabel: String { RailOrdering.accessibilityLabel(live) }
 
     /// 레일 툴팁 ("Title · State · Activity", 고정 칸은 "All work ⌘2"). 패널이 열리면 끈다
     var tooltip: (title: String, detail: String)? {
         guard isExpanded, !panelOpen, !menuOpen else { return nil }
+        if hoveredTile, let tileTooltip { return tileTooltip }
         if let hoveredID, let entry = slots.first(where: { $0.id == hoveredID }) {
             return (entry.title, "· \(entry.state.label) · \(entry.activity)")
         }
@@ -350,6 +363,7 @@ final class EdgeShellModel {
             enterTimer = nil
             hoveredID = nil
             hoveredControl = nil
+            hoveredTile = false
             guard railHovered, leaveTimer == nil else { return }
             leaveTimer = schedule(TFMotion.railLeaveDelay) { [weak self] in
                 guard let self else { return }
@@ -361,28 +375,97 @@ final class EdgeShellModel {
 
     func hover(item id: UUID?) {
         hoveredID = id
-        if id != nil { hoveredControl = nil }
+        if id != nil {
+            hoveredControl = nil
+            hoveredTile = false
+        }
     }
 
     func hover(control: Control?) {
         hoveredControl = control
-        if control != nil { hoveredID = nil }
+        if control != nil {
+            hoveredID = nil
+            hoveredTile = false
+        }
+    }
+
+    /// 포인터가 Review 타일 위에 있다
+    func hover(tile: Bool) {
+        hoveredTile = tile
+        if tile {
+            hoveredID = nil
+            hoveredControl = nil
+        }
+    }
+
+    // MARK: Review 타일 (OA U1)
+
+    /// 레일 맨 위 타일이 보일 것: needs-you(지금 Review 큐) → changes(복귀 요약의 읽음 처리할 변화) → 없음. 타일은 Review(S4)와 복귀 요약(C3)이 둘 다 켜졌을 때만 있다
+    var reviewTileContent: ReviewTileContent? {
+        ReviewTileRules.content(reviewCount: reviewQueue.count, summary: summary?.summary, reviewEnabled: review != nil, summaryEnabled: summary != nil)
+    }
+
+    /// 툴팁: "Review · Needs your answer" / "Review · Changes since 6:40 PM" (앞 낱말은 굵게, 나머지는 보조색)
+    var tileTooltip: (title: String, detail: String)? {
+        guard let content = reviewTileContent else { return nil }
+        let text = ReviewTileRules.tooltip(content, now: clock(), calendar: calendar())
+        guard let separator = text.range(of: " · ") else { return (text, "") }
+        return (String(text[..<separator.lowerBound]), "· " + text[separator.upperBound...])
+    }
+
+    var tileAccessibilityName: String? {
+        reviewTileContent.map { ReviewTileRules.accessibilityName($0, now: clock(), calendar: calendar()) }
+    }
+
+    /// Open 링: 타일이 데려가는 화면이 보이는 동안 (needs-you는 Review, changes는 복귀 요약이 있는 All work). 열기는 어떤 답도 아니다
+    var tileOpen: Bool {
+        guard panelOpen, let content = reviewTileContent else { return false }
+        switch ReviewTileRules.destination(for: content) {
+        case .newestReview: return view == .review
+        case .returnSummary: return view == .allWork
+        }
+    }
+
+    /// 타일을 누름: 기다리는 것이 있으면 가장 새 Review 항목, 변화만 있으면 복귀 요약. 타일이 없으면 아무 일도 없다 (목록 화면 `ReviewList`는 D4b-m)
+    func openReviewTile() {
+        guard let content = reviewTileContent else { return }
+        switch ReviewTileRules.destination(for: content) {
+        case .newestReview: openNewestReview()
+        case .returnSummary: openAllWork()
+        }
+    }
+
+    /// 패널에서 지금 열린 항목 (Assistant 창의 auto 칩이 따라간다): All work에서 연 일 · Review가 보이는 결정. 패널이 닫혀 있으면 없다
+    var openItem: (id: UUID, title: String)? {
+        guard panelOpen else { return nil }
+        switch view {
+        case .review:
+            return shownReview.map { ($0.id, $0.title) }
+        case .allWork:
+            guard let currentID, let item = workItems.first(where: { $0.id == currentID }) else { return nil }
+            return (currentID, item.action.title)
+        case .chats:
+            return nil
+        }
     }
 
     // MARK: 패널
 
-    /// ⌥ Space: 열려 있으면 접고, 아니면 마지막에 본 것을 연다. (Review는 마지막에 본 화면일 때만 열린다: ⌥ Space는 어떤 결정도 열지 않는다. ⌘1 · Needs-you 링이 연다)
+    /// ⌥ Space: 열려 있으면 접고, 아니면 **가장 새 Review 항목**, 기다리는 결정이 없으면 마지막에 본 화면을 연다 (DS Behaviors › Review: "⌥ Space opens the newest Review item, or the last view when nothing waits").
+    /// 열기는 어떤 답도 아니다 (Review가 꺼진 셸은 결정을 열 수 없다)
     func togglePanel() {
         if panelOpen {
             dismiss()
+        } else if review != nil, reviewQueue.newest != nil {
+            openNewestReview()
         } else {
             openPanel(view)
         }
     }
 
     func openPanel(_ view: View) {
-        // Chats가 없는 셸은 Chats 화면으로 열지 않는다 (⌥ Space의 마지막 화면 · 레일 · 키 어느 길로도)
-        guard view != .chats || chatsEnabled else { return }
+        // Chats가 없는 셸은 Chats 화면으로 열지 않는다 (⌥ Space의 마지막 화면 · 레일 · 키 어느 길로도). Assistant 창이 있는 셸도 패널은 Chats 화면을 열지 않는다
+        guard view != .chats || (chatsEnabled && !windowsEnabled) else { return }
         // Review를 떠나면 그 결정에 대한 안내는 거둔다 (돌아오면 지금 상태가 말한다)
         if view != .review { review?.clearNotice() }
         if view == .review, review != nil, !(panelOpen && self.view == .review) { reviewPresentation += 1 }
@@ -403,14 +486,23 @@ final class EdgeShellModel {
         openPanel(.allWork)
     }
 
-    /// Chats: 레일의 Chats · ⌘3 (마지막 대화로 돌아간다)
+    /// Chats: 레일의 Chats · ⌘3. Assistant 창이 있으면 가장 앞 창을 앞으로 가져오고 없으면 연다 (패널은 그대로). 창이 없는 구성은 패널의 Chats로 마지막 대화로 돌아간다
     func openChats() {
+        guard chatsEnabled else { return }
+        if windowsEnabled {
+            onChats()
+            return
+        }
         openPanel(.chats)
     }
 
-    /// 새 대화: ⌘N · 대화 머리의 `square-pen`. 손대지 않은 빈 대화가 있으면 그것을 다시 쓴다
+    /// 새 대화: ⌘N. Assistant 창이 있으면 새 창을 연다. 창이 없는 구성은 패널의 대화 머리 `square-pen`과 같다: 손대지 않은 빈 대화가 있으면 그것을 다시 쓴다
     func newChat() {
         guard chatsEnabled else { return }
+        if windowsEnabled {
+            onNewWindow()
+            return
+        }
         openPanel(.chats)
         onNewChat()
     }

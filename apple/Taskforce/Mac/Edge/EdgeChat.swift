@@ -14,6 +14,8 @@ final class ChatRuntime {
     let scope: AccountScope
     let memory: MemoryStore
     let chat: ChatStore
+    /// Assistant 창의 대상 목록 (OA U1): 대상 메뉴의 행. 이 빌드가 에이전트를 띄울 수 없으면(샌드박스) 모든 에이전트 행이 "Can't run agents in this build"다
+    let targets: AssistantTargetsStore
     /// All work의 실제 범위(프로젝트) 멤버십 (S3b). 없으면 모든 할 일이 Ungrouped (범위를 읽지 않는다)
     let contexts: WorkContextStore?
     /// 인용의 원문 링크를 연다 (테스트는 가짜로 바꾼다)
@@ -31,7 +33,10 @@ final class ChatRuntime {
     ) {
         self.scope = scope
         memory = MemoryStore(gateway: gateway, scope: scope)
-        chat = ChatStore(gateway: gateway, scope: scope, memory: memory, now: now)
+        // 대상 목록 · 칩을 실은 보내기는 실제 연결(`LiveChatGateway`)만 가진다. 견본 · 시험용 가짜는 Taskforce 대상으로만 보낸다
+        let assistant = gateway as? any AssistantGateway
+        chat = ChatStore(gateway: gateway, scope: scope, memory: memory, now: now, assistant: assistant)
+        targets = AssistantTargetsStore(gateway: assistant, scope: scope, canRunAgents: { !AgentRuntimeEnvironment.isSandboxed() })
         contexts = contextGateway.map { WorkContextStore(gateway: $0, scope: scope) }
     }
 

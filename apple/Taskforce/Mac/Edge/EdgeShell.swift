@@ -21,6 +21,8 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
     let launcher: LauncherModel
     /// Chats · Remembered (B3). 앱 시작 때 세션에 붙은 것을 받는다
     let chat: ChatRuntime?
+    /// Assistant 창들 (OA U1). `EdgeSurfaces.assistantWindows`가 꺼져 있으면(Release · 창이 없는 구성) nil이고 Chats는 지금처럼 패널의 한 화면이다
+    let assistant: AssistantWindowManager?
     private var clickMonitors: [Any] = []
     #if DEBUG
     /// 무인 합성 조작 · 스냅샷 실행(`-TFEdgeInteract*` · `-TFEdgeSnapshot*`)은 사용자 · 다른 앱이 같은 화면을 쓰는 중에도 돈다. 다른 앱의 클릭 · 활성화가 패널을 접으면(제품 동작) 그 실행의 결과가
@@ -47,24 +49,53 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
 
     /// - review: Review 페이지의 답을 보내는 곳 (S4). nil이면 S4 gate가 꺼진 것이다: Review 페이지 · ⌘1 · ← → · 1 · 2 연결이 없다 (`AppRuntime.reviewDesk`)
     /// - summary: 복귀 요약(C3)을 읽고 Clear하는 곳. nil이면 C3 gate가 꺼진 것이다: All work 위 카드도 서버 읽기도 없다 (`AppRuntime.returnSummary`)
-    init(launcher: LauncherModel, chat: ChatRuntime? = nil, review: ReviewDesk? = nil, summary: ReturnSummaryStore? = nil) {
+    /// - assistantWindows: Assistant 창이 있는 구성인가 (`EdgeSurfaces.current.assistantWindows`: Debug는 셸이 켜지면, Release는 늘 꺼짐. Debug의 `-TFPanelChats YES`는 옛 패널 Chats). 켜지면 레일 Chats · ⌘3 · ⌘N이 패널의 Chats 화면 대신 창을 연다
+    /// - positionStore: 창 위치를 기억할 곳 (앱 설정 도메인, 시험은 격리 suite를 넘긴다)
+    init(
+        launcher: LauncherModel, chat: ChatRuntime? = nil, review: ReviewDesk? = nil, summary: ReturnSummaryStore? = nil,
+        assistantWindows: Bool = EdgeSurfaces.assistantWindowsForThisRun, positionStore: AssistantWindowPositionStore? = nil
+    ) {
         self.launcher = launcher
         self.chat = chat
         let pinStore = Self.pinStore()
         self.pinStore = pinStore
-        shell = EdgeShellModel(reduceMotion: Self.systemReduceMotion, pinStore: pinStore, contexts: chat?.contexts, review: review, summary: summary, chatsEnabled: chat != nil)
+        let windows = chat != nil && assistantWindows
+        shell = EdgeShellModel(
+            reduceMotion: Self.systemReduceMotion, pinStore: pinStore, contexts: chat?.contexts, review: review, summary: summary, chatsEnabled: chat != nil,
+            windowsEnabled: windows
+        )
         rail = EdgeRailPanelController(shell: shell)
         panel = EdgePanelController(shell: shell, chat: chat)
+        if windows, let chat {
+            assistant = AssistantWindowManager(
+                runtime: chat, shell: shell, store: positionStore ?? Self.defaultPositionStore(),
+                environment: .live(panel: panel, shell: shell), reduceMotion: { Self.systemReduceMotion }
+            )
+        } else {
+            assistant = nil
+        }
         super.init()
         panel.panel.delegate = self
         shell.onConnect = { [weak self] in self?.rail.onConnections() }
-        if let chat {
+        if let assistant {
+            shell.onChats = { [weak assistant] in assistant?.showChats() }
+            shell.onNewWindow = { [weak assistant] in assistant?.openNewWindow() }
+            assistant.onOpenConnections = { [weak self] in self?.rail.onConnections() }
+        } else if let chat {
             shell.onChatsOpened = { chat.chat.openChats() }
             shell.onNewChat = { _ = chat.chat.newChat() }
             shell.onChatEscape = { chat.chat.escapeInner() }
         }
         // Try again은 읽는 중이어도 새로 읽는다 (읽기가 취소돼 "읽는 중"이 남아도 버튼이 무반응이 되지 않게)
         shell.onRetry = { [weak self] in self?.load(.retry) }
+    }
+
+    /// 창 위치를 기억할 곳: 앱 설정 도메인. 견본(`-TFSampleData`)은 메모리뿐이다 (격리 실행도 설정 도메인을 만들지 않는다)
+    private static func defaultPositionStore() -> AssistantWindowPositionStore {
+        #if DEBUG
+        if SampleData.isEnabled { return AssistantWindowPositionStore(defaults: nil) }
+        #endif
+        return AssistantWindowPositionStore(defaults: .standard)
     }
 
     /// All work 고정의 저장: 앱 설정과 다른 전용 suite(계정별 할 일 id만). 견본 · 번들 id를 모를 때는 메모리만 (디스크에 쓰지 않는다,
@@ -92,6 +123,7 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
 
     func start() {
         rail.show()
+        assistant?.start()
         // 계정이 떠나면(로그아웃 · 만료 · 계정 삭제 · 전환) 이 Mac의 고정을 모두 지운다 (이 기기 저장본 `SavedNowStore`와 같은 정리)
         Self.removePinsWhenAccountLeaves(launcher.session, store: pinStore)
         followWork()
@@ -315,7 +347,8 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
         if let local = NSEvent.addLocalMonitorForEvents(matching: mask, handler: { [weak self] event in
             MainActor.assumeIsolated {
                 guard let self else { return }
-                if event.window !== self.panel.panel, event.window !== self.rail.panel {
+                // Assistant 창(과 그 대상 메뉴)을 누르는 것은 패널 밖 클릭이 아니다: 창과 패널이 함께 보인다
+                if event.window !== self.panel.panel, event.window !== self.rail.panel, !self.ownsAssistantWindow(event.window) {
                     self.externalInteraction()
                 }
             }
@@ -397,7 +430,19 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
     func windowDidResignKey(_ notification: Notification) {
         // ⌘Tab 등으로 키를 잃으면 접는다 (More 메뉴를 연 동안은 빼고)
         guard shell.panelOpen, !shell.menuOpen else { return }
-        externalInteraction()
+        guard assistant != nil else {
+            externalInteraction()
+            return
+        }
+        // 키가 이 앱의 Assistant 창으로 옮겨 가는 것은 패널을 잃은 것이 아니다: 한 틱 뒤 새 키 창을 보고 정한다
+        Task { @MainActor [weak self] in
+            guard let self, self.shell.panelOpen, !self.shell.menuOpen, !self.ownsAssistantWindow(NSApp.keyWindow) else { return }
+            self.externalInteraction()
+        }
+    }
+
+    private func ownsAssistantWindow(_ window: NSWindow?) -> Bool {
+        assistant?.owns(window) ?? false
     }
 }
 

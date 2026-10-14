@@ -25,8 +25,8 @@ struct EdgeRailLayout: Equatable {
     static let topFromScreen: CGFloat = 120
     /// 창 안에서 레일이 시작하는 높이 (위 오목 모서리 자리)
     static let top: CGFloat = fillet
-    /// 가장 크게 펼친 레일 (일 넷 + 구분선 + 고정 칸 셋) + 위아래 오목 모서리
-    static let windowHeight: CGFloat = top + padding + 4 * (item + gap) + ruleBlock + gap + 3 * item + 2 * gap + padding + fillet
+    /// 가장 크게 펼친 레일 (Review 타일 + 일 넷 + 구분선 + 고정 칸 셋) + 위아래 오목 모서리
+    static let windowHeight: CGFloat = top + padding + 5 * (item + gap) + ruleBlock + gap + 3 * item + 2 * gap + padding + fillet
 
     let notchCount: Int
     let restCount: Int
@@ -34,6 +34,8 @@ struct EdgeRailLayout: Equatable {
     let idle: Bool
     /// 레일의 고정 칸 (Chats가 꺼져 있으면 둘: All work · More). 칸 좌표 · 펼친 높이가 이 수를 따른다
     var controls: [EdgeShellModel.Control] = EdgeShellModel.Control.allCases
+    /// Review 타일이 맨 위 칸에 있다 (OA U1): 링 · 구분선 · 고정 칸이 한 칸(`item + gap`)씩 내려가고 레일이 그만큼 길다. 없으면 지금 그대로
+    var tile = false
 
     /// 숨은 레일이 밀려난 거리
     var shift: CGFloat {
@@ -46,12 +48,20 @@ struct EdgeRailLayout: Equatable {
 
     private var itemX: CGFloat { shift + (Self.railWidth - Self.item) / 2 }
 
+    /// 타일이 차지하는 칸의 높이 (없으면 0)
+    private var tileStep: CGFloat { tile ? Self.item + Self.gap : 0 }
+
+    /// Review 타일의 자리: 레일의 맨 위 칸 (숨은 레일에서는 이 칸 안에서 16pt 원이 된다)
+    var tileFrame: CGRect? {
+        tile ? CGRect(x: itemX, y: Self.top + Self.padding, width: Self.item, height: Self.item) : nil
+    }
+
     func notchFrame(_ index: Int) -> CGRect {
-        CGRect(x: itemX, y: Self.top + Self.padding + CGFloat(index) * (Self.item + Self.gap), width: Self.item, height: Self.item)
+        CGRect(x: itemX, y: Self.top + Self.padding + tileStep + CGFloat(index) * (Self.item + Self.gap), width: Self.item, height: Self.item)
     }
 
     /// 펼친 부분이 시작하는 높이 (노치 링 아래, 간격 하나)
-    private var moreTop: CGFloat { Self.top + Self.padding + CGFloat(notchCount) * (Self.item + Self.gap) }
+    private var moreTop: CGFloat { Self.top + Self.padding + tileStep + CGFloat(notchCount) * (Self.item + Self.gap) }
 
     func restFrame(_ index: Int) -> CGRect {
         CGRect(x: itemX, y: moreTop + CGFloat(index) * (Self.item + Self.gap), width: Self.item, height: Self.item)
@@ -77,13 +87,19 @@ struct EdgeRailLayout: Equatable {
         if idle {
             return CGRect(x: shift, y: Self.top, width: Self.railWidth, height: Self.idleHeight)
         }
-        let height = Self.padding + CGFloat(notchCount) * (Self.item + Self.gap) + moreHeight + Self.padding
+        let height = Self.padding + tileStep + CGFloat(notchCount) * (Self.item + Self.gap) + moreHeight + Self.padding
         return CGRect(x: shift, y: Self.top, width: Self.railWidth, height: height)
     }
 
     /// 포인터가 레일 위인지 (화면에 보이는 부분만)
     var hitRect: CGRect {
         railRect.intersection(CGRect(x: 0, y: 0, width: Self.railWidth, height: Self.windowHeight))
+    }
+
+    /// 포인터가 Review 타일 위인지
+    func hitsTile(_ point: CGPoint) -> Bool {
+        guard let tileFrame, hitRect.contains(point), !idle else { return false }
+        return tileFrame.contains(point)
     }
 
     /// 포인터 아래의 칸
@@ -137,7 +153,10 @@ struct EdgeRailView: View {
     let onMore: (CGRect) -> Void
 
     private var layout: EdgeRailLayout {
-        EdgeRailLayout(notchCount: shell.notch.count, restCount: shell.rest.count, expanded: shell.isExpanded, idle: shell.isIdle, controls: shell.controls)
+        EdgeRailLayout(
+            notchCount: shell.notch.count, restCount: shell.rest.count, expanded: shell.isExpanded, idle: shell.isIdle, controls: shell.controls,
+            tile: shell.reviewTileContent != nil
+        )
     }
 
     private var slide: Animation? { TFMotion.move(TFMotion.railSlide, reduceMotion: shell.reduceMotion) }
@@ -181,6 +200,17 @@ struct EdgeRailView: View {
     @ViewBuilder
     private func content(_ layout: EdgeRailLayout) -> some View {
         ZStack(alignment: .topLeading) {
+            // Review 타일: 맨 위 칸 (숨은 레일에서는 노치 안 16pt 원, 펼치면 정사각 타일)
+            if let frame = layout.tileFrame, let content = shell.reviewTileContent {
+                ReviewTile(
+                    kind: content.tileKind, label: shell.tileAccessibilityName ?? "Review", expanded: layout.expanded, open: shell.tileOpen,
+                    highlighted: shell.hoveredTile, notchShift: layout.notchShift
+                ) {
+                    shell.openReviewTile()
+                }
+                .offset(x: frame.minX, y: frame.minY)
+                .transition(.opacity.animation(TFMotion.ease(TFMotion.ringFade)))
+            }
             ForEach(Array(shell.notch.enumerated()), id: \.element.id) { index, entry in
                 item(entry, layout: layout).offset(x: layout.notchFrame(index).minX, y: layout.notchFrame(index).minY)
             }
@@ -236,6 +266,8 @@ struct EdgeRailView: View {
     private func highlighted(_ control: EdgeShellModel.Control) -> Bool {
         if control == .more { return shell.menuOpen || shell.hoveredControl == .more }
         if shell.hoveredControl == control { return true }
+        // Assistant 창이 앞에 있으면 Chats 칸이 칠해진다 (DS: Chats 버튼은 가장 앞 창을 앞으로 / 없으면 연다)
+        if control == .chats, shell.windowsEnabled, shell.assistantWindowFront { return true }
         guard shell.panelOpen else { return false }
         return control == .allWork ? shell.view == .allWork && shell.currentID == nil : control == .chats && shell.view == .chats
     }
@@ -349,7 +381,10 @@ final class EdgeRailPanelController {
     }
 
     private var layout: EdgeRailLayout {
-        EdgeRailLayout(notchCount: shell.notch.count, restCount: shell.rest.count, expanded: shell.isExpanded, idle: shell.isIdle, controls: shell.controls)
+        EdgeRailLayout(
+            notchCount: shell.notch.count, restCount: shell.rest.count, expanded: shell.isExpanded, idle: shell.isIdle, controls: shell.controls,
+            tile: shell.reviewTileContent != nil
+        )
     }
 
     private func pointer(_ point: CGPoint?) {
@@ -360,13 +395,17 @@ final class EdgeRailPanelController {
         }
         let layout = layout
         shell.pointer(inside: layout.hitRect.contains(point))
+        let overTile = layout.hitsTile(point)
         let hit = layout.hit(point, slots: shell.slots)
-        if let id = hit.item {
+        if overTile {
+            shell.hover(tile: true)
+        } else if let id = hit.item {
             shell.hover(item: id)
         } else {
             shell.hover(control: hit.control)
         }
         let anchor: CGRect? = {
+            if overTile { return layout.tileFrame }
             if let id = hit.item, let index = shell.slots.firstIndex(where: { $0.id == id }) {
                 return index < layout.notchCount ? layout.notchFrame(index) : layout.restFrame(index - layout.notchCount)
             }
@@ -475,6 +514,16 @@ struct RailTooltipView: View {
             .padding(EdgeInsets(top: 6, leading: 9, bottom: 6, trailing: 9))
             .background(TFColor.bgTooltip, in: RoundedRectangle(cornerRadius: TFRadius.sm, style: .continuous))
             .accessibilityHidden(true)
+    }
+}
+
+extension ReviewTileContent {
+    /// 타일 부품의 종류
+    var tileKind: ReviewTile.Kind {
+        switch self {
+        case .needsYou: .needsYou
+        case .changes: .changes
+        }
     }
 }
 #endif
