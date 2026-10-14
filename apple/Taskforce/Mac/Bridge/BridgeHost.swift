@@ -44,6 +44,8 @@ final class BridgeHost {
     private var syncedEpoch = 0
     /// `syncAccount`는 한 번에 하나씩 이어서 돈다 (계정 전환이 겹쳐도 런타임이 섞이지 않게)
     private var syncTail: Task<Void, Never>?
+    /// 놓는 중인 런타임이 원장을 닫는 일: 같은 파티션의 새 런타임은 이것이 끝난 뒤에 원장을 연다 (한 원장에 런타임 둘이 열리지 않게)
+    private var closing: [String: Task<Void, Never>] = [:]
     private var observers: [NSObjectProtocol] = []
     private var lastBusy = false
 
@@ -130,6 +132,7 @@ final class BridgeHost {
         syncedEpoch = currentEpoch
         guard let user else { return }
         let partition = BridgePartition(apiBaseURL: apiBaseURL, userID: user)
+        await closing[partition.id]?.value // 놓는 중인 옛 런타임이 원장을 닫은 뒤에 연다
         if let existing = entries[partition.id] {
             // 떠났다가 돌아온 같은 계정: 남아 있는 런타임을 이어 쓴다 (같은 원장에 연결을 둘 만들지 않는다)
             activePartitionID = partition.id
@@ -177,10 +180,25 @@ final class BridgeHost {
         await release(entry)
     }
 
-    /// 런타임을 놓는다. 알림 값은 늦게 도착한 옛 값일 수 있으므로 놓기 직전에 런타임에 직접 다시 묻는다
+    #if DEBUG
+    /// 시험 전용 (Release에는 없다): `release`가 첫 확인을 마친 직후 끼어든다. 놓는 도중 같은 계정이 돌아오는 경쟁을 결정적으로 만든다
+    var releaseHook: (@MainActor () async -> Void)?
+    #endif
+
+    /// 놓아도 되나: 런타임이 멈춰 있고, 그 파티션이 다시 활성이 아니거나(떠난 계정) 마무리 모드일 때만
+    static func mayRelease(status: BridgeStatus, partitionIsActive: Bool, drain: Bool) -> Bool {
+        status == .stopped && (!partitionIsActive || drain)
+    }
+
+    /// 런타임을 놓는다. 알림 값은 늦게 도착한 옛 값일 수 있으므로 놓기 직전에 런타임에 직접 다시 묻는다.
+    /// 그 사이 같은 계정이 돌아와 런타임이 다시 켜졌을 수 있다(`performSync` → `resume`): 멈춰 있고, 그 파티션이 다시 활성이 아니거나 마무리 모드일 때만 놓는다 (검토 반영 2 8장 4).
+    /// 마지막 확인과 목록에서 빼는 일은 `await` 없이 이어진다: 이후 같은 계정이 돌아오면 새 런타임을 만들고, 원장은 이 런타임이 닫힌 뒤에 연다 (`closing`)
     private func release(_ entry: Entry) async {
         guard await !entry.runtime.isBusy(), await !entry.runtime.hasLiveProcess() else { return }
-        await entry.runtime.close()
+        #if DEBUG
+        await releaseHook?()
+        #endif
+        guard await Self.mayRelease(status: entry.runtime.status, partitionIsActive: activePartitionID == entry.partition.id, drain: entry.mode == .drain) else { return }
         // 같은 파티션에 새 세대가 이미 올라와 있으면 그 항목은 건드리지 않는다
         if entries[entry.partition.id]?.id == entry.id {
             entries[entry.partition.id] = nil
@@ -188,6 +206,10 @@ final class BridgeHost {
         }
         busyByEntry[entry.id] = nil
         liveByEntry[entry.id] = nil
+        let closeTask = Task { await entry.runtime.close() }
+        closing[entry.partition.id] = closeTask
+        await closeTask.value
+        if closing[entry.partition.id] == closeTask { closing[entry.partition.id] = nil }
         notifyBusyIfChanged()
     }
 
@@ -247,7 +269,9 @@ final class BridgeHost {
         Task {
             let result = await host.accountDeleted(userID: userID)
             if !result.isComplete {
-                BridgeOSLog().log("account_cleanup_incomplete", ["folder": .count(result.folderRemoved ? 1 : 0), "credentials": .count(result.credentialsRemoved ? 1 : 0)])
+                BridgeOSLog().log("account_cleanup_incomplete", [
+                    "folder": .count(result.folderRemoved ? 1 : 0), "credentials": .count(result.credentialsRemoved ? 1 : 0), "processes": .count(result.unterminatedProcesses),
+                ])
             }
         }
     }
@@ -256,8 +280,9 @@ final class BridgeHost {
     @discardableResult
     func accountDeleted(userID: UUID) async -> BridgeStorage.CleanupResult {
         let partition = BridgePartition(apiBaseURL: apiBaseURL, userID: userID)
+        var unterminated = 0
         if let entry = entries[partition.id] {
-            await entry.runtime.interruptLiveTurns()
+            unterminated = await entry.runtime.interruptLiveTurns()
             await entry.runtime.stop()
             await entry.runtime.close()
             entries[partition.id] = nil
@@ -266,7 +291,7 @@ final class BridgeHost {
             if activePartitionID == partition.id { activePartitionID = nil }
             notifyBusyIfChanged()
         }
-        return await BridgeStorage.deletePartition(partition, root: storageRoot, credentials: credentials)
+        return await BridgeStorage.deletePartition(partition, root: storageRoot, credentials: credentials, unterminatedProcesses: unterminated)
     }
 
     // MARK: 앱 연결
