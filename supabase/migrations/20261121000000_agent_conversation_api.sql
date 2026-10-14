@@ -8,6 +8,7 @@
 --    delivery_reason을 비우고 보관 기한을 지금부터 24시간으로 새로 준다 (계약 3.2 "Send again"). cancelled는 끝 상태라 받지 않는다(OD-8): 앱은 같은 글을 새 client_message_id로 보낸다.
 --    결과 불명(dispatched + 마지막 단계 unknown_outcome)과 질문의 답이 된 글(refs.answer_for)은 다시 보내지 않는다. 실제 전달은 TS가 이 함수가 끝난 뒤(commit 뒤) 메시지마다 시작한다.
 --    잠금: 대상 메시지를 id 순으로 for update 하는 것뿐이다 (대화 대상은 바뀌지 않아 잠그지 않는다). 만료 sweep(conversation_expire_agent_messages, skip locked)과 같은 행이 겹쳐도 잃은 갱신이 없다.
+--    잠근 행의 id를 배열로 고정해 그 행만 처리하고, 갱신은 지금도 대상 상태(not_sent · expired)일 때만 한다 (검토 반영 10-1: 일괄 호출의 두 조회 사이에 대상이 늘어도 잠그지 않은 행을 덮지 않는다).
 -- 3) open_agent_session_external(p_user_id, p_session_id): Open in Terminal (계약 3.8). bound 세션을 external로 바꾼다. 진행 중 턴(dispatched · accepted · running · awaiting_answer · unreachable)이 있으면 busy,
 --    첫 턴의 실제 세션 id를 아직 받지 못한 세션(pending:)은 not_started, bound가 아니면 not_bound(이미 external이면 unchanged). 쓰기는 세션 상태 · 묶인 대화마다 event 한 줄("Opened in Terminal") · 지표 한 줄뿐이다.
 --    external 동안 새 메시지는 start_agent_turn이 queued/session_external로 쌓는다(D1c-1). 경로 lease 해제는 D3c-2가 이 함수에 건다.
@@ -77,6 +78,8 @@ declare
   v_id uuid;
   v_out jsonb := '[]'::jsonb;
   v_seen uuid[] := '{}';
+  v_locked uuid[];
+  v_requeued boolean;
   v_unknown boolean;
 begin
   if p_message_ids is not null and cardinality(p_message_ids) not between 1 and 50 then
@@ -89,23 +92,32 @@ begin
   if not found then return jsonb_build_object('status', 'not_found', 'messages', '[]'::jsonb); end if;
   if v_target is distinct from 'agent' then return jsonb_build_object('status', 'wrong_target', 'messages', '[]'::jsonb); end if;
 
-  -- 이름을 주지 않으면 대상 상태 전부, 주면 그 id (이 대화 · 이 사용자의 사용자 메시지만). 행을 id 순으로 먼저 잠근다.
-  perform 1 from public.conversation_messages m
-   where m.conversation_id = p_conversation_id and m.user_id = p_user_id and m.role = 'user'
-     and (case when p_message_ids is null then m.delivery_state in ('not_sent', 'expired') else m.id = any (p_message_ids) end)
-   order by m.id for update;
+  -- 이름을 주지 않으면 대상 상태 전부, 주면 그 id (이 대화 · 이 사용자의 사용자 메시지만). 행을 id 순으로 먼저 잠그고, **잠근 행의 id를 배열로 고정한다** (검토 반영 10-1):
+  -- 뒤 처리는 그 배열의 행만 한다. 이름을 주지 않았을 때 두 번째 조회가 다시 대상을 고르면, 첫 조회에서 빠졌던(잠그지 않은) 행이 그 사이 대상 상태가 되어 섞여 들고
+  -- 다른 요청이 그 행을 재전송해 dispatched로 commit한 뒤에도 낡은 상태로 queued로 덮어 task · 단계와 전달 표시가 어긋난다.
+  with locked as (
+    select m.id from public.conversation_messages m
+     where m.conversation_id = p_conversation_id and m.user_id = p_user_id and m.role = 'user'
+       and (case when p_message_ids is null then m.delivery_state in ('not_sent', 'expired') else m.id = any (p_message_ids) end)
+     order by m.id for update
+  )
+  select coalesce(array_agg(id), '{}'::uuid[]) into v_locked from locked;
 
   for v_row in
     select m.id, m.delivery_state, m.delivery_reason, m.refs from public.conversation_messages m
-     where m.conversation_id = p_conversation_id and m.user_id = p_user_id and m.role = 'user'
-       and (case when p_message_ids is null then m.delivery_state in ('not_sent', 'expired') else m.id = any (p_message_ids) end)
+     where m.id = any (v_locked) and m.conversation_id = p_conversation_id and m.user_id = p_user_id and m.role = 'user'
      order by m.seq
   loop
     v_seen := array_append(v_seen, v_row.id);
+    v_requeued := false;
     if v_row.delivery_state in ('not_sent', 'expired') and not (v_row.refs ? 'answer_for') then
+      -- 갱신도 조건부다: 지금도 Send again 대상 상태일 때만 queued로 바꾼다 (dispatched 등은 덮지 않는다). 못 바꾸면 아래 건너뜀 경로로 간다
       update public.conversation_messages
          set delivery_state = 'queued', delivery_reason = null, delivery_expires_at = public.db_now() + interval '24 hours'
-       where id = v_row.id;
+       where id = v_row.id and delivery_state in ('not_sent', 'expired');
+      v_requeued := found;
+    end if;
+    if v_requeued then
       insert into public.metric_events (user_id, type, props)
         values (p_user_id, 'message_resent', jsonb_strip_nulls(jsonb_build_object(
           'adapter', v_adapter, 'from', v_row.delivery_state, 'reason', v_row.delivery_reason)));

@@ -498,3 +498,55 @@ describe("P8 거절 · 꺼짐 표시는 메시지 잠금 안에서 현재 상태
     expect(await waiting).toEqual({ status: "not_sent", reason: "write_gate_closed" });
   });
 });
+
+describe("P9 일괄 Send again은 처음 잠근 id 집합만 처리한다 (검토 반영 10-1)", () => {
+  // 시나리오(일괄 = message_ids 없음): ① 호출이 대상 X의 잠금을 기다리는 동안 처음 조회에서 빠졌던 Y(dispatched)가 not_sent로 바뀐다
+  // ② 호출은 풀려 X를 처리하다가 지표 insert에서 멈춰 있고(metric_events 잠금을 쥔 다른 연결) ③ 그 사이 다른 요청이 Y를 재전송해 dispatched로 commit한다.
+  // 고정하지 않은 구현은 두 번째 조회에서 Y를 만나 낡은 not_sent로 판단해 dispatched를 queued로 덮는다. 고정한 구현은 Y를 처리하지 않는다(결과에도 없다).
+  const waitForRelationLock = async (pid: number) => {
+    for (let i = 0; i < 100; i++) {
+      const { rows } = await setup.query<{ wait_event_type: string | null; wait_event: string | null }>("select wait_event_type, wait_event from pg_stat_activity where pid = $1", [pid]);
+      if (rows[0]?.wait_event_type === "Lock" && rows[0]?.wait_event === "relation") return;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    throw new Error("호출이 표(metric_events) 잠금을 기다리지 않는다");
+  };
+
+  async function raceWorld() {
+    const w = await world();
+    const x = w.message;
+    const y = String((await f.post(w.user, w.conversation, randomUUID(), "둘째")).message_id);
+    await f.setMessage(x, "not_sent", "usage_limited"); // seq 1: 처음부터 대상
+    await f.setMessage(y, "dispatched"); // seq 2: 처음 조회에서는 대상이 아니다
+    return { ...w, x, y };
+  }
+
+  it("두 조회 사이 대상이 하나 더 생기고 다른 요청이 그 행을 재전송해 dispatched로 commit해도, 그 행은 dispatched 그대로이고 결과 · 지표에 없다", async () => {
+    const w = await raceWorld();
+    await a.query("begin");
+    await a.query("select id from public.conversation_messages where id = $1 for update", [w.x]); // 호출의 첫 조회를 X에서 붙잡는다
+    const call = requeue(b, w.user, w.conversation).then((value) => ({ value }), (error: unknown) => ({ error }));
+    await waitForLockWait(); // 첫 조회는 X를 기다린다 (Y는 dispatched라 대상이 아니다)
+    await f.setMessage(w.y, "not_sent", "spawn_failed"); // 두 조회 사이 대상이 하나 더 생긴다
+    await c.query("begin");
+    await c.query("lock table public.metric_events in access exclusive mode"); // X 처리 중 지표 insert에서 멈추게 한다
+    await a.query("rollback"); // 첫 조회 끝 → 두 번째 조회가 X · Y를 읽고 X부터 처리한다
+    await waitForRelationLock(bPid);
+    await f.setMessage(w.y, "dispatched"); // 다른 요청이 Y를 다시 보내 전달까지 commit
+    await c.query("rollback"); // 호출이 이어진다
+    const outcome = await call;
+    expect(outcome).toHaveProperty("value");
+    const result = (outcome as { value: Requeue }).value;
+    expect(result).toEqual({ status: "ok", messages: [{ message_id: w.x, result: "requeued" }] }); // 고정한 집합(X)만 — Y는 결과에 없다
+    expect(await f.one("select delivery_state, delivery_reason from public.conversation_messages where id = $1", [w.y])).toEqual({ delivery_state: "dispatched", delivery_reason: null });
+    expect(await f.count("select 1 from public.metric_events where user_id = $1 and type = 'message_resent'", [w.user])).toBe(1);
+    expect((await f.one("select delivery_state from public.conversation_messages where id = $1", [w.x])).delivery_state).toBe("queued");
+  });
+
+  it("대조(경합 없음): 일괄은 평소처럼 그 시점의 대상 상태를 모두 다시 대기시킨다", async () => {
+    const w = await raceWorld();
+    await f.setMessage(w.y, "not_sent", "spawn_failed");
+    const result = await requeue(b, w.user, w.conversation);
+    expect(result.messages.map((item) => [item.message_id, item.result])).toEqual([[w.x, "requeued"], [w.y, "requeued"]]);
+  });
+});
