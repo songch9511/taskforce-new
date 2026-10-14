@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
-  admin: vi.fn(() => ({ admin: true })), auth: vi.fn(), loadAnswerTask: vi.fn(), loadSessionAdapter: vi.fn(), answerAgentQuestion: vi.fn(),
+  admin: vi.fn(() => ({ admin: true })), auth: vi.fn(), loadAnswerTask: vi.fn(), loadSessionAdapter: vi.fn(), answerAgentQuestion: vi.fn(), answerAgentApproval: vi.fn(),
 }));
 
 vi.mock("server-only", () => ({}));
@@ -11,6 +11,8 @@ vi.mock("@/lib/api/profile-store", () => ({ hasAiConsent: vi.fn(async () => true
 vi.mock("@/lib/agents/sessions", async (original) => ({ ...(await original<typeof import("@/lib/agents/sessions")>()), loadSessionAdapter: mocks.loadSessionAdapter }));
 vi.mock("@/lib/agents/questions", async (original) => ({ ...(await original<typeof import("@/lib/agents/questions")>()), answerAgentQuestion: mocks.answerAgentQuestion }));
 vi.mock("@/lib/agents/answers", async (original) => ({ ...(await original<typeof import("@/lib/agents/answers")>()), loadAnswerTask: mocks.loadAnswerTask }));
+
+vi.mock("@/lib/agents/approvals", () => ({ answerAgentApproval: mocks.answerAgentApproval }));
 
 import { POST } from "./route";
 
@@ -30,6 +32,7 @@ beforeEach(() => {
   mocks.auth.mockResolvedValue({ user: { id: USER } });
   mocks.loadSessionAdapter.mockResolvedValue({ adapter: "agent:codex", enabled: true });
   mocks.loadAnswerTask.mockResolvedValue({ id: TASK, sessionId: SESSION, pendingQuestion: question(), answeredQuestion: null });
+  mocks.answerAgentApproval.mockResolvedValue({ status: "answered", step_id: STEP });
   mocks.answerAgentQuestion.mockResolvedValue({ status: "answered", step_id: STEP });
 });
 afterEach(() => {
@@ -53,10 +56,9 @@ describe("POST /api/v2/agent-tasks/{id}/answer (route)", () => {
     expect(mocks.answerAgentQuestion).toHaveBeenCalledExactlyOnceWith(expect.anything(), { userId: USER, agentTaskId: TASK, providerRequestId: "q-1", answers: { choice: "Yes" }, question: question(), answeredLocally: false, recordMetric: true });
   });
 
-  it("승인 · 비밀값 · 옛 열쇠는 RPC 없이 409", async () => {
+  it("비밀값 · 옛 열쇠는 RPC 없이 409", async () => {
     vi.stubEnv("CONVERSATIONS_V2_ENABLED", "true");
     const cases: [Record<string, unknown>, string][] = [
-      [question({ kind: "approval" }), "approval_via_review"],
       [question({ questions: [{ id: "choice", header: "h", text: "t", options: [], multi_select: false, allow_other: true, secret: true }] }), "secret_requires_local"],
       [question({ question_key: [TASK, "q-2"] }), "question_stale"],
     ];
@@ -68,4 +70,16 @@ describe("POST /api/v2/agent-tasks/{id}/answer (route)", () => {
     }
     expect(mocks.answerAgentQuestion).not.toHaveBeenCalled();
   });
+});
+
+it.each(["allow", "deny"])("U4 wires approval %s through realAnswerDeps", async (decision) => {
+  vi.stubEnv("CONVERSATIONS_V2_ENABLED", "true");
+  const approval = question({ kind: "approval", questions: [{ ...question().questions[0], id: "approval" }] });
+  mocks.loadAnswerTask.mockResolvedValue({ id: TASK, sessionId: SESSION, pendingQuestion: approval, answeredQuestion: null });
+  const response = await call({ provider_request_id: "q-1", answers: { approval: decision } });
+  expect(response.status).toBe(200);
+  expect(mocks.answerAgentApproval).toHaveBeenCalledExactlyOnceWith(expect.anything(), {
+    userId: USER, agentTaskId: TASK, providerRequestId: "q-1", answers: { approval: decision }, question: approval,
+  });
+  expect(mocks.answerAgentQuestion).not.toHaveBeenCalled();
 });

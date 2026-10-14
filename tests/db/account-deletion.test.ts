@@ -19,6 +19,7 @@ const USER_TABLES = [
   "actions",
   "agent_artifacts",
   "agent_connections",
+  "agent_path_leases",
   "agent_sessions",
   "agent_tasks",
   "ai_spend_attempts",
@@ -230,6 +231,8 @@ async function seed(userId: string, tokenHex: string) {
     messageId,
   ]);
   await db.query(`insert into public.bridge_commands (user_id, bridge_id, step_id, agent_task_id, kind) select user_id, $2, step_id, id, 'message' from public.agent_tasks where user_id=$1`, [userId, bridgeId]);
+  await db.query(`insert into public.agent_path_leases(user_id,bridge_id,run_id,agent_session_id,workspace_ref,path_key,rel_path,source)
+    values($1,$2,$3,$4,'/w/proj','/w/proj/file','file','observed')`,[userId,bridgeId,runId,agentSessionId]);
   await db.query(`insert into public.agent_artifacts (user_id, run_id, agent_task_id, turn_seq, path, content_hash, summary)
     select user_id, run_id, id, turn_seq, 'src/result.ts', 'hash', 'Changed module' from public.agent_tasks where user_id = $1`, [userId]);
   await db.query(`insert into public.execution_events (user_id, run_id, type, external_event_id, bridge_id) values ($1, $2, 'agent', 'evt-1', $3)`, [userId, runId, bridgeId]);

@@ -950,6 +950,7 @@ function answerDeps(overrides: Partial<AnswerDeps<User>> = {}): AnswerDeps<User>
     loadTask: vi.fn(async () => ({ id: TASK, sessionId: SESSION, pendingQuestion: pendingQuestion(), answeredQuestion: null })),
     sessionAdapter: vi.fn(async () => ({ adapter: "agent:codex", enabled: true })),
     answer: vi.fn(async () => ({ status: "answered" as const, step_id: STEP })),
+    answerApproval: vi.fn(async () => ({ status: "answered" as const, step_id: STEP })),
     ...overrides,
   } as never;
 }
@@ -997,12 +998,51 @@ describe("POST /api/v2/agent-tasks/{id}/answer (R13)", () => {
     }
   });
 
-  it("승인 질문은 409 approval_via_review: RPC 0 (Review의 Allow · Deny가 정책 평가기를 거친다)", async () => {
-    const d = answerDeps({ loadTask: vi.fn(async () => ({ id: TASK, sessionId: SESSION, pendingQuestion: pendingQuestion({ kind: "approval" }), answeredQuestion: null })) });
-    const response = await run(d, { provider_request_id: "q-1", answers: { choice: "allow" } });
-    expect(response.status).toBe(409);
-    expect((await body(response)).error).toMatchObject({ code: "approval_via_review" });
+  it.each(["allow", "deny"])("U4 approval %s uses the approval dependency only", async (decision) => {
+    const question = pendingQuestion({ kind: "approval", questions: [{ ...pendingQuestion().questions[0], id: "approval" }] });
+    const d = answerDeps({ loadTask: vi.fn(async () => ({ id: TASK, sessionId: SESSION, pendingQuestion: question, answeredQuestion: null })) });
+    const response = await run(d, { provider_request_id: "q-1", answers: { approval: decision } });
+    expect(response.status).toBe(200);
+    expect(await body(response)).toEqual({ status: "answered", step_id: STEP });
+    expect(d.answerApproval).toHaveBeenCalledExactlyOnceWith(USER, { taskId: TASK, providerRequestId: "q-1", answers: { approval: decision }, question });
     expect(d.answer).not.toHaveBeenCalled();
+  });
+
+  it("U4 replay uses answered approval and keeps duplicate status", async () => {
+    const question = pendingQuestion({ kind: "approval", questions: [{ ...pendingQuestion().questions[0], id: "approval" }] });
+    const d = answerDeps({
+      loadTask: vi.fn(async () => ({ id: TASK, sessionId: SESSION, pendingQuestion: null, answeredQuestion: question })),
+      answerApproval: vi.fn(async () => ({ status: "duplicate" as const, step_id: STEP })),
+    });
+    const response = await run(d, { provider_request_id: "q-1", answers: { approval: "allow" } });
+    expect(response.status).toBe(200);
+    expect(await body(response)).toEqual({ status: "duplicate", step_id: STEP });
+    expect(d.answer).not.toHaveBeenCalled();
+  });
+
+  it.each([["question_stale", 409], ["invalid_answer", 400], ["not_found", 404]] as const)("U4 preserves approval SQL %s", async (status, http) => {
+    const question = pendingQuestion({ kind: "approval", questions: [{ ...pendingQuestion().questions[0], id: "approval" }] });
+    const d = answerDeps({
+      loadTask: vi.fn(async () => ({ id: TASK, sessionId: SESSION, pendingQuestion: question, answeredQuestion: null })),
+      answerApproval: vi.fn(async () => ({ status })),
+    });
+    expect((await run(d, { provider_request_id: "q-1", answers: { approval: "allow" } })).status).toBe(http);
+  });
+
+  it("U4 malformed approval questions and answers never reach either RPC", async () => {
+    const item = { ...pendingQuestion().questions[0], id: "approval" };
+    for (const [questions, answers] of [
+      [[item, { ...item, id: "second" }], { approval: "allow", second: "allow" }],
+      [[item, { ...item, id: "second" }], { approval: "allow" }],
+      [[item], { approval: "yes" }], [[item], { approval: ["allow"] }],
+      [[item], { approval: "allow", extra: "allow" }], [[item], {}],
+      [[{ ...item, id: "other" }], { approval: "allow" }],
+    ] as const) {
+      const d = answerDeps({ loadTask: vi.fn(async () => ({ id: TASK, sessionId: SESSION, pendingQuestion: pendingQuestion({ kind: "approval", questions }), answeredQuestion: null })) });
+      expect((await run(d, { provider_request_id: "q-1", answers })).status).toBe(400);
+      expect(d.answerApproval).not.toHaveBeenCalled();
+      expect(d.answer).not.toHaveBeenCalled();
+    }
   });
 
   it("비밀값이 하나라도 섞인 질문은 409 secret_requires_local: RPC 0, 값은 로그에도 없다 (R13)", async () => {

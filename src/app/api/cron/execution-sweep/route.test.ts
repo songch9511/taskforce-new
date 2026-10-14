@@ -10,7 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // OA D1d: 대기 메시지 만료(conversation_expire_agent_messages)도 이 admin의 rpc로 돈다
 const mocks = vi.hoisted(() => {
   const rpc = vi.fn();
-  return { sweep: vi.fn(), wakeRun: vi.fn(), supabaseExecutionStore: vi.fn(() => ({ store: true })), rpc, admin: { admin: true, rpc } };
+  return { sweepPaths: vi.fn(), sweep: vi.fn(), wakeRun: vi.fn(), supabaseExecutionStore: vi.fn(() => ({ store: true })), rpc, admin: { admin: true, rpc } };
 });
 
 vi.mock("server-only", () => ({}));
@@ -18,6 +18,8 @@ vi.mock("@/lib/supabase/admin", () => ({ createAdminClient: vi.fn(() => mocks.ad
 vi.mock("@/lib/execution/store", () => ({ supabaseExecutionStore: mocks.supabaseExecutionStore }));
 vi.mock("@/lib/execution/sweep", () => ({ sweep: mocks.sweep }));
 vi.mock("@/lib/execution/wake", () => ({ wakeRun: mocks.wakeRun }));
+
+vi.mock("@/lib/agents/path-leases", () => ({ sweepPathLeases: mocks.sweepPaths }));
 
 import { GET } from "./route";
 
@@ -31,6 +33,7 @@ beforeEach(() => {
   vi.stubEnv("CRON_SECRET", "s3cret");
   vi.stubEnv("EXECUTION_ENABLED", "true");
   mocks.sweep.mockResolvedValue(RESULT);
+  mocks.sweepPaths.mockResolvedValue({ expired: 0, run_ended: 0, stopped: 0, notified: 0, errors: 0 });
   vi.mocked(reconcileAiSpend).mockResolvedValue(AI_SPEND);
   mocks.rpc.mockReturnValue({ throwOnError: async () => ({ data: 0, error: null }) });
   vi.spyOn(console, "info").mockImplementation(() => {});
@@ -171,4 +174,17 @@ describe("대기 메시지 만료 (conversation_expire_agent_messages)", () => {
     expect((await cron("Bearer wrong!")).status).toBe(401);
     expect(mocks.rpc).not.toHaveBeenCalled();
   });
+});
+
+it("U6 path lifecycle sweep runs before the disabled execution early return", async () => {
+  vi.stubEnv("EXECUTION_ENABLED", "false");
+  expect(await (await cron()).json()).toEqual({ enabled: false });
+  expect(mocks.sweepPaths).toHaveBeenCalledExactlyOnceWith(mocks.admin);
+  expect(mocks.sweepPaths.mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(reconcileAiSpend).mock.invocationCallOrder[0]);
+});
+it("U6 path sweep failure preserves the cron response and hides exception text", async () => {
+  mocks.sweepPaths.mockRejectedValue(new Error("PRIVATE-PATH-TEXT"));
+  expect(await (await cron()).json()).toEqual({ enabled: true, ...RESULT });
+  expect(console.error).toHaveBeenCalledWith(JSON.stringify({ event: "path_lease_sweep_failed" }));
+  expect(JSON.stringify(vi.mocked(console.error).mock.calls)).not.toContain("PRIVATE-PATH-TEXT");
 });

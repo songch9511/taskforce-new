@@ -1,3 +1,4 @@
+import { answerAgentApproval } from "@/lib/agents/approvals";
 import { z } from "zod";
 
 import { AnswerInputError, answerFromRoute, loadAnswerTask, type AnswerTask } from "@/lib/agents/answers";
@@ -461,6 +462,7 @@ export async function handleListTargets<User extends AppUser>(request: Request, 
 
 export type AnswerDeps<User> = SessionDeps<User> & {
   loadTask: (user: User, taskId: string) => Promise<AnswerTask | null>;
+  answerApproval: (user: User, input: { taskId: string; providerRequestId: string; answers: Record<string, string | string[]>; question: unknown }) => Promise<AnswerAgentQuestionResult>;
   answer: (user: User, input: { taskId: string; providerRequestId: string; answers: Record<string, string | string[]>; question: unknown }) => Promise<AnswerAgentQuestionResult>;
 };
 
@@ -468,7 +470,7 @@ const questionShape = z.object({ kind: z.enum(["input", "approval"]), questions:
 
 /**
  * POST /api/v2/agent-tasks/{id}/answer (계약 3.6 · OD-14): input 질문에 구조화된 답. 열쇠(question_key)가 다르거나 질문이 없으면 409 question_stale,
- * 승인 질문은 409 approval_via_review(정책 평가기 + Review가 처리, D3c-2), 비밀값이 하나라도 섞이면 409 secret_requires_local(RPC 0 — 값은 서버로 오지 않는다).
+ * 승인 답은 lease와 같은 트랜잭션으로 처리하고(D3c-2), 비밀값이 하나라도 섞이면 409 secret_requires_local(RPC 0 — 값은 서버로 오지 않는다).
  * 같은 답을 다시 보내면 이미 답이 간 질문(answered_question)으로 SQL이 duplicate(같은 step)로 수렴시킨다
  */
 export async function handleAnswerQuestion<User extends AppUser>(request: Request, taskId: string, deps: AnswerDeps<User>): Promise<Response> {
@@ -492,12 +494,19 @@ export async function handleAnswerQuestion<User extends AppUser>(request: Reques
     const question = keyMatches(task.pendingQuestion) ? task.pendingQuestion : keyMatches(task.answeredQuestion) ? task.answeredQuestion : null;
     if (!question) return errorResponse(409, "question_stale", "이미 닫히거나 바뀐 질문입니다.");
     const shape = questionShape.parse(question);
-    if (shape.kind === "approval") return errorResponse(409, "approval_via_review", "승인은 Review에서 처리합니다.");
+    let answer = deps.answer;
+    if (shape.kind === "approval") {
+      if (shape.questions.length !== 1 || shape.questions[0].id !== "approval" || Object.keys(body.data.answers).length !== 1
+        || (body.data.answers.approval !== "allow" && body.data.answers.approval !== "deny")) {
+        return errorResponse(400, "invalid_request", "답이 질문과 맞지 않습니다.");
+      }
+      answer = deps.answerApproval;
+    }
     if (shape.questions.some((item) => item.secret)) return errorResponse(409, "secret_requires_local", "비밀값은 이 세션을 가진 Mac에서만 답할 수 있습니다.");
 
     let result: AnswerAgentQuestionResult;
     try {
-      result = await deps.answer(user, { taskId: task.id, providerRequestId: requestId, answers: body.data.answers, question });
+      result = await answer(user, { taskId: task.id, providerRequestId: requestId, answers: body.data.answers, question });
     } catch (error) {
       if (error instanceof AnswerInputError) return errorResponse(400, "invalid_request", "답이 질문과 맞지 않습니다.");
       throw error;
@@ -640,5 +649,6 @@ export const realAnswerDeps = (): AnswerDeps<ApiContext> => ({
   ...base,
   sessionAdapter,
   loadTask: ({ user }, taskId) => loadAnswerTask(admin(), user.id, taskId),
+  answerApproval: ({ user }, input) => answerAgentApproval(admin(), { userId: user.id, agentTaskId: input.taskId, providerRequestId: input.providerRequestId, answers: input.answers, question: input.question }),
   answer: ({ user }, input) => answerFromRoute(admin(), { userId: user.id, agentTaskId: input.taskId, providerRequestId: input.providerRequestId, answers: input.answers, question: input.question }),
 });
