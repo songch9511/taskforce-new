@@ -1,9 +1,13 @@
 import { z } from "zod";
 
-import type { OrganizeContent, OrganizeOp, OrganizeTarget, ProposalPayloadV2 } from "@/lib/api/contract";
+import type { ActionWrite, StoredRow } from "@/lib/actions/db-store";
+import { claimToRow } from "@/lib/actions/rows";
+import { userChangePlan } from "@/lib/actions/user-claims";
+import type { ConversationMessageContent, OrganizeContent, OrganizeOp, OrganizeTarget, Proposal, ProposalPayloadV2 } from "@/lib/api/contract";
+import type { Claim } from "@/lib/pipeline/resolve";
 
 import { REFERENT_CANDIDATE_LIMIT } from "./intent.config";
-import type { MovePlanItem } from "./proposal";
+import { newProposal, type ChangeWrite, type MovePlanItem } from "./proposal";
 
 // 이슈 정리(organize 의도: 이동 · 빼기 · 삭제 · 병합)의 대상 정하기 (D4c-2, 런타임 계약 2장 "지시 대상"). DB · 모델과 분리된 순수 함수: route · eval · 테스트가 같은 코드를 쓴다.
 // - 이슈는 앱이 붙인 added action 칩과 글의 #번호로만 정한다. 프로젝트는 added context 칩과 글에 이름이 그대로 있는 것만이다. 제목이 닮았다는 이유로 고르지 않는다 (규칙 1 = 분명한 지칭).
@@ -352,3 +356,110 @@ export function resolveMoveAdopt(payload: Extract<ProposalPayloadV2, { kind: "mo
     memoryOn,
   });
 }
+
+// ─── 삭제 · 병합 확인 (D4c-2): 카드 버튼과 글 "응"이 같은 쓰기를 만든다 ───
+
+export type Lang = "ko" | "en";
+export type CardPayload = Extract<ProposalPayloadV2, { kind: "delete" | "merge" }>;
+/** 쓰기 계획을 세우려고 읽은 이슈 하나 (행 + 지금 Claim, src/lib/actions/db-store loadStoredRow · loadClaims) */
+export type StoredTarget = { row: StoredRow; claims: Claim[] };
+
+/** 카드가 가리키는 이슈들: 삭제 = 카드의 이슈들, 병합 = [사라지는 쪽, 남는 쪽] */
+export function cardTargets(payload: CardPayload): OrganizeTarget[] {
+  return payload.kind === "delete" ? payload.targets : [payload.from, payload.into];
+}
+
+/**
+ * 카드가 본 그대로인가: 모든 대상이 있고, 읽은 version이 카드의 version과 같고, 이미 지운 것이 없다.
+ * updated_at이 아니라 version이다 — write_action이 version으로 조건부 쓰기를 해 SQL이 같은 값으로 원자적으로 막고, 착수 · 활동 시각 갱신 때문에 거짓 superseded가 나지 않는다 (AC3 6.1 정정).
+ */
+export function cardIsFresh(payload: CardPayload, current: ReadonlyMap<string, StoredTarget>): boolean {
+  return cardTargets(payload).every((target) => {
+    const found = current.get(target.action_id) ?? current.get(target.action_id.toLowerCase());
+    return Boolean(found) && found!.row.version === target.version && found!.row.status !== "dropped";
+  });
+}
+
+function changeWrite(userId: string, actionId: string, write: ActionWrite): ChangeWrite {
+  return {
+    action_id: actionId,
+    expected_version: write.expectedVersion!,
+    action: write.action,
+    claims: write.claims.map((claim) => claimToRow(claim, userId, actionId, write.evidence)),
+    events: write.events.map((e) => ({ type: e.type, before: e.before, after: e.after, rule: e.rule, actor: e.actor ?? write.actor, source_id: write.evidence.sourceId })),
+  };
+}
+
+/**
+ * 삭제 · 병합의 쓰기 계획 (카드가 신선할 때만 부른다). 값은 삭제 경로(service.ts deleteAction)와 같은 순수 계획(userChangePlan)으로만 계산한다 — 원칙 5:
+ * status dropped 사용자 Claim, user_deleted 이벤트(병합이면 user_merged + after.into), 확인 이유 비움. 읽은 version이 아니라 카드의 version이 조건이다(신선하면 같다).
+ * 병합의 남는 쪽은 확인만(action null): 값 · Claim · 근거 · run을 옮기지 않는다. 사라지는 쪽의 run 정리는 기존 트리거가 Done과 같은 규칙으로 한다.
+ */
+export function cardWrites(userId: string, payload: CardPayload, current: ReadonlyMap<string, StoredTarget>, now: Date, newId: () => string): ChangeWrite[] {
+  const read = (target: OrganizeTarget) => current.get(target.action_id) ?? current.get(target.action_id.toLowerCase())!;
+  const drop = (target: OrganizeTarget, into?: string): ChangeWrite => {
+    const found = read(target);
+    const plan = userChangePlan(found.row, found.claims, () => [{ field: "status", value: "dropped" }], into ? "user_merged" : "user_deleted", { clearReasons: true, ...(into ? { into } : {}) }, now, newId);
+    return changeWrite(userId, target.action_id, { ...plan, expectedVersion: target.version });
+  };
+  if (payload.kind === "delete") return payload.targets.map((target) => drop(target));
+  return [drop(payload.from, payload.into.action_id), { action_id: payload.into.action_id, expected_version: payload.into.version, action: null, claims: [], events: [] }];
+}
+
+const numbersLabel = (numbers: number[]) => numbers.map((n) => `#${n}`).join(" · ");
+
+/** 카드의 질문 글 (코드가 붙이는 문구) */
+export function cardAskText(lang: Lang, payload: CardPayload): string {
+  if (payload.kind === "delete") return lang === "ko" ? `${numbersLabel(payload.targets.map((t) => t.number))}을(를) 지울까요?` : `Delete ${numbersLabel(payload.targets.map((t) => t.number))}?`;
+  return lang === "ko" ? `#${payload.from.number}을(를) #${payload.into.number}에 합칠까요?` : `Merge #${payload.from.number} into #${payload.into.number}?`;
+}
+
+/** 확인한 뒤의 글 (대화 기록 줄 · 글 채택의 답) */
+export function cardDoneText(lang: Lang, payload: CardPayload): string {
+  if (payload.kind === "delete") return lang === "ko" ? `지웠어요: ${numbersLabel(payload.targets.map((t) => t.number))}` : `Deleted ${numbersLabel(payload.targets.map((t) => t.number))}`;
+  return lang === "ko" ? `합쳤어요: #${payload.from.number} → #${payload.into.number}` : `Merged #${payload.from.number} into #${payload.into.number}`;
+}
+
+const baseContent = (text: string, tier: "T1" | "T5"): ConversationMessageContent => ({ segments: [{ text, tier }], citations: [], proposal: null, asks: null, used: null, window: null });
+
+/** 확인 event 행 · 글 채택 답의 내용 (organize.state deleted · merged) */
+export function cardDoneContent(lang: Lang, payload: CardPayload): ConversationMessageContent & { organize: OrganizeContent } {
+  const organize: OrganizeContent =
+    payload.kind === "delete"
+      ? { state: "deleted", action_ids: payload.targets.map((t) => t.action_id) }
+      : { state: "merged", from_action_id: payload.from.action_id, into_action_id: payload.into.action_id };
+  return { ...baseContent(cardDoneText(lang, payload), "T1"), organize };
+}
+
+/**
+ * 카드 뒤에 대상이 바뀌었을 때(409 superseded) 대화에 낼 새 카드: 지금 기록에서 살아 있는 대상으로 같은 종류의 카드.
+ * 삭제는 아직 안 지운 것만(모두 지웠으면 null), 병합은 둘 다 살아 있을 때만(아니면 null — 새 카드를 내지 않는다)
+ */
+export function reissuedCard(
+  lang: Lang,
+  payload: CardPayload,
+  lookup: OrganizeLookup,
+  newId: () => string,
+): { proposal: Proposal; text: string; content: ConversationMessageContent } | null {
+  const live = (target: OrganizeTarget) => lookup.actions.find((a) => a.id.toLowerCase() === target.action_id.toLowerCase() && a.status !== "dropped");
+  let next: CardPayload | null;
+  if (payload.kind === "delete") {
+    const actions = payload.targets.map(live).filter((a): a is OrganizeAction => Boolean(a));
+    next = actions.length > 0 ? deletePayload(actions) : null;
+  } else {
+    const from = live(payload.from);
+    const into = live(payload.into);
+    next = from && into ? mergePayload(from, into) : null;
+  }
+  if (!next) return null;
+  const made = newProposal(next, newId);
+  const text = cardAskText(lang, next);
+  return { proposal: made.ref, text, content: { ...baseContent(text, "T5"), proposal: made.payload, asks: "confirm" } };
+}
+
+/** 카드 확인 결과 (store.confirmProposal → handler). busy = 잠금 경합이 재시도를 넘김(쓰기 0) */
+export type ConfirmOutcome =
+  | { status: "confirmed" | "already"; op: "delete" | "merge"; actionIds: string[]; eventId: string | null }
+  | { status: "superseded"; cardMessageId: string | null }
+  | { status: "not_open" | "not_found" | "busy" };
+export type DismissOutcome = "dismissed" | "already" | "not_open" | "not_found";

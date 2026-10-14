@@ -4,10 +4,12 @@ import { randomUUID } from "node:crypto";
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 
+import { loadClaims, loadStoredRow } from "@/lib/actions/db-store";
 import { rankNow, type RankInput } from "@/lib/actions/rank";
 import { budgetFetch } from "@/lib/ai/budget";
 import { decide, jevConfigFromEnv } from "@/lib/ai/jev";
 import { completeJson, llmConfigFromEnv } from "@/lib/ai/llm";
+import { answerLanguage } from "@/lib/ai/prompts/ask";
 import {
   conversationMessageContentSchema,
   conversationSchema,
@@ -39,7 +41,21 @@ import {
   SOURCES_SHOWN,
 } from "./conversation.config";
 import type { ShownMemory } from "./memory";
-import { organizeLookupSchema, type OrganizeLookup } from "./organize";
+import {
+  cardDoneContent,
+  cardDoneText,
+  cardIsFresh,
+  cardTargets,
+  cardWrites,
+  organizeLookupSchema,
+  reissuedCard,
+  type CardPayload,
+  type ConfirmOutcome,
+  type DismissOutcome,
+  type OrganizeLookup,
+  type StoredTarget,
+} from "./organize";
+import { proposalIntact } from "./proposal";
 import { normalizeSelected, type SelectedRefs, type Target } from "./referent";
 import type { ConsultAction, ConsultContext, ConsultMemory, ConsultSource, TurnPlan, WindowMessage } from "./respond";
 
@@ -330,6 +346,118 @@ export async function organizeLookup(admin: SupabaseClient, userId: string, quer
     .rpc("organize_lookup", { p_user_id: userId, p_numbers: query.numbers.slice(0, 10), p_action_ids: query.actionIds.slice(0, 10) })
     .throwOnError();
   return organizeLookupSchema.parse(data);
+}
+
+/** 삭제 · 병합 쓰기 계획을 세우려고 이슈의 행 · Claim을 읽는다 (사용자 것만, 없는 id는 빠진다). 쓰기 경로(deleteAction)와 같은 읽기다 */
+export async function loadChangeTargets(admin: SupabaseClient, userId: string, actionIds: string[]): Promise<Map<string, StoredTarget>> {
+  const entries = await Promise.all(
+    [...new Set(actionIds)].map(async (id): Promise<[string, StoredTarget] | null> => {
+      const row = await loadStoredRow(admin, userId, id);
+      return row ? [id, { row, claims: await loadClaims(admin, userId, id) }] : null;
+    }),
+  );
+  return new Map(entries.filter((entry): entry is [string, StoredTarget] => entry !== null));
+}
+
+// ─── 삭제 · 병합 확인 카드의 버튼 (D4c-2) ─────────────────
+
+/** 카드를 찾으려고 읽는 이 대화의 최근 assistant 메시지 수 (열린 제안은 하나뿐이라 카드는 거의 늘 최근이다) */
+const CARD_SCAN = 200;
+const BUSY_RETRIES = 2;
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+type Card = { message: ConversationMessage; ref: NonNullable<ConversationMessage["refs"]["proposal"]>; payload: CardPayload };
+
+async function loadCard(admin: SupabaseClient, userId: string, conversationId: string, proposalId: string): Promise<Card | null> {
+  const { data } = await admin
+    .from("conversation_messages")
+    .select(MESSAGE_COLUMNS)
+    .eq("user_id", userId)
+    .eq("conversation_id", conversationId)
+    .eq("role", "assistant")
+    .order("seq", { ascending: false })
+    .limit(CARD_SCAN)
+    .throwOnError();
+  const message = ((data ?? []) as MessageRow[]).map(toMessage).find((m) => m.refs.proposal?.id === proposalId);
+  const ref = message?.refs.proposal;
+  const payload = message?.content?.proposal ?? null;
+  if (!message || !ref || (ref.kind !== "delete" && ref.kind !== "merge") || !proposalIntact(ref, payload) || (payload.kind !== "delete" && payload.kind !== "merge")) return null;
+  return { message, ref, payload };
+}
+
+/**
+ * 확인의 쓰기 계획 (conversation_confirm_proposal의 p_plan). 카드를 읽고 hash를 다시 맞춰 보고, 대상의 지금 행 · Claim을 읽는다 (loadChangeTargets):
+ * 카드가 본 version 그대로면 삭제 경로와 같은 쓰기(cardWrites)를, 바뀌었으면 쓰기 없이 새 카드(reissue)만 보낸다.
+ * 새 카드는 늘 같이 보낸다(대비용): 읽은 뒤 SQL이 쓰는 사이에 바뀐 경우에도 대화에 새 카드를 낼 수 있게. 카드가 열려 있지 않으면 쓰기 · 새 카드 없이 상태만 묻는다.
+ */
+export async function planConfirmation(
+  admin: SupabaseClient,
+  userId: string,
+  conversationId: string,
+  proposalId: string,
+  options: { now?: Date; newId?: () => string } = {},
+): Promise<{ plan: Record<string, unknown>; payload: CardPayload } | null> {
+  const card = await loadCard(admin, userId, conversationId, proposalId);
+  if (!card) return null;
+  const lang = answerLanguage(card.message.text) === "한국어" ? "ko" : "en";
+  const newId = options.newId ?? randomUUID;
+  const event = { text: cardDoneText(lang, card.payload), content: cardDoneContent(lang, card.payload) };
+  const base = { payload_hash: card.ref.payload_hash, event };
+  if (card.ref.state !== "open") return { plan: { ...base, writes: [], reissue: null }, payload: card.payload };
+  const ids = cardTargets(card.payload).map((t) => t.action_id);
+  const current = await loadChangeTargets(admin, userId, ids);
+  const lookup = await organizeLookup(admin, userId, { numbers: [], actionIds: ids });
+  const reissue = reissuedCard(lang, card.payload, lookup, newId);
+  const writes = cardIsFresh(card.payload, current) ? cardWrites(userId, card.payload, current, options.now ?? new Date(), newId) : [];
+  return { plan: { ...base, writes, reissue: reissue ? { proposal: reissue.proposal, text: reissue.text, content: reissue.content } : null }, payload: card.payload };
+}
+
+type ConfirmRow = { status: string; event_id: string | null; card_id: string | null };
+
+/**
+ * 삭제 · 병합 확인 (버튼). 쓰기는 conversation_confirm_proposal 한 트랜잭션 — 두 번 눌러도 한 번(already), 대상이 카드 뒤에 바뀌었으면 쓰지 않고 새 카드(superseded).
+ * 열린 대화 run 정리가 메시지 행을 NOWAIT로 잡다 실패하면(busy) 새 계획으로 두 번만 다시 시도하고, 그래도면 busy (호출한 쪽이 409 busy_retry).
+ */
+export async function confirmProposal(
+  admin: SupabaseClient,
+  userId: string,
+  conversationId: string,
+  proposalId: string,
+  options: { now?: Date; newId?: () => string } = {},
+): Promise<ConfirmOutcome> {
+  for (let attempt = 0; ; attempt++) {
+    const planned = await planConfirmation(admin, userId, conversationId, proposalId, options);
+    if (!planned) return { status: "not_found" };
+    const { data } = await admin
+      .rpc("conversation_confirm_proposal", { p_user_id: userId, p_conversation_id: conversationId, p_proposal_id: proposalId, p_plan: planned.plan })
+      .single<ConfirmRow>()
+      .throwOnError();
+    // busy: 잠금 경합 · changed: 읽은 뒤 쓰기 전에 대상이 바뀜 — 둘 다 아무것도 쓰지 않았으니 새로 읽어 계획하고 두 번만 다시 시도한다
+    if ((data.status === "busy" || data.status === "changed") && attempt < BUSY_RETRIES) {
+      if (data.status === "busy") await sleep(attempt === 0 ? 50 : 150);
+      continue;
+    }
+    switch (data.status) {
+      case "confirmed":
+      case "already":
+        return { status: data.status, op: planned.payload.kind, actionIds: cardTargets(planned.payload).map((t) => t.action_id), eventId: data.event_id };
+      case "superseded":
+        return { status: "superseded", cardMessageId: data.card_id };
+      case "not_open":
+        return { status: "not_open" };
+      case "busy":
+      case "changed":
+        return { status: "busy" };
+      default:
+        return { status: "not_found" };
+    }
+  }
+}
+
+/** 삭제 · 병합 카드 취소 (버튼): 열린 카드만 dismissed로 (쓰기 0) */
+export async function dismissProposal(admin: SupabaseClient, userId: string, conversationId: string, proposalId: string): Promise<DismissOutcome> {
+  const { data } = await admin.rpc("conversation_dismiss_proposal", { p_user_id: userId, p_conversation_id: conversationId, p_proposal_id: proposalId }).throwOnError();
+  return data === "dismissed" || data === "already" || data === "not_open" ? data : "not_found";
 }
 
 // ─── 상담 기록 (조건 조회 · 기억 · 원문) ─────────────────

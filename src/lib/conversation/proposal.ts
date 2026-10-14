@@ -90,6 +90,18 @@ export type MovePlanItem = {
 /** 이동 제안의 채택 (kind move): 채택한 시점에 다시 푼 이동. 제안 id · hash는 conversation_finish_turn이 열린 제안과 대조한다 */
 export type MoveAdoptPlan = { kind: "move"; proposal_message_id: string; proposal_id: string; payload_hash: string; moves: MovePlanItem[] };
 
+/** 삭제 · 병합 한 건의 쓰기 (SQL apply_organize_change의 p_writes 항목): action이 null이면 확인만(병합의 남는 쪽: 값 변화 0, 읽은 version이 그대로인지만 본다) */
+export type ChangeWrite = {
+  action_id: string;
+  expected_version: number;
+  action: Record<string, unknown> | null;
+  claims: Record<string, unknown>[];
+  events: Record<string, unknown>[];
+};
+
+/** 삭제 · 병합 카드의 채택(글 "응"): 카드 버튼(conversation_confirm_proposal)과 같은 쓰기 */
+export type ChangeAdoptPlan = { kind: "delete" | "merge"; proposal_message_id: string; proposal_id: string; payload_hash: string; writes: ChangeWrite[] };
+
 export type AdoptPlan = {
   proposal_message_id: string;
   proposal_id: string;

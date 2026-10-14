@@ -8,7 +8,7 @@ import type { JevDecision } from "@/lib/ai/jev";
 import { proposalIntact } from "@/lib/conversation/proposal";
 import { respondToMessage, type TurnPlan } from "@/lib/conversation/respond";
 
-import { consultCaseSchema, consultInputOf, findConsultLabelErrors, formatOrganizeMetrics, observeOrganize, organizeMetrics, scoreConsultCase, type ConsultCase } from "./consult-golden";
+import { consultCaseSchema, consultInputOf, consultTargetsOf, findConsultLabelErrors, formatOrganizeMetrics, observeOrganize, organizeMetrics, scoreConsultCase, type ConsultCase } from "./consult-golden";
 
 // 대화 상담 골든셋(evals/consult)의 형식 · 라벨 · 입력 만들기 · 채점. 실제 모델 채점은 npm run eval -- --consult (이번 PR에서는 실행하지 않음).
 
@@ -161,7 +161,7 @@ describe("evals/consult: 이슈 정리 (D4c-2)", () => {
 
   it("organize 케이스는 기대한 판정(Jev)을 가짜로 주면 코드 규칙만으로 모두 통과한다 — 대상 · 프로젝트 · 남는 쪽 · 카드가 케이스 데이터와 어긋나지 않는다 (모델 판정은 npm run eval -- --consult)", async () => {
     let n = 0;
-    for (const golden of organizeCases.filter((c) => !c.expect.adopt)) {
+    for (const golden of organizeCases) {
       const { input, ids, lookup } = consultInputOf(golden);
       const expected = golden.expect.organize;
       const decide = vi.fn(async (request: { questions: Record<string, { criteria?: Record<string, string> }> }): Promise<JevDecision> => {
@@ -190,6 +190,7 @@ describe("evals/consult: 이슈 정리 (D4c-2)", () => {
           throw new Error("정리 분기는 기록 읽기를 하지 않는다");
         },
         organizeLookup: async () => lookup,
+        loadChangeTargets: async (actionIds) => new Map([...consultTargetsOf(golden, ids)].filter(([id]) => actionIds.includes(id))),
         newId: () => `eeeeeeee-0000-4000-8000-${String(++n).padStart(12, "0")}`,
       });
       const score = scoreConsultCase(golden, plan, ids);

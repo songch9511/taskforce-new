@@ -4,12 +4,13 @@ import { AiBudgetError } from "@/lib/ai/budget-error";
 import { DeadlineExceededError } from "@/lib/ai/deadline";
 import { LlmError } from "@/lib/ai/llm";
 import { ConsentRequiredError } from "@/lib/consent/gate";
+import type { ConfirmOutcome, DismissOutcome } from "@/lib/conversation/organize";
 import type { TurnPlan } from "@/lib/conversation/respond";
 
 import { emptyRefs, id } from "../../../tests/conversation/fakes";
 
-import { apiErrorV2Schema, postConversationMessageResponseSchema, updateConversationResponseSchema, type ConversationMessage } from "./contract";
-import { handleCreateConversation, handlePostConversationMessage, handleUpdateConversation, type PostMessageDeps } from "./conversations";
+import { apiErrorV2Schema, postConversationMessageResponseSchema, proposalConfirmResponseSchema, proposalConflictSchema, proposalDismissResponseSchema, updateConversationResponseSchema, type ConversationMessage } from "./contract";
+import { handleConfirmProposal, handleCreateConversation, handleDismissProposal, handlePostConversationMessage, handleUpdateConversation, type PostMessageDeps, type ProposalActionDeps } from "./conversations";
 
 // /api/v2/conversations 처리 (B2). 모델 대신 respond를 가짜로 두고 호출 수로 "AI 호출 0"을 증명한다:
 // gate 꺼짐 · 인증 거부 · 동의 없음 · 남의 대화/대상 · 같은 제출의 저장된 답 · 처리 중 · 한도에서는 respond(J1 · J2)를 부르지 않는다.
@@ -354,5 +355,106 @@ describe("PATCH /api/v2/conversations/{id} (B3: 대화 헤더 ProjectLink의 명
     const response = await patch(deps(vi.fn(async () => Promise.reject(new Error(`DB 오류 ${CONTEXT}`)))));
     expect(response.status).toBe(500);
     expect(errors.mock.calls.flat().map(String).join("\n")).not.toContain(CONTEXT);
+  });
+});
+
+// ─── D4c-2: 삭제 · 병합 확인 카드의 버튼 (POST …/proposals/{proposal_id}/confirm · /dismiss) ───
+// 쓰기는 conversation_confirm_proposal 한 트랜잭션(store.confirmProposal)이고 AI를 부르지 않는다. 여기서는 gate · 인증 · 입력 · 상태 → HTTP 응답을 본다.
+describe("POST /api/v2/conversations/{id}/proposals/{proposal_id}/confirm · dismiss", () => {
+  const PROPOSAL = id(7, "fafafafa");
+  const ACTION = id(41, "f0b0c918");
+  const EVENT = id(8, "dddddddd");
+  const NEW_CARD = id(9, "dddddddd");
+  const eventRow = message({ id: EVENT, seq: 4, role: "event", client_message_id: null, text: "지웠어요: #141", intent: null, content: { segments: [{ text: "지웠어요: #141", tier: "T1" }], citations: [], proposal: null, asks: null, used: null, window: null } });
+
+  function actionDeps(overrides: Partial<ProposalActionDeps<User>> = {}) {
+    return {
+      enabled: vi.fn(() => true),
+      authenticate: vi.fn(async () => USER),
+      confirm: vi.fn(async (): Promise<ConfirmOutcome> => ({ status: "confirmed", op: "delete", actionIds: [ACTION], eventId: EVENT })),
+      dismiss: vi.fn(async (): Promise<DismissOutcome> => "dismissed"),
+      loadMessage: vi.fn(async () => eventRow),
+      ...overrides,
+    };
+  }
+  const url = (action: string, conversation = CONVERSATION, proposal = PROPOSAL) => `https://api.example.dev/api/v2/conversations/${conversation}/proposals/${proposal}/${action}`;
+  const confirm = (deps: ProposalActionDeps<User>, body: unknown = {}, conversation = CONVERSATION, proposal = PROPOSAL) =>
+    handleConfirmProposal(new Request(url("confirm", conversation, proposal), { method: "POST", body: body === undefined ? undefined : JSON.stringify(body) }), conversation, proposal, deps);
+  const dismiss = (deps: ProposalActionDeps<User>, conversation = CONVERSATION, proposal = PROPOSAL) =>
+    handleDismissProposal(new Request(url("dismiss"), { method: "POST", body: "{}" }), conversation, proposal, deps);
+
+  it("gate가 꺼져 있으면 404 (인증 · 확인 0), 인증 거부 401, 잘못된 id 404, 모르는 본문 400 — 쓰기 0", async () => {
+    const off = actionDeps({ enabled: vi.fn(() => false) });
+    expect((await confirm(off)).status).toBe(404);
+    expect((await dismiss(off)).status).toBe(404);
+    for (const fn of [off.authenticate, off.confirm, off.dismiss]) expect(fn).not.toHaveBeenCalled();
+
+    const unauth = actionDeps({ authenticate: vi.fn(async () => null) });
+    expect((await confirm(unauth)).status).toBe(401);
+    expect((await dismiss(unauth)).status).toBe(401);
+    expect(unauth.confirm).not.toHaveBeenCalled();
+
+    const deps = actionDeps();
+    expect((await confirm(deps, {}, "not-a-uuid")).status).toBe(404);
+    expect((await confirm(deps, {}, CONVERSATION, "nope")).status).toBe(404);
+    expect((await dismiss(deps, "x", PROPOSAL)).status).toBe(404);
+    expect((await confirm(deps, { extra: 1 })).status).toBe(400);
+    expect((await confirm(deps, undefined)).status).toBe(200); // 본문은 없어도 된다
+    expect(deps.confirm).toHaveBeenCalledTimes(1);
+  });
+
+  it("confirmed · already는 200 { status, op, action_ids, event(기록 줄) }: 두 번 눌러도 같은 모양", async () => {
+    const deps = actionDeps();
+    const first = await confirm(deps);
+    expect(first.status).toBe(200);
+    const parsed = proposalConfirmResponseSchema.parse(await first.json());
+    expect(parsed).toMatchObject({ status: "confirmed", op: "delete", action_ids: [ACTION], event: { id: EVENT, role: "event", text: "지웠어요: #141" } });
+    expect(deps.confirm).toHaveBeenCalledWith(USER, CONVERSATION, PROPOSAL);
+    expect(deps.loadMessage).toHaveBeenCalledWith(USER, EVENT);
+
+    const again = actionDeps({ confirm: vi.fn(async (): Promise<ConfirmOutcome> => ({ status: "already", op: "delete", actionIds: [ACTION], eventId: EVENT })) });
+    expect(proposalConfirmResponseSchema.parse(await (await confirm(again)).json()).status).toBe("already");
+    // 기록 줄을 찾지 못해도(지워짐) 성공이다
+    const lost = actionDeps({ loadMessage: vi.fn(async () => null) });
+    expect(proposalConfirmResponseSchema.parse(await (await confirm(lost)).json())).toMatchObject({ status: "confirmed", event: null });
+    const noEvent = actionDeps({ confirm: vi.fn(async (): Promise<ConfirmOutcome> => ({ status: "already", op: "merge", actionIds: [ACTION, id(42, "f0b0c918")], eventId: null })) });
+    expect(proposalConfirmResponseSchema.parse(await (await confirm(noEvent)).json())).toMatchObject({ op: "merge", event: null });
+    expect(noEvent.loadMessage).not.toHaveBeenCalled();
+  });
+
+  it("409: superseded는 쓰기 0 · 새 카드 id를 싣는다 (카드가 없으면 생략), not_open은 취소됐거나 대체된 카드, busy는 busy_retry (다시 보내도 된다)", async () => {
+    const superseded = await confirm(actionDeps({ confirm: vi.fn(async (): Promise<ConfirmOutcome> => ({ status: "superseded", cardMessageId: NEW_CARD })) }));
+    expect(superseded.status).toBe(409);
+    expect(proposalConflictSchema.parse(await superseded.json())).toMatchObject({ error: { code: "superseded" }, card_message_id: NEW_CARD });
+    const none = await confirm(actionDeps({ confirm: vi.fn(async (): Promise<ConfirmOutcome> => ({ status: "superseded", cardMessageId: null })) }));
+    const noneBody = proposalConflictSchema.parse(await none.json());
+    expect(noneBody.error.code).toBe("superseded");
+    expect(noneBody).not.toHaveProperty("card_message_id");
+    const notOpen = await confirm(actionDeps({ confirm: vi.fn(async (): Promise<ConfirmOutcome> => ({ status: "not_open" })) }));
+    expect([notOpen.status, proposalConflictSchema.parse(await notOpen.json()).error.code]).toEqual([409, "not_open"]);
+    const busy = await confirm(actionDeps({ confirm: vi.fn(async (): Promise<ConfirmOutcome> => ({ status: "busy" })) }));
+    expect([busy.status, proposalConflictSchema.parse(await busy.json()).error.code]).toEqual([409, "busy_retry"]);
+    const gone = await confirm(actionDeps({ confirm: vi.fn(async (): Promise<ConfirmOutcome> => ({ status: "not_found" })) }));
+    expect(gone.status).toBe(404);
+  });
+
+  it("취소: dismissed · already는 200, not_open은 409, 없음 404", async () => {
+    expect(proposalDismissResponseSchema.parse(await (await dismiss(actionDeps())).json())).toEqual({ status: "dismissed" });
+    const already = await dismiss(actionDeps({ dismiss: vi.fn(async (): Promise<DismissOutcome> => "already") }));
+    expect(proposalDismissResponseSchema.parse(await already.json())).toEqual({ status: "already" });
+    const notOpen = await dismiss(actionDeps({ dismiss: vi.fn(async (): Promise<DismissOutcome> => "not_open") }));
+    expect([notOpen.status, proposalConflictSchema.parse(await notOpen.json()).error.code]).toEqual([409, "not_open"]);
+    expect((await dismiss(actionDeps({ dismiss: vi.fn(async (): Promise<DismissOutcome> => "not_found") }))).status).toBe(404);
+  });
+
+  it("예기치 못한 오류는 500이고 오류 이름만 로그에 남긴다 (대화 글 · 제목 없음)", async () => {
+    const secret = Object.assign(new Error("제목: 비밀 견적서"), { name: "PostgrestError" });
+    const response = await confirm(actionDeps({ confirm: vi.fn(async () => Promise.reject(secret)) }));
+    expect(response.status).toBe(500);
+    expect(JSON.stringify(await response.json())).not.toContain("비밀");
+    const logged = errors.mock.calls.map((call: unknown[]) => String(call[0])).join("\n");
+    expect(logged).toContain("PostgrestError");
+    expect(logged).not.toContain("비밀");
+    expect((await dismiss(actionDeps({ dismiss: vi.fn(async () => Promise.reject(secret)) }))).status).toBe(500);
   });
 });

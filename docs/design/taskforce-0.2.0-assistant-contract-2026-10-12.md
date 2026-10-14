@@ -381,6 +381,15 @@ registry에 있고 연결이 없으면 `not_connected`(예: Codex를 아직 연�
 
 Action 생성(3.3)은 `action_events` `user_created`(`rule='assistant_agent'`)로 남는다.
 
+**OA D4c-2 · D4c-3b 구현 정정 (6.1·9장을 이 항목이 이긴다):**
+- 6.1 이동(:343): 대상이 하나로 정해지면 제안 없이 바로 쓰고, **불확실하면(J1 0.5–0.8) 글 질문(제안 `move`, `asks adopt`)** 한 번, 모자란 것은 **한 번 더 묻기**(`content.organize.pending` + `asks organize`, 한 라운드)로 푼다.
+- 6.1 설명으로 여러 개(:345, "Shape 관련 다 옮겨줘"): 이번 구현은 후보 검색 없이 "이슈를 붙이거나 #번호로 말해 주세요"라고 묻기만 한다(쓰기 0). 후보 카드는 후속이다.
+- 6.1 병합 남는 쪽(:352): Jev `into`(확신 ≥ 0.8)가 먼저, 아니면 "뒤에 말한 이슈". "#139에 #144 합쳐줘"처럼 조사가 남는 쪽을 가리키는 말을 위해서다.
+- 6.1 확인 카드(:355): `payload_hash`는 (대상 id, `version`)의 hash다 — `updated_at`이 아니다(착수 · 활동 시각 갱신으로 거짓 superseded가 나지 않고, `write_action`의 version 조건과 같은 값이라 SQL이 원자적으로 막는다). 확인은 새 route `POST …/proposals/{proposal_id}/confirm` · `/dismiss`와 글 "응"(J1 `adopt`일 때만 — `answer`는 "아니요"도 담아 다시 묻는다) 둘이 같은 쓰기를 한다.
+- 6.1 이벤트(:357): `user_merged`를 받는 것은 `coordinator_on_action_decision` **트리거의 WHEN 목록**이다(함수 본문이 아니다).
+- 9장 마이그레이션이 필요한 기존 함수: `conversation_finish_turn`(adopt.kind · p_turn.move · 55P03) · `coordinator_recover_missing`(결정 회수 목록) · `match_actions_for_ask`(병합으로 닫은 중복 제외)도 교체한다. 이동 지표는 새 래퍼 `change_context_membership_with_metric`(by_user는 그대로).
+- 이슈 id: `start_agent_turn`이 sha256에서 만드는 Action id는 RFC 4122 버전 · variant 자리와 달라 `z.uuid()`를 통과하지 못한다 — 메시지 refs · 카드 · 기록 줄의 이슈 id 스키마는 `z.guid()`다.
+
 ## 9. 같이 고칠 문서
 
 - CLAUDE.md 원칙 1: 직접 추가 입구에 "Assistant에서 에이전트에게 일을 맡길 때"를 더한다(3.3).

@@ -21,7 +21,9 @@ import {
   windowMessage,
 } from "../../../tests/conversation/fakes";
 
-import type { OrganizeLookup } from "./organize";
+import { userClaims } from "@/lib/actions/user-claims";
+
+import type { OrganizeLookup, StoredTarget } from "./organize";
 import type { AdoptPlan } from "./proposal";
 import { ConsultOutputError, respondToMessage, type ConsultAction, type ConsultContext, type ConsultMemory } from "./respond";
 
@@ -855,6 +857,86 @@ describe("이슈 정리 (organize)", () => {
     const asked = await unsure.run();
     expect(asked.route).toBe("clarify");
     expect(unsure.organizeLookup).not.toHaveBeenCalled();
+  });
+
+  describe("삭제 · 병합 카드를 글로 확인", () => {
+    const stored = (n: number, over: Partial<StoredTarget["row"]> = {}): StoredTarget => {
+      const found = LOOKUP.actions.find((a) => a.number === n)!;
+      return {
+        row: { title: found.title, confirm_reasons: [], needs_confirmation: false, version: found.version, status: found.status as "open", started_at: null, ...over },
+        claims: userClaims([{ field: "scope", value: found.title }, { field: "owner", value: "me" }, { field: "status", value: "open" }], new Date("2026-10-01T00:00:00Z"), () => id(n + 500, "c0c0c0c0")),
+      };
+    };
+    const targets = (...entries: [number, Partial<StoredTarget["row"]>?][]) => new Map(entries.map(([n, over]) => [id(n, "abababab"), stored(n, over)]));
+    /** 먼저 카드를 낸 뒤(대화 한 줄) 그 카드에 답하는 turn */
+    async function confirmTurn(first: string, op: string, reply: string, j1: Parameters<typeof fakeDecide>[0], loaded = targets([141]), lookup: OrganizeLookup = LOOKUP) {
+      const asked = await run(first, { intent: "organize" }, { op }).run();
+      const card = windowMessage(2, "assistant", asked.reply.text, { refs: { ...emptyRefs(), ...asked.reply.refs }, content: asked.reply.content });
+      const t = run(reply, j1, {}, { history: [windowMessage(1, "user", first), card] }, lookup);
+      const loadChangeTargets = vi.fn(async () => loaded);
+      const plan = await respondToMessage({ ...respondInput(reply, { history: [windowMessage(1, "user", first), card] }) }, { ...t.deps, organizeLookup: t.organizeLookup, loadChangeTargets });
+      return { plan, card, loadChangeTargets, t };
+    }
+
+    it("삭제 카드에 '응'(J1 adopt ≥ 0.8)은 카드 버튼과 같은 쓰기 계획: adopt.kind delete · writes(읽은 version이 조건) · user Claim status dropped · user_deleted 이벤트. LLM 0", async () => {
+      const { plan, card, loadChangeTargets } = await confirmTurn("#141 지워줘", "delete", "응 지워", { intent: "adopt" });
+      expect(plan.route).toBe("adopt");
+      expect(loadChangeTargets).toHaveBeenCalledWith([id(141, "abababab")]);
+      expect(plan.adopt).toMatchObject({ kind: "delete", proposal_message_id: card.id, proposal_id: card.refs.proposal!.id, payload_hash: card.refs.proposal!.payload_hash });
+      const adopt = plan.adopt as unknown as { writes: { action_id: string; expected_version: number; action: { status: string }; claims: { field: string; value: string; origin: string }[]; events: { type: string }[] }[] };
+      expect(adopt.writes).toHaveLength(1);
+      expect(adopt.writes[0]).toMatchObject({ action_id: id(141, "abababab"), expected_version: 2, action: { status: "dropped" } });
+      expect(adopt.writes[0].claims.map((c) => [c.field, c.value, c.origin])).toEqual([["status", "dropped", "user"]]);
+      expect(adopt.writes[0].events).toEqual([expect.objectContaining({ type: "user_deleted", actor: "user" })]);
+      expect(plan.user.refs.proposal).toMatchObject({ kind: "delete", state: "adopted" });
+      expect(plan.reply.text).toBe("지웠어요: #141");
+      expect(plan.reply.content.organize).toEqual({ state: "deleted", action_ids: [id(141, "abababab")] });
+      expect(plan.move).toBeUndefined();
+    });
+
+    it("병합 카드에 'yes': 사라지는 쪽 user_merged(after.into) + 남는 쪽 확인만(action null). 영어 문구", async () => {
+      const { plan } = await confirmTurn("merge #144 into #139", "merge", "yes, merge them", { intent: "adopt" }, targets([144], [139]));
+      const adopt = plan.adopt as unknown as { kind: string; writes: { action_id: string; action: unknown; events: { type: string; after: { into?: string } }[] }[] };
+      expect(adopt.kind).toBe("merge");
+      expect(adopt.writes.map((w) => [w.action_id, w.action === null])).toEqual([[id(144, "abababab"), false], [id(139, "abababab"), true]]);
+      expect(adopt.writes[0].events[0]).toMatchObject({ type: "user_merged", after: { status: "dropped", into: id(139, "abababab") } });
+      expect(plan.reply.text).toBe("Merged #144 into #139");
+      expect(plan.reply.content.organize).toEqual({ state: "merged", from_action_id: id(144, "abababab"), into_action_id: id(139, "abababab") });
+    });
+
+    it("J1이 answer(예/아니오를 가르지 못함, '아니요'도 answer)거나 확신 0.5–0.8이면 쓰지 않고 같은 카드를 새 id로 한 번 더 보인다 — 삭제 · 병합은 'adopt'만 쓴다", async () => {
+      for (const j1 of [{ intent: "answer" as const }, { intent: "adopt" as const, confidence: 0.7 }]) {
+        const { plan, card, loadChangeTargets } = await confirmTurn("#141 지워줘", "delete", "아니요", j1);
+        expect(plan.adopt).toBeNull();
+        expect(loadChangeTargets).not.toHaveBeenCalled();
+        expect(plan.reply.content.asks).toBe("confirm");
+        expect(plan.reply.refs.proposal).toMatchObject({ kind: "delete", state: "open", payload_hash: card.refs.proposal!.payload_hash });
+        expect(plan.reply.refs.proposal!.id).not.toBe(card.refs.proposal!.id);
+        expect(plan.reply.text).toBe("#141을(를) 지울까요?");
+      }
+    });
+
+    it("카드 뒤에 대상이 바뀌었으면(version 다름) 쓰지 않고 지금 기록으로 새 카드, 이미 지웠으면 사실만", async () => {
+      const changed: OrganizeLookup = { ...LOOKUP, actions: LOOKUP.actions.map((a) => (a.number === 141 ? { ...a, version: 5 } : a)) };
+      const stale = await confirmTurn("#141 지워줘", "delete", "응 지워", { intent: "adopt" }, targets([141, { version: 5 }]), changed);
+      expect(stale.plan.adopt).toBeNull();
+      expect(stale.plan.reply.content.proposal).toMatchObject({ kind: "delete", targets: [{ number: 141, version: 5 }] });
+      expect(stale.plan.reply.content.asks).toBe("confirm");
+      expect(stale.plan.reply.refs.proposal!.id).not.toBe(stale.card.refs.proposal!.id);
+
+      const gone: OrganizeLookup = { ...LOOKUP, actions: LOOKUP.actions.map((a) => (a.number === 141 ? { ...a, status: "dropped" as const, version: 6 } : a)) };
+      const done = await confirmTurn("#141 지워줘", "delete", "응 지워", { intent: "adopt" }, targets([141, { status: "dropped", version: 6 }]), gone);
+      expect(done.plan.adopt).toBeNull();
+      expect(done.plan.reply.content.proposal).toBeNull();
+      expect(done.plan.reply.text).toBe("이미 지웠어요: #141");
+    });
+
+    it("삭제 · 병합 대상 읽기(loadChangeTargets)가 연결되지 않으면 글로 확인하지 못한다 (오류)", async () => {
+      const asked = await run("#141 지워줘", { intent: "organize" }, { op: "delete" }).run();
+      const card = windowMessage(2, "assistant", asked.reply.text, { refs: { ...emptyRefs(), ...asked.reply.refs }, content: asked.reply.content });
+      const t = run("응 지워", { intent: "adopt" }, {}, { history: [windowMessage(1, "user", "#141 지워줘"), card] });
+      await expect(t.run()).rejects.toThrow(ConsultOutputError);
+    });
   });
 
   it("정리 읽기(organizeLookup)가 연결되지 않으면 정리하지 못한다 (조용히 넘어가지 않고 오류)", async () => {

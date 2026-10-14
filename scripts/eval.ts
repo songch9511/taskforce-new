@@ -30,7 +30,7 @@ import { PLAN_PROMPT_VERSION } from "../src/lib/ai/prompts/plan";
 import { EXTRACT_PROMPT_VERSION } from "../src/lib/ai/prompts/extract";
 import { projectAction } from "../src/lib/actions/project";
 import { askCaseSchema, askContextOf, findAskLabelErrors, scoreAskCase, type AskCase, type AskScore } from "../src/lib/eval/ask-golden";
-import { consultCaseSchema, consultInputOf, findConsultLabelErrors, formatOrganizeMetrics, organizeMetrics, scoreConsultCase, type ConsultCase, type ConsultScore } from "../src/lib/eval/consult-golden";
+import { consultCaseSchema, consultInputOf, consultTargetsOf, findConsultLabelErrors, formatOrganizeMetrics, organizeMetrics, scoreConsultCase, type ConsultCase, type ConsultScore } from "../src/lib/eval/consult-golden";
 import { CONSULT_PROMPT_VERSION } from "../src/lib/ai/prompts/consult";
 import { INTENT_PROMPT_VERSION } from "../src/lib/ai/prompts/intent";
 import { MEMORY_EXTRACT_PROMPT_VERSION } from "../src/lib/ai/prompts/memory-extract";
@@ -456,6 +456,7 @@ async function runConsultEvals(llm: LlmConfig, jev: JevConfig, cases: ConsultCas
           retrieve: async () => context,
           // 이슈 정리(D4c-2): 읽기는 케이스의 이슈 · 프로젝트다 (DB 없음)
           organizeLookup: async () => lookup,
+          loadChangeTargets: async (actionIds) => new Map([...consultTargetsOf(golden, ids)].filter(([id]) => actionIds.includes(id))),
           newId: randomUUID,
         });
         return { golden, plan, score: scoreConsultCase(golden, plan, ids) };

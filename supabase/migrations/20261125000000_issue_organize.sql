@@ -11,6 +11,11 @@
 --     - adopt.kind가 move · delete · merge인 제안의 채택. adopt에 kind가 없으면(옛 create_action) 동작이 한 글자도 다르지 않다.
 --     - p_turn.move(≤3): 말로 이동. 기억 · 채택 뒤, 답 쓰기 전에 같은 트랜잭션. 하나라도 어긋나면 이 turn 전체를 되돌린다 (conflict).
 --     - 예외 목록에 55P03: 삭제 · 병합으로 닫는 쪽 Action의 대화 run 정리가 메시지 행을 NOWAIT로 잡다 실패하면 이 turn을 되돌리고 conflict.
+--  5) 삭제 · 병합 (몫 ②): action_events.type에 user_merged(목록 전체 교체) · 색인 action_events_user_merged_into_idx("From #144" 읽기) ·
+--     코디네이터 트리거 coordinator_on_action_decision의 WHEN 목록(함수 본문은 그대로) · coordinator_recover_missing 통째 교체(결정 회수 목록 한 줄) ·
+--     match_actions_for_ask 통째 교체(병합으로 닫은 중복도 물어보기 검색에서 뺀다, 조건 한 줄). 두 교체도 원본(20261114000000 · 20261004000000)과 글자 그대로다(`-- D4c-2 변경` 표시 한 줄만).
+--  6) apply_organize_change: 삭제 · 병합의 쓰기 (write_action으로 사용자 Claim dropped + 이벤트, 병합의 남는 쪽은 확인만). conversation_confirm_proposal · conversation_dismiss_proposal:
+--     카드 버튼. 확인 한 번에 한 트랜잭션: 제안 adopted · 기록 줄(event) · 쓰기. 낡았으면 쓰기 0 + 409 superseded + 새 카드, 열린 대화 run 정리의 잠금 실패(55P03)는 busy. 글 "응"(adopt.kind delete · merge)은 finish_turn 안에서 같은 apply_organize_change를 부른다.
 --  운영 적용은 병합 직전 승인 뒤 `supabase db query --linked -f`로 한다 (db push 금지). 20261123000000_agent_path_leases 뒤에 적용한다.
 --  되돌리기: 새 함수를 drop하고 conversation_finish_turn을 20261106000000의 정의로 다시 적용한다.
 
@@ -286,6 +291,10 @@ begin
       if v_kind = 'move' then
         p_turn := public.apply_organize_moves(p_user_id, v_adopt -> 'moves', p_turn);
         v_targets := (select coalesce(jsonb_agg(x ->> 'action_id'), '[]'::jsonb) from jsonb_array_elements(v_adopt -> 'moves') x);
+      else
+        -- 삭제 · 병합: 카드 버튼(conversation_confirm_proposal)과 같은 쓰기다. 대상이 카드 뒤에 바뀌었으면 TF409로 이 turn 전체를 되돌린다
+        perform public.apply_organize_change(p_user_id, v_kind, v_adopt -> 'writes');
+        v_targets := (select coalesce(jsonb_agg(distinct x ->> 'action_id'), '[]'::jsonb) from jsonb_array_elements(v_adopt -> 'writes') x);
       end if;
 
       update public.conversation_messages m
@@ -386,14 +395,323 @@ end;
 $$;
 
 -- ─────────────────────────────────────────────
--- 5) 권한: 새 함수는 모두 서버(service role) 전용이다 (write_action 패턴). invoker · search_path 고정.
+-- 5) action_events에 user_merged (이슈 병합으로 사라지는 쪽을 닫는 사용자 이벤트, after: { status, into: 남는 쪽 id }).
+--    20261029000000_action_notes의 목록 전체를 그대로 옮기고 user_merged 하나만 더했다 (이전 교체들과 같은 방식). 다른 값 · actor 제약은 그대로다.
+-- ─────────────────────────────────────────────
+alter table public.action_events
+  drop constraint action_events_type_check,
+  add constraint action_events_type_check check (type in (
+    'created', 'due_changed', 'scope_changed', 'owner_changed', 'merged', 'completed', 'dropped', 'reopened',
+    'user_edited', 'user_deleted', 'user_confirmed', 'user_started', 'user_reported_missing', 'user_created',
+    'user_unstarted', 'artifact_created', 'user_seen', 'user_notes_updated', 'user_merged'
+  ));
+
+-- "From #144" 읽기 (앱이 RLS로): 남는 쪽 id로 이어진 병합 이벤트를 찾는다
+create index action_events_user_merged_into_idx on public.action_events (user_id, (after ->> 'into')) where type = 'user_merged';
+
+-- ─────────────────────────────────────────────
+-- 6) 코디네이터: 사용자 결정 사건 목록에 user_merged. 트리거 함수 본문(coordinator_on_action_decision)은 그대로, 트리거의 WHEN 목록만 바꾼다 (20261110000000_coordinator_core).
+--    drop과 create가 한 트랜잭션(action_events 잠금)이라 사이에 놓치는 insert가 없다.
+-- ─────────────────────────────────────────────
+drop trigger coordinator_on_action_decision on public.action_events;
+create trigger coordinator_on_action_decision
+  after insert on public.action_events
+  for each row
+  when (new.actor = 'user' and new.type in ('user_confirmed', 'user_deleted', 'user_edited', 'completed', 'dropped', 'reopened', 'user_merged'))
+  execute function public.coordinator_on_action_decision();
+
+-- ─────────────────────────────────────────────
+-- 7) 회수 sweep도 같은 목록이다: coordinator_recover_missing을 20261114000000_conversation_agent_target의 정의에서 글자 그대로 옮기고 결정 회수의 목록 한 줄에만 user_merged를 더했다
+--    (표시: `-- D4c-2 변경`). 시그니처 · 권한 · agent 대화 제외 조건은 그대로다.
+-- ─────────────────────────────────────────────
+create or replace function public.coordinator_recover_missing(p_lookback_seconds integer, p_limit integer) returns integer
+language plpgsql
+set search_path = ''
+as $$
+declare
+  v_now timestamptz := public.db_now();
+  v_since timestamptz;
+  v_count integer;
+  v_total integer := 0;
+begin
+  if p_lookback_seconds is null or p_lookback_seconds not between 60 and 604800 or p_limit is null or p_limit not between 1 and 1000 then
+    raise exception 'coordinator_recover_missing: 인자가 범위 밖이다 (기간 60초–7일 · limit 1–1000)' using errcode = '22023';
+  end if;
+  v_since := v_now - make_interval(secs => p_lookback_seconds);
+
+  insert into public.inbox_events (user_id, type, dedup_key, refs, created_at)
+  select s.user_id,
+         case when cardinality(public.source_document_ids(s.user_id, s.id)) > 1 then 'source_revised' else 'source_processed' end,
+         'source:' || s.id::text, jsonb_build_object('source_id', s.id, 'kind', s.kind), v_now
+    from (
+      select x.* from public.sources x
+       where x.processing_status = 'done' and x.kind <> 'execution' and x.processing_summary is not null and x.processed_at >= v_since
+         and not exists (select 1 from public.inbox_events e where e.user_id = x.user_id and e.dedup_key = 'source:' || x.id::text)
+       order by x.processed_at, x.id limit p_limit
+    ) s
+  on conflict (user_id, dedup_key) do nothing;
+  get diagnostics v_count = row_count;
+  v_total := v_total + v_count;
+
+  insert into public.inbox_events (user_id, type, dedup_key, refs, created_at)
+  select m.user_id, 'user_message', 'message:' || m.id::text, jsonb_build_object('conversation_id', m.conversation_id, 'message_id', m.id), v_now
+    from (
+      select x.* from public.conversation_messages x
+       where x.role = 'user' and x.created_at >= v_since
+         and not exists (select 1 from public.conversations c where c.id = x.conversation_id and c.user_id = x.user_id and c.target_kind = 'agent')
+         and not exists (select 1 from public.inbox_events e where e.user_id = x.user_id and e.dedup_key = 'message:' || x.id::text)
+       order by x.created_at, x.id limit p_limit
+    ) m
+  on conflict (user_id, dedup_key) do nothing;
+  get diagnostics v_count = row_count;
+  v_total := v_total + v_count;
+
+  insert into public.inbox_events (user_id, type, dedup_key, refs, created_at)
+  select a.user_id, 'decision_made', 'action_event:' || a.id::text, jsonb_build_object('action_id', a.action_id, 'action_event_id', a.id, 'kind', a.type), v_now
+    from (
+      select x.* from public.action_events x
+       -- D4c-2 변경: 결정 회수 목록에 user_merged
+       where x.actor = 'user' and x.type in ('user_confirmed', 'user_deleted', 'user_edited', 'completed', 'dropped', 'reopened', 'user_merged') and x.created_at >= v_since
+         and not exists (select 1 from public.inbox_events e where e.user_id = x.user_id and e.dedup_key = 'action_event:' || x.id::text)
+       order by x.created_at, x.id limit p_limit
+    ) a
+  on conflict (user_id, dedup_key) do nothing;
+  get diagnostics v_count = row_count;
+  v_total := v_total + v_count;
+
+  return v_total;
+end;
+$$;
+
+-- ─────────────────────────────────────────────
+-- 8) 물어보기 검색: 병합으로 닫은 중복도 지운 것(오판)처럼 뺀다 (원칙 4: 같은 일이 답에 두 번 나오지 않게).
+--    match_actions_for_ask를 20261004000000_ask의 정의에서 글자 그대로 옮기고 제외 조건 한 줄만 넓혔다 (표시: `-- D4c-2 변경`). 시그니처 · 권한 그대로.
+-- ─────────────────────────────────────────────
+create or replace function public.match_actions_for_ask(
+  p_user_id uuid,
+  p_embedding extensions.vector(1536),
+  p_count int default 8,
+  p_closed_since timestamptz default now() - interval '30 days'
+)
+returns table (id uuid, similarity double precision)
+language sql stable
+set search_path = ''
+as $$
+  with mine as materialized (
+    select a.id, a.embedding from public.actions a
+    where a.user_id = p_user_id
+      and a.embedding is not null
+      and (a.status = 'open' or a.updated_at >= p_closed_since)
+      and not (
+        a.status = 'dropped'
+        and exists (
+          select 1 from public.action_events e
+          -- D4c-2 변경: 병합으로 닫은 중복도 지운 것처럼 뺀다
+          where e.action_id = a.id and e.user_id = p_user_id and e.type in ('user_deleted', 'user_merged')
+        )
+      )
+  )
+  select m.id, 1 - (m.embedding operator(extensions.<=>) p_embedding) as similarity
+  from mine m
+  order by m.embedding operator(extensions.<=>) p_embedding
+  limit p_count;
+$$;
+
+-- ─────────────────────────────────────────────
+-- 9) 삭제 · 병합을 쓰는 내부 함수. p_writes = [{ action_id, expected_version, action: obj | null, claims: [], events: [] }] (삭제 1–3개 / 병합 둘).
+--    action_id 오름차순으로 처리한다 (잠금 순서: 같은 두 이슈를 반대로 병합하는 요청 둘이 서로 기다리지 않는다).
+--    action이 있으면 write_action(읽은 version이 조건)으로 쓰고(삭제 경로와 같은 쓰기: user Claim status dropped + user_deleted/user_merged 이벤트),
+--    없으면(병합의 남는 쪽) 값은 바꾸지 않고 version이 그대로이고 dropped가 아닌지만 for share로 확인한다 (그 사이 PATCH · 다른 병합이 끼어들지 못하게 잡아 둔다).
+--    어긋나면 TF409. 열린 대화 run 정리는 쓰지 않는다: 사용자 Claim status dropped가 기존 트리거(stop_agent_runs_on_user_claim)로 Done과 같은 규칙으로 멈춘다
+--    (그 트리거가 메시지 행을 NOWAIT로 잡다 실패하면 55P03 — 호출한 쪽이 되돌린다).
+-- ─────────────────────────────────────────────
+create function public.apply_organize_change(p_user_id uuid, p_kind text, p_writes jsonb)
+returns void
+language plpgsql
+set search_path = ''
+as $$
+declare
+  v_item jsonb;
+  v_id uuid;
+  v_row record;
+  v_writing integer;
+begin
+  if p_kind is null or p_kind not in ('delete', 'merge') then
+    raise exception 'apply_organize_change: kind must be delete or merge' using errcode = '22023';
+  end if;
+  if jsonb_typeof(p_writes) <> 'array' or jsonb_array_length(p_writes) not between 1 and 3 then
+    raise exception 'apply_organize_change: writes must be an array of 1-3 items' using errcode = '22023';
+  end if;
+  select count(*) into v_writing from jsonb_array_elements(p_writes) x where jsonb_typeof(x -> 'action') = 'object';
+  if (p_kind = 'delete' and v_writing <> jsonb_array_length(p_writes)) or (p_kind = 'merge' and (jsonb_array_length(p_writes) <> 2 or v_writing <> 1)) then
+    raise exception 'apply_organize_change: unexpected shape for %', p_kind using errcode = '22023';
+  end if;
+
+  for v_item in select x.value from jsonb_array_elements(p_writes) x order by (x.value ->> 'action_id')::uuid loop
+    v_id := (v_item ->> 'action_id')::uuid;
+    if jsonb_typeof(v_item -> 'action') = 'object' then
+      if not public.write_action(
+        p_user_id, v_id, (v_item ->> 'expected_version')::integer, v_item -> 'action',
+        coalesce(v_item -> 'claims', '[]'::jsonb), '[]'::jsonb, coalesce(v_item -> 'events', '[]'::jsonb)
+      ) then
+        raise exception 'apply_organize_change: action changed' using errcode = 'TF409';
+      end if;
+    else
+      select a.version, a.status into v_row from public.actions a where a.id = v_id and a.user_id = p_user_id for share;
+      if not found or v_row.version is distinct from (v_item ->> 'expected_version')::integer or v_row.status = 'dropped' then
+        raise exception 'apply_organize_change: action changed' using errcode = 'TF409';
+      end if;
+    end if;
+  end loop;
+end;
+$$;
+
+-- ─────────────────────────────────────────────
+-- 10) 확인 카드의 버튼: 삭제 · 병합 확인 (conversation_confirm_proposal) · 취소 (conversation_dismiss_proposal).
+--    p_plan = { payload_hash, writes, event: { text, content }, reissue: { proposal, text, content } | null } — TS가 카드 · 지금 기록을 읽어 만든다 (순수 함수, 값은 삭제 경로와 같다).
+--    잠금 순서는 finish_turn과 같다: 대화 → 카드 메시지 → (원문 없음) → Action(id 순) → claims → 트리거(run · task · 메시지 NOWAIT).
+--    결과 status: confirmed(썼다) · already(이미 채택한 카드: 쓰기 0, 그 event 행 id) · superseded(TS가 읽은 대로 대상이 카드 뒤에 바뀜: 쓰기 0, 앞 카드는 superseded, card_id = 새 카드) ·
+--      changed(TS가 읽은 뒤 쓰기 전에 바뀜: 쓰기 0, 아무것도 안 바뀜 — TS가 다시 읽어 계획한다) · not_open(취소됐거나 다른 제안으로 대체됨) ·
+--      not_found(없는 · 남의 · 삭제/병합이 아닌 제안, 에이전트 대화) · busy(55P03 · 교착: 쓰기 0, 다시 보내면 된다).
+--    확인은 AI를 부르지 않는다 (동의 검사 없음).
+-- ─────────────────────────────────────────────
+create function public.conversation_confirm_proposal(p_user_id uuid, p_conversation_id uuid, p_proposal_id uuid, p_plan jsonb)
+returns table (status text, event_id uuid, card_id uuid)
+language plpgsql
+set search_path = ''
+as $$
+declare
+  v_card public.conversation_messages%rowtype;
+  v_kind text;
+  v_writes jsonb := coalesce(p_plan -> 'writes', '[]'::jsonb);
+  v_reissue jsonb := nullif(p_plan -> 'reissue', 'null'::jsonb);
+  v_targets jsonb;
+  v_event uuid;
+  v_new uuid;
+  v_seq integer;
+begin
+  perform 1 from public.conversations c where c.id = p_conversation_id and c.user_id = p_user_id and c.target_kind = 'taskforce' for update;
+  if not found then
+    return query select 'not_found'::text, null::uuid, null::uuid;
+    return;
+  end if;
+  select * into v_card
+    from public.conversation_messages m
+   where m.conversation_id = p_conversation_id and m.user_id = p_user_id and m.role = 'assistant' and (m.refs -> 'proposal' ->> 'id') = p_proposal_id::text
+   for update;
+  v_kind := v_card.refs -> 'proposal' ->> 'kind';
+  if not found or v_kind is null or v_kind not in ('delete', 'merge') then
+    return query select 'not_found'::text, null::uuid, null::uuid;
+    return;
+  end if;
+  if v_card.refs -> 'proposal' ->> 'state' = 'adopted' then
+    select m.id into v_event from public.conversation_messages m
+     where m.conversation_id = p_conversation_id and m.role = 'event' and (m.refs -> 'proposal' ->> 'id') = p_proposal_id::text order by m.seq limit 1;
+    return query select 'already'::text, v_event, null::uuid;
+    return;
+  end if;
+  if v_card.refs -> 'proposal' ->> 'state' <> 'open' or (v_card.refs -> 'proposal' ->> 'payload_hash') is distinct from (p_plan ->> 'payload_hash') then
+    return query select 'not_open'::text, null::uuid, null::uuid;
+    return;
+  end if;
+
+  -- 쓰기 계획이 비어 있으면 TS가 이미 카드 뒤에 대상이 바뀐 것을 본 것이다: 쓰지 않고 아래 superseded로 간다
+  if jsonb_array_length(v_writes) > 0 then
+    begin
+      perform public.apply_organize_change(p_user_id, v_kind, v_writes);
+      v_targets := (select coalesce(jsonb_agg(distinct x ->> 'action_id'), '[]'::jsonb) from jsonb_array_elements(v_writes) x);
+      update public.conversation_messages m
+         set refs = jsonb_set(
+                      jsonb_set(m.refs, '{proposal,state}', '"adopted"'::jsonb),
+                      '{action_ids}',
+                      (select coalesce(jsonb_agg(distinct t), '[]'::jsonb) from jsonb_array_elements_text(coalesce(m.refs -> 'action_ids', '[]'::jsonb) || v_targets) t))
+       where m.id = v_card.id;
+      select coalesce(max(m.seq), 0) + 1 into v_seq from public.conversation_messages m where m.conversation_id = p_conversation_id;
+      insert into public.conversation_messages (user_id, conversation_id, seq, role, text, refs, content)
+      values (
+        p_user_id, p_conversation_id, v_seq, 'event', coalesce(p_plan -> 'event' ->> 'text', ''),
+        jsonb_build_object('proposal', jsonb_build_object('id', p_proposal_id, 'kind', v_kind, 'payload_hash', v_card.refs -> 'proposal' ->> 'payload_hash', 'state', 'adopted'), 'action_ids', v_targets),
+        nullif(p_plan -> 'event' -> 'content', 'null'::jsonb)
+      )
+      returning id into v_event;
+      update public.conversations c set last_message_at = now() where c.id = p_conversation_id;
+      return query select 'confirmed'::text, v_event, null::uuid;
+      return;
+    exception
+      -- TS가 카드 그대로라고 읽은 뒤 쓰기 전에 대상이 바뀜(version · 이미 닫힘) · 이슈가 사라짐: 쓰기 계획이 낡았다. 아무것도 바꾸지 않고 changed —
+      -- TS가 지금 기록으로 다시 계획하면 쓰기 없이 새 카드를 담은 superseded가 된다 (낡은 기록으로 만든 새 카드를 대화에 내지 않으려고 여기서 내지 않는다)
+      when sqlstate 'TF409' or sqlstate 'P0002' then
+        return query select 'changed'::text, null::uuid, null::uuid;
+        return;
+      -- 열린 대화 run 정리가 메시지 행을 NOWAIT로 잡다 실패(55P03) · 교착(40P01): 이 확인만 되돌리고 다시 하게 한다
+      when sqlstate '55P03' or sqlstate '40P01' then
+        return query select 'busy'::text, null::uuid, null::uuid;
+        return;
+    end;
+  end if;
+
+  -- superseded: TS가 이미 카드 뒤에 바뀐 것을 읽었다(쓰기 계획 없음). 앞 카드는 더 쓸 수 없다. 새 카드가 있으면(대상이 아직 살아 있음) 대화에 낸다 — 앞 열린 제안은 모두 superseded (런타임 계약 2장)
+  if v_reissue is not null then
+    update public.conversation_messages m set refs = jsonb_set(m.refs, '{proposal,state}', '"superseded"'::jsonb)
+     where m.conversation_id = p_conversation_id and m.role = 'assistant' and m.refs -> 'proposal' ->> 'state' = 'open';
+    select coalesce(max(m.seq), 0) + 1 into v_seq from public.conversation_messages m where m.conversation_id = p_conversation_id;
+    insert into public.conversation_messages (user_id, conversation_id, seq, role, text, refs, content)
+    values (
+      p_user_id, p_conversation_id, v_seq, 'assistant', coalesce(v_reissue ->> 'text', ''),
+      jsonb_build_object('proposal', v_reissue -> 'proposal', 'action_ids', coalesce(v_card.refs -> 'action_ids', '[]'::jsonb)),
+      nullif(v_reissue -> 'content', 'null'::jsonb)
+    )
+    returning id into v_new;
+    update public.conversations c set last_message_at = now() where c.id = p_conversation_id;
+  else
+    update public.conversation_messages m set refs = jsonb_set(m.refs, '{proposal,state}', '"superseded"'::jsonb) where m.id = v_card.id;
+  end if;
+  return query select 'superseded'::text, null::uuid, v_new;
+end;
+$$;
+
+create function public.conversation_dismiss_proposal(p_user_id uuid, p_conversation_id uuid, p_proposal_id uuid)
+returns text
+language plpgsql
+set search_path = ''
+as $$
+declare
+  v_card public.conversation_messages%rowtype;
+  v_kind text;
+begin
+  perform 1 from public.conversations c where c.id = p_conversation_id and c.user_id = p_user_id and c.target_kind = 'taskforce' for update;
+  if not found then return 'not_found'; end if;
+  select * into v_card
+    from public.conversation_messages m
+   where m.conversation_id = p_conversation_id and m.user_id = p_user_id and m.role = 'assistant' and (m.refs -> 'proposal' ->> 'id') = p_proposal_id::text
+   for update;
+  v_kind := v_card.refs -> 'proposal' ->> 'kind';
+  if not found or v_kind is null or v_kind not in ('delete', 'merge') then return 'not_found'; end if;
+  case v_card.refs -> 'proposal' ->> 'state'
+    when 'open' then
+      update public.conversation_messages m set refs = jsonb_set(m.refs, '{proposal,state}', '"dismissed"'::jsonb) where m.id = v_card.id;
+      return 'dismissed';
+    when 'dismissed' then return 'already';
+    else return 'not_open';
+  end case;
+end;
+$$;
+
+-- ─────────────────────────────────────────────
+-- 11) 권한: 새 함수는 모두 서버(service role) 전용이다 (write_action 패턴). invoker · search_path 고정.
 --    교체한 conversation_finish_turn의 권한은 create or replace가 유지한다.
 -- ─────────────────────────────────────────────
 revoke all on function public.change_context_membership_with_metric(uuid, uuid, uuid, integer, uuid, integer, text) from public, anon, authenticated;
 revoke all on function public.organize_lookup(uuid, integer[], uuid[]) from public, anon, authenticated;
 revoke all on function public.apply_organize_moves(uuid, jsonb, jsonb) from public, anon, authenticated;
+revoke all on function public.apply_organize_change(uuid, text, jsonb) from public, anon, authenticated;
+revoke all on function public.conversation_confirm_proposal(uuid, uuid, uuid, jsonb) from public, anon, authenticated;
+revoke all on function public.conversation_dismiss_proposal(uuid, uuid, uuid) from public, anon, authenticated;
 grant execute on function public.change_context_membership_with_metric(uuid, uuid, uuid, integer, uuid, integer, text) to service_role;
 grant execute on function public.organize_lookup(uuid, integer[], uuid[]) to service_role;
 grant execute on function public.apply_organize_moves(uuid, jsonb, jsonb) to service_role;
+grant execute on function public.apply_organize_change(uuid, text, jsonb) to service_role;
+grant execute on function public.conversation_confirm_proposal(uuid, uuid, uuid, jsonb) to service_role;
+grant execute on function public.conversation_dismiss_proposal(uuid, uuid, uuid) to service_role;
 
 commit;

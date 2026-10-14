@@ -60,7 +60,31 @@ describe("misjudgment (지표 1)", () => {
       period,
     );
     expect(m).toMatchObject({ aiCreated: 1, corrected: 0, rate: 0 });
-    expect(m.byField).toEqual({ title: 0, due: 0, owner: 0, status: 0, deleted: 0 });
+    expect(m.byField).toEqual({ title: 0, due: 0, owner: 0, status: 0, deleted: 0, duplicate: 0 });
+  });
+
+  it("D4c-2: 병합(user_merged)은 '중복' 오판이다 — 매칭이 같은 일을 새 일로 본 것이라 단계는 갱신(update). 되살린 것 · 끝낸 일 정리는 뺀다", () => {
+    const merged = (id: string, status: string, at = "2026-09-23T00:00:00Z") => ev(id, "user_merged", at, { before: { status }, after: { status: "dropped", into: "남는 쪽" } });
+    const m = misjudgment(
+      [
+        created("dup"),
+        merged("dup", "open"),
+        created("done-cleanup"),
+        merged("done-cleanup", "done"),
+        created("undone"),
+        merged("undone", "open"),
+        ev("undone", "user_edited", "2026-09-24T00:00:00Z", { before: { status: "dropped", into: "남는 쪽" }, after: { status: "open" } }),
+        created("keep"),
+      ],
+      period,
+    );
+    expect(m).toMatchObject({ aiCreated: 4, corrected: 1, rate: 0.25 });
+    expect(m.byField).toEqual({ title: 0, due: 0, owner: 0, status: 0, deleted: 0, duplicate: 1 });
+    expect(m.byStage).toEqual({ extract: 0, update: 1 });
+    // 같은 Action을 지우기만 한 것은 deleted로, 병합은 duplicate로 따로 센다
+    const both = misjudgment([created("x"), merged("x", "open"), created("y"), ev("y", "user_deleted", "2026-09-23T00:00:00Z", { before: { status: "open" }, after: { status: "dropped" } })], period);
+    expect(both.byField).toMatchObject({ duplicate: 1, deleted: 1 });
+    expect(both.byStage).toEqual({ extract: 1, update: 1 });
   });
 
   it("끝낸 일을 지운 것 · 지운 뒤 되살린 것(되돌리기)은 삭제 오판으로 세지 않는다", () => {
@@ -199,7 +223,7 @@ describe("misjudgment (지표 1)", () => {
       ],
       period,
     );
-    expect(m).toMatchObject({ aiCreated: 3, corrected: 1, byField: { status: 1, title: 0, due: 0, owner: 0, deleted: 0 }, byStage: { extract: 0, update: 1 } });
+    expect(m).toMatchObject({ aiCreated: 3, corrected: 1, byField: { status: 1, title: 0, due: 0, owner: 0, deleted: 0, duplicate: 0 }, byStage: { extract: 0, update: 1 } });
   });
 
   it("실행 receipt(artifact_created, actor agent)는 AI 생성 · 오판 · 물음 풀기에 섞이지 않는다 (U2 PR7)", () => {
@@ -678,7 +702,7 @@ describe("본 것 표시(user_seen, U1 바뀜 점)는 지표가 세지 않는다
     ];
     const m = misjudgment(events, period);
     expect(m).toMatchObject({ aiCreated: 2, corrected: 1, confirmed: 0 });
-    expect(m.byField).toMatchObject({ status: 1, title: 0, due: 0, owner: 0, deleted: 0 });
+    expect(m.byField).toMatchObject({ status: 1, title: 0, due: 0, owner: 0, deleted: 0, duplicate: 0 });
     expect(missed(events, m, period, true)).toMatchObject({ reported: 0, added: 0, addedPlain: 0 });
   });
 });

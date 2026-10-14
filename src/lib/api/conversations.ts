@@ -3,6 +3,7 @@ import { DeadlineExceededError } from "@/lib/ai/deadline";
 import { JevError } from "@/lib/ai/jev";
 import { LlmError } from "@/lib/ai/llm";
 import { ConsentRequiredError } from "@/lib/consent/gate";
+import type { ConfirmOutcome, DismissOutcome } from "@/lib/conversation/organize";
 import type { RespondInput, TurnPlan, WindowMessage } from "@/lib/conversation/respond";
 import { normalizeSelected, type SelectedRefs, type Target } from "@/lib/conversation/referent";
 import { ConsultOutputError } from "@/lib/conversation/respond";
@@ -12,6 +13,10 @@ import { consentRequired } from "./consent";
 import {
   createConversationV2RequestSchema,
   postConversationMessageV2RequestSchema,
+  proposalActionRequestSchema,
+  proposalConfirmResponseSchema,
+  proposalConflictSchema,
+  proposalDismissResponseSchema,
   updateConversationRequestSchema,
   type Attachment,
   type Conversation,
@@ -379,4 +384,84 @@ async function pairResponse<User extends AppUser>(deps: PostMessageDeps<User>, u
     reply: { ...reply, role: "assistant", segments: reply.content?.segments ?? [], citations: reply.content?.citations ?? [] },
   };
   return Response.json(body);
+}
+
+// ─── 삭제 · 병합 확인 카드의 버튼 (D4c-2) ─────────────────
+
+export type ProposalActionDeps<User extends AppUser> = {
+  enabled: () => boolean;
+  authenticate: (request: Request) => Promise<User | null>;
+  /** 확인: 카드를 읽고 쓰기 계획을 세워 conversation_confirm_proposal 한 트랜잭션으로 쓴다 (store.confirmProposal). AI를 부르지 않는다 */
+  confirm: (user: User, conversationId: string, proposalId: string) => Promise<ConfirmOutcome>;
+  dismiss: (user: User, conversationId: string, proposalId: string) => Promise<DismissOutcome>;
+  /** 응답에 싣는 기록 줄(role event) 읽기 */
+  loadMessage: (user: User, messageId: string) => Promise<ConversationMessage | null>;
+};
+
+const proposalConflict = (code: "superseded" | "not_open" | "busy_retry", message: string, cardMessageId?: string | null) =>
+  Response.json(proposalConflictSchema.parse({ error: { code, message }, ...(cardMessageId ? { card_message_id: cardMessageId } : {}) }), { status: 409 });
+
+async function proposalAction<User extends AppUser>(
+  request: Request,
+  conversationId: string,
+  proposalId: string,
+  deps: ProposalActionDeps<User>,
+  event: string,
+  run: (user: User) => Promise<Response>,
+): Promise<Response> {
+  if (!deps.enabled()) return errorResponse(404, "not_found", "없는 경로입니다.");
+  const user = await deps.authenticate(request);
+  if (!user) return unauthorized();
+  if (!UUID.test(conversationId) || !UUID.test(proposalId)) return errorResponse(404, "not_found", NOT_FOUND);
+  const body = await parseBody(request, proposalActionRequestSchema);
+  if ("error" in body) return body.error;
+  try {
+    return await run(user);
+  } catch (error) {
+    // 오류 이름만 남긴다 (대화 글 · 이슈 제목 없음)
+    console.error(JSON.stringify({ event, error: error instanceof Error ? error.name : "unknown" }));
+    return errorResponse(500, "internal_error", "처리하지 못했습니다.");
+  }
+}
+
+/**
+ * POST /api/v2/conversations/{id}/proposals/{proposal_id}/confirm: 삭제 · 병합 카드의 Delete · Merge 버튼. 두 번 눌러도 쓰기 한 번(200 already).
+ * 409 superseded = 대상이 카드 뒤에 바뀜(쓰기 0, 새 카드가 대화에 있다: 앱은 대화를 다시 읽는다) · not_open = 취소됐거나 다른 제안으로 대체됨 · busy_retry = 잠금 경합(쓰기 0, 다시 보내도 된다). 404 = 없는 · 남의 · 삭제/병합이 아닌 제안.
+ * gate CONVERSATIONS_V2_ENABLED가 꺼져 있으면 404 (인증 · DB 0). 동의 검사 · 요청 한도는 없다 (외부 AI를 부르지 않고 멱등이다).
+ */
+export async function handleConfirmProposal<User extends AppUser>(request: Request, conversationId: string, proposalId: string, deps: ProposalActionDeps<User>): Promise<Response> {
+  return proposalAction(request, conversationId, proposalId, deps, "proposal_confirm_failed", async (user) => {
+    const outcome = await deps.confirm(user, conversationId, proposalId);
+    switch (outcome.status) {
+      case "confirmed":
+      case "already": {
+        const event = outcome.eventId ? await deps.loadMessage(user, outcome.eventId) : null;
+        return Response.json(proposalConfirmResponseSchema.parse({ status: outcome.status, op: outcome.op, action_ids: outcome.actionIds, event }));
+      }
+      case "superseded":
+        return proposalConflict("superseded", "대상이 바뀌어 쓰지 않았습니다. 새 카드를 확인해 주세요.", outcome.cardMessageId);
+      case "not_open":
+        return proposalConflict("not_open", "이미 취소됐거나 다른 제안으로 바뀐 카드입니다.");
+      case "busy":
+        return proposalConflict("busy_retry", "잠시 뒤 다시 시도해 주세요.");
+      case "not_found":
+        return errorResponse(404, "not_found", NOT_FOUND);
+    }
+  });
+}
+
+/** POST …/proposals/{proposal_id}/dismiss: 카드의 Cancel 버튼. 열린 카드만 dismissed로 (쓰기 0). 이미 취소했으면 200 already, 확인했거나 대체된 카드는 409 not_open */
+export async function handleDismissProposal<User extends AppUser>(request: Request, conversationId: string, proposalId: string, deps: ProposalActionDeps<User>): Promise<Response> {
+  return proposalAction(request, conversationId, proposalId, deps, "proposal_dismiss_failed", async (user) => {
+    const outcome = await deps.dismiss(user, conversationId, proposalId);
+    switch (outcome) {
+      case "dismissed":
+      case "already":
+        return Response.json(proposalDismissResponseSchema.parse({ status: outcome }));
+      case "not_open":
+        return proposalConflict("not_open", "이미 확인했거나 다른 제안으로 바뀐 카드입니다.");
+      case "not_found":
+        return errorResponse(404, "not_found", NOT_FOUND);
+    }
+  });
 }

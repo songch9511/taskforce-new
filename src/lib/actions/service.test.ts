@@ -1,7 +1,9 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { CHANGED_READ_TIMEOUT_MS, createUserAction, nowList } from "./service";
+import { claimToRow } from "./rows";
+import { CHANGED_READ_TIMEOUT_MS, createUserAction, deleteAction, editAction, nowList } from "./service";
+import { userClaims } from "./user-claims";
 
 vi.mock("server-only", () => ({}));
 
@@ -156,5 +158,65 @@ describe("nowList: 바뀜 점 이벤트 읽기", () => {
     } as unknown as SupabaseClient;
     expect(await nowList(client)).toEqual({ now: [], confirmations: [] });
     expect(tables).toEqual(["actions"]);
+  });
+});
+
+// 삭제 · 병합 확인이 삭제 경로와 같은 쓰기가 되도록 계획(userChangePlan)을 순수 함수로 뺐다 (D4c-2). 삭제 · 수정의 쓰기 모양이 그대로인지 write_action 인자로 본다.
+describe("deleteAction · editAction: 쓰기 계획(userChangePlan)을 그대로 write_action에 넘긴다", () => {
+  const ACTION = "2b3c4d5e-6f7a-4b8c-9d0e-1f2a3b4c5d6e";
+  const rowOf = (status: string) => ({ title: "견적서 보내기", confirm_reasons: status === "open" ? ["담당 확인"] : [], needs_confirmation: status === "open", version: 4, status, started_at: null });
+  const claimsOf = (status: string) =>
+    userClaims([{ field: "scope", value: "견적서 보내기" }, { field: "owner", value: "me" }, { field: "status", value: status }], new Date("2026-10-01T00:00:00Z"), () => "00000000-0000-4000-8000-000000000001").map((c) =>
+      claimToRow(c, USER, ACTION, { sourceId: null, quote: null }),
+    );
+
+  /** actions 행 · claims · action_events(병합 Undo 판정)를 돌려주고 write_action 인자를 기록하는 가짜 */
+  function admin(events: { type: string; after: Record<string, unknown> | null }[] = [], status = "open") {
+    const ROW = rowOf(status);
+    const claims = claimsOf(status);
+    const writes: Record<string, unknown>[] = [];
+    const client = {
+      rpc: (fn: string, params: Record<string, unknown>) => {
+        if (fn === "write_action") writes.push(params);
+        return { throwOnError: async () => ({ data: true }) };
+      },
+      from: (table: string) => {
+        const data = table === "actions" ? ROW : table === "claims" ? claims : table === "action_events" ? events : {};
+        const q: Record<string, unknown> = {};
+        for (const method of ["select", "eq", "in", "order", "limit", "returns", "single"]) q[method] = () => q;
+        q.maybeSingle = () => q;
+        q.throwOnError = async () => ({ data });
+        q.then = (resolve: (value: unknown) => unknown) => resolve({ data });
+        return q;
+      },
+    } as unknown as SupabaseClient;
+    return { client, writes };
+  }
+
+  it("삭제: 읽은 version이 조건, status dropped 사용자 Claim 하나, user_deleted 이벤트, 확인 이유 비움 — 카드 확인(cardWrites)이 만드는 쓰기와 같은 모양", async () => {
+    const { client, writes } = admin();
+    await deleteAction(client, USER, ACTION);
+    expect(writes).toHaveLength(1);
+    expect(writes[0]).toMatchObject({ p_user_id: USER, p_action_id: ACTION, p_expected_version: 4, p_action: { status: "dropped", needs_confirmation: false, confirm_reasons: [] }, p_evidence: [] });
+    expect(writes[0].p_claims).toEqual([expect.objectContaining({ field: "status", value: "dropped", origin: "user", source_id: null, quote: null })]);
+    expect(writes[0].p_events).toEqual([{ type: "user_deleted", before: { status: "open" }, after: { status: "dropped" }, rule: "user", actor: "user", source_id: null }]);
+  });
+
+  it("병합 Undo(D4c-2): 마지막 상태 이벤트가 user_merged인 이슈를 다시 열면 user_edited의 before에 into가 실린다. 그 뒤 제목만 고친 이벤트는 건너뛴다", async () => {
+    const INTO = "9f8e7d6c-5b4a-4a39-8281-706f5e4d3c2b";
+    const merged = { type: "user_merged", after: { status: "dropped", into: INTO } };
+    const titleEdit = { type: "user_edited", after: { title: "고침" } };
+    const { client, writes } = admin([titleEdit, merged], "dropped");
+    await editAction(client, USER, ACTION, { status: "open" });
+    expect(writes[0].p_events).toEqual([expect.objectContaining({ type: "user_edited", before: { status: "dropped", into: INTO }, after: { status: "open" } })]);
+  });
+
+  it("병합 Undo가 아니면 into를 싣지 않고, 상태가 아닌 수정(제목)은 이벤트를 읽지 않는다 (v1 응답 · 이벤트 모양 그대로)", async () => {
+    const plain = admin([{ type: "user_deleted", after: { status: "dropped" } }], "dropped");
+    await editAction(plain.client, USER, ACTION, { status: "open" });
+    expect(plain.writes[0].p_events).toEqual([expect.objectContaining({ type: "user_edited", before: { status: "dropped" }, after: { status: "open" } })]);
+    const title = admin([{ type: "user_merged", after: { status: "dropped", into: "x" } }], "dropped");
+    await editAction(title.client, USER, ACTION, { title: "새 제목" });
+    expect(JSON.stringify(title.writes[0].p_events)).not.toContain("into");
   });
 });

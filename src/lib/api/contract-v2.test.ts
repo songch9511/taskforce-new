@@ -1,6 +1,15 @@
 import { describe, expect, it } from "vitest";
 
-import { contextMembershipEffectSchema as effectSchema, conversationMessageContentSchema as contentSchema, intentKindSchema, organizeContentSchema, proposalPayloadSchema, proposalSchema } from "./contract";
+import {
+  contextMembershipEffectSchema as effectSchema,
+  conversationMessageContentSchema as contentSchema,
+  intentKindSchema,
+  messageRefsSchema,
+  organizeContentSchema,
+  proposalConfirmResponseSchema,
+  proposalPayloadSchema,
+  proposalSchema,
+} from "./contract";
 
 import {
   apiErrorCodeSchema,
@@ -681,6 +690,18 @@ describe("organize 계약 (D4c-2)", () => {
     expect(organizeContentSchema.safeParse({ state: "deleted", action_ids: [] }).success).toBe(false);
     expect(organizeContentSchema.safeParse({ state: "merged", from_action_id: A, into_action_id: B }).success).toBe(true);
     expect(organizeContentSchema.safeParse({ state: "merged", from_action_id: A }).success).toBe(false);
+  });
+
+  it("에이전트 턴이 만든 이슈 id(sha256에서 만든, 버전 · variant 자리가 RFC 4122와 다른 guid)도 받는다: refs · 카드 · 기록 줄이 읽혀야 삭제 · 병합 카드가 열린다", () => {
+    const hashed = "f0b0c918-acd0-b623-d33f-14699a728393";
+    expect(messageRefsSchema.safeParse({ action_ids: [hashed] }).success).toBe(true);
+    expect(proposalPayloadSchema.safeParse({ kind: "delete", targets: [target(hashed, 1)] }).success).toBe(true);
+    expect(proposalPayloadSchema.safeParse({ kind: "merge", from: target(hashed, 144), into: target(B, 139) }).success).toBe(true);
+    expect(organizeContentSchema.safeParse({ state: "deleted", action_ids: [hashed] }).success).toBe(true);
+    expect(organizeContentSchema.safeParse({ state: "merged", from_action_id: hashed, into_action_id: B }).success).toBe(true);
+    expect(organizeContentSchema.safeParse({ state: "moved", results: [{ action_id: hashed, number: 1, from_context_id: null, to_context_id: C, change: null }] }).success).toBe(true);
+    expect(proposalConfirmResponseSchema.shape.action_ids.safeParse([hashed]).success).toBe(true);
+    expect(messageRefsSchema.safeParse({ action_ids: ["not-a-uuid"] }).success).toBe(false);
   });
 
   it("moved.results[].change는 S3b 멤버십 변화(contextMembershipEffectSchema)와 같은 모양이다", () => {

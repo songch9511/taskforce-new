@@ -34,8 +34,8 @@ export type MetricEventRow = { userId: string; type: string; actionId: string | 
 
 export type Period = { from: Date; to: Date };
 
-/** 오판을 필드로 나눈다. deleted = 사용자가 지움 */
-export type ErrorField = "title" | "due" | "owner" | "status" | "deleted";
+/** 오판을 필드로 나눈다. deleted = 사용자가 지움, duplicate = 사용자가 다른 이슈에 병합함(추출이 같은 일을 둘로 만듦, D4c-2) */
+export type ErrorField = "title" | "due" | "owner" | "status" | "deleted" | "duplicate";
 /** 틀린 값을 만든 단계: 처음 만들 때(추출) / 나중 원문으로 고칠 때(매칭 · 갱신) */
 export type ErrorStage = "extract" | "update";
 
@@ -81,12 +81,13 @@ const inPeriod = (at: string, period: Period) => {
  * 삭제는 AI가 만들지 말았어야 한 일로 세되, 끝낸 일을 치운 것과 지운 뒤 되살린 것은 뺀다.
  */
 function correctedFields(event: ActionEventRow, earlier: ActionEventRow[], later: ActionEventRow[]): ErrorField[] {
-  if (event.type === "user_deleted") {
+  if (event.type === "user_deleted" || event.type === "user_merged") {
     // 끝낸 일을 치운 것은 AI가 틀린 게 아니다
     if ((event.before ?? {}).status === "done") return [];
     // 지운 뒤 사용자가 되살렸으면(되돌리기 · 마음을 바꿈) 지운 것으로 세지 않는다
     const restored = later.some((e) => e.type === "user_edited" && e.actor === "user" && ["open", "done"].includes(String((e.after ?? {}).status)));
-    return restored ? [] : ["deleted"];
+    // 병합(user_merged)은 삭제와 같은 규칙으로 세되 "중복" 오판으로 따로 센다
+    return restored ? [] : [event.type === "user_merged" ? "duplicate" : "deleted"];
   }
   if (event.type !== "user_edited") return [];
   const fields: ErrorField[] = [];
@@ -110,7 +111,7 @@ export function misjudgment(events: ActionEventRow[], period: Period): Misjudgme
     imported: 0,
     corrected: 0,
     rate: null,
-    byField: { title: 0, due: 0, owner: 0, status: 0, deleted: 0 },
+    byField: { title: 0, due: 0, owner: 0, status: 0, deleted: 0, duplicate: 0 },
     byStage: { extract: 0, update: 0 },
     byConfirmation: { auto: { created: 0, corrected: 0 }, asked: { created: 0, corrected: 0 }, unknown: { created: 0, corrected: 0 } },
     confirmed: 0,
@@ -145,6 +146,11 @@ export function misjudgment(events: ActionEventRow[], period: Period): Misjudgme
         if (field === "deleted") {
           // 지운 일은 애초에 만들지 말았어야 한 것으로 본다 (추출 단계)
           stages.add("extract");
+          continue;
+        }
+        if (field === "duplicate") {
+          // 중복은 매칭이 같은 일을 새 일로 본 것이라 갱신 단계다 (AC3 6.1, 매칭 · 갱신 = 나중 원문을 기존 일에 붙이지 못함)
+          stages.add("update");
           continue;
         }
         // 이 필드를 마지막으로 정한 AI 이벤트가 처음 만들 때였는지, 나중 원문으로 고칠 때였는지

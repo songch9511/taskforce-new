@@ -59,8 +59,15 @@ describe("대화 v2 ↔ 실행 권한 경계 (I04)", () => {
     expect(all).not.toMatch(/from\("(actions|claims|evidence|action_events|memory_items)"\)\s*\.\s*(insert|update|upsert|delete)/);
     expect(all).not.toMatch(/rpc\("(write_action|set_action_progress|start_action|remember_memory_item|create_run)"/);
     const rpcs = [...all.matchAll(/rpc\("([a-z_]+)"/g)].map((m) => m[1]).sort();
-    // organize_lookup(D4c-2): 이슈 · 범위를 읽기만 하는 함수 (실행 표 이름을 대화 코드가 직접 쓰지 않으려고 SQL로 둔다)
-    expect([...new Set(rpcs)]).toEqual(["conversation_finish_turn", "conversation_post_message", "conversation_release_lease", "organize_lookup"]);
+    // D4c-2: organize_lookup(이슈 · 범위 읽기 — 실행 표 이름을 대화 코드가 직접 쓰지 않으려고 SQL로 둔다) · 삭제/병합 카드의 확인 · 취소 (Action은 그 안에서 write_action으로만 쓴다)
+    expect([...new Set(rpcs)]).toEqual([
+      "conversation_confirm_proposal",
+      "conversation_dismiss_proposal",
+      "conversation_finish_turn",
+      "conversation_post_message",
+      "conversation_release_lease",
+      "organize_lookup",
+    ]);
   });
 
   it("대화 마이그레이션은 실행 · 크레딧 표를 만들거나 고치거나 가리키지 않는다 (Action은 기존 write_action으로만)", () => {

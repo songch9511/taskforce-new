@@ -3,7 +3,8 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 
 import { contextTierSchema, intentKindSchema, messageRefsSchema, type ProposalPayloadV2 } from "@/lib/api/contract";
-import { deletePayload, mergePayload, organizeTarget, type OrganizeLookup } from "@/lib/conversation/organize";
+import { userClaims } from "@/lib/actions/user-claims";
+import { deletePayload, mergePayload, organizeTarget, type OrganizeLookup, type StoredTarget } from "@/lib/conversation/organize";
 import { payloadHash } from "@/lib/conversation/proposal";
 import type { ConsultContext, RespondInput, TurnPlan, WindowMessage } from "@/lib/conversation/respond";
 import { quoteInText } from "@/lib/pipeline/text";
@@ -268,6 +269,21 @@ export function consultLookupOf(golden: ConsultCase, ids: (label: string) => str
     })),
     contexts: golden.projects.map((p) => ({ ...context(p.id), kind: "project" })),
   };
+}
+
+/** 삭제 · 병합 카드를 글로 확인할 때 쓰기 계획을 세우는 기록 (loadChangeTargets 대신 케이스): 이슈마다 만든 때의 사용자 Claim(제목 · 담당 나 · 상태) + 행 */
+export function consultTargetsOf(golden: ConsultCase, ids: (label: string) => string): Map<string, StoredTarget> {
+  const earlier = new Date(new Date(golden.asked_at).getTime() - 86_400_000);
+  let claimNo = 0;
+  return new Map(
+    consultLookupOf(golden, ids).actions.map((a, i) => [
+      a.id,
+      {
+        row: { title: a.title, confirm_reasons: [], needs_confirmation: false, version: a.version, status: a.status, started_at: null },
+        claims: userClaims([{ field: "scope", value: a.title }, { field: "owner", value: "me" }, { field: "status", value: a.status }], earlier, () => uuidOf(golden.id, `claim-${i}-${++claimNo}`)),
+      },
+    ]),
+  );
 }
 
 /** respondToMessage에 넘길 입력 · 기록 (DB 대신 케이스) */

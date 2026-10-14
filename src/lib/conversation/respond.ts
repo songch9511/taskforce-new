@@ -41,20 +41,29 @@ import {
   type ShownMemory,
 } from "./memory";
 import {
+  cardAskText,
+  cardDoneContent,
+  cardDoneText,
+  cardIsFresh,
+  cardTargets,
+  cardWrites,
   deletePayload,
   findIssueMentions,
   mergePayload,
   movePayload,
   moveOps,
   organizeIssues,
+  reissuedCard,
   resolveMoveAdopt,
   resolveOrganize,
+  type CardPayload,
   type OrganizeLookup,
   type OrganizeResolution,
   type PendingOrganize,
   type ReplyReason,
+  type StoredTarget,
 } from "./organize";
-import { adoptPlan, newProposal, proposalFromModel, proposalIntact, reissueProposal, type AdoptPlan, type MoveAdoptPlan, type MovePlanItem, type ProposalPayload } from "./proposal";
+import { adoptPlan, newProposal, proposalFromModel, proposalIntact, reissueProposal, type AdoptPlan, type ChangeAdoptPlan, type MoveAdoptPlan, type MovePlanItem, type ProposalPayload } from "./proposal";
 import { resolveReferent, type OpenProposalRef, type Referent, type Target } from "./referent";
 
 // 대화 한 번의 답 (POST /api/v2/conversations/{id}/messages의 본체, 구현 계획 B2). DB와 분리된 함수: 모델(Jev · LLM)과 기록 읽기를 인자로 받아
@@ -122,6 +131,8 @@ export type RespondDeps = {
   retrieve: (query: { text: string; chunks: boolean }) => Promise<ConsultContext>;
   /** 이슈 정리(D4c-2)의 읽기: 번호 · id로 이 사용자의 이슈와 확인된 멤버십, 범위 전부 (SQL organize_lookup). 정리 분기에서만 부른다 — 없으면 정리를 못 한다 */
   organizeLookup?: (query: { numbers: number[]; actionIds: string[] }) => Promise<OrganizeLookup>;
+  /** 삭제 · 병합 카드를 글로 확인할 때 쓰기 계획을 세우려고 대상 이슈의 행 · Claim을 읽는다 (src/lib/actions/db-store loadStoredRow · loadClaims). 없으면 글로 확인하지 못한다 */
+  loadChangeTargets?: (actionIds: string[]) => Promise<ReadonlyMap<string, StoredTarget>>;
   newId: () => string;
 };
 
@@ -131,7 +142,7 @@ export type TurnPlan = {
   user: { refs: MessageRefs };
   reply: { text: string; segments: ResponseSegment[]; citations: AskCitation[]; refs: MessageRefs; content: ConversationMessageContent };
   memory: MemoryWritePlan[];
-  adopt: AdoptPlan | MoveAdoptPlan | null;
+  adopt: AdoptPlan | MoveAdoptPlan | ChangeAdoptPlan | null;
   /** 말로 바로 쓰는 이동 (D4c-2, ≤3): 대상이 하나로 정해졌을 때만. 답과 같은 트랜잭션으로 쓴다 */
   move?: MovePlanItem[] | null;
   /** 로그 · eval용 (글 없음) */
@@ -232,8 +243,6 @@ const movedText = (lang: Lang, op: "move" | "remove", numbers: number[], to: str
   op === "move" ? (lang === "ko" ? `옮겼어요: ${labelsOf(numbers)} → ${to}` : `Moved ${labelsOf(numbers)} to ${to}`) : lang === "ko" ? `뺐어요: ${labelsOf(numbers)} (${from})` : `Removed ${labelsOf(numbers)} from ${from}`;
 const moveAsk = (lang: Lang, op: "move" | "remove", numbers: number[], to: string, from: string) =>
   op === "move" ? (lang === "ko" ? `${labelsOf(numbers)}을(를) ${to}(으)로 옮길까요?` : `Move ${labelsOf(numbers)} to ${to}?`) : lang === "ko" ? `${labelsOf(numbers)}을(를) ${from}에서 뺄까요?` : `Remove ${labelsOf(numbers)} from ${from}?`;
-const deleteAsk = (lang: Lang, numbers: number[]) => (lang === "ko" ? `${labelsOf(numbers)}을(를) 지울까요?` : `Delete ${labelsOf(numbers)}?`);
-const mergeAsk = (lang: Lang, from: number, into: number) => (lang === "ko" ? `#${from}을(를) #${into}에 합칠까요?` : `Merge #${from} into #${into}?`);
 const alreadyOrganized = (lang: Lang) => (lang === "ko" ? "이미 처리한 제안이에요." : "That was already done.");
 
 function replyText(lang: Lang, reason: ReplyReason, numbers: number[] | undefined, names: string[] | undefined): string {
@@ -362,7 +371,7 @@ export async function respondToMessage(input: RespondInput, deps: RespondDeps): 
   const segments: ResponseSegment[] = [];
   let citations: AskCitation[] = [];
   let memoryWrites: MemoryWritePlan[] = [];
-  let adopt: AdoptPlan | MoveAdoptPlan | null = null;
+  let adopt: AdoptPlan | MoveAdoptPlan | ChangeAdoptPlan | null = null;
   let move: MovePlanItem[] | null = null;
   let organizeSummary: NonNullable<TurnPlan["summary"]["organize"]> | null = null;
   let organizeCost = 0;
@@ -400,21 +409,60 @@ export async function respondToMessage(input: RespondInput, deps: RespondDeps): 
     from: [...new Set(resolution.items.flatMap((i) => (i.remove ? [i.remove.name] : [])))].join(" · "),
   });
 
+  /**
+   * 삭제 · 병합 카드에 글 "응": 카드 버튼과 같은 쓰기 계획(cardWrites)을 채택 계획으로 낸다. 되돌리기 어려운 쓰기라 더 조심한다:
+   * J1이 adopt가 아니라 answer(예/아니오를 가르지 못함, "아니요"도 answer다)이거나 확신 0.5–0.8이면 쓰지 않고 같은 카드를 새 id로 한 번 더 보여 준다.
+   * 카드 뒤에 대상이 바뀌었으면(version 다름 · 이미 지움) 쓰지 않고 지금 기록으로 새 카드를 낸다 (409 superseded와 같은 판정).
+   */
+  const adoptCard = async (proposal: OpenProposal, payload: CardPayload, lookupFn: NonNullable<RespondDeps["organizeLookup"]>) => {
+    const ids = cardTargets(payload).map((t) => t.action_id);
+    const showCard = (card: { proposal: Proposal; text: string; content: ConversationMessageContent }) => {
+      replyRefs.proposal = card.proposal;
+      content.proposal = card.content.proposal;
+      content.asks = "confirm";
+      push(card.text, "T5");
+    };
+    if (route.kind === "adopt" && (route.confirm || intent.kind !== "adopt")) {
+      const again = reissueProposal(payload, deps.newId);
+      showCard({ proposal: again.ref, text: cardAskText(lang, payload), content: { ...emptyContent(), proposal: again.payload } });
+      organizeSummary = { op: payload.kind, outcome: "ask", op_confidence: null };
+      return;
+    }
+    const loadTargets = deps.loadChangeTargets;
+    if (!loadTargets) throw new ConsultOutputError("삭제 · 병합 대상 읽기(loadChangeTargets)가 연결되지 않았습니다");
+    const current = await loadTargets(ids);
+    if (cardIsFresh(payload, current)) {
+      adopt = {
+        kind: payload.kind,
+        proposal_message_id: proposal.messageId,
+        proposal_id: proposal.proposalId,
+        payload_hash: proposal.payloadHash,
+        writes: cardWrites(input.userId, payload, current, input.now, deps.newId),
+      };
+      userRefs.proposal = { id: proposal.proposalId, kind: payload.kind, payload_hash: proposal.payloadHash, state: "adopted" };
+      content.organize = cardDoneContent(lang, payload).organize;
+      referTo(ids);
+      push(cardDoneText(lang, payload), "T1");
+      organizeSummary = { op: payload.kind, outcome: payload.kind, op_confidence: null };
+      return;
+    }
+    const lookup = await lookupFn({ numbers: [], actionIds: ids.slice(0, 10) });
+    const next = reissuedCard(lang, payload, lookup, deps.newId);
+    if (next) showCard(next);
+    else push(replyText(lang, "already_deleted", cardTargets(payload).map((t) => t.number), undefined), "T1");
+    organizeSummary = { op: payload.kind, outcome: next ? "ask" : "reply", op_confidence: null };
+  };
+
   /** 이동 제안에 "응": 지금 기록에서 다시 풀어 같은 트랜잭션으로 쓴다. 풀리지 않으면(지움 · 보관 · 이미 옮김) 쓰기 없는 답 */
   const adoptOrganize = async (proposal: OpenProposal) => {
     const payload = proposal.payload;
     if (payload.kind === "create_action") return; // create_action은 이 함수가 아니라 아래 원래 채택 경로가 받는다
-    if (payload.kind !== "move") {
-      // 삭제 · 병합 카드는 버튼(또는 이 글 채택)으로만 쓴다: 같은 카드를 한 번 더 보여 준다
-      const again = reissueProposal(payload, deps.newId);
-      replyRefs.proposal = again.ref;
-      content.proposal = again.payload;
-      content.asks = "confirm";
-      push(payload.kind === "delete" ? deleteAsk(lang, payload.targets.map((t) => t.number)) : mergeAsk(lang, payload.from.number, payload.into.number), "T5");
-      return;
-    }
     const lookupFn = deps.organizeLookup;
     if (!lookupFn) throw new ConsultOutputError("정리 읽기(organizeLookup)가 연결되지 않았습니다");
+    if (payload.kind !== "move") {
+      await adoptCard(proposal, payload, lookupFn);
+      return;
+    }
     const numbers = payload.targets.map((t) => t.number);
     const op = payload.to ? "move" : "remove";
     if (route.kind === "adopt" && route.confirm) {
@@ -623,7 +671,7 @@ export async function respondToMessage(input: RespondInput, deps: RespondDeps): 
           content.proposal = proposal.payload;
           content.asks = "confirm";
           referTo(resolution.targets.map((a) => a.id));
-          push(deleteAsk(lang, resolution.targets.map((a) => a.number)), "T5");
+          push(cardAskText(lang, proposal.payload as CardPayload), "T5");
           organizeSummary = { op: "delete", outcome: "delete", op_confidence: opConfidence };
           break;
         }
@@ -633,7 +681,7 @@ export async function respondToMessage(input: RespondInput, deps: RespondDeps): 
           content.proposal = proposal.payload;
           content.asks = "confirm";
           referTo([resolution.from.id, resolution.into.id]);
-          push(mergeAsk(lang, resolution.from.number, resolution.into.number), "T5");
+          push(cardAskText(lang, proposal.payload as CardPayload), "T5");
           organizeSummary = { op: "merge", outcome: "merge", op_confidence: opConfidence };
           break;
         }

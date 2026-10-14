@@ -1,6 +1,26 @@
 import { describe, expect, it } from "vitest";
 
-import { findIssueMentions, matchProjectNames, resolveOrganize, type OrganizeLookup, type PendingOrganize, type ResolveInput } from "./organize";
+import { userClaims } from "@/lib/actions/user-claims";
+
+import {
+  cardAskText,
+  cardDoneContent,
+  cardDoneText,
+  cardIsFresh,
+  cardTargets,
+  cardWrites,
+  deletePayload,
+  findIssueMentions,
+  matchProjectNames,
+  mergePayload,
+  reissuedCard,
+  resolveOrganize,
+  type OrganizeLookup,
+  type PendingOrganize,
+  type ResolveInput,
+  type StoredTarget,
+} from "./organize";
+import { payloadHash } from "./proposal";
 
 // 이슈 정리의 대상 정하기 (D4c-2, 런타임 계약 2장 지시 대상). 순수 함수: 모델 · DB 없이 규칙마다 확인한다.
 // 지칭은 앱이 붙인 added 칩과 글의 #번호 · 프로젝트 이름뿐이다. 제목 유사도로 고르지 않는다 (RC 2장 규칙 1).
@@ -321,5 +341,90 @@ describe("한 번 더 묻기 (pending, 한 라운드)", () => {
   it("그래도 모자라면 다시 묻는 결과가 나온다 (한 라운드는 respond가 clarify 글로 바꾼다)", () => {
     const result = resolveOrganize(input("글쎄", { pending: pending({ op: "move", action_ids: [A139.id], missing: "project" }), judged: { op: null, into: null } }));
     expect(result).toMatchObject({ kind: "ask", pending: { missing: "project" } });
+  });
+});
+
+// ─── 삭제 · 병합 카드의 쓰기 계획 (D4c-2): 확인(버튼 · 글)이 삭제 경로와 같은 쓰기를 만든다 ───
+describe("삭제 · 병합 카드 쓰기 계획", () => {
+  const NOW = new Date("2026-10-15T01:00:00.000Z");
+  const USER_ID = "11111111-0000-4000-8000-000000000001";
+  const newId = () => {
+    let i = 0;
+    return () => `eeeeeeee-0000-4000-8000-${String(++i).padStart(12, "0")}`;
+  };
+  const stored = (a: OrganizeLookup["actions"][number], over: Partial<StoredTarget["row"]> = {}): StoredTarget => ({
+    row: { title: a.title, confirm_reasons: [], needs_confirmation: false, version: a.version, status: a.status, started_at: null, ...over },
+    // 이슈를 만든 때의 사용자 Claim (지금보다 앞이어야 새 Claim이 이긴다)
+    claims: userClaims([{ field: "scope", value: a.title }, { field: "owner", value: "me" }, { field: "status", value: a.status }], new Date(NOW.getTime() - 86_400_000), newId()),
+  });
+  const current = (...entries: [OrganizeLookup["actions"][number], Partial<StoredTarget["row"]>?][]) => new Map(entries.map(([a, over]) => [a.id, stored(a, over)]));
+  const del = deletePayload([A141, A144]);
+  const merge = mergePayload(A144, A139);
+
+  it("대상: 삭제는 카드의 이슈들, 병합은 [사라지는 쪽, 남는 쪽]", () => {
+    expect(cardTargets(del).map((t) => t.number)).toEqual([141, 144]);
+    expect(cardTargets(merge).map((t) => t.number)).toEqual([144, 139]);
+  });
+
+  it("낡음: 모든 대상의 version이 카드가 본 값 그대로이고 지운 것이 없어야 신선하다 (updated_at이 아니라 version)", () => {
+    expect(cardIsFresh(del, current([A141], [A144]))).toBe(true);
+    expect(cardIsFresh(del, current([A141], [A144, { version: 3 }]))).toBe(false);
+    expect(cardIsFresh(del, current([A141], [A144, { status: "dropped" }]))).toBe(false);
+    expect(cardIsFresh(del, current([A141]))).toBe(false);
+    expect(cardIsFresh(merge, current([A144], [A139]))).toBe(true);
+    expect(cardIsFresh(merge, current([A144], [A139, { status: "dropped" }]))).toBe(false);
+    expect(cardIsFresh(merge, current([A144, { version: 9 }], [A139]))).toBe(false);
+  });
+
+  it("삭제: 대상마다 삭제 경로와 같은 쓰기 — 읽은 version 조건, 사용자 Claim status dropped(지금 시각), user_deleted 이벤트(before/after status), 확인 이유 비움", () => {
+    const writes = cardWrites(USER_ID, del, current([A141], [A144]), NOW, newId());
+    expect(writes.map((w) => [w.action_id, w.expected_version])).toEqual([[A141.id, 2], [A144.id, 2]]);
+    for (const w of writes) {
+      expect(w.action).toMatchObject({ status: "dropped", needs_confirmation: false, confirm_reasons: [] });
+      expect(w.claims).toEqual([expect.objectContaining({ user_id: USER_ID, action_id: w.action_id, source_id: null, quote: null, field: "status", value: "dropped", origin: "user", channel: "note", state: "active", occurred_at: NOW.toISOString() })]);
+      expect(w.events).toEqual([{ type: "user_deleted", before: { status: "open" }, after: { status: "dropped" }, rule: "user", actor: "user", source_id: null }]);
+    }
+  });
+
+  it("병합: 사라지는 쪽은 삭제와 같은 쓰기에 이벤트만 user_merged(after.into), 남는 쪽은 확인만(값 · Claim · 이벤트 0, 읽은 version 조건)", () => {
+    const writes = cardWrites(USER_ID, merge, current([A144], [A139]), NOW, newId());
+    expect(writes).toHaveLength(2);
+    const [gone, stays] = writes;
+    expect(gone.action_id).toBe(A144.id);
+    expect(gone.action).toMatchObject({ status: "dropped" });
+    expect(gone.events).toEqual([{ type: "user_merged", before: { status: "open" }, after: { status: "dropped", into: A139.id }, rule: "user", actor: "user", source_id: null }]);
+    expect(stays).toEqual({ action_id: A139.id, expected_version: 2, action: null, claims: [], events: [] });
+    // 삭제와 같은 값
+    const asDelete = cardWrites(USER_ID, deletePayload([A144]), current([A144]), NOW, newId())[0];
+    expect({ ...gone, events: [] }).toEqual({ ...asDelete, events: [] });
+  });
+
+  it("다시 낼 카드: 지금 기록에서 살아 있는 대상으로. 모두 지웠으면(삭제) · 한쪽이라도 지웠으면(병합) 없다. 내용 hash가 맞고 asks confirm", () => {
+    const next = newId();
+    const lookup = (actions: OrganizeLookup["actions"]): OrganizeLookup => ({ ...LOOKUP, actions });
+    const redo = reissuedCard("ko", del, lookup([{ ...A141, version: 5 }, A144]), next);
+    expect(redo).not.toBeNull();
+    expect(redo!.text).toBe("#141 · #144을(를) 지울까요?");
+    expect(redo!.proposal).toMatchObject({ kind: "delete", state: "open", payload_hash: payloadHash(redo!.content.proposal!) });
+    expect(redo!.content).toMatchObject({ asks: "confirm", proposal: { kind: "delete", targets: [{ number: 141, version: 5 }, { number: 144, version: 2 }] } });
+    // 하나만 지웠으면 남은 것만
+    const partial = reissuedCard("en", del, lookup([A141, { ...A144, status: "dropped" }]), next);
+    expect(partial!.content.proposal).toMatchObject({ targets: [{ number: 141 }] });
+    expect(partial!.text).toBe("Delete #141?");
+    expect(reissuedCard("ko", del, lookup([{ ...A141, status: "dropped" }, { ...A144, status: "dropped" }]), next)).toBeNull();
+    const m = reissuedCard("ko", merge, lookup([A144, { ...A139, version: 4 }]), next);
+    expect(m!.content.proposal).toMatchObject({ kind: "merge", from: { number: 144 }, into: { number: 139, version: 4 } });
+    expect(reissuedCard("ko", merge, lookup([A144, { ...A139, status: "dropped" }]), next)).toBeNull();
+    expect(reissuedCard("ko", merge, lookup([A144]), next)).toBeNull();
+  });
+
+  it("문구와 확인 event 내용: 지웠어요 · 합쳤어요, organize.state deleted · merged", () => {
+    expect(cardAskText("ko", del)).toBe("#141 · #144을(를) 지울까요?");
+    expect(cardAskText("en", merge)).toBe("Merge #144 into #139?");
+    expect(cardAskText("ko", merge)).toBe("#144을(를) #139에 합칠까요?");
+    expect(cardDoneText("ko", del)).toBe("지웠어요: #141 · #144");
+    expect(cardDoneText("en", merge)).toBe("Merged #144 into #139");
+    expect(cardDoneContent("ko", del)).toMatchObject({ segments: [{ text: "지웠어요: #141 · #144", tier: "T1" }], citations: [], proposal: null, asks: null, organize: { state: "deleted", action_ids: [A141.id, A144.id] } });
+    expect(cardDoneContent("en", merge).organize).toEqual({ state: "merged", from_action_id: A144.id, into_action_id: A139.id });
   });
 });
