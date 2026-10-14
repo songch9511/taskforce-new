@@ -22,6 +22,8 @@ final class HostBox<Value>: @unchecked Sendable {
 /// 새 세션의 작업 폴더 (D4a가 정하기 전의 시험용 값)
 struct HostWorkspaces: WorkspaceResolver {
     func workspace(forSession sessionID: String, adapter: String) async -> String? { "workspace-fake" }
+
+    func authorize(workspaceRef: String, session sessionID: String, adapter: String) async -> Bool { workspaceRef == "workspace-fake" }
 }
 
 /// 종료 확인 대역: 시험이 답을 정하고 몇 번 물었는지 센다
@@ -52,6 +54,8 @@ final class HostFixture {
     private(set) var replies: [Bool] = []
     private(set) var host: BridgeHost!
     private let enabled: Bool
+    /// 런타임을 만들기 전에 시험이 끼어드는 자리 (원장을 여는 동안 계정이 바뀌는 경쟁)
+    var onFactory: (@MainActor () async -> Void)?
 
     init(enabled: Bool = true, user: UUID? = UUID(), agent: FakeAgentProcess? = nil, server: FakeBridgeServer? = nil, root: URL? = nil, credentials: InMemoryBridgeCredentialStore? = nil) {
         let clock = self.clock
@@ -72,7 +76,8 @@ final class HostFixture {
         let credentials = self.credentials
         return BridgeHost(
             enabled: enabled, apiBaseURL: server.baseURL, storageRoot: root, credentials: credentials, currentUser: { [user] in user.value }, epoch: { [epoch] in epoch.value },
-            factory: { partition, mode, secrets, onChange in
+            factory: { [weak self] partition, mode, secrets, onChange in
+                await self?.onFactory?()
                 let ledger = try BridgeLedger(directory: partition.directory(in: root), now: { clock.now })
                 let token = "token-\(partition.userID.uuidString.lowercased())"
                 server.addUser(token: token, userID: partition.userID)
@@ -90,8 +95,19 @@ final class HostFixture {
     }
 
     /// 앱을 새로 띄운 것처럼 같은 뿌리 · 서버 · 자격으로 새 호스트를 만든다
-    func relaunch(agent newAgent: FakeAgentProcess) -> HostFixture {
-        HostFixture(enabled: enabled, user: user.value, agent: newAgent, server: server, root: root, credentials: credentials)
+    func relaunch(agent newAgent: FakeAgentProcess, enabled newEnabled: Bool? = nil) -> HostFixture {
+        HostFixture(enabled: newEnabled ?? enabled, user: user.value, agent: newAgent, server: server, root: root, credentials: credentials)
+    }
+
+    /// 수동 시계를 조금씩 흘려 보내는 일꾼: 유예(3초)를 기다리는 종료 · 삭제 경로가 멈추지 않게
+    func advancingClock() -> Task<Void, Never> {
+        Task { [clock] in
+            for _ in 0..<400 {
+                if Task.isCancelled { return }
+                await clock.advance(by: 0.25)
+                try? await Task.sleep(for: .milliseconds(3))
+            }
+        }
     }
 
     func start() async {
@@ -446,5 +462,181 @@ struct BridgeHostTests {
         try? await Task.sleep(for: .milliseconds(100))
         #expect(fixture.agent.startedTurns.count == 1)
         #expect(fixture.server.commandLeaseCount(created.commandID) == 2)
+    }
+
+    // MARK: 독립 검토 반영 (계약 7장): 마무리 모드 놓기 · 감독 밖 writer 0 · 겹치는 sync · 확인 못 한 고아
+
+    @Test func aDrainRuntimeThatFinishedItsWorkIsReleasedByTheHost() async throws {
+        // 켜진 호스트로 등록하고 서버에 닿지 못한 사건 하나를 원장에 남긴 채 내려간다
+        let first = HostFixture()
+        defer { first.cleanup() }
+        await first.start()
+        _ = await first.waitForBridge()
+        let userID = try #require(first.user.value)
+        let partition = BridgePartition(apiBaseURL: first.server.baseURL, userID: userID)
+        await first.host.activeRuntime?.abandonForTest()
+        first.host.stopObserving()
+        let ledger = try BridgeLedger(directory: partition.directory(in: first.root), now: { first.clock.now })
+        try await ledger.saveTask(BridgeTaskRecord(agentTaskID: "7a5c0001-0000-4000-8000-0000000000d1", agentSessionID: "5e551011-0000-4000-8000-0000000000d1", adapter: "agent:claude-code", turnSeq: 1, updatedAt: first.clock.now))
+        _ = try await ledger.appendEvent(
+            taskID: "7a5c0001-0000-4000-8000-0000000000d1", numbering: .taskSequence,
+            build: { seq, eventID in BuiltEvent(type: "progress", json: "{\"event_id\":\"\(eventID)\"}", observedAt: Date(timeIntervalSince1970: 1_760_400_000)) }, update: { _ in }
+        )
+        await ledger.close()
+        // 꺼진 새 앱: 마무리 모드로 올라와 사건을 보내고(서버는 이 task를 모른다) 할 일이 없어지면 멈춘다
+        let relaunched = first.relaunch(agent: FakeAgentProcess(clock: first.clock.clock), enabled: false)
+        await relaunched.start()
+        #expect(relaunched.host.runtimeCount == 1 || relaunched.host.runtimeCount == 0)
+        for _ in 0..<40 where relaunched.host.runtimeCount > 0 {
+            await relaunched.clock.advance(by: 31)
+            try? await Task.sleep(for: .milliseconds(25))
+        }
+        #expect(relaunched.host.runtimeCount == 0, "끝난 마무리 런타임은 호스트가 놓는다")
+        #expect(relaunched.host.activeRuntime == nil)
+        relaunched.host.stopObserving()
+    }
+
+    @Test func anIdleTurnWhoseProcessIsStillAliveIsEndedOnQuitWithoutAskingForConfirmation() async throws {
+        let fixture = HostFixture()
+        defer { fixture.cleanup() }
+        // 턴은 끝났는데(`idle`) 프로세스는 남아 있다 (오래 사는 app-server 모양)
+        fixture.agent.setScript(FakeAgentProcess.Script([.sessionBound(external: "fake-session-1", workspace: "workspace-fake"), .accepted, .progress, .message("done"), .turnCompleted, .wait(100_000)]))
+        await fixture.start()
+        let created = try #require(await fixture.message())
+        #expect(await fixture.eventually { fixture.server.taskState(created.taskID) == "idle" || fixture.agent.startedTurns.count == 1 })
+        #expect(await fixture.eventually { fixture.host.hasLiveProcess })
+        #expect(await fixture.eventually { !fixture.host.isBusy }, "턴이 끝났으니 바쁘지 않다")
+        #expect(fixture.agent.liveRunCount == 1)
+        #expect(fixture.host.terminationReply() == .terminateLater, "프로세스가 남아 있으면 그냥 종료하지 않는다")
+        let worker = fixture.advancingClock()
+        #expect(await fixture.eventually { fixture.replies == [true] })
+        worker.cancel()
+        #expect(fixture.prompt.asked == 0, "한가한 종료는 확인 창 없이")
+        #expect(fixture.agent.liveRunCount == 0, "감독 밖 writer를 남기지 않는다")
+    }
+
+    @Test func quitEndsARunThatIgnoresTheInterruptSignal() async throws {
+        let (fixture, created) = try await runningFixture()
+        defer { fixture.cleanup() }
+        fixture.agent.setIgnoreInterruptForever(true)
+        #expect(fixture.host.terminationReply() == .terminateLater)
+        let worker = fixture.advancingClock()
+        #expect(await fixture.eventually { fixture.replies == [true] })
+        worker.cancel()
+        #expect(fixture.prompt.asked == 1)
+        #expect(fixture.agent.interrupts.count == 1, "먼저 중단 신호")
+        #expect(fixture.agent.terminatedOrphans.count == 1, "신호를 무시해서 유예 뒤 terminateOrphan으로 끝냈다")
+        #expect(fixture.agent.liveRunCount == 0)
+        #expect(fixture.server.taskState(created.taskID) == "cancelled")
+    }
+
+    @Test func deletingTheAccountEndsARunThatIgnoresTheInterruptSignalBeforeTheLedgerIsRemoved() async throws {
+        let (fixture, _) = try await runningFixture()
+        defer { fixture.cleanup() }
+        fixture.agent.setIgnoreInterruptForever(true)
+        let userID = try #require(fixture.user.value)
+        let partition = try #require(fixture.host.activePartition)
+        let worker = fixture.advancingClock()
+        let result = await fixture.host.accountDeleted(userID: userID)
+        worker.cancel()
+        #expect(fixture.agent.liveRunCount == 0, "원장을 지우기 전에 감독 밖 writer를 남기지 않는다")
+        #expect(fixture.agent.terminatedOrphans.count == 1)
+        #expect(result.isComplete, "지운 결과를 알린다")
+        #expect(!FileManager.default.fileExists(atPath: partition.directory(in: fixture.root).path))
+    }
+
+    @Test func overlappingSyncsApplyInOrderAndEndOnTheLatestAccount() async throws {
+        let fixture = HostFixture()
+        defer { fixture.cleanup() }
+        let alice = try #require(fixture.user.value)
+        let bob = UUID()
+        await fixture.start()
+        _ = await fixture.waitForBridge()
+        // 두 번 바뀐 계정을 겹쳐서 sync한다: 호출은 차례로 돌고 마지막 사용자에 맞춰진다
+        fixture.user.value = bob
+        fixture.epoch.value += 1
+        async let first: Void = fixture.host.syncAccount()
+        fixture.user.value = alice
+        fixture.epoch.value += 1
+        async let second: Void = fixture.host.syncAccount()
+        fixture.user.value = bob
+        fixture.epoch.value += 1
+        async let third: Void = fixture.host.syncAccount()
+        _ = await (first, second, third)
+        #expect(fixture.host.activePartition?.userID == bob)
+        #expect(fixture.host.runtimeCount == 1, "런타임이 섞이거나 겹치지 않는다")
+    }
+
+    @Test func aRuntimeBuiltWhileTheAccountChangedIsNeverStartedForTheOldAccount() async throws {
+        let fixture = HostFixture()
+        defer { fixture.cleanup() }
+        let bob = UUID()
+        fixture.onFactory = { [fixture] in
+            // 원장을 여는 사이 계정이 바뀐다 (딱 한 번)
+            fixture.onFactory = nil
+            fixture.user.value = bob
+            fixture.epoch.value += 1
+        }
+        // `start()`는 부르지 않는다 (대기 중인 sync가 없다): 첫 sync 하나가 끝난 직후의 상태를 본다
+        await fixture.host.syncAccount()
+        #expect(fixture.host.runtimeCount == 0 && fixture.host.activeRuntime == nil, "바뀐 계정 몫이 아닌 런타임은 올리지 않는다")
+        try? await Task.sleep(for: .milliseconds(150))
+        #expect(fixture.server.registerAttempts == 0, "처음 계정으로는 등록하지 않았다")
+        // 다음 sync가 바뀐 계정으로 맞춘다
+        await fixture.host.syncAccount()
+        #expect(fixture.host.activePartition?.userID == bob, "바뀐 계정으로 맞춰진다")
+        #expect(fixture.host.runtimeCount == 1)
+        #expect(await fixture.eventually { fixture.server.bridgeID(userID: bob) != nil })
+        #expect(fixture.server.registerAttempts == 1)
+    }
+
+    @Test func aSecondSyncWaitsUntilTheFirstOneIsDone() async throws {
+        let fixture = HostFixture()
+        defer { fixture.cleanup() }
+        let bob = UUID()
+        let open = HostBox(false)
+        let calls = HostBox(0)
+        fixture.onFactory = {
+            let number = calls.value
+            calls.value += 1
+            if number == 0 { while !open.value { try? await Task.sleep(for: .milliseconds(5)) } } // 첫 런타임을 만드는 중에 멈춘다
+        }
+        let first = Task { await fixture.host.syncAccount() }
+        #expect(await fixture.eventually { calls.value == 1 }, "첫 sync가 런타임을 만드는 중")
+        fixture.user.value = bob
+        fixture.epoch.value += 1
+        let second = Task { await fixture.host.syncAccount() }
+        try? await Task.sleep(for: .milliseconds(150))
+        #expect(calls.value == 1, "앞 sync가 끝나기 전에는 다음 sync가 런타임을 만들지 않는다")
+        open.value = true
+        await first.value
+        await second.value
+        #expect(fixture.host.activePartition?.userID == bob)
+        #expect(fixture.host.runtimeCount == 1, "런타임이 섞이거나 겹치지 않는다")
+    }
+
+    @Test func anUnverifiedOrphanNeverBlocksTheUpdateRelaunchButKeepsTheSessionBlocked() async throws {
+        let fixture = HostFixture()
+        defer { fixture.cleanup() }
+        fixture.agent.setScript(.staysRunning())
+        await fixture.start()
+        let created = try #require(await fixture.message())
+        #expect(await fixture.eventually { fixture.agent.startedTurns.count == 1 })
+        #expect(await fixture.eventually { fixture.server.taskState(created.taskID) != "dispatched" || fixture.host.isBusy })
+        // 앱이 강제 종료된 것처럼 버리고 새 호스트가 올라온다. adapter는 이 실행의 끝을 증명하지 못한다
+        _ = fixture.agent.abandon()
+        await fixture.host.activeRuntime?.abandonForTest()
+        fixture.host.stopObserving()
+        let newAgent = FakeAgentProcess(clock: fixture.clock.clock)
+        newAgent.setLiveness(.unknown)
+        let relaunched = fixture.relaunch(agent: newAgent)
+        defer { UpdateRelaunchPolicy.resetForTesting() }
+        await relaunched.start()
+        #expect(await relaunched.eventually { relaunched.host.activeRuntime != nil })
+        try? await Task.sleep(for: .milliseconds(100))
+        #expect(!relaunched.host.isBusy, "끝을 증명하지 못한 고아는 Sparkle 재시작을 막지 않는다")
+        #expect(UpdateRelaunchPolicy.allowsRelaunchNow())
+        #expect(relaunched.host.hasLiveProcess, "그래도 원장은 살아 있다고 안다")
+        relaunched.host.stopObserving()
     }
 }

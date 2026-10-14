@@ -18,6 +18,8 @@
 	<string>$(SPARKLE_PUBLIC_ED_KEY)</string>
 	<key>TaskforceBridgeEnabled</key>
 	<string>$(TF_BRIDGE_ENABLED)</string>
+	<key>TaskforceKeychainAccessGroup</key>
+	<string>$(AppIdentifierPrefix)$(APP_BUNDLE_ID)</string>
 	<key>TaskforceReleaseChannel</key>
 	<string>$(TF_RELEASE_CHANNEL)</string>
 	<key>TaskforceSourceCommit</key>

@@ -48,14 +48,26 @@ struct BridgeFlagTests {
     }
 
     @Test func theFakeAgentExistsOnlyInDebugWithItsOwnArgument() {
-        #expect(!BridgeFlag.usesFakeAgent(arguments: [:], isDebugBuild: true))
-        #expect(BridgeFlag.usesFakeAgent(arguments: ["TF_BRIDGE_FAKE_AGENT": "YES"], isDebugBuild: true))
-        #expect(!BridgeFlag.usesFakeAgent(arguments: ["TF_BRIDGE_FAKE_AGENT": "YES"], isDebugBuild: false), "Release는 인자가 있어도 가짜를 쓰지 않는다")
+        let local = URL(string: "http://localhost:3000")!
+        #expect(!BridgeFlag.usesFakeAgent(arguments: [:], isDebugBuild: true, apiBaseURL: local))
+        #expect(BridgeFlag.usesFakeAgent(arguments: ["TF_BRIDGE_FAKE_AGENT": "YES"], isDebugBuild: true, apiBaseURL: local))
+        #expect(!BridgeFlag.usesFakeAgent(arguments: ["TF_BRIDGE_FAKE_AGENT": "YES"], isDebugBuild: false, apiBaseURL: local), "Release는 인자가 있어도 가짜를 쓰지 않는다")
+    }
+
+    /// 가짜 agent는 이 Mac의 개발 서버(loopback)일 때만: 실제 서버에서 받은 명령을 가짜가 수행한 것처럼 보고하지 않는다 (검토 반영 7장 D · security 9)
+    @Test func theFakeAgentIsNeverConnectedToARealServer() {
+        let arguments = ["TF_BRIDGE_FAKE_AGENT": "YES"]
+        for loopback in ["http://localhost:3000", "http://127.0.0.1:3000", "http://[::1]:3000", "http://dev.localhost:3000"] {
+            #expect(BridgeFlag.usesFakeAgent(arguments: arguments, isDebugBuild: true, apiBaseURL: URL(string: loopback)!), "\(loopback)")
+        }
+        for real in ["https://taskforce.example.com", "https://localhost.evil.com", "http://192.168.0.5:3000", "https://api.taskforcelabs.dev"] {
+            #expect(!BridgeFlag.usesFakeAgent(arguments: arguments, isDebugBuild: true, apiBaseURL: URL(string: real)!), "\(real)")
+        }
     }
 
     @Test func thisTestHostRunsWithTheBridgeOffAndNoFakeAgent() {
         #expect(!BridgeFlag.current)
-        #expect(!BridgeFlag.currentUsesFakeAgent)
+        #expect(!BridgeFlag.currentUsesFakeAgent(apiBaseURL: URL(string: "http://localhost:3000")!))
     }
 
     // MARK: Info.plist · 빌드 설정 (M1b U3 방식)
@@ -64,6 +76,15 @@ struct BridgeFlagTests {
         let data = try Data(contentsOf: UpdaterSources.apple.appending(path: "Taskforce/Info.plist"))
         let plist = try #require(try PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any])
         #expect(plist["TaskforceBridgeEnabled"] as? String == "$(TF_BRIDGE_ENABLED)")
+        // 장치 secret의 Keychain 접근 그룹은 entitlements의 앱 전용 그룹과 같은 값이다 (App Group이 아니다)
+        #expect(plist["TaskforceKeychainAccessGroup"] as? String == "$(AppIdentifierPrefix)$(APP_BUNDLE_ID)")
+        let entitlements = try Data(contentsOf: UpdaterSources.apple.appending(path: "Taskforce/Taskforce-macOS.entitlements"))
+        let values = try #require(try PropertyListSerialization.propertyList(from: entitlements, options: [], format: nil) as? [String: Any])
+        #expect((values["keychain-access-groups"] as? [String]) == ["$(AppIdentifierPrefix)$(APP_BUNDLE_ID)"])
+    }
+
+    @Test func anUnsignedHostHasNoUsableKeychainAccessGroup() {
+        #expect(BridgeFlag.keychainAccessGroup == nil, "서명 없는 빌드는 접두가 비어 그룹을 지정하지 않는다")
     }
 
     @Test func baseAndReleaseSetItToNOAndDebugTestInheritsIt() throws {
