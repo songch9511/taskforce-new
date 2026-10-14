@@ -99,7 +99,8 @@
 - **결정 라우팅 표**(`routing.ts DECISION_ROUTING`): 런타임 계약 6장 + 아키텍처 7.7을 상황 이름 → `user | coordinator`의 순수 조회로. 입력에 범위 · 기억 · version · 정책이 없다(ARCH06/07).
 - **`pending_decisions`는 계산값이다.** 표 · 사용자 API · UI · Undo · 결정 outcome은 없다. `coordinator_pending_inputs`(읽기 전용 SQL, `stable`)가 실제 원천을 주고 `pending.ts computePendingDecisions`가 묶는다:
   - 실제 원천: 승인 대기 단계(`prepared` + `needs_approval`, 유효한 승인이 없는 것 — `begin_call`과 같은 기준), run `needs_input` / `review_failed`(그 Action의 가장 최근 run, 멈추지 않음, Action이 열려 있음), `actions.needs_confirmation`.
-  - 미래 원천(에이전트 `pending_question` · 열린 제안 · 긴급 창의 막힌 의존)은 입력 타입 `FutureInputs` + fixture만(연결되지 않았다).
+  - 에이전트 입력(OA D4b-s): `review_agent_inputs`(읽기 전용 SQL, `stable`)가 질문 셋(`agent_question` · `agent_approval` · `agent_secret_question`) · 결과 준비(`result_ready`) · 경로 충돌(`path_conflict`)을 준다. 항목 id는 `<kind>:<item_ref>`(task · run · lease id)이고 종류별 ref(`agent` · `result` · `conflict`)가 항목에 붙는다. 대화 v2 ∧ adapter 플래그가 켜졌을 때만 읽는다(`openAgentAdapters()`) — 꺼지면 이 함수를 부르지 않아 C2 결과 그대로다. 상세는 `docs/review-summary.md`.
+  - 미래 원천(열린 제안 · 긴급 창의 막힌 의존)은 입력 타입 `FutureInputs` + fixture만(연결되지 않았다).
   - 항목: `{id, kind, action_id, run_id, step_id, question_id, version, urgent, created_at}`. 묶음: `(action_id, kind)`. 긴급: 기한이 24시간 안(지남 포함) 또는 다른 작업을 막음. 순서: 긴급 먼저 → 오래 기다린 순 → 종류 · action id(입력 순서와 무관).
   - **다른 기기에서 처리 · 삭제된 항목은 version 불일치로 사라진다**(`matchPendingVersion`: current · stale · gone). **읽기 · 계산 ≠ 해결**: 여러 번 계산해도 어떤 표도 바뀌지 않고 사건도 쌓이지 않는다(`tests/coordinator/pending.test.ts`).
 
