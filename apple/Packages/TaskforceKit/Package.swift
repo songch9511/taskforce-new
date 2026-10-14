@@ -24,7 +24,8 @@ let package = Package(
             dependencies: ["TaskforceKit"],
             resources: [.process("Resources")]
         ),
-        .testTarget(name: "TaskforceKitTests", dependencies: ["TaskforceKit"]),
+        // bridge 계약 JSON(Fixtures/bridge-v1)은 서버 쪽 src/lib/bridge/swift-fixtures.test.ts도 같은 파일을 읽는다 (OA D2b)
+        .testTarget(name: "TaskforceKitTests", dependencies: ["TaskforceKit"], resources: [.copy("Fixtures/bridge-v1")]),
         // 토큰 이름 · Light/Dark 값(Figma 변수) · 글자 대비, 부품의 순수 규칙
         .testTarget(name: "TaskforceUITests", dependencies: ["TaskforceUI"]),
     ]
