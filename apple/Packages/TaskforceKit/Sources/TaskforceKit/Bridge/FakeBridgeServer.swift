@@ -92,7 +92,7 @@ public final class FakeBridgeServer: @unchecked Sendable {
         var createdAt: Date
         var step: Step = .prepared
         var stepID = UUID().uuidString.lowercased()
-        var marker = "tf-" + UUID().uuidString.lowercased().prefix(12)
+        var marker = UUID().uuidString.lowercased() // 실제 서버의 marker는 uuid다 (`execution_intents.marker`)
         var leaseOwner: String?
         var leaseExpiresAt: Date?
         var leasedAt: Date?
@@ -280,12 +280,15 @@ public final class FakeBridgeServer: @unchecked Sendable {
     }
 
     @discardableResult
-    public func enqueueCancel(bridgeID: String, taskID: String, abandoned: String? = nil, scope: String = "turn_and_processes", commandID: String = UUID().uuidString.lowercased()) -> Created? {
+    public func enqueueCancel(
+        bridgeID: String, taskID: String, abandoned: String? = nil, scope: String = "turn_and_processes", commandID: String = UUID().uuidString.lowercased(),
+        extra: [String: Any] = [:]
+    ) -> Created? {
         lock.withLock {
             guard let task = tasks[taskID] else { return nil }
             var command = newCommand(id: commandID, bridgeID: bridgeID, kind: "cancel", sessionID: task.sessionID, taskID: taskID, turnSeq: task.turnSeq)
             let adapter = sessions[task.sessionID]?.adapter ?? "agent:claude-code"
-            command.payload = ["adapter": adapter, "abandoned_request_id": (abandoned as Any?) ?? NSNull(), "cancel_scope": scope]
+            command.payload = ["adapter": adapter, "abandoned_request_id": (abandoned as Any?) ?? NSNull(), "cancel_scope": scope].merging(extra) { $1 }
             commands[commandID] = command
             notifyLocked()
             return Created(commandID: commandID, taskID: taskID, sessionID: task.sessionID, stepID: command.stepID, marker: command.marker)

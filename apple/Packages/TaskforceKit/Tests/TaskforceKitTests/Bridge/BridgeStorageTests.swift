@@ -41,6 +41,18 @@ struct BridgeStorageTests {
         #expect(!FileManager.default.fileExists(atPath: partition.directory(in: dir.url).path))
     }
 
+    @Test func aCleanupWithARunningAgentLeftBehindIsNotComplete() async throws {
+        let dir = TempDirectory()
+        let partition = BridgePartition(apiOrigin: "https://x.test", userID: UUID())
+        let ledger = try BridgeLedger(directory: partition.directory(in: dir.url))
+        await ledger.close()
+        let result = await BridgeStorage.deletePartition(partition, root: dir.url, credentials: InMemoryBridgeCredentialStore(), unterminatedProcesses: 2)
+        #expect(result.folderRemoved && result.credentialsRemoved, "사용자 데이터는 그래도 지운다")
+        #expect(result.unterminatedProcesses == 2 && !result.isComplete, "끝내지 못한 프로세스가 남았다는 것을 알린다 (검토 반영 2 8장 6)")
+        let clean = await BridgeStorage.deletePartition(partition, root: dir.url, credentials: InMemoryBridgeCredentialStore())
+        #expect(clean.unterminatedProcesses == 0 && clean.isComplete)
+    }
+
     @Test func deletingAPartitionRemovesItsFolderAndCredentialsOnly() async throws {
         let dir = TempDirectory()
         let credentials = InMemoryBridgeCredentialStore()

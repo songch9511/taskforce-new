@@ -195,6 +195,8 @@ public final class FakeAgentProcess: AgentProcess, @unchecked Sendable {
             ))
             return (_startError, scriptProvider(turn), _useSubprocess)
         }
+        // AgentProcess 규칙: 작업 폴더가 없으면 띄우지 않는다 (런타임이 이 Mac이 승인한 폴더를 늘 채운다)
+        if turn.workspaceRef == nil { throw AgentStartError(.spawnFailed) }
         if let startError { throw startError }
         return try launch(script: script, taskID: turn.taskID, marker: turn.marker, events: events, subprocess: subprocess)
     }
@@ -229,8 +231,10 @@ public final class FakeAgentProcess: AgentProcess, @unchecked Sendable {
     public func closeRequest(_ request: AgentRequestRef) async throws {
         lock.withLock {
             _closed.append(request)
-            closedRequestIDs.insert(request.requestID)
+            if request.workspaceRef != nil { closedRequestIDs.insert(request.requestID) }
         }
+        // AgentProcess 규칙: 작업 폴더가 없으면 닫을 수 없다 (아무것도 닫지 않았다)
+        if request.workspaceRef == nil { throw AgentStartError(.spawnFailed) }
     }
 
     public func interrupt(_ target: AgentTurnRef, scope: AgentCancelScope) async -> AgentInterruptResult {

@@ -238,7 +238,8 @@ extension BridgeRuntime {
         let task: BridgeTaskRecord? = if let taskID { try? await ledger.task(taskID) } else { nil }
         let queued = if let taskID { (try? await ledger.outboxRows(forTask: taskID)) ?? [] } else { [OutboxRow]() }
         var adapterReadback = AgentReadback.unsupported
-        if let command, command.state == .startIntent, let task, let adapter = adapters[task.adapter], let marker = marker ?? command.marker {
+        // UUID 모양이 아닌 marker는 adapter에 넘기지 않는다 (결과를 모르는 것으로 답한다)
+        if let command, command.state == .startIntent, let task, let adapter = adapters[task.adapter], let marker = marker ?? command.marker, Self.isUUIDMarker(marker) {
             adapterReadback = await adapter.readback(marker: marker, session: AgentSessionRef(sessionID: task.agentSessionID, externalSessionID: task.externalSessionID, workspaceRef: task.workspaceRef))
         }
         return ReadbackFacts(
@@ -290,7 +291,8 @@ extension BridgeRuntime {
             ?? BridgeCommandRecord(commandID: item.commandID, kind: "cancel", agentSessionID: item.agentSessionID, agentTaskID: item.agentTaskID, turnSeq: item.turnSeq, cursor: 0, state: .leased, stateAt: clock.now())
         record.state = .leased
         try? await ledger.saveCommand(record)
-        _ = await interruptIfRunning(taskID: item.agentTaskID, scope: .turnAndProcesses)
+        let signalled = await interruptIfRunning(taskID: item.agentTaskID, scope: .turnAndProcesses)
+        if !signalled { await settleIdleTaskAsCancelled(item.agentTaskID) }
         await sendAck(.complete(.taskUnknown), commandID: item.commandID)
         return .acted
     }
@@ -381,8 +383,9 @@ extension BridgeRuntime {
                     await refuseUnknownPayload(record: fresh, why: "payload_mismatch")
                     return .acted
                 }
-                // 전달 창(24시간)이 지난 명령은 띄우지 않는다: 서버는 lease 때 24시간 지난 명령을 거두지만 `replay`는 그 검사를 지나 올 수 있다
-                if clock.now().timeIntervalSince(item.createdAt) > Self.deliveryWindow {
+                // 전달 창(24시간)이 지난 message · answer는 띄우지 않는다: 서버는 lease 때 24시간 지난 명령을 거두지만 `replay`는 그 검사를 지나 올 수 있다.
+                // Stop(cancel)은 창의 적용을 받지 않는다: 하루 넘게 기다렸어도 언제나 돌고 있는 실행을 멈추고 정산한다 (검토 반영 2 8장 1)
+                if item.kind != .cancel, clock.now().timeIntervalSince(item.createdAt) > Self.deliveryWindow {
                     await refuseUnknownPayload(record: fresh, why: "expired")
                     return .acted
                 }
@@ -420,15 +423,18 @@ extension BridgeRuntime {
     /// 서버가 아직 lease되지 않은 명령을 들고 있는 시간 (D2a 3.3): 이보다 오래된 명령은 띄우지 않는다
     static let deliveryWindow: TimeInterval = 24 * 3600
 
+    /// lease가 준 내용이 목록에서 본 그 명령인가: id · task · 세션과 **종류**가 같아야 한다. 종류가 다르면 목록 종류로 정한 것(24시간 창을 건너뛰는 Stop,
+    /// 마무리 모드의 새 전달 막기, writer 하나)을 우회할 수 있다 (검토 반영 2 8장 1)
     static func payload(_ payload: BridgeV1CommandPayload, matches item: BridgeV1CommandListItem) -> Bool {
         let common: BridgeV1CommandCommon
+        let kind: BridgeV1CommandKind
         switch payload {
-        case .message(let command): common = command.common
-        case .answer(let command): common = command.common
-        case .cancel(let command): common = command.common
+        case .message(let command): (common, kind) = (command.common, .message)
+        case .answer(let command): (common, kind) = (command.common, .answer)
+        case .cancel(let command): (common, kind) = (command.common, .cancel)
         case .unsupported: return true // 어차피 실행하지 않는다
         }
-        return common.id == item.id && common.agentTaskID == item.agentTaskID && common.agentSessionID == item.agentSessionID
+        return kind == item.kind && common.id == item.id && common.agentTaskID == item.agentTaskID && common.agentSessionID == item.agentSessionID
     }
 
     /// lease를 받았다: 원장에 `leased`(글 아닌 값만)를 적고 task를 만든 뒤 kind별로 실행한다
@@ -586,6 +592,8 @@ extension BridgeRuntime {
         case .full: mode = .full
         case .unknown: return await refuseUnknownPayload(record: record)
         }
+        // marker는 서버가 만든 uuid다. 명령줄이나 파일 이름에 쓰일 수 있는 adapter에는 그 모양만 넘긴다 (검토 반영 2 8장 6)
+        guard Self.isUUIDMarker(common.marker) else { return await refuseUnknownPayload(record: record, why: "unsafe_marker") }
         guard let adapter = adapters[common.adapter] else {
             return await failBeforeAcceptance(taskID: common.agentTaskID, commandID: record.commandID, reason: .spawnFailed)
         }
@@ -607,15 +615,17 @@ extension BridgeRuntime {
         // 서버가 준 작업 폴더는 이 Mac이 만든(사용자가 고른) 값일 때만 쓴다. 아니면 거절한다 (침해된 서버가 임의 경로를 시키지 못하게, 검토 반영 7장 C11)
         var workspace = common.session.workspaceRef
         if let served = workspace {
-            guard let resolver = workspaces, await resolver.authorize(workspaceRef: served, session: common.agentSessionID, adapter: common.adapter) else {
-                return await refuseUnknownPayload(record: record, why: "workspace_unauthorized")
-            }
+            // 이 Mac이 그 세션에 기록한 값(adapter가 `session_bound`로 알린 정규화된 경로 등)과 같은 값도 인정한다: 다음 턴이 정규화 차이로 거절되지 않게 (검토 반영 2 8장 3)
+            var approved = false
+            if let resolver = workspaces { approved = await resolver.authorize(workspaceRef: served, session: common.agentSessionID, adapter: common.adapter) }
+            if !approved { approved = await macRecordedWorkspace(served, session: common.agentSessionID) }
+            guard approved else { return await refuseUnknownPayload(record: record, why: "workspace_unauthorized") }
         }
-        // 새 세션의 작업 폴더는 D4a가 채우는 resolver가 정한다. 값이 없으면 짐작하지 않고 실패 (Q26)
-        if common.session.externalSessionID == nil, workspace == nil {
+        // 모든 실행에는 이 Mac이 승인한 작업 폴더가 있어야 한다: 새 세션이든 재개(`external_session_id`)든 서버가 폴더를 주지 않았으면 resolver가 정한다.
+        // 값이 없거나 비어 있으면 짐작하지 않고 접수 전 실패 (Q26, 검토 반영 2 8장 2). `workspace_ref`는 서버가 비어 있지 않게 요구한다
+        if workspace == nil {
             workspace = await workspaces?.workspace(forSession: common.agentSessionID, adapter: common.adapter)
-            if workspace?.isEmpty != false { // 값이 없거나 빈 값이면 서버가 거절한다 (`workspace_ref`는 비어 있지 않아야 한다)
-                workspace = nil
+            if workspace?.isEmpty != false {
                 return await failBeforeAcceptance(taskID: common.agentTaskID, commandID: record.commandID, reason: .spawnFailed)
             }
         }
@@ -678,6 +688,16 @@ extension BridgeRuntime {
         return id.utf8.allSatisfy { ($0 >= 0x30 && $0 <= 0x39) || ($0 >= 0x41 && $0 <= 0x5A) || ($0 >= 0x61 && $0 <= 0x7A) || $0 == 0x5F || $0 == 0x2D }
     }
 
+    /// 서버의 marker 모양 (`execution_intents.marker`는 uuid): 표준 8-4-4-4-12 모양만 adapter에 넘긴다 (`UUID(uuidString:)`은 그 밖의 길이 · 모양을 받지 않는다)
+    static func isUUIDMarker(_ marker: String) -> Bool {
+        UUID(uuidString: marker) != nil
+    }
+
+    /// 서버가 보낸 작업 폴더가 이 Mac이 그 세션에 기록한 값과 같은가. 원장 task의 `workspace_ref`는 이 Mac의 resolver가 정했거나 adapter(`session_bound`)가 알린 값뿐이다
+    func macRecordedWorkspace(_ ref: String, session: String) async -> Bool {
+        ((try? await ledger.allTasks()) ?? []).contains { $0.agentSessionID == session && $0.workspaceRef == ref }
+    }
+
     /// 프로세스를 띄운 뒤: 정체(pid · 시작 시각 · marker)와 `started`를 적는다. 시작 중에 이미 끝났다는 알림이 왔으면 되돌리지 않는다
     func recordStarted(taskID: String, runID: UUID, commandID: String, identity: AgentProcessIdentity, answer: Bool) async {
         let stillRunning = supervised[taskID]?.runID == runID
@@ -729,6 +749,7 @@ extension BridgeRuntime {
         case .approval: kind = .approval
         case .unknown: return await refuseUnknownPayload(record: record)
         }
+        guard Self.isUUIDMarker(common.marker) else { return await refuseUnknownPayload(record: record, why: "unsafe_marker") }
         let requestID = command.providerRequestID
         guard let task = try? await ledger.task(common.agentTaskID), task.openRequestID == requestID, !task.closedRequestIDs.contains(requestID),
               let adapter = adapters[task.adapter] else {
@@ -831,9 +852,19 @@ extension BridgeRuntime {
         // 모르는 범위는 더 넓게 멈춘다 (안전한 쪽)
         let scope: AgentCancelScope = command.cancelScope == .turn ? .turn : .turnAndProcesses
         let signalled = await interruptIfRunning(taskID: common.agentTaskID, scope: scope)
+        if !signalled { await settleIdleTaskAsCancelled(common.agentTaskID) }
         _ = try? await ledger.updateCommand(record.commandID) { $0.state = .ended; $0.stateAt = clock.now() }
         // 돌고 있는 실행이 없거나 이 Mac이 모르는 작업이면 "기록 없음"이다
         await sendAck(.complete(signalled ? .sent : .taskUnknown), commandID: record.commandID)
+    }
+
+    /// 중단을 정산했는데 돌고 있는 실행이 없다 (질문을 기다리던 task처럼 프로세스가 이미 끝났다): 원장도 `cancelled`로 닫는다.
+    /// 그대로 두면 heartbeat · reconcile에 영원히 실리고 prune도 지우지 못한다 (검토 반영 2 8장 5)
+    func settleIdleTaskAsCancelled(_ taskID: String) async {
+        _ = try? await ledger.updateTask(taskID) {
+            guard !$0.alive, ["dispatched", "accepted", "running", "awaiting_answer"].contains($0.lastState) else { return }
+            $0.lastState = "cancelled"
+        }
     }
 
     /// 살아 있는 실행에 중단 신호를 보낸다 (멱등). 보냈으면 true. 먼저 의도(`cancel_state`)를 적는다

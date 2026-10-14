@@ -21,13 +21,15 @@ public enum BridgeStorage {
     public struct CleanupResult: Equatable, Sendable {
         public var folderRemoved: Bool
         public var credentialsRemoved: Bool
+        /// 끝내지 못했거나 끝을 증명하지 못한 에이전트 프로세스 수: 원장을 지우면 그 정체(pid · marker)도 사라져 감독 밖 writer로 남을 수 있다 (검토 반영 2 8장 6)
+        public var unterminatedProcesses = 0
 
-        public var isComplete: Bool { folderRemoved && credentialsRemoved }
+        public var isComplete: Bool { folderRemoved && credentialsRemoved && unterminatedProcesses == 0 }
     }
 
     /// 계정 삭제 성공: 이 파티션의 원장 폴더와 Keychain 항목을 **끝까지 지우고** 결과를 돌려준다 (Q22). 다른 파티션은 건드리지 않는다.
     /// 호출한 쪽은 먼저 감독 중인 프로세스를 끝내고 원장을 닫아야 한다. 디스크를 만지므로 메인 스레드 밖에서 부른다
-    public static func deletePartition(_ partition: BridgePartition, root: URL, credentials: any BridgeCredentialStore) async -> CleanupResult {
+    public static func deletePartition(_ partition: BridgePartition, root: URL, credentials: any BridgeCredentialStore, unterminatedProcesses: Int = 0) async -> CleanupResult {
         await Task.detached(priority: .userInitiated) {
             let directory = partition.directory(in: root)
             var folderRemoved = true
@@ -35,7 +37,7 @@ public enum BridgeStorage {
                 folderRemoved = (try? FileManager.default.removeItem(at: directory)) != nil
             }
             let credentialsRemoved = (try? credentials.deleteAll(partition: partition.id)) != nil
-            return CleanupResult(folderRemoved: folderRemoved, credentialsRemoved: credentialsRemoved)
+            return CleanupResult(folderRemoved: folderRemoved, credentialsRemoved: credentialsRemoved, unterminatedProcesses: unterminatedProcesses)
         }.value
     }
 }

@@ -14,6 +14,9 @@ import Foundation
 // - **프로세스 정체 확인을 강하게 한다.** pid만 믿지 않는다: 시작 시각(원장은 밀리초라 1ms 안에서 같아야 한다) · 프로세스 소유자(uid가 이 사용자) · 우리가 띄울 때 심은 marker가 모두 맞아야 같은 프로세스다.
 //   `pid <= 1`에는 어떤 신호도 보내지 않는다. SIGTERM → SIGKILL로 올릴 때 **신호마다 정체를 다시 확인한다** (그 사이 pid가 재사용됐을 수 있다).
 // - **종료 · 계정 삭제에서는 `interrupt`가 듣지 않아도 `terminateOrphan`이 끝낸다.** 런타임은 유예(3초) 뒤에 감독 중인 실행에 `terminateOrphan`을 부른다. 감독 밖 writer를 남기지 않는다.
+// - **작업 폴더 없이는 띄우지 않는다.** 런타임은 모든 실행(새 세션이든 재개든)에 이 Mac이 승인한 `workspaceRef`를 채워 부른다 (서버가 준 폴더는 resolver가 인정할 때만, 없으면 resolver가 정한다 — 없으면 접수 전 `spawn_failed`).
+//   그래도 `workspaceRef == nil`로 불리면 `startTurn` · `closeRequest`는 `spawnFailed`를 던진다 (cwd를 짐작하지 않는다, 검토 반영 2 8장 2). `deliverAnswer`는 원장 task의 승인된 폴더로 불린다.
+// - **marker는 UUID 모양만 받는다.** 런타임은 UUID 모양이 아닌 marker를 adapter에 넘기지 않는다(명령을 거절한다). adapter는 marker를 명령줄 인자나 파일 이름에 그대로 쓰지 말고, 쓰면 UUID로만 쓴다.
 // - 하위 프로세스에는 앱의 환경을 통째로 넘기지 않는다: `AgentChildEnvironment.allowlisted()`(HOME · PATH · LANG · USER)에 adapter가 필요한 것만 명시해서 더한다.
 
 public enum AgentAccess: Sendable, Equatable {

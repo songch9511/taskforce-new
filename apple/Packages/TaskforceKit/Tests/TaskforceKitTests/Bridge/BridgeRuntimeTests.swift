@@ -470,7 +470,7 @@ struct BridgeRuntimeTests {
         let created = h.message()
         await h.runtime.tick()
         await h.settle { (try? await h.ledger.task(created.taskID))?.openRequestID == "req-1" }
-        try await h.agent.closeRequest(AgentRequestRef(taskID: created.taskID, sessionID: created.sessionID, requestID: "req-1", externalSessionID: nil, workspaceRef: nil))
+        try await h.agent.closeRequest(AgentRequestRef(taskID: created.taskID, sessionID: created.sessionID, requestID: "req-1", externalSessionID: nil, workspaceRef: "workspace-test"))
         let answer = try #require(h.server.enqueueAnswer(bridgeID: h.bridgeID, taskID: created.taskID, requestID: "req-1", answerText: "Alice", structured: false))
         h.clock.jump(by: 6)
         await h.runtime.tick()

@@ -118,9 +118,26 @@ struct FakeAgentProcessTests {
         #expect(await eventually { second.events.last == .ended(AgentExit(code: nil, signal: 2)) })
     }
 
+    /// AgentProcess 규칙 (검토 반영 2 8장 2): 작업 폴더 없이는 띄우지도 닫지도 않는다
+    @Test func startingOrClosingWithoutAWorkspaceThrowsSpawnFailed() async throws {
+        let agent = FakeAgentProcess(clock: .system)
+        var noFolder = turn()
+        noFolder.workspaceRef = nil
+        await #expect(throws: AgentStartError(.spawnFailed)) { _ = try await agent.startTurn(noFolder, events: Collector().sink) }
+        #expect(agent.liveRunCount == 0, "띄우지 않았다")
+        await #expect(throws: AgentStartError(.spawnFailed)) {
+            try await agent.closeRequest(AgentRequestRef(taskID: "t1", sessionID: "s1", requestID: "r1", externalSessionID: "ext", workspaceRef: nil))
+        }
+        let delivery = AgentAnswerDelivery(
+            taskID: "t1", sessionID: "s1", turnSeq: 1, adapter: "agent:claude-code", externalSessionID: nil, workspaceRef: "ws", marker: "m", access: .write, policyMode: .manual,
+            requestID: "r1", kind: .input, structured: false, value: AgentAnswerValue(text: "x")
+        )
+        #expect(try await agent.deliverAnswer(delivery, events: Collector().sink) != .requestClosed, "닫지 못했으므로 닫힌 요청으로 기록하지 않는다")
+    }
+
     @Test func f7AndF8AClosedRequestIsRecordedAndAnAnswerToItIsReportedClosed() async throws {
         let agent = FakeAgentProcess(clock: .system)
-        try await agent.closeRequest(AgentRequestRef(taskID: "t1", sessionID: "s1", requestID: "r9", externalSessionID: nil, workspaceRef: nil))
+        try await agent.closeRequest(AgentRequestRef(taskID: "t1", sessionID: "s1", requestID: "r9", externalSessionID: nil, workspaceRef: "ws"))
         #expect(agent.closedRequests.map(\.requestID) == ["r9"])
         let delivery = AgentAnswerDelivery(
             taskID: "t1", sessionID: "s1", turnSeq: 1, adapter: "agent:claude-code", externalSessionID: nil, workspaceRef: nil, marker: "m", access: .write, policyMode: .manual,

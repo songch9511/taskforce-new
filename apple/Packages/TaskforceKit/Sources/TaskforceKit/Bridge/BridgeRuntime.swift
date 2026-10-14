@@ -201,6 +201,9 @@ public actor BridgeRuntime {
     }
 
     func setStatus(_ value: BridgeStatus) {
+        // 멈춘 런타임의 `.stopped`는 멈추기 전에 시작한 요청(heartbeat · 등록)이 뒤늦게 끝나도 되돌아가지 않는다: `resume()`이 네트워크를 다시 켠 뒤에만 바뀐다.
+        // 호스트가 이 값으로 런타임을 놓아도 되는지 가른다 (검토 반영 2 8장 4)
+        if statusValue == .stopped, !networkEnabled, value != .stopped { return }
         guard statusValue != value else { return }
         statusValue = value
         log.log("status", ["to": .code(String(describing: value))])
@@ -293,11 +296,16 @@ public actor BridgeRuntime {
         await stop()
     }
 
-    /// 계정 삭제: 살아 있는 턴을 모두 중단한다 (원장 · 자격은 호출한 쪽이 지운다, Q22)
-    public func interruptLiveTurns() async {
+    /// 계정 삭제: 살아 있는 턴을 모두 중단한다 (원장 · 자격은 호출한 쪽이 지운다, Q22).
+    /// 돌려주는 값은 **끝내지 못했거나 끝을 증명하지 못한 프로세스 수**다: 원장을 지우면 그 정체(pid · marker)도 사라져 감독 밖 writer가 남을 수 있으므로, 호출한 쪽이 정리가 덜 됐다고 알린다 (검토 반영 2 8장 6)
+    @discardableResult
+    public func interruptLiveTurns() async -> Int {
         await interruptAll(reason: "account_deleted")
         await endRemainingRuns()
         await settleOrphans() // 감독 밖에 남은 프로세스도 끝낸다 (원장을 지우기 전에 감독 밖 writer를 남기지 않는다)
+        let unresolved = Set(supervised.keys).union(orphanLiveness.keys).count
+        if unresolved > 0 { log.log("account_deleted_unresolved", ["count": .count(unresolved)]) }
+        return unresolved
     }
 
     /// 중단 신호 뒤 3초 유예 동안 감독 중인 실행이 끝나기를 기다리고, 그래도 남은 실행은 `terminateOrphan`으로 끝낸다 (adapter가 SIGTERM → SIGKILL, 신호마다 정체 재확인).

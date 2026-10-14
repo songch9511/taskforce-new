@@ -174,16 +174,22 @@ public struct BridgeClient: Sendable {
 
     private func perform<T: Decodable>(_ request: inout URLRequest, secret: String?, isRegister: Bool) async throws -> T {
         if let secret { request.setValue(secret, forHTTPHeaderField: "X-Taskforce-Bridge-Secret") }
-        let data: Data
-        let response: URLResponse
+        var data = Data()
+        let http: HTTPURLResponse
         do {
-            (data, response) = try await session.data(for: request, delegate: RedirectRefuser())
+            let (bytes, response) = try await session.bytes(for: request, delegate: RedirectRefuser())
+            guard let received = response as? HTTPURLResponse else { throw BridgeClientError.server(status: 0) }
+            http = received
+            // 본문은 읽으면서 센다: 알린 길이가 상한을 넘으면 읽지 않고, 넘기 시작하면 거기서 끊는다 (끝까지 메모리에 받은 뒤 세지 않는다)
+            guard http.expectedContentLength <= Int64(Self.maxResponseBytes) else { throw BridgeClientError.server(status: http.statusCode) }
+            for try await byte in bytes {
+                data.append(byte)
+                guard data.count <= Self.maxResponseBytes else { throw BridgeClientError.server(status: http.statusCode) }
+            }
         } catch let error as URLError {
             if error.code == .cancelled { throw CancellationError() }
             throw BridgeClientError.transport(String(describing: error.code))
         }
-        guard let http = response as? HTTPURLResponse else { throw BridgeClientError.server(status: 0) }
-        guard data.count <= Self.maxResponseBytes else { throw BridgeClientError.server(status: http.statusCode) }
         guard (200..<300).contains(http.statusCode) else {
             throw Self.error(status: http.statusCode, retryAfter: http.value(forHTTPHeaderField: "Retry-After"), data: data, isRegister: isRegister)
         }
