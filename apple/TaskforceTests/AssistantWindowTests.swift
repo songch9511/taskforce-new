@@ -629,6 +629,7 @@ struct AssistantWindowTests {
         #expect(controller.panel.frame.maxX <= rail.minX, "마우스를 놓으면 레일 밖으로 들어간다")
         let saved = try #require(savedPosition())
         #expect(saved == controller.topLeft && saved.x + AssistantWindowGeometry.width <= rail.minX, "보정한 자리를 저장한다")
+        #expect(controller.desiredTopLeft == controller.topLeft, "보정한 자리가 새 바람이다 (끌던 밖의 자리가 남지 않는다)")
     }
 
     @Test func aWindowOnASecondScreenIsClampedAndSavedAgainstThatScreen() throws {
@@ -715,9 +716,9 @@ struct AssistantWindowTests {
         controller.presentation.bodyHeight = 0
         controller.applyFrame()
         #expect(controller.panel.frame.height == 440 && controller.topLeft.y == 440, "밀려난 자리가 굳지 않는다")
-        // 사용자가 옮긴 자리가 새 바람이다: 높이가 변해도 밀린 자리에서 이어진다
-        controller.move(by: .up)
-        #expect(controller.desiredTopLeft == controller.topLeft)
+        // 사용자가 옮긴 자리가 새 바람이다: 경계에 막혀 못 간 만큼은 바람에 남기지 않는다 (아래 끝에서 ↓)
+        controller.move(by: .down)
+        #expect(controller.topLeft.y == 440 && controller.desiredTopLeft == controller.topLeft, "보정된 자리가 새 바람")
     }
 
     @Test func aHeightChangeStaysOnTheScreenTheWindowWasOnEvenWhenItWouldOverlapAnotherMore() async throws {
