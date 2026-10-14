@@ -32,15 +32,18 @@ struct RGBA: Equatable, CustomStringConvertible {
     }
 }
 
-/// Figma 변수 (jDMRGHWMRXeNUILfi11xvf, 컬렉션 Color, 모드 Light/Dark) — 2026-10-03 `use_figma`로 읽은 값.
-/// 두 `-selected` 다크 값은 선택 행(흰색 14%) 위 4.5:1을 위해 2026-10-03 Figma에서 고친 값이다 (사용자 결정)
+/// 색 토큰의 기준 값. 기준은 디자인 시스템 아티팩트 `tokens.json`이다 (Vt7xUFnjFrLvXmkkKZ5gFx 버전 1791954728-6b5a, OA U1에서 기준이 Figma 변수에서 DS로 바뀜).
+/// 이 표의 이름은 옛 Figma 변수(jDMRGHWMRXeNUILfi11xvf) 이름 그대로다. 아래 다섯 토큰(여덟 값 중 일곱)은 DS 값으로 맞춘 것이다:
+/// `bg/selected`(검정 7% · 흰색 10%) · `bg/glass` 라이트(흰색 82%) · `text/accent` 다크 `#7D9BD1`(blue-300) · `text/secondary-selected`(gray-600 · gray-300) · `status/overdue` 다크 `#FF6961`(red-300).
+/// **DS와 다른 값은 하나뿐이다: `bg/glass` 다크** (DS `#2C2C2ED1`, 여기는 `#1E1E1ECC` 그대로). DS 값으로 바꾸면 흰 창 뒤의 런처 22pt 자리표시가 2.79:1로 떨어져
+/// 기존 가드 `GlassContrastTests.glassOverWorstBackdrop`(3:1, 사용자 결정 2026-10-03)을 깬다. 가드를 약화하지 않고 이 값만 남겨 두었다 (`DesignSystemDeviation`, 결정은 코디네이터 몫)
 enum FigmaColor {
     static let values: [String: (light: String, dark: String)] = [
         "bg/canvas": ("#FFFFFF", "#000000"),
         "bg/surface": ("#F5F5F7", "#1C1C1E"),
         "bg/elevated": ("#FFFFFF", "#2C2C2E"),
-        "bg/selected": ("#00000014", "#FFFFFF24"),
-        "bg/glass": ("#FFFFFFC7", "#1E1E1ECC"),
+        "bg/selected": ("#00000012", "#FFFFFF1A"),
+        "bg/glass": ("#FFFFFFD1", "#1E1E1ECC"),
         "bg/menu": ("#F6F6F6EB", "#2A2A2CF0"),
         "fill/accent": ("#4A6FA5", "#6A8CC7"),
         "fill/inverse": ("#1D1D1F", "#FFFFFF"),
@@ -48,13 +51,13 @@ enum FigmaColor {
         "fill/secondary": ("#FFFFFF", "#3A3A3C"),
         "text/primary": ("#1D1D1F", "#FFFFFF"),
         "text/secondary": ("#636366", "#9A9AA0"),
-        "text/accent": ("#4A6FA5", "#6A8CC7"),
+        "text/accent": ("#4A6FA5", "#7D9BD1"),
         "text/on-accent": ("#FFFFFF", "#FFFFFF"),
         "text/inverse": ("#FFFFFF", "#1D1D1F"),
         "text/link": ("#3F6199", "#7FA0D6"),
-        "text/secondary-selected": ("#5A5A5E", "#B9B9BE"),
-        // 다크는 2026-10-03 #FF453A → #FF594F (같은 색상, bg/elevated 위 4.5:1, 사용자 결정 · Figma 변수도 같은 값)
-        "status/overdue": ("#D70015", "#FF594F"),
+        "text/secondary-selected": ("#636366", "#B4B4BA"),
+        // 다크 red-300 `#FF6961` (DS tokens.json, 4.7:1)
+        "status/overdue": ("#D70015", "#FF6961"),
         "status/overdue-selected": ("#BF0013", "#FFA099"),
         "border/default": ("#E0E0E0", "#3A3A3C"),
         "border/control": ("#636366", "#9A9AA0"),
@@ -176,7 +179,32 @@ enum TokenCatalog {
     }
 }
 
+/// 디자인 시스템 `tokens.json`(6b5a)의 값과 이 앱의 값이 다른 곳. 지금은 한 곳이고, 이유가 있어야 늘 수 있다 (표 머리 주석)
+enum DesignSystemDeviation {
+    /// DS가 기준인 다섯 토큰의 DS 값
+    static let designSystem: [String: (light: String, dark: String)] = [
+        "bg/selected": ("#00000012", "#FFFFFF1A"),
+        "bg/glass": ("#FFFFFFD1", "#2C2C2ED1"),
+        "text/accent": ("#4A6FA5", "#7D9BD1"),
+        "text/secondary-selected": ("#636366", "#B4B4BA"),
+        "status/overdue": ("#D70015", "#FF6961"),
+    ]
+    /// 의도적으로 DS와 다른 값 ("토큰:light|dark")
+    static let known: Set<String> = ["bg/glass:dark"]
+}
+
 struct ColorTokenTests {
+    /// 다섯 토큰은 DS 값과 같고, 다른 곳은 알려진 하나뿐이다 (조용히 어긋나지도, 조용히 늘지도 않게)
+    @Test func theFiveDesignSystemTokensMatchExceptTheKnownDeviation() throws {
+        var deviations: Set<String> = []
+        for (name, ds) in DesignSystemDeviation.designSystem {
+            let resolved = try #require(TokenCatalog.resolve(name), "\(name) 색 세트를 번들에서 찾지 못함")
+            if resolved.light != RGBA(ds.light) { deviations.insert("\(name):light") }
+            if resolved.dark != RGBA(ds.dark) { deviations.insert("\(name):dark") }
+        }
+        #expect(deviations == DesignSystemDeviation.known, "DS와 다른 값: \(deviations.sorted())")
+    }
+
     /// 모든 `TFColor` 토큰이 번들에서 Light · Dark로 풀린다
     @Test(arguments: TFColor.Name.allCases)
     func everyTokenResolvesInBothAppearances(_ name: TFColor.Name) throws {
@@ -203,10 +231,10 @@ struct ColorTokenTests {
         #expect(TokenCatalog.sourceColorSets() == Set(TFColor.Name.allCases.map(\.rawValue)))
     }
 
-    /// 선택 면은 Figma 변수 그대로: 라이트 검정 8% · 다크 흰색 14% (청색 아님)
+    /// 선택 면은 DS 값 그대로: 라이트 검정 7% · 다크 흰색 10% (청색 아님)
     @Test func selectionIsTranslucentGray() throws {
         let selected = try #require(TokenCatalog.resolve("bg/selected"))
-        #expect(selected.light == RGBA(r: 0, g: 0, b: 0, a: 20))
-        #expect(selected.dark == RGBA(r: 255, g: 255, b: 255, a: 36))
+        #expect(selected.light == RGBA(r: 0, g: 0, b: 0, a: 18))
+        #expect(selected.dark == RGBA(r: 255, g: 255, b: 255, a: 26))
     }
 }
