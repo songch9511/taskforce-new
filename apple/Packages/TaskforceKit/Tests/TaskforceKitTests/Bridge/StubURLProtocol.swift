@@ -15,6 +15,8 @@ final class StubURLProtocol: URLProtocol {
         /// true면 응답하지 않고 취소를 기다린다 (긴 대기 · 취소 시험)
         var hold = false
         var transportError: URLError.Code?
+        /// 있으면 이 주소로 가라는 3xx로 답한다 (리다이렉트 거절 시험)
+        var redirectTo: URL?
     }
 
     private static let lock = NSLock()
@@ -63,6 +65,11 @@ final class StubURLProtocol: URLProtocol {
             return
         }
         let response = HTTPURLResponse(url: request.url!, statusCode: reply.status, httpVersion: "HTTP/1.1", headerFields: reply.headers)!
+        if let target = reply.redirectTo {
+            // 세션이 리다이렉트를 따를지 델리게이트에 묻는다. 따르면 새 요청이 나가고(이 프로토콜은 멈춘다), 거절하면 3xx 응답이 그대로 간다
+            client?.urlProtocol(self, wasRedirectedTo: URLRequest(url: target), redirectResponse: response)
+            // 따르지 않기로 했다면 3xx 응답이 그대로 전달돼야 한다 (따랐다면 세션이 이 프로토콜을 멈추므로 아래 호출은 무시된다)
+        }
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
         client?.urlProtocol(self, didLoad: reply.body)
         client?.urlProtocolDidFinishLoading(self)

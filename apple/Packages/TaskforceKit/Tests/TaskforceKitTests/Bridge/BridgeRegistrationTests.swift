@@ -182,6 +182,8 @@ struct BridgeRegistrationTests {
         let h = try BridgeHarness()
         await h.registerFirst()
         #expect(registers(h).first?.json["connect"] as? [String] == [])
+        // probe 보고가 있는 adapter(이 앱에 있는 것)만 connect한다
+        try await h.restart(adapters: [h.agent, FakeAgentProcess(adapter: "agent:codex", clock: h.clock.clock)], reopenLedger: false)
         #expect(await h.runtime.connect(adapters: ["agent:codex", "agent:claude-code", "agent:codex"]))
         #expect(registers(h).last?.json["connect"] as? [String] == ["agent:claude-code", "agent:codex"])
     }

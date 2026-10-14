@@ -7,6 +7,14 @@ import Foundation
 // - 글(사용자 메시지 · 비밀값 답)은 메모리로만 넘긴다. 런타임은 디스크에 쓰지 않는다.
 // - writer 하나: 런타임은 같은 세션에 살아 있는 실행이 있으면 그 세션의 `startTurn` · `deliverAnswer`를 부르지 않는다 (lease도 하지 않는다).
 // - `startTurn`이 던지면 **아무것도 띄우지 않았다**는 뜻이다 (adapter가 정리한다). 던진 이유가 `AgentStartError`면 그 이유로 `failed` 사건을 낸다.
+//
+// adapter 규칙 (D3a · D3b가 지킨다, 검토 반영 7장 A3 · D):
+// - **끝을 증명하지 못하면 `.unknown`이다.** `liveness`는 같은 프로세스가 없다는 것을 확인했을 때만 `.ended`를 주고, `terminateOrphan`은 신호를 보낸 뒤 사라진 것을 확인했을 때만 `.ended`를 준다.
+//   모르면 `.unknown`(또는 끝내지 못했으면 `.alive`)이다. 런타임은 `.unknown`인 고아를 "확인 안 된 고아"로 두고 heartbeat `process_alive`를 true로 보내지 않으며 결과 확인에는 `unknown`으로만 답한다.
+// - **프로세스 정체 확인을 강하게 한다.** pid만 믿지 않는다: 시작 시각(원장은 밀리초라 1ms 안에서 같아야 한다) · 프로세스 소유자(uid가 이 사용자) · 우리가 띄울 때 심은 marker가 모두 맞아야 같은 프로세스다.
+//   `pid <= 1`에는 어떤 신호도 보내지 않는다. SIGTERM → SIGKILL로 올릴 때 **신호마다 정체를 다시 확인한다** (그 사이 pid가 재사용됐을 수 있다).
+// - **종료 · 계정 삭제에서는 `interrupt`가 듣지 않아도 `terminateOrphan`이 끝낸다.** 런타임은 유예(3초) 뒤에 감독 중인 실행에 `terminateOrphan`을 부른다. 감독 밖 writer를 남기지 않는다.
+// - 하위 프로세스에는 앱의 환경을 통째로 넘기지 않는다: `AgentChildEnvironment.allowlisted()`(HOME · PATH · LANG · USER)에 adapter가 필요한 것만 명시해서 더한다.
 
 public enum AgentAccess: Sendable, Equatable {
     case write
@@ -314,6 +322,13 @@ extension AgentProcess {
 /// 새 세션의 작업 폴더를 정한다 (D4a가 채운다). 사용자 폴더를 짐작해 쓰기 권한을 주지 않는다 (Q26)
 public protocol WorkspaceResolver: Sendable {
     func workspace(forSession sessionID: String, adapter: String) async -> String?
+    /// 서버가 명령에 실어 준 `workspace_ref`를 이 Mac이 만든(사용자가 고른) 값으로 인정하나. 서버 값을 그대로 작업 폴더로 쓰지 않는다 (검토 반영 7장 C11):
+    /// 침해된 서버가 임의 경로를 보내도 이 Mac이 고른 적 없는 폴더에서는 실행하지 않는다. 기본은 거절이다 (D4a의 폴더 레지스트리가 구현한다)
+    func authorize(workspaceRef: String, session sessionID: String, adapter: String) async -> Bool
+}
+
+extension WorkspaceResolver {
+    public func authorize(workspaceRef: String, session sessionID: String, adapter: String) async -> Bool { false }
 }
 
 /// 비밀값 답은 이 Mac의 메모리에만 있다 (계약 3.6): 서버에도 디스크에도 없다. D4a의 입력 화면이 넣고 런타임이 한 번 꺼내 간다

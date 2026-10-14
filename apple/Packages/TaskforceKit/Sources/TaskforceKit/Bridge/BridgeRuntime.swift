@@ -50,6 +50,8 @@ public struct BridgeRuntimeSnapshot: Equatable, Sendable {
     public var status: BridgeStatus
     /// 살아 있는 실행(`idle`이 아닌 턴)이 있거나 아직 전달하지 않은 비밀값 답이 있다 (종료 확인 · 업데이트 재시작을 막는다)
     public var isBusy: Bool
+    /// 원장이 살아 있다고 하는 프로세스(감독 중이든 아니든)가 하나라도 있다. 턴이 `idle`이어도 프로세스가 남아 있을 수 있다 (종료 때 감독 밖 writer를 남기지 않기 위해)
+    public var hasLiveProcess: Bool
 }
 
 public struct PollOutcome: Equatable, Sendable {
@@ -135,6 +137,10 @@ public actor BridgeRuntime {
     var pausedUntil: [BridgeRoute: Date] = [:]
     var requestTimes: [BridgeRoute: [Date]] = [:]
     var supervised: [String: Supervised] = [:]
+    /// 원장은 살아 있다고 하지만 감독하는 실행이 없는 task가 마지막으로 확인된 상태: `.alive`(끝내지 못했다) · `.unknown`(끝을 증명하지 못했다)
+    var orphanLiveness: [String: AgentLiveness] = [:]
+    /// 최근 1시간의 등록 시도 시각 (자동 등록 예산 · 물러서기)
+    var registerTimes: [Date] = []
     var terminatedByUs: Set<String> = []
     var pendingWake: BridgeWakeReason?
     var wakeWaiter: CheckedContinuation<BridgeWakeReason?, Never>?
@@ -186,9 +192,11 @@ public actor BridgeRuntime {
 
     public var status: BridgeStatus { statusValue }
 
+    /// 감독 중인 살아 있는 턴이나 아직 전달하지 않은 비밀값 답이 있나. 확인하지 못한 고아(`orphanLiveness`)는 세지 않는다:
+    /// 그 세션의 다음 실행은 `liveTask`가 계속 막지만, 끝을 증명할 수 없는 프로세스가 Sparkle 재시작을 영원히 막아서는 안 된다
     public func isBusy() async -> Bool {
         let tasks = (try? await ledger.allTasks()) ?? []
-        if tasks.contains(where: { $0.alive && $0.lastState != "idle" }) { return true }
+        if tasks.contains(where: { $0.alive && $0.lastState != "idle" && supervised[$0.agentTaskID] != nil }) { return true }
         return await secrets.hasPending
     }
 
@@ -199,8 +207,14 @@ public actor BridgeRuntime {
     }
 
     /// 상태 · 바쁨이 바뀌었으면 알린다
+    /// 살아 있는 프로세스가 있나 (감독 중이거나 원장이 살아 있다고 하는 것)
+    public func hasLiveProcess() async -> Bool {
+        if !supervised.isEmpty { return true }
+        return ((try? await ledger.allTasks()) ?? []).contains { $0.alive }
+    }
+
     func publish() async {
-        let snapshot = BridgeRuntimeSnapshot(status: statusValue, isBusy: await isBusy())
+        let snapshot = BridgeRuntimeSnapshot(status: statusValue, isBusy: await isBusy(), hasLiveProcess: await hasLiveProcess())
         guard snapshot != lastSnapshot else { return }
         lastSnapshot = snapshot
         onChange(snapshot)
@@ -265,10 +279,7 @@ public actor BridgeRuntime {
     public func shutdown(interrupt: Bool) async {
         if interrupt {
             await interruptAll(reason: "shutdown")
-            let deadline = clock.now().addingTimeInterval(3)
-            while !supervised.isEmpty, clock.now() < deadline {
-                try? await clock.sleep(.milliseconds(100))
-            }
+            await endRemainingRuns()
         }
         if networkEnabled, bridgeID != nil {
             await withTaskGroup(of: Void.self) { group in
@@ -285,6 +296,30 @@ public actor BridgeRuntime {
     /// 계정 삭제: 살아 있는 턴을 모두 중단한다 (원장 · 자격은 호출한 쪽이 지운다, Q22)
     public func interruptLiveTurns() async {
         await interruptAll(reason: "account_deleted")
+        await endRemainingRuns()
+        await settleOrphans() // 감독 밖에 남은 프로세스도 끝낸다 (원장을 지우기 전에 감독 밖 writer를 남기지 않는다)
+    }
+
+    /// 중단 신호 뒤 3초 유예 동안 감독 중인 실행이 끝나기를 기다리고, 그래도 남은 실행은 `terminateOrphan`으로 끝낸다 (adapter가 SIGTERM → SIGKILL, 신호마다 정체 재확인).
+    /// 신호를 무시하는 프로세스가 앱 종료 · 계정 삭제 뒤에 감독 밖 writer로 남지 않게 한다 (검토 반영 7장 C12)
+    func endRemainingRuns() async {
+        let deadline = clock.now().addingTimeInterval(3)
+        while !supervised.isEmpty, clock.now() < deadline {
+            try? await clock.sleep(.milliseconds(100))
+        }
+        for (taskID, entry) in supervised {
+            guard let adapter = adapters[entry.adapterID] else { continue }
+            let task = try? await ledger.task(taskID)
+            guard let identity = entry.identity ?? task.map(processIdentity(of:)) else { continue }
+            terminatedByUs.insert(taskID)
+            switch await adapter.terminateOrphan(identity) {
+            case .ended:
+                log.log("run_terminated", ["task": .id(taskID)])
+                await handleEnded(taskID: taskID, runID: entry.runID)
+            case .alive, .unknown:
+                log.log("run_terminate_failed", ["task": .id(taskID)])
+            }
+        }
     }
 
     /// 살아 있는 모든 실행에 중단 신호 (종료 · 폐기 · 서버가 모르는 task)
@@ -339,7 +374,8 @@ public actor BridgeRuntime {
         await publish()
     }
 
-    /// 정리 없이 버린다 (강제 종료 흉내, 시험 전용): 원장만 닫는다
+    #if DEBUG
+    /// 정리 없이 버린다 (강제 종료 흉내, 시험 전용 — Release에는 없다): 원장만 닫는다
     public func abandonForTest() async {
         networkEnabled = false
         generation += 1
@@ -351,6 +387,7 @@ public actor BridgeRuntime {
         await ledger.close()
         statusValue = .stopped
     }
+    #endif
 
     // MARK: 한 번씩 (루프가 부르고, 시험도 직접 부른다)
 
@@ -365,17 +402,35 @@ public actor BridgeRuntime {
     public func housekeeping() async {
         await recover()
         guard active else { return }
+        // 마무리 모드: 끝낼 일이 없으면 요청을 하나도 보내지 않고 멈춘다 (호스트가 런타임을 놓는다)
+        if await finishDrainIfDone() { return }
         await pruneIfDue()
         guard await ensureRegistered() else { return }
         if heartbeatDue() { await sendHeartbeat() }
         await flushAcks()
         await flushOutbox()
         await enqueueReconcileIfNeeded()
+        _ = await finishDrainIfDone()
+    }
+
+    /// 마무리 모드(`BRIDGE_ENABLED` 꺼짐 + 원장에 할 일)에서 감독 중인 실행도, 끝나지 않은 명령 · 보낼 사건 · ack도, 살아 있는 task도 없으면 멈춘다 (계약 2.14)
+    func finishDrainIfDone() async -> Bool {
+        guard config.mode == .drain, supervised.isEmpty, let pending = try? await ledger.hasPendingWork(), !pending else { return false }
+        log.log("drain_done", [:])
+        await stop()
+        return true
     }
 
     // MARK: 루프
 
     func mainLoop(generation gen: Int) async {
+        // 루프가 스스로 끝나면(폐기 · 네트워크 꺼짐) 도는 중이라는 표시를 비운다: 그래야 `reactivate()`가 루프를 다시 시작할 수 있다
+        defer {
+            if generation == gen {
+                loopsRunning = false
+                loopTask = nil
+            }
+        }
         await startWake()
         while !Task.isCancelled, isCurrent(gen) {
             await housekeeping()
@@ -499,9 +554,10 @@ public actor BridgeRuntime {
         if let meta = try? await ledger.meta() {
             bridgeID = meta.bridgeID
             lastHeartbeatOK = meta.lastHeartbeatOKAt
-            if let seconds = meta.heartbeatIntervalSeconds { heartbeatInterval = TimeInterval(seconds) }
-            if let seconds = meta.unreachableAfterSeconds { unreachableAfter = TimeInterval(seconds) }
-            if let seconds = meta.longPollMaxSeconds { longPollMax = seconds }
+            // 원장에 적힌 서버 숫자도 범위를 자른다 (서버 값은 신뢰 경계 밖이다)
+            if let seconds = meta.heartbeatIntervalSeconds { heartbeatInterval = TimeInterval(BridgeV1Clamp.clamp(seconds, to: BridgeV1Clamp.heartbeatSeconds)) }
+            if let seconds = meta.unreachableAfterSeconds { unreachableAfter = TimeInterval(BridgeV1Clamp.clamp(seconds, to: BridgeV1Clamp.unreachableSeconds)) }
+            if let seconds = meta.longPollMaxSeconds { longPollMax = BridgeV1Clamp.clamp(seconds, to: BridgeV1Clamp.longPollSeconds) }
             lastAdapterReportHash = meta.adaptersReportHash
         }
         secret = (try? credentials.secret(partition: partitionID)) ?? nil
@@ -536,15 +592,23 @@ public actor BridgeRuntime {
             case .alive:
                 switch await adapter.terminateOrphan(identity) {
                 case .ended:
+                    orphanLiveness[task.agentTaskID] = nil
                     log.log("orphan_terminated", ["task": .id(task.agentTaskID)])
                     await finishEnded(taskID: task.agentTaskID, byUs: true)
-                case .alive, .unknown:
-                    // 끝났다는 확인이 없다: 이 세션의 다음 실행은 막은 채로 둔다 (writer 하나)
+                case .alive:
+                    // 살아 있음을 확인했지만 끝내지 못했다: 이 세션의 다음 실행은 막은 채로 둔다 (writer 하나)
+                    orphanLiveness[task.agentTaskID] = .alive
+                    log.log("orphan_stuck", ["task": .id(task.agentTaskID)])
+                case .unknown:
+                    orphanLiveness[task.agentTaskID] = .unknown
                     log.log("orphan_stuck", ["task": .id(task.agentTaskID)])
                 }
             case .ended:
+                orphanLiveness[task.agentTaskID] = nil
                 await finishEnded(taskID: task.agentTaskID, byUs: false)
             case .unknown:
+                // 확인 안 된 고아: 끝났다고도 살아 있다고도 보고하지 않는다 (heartbeat `process_alive` false, 결과 확인은 `unknown`). 세션은 계속 막는다
+                orphanLiveness[task.agentTaskID] = .unknown
                 log.log("orphan_unknown", ["task": .id(task.agentTaskID)])
             }
         }
@@ -583,15 +647,39 @@ public actor BridgeRuntime {
     func probeAll() async -> [BridgeV1AdapterReport] {
         var reports: [BridgeV1AdapterReport] = []
         for id in adapterOrder {
-            if let adapter = adapters[id] { reports.append(await adapter.probe()) }
+            guard let adapter = adapters[id] else { continue }
+            var report = await adapter.probe()
+            report.version = OutgoingValues.adapterVersion(report.version) // 서버는 50자를 넘는 version을 400으로 거절한다
+            reports.append(report)
         }
         lastProbeAt = clock.now()
         return reports
     }
 
+    /// 자동 등록(처음 · 401 회복)의 예산과 물러서기 (검토 반영 7장 D · security 3): 서버는 시간당 20회로 막는다. 우리는 1시간에 10회까지,
+    /// 시도마다 간격을 두 배로 늘린다 (최대 5분). **성공으로 초기화하지 않는다**: 등록이 성공해도 곧 다시 401/404가 되는 되풀이가 서버 한도를 쓰지 못하게.
+    /// 사용자가 누른 Connect · Reconnect는 막지 않는다 (시도는 센다)
+    func registerAllowed() -> Bool {
+        let now = clock.now()
+        registerTimes = registerTimes.filter { now.timeIntervalSince($0) < 3600 }
+        guard registerTimes.count < Self.registerBudgetPerHour else { return false }
+        guard let last = registerTimes.last else { return true }
+        let delay = registerTimes.count <= 1 ? 0 : min(300, pow(2.0, Double(registerTimes.count - 1)))
+        return now.timeIntervalSince(last) >= delay
+    }
+
+    static let registerBudgetPerHour = 10
+
     func performRegister(reactivate: Bool, reason: String) async -> Bool {
         guard networkEnabled else { return false }
         if let until = pausedUntil[.register], clock.now() < until { return false }
+        if reason == "initial" || reason == "recover_401" {
+            guard registerAllowed() else {
+                log.log("register_backoff", ["reason": .code(reason)])
+                return false
+            }
+        }
+        registerTimes.append(clock.now())
         let gen = generation
         let deviceID: String
         do {
@@ -669,7 +757,10 @@ public actor BridgeRuntime {
     /// 사용자가 Connect를 눌렀다 (`connect: [adapter]`, 화면은 U2 · D4a). 마무리 모드에서는 새 등록 · Connect 0
     public func connect(adapters ids: [String]) async -> Bool {
         guard config.mode == .normal, networkEnabled else { return false }
-        pendingConnect = Array(Set(ids)).sorted()
+        // probe 보고가 없는(이 앱에 adapter가 없는) 것은 connect하지 않는다: 서버는 보고 없는 adapter의 connect를 거절한다
+        let connectable = Set(ids).filter { adapters[$0] != nil }
+        guard !connectable.isEmpty else { return false }
+        pendingConnect = connectable.sorted()
         return await register(reactivate: false, reason: "connect")
     }
 
@@ -679,6 +770,11 @@ public actor BridgeRuntime {
         networkEnabled = true
         let result = await register(reactivate: true, reason: "reactivate")
         if !result, statusValue == .revoked { networkEnabled = false }
+        if result, wasStarted, !loopsRunning, statusValue != .stopped {
+            // 폐기(403)로 루프가 끝났다: 되살아난 Mac은 heartbeat · 목록을 다시 돈다
+            firstPollDone = false
+            start()
+        }
         return result
     }
 
@@ -706,6 +802,7 @@ public actor BridgeRuntime {
         guard budgetAllows(route) else { throw RouteFailure.blocked }
         let gen = generation
         var retriedAfter401 = false
+        var retriedWithNewerSecret = false
         while true {
             guard let current = secret else { throw RouteFailure.blocked }
             recordRequest(route)
@@ -719,6 +816,11 @@ public actor BridgeRuntime {
                 guard isCurrent(gen) else { throw RouteFailure.blocked }
                 switch error {
                 case .unauthorized:
+                    // 실패한 요청이 쓴 secret이 이미 낡았다(그 사이 다른 호출이 다시 등록했다): 새 secret으로 다시 보낸다. 또 등록해 secret을 돌리지 않는다
+                    if !retriedWithNewerSecret, let latest = secret, latest != current {
+                        retriedWithNewerSecret = true
+                        continue
+                    }
                     if retriedAfter401 {
                         setStatus(.credentialRejected)
                         await publish()
@@ -746,14 +848,20 @@ public actor BridgeRuntime {
                     pausedUntil[route] = clock.now().addingTimeInterval(after)
                     log.log("rate_limited", ["route": .code(route.rawValue), "seconds": .count(Int(after))])
                     throw RouteFailure.rateLimited
-                case .transport, .server:
+                case .transport, .server, .decoding:
+                    // 2xx인데 본문을 읽을 수 없는 것(로그인 안내 창 같은 중간 장치)도 일시 실패다: 물러섰다 다시 보내고 행을 유지한다.
+                    // 묶음을 쪼개거나 dead-letter하는 것은 진짜 HTTP 400일 때만이다
                     setStatus(.offline)
                     reconnecting = true
                     await publish()
                     throw RouteFailure.offline
                 case .accountChanged, .notSignedIn:
                     throw RouteFailure.accountMismatch
-                case .badRequest, .conflict, .tooManyBridges, .decoding:
+                case .insecureEndpoint:
+                    // https도 loopback도 아닌 주소: 토큰 · secret을 보내지 않았다. 조용히 막고 한 번만 기록한다
+                    log.log("endpoint_insecure", [:])
+                    throw RouteFailure.blocked
+                case .badRequest, .conflict, .tooManyBridges:
                     throw RouteFailure.badRequest
                 }
             }

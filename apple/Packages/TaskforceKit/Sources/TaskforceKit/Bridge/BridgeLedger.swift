@@ -18,8 +18,15 @@ public actor BridgeLedger {
     private var db: SQLiteDatabase
     private let now: @Sendable () -> Date
     private let byteLimit: Int
+    /// 단일 인스턴스 잠금: 파티션 폴더의 `ledger.lock`에 건 `flock`. 닫을 때 풀린다
+    private var lockDescriptor: Int32
 
     private static let day: TimeInterval = 86400
+
+    /// 열기 · `quick_check` · 스키마 만들기는 디스크를 만진다. 메인 스레드에서는 이 비동기 버전으로 연다 (새 스레드에서 열고 원장을 돌려준다)
+    public static func open(directory: URL, now: @escaping @Sendable () -> Date = { Date() }, byteLimit: Int = 50_000_000) async throws -> BridgeLedger {
+        try await Task.detached(priority: .userInitiated) { try BridgeLedger(directory: directory, now: now, byteLimit: byteLimit) }.value
+    }
 
     public init(directory: URL, now: @escaping @Sendable () -> Date = { Date() }, byteLimit: Int = 50_000_000) throws {
         self.directory = directory
@@ -30,15 +37,51 @@ public actor BridgeLedger {
         let fileManager = FileManager.default
         try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
         try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
+        // 같은 파티션 원장은 한 곳에서만 쓴다: 두 번째 런타임 · 프로세스가 같은 파일을 열면 서로의 감독을 모르고 같은 명령을 두 번 띄울 수 있다
+        let descriptor = try Self.acquireLock(in: directory)
+        self.lockDescriptor = descriptor
         var moved: URL?
         do {
-            self.db = try Self.openPrepared(file)
-        } catch let error as BridgeLedgerError where Self.isCorruption(error) {
-            moved = try Self.quarantine(file, at: now())
-            self.db = try Self.openPrepared(file)
+            do {
+                self.db = try Self.openPrepared(file)
+            } catch let error as BridgeLedgerError where Self.isCorruption(error) {
+                moved = try Self.quarantine(file, at: now())
+                self.db = try Self.openPrepared(file)
+            }
+        } catch {
+            flock(descriptor, LOCK_UN)
+            Darwin.close(descriptor)
+            throw error
         }
         self.quarantinedFile = moved
-        try? fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
+        // 쓰기를 한 번 해서 WAL · SHM 파일이 만들어진 뒤 세 파일 모두 소유자만 읽게 한다 (폴더가 0700이어도 파일 권한을 따로 둔다)
+        _ = try? db.run("UPDATE meta SET schema_version = schema_version WHERE id = 1")
+        Self.restrictPermissions(file)
+    }
+
+    deinit {
+        if lockDescriptor >= 0 {
+            flock(lockDescriptor, LOCK_UN)
+            Darwin.close(lockDescriptor)
+        }
+    }
+
+    private static func acquireLock(in directory: URL) throws -> Int32 {
+        let descriptor = Darwin.open(directory.appending(path: "ledger.lock").path, O_CREAT | O_RDWR | O_CLOEXEC, 0o600)
+        guard descriptor >= 0 else { throw BridgeLedgerError.sqlite(code: Int(errno), message: "lock open") }
+        guard flock(descriptor, LOCK_EX | LOCK_NB) == 0 else {
+            Darwin.close(descriptor)
+            throw BridgeLedgerError.locked
+        }
+        return descriptor
+    }
+
+    /// DB · WAL · SHM 세 파일을 0600으로 (없는 파일은 건너뛴다)
+    private static func restrictPermissions(_ file: URL) {
+        for suffix in ["", "-wal", "-shm"] {
+            let path = file.path + suffix
+            if FileManager.default.fileExists(atPath: path) { try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path) }
+        }
     }
 
     // MARK: 열기 · 손상 격리
@@ -47,7 +90,7 @@ public actor BridgeLedger {
         switch error {
         case .corrupt: true
         case .sqlite(let code, _): [11, 26].contains(code & 0xFF) // SQLITE_CORRUPT · SQLITE_NOTADB
-        case .unknownTask: false
+        case .unknownTask, .unknownCommand, .newerSchema, .locked: false
         }
     }
 
@@ -68,8 +111,8 @@ public actor BridgeLedger {
                     try db.run("INSERT INTO meta (id, schema_version) VALUES (1, ?)", [.n(Self.schemaVersion)])
                 }
             } else if version > Self.schemaVersion {
-                // 더 새 앱이 만든 원장: 열지 않는다 (지우지도 않는다)
-                throw BridgeLedgerError.sqlite(code: Int(version), message: "newer schema")
+                // 더 새 앱이 만든 원장: 열지 않는다 (지우지도 않는다). 손상이 아니므로 격리하지 않는다 (sqlite 오류 코드 11 · 26과 헷갈리지 않게 따로 둔 오류)
+                throw BridgeLedgerError.newerSchema(version: version)
             }
             return db
         } catch {
@@ -95,12 +138,25 @@ public actor BridgeLedger {
 
     public func close() {
         db.close()
+        if lockDescriptor >= 0 {
+            flock(lockDescriptor, LOCK_UN)
+            Darwin.close(lockDescriptor)
+            lockDescriptor = -1
+        }
     }
 
     /// WAL을 본 파일에 반영한다 (절전 전, 종료 전)
     public func checkpoint() {
         _ = try? db.scalarText("PRAGMA wal_checkpoint(TRUNCATE)")
     }
+
+    #if DEBUG
+    /// 시험 전용: 이 글이 들어간 쓰기 문장을 `skip`번 건너뛴 뒤 한 번 실패시킨다 (여러 행을 한 트랜잭션으로 쓰는지 본다)
+    public func debugFailWrite(containing text: String, after skip: Int = 0) {
+        db.faultSubstring = text
+        db.faultSkip = skip
+    }
+    #endif
 
     public func diagnostics() throws -> LedgerDiagnostics {
         LedgerDiagnostics(
@@ -302,6 +358,22 @@ public actor BridgeLedger {
         return record
     }
 
+    /// "run 시작" 한 번: task(살아 있음 · 이번 명령 · 구간 초기화)와 명령(`start_intent`) 두 행을 **한 트랜잭션**으로 쓴다 (메시지 · 답 둘 다).
+    /// 둘 중 하나만 적히고 죽으면 "프로세스를 띄웠을 수 있는데 명령은 아직 lease 상태" 같은 모순이 생기므로 함께 아니면 둘 다 없다
+    public func beginRun(
+        taskID: String, task change: @Sendable (inout BridgeTaskRecord) -> Void, commandID: String, command commandChange: @Sendable (inout BridgeCommandRecord) -> Void
+    ) throws {
+        try db.transaction {
+            guard var task = try task(taskID) else { throw BridgeLedgerError.unknownTask(taskID) }
+            change(&task)
+            task.updatedAt = now()
+            try saveTask(task)
+            guard var record = try command(commandID) else { throw BridgeLedgerError.unknownCommand(commandID) }
+            commandChange(&record)
+            try saveCommand(record)
+        }
+    }
+
     /// 같은 세션에 살아 있는 실행 (writer 하나, 계약 13.1). `taskID`는 건너뛴다 (그 task에 오는 답은 같은 실행의 이어짐이다)
     public func liveTask(inSession sessionID: String, excluding taskID: String?) throws -> BridgeTaskRecord? {
         try db.rows(
@@ -420,9 +492,11 @@ public actor BridgeLedger {
     // MARK: ack outbox
 
     /// ack도 먼저 적고 보낸다. 명령에는 무엇을 보고하려는지 남긴다 (같은 명령에 `unknown`을 두 번 보내지 않기 위해)
+    /// `saving`이 있으면 그 명령 기록(예: 원장 분실로 만든 `declined`)과 ack를 **한 트랜잭션**으로 쓴다: 기록만 있고 ack가 없는 반쪽 상태가 남지 않는다
     @discardableResult
-    public func enqueueAck(commandID: String, op: String, result: String?, bodyJSON: String) throws -> Int64 {
+    public func enqueueAck(commandID: String, op: String, result: String?, bodyJSON: String, saving record: BridgeCommandRecord? = nil) throws -> Int64 {
         try db.transaction {
+            if let record { try saveCommand(record) }
             try db.run(
                 "INSERT INTO ack_outbox (command_id, op, body_json, next_attempt_at) VALUES (?, ?, ?, ?)",
                 [.text(commandID), .text(op), .text(bodyJSON), .date(now())]
@@ -499,7 +573,21 @@ public actor BridgeLedger {
                 "UPDATE outbox SET dead_reason = 'outbox_expired', dead_at = ? WHERE dead_reason IS NULL AND created_at < ?", [.date(at), .date(week)]
             )
             report.fullTexts = try db.run("DELETE FROM full_texts WHERE created_at < ?", [.date(month)])
+            // 끝난 task(살아 있지 않고 7일 넘게 바뀌지 않았으며 보낼 사건 · 끝나지 않은 명령이 없는 것)와 그 질문 원래 값, 더는 task가 없는 세션의 사건 번호표
+            report.tasks = try db.run(
+                """
+                DELETE FROM tasks WHERE alive = 0 AND updated_at < ? AND last_state IN ('idle', 'failed', 'cancelled')
+                  AND NOT EXISTS (SELECT 1 FROM outbox o WHERE o.agent_task_id = tasks.agent_task_id)
+                  AND NOT EXISTS (SELECT 1 FROM commands c WHERE c.agent_task_id = tasks.agent_task_id AND c.state NOT IN (\(finished)))
+                """,
+                [.date(week)]
+            )
+            report.questionMaps = try db.run("DELETE FROM question_maps WHERE agent_task_id NOT IN (SELECT agent_task_id FROM tasks)")
+            report.counters = try db.run(
+                "DELETE FROM counters WHERE name LIKE 'session:%:s' AND substr(name, 9, length(name) - 10) NOT IN (SELECT agent_session_id FROM tasks)"
+            )
         }
+        report.corruptFiles = pruneQuarantinedFiles(now: at)
         // 크기 상한: 쓰는 쪽만 센다 (지운 쪽은 빈 쪽 목록으로 간다)
         while try usedBytes() > byteLimit {
             let removed = try db.run(
@@ -511,6 +599,19 @@ public actor BridgeLedger {
         return report
     }
 
+    /// 손상으로 옮겨 둔 `ledger.sqlite.corrupt-<epoch>`(+WAL · SHM)는 7일 뒤 지운다 (사용자 데이터가 폴더에 영원히 남지 않게). 지운 파일 수(묶음 단위)
+    private func pruneQuarantinedFiles(now at: Date) -> Int {
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: directory.path)) ?? []
+        var removed = 0
+        for name in names where name.hasPrefix("ledger.sqlite.corrupt-") {
+            let rest = name.dropFirst("ledger.sqlite.corrupt-".count)
+            let digits = rest.prefix { $0.isNumber }
+            guard let epoch = TimeInterval(digits), at.timeIntervalSince1970 - epoch > 7 * Self.day else { continue }
+            if (try? FileManager.default.removeItem(at: directory.appending(path: name))) != nil, rest == digits { removed += 1 }
+        }
+        return removed
+    }
+
     private func usedBytes() throws -> Int {
         let pages = try db.scalarInt("PRAGMA page_count") ?? 0
         let free = try db.scalarInt("PRAGMA freelist_count") ?? 0
@@ -520,15 +621,25 @@ public actor BridgeLedger {
 
     /// 끝나지 않은 명령 · 보낼 사건 · 보낼 ack · 살아 있는 실행이 있나 (BRIDGE_ENABLED가 꺼졌을 때 마무리 모드가 필요한지, 계약 2.14)
     public func hasPendingWork() throws -> Bool {
+        (try db.scalarInt(Self.pendingWorkSQL) ?? 0) > 0
+    }
+
+    private static var pendingWorkSQL: String {
         let finished = BridgeCommandState.allCases.filter(\.isFinished).map { "'\($0.rawValue)'" }.joined(separator: ",")
-        let sql = """
+        return """
             SELECT
               (SELECT COUNT(*) FROM commands WHERE state NOT IN (\(finished))) +
               (SELECT COUNT(*) FROM outbox WHERE dead_reason IS NULL) +
               (SELECT COUNT(*) FROM ack_outbox) +
               (SELECT COUNT(*) FROM tasks WHERE alive = 1)
             """
-        return (try db.scalarInt(sql) ?? 0) > 0
+    }
+
+    /// 원장 파일을 **읽기 전용**으로 열어 할 일이 남았는지만 본다: 스키마를 만들지도 손상 파일을 옮기지도 않고 잠금도 잡지 않는다. 읽을 수 없으면 nil (파일이 없거나 손상 · 더 새 스키마)
+    static func pendingWork(atFile file: URL) -> Bool? {
+        guard FileManager.default.fileExists(atPath: file.path), let db = try? SQLiteDatabase(path: file.path, readOnly: true) else { return nil }
+        defer { db.close() }
+        do { return (try db.scalarInt(pendingWorkSQL) ?? 0) > 0 } catch { return nil }
     }
 
     // MARK: 스키마

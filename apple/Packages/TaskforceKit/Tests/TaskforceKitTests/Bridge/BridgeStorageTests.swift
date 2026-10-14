@@ -23,6 +23,24 @@ struct BridgeStorageTests {
         #expect(await BridgeStorage.hasPendingWork(partition: partition, root: dir.url))
     }
 
+    private struct FailingCredentials: BridgeCredentialStore {
+        func deviceID(partition: String) throws -> String? { nil }
+        func secret(partition: String) throws -> String? { nil }
+        func save(deviceID: String, partition: String) throws {}
+        func save(secret: String, partition: String) throws {}
+        func deleteAll(partition: String) throws { throw BridgeLedgerError.corrupt }
+    }
+
+    @Test func aCleanupThatCouldNotRemoveTheCredentialsSaysSo() async throws {
+        let dir = TempDirectory()
+        let partition = BridgePartition(apiOrigin: "https://x.test", userID: UUID())
+        let ledger = try BridgeLedger(directory: partition.directory(in: dir.url))
+        await ledger.close()
+        let result = await BridgeStorage.deletePartition(partition, root: dir.url, credentials: FailingCredentials())
+        #expect(result.folderRemoved && !result.credentialsRemoved && !result.isComplete, "남은 것을 알린다 (사용자 데이터가 남았는데 성공으로 보이지 않게)")
+        #expect(!FileManager.default.fileExists(atPath: partition.directory(in: dir.url).path))
+    }
+
     @Test func deletingAPartitionRemovesItsFolderAndCredentialsOnly() async throws {
         let dir = TempDirectory()
         let credentials = InMemoryBridgeCredentialStore()
@@ -35,7 +53,8 @@ struct BridgeStorageTests {
             try credentials.save(deviceID: "device-\(partition.id)", partition: partition.id)
             try credentials.save(secret: "secret-\(partition.id)", partition: partition.id)
         }
-        BridgeStorage.deletePartition(mine, root: dir.url, credentials: credentials)
+        let result = await BridgeStorage.deletePartition(mine, root: dir.url, credentials: credentials)
+        #expect(result.isComplete, "둘 다 지웠으면 완료")
         #expect(!FileManager.default.fileExists(atPath: mine.directory(in: dir.url).path))
         #expect(try credentials.deviceID(partition: mine.id) == nil)
         #expect(try credentials.secret(partition: mine.id) == nil)

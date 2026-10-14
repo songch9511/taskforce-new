@@ -179,8 +179,14 @@ final class BridgeHarness: @unchecked Sendable {
 
 struct FixedWorkspace: WorkspaceResolver {
     let path: String
+    /// 이 Mac이 만든 값으로 인정하는 폴더들 (가짜 agent가 `session_bound`로 알리는 `workspace-fake` 포함)
+    var authorized: Set<String> = ["workspace-fake"]
 
     func workspace(forSession sessionID: String, adapter: String) async -> String? { path }
+
+    func authorize(workspaceRef: String, session sessionID: String, adapter: String) async -> Bool {
+        workspaceRef == path || authorized.contains(workspaceRef)
+    }
 }
 
 struct NoWorkspace: WorkspaceResolver {

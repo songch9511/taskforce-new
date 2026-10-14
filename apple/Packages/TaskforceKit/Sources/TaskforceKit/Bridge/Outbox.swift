@@ -59,15 +59,15 @@ public enum Outbox {
         case unrepresentable(String)
     }
 
-    private static func count(_ text: String) -> Int { text.unicodeScalars.count }
+    private static func count(_ text: String) -> Int { OutgoingValues.count(text) }
 
-    /// 글자 수는 유니코드 스칼라 기준이다 (서버는 JS `Array.from`으로 센다)
+    /// 글자 수는 유니코드 스칼라 기준이다 (서버는 JS `Array.from`으로 센다). NUL은 서버 JSONB가 담지 못하므로 먼저 뺀다 (잘리거나 바뀐 값은 `QuestionMap`이 원래 값으로 되돌린다)
     private static func cut(_ text: String, _ limit: Int) -> String {
-        count(text) <= limit ? text : String(String.UnicodeScalarView(text.unicodeScalars.prefix(limit)))
+        OutgoingValues.cut(OutgoingValues.stripNUL(text), limit)
     }
 
     public static func fit(question: AgentQuestion, taskID: String, observedAt: Date) -> QuestionFit {
-        guard (1...200).contains(count(question.providerRequestID)) else { return .unrepresentable("request_id") }
+        guard OutgoingValues.identity(question.providerRequestID) != nil else { return .unrepresentable("request_id") }
         guard (1...4).contains(question.items.count) else { return .unrepresentable("question_count") }
         guard question.items.allSatisfy({ $0.options.count <= 10 }) else { return .unrepresentable("option_count") }
 
@@ -115,7 +115,7 @@ public enum Outbox {
     }
 
     /// JS `JSON.stringify`와 같은 글자 이스케이프 (`"` `\` 제어 문자만)
-    private static func jsonString(_ value: String) -> String {
+    static func jsonString(_ value: String) -> String {
         var out = "\""
         for scalar in value.unicodeScalars {
             switch scalar {
@@ -141,7 +141,8 @@ public enum Outbox {
             case .many(let texts): .many(texts.map { map.labels[$0] ?? $0 })
             }
         }
-        return Dictionary(uniqueKeysWithValues: answers.map { (map.ids[$0.key] ?? $0.key, value($0.value)) })
+        // 서버 값으로 만든 사전이다: 잘린 id와 원래 id가 함께 와서 키가 겹쳐도 죽지 않는다 (먼저 온 값을 쓴다)
+        return Dictionary(answers.map { (map.ids[$0.key] ?? $0.key, value($0.value)) }, uniquingKeysWith: { first, _ in first })
     }
 
     // MARK: 묶음 고르기

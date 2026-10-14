@@ -45,8 +45,14 @@ struct SQLRow {
 final class SQLiteDatabase {
     private var handle: OpaquePointer?
 
-    init(path: String) throws {
-        let flags = SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX
+    #if DEBUG
+    /// 시험 전용: 이 글이 들어간 쓰기 문장을 `faultSkip`번 건너뛴 뒤 한 번 실패시킨다 (한 트랜잭션이 정말 한 번에 되돌려지는지 본다)
+    var faultSubstring: String?
+    var faultSkip = 0
+    #endif
+
+    init(path: String, readOnly: Bool = false) throws {
+        let flags = readOnly ? (SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX) : (SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX)
         var opened: OpaquePointer?
         let code = sqlite3_open_v2(path, &opened, flags, nil)
         handle = opened
@@ -110,6 +116,15 @@ final class SQLiteDatabase {
     /// 결과 행이 없는 문장. 바뀐 행 수를 돌려준다
     @discardableResult
     func run(_ sql: String, _ binds: [SQLValue] = []) throws -> Int {
+        #if DEBUG
+        if let fault = faultSubstring, sql.contains(fault) {
+            if faultSkip == 0 {
+                faultSubstring = nil
+                throw BridgeLedgerError.sqlite(code: Int(SQLITE_IOERR), message: "injected")
+            }
+            faultSkip -= 1
+        }
+        #endif
         let statement = try prepare(sql, binds)
         defer { sqlite3_finalize(statement) }
         var code = sqlite3_step(statement)

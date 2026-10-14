@@ -32,12 +32,15 @@ public final class FakeBridgeServer: @unchecked Sendable {
         public var headers: [String: String] = [:]
         public var transport = false
         public var count = 1
+        /// 있으면 오류 본문 대신 이 JSON을 준다 (예: 모르는 `status`를 단 200 ack 응답)
+        public var bodyJSON: String?
 
-        public init(status: Int, headers: [String: String] = [:], transport: Bool = false, count: Int = 1) {
+        public init(status: Int, headers: [String: String] = [:], transport: Bool = false, count: Int = 1, bodyJSON: String? = nil) {
             self.status = status
             self.headers = headers
             self.transport = transport
             self.count = count
+            self.bodyJSON = bodyJSON
         }
     }
 
@@ -140,7 +143,7 @@ public final class FakeBridgeServer: @unchecked Sendable {
         FakeBridgeURLProtocol.unregister(host: host)
     }
 
-    public var baseURL: URL { URL(string: "http://\(host)")! }
+    public var baseURL: URL { URL(string: "https://\(host)")! }
 
     public func makeSession() -> URLSession {
         let configuration = URLSessionConfiguration.ephemeral
@@ -322,6 +325,33 @@ public final class FakeBridgeServer: @unchecked Sendable {
     }
 
     private var dropAfter: Set<String> = []
+    private var staleOnce: [String: String] = [:]
+
+    /// 이 명령의 다음 lease 요청 하나에 `stale/<reason>`을 준다 (`heartbeat_first` · `policy_changed` 재시도 시험)
+    public func staleOnNextLease(_ commandID: String, reason: String) {
+        lock.withLock { staleOnce[commandID] = reason }
+    }
+
+    /// 이 명령을 "bridge가 lease했는데 결과를 모르는" 상태로 만든다 (lease 만료 뒤 `readbacks`에 나온다)
+    public func markLeasedUnknown(_ commandID: String) {
+        lock.withLock {
+            guard var command = commands[commandID] else { return }
+            command.leaseOwner = "bridge:\(command.bridgeID):\(commandID)"
+            command.leasedAt = clock()
+            command.leaseExpiresAt = clock()
+            command.step = .unknownOutcome
+            commands[commandID] = command
+        }
+    }
+
+    /// 서버가 센 `pending_commands`: 이 bridge의 prepared · calling · unknown_outcome 명령 수 (heartbeat 응답과 같다)
+    public func pendingCommandCount(bridgeID: String) -> Int {
+        lock.withLock { pendingCountLocked(bridgeID: bridgeID) }
+    }
+
+    private func pendingCountLocked(bridgeID: String) -> Int {
+        commands.values.filter { $0.bridgeID == bridgeID && [.prepared, .calling, .unknownOutcome].contains($0.step) }.count
+    }
 
     /// 서버가 task를 이 상태로 둔다 (시험 준비용)
     public func setTaskState(_ id: String, _ state: String) {
@@ -434,7 +464,7 @@ public final class FakeBridgeServer: @unchecked Sendable {
         }
         if let injected {
             if injected.transport { return Reply(status: 0, transportError: true) }
-            return Reply(status: injected.status, headers: injected.headers, body: error("injected", "injected"))
+            return Reply(status: injected.status, headers: injected.headers, body: injected.bodyJSON.map { Data($0.utf8) } ?? error("injected", "injected"))
         }
 
         guard let token, let userID = lock.withLock({ users[token] }) else { return Reply(status: 401, body: error("unauthorized", "Unauthorized")) }
@@ -593,6 +623,8 @@ public final class FakeBridgeServer: @unchecked Sendable {
             switch op {
             case "lease":
                 leaseCounts[commandID, default: 0] += 1
+                // 시험이 정한 한 번짜리 stale (예: `policy_changed`): 단계는 바꾸지 않는다
+                if let reason = staleOnce.removeValue(forKey: commandID) { return ok(["status": "stale", "reason": reason]) }
                 // 3.3 4: 단계가 calling이고 lease_owner가 같으면 replay (만료 연장 0, 쓰기 0). 지금 gate를 다시 본다 (정정 ⑨)
                 if command.step == .calling, command.leaseOwner == owner {
                     if !_gateOpen, command.kind != "cancel" { return ok(["status": "stale", "reason": "write_gate_closed"]) }
@@ -801,7 +833,8 @@ public final class FakeBridgeServer: @unchecked Sendable {
             let missing = tasks.values.filter {
                 sessions[$0.sessionID]?.bridgeID == bridgeID && ["accepted", "running", "awaiting_answer", "unreachable"].contains($0.state) && !reported.contains($0.id)
             }.map(\.id).prefix(50)
-            let pending = commands.values.filter { $0.bridgeID == bridgeID && $0.step == .prepared && $0.leaseOwner == nil }.count
+            // 실제 서버(`bridge_heartbeat`)처럼 prepared · calling · unknown_outcome 모두 센다
+            let pending = pendingCountLocked(bridgeID: bridgeID)
             let response: [String: Any] = [
                 "heartbeat_interval_seconds": 30, "server_time": iso(now), "pending_commands": pending, "unknown_task_ids": unknown, "missing_task_ids": Array(missing),
             ]

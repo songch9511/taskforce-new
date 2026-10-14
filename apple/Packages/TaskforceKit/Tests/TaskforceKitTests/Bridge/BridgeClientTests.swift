@@ -17,7 +17,7 @@ struct BridgeClientTests {
             host = "\(UUID().uuidString.lowercased()).stub.test"
             StubURLProtocol.install(host: host, handler)
             client = BridgeClient(
-                baseURL: URL(string: "http://\(host)")!, session: StubURLProtocol.session(), expectedUserID: user,
+                baseURL: URL(string: "https://\(host)")!, session: StubURLProtocol.session(), expectedUserID: user,
                 bearer: { BridgeBearer(userID: bearerUser, accessToken: "user-jwt") }
             )
         }
@@ -200,7 +200,7 @@ struct BridgeClientTests {
     @Test func aSignedOutSessionIsNotSignedInAndSendsNothing() async {
         let host = "\(UUID().uuidString.lowercased()).stub.test"
         StubURLProtocol.install(host: host) { _ in json(Self.emptyCommands) }
-        let client = BridgeClient(baseURL: URL(string: "http://\(host)")!, session: StubURLProtocol.session(), expectedUserID: Self.user, bearer: { throw APIError.notSignedIn })
+        let client = BridgeClient(baseURL: URL(string: "https://\(host)")!, session: StubURLProtocol.session(), expectedUserID: Self.user, bearer: { throw APIError.notSignedIn })
         do {
             _ = try await client.commands(bridgeID: Self.bridgeID, secret: Self.secret, after: 0, wait: 0)
             Issue.record("must throw")

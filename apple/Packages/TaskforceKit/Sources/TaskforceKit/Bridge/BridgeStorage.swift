@@ -10,19 +10,33 @@ public enum BridgeStorage {
         return support.appending(path: bundleID, directoryHint: .isDirectory).appending(path: "Bridge", directoryHint: .isDirectory).appending(path: "v1", directoryHint: .isDirectory)
     }
 
-    /// 이 파티션에 할 일이 남아 있나 (폴더가 없으면 false). 읽기 전용으로 열어 본다 — `BRIDGE_ENABLED`가 꺼졌을 때 마무리 모드가 필요한지 가르는 데 쓴다
+    /// 이 파티션에 할 일이 남아 있나 (폴더가 없으면 false). 원장을 **읽기 전용**으로 열어 본다(스키마를 만들거나 손상 파일을 옮기지 않는다) —
+    /// `BRIDGE_ENABLED`가 꺼졌을 때 마무리 모드가 필요한지 가르는 데 쓴다. 디스크를 만지므로 메인 스레드 밖에서 읽는다
     public static func hasPendingWork(partition: BridgePartition, root: URL) async -> Bool {
-        let directory = partition.directory(in: root)
-        guard FileManager.default.fileExists(atPath: directory.appending(path: "ledger.sqlite").path) else { return false }
-        guard let ledger = try? BridgeLedger(directory: directory) else { return false }
-        defer { Task { await ledger.close() } }
-        return (try? await ledger.hasPendingWork()) ?? false
+        let file = partition.directory(in: root).appending(path: "ledger.sqlite")
+        return await Task.detached(priority: .userInitiated) { BridgeLedger.pendingWork(atFile: file) ?? false }.value
     }
 
-    /// 계정 삭제 성공: 이 파티션의 원장 폴더와 Keychain 항목을 지운다 (Q22). 다른 파티션은 건드리지 않는다
-    public static func deletePartition(_ partition: BridgePartition, root: URL, credentials: any BridgeCredentialStore) {
-        try? FileManager.default.removeItem(at: partition.directory(in: root))
-        try? credentials.deleteAll(partition: partition.id)
+    /// 계정 삭제 정리의 결과: 어느 쪽이 지워지지 않았는지 알린다 (사용자 데이터가 남았는데 성공으로 보이지 않게)
+    public struct CleanupResult: Equatable, Sendable {
+        public var folderRemoved: Bool
+        public var credentialsRemoved: Bool
+
+        public var isComplete: Bool { folderRemoved && credentialsRemoved }
+    }
+
+    /// 계정 삭제 성공: 이 파티션의 원장 폴더와 Keychain 항목을 **끝까지 지우고** 결과를 돌려준다 (Q22). 다른 파티션은 건드리지 않는다.
+    /// 호출한 쪽은 먼저 감독 중인 프로세스를 끝내고 원장을 닫아야 한다. 디스크를 만지므로 메인 스레드 밖에서 부른다
+    public static func deletePartition(_ partition: BridgePartition, root: URL, credentials: any BridgeCredentialStore) async -> CleanupResult {
+        await Task.detached(priority: .userInitiated) {
+            let directory = partition.directory(in: root)
+            var folderRemoved = true
+            if FileManager.default.fileExists(atPath: directory.path) {
+                folderRemoved = (try? FileManager.default.removeItem(at: directory)) != nil
+            }
+            let credentialsRemoved = (try? credentials.deleteAll(partition: partition.id)) != nil
+            return CleanupResult(folderRemoved: folderRemoved, credentialsRemoved: credentialsRemoved)
+        }.value
     }
 }
 #endif

@@ -22,14 +22,22 @@ extension BridgeRuntime {
         case .ended:
             await handleEnded(taskID: taskID, runID: runID)
         case .sessionBound(let external, let workspace):
-            // 서버는 `pending:`으로 시작하는 id를 거절한다: adapter 버그이므로 보내지 않는다
-            guard !external.isEmpty, !external.hasPrefix("pending:") else {
-                log.log("session_bound_refused", ["task": .id(taskID)])
+            // 서버는 `pending:`으로 시작하는 id · 200자를 넘는 id · 500자를 넘는 workspace_ref를 final로 거절한다: 자르면 다른 세션 · 폴더가 되므로 보내지 않는다 (adapter 버그)
+            let workspaceValue: String?
+            switch OutgoingValues.workspaceRef(workspace) {
+            case .absent: workspaceValue = nil
+            case .value(let value): workspaceValue = value
+            case .refused:
+                log.log("session_bound_refused", ["task": .id(taskID), "why": .code("workspace_ref")])
                 return
             }
-            await appendTaskEvent(taskID: taskID, numbering: .sessionScoped, body: .sessionBound(externalSessionID: Outbox.fit(text: external, limitBytes: 200).sent, workspaceRef: workspace.map { String(String.UnicodeScalarView($0.unicodeScalars.prefix(500))) }), observed: observed) {
-                $0.externalSessionID = external
-                $0.workspaceRef = workspace ?? $0.workspaceRef
+            guard let sessionID = OutgoingValues.identity(external), !sessionID.hasPrefix("pending:") else {
+                log.log("session_bound_refused", ["task": .id(taskID), "why": .code("external_session_id")])
+                return
+            }
+            await appendTaskEvent(taskID: taskID, numbering: .sessionScoped, body: .sessionBound(externalSessionID: sessionID, workspaceRef: workspaceValue), observed: observed) {
+                $0.externalSessionID = sessionID
+                $0.workspaceRef = workspaceValue ?? $0.workspaceRef
             }
         case .accepted:
             await appendTaskEvent(taskID: taskID, body: .accepted, observed: observed, signal: true) {
@@ -42,12 +50,11 @@ extension BridgeRuntime {
             let fit = Outbox.fit(text: text)
             await appendTaskEvent(taskID: taskID, body: .message(text: fit.sent), observed: observed, fullText: fit.full, signal: true) { Self.markRunning(&$0) }
         case .artifact(let path, let hash, let summary):
-            func cut(_ text: String, _ limit: Int) -> String { String(String.UnicodeScalarView(text.unicodeScalars.prefix(limit))) }
-            guard !path.isEmpty, !hash.isEmpty else {
+            guard let artifact = OutgoingValues.artifact(path: path, hash: hash, summary: summary) else {
                 log.log("artifact_refused", ["task": .id(taskID)])
                 return
             }
-            await appendTaskEvent(taskID: taskID, body: .artifact(path: cut(path, 1000), hash: cut(hash, 200), summary: cut(summary, 2000)), observed: observed, signal: true) {
+            await appendTaskEvent(taskID: taskID, body: .artifact(path: artifact.path, hash: artifact.hash, summary: artifact.summary), observed: observed, signal: true) {
                 Self.markRunning(&$0)
             }
         case .question(let question):
@@ -152,6 +159,7 @@ extension BridgeRuntime {
     /// 프로세스가 끝났다. 끝 사건을 못 봤으면 원장으로 정한다: 접수 뒤 조용히 죽음 → `failed(agent_error)`, 우리가 멈춤 → `cancelled`,
     /// 접수 전에 조용히 끝남 → 사건을 지어내지 않는다 (서버가 결과를 물으면 `not_received`, 계약 2.8)
     func finishEnded(taskID: String, byUs: Bool) async {
+        orphanLiveness[taskID] = nil
         guard let task = try? await ledger.task(taskID) else { return }
         let command = if let id = task.currentCommandID { try? await ledger.command(id) } else { nil as BridgeCommandRecord? }
         let outcome = Reconcile.endedOutcome(task: task, hasAcceptSignal: command?.signalAt != nil, terminatedByUs: byUs)

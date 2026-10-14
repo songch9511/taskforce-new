@@ -260,8 +260,19 @@ struct BridgeRuntimeTests {
         #expect((sent.first?["payload"] as? [String: Any])?["reason"] as? String == "spawn_failed")
     }
 
+    /// 새 폴더를 정해 주지는 않지만 이 Mac이 고른 폴더 하나는 인정하는 resolver (재개한 세션의 폴더)
+    private struct AuthorizesOnly: WorkspaceResolver {
+        let refs: Set<String>
+
+        func workspace(forSession sessionID: String, adapter: String) async -> String? { nil }
+
+        func authorize(workspaceRef: String, session sessionID: String, adapter: String) async -> Bool { refs.contains(workspaceRef) }
+    }
+
     @Test func aResumedSessionDoesNotNeedAWorkspaceFromTheResolver() async throws {
         let h = try BridgeHarness(workspace: nil)
+        h.workspaces = AuthorizesOnly(refs: ["workspace-a"]) // 폴더를 새로 정하지는 않고, 이 Mac이 고른 폴더만 인정한다
+        try await h.restart(reopenLedger: false)
         await h.registerFirst()
         h.server.ensureSession(id: BridgeHarness.sessionID, bridgeID: h.bridgeID, externalSessionID: "claude-session-9", workspaceRef: "workspace-a")
         h.message()

@@ -351,6 +351,16 @@ public struct BridgeV1Connection: Decodable, Equatable, Sendable {
     }
 }
 
+/// 서버가 준 숫자를 쓰기 전에 범위를 자른다 (OA D2b 검토 반영 7장 C10): 서버 값은 신뢰 경계 밖이라 극값이 `Int(Double)` 변환 같은 곳에서 앱을 죽이거나
+/// 대기를 영원히 늘리지 않게 한다. 서버 약속은 30 · 90 · 25이고 이 범위는 그 둘레다
+public enum BridgeV1Clamp {
+    public static let heartbeatSeconds: ClosedRange<Int> = 5...3600
+    public static let unreachableSeconds: ClosedRange<Int> = 30...3600
+    public static let longPollSeconds: ClosedRange<Int> = 1...25
+
+    public static func clamp(_ value: Int, to range: ClosedRange<Int>) -> Int { min(max(value, range.lowerBound), range.upperBound) }
+}
+
 public struct BridgeV1RegisterResponse: Decodable, Equatable, Sendable {
     public let bridgeID: String
     public let bridgeSecret: String
@@ -366,6 +376,16 @@ public struct BridgeV1RegisterResponse: Decodable, Equatable, Sendable {
         case heartbeatIntervalSeconds = "heartbeat_interval_seconds"
         case unreachableAfterSeconds = "unreachable_after_seconds"
         case longPollMaxSeconds = "long_poll_max_seconds"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        bridgeID = try c.decode(String.self, forKey: .bridgeID)
+        bridgeSecret = try c.decode(String.self, forKey: .bridgeSecret)
+        heartbeatIntervalSeconds = BridgeV1Clamp.clamp(try c.decode(Int.self, forKey: .heartbeatIntervalSeconds), to: BridgeV1Clamp.heartbeatSeconds)
+        unreachableAfterSeconds = BridgeV1Clamp.clamp(try c.decode(Int.self, forKey: .unreachableAfterSeconds), to: BridgeV1Clamp.unreachableSeconds)
+        longPollMaxSeconds = BridgeV1Clamp.clamp(try c.decode(Int.self, forKey: .longPollMaxSeconds), to: BridgeV1Clamp.longPollSeconds)
+        connections = try c.decode([BridgeV1Connection].self, forKey: .connections)
     }
 }
 
@@ -660,7 +680,9 @@ public struct BridgeV1MessageCommand: Decodable, Equatable, Sendable {
         let message = try c.nestedContainer(keyedBy: MessageKeys.self, forKey: .message)
         messageID = try message.decode(String.self, forKey: .id)
         text = try message.decode(String.self, forKey: .text)
-        if try c.decodeNil(forKey: .closeBefore) {
+        // `close_before` 키가 아예 없어도(옛 서버 · 없는 값) 디코딩한다
+        let closeIsNull = c.contains(.closeBefore) ? try c.decodeNil(forKey: .closeBefore) : true
+        if closeIsNull {
             closeBeforeRequestID = nil
         } else {
             closeBeforeRequestID = try c.nestedContainer(keyedBy: CloseKeys.self, forKey: .closeBefore).decode(String.self, forKey: .providerRequestID)
@@ -1138,7 +1160,7 @@ public struct BridgeV1HeartbeatResponse: Decodable, Equatable, Sendable {
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         throttled = try c.decodeIfPresent(Bool.self, forKey: .throttled) ?? false
-        heartbeatIntervalSeconds = try c.decode(Int.self, forKey: .heartbeatIntervalSeconds)
+        heartbeatIntervalSeconds = BridgeV1Clamp.clamp(try c.decode(Int.self, forKey: .heartbeatIntervalSeconds), to: BridgeV1Clamp.heartbeatSeconds)
         serverTime = try BridgeTime.decode(c, .serverTime)
         pendingCommands = try c.decode(Int.self, forKey: .pendingCommands)
         unknownTaskIDs = try c.decode([String].self, forKey: .unknownTaskIDs)

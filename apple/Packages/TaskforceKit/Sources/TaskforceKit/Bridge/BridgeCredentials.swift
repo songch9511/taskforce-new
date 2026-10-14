@@ -81,7 +81,8 @@ public final class InMemoryBridgeCredentialStore: BridgeCredentialStore, @unchec
 /// 실제 쓰기 · 읽기는 서명 빌드에서 확인한다 — `oa-m1a-notes.md:105`).
 /// - generic password, service `taskforce.bridge`, account `<파티션>:device_id` · `<파티션>:secret`
 /// - `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly` · `kSecAttrSynchronizable = false` · 데이터 보호 Keychain
-/// - 접근 그룹은 지정하지 않는다: entitlements의 앱 전용 그룹이 기본이고 App Group이 아니다 (확장 · 위젯이 장치 secret을 읽지 않게)
+/// - 접근 그룹: 앱 전용 그룹(`$(AppIdentifierPrefix)$(APP_BUNDLE_ID)`, entitlements의 `keychain-access-groups`)으로 **고정**한다 — App Group이 아니다.
+///   확장 · 위젯이 장치 secret을 읽지 못한다. 서명되지 않은 시험 호스트에는 팀 접두가 없어 값이 비므로 그때는 지정하지 않는다 (`validAccessGroup`)
 public enum BridgeKeychainQuery {
     public static let service = "taskforce.bridge"
 
@@ -90,18 +91,28 @@ public enum BridgeKeychainQuery {
         case secret
     }
 
-    public static func match(partition: String, kind: Kind) -> [String: Any] {
-        [
+    /// `<팀 ID 10자>.<번들 id>` 모양일 때만 쓴다 (`$(AppIdentifierPrefix)`가 풀리지 않은 값 · 빈 값은 nil)
+    public static func validAccessGroup(_ raw: String?) -> String? {
+        guard let raw, let dot = raw.firstIndex(of: "."), raw.distance(from: raw.startIndex, to: dot) == 10 else { return nil }
+        let team = raw[raw.startIndex..<dot]
+        guard team.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber) }), raw.index(after: dot) < raw.endIndex, !raw.contains("$") else { return nil }
+        return raw
+    }
+
+    public static func match(partition: String, kind: Kind, accessGroup: String? = nil) -> [String: Any] {
+        var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: "\(partition):\(kind.rawValue)",
             kSecAttrSynchronizable as String: false,
             kSecUseDataProtectionKeychain as String: true,
         ]
+        if let accessGroup { query[kSecAttrAccessGroup as String] = accessGroup }
+        return query
     }
 
-    public static func add(partition: String, kind: Kind, value: Data) -> [String: Any] {
-        var query = match(partition: partition, kind: kind)
+    public static func add(partition: String, kind: Kind, value: Data, accessGroup: String? = nil) -> [String: Any] {
+        var query = match(partition: partition, kind: kind, accessGroup: accessGroup)
         query[kSecValueData as String] = value
         query[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
         return query
@@ -109,7 +120,12 @@ public enum BridgeKeychainQuery {
 }
 
 public struct KeychainBridgeCredentialStore: BridgeCredentialStore {
-    public init() {}
+    private let accessGroup: String?
+
+    /// `accessGroup`은 `BridgeKeychainQuery.validAccessGroup`을 지난 값 (앱이 Info.plist에서 읽는다)
+    public init(accessGroup: String? = nil) {
+        self.accessGroup = BridgeKeychainQuery.validAccessGroup(accessGroup)
+    }
 
     public func deviceID(partition: String) throws -> String? { try read(partition, .deviceID) }
     public func secret(partition: String) throws -> String? { try read(partition, .secret) }
@@ -118,13 +134,13 @@ public struct KeychainBridgeCredentialStore: BridgeCredentialStore {
 
     public func deleteAll(partition: String) throws {
         for kind in [BridgeKeychainQuery.Kind.deviceID, .secret] {
-            let status = SecItemDelete(BridgeKeychainQuery.match(partition: partition, kind: kind) as CFDictionary)
+            let status = SecItemDelete(BridgeKeychainQuery.match(partition: partition, kind: kind, accessGroup: accessGroup) as CFDictionary)
             if status != errSecSuccess, status != errSecItemNotFound { throw KeychainError(status: status) }
         }
     }
 
     private func read(_ partition: String, _ kind: BridgeKeychainQuery.Kind) throws -> String? {
-        var query = BridgeKeychainQuery.match(partition: partition, kind: kind)
+        var query = BridgeKeychainQuery.match(partition: partition, kind: kind, accessGroup: accessGroup)
         query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
         var result: AnyObject?
@@ -136,9 +152,9 @@ public struct KeychainBridgeCredentialStore: BridgeCredentialStore {
 
     private func write(_ value: String, _ partition: String, _ kind: BridgeKeychainQuery.Kind) throws {
         let data = Data(value.utf8)
-        let update = SecItemUpdate(BridgeKeychainQuery.match(partition: partition, kind: kind) as CFDictionary, [kSecValueData as String: data] as CFDictionary)
+        let update = SecItemUpdate(BridgeKeychainQuery.match(partition: partition, kind: kind, accessGroup: accessGroup) as CFDictionary, [kSecValueData as String: data] as CFDictionary)
         if update == errSecItemNotFound {
-            let add = SecItemAdd(BridgeKeychainQuery.add(partition: partition, kind: kind, value: data) as CFDictionary, nil)
+            let add = SecItemAdd(BridgeKeychainQuery.add(partition: partition, kind: kind, value: data, accessGroup: accessGroup) as CFDictionary, nil)
             guard add == errSecSuccess else { throw KeychainError(status: add) }
         } else if update != errSecSuccess {
             throw KeychainError(status: update)

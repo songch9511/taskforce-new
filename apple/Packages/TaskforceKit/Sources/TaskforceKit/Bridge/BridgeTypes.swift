@@ -316,18 +316,30 @@ public struct PruneReport: Equatable, Sendable {
     public var deadLetters = 0
     public var fullTexts = 0
     public var expiredEvents = 0
+    public var tasks = 0
+    public var questionMaps = 0
+    public var counters = 0
+    public var corruptFiles = 0
 }
 
 public enum BridgeLedgerError: Error, Equatable, Sendable, CustomStringConvertible {
     case sqlite(code: Int, message: String)
     case unknownTask(String)
+    case unknownCommand(String)
     case corrupt
+    /// 더 새 앱이 만든 원장 (손상이 아니다: 열지도 지우지도 않는다)
+    case newerSchema(version: Int)
+    /// 같은 파티션 원장을 다른 곳(다른 런타임 · 프로세스)이 쓰고 있다
+    case locked
 
     public var description: String {
         switch self {
         case .sqlite(let code, let message): "원장 sqlite \(code): \(message)"
         case .unknownTask(let id): "원장에 없는 task \(id)"
+        case .unknownCommand(let id): "원장에 없는 명령 \(id)"
         case .corrupt: "원장 파일이 손상됐다"
+        case .newerSchema(let version): "더 새 스키마(\(version))의 원장이다"
+        case .locked: "원장을 다른 곳에서 쓰고 있다"
         }
     }
 }

@@ -122,10 +122,14 @@ public final class FakeAgentProcess: AgentProcess, @unchecked Sendable {
     private var _startError: AgentStartError?
     private var _useSubprocess = false
     private var _ignoreInterruptFor: TimeInterval?
+    private var _ignoreInterruptForever = false
+    private var _hookInterrupt: (@Sendable (AgentTurnRef) async -> Void)?
     private var _answersFail = false
     private var _hookStart: (@Sendable (AgentTurnStart) async -> Void)?
     private var _hookDeliver: (@Sendable (AgentAnswerDelivery) async -> Void)?
     private var _livenessOverride: AgentLiveness?
+    private var _terminateOverride: AgentLiveness?
+    private var _externalTaskIDOverride: String?
     public var processCounter = 0
 
     public init(adapter: String = "agent:claude-code", version: String = "2.1.241", clock: BridgeClock = .system) {
@@ -155,8 +159,16 @@ public final class FakeAgentProcess: AgentProcess, @unchecked Sendable {
     public func setSubprocess(_ on: Bool) { lock.withLock { _useSubprocess = on } }
     /// F6: 중단 신호를 받고도 이만큼 더 돈다
     public func setIgnoreInterrupt(for seconds: TimeInterval?) { lock.withLock { _ignoreInterruptFor = seconds } }
+    /// F6 (끝까지): 중단 신호를 받아도 프로세스가 끝나지 않는다. `terminateOrphan`만 끝낸다
+    public func setIgnoreInterruptForever(_ value: Bool) { lock.withLock { _ignoreInterruptForever = value } }
+    /// 중단 신호가 오는 순간 시험이 원장을 들여다본다 (먼저 적고 그다음 신호를 보냈는지)
+    public func onInterrupt(_ hook: (@Sendable (AgentTurnRef) async -> Void)?) { lock.withLock { _hookInterrupt = hook } }
     public func setAnswersFail(_ value: Bool) { lock.withLock { _answersFail = value } }
     public func setLiveness(_ value: AgentLiveness?) { lock.withLock { _livenessOverride = value } }
+    /// `terminateOrphan`이 끝내지 못하는 프로세스 (`.alive`) 또는 증명하지 못하는 경우 (`.unknown`)
+    public func setTerminateResult(_ value: AgentLiveness?) { lock.withLock { _terminateOverride = value } }
+    /// 외부 작업 id를 이 값으로 고정한다 (서버 zod 모양 밖의 값을 adapter가 주는 경우)
+    public func setExternalTaskID(_ value: String?) { lock.withLock { _externalTaskIDOverride = value } }
     public func onStart(_ hook: (@Sendable (AgentTurnStart) async -> Void)?) { lock.withLock { _hookStart = hook } }
     public func onDeliver(_ hook: (@Sendable (AgentAnswerDelivery) async -> Void)?) { lock.withLock { _hookDeliver = hook } }
 
@@ -222,11 +234,14 @@ public final class FakeAgentProcess: AgentProcess, @unchecked Sendable {
     }
 
     public func interrupt(_ target: AgentTurnRef, scope: AgentCancelScope) async -> AgentInterruptResult {
-        let (key, ignore): (String?, TimeInterval?) = lock.withLock {
+        let (key, ignore, hook, forever): (String?, TimeInterval?, (@Sendable (AgentTurnRef) async -> Void)?, Bool) = lock.withLock {
             _interrupts.append((target, scope))
-            return (runs.first { $0.value.taskID == target.taskID && !$0.value.ended }?.key, _ignoreInterruptFor)
+            return (runs.first { $0.value.taskID == target.taskID && !$0.value.ended }?.key, _ignoreInterruptFor, _hookInterrupt, _ignoreInterruptForever)
         }
+        await hook?(target)
         guard let key else { return .notRunning }
+        // F6: 신호를 받고도 끝나지 않는다 (SIGTERM을 무시하는 프로세스). 끝내려면 `terminateOrphan`이 필요하다
+        if forever { return .signalled }
         if let ignore {
             Task { [self] in
                 try? await clock.sleep(.seconds(ignore))
@@ -243,11 +258,15 @@ public final class FakeAgentProcess: AgentProcess, @unchecked Sendable {
         if let pid = identity.pid {
             return Self.processExists(pid: pid, startedAt: identity.startedAt) ? .alive : .ended(AgentExit(code: nil))
         }
-        return lock.withLock { runs[identity.processMarker].map { $0.ended ? .ended(AgentExit(code: 0)) : .alive } } ?? .ended(AgentExit(code: nil))
+        // pid도 없고 이 가짜가 모르는 marker면 끝을 증명할 수 없다: `.ended`가 아니라 `.unknown` (AgentProcess 문서의 규칙)
+        return lock.withLock { runs[identity.processMarker].map { $0.ended ? .ended(AgentExit(code: 0)) : .alive } } ?? .unknown
     }
 
     public func terminateOrphan(_ identity: AgentProcessIdentity) async -> AgentLiveness {
         lock.withLock { _terminated.append(identity) }
+        if let override = lock.withLock({ _terminateOverride }) { return override }
+        // pid 1 이하(시스템)에는 어떤 신호도 보내지 않는다: 원장이 망가져 pid가 엉뚱해도 시스템 프로세스를 건드리지 않는다
+        if let pid = identity.pid, pid <= 1 { return .unknown }
         if let pid = identity.pid, Self.processExists(pid: pid, startedAt: identity.startedAt) {
             kill(pid_t(pid), SIGTERM)
             for _ in 0..<50 {
@@ -265,6 +284,8 @@ public final class FakeAgentProcess: AgentProcess, @unchecked Sendable {
             }
             return Self.processExists(pid: pid, startedAt: identity.startedAt) ? .alive : .ended(AgentExit(code: nil, signal: 15))
         }
+        // 이 가짜가 모르는 실행이면 끝을 증명하지 못한다 (adapter는 증명 못 하면 `.unknown`)
+        guard lock.withLock({ runs[identity.processMarker] != nil }) else { return .unknown }
         await finishRun(marker: identity.processMarker, exit: AgentExit(code: nil, signal: 15), emit: false)
         return .ended(AgentExit(code: nil, signal: 15))
     }
@@ -284,6 +305,8 @@ public final class FakeAgentProcess: AgentProcess, @unchecked Sendable {
             process.standardOutput = FileHandle.nullDevice
             process.standardError = FileHandle.nullDevice
             process.standardInput = FileHandle.nullDevice
+            // 앱의 환경을 통째로 넘기지 않는다 (사용자 토큰 · 키가 하위 프로세스로 새지 않게)
+            process.environment = AgentChildEnvironment.allowlisted()
             try process.run()
             child = process
             pid = Int(process.processIdentifier)
@@ -291,7 +314,7 @@ public final class FakeAgentProcess: AgentProcess, @unchecked Sendable {
         }
         let identity: AgentProcessIdentity = lock.withLock {
             processCounter += 1
-            return AgentProcessIdentity(pid: pid, startedAt: startedAt, processMarker: marker, externalTaskID: "turn-\(processCounter)")
+            return AgentProcessIdentity(pid: pid, startedAt: startedAt, processMarker: marker, externalTaskID: _externalTaskIDOverride ?? "turn-\(processCounter)")
         }
         let run = Task { [self] in await play(script, marker: marker, events: events) }
         lock.withLock {
@@ -407,7 +430,8 @@ public final class FakeAgentProcess: AgentProcess, @unchecked Sendable {
         if info.kp_proc.p_stat == SZOMB { return false }
         let start = info.kp_proc.p_un.__p_starttime
         let actual = Date(timeIntervalSince1970: TimeInterval(start.tv_sec) + TimeInterval(start.tv_usec) / 1_000_000)
-        return abs(actual.timeIntervalSince(startedAt)) < 1.5
+        // 원장은 밀리초로 적으므로 시작 시각은 1ms 안에서 같아야 같은 프로세스다 (pid 재사용을 가른다)
+        return abs(actual.timeIntervalSince(startedAt)) < 0.002
     }
 }
 #endif

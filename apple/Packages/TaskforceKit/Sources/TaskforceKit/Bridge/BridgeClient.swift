@@ -35,6 +35,34 @@ public enum BridgeClientError: Error, Equatable, Sendable {
     /// 토큰의 사용자가 이 파티션의 사용자가 아니다: 보내지 않았다
     case accountChanged
     case notSignedIn
+    /// 서버 주소가 https도 loopback도 아니다: 사용자 토큰 · 장치 secret을 평문으로 보내지 않는다 (보내지 않았다)
+    case insecureEndpoint
+}
+
+/// bridge 요청을 보낼 수 있는 주소 (OA D2b 검토 반영 7장 D · security 6): https, 또는 개발용 loopback(http)만
+public enum BridgeEndpointPolicy {
+    public static func isLoopback(_ url: URL) -> Bool {
+        guard let host = url.host()?.lowercased() else { return false }
+        return host == "localhost" || host == "127.0.0.1" || host == "::1" || host == "[::1]" || host.hasSuffix(".localhost")
+    }
+
+    public static func allows(_ url: URL) -> Bool {
+        switch url.scheme?.lowercased() {
+        case "https": url.host() != nil
+        case "http": isLoopback(url)
+        default: false
+        }
+    }
+}
+
+/// 리다이렉트를 따르지 않는다: 사용자 토큰 · 장치 secret이 다른 주소로 새지 않게, 3xx는 그대로 오류로 본다
+private final class RedirectRefuser: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+    func urlSession(
+        _ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest,
+        completionHandler: @escaping (URLRequest?) -> Void
+    ) {
+        completionHandler(nil)
+    }
 }
 
 public struct BridgeClient: Sendable {
@@ -44,11 +72,14 @@ public struct BridgeClient: Sendable {
     static let requestTimeout: TimeInterval = 30
     /// 긴 대기 요청의 여유: 서버 route `maxDuration = 30` · 대기 25초
     static let longPollSlack: TimeInterval = 10
+    /// 응답 본문 상한: bridge 응답은 수 KB이고 가장 큰 목록도 1MB 아래다. 넘으면 서버가 아닌 무엇이 끼어들었다고 보고 일시 실패로 다룬다
+    static let maxResponseBytes = 4_000_000
 
     private let api: APIClient
     private let session: URLSession
     private let expectedUserID: UUID
     private let bearer: BearerProvider
+    private let endpointAllowed: Bool
 
     public init(baseURL: URL, session: URLSession, expectedUserID: UUID, bearer: @escaping BearerProvider) {
         // `makeRequest`만 쓴다 (토큰은 `bearer`가 따로 준다)
@@ -56,6 +87,7 @@ public struct BridgeClient: Sendable {
         self.session = session
         self.expectedUserID = expectedUserID
         self.bearer = bearer
+        self.endpointAllowed = BridgeEndpointPolicy.allows(baseURL)
     }
 
     // MARK: route
@@ -103,7 +135,8 @@ public struct BridgeClient: Sendable {
         do {
             request = try api.makeRequest(method, path, query: query, body: body, token: token, timeout: timeout)
         } catch {
-            throw BridgeClientError.decoding
+            // 우리 쪽에서 요청을 만들지 못했다 (보내지 않았다): 서버가 본문을 읽지 못한 `decoding`(2xx)과 다르다
+            throw BridgeClientError.badRequest
         }
         return try await perform(&request, secret: secret, isRegister: isRegister)
     }
@@ -118,6 +151,7 @@ public struct BridgeClient: Sendable {
 
     /// 토큰을 받고, 그 토큰의 사용자가 이 파티션의 사용자인지 요청을 만들기 직전에 다시 본다
     private func userToken() async throws -> String {
+        guard endpointAllowed else { throw BridgeClientError.insecureEndpoint } // 토큰을 꺼내기도 전에 막는다
         let bearer: BridgeBearer
         do {
             bearer = try await self.bearer()
@@ -143,12 +177,13 @@ public struct BridgeClient: Sendable {
         let data: Data
         let response: URLResponse
         do {
-            (data, response) = try await session.data(for: request)
+            (data, response) = try await session.data(for: request, delegate: RedirectRefuser())
         } catch let error as URLError {
             if error.code == .cancelled { throw CancellationError() }
             throw BridgeClientError.transport(String(describing: error.code))
         }
         guard let http = response as? HTTPURLResponse else { throw BridgeClientError.server(status: 0) }
+        guard data.count <= Self.maxResponseBytes else { throw BridgeClientError.server(status: http.statusCode) }
         guard (200..<300).contains(http.statusCode) else {
             throw Self.error(status: http.statusCode, retryAfter: http.value(forHTTPHeaderField: "Retry-After"), data: data, isRegister: isRegister)
         }

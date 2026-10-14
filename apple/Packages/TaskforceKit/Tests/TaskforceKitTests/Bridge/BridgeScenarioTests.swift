@@ -381,7 +381,10 @@ struct BridgeScenarioTests {
         #expect(h.server.commandLeaseCount(fresh.commandID) == 0, "마무리 모드는 새 전달을 lease하지 않는다")
         #expect(agentB.startedTurns.isEmpty)
         #expect(h.server.commandLeaseCount(cancel.commandID) == 1, "중단은 계속")
-        #expect(await h.eventually { h.server.taskState(running.taskID) == "cancelled" || h.server.taskState(running.taskID) == "accepted" || h.server.taskState(running.taskID) == "running" })
+        // 중단이 이겼다: 접수 뒤 우리가 멈춘 task는 정확히 `cancelled`다 (예전 단언은 `running`도 통과했다)
+        await h.settle { h.server.taskState(running.taskID) == "cancelled" }
+        #expect(h.server.taskState(running.taskID) == "cancelled", "서버 task: \(h.server.taskState(running.taskID) ?? "-")")
+        #expect(await h.task(running.taskID)?.alive == false)
         #expect(h.server.requests("register").count == 1, "새 등록 0")
         #expect(try await h.ledger.outboxRows().isEmpty, "남은 사건은 모두 보냈다")
     }

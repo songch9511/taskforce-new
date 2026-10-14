@@ -28,8 +28,12 @@ extension BridgeRuntime {
         let candidates = ((try? await ledger.allTasks()) ?? []).filter { $0.isUnfinished && $0.serverUnknownAt == nil }
         func rank(_ task: BridgeTaskRecord) -> Int { task.alive ? 0 : (task.lastState == "awaiting_answer" || task.openRequestID != nil ? 1 : 2) }
         let sorted = candidates.sorted { (rank($0), $1.updatedAt) < (rank($1), $0.updatedAt) }
+        // `process_alive`는 감독 중이거나 liveness가 `.alive`로 확인된 프로세스만 true다: 끝을 증명하지 못한 고아의 lease를 heartbeat로 영원히 늘리지 않는다
         return sorted.prefix(50).map {
-            BridgeV1HeartbeatTask(taskID: $0.agentTaskID, processAlive: $0.alive, lastSeq: $0.lastSeq > 0 ? $0.lastSeq : nil)
+            BridgeV1HeartbeatTask(
+                taskID: $0.agentTaskID, processAlive: $0.alive && (supervised[$0.agentTaskID] != nil || orphanLiveness[$0.agentTaskID] == .alive),
+                lastSeq: $0.lastSeq > 0 ? $0.lastSeq : nil
+            )
         }
     }
 
@@ -131,7 +135,8 @@ extension BridgeRuntime {
         }
         guard isCurrent(gen) else { return outcome }
         let listedAt = clock.now()
-        after = max(after, response.nextCursor)
+        // 서버가 준 next_cursor를 그대로 믿지 않는다: 목록에서 실제로 본 가장 큰 cursor까지만 올린다 (극값 하나가 이후 긴 대기를 영원히 비우지 않게)
+        after = max(after, min(response.nextCursor, response.commands.map(\.cursor).max() ?? after))
         outcome.listed = response.commands.count + response.readbacks.count
         func tally(_ result: ItemResult) {
             switch result {
@@ -153,7 +158,8 @@ extension BridgeRuntime {
             case .unknown: 3
             }
         }
-        for item in response.commands.sorted(by: { (rank($0.kind), $0.cursor) < (rank($1.kind), $1.cursor) }) {
+        // cursor가 음수인 항목은 건너뛴다: 서버 약속(양의 정수)을 깬 값이다 (`deferred`와 `after` 계산을 오염시키지 않게)
+        for item in response.commands.filter({ $0.cursor >= 0 }).sorted(by: { (rank($0.kind), $0.cursor) < (rank($1.kind), $1.cursor) }) {
             guard isCurrent(gen) else { return outcome }
             tally(await handleListItem(item, reason: reason, wakeAt: wakeAt, listedAt: listedAt))
         }
@@ -222,7 +228,9 @@ extension BridgeRuntime {
     func processFact(for taskID: String, task: BridgeTaskRecord?) -> ReadbackProcess {
         if supervised[taskID] != nil { return .alive }
         guard let task else { return .unknown }
-        return task.alive ? .orphanAlive : .ended
+        guard task.alive else { return .ended }
+        // 끝을 증명하지 못한 고아는 먼저 끝낼 수도 없다: `unknown`으로만 답한다 (Reconcile)
+        return orphanLiveness[taskID] == .unknown ? .unverifiedOrphan : .orphanAlive
     }
 
     func readbackFacts(source: ReadbackFacts.Source, command: BridgeCommandRecord?, marker: String? = nil) async -> ReadbackFacts {
@@ -255,19 +263,19 @@ extension BridgeRuntime {
                 await flushOutbox()
                 if attempt == 2 { return .deferred }
             case .report(let result, let ended):
+                var unrecorded: BridgeCommandRecord?
                 if existing == nil {
-                    // 원장에 기록이 없던 명령: 끝난 기록으로 남긴다 (다시 목록에 나와도 실행하지 않는다)
+                    // 원장에 기록이 없던 명령: 끝난 기록으로 남긴다 (다시 목록에 나와도 실행하지 않는다). ack와 한 트랜잭션으로 쓴다
                     var record = BridgeCommandRecord(
                         commandID: item.commandID, kind: item.kind.raw, agentSessionID: item.agentSessionID, agentTaskID: item.agentTaskID, turnSeq: item.turnSeq,
                         cursor: 0, state: .declined, stateAt: clock.now()
                     )
                     record.marker = item.marker
                     record.reason = "no_record"
-                    try? await ledger.saveCommand(record)
-                    existing = record
+                    unrecorded = record
                 }
                 if result == .notReceived { _ = try? await ledger.updateTask(item.agentTaskID) { $0.lastState = "failed" } }
-                await sendAck(.readback(result, processEnded: ended), commandID: item.commandID)
+                await sendAck(.readback(result, processEnded: ended), commandID: item.commandID, saving: unrecorded)
                 return .acted
             }
             existing = try? await ledger.command(item.commandID)
@@ -292,11 +300,11 @@ extension BridgeRuntime {
         var record = makeSeen(item, reason: reason, wakeAt: wakeAt, listedAt: listedAt)
         record.state = .declined
         record.reason = "ledger_lost"
-        try? await ledger.saveCommand(record)
+        // 기록과 ack는 한 트랜잭션이다: 기록만 남으면 다음 판정이 이 명령을 "띄운 적 없음"으로 오해할 수 있다
         if item.kind == .cancel {
-            await sendAck(.complete(.taskUnknown), commandID: item.id)
+            await sendAck(.complete(.taskUnknown), commandID: item.id, saving: record)
         } else {
-            await sendAck(.readback(.unknown, processEnded: false), commandID: item.id)
+            await sendAck(.readback(.unknown, processEnded: false), commandID: item.id, saving: record)
         }
         return .acted
     }
@@ -307,8 +315,7 @@ extension BridgeRuntime {
         if item.leasedByMe { return .ignored } // lease한 적이 없다
         if existing?.ackOp != nil { return .ignored }
         let record = existing ?? makeSeen(item, reason: reason, wakeAt: wakeAt, listedAt: listedAt)
-        try? await ledger.saveCommand(record)
-        await sendAck(.decline, commandID: item.id)
+        await sendAck(.decline, commandID: item.id, saving: record)
         return .acted
     }
 
@@ -368,6 +375,17 @@ extension BridgeRuntime {
                 // 두 번째 실행 0: 원장이 start_intent 이상이면 응답이 replay여도 다시 띄우지 않는다
                 let fresh = (try? await ledger.command(item.id)) ?? record
                 if fresh.state.hasStartIntent { return .ignored }
+                // lease한 항목과 payload가 같은 명령 · task · 세션인지 본다: 다르면 서버(또는 중간 장치)가 다른 일을 시킨 것이다. 띄우지 않았다는 것이 증명된다
+                if !Self.payload(payload, matches: item) {
+                    log.log("lease_payload_mismatch", ["command": .id(item.id)])
+                    await refuseUnknownPayload(record: fresh, why: "payload_mismatch")
+                    return .acted
+                }
+                // 전달 창(24시간)이 지난 명령은 띄우지 않는다: 서버는 lease 때 24시간 지난 명령을 거두지만 `replay`는 그 검사를 지나 올 수 있다
+                if clock.now().timeIntervalSince(item.createdAt) > Self.deliveryWindow {
+                    await refuseUnknownPayload(record: fresh, why: "expired")
+                    return .acted
+                }
                 return await applyLease(payload: payload, expires: expires, record: fresh)
             case .withdrawn(let withdrawn):
                 record.state = .withdrawn
@@ -399,6 +417,20 @@ extension BridgeRuntime {
         }
     }
 
+    /// 서버가 아직 lease되지 않은 명령을 들고 있는 시간 (D2a 3.3): 이보다 오래된 명령은 띄우지 않는다
+    static let deliveryWindow: TimeInterval = 24 * 3600
+
+    static func payload(_ payload: BridgeV1CommandPayload, matches item: BridgeV1CommandListItem) -> Bool {
+        let common: BridgeV1CommandCommon
+        switch payload {
+        case .message(let command): common = command.common
+        case .answer(let command): common = command.common
+        case .cancel(let command): common = command.common
+        case .unsupported: return true // 어차피 실행하지 않는다
+        }
+        return common.id == item.id && common.agentTaskID == item.agentTaskID && common.agentSessionID == item.agentSessionID
+    }
+
     /// lease를 받았다: 원장에 `leased`(글 아닌 값만)를 적고 task를 만든 뒤 kind별로 실행한다
     func applyLease(payload: BridgeV1CommandPayload, expires: Date, record initial: BridgeCommandRecord) async -> ItemResult {
         var record = initial
@@ -422,9 +454,8 @@ extension BridgeRuntime {
         do {
             try await ledger.saveCommand(record)
             if (try await ledger.task(common.agentTaskID)) == nil {
-                var task = BridgeTaskRecord(agentTaskID: common.agentTaskID, agentSessionID: common.agentSessionID, adapter: common.adapter, turnSeq: common.turnSeq, updatedAt: now)
-                task.externalSessionID = common.session.externalSessionID
-                task.workspaceRef = common.session.workspaceRef
+                // 서버가 준 외부 세션 id · 작업 폴더는 검사(모양 · 이 Mac이 인정함) 전에는 원장 task에 쓰지 않는다: `runMessage`가 검사 뒤 `beginRun`에서 적는다
+                let task = BridgeTaskRecord(agentTaskID: common.agentTaskID, agentSessionID: common.agentSessionID, adapter: common.adapter, turnSeq: common.turnSeq, updatedAt: now)
                 try await ledger.saveTask(task)
             }
         } catch {
@@ -442,7 +473,8 @@ extension BridgeRuntime {
 
     // MARK: ack (먼저 적고 보낸다)
 
-    func sendAck(_ op: BridgeV1AckOp, commandID: String) async {
+    /// `saving`이 있으면 그 명령 기록과 ack 행을 한 트랜잭션으로 쓴다 (원장 분실로 만든 `declined` 기록처럼, 기록만 있고 ack가 없는 반쪽 상태가 남으면 안 되는 경우)
+    func sendAck(_ op: BridgeV1AckOp, commandID: String, saving record: BridgeCommandRecord? = nil) async {
         guard let bridgeID else { return }
         let request = BridgeV1AckRequest(bridgeID: bridgeID, commandID: commandID, op: op)
         guard let data = try? TaskforceJSON.encoder().encode(request) else {
@@ -450,7 +482,7 @@ extension BridgeRuntime {
             return
         }
         do {
-            _ = try await ledger.enqueueAck(commandID: commandID, op: op.name, result: op.resultName, bodyJSON: String(decoding: data, as: UTF8.self))
+            _ = try await ledger.enqueueAck(commandID: commandID, op: op.name, result: op.resultName, bodyJSON: String(decoding: data, as: UTF8.self), saving: record)
         } catch {
             log.log("ledger_write_failed", ["step": .code("ack")])
             return
@@ -497,7 +529,13 @@ extension BridgeRuntime {
             case .settled: state = row.op == "decline" ? .declined : .settled
             case .stale(let why): state = row.op == "decline" ? .declined : .stale; reason = why?.raw
             case .withdrawn(let why): state = row.op == "decline" ? .declined : .withdrawn; reason = why.raw
-            case .leased, .replay, .unknown: state = .settled
+            case .leased, .replay: state = .settled
+            case .unknown:
+                // 이 앱이 모르는 정산 상태: final로 보지 않는다. ack를 남기고 물러선다 (더 새 서버가 뜻을 바꿨을 수 있다)
+                log.log("ack_unknown_status", ["op": .code(row.op)])
+                let delay = Outbox.backoff(attempts: row.attempts, jitter: Double.random(in: -0.2...0.2))
+                try? await ledger.recordAckFailure(key: row.key, nextAttemptAt: clock.now().addingTimeInterval(delay))
+                return
             }
             try? await ledger.settleAck(key: row.key, commandState: state, reason: reason)
             await publish()
@@ -523,9 +561,14 @@ extension BridgeRuntime {
     }
 
     /// payload에 모르는 값이 있다: 띄우지 않았다는 것이 원장으로 증명된다 → `readback not_received, process_ended: true`
-    func refuseUnknownPayload(record: BridgeCommandRecord) async {
-        _ = try? await ledger.updateCommand(record.commandID) { $0.state = .declined; $0.reason = "unknown_payload"; $0.stateAt = clock.now() }
-        await sendAck(.readback(.notReceived, processEnded: true), commandID: record.commandID)
+    func refuseUnknownPayload(record: BridgeCommandRecord, why: String = "unknown_payload") async {
+        var refused = (try? await ledger.command(record.commandID)) ?? record
+        refused.state = .declined
+        refused.reason = why
+        refused.stateAt = clock.now()
+        // 중단 명령은 결과 확인이 아니라 `complete`로 정산한다 (띄운 프로세스가 없는 task)
+        let op: BridgeV1AckOp = refused.kind == "cancel" ? .complete(.taskUnknown) : .readback(.notReceived, processEnded: true)
+        await sendAck(op, commandID: record.commandID, saving: refused)
     }
 
     func runMessage(_ command: BridgeV1MessageCommand, record: BridgeCommandRecord) async {
@@ -557,11 +600,22 @@ extension BridgeRuntime {
         if report.signedIn == .no {
             return await failBeforeAcceptance(taskID: common.agentTaskID, commandID: record.commandID, reason: .signInNeeded)
         }
-        // 새 세션의 작업 폴더는 D4a가 채우는 resolver가 정한다. 값이 없으면 짐작하지 않고 실패 (Q26)
+        // 재개할 세션 id는 모양을 확인한다: 서버 값이 명령줄 옵션이나 경로처럼 쓰이지 못하게 (`^[A-Za-z0-9_-]{1,128}$`, UUID 포함)
+        if let external = common.session.externalSessionID, !Self.isSafeSessionID(external) {
+            return await refuseUnknownPayload(record: record, why: "unsafe_session_id")
+        }
+        // 서버가 준 작업 폴더는 이 Mac이 만든(사용자가 고른) 값일 때만 쓴다. 아니면 거절한다 (침해된 서버가 임의 경로를 시키지 못하게, 검토 반영 7장 C11)
         var workspace = common.session.workspaceRef
+        if let served = workspace {
+            guard let resolver = workspaces, await resolver.authorize(workspaceRef: served, session: common.agentSessionID, adapter: common.adapter) else {
+                return await refuseUnknownPayload(record: record, why: "workspace_unauthorized")
+            }
+        }
+        // 새 세션의 작업 폴더는 D4a가 채우는 resolver가 정한다. 값이 없으면 짐작하지 않고 실패 (Q26)
         if common.session.externalSessionID == nil, workspace == nil {
             workspace = await workspaces?.workspace(forSession: common.agentSessionID, adapter: common.adapter)
-            if workspace == nil {
+            if workspace?.isEmpty != false { // 값이 없거나 빈 값이면 서버가 거절한다 (`workspace_ref`는 비어 있지 않아야 한다)
+                workspace = nil
                 return await failBeforeAcceptance(taskID: common.agentTaskID, commandID: record.commandID, reason: .spawnFailed)
             }
         }
@@ -579,18 +633,25 @@ extension BridgeRuntime {
         let runID = UUID()
         let resolvedWorkspace = workspace
         let startedAt = clock.now()
+        let commandID = record.commandID
+        let marker = common.marker
+        let sessionExternalID = common.session.externalSessionID
         do {
-            _ = try await ledger.updateTask(common.agentTaskID) {
-                $0.alive = true
-                $0.currentCommandID = record.commandID
-                $0.segmentTerminal = nil
-                $0.processMarker = common.marker
-                $0.cancelState = nil
-                $0.lastState = "dispatched"
-                $0.externalSessionID = common.session.externalSessionID ?? $0.externalSessionID
-                $0.workspaceRef = resolvedWorkspace ?? $0.workspaceRef
-            }
-            _ = try await ledger.updateCommand(record.commandID) { $0.state = .startIntent; $0.stateAt = startedAt }
+            // task(살아 있음)와 명령(`start_intent`)은 한 트랜잭션이다: 하나만 적히고 죽으면 모순된 상태가 남는다
+            try await ledger.beginRun(
+                taskID: common.agentTaskID,
+                task: {
+                    $0.alive = true
+                    $0.currentCommandID = commandID
+                    $0.segmentTerminal = nil
+                    $0.processMarker = marker
+                    $0.cancelState = nil
+                    $0.lastState = "dispatched"
+                    $0.externalSessionID = sessionExternalID ?? $0.externalSessionID
+                    $0.workspaceRef = resolvedWorkspace ?? $0.workspaceRef
+                },
+                commandID: commandID, command: { $0.state = .startIntent; $0.stateAt = startedAt }
+            )
         } catch {
             log.log("ledger_write_failed", ["step": .code("start_intent")])
             return
@@ -611,6 +672,12 @@ extension BridgeRuntime {
         }
     }
 
+    /// 재개에 쓰는 외부 세션 id의 모양 (`^[A-Za-z0-9_-]{1,128}$`). 맨 앞의 `-`는 거절한다: 명령줄 옵션처럼 읽히면 안 된다 (UUID · 실제 세션 id는 `-`로 시작하지 않는다)
+    static func isSafeSessionID(_ id: String) -> Bool {
+        guard (1...128).contains(id.utf8.count), id.utf8.first != 0x2D else { return false }
+        return id.utf8.allSatisfy { ($0 >= 0x30 && $0 <= 0x39) || ($0 >= 0x41 && $0 <= 0x5A) || ($0 >= 0x61 && $0 <= 0x7A) || $0 == 0x5F || $0 == 0x2D }
+    }
+
     /// 프로세스를 띄운 뒤: 정체(pid · 시작 시각 · marker)와 `started`를 적는다. 시작 중에 이미 끝났다는 알림이 왔으면 되돌리지 않는다
     func recordStarted(taskID: String, runID: UUID, commandID: String, identity: AgentProcessIdentity, answer: Bool) async {
         let stillRunning = supervised[taskID]?.runID == runID
@@ -620,7 +687,9 @@ extension BridgeRuntime {
             $0.pid = identity.pid
             $0.processStartedAt = identity.startedAt
             $0.processMarker = identity.processMarker
-            $0.externalTaskID = identity.externalTaskID ?? $0.externalTaskID
+            // 한 task의 외부 작업 id는 처음 묶인 값을 바꾸지 않는다: 답으로 새 프로세스를 띄워도 같다 (서버는 다른 값을 final `conflict`로 버린다)
+            // (1–200자가 아니거나 NUL이 있는 값은 서버가 final로 거절하므로 쓰지 않는다)
+            $0.externalTaskID = $0.externalTaskID ?? OutgoingValues.identity(identity.externalTaskID)
             if stillRunning { $0.alive = true }
         }
         _ = try? await ledger.updateCommand(commandID) {
@@ -687,14 +756,18 @@ extension BridgeRuntime {
         // 프로세스가 질문을 기다리며 살아 있으면(Codex) 같은 실행의 이어짐이다. 끝났으면(Claude Code) 새 실행 구간이다
         let runID = supervised[common.agentTaskID]?.runID ?? UUID()
         let answeredAt = clock.now()
+        let commandID = record.commandID
         do {
-            _ = try await ledger.updateTask(common.agentTaskID) {
-                $0.alive = true
-                $0.currentCommandID = record.commandID
-                $0.segmentTerminal = nil
-                $0.cancelState = nil
-            }
-            _ = try await ledger.updateCommand(record.commandID) { $0.state = .startIntent; $0.stateAt = answeredAt }
+            try await ledger.beginRun(
+                taskID: common.agentTaskID,
+                task: {
+                    $0.alive = true
+                    $0.currentCommandID = commandID
+                    $0.segmentTerminal = nil
+                    $0.cancelState = nil
+                },
+                commandID: commandID, command: { $0.state = .startIntent; $0.stateAt = answeredAt }
+            )
         } catch {
             log.log("ledger_write_failed", ["step": .code("start_intent")])
             return

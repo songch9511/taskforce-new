@@ -15,6 +15,8 @@ public enum ReadbackProcess: Sendable, Equatable {
     case orphanAlive
     /// 확인할 수 없다. 끝났다고 말하지 않는다
     case unknown
+    /// 원장은 살아 있다고 하지만 감독하는 실행이 없고, adapter도 끝을 증명하지 못한다 (`liveness == .unknown`). 먼저 끝낼 수도 없다: `unknown`으로만 답한다
+    case unverifiedOrphan
 }
 
 public struct ReadbackFacts: Sendable {
@@ -77,6 +79,10 @@ public enum Reconcile {
         case .withdrawn, .gone:
             return .none
         case .declined, .stale:
+            // 원장을 잃어서 · 기록이 없어서 만든 `declined`는 띄웠는지 모른다: 증명된 것이 없으므로 unknown (한 번만)
+            if command.state == .declined, command.reason == "ledger_lost" || command.reason == "no_record" {
+                return command.ackOp == "readback" ? .none : .report(.unknown, processEnded: false)
+            }
             // 띄우지 않기로 한 명령: 띄운 적이 없다는 것이 원장으로 증명된다
             return command.ackOp == "readback" ? .none : .report(.notReceived, processEnded: true)
         case .seen, .leaseRequested, .leased:
@@ -111,7 +117,7 @@ public enum Reconcile {
                 } else {
                     decision = facts.preAcceptFailureQueued ? .replayOutboxFirst : .report(.notReceived, processEnded: true)
                 }
-            case .unknown:
+            case .unknown, .unverifiedOrphan:
                 decision = signal ? (facts.outboxPending ? .replayOutboxFirst : .report(.received, processEnded: false)) : .report(.unknown, processEnded: false)
             case .orphanAlive:
                 decision = .terminateOrphanFirst
