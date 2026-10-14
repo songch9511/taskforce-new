@@ -12,6 +12,10 @@
 	<string>$(API_BASE_URL)</string>
 	<key>GIDClientID</key>
 	<string>$(GOOGLE_IOS_CLIENT_ID)</string>
+	<key>SUFeedURL</key>
+	<string>$(SPARKLE_FEED_URL)</string>
+	<key>SUPublicEDKey</key>
+	<string>$(SPARKLE_PUBLIC_ED_KEY)</string>
 	<key>TaskforceReleaseChannel</key>
 	<string>$(TF_RELEASE_CHANNEL)</string>
 	<key>TaskforceSourceCommit</key>
