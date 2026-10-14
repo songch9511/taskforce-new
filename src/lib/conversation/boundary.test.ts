@@ -78,3 +78,38 @@ describe("대화 v2 ↔ 실행 권한 경계 (I04)", () => {
     expect(offenders).toEqual([]);
   });
 });
+
+// ─── OA D1d(OD-27): 에이전트 대상 대화 ↔ 대화 모듈 경계 ───
+// 에이전트 대화는 설계상 대화 run을 열고 전달 단계를 만든다(실행 쪽 일). 그 논리는 src/lib/api/agent-conversations.ts + src/lib/agents/*에만 두고,
+// 대화 모듈 · handler(conversations.ts)는 주입된 delegate로만 부른다. v2 대화 route는 에이전트 논리를 @/lib/api/agent-conversations로만 받는다.
+describe("에이전트 대상 대화 경계 (I04 · OD-27)", () => {
+  const AGENT_API_FILE = path.join(ROOT, "src/lib/api/agent-conversations.ts");
+  const AGENT_FILES = files(path.join(ROOT, "src/lib/agents"));
+  const imports = (file: string) => [...readFileSync(file, "utf8").matchAll(/(?:from\s+|import\()\s*["']([^"']+)["']/g)].map((match) => match[1]);
+
+  it("대화 모듈 · handler는 @/lib/agents도 agent-conversations도 가져오지 않는다 (delegate만 주입받는다)", () => {
+    const offenders = [...CONVERSATION_FILES, API_FILE].flatMap((file) =>
+      imports(file).filter((spec) => /^@\/lib\/agents(\/|$)|\/agent-conversations$|^\.\.?\/agents(\/|$)/.test(spec)).map((spec) => `${path.relative(ROOT, file)}: ${spec}`),
+    );
+    expect(offenders).toEqual([]);
+  });
+
+  it("v2 대화 route는 에이전트 논리를 @/lib/api/agent-conversations로만 받는다 (@/lib/agents 직접 import 0)", () => {
+    const offenders = ROUTE_FILES.flatMap((file) => imports(file).filter((spec) => /^@\/lib\/agents(\/|$)/.test(spec)).map((spec) => `${path.relative(ROOT, file)}: ${spec}`));
+    expect(offenders).toEqual([]);
+    const usesDelegate = ROUTE_FILES.filter((file) => imports(file).includes("@/lib/api/agent-conversations")).map((file) => path.relative(ROOT, file));
+    expect(usesDelegate.length).toBeGreaterThanOrEqual(6);
+  });
+
+  it("에이전트 경로는 Taskforce 모델 경로를 가져오지 않는다: respondToMessage · Jev · LLM · 대화 store 0 (대상이 명시돼 분류를 건너뛴다)", () => {
+    const forbidden = [/^@\/lib\/conversation\/(respond|store|intent|memory|proposal|referent)$/, /^@\/lib\/ai\//];
+    const offenders = [AGENT_API_FILE, ...AGENT_FILES.filter((file) => !/fake-admin\.ts$/.test(file))].flatMap((file) =>
+      imports(file)
+        .filter((spec) => forbidden.some((pattern) => pattern.test(spec)))
+        .map((spec) => `${path.relative(ROOT, file)}: ${spec}`),
+    );
+    expect(offenders).toEqual([]);
+    const all = [AGENT_API_FILE, ...AGENT_FILES].map(code).join("\n");
+    expect(all).not.toMatch(/respondToMessage|completeJson|\bdecide\(|jevConfigFromEnv|llmConfigFromEnv/);
+  });
+});

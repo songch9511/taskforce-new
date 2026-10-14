@@ -5,10 +5,14 @@ import path from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const mocks = vi.hoisted(() => ({ sweep: vi.fn(), wakeRun: vi.fn(), supabaseExecutionStore: vi.fn(() => ({ store: true })) }));
+// OA D1d: 대기 메시지 만료(conversation_expire_agent_messages)도 이 admin의 rpc로 돈다
+const mocks = vi.hoisted(() => {
+  const rpc = vi.fn();
+  return { sweep: vi.fn(), wakeRun: vi.fn(), supabaseExecutionStore: vi.fn(() => ({ store: true })), rpc, admin: { admin: true, rpc } };
+});
 
 vi.mock("server-only", () => ({}));
-vi.mock("@/lib/supabase/admin", () => ({ createAdminClient: vi.fn(() => ({ admin: true })) }));
+vi.mock("@/lib/supabase/admin", () => ({ createAdminClient: vi.fn(() => mocks.admin) }));
 vi.mock("@/lib/execution/store", () => ({ supabaseExecutionStore: mocks.supabaseExecutionStore }));
 vi.mock("@/lib/execution/sweep", () => ({ sweep: mocks.sweep }));
 vi.mock("@/lib/execution/wake", () => ({ wakeRun: mocks.wakeRun }));
@@ -25,6 +29,7 @@ beforeEach(() => {
   vi.stubEnv("EXECUTION_ENABLED", "true");
   mocks.sweep.mockResolvedValue(RESULT);
   vi.mocked(reconcileAiSpend).mockResolvedValue(AI_SPEND);
+  mocks.rpc.mockReturnValue({ throwOnError: async () => ({ data: 0, error: null }) });
   vi.spyOn(console, "info").mockImplementation(() => {});
   vi.spyOn(console, "error").mockImplementation(() => {});
 });
@@ -53,7 +58,7 @@ describe("GET /api/cron/execution-sweep", () => {
     expect(await response.json()).toEqual({ enabled: false });
     expect(mocks.sweep).not.toHaveBeenCalled();
     expect(mocks.supabaseExecutionStore).not.toHaveBeenCalled();
-    expect(reconcileAiSpend).toHaveBeenCalledWith({ admin: true });
+    expect(reconcileAiSpend).toHaveBeenCalledWith(mocks.admin);
   });
 
   it("켜져 있으면 sweep 결과(숫자만)를 돌려주고 로그 한 줄", async () => {
@@ -92,4 +97,57 @@ it("keeps startup infrastructure failures observable and HTTP 500 for retry", as
   expect((await cron()).status).toBe(500);
   expect(mocks.sweep).not.toHaveBeenCalled();
   expect(console.error).toHaveBeenCalledExactlyOnceWith(JSON.stringify({ event: "execution_sweep", ai_spend: aiSpend }));
+});
+
+
+// ─── OA D1d: 대기 메시지 만료 (계약 2.13 · OD-18) ───
+const expiryCalls = () => mocks.rpc.mock.calls.filter(([name]) => name === "conversation_expire_agent_messages");
+const expiring = (...counts: number[]) => {
+  let call = 0;
+  mocks.rpc.mockImplementation(() => ({ throwOnError: async () => ({ data: counts[Math.min(call++, counts.length - 1)], error: null }) }));
+};
+
+describe("대기 메시지 만료 (conversation_expire_agent_messages)", () => {
+  it("실행 플래그가 꺼져 있어도 돈다 (조기 반환 앞): 대기 메시지가 24시간 뒤에도 자동 전달 대상으로 남지 않는다", async () => {
+    vi.stubEnv("EXECUTION_ENABLED", "");
+    const response = await cron();
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ enabled: false });
+    expect(expiryCalls()).toHaveLength(1);
+    expect(mocks.sweep).not.toHaveBeenCalled();
+  });
+
+  it("켜져 있어도 한 번 돌고, 기존 sweep과 응답 본문은 그대로다. 로그는 숫자만", async () => {
+    expiring(7);
+    const response = await cron();
+    expect(await response.json()).toEqual({ enabled: true, ...RESULT });
+    expect(expiryCalls()).toHaveLength(1);
+    expect(expiryCalls()[0][1]).toEqual({ p_now: expect.stringMatching(/^\d{4}-\d\d-\d\dT/) });
+    expect(console.info).toHaveBeenCalledWith(JSON.stringify({ event: "agent_message_expiry", expired: 7, rounds: 1 }));
+  });
+
+  it("2,500행이면 1,000 · 1,000 · 500으로 세 번 돈다 (한 번의 cron에서 최대 10회)", async () => {
+    expiring(1000, 1000, 500);
+    await cron();
+    expect(expiryCalls()).toHaveLength(3);
+    mocks.rpc.mockClear();
+    expiring(1000);
+    await cron();
+    expect(expiryCalls()).toHaveLength(10);
+  });
+
+  it("실패해도 응답 본문 · 상태 코드는 그대로이고 기존 sweep도 이어 돈다 (로그에는 이벤트 이름 · 오류 이름만)", async () => {
+    mocks.rpc.mockImplementation(() => ({ throwOnError: async () => { throw Object.assign(new Error("secret"), { name: "PostgrestError" }); } }));
+    const response = await cron();
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ enabled: true, ...RESULT });
+    expect(mocks.sweep).toHaveBeenCalledTimes(1);
+    expect(console.error).toHaveBeenCalledWith(JSON.stringify({ event: "agent_message_expiry_failed", error: "PostgrestError" }));
+    expect(JSON.stringify(vi.mocked(console.error).mock.calls)).not.toContain("secret");
+  });
+
+  it("인증 실패(401)에서는 돌지 않는다", async () => {
+    expect((await cron("Bearer wrong!")).status).toBe(401);
+    expect(mocks.rpc).not.toHaveBeenCalled();
+  });
 });

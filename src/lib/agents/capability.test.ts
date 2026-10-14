@@ -44,8 +44,14 @@ describe("S0 registry and access", () => {
     expect(adapterEnabled("agent:claude-code", {})).toBe(false);
     expect(adapterEnabled("agent:claude-code", { AGENT_ADAPTER_CLAUDE_CODE_ENABLED: "true" })).toBe(true);
     expect(adapterEnabled("agent:claude-code", { AGENT_ADAPTER_CLAUDE_CODE_ENABLED: "TRUE" })).toBe(false);
-    expect(adapterEnabled("agent:codex", {})).toBe(true);
     expect(adapterEnabled("agent:unknown", {})).toBe(false);
+  });
+  it("reads the Codex flag (OD-2): closed by default, exact true semantics, independent of the Claude Code flag", () => {
+    expect(adapterEnabled("agent:codex", {})).toBe(false);
+    expect(adapterEnabled("agent:codex", { AGENT_ADAPTER_CODEX_ENABLED: "true" })).toBe(true);
+    for (const value of ["TRUE", "1", " true", ""]) expect(adapterEnabled("agent:codex", { AGENT_ADAPTER_CODEX_ENABLED: value })).toBe(false);
+    expect(adapterEnabled("agent:codex", { AGENT_ADAPTER_CLAUDE_CODE_ENABLED: "true" })).toBe(false);
+    expect(adapterEnabled("agent:claude-code", { AGENT_ADAPTER_CODEX_ENABLED: "true" })).toBe(false);
   });
   it("allows requested-only cancellation and keeps absent legacy read_only closed", () => {
     const c = structuredClone(AGENT_REGISTRY["agent:codex"]);

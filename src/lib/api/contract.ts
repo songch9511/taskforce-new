@@ -1459,3 +1459,179 @@ export type SuggestionDismissRequest = z.infer<typeof suggestionDismissRequestSc
 /** 200 { suggestion }: 처리한 뒤의 제안. 404 없는/남의 제안 · 409 conflict(옛 version이거나 이미 끝난 제안: 다시 조회) · 400 잘못된 본문 · 시점 */
 export const suggestionResponseSchema = z.object({ suggestion: suggestionSchema });
 export type SuggestionResponse = z.infer<typeof suggestionResponseSchema>;
+
+// --- D1d ---
+// 대화 API v2 확장 (OA D1d-s, Assistant 계약 v3 2–5장). 기존 B2 스키마는 지문 · 모양 그대로 두고, 필요한 확장은 파생 스키마를 새 이름으로 둔다 (OD-26).
+// 에이전트 대화 route(/api/v2/conversations 확장 · agent-sessions · agent-tasks · assistant/targets)만 이 스키마를 쓴다. 결정적 Action id는 UUID 버전 비트가 없어 Action id는 z.guid()다.
+
+export const conversationTargetKindSchema = z.enum(["taskforce", "agent"]);
+export type ConversationTargetKind = z.infer<typeof conversationTargetKindSchema>;
+/** 대화 대상 (계약 3.1): 만든 뒤 바뀌지 않는다. agent는 내 에이전트 연결이 필수이고 세션은 선택(같은 연결의 세션) */
+export const conversationTargetSchema = z.discriminatedUnion("kind", [
+  z.strictObject({ kind: z.literal("taskforce") }),
+  z.strictObject({ kind: z.literal("agent"), connection_id: z.uuid(), session_id: z.uuid().optional() }),
+]);
+export type ConversationTarget = z.infer<typeof conversationTargetSchema>;
+
+/** POST /api/v2/conversations: 기존 { id?, title?, context_id? } + target?(없으면 taskforce). 같은 id에 다른 target이면 409 target_mismatch */
+export const createConversationV2RequestSchema = createConversationRequestSchema.extend({ target: conversationTargetSchema.optional() });
+export type CreateConversationV2Request = z.infer<typeof createConversationV2RequestSchema>;
+/** 만들기 응답의 대화: 기존 행 + 대상 열 (taskforce는 target_kind 'taskforce', 연결 · 세션 null) */
+export const conversationWithTargetSchema = conversationSchema.extend({
+  target_kind: conversationTargetKindSchema,
+  agent_connection_id: z.uuid().nullable(),
+  agent_session_id: z.uuid().nullable(),
+});
+export type ConversationWithTarget = z.infer<typeof conversationWithTargetSchema>;
+export const createConversationV2ResponseSchema = z.object({ conversation: conversationWithTargetSchema });
+export type CreateConversationV2Response = z.infer<typeof createConversationV2ResponseSchema>;
+
+// ─── 맥락 칩 (계약 2.1 · 2.2) ───
+export const attachmentKindSchema = z.enum(["action", "context", "agent_session", "run", "artifact", "source"]);
+export type AttachmentKind = z.infer<typeof attachmentKindSchema>;
+/** auto = 패널에 열린 항목(점선 칩, 에이전트로는 보내지 않는다) · added = Ask · 끌어다 놓기 · 첨부 */
+export const attachmentOriginSchema = z.enum(["auto", "added"]);
+export type AttachmentOrigin = z.infer<typeof attachmentOriginSchema>;
+export const attachmentSchema = z.strictObject({ kind: attachmentKindSchema, id: z.guid(), origin: attachmentOriginSchema });
+export type Attachment = z.infer<typeof attachmentSchema>;
+
+/**
+ * POST /api/v2/conversations/{id}/messages: 기존 { client_message_id, text, refs? } + attachments?(≤ 20).
+ * refs와 attachments를 함께 보내면 400 (OD-4): 새 앱은 attachments만 보낸다. 같은 client_message_id에 정규화한 attachments가 다르면 409 conflict(다른 대상)
+ */
+export const postConversationMessageV2RequestSchema = postConversationMessageRequestSchema
+  .extend({ attachments: z.array(attachmentSchema).max(20).optional() })
+  .refine((request) => request.refs === undefined || request.attachments === undefined, { message: "refs와 attachments는 함께 보낼 수 없습니다", path: ["attachments"] });
+export type PostConversationMessageV2Request = z.infer<typeof postConversationMessageV2RequestSchema>;
+
+// ─── 전달 표시 (계약 2.4 · 3.2) ───
+/** answered ~ cancelled는 메시지 열(또는 답 글), sent · accepted · unknown은 dispatched 뒤 전달 단계에서 계산한다 */
+export const agentDeliveryStateSchema = z.enum(["answered", "queued", "needs_referent", "not_sent", "expired", "cancelled", "sent", "accepted", "unknown"]);
+export type AgentDeliveryState = z.infer<typeof agentDeliveryStateSchema>;
+/** 계약 2.4의 아홉 + SQL이 실제로 쓰는 여덟 (OD-12). 앱은 모르는 값을 만나도 깨지지 않는다 (open string) */
+export const agentDeliveryReasonSchema = z.enum([
+  "not_connected", "sign_in_needed", "unsupported", "write_gate_closed", "session_external", "version_unsupported", "usage_limited", "spawn_failed", "not_received",
+  "session_busy", "live_limit", "queue_order", "session_closed", "invalid_referent", "not_found", "already_dispatched", "question_open",
+]);
+export type AgentDeliveryReason = z.infer<typeof agentDeliveryReasonSchema>;
+export const agentDeliverySchema = z.strictObject({
+  state: agentDeliveryStateSchema,
+  reason: agentDeliveryReasonSchema.optional(),
+  /** needs_referent일 때 ≤ 3 */
+  candidates: z.array(z.strictObject({ action_id: z.guid(), title: z.string() })).max(3).optional(),
+});
+export type AgentDelivery = z.infer<typeof agentDeliverySchema>;
+export const attachmentDroppedSchema = z.strictObject({ kind: attachmentKindSchema, id: z.guid(), reason: z.enum(["deleted", "access_lost", "slack_purged"]) });
+export type AttachmentDropped = z.infer<typeof attachmentDroppedSchema>;
+
+/** 에이전트 대화의 사용자 메시지: 기존 메시지 + 전달 열 (대상 agent의 사용자 메시지만 값이 있다) */
+export const agentConversationMessageSchema = conversationMessageSchema.extend({
+  delivery_state: z.enum(["queued", "not_sent", "dispatched", "expired", "cancelled"]).nullable(),
+  delivery_reason: z.string().nullable(),
+  delivery_expires_at: z.string().nullable(),
+});
+export type AgentConversationMessage = z.infer<typeof agentConversationMessageSchema>;
+
+/** 에이전트 대상 보내기 · referent 응답 (계약 2.4): reply는 null — 답은 비동기로 대화에 쓰인다 (3.5) */
+export const postAgentMessageResponseSchema = z.object({
+  message: agentConversationMessageSchema,
+  reply: z.null(),
+  delivery: agentDeliverySchema,
+  attachments_dropped: z.array(attachmentDroppedSchema),
+  created_action: z.strictObject({ id: z.guid(), number: z.number().int().positive().nullable(), title: z.string(), context_id: z.uuid().nullable() }).nullable(),
+  agent_task: z.strictObject({ id: z.guid(), state: agentTaskStateSchema, agent_session_id: z.guid() }).nullable(),
+});
+export type PostAgentMessageResponse = z.infer<typeof postAgentMessageResponseSchema>;
+
+/** POST /api/v2/conversations/{id}/deliver (Send again): message_ids가 없으면 그 대화의 보류 · 만료 메시지 전부 */
+export const deliverAgentMessagesRequestSchema = z.strictObject({ message_ids: z.array(z.uuid()).min(1).max(50).optional() });
+export type DeliverAgentMessagesRequest = z.infer<typeof deliverAgentMessagesRequestSchema>;
+/** result requeued: 다시 대기시켰다 · skipped: 건너뛰었다(not_eligible 상태가 아님 · not_found 이 대화의 것이 아님 · unknown_outcome 결과 불명). not_found에는 delivery가 없다 */
+export const deliverAgentMessagesResponseSchema = z.object({
+  messages: z.array(z.strictObject({
+    message_id: z.guid(),
+    result: z.enum(["requeued", "skipped"]),
+    skipped_reason: z.enum(["not_eligible", "not_found", "unknown_outcome"]).optional(),
+    delivery: agentDeliverySchema.optional(),
+  })),
+});
+export type DeliverAgentMessagesResponse = z.infer<typeof deliverAgentMessagesResponseSchema>;
+
+/** POST /api/v2/conversations/{id}/messages/{message_id}/referent: needs_referent 후보 중 하나를 고른다 */
+export const setReferentRequestSchema = z.strictObject({ action_id: z.guid() });
+export type SetReferentRequest = z.infer<typeof setReferentRequestSchema>;
+
+/** GET /api/v2/conversations/{id}/delivery?since_seq= (OD-13): RLS로 읽은 메시지의 전달 표시를 서버 계산으로 */
+export const conversationDeliveryResponseSchema = z.object({
+  messages: z.array(z.strictObject({ message_id: z.guid(), seq: z.number().int().positive(), delivery: agentDeliverySchema })).max(100),
+});
+export type ConversationDeliveryResponse = z.infer<typeof conversationDeliveryResponseSchema>;
+
+// ─── 중단 · 세션 (계약 3.8 · 5장) ───
+/** 본문 없는 쓰기 (Stop · Open in Terminal): {} */
+export const agentEmptyRequestSchema = z.strictObject({});
+export const agentStopResponseSchema = z.strictObject({
+  tasks: z.array(z.strictObject({
+    agent_task_id: z.guid(),
+    cancel: z.enum(["requested_only", "confirmed"]),
+    /** Codex처럼 턴만 끊는 adapter: 실행 중 명령이 남을 수 있다 */
+    processes: z.literal("may_continue").optional(),
+  })),
+});
+export type AgentStopResponse = z.infer<typeof agentStopResponseSchema>;
+export const agentSessionSchema = z.strictObject({
+  id: z.guid(),
+  connection_id: z.guid(),
+  display_name: z.string(),
+  status: agentSessionStatusSchema,
+  last_turn_seq: z.number().int().nonnegative(),
+  updated_at: z.string(),
+});
+export type AgentSession = z.infer<typeof agentSessionSchema>;
+export const updateAgentSessionRequestSchema = z.strictObject({ display_name: z.string().trim().min(1).max(200) });
+export type UpdateAgentSessionRequest = z.infer<typeof updateAgentSessionRequestSchema>;
+export const agentSessionResponseSchema = z.object({ session: agentSessionSchema });
+export type AgentSessionResponse = z.infer<typeof agentSessionResponseSchema>;
+/** Resume here: 사용자가 터미널 세션을 닫았다고 확인한 뒤에만 (계약 3.8). 서버는 이 확인을 본문으로 받는다 */
+export const resumeAgentSessionRequestSchema = z.strictObject({ confirmed_terminal_closed: z.literal(true) });
+export type ResumeAgentSessionRequest = z.infer<typeof resumeAgentSessionRequestSchema>;
+export const resumeAgentSessionResponseSchema = z.object({ session: agentSessionSchema, started_message_id: z.guid().nullable() });
+export type ResumeAgentSessionResponse = z.infer<typeof resumeAgentSessionResponseSchema>;
+
+// ─── 대상 목록 (계약 4.5) ───
+export const agentTargetStateSchema = z.enum(["ready", "not_connected", "sign_in_needed", "unreachable", "unsupported"]);
+export type AgentTargetState = z.infer<typeof agentTargetStateSchema>;
+export const agentAccessSchema = z.enum(["write", "read_only"]);
+export type AgentAccess = z.infer<typeof agentAccessSchema>;
+export const assistantTargetSchema = z.discriminatedUnion("kind", [
+  z.strictObject({ kind: z.literal("taskforce") }),
+  z.strictObject({
+    kind: z.literal("agent"),
+    adapter: agentAdapterIdSchema,
+    display_name: z.string(),
+    connection_id: z.guid().nullable(),
+    state: agentTargetStateSchema,
+    access: agentAccessSchema.nullable(),
+  }),
+]);
+export type AssistantTarget = z.infer<typeof assistantTargetSchema>;
+export const assistantTargetsResponseSchema = z.object({ targets: z.array(assistantTargetSchema) });
+export type AssistantTargetsResponse = z.infer<typeof assistantTargetsResponseSchema>;
+
+// ─── 질문에 답하기 (계약 3.6) ───
+const agentAnswerTextSchema = z.string().refine((value) => Array.from(value).length <= 2000, "답은 2000자 이하");
+/** POST /api/v2/agent-tasks/{id}/answer: 질문마다 단일 글 또는 선택지 배열(다중 선택). 정확한 검증은 질문 모양에 맞춰 서버가 다시 한다 */
+export const answerAgentQuestionRequestSchema = z.strictObject({
+  provider_request_id: z.string().min(1).max(200),
+  answers: z.record(z.string().max(200), z.union([agentAnswerTextSchema, z.array(agentAnswerTextSchema).max(10)])),
+});
+export type AnswerAgentQuestionRequest = z.infer<typeof answerAgentQuestionRequestSchema>;
+export const answerAgentQuestionResponseSchema = z.strictObject({ status: z.enum(["answered", "duplicate"]), step_id: z.guid() });
+export type AnswerAgentQuestionResponse = z.infer<typeof answerAgentQuestionResponseSchema>;
+
+// ─── 오류 코드 ───
+/** busy_retry: 잠금 경합(55P03 · 40001)이 재시도를 넘겼다 — 쓰기 0이고 같은 요청을 다시 보내도 된다 (코디네이터 결정 5.1). 나머지는 계약 OD-26 */
+export const agentConversationErrorCodeSchema = z.enum(["target_mismatch", "question_stale", "secret_requires_local", "session_busy", "approval_via_review", "busy_retry"]);
+export type AgentConversationErrorCode = z.infer<typeof agentConversationErrorCodeSchema>;
+export const apiErrorV2AgentCodeSchema = z.enum([...apiErrorV2CodeSchema.options, ...agentConversationErrorCodeSchema.options]);
+export type ApiErrorV2AgentCode = z.infer<typeof apiErrorV2AgentCodeSchema>;

@@ -17,6 +17,14 @@ describe("answerAgentQuestion", () => {
     expect(await answerAgentQuestion(d.admin, input)).toEqual({ status: "answered", step_id: id });
     expect(d.rpc).toHaveBeenCalledExactlyOnceWith("answer_agent_question", { p_user_id: id, p_agent_task_id: id, p_provider_request_id: "request", p_answers: { choice: "A" }, p_answered_locally: false });
   });
+  it("D1d recordMetric: 같은 인자를 지표까지 남기는 SQL 래퍼 answer_agent_question_recorded로 보낸다 (기본은 그대로 answer_agent_question)", async () => {
+    const d = db();
+    expect(await answerAgentQuestion(d.admin, { ...input, recordMetric: true })).toEqual({ status: "answered", step_id: id });
+    expect(d.rpc).toHaveBeenCalledExactlyOnceWith("answer_agent_question_recorded", { p_user_id: id, p_agent_task_id: id, p_provider_request_id: "request", p_answers: { choice: "A" }, p_answered_locally: false });
+    const plain = db();
+    await answerAgentQuestion(plain.admin, { ...input, recordMetric: false });
+    expect(plain.rpc.mock.calls[0][0]).toBe("answer_agent_question");
+  });
   it.each(["duplicate", "question_stale", "invalid_answer", "secret_requires_local", "not_found"])("preserves SQL %s", async (status) => {
     const result = status === "duplicate" ? { status, step_id: id } : { status };
     expect(await answerAgentQuestion(db(result).admin, input)).toEqual(result);

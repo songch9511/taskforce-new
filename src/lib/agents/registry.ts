@@ -52,5 +52,6 @@ export const AGENT_REGISTRY: Record<"agent:claude-code" | "agent:codex", AgentCa
 };
 
 export function adapterEnabled(adapter: string, env: Record<string, string | undefined> = process.env): boolean {
-  return adapter === "agent:codex" || (adapter === "agent:claude-code" && flagEnabled("AGENT_ADAPTER_CLAUDE_CODE_ENABLED", env));
+  if (adapter === "agent:claude-code") return flagEnabled("AGENT_ADAPTER_CLAUDE_CODE_ENABLED", env);
+  return adapter === "agent:codex" && flagEnabled("AGENT_ADAPTER_CODEX_ENABLED", env);
 }
