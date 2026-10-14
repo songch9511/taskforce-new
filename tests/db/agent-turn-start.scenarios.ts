@@ -420,7 +420,7 @@ export function agentTurnStartTests(db: () => ConversationAgentDb) {
       const w = await f.turnWorld();
       const action = await f.action(w.user); await f.updateRow("actions",action,{status:"done"});
       expect(await f.start(w.user,w.message,[action])).toEqual({status:"not_sent",reason:"invalid_referent"});
-      const otherConnection = await f.agentConnection(w.user,w.bridge,{adapter:"agent:codex"});
+      const otherConnection = await f.agentConnection(w.user,await f.bridge(w.user),{adapter:"agent:codex"});
       const otherSession = await f.session(w.user,otherConnection);
       await f.updateRow("conversations",w.conversation,{agent_session_id:otherSession});
       expect((await f.start(w.user,w.message)).status).toBe("not_found");

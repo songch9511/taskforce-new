@@ -3,6 +3,7 @@ import { after } from "next/server";
 import { reconcileAiSpend } from "@/lib/ai/budget";
 import { fetchGeneration, generationConfigFromEnv } from "@/lib/ai/generation";
 import { cronAuthorized, cronUnauthorized } from "@/lib/api/cron";
+import { sweepBridge } from "@/lib/bridge/sweep";
 import { wakeCoordinator } from "@/lib/coordinator/wake";
 import { executionEnabled } from "@/lib/env";
 import { supabaseExecutionStore } from "@/lib/execution/store";
@@ -32,6 +33,7 @@ export async function GET(request: Request) {
   if (!cronAuthorized(request)) return cronUnauthorized();
   scheduleCoordinatorWake();
   const admin = createAdminClient();
+  await sweepBridge(admin).then((result) => console.info(JSON.stringify({ event: "bridge_sweep", ...result }))).catch(() => console.error(JSON.stringify({ event: "bridge_sweep_failed" })));
   const aiSpend = await reconcileAiSpend(admin);
   // Listing/configuration failures previously aborted the route: retain HTTP 500 for those.
   if (aiSpend.errors > 0 && aiSpend.attempted === 0) {

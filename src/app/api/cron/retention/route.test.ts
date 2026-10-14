@@ -20,15 +20,15 @@ let now = 0;
  * 부를 때마다 2초가 걸리는 가짜 service role 클라이언트. busy면 원문 · Slack 정리가 매번 한도(5000건)만큼 지워 밀린 것이 남는다.
  * artifacts · execution: purge_expired_artifacts · purge_expired_execution_text가 돌려줄 수, Error면 실패. args: RPC마다 받은 인자
  */
-function fakeAdmin({ busy = false, artifacts = 0, execution = 0 }: { busy?: boolean; artifacts?: number | Error; execution?: number | Error } = {}) {
+function fakeAdmin({ busy = false, artifacts = 0, execution = 0, bridge = 0 }: { busy?: boolean; artifacts?: number | Error; execution?: number | Error; bridge?: number | Error } = {}) {
   const calls: string[] = [];
   const args: Record<string, unknown> = {};
   const n = busy ? 5000 : 0;
   const call = async (fn: string) => {
     calls.push(fn);
     now += 2_000;
-    if (fn === "purge_expired_artifacts" || fn === "purge_expired_execution_text") {
-      const result = fn === "purge_expired_artifacts" ? artifacts : execution;
+    if (fn === "purge_expired_artifacts" || fn === "purge_expired_execution_text" || fn === "purge_bridge_commands") {
+      const result = fn === "purge_expired_artifacts" ? artifacts : fn === "purge_bridge_commands" ? bridge : execution;
       if (result instanceof Error) throw result;
       return { data: result };
     }
@@ -76,8 +76,8 @@ describe("GET /api/cron/retention", () => {
     const response = await cron();
 
     expect(response.status).toBe(200);
-    expect(calls).toEqual(["purge_expired_artifacts", "purge_expired_execution_text", "purge_expired_source_text", "purge_slack_buffers"]);
-    expect(await response.json()).toMatchObject({ artifacts_purged: 3, execution_text_purged: 2, sources_purged: 0, calls: 4 });
+    expect(calls).toEqual(["purge_expired_artifacts", "purge_expired_execution_text", "purge_bridge_commands", "purge_expired_source_text", "purge_slack_buffers"]);
+    expect(await response.json()).toMatchObject({ artifacts_purged: 3, execution_text_purged: 2, sources_purged: 0, calls: 5 });
     expect(checkSlackConnectionTokens).toHaveBeenCalledOnce();
     // 기준 시각 = 지금 - EXECUTION_TEXT_RETENTION_DAYS (run을 만든 시각과 비교한다), 한 번에 5000개 run
     expect(EXECUTION_TEXT_RETENTION_DAYS).toBe(90);
@@ -94,7 +94,7 @@ describe("GET /api/cron/retention", () => {
     const response = await cron();
 
     expect(response.status).toBe(500);
-    expect(calls).toEqual(["purge_expired_artifacts", "purge_expired_execution_text", "purge_expired_source_text", "purge_slack_buffers"]);
+    expect(calls).toEqual(["purge_expired_artifacts", "purge_expired_execution_text", "purge_bridge_commands", "purge_expired_source_text", "purge_slack_buffers"]);
     expect(await response.json()).toMatchObject({ artifacts_purged: null, execution_text_purged: 0, sources_purged: 0 });
     expect(checkSlackConnectionTokens).toHaveBeenCalledOnce();
     expect(error).toHaveBeenCalledWith("실행 산출물 본문 정리 실패:", "function public.purge_expired_artifacts() does not exist");
@@ -107,7 +107,7 @@ describe("GET /api/cron/retention", () => {
     const response = await cron();
 
     expect(response.status).toBe(500);
-    expect(calls).toEqual(["purge_expired_artifacts", "purge_expired_execution_text", "purge_expired_source_text", "purge_slack_buffers"]);
+    expect(calls).toEqual(["purge_expired_artifacts", "purge_expired_execution_text", "purge_bridge_commands", "purge_expired_source_text", "purge_slack_buffers"]);
     expect(await response.json()).toMatchObject({ artifacts_purged: 1, execution_text_purged: null, sources_purged: 0 });
     expect(checkSlackConnectionTokens).toHaveBeenCalledOnce();
     expect(error).toHaveBeenCalledWith(
@@ -123,7 +123,7 @@ describe("GET /api/cron/retention", () => {
     const response = await cron();
 
     expect(response.status).toBe(500);
-    expect(calls).toEqual(["purge_expired_artifacts", "purge_expired_execution_text", "purge_expired_source_text", "purge_slack_buffers"]);
+    expect(calls).toEqual(["purge_expired_artifacts", "purge_expired_execution_text", "purge_bridge_commands", "purge_expired_source_text", "purge_slack_buffers"]);
     expect(await response.json()).toMatchObject({ artifacts_purged: null, execution_text_purged: null, sources_purged: 0 });
     expect(checkSlackConnectionTokens).toHaveBeenCalledOnce();
   });
@@ -144,4 +144,23 @@ describe("GET /api/cron/retention", () => {
     // 한도 직전에 시작한 Slack 호출(최대 10초)까지 실행 한도(60초) 안에서 끝나고 응답할 시간을 남긴다
     expect(options!.deadline! - started).toBeLessThanOrEqual(40_000);
   });
+});
+
+it("purges only the bounded 30-day bridge command batch", async () => {
+  const { args } = fakeAdmin({ bridge: 3 });
+  const response = await cron();
+  expect(await response.json()).toMatchObject({ bridge_commands_purged: 3 });
+  const { p_before, p_limit } = args.purge_bridge_commands as { p_before: string; p_limit: number };
+  expect(Math.abs(new Date(p_before).getTime() - retentionCutoff(new Date(), 30).getTime())).toBeLessThan(60_000);
+  expect(p_limit).toBe(5000);
+});
+it("contains bridge purge errors without logging exception content", async () => {
+  vi.spyOn(console, "error").mockImplementation(() => {});
+  const { calls } = fakeAdmin({ bridge: new Error("PRIVATE-BRIDGE-TEXT") });
+  const response = await cron();
+  expect(response.status).toBe(500);
+  expect(await response.json()).toMatchObject({ bridge_commands_purged: null });
+  expect(calls).toContain("purge_slack_buffers");
+  expect(checkSlackConnectionTokens).toHaveBeenCalledOnce();
+  expect(JSON.stringify(vi.mocked(console.error).mock.calls)).not.toContain("PRIVATE-BRIDGE-TEXT");
 });

@@ -1,3 +1,5 @@
+import { sweepBridge } from "@/lib/bridge/sweep";
+vi.mock("@/lib/bridge/sweep", () => ({ sweepBridge: vi.fn() }));
 import { reconcileAiSpend } from "@/lib/ai/budget";
 vi.mock("@/lib/ai/budget", () => ({ reconcileAiSpend: vi.fn() }));
 import { readFileSync } from "node:fs";
@@ -21,6 +23,7 @@ const cron = (authorization = "Bearer s3cret") => GET(new Request("https://api.e
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.mocked(sweepBridge).mockResolvedValue({} as Awaited<ReturnType<typeof sweepBridge>>);
   vi.stubEnv("CRON_SECRET", "s3cret");
   vi.stubEnv("EXECUTION_ENABLED", "true");
   mocks.sweep.mockResolvedValue(RESULT);
@@ -44,6 +47,7 @@ describe("GET /api/cron/execution-sweep", () => {
     expect((await cron("Bearer wrong!")).status).toBe(401);
     expect(mocks.sweep).not.toHaveBeenCalled();
     expect(reconcileAiSpend).not.toHaveBeenCalled();
+    expect(sweepBridge).not.toHaveBeenCalled();
   });
 
   it("실행 플래그가 꺼져도 공통 원가를 확인하고 실행 sweep은 생략", async () => {
@@ -92,4 +96,21 @@ it("keeps startup infrastructure failures observable and HTTP 500 for retry", as
   expect((await cron()).status).toBe(500);
   expect(mocks.sweep).not.toHaveBeenCalled();
   expect(console.error).toHaveBeenCalledExactlyOnceWith(JSON.stringify({ event: "execution_sweep", ai_spend: aiSpend }));
+});
+
+it("runs bridge recovery with execution disabled and contains its failures", async () => {
+  vi.stubEnv("EXECUTION_ENABLED", "false");
+  vi.mocked(sweepBridge).mockRejectedValue(new Error("PRIVATE-BRIDGE-TEXT"));
+  const response = await cron();
+  expect(await response.json()).toEqual({ enabled: false });
+  expect(sweepBridge).toHaveBeenCalledExactlyOnceWith({ admin: true });
+  expect(mocks.sweep).not.toHaveBeenCalled();
+  expect(JSON.stringify(vi.mocked(console.error).mock.calls)).not.toContain("PRIVATE-BRIDGE-TEXT");
+});
+
+it("runs bridge recovery before a budget startup failure", async () => {
+  vi.mocked(reconcileAiSpend).mockResolvedValueOnce({ attempted: 0, settled: 0, deferred: 0, errors: 1 });
+  expect((await cron()).status).toBe(500);
+  expect(sweepBridge).toHaveBeenCalledExactlyOnceWith({ admin: true });
+  expect(vi.mocked(sweepBridge).mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(reconcileAiSpend).mock.invocationCallOrder[0]);
 });

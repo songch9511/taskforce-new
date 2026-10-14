@@ -173,9 +173,13 @@ export function agentGatewayCoreTests(db: () => AgentGatewayDb) {
         "bridges.revoked_at timestamp with time zone null",
         "bridges.created_at timestamp with time zone not null = now()",
         "bridges.updated_at timestamp with time zone not null = now()",
+        "bridges.heartbeat_result jsonb null",
+        "bridges.secret_hash text null",
+        "bridges.secret_rotated_at timestamp with time zone null",
+        "bridges.app_version text null",
       ]);
-      // 로그인 계정 · 이메일 · 토큰 · 비밀값 열이 없다 (I16)
-      expect(rows.filter((r) => /email|token|secret|password|account|login/i.test(String(r.column_name)))).toEqual([]);
+      // 원문 비밀값은 금지; 장치 자격의 hash와 회전 시각만 허용한다.
+      expect(rows.filter((r) => /email|token|secret|password|account|login/i.test(String(r.column_name))).map(r => `${r.table_name}.${r.column_name}`)).toEqual(["bridges.secret_hash", "bridges.secret_rotated_at"]);
     });
 
     it("execution_runs · execution_events 새 열: 형 · null 허용 · 기본값", async () => {
@@ -289,7 +293,11 @@ export function agentGatewayCoreTests(db: () => AgentGatewayDb) {
         ]);
         expect(await f.one(`select relrowsecurity from pg_class where oid = ('public.' || $1)::regclass`, [table]), table).toEqual({ relrowsecurity: true });
         const privilege = async (role: string, kind: string) => (await f.one(`select has_table_privilege($1, ('public.' || $2)::regclass, $3) as ok`, [role, table, kind])).ok;
-        for (const kind of ["select"]) expect(await privilege("authenticated", kind), `${table} authenticated ${kind}`).toBe(true);
+        for (const kind of ["select"]) expect(await privilege("authenticated", kind), `${table} authenticated ${kind}`).toBe(table !== "bridges");
+        if (table === "bridges") {
+          const columns = await q(`select column_name, has_column_privilege('authenticated', 'public.bridges', column_name, 'select') as readable from information_schema.columns where table_schema='public' and table_name='bridges'`);
+          for (const column of columns) expect(column.readable, String(column.column_name)).toBe(!["secret_hash", "heartbeat_result"].includes(String(column.column_name)));
+        }
         for (const kind of ["insert", "update", "delete", "truncate", "references", "trigger"]) expect(await privilege("authenticated", kind), `${table} authenticated ${kind}`).toBe(false);
         for (const kind of ["select", "insert", "update", "delete", "truncate", "references", "trigger"]) expect(await privilege("anon", kind), `${table} anon ${kind}`).toBe(false);
         for (const kind of ["select", "insert", "update", "delete"]) expect(await privilege("service_role", kind), `${table} service_role ${kind}`).toBe(true);
@@ -345,17 +353,17 @@ export function agentGatewayCoreTests(db: () => AgentGatewayDb) {
   describe("T2 복합 외래키: 남의 행 · 없는 행을 가리키지 못하고 내 것과 null은 된다", () => {
     it("agent_connections.bridge_id · agent_sessions.connection_id · bound_action_id", async () => {
       const [alice, bob] = [await f.world(), await f.world()];
-      await rejects(f.agentConnection(alice.user, bob.bridge), /agent_connections_bridge_fkey/);
+      await rejects(f.agentConnection(alice.user, bob.bridge, { adapter: "agent:codex" }), /agent_connections_bridge_fkey/);
       await rejects(f.agentConnection(alice.user, randomUUID()), /agent_connections_bridge_fkey/);
       await rejects(f.session(alice.user, bob.connection), /agent_sessions_connection_fkey/);
       await rejects(f.session(alice.user, randomUUID()), /agent_sessions_connection_fkey/);
       await rejects(f.session(alice.user, alice.connection, { bound_action_id: bob.action }), /agent_sessions_bound_action_fkey/);
       await rejects(f.session(alice.user, alice.connection, { bound_action_id: randomUUID() }), /agent_sessions_bound_action_fkey/);
       // 갱신으로 옮겨도 같다
-      await rejects(f.updateRow("agent_connections", alice.connection, { bridge_id: bob.bridge }), /agent_connections_bridge_fkey/);
+      await rejects(f.updateRow("agent_connections", alice.connection, { bridge_id: bob.bridge, adapter: "agent:codex" }), /agent_connections_bridge_fkey/);
       await rejects(f.updateRow("agent_sessions", alice.session, { bound_action_id: bob.action }), /agent_sessions_bound_action_fkey/);
       // 내 것과 null은 된다
-      await f.agentConnection(alice.user, alice.bridge);
+      await f.agentConnection(alice.user, alice.bridge, { adapter: "agent:codex" });
       await f.agentConnection(alice.user, null);
       await f.session(alice.user, alice.connection, { bound_action_id: alice.action });
       await f.session(alice.user, alice.connection, { bound_action_id: null });

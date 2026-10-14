@@ -497,8 +497,8 @@ Vercel 함수는 상주 소켓을 못 두므로 bridge가 **끌어오는** 모�
 
 | 채널 | 방향 | 모양 |
 |---|---|---|
-| 명령 | 서버 → bridge | `bridge_commands(id, user_id, bridge_id, kind in ('dispatch','message','cancel','reconcile','check'), payload, lease_until, acked_at)`. bridge가 `GET /api/v1/bridge/commands?since=`로 가져가고(long-poll ≤ 25초), `ack`로 lease를 잡는다. 서버가 명령을 만들 때 Supabase Realtime(`bridge_commands` insert)으로 깨운다(앱이 이미 Realtime을 신호로 쓴다) |
-| 사건 | bridge → 서버 | `POST /api/v1/bridge/events` 배열. 각 사건은 `(bridge_id, event_id)` unique · `seq` 단조. 서버는 `execution_events(type='agent')`에 넣고 코디네이터 사건으로 변환 |
+| 명령 | 서버 → bridge | `bridge_commands(id, user_id, bridge_id, step_id, agent_task_id, cursor, kind in ('message','answer','cancel'), lease_owner, leased_at, outcome, outcome_at, created_at)`(OA D2a). 상태의 원천은 `execution_steps`이며 명령 행에는 글 · payload 사본을 두지 않는다. `GET /api/v1/bridge/commands?after=`(long-poll ≤ 25초, 2초 재확인)는 메타데이터와 readbacks만 돌려주고, `ack` lease 응답에서 보관 기한 내 원문을 읽는다. 단계 prepared와 같은 트랜잭션의 INSERT를 Realtime으로 알린다 |
+| 사건 | bridge → 서버 | `POST /api/v1/bridge/events` 배열. 원장 중복 범위는 `(run_id, external_event_id) where type='agent'`, `seq`는 작업의 순서 판단에 쓴다. 사용자 · 세션의 bridge 귀속을 확인한 뒤 `execution_events(type='agent')`에 bridge_id를 남긴다. 코디네이터 생산자 연결은 E1c |
 | heartbeat | bridge → 서버 | 30초. 살아 있는 `agent_tasks`의 `(task_id, process_alive, last_seq)`를 함께 보낸다. 3회 누락 → 세션 · 작업 `unreachable`(유지) |
 | outbox | bridge 로컬 | SQLite 또는 파일. 보내지 못한 사건을 TTL 24시간(기본값표) 보관. 재접속 시 순서대로 재생 |
 | 비밀값 | 로컬 | 에이전트 API 키 · 로그인은 Mac Keychain. 서버에 올리지 않는다. `connection_secrets`에는 remote adapter 토큰만 |
@@ -523,7 +523,7 @@ Vercel 함수는 상주 소켓을 못 두므로 bridge가 **끌어오는** 모�
 | 네트워크 단절(에이전트는 진행) | 사건을 outbox에 쌓는다 | 위와 같음 | 같음 |
 | 재접속 | outbox 재생(순서 · event_id) → `reconcile` 사건(살아 있는 task마다 `alive/finished/unknown`) | 재생 사건을 한 번씩 적용 → 끝 사건이 있으면 귀속 확인 → 없으면 `last_live_state` 복원 | 재생 결과 |
 | Mac 종료 · 앱 종료 | 에이전트 프로세스 사망. 재시작 시 저장된 `external_session_id`로 `resume` 가능 여부 확인 | `unreachable` 유지. 재dispatch 금지(I02). 재개는 capability `resume=supported`일 때만 `message`(이어서) 명령 | "재개 가능 / 불가" 구분 |
-| outbox 유실(앱 크래시) | 세션 transcript(Claude `.jsonl` · Codex rollout)에서 마지막 결과를 읽어 `reconcile`에 `readback` 첨부 | 표식(묶음 marker)이 산출물 · transcript에 있으면 `confirmed`, 없으면 `unconfirmed` → readback 단계 또는 사용자 확인 | "최신 지시의 결과인지 확인 중" |
+| outbox 유실(앱 크래시) | bridge 원장으로 먼저 확인한다. Claude Code transcript는 파싱하지 않는다(Assistant 계약 13.2 우선). Codex는 13.3의 공식 turn 조회에서 marker와 clientUserMessageId를 대조한다 | ack readback의 received/not_received/unknown으로 기존 단계만 정산한다. not_received는 앞 프로세스 종료 확인이 필수이며 자동 재dispatch하지 않는다 | "전달 결과 확인 중" |
 | 다른 Mac에서 로그인 | 새 bridge 등록. 기존 세션은 이어받지 않음 | 세션은 bridge_id에 묶임 | "이 작업은 다른 Mac에서 실행 중" |
 | 사용자가 Stop | `cancel` 명령 수신 → interrupt → 종료 사건 | `cancel_requested_at`, 확인 전 상태 유지(유지) | "중단 요청됨" |
 | bridge 버전이 서버 enum을 모름 | 모르는 명령 kind는 `unsupported` 사건 | `needs_capability` | 앱 업데이트 안내 |
