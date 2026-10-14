@@ -1,12 +1,13 @@
-import { describe, expect, it, vi } from "vitest";
+import type { SupabaseClient } from "@supabase/supabase-js";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
 
 import { URGENT_WINDOW_HOURS } from "./coordinator.config";
-import { computePendingDecisions, matchPendingVersion, urgency, type FutureInputs, type PendingInput } from "./pending";
+import { computePendingDecisions, loadPendingDecisions, matchPendingVersion, PENDING_KINDS, urgency, type FutureInputs, type PendingInput } from "./pending";
 
 // 결정 대기 목록 계산 (A39, 런타임 계약 6장). 순수 함수 시험. [현재 실제] 원천(승인 · run 결과 · 확인 요청)은 tests/coordinator/pending.test.ts가 실제 DB로 본다.
-// [미래 fixture] 에이전트 질문 · 열린 제안 · 막힌 의존은 원천 표가 없어 입력 타입으로만 만든다.
+// [미래 fixture] 열린 제안 · 막힌 의존은 원천 표가 없어 입력 타입으로만 만든다. 에이전트 입력(질문 · 결과 준비 · 경로 충돌, OA D4b-s)은 review_agent_inputs가 준다 — 아래 [D4b-s] 절.
 
 const NOW = new Date("2026-10-12T00:00:00Z");
 const id = (n: number, prefix = "aaaaaaaa") => `${prefix}-0000-4000-8000-${String(n).padStart(12, "0")}`;
@@ -107,21 +108,208 @@ describe("처리된 항목은 version 불일치로 사라진다 (다른 기기�
 });
 
 describe("[미래 fixture] 아직 원천이 없는 종류: 입력 타입으로만 섞는다 (연결되지 않았다)", () => {
-  it("에이전트 질문 · 열린 제안 · 긴급 창의 막힌 의존이 같은 업무에 동시에 생겨도 (action, kind)로 묶이고, 막는 의존은 긴급이다", () => {
+  it("에이전트 질문(실제 입력 행) · 열린 제안 · 긴급 창의 막힌 의존이 같은 업무에 동시에 생겨도 (action, kind)로 묶이고, 막는 의존은 긴급이다", () => {
     const future: FutureInputs = {
-      agentQuestions: [row({ kind: "agent_question", action_id: id(1), run_id: id(1, "cccccccc"), question_id: "q-1", version: "q-1", created_at: "2026-10-11T05:00:00Z" })],
       openSuggestions: [row({ kind: "suggestion", action_id: id(1), question_id: null, version: "sg-1", created_at: "2026-10-11T06:00:00Z" })],
       blockedDependencies: [row({ kind: "blocked_dependency", action_id: id(1), version: "dep-1", created_at: "2026-10-11T07:00:00Z", due_at: hours(3), blocks_other_work: true })],
     };
     const groups = computePendingDecisions({
       now: NOW,
-      rows: [row({ kind: "approval", action_id: id(1), step_id: id(1, "bbbbbbbb"), version: "step:a:1:1", created_at: "2026-10-11T04:00:00Z" }), row({ kind: "confirm", action_id: id(1), version: "action:a:2", created_at: "2026-10-11T03:00:00Z" })],
+      rows: [
+        row({ kind: "approval", action_id: id(1), step_id: id(1, "bbbbbbbb"), version: "step:a:1:1", created_at: "2026-10-11T04:00:00Z" }),
+        row({ kind: "confirm", action_id: id(1), version: "action:a:2", created_at: "2026-10-11T03:00:00Z" }),
+        agentRow("agent_question", { action_id: id(1), created_at: "2026-10-11T05:00:00Z" }),
+      ],
       future,
     });
     expect(groups.map((g) => g.kind)).toEqual(["blocked_dependency", "confirm", "approval", "agent_question", "suggestion"]);
     expect(groups[0]).toMatchObject({ urgent: true });
     expect(groups.slice(1).every((g) => !g.urgent)).toBe(true);
-    expect(groups.find((g) => g.kind === "agent_question")!.items[0].questionId).toBe("q-1");
+    expect(groups.find((g) => g.kind === "agent_question")!.items[0].agent).toMatchObject({ task_id: TASK });
+  });
+});
+
+// ─── [D4b-s] 에이전트 입력: 질문 셋 · 결과 준비 · 경로 충돌 ────────────────────────────────────────
+
+const TASK = "c0000000-0000-4000-8000-000000000001";
+const RUN = "d0000000-0000-4000-8000-000000000001";
+const LEASE = "e0000000-0000-4000-8000-000000000001";
+const SESSION = "f0000000-0000-4000-8000-000000000001";
+type AgentKind = "agent_question" | "agent_approval" | "agent_secret_question" | "result_ready" | "path_conflict";
+const DETAIL: Record<AgentKind, Record<string, unknown>> = {
+  agent_question: { task_id: TASK, session_id: SESSION, provider_request_id: "req-1", adapter: "agent:codex", bridge_id: null },
+  agent_approval: { task_id: TASK, session_id: SESSION, provider_request_id: "req-1", adapter: "agent:codex", bridge_id: SESSION },
+  agent_secret_question: { task_id: TASK, session_id: SESSION, provider_request_id: "req-1", adapter: "agent:claude-code", bridge_id: SESSION },
+  result_ready: { session_id: SESSION, reviewed_turn_seq: 0, last_turn_seq: 2, changed_at: "2026-10-11T05:30:00.123456+00:00" },
+  path_conflict: { lease_id: LEASE, conflict_version: 1, holder_action_id: id(9), holder_run_id: RUN, later_run_id: RUN, released: false, stopped: false },
+};
+const REF: Record<AgentKind, string> = { agent_question: TASK, agent_approval: TASK, agent_secret_question: TASK, result_ready: RUN, path_conflict: LEASE };
+/** review_agent_inputs 한 행이 가는 PendingInput (item_ref가 항목 열쇠, step_id · question_id는 null) */
+const agentRow = (kind: AgentKind, over: Partial<PendingInput> = {}): PendingInput => ({
+  kind, action_id: id(1), run_id: RUN, step_id: null, question_id: null, item_ref: REF[kind], version: `${kind}:v1`, created_at: "2026-10-11T05:00:00Z", due_at: null, detail: DETAIL[kind], ...over,
+});
+
+describe("[D4b-s] 에이전트 종류의 항목: id · ref · 묶음 · 순서", () => {
+  it("종류 순서: C3 종류가 앞 그대로이고 에이전트 종류 넷이 끝에 덧붙는다", () => {
+    expect([...PENDING_KINDS]).toEqual([
+      "approval", "review_failed", "run_input", "confirm", "agent_question", "suggestion", "blocked_dependency", "agent_approval", "agent_secret_question", "result_ready", "path_conflict",
+    ]);
+  });
+
+  it("항목 id는 `${kind}:${item_ref}` (task · run · lease). step_id · question_id는 null이고 ref는 자기 종류에만 붙는다", () => {
+    const groups = computePendingDecisions({ now: NOW, rows: (Object.keys(DETAIL) as AgentKind[]).map((kind, i) => agentRow(kind, { action_id: id(i + 1) })) });
+    const items = groups.flatMap((g) => g.items);
+    expect(items.map((i) => i.id).sort()).toEqual([`agent_approval:${TASK}`, `agent_question:${TASK}`, `agent_secret_question:${TASK}`, `path_conflict:${LEASE}`, `result_ready:${RUN}`].sort());
+    for (const item of items) {
+      expect([item.stepId, item.questionId]).toEqual([null, null]);
+      const refs = (["agent", "result", "conflict"] as const).filter((key) => key in item);
+      const expected = item.kind === "result_ready" ? ["result"] : item.kind === "path_conflict" ? ["conflict"] : ["agent"];
+      expect(refs, item.kind).toEqual(expected);
+    }
+    expect(items.find((i) => i.kind === "result_ready")!.result).toMatchObject({ reviewed_turn_seq: 0, last_turn_seq: 2, changed_at: "2026-10-11T05:30:00.123Z" });
+  });
+
+  it("C2 종류 항목에는 ref 키 자체가 없다 (JSON이 C3 그대로)", () => {
+    const [group] = computePendingDecisions({ now: NOW, rows: [row({ kind: "confirm", action_id: id(1), version: "action:a:1" })] });
+    expect(Object.keys(group.items[0]).sort()).toEqual(["actionId", "createdAt", "id", "kind", "questionId", "runId", "stepId", "urgent", "urgentReason", "version"]);
+    expect(group.items[0].id).toBe(`confirm:${id(1)}`);
+  });
+
+  it("묶음 = (Action, 종류): 같은 Action의 질문 종류가 달라도 따로, 다른 Action의 같은 종류도 따로", () => {
+    const task2 = "c0000000-0000-4000-8000-000000000002";
+    const groups = computePendingDecisions({
+      now: NOW,
+      rows: [
+        agentRow("agent_question"),
+        agentRow("agent_question", { item_ref: task2, detail: { ...DETAIL.agent_question, task_id: task2 }, created_at: "2026-10-11T05:10:00Z" }),
+        agentRow("agent_approval", { created_at: "2026-10-11T05:20:00Z", item_ref: "c0000000-0000-4000-8000-000000000003", detail: { ...DETAIL.agent_approval, task_id: "c0000000-0000-4000-8000-000000000003" } }),
+        agentRow("agent_question", { action_id: id(2), item_ref: "c0000000-0000-4000-8000-000000000004", detail: { ...DETAIL.agent_question, task_id: "c0000000-0000-4000-8000-000000000004" } }),
+      ],
+    });
+    expect(groups.map((g) => [g.actionId, g.kind, g.items.length])).toEqual([[id(1), "agent_question", 2], [id(2), "agent_question", 1], [id(1), "agent_approval", 1]]);
+  });
+
+  it("순서: 긴급 묶음 → 오래 기다린 묶음 → 종류 → Action id. 새 종류에 새 긴급 이유는 없다 (기한 창만)", () => {
+    const rows = [
+      agentRow("path_conflict", { action_id: id(1), created_at: "2026-10-11T00:00:00Z" }),
+      agentRow("result_ready", { action_id: id(2), created_at: "2026-10-11T00:00:00Z" }),
+      agentRow("agent_question", { action_id: id(3), created_at: "2026-10-11T00:00:00Z" }),
+      agentRow("agent_approval", { action_id: id(4), created_at: "2026-10-12T00:00:00Z", due_at: hours(5) }),
+      row({ kind: "confirm", action_id: id(5), version: "action:5:1", created_at: "2026-10-09T00:00:00Z" }),
+    ];
+    const groups = computePendingDecisions({ rows, now: NOW });
+    // 긴급(approval, 기한 5시간) → 가장 오래된 confirm → 같은 시각 셋은 종류 순서(agent_question < result_ready < path_conflict)
+    expect(groups.map((g) => g.kind)).toEqual(["agent_approval", "confirm", "agent_question", "result_ready", "path_conflict"]);
+    expect(groups.map((g) => g.urgent)).toEqual([true, false, false, false, false]);
+    expect(groups[0].items[0].urgentReason).toBe("due_window");
+    for (const shuffled of [[...rows].reverse(), [rows[3], rows[0], rows[4], rows[2], rows[1]]]) expect(computePendingDecisions({ rows: shuffled, now: NOW })).toEqual(groups);
+  });
+
+  it("묶음 version은 에이전트 항목 version이 바뀌면 달라진다", () => {
+    const first = computePendingDecisions({ now: NOW, rows: [agentRow("agent_question", { version: "question:t:req-1" })] })[0];
+    const second = computePendingDecisions({ now: NOW, rows: [agentRow("agent_question", { version: "question:t:req-2" })] })[0];
+    expect(first.version).not.toBe(second.version);
+  });
+
+  it("ref 모양이 틀리면 계산이 throw한다: 빠진 detail · 틀린 타입 · 모르는 키 · 다른 종류의 ref", () => {
+    const bad: Partial<PendingInput>[] = [
+      { detail: undefined },
+      { detail: { ...DETAIL.agent_question, task_id: "not-a-guid" } },
+      { detail: { ...DETAIL.agent_question, extra: "x" } },
+      { detail: { ...DETAIL.agent_question, adapter: "claude" } },
+      { detail: DETAIL.result_ready },
+    ];
+    for (const over of bad) expect(() => computePendingDecisions({ now: NOW, rows: [agentRow("agent_question", over)] }), JSON.stringify(over)).toThrow();
+    expect(() => computePendingDecisions({ now: NOW, rows: [agentRow("result_ready", { detail: { ...DETAIL.result_ready, last_turn_seq: 0 } })] })).toThrow();
+    expect(() => computePendingDecisions({ now: NOW, rows: [agentRow("result_ready", { detail: { ...DETAIL.result_ready, changed_at: "not a time" } })] })).toThrow();
+    expect(() => computePendingDecisions({ now: NOW, rows: [agentRow("path_conflict", { detail: { ...DETAIL.path_conflict, conflict_version: 0 } })] })).toThrow();
+  });
+});
+
+describe("[D4b-s] version 대조 (ONE-TF-03 서버 몫): 질문 교체 · 답함 · 충돌 재발생 · 해소", () => {
+  const listOf = (rows: PendingInput[]) => computePendingDecisions({ now: NOW, rows });
+  const questionItem = `agent_question:${TASK}`;
+
+  it("같은 task의 질문이 교체되면 같은 id에 다른 version이라 옛 화면은 stale이다", () => {
+    const old = { itemId: questionItem, version: `question:${TASK}:req-1` };
+    expect(matchPendingVersion(listOf([agentRow("agent_question", { version: old.version })]), old)).toBe("current");
+    expect(matchPendingVersion(listOf([agentRow("agent_question", { version: `question:${TASK}:req-2` })]), old)).toBe("stale");
+  });
+
+  it("답한 뒤(질문이 목록에서 빠짐)에는 gone이다", () => {
+    expect(matchPendingVersion(listOf([]), { itemId: questionItem, version: `question:${TASK}:req-1` })).toBe("gone");
+  });
+
+  it("충돌이 해소되면 gone, 같은 lease에 새 충돌(conflict_version 증가)이 생기면 stale이다", () => {
+    const seen = { itemId: `path_conflict:${LEASE}`, version: `conflict:${LEASE}:1` };
+    expect(matchPendingVersion(listOf([agentRow("path_conflict", { version: seen.version })]), seen)).toBe("current");
+    expect(matchPendingVersion(listOf([agentRow("path_conflict", { version: `conflict:${LEASE}:2` })]), seen)).toBe("stale");
+    expect(matchPendingVersion(listOf([]), seen)).toBe("gone");
+  });
+});
+
+describe("[D4b-s] loadPendingDecisions: gate · 두 함수 · 실패는 전체 실패", () => {
+  afterEach(() => vi.unstubAllEnvs());
+  const AGENT_ROW = { kind: "agent_question", item_ref: TASK, action_id: id(1), run_id: RUN, version: `question:${TASK}:req-1`, created_at: "2026-10-11T05:00:00+00:00", due_at: null, detail: DETAIL.agent_question };
+  /** supabase-js 흉내: 함수 이름 → 돌려줄 행 (Error면 실패). 부른 함수와 인자를 기록한다 */
+  function fakeAdmin(results: Record<string, unknown[] | Error>) {
+    const calls: { name: string; args: unknown }[] = [];
+    const admin = {
+      rpc: (name: string, args: unknown) => {
+        calls.push({ name, args });
+        const result = results[name];
+        return { throwOnError: () => (result instanceof Error ? Promise.reject(result) : Promise.resolve({ data: result ?? [] })) };
+      },
+    } as unknown as SupabaseClient;
+    return { admin, calls };
+  }
+  const C2_ROW = { kind: "confirm", action_id: id(2), run_id: null, step_id: null, version: "action:b:1", created_at: "2026-10-11T00:00:00Z", due_at: null };
+
+  it("켜진 adapter가 없으면(빈 배열) review_agent_inputs를 부르지 않는다 — C2 함수 하나만, 결과도 C2 그대로", async () => {
+    const { admin, calls } = fakeAdmin({ coordinator_pending_inputs: [C2_ROW], review_agent_inputs: [AGENT_ROW] });
+    const groups = await loadPendingDecisions(admin, "user-1", NOW, { agentAdapters: [] });
+    expect(calls.map((c) => c.name)).toEqual(["coordinator_pending_inputs"]);
+    expect(groups.map((g) => g.kind)).toEqual(["confirm"]);
+  });
+
+  it("기본값은 환경의 openAgentAdapters()다: 플래그가 모두 꺼져 있으면 부르지 않고, 대화 v2 ∧ adapter가 켜지면 그 adapter만 넘겨 부른다", async () => {
+    vi.stubEnv("CONVERSATIONS_V2_ENABLED", "");
+    vi.stubEnv("AGENT_ADAPTER_CODEX_ENABLED", "");
+    vi.stubEnv("AGENT_ADAPTER_CLAUDE_CODE_ENABLED", "");
+    const off = fakeAdmin({ coordinator_pending_inputs: [C2_ROW], review_agent_inputs: [AGENT_ROW] });
+    await loadPendingDecisions(off.admin, "user-1", NOW);
+    expect(off.calls.map((c) => c.name)).toEqual(["coordinator_pending_inputs"]);
+
+    vi.stubEnv("CONVERSATIONS_V2_ENABLED", "true");
+    vi.stubEnv("AGENT_ADAPTER_CODEX_ENABLED", "true");
+    const on = fakeAdmin({ coordinator_pending_inputs: [C2_ROW], review_agent_inputs: [AGENT_ROW] });
+    const groups = await loadPendingDecisions(on.admin, "user-1", NOW);
+    expect(on.calls.map((c) => c.name).sort()).toEqual(["coordinator_pending_inputs", "review_agent_inputs"]);
+    expect(on.calls.find((c) => c.name === "review_agent_inputs")!.args).toEqual({ p_user_id: "user-1", p_adapters: ["agent:codex"] });
+    expect(groups.map((g) => g.kind).sort()).toEqual(["agent_question", "confirm"]);
+  });
+
+  it("켜진 adapter가 있으면 두 함수의 행을 합쳐 한 목록으로 계산한다 (C2 행은 ref 없음, 에이전트 행은 ref 있음)", async () => {
+    const { admin } = fakeAdmin({ coordinator_pending_inputs: [C2_ROW], review_agent_inputs: [AGENT_ROW] });
+    const groups = await loadPendingDecisions(admin, "user-1", NOW, { agentAdapters: ["agent:codex", "agent:claude-code"] });
+    const items = groups.flatMap((g) => g.items);
+    expect(items.find((i) => i.kind === "confirm")).not.toHaveProperty("agent");
+    expect(items.find((i) => i.kind === "agent_question")).toMatchObject({ id: `agent_question:${TASK}`, runId: RUN, agent: { task_id: TASK, adapter: "agent:codex" } });
+  });
+
+  it("어느 함수든 실패하면 throw한다 (일부만 보이지 않는다 — 호출한 쪽이 결정 전체를 unavailable로 표시)", async () => {
+    await expect(loadPendingDecisions(fakeAdmin({ coordinator_pending_inputs: new Error("c2 down") }).admin, "u", NOW, { agentAdapters: ["agent:codex"] })).rejects.toThrow("c2 down");
+    await expect(loadPendingDecisions(fakeAdmin({ coordinator_pending_inputs: [C2_ROW], review_agent_inputs: new Error("agent down") }).admin, "u", NOW, { agentAdapters: ["agent:codex"] })).rejects.toThrow("agent down");
+  });
+
+  it("모르는 종류 · 틀린 ref 모양 · 틀린 열쇠를 받으면 throw한다", async () => {
+    const run = (row: unknown) => loadPendingDecisions(fakeAdmin({ coordinator_pending_inputs: [], review_agent_inputs: [row] }).admin, "u", NOW, { agentAdapters: ["agent:codex"] });
+    await expect(run({ ...AGENT_ROW, kind: "from_the_future" })).rejects.toThrow();
+    await expect(run({ ...AGENT_ROW, detail: { ...DETAIL.agent_question, task_id: 3 } })).rejects.toThrow();
+    await expect(run({ ...AGENT_ROW, detail: {} })).rejects.toThrow();
+    await expect(run({ ...AGENT_ROW, item_ref: "x" })).rejects.toThrow();
+    await expect(run({ ...AGENT_ROW, version: "" })).rejects.toThrow();
+    await expect(run({ ...AGENT_ROW, detail: null })).rejects.toThrow();
   });
 });
 

@@ -55,3 +55,12 @@ export function adapterEnabled(adapter: string, env: Record<string, string | und
   if (adapter === "agent:claude-code") return flagEnabled("AGENT_ADAPTER_CLAUDE_CODE_ENABLED", env);
   return adapter === "agent:codex" && flagEnabled("AGENT_ADAPTER_CODEX_ENABLED", env);
 }
+
+/**
+ * 에이전트 입력(Review · 복귀 요약 · 경로 충돌 해소)을 읽을 수 있는 adapter 목록 (OA D4b-s). 에이전트 대화 route의 gate와 같은 조건이다:
+ * CONVERSATIONS_V2_ENABLED가 정확히 "true"이고 그 adapter 플래그가 켜져 있다. 하나도 없으면 빈 배열 — 호출한 쪽은 에이전트 입력을 읽지 않는다.
+ */
+export function openAgentAdapters(env: Record<string, string | undefined> = process.env): string[] {
+  if (!flagEnabled("CONVERSATIONS_V2_ENABLED", env)) return [];
+  return Object.keys(AGENT_REGISTRY).filter((adapter) => adapterEnabled(adapter, env));
+}

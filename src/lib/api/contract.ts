@@ -1805,3 +1805,58 @@ export const bridgeV1ToolDecisionResponseSchema = z.strictObject({
   card_flags: z.array(z.literal("runs_without_sandbox")).max(1), server_time: z.iso.datetime({ offset: true }),
 }).refine((value) => (!value.parse || value.decision === "allow" && value.reason === "readonly_command") && (!value.agent_note || value.decision === "deny"));
 export type BridgeV1ToolDecisionResponse = z.infer<typeof bridgeV1ToolDecisionResponseSchema>;
+// --- D4b-s ---
+// Review 입력 연결 (OA D4b-s). C3 줄은 고치지 않고 파생 스키마를 새 이름으로 둔다 (D1d OD-26 방식). 최상위 키 · sources · complete · empty의 뜻은 그대로다:
+// 새 것은 ① 종류 값 넷 ② 새 종류에만 붙는 선택 키(agent · result · conflict) ③ 해소 route 하나다. 응답에 글이 없다 — 질문 글 · 경로 · 제목은 앱이 RLS로 읽는다.
+// Action id는 결정적 id라 UUID 버전 비트가 없어 z.guid()다 (run · lease id는 gen_random_uuid()라 z.uuid()).
+
+/** 결정 대기 종류 (src/lib/coordinator/pending.ts PENDING_KINDS와 같다: 순서까지 시험이 견준다). C3 종류가 앞부분이고 에이전트 종류 넷이 끝에 덧붙는다 */
+export const reviewDecisionKindSchema = z.enum([...pendingDecisionKindSchema.options, "agent_approval", "agent_secret_question", "result_ready", "path_conflict"]);
+export type ReviewDecisionKind = z.infer<typeof reviewDecisionKindSchema>;
+
+/** agent_question · agent_approval · agent_secret_question 항목의 열쇠: 답은 POST /api/v2/agent-tasks/{task_id}/answer { provider_request_id, answers }. bridge_id는 세션 연결의 bridge (지워졌으면 null) */
+export const reviewAgentRefSchema = z.strictObject({ task_id: z.guid(), session_id: z.guid(), provider_request_id: z.string().min(1).max(200), adapter: agentAdapterIdSchema, bridge_id: z.guid().nullable() });
+export type ReviewAgentRef = z.infer<typeof reviewAgentRefSchema>;
+/** result_ready 항목: 검토하지 않은 산출물이 있는 턴 범위 (reviewed_turn_seq 초과 ~ last_turn_seq). changed_at = 그 산출물 중 가장 늦은 생성 시각 */
+export const reviewResultRefSchema = z.strictObject({ session_id: z.guid().nullable(), reviewed_turn_seq: z.number().int().min(0), last_turn_seq: z.number().int().min(1), changed_at: z.string() });
+export type ReviewResultRef = z.infer<typeof reviewResultRefSchema>;
+/** path_conflict 항목: 해소는 POST /api/v2/path-conflicts/{lease_id}/resolve { keep, conflict_version }. released = lease가 이미 해제됨, stopped = 늦게 쓴 run을 멈췄다 */
+export const reviewConflictRefSchema = z.strictObject({
+  lease_id: z.uuid(), conflict_version: z.number().int().min(1), holder_action_id: z.guid(), holder_run_id: z.uuid(), later_run_id: z.uuid(), released: z.boolean(), stopped: z.boolean(),
+});
+export type ReviewConflictRef = z.infer<typeof reviewConflictRefSchema>;
+
+/** 결정 항목: 새 종류는 자기 ref 하나만 갖고, C3 종류에는 세 키가 모두 없다 (키 자체가 없다) */
+export const reviewDecisionItemSchema = pendingDecisionItemSchema.extend({
+  kind: reviewDecisionKindSchema,
+  action_id: z.guid(),
+  agent: reviewAgentRefSchema.optional(),
+  result: reviewResultRefSchema.optional(),
+  conflict: reviewConflictRefSchema.optional(),
+});
+export type ReviewDecisionItem = z.infer<typeof reviewDecisionItemSchema>;
+export const reviewDecisionGroupSchema = pendingDecisionGroupSchema.extend({ kind: reviewDecisionKindSchema, action_id: z.guid(), items: z.array(reviewDecisionItemSchema) });
+export type ReviewDecisionGroup = z.infer<typeof reviewDecisionGroupSchema>;
+/** GET /api/v2/review 응답 (D4b-s 이후). decisions가 서버 순서 그대로 Needs you 순서다 — 앱은 다시 정렬하지 않는다 */
+export const reviewWithAgentsResponseSchema = reviewResponseSchema.extend({ decisions: z.array(reviewDecisionGroupSchema).nullable() });
+export type ReviewWithAgentsResponse = z.infer<typeof reviewWithAgentsResponseSchema>;
+
+/** 복귀 요약 줄 (D4b-s 이후): decisions[].id/version = Review 항목 id/version. needs_answer는 result_ready 아닌 결정이 있을 때, next는 answer → review_result → open 순 */
+export const returnSummaryWithAgentsItemSchema = returnSummaryItemSchema.extend({
+  action_id: z.guid(),
+  decisions: z.array(z.object({ id: z.string(), kind: reviewDecisionKindSchema, version: z.string(), urgent: z.boolean() })),
+  next: returnSummaryNextSchema.extend({ decision_kinds: z.array(reviewDecisionKindSchema) }),
+});
+export type ReturnSummaryWithAgentsItem = z.infer<typeof returnSummaryWithAgentsItemSchema>;
+export const returnSummaryWithAgentsResponseSchema = returnSummaryResponseSchema.extend({ items: z.array(returnSummaryWithAgentsItemSchema) });
+export type ReturnSummaryWithAgentsResponse = z.infer<typeof returnSummaryWithAgentsResponseSchema>;
+
+/**
+ * POST /api/v2/path-conflicts/{lease_id}/resolve { keep, conflict_version }: conflict_version은 Review 항목 conflict.conflict_version 그대로 (integer CAS, DB integer 범위).
+ * holder = 먼저 쓴 쪽을 남긴다(충돌 표시만 지운다) · later = 늦게 쓴 쪽을 남긴다(holder의 살아 있는 lease를 푼다). 멈춘 run을 다시 시작하지 않고 파일을 되돌리지 않는다.
+ * 200 { status: "resolved" } · 409 conflict(옛 version이거나 이미 해소됨: 쓰기 0, 앱은 자동 재시도 없이 Review를 다시 읽는다) · 404 · 400 · 401
+ */
+export const resolvePathConflictRequestSchema = z.strictObject({ keep: z.enum(["holder", "later"]), conflict_version: z.number().int().min(1).max(2_147_483_647) });
+export type ResolvePathConflictRequest = z.infer<typeof resolvePathConflictRequestSchema>;
+export const resolvePathConflictResponseSchema = z.strictObject({ status: z.literal("resolved") });
+export type ResolvePathConflictResponse = z.infer<typeof resolvePathConflictResponseSchema>;
