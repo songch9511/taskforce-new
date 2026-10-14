@@ -5,7 +5,8 @@ import Foundation
 // 앱은 RLS로 읽는 행(`conversations` · `conversation_messages` · `memory_items` · `work_contexts`)과 서버 쓰기 응답을 같은 타입으로 읽는다.
 // 모르는 값은 실패로 만들지 않고(목록 전체를 못 읽게 되는 것을 막는다) 가장 덜 주장하는 쪽으로 읽는다.
 
-/// `conversations` 행. `contextID`: 대화의 범위 (nil = All work). `textPurgedAt`: 글 보관 기한 뒤 메시지 글만 비워졌다
+/// `conversations` 행. `contextID`: 대화의 범위 (nil = All work). `textPurgedAt`: 글 보관 기한 뒤 메시지 글만 비워졌다.
+/// `target`: 대화의 대상 열 (`target_kind` · `agent_connection_id` · `agent_session_id`, OA D1d). 열이 없는 옛 행은 Taskforce다
 public struct ChatConversation: Decodable, Sendable, Hashable, Identifiable {
     public let id: UUID
     public let title: String?
@@ -15,8 +16,9 @@ public struct ChatConversation: Decodable, Sendable, Hashable, Identifiable {
     public let lastReadAt: Date?
     public let archivedAt: Date?
     public let textPurgedAt: Date?
+    public let target: ChatConversationTarget
 
-    public static let columns = "id, title, context_id, created_at, last_message_at, last_read_at, archived_at, text_purged_at"
+    public static let columns = "id, title, context_id, created_at, last_message_at, last_read_at, archived_at, text_purged_at, target_kind, agent_connection_id, agent_session_id"
 
     enum CodingKeys: String, CodingKey {
         case id, title
@@ -30,7 +32,7 @@ public struct ChatConversation: Decodable, Sendable, Hashable, Identifiable {
 
     public init(
         id: UUID, title: String? = nil, contextID: UUID? = nil, createdAt: Date, lastMessageAt: Date? = nil, lastReadAt: Date? = nil,
-        archivedAt: Date? = nil, textPurgedAt: Date? = nil
+        archivedAt: Date? = nil, textPurgedAt: Date? = nil, target: ChatConversationTarget = .taskforce
     ) {
         self.id = id
         self.title = title
@@ -40,6 +42,21 @@ public struct ChatConversation: Decodable, Sendable, Hashable, Identifiable {
         self.lastReadAt = lastReadAt
         self.archivedAt = archivedAt
         self.textPurgedAt = textPurgedAt
+        self.target = target
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(UUID.self, forKey: .id)
+        title = try c.decodeIfPresent(String.self, forKey: .title)
+        contextID = try c.decodeIfPresent(UUID.self, forKey: .contextID)
+        createdAt = try c.decode(Date.self, forKey: .createdAt)
+        lastMessageAt = try c.decodeIfPresent(Date.self, forKey: .lastMessageAt)
+        lastReadAt = try c.decodeIfPresent(Date.self, forKey: .lastReadAt)
+        archivedAt = try c.decodeIfPresent(Date.self, forKey: .archivedAt)
+        textPurgedAt = try c.decodeIfPresent(Date.self, forKey: .textPurgedAt)
+        // 대상 열은 같은 행의 다른 키다 (`ChatConversationTarget`이 직접 읽는다)
+        target = try ChatConversationTarget(from: decoder)
     }
 
     /// 손대지 않은 빈 대화: 메시지가 한 번도 없었다 (`last_message_at`은 메시지를 저장할 때 선다)
