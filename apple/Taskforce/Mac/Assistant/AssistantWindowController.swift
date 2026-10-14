@@ -44,7 +44,11 @@ final class AssistantWindowController: NSObject, NSWindowDelegate {
     /// 창을 실제 화면에 올리는가 (시험은 끈다: 창을 만들고 자리만 잡는다)
     var presents = true
 
-    init(model: AssistantWindowModel, runtime: ChatRuntime, topLeft: CGPoint, environment: AssistantWindowManager.Environment, reduceMotion: Bool) {
+    /// - screenID: 기억한 위치를 읽은 화면. 그 위치는 그 화면에 놓는다 (처음 높이로 어느 화면과 더 많이 겹치는지 따지지 않는다)
+    init(
+        model: AssistantWindowModel, runtime: ChatRuntime, topLeft: CGPoint, screenID: String? = nil,
+        environment: AssistantWindowManager.Environment, reduceMotion: Bool
+    ) {
         self.model = model
         self.runtime = runtime
         self.topLeft = topLeft
@@ -83,7 +87,7 @@ final class AssistantWindowController: NSObject, NSWindowDelegate {
         panel.delegate = self
         panel.setAccessibilityLabel("Assistant")
         panel.title = "Assistant"
-        applyFrame(.placement)
+        applyFrame(.placement, screenID: screenID)
         followLayout()
     }
 
@@ -100,12 +104,13 @@ final class AssistantWindowController: NSObject, NSWindowDelegate {
         case placement, heightChange
     }
 
-    /// 위 가장자리를 둔 채 높이를 맞춘다. 보이는 영역 · 레일 밖으로 넣는다. 보정은 늘 **바라는 자리**에서 시작한다
-    func applyFrame(_ change: Change = .heightChange) {
+    /// 위 가장자리를 둔 채 높이를 맞춘다. 보이는 영역 · 레일 밖으로 넣는다. 보정은 늘 **바라는 자리**에서 시작한다.
+    /// - screenID: 놓을 화면을 정해 준다 (`placement`일 때만). 기억한 위치를 읽은 화면이다: 지금 높이로 다른 화면을 고르면 새 높이가 반영돼도 돌아오지 못한다
+    func applyFrame(_ change: Change = .heightChange, screenID: String? = nil) {
         let height = height
         // 창이 있는 화면 기준으로 보정한다 (레일은 레일 화면에만 있다)
         let reference = change == .placement ? Self.rect(topLeft: desiredTopLeft, height: height) : panel.frame
-        let screen = environment.screen(for: reference)
+        let screen = (change == .placement ? screenID.flatMap { environment.screen(id: $0) } : nil) ?? environment.screen(for: reference)
         topLeft = AssistantWindowGeometry.clamped(topLeft: desiredTopLeft, height: height, visible: screen.visible, railWidth: environment.reservedRailWidth(on: screen))
         let frame = NSRect(x: topLeft.x, y: topLeft.y - height, width: AssistantWindowGeometry.width, height: height)
         guard frame != panel.frame else { return }
@@ -154,9 +159,10 @@ final class AssistantWindowController: NSObject, NSWindowDelegate {
     }
 
     /// 지금의 위치를 알려 준 위치로 (관리자가 기억한 위치 · 겹쳐 열기). 바라는 자리로 남아, 이어지는 높이 변화가 그 자리에서 다시 보정한다
-    func place(topLeft: CGPoint) {
+    /// - screenID: 그 위치를 읽은 화면 (기억한 위치를 적용할 때). 없으면 놓을 영역이 가장 많이 겹치는 화면
+    func place(topLeft: CGPoint, onScreen screenID: String? = nil) {
         desiredTopLeft = topLeft
-        applyFrame(.placement)
+        applyFrame(.placement, screenID: screenID)
     }
 
     // MARK: 보이기 · 숨기기
@@ -278,7 +284,9 @@ final class AssistantWindowController: NSObject, NSWindowDelegate {
     /// 끌기가 끝났다: 보이는 영역 · 레일 밖이면 안으로 넣고 그 자리를 기억한다
     func finishMove() {
         settleTask = nil
-        // 끄는 동안 `windowDidMove`가 바라는 자리를 창 자리로 따라왔다
+        // 실제 프레임 좌표를 다시 읽는다: 정착을 기다리는 사이 높이 변경이 창을 밀었으면(위 화면 바닥의 창이 커져 위로 밀림)
+        // `windowDidMove`가 따라온 바라는 자리와 실제 자리가 다르고, 바라는 자리로 놓으면 다른 화면을 골라 거기에 저장한다
+        desiredTopLeft = CGPoint(x: panel.frame.minX, y: panel.frame.maxY)
         applyFrame(.placement)
         desiredTopLeft = topLeft
         onMoved(topLeft)

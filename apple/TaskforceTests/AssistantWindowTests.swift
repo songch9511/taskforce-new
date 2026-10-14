@@ -748,4 +748,93 @@ struct AssistantWindowTests {
         controller.place(topLeft: CGPoint(x: 500, y: 500))
         #expect(controller.currentScreenID == "1" && controller.panel.frame.minY >= 0 && controller.panel.frame.maxY <= 875)
     }
+    // MARK: 검토 반영 3 (Astra 3차: 두 교차 순서)
+
+    private func setHeights(_ controller: AssistantWindowController, body: CGFloat) {
+        controller.presentation.headHeight = 0
+        controller.presentation.bodyHeight = body
+        controller.presentation.footerHeight = 0
+    }
+
+    @Test func historyRestoreKeepsTheScreenWhereTheSavedPositionWasReadWhateverTheOldHeightWas() async throws {
+        // 세로로 쌓인 두 화면: 위 화면은 y 875 ..< 1750
+        let upper = AssistantScreen(id: "2", visible: CGRect(x: 0, y: 875, width: 1440, height: 875))
+        let rows = [row(1, "A", age: 20), row(2, "B", age: 10)]
+        let r = try rig(rows: rows, extraScreens: [upper])
+        defer { r.defaults.cleanup() }
+        await r.runtime.chat.refresh()
+        // B: 220pt, 위 화면 아래 끝(위 가장자리 1095)에 저장
+        let b = try #require(r.manager.openWindow(for: rows[1].id))
+        let bController = try #require(r.manager.controllers[b])
+        setHeights(bController, body: 220)
+        bController.place(topLeft: CGPoint(x: 500, y: 875 + 220))
+        bController.move(by: .left)
+        let saved = bController.topLeft
+        #expect(saved.y == 1095 && bController.currentScreenID == "2" && bController.panel.frame.height == 220)
+        r.manager.close(b)
+        // A: 560pt, 위 화면 안
+        let a = try #require(r.manager.openWindow(for: rows[0].id))
+        let aController = try #require(r.manager.controllers[a])
+        setHeights(aController, body: 600)
+        aController.place(topLeft: CGPoint(x: 900, y: 1500))
+        #expect(aController.panel.frame.height == 560 && aController.currentScreenID == "2")
+        setHeights(aController, body: 600)
+        aController.model.openConversation(rows[1].id)
+        #expect(aController.currentScreenID == "2" && aController.panel.frame.minY >= 875, "저장 위치를 읽은 화면에 남는다: A의 높이(560)로 아래 화면을 고르지 않는다")
+        // B의 높이(220)가 반영되면 저장 위치로 돌아온다
+        setHeights(aController, body: 220)
+        aController.applyFrame()
+        #expect(aController.topLeft == saved && aController.currentScreenID == "2", "그 화면 · 그 좌표로 복원")
+    }
+
+    @Test func aDragFinishRereadsTheRealFrameWhenAHeightChangeLandedBeforeTheMouseWasSettled() async throws {
+        let upper = AssistantScreen(id: "2", visible: CGRect(x: 0, y: 875, width: 1440, height: 875))
+        let rows = [row(1, "A", age: 20)]
+        let r = try rig(rows: rows, extraScreens: [upper])
+        defer { r.defaults.cleanup() }
+        await r.runtime.chat.refresh()
+        let id = try #require(r.manager.openWindow(for: rows[0].id))
+        let controller = try #require(r.manager.controllers[id])
+        let conversation = rows[0].id
+        controller.moveSettleDelay = .seconds(60)   // 끝맺음은 아래에서 직접 부른다 (그 사이에 일어난 일을 순서대로 만든다)
+        setHeights(controller, body: 220)
+        controller.place(topLeft: CGPoint(x: 500, y: 875 + 220))
+        try? await Task.sleep(for: .milliseconds(50))
+        // 사용자가 위 화면 바닥으로 220pt 창을 끌어다 놓는다 (위 가장자리 1095)
+        setHeights(controller, body: 220)
+        controller.panel.setFrameOrigin(CGPoint(x: 600, y: 875))
+        controller.windowDidMove(Notification(name: NSWindow.didMoveNotification))
+        #expect(controller.desiredTopLeft.y == 1095)
+        // 정착을 기다리는 사이 응답이 와서 높이가 560이 된다: 위 화면 안에서 위로 밀려 자란다
+        setHeights(controller, body: 600)
+        controller.applyFrame()
+        #expect(controller.panel.frame.height == 560 && controller.currentScreenID == "2" && controller.desiredTopLeft.y == 1095)
+        // 끌기가 끝난다: 실제 프레임 좌표를 다시 읽어야 한다 (바라는 자리 1095로 560 높이를 놓으면 아래 화면이 더 많이 겹친다)
+        setHeights(controller, body: 600)
+        controller.finishMove()
+        let saved = AssistantWindowPositionStore(defaults: r.defaults.defaults).load()
+        #expect(controller.currentScreenID == "2" && controller.panel.frame.minY >= 875, "아래 화면으로 옮겨지지 않는다")
+        #expect(saved.position(conversation: conversation, display: "2") == controller.topLeft && saved.position(conversation: conversation, display: "1") == nil, "위 화면의 키로, 실제 자리를 저장한다")
+    }
+
+    @Test func aRememberedPositionOpensOnTheScreenItWasReadFromEvenWhenTheFirstHeightStraddlesTwoScreens() throws {
+        let upper = AssistantScreen(id: "2", visible: CGRect(x: 0, y: 875, width: 1440, height: 875))
+        let rows = [row(1, "A", age: 20), row(2, "B", age: 10)]
+        let defaults = try TestDefaults()
+        // B의 저장 위치: 위 화면 아래 끝(위 가장자리 1095)
+        let seed = AssistantWindowPositionStore(defaults: defaults.defaults)
+        var positions = seed.load()
+        positions.remember(CGPoint(x: 500, y: 1095), conversation: rows[1].id, display: "2")
+        seed.save(positions)
+        let r = try rig(defaults: defaults, rows: rows, extraScreens: [upper])
+        defer { r.defaults.cleanup() }
+        // 앞 창이 위 화면에 있다: 그 화면에서 B의 기억을 찾는다
+        let front = try #require(r.manager.openNewWindow())
+        try #require(r.manager.controllers[front]).place(topLeft: CGPoint(x: 900, y: 1500))
+        // B는 글을 읽기 전이라 처음 높이가 440이다: 1095에 440을 놓으면 두 화면에 반씩 걸친다
+        let b = try #require(r.manager.openWindow(for: rows[1].id))
+        let controller = try #require(r.manager.controllers[b])
+        #expect(controller.panel.frame.height == 440)
+        #expect(controller.currentScreenID == "2" && controller.panel.frame.minY >= 875, "읽은 화면(위 화면)에 놓는다")
+    }
 }

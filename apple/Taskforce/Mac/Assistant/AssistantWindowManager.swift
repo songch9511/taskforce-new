@@ -34,6 +34,11 @@ final class AssistantWindowManager {
             AssistantWindowGeometry.screen(containing: frame, in: [railScreen] + extraScreens(), fallback: railScreen)
         }
 
+        /// 화면 키로 찾는다 (기억한 위치를 읽은 화면)
+        @MainActor func screen(id: String) -> AssistantScreen? {
+            ([railScreen] + extraScreens()).first { $0.id == id }
+        }
+
         /// 레일은 주 화면(레일 화면)에만 있다: 다른 화면은 오른쪽 끝까지 쓴다
         @MainActor func reservedRailWidth(on screen: AssistantScreen) -> CGFloat {
             screen.id == display() ? railWidth : 0
@@ -149,7 +154,7 @@ final class AssistantWindowManager {
     func openWindow(for conversationID: UUID) -> UUID? {
         let windowID = UUID()
         // 자리는 새 창을 등록하기 전에 정한다 (등록하면 새 창이 가장 앞 창이 되어 겹쳐 열 기준이 사라진다)
-        let initial = initialTopLeft(for: conversationID)
+        let initial = initialPlacement(for: conversationID)
         switch registry.open(conversation: conversationID, windowID: windowID) {
         case .reused(let id), .atCapacity(let id):
             bringForward(id)
@@ -163,7 +168,7 @@ final class AssistantWindowManager {
             // 열 때 패널에 열린 항목이 있으면 그것이 auto 칩이다
             model.followOpenItem(shell.openItem.map(Self.chip(for:)))
             let controller = AssistantWindowController(
-                model: model, runtime: runtime, topLeft: initial, environment: environment, reduceMotion: reduceMotion()
+                model: model, runtime: runtime, topLeft: initial.topLeft, screenID: initial.screenID, environment: environment, reduceMotion: reduceMotion()
             )
             controller.presents = presents
             controller.onMoved = { [weak self] topLeft in self?.remember(topLeft, windowID: id) }
@@ -314,17 +319,18 @@ final class AssistantWindowManager {
         Set(registry.windowIDs.filter { $0 != windowID }.compactMap { registry.conversationID(of: $0) })
     }
 
-    /// 새 창의 왼쪽 위: 그 대화의 기억된 위치(이 화면), 없으면 앞 창에서 24pt 아래 · 왼쪽, 보이는 창이 없으면 첫 창의 자리 (열린 패널 12pt 왼쪽 · 없으면 레일 12pt 왼쪽)
-    private func initialTopLeft(for conversationID: UUID) -> CGPoint {
+    /// 새 창의 왼쪽 위: 그 대화의 기억된 위치(이 화면), 없으면 앞 창에서 24pt 아래 · 왼쪽, 보이는 창이 없으면 첫 창의 자리 (열린 패널 12pt 왼쪽 · 없으면 레일 12pt 왼쪽).
+    /// 기억한 위치는 그 위치를 읽은 화면(`screenID`)에 놓는다
+    private func initialPlacement(for conversationID: UUID) -> (topLeft: CGPoint, screenID: String?) {
         // 기억은 앞 창이 있는 화면, 없으면 레일 화면에서 찾는다
         let displays = [registry.frontmost.flatMap { controllers[$0]?.currentScreenID }, environment.display()].compactMap { $0 }
         for display in displays {
-            if let remembered = positions.position(conversation: conversationID, display: display) { return remembered }
+            if let remembered = positions.position(conversation: conversationID, display: display) { return (remembered, display) }
         }
         if let front = registry.frontmost, let controller = controllers[front] {
-            return AssistantWindowGeometry.cascaded(from: controller.topLeft)
+            return (AssistantWindowGeometry.cascaded(from: controller.topLeft), nil)
         }
-        return AssistantWindowGeometry.firstTopLeft(panelFrame: environment.panelFrame(), railFrame: environment.railFrame())
+        return (AssistantWindowGeometry.firstTopLeft(panelFrame: environment.panelFrame(), railFrame: environment.railFrame()), nil)
     }
 
     private func remember(_ topLeft: CGPoint, windowID: UUID) {
@@ -342,8 +348,12 @@ final class AssistantWindowManager {
             bringForward(other)
         case .rebound:
             // 그 대화의 저장 위치가 있으면 그리로 간다 (History로 대화를 바꾸면 위치도 그 대화의 것이다)
-            if let controller = controllers[windowID], let remembered = positions.position(conversation: conversationID, display: controller.currentScreenID) {
-                controller.place(topLeft: remembered)
+            // 저장 위치를 읽은 화면(이 창이 있는 화면)에 놓는다: 앞 대화의 높이로 다른 화면을 고르지 않는다
+            if let controller = controllers[windowID] {
+                let display = controller.currentScreenID
+                if let remembered = positions.position(conversation: conversationID, display: display) {
+                    controller.place(topLeft: remembered, onScreen: display)
+                }
             }
         }
         return outcome
