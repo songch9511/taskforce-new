@@ -630,6 +630,7 @@ struct AssistantWindowTests {
         let saved = try #require(savedPosition())
         #expect(saved == controller.topLeft && saved.x + AssistantWindowGeometry.width <= rail.minX, "보정한 자리를 저장한다")
         #expect(controller.desiredTopLeft == controller.topLeft, "보정한 자리가 새 바람이다 (끌던 밖의 자리가 남지 않는다)")
+        #expect(controller.topLeft.x == rail.minX - AssistantWindowGeometry.width, "끌어다 놓은 자리에서 레일 경계까지만 들어간다 (처음 자리로 되돌아가지 않는다)")
     }
 
     @Test func aWindowOnASecondScreenIsClampedAndSavedAgainstThatScreen() throws {
@@ -737,6 +738,7 @@ struct AssistantWindowTests {
         controller.place(topLeft: CGPoint(x: 500, y: 875 + 220))
         #expect(controller.panel.frame.height == 220 && controller.panel.frame.minY == 875 && controller.currentScreenID == "2", "위 화면 아래 끝의 220pt 창")
         controller.presentation.bodyHeight = 600
+        #expect(controller.currentScreenID == "2", "높이를 반영하기 전에는 지금 창이 있는 화면이다 (바뀔 높이의 영역이 아니라)")
         controller.applyFrame()
         #expect(controller.panel.frame.height == 560)
         #expect(controller.currentScreenID == "2" && controller.panel.frame.minY >= 875, "아래 화면과 더 많이 겹쳐도 위 화면 안에서 위로 밀려 자란다")

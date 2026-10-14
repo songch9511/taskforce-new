@@ -278,7 +278,7 @@ final class AssistantWindowController: NSObject, NSWindowDelegate {
     /// 끌기가 끝났다: 보이는 영역 · 레일 밖이면 안으로 넣고 그 자리를 기억한다
     func finishMove() {
         settleTask = nil
-        desiredTopLeft = CGPoint(x: panel.frame.minX, y: panel.frame.maxY)
+        // 끄는 동안 `windowDidMove`가 바라는 자리를 창 자리로 따라왔다
         applyFrame(.placement)
         desiredTopLeft = topLeft
         onMoved(topLeft)
