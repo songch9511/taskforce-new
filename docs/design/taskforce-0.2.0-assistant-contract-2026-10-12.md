@@ -309,6 +309,17 @@ registry에 있고 연결이 없으면 `not_connected`(예: Codex를 아직 연�
 - 대기열(3.2-5)의 아직 전달하지 않은 메시지는 Stop 때 함께 취소하고 `event` 줄로 남긴다.
 - **(v3)** `cancel_scope='turn'`인 adapter(Codex 실측: `turn/interrupt` 뒤 실행 중 명령이 살아남음)는 응답 작업마다 `processes: "may_continue"`를 더하고, 앱은 "Stopped · commands may still be running"을 보인다. `external` 세션(3.8)의 Stop은 run만 멈춘다.
 
+### 5.1 OA D3c-2 서버 확정 정정 (2026-10-14)
+
+이 절은 OA D3c-2 계약 5.1의 Q1–Q21을 반영하며 아래에 지정한 기존 문구보다 우선한다. 13.4.1의 파서 규칙은 수정하지 않는다.
+
+- **3.9 경로 lease:** 키는 `(user_id, bridge_id, agent_path_key(real_path))`다. Mac이 절대 realpath를 보고하고 SQL이 NFC + `ſ`→`s` + ASCII 대소문자 접기를 한다. 그 밖의 비ASCII 대소문자는 접지 않는다. Manual 파일 쓰기는 승인 요청 때 `requested`로 예약하고 Allow면 `approved`, Deny면 그 요청의 예약만 해제한다. 같은 run의 `approved/observed` 재사용은 source·request_id를 보존하고 만료만 지운다. 늦은 `allow`가 새로 만든 행은 그 요청의 Deny로 해제한다. 산출물로 처음 관찰한 경로는 `observed`로 잡는다. 같은 세션의 다른 이슈 run에도 양보 규칙을 적용한다.
+- **3.9 양보·해제:** 응답은 `deny`, `reason: path_in_use`, `holder: {action_number, rel_path}`이며 run id를 에이전트에 보내지 않는다. Claude Code에는 `agent_note`를 훅 거절 이유로 전달한다. 대화에는 `Waiting for …`, 해제 뒤에는 `… is free now` event 줄을 남긴다. Taskforce가 에이전트에게 먼저 보내는 새 턴은 만들지 않는다. run 종료·external·Deny에서 해제하고, 턴 종료 30분 뒤 sweep으로 만료한다. 다음 턴의 실제 접수(`accepted`)에서 만료 시각을 비운다.
+- **3.9 사후 충돌:** 늦게 쓴 run에 취소를 요청하고 `stopped`로 끝내는 것이 `Stop new steps`다. `conflict_run_id`, `conflict_at`, `conflict_stop_at`은 충돌 해소까지 보존한다. 이미 실행된 파일 변경을 되돌렸다는 뜻은 아니다.
+- **13.2 결정표:** bridge는 정적 도구·닫기 모드·보류 중복·파일 시스템 사실을 먼저 확인한다. Bash·Edit·Write·Codex 승인의 정책 판정은 서버 API가 한다. 0.2.0에는 사용자 명령 허용 목록이 없으며 Bash 자동 허용은 13.4 파서 성공에만 근거한다.
+- **AC-9 (사용자 결정: 읽기는 허용):** Manual에서 쓰기 자동 허락은 0이다. 작업 폴더 안 읽기 전용 단일 명령은 13.4 판정으로 허용한다. Codex Manual은 읽기 actions·독립 파서 성공·첫 요청의 세 조건을 모두 요구한다. Auto/Full에서 온 Codex 승인 요청은 사용자에게 묻고 `Runs without sandbox`를 표시한다.
+- **3.6 승인 답·8장 측정:** Assistant와 Review는 같은 `POST /api/v2/agent-tasks/{id}/answer`에 `{provider_request_id, answers:{approval:"allow"|"deny"}}`를 보낸다. SQL이 답·예약 확정/해제·`question_answered {kind:approval,adapter,decision}`를 원자 처리한다. 서버 판정은 `tool_call_decided`, 사후 충돌·해소는 `path_conflict_found`·`path_conflict_resolved`로 센다. bridge 로컬 결정은 서버 지표에 포함하지 않는다.
+
 ## 6. 프로젝트 관리 (U5)
 
 | route | 내용 |
@@ -533,7 +544,7 @@ Action 생성(3.3)은 `action_events` `user_created`(`rule='assistant_agent'`)�
 
 **승인**
 
-- 요청: `item/commandExecution/requestApproval`(명령 문자열 · cwd · reason · `commandActions[]` · `availableDecisions`) · `item/fileChange/requestApproval`(id만, 경로 · diff는 같은 `itemId`의 앞선 `item/started`). `provider_request_id = "<threadId>:<turnId>:<itemId>"`(명령 승인에 `approvalId`가 있으면 덧붙인다). 연결마다 0부터 다시 세는 JSON-RPC id는 응답 · `serverRequest/resolved` 대조에만 쓴다.
+- 요청: `item/commandExecution/requestApproval`(명령 문자열 · cwd · reason · `commandActions[]` · `availableDecisions`) · `item/fileChange/requestApproval`(id만, 경로 · diff는 같은 `itemId`의 앞선 `item/started`). `provider_request_id = "<threadId>:<turnId>:<itemId>"`(명령 승인에 `approvalId`가 있으면 덧붙인다). 같은 item의 두 번째 이후 승인 요청은 끝에 회차 `:<n>`을 붙여 새 열쇠를 쓴다(예: `…:<itemId>:2`). 재전송은 같은 회차의 열쇠를 유지한다. 이미 답한 열쇠의 다른 답이나 다시 열린 질문은 `question_stale`(409), 그 열쇠를 재사용한 도구 결정은 `deny/not_first_request`다. 연결마다 0부터 다시 세는 JSON-RPC id는 응답 · `serverRequest/resolved` 대조에만 쓴다.
 - 결정: `accept` · `decline` · `cancel`(= 거절 + 턴 중단, CX-8b). `acceptForSession` · execpolicy 수정은 보내지 않는다. adapter가 다루지 않는 서버 요청(`item/permissions/requestApproval` · MCP elicitation 등)은 `decline`.
 - Manual에서 읽기 요청의 자동 승인은 셋을 모두 만족할 때만: ① `commandActions[]`가 모두 알려진 읽기 종류(`listFiles` · `read` · `search`), ② 13.4 파서가 같은 문자열을 작업 폴더 안 읽기 전용 단일 명령으로 판정, ③ 그 `itemId`의 첫 요청. 아니면 정책 평가기 → 사용자. 같은 `itemId`의 두 번째 요청은 샌드박스 밖 재실행 요청으로 보고 카드에 "Runs without sandbox"를 붙이며 자동 승인하지 않는다(요청에 샌드박스 표시가 없다, CX-8b).
 - Auto/Full의 승인 요청은 모두 샌드박스 밖 실행 요청이다. 자동 승인하지 않고 항상 사용자에게 묻는다(카드에 "Runs without sandbox"). 승인하면 그 명령은 샌드박스 없이 실행된다(CX-8b).

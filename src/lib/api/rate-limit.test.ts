@@ -1,7 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { describe, expect, it, vi } from "vitest";
 
-import { ACTION_CREATE_LIMIT, ASK_LIMIT, BRIDGE_REGISTER_LIMIT, CONNECTION_START_LIMIT, MISSING_REPORT_LIMIT, RateLimitedError, retryAfterSeconds, takeBridgeRegistrationLimit, takeBridgeRequestLimit } from "./rate-limit";
+import { ACTION_CREATE_LIMIT, ASK_LIMIT, BRIDGE_REGISTER_LIMIT, CONNECTION_START_LIMIT, MISSING_REPORT_LIMIT, RateLimitedError, retryAfterSeconds, takeBridgeRegistrationLimit, takeBridgeRequestLimit, takeBridgeDecisionPreflightLimit } from "./rate-limit";
 
 // 세기 · 기록 자체는 DB 함수(take_rate_limit)가 한다: tests/db/rate-limits.test.ts
 
@@ -46,7 +46,7 @@ describe("한도", () => {
 });
 
 describe("per-device bridge request limits", () => {
-  it.each([["bridge_events", 120], ["bridge_ack", 240], ["bridge_poll", 90]] as const)("limits %s to %s per minute", async (kind, max) => {
+  it.each([["bridge_events", 120], ["bridge_ack", 240], ["bridge_poll", 90], ["bridge_decide", 600]] as const)("limits %s to %s per minute", async (kind, max) => {
     const rpc = vi.fn(() => ({ throwOnError: async () => ({ data: null }) }));
     await takeBridgeRequestLimit({ rpc } as unknown as SupabaseClient, "user", "bridge", kind);
     expect(rpc).toHaveBeenCalledExactlyOnceWith("take_rate_limit", { p_user_id: "user", p_bridge_id: "bridge", p_kind: kind, p_max: max, p_window_seconds: 60 });
@@ -59,4 +59,13 @@ describe("per-device bridge request limits", () => {
     const failed = { rpc: () => ({ throwOnError: async () => { throw error; } }) } as unknown as SupabaseClient;
     await expect(takeBridgeRequestLimit(failed, "user", "bridge", "bridge_poll")).rejects.toBe(error);
   });
+});
+
+it("decision preflight limits locally per user/device and renews after a minute", () => {
+  const now = 2000000000000;
+  for (let n = 0; n < 600; n++) expect(takeBridgeDecisionPreflightLimit("preflight-user", "device", now)).toBeNull();
+  expect(takeBridgeDecisionPreflightLimit("preflight-user", "device", now + 1)).toEqual(new Date(now + 60000));
+  expect(takeBridgeDecisionPreflightLimit("other-user", "device", now + 1)).toBeNull();
+  expect(takeBridgeDecisionPreflightLimit("preflight-user", "other-device", now + 1)).toBeNull();
+  expect(takeBridgeDecisionPreflightLimit("preflight-user", "device", now + 60000)).toBeNull();
 });

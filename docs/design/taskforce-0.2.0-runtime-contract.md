@@ -146,7 +146,7 @@ action_dependencies(
 | `execution_artifacts` 열 | `directive_version int` · `result_revision int` · `attribution in ('confirmed','unconfirmed')` · `superseded_at timestamptz null` | 옛 지시 · 미귀속 · 늦은 결과를 새 표 없이 표시한다(5장) |
 | `execution_events` | `type`에 `agent` 추가, 열 `external_event_id` · `external_seq` · `directive_version` · `payload jsonb`(글 없음), `unique (run_id, external_event_id) where type = 'agent'` | 에이전트 사건 저장 · 중복 방지를 기존 이벤트 표로 한다(5장). 질문 · 결과 글은 `agent_tasks.pending_question` · 산출물에만 둔다 |
 | `limits.ts` | goal별 단계 상한: `draft` 4(기존), `agent` 12, `send` 4, `followup` 3 | agent = dispatch 1 + 메시지 왕복 ≤ 3×2 + 검토 ≤ 2 + 계획 단계. 상한은 비용 · 무한 반복 방지. 바꾸려면 상수와 테스트를 함께 |
-| 정책 | `execution_connection_policies(user_id, connection_id, mode, allowed_tools text[], allowed_targets jsonb, standing_budget_credits, version)` `제안` | C03 “연결별” 정책. 기존 사용자 정책은 기본값으로 남긴다. 승인 hash의 정책 버전에 연결 정책 버전도 넣는다 |
+| 정책 | `execution_connection_policies(user_id, connection_id, mode, allowed_tools text[], allowed_targets jsonb, standing_budget_credits, version)` `제안` | C03 “연결별” 정책. 기존 사용자 정책은 기본값으로 남긴다. 승인 hash의 정책 버전에 연결 정책 버전도 넣는다. **OA D3c-2 Q2: 이 표는 v1 connections FK라 0.2.0 에이전트 판정에는 사용하지 않는다. `execution_policies.mode` + registry 등급 + DB gate만 적용하고 연결별 정책은 0.2.x로 남긴다** |
 | 동시성 한도 | 세 가지를 나눈다. ① 실행 동시성 = 사용자당 동시에 `calling`인 비용 단계(모델 · 에이전트 호출) 3. ② 살아 있는 외부 작업 = 실행 중이거나 실행 가능성이 남은 원격 작업 5(아래). ③ 대기 보관 = 승인 · 질문 · 회신 대기 run에 실행 동시성 한도를 적용하지 않으며, 30일 뒤 정리를 제안한다. Action당 열린 run은 intent가 다를 때만 2 | 대기 기록만으로 독립 작업을 막지 않는다(A45). 읽기 전용이어도 모델 등 유료 호출은 ①에 포함한다. 저장량·조회 빈도는 별도 서비스 한도를 적용한다. `limits.ts` 상수 |
 
 ②에는 `dispatched` · `accepted` · `running`과 실행 여부가 불명인 `unreachable`을 센다. `awaiting_answer`는 adapter가 해당 작업의 실행·과금 대기를 확인한 경우에만 제외한다. 질문하면서 다른 작업을 계속하거나 상태를 관찰할 수 없으면 외부 작업 자리를 유지한다. 답변·수정 후 재개할 때는 ①②와 예산을 다시 검사한다. 승인·외부 회신을 기다리는 기록만으로 자리를 차지하지 않되, 실제 원격 실행을 대기로 가장해 한도를 우회하지 않는다.
@@ -448,6 +448,7 @@ dispatch 묶음 · 응답 segments · 검토 입력은 등급을 들고 다닌�
 | 대화 글 보관 | 30일(기획안 제안, D0 확정) | 원문 90일보다 짧게 두어 처리방침 부담을 줄임 | 처리방침 · retention |
 | heartbeat | 30초, 3회 누락(90초) → `unreachable` | 함수 호출 비용과 감지 지연의 균형 | bridge · `limits.ts` |
 | bridge outbox TTL | 24시간 | 하루 안 복귀를 가정, 넘으면 `unknown` | bridge |
+| 경로 lease idle | 30분 | 턴 종료 뒤 해제, 다음 턴 `accepted`면 만료 시각을 비움(OA D3c-2) | `PATH_LEASE_IDLE_MINUTES` · `sweep_agent_path_leases` |
 | agent goal 단계 상한 | 12 | dispatch 1 + 왕복 ≤ 6 + 검토 ≤ 2 + 계획 | `limits.ts` |
 | 검토 왕복 상한 | 2 | 세 번째부터는 사람의 기준 판단이 필요할 확률이 높다 | `limits.ts` |
 | 검토 1회 비용 상한 | 40 크레딧(초안 추정 20의 2배) | 검토 입력이 초안보다 크다 | `limits.ts` |

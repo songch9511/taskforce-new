@@ -2,7 +2,7 @@ import { billingEnabled } from '@/lib/billing/state';
 import { cronAuthorized, cronUnauthorized } from "@/lib/api/cron";
 import { checkSlackConnectionTokens } from "@/lib/connectors/slack/run";
 import { EXECUTION_TEXT_RETENTION_DAYS, retentionCutoff, SLACK_PENDING_RETENTION_DAYS, SLACK_THREAD_RETENTION_DAYS } from "@/lib/retention";
-import { BRIDGE_COMMAND_RETENTION_DAYS } from "@/lib/execution/limits";
+import { BRIDGE_COMMAND_RETENTION_DAYS, PATH_LEASE_RETENTION_DAYS } from "@/lib/execution/limits";
 import { createAdminClient } from "@/lib/supabase/admin";
 
 // 원문 보관 기간 정리 (Vercel Cron, 매일). Authorization: Bearer $CRON_SECRET 인 요청만 받는다.
@@ -40,7 +40,7 @@ export async function GET(request: Request) {
   const started = Date.now();
   const tokenDeadline = started + TIME_BUDGET_MS - SLACK_CALL_TIMEOUT_MS;
   const purgeDeadline = tokenDeadline - SLACK_TOKEN_CHECK_MS;
-  let calls = 3; // artifacts · execution text · bridge commands
+  let calls = 4; // artifacts · execution text · bridge commands · path leases
   const artifactsPurged = await admin
     .rpc("purge_expired_artifacts")
     .throwOnError()
@@ -74,6 +74,19 @@ export async function GET(request: Request) {
       ({ data }) => data as number,
       () => {
         console.error(JSON.stringify({ event: "bridge_command_purge_failed" }));
+        return null;
+      },
+    );
+  const pathLeasesPurged = await admin
+    .rpc("purge_agent_path_leases", {
+      p_before: retentionCutoff(now, PATH_LEASE_RETENTION_DAYS).toISOString(),
+      p_limit: PURGE_LIMIT,
+    })
+    .throwOnError()
+    .then(
+      ({ data }) => data as number,
+      () => {
+        console.error(JSON.stringify({ event: "path_lease_purge_failed" }));
         return null;
       },
     );
@@ -116,6 +129,7 @@ export async function GET(request: Request) {
       artifacts_purged: artifactsPurged,
       execution_text_purged: executionTextPurged,
       bridge_commands_purged: bridgeCommandsPurged,
+      path_leases_purged: pathLeasesPurged,
       slack_tokens_checked: slackTokens?.checked ?? 0,
       slack_tokens_revoked: slackTokens?.revoked ?? 0,
       slack_messages_deleted: slack.messages_deleted,
@@ -123,6 +137,6 @@ export async function GET(request: Request) {
       slack_sources_repurged: slack.sources_repurged,
       calls,
     },
-    { status: billingCleanup === null || artifactsPurged === null || executionTextPurged === null || bridgeCommandsPurged === null ? 500 : 200 },
+    { status: billingCleanup === null || artifactsPurged === null || executionTextPurged === null || bridgeCommandsPurged === null || pathLeasesPurged === null ? 500 : 200 },
   );
 }
