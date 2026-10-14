@@ -1,0 +1,44 @@
+#if os(macOS)
+import Foundation
+
+/// 원장 파일 위치 (OA D2b 계약 2.5): `<Application Support>/<번들 id>/Bridge/v1/<파티션>/`.
+/// 번들 id가 들어가므로 시험 호스트(`dev.taskforcelabs.unittest.taskforce`)와 실사용 앱이 섞이지 않고, 파티션에 서버 origin이 들어가므로 로컬 서버와 운영이 섞이지 않는다.
+/// 시험은 뿌리 폴더를 주입한다 (실제 Application Support에 쓰지 않는다).
+public enum BridgeStorage {
+    public static func defaultRoot(bundleID: String, fileManager: FileManager = .default) -> URL? {
+        guard let support = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else { return nil }
+        return support.appending(path: bundleID, directoryHint: .isDirectory).appending(path: "Bridge", directoryHint: .isDirectory).appending(path: "v1", directoryHint: .isDirectory)
+    }
+
+    /// 이 파티션에 할 일이 남아 있나 (폴더가 없으면 false). 원장을 **읽기 전용**으로 열어 본다(스키마를 만들거나 손상 파일을 옮기지 않는다) —
+    /// `BRIDGE_ENABLED`가 꺼졌을 때 마무리 모드가 필요한지 가르는 데 쓴다. 디스크를 만지므로 메인 스레드 밖에서 읽는다
+    public static func hasPendingWork(partition: BridgePartition, root: URL) async -> Bool {
+        let file = partition.directory(in: root).appending(path: "ledger.sqlite")
+        return await Task.detached(priority: .userInitiated) { BridgeLedger.pendingWork(atFile: file) ?? false }.value
+    }
+
+    /// 계정 삭제 정리의 결과: 어느 쪽이 지워지지 않았는지 알린다 (사용자 데이터가 남았는데 성공으로 보이지 않게)
+    public struct CleanupResult: Equatable, Sendable {
+        public var folderRemoved: Bool
+        public var credentialsRemoved: Bool
+        /// 끝내지 못했거나 끝을 증명하지 못한 에이전트 프로세스 수: 원장을 지우면 그 정체(pid · marker)도 사라져 감독 밖 writer로 남을 수 있다 (검토 반영 2 8장 6)
+        public var unterminatedProcesses = 0
+
+        public var isComplete: Bool { folderRemoved && credentialsRemoved && unterminatedProcesses == 0 }
+    }
+
+    /// 계정 삭제 성공: 이 파티션의 원장 폴더와 Keychain 항목을 **끝까지 지우고** 결과를 돌려준다 (Q22). 다른 파티션은 건드리지 않는다.
+    /// 호출한 쪽은 먼저 감독 중인 프로세스를 끝내고 원장을 닫아야 한다. 디스크를 만지므로 메인 스레드 밖에서 부른다
+    public static func deletePartition(_ partition: BridgePartition, root: URL, credentials: any BridgeCredentialStore, unterminatedProcesses: Int = 0) async -> CleanupResult {
+        await Task.detached(priority: .userInitiated) {
+            let directory = partition.directory(in: root)
+            var folderRemoved = true
+            if FileManager.default.fileExists(atPath: directory.path) {
+                folderRemoved = (try? FileManager.default.removeItem(at: directory)) != nil
+            }
+            let credentialsRemoved = (try? credentials.deleteAll(partition: partition.id)) != nil
+            return CleanupResult(folderRemoved: folderRemoved, credentialsRemoved: credentialsRemoved, unterminatedProcesses: unterminatedProcesses)
+        }.value
+    }
+}
+#endif

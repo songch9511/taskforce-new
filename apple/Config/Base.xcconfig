@@ -14,3 +14,7 @@ TF_BUILD_TIME_UTC = NotAvailable
 // Release에서 채운다 (Release.xcconfig, docs/go-live/mac-dmg.md "자동 업데이트").
 SPARKLE_FEED_URL =
 SPARKLE_PUBLIC_ED_KEY =
+
+// Mac bridge (OA D2b): Info.plist의 TaskforceBridgeEnabled로 들어간다. 모든 구성에서 기본 꺼짐(NO) — 꺼진 빌드는 네트워크 · 프로세스 0.
+// 켜는 것(L5)은 이 줄을 YES로 바꾸는 것이다. Debug는 여기에 더해 실행 인자 -TF_BRIDGE YES가 있어야 켜진다 (apple/Taskforce/Mac/Bridge/BridgeFlag.swift).
+TF_BRIDGE_ENABLED = NO

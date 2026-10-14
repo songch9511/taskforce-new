@@ -63,9 +63,42 @@ struct UpdateConfiguration: Equatable, Sendable {
     }
 }
 
-/// 업데이트 뒤 재시작을 지금 해도 되는지. **지금은 항상 허용**한다.
-/// 자리: 실행 중인 에이전트 턴이 있을 때의 종료 확인은 bridge WP가 여기서 한다 (`AppUpdater.updaterShouldRelaunchApplication`이 이 함수를 부른다).
+/// 업데이트 뒤 재시작을 지금 해도 되는지 (OA D2b, 계약 2.9 · Q9). 실행 중인 에이전트 턴(또는 아직 전달하지 않은 비밀값 답)이 있으면 지금은 안 된다.
+/// 바쁜지는 `BridgeHost`가 알려 준다 (`isBusy`). bridge가 꺼져 있거나 호스트가 없으면 한가하다.
+///
+/// Sparkle 2.10.0 확인 (`SPUInstallerDriver.installWithToolAndRelaunch`): 먼저 `updaterShouldRelaunchApplication`을 묻고 **false면 설치를 접는다**
+/// (`installerIsRequestingAbortInstallWithError:nil`, 미루기 질문은 하지 않는다). `updater(_:shouldPostponeRelaunchForUpdate:untilInvokingBlock:)`는 그 질문을 통과한 뒤 한 번만 묻는다.
+/// 그래서 바쁠 때 설치를 접지 않고 한가해질 때까지 **미루려면** 앞 질문은 true로 두고 뒤 질문에서 미룬다 (`postponesRelaunchWhileBusy`).
+@MainActor
 enum UpdateRelaunchPolicy {
-    static func allowsRelaunchNow() -> Bool { true }
+    /// 지금 바쁜가 (`BridgeHost.start`가 연결한다)
+    static var isBusy: () -> Bool = { false }
+
+    /// 미루기 질문을 구현했다: 바쁠 때 `updaterShouldRelaunchApplication`이 false를 주지 않고 `shouldPostpone…`에서 미룬다
+    static let postponesRelaunchWhileBusy = true
+
+    private static var postponed: (() -> Void)?
+
+    static func allowsRelaunchNow() -> Bool { !isBusy() }
+
+    /// 바쁘면 `resume`을 보관하고 true(미룬다). 한가해지면 `busyChanged(false)`가 한 번 부른다. 한가하면 false(바로 진행)
+    static func postponeRelaunchWhileBusy(_ resume: @escaping () -> Void) -> Bool {
+        guard !allowsRelaunchNow() else { return false }
+        postponed = resume
+        return true
+    }
+
+    /// `BridgeHost`가 바쁨이 바뀔 때마다 부른다
+    static func busyChanged(_ busy: Bool) {
+        guard !busy, let resume = postponed else { return }
+        postponed = nil
+        resume()
+    }
+
+    /// 시험이 정책 상태를 비운다
+    static func resetForTesting() {
+        postponed = nil
+        isBusy = { false }
+    }
 }
 #endif

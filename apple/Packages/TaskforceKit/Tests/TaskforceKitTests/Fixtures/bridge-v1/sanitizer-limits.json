@@ -1,0 +1,9 @@
+{
+  "identity_max_chars": 200,
+  "workspace_ref_max_chars": 500,
+  "adapter_version_max_chars": 50,
+  "artifact_path_max_chars": 1000,
+  "artifact_summary_max_chars": 2000,
+  "artifact_payload_max_bytes": 4096,
+  "text_max_bytes": 32768
+}

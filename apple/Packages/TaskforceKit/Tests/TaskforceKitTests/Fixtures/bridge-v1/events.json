@@ -1,0 +1,193 @@
+{
+  "events": {
+    "accepted": {
+      "adapter": "agent:claude-code",
+      "session_ref": { "agent_session_id": "5e551011-0000-4000-8000-000000000001" },
+      "agent_task_id": "7a5c0001-0000-4000-8000-000000000002",
+      "event_id": "7a5c0001-0000-4000-8000-000000000002:1",
+      "seq": 1,
+      "turn_seq": 2,
+      "type": "accepted",
+      "observed_at": "2026-10-14T05:00:03.123Z"
+    },
+    "progress": {
+      "adapter": "agent:claude-code",
+      "session_ref": { "agent_session_id": "5e551011-0000-4000-8000-000000000001" },
+      "agent_task_id": "7a5c0001-0000-4000-8000-000000000002",
+      "external_task_id": "turn-2",
+      "event_id": "7a5c0001-0000-4000-8000-000000000002:2",
+      "seq": 2,
+      "turn_seq": 2,
+      "type": "progress",
+      "observed_at": "2026-10-14T05:00:04.000Z"
+    },
+    "message": {
+      "adapter": "agent:claude-code",
+      "session_ref": { "agent_session_id": "5e551011-0000-4000-8000-000000000001" },
+      "agent_task_id": "7a5c0001-0000-4000-8000-000000000002",
+      "event_id": "7a5c0001-0000-4000-8000-000000000002:3",
+      "seq": 3,
+      "turn_seq": 2,
+      "type": "message",
+      "text": "Here is the summary.",
+      "observed_at": "2026-10-14T05:00:05.000Z"
+    },
+    "question": {
+      "adapter": "agent:claude-code",
+      "session_ref": { "agent_session_id": "5e551011-0000-4000-8000-000000000001" },
+      "agent_task_id": "7a5c0001-0000-4000-8000-000000000002",
+      "event_id": "7a5c0001-0000-4000-8000-000000000002:4",
+      "seq": 4,
+      "turn_seq": 2,
+      "type": "question",
+      "text": "Which environment?",
+      "question": {
+        "provider_request_id": "req-1",
+        "kind": "input",
+        "structured": true,
+        "questions": [
+          {
+            "id": "q1",
+            "header": "Environment",
+            "text": "Which environment should I deploy to?",
+            "options": [
+              { "label": "staging", "description": "The staging cluster" },
+              { "label": "production", "description": "The production cluster" }
+            ],
+            "multi_select": false,
+            "allow_other": true,
+            "secret": false
+          }
+        ]
+      },
+      "observed_at": "2026-10-14T05:00:06.000Z"
+    },
+    "artifact": {
+      "adapter": "agent:claude-code",
+      "session_ref": { "agent_session_id": "5e551011-0000-4000-8000-000000000001" },
+      "agent_task_id": "7a5c0001-0000-4000-8000-000000000002",
+      "event_id": "7a5c0001-0000-4000-8000-000000000002:5",
+      "seq": 5,
+      "turn_seq": 2,
+      "type": "artifact",
+      "payload": { "path": "notes/summary.md", "hash": "sha256:abc123", "summary": "Summary of open tasks" },
+      "observed_at": "2026-10-14T05:00:07.000Z"
+    },
+    "turn_completed": {
+      "adapter": "agent:claude-code",
+      "session_ref": { "agent_session_id": "5e551011-0000-4000-8000-000000000001" },
+      "agent_task_id": "7a5c0001-0000-4000-8000-000000000002",
+      "event_id": "7a5c0001-0000-4000-8000-000000000002:6",
+      "seq": 6,
+      "turn_seq": 2,
+      "type": "turn_completed",
+      "observed_at": "2026-10-14T05:00:08.000Z"
+    },
+    "cancelled": {
+      "adapter": "agent:claude-code",
+      "session_ref": { "agent_session_id": "5e551011-0000-4000-8000-000000000001" },
+      "agent_task_id": "7a5c0001-0000-4000-8000-000000000002",
+      "event_id": "7a5c0001-0000-4000-8000-000000000002:7",
+      "seq": 7,
+      "turn_seq": 2,
+      "type": "cancelled",
+      "observed_at": "2026-10-14T05:00:09.000Z"
+    },
+    "failed": {
+      "adapter": "agent:claude-code",
+      "session_ref": { "agent_session_id": "5e551011-0000-4000-8000-000000000001" },
+      "agent_task_id": "7a5c0001-0000-4000-8000-000000000002",
+      "event_id": "7a5c0001-0000-4000-8000-000000000002:8",
+      "seq": 8,
+      "turn_seq": 2,
+      "type": "failed",
+      "payload": { "reason": "sign_in_needed" },
+      "observed_at": "2026-10-14T05:00:10.000Z"
+    },
+    "failed_bare": {
+      "adapter": "agent:claude-code",
+      "session_ref": { "agent_session_id": "5e551011-0000-4000-8000-000000000001" },
+      "agent_task_id": "7a5c0001-0000-4000-8000-000000000002",
+      "event_id": "7a5c0001-0000-4000-8000-000000000002:9",
+      "seq": 9,
+      "turn_seq": 2,
+      "type": "failed",
+      "observed_at": "2026-10-14T05:00:11.000Z"
+    },
+    "session_bound": {
+      "adapter": "agent:claude-code",
+      "session_ref": { "agent_session_id": "5e551011-0000-4000-8000-000000000001" },
+      "agent_task_id": "7a5c0001-0000-4000-8000-000000000002",
+      "event_id": "5e551011-0000-4000-8000-000000000001:s1",
+      "turn_seq": 2,
+      "type": "session_bound",
+      "payload": { "external_session_id": "claude-session-9", "workspace_ref": "workspace-a" },
+      "observed_at": "2026-10-14T05:00:02.500Z"
+    },
+    "session_bound_no_workspace": {
+      "adapter": "agent:codex",
+      "session_ref": { "agent_session_id": "5e551011-0000-4000-8000-000000000001" },
+      "agent_task_id": "7a5c0001-0000-4000-8000-000000000002",
+      "event_id": "5e551011-0000-4000-8000-000000000001:s2",
+      "turn_seq": 2,
+      "type": "session_bound",
+      "payload": { "external_session_id": "thread-77" },
+      "observed_at": "2026-10-14T05:00:02.600Z"
+    },
+    "reconcile": {
+      "adapter": "agent:claude-code",
+      "session_ref": { "agent_session_id": "5e551011-0000-4000-8000-000000000001" },
+      "agent_task_id": "7a5c0001-0000-4000-8000-000000000002",
+      "event_id": "7a5c0001-0000-4000-8000-000000000002:r1",
+      "turn_seq": 2,
+      "type": "reconcile",
+      "observed_at": "2026-10-14T05:10:00.000Z"
+    },
+    "reconcile_with_state": {
+      "adapter": "agent:claude-code",
+      "session_ref": { "agent_session_id": "5e551011-0000-4000-8000-000000000001" },
+      "agent_task_id": "7a5c0001-0000-4000-8000-000000000002",
+      "event_id": "7a5c0001-0000-4000-8000-000000000002:r2",
+      "turn_seq": 2,
+      "type": "reconcile",
+      "payload": { "state": "running" },
+      "observed_at": "2026-10-14T05:10:01.000Z"
+    }
+  },
+  "request": {
+    "bridge_id": "b1111111-1111-4111-8111-111111111111",
+    "events": [
+      {
+        "adapter": "agent:claude-code",
+        "session_ref": { "agent_session_id": "5e551011-0000-4000-8000-000000000001" },
+        "agent_task_id": "7a5c0001-0000-4000-8000-000000000002",
+        "event_id": "7a5c0001-0000-4000-8000-000000000002:1",
+        "seq": 1,
+        "turn_seq": 2,
+        "type": "accepted",
+        "observed_at": "2026-10-14T05:00:03.123Z"
+      },
+      {
+        "adapter": "agent:claude-code",
+        "session_ref": { "agent_session_id": "5e551011-0000-4000-8000-000000000001" },
+        "agent_task_id": "7a5c0001-0000-4000-8000-000000000002",
+        "event_id": "7a5c0001-0000-4000-8000-000000000002:3",
+        "seq": 3,
+        "turn_seq": 2,
+        "type": "message",
+        "text": "Here is the summary.",
+        "observed_at": "2026-10-14T05:00:05.000Z"
+      }
+    ]
+  },
+  "response": {
+    "results": [
+      { "event_id": "7a5c0001-0000-4000-8000-000000000002:1", "status": "applied", "task_state": "accepted" },
+      { "event_id": "7a5c0001-0000-4000-8000-000000000002:3", "status": "duplicate" },
+      { "event_id": "7a5c0001-0000-4000-8000-000000000002:4", "status": "step_not_calling" }
+    ],
+    "accepted_event_ids": ["7a5c0001-0000-4000-8000-000000000002:1", "7a5c0001-0000-4000-8000-000000000002:3"],
+    "retry_event_ids": ["7a5c0001-0000-4000-8000-000000000002:5"],
+    "rejected": [{ "event_id": "7a5c0001-0000-4000-8000-000000000002:4", "code": "invalid" }]
+  }
+}

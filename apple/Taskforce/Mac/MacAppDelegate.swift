@@ -17,6 +17,8 @@ final class MacAppDelegate: NSObject, NSApplicationDelegate {
     private(set) var chatRuntime: ChatRuntime?
     /// S4 · C3의 계정 경계를 포함한 Edge 기초 (`EdgeSurfaces.current`대로)
     private var edgeFoundation = AppRuntime.EdgeFoundation(chat: nil, scope: nil)
+    /// Mac bridge 연결 (OA D2b). `BRIDGE_ENABLED`가 꺼져 있고 원장에 할 일도 없으면 아무것도 만들지 않는다 (기본)
+    private(set) var bridge: BridgeHost?
     let hotKeys = HotKeyCenter()
     let settingsHotKeys = HotKeyCenter(id: 2)
 
@@ -43,6 +45,9 @@ final class MacAppDelegate: NSObject, NSApplicationDelegate {
             edgeFoundation = AppRuntime.edgeFoundation(session: session, services: services)
             chatRuntime = edgeFoundation.chat
             session.start()
+            // bridge는 연결만 한다 (핵심은 TaskforceKit `BridgeRuntime`). 계정이 정해진 뒤 `syncAccount`가 런타임을 올리거나 올리지 않는다
+            bridge = BridgeHost.live(session: session, services: services)
+            bridge?.start()
             model = LauncherModel(
                 session: session, services: services, account: AppRuntime.account(services: services), saved: AppRuntime.savedNow,
                 runs: AppRuntime.runs(services: services), connectivity: Connectivity.updates()
@@ -106,6 +111,11 @@ final class MacAppDelegate: NSObject, NSApplicationDelegate {
         // Edge 셸 합성 조작 확인용: `-TF_EDGE_SHELL YES -TFSampleData -TFEdgeInteract <로그 파일>`
         if let edge { EdgeInteraction.runIfRequested(edge) }
         #endif
+    }
+
+    /// 종료: 실행 중인 에이전트 턴이 있으면 확인 창 (Quit → 중단 · outbox 비우기 뒤 종료, Cancel → 변화 0). 아니면 바로 종료
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        bridge?.terminationReply() ?? .terminateNow
     }
 
     /// `taskforce://connections/…` · Google 로그인 콜백 (ASWebAuthenticationSession이 주소를 바로 돌려주지만, 앱 밖에서 열린 경우를 위해).
