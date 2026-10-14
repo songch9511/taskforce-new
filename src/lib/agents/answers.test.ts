@@ -45,11 +45,19 @@ describe("answerFromRoute: 입력 검증 실패와 DB 오류를 구별한다", (
     expect(fake.rpcCalls("answer_agent_question_recorded")[0].args).toMatchObject({ p_user_id: USER, p_agent_task_id: TASK, p_provider_request_id: "q", p_answers: { choice: "Yes" }, p_answered_locally: false });
   });
 
+  it.each(["40001", "40P01", "55P03"])("검토 반영 9-2: %s로 두 번 롤백돼도 세 번째에 성공하면 그 결과를 돌려준다 (RPC 앞 검증은 한 번)", async (code) => {
+    let calls = 0;
+    const db = fakeAdmin({ rpc: { answer_agent_question_recorded: () => { if (++calls < 3) throw Object.assign(new Error("conflict"), { code }); return answered; } } });
+    expect(await answerFromRoute(db.admin, input({ choice: "Yes" }))).toEqual(answered);
+    expect(db.rpcCalls("answer_agent_question_recorded")).toHaveLength(3);
+  });
+
   it("RPC 이후의 오류(DB 오류 · 예상 밖 출력)는 그대로 던진다 — 입력 오류로 둔갑하지 않는다", async () => {
     const db = fakeAdmin({ rpc: { answer_agent_question_recorded: () => { throw Object.assign(new Error("lock"), { code: "55P03" }); } } });
     const error = await answerFromRoute(db.admin, input({ choice: "Yes" })).catch((e: unknown) => e);
     expect(error).not.toBeInstanceOf(AnswerInputError);
     expect(error).toMatchObject({ code: "55P03" });
+    expect(db.rpcCalls("answer_agent_question_recorded")).toHaveLength(3); // 검토 반영 9-2: 롤백된 경합은 두 번까지 다시 한 뒤에 던진다
     const odd = fakeAdmin({ rpc: { answer_agent_question_recorded: () => ({ status: "mystery" }) } });
     await expect(answerFromRoute(odd.admin, input({ choice: "Yes" }))).rejects.not.toBeInstanceOf(AnswerInputError);
   });

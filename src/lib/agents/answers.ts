@@ -1,6 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 import { answerAgentQuestion, type AnswerAgentQuestionResult } from "./questions";
+import { retryOnConflict } from "./retry";
 
 // 질문 답 route의 보조 (Assistant 계약 v3 3.6, OA D1d-s). answerAgentQuestion(questions.ts)을 쓰되 지표(question_answered)는 SQL 래퍼가 같은 트랜잭션에서 남긴다 (검토 반영 7-5).
 
@@ -28,7 +29,7 @@ export async function answerFromRoute(
     },
   } as unknown as SupabaseClient;
   try {
-    return await answerAgentQuestion(probe, { ...input, answeredLocally: false, recordMetric: true });
+    return await retryOnConflict(() => answerAgentQuestion(probe, { ...input, answeredLocally: false, recordMetric: true }));
   } catch (error) {
     if (!reachedDatabase) throw new AnswerInputError(error instanceof Error ? error.message : "invalid answer");
     throw error;

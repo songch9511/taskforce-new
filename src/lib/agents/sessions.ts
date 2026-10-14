@@ -5,6 +5,7 @@ import { agentSessionSchema, type AgentSession } from "@/lib/api/contract";
 
 import { adapterEnabled, AGENT_REGISTRY } from "./registry";
 import { startNextAgentMessage } from "./next-turn";
+import { retryOnConflict } from "./retry";
 
 // 에이전트 세션 (Assistant 계약 v3 3.8, OA D1d-s): 이름 바꾸기 · Open in Terminal · Resume here. 세션은 모두 사용자 id로 좁혀 읽는다.
 // 규칙은 SQL(rename_agent_session · open_agent_session_external · resume_agent_session_here)에 있고 여기는 부르기만 한다. 이름 · 글은 로그에 남기지 않는다.
@@ -45,25 +46,11 @@ const renameSchema = z.object({ status: z.enum(["renamed", "unchanged", "not_fou
  * 같은 이름이면 쓰지 않는다(unchanged, 지표 0). 없거나 남의 세션은 not_found — 대상은 사용자 id로 좁힌다
  */
 export async function renameAgentSession(admin: SupabaseClient, userId: string, id: string, displayName: string): Promise<RenameAgentSessionResult> {
-  const { data } = await admin.rpc("rename_agent_session", { p_user_id: userId, p_session_id: id, p_display_name: displayName }).throwOnError();
+  const { data } = await retryOnConflict(async () => await admin.rpc("rename_agent_session", { p_user_id: userId, p_session_id: id, p_display_name: displayName }).throwOnError());
   const { status } = renameSchema.parse(data);
   if (status === "not_found") return { status };
   const session = await loadAgentSession(admin, userId, id);
   return session ? { status, session } : { status: "not_found" };
-}
-
-/**
- * 세션 잠금 뒤 묶인 대화를 NOWAIT로 다시 확인하다가 경합하면(55P03) SQL이 통째로 롤백한다 — 같은 호출을 몇 번 다시 한다 (Stop과 같은 방식, 검토 반영 7-2).
- * 세 번 모두 경합이면 던지고 route가 409 busy_retry로 답한다. 다른 오류는 다시 하지 않는다
- */
-async function retryOnLock<T>(call: () => Promise<T>): Promise<T> {
-  for (let attempt = 1; ; attempt++) {
-    try {
-      return await call();
-    } catch (error) {
-      if (attempt >= 3 || typeof error !== "object" || error === null || !("code" in error) || error.code !== "55P03") throw error;
-    }
-  }
 }
 
 const externalSchema = z.object({ status: z.enum(["external", "unchanged", "busy", "not_started", "not_bound", "not_found"]) });
@@ -71,7 +58,7 @@ export type OpenAgentSessionExternalResult = { status: "external" | "unchanged";
 
 /** POST …/open-external: bound 세션을 external로 (SQL이 진행 중 턴 · pending 세션 · 상태를 본다). 바뀐 세션을 다시 읽어 돌려준다 */
 export async function openAgentSessionExternal(admin: SupabaseClient, userId: string, id: string): Promise<OpenAgentSessionExternalResult> {
-  const { data } = await retryOnLock(async () => await admin.rpc("open_agent_session_external", { p_user_id: userId, p_session_id: id }).throwOnError());
+  const { data } = await retryOnConflict(async () => await admin.rpc("open_agent_session_external", { p_user_id: userId, p_session_id: id }).throwOnError());
   const { status } = externalSchema.parse(data);
   if (status !== "external" && status !== "unchanged") return { status };
   const session = await loadAgentSession(admin, userId, id);
@@ -87,7 +74,7 @@ export type ResumeAgentSessionResult = { status: "bound" | "unchanged"; session:
  * 시작된 메시지 id는 그 작업의 message_id다
  */
 export async function resumeAgentSessionHere(admin: SupabaseClient, userId: string, id: string, env: Env = process.env): Promise<ResumeAgentSessionResult> {
-  const { data } = await retryOnLock(async () => await admin.rpc("resume_agent_session_here", { p_user_id: userId, p_session_id: id }).throwOnError());
+  const { data } = await retryOnConflict(async () => await admin.rpc("resume_agent_session_here", { p_user_id: userId, p_session_id: id }).throwOnError());
   const { status } = resumeSchema.parse(data);
   if (status === "not_external" || status === "not_found") return { status, startedMessageId: null };
   let startedMessageId: string | null = null;

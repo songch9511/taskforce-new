@@ -81,10 +81,10 @@ function codeOf(error: unknown): string | undefined {
   return typeof code === "string" ? code : undefined;
 }
 
-/** 잠금 경합(55P03) · 직렬화 실패(40001)는 쓰기가 롤백됐으니 같은 요청을 다시 보내도 된다 (409 busy_retry). 그 밖은 500 + 이벤트 이름 · 오류 이름 · 코드만 로그 */
+/** 잠금 경합(55P03) · 직렬화 실패(40001) · 교착(40P01)은 쓰기가 롤백됐으니 같은 요청을 다시 보내도 된다 (409 busy_retry, 500 아님). TS 쪽 재시도(retryOnConflict)를 다 쓴 뒤 여기까지 온다. 그 밖은 500 + 이벤트 이름 · 오류 이름 · 코드만 로그 */
 function failed(error: unknown, event: string, message: string): Response {
   const code = codeOf(error);
-  if (code === "55P03" || code === "40001") return errorResponse(409, "busy_retry", "잠시 뒤 다시 시도해 주세요.");
+  if (code === "55P03" || code === "40001" || code === "40P01") return errorResponse(409, "busy_retry", "잠시 뒤 다시 시도해 주세요.");
   console.error(JSON.stringify({ event, error: error instanceof Error ? error.name : "unknown", ...(code ? { code } : {}) }));
   return errorResponse(500, "internal_error", message);
 }

@@ -76,6 +76,18 @@ describe("renameAgentSession (R14 · 검토 반영 7-5)", () => {
   });
 });
 
+describe("renameAgentSession 경합 (검토 반영 9-2)", () => {
+  it.each(["40001", "40P01", "55P03"])("%s로 두 번 롤백돼도 세 번째에 성공하면 그 결과를 돌려준다. 세 번 모두면 던진다", async (code) => {
+    let calls = 0;
+    const flaky = fakeAdmin({ tables: world({ agent_sessions: [sessionRow({ display_name: "새 이름" })] }), rpc: { rename_agent_session: () => { if (++calls < 3) throw Object.assign(new Error("conflict"), { code }); return { status: "renamed" }; } } });
+    expect(await renameAgentSession(flaky.admin, USER, SESSION, "새 이름")).toMatchObject({ status: "renamed" });
+    expect(flaky.rpcCalls("rename_agent_session")).toHaveLength(3);
+    const stuck = fakeAdmin({ tables: world(), rpc: { rename_agent_session: () => { throw Object.assign(new Error("conflict"), { code }); } } });
+    await expect(renameAgentSession(stuck.admin, USER, SESSION, "x")).rejects.toMatchObject({ code });
+    expect(stuck.rpcCalls("rename_agent_session")).toHaveLength(3);
+  });
+});
+
 describe("openAgentSessionExternal (AC-36 서버 몫)", () => {
   it.each(["external", "unchanged"])("%s → 세션을 다시 읽어 돌려준다", async (status) => {
     const fake = fakeAdmin({ tables: world({ agent_sessions: [sessionRow({ status: "external" })] }), rpc: { open_agent_session_external: () => ({ status }) } });
@@ -101,7 +113,12 @@ describe("openAgentSessionExternal (AC-36 서버 몫)", () => {
     const stuck = fakeAdmin({ tables: world(), rpc: { open_agent_session_external: () => { throw lock(); } } });
     await expect(openAgentSessionExternal(stuck.admin, USER, SESSION)).rejects.toMatchObject({ code: "55P03" });
     expect(stuck.rpcCalls("open_agent_session_external")).toHaveLength(3);
-    for (const code of ["40001", "XX000"]) {
+    for (const code of ["40001", "40P01"]) {
+      const conflict = fakeAdmin({ tables: world(), rpc: { open_agent_session_external: () => { throw Object.assign(new Error("db"), { code }); } } });
+      await expect(openAgentSessionExternal(conflict.admin, USER, SESSION)).rejects.toMatchObject({ code });
+      expect(conflict.rpcCalls("open_agent_session_external")).toHaveLength(3); // 검토 반영 9-2: 세 코드 모두 다시 한다
+    }
+    for (const code of ["XX000", "22023"]) {
       const other = fakeAdmin({ tables: world(), rpc: { open_agent_session_external: () => { throw Object.assign(new Error("db"), { code }); } } });
       await expect(openAgentSessionExternal(other.admin, USER, SESSION)).rejects.toMatchObject({ code });
       expect(other.rpcCalls("open_agent_session_external")).toHaveLength(1);
@@ -180,10 +197,10 @@ describe("resumeAgentSessionHere (AC-36 · ONE-TF-13 서버 몫)", () => {
   it("D2a 보안 검토 P1 방어: 실행 kill switch가 꺼져 있으면 되돌려도 턴을 시작하지 않고 대기 메시지를 not_sent/write_gate_closed로 표시한다 (start_agent_turn_auto 0)", async () => {
     const fake = fakeAdmin({
       tables: world({ conversation_messages: [{ id: MSG, user_id: USER, refs: {}, selected: { action_ids: [], context_ids: [] }, delivery_state: "queued", delivery_reason: null }] }),
-      rpc: { ...rpc("bound", MSG), mark_agent_message_not_sent: () => ({ status: "not_sent", reason: "write_gate_closed" }) },
+      rpc: { ...rpc("bound", MSG), mark_agent_message_not_sent_auto: () => ({ status: "not_sent", reason: "write_gate_closed" }) },
     });
     expect(await resumeAgentSessionHere(fake.admin, USER, SESSION, OFF)).toMatchObject({ status: "bound", startedMessageId: null });
-    expect(fake.rpcCalls().map((call) => call.target)).toEqual(["resume_agent_session_here", "next_queued_agent_message", "mark_agent_message_not_sent"]);
+    expect(fake.rpcCalls().map((call) => call.target)).toEqual(["resume_agent_session_here", "next_queued_agent_message", "mark_agent_message_not_sent_auto"]);
   });
 
   it("다음 시작이 실패해도 상태 전이는 끝났으니 bound로 답한다 (오류 이름만 로그)", async () => {

@@ -21,7 +21,10 @@
 -- 7) start_agent_turn_auto(…): 자동 시작(대기열 머리 · Resume · Stop 뒤)의 시작 입구 (검토 반영 8-1). TS가 고른 메시지 id를 그대로 받아 route_agent_message와 같은 순서로 그 메시지 행을 잠근 뒤
 --    상태를 다시 읽는다: queued이거나 not_sent + 이유가 gate 계열(write_gate_closed · not_connected · adapter_disabled)이면 같은 트랜잭션에서 route_agent_message를 부르고, 아니면 아무것도 하지 않고 skipped.
 --    검사한 뒤 다른 요청이 상태를 바꿨어도(예: 앞 메시지가 만료돼 not_sent/spawn_failed가 머리가 됨) 낡은 상태로 새 회차를 만들지 않는다. route_agent_message 본문은 바꾸지 않는다.
--- 잠금 순서(D1c와 같다): 메시지 → 사용자 advisory → 대화 → 세션 → run → task → step. 2번은 메시지만, 3 · 4번은 묶인 대화(id 순) → 세션 → 묶인 대화 다시 확인, 7번은 route_agent_message와 같다.
+--    잠금을 얻은 뒤 질문의 원문 · 사건 기준이 처음 읽은 것과 달라졌으면(기다리는 사이 질문이 열리거나 닫힘) 원문을 M 뒤에 잠그다 교착하지 않도록 추가 잠금 전에 40001로 롤백한다 (검토 반영 9-2). TS가 두 번까지 다시 부르고, 안 되면 409 busy_retry.
+-- 8) mark_agent_message_not_sent_auto(user, message, reason, from_gate): 자동 경로의 not_sent 표시(실행 kill switch 꺼짐 · 연결 · 등급 거절 · 진짜 not_found/already_dispatched)를 메시지 잠금 안에서 현재 상태를 다시 보고 한다 (검토 반영 9-1).
+--    지금 queued일 때만 표시한다(from_gate가 참이면 gate 계열 이유의 not_sent도). 읽은 뒤 다른 요청이 전달 · spawn_failed로 만들었다면 이유를 덮어쓰지 않고 skipped. 표시 자체는 mark_agent_message_not_sent(D1c-1)를 그대로 부른다.
+-- 잠금 순서(D1c와 같다): 메시지 → 사용자 advisory → 대화 → 세션 → run → task → step. 2번은 메시지만, 3 · 4번은 묶인 대화(id 순) → 세션 → 묶인 대화 다시 확인, 7번은 route_agent_message와 같다, 8번은 그 메시지 한 행뿐이다.
 -- 함수는 모두 서버 전용이다: security invoker, search_path 비움, public · anon · authenticated 실행 거절, service_role만 실행.
 -- 적용: 운영 DB에는 병합 직전 승인을 받고 저장소 문서(docs/agent-gateway.md)의 방법으로만 한다. 20261120000000_action_numbers 뒤에 적용한다.
 
@@ -282,8 +285,10 @@ declare
   v_message public.conversation_messages;
   v_conversation public.conversations;
   v_task public.agent_tasks;
+  v_task_now public.agent_tasks;
   v_origin uuid;
   v_answer_event text;
+  v_answer_event_now text;
 begin
   select * into v_message from public.conversation_messages where id = p_message_id and user_id = p_user_id and role = 'user';
   -- 없는 · 남의 메시지는 route_agent_message가 not_found로 답한다 (같은 결과, 쓰기 0)
@@ -291,6 +296,7 @@ begin
     return public.route_agent_message(p_user_id, p_message_id, p_access, p_live_limit, p_action_ids, p_context_ids);
   end if;
   select * into v_conversation from public.conversations where id = v_message.conversation_id and user_id = p_user_id;
+  -- 답 경로가 쓸 원문(질문을 낸 메시지) · 사건 기준을 한 번 읽어 고정한다 (route_agent_message가 같은 식으로 읽는다)
   select * into v_task from public.agent_tasks where agent_session_id = v_conversation.agent_session_id
     and user_id = p_user_id and state = 'awaiting_answer';
   v_origin := v_task.message_id;
@@ -304,7 +310,39 @@ begin
     or (v_message.delivery_state = 'not_sent' and v_message.delivery_reason in ('write_gate_closed', 'not_connected', 'adapter_disabled'))) then
     return jsonb_build_object('status', 'skipped');
   end if;
+  -- 잠금 대상이 그대로인지 확인한다: 기다리는 사이 질문이 열리거나 닫혀 route_agent_message가 다른 원문 · 사건을 보게 되면,
+  -- 그 원문을 M 뒤에 잠그려다 (원문 → M 순으로 잠그는 다른 요청과) 교착하므로 추가 잠금 전에 40001로 롤백한다. 풀린 뒤 다시 부르면 된다
+  select * into v_task_now from public.agent_tasks where agent_session_id = v_conversation.agent_session_id
+    and user_id = p_user_id and state = 'awaiting_answer';
+  v_answer_event_now := 'answer:' || v_task_now.id || ':' || encode(sha256(convert_to(v_task_now.pending_question->>'provider_request_id','UTF8')),'hex');
+  if v_task_now.message_id is distinct from v_origin or v_answer_event_now is distinct from v_answer_event then
+    raise exception 'start_agent_turn_auto: question changed while waiting for the message lock' using errcode = '40001';
+  end if;
   return public.route_agent_message(p_user_id, p_message_id, p_access, p_live_limit, p_action_ids, p_context_ids);
+end;
+$$;
+
+-- ─────────────────────────────────────────────
+-- 8) 자동 경로의 거절 · 꺼짐 표시: 메시지 잠금 안에서 현재 상태를 다시 보고 한다
+-- ─────────────────────────────────────────────
+create function public.mark_agent_message_not_sent_auto(p_user_id uuid, p_message_id uuid, p_reason text, p_from_gate boolean default false) returns jsonb
+language plpgsql set search_path = ''
+as $$
+declare
+  v_message public.conversation_messages;
+begin
+  select * into v_message from public.conversation_messages where id = p_message_id and user_id = p_user_id and role = 'user' for update;
+  -- 없는 · 남의 메시지는 안쪽 함수가 not_found로 답한다
+  if not found then
+    return public.mark_agent_message_not_sent(p_user_id, p_message_id, p_reason);
+  end if;
+  -- 지금 queued일 때만 표시한다. p_from_gate가 참(연결 · 등급 거절 · 진짜 not_found · already_dispatched)이면 이유가 gate 계열인 not_sent도 새 이유로 바꾼다.
+  -- 그 밖의 not_sent(spawn_failed · sign_in_needed · usage_limited …) · dispatched · expired · cancelled는 건드리지 않는다: 읽은 뒤 다른 요청이 전달 · 실패시켰어도 그 이유를 덮지 않는다
+  if v_message.delivery_state = 'queued'
+    or (p_from_gate and v_message.delivery_state = 'not_sent' and v_message.delivery_reason in ('write_gate_closed', 'not_connected', 'adapter_disabled')) then
+    return public.mark_agent_message_not_sent(p_user_id, p_message_id, p_reason);
+  end if;
+  return jsonb_build_object('status', 'skipped');
 end;
 $$;
 
@@ -312,7 +350,7 @@ $$;
 do $$
 declare f text;
 begin
-  foreach f in array array['requeue_agent_messages', 'open_agent_session_external', 'resume_agent_session_here', 'answer_agent_question_recorded', 'rename_agent_session', 'start_agent_turn_auto'] loop
+  foreach f in array array['requeue_agent_messages', 'open_agent_session_external', 'resume_agent_session_here', 'answer_agent_question_recorded', 'rename_agent_session', 'start_agent_turn_auto', 'mark_agent_message_not_sent_auto'] loop
     execute format('revoke all on function public.%I from public, anon, authenticated', f);
     execute format('grant execute on function public.%I to service_role', f);
   end loop;

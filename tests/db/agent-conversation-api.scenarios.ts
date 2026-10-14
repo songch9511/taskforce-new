@@ -5,6 +5,9 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { AGENT_QUESTION } from "./agent-gateway-core.scenarios";
+import { startAgentMessage } from "../../src/lib/agents/messages";
+import { startNextAgentMessage } from "../../src/lib/agents/next-turn";
+import { pgliteAgentAdmin } from "./agent-conversation-pglite-admin";
 import { agentQuestionsStopFixtures } from "./agent-questions-stop.scenarios";
 import type { ConversationAgentDb } from "./conversation-agent-target.scenarios";
 
@@ -14,7 +17,7 @@ import type { ConversationAgentDb } from "./conversation-agent-target.scenarios"
 // 과 공통 metric 블록 v2(새 type 5개). 새 지표 다섯은 모두 상태 변경과 같은 트랜잭션에서 쓴다(검토 반영 7-5). 같은 시나리오를 PGlite(tests/db/agent-conversation-api.test.ts)와 실제 Postgres(tests/pg)에서 돌린다.
 
 export const D1D_MIGRATION = "20261121000000_agent_conversation_api.sql";
-export const D1D_FUNCTIONS = ["answer_agent_question_recorded", "open_agent_session_external", "rename_agent_session", "requeue_agent_messages", "resume_agent_session_here", "start_agent_turn_auto"];
+export const D1D_FUNCTIONS = ["answer_agent_question_recorded", "mark_agent_message_not_sent_auto", "open_agent_session_external", "rename_agent_session", "requeue_agent_messages", "resume_agent_session_here", "start_agent_turn_auto"];
 /** 자동 시작(start_agent_turn_auto)을 다시 허용하는 not_sent 이유 (TS의 GATE_REASONS와 같아야 한다 — next-turn.test.ts가 글자를 맞춰 본다) */
 export const AUTO_START_GATE_REASONS = ["write_gate_closed", "not_connected", "adapter_disabled"];
 /** 공통 블록 v2(handoffs/oa-metric-events-block.sql)의 SHA-256. 블록은 코디네이터 소유라 글자 그대로 넣는다 */
@@ -39,6 +42,8 @@ export function agentConversationApiFixtures(db: () => ConversationAgentDb) {
       (await base.one(`select public.open_agent_session_external($1,$2) as result`, [user, session])).result as { status: string },
     resumeHere: async (user: string, session: string) =>
       (await base.one(`select public.resume_agent_session_here($1,$2) as result`, [user, session])).result as { status: string },
+    markAuto: async (user: string, message: string, reason: string, fromGate = false) =>
+      (await base.one(`select public.mark_agent_message_not_sent_auto($1,$2,$3,$4) as result`, [user, message, reason, fromGate])).result as { status: string; reason?: string },
     startAuto: async (user: string, message: string, actions: string[] = [], contexts: string[] = []) =>
       (await base.one(`select public.start_agent_turn_auto($1,$2,'read_only',5,$3::uuid[],$4::uuid[]) as result`, [user, message, actions, contexts])).result as { status: string; reason?: string; turn_seq?: number },
     text: (n: number) => `메시지 ${n}`,
@@ -82,7 +87,7 @@ export function agentConversationApiTests(db: () => ConversationAgentDb) {
     const read = () => readFileSync(path.resolve(__dirname, "../../supabase/migrations", D1D_MIGRATION), "utf8");
     const code = (migration: string) => migration.split("\n").filter((line) => !line.trim().startsWith("--")).join("\n").trim();
 
-    it("한 트랜잭션, lock_timeout 5초, 잠금은 모두 NOWAIT, 새 함수는 정확히 셋이고 기존 함수는 교체하지 않는다", () => {
+    it("한 트랜잭션, lock_timeout 5초, 잠금은 모두 NOWAIT, 새 함수는 정확히 D1D_FUNCTIONS이고 기존 함수는 교체하지 않는다", () => {
       const sql = code(read());
       expect(sql.startsWith("begin;\nset local lock_timeout = '5s';")).toBe(true);
       expect(sql.endsWith("commit;")).toBe(true);
@@ -104,7 +109,7 @@ export function agentConversationApiTests(db: () => ConversationAgentDb) {
       expect(createHash("sha256").update(block!).digest("hex")).toBe(METRIC_BLOCK_V2_SHA256);
     });
 
-    it("새 함수 셋은 service_role만 실행한다 (권한 블록)", () => {
+    it("새 함수는 모두 service_role만 실행한다 (권한 블록)", () => {
       const migration = read();
       for (const name of D1D_FUNCTIONS) expect(migration).toContain(`'${name}'`);
       expect(migration).toContain("revoke all on function public.%I from public, anon, authenticated");
@@ -113,7 +118,7 @@ export function agentConversationApiTests(db: () => ConversationAgentDb) {
   });
 
   describe("S3 권한 · 모양: 서버 전용 invoker 함수", () => {
-    it("새 함수 셋: security invoker, search_path 비움, anon · authenticated 실행 거절, service_role만 실행", async () => {
+    it("새 함수 전부: security invoker, search_path 비움, anon · authenticated 실행 거절, service_role만 실행", async () => {
       const rows = await f.q(
         `select p.proname,p.prosecdef,p.proconfig,has_function_privilege('anon',p.oid,'execute') as anon,has_function_privilege('authenticated',p.oid,'execute') as app,has_function_privilege('service_role',p.oid,'execute') as server
            from pg_proc p join pg_namespace n on n.oid=p.pronamespace where n.nspname='public' and p.proname=any($1) order by p.proname`,
@@ -132,6 +137,7 @@ export function agentConversationApiTests(db: () => ConversationAgentDb) {
         [`select public.rename_agent_session($1,$2,'x')`, [w.user, w.session]],
         [`select public.answer_agent_question_recorded($1,$2,'q','{}'::jsonb,false)`, [w.user, w.session]],
         [`select public.start_agent_turn_auto($1,$2,'read_only',5)`, [w.user, w.session]],
+        [`select public.mark_agent_message_not_sent_auto($1,$2,'write_gate_closed')`, [w.user, w.session]],
       ];
       for (const [sql, params] of calls) await rejects(db().asUser(w.user, () => db().query(sql, params)), /permission denied/);
     });
@@ -661,6 +667,116 @@ export function agentConversationApiTests(db: () => ConversationAgentDb) {
       const message = await newMessage(w);
       expect(await f.startAuto(w.user, message, [randomUUID()])).toEqual({ status: "not_found" });
       expect(await f.startAuto(w.user, message, [await f.action(w.user)])).toMatchObject({ status: "started" });
+    });
+  });
+
+  describe("검토 반영 9-1: mark_agent_message_not_sent_auto — 거절 · 꺼짐 표시도 메시지 잠금 안에서 현재 상태를 다시 보고 한다", () => {
+    const FAILURES = ["spawn_failed", "sign_in_needed", "usage_limited", "not_received", "unsupported", "version_unsupported", "invalid_referent", "session_closed", "not_found", "already_dispatched"];
+    const newMessage = async (w: Awaited<ReturnType<typeof f.plainWorld>>, text = "글") => String((await f.post(w.user, w.conversation, randomUUID(), text)).message_id);
+
+    it("queued는 표시한다 (p_from_gate가 거짓이든 참이든)", async () => {
+      const w = await f.plainWorld();
+      const a = await newMessage(w);
+      expect(await f.markAuto(w.user, a, "write_gate_closed")).toEqual({ status: "not_sent", reason: "write_gate_closed" });
+      const b = await newMessage(w, "B");
+      expect(await f.markAuto(w.user, b, "not_connected", true)).toEqual({ status: "not_sent", reason: "not_connected" });
+      expect(await f.msg(a)).toMatchObject({ delivery_state: "not_sent", delivery_reason: "write_gate_closed" });
+    });
+
+    it.each(FAILURES)("not_sent/%s(실패 이유)는 어떤 경우에도 덮지 않는다: skipped, 행 그대로", async (reason) => {
+      const w = await f.plainWorld();
+      const message = await newMessage(w);
+      await f.setMessage(message, "not_sent", reason);
+      for (const fromGate of [false, true]) {
+        expect(await f.markAuto(w.user, message, "write_gate_closed", fromGate)).toEqual({ status: "skipped" });
+        expect(await f.msg(message)).toMatchObject({ delivery_state: "not_sent", delivery_reason: reason });
+      }
+    });
+
+    it.each(["write_gate_closed", "not_connected", "adapter_disabled"])("not_sent/%s(gate 계열)는 꺼짐 표시(p_from_gate 거짓)가 덮지 않고, 거절 표시(참)는 새 이유로 바꾼다", async (reason) => {
+      const w = await f.plainWorld();
+      const message = await newMessage(w);
+      await f.setMessage(message, "not_sent", reason);
+      expect(await f.markAuto(w.user, message, "write_gate_closed")).toEqual({ status: "skipped" });
+      expect(await f.msg(message)).toMatchObject({ delivery_state: "not_sent", delivery_reason: reason });
+      expect(await f.markAuto(w.user, message, "unsupported", true)).toEqual({ status: "not_sent", reason: "unsupported" });
+    });
+
+    it.each(["dispatched", "expired", "cancelled"])("%s는 skipped", async (state) => {
+      const w = await f.plainWorld();
+      const message = await newMessage(w);
+      await f.setMessage(message, state);
+      expect(await f.markAuto(w.user, message, "write_gate_closed", true)).toEqual({ status: "skipped" });
+      expect(await f.msg(message)).toMatchObject({ delivery_state: state });
+    });
+
+    it("없는 · 남의 메시지는 not_found, queued인데 이유가 잘못되면 22023 (안쪽 함수의 검증 그대로)", async () => {
+      const w = await f.plainWorld();
+      const message = await newMessage(w);
+      expect(await f.markAuto(w.user, randomUUID(), "write_gate_closed")).toEqual({ status: "not_found" });
+      expect(await f.markAuto(await f.user(), message, "write_gate_closed")).toEqual({ status: "not_found" });
+      await rejects(f.markAuto(w.user, message, "spawn_failed"), /invalid reason/);
+    });
+  });
+
+  describe("검토 반영 9-1: TS + 실제 SQL(PGlite) 경합 — 읽은 뒤 다른 요청이 전달 · spawn_failed로 만들어도 늦은 표시가 이유를 덮지 않는다", () => {
+    const ON = { AGENT_ADAPTER_CODEX_ENABLED: "true", EXECUTION_ENABLED: "true" };
+    const OFF = { AGENT_ADAPTER_CODEX_ENABLED: "true" };
+    // 시작 가능한 queued 메시지가 있는 bound 세션 대화
+    async function raceWorld() {
+      const w = await f.sessionWorld();
+      const message = String((await f.post(w.user, w.conversation, randomUUID(), "고쳐 줘")).message_id);
+      const before = {
+        tasks: await count("agent_tasks", w.user),
+        steps: await f.count(`select 1 from public.execution_steps where user_id=$1 and kind='agent_message'`, [w.user]),
+        sent: (await f.metrics(w.user, "agent_message_sent")).length,
+      };
+      return { ...w, message, before };
+    }
+    /** TS가 상태를 읽은 뒤 표시 RPC를 부르기 직전에, 다른 요청이 그 메시지를 전달하고 spawn_failed로 만든다 */
+    const racing = (message: string) => {
+      let flipped = false;
+      return pgliteAgentAdmin(db(), {
+        before: async (name) => {
+          if (!name.startsWith("mark_agent_message_not_sent") || flipped) return;
+          flipped = true;
+          await f.setMessage(message, "not_sent", "spawn_failed");
+        },
+      });
+    };
+    const noNewAttempt = async (w: Awaited<ReturnType<typeof raceWorld>>) => {
+      expect(await f.msg(w.message)).toMatchObject({ delivery_state: "not_sent", delivery_reason: "spawn_failed" });
+      // 후속 자동 시작(플래그가 켜진 뒤): 실패한 머리는 시작하지 않는다 — 새 회차 0
+      expect(await startNextAgentMessage(pgliteAgentAdmin(db()), { userId: w.user, sessionId: w.session }, ON)).toBeNull();
+      expect(await count("agent_tasks", w.user)).toBe(w.before.tasks);
+      expect(await f.count(`select 1 from public.execution_steps where user_id=$1 and kind='agent_message'`, [w.user])).toBe(w.before.steps);
+      expect((await f.metrics(w.user, "agent_message_sent")).length).toBe(w.before.sent);
+    };
+
+    it("실행 플래그 꺼짐 표시(대기열 머리 경로, startNextAgentMessage)", async () => {
+      const w = await raceWorld();
+      expect(await startNextAgentMessage(racing(w.message), { userId: w.user, sessionId: w.session }, OFF)).toBeNull();
+      await noNewAttempt(w);
+    });
+
+    it("실행 플래그 꺼짐 표시(직접 경로, startAgentMessage)", async () => {
+      const w = await raceWorld();
+      expect(await startAgentMessage(racing(w.message), { userId: w.user, conversationId: w.conversation, messageId: w.message }, OFF)).toEqual({ status: "skipped" });
+      await noNewAttempt(w);
+    });
+
+    it("연결 거절 표시(not_connected): 연결이 끊긴 상태에서 읽은 queued 머리도 같다", async () => {
+      const w = await raceWorld();
+      await f.updateRow("agent_connections", w.connection, { status: "revoked" });
+      expect(await startNextAgentMessage(racing(w.message), { userId: w.user, sessionId: w.session }, ON)).toBeNull();
+      await noNewAttempt(w);
+    });
+
+    it("대조: 표시가 끼어들지 않으면 같은 TS가 평소처럼 표시한다 (꺼짐 → not_sent/write_gate_closed, 새 회차 0)", async () => {
+      const w = await raceWorld();
+      expect(await startNextAgentMessage(pgliteAgentAdmin(db()), { userId: w.user, sessionId: w.session }, OFF)).toEqual({ status: "not_sent", reason: "write_gate_closed" });
+      expect(await f.msg(w.message)).toMatchObject({ delivery_state: "not_sent", delivery_reason: "write_gate_closed" });
+      expect(await count("agent_tasks", w.user)).toBe(w.before.tasks);
     });
   });
 

@@ -44,7 +44,7 @@ function world(head: Head | null = { state: "queued" }, options: { adapter?: str
     rpc: {
       next_queued_agent_message: () => (head ? MSG : null),
       start_agent_turn_auto: () => started,
-      mark_agent_message_not_sent: (args) => ({ status: "not_sent", reason: args.p_reason }),
+      mark_agent_message_not_sent_auto: (args) => ({ status: "not_sent", reason: args.p_reason }),
       ...options.rpc,
     },
   });
@@ -109,7 +109,7 @@ describe("startNextAgentMessage", () => {
     expect(await run(fake, ON)).toBeNull();
     expect(fake.rpcCalls("next_queued_agent_message")).toHaveLength(1);
     expect(fake.rpcCalls("start_agent_turn_auto").map((call) => (call.args as { p_message_id: string }).p_message_id)).toEqual([MSG]);
-    expect(fake.rpcCalls("mark_agent_message_not_sent")).toEqual([]);
+    expect(fake.rpcCalls("mark_agent_message_not_sent_auto")).toEqual([]);
   });
 
   it("검토 반영 8-2: 처리용 칩에서 지워진 Action을 뺀다 — 저장된 selected는 그대로(쓰기 0), context는 그대로", async () => {
@@ -134,22 +134,22 @@ describe("startNextAgentMessage", () => {
     expect(both.rpcCalls("start_agent_turn_auto")[0].args).toMatchObject({ p_action_ids: [ACTION2] });
   });
 
-  it.each(["not_found", "already_dispatched"])("진짜 %s(칩 때문이 아니라 대상이 정말 없음)이면 대기열에서 뺀다: mark_agent_message_not_sent(같은 이유)", async (status) => {
+  it.each(["not_found", "already_dispatched"])("진짜 %s(칩 때문이 아니라 대상이 정말 없음)이면 대기열에서 뺀다: mark_agent_message_not_sent_auto(같은 이유)", async (status) => {
     const fake = world({ state: "queued" }, { rpc: { start_agent_turn_auto: () => ({ status }) } });
     expect(await run(fake, ON)).toEqual({ status: "not_sent", reason: status });
-    expect(fake.rpcCalls("mark_agent_message_not_sent")[0].args).toEqual({ p_user_id: USER, p_message_id: MSG, p_reason: status });
+    expect(fake.rpcCalls("mark_agent_message_not_sent_auto")[0].args).toEqual({ p_user_id: USER, p_message_id: MSG, p_reason: status, p_from_gate: true });
   });
 
   it.each([["queued", { status: "queued", reason: "session_busy" }], ["expired", { status: "expired" }], ["needs_referent", { status: "needs_referent", candidates: [] }]])("그 밖의 결과(%s)는 표시 없이 그대로 돌려준다", async (_name, result) => {
     const fake = world({ state: "queued" }, { rpc: { start_agent_turn_auto: () => result } });
     expect(await run(fake, ON)).toEqual(result);
-    expect(fake.rpcCalls("mark_agent_message_not_sent")).toEqual([]);
+    expect(fake.rpcCalls("mark_agent_message_not_sent_auto")).toEqual([]);
   });
 
   it("래퍼가 skipped이면 null: 표시 0", async () => {
     const fake = world({ state: "queued" }, { rpc: { start_agent_turn_auto: () => ({ status: "skipped" }) } });
     expect(await run(fake, ON)).toBeNull();
-    expect(fake.rpcCalls("mark_agent_message_not_sent")).toEqual([]);
+    expect(fake.rpcCalls("mark_agent_message_not_sent_auto")).toEqual([]);
   });
 
   it("연결이 active가 아니면 시작 대신 not_sent/not_connected로 표시한다 (queued 머리). 이미 같은 이유인 머리는 다시 쓰지 않는다", async () => {
@@ -158,7 +158,7 @@ describe("startNextAgentMessage", () => {
     expect(queued.rpcCalls("start_agent_turn_auto")).toEqual([]);
     const already = world({ state: "not_sent", reason: "not_connected" }, { connection: "revoked" });
     expect(await run(already, ON)).toBeNull();
-    expect(already.rpcCalls("mark_agent_message_not_sent")).toEqual([]);
+    expect(already.rpcCalls("mark_agent_message_not_sent_auto")).toEqual([]);
   });
 
   it("쓰기 등급을 못 받는 adapter(Claude Code)는 시작 대신 not_sent/write_gate_closed로 표시한다", async () => {
@@ -170,15 +170,58 @@ describe("startNextAgentMessage", () => {
   it("실행 kill switch가 꺼져 있으면: queued 머리만 not_sent/write_gate_closed로 표시한다 (시작 0)", async () => {
     const fake = world({ state: "queued" });
     expect(await run(fake, NO_EXECUTION)).toEqual({ status: "not_sent", reason: "write_gate_closed" });
-    expect(targets(fake)).toEqual(["next_queued_agent_message", "mark_agent_message_not_sent"]);
-    expect(fake.rpcCalls("mark_agent_message_not_sent")[0].args).toEqual({ p_user_id: USER, p_message_id: MSG, p_reason: "write_gate_closed" });
+    expect(targets(fake)).toEqual(["next_queued_agent_message", "mark_agent_message_not_sent_auto"]);
+    expect(fake.rpcCalls("mark_agent_message_not_sent_auto")[0].args).toEqual({ p_user_id: USER, p_message_id: MSG, p_reason: "write_gate_closed", p_from_gate: false });
     expect(writes(fake)).toEqual([]);
+  });
+
+  it("검토 반영 9-1: 표시는 SQL이 메시지 잠금 안에서 현재 queued일 때만 한다 — 읽은 뒤 상태가 바뀌어 SQL이 skipped이면 null (kill switch는 p_from_gate false: 어떤 not_sent도 덮지 않는다)", async () => {
+    const fake = world({ state: "queued" }, { rpc: { mark_agent_message_not_sent_auto: () => ({ status: "skipped" }) } });
+    expect(await run(fake, NO_EXECUTION)).toBeNull();
+    expect(fake.rpcCalls("mark_agent_message_not_sent_auto")[0].args).toMatchObject({ p_reason: "write_gate_closed", p_from_gate: false });
+    // 거절 표시(연결 거절)도 같다: SQL이 skipped이면 아무것도 바뀌지 않았다
+    const refused = world({ state: "queued" }, { connection: "revoked", rpc: { mark_agent_message_not_sent_auto: () => ({ status: "skipped" }) } });
+    expect(await run(refused, ON)).toBeNull();
+    expect(refused.rpcCalls("mark_agent_message_not_sent_auto")[0].args).toMatchObject({ p_reason: "not_connected", p_from_gate: true });
+  });
+
+  it("검토 반영 9-1: 이 파일의 경로는 예전 무조건 표시 함수(mark_agent_message_not_sent)를 부르지 않는다", async () => {
+    for (const [fake, env] of [[world({ state: "queued" }), NO_EXECUTION], [world({ state: "queued" }, { connection: "revoked" }), ON], [world({ state: "queued" }, { rpc: { start_agent_turn_auto: () => ({ status: "not_found" }) } }), ON]] as const) {
+      await run(fake, env);
+      expect(fake.rpcCalls("mark_agent_message_not_sent")).toEqual([]);
+      expect(fake.rpcCalls("mark_agent_message_not_sent_auto")).toHaveLength(1);
+    }
+  });
+
+  it.each(["40001", "40P01", "55P03"])("검토 반영 9-2: 시작 호출이 %s로 롤백되면 같은 id로 두 번까지 다시 한다 — 세 번째에 성공하면 그 결과", async (code) => {
+    let calls = 0;
+    const fake = world({ state: "queued" }, { rpc: { start_agent_turn_auto: () => { if (++calls < 3) throw Object.assign(new Error("conflict"), { code }); return started; } } });
+    expect(await run(fake, ON)).toEqual(started);
+    expect(fake.rpcCalls("start_agent_turn_auto")).toHaveLength(3);
+    expect(new Set(fake.rpcCalls("start_agent_turn_auto").map((call) => (call.args as { p_message_id: string }).p_message_id))).toEqual(new Set([MSG]));
+    expect(fake.rpcCalls("next_queued_agent_message")).toHaveLength(1); // 머리를 다시 고르지 않는다
+  });
+
+  it("검토 반영 9-2: 세 번 모두 경합이면 던진다 (handler가 409 busy_retry로 바꾼다). 다른 오류는 다시 하지 않는다", async () => {
+    const stuck = world({ state: "queued" }, { rpc: { start_agent_turn_auto: () => { throw Object.assign(new Error("deadlock"), { code: "40P01" }); } } });
+    await expect(run(stuck, ON)).rejects.toMatchObject({ code: "40P01" });
+    expect(stuck.rpcCalls("start_agent_turn_auto")).toHaveLength(3);
+    const other = world({ state: "queued" }, { rpc: { start_agent_turn_auto: () => { throw Object.assign(new Error("db"), { code: "XX000" }); } } });
+    await expect(run(other, ON)).rejects.toMatchObject({ code: "XX000" });
+    expect(other.rpcCalls("start_agent_turn_auto")).toHaveLength(1);
+  });
+
+  it("검토 반영 9-2: 표시 호출(mark_agent_message_not_sent_auto)의 경합도 같은 방식으로 다시 한다", async () => {
+    let calls = 0;
+    const fake = world({ state: "queued" }, { rpc: { mark_agent_message_not_sent_auto: (args) => { if (++calls < 2) throw Object.assign(new Error("lock"), { code: "55P03" }); return { status: "not_sent", reason: args.p_reason }; } } });
+    expect(await run(fake, NO_EXECUTION)).toEqual({ status: "not_sent", reason: "write_gate_closed" });
+    expect(fake.rpcCalls("mark_agent_message_not_sent_auto")).toHaveLength(2);
   });
 
   it.each(["spawn_failed", "usage_limited", "write_gate_closed", "not_connected"])("꺼져 있어도 이미 not_sent/%s인 머리의 이유는 덮어쓰지 않는다 (표시 0)", async (reason) => {
     const fake = world({ state: "not_sent", reason });
     expect(await run(fake, NO_EXECUTION)).toBeNull();
-    expect(fake.rpcCalls("mark_agent_message_not_sent")).toEqual([]);
+    expect(fake.rpcCalls("mark_agent_message_not_sent_auto")).toEqual([]);
     expect(fake.rpcCalls("start_agent_turn_auto")).toEqual([]);
   });
 
@@ -197,7 +240,7 @@ describe("startNextAgentMessage", () => {
   it("대기 메시지가 없거나 머리 행을 읽을 수 없으면 null (표시 0)", async () => {
     const empty = world({ state: "queued" }, { rpc: { next_queued_agent_message: () => null } });
     expect(await run(empty, NO_EXECUTION)).toBeNull();
-    expect(empty.rpcCalls("mark_agent_message_not_sent")).toEqual([]);
+    expect(empty.rpcCalls("mark_agent_message_not_sent_auto")).toEqual([]);
     const gone = world(null, { rpc: { next_queued_agent_message: () => MSG } });
     expect(await run(gone, ON)).toBeNull();
     expect(gone.rpcCalls("start_agent_turn_auto")).toEqual([]);

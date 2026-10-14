@@ -159,6 +159,35 @@ describe("expireAgentMessages (R11, OD-18): 1,000이면 다시, 최대 10회", (
   });
 });
 
+describe("검토 반영 9-2: 롤백된 경합(40001 · 40P01 · 55P03)은 SQL 호출을 두 번까지 다시 한다", () => {
+  const conflict = (code: string) => Object.assign(new Error("conflict"), { code });
+  const flaky = (name: string, result: unknown, code: string) => {
+    let calls = 0;
+    return { [name]: () => { if (++calls < 3) throw conflict(code); return result; } };
+  };
+
+  it.each(["40001", "40P01", "55P03"])("requeue_agent_messages · set_agent_message_referent · conversation_post_message가 %s로 두 번 롤백돼도 세 번째에 성공한다", async (code) => {
+    const requeue = fakeAdmin({ rpc: flaky("requeue_agent_messages", { status: "ok", messages: [] }, code) });
+    expect(await requeueAgentMessages(requeue.admin, { userId: USER, conversationId: CONV })).toEqual({ status: "ok", messages: [] });
+    expect(requeue.rpcCalls("requeue_agent_messages")).toHaveLength(3);
+    const referent = fakeAdmin({ tables: world(), rpc: flaky("set_agent_message_referent", { status: "selected" }, code) });
+    expect(await setAgentMessageReferent(referent.admin, { userId: USER, conversationId: CONV, messageId: MSG, actionId: ACTION })).toBe("selected");
+    expect(referent.rpcCalls("set_agent_message_referent")).toHaveLength(3);
+    const post = fakeAdmin({ rpc: flaky("conversation_post_message", { status: "created", message_id: MSG, seq: 1, reply_id: null }, code) });
+    expect(await postAgentUserMessage(post.admin, { userId: USER, conversationId: CONV, clientMessageId: MSG2, text: "글", selected: {} })).toEqual({ status: "created", messageId: MSG, seq: 1 });
+    expect(post.rpcCalls("conversation_post_message")).toHaveLength(3);
+  });
+
+  it("세 번 모두 경합이면 던지고, 다른 오류는 한 번만 부른다", async () => {
+    const stuck = fakeAdmin({ rpc: { requeue_agent_messages: () => { throw conflict("40P01"); } } });
+    await expect(requeueAgentMessages(stuck.admin, { userId: USER, conversationId: CONV })).rejects.toMatchObject({ code: "40P01" });
+    expect(stuck.rpcCalls("requeue_agent_messages")).toHaveLength(3);
+    const other = fakeAdmin({ rpc: { requeue_agent_messages: () => { throw conflict("XX000"); } } });
+    await expect(requeueAgentMessages(other.admin, { userId: USER, conversationId: CONV })).rejects.toMatchObject({ code: "XX000" });
+    expect(other.rpcCalls("requeue_agent_messages")).toHaveLength(1);
+  });
+});
+
 describe("requeueAgentMessages", () => {
   it("SQL 인자 · 결과 매핑", async () => {
     const result = { status: "ok", messages: [{ message_id: MSG, result: "requeued" }, { message_id: MSG2, result: "skipped", reason: "not_eligible" }] };
@@ -229,7 +258,7 @@ describe("startAgentMessage: 대화의 연결을 해석해 전달 단계를 시�
   });
 
   it.each(["write_gate_closed", "not_connected", "spawn_failed"])("검토 반영 7-1: 실행 플래그가 꺼져 있어도 이미 not_sent/%s인 메시지의 이유는 덮어쓰지 않는다 (표시 0)", async (reason) => {
-    const fake = fakeAdmin({ tables: world({ conversation_messages: [messageRow({ delivery_state: "not_sent", delivery_reason: reason })] }), rpc: rpcs({ mark_agent_message_not_sent: () => ({ status: "not_sent", reason: "write_gate_closed" }) }) });
+    const fake = fakeAdmin({ tables: world({ conversation_messages: [messageRow({ delivery_state: "not_sent", delivery_reason: reason })] }), rpc: rpcs({ mark_agent_message_not_sent_auto: () => ({ status: "not_sent", reason: "write_gate_closed" }) }) });
     expect(await startAgentMessage(fake.admin, { userId: USER, conversationId: CONV, messageId: MSG }, OFF, NOW)).toEqual({ status: "skipped" });
     expect(fake.rpcCalls()).toEqual([]);
   });
@@ -261,10 +290,10 @@ describe("startAgentMessage: 대화의 연결을 해석해 전달 단계를 시�
     expect(fake.rpcCalls().map((call) => call.target)).toEqual(["start_agent_turn_auto"]);
   });
 
-  it.each(["not_found", "already_dispatched"])("검토 반영 8-2: 진짜 %s이면 대기열에서 뺀다 (mark_agent_message_not_sent, 같은 이유)", async (status) => {
-    const fake = fakeAdmin({ tables: world(), rpc: rpcs({ start_agent_turn_auto: () => ({ status }), mark_agent_message_not_sent: (args) => ({ status: "not_sent", reason: args.p_reason }) }) });
+  it.each(["not_found", "already_dispatched"])("검토 반영 8-2: 진짜 %s이면 대기열에서 뺀다 (mark_agent_message_not_sent_auto, 같은 이유)", async (status) => {
+    const fake = fakeAdmin({ tables: world(), rpc: rpcs({ start_agent_turn_auto: () => ({ status }), mark_agent_message_not_sent_auto: (args) => ({ status: "not_sent", reason: args.p_reason }) }) });
     expect(await startAgentMessage(fake.admin, { userId: USER, conversationId: CONV, messageId: MSG }, CODEX, NOW)).toEqual({ status: "not_sent", reason: status });
-    expect(fake.rpcCalls("mark_agent_message_not_sent")[0].args).toEqual({ p_user_id: USER, p_message_id: MSG, p_reason: status });
+    expect(fake.rpcCalls("mark_agent_message_not_sent_auto")[0].args).toEqual({ p_user_id: USER, p_message_id: MSG, p_reason: status, p_from_gate: true });
   });
 
   it("보관 기한이 지난 queued · not_sent도 시작하지 않는다 (만료 sweep이 expired로 바꾼다)", async () => {
@@ -291,10 +320,10 @@ describe("startAgentMessage: 대화의 연결을 해석해 전달 단계를 시�
   it("Claude Code(쓰기 gate · read_only 미검증)는 단계를 만들지 않고 not_sent로 표시한다 (AC-10)", async () => {
     const fake = fakeAdmin({
       tables: world({ agent_connections: [{ id: CONN, user_id: USER, adapter: "agent:claude-code", status: "active" }] }),
-      rpc: rpcs({ mark_agent_message_not_sent: () => ({ status: "not_sent", reason: "write_gate_closed" }) }),
+      rpc: rpcs({ mark_agent_message_not_sent_auto: () => ({ status: "not_sent", reason: "write_gate_closed" }) }),
     });
     expect(await startAgentMessage(fake.admin, { userId: USER, conversationId: CONV, messageId: MSG }, { AGENT_ADAPTER_CLAUDE_CODE_ENABLED: "true" }, NOW)).toEqual({ status: "not_sent", reason: "write_gate_closed" });
-    expect(fake.rpcCalls().map((call) => call.target)).toEqual(["mark_agent_message_not_sent"]);
+    expect(fake.rpcCalls().map((call) => call.target)).toEqual(["mark_agent_message_not_sent_auto"]);
   });
 
   it("queue_order로 밀렸고 세션이 있으면 다음 대기 메시지를 한 번 시작해 본다 (OD-10)", async () => {
@@ -343,14 +372,20 @@ describe("startAgentMessage: 대화의 연결을 해석해 전달 단계를 시�
 
 describe("D2a 보안 검토 P1 방어: 실행 kill switch가 꺼져 있으면 턴을 시작하지 않는다", () => {
   const closed = { status: "not_sent", reason: "write_gate_closed" };
-  const gateRpcs = () => rpcs({ mark_agent_message_not_sent: () => closed });
+  const gateRpcs = () => rpcs({ mark_agent_message_not_sent_auto: () => closed });
 
   it("startAgentMessage: start_agent_turn_auto 0, 메시지를 not_sent/write_gate_closed로 표시하고 그 상태를 돌려준다", async () => {
     const fake = fakeAdmin({ tables: world(), rpc: gateRpcs() });
     expect(await startAgentMessage(fake.admin, { userId: USER, conversationId: CONV, messageId: MSG }, OFF, NOW)).toEqual(closed);
-    expect(fake.rpcCalls().map((call) => call.target)).toEqual(["mark_agent_message_not_sent"]);
-    expect(fake.rpcCalls()[0].args).toEqual({ p_user_id: USER, p_message_id: MSG, p_reason: "write_gate_closed" });
+    expect(fake.rpcCalls().map((call) => call.target)).toEqual(["mark_agent_message_not_sent_auto"]);
+    expect(fake.rpcCalls()[0].args).toEqual({ p_user_id: USER, p_message_id: MSG, p_reason: "write_gate_closed", p_from_gate: false });
     expect(fake.calls.filter((call) => call.kind === "insert" || call.kind === "update" || call.kind === "upsert")).toEqual([]);
+  });
+
+  it("검토 반영 9-1: 읽은 뒤 상태가 바뀌어 SQL이 표시하지 않으면(skipped) 그대로 skipped다 — TS가 읽어 둔 queued로 판단해 쓰지 않는다", async () => {
+    const fake = fakeAdmin({ tables: world(), rpc: rpcs({ mark_agent_message_not_sent_auto: () => ({ status: "skipped" }) }) });
+    expect(await startAgentMessage(fake.admin, { userId: USER, conversationId: CONV, messageId: MSG }, OFF, NOW)).toEqual({ status: "skipped" });
+    expect(fake.rpcCalls("mark_agent_message_not_sent")).toEqual([]);
   });
 
   it("전달 전 상태가 아니거나 adapter gate가 꺼져 있으면 표시도 하지 않는다 (skipped, RPC 0)", async () => {
@@ -367,14 +402,14 @@ describe("D2a 보안 검토 P1 방어: 실행 kill switch가 꺼져 있으면 �
       rpc: { ...gateRpcs(), requeue_agent_messages: () => ({ status: "ok", messages: [{ message_id: MSG, result: "requeued" }, { message_id: MSG2, result: "requeued" }] }) },
     });
     await deliverAgentMessages(fake.admin, { userId: USER, conversationId: CONV }, OFF, NOW);
-    expect(fake.rpcCalls().map((call) => call.target)).toEqual(["requeue_agent_messages", "mark_agent_message_not_sent", "mark_agent_message_not_sent"]);
+    expect(fake.rpcCalls().map((call) => call.target)).toEqual(["requeue_agent_messages", "mark_agent_message_not_sent_auto", "mark_agent_message_not_sent_auto"]);
     expect(fake.rpcCalls("start_agent_turn_auto")).toEqual([]);
   });
 
   it("켜져 있으면 동작이 그대로다: start_agent_turn_auto로 시작하고 표시하지 않는다", async () => {
     const fake = fakeAdmin({ tables: world(), rpc: gateRpcs() });
     expect(await startAgentMessage(fake.admin, { userId: USER, conversationId: CONV, messageId: MSG }, CODEX, NOW)).toEqual(started);
-    expect(fake.rpcCalls("mark_agent_message_not_sent")).toEqual([]);
+    expect(fake.rpcCalls("mark_agent_message_not_sent_auto")).toEqual([]);
   });
 });
 
@@ -419,7 +454,7 @@ describe("deliverAgentMessages (Send again, AC-22): 다시 대기시킨 메시�
       rpc: rpcs({ requeue_agent_messages: () => requeueResult([MSG, "requeued"], [MSG2, "requeued"]), start_agent_turn_auto: () => { throw Object.assign(new Error("lock"), { code: "55P03" }); } }),
     });
     await expect(deliverAgentMessages(fake.admin, { userId: USER, conversationId: CONV }, CODEX, NOW)).rejects.toMatchObject({ code: "55P03" });
-    expect(fake.rpcCalls("start_agent_turn_auto")).toHaveLength(1);
+    expect(fake.rpcCalls("start_agent_turn_auto")).toHaveLength(3); // 검토 반영 9-2: 롤백된 경합은 같은 메시지로 두 번 더 시도한 뒤에야 던진다 (다음 메시지로 넘어가지 않는다)
   });
 });
 

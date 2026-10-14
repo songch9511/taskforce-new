@@ -32,7 +32,7 @@ const queue = (head: { state: string; reason?: string | null; selected?: Record<
       agent_sessions: [{ id: SESSION, user_id: USER, connection_id: CONN }],
       agent_connections: [{ id: CONN, user_id: USER, adapter: "agent:codex", status: "active" }],
     },
-    rpc: { next_queued_agent_message: () => (head ? MESSAGE : null), start_agent_turn_auto: () => ({ status: "skipped" }), mark_agent_message_not_sent: () => ({ status: "not_sent", reason: "write_gate_closed" }) },
+    rpc: { next_queued_agent_message: () => (head ? MESSAGE : null), start_agent_turn_auto: () => ({ status: "skipped" }), mark_agent_message_not_sent_auto: () => ({ status: "not_sent", reason: "write_gate_closed" }) },
   });
 const call = () => POST(new Request(`https://api.example.dev/api/v2/conversations/${CONV}/stop`, { method: "POST", body: "{}" }), { params: Promise.resolve({ id: CONV }) });
 
@@ -95,7 +95,7 @@ describe("POST /api/v2/conversations/{id}/stop (route)", () => {
     expect(response.status).toBe(200);
     expect(mocks.stopAgentSession).toHaveBeenCalledTimes(1);
     expect(mocks.startNextQueuedTurn).not.toHaveBeenCalled();
-    expect(fake.rpcCalls().map((rpc) => rpc.target)).toEqual(["next_queued_agent_message", "mark_agent_message_not_sent"]);
+    expect(fake.rpcCalls().map((rpc) => rpc.target)).toEqual(["next_queued_agent_message", "mark_agent_message_not_sent_auto"]);
   });
 
   it.each(["spawn_failed", "usage_limited", "write_gate_closed"])("검토 반영 7-1: Stop 뒤 대기열 머리가 not_sent/%s이면 시작하지도 이유를 덮어쓰지도 않는다 (실행 플래그가 켜져 있든 꺼져 있든, 실패한 머리는 Send again으로만)", async (reason) => {
@@ -106,7 +106,7 @@ describe("POST /api/v2/conversations/{id}/stop (route)", () => {
       const fake = queue({ state: "not_sent", reason });
       mocks.admin.mockReturnValue(fake.admin as never);
       expect((await call()).status).toBe(200);
-      expect(fake.rpcCalls("mark_agent_message_not_sent")).toEqual([]);
+      expect(fake.rpcCalls("mark_agent_message_not_sent_auto")).toEqual([]);
       // gate 계열은 플래그가 켜져 있을 때만 다시 시작한다
       expect(fake.rpcCalls("start_agent_turn_auto")).toHaveLength(reason === "write_gate_closed" && execution === "true" ? 1 : 0);
       expect(mocks.startNextQueuedTurn).not.toHaveBeenCalled();

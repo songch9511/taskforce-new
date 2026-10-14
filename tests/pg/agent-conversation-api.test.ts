@@ -373,3 +373,128 @@ describe("P6 자동 시작은 고정한 메시지를 잠금 안에서 다시 확
     expect(await tallies(w.user)).toEqual({ tasks: 0, steps: 0, sent: 0 });
   });
 });
+
+describe("P7 자동 시작 래퍼는 잠금 대상(질문의 원문)을 고정한다 — 바뀌면 추가 잠금 전에 40001 (검토 반영 9-2)", () => {
+  // 시나리오: 래퍼가 M의 잠금을 기다리는 동안 그 세션의 질문이 열리거나 닫힌다. 래퍼가 그대로 route_agent_message로 가면 route는 다른 원문 O를 보고 M → O 순으로 잠그려 하고,
+  // 다른 요청(O → M 순)과 서로 기다려 교착한다. 래퍼는 M을 잡은 직후 원문 · 사건 기준을 다시 읽어 달라졌으면 O를 잠그기 전에 40001로 롤백한다 → 풀린 뒤 다시 부르면 성공.
+  async function questionWorld() {
+    const w = await f.questionWorld();
+    const pending = (await f.state(w)).pending_question;
+    const incoming = String((await f.post(w.user, w.conversation, randomUUID(), "답변이에요")).message_id);
+    return { ...w, pending, origin: w.message, incoming };
+  }
+  const lockMessage = (client: pg.Client, id: string) => client.query("select id from public.conversation_messages where id = $1 for update", [id]);
+  const closeQuestion = (client: pg.Client, task: string) => client.query("update public.agent_tasks set state = 'running', pending_question = null where id = $1", [task]);
+  const openQuestion = (client: pg.Client, task: string, pending: unknown) =>
+    client.query("update public.agent_tasks set state = 'awaiting_answer', pending_question = $2::jsonb where id = $1", [task, JSON.stringify(pending)]);
+  const settle = <T,>(promise: Promise<T>) => promise.then((value) => ({ value }), (error: unknown) => ({ error }));
+
+  it("질문이 열리는 사이: 래퍼는 M만 잠근 채 기다리고, 다른 요청이 O → M 순으로 잠그려 해도 교착하지 않는다 — 래퍼가 40001로 물러나고 다른 요청이 끝난 뒤 다시 부르면 성공", async () => {
+    const w = await questionWorld();
+    await closeQuestion(setup, w.task); // 시작 상태: 질문이 아직 안 열린 세션
+    await c.query("begin");
+    await lockMessage(c, w.incoming); // M을 쥔 요청이 질문을 연다 (commit 전)
+    await openQuestion(c, w.task, w.pending);
+    const wrapper = settle(startAuto(b, w.user, w.incoming));
+    await waitForLockWait(bPid); // 래퍼는 질문이 안 열린 것으로 읽고 M의 잠금에서 기다린다
+    await a.query("begin");
+    await lockMessage(a, w.origin); // 다른 요청: O를 먼저 잡고
+    const other = settle(lockMessage(a, w.incoming)); // M을 원한다 (래퍼 뒤에 줄을 선다)
+    await waitForLockWait(aPid);
+    await c.query("commit"); // M이 래퍼에게 넘어가고, 래퍼는 질문이 열린 것을 본다
+    const result = await wrapper;
+    expect(result).toMatchObject({ error: { code: "40001" } }); // 교착(40P01)이 아니라 직렬화 실패로 물러난다
+    expect(await other).toHaveProperty("value"); // 다른 요청은 M을 얻는다 (래퍼가 롤백하며 놓았다)
+    await a.query("commit");
+    // 다시 부르면 이제 열린 질문을 같은 눈으로 보고 끝까지 간다
+    const retry = await startAuto(b, w.user, w.incoming);
+    expect(typeof retry.status).toBe("string");
+    expect(retry.status).not.toBe("skipped");
+  });
+
+  it("질문이 닫히는 사이도 같다: 래퍼가 읽은 원문 O와 달라지면 40001, 다시 부르면 성공", async () => {
+    const w = await questionWorld(); // 질문이 열려 있다 → 래퍼는 {M, O}를 잠그려 한다
+    await c.query("begin");
+    await lockMessage(c, w.incoming);
+    await closeQuestion(c, w.task); // M을 쥔 요청이 질문을 닫는다 (commit 전)
+    const wrapper = settle(startAuto(b, w.user, w.incoming));
+    await waitForLockWait(bPid);
+    await c.query("commit");
+    expect(await wrapper).toMatchObject({ error: { code: "40001" } });
+    const retry = await startAuto(b, w.user, w.incoming);
+    expect(typeof retry.status).toBe("string");
+    expect(retry.status).not.toBe("skipped");
+  });
+
+  it("같은 task에서 질문이 바뀌어도(원문은 같고 사건 기준 provider_request_id만 달라짐) 40001 — 다시 부르면 성공", async () => {
+    const w = await questionWorld(); // 질문 q가 열려 있다 → 래퍼는 {M, O, 사건 행}을 기준으로 삼는다
+    await c.query("begin");
+    await lockMessage(c, w.incoming);
+    await c.query(
+      "update public.agent_tasks set pending_question = jsonb_set(jsonb_set(pending_question, '{provider_request_id}', '\"another-question\"'), '{question_key}', jsonb_build_array(id, 'another-question')) where id = $1",
+      [w.task],
+    );
+    const wrapper = settle(startAuto(b, w.user, w.incoming));
+    await waitForLockWait(bPid);
+    await c.query("commit");
+    expect(await wrapper).toMatchObject({ error: { code: "40001" } });
+    const retry = await startAuto(b, w.user, w.incoming);
+    expect(retry.status).not.toBe("skipped");
+  });
+
+  it("바뀌지 않았으면 40001 없이 그대로 진행한다 (질문이 열린 채 M을 기다렸다 받음)", async () => {
+    const w = await questionWorld();
+    await c.query("begin");
+    await lockMessage(c, w.incoming);
+    const wrapper = settle(startAuto(b, w.user, w.incoming));
+    await waitForLockWait(bPid);
+    await c.query("commit");
+    const result = await wrapper;
+    expect(result).toHaveProperty("value");
+    expect((result as { value: Turn }).value.status).not.toBe("skipped");
+  });
+});
+
+describe("P8 거절 · 꺼짐 표시는 메시지 잠금 안에서 현재 상태를 다시 본다 (검토 반영 9-1)", () => {
+  const markAuto = async (client: pg.Client, user: string, message: string, reason: string, fromGate = false) =>
+    (await client.query<{ result: { status: string; reason?: string } }>("select public.mark_agent_message_not_sent_auto($1,$2,$3,$4) as result", [user, message, reason, fromGate])).rows[0].result;
+  const markPlain = async (client: pg.Client, user: string, message: string, reason: string) =>
+    (await client.query<{ result: { status: string; reason?: string } }>("select public.mark_agent_message_not_sent($1,$2,$3) as result", [user, message, reason])).rows[0].result;
+  const flip = (client: pg.Client, message: string) =>
+    client.query("update public.conversation_messages set delivery_state = 'not_sent', delivery_reason = 'spawn_failed' where id = $1", [message]);
+
+  it("TS가 queued로 읽은 뒤 다른 요청이 spawn_failed로 만드는 중이면, 기다린 늦은 표시는 풀린 뒤 상태를 다시 읽어 skipped — 이유를 덮지 않는다", async () => {
+    for (const fromGate of [false, true]) {
+      const w = await world();
+      await a.query("begin");
+      await flip(a, w.message);
+      const waiting = markAuto(b, w.user, w.message, "write_gate_closed", fromGate);
+      await waitForLockWait();
+      await expectBWaitsForA();
+      await a.query("commit");
+      expect(await waiting).toEqual({ status: "skipped" });
+      expect(await f.one("select delivery_state, delivery_reason from public.conversation_messages where id = $1", [w.message])).toEqual({ delivery_state: "not_sent", delivery_reason: "spawn_failed" });
+    }
+  });
+
+  it("대조: 무조건 표시 함수(mark_agent_message_not_sent)는 같은 상황에서 실패 이유를 덮는다 — 위 시험이 지키는 위험", async () => {
+    const w = await world();
+    await a.query("begin");
+    await flip(a, w.message);
+    const waiting = markPlain(b, w.user, w.message, "write_gate_closed");
+    await waitForLockWait();
+    await a.query("commit");
+    expect((await waiting).status).toBe("not_sent");
+    expect(await f.one("select delivery_reason from public.conversation_messages where id = $1", [w.message])).toEqual({ delivery_reason: "write_gate_closed" });
+  });
+
+  it("그대로 queued이면 기다렸다가 표시한다 (선 요청이 롤백하면)", async () => {
+    const w = await world();
+    await a.query("begin");
+    await a.query("select id from public.conversation_messages where id = $1 for update", [w.message]);
+    const waiting = markAuto(b, w.user, w.message, "write_gate_closed");
+    await waitForLockWait();
+    await a.query("rollback");
+    expect(await waiting).toEqual({ status: "not_sent", reason: "write_gate_closed" });
+  });
+});

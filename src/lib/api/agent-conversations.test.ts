@@ -283,8 +283,8 @@ describe("POST messages · 에이전트 대상 (delegate)", () => {
     expectNoUserText();
   });
 
-  it("잠금 경합(55P03 · 40001)은 409 busy_retry (쓰기는 롤백됐다), 그 밖 오류는 500 + 이름만 로그", async () => {
-    for (const code of ["55P03", "40001"]) {
+  it("잠금 경합(55P03 · 40001) · 교착(40P01)은 409 busy_retry (쓰기는 롤백됐다, 500 아님), 그 밖 오류는 500 + 이름만 로그", async () => {
+    for (const code of ["55P03", "40001", "40P01"]) {
       const agent = agentDeps({ start: vi.fn(async () => { throw Object.assign(new Error(TEXT), { code }); }) });
       const response = await send(postDeps(agent));
       expect(response.status).toBe(409);
@@ -618,10 +618,12 @@ describe("POST …/deliver (Send again, AC-22 · AC-26)", () => {
     expect((await run(deps({ deliver: vi.fn(async () => ({ status: "wrong_target" as const, messages: [] })) }))).status).toBe(409);
   });
 
-  it("잠금 경합은 409 busy_retry, 그 밖 오류는 500 + 이름만 로그", async () => {
-    const busy = await run(deps({ deliver: vi.fn(async () => { throw Object.assign(new Error(TEXT), { code: "55P03" }); }) }));
-    expect(busy.status).toBe(409);
-    expect((await body(busy)).error).toMatchObject({ code: "busy_retry" });
+  it("잠금 경합 · 교착(55P03 · 40001 · 40P01)은 409 busy_retry, 그 밖 오류는 500 + 이름만 로그", async () => {
+    for (const code of ["55P03", "40001", "40P01"]) {
+      const busy = await run(deps({ deliver: vi.fn(async () => { throw Object.assign(new Error(TEXT), { code }); }) }));
+      expect(busy.status, code).toBe(409);
+      expect((await body(busy)).error).toMatchObject({ code: "busy_retry" });
+    }
     const broken = await run(deps({ deliver: vi.fn(async () => { throw Object.assign(new Error(TEXT), { name: "PostgrestError" }); }) }));
     expect(broken.status).toBe(500);
     expect(JSON.parse(logged())).toMatchObject({ event: "agent_deliver_failed", error: "PostgrestError" });
@@ -686,10 +688,12 @@ describe("POST …/messages/{message_id}/referent (AC-4)", () => {
     }
   });
 
-  it("잠금 경합 409 busy_retry", async () => {
-    const response = await run(deps({ start: vi.fn(async () => { throw Object.assign(new Error("x"), { code: "40001" }); }) }));
-    expect(response.status).toBe(409);
-    expect((await body(response)).error).toMatchObject({ code: "busy_retry" });
+  it("잠금 경합 · 교착(40001 · 40P01 · 55P03) 409 busy_retry", async () => {
+    for (const code of ["40001", "40P01", "55P03"]) {
+      const response = await run(deps({ start: vi.fn(async () => { throw Object.assign(new Error("x"), { code }); }) }));
+      expect(response.status, code).toBe(409);
+      expect((await body(response)).error).toMatchObject({ code: "busy_retry" });
+    }
   });
 });
 
@@ -742,9 +746,11 @@ describe("POST …/stop (AC-12): 세션 단위 중단", () => {
 
   it("세션이 사라졌으면(not_found) 404, 55P03 소진은 409 busy_retry, 그 밖 오류는 500", async () => {
     expect((await stopConversation(convDeps({ stop: vi.fn(async () => ({ status: "not_found" as const })) }))).status).toBe(404);
-    const busy = await stopConversation(convDeps({ stop: vi.fn(async () => { throw Object.assign(new Error("lock"), { code: "55P03" }); }) }));
-    expect(busy.status).toBe(409);
-    expect((await body(busy)).error).toMatchObject({ code: "busy_retry" });
+    for (const code of ["55P03", "40001", "40P01"]) {
+      const busy = await stopConversation(convDeps({ stop: vi.fn(async () => { throw Object.assign(new Error("lock"), { code }); }) }));
+      expect(busy.status, code).toBe(409);
+      expect((await body(busy)).error).toMatchObject({ code: "busy_retry" });
+    }
     expect((await stopConversation(convDeps({ stop: vi.fn(async () => { throw new Error("x"); }) }))).status).toBe(500);
   });
 
@@ -903,9 +909,11 @@ describe("세션 route: 이름 · Open in Terminal · Resume here", () => {
 
   it("세션 route의 잠금 경합은 409 busy_retry, 그 밖 오류는 500 (이름만 로그)", async () => {
     const d: OpenExternalDeps<User> = { ...baseDeps(), ...adapter, open: vi.fn(async () => { throw Object.assign(new Error("x"), { code: "55P03" }); }) };
-    const busy = await handleOpenExternal(json({}), SESSION, d);
-    expect(busy.status).toBe(409);
-    expect((await body(busy)).error).toMatchObject({ code: "busy_retry" });
+    for (const code of ["55P03", "40001", "40P01"]) {
+      const busy = await handleOpenExternal(json({}), SESSION, { ...d, open: vi.fn(async () => { throw Object.assign(new Error("x"), { code }); }) });
+      expect(busy.status, code).toBe(409);
+      expect((await body(busy)).error).toMatchObject({ code: "busy_retry" });
+    }
     const broken = await handleOpenExternal(json({}), SESSION, { ...d, open: vi.fn(async () => { throw Object.assign(new Error(TEXT), { name: "PostgrestError" }); }) });
     expect(broken.status).toBe(500);
     expect(JSON.parse(logged())).toMatchObject({ event: "agent_session_open_failed", error: "PostgrestError" });
@@ -1042,9 +1050,11 @@ describe("POST /api/v2/agent-tasks/{id}/answer (R13)", () => {
   });
 
   it("잠금 경합은 409 busy_retry, 그 밖 DB 오류는 500 + 이름만 로그 (답 · 질문 글 없음)", async () => {
-    const busy = await run(answerDeps({ answer: vi.fn(async () => { throw Object.assign(new Error("x"), { code: "55P03" }); }) }));
-    expect(busy.status).toBe(409);
-    expect((await body(busy)).error).toMatchObject({ code: "busy_retry" });
+    for (const code of ["55P03", "40001", "40P01"]) {
+      const busy = await run(answerDeps({ answer: vi.fn(async () => { throw Object.assign(new Error("x"), { code }); }) }));
+      expect(busy.status, code).toBe(409);
+      expect((await body(busy)).error).toMatchObject({ code: "busy_retry" });
+    }
     const broken = await run(answerDeps({ answer: vi.fn(async () => { throw Object.assign(new Error("Private question 비밀 답"), { name: "PostgrestError", code: "XX000" }); }) }));
     expect(broken.status).toBe(500);
     expect(JSON.parse(logged())).toMatchObject({ event: "agent_answer_failed", error: "PostgrestError", code: "XX000" });

@@ -6,6 +6,7 @@ import { MAX_LIVE_EXTERNAL_TASKS } from "@/lib/execution/limits";
 
 import { agentAccess, directChat } from "./capability";
 import { adapterEnabled } from "./registry";
+import { retryOnConflict } from "./retry";
 import { resolveAgentTarget, type ResolvedAgentTarget } from "./targets";
 import { startAgentTurnResultSchema, type StartAgentTurnResult } from "./turns";
 
@@ -35,22 +36,29 @@ export async function existingActionIds(admin: SupabaseClient, userId: string, i
   return ids.filter((id) => found.has(id.toLowerCase()));
 }
 
-async function markNotSent(admin: SupabaseClient, input: { userId: string; messageId: string }, reason: string): Promise<StartAgentTurnResult> {
-  const { data } = await admin.rpc("mark_agent_message_not_sent", { p_user_id: input.userId, p_message_id: input.messageId, p_reason: reason }).throwOnError();
-  return startAgentTurnResultSchema.parse(data);
+export type PinnedStartResult = StartAgentTurnResult | { status: "skipped" };
+const pinnedResultSchema = z.union([z.object({ status: z.literal("skipped") }), startAgentTurnResultSchema]);
+
+/**
+ * 자동 경로의 not_sent 표시. SQL(mark_agent_message_not_sent_auto)이 메시지를 잠근 뒤 **그때의** 상태를 다시 보고 표시한다 — TS가 미리 읽은 상태로 판단하지 않는다 (검토 반영 9-1):
+ * 지금 queued일 때만 바꾸고(fromGate가 참이면 gate 계열 이유의 not_sent도), 읽은 뒤 다른 요청이 전달 · spawn_failed로 만든 메시지의 이유는 덮지 않고 skipped.
+ * fromGate 거짓은 실행 kill switch 꺼짐 표시(어떤 not_sent도 안 덮음), 참은 연결 · 등급 거절과 진짜 not_found · already_dispatched
+ */
+async function markNotSent(admin: SupabaseClient, input: { userId: string; messageId: string }, reason: string, fromGate: boolean): Promise<PinnedStartResult> {
+  const { data } = await retryOnConflict(async () =>
+    admin.rpc("mark_agent_message_not_sent_auto", { p_user_id: input.userId, p_message_id: input.messageId, p_reason: reason, p_from_gate: fromGate }).throwOnError(),
+  );
+  return pinnedResultSchema.parse(data);
 }
 
 /**
  * 실행 kill switch(EXECUTION_ENABLED)가 꺼져 있으면 턴을 시작하지 않고 메시지를 not_sent/write_gate_closed로 표시한다 (D2a 보안 검토 P1 방어).
  * 꺼진 채 턴을 시작하면 task · 단계 · 명령 · agent_message_sent 지표가 만들어지지만 전달될 수 없고, bridge가 거둔 것을 자동 계기가 다시 시작하는 끝없는 반복이 된다.
- * DB 쪽 gate(execution_controls · 실행 주체 · 도구)는 bridge lease의 몫이라 여기서 보지 않는다. turns.ts는 바꾸지 않는다 — 기존 mark_agent_message_not_sent 경로만 쓴다
+ * 표시는 SQL이 잠금 안에서 현재 queued일 때만 한다(검토 반영 9-1). DB 쪽 gate(execution_controls · 실행 주체 · 도구)는 bridge lease의 몫이라 여기서 보지 않는다. turns.ts는 바꾸지 않는다
  */
-export function markWriteGateClosed(admin: SupabaseClient, input: { userId: string; messageId: string }): Promise<StartAgentTurnResult> {
-  return markNotSent(admin, input, "write_gate_closed");
+export function markWriteGateClosed(admin: SupabaseClient, input: { userId: string; messageId: string }): Promise<PinnedStartResult> {
+  return markNotSent(admin, input, "write_gate_closed", false);
 }
-
-export type PinnedStartResult = StartAgentTurnResult | { status: "skipped" };
-const pinnedResultSchema = z.union([z.object({ status: z.literal("skipped") }), startAgentTurnResultSchema]);
 
 /**
  * D1d 자신의 시작 함수 (검토 반영 8-1 · 8-2): 이미 검사한 메시지 id를 고정해 시작한다 — 대기열 머리를 다시 고르지 않는다(turns.ts의 startNextQueuedTurn은 쓰지 않는다).
@@ -72,16 +80,20 @@ export async function startPinnedAgentMessage(
     : !adapterEnabled(capability.adapter, env) || directChat(capability, mode) !== "supported" ? "unsupported" : null;
   if (refusal !== null || access === null) {
     const reason = refusal ?? "write_gate_closed";
-    return input.state === "not_sent" && input.reason === reason ? { status: "skipped" } : markNotSent(admin, input, reason);
+    return input.state === "not_sent" && input.reason === reason ? { status: "skipped" } : markNotSent(admin, input, reason, true);
   }
-  const { data } = await admin
-    .rpc("start_agent_turn_auto", {
-      p_user_id: input.userId, p_message_id: input.messageId, p_access: access, p_live_limit: MAX_LIVE_EXTERNAL_TASKS,
-      p_action_ids: await existingActionIds(admin, input.userId, input.chips.action_ids), p_context_ids: input.chips.context_ids,
-    })
-    .throwOnError();
+  const actionIds = await existingActionIds(admin, input.userId, input.chips.action_ids);
+  // 40001(잠금 대상이 기다리는 사이 바뀜) · 40P01 · 55P03은 SQL이 통째로 롤백한 경합이라 같은 id로 다시 부른다 (최대 2번 다시)
+  const { data } = await retryOnConflict(async () =>
+    admin
+      .rpc("start_agent_turn_auto", {
+        p_user_id: input.userId, p_message_id: input.messageId, p_access: access, p_live_limit: MAX_LIVE_EXTERNAL_TASKS,
+        p_action_ids: actionIds, p_context_ids: input.chips.context_ids,
+      })
+      .throwOnError(),
+  );
   const result = pinnedResultSchema.parse(data);
-  if (result.status === "not_found" || result.status === "already_dispatched") return markNotSent(admin, input, result.status);
+  if (result.status === "not_found" || result.status === "already_dispatched") return markNotSent(admin, input, result.status, true);
   return result;
 }
 
@@ -117,7 +129,11 @@ export async function startNextAgentMessage(admin: SupabaseClient, input: { user
   if (!autoStartable(head.delivery_state, head.delivery_reason)) return null;
   const target = await sessionTarget(admin, input.userId, input.sessionId, env);
   if (!target?.enabled) return null;
-  if (!executionEnabled(env)) return head.delivery_state === "queued" ? markWriteGateClosed(admin, { userId: input.userId, messageId }) : null;
+  if (!executionEnabled(env)) {
+    // TS가 읽은 상태(queued)는 거르는 용도일 뿐 판단은 SQL이 잠금 안에서 다시 한다
+    const marked = head.delivery_state === "queued" ? await markWriteGateClosed(admin, { userId: input.userId, messageId }) : null;
+    return marked === null || marked.status === "skipped" ? null : marked;
+  }
   const result = await startPinnedAgentMessage(
     admin,
     { userId: input.userId, messageId, state: head.delivery_state, reason: head.delivery_reason, chips: head.refs?.agent_turn ?? head.selected ?? { action_ids: [], context_ids: [] }, target },

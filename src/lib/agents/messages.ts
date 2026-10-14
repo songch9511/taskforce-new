@@ -20,6 +20,7 @@ import type { StepState } from "@/lib/execution/types";
 import { readConversationTarget } from "./conversations";
 import { agentDeliveryView, type AgentMessageDeliveryState } from "./delivery";
 import { autoStartable, chipsSchema, markWriteGateClosed, startNextAgentMessage, startPinnedAgentMessage } from "./next-turn";
+import { retryOnConflict } from "./retry";
 import { resolveAgentTarget } from "./targets";
 import type { StartAgentTurnResult } from "./turns";
 
@@ -46,17 +47,19 @@ export async function postAgentUserMessage(
   admin: SupabaseClient,
   input: { userId: string; conversationId: string; clientMessageId: string; text: string; selected: unknown },
 ): Promise<PostedAgentMessage> {
-  const { data } = await admin
-    .rpc("conversation_post_message", {
-      p_user_id: input.userId,
-      p_conversation_id: input.conversationId,
-      p_client_message_id: input.clientMessageId,
-      p_text: input.text,
-      p_selected: input.selected,
-      p_lease_seconds: REPLY_LEASE_SECONDS,
-    })
-    .single()
-    .throwOnError();
+  const { data } = await retryOnConflict(async () =>
+    admin
+      .rpc("conversation_post_message", {
+        p_user_id: input.userId,
+        p_conversation_id: input.conversationId,
+        p_client_message_id: input.clientMessageId,
+        p_text: input.text,
+        p_selected: input.selected,
+        p_lease_seconds: REPLY_LEASE_SECONDS,
+      })
+      .single()
+      .throwOnError(),
+  );
   const parsed = postedSchema.parse(data);
   return { status: parsed.status, messageId: parsed.message_id, seq: parsed.seq };
 }
@@ -124,9 +127,9 @@ export type RequeueResult = z.infer<typeof requeueSchema>;
 
 /** requeue_agent_messages: not_sent · expired를 queued로 (새 24시간). 실제 전달은 이 호출이 commit된 뒤 startAgentMessage가 한다 */
 export async function requeueAgentMessages(admin: SupabaseClient, input: { userId: string; conversationId: string; messageIds?: string[] }): Promise<RequeueResult> {
-  const { data } = await admin
-    .rpc("requeue_agent_messages", { p_user_id: input.userId, p_conversation_id: input.conversationId, p_message_ids: input.messageIds ?? null })
-    .throwOnError();
+  const { data } = await retryOnConflict(async () =>
+    admin.rpc("requeue_agent_messages", { p_user_id: input.userId, p_conversation_id: input.conversationId, p_message_ids: input.messageIds ?? null }).throwOnError(),
+  );
   return requeueSchema.parse(data);
 }
 
@@ -383,9 +386,9 @@ export async function setAgentMessageReferent(
     .maybeSingle()
     .throwOnError();
   if (!data) return "not_found";
-  const { data: result } = await admin
-    .rpc("set_agent_message_referent", { p_user_id: input.userId, p_message_id: input.messageId, p_action_id: input.actionId })
-    .throwOnError();
+  const { data: result } = await retryOnConflict(async () =>
+    admin.rpc("set_agent_message_referent", { p_user_id: input.userId, p_message_id: input.messageId, p_action_id: input.actionId }).throwOnError(),
+  );
   return referentSchema.parse(result).status;
 }
 
