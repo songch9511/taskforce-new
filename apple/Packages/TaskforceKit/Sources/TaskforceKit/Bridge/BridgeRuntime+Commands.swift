@@ -457,9 +457,12 @@ extension BridgeRuntime {
         record.stepID = common.stepID
         record.adapter = common.adapter
         record.marker = common.marker
+        var taskOfAnotherSession = false
         do {
             try await ledger.saveCommand(record)
-            if (try await ledger.task(common.agentTaskID)) == nil {
+            if let existing = try await ledger.task(common.agentTaskID) {
+                taskOfAnotherSession = existing.agentSessionID != common.agentSessionID
+            } else {
                 // 서버가 준 외부 세션 id · 작업 폴더는 검사(모양 · 이 Mac이 인정함) 전에는 원장 task에 쓰지 않는다: `runMessage`가 검사 뒤 `beginRun`에서 적는다
                 let task = BridgeTaskRecord(agentTaskID: common.agentTaskID, agentSessionID: common.agentSessionID, adapter: common.adapter, turnSeq: common.turnSeq, updatedAt: now)
                 try await ledger.saveTask(task)
@@ -467,6 +470,12 @@ extension BridgeRuntime {
         } catch {
             log.log("ledger_write_failed", ["step": .code("leased")])
             return .deferred
+        }
+        // 이미 다른 세션의 것으로 적힌 task id를 이 명령이 자기 세션 것으로 쓰려 한다: 그 task의 폴더 · 질문 · 실행을 다른 세션이 쓰지 못하게 어떤 종류든 거절한다 (검토 반영 3)
+        if taskOfAnotherSession {
+            log.log("task_session_mismatch", ["command": .id(record.commandID)])
+            await refuseUnknownPayload(record: record, why: "task_session_mismatch")
+            return .acted
         }
         switch payload {
         case .message(let command): await runMessage(command, record: record)
@@ -594,6 +603,9 @@ extension BridgeRuntime {
         }
         // marker는 서버가 만든 uuid다. 명령줄이나 파일 이름에 쓰일 수 있는 adapter에는 그 모양만 넘긴다 (검토 반영 2 8장 6)
         guard Self.isUUIDMarker(common.marker) else { return await refuseUnknownPayload(record: record, why: "unsafe_marker") }
+        guard await !taskBelongsToAnotherSession(taskID: common.agentTaskID, session: common.agentSessionID) else {
+            return await refuseUnknownPayload(record: record, why: "task_session_mismatch")
+        }
         guard let adapter = adapters[common.adapter] else {
             return await failBeforeAcceptance(taskID: common.agentTaskID, commandID: record.commandID, reason: .spawnFailed)
         }
@@ -693,6 +705,12 @@ extension BridgeRuntime {
         UUID(uuidString: marker) != nil
     }
 
+    /// 원장에 이미 있는 task가 다른 세션의 것인가. 같은 task id를 다른 세션이 쓰면 그 task에 기록된 폴더 · 질문 · 실행을 가로챌 수 있다 (검토 반영 3)
+    func taskBelongsToAnotherSession(taskID: String, session: String) async -> Bool {
+        guard let task = try? await ledger.task(taskID) else { return false }
+        return task.agentSessionID != session
+    }
+
     /// 서버가 보낸 작업 폴더가 이 Mac이 그 세션에 기록한 값과 같은가. 원장 task의 `workspace_ref`는 이 Mac의 resolver가 정했거나 adapter(`session_bound`)가 알린 값뿐이다
     func macRecordedWorkspace(_ ref: String, session: String) async -> Bool {
         ((try? await ledger.allTasks()) ?? []).contains { $0.agentSessionID == session && $0.workspaceRef == ref }
@@ -750,6 +768,9 @@ extension BridgeRuntime {
         case .unknown: return await refuseUnknownPayload(record: record)
         }
         guard Self.isUUIDMarker(common.marker) else { return await refuseUnknownPayload(record: record, why: "unsafe_marker") }
+        guard await !taskBelongsToAnotherSession(taskID: common.agentTaskID, session: common.agentSessionID) else {
+            return await refuseUnknownPayload(record: record, why: "task_session_mismatch")
+        }
         let requestID = command.providerRequestID
         guard let task = try? await ledger.task(common.agentTaskID), task.openRequestID == requestID, !task.closedRequestIDs.contains(requestID),
               let adapter = adapters[task.adapter] else {

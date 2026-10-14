@@ -223,6 +223,11 @@ public final class FakeBridgeServer: @unchecked Sendable {
     public func taskState(_ id: String) -> String? { lock.withLock { tasks[id]?.state } }
     public func taskLastSeq(_ id: String) -> Int? { lock.withLock { tasks[id]?.lastEventSeq } }
 
+    /// 시험 전용: 서버가 이 task를 다른 세션의 것으로 말한다 (이후 이 task를 가리키는 명령은 그 세션 id를 싣는다)
+    public func reassignTask(_ id: String, toSession sessionID: String) {
+        lock.withLock { tasks[id]?.sessionID = sessionID }
+    }
+
     public func commandStep(_ id: String) -> String? { lock.withLock { commands[id]?.step.rawValue } }
     public func commandCursor(_ id: String) -> Int? { lock.withLock { commands[id]?.cursor } }
     public func commandOutcome(_ id: String) -> String? { lock.withLock { commands[id]?.outcome } }

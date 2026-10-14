@@ -574,10 +574,12 @@ public actor BridgeLedger {
             )
             report.fullTexts = try db.run("DELETE FROM full_texts WHERE created_at < ?", [.date(month)])
             // 끝난 task(살아 있지 않고 7일 넘게 바뀌지 않았으며 보낼 사건 · 끝나지 않은 명령이 없는 것)와 그 질문 원래 값, 더는 task가 없는 세션의 사건 번호표.
-            // 접수 전에 조용히 끝난 `dispatched`와 답을 기다리다 버려진 `awaiting_answer`도 기한이 지나면 지운다 (heartbeat · reconcile에 영원히 남지 않게)
+            // 접수 전에 조용히 끝난 `dispatched`와 답을 기다리다 버려진 `awaiting_answer`도 기한이 지나면 지운다 (heartbeat · reconcile에 영원히 남지 않게).
+            // 단 열린 질문(`open_request_id`)이 있는 `awaiting_answer`는 지우지 않는다: 질문이 한 주 넘게 열려 있다가 답이 오면 전달해야 한다 (취소로 닫은 것은 `cancelled`라 지워지고, `request_closed`는 열린 질문을 비운다)
             report.tasks = try db.run(
                 """
                 DELETE FROM tasks WHERE alive = 0 AND updated_at < ? AND last_state IN ('idle', 'failed', 'cancelled', 'dispatched', 'awaiting_answer')
+                  AND NOT (last_state = 'awaiting_answer' AND open_request_id IS NOT NULL)
                   AND NOT EXISTS (SELECT 1 FROM outbox o WHERE o.agent_task_id = tasks.agent_task_id)
                   AND NOT EXISTS (SELECT 1 FROM commands c WHERE c.agent_task_id = tasks.agent_task_id AND c.state NOT IN (\(finished)))
                 """,
