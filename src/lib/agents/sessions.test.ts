@@ -114,7 +114,7 @@ describe("openAgentSessionExternal (AC-36 서버 몫)", () => {
 });
 
 describe("resumeAgentSessionHere (AC-36 · ONE-TF-13 서버 몫)", () => {
-  const rpc = (status: string, next: unknown = null) => ({ resume_agent_session_here: () => ({ status }), next_queued_agent_message: () => next, route_agent_message: () => started });
+  const rpc = (status: string, next: unknown = null) => ({ resume_agent_session_here: () => ({ status }), next_queued_agent_message: () => next, start_agent_turn_auto: () => started });
 
   it("bound가 되면 commit 뒤 대기 메시지를 한 번 시작해 본다 (자동 전달 계기 ④). 시작된 메시지 id를 돌려준다", async () => {
     const fake = fakeAdmin({
@@ -128,7 +128,7 @@ describe("resumeAgentSessionHere (AC-36 · ONE-TF-13 서버 몫)", () => {
     const result = await resumeAgentSessionHere(fake.admin, USER, SESSION, CODEX);
     expect(result).toMatchObject({ status: "bound", session: { id: SESSION }, startedMessageId: MSG });
     // 순서: 상태 전이(commit) → 다음 시작
-    expect(fake.rpcCalls().map((call) => call.target)).toEqual(["resume_agent_session_here", "next_queued_agent_message", "next_queued_agent_message", "route_agent_message"]);
+    expect(fake.rpcCalls().map((call) => call.target)).toEqual(["resume_agent_session_here", "next_queued_agent_message", "start_agent_turn_auto"]);
   });
 
   it("검토 반영 7-2: 묶인 대화 잠금 경합(55P03)이면 상태 전이가 롤백됐으니 다시 부른다 — 대기열 시작은 전이가 성공한 뒤 한 번만", async () => {
@@ -146,10 +146,23 @@ describe("resumeAgentSessionHere (AC-36 · ONE-TF-13 서버 몫)", () => {
     expect(stuck.rpcCalls("next_queued_agent_message")).toEqual([]);
   });
 
+  it("검토 반영 8-2: 첨부 뒤 Action이 지워졌어도 Resume 뒤 자동 시작은 성공한다 — 지워진 칩만 처리 입력에서 빠지고 저장된 selected는 그대로", async () => {
+    const GONE = "ac000000-0000-4000-8000-0000000000ff";
+    const KEPT = "ac000000-0000-4000-8000-000000000001";
+    const selected = { action_ids: [KEPT, GONE], context_ids: [], attachments: [{ kind: "action", id: KEPT, origin: "added" }, { kind: "action", id: GONE, origin: "added" }] };
+    const fake = fakeAdmin({
+      tables: world({ conversation_messages: [{ id: MSG, user_id: USER, refs: {}, selected, delivery_state: "queued", delivery_reason: null }], actions: [{ id: KEPT, user_id: USER }] }),
+      rpc: rpc("bound", MSG),
+    });
+    expect(await resumeAgentSessionHere(fake.admin, USER, SESSION, CODEX)).toMatchObject({ status: "bound", startedMessageId: MSG });
+    expect(fake.rpcCalls("start_agent_turn_auto")[0].args).toMatchObject({ p_message_id: MSG, p_action_ids: [KEPT] });
+    expect(fake.tables.conversation_messages[0].selected).toEqual(selected);
+  });
+
   it("대기 메시지가 없으면 시작 0, started_message_id는 null", async () => {
     const fake = fakeAdmin({ tables: world(), rpc: rpc("bound", null) });
     expect(await resumeAgentSessionHere(fake.admin, USER, SESSION, CODEX)).toMatchObject({ status: "bound", startedMessageId: null });
-    expect(fake.rpcCalls("route_agent_message")).toEqual([]);
+    expect(fake.rpcCalls("start_agent_turn_auto")).toEqual([]);
   });
 
   it("이미 bound(unchanged)여도 대기열을 한 번 확인한다 (앞선 시작이 실패했을 때 다시 눌러 이어 갈 수 있다)", async () => {
@@ -164,7 +177,7 @@ describe("resumeAgentSessionHere (AC-36 · ONE-TF-13 서버 몫)", () => {
     expect(fake.rpcCalls("next_queued_agent_message")).toEqual([]);
   });
 
-  it("D2a 보안 검토 P1 방어: 실행 kill switch가 꺼져 있으면 되돌려도 턴을 시작하지 않고 대기 메시지를 not_sent/write_gate_closed로 표시한다 (route_agent_message 0)", async () => {
+  it("D2a 보안 검토 P1 방어: 실행 kill switch가 꺼져 있으면 되돌려도 턴을 시작하지 않고 대기 메시지를 not_sent/write_gate_closed로 표시한다 (start_agent_turn_auto 0)", async () => {
     const fake = fakeAdmin({
       tables: world({ conversation_messages: [{ id: MSG, user_id: USER, refs: {}, selected: { action_ids: [], context_ids: [] }, delivery_state: "queued", delivery_reason: null }] }),
       rpc: { ...rpc("bound", MSG), mark_agent_message_not_sent: () => ({ status: "not_sent", reason: "write_gate_closed" }) },

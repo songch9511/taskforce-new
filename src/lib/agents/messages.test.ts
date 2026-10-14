@@ -61,7 +61,7 @@ function world(extra: Partial<Tables> = {}) {
   return tables;
 }
 const rpcs = (overrides: Record<string, (args: Record<string, unknown>) => unknown> = {}) => ({
-  route_agent_message: () => started,
+  start_agent_turn_auto: () => started,
   next_queued_agent_message: () => null,
   ...overrides,
 });
@@ -183,8 +183,8 @@ describe("startAgentMessage: 대화의 연결을 해석해 전달 단계를 시�
     };
     const fake = fakeAdmin({ tables: world({ conversation_messages: [messageRow({ selected })], actions: [{ id: ACTION, user_id: USER }] }), rpc: rpcs() });
     expect(await startAgentMessage(fake.admin, { userId: USER, conversationId: CONV, messageId: MSG }, CODEX, NOW)).toEqual(started);
-    expect(fake.rpcCalls("route_agent_message")).toHaveLength(1);
-    expect(fake.rpcCalls("route_agent_message")[0].args).toEqual({
+    expect(fake.rpcCalls("start_agent_turn_auto")).toHaveLength(1);
+    expect(fake.rpcCalls("start_agent_turn_auto")[0].args).toEqual({
       p_user_id: USER, p_message_id: MSG, p_action_ids: [ACTION], p_context_ids: [CONTEXT], p_access: "read_only", p_live_limit: 5,
     });
   });
@@ -195,7 +195,7 @@ describe("startAgentMessage: 대화의 연결을 해석해 전달 단계를 시�
       rpc: rpcs(),
     });
     await startAgentMessage(fake.admin, { userId: USER, conversationId: CONV, messageId: MSG }, CODEX, NOW);
-    expect(fake.rpcCalls("route_agent_message")[0].args).toMatchObject({ p_action_ids: [ACTION2], p_context_ids: [] });
+    expect(fake.rpcCalls("start_agent_turn_auto")[0].args).toMatchObject({ p_action_ids: [ACTION2], p_context_ids: [] });
   });
 
   it.each(["dispatched", "cancelled", "expired"])("전달 전 상태가 아닌 %s는 건드리지 않는다 (RPC 0)", async (state) => {
@@ -209,12 +209,12 @@ describe("startAgentMessage: 대화의 연결을 해석해 전달 단계를 시�
     const fake = fakeAdmin({ tables: world({ conversation_messages: [messageRow({ selected })], actions: [{ id: ACTION, user_id: USER }, { id: ACTION2, user_id: OTHER }] }), rpc: rpcs() });
     await startAgentMessage(fake.admin, { userId: USER, conversationId: CONV, messageId: MSG }, CODEX, NOW);
     // ACTION2는 남의 것(지워진 것과 구별하지 못한다)이라 빠지고, 남은 칩으로 시작한다
-    expect(fake.rpcCalls("route_agent_message")[0].args).toMatchObject({ p_action_ids: [ACTION], p_context_ids: [CONTEXT] });
+    expect(fake.rpcCalls("start_agent_turn_auto")[0].args).toMatchObject({ p_action_ids: [ACTION], p_context_ids: [CONTEXT] });
     expect(fake.tables.conversation_messages[0].selected).toEqual(selected);
     // 칩이 모두 지워지면 칩 없는 메시지로 시작한다 (새 Action 경로)
     const allGone = fakeAdmin({ tables: world({ conversation_messages: [messageRow({ selected })], actions: [] }), rpc: rpcs() });
     await startAgentMessage(allGone.admin, { userId: USER, conversationId: CONV, messageId: MSG }, CODEX, NOW);
-    expect(allGone.rpcCalls("route_agent_message")[0].args).toMatchObject({ p_action_ids: [] });
+    expect(allGone.rpcCalls("start_agent_turn_auto")[0].args).toMatchObject({ p_action_ids: [] });
   });
 
   it.each(["spawn_failed", "sign_in_needed", "usage_limited", "not_received", "unsupported"])("검토 반영 7-1: not_sent/%s는 자동으로 다시 시작하지 않는다 (같은 제출 재전송 · referent도 마찬가지: Send again으로만)", async (reason) => {
@@ -242,17 +242,29 @@ describe("startAgentMessage: 대화의 연결을 해석해 전달 단계를 시�
       conversation_messages: [messageRow({ id: A, seq: 1, delivery_state: "not_sent", delivery_reason: "spawn_failed" }), messageRow({ id: MSG, seq: 2, client_message_id: "c1c1c1c1-0000-4000-8000-0000000000bb" })],
     });
     const started_ = new Map<string, unknown>([[MSG, { status: "queued", reason: "queue_order" }], [A, started]]);
-    const fake = fakeAdmin({ tables, rpc: rpcs({ route_agent_message: (args) => started_.get(String(args.p_message_id)), next_queued_agent_message: () => A }) });
+    const fake = fakeAdmin({ tables, rpc: rpcs({ start_agent_turn_auto: (args) => started_.get(String(args.p_message_id)), next_queued_agent_message: () => A }) });
     expect(await startAgentMessage(fake.admin, { userId: USER, conversationId: CONV, messageId: MSG }, CODEX, NOW)).toEqual({ status: "queued", reason: "queue_order" });
-    expect(fake.rpcCalls("route_agent_message").map((call) => (call.args as { p_message_id?: string }).p_message_id)).toEqual([MSG]); // A는 시작되지 않았다
+    expect(fake.rpcCalls("start_agent_turn_auto").map((call) => (call.args as { p_message_id?: string }).p_message_id)).toEqual([MSG]); // A는 시작되지 않았다
     expect(tables.conversation_messages.find((m) => m.id === A)).toMatchObject({ delivery_state: "not_sent", delivery_reason: "spawn_failed" });
     // 사용자가 A를 Send again: 대기로 되돌린 뒤 시작한다
     const again = fakeAdmin({
       tables: { ...tables, conversation_messages: [messageRow({ id: A, seq: 1, delivery_state: "queued" }), tables.conversation_messages[1]] },
-      rpc: rpcs({ requeue_agent_messages: () => ({ status: "ok", messages: [{ message_id: A, result: "requeued" }] }), route_agent_message: (args) => started_.get(String(args.p_message_id)) }),
+      rpc: rpcs({ requeue_agent_messages: () => ({ status: "ok", messages: [{ message_id: A, result: "requeued" }] }), start_agent_turn_auto: (args) => started_.get(String(args.p_message_id)) }),
     });
     await deliverAgentMessages(again.admin, { userId: USER, conversationId: CONV, messageIds: [A] }, CODEX, NOW);
-    expect(again.rpcCalls("route_agent_message").map((call) => (call.args as { p_message_id?: string }).p_message_id)).toEqual([A]);
+    expect(again.rpcCalls("start_agent_turn_auto").map((call) => (call.args as { p_message_id?: string }).p_message_id)).toEqual([A]);
+  });
+
+  it("검토 반영 8-1: 시작은 SQL 래퍼(start_agent_turn_auto)를 지나 잠금 안에서 다시 확인한다 — 래퍼가 skipped이면 그대로 skipped (표시 0)", async () => {
+    const fake = fakeAdmin({ tables: world(), rpc: rpcs({ start_agent_turn_auto: () => ({ status: "skipped" }) }) });
+    expect(await startAgentMessage(fake.admin, { userId: USER, conversationId: CONV, messageId: MSG }, CODEX, NOW)).toEqual({ status: "skipped" });
+    expect(fake.rpcCalls().map((call) => call.target)).toEqual(["start_agent_turn_auto"]);
+  });
+
+  it.each(["not_found", "already_dispatched"])("검토 반영 8-2: 진짜 %s이면 대기열에서 뺀다 (mark_agent_message_not_sent, 같은 이유)", async (status) => {
+    const fake = fakeAdmin({ tables: world(), rpc: rpcs({ start_agent_turn_auto: () => ({ status }), mark_agent_message_not_sent: (args) => ({ status: "not_sent", reason: args.p_reason }) }) });
+    expect(await startAgentMessage(fake.admin, { userId: USER, conversationId: CONV, messageId: MSG }, CODEX, NOW)).toEqual({ status: "not_sent", reason: status });
+    expect(fake.rpcCalls("mark_agent_message_not_sent")[0].args).toEqual({ p_user_id: USER, p_message_id: MSG, p_reason: status });
   });
 
   it("보관 기한이 지난 queued · not_sent도 시작하지 않는다 (만료 sweep이 expired로 바꾼다)", async () => {
@@ -288,7 +300,7 @@ describe("startAgentMessage: 대화의 연결을 해석해 전달 단계를 시�
   it("queue_order로 밀렸고 세션이 있으면 다음 대기 메시지를 한 번 시작해 본다 (OD-10)", async () => {
     const fake = fakeAdmin({
       tables: world({ agent_sessions: [{ id: SESSION, user_id: USER, connection_id: CONN }] }),
-      rpc: rpcs({ route_agent_message: () => ({ status: "queued", reason: "queue_order" }), next_queued_agent_message: () => null }),
+      rpc: rpcs({ start_agent_turn_auto: () => ({ status: "queued", reason: "queue_order" }), next_queued_agent_message: () => null }),
     });
     expect(await startAgentMessage(fake.admin, { userId: USER, conversationId: CONV, messageId: MSG }, CODEX, NOW)).toEqual({ status: "queued", reason: "queue_order" });
     expect(fake.rpcCalls("next_queued_agent_message")).toHaveLength(1);
@@ -298,10 +310,10 @@ describe("startAgentMessage: 대화의 연결을 해석해 전달 단계를 시�
   it("queue_order라도 세션이 없으면 부르지 않고, 다른 대기 이유(session_busy)에도 부르지 않는다", async () => {
     const noSession = fakeAdmin({
       tables: world({ conversations: [{ id: CONV, user_id: USER, target_kind: "agent", agent_connection_id: CONN, agent_session_id: null }] }),
-      rpc: rpcs({ route_agent_message: () => ({ status: "queued", reason: "queue_order" }) }),
+      rpc: rpcs({ start_agent_turn_auto: () => ({ status: "queued", reason: "queue_order" }) }),
     });
     await startAgentMessage(noSession.admin, { userId: USER, conversationId: CONV, messageId: MSG }, CODEX, NOW);
-    const busy = fakeAdmin({ tables: world(), rpc: rpcs({ route_agent_message: () => ({ status: "queued", reason: "session_busy" }) }) });
+    const busy = fakeAdmin({ tables: world(), rpc: rpcs({ start_agent_turn_auto: () => ({ status: "queued", reason: "session_busy" }) }) });
     await startAgentMessage(busy.admin, { userId: USER, conversationId: CONV, messageId: MSG }, CODEX, NOW);
     expect(noSession.rpcCalls("next_queued_agent_message")).toEqual([]);
     expect(busy.rpcCalls("next_queued_agent_message")).toEqual([]);
@@ -312,7 +324,7 @@ describe("startAgentMessage: 대화의 연결을 해석해 전달 단계를 시�
     try {
       const fake = fakeAdmin({
         tables: world(),
-        rpc: rpcs({ route_agent_message: () => ({ status: "queued", reason: "queue_order" }), next_queued_agent_message: () => { throw Object.assign(new Error("secret text"), { name: "PostgrestError" }); } }),
+        rpc: rpcs({ start_agent_turn_auto: () => ({ status: "queued", reason: "queue_order" }), next_queued_agent_message: () => { throw Object.assign(new Error("secret text"), { name: "PostgrestError" }); } }),
       });
       expect(await startAgentMessage(fake.admin, { userId: USER, conversationId: CONV, messageId: MSG }, CODEX, NOW)).toEqual({ status: "queued", reason: "queue_order" });
       expect(log).toHaveBeenCalledTimes(1);
@@ -324,7 +336,7 @@ describe("startAgentMessage: 대화의 연결을 해석해 전달 단계를 시�
   });
 
   it("전달 RPC의 오류는 그대로 던진다 (이미 시작한 것으로 오해하지 않는다)", async () => {
-    const fake = fakeAdmin({ tables: world(), rpc: rpcs({ route_agent_message: () => { throw Object.assign(new Error("lock"), { code: "55P03" }); } }) });
+    const fake = fakeAdmin({ tables: world(), rpc: rpcs({ start_agent_turn_auto: () => { throw Object.assign(new Error("lock"), { code: "55P03" }); } }) });
     await expect(startAgentMessage(fake.admin, { userId: USER, conversationId: CONV, messageId: MSG }, CODEX, NOW)).rejects.toMatchObject({ code: "55P03" });
   });
 });
@@ -333,7 +345,7 @@ describe("D2a 보안 검토 P1 방어: 실행 kill switch가 꺼져 있으면 �
   const closed = { status: "not_sent", reason: "write_gate_closed" };
   const gateRpcs = () => rpcs({ mark_agent_message_not_sent: () => closed });
 
-  it("startAgentMessage: route_agent_message 0, 메시지를 not_sent/write_gate_closed로 표시하고 그 상태를 돌려준다", async () => {
+  it("startAgentMessage: start_agent_turn_auto 0, 메시지를 not_sent/write_gate_closed로 표시하고 그 상태를 돌려준다", async () => {
     const fake = fakeAdmin({ tables: world(), rpc: gateRpcs() });
     expect(await startAgentMessage(fake.admin, { userId: USER, conversationId: CONV, messageId: MSG }, OFF, NOW)).toEqual(closed);
     expect(fake.rpcCalls().map((call) => call.target)).toEqual(["mark_agent_message_not_sent"]);
@@ -349,17 +361,17 @@ describe("D2a 보안 검토 P1 방어: 실행 kill switch가 꺼져 있으면 �
     expect(dispatched.rpcCalls().concat(adapterOff.rpcCalls())).toEqual([]);
   });
 
-  it("deliverAgentMessages: 다시 대기시킨 메시지마다 시작하지 않고 표시한다 (작업 · 단계 · 지표를 만드는 route_agent_message 0)", async () => {
+  it("deliverAgentMessages: 다시 대기시킨 메시지마다 시작하지 않고 표시한다 (작업 · 단계 · 지표를 만드는 start_agent_turn_auto 0)", async () => {
     const fake = fakeAdmin({
       tables: world({ conversation_messages: [messageRow(), messageRow({ id: MSG2, seq: 2 })] }),
       rpc: { ...gateRpcs(), requeue_agent_messages: () => ({ status: "ok", messages: [{ message_id: MSG, result: "requeued" }, { message_id: MSG2, result: "requeued" }] }) },
     });
     await deliverAgentMessages(fake.admin, { userId: USER, conversationId: CONV }, OFF, NOW);
     expect(fake.rpcCalls().map((call) => call.target)).toEqual(["requeue_agent_messages", "mark_agent_message_not_sent", "mark_agent_message_not_sent"]);
-    expect(fake.rpcCalls("route_agent_message")).toEqual([]);
+    expect(fake.rpcCalls("start_agent_turn_auto")).toEqual([]);
   });
 
-  it("켜져 있으면 동작이 그대로다: route_agent_message로 시작하고 표시하지 않는다", async () => {
+  it("켜져 있으면 동작이 그대로다: start_agent_turn_auto로 시작하고 표시하지 않는다", async () => {
     const fake = fakeAdmin({ tables: world(), rpc: gateRpcs() });
     expect(await startAgentMessage(fake.admin, { userId: USER, conversationId: CONV, messageId: MSG }, CODEX, NOW)).toEqual(started);
     expect(fake.rpcCalls("mark_agent_message_not_sent")).toEqual([]);
@@ -377,37 +389,37 @@ describe("deliverAgentMessages (Send again, AC-22): 다시 대기시킨 메시�
       tables: world({ conversation_messages: [messageRow(), messageRow({ id: MSG2, seq: 2 }), messageRow({ id: third, seq: 3, delivery_state: "dispatched" })] }),
       rpc: rpcs({
         requeue_agent_messages: () => requeueResult([MSG, "requeued"], [MSG2, "requeued"], [third, "skipped"]),
-        route_agent_message: (args) => { order.push(String(args.p_message_id)); return results[String(args.p_message_id)]; },
+        start_agent_turn_auto: (args) => { order.push(String(args.p_message_id)); return results[String(args.p_message_id)]; },
       }),
     });
     const outcome = await deliverAgentMessages(fake.admin, { userId: USER, conversationId: CONV, messageIds: undefined }, CODEX, NOW);
     expect(outcome.status).toBe("ok");
     expect(order).toEqual([MSG, MSG2]);
     // requeue가 commit된 뒤에 시작한다 (함수 호출 순서)
-    expect(fake.rpcCalls().map((call) => call.target)).toEqual(["requeue_agent_messages", "route_agent_message", "route_agent_message"]);
+    expect(fake.rpcCalls().map((call) => call.target)).toEqual(["requeue_agent_messages", "start_agent_turn_auto", "start_agent_turn_auto"]);
   });
 
   it("다시 눌러 모두 skipped이면 새 시작 0", async () => {
     const fake = fakeAdmin({ tables: world(), rpc: rpcs({ requeue_agent_messages: () => requeueResult([MSG, "skipped"], [MSG2, "skipped"]) }) });
     await deliverAgentMessages(fake.admin, { userId: USER, conversationId: CONV, messageIds: [MSG, MSG2] }, CODEX, NOW);
-    expect(fake.rpcCalls("route_agent_message")).toEqual([]);
+    expect(fake.rpcCalls("start_agent_turn_auto")).toEqual([]);
   });
 
   it("대화가 없거나 taskforce 대화면 시작하지 않는다", async () => {
     for (const status of ["not_found", "wrong_target"]) {
       const fake = fakeAdmin({ tables: world(), rpc: rpcs({ requeue_agent_messages: () => ({ status, messages: [] }) }) });
       expect((await deliverAgentMessages(fake.admin, { userId: USER, conversationId: CONV }, CODEX, NOW)).status).toBe(status);
-      expect(fake.rpcCalls("route_agent_message")).toEqual([]);
+      expect(fake.rpcCalls("start_agent_turn_auto")).toEqual([]);
     }
   });
 
   it("중간 메시지의 시작이 실패하면 던진다 (이미 다시 대기된 메시지는 queued로 남아 다음 계기가 집는다)", async () => {
     const fake = fakeAdmin({
       tables: world({ conversation_messages: [messageRow(), messageRow({ id: MSG2, seq: 2 })] }),
-      rpc: rpcs({ requeue_agent_messages: () => requeueResult([MSG, "requeued"], [MSG2, "requeued"]), route_agent_message: () => { throw Object.assign(new Error("lock"), { code: "55P03" }); } }),
+      rpc: rpcs({ requeue_agent_messages: () => requeueResult([MSG, "requeued"], [MSG2, "requeued"]), start_agent_turn_auto: () => { throw Object.assign(new Error("lock"), { code: "55P03" }); } }),
     });
     await expect(deliverAgentMessages(fake.admin, { userId: USER, conversationId: CONV }, CODEX, NOW)).rejects.toMatchObject({ code: "55P03" });
-    expect(fake.rpcCalls("route_agent_message")).toHaveLength(1);
+    expect(fake.rpcCalls("start_agent_turn_auto")).toHaveLength(1);
   });
 });
 
@@ -423,7 +435,7 @@ describe("loadAgentMessageOutcome: 다시 읽은 행으로 계산한다 (계약 
   const dispatched = (extra: Partial<Tables> = {}) => world({
     conversation_messages: [messageRow({ delivery_state: "dispatched" })],
     agent_tasks: [taskRow()],
-    execution_steps: [{ id: STEP, user_id: USER, state: "prepared", kind: "agent_message", seq: 1, args: { message_id: MSG } }],
+    execution_steps: [{ id: STEP, user_id: USER, state: "prepared", kind: "agent_message", seq: 1, run_id: RUN, args: { message_id: MSG } }],
     execution_runs: [{ id: RUN, user_id: USER, action_id: deterministicActionId(MSG) }],
     actions: [{ id: deterministicActionId(MSG), user_id: USER, title: "이어서 해 줘", number: 139 }],
     context_members: [{ user_id: USER, member_kind: "action", action_id: deterministicActionId(MSG), context_id: CONTEXT, removed_at: null, created_at: "2026-10-14T00:00:00Z" }],
@@ -445,7 +457,7 @@ describe("loadAgentMessageOutcome: 다시 읽은 행으로 계산한다 (계약 
 
   it("단계 called → accepted, unknown_outcome → unknown", async () => {
     for (const [state, expected] of [["called", "accepted"], ["unknown_outcome", "unknown"]] as const) {
-      const fake = fakeAdmin({ tables: dispatched({ execution_steps: [{ id: STEP, user_id: USER, state, kind: "agent_message", seq: 1, args: { message_id: MSG } }] }) });
+      const fake = fakeAdmin({ tables: dispatched({ execution_steps: [{ id: STEP, user_id: USER, state, kind: "agent_message", seq: 1, run_id: RUN, args: { message_id: MSG } }] }) });
       expect((await loadAgentMessageOutcome(fake.admin, USER, CONV, MSG))!.delivery).toEqual({ state: expected });
     }
   });
@@ -455,7 +467,7 @@ describe("loadAgentMessageOutcome: 다시 읽은 행으로 계산한다 (계약 
     const fake = fakeAdmin({
       tables: dispatched({
         agent_tasks: [taskRow({ turn_seq: 2 }), first],
-        execution_steps: [{ id: first.step_id, user_id: USER, state: "failed", kind: "agent_message", seq: 1, args: { message_id: MSG } }, { id: STEP, user_id: USER, state: "called", kind: "agent_message", seq: 2, args: { message_id: MSG } }],
+        execution_steps: [{ id: first.step_id, user_id: USER, state: "failed", kind: "agent_message", seq: 1, run_id: RUN, args: { message_id: MSG } }, { id: STEP, user_id: USER, state: "called", kind: "agent_message", seq: 2, run_id: RUN, args: { message_id: MSG } }],
       }),
     });
     const outcome = await loadAgentMessageOutcome(fake.admin, USER, CONV, MSG);
@@ -469,8 +481,8 @@ describe("loadAgentMessageOutcome: 다시 읽은 행으로 계산한다 (계약 
       conversation_messages: [messageRow({ delivery_state: "dispatched" }), messageRow({ id: ANSWER_MSG, seq: 3, client_message_id: "c1c1c1c1-0000-4000-8000-0000000000ac", delivery_state: "dispatched", refs: { answer_for: [TASK, "q-1"] } })],
       agent_tasks: [taskRow({ step_id: ANSWER_STEP })], // 답을 제출하면 task.step_id가 답 단계로 옮겨 간다
       execution_steps: [
-        { id: STEP, user_id: USER, state: "called", kind: "agent_message", seq: 1, args: { message_id: MSG } },
-        { id: ANSWER_STEP, user_id: USER, state: "failed", kind: "agent_message", seq: 2, receipt: { reason: "usage_limited" }, args: { agent_task_id: TASK, provider_request_id: "q-1", answer_message_id: ANSWER_MSG } },
+        { id: STEP, user_id: USER, state: "called", kind: "agent_message", seq: 1, run_id: RUN, args: { message_id: MSG } },
+        { id: ANSWER_STEP, user_id: USER, state: "failed", kind: "agent_message", seq: 2, run_id: RUN, receipt: { reason: "usage_limited" }, args: { agent_task_id: TASK, provider_request_id: "q-1", answer_message_id: ANSWER_MSG } },
       ],
     });
     const fake = fakeAdmin({ tables });
@@ -484,12 +496,65 @@ describe("loadAgentMessageOutcome: 다시 읽은 행으로 계산한다 (계약 
     const fake = fakeAdmin({
       tables: dispatched({
         execution_steps: [
-          { id: "57000000-0000-4000-8000-0000000000e2", user_id: USER, state: "prepared", kind: "agent_message", seq: 5, args: { message_id: MSG } },
-          { id: "57000000-0000-4000-8000-0000000000e1", user_id: USER, state: "failed", kind: "agent_message", seq: 1, args: { message_id: MSG } },
+          { id: "57000000-0000-4000-8000-0000000000e2", user_id: USER, state: "prepared", kind: "agent_message", seq: 5, run_id: RUN, args: { message_id: MSG } },
+          { id: "57000000-0000-4000-8000-0000000000e1", user_id: USER, state: "failed", kind: "agent_message", seq: 1, run_id: RUN, args: { message_id: MSG } },
         ],
       }),
     });
     expect((await loadAgentMessageOutcome(fake.admin, USER, CONV, MSG))!.delivery).toEqual({ state: "sent" });
+  });
+
+  it("검토 반영 8-3: 원문 전달 단계는 그 메시지의 최신 task의 run 안에서 찾는다 — 옛 run에서 실패(seq 2) → Done → 다시 열기 → 재전송이 새 run seq 1에서 called면 accepted (run 구분 없는 seq 최댓값이면 not_sent)", async () => {
+    const OLD_RUN = "20000000-0000-4000-8000-0000000000bb";
+    const OLD_TASK = "7a000000-0000-4000-8000-0000000000f2";
+    const fake = fakeAdmin({
+      tables: dispatched({
+        agent_tasks: [
+          { ...taskRow(), id: OLD_TASK, run_id: OLD_RUN, turn_seq: 1, state: "failed", step_id: "57000000-0000-4000-8000-0000000000f2" },
+          taskRow({ turn_seq: 2 }),
+        ],
+        execution_steps: [
+          { id: "57000000-0000-4000-8000-0000000000f2", user_id: USER, state: "failed", kind: "agent_message", seq: 2, run_id: OLD_RUN, args: { message_id: MSG } },
+          { id: STEP, user_id: USER, state: "called", kind: "agent_message", seq: 1, run_id: RUN, args: { message_id: MSG } },
+        ],
+      }),
+    });
+    expect((await loadAgentMessageOutcome(fake.admin, USER, CONV, MSG))!.delivery).toEqual({ state: "accepted" });
+    expect((await loadAgentDeliveries(fake.admin, USER, CONV, {})).map((item) => item.delivery.state)).toEqual(["accepted"]);
+    expect(Object.values(await loadAgentDeliveriesByIds(fake.admin, USER, CONV, [MSG])).map((delivery) => delivery.state)).toEqual(["accepted"]);
+  });
+
+  it("검토 반영 8-3: 같은 run을 다른 메시지가 쓰고 있어도(옛 run에 두 메시지의 단계가 함께 있다) 각 메시지는 자기 최신 task의 run 단계만 본다", async () => {
+    const OLD_RUN = "20000000-0000-4000-8000-0000000000bb";
+    const stepRow = (id: string, message: string, run: string, seq: number, state: string) => ({ id, user_id: USER, state, kind: "agent_message", seq, run_id: run, args: { message_id: message } });
+    const fake = fakeAdmin({
+      tables: dispatched({
+        conversation_messages: [messageRow({ delivery_state: "dispatched" }), messageRow({ id: MSG2, seq: 2, client_message_id: "c1c1c1c1-0000-4000-8000-0000000000ad", delivery_state: "dispatched" })],
+        agent_tasks: [
+          { ...taskRow(), id: "7a000000-0000-4000-8000-0000000000f2", run_id: OLD_RUN, turn_seq: 1, state: "failed" }, // MSG의 옛 run
+          { ...taskRow(), id: "7a000000-0000-4000-8000-0000000000f3", message_id: MSG2, run_id: OLD_RUN, turn_seq: 2 }, // MSG2는 옛 run을 계속 쓴다
+          taskRow({ turn_seq: 3 }), // MSG의 새 run(다시 열기 뒤 재전송)
+        ],
+        execution_steps: [
+          stepRow("57000000-0000-4000-8000-0000000000f2", MSG, OLD_RUN, 2, "failed"),
+          stepRow("57000000-0000-4000-8000-0000000000f4", MSG2, OLD_RUN, 3, "called"),
+          stepRow(STEP, MSG, RUN, 1, "called"),
+        ],
+      }),
+    });
+    const read = await loadAgentDeliveries(fake.admin, USER, CONV, {});
+    expect(read.map((item) => [item.message_id, item.delivery.state])).toEqual([[MSG, "accepted"], [MSG2, "accepted"]]);
+  });
+
+  it("검토 반영 8-3: 최신 task의 run에 원문 단계가 아직 없으면 옛 run의 단계로 대신하지 않는다 (not_sent 방어 표시)", async () => {
+    const OLD_RUN = "20000000-0000-4000-8000-0000000000bb";
+    const fake = fakeAdmin({
+      tables: dispatched({
+        agent_tasks: [{ ...taskRow(), id: "7a000000-0000-4000-8000-0000000000f2", run_id: OLD_RUN, turn_seq: 1 }, taskRow({ turn_seq: 2 })],
+        execution_steps: [{ id: "57000000-0000-4000-8000-0000000000f2", user_id: USER, state: "called", kind: "agent_message", seq: 4, run_id: OLD_RUN, args: { message_id: MSG } }],
+      }),
+    });
+    expect((await loadAgentMessageOutcome(fake.admin, USER, CONV, MSG))!.delivery.state).toBe("not_sent");
   });
 
   it("기존 Action에 붙인 턴이면 created_action은 null (이 메시지가 만든 Action이 아니다)", async () => {

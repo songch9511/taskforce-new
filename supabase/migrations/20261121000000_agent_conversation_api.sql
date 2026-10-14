@@ -18,7 +18,10 @@
 --    쥐면 (세션 → 대화)와 (대화 → 세션)이 서로 기다려 교착하므로, 기다리지 않고 55P03으로 원자 실패한다. TS가 몇 번 다시 시도하고 그래도 안 되면 409 busy_retry.
 -- 5) answer_agent_question_recorded(…): 질문 답 + 지표. D1c-2b의 answer_agent_question 본문은 그대로 두고 그 결과가 answered일 때만 question_answered 한 줄을 같은 트랜잭션에서 쓴다 (duplicate · 잘못된 답 · 낡은 질문은 0).
 -- 6) rename_agent_session(p_user_id, p_session_id, p_display_name): 이름 바꾸기 + 지표. 실제로 바뀔 때만 session_renamed 한 줄(adapter만). 같은 이름은 unchanged, 없거나 남의 세션은 not_found.
--- 잠금 순서(D1c와 같다): 메시지 → 사용자 advisory → 대화 → 세션 → run → task → step. 2번은 메시지만, 3 · 4번은 묶인 대화(id 순) → 세션 → 묶인 대화 다시 확인이다.
+-- 7) start_agent_turn_auto(…): 자동 시작(대기열 머리 · Resume · Stop 뒤)의 시작 입구 (검토 반영 8-1). TS가 고른 메시지 id를 그대로 받아 route_agent_message와 같은 순서로 그 메시지 행을 잠근 뒤
+--    상태를 다시 읽는다: queued이거나 not_sent + 이유가 gate 계열(write_gate_closed · not_connected · adapter_disabled)이면 같은 트랜잭션에서 route_agent_message를 부르고, 아니면 아무것도 하지 않고 skipped.
+--    검사한 뒤 다른 요청이 상태를 바꿨어도(예: 앞 메시지가 만료돼 not_sent/spawn_failed가 머리가 됨) 낡은 상태로 새 회차를 만들지 않는다. route_agent_message 본문은 바꾸지 않는다.
+-- 잠금 순서(D1c와 같다): 메시지 → 사용자 advisory → 대화 → 세션 → run → task → step. 2번은 메시지만, 3 · 4번은 묶인 대화(id 순) → 세션 → 묶인 대화 다시 확인, 7번은 route_agent_message와 같다.
 -- 함수는 모두 서버 전용이다: security invoker, search_path 비움, public · anon · authenticated 실행 거절, service_role만 실행.
 -- 적용: 운영 DB에는 병합 직전 승인을 받고 저장소 문서(docs/agent-gateway.md)의 방법으로만 한다. 20261120000000_action_numbers 뒤에 적용한다.
 
@@ -266,11 +269,50 @@ begin
 end;
 $$;
 
+-- ─────────────────────────────────────────────
+-- 7) 자동 시작: 고정한 메시지를 잠금 안에서 다시 확인하고 시작
+-- ─────────────────────────────────────────────
+create function public.start_agent_turn_auto(
+  p_user_id uuid, p_message_id uuid, p_access text, p_live_limit integer,
+  p_action_ids uuid[] default '{}', p_context_ids uuid[] default '{}'
+) returns jsonb
+language plpgsql set search_path = ''
+as $$
+declare
+  v_message public.conversation_messages;
+  v_conversation public.conversations;
+  v_task public.agent_tasks;
+  v_origin uuid;
+  v_answer_event text;
+begin
+  select * into v_message from public.conversation_messages where id = p_message_id and user_id = p_user_id and role = 'user';
+  -- 없는 · 남의 메시지는 route_agent_message가 not_found로 답한다 (같은 결과, 쓰기 0)
+  if not found then
+    return public.route_agent_message(p_user_id, p_message_id, p_access, p_live_limit, p_action_ids, p_context_ids);
+  end if;
+  select * into v_conversation from public.conversations where id = v_message.conversation_id and user_id = p_user_id;
+  select * into v_task from public.agent_tasks where agent_session_id = v_conversation.agent_session_id
+    and user_id = p_user_id and state = 'awaiting_answer';
+  v_origin := v_task.message_id;
+  v_answer_event := 'answer:' || v_task.id || ':' || encode(sha256(convert_to(v_task.pending_question->>'provider_request_id','UTF8')),'hex');
+  -- route_agent_message와 같은 행을 같은 순서로 먼저 잠근다 (메시지 → …): 이 뒤의 route_agent_message 잠금은 이미 쥔 행이라 기다리지 않는다
+  perform 1 from public.conversation_messages where user_id = p_user_id and (id in (p_message_id, v_origin)
+    or (external_event_id = v_answer_event and conversation_id = (select conversation_id from public.conversation_messages where id = v_origin))) order by id for update;
+  -- 잠금을 얻은 뒤의 상태로 다시 확인한다 (기다리는 동안 다른 요청이 commit했을 수 있다)
+  select * into v_message from public.conversation_messages where id = p_message_id and user_id = p_user_id;
+  if not (v_message.delivery_state = 'queued'
+    or (v_message.delivery_state = 'not_sent' and v_message.delivery_reason in ('write_gate_closed', 'not_connected', 'adapter_disabled'))) then
+    return jsonb_build_object('status', 'skipped');
+  end if;
+  return public.route_agent_message(p_user_id, p_message_id, p_access, p_live_limit, p_action_ids, p_context_ids);
+end;
+$$;
+
 -- 서버 전용: 앱은 이 입구를 실행할 수 없다 (기존 함수와 같은 security invoker + 같은 권한 블록).
 do $$
 declare f text;
 begin
-  foreach f in array array['requeue_agent_messages', 'open_agent_session_external', 'resume_agent_session_here', 'answer_agent_question_recorded', 'rename_agent_session'] loop
+  foreach f in array array['requeue_agent_messages', 'open_agent_session_external', 'resume_agent_session_here', 'answer_agent_question_recorded', 'rename_agent_session', 'start_agent_turn_auto'] loop
     execute format('revoke all on function public.%I from public, anon, authenticated', f);
     execute format('grant execute on function public.%I to service_role', f);
   end loop;

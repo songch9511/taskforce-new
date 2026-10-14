@@ -77,6 +77,8 @@ const start = async (client: pg.Client, user: string, message: string) =>
   (await client.query<{ result: Turn }>("select public.start_agent_turn($1,$2,'{}','{}','read_only',$3) as result", [user, message, MAX_LIVE_EXTERNAL_TASKS])).rows[0].result;
 const route = async (client: pg.Client, user: string, message: string) =>
   (await client.query<{ result: Turn }>("select public.route_agent_message($1,$2,'read_only',$3) as result", [user, message, MAX_LIVE_EXTERNAL_TASKS])).rows[0].result;
+const startAuto = async (client: pg.Client, user: string, message: string) =>
+  (await client.query<{ result: Turn }>("select public.start_agent_turn_auto($1,$2,'read_only',$3) as result", [user, message, MAX_LIVE_EXTERNAL_TASKS])).rows[0].result;
 const requeue = async (client: pg.Client, user: string, conversation: string, ids: string[] | null = null) =>
   (await client.query<{ result: Requeue }>("select public.requeue_agent_messages($1,$2,$3::uuid[]) as result", [user, conversation, ids])).rows[0].result;
 const expire = async (client: pg.Client) => Number((await client.query<{ n: number }>("select public.conversation_expire_agent_messages(now()) as n")).rows[0].n);
@@ -310,4 +312,64 @@ describe("P5 세션을 잡은 직후 묶인 대화를 NOWAIT로 다시 확인한
       expect(await f.count("select 1 from public.conversation_messages where conversation_id = $1 and role = 'event'", [c2])).toBe(1);
     });
   }
+});
+
+describe("P6 자동 시작은 고정한 메시지를 잠금 안에서 다시 확인한다 (검토 반영 8-1)", () => {
+  // 시나리오: TS가 대기열 머리 B(queued)를 검사해 고정한 뒤 시작하려는 사이, 다른 요청이 B를 not_sent/spawn_failed로 바꾸는 트랜잭션을 쥐고 있다.
+  // 시작은 B의 행 잠금에서 기다렸다가 풀린 뒤 상태를 다시 읽어 skipped — 검사한 시점의 낡은 상태로 새 회차를 만들지 않는다.
+  const tallies = async (user: string) => ({
+    tasks: await f.count("select 1 from public.agent_tasks where user_id = $1", [user]),
+    steps: await f.count("select 1 from public.execution_steps where user_id = $1 and kind = 'agent_message'", [user]),
+    sent: await f.count("select 1 from public.metric_events where user_id = $1 and type = 'agent_message_sent'", [user]),
+  });
+
+  it("검사한 뒤 not_sent/spawn_failed로 바뀐 메시지는 시작하지 않는다: 기다린 자동 시작은 skipped, task · 단계 · 지표 0", async () => {
+    const w = await world();
+    await a.query("begin");
+    await a.query("update public.conversation_messages set delivery_state = 'not_sent', delivery_reason = 'spawn_failed' where id = $1", [w.message]);
+    const waiting = startAuto(b, w.user, w.message);
+    await waitForLockWait();
+    await expectBWaitsForA();
+    await a.query("commit");
+    expect(await waiting).toEqual({ status: "skipped" });
+    expect(await tallies(w.user)).toEqual({ tasks: 0, steps: 0, sent: 0 });
+    expect((await f.one("select delivery_state, delivery_reason from public.conversation_messages where id = $1", [w.message]))).toEqual({ delivery_state: "not_sent", delivery_reason: "spawn_failed" });
+  });
+
+  it("대조: 잠금 안 재확인이 없는 길(route_agent_message 직접)은 같은 상황에서 새 회차를 만든다 — 위 시험이 지키는 위험", async () => {
+    const w = await world();
+    await a.query("begin");
+    await a.query("update public.conversation_messages set delivery_state = 'not_sent', delivery_reason = 'spawn_failed' where id = $1", [w.message]);
+    const waiting = route(b, w.user, w.message);
+    await waitForLockWait();
+    await a.query("commit");
+    expect((await waiting).status).toBe("started");
+    expect((await tallies(w.user)).tasks).toBe(1);
+  });
+
+  it("gate 이유로 바뀐 메시지는 기다렸다가 시작한다 (같은 잠금 경로, 플래그가 풀린 뒤의 자동 재시작)", async () => {
+    const w = await world();
+    await a.query("begin");
+    await a.query("update public.conversation_messages set delivery_state = 'not_sent', delivery_reason = 'not_connected' where id = $1", [w.message]);
+    const waiting = startAuto(b, w.user, w.message);
+    await waitForLockWait();
+    await a.query("commit");
+    expect((await waiting).status).toBe("started");
+    expect((await tallies(w.user)).tasks).toBe(1);
+  });
+
+  it("만료가 먼저 끝나면(A expires) 고정한 A는 skipped이고 뒤의 not_sent/spawn_failed B도 새 회차가 없다", async () => {
+    const w = await world({ bound: true });
+    const second = String((await f.post(w.user, w.conversation, randomUUID(), "B")).message_id);
+    await f.setMessage(second, "not_sent", "spawn_failed");
+    await f.setMessage(w.message, "queued", null, { delivery_expires_at: new Date(Date.now() - 1000).toISOString() });
+    await a.query("begin");
+    expect(await expire(a)).toBe(1); // 만료 sweep이 A를 잡고 있다
+    const waiting = startAuto(b, w.user, w.message);
+    await waitForLockWait();
+    await a.query("commit");
+    expect(await waiting).toEqual({ status: "skipped" });
+    expect(await startAuto(b, w.user, second)).toEqual({ status: "skipped" });
+    expect(await tallies(w.user)).toEqual({ tasks: 0, steps: 0, sent: 0 });
+  });
 });
