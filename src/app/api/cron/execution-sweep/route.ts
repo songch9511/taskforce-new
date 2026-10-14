@@ -3,6 +3,7 @@ import { after } from "next/server";
 import { reconcileAiSpend } from "@/lib/ai/budget";
 import { fetchGeneration, generationConfigFromEnv } from "@/lib/ai/generation";
 import { expireAgentMessagesQuietly } from "@/lib/agents/messages";
+import { sweepPathLeases } from "@/lib/agents/path-leases";
 import { cronAuthorized, cronUnauthorized } from "@/lib/api/cron";
 import { sweepBridge } from "@/lib/bridge/sweep";
 import { wakeCoordinator } from "@/lib/coordinator/wake";
@@ -35,6 +36,7 @@ export async function GET(request: Request) {
   scheduleCoordinatorWake();
   const admin = createAdminClient();
   await sweepBridge(admin).then((result) => console.info(JSON.stringify({ event: "bridge_sweep", ...result }))).catch(() => console.error(JSON.stringify({ event: "bridge_sweep_failed" })));
+  await sweepPathLeases(admin).then((result) => (result.errors ? console.error : console.info)(JSON.stringify({ event: "path_lease_sweep", ...result }))).catch(() => console.error(JSON.stringify({ event: "path_lease_sweep_failed" })));
   // 에이전트 대기 메시지 만료 (OA D1d): 실행 플래그와 무관하게 돌고, 실패는 가둔다 (응답 불변)
   await expireAgentMessagesQuietly(admin);
   const aiSpend = await reconcileAiSpend(admin);

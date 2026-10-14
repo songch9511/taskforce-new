@@ -1,3 +1,5 @@
+import { BRIDGE_DECIDE_PER_MINUTE } from "@/lib/execution/limits";
+
 // 사용자별 요청 횟수 제한. 세기와 시도 기록은 DB 함수 take_rate_limit이 한 트랜잭션에서 한다
 // (서버 인스턴스가 여러 개이거나 요청이 동시에 와도 한도를 넘지 않는다, rate-limit-store.ts).
 
@@ -37,7 +39,7 @@ export async function takeBridgeRegistrationLimit(admin: import("@supabase/supab
   if (data) throw new RateLimitedError(new Date(String(data)));
 }
 
-const BRIDGE_REQUEST_LIMITS = { bridge_events: 120, bridge_ack: 240, bridge_poll: 90 } as const;
+const BRIDGE_REQUEST_LIMITS = { bridge_events: 120, bridge_ack: 240, bridge_poll: 90, bridge_decide: BRIDGE_DECIDE_PER_MINUTE } as const;
 export async function takeBridgeRequestLimit(
   admin: import("@supabase/supabase-js").SupabaseClient,
   userId: string,
@@ -48,4 +50,19 @@ export async function takeBridgeRequestLimit(
     p_user_id: userId, p_bridge_id: bridgeId, p_kind: kind, p_max: BRIDGE_REQUEST_LIMITS[kind], p_window_seconds: 60,
   }).throwOnError();
   if (data) throw new RateLimitedError(new Date(String(data)));
+}
+
+// shortcut: process-local preflight only; SQL remains authoritative across instances.
+const bridgeDecisionPreflight = new Map<string, { count: number; expiresAt: number }>();
+export function takeBridgeDecisionPreflightLimit(userId: string, bridgeId: string, now = Date.now()): Date | null {
+  for (const [key, bucket] of bridgeDecisionPreflight) if (bucket.expiresAt <= now) bridgeDecisionPreflight.delete(key);
+  const key = `${userId}:${bridgeId}`;
+  let bucket = bridgeDecisionPreflight.get(key);
+  if (!bucket) {
+    bucket = { count: 0, expiresAt: now + 60_000 };
+    bridgeDecisionPreflight.set(key, bucket);
+  }
+  if (bucket.count >= BRIDGE_DECIDE_PER_MINUTE) return new Date(bucket.expiresAt);
+  bucket.count++;
+  return null;
 }

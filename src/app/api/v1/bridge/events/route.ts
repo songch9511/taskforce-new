@@ -1,3 +1,4 @@
+import { stopPathConflictRuns } from "@/lib/agents/path-leases";
 import { RateLimitedError, retryAfterSeconds, takeBridgeRequestLimit } from "@/lib/api/rate-limit";
 import { authenticateRequest } from "@/lib/api/auth";
 import { bridgeV1EventsRequestSchema } from "@/lib/api/contract";
@@ -34,6 +35,7 @@ export async function POST(request: Request) {
     if ("error" in auth) return auth.error;
     await takeBridgeRequestLimit(auth.admin, auth.user.id, auth.bridge.id, "bridge_events");
     const result = await applyBridgeEvents(auth.admin, { userId: auth.user.id, bridgeId: auth.bridge.id, events: body.data.events });
+    await stopPathConflictRuns(auth.admin, { userId: auth.user.id, bridgeId: auth.bridge.id }).then(({ errors }) => { if (errors) console.error(JSON.stringify({ event: "path_conflict_stop_failed" })); }).catch(() => console.error(JSON.stringify({ event: "path_conflict_stop_failed" })));
     return Response.json(result, { headers: { "Cache-Control": "no-store" } });
   } catch (error) {
     if (error instanceof RateLimitedError) {

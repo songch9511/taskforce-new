@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { errorResponse } from "@/lib/api/respond";
 
 vi.mock("server-only", () => ({}));
-const mocks = vi.hoisted(() => ({ account: vi.fn(), limit: vi.fn(), auth: vi.fn(), operation: vi.fn() }));
+const mocks = vi.hoisted(() => ({ account: vi.fn(), limit: vi.fn(), auth: vi.fn(), operation: vi.fn(), stopConflicts: vi.fn() }));
 vi.mock("@/lib/bridge/auth", () => ({ verifyBridgeDevice: mocks.auth }));
 vi.mock("@/lib/api/auth", () => ({ authenticateRequest: mocks.account }));
 vi.mock("@/lib/api/rate-limit", async (original) => ({ ...await original<typeof import("@/lib/api/rate-limit")>(), takeBridgeRequestLimit: mocks.limit }));
@@ -17,10 +17,12 @@ beforeEach(() => {
   mocks.limit.mockResolvedValue(undefined);
   mocks.auth.mockResolvedValue({ user: { id: userId }, admin, bridge });
   mocks.operation.mockResolvedValue({ status: "settled" });
+  mocks.stopConflicts.mockResolvedValue({ stopped: 0, errors: 0 });
   vi.spyOn(console, "error").mockImplementation(() => {});
 });
 afterEach(() => vi.restoreAllMocks());
 vi.mock("@/lib/bridge/events", () => ({ applyBridgeEvents: mocks.operation }));
+vi.mock("@/lib/agents/path-leases", () => ({ stopPathConflictRuns: mocks.stopConflicts }));
 import { POST } from "./route";
 const input = { bridge_id: bridgeId, events: [{ adapter: "agent:codex", session_ref: { agent_session_id: commandId }, agent_task_id: commandId, event_id: "event-1", type: "progress", observed_at: "2026-10-14T00:00:00Z" }] };
 const request = (body: unknown = input) => new Request("https://api.example.test/api/v1/bridge/events", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
@@ -103,4 +105,24 @@ it("passes invalid individual events to per-event rejection without rejecting th
   expect(response.status).toBe(200);
   expect(mocks.operation).toHaveBeenCalledWith(admin, { userId, bridgeId, events });
   expect((await response.json()).rejected).toEqual([{ event_id: "", code: "invalid" }, { event_id: "bad", code: "invalid" }]);
+});
+
+it("U6 stops path conflict runs only after the event batch commits", async () => {
+  const response = await POST(request());
+  expect(await response.json()).toEqual({ status: "settled" });
+  expect(mocks.stopConflicts).toHaveBeenCalledExactlyOnceWith(admin, { userId, bridgeId });
+  expect(mocks.operation.mock.invocationCallOrder[0]).toBeLessThan(mocks.stopConflicts.mock.invocationCallOrder[0]);
+});
+it("U6 contains postcommit conflict stop failures and private exception text", async () => {
+  mocks.stopConflicts.mockRejectedValue(new Error("PRIVATE-PATH-TEXT"));
+  const response = await POST(request());
+  expect(response.status).toBe(200);
+  expect(await response.json()).toEqual({ status: "settled" });
+  expect(console.error).toHaveBeenCalledExactlyOnceWith(JSON.stringify({ event: "path_conflict_stop_failed" }));
+});
+
+it("U6 reports contained per-lease failures without changing committed event results", async () => {
+  mocks.stopConflicts.mockResolvedValue({ stopped: 1, errors: 1 });
+  expect((await POST(request())).status).toBe(200);
+  expect(console.error).toHaveBeenCalledExactlyOnceWith(JSON.stringify({ event: "path_conflict_stop_failed" }));
 });

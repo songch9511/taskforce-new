@@ -1767,3 +1767,41 @@ export const agentConversationErrorCodeSchema = z.enum(["target_mismatch", "ques
 export type AgentConversationErrorCode = z.infer<typeof agentConversationErrorCodeSchema>;
 export const apiErrorV2AgentCodeSchema = z.enum([...apiErrorV2CodeSchema.options, ...agentConversationErrorCodeSchema.options]);
 export type ApiErrorV2AgentCode = z.infer<typeof apiErrorV2AgentCodeSchema>;
+
+// --- D3c-2 ---
+// SQL measures target length after NFC so overlong targets return deny/path_too_long, not HTTP 400.
+const toolRealPathSchema = z.string().min(1).refine((value) =>
+  value.startsWith("/") && (value === "/" || !value.slice(1).split("/").some((part) => part === "" || part === "." || part === ".."))
+  && !Array.from(value).some((char) => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127));
+const toolRequestIdSchema = z.string().min(1).max(200);
+const toolCwdSchema = z.string().min(1).max(4096).startsWith("/");
+const toolTargetSchema = z.strictObject({ real_path: toolRealPathSchema, rel_path: z.string().min(1).max(1000) });
+export const toolDecisionReasonSchema = z.enum([
+  "readonly_command", "policy_auto", "manual_write", "command_not_readonly", "actions_not_read", "not_first_request",
+  "runs_without_sandbox", "server_busy", "write_gate_closed", "read_only", "permission_mode", "background", "sandbox_disabled",
+  "outside_workspace", "workspace_mismatch", "path_in_use", "not_live", "rate_limited", "tool_config_write", "path_too_long",
+]);
+export type ToolDecisionReason = z.infer<typeof toolDecisionReasonSchema>;
+export const bridgeV1ToolDecisionRequestSchema = z.strictObject({
+  bridge_id: z.guid(), agent_session_id: z.guid(), agent_task_id: z.guid(), turn_seq: z.number().int().positive(),
+  workspace_real_path: toolRealPathSchema.refine((value) => Array.from(value.normalize("NFC")).length <= 500),
+  call: z.discriminatedUnion("kind", [
+    z.strictObject({ kind: z.literal("claude_bash"), tool_use_id: toolRequestIdSchema, permission_mode: z.string().min(1).max(50),
+      cwd: toolCwdSchema, command: z.string().min(1).max(4096), run_in_background: z.boolean(), dangerously_disable_sandbox: z.boolean() }),
+    z.strictObject({ kind: z.literal("claude_write"), tool_use_id: toolRequestIdSchema, permission_mode: z.string().min(1).max(50),
+      tool: z.enum(["Edit", "Write"]), target: toolTargetSchema }),
+    z.strictObject({ kind: z.literal("codex_command"), provider_request_id: toolRequestIdSchema, cwd: toolCwdSchema,
+      command: z.string().min(1).max(4096), command_actions: z.array(z.string().min(1).max(50)).max(32), first_for_item: z.boolean() }),
+    z.strictObject({ kind: z.literal("codex_file_change"), provider_request_id: toolRequestIdSchema,
+      targets: z.array(toolTargetSchema).min(1).max(20), first_for_item: z.boolean() }),
+  ]),
+});
+export type BridgeV1ToolDecisionRequest = z.infer<typeof bridgeV1ToolDecisionRequestSchema>;
+export const bridgeV1ToolDecisionResponseSchema = z.strictObject({
+  decision: z.enum(["allow", "deny", "defer"]), reason: toolDecisionReasonSchema,
+  parse: z.strictObject({ wrapper: z.enum(["none", "zsh_lc"]), argv: z.array(z.string()),
+    paths: z.array(z.strictObject({ index: z.number().int().nonnegative().nullable(), absolute: z.string().startsWith("/") })), implicit_cwd: z.boolean() }).optional(),
+  agent_note: z.string().max(300).optional(), holder: z.strictObject({ action_number: z.number().int().nullable(), rel_path: z.string().min(1).max(1000) }).optional(),
+  card_flags: z.array(z.literal("runs_without_sandbox")).max(1), server_time: z.iso.datetime({ offset: true }),
+}).refine((value) => (!value.parse || value.decision === "allow" && value.reason === "readonly_command") && (!value.agent_note || value.decision === "deny"));
+export type BridgeV1ToolDecisionResponse = z.infer<typeof bridgeV1ToolDecisionResponseSchema>;

@@ -47,3 +47,22 @@ describe("한도 소비처는 구현된 입구만 허용한다", () => {
     }
   });
 });
+
+// D3c-2: SQL keeps these transactional limits; consumers use the same named constants.
+import { PATH_LEASE_IDLE_MINUTES, PATH_LEASE_TARGETS_MAX, PATH_LEASE_WAITERS_MAX, PATH_LEASE_RETENTION_DAYS, PATH_LEASE_SWEEP_LIMIT, TOOL_DECISION_LOCK_TIMEOUT_MS, TOOL_DECISION_MAX_BYTES, BRIDGE_DECIDE_PER_MINUTE } from "./limits";
+it("D3c-2 bounds match the contract", () => {
+  expect([PATH_LEASE_IDLE_MINUTES, PATH_LEASE_TARGETS_MAX, PATH_LEASE_WAITERS_MAX, PATH_LEASE_RETENTION_DAYS, PATH_LEASE_SWEEP_LIMIT, TOOL_DECISION_LOCK_TIMEOUT_MS, TOOL_DECISION_MAX_BYTES, BRIDGE_DECIDE_PER_MINUTE]).toEqual([30, 20, 20, 30, 500, 250, 65536, 600]);
+});
+it("D3c-2 SQL uses the shared idle, lock, rate, waiter and sweep bounds", () => {
+  const sql = readFileSync(path.resolve(__dirname, "../../../supabase/migrations/20261123000000_agent_path_leases.sql"), "utf8");
+  expect(sql).toContain(`interval '${PATH_LEASE_IDLE_MINUTES} minutes'`);
+  expect(sql).toContain(`set lock_timeout = '${TOOL_DECISION_LOCK_TIMEOUT_MS}ms'`);
+  expect(sql).toContain(`'bridge_decide',${BRIDGE_DECIDE_PER_MINUTE},60,p_bridge_id`);
+  expect(sql).toContain(`cardinality(waiter_run_ids)<=${PATH_LEASE_WAITERS_MAX}`);
+  expect(sql).toContain(`least(p_limit,${PATH_LEASE_SWEEP_LIMIT})`);
+});
+
+it("shared DTO target maximum matches PATH_LEASE_TARGETS_MAX without an execution import", () => {
+  const contract = readFileSync(path.resolve(__dirname, "../api/contract.ts"), "utf8").split("// --- D3c-2 ---")[1];
+  expect(contract).toContain(`targets: z.array(toolTargetSchema).min(1).max(${PATH_LEASE_TARGETS_MAX})`);
+});

@@ -45,6 +45,7 @@ describe("초기 마이그레이션", () => {
       "actions",
       "agent_artifacts",
       "agent_connections",
+  "agent_path_leases",
       "agent_sessions",
       "agent_tasks",
       "ai_budget_policy",

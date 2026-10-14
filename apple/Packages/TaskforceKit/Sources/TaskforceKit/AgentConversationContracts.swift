@@ -804,7 +804,7 @@ public struct AssistantTargetsResponse: Decodable, Sendable, Hashable {
 // MARK: - 질문에 답하기 (계약 3.6)
 
 /// 질문 하나의 답: 단일 글(2000자까지) 또는 선택지 배열(다중 선택, 10개까지)
-public enum AgentAnswerValue: Encodable, Sendable, Hashable {
+public enum ConversationAnswerValue: Encodable, Sendable, Hashable {
     case text(String)
     case choices([String])
 
@@ -820,14 +820,14 @@ public enum AgentAnswerValue: Encodable, Sendable, Hashable {
 /// `POST /api/v2/agent-tasks/{id}/answer` 요청: 질문 id마다 답 하나
 public struct AgentAnswerRequest: Encodable, Sendable, Hashable {
     public let providerRequestID: String
-    public let answers: [String: AgentAnswerValue]
+    public let answers: [String: ConversationAnswerValue]
 
     enum CodingKeys: String, CodingKey {
         case answers
         case providerRequestID = "provider_request_id"
     }
 
-    public init(providerRequestID: String, answers: [String: AgentAnswerValue]) {
+    public init(providerRequestID: String, answers: [String: ConversationAnswerValue]) {
         self.providerRequestID = providerRequestID
         self.answers = answers
     }
