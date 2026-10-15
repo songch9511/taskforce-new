@@ -1,0 +1,485 @@
+import Darwin
+import Foundation
+
+// 가짜 `claude` (OA D3a 계약 4.3, 시험 전용 — 앱은 링크하지 않는다).
+// - 인자를 계약 2.4의 집합과 정확히 대조한다 (다르면 stderr "unexpected flags" + exit 3: 인자 계약이 시험된다).
+// - `--settings`의 훅 명령을 `/bin/sh -c`로 실제로 실행하고(훅 입력 JSON을 stdin으로), 결정대로 결과를 지어 낸다.
+// - `--mcp-config`의 `tf` 서버를 띄워 `initialize` · `tools/list` · `tools/call`을 한다.
+// - 대본은 시험이 넣은 임시 `HOME/.fake-claude/scenario.json` (환경이 넷뿐이라 HOME으로 찾는다). 실행마다 `report-<n>.json`을 남긴다.
+// - SIGINT: 돌던 도구를 끝내고 `error_during_execution` · `aborted_tools` 결과를 낸 뒤 exit 0 (S0 CC-4).
+
+nonisolated(unsafe) var fakeInterrupted: sig_atomic_t = 0
+
+enum Fake {
+    static let prompt = "When you need the user's input, call mcp__tf__ask_user (1–4 questions). Make one such call at a time and wait for its result."
+
+    nonisolated(unsafe) static var report: [String: Any] = [:]
+    nonisolated(unsafe) static var reportURL: URL?
+    nonisolated(unsafe) static var messageCounter = 0
+    nonisolated(unsafe) static var denials: [[String: Any]] = []
+    nonisolated(unsafe) static var sessionID = ""
+    nonisolated(unsafe) static var mcp: MCPClient?
+    nonisolated(unsafe) static var lastText = ""
+
+    struct Flags {
+        var tools = ""
+        var mcpConfig = ""
+        var addDir = ""
+        var settings = ""
+        var sessionID: String?
+        var resume: String?
+    }
+
+    // MARK: 출력
+
+    static func emit(_ object: [String: Any]) {
+        guard var data = try? JSONSerialization.data(withJSONObject: object) else { return }
+        data.append(0x0A)
+        data.withUnsafeBytes { _ = write(STDOUT_FILENO, $0.baseAddress, data.count) }
+    }
+
+    static func saveReport() {
+        guard let reportURL, let data = try? JSONSerialization.data(withJSONObject: report, options: [.sortedKeys]) else { return }
+        try? data.write(to: reportURL)
+    }
+
+    static func append(_ key: String, _ value: Any) {
+        var list = report[key] as? [Any] ?? []
+        list.append(value)
+        report[key] = list
+        saveReport()
+    }
+
+    static func nextMessageID() -> String {
+        messageCounter += 1
+        return "msg_fake_\(messageCounter)"
+    }
+
+    static func assistant(_ content: [String: Any], model: String = "claude-sonnet-5", error: String? = nil, messageID: String? = nil) {
+        var event: [String: Any] = [
+            "type": "assistant", "session_id": sessionID,
+            "message": ["model": model, "id": messageID ?? nextMessageID(), "type": "message", "role": "assistant", "content": [content]],
+        ]
+        if let error { event["error"] = error }
+        emit(event)
+    }
+
+    static func toolResult(_ id: String, _ text: String, isError: Bool) {
+        emit(["type": "user", "session_id": sessionID, "message": ["role": "user", "content": [["type": "tool_result", "tool_use_id": id, "content": text, "is_error": isError]]]])
+        append("tool_results", ["id": id, "is_error": isError, "text": text])
+    }
+
+    /// SIGINT를 받았으면 결과를 내고 끝낸다
+    static func checkInterrupt() {
+        guard fakeInterrupted != 0 else { return }
+        emit(["type": "user", "session_id": sessionID, "message": ["role": "user", "content": [["type": "text", "text": "[Request interrupted by user for tool use]"]]]])
+        emit(["type": "result", "subtype": "error_during_execution", "is_error": true, "stop_reason": "tool_use", "terminal_reason": "aborted_tools", "session_id": sessionID])
+        report["interrupted"] = true
+        saveReport()
+        mcp?.stop()
+        exit(0)
+    }
+
+    // MARK: 하위 프로세스
+
+    /// 명령을 `/bin/sh -c`로 돌려 stdout · 종료 코드를 받는다 (훅)
+    static func shell(_ command: String, input: Data, timeout: TimeInterval) -> (stdout: String, code: Int32) {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-c", command]
+        process.environment = ProcessInfo.processInfo.environment
+        let stdin = Pipe()
+        let stdout = Pipe()
+        process.standardInput = stdin
+        process.standardOutput = stdout
+        process.standardError = FileHandle.nullDevice
+        do { try process.run() } catch { return ("", 127) }
+        // 출력은 따로 끝까지 읽는다 (큰 출력이 파이프를 막지 않게)
+        let collected = OutputBox()
+        let reader = stdout.fileHandleForReading
+        let done = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async {
+            collected.data = reader.readDataToEndOfFile()
+            done.signal()
+        }
+        stdin.fileHandleForWriting.write(input)
+        try? stdin.fileHandleForWriting.close()
+        let deadline = Date().addingTimeInterval(timeout)
+        while process.isRunning, Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        if process.isRunning {
+            process.terminate()
+            return ("", 1)
+        }
+        _ = done.wait(timeout: .now() + 2)
+        return (String(decoding: collected.data, as: UTF8.self), process.terminationStatus)
+    }
+
+    final class OutputBox: @unchecked Sendable {
+        var data = Data()
+    }
+
+    // MARK: 훅
+
+    static func hookCommands(_ path: String) -> (sessionStart: String?, preToolUse: String?) {
+        guard let data = FileManager.default.contents(atPath: path), let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let hooks = object["hooks"] as? [String: Any] else { return (nil, nil) }
+        func command(_ key: String) -> String? {
+            guard let groups = hooks[key] as? [[String: Any]], let first = groups.first, let entries = first["hooks"] as? [[String: Any]] else { return nil }
+            return entries.first?["command"] as? String
+        }
+        return (command("SessionStart"), command("PreToolUse"))
+    }
+
+    static func sessionStart(_ command: String, resume: Bool, cwd: String) {
+        let name = resume ? "SessionStart:resume" : "SessionStart:startup"
+        emit(["type": "system", "subtype": "hook_started", "hook_name": name, "hook_event": "SessionStart", "session_id": sessionID])
+        let input = try? JSONSerialization.data(withJSONObject: ["hook_event_name": "SessionStart", "source": resume ? "resume" : "startup", "session_id": sessionID, "cwd": cwd])
+        let (stdout, code) = shell(command, input: input ?? Data(), timeout: 10)
+        emit(["type": "system", "subtype": "hook_response", "hook_name": name, "hook_event": "SessionStart", "output": stdout, "stdout": stdout, "stderr": "", "exit_code": code,
+              "outcome": code == 0 ? "success" : "error", "session_id": sessionID])
+        report["session_start_stdout"] = stdout
+    }
+
+    enum Outcome {
+        case done
+        case deferred(id: String, name: String, input: [String: Any])
+    }
+
+    /// 도구 호출 하나: (assistant tool_use) → PreToolUse 훅 → 결정대로 실행 · 거절 · 보류
+    static func call(id: String, name: String, input: [String: Any], step: [String: Any], hook: String?, cwd: String, announce: Bool) -> Outcome {
+        if announce { assistant(["type": "tool_use", "id": id, "name": name, "input": input]) }
+        checkInterrupt()
+        var effective = input
+        if step["skip_hook"] as? Bool == true || hook == nil {
+            execute(id: id, name: name, input: effective, step: step)
+            return .done
+        }
+        emit(["type": "system", "subtype": "hook_started", "hook_name": "PreToolUse:\(name)", "hook_event": "PreToolUse", "session_id": sessionID])
+        let hookInput: [String: Any] = [
+            "session_id": sessionID, "transcript_path": NSHomeDirectory() + "/.fake-claude/transcript.jsonl", "cwd": cwd,
+            "permission_mode": step["permission_mode"] as? String ?? "default", "hook_event_name": "PreToolUse", "tool_name": name, "tool_input": input, "tool_use_id": id,
+        ]
+        let started = Date()
+        let (stdout, code) = shell(hook!, input: (try? JSONSerialization.data(withJSONObject: hookInput)) ?? Data(), timeout: 10)
+        append("hook_ms", Int(Date().timeIntervalSince(started) * 1000))
+        emit(["type": "system", "subtype": "hook_response", "hook_name": "PreToolUse:\(name)", "hook_event": "PreToolUse", "output": stdout, "stdout": stdout, "stderr": "",
+              "exit_code": code, "outcome": code == 0 ? "success" : "error", "session_id": sessionID])
+        let output = (try? JSONSerialization.jsonObject(with: Data(stdout.utf8)) as? [String: Any])?["hookSpecificOutput"] as? [String: Any]
+        let decision = code == 2 ? "deny" : (output?["permissionDecision"] as? String ?? "")
+        let reason = output?["permissionDecisionReason"] as? String ?? "hook error"
+        append("decisions", ["id": id, "tool": name, "decision": decision])
+        checkInterrupt()
+        switch decision {
+        case "allow":
+            if let updated = output?["updatedInput"] as? [String: Any] { effective = updated }
+            execute(id: id, name: name, input: effective, step: step)
+        case "deny":
+            denials.append(["tool_name": name, "tool_use_id": id])
+            toolResult(id, reason, isError: true)
+        case "defer":
+            return .deferred(id: id, name: name, input: input)
+        default:
+            // 결정 없음: manual 모드에서 쓰기는 거절, 읽기는 그냥 허용 (S0 CC-10)
+            if ["Read", "Glob", "Grep"].contains(name) {
+                execute(id: id, name: name, input: effective, step: step)
+            } else {
+                emit(["type": "system", "subtype": "permission_denied", "tool_name": name, "tool_use_id": id, "session_id": sessionID])
+                denials.append(["tool_name": name, "tool_use_id": id])
+                toolResult(id, "Permission to use \(name) has been denied.", isError: true)
+            }
+        }
+        return .done
+    }
+
+    static func execute(id: String, name: String, input: [String: Any], step: [String: Any]) {
+        switch name {
+        case "Write":
+            guard let path = input["file_path"] as? String, let content = input["content"] as? String else { return toolResult(id, "InputValidationError", isError: true) }
+            try? FileManager.default.createDirectory(atPath: (path as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
+            let ok = FileManager.default.createFile(atPath: path, contents: Data(content.utf8))
+            toolResult(id, ok ? "File created successfully at: \(path)" : "write failed", isError: !ok)
+        case "Edit":
+            guard let path = input["file_path"] as? String, let old = input["old_string"] as? String, let new = input["new_string"] as? String,
+                  let text = try? String(contentsOfFile: path, encoding: .utf8), text.contains(old) else { return toolResult(id, "edit failed", isError: true) }
+            try? text.replacingOccurrences(of: old, with: new).write(toFile: path, atomically: true, encoding: .utf8)
+            toolResult(id, "The file \(path) has been updated.", isError: false)
+        case "Bash":
+            let command = input["command"] as? String ?? ""
+            append("bash_commands", command)
+            if let seconds = step["sleep"] as? Int, seconds > 0 {
+                runSleep(id: id, seconds: seconds)
+            } else {
+                let (stdout, code) = shell(command, input: Data(), timeout: 10)
+                toolResult(id, String(stdout.prefix(2000)), isError: code != 0)
+            }
+        case "mcp__tf__ask_user":
+            guard let mcp, let reply = mcp.request("tools/call", params: ["name": "ask_user", "arguments": input]), let result = reply["result"] as? [String: Any] else {
+                return toolResult(id, "MCP error", isError: true)
+            }
+            let text = ((result["content"] as? [[String: Any]])?.first?["text"] as? String) ?? ""
+            append("mcp_results", text)
+            toolResult(id, text, isError: result["isError"] as? Bool ?? false)
+        default:
+            toolResult(id, "ok", isError: false)
+        }
+    }
+
+    /// 오래 걸리는 Bash (자식 `sleep`): SIGINT를 받으면 자식을 끝내고 중단 결과를 낸다
+    static func runSleep(id: String, seconds: Int) {
+        let child = Process()
+        child.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        child.arguments = [String(seconds)]
+        try? child.run()
+        report["sleep_pid"] = Int(child.processIdentifier)
+        saveReport()
+        emit(["type": "system", "subtype": "task_started", "task_id": "t1", "tool_use_id": id, "session_id": sessionID])
+        while child.isRunning {
+            if fakeInterrupted != 0 {
+                kill(child.processIdentifier, SIGKILL)
+                child.waitUntilExit()
+                emit(["type": "system", "subtype": "task_notification", "task_id": "t1", "tool_use_id": id, "status": "stopped", "session_id": sessionID])
+                toolResult(id, "The user doesn't want to proceed with this tool use.", isError: true)
+                checkInterrupt()
+            }
+            Thread.sleep(forTimeInterval: 0.02)
+        }
+        toolResult(id, "", isError: false)
+    }
+
+    // MARK: 인자
+
+    static func parse(_ arguments: [String]) -> Flags? {
+        var flags = Flags()
+        var seen = Set<String>()
+        var index = 0
+        func value() -> String? {
+            index += 1
+            return index < arguments.count ? arguments[index] : nil
+        }
+        while index < arguments.count {
+            let token = arguments[index]
+            guard seen.insert(token).inserted else { return nil }
+            switch token {
+            case "-p", "--verbose", "--include-hook-events", "--strict-mcp-config": break
+            case "--output-format": guard value() == "stream-json" else { return nil }
+            case "--max-budget-usd": guard let budget = value(), Double(budget) != nil else { return nil }
+            case "--tools":
+                guard let tools = value(), ["Read,Glob,Grep,Edit,Write,Bash", "Read,Glob,Grep"].contains(tools) else { return nil }
+                flags.tools = tools
+            case "--mcp-config": guard let path = value() else { return nil }; flags.mcpConfig = path
+            case "--add-dir": guard let path = value() else { return nil }; flags.addDir = path
+            case "--settings": guard let path = value() else { return nil }; flags.settings = path
+            case "--setting-sources": guard value() == "project" else { return nil }
+            case "--permission-mode": guard value() == "manual" else { return nil }
+            case "--append-system-prompt": guard value() == prompt else { return nil }
+            case "--session-id": flags.sessionID = value()
+            case "--resume": flags.resume = value()
+            default: return nil
+            }
+            index += 1
+        }
+        let required: Set<String> = ["-p", "--output-format", "--verbose", "--include-hook-events", "--max-budget-usd", "--tools", "--strict-mcp-config", "--mcp-config", "--add-dir",
+                                     "--settings", "--setting-sources", "--permission-mode", "--append-system-prompt"]
+        guard required.isSubset(of: seen), (flags.sessionID == nil) != (flags.resume == nil) else { return nil }
+        return flags
+    }
+
+    static func readStdin() -> Data {
+        var data = Data()
+        var buffer = [UInt8](repeating: 0, count: 65536)
+        while true {
+            let count = read(STDIN_FILENO, &buffer, buffer.count)
+            if count < 0, errno == EINTR { continue }
+            guard count > 0 else { break }
+            data.append(contentsOf: buffer[0..<count])
+        }
+        return data
+    }
+
+    // MARK: 본체
+
+    static func main(openFDs: [Int32], environmentKeys: [String]) -> Int32 {
+        signal(SIGPIPE, SIG_IGN)
+        signal(SIGINT) { _ in fakeInterrupted = 1 }
+        let arguments = Array(CommandLine.arguments.dropFirst())
+        guard let home = ProcessInfo.processInfo.environment["HOME"] else { return 4 }
+        let folder = URL(fileURLWithPath: home).appending(path: ".fake-claude", directoryHint: .isDirectory)
+        let scenario = (try? JSONSerialization.jsonObject(with: Data(contentsOf: folder.appending(path: "scenario.json")))) as? [String: Any] ?? [:]
+        if arguments == ["--version"] {
+            print(scenario["version"] as? String ?? "2.1.241 (Claude Code)")
+            return 0
+        }
+        if arguments == ["auth", "status"] {
+            let auth = scenario["auth"] ?? ["loggedIn": true, "authMethod": "claude.ai", "email": "someone@example.com"]
+            print(String(decoding: (try? JSONSerialization.data(withJSONObject: auth)) ?? Data(), as: UTF8.self))
+            return 0
+        }
+        guard let flags = parse(arguments) else {
+            FileHandle.standardError.write(Data("unexpected flags\n".utf8))
+            return 3
+        }
+        // 실행 번호
+        let counter = folder.appending(path: "count")
+        let number = Int((try? String(contentsOf: counter, encoding: .utf8)) ?? "0") ?? 0
+        try? String(number + 1).write(to: counter, atomically: true, encoding: .utf8)
+        reportURL = folder.appending(path: "report-\(number).json")
+        let runs = scenario["runs"] as? [[String: Any]] ?? [[:]]
+        let run = runs[min(number, runs.count - 1)]
+        sessionID = flags.sessionID ?? flags.resume ?? ""
+        let cwd = FileManager.default.currentDirectoryPath
+        let stdin = readStdin()
+        report = [
+            "args_ok": true, "fds": openFDs.map(Int.init), "env_keys": environmentKeys.sorted(), "stdin_bytes": stdin.count, "resume": flags.resume != nil,
+            "session_id": sessionID, "cwd": cwd, "tools": flags.tools, "pid": Int(getpid()), "pgid": Int(getpgrp()),
+        ]
+        saveReport()
+        if run["die"] as? String == "before_init" { kill(getpid(), SIGKILL) }
+
+        let hooks = hookCommands(flags.settings)
+        if let config = (try? JSONSerialization.jsonObject(with: Data(contentsOf: URL(fileURLWithPath: flags.mcpConfig)))) as? [String: Any],
+           let servers = config["mcpServers"] as? [String: Any], let tf = servers["tf"] as? [String: Any], let command = tf["command"] as? String {
+            mcp = MCPClient(command: command, arguments: tf["args"] as? [String] ?? [])
+        }
+        let mcpTools = mcp?.toolNames ?? []
+        if run["skip_session_start"] as? Bool != true, let command = hooks.sessionStart {
+            sessionStart(command, resume: flags.resume != nil, cwd: cwd)
+        }
+        checkInterrupt()
+        // 보류를 답하는 빈 stdin resume: 보류 id의 훅을 init보다 먼저 부른다 (S0 r3-cc9-2 순서)
+        let deferredFile = folder.appending(path: "deferred-\(sessionID).json")
+        if flags.resume != nil, stdin.isEmpty, let saved = (try? JSONSerialization.jsonObject(with: Data(contentsOf: deferredFile))) as? [String: Any],
+           let id = saved["id"] as? String, let name = saved["name"] as? String, var input = saved["input"] as? [String: Any] {
+            try? FileManager.default.removeItem(at: deferredFile)
+            if let override = run["resume_input_override"] as? [String: Any] { input = override }
+            emit(["type": "command_lifecycle", "state": "started", "session_id": sessionID])
+            if case .deferred(let again, let againName, let againInput) = call(id: id, name: name, input: input, step: [:], hook: hooks.preToolUse, cwd: cwd, announce: false) {
+                return finishDeferred(id: again, name: againName, input: againInput, file: deferredFile)
+            }
+        }
+        let initVersion = run["init_version"] as? String ?? "2.1.241"
+        let tools = flags.tools.split(separator: ",").map(String.init) + mcpTools.map { "mcp__tf__\($0)" }
+        emit([
+            "type": "system", "subtype": "init", "cwd": cwd, "session_id": sessionID, "tools": tools,
+            "mcp_servers": mcp.map { [["name": "tf", "status": $0.toolNames.isEmpty ? "failed" : "connected"]] } ?? [], "model": "claude-sonnet-5",
+            "permissionMode": "default", "claude_code_version": initVersion, "apiKeySource": "none", "plugins": [], "skills": [],
+        ])
+        checkInterrupt()
+        if run["die"] as? String == "after_init" { kill(getpid(), SIGKILL) }
+        if run["synthetic_login_error"] as? Bool == true {
+            assistant(["type": "text", "text": "Not logged in · Please run /login"], model: "<synthetic>", error: "authentication_failed")
+            emit(["type": "result", "subtype": "success", "is_error": true, "stop_reason": "stop_sequence", "terminal_reason": "api_error", "session_id": sessionID,
+                  "result": "Not logged in · Please run /login"])
+            mcp?.stop()
+            return 1
+        }
+        var lastDeferred: (id: String, name: String, input: [String: Any])?
+        for step in run["steps"] as? [[String: Any]] ?? [] {
+            checkInterrupt()
+            if let text = step["text"] as? String {
+                lastText = text
+                assistant(["type": "text", "text": text])
+            } else if let name = step["tool"] as? String {
+                let id = step["id"] as? String ?? "toolu_\(UUID().uuidString.prefix(8))"
+                let input = step["input"] as? [String: Any] ?? [:]
+                if case .deferred(let deferredID, let deferredName, let deferredInput) = call(id: id, name: name, input: input, step: step, hook: hooks.preToolUse, cwd: cwd, announce: true) {
+                    lastDeferred = (deferredID, deferredName, deferredInput)
+                    if step["same_response"] as? Bool != true { break }
+                }
+            }
+        }
+        checkInterrupt()
+        if let lastDeferred {
+            return finishDeferred(id: lastDeferred.id, name: lastDeferred.name, input: lastDeferred.input, file: deferredFile)
+        }
+        if let final = run["final_text"] as? String {
+            lastText = final
+            assistant(["type": "text", "text": final])
+        }
+        emit(["type": "result", "subtype": "success", "is_error": false, "stop_reason": "end_turn", "terminal_reason": "completed", "session_id": sessionID, "result": lastText,
+              "permission_denials": denials])
+        mcp?.stop()
+        if let linger = run["linger_after_result"] as? Double { Thread.sleep(forTimeInterval: linger) }
+        saveReport()
+        return 0
+    }
+
+    /// 한 응답에서 보류된 마지막 호출만 보고한다 (S0 CC-3a · CC-9)
+    static func finishDeferred(id: String, name: String, input: [String: Any], file: URL) -> Int32 {
+        if let data = try? JSONSerialization.data(withJSONObject: ["id": id, "name": name, "input": input]) { try? data.write(to: file) }
+        emit(["type": "result", "subtype": "success", "is_error": false, "stop_reason": "tool_deferred", "terminal_reason": "tool_deferred", "session_id": sessionID,
+              "deferred_tool_use": ["id": id, "name": name, "input": input], "permission_denials": denials])
+        report["deferred"] = id
+        saveReport()
+        mcp?.stop()
+        return 0
+    }
+}
+
+/// `tf` MCP 서버 (stdio JSON-RPC) 대화
+final class MCPClient {
+    let process = Process()
+    let input = Pipe()
+    let output = Pipe()
+    var buffer = Data()
+    var nextID = 1
+    var toolNames: [String] = []
+
+    init(command: String, arguments: [String]) {
+        process.executableURL = URL(fileURLWithPath: command)
+        process.arguments = arguments
+        process.environment = ProcessInfo.processInfo.environment
+        process.standardInput = input
+        process.standardOutput = output
+        process.standardError = FileHandle.nullDevice
+        guard (try? process.run()) != nil else { return }
+        _ = request("initialize", params: ["protocolVersion": "2025-06-18", "capabilities": [:], "clientInfo": ["name": "fake-claude", "version": "0"]])
+        send(["jsonrpc": "2.0", "method": "notifications/initialized"])
+        if let reply = request("tools/list", params: [:]), let result = reply["result"] as? [String: Any], let tools = result["tools"] as? [[String: Any]] {
+            toolNames = tools.compactMap { $0["name"] as? String }
+            Fake.report["mcp_tools"] = toolNames
+        }
+    }
+
+    func send(_ object: [String: Any]) {
+        guard var data = try? JSONSerialization.data(withJSONObject: object) else { return }
+        data.append(0x0A)
+        input.fileHandleForWriting.write(data)
+    }
+
+    func request(_ method: String, params: [String: Any]) -> [String: Any]? {
+        let id = nextID
+        nextID += 1
+        send(["jsonrpc": "2.0", "id": id, "method": method, "params": params])
+        let deadline = Date().addingTimeInterval(5)
+        while Date() < deadline {
+            if let newline = buffer.firstIndex(of: 0x0A) {
+                let line = buffer[buffer.startIndex..<newline]
+                buffer = Data(buffer[buffer.index(after: newline)...])
+                if let object = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any], object["id"] as? Int == id { return object }
+                continue
+            }
+            let chunk = output.fileHandleForReading.availableData
+            if chunk.isEmpty { return nil }
+            buffer.append(chunk)
+        }
+        return nil
+    }
+
+    func stop() {
+        try? input.fileHandleForWriting.close()
+        process.waitUntilExit()
+    }
+}
+
+// 시작하자마자 (Foundation이 무엇을 열기 전에) 열린 fd · 환경 키를 본다 (E16 · E23)
+let fakeOpenFDs: [Int32] = (0..<256).map { Int32($0) }.filter { fcntl($0, F_GETFD) != -1 }
+var fakeEnvironmentKeys: [String] = []
+if var pointer = Optional(environ) {
+    while let entry = pointer.pointee {
+        fakeEnvironmentKeys.append(String(String(cString: entry).prefix { $0 != "=" }))
+        pointer += 1
+    }
+}
+exit(Fake.main(openFDs: fakeOpenFDs, environmentKeys: fakeEnvironmentKeys))
