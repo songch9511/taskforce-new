@@ -25,6 +25,14 @@ extension TaskforceReads {
         return try await touched + untouched
     }
 
+    /// 대화 한 행을 id로 (RLS 본인 행). 보관했는지는 호출부가 본다. 없으면(지움 · 남의 것) nil
+    public func conversation(id: UUID) async throws -> ChatConversation? {
+        let found: [ChatConversation] = try await rows(
+            supabase.from("conversations").select(ChatConversation.columns).eq("id", value: id.lowercased).limit(1)
+        )
+        return found.first
+    }
+
     /// 목록 한 줄의 미리보기: 대화마다 마지막 글 (사용자 · 답). 읽은 최근 메시지 안에 없으면 그 대화는 빠진다 (미리보기 없음)
     public func lastMessages(conversationIDs: [UUID]) async throws -> [UUID: ChatMessage] {
         let ids = Array(Set(conversationIDs))
@@ -68,9 +76,19 @@ extension TaskforceReads {
         return found.first
     }
 
-    /// 내 범위(프로젝트). 이름은 모두(보관된 것 포함), 고르는 popup은 `isActive`만
+    /// 내 범위(프로젝트). 이름은 모두(보관된 것 포함), 고르는 popup은 `isActive`만.
+    /// 아이콘 · version 열이 아직 없는 DB(마이그레이션 전)면 그 열 없이 다시 읽고(`icon` = folder), 이번 실행 동안은 처음부터 그 열 없이 읽는다 (옛 멤버십 읽기가 깨지지 않게)
     public func workContexts() async throws -> [WorkContext] {
-        try await rows(supabase.from("work_contexts").select(WorkContext.columns).order("name", ascending: true).limit(500))
+        func read(_ columns: String) async throws -> [WorkContext] {
+            try await rows(supabase.from("work_contexts").select(columns).order("name", ascending: true).limit(500))
+        }
+        if missingContextIcon.isSet { return try await read(WorkContext.columnsWithoutIcon) }
+        do {
+            return try await read(WorkContext.columns)
+        } catch let error as PostgrestError where error.code == Self.undefinedColumn {
+            missingContextIcon.set()
+            return try await read(WorkContext.columnsWithoutIcon)
+        }
     }
 
     /// "지금 기억" 전부 (`superseded_at is null and revoked_at is null`), 새 것이 위. 범위 사이 우선은 서버 판정이라 흉내 내지 않고 항목마다 범위를 그대로 읽는다

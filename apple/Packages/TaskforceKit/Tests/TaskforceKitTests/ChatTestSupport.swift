@@ -158,6 +158,8 @@ final class FakeChatGateway: ChatGateway, @unchecked Sendable {
 
     // 읽기 스크립트
     nonisolated(unsafe) var conversationsHandler: @Sendable () async throws -> [ChatConversation] = { [] }
+    /// id로 직접 읽는 한 행 (OA U2 세션 패널). 정하지 않으면 `ChatGateway`의 기본 구현(목록에서 찾기)이 그대로다
+    nonisolated(unsafe) var conversationHandler: (@Sendable (UUID) async throws -> ChatConversation?)?
     nonisolated(unsafe) var lastMessagesHandler: @Sendable ([UUID]) async throws -> [UUID: ChatMessage] = { _ in [:] }
     nonisolated(unsafe) var messagesHandler: @Sendable (UUID) async throws -> [ChatMessage] = { _ in [] }
     nonisolated(unsafe) var messageHandler: @Sendable (UUID) async throws -> ChatMessage? = { _ in nil }
@@ -179,6 +181,11 @@ final class FakeChatGateway: ChatGateway, @unchecked Sendable {
     nonisolated(unsafe) var moveHandler: @Sendable (UUID, Int, MemoryTarget) async throws -> MemoryItem = { _, _, _ in throw Failure() }
 
     func conversations() async throws -> [ChatConversation] { record("conversations"); return try await conversationsHandler() }
+    func conversation(id: UUID) async throws -> ChatConversation? {
+        record("conversation:\(id.uuidString)")
+        if let conversationHandler { return try await conversationHandler(id) }
+        return try await conversations().first { $0.id == id }
+    }
     func lastMessages(conversationIDs: [UUID]) async throws -> [UUID: ChatMessage] { record("lastMessages"); return try await lastMessagesHandler(conversationIDs) }
     func messages(conversationID: UUID) async throws -> [ChatMessage] { record("messages:\(conversationID.uuidString)"); return try await messagesHandler(conversationID) }
     func message(id: UUID) async throws -> ChatMessage? { record("message:\(id.uuidString)"); return try await messageHandler(id) }

@@ -417,8 +417,12 @@ public struct ActionRecord: Decodable, Sendable, Hashable, Identifiable {
     public let startedAt: Date?
     public let lastActivityAt: Date
     public let createdAt: Date
+    /// 이슈 번호 (`actions.number`, 사용자별 · 재사용 없음). 열이 없는 DB(마이그레이션 전)나 모르면 nil: 번호 자리를 비운다
+    public let number: Int?
 
-    public static let columns =
+    /// 번호 열이 없는 DB(`20261120000000_action_numbers.sql` 전)에서는 `columnsWithoutNumber`로 다시 읽는다 (`TaskforceReads.actionDetail`)
+    public static let columns = columnsWithoutNumber + ", number"
+    static let columnsWithoutNumber =
         "id, title, scope_summary, owner, counterpart, due_date, status, needs_confirmation, confirm_reasons, started_at, last_activity_at, created_at"
 
     enum CodingKeys: String, CodingKey {
@@ -430,6 +434,7 @@ public struct ActionRecord: Decodable, Sendable, Hashable, Identifiable {
         case startedAt = "started_at"
         case lastActivityAt = "last_activity_at"
         case createdAt = "created_at"
+        case number
     }
 }
 

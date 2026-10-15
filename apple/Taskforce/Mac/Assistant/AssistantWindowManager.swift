@@ -44,17 +44,21 @@ final class AssistantWindowManager {
             screen.id == display() ? railWidth : 0
         }
 
-        /// 실제 화면: 레일이 붙는 화면, 열린 패널의 창
-        static func live(panel: EdgePanelController, shell: EdgeShellModel) -> Environment {
+        /// 실제 화면: 레일이 붙는 화면, 열린 패널의 창. 패널의 자리는 **열린 패널들의 합**이다: 이슈 패널 창(SessionTab 띠 포함)과 세션 패널 (OA U2-44)
+        static func live(panel: EdgePanelController, shell: EdgeShellModel, sessionPanel: EdgeSessionPanelController? = nil) -> Environment {
             Environment(
                 visibleFrame: { (EdgeRailPanelController.screen ?? NSScreen.main)?.visibleFrame ?? CGRect(x: 0, y: 0, width: 1440, height: 875) },
                 railFrame: {
                     guard let screen = EdgeRailPanelController.screen ?? NSScreen.main else { return CGRect(x: 1396, y: 400, width: 44, height: 320) }
                     let top = EdgeRailPanelController.railTop(on: screen)
-                    let height = EdgeRailLayout.windowHeight - 2 * EdgeRailLayout.fillet
+                    let height = EdgeRailLayout.windowHeight(plus: shell.issueScreensEnabled) - 2 * EdgeRailLayout.fillet
                     return CGRect(x: screen.frame.maxX - EdgeRailLayout.railWidth, y: top - height, width: EdgeRailLayout.railWidth, height: height)
                 },
-                panelFrame: { shell.panelOpen && panel.isVisible ? panel.panel.frame : nil },
+                panelFrame: {
+                    guard shell.panelOpen, panel.isVisible else { return nil }
+                    let frames = [panel.panel.frame] + ((sessionPanel?.isVisible ?? false) ? [sessionPanel?.panel.frame].compactMap { $0 } : [])
+                    return AssistantWindowGeometry.panelsFrame(frames)
+                },
                 display: { Self.displayKey(EdgeRailPanelController.screen ?? NSScreen.main) },
                 extraScreens: {
                     let rail = EdgeRailPanelController.screen ?? NSScreen.main
@@ -363,6 +367,30 @@ final class AssistantWindowManager {
 
     nonisolated static func chip(for item: (id: UUID, title: String)) -> AssistantChip {
         AssistantChip(kind: .action, itemID: item.id, origin: .auto, title: item.title)
+    }
+
+    /// 패널에서 열린 항목의 auto 칩: 종류(이슈 · 프로젝트 · 세션)와 이슈 번호를 싣는다 (OA U2-45)
+    nonisolated static func chip(for item: AssistantOpenItem) -> AssistantChip {
+        AssistantChip(open: item)
+    }
+
+    // MARK: Ask · New session (OA U2)
+
+    /// Ask 알약: 앞 Assistant 창에 그 항목의 칩을 더한다. 앞 창이 없으면 숨은 가장 최근 창을 앞으로, 창이 하나도 없으면 새 창을 연다
+    @discardableResult
+    func ask(about item: AssistantOpenItem) -> UUID? {
+        guard let id = registry.frontmost ?? showChats() else { return nil }
+        controllers[id]?.model.addChip(AssistantChip(open: item))
+        return id
+    }
+
+    /// New session `+`: 새 Assistant 창을 열고 범위 칩을 단 채 대상 메뉴를 열어 둔다 (U1 ⌘N 길). 세션은 첫 전달 때 서버가 만든다
+    @discardableResult
+    func openNewSession(scope: AssistantOpenItem?) -> UUID? {
+        guard let id = openNewWindow() else { return nil }
+        if let scope { controllers[id]?.model.addChip(AssistantChip(open: scope)) }
+        controllers[id]?.toggleTargetMenu()
+        return id
     }
 
     /// 패널에서 열린 항목을 앞 창의 auto 칩이 따라간다 (뒤 창들은 자기 칩을 지킨다). 열린 항목이 없어졌다고 칩을 지우지 않는다

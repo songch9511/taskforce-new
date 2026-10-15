@@ -18,6 +18,8 @@ final class ChatRuntime {
     let targets: AssistantTargetsStore
     /// All work의 실제 범위(프로젝트) 멤버십 (S3b). 없으면 모든 할 일이 Ungrouped (범위를 읽지 않는다)
     let contexts: WorkContextStore?
+    /// 새 Issues 화면(OA U2)의 세션 · 이슈 번호 · 이슈 상세 읽기. **게이트가 꺼져 있으면 nil** (`EdgeSurfaces.issueScreens`): 읽기도 타이머도 없다
+    let issues: IssueRuntime?
     /// 인용의 원문 링크를 연다 (테스트는 가짜로 바꾼다)
     var openURL: (URL) -> Void = { NSWorkspace.shared.open($0) }
     #if DEBUG
@@ -27,17 +29,27 @@ final class ChatRuntime {
     #endif
     private var connectivityTask: Task<Void, Never>?
 
+    /// - issueScreens: 새 Issues 화면을 켜는가 (기본은 이 실행의 게이트 `EdgeSurfaces.issueScreens`). 켜져 있어도 이 연결이 `IssueScreensGateway`를 따르지 않으면(견본 · 시험용 가짜) 만들지 않는다
     init(
         gateway: any ChatGateway, contextGateway: (any ContextGateway)? = nil, scope: AccountScope = AccountScope(),
-        now: @escaping @Sendable () -> Date = { Date() }
+        now: @escaping @Sendable () -> Date = { Date() }, issueScreens: Bool = EdgeSurfaces.issueScreensForThisRun
     ) {
+        #if DEBUG
+        // 견본 하네스(`-TFEdgeSnapshotIssues`)는 세션 · 번호 · 상세와 프로젝트 아이콘이 있는 견본 서버를 읽는다 (실서버 · 기존 견본은 그대로)
+        let gateway = issueScreens ? IssueSnapshotData.gateway(replacing: gateway) : gateway
+        #endif
         self.scope = scope
         memory = MemoryStore(gateway: gateway, scope: scope)
         // 대상 목록 · 칩을 실은 보내기는 실제 연결(`LiveChatGateway`)만 가진다. 견본 · 시험용 가짜는 Taskforce 대상으로만 보낸다
         let assistant = gateway as? any AssistantGateway
         chat = ChatStore(gateway: gateway, scope: scope, memory: memory, now: now, assistant: assistant)
         targets = AssistantTargetsStore(gateway: assistant, scope: scope, canRunAgents: { !AgentRuntimeEnvironment.isSandboxed() })
+        #if DEBUG
+        // 견본 하네스(`-TFEdgeSnapshotIssues`)는 프로젝트 아이콘 · 긴 이름이 있는 견본 범위를 읽는다 (실서버 · 기존 견본은 그대로)
+        let contextGateway = issueScreens ? IssueSnapshotData.contextGateway(replacing: contextGateway) : contextGateway
+        #endif
         contexts = contextGateway.map { WorkContextStore(gateway: $0, scope: scope) }
+        issues = issueScreens ? (gateway as? any IssueScreensGateway).map { IssueRuntime(gateway: $0, scope: scope, now: now) } : nil
     }
 
     /// 연결 경로를 두 저장소에 알린다 (오프라인에서 돌아오면 대화 목록을 다시 읽는다)
@@ -50,6 +62,7 @@ final class ChatRuntime {
                 chat.pathChanged(online: online)
                 memory.pathChanged(online: online)
                 contexts?.pathChanged(online: online)
+                issues?.pathChanged(online: online)
                 if online, !wasOnline {
                     await chat.refresh()
                     await contexts?.refresh()

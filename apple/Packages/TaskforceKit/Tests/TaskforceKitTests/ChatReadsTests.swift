@@ -65,6 +65,24 @@ struct ChatReadsTests {
         #expect(query(untouched)["order"]?.hasPrefix("created_at.desc") == true)
     }
 
+    /// 세션 패널(OA U2): 목록(최근 100 + 빈 20)에 없는 오래된 대화도 id로 직접 읽는다. 보관 여부는 호출부가 본다 (`archived_at` 열을 읽는다)
+    @Test func aConversationIsReadByIDWithItsTargetColumns() async throws {
+        let id = ChatContractFixtures.conversationID
+        let row = """
+        [{"id":"\(id.uuidString.lowercased())","title":null,"context_id":null,"created_at":"2026-10-01T00:00:00Z","last_message_at":"2026-10-02T00:00:00Z","last_read_at":null,
+          "archived_at":null,"text_purged_at":null,"target_kind":"agent","agent_connection_id":"c0c00000-0000-4000-8000-000000000001","agent_session_id":"5e550000-0000-4000-8000-000000000001"}]
+        """
+        let found = try await reads(rows: ["conversations": row]).conversation(id: id)
+        let request = try #require(requests.last)
+        #expect(request.path == "/rest/v1/conversations")
+        let q = query(request)
+        #expect(q["id"] == "eq.\(id.uuidString.lowercased())" && q["limit"] == "1")
+        #expect(q["select"]?.contains("target_kind") == true && q["select"]?.contains("agent_session_id") == true && q["select"]?.contains("archived_at") == true)
+        #expect(found?.id == id && found?.target.isAgent == true)
+        let none = try await reads(rows: ["conversations": "[]"]).conversation(id: id)
+        #expect(none == nil, "없으면(지움 · 남의 것) nil")
+    }
+
     @Test func threadReadsNewestPagesAndReturnsThemOldestFirst() async throws {
         func row(_ seq: Int) -> String {
             """

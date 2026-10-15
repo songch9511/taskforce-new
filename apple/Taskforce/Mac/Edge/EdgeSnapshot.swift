@@ -68,6 +68,11 @@ enum EdgeSnapshot {
                 NSApplication.shared.terminate(nil)
                 return
             }
+            if arguments.contains("-TFEdgeSnapshotIssues") {
+                await IssueSnapshot.capture(edge, file: file, pause: { seconds in await settle(seconds) })
+                NSApplication.shared.terminate(nil)
+                return
+            }
             if arguments.contains("-TFEdgeSnapshotSummary") {
                 await SummarySnapshot.capture(edge, file: file, settle: { await settle() })
                 NSApplication.shared.terminate(nil)
