@@ -56,6 +56,26 @@ describe("T4 사후 소유 확인 · 본문 동일성 · 되돌리기", () => {
     }
   });
 
+  it("쓰는 도중 답이 간 질문이 승인 질문(approval + secret:true)으로 바뀌면 같은 롤백 · not_found (사후 확인은 질문 종류도 본다)", async () => {
+    const w = await f.secretWorld();
+    const before = await f.all(w.user);
+    expect((before.agent_path_leases as unknown[]).length).toBe(1);
+    await f.q("begin");
+    try {
+      // 사전 확인 때는 secret input 질문이었다가 잠금 아래에서 승인 질문이 된 것을 흉내 낸다: 답이 간 질문(answered_question)의 종류를 갈아 끼운다
+      await f.q(`create function public.tmp_f2_kind() returns trigger language plpgsql as $$
+        begin new.answered_question := jsonb_set(new.answered_question, '{kind}', '"approval"'); return new; end $$`);
+      await f.q(`create trigger tmp_f2_kind before update of state on public.agent_tasks for each row
+        when (old.state = 'awaiting_answer' and new.state = 'running') execute function public.tmp_f2_kind()`);
+      expect(await f.local(w)).toEqual({ status: "not_found" });
+      expect(await f.all(w.user)).toEqual(before);
+      expect(await f.answerSteps(w.task)).toEqual([]);
+      expect(await f.metrics(w.user)).toEqual([]);
+    } finally {
+      await f.q("rollback");
+    }
+  });
+
   it("대조: 바뀌지 않으면 같은 호출이 answered이다 (위 시험이 트리거 때문에만 거절된 것을 확인)", async () => {
     const w = await f.secretWorld();
     expect((await f.local(w)).status).toBe("answered");

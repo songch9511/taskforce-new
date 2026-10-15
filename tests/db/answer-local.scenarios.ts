@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { answerQuestionFixture } from "./agent-questions-stop.scenarios";
 import { bridgeCommandFixtures } from "./bridge-commands.scenarios";
@@ -24,8 +24,18 @@ export function answerLocalFixtures(db: () => ConversationAgentDb) {
   const x = {
     ...f,
     secretQuestion,
-    /** 대화 run의 작업이 비밀값 질문 하나(request)를 기다린다. 연결은 bridge에 묶여 있고 adapter는 codex */
-    secretWorld: (question: ReturnType<typeof answerQuestionFixture> = secretQuestion(), adapter = "agent:codex") => f.questionWorld(question, adapter),
+    /** 그 run이 쥔 실제 `requested` 경로 lease 하나 (승인을 기다리는 예약). 만료는 먼 미래 — 작업 상태가 잘못 바뀌면 트리거가 만료를 지워 행이 달라진다 */
+    requestedLease: (w: Pick<World, "user" | "bridge" | "run" | "session">) =>
+      f.insertRow("agent_path_leases", {
+        user_id: w.user, bridge_id: w.bridge, run_id: w.run, agent_session_id: w.session, workspace_ref: "/w/proj", path_key: `/w/proj/${randomUUID()}.mdx`,
+        rel_path: "pricing.mdx", source: "requested", request_id: REQUEST, expires_at: new Date(Date.now() + 30 * 60_000).toISOString(),
+      }),
+    /** 대화 run의 작업이 비밀값 질문 하나(request)를 기다린다. 연결은 bridge에 묶여 있고 adapter는 codex. 같은 run이 실제 `requested` lease를 하나 쥔다 */
+    async secretWorld(question: ReturnType<typeof answerQuestionFixture> = secretQuestion(), adapter = "agent:codex") {
+      const w = await f.questionWorld(question, adapter);
+      await x.requestedLease(w);
+      return w;
+    },
     async local(w: Pick<World, "user" | "bridge" | "task">, over: Over = {}): Promise<LocalResult> {
       const adapters = over.adapters === undefined ? BOTH : over.adapters;
       return (await f.one("select public.answer_agent_question_locally($1,$2,$3,$4,$5::text[]) as result", [
@@ -34,7 +44,7 @@ export function answerLocalFixtures(db: () => ConversationAgentDb) {
     },
     /** 쓰기가 있었는지 보는 한 장: 답이 건드릴 수 있는 표 전부 (같으면 쓰기 0) */
     async all(user: string) {
-      const tables = ["bridge_commands", "execution_steps", "execution_runs", "agent_tasks", "agent_sessions", "agent_connections", "conversation_messages", "conversations", "execution_events", "execution_intents", "metric_events"];
+      const tables = ["bridge_commands", "execution_steps", "execution_runs", "agent_tasks", "agent_sessions", "agent_connections", "conversation_messages", "conversations", "execution_events", "execution_intents", "metric_events", "agent_path_leases"];
       const out: Record<string, unknown[]> = {};
       for (const table of tables) out[table] = await f.q(`select * from public.${table} where user_id=$1 order by 1`, [user]);
       return out;
@@ -232,6 +242,40 @@ export function answerLocalTests(db: () => ConversationAgentDb) {
         await f.updateRow("agent_tasks", w.task, { state, pending_question: null });
         expect(await f.local(w)).toEqual({ status: "stale", reason: "question_closed" });
       }
+    });
+  });
+
+  describe("T5b lease 관찰", () => {
+    const leases = (run: string) => f.q("select * from public.agent_path_leases where run_id=$1 order by id", [run]);
+
+    it("실제 requested lease가 있고 all()이 그 표를 본다: lease를 고치면 all()이 달라진다 (대조)", async () => {
+      const w = await f.secretWorld();
+      const rows = await leases(w.run);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({ source: "requested", request_id: REQUEST, released_at: null });
+      const before = await f.all(w.user);
+      expect(before.agent_path_leases).toHaveLength(1);
+      await f.q("update public.agent_path_leases set rel_path='changed.mdx' where run_id=$1", [w.run]);
+      expect(await f.all(w.user)).not.toEqual(before);
+    });
+
+    const writeFree: [string, () => ReturnType<typeof f.secretWorld>, Over][] = [
+      ["승인 질문(lease 확정이 있는 길로만 답한다)", () => f.secretWorld(answerQuestionFixture({ secret: true }, { kind: "approval" })), {}],
+      ["비밀값 없는 input", () => f.secretWorld(answerQuestionFixture()), {}],
+      ["digest가 다름", () => f.secretWorld(), { digest: sha256("other") }],
+      ["모양이 틀린 digest", () => f.secretWorld(), { digest: CANARY }],
+      ["다른 bridge", () => f.secretWorld(), { bridge: "other" }],
+    ];
+    it.each(writeFree)("쓰기 없는 결과(%s)에서 requested lease 행이 한 글자도 바뀌지 않는다", async (_name, build, over) => {
+      const w = await build();
+      const arranged = over.bridge === "other" ? { ...over, bridge: await f.bridge(w.user) } : over;
+      const before = await leases(w.run);
+      expect(before).toHaveLength(1);
+      const all = await f.all(w.user);
+      const result = await f.local(w, arranged);
+      expect(["stale", "invalid", "not_found"]).toContain(result.status);
+      expect(await leases(w.run)).toEqual(before);
+      expect(await f.all(w.user)).toEqual(all);
     });
   });
 

@@ -14,7 +14,8 @@
 --   5) 아직 열린 질문인데 작업이 unreachable(heartbeat 공백)이면 stale/not_live — 참고 이유다. Mac이 heartbeat · reconcile로 작업을 되살린 뒤 한 번 다시 보낸다
 --   6) answer_agent_question(user, task, 원래 provider_request_id, null, true, null)을 그대로 지난다: 질문 열쇠 CAS · 중복 수렴 · 답 단계 · bridge 명령 · 대화 줄이
 --      Assistant · Review의 답과 같은 길이다. 인자는 SQL 상수(p_answers => null, p_answered_locally => true, p_answer_message_id => null)라 값이 들어갈 길이 없다
---   7) answered · duplicate이면 세션 · 작업을 쥔 채로 연결의 bridge_id가 이 bridge인지(와 bridge가 active인지) 한 번 더 본다. 다르면 TF005로 블록을 롤백하고 not_found
+--   7) answered · duplicate이면 세션 · 작업을 쥔 채로 연결의 bridge_id가 이 bridge인지(와 bridge가 active인지), 답이 간 질문이 input인지 한 번 더 본다. 다르면 TF005로 블록을 롤백하고 not_found
+--      (사전 확인과 잠금 사이에 승인 질문으로 바뀐 경우도 여기서 걸러진다 — 승인은 lease 확정이 있는 길로만 답한다)
 --      (지금은 연결의 bridge_id를 바꾸는 길이 없다. 그래도 안전을 "바꾸는 길이 없다"는 강제되지 않은 사실에 기대지 않는다). 같으면 answered에만 지표 한 줄 — 같은 트랜잭션
 -- 잠금은 `answer_agent_question`의 것뿐이다(메시지 → 대화 → 세션 → run → 작업 → 단계). 이 함수는 잠그기 전에 잠금 없이 읽기만 하고, bridge · 연결 행은 잠그지 않는다:
 --   revoke_bridge(bridge → 연결 → 세션 …)와 서로 반대 순서로 기다리지 않는다 (명령 행의 FK는 bridge에 KEY SHARE만 건다).
@@ -101,9 +102,10 @@ begin
           join public.agent_sessions s on s.id = t.agent_session_id and s.user_id = t.user_id
           join public.agent_connections c on c.id = s.connection_id and c.user_id = s.user_id
           join public.bridges b on b.id = c.bridge_id and b.user_id = c.user_id
-         where t.id = p_agent_task_id and t.user_id = p_user_id and c.bridge_id = p_bridge_id and b.status = 'active';
+         where t.id = p_agent_task_id and t.user_id = p_user_id and c.bridge_id = p_bridge_id and b.status = 'active'
+           and t.answered_question->>'kind' = 'input';
         if not found then
-          raise exception 'answer_agent_question_locally: bridge changed' using errcode = 'TF005';
+          raise exception 'answer_agent_question_locally: bridge or question changed' using errcode = 'TF005';
         end if;
         if v_result->>'status' = 'answered' then
           insert into public.metric_events (user_id, type, props)
