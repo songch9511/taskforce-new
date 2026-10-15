@@ -275,19 +275,29 @@ public struct WorkContext: Decodable, Sendable, Hashable, Identifiable {
     public let status: Status
     /// 멤버십 쓰기의 조건 (`expected_context_version`): 앱이 RLS로 읽은 값. 읽지 못했으면 nil (그 범위에는 쓰지 않는다)
     public let contextVersion: Int?
+    /// 프로젝트 아이콘 (OA U2, 서버 `icon`). 풀 밖 이름 · 열이 없는 DB는 folder
+    public let icon: ProjectIconName
+    /// 이름 · 아이콘 · 상태를 바꿀 때의 조건 (`expected_version`, 서버 `version`). 열이 없는 DB · 읽지 못했으면 nil
+    public let version: Int?
 
-    public static let columns = "id, name, kind, status, context_version, last_activity_at"
+    /// 아이콘 · version 열이 없는 DB(`20261117000000_context_icon_version.sql` 전)에서는 `columnsWithoutIcon`으로 다시 읽는다 (`TaskforceReads.workContexts`)
+    public static let columns = columnsWithoutIcon + ", icon, version"
+    static let columnsWithoutIcon = "id, name, kind, status, context_version, last_activity_at"
 
     enum CodingKeys: String, CodingKey {
-        case id, name, status
+        case id, name, status, icon, version
         case contextVersion = "context_version"
     }
 
-    public init(id: UUID, name: String, status: Status = .active, contextVersion: Int? = nil) {
+    public init(
+        id: UUID, name: String, status: Status = .active, contextVersion: Int? = nil, icon: ProjectIconName = .folder, version: Int? = nil
+    ) {
         self.id = id
         self.name = name
         self.status = status
         self.contextVersion = contextVersion
+        self.icon = icon
+        self.version = version
     }
 
     public init(from decoder: Decoder) throws {
@@ -296,6 +306,9 @@ public struct WorkContext: Decodable, Sendable, Hashable, Identifiable {
         name = try c.decode(String.self, forKey: .name)
         status = Status(raw: (try? c.decode(String.self, forKey: .status)) ?? "")
         contextVersion = try? c.decodeIfPresent(Int.self, forKey: .contextVersion)
+        // 모양이 어긋난 값 하나가 범위 목록 전체를 못 읽게 하지 않는다
+        icon = ProjectIconName(raw: (try? c.decodeIfPresent(String.self, forKey: .icon)) ?? nil)
+        version = try? c.decodeIfPresent(Int.self, forKey: .version)
     }
 
     public var isActive: Bool { status == .active }

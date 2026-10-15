@@ -32,12 +32,14 @@ public struct WorkItem: Sendable, Hashable, Identifiable {
     public let waiting: Bool
     /// 서버의 순서 이유 (기한 빨강 `DueText.isUrgent`). 확인 요청 · 끝낸 일은 없음
     public let reasons: [RankReason]
+    /// 이슈 번호 (`IssueNumberStore`가 RLS로 읽은 `actions.number`). 모르면 nil: 번호 자리를 비운다 (OA U2, v1 응답은 번호가 없다)
+    public let number: Int?
 
     public var id: UUID { action.id }
 
     public init(
         action: ActionSummary, state: WorkState, memberships: WorkMemberships = .none, performer: String? = nil, activity: String? = nil,
-        waiting: Bool = false, reasons: [RankReason] = []
+        waiting: Bool = false, reasons: [RankReason] = [], number: Int? = nil
     ) {
         self.action = action
         self.state = state
@@ -46,6 +48,7 @@ public struct WorkItem: Sendable, Hashable, Identifiable {
         self.activity = activity
         self.waiting = waiting
         self.reasons = reasons
+        self.number = number
     }
 
     /// 수행자: 담당이 나이고 담당을 묻는 확인 이유("Not sure it's yours": 판정 NOT_MY_ACTION · 담당 확인)가 없을 때만 "You".
@@ -60,14 +63,14 @@ public struct WorkItem: Sendable, Hashable, Identifiable {
     public static func list(
         reviews: [ActionSummary], open: [ActionSummary], doneToday: [ActionSummary],
         working: Set<UUID> = [], stopping: Set<UUID> = [], reasons: [UUID: [RankReason]] = [:],
-        memberships: WorkMembershipIndex = .empty
+        memberships: WorkMembershipIndex = .empty, numbers: [UUID: Int] = [:]
     ) -> [WorkItem] {
         var seen = Set<UUID>()
         var items: [WorkItem] = []
         for action in reviews where seen.insert(action.id).inserted {
             items.append(WorkItem(
                 action: action, state: openState(action), memberships: memberships.memberships(of: action.id), performer: performer(action),
-                activity: WorkActivity.needsAnswer
+                activity: WorkActivity.needsAnswer, number: numbers[action.id]
             ))
         }
         for action in open where seen.insert(action.id).inserted {
@@ -76,12 +79,13 @@ public struct WorkItem: Sendable, Hashable, Identifiable {
                 : nil
             items.append(WorkItem(
                 action: action, state: openState(action), memberships: memberships.memberships(of: action.id), performer: performer(action),
-                activity: activity, reasons: reasons[action.id] ?? []
+                activity: activity, reasons: reasons[action.id] ?? [], number: numbers[action.id]
             ))
         }
         for action in doneToday where seen.insert(action.id).inserted {
             items.append(WorkItem(
-                action: action, state: .done, memberships: memberships.memberships(of: action.id), performer: performer(action)
+                action: action, state: .done, memberships: memberships.memberships(of: action.id), performer: performer(action),
+                number: numbers[action.id]
             ))
         }
         return items

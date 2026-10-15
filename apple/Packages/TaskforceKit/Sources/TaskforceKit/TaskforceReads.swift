@@ -9,6 +9,14 @@ public struct ActionDetail: Sendable, Hashable {
     public let evidence: [EvidenceRecord]
     public let sources: [UUID: SourceSummary]
     public let events: [ActionEventRecord]
+
+    /// 견본 · 시험이 만든다 (실제 읽기는 `TaskforceReads.actionDetail`)
+    public init(action: ActionRecord, evidence: [EvidenceRecord], sources: [UUID: SourceSummary], events: [ActionEventRecord]) {
+        self.action = action
+        self.evidence = evidence
+        self.sources = sources
+        self.events = events
+    }
 }
 
 /// 원문 상세: 원문 + 이 원문에서 나온 근거 인용
@@ -22,6 +30,10 @@ public struct TaskforceReads: Sendable {
     let supabase: SupabaseClient
     /// `execution_runs.stopped_at` 열이 없음을 이번 실행에서 알았나 (서버 U2 Mac PR1 마이그레이션 전 DB: 매 읽기마다 실패 응답을 받지 않게)
     private let missingStoppedAt = MissingColumnMemo()
+    /// `actions.number` 열이 없음을 이번 실행에서 알았나 (`20261120000000_action_numbers.sql` 전 DB: 매 읽기마다 실패 응답을 받지 않게, OA U2)
+    private let missingNumber = MissingColumnMemo()
+    /// `work_contexts.icon` · `version` 열이 없음을 이번 실행에서 알았나 (`20261117000000_context_icon_version.sql` 전 DB, OA U2)
+    let missingContextIcon = MissingColumnMemo()
 
     public init(supabase: SupabaseClient) {
         self.supabase = supabase
@@ -35,9 +47,7 @@ public struct TaskforceReads: Sendable {
 
     public func actionDetail(id: UUID) async throws -> ActionDetail {
         let idString = id.lowercased
-        async let actionRows: [ActionRecord] = rows(
-            supabase.from("actions").select(ActionRecord.columns).eq("id", value: idString).limit(1)
-        )
+        async let actionRows: [ActionRecord] = actionRecordRows(idString)
         async let evidenceRows: [EvidenceRecord] = rows(
             supabase.from("evidence").select(EvidenceRecord.columns).eq("action_id", value: idString)
                 .order("created_at", ascending: false).limit(50)
@@ -62,6 +72,38 @@ public struct TaskforceReads: Sendable {
             sources: Dictionary(sources.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first }),
             events: events
         )
+    }
+
+    /// `actions` 상세 행. 번호 열이 아직 없는 DB(마이그레이션 전)면 그 열 없이 다시 읽고(`number` = nil), 이번 실행 동안은 처음부터 그 열 없이 읽는다
+    private func actionRecordRows(_ idString: String) async throws -> [ActionRecord] {
+        func read(_ columns: String) async throws -> [ActionRecord] {
+            try await rows(supabase.from("actions").select(columns).eq("id", value: idString).limit(1))
+        }
+        if missingNumber.isSet { return try await read(ActionRecord.columnsWithoutNumber) }
+        do {
+            return try await read(ActionRecord.columns)
+        } catch let error as PostgrestError where error.code == Self.undefinedColumn {
+            missingNumber.set()
+            return try await read(ActionRecord.columnsWithoutNumber)
+        }
+    }
+
+    /// 그 이슈들의 번호 (`actions.number`, RLS). 한 번에 100개씩. 번호 열이 없는 DB면 빈 답이다 (번호 자리를 비운다)
+    public func actionNumbers(ids: [UUID]) async throws -> [UUID: Int] {
+        let ids = Array(Set(ids)).sorted { $0.uuidString < $1.uuidString }
+        guard !ids.isEmpty, !missingNumber.isSet else { return [:] }
+        var result: [UUID: Int] = [:]
+        for start in stride(from: 0, to: ids.count, by: Self.sourceIDChunkSize) {
+            let chunk = ids[start..<min(start + Self.sourceIDChunkSize, ids.count)].map(\.lowercased)
+            do {
+                let page: [IssueNumberRow] = try await rows(supabase.from("actions").select(IssueNumberRow.columns).in("id", values: chunk))
+                for row in page { result[row.id] = row.number }
+            } catch let error as PostgrestError where error.code == Self.undefinedColumn {
+                missingNumber.set()
+                return [:]
+            }
+        }
+        return result
     }
 
     /// 오늘 끝낸 할 일 (Done Today): `since`(기기 시간대의 오늘 0시) 뒤에 바뀐 완료 행, 최근 것이 위.

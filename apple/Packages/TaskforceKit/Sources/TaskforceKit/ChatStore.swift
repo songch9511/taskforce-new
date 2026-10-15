@@ -500,6 +500,15 @@ public final class ChatStore {
         spawn { await self.loadThread(id) }
     }
 
+    /// 대화 id만 아는 곳(세션 패널)용: 목록에 아직 없는 대화면 목록을 먼저 읽고 글을 읽는다 (앱을 연 뒤 처음 · 방금 만든 세션). 저장소의 현재 대화 · 모드는 그대로
+    public func ensureLoadedReadingListFirst(_ id: UUID) {
+        spawn {
+            if !self.conversations.contains(where: { $0.id == id }) { await self.refresh() }
+            guard self.conversations.contains(where: { $0.id == id }) else { return }
+            await self.loadThread(id)
+        }
+    }
+
     /// 새 대화 하나를 마련한다 (⌘N · SquarePen · 대상 바꾸기). 손대지 않은 빈 대화가 있으면 그것을 다시 쓴다 — 단 `excluding`(다른 창이 쥔 대화)은 빼고,
     /// 서버에 이미 있는 빈 대화는 대상이 같을 때만 쓴다 (서버 대화의 대상은 바뀌지 않는다). 없으면 서버에 아직 없는 빈 대화를 메모리에 만든다 (첫 메시지를 보낼 때 서버에 만든다)
     @discardableResult
