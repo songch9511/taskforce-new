@@ -114,8 +114,14 @@ public enum Reconcile {
             case .ended:
                 if signal {
                     decision = facts.outboxPending ? .replayOutboxFirst : .report(.received, processEnded: true)
+                } else if facts.preAcceptFailureQueued {
+                    decision = .replayOutboxFirst
+                } else if command.inputAt != nil, facts.adapterReadback != .notReceived(processEnded: true) {
+                    // 입력이 CLI에 닿은 뒤(Claude Code init · Codex turn/start) 접수 신호 없이 끝났다: 받았는지 모른다 (계약 13.2 :519, OA D3a Q5).
+                    // adapter가 받지 않았다고 확인할 때만 not_received (Send again이 같은 글을 transcript에 두 번 넣지 않게)
+                    decision = .report(.unknown, processEnded: false)
                 } else {
-                    decision = facts.preAcceptFailureQueued ? .replayOutboxFirst : .report(.notReceived, processEnded: true)
+                    decision = .report(.notReceived, processEnded: true)
                 }
             case .unknown, .unverifiedOrphan:
                 decision = signal ? (facts.outboxPending ? .replayOutboxFirst : .report(.received, processEnded: false)) : .report(.unknown, processEnded: false)

@@ -89,6 +89,8 @@ public actor BridgeRuntime {
         let runID: UUID
         let adapterID: String
         var identity: AgentProcessIdentity?
+        /// adapter가 `inputReached`를 알렸지만 아직 명령 `inputAt`에 적지 못한 시각 (시작 기록이 끝난 뒤 적는다, OA D3a Q5)
+        var inputReachedAt: Date?
     }
 
     // MARK: 의존성
@@ -186,6 +188,34 @@ public actor BridgeRuntime {
             guard let runtime = self else { return }
             await secrets.observe { [weak runtime] _ in Task { await runtime?.publish() } }
         }
+        // adapter마다 한 번: 도구 판정은 이 런타임(이 파티션의 bridge id · secret)으로만 묻는다 (OA D3a Q12, ONE-TF-09)
+        let services = AgentRuntimeServices { [weak self] query in
+            guard let runtime = self else { throw AgentToolDecisionError.unavailable }
+            return try await runtime.decideTool(query)
+        }
+        for adapter in adapters { adapter.attach(services) }
+    }
+
+    // MARK: 도구 판정 (OA D3a 2.17)
+
+    static let toolDecisionTimeout: TimeInterval = 1.0
+
+    /// `POST /api/v1/bridge/tool-decision`: 1.0초 · 재시도 0. 보내지 못했거나(등록 전 · 네트워크 꺼짐 · 멈춘 상태) 답을 못 받으면 `unavailable`(adapter가 defer),
+    /// 폐기된 Mac(403)이면 `revoked`(adapter가 deny). 401에 다시 등록하지 않는다: 훅 예산 안에서 secret을 돌리지 않는다 (defer로 둔다)
+    func decideTool(_ query: BridgeV1ToolDecisionQuery) async throws -> BridgeV1ToolDecisionResponse {
+        if statusValue == .revoked { throw AgentToolDecisionError.revoked }
+        guard networkEnabled, statusValue != .stopped, let bridgeID, let secret else { throw AgentToolDecisionError.unavailable }
+        let gen = generation
+        let response: BridgeV1ToolDecisionResponse
+        do {
+            response = try await client.toolDecision(BridgeV1ToolDecisionRequest(bridgeID: bridgeID, query: query), secret: secret, timeout: Self.toolDecisionTimeout)
+        } catch BridgeClientError.forbidden {
+            throw AgentToolDecisionError.revoked
+        } catch {
+            throw AgentToolDecisionError.unavailable
+        }
+        guard isCurrent(gen) else { throw AgentToolDecisionError.unavailable }
+        return response
     }
 
     // MARK: 관찰

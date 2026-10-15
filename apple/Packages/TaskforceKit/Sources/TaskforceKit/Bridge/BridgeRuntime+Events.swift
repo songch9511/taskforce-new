@@ -18,7 +18,14 @@ extension BridgeRuntime {
             return
         }
         let observed = at ?? clock.now()
+        // 앞에서 미뤄 둔 `inputReached`가 있으면 시작 기록이 끝났는지 다시 보고 적는다 (OA D3a Q5)
+        if current.inputReachedAt != nil { await applyInputReached(taskID: taskID) }
         switch event {
+        case .inputReached:
+            // 로컬 전용: 서버 사건 0 · 접수 신호 아님. 명령의 `inputAt`이 비어 있을 때만 적는다
+            if supervised[taskID]?.inputReachedAt == nil { supervised[taskID]?.inputReachedAt = observed }
+            await applyInputReached(taskID: taskID)
+            return
         case .ended:
             await handleEnded(taskID: taskID, runID: runID)
         case .sessionBound(let external, let workspace):
@@ -149,8 +156,23 @@ extension BridgeRuntime {
 
     // MARK: 프로세스 끝
 
+    /// `inputReached` 시각을 명령 `inputAt`에 적는다 (비어 있을 때만). 시작 기록(`recordStarted`)이 `inputAt`을 adapter 정체 값으로 덮으므로
+    /// 그 기록이 끝난 뒤(`spawnAt` · `answerSentAt`이 있음)에만 적고, 아직이면 다음 사건 · 끝남에서 다시 본다
+    func applyInputReached(taskID: String) async {
+        guard let at = supervised[taskID]?.inputReachedAt, let task = try? await ledger.task(taskID), let commandID = task.currentCommandID,
+              let command = try? await ledger.command(commandID) else { return }
+        guard command.inputAt == nil else {
+            supervised[taskID]?.inputReachedAt = nil
+            return
+        }
+        guard command.spawnAt != nil || command.answerSentAt != nil else { return }
+        _ = try? await ledger.updateCommand(commandID) { if $0.inputAt == nil { $0.inputAt = at } }
+        supervised[taskID]?.inputReachedAt = nil
+    }
+
     func handleEnded(taskID: String, runID: UUID) async {
         guard supervised[taskID]?.runID == runID else { return }
+        if supervised[taskID]?.inputReachedAt != nil { await applyInputReached(taskID: taskID) }
         supervised[taskID] = nil
         let byUs = terminatedByUs.remove(taskID) != nil
         await finishEnded(taskID: taskID, byUs: byUs)

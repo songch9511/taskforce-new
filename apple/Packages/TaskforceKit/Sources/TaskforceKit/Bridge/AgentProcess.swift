@@ -116,6 +116,9 @@ public struct AgentQuestion: Sendable, Equatable {
 /// adapter가 내는 사건 (형태만). `ended`는 프로세스 종료 신호이고 서버로 가는 사건이 아니다
 public enum AgentEvent: Sendable, Equatable {
     case sessionBound(externalSessionID: String, workspaceRef: String?)
+    /// 입력이 CLI에 닿았다 (Claude Code `system/init`, OA D3a Q5). **로컬 전용**: 서버 사건이 아니고 접수 신호도 아니다.
+    /// 런타임은 명령의 `inputAt`이 비어 있으면 이 시각을 적고, 결과 확인에서 접수 신호 없이 끝난 명령을 `not_received`가 아니라 `unknown`으로 답한다 (계약 13.2 :519)
+    case inputReached
     /// 접수 신호. Claude Code는 진짜 첫 assistant 메시지(synthetic 제외), Codex는 `turn/started` (adapter가 정한다)
     case accepted
     case progress
@@ -298,9 +301,27 @@ public struct AgentStartError: Error, Equatable, Sendable {
     }
 }
 
+/// 도구 결정 API 호출의 실패 (OA D3a Q11 · Q12): 폐기된 Mac(403)만 거절로, 그 밖(시간 초과 · 2xx 아님 · 등록 전 · 디코딩 실패)은 defer로 다룬다
+public enum AgentToolDecisionError: Error, Equatable, Sendable {
+    case revoked
+    case unavailable
+}
+
+/// 런타임이 adapter에 넘기는 좁은 연결 (OA D3a Q12). bridge id · 장치 secret · 계정 세대는 런타임만 안다: adapter는 이것으로만 서버 판정을 받는다
+public struct AgentRuntimeServices: Sendable {
+    /// `POST /api/v1/bridge/tool-decision` (timeout 1.0초, 재시도 0). 이 런타임의 파티션으로만 간다 (ONE-TF-09)
+    public var decideTool: @Sendable (BridgeV1ToolDecisionQuery) async throws -> BridgeV1ToolDecisionResponse
+
+    public init(decideTool: @escaping @Sendable (BridgeV1ToolDecisionQuery) async throws -> BridgeV1ToolDecisionResponse) {
+        self.decideTool = decideTool
+    }
+}
+
 public protocol AgentProcess: Sendable {
     /// registry id (`agent:claude-code`)
     var adapter: String { get }
+    /// 런타임이 만들어질 때 한 번 부른다 (OA D3a Q12). 서버 판정이 필요 없는 adapter는 기본 구현(아무것도 안 함)을 쓴다
+    func attach(_ services: AgentRuntimeServices)
     /// 설치 · 버전 · 로그인 · managed settings 보고. 자격 값은 읽지 않는다 (I16)
     func probe() async -> BridgeV1AdapterReport
     /// 이 버전을 이 adapter가 다룰 수 있나 (시작 직전 확인). 기본은 모두 허용
@@ -318,6 +339,7 @@ public protocol AgentProcess: Sendable {
 }
 
 extension AgentProcess {
+    public func attach(_ services: AgentRuntimeServices) {}
     public func supportsVersion(_ version: String?) -> Bool { true }
     public func readback(marker: String, session: AgentSessionRef) async -> AgentReadback { .unsupported }
 }
