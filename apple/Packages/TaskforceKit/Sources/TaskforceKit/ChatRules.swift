@@ -9,7 +9,7 @@ public enum ChatCopy {
     public static let noConversations = "No conversations yet."
     public static let newChat = "New chat"
     public static let emptyChatPreview = "No messages yet"
-    public static let composerPlaceholder = "Ask Taskforce…"
+    public static let composerPlaceholder = "Ask Taskforce"
     public static let composerLabel = "Reply to Taskforce"
     public static let historyTitle = "Chat history"
     public static let chatsTitle = "Chats"
@@ -37,6 +37,8 @@ public enum ChatCopy {
     public static let projectReasonUser = "You linked this chat to this project."
     public static let projectReasonNone = "This chat isn't linked to a project."
     public static let projectLabel = "Project"
+    /// 에이전트를 골랐는데 연결이 없어 보낼 곳이 없다 (보내기 실패 줄의 이유, 대상 메뉴의 단어와 같다)
+    public static let agentNotConnected = "Not connected"
 }
 
 /// 대화 이름 (첫 보낸 메시지가 이름이 된다, 디자인 README Chat history)
@@ -73,11 +75,14 @@ public struct LocalChat: Sendable, Hashable, Identifiable {
     public let createdAt: Date
     /// 헤더 ProjectLink에서 미리 고른 프로젝트 (첫 메시지를 보낼 때 대화를 만들며 보낸다)
     public var contextID: UUID?
+    /// 프롬프트 박스의 대상 고르기에서 고른 대상 (첫 메시지를 보낼 때 대화를 만들며 보낸다, 그 뒤로는 바뀌지 않는다)
+    public var target: AssistantTargetPick
 
-    public init(id: UUID = UUID(), createdAt: Date, contextID: UUID? = nil) {
+    public init(id: UUID = UUID(), createdAt: Date, contextID: UUID? = nil, target: AssistantTargetPick = .taskforce) {
         self.id = id
         self.createdAt = createdAt
         self.contextID = contextID
+        self.target = target
     }
 }
 
@@ -100,6 +105,10 @@ public struct ChatListEntry: Sendable, Hashable, Identifiable {
     public let preview: Preview
     /// 서버에 아직 없는 빈 대화
     public let isLocal: Bool
+    /// 대화의 대상 (History는 두 대상의 대화를 모두 보이고 에이전트 대화는 앞에 AgentMark를 붙인다). 열이 없으면 Taskforce
+    public internal(set) var target: ChatConversationTarget = .taskforce
+    /// 서버에 아직 없는 에이전트 대화의 adapter (연결을 모를 때 마크를 고르는 데 쓴다)
+    public internal(set) var localAdapter: String?
 
     /// ChatItem이 그리는 미리보기 줄 (모르면 nil)
     public var previewText: String? {
@@ -122,16 +131,23 @@ public enum ChatHistoryRules {
         for chat in conversations where chat.archivedAt == nil {
             let hasMessages = !chat.isUntouched
             let title = chat.title.flatMap { $0.isEmpty ? nil : $0 } ?? titles[chat.id] ?? (hasMessages ? ChatCopy.untitled : ChatCopy.newChat)
-            result.append(ChatListEntry(
+            var entry = ChatListEntry(
                 id: chat.id, title: title, date: chat.lastMessageAt ?? chat.createdAt,
                 preview: preview(hasMessages: hasMessages, last: previews[chat.id], draft: drafts[chat.id]), isLocal: false
-            ))
+            )
+            entry.target = chat.target
+            result.append(entry)
         }
         for chat in locals {
-            result.append(ChatListEntry(
+            var entry = ChatListEntry(
                 id: chat.id, title: ChatCopy.newChat, date: chat.createdAt,
                 preview: preview(hasMessages: false, last: nil, draft: drafts[chat.id]), isLocal: true
-            ))
+            )
+            if case .agent(let adapter, let connectionID) = chat.target {
+                entry.target = ChatConversationTarget(kind: .agent, agentConnectionID: connectionID)
+                entry.localAdapter = adapter
+            }
+            result.append(entry)
         }
         return result.sorted { ($0.date, $0.id.uuidString) > ($1.date, $1.id.uuidString) }
     }

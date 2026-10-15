@@ -8,7 +8,7 @@ import TaskforceKit
 /// `-TFEdgeSnapshotMix`: 견본의 확인 요청을 하나로 줄여 needs you · running 링이 함께 보이게 한다(`-TFSampleRunWorking`과 같이).
 /// 남기는 것: hidden(숨은 레일) · expanded(호버로 펼친 레일) · panel(All work 패널) · All work 상태(S3: filters-open · filter-summary ·
 /// no-match · pinned · done-today · rail-open-clears-filter) · reduce-motion(움직임 줄이기, 패널) · chats.
-/// `-TFEdgeSnapshotChats`: Chats 상태 (B3, 견본 가짜 서버): 목록 · 초안 · 대화(인용 · 기억 노트 explicit/inferred) · 보내는 중 · 실패 · 동의 전 · 기능 꺼짐 · 빈 목록 · 오프라인 · 읽기 실패 ·
+/// `-TFEdgeSnapshotChats`: 옛 패널의 Chats 상태 (B3, `-TFPanelChats YES`와 함께: Assistant 창이 켜진 실행에는 패널 Chats가 없다. 견본 가짜 서버): 목록 · 초안 · 대화(인용 · 기억 노트 explicit/inferred) · 보내는 중 · 실패 · 동의 전 · 기능 꺼짐 · 빈 목록 · 오프라인 · 읽기 실패 ·
 /// 노트 확인 · 잊기 뒤. 서버 응답은 가짜(`SampleChatGateway`)라 렌더 fixture일 뿐이다 (실제 서버 · 계정 · AI 호출 없음).
 /// `-TFEdgeSnapshotContexts`(`-TF_S3B YES`와 함께: S3b 기본은 꺼짐): 범위(프로젝트) 멤버십 상태 (S3b, 견본 가짜 서버 `SampleContextGateway`): 묶음(여러 프로젝트 · 보관됨 · Ungrouped) · 검색 · Project 칩 ·
 /// ProjectLink 줄(Set by you · Auto-linked · Not confirmed 후보 · No clear link · 여러 프로젝트 · 보관됨) · 바꾼 뒤 Undo · 충돌 · 응답 유실 · gate 꺼짐 · 진행 중 ·
@@ -63,6 +63,11 @@ enum EdgeSnapshot {
                 NSApplication.shared.terminate(nil)
                 return
             }
+            if arguments.contains("-TFEdgeSnapshotAssistant") {
+                await AssistantSnapshot.capture(edge, file: file, pause: { seconds in await settle(seconds) })
+                NSApplication.shared.terminate(nil)
+                return
+            }
             if arguments.contains("-TFEdgeSnapshotSummary") {
                 await SummarySnapshot.capture(edge, file: file, settle: { await settle() })
                 NSApplication.shared.terminate(nil)
@@ -87,9 +92,12 @@ enum EdgeSnapshot {
             await settle()
             capture(edge, to: file("reduce-motion"))
             edge.shell.reduceMotion = EdgeShellController.systemReduceMotion
-            edge.shell.openChats()
-            await settle()
-            capture(edge, to: file("chats"))
+            // 옛 패널의 Chats는 `-TFPanelChats YES`일 때만 있다 (Assistant 창은 `-TFEdgeSnapshotAssistant`)
+            if !edge.shell.windowsEnabled {
+                edge.shell.openChats()
+                await settle()
+                capture(edge, to: file("chats"))
+            }
             NSApplication.shared.terminate(nil)
         }
     }

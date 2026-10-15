@@ -39,6 +39,8 @@ public struct ChatTurn: Identifiable, Equatable, Sendable {
     public let rememberedIDs: [UUID]
     /// 보관 기한으로 글이 비워졌다
     public let textDeleted: Bool
+    /// 에이전트 대화에서 서버가 계산한 전달 표시 (보낸 응답에서 받은 것. Taskforce 대화의 글은 늘 nil)
+    public internal(set) var delivery: AgentDelivery? = nil
 }
 
 /// 헤더의 ProjectLink (명시적 선택만: Set by you · No clear link. 자동 추정 없음)
@@ -109,6 +111,8 @@ public final class ChatStore {
         let createdAt: Date
         let owner: AccountScope.Token
         var status: Status
+        /// 이 제출에 실린 칩 (같은 제출을 다시 보내면 같은 칩이다: 칩만 다르면 서버가 409)
+        var attachments: [ChatAttachment] = []
     }
 
     struct ChatThread {
@@ -137,6 +141,8 @@ public final class ChatStore {
     /// 대화마다 읽기를 시작할 때 하나씩 올리는 순번: **마지막에 시작한 읽기만** 반영한다 (늦게 끝난 옛 읽기가 새 읽기 결과를 되돌리지 못한다)
     @ObservationIgnored private var threadReadSeq: [UUID: Int] = [:]
     private var drafts: [UUID: String] = [:]
+    /// 열린 창들이 보이는 대화 (앱이 정한다). 목록 읽기(⌘3 · 온라인 복귀 · Try again)가 공유 `currentID`뿐 아니라 이들의 글도 다시 읽는다
+    @ObservationIgnored public var viewedConversations: () -> Set<UUID> = { [] }
     var threads: [UUID: ChatThread] = [:]
     private var projectUndo: [UUID: UUID?] = [:]
     private var projectMessage: [UUID: String] = [:]
@@ -145,7 +151,14 @@ public final class ChatStore {
     /// 사용자가 목록 · 새 대화로 직접 옮겼나 (아니면 목록을 읽은 뒤 마지막 대화로 자동 복원)
     private var navigated = false
 
+    /// 에이전트 대상 전달 표시 (보낸 사용자 메시지 id → 서버가 계산한 표시). 메모리뿐이다
+    private var deliveries: [UUID: AgentDelivery] = [:]
+    /// 보낸 글의 칩 (client_message_id → 칩): 서버에 저장됐지만 답이 없는 글을 다시 보낼 때 같은 칩을 싣는다
+    @ObservationIgnored private var sentChips: [UUID: [ChatAttachment]] = [:]
+
     @ObservationIgnored private let gateway: any ChatGateway
+    /// Assistant 창의 쓰기 (대상 목록 · 대상을 지정한 만들기 · 칩을 실은 보내기). 없으면 칩 없이 Taskforce 대상으로만 보낸다
+    @ObservationIgnored public var assistant: (any AssistantGateway)?
     @ObservationIgnored private let scope: AccountScope
     @ObservationIgnored private let memory: MemoryStore?
     @ObservationIgnored private let now: @Sendable () -> Date
@@ -153,8 +166,12 @@ public final class ChatStore {
     /// 화면 동작이 띄운 읽기들 (테스트가 `settle()`로 기다린다)
     @ObservationIgnored private var background: [Task<Void, Never>] = []
 
-    public init(gateway: any ChatGateway, scope: AccountScope, memory: MemoryStore? = nil, now: @escaping @Sendable () -> Date = { Date() }) {
+    public init(
+        gateway: any ChatGateway, scope: AccountScope, memory: MemoryStore? = nil, now: @escaping @Sendable () -> Date = { Date() },
+        assistant: (any AssistantGateway)? = nil
+    ) {
         self.gateway = gateway
+        self.assistant = assistant
         self.scope = scope
         self.memory = memory
         self.now = now
@@ -186,6 +203,8 @@ public final class ChatStore {
         threadReadSeq = [:]
         drafts = [:]
         threads = [:]
+        deliveries = [:]
+        sentChips = [:]
         projectUndo = [:]
         projectMessage = [:]
         navigated = false
@@ -243,8 +262,11 @@ public final class ChatStore {
     }
 
     /// 지금 대화의 화면: 읽은 글이 없으면 읽기 상태가 화면이고, 글이 있으면 읽은 뒤의 문제는 위 Notice
-    public var screen: ChatScreen {
-        guard let id = currentID else { return .blank }
+    public var screen: ChatScreen { screen(for: currentID) }
+
+    /// 한 대화의 화면 (Assistant 창은 창마다 대화가 하나라 id로 읽는다)
+    public func screen(for id: UUID?) -> ChatScreen {
+        guard let id else { return .blank }
         let thread = threads[id]
         let hasContent = !(thread?.messages.isEmpty ?? true) || !(thread?.pending.isEmpty ?? true)
         let isLocal = locals.contains { $0.id == id }
@@ -258,10 +280,17 @@ public final class ChatStore {
 
     /// 동의가 먼저 필요한 글이 있다 (위에 "Allow AI processing to continue")
     public var needsConsent: Bool {
-        currentID.flatMap { threads[$0] }?.pending.contains { $0.status == .needsConsent } ?? false
+        currentID.map(needsConsent(in:)) ?? false
+    }
+
+    public func needsConsent(in id: UUID) -> Bool {
+        threads[id]?.pending.contains { $0.status == .needsConsent } ?? false
     }
 
     public func draft(for id: UUID) -> String { drafts[id] ?? "" }
+
+    /// 쓰던 글이 남은 대화들 (대상을 바꿀 때 새 대화가 이 중 하나를 다시 써서 그 글을 덮지 않게)
+    public var draftConversationIDs: Set<UUID> { Set(drafts.keys) }
 
     public func setDraft(_ text: String, for id: UUID) {
         guard scope.token != nil else { return }
@@ -271,6 +300,8 @@ public final class ChatStore {
     /// 지금 대화의 줄들 (서버가 확인한 메시지 + 아직 확인하지 않은 보내기)
     public func turns(for id: UUID) -> [ChatTurn] {
         guard let thread = threads[id] else { return [] }
+        // 에이전트 대화의 답은 비동기로 쓰인다: 답이 아직 없다고 "No reply yet"을 말하지 않는다 (전달 표시가 그 자리를 맡는다)
+        let isAgent = conversationTarget(for: id).isAgent
         let pending = Dictionary(thread.pending.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         var used: Set<UUID> = []
         var turns: [ChatTurn] = []
@@ -282,14 +313,16 @@ public final class ChatStore {
                 if let cmid = message.clientMessageID, let turn = pending[cmid] {
                     status = Self.status(of: turn)
                     used.insert(cmid)
-                } else if !messages.contains(where: { $0.replyTo == message.id }) {
+                } else if !isAgent, !messages.contains(where: { $0.replyTo == message.id }) {
                     let hasLater = messages[(index + 1)...].contains { $0.role.isUser }
                     status = hasLater || message.clientMessageID == nil ? .notAnswered : .noReply
                 }
-                turns.append(ChatTurn(
+                var turn = ChatTurn(
                     id: message.id, isUser: true, text: message.text, createdAt: message.createdAt, status: status,
                     clientMessageID: message.clientMessageID, citations: [], rememberedIDs: [], textDeleted: deleted
-                ))
+                )
+                turn.delivery = deliveries[message.id]
+                turns.append(turn)
             } else {
                 turns.append(ChatTurn(
                     id: message.id, isUser: false, text: message.text, createdAt: message.createdAt, status: .sent, clientMessageID: nil,
@@ -402,6 +435,103 @@ public final class ChatStore {
         return chat.id
     }
 
+    // MARK: Assistant 창 (OA U1)
+    // 창마다 대화가 하나라 위의 `currentID` · `mode`(패널의 한 대화)와 따로 논다: 아래는 모두 대화 id를 받고 `currentID` · `mode` · `focusRequest`를 바꾸지 않는다.
+
+    /// 대화의 대상. 서버에 아직 없는 대화는 고른 대상, 서버 대화는 행의 대상 열 (열이 없는 옛 행 · 모르는 대화는 Taskforce)
+    public func conversationTarget(for id: UUID) -> ChatConversationTarget {
+        if let local = locals.first(where: { $0.id == id }) {
+            guard case .agent(_, let connectionID) = local.target else { return .taskforce }
+            return ChatConversationTarget(kind: .agent, agentConnectionID: connectionID)
+        }
+        return conversations.first { $0.id == id }?.target ?? .taskforce
+    }
+
+    /// 대화의 대상을 대상 고르기의 말로. 서버 대화의 에이전트는 adapter를 모른다(빈 글자): 연결 id로 대상 목록의 행을 찾는다
+    public func pick(for id: UUID) -> AssistantTargetPick {
+        if let local = locals.first(where: { $0.id == id }) { return local.target }
+        let target = conversationTarget(for: id)
+        return target.isAgent ? .agent(adapter: "", connectionID: target.agentConnectionID) : .taskforce
+    }
+
+    public func isLocalChat(_ id: UUID) -> Bool { locals.contains { $0.id == id } }
+
+    /// 첫 메시지를 보내기 전의 대화만 대상을 바꿀 수 있다. 서버에 있는 대화의 대상은 바뀌지 않는다 (같은 id 다른 대상은 서버가 409)
+    public func setLocalTarget(_ pick: AssistantTargetPick, for id: UUID) {
+        guard let index = locals.firstIndex(where: { $0.id == id }) else { return }
+        locals[index].target = pick
+    }
+
+    /// 메시지가 한 번이라도 있었거나 보내는 중이다 (대상 고르기가 새 대화를 열지 정하는 데 쓴다)
+    public func hasMessages(_ id: UUID) -> Bool {
+        let thread = threads[id]
+        if !(thread?.pending.isEmpty ?? true) { return true }
+        if let chat = conversations.first(where: { $0.id == id }) { return !chat.isUntouched || !(thread?.messages.isEmpty ?? true) }
+        return false
+    }
+
+    /// 서버에 있는 가장 새 대화 (⌘3으로 첫 창을 열 때 되돌아갈 대화). 아직 서버에 없는 빈 대화는 아니다
+    public var lastConversationID: UUID? {
+        entries.first { !$0.isLocal }?.id
+    }
+
+    /// 한 대화의 이름 (이름이 없으면 New chat)
+    public func title(for id: UUID) -> String {
+        entries.first { $0.id == id }?.title ?? ChatCopy.newChat
+    }
+
+    public func canCompose(in id: UUID?) -> Bool { id != nil && !isUnavailable }
+
+    /// 이 글을 지금 보낼 수 있나: 보낼 곳이 있고, 로그인해 있고, 글이 보낼 수 있는 것이고, 이 대화가 보내는 중이 아니다
+    public func canSend(_ text: String, in id: UUID) -> Bool {
+        canCompose(in: id) && scope.token != nil && ChatComposerRules.isSendable(text) && !isSending(in: id)
+    }
+
+    /// 대화 목록을 읽는다 (History를 열 때): 끝을 기다리지 않는다
+    public func refreshInBackground() {
+        spawn { await self.refresh() }
+    }
+
+    public func isSending(in id: UUID) -> Bool { threads[id]?.isSending ?? false }
+
+    /// 서버에 있는 대화의 글을 읽는다. 창이 대화를 열 때 부른다 (저장소의 현재 대화 · 모드는 그대로)
+    public func ensureLoaded(_ id: UUID) {
+        guard conversations.contains(where: { $0.id == id }) else { return }
+        spawn { await self.loadThread(id) }
+    }
+
+    /// 새 대화 하나를 마련한다 (⌘N · SquarePen · 대상 바꾸기). 손대지 않은 빈 대화가 있으면 그것을 다시 쓴다 — 단 `excluding`(다른 창이 쥔 대화)은 빼고,
+    /// 서버에 이미 있는 빈 대화는 대상이 같을 때만 쓴다 (서버 대화의 대상은 바뀌지 않는다). 없으면 서버에 아직 없는 빈 대화를 메모리에 만든다 (첫 메시지를 보낼 때 서버에 만든다)
+    @discardableResult
+    public func reserveNewChat(target: AssistantTargetPick, excluding: Set<UUID>) -> UUID {
+        let occupied = Set(threads.filter { !$0.value.pending.isEmpty }.keys).union(excluding)
+        let compatible = conversations.filter { Self.canReuse($0.target, for: target) }
+        if let reused = ChatHistoryRules.reusableEmptyChat(current: nil, conversations: compatible, locals: locals, occupied: occupied) {
+            if locals.contains(where: { $0.id == reused }) {
+                setLocalTarget(target, for: reused)
+            } else {
+                ensureLoaded(reused)
+            }
+            return reused
+        }
+        let chat = LocalChat(createdAt: now(), target: target)
+        locals.append(chat)
+        threads[chat.id] = ChatThread(load: .loaded(problem: nil))
+        return chat.id
+    }
+
+    private static func canReuse(_ existing: ChatConversationTarget, for pick: AssistantTargetPick) -> Bool {
+        switch pick {
+        case .taskforce: existing.kind == .taskforce
+        case .agent(_, let connectionID): existing.isAgent && connectionID != nil && existing.agentConnectionID == connectionID
+        }
+    }
+
+    /// 보낸 글에 서버가 계산해 준 전달 표시 (에이전트 대화)
+    public func delivery(forMessage id: UUID) -> AgentDelivery? { deliveries[id] }
+
+    var deliveryCount: Int { deliveries.count }
+
     // MARK: 읽기
 
     /// 목록 · 열린 대화를 서버에서 읽는다 (Chats를 열 때 · Try again · 온라인으로 돌아왔을 때)
@@ -430,7 +560,7 @@ public final class ChatStore {
                 focusRequest += 1
             }
             await loadPreviews(token: token, sequence: sequence)
-            if let id = currentID, conversations.contains(where: { $0.id == id }) { await loadThread(id) }
+            await loadShownThreads()
         } catch {
             guard scope.isCurrent(token), sequence == listSequence, let failure = ReadFailure.from(error, online: isOnline) else { return }
             if failure == .unavailable {
@@ -442,6 +572,17 @@ public final class ChatStore {
             } else {
                 listLoad = failure == .offline ? .offline : .failed
             }
+        }
+    }
+
+    /// 지금 보이는 대화들의 글을 읽는다: 공유 `currentID`와 창들이 보이는 대화 (서버에 있는 것만, 겹치지 않게)
+    private func loadShownThreads() async {
+        var shown = viewedConversations()
+        if let id = currentID { shown.insert(id) }
+        let ids = shown.filter { id in conversations.contains { $0.id == id } }.sorted { $0.uuidString < $1.uuidString }
+        guard !ids.isEmpty else { return }
+        await withTaskGroup(of: Void.self) { group in
+            for id in ids { group.addTask { await self.loadThread(id) } }
         }
     }
 
@@ -512,17 +653,29 @@ public final class ChatStore {
 
     /// 지금 대화에 글을 보낸다. 서버가 확인(200)하기 전에는 "Sending…"이고, 실패하면 같은 글을 Try again으로 다시 보낼 수 있다
     public func send(_ text: String) async {
-        guard canCompose, let id = currentID, let token = scope.token, ChatComposerRules.isSendable(text) else { return }
+        guard canCompose, let id = currentID else { return }
+        await send(text, in: id)
+    }
+
+    /// 한 대화에 글을 보낸다 (Assistant 창). 칩은 이 제출에 실려 같은 제출을 다시 보내도 같다. 에이전트 대상이면 응답은 전달 표시뿐이다
+    public func send(_ text: String, in id: UUID, attachments: [ChatAttachment] = []) async {
+        guard canCompose(in: id), let token = scope.token, ChatComposerRules.isSendable(text) else { return }
         guard !(threads[id]?.isSending ?? false) else { return }
-        let turn = PendingTurn(id: UUID(), text: ChatComposerRules.normalized(text), createdAt: now(), owner: token, status: .sending)
+        let turn = PendingTurn(id: UUID(), text: ChatComposerRules.normalized(text), createdAt: now(), owner: token, status: .sending, attachments: attachments)
         threads[id, default: ChatThread()].pending.append(turn)
+        sentChips[turn.id] = attachments
         drafts[id] = nil
         await deliver(turn.id, in: id)
     }
 
     /// 보내지 못한 글(또는 답이 없는 마지막 글)을 같은 `client_message_id` · 같은 글로 다시 보낸다
     public func retry(_ clientMessageID: UUID) async {
-        guard let id = currentID, let token = scope.token, !(threads[id]?.isSending ?? false) else { return }
+        guard let id = currentID else { return }
+        await retry(clientMessageID, in: id)
+    }
+
+    public func retry(_ clientMessageID: UUID, in id: UUID) async {
+        guard let token = scope.token, !(threads[id]?.isSending ?? false) else { return }
         // 사용자가 직접 다시 시도했다: 꺼짐 안내를 걷고 서버에 다시 묻는다 (아직 꺼져 있으면 다시 404로 알게 된다)
         isUnavailable = false
         if let index = threads[id]?.pending.firstIndex(where: { $0.id == clientMessageID }) {
@@ -531,7 +684,9 @@ public final class ChatStore {
         } else if let message = threads[id]?.messages.last(where: { $0.role.isUser && $0.clientMessageID == clientMessageID }),
                   !(threads[id]?.messages.contains { $0.replyTo == message.id } ?? true) {
             // 서버에 저장됐지만 답이 없는 마지막 글 (앱을 다시 켠 뒤 포함): 저장된 글 그대로
-            threads[id]?.pending.append(PendingTurn(id: clientMessageID, text: message.text, createdAt: message.createdAt, owner: token, status: .sending))
+            threads[id]?.pending.append(PendingTurn(
+                id: clientMessageID, text: message.text, createdAt: message.createdAt, owner: token, status: .sending, attachments: sentChips[clientMessageID] ?? []
+            ))
         } else {
             return
         }
@@ -551,21 +706,87 @@ public final class ChatStore {
         do {
             if let local = locals.first(where: { $0.id == conversationID }) {
                 let first = threads[conversationID]?.pending.map(\.text).first ?? turn.text
-                let created = try await gateway.createConversation(id: conversationID, title: ChatTitle.make(from: first), contextID: local.contextID)
+                let title = ChatTitle.make(from: first)
+                let created: ChatConversation
+                switch local.target {
+                case .taskforce:
+                    created = try await gateway.createConversation(id: conversationID, title: title, contextID: local.contextID)
+                case .agent(_, let connectionID):
+                    // 연결이 없는 에이전트는 대화를 만들 곳이 없다: 서버를 부르지 않고 이유를 말한다 (대상 메뉴의 "Not connected"와 같은 말)
+                    guard let connectionID, let assistant else {
+                        if let index = threads[conversationID]?.pending.firstIndex(where: { $0.id == turnID }) {
+                            threads[conversationID]?.pending[index].status = .failed(ChatCopy.agentNotConnected)
+                        }
+                        return
+                    }
+                    let response = try await assistant.createConversation(
+                        id: conversationID, title: title, contextID: local.contextID, target: .agent(connectionID: connectionID)
+                    )
+                    let row = response.conversation
+                    created = ChatConversation(
+                        id: row.id, title: row.title, contextID: row.contextID, createdAt: row.createdAt, lastMessageAt: row.lastMessageAt,
+                        lastReadAt: row.lastReadAt, archivedAt: row.archivedAt, textPurgedAt: row.textPurgedAt, target: response.target
+                    )
+                }
                 guard scope.isCurrent(turn.owner), threads[conversationID] != nil else { return }
                 locals.removeAll { $0.id == conversationID }
                 upsert(created)
             }
             guard scope.isCurrent(turn.owner), threads[conversationID]?.pending.contains(where: { $0.id == turnID }) == true else { return }
-            let posted = try await gateway.postChatMessage(conversationID: conversationID, clientMessageID: turnID, text: turn.text)
-            guard scope.isCurrent(turn.owner) else { return }
-            isUnavailable = false
-            apply(posted, to: conversationID)
-            if let memory { await memory.loadReferenced(ids: posted.reply.rememberedIDs) }
+            if conversationTarget(for: conversationID).isAgent {
+                guard let assistant else { return }
+                let posted = try await assistant.postAgentMessage(
+                    conversationID: conversationID, clientMessageID: turnID, text: turn.text, attachments: turn.attachments
+                )
+                guard scope.isCurrent(turn.owner) else { return }
+                isUnavailable = false
+                applyAgent(posted, to: conversationID)
+            } else {
+                let posted: ChatPostedMessage
+                if !turn.attachments.isEmpty, let assistant {
+                    posted = try await assistant.postChatMessage(conversationID: conversationID, clientMessageID: turnID, text: turn.text, attachments: turn.attachments)
+                } else {
+                    posted = try await gateway.postChatMessage(conversationID: conversationID, clientMessageID: turnID, text: turn.text)
+                }
+                guard scope.isCurrent(turn.owner) else { return }
+                isUnavailable = false
+                apply(posted, to: conversationID)
+                if let memory { await memory.loadReferenced(ids: posted.reply.rememberedIDs) }
+            }
         } catch {
             guard scope.isCurrent(turn.owner) else { return }
             await failed(error, turnID: turnID, in: conversationID)
         }
+    }
+
+    /// 에이전트 대상 보내기의 응답: 사용자 글 + 전달 표시. 답은 비동기로 대화에 쓰이므로 지금은 `reply`가 없다 (있으면 같이 반영한다).
+    /// 두 번 온 응답 · 늦게 온 응답도 메시지 id로 한 번만 반영한다
+    private func applyAgent(_ posted: AgentPostedMessage, to id: UUID) {
+        guard threads[id] != nil else { return }
+        var messages = threads[id]?.messages ?? []
+        for message in [posted.message] + (posted.reply.map { [$0] } ?? []) {
+            if let index = messages.firstIndex(where: { $0.id == message.id }) {
+                messages[index] = message
+            } else {
+                messages.append(message)
+            }
+        }
+        threads[id]?.messages = messages.sorted { $0.seq < $1.seq }
+        deriveTitle(for: id)
+        threads[id]?.pending.removeAll { $0.id == posted.message.clientMessageID }
+        threads[id]?.revision += 1
+        deliveries[posted.message.id] = posted.delivery
+        previews[id] = (posted.reply ?? posted.message).text
+        touchLastMessage(of: id, at: posted.message.createdAt)
+    }
+
+    private func touchLastMessage(of id: UUID, at date: Date) {
+        guard let index = conversations.firstIndex(where: { $0.id == id }) else { return }
+        let old = conversations[index]
+        conversations[index] = ChatConversation(
+            id: old.id, title: old.title, contextID: old.contextID, createdAt: old.createdAt, lastMessageAt: date,
+            lastReadAt: old.lastReadAt, archivedAt: old.archivedAt, textPurgedAt: old.textPurgedAt, target: old.target
+        )
     }
 
     /// 서버 확인(200): 사용자 글 + 답을 메시지 id로 한 번만 반영한다 (두 번 온 응답 · 늦게 온 응답 · 다른 대화로 옮긴 뒤 온 응답도 같다)
@@ -584,13 +805,7 @@ public final class ChatStore {
         threads[id]?.pending.removeAll { $0.id == posted.message.clientMessageID }
         threads[id]?.revision += 1
         previews[id] = posted.reply.text
-        if let index = conversations.firstIndex(where: { $0.id == id }) {
-            let old = conversations[index]
-            conversations[index] = ChatConversation(
-                id: old.id, title: old.title, contextID: old.contextID, createdAt: old.createdAt, lastMessageAt: posted.message.createdAt,
-                lastReadAt: old.lastReadAt, archivedAt: old.archivedAt, textPurgedAt: old.textPurgedAt
-            )
-        }
+        touchLastMessage(of: id, at: posted.message.createdAt)
     }
 
     /// 이름이 없는 대화는 읽은 첫 사용자 글로 이름을 보인다
@@ -639,7 +854,13 @@ public final class ChatStore {
 
     /// 헤더 ProjectLink에서 고른 프로젝트 (nil = Ungrouped). 서버 대화면 `PATCH`, 아직 서버에 없는 대화면 만들 때 보낸다. 자동 추정은 없다
     public func chooseProject(_ contextID: UUID?) async {
-        guard let id = currentID, let token = scope.token, !isUnavailable else { return }
+        guard let id = currentID else { return }
+        await chooseProject(contextID, in: id)
+    }
+
+    /// 한 대화의 프로젝트 (Assistant 창의 머리 ProjectLink)
+    public func chooseProject(_ contextID: UUID?, in id: UUID) async {
+        guard let token = scope.token, !isUnavailable else { return }
         projectMessage[id] = nil
         if let index = locals.firstIndex(where: { $0.id == id }) {
             projectUndo[id] = .some(locals[index].contextID)
@@ -651,7 +872,8 @@ public final class ChatStore {
             let updated = try await gateway.updateConversation(id: id, contextID: contextID)
             guard scope.isCurrent(token) else { return }
             projectUndo[id] = .some(chat.contextID)
-            upsert(updated)
+            // 범위를 바꾸는 PATCH 응답은 대상 열을 주지 않을 수 있다: 아는 대상을 지키지 않으면 에이전트 대화가 Taskforce로 보인다
+            upsert(updated.with(target: chat.target))
         } catch {
             guard scope.isCurrent(token), ReadFailure.from(error, online: isOnline) != nil else { return }
             if let api = error as? APIError, api.isFeatureOff { isUnavailable = true } else { projectMessage[id] = ReadFailure.userMessage(error) }
@@ -660,9 +882,14 @@ public final class ChatStore {
 
     /// 방금 바꾼 프로젝트를 되돌린다 (Undo)
     public func undoProject() async {
-        guard let id = currentID, let previous = projectUndo[id] else { return }
+        guard let id = currentID else { return }
+        await undoProject(in: id)
+    }
+
+    public func undoProject(in id: UUID) async {
+        guard let previous = projectUndo[id] else { return }
         projectUndo[id] = nil
-        await chooseProject(previous)
+        await chooseProject(previous, in: id)
         // 되돌리기 자체는 되돌릴 것이 없다
         projectUndo[id] = nil
     }

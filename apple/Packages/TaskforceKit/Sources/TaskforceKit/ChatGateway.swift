@@ -68,3 +68,22 @@ public struct LiveChatGateway: ChatGateway {
         try await api.moveMemory(id: id, expectedVersion: expectedVersion, to: target)
     }
 }
+
+/// Assistant 창의 쓰기: 같은 `APIClient`를 쓴다 (`AgentConversationEndpoints.swift`)
+extension LiveChatGateway: AssistantGateway {
+    public func targets() async throws -> [AssistantTarget] {
+        try await api.assistantTargets().targets
+    }
+
+    public func createConversation(id: UUID, title: String?, contextID: UUID?, target: ChatTarget) async throws -> ChatCreatedConversation {
+        try await api.createConversation(id: id, title: title, contextID: contextID, target: target)
+    }
+
+    public func postChatMessage(conversationID: UUID, clientMessageID: UUID, text: String, attachments: [ChatAttachment]) async throws -> ChatPostedMessage {
+        try await api.postChatMessage(conversationID: conversationID, clientMessageID: clientMessageID, text: text, attachments: attachments)
+    }
+
+    public func postAgentMessage(conversationID: UUID, clientMessageID: UUID, text: String, attachments: [ChatAttachment]) async throws -> AgentPostedMessage {
+        try await api.postAgentMessage(conversationID: conversationID, clientMessageID: clientMessageID, text: text, attachments: attachments)
+    }
+}

@@ -178,8 +178,11 @@ struct EdgeChatTests {
     }
 
     @Test func panelHeightIncludesTheComposerAtTheFoot() {
-        #expect(EdgePanelMetrics.height(body: 100) == 140)
-        #expect(EdgePanelMetrics.height(body: 100, footer: 54) == 194)
+        // 머리 40 + 본문 + 입력칸. DS `panel-min-height` 320 아래로는 줄지 않는다 (F-2: 옛 값은 120)
+        #expect(EdgePanelMetrics.minHeight == 320)
+        #expect(EdgePanelMetrics.height(body: 300) == 340)
+        #expect(EdgePanelMetrics.height(body: 300, footer: 54) == 394)
+        #expect(EdgePanelMetrics.height(body: 100, footer: 54) == EdgePanelMetrics.minHeight, "짧은 본문은 최소 높이")
         #expect(EdgePanelMetrics.height(body: 2_000, footer: 54) == EdgePanelMetrics.maxHeight)
     }
 

@@ -1,7 +1,7 @@
 import SwiftUI
 
-// Figma 디자인 시스템 v1 (jDMRGHWMRXeNUILfi11xvf) Foundations 13:960.
-// 값이 다르면 Figma 변수가 기준이다. 색은 Asset Catalog 색 세트(Any/Dark)로 두고 이름은 Figma 변수 이름 그대로다.
+// Figma 디자인 시스템 v1 (jDMRGHWMRXeNUILfi11xvf) Foundations 13:960에서 시작했고, 값의 기준은 디자인 시스템 아티팩트 `tokens.json`이다
+// (Vt7xUFnjFrLvXmkkKZ5gFx, OA U1부터. 둘이 다르면 DS 값이 이긴다). 색은 Asset Catalog 색 세트(Any/Dark)로 두고 이름은 Figma 변수 이름 그대로다.
 // Native 재설계(156:6)의 변수도 같은 규칙이다.
 
 /// Color 컬렉션 (13:983). 이름 = Figma 변수 이름(`color/` 뺀 것) = Asset Catalog 색 세트 경로.
@@ -9,7 +9,7 @@ public enum TFColor {
     public static let bgCanvas = color(.bgCanvas)
     public static let bgSurface = color(.bgSurface)
     public static let bgElevated = color(.bgElevated)
-    /// 선택 행 면: 라이트 검정 8% · 다크 흰색 14% (반투명 회색, 청색은 포커스 · 링크 · 커서에만)
+    /// 선택 행 면: 라이트 검정 7% · 다크 흰색 10% (DS `bg-selected`. 반투명 회색, 청색은 포커스 · 링크 · 커서에만)
     public static let bgSelected = color(.bgSelected)
     /// 런처 검색줄 · 액션 바 유리 (macOS 26 전, 반투명)
     public static let bgGlass = color(.bgGlass)
@@ -28,10 +28,10 @@ public enum TFColor {
     public static let textInverse = color(.textInverse)
     /// 링크와 본문 안 동작
     public static let textLink = color(.textLink)
-    /// 선택 행 위의 보조 글자 (bg/selected 위에서도 4.5:1. 다크 `#B9B9BE`는 2026-10-03 Figma에서 4.5:1에 맞춰 고친 값)
+    /// 선택 행 위의 보조 글자 (bg/selected 위에서도 4.5:1. DS gray-600 · gray-300 = 라이트 `#636366` · 다크 `#B4B4BA`)
     public static let textSecondarySelected = color(.textSecondarySelected)
 
-    /// 지난 · 오늘 기한, 오류 한 줄. 다크 `#FF594F`는 2026-10-03 bg/elevated(상세 칸) 위 4.5:1에 맞춰 #FF453A에서 밝힌 값 (Figma도 같은 값)
+    /// 지난 · 오늘 기한, 오류 한 줄. 다크는 DS red-300 `#FF6961` (bg/elevated 위 4.5:1 이상)
     public static let statusOverdue = color(.statusOverdue)
     /// 선택 행 위의 지난 · 오늘 기한 (bg/selected 위에서도 4.5:1. 다크 `#FFA099`는 2026-10-03 Figma에서 4.5:1에 맞춰 고친 값)
     public static let statusOverdueSelected = color(.statusOverdueSelected)

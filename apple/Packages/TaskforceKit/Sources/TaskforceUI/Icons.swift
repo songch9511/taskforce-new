@@ -44,6 +44,10 @@ public enum TFIcon: String, CaseIterable, Sendable {
     case removeItem = "x"
     /// 검증된 결과 · 끝남 표시 (`ResultStatusLabel`)
     case check = "check"
+    /// Assistant 프롬프트 박스의 Attach (OA U1, Lucide `paperclip`)
+    case attach = "paperclip"
+    /// 레일 맨 위 Review 타일 (OA U1, Lucide `clipboard-check`): 결정 · 결과의 입구
+    case review = "clipboard-check"
 
     /// 자산 카탈로그 경로 (`icon` 폴더가 이름공간)
     public var assetName: String { "icon/\(rawValue)" }

@@ -8,7 +8,8 @@ import TaskforceUI
 enum EdgePanelMetrics {
     static let width: CGFloat = 380
     static let maxHeight: CGFloat = 520
-    static let minHeight: CGFloat = 120
+    /// DS `panel-min-height` 320: 결정 화면도 이 아래로 줄지 않는다 (세션 탭이 늘 패널의 평평한 가장자리에 닿는다)
+    static let minHeight: CGFloat = 320
     static let radius: CGFloat = TFRadius.lg
     /// 레일과의 간격 (`space-md`)
     static let gap: CGFloat = TFSpace.md
