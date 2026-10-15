@@ -867,7 +867,7 @@ export const conversationMessageContentSchema = z.object({
       context_version: z.number().int().positive().nullable(),
       memory_item_ids: z.array(z.uuid()).default([]),
       source_ids: z.array(z.uuid()).default([]),
-      action_ids: z.array(z.uuid()).default([]),
+      action_ids: z.array(z.guid()).default([]), // guid: 에이전트 턴이 만든 이슈 id(sha256에서 만든 값)도 읽힌다
     })
     .nullable()
     .default(null),

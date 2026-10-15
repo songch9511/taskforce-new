@@ -704,6 +704,21 @@ describe("organize 계약 (D4c-2)", () => {
     expect(messageRefsSchema.safeParse({ action_ids: ["not-a-uuid"] }).success).toBe(false);
   });
 
+  it("상담 답의 content.used.action_ids에 에이전트 턴이 만든 이슈 id(sha256에서 만든 guid)가 있어도 답이 읽히고 그대로 되돌려 읽힌다", () => {
+    const hashed = "f0b0c918-acd0-b623-d33f-14699a728393";
+    const stored = { segments: [{ text: "열린 일은 하나예요.", tier: "T1" }], used: { context_id: null, context_version: null, memory_item_ids: [], source_ids: [], action_ids: [hashed, A] } };
+    const parsed = contentSchema.parse(stored);
+    expect(parsed.used?.action_ids).toEqual([hashed, A]);
+    // 메시지 행으로도 읽힌다 (content가 null로 떨어지지 않는다) · 다시 직렬화해도 같다
+    const row = conversationMessageSchema.parse({
+      id: A, conversation_id: B, seq: 2, role: "assistant", client_message_id: null, text: "열린 일은 하나예요.", refs: { action_ids: [hashed] },
+      intent: null, created_at: "2026-10-15T01:00:00Z", reply_to: C, content: stored,
+    });
+    expect(row.content?.used?.action_ids).toEqual([hashed, A]);
+    expect(contentSchema.parse(JSON.parse(JSON.stringify(row.content))).used?.action_ids).toEqual([hashed, A]);
+    expect(contentSchema.safeParse({ used: { ...stored.used, action_ids: ["not-a-uuid"] } }).success).toBe(false);
+  });
+
   it("moved.results[].change는 S3b 멤버십 변화(contextMembershipEffectSchema)와 같은 모양이다", () => {
     const samples = [
       { added: [{ context_id: C, context_version: 5 }], removed: [{ context_id: B, context_version: 2 }] },
