@@ -153,6 +153,10 @@ public final class ChatStore {
     /// 행이 `conversations`에 들어온 순서표: 새로 읽기가 시작한 뒤에 들어온 행("읽는 사이 생긴 행")을 가린다 (묘비 뒤 Try again이 복구한 행도 포함)
     @ObservationIgnored private var rowStamps: [UUID: Int] = [:]
     @ObservationIgnored private var stampClock = 0
+    /// 행을 읽기 시작할 때와 반영할 때 하나씩 올리는 시계, 그리고 대화별로 쥔 행을 반영한 때의 값. 쥔 행을 반영한 뒤에 시작한 읽기는 서버 버전과 상관없이 이긴다
+    /// (서버 시각은 뒤로 갈 수 있다: `db_now()`는 트랜잭션 시작 시각이다). 서버 버전은 겹친 읽기 사이의 역전 방어에만 쓴다
+    @ObservationIgnored private var rowClock = 0
+    @ObservationIgnored private var rowAppliedAt: [UUID: Int] = [:]
     private var drafts: [UUID: String] = [:]
     /// 열린 창들이 보이는 대화 (앱이 정한다). 목록 읽기(⌘3 · 온라인 복귀 · Try again)가 공유 `currentID`뿐 아니라 이들의 글도 다시 읽는다
     @ObservationIgnored public var viewedConversations: () -> Set<UUID> = { [] }
@@ -221,6 +225,7 @@ public final class ChatStore {
         tombstones = [:]
         recoveries = [:]
         rowStamps = [:]
+        rowAppliedAt = [:]
         drafts = [:]
         threads = [:]
         deliveries = [:]
@@ -540,6 +545,7 @@ public final class ChatStore {
         guard let token = scope.token else { return }
         if !isTargetKnown(id) {
             let started = tombstoneClock
+            let readStart = tickRow()
             let rowSeq = (rowReadSeq[id] ?? 0) + 1
             rowReadSeq[id] = rowSeq
             threadReadSeq[id] = (threadReadSeq[id] ?? 0) + 1   // 이미 나가 있던 글 읽기는 이 읽기가 대신한다
@@ -555,7 +561,7 @@ public final class ChatStore {
                     return
                 }
                 guard !isStale(id, since: started) else { return }
-                applyRead(row)
+                applyRead(row, readStartedAt: readStart)
             } catch {
                 guard scope.isCurrent(token), rowReadSeq[id] == rowSeq, !isStale(id, since: started), let failure = ReadFailure.from(error, online: isOnline) else { return }
                 if failure == .unavailable {
@@ -613,13 +619,15 @@ public final class ChatStore {
         if case .loaded = listLoad {} else { listLoad = .loading }
         // 읽는 사이 이 기기가 만든 · 복구한 대화(첫 보내기 · Try again)는 그 읽기에 없을 수 있다: 서버가 지운 것이 아니다 (이 순서표보다 새로 들어온 행)
         let startedStamp = stampClock
+        let listReadStart = tickRow()
         do {
             async let rows = gateway.conversations()
             async let projects = gateway.workContexts()
             let (chats, named) = try await (rows, projects)
             // 세션 패널이 보이는 대화 중 이 목록(최근 100 + 빈 20)에 없는 것은 id로 직접 읽어 남긴다
             let listed = Set(chats.map(\.id))
-            let (panelRows, gone) = await readPanelRows(missingFrom: listed)
+            let panelReadStart = tickRow()
+            let (panelRows, gone, kept) = await readPanelRows(missingFrom: listed)
             guard scope.isCurrent(token), sequence == listSequence else { return }
             // 서버가 없다 · 보관했다고 확인한 패널 대화: 행 · 본문 · 대상을 지우고 오류 화면(다시 시도)으로 둔다 (일시 실패와 다르다). 직접 읽기와 같은 길이다
             // 부정 응답은 현재 세대가 시작한 뒤에 시작한 읽기만 반영한다 (그 사이 Try again이 복구했으면 이 옛 응답이 복구를 지우지 못한다)
@@ -627,16 +635,21 @@ public final class ChatStore {
             // 이 새로 읽기를 시작한 뒤에 다른 길(직접 읽기)이 없다고 확인한 대화는, 이 응답(목록 · id로 읽은 행)에 있어도 반영하지 않는다.
             // 행은 응답이 끝난 순서가 아니라 서버 버전 순서다: 쥔 행이 더 새 버전이면 응답 행 대신 쥔 행을 둔다
             let held = Dictionary(conversations.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-            let newest: (ChatConversation) -> ChatConversation = { row in
-                if let heldRow = held[row.id], heldRow.rowVersion > row.rowVersion { return heldRow }
+            var appliedIDs: [UUID] = []
+            let pick: (ChatConversation, Int) -> ChatConversation = { row, readStart in
+                if let heldRow = held[row.id], !self.shouldApply(row, over: heldRow, readStartedAt: readStart) { return heldRow }
+                appliedIDs.append(row.id)
                 return row
             }
             let fresh: [ChatConversation] = chats.filter { !isStale($0.id, since: started) }
-            let listedRows: [ChatConversation] = fresh.filter { $0.archivedAt == nil }.map(newest)
-            let extras: [ChatConversation] = panelRows.filter { !isStale($0.id, since: started) }.map(newest)
-            let live = Set(fresh.map(\.id)).union(extras.map(\.id))
+            let listedRows: [ChatConversation] = fresh.filter { $0.archivedAt == nil }.map { pick($0, listReadStart) }
+            let extras: [ChatConversation] = panelRows.filter { !isStale($0.id, since: started) }.map { pick($0, panelReadStart) }
+            // 잠깐 못 읽은 패널 대화: 지금 쥔 행을 그대로 둔다 (읽기 전에 알던 행의 옛 사본이 아니라)
+            let keptRows: [ChatConversation] = conversations.filter { kept.contains($0.id) }
+            let live = Set(fresh.map(\.id)).union(extras.map(\.id)).union(keptRows.map(\.id))
             let createdMeanwhile: [ChatConversation] = conversations.filter { (rowStamps[$0.id] ?? 0) > startedStamp && !live.contains($0.id) }
-            replaceConversations(listedRows + extras + createdMeanwhile)
+            replaceConversations(listedRows + extras + keptRows + createdMeanwhile)
+            for id in appliedIDs { rowAppliedAt[id] = tickRow() }
             contexts = Dictionary(named.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
             listLoad = .loaded(problem: nil)
             dropThreads(missingFrom: live.union(createdMeanwhile.map(\.id)).union(panelConversations()))
@@ -663,13 +676,14 @@ public final class ChatStore {
     }
 
     /// 세션 패널이 보이는 대화 중 목록에 없는 것의 행을 id로 읽는다. 서버가 없다 · 보관했다고 확인하면 `gone`(오류 화면), 잠깐 못 읽으면 아는 행을 그대로 둔다
-    private func readPanelRows(missingFrom listed: Set<UUID>) async -> (rows: [ChatConversation], gone: Set<UUID>) {
+    private func readPanelRows(missingFrom listed: Set<UUID>) async -> (rows: [ChatConversation], gone: Set<UUID>, kept: Set<UUID>) {
         let ids = panelConversations().subtracting(listed).subtracting(locals.map(\.id)).sorted { $0.uuidString < $1.uuidString }
-        guard !ids.isEmpty else { return ([], []) }
-        let known = conversations
+        guard !ids.isEmpty else { return ([], [], []) }
+        let knownIDs = Set(conversations.map(\.id))
         enum Outcome: Sendable {
             case row(ChatConversation)
             case gone(UUID)
+            case keep(UUID)
             case unknown
         }
         return await withTaskGroup(of: Outcome.self) { group in
@@ -679,20 +693,22 @@ public final class ChatStore {
                         guard let row = try await gateway.conversation(id: id), row.archivedAt == nil else { return .gone(id) }
                         return .row(row)
                     } catch {
-                        return known.first { $0.id == id }.map(Outcome.row) ?? .unknown
+                        return knownIDs.contains(id) ? .keep(id) : .unknown
                     }
                 }
             }
             var rows: [ChatConversation] = []
             var gone: Set<UUID> = []
+            var kept: Set<UUID> = []
             for await outcome in group {
                 switch outcome {
                 case .row(let row): rows.append(row)
                 case .gone(let id): gone.insert(id)
+                case .keep(let id): kept.insert(id)
                 case .unknown: break
                 }
             }
-            return (rows, gone)
+            return (rows, gone, kept)
         }
     }
 
@@ -703,6 +719,7 @@ public final class ChatStore {
         tombstones[id] = tombstoneClock
         conversations.removeAll { $0.id == id }
         rowStamps[id] = nil
+        rowAppliedAt[id] = nil
         previews[id] = nil
         derivedTitles[id] = nil
         threads[id] = ChatThread()
@@ -731,9 +748,20 @@ public final class ChatStore {
         recoveries[id] = tombstoneClock
     }
 
-    /// 읽은 행(직접 읽기)을 반영한다: 서버 버전이 쥔 행보다 오래되면 반영하지 않는다 (늦게 끝난 옛 응답이 더 새 행을 덮지 못한다)
-    private func applyRead(_ row: ChatConversation) {
-        if let held = conversations.first(where: { $0.id == row.id }), held.rowVersion > row.rowVersion { return }
+    private func tickRow() -> Int {
+        rowClock += 1
+        return rowClock
+    }
+
+    /// 이 읽기의 행을 쥔 행 대신 반영해도 되나: 쥔 행을 반영한 **뒤에** 시작한 읽기는 늘 이긴다 (서버 시각이 뒤로 갈 수 있어 그 새 읽기를 영원히 거절하면 수렴하지 못한다).
+    /// 쥔 행을 반영하기 전에 시작한 읽기(겹친 읽기)는 서버 버전이 더 낮으면 반영하지 않는다: 늦게 끝난 옛 응답이 더 새 행을 덮지 못한다
+    private func shouldApply(_ row: ChatConversation, over held: ChatConversation, readStartedAt: Int) -> Bool {
+        readStartedAt > (rowAppliedAt[row.id] ?? 0) || row.rowVersion >= held.rowVersion
+    }
+
+    /// 읽은 행(직접 읽기)을 반영한다 (`shouldApply`)
+    private func applyRead(_ row: ChatConversation, readStartedAt: Int) {
+        if let held = conversations.first(where: { $0.id == row.id }), !shouldApply(row, over: held, readStartedAt: readStartedAt) { return }
         upsert(row)
         noteRecovery(row.id)
     }
@@ -994,6 +1022,7 @@ public final class ChatStore {
     }
 
     private func upsert(_ conversation: ChatConversation) {
+        rowAppliedAt[conversation.id] = tickRow()
         if let index = conversations.firstIndex(where: { $0.id == conversation.id }) {
             conversations[index] = conversation
         } else {

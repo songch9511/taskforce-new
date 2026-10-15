@@ -52,9 +52,9 @@ struct ChatStoreTombstoneTests {
         return chat
     }
 
-    func agentRow(_ n: Int, last: TimeInterval? = 10, archived: Bool = false, title: String? = nil) -> ChatConversation {
+    func agentRow(_ n: Int, last: TimeInterval? = 10, archived: Bool = false, title: String? = nil, contextID: UUID? = nil) -> ChatConversation {
         ChatConversation(
-            id: ChatContractFixtures.id(n, prefix: "bcb50000"), title: title, createdAt: .test(0), lastMessageAt: last.map { .test($0) }, archivedAt: archived ? .test(1) : nil,
+            id: ChatContractFixtures.id(n, prefix: "bcb50000"), title: title, contextID: contextID, createdAt: .test(0), lastMessageAt: last.map { .test($0) }, archivedAt: archived ? .test(1) : nil,
             target: ChatConversationTarget(kind: .agent, agentConnectionID: connection, agentSessionID: ChatContractFixtures.id(n, prefix: "5e550000"))
         )
     }
@@ -337,35 +337,86 @@ struct ChatStoreTombstoneTests {
         #expect(chat.screen(for: oldID) == .ready(problem: nil) && chat.turns(for: oldID).map(\.text) == ["first message"])
     }
 
-    /// 목록 응답 · id로 읽은 행(extras)이 쥔 행보다 오래된 버전이면 쥔 행을 둔다 (목록 교체 · extras 모두)
-    @Test func aListOrByIDResponseOlderThanTheHeldRowKeepsTheHeldRow() async {
+    /// 겹친 읽기의 역전 방어: 쥔 행을 반영하기 **전에** 시작한 읽기의 응답이 서버 버전이 더 낮으면 쥔 행을 둔다 (목록 교체 · id로 읽은 행 모두)
+    private func overlappingOlderResponse(viaList: Bool) async {
         let listed = agentRow(1, last: 100)
         let held = agentRow(2, last: 50, title: "held")
         let older = agentRow(2, last: 10, title: "older")
         let chat = store()
         let id = held.id
-        // 쥔 행을 직접 읽어 마련한다
+        chat.panelConversations = { [id] }
+        let latch = Latch()
+        let calls = CallCounter()
+        gateway.conversationsHandler = {
+            if viaList {
+                await latch.wait()          // 먼저 시작한 새로 읽기의 목록 응답이 붙잡힌다 (옛 행)
+                return [listed, older]
+            }
+            return [listed]
+        }
+        gateway.conversationHandler = { _ in
+            if !viaList, calls.next() == 1 {
+                await latch.wait()          // 먼저 시작한 새로 읽기의 id 읽기 응답이 붙잡힌다 (옛 행)
+                return older
+            }
+            return held                     // 그사이 시작한 직접 읽기: 최신 행
+        }
+        gateway.messagesHandler = { _ in [] }
+        gateway.lastMessagesHandler = { _ in [:] }
+        let refresh = Task { await chat.refresh() }
+        #expect(await latch.waitForArrivals(1, timeout: .seconds(5)), "먼저 시작한 읽기의 응답이 붙잡혀 있다")
+        await chat.readConversation(id)
+        #expect(chat.conversations.first { $0.id == id }?.title == "held", "직접 읽기가 최신 행을 반영했다")
+        await latch.open()
+        await refresh.value
+        await chat.settle()
+        #expect(chat.conversations.first { $0.id == id }?.title == "held" && chat.conversations.first { $0.id == id }?.lastMessageAt == .test(50), "겹친 옛 응답(버전이 낮다)이 쥔 행을 덮지 않는다")
+    }
+
+    @Test func anOverlappingOlderListResponseDoesNotOverwriteTheHeldRow() async {
+        await overlappingOlderResponse(viaList: true)
+    }
+
+    @Test func anOverlappingOlderByIDResponseDoesNotOverwriteTheHeldRow() async {
+        await overlappingOlderResponse(viaList: false)
+    }
+
+    /// 서버 시각은 뒤로 갈 수 있다 (`db_now()`는 트랜잭션 시작 시각이고 Stop이 메시지 잠금을 기다리는 사이 새 POST가 커밋될 수 있다):
+    /// 앱이 `last_message_at`=t20 행을 쥔 뒤 서버가 `{t10, 새 프로젝트}`를 돌려준다. 쥔 행을 반영한 **뒤에** 시작한 읽기는 늘 이겨 수렴한다 (되풀이해도)
+    private func freshReadAfterBackwardsTimestamp(viaList: Bool) async {
+        let listed = agentRow(1, last: 100)
+        let projectA = ChatContractFixtures.id(41, prefix: "c0170000")
+        let projectB = ChatContractFixtures.id(42, prefix: "c0170000")
+        let held = agentRow(2, last: 20, title: "held", contextID: projectA)
+        let backwards = agentRow(2, last: 10, title: "held", contextID: projectB)
+        let chat = store()
+        let id = held.id
         gateway.conversationHandler = { _ in held }
         gateway.conversationsHandler = { [listed] }
         gateway.messagesHandler = { _ in [] }
         gateway.lastMessagesHandler = { _ in [:] }
         await chat.readConversation(id)
-        #expect(chat.conversations.first { $0.id == id }?.lastMessageAt == .test(50))
-        // 목록 응답이 더 오래된 행을 준다
-        gateway.conversationsHandler = { [listed, older] }
-        await chat.refresh()
-        #expect(chat.conversations.first { $0.id == id }?.title == "held" && chat.conversations.first { $0.id == id }?.lastMessageAt == .test(50), "더 오래된 목록 행이 쥔 행을 덮지 않는다")
-        // 패널 대화를 id로 읽은 행(extras)이 더 오래됐다
-        chat.panelConversations = { [id] }
-        gateway.conversationsHandler = { [listed] }
-        gateway.conversationHandler = { _ in older }
-        await chat.refresh()
-        #expect(chat.conversations.first { $0.id == id }?.title == "held" && chat.conversations.first { $0.id == id }?.lastMessageAt == .test(50), "더 오래된 id 읽기 행이 쥔 행을 덮지 않는다")
-        // 같은 버전 · 더 새 버전은 반영한다
-        let newer = agentRow(2, last: 60, title: "newer")
-        gateway.conversationHandler = { _ in newer }
-        await chat.refresh()
-        #expect(chat.conversations.first { $0.id == id }?.title == "newer", "더 새 버전은 반영한다")
+        #expect(chat.conversations.first { $0.id == id }?.lastMessageAt == .test(20) && chat.conversations.first { $0.id == id }?.contextID == projectA)
+        // 서버: 시각이 t10으로 되돌아가고 다른 기기가 프로젝트를 바꿨다
+        if viaList {
+            gateway.conversationsHandler = { [listed, backwards] }
+        } else {
+            chat.panelConversations = { [id] }
+            gateway.conversationHandler = { _ in backwards }
+        }
+        for _ in 0..<2 {
+            await chat.refresh()
+            let row = chat.conversations.first { $0.id == id }
+            #expect(row?.contextID == projectB && row?.lastMessageAt == .test(10), "새 읽기가 서버의 행으로 수렴한다 (시각이 뒤로 갔어도 영원히 거절하지 않는다)")
+        }
+    }
+
+    @Test func aFreshListReadConvergesEvenWhenTheServerTimestampWentBackwards() async {
+        await freshReadAfterBackwardsTimestamp(viaList: true)
+    }
+
+    @Test func aFreshByIDReadConvergesEvenWhenTheServerTimestampWentBackwards() async {
+        await freshReadAfterBackwardsTimestamp(viaList: false)
     }
 
     // MARK: 확인 뒤 Try again이 읽은 것은 옛 응답이 덮지 않는다
