@@ -140,6 +140,14 @@ public final class ChatStore {
     private var derivedTitles: [UUID: String] = [:]
     /// 대화마다 읽기를 시작할 때 하나씩 올리는 순번: **마지막에 시작한 읽기만** 반영한다 (늦게 끝난 옛 읽기가 새 읽기 결과를 되돌리지 못한다)
     @ObservationIgnored private var threadReadSeq: [UUID: Int] = [:]
+    /// 행을 id로 직접 읽을 때(`readConversation`)마다 올리는 순번: 겹친 직접 읽기는 마지막에 시작한 것만 반영한다.
+    /// 글 읽기(`threadReadSeq`)와 따로 둔다: 다른 길의 글 읽기가 시작됐다고 해서 "서버가 없다"는 이 확인이 버려지면 안 된다
+    @ObservationIgnored private var rowReadSeq: [UUID: Int] = [:]
+    /// 묘비 시계: 서버가 대화를 없다 · 보관했다고 확인할 때마다 하나 오른다 (`confirmGone`)
+    @ObservationIgnored private var tombstoneClock = 0
+    /// 대화별 묘비: 그 대화를 없다고 확인한 때의 시계값. **읽기를 시작할 때 시계값을 쥐고**, 반영할 때 이 대화의 묘비가 그보다 새것이면(`isStale`)
+    /// 그 읽기의 데이터(목록 행 · 직접 읽은 행 · 글 · 미리보기)를 버린다. 확인 뒤에 시작한 읽기(사용자의 Try again · 다시 열기)는 묘비보다 새 세대라 정상으로 반영한다
+    @ObservationIgnored private var tombstones: [UUID: Int] = [:]
     private var drafts: [UUID: String] = [:]
     /// 열린 창들이 보이는 대화 (앱이 정한다). 목록 읽기(⌘3 · 온라인 복귀 · Try again)가 공유 `currentID`뿐 아니라 이들의 글도 다시 읽는다
     @ObservationIgnored public var viewedConversations: () -> Set<UUID> = { [] }
@@ -204,6 +212,8 @@ public final class ChatStore {
         previews = [:]
         derivedTitles = [:]
         threadReadSeq = [:]
+        rowReadSeq = [:]
+        tombstones = [:]
         drafts = [:]
         threads = [:]
         deliveries = [:]
@@ -522,20 +532,22 @@ public final class ChatStore {
     public func readConversation(_ id: UUID) async {
         guard let token = scope.token else { return }
         if !isTargetKnown(id) {
-            let seq = (threadReadSeq[id] ?? 0) + 1
-            threadReadSeq[id] = seq
+            let started = tombstoneClock
+            let rowSeq = (rowReadSeq[id] ?? 0) + 1
+            rowReadSeq[id] = rowSeq
+            threadReadSeq[id] = (threadReadSeq[id] ?? 0) + 1   // 이미 나가 있던 글 읽기는 이 읽기가 대신한다
             if threads[id] == nil { threads[id] = ChatThread() }
             threads[id]?.load = .loading
             do {
                 let row = try await gateway.conversation(id: id)
-                guard scope.isCurrent(token), threadReadSeq[id] == seq else { return }
+                guard scope.isCurrent(token), rowReadSeq[id] == rowSeq, !isStale(id, since: started) else { return }
                 guard let row, row.archivedAt == nil else {
-                    threads[id]?.load = .failed
+                    confirmGone(id)
                     return
                 }
                 upsert(row)
             } catch {
-                guard scope.isCurrent(token), threadReadSeq[id] == seq, let failure = ReadFailure.from(error, online: isOnline) else { return }
+                guard scope.isCurrent(token), rowReadSeq[id] == rowSeq, !isStale(id, since: started), let failure = ReadFailure.from(error, online: isOnline) else { return }
                 if failure == .unavailable {
                     isUnavailable = true
                     threads[id]?.load = .loaded(problem: nil)
@@ -587,6 +599,7 @@ public final class ChatStore {
         guard let token = scope.token else { return }
         listSequence += 1
         let sequence = listSequence
+        let started = tombstoneClock
         if case .loaded = listLoad {} else { listLoad = .loading }
         // 읽는 사이 이 기기가 만든 대화(첫 보내기)는 그 읽기에 없을 수 있다: 서버가 지운 것이 아니다
         let knownBefore = Set(conversations.map(\.id))
@@ -596,19 +609,17 @@ public final class ChatStore {
             let (chats, named) = try await (rows, projects)
             // 세션 패널이 보이는 대화 중 이 목록(최근 100 + 빈 20)에 없는 것은 id로 직접 읽어 남긴다
             let listed = Set(chats.map(\.id))
-            let (extras, gone) = await readPanelRows(missingFrom: listed)
+            let (panelRows, gone) = await readPanelRows(missingFrom: listed)
             guard scope.isCurrent(token), sequence == listSequence else { return }
-            // 서버가 없다 · 보관했다고 확인한 패널 대화: 이전 본문 · 대상을 남기지 않고 오류 화면(다시 시도)으로 둔다 (일시 실패와 다르다)
-            // 읽기 순번도 올린다: 이미 나가 있던 옛 읽기(글 · 행)의 늦은 응답이 오류 화면을 정상 본문으로 되돌리지 못하게 버린다
-            for id in gone {
-                threadReadSeq[id] = (threadReadSeq[id] ?? 0) + 1
-                threads[id] = ChatThread()
-                threads[id]?.load = .failed
-            }
-            let live = listed.union(extras.map(\.id))
-            // 서버가 없다 · 보관했다고 확인한 대화는 "읽는 사이 만든 대화"로 남기지 않는다 (그 사이 별도 읽기가 행을 먼저 반영했어도)
-            let createdMeanwhile = conversations.filter { !knownBefore.contains($0.id) && !live.contains($0.id) && !gone.contains($0.id) }
-            conversations = chats.filter { $0.archivedAt == nil } + extras + createdMeanwhile
+            // 서버가 없다 · 보관했다고 확인한 패널 대화: 행 · 본문 · 대상을 지우고 오류 화면(다시 시도)으로 둔다 (일시 실패와 다르다). 직접 읽기와 같은 길이다
+            for id in gone { confirmGone(id) }
+            // 이 새로 읽기를 시작한 뒤에 다른 길(직접 읽기)이 없다고 확인한 대화는, 이 응답(목록 · id로 읽은 행)에 있어도 반영하지 않는다
+            let fresh: [ChatConversation] = chats.filter { !isStale($0.id, since: started) }
+            let listedRows: [ChatConversation] = fresh.filter { $0.archivedAt == nil }
+            let extras: [ChatConversation] = panelRows.filter { !isStale($0.id, since: started) }
+            let live = Set(fresh.map(\.id)).union(extras.map(\.id))
+            let createdMeanwhile: [ChatConversation] = conversations.filter { !knownBefore.contains($0.id) && !live.contains($0.id) }
+            conversations = listedRows + extras + createdMeanwhile
             contexts = Dictionary(named.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
             listLoad = .loaded(problem: nil)
             dropThreads(missingFrom: live.union(createdMeanwhile.map(\.id)).union(panelConversations()))
@@ -618,7 +629,7 @@ public final class ChatStore {
                 mode = .chat
                 focusRequest += 1
             }
-            await loadPreviews(token: token, sequence: sequence)
+            await loadPreviews(token: token, sequence: sequence, started: started)
             await loadShownThreads()
         } catch {
             guard scope.isCurrent(token), sequence == listSequence, let failure = ReadFailure.from(error, online: isOnline) else { return }
@@ -668,6 +679,23 @@ public final class ChatStore {
         }
     }
 
+    /// 서버가 없다 · 보관했다고 확인한 대화 (새로 읽기와 직접 읽기가 같은 길을 쓴다): 행 · 본문 · 대상 · 미리보기를 지우고 오류 화면(`.failed`, Try again)으로 둔다.
+    /// 묘비를 세워, 이 확인보다 먼저 시작한 읽기의 늦은 응답이 이 대화를 되살리지 못하게 한다 (`isStale`). 사용자의 Try again · 다시 열기(`readConversation`)는 새 세대로 시작한다
+    private func confirmGone(_ id: UUID) {
+        tombstoneClock += 1
+        tombstones[id] = tombstoneClock
+        conversations.removeAll { $0.id == id }
+        previews[id] = nil
+        derivedTitles[id] = nil
+        threads[id] = ChatThread()
+        threads[id]?.load = .failed
+    }
+
+    /// 읽기를 시작한 뒤(`started` = 그때의 묘비 시계) 이 대화가 없다고 확인됐나: 그렇다면 그 읽기의 데이터는 반영하지 않는다
+    private func isStale(_ id: UUID, since started: Int) -> Bool {
+        (tombstones[id] ?? 0) > started
+    }
+
     /// 지금 보이는 대화들의 글을 읽는다: 공유 `currentID`와 창들 · 세션 패널이 보이는 대화 (서버에 있는 것만, 겹치지 않게)
     private func loadShownThreads() async {
         var shown = viewedConversations().union(panelConversations())
@@ -689,11 +717,11 @@ public final class ChatStore {
         }
     }
 
-    private func loadPreviews(token: AccountScope.Token, sequence: Int) async {
+    private func loadPreviews(token: AccountScope.Token, sequence: Int, started: Int) async {
         let ids = conversations.filter { !$0.isUntouched }.map(\.id)
         guard !ids.isEmpty, let last = try? await gateway.lastMessages(conversationIDs: ids), scope.isCurrent(token), sequence == listSequence else { return }
         var next: [UUID: String] = [:]
-        for (id, message) in last { next[id] = message.text }
+        for (id, message) in last where !isStale(id, since: started) { next[id] = message.text }
         previews = next
     }
 
@@ -703,6 +731,7 @@ public final class ChatStore {
     ///   다른 대화의 읽기는 서로 막지 않는다. 계정이 바뀌었으면 어느 쪽도 반영하지 않는다
     public func loadThread(_ id: UUID) async {
         guard let token = scope.token, conversations.contains(where: { $0.id == id }) else { return }
+        let started = tombstoneClock
         let seq = (threadReadSeq[id] ?? 0) + 1
         threadReadSeq[id] = seq
         if threads[id] == nil { threads[id] = ChatThread() }
@@ -711,14 +740,14 @@ public final class ChatStore {
             let revision = threads[id]?.revision ?? 0
             do {
                 let messages = try await gateway.messages(conversationID: id)
-                guard scope.isCurrent(token), threads[id] != nil, threadReadSeq[id] == seq else { return }
+                guard scope.isCurrent(token), threads[id] != nil, threadReadSeq[id] == seq, !isStale(id, since: started) else { return }
                 guard threads[id]?.revision == revision else { continue }
                 applyServerMessages(messages, to: id)
                 threads[id]?.load = .loaded(problem: nil)
                 if let memory { await memory.loadReferenced(ids: messages.flatMap(\.rememberedIDs)) }
                 return
             } catch {
-                guard scope.isCurrent(token), threadReadSeq[id] == seq, let failure = ReadFailure.from(error, online: isOnline), threads[id] != nil else { return }
+                guard scope.isCurrent(token), threadReadSeq[id] == seq, !isStale(id, since: started), let failure = ReadFailure.from(error, online: isOnline), threads[id] != nil else { return }
                 if failure == .unavailable {
                     isUnavailable = true
                     threads[id]?.load = .loaded(problem: nil)
