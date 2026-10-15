@@ -648,7 +648,13 @@ extension BridgeRuntime {
         // close_before: 앞 턴의 버려진 요청을 거절로 먼저 닫는다 (계약 3.6)
         if let requestID = command.closeBeforeRequestID {
             let ref = AgentRequestRef(taskID: common.agentTaskID, sessionID: common.agentSessionID, requestID: requestID, externalSessionID: common.session.externalSessionID, workspaceRef: workspace)
-            try? await adapter.closeRequest(ref)
+            do {
+                try await adapter.closeRequest(ref)
+            } catch {
+                // 닫지 못했다 (앞 프로세스의 끝을 증명하지 못함 등, OA D3a 8장 15): 이 턴을 띄우지 않는다
+                log.log("adapter_close_failed", ["task": .id(common.agentTaskID), "step": .code("close_before")])
+                return await failBeforeAcceptance(taskID: common.agentTaskID, commandID: record.commandID, reason: .spawnFailed)
+            }
             _ = try? await ledger.updateTask(common.agentTaskID) { if !$0.closedRequestIDs.contains(requestID) { $0.closedRequestIDs.append(requestID) } }
         }
         // 먼저 적는다 (start_intent): 이 commit 뒤에는 프로세스를 띄웠을 수 있다 → 다시 띄우지 않는다
@@ -733,10 +739,10 @@ extension BridgeRuntime {
         _ = try? await ledger.updateCommand(commandID) {
             if answer {
                 $0.answerSentAt = now
-                $0.inputAt = identity.inputSentAt
+                $0.inputAt = identity.inputSentAt ?? $0.inputAt
             } else {
                 $0.spawnAt = identity.startedAt
-                $0.inputAt = identity.inputSentAt
+                $0.inputAt = identity.inputSentAt ?? $0.inputAt
             }
             if stillRunning, ($0.state.rank ?? 0) < (BridgeCommandState.started.rank ?? 4) {
                 $0.state = answer ? .inputSent : .started
@@ -744,6 +750,18 @@ extension BridgeRuntime {
             }
         }
         await publish()
+    }
+
+    /// 답 resume로 새 프로세스가 떴다 (OA D3a 8장 14): 답을 전달하기 전에 그 정체를 원장에 먼저 적는다 (그 사이 앱이 죽어도 고아를 찾는다).
+    /// 답 전달 완료(`answerSentAt` · `inputAt`)는 `deliverAnswer`가 돌아온 뒤 `recordStarted`가 적는다
+    func recordSpawnIdentity(taskID: String, identity: AgentProcessIdentity) async {
+        guard supervised[taskID] != nil else { return }
+        supervised[taskID]?.identity = identity
+        _ = try? await ledger.updateTask(taskID) {
+            $0.pid = identity.pid
+            $0.processStartedAt = identity.startedAt
+            $0.processMarker = identity.processMarker
+        }
     }
 
     func runAnswer(_ command: BridgeV1AnswerCommand, record: BridgeCommandRecord) async {
@@ -847,7 +865,12 @@ extension BridgeRuntime {
     func closeRequestAndAck(record: BridgeCommandRecord, taskID: String, requestID: String, adapterID: String, session: String, adapterClose: Bool) async {
         if adapterClose, let adapter = adapters[adapterID] {
             let task = try? await ledger.task(taskID)
-            try? await adapter.closeRequest(AgentRequestRef(taskID: taskID, sessionID: session, requestID: requestID, externalSessionID: task?.externalSessionID, workspaceRef: task?.workspaceRef))
+            do {
+                try await adapter.closeRequest(AgentRequestRef(taskID: taskID, sessionID: session, requestID: requestID, externalSessionID: task?.externalSessionID, workspaceRef: task?.workspaceRef))
+            } catch {
+                // 답은 어차피 전달하지 않는다 (request_closed). 닫지 못한 보류가 남아도 adapter는 앞 프로세스의 끝을 증명하기 전에는 다음 실행을 띄우지 않는다 (OA D3a 8장 15)
+                log.log("adapter_close_failed", ["task": .id(taskID), "step": .code("request_closed")])
+            }
         }
         _ = try? await ledger.updateTask(taskID) {
             if !$0.closedRequestIDs.contains(requestID) { $0.closedRequestIDs.append(requestID) }
@@ -867,7 +890,11 @@ extension BridgeRuntime {
         if let abandoned = command.abandonedRequestID {
             _ = try? await ledger.updateTask(common.agentTaskID) { if !$0.closedRequestIDs.contains(abandoned) { $0.closedRequestIDs.append(abandoned) } }
             if let task = try? await ledger.task(common.agentTaskID), let adapter = adapters[task.adapter] {
-                try? await adapter.closeRequest(AgentRequestRef(taskID: task.agentTaskID, sessionID: task.agentSessionID, requestID: abandoned, externalSessionID: task.externalSessionID, workspaceRef: task.workspaceRef))
+                do {
+                    try await adapter.closeRequest(AgentRequestRef(taskID: task.agentTaskID, sessionID: task.agentSessionID, requestID: abandoned, externalSessionID: task.externalSessionID, workspaceRef: task.workspaceRef))
+                } catch {
+                    log.log("adapter_close_failed", ["task": .id(task.agentTaskID), "step": .code("cancel")])
+                }
             }
         }
         // 모르는 범위는 더 넓게 멈춘다 (안전한 쪽)

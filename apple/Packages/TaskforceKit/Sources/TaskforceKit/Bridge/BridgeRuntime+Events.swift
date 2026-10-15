@@ -18,7 +18,7 @@ extension BridgeRuntime {
             return
         }
         let observed = at ?? clock.now()
-        // 앞에서 미뤄 둔 `inputReached`가 있으면 시작 기록이 끝났는지 다시 보고 적는다 (OA D3a Q5)
+        // 앞에서 적지 못한 `inputReached`가 있으면 다시 적는다 (OA D3a Q5)
         if current.inputReachedAt != nil { await applyInputReached(taskID: taskID) }
         switch event {
         case .inputReached:
@@ -156,8 +156,8 @@ extension BridgeRuntime {
 
     // MARK: 프로세스 끝
 
-    /// `inputReached` 시각을 명령 `inputAt`에 적는다 (비어 있을 때만). 시작 기록(`recordStarted`)이 `inputAt`을 adapter 정체 값으로 덮으므로
-    /// 그 기록이 끝난 뒤(`spawnAt` · `answerSentAt`이 있음)에만 적고, 아직이면 다음 사건 · 끝남에서 다시 본다
+    /// `inputReached` 시각을 명령 `inputAt`에 바로 적는다 (비어 있을 때만). 시작 기록(`recordStarted`)은 adapter 정체 값이 없으면 이 값을 남긴다 (OA D3a 5.2),
+    /// 그래서 시작 기록 전에 init → 끝이 와도 `supervised`를 지우기 전에 적힌다 (8장 16). 원장 읽기 · 쓰기가 실패하면 다음 사건 · 끝남에서 다시 본다
     func applyInputReached(taskID: String) async {
         guard let at = supervised[taskID]?.inputReachedAt, let task = try? await ledger.task(taskID), let commandID = task.currentCommandID,
               let command = try? await ledger.command(commandID) else { return }
@@ -165,8 +165,7 @@ extension BridgeRuntime {
             supervised[taskID]?.inputReachedAt = nil
             return
         }
-        guard command.spawnAt != nil || command.answerSentAt != nil else { return }
-        _ = try? await ledger.updateCommand(commandID) { if $0.inputAt == nil { $0.inputAt = at } }
+        guard (try? await ledger.updateCommand(commandID) { if $0.inputAt == nil { $0.inputAt = at } }) != nil else { return }
         supervised[taskID]?.inputReachedAt = nil
     }
 

@@ -311,9 +311,15 @@ public enum AgentToolDecisionError: Error, Equatable, Sendable {
 public struct AgentRuntimeServices: Sendable {
     /// `POST /api/v1/bridge/tool-decision` (timeout 1.0초, 재시도 0). 이 런타임의 파티션으로만 간다 (ONE-TF-09)
     public var decideTool: @Sendable (BridgeV1ToolDecisionQuery) async throws -> BridgeV1ToolDecisionResponse
+    /// 답 resume로 새 프로세스를 띄운 직후 그 정체(pid · 시작 시각 · marker)를 원장에 먼저 적는다. 답 전달 완료는 `deliverAnswer`의 반환으로 따로 적는다 (OA D3a 8장 14)
+    public var recordSpawn: @Sendable (_ taskID: String, _ identity: AgentProcessIdentity) async -> Void
 
-    public init(decideTool: @escaping @Sendable (BridgeV1ToolDecisionQuery) async throws -> BridgeV1ToolDecisionResponse) {
+    public init(
+        decideTool: @escaping @Sendable (BridgeV1ToolDecisionQuery) async throws -> BridgeV1ToolDecisionResponse,
+        recordSpawn: @escaping @Sendable (_ taskID: String, _ identity: AgentProcessIdentity) async -> Void = { _, _ in }
+    ) {
         self.decideTool = decideTool
+        self.recordSpawn = recordSpawn
     }
 }
 
@@ -356,7 +362,7 @@ extension WorkspaceResolver {
     public func authorize(workspaceRef: String, session sessionID: String, adapter: String) async -> Bool { false }
 }
 
-/// 비밀값 답은 이 Mac의 메모리에만 있다 (계약 3.6): 서버에도 디스크에도 없다. D4a의 입력 화면이 넣고 런타임이 한 번 꺼내 간다
+/// 비밀값 답은 이 Mac의 메모리에만 있다 (계약 3.6): 서버에도 디스크에도 없다. D4b-m의 입력 화면이 넣고 런타임이 한 번 꺼내 간다
 public actor LocalSecretAnswers {
     private var values: [String: AgentAnswerValue] = [:]
     private var onChange: (@Sendable (Bool) -> Void)?

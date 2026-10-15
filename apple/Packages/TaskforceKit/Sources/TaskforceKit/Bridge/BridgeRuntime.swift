@@ -188,11 +188,17 @@ public actor BridgeRuntime {
             guard let runtime = self else { return }
             await secrets.observe { [weak runtime] _ in Task { await runtime?.publish() } }
         }
-        // adapter마다 한 번: 도구 판정은 이 런타임(이 파티션의 bridge id · secret)으로만 묻는다 (OA D3a Q12, ONE-TF-09)
-        let services = AgentRuntimeServices { [weak self] query in
-            guard let runtime = self else { throw AgentToolDecisionError.unavailable }
-            return try await runtime.decideTool(query)
-        }
+        // adapter마다 한 번: 도구 판정은 이 런타임(이 파티션의 bridge id · secret)으로만 묻는다 (OA D3a Q12, ONE-TF-09).
+        // 답 resume로 띄운 새 프로세스의 정체는 답 전달 전에 원장에 적는다 (OA D3a 8장 14)
+        let services = AgentRuntimeServices(
+            decideTool: { [weak self] query in
+                guard let runtime = self else { throw AgentToolDecisionError.unavailable }
+                return try await runtime.decideTool(query)
+            },
+            recordSpawn: { [weak self] taskID, identity in
+                await self?.recordSpawnIdentity(taskID: taskID, identity: identity)
+            }
+        )
         for adapter in adapters { adapter.attach(services) }
     }
 
