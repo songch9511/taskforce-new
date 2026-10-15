@@ -162,7 +162,7 @@ export function bridgeCommandTests(db: () => ConversationAgentDb) {
     if(reason==="not_connected")await f.updateRow("agent_connections",w.connection,{status:"error"});
     if(reason.startsWith("session_"))await f.updateRow("agent_sessions",w.session,{status:reason.slice(8)});
     expect(await f.lease(w)).toMatchObject({status:"withdrawn",reason});
-    expect(await f.msg(w.message)).toMatchObject({delivery_state:reason==="expired"?"expired":"not_sent",delivery_reason:reason});
+    expect(await f.msg(w.message)).toMatchObject({delivery_state:reason==="expired"?"expired":"not_sent",delivery_reason:reason==="expired"?null:reason});
   });
   it("B5 decline before lease has no external effect",async()=>{
     const w=await f.world();expect(await f.settle(w,"decline","unsupported_kind")).toMatchObject({status:"withdrawn",reason:"unsupported"});
