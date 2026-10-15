@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { embed } from "@/lib/ai/embed";
 import { ConsentRequiredError } from "@/lib/consent/gate";
 
-import { conversationModelsFromEnv, finishTurn, loadConsultContext, loadConversation, postUserMessage, releaseLease, verifySelected } from "./store";
+import { conversationModelsFromEnv, finishTurn, loadConsultContext, loadConversation, organizeLookup, postUserMessage, releaseLease, verifySelected } from "./store";
 
 vi.mock("server-only", () => ({}));
 // 임베딩은 결정적 가짜 (실제 모델 호출 없음)
@@ -132,6 +132,39 @@ describe("RPC 인자", () => {
       ["conversation_release_lease", { p_user_id: USER, p_message_id: "m" }],
       ["conversation_finish_turn", { p_user_id: USER, p_message_id: "m", p_turn: { user: { intent: plan.intent, refs: {} }, reply: { text: "답", refs: {}, content: {} }, memory: [], adopt: null } }],
     ]);
+  });
+
+  it("D4c-2: 말로 이동(move)이 있으면 p_turn에 그대로 싣고, 없으면 키를 보내지 않는다 (옛 모양과 바이트까지 같다)", async () => {
+    const { admin, calls } = recordingAdmin({ conversation_finish_turn: { status: "written", reply_id: "r", memory_ids: [], action_id: null } });
+    const base = {
+      intent: { kind: "organize" as const, confidence: 0.9, judge_version: "intent-v2" },
+      user: { refs: {} as never },
+      reply: { text: "답", segments: [], citations: [], refs: {} as never, content: {} as never },
+      memory: [],
+      adopt: null,
+    };
+    const move = [{ action_id: "a", add: { context_id: "c", expected_version: 3 }, remove: null }];
+    await finishTurn(admin, USER, "m", { ...base, move });
+    await finishTurn(admin, USER, "m", { ...base, move: null });
+    await finishTurn(admin, USER, "m", base);
+    const turns = calls.map((c) => (c.ops[0].args[0] as { p_turn: Record<string, unknown> }).p_turn);
+    expect(turns[0].move).toEqual(move);
+    expect(Object.keys(turns[1])).not.toContain("move");
+    expect(Object.keys(turns[2])).not.toContain("move");
+  });
+
+  it("D4c-2: organizeLookup은 organize_lookup RPC를 이 사용자로, 배열은 10개까지 보내고 결과를 zod로 검증한다", async () => {
+    const result = {
+      actions: [{ id: "a1", number: 139, title: "t", status: "open", version: 0, open_sessions: 0, evidence_count: 0, contexts: [{ id: "c1", name: "Launch", status: "active", context_version: 2 }] }],
+      contexts: [{ id: "c1", name: "Launch", kind: "project", status: "active", context_version: 2 }],
+    };
+    const { admin, calls } = recordingAdmin({ organize_lookup: result });
+    const numbers = Array.from({ length: 12 }, (_, i) => i + 1);
+    expect(await organizeLookup(admin, USER, { numbers, actionIds: ["a1"] })).toEqual(result);
+    expect(calls[0].name).toBe("organize_lookup");
+    expect(calls[0].ops[0].args[0]).toEqual({ p_user_id: USER, p_numbers: numbers.slice(0, 10), p_action_ids: ["a1"] });
+    const broken = recordingAdmin({ organize_lookup: { actions: [{ id: 1 }], contexts: [] } });
+    await expect(organizeLookup(broken.admin, USER, { numbers: [], actionIds: [] })).rejects.toThrow();
   });
 
   it("앱이 보낸 대상은 이 사용자의 것만 센다: 하나라도 없으면 missing", async () => {

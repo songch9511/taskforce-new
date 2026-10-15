@@ -61,7 +61,8 @@ export function projectAction(fallbackTitle: string, claims: Claim[], storedReas
 
 export type AiEventType = "created" | "due_changed" | "scope_changed" | "owner_changed" | "merged" | "completed" | "dropped" | "reopened";
 // user_unstarted: 착수를 되돌림 (진행 중 → 할 일, before · after: { started_at }). DB 함수 set_action_progress만 남긴다.
-export type UserEventType = "user_edited" | "user_deleted" | "user_confirmed" | "user_started" | "user_unstarted" | "user_reported_missing" | "user_created";
+// user_merged: 이슈 병합으로 사라지는 쪽을 닫음 (D4c-2, after: { status, into: 남는 쪽 id }). 삭제와 같은 쓰기에 이벤트 종류만 다르고 지표 1의 "중복" 오판 신호다.
+export type UserEventType = "user_edited" | "user_deleted" | "user_confirmed" | "user_started" | "user_unstarted" | "user_reported_missing" | "user_created" | "user_merged";
 
 export type EventDraft = {
   type: AiEventType | UserEventType;

@@ -1,6 +1,10 @@
+import { createHash } from "node:crypto";
+
 import { describe, expect, it } from "vitest";
 
-import { adoptPlan, conversationLink, payloadHash, proposalFromModel, proposalIntact, reissueProposal } from "./proposal";
+import type { OrganizeTarget, ProposalPayloadV2 } from "@/lib/api/contract";
+
+import { adoptPlan, conversationLink, newProposal, payloadHash, proposalFromModel, proposalIntact, reissueProposal } from "./proposal";
 
 // 제안 · 채택 (런타임 계약 2장, A41). B2의 제안은 create_action뿐이고 run · modify · stop 제안은 만들지 않는다.
 
@@ -59,5 +63,73 @@ describe("proposal", () => {
     expect(plan.claims.every((c) => c.origin === "user" && c.channel === "note" && c.source_id === plan.note.id)).toBe(true);
     expect(plan.action).toMatchObject({ title: "Shape 출시 준비", owner: "me", status: "open", due_date: null, due_at: null, needs_confirmation: false, embedding: null });
     expect(plan.events).toEqual([expect.objectContaining({ type: "user_created", actor: "user", rule: "user", source_id: plan.note.id })]);
+  });
+});
+
+// ─── D4c-2: 이동 · 삭제 · 병합 제안 ───
+const target = (n: number, overrides: Partial<OrganizeTarget> = {}): OrganizeTarget => ({
+  action_id: `aaaaaaaa-0000-4000-8000-${String(n).padStart(12, "0")}`,
+  number: n,
+  title: `이슈 ${n}`,
+  version: 2,
+  contexts: [{ id: "c1c1c1c1-0000-4000-8000-000000000001", name: "Launch" }],
+  open_sessions: 1,
+  evidence_count: 3,
+  ...overrides,
+});
+const ctxRef = (n: number, name = "Launch", version = 3) => ({ id: `c1c1c1c1-0000-4000-8000-${String(n).padStart(12, "0")}`, name, version });
+
+describe("proposal hash: 종류별 (D4c-2)", () => {
+  it("create_action은 B2와 같은 값이다 (JSON.stringify({ kind, title })의 sha256)", () => {
+    const legacy = `sha256:${createHash("sha256").update(JSON.stringify({ kind: "create_action", title: "Shape 출시 준비" })).digest("hex")}`;
+    expect(payloadHash({ kind: "create_action", title: "Shape 출시 준비" })).toBe(legacy);
+  });
+
+  it("삭제: 대상 id · version이 같으면 같은 확인 — 제목 · 번호 · 프로젝트 이름 · 세션 수는 hash에 넣지 않고, 순서도 무관(id 오름차순)", () => {
+    const a = payloadHash({ kind: "delete", targets: [target(1), target(2)] });
+    expect(payloadHash({ kind: "delete", targets: [target(2), target(1)] })).toBe(a);
+    expect(payloadHash({ kind: "delete", targets: [target(1, { title: "다른 제목", number: 9, open_sessions: 0, evidence_count: 0, contexts: [] }), target(2)] })).toBe(a);
+    expect(payloadHash({ kind: "delete", targets: [target(1, { version: 3 }), target(2)] })).not.toBe(a);
+    expect(payloadHash({ kind: "delete", targets: [target(1)] })).not.toBe(a);
+  });
+
+  it("병합: 어느 쪽이 남는지가 hash에 든다. 종류가 다르면 같은 대상이어도 다르다", () => {
+    const merge = payloadHash({ kind: "merge", from: target(1), into: target(2) });
+    expect(payloadHash({ kind: "merge", from: target(2), into: target(1) })).not.toBe(merge);
+    expect(payloadHash({ kind: "delete", targets: [target(1), target(2)] })).not.toBe(merge);
+    expect(payloadHash({ kind: "merge", from: target(1, { title: "x" }), into: target(2) })).toBe(merge);
+  });
+
+  it("이동: 대상 · 출발 · 도착 범위 id. 범위 이름 · version은 hash에 넣지 않는다 (채택할 때 다시 읽는다)", () => {
+    const move = payloadHash({ kind: "move", targets: [target(1)], from: ctxRef(1, "A"), to: ctxRef(2, "B") });
+    expect(payloadHash({ kind: "move", targets: [target(1)], from: ctxRef(1, "이름이 바뀜", 9), to: ctxRef(2, "B") })).toBe(move);
+    expect(payloadHash({ kind: "move", targets: [target(1)], from: null, to: ctxRef(2, "B") })).not.toBe(move);
+    expect(payloadHash({ kind: "move", targets: [target(1)], from: ctxRef(1, "A"), to: ctxRef(3, "C") })).not.toBe(move);
+  });
+
+  it("proposalIntact: 종류 · hash가 모두 맞아야 한다. 새 종류도 같은 규칙", () => {
+    const payloads: ProposalPayloadV2[] = [
+      { kind: "delete", targets: [target(1)] },
+      { kind: "merge", from: target(1), into: target(2) },
+      { kind: "move", targets: [target(1)], from: null, to: ctxRef(1) },
+    ];
+    for (const payload of payloads) {
+      const { ref } = newProposal(payload, newId);
+      expect(ref).toMatchObject({ kind: payload.kind, state: "open", payload_hash: payloadHash(payload) });
+      expect(proposalIntact(ref, payload)).toBe(true);
+      expect(proposalIntact({ ...ref, kind: payload.kind === "delete" ? "merge" : "delete" }, payload)).toBe(false);
+      expect(proposalIntact({ ...ref, payload_hash: "sha256:other" }, payload)).toBe(false);
+      expect(proposalIntact(ref, null)).toBe(false);
+    }
+    const delta: ProposalPayloadV2 = { kind: "delete", targets: [target(1, { version: 9 })] };
+    expect(proposalIntact(newProposal({ kind: "delete", targets: [target(1)] }, newId).ref, delta)).toBe(false);
+  });
+
+  it("reissue는 같은 종류 · 새 id", () => {
+    const payload: ProposalPayloadV2 = { kind: "delete", targets: [target(1)] };
+    const first = newProposal(payload, newId);
+    const again = reissueProposal(payload, newId);
+    expect(again.ref.id).not.toBe(first.ref.id);
+    expect(again.ref).toMatchObject({ kind: "delete", payload_hash: first.ref.payload_hash, state: "open" });
   });
 });

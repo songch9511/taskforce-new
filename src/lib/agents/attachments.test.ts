@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import type { Attachment } from "@/lib/api/contract";
 
-import { agentSelected, attachmentsFromLegacyRefs, checkAttachments, normalizeAttachments, taskforceRefs, taskforceSelected } from "./attachments";
+import { agentSelected, attachmentsFromLegacyRefs, checkAttachments, normalizeAttachments, taskforceContextIds, taskforceRefs, taskforceSelected } from "./attachments";
 import { fakeAdmin } from "./fake-admin";
 
 const USER = "10000000-0000-4000-8000-000000000001";
@@ -66,6 +66,13 @@ describe("selected 모양 (OD-3 · OD-5)", () => {
     expect(taskforceRefs(chips, { missing: [], executionArtifactIds: [] })).toEqual({ action_ids: [A], run_ids: [B], artifact_ids: [] });
     // 지워진 칩은 처리 입력에서 빠진다 (저장된 selected에는 그대로 남는다)
     expect(taskforceRefs(chips, { missing: [chip("action", A), chip("run", B)], executionArtifactIds: [C] })).toEqual({ action_ids: [], run_ids: [], artifact_ids: [C] });
+  });
+
+  it("D4c-2: taskforce 대상의 added context 칩 id (이슈 정리의 프로젝트 지칭): auto 칩 · 지워진 칩은 뺀다", () => {
+    const list = normalizeAttachments([chip("context", A), chip("context", B, "auto"), chip("context", C), chip("action", A)]);
+    expect(taskforceContextIds(list, { missing: [] })).toEqual([A, C]);
+    expect(taskforceContextIds(list, { missing: [chip("context", C)] })).toEqual([A]);
+    expect(taskforceContextIds([], { missing: [] })).toEqual([]);
   });
 
   it("칩이 없으면 taskforce selected에 attachments 키를 만들지 않는다 (옛 제출과 같은 제출로 비교된다)", () => {

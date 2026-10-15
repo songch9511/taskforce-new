@@ -1,0 +1,64 @@
+{
+  "id": "org-move-nested-name",
+  "description": "AC-27: 프로젝트 'Taskforce'와 'Taskforce 0.2.0'이 함께 있을 때 '#139 Taskforce 0.2.0으로' — 긴 이름이 이긴다",
+  "maps_to": [
+    "AC-27"
+  ],
+  "asked_at": "2026-10-15T10:00:00+09:00",
+  "message": "#139 Taskforce 0.2.0으로 옮겨줘",
+  "projects": [
+    {
+      "id": "p_tf",
+      "name": "Taskforce"
+    },
+    {
+      "id": "p_tf2",
+      "name": "Taskforce 0.2.0"
+    }
+  ],
+  "records": {
+    "open_actions": [
+      {
+        "id": "i139",
+        "title": "Shape 디자인 확정",
+        "number": 139,
+        "version": 2,
+        "projects": [
+          "p_tf"
+        ],
+        "open_sessions": 1,
+        "evidence_count": 2
+      },
+      {
+        "id": "i140",
+        "title": "견적서 보내기",
+        "number": 140,
+        "version": 2,
+        "projects": [],
+        "open_sessions": 1,
+        "evidence_count": 2
+      }
+    ]
+  },
+  "expect": {
+    "intent_any": [
+      "organize"
+    ],
+    "route_any": [
+      "organize"
+    ],
+    "organize": {
+      "op": "move",
+      "targets": [
+        "i139"
+      ],
+      "outcome": "write",
+      "project": "p_tf2"
+    },
+    "memory_writes": {
+      "min": 0,
+      "max": 0
+    }
+  },
+  "origin": "synthetic"
+}

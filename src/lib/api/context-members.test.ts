@@ -125,15 +125,28 @@ describe("POST /api/v2/contexts/{id}/members (넣기 · 빼기)", () => {
   it("예상 못 한 오류는 500 internal_error이고 로그에는 오류 이름과 DB 코드만 남는다 (id · 본문 없음)", async () => {
     const spy = vi.spyOn(console, "error").mockImplementation(() => {});
     const failing = makeDeps(async () => {
-      throw Object.assign(new Error("boom: " + ACTION), { code: "40P01" });
+      throw Object.assign(new Error("boom: " + ACTION), { code: "XX000" });
     });
     const response = await handleChangeContextMember(post(add), CTX, failing.deps);
     expect(response.status).toBe(500);
     expect(apiErrorV2Schema.parse(await response.json()).error.code).toBe("internal_error");
     const logged = spy.mock.calls.map((call) => String(call[0])).join("\n");
-    expect(logged).toContain("40P01");
+    expect(logged).toContain("XX000");
     expect(logged).not.toContain(ACTION);
     expect(logged).not.toContain(CTX);
+  });
+
+  it("교착(40P01) · 잠금 경합(55P03) · 직렬화 실패(40001)는 쓰기가 롤백됐으니 500이 아니라 409 busy_retry다 (일괄 말로 이동과 겹친 피해자, 검토 P2-3). 로그도 남기지 않는다", async () => {
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    for (const code of ["40P01", "55P03", "40001"]) {
+      const failing = makeDeps(async () => {
+        throw Object.assign(new Error("boom: " + ACTION), { code });
+      });
+      const response = await handleChangeContextMember(post(add), CTX, failing.deps);
+      expect(response.status, code).toBe(409);
+      expect((await response.json()).error, code).toEqual({ code: "busy_retry", message: "잠시 뒤 다시 시도해 주세요." });
+    }
+    expect(spy).not.toHaveBeenCalled();
   });
 });
 
@@ -193,6 +206,37 @@ describe("POST /api/v2/contexts/{to}/members/move (옮기기 · Undo)", () => {
     expect((await handleMoveContextMember(post(move), CTX, makeDeps({ status: "conflict" }).deps)).status).toBe(409);
     expect((await handleMoveContextMember(post(move), CTX, makeDeps({ status: "context_not_found" }).deps)).status).toBe(404);
     expect((await handleMoveContextMember(post(move), CTX, makeDeps({ status: "action_not_found" }).deps)).status).toBe(404);
+  });
+});
+
+// 에이전트가 만든 이슈의 id는 sha256에서 나온 GUID라 RFC 4122 버전 자리가 맞지 않는다(z.uuid()는 거절, z.guid()는 받는다). 이슈 정리가 받는 id를 메뉴 이동 · Undo도 받아야 한다 (검토 P2)
+describe("해시 GUID 이슈의 이동 · Undo (검토 P2)", () => {
+  const HASH_ACTION = "a3f1c2d4-5e6f-0718-293a-4b5c6d7e8f90";
+  const hashed = (over: Partial<ContextMember> = {}) => member({ action_id: HASH_ACTION, ...over });
+
+  it("넣기 · 빼기 요청은 해시 GUID member_id를 받고 응답 행의 action_id도 읽힌다", async () => {
+    const { deps, change } = makeDeps({ status: "ok", added: written({ member: hashed() }), removed: null });
+    const response = await handleChangeContextMember(post({ ...add, member_id: HASH_ACTION }), CTX, deps);
+    expect(response.status).toBe(200);
+    expect(change).toHaveBeenCalledWith(USER, { actionId: HASH_ACTION, add: { contextId: CTX, expectedVersion: 4 } });
+    expect(contextMembershipResponseSchema.parse(await response.json()).member.action_id).toBe(HASH_ACTION);
+  });
+
+  it("옮기기 → Undo(반대로 옮기기)가 모두 200이다: 요청의 member_id도 응답 행의 action_id도 해시 GUID", async () => {
+    const forward: ContextMemberOutcome = {
+      status: "ok",
+      added: written({ member: hashed(), contextVersion: 5 }),
+      removed: written({ member: hashed({ context_id: FROM, removed_at: "2026-10-11T02:00:00.000Z" }), contextVersion: 3 }),
+    };
+    const { deps, change } = makeDeps(forward);
+    const first = await handleMoveContextMember(post({ ...move, member_id: HASH_ACTION }), CTX, deps);
+    expect(first.status).toBe(200);
+    expect(contextMemberMoveResponseSchema.parse(await first.json()).member.action_id).toBe(HASH_ACTION);
+
+    // Undo: 이 변화의 역연산 (도착 → 출발, 앞 응답의 version이 조건)
+    const undo = await handleMoveContextMember(post({ member_kind: "action", member_id: HASH_ACTION, from_context_id: CTX, expected_context_version: 3, expected_from_context_version: 5 }), FROM, deps);
+    expect(undo.status).toBe(200);
+    expect(change).toHaveBeenLastCalledWith(USER, { actionId: HASH_ACTION, add: { contextId: FROM, expectedVersion: 3 }, remove: { contextId: CTX, expectedVersion: 5 } });
   });
 });
 
