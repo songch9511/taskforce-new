@@ -115,16 +115,18 @@ struct ClaudeProcessIdentityTests {
         #expect(killpg(group, 0) != 0, "그룹에 남은 것 0")
     }
 
-    /// 부모가 이미 없어도 그 그룹의 자손이 살아 있으면 살아 있다 (고아 확인이 끝났다고 하지 않는다)
+    /// 부모가 이미 없어도 그 자손이 살아 있으면 살아 있다 (고아 확인이 끝났다고 하지 않는다). 부모가 없으면 그룹은 믿지 않고 혈통으로 찾는다 (10장 1)
     @Test func a13ADeadParentWithLiveDescendantsIsStillAlive() async throws {
-        let child = try spawn(script: "sleep 600 & exit 0")
+        let child = try spawn(script: "sleep 600 & sleep 0.3; exit 0")
         let group = child.process.pid
         defer { killpg(group, SIGKILL) }
+        let lineage = ClaudeLineage()
+        lineage.seed(child.process.pid)
         _ = try await offPool { child.process.waitForExit() }
-        #expect(ClaudeProcessInspector.liveness(child.identity) == .alive)
+        #expect(ClaudeProcessInspector.liveness(child.identity, lineage: lineage) == .alive)
         let timing = self.timing
-        #expect(try await offPool { ClaudeProcessInspector.terminate(child.identity, timing: timing) } == .ended(AgentExit(code: nil, signal: Int(SIGKILL))))
-        #expect(ClaudeProcessInspector.liveness(child.identity) == .ended(AgentExit(code: nil)))
+        #expect(try await offPool { ClaudeProcessInspector.terminate(child.identity, timing: timing, lineage: lineage) } == .ended(AgentExit(code: nil, signal: Int(SIGKILL))))
+        #expect(ClaudeProcessInspector.liveness(child.identity, lineage: lineage) == .ended(AgentExit(code: nil)))
     }
 
     /// 세션을 떠난(setsid) 자손은 그룹 밖이다: 혈통(만들 때의 부모 id)으로 찾아 끝낸 뒤에만 `.ended` (9장 4 정정). 부모가 이미 없어도 그 자손이 살아 있으면 `alive`
@@ -240,7 +242,7 @@ struct ClaudeProcessIdentityTests {
         #expect(await restarted.liveness(child.identity) == .ended(AgentExit(code: nil)))
     }
 
-    /// 혈통 파일: 다시 뜬 앱이 읽는다. 이번 부팅에 적힌 숫자 줄만 받는다 (다른 부팅 · 이상한 줄은 버린다)
+    /// 혈통 파일: 다시 뜬 앱이 읽는다. 머리 = 부팅 id(`kern.bootsessionuuid`) · 뿌리 id, 그 뒤 숫자 줄만 받는다 (다른 부팅은 `fromOtherBoot`, 이상한 줄은 버린다)
     @Test func b4TheLineageFileIsReadOnlyForThisBootAndOnlyAsNumbers() throws {
         let file = box.root.appending(path: "lineage/x.lineage")
         let lineage = ClaudeLineage(file: file)
@@ -248,15 +250,19 @@ struct ClaudeProcessIdentityTests {
         lineage.insert(77)
         lineage.save()
         let text = try String(contentsOf: file, encoding: .utf8)
-        let boot = try #require(ClaudeProcessInspector.bootTime())
-        #expect(text == "taskforce-lineage 1\n\(ClaudeLineage.stamp(boot))\n77\n4242\n")
+        let boot = try #require(ClaudeProcessInspector.bootSessionID())
+        #expect(text == "taskforce-lineage 2\nboot \(boot)\nroot -\n77\n4242\n")
         let attributes = try FileManager.default.attributesOfItem(atPath: file.path)
         #expect((attributes[.posixPermissions] as? NSNumber)?.intValue == 0o600)
         #expect(ClaudeLineage(file: file).contains(4242))
-        try "taskforce-lineage 1\nboot 1\n4242\n".write(to: file, atomically: true, encoding: .utf8)
-        #expect(!ClaudeLineage(file: file).contains(4242), "다른 부팅")
-        try "taskforce-lineage 1\n\(ClaudeLineage.stamp(boot))\n4242\n-1\n".write(to: file, atomically: true, encoding: .utf8)
-        #expect(!ClaudeLineage(file: file).contains(4242), "숫자가 아닌 줄")
+        try "taskforce-lineage 2\nboot \(UUID().uuidString)\nroot 77\n4242\n".write(to: file, atomically: true, encoding: .utf8)
+        let other = ClaudeLineage(file: file)
+        #expect(!other.contains(4242) && other.fromOtherBoot, "다른 부팅")
+        try "taskforce-lineage 2\nboot \(boot)\nroot 77\n4242\n-1\n".write(to: file, atomically: true, encoding: .utf8)
+        let broken = ClaudeLineage(file: file)
+        #expect(!broken.contains(4242) && !broken.fromOtherBoot && broken.rootID == nil, "숫자가 아닌 줄")
+        try "taskforce-lineage 2\nboot \(boot)\nroot 77\n4242\n".write(to: file, atomically: true, encoding: .utf8)
+        #expect(ClaudeLineage(file: file).rootID == 77)
         lineage.forget()
         #expect(!FileManager.default.fileExists(atPath: file.path))
     }
@@ -289,15 +295,16 @@ struct ClaudeProcessIdentityTests {
         throw CancellationError()
     }
 
-    /// 확인한 pid에만 신호 (9장 5): 시작 시각이 다르면 그 pid를 다른 프로세스가 쓰는 것이다
+    /// 확인한 pid에만 신호 (9장 5): 그 pid의 unique id가 다르면 다른 프로세스(다른 세대)다
     @Test func b5OnlyVerifiedProcessesAreSignalled() async throws {
         let child = try spawn()
         defer { _ = ClaudeProcessInspector.forceKill(child.process) }
-        let wrong = ClaudeProcessInspector.Member(pid: child.process.pid, start: child.identity.startedAt.addingTimeInterval(-1))
+        let id = try #require(ClaudeProcessInspector.uniqueIDs(pid: child.process.pid)?.own)
+        let wrong = ClaudeProcessInspector.Member(pid: child.process.pid, uniqueID: id + 1)
         ClaudeProcessInspector.signalVerified([wrong], SIGKILL)
         try await Task.sleep(for: .milliseconds(200))
-        #expect(ClaudeProcessInspector.liveness(child.identity) == .alive, "시작 시각이 다르면 신호 0")
-        let right = ClaudeProcessInspector.Member(pid: child.process.pid, start: child.identity.startedAt)
+        #expect(ClaudeProcessInspector.liveness(child.identity) == .alive, "다른 세대면 신호 0")
+        let right = ClaudeProcessInspector.Member(pid: child.process.pid, uniqueID: id)
         ClaudeProcessInspector.signalVerified([right], SIGKILL)
         let status = try await offPool { child.process.waitForExit() }
         #expect(status.signal == SIGKILL)

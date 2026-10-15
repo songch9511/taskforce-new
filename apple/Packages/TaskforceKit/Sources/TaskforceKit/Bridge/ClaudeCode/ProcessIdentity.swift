@@ -212,7 +212,7 @@ public enum ClaudeProcessInspector {
 
     enum Check: Equatable {
         case same
-        /// 그 프로세스는 끝났다 (없음 · 좀비). 그 pid를 그룹 id로 쓰는 자손은 남아 있을 수 있다 (그룹이 있는 동안 그 pid는 다시 쓰이지 않는다)
+        /// 그 프로세스는 끝났다 (없음 · 좀비). 자손이 남아 있을 수 있지만 그 pid의 그룹은 믿지 않는다 (10장 1: 혈통 · marker로만 찾는다)
         case absent
         /// 그 pid를 다른 프로세스가 쓴다 (시작 시각 · 사용자 다름): 그 프로세스는 끝났고, 그 pid의 그룹은 우리 것이 아니다
         case replaced
@@ -238,39 +238,68 @@ public enum ClaudeProcessInspector {
     /// macOS 26.5에서는 남의 프로세스 환경을 읽을 수 없어 이것만으로는 찾지 못한다: 혈통(`ClaudeLineage`)이 주로 찾는다 (정정 제안 9-4)
     public static let markerKey = "TASKFORCE_SPAWN_ID"
 
-    /// 커널 unique id: 그 프로세스 · 부모 (부팅 안에서 다시 쓰지 않는다. exec해도 자기 id는 그대로다).
-    /// 부모 값은 fork · 마지막 exec 때의 부모다: 그 뒤 부모가 끝나 launchd로 옮겨져도 · setsid해도 그대로지만, 부모가 끝난 뒤 exec하면 launchd(1)가 된다 (notes 증거).
-    /// `proc_pidinfo(PROC_PIDUNIQIDENTIFIERINFO = 17, arg 1 = 좀비도)`, `struct proc_uniqidentifierinfo` = uuid 16 · uniqueid 8 · puniqueid 8 · idversion 4 · 예비 20 = 56바이트.
+    /// 프로세스 한 세대를 한 번에 읽은 것 (10장 2): 시작 시각 · 부모 pid · 그룹 · 사용자 · 상태와 커널 unique id가 같은 프로세스의 것이다.
+    /// unique id는 부팅 안에서 다시 쓰지 않고 exec해도 그대로다. 부모 id는 fork · 마지막 exec 때의 부모다: 그 뒤 부모가 끝나 launchd로 옮겨져도 · setsid해도
+    /// 그대로지만, 부모가 끝난 뒤 exec하면 launchd(1)가 된다 (notes 증거)
+    struct Generation: Equatable {
+        let pid: pid_t
+        /// 커널 시작 시각 (초 · 마이크로초 그대로)
+        let startSeconds: UInt64
+        let startMicros: UInt64
+        let parentPID: pid_t
+        let group: pid_t
+        let uid: uid_t
+        let zombie: Bool
+        let own: UInt64
+        let parent: UInt64
+
+        var start: Date { Date(timeIntervalSince1970: TimeInterval(startSeconds) + TimeInterval(startMicros) / 1_000_000) }
+    }
+
+    /// `proc_pidinfo(PROC_PIDT_BSDINFOWITHUNIQID = 18, arg 1 = 좀비도)`: `struct proc_bsdinfo`(136바이트) 뒤에 `struct proc_uniqidentifierinfo`
+    /// (uuid 16 · uniqueid 8 · puniqueid 8 · idversion 4 · 예비 20 = 56바이트). 커널이 한 프로세스를 잡고 둘을 함께 채운다.
     /// SDK 공개 머리에 없는 flavor라 돌려준 크기가 맞을 때만 믿는다 (정정 제안 9-4)
-    static func uniqueIDs(pid: pid_t) -> (own: UInt64, parent: UInt64)? {
+    static func generation(pid: pid_t) -> Generation? {
         guard pid > 0 else { return nil }
-        var buffer = [UInt8](repeating: 0, count: 56)
-        guard proc_pidinfo(pid, 17, 1, &buffer, 56) == 56 else { return nil }
-        let own = buffer.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: 16, as: UInt64.self) }
-        let parent = buffer.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: 24, as: UInt64.self) }
-        return own > 1 ? (own, parent) : nil
+        let bsd = MemoryLayout<proc_bsdinfo>.size
+        let total = bsd + 56
+        var buffer = [UInt8](repeating: 0, count: total)
+        guard proc_pidinfo(pid, 18, 1, &buffer, Int32(total)) == Int32(total) else { return nil }
+        let info = buffer.withUnsafeBytes { $0.loadUnaligned(as: proc_bsdinfo.self) }
+        let own = buffer.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: bsd + 16, as: UInt64.self) }
+        let parent = buffer.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: bsd + 24, as: UInt64.self) }
+        guard own > 1, info.pbi_pid == UInt32(bitPattern: pid) else { return nil }
+        return Generation(
+            pid: pid, startSeconds: info.pbi_start_tvsec, startMicros: info.pbi_start_tvusec, parentPID: pid_t(bitPattern: info.pbi_ppid), group: pid_t(bitPattern: info.pbi_pgid),
+            uid: info.pbi_uid, zombie: info.pbi_status == UInt32(SZOMB), own: own, parent: parent
+        )
     }
 
-    /// 이번 부팅 시각 (`kern.boottime`)
-    static func bootTime() -> Date? {
-        var value = timeval()
-        var size = MemoryLayout<timeval>.size
-        var mib: [Int32] = [CTL_KERN, KERN_BOOTTIME]
-        guard sysctl(&mib, 2, &value, &size, nil, 0) == 0, value.tv_sec > 0 else { return nil }
-        return Date(timeIntervalSince1970: TimeInterval(value.tv_sec) + TimeInterval(value.tv_usec) / 1_000_000)
+    /// 커널 unique id (그 프로세스 · 부모)
+    static func uniqueIDs(pid: pid_t) -> (own: UInt64, parent: UInt64)? {
+        generation(pid: pid).map { ($0.own, $0.parent) }
     }
 
-    /// 신호를 보낼 확인된 프로세스 하나: pid + 그때 읽은 커널 시작 시각 (보내기 직전에 다시 대조한다)
+    /// 이번 부팅의 id (`kern.bootsessionuuid`, 10장 3). 벽시계와 무관하다
+    static func bootSessionID() -> String? {
+        var size = 0
+        guard sysctlbyname("kern.bootsessionuuid", nil, &size, nil, 0) == 0, size > 1, size < 128 else { return nil }
+        var chars = [CChar](repeating: 0, count: size)
+        guard sysctlbyname("kern.bootsessionuuid", &chars, &size, nil, 0) == 0 else { return nil }
+        let value = String(decoding: chars.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self)
+        return UUID(uuidString: value) != nil ? value : nil
+    }
+
+    /// 신호를 보낼 확인된 프로세스 하나: pid + 그 세대의 unique id (보내기 직전에 다시 대조한다)
     struct Member: Equatable {
         let pid: pid_t
-        let start: Date
+        let uniqueID: UInt64
     }
 
-    /// 확인된 프로세스에만 신호를 보낸다: 보내기 직전에 시작 시각 · 사용자가 그대로이고 좀비가 아닐 때만 (그 사이 pid가 재사용됐을 수 있다, 9장 5)
+    /// 확인된 프로세스에만 신호를 보낸다: 보내기 직전에 그 pid의 unique id · 사용자가 그대로이고 좀비가 아닐 때만 (그 사이 pid가 재사용됐을 수 있다, 9장 5)
     static func signalVerified(_ members: [Member], _ signal: Int32) {
         for member in members {
-            guard case .running(let start, let uid, let zombie, _) = kernel(pid: member.pid), !zombie, uid == getuid(),
-                  abs(start.timeIntervalSince(member.start)) <= 0.001 else { continue }
+            guard let now = generation(pid: member.pid), now.own == member.uniqueID, !now.zombie, now.uid == getuid() else { continue }
             kill(member.pid, signal)
         }
     }
@@ -288,66 +317,60 @@ public enum ClaudeProcessInspector {
         return Array(processes.prefix(size / MemoryLayout<kinfo_proc>.stride))
     }
 
-    /// 그 spawn의 그룹 id를 믿을 수 있을 때만 (9장 5): 부모가 살아 있고 그룹 리더이거나(`same`), 부모가 없어 그 pid가 그룹으로만 쓰일 때(`absent`).
-    /// pid가 재사용됐으면(`replaced`) 그 그룹은 남의 것이다
+    /// 그 spawn의 그룹 id를 믿을 수 있을 때만 (10장 1): 부모가 살아 있고(`same`) 그룹 리더일 때. 부모가 없거나(`absent`) · pid가 재사용됐거나(`replaced`) ·
+    /// 확인할 수 없으면 그 pid의 그룹은 이미 남의 것일 수 있다 (앱이 멈춘 사이 다른 그룹이 같은 pid를 썼을 수 있다): 혈통과 marker만 쓴다
     static func ownedGroup(_ identity: AgentProcessIdentity, _ parent: Check) -> pid_t? {
-        guard let raw = identity.pid, raw > 1, raw <= Int(Int32.max) else { return nil }
+        guard parent == .same, let raw = identity.pid, raw > 1, raw <= Int(Int32.max) else { return nil }
         let pid = pid_t(raw)
-        switch parent {
-        case .absent: return pid
-        case .same:
-            if case .running(_, _, _, let leader) = kernel(pid: pid), leader == pid { return pid }
-            return nil
-        case .replaced, .unprovable: return nil
-        }
+        if case .running(_, _, _, let leader) = kernel(pid: pid), leader == pid { return pid }
+        return nil
     }
 
-    /// 그 spawn의 살아 있는 자손 (부모 자신은 빼고, 9장 4 정정). 이 spawn 뒤에 시작한 이 사용자 프로세스 중
-    /// ① 자기 id나 부모 id가 혈통에 있거나(세션을 떠난 · 부모가 끝난 자손도) ② 부모가 지금 살아 있는 자손이거나 ③ 믿을 수 있는 그 그룹에 들었거나
-    /// ④ 환경에 `TASKFORCE_SPAWN_ID=<spawn id>`가 보이는 것(그 환경을 읽을 수 있는 OS에서만). 찾은 것은 혈통에 더한다 (좀비도: 그 자식을 찾는 데 쓴다).
+    /// 그 spawn의 살아 있는 자손 (부모 자신은 빼고, 9장 4 정정 · 10장 1–3). 뿌리보다 뒤에 만들어진(unique id가 큰) 이 사용자 프로세스 중
+    /// ① 자기 id나 부모 id가 혈통에 있거나(세션을 떠난 · 부모가 끝난 자손도) ② 부모가 지금 살아 있는 자손이거나 ③ 믿을 수 있는 그 그룹에 들었거나(살아 있는 리더)
+    /// ④ 환경에 `TASKFORCE_SPAWN_ID=<spawn id>`가 보이는 것(그 환경을 읽을 수 있는 OS에서만). 소속은 한 번에 읽은 한 세대의 값으로만 정하고, 목록의 시작 시각과
+    /// 다르면(그 사이 pid가 재사용됐다) 그 후보를 버린다. 찾은 것은 혈통에 더한다 (좀비도: 그 자식을 찾는 데 쓴다). 다른 부팅의 혈통이면 훑지 않는다(끝).
     /// 좀비는 끝난 것으로 본다. 목록을 읽지 못하면 nil (끝났다고 보지 않는다)
-    static func descendants(_ identity: AgentProcessIdentity, lineage: ClaudeLineage) -> [Member]? {
-        guard let processes = userProcessInfos() else { return nil }
+    static func descendants(_ identity: AgentProcessIdentity, lineage: ClaudeLineage, processes: [kinfo_proc]? = nil) -> [Member]? {
+        if lineage.fromOtherBoot { return [] }
+        guard let processes = processes ?? userProcessInfos() else { return nil }
         let root = identity.pid.map { pid_t(truncatingIfNeeded: $0) }
         let parentCheck = check(identity)
+        if parentCheck == .same { lineage.seed(identity) }
         let group = ownedGroup(identity, parentCheck)
+        let rootID = lineage.rootID
         let needle = markerKey + "=" + identity.processMarker
         let me = getpid()
-        // 자손은 부모보다 먼저 시작할 수 없다: 그 뒤에 시작한 것만 본다 (시작 순서로, 부모가 자식보다 앞에 온다)
-        let floor = identity.startedAt.addingTimeInterval(-0.001)
         struct Candidate {
-            let member: Member
-            let parent: pid_t
-            let group: pid_t
-            let zombie: Bool
-            let ids: (own: UInt64, parent: UInt64)?
+            let generation: Generation
             let marked: Bool
         }
         var pending: [Candidate] = processes.compactMap { info in
             let pid = info.kp_proc.p_pid
             guard pid > 1, pid != me, pid != root, info.kp_eproc.e_ucred.cr_uid == getuid() else { return nil }
-            let raw = info.kp_proc.p_un.__p_starttime
-            let member = Member(pid: pid, start: Date(timeIntervalSince1970: TimeInterval(raw.tv_sec) + TimeInterval(raw.tv_usec) / 1_000_000))
-            guard member.start >= floor else { return nil }
-            let zombie = info.kp_proc.p_stat == SZOMB
-            return Candidate(
-                member: member, parent: info.kp_eproc.e_ppid, group: info.kp_eproc.e_pgid, zombie: zombie, ids: uniqueIDs(pid: pid),
-                marked: !zombie && lineage.marked(member) { procArgs(pid: pid)?.environment.contains(needle) == true }
-            )
-        }.sorted { $0.member.start < $1.member.start }
+            // 같은 세대만 (10장 2): 목록이 본 시작 시각과 한 번에 읽은 세대의 시작 시각이 같아야 그 소속 · id가 한 프로세스의 것이다
+            let listed = info.kp_proc.p_un.__p_starttime
+            guard let generation = generation(pid: pid), generation.uid == getuid(),
+                  Int64(generation.startSeconds) == Int64(listed.tv_sec), Int64(generation.startMicros) == Int64(listed.tv_usec) else { return nil }
+            // 자손은 뿌리보다 뒤에 만들어진다 (10장 3: 벽시계가 아니라 unique id 순서)
+            if let rootID, generation.own <= rootID { return nil }
+            let marked = !generation.zombie && lineage.marked(generation.own) { procArgs(pid: pid)?.environment.contains(needle) == true }
+            return Candidate(generation: generation, marked: marked)
+        }.sorted { $0.generation.own < $1.generation.own }
         var parents: Set<pid_t> = parentCheck == .same ? root.map { [$0] } ?? [] : []
         var result: [Member] = []
         var progress = true
         while progress {
             progress = false
             pending.removeAll { candidate in
+                let generation = candidate.generation
                 // 전에 본 그 프로세스이거나(부모 id는 마지막 exec 때의 부모라, 부모가 끝난 뒤 exec하면 launchd 것이 된다) 본 프로세스의 자식
-                let byLineage = candidate.ids.map { lineage.contains($0.own) || lineage.contains($0.parent) } ?? false
-                guard byLineage || parents.contains(candidate.parent) || (group != nil && candidate.group == group) || candidate.marked else { return false }
-                if let ids = candidate.ids { lineage.insert(ids.own) }
-                if !candidate.zombie {
-                    parents.insert(candidate.member.pid)
-                    result.append(candidate.member)
+                let byLineage = lineage.contains(generation.own) || lineage.contains(generation.parent)
+                guard byLineage || parents.contains(generation.parentPID) || (group != nil && generation.group == group) || candidate.marked else { return false }
+                lineage.insert(generation.own)
+                if !generation.zombie {
+                    parents.insert(generation.pid)
+                    result.append(Member(pid: generation.pid, uniqueID: generation.own))
                 }
                 progress = true
                 return true
@@ -374,6 +397,8 @@ public enum ClaudeProcessInspector {
     /// 부모가 끝났어도 자손(혈통 · 그룹 · marker)이 살아 있으면 `alive`다 (8장 13 · 9장 4: 자손까지 끝나야 끝).
     /// `lineage`가 없으면 지금 부모(정체가 그대로일 때)에서 시작한다
     public static func liveness(_ identity: AgentProcessIdentity, lineage: ClaudeLineage? = nil) -> AgentLiveness {
+        // 다른 부팅의 spawn은 훑지 않고 끝이다 (10장 1)
+        if lineage?.fromOtherBoot == true { return .ended(AgentExit(code: nil)) }
         switch check(identity) {
         case .same: return .alive
         case .unprovable: return .unknown
@@ -394,6 +419,8 @@ public enum ClaudeProcessInspector {
     /// (다시 확인) SIGKILL → 유예 → 확인. 부모와 자손이 모두 사라진 것을 확인했을 때만 `.ended` (8장 13 · 9장 4), 끝내지 못했으면 `.alive`, 확인할 수 없으면 `.unknown`.
     /// `killpg`는 쓰지 않는다: 신호는 확인한 pid에만 간다 (9장 5). `lineage`가 없으면 신호 전에 지금 부모에서 시작한다 (부모가 먼저 끝나도 그 자식을 찾는다)
     public static func terminate(_ identity: AgentProcessIdentity, timing: ClaudeCodeTiming, lineage: ClaudeLineage? = nil) -> AgentLiveness {
+        // 다른 부팅의 spawn은 훑지도 신호를 보내지도 않는다: 이미 끝났다 (10장 1)
+        if lineage?.fromOtherBoot == true { return .ended(AgentExit(code: nil)) }
         let initial = check(identity)
         if initial == .unprovable { return .unknown }
         guard let raw = identity.pid else { return .unknown }
