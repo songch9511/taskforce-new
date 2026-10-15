@@ -70,6 +70,7 @@ const input = (text: string, overrides: Partial<ResolveInput> = {}): ResolveInpu
   chipContextIds: [],
   lookup: LOOKUP,
   pending: null,
+  inherit: true,
   judged: { op: { op: "move", confidence: 0.95 }, into: null },
   confirm: false,
   memoryOn: true,
@@ -335,7 +336,7 @@ describe("한 번 더 묻기 (pending, 한 라운드)", () => {
   });
 
   it("이번 메시지가 자기 이슈를 말하면 새 명령이다: 앞 pending의 이슈는 쓰지 않는다 (op는 새로 읽은 것)", () => {
-    const result = resolveOrganize(input("아니 #141 지워줘", { pending: pending({ op: "move", action_ids: [A139.id], context_id: CTX.launch, missing: "from" }), judged: judged("delete") }));
+    const result = resolveOrganize(input("아니 #141 지워줘", { pending: pending({ op: "move", action_ids: [A139.id], context_id: CTX.launch, missing: "from" }), inherit: false, judged: judged("delete") }));
     expect(result).toMatchObject({ kind: "delete" });
     if (result.kind === "delete") expect(result.targets.map((t) => t.number)).toEqual([141]);
   });
@@ -397,7 +398,7 @@ describe("질문에 대한 답 · 정정 · 새 지시 (검토 P1-2)", () => {
   });
 
   it("'아니 Launch에서 빼줘'는 앞 op(옮기기)와 다른 op(빼기)로 읽히면 새로 푼다: 앞 이슈에서 Launch를 뺀다 (Launch로 옮기지 않는다)", () => {
-    const result = resolveOrganize(input("아니 Launch에서 빼줘", { pending: asked, judged: judged("remove") }));
+    const result = resolveOrganize(input("아니 Launch에서 빼줘", { pending: asked, inherit: false, judged: judged("remove") }));
     expect(result).toMatchObject({ kind: "move", op: "remove", to: null });
     if (result.kind !== "move") throw new Error("move 아님");
     expect(result.items).toHaveLength(1);
@@ -406,15 +407,56 @@ describe("질문에 대한 답 · 정정 · 새 지시 (검토 P1-2)", () => {
   });
 
   it("정정이 다른 op로 바뀌면 앞 계획의 프로젝트도 이어받지 않는다 (프로젝트를 말하지 않은 '그냥 지워줘'는 지우기 카드)", () => {
-    const result = resolveOrganize(input("아니 그냥 지워줘", { pending: pending({ op: "move", action_ids: [A140.id], context_id: CTX.launch, missing: "from" }), judged: judged("delete") }));
+    const result = resolveOrganize(input("아니 그냥 지워줘", { pending: pending({ op: "move", action_ids: [A140.id], context_id: CTX.launch, missing: "from" }), inherit: false, judged: judged("delete") }));
     expect(result).toMatchObject({ kind: "delete" });
     if (result.kind === "delete") expect(result.targets.map((t) => t.number)).toEqual([140]);
   });
 
   it("남는 쪽을 물은 뒤의 '아니 #141 지워줘'는 새 지시다: 앞 둘과 합쳐 셋을 지우지 않고 #141만 지우는 카드", () => {
-    const result = resolveOrganize(input("아니 #141 지워줘", { pending: pending({ op: "merge", action_ids: [A144.id, A139.id], missing: "into" }), judged: judged("delete") }));
+    const result = resolveOrganize(input("아니 #141 지워줘", { pending: pending({ op: "merge", action_ids: [A144.id, A139.id], missing: "into" }), inherit: false, judged: judged("delete") }));
     expect(result).toMatchObject({ kind: "delete" });
     if (result.kind === "delete") expect(result.targets.map((t) => t.number)).toEqual([141]);
+  });
+});
+
+// 재검토 P1: 단순한 답(isOrganizeAnswer)만 앞 질문의 값을 이어받는다. 정정 · 새 지시는 op · 목적지 · 출발 · 질문 상태를 모두 버리고 처음부터 푼다 (이슈만 이번 글이 말하지 않으면 앞 것을 이어받는다)
+describe("단순한 답이 아니면 앞 계획을 상속하지 않는다 (재검토 P1, inherit false)", () => {
+  const fresh = (text: string, pendingValue: PendingOrganize, j: ResolveInput["judged"]) => resolveOrganize(input(text, { pending: pendingValue, inherit: false, judged: j }));
+
+  it("'아니 Launch에서 빼줘'를 op 확신 0.6으로만 읽었으면 앞 이동(Launch로 옮기기)으로 채우지 않고 쓰기 없이 무엇을 할지 묻는다", () => {
+    const result = fresh("아니 Launch에서 빼줘", pending({ op: "move", action_ids: [A151.id], missing: "project" }), judged("remove", 0.6));
+    expect(result).toMatchObject({ kind: "ask", pending: { op: null, missing: "op", action_ids: [A151.id], context_id: CTX.launch } });
+  });
+
+  it("확신 0.95로 읽었으면 정정으로 푼다: 앞 이슈에서 Launch를 뺀다 (이슈만 이어받는다)", () => {
+    const result = fresh("아니 Launch에서 빼줘", pending({ op: "move", action_ids: [A151.id], missing: "project" }), judged("remove"));
+    expect(result).toMatchObject({ kind: "move", op: "remove" });
+    if (result.kind === "move") expect(result.items[0]).toMatchObject({ add: null, remove: { id: CTX.launch } });
+  });
+
+  it("출발을 물은 뒤 '아니 #144를 출시 준비로 옮겨줘'(같은 op)는 새 지시다: 앞 도착(Launch) · 출발 질문 상태를 버리고 #144를 출시 준비로 옮긴다", () => {
+    const result = fresh("아니 #144를 출시 준비로 옮겨줘", pending({ op: "move", action_ids: [A139.id], context_id: CTX.launch, missing: "from" }), judged("move"));
+    expect(result).toMatchObject({ kind: "move", op: "move", to: { id: CTX.korean } });
+    if (result.kind === "move") {
+      expect(result.items).toHaveLength(1);
+      expect(result.items[0]).toMatchObject({ action: { number: 144 }, add: { id: CTX.korean }, remove: null });
+    }
+  });
+
+  it("같은 op여도 목적지를 말하지 않았으면 앞 목적지를 물려받지 않고 프로젝트를 묻는다", () => {
+    const result = fresh("아니 #140 옮겨줘", pending({ op: "move", action_ids: [A139.id], context_id: CTX.launch, missing: "from" }), judged("move"));
+    expect(result).toMatchObject({ kind: "ask", pending: { op: "move", action_ids: [A140.id], context_id: null, missing: "project" } });
+  });
+
+  it("병합 이슈를 물은 뒤의 새 지시 '#144 합쳐줘'는 앞 이슈와 합치지 않는다 (둘째를 다시 묻는다)", () => {
+    const result = fresh("#144 합쳐줘", pending({ op: "merge", action_ids: [A139.id], missing: "issue" }), judged("merge"));
+    expect(result).toMatchObject({ kind: "ask", pending: { op: "merge", action_ids: [A144.id], missing: "issue" } });
+  });
+
+  it("op를 새로 읽지 못하면(other · 없음) 앞 op로 채우지 않는다. 같은 글을 단순한 답(inherit true)으로 보면 앞 op로 채운다", () => {
+    const asked = pending({ op: "move", action_ids: [A139.id], missing: "project" });
+    expect(fresh("Launch 쪽으로 좀", asked, judged("other"))).toMatchObject({ kind: "ask", pending: { op: null, missing: "op" } });
+    expect(resolveOrganize(input("Launch", { pending: asked, inherit: true, judged: judged("other") }))).toMatchObject({ kind: "move", op: "move" });
   });
 });
 
@@ -439,10 +481,10 @@ describe("병합 대상 질문의 답은 앞 대상과 합친다 (검토 P2-6, �
   });
 
   it("이번 메시지가 둘을 직접 말했으면 새 지시라서 앞 이슈를 합치지 않는다. 다른 op의 정정도 마찬가지", () => {
-    const two = resolveOrganize(input("#140 #141 합쳐줘", { pending: asked, judged: judged("merge") }));
+    const two = resolveOrganize(input("#140 #141 합쳐줘", { pending: asked, inherit: false, judged: judged("merge") }));
     expect(two).toMatchObject({ kind: "merge" });
     if (two.kind === "merge") expect([two.from.number, two.into.number]).toEqual([140, 141]);
-    const fix = resolveOrganize(input("아니 #141 지워줘", { pending: asked, judged: judged("delete") }));
+    const fix = resolveOrganize(input("아니 #141 지워줘", { pending: asked, inherit: false, judged: judged("delete") }));
     expect(fix).toMatchObject({ kind: "delete" });
     if (fix.kind === "delete") expect(fix.targets.map((t) => t.number)).toEqual([141]);
   });

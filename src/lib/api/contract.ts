@@ -1082,7 +1082,7 @@ export const contextMemberSchema = z.object({
   id: z.uuid(),
   context_id: z.uuid(),
   member_kind: contextMemberKindSchema,
-  action_id: z.uuid().nullable(),
+  action_id: z.guid().nullable(),
   source_id: z.uuid().nullable(),
   person_id: z.uuid().nullable(),
   origin: contextMemberOriginSchema,
@@ -1114,7 +1114,7 @@ export type ContextMembershipChange = z.infer<typeof contextMembershipChangeSche
 
 /** 넣기 · 빼기 요청 (POST /api/v2/contexts/{id}/members). origin은 언제나 user다. S3b는 할 일(action)만 받는다. contextMembershipRequestSchema(A2)에 조건을 더한 것 */
 export const contextMembershipWriteRequestSchema = z
-  .object({ op: z.enum(["add", "remove"]), member_kind: z.literal("action"), member_id: z.uuid(), expected_context_version: z.number().int().positive() })
+  .object({ op: z.enum(["add", "remove"]), member_kind: z.literal("action"), member_id: z.guid(), expected_context_version: z.number().int().positive() })
   .strict();
 export type ContextMembershipWriteRequest = z.infer<typeof contextMembershipWriteRequestSchema>;
 
@@ -1125,7 +1125,7 @@ export type ContextMembershipWriteRequest = z.infer<typeof contextMembershipWrit
 export const contextMemberMoveRequestSchema = z
   .object({
     member_kind: z.literal("action"),
-    member_id: z.uuid(),
+    member_id: z.guid(),
     from_context_id: z.uuid(),
     expected_context_version: z.number().int().positive(),
     expected_from_context_version: z.number().int().positive(),

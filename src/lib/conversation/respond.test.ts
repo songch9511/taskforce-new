@@ -839,6 +839,72 @@ describe("이슈 정리 (organize)", () => {
     ]);
   });
 
+  // 재검토 P1: 단순한 답(isOrganizeAnswer)만 앞 계획을 이어받는다. 정정 · 새 지시는 처음부터 (실제 respondToMessage로 검토의 재현 둘)
+  describe("단순한 답이 아닌 정정 · 새 지시는 앞 계획을 상속하지 않는다 (재검토 P1)", () => {
+    const projectAsked = [windowMessage(1, "user", "#139 옮겨줘"), askedProject()];
+
+    it("'아니 Launch에서 빼줘'를 J1 organize 0.95 · op remove 0.6으로 읽으면 앞 이동으로 채우지 않는다: 쓰기 0, 질문(clarify) — 반대 이동(Launch에 남기고 Taskforce에서 빼기)이 쓰이지 않는다", async () => {
+      const t = run("아니 Launch에서 빼줘", { intent: "organize", confidence: 0.95 }, { op: "remove", opConfidence: 0.6 }, { history: projectAsked }, TWO_PLACES);
+      const plan = await t.run();
+      expect(plan.route).toBe("organize");
+      expect(plan.move).toBeUndefined();
+      expect(plan.adopt).toBeNull();
+      expect(plan.reply.content.asks).toBe("clarify");
+      expect(plan.reply.content.organize).toBeUndefined();
+      expect(plan.summary.organize).toMatchObject({ op: null, outcome: "clarify", op_confidence: 0.6 });
+      expect(plan.summary.organize?.answer_rule).toBeUndefined();
+    });
+
+    it("op를 확실하게(0.95) 읽으면 같은 글이 정정으로 풀린다: 앞 이슈에서 Launch를 뺀다", async () => {
+      const plan = await run("아니 Launch에서 빼줘", { intent: "organize", confidence: 0.95 }, { op: "remove" }, { history: projectAsked }, TWO_PLACES).run();
+      expect(plan.move).toEqual([{ action_id: id(139, "abababab"), add: null, remove: { context_id: CTX.launch, expected_version: 4 } }]);
+    });
+
+    it("출발을 물은 뒤 '아니 #144를 Other로 옮겨줘'(op move 0.95)는 새 지시다: #144를 Other로 옮긴다 (Other→Launch가 아니다, 출발 질문 상태를 버린다)", async () => {
+      const OTHER = id(5, "c1c1c1c1");
+      const lookup: OrganizeLookup = {
+        actions: [...LOOKUP.actions],
+        contexts: [...LOOKUP.contexts, { id: OTHER, name: "Other", kind: "project", status: "active", context_version: 4 }],
+      };
+      const fromQuestion = windowMessage(2, "assistant", "어느 프로젝트에서 옮길까요?", {
+        content: { segments: [], citations: [], proposal: null, asks: "organize", organize: { state: "pending", op: "move", action_ids: [id(139, "abababab")], context_id: CTX.launch, missing: "from" }, used: null, window: null },
+      });
+      const t = run("아니 #144를 Other로 옮겨줘", { intent: "organize", confidence: 0.95 }, { op: "move" }, { history: [windowMessage(1, "user", "#139 Launch로 옮겨줘"), fromQuestion] }, lookup);
+      const plan = await t.run();
+      expect(plan.route).toBe("organize");
+      expect(plan.move).toEqual([{ action_id: id(144, "abababab"), add: { context_id: OTHER, expected_version: 4 }, remove: null }]);
+      expect(plan.reply.text).toBe("옮겼어요: #144 → Other");
+      expect(t.organizeLookup).toHaveBeenCalledWith({ numbers: [144], actionIds: [id(139, "abababab")] }); // 앞 이슈를 읽기만 한다 (이번 글이 이슈를 말했으니 쓰지 않는다)
+    });
+
+    it("남는 쪽을 물은 뒤 '아니 그냥 합쳐줘'(단순한 답이 아님)는 처음부터 푼다: 남는 쪽을 Jev에 다시 묻고(into) 그 답으로 카드 — 앞 질문이 into를 물었다는 이유로 건너뛰지 않는다", async () => {
+      const askedInto = windowMessage(2, "assistant", "어느 쪽을 남길까요? #139 · #144", {
+        content: { segments: [], citations: [], proposal: null, asks: "organize", organize: { state: "pending", op: "merge", action_ids: [id(139, "abababab"), id(144, "abababab")], context_id: null, missing: "into" }, used: null, window: null },
+      });
+      const t = run("아니 그냥 합쳐줘", { intent: "organize", confidence: 0.95 }, { op: "merge", into: "#139" }, { history: [windowMessage(1, "user", "이 둘 합쳐줘"), askedInto] });
+      const plan = await t.run();
+      expect(t.asked).toEqual([["op", "into"]]);
+      expect(plan.reply.content.proposal).toMatchObject({ kind: "merge", from: { number: 144 }, into: { number: 139 } });
+    });
+
+    it("병합 이슈를 물은 뒤 '#144 합쳐줘'(새 지시)는 앞 이슈와 합치지 않는다: 이슈가 하나뿐이라 남는 쪽(into)은 묻지 않고, 둘째를 못 얻었으니 쓰기 없이 한 라운드 clarify", async () => {
+      const askedIssue = windowMessage(2, "assistant", "어느 이슈인가요? 이슈를 붙이거나 #번호로 말해 주세요.", {
+        content: { segments: [], citations: [], proposal: null, asks: "organize", organize: { state: "pending", op: "merge", action_ids: [id(139, "abababab")], context_id: null, missing: "issue" }, used: null, window: null },
+      });
+      const t = run("#144 합쳐줘", { intent: "organize", confidence: 0.95 }, { op: "merge", into: "#139" }, { history: [windowMessage(1, "user", "#139 합쳐줘"), askedIssue] });
+      const plan = await t.run();
+      expect(t.asked).toEqual([["op"]]);
+      expect(plan.reply.content.proposal).toBeNull();
+      expect(plan.reply.content.asks).toBe("clarify");
+    });
+
+    it("정리 질문 뒤에 이슈를 말하지 않고 op도 못 읽은 글('글쎄')은 한 라운드 clarify 그대로다", async () => {
+      const plan = await run("글쎄 그건 좀", { intent: "organize", confidence: 0.95 }, { op: "other" }, { history: projectAsked }).run();
+      expect(plan.move).toBeUndefined();
+      expect(plan.reply.content.asks).toBe("clarify");
+    });
+  });
+
   describe("정리가 물은 것에 대한 짧은 답은 코드가 정리 이어가기로 보낸다 (J1 라벨을 믿지 않는다)", () => {
     const history = [windowMessage(1, "user", "#139 옮겨줘"), askedProject()];
     const j1Called = (t: { state: () => { questions: Record<string, unknown> }[] }) => t.state().some((r) => "intent" in r.questions);

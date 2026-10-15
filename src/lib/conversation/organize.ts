@@ -174,6 +174,11 @@ export type ResolveInput = {
   lookup: OrganizeLookup;
   /** 앞 답이 한 번 물었다면 그 값 (asks organize) */
   pending: PendingOrganize | null;
+  /**
+   * 앞 질문의 값(op · 목적지 · 출발 · 질문 상태 · 앞 이슈에 더하기)을 이어받는가. 질문에 대한 단순한 답(isOrganizeAnswer)만 true다.
+   * false(정정 · 새 지시)면 그것들을 모두 버리고 이번 글만으로 처음부터 푼다 — op 확신이 0.8 미만이면 묻는다(앞 op로 채우지 않는다). 이슈만은 이번 글이 말하지 않았을 때 앞 질문의 것을 이어받는다
+   */
+  inherit: boolean;
   /** Jev organize 답(op · into). 묻지 않은 질문은 null */
   judged: { op: { op: OrganizeOp | "other"; confidence: number } | null; into: { number: number | null; confidence: number } | null };
   /** J1 확신이 0.5–0.8 (act 임계값 미만): 이동은 바로 쓰지 않고 글로 묻는다 */
@@ -200,7 +205,7 @@ function decidedOp(judged: ResolveInput["judged"]["op"]): OrganizeOp | null {
  * judgedOp: Jev가 이번 메시지에서 확실하게 읽은 op. 앞 pending의 op와 다르면 이번 메시지는 질문에 대한 답이 아니라 정정 · 새 지시라서,
  * 자기 이슈를 말했다면 앞 이슈와 합치지 않는다 (이슈를 말하지 않았으면 이어받는다: "아니 Launch에서 빼줘"는 앞 이슈의 일이다)
  */
-export function organizeIssues(input: Pick<ResolveInput, "text" | "chipActionIds" | "lookup" | "pending"> & { judgedOp?: OrganizeOp | null }) {
+export function organizeIssues(input: Pick<ResolveInput, "text" | "chipActionIds" | "lookup" | "pending" | "inherit"> & { judgedOp?: OrganizeOp | null }) {
   const { lookup, pending } = input;
   const actionsByNumber = new Map(lookup.actions.map((a) => [a.number, a]));
   const actionsById = new Map(lookup.actions.map((a) => [lower(a.id), a]));
@@ -209,7 +214,7 @@ export function organizeIssues(input: Pick<ResolveInput, "text" | "chipActionIds
   const ownIds = unique([...mentions.filter((m) => actionsByNumber.has(m.number)).map((m) => actionsByNumber.get(m.number)!.id), ...input.chipActionIds.filter((id) => actionsById.has(lower(id)))]);
   const pendingIds = (pending?.action_ids ?? []).filter((id) => actionsById.has(lower(id)));
   const redirected = pending !== null && pending.op !== null && input.judgedOp != null && input.judgedOp !== pending.op;
-  const answersPending = pending !== null && !redirected;
+  const answersPending = pending !== null && input.inherit && !redirected;
   // 병합에서 이슈를 물은 답: 앞 이슈에 이번 이슈를 더한다 (이번 메시지가 이미 둘을 말했으면 그것이 새 지시)
   const joinsIssue = answersPending && pending.missing === "issue" && !(pending.op === "merge" && ownIds.length >= 2);
   const joinsInto = answersPending && pending.missing === "into";
@@ -218,7 +223,9 @@ export function organizeIssues(input: Pick<ResolveInput, "text" | "chipActionIds
 }
 
 export function resolveOrganize(input: ResolveInput): OrganizeResolution {
-  const { lookup, pending } = input;
+  const { lookup } = input;
+  // 이어받는 앞 질문의 값 (정정 · 새 지시면 없다). 이슈 지칭만은 organizeIssues가 input.pending에서 따로 이어받는다
+  const pending = input.inherit ? input.pending : null;
   const contextsById = new Map(lookup.contexts.map((c) => [lower(c.id), c]));
   const info = (context: { id: string; name: string; status: "active" | "archived"; context_version: number }): ContextInfo => {
     const current = contextsById.get(lower(context.id)) ?? context;
@@ -410,6 +417,7 @@ export function resolveMoveAdopt(payload: Extract<ProposalPayloadV2, { kind: "mo
     chipContextIds: origin ? [origin.id] : project ? [project.id] : [],
     lookup,
     pending: origin ? { state: "pending", op: "move", action_ids: actionIds, context_id: payload.to!.id, missing: "from" } : null,
+    inherit: true,
     judged: { op: { op, confidence: 1 }, into: null },
     confirm: false,
     memoryOn,

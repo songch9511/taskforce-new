@@ -606,12 +606,14 @@ export async function respondToMessage(input: RespondInput, deps: RespondDeps): 
 
       const pending = pendingAsk;
       const lookup = await readOrganize(lookupFn);
-      const issues = organizeIssues({ text: input.message.text, chipActionIds, lookup, pending });
+      const issues = organizeIssues({ text: input.message.text, chipActionIds, lookup, pending, inherit: answersOrganize });
 
       // Jev 한 번(질문 둘까지): 무엇을(op) — 늘 묻는다. 앞 질문이 있어도 이번 메시지가 질문에 대한 단순한 답인지 정정 · 새 지시인지는 op가 가른다
       // (프로젝트 이름만 답했으면 op가 확실하지 않아 앞 계획을 채우고, "아니 Launch에서 빼줘"는 앞 op와 다른 op로 읽혀 새로 푼다) / 남는 쪽(into) — 이슈가 정확히 둘일 때만
-      const freshInstruction = pending === null || pending.op === null || (issues.ownIds.length > 0 && pending.missing !== "into");
-      const needsInto = issues.actions.length === 2 && pending?.missing !== "into" && (freshInstruction || pending?.op === "merge");
+      // 이어받는 앞 질문은 단순한 답일 때만이다 (정정 · 새 지시는 처음부터 다시 푼다)
+      const inherited = answersOrganize ? pending : null;
+      const freshInstruction = inherited === null || inherited.op === null || (issues.ownIds.length > 0 && inherited.missing !== "into");
+      const needsInto = issues.actions.length === 2 && inherited?.missing !== "into" && (freshInstruction || inherited?.op === "merge");
       const labels = issues.actions.map((a) => `#${a.number}`);
       const questions: Record<string, JevQuestion> = { op: ORGANIZE_OP_QUESTION };
       if (needsInto) questions.into = organizeIntoQuestion(labels);
@@ -636,6 +638,7 @@ export async function respondToMessage(input: RespondInput, deps: RespondDeps): 
         chipContextIds: input.selectedContexts ?? [],
         lookup,
         pending,
+        inherit: answersOrganize,
         judged,
         confirm: route.confirm,
         memoryOn: input.flags.memory,

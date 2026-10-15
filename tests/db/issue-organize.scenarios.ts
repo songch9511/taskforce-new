@@ -333,6 +333,29 @@ export function organizeMoveTests(db: () => OrganizeDb) {
       expect(stale.status).toBe("conflict");
       expect(await f.moved(user)).toHaveLength(1);
     });
+
+    it("해시 GUID id(에이전트가 만든 이슈, RFC 4122 버전 자리가 아님)의 메뉴 이동 → Undo가 서버 코드로 끝까지 읽힌다 (검토 P2: z.uuid()면 응답 행 parse가 실패했다)", async () => {
+      const user = await f.user();
+      const a = await f.project(user, "A");
+      const b = await f.project(user, "B");
+      const hashed = "a3f1c2d4-5e6f-0718-293a-4b5c6d7e8f90";
+      await f.q(`insert into public.actions (id, user_id, title, status) values ($1, $2, '에이전트가 만든 이슈', 'open')`, [hashed, user]);
+      await f.member(user, a, hashed);
+
+      const forward = await changeContextMembership(f.admin(), user, { actionId: hashed, remove: { contextId: a, expectedVersion: await f.version(a) }, add: { contextId: b, expectedVersion: await f.version(b) } }, ON);
+      if (forward.status !== "ok" || !forward.added || !forward.removed) throw new Error(`이동 실패: ${forward.status}`);
+      expect(forward.added.member.action_id).toBe(hashed);
+
+      // Undo: 이 변화의 역연산 (앞 응답의 version이 조건)
+      const undo = await changeContextMembership(
+        f.admin(),
+        user,
+        { actionId: hashed, remove: { contextId: b, expectedVersion: forward.added.contextVersion }, add: { contextId: a, expectedVersion: forward.removed.contextVersion } },
+        ON,
+      );
+      expect(undo).toMatchObject({ status: "ok", added: { changed: true }, removed: { changed: true } });
+      expect((await f.current(hashed)).map((m) => m.context_id)).toEqual([a]);
+    });
   });
 
   // ───────────────────────── T5 말로 이동 (finish_turn p_turn.move) ─────────────────────────
