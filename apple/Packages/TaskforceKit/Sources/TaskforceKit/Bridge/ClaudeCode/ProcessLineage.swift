@@ -3,7 +3,7 @@ import Darwin
 import Foundation
 import Synchronization
 
-/// 한 spawn의 혈통 (OA D3a 9장 4 · 10장 1–4, 정정 제안 9-4): 그 spawn에서 나온 프로세스를 커널 unique id로 기억한다.
+/// 한 spawn의 혈통 (OA D3a 9장 4 · 10장 1–4 · 11장 1–5, 정정 제안 9-4): 그 spawn에서 나온 프로세스를 커널 unique id로 기억한다.
 ///
 /// 계약은 spawn marker 환경 변수를 `KERN_PROCARGS2`로 읽어 자손을 찾으라고 했지만, macOS 26.5에서는 같은 사용자 · 샌드박스 밖이라도 남의 프로세스 환경이 비어 온다
 /// (notes 정정 제안 9-4 증거). 그래서 커널 계보를 쓴다: 프로세스마다 부팅 안에서 다시 쓰지 않는 unique id가 있고(exec해도 그대로), 자식은 fork · exec 때의
@@ -11,50 +11,87 @@ import Synchronization
 /// 뿌리(띄운 CLI)의 id도 적는다: 자손은 뿌리보다 뒤에 만들어져 id가 크다 (10장 3, 벽시계를 보지 않는다).
 /// 남는 틈: 한 번도 못 본 중간 프로세스가 자식을 만들고 끝나거나, 자식이 부모가 끝난 뒤에 exec하면(부모 id가 launchd 것이 된다) 그 자식은 놓친다.
 /// 감독하는 동안 본 프로세스마다 `NOTE_FORK`를 걸어 새 자식이 생기면 다시 훑고(훑기 사이 최소 30ms, 아니면 0.1초마다), 거두기 전의 좀비도 본다.
-/// 본 id는 `<sessionsRoot>/lineage/<spawn id>.lineage`에도 적는다 (0.5초씩 묶어서, 앱이 다시 떠도 고아 정리가 쓴다). 첫 줄들은 부팅 id(`kern.bootsessionuuid`) ·
-/// 뿌리 id다. 다른 부팅의 파일이면 그 spawn은 이미 끝난 것이다 (훑지 않는다). 글 · 경로 · 명령은 적지 않는다: 숫자뿐이다
+///
+/// 파일 `<sessionsRoot>/lineage/<spawn id>.lineage`(0600): 머리 = 형식 · 부팅 id(`kern.bootsessionuuid`) · 뿌리 id, 그 뒤 id 한 줄씩. 새 id는 **바로 한 줄 덧붙이고**
+/// (11장 3: 앱이 그 순간 죽어도 남는다), 0.5초마다 · 지켜보던 프로세스가 끝날 때 전체를 다시 쓴다(정리). 끝을 증명하면 id를 지우고 "끝" 기록만 남긴다
+/// (그 뒤의 확인도 끝이라고 답한다). 다른 부팅의 파일이면 그 spawn은 이미 끝났다. 파일이 있어야 할 spawn인데 없거나 읽지 못하면 증거가 없다 → 끝을 증명하지 못한다 (11장 1).
+/// 글 · 경로 · 명령은 적지 않는다: 숫자뿐이다
 public final class ClaudeLineage: Sendable {
+    /// 파일에서 읽은 것
+    enum Evidence: Equatable {
+        /// 메모리 혈통 (파일 없음 또는 새 spawn): 지금 본 것이 전부다
+        case memory
+        /// 이번 부팅의 파일
+        case thisBoot
+        /// 다른 부팅의 파일: 그 spawn은 끝났다
+        case otherBoot
+        /// 끝을 증명해 둔 기록
+        case ended
+        /// 있어야 할 파일이 없거나 읽지 못했다: 끝을 증명할 수 없다
+        case missing
+    }
+
+    /// 자손으로 본 프로세스 한 세대 (pid · 커널 시작 시각): 그 세대를 다시 읽지 못하면 그 훑기는 불완전하다 (11장 4)
+    struct MemberKey: Hashable {
+        let pid: pid_t
+        let seconds: Int64
+        let micros: Int64
+    }
+
     struct State {
         var ids: Set<UInt64> = []
+        var memberKeys: Set<MemberKey> = []
         var rootID: UInt64?
         /// 환경을 읽어 marker가 없던 프로세스 (unique id): 다시 읽지 않는다
         var unmarked: Set<UInt64> = []
+        /// 파일 머리를 썼거나 읽었다: 새 id를 덧붙일 수 있다
+        var headed = false
+        /// 덧붙이지 못한 id가 있다 (다음 정리에서 전체를 다시 쓴다)
         var dirty = false
         var lastSave: Date?
         var stopped = false
     }
 
-    /// 파일 저장 간격 (10장 4)
+    /// 전체 다시 쓰기(정리) 간격 (10장 4 · 11장 3)
     static let saveInterval: TimeInterval = 0.5
     /// `NOTE_FORK`가 몰려도 훑기 사이 최소 간격 (10장 4)
     static let minimumScanInterval: TimeInterval = 0.03
 
     private let state = Mutex(State())
     let file: URL?
-    /// 파일이 다른 부팅에 적힌 것이다: 그 spawn과 자손은 이미 끝났다 (10장 1)
-    let fromOtherBoot: Bool
+    let evidence: Evidence
 
-    /// `file`이 있으면 그 내용으로 시작한다 (이번 부팅이면 id · 뿌리, 다른 부팅이면 `fromOtherBoot`)
-    init(file: URL? = nil) {
+    var fromOtherBoot: Bool { evidence == .otherBoot }
+    /// 끝이라는 증거가 이미 있다 (다른 부팅 · 끝 기록)
+    var provenEnded: Bool { evidence == .otherBoot || evidence == .ended }
+    /// 훑어서 끝을 증명할 수 있는 혈통인가 (있어야 할 파일이 없으면 아니다)
+    var hasEvidence: Bool { evidence != .missing }
+
+    /// - `fresh`: 이제 띄우는 spawn (파일은 곧 쓴다). 아니면 `file`을 읽는다 (다시 뜬 앱의 확인 · 끝내기)
+    init(file: URL? = nil, fresh: Bool = false) {
         self.file = file
-        switch file.map(Self.load) {
-        case .thisBoot(let root, let ids)?:
-            fromOtherBoot = false
+        guard let file, !fresh else {
+            evidence = .memory
+            return
+        }
+        switch Self.load(file) {
+        case .thisBoot(let root, let ids):
+            evidence = .thisBoot
             state.withLock {
                 $0.ids = ids
                 $0.rootID = root
+                $0.headed = true
             }
-        case .otherBoot?:
-            fromOtherBoot = true
-        case .unreadable?, nil:
-            fromOtherBoot = false
+        case .ended: evidence = .ended
+        case .otherBoot: evidence = .otherBoot
+        case .unreadable: evidence = .missing
         }
     }
 
     /// 지금 정체가 그대로인 부모(`same`)에서 시작한다 (감독 밖: 다시 뜬 앱의 고아 정리, 시험)
     static func seeded(_ identity: AgentProcessIdentity, file: URL? = nil) -> ClaudeLineage {
         let lineage = ClaudeLineage(file: file)
-        if !lineage.fromOtherBoot, ClaudeProcessInspector.check(identity) == .same { lineage.seed(identity) }
+        if !lineage.provenEnded, ClaudeProcessInspector.check(identity) == .same { lineage.seed(identity) }
         return lineage
     }
 
@@ -77,7 +114,7 @@ public final class ClaudeLineage: Sendable {
                 $0.rootID = root
                 $0.dirty = true
             }
-            if $0.ids.insert(root).inserted { $0.dirty = true }
+            append(root, &$0)
         }
     }
 
@@ -87,8 +124,34 @@ public final class ClaudeLineage: Sendable {
         state.withLock { $0.ids.contains(id) }
     }
 
+    /// 새 id는 바로 파일에 한 줄 덧붙인다 (11장 3)
     func insert(_ id: UInt64) {
-        state.withLock { if $0.ids.insert(id).inserted { $0.dirty = true } }
+        state.withLock { append(id, &$0) }
+    }
+
+    /// 자손으로 본 세대를 기억한다 (메모리만)
+    func remember(_ key: MemberKey) {
+        state.withLock { _ = $0.memberKeys.insert(key) }
+    }
+
+    func wasMember(_ key: MemberKey) -> Bool {
+        state.withLock { $0.memberKeys.contains(key) }
+    }
+
+    private func append(_ id: UInt64, _ current: inout State) {
+        guard current.ids.insert(id).inserted else { return }
+        guard let file, current.headed, !current.stopped else {
+            current.dirty = true
+            return
+        }
+        let fd = open(file.path, O_WRONLY | O_APPEND | O_CLOEXEC | O_NOFOLLOW)
+        guard fd >= 0 else {
+            current.dirty = true
+            return
+        }
+        defer { close(fd) }
+        let line = Array((String(id) + "\n").utf8)
+        if line.withUnsafeBytes({ Darwin.write(fd, $0.baseAddress, $0.count) }) != line.count { current.dirty = true }
     }
 
     /// 환경에 marker가 있나 (프로세스마다 한 번만 읽는다)
@@ -101,32 +164,48 @@ public final class ClaudeLineage: Sendable {
 
     var isStopped: Bool { state.withLock { $0.stopped } }
 
-    /// 새로 본 id가 있으면 파일에 적는다 (원자적 쓰기, 0600). 0.5초에 한 번까지 (`force`면 바로: 띄운 직후)
+    /// 전체를 다시 쓴다 (원자적 쓰기, 0600): 머리 + 모든 id. 0.5초에 한 번까지, `force`면 바로 (띄운 직후 · 지켜보던 프로세스가 끝났을 때)
     func save(force: Bool = false) {
-        guard let file, !fromOtherBoot else { return }
+        guard let file, evidence == .memory || evidence == .thisBoot else { return }
         state.withLock { current in
-            guard current.dirty, !current.stopped, let boot = ClaudeProcessInspector.bootSessionID() else { return }
+            guard !current.stopped, current.dirty || !current.headed || force, let boot = ClaudeProcessInspector.bootSessionID() else { return }
             let now = Date()
             if !force, let last = current.lastSave, now.timeIntervalSince(last) < Self.saveInterval { return }
             let lines = [Self.header, "boot " + boot, "root " + (current.rootID.map { String($0) } ?? "-")] + current.ids.sorted().map { String($0) }
-            let directory = file.deletingLastPathComponent()
-            do {
-                try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-                try Data((lines.joined(separator: "\n") + "\n").utf8).write(to: file, options: .atomic)
-                try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
+            if Self.write(lines, to: file) {
                 current.dirty = false
+                current.headed = true
                 current.lastSave = now
-            } catch {
-                // 적지 못하면 다음 훑기에서 다시 적는다 (메모리의 혈통은 그대로 쓴다)
             }
         }
     }
 
-    /// 끝을 증명한 뒤: 지켜보기를 멈추고 파일을 지운다 (그 뒤로는 적지 않는다)
+    /// 파일이 이번 부팅의 혈통으로 읽히나 (띄운 직후 강제 저장 확인, 11장 2)
+    var isRecorded: Bool {
+        guard let file else { return false }
+        if case .thisBoot = Self.load(file) { return true }
+        return false
+    }
+
+    /// 끝을 증명한 뒤: 지켜보기를 멈추고 id를 지운 "끝" 기록만 남긴다 (그 뒤의 확인도 끝이다, 11장 1)
     func forget() {
         state.withLock { current in
             current.stopped = true
-            if let file { try? FileManager.default.removeItem(at: file) }
+            guard let file, evidence != .otherBoot else { return }
+            if let boot = ClaudeProcessInspector.bootSessionID(), Self.write([Self.header, "boot " + boot, "ended"], to: file) { return }
+            // 끝 기록을 쓰지 못하면 지운다: 그 뒤의 확인은 증거가 없어 unknown이다 (끝이라고 하지 않는다)
+            try? FileManager.default.removeItem(at: file)
+        }
+    }
+
+    static func write(_ lines: [String], to file: URL) -> Bool {
+        do {
+            try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+            try Data((lines.joined(separator: "\n") + "\n").utf8).write(to: file, options: .atomic)
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
+            return true
+        } catch {
+            return false
         }
     }
 
@@ -134,20 +213,25 @@ public final class ClaudeLineage: Sendable {
 
     enum Loaded: Equatable {
         case thisBoot(root: UInt64?, ids: Set<UInt64>)
+        case ended
         case otherBoot
         case unreadable
     }
 
-    /// 형식이 맞는 파일만 (숫자 줄만 받는다). 부팅 id가 지금과 다르면 `otherBoot`
-    static func load(_ file: URL) -> Loaded {
+    /// 형식이 맞는 파일만 (줄바꿈으로 끝난 숫자 줄만 받는다: 쓰다 끊긴 마지막 줄은 버린다). 부팅 id가 `boot`와 다르면 `otherBoot`, 부팅 id를 못 읽으면 `unreadable`
+    static func load(_ file: URL, boot: String? = ClaudeProcessInspector.bootSessionID()) -> Loaded {
         guard let text = try? String(contentsOf: file, encoding: .utf8) else { return .unreadable }
-        let lines = text.split(separator: "\n", omittingEmptySubsequences: true).map(String.init)
-        guard lines.count >= 3, lines[0] == header, lines[1].hasPrefix("boot "), lines[2].hasPrefix("root ") else { return .unreadable }
-        let boot = String(lines[1].dropFirst(5))
-        guard UUID(uuidString: boot) != nil, let now = ClaudeProcessInspector.bootSessionID() else { return .unreadable }
-        guard boot == now else { return .otherBoot }
+        var lines = text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        // 마지막 원소는 마지막 줄바꿈 뒤다: 비어 있지 않으면 쓰다 끊긴 줄이다
+        lines.removeLast()
+        guard lines.count >= 3, lines[0] == header, lines[1].hasPrefix("boot ") else { return .unreadable }
+        let written = String(lines[1].dropFirst(5))
+        guard UUID(uuidString: written) != nil, let boot else { return .unreadable }
+        guard written == boot else { return .otherBoot }
+        if lines[2] == "ended", lines.count == 3 { return .ended }
+        guard lines[2].hasPrefix("root ") else { return .unreadable }
         func number(_ line: Substring) -> UInt64? {
-            guard line.allSatisfy(\.isASCII), let id = UInt64(line), id > 1 else { return nil }
+            guard !line.isEmpty, line.allSatisfy({ $0.isASCII && $0.isNumber }), let id = UInt64(line), id > 1 else { return nil }
             return id
         }
         let rootText = lines[2].dropFirst(5)
@@ -161,17 +245,17 @@ public final class ClaudeLineage: Sendable {
         return .thisBoot(root: root, ids: ids)
     }
 
-    /// 앱이 뜰 때: 다른 부팅에 적힌 파일 · 형식이 깨진 파일을 지운다 (10장 4). 이번 부팅의 파일은 고아 정리가 쓴다
-    static func purge(directory: URL) {
-        guard let names = try? FileManager.default.contentsOfDirectory(atPath: directory.path) else { return }
+    /// 앱이 뜰 때: 확인된 다른 부팅의 파일만 지운다 (11장 1). 부팅 id를 못 읽으면 아무것도 지우지 않는다
+    static func purge(directory: URL, boot: String? = ClaudeProcessInspector.bootSessionID()) {
+        guard let boot, let names = try? FileManager.default.contentsOfDirectory(atPath: directory.path) else { return }
         for name in names where name.hasSuffix(".lineage") {
             let file = directory.appending(path: name)
-            if case .thisBoot = load(file) { continue }
-            try? FileManager.default.removeItem(at: file)
+            if load(file, boot: boot) == .otherBoot { try? FileManager.default.removeItem(at: file) }
         }
     }
 
-    /// 감독하는 동안 지켜본다 (막히는 스레드 하나): 본 프로세스마다 `NOTE_FORK`를 걸어 새 자식이 생기면 다시 훑는다(훑기 사이 최소 30ms). 아니면 0.1초마다. `forget()`까지
+    /// 감독하는 동안 지켜본다 (막히는 스레드 하나): 본 프로세스마다 `NOTE_FORK`를 걸어 새 자식이 생기면 다시 훑는다(훑기 사이 최소 30ms). 아니면 0.1초마다.
+    /// 지켜보던 프로세스가 끝나면(`NOTE_EXIT`) 파일 전체를 바로 다시 쓴다 (11장 3). `forget()`까지
     func watch(_ identity: AgentProcessIdentity) {
         guard let raw = identity.pid, raw > 1, raw <= Int(Int32.max) else { return }
         let queue = kqueue()
@@ -202,7 +286,12 @@ public final class ClaudeLineage: Sendable {
                 var timeout = timespec(tv_sec: 0, tv_nsec: 100_000_000)
                 let capacity: Int32 = 32
                 let count: Int32 = kevent(queue, noChanges, 0, &events, capacity, &timeout)
-                for event in events.prefix(max(0, Int(count))) where event.fflags & exit != 0 { watched.remove(pid_t(event.ident)) }
+                var exited = false
+                for event in events.prefix(max(0, Int(count))) where event.fflags & exit != 0 {
+                    watched.remove(pid_t(event.ident))
+                    exited = true
+                }
+                if exited { save(force: true) }
             }
             close(queue)
         }

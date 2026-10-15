@@ -24,15 +24,18 @@ public struct ClaudeCodeTestHooks: Sendable {
     public var terminateOverride: (@Sendable (AgentProcessIdentity) -> AgentLiveness?)?
     /// 끝나는 spawn이 자기 요청을 닫기 모드로 닫기 바로 전 (그 사이 다른 턴이 끼어드는 경쟁 시험, 9장 10)
     public var beforeFinishClose: (@Sendable () async -> Void)?
+    /// 훅 결정이 끝나고 응답을 확정하기 바로 전 (마지막 await 경쟁 시험, 11장 6)
+    public var beforeHookReturn: (@Sendable () async -> Void)?
 
     public init(
         afterConfigWrite: (@Sendable (URL) -> Void)? = nil, gateDelay: Duration? = nil, terminateOverride: (@Sendable (AgentProcessIdentity) -> AgentLiveness?)? = nil,
-        beforeFinishClose: (@Sendable () async -> Void)? = nil
+        beforeFinishClose: (@Sendable () async -> Void)? = nil, beforeHookReturn: (@Sendable () async -> Void)? = nil
     ) {
         self.afterConfigWrite = afterConfigWrite
         self.gateDelay = gateDelay
         self.terminateOverride = terminateOverride
         self.beforeFinishClose = beforeFinishClose
+        self.beforeHookReturn = beforeHookReturn
     }
 }
 
@@ -139,6 +142,7 @@ public actor ClaudeCodeProcess: AgentProcess {
         if let external = turn.externalSessionID {
             guard BridgeRuntime.isSafeSessionID(external) else { throw AgentStartError(.spawnFailed) }
             try Self.requireBound(external, state: state)
+            try requireSecretContext(state, sessionID: turn.sessionID, taskID: turn.taskID)
             providerID = external
             session = .resume(external)
         } else {
@@ -148,6 +152,7 @@ public actor ClaudeCodeProcess: AgentProcess {
             newSession = providerID
             state.providerSessionID = providerID
             state.bound = false
+            state.secretAnswered = false
         }
         // 이 세션에서 다른 프로세스가 돈다: 앞의 보류는 더는 열려 있지 않다 (13.2 :511)
         state.openDeferred = nil
@@ -164,6 +169,14 @@ public actor ClaudeCodeProcess: AgentProcess {
     /// `--resume`에는 이 세션 폴더 상태가 묶은 id(init이 돌려준 id)만 쓴다 (8장 10). 다른 값은 서버가 줘도 띄우지 않는다
     static func requireBound(_ external: String, state: ClaudeSessionState) throws {
         guard state.bound, state.providerSessionID == external else { throw AgentStartError(.spawnFailed) }
+    }
+
+    /// 이 Claude 세션에 비밀값을 건넨 적이 있는데 이 adapter의 가리개가 비었다(앱이 다시 떴다): 모델이 되말해도 가릴 수 없으므로 그 세션은 이어 띄우지 않는다
+    /// (11장 9, fail-closed. 값은 디스크에 두지 않는다 — 사용자 결정 Q9). 사용자는 새 세션으로 (이유 표시는 D4a)
+    private func requireSecretContext(_ state: ClaudeSessionState, sessionID: String, taskID: String) throws {
+        guard state.secretAnswered, redactor(sessionID).isEmpty else { return }
+        log.log("claude_secret_context_lost", ["task": .id(taskID)])
+        throw AgentStartError(.spawnFailed)
     }
 
     /// 이 답에서 비밀 항목의 값 (8장 11 · 10장 7): 질문을 낸 spawn이 메모리에 적은 항목과 상태 파일의 비밀 항목 id(앱이 다시 떠도 남는다).
@@ -201,10 +214,22 @@ public actor ClaudeCodeProcess: AgentProcess {
             log.log("claude_answer_closed", ["task": .id(answer.taskID)])
             return .requestClosed
         }
-        state.openDeferred = nil
-        try? state.save(in: folder.root)
-        // 비밀 항목의 답 값을 이 세션의 가리개에 쌓는다 (9장 1: 이 세션의 다음 spawn에도 쓴다. 10장 7: 앱이 다시 떠도 상태 파일의 항목 id로)
+        try requireSecretContext(state, sessionID: answer.sessionID, taskID: answer.taskID)
+        // 비밀 항목의 답 값을 이 세션의 가리개에 쌓는다 (9장 1: 이 세션의 다음 spawn에도 쓴다. 10장 7: 앱이 다시 떠도 상태 파일의 항목 id로).
+        // 비밀값을 건넨다는 표식(값 0)은 띄우기 전에 상태 파일에 적는다: 적지 못하면 건네지 않는다 (11장 9)
         let values = secretValues(answer, open: open)
+        state.openDeferred = nil
+        if !values.isEmpty {
+            state.secretAnswered = true
+            do {
+                try state.save(in: folder.root)
+            } catch {
+                log.log("claude_state_save_failed", [:])
+                throw AgentStartError(.spawnFailed)
+            }
+        } else {
+            try? state.save(in: folder.root)
+        }
         if !values.isEmpty { sessionRedactors[answer.sessionID] = redactor(answer.sessionID).adding(values) }
         secretItems[answer.sessionID] = nil
         let binding = ClaudeAnswerBinding(requestID: answer.requestID, kind: answer.kind, inputSHA256: open.inputSHA256, value: answer.value, targetSHA256: open.targetSHA256)
@@ -367,8 +392,8 @@ public actor ClaudeCodeProcess: AgentProcess {
         let mcp = ClaudeCodeLaunch.mcpJSON(helper: helpers.mcp, session: agentSessionID)
         let files = try ClaudeCodeLaunch.writeConfig(directory: folder.config, spawnID: spawnID, settings: settings, mcp: mcp)
         testHooks.afterConfigWrite?(files.settings)
-        // ①: 쓴 파일을 다시 읽어 기대 값과 같을 때만 띄운다
-        guard ClaudeCodeLaunch.verifyConfig(files, settings: settings, mcp: mcp) else {
+        // ①: 쓴 파일을 다시 읽어 기대 값과 같고, 격리 `cwd/`가 비어 있을 때만 띄운다 (11장 10: 누가 project 설정을 심어 두지 않았다)
+        guard ClaudeCodeLaunch.verifyConfig(files, settings: settings, mcp: mcp), (try? FileManager.default.contentsOfDirectory(atPath: folder.cwd.path))?.isEmpty == true else {
             ClaudeCodeLaunch.removeConfig(files)
             log.log("claude_selfcheck_failed", ["check": .count(1)])
             throw AgentStartError(.spawnFailed)
@@ -383,7 +408,8 @@ public actor ClaudeCodeProcess: AgentProcess {
         ))
         let spawn = Spawn(
             id: spawnID, nonce: nonce, mode: mode, providerID: providerID, agentSessionID: agentSessionID, taskID: taskID, turnSeq: turnSeq, access: access, workspace: workspace,
-            folder: folder, cwdReal: cwdReal, childPATH: environment["PATH"] ?? "", files: files, sink: sink, mapper: mapper, lineage: ClaudeLineage(file: lineageFile(spawnID))
+            folder: folder, cwdReal: cwdReal, childPATH: environment["PATH"] ?? "", files: files, sink: sink, mapper: mapper,
+            lineage: ClaudeLineage(file: lineageFile(spawnID), fresh: true)
         )
         spawn.binding = binding
         let answered = spawn.answered
@@ -404,6 +430,16 @@ public actor ClaudeCodeProcess: AgentProcess {
         // 혈통의 뿌리 (9장 4 정정): 거두기 전이라 그 pid는 우리 자식이다. 부팅 id · 뿌리 id를 바로 파일에 적는다 (10장 1 · 3). 지켜보기는 끝을 증명한 `finish`까지
         spawn.lineage.seed(process.pid)
         spawn.lineage.save(force: true)
+        // 혈통 파일을 적지 못했으면 이 spawn의 끝을 나중에 증명할 수 없다: 정체를 적기 전에 멈추고 띄우지 않은 것으로 한다 (11장 2)
+        guard spawn.lineage.isRecorded else {
+            kill(process.pid, SIGKILL)
+            _ = process.waitForExit()
+            process.closeStandardStreams()
+            hookServer?.unregister(nonce: nonce, after: .zero)
+            ClaudeCodeLaunch.removeConfig(files)
+            log.log("claude_lineage_unrecorded", [:])
+            throw AgentStartError(.spawnFailed)
+        }
         let identity = AgentProcessIdentity(pid: Int(process.pid), startedAt: process.startedAt, processMarker: spawnID, externalTaskID: "\(providerID):\(turnSeq)")
         spawn.identity = identity
         spawn.lineage.watch(identity)
@@ -423,64 +459,25 @@ public actor ClaudeCodeProcess: AgentProcess {
 
     // MARK: 훅 요청 (소켓 → 결정기)
 
+    /// 훅 요청 하나. 한 spawn의 훅은 하나씩 정한다 (defer 하나 · 답 한 번이 겹치지 않게): 앞 훅이 응답을 확정할 때까지 기다린다.
+    /// 정한 뒤 돌려주기 직전(마지막 await 뒤)에 중단 상태와 응답 · 전달 기록을 한 번에 확정한다(`settle`, 11장 6): 그 사이에 await가 없어 Stop이 끼어들 틈이 없다
     func handleHook(spawnID: String, _ request: HookRequest) async -> HookResponse {
         guard let spawn = spawns[spawnID] else { return HookResponse(decision: .deny, reason: ClaudeGateReason.turnStopped) }
-        // 한 spawn의 훅은 하나씩 정한다 (defer 하나 · 답 한 번이 겹치지 않게)
         let previous = spawn.hookTail
-        let task = Task { () -> HookResponse in
-            await previous?.value
-            return await self.decide(spawn: spawn, request)
-        }
-        spawn.hookTail = Task { _ = await task.value }
-        return await task.value
+        let (turn, settled) = AsyncStream<Void>.makeStream()
+        spawn.hookTail = Task { for await _ in turn {} }
+        defer { settled.finish() }
+        await previous?.value
+        let started = Date()
+        let decided = await decide(spawn: spawn, request)
+        await testHooks.beforeHookReturn?()
+        return settle(spawn, request, decided, started: started)
     }
 
-    private func decide(spawn: Spawn, _ request: HookRequest) async -> HookResponse {
-        let started = Date()
-        spawn.facts.toolNames[request.toolUseID] = request.toolName
-        if ["Edit", "Write"].contains(request.toolName), let path = request.toolInput["file_path"]?.stringValue, let absolute = GateFileSystem.absolute(path, cwd: request.cwd) {
-            spawn.facts.filePaths[request.toolUseID] = absolute
-        }
-        let gateMode: ClaudeGateContext.Mode
-        switch spawn.mode {
-        case .turn: gateMode = .normal
-        case .answer: gateMode = spawn.binding.map { .answer($0) } ?? .normal
-        case .close(let requestID): gateMode = .close(requestID: requestID)
-        }
-        // 답 훅은 새 정체가 원장에 commit된 뒤에만 답한다 (9장 8): 그 전이면 잠깐 기다리고(훅 예산 안), 실패 · 시간 초과면 답을 주지 않는다
-        if case .answer = spawn.mode, request.toolUseID == spawn.binding?.requestID {
-            let deadline = Date().addingTimeInterval(Self.identityWait)
-            while spawn.identityRecorded == nil, Date() < deadline { try? await Task.sleep(for: .milliseconds(5)) }
-            if spawn.identityRecorded != true {
-                if spawn.answerSignal == nil { spawn.answerSignal = .lost }
-                sendInterrupt(spawn)
-                log.log("tool_gate", ["source": .code("local"), "decision": .code("deny"), "reason": .code("identity_unrecorded")])
-                return HookResponse(decision: .deny, reason: ClaudeGateReason.turnStopped)
-            }
-        }
-        let context = ClaudeGateContext(
-            mode: gateMode, access: spawn.access, workspaceRealPath: spawn.workspace, sessionCwdRealPath: spawn.cwdReal, childPATH: spawn.childPATH,
-            agentSessionID: spawn.agentSessionID, agentTaskID: spawn.taskID, turnSeq: spawn.turnSeq, deferIssued: spawn.deferIssued, answerDelivered: spawn.answerDelivered,
-            stopped: spawn.stopped || spawn.interruptSent, secrets: redactor(spawn.agentSessionID),
-            protectedRealPaths: protectedRoots.map { GateFileSystem.realpath($0.path) ?? $0.path }
-        )
-        if let delay = testHooks.gateDelay { try? await Task.sleep(for: delay) }
-        let gate = ClaudeToolGate(fileSystem: fileSystem, decide: services.withLock { $0 }?.decideTool, serverTimeout: .milliseconds(Int(timing.serverTimeout * 1000)))
-        var outcome = await gate.evaluate(request, context: context)
-        // 서버를 기다리는 동안 Stop · 자체 점검 실패가 왔으면 그 결과를 쓰지 않는다 (9장 7): 허용 · 보류 모두 deny로
-        if spawn.stopped || spawn.interruptSent, outcome.response.decision != .deny {
-            outcome = ClaudeToolGate.local(.deny, ClaudeGateReason.turnStopped, "stopped_after_wait")
-        }
-        if outcome.answeredPending { await spawn.sink?.emit(.progress) }
-        // 마지막 await 뒤, 돌려주기 직전에 다시 본다 (10장 6): 그 사이 Stop · 자체 점검 실패가 왔으면 answers 없는 deny. 아래 기록은 await 없이 이 결과대로만 남긴다
-        if spawn.stopped || spawn.interruptSent, outcome.response.decision != .deny {
-            outcome = ClaudeToolGate.local(.deny, ClaudeGateReason.turnStopped, "stopped_after_wait")
-            if case .answer = spawn.mode, request.toolUseID == spawn.binding?.requestID {
-                // 답은 모델에 닿지 않았다: 전달로 적지 않고, 값은 메모리에서 지운다
-                spawn.binding?.value = AgentAnswerValue()
-                if spawn.answerSignal == nil { spawn.answerSignal = .lost }
-            }
-        }
+    /// 돌려주기 직전의 확정 (11장 6, await 없음): 중단 · 자체 점검 실패가 보이면 answers 없는 deny(답 훅이면 값을 지우고 `.lost` → `requestClosed`),
+    /// 아니면 그 결과대로 보류 · 전달(`.delivered` · 값 지우기)을 적는다
+    private func settle(_ spawn: Spawn, _ request: HookRequest, _ decided: ClaudeGateOutcome, started: Date) -> HookResponse {
+        let outcome = stopOverride(spawn, request, decided)
         if outcome.response.decision == .defer, let deferred = outcome.deferred {
             spawn.deferIssued = true
             spawn.facts.pending = deferred
@@ -500,6 +497,53 @@ public actor ClaudeCodeProcess: AgentProcess {
             "ms": .millis(Int(Date().timeIntervalSince(started) * 1000)),
         ])
         return outcome.response
+    }
+
+    /// 중단 재확인 하나 (9장 7 · 10장 6 · 11장 6): 이 spawn에 Stop · 자체 점검 실패가 왔으면 allow · defer를 answers 없는 deny로 바꾼다.
+    /// 답 훅이었으면 그 답은 모델에 닿지 않는다: 값은 메모리에서 지우고 `.lost`
+    private func stopOverride(_ spawn: Spawn, _ request: HookRequest, _ outcome: ClaudeGateOutcome) -> ClaudeGateOutcome {
+        guard spawn.stopped || spawn.interruptSent, outcome.response.decision != .deny else { return outcome }
+        if case .answer = spawn.mode, request.toolUseID == spawn.binding?.requestID {
+            spawn.binding?.value = AgentAnswerValue()
+            if spawn.answerSignal == nil { spawn.answerSignal = .lost }
+        }
+        return ClaudeToolGate.local(.deny, ClaudeGateReason.turnStopped, "stopped_after_wait")
+    }
+
+    private func decide(spawn: Spawn, _ request: HookRequest) async -> ClaudeGateOutcome {
+        spawn.facts.toolNames[request.toolUseID] = request.toolName
+        if ["Edit", "Write"].contains(request.toolName), let path = request.toolInput["file_path"]?.stringValue, let absolute = GateFileSystem.absolute(path, cwd: request.cwd) {
+            spawn.facts.filePaths[request.toolUseID] = absolute
+        }
+        let gateMode: ClaudeGateContext.Mode
+        switch spawn.mode {
+        case .turn: gateMode = .normal
+        case .answer: gateMode = spawn.binding.map { .answer($0) } ?? .normal
+        case .close(let requestID): gateMode = .close(requestID: requestID)
+        }
+        // 답 훅은 새 정체가 원장에 commit된 뒤에만 답한다 (9장 8): 그 전이면 잠깐 기다리고(훅 예산 안), 실패 · 시간 초과면 답을 주지 않는다
+        if case .answer = spawn.mode, request.toolUseID == spawn.binding?.requestID {
+            let deadline = Date().addingTimeInterval(Self.identityWait)
+            while spawn.identityRecorded == nil, Date() < deadline { try? await Task.sleep(for: .milliseconds(5)) }
+            if spawn.identityRecorded != true {
+                if spawn.answerSignal == nil { spawn.answerSignal = .lost }
+                sendInterrupt(spawn)
+                return ClaudeToolGate.local(.deny, ClaudeGateReason.turnStopped, "identity_unrecorded")
+            }
+        }
+        let context = ClaudeGateContext(
+            mode: gateMode, access: spawn.access, workspaceRealPath: spawn.workspace, sessionCwdRealPath: spawn.cwdReal, childPATH: spawn.childPATH,
+            agentSessionID: spawn.agentSessionID, agentTaskID: spawn.taskID, turnSeq: spawn.turnSeq, deferIssued: spawn.deferIssued, answerDelivered: spawn.answerDelivered,
+            stopped: spawn.stopped || spawn.interruptSent, secrets: redactor(spawn.agentSessionID),
+            protectedRealPaths: protectedRoots.map { GateFileSystem.realpath($0.path) ?? $0.path }
+        )
+        if let delay = testHooks.gateDelay { try? await Task.sleep(for: delay) }
+        let gate = ClaudeToolGate(fileSystem: fileSystem, decide: services.withLock { $0 }?.decideTool, serverTimeout: .milliseconds(Int(timing.serverTimeout * 1000)))
+        // 서버를 기다리는 동안 Stop · 자체 점검 실패가 왔으면 그 결과를 쓰지 않는다 (9장 7): 진행 사건도 내지 않는다. 기록은 `settle`이 한다
+        let evaluated = await gate.evaluate(request, context: context)
+        let outcome = stopOverride(spawn, request, evaluated)
+        if outcome.answeredPending { await spawn.sink?.emit(.progress) }
+        return outcome
     }
 
     // MARK: 감독

@@ -55,7 +55,7 @@ struct ClaudeRereview2Tests {
         let marker = UUID().uuidString
         let root = try spawn("/usr/bin/perl -e 'use POSIX; POSIX::setsid(); open(F, q(>\(pidFile))); print F $$; close F; sleep 600;' & sleep 0.3; exit 0", marker: marker)
         let file = box.sessionsRoot.appending(path: "lineage/\(marker).lineage")
-        let before = ClaudeLineage(file: file)
+        let before = ClaudeLineage(file: file, fresh: true)
         before.seed(root.process.pid)
         before.save(force: true)
         _ = try await offPool { root.process.waitForExit() }
@@ -71,10 +71,12 @@ struct ClaudeRereview2Tests {
         let timing = Self.timing
         #expect(try await offPool { ClaudeProcessInspector.terminate(root.identity, timing: timing, lineage: other) } == .ended(AgentExit(code: nil)))
         #expect(kill(orphan, 0) == 0, "다른 부팅의 혈통으로는 신호를 보내지 않는다")
-        // 다시 뜬 adapter도 끝으로 보고 그 파일을 지운다
+        // 다시 뜬 adapter도 끝으로 본다. 다른 부팅의 파일은 앱이 뜰 때 purge가 지운다 (11장 1: 확인할 때는 지우지 않는다 — 다시 물어도 끝)
         let adapter = ClaudeCodeProcess(sessionsRoot: box.sessionsRoot, hookServer: nil, helpers: ClaudeCodeHelpers(hook: "/x", mcp: "/y"),
                                         locator: ClaudeCodeLocator(candidates: [], confinedTo: box.root.path), timing: .testing)
         #expect(await adapter.liveness(root.identity) == .ended(AgentExit(code: nil)))
+        #expect(await adapter.liveness(root.identity) == .ended(AgentExit(code: nil)))
+        adapter.purgeLineageOfOtherBoots()
         #expect(!FileManager.default.fileExists(atPath: file.path))
     }
 
@@ -111,12 +113,15 @@ struct ClaudeRereview2Tests {
 
     // MARK: 4 비용 · 정리
 
+    /// 전체 다시 쓰기(정리)는 0.5초씩 묶는다 (11장 3 뒤: 새 id는 바로 덧붙고, 덧붙이지 못한 것만 정리가 다시 쓴다)
     @Test func c4LineageSavesAreBatchedExceptTheForcedFirstOne() throws {
         let file = box.root.appending(path: "lineage/batch.lineage")
-        let lineage = ClaudeLineage(file: file)
+        let lineage = ClaudeLineage(file: file, fresh: true)
         lineage.insert(11)
         lineage.save(force: true)
         #expect(try String(contentsOf: file, encoding: .utf8).hasSuffix("\n11\n"))
+        // 덧붙이기가 실패하게 (읽기 전용): 정리할 것이 생긴다
+        chmod(file.path, 0o400)
         lineage.insert(12)
         lineage.save()
         #expect(try !String(contentsOf: file, encoding: .utf8).contains("\n12\n"), "0.5초 안에는 다시 쓰지 않는다")
@@ -127,7 +132,7 @@ struct ClaudeRereview2Tests {
 
     @Test func c4AppStartPurgesLineageFilesOfOtherBootsOnly() throws {
         let folder = box.sessionsRoot.appending(path: "lineage", directoryHint: .isDirectory)
-        let keep = ClaudeLineage(file: folder.appending(path: "\(UUID().uuidString).lineage"))
+        let keep = ClaudeLineage(file: folder.appending(path: "\(UUID().uuidString).lineage"), fresh: true)
         keep.insert(5)
         keep.save(force: true)
         let other = folder.appending(path: "\(UUID().uuidString).lineage")
@@ -140,22 +145,22 @@ struct ClaudeRereview2Tests {
                           locator: ClaudeCodeLocator(candidates: [], confinedTo: box.root.path)).purgeLineageOfOtherBoots()
         #expect(FileManager.default.fileExists(atPath: keep.file?.path ?? ""))
         #expect(!FileManager.default.fileExists(atPath: other.path))
-        #expect(!FileManager.default.fileExists(atPath: broken.path))
+        #expect(FileManager.default.fileExists(atPath: broken.path), "다른 부팅으로 확인되지 않은 파일은 남긴다 (11장 1)")
         #expect(FileManager.default.fileExists(atPath: unrelated.path))
     }
 
-    @Test func c4ARestartedAdapterDeletesTheFileOnceItProvesTheEnd() async throws {
+    @Test func c4ARestartedAdapterReplacesTheIDsWithAnEndRecordOnceItProvesTheEnd() async throws {
         let marker = UUID().uuidString
         let root = try spawn("exit 0", marker: marker)
         let file = box.sessionsRoot.appending(path: "lineage/\(marker).lineage")
-        let lineage = ClaudeLineage(file: file)
+        let lineage = ClaudeLineage(file: file, fresh: true)
         lineage.seed(root.process.pid)
         lineage.save(force: true)
         _ = try await offPool { root.process.waitForExit() }
         let adapter = ClaudeCodeProcess(sessionsRoot: box.sessionsRoot, hookServer: nil, helpers: ClaudeCodeHelpers(hook: "/x", mcp: "/y"),
                                         locator: ClaudeCodeLocator(candidates: [], confinedTo: box.root.path), timing: .testing)
         #expect(await adapter.liveness(root.identity) == .ended(AgentExit(code: nil)))
-        #expect(!FileManager.default.fileExists(atPath: file.path))
+        #expect(ClaudeLineage.load(file) == .ended, "id는 지우고 끝 기록만 (11장 1)")
     }
 
     // MARK: 5 앱 데이터 폴더

@@ -217,13 +217,13 @@ struct ClaudeProcessIdentityTests {
         #expect(await Self.vanished(orphan))
     }
 
-    /// 다시 뜬 앱: CLI는 이미 끝났고 그 setsid 자손만 남았다. 혈통 파일(감독하던 앱이 적은 것)로만 찾을 수 있다 → 끝내고 파일을 지운다
+    /// 다시 뜬 앱: CLI는 이미 끝났고 그 setsid 자손만 남았다. 혈통 파일(감독하던 앱이 적은 것)로만 찾을 수 있다 → 끝내고 끝 기록을 남긴다
     @Test func b4ARestartedAdapterFindsTheOrphanOfAnEndedCLIThroughTheLineageFile() async throws {
         let pidFile = box.root.appending(path: "restart.pid").path
         let marker = UUID().uuidString
         let child = try spawn(script: "/usr/bin/perl -e 'use POSIX; POSIX::setsid(); open(F, q(>\(pidFile))); print F $$; close F; sleep 600;' & sleep 0.3; exit 0", marker: marker)
         let file = box.sessionsRoot.appending(path: "lineage/\(marker).lineage")
-        let before = ClaudeLineage(file: file)
+        let before = ClaudeLineage(file: file, fresh: true)
         before.seed(child.process.pid)
         before.save()
         _ = try await offPool { child.process.waitForExit() }
@@ -238,14 +238,14 @@ struct ClaudeProcessIdentityTests {
             return
         }
         #expect(await Self.vanished(orphan))
-        #expect(!FileManager.default.fileExists(atPath: file.path), "끝을 증명한 뒤 파일을 지웠다")
+        #expect(ClaudeLineage.load(file) == .ended, "끝을 증명한 뒤 id를 지운 끝 기록")
         #expect(await restarted.liveness(child.identity) == .ended(AgentExit(code: nil)))
     }
 
     /// 혈통 파일: 다시 뜬 앱이 읽는다. 머리 = 부팅 id(`kern.bootsessionuuid`) · 뿌리 id, 그 뒤 숫자 줄만 받는다 (다른 부팅은 `fromOtherBoot`, 이상한 줄은 버린다)
     @Test func b4TheLineageFileIsReadOnlyForThisBootAndOnlyAsNumbers() throws {
         let file = box.root.appending(path: "lineage/x.lineage")
-        let lineage = ClaudeLineage(file: file)
+        let lineage = ClaudeLineage(file: file, fresh: true)
         lineage.insert(4242)
         lineage.insert(77)
         lineage.save()
@@ -260,11 +260,12 @@ struct ClaudeProcessIdentityTests {
         #expect(!other.contains(4242) && other.fromOtherBoot, "다른 부팅")
         try "taskforce-lineage 2\nboot \(boot)\nroot 77\n4242\n-1\n".write(to: file, atomically: true, encoding: .utf8)
         let broken = ClaudeLineage(file: file)
-        #expect(!broken.contains(4242) && !broken.fromOtherBoot && broken.rootID == nil, "숫자가 아닌 줄")
+        #expect(!broken.contains(4242) && !broken.fromOtherBoot && broken.rootID == nil && !broken.hasEvidence, "숫자가 아닌 줄: 증거 없음")
         try "taskforce-lineage 2\nboot \(boot)\nroot 77\n4242\n".write(to: file, atomically: true, encoding: .utf8)
         #expect(ClaudeLineage(file: file).rootID == 77)
         lineage.forget()
-        #expect(!FileManager.default.fileExists(atPath: file.path))
+        #expect(try String(contentsOf: file, encoding: .utf8) == "taskforce-lineage 2\nboot \(boot)\nended\n", "끝 기록")
+        #expect(ClaudeLineage(file: file).provenEnded)
     }
 
     /// 커널 id: exec까지 마친 자식의 부모 id는 부모가 끝나 launchd로 옮겨진 뒤에도 그대로다 (혈통의 바탕)

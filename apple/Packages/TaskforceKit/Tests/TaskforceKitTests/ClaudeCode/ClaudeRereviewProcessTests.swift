@@ -96,7 +96,10 @@ struct ClaudeRereviewProcessTests {
         #expect(await events.wait { FakeClaude.ended($0) })
         let child = try #require(fake.report(0)?["detached_child_pid"] as? Int)
         #expect(Self.gone(child), "ended를 내기 전에 혈통으로 찾은 자손을 끝냈다")
-        #expect(try FileManager.default.contentsOfDirectory(atPath: fake.box.sessionsRoot.appending(path: "lineage").path).isEmpty, "끝을 증명한 뒤 혈통 파일을 지웠다")
+        // 끝을 증명한 뒤 혈통 파일에는 id가 없고 끝 기록만 남는다 (11장 1)
+        let folder = fake.box.sessionsRoot.appending(path: "lineage")
+        let records = try FileManager.default.contentsOfDirectory(atPath: folder.path)
+        #expect(!records.isEmpty && records.allSatisfy { ClaudeLineage.load(folder.appending(path: $0)) == .ended }, "끝 기록만")
     }
 
     /// 0.3초만 사는 중간 셸의 setsid 손자: 감독이 그 셸을 살아 있을 때 혈통에 넣어 두어, CLI가 끝난 뒤 손자까지 끝낸 다음에 `ended`를 낸다

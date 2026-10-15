@@ -326,14 +326,21 @@ public enum ClaudeProcessInspector {
         return nil
     }
 
-    /// 그 spawn의 살아 있는 자손 (부모 자신은 빼고, 9장 4 정정 · 10장 1–3). 뿌리보다 뒤에 만들어진(unique id가 큰) 이 사용자 프로세스 중
+    /// 한 번 훑은 결과: 찾은 자손과, 그 훑기가 완전했나 (11장 4). 불완전 = 전에 자손으로 본 세대를 같은 세대로 다시 읽지 못했다(목록과 조회 사이에 끝나며
+    /// 무엇을 남겼는지 모른다), 또는 살아 있는 프로세스의 세대를 읽지 못했다(flavor 18 실패: 자손인지 가를 수 없다)
+    struct Scan {
+        var members: [Member]
+        var complete: Bool
+    }
+
+    /// 그 spawn의 살아 있는 자손 (부모 자신은 빼고, 9장 4 정정 · 10장 1–3 · 11장 4 · 5). 뿌리보다 뒤에 만들어진(unique id가 큰) 이 사용자 프로세스 중
     /// ① 자기 id나 부모 id가 혈통에 있거나(세션을 떠난 · 부모가 끝난 자손도) ② 부모가 지금 살아 있는 자손이거나 ③ 믿을 수 있는 그 그룹에 들었거나(살아 있는 리더)
     /// ④ 환경에 `TASKFORCE_SPAWN_ID=<spawn id>`가 보이는 것(그 환경을 읽을 수 있는 OS에서만). 소속은 한 번에 읽은 한 세대의 값으로만 정하고, 목록의 시작 시각과
-    /// 다르면(그 사이 pid가 재사용됐다) 그 후보를 버린다. 찾은 것은 혈통에 더한다 (좀비도: 그 자식을 찾는 데 쓴다). 다른 부팅의 혈통이면 훑지 않는다(끝).
-    /// 좀비는 끝난 것으로 본다. 목록을 읽지 못하면 nil (끝났다고 보지 않는다)
-    static func descendants(_ identity: AgentProcessIdentity, lineage: ClaudeLineage, processes: [kinfo_proc]? = nil) -> [Member]? {
-        if lineage.fromOtherBoot { return [] }
-        guard let processes = processes ?? userProcessInfos() else { return nil }
+    /// 다르거나 다시 읽지 못하면 그 후보를 버리고 그 훑기를 불완전으로 적는다. 뿌리는 뿌리 id로만 뺀다(뿌리 id를 모를 때만 pid로). 찾은 것은 혈통에 더한다
+    /// (좀비도: 그 자식을 찾는 데 쓴다). 좀비는 끝난 것으로 본다. 끝이 증명된 혈통이면 훑지 않는다. 목록을 읽지 못하거나 혈통 증거가 없으면 nil
+    static func scan(_ identity: AgentProcessIdentity, lineage: ClaudeLineage, processes: [kinfo_proc]? = nil) -> Scan? {
+        if lineage.provenEnded { return Scan(members: [], complete: true) }
+        guard lineage.hasEvidence, let processes = processes ?? userProcessInfos() else { return nil }
         let root = identity.pid.map { pid_t(truncatingIfNeeded: $0) }
         let parentCheck = check(identity)
         if parentCheck == .same { lineage.seed(identity) }
@@ -345,14 +352,22 @@ public enum ClaudeProcessInspector {
             let generation: Generation
             let marked: Bool
         }
+        var complete = true
         var pending: [Candidate] = processes.compactMap { info in
             let pid = info.kp_proc.p_pid
-            guard pid > 1, pid != me, pid != root, info.kp_eproc.e_ucred.cr_uid == getuid() else { return nil }
-            // 같은 세대만 (10장 2): 목록이 본 시작 시각과 한 번에 읽은 세대의 시작 시각이 같아야 그 소속 · id가 한 프로세스의 것이다
+            guard pid > 1, pid != me, info.kp_eproc.e_ucred.cr_uid == getuid() else { return nil }
+            // 뿌리 id를 모를 때만 숫자 pid로 뿌리를 뺀다 (11장 5: 뿌리가 끝난 뒤 그 pid를 다시 받은 자손을 빼지 않는다)
+            if rootID == nil, pid == root { return nil }
+            // 같은 세대만 (10장 2): 목록이 본 시작 시각과 한 번에 읽은 세대의 시작 시각이 같아야 그 소속 · id가 한 프로세스의 것이다.
+            // 다시 읽지 못했거나 다르면 그 사이 끝났거나 바뀌었다: 전에 자손으로 본 세대였거나 아직 살아 있는데 읽지 못했으면 이 훑기는 불완전하다 (11장 4)
             let listed = info.kp_proc.p_un.__p_starttime
+            let key = ClaudeLineage.MemberKey(pid: pid, seconds: Int64(listed.tv_sec), micros: Int64(listed.tv_usec))
             guard let generation = generation(pid: pid), generation.uid == getuid(),
-                  Int64(generation.startSeconds) == Int64(listed.tv_sec), Int64(generation.startMicros) == Int64(listed.tv_usec) else { return nil }
-            // 자손은 뿌리보다 뒤에 만들어진다 (10장 3: 벽시계가 아니라 unique id 순서)
+                  Int64(generation.startSeconds) == key.seconds, Int64(generation.startMicros) == key.micros else {
+                if lineage.wasMember(key) || stillListed(key) { complete = false }
+                return nil
+            }
+            // 자손은 뿌리보다 뒤에 만들어진다 (10장 3: 벽시계가 아니라 unique id 순서). 뿌리 자신은 뿌리 id로 뺀다
             if let rootID, generation.own <= rootID { return nil }
             let marked = !generation.zombie && lineage.marked(generation.own) { procArgs(pid: pid)?.environment.contains(needle) == true }
             return Candidate(generation: generation, marked: marked)
@@ -368,6 +383,7 @@ public enum ClaudeProcessInspector {
                 let byLineage = lineage.contains(generation.own) || lineage.contains(generation.parent)
                 guard byLineage || parents.contains(generation.parentPID) || (group != nil && generation.group == group) || candidate.marked else { return false }
                 lineage.insert(generation.own)
+                lineage.remember(ClaudeLineage.MemberKey(pid: generation.pid, seconds: Int64(generation.startSeconds), micros: Int64(generation.startMicros)))
                 if !generation.zombie {
                     parents.insert(generation.pid)
                     result.append(Member(pid: generation.pid, uniqueID: generation.own))
@@ -377,14 +393,44 @@ public enum ClaudeProcessInspector {
             }
         }
         lineage.save()
-        return result
+        return Scan(members: result, complete: complete)
     }
 
-    /// 부모가 끝났고(다른 프로세스가 그 pid를 쓰더라도) 자손도 하나 없다
+    /// 목록이 본 그 세대가 아직 그대로 있다 (세대를 읽지 못한 것이 끝나서가 아니다)
+    static func stillListed(_ key: ClaudeLineage.MemberKey) -> Bool {
+        var info = kinfo_proc()
+        var size = MemoryLayout<kinfo_proc>.stride
+        var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, key.pid]
+        guard sysctl(&mib, UInt32(mib.count), &info, &size, nil, 0) == 0, size > 0, info.kp_proc.p_pid == key.pid, info.kp_proc.p_stat != SZOMB else { return false }
+        let start = info.kp_proc.p_un.__p_starttime
+        return Int64(start.tv_sec) == key.seconds && Int64(start.tv_usec) == key.micros
+    }
+
+    /// 지금 찾은 자손 (불완전한 훑기여도 찾은 것은 신호 대상이다). 목록을 읽지 못하거나 혈통 증거가 없으면 nil
+    static func descendants(_ identity: AgentProcessIdentity, lineage: ClaudeLineage, processes: [kinfo_proc]? = nil) -> [Member]? {
+        scan(identity, lineage: lineage, processes: processes)?.members
+    }
+
+    /// 자손이 하나도 없다는 증명 (11장 4): 연속 두 번의 완전한 훑기에서 0이면 true, 어느 훑기에서든 자손을 찾으면 false, 증명하지 못하면 nil (최대 `attempts`번)
+    static func descendantsProvenGone(
+        _ identity: AgentProcessIdentity, _ lineage: ClaudeLineage, attempts: Int = 6, listing: () -> [kinfo_proc]? = { userProcessInfos() }
+    ) -> Bool? {
+        var cleanInARow = 0
+        for _ in 0..<attempts {
+            guard let result = scan(identity, lineage: lineage, processes: listing()) else { return nil }
+            if !result.members.isEmpty { return false }
+            cleanInARow = result.complete ? cleanInARow + 1 : 0
+            if cleanInARow >= 2 { return true }
+        }
+        return nil
+    }
+
+    /// 부모가 끝났고(다른 프로세스가 그 pid를 쓰더라도) 자손도 하나 없다는 증명이 있다
     static func allGone(_ identity: AgentProcessIdentity, _ lineage: ClaudeLineage) -> Bool {
+        if lineage.provenEnded { return true }
         switch check(identity) {
         case .same, .unprovable: return false
-        case .absent, .replaced: return descendants(identity, lineage: lineage)?.isEmpty == true
+        case .absent, .replaced: return descendantsProvenGone(identity, lineage) == true
         }
     }
 
@@ -394,17 +440,25 @@ public enum ClaudeProcessInspector {
         return zip(arguments, arguments.dropFirst()).contains { $0 == "--settings" && $1.hasSuffix(suffix) }
     }
 
-    /// 부모가 끝났어도 자손(혈통 · 그룹 · marker)이 살아 있으면 `alive`다 (8장 13 · 9장 4: 자손까지 끝나야 끝).
-    /// `lineage`가 없으면 지금 부모(정체가 그대로일 때)에서 시작한다
+    /// 부모가 끝났어도 자손(혈통 · 그룹 · marker)이 살아 있으면 `alive`다 (8장 13 · 9장 4: 자손까지 끝나야 끝). 끝은 완전한 증거가 있을 때만이고
+    /// (다른 부팅 · 끝 기록 · 연속 두 번의 완전한 빈 훑기), 증명하지 못하면 `unknown`이다 (11장 1 · 4). `lineage`가 없으면 지금 부모(정체가 그대로일 때)에서 시작한다
     public static func liveness(_ identity: AgentProcessIdentity, lineage: ClaudeLineage? = nil) -> AgentLiveness {
-        // 다른 부팅의 spawn은 훑지 않고 끝이다 (10장 1)
-        if lineage?.fromOtherBoot == true { return .ended(AgentExit(code: nil)) }
+        liveness(identity, lineage: lineage, listing: { userProcessInfos() })
+    }
+
+    /// `listing`: 훑기마다 쓸 프로세스 목록 (시험이 관측 중 변화를 흉내 낸다)
+    static func liveness(_ identity: AgentProcessIdentity, lineage: ClaudeLineage?, listing: () -> [kinfo_proc]?) -> AgentLiveness {
+        // 다른 부팅의 spawn · 끝 기록은 훑지 않고 끝이다 (10장 1 · 11장 1)
+        if lineage?.provenEnded == true { return .ended(AgentExit(code: nil)) }
         switch check(identity) {
         case .same: return .alive
         case .unprovable: return .unknown
         case .absent, .replaced:
-            guard let members = descendants(identity, lineage: lineage ?? ClaudeLineage.seeded(identity)) else { return .unknown }
-            return members.isEmpty ? .ended(AgentExit(code: nil)) : .alive
+            switch descendantsProvenGone(identity, lineage ?? ClaudeLineage.seeded(identity), listing: listing) {
+            case true?: return .ended(AgentExit(code: nil))
+            case false?: return .alive
+            case nil: return .unknown
+            }
         }
     }
 
@@ -419,18 +473,15 @@ public enum ClaudeProcessInspector {
     /// (다시 확인) SIGKILL → 유예 → 확인. 부모와 자손이 모두 사라진 것을 확인했을 때만 `.ended` (8장 13 · 9장 4), 끝내지 못했으면 `.alive`, 확인할 수 없으면 `.unknown`.
     /// `killpg`는 쓰지 않는다: 신호는 확인한 pid에만 간다 (9장 5). `lineage`가 없으면 신호 전에 지금 부모에서 시작한다 (부모가 먼저 끝나도 그 자식을 찾는다)
     public static func terminate(_ identity: AgentProcessIdentity, timing: ClaudeCodeTiming, lineage: ClaudeLineage? = nil) -> AgentLiveness {
-        // 다른 부팅의 spawn은 훑지도 신호를 보내지도 않는다: 이미 끝났다 (10장 1)
-        if lineage?.fromOtherBoot == true { return .ended(AgentExit(code: nil)) }
+        // 다른 부팅의 spawn · 끝 기록은 훑지도 신호를 보내지도 않는다: 이미 끝났다 (10장 1 · 11장 1)
+        if lineage?.provenEnded == true { return .ended(AgentExit(code: nil)) }
         let initial = check(identity)
         if initial == .unprovable { return .unknown }
         guard let raw = identity.pid else { return .unknown }
         let pid = pid_t(raw)
         let lineage = lineage ?? ClaudeLineage.seeded(identity)
-        if initial != .same {
-            // 부모는 이미 없다: 남은 자손만 본다
-            guard let members = descendants(identity, lineage: lineage) else { return .unknown }
-            if members.isEmpty { return .ended(AgentExit(code: nil)) }
-        }
+        // 부모가 이미 없고 자손이 없다는 증명이 있으면 끝 (증명하지 못하면 아래에서 찾은 것에 신호를 보내고 다시 증명을 구한다)
+        if initial != .same, descendantsProvenGone(identity, lineage) == true { return .ended(AgentExit(code: nil)) }
         signalAll(identity, lineage, parent: pid, SIGINT)
         if waitAllGone(identity, lineage, timeout: timing.orphanInterruptGrace) { return .ended(AgentExit(code: nil, signal: Int(SIGINT))) }
         if check(identity) == .unprovable { return .unknown }
@@ -456,10 +507,11 @@ public enum ClaudeProcessInspector {
         return allGone(identity, lineage)
     }
 
-    /// 감독하던 자식을 거둔 뒤 남은 자손(혈통 · 그룹 · marker)을 끝낸다 (막힘 호출, 8장 13 · 9장 4): SIGINT → 유예 → SIGKILL. 남은 것이 없거나 다 끝났으면 true
+    /// 감독하던 자식을 거둔 뒤 남은 자손(혈통 · 그룹 · marker)을 끝낸다 (막힘 호출, 8장 13 · 9장 4): SIGINT → 유예 → SIGKILL.
+    /// 남은 것이 없다는 증명(연속 두 번의 완전한 빈 훑기)이 있을 때만 true (11장 4)
     static func endDescendants(_ identity: AgentProcessIdentity, lineage: ClaudeLineage, timing: ClaudeCodeTiming) -> Bool {
+        if descendantsProvenGone(identity, lineage) == true { return true }
         guard let members = descendants(identity, lineage: lineage) else { return false }
-        if members.isEmpty { return true }
         signalVerified(members, SIGINT)
         if waitAllGone(identity, lineage, timeout: timing.orphanInterruptGrace) { return true }
         signalVerified(descendants(identity, lineage: lineage) ?? [], SIGKILL)

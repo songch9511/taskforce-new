@@ -2,7 +2,7 @@
 import Foundation
 
 /// 세션 폴더의 상태 파일 `state.json` (0600, OA D3a 계약 2.10-1 · 2.4): Claude Code 세션 id · 묶였는지 · 열린 보류 하나 (id · 종류 · 입력 digest · spawn id · 시각 · 대상 지문 ·
-/// 비밀 항목 id). **글 0:** 질문 글 · 답 · 비밀값 · 명령 · 경로를 쓰지 않는다. 앱이 다시 떠도 답 resume가 "그 요청이 아직 열려 있나"와 "어느 항목이 비밀인가"를 볼 수 있게 한다
+/// 비밀 항목 id) · 비밀값 답을 건넨 적이 있다는 표식. **글 0:** 질문 글 · 답 · 비밀값 · 명령 · 경로를 쓰지 않는다. 앱이 다시 떠도 답 resume가 "그 요청이 아직 열려 있나"와 "어느 항목이 비밀인가"를 볼 수 있게 한다
 public struct ClaudeSessionState: Equatable, Sendable {
     public struct OpenDeferred: Equatable, Sendable {
         public var id: String
@@ -36,6 +36,8 @@ public struct ClaudeSessionState: Equatable, Sendable {
     /// init이 그 id를 돌려줬다 (`session_bound`를 냈다)
     public var bound = false
     public var openDeferred: OpenDeferred?
+    /// 이 Claude 세션에 비밀값 답을 건넨 적이 있다 (값 0, 11장 9). 앱이 다시 떠 가리개가 비었으면 이 세션의 다음 턴 · 답 resume를 띄우지 않는다
+    public var secretAnswered = false
 
     public init() {}
 
@@ -47,6 +49,7 @@ public struct ClaudeSessionState: Equatable, Sendable {
         var state = ClaudeSessionState()
         state.providerSessionID = object["provider_session_id"] as? String
         state.bound = object["bound"] as? Bool ?? false
+        state.secretAnswered = object["secret_answered"] as? Bool ?? false
         if let open = object["open_deferred"] as? [String: Any], let id = open["id"] as? String, let kind = open["kind"] as? String,
            let digest = open["input_sha256"] as? String, let spawnID = open["spawn_id"] as? String, let at = open["at"] as? Double {
             state.openDeferred = OpenDeferred(
@@ -58,7 +61,7 @@ public struct ClaudeSessionState: Equatable, Sendable {
     }
 
     public func save(in folder: URL) throws {
-        var object: [String: Any] = ["v": 1, "bound": bound]
+        var object: [String: Any] = ["v": 1, "bound": bound, "secret_answered": secretAnswered]
         object["provider_session_id"] = providerSessionID ?? NSNull()
         if let openDeferred {
             object["open_deferred"] = [

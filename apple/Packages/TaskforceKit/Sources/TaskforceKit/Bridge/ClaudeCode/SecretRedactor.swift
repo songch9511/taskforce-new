@@ -15,7 +15,8 @@ public struct SecretRedactor: Sendable, Equatable {
     let secrets: [String]
     /// 가릴 글: 원래 값과 변형, 긴 것부터
     let values: [String]
-    /// 디코드한 글에서 찾을 값: 원래 값 · 앞뒤 공백 정리본의 NFC와 NFD
+    /// 디코드한 글에서 찾을 값: 원래 값 · 앞뒤 공백 정리본 그대로(정규화 전), 그리고 그 NFC와 NFD
+    let needlesRaw: [String]
     let needlesNFC: [String]
     let needlesNFD: [String]
 
@@ -30,14 +31,16 @@ public struct SecretRedactor: Sendable, Equatable {
         }
         self.secrets = kept
         values = Self.unique(found).sorted { $0.utf16.count != $1.utf16.count ? $0.utf16.count > $1.utf16.count : Array($0.utf8).lexicographicallyPrecedes($1.utf8) }
+        needlesRaw = Self.unique(bases)
         needlesNFC = Self.unique(bases.map(\.precomposedStringWithCanonicalMapping))
         needlesNFD = Self.unique(bases.map(\.decomposedStringWithCanonicalMapping))
     }
 
-    /// 디코드한 형태 어디엔가 비밀값이 있나 (10장 8)
+    /// 디코드한 형태 어디엔가 비밀값이 있나 (10장 8 · 11장 7): 형태마다 먼저 정규화 전 글자 그대로 찾고(뒤에 붙은 결합 표시가 정규화로 섞여 사라지지 않게), 그다음 NFC · NFD로
     public func detects(_ text: String) -> Bool {
-        guard !needlesNFC.isEmpty, !text.isEmpty else { return false }
+        guard !needlesRaw.isEmpty, !text.isEmpty else { return false }
         for form in Self.decodedForms(text) {
+            if needlesRaw.contains(where: { form.range(of: $0, options: .literal) != nil }) { return true }
             let nfc = form.precomposedStringWithCanonicalMapping
             if needlesNFC.contains(where: { nfc.range(of: $0, options: .literal) != nil }) { return true }
             let nfd = form.decomposedStringWithCanonicalMapping
@@ -139,44 +142,100 @@ public struct SecretRedactor: Sendable, Equatable {
         return out == units ? nil : String(decoding: out, as: UTF16.self)
     }
 
-    /// 셸 따옴표를 푼다: `'…'`는 그대로, `"…"` 안의 `\` 이스케이프(`$` `` ` `` `"` `\` 줄바꿈), 따옴표 밖의 `\x` → `x`. `'"'"'` · `'\''`도 풀린다. 바뀐 것이 없으면 nil
+    /// 셸 따옴표를 푼다: `'…'`는 그대로, `"…"` 안의 `\` 이스케이프(`$` `` ` `` `"` `\`), 따옴표 밖의 `\x` → `x`, 따옴표 밖 · 큰따옴표 안의 줄 이음(`\` + 줄바꿈)은 지운다,
+    /// ANSI-C `$'…'`는 이스케이프(`\xHH` · `\NNN` · 4자리 `\u` · 8자리 `\U` · `\n` 등 · `\cX`)를 푼다 (11장 8). `'"'"'` · `'\''`도 풀린다. 바뀐 것이 없으면 nil
     static func shellUnquoted(_ text: String) -> String? {
         let scalars = Array(text.unicodeScalars)
         guard scalars.contains(where: { $0 == "'" || $0 == "\"" || $0 == "\\" }) else { return nil }
-        enum Mode { case bare, single, double }
+        enum Mode { case bare, single, double, ansiC }
         var mode = Mode.bare
-        var out = String.UnicodeScalarView()
+        // `$'…'`의 `\xHH` · `\NNN`은 바이트다: 바이트로 모아 끝에 UTF-8로 읽는다
+        var out: [UInt8] = []
+        func put(_ scalar: Unicode.Scalar) { out += Array(String(scalar).utf8) }
+        func digits(from start: Int, max: Int, radix: UInt32) -> (value: UInt32, count: Int) {
+            var value: UInt32 = 0
+            var count = 0
+            while count < max, start + count < scalars.count, let digit = Character(scalars[start + count]).hexDigitValue, UInt32(digit) < radix {
+                value = value * radix + UInt32(digit)
+                count += 1
+            }
+            return (value, count)
+        }
         var index = 0
         while index < scalars.count {
             let scalar = scalars[index]
+            let next = index + 1 < scalars.count ? scalars[index + 1] : nil
             switch mode {
             case .single:
-                if scalar == "'" { mode = .bare } else { out.append(scalar) }
+                if scalar == "'" { mode = .bare } else { put(scalar) }
             case .double:
                 if scalar == "\"" {
                     mode = .bare
-                } else if scalar == "\\", index + 1 < scalars.count, ["$", "`", "\"", "\\", "\n"].contains(scalars[index + 1]) {
-                    out.append(scalars[index + 1])
+                } else if scalar == "\\", next == "\n" {
+                    index += 1 // 줄 이음: `\`와 줄바꿈을 함께 지운다 (11장 8)
+                } else if scalar == "\\", let next, ["$", "`", "\"", "\\"].contains(next) {
+                    put(next)
                     index += 1
                 } else {
-                    out.append(scalar)
+                    put(scalar)
+                }
+            case .ansiC:
+                if scalar == "'" {
+                    mode = .bare
+                } else if scalar == "\\", let next {
+                    index += 1
+                    switch next {
+                    case "a": out.append(0x07)
+                    case "b": out.append(0x08)
+                    case "e", "E": out.append(0x1B)
+                    case "f": out.append(0x0C)
+                    case "n": out.append(0x0A)
+                    case "r": out.append(0x0D)
+                    case "t": out.append(0x09)
+                    case "v": out.append(0x0B)
+                    case "\\", "'", "\"", "?": put(next)
+                    case "x":
+                        let (value, count) = digits(from: index + 1, max: 2, radix: 16)
+                        if count > 0 { out.append(UInt8(value)); index += count } else { put("\\"); put(next) }
+                    case "u", "U":
+                        let (value, count) = digits(from: index + 1, max: next == "u" ? 4 : 8, radix: 16)
+                        if count > 0, let decoded = Unicode.Scalar(value) { put(decoded); index += count } else { put("\\"); put(next) }
+                    case "c":
+                        if index + 1 < scalars.count, scalars[index + 1].isASCII {
+                            out.append(UInt8(scalars[index + 1].value & 0x1F))
+                            index += 1
+                        } else {
+                            put("\\")
+                            put(next)
+                        }
+                    default:
+                        let (value, count) = digits(from: index, max: 3, radix: 8)
+                        if count > 0 { out.append(UInt8(truncatingIfNeeded: value)); index += count - 1 } else { put("\\"); put(next) }
+                    }
+                } else {
+                    put(scalar)
                 }
             case .bare:
                 if scalar == "'" {
                     mode = .single
+                } else if scalar == "$", next == "'" {
+                    mode = .ansiC // ANSI-C 따옴표 `$'…'` (11장 8)
+                    index += 1
                 } else if scalar == "\"" {
                     mode = .double
-                } else if scalar == "\\", index + 1 < scalars.count {
-                    out.append(scalars[index + 1])
+                } else if scalar == "\\", next == "\n" {
+                    index += 1 // 줄 이음
+                } else if scalar == "\\", let next {
+                    put(next)
                     index += 1
                 } else {
-                    out.append(scalar)
+                    put(scalar)
                 }
             }
             index += 1
         }
-        let result = String(out)
-        return Array(result.utf8) == Array(text.utf8) ? nil : result
+        let result = String(decoding: out, as: UTF8.self)
+        return out == Array(text.utf8) ? nil : result
     }
 
     /// 셸 단어로 나눈다 (따옴표 밖의 빈칸 · 탭 · 줄바꿈이 경계). 경계 글도 조각으로 남겨 다시 이으면 원래 글이다
