@@ -233,7 +233,7 @@ export function deterministicActionId(messageId: string): string {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
-async function deliveryViews(admin: SupabaseClient, userId: string, rows: MessageRecord[], now: Date) {
+async function deliveryViews(admin: SupabaseClient, userId: string, rows: MessageRecord[]) {
   const ids = rows.map((row) => row.id);
   const tasks = new Map<string, TaskRecord>();
   const sessions = new Map<string, AgentSessionStatus>();
@@ -293,8 +293,6 @@ async function deliveryViews(admin: SupabaseClient, userId: string, rows: Messag
         sessionStatus: sessions.get(tasks.get(row.id)?.agent_session_id ?? ""),
         answerStep: answer ? { state: answer.state as StepState, reason: answer.reason } : null,
         titles,
-        expiresAt: typeof row.delivery_expires_at === "string" ? row.delivery_expires_at : null,
-        now,
       }),
     );
   }
@@ -319,7 +317,7 @@ export type AgentMessageOutcome = Pick<PostAgentMessageResponse, "message" | "de
  * 메시지 하나의 응답 재료를 다시 읽어 계산한다 (계약 2.4): 전달 표시 · 이 메시지가 만든 새 Action(번호 포함) · 마지막 턴의 작업.
  * 없거나 남의 메시지 · 다른 대화의 메시지면 null. 읽기만 한다
  */
-export async function loadAgentMessageOutcome(admin: SupabaseClient, userId: string, conversationId: string, messageId: string, now: Date = new Date()): Promise<AgentMessageOutcome | null> {
+export async function loadAgentMessageOutcome(admin: SupabaseClient, userId: string, conversationId: string, messageId: string): Promise<AgentMessageOutcome | null> {
   const { data } = await admin
     .from("conversation_messages")
     .select(MESSAGE_COLUMNS)
@@ -331,7 +329,7 @@ export async function loadAgentMessageOutcome(admin: SupabaseClient, userId: str
     .throwOnError();
   if (!data) return null;
   const row = data as unknown as MessageRecord;
-  const { views, tasks } = await deliveryViews(admin, userId, [row], now);
+  const { views, tasks } = await deliveryViews(admin, userId, [row]);
   const task = tasks.get(row.id);
 
   let createdAction: AgentMessageOutcome["created_action"] = null;
@@ -364,14 +362,13 @@ export async function loadAgentDeliveries(
   userId: string,
   conversationId: string,
   options: { sinceSeq?: number; limit?: number },
-  now: Date = new Date(),
 ): Promise<{ message_id: string; seq: number; delivery: AgentDelivery }[]> {
   const limit = Math.min(options.limit ?? 100, 100);
   const query = admin.from("conversation_messages").select(MESSAGE_COLUMNS).eq("user_id", userId).eq("conversation_id", conversationId).eq("role", "user");
   const { data } = await (options.sinceSeq !== undefined ? query.gt("seq", options.sinceSeq) : query).order("seq", { ascending: true }).limit(limit).throwOnError();
   const rows = (data ?? []) as unknown as (MessageRecord & { seq: number })[];
   if (!rows.length) return [];
-  const { views } = await deliveryViews(admin, userId, rows, now);
+  const { views } = await deliveryViews(admin, userId, rows);
   return rows.map((row) => ({ message_id: row.id, seq: row.seq, delivery: views.get(row.id)! }));
 }
 
@@ -404,7 +401,7 @@ export async function setAgentMessageReferent(
 }
 
 /** Send again 응답용: 메시지 id별 전달 표시 (이 대화 · 이 사용자의 사용자 메시지만, 읽기만) */
-export async function loadAgentDeliveriesByIds(admin: SupabaseClient, userId: string, conversationId: string, messageIds: string[], now: Date = new Date()): Promise<Record<string, AgentDelivery>> {
+export async function loadAgentDeliveriesByIds(admin: SupabaseClient, userId: string, conversationId: string, messageIds: string[]): Promise<Record<string, AgentDelivery>> {
   if (!messageIds.length) return {};
   const { data } = await admin
     .from("conversation_messages")
@@ -416,7 +413,7 @@ export async function loadAgentDeliveriesByIds(admin: SupabaseClient, userId: st
     .throwOnError();
   const rows = (data ?? []) as unknown as MessageRecord[];
   if (!rows.length) return {};
-  const { views } = await deliveryViews(admin, userId, rows, now);
+  const { views } = await deliveryViews(admin, userId, rows);
   return Object.fromEntries(rows.map((row) => [row.id, views.get(row.id)!]));
 }
 
