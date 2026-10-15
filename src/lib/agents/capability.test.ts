@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { agentCapabilitySchema } from "@/lib/api/contract";
 import { agentAccess, directChat } from "./capability";
-import { AGENT_REGISTRY, adapterEnabled } from "./registry";
+import { AGENT_REGISTRY, adapterEnabled, openAgentAdapters } from "./registry";
 
 describe("S0 registry and access", () => {
   it("keeps both descriptors and S0 conservative boundaries", () => {
@@ -60,5 +60,33 @@ describe("S0 registry and access", () => {
     delete c.enforcement.read_only;
     expect(agentAccess(c, "manual")).toBeNull();
     expect(directChat(c, "manual")).toBe("unsupported");
+  });
+  it("openAgentAdapters (D4b-s): 대화 v2가 꺼져 있으면 adapter 플래그가 켜져 있어도 빈 배열 (에이전트 대화 route의 gate와 같은 조건)", () => {
+    expect(openAgentAdapters({})).toEqual([]);
+    expect(openAgentAdapters({ AGENT_ADAPTER_CODEX_ENABLED: "true", AGENT_ADAPTER_CLAUDE_CODE_ENABLED: "true" })).toEqual([]);
+    for (const value of ["TRUE", "1", " true", "true\n", "", "false"]) {
+      expect(openAgentAdapters({ CONVERSATIONS_V2_ENABLED: value, AGENT_ADAPTER_CODEX_ENABLED: "true" }), JSON.stringify(value)).toEqual([]);
+    }
+  });
+  it("openAgentAdapters: 대화 v2가 켜져 있어도 adapter 플래그가 없으면 빈 배열, 하나만 켜지면 그것만, 둘 다 켜지면 registry 순서 그대로", () => {
+    expect(openAgentAdapters({ CONVERSATIONS_V2_ENABLED: "true" })).toEqual([]);
+    expect(openAgentAdapters({ CONVERSATIONS_V2_ENABLED: "true", AGENT_ADAPTER_CODEX_ENABLED: "true" })).toEqual(["agent:codex"]);
+    expect(openAgentAdapters({ CONVERSATIONS_V2_ENABLED: "true", AGENT_ADAPTER_CLAUDE_CODE_ENABLED: "true" })).toEqual(["agent:claude-code"]);
+    expect(openAgentAdapters({ CONVERSATIONS_V2_ENABLED: "true", AGENT_ADAPTER_CLAUDE_CODE_ENABLED: "true", AGENT_ADAPTER_CODEX_ENABLED: "true" })).toEqual(["agent:claude-code", "agent:codex"]);
+    expect(openAgentAdapters({ CONVERSATIONS_V2_ENABLED: "true", AGENT_ADAPTER_CODEX_ENABLED: "TRUE" })).toEqual([]);
+  });
+  it("openAgentAdapters의 기본 env는 process.env다 (route가 인자 없이 부른다)", () => {
+    const before = { ...process.env };
+    try {
+      process.env.CONVERSATIONS_V2_ENABLED = "true";
+      process.env.AGENT_ADAPTER_CODEX_ENABLED = "true";
+      delete process.env.AGENT_ADAPTER_CLAUDE_CODE_ENABLED;
+      expect(openAgentAdapters()).toEqual(["agent:codex"]);
+    } finally {
+      for (const key of ["CONVERSATIONS_V2_ENABLED", "AGENT_ADAPTER_CODEX_ENABLED", "AGENT_ADAPTER_CLAUDE_CODE_ENABLED"]) {
+        if (before[key] === undefined) delete process.env[key];
+        else process.env[key] = before[key];
+      }
+    }
   });
 });

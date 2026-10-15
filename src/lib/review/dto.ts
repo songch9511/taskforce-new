@@ -1,10 +1,11 @@
-import type { PendingDecisionGroup, Suggestion } from "@/lib/api/contract";
+import type { ReviewDecisionGroup, Suggestion } from "@/lib/api/contract";
 import { suggestionKindSchema } from "@/lib/api/contract";
 import type { PendingGroup } from "@/lib/coordinator/pending";
 
 // 서버 내부 값 → API 응답 모양 (순수 함수). 응답에는 id · 토큰 · 시각만 있고 글이 없다.
 
-export function pendingGroupDto(group: PendingGroup): PendingDecisionGroup {
+/** 묶음 → 응답. 에이전트 종류(D4b-s)의 ref(agent · result · conflict)는 그 항목에만 옮긴다 — C2 종류에는 키 자체가 없어 JSON이 그대로다 */
+export function pendingGroupDto(group: PendingGroup): ReviewDecisionGroup {
   return {
     key: group.key,
     action_id: group.actionId,
@@ -23,6 +24,9 @@ export function pendingGroupDto(group: PendingGroup): PendingDecisionGroup {
       urgent: item.urgent,
       urgent_reason: item.urgentReason,
       created_at: item.createdAt,
+      ...(item.agent ? { agent: item.agent } : {}),
+      ...(item.result ? { result: item.result } : {}),
+      ...(item.conflict ? { conflict: item.conflict } : {}),
     })),
   };
 }

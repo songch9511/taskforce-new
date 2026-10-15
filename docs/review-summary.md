@@ -16,6 +16,8 @@
 | route | `src/app/api/v2/{review,return-summary,return-summary/clear,return-summary/baseline,suggestions/[id]/snooze,suggestions/[id]/dismiss}/route.ts` |
 | gate | `src/lib/flags.ts` `REVIEW_V2_ENABLED`(여섯 경로) · `RETURN_SUMMARY_ENABLED`(복귀 요약 세 경로만) · `returnSummaryEnabled()` |
 | 바뀜 규칙 한 곳 | `src/lib/actions/changed.ts` (`changesAfterSeen`은 `changedSinceSeen`과 같은 뜻) |
+| 에이전트 입력 읽기 (질문 셋 · 결과 준비 · 경로 충돌, OA D4b-s) | `supabase/migrations/20261124000000_review_agent_inputs.sql`(읽기 전용 SQL 함수 `review_agent_inputs` 하나 — 반환은 입력 배열 **scalar `jsonb` 하나**라서 PostgREST `db-max-rows`(행 수 상한)에 잘리지 않는다) · `src/lib/coordinator/pending.ts`(종류 · 항목 열쇠 · ref · 계산) · gate `openAgentAdapters()`(`src/lib/agents/registry.ts`) |
+| 경로 충돌 해소 route (D4b-s) | `src/app/api/v2/path-conflicts/[id]/resolve/route.ts` · `src/lib/api/path-conflicts.ts` → D3c-2 `resolve_path_conflict` |
 
 ## 2. 읽음 = (사건 id, 작업 id) 쌍 (P2-A · P2-C 보완 포함)
 
@@ -59,7 +61,10 @@
 | 제안 `source_revised_run` | **실제 연결 (C2 결과 소비)** | C2가 처리한 `source_revised`(`impact_recorded`)가 가리키는 살아 있는 run. `COORDINATOR_ENABLED`일 때만 `inbox_events`를 읽는다. 비긴급 |
 | 그 밖의 제안 종류 | **미연결** | 원천이 없다(회신 · 에이전트 질문 · 의존 · 연결 상태). 종류는 코드 토큰이고 문구는 서버가 만들지 않는다 |
 | 결정 대기 (Review `decisions`) | **실제 연결 (C2 계산)** | `coordinator_pending_inputs`: 승인 대기 단계 · run `needs_input`/`review_failed` · Action 확인 요청. C2 게이트와 무관하게 실제 표에서 계산 |
-| 결정 대기 `agent_question` · `suggestion` · `blocked_dependency` | **미연결 (계약 값만)** | 원천 표가 없다. 열린 제안은 `decisions`에 합치지 않고 Review의 `suggestions`로 따로 낸다 |
+| 결정 대기 `agent_question` · `agent_approval` · `agent_secret_question` | **실제 연결 (D4b-s, gate 뒤)** | `review_agent_inputs`: `agent_tasks.pending_question`(대화 run의 작업만). 항목 열쇠 = task id, version = `question:<task id>:<provider_request_id>`. `CONVERSATIONS_V2_ENABLED` ∧ 그 세션 연결의 adapter 플래그가 켜졌을 때만(답 route와 같은 gate) |
+| 결정 대기 `result_ready` | **실제 연결 (D4b-s, gate 뒤)** | 끝나지 않은 대화 run의 마지막 턴 작업이 `idle`이고 `turn_seq > reviewed_turn_seq`인 현재 산출물이 있다. 항목 열쇠 = run id, version = `result:<run id>:<reviewed_turn_seq>:<마지막 turn_seq>:<산출물 수>`. 행동("Review result" · Later)은 E1c — 그 전에는 이슈 Done · 세션 Stop으로 사라진다 |
+| 결정 대기 `path_conflict` | **실제 연결 (D4b-s, gate 뒤)** | `agent_path_leases.conflict_run_id`가 남은 lease(해제됐지만 해소 전인 것 포함), 늦게 쓴 run의 Action이 열려 있을 때. 항목 열쇠 = lease id, version = `conflict:<lease id>:<conflict_version>`. 해소는 새 route(JSON 계약 3-2) |
+| 결정 대기 `suggestion` · `blocked_dependency` | **미연결 (계약 값만)** | 원천 표가 없다. 열린 제안은 `decisions`에 합치지 않고 Review의 `suggestions`로 따로 낸다 |
 | 복귀 요약 변화 | **실제 연결** | `action_events`(사용자 자기 수정 · 본 것 이전 제외) · `execution_events`(done/failed) · `conversation_messages`(+ `last_read_at`). `inbox_events`는 읽지 않는다(C2 적재 실패 누락 한계로 완전성의 근거가 못 된다) |
 | `conversations.last_read_at` | 읽기만 | 쓰는 코드는 아직 없다(열만). 쓰는 쪽이 생기면 그 이후 메시지만 변화다 |
 | Receipts | **서버 몫 없음** | 틀은 Mac, 채움은 F2 |
@@ -120,6 +125,8 @@
     | off | on | **열림** | 404 |
     | on | on | 열림 | 열림 |
   - 닫힌 경로는 **404** `{"error":{"code":"not_found","message":"없는 경로입니다."}}`, 인증도 DB도 부르지 않고 새 쓰기 0 (열린 경로의 인증 · 쿠키 CSRF는 그대로). 앱은 404를 "이 서버는 아직 이 기능이 없다"로 읽고 기존 화면으로 둔다(오류 토스트 금지).
+  - **에이전트 입력 gate (D4b-s, 새 플래그 없음)**: Review · 복귀 요약이 에이전트 입력(질문 · 결과 준비 · 경로 충돌)을 읽는 조건은 `CONVERSATIONS_V2_ENABLED` ∧ adapter 플래그(`AGENT_ADAPTER_CODEX_ENABLED` · `AGENT_ADAPTER_CLAUDE_CODE_ENABLED`) 하나 이상이다(`openAgentAdapters()`, 에이전트 대화 route의 gate와 같은 조건). **전부 꺼져 있으면 `review_agent_inputs`를 부르지 않고 응답이 C3와 바이트 동일하다**(운영의 기본 상태). adapter 하나만 꺼지면 그 adapter 세션의 질문 항목만 빠진다 — 그 질문의 답 route도 404라서 Review에 보이는 질문은 늘 답할 수 있다. 결과 준비 · 충돌은 adapter가 하나라도 켜져 있으면 나온다.
+  - 경로 충돌 해소 route(아래 3-2)는 `REVIEW_V2_ENABLED` ∧ `openAgentAdapters()`가 비지 않음일 때만 열린다(Review가 충돌을 보이는 조건과 같다). `RETURN_SUMMARY_ENABLED`는 이 route를 열지 못한다.
 - 오류 본문은 항상 `{"error":{"code","message"}}` (code ∈ 기존 `apiErrorCodeSchema`: `unauthorized` 401 · `invalid_request` 400 · `not_found` 404 · `conflict` 409 · `internal_error` 500). 새 오류 코드는 없다. `message`는 한국어 진단문이라 화면에 그대로 쓰지 않는다. 오류 본문에는 요청 값이 없다.
 - 시각은 두 종류다: **마이크로초 UTC 글자** `2026-10-12T00:00:00.123456Z`(`since` · 변화 `at` · 커서 · `cleared_through`)는 **Date로 바꿔서 서버에 돌려주지 않는다**(커서는 불투명 글자 그대로). 나머지(`generated_at` · `created_at` · `shown_at` · `snooze_until`)는 `toISOString()` 모양(밀리초) ISO 8601.
 - GET 응답은 `Cache-Control: no-store`. **`GET /api/v2/return-summary`는 아무것도 쓰지 않는다. `GET /api/v2/review`는 멱등 쓰기를 한다**(제안 생산 · 노출 표시, 아래 1절) — Action · run · Claim은 만들지 않는다.
@@ -150,7 +157,14 @@
 }
 ```
 
-- `decisions` = C2 `pending_decisions` 계산 그대로: **(업무, 종류) 묶음**, 긴급 먼저 → 오래 기다린 순. **개수 상한이 없다**(201개면 201개). `kind`는 `approval | review_failed | run_input | confirm`만 실제로 나온다(`agent_question · suggestion · blocked_dependency`는 계약에만 있는 예약 값 — 지금 원천이 없어 오지 않는다. 모르는 값은 건너뛰되 `complete`를 true로 믿지 않는다). 목록은 계산값이라 표가 없다.
+- `decisions` = C2 `pending_decisions` 계산 그대로: **(업무, 종류) 묶음**, 긴급 먼저 → 오래 기다린 순 → 종류 순(`PENDING_KINDS` 순서) → 업무 id. **이 순서가 Needs you 순서다 — 앱은 다시 정렬하지 않는다.** **개수 상한이 없다**(201개면 201개). `kind`는 C3의 `approval | review_failed | run_input | confirm`에 더해, **에이전트 입력이 켜졌을 때(위 "에이전트 입력 gate")** `agent_question | agent_approval | agent_secret_question | result_ready | path_conflict`가 나온다(`suggestion · blocked_dependency`는 계약에만 있는 예약 값 — 지금 원천이 없어 오지 않는다). **모르는 `kind`는 건너뛰되(Swift `.unknown`) `complete`를 true로 믿지 않는다.** 목록은 계산값이라 표가 없다.
+- **에이전트 종류의 항목 (D4b-s)**: 항목 `id` = `<kind>:<열쇠>`(질문 셋은 task id, `result_ready`는 run id, `path_conflict`는 lease id). `step_id` · `question_id`는 null이다(답 열쇠는 아래 ref가 원천). 항목은 **자기 종류의 ref 하나만** 가진다 — C3 종류에는 `agent` · `result` · `conflict` 키 자체가 없다.
+  - 질문 셋(`agent_question` 입력 · `agent_approval` 승인 · `agent_secret_question` 비밀값이 하나라도 섞임): `agent: { task_id, session_id, provider_request_id, adapter, bridge_id | null }`. 답은 **`POST /api/v2/agent-tasks/{agent.task_id}/answer { provider_request_id, answers }`**(D1d 답 route, Assistant 질문 카드와 같은 입구 · 같은 CAS)이고 승인은 `answers = { "approval": "allow" | "deny" }`다. `version` = `question:<task id>:<provider_request_id>`라서 **질문이 교체되면 같은 `id`에 다른 `version`**이 되고, 옛 화면이 옛 `provider_request_id`로 답하면 409 `question_stale`(답 단계 0)이다 → 앱은 Review를 다시 읽는다(새 version의 같은 id가 있으면 그 질문을 보인다). 답한 뒤 `pending_question`이 비면 다음 읽기에서 항목이 사라진다. **비밀값 항목은 Review에 보이되 서버로 답할 수 없다**(409 `secret_requires_local`): `agent.bridge_id`가 이 Mac의 bridge가 아니면 "다른 기기에서 답한다"로 보이고, 그 Mac의 로컬 답 route는 후속 서버 WP다(지금은 세션 Stop으로만 사라진다).
+  - `result_ready`: `result: { session_id | null, reviewed_turn_seq, last_turn_seq, changed_at }`. 턴이 `idle`로 끝나고 검토하지 않은 산출물이 있으면 **run마다 하나**(턴이 더해지면 같은 `id`에 version만 바뀐다). `changed_at` = 그 산출물 중 가장 늦은 생성 시각. 사라지는 때: 이슈 Done · 세션 Stop(run이 끝남) · Action이 닫힘 · 다음 턴이 진행 중 · E1c가 `reviewed_turn_seq`를 올림. **"Review result" · Later 행동은 E1c 몫이라 이 서버에는 없다.**
+  - `path_conflict`: `conflict: { lease_id, conflict_version, holder_action_id, holder_run_id, later_run_id, released, stopped }`. 묶음 · 항목의 `action_id` · `run_id`는 **늦게 쓴(멈춘) run** 쪽이고 holder는 ref에 있다. 해소는 **`POST /api/v2/path-conflicts/{conflict.lease_id}/resolve { keep, conflict_version }`**(아래 3-2). 같은 lease에 새 충돌이 생기면 `conflict_version`이 올라 같은 `id`에 다른 `version`이 된다.
+  - 응답에는 **글이 없다**: 질문 글 · 헤더는 `agent_tasks.pending_question`(카드는 그 값이 있을 때만), 경로는 `agent_path_leases.rel_path`, 이슈 번호는 `actions.number`를 앱이 RLS로 읽는다.
+  - ⌥Space가 여는 "가장 최근 결정"은 `decisions` 항목 중 `created_at`이 가장 늦은 것이다(앱의 표시 규칙이고 순위 계산이 아니다).
+- 에이전트 입력 함수의 반환은 배열 하나(`[]`이면 입력 없음)다. 개수 상한이 없고 PostgREST `db-max-rows`에 잘리지 않으며, 배열이 아닌 값(null 포함)은 비었다고 읽지 않고 실패로 읽는다. 에이전트 입력 중 하나라도 읽지 못하거나 모양이 틀리면 **결정 전체**가 `unavailable`이다(`sources.decisions: "unavailable"` · `decisions: null` · `complete:false` · `empty:false`) — C3 결정만 보이고 에이전트 결정이 빠진 목록을 내지 않는다.
 - `version`(묶음 · 항목)은 **처리되면 바뀌는 식별**이다. 다른 기기에서 처리되면 다음 조회에서 항목이 사라지거나(gone) version이 달라진다(stale). **옛 version으로 행동하지 않는다.** 항목 `id`는 안정 id.
 - `suggestions` = 지금 보이는 열린 제안(`state`는 늘 `open`): 긴급(상한 밖) + 이미 노출한 비긴급 + 오늘 처음 노출된 비긴급(사용자 현지 날짜마다 **한 묶음 3개**). `offered_on`(YYYY-MM-DD)이 오늘이면 오늘 새로 나온 것. 긴급은 `offered_on: null`. 순서: 긴급 먼저 → 오래된 순.
 - `suggestion_batch.state`: `ready`(시간대를 알아 하루 묶음을 센다) | `needs_time_zone`(**저장된 사용자 시간대가 없다** — 이 서버 스택에 시간대 저장소가 없거나 그 사용자의 값이 없는 **정당한 모름**이고 읽기는 완전하다: **새 비긴급은 아직 내지 않는다**, 긴급과 이미 낸 제안은 보인다) | `unavailable`(시간대를 **읽지 못했다** — 예상 못한 읽기 오류, 아래 `sources.time_zone`도 `unavailable`, `complete:false`: 새 비긴급은 내지 않고 긴급과 이미 낸 제안만 보인다). 앱은 어느 쪽도 "제안 없음"으로 보이면 안 된다.
@@ -196,8 +210,9 @@
 - `init_token`: **`baseline == "never_cleared"`이고 변화 읽기가 성공(`sources.changes` ∈ `ok | truncated`)했을 때만** 문자열, 그 밖에는 `null`(`cleared` · `initialized` · `unknown`, 변화 읽기 실패). **빈 첫 화면(`empty: true`)에도 발급된다.** 서버가 만든 불투명 글자(최대 400자): 열지도 고치지도 시각으로 바꾸지도 않는다. 앱은 **그 응답을 정상 표시했을 때만** `POST /api/v2/return-summary/baseline`에 그대로 돌려준다(아래 3-1). 결정(`sources.decisions`) 읽기만 실패해도 토큰은 나온다(결정은 기준점 범위가 아니다).
 - `cursor`: **Clear에 그대로 돌려줄 불투명 글자**(조회가 본 사건 집합의 지문, 최대 약 9KB). 열지도 고치지도 시각으로 바꾸지도 않는다. **`cursor`가 있으면 Clear할 수 있다.** `null`은 변화 원천을 읽지 못했을 때뿐이다(`sources.changes: unavailable` — 읽음 처리할 범위를 정할 수 없다). **잘렸어도(`truncated`) 커서가 있다**: 그 커서는 **지금 보인 작업의 사건만** 읽음 처리하고, 보이지 않은 작업은 읽음이 되지 않아 다음 조회에 나온다.
 - 완전성: `sources.changes` ∈ `ok | unavailable | truncated`(작업이 300개를 넘으면 `truncated` + 가장 최근 변화 순 앞 300개만 — 사용자가 이미 본 작업은 세지 않는다), `sources.decisions` ∈ `ok | unavailable`. `complete` = 둘 다 `ok`. **`empty`(= complete이면서 items가 빔)일 때만** "변화 없음 · 모두 처리됨"을 보일 수 있다. `unavailable`/`truncated`는 비어 있는 것이 아니라 일부를 모르는 것이다. `truncated` 페이지를 Clear해도 "모두 처리됨"이 아니다: 다음 GET에 나머지가 나온다(마지막 페이지는 `truncated`가 아니다).
-- 결정(`decisions`)은 Clear와 무관하다 — **읽음은 결정이 아니다.** Clear 뒤에도 `needs_answer` 줄은 남고 ⌥ Space는 Review 먼저다. `decisions[].id/version`은 Review의 항목 `id/version`과 같은 값이다(상세 연결 키).
-- `next.kind`: `answer`(답할 결정이 있음, `decision_kinds`에 종류) · `review_result`(끝난 결과 `draft_ready`/`agent_done`를 볼 차례) · `open`(그 업무를 열어 본다).
+- 결정(`decisions`)은 Clear와 무관하다 — **읽음은 결정이 아니다.** Clear 뒤에도 `needs_answer` 줄은 남고 ⌥ Space는 Review 먼저다. `decisions[].id/version`은 Review의 항목 `id/version`과 같은 값이다(상세 연결 키) — 에이전트 종류(위 1절)에서도 같다(같은 계산을 쓴다). 에이전트 결정만 있는 업무도 줄이 있다(제목 · 상태). "Since …" 칸에서 해야 할 일을 빼는 것은 화면 규칙이고, 서버는 결정을 줄에 그대로 싣는다.
+- `needs_answer`: **`result_ready`가 아닌 결정이 하나라도 있다**(결과 준비는 답할 것이 아니라 검토할 것이라 "Needs your answer"를 만들지 않는다).
+- `next.kind`: `answer`(답할 결정이 있음 — 위 `needs_answer`) · `review_result`(`result_ready` 결정만 있거나, 끝난 결과 `draft_ready`/`agent_done`를 볼 차례) · `open`(그 업무를 열어 본다). `decision_kinds`는 줄에 **있는 결정 종류 전부**(결정이 없으면 빈 배열).
 - 줄 `version`: 줄의 변화 · 결정이 바뀌면 달라지는 글자. 같은 `action_id`의 줄을 비교할 때 쓴다.
 - 401 · 404 · 500.
 
@@ -224,6 +239,15 @@
 - 404 gate 꺼짐 · 401 · 500. 클라이언트 시각 · 읽음 목록 · 사용자 id를 보내지 않는다 — 서버가 낸 토큰만 통한다.
 - Clear와의 관계: 기준점 **전** Clear는 그대로 기준점 이력도 읽음으로 삼는다(이후 `cleared`, 이 확정은 `already_initialized`). 기준점 **뒤** Clear는 기준점 이력을 다시 다루지 않는다. 같은 사용자의 확정 · Clear는 서버에서 직렬이다.
 
+### 3-2. `POST /api/v2/path-conflicts/{lease_id}/resolve` — 경로 충돌 해소 (OA D4b-s)
+
+요청 `{ "keep": "holder" | "later", "conflict_version": <정수 ≥ 1> }`(그 밖의 키 · 범위 밖 값은 400). `conflict_version`은 Review 항목 `conflict.conflict_version` 그대로다(정수 CAS). 응답 200 `{ "status": "resolved" }`. 인증은 Bearer(쿠키로 인증하는 POST는 같은 출처만 — 아니면 401), gate는 위 "에이전트 입력 gate"의 해소 route 줄.
+
+- **뜻**: 같은 경로를 쓴 두 세션 중 한쪽을 남긴다. `holder` = 먼저 쓴 쪽을 남긴다(충돌 표시만 지운다). `later` = 늦게 쓴 쪽을 남긴다(holder의 살아 있는 lease를 `conflict_resolved`로 푼다). **멈춘 run을 다시 시작하지 않고 파일을 되돌리지 않는다.** 효과는 D3c-2 SQL(`resolve_path_conflict`) 그대로이고, 성공한 해소마다 지표 `path_conflict_resolved {keep}`가 같은 트랜잭션에 한 줄 남는다(새 지표 type 없음).
+- **409 `conflict`**: 옛 `conflict_version`이거나 이미 해소됐다(같은 lease에 새 충돌이 생긴 경우 포함). **아무것도 쓰지 않았다**(지표 0). 앱은 자동 재시도하지 않고 Review를 다시 읽는다. 응답이 유실돼 같은 요청을 다시 보내면 409가 정상이다(다시 읽으면 항목이 없다).
+- 404: 없는 lease · 남의 lease(구별하지 않는다) · gate 꺼짐. 400: 본문 오류. 401. 500: 그 밖의 서버 오류(로그에는 오류 이름만, lease id · 경로 · 본문 0).
+- 응답에 글이 없다. 되돌릴 수 없는 일이므로 보내기 전 확인(2초 보류)은 Mac 몫이다.
+
 ### 4. `POST /api/v2/suggestions/{id}/snooze` · `/dismiss` — 제안 처리
 
 - snooze 요청 `{ "expected_version": 1, "snooze_until": "2026-10-13T09:00:00+09:00" }` — 시점은 **사용자가 고른 것**(오프셋이 있는 ISO). 지금 이후 · 366일 이내(아니면 400). 서버가 시점을 정하지 않는다(자동 snooze 없음). 시점이 지나면 같은 제안이 다시 `open`이 된다(새 제안이 아니다, `version`이 오른다).
@@ -241,7 +265,7 @@
 | `changes[].kind` (`message`) | `assistant · event` | 없음 | 필요하면 |
 | `changes[].source_state` | `available · deleted · access_lost · text_expired` | `deleted`/`access_lost`/`text_expired` 일부(원문 삭제 · 보관 기간 문구) | 복귀 요약용 문구 |
 | `next.kind` | `answer · review_result · open` | SSOT 예시 "Next: accept the result" | 세 토큰별 문구 |
-| `decisions[].kind` / `decision_kinds` | `approval · review_failed · run_input · confirm` | S4 Review의 확인 요청 문구(`confirm`) | 나머지 셋 |
+| `decisions[].kind` / `decision_kinds` | `approval · review_failed · run_input · confirm`, 에이전트 입력이 켜졌을 때 `agent_question · agent_approval · agent_secret_question · result_ready · path_conflict` | S4 Review의 확인 요청 문구(`confirm`) | 나머지 여덟 |
 | `suggestions[].kind` | `due_window · run_failed · source_revised_run` | 없음 | **세 종류 모두 새 문구** |
 | `suggestion_batch.state` | `ready · needs_time_zone · unavailable` | 없음 | `needs_time_zone` · `unavailable` 안내 문구 |
 | `baseline` | `cleared · initialized · never_cleared · unknown` | 없음 | "Since …" 캡션이 없을 때의 문구(`initialized` · `never_cleared`는 `since:null`) |
@@ -257,3 +281,6 @@
 6. `init_token`은 **그 응답을 정상 표시했을 때만** 확정에 쓴다(디코드 성공 · `sources.changes` ∈ `ok | truncated` · 앱이 표현하지 못하는 변화가 표시에 없음 · 같은 계정 · 패널이 그 응답을 실제로 보이는 중). 읽기 실패 · 오래된 응답 · 닫힘 · 계정 바뀜이면 보내지 않는다(쓰기 0). 토큰을 열거나 고치거나 시각으로 바꾸거나 저장해 두었다 나중에 보내지 않는다.
 7. 확정 409 · 응답 유실을 자동 재전송하지 않는다 — 다음 정상 표시의 새 GET이 준 새 토큰으로만. 확정 성공 뒤에는 GET으로 다시 읽는다. 확정은 읽음 표시일 뿐 결정이 아니다.
 8. `run`의 `detail`이 모르는 값이면 정상 성공 문구(결과가 준비됨)로 올리지 않는다. `review_failed`를 실패 · 오류로 단정하지 않는다(수정이 필요하다는 뜻), `agent_done`을 아무 완료에나 쓰지 않는다(검토를 거친 결과).
+9. (D4b-s) 모르는 `decisions[].kind`는 건너뛰되(`.unknown`) `complete`를 true로 믿지 않는다. `decisions`의 순서를 다시 매기지 않는다(서버 순서가 Needs you 순서).
+10. (D4b-s) 에이전트 질문 · 해소의 409(`question_stale` · `conflict`)를 자동 재시도하지 않는다 — Review를 다시 읽는다. 비밀값 항목(`agent_secret_question`)의 답을 서버로 보내지 않는다(409 `secret_requires_local`; 값은 서버로 오지 않는다).
+11. (D4b-s) 응답에 없는 글(질문 · 경로 · 파일 이름)을 서버에 요청하지 않는다 — 앱이 RLS로 읽는다. 결과 준비 항목에서 `reviewed_turn_seq`를 올리는 행동은 E1c 전에는 없다.
