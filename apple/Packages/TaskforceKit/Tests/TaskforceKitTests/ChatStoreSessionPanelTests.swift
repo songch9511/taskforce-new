@@ -251,6 +251,47 @@ struct ChatStoreSessionPanelTests {
         #expect(chat.screen(for: old.id) == .failed && chat.turns(for: old.id).isEmpty && !chat.isTargetKnown(old.id), "늦은 옛 행 응답이 되살리지 않는다")
     }
 
+    /// 새로 읽기가 시작될 때 행이 없었고(`knownBefore`에 없다), 그사이 별도 `readConversation`이 행을 먼저 `upsert`했다.
+    /// 이어서 새로 읽기가 그 대화의 삭제 · 보관을 확인하면 "이 기기가 읽는 사이 만든 대화"(`createdMeanwhile`)로 남겨 `loadShownThreads()`가
+    /// 새 순번으로 다시 읽지 않는다 (빈 응답도 정상으로 반영돼 Try again이 사라지고 Composer가 열리던 경쟁)
+    private func rowReadWhileRefreshThenGone(archived: Bool) async {
+        let listed = agentRow(1, last: 100)
+        let old = agentRow(2, last: 1)
+        serve(list: [listed], direct: [], messages: [:])
+        let chat = store()
+        chat.panelConversations = { [old.id] }
+        // 1. 새로 읽기가 시작돼 목록 응답을 기다린다 (그때 old의 행은 없다)
+        let latch = Latch()
+        gateway.conversationsHandler = { await latch.wait(); return [listed] }
+        // 행 조회: 첫 호출(별도 읽기)은 행이 있다고, 그다음(새로 읽기)은 삭제 · 보관했다고 답한다
+        let calls = CallCounter()
+        let gone: ChatConversation? = archived ? agentRow(2, last: 1, archived: true) : nil
+        gateway.conversationHandler = { _ in calls.next() == 1 ? old : gone }
+        let refresh = Task { await chat.refresh() }
+        #expect(await latch.waitForArrivals(1, timeout: .seconds(5)), "새로 읽기가 목록 응답을 기다린다")
+        // 2. 그사이 별도 읽기가 행을 먼저 반영하고 (빈 글 응답) 열린다
+        await chat.readConversation(old.id)
+        #expect(chat.isTargetKnown(old.id) && chat.screen(for: old.id) == .ready(problem: nil), "별도 읽기가 행을 먼저 반영했다")
+        // 3. 새로 읽기가 이어져 삭제 · 보관을 확인한다
+        await latch.open()
+        await refresh.value
+        await chat.settle()
+        #expect(chat.screen(for: old.id) == .failed, "오류 화면 + Try again이 그대로다 (빈 응답으로 정상이 되지 않는다)")
+        #expect(chat.turns(for: old.id).isEmpty && !chat.isTargetKnown(old.id) && !chat.canCompose(in: old.id), "행 · 대상 · 보내기 모두 없다 (Composer가 열리지 않는다)")
+        // 다시 시도: 다시 생기면 열린다
+        gateway.conversationHandler = { _ in old }
+        await chat.readConversation(old.id)
+        #expect(chat.screen(for: old.id) == .ready(problem: nil) && chat.isTargetKnown(old.id), "Try again은 그대로 다시 읽는다")
+    }
+
+    @Test func aRowReadFirstDoesNotSurviveARefreshThatConfirmsItDeleted() async {
+        await rowReadWhileRefreshThenGone(archived: false)
+    }
+
+    @Test func aRowReadFirstDoesNotSurviveARefreshThatConfirmsItArchived() async {
+        await rowReadWhileRefreshThenGone(archived: true)
+    }
+
     // MARK: 첫 읽기 실패 · 없는 대화
 
     @Test func aFirstReadFailureShowsOfflineOrFailedAndTryAgainReadsAgain() async {

@@ -606,7 +606,8 @@ public final class ChatStore {
                 threads[id]?.load = .failed
             }
             let live = listed.union(extras.map(\.id))
-            let createdMeanwhile = conversations.filter { !knownBefore.contains($0.id) && !live.contains($0.id) }
+            // 서버가 없다 · 보관했다고 확인한 대화는 "읽는 사이 만든 대화"로 남기지 않는다 (그 사이 별도 읽기가 행을 먼저 반영했어도)
+            let createdMeanwhile = conversations.filter { !knownBefore.contains($0.id) && !live.contains($0.id) && !gone.contains($0.id) }
             conversations = chats.filter { $0.archivedAt == nil } + extras + createdMeanwhile
             contexts = Dictionary(named.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
             listLoad = .loaded(problem: nil)
