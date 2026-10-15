@@ -111,6 +111,15 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
         shell.onAsk = { [weak self] item in self?.assistant?.ask(about: item) }
         shell.onNewSession = { [weak self] scope in self?.assistant?.openNewSession(scope: scope) }
         shell.onShowMoreSessions = { [weak self] hidden in self?.showMoreSessions(hidden) }
+        // 세션 패널의 대화: id로 직접 읽고(History 100개 목록에 기대지 않는다), 보이는 동안은 온라인 복귀 · 목록 새로 읽기의 공통 갱신 집합에 든다
+        if let chat {
+            let store = chat.chat
+            shell.onLoadSessionConversation = { [weak store] id in store?.loadConversation(id) }
+            store.panelConversations = { [weak shell] in
+                guard let shell, shell.panelOpen, let id = shell.openSessionItem?.conversationID else { return [] }
+                return [id]
+            }
+        }
     }
 
     /// More(탭의 `…`): 숨은 세션을 메뉴로 (이름 + 오른쪽 링 말, AgentMark 없음). 고르면 그 세션의 패널

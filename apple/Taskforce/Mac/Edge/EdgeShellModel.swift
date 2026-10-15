@@ -288,7 +288,13 @@ final class EdgeShellModel {
     /// Issues 패널 안의 화면 이동 (Projects → 목록 → 상세). 게이트가 켜졌을 때 `View.allWork`가 이 화면을 보인다
     private(set) var nav = IssueNavigation()
     /// 열린 세션 패널의 세션 (이슈 패널 왼쪽의 두 번째 패널). 이슈 패널 없이 열리지 않는다. 패널을 접어도 남아 ⌥ Space로 다시 열면 둘 다 마지막 화면이다
-    private(set) var sessionPanelID: UUID?
+    private(set) var sessionPanelID: UUID? {
+        didSet { if sessionPanelID == nil { loadedPanelConversation = nil } }
+    }
+    /// 세션 패널이 마지막으로 읽도록 한 대화 (패널을 닫으면 지운다: 다시 열면 다시 읽는다)
+    @ObservationIgnored private var loadedPanelConversation: UUID?
+    /// 세션 패널이 보이는 대화를 읽는다 (열 때 · 패널의 conversation id가 바뀔 때): 컨트롤러가 `ChatStore.loadConversation`에 잇는다 (id로 직접 읽고 오류 · 다시 시도를 보인다)
+    @ObservationIgnored var onLoadSessionConversation: (UUID) -> Void = { _ in }
     #if DEBUG
     /// 디자인 비교 스냅샷(`-TFEdgeSnapshotIssues`)만: SessionTab을 호버한 모양(펼침)으로 둔다
     var tabExpandedForSnapshot = false
@@ -544,6 +550,7 @@ final class EdgeShellModel {
             sessionPanelID = nil
         }
         openPanel(.allWork)
+        if issues != nil { readSessionsOnEntry() }
     }
 
     /// Chats: 레일의 Chats · ⌘3. Assistant 창이 있으면 가장 앞 창을 앞으로 가져오고 없으면 연다 (패널은 그대로). 창이 없는 구성은 패널의 Chats로 마지막 대화로 돌아간다
@@ -649,12 +656,19 @@ final class EdgeShellModel {
         return AgentSessionRules.listOrder(issues.sessions.sessions(of: [issue]))
     }
 
+    /// 화면에 들어올 때마다 세션을 다시 읽는다 (U2-35): 5초 읽기가 멈춘 idle뿐인 상태에서도 다른 기기의 이름 · 상태 변화가 반영된다
+    private func readSessionsOnEntry() {
+        guard let issues else { return }
+        Task { await issues.sessions.refresh() }
+    }
+
     /// Projects에서 목록을 연다 (세션 패널은 닫는다)
     func openList(_ scope: IssueListScope) {
         guard issues != nil else { return }
         sessionPanelID = nil
         nav.open(scope)
         currentID = nil
+        readSessionsOnEntry()
     }
 
     /// 목록에서 이슈 상세를 연다. 이미 그 상세가 열려 있으면 세션 패널을 둔다
@@ -664,6 +678,7 @@ final class EdgeShellModel {
         nav.openDetail(id)
         currentID = id
         Task { await issues?.details.load(id) }
+        readSessionsOnEntry()
     }
 
     /// 목록 밖(레일 · ⌘1 · 칩)에서 이슈를 연다: 뒤로는 그 이슈의 첫 프로젝트(이름순) 목록 또는 Ungrouped.
@@ -676,6 +691,7 @@ final class EdgeShellModel {
         currentID = id
         openPanel(.allWork)
         Task { await issues?.details.load(id) }
+        readSessionsOnEntry()
     }
 
     /// 머리의 뒤로: 세션 패널도 닫는다
@@ -684,6 +700,7 @@ final class EdgeShellModel {
         sessionPanelID = nil
         nav.back()
         currentID = nav.detailID
+        readSessionsOnEntry()
     }
 
     /// SessionRow · 탭 항목: 탭이 붙은 패널 왼쪽에 세션 패널 (같은 세션이면 닫고, 다른 세션이면 바꾼다). 이슈 패널 없이 열리지 않는다
@@ -691,6 +708,19 @@ final class EdgeShellModel {
         guard issues != nil, showsSessionTab || (panelOpen && view == .allWork && nav.detailID != nil) else { return }
         sessionPanelID = sessionPanelID == id ? nil : id
         if sessionPanelID != nil { Task { await issues?.sessions.refresh() } }
+        loadPanelConversationIfNeeded()
+    }
+
+    /// 세션 패널이 보이는 대화를 읽게 한다: 처음 열 때와 패널의 conversation id가 바뀔 때만 (같은 대화면 다시 부르지 않는다)
+    private func loadPanelConversationIfNeeded() {
+        guard let conversation = openSessionItem?.conversationID else {
+            // 대화가 아직 없는 세션: 닫혀 있는 것과 같다 (대화가 생기면 그때 읽는다)
+            loadedPanelConversation = nil
+            return
+        }
+        guard conversation != loadedPanelConversation else { return }
+        loadedPanelConversation = conversation
+        onLoadSessionConversation(conversation)
     }
 
     func closeSessionPanel() {
@@ -745,6 +775,7 @@ final class EdgeShellModel {
     func sessionsChanged() {
         refreshSlots(at: clock())
         reconcileIssues()
+        loadPanelConversationIfNeeded()
     }
 
     // MARK: Review (S4)
@@ -859,15 +890,19 @@ final class EdgeShellModel {
     /// 읽음 표시일 뿐이다: 결정 · Action · run을 바꾸지 않는다. 보낼 수 없으면 nil (C3 꺼짐 · 패널이 닫힘/다른 화면 · 정상 표시가 아님 · 이 응답으로 이미 받음)
     @discardableResult
     func considerSummaryBaseline() -> Task<ReturnSummaryBaselineResult, Never>? {
-        guard let summary, panelOpen, view == .allWork, let ticket = summary.beginBaseline() else { return nil }
+        guard let summary, drawsSummary, panelOpen, view == .allWork, let ticket = summary.beginBaseline() else { return nil }
         let presentation = allWorkPresentation
         return Task { [weak self] in
             await summary.sendBaseline(ticket) {
                 guard let self else { return false }
-                return self.panelOpen && self.view == .allWork && self.allWorkPresentation == presentation
+                return self.drawsSummary && self.panelOpen && self.view == .allWork && self.allWorkPresentation == presentation
             }
         }
     }
+
+    /// 복귀 요약이 화면에 그려지는 구성인가: C3가 켜져 있고 All work(옛 홈)가 그 카드를 그린다. **새 Issues 화면이 켜지면 Projects에 요약이 없다**(계약 10장 2):
+    /// 그릴 수 없는 요약의 "첫 정상 표시" 기준점을 서버에 확정하지 않는다 (읽음 표시는 사용자가 실제로 본 것만)
+    var drawsSummary: Bool { summary != nil && issues == nil }
 
     /// 복귀 요약 Try again
     func retrySummary() {

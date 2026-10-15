@@ -19,7 +19,7 @@ final class EdgeSessionPanelPresentation {
 /// 세션 패널 (OA U2, DS PanelHeader 세션 변형 · SessionPage): 이슈 패널 왼쪽의 두 번째 패널. 머리(에이전트 마크 · "{이름} — #번호" · 알약 자리) · 상태 줄 · 본문(U1 `Message` 그대로) · Composer.
 /// - 폭 380, 모서리 18, `panel` 재료, 높이는 내용에 맞춰 320–520. 닫기 버튼은 없다 (Esc · 바깥 클릭 · 다른 세션 · 뒤로)
 /// - 알약(Open in Terminal · Resume here)은 **동작이 주어질 때만** 보인다: U2에서는 견본 하네스뿐이고 동작은 D4a다. 상태 줄은 세션의 말 (2.5 표)
-/// - Composer는 그 세션의 대화(`conversations.agent_session_id`, 여럿이면 가장 새 것)로 `ChatStore.send(_:in:)`한다. 닫힌 세션은 읽기만 (상태 줄 "Closed", Composer 없음)
+/// - Composer는 그 세션의 대화(`conversations.agent_session_id`, 여럿이면 가장 새 것)로 `ChatStore.send(_:in:)`한다. 닫힌 세션은 읽기만 (상태 말 없이 흐리게, Composer 없음). 대화(대상)를 읽기 전에는 Composer가 비활성이다
 /// - 읽는 중 = 그리지 않음, 오프라인 · 읽기 실패 = 기존 화면 + Try again
 struct SessionPanelView: View {
     @Bindable var shell: EdgeShellModel
@@ -89,7 +89,28 @@ struct SessionPanelView: View {
         if let spec = session.pill, let action = shell.onSessionPill {
             pill = PanelHeaderPill(title: spec.title, disabledReason: spec.disabledReason) { action(spec, session) }
         }
-        return PanelHeader(title: Self.title(for: session, number: number), agent: session.agent, pill: pill, status: session.line)
+        return PanelHeader(
+            title: Self.title(for: session, number: number), agent: session.agent, pill: pill, status: Self.statusLine(for: session), dimmed: session.isClosed
+        )
+    }
+
+    /// 머리 아래 상태 줄: 끝난 세션은 상태 말이 없다 (사용자 결정 2026-10-15: 상태 말 없이 흐리게)
+    static func statusLine(for session: AgentSessionItem) -> String? {
+        session.line.isEmpty ? nil : session.line
+    }
+
+    /// 입력 영역: 읽은 대화 행이 있어야(= 대상을 알아야) 보낸다. 모르는 동안은 비활성 + 접근성 이유. 닫힌 세션 · 대화가 없는 세션은 읽기만
+    enum ComposerState: Equatable {
+        case hidden
+        case waiting
+        case ready(UUID)
+    }
+
+    static let waitingHint = "Loading this conversation"
+
+    static func composerState(for session: AgentSessionItem, chat: ChatStore) -> ComposerState {
+        guard !session.isClosed, let id = session.conversationID else { return .hidden }
+        return chat.isTargetKnown(id) ? .ready(id) : .waiting
     }
 
     // MARK: 본문
@@ -113,16 +134,16 @@ struct SessionPanelView: View {
             case .blank:
                 Color.clear.frame(height: 0)
             case .offline:
-                PanelEmptyState(.offline) { Button(ChatCopy.tryAgain) { chat.ensureLoaded(conversationID) }.buttonStyle(TFButtonStyle(.secondary, size: .md)) }
+                PanelEmptyState(.offline) { Button(ChatCopy.tryAgain) { chat.loadConversation(conversationID) }.buttonStyle(TFButtonStyle(.secondary, size: .md)) }
             case .failed:
                 PanelEmptyState(title: ChatCopy.couldNotLoadChat) {
-                    Button(ChatCopy.tryAgain) { chat.ensureLoaded(conversationID) }.buttonStyle(TFButtonStyle(.secondary, size: .md))
+                    Button(ChatCopy.tryAgain) { chat.loadConversation(conversationID) }.buttonStyle(TFButtonStyle(.secondary, size: .md))
                 }
             case .ready(let problem):
                 VStack(alignment: .leading, spacing: TFSpace.md) {
                     if let problem {
                         Notice(title: problem == .offline ? PanelEmptyKind.offline.title : ChatCopy.couldNotLoad) {
-                            Button(ChatCopy.tryAgain) { chat.ensureLoaded(conversationID) }.buttonStyle(TFButtonStyle(.secondary, size: .sm))
+                            Button(ChatCopy.tryAgain) { chat.loadConversation(conversationID) }.buttonStyle(TFButtonStyle(.secondary, size: .sm))
                         }
                     }
                     ForEach(chat.turns(for: conversationID)) { turn in
@@ -155,28 +176,34 @@ struct SessionPanelView: View {
 
     @ViewBuilder
     private func footer(_ session: AgentSessionItem) -> some View {
-        // 닫힌 세션은 읽기만 (Composer 없음). 대화를 모르는 세션도 보낼 곳이 없다
-        if !session.isClosed, let conversationID = session.conversationID {
-            Composer(
-                text: Binding(get: { chat.draft(for: conversationID) }, set: { chat.setDraft($0, for: conversationID) }),
-                placeholder: "Message \(session.agentName)", label: "Message \(session.agentName)", isDisabled: chat.isUnavailable,
-                isSending: chat.isSending(in: conversationID),
-                onSubmit: { text in Task { await chat.send(text, in: conversationID) } }
-            )
-            .padding(EdgeInsets(top: 10, leading: TFSpace.md, bottom: TFSpace.md, trailing: TFSpace.md))
-        } else {
+        switch Self.composerState(for: session, chat: chat) {
+        case .hidden:
+            // 닫힌 세션은 읽기만 (Composer 없음). 대화를 모르는 세션도 보낼 곳이 없다
             Color.clear.frame(height: TFSpace.sm)
+        case .waiting:
+            // 대상을 아직 모른다: 보내지 못한다 (확인되지 않은 대상을 Taskforce로 보지 않는다)
+            composer(session, conversationID: session.conversationID, disabled: true)
+                .accessibilityHint(Self.waitingHint)
+        case .ready(let conversationID):
+            composer(session, conversationID: conversationID, disabled: chat.isUnavailable)
         }
     }
 
-    /// 열 때: 이 세션의 대화를 읽고 현재 이슈의 번호를 읽는다
+    private func composer(_ session: AgentSessionItem, conversationID: UUID?, disabled: Bool) -> some View {
+        Composer(
+            text: Binding(
+                get: { conversationID.map { chat.draft(for: $0) } ?? "" },
+                set: { value in if let conversationID { chat.setDraft(value, for: conversationID) } }
+            ),
+            placeholder: "Message \(session.agentName)", label: "Message \(session.agentName)", isDisabled: disabled,
+            isSending: conversationID.map { chat.isSending(in: $0) } ?? false,
+            onSubmit: { text in if let conversationID { Task { await chat.send(text, in: conversationID) } } }
+        )
+        .padding(EdgeInsets(top: 10, leading: TFSpace.md, bottom: TFSpace.md, trailing: TFSpace.md))
+    }
+
+    /// 열 때: 현재 이슈의 번호를 읽는다 (대화는 셸이 `onLoadSessionConversation`으로 id로 읽는다)
     private func prepare(_ session: AgentSessionItem) async {
-        if let conversationID = session.conversationID {
-            // 대화 목록에 아직 없으면(앱을 연 뒤 처음 · 방금 만든 세션) 목록을 먼저 읽고 글을 읽는다
-            chat.ensureLoadedReadingListFirst(conversationID)
-        } else {
-            chat.refreshInBackground()
-        }
         if let issue = session.currentIssueID { await shell.issues?.numbers.ensure([issue]) }
     }
 }

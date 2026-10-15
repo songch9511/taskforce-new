@@ -141,6 +141,15 @@ enum IssueSnapshotData {
         switch scenario {
         case .none:
             return []
+        case .many:
+            // 세션이 아주 많은 경우: 한 이슈에 예순 (탭 6 + More, More 메뉴는 화면 높이에서 스크롤)
+            let states: [AgentTaskState] = [.running, .idle, .awaitingAnswer, .idle, .running]
+            return (0..<60).map { index in
+                SessionSeed(
+                    number: 100 + index, name: index == 7 ? "A session with a very long name that has to be cut before the status word on the right" : "Session \(index + 1)",
+                    connection: index.isMultiple(of: 3) ? codex : claude, status: .bound, state: states[index % states.count], issues: [139], created: Double(index)
+                )
+            }
         case .basic:
             return [
                 SessionSeed(number: 1, name: "Pricing copy draft", connection: claude, status: .bound, state: .running, issues: [139], created: 1),
@@ -185,7 +194,8 @@ enum IssueSnapshotData {
     static let longLine = "Running"
 
     /// 세션 읽기 모양 (RLS 다섯 표를 한 번에)
-    static func snapshot(scenario: IssueSampleGateway.SessionScenario) -> AgentSessionSnapshot {
+    /// - shiftConversations: 세션의 대화 id를 다른 값으로 (시험: 패널의 conversation id가 바뀐 경우)
+    static func snapshot(scenario: IssueSampleGateway.SessionScenario, shiftConversations: Bool = false) -> AgentSessionSnapshot {
         let now = Date()
         let seeds = sessions(for: scenario)
         let connections = [AgentConnectionRecord(id: claude, adapter: "agent:claude-code"), AgentConnectionRecord(id: codex, adapter: "agent:codex")]
@@ -208,7 +218,7 @@ enum IssueSnapshotData {
             for (index, issueNumber) in seed.issues.enumerated() {
                 runs.append(AgentSessionRunRecord(id: index == 0 ? task(seed.number) : id(seed.number * 10 + index, "7b7b0000"), agentSessionID: session(seed.number), actionID: issue(issueNumber)))
             }
-            conversations.append(AgentSessionConversationRecord(id: conversation(seed.number), agentSessionID: session(seed.number)))
+            conversations.append(AgentSessionConversationRecord(id: conversation(seed.number + (shiftConversations ? 100 : 0)), agentSessionID: session(seed.number)))
         }
         return AgentSessionSnapshot(sessions: records, tasks: tasks, runs: runs, connections: connections, conversations: conversations)
     }
@@ -309,7 +319,7 @@ final class IssueSampleGateway: ChatGateway, IssueScreensGateway, @unchecked Sen
     static let shared = IssueSampleGateway()
 
     enum SessionScenario: Sendable {
-        case none, basic, awaiting, external, closedAndStates, nine, longName
+        case none, basic, awaiting, external, closedAndStates, nine, longName, many
     }
 
     enum ReadScenario: Sendable {
@@ -321,6 +331,10 @@ final class IssueSampleGateway: ChatGateway, IssueScreensGateway, @unchecked Sen
     private var _reads = ReadScenario.full
     private var _detail = ReadScenario.full
     private var _sources = 2
+    private var _slackLeads = false
+    private var _sessionReads = 0
+    private var _conversationReads = 0
+    private var _shiftConversations = false
 
     var sessions: SessionScenario {
         get { lock.withLock { _sessions } }
@@ -337,6 +351,22 @@ final class IssueSampleGateway: ChatGateway, IssueScreensGateway, @unchecked Sen
     var detail: ReadScenario {
         get { lock.withLock { _detail } }
         set { lock.withLock { _detail = newValue } }
+    }
+
+    /// Slack 인용이 가장 새 것 (스냅샷: 서비스 자기 색 마크가 맨 앞 인용에 보인다)
+    var slackLeads: Bool {
+        get { lock.withLock { _slackLeads } }
+        set { lock.withLock { _slackLeads = newValue } }
+    }
+
+    /// 세션 읽기를 부른 횟수 (시험: 화면 진입이 세션을 다시 읽는다)
+    var sessionReads: Int { lock.withLock { _sessionReads } }
+    /// 대화 행을 id로 직접 읽은 횟수 (시험: 세션 패널이 id로 읽는다)
+    var conversationReads: Int { lock.withLock { _conversationReads } }
+    /// 세션의 대화 id를 다른 값으로 바꾼 읽기 (시험: 패널의 conversation id가 바뀐 경우)
+    var shiftsConversations: Bool {
+        get { lock.withLock { _shiftConversations } }
+        set { lock.withLock { _shiftConversations = newValue } }
     }
 
     /// 이슈 상세의 원문 인용 수 (0 = 직접 추가한 이슈)
@@ -383,7 +413,7 @@ final class IssueSampleGateway: ChatGateway, IssueScreensGateway, @unchecked Sen
             """.utf8)),
         ]
         let quotes = [
-            (slack, "Can the pricing copy ship before Thursday?", Date(timeIntervalSince1970: 1_791_000_000)),
+            (slack, "Can the pricing copy ship before Thursday?", Date(timeIntervalSince1970: slackLeads ? 1_791_400_000 : 1_791_000_000)),
             (notion, "Mina to confirm the refund window wording by Friday", Date(timeIntervalSince1970: 1_791_200_000)),
         ].prefix(sourceCount)
         let evidence = quotes.map { quote in
@@ -393,15 +423,21 @@ final class IssueSampleGateway: ChatGateway, IssueScreensGateway, @unchecked Sen
     }
 
     func agentSessionSnapshot() async throws -> AgentSessionSnapshot {
+        lock.withLock { _sessionReads += 1 }
         try await gate(reads)
-        return IssueSnapshotData.snapshot(scenario: sessions)
+        return IssueSnapshotData.snapshot(scenario: sessions, shiftConversations: shiftsConversations)
     }
 
     // MARK: ChatGateway (읽기만)
 
+    func conversation(id: UUID) async throws -> ChatConversation? {
+        lock.withLock { _conversationReads += 1 }
+        return try await conversations().first { $0.id == id }
+    }
+
     func conversations() async throws -> [ChatConversation] {
         try await gate(reads)
-        let snapshot = IssueSnapshotData.snapshot(scenario: sessions)
+        let snapshot = IssueSnapshotData.snapshot(scenario: sessions, shiftConversations: shiftsConversations)
         return snapshot.conversations.map { row in
             ChatConversation(
                 id: row.id, title: nil, contextID: nil, createdAt: Date().addingTimeInterval(-3_600), lastMessageAt: Date().addingTimeInterval(-60),
@@ -436,7 +472,7 @@ final class IssueSampleGateway: ChatGateway, IssueScreensGateway, @unchecked Sen
 /// 새 Issues 화면 PNG (OA U2, 디자인 비교용): `-TF_EDGE_SHELL YES -TFSampleData -TF_S3B YES -TF_U2 YES -TFEdgeSnapshot <폴더> -TFEdgeSnapshotIssues`
 /// (+ `-TFSnapshotDark`, `-TFReduceMotion YES`). 화면 녹화 권한 없이 자기 창(레일 · 이슈 패널과 SessionTab · 세션 패널 · 메뉴)의 내용만 그려 데스크톱 견본 위에 실제 자리대로 붙인다.
 /// 남기는 것(`mac-edge-issues-<이름>.png`): projects(M1) · projects-ask · projects-many · projects-empty · projects-loading/offline/failed · list-project(M3) · list-project-tab-open ·
-/// list-ungrouped · list-done-today · list-many(긴 제목 · 많은 이슈) · list-ask · list-tab-more · menu-more · detail(M4) · detail-states · detail-no-source · detail-no-sessions · detail-nine ·
+/// list-ungrouped · list-done-today · list-many(긴 제목 · 많은 이슈) · list-ask · list-tab-more · menu-more · menu-more-many · menu-more-many-last · detail-many · detail(M4) · detail-states · detail-no-source · detail-no-sessions · detail-nine ·
 /// detail-loading/offline/failed · detail-long · session-running · session-needs · session-idle · session-external · session-closed · session-in-nine · session-long-name · session-unreachable.
 /// 서버 응답은 가짜(`IssueSampleGateway` · `IssueSampleContextGateway`)라 렌더 fixture일 뿐이다.
 @MainActor
@@ -460,9 +496,10 @@ enum IssueSnapshot {
         /// 새 계정이 막 로그인한 것처럼 저장소를 비우고 가짜 서버 시나리오대로 다시 읽는다
         func world(
             seeds: [IssueSnapshotData.Seed] = IssueSnapshotData.seeds, sessions: IssueSampleGateway.SessionScenario = .basic,
-            reads: IssueSampleGateway.ReadScenario = .full, detail: IssueSampleGateway.ReadScenario = .full, sources: Int = 2,
+            reads: IssueSampleGateway.ReadScenario = .full, detail: IssueSampleGateway.ReadScenario = .full, sources: Int = 2, slackLeads: Bool = false,
             contexts scenario: IssueSampleContextGateway.Scenario = .full, load: WorkLoad = .loaded(problem: nil)
         ) async {
+            sample.slackLeads = slackLeads
             sample.sessions = sessions
             sample.reads = reads
             sample.detail = detail
@@ -545,6 +582,10 @@ enum IssueSnapshot {
         shoot("detail-needs")
         await detail(155)
         shoot("detail-ungrouped")
+        // DS SourceMark: 서비스 자기 색의 공식 마크 (Slack · Notion), 마크가 없는 출처(붙여 넣은 원문)는 점선 빈 타일
+        await world(slackLeads: true)
+        await detail(139)
+        shoot("detail-source-slack")
         await world(sources: 0)
         await detail(139)
         shoot("detail-no-source")
@@ -609,6 +650,21 @@ enum IssueSnapshot {
         shoot("menu-more")
         edge.menu.dismiss()
 
+        // 세션이 아주 많은 경우: 이슈 상세 · More 메뉴가 화면 높이에서 스크롤 (키보드로 짚은 줄을 따라간다)
+        await world(sessions: .many)
+        await detail(139)
+        shoot("detail-many")
+        await list(.project(IssueSnapshotData.taskforce))
+        showMore(edge)
+        await settle(0.5)
+        shoot("menu-more-many")
+        if let model = edge.menu.model {
+            for _ in 0..<60 { model.move(1) }
+            await settle(0.5)
+            shoot("menu-more-many-last")
+        }
+        edge.menu.dismiss()
+
         // 긴 제목 · 많은 이슈 · 많은 프로젝트
         let many = IssueSnapshotData.seeds + IssueSnapshotData.longTitles
         await world(seeds: many, sessions: .basic, contexts: .many)
@@ -646,6 +702,7 @@ enum IssueSnapshot {
         await world()
         shell.openAllWork()
     }
+
 
 
     /// 포인터를 패널에서 먼 곳(왼쪽 가장자리 가운데)으로 옮기고, 원래 자리로 되돌리는 함수를 돌려준다 (견본 하네스에서만)

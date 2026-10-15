@@ -1,5 +1,6 @@
 #if os(macOS)
 import AppKit
+import Carbon.HIToolbox
 import SwiftUI
 import TaskforceKit
 import TaskforceUI
@@ -37,9 +38,17 @@ final class EdgeContextMenu {
         self.pointerX = pointerX
         self.onClose = onClose
         model.onPick = { [weak self] in self?.dismiss() }
-        let hosting = NSHostingView(rootView: ContextMenuView(model: model, label: label))
+        var hosting = NSHostingView(rootView: ContextMenuView(model: model, label: label))
         hosting.sizingOptions = [.intrinsicContentSize]
-        let size = hosting.intrinsicContentSize
+        var size = hosting.intrinsicContentSize
+        let visible = (parent.screen ?? NSScreen.main)?.visibleFrame ?? parent.frame
+        // 줄이 화면보다 길면 높이를 줄이고 안에서 스크롤한다 (키보드로 짚은 줄을 따라간다): 줄 몇 개가 화면 밖으로 넘쳐 못 보는 일이 없다
+        let limited = ContextMenuGeometry.limited(natural: size, visible: visible)
+        if limited.height < size.height {
+            hosting = NSHostingView(rootView: ContextMenuView(model: model, label: label, height: limited.height))
+            hosting.sizingOptions = [.intrinsicContentSize]
+            size = limited
+        }
         let panel = EdgeMenuPanel(contentRect: CGRect(origin: .zero, size: size), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         panel.isFloatingPanel = true
         panel.level = parent.level
@@ -51,7 +60,6 @@ final class EdgeContextMenu {
         panel.animationBehavior = .none
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
         panel.contentView = hosting
-        let visible = (parent.screen ?? NSScreen.main)?.visibleFrame ?? parent.frame
         visibleFrame = visible
         panel.setFrame(ContextMenuGeometry.frame(size: size, row: row, pointerX: pointerX, visible: visible), display: true)
         self.panel = panel
@@ -104,17 +112,33 @@ final class EdgeContextMenu {
         }
     }
 
+    /// 메뉴가 듣는 키
+    enum Key: Equatable {
+        case up, down, activate, escape
+    }
+
+    /// 키 → 메뉴 키 (순수). 방향키는 `.numericPad` · `.function`이 함께 오고 키패드 Enter는 `.numericPad`가 온다: 이 두 비트를 지운 뒤 비교한다
+    /// (`EdgeReviewKeys`와 같다). ⌘ · ⌃ · ⌥ · ⇧가 함께면 메뉴 키가 아니다
+    nonisolated static func key(keyCode: Int, flags: NSEvent.ModifierFlags) -> Key? {
+        let flags = flags.intersection(.deviceIndependentFlagsMask).subtracting([.numericPad, .function])
+        guard flags.isEmpty else { return nil }
+        switch keyCode {
+        case kVK_UpArrow: return .up
+        case kVK_DownArrow: return .down
+        case kVK_Return, kVK_ANSI_KeypadEnter: return .activate
+        case kVK_Escape: return .escape
+        default: return nil
+        }
+    }
+
     /// 메뉴 창이 키 창일 때 그 창으로 온 키만: ↑ ↓ Return Esc. 다른 창의 Return을 가로채지 않는다
     func handle(_ event: NSEvent) -> Bool {
-        guard let model, let panel, event.window === panel else { return false }
-        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-        guard flags.isEmpty || flags == .numericPad || flags == .function else { return false }
-        switch Int(event.keyCode) {
-        case 126: model.move(-1)
-        case 125: model.move(1)
-        case 36, 76: model.activate()
-        case 53: dismiss()
-        default: return false
+        guard let model, let panel, event.window === panel, let key = Self.key(keyCode: Int(event.keyCode), flags: event.modifierFlags) else { return false }
+        switch key {
+        case .up: model.move(-1)
+        case .down: model.move(1)
+        case .activate: model.activate()
+        case .escape: dismiss()
         }
         return true
     }

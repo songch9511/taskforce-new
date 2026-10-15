@@ -25,7 +25,7 @@ struct IssuesPanelBody: View {
 
 /// 목록 · 프로젝트 화면이 함께 쓰는 상태: 이슈 목록을 받았는지 · 프로젝트 멤버십을 읽었는지
 @MainActor
-private struct IssuesLoadState {
+struct IssuesLoadState {
     enum Screen {
         case blank
         case offline
@@ -35,7 +35,8 @@ private struct IssuesLoadState {
     }
 
     static func screen(_ shell: EdgeShellModel) -> Screen {
-        switch WorkListScreen.of(load: shell.work.load, isEmpty: shell.workItems.isEmpty, syncing: shell.work.syncing) {
+        // 빈 화면은 할 일 0 ∧ 보일 프로젝트 0일 때만: 할 일 없는 활성 프로젝트에도 들어갈 수 있다 (U2-01 · 29, 검토 반영 8)
+        switch WorkListScreen.of(load: shell.work.load, isEmpty: shell.workItems.isEmpty && shell.projectRows.isEmpty, syncing: shell.work.syncing) {
         case .blank, .waitingForSync: return .blank
         case .offline: return .offline
         case .failed: return .failed
@@ -288,7 +289,8 @@ struct IssueSourceQuote: View {
         } else {
             SourceQuote(
                 service: line.service, place: line.displayTitle, time: line.displayDate.map { WhenText.label($0) }, text: line.quote,
-                openTitle: line.externalURL == nil ? nil : line.service.openTitle, onOpen: line.externalURL.map { url in { open(url) } }
+                openTitle: line.externalURL == nil ? nil : line.service.openTitle, onOpen: line.externalURL.map { url in { open(url) } },
+                usesSourceMark: true
             )
         }
     }
