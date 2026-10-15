@@ -52,9 +52,9 @@ struct ChatStoreTombstoneTests {
         return chat
     }
 
-    func agentRow(_ n: Int, last: TimeInterval = 10, archived: Bool = false, title: String? = nil) -> ChatConversation {
+    func agentRow(_ n: Int, last: TimeInterval? = 10, archived: Bool = false, title: String? = nil) -> ChatConversation {
         ChatConversation(
-            id: ChatContractFixtures.id(n, prefix: "bcb50000"), title: title, createdAt: .test(0), lastMessageAt: .test(last), archivedAt: archived ? .test(1) : nil,
+            id: ChatContractFixtures.id(n, prefix: "bcb50000"), title: title, createdAt: .test(0), lastMessageAt: last.map { .test($0) }, archivedAt: archived ? .test(1) : nil,
             target: ChatConversationTarget(kind: .agent, agentConnectionID: connection, agentSessionID: ChatContractFixtures.id(n, prefix: "5e550000"))
         )
     }
@@ -97,12 +97,24 @@ struct ChatStoreTombstoneTests {
                 }
                 return confirmation
             }
-            gateway.messagesHandler = { id in id == oldID ? body : [] }
+            // 늦게 오는 것이 글이면 글 응답도 붙잡는다 (옛 구조에서는 늦은 행이 글 읽기를 시작시키고 그 응답이 화면을 되살렸다)
+            let bodyLatch = Latch()
+            let holdsBody = c.late != .row
+            gateway.messagesHandler = { id in
+                guard id == oldID else { return [] }
+                if holdsBody { await bodyLatch.wait() }
+                return body
+            }
             let refresh = Task { await chat.refresh() }
             #expect(await rowLatch.waitForArrivals(1, timeout: .seconds(5)), "새로 읽기의 응답이 붙잡혀 있다")
             await chat.readConversation(old.id)
             #expect(chat.screen(for: old.id) == .failed, "직접 읽기가 먼저 없다고 확인했다")
             await rowLatch.open()
+            if holdsBody {
+                // 새 구조는 묘비 때문에 글 읽기 자체를 시작하지 않는다: 도착이 없어도 짧게 기다린 뒤 풀어 준다
+                _ = await bodyLatch.waitForArrivals(1, timeout: .milliseconds(120))
+                await bodyLatch.open()
+            }
             await refresh.value
             await chat.settle()
 
@@ -154,6 +166,206 @@ struct ChatStoreTombstoneTests {
         #expect(chat.screen(for: old.id) == .ready(problem: nil) && chat.isTargetKnown(old.id), "Try again은 다시 읽는다")
         #expect(chat.turns(for: old.id).map(\.text) == ["back"])
         #expect(chat.entries.first { $0.id == old.id }?.preview != .message("stale preview"), "옛 미리보기가 되살아나지 않는다")
+    }
+
+    // MARK: 서버 버전 순서 · 늦은 부정 응답 (6차 재검토)
+
+    /// 1. 새로 읽기의 id 읽기 응답(없다 · 보관)이 붙잡혀 있는 사이 직접 읽기가 없다고 확인했고, 사용자의 Try again이 행 · 글을 복구했다.
+    /// 그 뒤에 도착한 옛 부정 응답은 현재 세대보다 먼저 시작한 읽기라 복구를 지우지 못한다
+    private func lateNegativeAfterRecovery(archived: Bool) async {
+        let listed = agentRow(1, last: 100)
+        let old = agentRow(2, last: 1)
+        let confirmation: ChatConversation? = archived ? agentRow(2, last: 1, archived: true) : nil
+        let chat = store()
+        chat.panelConversations = { [old.id] }
+        let oldID = old.id
+        let latch = Latch()
+        let calls = CallCounter()
+        gateway.conversationsHandler = { [listed] }
+        gateway.conversationHandler = { _ in
+            switch calls.next() {
+            case 1:             // 새로 읽기의 id 읽기: 붙잡힌 옛 부정 응답
+                await latch.wait()
+                return confirmation
+            case 2:             // 직접 읽기: 없다고 확인
+                return confirmation
+            default:            // Try again: 이제 있다
+                return old
+            }
+        }
+        gateway.messagesHandler = { id in id == oldID ? [Chats.message(9, in: oldID, seq: 9, role: .assistant, text: "back", at: 9)] : [] }
+        gateway.lastMessagesHandler = { _ in [:] }
+        let refresh = Task { await chat.refresh() }
+        #expect(await latch.waitForArrivals(1, timeout: .seconds(5)), "새로 읽기의 id 읽기 응답이 붙잡혀 있다")
+        await chat.readConversation(oldID)
+        #expect(chat.screen(for: oldID) == .failed, "직접 읽기가 없다고 확인했다")
+        await chat.readConversation(oldID)
+        #expect(chat.screen(for: oldID) == .ready(problem: nil) && chat.isTargetKnown(oldID) && chat.turns(for: oldID).map(\.text) == ["back"], "Try again이 복구했다")
+        await latch.open()
+        await refresh.value
+        await chat.settle()
+        #expect(chat.screen(for: oldID) == .ready(problem: nil), "늦은 옛 부정 응답이 복구를 지우지 않는다")
+        #expect(chat.isTargetKnown(oldID) && chat.canCompose(in: oldID) && chat.turns(for: oldID).map(\.text) == ["back"])
+    }
+
+    @Test func aLateDeletedResponseDoesNotWipeATryAgainRecovery() async {
+        await lateNegativeAfterRecovery(archived: false)
+    }
+
+    @Test func aLateArchivedResponseDoesNotWipeATryAgainRecovery() async {
+        await lateNegativeAfterRecovery(archived: true)
+    }
+
+    /// 1'. 확인 **뒤에** 시작했지만 복구보다 먼저 시작한 부정 응답도 복구를 지우지 못한다: 복구가 새 세대를 시작하기 때문이다
+    /// (`viaRefresh`: 늦은 부정 응답이 새로 읽기의 id 읽기 응답인가, 아니면 두 번째 직접 읽기의 응답인가. `recoveredByRefresh`: 복구가 새로 읽기인가, 사용자의 Try again인가)
+    private func lateNegativeStartedBetweenConfirmationAndRecovery(viaRefresh: Bool, recoveredByRefresh: Bool) async {
+        let listed = agentRow(1, last: 100)
+        let old = agentRow(2, last: 1)
+        let chat = store()
+        chat.panelConversations = { [old.id] }
+        let oldID = old.id
+        let latch = Latch()
+        let calls = CallCounter()
+        gateway.conversationsHandler = { [listed] }
+        gateway.conversationHandler = { _ in
+            switch calls.next() {
+            case 1:             // 직접 읽기: 없다고 확인 (묘비)
+                return nil
+            case 2:             // 확인 뒤에 시작한 읽기: 부정 응답이 붙잡힌다
+                await latch.wait()
+                return nil
+            default:            // Try again: 이제 있다
+                return old
+            }
+        }
+        gateway.messagesHandler = { id in id == oldID ? [Chats.message(9, in: oldID, seq: 9, role: .assistant, text: "back", at: 9)] : [] }
+        gateway.lastMessagesHandler = { _ in [:] }
+        await chat.readConversation(oldID)
+        #expect(chat.screen(for: oldID) == .failed, "직접 읽기가 없다고 확인했다 (묘비)")
+        let late = Task { viaRefresh ? await chat.refresh() : await chat.readConversation(oldID) }
+        #expect(await latch.waitForArrivals(1, timeout: .seconds(5)), "확인 뒤에 시작한 읽기의 부정 응답이 붙잡혀 있다")
+        if recoveredByRefresh {
+            await chat.refresh()                // 확인 뒤에 시작한 새로 읽기가 행을 다시 읽어 복구한다
+        } else {
+            await chat.readConversation(oldID)  // Try again: 복구
+        }
+        #expect(chat.screen(for: oldID) == .ready(problem: nil) && chat.isTargetKnown(oldID), "복구했다")
+        await latch.open()
+        await late.value
+        await chat.settle()
+        #expect(chat.screen(for: oldID) == .ready(problem: nil) && chat.isTargetKnown(oldID) && chat.canCompose(in: oldID), "복구 전에 시작한 부정 응답이 복구를 지우지 않는다")
+        #expect(chat.turns(for: oldID).map(\.text) == ["back"])
+    }
+
+    @Test(arguments: [true, false], [true, false])
+    func aNegativeResponseStartedBeforeTheRecoveryDoesNotWipeIt(viaRefresh: Bool, recoveredByRefresh: Bool) async {
+        await lateNegativeStartedBetweenConfirmationAndRecovery(viaRefresh: viaRefresh, recoveredByRefresh: recoveredByRefresh)
+    }
+
+    /// 2. 행을 모르는 직접 읽기 D가 기다리는 사이 새로 읽기 R0이 행을 확보했고, R1이 시작했다(그때 행을 안다). D가 없다고 확인하고 Try again이 복구한 뒤
+    /// R1의 옛 활성 행이 도착한다: 옛 행은 버리고, 복구한 현재 행은 R1의 목록 교체에서도 남는다 (본문만 남고 대상이 없는 Composer 대기가 되지 않는다)
+    @Test func aRecoveredRowSurvivesTheListReplacementOfARefreshThatStartedBeforeTheConfirmation() async {
+        let listed = agentRow(1, last: 100)
+        let oldRow = agentRow(2, last: 1, title: "old title")
+        let freshRow = agentRow(2, last: 5, title: "fresh title")
+        let chat = store()
+        chat.panelConversations = { [oldRow.id] }
+        let oldID = oldRow.id
+        let dLatch = Latch()
+        let r1Latch = Latch()
+        let rowCalls = CallCounter()
+        let listCalls = CallCounter()
+        gateway.conversationHandler = { _ in
+            if rowCalls.next() == 1 {   // 행을 모르는 직접 읽기: 붙잡힌 부정 응답
+                await dLatch.wait()
+                return nil
+            }
+            return freshRow             // Try again: 있다
+        }
+        gateway.conversationsHandler = {
+            if listCalls.next() == 1 { return [listed, oldRow] }   // R0: 행을 확보한다
+            await r1Latch.wait()                                    // R1: 붙잡힌 옛 응답
+            return [listed, oldRow]
+        }
+        gateway.messagesHandler = { id in id == oldID ? [Chats.message(9, in: oldID, seq: 9, role: .assistant, text: "back", at: 9)] : [] }
+        gateway.lastMessagesHandler = { _ in [:] }
+        let direct = Task { await chat.readConversation(oldID) }
+        #expect(await dLatch.waitForArrivals(1, timeout: .seconds(5)), "직접 읽기가 응답을 기다린다 (행을 모른다)")
+        await chat.refresh()    // R0
+        #expect(chat.isTargetKnown(oldID), "R0이 행을 확보했다")
+        let r1 = Task { await chat.refresh() }
+        #expect(await r1Latch.waitForArrivals(1, timeout: .seconds(5)), "R1이 시작해 기다린다 (그때 행을 안다)")
+        await dLatch.open()
+        await direct.value
+        #expect(chat.screen(for: oldID) == .failed && !chat.isTargetKnown(oldID), "직접 읽기가 없다고 확인했다")
+        await chat.readConversation(oldID)     // Try again
+        #expect(chat.isTargetKnown(oldID) && chat.screen(for: oldID) == .ready(problem: nil), "Try again이 복구했다")
+        await r1Latch.open()
+        await r1.value
+        await chat.settle()
+        #expect(chat.isTargetKnown(oldID) && chat.canCompose(in: oldID), "복구한 행이 R1의 목록 교체에서 사라지지 않는다 (Composer가 대상 없이 기다리지 않는다)")
+        #expect(chat.screen(for: oldID) == .ready(problem: nil) && chat.turns(for: oldID).map(\.text) == ["back"])
+        #expect(chat.entries.first { $0.id == oldID }?.title == "fresh title", "옛 행(옛 이름)이 복구한 행을 덮지 않는다")
+    }
+
+    /// 3. 직접 읽기가 `last_message_at`이 없는 옛 행 응답을 기다리는 사이 첫 메시지가 저장되고 새로 읽기가 최신 행 · 글을 반영했다.
+    /// 늦게 온 옛 행이 최신 행을 덮으면 메시지가 있는 대화가 "빈 대화"로 보여 재사용 대상이 된다: 서버 버전이 더 새로운 행을 쥐고 있으면 그것을 둔다
+    @Test func aLateDirectReadRowWithoutAnyMessageDoesNotOverwriteANewerRow() async {
+        let listed = agentRow(1, last: 100)
+        let emptyRow = agentRow(2, last: nil)
+        let newer = agentRow(2, last: 50)
+        let chat = store()
+        chat.panelConversations = { [emptyRow.id] }
+        let oldID = emptyRow.id
+        let latch = Latch()
+        gateway.conversationHandler = { _ in
+            await latch.wait()
+            return emptyRow     // 옛 응답: 메시지가 없던 때의 행
+        }
+        gateway.conversationsHandler = { [listed, newer] }
+        gateway.messagesHandler = { id in id == oldID ? [Chats.message(9, in: oldID, seq: 9, role: .assistant, text: "first message", at: 9)] : [] }
+        gateway.lastMessagesHandler = { _ in [:] }
+        let direct = Task { await chat.readConversation(oldID) }
+        #expect(await latch.waitForArrivals(1, timeout: .seconds(5)), "직접 읽기가 옛 응답을 기다린다")
+        await chat.refresh()
+        #expect(chat.conversations.first { $0.id == oldID }?.lastMessageAt == .test(50), "새로 읽기가 최신 행을 반영했다")
+        await latch.open()
+        await direct.value
+        await chat.settle()
+        #expect(chat.conversations.first { $0.id == oldID }?.lastMessageAt == .test(50), "늦은 옛 행이 최신 행의 시각을 되돌리지 않는다")
+        #expect(chat.conversations.first { $0.id == oldID }?.isUntouched == false, "메시지가 있는 대화가 빈 대화로 보이지 않는다")
+        #expect(chat.screen(for: oldID) == .ready(problem: nil) && chat.turns(for: oldID).map(\.text) == ["first message"])
+    }
+
+    /// 목록 응답 · id로 읽은 행(extras)이 쥔 행보다 오래된 버전이면 쥔 행을 둔다 (목록 교체 · extras 모두)
+    @Test func aListOrByIDResponseOlderThanTheHeldRowKeepsTheHeldRow() async {
+        let listed = agentRow(1, last: 100)
+        let held = agentRow(2, last: 50, title: "held")
+        let older = agentRow(2, last: 10, title: "older")
+        let chat = store()
+        let id = held.id
+        // 쥔 행을 직접 읽어 마련한다
+        gateway.conversationHandler = { _ in held }
+        gateway.conversationsHandler = { [listed] }
+        gateway.messagesHandler = { _ in [] }
+        gateway.lastMessagesHandler = { _ in [:] }
+        await chat.readConversation(id)
+        #expect(chat.conversations.first { $0.id == id }?.lastMessageAt == .test(50))
+        // 목록 응답이 더 오래된 행을 준다
+        gateway.conversationsHandler = { [listed, older] }
+        await chat.refresh()
+        #expect(chat.conversations.first { $0.id == id }?.title == "held" && chat.conversations.first { $0.id == id }?.lastMessageAt == .test(50), "더 오래된 목록 행이 쥔 행을 덮지 않는다")
+        // 패널 대화를 id로 읽은 행(extras)이 더 오래됐다
+        chat.panelConversations = { [id] }
+        gateway.conversationsHandler = { [listed] }
+        gateway.conversationHandler = { _ in older }
+        await chat.refresh()
+        #expect(chat.conversations.first { $0.id == id }?.title == "held" && chat.conversations.first { $0.id == id }?.lastMessageAt == .test(50), "더 오래된 id 읽기 행이 쥔 행을 덮지 않는다")
+        // 같은 버전 · 더 새 버전은 반영한다
+        let newer = agentRow(2, last: 60, title: "newer")
+        gateway.conversationHandler = { _ in newer }
+        await chat.refresh()
+        #expect(chat.conversations.first { $0.id == id }?.title == "newer", "더 새 버전은 반영한다")
     }
 
     // MARK: 확인 뒤 Try again이 읽은 것은 옛 응답이 덮지 않는다

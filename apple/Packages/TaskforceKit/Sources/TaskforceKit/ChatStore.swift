@@ -148,6 +148,11 @@ public final class ChatStore {
     /// 대화별 묘비: 그 대화를 없다고 확인한 때의 시계값. **읽기를 시작할 때 시계값을 쥐고**, 반영할 때 이 대화의 묘비가 그보다 새것이면(`isStale`)
     /// 그 읽기의 데이터(목록 행 · 직접 읽은 행 · 글 · 미리보기)를 버린다. 확인 뒤에 시작한 읽기(사용자의 Try again · 다시 열기)는 묘비보다 새 세대라 정상으로 반영한다
     @ObservationIgnored private var tombstones: [UUID: Int] = [:]
+    /// 대화별 복구: 묘비가 선 뒤 행이 다시 반영된 때의 시계값. 현재 세대는 마지막 묘비 · 복구에서 시작한다 (`generationStart`)
+    @ObservationIgnored private var recoveries: [UUID: Int] = [:]
+    /// 행이 `conversations`에 들어온 순서표: 새로 읽기가 시작한 뒤에 들어온 행("읽는 사이 생긴 행")을 가린다 (묘비 뒤 Try again이 복구한 행도 포함)
+    @ObservationIgnored private var rowStamps: [UUID: Int] = [:]
+    @ObservationIgnored private var stampClock = 0
     private var drafts: [UUID: String] = [:]
     /// 열린 창들이 보이는 대화 (앱이 정한다). 목록 읽기(⌘3 · 온라인 복귀 · Try again)가 공유 `currentID`뿐 아니라 이들의 글도 다시 읽는다
     @ObservationIgnored public var viewedConversations: () -> Set<UUID> = { [] }
@@ -214,6 +219,8 @@ public final class ChatStore {
         threadReadSeq = [:]
         rowReadSeq = [:]
         tombstones = [:]
+        recoveries = [:]
+        rowStamps = [:]
         drafts = [:]
         threads = [:]
         deliveries = [:]
@@ -540,12 +547,15 @@ public final class ChatStore {
             threads[id]?.load = .loading
             do {
                 let row = try await gateway.conversation(id: id)
-                guard scope.isCurrent(token), rowReadSeq[id] == rowSeq, !isStale(id, since: started) else { return }
+                guard scope.isCurrent(token), rowReadSeq[id] == rowSeq else { return }
                 guard let row, row.archivedAt == nil else {
+                    // 부정 응답(없다 · 보관): 현재 세대가 시작한 뒤에 시작한 읽기만 반영한다 (Try again 복구는 늦은 부정 응답에 지워지지 않는다)
+                    guard !isNegativeStale(id, since: started) else { return }
                     confirmGone(id)
                     return
                 }
-                upsert(row)
+                guard !isStale(id, since: started) else { return }
+                applyRead(row)
             } catch {
                 guard scope.isCurrent(token), rowReadSeq[id] == rowSeq, !isStale(id, since: started), let failure = ReadFailure.from(error, online: isOnline) else { return }
                 if failure == .unavailable {
@@ -601,8 +611,8 @@ public final class ChatStore {
         let sequence = listSequence
         let started = tombstoneClock
         if case .loaded = listLoad {} else { listLoad = .loading }
-        // 읽는 사이 이 기기가 만든 대화(첫 보내기)는 그 읽기에 없을 수 있다: 서버가 지운 것이 아니다
-        let knownBefore = Set(conversations.map(\.id))
+        // 읽는 사이 이 기기가 만든 · 복구한 대화(첫 보내기 · Try again)는 그 읽기에 없을 수 있다: 서버가 지운 것이 아니다 (이 순서표보다 새로 들어온 행)
+        let startedStamp = stampClock
         do {
             async let rows = gateway.conversations()
             async let projects = gateway.workContexts()
@@ -612,14 +622,21 @@ public final class ChatStore {
             let (panelRows, gone) = await readPanelRows(missingFrom: listed)
             guard scope.isCurrent(token), sequence == listSequence else { return }
             // 서버가 없다 · 보관했다고 확인한 패널 대화: 행 · 본문 · 대상을 지우고 오류 화면(다시 시도)으로 둔다 (일시 실패와 다르다). 직접 읽기와 같은 길이다
-            for id in gone { confirmGone(id) }
-            // 이 새로 읽기를 시작한 뒤에 다른 길(직접 읽기)이 없다고 확인한 대화는, 이 응답(목록 · id로 읽은 행)에 있어도 반영하지 않는다
+            // 부정 응답은 현재 세대가 시작한 뒤에 시작한 읽기만 반영한다 (그 사이 Try again이 복구했으면 이 옛 응답이 복구를 지우지 못한다)
+            for id in gone where !isNegativeStale(id, since: started) { confirmGone(id) }
+            // 이 새로 읽기를 시작한 뒤에 다른 길(직접 읽기)이 없다고 확인한 대화는, 이 응답(목록 · id로 읽은 행)에 있어도 반영하지 않는다.
+            // 행은 응답이 끝난 순서가 아니라 서버 버전 순서다: 쥔 행이 더 새 버전이면 응답 행 대신 쥔 행을 둔다
+            let held = Dictionary(conversations.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+            let newest: (ChatConversation) -> ChatConversation = { row in
+                if let heldRow = held[row.id], heldRow.rowVersion > row.rowVersion { return heldRow }
+                return row
+            }
             let fresh: [ChatConversation] = chats.filter { !isStale($0.id, since: started) }
-            let listedRows: [ChatConversation] = fresh.filter { $0.archivedAt == nil }
-            let extras: [ChatConversation] = panelRows.filter { !isStale($0.id, since: started) }
+            let listedRows: [ChatConversation] = fresh.filter { $0.archivedAt == nil }.map(newest)
+            let extras: [ChatConversation] = panelRows.filter { !isStale($0.id, since: started) }.map(newest)
             let live = Set(fresh.map(\.id)).union(extras.map(\.id))
-            let createdMeanwhile: [ChatConversation] = conversations.filter { !knownBefore.contains($0.id) && !live.contains($0.id) }
-            conversations = listedRows + extras + createdMeanwhile
+            let createdMeanwhile: [ChatConversation] = conversations.filter { (rowStamps[$0.id] ?? 0) > startedStamp && !live.contains($0.id) }
+            replaceConversations(listedRows + extras + createdMeanwhile)
             contexts = Dictionary(named.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
             listLoad = .loaded(problem: nil)
             dropThreads(missingFrom: live.union(createdMeanwhile.map(\.id)).union(panelConversations()))
@@ -685,6 +702,7 @@ public final class ChatStore {
         tombstoneClock += 1
         tombstones[id] = tombstoneClock
         conversations.removeAll { $0.id == id }
+        rowStamps[id] = nil
         previews[id] = nil
         derivedTitles[id] = nil
         threads[id] = ChatThread()
@@ -694,6 +712,43 @@ public final class ChatStore {
     /// 읽기를 시작한 뒤(`started` = 그때의 묘비 시계) 이 대화가 없다고 확인됐나: 그렇다면 그 읽기의 데이터는 반영하지 않는다
     private func isStale(_ id: UUID, since started: Int) -> Bool {
         (tombstones[id] ?? 0) > started
+    }
+
+    /// 이 대화의 현재 세대가 시작한 시계값: 마지막 묘비(없다고 확인) 또는 복구(묘비 뒤 행이 다시 반영)
+    private func generationStart(_ id: UUID) -> Int {
+        max(tombstones[id] ?? 0, recoveries[id] ?? 0)
+    }
+
+    /// 부정 응답(없다 · 보관)이 현재 세대보다 먼저 시작했나: 그렇다면 반영하지 않는다
+    private func isNegativeStale(_ id: UUID, since started: Int) -> Bool {
+        generationStart(id) > started
+    }
+
+    /// 묘비가 선 대화에 행이 다시 반영됐다(Try again · 확인 뒤 시작한 새로 읽기): 새 세대가 시작한다. 이전에 시작한 부정 응답은 이 복구를 지우지 못한다
+    private func noteRecovery(_ id: UUID) {
+        guard let gone = tombstones[id], (recoveries[id] ?? 0) < gone else { return }
+        tombstoneClock += 1
+        recoveries[id] = tombstoneClock
+    }
+
+    /// 읽은 행(직접 읽기)을 반영한다: 서버 버전이 쥔 행보다 오래되면 반영하지 않는다 (늦게 끝난 옛 응답이 더 새 행을 덮지 못한다)
+    private func applyRead(_ row: ChatConversation) {
+        if let held = conversations.first(where: { $0.id == row.id }), held.rowVersion > row.rowVersion { return }
+        upsert(row)
+        noteRecovery(row.id)
+    }
+
+    /// 새로 읽은 목록 · 행으로 `conversations`를 바꾼다 (들어온 행에 순서표를 붙이고 나간 행은 뗀다)
+    private func replaceConversations(_ rows: [ChatConversation]) {
+        let before = Set(conversations.map(\.id))
+        let after = Set(rows.map(\.id))
+        for id in before.subtracting(after) { rowStamps[id] = nil }
+        for row in rows where !before.contains(row.id) {
+            stampClock += 1
+            rowStamps[row.id] = stampClock
+            noteRecovery(row.id)
+        }
+        conversations = rows
     }
 
     /// 지금 보이는 대화들의 글을 읽는다: 공유 `currentID`와 창들 · 세션 패널이 보이는 대화 (서버에 있는 것만, 겹치지 않게)
@@ -943,6 +998,8 @@ public final class ChatStore {
             conversations[index] = conversation
         } else {
             conversations.append(conversation)
+            stampClock += 1
+            rowStamps[conversation.id] = stampClock
         }
     }
 
