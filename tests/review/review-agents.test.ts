@@ -16,7 +16,8 @@ import { loadSessionAdapter } from "@/lib/agents/sessions";
 import { clearReturnSummary, loadReturnSummary } from "@/lib/review/return-summary";
 import { loadReview } from "@/lib/review/review";
 
-import { adminOf, createCoordinatorDb, seed } from "../coordinator/support";
+import { adminOf, createCoordinatorDb, queryOf, seed } from "../coordinator/support";
+import { sqlAdmin } from "../conversation/sql-admin";
 import { asUser } from "../db/local-supabase";
 import { answerQuestionFixture } from "../db/agent-questions-stop.scenarios";
 import { ASKED, BOTH, reviewAgentInputsFixtures, SECRET } from "../db/review-agent-inputs.scenarios";
@@ -406,5 +407,43 @@ describe("U10 경로 충돌 해소 (실제 SQL): Review 항목의 conflict_versi
     expect((await resolveWith(mine.w.user)(randomUUID(), { keep: "holder", conflict_version: 1 })).status).toBe(404);
     expect(await resolvedMetrics(mine.w.user)).toEqual([]);
     expect(await resolvedMetrics(theirs.w.user)).toEqual([]);
+  });
+});
+
+describe("P2 개수 상한: 입력이 1,001개여도 Review · 복귀 요약이 모두 받고 완전하다 (PostgREST db-max-rows 흉내)", () => {
+  // PostgREST db-max-rows는 응답 "행" 수에 걸린다. 같은 상한(1,000행)을 SQL 결과에 씌운 admin으로 운영 TS를 돌린다.
+  // review_agent_inputs가 TABLE이면 1,001행이 1,000으로 잘려 일부가 빠진 채 complete가 되고, scalar jsonb(행 하나)면 영향이 없다.
+  const capped = () => sqlAdmin(async (sql, params) => (await queryOf(db)(sql, params)).slice(0, 1000));
+
+  it("경로 충돌 1,001개: 항목 1,001개 · decisions ok · complete true. 복귀 요약 줄의 결정도 1,001개", async () => {
+    const w = await f.conflictWorld();
+    await s.q(
+      `insert into public.agent_path_leases (user_id, bridge_id, run_id, agent_session_id, workspace_ref, path_key, rel_path, source, conflict_run_id, conflict_at, conflict_version)
+       select $1, $2, $3, $4, '/w/proj', '/w/proj/bulk-' || g, 'bulk-' || g, 'observed', $5, '2026-10-13T09:00:00Z', 1 from generate_series(1, 1000) g`,
+      [w.user, w.bridge, w.run, w.session, w.later.run],
+    );
+    const client = capped();
+    const board = await review(w.user, BOTH, client);
+    expect(board).toMatchObject({ complete: true, empty: false, sources: { decisions: "ok" } });
+    expect(itemsOf(board)).toHaveLength(1001);
+    expect(new Set(itemsOf(board).map((item) => item.id)).size).toBe(1001);
+    const lines = (await summary(w.user, BOTH, client)).items.filter((item) => item.action_id === w.later.action);
+    expect(lines).toHaveLength(1);
+    expect(lines[0].decisions).toHaveLength(1001);
+    expect(lines[0]).toMatchObject({ needs_answer: true, next: { kind: "answer", decision_kinds: ["path_conflict"] } });
+  });
+});
+
+describe("결정적 Action id (start_agent_turn이 sha256에서 만든 id)의 복귀 요약", () => {
+  it("UUID 버전 비트가 없는 id의 Action도 변화 줄이 읽힌다 (변화 원천이 통째로 unavailable이 되지 않는다)", async () => {
+    const user = await s.user();
+    const action = "d1b2c3d4-e5f6-0a7b-8c9d-0e1f2a3b4c5d";
+    await s.q("insert into public.actions (id, user_id, title) values ($1, $2, '결정적 id 이슈')", [action, user]);
+    await s.q("insert into public.action_events (user_id, action_id, type, actor, created_at) values ($1, $2, 'due_changed', 'ai', $3)", [user, action, "2026-10-12T12:00:00.000000Z"]);
+    const response = await summary(user, []);
+    expect(response.sources.changes).toBe("ok");
+    const line = response.items.find((item) => item.action_id === action);
+    expect(line).toMatchObject({ title: "결정적 id 이슈", changes: [{ source: "action_event", kind: "due_changed" }] });
+    expect(returnSummaryWithAgentsResponseSchema.parse(response)).toEqual(response);
   });
 });

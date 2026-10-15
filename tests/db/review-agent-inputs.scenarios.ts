@@ -13,13 +13,14 @@ export const SECRET = "비밀 질문 문구";
 /** 질문한 시각의 기본값: 어느 시계로 읽어도 과거다 (asked_at은 DB 시각으로 잘리므로 기본 시험이 시계에 기대지 않게) */
 export const ASKED = "2026-01-02T03:04:05Z";
 
-export type InputRow = { kind: string; item_ref: string; action_id: string; run_id: string; version: string; created_at: Date; due_at: Date | null; detail: Record<string, unknown> };
+export type InputRow = { kind: string; item_ref: string; action_id: string; run_id: string; version: string; created_at: string; due_at: string | null; detail: Record<string, unknown> };
 
 export function reviewAgentInputsFixtures(db: () => ConversationAgentDb) {
   const f = agentPathLeaseFixtures(db);
   type World = Awaited<ReturnType<typeof f.agentWorld>>;
   const inputs = async (user: string, adapters: string[] | null = BOTH) =>
-    (await f.q("select * from public.review_agent_inputs($1, $2::text[]) order by kind, item_ref", [user, adapters])) as InputRow[];
+    // 함수는 scalar jsonb 하나(배열)를 돌려준다 — PostgREST db-max-rows가 행 수에 걸려도 잘리지 않는다. 시험은 읽기 쉽게 종류 · 열쇠 순으로 줄 세운다
+    ((await f.one("select public.review_agent_inputs($1, $2::text[]) as result", [user, adapters])).result as InputRow[]).slice().sort((a, b) => (a.kind < b.kind ? -1 : a.kind > b.kind ? 1 : a.item_ref < b.item_ref ? -1 : a.item_ref > b.item_ref ? 1 : 0));
   const question = (task: string, request = "req-1", over: { kind?: string; secrets?: boolean[]; asked_at?: string } = {}) => ({
     question_key: [task, request], provider_request_id: request, kind: over.kind ?? "input", structured: true,
     questions: (over.secrets ?? [false]).map((secret, i) => ({ id: `q${i}`, header: SECRET, text: SECRET, options: [], multi_select: false, allow_other: true, secret })),
@@ -85,13 +86,14 @@ export function reviewAgentInputsTests(db: () => ConversationAgentDb) {
   describe("T1 함수 모양", () => {
     it("stable · invoker · search_path='' · service_role만 실행 · 본문에 쓰기와 행 잠금이 없다", async () => {
       const row = await f.one(
-        `select p.prokind, p.provolatile, p.prosecdef, p.proconfig, pg_get_function_result(p.oid) result, pg_get_functiondef(p.oid) def,
+        `select p.prokind, p.provolatile, p.prosecdef, p.proretset, p.proconfig, pg_get_function_result(p.oid) result, pg_get_functiondef(p.oid) def,
                 has_function_privilege('anon', p.oid, 'execute') anon, has_function_privilege('authenticated', p.oid, 'execute') app, has_function_privilege('service_role', p.oid, 'execute') server
            from pg_proc p where p.pronamespace = 'public'::regnamespace and p.proname = 'review_agent_inputs'`,
       );
-      expect(row).toMatchObject({ prokind: "f", provolatile: "s", prosecdef: false, anon: false, app: false, server: true });
+      expect(row).toMatchObject({ prokind: "f", provolatile: "s", prosecdef: false, proretset: false, anon: false, app: false, server: true });
       expect(row.proconfig).toEqual(['search_path=""']);
-      expect(row.result).toBe("TABLE(kind text, item_ref uuid, action_id uuid, run_id uuid, version text, created_at timestamp with time zone, due_at timestamp with time zone, detail jsonb)");
+      // 반환은 scalar jsonb 하나다 (TABLE이면 PostgREST db-max-rows가 행을 자른다)
+      expect(row.result).toBe("jsonb");
       expect(String(row.def)).not.toMatch(/\b(insert|update|delete|truncate|nextval|set_config)\b/i);
       expect(String(row.def)).not.toMatch(/\bfor\s+(update|share|no\s+key\s+update|key\s+share)\b/i);
     });
@@ -99,7 +101,7 @@ export function reviewAgentInputsTests(db: () => ConversationAgentDb) {
     it("앱(authenticated)·익명은 부를 수 없다 (RLS 밖의 서버 함수)", async () => {
       const w = await f.agentWorld();
       await db().asUser(w.user, async () => {
-        await expect(f.q("select * from public.review_agent_inputs($1, $2::text[])", [w.user, f.BOTH])).rejects.toMatchObject({ code: "42501" });
+        await expect(f.q("select public.review_agent_inputs($1, $2::text[])", [w.user, f.BOTH])).rejects.toMatchObject({ code: "42501" });
       });
     });
 
@@ -389,6 +391,29 @@ export function reviewAgentInputsTests(db: () => ConversationAgentDb) {
       await f.updateRow("actions", third.action, { status: "done" });
       expect(await listed()).toContain(lease3);
       expect((await f.inputs(w.user)).map((r) => r.item_ref)).not.toContain(lease3);
+    });
+  });
+
+  describe("T6 개수 상한 없음 (PostgREST db-max-rows)", () => {
+    it("입력이 1,001개여도 모두 나온다. 호출 결과는 항상 행 하나(scalar jsonb 배열)라 행 수 상한에 걸리지 않는다", async () => {
+      const w = await f.conflictWorld();
+      await f.q(
+        `insert into public.agent_path_leases (user_id, bridge_id, run_id, agent_session_id, workspace_ref, path_key, rel_path, source, conflict_run_id, conflict_at, conflict_version)
+         select $1, $2, $3, $4, '/w/proj', '/w/proj/bulk-' || g, 'bulk-' || g, 'observed', $5, '2026-10-13T09:00:00Z', 1 from generate_series(1, 1000) g`,
+        [w.user, w.bridge, w.run, w.session, w.later.run],
+      );
+      const rows = await f.inputs(w.user);
+      expect(rows).toHaveLength(1001);
+      expect(new Set(rows.map((r) => r.item_ref)).size).toBe(1001);
+      expect(rows.every((r) => r.kind === "path_conflict")).toBe(true);
+      // 같은 호출을 행으로 세면 하나다 (set-returning이면 1,001행이고 max-rows에 잘린다)
+      expect(await f.count("select public.review_agent_inputs($1, $2::text[]) as result", [w.user, f.BOTH])).toBe(1);
+    });
+
+    it("입력이 없으면 빈 배열이다 (null이 아니다)", async () => {
+      const w = await f.agentWorld();
+      expect((await f.one("select public.review_agent_inputs($1, $2::text[]) as result", [w.user, f.BOTH])).result).toEqual([]);
+      expect((await f.one("select public.review_agent_inputs($1, null) as result", [w.user])).result).toEqual([]);
     });
   });
 

@@ -171,8 +171,11 @@ export function matchPendingVersion(current: PendingGroup[], seen: { itemId: str
   return "gone";
 }
 
-/** review_agent_inputs 한 행 (외부 응답처럼 zod로 검증한다). 모르는 종류 · 틀린 모양은 throw */
-const agentInputRowSchema = z.object({
+/**
+ * review_agent_inputs의 반환 = 입력 행의 배열 하나(scalar jsonb)다. 외부 응답처럼 zod로 검증한다: 모르는 종류 · 틀린 모양은 물론 배열이 아닌 값(null 포함)도 throw한다 —
+ * 비어 있다는 말은 `[]`뿐이다. (행 여러 개를 돌려주는 함수는 PostgREST db-max-rows에 잘려 일부만 "완전함"으로 나가므로 한 값으로 받는다.)
+ */
+const agentInputsSchema = z.array(z.object({
   kind: z.enum(AGENT_INPUT_KINDS),
   item_ref: z.guid(),
   action_id: z.guid(),
@@ -181,7 +184,7 @@ const agentInputRowSchema = z.object({
   created_at: z.union([z.string(), z.date()]),
   due_at: z.union([z.string(), z.date()]).nullable(),
   detail: z.record(z.string(), z.unknown()),
-});
+}));
 
 export type PendingLoadOptions = {
   future?: FutureInputs;
@@ -200,9 +203,6 @@ export async function loadPendingDecisions(admin: SupabaseClient, userId: string
     adapters.length > 0 ? admin.rpc("review_agent_inputs", { p_user_id: userId, p_adapters: [...adapters] }).throwOnError() : null,
   ]);
   const rows: PendingInput[] = ((c2.data ?? []) as PendingInput[]).map((r) => ({ ...r, blocks_other_work: false }));
-  for (const raw of agent ? ((agent.data ?? []) as unknown[]) : []) {
-    const row = agentInputRowSchema.parse(raw);
-    rows.push({ ...row, step_id: null, question_id: null, blocks_other_work: false });
-  }
+  if (agent) for (const row of agentInputsSchema.parse(agent.data)) rows.push({ ...row, step_id: null, question_id: null, blocks_other_work: false });
   return computePendingDecisions({ rows, future: options.future, now });
 }

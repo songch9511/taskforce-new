@@ -30,8 +30,9 @@ const scanChangeSchema = z.object({
   source_state: z.enum(["available", "deleted", "access_lost", "text_expired"]).nullable(),
 });
 
+// Action id는 z.guid()다: start_agent_turn이 sha256에서 만드는 결정적 id에는 UUID 버전 · variant 비트가 없어 z.uuid()는 그 id를 거절하고 변화 원천 전체를 unavailable로 만든다.
 const scanWorkSchema = z.object({
-  action_id: z.uuid(),
+  action_id: z.guid(),
   title: z.string(),
   status: z.enum(["open", "done", "dropped"]),
   started: z.boolean(),
@@ -45,7 +46,7 @@ export const scanResultSchema = z.object({
   digest: z.string().refine(isDigest),
   truncated: z.boolean(),
   /** 잘렸을 때만: 보인 작업의 id (Clear 범위). 커서가 Clear까지 가져간다 */
-  page: z.array(z.uuid()).max(RETURN_SUMMARY_MAX_WORKS).nullable(),
+  page: z.array(z.guid()).max(RETURN_SUMMARY_MAX_WORKS).nullable(),
   /** 읽음 기준이 없다 (Clear도 기준점도 없었다) — 잘린 조회의 Clear가 run · 대화 이력도 기준으로 삼아야 한다 */
   baseline: z.boolean(),
   /** 응답의 baseline 값: Clear한 적 있음 | 기준점만 있음 | 둘 다 없음 */

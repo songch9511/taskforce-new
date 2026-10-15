@@ -77,11 +77,13 @@ async function expectBWaitsForA() {
 /** reader가 읽는다 (다른 연결). 잠금을 기다리면 3초 안에 끝나지 않는다 */
 async function read(user: string, adapters: string[] = BOTH) {
   const started = Date.now();
-  const query = pending(reader.query("select * from public.review_agent_inputs($1, $2::text[]) order by kind, item_ref", [user, adapters]));
+  const query = pending(reader.query("select public.review_agent_inputs($1, $2::text[]) as result", [user, adapters]));
   const timeout = new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), 3_000));
   const winner = await Promise.race([query, timeout]);
   if (winner === "timeout") throw new Error("review_agent_inputs waited for a lock");
-  const rows = (await resolved(query)).rows as { kind: string; item_ref: string; version: string; detail: Record<string, unknown> }[];
+  const rows = ((await resolved(query)).rows[0].result as { kind: string; item_ref: string; version: string; detail: Record<string, unknown> }[])
+    .slice()
+    .sort((a, b) => (a.kind < b.kind ? -1 : a.kind > b.kind ? 1 : a.item_ref < b.item_ref ? -1 : a.item_ref > b.item_ref ? 1 : 0));
   return { rows, ms: Date.now() - started };
 }
 const lockWaits = async () => (await setup.query<{ n: number }>("select count(*)::int n from pg_stat_activity where datname=$1 and wait_event_type='Lock'", [DB_NAME])).rows[0].n;

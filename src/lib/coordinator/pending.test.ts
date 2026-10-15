@@ -311,6 +311,29 @@ describe("[D4b-s] loadPendingDecisions: gate · 두 함수 · 실패는 전체 �
     await expect(run({ ...AGENT_ROW, version: "" })).rejects.toThrow();
     await expect(run({ ...AGENT_ROW, detail: null })).rejects.toThrow();
   });
+
+  it("review_agent_inputs의 반환은 배열이어야 한다: null · 객체 · 글자는 비었다고 읽지 않고 throw한다 (잘린/깨진 응답을 빈 목록으로 두지 않는다)", async () => {
+    for (const data of [null, undefined, {}, "[]", 3]) {
+      const t = fakeAdmin({ coordinator_pending_inputs: [C2_ROW] });
+      const admin = { rpc: (name: string, args: unknown) => (name === "review_agent_inputs" ? { throwOnError: () => Promise.resolve({ data }) } : t.admin.rpc(name, args)) } as unknown as SupabaseClient;
+      await expect(loadPendingDecisions(admin, "u", NOW, { agentAdapters: ["agent:codex"] }), JSON.stringify(data) ?? "undefined").rejects.toThrow();
+    }
+  });
+
+  it("빈 배열은 정당한 빈 목록이다 (C2 항목만 나온다)", async () => {
+    const { admin } = fakeAdmin({ coordinator_pending_inputs: [C2_ROW], review_agent_inputs: [] });
+    expect((await loadPendingDecisions(admin, "u", NOW, { agentAdapters: ["agent:codex"] })).map((g) => g.kind)).toEqual(["confirm"]);
+  });
+
+  it("행이 1,001개여도 하나도 버리지 않는다 (개수 상한 없음 — 잘림은 SQL 반환 형태가 막는다)", async () => {
+    const rows = Array.from({ length: 1001 }, (_, i) => {
+      const lease = `c0000000-0000-4000-8000-${String(i + 1).padStart(12, "0")}`;
+      return { ...AGENT_ROW, kind: "path_conflict", item_ref: lease, version: `conflict:${lease}:1`, detail: { ...DETAIL.path_conflict, lease_id: lease } };
+    });
+    const { admin } = fakeAdmin({ coordinator_pending_inputs: [], review_agent_inputs: rows });
+    const groups = await loadPendingDecisions(admin, "u", NOW, { agentAdapters: ["agent:codex"] });
+    expect(groups.flatMap((g) => g.items)).toHaveLength(1001);
+  });
 });
 
 describe("계산은 실제 대기 항목을 하나도 버리지 않는다 (개수 상한 없음 — 상한 때문에 항목이 gone으로 보이면 안 된다)", () => {

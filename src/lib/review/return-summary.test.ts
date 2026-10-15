@@ -7,7 +7,7 @@ import { computePendingDecisions, type PendingInput } from "@/lib/coordinator/pe
 
 import { decodeCursor } from "./cursor";
 import { decodeInitToken } from "./init-token";
-import { buildReturnSummaryItems, composeReturnSummary, type ActionBasics, type ScanResult, type ScanWork } from "./return-summary";
+import { buildReturnSummaryItems, composeReturnSummary, scanResultSchema, type ActionBasics, type ScanResult, type ScanWork } from "./return-summary";
 
 // 복귀 요약 계산 (순수): SQL 스캔 결과 + C2 결정 대기 → 응답. DB 없이 의미만 시험한다 (DB 쪽은 tests/db/review-summary.scenarios.ts, 연결은 tests/review).
 
@@ -232,6 +232,28 @@ describe("buildReturnSummaryItems: 에이전트 결정 (D4b-s)", () => {
     const done = change("done", 5, { source: "run", detail: "draft_ready", source_state: null });
     const item = buildReturnSummaryItems({ works: [work(A, { changes: [done] })], pending: [], basics: basics() })[0];
     expect(item.next).toEqual({ kind: "review_result", decision_kinds: [] });
+  });
+});
+
+// 결정적 Action id(start_agent_turn이 sha256에서 만든다)는 UUID 버전 · variant 비트가 없다: SQL 스캔 결과의 Action id를 z.uuid()로 거절하면 복귀 요약 변화 원천 전체가 unavailable이 된다.
+describe("scanResultSchema: 결정적 Action id를 받는다", () => {
+  const DETERMINISTIC = "d1b2c3d4-e5f6-0a7b-8c9d-0e1f2a3b4c5d"; // 버전 비트 0, variant 비트 0
+  const raw = (over: Record<string, unknown> = {}) => ({
+    since: null, horizon: at(900), digest: "a:1:5|r:0:0|m:0:0", truncated: false, page: null, baseline: true, baseline_state: "never_cleared", init_digest: null,
+    works: [{ action_id: DETERMINISTIC, title: "t", status: "open", started: false, last_user_at: null, changes: [] }], ...over,
+  });
+
+  it("works[].action_id", () => {
+    expect(scanResultSchema.parse(raw()).works[0].action_id).toBe(DETERMINISTIC);
+  });
+
+  it("page[] (잘린 조회의 Clear 범위)", () => {
+    expect(scanResultSchema.parse(raw({ truncated: true, page: [DETERMINISTIC] })).page).toEqual([DETERMINISTIC]);
+  });
+
+  it("그래도 UUID 모양이 아닌 글자는 거절한다", () => {
+    expect(scanResultSchema.safeParse(raw({ works: [{ action_id: "not-an-id", title: "t", status: "open", started: false, last_user_at: null, changes: [] }] })).success).toBe(false);
+    expect(scanResultSchema.safeParse(raw({ truncated: true, page: ["x"] })).success).toBe(false);
   });
 });
 

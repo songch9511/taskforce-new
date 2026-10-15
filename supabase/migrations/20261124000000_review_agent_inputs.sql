@@ -1,6 +1,8 @@
 -- OA D4b-s: Review 입력 연결 (서버). 읽기 전용 SQL 함수 하나뿐이다: 표 · 열 · 색인 · 트리거 · 지표 CHECK 변경 0, 새 쓰기 경로 0.
 --
 -- review_agent_inputs(p_user_id, p_adapters): 에이전트가 사용자의 결정을 기다리는 일을 한 스냅샷(문장 하나)에서 읽는다.
+--   반환은 **scalar jsonb 하나**(입력 행의 배열, 없으면 `[]`)다. TABLE을 돌려주면 PostgREST `db-max-rows`(Supabase 기본 1000)가 행 수에 걸려 입력이 조용히 잘리고,
+--   잘린 목록이 "완전함"으로 나간다 — 결과가 행 하나면 상한이 닿지 않는다. 배열 원소 = { kind, item_ref, action_id, run_id, version, created_at, due_at, detail }, kind · item_ref 순.
 --   agent_question / agent_approval / agent_secret_question: agent_tasks.pending_question (대화 run의 작업만, 그 세션 연결의 adapter가 p_adapters 안일 때만)
 --     항목 열쇠 = task id, version = question:<task id>:<provider_request_id> (질문이 바뀌면 같은 열쇠에 다른 version)
 --   result_ready: 끝나지 않은 대화 run의 마지막 턴 작업이 idle이고, 검토하지 않은(turn_seq > reviewed_turn_seq) 현재 산출물이 있다
@@ -14,22 +16,24 @@ begin;
 set local lock_timeout = '5s';
 
 create function public.review_agent_inputs(p_user_id uuid, p_adapters text[])
-returns table (kind text, item_ref uuid, action_id uuid, run_id uuid, version text, created_at timestamptz, due_at timestamptz, detail jsonb)
+returns jsonb
 language sql
 stable
 set search_path = ''
 as $$
+  select coalesce(jsonb_agg(to_jsonb(x) order by x.kind, x.item_ref), '[]'::jsonb)
+    from (
   select case
            when t.pending_question->>'kind' = 'approval' then 'agent_approval'
            when exists (select 1 from jsonb_array_elements(t.pending_question->'questions') q where q->>'secret' = 'true') then 'agent_secret_question'
            else 'agent_question'
-         end::text,
-         t.id, r.action_id, r.id,
-         'question:' || t.id::text || ':' || (t.pending_question->>'provider_request_id'),
-         least((t.pending_question->>'asked_at')::timestamptz, public.db_now()),
-         a.due_at,
+         end::text as kind,
+         t.id as item_ref, r.action_id as action_id, r.id as run_id,
+         'question:' || t.id::text || ':' || (t.pending_question->>'provider_request_id') as version,
+         least((t.pending_question->>'asked_at')::timestamptz, public.db_now()) as created_at,
+         a.due_at as due_at,
          jsonb_build_object('task_id', t.id, 'session_id', t.agent_session_id, 'provider_request_id', t.pending_question->>'provider_request_id',
-                            'adapter', c.adapter, 'bridge_id', c.bridge_id)
+                            'adapter', c.adapter, 'bridge_id', c.bridge_id) as detail
     from public.agent_tasks t
     join public.execution_runs r on r.id = t.run_id and r.user_id = t.user_id
     join public.actions a on a.id = r.action_id and a.user_id = r.user_id
@@ -63,6 +67,7 @@ as $$
     join public.execution_runs c on c.id = l.conflict_run_id and c.user_id = l.user_id
     join public.actions a on a.id = c.action_id and a.user_id = c.user_id
    where l.user_id = p_user_id and l.conflict_run_id is not null and a.status = 'open'
+    ) x
 $$;
 
 revoke all on function public.review_agent_inputs(uuid, text[]) from public, anon, authenticated;
