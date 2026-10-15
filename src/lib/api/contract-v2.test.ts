@@ -488,6 +488,19 @@ describe("범위 (work_contexts · context_members)", () => {
   });
 });
 
+describe("해시 GUID 이슈의 멤버십 요청 (재검토 P2)", () => {
+  it("에이전트가 만든 이슈의 id(sha256에서 나온 해시 GUID, RFC 4122 버전 자리가 아님)로도 넣기 · 빼기를 받는다. 모양이 틀린 id는 여전히 거절한다", () => {
+    const hashed = "a3f1c2d4-5e6f-0718-293a-4b5c6d7e8f90";
+    for (const op of ["add", "remove"]) {
+      const target = { op, member_kind: "action", member_id: hashed };
+      expect(contextMembershipRequestSchema.parse(target), op).toEqual(target);
+      expect(contextMembershipChangeSchema.parse({ ...target, origin: "user" }), op).toEqual({ ...target, origin: "user", confidence: null });
+    }
+    expect(contextMembershipRequestSchema.safeParse({ op: "add", member_kind: "action", member_id: "not-a-guid" }).success).toBe(false);
+    expect(contextMembershipRequestSchema.safeParse({ op: "add", member_kind: "action", member_id: hashed.replace(/-/g, "") }).success).toBe(false);
+  });
+});
+
 describe("사용자 멤버십 쓰기 (S3b): 조건부 요청 · 실제 변화 응답", () => {
   const write = { op: "add", member_kind: "action", member_id: U.action, expected_context_version: 4 };
   const member = {

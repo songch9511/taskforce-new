@@ -1094,7 +1094,7 @@ export const contextMemberSchema = z.object({
 });
 export type ContextMember = z.infer<typeof contextMemberSchema>;
 
-const membershipTargetSchema = z.object({ op: z.enum(["add", "remove"]), member_kind: contextMemberKindSchema, member_id: z.uuid() });
+const membershipTargetSchema = z.object({ op: z.enum(["add", "remove"]), member_kind: contextMemberKindSchema, member_id: z.guid() });
 
 /** 앱이 보내는 멤버십 변경의 대상 (A2 스키마, 조건 없음). S3b route는 조건부 contextMembershipWriteRequestSchema를 받는다. origin은 언제나 user다 (Set by you · Undo) */
 export const contextMembershipRequestSchema = membershipTargetSchema.strict();
