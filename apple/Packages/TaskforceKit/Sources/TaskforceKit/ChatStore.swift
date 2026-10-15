@@ -596,8 +596,13 @@ public final class ChatStore {
             let (chats, named) = try await (rows, projects)
             // 세션 패널이 보이는 대화 중 이 목록(최근 100 + 빈 20)에 없는 것은 id로 직접 읽어 남긴다
             let listed = Set(chats.map(\.id))
-            let extras = await readPanelRows(missingFrom: listed)
+            let (extras, gone) = await readPanelRows(missingFrom: listed)
             guard scope.isCurrent(token), sequence == listSequence else { return }
+            // 서버가 없다 · 보관했다고 확인한 패널 대화: 이전 본문 · 대상을 남기지 않고 오류 화면(다시 시도)으로 둔다 (일시 실패와 다르다)
+            for id in gone {
+                threads[id] = ChatThread()
+                threads[id]?.load = .failed
+            }
             let live = listed.union(extras.map(\.id))
             let createdMeanwhile = conversations.filter { !knownBefore.contains($0.id) && !live.contains($0.id) }
             conversations = chats.filter { $0.archivedAt == nil } + extras + createdMeanwhile
@@ -626,25 +631,37 @@ public final class ChatStore {
         }
     }
 
-    /// 세션 패널이 보이는 대화 중 목록에 없는 것의 행을 id로 읽는다. 보관했거나 서버에 없으면 빠지고, 잠깐 못 읽으면 아는 행을 그대로 둔다
-    private func readPanelRows(missingFrom listed: Set<UUID>) async -> [ChatConversation] {
+    /// 세션 패널이 보이는 대화 중 목록에 없는 것의 행을 id로 읽는다. 서버가 없다 · 보관했다고 확인하면 `gone`(오류 화면), 잠깐 못 읽으면 아는 행을 그대로 둔다
+    private func readPanelRows(missingFrom listed: Set<UUID>) async -> (rows: [ChatConversation], gone: Set<UUID>) {
         let ids = panelConversations().subtracting(listed).subtracting(locals.map(\.id)).sorted { $0.uuidString < $1.uuidString }
-        guard !ids.isEmpty else { return [] }
+        guard !ids.isEmpty else { return ([], []) }
         let known = conversations
-        return await withTaskGroup(of: ChatConversation?.self) { group in
+        enum Outcome: Sendable {
+            case row(ChatConversation)
+            case gone(UUID)
+            case unknown
+        }
+        return await withTaskGroup(of: Outcome.self) { group in
             for id in ids {
                 group.addTask { [gateway] in
                     do {
-                        guard let row = try await gateway.conversation(id: id), row.archivedAt == nil else { return nil }
-                        return row
+                        guard let row = try await gateway.conversation(id: id), row.archivedAt == nil else { return .gone(id) }
+                        return .row(row)
                     } catch {
-                        return known.first { $0.id == id }
+                        return known.first { $0.id == id }.map(Outcome.row) ?? .unknown
                     }
                 }
             }
             var rows: [ChatConversation] = []
-            for await row in group { if let row { rows.append(row) } }
-            return rows
+            var gone: Set<UUID> = []
+            for await outcome in group {
+                switch outcome {
+                case .row(let row): rows.append(row)
+                case .gone(let id): gone.insert(id)
+                case .unknown: break
+                }
+            }
+            return (rows, gone)
         }
     }
 

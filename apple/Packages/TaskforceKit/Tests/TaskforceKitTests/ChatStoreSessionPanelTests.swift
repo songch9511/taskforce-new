@@ -126,6 +126,52 @@ struct ChatStoreSessionPanelTests {
         #expect(chat.screen(for: old.id) == .ready(problem: nil) && chat.turns(for: old.id).map(\.text) == ["back"], "다시 시도하면 열린다")
     }
 
+    // MARK: 재검토 반영 3 — 열려 있는 동안 지워지거나 보관된 대화
+
+    /// 후속 조회(목록 새로 읽기)가 `nil` · archived를 돌려주면 일시 실패(아는 행을 남긴다)와 달리 이전 `.ready` 본문을 남기지 않고 오류 화면 + 다시 시도다
+    @Test func aPanelConversationDeletedElsewhereBecomesTheErrorScreenNotAStaleBody() async {
+        let listed = agentRow(1, last: 100)
+        let old = agentRow(2, last: 1)
+        serve(list: [listed], direct: [old], messages: said(old.id, "first"))
+        let chat = store()
+        chat.panelConversations = { [old.id] }
+        await chat.refresh()
+        #expect(chat.screen(for: old.id) == .ready(problem: nil) && chat.turns(for: old.id).map(\.text) == ["first"])
+        serve(list: [listed], direct: [], messages: said(old.id, "first"))
+        await chat.refresh()
+        #expect(chat.screen(for: old.id) == .failed, "서버에 없으면 이전 본문이 아니라 오류 화면")
+        #expect(chat.turns(for: old.id).isEmpty && !chat.isTargetKnown(old.id), "낡은 본문 · 낡은 대상을 남기지 않는다")
+        #expect(!chat.canCompose(in: old.id), "보낼 수 없다")
+        // 다시 시도: 다시 생기면 열린다
+        serve(list: [listed], direct: [old], messages: said(old.id, "back", seq: 2))
+        await chat.readConversation(old.id)
+        #expect(chat.screen(for: old.id) == .ready(problem: nil) && chat.turns(for: old.id).map(\.text) == ["back"])
+    }
+
+    @Test func aPanelConversationArchivedElsewhereBecomesTheErrorScreenToo() async {
+        let listed = agentRow(1, last: 100)
+        let old = agentRow(2, last: 1)
+        serve(list: [listed], direct: [old], messages: said(old.id, "first"))
+        let chat = store()
+        chat.panelConversations = { [old.id] }
+        await chat.refresh()
+        serve(list: [listed], direct: [agentRow(2, last: 1, archived: true)], messages: said(old.id, "first"))
+        await chat.refresh()
+        #expect(chat.screen(for: old.id) == .failed && chat.turns(for: old.id).isEmpty)
+    }
+
+    @Test func aConversationInTheListThatIsLaterArchivedAlsoShowsTheErrorScreenWhileThePanelShowsIt() async {
+        let row = agentRow(1, last: 100)
+        serve(list: [row], direct: [row], messages: said(row.id, "first"))
+        let chat = store()
+        chat.panelConversations = { [row.id] }
+        await chat.refresh()
+        #expect(chat.screen(for: row.id) == .ready(problem: nil))
+        serve(list: [], direct: [agentRow(1, last: 100, archived: true)], messages: said(row.id, "first"))
+        await chat.refresh()
+        #expect(chat.screen(for: row.id) == .failed && chat.turns(for: row.id).isEmpty, "목록에서 빠진(보관된) 대화는 본문이 아니라 오류 화면")
+    }
+
     // MARK: 첫 읽기 실패 · 없는 대화
 
     @Test func aFirstReadFailureShowsOfflineOrFailedAndTryAgainReadsAgain() async {
