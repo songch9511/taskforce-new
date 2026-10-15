@@ -118,7 +118,7 @@ export function answerLocalTests(db: () => ConversationAgentDb) {
       ["같은 사용자의 다른 bridge", async (w) => ({ bridge: await f.bridge(w.user) })],
       ["연결이 bridge에 묶여 있지 않음", async (w) => { await f.q("update public.agent_connections set bridge_id=null where id=$1", [w.connection]); return {}; }],
       ["bridge가 폐기됨(연결 · 세션은 그대로)", async (w) => { await f.q("update public.bridges set status='revoked', revoked_at=now() where id=$1", [w.bridge]); return {}; }],
-      ["남의 작업", async (w) => ({ user: await f.user() })],
+      ["남의 작업", async () => ({ user: await f.user() })],
       ["없는 작업", async () => ({ task: "00000000-0000-4000-8000-000000000000" })],
       ["run이 대화가 아님", async (w) => { await f.updateRow("execution_runs", w.run, { kind: "task" }); return {}; }],
       ["adapter 목록 밖", async () => ({ adapters: ["agent:claude-code"] })],
@@ -131,6 +131,19 @@ export function answerLocalTests(db: () => ConversationAgentDb) {
       const before = await f.all(w.user);
       expect(await f.local(w, over)).toEqual({ status: "not_found" });
       expect(await f.all(w.user)).toEqual(before);
+    });
+
+    it.each(cases)("%s → 쓰기 길에 닿지 않는다: 잠그기 전에 거른다 (agent_tasks 쓰기를 터뜨리는 덫으로 확인)", async (_name, arrange) => {
+      const w = await f.secretWorld();
+      const over = await arrange(w);
+      await f.q("begin");
+      try {
+        await f.q("create function public.tmp_f2_probe() returns trigger language plpgsql as $$ begin raise exception 'F2_PROBE_REACHED_WRITE_PATH'; end $$");
+        await f.q("create trigger tmp_f2_probe before update on public.agent_tasks for each row execute function public.tmp_f2_probe()");
+        expect(await f.local(w, over)).toEqual({ status: "not_found" });
+      } finally {
+        await f.q("rollback");
+      }
     });
 
     const stale: [string, (w: Awaited<ReturnType<typeof f.secretWorld>>) => Promise<unknown>][] = [

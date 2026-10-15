@@ -39,6 +39,23 @@ describe("T4 사후 소유 확인 · 본문 동일성 · 되돌리기", () => {
     }
   });
 
+  it("쓰는 도중 bridge가 폐기되면 같은 롤백 · not_found (사후 확인은 bridge active도 본다)", async () => {
+    const w = await f.secretWorld();
+    const before = await f.all(w.user);
+    await f.q("begin");
+    try {
+      await f.q(`create function public.tmp_f2_revoke() returns trigger language plpgsql as $$
+        begin update public.bridges set status = 'revoked', revoked_at = now() where id = '${w.bridge}'; return new; end $$`);
+      await f.q(`create trigger tmp_f2_revoke after update of state on public.agent_tasks for each row
+        when (old.state = 'awaiting_answer' and new.state = 'running') execute function public.tmp_f2_revoke()`);
+      expect(await f.local(w)).toEqual({ status: "not_found" });
+      expect(await f.all(w.user)).toEqual(before);
+      expect(await f.one("select status from public.bridges where id=$1", [w.bridge])).toEqual({ status: "active" });
+    } finally {
+      await f.q("rollback");
+    }
+  });
+
   it("대조: 바뀌지 않으면 같은 호출이 answered이다 (위 시험이 트리거 때문에만 거절된 것을 확인)", async () => {
     const w = await f.secretWorld();
     expect((await f.local(w)).status).toBe("answered");

@@ -266,18 +266,38 @@ describe("P6 로컬 답 ↔ heartbeat sweep", () => {
 });
 
 describe("P7 잠금을 붙잡으면 2초 안에 물러난다", () => {
-  it("다른 연결이 task 행을 쥐고 있으면 lock_timeout(2초)으로 55P03이고 쓰기 0", async () => {
+  it("다른 연결이 task 행을 쥐고 있으면 함수의 lock_timeout(2초)으로 55P03이고 쓰기 0 (세션의 lock_timeout에 기대지 않는다)", async () => {
     const w = await secretWorld();
     await a.query("begin");
     await a.query("select id from public.agent_tasks where id=$1 for update", [w.task]);
+    // 부르는 연결에는 세션 lock_timeout이 없다: 물러나는 시간은 함수의 set lock_timeout이 정한다
+    await b.query("set lock_timeout = 0");
     const started = Date.now();
-    await expect(setup.query("select public.answer_agent_question_locally($1,$2,$3,$4,$5::text[])", [w.user, w.bridge, w.task, sha256(REQUEST), BOTH])).rejects.toMatchObject({ code: "55P03" });
+    await expect(b.query("select public.answer_agent_question_locally($1,$2,$3,$4,$5::text[])", [w.user, w.bridge, w.task, sha256(REQUEST), BOTH])).rejects.toMatchObject({ code: "55P03" });
     const elapsed = Date.now() - started;
     expect(elapsed).toBeGreaterThanOrEqual(1500);
-    expect(elapsed).toBeLessThan(6000);
+    expect(elapsed).toBeLessThan(4000);
     await a.query("rollback");
     expect(await answerSteps(w)).toBe(0);
     expect(await f.state(w)).toMatchObject({ state: "awaiting_answer" });
     expect((await local(f, w)).status).toBe("answered");
+  });
+});
+
+describe("P8 남의 호출은 잠금을 기다리지 않는다", () => {
+  it("다른 Mac · 폐기된 bridge의 호출은 세션 · 작업을 다른 연결이 쥐고 있어도 바로 not_found (잠그기 전에 거른다)", async () => {
+    const w = await secretWorld();
+    const stranger = await f.bridge(w.user);
+    const revoked = await f.bridge(w.user);
+    await f.q("update public.bridges set status='revoked', revoked_at=now() where id=$1", [revoked]);
+    await a.query("begin");
+    await a.query("select id from public.agent_sessions where id=$1 for update", [w.session]);
+    await a.query("select id from public.agent_tasks where id=$1 for update", [w.task]);
+    const started = Date.now();
+    expect(await local(fb, { ...w, bridge: stranger })).toEqual({ status: "not_found" });
+    expect(await local(fb, { ...w, bridge: revoked })).toEqual({ status: "not_found" });
+    expect(Date.now() - started).toBeLessThan(1000);
+    await a.query("rollback");
+    expect(await answerSteps(w)).toBe(0);
   });
 });
