@@ -533,9 +533,10 @@ OA D3a 계약(`handoffs/oa-d3a-contract.md`) 5.1의 결정을 반영한다. 위 
 5. **결과 불명(Q5).** init을 본 시각을 명령 `inputAt`으로 적는다(로컬 전용, 서버 사건 아님). 접수 신호 없이 끝난 명령은 `inputAt`이 없으면 `not_received`, 있으면 `unknown`이다. adapter 결과 확인은 transcript를 읽지 않으므로 `unsupported` 그대로다.
 6. **신호(Q12).** 중단과 고아 끝내기는 SIGINT → (유예, 정체 재확인) → 그룹 · 프로세스 SIGKILL이다. SIGTERM은 쓰지 않는다(OA D2b `AgentProcess` 문서의 "SIGTERM → SIGKILL"보다 이 절이 이긴다).
 7. **managed settings(Q13).** 파일이 있으면 `managed_settings: true`(대상 `unsupported`)이고 내용 검사는 0.2.x다.
-8. **승인 카드 글(Q8, 사용자 결정).** Edit · Write는 `Edit <작업 폴더 기준 상대 경로>` · `Write <상대 경로>`, Bash는 `Run: <공백을 정리한 명령 앞 300자>`를 질문 글로 서버에 둔다(대화 보관 기한을 따른다). diff · 파일 내용은 0이다.
-9. **비밀값(Q9, 사용자 결정).** `ask_user`의 `secret` 질문을 허용한다. 값은 Taskforce 서버 · Mac 원장 · 로그에 없고, 훅 출력 → MCP 도구 결과로 모델 문맥과 Claude Code 자체 기록(`~/.claude/projects/…`)에만 남는다. 3.6의 "Mac 디스크에도 쓰지 않는다"는 Taskforce가 쓰는 곳으로 읽는다.
-10. **질문은 보고된 보류만.** 질문 사건은 `result.deferred_tool_use`가 bridge가 기록한 id를 보고할 때만 내고, 프로세스가 끝난 뒤에 낸다(답이 왔을 때 writer가 하나). 기록에 없는 id가 보고되면 질문 없이 그 id를 닫기 모드로 닫고 `failed(agent_error)`다.
+8. **승인 카드 글(Q8, 사용자 결정).** Edit · Write는 `Edit <작업 폴더 기준 상대 경로>` · `Write <상대 경로>`, Bash는 `Run: <명령 앞 300자>`를 질문 글로 서버에 둔다(대화 보관 기한을 따른다). 줄바꿈은 `⏎`, 탭은 `⇥`, 제어 · 양방향 · 폭 없는 글자는 `\u{XXXX}`로 보이고, 300자에서 잘랐으면 `… (+남은 글자 수)`를 붙인다(OA D3a 계약 8장 4). diff · 파일 내용은 0이다.
+9. **비밀값(Q9, 사용자 결정).** `ask_user`의 `secret` 질문을 허용한다. 값은 Taskforce 서버 · Mac 원장 · 로그에 없고, 훅 출력 → MCP 도구 결과로 모델 문맥과 Claude Code 자체 기록(`~/.claude/projects/…`)에만 남는다. 3.6의 "Mac 디스크에도 쓰지 않는다"는 Taskforce가 쓰는 곳으로 읽는다. 모델이 그 값을 되말하거나 명령에 넣으면, 답 resume 프로세스가 끝날 때까지 Mac 메모리에 둔 값과 정확히 같은 글(8자 이상)을 밖으로 나가는 사건 글 · tool-decision 명령 · 경로 · 승인 글에서 `[redacted]`로 바꾼다(OA D3a 계약 8장 11). 변형된 값은 가리지 못한다.
+10. **질문은 보고된 보류만.** 질문 사건은 `result.deferred_tool_use`가 bridge가 기록한 id를 보고할 때만 내고, 프로세스가 끝난 뒤에 낸다(답이 왔을 때 writer가 하나). 기록에 없는 id가 보고되거나 열린 요청을 상태 파일에 적지 못하면 질문 없이 그 id를 닫기 모드로 닫고 `failed(agent_error)`다.
+11. **승인 대상 · 끝 · resume id(OA D3a 계약 8장 2 · 13 · 10).** 승인한 Edit · Write는 보류 때 해석한 대상과 같을 때만 실행한다(지문 해시, 다르면 deny). 프로세스의 끝은 같은 프로세스 그룹의 자손까지 사라진 때다. `--resume`은 Mac 세션 폴더가 init으로 묶은 id만 쓴다.
 
 ### 13.3 Codex (`agent:codex`, codex-cli 0.162.1, `codex app-server` stdio)
 
