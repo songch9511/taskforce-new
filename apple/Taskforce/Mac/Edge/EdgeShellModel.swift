@@ -232,7 +232,11 @@ final class EdgeShellModel {
     private(set) var slots: [RailEntry] = []
     /// 노치에 120ms 머물러 펼친 레일 (패널이 열려 있으면 `isExpanded`가 따로 참)
     private(set) var railHovered = false
-    private(set) var panelOpen = false
+    private(set) var panelOpen = false {
+        // 패널을 접으면 세션 패널의 대화 읽기 기록을 지운다: 접어 둔 사이 온라인 복귀 · 목록 새로 읽기가 그 대화의 캐시를 비웠을 수 있어
+        // 복원(⌥Space)하면 같은 conversation id여도 다시 읽는다 (재검토 반영 1)
+        didSet { if !panelOpen { loadedPanelConversation = nil } }
+    }
     private(set) var view: View = .allWork
     /// 레일에서 연 일 (패널 목록에서 그 행을 표시)
     private(set) var currentID: UUID?
@@ -534,6 +538,8 @@ final class EdgeShellModel {
         self.view = view
         panelOpen = true
         menuOpen = false
+        // 접었던 세션 패널이 다시 보이면(숨김 → 표시) 그 대화를 다시 읽는다. 세션 패널이 안 보이는 화면으로 가면 읽기 기록을 지운다
+        loadPanelConversationIfNeeded()
         if view == .chats { onChatsOpened() }
         // All work로 들어오면 지금 들고 있는 응답이 처음 화면에 보인다: 아직 확정을 받지 않은 응답이면 그 표시 시점이다 (이미 받은 응답은 다시 받지 않는다)
         if view == .allWork { considerSummaryBaseline() }
@@ -713,8 +719,8 @@ final class EdgeShellModel {
 
     /// 세션 패널이 보이는 대화를 읽게 한다: 처음 열 때와 패널의 conversation id가 바뀔 때만 (같은 대화면 다시 부르지 않는다)
     private func loadPanelConversationIfNeeded() {
-        guard let conversation = openSessionItem?.conversationID else {
-            // 대화가 아직 없는 세션: 닫혀 있는 것과 같다 (대화가 생기면 그때 읽는다)
+        guard sessionPanelShown, let conversation = openSessionItem?.conversationID else {
+            // 세션 패널이 보이지 않거나 대화가 아직 없는 세션: 닫혀 있는 것과 같다 (다시 보이거나 대화가 생기면 그때 읽는다)
             loadedPanelConversation = nil
             return
         }
@@ -722,6 +728,9 @@ final class EdgeShellModel {
         loadedPanelConversation = conversation
         onLoadSessionConversation(conversation)
     }
+
+    /// 세션 패널 창이 실제로 보인다: 이슈 패널이 열려 있고 탭이 붙은 화면이고 세션 패널이 열려 있다 (`EdgeShell.followSessionPanel`과 같은 조건)
+    var sessionPanelShown: Bool { panelOpen && showsSessionTab && openSessionItem != nil }
 
     func closeSessionPanel() {
         sessionPanelID = nil
@@ -749,8 +758,8 @@ final class EdgeShellModel {
             return true
         }
         if nav.detailID != nil {
-            nav.back()
-            currentID = nav.detailID
+            // 머리 뒤로와 같은 길: 화면에 들어올 때마다 세션을 다시 읽는다 (재검토 반영 2)
+            goBack()
             return true
         }
         return false

@@ -16,6 +16,15 @@ enum EdgePanelMetrics {
     /// 머리 줄: 위 12 + 제목 20 + 아래 8
     static let headerHeight: CGFloat = 40
 
+    /// 패널 본문의 안쪽 여백. 새 Issues 화면(M1 · M3 · M4)은 디자인대로 좌우 8 · 아래 10(행이 364 폭, 행 안쪽 10이 글 시작을 만든다).
+    /// 그 밖의 화면(게이트가 꺼진 All work · Chats · Review)은 지금의 공통 좌우 16 · 아래 12 그대로다
+    static func bodyInsets(issueScreens: Bool, view: EdgeShellModel.View) -> EdgeInsets {
+        if issueScreens, view == .allWork {
+            return EdgeInsets(top: 0, leading: TFSpace.sm, bottom: 10, trailing: TFSpace.sm)
+        }
+        return EdgeInsets(top: 0, leading: TFSpace.lg, bottom: TFSpace.md, trailing: TFSpace.lg)
+    }
+
     /// 본문(+아래 입력칸) 높이에 맞춘 패널 높이
     static func height(body: CGFloat, footer: CGFloat = 0) -> CGFloat {
         min(maxHeight, max(minHeight, headerHeight + body + footer))
@@ -101,7 +110,7 @@ struct EdgePanelView: View {
                             if let desk = shell.review { ReviewPanelBody(shell: shell, desk: desk) }
                         }
                     }
-                    .padding(EdgeInsets(top: 0, leading: TFSpace.lg, bottom: TFSpace.md, trailing: TFSpace.lg))
+                    .padding(EdgePanelMetrics.bodyInsets(issueScreens: shell.issueScreensEnabled, view: shell.view))
                     .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { presentation.bodyHeight = $0 }
                 }
                 .defaultScrollAnchor(inConversation ? .bottom : .top)

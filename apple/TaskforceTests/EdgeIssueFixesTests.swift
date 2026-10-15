@@ -42,6 +42,18 @@ struct EdgeIssueFixesTests {
         return true
     }
 
+    /// 세션 읽기 횟수가 한동안(연속 5번 · 20ms) 늘지 않을 때까지 기다린다: 화면 진입이 기다리지 않고 보낸 읽기가 끝났다는 뜻이다
+    private func quietSessionReads(_ gateway: IssueSampleGateway) async {
+        var last = gateway.sessionReads
+        var steady = 0
+        let deadline = ContinuousClock.now.advanced(by: .seconds(3))
+        while steady < 5, ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(20))
+            steady = gateway.sessionReads == last ? steady + 1 : 0
+            last = gateway.sessionReads
+        }
+    }
+
     /// 실제 키 이벤트 (시스템이 보내는 모양 그대로: 방향키는 `.numericPad` · `.function`이 함께 온다)
     private func key(_ code: Int, flags: NSEvent.ModifierFlags = [], window: NSWindow? = nil) throws -> NSEvent {
         try #require(NSEvent.keyEvent(
@@ -260,6 +272,13 @@ struct EdgeIssueFixesTests {
         #expect(runtime.chat.panelConversations() == [Fx.conversation(1)], "세션 패널이 보이는 대화는 공통 갱신 집합에 든다")
         #expect(await eventually { runtime.chat.screen(for: Fx.conversation(1)) == .ready(problem: nil) }, "열면 그 대화를 id로 읽는다 (History 목록에 기대지 않는다)")
         #expect(gateway.conversationReads == 1, "행을 id로 한 번 읽었다 (목록에 없던 대화)")
+        controller.shell.openPanel(.review)
+        #expect(runtime.chat.panelConversations().isEmpty, "세션 패널이 보이지 않는 화면이면 갱신 집합에서 빠진다 (캐시를 붙들지 않는다)")
+        controller.shell.dismiss()
+        #expect(runtime.chat.panelConversations().isEmpty, "접어 두면 갱신 집합에서 빠진다")
+        controller.shell.togglePanel()
+        controller.shell.openPanel(.allWork)
+        #expect(runtime.chat.panelConversations() == [Fx.conversation(1)], "다시 이슈 화면에서 세션 패널이 보이면 다시 든다")
         controller.shell.closeSessionPanel()
         #expect(runtime.chat.panelConversations().isEmpty)
     }
@@ -282,5 +301,158 @@ struct EdgeIssueFixesTests {
         let short = try #require(menu.window).frame
         #expect(short.height < 200 && short.height < tall.height, "짧은 메뉴는 줄 전부가 그대로 보인다")
         menu.dismiss(notify: false)
+    }
+
+    // MARK: 재검토 반영 1 — 접었던 세션 패널 복원
+
+    /// History 범위 밖 대화 열기 → 패널 접기 → 온라인 복귀가 대화 캐시를 비움 → ⌥Space 복원. 같은 conversation id여도 숨김 → 표시 때 다시 읽는다 (빈 본문 · 끝나지 않는 로딩 없음)
+    @Test func restoringACollapsedSessionPanelReadsTheOutOfHistoryConversationAgain() async throws {
+        let account = try AppChatAccount.make()
+        let gateway = IssueSampleGateway()
+        gateway.hidesConversationsFromList = true
+        let runtime = ChatRuntime(gateway: gateway, contextGateway: IssueSampleContextGateway(), scope: account.scope, issueScreens: true)
+        let defaults = try TestDefaults()
+        defer { defaults.cleanup() }
+        let controller = EdgeShellController(
+            launcher: LauncherModel(configurationError: "test"), chat: runtime, assistantWindows: true,
+            positionStore: AssistantWindowPositionStore(defaults: defaults.defaults)
+        )
+        controller.assistant?.presents = false
+        let shell = controller.shell
+        shell.update(Fx.snapshot(seeds: Fx.seeds))
+        await runtime.contexts?.refresh()
+        await runtime.issues?.numbers.ensure(Fx.seeds.map { Fx.issue($0.number) })
+        await runtime.issues?.sessions.refresh()
+        shell.sessionsChanged()
+        let chat = runtime.chat
+        let conversation = Fx.conversation(1)
+        // 1. 목록(History)에 없는 대화를 세션 패널로 연다
+        shell.openAllWork()
+        shell.openIssue(Fx.issue(139))
+        shell.openSession(Fx.session(1))
+        #expect(await eventually { chat.screen(for: conversation) == .ready(problem: nil) }, "id로 직접 읽어 열린다")
+        let readsBefore = gateway.conversationReads
+        // 2. 패널을 접는다
+        shell.dismiss()
+        #expect(!shell.panelOpen && shell.sessionPanelID == Fx.session(1), "접어도 세션 패널 선택은 남는다")
+        // 3. 온라인 복귀가 대화 목록을 다시 읽고, 패널이 접혀 있어 그 대화의 캐시가 비워진다
+        chat.pathChanged(online: false)
+        chat.pathChanged(online: true)
+        await chat.refresh()   // `ChatRuntime.followConnectivity`가 온라인 복귀에 하는 일과 같다
+        await chat.settle()
+        #expect(chat.screen(for: conversation) == .blank && !chat.isTargetKnown(conversation), "캐시가 비었다 (복원 전)")
+        // 4. ⌥Space로 복원한다: 같은 conversation id여도 다시 읽는다
+        shell.togglePanel()
+        #expect(shell.panelOpen && shell.openSessionItem?.conversationID == conversation)
+        #expect(await eventually { chat.screen(for: conversation) == .ready(problem: nil) && chat.isTargetKnown(conversation) }, "복원하면 본문이 다시 보이고 Composer가 열린다")
+        #expect(gateway.conversationReads > readsBefore, "행을 id로 다시 읽었다")
+        #expect(SessionPanelView.composerState(for: try #require(shell.openSessionItem), chat: chat) == .ready(conversation))
+    }
+
+    @Test func switchingAwayToChatsAndBackToIssuesReadsThePanelConversationAgainOnlyWhenItIsShown() async {
+        let r = await rig(sessions: .basic)
+        var asked: [UUID] = []
+        r.shell.onLoadSessionConversation = { asked.append($0) }
+        r.openDetail(139)
+        r.shell.openSession(Fx.session(1))
+        #expect(asked == [Fx.conversation(1)])
+        r.shell.dismiss()
+        r.shell.openPanel(.review)
+        #expect(asked == [Fx.conversation(1)], "세션 패널이 보이지 않는 화면(Review)에서는 읽지 않는다")
+        r.shell.openAllWork()
+        #expect(r.shell.sessionPanelID == nil, "⌘2는 세션 패널을 닫는다")
+        r.openDetail(139)
+        r.shell.openSession(Fx.session(1))
+        r.shell.dismiss()
+        r.shell.togglePanel()
+        #expect(asked.count == 3 && asked.last == Fx.conversation(1), "접었다 ⌥Space로 복원하면 같은 대화도 다시 읽는다")
+    }
+
+    // MARK: 재검토 반영 2 — Esc 뒤로도 세션 refresh
+
+    @Test func escapingBackFromTheDetailReadsTheSessionsAgainWithPollingStopped() async {
+        let r = await rig(sessions: .external)
+        #expect(r.issues.sessions.items.allSatisfy { !$0.hasOpenTask }, "idle · external뿐이라 5초 읽기가 멈춘 상태")
+        r.shell.openAllWork()
+        r.shell.openList(.project(Fx.taskforce))
+        r.shell.openIssue(Fx.issue(139))
+        // 들어올 때 보낸 읽기(기다리지 않는 Task)가 끝난 뒤에 시작한다: 안 그러면 그 읽기가 Esc의 읽기로 보인다
+        await quietSessionReads(r.gateway)
+        r.gateway.sessions = .awaiting
+        let before = r.gateway.sessionReads
+        r.shell.escape()
+        #expect(r.shell.nav.current == .list(.project(Fx.taskforce)), "Esc로 상세에서 목록으로")
+        #expect(await eventually { r.gateway.sessionReads > before }, "Esc 뒤로도 세션을 다시 읽는다 (머리 뒤로와 같은 경로)")
+        #expect(await eventually { r.shell.tabPlan.shown.first { $0.id == Fx.session(1) }?.line == "Needs your answer" }, "다른 기기의 변경이 Esc 복귀로 반영된다")
+    }
+
+    @Test func escapingWithAnOpenSessionPanelOnlyClosesItAndDoesNotNavigate() async {
+        let r = await rig(sessions: .basic)
+        r.openDetail(139)
+        r.shell.openSession(Fx.session(1))
+        r.shell.escape()
+        #expect(r.shell.sessionPanelID == nil && r.shell.nav.detailID == Fx.issue(139), "먼저 세션 패널만 닫는다")
+    }
+
+    // MARK: 재검토 반영 3 — 지워진 · 보관된 대화는 끝나지 않는 로딩이 아니다
+
+    @Test func aConversationTheServerNoLongerHasLeavesNoEndlessComposerLoadingAndShowsTheError() async throws {
+        let account = try AppChatAccount.make()
+        let gateway = IssueSampleGateway()
+        gateway.hidesConversationsFromList = true
+        let runtime = ChatRuntime(gateway: gateway, scope: account.scope, issueScreens: true)
+        await runtime.issues?.sessions.refresh()
+        let session = try #require(runtime.issues?.sessions.items.first { $0.id == Fx.session(1) })
+        let conversation = try #require(session.conversationID)
+        runtime.chat.panelConversations = { [conversation] }
+        await runtime.chat.readConversation(conversation)
+        #expect(SessionPanelView.composerState(for: session, chat: runtime.chat) == .ready(conversation))
+        gateway.deletesConversations = true
+        await runtime.chat.refresh()
+        #expect(runtime.chat.screen(for: conversation) == .failed, "이전 본문이 아니라 오류 화면 + Try again")
+        #expect(SessionPanelView.composerState(for: session, chat: runtime.chat) == .hidden, "끝나지 않는 \"Loading this conversation\"이 아니라 Composer를 두지 않는다")
+        gateway.deletesConversations = false
+        await runtime.chat.readConversation(conversation)
+        #expect(runtime.chat.screen(for: conversation) == .ready(problem: nil), "Try again으로 다시 열린다")
+        #expect(SessionPanelView.composerState(for: session, chat: runtime.chat) == .ready(conversation))
+    }
+
+    @Test func anOfflineFirstReadAlsoHidesTheComposerInsteadOfLoadingForever() async throws {
+        let account = try AppChatAccount.make()
+        let gateway = IssueSampleGateway()
+        gateway.hidesConversationsFromList = true
+        let runtime = ChatRuntime(gateway: gateway, scope: account.scope, issueScreens: true)
+        await runtime.issues?.sessions.refresh()
+        let session = try #require(runtime.issues?.sessions.items.first { $0.id == Fx.session(1) })
+        let conversation = try #require(session.conversationID)
+        #expect(SessionPanelView.composerState(for: session, chat: runtime.chat) == .waiting, "읽기 전에는 기다린다")
+        gateway.conversationFailure = URLError(.notConnectedToInternet)
+        await runtime.chat.readConversation(conversation)
+        #expect(runtime.chat.screen(for: conversation) == .offline)
+        #expect(SessionPanelView.composerState(for: session, chat: runtime.chat) == .hidden, "오류 화면(Try again)이 말한다: Composer는 로딩 힌트를 달고 기다리지 않는다")
+    }
+
+    @Test func whenTheSessionIsGoneTheSessionPanelClosesEvenIfItsConversationReadFailed() async {
+        let r = await rig(sessions: .basic)
+        r.openDetail(139)
+        r.shell.openSession(Fx.session(1))
+        r.gateway.sessions = .none
+        await r.issues.sessions.refresh()
+        #expect(await eventually { r.issues.sessions.items.isEmpty })
+        r.shell.sessionsChanged()
+        #expect(r.shell.sessionPanelID == nil, "세션이 사라졌으면 패널을 닫는다")
+    }
+
+    // MARK: 재검토 반영 4 — 본문 좌우 여백 8 (U2 화면만)
+
+    @Test func theBodyMarginIsEightOnTheIssueScreensAndStaysSixteenElsewhere() {
+        let issues = EdgePanelMetrics.bodyInsets(issueScreens: true, view: .allWork)
+        #expect(issues.leading == 8 && issues.trailing == 8 && issues.bottom == 10 && issues.top == 0, "디자인 인계: 본문은 좌우 8 · 아래 10")
+        let old = EdgePanelMetrics.bodyInsets(issueScreens: false, view: .allWork)
+        #expect(old.leading == 16 && old.trailing == 16 && old.bottom == 12, "게이트가 꺼진 All work는 지금 그대로 (공통 16)")
+        for view in [EdgeShellModel.View.chats, .review] {
+            let other = EdgePanelMetrics.bodyInsets(issueScreens: true, view: view)
+            #expect(other.leading == 16 && other.trailing == 16 && other.bottom == 12, "Chats · Review는 공통 16 그대로")
+        }
     }
 }

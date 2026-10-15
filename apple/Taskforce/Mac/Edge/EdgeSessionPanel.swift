@@ -110,7 +110,12 @@ struct SessionPanelView: View {
 
     static func composerState(for session: AgentSessionItem, chat: ChatStore) -> ComposerState {
         guard !session.isClosed, let id = session.conversationID else { return .hidden }
-        return chat.isTargetKnown(id) ? .ready(id) : .waiting
+        if chat.isTargetKnown(id) { return .ready(id) }
+        // 읽기가 실패했거나(오프라인 · 실패 · 서버에 없음) 오류 화면이 말하는 중이면 Composer를 두지 않는다: 끝나지 않는 로딩 힌트를 달고 기다리지 않는다
+        switch chat.screen(for: id) {
+        case .offline, .failed: return .hidden
+        default: return .waiting
+        }
     }
 
     // MARK: 본문

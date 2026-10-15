@@ -332,6 +332,9 @@ final class IssueSampleGateway: ChatGateway, IssueScreensGateway, @unchecked Sen
     private var _detail = ReadScenario.full
     private var _sources = 2
     private var _slackLeads = false
+    private var _hidesConversations = false
+    private var _deletesConversations = false
+    private var _conversationFailure: Error?
     private var _sessionReads = 0
     private var _conversationReads = 0
     private var _shiftConversations = false
@@ -357,6 +360,24 @@ final class IssueSampleGateway: ChatGateway, IssueScreensGateway, @unchecked Sen
     var slackLeads: Bool {
         get { lock.withLock { _slackLeads } }
         set { lock.withLock { _slackLeads = newValue } }
+    }
+
+    /// 대화 목록(History)에 세션의 대화가 없다 (시험: 목록의 최근 100 · 빈 20 밖의 오래된 대화). 행은 id로 직접 읽으면 있다
+    var hidesConversationsFromList: Bool {
+        get { lock.withLock { _hidesConversations } }
+        set { lock.withLock { _hidesConversations = newValue } }
+    }
+
+    /// 대화 행을 id로 읽으면 없다 (시험: 다른 곳에서 지운 대화)
+    var deletesConversations: Bool {
+        get { lock.withLock { _deletesConversations } }
+        set { lock.withLock { _deletesConversations = newValue } }
+    }
+
+    /// 대화 행을 id로 읽을 때 던지는 오류 (시험: 첫 읽기 실패)
+    var conversationFailure: Error? {
+        get { lock.withLock { _conversationFailure } }
+        set { lock.withLock { _conversationFailure = newValue } }
     }
 
     /// 세션 읽기를 부른 횟수 (시험: 화면 진입이 세션을 다시 읽는다)
@@ -431,11 +452,21 @@ final class IssueSampleGateway: ChatGateway, IssueScreensGateway, @unchecked Sen
     // MARK: ChatGateway (읽기만)
 
     func conversation(id: UUID) async throws -> ChatConversation? {
-        lock.withLock { _conversationReads += 1 }
-        return try await conversations().first { $0.id == id }
+        let (failure, deleted) = lock.withLock { () -> (Error?, Bool) in
+            _conversationReads += 1
+            return (_conversationFailure, _deletesConversations)
+        }
+        if let failure { throw failure }
+        if deleted { return nil }
+        return try await conversationRows().first { $0.id == id }
     }
 
     func conversations() async throws -> [ChatConversation] {
+        if lock.withLock({ _hidesConversations }) { return [] }
+        return try await conversationRows()
+    }
+
+    private func conversationRows() async throws -> [ChatConversation] {
         try await gate(reads)
         let snapshot = IssueSnapshotData.snapshot(scenario: sessions, shiftConversations: shiftsConversations)
         return snapshot.conversations.map { row in

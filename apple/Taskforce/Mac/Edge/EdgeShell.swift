@@ -116,7 +116,7 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
             let store = chat.chat
             shell.onLoadSessionConversation = { [weak store] id in store?.loadConversation(id) }
             store.panelConversations = { [weak shell] in
-                guard let shell, shell.panelOpen, let id = shell.openSessionItem?.conversationID else { return [] }
+                guard let shell, shell.sessionPanelShown, let id = shell.openSessionItem?.conversationID else { return [] }
                 return [id]
             }
         }
