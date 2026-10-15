@@ -31,10 +31,10 @@ const emptyPlan = (overrides: Partial<TurnPlan> = {}): TurnPlan =>
   }) as TurnPlan;
 
 describe("evals/consult", () => {
-  it("기존 15건 + 이슈 정리 24건(org 19 · neg 5) · 파일 이름 = id · 라벨 오류 없음 · 기준 A01–A05 · A34 · A41 · ARCH01 · 02 · 04, AC-27 · 29 · 30을 모두 덮는다", () => {
+  it("기존 15건 + 이슈 정리 27건(org 22 · neg 5) · 파일 이름 = id · 라벨 오류 없음 · 기준 A01–A05 · A34 · A41 · ARCH01 · 02 · 04, AC-27 · 29 · 30을 모두 덮는다", () => {
     const legacy = cases.filter((c) => !/^(org|neg)-/.test(c.id));
     expect(legacy).toHaveLength(15);
-    expect(cases.filter((c) => c.id.startsWith("org-"))).toHaveLength(19);
+    expect(cases.filter((c) => c.id.startsWith("org-"))).toHaveLength(22);
     expect(cases.filter((c) => c.id.startsWith("neg-"))).toHaveLength(5);
     for (const golden of cases) expect(findConsultLabelErrors(golden), golden.id).toEqual([]);
     for (const file of readdirSync(DIR).filter((f) => f.endsWith(".json"))) expect(consultCaseSchema.parse(JSON.parse(readFileSync(path.join(DIR, file), "utf8"))).id).toBe(file.replace(/\.json$/, ""));

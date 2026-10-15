@@ -125,15 +125,28 @@ describe("POST /api/v2/contexts/{id}/members (넣기 · 빼기)", () => {
   it("예상 못 한 오류는 500 internal_error이고 로그에는 오류 이름과 DB 코드만 남는다 (id · 본문 없음)", async () => {
     const spy = vi.spyOn(console, "error").mockImplementation(() => {});
     const failing = makeDeps(async () => {
-      throw Object.assign(new Error("boom: " + ACTION), { code: "40P01" });
+      throw Object.assign(new Error("boom: " + ACTION), { code: "XX000" });
     });
     const response = await handleChangeContextMember(post(add), CTX, failing.deps);
     expect(response.status).toBe(500);
     expect(apiErrorV2Schema.parse(await response.json()).error.code).toBe("internal_error");
     const logged = spy.mock.calls.map((call) => String(call[0])).join("\n");
-    expect(logged).toContain("40P01");
+    expect(logged).toContain("XX000");
     expect(logged).not.toContain(ACTION);
     expect(logged).not.toContain(CTX);
+  });
+
+  it("교착(40P01) · 잠금 경합(55P03) · 직렬화 실패(40001)는 쓰기가 롤백됐으니 500이 아니라 409 busy_retry다 (일괄 말로 이동과 겹친 피해자, 검토 P2-3). 로그도 남기지 않는다", async () => {
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    for (const code of ["40P01", "55P03", "40001"]) {
+      const failing = makeDeps(async () => {
+        throw Object.assign(new Error("boom: " + ACTION), { code });
+      });
+      const response = await handleChangeContextMember(post(add), CTX, failing.deps);
+      expect(response.status, code).toBe(409);
+      expect((await response.json()).error, code).toEqual({ code: "busy_retry", message: "잠시 뒤 다시 시도해 주세요." });
+    }
+    expect(spy).not.toHaveBeenCalled();
   });
 });
 

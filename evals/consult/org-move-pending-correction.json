@@ -1,0 +1,99 @@
+{
+  "id": "org-move-pending-correction",
+  "description": "AC-27 · 검토 P1-2: 앞 답이 '어느 프로젝트인가요?'였는데 '아니 Launch에서 빼줘'라고 정정함 — 단순한 답이 아니라 새 지시라 op를 다시 판정해(빼기) 앞 이동 계획(Launch로 옮기기)을 쓰지 않는다",
+  "maps_to": [
+    "AC-27",
+    "A34"
+  ],
+  "asked_at": "2026-10-15T10:00:00+09:00",
+  "message": "아니 Launch에서 빼줘",
+  "projects": [
+    {
+      "id": "p_launch",
+      "name": "Launch"
+    },
+    {
+      "id": "p_tf",
+      "name": "Taskforce"
+    }
+  ],
+  "records": {
+    "open_actions": [
+      {
+        "id": "i139",
+        "title": "Shape 디자인 확정",
+        "number": 139,
+        "version": 2,
+        "projects": [
+          "p_tf",
+          "p_launch"
+        ],
+        "open_sessions": 1,
+        "evidence_count": 2
+      },
+      {
+        "id": "i140",
+        "title": "견적서 보내기",
+        "number": 140,
+        "version": 2,
+        "projects": [],
+        "open_sessions": 1,
+        "evidence_count": 2
+      },
+      {
+        "id": "i141",
+        "title": "회의록 정리",
+        "number": 141,
+        "version": 2,
+        "projects": [],
+        "open_sessions": 1,
+        "evidence_count": 2
+      }
+    ]
+  },
+  "history": [
+    {
+      "role": "user",
+      "text": "#139 옮겨줘"
+    },
+    {
+      "role": "assistant",
+      "text": "어느 프로젝트인가요?",
+      "organize_pending": {
+        "op": "move",
+        "targets": [
+          "i139"
+        ],
+        "missing": "project"
+      }
+    }
+  ],
+  "expect": {
+    "intent_any": [
+      "answer",
+      "organize"
+    ],
+    "route_any": [
+      "organize"
+    ],
+    "reply_must_not_match": [
+      "옮겼어요"
+    ],
+    "organize": {
+      "op": "remove",
+      "targets": [
+        "i139"
+      ],
+      "outcome": "write",
+      "project": "p_launch"
+    },
+    "memory_writes": {
+      "min": 0,
+      "max": 0
+    },
+    "reply_contains_any": [
+      "뺐어요"
+    ]
+  },
+  "origin": "synthetic"
+}

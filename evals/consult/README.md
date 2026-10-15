@@ -22,6 +22,7 @@ npm run eval -- --consult --case a01-no-open-one-done
 - 채점에 `organize_outcome · organize_op · organize_targets · organize_into · organize_project`와 `no_false_write`가 더해집니다. `no_false_write`는 쓰기를 기대하지 않았는데 이동을 쓰거나 채택을 기대하지 않았는데 채택하면 실패합니다 — **거짓 쓰기는 0이어야 합니다** (기존 상담 케이스에도 적용).
 - `npm run eval -- --consult`는 끝에 요약 한 줄을 찍습니다: `organize: intent 정밀도 · 재현율 · op · 대상 · 남는 쪽 정확도 · 거짓 쓰기 · 기존 상담 회귀`. 기존 상담 회귀는 기준선(기준 SHA에서 돌린 `--consult` 결과 파일)을 `--baseline <파일>`로 주면 셉니다.
 - 기대 수치(계약 5.3): 거짓 쓰기 0 · 기존 상담 회귀 0 · organize 재현율 ≥ 0.9 · 정밀도 ≥ 0.95 · op · 대상 정확도 ≥ 0.9 · 병합 남는 쪽은 전부.
+- 독립 검토(Astra) 반영 케이스 셋: `org-move-pending-correction`(프로젝트를 묻는 질문 뒤 "아니 Launch에서 빼줘" — 정정이라 op를 다시 판정해 앞 이동 계획을 쓰지 않는다) · `org-merge-target-answer`("#144 합쳐줘" → 이슈를 묻는 질문 → "#139에" = 앞 이슈와 합쳐 병합 카드) · `org-move-from-mismatch`(출발을 묻는 질문에 이슈의 소속이 아닌 프로젝트를 답함 — 쓰지 않고 실제 소속을 후보로 다시 묻는다). 개수는 org 22 · neg 5.
 - 실제 모델 없이도 `src/lib/eval/consult-golden.test.ts`가 기대한 판정(Jev)을 가짜로 주고 코드 규칙만으로 케이스가 모두 통과하는지 확인합니다 (케이스 데이터와 코드가 어긋나지 않게).
 
 실제 모델 채점은 비용이 들고 외부 공급자를 부르므로 승인 뒤에만 돌립니다. 프롬프트(`src/lib/ai/prompts/{intent,organize,consult,memory-extract}.ts`)를 바꾸면 버전을 올리고 이 채점 결과를 PR에 적습니다.
