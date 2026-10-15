@@ -87,13 +87,16 @@ public struct PanelHeader: View {
     let agent: AgentMarkKind?
     let pill: PanelHeaderPill?
     let status: String?
+    /// 끝난 세션의 머리: 마크 불투명도 .45 · 제목 `text/secondary` (상태 줄은 없다)
+    let dimmed: Bool
     @State private var hoveringPill = false
 
     public init(
         title: String, steps: Steps? = nil, onStep: ((Int) -> Void)? = nil, pinned: Bool? = nil, onPin: (() -> Void)? = nil,
         onNewChat: (() -> Void)? = nil, historyOpen: Bool? = nil, onHistory: (() -> Void)? = nil,
-        onBack: (() -> Void)? = nil, onAdd: (() -> Void)? = nil, agent: AgentMarkKind? = nil, pill: PanelHeaderPill? = nil, status: String? = nil
+        onBack: (() -> Void)? = nil, onAdd: (() -> Void)? = nil, agent: AgentMarkKind? = nil, pill: PanelHeaderPill? = nil, status: String? = nil, dimmed: Bool = false
     ) {
+        self.dimmed = dimmed
         self.onBack = onBack
         self.onAdd = onAdd
         self.agent = agent
@@ -135,12 +138,13 @@ public struct PanelHeader: View {
             }
             if let agent {
                 AgentMark(agent, size: 20)
+                    .opacity(dimmed ? SessionRow.Look.of(line: "", dimmed: true).markOpacity : 1)
                     .padding(.trailing, TFSpace.xs)
             }
             Text(title)
                 .font(TFFont.calloutEmphasis)
                 .tracking(-0.24)
-                .foregroundStyle(TFColor.textPrimary)
+                .foregroundStyle(dimmed ? TFColor.textSecondary : TFColor.textPrimary)
                 .lineLimit(1)
                 .truncationMode(.tail)
                 .frame(maxWidth: .infinity, alignment: .leading)

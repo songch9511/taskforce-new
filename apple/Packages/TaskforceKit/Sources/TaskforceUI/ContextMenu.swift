@@ -98,13 +98,16 @@ public struct ContextMenuView: View {
 
     let model: ContextMenuModel
     let label: String
+    /// 메뉴 전체 높이를 정해 두면(화면보다 긴 목록, 검토 반영 9) 줄은 그 안에서 스크롤되고 키보드로 짚은 줄을 따라간다. nil이면 줄 전부가 그대로 보인다
+    let height: CGFloat?
 
-    public init(model: ContextMenuModel, label: String) {
+    public init(model: ContextMenuModel, label: String, height: CGFloat? = nil) {
         self.model = model
         self.label = label
+        self.height = height
     }
 
-    public var body: some View {
+    private var rows: some View {
         VStack(spacing: 0) {
             ForEach(Array(model.items.enumerated()), id: \.element.id) { index, item in
                 if item.isSeparator {
@@ -116,6 +119,25 @@ public struct ContextMenuView: View {
                 } else {
                     row(item, index: index)
                 }
+            }
+        }
+    }
+
+    public var body: some View {
+        Group {
+            if let height {
+                ScrollViewReader { proxy in
+                    ScrollView(.vertical) { rows }
+                        .scrollIndicators(.automatic)
+                        .frame(height: max(0, height - 2 * Self.inset))
+                        // 키보드(↑ ↓)로 짚은 줄이 보이는 곳 밖이면 그 줄이 보이게만 움직인다
+                        .onChange(of: model.highlighted) { _, index in
+                            guard let index, model.items.indices.contains(index) else { return }
+                            proxy.scrollTo(model.items[index].id)
+                        }
+                }
+            } else {
+                rows
             }
         }
         .padding(Self.inset)

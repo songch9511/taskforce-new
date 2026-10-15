@@ -1,3 +1,4 @@
+import CryptoKit
 import SwiftUI
 import Testing
 import TaskforceKit
@@ -178,5 +179,56 @@ struct IssueComponentTests {
         let pill = PanelHeaderPill(title: "Open in Terminal", disabledReason: "Turn is running", action: {})
         #expect(pill.title == "Open in Terminal" && pill.disabledReason == "Turn is running")
         #expect(PanelHeaderPill(title: "Resume here", action: {}).disabledReason == nil)
+    }
+
+    // MARK: 끝난 세션 (사용자 결정 2026-10-15: 상태 말 없이 흐리게)
+
+    @Test func aClosedSessionRowIsDimmedWithoutAStatusWordUsingTheDSDisabledValues() {
+        let closed = SessionRow.Look.of(line: "", dimmed: true)
+        #expect(closed.nameIsQuiet && closed.markOpacity == 0.45 && !closed.showsLine, "DS 비활성 값 .45 · text-secondary 이름 · 말 없음")
+        let running = SessionRow.Look.of(line: "Running", dimmed: false)
+        #expect(!running.nameIsQuiet && running.markOpacity == 1 && running.showsLine)
+        #expect(!SessionRow.Look.of(line: "", dimmed: false).showsLine, "말이 없으면 그리지 않는다")
+        #expect(!SessionRow.Look.of(line: "Closed", dimmed: true).showsLine, "끝난 행은 말이 와도 그리지 않는다")
+    }
+
+    // MARK: 긴 메뉴 (검토 반영 9)
+
+    @Test func aMenuTallerThanTheScreenIsLimitedToTheVisibleHeightLeavingTheMargins() {
+        let visible = CGRect(x: 0, y: 0, width: 1440, height: 875)
+        #expect(ContextMenuGeometry.maxHeight(visible: visible) == 875 - 2 * ContextMenuGeometry.screenMargin)
+        let limited = ContextMenuGeometry.limited(natural: CGSize(width: 260, height: 2_400), visible: visible)
+        #expect(limited == CGSize(width: 260, height: 859), "폭은 그대로, 높이만 줄인다")
+        #expect(ContextMenuGeometry.limited(natural: CGSize(width: 260, height: 300), visible: visible).height == 300, "짧은 메뉴는 그대로")
+        let frame = ContextMenuGeometry.frame(size: limited, row: CGRect(x: 1000, y: 400, width: 364, height: 54), pointerX: 1100, visible: visible)
+        #expect(frame.minY >= visible.minY && frame.maxY <= visible.maxY, "줄인 메뉴는 화면 안에 놓인다")
+    }
+
+    // MARK: SourceMark (검토 반영 11)
+
+    @Test func theFourServicesHaveTheirOwnMarkAndManualSourcesGetTheDashedBlankTile() {
+        #expect(SourceMark.assetName(for: .slack) == "source-mark/slack")
+        #expect(SourceMark.assetName(for: .notion) == "source-mark/notion")
+        #expect(SourceMark.assetName(for: .gmail) == "source-mark/gmail")
+        #expect(SourceMark.assetName(for: .googleMeet) == "source-mark/google-meet")
+        #expect(SourceMark.assetName(for: .manual(.note)) == nil && SourceMark.assetName(for: .manual(.message)) == nil, "마크가 없으면 점선 빈 타일")
+    }
+
+    /// 마크는 DS 아티팩트의 SourceMark(thesvg `default.svg` 그대로)와 같은 파일이고 다시 칠하지 않는다 (original 렌더링): 파일 지문과 렌더링 의도를 고정한다
+    @Test(arguments: [
+        ("slack", "082fb39f58df"), ("notion", "0d94471649fb"), ("gmail", "a8de5ec713ee"), ("google-meet", "0645463c2db7"),
+    ])
+    func theMarksAreThePublishedFilesRenderedAsTheyAre(name: String, prefix: String) throws {
+        let folder = TokenCatalog.sourceCatalog.appending(path: "source-mark/\(name).imageset", directoryHint: .isDirectory)
+        let svg = try Data(contentsOf: folder.appending(path: "\(name).svg"))
+        let digest = SHA256.hash(data: svg).map { String(format: "%02x", $0) }.joined()
+        #expect(digest.hasPrefix(prefix), "\(name): DS의 SourceMark 파일과 다르다 (\(digest.prefix(12)))")
+        let json = try #require(try JSONSerialization.jsonObject(with: Data(contentsOf: folder.appending(path: "Contents.json"))) as? [String: Any])
+        let properties = try #require(json["properties"] as? [String: Any])
+        #expect(properties["template-rendering-intent"] as? String == "original" && properties["preserves-vector-representation"] as? Bool == true)
+        let text = String(decoding: svg, as: UTF8.self).lowercased()
+        for banned in ["<script", "onload", "onclick", "onerror", "<image", "<foreignobject", "href="] {
+            #expect(!text.contains(banned), "\(name): \(banned)")
+        }
     }
 }

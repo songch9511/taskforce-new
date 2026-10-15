@@ -67,17 +67,30 @@ public struct ProjectRow: View {
 /// SessionRow (0.2.0 디자인 시스템 Molecules, OA U2): 이슈의 에이전트 세션 하나. 에이전트 마크 20 · 세션 이름(callout) · 지금 어디에 있나(footnote `text/secondary`).
 /// ProjectRow와 같은 수치. 말은 동사를 앞에 ("Running", "External · Open in Terminal"): 줄임이 동사를 남긴다. 접근성 이름 "{이름} — {에이전트} — {말}"
 public struct SessionRow: View {
+    /// 끝난(`closed`) 세션의 모양 (사용자 결정 2026-10-15): 상태 말 없이 흐리게. DS에는 `text-tertiary`가 없어 DS의 비활성 값을 쓴다: 이름은 `text-secondary`,
+    /// 마크는 불투명도 .45(DS `.tf-btn:disabled` · `.tf-iconbtn:disabled`와 같은 값). 새 색을 만들지 않는다
+    public struct Look: Equatable, Sendable {
+        public let nameIsQuiet: Bool
+        public let markOpacity: Double
+        public let showsLine: Bool
+
+        public static func of(line: String, dimmed: Bool) -> Look {
+            Look(nameIsQuiet: dimmed, markOpacity: dimmed ? 0.45 : 1, showsLine: !dimmed && !line.isEmpty)
+        }
+    }
+
     let name: String
     let agent: AgentMarkKind
     let line: String
     let accessibilityName: String
     let current: Bool
     let highlighted: Bool
+    let dimmed: Bool
     let onOpen: () -> Void
     let onAsk: (() -> Void)?
 
     public init(
-        name: String, agent: AgentMarkKind, line: String, accessibilityName: String, current: Bool = false, highlighted: Bool = false,
+        name: String, agent: AgentMarkKind, line: String, accessibilityName: String, current: Bool = false, highlighted: Bool = false, dimmed: Bool = false,
         onOpen: @escaping () -> Void, onAsk: (() -> Void)? = nil
     ) {
         self.name = name
@@ -86,6 +99,7 @@ public struct SessionRow: View {
         self.accessibilityName = accessibilityName
         self.current = current
         self.highlighted = highlighted
+        self.dimmed = dimmed
         self.onOpen = onOpen
         self.onAsk = onAsk
     }
@@ -93,34 +107,38 @@ public struct SessionRow: View {
     public init(_ item: AgentSessionItem, current: Bool = false, highlighted: Bool = false, onOpen: @escaping () -> Void, onAsk: (() -> Void)? = nil) {
         self.init(
             name: item.name, agent: item.agent, line: item.line, accessibilityName: item.rowAccessibilityName, current: current, highlighted: highlighted,
-            onOpen: onOpen, onAsk: onAsk
+            dimmed: item.isClosed, onOpen: onOpen, onAsk: onAsk
         )
     }
 
     public var body: some View {
+        let look = Look.of(line: line, dimmed: dimmed)
         PanelRowChrome(
             current: current, highlighted: highlighted, accessibilityName: accessibilityName,
             askLabel: onAsk == nil ? nil : AskPill.accessibilityName(number: nil, name: name), onOpen: onOpen, onAsk: onAsk
         ) { lit, asking in
             HStack(alignment: .top, spacing: 10) {
                 AgentMark(agent, size: 20)
+                    .opacity(look.markOpacity)
                     .frame(minHeight: 20)
                 VStack(alignment: .leading, spacing: 0) {
                     Text(name)
                         .font(TFFont.callout)
                         .tracking(-0.24)
-                        .foregroundStyle(TFColor.textPrimary)
+                        .foregroundStyle(look.nameIsQuiet ? TFColor.textSecondary : TFColor.textPrimary)
                         .lineLimit(1)
                         .truncationMode(.tail)
                         .frame(height: 20, alignment: .leading)
-                    Text(line)
-                        .font(TFFont.footnote)
-                        .tracking(-0.08)
-                        .foregroundStyle(lit ? TFColor.textSecondarySelected : TFColor.textSecondary)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                        .frame(height: 18, alignment: .leading)
-                        .opacity(asking ? 0 : 1)
+                    if look.showsLine {
+                        Text(line)
+                            .font(TFFont.footnote)
+                            .tracking(-0.08)
+                            .foregroundStyle(lit ? TFColor.textSecondarySelected : TFColor.textSecondary)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                            .frame(height: 18, alignment: .leading)
+                            .opacity(asking ? 0 : 1)
+                    }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             }

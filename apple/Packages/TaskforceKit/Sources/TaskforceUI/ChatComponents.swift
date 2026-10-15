@@ -279,12 +279,15 @@ public struct SourceQuote: View {
     let text: String
     let openTitle: String?
     let onOpen: (() -> Void)?
+    /// DS의 SourceMark(공식 마크 그대로, 18pt 타일)로 그린다 (새 Issues 화면). 기본은 지금의 단일 잉크 `SourceIcon`이다
+    let usesSourceMark: Bool
     @Environment(\.colorSchemeContrast) private var contrast
 
     public init(
         service: SourceService? = nil, from: String? = nil, place: String? = nil, time: String? = nil, text: String,
-        openTitle: String? = nil, onOpen: (() -> Void)? = nil
+        openTitle: String? = nil, onOpen: (() -> Void)? = nil, usesSourceMark: Bool = false
     ) {
+        self.usesSourceMark = usesSourceMark
         self.service = service
         self.from = from
         self.place = place
@@ -305,7 +308,9 @@ public struct SourceQuote: View {
             let meta = Self.metaLine(from: from, place: place, time: time)
             if service != nil || !meta.isEmpty {
                 HStack(spacing: 6) {
-                    if let service { SourceIcon(service, size: .m) }
+                    if let service {
+                        if usesSourceMark { SourceMark(service, size: .sm) } else { SourceIcon(service, size: .m) }
+                    }
                     if !meta.isEmpty {
                         Text(meta)
                             .font(TFFont.meta)
