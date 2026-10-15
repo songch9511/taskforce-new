@@ -159,11 +159,13 @@ public final class AgentSessionStore {
         }
     }
 
-    /// 방금 끝남(Done)이 3초 뒤 풀린다
+    /// 방금 끝남(Done)이 3초 뒤 풀린다. **미래의 만료만** 예약한다: 이미 지난 것은 걷어 낸다 (먼저 끝난 세션의 지난 시각이 남아 다음 만료를 막으면
+    /// 폴링이 멈춘 뒤에도 둘째의 Done이 계속 남는다)
     private func scheduleExpiry() {
         expiryTask?.cancel()
         expiryTask = nil
         let current = now()
+        doneObservedAt = doneObservedAt.filter { current.timeIntervalSince($0.value) < AgentSessionRules.doneHold }
         guard let earliest = doneObservedAt.values.min() else { return }
         let remaining = AgentSessionRules.doneHold - current.timeIntervalSince(earliest)
         guard remaining > 0 else { return }

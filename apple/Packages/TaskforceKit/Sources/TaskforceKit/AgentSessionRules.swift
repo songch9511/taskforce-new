@@ -33,7 +33,6 @@ extension AgentSessionRing {
 }
 
 public enum AgentSessionRules {
-    public static let closed = "Closed"
     public static let connectionLost = "Connection lost · progress unknown"
     public static let idle = "Idle"
     public static let doneJustNow = "Done just now"
@@ -47,7 +46,8 @@ public enum AgentSessionRules {
 
     /// 위에서부터 먼저 맞는 줄. 마지막 task는 `turn_seq` 최대다. `doneNow`: 그 task가 `completed`로 바뀌는 것을 본 지 3초가 안 됐다
     static func standing(status: AgentSessionStatus, task: AgentTaskRecord?, doneNow: Bool) -> AgentSessionStanding {
-        if status == .closed { return AgentSessionStanding(ring: nil, line: closed) }
+        // 끝난 세션은 상태 말이 없다 (사용자 결정 2026-10-15): 링도 말도 없이 흐리게 그린다 (`AgentSessionItem.isClosed`)
+        if status == .closed { return AgentSessionStanding(ring: nil, line: "") }
         if status == .unreachable || task?.state == .unreachable { return AgentSessionStanding(ring: .unreachable, line: connectionLost) }
         let openState = task.map { [.dispatched, .accepted, .running, .awaitingAnswer].contains($0.state) } ?? false
         if openState, task?.cancelRequestedAt != nil { return AgentSessionStanding(ring: .stopping, line: WorkActivity.stopRequested) }

@@ -10,6 +10,19 @@ public enum ContextMenuGeometry {
     /// 메뉴의 안쪽 여백 (하위 메뉴의 첫 줄을 부모 줄에 맞출 때)
     public static let inset: CGFloat = 5
 
+    /// 화면 위 · 아래에 남기는 여백
+    public static let screenMargin: CGFloat = 8
+
+    /// 메뉴 창이 가질 수 있는 가장 큰 높이: 보이는 화면에서 위 · 아래 여백을 뺀 것. 줄이 이보다 길면 메뉴가 이 높이로 줄고 안에서 스크롤된다
+    public static func maxHeight(visible: CGRect) -> CGFloat {
+        max(0, visible.height - 2 * screenMargin)
+    }
+
+    /// 줄 전체의 높이(`natural`)가 화면보다 크면 `maxHeight`로 줄인 크기 (아니면 그대로)
+    public static func limited(natural: CGSize, visible: CGRect) -> CGSize {
+        CGSize(width: natural.width, height: min(natural.height, maxHeight(visible: visible)))
+    }
+
     /// 메뉴 창의 자리. `row`: 눌린 행의 자리, `pointerX`: 포인터의 가로 위치
     public static func frame(size: CGSize, row: CGRect, pointerX: CGFloat, visible: CGRect) -> CGRect {
         let below = row.minY - gap - size.height

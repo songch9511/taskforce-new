@@ -8,9 +8,18 @@ struct AgentSessionRulesTests {
 
     // MARK: 2.5 표 (위에서부터 먼저 맞는 줄)
 
-    @Test func aClosedSessionHasNoRingAndSaysClosed() {
+    /// 사용자 결정(2026-10-15): 끝난 세션은 상태 말 없이 흐리게. "Closed" 글을 쓰지 않고 접근성 이름에서도 상태 말을 뺀다
+    @Test func aClosedSessionHasNoRingAndNoStatusWord() {
         let item = Fx.item(Fx.snapshot(status: .closed, state: .running))
-        #expect(item.ring == nil && item.line == "Closed" && item.isClosed && !item.showsInTab)
+        #expect(item.ring == nil && item.line.isEmpty && item.isClosed && !item.showsInTab)
+        #expect(item.rowAccessibilityName == "Pricing — Claude Code", "상태 말 없이 이름 — 에이전트만")
+        #expect(item.tabAccessibilityName == "Pricing")
+        #expect(!item.rowAccessibilityName.contains("Closed") && !item.tabAccessibilityName.contains("Closed"))
+    }
+
+    @Test func theOtherSessionsKeepTheirStatusWordInTheAccessibilityNames() {
+        let item = Fx.item(Fx.snapshot(status: .bound, state: .running))
+        #expect(item.rowAccessibilityName == "Pricing — Claude Code — Running" && item.tabAccessibilityName == "Pricing · Running")
     }
 
     @Test func anUnreachableSessionIsConnectionLostEvenWithARunningTask() {
@@ -349,7 +358,7 @@ struct AgentSessionRulesTests {
     ) -> AgentSessionItem {
         AgentSessionItem(
             id: Fx.id(id), name: "S\(id)", agent: .claudeCode, agentName: "Claude Code", connectionID: Fx.claudeConnection, status: status,
-            ring: ring, line: ring?.label ?? "Closed", createdAt: Fx.at(created), updatedAt: Fx.at(updated), issueIDs: issues,
+            ring: ring, line: ring?.label ?? "", createdAt: Fx.at(created), updatedAt: Fx.at(updated), issueIDs: issues,
             currentIssueID: issues.first, conversationID: nil, hasOpenTask: false, pill: nil
         )
     }

@@ -25,6 +25,14 @@ extension TaskforceReads {
         return try await touched + untouched
     }
 
+    /// 대화 한 행을 id로 (RLS 본인 행). 보관했는지는 호출부가 본다. 없으면(지움 · 남의 것) nil
+    public func conversation(id: UUID) async throws -> ChatConversation? {
+        let found: [ChatConversation] = try await rows(
+            supabase.from("conversations").select(ChatConversation.columns).eq("id", value: id.lowercased).limit(1)
+        )
+        return found.first
+    }
+
     /// 목록 한 줄의 미리보기: 대화마다 마지막 글 (사용자 · 답). 읽은 최근 메시지 안에 없으면 그 대화는 빠진다 (미리보기 없음)
     public func lastMessages(conversationIDs: [UUID]) async throws -> [UUID: ChatMessage] {
         let ids = Array(Set(conversationIDs))

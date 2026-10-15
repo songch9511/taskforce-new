@@ -5,6 +5,9 @@ import Foundation
 public protocol ChatGateway: Sendable {
     // 읽기 (RLS)
     func conversations() async throws -> [ChatConversation]
+    /// 대화 한 행을 id로 직접 읽는다 (OA U2 세션 패널): 목록(최근 100 + 빈 20)에 없는 오래된 대화도 열 수 있다. 없으면(지움 · 남의 것) nil.
+    /// 기본 구현은 목록에서 찾는다 (직접 읽는 길이 없는 가짜)
+    func conversation(id: UUID) async throws -> ChatConversation?
     func lastMessages(conversationIDs: [UUID]) async throws -> [UUID: ChatMessage]
     func messages(conversationID: UUID) async throws -> [ChatMessage]
     func message(id: UUID) async throws -> ChatMessage?
@@ -23,6 +26,12 @@ public protocol ChatGateway: Sendable {
     func moveMemory(id: UUID, expectedVersion: Int, to target: MemoryTarget) async throws -> MemoryItem
 }
 
+extension ChatGateway {
+    public func conversation(id: UUID) async throws -> ChatConversation? {
+        try await conversations().first { $0.id == id }
+    }
+}
+
 /// 실제 연결: `TaskforceReads`(RLS) + `APIClient`(쓰기)
 public struct LiveChatGateway: ChatGateway {
     /// 같은 모듈의 `IssueScreensGateway`(OA U2)가 같은 읽기를 쓴다
@@ -39,6 +48,7 @@ public struct LiveChatGateway: ChatGateway {
     }
 
     public func conversations() async throws -> [ChatConversation] { try await reads.conversations() }
+    public func conversation(id: UUID) async throws -> ChatConversation? { try await reads.conversation(id: id) }
     public func lastMessages(conversationIDs: [UUID]) async throws -> [UUID: ChatMessage] {
         try await reads.lastMessages(conversationIDs: conversationIDs)
     }

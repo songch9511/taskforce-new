@@ -143,6 +143,9 @@ public final class ChatStore {
     private var drafts: [UUID: String] = [:]
     /// 열린 창들이 보이는 대화 (앱이 정한다). 목록 읽기(⌘3 · 온라인 복귀 · Try again)가 공유 `currentID`뿐 아니라 이들의 글도 다시 읽는다
     @ObservationIgnored public var viewedConversations: () -> Set<UUID> = { [] }
+    /// 세션 패널이 보이는 대화 (OA U2, 앱이 정한다). `viewedConversations`와 같이 목록 읽기가 이 글도 다시 읽고, 목록(최근 100 + 빈 20)에 없는 오래된 대화는
+    /// 행을 id로 직접 읽어 (패널이 열려 있는 동안) 목록 갱신이 떨어뜨리지 않는다
+    @ObservationIgnored public var panelConversations: () -> Set<UUID> = { [] }
     var threads: [UUID: ChatThread] = [:]
     private var projectUndo: [UUID: UUID?] = [:]
     private var projectMessage: [UUID: String] = [:]
@@ -480,7 +483,16 @@ public final class ChatStore {
         entries.first { $0.id == id }?.title ?? ChatCopy.newChat
     }
 
-    public func canCompose(in id: UUID?) -> Bool { id != nil && !isUnavailable }
+    /// 이 대화의 대상을 안다: 서버에 아직 없는 새 대화(고른 대상)이거나 읽은 행이 있다. **대상을 모르는 대화는 Taskforce로 보지 않는다**
+    /// (에이전트 대화에 Taskforce 길로 보내면 서버가 `reply: null`로 접수한 것을 디코딩 오류로 읽는다)
+    public func isTargetKnown(_ id: UUID) -> Bool {
+        locals.contains { $0.id == id } || conversations.contains { $0.id == id }
+    }
+
+    public func canCompose(in id: UUID?) -> Bool {
+        guard let id else { return false }
+        return !isUnavailable && isTargetKnown(id)
+    }
 
     /// 이 글을 지금 보낼 수 있나: 보낼 곳이 있고, 로그인해 있고, 글이 보낼 수 있는 것이고, 이 대화가 보내는 중이 아니다
     public func canSend(_ text: String, in id: UUID) -> Bool {
@@ -500,13 +512,40 @@ public final class ChatStore {
         spawn { await self.loadThread(id) }
     }
 
-    /// 대화 id만 아는 곳(세션 패널)용: 목록에 아직 없는 대화면 목록을 먼저 읽고 글을 읽는다 (앱을 연 뒤 처음 · 방금 만든 세션). 저장소의 현재 대화 · 모드는 그대로
-    public func ensureLoadedReadingListFirst(_ id: UUID) {
-        spawn {
-            if !self.conversations.contains(where: { $0.id == id }) { await self.refresh() }
-            guard self.conversations.contains(where: { $0.id == id }) else { return }
-            await self.loadThread(id)
+    /// 대화 id만 아는 곳(세션 패널)용: 끝을 기다리지 않는다. 읽기는 `readConversation`
+    public func loadConversation(_ id: UUID) {
+        spawn { await self.readConversation(id) }
+    }
+
+    /// 대화 id만 아는 곳(세션 패널)용 (OA U2): 행을 모르면 **id로 직접 읽고**(History 목록에 기대지 않는다) 글을 읽는다. 저장소의 현재 대화 · 모드는 그대로.
+    /// 행을 못 읽었거나(오프라인 · 실패) 서버에 없거나 보관한 대화면 빈 화면이 아니라 그 오류 상태다 (`screen(for:)`: Try again이 이 함수를 다시 부른다)
+    public func readConversation(_ id: UUID) async {
+        guard let token = scope.token else { return }
+        if !isTargetKnown(id) {
+            let seq = (threadReadSeq[id] ?? 0) + 1
+            threadReadSeq[id] = seq
+            if threads[id] == nil { threads[id] = ChatThread() }
+            threads[id]?.load = .loading
+            do {
+                let row = try await gateway.conversation(id: id)
+                guard scope.isCurrent(token), threadReadSeq[id] == seq else { return }
+                guard let row, row.archivedAt == nil else {
+                    threads[id]?.load = .failed
+                    return
+                }
+                upsert(row)
+            } catch {
+                guard scope.isCurrent(token), threadReadSeq[id] == seq, let failure = ReadFailure.from(error, online: isOnline) else { return }
+                if failure == .unavailable {
+                    isUnavailable = true
+                    threads[id]?.load = .loaded(problem: nil)
+                } else {
+                    threads[id]?.load = failure == .offline ? .offline : .failed
+                }
+                return
+            }
         }
+        await loadThread(id)
     }
 
     /// 새 대화 하나를 마련한다 (⌘N · SquarePen · 대상 바꾸기). 손대지 않은 빈 대화가 있으면 그것을 다시 쓴다 — 단 `excluding`(다른 창이 쥔 대화)은 빼고,
@@ -555,13 +594,16 @@ public final class ChatStore {
             async let rows = gateway.conversations()
             async let projects = gateway.workContexts()
             let (chats, named) = try await (rows, projects)
+            // 세션 패널이 보이는 대화 중 이 목록(최근 100 + 빈 20)에 없는 것은 id로 직접 읽어 남긴다
+            let listed = Set(chats.map(\.id))
+            let extras = await readPanelRows(missingFrom: listed)
             guard scope.isCurrent(token), sequence == listSequence else { return }
-            let live = Set(chats.map(\.id))
+            let live = listed.union(extras.map(\.id))
             let createdMeanwhile = conversations.filter { !knownBefore.contains($0.id) && !live.contains($0.id) }
-            conversations = chats.filter { $0.archivedAt == nil } + createdMeanwhile
+            conversations = chats.filter { $0.archivedAt == nil } + extras + createdMeanwhile
             contexts = Dictionary(named.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
             listLoad = .loaded(problem: nil)
-            dropThreads(missingFrom: live.union(createdMeanwhile.map(\.id)))
+            dropThreads(missingFrom: live.union(createdMeanwhile.map(\.id)).union(panelConversations()))
             if currentID == nil, !navigated, let latest = entries.first(where: { !$0.isLocal }) {
                 // 마지막 대화로 되살린다 (앱을 다시 켠 뒤)
                 currentID = latest.id
@@ -584,9 +626,31 @@ public final class ChatStore {
         }
     }
 
-    /// 지금 보이는 대화들의 글을 읽는다: 공유 `currentID`와 창들이 보이는 대화 (서버에 있는 것만, 겹치지 않게)
+    /// 세션 패널이 보이는 대화 중 목록에 없는 것의 행을 id로 읽는다. 보관했거나 서버에 없으면 빠지고, 잠깐 못 읽으면 아는 행을 그대로 둔다
+    private func readPanelRows(missingFrom listed: Set<UUID>) async -> [ChatConversation] {
+        let ids = panelConversations().subtracting(listed).subtracting(locals.map(\.id)).sorted { $0.uuidString < $1.uuidString }
+        guard !ids.isEmpty else { return [] }
+        let known = conversations
+        return await withTaskGroup(of: ChatConversation?.self) { group in
+            for id in ids {
+                group.addTask { [gateway] in
+                    do {
+                        guard let row = try await gateway.conversation(id: id), row.archivedAt == nil else { return nil }
+                        return row
+                    } catch {
+                        return known.first { $0.id == id }
+                    }
+                }
+            }
+            var rows: [ChatConversation] = []
+            for await row in group { if let row { rows.append(row) } }
+            return rows
+        }
+    }
+
+    /// 지금 보이는 대화들의 글을 읽는다: 공유 `currentID`와 창들 · 세션 패널이 보이는 대화 (서버에 있는 것만, 겹치지 않게)
     private func loadShownThreads() async {
-        var shown = viewedConversations()
+        var shown = viewedConversations().union(panelConversations())
         if let id = currentID { shown.insert(id) }
         let ids = shown.filter { id in conversations.contains { $0.id == id } }.sorted { $0.uuidString < $1.uuidString }
         guard !ids.isEmpty else { return }

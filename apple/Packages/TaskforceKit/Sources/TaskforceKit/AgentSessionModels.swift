@@ -263,7 +263,7 @@ public struct AgentSessionItem: Identifiable, Sendable, Hashable {
     public let status: AgentSessionStatus
     /// 링. 닫힌 세션은 링이 없다 (탭 · 레일에 없다)
     public let ring: AgentSessionRing?
-    /// 상태 줄 · SessionRow 말 (2.5 표)
+    /// 상태 줄 · SessionRow 말 (2.5 표). 끝난(`closed`) 세션은 빈 글이다: 상태 말 없이 흐리게 그린다
     public let line: String
     public let createdAt: Date
     public let updatedAt: Date
@@ -304,8 +304,8 @@ public struct AgentSessionItem: Identifiable, Sendable, Hashable {
     /// 탭 · 레일에 보이는가: 닫힌 세션은 없다
     public var showsInTab: Bool { !isClosed }
 
-    /// SessionRow의 접근성 이름 "{이름} — {에이전트} — {말}"
-    public var rowAccessibilityName: String { "\(name) — \(agentName) — \(line)" }
+    /// SessionRow의 접근성 이름 "{이름} — {에이전트} — {말}". 끝난 세션은 말이 없어 "{이름} — {에이전트}"
+    public var rowAccessibilityName: String { line.isEmpty ? "\(name) — \(agentName)" : "\(name) — \(agentName) — \(line)" }
     /// 탭 항목의 접근성 이름 "{이름} · {말}" (말은 상태 줄과 같다: external은 "External · Open in Terminal")
-    public var tabAccessibilityName: String { "\(name) · \(line)" }
+    public var tabAccessibilityName: String { line.isEmpty ? name : "\(name) · \(line)" }
 }
