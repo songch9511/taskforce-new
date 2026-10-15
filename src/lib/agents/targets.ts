@@ -1,7 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { z } from "zod";
 
-import type { AgentCapability, AssistantTarget } from "@/lib/api/contract";
+import type { AgentCapability, AssistantTargetWithDevice } from "@/lib/api/contract";
 
 import { agentAccess, directChat, type AgentPolicyMode } from "./capability";
 import { adapterEnabled, AGENT_REGISTRY } from "./registry";
@@ -51,17 +51,18 @@ export async function resolveAgentTarget(admin: SupabaseClient, userId: string, 
 }
 
 type ConnectionRow = { id: string; adapter: string; status: "active" | "error" | "revoked"; bridge_id: string | null; created_at: string };
-type BridgeRow = { id: string; status: "active" | "revoked"; last_heartbeat_at: string | null };
+type BridgeRow = { id: string; status: "active" | "revoked"; last_heartbeat_at: string | null; device_name: string | null };
 
 /**
  * GET /api/v2/assistant/targets (계약 4.5 · OD-20): taskforce 먼저, 그다음 registry 순서(claude-code · codex). 켜지지 않은 adapter와 registry 밖 adapter의 연결은 뺀다.
  * 연결(revoked 제외)마다 한 행, 활성 연결이 없는 adapter는 not_connected 한 행(connection_id null).
  * 상태 순서: error · bridge 없음 · bridge revoked → not_connected / heartbeat 없음 · 90초 넘음 → unreachable / 서버 registry가 직접 대화를 못 하면 → unsupported / 그 밖 ready.
- * access는 registry · 정책 mode로 계산한 등급이다. sign_in_needed는 bridge 사전 점검(D2a)에서 오므로 여기서는 내지 않는다
+ * access는 registry · 정책 mode로 계산한 등급이다. sign_in_needed는 bridge 사전 점검(D2a)에서 오므로 여기서는 내지 않는다.
+ * F1s: 행마다 device_name(그 연결 bridge의 표시용 이름, 모르면 null)과 bridge_id(연결의 bridge, 연결이 없으면 null)를 더한다 — 이름은 상태 계산에 쓰지 않는다
  */
-export async function listAssistantTargets(admin: SupabaseClient, userId: string, env: Env = process.env, now: Date = new Date()): Promise<AssistantTarget[]> {
+export async function listAssistantTargets(admin: SupabaseClient, userId: string, env: Env = process.env, now: Date = new Date()): Promise<AssistantTargetWithDevice[]> {
   const enabled = ADAPTERS.filter((adapter) => adapterEnabled(adapter, env));
-  const targets: AssistantTarget[] = [{ kind: "taskforce" }];
+  const targets: AssistantTargetWithDevice[] = [{ kind: "taskforce" }];
   if (!enabled.length) return targets;
 
   const [{ data: connectionData }, mode] = await Promise.all([
@@ -75,11 +76,11 @@ export async function listAssistantTargets(admin: SupabaseClient, userId: string
   const bridgeIds = [...new Set(connections.map((row) => row.bridge_id).filter((bridgeId): bridgeId is string => bridgeId !== null))];
   const bridges = new Map<string, BridgeRow>();
   if (bridgeIds.length) {
-    const { data } = await admin.from("bridges").select("id, status, last_heartbeat_at").eq("user_id", userId).in("id", bridgeIds).throwOnError();
+    const { data } = await admin.from("bridges").select("id, status, last_heartbeat_at, device_name").eq("user_id", userId).in("id", bridgeIds).throwOnError();
     for (const row of (data ?? []) as BridgeRow[]) bridges.set(row.id, row);
   }
 
-  const stateOf = (row: ConnectionRow, capability: AgentCapability): Extract<AssistantTarget, { kind: "agent" }>["state"] => {
+  const stateOf = (row: ConnectionRow, capability: AgentCapability): Extract<AssistantTargetWithDevice, { kind: "agent" }>["state"] => {
     const bridge = row.bridge_id === null ? undefined : bridges.get(row.bridge_id);
     if (row.status !== "active" || !bridge || bridge.status === "revoked") return "not_connected";
     const heartbeat = bridge.last_heartbeat_at === null ? null : Date.parse(bridge.last_heartbeat_at);
@@ -91,8 +92,11 @@ export async function listAssistantTargets(admin: SupabaseClient, userId: string
     const capability = AGENT_REGISTRY[adapter];
     const base = { kind: "agent" as const, adapter, display_name: capability.display_name ?? adapter, access: agentAccess(capability, mode) };
     const own = connections.filter((row) => row.adapter === adapter);
-    if (!own.length) targets.push({ ...base, connection_id: null, state: "not_connected" });
-    for (const row of own) targets.push({ ...base, connection_id: row.id, state: stateOf(row, capability) });
+    if (!own.length) targets.push({ ...base, connection_id: null, state: "not_connected", device_name: null, bridge_id: null });
+    for (const row of own) {
+      const bridge = row.bridge_id === null ? undefined : bridges.get(row.bridge_id);
+      targets.push({ ...base, connection_id: row.id, state: stateOf(row, capability), device_name: bridge?.device_name ?? null, bridge_id: row.bridge_id });
+    }
   }
   return targets;
 }

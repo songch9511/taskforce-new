@@ -47,6 +47,7 @@ import {
   updateAgentSessionRequestSchema,
   type AgentDelivery,
   type AssistantTarget,
+  type AssistantTargetWithDevice,
   type Attachment,
   type AttachmentDropped,
   type AttachmentKind,
@@ -445,7 +446,7 @@ export async function handleResumeHere<User extends AppUser>(request: Request, s
 
 // ─────────────────────────── 대상 목록 ───────────────────────────
 
-export type TargetsDeps<User> = Base<User> & { list: (user: User) => Promise<AssistantTarget[]> };
+export type TargetsDeps<User> = Base<User> & { list: (user: User) => Promise<(AssistantTarget | AssistantTargetWithDevice)[]> };
 
 /** GET /api/v2/assistant/targets (계약 4.5): 읽기만 한다 (CSRF 대상이 아니다) */
 export async function handleListTargets<User extends AppUser>(request: Request, deps: TargetsDeps<User>): Promise<Response> {

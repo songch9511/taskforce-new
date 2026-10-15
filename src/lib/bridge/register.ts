@@ -1,16 +1,17 @@
 import { createHash, randomBytes } from "node:crypto";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { z } from "zod";
-import { bridgeV1AdapterReportSchema, bridgeV1RegisterRequestSchema, bridgeV1RegisterResponseSchema, bridgeV1RevokeResponseSchema, type BridgeV1RegisterRequest } from "@/lib/api/contract";
+import { bridgeV1AdapterReportSchema, bridgeV1RegisterRequestWithDeviceSchema, bridgeV1RegisterResponseSchema, bridgeV1RevokeResponseSchema, type BridgeV1RegisterRequestWithDevice } from "@/lib/api/contract";
 import { takeBridgeRegistrationLimit } from "@/lib/api/rate-limit";
 import { BRIDGE_HEARTBEAT_SECONDS, BRIDGE_LONG_POLL_MAX_SECONDS, BRIDGE_UNREACHABLE_AFTER_SECONDS } from "@/lib/execution/limits";
+import { saveBridgeDeviceName } from "./device-name";
 import { kickBridgeConnections } from "./triggers";
 
 export function normalizeBridgeReport(adapters: z.infer<typeof bridgeV1AdapterReportSchema>[]) {
   return { reported_at: new Date().toISOString(), adapters: Object.fromEntries(adapters.map(({ adapter, ...report }) => [adapter, report])) };
 }
-export async function registerBridge(admin: SupabaseClient, userId: string, input: BridgeV1RegisterRequest) {
-  const body = bridgeV1RegisterRequestSchema.parse(input);
+export async function registerBridge(admin: SupabaseClient, userId: string, input: BridgeV1RegisterRequestWithDevice) {
+  const body = bridgeV1RegisterRequestWithDeviceSchema.parse(input);
   await takeBridgeRegistrationLimit(admin, userId);
   const secret = randomBytes(32).toString("base64url");
   const { data } = await admin.rpc("register_bridge", {
@@ -21,6 +22,7 @@ export async function registerBridge(admin: SupabaseClient, userId: string, inpu
   if (data?.status === "revoked") return { status: "revoked" as const };
   if (data?.status === "too_many_bridges") return { status: "too_many_bridges" as const };
   const result = z.object({ status: z.enum(["registered", "rotated", "reactivated"]), bridge_id: z.guid(), connections: z.array(z.object({ connection_id: z.guid(), adapter: bridgeV1AdapterReportSchema.shape.adapter, status: z.enum(["active", "error", "revoked"]), activated: z.boolean() })) }).parse(data);
+  await saveBridgeDeviceName(admin, { userId, bridgeId: result.bridge_id, deviceName: body.device_name });
   await kickBridgeConnections(admin, userId, result.connections.filter((connection) => connection.activated).map((connection) => connection.connection_id));
   return bridgeV1RegisterResponseSchema.parse({ bridge_id: result.bridge_id, bridge_secret: secret,
     heartbeat_interval_seconds: BRIDGE_HEARTBEAT_SECONDS, unreachable_after_seconds: BRIDGE_UNREACHABLE_AFTER_SECONDS, long_poll_max_seconds: BRIDGE_LONG_POLL_MAX_SECONDS,
