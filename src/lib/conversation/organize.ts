@@ -73,13 +73,8 @@ const isAsciiAlnum = (ch: string) => /[A-Za-z0-9]/.test(ch);
 /** 이름 뒤에 붙는 조사 (한 낱말로 끝나야 한다) */
 const PARTICLE = /^(?:으로|에서|에게|한테|까지|부터|로|에|을|를|은|는|이|가|의|와|과|도|만|께)(?![\p{L}\p{N}])/u;
 
-/**
- * 글에 이름이 그대로 있는 범위 (NFC · 소문자 · 공백 하나로 맞춘 뒤 글자 · 숫자 경계로 자른 부분 문자열).
- * 경계: 앞은 글자 · 숫자가 아니어야 하고, 뒤는 글자 · 숫자가 아니거나 (영문 · 숫자로 끝나는 이름이면) 영문 · 숫자가 아니거나 조사 한 낱말이어야 한다.
- * 더 긴 이름 안에 든 짧은 일치는 버린다 (Taskforce 0.2.0 안의 Taskforce). 나온 순서대로 id (중복 없음)
- */
-export function matchProjectNames(text: string, contexts: readonly { id: string; name: string }[]): string[] {
-  const haystack = normalizeName(unquoted(text));
+/** 정규화한 글 안에서 이름이 그대로 나온 자리 (더 긴 이름 안에 든 짧은 일치는 버린다), 글 순서 */
+function projectNameSpans(haystack: string, contexts: readonly { id: string; name: string }[]): { id: string; start: number; end: number }[] {
   const spans: { id: string; start: number; end: number }[] = [];
   for (const context of contexts) {
     const name = normalizeName(context.name);
@@ -97,10 +92,46 @@ export function matchProjectNames(text: string, contexts: readonly { id: string;
       if (ok) spans.push({ id: context.id, start, end });
     }
   }
-  const kept = spans.filter((s) => !spans.some((o) => o.id !== s.id && o.start <= s.start && o.end >= s.end && o.end - o.start > s.end - s.start));
+  return spans.filter((s) => !spans.some((o) => o.id !== s.id && o.start <= s.start && o.end >= s.end && o.end - o.start > s.end - s.start)).sort((a, b) => a.start - b.start);
+}
+
+/**
+ * 글에 이름이 그대로 있는 범위 (NFC · 소문자 · 공백 하나로 맞춘 뒤 글자 · 숫자 경계로 자른 부분 문자열).
+ * 경계: 앞은 글자 · 숫자가 아니어야 하고, 뒤는 글자 · 숫자가 아니거나 (영문 · 숫자로 끝나는 이름이면) 영문 · 숫자가 아니거나 조사 한 낱말이어야 한다.
+ * 더 긴 이름 안에 든 짧은 일치는 버린다 (Taskforce 0.2.0 안의 Taskforce). 나온 순서대로 id (중복 없음)
+ */
+export function matchProjectNames(text: string, contexts: readonly { id: string; name: string }[]): string[] {
   const ids: string[] = [];
-  for (const span of kept.sort((a, b) => a.start - b.start)) if (!ids.includes(span.id)) ids.push(span.id);
+  for (const span of projectNameSpans(normalizeName(unquoted(text)), contexts)) if (!ids.includes(span.id)) ids.push(span.id);
   return ids;
+}
+
+/** 답의 최대 길이 (글자): 이보다 긴 글은 질문에 대한 단순한 답이 아니다 */
+const ANSWER_MAX_CHARS = 80;
+/** 이름 · 번호를 뺀 나머지가 이 낱말들뿐이어야 답이다: 조사 · 응답 말머리 · 지시어 · 영어 군더더기. 동사(옮겨줘 · 알려줘)나 정정("아니")은 없다 */
+const ANSWER_WORD = new RegExp(
+  "^(?:응|네|예|그래|그거|이거|그걸|이걸|저거|저걸|걸|그것|이것|프로젝트|이슈|랑|하고|와|과|the|to|from|in|it|this|that|one|please|yes|ok|okay|project|issue|and)?(?:으로|로|에서|에|을|를|은|는|이|가|의|도|만|요|이요|입니다|이에요|예요|이야|야)*$",
+  "u",
+);
+
+/**
+ * 정리가 물은 것(어느 프로젝트인가요? 등)에 대한 짧은 답인가 (코드가 정한다 — J1이 "Launch"를 instruct · other로 읽는 것을 믿지 않는다).
+ * 답의 모양: 프로젝트 이름이 그대로 · #번호 · 앱이 붙인 칩 중 하나 이상으로 지칭하고, 그것들과 조사 · 응답 말머리 · 지시어를 빼면 남는 말이 없다.
+ * 지시나 질문이 섞이면("Launch 알려줘" · "아니 Launch에서 빼줘") 답이 아니다: J1의 의도를 따른다. 이 판정은 쓰기를 정하지 않는다 — 어디로 가는지만 정하고, 무엇을 할지는 op 판정(Jev)과 앞 질문의 값이 정한다.
+ */
+export function isOrganizeAnswer(input: { text: string; chipActionIds: readonly string[]; chipContextIds: readonly string[]; contexts: readonly { id: string; name: string }[] }): boolean {
+  const haystack = normalizeName(unquoted(input.text));
+  if (!haystack || [...haystack].length > ANSWER_MAX_CHARS) return false;
+  const spans = projectNameSpans(haystack, input.contexts);
+  let rest = haystack;
+  for (const span of [...spans].sort((a, b) => b.start - a.start)) rest = `${rest.slice(0, span.start)} ${rest.slice(span.end)}`;
+  const numbers = findIssueMentions(input.text).length;
+  rest = rest.replace(ISSUE_NUMBER, " ");
+  if (spans.length === 0 && numbers === 0 && input.chipActionIds.length === 0 && input.chipContextIds.length === 0) return false;
+  return rest
+    .split(/[\s.,!?~"'`()[\]{}:;·/\\-]+/u)
+    .filter(Boolean)
+    .every((word) => ANSWER_WORD.test(word));
 }
 
 // ─── 대상 정하기 ───

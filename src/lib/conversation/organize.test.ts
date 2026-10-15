@@ -12,6 +12,7 @@ import {
   cardWrites,
   deletePayload,
   findIssueMentions,
+  isOrganizeAnswer,
   matchProjectNames,
   mergePayload,
   reissuedCard,
@@ -342,6 +343,45 @@ describe("한 번 더 묻기 (pending, 한 라운드)", () => {
   it("그래도 모자라면 다시 묻는 결과가 나온다 (한 라운드는 respond가 clarify 글로 바꾼다)", () => {
     const result = resolveOrganize(input("글쎄", { pending: pending({ op: "move", action_ids: [A139.id], missing: "project" }), judged: { op: null, into: null } }));
     expect(result).toMatchObject({ kind: "ask", pending: { missing: "project" } });
+  });
+});
+
+// ─── 정리가 물은 것에 대한 짧은 답 (코디네이터 eval 반영): 코드가 정한다, J1 라벨을 믿지 않는다 ───
+// 실제 모델 eval에서 "Launch"는 J1이 instruct(0.90)로, "Other"는 other(0.79)로 읽어 정리 이어가기로 오지 못했다.
+describe("isOrganizeAnswer (answer-shaped 짧은 답)", () => {
+  const contexts = LOOKUP.contexts.map((c) => ({ id: c.id, name: c.name }));
+  const answers = (text: string, extra: Partial<Parameters<typeof isOrganizeAnswer>[0]> = {}) => isOrganizeAnswer({ text, chipActionIds: [], chipContextIds: [], contexts, ...extra });
+
+  it("프로젝트 이름(그대로)만 · 그 이름 + 조사 · 응답 말머리만 있으면 답이다", () => {
+    for (const text of ["Launch", "launch", " Launch. ", "Launch로", "Launch로요", "Launch에서", "네, Launch", "응 Launch로", "출시 준비", "출시 준비로", "Taskforce 0.2.0으로", "the Launch project", "to Launch please"]) {
+      expect(answers(text), text).toBe(true);
+    }
+  });
+
+  it("#번호 · 칩 지칭만 있어도 답이다 (조사 · 지시어만 곁들여도)", () => {
+    for (const text of ["#144", "#139에", "#144를", "#139 #144", "그거 #144로요"]) expect(answers(text), text).toBe(true);
+    expect(answers("이걸로", { chipActionIds: [A140.id] })).toBe(true);
+    expect(answers("this one", { chipContextIds: [CTX.launch] })).toBe(true);
+  });
+
+  it("지칭이 하나도 없으면 답이 아니다 (이름 없는 '런치로' · 응 · 지시어만)", () => {
+    for (const text of ["런치로", "응", "그걸로요", "글쎄", "Launching"]) expect(answers(text), text).toBe(false);
+  });
+
+  it("지칭이 있어도 그 밖의 말(지시 · 질문 · 정정)이 있으면 답이 아니다: J1이 정한다", () => {
+    for (const text of ["Launch 일정 알려줘", "Launch 알려줘", "아니 Launch에서 빼줘", "#144 요약해줘", "move #144 to Launch", "Launch 어때?", "Launch는 어제 끝났어", "Launch로 보내줘", "아니 Launch", "no, Launch"]) {
+      expect(answers(text), text).toBe(false);
+    }
+  });
+
+  it("더 긴 이름 안의 짧은 일치는 이름으로 세지 않는다 (Taskforce 0.2.0 안의 Taskforce가 남지 않는다) · 인용한 줄은 보지 않는다", () => {
+    expect(answers("Taskforce 0.2.0")).toBe(true);
+    expect(answers("> Launch로 옮겨줘\nLaunch")).toBe(true);
+    expect(answers("> Launch")).toBe(false);
+  });
+
+  it("긴 글은 답이 아니다", () => {
+    expect(answers(`Launch ${"로 ".repeat(60)}`)).toBe(false);
   });
 });
 

@@ -49,6 +49,7 @@ import {
   cardWrites,
   deletePayload,
   findIssueMentions,
+  isOrganizeAnswer,
   mergePayload,
   movePayload,
   moveOps,
@@ -160,7 +161,7 @@ export type TurnPlan = {
     model: string | null;
     cost: number;
     /** 이슈 정리의 판정 (숫자 · 코드만): 무엇을 · 어떻게 끝났나 · Jev op 확신 */
-    organize?: { op: OrganizeOp | null; outcome: OrganizeResolution["kind"] | "clarify"; op_confidence: number | null } | null;
+    organize?: { op: OrganizeOp | null; outcome: OrganizeResolution["kind"] | "clarify"; op_confidence: number | null; /** 정리가 물은 것에 대한 짧은 답이라 코드가 J1 없이 정리로 보냈다 */ answer_rule?: true } | null;
     promptVersions: { intent: string; consult: string; memory: string; organize?: string };
   };
 };
@@ -358,15 +359,35 @@ export async function respondToMessage(input: RespondInput, deps: RespondDeps): 
   const lang: Lang = answerLanguage(input.message.text) === "한국어" ? "ko" : "en";
   const previous = previousAssistant(input);
   const previousProposal = openProposalOf(previous);
-  const intent = await classifyIntent(
-    {
-      message: input.message.text,
-      previousReply: previous ? { text: previous.text, asked: previous.content?.asks ?? null, openProposal: previousProposal ? proposalLabel(previousProposal) : null } : null,
-      selectedTargets: input.selected.length,
-    },
-    deps.decide,
-  );
-  const route = routeIntent(intent, { asked: previous?.content?.asks ?? null, openProposal: previousProposal !== null });
+
+  // 정리가 물은 것(content.organize.pending, 바로 앞 답)에 대한 짧은 답이면 코드가 정리 이어가기로 보낸다 — J1 라벨을 믿지 않는다 (실제 eval: "Launch"를 instruct 0.90, "Other"를 other 0.79로 읽었다).
+  // 답 모양: 프로젝트 이름이 그대로 · #번호 · 칩으로 지칭하고 조사 · 응답 말머리 말고는 말이 없다 (isOrganizeAnswer). 지시가 섞이면("Launch 알려줘" · "아니 Launch에서 빼줘") J1을 따른다.
+  // 어디로 보낼지만 정한다: 무엇을 할지는 organize 분기의 op 판정(Jev, 정정은 정정)과 앞 질문의 값이, 쓰기 규칙은 분기가 그대로 정한다.
+  const pendingAsk = pendingOf(previous);
+  const chipActionIds = input.selected.filter((t) => t.kind === "action").map((t) => t.id);
+  const mentions = findIssueMentions(input.message.text);
+  let organizeRead: Promise<OrganizeLookup> | null = null;
+  /** 정리 읽기: 답인지 보는 데와 정리 분기가 같은 질의를 쓰므로 한 번만 읽는다 */
+  const readOrganize = (lookupFn: NonNullable<RespondDeps["organizeLookup"]>) =>
+    (organizeRead ??= lookupFn({
+      numbers: mentions.map((m) => m.number).slice(0, 10),
+      actionIds: [...new Set([...chipActionIds, ...(pendingAsk?.action_ids ?? [])])].slice(0, 10),
+    }));
+  const answersOrganize =
+    pendingAsk !== null &&
+    deps.organizeLookup !== undefined &&
+    isOrganizeAnswer({ text: input.message.text, chipActionIds, chipContextIds: input.selectedContexts ?? [], contexts: (await readOrganize(deps.organizeLookup)).contexts });
+  const intent: IntentResult = answersOrganize
+    ? { kind: "answer", confidence: 1, remember: 0, read: 0, judgeVersion: INTENT_PROMPT_VERSION, cost: 0 }
+    : await classifyIntent(
+        {
+          message: input.message.text,
+          previousReply: previous ? { text: previous.text, asked: previous.content?.asks ?? null, openProposal: previousProposal ? proposalLabel(previousProposal) : null } : null,
+          selectedTargets: input.selected.length,
+        },
+        deps.decide,
+      );
+  const route: IntentRoute = answersOrganize ? { kind: "organize", confirm: false, alsoRead: false } : routeIntent(intent, { asked: previous?.content?.asks ?? null, openProposal: previousProposal !== null });
   // 앞 답이 "어느 일인가요?"였고 그 답이면 다시 묻지 않는다 (B2에는 실행 연결이 없어 고른 대상으로 할 일이 없다)
   const answeredReferent = intent.kind === "answer" && previous?.content?.asks === "referent";
 
@@ -583,13 +604,8 @@ export async function respondToMessage(input: RespondInput, deps: RespondDeps): 
       if (!lookupFn) throw new ConsultOutputError("정리 읽기(organizeLookup)가 연결되지 않았습니다");
       if (route.alsoRead) await runConsult({ context: await deps.retrieve({ text: input.message.text, chunks: true }), allowMemory: false, allowProposal: false, executionRequested: false });
 
-      const pending = pendingOf(previous);
-      const chipActionIds = input.selected.filter((t) => t.kind === "action").map((t) => t.id);
-      const mentions = findIssueMentions(input.message.text);
-      const lookup = await lookupFn({
-        numbers: mentions.map((m) => m.number).slice(0, 10),
-        actionIds: [...new Set([...chipActionIds, ...(pending?.action_ids ?? [])])].slice(0, 10),
-      });
+      const pending = pendingAsk;
+      const lookup = await readOrganize(lookupFn);
       const issues = organizeIssues({ text: input.message.text, chipActionIds, lookup, pending });
 
       // Jev 한 번(질문 둘까지): 무엇을(op) — 늘 묻는다. 앞 질문이 있어도 이번 메시지가 질문에 대한 단순한 답인지 정정 · 새 지시인지는 op가 가른다
@@ -775,7 +791,7 @@ export async function respondToMessage(input: RespondInput, deps: RespondDeps): 
       adopt: adopt !== null,
       model: done?.model ?? null,
       cost: intent.cost + (done?.cost ?? 0) + organizeCost,
-      ...(organizeSummary ? { organize: organizeSummary } : {}),
+      ...(organizeSummary ? { organize: answersOrganize ? { ...organizeSummary, answer_rule: true as const } : organizeSummary } : {}),
       promptVersions: {
         intent: INTENT_PROMPT_VERSION,
         consult: CONSULT_PROMPT_VERSION,

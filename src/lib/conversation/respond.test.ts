@@ -839,6 +839,85 @@ describe("이슈 정리 (organize)", () => {
     ]);
   });
 
+  describe("정리가 물은 것에 대한 짧은 답은 코드가 정리 이어가기로 보낸다 (J1 라벨을 믿지 않는다)", () => {
+    const history = [windowMessage(1, "user", "#139 옮겨줘"), askedProject()];
+    const j1Called = (t: { state: () => { questions: Record<string, unknown> }[] }) => t.state().some((r) => "intent" in r.questions);
+
+    it("실제 eval의 두 미달: 'Launch'를 J1이 instruct(0.90)로, 'Other'를 other(0.79)로 읽어도 정리로 간다 — J1은 부르지 않는다", async () => {
+      for (const j1 of [{ intent: "instruct" as const, confidence: 0.9 }, { intent: "other" as const, confidence: 0.79 }, { intent: "consult" as const, confidence: 0.95 }, { intent: "answer" as const, confidence: 0.3 }]) {
+        const t = run("Launch", j1, { op: "other" }, { history });
+        const plan = await t.run();
+        expect(plan.route, j1.intent).toBe("organize");
+        expect(plan.move, j1.intent).toEqual([{ action_id: id(139, "abababab"), add: { context_id: CTX.launch, expected_version: 4 }, remove: { context_id: CTX.taskforce, expected_version: 4 } }]);
+        expect(j1Called(t), j1.intent).toBe(false);
+        expect(t.complete).not.toHaveBeenCalled();
+        expect(plan.intent).toMatchObject({ kind: "answer" }); // 코드가 정한 라벨 (J1이 읽은 값이 아니다)
+        expect(plan.summary.organize).toMatchObject({ op: "move", outcome: "move", answer_rule: true });
+        expect(t.organizeLookup).toHaveBeenCalledTimes(1); // 답인지 보려고 읽은 정리 읽기를 정리 분기가 다시 읽지 않는다
+      }
+    });
+
+    it("op 재판정은 그대로다: 답 모양이어도 Jev가 앞 op와 다르게 확실히 읽으면 정정이다 (Launch로 옮기지 않고 Launch에서 뺀다)", async () => {
+      const plan = await run("Launch", { intent: "instruct", confidence: 0.9 }, { op: "remove" }, { history }, TWO_PLACES).run();
+      expect(plan.route).toBe("organize");
+      expect(plan.move).toEqual([{ action_id: id(139, "abababab"), add: null, remove: { context_id: CTX.launch, expected_version: 4 } }]);
+    });
+
+    it("출발 불일치도 같다: J1이 other(0.79)여도 쓰지 않고 실제 소속을 후보로 다시 묻는다 (org-move-from-mismatch)", async () => {
+      const BETA = id(4, "c1c1c1c1");
+      const OTHER = id(5, "c1c1c1c1");
+      const lookup: OrganizeLookup = {
+        actions: [issue(139, "Shape 디자인 확정", [{ id: BETA, name: "Beta", status: "active", context_version: 4 }, member("taskforce", "Taskforce")])],
+        contexts: [...LOOKUP.contexts, { id: BETA, name: "Beta", kind: "project", status: "active", context_version: 4 }, { id: OTHER, name: "Other", kind: "project", status: "active", context_version: 4 }],
+      };
+      const fromQuestion = windowMessage(2, "assistant", "어느 프로젝트에서 옮길까요?", {
+        content: { segments: [], citations: [], proposal: null, asks: "organize", organize: { state: "pending", op: "move", action_ids: [id(139, "abababab")], context_id: CTX.launch, missing: "from" }, used: null, window: null },
+      });
+      const plan = await run("Other", { intent: "other", confidence: 0.79 }, { op: "other" }, { history: [windowMessage(1, "user", "#139 Launch로 옮겨줘"), fromQuestion] }, lookup).run();
+      expect(plan.route).toBe("organize");
+      expect(plan.move).toBeUndefined();
+      expect(plan.reply.content.asks).toBe("organize");
+      expect(plan.reply.text).toBe("Move it from which project? 1) Beta 2) Taskforce");
+    });
+
+    it("삭제 · 병합은 이 규칙으로 쓰이지 않는다: 이슈를 물은 뒤 '#141' 답은 카드(쓰기 0)까지만, 쓰기는 카드의 글 확인(adopt ≥ 0.8) 몫이다", async () => {
+      const askedIssue = windowMessage(2, "assistant", "어느 이슈인가요? 이슈를 붙이거나 #번호로 말해 주세요.", {
+        content: { segments: [], citations: [], proposal: null, asks: "organize", organize: { state: "pending", op: "delete", action_ids: [], context_id: null, missing: "issue" }, used: null, window: null },
+      });
+      const plan = await run("#141", { intent: "instruct", confidence: 0.95 }, { op: "other" }, { history: [windowMessage(1, "user", "지워줘"), askedIssue] }).run();
+      expect(plan.route).toBe("organize");
+      expect(plan.move).toBeUndefined();
+      expect(plan.adopt).toBeNull();
+      expect(plan.reply.content.asks).toBe("confirm");
+      expect(plan.reply.content.proposal).toMatchObject({ kind: "delete", targets: [{ number: 141 }] });
+    });
+
+    it("답 모양이 아니면 J1을 따른다: 지시 · 질문이 섞인 글('Launch 일정 알려줘')은 상담으로, 쓰기 0", async () => {
+      const t = run("Launch 일정 알려줘", { intent: "consult", confidence: 0.9 }, {}, { history });
+      const plan = await t.run();
+      expect(plan.route).toBe("consult");
+      expect(plan.move).toBeUndefined();
+      expect(j1Called(t)).toBe(true);
+      expect(plan.summary.organize).toBeUndefined();
+    });
+
+    it("앞 답이 정리 질문이 아니거나, 그 뒤에 사용자 메시지가 끼어 질문이 낡았거나, 정리 읽기가 없으면 규칙은 적용되지 않는다 (J1을 따른다)", async () => {
+      const plainReply = windowMessage(2, "assistant", "오늘 할 일은 둘이에요.");
+      const none = run("Launch", { intent: "consult", confidence: 0.9 }, {}, { history: [windowMessage(1, "user", "오늘 뭐 해?"), plainReply] });
+      expect((await none.run()).route).toBe("consult");
+      expect(j1Called(none)).toBe(true);
+
+      const stale = run("Launch", { intent: "consult", confidence: 0.9 }, {}, { history: [windowMessage(1, "user", "#139 옮겨줘"), askedProject(), windowMessage(3, "user", "잠깐만")] });
+      expect((await stale.run()).route).toBe("consult");
+      expect(j1Called(stale)).toBe(true);
+
+      const models = organizeModels({ intent: "consult", confidence: 0.9 });
+      const t = deps({ decide: models.decide }, emptyContext());
+      const withoutLookup = await respondToMessage(respondInput("Launch", { history }), t.deps);
+      expect(withoutLookup.route).toBe("consult");
+    });
+  });
+
   it("병합 대상을 물은 답은 앞 대상과 합친다: '#139 합쳐줘' → 질문 → '#144' = 카드 [#144 → #139] (검토 P2-6)", async () => {
     const first = await run("#139 합쳐줘", { intent: "organize" }, { op: "merge" }).run();
     expect(first.reply.content.organize).toEqual({ state: "pending", op: "merge", action_ids: [id(139, "abababab")], context_id: null, missing: "issue" });
@@ -1020,7 +1099,8 @@ describe("이슈 정리 (organize)", () => {
       const pendingMessage = windowMessage(2, "assistant", "어느 프로젝트인가요?", {
         content: { segments: [], citations: [], proposal: null, asks: "organize", organize: { state: "pending", op: "move", action_ids: [id(139, "abababab")], context_id: null, missing: "project" }, used: null, window: null },
       });
-      const t = run("Launch", { intent: "answer" }, {}, { history: [windowMessage(1, "user", "#139 런치로 옮겨줘"), pendingMessage] });
+      // 이름만 답하는 짧은 답은 코드가 J1 없이 정리로 보낸다(아래). J1을 부르는 글(지시가 섞인 글)로 본다
+      const t = run("Launch 말고 그냥 지워줘", { intent: "organize" }, { op: "delete" }, { history: [windowMessage(1, "user", "#139 런치로 옮겨줘"), pendingMessage] });
       await t.run();
       expect(t.state().find((r) => "intent" in r.questions)!.state).toMatchObject({ previous_reply: { text: "어느 프로젝트인가요?", asked_user: "which_project_or_issue", open_proposal: null } });
     });
