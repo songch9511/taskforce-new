@@ -118,9 +118,18 @@ final class ScriptedDecider: @unchecked Sendable {
 /// 사건 싱크 대역 (adapter가 낸 형태 있는 사건을 차례로 모은다)
 final class EventLog: @unchecked Sendable {
     private let events = Mutex<[AgentEvent]>([])
+    /// 사건을 받기 전에 기다리는 시험 끼어들기 (emit 대기 중 경쟁 시험, 10장 6)
+    private let hook = Mutex<(@Sendable (AgentEvent) async -> Void)?>(nil)
+
+    func before(_ body: @escaping @Sendable (AgentEvent) async -> Void) {
+        hook.withLock { $0 = body }
+    }
 
     var sink: AgentEventSink {
-        AgentEventSink { [self] event, _ in events.withLock { $0.append(event) } }
+        AgentEventSink { [self] event, _ in
+            if let body = hook.withLock({ $0 }) { await body(event) }
+            events.withLock { $0.append(event) }
+        }
     }
 
     var all: [AgentEvent] { events.withLock { $0 } }

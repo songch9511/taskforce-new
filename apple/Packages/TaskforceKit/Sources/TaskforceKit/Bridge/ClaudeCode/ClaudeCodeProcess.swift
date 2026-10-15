@@ -50,6 +50,8 @@ public actor ClaudeCodeProcess: AgentProcess {
     nonisolated let probeActor: ClaudeCodeProbe
     nonisolated let testHooks: ClaudeCodeTestHooks
     nonisolated let services = Mutex<AgentRuntimeServices?>(nil)
+    /// Edit/Write가 바꾸면 안 되는 앱 데이터 폴더 (`sessionsRoot`는 늘 포함, 10장 5)
+    nonisolated let protectedRoots: [URL]
 
     private var spawns: [String: Spawn] = [:]
     private var sessionSpawn: [String: String] = [:]
@@ -78,13 +80,15 @@ public actor ClaudeCodeProcess: AgentProcess {
 
     /// - `sessionsRoot`: `<원장 파티션 폴더>/claude-code` (계정 삭제는 파티션째 지운다)
     /// - `hookServer`: 앱 전체 소켓 (bridge가 꺼져 있으면 nil: 새 턴 · 답은 `spawn_failed`, 닫기는 소켓 없이 — 훅이 모두 deny)
+    /// - `protectedRoots`: 앱 Application Support 등 Edit/Write를 막을 앱 데이터 폴더 (`sessionsRoot`는 늘 막는다)
     public init(
         sessionsRoot: URL, hookServer: HookSocketServer?, helpers: ClaudeCodeHelpers, locator: ClaudeCodeLocator,
         environment: [String: String] = ProcessInfo.processInfo.environment, managedSettingsPath: String = ClaudeCodeProbe.managedSettingsPath,
         fileSystem: GateFileSystem = .live, timing: ClaudeCodeTiming = .standard, log: any BridgeLogSink = NoBridgeLog(), runner: ClaudeCommandRunner? = nil,
-        testHooks: ClaudeCodeTestHooks = ClaudeCodeTestHooks()
+        testHooks: ClaudeCodeTestHooks = ClaudeCodeTestHooks(), protectedRoots: [URL] = []
     ) {
         self.sessionsRoot = sessionsRoot
+        self.protectedRoots = [sessionsRoot] + protectedRoots
         self.hookServer = hookServer
         self.helpers = helpers
         self.locator = locator
@@ -162,17 +166,23 @@ public actor ClaudeCodeProcess: AgentProcess {
         guard state.bound, state.providerSessionID == external else { throw AgentStartError(.spawnFailed) }
     }
 
-    /// 이 답에서 비밀 항목의 값 (질문을 낸 spawn이 메모리에 적어 둔 항목만, 8장 11)
-    private func secretValues(_ answer: AgentAnswerDelivery) -> [String] {
-        guard let marked = secretItems[answer.sessionID], marked.requestID == answer.requestID else { return [] }
+    /// 이 답에서 비밀 항목의 값 (8장 11 · 10장 7): 질문을 낸 spawn이 메모리에 적은 항목과 상태 파일의 비밀 항목 id(앱이 다시 떠도 남는다).
+    /// 이 Mac에서 답한 값(`answeredLocally`)인데 어느 항목이 비밀인지 모르면 답 값 전부를 비밀로 본다
+    private func secretValues(_ answer: AgentAnswerDelivery, open: ClaudeSessionState.OpenDeferred) -> [String] {
+        var ids = Set(open.secretItemIDs)
+        var single = open.singleItem
+        if let marked = secretItems[answer.sessionID], marked.requestID == answer.requestID {
+            ids.formUnion(marked.ids)
+            single = single || marked.single
+        }
         var values: [String] = []
-        for (id, value) in answer.value.answers ?? [:] where marked.ids.contains(id) {
+        for (id, value) in answer.value.answers ?? [:] where ids.contains(id) || (answer.answeredLocally && ids.isEmpty) {
             switch value {
             case .one(let text): values.append(text)
             case .many(let texts): values += texts
             }
         }
-        if marked.single, let text = answer.value.text { values.append(text) }
+        if let text = answer.value.text, (single && !ids.isEmpty) || (answer.answeredLocally && ids.isEmpty) { values.append(text) }
         return values
     }
 
@@ -193,8 +203,8 @@ public actor ClaudeCodeProcess: AgentProcess {
         }
         state.openDeferred = nil
         try? state.save(in: folder.root)
-        // 비밀 항목의 답 값을 이 세션의 가리개에 쌓는다 (9장 1: 이 세션의 다음 spawn에도 쓴다)
-        let values = secretValues(answer)
+        // 비밀 항목의 답 값을 이 세션의 가리개에 쌓는다 (9장 1: 이 세션의 다음 spawn에도 쓴다. 10장 7: 앱이 다시 떠도 상태 파일의 항목 id로)
+        let values = secretValues(answer, open: open)
         if !values.isEmpty { sessionRedactors[answer.sessionID] = redactor(answer.sessionID).adding(values) }
         secretItems[answer.sessionID] = nil
         let binding = ClaudeAnswerBinding(requestID: answer.requestID, kind: answer.kind, inputSHA256: open.inputSHA256, value: answer.value, targetSHA256: open.targetSHA256)
@@ -297,9 +307,18 @@ public actor ClaudeCodeProcess: AgentProcess {
         }
     }
 
-    /// 감독 중인 spawn이면 그 혈통으로, 아니면(앱이 다시 떴다) 적어 둔 혈통 파일로 자손까지 본다 (9장 4 정정)
+    /// 감독 중인 spawn이면 그 혈통으로, 아니면(앱이 다시 떴다) 적어 둔 혈통 파일로 자손까지 본다 (9장 4 정정). 감독 밖에서 끝을 증명하면 그 파일을 지운다 (10장 4)
     public func liveness(_ identity: AgentProcessIdentity) async -> AgentLiveness {
-        ClaudeProcessInspector.liveness(identity, lineage: spawns[identity.processMarker]?.lineage ?? ClaudeLineage(file: lineageFile(identity.processMarker)))
+        if let lineage = spawns[identity.processMarker]?.lineage { return ClaudeProcessInspector.liveness(identity, lineage: lineage) }
+        let lineage = ClaudeLineage(file: lineageFile(identity.processMarker))
+        let result = ClaudeProcessInspector.liveness(identity, lineage: lineage)
+        if case .ended = result { lineage.forget() }
+        return result
+    }
+
+    /// 앱이 뜰 때 부른다: 다른 부팅에 적힌 혈통 파일을 지운다 (10장 4). 이번 부팅의 파일은 고아 정리가 쓰고 끝을 증명하면 지운다
+    public nonisolated func purgeLineageOfOtherBoots() {
+        ClaudeLineage.purge(directory: sessionsRoot.appending(path: "lineage", directoryHint: .isDirectory))
     }
 
     public func terminateOrphan(_ identity: AgentProcessIdentity) async -> AgentLiveness {
@@ -382,8 +401,9 @@ public actor ClaudeCodeProcess: AgentProcess {
             throw AgentStartError(.spawnFailed)
         }
         spawn.process = process
-        // 혈통의 뿌리 (9장 4 정정): 거두기 전이라 그 pid는 우리 자식이다. 지켜보기는 끝을 증명한 `finish`까지
+        // 혈통의 뿌리 (9장 4 정정): 거두기 전이라 그 pid는 우리 자식이다. 부팅 id · 뿌리 id를 바로 파일에 적는다 (10장 1 · 3). 지켜보기는 끝을 증명한 `finish`까지
         spawn.lineage.seed(process.pid)
+        spawn.lineage.save(force: true)
         let identity = AgentProcessIdentity(pid: Int(process.pid), startedAt: process.startedAt, processMarker: spawnID, externalTaskID: "\(providerID):\(turnSeq)")
         spawn.identity = identity
         spawn.lineage.watch(identity)
@@ -441,7 +461,8 @@ public actor ClaudeCodeProcess: AgentProcess {
         let context = ClaudeGateContext(
             mode: gateMode, access: spawn.access, workspaceRealPath: spawn.workspace, sessionCwdRealPath: spawn.cwdReal, childPATH: spawn.childPATH,
             agentSessionID: spawn.agentSessionID, agentTaskID: spawn.taskID, turnSeq: spawn.turnSeq, deferIssued: spawn.deferIssued, answerDelivered: spawn.answerDelivered,
-            stopped: spawn.stopped || spawn.interruptSent, secrets: redactor(spawn.agentSessionID)
+            stopped: spawn.stopped || spawn.interruptSent, secrets: redactor(spawn.agentSessionID),
+            protectedRealPaths: protectedRoots.map { GateFileSystem.realpath($0.path) ?? $0.path }
         )
         if let delay = testHooks.gateDelay { try? await Task.sleep(for: delay) }
         let gate = ClaudeToolGate(fileSystem: fileSystem, decide: services.withLock { $0 }?.decideTool, serverTimeout: .milliseconds(Int(timing.serverTimeout * 1000)))
@@ -449,6 +470,16 @@ public actor ClaudeCodeProcess: AgentProcess {
         // 서버를 기다리는 동안 Stop · 자체 점검 실패가 왔으면 그 결과를 쓰지 않는다 (9장 7): 허용 · 보류 모두 deny로
         if spawn.stopped || spawn.interruptSent, outcome.response.decision != .deny {
             outcome = ClaudeToolGate.local(.deny, ClaudeGateReason.turnStopped, "stopped_after_wait")
+        }
+        if outcome.answeredPending { await spawn.sink?.emit(.progress) }
+        // 마지막 await 뒤, 돌려주기 직전에 다시 본다 (10장 6): 그 사이 Stop · 자체 점검 실패가 왔으면 answers 없는 deny. 아래 기록은 await 없이 이 결과대로만 남긴다
+        if spawn.stopped || spawn.interruptSent, outcome.response.decision != .deny {
+            outcome = ClaudeToolGate.local(.deny, ClaudeGateReason.turnStopped, "stopped_after_wait")
+            if case .answer = spawn.mode, request.toolUseID == spawn.binding?.requestID {
+                // 답은 모델에 닿지 않았다: 전달로 적지 않고, 값은 메모리에서 지운다
+                spawn.binding?.value = AgentAnswerValue()
+                if spawn.answerSignal == nil { spawn.answerSignal = .lost }
+            }
         }
         if outcome.response.decision == .defer, let deferred = outcome.deferred {
             spawn.deferIssued = true
@@ -459,7 +490,6 @@ public actor ClaudeCodeProcess: AgentProcess {
             // 답(비밀값 포함)은 보류 id 훅에 한 번 주고 메모리에서도 지운다
             spawn.binding?.value = AgentAnswerValue()
             if spawn.answerSignal == nil { spawn.answerSignal = .delivered(Date()) }
-            await spawn.sink?.emit(.progress)
         }
         if outcome.abortSpawn {
             if spawn.answerSignal == nil { spawn.answerSignal = .lost }
@@ -594,13 +624,16 @@ public actor ClaudeCodeProcess: AgentProcess {
             case .confirmQuestion(let pending):
                 // 보고된 보류만 열린 요청이다: id · 종류 · digest · 대상 지문만 적는다 (글 · 경로 0)
                 var state = ClaudeSessionState.load(from: spawn.folder.root)
+                let secret = pending.kind == .input ? pending.question.items.filter(\.secret).map(\.id) : []
+                let single = pending.question.items.count == 1
+                // 비밀 항목은 id만 상태 파일에 (10장 7: 앱이 다시 떠도 그 답 값을 가린다. 값은 쓰지 않는다)
                 state.openDeferred = ClaudeSessionState.OpenDeferred(
-                    id: pending.id, kind: pending.kind.rawValue, inputSHA256: pending.inputSHA256, spawnID: spawn.id, at: Date(), targetSHA256: pending.targetSHA256
+                    id: pending.id, kind: pending.kind.rawValue, inputSHA256: pending.inputSHA256, spawnID: spawn.id, at: Date(), targetSHA256: pending.targetSHA256,
+                    secretItemIDs: secret, singleItem: single
                 )
                 do {
                     try state.save(in: spawn.folder.root)
-                    let secret = Set(pending.question.items.filter(\.secret).map(\.id))
-                    if pending.kind == .input, !secret.isEmpty { secretItems[spawn.agentSessionID] = (pending.id, secret, pending.question.items.count == 1) }
+                    if !secret.isEmpty { secretItems[spawn.agentSessionID] = (pending.id, Set(secret), single) }
                 } catch {
                     // 열린 요청으로 적지 못했다 (8장 17): 답할 수 없는 질문은 내지 않는다. 그 호출은 끝난 뒤 닫기 모드로 거절하고 실패로 알린다
                     log.log("claude_state_save_failed", [:])

@@ -98,12 +98,11 @@ struct ClaudeRereviewGateTests {
         #expect(card("ls a b") == "Run: ls a b", "공백 하나는 그대로")
         #expect(card("ls\u{3000}a") == "Run: ls␠a", "보통 공백이 아닌 빈칸은 하나도 보인다")
         #expect(card("ls \u{034F}\u{FE0F}x") == #"Run: ls \u{034F}\u{FE0F}x"#, "폭 없는 결합 글자는 코드로")
-        // 길면 앞부분 + … + 마지막 80자
+        // 길면 앞부분 + …(+숨긴 수)… + 마지막 80 스칼라 (10장 9: 362 스칼라 → 앞 212 · 끝 80 · 숨김 70)
         let long = String(repeating: "a", count: 250) + "; rm -rf ~; " + String(repeating: "b", count: 100)
         let text = card(long)
-        #expect(text.hasSuffix("…" + String(repeating: "b", count: 80)))
-        #expect(text.hasPrefix("Run: " + String(repeating: "a", count: 219) + "…"))
-        #expect(text.count == "Run: ".count + 300)
+        #expect(text == "Run: " + String(repeating: "a", count: 212) + "…(+70)…" + String(repeating: "b", count: 80))
+        #expect(text.unicodeScalars.count <= "Run: ".count + 300)
     }
 
     // MARK: 12 로컬 defer 카드의 사유 한 줄

@@ -16,6 +16,9 @@ final class FakeClaude: @unchecked Sendable {
     let log = CapturingLog()
     let process: ClaudeCodeProcess
     let claude: URL
+    let helpers: ClaudeCodeHelpers
+    let environment: [String: String]
+    let timing: ClaudeCodeTiming
 
     /// - `linked`: 후보 `~/.local/bin/claude`가 실제 파일(`~/versions/claude-fake`)을 가리키는 기호 링크다 (8장 8)
     init(
@@ -41,6 +44,9 @@ final class FakeClaude: @unchecked Sendable {
         try server.start()
         let helpers = ClaudeCodeHelpers(hook: try BuiltProducts.url("tf-agent-hook").path, mcp: try BuiltProducts.url("tf-agent-mcp").path)
         let environment = ["HOME": box.home.path, "USER": NSUserName(), "PATH": "/usr/bin:/bin", "LANG": "en_US.UTF-8"].merging(extra) { _, new in new }
+        self.helpers = helpers
+        self.environment = environment
+        self.timing = timing
         process = ClaudeCodeProcess(
             sessionsRoot: box.sessionsRoot, hookServer: server, helpers: helpers, locator: ClaudeCodeLocator(candidates: [claude.path], confinedTo: box.root.path),
             environment: environment, managedSettingsPath: box.root.appending(path: "managed-settings.json").path, timing: timing, log: log, testHooks: hooks
@@ -54,6 +60,16 @@ final class FakeClaude: @unchecked Sendable {
     }
 
     var workspace: String { box.workspacePath }
+
+    /// 다시 뜬 앱의 adapter: 같은 세션 폴더 · 소켓 · 가짜 `claude`, 메모리는 비었다 (10장 7)
+    func restarted() -> ClaudeCodeProcess {
+        let adapter = ClaudeCodeProcess(
+            sessionsRoot: box.sessionsRoot, hookServer: server, helpers: helpers, locator: ClaudeCodeLocator(candidates: [claude.path], confinedTo: box.root.path),
+            environment: environment, managedSettingsPath: box.root.appending(path: "managed-settings.json").path, timing: timing, log: log
+        )
+        adapter.attach(AgentRuntimeServices(decideTool: decider.function))
+        return adapter
+    }
 
     /// 서버가 `cat <name>`을 읽기 명령으로 허용한다 (작업 폴더의 파일을 만든다). 오래 도는 Bash는 대본의 `sleep`으로 흉내 낸다
     func allowReadonlyCat(_ name: String) {

@@ -149,9 +149,9 @@ struct ClaudeReviewGateTests {
     @Test func a4TheApprovalCardShowsHiddenCharactersAndHowMuchWasCut() {
         let tricky = "echo ok\nrm -rf ~\t# \u{202E}gpj.exe \u{200B}x\u{0007}"
         #expect(ClaudeToolGate.approvalQuestion(id: "t", tool: "Bash", relPath: nil, command: tricky).text == #"Run: echo ok⏎rm -rf ~⇥# \u{202E}gpj.exe \u{200B}x\u{0007}"#)
-        // 길면 앞부분 + … + 마지막 80자 (9장 11이 8장 4의 `… (+N)`을 바꿨다)
+        // 길면 앞부분 + `…(+숨긴 수)…` + 마지막 80 스칼라 (10장 9). 자리는 가장 긴 수(3자리)로 잡아 앞부분은 300 − 80 − 8 = 212
         let long = String(repeating: "a", count: 350)
-        #expect(ClaudeToolGate.approvalQuestion(id: "t", tool: "Bash", relPath: nil, command: long).text == "Run: " + String(repeating: "a", count: 219) + "…" + String(repeating: "a", count: 80))
+        #expect(ClaudeToolGate.approvalQuestion(id: "t", tool: "Bash", relPath: nil, command: long).text == "Run: " + String(repeating: "a", count: 212) + "…(+58)…" + String(repeating: "a", count: 80))
         let exact = String(repeating: "b", count: 300)
         #expect(ClaudeToolGate.approvalQuestion(id: "t", tool: "Bash", relPath: nil, command: exact).text == "Run: " + exact)
         let file = ClaudeToolGate.approvalQuestion(id: "t", tool: "Write", relPath: "a\nb\u{202E}.txt", command: nil)

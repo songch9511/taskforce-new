@@ -1,9 +1,11 @@
 #if os(macOS)
 import Foundation
 
-/// 건넨 비밀값을 밖으로 나가는 글에서 가린다 (OA D3a 8장 11 · 9장 1 · 3, 코디네이터 결정).
-/// 값은 agent 세션의 가리개로 메모리에만 있다 (디스크 · 로그 0). 정확히 같은 부분 문자열과 그 변형 — 앞뒤 공백 정리, NFC/NFD, JSON 이스케이프
+/// 건넨 비밀값을 밖으로 나가는 글에서 가린다 (OA D3a 8장 11 · 9장 1 · 3 · 10장 8, 코디네이터 결정).
+/// 값은 agent 세션의 가리개로 메모리에만 있다 (디스크 · 로그 0). 먼저 정확히 같은 부분 문자열과 그 변형 — 앞뒤 공백 정리, NFC/NFD, JSON 이스케이프
 /// (`\"` · `\\` · `\/` · `\uXXXX`), 셸 작은따옴표 이스케이프(`'\''`), 퍼센트 인코딩(대문자 · 소문자) — 을 `[redacted]`로 바꾼다.
+/// 그다음 열거로 못 찾는 형태(일부만 퍼센트 인코딩 · `+`로 쓴 빈칸 · `'"'"'` 등)는 **디코드해서 찾는다** (`detects`): 퍼센트(두 방식) · JSON · 셸 따옴표를
+/// 겹쳐 풀고 NFC/NFD로 맞춘다. 결정 입력에서 찾으면 서버에 묻지 않고, 사건 글에서는 그 셸 단어를 가린다 (단어를 못 집으면 글 전체).
 /// 8자 미만 값과 그 밖의 변형(base64 · 일부)은 가리지 못한다 (notes 남는 위험)
 public struct SecretRedactor: Sendable, Equatable {
     public static let placeholder = "[redacted]"
@@ -13,16 +15,198 @@ public struct SecretRedactor: Sendable, Equatable {
     let secrets: [String]
     /// 가릴 글: 원래 값과 변형, 긴 것부터
     let values: [String]
+    /// 디코드한 글에서 찾을 값: 원래 값 · 앞뒤 공백 정리본의 NFC와 NFD
+    let needlesNFC: [String]
+    let needlesNFD: [String]
 
     public init(_ secrets: [String] = []) {
         var kept: [String] = []
         var found: [String] = []
+        var bases: [String] = []
         for secret in secrets where secret.trimmingCharacters(in: .whitespacesAndNewlines).count >= Self.minimumLength {
             kept.append(secret)
             found += Self.variants(of: secret)
+            bases += [secret, secret.trimmingCharacters(in: .whitespacesAndNewlines)]
         }
         self.secrets = kept
         values = Self.unique(found).sorted { $0.utf16.count != $1.utf16.count ? $0.utf16.count > $1.utf16.count : Array($0.utf8).lexicographicallyPrecedes($1.utf8) }
+        needlesNFC = Self.unique(bases.map(\.precomposedStringWithCanonicalMapping))
+        needlesNFD = Self.unique(bases.map(\.decomposedStringWithCanonicalMapping))
+    }
+
+    /// 디코드한 형태 어디엔가 비밀값이 있나 (10장 8)
+    public func detects(_ text: String) -> Bool {
+        guard !needlesNFC.isEmpty, !text.isEmpty else { return false }
+        for form in Self.decodedForms(text) {
+            let nfc = form.precomposedStringWithCanonicalMapping
+            if needlesNFC.contains(where: { nfc.range(of: $0, options: .literal) != nil }) { return true }
+            let nfd = form.decomposedStringWithCanonicalMapping
+            if needlesNFD.contains(where: { nfd.range(of: $0, options: .literal) != nil }) { return true }
+        }
+        return false
+    }
+
+    /// 원래 글과, 퍼센트(`%XX` · `+`→빈칸 두 방식) · JSON unescape · 셸 따옴표 풀기를 3단까지 겹쳐 푼 글 (바이트가 같은 것은 한 번)
+    static func decodedForms(_ text: String, depth: Int = 3) -> [String] {
+        var forms = [text]
+        var seen: Set<[UInt8]> = [Array(text.utf8)]
+        var frontier = [text]
+        for _ in 0..<depth where !frontier.isEmpty {
+            var next: [String] = []
+            for form in frontier {
+                for decoded in [percentDecoded(form, plusIsSpace: false), percentDecoded(form, plusIsSpace: true), jsonUnescaped(form), shellUnquoted(form)] {
+                    guard let decoded, seen.insert(Array(decoded.utf8)).inserted else { continue }
+                    forms.append(decoded)
+                    next.append(decoded)
+                }
+            }
+            frontier = next
+        }
+        return forms
+    }
+
+    static func hexValue(_ byte: UInt8) -> UInt8? {
+        switch byte {
+        case 0x30...0x39: byte - 0x30
+        case 0x41...0x46: byte - 0x41 + 10
+        case 0x61...0x66: byte - 0x61 + 10
+        default: nil
+        }
+    }
+
+    /// `%XX`를 바이트로 (`plusIsSpace`면 `+`도 빈칸으로, form 인코딩). 바뀐 것이 없으면 nil
+    static func percentDecoded(_ text: String, plusIsSpace: Bool) -> String? {
+        let bytes = Array(text.utf8)
+        guard bytes.contains(0x25) || (plusIsSpace && bytes.contains(0x2B)) else { return nil }
+        var out: [UInt8] = []
+        var index = 0
+        while index < bytes.count {
+            let byte = bytes[index]
+            if byte == 0x25, index + 2 < bytes.count, let high = hexValue(bytes[index + 1]), let low = hexValue(bytes[index + 2]) {
+                out.append(high << 4 | low)
+                index += 3
+            } else {
+                out.append(plusIsSpace && byte == 0x2B ? 0x20 : byte)
+                index += 1
+            }
+        }
+        return out == bytes ? nil : String(decoding: out, as: UTF8.self)
+    }
+
+    /// JSON 문자열 안의 이스케이프를 푼다 (`\"` `\\` `\/` `\b` `\f` `\n` `\r` `\t`, 4자리 16진 `\u` + 서로게이트 쌍). 바뀐 것이 없으면 nil
+    static func jsonUnescaped(_ text: String) -> String? {
+        let units = Array(text.utf16)
+        guard units.contains(0x5C) else { return nil }
+        var out: [UInt16] = []
+        var index = 0
+        func hex4(_ at: Int) -> UInt16? {
+            guard at + 4 <= units.count else { return nil }
+            var value: UInt16 = 0
+            for unit in units[at..<at + 4] {
+                guard unit < 0x80, let digit = hexValue(UInt8(unit)) else { return nil }
+                value = value << 4 | UInt16(digit)
+            }
+            return value
+        }
+        while index < units.count {
+            let unit = units[index]
+            guard unit == 0x5C, index + 1 < units.count else {
+                out.append(unit)
+                index += 1
+                continue
+            }
+            let next = units[index + 1]
+            switch next {
+            case 0x22, 0x5C, 0x2F: out.append(next); index += 2
+            case 0x62: out.append(0x08); index += 2
+            case 0x66: out.append(0x0C); index += 2
+            case 0x6E: out.append(0x0A); index += 2
+            case 0x72: out.append(0x0D); index += 2
+            case 0x74: out.append(0x09); index += 2
+            case 0x75:
+                if let value = hex4(index + 2) {
+                    out.append(value)
+                    index += 6
+                } else {
+                    out.append(unit)
+                    index += 1
+                }
+            default:
+                out.append(unit)
+                index += 1
+            }
+        }
+        return out == units ? nil : String(decoding: out, as: UTF16.self)
+    }
+
+    /// 셸 따옴표를 푼다: `'…'`는 그대로, `"…"` 안의 `\` 이스케이프(`$` `` ` `` `"` `\` 줄바꿈), 따옴표 밖의 `\x` → `x`. `'"'"'` · `'\''`도 풀린다. 바뀐 것이 없으면 nil
+    static func shellUnquoted(_ text: String) -> String? {
+        let scalars = Array(text.unicodeScalars)
+        guard scalars.contains(where: { $0 == "'" || $0 == "\"" || $0 == "\\" }) else { return nil }
+        enum Mode { case bare, single, double }
+        var mode = Mode.bare
+        var out = String.UnicodeScalarView()
+        var index = 0
+        while index < scalars.count {
+            let scalar = scalars[index]
+            switch mode {
+            case .single:
+                if scalar == "'" { mode = .bare } else { out.append(scalar) }
+            case .double:
+                if scalar == "\"" {
+                    mode = .bare
+                } else if scalar == "\\", index + 1 < scalars.count, ["$", "`", "\"", "\\", "\n"].contains(scalars[index + 1]) {
+                    out.append(scalars[index + 1])
+                    index += 1
+                } else {
+                    out.append(scalar)
+                }
+            case .bare:
+                if scalar == "'" {
+                    mode = .single
+                } else if scalar == "\"" {
+                    mode = .double
+                } else if scalar == "\\", index + 1 < scalars.count {
+                    out.append(scalars[index + 1])
+                    index += 1
+                } else {
+                    out.append(scalar)
+                }
+            }
+            index += 1
+        }
+        let result = String(out)
+        return Array(result.utf8) == Array(text.utf8) ? nil : result
+    }
+
+    /// 셸 단어로 나눈다 (따옴표 밖의 빈칸 · 탭 · 줄바꿈이 경계). 경계 글도 조각으로 남겨 다시 이으면 원래 글이다
+    static func shellSegments(_ text: String) -> [(text: String, isWord: Bool)] {
+        var segments: [(text: String, isWord: Bool)] = []
+        var current = String.UnicodeScalarView()
+        var currentIsWord = true
+        var quote: Unicode.Scalar?
+        var escaped = false
+        func flush() {
+            if !current.isEmpty { segments.append((String(current), currentIsWord)) }
+            current = String.UnicodeScalarView()
+        }
+        for scalar in text.unicodeScalars {
+            let isWord = !(quote == nil && !escaped && (scalar == " " || scalar == "\t" || scalar == "\n"))
+            if isWord != currentIsWord, !current.isEmpty { flush() }
+            currentIsWord = isWord
+            current.append(scalar)
+            if escaped {
+                escaped = false
+            } else if let open = quote {
+                if scalar == open { quote = nil } else if open == "\"", scalar == "\\" { escaped = true }
+            } else if scalar == "'" || scalar == "\"" {
+                quote = scalar
+            } else if scalar == "\\" {
+                escaped = true
+            }
+        }
+        flush()
+        return segments
     }
 
     /// 바이트가 같은 것만 하나로 (Swift `String`의 `==` · `Set`은 정규 동등이라 NFC와 NFD를 하나로 합친다)
@@ -92,9 +276,14 @@ public struct SecretRedactor: Sendable, Equatable {
         return out
     }
 
-    /// 글자 단위 정확 비교 (`.literal`: 정규 동등 · 대소문자를 보지 않는다)
+    /// 먼저 변형을 글자 단위로 정확히 바꾸고(`.literal`: 정규 동등 · 대소문자를 보지 않는다), 디코드해서 남은 것을 찾는다
     public func redact(_ text: String) -> String {
-        values.reduce(text) { $0.replacingOccurrences(of: $1, with: Self.placeholder, options: .literal) }
+        guard !isEmpty else { return text }
+        let exact = values.reduce(text) { $0.replacingOccurrences(of: $1, with: Self.placeholder, options: .literal) }
+        guard detects(exact) else { return exact }
+        // 열거로 못 지운 형태 (10장 8): 디코드해서 비밀값이 나오는 셸 단어를 통째로 가린다. 그래도 남으면(단어를 넘나든다) 글 전체를 가린다
+        let words = Self.shellSegments(exact).map { $0.isWord && detects($0.text) ? Self.placeholder : $0.text }.joined()
+        return detects(words) ? Self.placeholder : words
     }
 
     /// 밖으로 나가는 사건 (메시지 · 질문 · 산출물 글)

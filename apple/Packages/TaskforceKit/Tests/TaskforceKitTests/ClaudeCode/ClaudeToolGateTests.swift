@@ -375,10 +375,10 @@ struct ClaudeToolGateTests {
         ]))
         let command = "npm   run\n build " + String(repeating: "x", count: 400)
         let bash = await evaluate("Bash", WireJSON.object(["command": .string(command)]).canonicalText, id: "toolu_b", decider: ScriptedDecider([.success(ScriptedDecider.response(.defer, .commandNotReadonly))]))
-        // 줄바꿈은 ⏎, 공백 여럿은 ␠×N, 길면 앞부분 + … + 마지막 80자 (8장 4 · 9장 11)
+        // 줄바꿈은 ⏎, 공백 여럿은 ␠×N, 길면 앞부분 + …(+숨긴 수)… + 마지막 80 스칼라 (8장 4 · 9장 11 · 10장 9)
         let text = try #require(bash.deferred).question.text
-        // 앞부분 219자 = "npm␠×3run⏎ build " 17자 + x 202자
-        #expect(text == "Run: npm␠×3run⏎ build " + String(repeating: "x", count: 202) + "…" + String(repeating: "x", count: 80))
+        // 원래 417 스칼라. 앞부분 212 = "npm␠×3run⏎ build " 17 + x 195, 끝 x 80, 숨긴 수 417 − 212 − 80 = 125
+        #expect(text == "Run: npm␠×3run⏎ build " + String(repeating: "x", count: 195) + "…(+125)…" + String(repeating: "x", count: 80))
         let config = await evaluate("Write", #"{"file_path":"\#(box.workspacePath)/.mcp.json","content":"{}"}"#, decider: ScriptedDecider([.success(ScriptedDecider.response(.defer, .toolConfigWrite))]))
         #expect(config.deferred?.question.text == "Write .mcp.json")
     }

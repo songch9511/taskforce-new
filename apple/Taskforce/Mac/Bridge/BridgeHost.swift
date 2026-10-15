@@ -361,11 +361,15 @@ final class BridgeHost {
                     adapters = []
                     workspaces = nil
                 case .claudeCode(let disposable):
-                    // 세션 폴더는 파티션 아래 (계정 삭제가 파티션째 지운다). init은 부수 효과 0: probe · 폴더 만들기는 런타임이 부를 때만
-                    adapters = [ClaudeCodeProcess(
+                    // 세션 폴더는 파티션 아래 (계정 삭제가 파티션째 지운다). init은 부수 효과 0: probe · 폴더 만들기는 런타임이 부를 때만.
+                    // 앱 Application Support 안의 Edit/Write는 막는다 (OA D3a 10장 5). 다른 부팅의 혈통 파일은 런타임을 만들 때 지운다 (10장 4)
+                    let claudeCode = ClaudeCodeProcess(
                         sessionsRoot: partition.directory(in: root).appending(path: "claude-code", directoryHint: .isDirectory), hookServer: hookServer,
-                        helpers: .inBundle(), locator: .standard(home: NSHomeDirectory()), log: BridgeOSLog()
-                    )]
+                        helpers: .inBundle(), locator: .standard(home: NSHomeDirectory()), log: BridgeOSLog(),
+                        protectedRoots: [support.appending(path: bundleID, directoryHint: .isDirectory), root]
+                    )
+                    claudeCode.purgeLineageOfOtherBoots()
+                    adapters = [claudeCode]
                     #if DEBUG
                     // R2 확인용 일회용 폴더 (Q14). 실제 폴더 고르기는 D4a 몫이라 Release는 resolver가 없다 (새 세션 `spawn_failed`)
                     workspaces = DisposableWorkspaces.make(path: disposable, apiBaseURL: services.api.baseURL, home: NSHomeDirectory())

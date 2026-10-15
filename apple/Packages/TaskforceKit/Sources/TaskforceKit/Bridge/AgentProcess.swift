@@ -202,11 +202,15 @@ public struct AgentAnswerDelivery: Sendable {
     public var structured: Bool
     /// 서버가 준 값이거나(비밀값이 아닐 때) 이 Mac의 메모리에서 가져온 값(`answered_locally`). 디스크에 쓰지 않는다
     public var value: AgentAnswerValue
+    /// 값이 이 Mac에서 답한 비밀값이다 (`answered_locally`, OA D3a 10장 7): adapter가 그 값을 가리개에 쌓는다 (앱이 다시 떠도)
+    public var answeredLocally: Bool
 
     public init(
         taskID: String, sessionID: String, turnSeq: Int, adapter: String, externalSessionID: String?, workspaceRef: String?, marker: String,
-        access: AgentAccess, policyMode: AgentPolicyMode, requestID: String, kind: BridgeV1PendingQuestionKind, structured: Bool, value: AgentAnswerValue
+        access: AgentAccess, policyMode: AgentPolicyMode, requestID: String, kind: BridgeV1PendingQuestionKind, structured: Bool, value: AgentAnswerValue,
+        answeredLocally: Bool = false
     ) {
+        self.answeredLocally = answeredLocally
         self.taskID = taskID
         self.sessionID = sessionID
         self.turnSeq = turnSeq

@@ -847,7 +847,8 @@ extension BridgeRuntime {
         await publish()
         let delivery = AgentAnswerDelivery(
             taskID: common.agentTaskID, sessionID: common.agentSessionID, turnSeq: common.turnSeq, adapter: task.adapter, externalSessionID: task.externalSessionID,
-            workspaceRef: task.workspaceRef, marker: common.marker, access: access, policyMode: mode, requestID: requestID, kind: kind, structured: command.structured, value: value
+            workspaceRef: task.workspaceRef, marker: common.marker, access: access, policyMode: mode, requestID: requestID, kind: kind, structured: command.structured, value: value,
+            answeredLocally: command.answeredLocally
         )
         do {
             switch try await adapter.deliverAnswer(delivery, events: makeSink(taskID: common.agentTaskID, runID: runID)) {

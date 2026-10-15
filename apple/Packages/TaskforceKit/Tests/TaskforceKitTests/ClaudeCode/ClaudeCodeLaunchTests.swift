@@ -175,8 +175,8 @@ struct ClaudeCodeLaunchTests {
         #expect(try FileManager.default.attributesOfItem(atPath: folder.root.appending(path: "state.json").path)[.posixPermissions] as? Int == 0o600)
         let object = try #require(try WireJSON.parse(Data(contentsOf: folder.root.appending(path: "state.json"))).objectValue)
         #expect(Set(object.keys) == ["v", "provider_session_id", "bound", "open_deferred"])
-        // 대상은 경로가 아니라 지문(sha256)으로만 (8장 2)
-        #expect(Set(try #require(object["open_deferred"]?.objectValue).keys) == ["id", "kind", "input_sha256", "spawn_id", "at", "target_sha256"])
+        // 대상은 경로가 아니라 지문(sha256)으로만 (8장 2), 비밀 항목은 값이 아니라 id만 (10장 7)
+        #expect(Set(try #require(object["open_deferred"]?.objectValue).keys) == ["id", "kind", "input_sha256", "spawn_id", "at", "target_sha256", "secret_item_ids", "single_item"])
     }
 }
 #endif
