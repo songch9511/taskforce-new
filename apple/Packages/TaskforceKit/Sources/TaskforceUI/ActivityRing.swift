@@ -8,10 +8,13 @@ import SwiftUI
 /// - needsYou: 닫힌 형광펜 링 (2.5 선). 결정이 기다린다. 점을 넣지 않는다 (In Progress ◉와 겹친다)
 /// - waiting: 회색 점선 링. 사람 · 서비스의 답을 기다린다
 /// - done: 흰 링 + 체크, 3초 동안
+/// - idle: 멈춘 링 (아무것도 돌지 않고 기다리지 않는다). 레일에는 오르지 않고 SessionTab에만 있다 (OA U2)
 /// 움직임 줄이기: running은 반 링, stopping은 3/4 링으로 멈춰 서로 구분된다.
+/// **ground**: `bezel`(기본, 검은 레일 · 14/18pt)과 `light`(패널 위 SessionTab · 12/18pt, 선은 2pt 고정). 빛 위에서는 트랙 `border/default`, running 호 `status/activity`,
+/// needs-you는 `marker` 원반 + `text/primary` 2pt 링, done은 `text/primary` 링(체크 없음), idle은 `status/step-inactive`, waiting · unreachable · stopping의 호는 `text/secondary`
 public struct ActivityRing: View {
     public enum Kind: String, CaseIterable, Sendable {
-        case running, stopping, unreachable, needsYou, waiting, done
+        case running, stopping, unreachable, needsYou, waiting, done, idle
 
         /// VoiceOver 이름 (레일 항목은 "제목 · 상태 · 활동"으로 감싼다)
         public var accessibilityLabel: String {
@@ -22,6 +25,7 @@ public struct ActivityRing: View {
             case .needsYou: "Needs your answer"
             case .waiting: "Waiting"
             case .done: "Done just now"
+            case .idle: "Idle"
             }
         }
 
@@ -46,16 +50,30 @@ public struct ActivityRing: View {
     }
 
     public enum Size: Sendable {
-        /// 숨은 레일 노치 14pt
+        /// 숨은 레일 노치 14pt (빛 위 접힌 SessionTab 12pt)
         case small
         /// 펼친 레일 18pt
         case medium
 
-        var points: CGFloat { self == .small ? 14 : 18 }
+        func points(on ground: Ground) -> CGFloat {
+            switch (self, ground) {
+            case (.small, .bezel): 14
+            case (.small, .light): 12
+            case (.medium, _): 18
+            }
+        }
+    }
+
+    public enum Ground: Sendable {
+        /// 검은 레일 (기본)
+        case bezel
+        /// 패널 (SessionTab)
+        case light
     }
 
     let kind: Kind
     let size: Size
+    let ground: Ground
     /// 시스템 설정 대신 쓸 움직임 줄이기 값 (nil이면 시스템 설정). `accessibilityReduceMotion` 환경값은 덮어쓸 수 없어서
     /// 레일 모델 · 디자인 비교 스냅샷이 같은 값을 넘긴다
     let reduceMotionOverride: Bool?
@@ -63,30 +81,58 @@ public struct ActivityRing: View {
 
     private var reduceMotion: Bool { reduceMotionOverride ?? systemReduceMotion }
 
-    public init(_ kind: Kind, size: Size = .small, reduceMotion: Bool? = nil) {
+    public init(_ kind: Kind, size: Size = .small, ground: Ground = .bezel, reduceMotion: Bool? = nil) {
         self.kind = kind
         self.size = size
+        self.ground = ground
         reduceMotionOverride = reduceMotion
     }
 
-    /// 디자인 시스템은 16 단위 viewBox에 반지름 6.5 · 선 2로 그린다
-    private var unit: CGFloat { size.points / 16 }
-    private var inset: CGFloat { 1.5 * unit }
-    private var line: CGFloat { 2 * unit }
+    private var points: CGFloat { size.points(on: ground) }
+    /// 디자인 시스템은 16 단위 viewBox에 반지름 6.5 · 선 2로 그린다. 빛 위에서는 선이 어느 크기에서나 2pt다
+    private var unit: CGFloat { points / 16 }
+    private var inset: CGFloat { ground == .light ? 1 : 1.5 * unit }
+    private var line: CGFloat { ground == .light ? 2 : 2 * unit }
 
     public var body: some View {
         ZStack {
             track
             arc
-            if kind == .done { check }
+            if kind == .done, ground == .bezel { check }
         }
-        .frame(width: size.points, height: size.points)
+        .frame(width: points, height: points)
         .accessibilityElement()
         .accessibilityLabel(kind.accessibilityLabel)
     }
 
     @ViewBuilder private var track: some View {
         let ring = Circle().inset(by: inset)
+        if ground == .light {
+            lightTrack(ring)
+        } else {
+            bezelTrack(ring)
+        }
+    }
+
+    /// 빛 위: 트랙은 `border/default`, needs-you는 원반, done · idle은 한 색 링
+    @ViewBuilder private func lightTrack(_ ring: Circle.InsetShape) -> some View {
+        switch kind {
+        case .needsYou:
+            ring.fill(TFColor.fillMarker)
+            ring.stroke(TFColor.textPrimary, lineWidth: line)
+        case .done:
+            ring.stroke(TFColor.textPrimary, lineWidth: line)
+        case .idle:
+            ring.stroke(TFColor.statusStepInactive, lineWidth: line)
+        case .waiting:
+            let circumference = 2 * Double.pi * (points / 2 - inset)
+            ring.stroke(TFColor.textSecondary, style: StrokeStyle(lineWidth: line, lineCap: .round, dash: [circumference * 0.02, circumference * 0.064]))
+        default:
+            ring.stroke(TFColor.borderDefault, lineWidth: line)
+        }
+    }
+
+    @ViewBuilder private func bezelTrack(_ ring: Circle.InsetShape) -> some View {
         switch kind {
         case .needsYou:
             ring.stroke(TFColor.fillMarker, lineWidth: 2.5 * unit)
@@ -95,6 +141,8 @@ public struct ActivityRing: View {
         case .waiting:
             let circumference = 2 * Double.pi * 6.5 * unit
             ring.stroke(TFColor.bezelInkSecondary, style: StrokeStyle(lineWidth: line, lineCap: .round, dash: [circumference * 0.02, circumference * 0.064]))
+        case .idle:
+            ring.stroke(TFColor.bezelInkSecondary, lineWidth: line)
         default:
             ring.stroke(TFColor.bezelTrack, lineWidth: line)
         }
@@ -102,7 +150,7 @@ public struct ActivityRing: View {
 
     @ViewBuilder private var arc: some View {
         if let length = kind.arcLength(reduceMotion: reduceMotion) {
-            let color = kind == .running ? TFColor.statusActivity : TFColor.bezelInkSecondary
+            let color = kind == .running ? TFColor.statusActivity : (ground == .light ? TFColor.textSecondary : TFColor.bezelInkSecondary)
             let shape = Circle()
                 .inset(by: inset)
                 .trim(from: 0, to: length)

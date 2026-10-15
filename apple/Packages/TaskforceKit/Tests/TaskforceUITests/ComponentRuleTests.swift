@@ -73,7 +73,7 @@ struct ComponentRuleTests {
 
     @Test func activityRingLabels() {
         #expect(ActivityRing.Kind.allCases.map(\.accessibilityLabel) == [
-            "Running", "Stop requested", "Connection lost", "Needs your answer", "Waiting", "Done just now",
+            "Running", "Stop requested", "Connection lost", "Needs your answer", "Waiting", "Done just now", "Idle",
         ])
     }
 
