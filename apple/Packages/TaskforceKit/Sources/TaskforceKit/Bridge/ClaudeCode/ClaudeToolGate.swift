@@ -27,10 +27,14 @@ public struct ClaudeGateContext: Sendable {
     public var deferIssued: Bool
     /// 답 모드: 보류 id에 이미 답을 줬다 (비밀값은 한 번만)
     public var answerDelivered: Bool
+    /// 이 spawn에 중단 신호를 보냈거나 자체 점검이 실패했다: 모든 요청 deny (8장 9)
+    public var stopped: Bool
+    /// 이 spawn에 건넨 비밀값 (밖으로 나가는 명령 · 경로 · 승인 글에서 가린다, 8장 11)
+    public var secrets: SecretRedactor
 
     public init(
         mode: Mode, access: AgentAccess, workspaceRealPath: String, sessionCwdRealPath: String, childPATH: String, agentSessionID: String, agentTaskID: String,
-        turnSeq: Int, deferIssued: Bool, answerDelivered: Bool
+        turnSeq: Int, deferIssued: Bool, answerDelivered: Bool, stopped: Bool = false, secrets: SecretRedactor = SecretRedactor()
     ) {
         self.mode = mode
         self.access = access
@@ -42,6 +46,8 @@ public struct ClaudeGateContext: Sendable {
         self.turnSeq = turnSeq
         self.deferIssued = deferIssued
         self.answerDelivered = answerDelivered
+        self.stopped = stopped
+        self.secrets = secrets
     }
 }
 
@@ -52,12 +58,15 @@ public struct ClaudeAnswerBinding: Sendable, Equatable {
     /// 보류 때 입력 digest (상태 파일). 다르면 deny (G16)
     public var inputSHA256: String?
     public var value: AgentAnswerValue
+    /// 보류 때 해석한 Edit · Write 대상의 지문 (상태 파일). 다르면 deny `target_changed` (8장 2)
+    public var targetSHA256: String?
 
-    public init(requestID: String, kind: BridgeV1PendingQuestionKind, inputSHA256: String?, value: AgentAnswerValue) {
+    public init(requestID: String, kind: BridgeV1PendingQuestionKind, inputSHA256: String?, value: AgentAnswerValue, targetSHA256: String? = nil) {
         self.requestID = requestID
         self.kind = kind
         self.inputSHA256 = inputSHA256
         self.value = value
+        self.targetSHA256 = targetSHA256
     }
 }
 
@@ -104,6 +113,9 @@ public enum ClaudeGateReason {
     public static let accessDisabled = "Tool access is disabled. Do not retry this tool."
     public static let questionsTooLarge = "ask_user was not sent: The questions are too long. Shorten them and try again."
     public static let unreadable = HookReason.unreadable
+    public static let targetChanged = "The file changed while this request waited for the user, so it was not run."
+    public static let unknownInput = "This tool input has fields Taskforce does not support. Retry with only the standard fields."
+    public static let patternNotAllowed = "Use a pattern without '..' or braces."
 }
 
 /// 결정표 (OA D3a 계약 2.7): 위에서 처음 맞는 행. L = 로컬(서버 호출 0), S = 서버, P = 서버 응답 뒤 로컬.
@@ -123,6 +135,23 @@ public struct ClaudeToolGate: Sendable {
     static let writeTools: Set<String> = ["Read", "Glob", "Grep", "Edit", "Write", "Bash", AskUserSchema.qualifiedName]
     static let readOnlyTools: Set<String> = ["Read", "Glob", "Grep", AskUserSchema.qualifiedName]
 
+    /// 도구마다 알려진 입력 키 (8장 6). 훅은 Write `content` · Edit `old_string` · `new_string`을 길이(`*_len`)로 바꿔 보낸다.
+    /// 이 밖의 키가 있으면 읽기 도구는 deny, 쓰기 · Bash는 서버 없이 defer (모르는 키가 무엇을 바꾸는지 짐작하지 않는다)
+    static let knownInputKeys: [String: Set<String>] = [
+        "Read": ["file_path", "offset", "limit", "pages"],
+        "Glob": ["pattern", "path"],
+        "Grep": ["pattern", "path", "glob", "output_mode", "-B", "-A", "-C", "-n", "-i", "type", "head_limit", "offset", "multiline"],
+        "Edit": ["file_path", "old_string_len", "new_string_len", "replace_all"],
+        "Write": ["file_path", "content_len"],
+        "Bash": ["command", "timeout", "description", "run_in_background", "runInBackground", "dangerouslyDisableSandbox", "dangerously_disable_sandbox"],
+    ]
+
+    static func hasUnknownKeys(tool: String, input: WireJSON) -> Bool {
+        guard let known = knownInputKeys[tool] else { return false }
+        guard case .object(let fields) = input else { return true }
+        return !fields.keys.allSatisfy(known.contains)
+    }
+
     static func local(_ decision: HookDecision, _ reason: String, _ code: String) -> ClaudeGateOutcome {
         ClaudeGateOutcome(response: HookResponse(decision: decision, reason: reason), source: .local, code: code)
     }
@@ -130,6 +159,8 @@ public struct ClaudeToolGate: Sendable {
     public func evaluate(_ request: HookRequest, context: ClaudeGateContext) async -> ClaudeGateOutcome {
         let tool = request.toolName
         let input = request.toolInput
+        // L0 멈춘 spawn: 중단 신호 뒤 · 자체 점검 실패 뒤에는 모두 deny (8장 9)
+        if context.stopped { return Self.local(.deny, ClaudeGateReason.turnStopped, "stopped") }
         // L1 닫기 모드
         if case .close(let closing) = context.mode {
             return Self.local(.deny, request.toolUseID == closing ? ClaudeGateReason.closedRequest : ClaudeGateReason.turnStopped, "closing")
@@ -149,16 +180,14 @@ public struct ClaudeToolGate: Sendable {
             }
         }
         // L5 도구 집합
-        let allowed = context.access == .write ? Self.writeTools : Self.readOnlyTools
-        guard allowed.contains(tool) else {
-            if context.access == .readOnly, ["Edit", "Write", "Bash"].contains(tool) { return Self.local(.deny, ClaudeGateReason.readOnly, "read_only") }
-            return Self.local(.deny, ClaudeGateReason.toolNotAllowed, "tool_not_allowed")
-        }
+        if let refused = Self.outsideToolSet(tool, access: context.access) { return refused }
         // L6 spawn당 보류 하나
         if context.deferIssued { return Self.local(.deny, ClaudeGateReason.oneAtATime, "one_defer") }
         switch tool {
         case "Read", "Glob", "Grep":
-            // L7 읽기 범위
+            // L7 읽기 범위 (모르는 입력 키 · `..` · 중괄호 경로 패턴은 deny)
+            if Self.hasUnknownKeys(tool: tool, input: input) { return Self.local(.deny, ClaudeGateReason.unknownInput, "unknown_input") }
+            if Self.hasUnsafePattern(tool: tool, input: input) { return Self.local(.deny, ClaudeGateReason.patternNotAllowed, "pattern") }
             guard let targets = readTargets(tool: tool, input: input, cwd: request.cwd), !targets.isEmpty,
                   targets.allSatisfy({ insideReadable($0, context: context) }) else {
                 return Self.local(.deny, ClaudeGateReason.outsidePath, "outside_workspace_read")
@@ -172,18 +201,58 @@ public struct ClaudeToolGate: Sendable {
             guard let target = writeTarget(input: input, cwd: request.cwd, context: context) else {
                 return Self.local(.deny, ClaudeGateReason.outsideFile, "outside_workspace")
             }
-            let call = BridgeV1ToolCall.claudeWrite(toolUseID: request.toolUseID, permissionMode: request.permissionMode, tool: tool, target: target)
-            return await server(request, call: call, context: context, question: Self.approvalQuestion(id: request.toolUseID, tool: tool, relPath: target.relPath, command: nil))
+            let fingerprint = Self.targetFingerprint(target.realPath)
+            let shown = context.secrets.redact(target.relPath)
+            let question = Self.approvalQuestion(id: request.toolUseID, tool: tool, relPath: shown, command: nil)
+            // 모르는 입력 키 · 하드 링크(작업 폴더 밖과 같은 파일일 수 있다)는 서버에 묻지 않고 사용자에게 (8장 6 · 7)
+            if Self.hasUnknownKeys(tool: tool, input: input) { return Self.deferLocally(request, question: question, target: fingerprint, code: "unknown_input") }
+            if Self.isHardLinked(target.realPath) { return Self.deferLocally(request, question: question, target: fingerprint, code: "hard_link") }
+            let sent = BridgeV1ToolTarget(realPath: context.secrets.redact(target.realPath), relPath: shown)
+            let call = BridgeV1ToolCall.claudeWrite(toolUseID: request.toolUseID, permissionMode: request.permissionMode, tool: tool, target: sent)
+            return await server(request, call: call, context: context, question: question, target: fingerprint, command: nil)
         default:
             // L10 Bash
             guard let command = input["command"]?.stringValue else { return Self.local(.deny, ClaudeGateReason.unreadable, "malformed") }
             if Self.flag(input, "run_in_background", "runInBackground") { return Self.local(.deny, ClaudeGateReason.background, "background") }
             if Self.flag(input, "dangerouslyDisableSandbox", "dangerously_disable_sandbox") { return Self.local(.deny, ClaudeGateReason.sandboxDisabled, "sandbox") }
+            // 건넨 비밀값은 서버로 가는 명령 · 경로와 승인 글에서 가린다 (8장 11). 재구성은 원래 명령으로 대조하므로 가린 명령이 실행되지 않는다
+            let shown = context.secrets.redact(command)
+            let question = Self.approvalQuestion(id: request.toolUseID, tool: tool, relPath: nil, command: shown)
+            if Self.hasUnknownKeys(tool: tool, input: input) { return Self.deferLocally(request, question: question, target: nil, code: "unknown_input") }
             let call = BridgeV1ToolCall.claudeBash(
-                toolUseID: request.toolUseID, permissionMode: request.permissionMode, cwd: request.cwd, command: command, runInBackground: false, dangerouslyDisableSandbox: false
+                toolUseID: request.toolUseID, permissionMode: request.permissionMode, cwd: context.secrets.redact(request.cwd), command: shown, runInBackground: false,
+                dangerouslyDisableSandbox: false
             )
-            return await server(request, call: call, context: context, question: Self.approvalQuestion(id: request.toolUseID, tool: tool, relPath: nil, command: command))
+            return await server(request, call: call, context: context, question: question, target: nil, command: command)
         }
+    }
+
+    /// L5: 등급의 도구 집합 밖이면 deny (답 모드에서도 본다, 8장 9)
+    static func outsideToolSet(_ tool: String, access: AgentAccess) -> ClaudeGateOutcome? {
+        let allowed = access == .write ? writeTools : readOnlyTools
+        guard !allowed.contains(tool) else { return nil }
+        if access == .readOnly, ["Edit", "Write", "Bash"].contains(tool) { return local(.deny, ClaudeGateReason.readOnly, "read_only") }
+        return local(.deny, ClaudeGateReason.toolNotAllowed, "tool_not_allowed")
+    }
+
+    /// Glob `pattern` · Grep `glob`(파일 경로 패턴)에 `..`이나 중괄호가 있으면 정적 접두 검사를 벗어날 수 있다 (8장 5). Grep `pattern`은 파일 내용 정규식이라 보지 않는다
+    static func hasUnsafePattern(tool: String, input: WireJSON) -> Bool {
+        let key: String
+        switch tool {
+        case "Glob": key = "pattern"
+        case "Grep": key = "glob"
+        default: return false
+        }
+        guard let value = input[key] else { return false }
+        guard let pattern = value.stringValue else { return true }
+        return pattern.contains("..") || pattern.contains("{") || pattern.contains("}")
+    }
+
+    /// 서버를 부르지 않고 승인 질문으로 미룬다
+    static func deferLocally(_ request: HookRequest, question: AgentQuestion, target: String?, code: String, source: ClaudeGateOutcome.Source = .local) -> ClaudeGateOutcome {
+        var outcome = ClaudeGateOutcome(response: HookResponse(decision: .defer, reason: ClaudeGateReason.waitingApproval), source: source, code: code)
+        outcome.deferred = ClaudePendingDeferred(id: request.toolUseID, kind: .approval, inputSHA256: request.inputSHA256, toolName: request.toolName, question: question, targetSHA256: target)
+        return outcome
     }
 
     /// 없거나 `false`가 아니면 켜진 것으로 본다 (모양이 이상한 값도 거절 쪽)
@@ -203,6 +272,11 @@ public struct ClaudeToolGate: Sendable {
             return outcome
         }
         var outcome: ClaudeGateOutcome
+        // 답 모드에서도 지금 등급의 도구 집합을 본다 (8장 9): 질문 뒤에 등급이 내려갔으면 승인도 거절이다
+        if var refused = Self.outsideToolSet(request.toolName, access: context.access) {
+            refused.answeredPending = true
+            return refused
+        }
         switch binding.kind {
         case .input:
             guard request.toolName == AskUserSchema.qualifiedName, let answers = Self.answers(binding.value, input: request.toolInput) else {
@@ -214,12 +288,20 @@ public struct ClaudeToolGate: Sendable {
         case .approval:
             switch Self.approval(binding.value) {
             case true?:
-                if ["Edit", "Write"].contains(request.toolName), writeTarget(input: request.toolInput, cwd: request.cwd, context: context) == nil {
-                    // 승인 뒤에 대상이 밖을 가리키게 바뀌었다 (기호 링크 바꿔치기)
-                    outcome = Self.local(.deny, ClaudeGateReason.outsideFile, "outside_workspace")
-                } else {
-                    outcome = Self.local(.allow, ClaudeGateReason.approved, "approved")
+                if ["Edit", "Write"].contains(request.toolName) {
+                    guard let target = writeTarget(input: request.toolInput, cwd: request.cwd, context: context) else {
+                        // 승인 뒤에 대상이 밖을 가리키게 바뀌었다 (기호 링크 바꿔치기)
+                        outcome = Self.local(.deny, ClaudeGateReason.outsideFile, "outside_workspace")
+                        break
+                    }
+                    // 보류 때 해석한 대상과 같을 때만 (8장 2): 안의 다른 파일로 바뀐 링크 · 바뀐 부모 폴더 · 새 하드 링크. 지문이 없으면 확인할 수 없다
+                    guard let expected = binding.targetSHA256, Self.targetFingerprint(target.realPath) == expected else {
+                        outcome = Self.local(.deny, ClaudeGateReason.targetChanged, "target_changed")
+                        outcome.abortSpawn = true
+                        return outcome
+                    }
                 }
+                outcome = Self.local(.allow, ClaudeGateReason.approved, "approved")
             case false?:
                 outcome = Self.local(.deny, ClaudeGateReason.declined, "declined")
             case nil:
@@ -302,6 +384,35 @@ public struct ClaudeToolGate: Sendable {
         return BridgeV1ToolTarget(realPath: real, relPath: relative)
     }
 
+    /// 대상 지문 (8장 2): 있으면 realpath + 장치 · inode · 링크 수, 없으면 있는 가장 가까운 조상의 장치 · inode + 그 아래 이름.
+    /// 상태 파일에 경로를 쓰지 않도록 sha256 hex로 둔다. 조상도 없으면 nil
+    static func targetFingerprint(_ realPath: String) -> String? {
+        var info = stat()
+        if lstat(realPath, &info) == 0 {
+            return digest(["file", realPath, "\(info.st_dev)", "\(info.st_ino)", "\(info.st_nlink)"])
+        }
+        var ancestor = realPath
+        var rest: [String] = []
+        while ancestor != "/", !ancestor.isEmpty {
+            rest.insert((ancestor as NSString).lastPathComponent, at: 0)
+            ancestor = (ancestor as NSString).deletingLastPathComponent
+            if lstat(ancestor, &info) == 0, (info.st_mode & S_IFMT) == S_IFDIR {
+                return digest(["parent", realPath, "\(info.st_dev)", "\(info.st_ino)", rest.joined(separator: "/")])
+            }
+        }
+        return nil
+    }
+
+    static func digest(_ parts: [String]) -> String {
+        WireSHA256.hex(Data(parts.joined(separator: "\u{0}").utf8))
+    }
+
+    /// 일반 파일이고 다른 이름(하드 링크)이 더 있다 (8장 7)
+    static func isHardLinked(_ realPath: String) -> Bool {
+        var info = stat()
+        return lstat(realPath, &info) == 0 && (info.st_mode & S_IFMT) == S_IFREG && info.st_nlink > 1
+    }
+
     // MARK: L8 질문
 
     func askUser(_ request: HookRequest, input: WireJSON) -> ClaudeGateOutcome {
@@ -330,32 +441,53 @@ public struct ClaudeToolGate: Sendable {
 
     static let commandPreviewChars = 300
 
+    /// 승인 카드 글 (Q8 · 8장 4): Edit · Write는 상대 경로, Bash는 명령 앞 300자. 줄바꿈 `⏎` · 탭 `⇥` · 제어 · 양방향 · 폭 없는 글자 `\u{XXXX}`로 보이게 하고,
+    /// 300자에서 잘랐으면 `… (+남은 글자 수)`를 붙인다 (보이지 않는 글자로 실제 명령을 숨기지 못하게)
     static func approvalQuestion(id: String, tool: String, relPath: String?, command: String?) -> AgentQuestion {
         let header: String
         let text: String
         switch tool {
         case "Edit":
             header = "Edit file"
-            text = "Edit \(relPath ?? "")"
+            text = "Edit " + visible(relPath ?? "")
         case "Write":
             header = "Write file"
-            text = "Write \(relPath ?? "")"
+            text = "Write " + visible(relPath ?? "")
         default:
             header = "Run command"
-            let collapsed = (command ?? "").split(whereSeparator: { $0.isWhitespace || $0.isNewline }).joined(separator: " ")
-            text = "Run: " + String(collapsed.prefix(commandPreviewChars))
+            let full = command ?? ""
+            let rest = full.count - commandPreviewChars
+            text = "Run: " + visible(String(full.prefix(commandPreviewChars))) + (rest > 0 ? "… (+\(rest))" : "")
         }
         let item = AgentQuestionItem(id: "approval", header: header, text: text, options: [AgentQuestionOption(label: "Allow", description: ""), AgentQuestionOption(label: "Deny", description: "")])
         return AgentQuestion(providerRequestID: id, kind: .approval, structured: true, text: text, items: [item])
     }
 
+    /// 보이지 않거나 글 방향을 바꾸는 글자를 보이는 표기로
+    static func visible(_ text: String) -> String {
+        var out = String.UnicodeScalarView()
+        for scalar in text.unicodeScalars {
+            switch scalar {
+            case "\n": out.append(contentsOf: "⏎".unicodeScalars)
+            case "\t": out.append(contentsOf: "⇥".unicodeScalars)
+            default:
+                let hidden: Bool
+                switch scalar.properties.generalCategory {
+                case .control, .format, .lineSeparator, .paragraphSeparator: hidden = true
+                default: hidden = false
+                }
+                if hidden { out.append(contentsOf: String(format: "\\u{%04X}", scalar.value).unicodeScalars) } else { out.append(scalar) }
+            }
+        }
+        return String(out)
+    }
+
     // MARK: S · P
 
-    func server(_ request: HookRequest, call: BridgeV1ToolCall, context: ClaudeGateContext, question: AgentQuestion) async -> ClaudeGateOutcome {
+    /// - `target`: Edit · Write 대상 지문 (보류 기록에 둔다). - `command`: Bash 원래 명령 (재구성 대조용, 서버로는 가린 명령이 간다)
+    func server(_ request: HookRequest, call: BridgeV1ToolCall, context: ClaudeGateContext, question: AgentQuestion, target: String?, command: String?) async -> ClaudeGateOutcome {
         func deferLocally(_ code: String, source: ClaudeGateOutcome.Source = .local) -> ClaudeGateOutcome {
-            var outcome = ClaudeGateOutcome(response: HookResponse(decision: .defer, reason: ClaudeGateReason.waitingApproval), source: source, code: code)
-            outcome.deferred = ClaudePendingDeferred(id: request.toolUseID, kind: .approval, inputSHA256: request.inputSHA256, toolName: request.toolName, question: question)
-            return outcome
+            Self.deferLocally(request, question: question, target: target, code: code, source: source)
         }
         let query = BridgeV1ToolDecisionQuery(
             agentSessionID: context.agentSessionID, agentTaskID: context.agentTaskID, turnSeq: context.turnSeq, workspaceRealPath: context.workspaceRealPath, call: call
@@ -377,13 +509,14 @@ public struct ClaudeToolGate: Sendable {
         case .success(let value)?:
             response = value
         }
-        let code = response.reason.raw
         guard response.isUnderstood else { return deferLocally("unknown_response", source: .server) }
+        // 로그에는 아는 이유 코드만 (서버가 준 모르는 글 · agent_note는 쓰지 않는다, 8장 21)
+        let code = response.reason.raw
         switch (response.decision, call) {
         case (.allow, .claudeBash):
-            // P2: 서버 파서가 허용했다. 넘긴 PATH의 실행 파일 · 경로 realpath를 확인하고 명령을 다시 만든다
-            guard response.reason == .readonlyCommand, let parse = response.parse,
-                  let rebuilt = CommandRebuild.rebuild(parse, childPATH: context.childPATH, workspaceRealPath: context.workspaceRealPath, fileSystem: fileSystem) else {
+            // P2: 서버 파서가 허용했다. 원래 명령 · 넘긴 PATH의 실행 파일 · 경로 realpath를 확인하고 명령을 다시 만든다
+            guard response.reason == .readonlyCommand, let parse = response.parse, let command,
+                  let rebuilt = CommandRebuild.rebuild(parse, command: command, childPATH: context.childPATH, workspaceRealPath: context.workspaceRealPath, fileSystem: fileSystem) else {
                 return deferLocally("parse_check_failed", source: .server)
             }
             return ClaudeGateOutcome(response: HookResponse(decision: .allow, reason: ClaudeGateReason.readOnlyCommand, command: rebuilt), source: .server, code: code)

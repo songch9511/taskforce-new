@@ -20,10 +20,13 @@ public struct ClaudeCodeTestHooks: Sendable {
     public var afterConfigWrite: (@Sendable (URL) -> Void)?
     /// 결정기 앞에서 기다린다 (훅 예산 시험, E17)
     public var gateDelay: Duration?
+    /// 고아 끝내기의 결과를 바꾼다 (끝을 증명하지 못한 경우 시험, 8장 15)
+    public var terminateOverride: (@Sendable (AgentProcessIdentity) -> AgentLiveness?)?
 
-    public init(afterConfigWrite: (@Sendable (URL) -> Void)? = nil, gateDelay: Duration? = nil) {
+    public init(afterConfigWrite: (@Sendable (URL) -> Void)? = nil, gateDelay: Duration? = nil, terminateOverride: (@Sendable (AgentProcessIdentity) -> AgentLiveness?)? = nil) {
         self.afterConfigWrite = afterConfigWrite
         self.gateDelay = gateDelay
+        self.terminateOverride = terminateOverride
     }
 }
 
@@ -45,6 +48,8 @@ public actor ClaudeCodeProcess: AgentProcess {
     private var spawns: [String: Spawn] = [:]
     private var sessionSpawn: [String: String] = [:]
     private var taskSpawn: [String: String] = [:]
+    /// 세션마다 지금 열린 입력 질문의 비밀 항목 (메모리만, 8장 11): 그 답 값을 답 resume 프로세스가 끝날 때까지 밖으로 나가는 글에서 가린다
+    private var secretItems: [String: (requestID: String, ids: Set<String>, single: Bool)] = [:]
 
     /// - `sessionsRoot`: `<원장 파티션 폴더>/claude-code` (계정 삭제는 파티션째 지운다)
     /// - `hookServer`: 앱 전체 소켓 (bridge가 꺼져 있으면 nil: 새 턴 · 답은 `spawn_failed`, 닫기는 소켓 없이 — 훅이 모두 deny)
@@ -96,7 +101,7 @@ public actor ClaudeCodeProcess: AgentProcess {
 
     public func startTurn(_ turn: AgentTurnStart, events: AgentEventSink) async throws -> AgentProcessIdentity {
         guard let workspace = turn.workspaceRef.flatMap(workspaceRealPath), hookServer != nil, let executable = locator.locate() else { throw AgentStartError(.spawnFailed) }
-        await waitForSessionIdle(turn.sessionID)
+        try await waitForSessionIdle(turn.sessionID)
         let folder = try ClaudeSessionFolder.prepare(sessionsRoot: sessionsRoot, agentSessionID: turn.sessionID)
         var state = ClaudeSessionState.load(from: folder.root)
         let providerID: String
@@ -104,6 +109,7 @@ public actor ClaudeCodeProcess: AgentProcess {
         var newSession: String?
         if let external = turn.externalSessionID {
             guard BridgeRuntime.isSafeSessionID(external) else { throw AgentStartError(.spawnFailed) }
+            try Self.requireBound(external, state: state)
             providerID = external
             session = .resume(external)
         } else {
@@ -117,6 +123,7 @@ public actor ClaudeCodeProcess: AgentProcess {
         // 이 세션에서 다른 프로세스가 돈다: 앞의 보류는 더는 열려 있지 않다 (13.2 :511)
         state.openDeferred = nil
         try? state.save(in: folder.root)
+        secretItems[turn.sessionID] = nil
         let spawn = try launch(
             mode: .turn(newSessionID: newSession), session: session, providerID: providerID, agentSessionID: turn.sessionID, taskID: turn.taskID, turnSeq: turn.turnSeq,
             access: turn.access, workspace: workspace, folder: folder, executable: executable, sink: events, stdin: Data(turn.text.utf8)
@@ -125,15 +132,35 @@ public actor ClaudeCodeProcess: AgentProcess {
         return identity
     }
 
+    /// `--resume`에는 이 세션 폴더 상태가 묶은 id(init이 돌려준 id)만 쓴다 (8장 10). 다른 값은 서버가 줘도 띄우지 않는다
+    static func requireBound(_ external: String, state: ClaudeSessionState) throws {
+        guard state.bound, state.providerSessionID == external else { throw AgentStartError(.spawnFailed) }
+    }
+
+    /// 이 답에서 비밀 항목의 값 (질문을 낸 spawn이 메모리에 적어 둔 항목만, 8장 11)
+    private func secretValues(_ answer: AgentAnswerDelivery) -> [String] {
+        guard let marked = secretItems[answer.sessionID], marked.requestID == answer.requestID else { return [] }
+        var values: [String] = []
+        for (id, value) in answer.value.answers ?? [:] where marked.ids.contains(id) {
+            switch value {
+            case .one(let text): values.append(text)
+            case .many(let texts): values += texts
+            }
+        }
+        if marked.single, let text = answer.value.text { values.append(text) }
+        return values
+    }
+
     // MARK: 답 (계약 2.10-3)
 
     public func deliverAnswer(_ answer: AgentAnswerDelivery, events: AgentEventSink) async throws -> AgentAnswerResult {
         guard let workspace = answer.workspaceRef.flatMap(workspaceRealPath) else { throw AgentStartError(.spawnFailed) }
         guard let external = answer.externalSessionID, BridgeRuntime.isSafeSessionID(external) else { return .requestClosed }
         guard hookServer != nil, let executable = locator.locate() else { throw AgentStartError(.spawnFailed) }
-        await waitForSessionIdle(answer.sessionID)
+        try await waitForSessionIdle(answer.sessionID)
         let folder = try ClaudeSessionFolder.prepare(sessionsRoot: sessionsRoot, agentSessionID: answer.sessionID)
         var state = ClaudeSessionState.load(from: folder.root)
+        try Self.requireBound(external, state: state)
         // 열린 보류가 아니면 spawn 0 (ONE-TF-03, AC-37, G28)
         guard let open = state.openDeferred, open.id == answer.requestID, open.kind == answer.kind.rawValue else {
             log.log("claude_answer_closed", ["task": .id(answer.taskID)])
@@ -141,11 +168,16 @@ public actor ClaudeCodeProcess: AgentProcess {
         }
         state.openDeferred = nil
         try? state.save(in: folder.root)
-        let binding = ClaudeAnswerBinding(requestID: answer.requestID, kind: answer.kind, inputSHA256: open.inputSHA256, value: answer.value)
+        let secrets = SecretRedactor(secretValues(answer))
+        secretItems[answer.sessionID] = nil
+        let binding = ClaudeAnswerBinding(requestID: answer.requestID, kind: answer.kind, inputSHA256: open.inputSHA256, value: answer.value, targetSHA256: open.targetSHA256)
         let spawn = try launch(
             mode: .answer(requestID: answer.requestID), binding: binding, session: .resume(external), providerID: external, agentSessionID: answer.sessionID,
-            taskID: answer.taskID, turnSeq: answer.turnSeq, access: answer.access, workspace: workspace, folder: folder, executable: executable, sink: events, stdin: Data()
+            taskID: answer.taskID, turnSeq: answer.turnSeq, access: answer.access, workspace: workspace, folder: folder, executable: executable, sink: events, stdin: Data(),
+            secrets: secrets
         )
+        // 새 프로세스의 정체를 답 전달 전에 원장에 먼저 적는다 (8장 14): 그 사이 앱이 죽어도 고아를 찾는다. 답 전달 완료는 이 함수의 반환으로 따로 적힌다
+        if let identity = spawn.identity, let services = services.withLock({ $0 }) { await services.recordSpawn(answer.taskID, identity) }
         // 보류 id의 훅이 오면 그 순간 전달이다. 그 전에 init이나 다른 호출이 오면(상태 유실) 멈추고 닫힘, 그 전에 끝나면 던진다
         var signal = spawn.answerSignal
         while signal == nil {
@@ -172,7 +204,10 @@ public actor ClaudeCodeProcess: AgentProcess {
         // Claude 세션이 없으면 닫을 보류도 없다
         guard let external = request.externalSessionID, BridgeRuntime.isSafeSessionID(external) else { return }
         guard let executable = locator.locate() else { throw AgentStartError(.spawnFailed) }
-        await waitForSessionIdle(request.sessionID)
+        try await waitForSessionIdle(request.sessionID)
+        let folder = try ClaudeSessionFolder.prepare(sessionsRoot: sessionsRoot, agentSessionID: request.sessionID)
+        try Self.requireBound(external, state: ClaudeSessionState.load(from: folder.root))
+        secretItems[request.sessionID] = nil
         try await close(requestID: request.requestID, providerID: external, agentSessionID: request.sessionID, taskID: request.taskID, workspace: workspace, executable: executable)
     }
 
@@ -186,21 +221,37 @@ public actor ClaudeCodeProcess: AgentProcess {
             mode: .close(requestID: requestID), session: .resume(providerID), providerID: providerID, agentSessionID: agentSessionID, taskID: taskID, turnSeq: 1,
             access: .write, workspace: workspace, folder: folder, executable: executable, sink: nil, stdin: Data()
         )
-        // 끝날 때까지 기다린다 (다음 startTurn이 두 번째 writer를 만들지 않게). 10초 안에 끝나지 않으면 고아 끝내기
-        if await !waitForEnd(spawn, timeout: timing.closeTimeout), let identity = spawn.identity {
-            _ = await terminate(identity)
-            _ = await waitForEnd(spawn, timeout: timing.orphanKillGrace + 1)
-        }
+        // 끝날 때까지 기다린다 (다음 startTurn이 두 번째 writer를 만들지 않게). 10초 안에 끝나지 않으면 고아 끝내기.
+        // 끝을 증명하지 못하면 던진다 (8장 15): 호출한 쪽은 이 세션의 다음 실행을 띄우지 않는다
+        if await waitForEnd(spawn, timeout: timing.closeTimeout) { return }
+        if let identity = spawn.identity { _ = await terminate(identity) }
+        if await waitForEnd(spawn, timeout: timing.orphanKillGrace + 1) { return }
+        log.log("claude_writer_unproven", ["mode": .code("close")])
+        throw AgentStartError(.agentError)
     }
 
     // MARK: 중단 · 고아 (계약 2.13 · 2.14)
 
+    /// 감독 중인 실행이면 SIGINT를 보내고 `signalled`(끝은 감독이 `ended`로 알린다). 등록부에 없으면(앱이 다시 떴다) 원장의 정체로 확인해 끝까지 끝낸다:
+    /// 끝났음이 증명될 때만 `notRunning`, 확인할 수 없거나 끝내지 못했으면 `signalled`로 답해 런타임이 끝났다고 정하지 않게 한다 (8장 12)
     public func interrupt(_ target: AgentTurnRef, scope: AgentCancelScope) async -> AgentInterruptResult {
-        guard let spawnID = taskSpawn[target.taskID], let spawn = spawns[spawnID], !spawn.exited, let identity = spawn.identity else { return .notRunning }
-        spawn.mapper.markInterruptRequested()
-        guard ClaudeProcessInspector.interrupt(identity) else { return .notRunning }
-        log.log("claude_interrupt", ["task": .id(target.taskID)])
-        return .signalled
+        if let spawnID = taskSpawn[target.taskID], let spawn = spawns[spawnID] {
+            spawn.mapper.markInterruptRequested()
+            spawn.stopped = true
+            if !spawn.exited, let identity = spawn.identity, ClaudeProcessInspector.interrupt(identity) {
+                log.log("claude_interrupt", ["task": .id(target.taskID)])
+            }
+            return .signalled
+        }
+        guard let identity = target.identity else { return .signalled }
+        switch await terminate(identity) {
+        case .ended:
+            log.log("claude_interrupt", ["task": .id(target.taskID), "orphan": .count(1)])
+            return .notRunning
+        case .alive, .unknown:
+            log.log("claude_interrupt_unproven", ["task": .id(target.taskID)])
+            return .signalled
+        }
     }
 
     public func liveness(_ identity: AgentProcessIdentity) async -> AgentLiveness {
@@ -212,11 +263,15 @@ public actor ClaudeCodeProcess: AgentProcess {
     }
 
     nonisolated func terminate(_ identity: AgentProcessIdentity) async -> AgentLiveness {
+        if let override = testHooks.terminateOverride?(identity) { return override }
         let timing = self.timing
-        return await withCheckedContinuation { continuation in
-            DispatchQueue.global(qos: .userInitiated).async {
-                continuation.resume(returning: ClaudeProcessInspector.terminate(identity, timing: timing))
-            }
+        return await offActor { ClaudeProcessInspector.terminate(identity, timing: timing) }
+    }
+
+    /// 막히는 일(신호 뒤 기다림 · 파일 해시)을 협력 스레드 밖에서
+    nonisolated func offActor<T: Sendable>(_ work: @escaping @Sendable () -> T) async -> T {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async { continuation.resume(returning: work()) }
         }
     }
 
@@ -232,7 +287,8 @@ public actor ClaudeCodeProcess: AgentProcess {
 
     private func launch(
         mode: ClaudeMapperConfig.Mode, binding: ClaudeAnswerBinding? = nil, session: ClaudeCodeLaunch.SessionArgument, providerID: String, agentSessionID: String, taskID: String,
-        turnSeq: Int, access: AgentAccess, workspace: String, folder: ClaudeSessionFolder, executable: ClaudeCodeExecutable, sink: AgentEventSink?, stdin: Data
+        turnSeq: Int, access: AgentAccess, workspace: String, folder: ClaudeSessionFolder, executable: ClaudeCodeExecutable, sink: AgentEventSink?, stdin: Data,
+        secrets: SecretRedactor = SecretRedactor()
     ) throws -> Spawn {
         let spawnID = UUID().uuidString
         let nonce = ClaudeCodeLaunch.newNonce()
@@ -259,6 +315,7 @@ public actor ClaudeCodeProcess: AgentProcess {
             folder: folder, cwdReal: cwdReal, childPATH: environment["PATH"] ?? "", files: files, sink: sink, mapper: mapper
         )
         spawn.binding = binding
+        spawn.secrets = secrets
         let answered = spawn.answered
         hookServer?.register(nonce: nonce, HookSocketServer.Registration(agentSessionID: agentSessionID, providerSessionID: providerID, handler: { [weak self] request in
             await self?.handleHook(spawnID: spawnID, request) ?? HookResponse(decision: .deny, reason: ClaudeGateReason.turnStopped)
@@ -266,7 +323,8 @@ public actor ClaudeCodeProcess: AgentProcess {
         let arguments = ClaudeCodeLaunch.arguments(access: access, workspace: workspace, settings: files.settings.path, mcp: files.mcp.path, session: session)
         let process: ClaudeSpawnedProcess
         do {
-            process = try ClaudeSpawner.spawn(executable: executable.path, arguments: arguments, environment: environment, cwd: folder.cwd.path)
+            // 검사한 실제 파일(realpath)로 띄운다. 자식이 보는 argv[0]은 후보 경로 그대로 (8장 8)
+            process = try ClaudeSpawner.spawn(executable: executable.realPath, argv0: executable.path, arguments: arguments, environment: environment, cwd: folder.cwd.path)
         } catch {
             hookServer?.unregister(nonce: nonce, after: .zero)
             ClaudeCodeLaunch.removeConfig(files)
@@ -316,7 +374,8 @@ public actor ClaudeCodeProcess: AgentProcess {
         }
         let context = ClaudeGateContext(
             mode: gateMode, access: spawn.access, workspaceRealPath: spawn.workspace, sessionCwdRealPath: spawn.cwdReal, childPATH: spawn.childPATH,
-            agentSessionID: spawn.agentSessionID, agentTaskID: spawn.taskID, turnSeq: spawn.turnSeq, deferIssued: spawn.deferIssued, answerDelivered: spawn.answerDelivered
+            agentSessionID: spawn.agentSessionID, agentTaskID: spawn.taskID, turnSeq: spawn.turnSeq, deferIssued: spawn.deferIssued, answerDelivered: spawn.answerDelivered,
+            stopped: spawn.stopped || spawn.interruptSent, secrets: spawn.secrets
         )
         if let delay = testHooks.gateDelay { try? await Task.sleep(for: delay) }
         let gate = ClaudeToolGate(fileSystem: fileSystem, decide: services.withLock { $0 }?.decideTool, serverTimeout: .milliseconds(Int(timing.serverTimeout * 1000)))
@@ -447,26 +506,43 @@ public actor ClaudeCodeProcess: AgentProcess {
         for action in actions {
             switch action {
             case .emit(let event):
-                await spawn.sink?.emit(event)
+                // 건넨 비밀값을 모델이 되말해도 밖으로 나가는 글에서는 가린다 (8장 11)
+                await spawn.sink?.emit(spawn.secrets.redact(event))
             case .interrupt(let cause):
                 switch cause {
                 case .selfCheck(let check): log.log("claude_selfcheck_failed", ["check": .count(check)])
                 case .answerLost: if spawn.answerSignal == nil { spawn.answerSignal = .lost }
                 case .closeDone: break
                 }
+                // 멈추기로 한 spawn의 훅은 모두 deny (8장 9)
+                spawn.stopped = true
                 sendInterrupt(spawn)
             case .confirmQuestion(let pending):
-                // 보고된 보류만 열린 요청이다: id · 종류 · digest만 적는다 (글 0)
+                // 보고된 보류만 열린 요청이다: id · 종류 · digest · 대상 지문만 적는다 (글 · 경로 0)
                 var state = ClaudeSessionState.load(from: spawn.folder.root)
-                state.openDeferred = ClaudeSessionState.OpenDeferred(id: pending.id, kind: pending.kind.rawValue, inputSHA256: pending.inputSHA256, spawnID: spawn.id, at: Date())
-                try? state.save(in: spawn.folder.root)
+                state.openDeferred = ClaudeSessionState.OpenDeferred(
+                    id: pending.id, kind: pending.kind.rawValue, inputSHA256: pending.inputSHA256, spawnID: spawn.id, at: Date(), targetSHA256: pending.targetSHA256
+                )
+                do {
+                    try state.save(in: spawn.folder.root)
+                    let secret = Set(pending.question.items.filter(\.secret).map(\.id))
+                    if pending.kind == .input, !secret.isEmpty { secretItems[spawn.agentSessionID] = (pending.id, secret, pending.question.items.count == 1) }
+                } catch {
+                    // 열린 요청으로 적지 못했다 (8장 17): 답할 수 없는 질문은 내지 않는다. 그 호출은 끝난 뒤 닫기 모드로 거절하고 실패로 알린다
+                    log.log("claude_state_save_failed", [:])
+                    spawn.mapper.dropConfirmedQuestion()
+                    spawn.unexpectedDeferred = pending.id
+                    await spawn.sink?.emit(.failed(.agentError))
+                }
             case .unexpectedDeferred(let id):
                 spawn.unexpectedDeferred = id
                 log.log("claude_unexpected_deferred", [:])
             case .artifacts(let candidates):
+                // 파일 해시는 actor 밖에서 (일반 파일 · 크기 상한, 8장 18)
+                let workspace = spawn.workspace
                 for candidate in candidates {
-                    if let artifact = artifact(candidate, workspace: spawn.workspace) {
-                        await spawn.sink?.emit(.artifact(path: artifact.path, hash: artifact.hash, summary: artifact.summary))
+                    if let artifact = await offActor({ self.artifact(candidate, workspace: workspace) }) {
+                        await spawn.sink?.emit(spawn.secrets.redact(.artifact(path: artifact.path, hash: artifact.hash, summary: artifact.summary)))
                     }
                 }
             case .signInNeeded:
@@ -497,17 +573,40 @@ public actor ClaudeCodeProcess: AgentProcess {
     /// 산출물: 작업 폴더 기준 realpath 상대 경로 · 결과 뒤 파일의 sha256 (D3c-2 Q19)
     nonisolated func artifact(_ candidate: ClaudeArtifactCandidate, workspace: String) -> (path: String, hash: String, summary: String)? {
         guard let real = fileSystem.realpath(candidate.filePath), real != workspace, GateFileSystem.isInside(real, root: workspace),
-              let handle = FileHandle(forReadingAtPath: real) else { return nil }
-        defer { try? handle.close() }
-        var hasher = SHA256()
-        while let chunk = try? handle.read(upToCount: 1 << 20), !chunk.isEmpty { hasher.update(data: chunk) }
-        let hash = "sha256:" + hasher.finalize().map { String(format: "%02x", $0) }.joined()
+              let hash = Self.artifactHash(atPath: real, limit: Self.artifactHashLimit) else { return nil }
         let relative = String(real.dropFirst(workspace == "/" ? 1 : workspace.count + 1))
         return (relative, hash, (candidate.tool == "Edit" ? "Edited " : "Wrote ") + relative)
     }
 
+    /// 산출물 해시를 내는 파일 크기 상한
+    static let artifactHashLimit: Int64 = 64 * 1024 * 1024
+
+    /// `sha256:<hex>`. 일반 파일이고 `limit` 바이트 이하일 때만 (FIFO · 장치 · 폴더는 열어도 읽지 않는다: 막히지 않게 `O_NONBLOCK`으로 연다). 읽지 못하면 nil
+    nonisolated static func artifactHash(atPath path: String, limit: Int64) -> String? {
+        let fd = open(path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
+        guard fd >= 0 else { return nil }
+        defer { Darwin.close(fd) }
+        var info = stat()
+        guard fstat(fd, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG, Int64(info.st_size) <= limit else { return nil }
+        var hasher = SHA256()
+        var buffer = [UInt8](repeating: 0, count: 1 << 20)
+        var total: Int64 = 0
+        while true {
+            let count = buffer.withUnsafeMutableBytes { read(fd, $0.baseAddress, $0.count) }
+            if count < 0, errno == EINTR { continue }
+            guard count >= 0 else { return nil }
+            if count == 0 { break }
+            total += Int64(count)
+            // 읽는 사이 커진 파일도 상한을 넘기지 않는다
+            guard total <= limit else { return nil }
+            buffer.withUnsafeBytes { hasher.update(bufferPointer: UnsafeRawBufferPointer(rebasing: $0[0..<count])) }
+        }
+        return "sha256:" + hasher.finalize().map { String(format: "%02x", $0) }.joined()
+    }
+
     /// 우리 자식에게 SIGINT (정체 확인 뒤). 그래도 끝나지 않으면 유예 뒤 고아 끝내기
     func sendInterrupt(_ spawn: Spawn) {
+        spawn.stopped = true
         guard !spawn.exited, let identity = spawn.identity, !spawn.interruptSent else { return }
         spawn.interruptSent = true
         ClaudeProcessInspector.interrupt(identity)
@@ -527,6 +626,16 @@ public actor ClaudeCodeProcess: AgentProcess {
     private func finish(_ spawn: Spawn, status: ClaudeExitStatus) async {
         spawn.resultTimer?.cancel()
         spawn.exited = true
+        // 같은 그룹의 자손까지 끝나야 끝이다 (8장 13). 끝을 증명할 때까지 다시 시도한다: 그동안 이 세션의 다음 writer는 기다린다
+        if let group = spawn.process?.pid {
+            let timing = self.timing
+            var attempt = 0
+            while await !offActor({ ClaudeProcessInspector.endGroup(group, timing: timing) }) {
+                if attempt == 0 { log.log("claude_group_lingering", ["mode": .code(spawn.modeName)]) }
+                attempt += 1
+                try? await Task.sleep(for: .seconds(min(5, attempt)))
+            }
+        }
         let actions = spawn.mapper.finish()
         // 이 spawn을 감독 목록에서 뺀 뒤에 닫기를 띄운다 (같은 세션의 다음 spawn이 이 spawn을 기다리지 않게)
         spawns[spawn.id] = nil
@@ -536,9 +645,15 @@ public actor ClaudeCodeProcess: AgentProcess {
         hookServer?.unregister(nonce: spawn.nonce)
         if spawn.answerSignal == nil { spawn.answerSignal = .ended }
         await apply(spawn, actions)
+        // 비밀값은 이 프로세스가 끝나면 메모리에서도 지운다 (8장 11)
+        spawn.secrets = SecretRedactor()
         if let id = spawn.unexpectedDeferred, let executable = locator.locate() {
-            // 기록에 없는 id가 보고됐다: 그 id를 바로 닫는다 (질문을 내지 않는다)
-            try? await close(requestID: id, providerID: spawn.providerID, agentSessionID: spawn.agentSessionID, taskID: spawn.taskID, workspace: spawn.workspace, executable: executable)
+            // 기록에 없는 id가 보고됐거나 열린 요청으로 적지 못했다: 그 id를 바로 닫는다 (질문을 내지 않는다)
+            do {
+                try await close(requestID: id, providerID: spawn.providerID, agentSessionID: spawn.agentSessionID, taskID: spawn.taskID, workspace: spawn.workspace, executable: executable)
+            } catch {
+                log.log("claude_close_failed", [:])
+            }
         }
         spawn.ended = true
         log.log("claude_ended", ["mode": .code(spawn.modeName), "code": .count(Int(status.code ?? -1)), "signal": .count(Int(status.signal ?? 0))])
@@ -547,12 +662,14 @@ public actor ClaudeCodeProcess: AgentProcess {
 
     // MARK: writer 하나
 
-    /// 같은 세션의 앞 spawn이 끝나기를 기다린다. 넘으면 고아 끝내기
-    private func waitForSessionIdle(_ sessionID: String) async {
+    /// 같은 세션의 앞 spawn이 끝나기를 기다린다. 넘으면 고아 끝내기. 끝(자손까지)을 증명하지 못하면 던진다: 두 번째 writer를 만들지 않는다 (8장 15)
+    private func waitForSessionIdle(_ sessionID: String) async throws {
         guard let spawnID = sessionSpawn[sessionID], let spawn = spawns[spawnID] else { return }
         if await waitForEnd(spawn, timeout: timing.closeTimeout) { return }
         if let identity = spawn.identity { _ = await terminate(identity) }
-        _ = await waitForEnd(spawn, timeout: timing.orphanKillGrace + 1)
+        if await waitForEnd(spawn, timeout: timing.orphanKillGrace + 1) { return }
+        log.log("claude_writer_unproven", ["mode": .code(spawn.modeName)])
+        throw AgentStartError(.spawnFailed)
     }
 
     private func waitForEnd(_ spawn: Spawn, timeout: TimeInterval) async -> Bool {
@@ -602,6 +719,10 @@ public actor ClaudeCodeProcess: AgentProcess {
         var exited = false
         var ended = false
         var interruptSent = false
+        /// 중단 · 자체 점검 실패 · 닫기 끝: 이 spawn의 훅은 모두 deny (8장 9)
+        var stopped = false
+        /// 이 spawn에 건넨 비밀값 (메모리만, 끝나면 비운다, 8장 11)
+        var secrets = SecretRedactor()
         var unexpectedDeferred: String?
         var resultTimer: Task<Void, Never>?
 

@@ -66,7 +66,11 @@ struct ClaudeCodeRuntimeTests {
     @Test func e15ASecretAnswerReachesTheModelButNeverTheSessionFolderLedgerLogsOrServer() async throws {
         let fake = try FakeClaude()
         let ask: [String: Any] = ["questions": [["id": "key", "header": "Key", "text": "Paste the API key", "secret": true]]]
-        try fake.scenario(["runs": [["steps": [["tool": "mcp__tf__ask_user", "id": "toolu_secret", "input": ask]]], ["final_text": "Thanks."]]])
+        // 답 뒤에 모델이 값을 되말하고, 그 값을 명령에 넣는다 (8장 11): 밖으로 나가는 글 · 명령에서는 가린다
+        try fake.scenario(["runs": [
+            ["steps": [["tool": "mcp__tf__ask_user", "id": "toolu_secret", "input": ask]]],
+            ["steps": [["text": "Your key CANARY-SECRET-7f3a works."], ["tool": "Bash", "id": "toolu_curl", "input": ["command": "curl -H 'X-Key: CANARY-SECRET-7f3a' https://example.invalid"]]]],
+        ]])
         let h = try await harness(fake)
         let created = h.message("SENTINEL-USER-MESSAGE-d3a")
         await h.runtime.tick()
@@ -76,9 +80,16 @@ struct ClaudeCodeRuntimeTests {
         h.server.enqueueAnswer(bridgeID: h.bridgeID, taskID: created.taskID, requestID: "toolu_secret", locally: true, structured: true)
         h.clock.jump(by: 6)
         await h.runtime.tick()
-        await h.settle { h.server.taskState(created.taskID) == "idle" }
+        // 명령은 서버에 묻지 못해(가짜 결정기에 답 없음) 승인 질문이 된다
+        await h.settle { h.server.requests.contains { $0.bodyJSON.contains("Run: curl") } }
         // 모델에는 닿았다 (가짜의 MCP 결과 = Claude Code transcript 쪽, Q9)
         #expect((fake.report(1)?["mcp_results"] as? [String])?.first == #"The user answered: {"key":"CANARY-SECRET-7f3a"}"#)
+        // 되말한 글 · 결정 요청의 명령 · 승인 카드 글에서는 가렸다
+        let bodies = h.server.requests.map(\.bodyJSON).joined(separator: "\n")
+        #expect(bodies.contains("Your key [redacted] works."))
+        #expect(bodies.contains(#"Run: curl -H 'X-Key: [redacted]' https:\/\/example.invalid"#), "JSON 본문은 /를 \\/로 쓴다")
+        let decided = fake.decider.calls.compactMap { query -> String? in if case .claudeBash(_, _, _, let command, _, _) = query.call { command } else { nil } }
+        #expect(decided == ["curl -H 'X-Key: [redacted]' https://example.invalid"])
         await h.ledger.checkpoint()
         for sentinel in ["CANARY-SECRET-7f3a", "SENTINEL-USER-MESSAGE-d3a"] {
             #expect(!Self.treeContains(sentinel, fake.box.sessionsRoot), "세션 폴더에 \(sentinel) 0")

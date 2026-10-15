@@ -97,6 +97,34 @@ struct ClaudeProcessIdentityTests {
         #expect(killpg(child.process.pid, 0) != 0)
     }
 
+    /// 부모만 끝나고 같은 그룹의 자손이 남으면 아직 끝이 아니다 (8장 13, A6): 그룹을 SIGKILL로 끝낸 뒤에만 `.ended`
+    @Test func a13TerminateEndsTheGroupNotJustTheParent() async throws {
+        // 부모는 SIGINT에 끝나고(trap), 백그라운드 자식은 신호를 받지 않아 남는다
+        let child = try spawn(script: "trap 'exit 0' INT; sleep 600 & while :; do sleep 0.2; done")
+        let group = child.process.pid
+        defer { killpg(group, SIGKILL) }
+        try await Task.sleep(for: .milliseconds(300))
+        let timing = self.timing
+        let result = try await offPool { ClaudeProcessInspector.terminate(child.identity, timing: timing) }
+        #expect(result == .ended(AgentExit(code: nil, signal: Int(SIGKILL))))
+        _ = try await offPool { child.process.waitForExit() }
+        let deadline = Date().addingTimeInterval(2)
+        while killpg(group, 0) == 0, Date() < deadline { try await Task.sleep(for: .milliseconds(20)) }
+        #expect(killpg(group, 0) != 0, "그룹에 남은 것 0")
+    }
+
+    /// 부모가 이미 없어도 그 그룹의 자손이 살아 있으면 살아 있다 (고아 확인이 끝났다고 하지 않는다)
+    @Test func a13ADeadParentWithLiveDescendantsIsStillAlive() async throws {
+        let child = try spawn(script: "sleep 600 & exit 0")
+        let group = child.process.pid
+        defer { killpg(group, SIGKILL) }
+        _ = try await offPool { child.process.waitForExit() }
+        #expect(ClaudeProcessInspector.liveness(child.identity) == .alive)
+        let timing = self.timing
+        #expect(try await offPool { ClaudeProcessInspector.terminate(child.identity, timing: timing) } == .ended(AgentExit(code: nil, signal: Int(SIGKILL))))
+        #expect(ClaudeProcessInspector.liveness(child.identity) == .ended(AgentExit(code: nil)))
+    }
+
     /// 앱이 연 fd(소켓 · SQLite)는 CLOEXEC 표시가 없어도 자식에게 가지 않는다 (`POSIX_SPAWN_CLOEXEC_DEFAULT`, G25)
     @Test func anInheritableAppDescriptorDoesNotReachTheChild() async throws {
         let file = box.file("open.txt")

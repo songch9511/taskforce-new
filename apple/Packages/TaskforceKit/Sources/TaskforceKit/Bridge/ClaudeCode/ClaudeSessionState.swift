@@ -1,7 +1,7 @@
 #if os(macOS)
 import Foundation
 
-/// 세션 폴더의 상태 파일 `state.json` (0600, OA D3a 계약 2.10-1 · 2.4): Claude Code 세션 id · 묶였는지 · 열린 보류 하나 (id · 종류 · 입력 digest · spawn id · 시각).
+/// 세션 폴더의 상태 파일 `state.json` (0600, OA D3a 계약 2.10-1 · 2.4): Claude Code 세션 id · 묶였는지 · 열린 보류 하나 (id · 종류 · 입력 digest · spawn id · 시각 · 대상 지문).
 /// **글 0:** 질문 글 · 답 · 명령 · 경로를 쓰지 않는다. 앱이 다시 떠도 답 resume가 "그 요청이 아직 열려 있나"를 볼 수 있게 한다
 public struct ClaudeSessionState: Equatable, Sendable {
     public struct OpenDeferred: Equatable, Sendable {
@@ -11,13 +11,16 @@ public struct ClaudeSessionState: Equatable, Sendable {
         public var inputSHA256: String
         public var spawnID: String
         public var at: Date
+        /// Edit · Write 대상의 지문 (경로가 아니라 해시, 8장 2)
+        public var targetSHA256: String?
 
-        public init(id: String, kind: String, inputSHA256: String, spawnID: String, at: Date) {
+        public init(id: String, kind: String, inputSHA256: String, spawnID: String, at: Date, targetSHA256: String? = nil) {
             self.id = id
             self.kind = kind
             self.inputSHA256 = inputSHA256
             self.spawnID = spawnID
             self.at = at
+            self.targetSHA256 = targetSHA256
         }
     }
 
@@ -38,7 +41,9 @@ public struct ClaudeSessionState: Equatable, Sendable {
         state.bound = object["bound"] as? Bool ?? false
         if let open = object["open_deferred"] as? [String: Any], let id = open["id"] as? String, let kind = open["kind"] as? String,
            let digest = open["input_sha256"] as? String, let spawnID = open["spawn_id"] as? String, let at = open["at"] as? Double {
-            state.openDeferred = OpenDeferred(id: id, kind: kind, inputSHA256: digest, spawnID: spawnID, at: Date(timeIntervalSince1970: at / 1000))
+            state.openDeferred = OpenDeferred(
+                id: id, kind: kind, inputSHA256: digest, spawnID: spawnID, at: Date(timeIntervalSince1970: at / 1000), targetSHA256: open["target_sha256"] as? String
+            )
         }
         return state
     }
@@ -49,7 +54,7 @@ public struct ClaudeSessionState: Equatable, Sendable {
         if let openDeferred {
             object["open_deferred"] = [
                 "id": openDeferred.id, "kind": openDeferred.kind, "input_sha256": openDeferred.inputSHA256, "spawn_id": openDeferred.spawnID,
-                "at": (openDeferred.at.timeIntervalSince1970 * 1000).rounded(),
+                "at": (openDeferred.at.timeIntervalSince1970 * 1000).rounded(), "target_sha256": openDeferred.targetSHA256.map { $0 as Any } ?? NSNull(),
             ]
         } else {
             object["open_deferred"] = NSNull()

@@ -15,6 +15,22 @@
       "dangerously_disable_sandbox": false
     }
   },
+  "claude_bash_session_cwd": {
+    "bridge_id": "b1111111-1111-4111-8111-111111111111",
+    "agent_session_id": "5e551011-0000-4000-8000-000000000001",
+    "agent_task_id": "7a5c0001-0000-4000-8000-000000000001",
+    "turn_seq": 3,
+    "workspace_real_path": "/Users/u/proj",
+    "call": {
+      "kind": "claude_bash",
+      "tool_use_id": "toolu_03",
+      "permission_mode": "default",
+      "cwd": "/Users/u/Library/Application Support/dev.taskforcelabs.taskforce/Bridge/p/claude-code/5e551011-0000-4000-8000-000000000001/cwd",
+      "command": "cat /Users/u/proj/notes.md",
+      "run_in_background": false,
+      "dangerously_disable_sandbox": false
+    }
+  },
   "claude_write": {
     "bridge_id": "b1111111-1111-4111-8111-111111111111",
     "agent_session_id": "5e551011-0000-4000-8000-000000000001",

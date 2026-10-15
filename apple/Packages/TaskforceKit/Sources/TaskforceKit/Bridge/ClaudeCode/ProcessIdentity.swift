@@ -87,8 +87,9 @@ public final class ClaudeSpawnedProcess: @unchecked Sendable {
 }
 
 public enum ClaudeSpawner {
-    /// `executable`을 `arguments`로 띄운다. 환경은 이 사전뿐이다. 실패하면 아무것도 남기지 않고 던진다
-    public static func spawn(executable: String, arguments: [String], environment: [String: String], cwd: String) throws -> ClaudeSpawnedProcess {
+    /// `executable`을 `arguments`로 띄운다. 환경은 이 사전뿐이다. 실패하면 아무것도 남기지 않고 던진다.
+    /// `argv0`: 자식이 보는 이름 (없으면 `executable`). 실행하는 파일은 언제나 `executable`이다 (검사한 realpath로 띄운다, 8장 8)
+    public static func spawn(executable: String, argv0: String? = nil, arguments: [String], environment: [String: String], cwd: String) throws -> ClaudeSpawnedProcess {
         var input: [Int32] = [-1, -1]
         var output: [Int32] = [-1, -1]
         var errors: [Int32] = [-1, -1]
@@ -123,7 +124,7 @@ public enum ClaudeSpawner {
         sigemptyset(&mask)
         posix_spawnattr_setsigmask(&attributes, &mask)
 
-        let argv = ([executable] + arguments).map { strdup($0) } + [nil]
+        let argv = ([argv0 ?? executable] + arguments).map { strdup($0) } + [nil]
         let envp = environment.sorted { $0.key < $1.key }.map { strdup("\($0.key)=\($0.value)") } + [nil]
         defer {
             for pointer in argv { free(pointer) }
@@ -196,8 +197,10 @@ public enum ClaudeProcessInspector {
 
     enum Check: Equatable {
         case same
-        /// 없다 · 좀비 · 다른 시작 시각 · 다른 사용자: 그 프로세스는 끝났다
-        case gone
+        /// 그 프로세스는 끝났다 (없음 · 좀비). 그 pid를 그룹 id로 쓰는 자손은 남아 있을 수 있다 (그룹이 있는 동안 그 pid는 다시 쓰이지 않는다)
+        case absent
+        /// 그 pid를 다른 프로세스가 쓴다 (시작 시각 · 사용자 다름): 그 프로세스는 끝났고, 그 pid의 그룹은 우리 것이 아니다
+        case replaced
         /// 확인할 수 없다 (pid 없음 · ≤ 1 · 읽기 실패 · marker 없음): 끝났다고도 살아 있다고도 하지 않는다
         case unprovable
     }
@@ -206,12 +209,40 @@ public enum ClaudeProcessInspector {
         guard let raw = identity.pid, raw > 1, raw <= Int(Int32.max), UUID(uuidString: identity.processMarker) != nil else { return .unprovable }
         let pid = pid_t(raw)
         switch kernel(pid: pid) {
-        case .gone: return .gone
+        case .gone: return .absent
         case .unreadable: return .unprovable
         case .running(let start, let uid, let zombie, _):
-            if zombie || abs(start.timeIntervalSince(identity.startedAt)) > 0.001 || uid != getuid() { return .gone }
+            if abs(start.timeIntervalSince(identity.startedAt)) > 0.001 || uid != getuid() { return .replaced }
+            if zombie { return .absent }
             guard let arguments = arguments(pid: pid) else { return .unprovable }
             return hasMarker(arguments, identity.processMarker) ? .same : .unprovable
+        }
+    }
+
+    /// 그룹 `group`에서 살아 있는(좀비 아님) 이 사용자의 프로세스. 읽지 못하면 nil (끝났다고 보지 않는다)
+    static func liveGroupMembers(_ group: pid_t) -> [pid_t]? {
+        guard group > 1 else { return nil }
+        var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PGRP, group]
+        var size = 0
+        guard sysctl(&mib, 4, nil, &size, nil, 0) == 0 else { return nil }
+        if size == 0 { return [] }
+        let count = size / MemoryLayout<kinfo_proc>.stride + 8
+        var processes = [kinfo_proc](repeating: kinfo_proc(), count: count)
+        size = count * MemoryLayout<kinfo_proc>.stride
+        guard sysctl(&mib, 4, &processes, &size, nil, 0) == 0 else { return nil }
+        return processes.prefix(size / MemoryLayout<kinfo_proc>.stride)
+            .filter { $0.kp_eproc.e_pgid == group && $0.kp_proc.p_stat != SZOMB && $0.kp_eproc.e_ucred.cr_uid == getuid() }
+            .map(\.kp_proc.p_pid)
+    }
+
+    /// 부모와 (부모가 끝났으면) 같은 그룹의 자손이 모두 없어졌다. 다른 프로세스가 그 pid를 쓰면 그 그룹은 보지 않는다
+    static func allGone(_ identity: AgentProcessIdentity, group: pid_t?) -> Bool {
+        switch check(identity) {
+        case .replaced: return true
+        case .same, .unprovable: return false
+        case .absent:
+            guard let group else { return true }
+            return liveGroupMembers(group)?.isEmpty == true
         }
     }
 
@@ -221,11 +252,15 @@ public enum ClaudeProcessInspector {
         return zip(arguments, arguments.dropFirst()).contains { $0 == "--settings" && $1.hasSuffix(suffix) }
     }
 
+    /// 부모가 끝났어도 같은 그룹의 자손이 살아 있으면 `alive`다 (8장 13: 자손까지 끝나야 끝)
     public static func liveness(_ identity: AgentProcessIdentity) -> AgentLiveness {
         switch check(identity) {
-        case .same: .alive
-        case .gone: .ended(AgentExit(code: nil))
-        case .unprovable: .unknown
+        case .same: return .alive
+        case .replaced: return .ended(AgentExit(code: nil))
+        case .unprovable: return .unknown
+        case .absent:
+            guard let raw = identity.pid, let members = liveGroupMembers(pid_t(raw)) else { return .unknown }
+            return members.isEmpty ? .ended(AgentExit(code: nil)) : .alive
         }
     }
 
@@ -237,31 +272,63 @@ public enum ClaudeProcessInspector {
     }
 
     /// 고아 끝내기 (막힘 호출, 메인 스레드 밖에서): SIGINT → 유예 → (다시 확인) 그룹 · 프로세스 SIGKILL → 유예 → 확인.
-    /// 사라진 것을 확인했을 때만 `.ended`, 끝내지 못했으면 `.alive`, 확인할 수 없으면 `.unknown`
+    /// 부모와 같은 그룹의 자손이 모두 사라진 것을 확인했을 때만 `.ended` (8장 13), 끝내지 못했으면 `.alive`, 확인할 수 없으면 `.unknown`.
+    /// 그룹: 우리 spawn은 그룹 리더다 (`POSIX_SPAWN_SETPGROUP`). 살아 있으면 커널로 다시 보고, 끝났으면 그 pid가 그룹 id다
     public static func terminate(_ identity: AgentProcessIdentity, timing: ClaudeCodeTiming) -> AgentLiveness {
-        switch check(identity) {
-        case .gone: return .ended(AgentExit(code: nil))
+        let initial = check(identity)
+        switch initial {
+        case .replaced: return .ended(AgentExit(code: nil))
         case .unprovable: return .unknown
-        case .same: break
+        case .same, .absent: break
         }
         guard let raw = identity.pid else { return .unknown }
         let pid = pid_t(raw)
-        kill(pid, SIGINT)
-        if waitGone(identity, timeout: timing.orphanInterruptGrace) { return .ended(AgentExit(code: nil, signal: Int(SIGINT))) }
-        guard check(identity) == .same else { return check(identity) == .gone ? .ended(AgentExit(code: nil, signal: Int(SIGINT))) : .unknown }
-        if case .running(_, _, _, let group) = kernel(pid: pid), group == pid { killpg(pid, SIGKILL) }
-        kill(pid, SIGKILL)
-        if waitGone(identity, timeout: timing.orphanKillGrace) { return .ended(AgentExit(code: nil, signal: Int(SIGKILL))) }
-        return check(identity) == .same ? .alive : .unknown
+        var group: pid_t? = pid
+        if initial == .same, case .running(_, _, _, let leader) = kernel(pid: pid), leader != pid { group = nil }
+        if initial == .absent {
+            // 부모는 이미 없다: 남은 자손만 본다
+            guard let members = liveGroupMembers(pid) else { return .unknown }
+            if members.isEmpty { return .ended(AgentExit(code: nil)) }
+        } else {
+            kill(pid, SIGINT)
+            if waitAllGone(identity, group: group, timeout: timing.orphanInterruptGrace) { return .ended(AgentExit(code: nil, signal: Int(SIGINT))) }
+        }
+        switch check(identity) {
+        case .unprovable: return .unknown
+        case .replaced: return .ended(AgentExit(code: nil, signal: Int(SIGINT)))
+        case .same:
+            if let group { killpg(group, SIGKILL) }
+            kill(pid, SIGKILL)
+        case .absent:
+            if let group { killpg(group, SIGKILL) }
+        }
+        if waitAllGone(identity, group: group, timeout: timing.orphanKillGrace) { return .ended(AgentExit(code: nil, signal: Int(SIGKILL))) }
+        if check(identity) == .same { return .alive }
+        if let group, liveGroupMembers(group)?.isEmpty == false { return .alive }
+        return .unknown
     }
 
-    static func waitGone(_ identity: AgentProcessIdentity, timeout: TimeInterval) -> Bool {
+    static func waitAllGone(_ identity: AgentProcessIdentity, group: pid_t?, timeout: TimeInterval) -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
         repeat {
-            if check(identity) == .gone { return true }
+            if allGone(identity, group: group) { return true }
             Thread.sleep(forTimeInterval: 0.05)
         } while Date() < deadline
-        return check(identity) == .gone
+        return allGone(identity, group: group)
+    }
+
+    /// 감독하던 자식이 끝난 뒤 같은 그룹에 남은 자손을 끝낸다 (막힘 호출, 8장 13). 남은 것이 없거나 다 끝났으면 true.
+    /// 자식은 거둬졌지만 그룹이 남아 있는 동안 그 pid(그룹 id)는 다시 쓰이지 않는다
+    static func endGroup(_ group: pid_t, timing: ClaudeCodeTiming) -> Bool {
+        guard let members = liveGroupMembers(group) else { return false }
+        if members.isEmpty { return true }
+        killpg(group, SIGKILL)
+        let deadline = Date().addingTimeInterval(timing.orphanKillGrace)
+        repeat {
+            if liveGroupMembers(group)?.isEmpty == true { return true }
+            Thread.sleep(forTimeInterval: 0.05)
+        } while Date() < deadline
+        return liveGroupMembers(group)?.isEmpty == true
     }
 
     /// 시험 정리: 그룹째 SIGKILL하고 거둔다

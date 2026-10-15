@@ -167,13 +167,16 @@ struct ClaudeCodeLaunchTests {
         var state = ClaudeSessionState()
         state.providerSessionID = "0e09f680-f476-4f2e-96d9-670f24599f6d"
         state.bound = true
-        state.openDeferred = ClaudeSessionState.OpenDeferred(id: "toolu_1", kind: "approval", inputSHA256: "abc", spawnID: "s", at: Date(timeIntervalSince1970: 1_760_000_000))
+        state.openDeferred = ClaudeSessionState.OpenDeferred(
+            id: "toolu_1", kind: "approval", inputSHA256: "abc", spawnID: "s", at: Date(timeIntervalSince1970: 1_760_000_000), targetSHA256: String(repeating: "f", count: 64)
+        )
         try state.save(in: folder.root)
         #expect(ClaudeSessionState.load(from: folder.root) == state)
         #expect(try FileManager.default.attributesOfItem(atPath: folder.root.appending(path: "state.json").path)[.posixPermissions] as? Int == 0o600)
         let object = try #require(try WireJSON.parse(Data(contentsOf: folder.root.appending(path: "state.json"))).objectValue)
         #expect(Set(object.keys) == ["v", "provider_session_id", "bound", "open_deferred"])
-        #expect(Set(try #require(object["open_deferred"]?.objectValue).keys) == ["id", "kind", "input_sha256", "spawn_id", "at"])
+        // 대상은 경로가 아니라 지문(sha256)으로만 (8장 2)
+        #expect(Set(try #require(object["open_deferred"]?.objectValue).keys) == ["id", "kind", "input_sha256", "spawn_id", "at", "target_sha256"])
     }
 }
 #endif

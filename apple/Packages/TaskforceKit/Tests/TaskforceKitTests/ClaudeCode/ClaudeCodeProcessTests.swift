@@ -17,11 +17,22 @@ final class FakeClaude: @unchecked Sendable {
     let process: ClaudeCodeProcess
     let claude: URL
 
-    init(decider: ScriptedDecider = ScriptedDecider(), environment extra: [String: String] = [:], hooks: ClaudeCodeTestHooks = ClaudeCodeTestHooks(), attach: Bool = true) throws {
+    /// - `linked`: 후보 `~/.local/bin/claude`가 실제 파일(`~/versions/claude-fake`)을 가리키는 기호 링크다 (8장 8)
+    init(
+        decider: ScriptedDecider = ScriptedDecider(), environment extra: [String: String] = [:], hooks: ClaudeCodeTestHooks = ClaudeCodeTestHooks(), attach: Bool = true,
+        timing: ClaudeCodeTiming = .testing, linked: Bool = false
+    ) throws {
         self.decider = decider
         claude = box.home.appending(path: ".local/bin/claude")
         try FileManager.default.createDirectory(at: claude.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try FileManager.default.copyItem(at: try BuiltProducts.url("FakeClaudeCode"), to: claude)
+        if linked {
+            let real = box.home.appending(path: "versions/claude-fake")
+            try FileManager.default.createDirectory(at: real.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try FileManager.default.copyItem(at: try BuiltProducts.url("FakeClaudeCode"), to: real)
+            try FileManager.default.createSymbolicLink(at: claude, withDestinationURL: real)
+        } else {
+            try FileManager.default.copyItem(at: try BuiltProducts.url("FakeClaudeCode"), to: claude)
+        }
         try FileManager.default.createDirectory(at: box.home.appending(path: ".fake-claude"), withIntermediateDirectories: true)
         socketFolder = URL(fileURLWithPath: ClaudeSandbox.real(NSTemporaryDirectory())).appending(path: "tfh-\(UUID().uuidString.prefix(6))", directoryHint: .isDirectory)
         let socket = socketFolder.appending(path: "hook.sock").path
@@ -32,7 +43,7 @@ final class FakeClaude: @unchecked Sendable {
         let environment = ["HOME": box.home.path, "USER": NSUserName(), "PATH": "/usr/bin:/bin", "LANG": "en_US.UTF-8"].merging(extra) { _, new in new }
         process = ClaudeCodeProcess(
             sessionsRoot: box.sessionsRoot, hookServer: server, helpers: helpers, locator: ClaudeCodeLocator(candidates: [claude.path], confinedTo: box.root.path),
-            environment: environment, managedSettingsPath: box.root.appending(path: "managed-settings.json").path, timing: .testing, log: log, testHooks: hooks
+            environment: environment, managedSettingsPath: box.root.appending(path: "managed-settings.json").path, timing: timing, log: log, testHooks: hooks
         )
         if attach { process.attach(AgentRuntimeServices(decideTool: decider.function)) }
     }
@@ -43,6 +54,14 @@ final class FakeClaude: @unchecked Sendable {
     }
 
     var workspace: String { box.workspacePath }
+
+    /// 서버가 `cat <name>`을 읽기 명령으로 허용한다 (작업 폴더의 파일을 만든다). 오래 도는 Bash는 대본의 `sleep`으로 흉내 낸다
+    func allowReadonlyCat(_ name: String) {
+        box.file(name)
+        decider.push(.success(ScriptedDecider.response(.allow, .readonlyCommand, parse: BridgeV1ToolDecisionParse(
+            wrapper: "none", argv: ["cat", name], paths: [.init(index: 1, absolute: workspace + "/" + name)], implicitCwd: false
+        ))))
+    }
 
     func scenario(_ value: [String: Any]) throws {
         try JSONSerialization.data(withJSONObject: value).write(to: box.home.appending(path: ".fake-claude/scenario.json"))
@@ -230,9 +249,9 @@ struct ClaudeCodeProcessTests {
     // MARK: E6 Bash 중 SIGINT
 
     @Test func e6StopDuringBashCancelsAndLeavesNoProcessGroup() async throws {
-        let parse = BridgeV1ToolDecisionParse(wrapper: "none", argv: ["sleep", "30"], paths: [], implicitCwd: false)
-        let fake = try FakeClaude(decider: ScriptedDecider([.success(ScriptedDecider.response(.allow, .readonlyCommand, parse: parse))]))
-        try fake.scenario(["runs": [["steps": [["tool": "Bash", "id": "toolu_b", "input": ["command": "sleep 30"], "sleep": 30]]]]])
+        let fake = try FakeClaude()
+        fake.allowReadonlyCat("notes.md")
+        try fake.scenario(["runs": [["steps": [["tool": "Bash", "id": "toolu_b", "input": ["command": "cat notes.md"], "sleep": 30]]]]])
         let events = EventLog()
         let identity = try await fake.turn(events: events)
         var sleepPID: Int?
@@ -242,7 +261,7 @@ struct ClaudeCodeProcessTests {
             try await Task.sleep(for: .milliseconds(20))
         }
         #expect(sleepPID != nil)
-        #expect((fake.report(0)?["bash_commands"] as? [String])?.first == "'/bin/sleep' '30'", "실행되는 것 = 판정한 것 (재구성 명령)")
+        #expect((fake.report(0)?["bash_commands"] as? [String])?.first == "'/bin/cat' '\(fake.workspace)/notes.md'", "실행되는 것 = 판정한 것 (재구성 명령)")
         let result = await fake.process.interrupt(AgentTurnRef(taskID: ClaudeTest.task, sessionID: ClaudeTest.session, identity: identity), scope: .turnAndProcesses)
         #expect(result == .signalled)
         #expect(await events.wait { FakeClaude.ended($0) })
@@ -345,9 +364,9 @@ struct ClaudeCodeProcessTests {
     // MARK: E14 고아
 
     @Test func e14AnOrphanLeftByAnAbandonedRuntimeIsFoundAliveAndTerminated() async throws {
-        let parse = BridgeV1ToolDecisionParse(wrapper: "none", argv: ["sleep", "30"], paths: [], implicitCwd: false)
-        let fake = try FakeClaude(decider: ScriptedDecider([.success(ScriptedDecider.response(.allow, .readonlyCommand, parse: parse))]))
-        try fake.scenario(["runs": [["steps": [["tool": "Bash", "id": "toolu_b", "input": ["command": "sleep 30"], "sleep": 30]]]]])
+        let fake = try FakeClaude()
+        fake.allowReadonlyCat("notes.md")
+        try fake.scenario(["runs": [["steps": [["tool": "Bash", "id": "toolu_b", "input": ["command": "cat notes.md"], "sleep": 30]]]]])
         let events = EventLog()
         let identity = try await fake.turn(events: events)
         for _ in 0..<500 where fake.report(0)?["sleep_pid"] == nil { try await Task.sleep(for: .milliseconds(20)) }

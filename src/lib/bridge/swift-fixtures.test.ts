@@ -18,7 +18,9 @@ import {
   bridgeV1ToolDecisionRequestSchema,
   bridgeV1ToolDecisionResponseSchema,
 } from "@/lib/api/contract";
+import { COMMAND_FLAGS } from "@/lib/agents/command-flags";
 import { AGENT_REGISTRY } from "@/lib/agents/registry";
+import { decideToolCall } from "@/lib/agents/tool-decision";
 
 // OA D2b Q13: Swift 시험(TaskforceKitTests/BridgeV1ContractsTests)이 읽는 같은 JSON 파일을 서버 zod 스키마로 parse한다.
 // Swift는 요청 파일과 같은 키 집합을 내보내야 하고(strictObject), 응답 파일은 서버가 실제로 줄 수 있는 모양이어야 한다.
@@ -137,8 +139,23 @@ describe("Swift fixtures parse with the D2a server schemas", () => {
 describe("Swift fixtures for the Claude Code adapter (OA D3a)", () => {
   it("tool-decision requests parse with the D3c-2 request schema", () => {
     const file = load("tool-decision-request");
-    expect(Object.keys(file).sort()).toEqual(["claude_bash", "claude_write", "codex_command", "codex_file_change"]);
+    expect(Object.keys(file).sort()).toEqual(["claude_bash", "claude_bash_session_cwd", "claude_write", "codex_command", "codex_file_change"]);
     parseEach(bridgeV1ToolDecisionRequestSchema, file, "tool-decision request");
+  });
+
+  // OA D3a 8장 19: Mac은 Bash를 빈 세션 cwd/(작업 폴더 밖)에서 돌린다. 그 요청을 실제 결정 함수로 돌린 지금 결과를 고정한다 (읽기도 확인 요청).
+  // 고치는 일(격리 cwd를 받는 파서 규칙)은 D3a-s가 R1 결과로 정한다
+  it("a Mac Bash request from the isolated session cwd is deferred by the real decision function today", () => {
+    const request = bridgeV1ToolDecisionRequestSchema.parse(load("tool-decision-request").claude_bash_session_cwd);
+    for (const mode of ["manual", "auto", "full"] as const) {
+      const decision = decideToolCall({ call: request.call, access: "write", mode, workspace_real_path: request.workspace_real_path });
+      expect(decision, mode).toMatchObject({ decision: "defer", reason: "command_not_readonly", parseReason: "cwd_outside_workspace" });
+    }
+  });
+
+  // OA D3a 8장 3: Mac이 다시 만드는 명령 이름 = 서버 파서가 받는 이름
+  it("the Mac rebuilds exactly the server's readonly command names", () => {
+    expect(load("claude-code-adapter").readonly_commands).toEqual(Object.keys(COMMAND_FLAGS).sort());
   });
 
   it("tool-decision responses parse with the D3c-2 response schema, except the client-tolerance sample", () => {

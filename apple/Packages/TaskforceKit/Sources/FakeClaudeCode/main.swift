@@ -286,6 +286,33 @@ enum Fake {
         return flags
     }
 
+    /// 커널이 실제로 실행한 파일 (`_NSGetExecutablePath`, 8장 8: 검사한 realpath로 띄웠나)
+    static func executablePath() -> String {
+        var size: UInt32 = 4096
+        var buffer = [CChar](repeating: 0, count: Int(size))
+        guard _NSGetExecutablePath(&buffer, &size) == 0 else { return "" }
+        return String(decoding: buffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self)
+    }
+
+    /// 같은 프로세스 그룹에 남는 자손 하나 (`sleep 600`, 기다리지 않는다. 8장 13). 파이프를 물려주지 않는다 (가짜 자신은 바로 끝난다)
+    static func leaveChild() {
+        var pid: pid_t = 0
+        let argv: [UnsafeMutablePointer<CChar>?] = [strdup("/bin/sleep"), strdup("600"), nil]
+        defer { for pointer in argv { free(pointer) } }
+        var actions: posix_spawn_file_actions_t?
+        posix_spawn_file_actions_init(&actions)
+        defer { posix_spawn_file_actions_destroy(&actions) }
+        for fd in [Int32(0), 1, 2] { posix_spawn_file_actions_addopen(&actions, fd, "/dev/null", fd == 0 ? O_RDONLY : O_WRONLY, 0) }
+        var attributes: posix_spawnattr_t?
+        posix_spawnattr_init(&attributes)
+        defer { posix_spawnattr_destroy(&attributes) }
+        posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_CLOEXEC_DEFAULT))
+        if posix_spawn(&pid, "/bin/sleep", &actions, &attributes, argv, environ) == 0 {
+            report["left_child_pid"] = Int(pid)
+            saveReport()
+        }
+    }
+
     static func readStdin() -> Data {
         var data = Data()
         var buffer = [UInt8](repeating: 0, count: 65536)
@@ -333,6 +360,7 @@ enum Fake {
         report = [
             "args_ok": true, "fds": openFDs.map(Int.init), "env_keys": environmentKeys.sorted(), "stdin_bytes": stdin.count, "resume": flags.resume != nil,
             "session_id": sessionID, "cwd": cwd, "tools": flags.tools, "pid": Int(getpid()), "pgid": Int(getpgrp()),
+            "argv0": CommandLine.arguments.first ?? "", "exec_path": executablePath(),
         ]
         saveReport()
         if run["die"] as? String == "before_init" { kill(getpid(), SIGKILL) }
@@ -353,6 +381,7 @@ enum Fake {
            let id = saved["id"] as? String, let name = saved["name"] as? String, var input = saved["input"] as? [String: Any] {
             try? FileManager.default.removeItem(at: deferredFile)
             if let override = run["resume_input_override"] as? [String: Any] { input = override }
+            if let pause = run["pause_before_resume_hook"] as? Double { Thread.sleep(forTimeInterval: pause) }
             emit(["type": "command_lifecycle", "state": "started", "session_id": sessionID])
             if case .deferred(let again, let againName, let againInput) = call(id: id, name: name, input: input, step: [:], hook: hooks.preToolUse, cwd: cwd, announce: false) {
                 return finishDeferred(id: again, name: againName, input: againInput, file: deferredFile)
@@ -397,6 +426,7 @@ enum Fake {
             lastText = final
             assistant(["type": "text", "text": final])
         }
+        if run["leave_child"] as? Bool == true { leaveChild() }
         emit(["type": "result", "subtype": "success", "is_error": false, "stop_reason": "end_turn", "terminal_reason": "completed", "session_id": sessionID, "result": lastText,
               "permission_denials": denials])
         mcp?.stop()

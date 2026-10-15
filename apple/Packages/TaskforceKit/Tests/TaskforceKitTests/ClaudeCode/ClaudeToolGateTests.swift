@@ -94,7 +94,11 @@ struct ClaudeToolGateTests {
     @Test func approvalAllowAndDenyFollowTheUser() async {
         let input = #"{"file_path":"\#(box.workspacePath)/a.txt","content":"A"}"#
         let decider = ScriptedDecider()
-        let allow = await evaluate("Write", input, id: "toolu_q", context: context(binding(.approval, AgentAnswerValue(answers: ["approval": .one("allow")]), digest: input)), decider: decider)
+        // 보류 때 적은 대상 지문 (8장 2): 그대로면 승인을 따른다
+        let target = GateFileSystem.live.resolve(box.workspacePath + "/a.txt").flatMap(ClaudeToolGate.targetFingerprint)
+        var approved = ClaudeAnswerBinding(requestID: "toolu_q", kind: .approval, inputSHA256: HookWire.inputDigest(ClaudeTest.json(input)), value: AgentAnswerValue(answers: ["approval": .one("allow")]))
+        approved.targetSHA256 = target
+        let allow = await evaluate("Write", input, id: "toolu_q", context: context(.answer(approved)), decider: decider)
         #expect(allow.response == HookResponse(decision: .allow, reason: ClaudeGateReason.approved))
         let deny = await evaluate("Write", input, id: "toolu_q", context: context(binding(.approval, AgentAnswerValue(answers: ["approval": .one("deny")]), digest: input)), decider: decider)
         #expect(deny.response == HookResponse(decision: .deny, reason: ClaudeGateReason.declined))
@@ -283,9 +287,14 @@ struct ClaudeToolGateTests {
         let outcome = await evaluate("Bash", #"{"command":"echo \#(long)"}"#, decider: decider)
         #expect(outcome.response.decision == .defer)
         #expect(decider.calls.isEmpty)
-        let deep = (0..<200).map { _ in "abcdef" }.joined(separator: "/")
+        // 서버 상한(1000자)은 넘고 OS 경로 상한(1024)은 넘지 않는 경로: 서버를 부르지 않고 defer
+        let deep = (0..<((1010 - box.workspacePath.count) / 7)).map { _ in "abcdef" }.joined(separator: "/")
         let path = await evaluate("Write", #"{"file_path":"\#(box.workspacePath)/\#(deep)","content":"x"}"#, decider: decider)
         #expect(path.response.decision == .defer)
+        // OS가 풀 수 없는 경로(ENAMETOOLONG)는 확인할 수 없으니 밖으로 본다 (8장 1)
+        let tooDeep = (0..<200).map { _ in "abcdef" }.joined(separator: "/")
+        let unresolvable = await evaluate("Write", #"{"file_path":"\#(box.workspacePath)/\#(tooDeep)","content":"x"}"#, decider: decider)
+        #expect(unresolvable.response.decision == .deny)
         #expect(decider.calls.isEmpty)
     }
 
@@ -366,9 +375,9 @@ struct ClaudeToolGateTests {
         ]))
         let command = "npm   run\n build " + String(repeating: "x", count: 400)
         let bash = await evaluate("Bash", WireJSON.object(["command": .string(command)]).canonicalText, id: "toolu_b", decider: ScriptedDecider([.success(ScriptedDecider.response(.defer, .commandNotReadonly))]))
+        // 명령 앞 300자 그대로 (줄바꿈은 ⏎로 보인다, 공백을 줄이지 않는다) + 잘린 글자 수 (8장 4)
         let text = try #require(bash.deferred).question.text
-        #expect(text.hasPrefix("Run: npm run build xxx"))
-        #expect(text.count == "Run: ".count + 300)
+        #expect(text == "Run: npm   run⏎ build " + String(repeating: "x", count: 283) + "… (+117)")
         let config = await evaluate("Write", #"{"file_path":"\#(box.workspacePath)/.mcp.json","content":"{}"}"#, decider: ScriptedDecider([.success(ScriptedDecider.response(.defer, .toolConfigWrite))]))
         #expect(config.deferred?.question.text == "Write .mcp.json")
     }

@@ -152,6 +152,8 @@ struct ClaudeCodeGoldenTests {
         #expect(object["tools_write"] as? [String] == ClaudeCodeSupport.tools(for: .write))
         #expect(object["tools_read_only"] as? [String] == ClaudeCodeSupport.tools(for: .readOnly))
         #expect(object["cancel_scope"] as? String == "turn_and_processes")
+        // 재구성하는 명령 이름 = 서버 `COMMAND_FLAGS` 키 (TS가 같은 파일로 서버 목록과 대조한다, 8장 3)
+        #expect(object["readonly_commands"] as? [String] == CommandRebuild.allowedCommands)
     }
 }
 #endif

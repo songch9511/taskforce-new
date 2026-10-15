@@ -60,13 +60,16 @@ public struct ClaudePendingDeferred: Equatable, Sendable {
     public var inputSHA256: String
     public var toolName: String
     public var question: AgentQuestion
+    /// Edit · Write: 보류할 때 해석한 대상의 지문 (`ClaudeTargetFingerprint`, 8장 2). 재개 때 같아야 한다
+    public var targetSHA256: String?
 
-    public init(id: String, kind: BridgeV1PendingQuestionKind, inputSHA256: String, toolName: String, question: AgentQuestion) {
+    public init(id: String, kind: BridgeV1PendingQuestionKind, inputSHA256: String, toolName: String, question: AgentQuestion, targetSHA256: String? = nil) {
         self.id = id
         self.kind = kind
         self.inputSHA256 = inputSHA256
         self.toolName = toolName
         self.question = question
+        self.targetSHA256 = targetSHA256
     }
 }
 
@@ -135,6 +138,11 @@ public struct ClaudeEventMapper: Sendable {
     }
 
     public var wasAccepted: Bool { accepted }
+
+    /// 보고된 보류를 열린 요청으로 적지 못했다 (상태 저장 실패, 8장 17): 답할 수 없는 질문은 끝에 내지 않는다
+    public mutating func dropConfirmedQuestion() {
+        confirmed = nil
+    }
 
     public mutating func consume(_ event: ClaudeStreamEvent, facts: ClaudeSpawnFacts, now: Date) -> [ClaudeMapperAction] {
         guard !terminal else { return [] }
