@@ -68,13 +68,14 @@ public final class ClaudeLineage: Sendable {
     var hasEvidence: Bool { evidence != .missing }
 
     /// - `fresh`: 이제 띄우는 spawn (파일은 곧 쓴다). 아니면 `file`을 읽는다 (다시 뜬 앱의 확인 · 끝내기)
-    init(file: URL? = nil, fresh: Bool = false) {
+    /// - `boot`: 이번 부팅 id (못 읽으면 nil: 파일을 대조할 수 없어 증거 없음)
+    init(file: URL? = nil, fresh: Bool = false, boot: () -> String? = { ClaudeProcessInspector.bootSessionID() }) {
         self.file = file
         guard let file, !fresh else {
             evidence = .memory
             return
         }
-        switch Self.load(file) {
+        switch Self.load(file, boot: boot()) {
         case .thisBoot(let root, let ids):
             evidence = .thisBoot
             state.withLock {
@@ -245,12 +246,14 @@ public final class ClaudeLineage: Sendable {
         return .thisBoot(root: root, ids: ids)
     }
 
-    /// 앱이 뜰 때: 확인된 다른 부팅의 파일만 지운다 (11장 1). 부팅 id를 못 읽으면 아무것도 지우지 않는다
+    /// 앱이 뜰 때 (11장 1, 코디네이터 결정 11-1): 다시 부팅했다는 것은 그 부팅의 프로세스가 모두 끝났다는 증명이다. 확인된 다른 부팅의 파일은 지우지 않고
+    /// 이번 부팅의 id 없는 "끝" 기록으로 바꾼다 (그 spawn을 나중에 물어도 끝이다). 부팅 id를 못 읽으면 아무것도 바꾸지 않는다.
+    /// 끝 기록은 task 정리를 adapter가 알 길이 없어 지우지 않는다 (숫자 · 부팅 id뿐, 계정 삭제가 파티션째 지운다)
     static func purge(directory: URL, boot: String? = ClaudeProcessInspector.bootSessionID()) {
         guard let boot, let names = try? FileManager.default.contentsOfDirectory(atPath: directory.path) else { return }
         for name in names where name.hasSuffix(".lineage") {
             let file = directory.appending(path: name)
-            if load(file, boot: boot) == .otherBoot { try? FileManager.default.removeItem(at: file) }
+            if load(file, boot: boot) == .otherBoot { _ = write([header, "boot " + boot, "ended"], to: file) }
         }
     }
 

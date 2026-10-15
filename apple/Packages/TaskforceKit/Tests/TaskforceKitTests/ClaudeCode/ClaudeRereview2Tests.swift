@@ -76,8 +76,10 @@ struct ClaudeRereview2Tests {
                                         locator: ClaudeCodeLocator(candidates: [], confinedTo: box.root.path), timing: .testing)
         #expect(await adapter.liveness(root.identity) == .ended(AgentExit(code: nil)))
         #expect(await adapter.liveness(root.identity) == .ended(AgentExit(code: nil)))
+        // 앱이 뜰 때: 지우지 않고 이번 부팅의 끝 기록으로 바꾼다 (결정 11-1)
         adapter.purgeLineageOfOtherBoots()
-        #expect(!FileManager.default.fileExists(atPath: file.path))
+        #expect(ClaudeLineage.load(file) == .ended)
+        #expect(await adapter.liveness(root.identity) == .ended(AgentExit(code: nil)))
     }
 
     @Test func c3AProcessCreatedBeforeTheRootIsNeverADescendant() async throws {
@@ -144,7 +146,7 @@ struct ClaudeRereview2Tests {
         ClaudeCodeProcess(sessionsRoot: box.sessionsRoot, hookServer: nil, helpers: ClaudeCodeHelpers(hook: "/x", mcp: "/y"),
                           locator: ClaudeCodeLocator(candidates: [], confinedTo: box.root.path)).purgeLineageOfOtherBoots()
         #expect(FileManager.default.fileExists(atPath: keep.file?.path ?? ""))
-        #expect(!FileManager.default.fileExists(atPath: other.path))
+        #expect(ClaudeLineage.load(other) == .ended, "다른 부팅의 파일은 끝 기록으로 (결정 11-1)")
         #expect(FileManager.default.fileExists(atPath: broken.path), "다른 부팅으로 확인되지 않은 파일은 남긴다 (11장 1)")
         #expect(FileManager.default.fileExists(atPath: unrelated.path))
     }

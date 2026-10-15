@@ -362,7 +362,7 @@ final class BridgeHost {
                     workspaces = nil
                 case .claudeCode(let disposable):
                     // 세션 폴더는 파티션 아래 (계정 삭제가 파티션째 지운다). init은 부수 효과 0: probe · 폴더 만들기는 런타임이 부를 때만.
-                    // 앱 Application Support 안의 Edit/Write는 막는다 (OA D3a 10장 5). 다른 부팅의 혈통 파일은 런타임을 만들 때 지운다 (10장 4)
+                    // 앱 Application Support 안의 Edit/Write는 막는다 (OA D3a 10장 5). 다른 부팅의 혈통 파일은 런타임을 만들 때 끝 기록으로 바꾼다 (10장 4 · 결정 11-1)
                     let claudeCode = ClaudeCodeProcess(
                         sessionsRoot: partition.directory(in: root).appending(path: "claude-code", directoryHint: .isDirectory), hookServer: hookServer,
                         helpers: .inBundle(), locator: .standard(home: NSHomeDirectory()), log: BridgeOSLog(),

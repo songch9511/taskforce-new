@@ -341,7 +341,7 @@ public actor ClaudeCodeProcess: AgentProcess {
         return result
     }
 
-    /// 앱이 뜰 때 부른다: 다른 부팅에 적힌 혈통 파일을 지운다 (10장 4). 이번 부팅의 파일은 고아 정리가 쓰고 끝을 증명하면 지운다
+    /// 앱이 뜰 때 부른다: 다른 부팅에 적힌 혈통 파일을 이번 부팅의 끝 기록으로 바꾼다 (10장 4 · 11장 1, 결정 11-1). 이번 부팅의 파일은 고아 정리가 쓰고 끝을 증명하면 끝 기록이 된다
     public nonisolated func purgeLineageOfOtherBoots() {
         ClaudeLineage.purge(directory: sessionsRoot.appending(path: "lineage", directoryHint: .isDirectory))
     }

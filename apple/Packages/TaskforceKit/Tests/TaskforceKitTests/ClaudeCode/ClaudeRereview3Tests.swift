@@ -40,7 +40,7 @@ struct ClaudeRereview3Tests {
         #expect(await adapter.liveness(root.identity) == .unknown, "기록이 사라지면 다시 증명할 수 없다")
     }
 
-    @Test func d1PurgeDeletesOnlyConfirmedOtherBootFilesAndNothingWithoutABootID() throws {
+    @Test func d1PurgeEndsOnlyConfirmedOtherBootFilesAndNothingWithoutABootID() throws {
         let folder = box.sessionsRoot.appending(path: "lineage", directoryHint: .isDirectory)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         let boot = try #require(ClaudeProcessInspector.bootSessionID())
@@ -51,11 +51,42 @@ struct ClaudeRereview3Tests {
         let broken = folder.appending(path: "\(UUID().uuidString).lineage")
         try "nonsense\n".write(to: broken, atomically: true, encoding: .utf8)
         ClaudeLineage.purge(directory: folder, boot: nil)
-        #expect([mine, other, broken].allSatisfy { FileManager.default.fileExists(atPath: $0.path) }, "부팅 id를 못 읽으면 아무것도 지우지 않는다")
+        #expect([mine, other, broken].allSatisfy { FileManager.default.fileExists(atPath: $0.path) }, "부팅 id를 못 읽으면 아무것도 바꾸지 않는다")
         ClaudeLineage.purge(directory: folder)
-        #expect(FileManager.default.fileExists(atPath: mine.path))
-        #expect(!FileManager.default.fileExists(atPath: other.path))
-        #expect(FileManager.default.fileExists(atPath: broken.path), "읽지 못하는 파일은 다른 부팅으로 확인되지 않았다: 남긴다")
+        #expect(ClaudeLineage.load(mine) == .thisBoot(root: 7, ids: [7]))
+        #expect(try String(contentsOf: other, encoding: .utf8) == "taskforce-lineage 2\nboot \(boot)\nended\n", "다른 부팅 = 끝 기록 (결정 11-1)")
+        #expect(try String(contentsOf: broken, encoding: .utf8) == "nonsense\n", "읽지 못하는 파일은 다른 부팅으로 확인되지 않았다: 그대로")
+    }
+
+    // MARK: 결정 11-1 다른 부팅 = 끝
+
+    /// 다시 부팅했다는 것은 그 부팅의 프로세스가 모두 끝났다는 증명이다: 앱이 다시 떠 정리한 뒤에도 그 spawn은 끝이다 (unknown이 아니다)
+    @Test func e1AnOtherBootLineageIsEndedAfterARelaunch() async throws {
+        let marker = UUID().uuidString
+        let root = try spawn("exit 0", marker: marker)
+        _ = try await offPool { root.process.waitForExit() }
+        let file = box.sessionsRoot.appending(path: "lineage/\(marker).lineage")
+        try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try "taskforce-lineage 2\nboot \(UUID().uuidString)\nroot 7\n7\n9\n".write(to: file, atomically: true, encoding: .utf8)
+        let adapter = ClaudeRereview3ReproTests.adapter(box)
+        adapter.purgeLineageOfOtherBoots()
+        #expect(await adapter.liveness(root.identity) == .ended(AgentExit(code: nil)))
+        #expect(await adapter.terminateOrphan(root.identity) == .ended(AgentExit(code: nil)))
+        #expect(await adapter.liveness(root.identity) == .ended(AgentExit(code: nil)), "다시 물어도 끝")
+    }
+
+    /// 부팅 id를 읽지 못하면 아무것도 바꾸지 않고, 그 파일로는 끝을 증명하지 못한다 (unknown 그대로)
+    @Test func e2WithoutABootIDNothingChangesAndUnknownStays() async throws {
+        let marker = UUID().uuidString
+        let root = try spawn("exit 0", marker: marker)
+        _ = try await offPool { root.process.waitForExit() }
+        let file = box.sessionsRoot.appending(path: "lineage/\(marker).lineage")
+        try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let text = "taskforce-lineage 2\nboot \(UUID().uuidString)\nroot 7\n7\n"
+        try text.write(to: file, atomically: true, encoding: .utf8)
+        ClaudeLineage.purge(directory: file.deletingLastPathComponent(), boot: nil)
+        #expect(try String(contentsOf: file, encoding: .utf8) == text, "바꾼 것 0")
+        #expect(ClaudeProcessInspector.liveness(root.identity, lineage: ClaudeLineage(file: file, boot: { nil })) == .unknown)
     }
 
     // MARK: 3 바로 덧붙이기
