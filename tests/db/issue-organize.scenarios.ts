@@ -39,13 +39,20 @@ export function organizeFixtures(db: () => OrganizeDb) {
   // sqlAdmin(tests/conversation/sql-admin.ts)이 아직 모르는 supabase-js 호출 .returns()를 더한다 (loadClaims가 쓴다): 같은 빌더를 돌려주는 타입 표시일 뿐이다
   const admin = () => {
     // 실제 Postgres의 pg 클라이언트는 JS 배열을 PG 배열 글자로 바꾼다: write_action의 jsonb 인자(p_claims · p_evidence · p_events)는 JSON 글로 보낸다 (PGlite는 인자 형을 보고 알아서 한다)
-    const client = sqlAdmin((sql, params) => db().query(sql, /public\.(write_action|set_action_progress)\(/.test(sql) ? params?.map((v) => (Array.isArray(v) ? JSON.stringify(v) : v)) : params));
+    // .not(path, "is", null)도 모른다 (service.ts mergedInto가 쓴다: after->>status가 있는 이벤트만): .is에 표시를 달아 보내고 SQL을 보내기 전에 `is not null`로 바꾼다
+    const client = sqlAdmin((sql, params) =>
+      db().query(sql.replace(/__not_null__(\w+)->>(\w+) is null/g, "($1->>'$2') is not null"), /public\.(write_action|set_action_progress)\(/.test(sql) ? params?.map((v) => (Array.isArray(v) ? JSON.stringify(v) : v)) : params),
+    );
     const from = client.from.bind(client);
     client.from = ((table: string) => {
-      const builder = from(table) as unknown as { returns?: () => unknown };
+      const builder = from(table) as unknown as { returns?: () => unknown; is: (column: string, value: null) => unknown; not?: (column: string, operator: string, value: unknown) => unknown };
       builder.returns = () => builder;
+      builder.not = (column, operator, value) => {
+        if (operator !== "is" || value !== null) throw new Error(`가짜가 모르는 필터: ${column} ${operator}`);
+        return builder.is(`__not_null__${column}`, null);
+      };
       return builder;
-    }) as typeof client.from;
+    }) as unknown as typeof client.from;
     return client;
   };
 

@@ -126,6 +126,9 @@ $$;
 --    같은 범위가 앞 항목에서 version이 올라도 conflict가 아니다: 처음 본 version 하나만 조건이고, 이어지는 항목은 앞 쓰기가 돌려준 version을 쓴다.
 --    p_turn의 답 내용 reply.content.organize.results[i].change(TS는 null로 보낸다)를 쓰기 직후 값 { added: [{ context_id, context_version }], removed: [...] }으로 채워 돌려준다
 --    (실제 바뀐 범위만: 앱 Undo가 그 version을 조건으로 역연산을 보낸다).
+--    잠금 순서 (검토 P2-3): 이슈마다 (사용자 × 이슈) advisory 잠금을 action_id 순으로 **모두 먼저** 잡은 뒤에야 범위 행을 건드린다.
+--    메뉴 이동(change_context_membership_by_user)은 이슈 advisory 잠금 → 범위 순이라 같은 순서다. 먼저 잡지 않으면 일괄 [A,B]→P가 A의 잠금과 범위 P의 version 올림을 쥔 채 B를 기다리고,
+--    메뉴 B→P가 B의 잠금을 쥔 채 P를 기다려 서로 기다린다(교착). 일괄끼리도 같은 순서라 반대 순서로 낀 두 요청이 기다리지 않는다.
 -- ─────────────────────────────────────────────
 create function public.apply_organize_moves(p_user_id uuid, p_moves jsonb, p_turn jsonb)
 returns jsonb
@@ -142,10 +145,18 @@ declare
   v_exp_add integer;
   v_exp_remove integer;
   v_row record;
+  v_lock uuid;
 begin
   if jsonb_typeof(p_moves) <> 'array' or jsonb_array_length(p_moves) not between 1 and 3 then
     raise exception 'apply_organize_moves: move must be an array of 1-3 items' using errcode = '22023';
   end if;
+
+  -- 이슈 잠금을 id 순으로 먼저 (change_context_membership_by_user와 같은 잠금 키; 같은 트랜잭션이라 안쪽 호출이 다시 잡아도 기다리지 않는다)
+  for v_lock in
+    select distinct (m ->> 'action_id')::uuid as action_id from jsonb_array_elements(p_moves) as m order by 1
+  loop
+    perform pg_advisory_xact_lock(hashtextextended(concat_ws(':', 'context_member_user', p_user_id, v_lock), 0));
+  end loop;
 
   for v_idx in 0 .. jsonb_array_length(p_moves) - 1 loop
     v_move := p_moves -> v_idx;

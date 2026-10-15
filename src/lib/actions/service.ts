@@ -50,30 +50,44 @@ async function userChangeWrite(
   return userChangePlan(row, claims, changes, event, options, new Date(), randomUUID);
 }
 
+/** options는 값이거나, 읽은 행으로 시도마다 정하는 함수다 (행을 읽은 뒤의 읽기가 필요한 쓰기: 병합 Undo의 into) */
+type ChangeOptions = UserChangeOptions | ((row: StoredRow) => Promise<UserChangeOptions>);
+
 async function applyUserChanges(
   admin: SupabaseClient,
   userId: string,
   actionId: string,
   changes: (current: ReturnType<typeof projectAction>) => UserChange[],
   event: UserWriteEvent,
-  options: UserChangeOptions = {},
+  options: ChangeOptions = {},
 ): Promise<ActionSummary> {
   await retryOnConflict(async () => {
     const row = await loadStoredRow(admin, userId, actionId);
     if (!row) throw new ActionNotFoundError();
-    const written = await writeAction(admin, userId, actionId, await userChangeWrite(admin, userId, actionId, row, changes, event, options));
+    const resolved = typeof options === "function" ? await options(row) : options;
+    const written = await writeAction(admin, userId, actionId, await userChangeWrite(admin, userId, actionId, row, changes, event, resolved));
     return written ? true : null;
   });
   return summary(admin, userId, actionId);
 }
 
 export async function editAction(admin: SupabaseClient, userId: string, actionId: string, edit: EditActionRequest) {
-  // 병합 Undo(D4c-2): 마지막 상태 이벤트가 user_merged인 Action을 다시 열면 그 before에 남는 쪽 id(into)를 남긴다. v1 요청 · 응답은 그대로다
-  const undoneInto = edit.status === "open" ? await mergedInto(admin, userId, actionId) : null;
-  return applyUserChanges(admin, userId, actionId, () => editChanges(edit), "user_edited", undoneInto ? { undoneInto } : {});
+  // 병합 Undo(D4c-2): 마지막 상태 이벤트가 user_merged인 Action을 다시 열면 그 before에 남는 쪽 id(into)를 남긴다. v1 요청 · 응답은 그대로다.
+  // 이벤트는 행을 읽은 뒤 같은 CAS 시도 안에서 읽는다: 읽은 version이 조건이라, 그 사이 다른 요청이 다시 병합했다면 쓰기가 거절되고 새 시도가 최신 병합 이벤트를 읽는다
+  const options: ChangeOptions =
+    edit.status === "open"
+      ? async () => {
+          const undoneInto = await mergedInto(admin, userId, actionId);
+          return undoneInto ? { undoneInto } : {};
+        }
+      : {};
+  return applyUserChanges(admin, userId, actionId, () => editChanges(edit), "user_edited", options);
 }
 
-/** 이 Action의 마지막 "상태가 바뀐" 이벤트(after.status가 있는 것)가 user_merged면 그 이벤트가 이은 남는 쪽 id (아니면 null). 제목 · 기한 수정은 상태 이벤트가 아니다 */
+/**
+ * 이 Action의 마지막 "상태가 바뀐" 이벤트(after.status가 있는 것)가 user_merged면 그 이벤트가 이은 남는 쪽 id (아니면 null).
+ * 제목 · 기한 수정은 상태 이벤트가 아니다 — 그것이 수없이 쌓여도 병합 이벤트가 밀려나지 않게 DB에서 상태 이벤트만 걸러 가장 최근 한 건을 읽는다
+ */
 async function mergedInto(admin: SupabaseClient, userId: string, actionId: string): Promise<string | null> {
   const { data } = await admin
     .from("action_events")
@@ -81,12 +95,12 @@ async function mergedInto(admin: SupabaseClient, userId: string, actionId: strin
     .eq("user_id", userId)
     .eq("action_id", actionId)
     .in("type", ["user_merged", "user_deleted", "user_edited", "completed", "dropped", "reopened"])
+    .not("after->>status", "is", null)
     .order("created_at", { ascending: false })
     .order("id", { ascending: false })
-    .limit(20)
+    .limit(1)
     .throwOnError();
-  const events = (data ?? []) as { type: string; after: { status?: unknown; into?: unknown } | null }[];
-  const last = events.find((e) => typeof e.after?.status === "string");
+  const last = ((data ?? []) as { type: string; after: { into?: unknown } | null }[])[0];
   return last?.type === "user_merged" && typeof last.after?.into === "string" ? last.after.into : null;
 }
 

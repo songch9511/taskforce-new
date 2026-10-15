@@ -23,7 +23,7 @@ import {
 
 import { userClaims } from "@/lib/actions/user-claims";
 
-import type { OrganizeLookup, StoredTarget } from "./organize";
+import type { OrganizeLookup, PendingOrganize, StoredTarget } from "./organize";
 import type { AdoptPlan } from "./proposal";
 import { ConsultOutputError, respondToMessage, type ConsultAction, type ConsultContext, type ConsultMemory } from "./respond";
 
@@ -613,7 +613,7 @@ describe("실행 의도 · 지시 대상 (A34): 실행하지 않는다, 대상�
 
 
 // ─── 이슈 정리 (organize, D4c-2): 대상이 정해지면 바로 쓰고, 불확실하면 묻고, 삭제 · 병합은 카드 ───────────────
-// 상담 LLM은 부르지 않는다 (read ≥ 0.8일 때만 상담 한 번). 판정은 Jev(J1 + organize-v2)뿐이고, 대상은 칩 · #번호 · 이름이 정한다.
+// 상담 LLM은 부르지 않는다 (read ≥ 0.8일 때만 상담 한 번). 판정은 Jev(J1 + organize-v3)뿐이고, 대상은 칩 · #번호 · 이름이 정한다.
 
 describe("이슈 정리 (organize)", () => {
   const CTX = { launch: id(1, "c1c1c1c1"), taskforce: id(2, "c1c1c1c1"), old: id(3, "c1c1c1c1") };
@@ -638,7 +638,7 @@ describe("이슈 정리 (organize)", () => {
   };
 
   type Judged = { op?: string; opConfidence?: number; into?: string; intoConfidence?: number };
-  /** J1은 fakeDecide, organize-v2 질문(op · into)은 정해 둔 답. 호출한 질문 이름을 기록한다 */
+  /** J1은 fakeDecide, organize-v3 질문(op · into)은 정해 둔 답. 호출한 질문 이름을 기록한다 */
   function organizeModels(j1: Parameters<typeof fakeDecide>[0], judged: Judged = {}) {
     const base = fakeDecide(j1);
     const asked: string[][] = [];
@@ -690,7 +690,7 @@ describe("이슈 정리 (organize)", () => {
     expect(t.retrieve).not.toHaveBeenCalled();
     expect(t.organizeLookup).toHaveBeenCalledWith({ numbers: [139], actionIds: [] });
     expect(t.asked).toEqual([["op"]]);
-    expect(plan.summary).toMatchObject({ route: "organize", organize: { op: "move", outcome: "move", op_confidence: 0.95 }, promptVersions: { organize: "organize-v2" }, consulted: false });
+    expect(plan.summary).toMatchObject({ route: "organize", organize: { op: "move", outcome: "move", op_confidence: 0.95 }, promptVersions: { organize: "organize-v3" }, consulted: false });
     expect(plan.summary.cost).toBeCloseTo(0.001);
   });
 
@@ -791,15 +791,16 @@ describe("이슈 정리 (organize)", () => {
     expect(plan.reply.text).toBe("어느 프로젝트인가요?");
   });
 
-  it("묻는 말에 답하면(answer) 앞 pending에 이번 지칭만 더해 푼다 — 프로젝트 이름만 답해도 Jev op는 묻지 않는다. 그래도 모자라면 clarify, pending을 다시 만들지 않는다", async () => {
+  it("묻는 말에 답하면(answer) 앞 pending에 이번 지칭만 더해 푼다 — 프로젝트 이름만 답하면 Jev op가 other라서 앞 계획을 채운다. 그래도 모자라면 clarify, pending을 다시 만들지 않는다", async () => {
     const pendingMessage = windowMessage(2, "assistant", "어느 프로젝트인가요?", {
       content: { segments: [], citations: [], proposal: null, asks: "organize", organize: { state: "pending", op: "move", action_ids: [id(139, "abababab")], context_id: null, missing: "project" }, used: null, window: null },
     });
     const history = [windowMessage(1, "user", "#139 런치로 옮겨줘"), pendingMessage];
-    const t = run("Launch", { intent: "answer" }, {}, { history });
+    const t = run("Launch", { intent: "answer" }, { op: "other" }, { history });
     const plan = await t.run();
     expect(plan.route).toBe("organize");
-    expect(t.asked).toEqual([]);
+    // 단순한 답인지 정정인지는 Jev op가 가른다: 늘 묻고(검토 P1-2), op가 확실하지 않으면 앞 계획을 채운다
+    expect(t.asked).toEqual([["op"]]);
     expect(plan.move).toEqual([{ action_id: id(139, "abababab"), add: { context_id: CTX.launch, expected_version: 4 }, remove: { context_id: CTX.taskforce, expected_version: 4 } }]);
     expect(t.organizeLookup).toHaveBeenCalledWith({ numbers: [], actionIds: [id(139, "abababab")] });
 
@@ -808,6 +809,76 @@ describe("이슈 정리 (organize)", () => {
     expect(again.reply.content.asks).toBe("clarify");
     expect(again.reply.content.organize).toBeUndefined();
     expect(again.summary.organize).toMatchObject({ outcome: "clarify" });
+  });
+
+  // ─ 독립 검토(Astra) 반영 ─
+  const askedProject = (extra: Partial<PendingOrganize> = {}) =>
+    windowMessage(2, "assistant", "어느 프로젝트인가요?", {
+      content: { segments: [], citations: [], proposal: null, asks: "organize", organize: { state: "pending", op: "move", action_ids: [id(139, "abababab")], context_id: null, missing: "project", ...extra }, used: null, window: null },
+    });
+  const TWO_PLACES: OrganizeLookup = { ...LOOKUP, actions: LOOKUP.actions.map((a) => (a.number === 139 ? issue(139, "Shape 디자인 확정", [member("launch", "Launch"), member("taskforce", "Taskforce")]) : a)) };
+
+  it("프로젝트를 물은 뒤 '아니 Launch에서 빼줘'는 정정이다: op를 다시 판정해(빼기) Launch에서 뺀다 — Launch로 옮기지 않는다 (검토 P1-2)", async () => {
+    const history = [windowMessage(1, "user", "#139 옮겨줘"), askedProject()];
+    for (const j1 of [{ intent: "answer" as const }, { intent: "organize" as const }]) {
+      const t = run("아니 Launch에서 빼줘", j1, { op: "remove" }, { history }, TWO_PLACES);
+      const plan = await t.run();
+      expect(t.asked).toEqual([["op"]]);
+      expect(plan.move).toEqual([{ action_id: id(139, "abababab"), add: null, remove: { context_id: CTX.launch, expected_version: 4 } }]);
+      expect(plan.reply.text).toBe("뺐어요: #139 (Launch)");
+      expect(plan.summary.organize).toMatchObject({ op: "remove", outcome: "move", op_confidence: 0.95 });
+    }
+  });
+
+  it("op를 새로 읽은 값이 확실하지 않으면(Jev 확신 낮음) 정정으로 보지 않고 앞 계획을 채운다 — 정정을 못 알아봐도 쓰기는 앞 계획을 채운 이동뿐이다", async () => {
+    const history = [windowMessage(1, "user", "#139 옮겨줘"), askedProject()];
+    const plan = await run("Launch", { intent: "answer" }, { op: "remove", opConfidence: 0.6 }, { history }, TWO_PLACES).run();
+    expect(plan.move).toEqual([
+      // Launch가 이미 소속이라 도착에서는 더할 것이 없고 다른 소속(Taskforce)에서 빼서 옮긴다
+      { action_id: id(139, "abababab"), add: { context_id: CTX.launch, expected_version: 4 }, remove: { context_id: CTX.taskforce, expected_version: 4 } },
+    ]);
+  });
+
+  it("병합 대상을 물은 답은 앞 대상과 합친다: '#139 합쳐줘' → 질문 → '#144' = 카드 [#144 → #139] (검토 P2-6)", async () => {
+    const first = await run("#139 합쳐줘", { intent: "organize" }, { op: "merge" }).run();
+    expect(first.reply.content.organize).toEqual({ state: "pending", op: "merge", action_ids: [id(139, "abababab")], context_id: null, missing: "issue" });
+    const question = windowMessage(2, "assistant", first.reply.text, { refs: { ...emptyRefs(), ...first.reply.refs }, content: first.reply.content });
+
+    const t = run("#144", { intent: "answer" }, { op: "other", into: "#139" }, { history: [windowMessage(1, "user", "#139 합쳐줘"), question] });
+    const plan = await t.run();
+    expect(t.organizeLookup).toHaveBeenCalledWith({ numbers: [144], actionIds: [id(139, "abababab")] });
+    expect(t.asked).toEqual([["op", "into"]]);
+    expect(plan.reply.content.asks).toBe("confirm");
+    expect(plan.reply.content.proposal).toMatchObject({ kind: "merge", from: { number: 144 }, into: { number: 139 } });
+    expect(plan.reply.text).toBe("Merge #144 into #139?"); // 답이 "#144"뿐이라 문구 언어는 영어로 읽힌다
+    expect(plan.move).toBeUndefined();
+  });
+
+  it("고른 출발이 이슈의 실제 소속이 아니면 쓰지 않고 실제 소속을 후보로 다시 묻는다 (도착만 더해 '옮겼어요'가 되지 않는다) (검토 P2-5)", async () => {
+    const BETA = id(4, "c1c1c1c1");
+    const OTHER = id(5, "c1c1c1c1");
+    const lookup: OrganizeLookup = {
+      actions: [issue(139, "Shape 디자인 확정", [{ id: BETA, name: "Beta", status: "active", context_version: 4 }, member("taskforce", "Taskforce")])],
+      contexts: [
+        ...LOOKUP.contexts,
+        { id: BETA, name: "Beta", kind: "project", status: "active", context_version: 4 },
+        { id: OTHER, name: "Other", kind: "project", status: "active", context_version: 4 },
+      ],
+    };
+    const fromQuestion = windowMessage(2, "assistant", "어느 프로젝트에서 옮길까요?", {
+      content: { segments: [], citations: [], proposal: null, asks: "organize", organize: { state: "pending", op: "move", action_ids: [id(139, "abababab")], context_id: CTX.launch, missing: "from" }, used: null, window: null },
+    });
+    const history = [windowMessage(1, "user", "#139 Launch로 옮겨줘"), fromQuestion];
+
+    const wrong = await run("Other", { intent: "answer" }, { op: "other" }, { history }, lookup).run();
+    expect(wrong.move).toBeUndefined();
+    expect(wrong.reply.content.asks).toBe("organize");
+    expect(wrong.reply.content.organize).toEqual({ state: "pending", op: "move", action_ids: [id(139, "abababab")], context_id: CTX.launch, missing: "from" });
+    expect(wrong.reply.text).toBe("Move it from which project? 1) Beta 2) Taskforce");
+
+    const right = await run("Beta", { intent: "answer" }, { op: "other" }, { history }, lookup).run();
+    expect(right.move).toEqual([{ action_id: id(139, "abababab"), add: { context_id: CTX.launch, expected_version: 4 }, remove: { context_id: BETA, expected_version: 4 } }]);
+    expect(right.reply.text).toBe("Moved #139 to Launch");
   });
 
   it("op를 모르겠으면(Jev other · 확신 낮음) 무엇을 할지 묻는다. 쓰기 0", async () => {

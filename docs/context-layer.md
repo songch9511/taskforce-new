@@ -193,6 +193,7 @@ AI를 부르지 않고 run · Action · Claim · 정책 · 승인을 만들지 �
 
 - S3b의 멤버십 쓰기에 지표가 없던 빈칸을 닫았다(위 "남긴 것"): `change_context_membership_with_metric`(`20261125000000_issue_organize.sql`)이 `change_context_membership_by_user`를 **바꾸지 않고 그대로 부르고**, 실제 멤버가 바뀐 때만(`added_changed or removed_changed`) 같은 트랜잭션에서 `metric_events issue_moved {via, from_context, to_context}` 한 줄을 남긴다. 이미 그 상태인 쓰기 · conflict · not_found는 0줄이고, Undo도 이동으로 센다(앞뒤 줄로 분석에서 구별).
 - `via`: 멤버 route 둘(`POST /api/v2/contexts/{id}/members` · `…/members/move`)은 `menu`(`lib/context/member-writes.ts`의 기본값, 요청 · 응답 · 409 규칙은 그대로), 말로 이동은 `talk`(대화 `conversation_finish_turn`이 같은 래퍼를 부른다).
+- **일괄 말로 이동의 잠금 순서(검토 P2-3):** `apply_organize_moves`는 이슈마다 (사용자 × 이슈) advisory 잠금(`change_context_membership_by_user`와 같은 키)을 이슈 id 순으로 **모두 먼저** 잡은 뒤에 범위 행을 건드린다. 메뉴 이동은 이슈 잠금 → 범위 순이라 같은 순서다. 먼저 잡지 않으면 일괄 `[A,B]→P`가 A의 잠금과 P의 version 올림을 쥔 채 B를 기다리고 메뉴 `B→P`가 B의 잠금을 쥔 채 P를 기다려 교착한다(실제 Postgres 교차 시험 P7). 그래도 교착 · 잠금 실패(40P01 · 55P03)가 나면 말로 이동의 턴 쓰기는 `conflict`로 롤백된다.
 
 ## 10. 코디네이터(C2)가 이 층을 쓰는 방식 · 바뀐 것
 

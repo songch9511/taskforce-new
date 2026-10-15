@@ -164,33 +164,69 @@ describe("nowList: 바뀜 점 이벤트 읽기", () => {
 // 삭제 · 병합 확인이 삭제 경로와 같은 쓰기가 되도록 계획(userChangePlan)을 순수 함수로 뺐다 (D4c-2). 삭제 · 수정의 쓰기 모양이 그대로인지 write_action 인자로 본다.
 describe("deleteAction · editAction: 쓰기 계획(userChangePlan)을 그대로 write_action에 넘긴다", () => {
   const ACTION = "2b3c4d5e-6f7a-4b8c-9d0e-1f2a3b4c5d6e";
-  const rowOf = (status: string) => ({ title: "견적서 보내기", confirm_reasons: status === "open" ? ["담당 확인"] : [], needs_confirmation: status === "open", version: 4, status, started_at: null });
+  const rowOf = (status: string, version = 4) => ({ title: "견적서 보내기", confirm_reasons: status === "open" ? ["담당 확인"] : [], needs_confirmation: status === "open", version, status, started_at: null });
   const claimsOf = (status: string) =>
     userClaims([{ field: "scope", value: "견적서 보내기" }, { field: "owner", value: "me" }, { field: "status", value: status }], new Date("2026-10-01T00:00:00Z"), () => "00000000-0000-4000-8000-000000000001").map((c) =>
       claimToRow(c, USER, ACTION, { sourceId: null, quote: null }),
     );
 
-  /** actions 행 · claims · action_events(병합 Undo 판정)를 돌려주고 write_action 인자를 기록하는 가짜 */
-  function admin(events: { type: string; after: Record<string, unknown> | null }[] = [], status = "open") {
-    const ROW = rowOf(status);
-    const claims = claimsOf(status);
+  type FakeEvent = { type: string; after: Record<string, unknown> | null };
+
+  /**
+   * actions 행 · claims · action_events(병합 Undo 판정)를 돌려주고 write_action 인자를 기록하는 가짜.
+   * action_events 읽기는 진짜 쿼리처럼 걸러 주는 만큼만 돌려준다: in(type) · not(path, is, null) 필터, order(created_at · id), limit — 가짜가 limit을 무시하면 "20건 뒤 Undo" 같은 버그를 놓친다.
+   * events는 오래된 것부터. onWrite는 write_action을 비교하기 전에 불러 그 사이 다른 요청이 끼어든 것을 흉내 낸다 (version을 올리고 상태 · 이벤트를 바꾼다)
+   */
+  function admin(events: FakeEvent[] = [], status = "open", onWrite?: (state: { version: number; status: string; events: FakeEvent[] }, attempt: number) => void) {
+    const state = { version: 4, status, events: events.map((e) => ({ ...e })) };
     const writes: Record<string, unknown>[] = [];
+    let attempts = 0;
     const client = {
       rpc: (fn: string, params: Record<string, unknown>) => {
-        if (fn === "write_action") writes.push(params);
-        return { throwOnError: async () => ({ data: true }) };
+        if (fn !== "write_action") return { throwOnError: async () => ({ data: true }) };
+        onWrite?.(state, attempts++);
+        const ok = params.p_expected_version === state.version;
+        if (ok) writes.push(params);
+        return { throwOnError: async () => ({ data: ok }) };
       },
       from: (table: string) => {
-        const data = table === "actions" ? ROW : table === "claims" ? claims : table === "action_events" ? events : {};
+        const filters: ((e: FakeEvent) => boolean)[] = [];
+        let max = Infinity;
+        let descending = false;
+        const rows = () => {
+          if (table === "actions") return rowOf(state.status, state.version);
+          if (table === "claims") return claimsOf(state.status);
+          if (table !== "action_events") return {};
+          const indexed = state.events.map((e, i) => ({ e, i })).filter(({ e }) => filters.every((f) => f(e)));
+          return indexed.sort((a, b) => (descending ? b.i - a.i : a.i - b.i)).slice(0, max).map(({ e }) => e);
+        };
         const q: Record<string, unknown> = {};
-        for (const method of ["select", "eq", "in", "order", "limit", "returns", "single"]) q[method] = () => q;
+        for (const method of ["select", "eq", "returns", "single"]) q[method] = () => q;
+        q.in = (column: string, values: string[]) => {
+          if (column === "type") filters.push((e) => values.includes(e.type));
+          return q;
+        };
+        q.not = (column: string, operator: string, value: unknown) => {
+          const [head, key] = column.split("->>");
+          if (head !== "after" || !key || operator !== "is" || value !== null) throw new Error(`가짜가 모르는 필터: ${column} ${operator} ${String(value)}`);
+          filters.push((e) => e.after?.[key] !== undefined && e.after[key] !== null);
+          return q;
+        };
+        q.order = (column: string, options?: { ascending?: boolean }) => {
+          if (column === "created_at") descending = options?.ascending === false;
+          return q;
+        };
+        q.limit = (n: number) => {
+          max = n;
+          return q;
+        };
         q.maybeSingle = () => q;
-        q.throwOnError = async () => ({ data });
-        q.then = (resolve: (value: unknown) => unknown) => resolve({ data });
+        q.throwOnError = async () => ({ data: rows() });
+        q.then = (resolve: (value: unknown) => unknown) => resolve({ data: rows() });
         return q;
       },
     } as unknown as SupabaseClient;
-    return { client, writes };
+    return { client, writes, state };
   }
 
   it("삭제: 읽은 version이 조건, status dropped 사용자 Claim 하나, user_deleted 이벤트, 확인 이유 비움 — 카드 확인(cardWrites)이 만드는 쓰기와 같은 모양", async () => {
@@ -206,9 +242,55 @@ describe("deleteAction · editAction: 쓰기 계획(userChangePlan)을 그대로
     const INTO = "9f8e7d6c-5b4a-4a39-8281-706f5e4d3c2b";
     const merged = { type: "user_merged", after: { status: "dropped", into: INTO } };
     const titleEdit = { type: "user_edited", after: { title: "고침" } };
-    const { client, writes } = admin([titleEdit, merged], "dropped");
+    const { client, writes } = admin([merged, titleEdit], "dropped");
     await editAction(client, USER, ACTION, { status: "open" });
     expect(writes[0].p_events).toEqual([expect.objectContaining({ type: "user_edited", before: { status: "dropped", into: INTO }, after: { status: "open" } })]);
+  });
+
+  it("병합 뒤 제목 · 기한 수정이 스무 건을 넘어도 Undo는 병합 이벤트를 찾는다: DB에서 상태 이벤트만 걸러 최신 한 건을 읽는다 (검토 P3-7)", async () => {
+    const INTO = "9f8e7d6c-5b4a-4a39-8281-706f5e4d3c2b";
+    const edits = Array.from({ length: 30 }, (_, i) => ({ type: "user_edited", after: { title: `고침 ${i}` } }));
+    const { client, writes } = admin([{ type: "user_merged", after: { status: "dropped", into: INTO } }, ...edits], "dropped");
+    await editAction(client, USER, ACTION, { status: "open" });
+    expect(writes[0].p_events).toEqual([expect.objectContaining({ type: "user_edited", before: { status: "dropped", into: INTO }, after: { status: "open" } })]);
+  });
+
+  it("Undo 판정은 상태 이벤트 하나만 읽는다 (limit 1, after.status가 있는 것)", async () => {
+    const seen: unknown[][] = [];
+    const { client } = admin([{ type: "user_merged", after: { status: "dropped", into: "x" } }], "dropped");
+    const from = client.from.bind(client);
+    client.from = ((table: string) => {
+      const q = from(table) as unknown as Record<string, (...args: unknown[]) => unknown>;
+      if (table === "action_events") {
+        for (const method of ["not", "limit"]) {
+          const original = q[method];
+          q[method] = (...args: unknown[]) => {
+            seen.push([method, ...args]);
+            return original(...args);
+          };
+        }
+      }
+      return q;
+    }) as unknown as typeof client.from;
+    await editAction(client, USER, ACTION, { status: "open" });
+    expect(seen).toEqual([["not", "after->>status", "is", null], ["limit", 1]]);
+  });
+
+  it("Undo가 읽는 병합 이벤트는 행을 읽은 뒤 같은 CAS 시도 안에서 읽는다: 그 사이 다시 병합되어 version이 올랐으면 새 시도가 최신 남는 쪽을 싣는다 (검토 P2-4)", async () => {
+    const B = "bbbbbbbb-5b4a-4a39-8281-706f5e4d3c2b";
+    const C = "cccccccc-5b4a-4a39-8281-706f5e4d3c2b";
+    // 처음 행을 읽을 때는 B로 병합된 상태(version 4). 쓰기 직전에 다른 요청이 Undo하고 C로 다시 병합했다 (version 6)
+    const { client, writes, state } = admin([{ type: "user_merged", after: { status: "dropped", into: B } }], "dropped", (current, attempt) => {
+      if (attempt !== 0) return;
+      current.events.push({ type: "user_edited", after: { status: "open" } }, { type: "user_merged", after: { status: "dropped", into: C } });
+      current.version = 6;
+      current.status = "dropped";
+    });
+    await editAction(client, USER, ACTION, { status: "open" });
+    expect(state.version).toBe(6);
+    expect(writes).toHaveLength(1);
+    expect(writes[0]).toMatchObject({ p_expected_version: 6 });
+    expect(writes[0].p_events).toEqual([expect.objectContaining({ type: "user_edited", before: { status: "dropped", into: C }, after: { status: "open" } })]);
   });
 
   it("병합 Undo가 아니면 into를 싣지 않고, 상태가 아닌 수정(제목)은 이벤트를 읽지 않는다 (v1 응답 · 이벤트 모양 그대로)", async () => {

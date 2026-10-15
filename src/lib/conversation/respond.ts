@@ -592,12 +592,12 @@ export async function respondToMessage(input: RespondInput, deps: RespondDeps): 
       });
       const issues = organizeIssues({ text: input.message.text, chipActionIds, lookup, pending });
 
-      // Jev 한 번(질문 둘까지): 무엇을(op) — 앞 pending이 op를 알고 이번 메시지가 자기 이슈를 말하지 않았으면 묻지 않는다 / 남는 쪽(into) — 이슈가 정확히 둘일 때만
-      const needsOp = pending === null || pending.op === null || (issues.ownIds.length > 0 && pending.missing !== "into");
-      const needsInto = issues.actions.length === 2 && pending?.missing !== "into" && (needsOp || pending?.op === "merge");
+      // Jev 한 번(질문 둘까지): 무엇을(op) — 늘 묻는다. 앞 질문이 있어도 이번 메시지가 질문에 대한 단순한 답인지 정정 · 새 지시인지는 op가 가른다
+      // (프로젝트 이름만 답했으면 op가 확실하지 않아 앞 계획을 채우고, "아니 Launch에서 빼줘"는 앞 op와 다른 op로 읽혀 새로 푼다) / 남는 쪽(into) — 이슈가 정확히 둘일 때만
+      const freshInstruction = pending === null || pending.op === null || (issues.ownIds.length > 0 && pending.missing !== "into");
+      const needsInto = issues.actions.length === 2 && pending?.missing !== "into" && (freshInstruction || pending?.op === "merge");
       const labels = issues.actions.map((a) => `#${a.number}`);
-      const questions: Record<string, JevQuestion> = {};
-      if (needsOp) questions.op = ORGANIZE_OP_QUESTION;
+      const questions: Record<string, JevQuestion> = { op: ORGANIZE_OP_QUESTION };
       if (needsInto) questions.into = organizeIntoQuestion(labels);
       const judged: Parameters<typeof resolveOrganize>[0]["judged"] = { op: null, into: null };
       if (issues.unknown.length === 0 && Object.keys(questions).length > 0) {
@@ -633,7 +633,7 @@ export async function respondToMessage(input: RespondInput, deps: RespondDeps): 
           break;
         }
         case "ask": {
-          if (pending) {
+          if (pending && !resolution.again) {
             // 한 번 물었는데 아직 모자란다: 다시 묻지 않고 무엇을 원하는지 묻는다 (한 라운드)
             push(TEXT.clarify[lang], "T5");
             content.asks = "clarify";

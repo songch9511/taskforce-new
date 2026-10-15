@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { userClaims } from "@/lib/actions/user-claims";
-import { buildOrganizeState, ORGANIZE_OP_CRITERIA, ORGANIZE_PROMPT_VERSION, organizeIntoQuestion } from "@/lib/ai/prompts/organize";
+import { buildOrganizeState, ORGANIZE_OP_CRITERIA, ORGANIZE_OP_QUESTION, ORGANIZE_PROMPT_VERSION, organizeIntoQuestion } from "@/lib/ai/prompts/organize";
 
 import {
   cardAskText,
@@ -345,6 +345,108 @@ describe("한 번 더 묻기 (pending, 한 라운드)", () => {
   });
 });
 
+// 독립 검토(Astra) 반영: 질문에 대한 단순한 답과 정정 · 새 지시를 구분하고, 병합 대상 질문의 답은 앞 대상과 합치고, 답한 출발을 실제 소속으로 검증한다
+describe("질문에 대한 답 · 정정 · 새 지시 (검토 P1-2)", () => {
+  const asked = pending({ op: "move", action_ids: [A151.id], missing: "project" });
+
+  it("프로젝트 이름만 답하면(Jev op가 other이거나 확실하지 않거나 같은 op) 앞 계획을 채운다", () => {
+    for (const op of [judged("other"), judged("move", 0.6), judged("move"), judged("remove", 0.7), { op: null, into: null }]) {
+      const result = resolveOrganize(input("Launch", { pending: pending({ op: "move", action_ids: [A139.id], missing: "project" }), judged: op }));
+      expect(result, JSON.stringify(op)).toMatchObject({ kind: "move", op: "move", to: { id: CTX.launch } });
+    }
+  });
+
+  it("'아니 Launch에서 빼줘'는 앞 op(옮기기)와 다른 op(빼기)로 읽히면 새로 푼다: 앞 이슈에서 Launch를 뺀다 (Launch로 옮기지 않는다)", () => {
+    const result = resolveOrganize(input("아니 Launch에서 빼줘", { pending: asked, judged: judged("remove") }));
+    expect(result).toMatchObject({ kind: "move", op: "remove", to: null });
+    if (result.kind !== "move") throw new Error("move 아님");
+    expect(result.items).toHaveLength(1);
+    expect(result.items[0]).toMatchObject({ add: null, remove: { id: CTX.launch } });
+    expect(result.items[0].action.id).toBe(A151.id);
+  });
+
+  it("정정이 다른 op로 바뀌면 앞 계획의 프로젝트도 이어받지 않는다 (프로젝트를 말하지 않은 '그냥 지워줘'는 지우기 카드)", () => {
+    const result = resolveOrganize(input("아니 그냥 지워줘", { pending: pending({ op: "move", action_ids: [A140.id], context_id: CTX.launch, missing: "from" }), judged: judged("delete") }));
+    expect(result).toMatchObject({ kind: "delete" });
+    if (result.kind === "delete") expect(result.targets.map((t) => t.number)).toEqual([140]);
+  });
+
+  it("남는 쪽을 물은 뒤의 '아니 #141 지워줘'는 새 지시다: 앞 둘과 합쳐 셋을 지우지 않고 #141만 지우는 카드", () => {
+    const result = resolveOrganize(input("아니 #141 지워줘", { pending: pending({ op: "merge", action_ids: [A144.id, A139.id], missing: "into" }), judged: judged("delete") }));
+    expect(result).toMatchObject({ kind: "delete" });
+    if (result.kind === "delete") expect(result.targets.map((t) => t.number)).toEqual([141]);
+  });
+});
+
+describe("병합 대상 질문의 답은 앞 대상과 합친다 (검토 P2-6, 계약 Q10)", () => {
+  const asked = pending({ op: "merge", action_ids: [A139.id], missing: "issue" });
+
+  it("'#139 합쳐줘' → 질문 → '#144' = [139, 144]: Jev into가 정하는 쪽이 남는 카드", () => {
+    const result = resolveOrganize(input("#144", { pending: asked, judged: judged("other", 0.9, { number: 139, confidence: 0.9 }) }));
+    expect(result).toMatchObject({ kind: "merge" });
+    if (result.kind === "merge") expect([result.from.number, result.into.number]).toEqual([144, 139]);
+  });
+
+  it("Jev가 정하지 못하면 이번 글에서 말한 쪽이 뒤에 말한 것이라 남는다 (앞 질문에서 넘어온 이슈는 이번 글보다 앞)", () => {
+    const result = resolveOrganize(input("#144", { pending: asked, judged: judged("merge") }));
+    expect(result).toMatchObject({ kind: "merge" });
+    if (result.kind === "merge") expect([result.from.number, result.into.number]).toEqual([139, 144]);
+  });
+
+  it("앞 이슈는 칩이어도 같다. 같은 이슈를 다시 답하면 둘이 아니라서 다시 이슈를 묻는다", () => {
+    expect(resolveOrganize(input("이거랑", { pending: asked, chipActionIds: [A144.id], judged: judged("other", 0.9, { number: 139, confidence: 0.9 }) }))).toMatchObject({ kind: "merge" });
+    expect(resolveOrganize(input("#139", { pending: asked, judged: judged("other") }))).toMatchObject({ kind: "ask", pending: { op: "merge", missing: "issue" } });
+  });
+
+  it("이번 메시지가 둘을 직접 말했으면 새 지시라서 앞 이슈를 합치지 않는다. 다른 op의 정정도 마찬가지", () => {
+    const two = resolveOrganize(input("#140 #141 합쳐줘", { pending: asked, judged: judged("merge") }));
+    expect(two).toMatchObject({ kind: "merge" });
+    if (two.kind === "merge") expect([two.from.number, two.into.number]).toEqual([140, 141]);
+    const fix = resolveOrganize(input("아니 #141 지워줘", { pending: asked, judged: judged("delete") }));
+    expect(fix).toMatchObject({ kind: "delete" });
+    if (fix.kind === "delete") expect(fix.targets.map((t) => t.number)).toEqual([141]);
+  });
+});
+
+describe("답한 출발 프로젝트 검증 (검토 P2-5)", () => {
+  // A151은 Launch와 Taskforce에 있고, 도착은 Taskforce 0.2.0 — 출발이 둘이라 어느 쪽인지 물었다
+  const asked = pending({ op: "move", action_ids: [A151.id], context_id: CTX.taskforce2, missing: "from" });
+
+  it("실제 소속을 답하면 그 소속만 빼고 도착을 더한다", () => {
+    const result = resolveOrganize(input("Launch", { pending: asked, judged: { op: null, into: null } }));
+    expect(result).toMatchObject({ kind: "move" });
+    if (result.kind === "move") expect(result.items[0]).toMatchObject({ remove: { id: CTX.launch }, add: { id: CTX.taskforce2 } });
+  });
+
+  it("소속이 아닌 프로젝트를 답하면 쓰지 않고(도착만 더하지 않고) 실제 소속을 후보로 같은 것을 다시 묻는다", () => {
+    const result = resolveOrganize(input("출시 준비", { pending: asked, judged: { op: null, into: null } }));
+    expect(result).toEqual({
+      kind: "ask",
+      pending: { state: "pending", op: "move", action_ids: [A151.id], context_id: CTX.taskforce2, missing: "from" },
+      candidates: [
+        { id: CTX.launch, name: "Launch" },
+        { id: CTX.taskforce, name: "Taskforce" },
+      ],
+      again: true,
+    });
+  });
+
+  it("실제 다른 소속이 하나도 없으면(그 사이 바뀜) 다시 묻지 않고 그 프로젝트에 없다고 답한다", () => {
+    const result = resolveOrganize(input("출시 준비", { pending: pending({ op: "move", action_ids: [A140.id], context_id: CTX.launch, missing: "from" }), judged: { op: null, into: null } }));
+    expect(result).toMatchObject({ kind: "reply", reason: "not_member", numbers: [140], names: ["출시 준비"] });
+  });
+
+  it("여러 이슈 중 하나라도 소속이 아니면 아무것도 쓰지 않는다 (맞는 이슈만 옮기지 않는다)", () => {
+    const result = resolveOrganize(input("Taskforce", { pending: pending({ op: "move", action_ids: [A151.id, A139.id, A140.id], context_id: CTX.launch, missing: "from" }), judged: { op: null, into: null } }));
+    expect(result).toMatchObject({ kind: "ask", again: true, pending: { missing: "from", context_id: CTX.launch } });
+  });
+
+  it("이미 도착에 있는 이슈는 답한 출발이 소속이 아니어도 막지 않는다 (옮길 것이 없으면 이미 있음)", () => {
+    const result = resolveOrganize(input("출시 준비", { pending: pending({ op: "move", action_ids: [A151.id], context_id: CTX.launch, missing: "from" }), judged: { op: null, into: null } }));
+    expect(result).toMatchObject({ kind: "reply", reason: "already_there", numbers: [151] });
+  });
+});
+
 // ─── 삭제 · 병합 카드의 쓰기 계획 (D4c-2): 확인(버튼 · 글)이 삭제 경로와 같은 쓰기를 만든다 ───
 describe("삭제 · 병합 카드 쓰기 계획", () => {
   const NOW = new Date("2026-10-15T01:00:00.000Z");
@@ -430,11 +532,22 @@ describe("삭제 · 병합 카드 쓰기 계획", () => {
   });
 });
 
-// ─── Jev organize-v2 질문 (eval 반영) ───
-// org-merge-particle-ko("#139에 #144 합쳐줘")에서 남는 쪽을 #144로 골랐다: v1은 두 선택지 설명이 똑같아 Jev가 고를 근거가 없었다.
-describe("organizeIntoQuestion (organize-v2)", () => {
+// ─── Jev organize-v2 · v3 질문 (eval · 검토 반영) ───
+// org-merge-particle-ko("#139에 #144 합쳐줘")에서 남는 쪽을 #144로 골랐다: v1은 두 선택지 설명이 똑같아 Jev가 고를 근거가 없었다 (v2).
+// v3: 질문에 대한 단순한 답("Launch")을 Jev가 새 지시(옮기기)로 읽어 앞 계획(빼기)을 뒤집지 않게, 이름만 말한 글은 other라고 알린다.
+describe("organizeIntoQuestion (organize-v2) · ORGANIZE_OP_QUESTION (organize-v3)", () => {
+  it("op 질문은 지시 없이 프로젝트나 이슈 이름만 말한 글(질문에 대한 답)은 other라고 알린다 — 선택지 키는 그대로", () => {
+    const question = ORGANIZE_OP_QUESTION;
+    expect(question.type).toBe("choice");
+    expect(question.instructions).toMatch(/only names a project or an issue/);
+    expect(question.instructions).toMatch(/answer to a question Taskforce (just )?asked/);
+    expect(question.instructions).toMatch(/the answer is other/);
+    expect(question.instructions).toMatch(/quoted|forwarded/i);
+    if (question.type === "choice") expect(Object.keys(question.criteria)).toEqual(["move", "remove", "delete", "merge", "other"]);
+  });
+
   it("버전이 올랐다. 선택지는 이슈 표시(#번호)이고 설명은 선택지마다 그 이슈가 남는 쪽임을 말한다 (서로 다르다)", () => {
-    expect(ORGANIZE_PROMPT_VERSION).toBe("organize-v2");
+    expect(ORGANIZE_PROMPT_VERSION).toBe("organize-v3");
     const question = organizeIntoQuestion(["#144", "#139"]);
     expect(question.type).toBe("choice");
     if (question.type !== "choice") throw new Error("choice 아님");
@@ -453,7 +566,7 @@ describe("organizeIntoQuestion (organize-v2)", () => {
     expect(text).toMatch(/quoted|forwarded/i);
   });
 
-  it("Jev state는 메시지와 이슈 표시뿐 (제목 · 프로젝트 이름 없음), op 선택지는 v1 그대로", () => {
+  it("Jev state는 메시지와 이슈 표시뿐 (제목 · 프로젝트 이름 없음), op 선택지는 그대로", () => {
     expect(buildOrganizeState({ message: "#139에 #144 합쳐줘", issues: ["#139", "#144"] })).toEqual({ message: "#139에 #144 합쳐줘", issues: ["#139", "#144"] });
     expect(Object.keys(ORGANIZE_OP_CRITERIA)).toEqual(["move", "remove", "delete", "merge", "other"]);
   });

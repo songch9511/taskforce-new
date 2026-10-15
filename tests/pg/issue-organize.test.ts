@@ -143,6 +143,41 @@ describe("이슈 정리 경합 (실제 Postgres, 연결 둘)", () => {
     expect(await f.q(`select 1 from public.conversation_messages where reply_to = $1`, [second.message])).toEqual([]);
   });
 
+  it("P7 일괄 말로 이동 [A,B]→P ↔ 메뉴 이동 B→P 교차: 일괄은 이슈 잠금을 id 순으로 모두 먼저 잡은 뒤에 범위 P를 건드려서 교착이 없다 (메뉴가 기다리지 않고 끝나고, 일괄은 version이 올라 conflict로 쓰기 0)", async () => {
+    const w = await f.world();
+    const other = await f.issue(w.user, "두 번째 이슈");
+    await f.member(w.user, w.a, other.id);
+    const [early, late] = [w.issue.id, other.id].sort();
+    const seen = await f.version(w.b);
+    const moves = [early, late].map((action_id) => ({ action_id, add: { context_id: w.b, expected_version: seen }, remove: null }));
+
+    // 교착 검출을 늦춰, 서로 기다리는 쪽이 있다면 시험이 그것을 기다림으로 보게 한다 (검출되면 어느 쪽이 죽든 시험이 판단할 수 없다)
+    await a.query("set deadlock_timeout = '4s'");
+    await b.query("set deadlock_timeout = '4s'");
+    let bulk: Promise<{ status: string }> | undefined;
+    let menu: Promise<unknown> | undefined;
+    try {
+      // 메뉴 쪽(a)이 늦은 이슈의 (사용자 × 이슈) 잠금을 이미 쥐고 있다 = 메뉴 이동이 막 시작한 상태
+      await a.query("begin");
+      await a.query(`select pg_advisory_xact_lock(hashtextextended(concat_ws(':', 'context_member_user', $1::uuid, $2::uuid), 0))`, [w.user, late]);
+      bulk = finish(b, w.user, w.message, f.moveTurn(moves));
+      await waitForLockWait(bPid); // 일괄은 늦은 이슈의 잠금을 기다린다 (그 전에 범위 P를 쥐고 있으면 안 된다)
+      menu = menuMove(a, w.user, late, w.b, seen);
+      const settled = await Promise.race([menu, new Promise((resolve) => setTimeout(() => resolve("기다리는 중(교착)"), 1500))]);
+      expect(settled).toMatchObject({ status: "ok", added_changed: true });
+      await a.query("commit");
+      expect((await bulk).status).toBe("conflict");
+      expect((await f.current(early)).map((m) => m.context_id)).toEqual([w.a]); // 일괄은 쓰기 0: 앞 이슈도 옮겨지지 않았다
+      expect((await f.current(late)).map((m) => m.context_id).sort()).toEqual([w.a, w.b].sort());
+      expect(await f.moved(w.user)).toEqual([{ action_id: late, props: { via: "menu", from_context: null, to_context: w.b } }]);
+    } finally {
+      await a.query("rollback").catch(() => undefined);
+      await Promise.allSettled([bulk, menu]);
+      await a.query("reset deadlock_timeout");
+      await b.query("reset deadlock_timeout");
+    }
+  });
+
   // ───────────────────────── 카드 확인의 경합 (P1–P6) ─────────────────────────
   const confirmSql = (client: pg.Client, userId: string, conversationId: string, proposalId: string, plan: Record<string, unknown>) =>
     client

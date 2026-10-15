@@ -129,8 +129,8 @@ export type OrganizeResolution =
   | { kind: "delete"; targets: OrganizeAction[] }
   /** 확인 카드 (제안 merge): from이 사라지고 into가 남는다 */
   | { kind: "merge"; from: OrganizeAction; into: OrganizeAction }
-  /** 모자란 것을 한 번 묻는다 (candidates: 이름이 겹친 후보 ≤ 3) */
-  | { kind: "ask"; pending: PendingOrganize; candidates?: { id: string; name: string }[] }
+  /** 모자란 것을 한 번 묻는다 (candidates: 이름이 겹친 후보 ≤ 3). again: 물은 것에 틀린 답을 해서 같은 것을 다시 묻는다 (한 라운드의 clarify로 바꾸지 않는다) */
+  | { kind: "ask"; pending: PendingOrganize; candidates?: { id: string; name: string }[]; again?: true }
   /** 쓰기 없는 사실 답 (op: 이미 알던 무엇을 — 번호를 못 찾는 답처럼 그 전에 끝나면 null) */
   | { kind: "reply"; reason: ReplyReason; numbers?: number[]; names?: string[]; op?: OrganizeOp | null };
 
@@ -158,20 +158,32 @@ export const ORGANIZE_MAX_ISSUES = 3;
 const lower = (value: string) => value.toLowerCase();
 const unique = (values: string[]) => [...new Set(values.map(lower))];
 
+/** Jev op가 확실하면(≥ 0.8, other 아님) 그 op, 아니면 null */
+function decidedOp(judged: ResolveInput["judged"]["op"]): OrganizeOp | null {
+  return judged && judged.confidence >= JEV_ACT && judged.op !== "other" ? judged.op : null;
+}
+
 /**
- * 이슈 지칭: 글의 #번호 ∪ added 칩 (+ 이번 메시지가 자기 이슈를 말하지 않았을 때만, 또는 남는 쪽을 물은 답일 때 앞 pending의 이슈).
- * 제목은 보지 않는다. unknown: lookup에 없는 번호 (없는 번호 · 남의 번호). ownIds: 이번 메시지가 직접 가리킨 이슈
+ * 이슈 지칭: 글의 #번호 ∪ added 칩 (+ 앞 pending의 이슈: 이번 메시지가 자기 이슈를 말하지 않았을 때, 남는 쪽을 물은 답일 때, 이슈를 물은 답일 때).
+ * 제목은 보지 않는다. unknown: lookup에 없는 번호 (없는 번호 · 남의 번호). ownIds: 이번 메시지가 직접 가리킨 이슈.
+ * judgedOp: Jev가 이번 메시지에서 확실하게 읽은 op. 앞 pending의 op와 다르면 이번 메시지는 질문에 대한 답이 아니라 정정 · 새 지시라서,
+ * 자기 이슈를 말했다면 앞 이슈와 합치지 않는다 (이슈를 말하지 않았으면 이어받는다: "아니 Launch에서 빼줘"는 앞 이슈의 일이다)
  */
-export function organizeIssues(input: Pick<ResolveInput, "text" | "chipActionIds" | "lookup" | "pending">) {
+export function organizeIssues(input: Pick<ResolveInput, "text" | "chipActionIds" | "lookup" | "pending"> & { judgedOp?: OrganizeOp | null }) {
   const { lookup, pending } = input;
   const actionsByNumber = new Map(lookup.actions.map((a) => [a.number, a]));
   const actionsById = new Map(lookup.actions.map((a) => [lower(a.id), a]));
   const mentions = findIssueMentions(input.text);
   const unknown = mentions.filter((m) => !actionsByNumber.has(m.number)).map((m) => m.number);
   const ownIds = unique([...mentions.filter((m) => actionsByNumber.has(m.number)).map((m) => actionsByNumber.get(m.number)!.id), ...input.chipActionIds.filter((id) => actionsById.has(lower(id)))]);
-  const keepPending = pending !== null && (ownIds.length === 0 || pending.missing === "into");
-  const ids = unique([...ownIds, ...(keepPending ? pending.action_ids.filter((id) => actionsById.has(lower(id))) : [])]);
-  return { mentions, unknown, ownIds, ids, actions: ids.map((id) => actionsById.get(id)!) };
+  const pendingIds = (pending?.action_ids ?? []).filter((id) => actionsById.has(lower(id)));
+  const redirected = pending !== null && pending.op !== null && input.judgedOp != null && input.judgedOp !== pending.op;
+  const answersPending = pending !== null && !redirected;
+  // 병합에서 이슈를 물은 답: 앞 이슈에 이번 이슈를 더한다 (이번 메시지가 이미 둘을 말했으면 그것이 새 지시)
+  const joinsIssue = answersPending && pending.missing === "issue" && !(pending.op === "merge" && ownIds.length >= 2);
+  const joinsInto = answersPending && pending.missing === "into";
+  const ids = joinsIssue ? unique([...pendingIds, ...ownIds]) : joinsInto || (pending !== null && ownIds.length === 0) ? unique([...ownIds, ...pendingIds]) : ownIds;
+  return { mentions, unknown, ownIds, ids, pendingIds: new Set(pendingIds.map(lower)), actions: ids.map((id) => actionsById.get(id)!) };
 }
 
 export function resolveOrganize(input: ResolveInput): OrganizeResolution {
@@ -182,14 +194,14 @@ export function resolveOrganize(input: ResolveInput): OrganizeResolution {
     return { id: current.id, name: current.name, status: current.status, context_version: current.context_version };
   };
 
-  const { mentions, unknown, ownIds, ids, actions } = organizeIssues(input);
+  // ─ 무엇을: Jev op ≥ 0.8, 아니면 앞 pending의 op (프로젝트 이름만 답한 것처럼 op를 말하지 않은 답은 앞 계획을 채운다)
+  const decided = decidedOp(input.judged.op);
+  const op: OrganizeOp | null = decided ?? pending?.op ?? null;
+
+  const { mentions, unknown, ownIds, ids, pendingIds, actions } = organizeIssues({ ...input, judgedOp: decided });
   if (unknown.length > 0) return { kind: "reply", reason: "issue_not_found", numbers: unknown };
   if (ids.length > ORGANIZE_MAX_ISSUES) return { kind: "reply", reason: "too_many" };
   const numbersOf = (list: OrganizeAction[]) => list.map((a) => a.number);
-
-  // ─ 무엇을: Jev op ≥ 0.8, 아니면 앞 pending의 op
-  const judgedOp = input.judged.op;
-  const op: OrganizeOp | null = judgedOp && judgedOp.confidence >= JEV_ACT && judgedOp.op !== "other" ? judgedOp.op : (pending?.op ?? null);
 
   // ─ 프로젝트 후보: added context 칩 ∪ 글에 이름이 그대로 있는 범위
   const candidateIds = unique([...input.chipContextIds.filter((id) => contextsById.has(lower(id))), ...matchProjectNames(input.text, lookup.contexts).filter((id) => contextsById.has(lower(id)))]);
@@ -226,9 +238,11 @@ export function resolveOrganize(input: ResolveInput): OrganizeResolution {
     const judgedInto = input.judged.into;
     if (!into && judgedInto && judgedInto.number !== null && judgedInto.confidence >= JEV_ACT) into = actions.find((a) => a.number === judgedInto.number) ?? null;
     if (!into) {
-      const at = (a: OrganizeAction) => mentions.find((m) => m.number === a.number)?.index;
+      // 이번 글에서 나온 자리, 앞 질문에서 넘어온 이슈는 이번 글보다 앞선 것 (-1)
+      const at = (a: OrganizeAction) => mentions.find((m) => m.number === a.number)?.index ?? (pendingIds.has(lower(a.id)) ? -1 : undefined);
       const [first, second] = actions;
-      if (at(first) !== undefined && at(second) !== undefined) into = at(first)! > at(second)! ? first : second;
+      const [x, y] = [at(first), at(second)];
+      if (x !== undefined && y !== undefined && x !== y) into = x > y ? first : second;
     }
     if (!into) return ask("into");
     return { kind: "merge", from: actions.find((a) => a !== into)!, into };
@@ -265,8 +279,22 @@ export function resolveOrganize(input: ResolveInput): OrganizeResolution {
       const memberships = action.contexts.map(info);
       const inTo = memberships.some((c) => lower(c.id) === lower(to.id));
       let remove: ContextInfo | null;
-      if (explicitFrom) remove = lower(explicitFrom.id) !== lower(to.id) && memberships.some((c) => lower(c.id) === lower(explicitFrom!.id)) ? explicitFrom : null;
-      else {
+      if (explicitFrom) {
+        const fromMember = memberships.some((c) => lower(c.id) === lower(explicitFrom!.id));
+        if (!fromMember && !inTo) {
+          // 답한 출발이 이 이슈의 소속이 아니다: 도착만 더하지 않는다 (기존 소속이 남은 채 "옮겼어요"가 되면 안 된다). 실제 소속을 후보로 다시 묻는다
+          const real = new Map<string, ContextInfo>();
+          for (const a of actions) for (const c of a.contexts.map(info)) if (lower(c.id) !== lower(to.id) && !real.has(lower(c.id))) real.set(lower(c.id), c);
+          if (real.size === 0) return { kind: "reply", reason: "not_member", numbers: numbersOf(actions), names: [explicitFrom.name], op };
+          return {
+            kind: "ask",
+            pending: { state: "pending", op, action_ids: actions.map((a) => a.id), context_id: to.id, missing: "from" },
+            candidates: [...real.values()].slice(0, REFERENT_CANDIDATE_LIMIT).map((c) => ({ id: c.id, name: c.name })),
+            again: true,
+          };
+        }
+        remove = fromMember && lower(explicitFrom.id) !== lower(to.id) ? explicitFrom : null;
+      } else {
         const others = memberships.filter((c) => lower(c.id) !== lower(to.id));
         if (others.length > 1) return ask("from", { context_id: to.id });
         remove = others[0] ?? null;
