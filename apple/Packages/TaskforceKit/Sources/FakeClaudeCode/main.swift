@@ -75,7 +75,7 @@ enum Fake {
         emit(["type": "user", "session_id": sessionID, "message": ["role": "user", "content": [["type": "text", "text": "[Request interrupted by user for tool use]"]]]])
         emit(["type": "result", "subtype": "error_during_execution", "is_error": true, "stop_reason": "tool_use", "terminal_reason": "aborted_tools", "session_id": sessionID])
         report["interrupted"] = true
-        saveReport()
+        markEnded()
         mcp?.stop()
         exit(0)
     }
@@ -313,6 +313,63 @@ enum Fake {
         }
     }
 
+    /// 세션을 떠난(setsid) 자손 하나: Claude Code 2.1.241은 Bash 도구 명령을 `detached`로 띄운다 (9장 4). SIGINT를 무시하고 600초 잔다.
+    /// 환경은 가짜의 것을 그대로 물려받는다 (spawn marker 포함). SIGINT를 무시하기 시작한 뒤에 돌아온다 (그 전에 끝내기가 오면 시험이 흔들린다: 준비 파일을 2초까지 기다린다)
+    static func detachChild() {
+        var pid: pid_t = 0
+        let ready = (reportURL?.path ?? NSTemporaryDirectory() + "fake-claude") + ".detached-ready"
+        let script = "use POSIX; POSIX::setsid(); $SIG{INT} = 'IGNORE'; open(my $f, '>', $ARGV[0]); close($f); sleep 600;"
+        let argv: [UnsafeMutablePointer<CChar>?] = [strdup("/usr/bin/perl"), strdup("-e"), strdup(script), strdup(ready), nil]
+        defer { for pointer in argv { free(pointer) } }
+        var actions: posix_spawn_file_actions_t?
+        posix_spawn_file_actions_init(&actions)
+        defer { posix_spawn_file_actions_destroy(&actions) }
+        for fd in [Int32(0), 1, 2] { posix_spawn_file_actions_addopen(&actions, fd, "/dev/null", fd == 0 ? O_RDONLY : O_WRONLY, 0) }
+        var attributes: posix_spawnattr_t?
+        posix_spawnattr_init(&attributes)
+        defer { posix_spawnattr_destroy(&attributes) }
+        posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_CLOEXEC_DEFAULT))
+        if posix_spawn(&pid, "/usr/bin/perl", &actions, &attributes, argv, environ) == 0 {
+            report["detached_child_pid"] = Int(pid)
+            saveReport()
+            for _ in 0..<200 where !FileManager.default.fileExists(atPath: ready) { Thread.sleep(forTimeInterval: 0.01) }
+        }
+    }
+
+    /// 짧게 사는 중간 셸 밑의 setsid 손자 (셸은 0.3초 뒤 끝난다, 9장 4 정정): 감독이 그 셸을 살아 있을 때 보아 둬야 손자를 찾는다.
+    /// 손자는 SIGINT를 무시하고, 준비되면 자기 pid를 준비 파일에 적는다 (2초까지 기다려 보고에 넣는다)
+    static func detachGrandchild() {
+        var pid: pid_t = 0
+        let ready = (reportURL?.path ?? NSTemporaryDirectory() + "fake-claude") + ".grandchild-ready"
+        let perl = "use POSIX; POSIX::setsid(); $SIG{INT} = 'IGNORE'; open(my $f, '>', $ARGV[0]); print $f $$; close($f); sleep 600;"
+        let shell = "/usr/bin/perl -e \"$2\" \"$1\" & sleep 0.3"
+        let argv: [UnsafeMutablePointer<CChar>?] = [strdup("/bin/sh"), strdup("-c"), strdup(shell), strdup("sh"), strdup(ready), strdup(perl), nil]
+        defer { for pointer in argv { free(pointer) } }
+        var actions: posix_spawn_file_actions_t?
+        posix_spawn_file_actions_init(&actions)
+        defer { posix_spawn_file_actions_destroy(&actions) }
+        for fd in [Int32(0), 1, 2] { posix_spawn_file_actions_addopen(&actions, fd, "/dev/null", fd == 0 ? O_RDONLY : O_WRONLY, 0) }
+        var attributes: posix_spawnattr_t?
+        posix_spawnattr_init(&attributes)
+        defer { posix_spawnattr_destroy(&attributes) }
+        posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_CLOEXEC_DEFAULT))
+        guard posix_spawn(&pid, "/bin/sh", &actions, &attributes, argv, environ) == 0 else { return }
+        for _ in 0..<200 {
+            if let text = try? String(contentsOfFile: ready, encoding: .utf8), let grandchild = Int(text), grandchild > 1 {
+                report["detached_grandchild_pid"] = grandchild
+                saveReport()
+                return
+            }
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+    }
+
+    /// 끝나는 시각 (닫기와 다음 턴이 겹치지 않는지 보는 시험, 9장 10)
+    static func markEnded() {
+        report["ended_at"] = Date().timeIntervalSince1970
+        saveReport()
+    }
+
     static func readStdin() -> Data {
         var data = Data()
         var buffer = [UInt8](repeating: 0, count: 65536)
@@ -360,9 +417,12 @@ enum Fake {
         report = [
             "args_ok": true, "fds": openFDs.map(Int.init), "env_keys": environmentKeys.sorted(), "stdin_bytes": stdin.count, "resume": flags.resume != nil,
             "session_id": sessionID, "cwd": cwd, "tools": flags.tools, "pid": Int(getpid()), "pgid": Int(getpgrp()),
-            "argv0": CommandLine.arguments.first ?? "", "exec_path": executablePath(),
+            "argv0": CommandLine.arguments.first ?? "", "exec_path": executablePath(), "started_at": Date().timeIntervalSince1970,
         ]
         saveReport()
+        // SIGINT를 듣지 않는 CLI (일반 Stop도 SIGKILL로 이어지는지, 9장 6)
+        if run["ignore_sigint"] as? Bool == true { signal(SIGINT, SIG_IGN) }
+        if run["detached_child_early"] as? Bool == true { detachChild() }
         if run["die"] as? String == "before_init" { kill(getpid(), SIGKILL) }
 
         let hooks = hookCommands(flags.settings)
@@ -427,6 +487,8 @@ enum Fake {
             assistant(["type": "text", "text": final])
         }
         if run["leave_child"] as? Bool == true { leaveChild() }
+        if run["detached_child"] as? Bool == true { detachChild() }
+        if run["detached_grandchild"] as? Bool == true { detachGrandchild() }
         emit(["type": "result", "subtype": "success", "is_error": false, "stop_reason": "end_turn", "terminal_reason": "completed", "session_id": sessionID, "result": lastText,
               "permission_denials": denials])
         mcp?.stop()
@@ -512,4 +574,6 @@ if var pointer = Optional(environ) {
         pointer += 1
     }
 }
-exit(Fake.main(openFDs: fakeOpenFDs, environmentKeys: fakeEnvironmentKeys))
+let fakeStatus = Fake.main(openFDs: fakeOpenFDs, environmentKeys: fakeEnvironmentKeys)
+if Fake.reportURL != nil { Fake.markEnded() }
+exit(fakeStatus)

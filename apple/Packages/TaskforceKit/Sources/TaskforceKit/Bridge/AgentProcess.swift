@@ -311,12 +311,13 @@ public enum AgentToolDecisionError: Error, Equatable, Sendable {
 public struct AgentRuntimeServices: Sendable {
     /// `POST /api/v1/bridge/tool-decision` (timeout 1.0초, 재시도 0). 이 런타임의 파티션으로만 간다 (ONE-TF-09)
     public var decideTool: @Sendable (BridgeV1ToolDecisionQuery) async throws -> BridgeV1ToolDecisionResponse
-    /// 답 resume로 새 프로세스를 띄운 직후 그 정체(pid · 시작 시각 · marker)를 원장에 먼저 적는다. 답 전달 완료는 `deliverAnswer`의 반환으로 따로 적는다 (OA D3a 8장 14)
-    public var recordSpawn: @Sendable (_ taskID: String, _ identity: AgentProcessIdentity) async -> Void
+    /// 답 resume로 새 프로세스를 띄운 직후 그 정체(pid · 시작 시각 · marker)를 원장에 먼저 적는다. 답 전달 완료는 `deliverAnswer`의 반환으로 따로 적는다 (OA D3a 8장 14).
+    /// 원장 commit이 성공했을 때만 true: adapter는 true를 받은 뒤에만 답을 준다 (9장 8)
+    public var recordSpawn: @Sendable (_ taskID: String, _ identity: AgentProcessIdentity) async -> Bool
 
     public init(
         decideTool: @escaping @Sendable (BridgeV1ToolDecisionQuery) async throws -> BridgeV1ToolDecisionResponse,
-        recordSpawn: @escaping @Sendable (_ taskID: String, _ identity: AgentProcessIdentity) async -> Void = { _, _ in }
+        recordSpawn: @escaping @Sendable (_ taskID: String, _ identity: AgentProcessIdentity) async -> Bool = { _, _ in true }
     ) {
         self.decideTool = decideTool
         self.recordSpawn = recordSpawn

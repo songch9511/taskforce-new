@@ -196,7 +196,7 @@ public actor BridgeRuntime {
                 return try await runtime.decideTool(query)
             },
             recordSpawn: { [weak self] taskID, identity in
-                await self?.recordSpawnIdentity(taskID: taskID, identity: identity)
+                await self?.recordSpawnIdentity(taskID: taskID, identity: identity) ?? false
             }
         )
         for adapter in adapters { adapter.attach(services) }

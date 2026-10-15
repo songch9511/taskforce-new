@@ -753,15 +753,26 @@ extension BridgeRuntime {
     }
 
     /// 답 resume로 새 프로세스가 떴다 (OA D3a 8장 14): 답을 전달하기 전에 그 정체를 원장에 먼저 적는다 (그 사이 앱이 죽어도 고아를 찾는다).
+    /// 원장 commit이 성공했을 때만 true (9장 8): adapter는 false면 답을 주지 않고 그 프로세스를 끝낸다.
     /// 답 전달 완료(`answerSentAt` · `inputAt`)는 `deliverAnswer`가 돌아온 뒤 `recordStarted`가 적는다
-    func recordSpawnIdentity(taskID: String, identity: AgentProcessIdentity) async {
-        guard supervised[taskID] != nil else { return }
-        supervised[taskID]?.identity = identity
-        _ = try? await ledger.updateTask(taskID) {
-            $0.pid = identity.pid
-            $0.processStartedAt = identity.startedAt
-            $0.processMarker = identity.processMarker
+    func recordSpawnIdentity(taskID: String, identity: AgentProcessIdentity) async -> Bool {
+        guard supervised[taskID] != nil else { return false }
+        do {
+            let written = try await ledger.updateTask(taskID) {
+                $0.pid = identity.pid
+                $0.processStartedAt = identity.startedAt
+                $0.processMarker = identity.processMarker
+            }
+            guard written != nil else {
+                log.log("ledger_write_failed", ["step": .code("spawn_identity")])
+                return false
+            }
+        } catch {
+            log.log("ledger_write_failed", ["step": .code("spawn_identity")])
+            return false
         }
+        supervised[taskID]?.identity = identity
+        return true
     }
 
     func runAnswer(_ command: BridgeV1AnswerCommand, record: BridgeCommandRecord) async {

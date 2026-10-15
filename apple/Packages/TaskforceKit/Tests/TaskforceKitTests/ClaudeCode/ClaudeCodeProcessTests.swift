@@ -396,8 +396,9 @@ struct ClaudeCodeProcessTests {
         let report = try #require(fake.report(0))
         // 가짜는 Foundation을 링크해서 CoreFoundation이 시작할 때 자기 환경에 `__CF_USER_TEXT_ENCODING`을 더한다 (우리가 넘긴 값이 아니다).
         // 우리가 넘기는 사전 자체는 `theSpawnerPassesExactlyTheGivenEnvironment`가 `/usr/bin/env`로 본다
+        // 넷 + spawn marker (9장 4: 세션을 떠난 자손도 이 값으로 찾는다)
         let keys = (report["env_keys"] as? [String] ?? []).filter { $0 != "__CF_USER_TEXT_ENCODING" }
-        #expect(keys == ["HOME", "LANG", "PATH", "USER"])
+        #expect(keys == ["HOME", "LANG", "PATH", ClaudeProcessInspector.markerKey, "USER"])
         #expect(report["fds"] as? [Int] == [0, 1, 2], "앱의 소켓 · SQLite fd를 물려주지 않는다 (CLOEXEC)")
     }
 

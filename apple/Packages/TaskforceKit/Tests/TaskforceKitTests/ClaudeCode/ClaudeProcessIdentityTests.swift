@@ -15,10 +15,12 @@ struct ClaudeProcessIdentityTests {
         let identity: AgentProcessIdentity
     }
 
+    /// spawn marker 환경 변수(9장 4)를 실제 adapter처럼 넣는다: 자손이 물려받는다
     func spawn(script: String = "while :; do sleep 1; done", marker: String = UUID().uuidString, extra: [String] = []) throws -> Child {
         let settings = box.root.appending(path: "config/\(marker).settings.json").path
         let process = try ClaudeSpawner.spawn(
-            executable: "/bin/sh", arguments: ["-c", script, "sh", "--settings", settings] + extra, environment: ["PATH": "/usr/bin:/bin"], cwd: box.root.path
+            executable: "/bin/sh", arguments: ["-c", script, "sh", "--settings", settings] + extra,
+            environment: ["PATH": "/usr/bin:/bin", ClaudeProcessInspector.markerKey: marker], cwd: box.root.path
         )
         process.closeStandardStreams()
         return Child(process: process, identity: AgentProcessIdentity(pid: Int(process.pid), startedAt: process.startedAt, processMarker: marker))
@@ -123,6 +125,182 @@ struct ClaudeProcessIdentityTests {
         let timing = self.timing
         #expect(try await offPool { ClaudeProcessInspector.terminate(child.identity, timing: timing) } == .ended(AgentExit(code: nil, signal: Int(SIGKILL))))
         #expect(ClaudeProcessInspector.liveness(child.identity) == .ended(AgentExit(code: nil)))
+    }
+
+    /// 세션을 떠난(setsid) 자손은 그룹 밖이다: 혈통(만들 때의 부모 id)으로 찾아 끝낸 뒤에만 `.ended` (9장 4 정정). 부모가 이미 없어도 그 자손이 살아 있으면 `alive`
+    @Test func b4ASetsidDescendantIsFoundByItsLineageAndEnded() async throws {
+        let pidFile = box.root.appending(path: "detached.pid").path
+        let perl = "use POSIX; POSIX::setsid(); $SIG{INT} = q(IGNORE); sleep 600;"
+        let child = try spawn(script: "trap 'exit 0' INT; /usr/bin/perl -e '\(perl)' & echo $! > '\(pidFile)'; while :; do sleep 0.2; done")
+        defer { killpg(child.process.pid, SIGKILL) }
+        var detached: pid_t = 0
+        for _ in 0..<100 {
+            if let text = try? String(contentsOfFile: pidFile, encoding: .utf8), let value = Int32(text.trimmingCharacters(in: .whitespacesAndNewlines)) { detached = value; break }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        #expect(detached > 0)
+        defer { kill(detached, SIGKILL) }
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(getsid(detached) == detached, "세션을 떠났다")
+        let timing = self.timing
+        let result = try await offPool { ClaudeProcessInspector.terminate(child.identity, timing: timing) }
+        #expect(result == .ended(AgentExit(code: nil, signal: Int(SIGKILL))))
+        let deadline = Date().addingTimeInterval(2)
+        while kill(detached, 0) == 0, Date() < deadline { try await Task.sleep(for: .milliseconds(20)) }
+        #expect(kill(detached, 0) != 0, "혈통으로 찾은 자손을 끝냈다")
+    }
+
+    /// adapter처럼 띄운 직후 혈통의 뿌리를 적으면, 부모가 끝나 launchd로 옮겨진 setsid 자손도 찾는다 (자손이 exec한 뒤에 부모가 끝난다)
+    @Test func b4ADeadParentWithALiveSetsidDescendantIsAlive() async throws {
+        let pidFile = box.root.appending(path: "orphan.pid").path
+        let child = try spawn(script: "/usr/bin/perl -e 'use POSIX; POSIX::setsid(); open(F, q(>\(pidFile))); print F $$; close F; sleep 600;' & sleep 0.3; exit 0")
+        let lineage = ClaudeLineage()
+        lineage.seed(child.process.pid)
+        _ = try await offPool { child.process.waitForExit() }
+        let detached = try await Self.readPID(pidFile)
+        defer { kill(detached, SIGKILL) }
+        #expect(ClaudeProcessInspector.liveness(child.identity, lineage: lineage) == .alive)
+        let timing = self.timing
+        let result = try await offPool { ClaudeProcessInspector.terminate(child.identity, timing: timing, lineage: lineage) }
+        guard case .ended = result else {
+            Issue.record("\(result)")
+            return
+        }
+        #expect(await Self.vanished(detached))
+        #expect(ClaudeProcessInspector.liveness(child.identity, lineage: lineage) == .ended(AgentExit(code: nil)))
+    }
+
+    /// 자식을 만들고 곧 끝나는 중간 프로세스: 지켜보기(`watch`)가 살아 있을 때 보아 두면, 그 setsid 손자를 부모들이 다 끝난 뒤에도 찾는다
+    @Test func b4AWatchedLineageFindsTheGrandchildOfAShortLivedIntermediate() async throws {
+        let pidFile = box.root.appending(path: "grandchild.pid").path
+        // 중간 셸: setsid 손자를 띄우고 0.2초 뒤 끝난다
+        let intermediate = box.file("intermediate.sh", "/usr/bin/perl -e 'use POSIX; POSIX::setsid(); open(F, q(>\(pidFile))); print F $$; close F; sleep 600;' &\nsleep 0.2\n")
+        let child = try spawn(script: "sleep 0.3; /bin/sh '\(intermediate.path)'; exit 0")
+        let lineage = ClaudeLineage()
+        lineage.seed(child.process.pid)
+        lineage.watch(child.identity)
+        defer { lineage.forget() }
+        _ = try await offPool { child.process.waitForExit() }
+        let grandchild = try await Self.readPID(pidFile)
+        defer { kill(grandchild, SIGKILL) }
+        let timing = self.timing
+        #expect(ClaudeProcessInspector.liveness(child.identity, lineage: lineage) == .alive, "중간 셸은 끝났고 손자는 launchd 밑에 있다")
+        // 셸의 백그라운드 명령은 SIGINT를 무시한 채 뜬다 (job control 없음): SIGKILL까지 간다
+        let result = try await offPool { ClaudeProcessInspector.terminate(child.identity, timing: timing, lineage: lineage) }
+        #expect(result == .ended(AgentExit(code: nil, signal: Int(SIGKILL))))
+        #expect(await Self.vanished(grandchild))
+    }
+
+    /// 부모가 끝난 뒤에 exec한 자식은 부모 id가 launchd(1)가 된다: 그 전에 본 자기 id로 찾는다
+    @Test func b4AChildThatExecsAfterItsParentEndedIsKnownByItsOwnID() async throws {
+        let pidFile = box.root.appending(path: "late-exec.pid").path
+        let late = box.file("late.pl", "use POSIX; POSIX::setsid(); open(F, q(>\(pidFile))); print F $$; close F; sleep 600;")
+        // 중간(perl): 자식을 만들고 0.3초 뒤 끝난다. 자식은 0.8초 뒤에 exec한다
+        let child = try spawn(script: "/usr/bin/perl -e 'if (fork() == 0) { select(undef, undef, undef, 0.8); exec(q(/usr/bin/perl), q(\(late.path))); } select(undef, undef, undef, 0.3);'; exit 0")
+        let lineage = ClaudeLineage()
+        lineage.seed(child.process.pid)
+        lineage.watch(child.identity)
+        defer { lineage.forget() }
+        _ = try await offPool { child.process.waitForExit() }
+        let orphan = try await Self.readPID(pidFile)
+        defer { kill(orphan, SIGKILL) }
+        #expect(ClaudeProcessInspector.uniqueIDs(pid: orphan)?.parent == 1, "부모가 끝난 뒤 exec")
+        #expect(ClaudeProcessInspector.liveness(child.identity, lineage: lineage) == .alive)
+        let timing = self.timing
+        let result = try await offPool { ClaudeProcessInspector.terminate(child.identity, timing: timing, lineage: lineage) }
+        guard case .ended = result else {
+            Issue.record("\(result)")
+            return
+        }
+        #expect(await Self.vanished(orphan))
+    }
+
+    /// 다시 뜬 앱: CLI는 이미 끝났고 그 setsid 자손만 남았다. 혈통 파일(감독하던 앱이 적은 것)로만 찾을 수 있다 → 끝내고 파일을 지운다
+    @Test func b4ARestartedAdapterFindsTheOrphanOfAnEndedCLIThroughTheLineageFile() async throws {
+        let pidFile = box.root.appending(path: "restart.pid").path
+        let marker = UUID().uuidString
+        let child = try spawn(script: "/usr/bin/perl -e 'use POSIX; POSIX::setsid(); open(F, q(>\(pidFile))); print F $$; close F; sleep 600;' & sleep 0.3; exit 0", marker: marker)
+        let file = box.sessionsRoot.appending(path: "lineage/\(marker).lineage")
+        let before = ClaudeLineage(file: file)
+        before.seed(child.process.pid)
+        before.save()
+        _ = try await offPool { child.process.waitForExit() }
+        let orphan = try await Self.readPID(pidFile)
+        defer { kill(orphan, SIGKILL) }
+        let restarted = ClaudeCodeProcess(sessionsRoot: box.sessionsRoot, hookServer: nil, helpers: ClaudeCodeHelpers(hook: "/x", mcp: "/y"),
+                                          locator: ClaudeCodeLocator(candidates: [], confinedTo: box.root.path), timing: .testing)
+        #expect(await restarted.liveness(child.identity) == .alive, "부모는 끝났지만 파일의 혈통으로 자손을 본다")
+        let ended = await restarted.terminateOrphan(child.identity)
+        guard case .ended = ended else {
+            Issue.record("\(ended)")
+            return
+        }
+        #expect(await Self.vanished(orphan))
+        #expect(!FileManager.default.fileExists(atPath: file.path), "끝을 증명한 뒤 파일을 지웠다")
+        #expect(await restarted.liveness(child.identity) == .ended(AgentExit(code: nil)))
+    }
+
+    /// 혈통 파일: 다시 뜬 앱이 읽는다. 이번 부팅에 적힌 숫자 줄만 받는다 (다른 부팅 · 이상한 줄은 버린다)
+    @Test func b4TheLineageFileIsReadOnlyForThisBootAndOnlyAsNumbers() throws {
+        let file = box.root.appending(path: "lineage/x.lineage")
+        let lineage = ClaudeLineage(file: file)
+        lineage.insert(4242)
+        lineage.insert(77)
+        lineage.save()
+        let text = try String(contentsOf: file, encoding: .utf8)
+        let boot = try #require(ClaudeProcessInspector.bootTime())
+        #expect(text == "taskforce-lineage 1\n\(ClaudeLineage.stamp(boot))\n77\n4242\n")
+        let attributes = try FileManager.default.attributesOfItem(atPath: file.path)
+        #expect((attributes[.posixPermissions] as? NSNumber)?.intValue == 0o600)
+        #expect(ClaudeLineage(file: file).contains(4242))
+        try "taskforce-lineage 1\nboot 1\n4242\n".write(to: file, atomically: true, encoding: .utf8)
+        #expect(!ClaudeLineage(file: file).contains(4242), "다른 부팅")
+        try "taskforce-lineage 1\n\(ClaudeLineage.stamp(boot))\n4242\n-1\n".write(to: file, atomically: true, encoding: .utf8)
+        #expect(!ClaudeLineage(file: file).contains(4242), "숫자가 아닌 줄")
+        lineage.forget()
+        #expect(!FileManager.default.fileExists(atPath: file.path))
+    }
+
+    /// 커널 id: exec까지 마친 자식의 부모 id는 부모가 끝나 launchd로 옮겨진 뒤에도 그대로다 (혈통의 바탕)
+    @Test func b4AnOrphansParentIDStaysTheIDOfItsOriginalParent() async throws {
+        let pidFile = box.root.appending(path: "kept.pid").path
+        let child = try spawn(script: "/usr/bin/perl -e 'open(F, q(>\(pidFile))); print F $$; close F; sleep 600;' & sleep 0.3; exit 0")
+        let parent = try #require(ClaudeProcessInspector.uniqueIDs(pid: child.process.pid))
+        _ = try await offPool { child.process.waitForExit() }
+        let orphan = try await Self.readPID(pidFile)
+        defer { kill(orphan, SIGKILL) }
+        #expect(ClaudeProcessInspector.uniqueIDs(pid: orphan)?.parent == parent.own)
+        #expect(ClaudeProcessInspector.uniqueIDs(pid: getpid())?.own != parent.own)
+    }
+
+    /// 그 pid가 사라졌다 (launchd가 좀비를 거둘 때까지 2초 기다린다)
+    static func vanished(_ pid: pid_t) async -> Bool {
+        let deadline = Date().addingTimeInterval(2)
+        while kill(pid, 0) == 0, Date() < deadline { try? await Task.sleep(for: .milliseconds(20)) }
+        return kill(pid, 0) != 0
+    }
+
+    /// 파일에 적힌 pid를 읽는다 (자식이 적을 때까지 기다린다)
+    static func readPID(_ path: String) async throws -> pid_t {
+        for _ in 0..<250 {
+            if let text = try? String(contentsOfFile: path, encoding: .utf8), let value = Int32(text.trimmingCharacters(in: .whitespacesAndNewlines)), value > 1 { return value }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        throw CancellationError()
+    }
+
+    /// 확인한 pid에만 신호 (9장 5): 시작 시각이 다르면 그 pid를 다른 프로세스가 쓰는 것이다
+    @Test func b5OnlyVerifiedProcessesAreSignalled() async throws {
+        let child = try spawn()
+        defer { _ = ClaudeProcessInspector.forceKill(child.process) }
+        let wrong = ClaudeProcessInspector.Member(pid: child.process.pid, start: child.identity.startedAt.addingTimeInterval(-1))
+        ClaudeProcessInspector.signalVerified([wrong], SIGKILL)
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(ClaudeProcessInspector.liveness(child.identity) == .alive, "시작 시각이 다르면 신호 0")
+        let right = ClaudeProcessInspector.Member(pid: child.process.pid, start: child.identity.startedAt)
+        ClaudeProcessInspector.signalVerified([right], SIGKILL)
+        let status = try await offPool { child.process.waitForExit() }
+        #expect(status.signal == SIGKILL)
     }
 
     /// 앱이 연 fd(소켓 · SQLite)는 CLOEXEC 표시가 없어도 자식에게 가지 않는다 (`POSIX_SPAWN_CLOEXEC_DEFAULT`, G25)
