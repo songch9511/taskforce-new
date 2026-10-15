@@ -6,7 +6,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { z } from "zod";
 
 import { CHANGE_EVENT_TYPES, changesAfterSeen } from "@/lib/actions/changed";
-import type { ActionProgressState, PendingDecisionKind, ReturnSummaryChange, ReturnSummaryItem, ReturnSummaryResponse } from "@/lib/api/contract";
+import type { ActionProgressState, ReturnSummaryChange, ReturnSummaryWithAgentsItem, ReturnSummaryWithAgentsResponse, ReviewDecisionKind } from "@/lib/api/contract";
 import { loadPendingDecisions, PENDING_KINDS, type PendingGroup } from "@/lib/coordinator/pending";
 
 import { decodeCursor, encodeCursor, isDigest, isMicroTimestamp } from "./cursor";
@@ -30,8 +30,9 @@ const scanChangeSchema = z.object({
   source_state: z.enum(["available", "deleted", "access_lost", "text_expired"]).nullable(),
 });
 
+// Action id는 z.guid()다: start_agent_turn이 sha256에서 만드는 결정적 id에는 UUID 버전 · variant 비트가 없어 z.uuid()는 그 id를 거절하고 변화 원천 전체를 unavailable로 만든다.
 const scanWorkSchema = z.object({
-  action_id: z.uuid(),
+  action_id: z.guid(),
   title: z.string(),
   status: z.enum(["open", "done", "dropped"]),
   started: z.boolean(),
@@ -45,7 +46,7 @@ export const scanResultSchema = z.object({
   digest: z.string().refine(isDigest),
   truncated: z.boolean(),
   /** 잘렸을 때만: 보인 작업의 id (Clear 범위). 커서가 Clear까지 가져간다 */
-  page: z.array(z.uuid()).max(RETURN_SUMMARY_MAX_WORKS).nullable(),
+  page: z.array(z.guid()).max(RETURN_SUMMARY_MAX_WORKS).nullable(),
   /** 읽음 기준이 없다 (Clear도 기준점도 없었다) — 잘린 조회의 Clear가 run · 대화 이력도 기준으로 삼아야 한다 */
   baseline: z.boolean(),
   /** 응답의 baseline 값: Clear한 적 있음 | 기준점만 있음 | 둘 다 없음 */
@@ -93,7 +94,7 @@ export function buildReturnSummaryItems(input: {
   pending: readonly PendingGroup[] | null;
   /** 변화는 없지만 결정 대기가 있는 작업의 제목 · 상태 */
   basics: ReadonlyMap<string, ActionBasics>;
-}): ReturnSummaryItem[] {
+}): ReturnSummaryWithAgentsItem[] {
   const pendingByAction = new Map<string, PendingGroup[]>();
   for (const group of input.pending ?? []) {
     const list = pendingByAction.get(group.actionId);
@@ -121,23 +122,25 @@ export function buildReturnSummaryItems(input: {
     if (basics) rows.set(actionId, { title: basics.title, status: basics.status, started: basics.started, changes: [] });
   }
 
-  const entries: { item: ReturnSummaryItem; latest: string }[] = [];
+  const entries: { item: ReturnSummaryWithAgentsItem; latest: string }[] = [];
   for (const [actionId, row] of rows) {
     const groups = (pendingByAction.get(actionId) ?? []).slice().sort((a, b) => (PENDING_ORDER.get(a.kind) ?? 99) - (PENDING_ORDER.get(b.kind) ?? 99));
-    const decisions = groups.flatMap((g) => g.items.map((i) => ({ id: i.id, kind: i.kind as PendingDecisionKind, version: i.version, urgent: i.urgent })));
-    const decisionKinds = [...new Set(groups.map((g) => g.kind as PendingDecisionKind))];
-    const resultReady = row.changes.some((c) => c.source === "run" && c.kind === "done" && c.detail !== null && RESULT_READY_OUTCOMES.has(c.detail));
+    const decisions = groups.flatMap((g) => g.items.map((i) => ({ id: i.id, kind: i.kind as ReviewDecisionKind, version: i.version, urgent: i.urgent })));
+    const decisionKinds = [...new Set(groups.map((g) => g.kind as ReviewDecisionKind))];
+    // 결과 준비(result_ready)는 답할 것이 아니라 검토할 것이다: "Needs your answer"와 next=answer를 만들지 않는다 (D4b-s)
+    const answerable = decisions.some((d) => d.kind !== "result_ready");
+    const resultReady = decisions.length > 0 || row.changes.some((c) => c.source === "run" && c.kind === "done" && c.detail !== null && RESULT_READY_OUTCOMES.has(c.detail));
     entries.push({
       item: {
         action_id: actionId,
         title: row.title,
         status: row.status,
         state: progressState(row),
-        needs_answer: decisions.length > 0,
+        needs_answer: answerable,
         urgent: groups.some((g) => g.urgent),
         decisions,
         changes: row.changes,
-        next: decisions.length > 0 ? { kind: "answer", decision_kinds: decisionKinds } : { kind: resultReady ? "review_result" : "open", decision_kinds: [] },
+        next: answerable ? { kind: "answer", decision_kinds: decisionKinds } : { kind: resultReady ? "review_result" : "open", decision_kinds: decisionKinds },
         version: itemVersion(row.changes, decisions),
       },
       latest: row.changes.reduce((max, c) => (c.at > max ? c.at : max), ""),
@@ -161,11 +164,11 @@ export function composeReturnSummary(input: {
   scan: ScanResult | null;
   pending: readonly PendingGroup[] | null;
   basics: ReadonlyMap<string, ActionBasics>;
-}): ReturnSummaryResponse {
+}): ReturnSummaryWithAgentsResponse {
   const { scan, pending } = input;
   const items = buildReturnSummaryItems({ works: scan?.works ?? [], pending, basics: input.basics });
-  const changes: ReturnSummaryResponse["sources"]["changes"] = !scan ? "unavailable" : scan.truncated ? "truncated" : "ok";
-  const decisions: ReturnSummaryResponse["sources"]["decisions"] = pending ? "ok" : "unavailable";
+  const changes: ReturnSummaryWithAgentsResponse["sources"]["changes"] = !scan ? "unavailable" : scan.truncated ? "truncated" : "ok";
+  const decisions: ReturnSummaryWithAgentsResponse["sources"]["decisions"] = pending ? "ok" : "unavailable";
   const complete = changes === "ok" && decisions === "ok";
   return {
     generated_at: input.now.toISOString(),
@@ -205,10 +208,16 @@ const failureName = (reason: unknown) => (reason instanceof Error ? reason.name 
 
 /**
  * 복귀 요약을 계산한다. 변화(스냅샷 하나)와 결정 대기(C2 계산)를 따로 읽고, 어느 쪽이든 실패하면 그 부분을 unavailable로 표시한다 —
- * 비어 있다고 말하지 않는다. 결정 대기는 C2 게이트(COORDINATOR_ENABLED)와 무관하게 실제 원천(SQL coordinator_pending_inputs)에서 계산한다.
+ * 비어 있다고 말하지 않는다. 결정 대기는 C2 게이트(COORDINATOR_ENABLED)와 무관하게 실제 원천(SQL coordinator_pending_inputs, 켜진 adapter가 있으면 review_agent_inputs도)에서 계산한다 —
+ * Review와 같은 loadPendingDecisions라서 decisions[].id/version = Review 항목 id/version이다 (agentAdapters: 시험이 gate를 주입한다).
  */
-export async function loadReturnSummary(admin: SupabaseClient, userId: string, now: Date, options: { horizon?: string } = {}): Promise<ReturnSummaryResponse> {
-  const [scanned, decided] = await Promise.allSettled([scanReturnSummary(admin, userId, options.horizon), loadPendingDecisions(admin, userId, now)]);
+export async function loadReturnSummary(
+  admin: SupabaseClient,
+  userId: string,
+  now: Date,
+  options: { horizon?: string; agentAdapters?: readonly string[] } = {},
+): Promise<ReturnSummaryWithAgentsResponse> {
+  const [scanned, decided] = await Promise.allSettled([scanReturnSummary(admin, userId, options.horizon), loadPendingDecisions(admin, userId, now, { agentAdapters: options.agentAdapters })]);
   if (scanned.status === "rejected") console.error(JSON.stringify({ event: "return_summary_scan_failed", error: failureName(scanned.reason) }));
   if (decided.status === "rejected") console.error(JSON.stringify({ event: "return_summary_pending_failed", error: failureName(decided.reason) }));
   const scan = scanned.status === "fulfilled" ? scanned.value : null;

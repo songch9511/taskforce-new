@@ -4,7 +4,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
 
-import { returnSummaryResponseSchema, type ReturnSummaryResponse } from "@/lib/api/contract";
+import { returnSummaryResponseSchema, type ReturnSummaryWithAgentsResponse } from "@/lib/api/contract";
 import { encodeCursor } from "@/lib/review/cursor";
 import { encodeInitToken } from "@/lib/review/init-token";
 import { clearReturnSummary, initializeReturnSummaryBaseline, loadReturnSummary } from "@/lib/review/return-summary";
@@ -33,12 +33,12 @@ const H = "2026-10-12T20:00:00.000000Z";
 const load = (user: string, horizon = H, client: SupabaseClient = admin) => loadReturnSummary(client, user, NOW, { horizon });
 const confirm = (user: string, token: string | null, client: SupabaseClient = admin) => initializeReturnSummaryBaseline(client, user, token!, NOW.toISOString());
 const clear = (user: string, cursor: string | null) => clearReturnSummary(admin, user, cursor!, NOW.toISOString());
-const summary = (body: ReturnSummaryResponse) => returnSummaryResponseSchema.parse(body);
+const summary = (body: ReturnSummaryWithAgentsResponse) => returnSummaryResponseSchema.parse(body);
 const event = (user: string, action: string, type: string, actor: string, at: string) =>
   s.id(`insert into public.action_events (user_id, action_id, type, actor, created_at) values ($1, $2, $3, $4, $5) returning id`, [user, action, type, actor, at]);
 const reads = (user: string) => s.count(`select 1 from public.return_summary_reads where user_id = $1`, [user]);
 const baselineRows = (user: string) => s.count(`select 1 from public.return_summary_baseline where user_id = $1`, [user]);
-const kinds = (body: ReturnSummaryResponse, action: string) => body.items.find((i) => i.action_id === action)?.changes.map((c) => `${c.source}:${c.kind}`) ?? null;
+const kinds = (body: ReturnSummaryWithAgentsResponse, action: string) => body.items.find((i) => i.action_id === action)?.changes.map((c) => `${c.source}:${c.kind}`) ?? null;
 
 /** run 결과를 정해진 DB 시각에 만든다 (done · draft_ready) */
 async function finishRun(user: string, action: string, at: string, outcome = "draft_ready"): Promise<string> {

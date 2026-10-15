@@ -2,7 +2,7 @@ import "server-only";
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 
-import type { PendingDecisionGroup, ReviewResponse, Suggestion } from "@/lib/api/contract";
+import type { ReviewDecisionGroup, ReviewResponse, ReviewWithAgentsResponse, Suggestion } from "@/lib/api/contract";
 import { loadPendingDecisions } from "@/lib/coordinator/pending";
 
 import { localDay } from "./day";
@@ -12,7 +12,8 @@ import { exposeSuggestions, produceSuggestions } from "./suggestions";
 import { loadUserTimeZone } from "./time-zone";
 
 // Review (런타임 계약 6장 pending_decisions + 8장 suggestions): C2 결정 대기 계산(개수 상한 없음, 숨긴 항목을 gone으로 만들지 않는다) + 열린 제안.
-//  - 결정 대기는 실제 원천(SQL coordinator_pending_inputs)에서 그때그때 계산한다. 코디네이터 게이트와 무관하다. 계산은 아무것도 해결하지 않는다.
+//  - 결정 대기는 실제 원천(SQL coordinator_pending_inputs, 에이전트 입력은 review_agent_inputs)에서 그때그때 계산한다. 코디네이터 게이트와 무관하다. 계산은 아무것도 해결하지 않는다.
+//    에이전트 입력(질문 · 결과 준비 · 경로 충돌)은 대화 v2 ∧ adapter 플래그가 켜졌을 때만 읽는다 — 모두 꺼지면 C3 응답과 바이트 동일하다.
 //  - 제안: 생산(지금 있는 결정적 사실, 멱등) → 노출(비긴급 하루 한 묶음 3개 · 긴급은 상한 밖). 코디네이터 결과를 쓰는 종류는 COORDINATOR_ENABLED일 때만 읽는다.
 //    이 호출은 읽기만 하지 않는다: 제안 생산 · 노출 표시(shown_at · 그날의 비긴급 묶음 소비 · snooze 끝난 제안 다시 열기 · 증거 있는 expired)를 멱등으로 쓴다. 제안을 보는 것은 Action · run · Claim을 만들지 않는다.
 //  - 한 쪽을 읽지 못하면 그 쪽을 unavailable로 표시한다 — 비었다고 하지 않는다. 시간대(하루 경계)도 같다. empty는 모든 원천을 읽었고 둘 다 비었을 때만이다.
@@ -22,13 +23,15 @@ export type ReviewOptions = {
   coordinatorEnabled: boolean;
   /** 사용자 시간대 읽기(주입: 시험). 기본은 보고 설정 표를 읽고, 표가 없으면 모른다(null) */
   timeZone?: (admin: SupabaseClient, userId: string) => Promise<string | null>;
+  /** 에이전트 입력을 읽을 adapter(주입: 시험). 기본은 환경의 openAgentAdapters() — 대화 v2 ∧ adapter 플래그. 비면 C3 그대로다(에이전트 입력을 부르지 않는다) */
+  agentAdapters?: readonly string[];
 };
 
 const failureName = (reason: unknown) => (reason instanceof Error ? reason.name : "unknown");
 /** DB 오류 코드(SQLSTATE · PostgREST)만. 메시지 · 값은 남기지 않는다 */
 const errorCode = (reason: unknown) => (typeof (reason as { code?: unknown } | null)?.code === "string" ? (reason as { code: string }).code : undefined);
 
-export async function loadReview(admin: SupabaseClient, userId: string, now: Date, options: ReviewOptions): Promise<ReviewResponse> {
+export async function loadReview(admin: SupabaseClient, userId: string, now: Date, options: ReviewOptions): Promise<ReviewWithAgentsResponse> {
   const readZone = options.timeZone ?? loadUserTimeZone;
 
   // 사용자 시간대: "저장된 시간대가 없다 / 이 스택에 설정 표가 없다"(null)는 정당한 모름이다. 예상 못한 읽기 오류는 모름이 아니라 읽지 못한 것이다 —
@@ -44,7 +47,7 @@ export async function loadReview(admin: SupabaseClient, userId: string, now: Dat
   const day = zone ? localDay(now, zone) : null;
 
   const [decided, offered] = await Promise.allSettled([
-    loadPendingDecisions(admin, userId, now),
+    loadPendingDecisions(admin, userId, now, { agentAdapters: options.agentAdapters }),
     (async () => {
       await produceSuggestions(admin, userId, now, { coordinatorEnabled: options.coordinatorEnabled });
       return exposeSuggestions(admin, userId, day, now);
@@ -53,7 +56,7 @@ export async function loadReview(admin: SupabaseClient, userId: string, now: Dat
   if (decided.status === "rejected") console.error(JSON.stringify({ event: "review_pending_failed", error: failureName(decided.reason) }));
   if (offered.status === "rejected") console.error(JSON.stringify({ event: "review_suggestions_failed", error: failureName(offered.reason) }));
 
-  const decisions: PendingDecisionGroup[] | null = decided.status === "fulfilled" ? decided.value.map(pendingGroupDto) : null;
+  const decisions: ReviewDecisionGroup[] | null = decided.status === "fulfilled" ? decided.value.map(pendingGroupDto) : null;
   const suggestions: Suggestion[] | null = offered.status === "fulfilled" ? offered.value.suggestions : null;
   // 이 코드가 모르는 종류의 열린 제안이 있으면 목록은 일부다: 지어서 보이지 않고, 비었다고도 하지 않는다
   const suggestionsStatus: ReviewResponse["sources"]["suggestions"] = offered.status === "fulfilled" && offered.value.unrecognized === 0 ? "ok" : "unavailable";

@@ -5,8 +5,8 @@ import {
   suggestionSnoozeRequestSchema,
   type ReturnSummaryBaselineResponse,
   type ReturnSummaryClearResponse,
-  type ReturnSummaryResponse,
-  type ReviewResponse,
+  type ReturnSummaryWithAgentsResponse,
+  type ReviewWithAgentsResponse,
   type Suggestion,
   type SuggestionResponse,
 } from "./contract";
@@ -37,7 +37,7 @@ const fail = (event: string, error: unknown) =>
 
 // ─── GET: Review · 복귀 요약 ─────────────────────────
 
-export type ReviewDeps<User extends AppUser> = BaseDeps<User> & { load: (user: User, now: Date) => Promise<ReviewResponse> };
+export type ReviewDeps<User extends AppUser> = BaseDeps<User> & { load: (user: User, now: Date) => Promise<ReviewWithAgentsResponse> };
 
 /** GET /api/v2/review — C2 결정 대기 계산 + 열린 제안. 일부를 읽지 못해도 200이고 그 부분을 unavailable로 표시한다 */
 export async function handleGetReview<User extends AppUser>(request: Request, deps: ReviewDeps<User>): Promise<Response> {
@@ -45,14 +45,14 @@ export async function handleGetReview<User extends AppUser>(request: Request, de
   const user = await deps.authenticate(request);
   if (!user) return unauthorized();
   try {
-    return Response.json(await deps.load(user, deps.now?.() ?? new Date()) satisfies ReviewResponse, { headers: NO_STORE });
+    return Response.json(await deps.load(user, deps.now?.() ?? new Date()) satisfies ReviewWithAgentsResponse, { headers: NO_STORE });
   } catch (error) {
     fail("review_failed", error);
     return errorResponse(500, "internal_error", "Review를 불러오지 못했습니다.");
   }
 }
 
-export type ReturnSummaryDeps<User extends AppUser> = BaseDeps<User> & { load: (user: User, now: Date) => Promise<ReturnSummaryResponse> };
+export type ReturnSummaryDeps<User extends AppUser> = BaseDeps<User> & { load: (user: User, now: Date) => Promise<ReturnSummaryWithAgentsResponse> };
 
 /** GET /api/v2/return-summary — 복귀 요약. 원천을 읽지 못한 부분은 unavailable · truncated로 표시한다 (비었다고 하지 않는다) */
 export async function handleGetReturnSummary<User extends AppUser>(request: Request, deps: ReturnSummaryDeps<User>): Promise<Response> {
@@ -60,7 +60,7 @@ export async function handleGetReturnSummary<User extends AppUser>(request: Requ
   const user = await deps.authenticate(request);
   if (!user) return unauthorized();
   try {
-    return Response.json(await deps.load(user, deps.now?.() ?? new Date()) satisfies ReturnSummaryResponse, { headers: NO_STORE });
+    return Response.json(await deps.load(user, deps.now?.() ?? new Date()) satisfies ReturnSummaryWithAgentsResponse, { headers: NO_STORE });
   } catch (error) {
     fail("return_summary_failed", error);
     return errorResponse(500, "internal_error", "복귀 요약을 불러오지 못했습니다.");

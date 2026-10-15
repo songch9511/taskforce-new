@@ -7,7 +7,7 @@ import { computePendingDecisions, type PendingInput } from "@/lib/coordinator/pe
 
 import { decodeCursor } from "./cursor";
 import { decodeInitToken } from "./init-token";
-import { buildReturnSummaryItems, composeReturnSummary, type ActionBasics, type ScanResult, type ScanWork } from "./return-summary";
+import { buildReturnSummaryItems, composeReturnSummary, scanResultSchema, type ActionBasics, type ScanResult, type ScanWork } from "./return-summary";
 
 // 복귀 요약 계산 (순수): SQL 스캔 결과 + C2 결정 대기 → 응답. DB 없이 의미만 시험한다 (DB 쪽은 tests/db/review-summary.scenarios.ts, 연결은 tests/review).
 
@@ -160,6 +160,100 @@ describe("buildReturnSummaryItems: 필요한 결정 · Next · 숫자 없음", (
     expect(make("merged", "action:A:1")).toBe(make("merged", "action:A:1"));
     expect(make("merged", "action:A:1")).not.toBe(make("completed", "action:A:1"));
     expect(make("merged", "action:A:1")).not.toBe(make("merged", "action:A:2"));
+  });
+});
+
+// ─── D4b-s: 에이전트 결정(질문 · 결과 준비 · 경로 충돌)이 있는 줄 ────────────────────────────────────
+
+const TASK = "b0000000-0000-4000-8000-000000000001";
+const RUN = "d0000000-0000-4000-8000-000000000001";
+const LEASE = "c0000000-0000-4000-8000-000000000001";
+const SESSION = "b0000000-0000-4000-8000-000000000002";
+const askedRow = (kind: "agent_question" | "agent_approval" | "agent_secret_question", over: Partial<PendingInput> = {}): PendingInput => ({
+  kind, action_id: A, run_id: RUN, step_id: null, question_id: null, item_ref: TASK, version: `question:${TASK}:req-1`, created_at: "2026-10-11T00:00:00Z", due_at: null,
+  detail: { task_id: TASK, session_id: SESSION, provider_request_id: "req-1", adapter: "agent:codex", bridge_id: null }, ...over,
+});
+const resultRow = (over: Partial<PendingInput> = {}): PendingInput => ({
+  kind: "result_ready", action_id: A, run_id: RUN, step_id: null, question_id: null, item_ref: RUN, version: `result:${RUN}:0:2:2`, created_at: "2026-10-11T01:00:00Z", due_at: null,
+  detail: { session_id: SESSION, reviewed_turn_seq: 0, last_turn_seq: 2, changed_at: "2026-10-11T02:00:00Z" }, ...over,
+});
+const conflictRow = (over: Partial<PendingInput> = {}): PendingInput => ({
+  kind: "path_conflict", action_id: A, run_id: RUN, step_id: null, question_id: null, item_ref: LEASE, version: `conflict:${LEASE}:1`, created_at: "2026-10-11T03:00:00Z", due_at: null,
+  detail: { lease_id: LEASE, conflict_version: 1, holder_action_id: B, holder_run_id: RUN, later_run_id: RUN, released: false, stopped: false }, ...over,
+});
+
+describe("buildReturnSummaryItems: 에이전트 결정 (D4b-s)", () => {
+  const build = (rows: PendingInput[], works: ScanWork[] = []) =>
+    buildReturnSummaryItems({ works, pending: groups(rows), basics: basics({ id: A, title: "견적서 보내기", status: "open", started: true }) })[0];
+
+  it("에이전트 결정만 있는 Action도 줄이 있다 (제목 · 상태): 질문은 답할 것이라 needs_answer · next=answer", () => {
+    for (const kind of ["agent_question", "agent_approval", "agent_secret_question"] as const) {
+      const item = build([askedRow(kind)]);
+      expect(item, kind).toMatchObject({ action_id: A, title: "견적서 보내기", state: "in_progress", changes: [], needs_answer: true, next: { kind: "answer", decision_kinds: [kind] } });
+      expect(item.decisions, kind).toEqual([{ id: `${kind}:${TASK}`, kind, version: `question:${TASK}:req-1`, urgent: false }]);
+    }
+  });
+
+  it("경로 충돌도 답할 것이다 (해소해야 한다): needs_answer · next=answer", () => {
+    expect(build([conflictRow()])).toMatchObject({ needs_answer: true, next: { kind: "answer", decision_kinds: ["path_conflict"] }, decisions: [{ id: `path_conflict:${LEASE}`, kind: "path_conflict", version: `conflict:${LEASE}:1` }] });
+  });
+
+  it("결과 준비만 있으면 답할 것이 아니라 검토할 것이다: needs_answer false · next=review_result (결정은 줄에 그대로 실린다)", () => {
+    const item = build([resultRow()]);
+    expect(item.needs_answer).toBe(false);
+    expect(item.next).toEqual({ kind: "review_result", decision_kinds: ["result_ready"] });
+    expect(item.decisions).toEqual([{ id: `result_ready:${RUN}`, kind: "result_ready", version: `result:${RUN}:0:2:2`, urgent: false }]);
+  });
+
+  it("결과 준비와 질문이 함께 있으면 질문이 이긴다: needs_answer true · next=answer, decision_kinds는 있는 종류 전부(종류 순서)", () => {
+    const item = build([resultRow(), conflictRow(), askedRow("agent_approval")]);
+    expect(item.needs_answer).toBe(true);
+    expect(item.next).toEqual({ kind: "answer", decision_kinds: ["agent_approval", "result_ready", "path_conflict"] });
+    expect(item.decisions.map((d) => d.kind)).toEqual(["agent_approval", "result_ready", "path_conflict"]);
+  });
+
+  it("C3 종류만 있는 줄은 이전과 같은 값이다 (needs_answer · next · decision_kinds)", () => {
+    const withDecision = build([pendingRow({ action_id: A })]);
+    expect(withDecision).toMatchObject({ needs_answer: true, next: { kind: "answer", decision_kinds: ["confirm"] } });
+    const none = buildReturnSummaryItems({ works: [work(A, { changes: [change("merged", 1)] })], pending: [], basics: basics() })[0];
+    expect(none).toMatchObject({ needs_answer: false, next: { kind: "open", decision_kinds: [] }, decisions: [] });
+  });
+
+  it("긴급(기한 창 안)은 에이전트 결정에도 그대로 적용된다. 답할 줄이 결과만 있는 줄보다 앞이다", () => {
+    const items = buildReturnSummaryItems({
+      works: [],
+      pending: groups([resultRow({ action_id: A }), askedRow("agent_question", { action_id: B, item_ref: "b0000000-0000-4000-8000-000000000009", detail: { task_id: "b0000000-0000-4000-8000-000000000009", session_id: SESSION, provider_request_id: "r", adapter: "agent:codex", bridge_id: null } })]),
+      basics: basics({ id: A, title: "A 일", status: "open", started: false }, { id: B, title: "B 일", status: "open", started: false }),
+    });
+    expect(items.map((i) => [i.action_id, i.needs_answer])).toEqual([[B, true], [A, false]]);
+  });
+
+  it("run 변화(draft_ready)만 있는 줄의 next는 그대로 review_result이고 decision_kinds는 비어 있다", () => {
+    const done = change("done", 5, { source: "run", detail: "draft_ready", source_state: null });
+    const item = buildReturnSummaryItems({ works: [work(A, { changes: [done] })], pending: [], basics: basics() })[0];
+    expect(item.next).toEqual({ kind: "review_result", decision_kinds: [] });
+  });
+});
+
+// 결정적 Action id(start_agent_turn이 sha256에서 만든다)는 UUID 버전 · variant 비트가 없다: SQL 스캔 결과의 Action id를 z.uuid()로 거절하면 복귀 요약 변화 원천 전체가 unavailable이 된다.
+describe("scanResultSchema: 결정적 Action id를 받는다", () => {
+  const DETERMINISTIC = "d1b2c3d4-e5f6-0a7b-8c9d-0e1f2a3b4c5d"; // 버전 비트 0, variant 비트 0
+  const raw = (over: Record<string, unknown> = {}) => ({
+    since: null, horizon: at(900), digest: "a:1:5|r:0:0|m:0:0", truncated: false, page: null, baseline: true, baseline_state: "never_cleared", init_digest: null,
+    works: [{ action_id: DETERMINISTIC, title: "t", status: "open", started: false, last_user_at: null, changes: [] }], ...over,
+  });
+
+  it("works[].action_id", () => {
+    expect(scanResultSchema.parse(raw()).works[0].action_id).toBe(DETERMINISTIC);
+  });
+
+  it("page[] (잘린 조회의 Clear 범위)", () => {
+    expect(scanResultSchema.parse(raw({ truncated: true, page: [DETERMINISTIC] })).page).toEqual([DETERMINISTIC]);
+  });
+
+  it("그래도 UUID 모양이 아닌 글자는 거절한다", () => {
+    expect(scanResultSchema.safeParse(raw({ works: [{ action_id: "not-an-id", title: "t", status: "open", started: false, last_user_at: null, changes: [] }] })).success).toBe(false);
+    expect(scanResultSchema.safeParse(raw({ truncated: true, page: ["x"] })).success).toBe(false);
   });
 });
 
