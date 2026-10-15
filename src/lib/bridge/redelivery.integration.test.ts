@@ -174,3 +174,74 @@ it("sweeps the actual SQL lease function through the production TS caller", asyn
     expect(await f.one("select state from public.execution_steps where id=$1", [w.step])).toEqual({ state: "unknown_outcome" });
   } finally { vi.stubEnv("EXECUTION_ENABLED", "true"); }
 });
+
+// ─── F1s 항목 3 (D3): 계기 ③은 후보 대화 하나의 머리만 시작한다 (onlyConversationId 필터) ───
+const gateEnv = { EXECUTION_ENABLED: "true", AGENT_ADAPTER_CODEX_ENABLED: "true" };
+it("③: 같은 연결의 세션 없는 대화 둘 중 후보로 넘어온 대화의 머리만 시작한다", async () => {
+  const w = await f.world();
+  await f.updateRow("agent_sessions", w.session, { status: "bound", external_session_id: `session:${randomUUID()}` });
+  await f.updateRow("bridges", w.bridge, { capabilities });
+  const heads: string[] = [], conversations: string[] = [];
+  for (const text of ["First unbound head", "Second unbound head"]) {
+    const conversation = await f.agentConversation(w.user, w.connection, null);
+    const message = String((await f.post(w.user, conversation, randomUUID(), text)).message_id);
+    await f.updateRow("conversation_messages", message, { delivery_state: "not_sent", delivery_reason: "write_gate_closed" });
+    conversations.push(conversation);
+    heads.push(message);
+  }
+  const before = await counts(w.user), client = admin();
+  // 실제 SQL(next_unbound_agent_messages)은 연결의 세션 없는 대화 머리를 모두 돌려준다 — 둘째 대화의 머리를 건드리지 않는 것은 TS 필터(onlyConversationId)의 몫이다
+  expect((await client.rpc("next_unbound_agent_messages", { p_user_id: w.user, p_connection_id: w.connection, p_limit: 10, p_retry_gate: true }).throwOnError()).data).toEqual(expect.arrayContaining(heads));
+  const originalRpc = client.rpc.bind(client);
+  const rpc = vi.spyOn(client, "rpc").mockImplementation((...args) => {
+    // 후보 SQL은 분마다 순서를 돌려 어느 대화가 오는지 정해져 있지 않다: 첫째 대화 하나만 돌려주고 나머지는 실제 SQL을 쓴다
+    if (args[0] === "bridge_redelivery_candidates") {
+      return { throwOnError: async () => ({ data: [{ user_id: w.user, agent_session_id: null, conversation_id: conversations[0] }] }) } as unknown as ReturnType<typeof client.rpc>;
+    }
+    return originalRpc(...args);
+  });
+  expect(await redeliverBridgeMessages(client, gateEnv)).toBe(1);
+  expect(await f.msg(heads[0])).toMatchObject({ delivery_state: "dispatched", delivery_reason: null });
+  expect(await f.msg(heads[1])).toMatchObject({ delivery_state: "not_sent", delivery_reason: "write_gate_closed" });
+  expect(rpc.mock.calls.filter(([name]) => name === "start_agent_turn_auto").map(([, args]) => args?.p_message_id)).toEqual([heads[0]]);
+  expect((await counts(w.user)).slice(0, 3)).toEqual(before.slice(0, 3).map((n) => Number(n) + 1));
+});
+
+// ─── F1s 항목 4 (D4): 실제 not_found 머리는 대기열에서 빠지고 다음 kick이 그 뒤 메시지를 시작한다 ───
+// (FU의 예시 "지워진 context 칩"은 not_found가 아니다: 없는 · 보관한 context는 Ungrouped다. 실제 not_found는 남의 칩, 또는 TS 필터 뒤 SQL 전에 지워진 Action이다)
+it.each(["another user's context chip", "Action deleted just before the start"])("not_found 머리(%s)는 대기열에서 빠지고 다음 kick이 M3을 시작한다", async (kind) => {
+  const w = await f.world();
+  await f.updateRow("agent_sessions", w.session, { status: "bound", external_session_id: `session:${randomUUID()}` });
+  await f.updateRow("bridges", w.bridge, { capabilities });
+  await f.lease(w);
+  await f.bridgeEvent(w, f.event(w, "accepted"));
+  await f.bridgeEvent(w, f.event(w, "turn_completed"));
+  const foreign = kind.startsWith("another") ? await f.context(await f.user()) : null;
+  const chip = foreign ? null : await f.action(w.user);
+  const selected = foreign ? { action_ids: [], context_ids: [foreign] } : { action_ids: [chip!], context_ids: [] };
+  const m2 = String((await f.post(w.user, w.conversation, randomUUID(), "Chip that will not resolve")).message_id);
+  await f.updateRow("conversation_messages", m2, { delivery_state: "queued", delivery_reason: "session_busy", selected });
+  const m3 = String((await f.post(w.user, w.conversation, randomUUID(), "Plain follow-up")).message_id);
+  await f.updateRow("conversation_messages", m3, { delivery_state: "queued", delivery_reason: "queue_order" });
+  const before = await counts(w.user), client = admin();
+  const originalRpc = client.rpc.bind(client);
+  const rpc = vi.spyOn(client, "rpc").mockImplementation((...args) => {
+    if (args[0] === "start_agent_turn_auto" && args[1]?.p_message_id === m2 && chip) {
+      // TS가 칩 Action이 있는 것을 확인한 뒤, SQL이 보기 전에 지워진다
+      return { throwOnError: async () => { await f.q("delete from public.actions where id=$1", [chip]); return originalRpc(...args).throwOnError(); } } as unknown as ReturnType<typeof client.rpc>;
+    }
+    return originalRpc(...args);
+  });
+  await kickBridgeSessions(client, w.user, [w.session]);
+  expect(await f.msg(m2)).toMatchObject({ delivery_state: "not_sent", delivery_reason: "not_found" });
+  expect(await f.msg(m3)).toMatchObject({ delivery_state: "queued" });
+  expect(await counts(w.user)).toEqual(before);
+  await kickBridgeSessions(client, w.user, [w.session]);
+  expect(await f.msg(m2)).toMatchObject({ delivery_state: "not_sent", delivery_reason: "not_found" });
+  expect(await f.msg(m3)).toMatchObject({ delivery_state: "dispatched", delivery_reason: null });
+  const after = await counts(w.user);
+  expect(after.slice(0, 3)).toEqual(before.slice(0, 3).map((n) => Number(n) + 1));
+  expect(rpc.mock.calls.filter(([name]) => name === "start_agent_turn_auto").map(([, args]) => args?.p_message_id)).toEqual([m2, m3]);
+  await kickBridgeSessions(client, w.user, [w.session]);
+  expect(await counts(w.user)).toEqual(after);
+});

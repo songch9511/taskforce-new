@@ -26,6 +26,15 @@ export type AgentDeliveryInput = {
   answerStep?: { state: StepState; reason: string | null } | null;
   /** needs_referent 후보 Action 제목 (읽지 못한 후보는 뺀다) */
   titles: ReadonlyMap<string, string>;
+  /** 메시지의 전달 만료 시각(delivery_expires_at). dispatched + 단계 prepared인데 이 시각이 지났으면 expired로 보인다 (bridge lease가 같은 조건으로 회수한다) */
+  expiresAt?: string | null;
+  /** 만료를 판단하는 현재 시각 (기본 지금) */
+  now?: Date;
+};
+
+const pastExpiry = (expiresAt: string | null | undefined, now: Date) => {
+  const at = expiresAt ? Date.parse(expiresAt) : Number.NaN;
+  return !Number.isNaN(at) && at <= now.getTime();
 };
 
 const reasonOf = (reason: string | null | undefined) => {
@@ -36,9 +45,10 @@ const reasonOf = (reason: string | null | undefined) => {
 /**
  * 메시지 행 + 마지막 턴 단계로 계산하는 전달 표시 (순수 함수, 서버만 계산한다 — CLAUDE.md "표시 규칙" 예외에 없다).
  * 행: cancelled → cancelled · answer_for(질문의 답) → answered(답 단계 failed면 not_sent + 이유, skipped면 cancelled) ·
- * queued + 후보 + 아직 안 고름 → needs_referent · queued/not_sent/expired → 그 상태 + 이유 · dispatched → sent · accepted · unknown(그 밖은 not_sent 방어)
+ * queued + 후보 + 아직 안 고름 → needs_referent · queued/not_sent/expired → 그 상태 + 이유 · dispatched → sent · accepted · unknown(그 밖은 not_sent 방어).
+ * 만료(F1s): dispatched + 단계 prepared가 delivery_expires_at 뒤이면 세션 상태와 상관없이 expired — Mac이 꺼져 있어 lease가 못 돌아도 24시간 규칙(계약 2.4)을 지킨다 (lease의 회수 조건: BC lease_bridge_command)
  */
-export function agentDeliveryView({ row, stepState, sessionStatus, answerStep, titles }: AgentDeliveryInput): AgentDelivery {
+export function agentDeliveryView({ row, stepState, sessionStatus, answerStep, titles, expiresAt, now = new Date() }: AgentDeliveryInput): AgentDelivery {
   const refs = row.refs ?? {};
   if (row.state === "cancelled") return { state: "cancelled" };
   if (refs.answer_for !== undefined && row.state === "dispatched") {
@@ -60,6 +70,7 @@ export function agentDeliveryView({ row, stepState, sessionStatus, answerStep, t
     const reason = reasonOf(row.reason);
     return reason ? { state: row.state, reason } : { state: row.state };
   }
+  if (row.state === "dispatched" && stepState === "prepared" && pastExpiry(expiresAt, now)) return { state: "expired" };
   const delivered = agentMessageDelivery(row.state, stepState, sessionStatus);
   return { state: delivered === "queued" || delivered === "sent" || delivered === "accepted" || delivered === "unknown" ? delivered : "not_sent" };
 }

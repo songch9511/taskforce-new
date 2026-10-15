@@ -34,7 +34,8 @@ const TASK = "7a000000-0000-4000-8000-000000000001";
 const STEP = "57000000-0000-4000-8000-000000000001";
 const RUN = "20000000-0000-4000-8000-0000000000aa";
 const NOW = new Date("2026-10-14T12:00:00.000Z");
-const FUTURE = "2026-10-15T12:00:00.000Z";
+// 전달 만료 시각이 아직 안 지난 값. 읽기 함수는 지금 시각으로 만료를 판단하므로(F1s 항목 7) 실제 시계와 상관없이 먼 미래로 둔다
+const FUTURE = "2099-01-01T00:00:00.000Z";
 // 실행 kill switch(EXECUTION_ENABLED)가 켜진 환경. 꺼진 환경은 아래 OFF (D2a 보안 검토 P1 방어)
 const CODEX = { AGENT_ADAPTER_CODEX_ENABLED: "true", EXECUTION_ENABLED: "true" };
 const OFF = { AGENT_ADAPTER_CODEX_ENABLED: "true" };
@@ -715,5 +716,37 @@ describe("loadAgentDeliveriesByIds: Send again 응답용 (이 대화 · 이 사�
     });
     expect(await loadAgentDeliveriesByIds(fake.admin, USER, CONV, [])).toEqual({});
     expect(await loadAgentDeliveriesByIds(fake.admin, OTHER, CONV, [MSG])).toEqual({});
+  });
+});
+
+// ─── F1s 항목 7 (D7): 만료한 prepared 메시지는 expired로 보인다 ───
+describe("전달 표시 읽기: 만료한 prepared 메시지는 expired로 보인다 (F1s 항목 7)", () => {
+  const EXPIRES = "2026-10-15T12:00:00.000Z";
+  const BEFORE = new Date("2026-10-15T11:00:00.000Z");
+  const AFTER = new Date("2026-10-15T12:00:01.000Z");
+  const preparedWorld = (sessionStatus: string, extra: Partial<Tables> = {}) => world({
+    conversation_messages: [messageRow({ delivery_state: "dispatched", delivery_expires_at: EXPIRES })],
+    agent_tasks: [{ id: TASK, user_id: USER, message_id: MSG, state: "dispatched", agent_session_id: SESSION, run_id: RUN, step_id: STEP, turn_seq: 1 }],
+    agent_sessions: [{ id: SESSION, user_id: USER, status: sessionStatus }],
+    execution_steps: [{ id: STEP, user_id: USER, state: "prepared", kind: "agent_message", seq: 1, run_id: RUN, args: { message_id: MSG } }],
+    execution_runs: [{ id: RUN, user_id: USER, action_id: deterministicActionId(MSG) }],
+    actions: [{ id: deterministicActionId(MSG), user_id: USER, title: "이어서 해 줘", number: 139 }],
+    ...extra,
+  });
+
+  it.each([["unreachable", "queued"], ["bound", "sent"]] as const)("만료 전 세션 %s → %s, 만료 뒤에는 둘 다 expired (결과 · 목록 · id별 읽기 모두)", async (sessionStatus, before) => {
+    const fake = fakeAdmin({ tables: preparedWorld(sessionStatus) });
+    expect((await loadAgentMessageOutcome(fake.admin, USER, CONV, MSG, BEFORE))!.delivery).toEqual({ state: before });
+    expect((await loadAgentMessageOutcome(fake.admin, USER, CONV, MSG, AFTER))!.delivery).toEqual({ state: "expired" });
+    expect((await loadAgentDeliveries(fake.admin, USER, CONV, {}, BEFORE)).map((item) => item.delivery)).toEqual([{ state: before }]);
+    expect((await loadAgentDeliveries(fake.admin, USER, CONV, {}, AFTER)).map((item) => item.delivery)).toEqual([{ state: "expired" }]);
+    expect(await loadAgentDeliveriesByIds(fake.admin, USER, CONV, [MSG], BEFORE)).toEqual({ [MSG]: { state: before } });
+    expect(await loadAgentDeliveriesByIds(fake.admin, USER, CONV, [MSG], AFTER)).toEqual({ [MSG]: { state: "expired" } });
+    for (const call of fake.calls) expect(call.kind).toBe("select");
+  });
+
+  it("단계가 calling이면 만료 뒤에도 sent 그대로다", async () => {
+    const fake = fakeAdmin({ tables: preparedWorld("unreachable", { execution_steps: [{ id: STEP, user_id: USER, state: "calling", kind: "agent_message", seq: 1, run_id: RUN, args: { message_id: MSG } }] }) });
+    expect((await loadAgentMessageOutcome(fake.admin, USER, CONV, MSG, AFTER))!.delivery).toEqual({ state: "sent" });
   });
 });

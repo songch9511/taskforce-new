@@ -67,6 +67,12 @@ describe("agentDeliveryView: 계약 2.15 표의 모든 행", () => {
     expect(view({ state: "dispatched" }, { stepState, sessionStatus: "unreachable" })).toEqual({ state });
   });
 
+  // F1s 항목 1 (D1): unreachable만 prepared를 queued로 보인다. 다른 세션 상태는 모두 sent (`sessionStatus !== "bound"` 같은 변이를 잡는다)
+  it.each(["bound", "external", "closed"] as const)("dispatched + 단계 prepared + 세션 %s → sent (OD-11은 unreachable만)", (sessionStatus) => {
+    expect(agentMessageDelivery("dispatched", "prepared", sessionStatus)).toBe("sent");
+    expect(view({ state: "dispatched" }, { stepState: "prepared", sessionStatus })).toEqual({ state: "sent" });
+  });
+
   it.each(["failed", "pending", "skipped", null] as const)("dispatched + 단계 %s는 전달했다고 말하지 않는다 (not_sent, 이유 없음)", (stepState) => {
     expect(view({ state: "dispatched", reason: "usage_limited" }, { stepState })).toEqual({ state: "not_sent" });
   });
@@ -113,6 +119,14 @@ describe("R12: SQL이 delivery_reason에 쓸 수 있는 모든 값은 agentDeliv
   // Bridge stale/withdrawn 응답의 reason은 메시지 delivery_reason과 다른 계약이다.
   for (const match of sql.matchAll(/'status',\s*'(?:not_sent|queued)',\s*'reason',\s*'([a-z][a-z0-9_]*)'/g)) written.add(match[1]);
   for (const match of sql.matchAll(/mark_agent_message_not_sent\([^)]*?,\s*'([a-z][a-z0-9_]*)'\)/g)) written.add(match[1]);
+  // bridge lease의 회수: withdraw_bridge_command(<id>, '<이유>')의 이유는 메시지 delivery_reason이 된다 (F1s 항목 5). enum 밖의 값을 넘기는 이름 붙은 예외는 둘뿐이다
+  const WITHDRAW_EXCEPTIONS: Record<string, string> = {
+    expired: "상태가 이미 expired라 이유는 덧말이다: 20261127000000 뒤 withdraw_bridge_command가 이유를 null로 저장한다",
+    stale_answer: "answer 명령에서만 쓰고 메시지 행을 쓰지 않는다 (답 단계만 skipped)",
+  };
+  const withdrawCalls = new Set<string>();
+  for (const match of sql.matchAll(/withdraw_bridge_command\([^,]+,\s*'([a-z][a-z0-9_]*)'\)/g)) withdrawCalls.add(match[1]);
+  for (const reason of withdrawCalls) if (!(reason in WITHDRAW_EXCEPTIONS)) written.add(reason);
   for (const match of sql.matchAll(/p_reason not in \(([^)]*)\)/g)) add(literals(match[1]));
   // bridge가 알린 접수 전 실패 이유는 검증 목록 안에서만 delivery_reason이 된다 (apply_agent_event)
   for (const match of sql.matchAll(/v_payload->>'reason' not in \(('sign_in_needed'[^)]*)\) then\s*raise exception 'apply_agent_event: invalid pre-accept/g)) add(literals(match[1]));
@@ -137,5 +151,78 @@ describe("R12: SQL이 delivery_reason에 쓸 수 있는 모든 값은 agentDeliv
 
   it("agentDeliverySchema는 view의 결과를 모두 받는다", () => {
     expect(agentDeliverySchema.safeParse(view({ state: "queued", reason: "question_open" })).success).toBe(true);
+  });
+
+  it("회수 호출(withdraw_bridge_command)의 이유 글자를 모았고, 이름 붙인 예외 둘이 실제 호출에 있다 (마른 예외 0)", () => {
+    for (const reason of ["write_gate_closed", "unsupported"]) expect(withdrawCalls, reason).toContain(reason);
+    expect(Object.keys(WITHDRAW_EXCEPTIONS).sort()).toEqual(["expired", "stale_answer"]);
+    for (const reason of Object.keys(WITHDRAW_EXCEPTIONS)) {
+      expect(withdrawCalls, `${reason}: 호출에 없는 예외`).toContain(reason);
+      expect(agentDeliveryReasonSchema.safeParse(reason).success, `${reason}: enum에 들어갔으면 예외에서 뺀다`).toBe(false);
+    }
+  });
+
+  it("회수 호출의 이유는 enum이거나 이름 붙인 예외다", () => {
+    const unknown = [...withdrawCalls].filter((reason) => !(reason in WITHDRAW_EXCEPTIONS) && !agentDeliveryReasonSchema.safeParse(reason).success);
+    expect(unknown).toEqual([]);
+  });
+
+  it("withdraw_bridge_command의 마지막 정의는 expired 회수에 이유를 쓰지 않는다 (null) — 나머지 이유는 그대로", () => {
+    const definitions = [...sql.matchAll(/create (?:or replace )?function public\.withdraw_bridge_command\([^)]*\)[\s\S]*?as \$\$([\s\S]*?)\$\$;/g)].map((match) => match[1]);
+    expect(definitions.length).toBeGreaterThanOrEqual(2);
+    const latest = definitions.at(-1)!;
+    expect(latest).toContain("delivery_reason=case when p_reason='expired' then null else p_reason end");
+    expect(latest).not.toMatch(/delivery_reason\s*=\s*p_reason/);
+    expect(definitions[0]).toMatch(/delivery_reason=p_reason/); // BC의 원래 정의는 이유를 그대로 썼다 (기록)
+  });
+});
+
+// ─── F1s 항목 7 (D7): 만료한 prepared 메시지는 expired로 보인다 ───
+describe("agentDeliveryView 만료 표시: dispatched + prepared가 delivery_expires_at 뒤에도 queued로 보이던 틈 (F1s 항목 7)", () => {
+  const EXPIRES = "2026-10-15T12:00:00.000Z";
+  const before = new Date("2026-10-15T11:59:59.999Z");
+  const at = new Date(EXPIRES);
+  const after = new Date("2026-10-15T12:00:01.000Z");
+  const dispatched = { state: "dispatched" as const };
+
+  it("만료 전: unreachable + prepared는 queued (OD-11 그대로), 그 밖은 sent", () => {
+    expect(view(dispatched, { stepState: "prepared", sessionStatus: "unreachable", expiresAt: EXPIRES, now: before })).toEqual({ state: "queued" });
+    expect(view(dispatched, { stepState: "prepared", sessionStatus: "bound", expiresAt: EXPIRES, now: before })).toEqual({ state: "sent" });
+  });
+
+  it.each(["unreachable", "bound", "external", "closed", undefined] as const)("만료 시각이 되면(≤) prepared는 세션 %s여도 expired다 (lease의 회수 조건과 같다)", (sessionStatus) => {
+    for (const now of [at, after]) expect(view(dispatched, { stepState: "prepared", sessionStatus, expiresAt: EXPIRES, now })).toEqual({ state: "expired" });
+  });
+
+  it.each([["calling", "sent"], ["called", "accepted"], ["unknown_outcome", "unknown"]] as const)("단계 %s는 만료 뒤에도 %s 그대로다 (이미 Mac에 넘어갔다)", (stepState, state) => {
+    expect(view(dispatched, { stepState, sessionStatus: "unreachable", expiresAt: EXPIRES, now: after })).toEqual({ state });
+  });
+
+  it("질문에 답한 글(answer_for)은 만료 시각과 상관없이 그대로다", () => {
+    expect(view({ state: "dispatched", refs: { answer_for: [A1, "request"] } }, { stepState: "prepared", expiresAt: EXPIRES, now: after })).toEqual({ state: "answered" });
+    expect(view({ state: "dispatched", refs: { answer_for: [A1, "request"] } }, { stepState: "prepared", expiresAt: EXPIRES, now: after, answerStep: { state: "failed", reason: "usage_limited" } })).toEqual({ state: "not_sent", reason: "usage_limited" });
+  });
+
+  it("만료 시각이 없거나 읽을 수 없으면 만료로 보지 않는다", () => {
+    for (const expiresAt of [undefined, null, "", "not-a-date"]) {
+      expect(view(dispatched, { stepState: "prepared", sessionStatus: "unreachable", expiresAt, now: after }), String(expiresAt)).toEqual({ state: "queued" });
+    }
+  });
+
+  it("dispatched가 아닌 행은 만료 시각을 보지 않는다 (queued · not_sent는 만료 sweep의 몫)", () => {
+    expect(view({ state: "queued" }, { stepState: "prepared", expiresAt: EXPIRES, now: after })).toEqual({ state: "queued" });
+    expect(view({ state: "not_sent", reason: "session_busy" }, { stepState: "prepared", expiresAt: EXPIRES, now: after })).toEqual({ state: "not_sent", reason: "session_busy" });
+    expect(view({ state: "cancelled" }, { stepState: "prepared", expiresAt: EXPIRES, now: after })).toEqual({ state: "cancelled" });
+  });
+
+  it("now를 안 주면 지금 시각이다", () => {
+    expect(view(dispatched, { stepState: "prepared", sessionStatus: "unreachable", expiresAt: "2000-01-01T00:00:00.000Z" })).toEqual({ state: "expired" });
+    expect(view(dispatched, { stepState: "prepared", sessionStatus: "unreachable", expiresAt: "2999-01-01T00:00:00.000Z" })).toEqual({ state: "queued" });
+  });
+
+  it("결과는 agentDeliverySchema를 지킨다 (이유 없는 expired)", () => {
+    const result = view(dispatched, { stepState: "prepared", expiresAt: EXPIRES, now: after });
+    expect(result).toEqual({ state: "expired" });
+    expect(agentDeliverySchema.safeParse(result).success).toBe(true);
   });
 });

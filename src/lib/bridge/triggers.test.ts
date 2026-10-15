@@ -4,6 +4,7 @@ vi.mock("server-only", () => ({}));
 vi.mock("@/lib/agents/next-turn", async (importOriginal) => ({ ...await importOriginal<typeof import("@/lib/agents/next-turn")>(), startPinnedAgentMessage: vi.fn() }));
 import { kickBridgeConnections, kickBridgeSessions, redeliverBridgeMessages } from "./triggers";
 import { startPinnedAgentMessage } from "@/lib/agents/next-turn";
+import { AGENT_REGISTRY } from "@/lib/agents/registry";
 const id = "10000000-0000-4000-8000-000000000001";
 beforeEach(() => { vi.clearAllMocks(); vi.mocked(startPinnedAgentMessage).mockResolvedValue({ status: "queued", reason: "session_busy" }); vi.stubEnv("EXECUTION_ENABLED", "true"); vi.stubEnv("AGENT_ADAPTER_CODEX_ENABLED", "true"); });
 afterEach(() => vi.unstubAllEnvs());
@@ -98,4 +99,46 @@ it("does not kick a session twice when heartbeat also retries its connection", a
   await kickBridgeConnections(admin, id, [id], { EXECUTION_ENABLED: "true", AGENT_ADAPTER_CODEX_ENABLED: "true" }, [id]);
   expect(from.mock.calls.filter(([table]) => table === "agent_sessions")).toHaveLength(1);
   expect(startPinnedAgentMessage).not.toHaveBeenCalled();
+});
+
+// ─── F1s 항목 2 (D2): 계기 ③이 시작 입력을 그대로 넘긴다 (state · reason · 칩 우선순위 · target) ───
+describe("redeliverBridgeMessages(③)가 startPinnedAgentMessage에 넘기는 입력 전체", () => {
+  const other = "10000000-0000-4000-8000-000000000002";
+  const context = "10000000-0000-4000-8000-000000000003";
+  const env = { EXECUTION_ENABLED: "true", AGENT_ADAPTER_CODEX_ENABLED: "true" };
+  const turnChips = { action_ids: [id], context_ids: [] };
+  const selectedChips = { action_ids: [other], context_ids: [context] };
+  const head = (extra: Record<string, unknown>) => deliveryDb({ conversation_messages: { delivery_state: "not_sent", delivery_reason: "write_gate_closed", refs: {}, selected: null, ...extra } });
+  const expectedInput = (chips: { action_ids: string[]; context_ids: string[] }) => ({
+    userId: id, messageId: id, state: "not_sent", reason: "write_gate_closed", chips,
+    target: { capability: AGENT_REGISTRY["agent:codex"], mode: "manual", connectionStatus: "active" },
+  });
+
+  it("refs.agent_turn(A)과 selected(B · 맥락 포함)가 둘 다 있으면 A가 이긴다. state · reason은 머리 그대로", async () => {
+    vi.mocked(startPinnedAgentMessage).mockClear();
+    const { admin } = head({ refs: { agent_turn: turnChips }, selected: selectedChips });
+    expect(await redeliverBridgeMessages(admin, env)).toBe(1);
+    expect(startPinnedAgentMessage).toHaveBeenCalledExactlyOnceWith(admin, expectedInput(turnChips), env);
+  });
+
+  it("selected만 있으면 B (맥락 칩까지 그대로)", async () => {
+    vi.mocked(startPinnedAgentMessage).mockClear();
+    const { admin } = head({ selected: selectedChips });
+    await redeliverBridgeMessages(admin, env);
+    expect(startPinnedAgentMessage).toHaveBeenCalledExactlyOnceWith(admin, expectedInput(selectedChips), env);
+  });
+
+  it("둘 다 없으면 빈 칩", async () => {
+    vi.mocked(startPinnedAgentMessage).mockClear();
+    const { admin } = head({});
+    await redeliverBridgeMessages(admin, env);
+    expect(startPinnedAgentMessage).toHaveBeenCalledExactlyOnceWith(admin, expectedInput({ action_ids: [], context_ids: [] }), env);
+  });
+
+  it.each([["not_sent", "not_connected"], ["not_sent", "adapter_disabled"], ["queued", null]] as const)("머리의 state · reason(%s/%s)을 바꾸지 않고 넘긴다", async (state, reason) => {
+    vi.mocked(startPinnedAgentMessage).mockClear();
+    const { admin } = head({ delivery_state: state, delivery_reason: reason, refs: { agent_turn: turnChips } });
+    await redeliverBridgeMessages(admin, env);
+    expect(startPinnedAgentMessage).toHaveBeenCalledExactlyOnceWith(admin, { ...expectedInput(turnChips), state, reason }, env);
+  });
 });
