@@ -1,4 +1,5 @@
 #if os(macOS)
+import AppKit
 import Foundation
 import Observation
 import TaskforceKit
@@ -136,10 +137,10 @@ struct EdgeWorkSnapshot: Equatable {
 
     /// All work의 줄 (`WorkItem.list`). Done today는 읽은 날이 기기 시간대의 오늘일 때만 (자정 · 시간대가 바뀌면 다시 읽을 때까지 없음).
     /// `memberships`: 실제 범위 멤버십 (S3b). 줄의 상태 · 활동 · 수행자 · 순서는 멤버십과 상관없다
-    func items(now: Date, calendar: Calendar = .current, memberships: WorkMembershipIndex = .empty) -> [WorkItem] {
+    func items(now: Date, calendar: Calendar = .current, memberships: WorkMembershipIndex = .empty, numbers: [UUID: Int] = [:]) -> [WorkItem] {
         let done = DoneTodayWindow.isCurrent(since: doneSince, now: now, calendar: calendar) ? doneToday : []
         return WorkItem.list(
-            reviews: review, open: open, doneToday: done, working: working, stopping: stopping, reasons: reasons, memberships: memberships
+            reviews: review, open: open, doneToday: done, working: working, stopping: stopping, reasons: reasons, memberships: memberships, numbers: numbers
         )
     }
 }
@@ -212,6 +213,14 @@ final class EdgeShellModel {
         chatsEnabled ? Control.allCases : Control.allCases.filter { $0 != .chats }
     }
 
+    /// 고정 칸의 이름. 새 Issues 화면이 켜진 셸의 첫 칸은 "Issues"다 (툴팁 "Issues ⌘2", OA U2 사용자 결정): 꺼져 있으면 "All work"
+    func label(for control: Control) -> String {
+        control == .allWork && issues != nil ? Self.issuesLabel : control.label
+    }
+
+    static let issuesLabel = "Issues"
+    static let newSessionLabel = "New session"
+
     /// 이 셸이 듣는 키 명령인가: Chats가 꺼져 있으면 ⌘3 · ⌘N은 연결이 없어 지나간다 (먹지 않는다)
     func listens(to command: EdgeKeyCommand) -> Bool {
         switch command {
@@ -273,8 +282,31 @@ final class EdgeShellModel {
     @ObservationIgnored var onNewWindow: () -> Void = {}
     /// Assistant 창이 앞에 있다 (레일 Chats 칸이 `bezel/hover`로 칠해진다). 창 관리자가 올린다
     var assistantWindowFront = false
+    /// 새 Issues 화면(OA U2): 세션 · 번호 · 상세를 읽는 곳. **없으면 게이트가 꺼진 것이다** — Projects · 이슈 목록 · 상세 · SessionTab · 세션 패널이 없고 All work는 지금 그대로다 (`EdgeSurfaces.issueScreens`)
+    let issues: IssueRuntime?
+    var issueScreensEnabled: Bool { issues != nil }
+    /// Issues 패널 안의 화면 이동 (Projects → 목록 → 상세). 게이트가 켜졌을 때 `View.allWork`가 이 화면을 보인다
+    private(set) var nav = IssueNavigation()
+    /// 열린 세션 패널의 세션 (이슈 패널 왼쪽의 두 번째 패널). 이슈 패널 없이 열리지 않는다. 패널을 접어도 남아 ⌥ Space로 다시 열면 둘 다 마지막 화면이다
+    private(set) var sessionPanelID: UUID?
+    #if DEBUG
+    /// 디자인 비교 스냅샷(`-TFEdgeSnapshotIssues`)만: SessionTab을 호버한 모양(펼침)으로 둔다
+    var tabExpandedForSnapshot = false
+    #endif
+    /// New session `+`가 눌렸다: 창 관리자가 새 Assistant 창을 열고 범위 칩을 달아 대상 메뉴를 연다 (칩은 눌린 곳의 범위)
+    @ObservationIgnored var onNewSession: (AssistantOpenItem?) -> Void = { _ in }
+    /// Ask 알약: 앞 Assistant 창에 그 항목의 칩을 더한다 (창이 없으면 새 창). 컨트롤러가 창 관리자에 잇는다
+    @ObservationIgnored var onAsk: (AssistantOpenItem) -> Void = { _ in }
+    /// 인용의 원문 링크를 연다 (시험은 가짜로 바꾼다)
+    @ObservationIgnored var onOpenURL: (URL) -> Void = { NSWorkspace.shared.open($0) }
+    /// 세션 머리 알약(Open in Terminal · Resume here)의 동작. **없으면 알약을 그리지 않는다** (알약 동작은 D4a: 앱에서는 비어 있고 견본 하네스만 채운다)
+    @ObservationIgnored var onSessionPill: ((AgentSessionPill, AgentSessionItem) -> Void)?
+    /// More 목록(탭의 `…`): 숨은 세션들을 메뉴로 보인다. 컨트롤러가 메뉴 창을 올린다
+    @ObservationIgnored var onShowMoreSessions: ([AgentSessionItem]) -> Void = { _ in }
     /// 포인터가 Review 타일 위에 있다 (툴팁 · 호버 덧칠)
     private(set) var hoveredTile = false
+    /// 포인터가 New session `+` 위에 있다 (OA U2, 툴팁 · 호버 덧칠)
+    private(set) var hoveredPlus = false
     /// Review 페이지가 보이는 결정의 stable action id. 몇 번째인지(index)가 아니라 id로 가리킨다: 큐가 바뀌어도 키 · 클릭은 이 id의 항목에만 간다
     private(set) var reviewID: UUID?
     /// Review 페이지에 들어온 차례: 패널을 다시 열거나 다른 화면에서 Review로 들어올 때마다 오른다 (단계를 옮기는 것은 아니다).
@@ -302,8 +334,9 @@ final class EdgeShellModel {
         reduceMotion: Bool = false, schedule: @escaping EdgeSchedule = EdgeScheduler.live, clock: @escaping () -> Date = Date.init,
         calendar: @escaping () -> Calendar = { Calendar.current }, pinStore: WorkPinStore = WorkPinStore(defaults: nil),
         contexts: WorkContextStore? = nil, review: ReviewDesk? = nil, summary: ReturnSummaryStore? = nil, chatsEnabled: Bool = true,
-        windowsEnabled: Bool = false
+        windowsEnabled: Bool = false, issues: IssueRuntime? = nil
     ) {
+        self.issues = issues
         self.windowsEnabled = chatsEnabled && windowsEnabled
         self.contexts = contexts
         self.review = review
@@ -334,11 +367,12 @@ final class EdgeShellModel {
     var tooltip: (title: String, detail: String)? {
         guard isExpanded, !panelOpen, !menuOpen else { return nil }
         if hoveredTile, let tileTooltip { return tileTooltip }
+        if hoveredPlus { return (Self.newSessionLabel, "") }
         if let hoveredID, let entry = slots.first(where: { $0.id == hoveredID }) {
             return (entry.title, "· \(entry.state.label) · \(entry.activity)")
         }
         if let hoveredControl, let shortcut = hoveredControl.shortcut {
-            return (hoveredControl.label, shortcut)
+            return (label(for: hoveredControl), shortcut)
         }
         return nil
     }
@@ -364,6 +398,7 @@ final class EdgeShellModel {
             hoveredID = nil
             hoveredControl = nil
             hoveredTile = false
+            hoveredPlus = false
             guard railHovered, leaveTimer == nil else { return }
             leaveTimer = schedule(TFMotion.railLeaveDelay) { [weak self] in
                 guard let self else { return }
@@ -378,6 +413,7 @@ final class EdgeShellModel {
         if id != nil {
             hoveredControl = nil
             hoveredTile = false
+            hoveredPlus = false
         }
     }
 
@@ -386,6 +422,7 @@ final class EdgeShellModel {
         if control != nil {
             hoveredID = nil
             hoveredTile = false
+            hoveredPlus = false
         }
     }
 
@@ -395,6 +432,17 @@ final class EdgeShellModel {
         if tile {
             hoveredID = nil
             hoveredControl = nil
+            hoveredPlus = false
+        }
+    }
+
+    /// 포인터가 New session `+` 위에 있다 (OA U2)
+    func hover(plus: Bool) {
+        hoveredPlus = plus
+        if plus {
+            hoveredID = nil
+            hoveredControl = nil
+            hoveredTile = false
         }
     }
 
@@ -435,15 +483,22 @@ final class EdgeShellModel {
         }
     }
 
-    /// 패널에서 지금 열린 항목 (Assistant 창의 auto 칩이 따라간다): All work에서 연 일 · Review가 보이는 결정. 패널이 닫혀 있으면 없다
-    var openItem: (id: UUID, title: String)? {
+    /// 패널에서 지금 열린 항목 (Assistant 창의 auto 칩이 따라간다): All work에서 연 일 · Review가 보이는 결정. 패널이 닫혀 있으면 없다.
+    /// 새 Issues 화면이 켜져 있으면 가장 안쪽에 열린 것이다 (세션 패널 → 그 세션, 이슈 상세 → 그 이슈(번호 앞), 프로젝트 목록 → 그 프로젝트, 그 밖은 없음)
+    var openItem: AssistantOpenItem? {
         guard panelOpen else { return nil }
         switch view {
         case .review:
-            return shownReview.map { ($0.id, $0.title) }
+            return shownReview.map { AssistantOpenItem(kind: .action, id: $0.id, title: $0.title, number: issues?.numbers.number(for: $0.id)) }
         case .allWork:
+            if issues != nil {
+                return IssueOpenItemRules.openItem(
+                    screen: nav.current, session: openSessionItem, items: workItems, contexts: contextList,
+                    number: { [issues] in issues?.numbers.number(for: $0) }
+                )
+            }
             guard let currentID, let item = workItems.first(where: { $0.id == currentID }) else { return nil }
-            return (currentID, item.action.title)
+            return AssistantOpenItem(kind: .action, id: currentID, title: item.action.title)
         case .chats:
             return nil
         }
@@ -483,6 +538,11 @@ final class EdgeShellModel {
         currentID = nil
         workFilter = WorkFilter()
         filtersOpen = false
+        // 새 Issues 화면: ⌘2는 Projects 첫 화면이다 (쌓인 화면과 세션 패널을 비운다)
+        if issues != nil {
+            nav.reset()
+            sessionPanelID = nil
+        }
         openPanel(.allWork)
     }
 
@@ -510,11 +570,181 @@ final class EdgeShellModel {
     /// 레일의 일: 그 일을 연다. 일 상세 · Review 화면은 다음 PR이라 지금은 All work에서 그 행을 표시한다.
     /// 남은 검색어 · 필터가 그 일을 가리면 검색어 · 필터를 비운다 (연 일이 목록에 보여야 한다)
     func open(itemID: UUID) {
+        if issues != nil {
+            openIssueFromOutside(itemID)
+            return
+        }
         currentID = itemID
         if let item = workItems.first(where: { $0.id == itemID }), !workFilter.matches(item) {
             workFilter = WorkFilter()
         }
         openPanel(.allWork)
+    }
+
+    // MARK: Issues (OA U2)
+
+    /// 읽은 프로젝트(보관한 것 포함, 이름 · 아이콘 · 상태)
+    var contextList: [WorkContext] { contexts.map { Array($0.contexts.values) } ?? [] }
+
+    /// 멤버십을 읽었다 (읽기 전에는 Projects · 목록이 어떤 이슈도 어느 프로젝트에 두지 않는다: 아무것도 말하지 않는다)
+    var membershipsKnown: Bool { contexts?.hasRead ?? false }
+
+    /// 지금 열린 세션 패널의 세션
+    var openSessionItem: AgentSessionItem? {
+        guard let sessionPanelID else { return nil }
+        return issues?.sessions.item(id: sessionPanelID)
+    }
+
+    /// Projects 목록의 행 (활성 프로젝트 이름순 → Ungrouped → Done today)
+    var projectRows: [ProjectRowContent] {
+        ProjectListRules.rows(items: workItems, contexts: contextList, sessions: issues?.sessions.items ?? [], today: DueDateFormat.today())
+    }
+
+    /// 이슈 목록 하나 (프로젝트 · Ungrouped · Done today). 없는 프로젝트 · 보관한 프로젝트면 nil
+    func issueList(_ scope: IssueListScope) -> IssueListContent? {
+        IssueListRules.content(scope: scope, items: workItems, contexts: contextList, sessions: issues?.sessions.items ?? [], today: DueDateFormat.today())
+    }
+
+    func issueItem(_ id: UUID) -> WorkItem? {
+        workItems.first { $0.id == id }
+    }
+
+    /// 패널 머리 제목: 새 Issues 화면은 지금 연 화면이 정한다 (Projects · 프로젝트 이름 · "#139"). 번호를 아직 못 읽었으면 상세 제목은 비운다 (지어내지 않는다)
+    var panelTitle: String {
+        guard issues != nil, view == .allWork else { return view.title }
+        switch nav.current {
+        case .projects: return "Projects"
+        case .list(let scope): return issueList(scope)?.title ?? ""
+        case .detail(let id): return IssueNumberStore.label(issues?.numbers.number(for: id) ?? detailNumber(id)) ?? ""
+        }
+    }
+
+    /// 상세를 읽어 온 번호 (목록용 배치 읽기가 아직 못 가져왔을 때)
+    private func detailNumber(_ id: UUID) -> Int? {
+        if case .ready(let content)? = issues?.details.screen(for: id) { content.number } else { nil }
+    }
+
+    /// 탭이 붙는 패널의 이슈들: 이슈 상세는 그 이슈, 프로젝트 · Ungrouped 목록은 그 목록의 이슈들. Projects · Done today에는 탭이 없다 (nil)
+    var tabIssueIDs: Set<UUID>? {
+        guard issues != nil, panelOpen, view == .allWork, let scope = nav.tabScope else { return nil }
+        switch scope {
+        case .detail(let id): return [id]
+        case .list(let list): return issueList(list).map { Set($0.issueIDs) }
+        case .projects: return nil
+        }
+    }
+
+    /// 탭이 보이는가 (세션 패널은 탭이 있을 때만 열린다)
+    var showsSessionTab: Bool { tabIssueIDs != nil }
+
+    /// 탭 항목: 닫힌 세션은 없고 여섯과 More (현재 세션 · needs-you는 늘 남긴다)
+    var tabPlan: AgentSessionTabPlan {
+        guard let ids = tabIssueIDs, let issues else { return AgentSessionTabPlan(shown: [], hidden: []) }
+        return AgentSessionRules.tabPlan(sessions: issues.sessions.sessions(of: ids), currentID: sessionPanelID)
+    }
+
+    /// 이슈 상세의 Sessions 목록: 만든 시각 순, 닫힌 세션은 맨 아래
+    func sessions(of issue: UUID) -> [AgentSessionItem] {
+        guard let issues else { return [] }
+        return AgentSessionRules.listOrder(issues.sessions.sessions(of: [issue]))
+    }
+
+    /// Projects에서 목록을 연다 (세션 패널은 닫는다)
+    func openList(_ scope: IssueListScope) {
+        guard issues != nil else { return }
+        sessionPanelID = nil
+        nav.open(scope)
+        currentID = nil
+    }
+
+    /// 목록에서 이슈 상세를 연다. 이미 그 상세가 열려 있으면 세션 패널을 둔다
+    func openIssue(_ id: UUID) {
+        guard issues != nil else { return }
+        if nav.detailID != id { sessionPanelID = nil }
+        nav.openDetail(id)
+        currentID = id
+        Task { await issues?.details.load(id) }
+    }
+
+    /// 목록 밖(레일 · ⌘1 · 칩)에서 이슈를 연다: 뒤로는 그 이슈의 첫 프로젝트(이름순) 목록 또는 Ungrouped.
+    /// 링 클릭이 이미 열린 같은 이슈면 세션 패널을 둔다 (다른 이슈면 닫는다)
+    func openIssueFromOutside(_ id: UUID) {
+        guard issues != nil else { return }
+        let same = panelOpen && view == .allWork && nav.detailID == id
+        if !same { sessionPanelID = nil }
+        nav.openDetail(id, outside: issueItem(id).map(IssueNavigation.fallbackScope) ?? .ungrouped)
+        currentID = id
+        openPanel(.allWork)
+        Task { await issues?.details.load(id) }
+    }
+
+    /// 머리의 뒤로: 세션 패널도 닫는다
+    func goBack() {
+        guard issues != nil else { return }
+        sessionPanelID = nil
+        nav.back()
+        currentID = nav.detailID
+    }
+
+    /// SessionRow · 탭 항목: 탭이 붙은 패널 왼쪽에 세션 패널 (같은 세션이면 닫고, 다른 세션이면 바꾼다). 이슈 패널 없이 열리지 않는다
+    func openSession(_ id: UUID) {
+        guard issues != nil, showsSessionTab || (panelOpen && view == .allWork && nav.detailID != nil) else { return }
+        sessionPanelID = sessionPanelID == id ? nil : id
+        if sessionPanelID != nil { Task { await issues?.sessions.refresh() } }
+    }
+
+    func closeSessionPanel() {
+        sessionPanelID = nil
+    }
+
+    /// New session `+`: 새 Assistant 창 + 범위 칩 + 대상 메뉴. 칩: 탭 = 그 패널의 이슈 또는 프로젝트, 레일 = 지금 패널에 열린 것 (없으면 칩 없음)
+    func newSession(from source: NewSessionSource) {
+        guard issues != nil else { return }
+        let scope: AssistantOpenItem?
+        switch source {
+        case .rail:
+            scope = openItem
+        case .tab:
+            scope = IssueOpenItemRules.openItem(
+                screen: nav.current, session: nil, items: workItems, contexts: contextList, number: { [issues] in issues?.numbers.number(for: $0) }
+            )
+        }
+        onNewSession(scope)
+    }
+
+    /// Esc의 Issues 차례 (열린 메뉴는 컨트롤러가 먼저 닫는다): 세션 패널 → 이슈 상세(목록으로). 그 밖은 접는다. 처리했으면 true
+    func escapeIssues() -> Bool {
+        if sessionPanelID != nil {
+            sessionPanelID = nil
+            return true
+        }
+        if nav.detailID != nil {
+            nav.back()
+            currentID = nav.detailID
+            return true
+        }
+        return false
+    }
+
+    /// 읽은 것이 바뀐 뒤 열어 둔 화면을 맞춘다: 없어진 프로젝트의 목록은 Projects로, 없어진 이슈의 상세는 목록으로 (지우거나 병합된 이슈), 사라진 세션의 패널은 닫는다.
+    /// 목록 · 멤버십 · 세션을 아직 읽지 못했으면 아무것도 닫지 않는다 (읽는 중에 화면을 치우지 않는다)
+    func reconcileIssues() {
+        guard let issues, case .loaded = work.load else { return }
+        if membershipsKnown {
+            let known = Set(workItems.map(\.id))
+            let before = nav
+            nav.reconcile(listExists: { issueList($0) != nil }, issueExists: { known.contains($0) })
+            if nav != before { currentID = nav.detailID }
+        }
+        if issues.sessions.hasRead, let id = sessionPanelID, issues.sessions.item(id: id) == nil { sessionPanelID = nil }
+        // 세션 패널은 탭이 붙은 이슈 패널 없이 열려 있지 않다 (Projects · Done today에는 탭이 없다)
+        if sessionPanelID != nil, nav.tabScope == nil { sessionPanelID = nil }
+    }
+
+    /// 세션 · 번호가 바뀌었다: 레일의 링을 다시 정하고 열어 둔 화면을 맞춘다
+    func sessionsChanged() {
+        refreshSlots(at: clock())
+        reconcileIssues()
     }
 
     // MARK: Review (S4)
@@ -533,7 +763,8 @@ final class EdgeShellModel {
 
     /// 레일의 일을 누름. S4가 켜져 있고 Needs-you 링이면 그 Review 항목 (그 밖의 링은 그 일, 기존 동작 그대로)
     func openRailEntry(_ entry: RailEntry) {
-        if review != nil, entry.kind == .needsYou {
+        // 새 Issues 화면: needs-you가 세션의 질문이라 Review 큐에 그 이슈가 없으면 다른 이슈의 Review를 열지 않고 그 이슈의 상세를 연다
+        if review != nil, entry.kind == .needsYou, issues == nil || reviewQueue.contains(entry.id) {
             openReview(itemID: entry.id)
         } else {
             open(itemID: entry.id)
@@ -646,6 +877,9 @@ final class EdgeShellModel {
 
     /// Esc: 안쪽 것(열린 필터 카드 · Chats의 대화 목록)을 먼저 닫고, 그다음 패널을 접는다 (디자인 Focus and keys)
     func escape() {
+        if panelOpen, view == .allWork, issues != nil, escapeIssues() {
+            return
+        }
         if panelOpen, view == .allWork, filtersOpen {
             filtersOpen = false
         } else if panelOpen, view == .chats, onChatEscape() {
@@ -679,7 +913,7 @@ final class EdgeShellModel {
     /// All work의 줄 (지금 시각의 기기 시간대로 Done today를 정한다). `timeEpoch`를 읽어, 시각 신호(`timeChanged`)가 오면 이 값을 읽은 화면이 다시 계산한다
     var workItems: [WorkItem] {
         _ = timeEpoch
-        return work.items(now: clock(), calendar: calendar(), memberships: contexts?.index ?? .empty)
+        return work.items(now: clock(), calendar: calendar(), memberships: contexts?.index ?? .empty, numbers: issues?.numbers.numbers ?? [:])
     }
 
     /// 프로젝트(범위 멤버십)를 읽다 생긴 문제: 목록 위 Notice (할 일 목록의 문제가 먼저)
@@ -724,6 +958,8 @@ final class EdgeShellModel {
         currentID = nil
         hoveredID = nil
         reviewID = nil
+        nav.reset()
+        sessionPanelID = nil
         pins = account.map { pinStore.load(account: $0) } ?? WorkPins()
     }
 
@@ -743,6 +979,7 @@ final class EdgeShellModel {
         self.work = work
         reconcileReview(previous: previousReview)
         refreshSlots(at: now)
+        reconcileIssues()
     }
 
     /// Done 3초가 지난 일을 뺀다
@@ -752,7 +989,7 @@ final class EdgeShellModel {
 
     private func refreshSlots(at now: Date) {
         recentlyDone = recentlyDone.filter { now.timeIntervalSince($0.value) < TFMotion.doneHold }
-        let entries = Self.entries(work, recentlyDone: recentlyDone)
+        let entries = Self.entries(work, recentlyDone: recentlyDone, sessions: issues?.sessions.items)
         live = entries
         slots = RailOrdering.slots(previous: slots.map(\.id), entries: entries)
         if let hoveredID, !slots.contains(where: { $0.id == hoveredID }) { self.hoveredID = nil }
@@ -767,21 +1004,51 @@ final class EdgeShellModel {
         doneTimer = schedule(delay) { [weak self] in self?.expireDone() }
     }
 
-    /// 지금 레일에 오를 수 있는 일: 확인 요청(needs you) · run이 도는 일(running · stop requested) · 막 끝난 일(done)
-    static func entries(_ work: EdgeWorkSnapshot, recentlyDone: [UUID: Date]) -> [RailEntry] {
-        var entries = work.review.map {
-            RailEntry(id: $0.id, title: $0.title, kind: .needsYou, state: TaskStatusMark.State(.review))
+    /// 지금 레일에 오를 수 있는 일: 확인 요청(needs you) · run이 도는 일(running · stop requested) · 막 끝난 일(done).
+    /// `sessions`가 있으면(새 Issues 화면) 링 하나 = 이슈 하나다: 그 이슈의 v1 링과 닫히지 않은 세션들의 링 중 먼저인 것 (needs-you → unreachable → stopping → running → done → waiting).
+    /// 세션만 있는 이슈(v1 run 없이 세션이 돈다)도 오른다. idle 세션은 링이 아니다
+    static func entries(_ work: EdgeWorkSnapshot, recentlyDone: [UUID: Date], sessions: [AgentSessionItem]? = nil) -> [RailEntry] {
+        guard let sessions else {
+            var entries = work.review.map {
+                RailEntry(id: $0.id, title: $0.title, kind: .needsYou, state: TaskStatusMark.State(.review))
+            }
+            let reviewIDs = Set(entries.map(\.id))
+            for action in work.open where work.working.contains(action.id) && !reviewIDs.contains(action.id) {
+                let kind: ActivityRing.Kind = work.stopping.contains(action.id) ? .stopping : .running
+                let activity = kind == .stopping ? "Stop requested · not confirmed" : nil
+                entries.append(RailEntry(id: action.id, title: action.title, kind: kind, state: TaskStatusMark.State(TaskGroup.open(action)), activity: activity))
+            }
+            for action in work.doneToday where recentlyDone[action.id] != nil {
+                entries.append(RailEntry(id: action.id, title: action.title, kind: .done, state: .done))
+            }
+            return entries
         }
-        let reviewIDs = Set(entries.map(\.id))
-        for action in work.open where work.working.contains(action.id) && !reviewIDs.contains(action.id) {
-            let kind: ActivityRing.Kind = work.stopping.contains(action.id) ? .stopping : .running
-            let activity = kind == .stopping ? "Stop requested · not confirmed" : nil
-            entries.append(RailEntry(id: action.id, title: action.title, kind: kind, state: TaskStatusMark.State(TaskGroup.open(action)), activity: activity))
+        var entries: [RailEntry] = []
+        var seen = Set<UUID>()
+        func add(_ action: ActionSummary, v1: AgentSessionRing?, state: TaskStatusMark.State) {
+            guard seen.insert(action.id).inserted else { return }
+            let mine = AgentSessionRules.sessions(of: [action.id], in: sessions)
+            guard let ring = AgentSessionRules.issueRing(v1: v1, sessions: mine) else { return }
+            entries.append(RailEntry(id: action.id, title: action.title, kind: ActivityRing.Kind(ring), state: state, activity: ring.railActivity))
         }
-        for action in work.doneToday where recentlyDone[action.id] != nil {
-            entries.append(RailEntry(id: action.id, title: action.title, kind: .done, state: .done))
+        for action in work.review { add(action, v1: .needsYou, state: TaskStatusMark.State(.review)) }
+        for action in work.open {
+            let v1: AgentSessionRing? = work.working.contains(action.id) ? (work.stopping.contains(action.id) ? .stopping : .running) : nil
+            add(action, v1: v1, state: TaskStatusMark.State(TaskGroup.open(action)))
         }
+        for action in work.doneToday where recentlyDone[action.id] != nil { add(action, v1: .done, state: .done) }
         return entries
+    }
+}
+
+extension AgentSessionRing {
+    /// 레일 항목의 활동 글: 링의 말과 다른 것만 (Stop 요청 · 연결 끊김은 설명이 붙는다)
+    var railActivity: String? {
+        switch self {
+        case .stopping: WorkActivity.stopRequested
+        case .unreachable: AgentSessionRules.connectionLost
+        default: nil
+        }
     }
 }
 #endif

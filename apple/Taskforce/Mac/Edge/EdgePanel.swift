@@ -21,9 +21,10 @@ enum EdgePanelMetrics {
         min(maxHeight, max(minHeight, headerHeight + body + footer))
     }
 
-    /// 패널 창의 자리 (화면 좌표, 아래가 0). 오른쪽은 펼친 레일 왼쪽에서 12pt, 위는 레일 위 모서리
-    static func frame(height: CGFloat, railTop: CGFloat, screenMaxX: CGFloat) -> NSRect {
-        NSRect(x: screenMaxX - EdgeRailLayout.railWidth - gap - width, y: railTop - height, width: width, height: height)
+    /// 패널 창의 자리 (화면 좌표, 아래가 0). 오른쪽은 펼친 레일 왼쪽에서 12pt, 위는 레일 위 모서리.
+    /// `tab`: 패널 왼쪽에 붙는 SessionTab 띠의 폭 (OA U2: 창이 그만큼 왼쪽으로 넓다. 탭이 없으면 0)
+    static func frame(height: CGFloat, railTop: CGFloat, screenMaxX: CGFloat, tab: CGFloat = 0) -> NSRect {
+        NSRect(x: screenMaxX - EdgeRailLayout.railWidth - gap - width - tab, y: railTop - height, width: width + tab, height: height)
     }
 }
 
@@ -35,6 +36,8 @@ final class EdgePanelPresentation {
     /// 아래 입력칸(Chats)의 높이: 패널 높이에 더한다
     var footerHeight: CGFloat = 0
     var shown = false
+    /// 패널 왼쪽 SessionTab 띠의 폭 (없으면 0, OA U2): 창 프레임이 그만큼 넓다
+    var tabWidth: CGFloat = 0
 }
 
 /// 패널 (디자인 EdgePanel): 머리 · 본문 · (입력칸). 자기 탐색이 없고 닫기 버튼도 없다. 한 번에 한 화면.
@@ -60,15 +63,33 @@ struct EdgePanelView: View {
     var body: some View {
         // 이동(16pt)은 창이 움직이고, 크기(.975 → 1)는 여기서. 움직임 줄이기면 둘 다 없다
         let scale = TFMotion.panelTransform(shown: presentation.shown, reduceMotion: shell.reduceMotion).scale
+        let showsTab = shell.showsSessionTab
+        // 새 Issues 화면: 패널 왼쪽에 SessionTab 띠가 붙는다. 창이 그만큼 넓고 띠 밖은 투명해 클릭이 뒤로 지나간다
+        HStack(alignment: .top, spacing: 0) {
+            if showsTab { sessionTab }
+            panel
+        }
+        .frame(maxHeight: .infinity, alignment: .top)
+        .scaleEffect(scale, anchor: .topTrailing)
+        .animation(TFMotion.move(TFMotion.panelMove, reduceMotion: shell.reduceMotion), value: presentation.shown)
+        .onChange(of: showsTab, initial: true) { _, shows in
+            presentation.tabWidth = shows ? SessionTabGeometry.expanded.width : 0
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Taskforce")
+    }
+
+    /// 패널: 머리 · 본문 · (입력칸). 폭 380, 모서리 18, `panel` 재료
+    private var panel: some View {
         let inConversation = shell.view == .chats && chat?.chat.mode == .chat
-        VStack(spacing: 0) {
+        return VStack(spacing: 0) {
             header
             ScrollViewReader { proxy in
                 ScrollView {
                     Group {
                         switch shell.view {
                         case .allWork:
-                            workList
+                            if shell.issueScreensEnabled { IssuesPanelBody(shell: shell) } else { workList }
                         case .chats:
                             if let chat {
                                 ChatPanelBody(runtime: chat, shell: shell)
@@ -104,10 +125,22 @@ struct EdgePanelView: View {
             }
         }
         .clipShape(RoundedRectangle(cornerRadius: EdgePanelMetrics.radius, style: .continuous))
-        .scaleEffect(scale, anchor: .topTrailing)
-        .animation(TFMotion.move(TFMotion.panelMove, reduceMotion: shell.reduceMotion), value: presentation.shown)
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("Taskforce")
+    }
+
+    /// 패널 왼쪽 가장자리의 SessionTab (이슈 상세 · 프로젝트 · Ungrouped 목록의 세션). 위는 패널 위에서 40 (필렛 10 포함해 30에서 시작)
+    private var sessionTab: some View {
+        let plan = shell.tabPlan
+        #if DEBUG
+        let expanded = shell.tabExpandedForSnapshot
+        #else
+        let expanded = false
+        #endif
+        return SessionTab(
+            items: plan.shown.map { SessionTabItem($0, current: $0.id == shell.sessionPanelID) }, moreLabel: plan.moreLabel,
+            expanded: expanded, reduceMotion: shell.reduceMotion, onOpen: { shell.openSession($0) },
+            onMore: { shell.onShowMoreSessions(plan.hidden) }, onNew: { shell.newSession(from: .tab) }
+        )
+        .padding(.top, SessionTabMetrics.top - SessionTabGeometry.fillet)
     }
 
     @ViewBuilder
@@ -116,9 +149,21 @@ struct EdgePanelView: View {
             ChatPanelHeader(chat: chat.chat)
         } else if shell.view == .review, shell.review != nil {
             ReviewPanelHeader(shell: shell)
+        } else if shell.issueScreensEnabled, shell.view == .allWork {
+            // 새 Issues 화면: 머리는 지금 연 화면이 정한다. 뒤로는 목록 · 상세에, 직접 추가 `+`는 Done today를 뺀 이슈 목록에 (Add task = 기존 런처)
+            PanelHeader(
+                title: shell.panelTitle, onBack: shell.nav.canGoBack ? { shell.goBack() } : nil,
+                onAdd: addsTask ? { shell.onAddTask() } : nil
+            )
         } else {
             PanelHeader(title: shell.view.title)
         }
+    }
+
+    /// 머리 `+`(Add task)가 있나: 프로젝트 · Ungrouped 이슈 목록뿐
+    private var addsTask: Bool {
+        guard case .list(let scope) = shell.nav.current else { return false }
+        return shell.issueList(scope)?.allowsAdd ?? false
     }
 
     /// Chats에 대화가 없음 (이 셸을 대화 저장소 없이 만들었을 때)
@@ -179,7 +224,8 @@ final class EdgePanelController {
     init(shell: EdgeShellModel, chat: ChatRuntime? = nil) {
         self.shell = shell
         panel = EdgeKeyPanel(
-            contentRect: NSRect(x: 0, y: 0, width: EdgePanelMetrics.width, height: EdgePanelMetrics.maxHeight),
+            // 새 Issues 화면이 켜진 셸은 SessionTab 띠(36)만큼 넓다. 꺼져 있으면 지금 그대로 380
+            contentRect: NSRect(x: 0, y: 0, width: EdgePanelMetrics.width + (shell.issueScreensEnabled ? SessionTabGeometry.expanded.width : 0), height: EdgePanelMetrics.maxHeight),
             styleMask: [.borderless, .nonactivatingPanel, .fullSizeContentView],
             backing: .buffered,
             defer: false
@@ -208,7 +254,8 @@ final class EdgePanelController {
         return EdgePanelMetrics.frame(
             height: EdgePanelMetrics.height(body: presentation.bodyHeight, footer: presentation.footerHeight),
             railTop: EdgeRailPanelController.railTop(on: screen),
-            screenMaxX: screen.frame.maxX
+            screenMaxX: screen.frame.maxX,
+            tab: presentation.tabWidth
         )
     }
 
