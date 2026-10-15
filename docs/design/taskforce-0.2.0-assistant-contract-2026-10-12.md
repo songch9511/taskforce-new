@@ -522,6 +522,21 @@ Action 생성(3.3)은 `action_events` `user_created`(`rule='assistant_agent'`)�
 - **미시험(D3a에서 시험):** 같은 응답의 defer 뒤 deny 조합(결정표 "이미 defer를 한 번 냄"), Write를 deny로 닫은 뒤의 모델 행동(닫기 모드), managed settings가 있는 Mac, `--permission-mode plan`, stream-json 제어 프로토콜.
 - **약관 gate LEGAL-CC:** 사용자가 수정하지 않은 `claude`에 직접 로그인해 쓰는 구조다. 제품에서 Claude Code를 띄우는 것은 Commercial Terms 동의를 조건으로 한다. 외부 사용자에게 켜기 전에 확인한다(아키텍처 8.2의 ARCH-V07).
 
+#### 13.2.1 정정 (OA D3a, 2026-10-15)
+
+OA D3a 계약(`handoffs/oa-d3a-contract.md`) 5.1의 결정을 반영한다. 위 13.2와 다르면 이 절이 이긴다. 13.4.1은 바꾸지 않는다.
+
+1. **답 resume의 순서(실측, 위 본문 침묵).** 보류를 답하는 빈 stdin resume에서는 `SessionStart:resume` → `command_lifecycle` → 보류 id의 `hook_started PreToolUse` → `hook_response` → `tool_result` → **그 뒤에** `system/init`이 온다(S0 `r3-cc9-2` · `r3-cc9-3`). 그래서 답 resume의 자체 점검 ②는 보류 호출이 실행된 뒤에 확인된다. 보류 호출은 ③ · ④와 bridge 자신의 답(보류 id · 입력 digest 대조)으로 지키고, ②가 어긋나면 SIGINT로 그 뒤 호출을 0으로 만든다. 보류 id의 훅보다 init이 먼저 오면(상태 유실) 그 답은 닫힌 것으로 본다.
+2. **소켓 · 인자 · 요청 모양(Q4).** 소켓은 `<Application Support>/<번들 id>/Bridge/hook.sock`(경로가 100바이트를 넘으면 사용자 임시 폴더 아래 `tf-<번들 id sha256 앞 8자>/hook.sock`, 폴더 0700 · 소켓 0600 · 피어 uid 확인)이다. 훅 명령은 `'<helper>' pre-tool-use --socket '<S>' --session '<id>' --nonce '<N>'`(SessionStart는 `'<helper>' session-start`, 모든 값 작은따옴표)이고 `mcp.json`은 `--session`만 준다(MCP는 소켓 · nonce를 쓰지 않는다). 설정 파일은 세션 폴더의 `config/`(cwd 밖)에 spawn마다 새로 쓴다. 요청은 Write `content` · Edit `old_string` · `new_string`을 빼고 길이와 원래 입력 전체의 정규 sha256(`input_sha256`), 훅 입력의 Claude 세션 id(`provider_session_id`)를 싣는다. bridge 응답은 `updated_input` 대신 `answers`(ask_user 답) 또는 `command`(다시 만든 Bash)만 주고, 훅이 자기가 받은 원래 입력에서 그 키만 바꿔 `updatedInput`을 만든다(모델이 넣은 `answers`는 버린다). bridge는 1.2초 안에 답하지 못하면 deny로 끊는다.
+3. **model · 예산(Q6).** `--model`은 주지 않는다(사용자 플랜의 기본). `--max-budget-usd 25`는 폭주를 막는 상한일 뿐 약속이 아니다(넘으면 `failed(agent_error)`).
+4. **PATH · 실행 파일(Q7).** `claude`는 `~/.local/bin` → `/opt/homebrew/bin` → `/usr/local/bin`의 처음 있는 것을 쓰고, 자식 PATH = `<그 폴더>:~/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin`이다. 셸 설정을 실행해 PATH를 얻지 않는다.
+5. **결과 불명(Q5).** init을 본 시각을 명령 `inputAt`으로 적는다(로컬 전용, 서버 사건 아님). 접수 신호 없이 끝난 명령은 `inputAt`이 없으면 `not_received`, 있으면 `unknown`이다. adapter 결과 확인은 transcript를 읽지 않으므로 `unsupported` 그대로다.
+6. **신호(Q12).** 중단과 고아 끝내기는 SIGINT → (유예, 정체 재확인) → 그룹 · 프로세스 SIGKILL이다. SIGTERM은 쓰지 않는다(OA D2b `AgentProcess` 문서의 "SIGTERM → SIGKILL"보다 이 절이 이긴다).
+7. **managed settings(Q13).** 파일이 있으면 `managed_settings: true`(대상 `unsupported`)이고 내용 검사는 0.2.x다.
+8. **승인 카드 글(Q8, 사용자 결정).** Edit · Write는 `Edit <작업 폴더 기준 상대 경로>` · `Write <상대 경로>`, Bash는 `Run: <공백을 정리한 명령 앞 300자>`를 질문 글로 서버에 둔다(대화 보관 기한을 따른다). diff · 파일 내용은 0이다.
+9. **비밀값(Q9, 사용자 결정).** `ask_user`의 `secret` 질문을 허용한다. 값은 Taskforce 서버 · Mac 원장 · 로그에 없고, 훅 출력 → MCP 도구 결과로 모델 문맥과 Claude Code 자체 기록(`~/.claude/projects/…`)에만 남는다. 3.6의 "Mac 디스크에도 쓰지 않는다"는 Taskforce가 쓰는 곳으로 읽는다.
+10. **질문은 보고된 보류만.** 질문 사건은 `result.deferred_tool_use`가 bridge가 기록한 id를 보고할 때만 내고, 프로세스가 끝난 뒤에 낸다(답이 왔을 때 writer가 하나). 기록에 없는 id가 보고되면 질문 없이 그 id를 닫기 모드로 닫고 `failed(agent_error)`다.
+
 ### 13.3 Codex (`agent:codex`, codex-cli 0.162.1, `codex app-server` stdio)
 
 실측 S0 CX-1–CX-8 · CX-3d(`oa-s0-evidence/codex-0.162.1/results.md`).

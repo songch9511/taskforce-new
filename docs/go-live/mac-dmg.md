@@ -64,6 +64,27 @@ Mac 앱은 [Sparkle 2](https://sparkle-project.org/documentation/)로 스스로 
 
 이 단계는 서명 · 공증 · DMG를 만들지 않았다. 따라서 (1) Developer ID로 다시 서명한 뒤에도 앱 안의 `Sparkle.framework`와 그 보조 도구(`Autoupdate` · `Updater.app` · XPC 서비스)가 Hardened Runtime 아래에서 서명 검증을 통과하는지, (2) 실제 업데이트가 내려받기 · 설치 · 재시작까지 되는지, (3) Dock 아이콘이 없는 에이전트 앱(`LSUIElement`)에서 예약된 확인 창이 다른 창 뒤에 뜨는지(Sparkle은 시작 직후가 아니면 포커스를 가져오지 않는다. 눈에 띄게 하려면 Sparkle의 "gentle reminders"가 필요하고 지금은 만들지 않았다, 화면 설계 빈칸)는 확인하지 못했다. 첫 서명 빌드에서 사람이 한 번 본다.
 
+## Claude Code helper 둘 (OA D3a)
+
+앱 번들에 실행 파일 둘이 더 들어간다: `Taskforce.app/Contents/Helpers/tf-agent-hook`(Claude Code PreToolUse · SessionStart 훅)과 `tf-agent-mcp`(Taskforce MCP 서버 `tf`). 둘 다 인터프리터 없는 Mach-O이고 `TaskforceAgentWire`(Foundation · Darwin)만 링크한다. `apple/project.yml`의 `tool` 타깃이 만들고, 앱 타깃이 `Contents/Helpers`로 복사하면서 서명한다(Code Sign On Copy, Xcode가 중첩 코드 서명 순서를 지킨다). Hardened Runtime은 켜고 **권한 파일은 없다**(App Sandbox가 꺼져 있어 상속 권한이 필요 없고, Keychain · App Group · 네트워크 · `com.apple.security.cs.*` 예외도 없다). 앱 권한 파일 · `scripts/release-mac-dmg.sh`는 이 단계에서 바꾸지 않았다.
+
+서명 · 공증 빌드에서 사용자가 한 번 확인한다 (이 단계는 서명하지 않았다):
+
+```
+APP=<서명한 Taskforce.app>
+ls -l "$APP/Contents/Helpers"                                         # 두 파일, 실행 권한
+codesign --verify --deep --strict --verbose=2 "$APP"                  # 중첩 helper 포함 통과
+for h in tf-agent-hook tf-agent-mcp; do
+  codesign -dvv "$APP/Contents/Helpers/$h" 2>&1 | grep -E "Authority=Developer ID Application|flags=.*runtime|Timestamp="   # 같은 팀 Developer ID · Hardened Runtime · 보안 타임스탬프
+  codesign -d --entitlements :- "$APP/Contents/Helpers/$h"           # 빈 출력 (권한 0)
+  otool -L "$APP/Contents/Helpers/$h"                                 # /usr/lib · /System/Library만
+done
+spctl -a -vv -t exec "$APP"                                           # 공증 뒤 accepted
+```
+
+- `scripts/release-mac-dmg.sh`의 지금 검사가 helper까지 덮는지(특히 샌드박스 키 검사가 앱 본체만 보는지)는 첫 서명 빌드에서 위 명령으로 따로 본다. 검사를 넓히는 것은 별도 변경이다.
+- 작업 폴더가 Documents · Desktop · Downloads · iCloud 안이면 `claude`(앱의 자손)가 그 폴더를 읽을 때 macOS 접근 동의 창이 Taskforce 이름으로 뜰 수 있다. 실제 동의 창은 사용자 gate(R2)에서 한 번 본다.
+
 ## 현재 상태
 
 | 항목 | 현재 근거 |
