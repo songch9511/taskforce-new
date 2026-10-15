@@ -759,6 +759,19 @@ public final class ChatStore {
         readStartedAt > (rowAppliedAt[row.id] ?? 0) || row.rowVersion >= held.rowVersion
     }
 
+    /// 내가 쓴 뒤 서버가 돌려준 행(범위 PATCH)을 반영한다: 쓴 값(프로젝트 등)은 늘 반영하되, 겹친 읽기가 이미 더 새 버전을 쥐게 했다면(쓰기를 보내고 응답이 오는 사이)
+    /// 그 행의 시각 · 읽음 · 글 비움은 쥔 것을 지킨다 (옛 응답이 첫 글의 시각을 되돌려 New chat이 글이 있는 대화를 빈 대화로 다시 쓰지 않게)
+    private func applyWrite(_ row: ChatConversation, startedAt: Int) {
+        guard let held = conversations.first(where: { $0.id == row.id }), !shouldApply(row, over: held, readStartedAt: startedAt) else {
+            upsert(row)
+            return
+        }
+        upsert(ChatConversation(
+            id: row.id, title: row.title, contextID: row.contextID, createdAt: row.createdAt, lastMessageAt: held.lastMessageAt,
+            lastReadAt: held.lastReadAt, archivedAt: row.archivedAt, textPurgedAt: held.textPurgedAt, target: row.target
+        ))
+    }
+
     /// 읽은 행(직접 읽기)을 반영한다 (`shouldApply`)
     private func applyRead(_ row: ChatConversation, readStartedAt: Int) {
         if let held = conversations.first(where: { $0.id == row.id }), !shouldApply(row, over: held, readStartedAt: readStartedAt) { return }
@@ -985,8 +998,11 @@ public final class ChatStore {
         touchLastMessage(of: id, at: posted.message.createdAt)
     }
 
+    /// 보낸 글이 서버에 저장됐다: 쥔 행의 마지막 시각을 바꾼다. 내 쓰기도 쥔 행을 바꾼 일이라 반영 시계를 올린다 —
+    /// 그 전에 시작한 읽기의 늦은 응답(글이 저장되기 전의 빈 행)은 서버 버전 검사를 다시 받아 이 행을 되돌리지 못한다
     private func touchLastMessage(of id: UUID, at date: Date) {
         guard let index = conversations.firstIndex(where: { $0.id == id }) else { return }
+        rowAppliedAt[id] = tickRow()
         let old = conversations[index]
         conversations[index] = ChatConversation(
             id: old.id, title: old.title, contextID: old.contextID, createdAt: old.createdAt, lastMessageAt: date,
@@ -1076,12 +1092,15 @@ public final class ChatStore {
             return
         }
         guard let chat = conversations.first(where: { $0.id == id }), chat.contextID != contextID else { return }
+        let writeStart = tickRow()
+        let started = tombstoneClock
         do {
             let updated = try await gateway.updateConversation(id: id, contextID: contextID)
-            guard scope.isCurrent(token) else { return }
+            // 쓰는 사이 서버가 없다고 확인한 대화는 이 응답의 행으로 되살리지 않는다 (묘비)
+            guard scope.isCurrent(token), !isStale(id, since: started) else { return }
             projectUndo[id] = .some(chat.contextID)
             // 범위를 바꾸는 PATCH 응답은 대상 열을 주지 않을 수 있다: 아는 대상을 지키지 않으면 에이전트 대화가 Taskforce로 보인다
-            upsert(updated.with(target: chat.target))
+            applyWrite(updated.with(target: chat.target), startedAt: writeStart)
         } catch {
             guard scope.isCurrent(token), ReadFailure.from(error, online: isOnline) != nil else { return }
             if let api = error as? APIError, api.isFeatureOff { isUnavailable = true } else { projectMessage[id] = ReadFailure.userMessage(error) }

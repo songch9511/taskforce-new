@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import TaskforceKit
 
-/// 같은 대화를 두고 {목록 새로 읽기(extras 포함) · 직접 읽기 · 글 읽기 · Try again · 서버의 삭제 · 보관 · 복원 · 메시지 저장 · 읽음 · 글 비움 · 프로젝트 변경}이
+/// 같은 대화를 두고 {목록 새로 읽기(extras 포함) · 직접 읽기 · 글 읽기 · 내 글 보내기(POST) · 내 프로젝트 바꾸기(PATCH) · 서버의 삭제 · 보관 · 복원 · 메시지 저장 · 읽음 · 글 비움 · 프로젝트 변경}이
 /// 무작위로 섞이고 응답이 무작위 순서로 늦게 도착해도 지키는 불변식 (시드 고정, 240개). 서버는 모델이고 호출한 때의 사실을 찍어 두며 응답은 장면이 놓아 줄 때까지 붙잡힌다.
 /// 메시지 개수와 `last_message_at`은 따로 움직이고, 시드의 절반은 시각이 뒤로 간다 (`db_now()`는 트랜잭션 시작 시각이라 서버 시각이 줄 수 있다):
 /// - 본문이 정상(.ready)이면 대상(행)을 안다 (본문만 남고 Composer가 대상 없이 기다리는 상태가 없다). 오류 화면(.failed)에는 이전 본문이 없다
@@ -25,12 +25,38 @@ private struct SeededGenerator: RandomNumberGenerator {
 private struct Fact: Sendable, Equatable {
     var exists = false
     var archived = false
-    var messageCount = 0
+    var messages: [Rec] = []
     var lastMessageAt: TimeInterval?
     var lastReadAt: TimeInterval?
     var textPurged = false
     var contextID: UUID?
     var alive: Bool { exists && !archived }
+
+    /// 서버에 저장된 메시지 하나 (내가 보낸 글이면 `cmid`가 있고 답은 그 글에 `replyTo`)
+    struct Rec: Sendable, Equatable {
+        let seq: Int
+        let isUser: Bool
+        let text: String
+        let cmid: UUID?
+        let replyTo: Int?
+        let at: TimeInterval
+    }
+}
+
+/// 서버 시각 모델: 시각이 앞으로만 가는 시드와, 아무 값이나 가는 시드 (`db_now()`는 트랜잭션 시작 시각이라 나중에 저장한 값이 더 작을 수 있다)
+@MainActor
+private final class TimeSource {
+    private var rng: SeededGenerator
+    let allowBackward: Bool
+
+    init(seed: UInt64, allowBackward: Bool) {
+        rng = SeededGenerator(seed: seed ^ 0xA5A5_A5A5_5A5A_5A5A)
+        self.allowBackward = allowBackward
+    }
+
+    func next(after current: TimeInterval?) -> TimeInterval {
+        allowBackward ? Double(Int.random(in: 1...1000, using: &rng)) : (current ?? 0) + Double(Int.random(in: 1...5, using: &rng))
+    }
 }
 
 @MainActor
@@ -46,6 +72,10 @@ private final class ModelServer {
     let projects: [UUID?] = [nil, ChatContractFixtures.id(41, prefix: "c0170000"), ChatContractFixtures.id(42, prefix: "c0170000"), ChatContractFixtures.id(43, prefix: "c0170000")]
     var fact = Fact()
     var autoDeliver = false
+    /// 내 글이 서버에서 거절된 적이 있나 (실패한 보내기는 화면에 남으므로 그 시드는 본문 수렴을 따로 보지 않는다)
+    var postFailed = false
+    /// 내 글의 시각을 정한다 (서버 시각 모델)
+    var postTime: @MainActor (TimeInterval?) -> TimeInterval = { ($0 ?? 0) + 1 }
     /// 서버가 지금까지 돌려준 X의 행들: 쥔 행은 이 중 하나여야 한다 (섞인 행이 없다)
     private(set) var issuedRows: Set<ChatConversation> = []
     private(set) var pending: [Pending] = []
@@ -55,15 +85,43 @@ private final class ModelServer {
         let row = ChatConversation(
             id: id, title: nil, contextID: fact.contextID, createdAt: .test(0), lastMessageAt: fact.lastMessageAt.map { .test($0) },
             lastReadAt: fact.lastReadAt.map { .test($0) }, archivedAt: fact.archived ? .test(1) : nil, textPurgedAt: fact.textPurged ? .test(2) : nil,
-            target: ChatConversationTarget(kind: .agent, agentConnectionID: connection, agentSessionID: ChatContractFixtures.id(2, prefix: "5e550000"))
+            target: .taskforce
         )
         issuedRows.insert(row)
         return row
     }
 
+    func message(_ rec: Fact.Rec) -> ChatMessage {
+        Chats.message(
+            rec.seq, in: id, seq: rec.seq, role: rec.isUser ? .user : .assistant, text: rec.text, cmid: rec.cmid,
+            replyTo: rec.replyTo.map { ChatContractFixtures.id($0, prefix: "aaaa0000") }, at: rec.at
+        )
+    }
+
     func messages(_ fact: Fact) -> [ChatMessage] {
-        guard fact.alive, fact.messageCount > 0 else { return [] }
-        return (1...fact.messageCount).map { Chats.message($0, in: id, seq: $0, role: .assistant, text: "m\($0)", at: Double($0)) }
+        guard fact.alive else { return [] }
+        return fact.messages.map(message)
+    }
+
+    /// 내가 보낸 글(POST): 서버는 호출한 때 저장하고(글 + 답, 시각은 `time`) 응답은 붙잡힌다. 없는 · 보관한 대화는 오류다
+    func post(cmid: UUID, text: String) async throws -> ChatPostedMessage {
+        guard fact.alive else {
+            postFailed = true
+            throw FakeChatGateway.Failure()
+        }
+        let time = postTime(fact.lastMessageAt)
+        let user = Fact.Rec(seq: fact.messages.count + 1, isUser: true, text: text, cmid: cmid, replyTo: nil, at: time)
+        let reply = Fact.Rec(seq: user.seq + 1, isUser: false, text: "r\(user.seq + 1)", cmid: nil, replyTo: user.seq, at: time)
+        fact.messages += [user, reply]
+        fact.lastMessageAt = time
+        return await respond { [self] _ in ChatPostedMessage(message: message(user), reply: message(reply)) }
+    }
+
+    /// 내가 바꾼 프로젝트(PATCH): 서버는 호출한 때 바꾸고 바뀐 행을 돌려준다
+    func patch(contextID: UUID?) async throws -> ChatConversation {
+        guard fact.alive else { throw FakeChatGateway.Failure() }
+        fact.contextID = contextID
+        return await respond { [self] fact in row(fact) }
     }
 
     /// 호출한 때의 사실로 응답을 만들어 두고, 장면이 놓아 줄 때까지 붙잡는다 (`autoDeliver`면 바로 돌려준다)
@@ -84,7 +142,7 @@ private final class ModelServer {
 
 @MainActor
 struct ChatStoreInterleavingTests {
-    enum Step: CaseIterable { case refresh, direct, body, mutate }
+    enum Step: CaseIterable { case refresh, direct, body, post, patch, mutate }
 
     @Test func randomInterleavingsKeepTheInvariantsAndConvergeToTheServersLatestState() async {
         let seeds = 240
@@ -122,11 +180,22 @@ struct ChatStoreInterleavingTests {
         }
         gateway.lastMessagesHandler = { [server] _ in
             await server.respond { fact in
-                guard fact.alive, fact.messageCount > 0, let last = server.messages(fact).last else { return [:] }
+                guard fact.alive, let last = server.messages(fact).last else { return [:] }
                 return [id: last]
             }
         }
         gateway.contextsHandler = { [] }
+        // 내 글(POST)의 시각: 시각이 앞으로만 가는 시드에서는 지금 시각보다 뒤, 아니면 아무 값이나 (서버 트랜잭션 시작 시각)
+        let timeSource = TimeSource(seed: seed, allowBackward: allowBackward)
+        server.postTime = { current in timeSource.next(after: current) }
+        gateway.postHandler = { [server] requested, cmid, text in
+            guard requested == id else { throw FakeChatGateway.Failure() }
+            return try await server.post(cmid: cmid, text: text)
+        }
+        gateway.updateHandler = { [server] requested, contextID in
+            guard requested == id else { throw FakeChatGateway.Failure() }
+            return try await server.patch(contextID: contextID)
+        }
 
         var problems: [String] = []
         var lastVersion: ChatRowVersion?
@@ -140,7 +209,8 @@ struct ChatStoreInterleavingTests {
                 problems.append("\(when): 오류 화면에 이전 본문이 남았다")
             }
             if let held = chat.conversations.first(where: { $0.id == id }) {
-                if !server.issuedRows.contains(held) { problems.append("\(when): 쥔 행이 서버가 돌려준 어떤 행과도 다르다 (섞였다)") }
+                // 내 쓰기는 쥔 행을 합쳐 바꾼다(글이 저장되면 마지막 시각, 프로젝트 응답은 쓴 값만): 시각 필드를 뺀 나머지가 서버가 돌려준 행과 같아야 한다
+                if !server.issuedRows.contains(where: { $0.sameExceptTimestamps(as: held) }) { problems.append("\(when): 쥔 행이 서버가 돌려준 어떤 행과도 다르다 (섞였다)") }
                 if !allowBackward {
                     let version = held.rowVersion
                     if let last = lastVersion, version < last { problems.append("\(when): 쥔 행의 서버 버전이 줄었다") }
@@ -165,7 +235,8 @@ struct ChatStoreInterleavingTests {
         }
 
         // 1. 무작위 장면: 작업을 시작하고 · 응답을 놓고 · 서버 사실을 바꾼다
-        var budget: [Step: Int] = [.refresh: 4, .direct: 3, .body: 2, .mutate: 7]
+        var budget: [Step: Int] = [.refresh: 4, .direct: 3, .body: 2, .post: 3, .patch: 3, .mutate: 7]
+        var postCount = 0
         var steps = 0
         while budget.values.contains(where: { $0 > 0 }), steps < 300 {
             steps += 1
@@ -184,6 +255,13 @@ struct ChatStoreInterleavingTests {
                 start { await chat.readConversation(id) }
             case .body:
                 start { await chat.loadThread(id) }
+            case .post:
+                postCount += 1
+                let text = "p\(postCount)"
+                start { await chat.send(text, in: id) }
+            case .patch:
+                let project = server.projects[Int.random(in: 0..<server.projects.count, using: &rng)]
+                start { await chat.chooseProject(project, in: id) }
             case .mutate:
                 // 시각: 뒤로 가는 시드에서는 아무 값이나 (`db_now()`가 트랜잭션 시작 시각이라 나중에 저장한 값이 더 작을 수 있다), 아니면 앞으로만
                 func nextTime(_ current: TimeInterval?) -> TimeInterval {
@@ -199,8 +277,8 @@ struct ChatStoreInterleavingTests {
                     options = [{ $0.archived = false }, { $0.exists = false }]
                 } else {
                     options = [
-                        { $0.messageCount += 1; $0.lastMessageAt = message },
-                        { $0.messageCount += 1; $0.lastMessageAt = message },
+                        { $0.messages.append(Fact.Rec(seq: $0.messages.count + 1, isUser: false, text: "m\($0.messages.count + 1)", cmid: nil, replyTo: nil, at: message)); $0.lastMessageAt = message },
+                        { $0.messages.append(Fact.Rec(seq: $0.messages.count + 1, isUser: false, text: "m\($0.messages.count + 1)", cmid: nil, replyTo: nil, at: message)); $0.lastMessageAt = message },
                         { $0.lastReadAt = read },
                         { $0.textPurged = true },
                         { $0.contextID = project },
@@ -230,10 +308,15 @@ struct ChatStoreInterleavingTests {
             server.autoDeliver = true
             await chat.refresh()
             observe("seed \(seed) 확인 새로 읽기")
-            if chat.screen(for: id) != .failed || chat.isTargetKnown(id) { problems.append("새로 읽기가 없는 대화를 확인하지 못했다") }
+            // 서버가 거절한 내 글은 실패한 보내기로 화면에 남는다: 그 시드는 화면 · 글 목록 대신 대상(행)만 본다
+            func isGoneState() -> Bool {
+                if chat.isTargetKnown(id) { return false }
+                return server.postFailed || (chat.screen(for: id) == .failed && chat.turns(for: id).isEmpty)
+            }
+            if !isGoneState() { problems.append("새로 읽기가 없는 대화를 확인하지 못했다") }
             await drain("확인 뒤 늦은 응답")
-            if chat.screen(for: id) != .failed || chat.isTargetKnown(id) || !chat.turns(for: id).isEmpty {
-                problems.append("확인한 대화를 늦은 응답이 되살렸다")
+            if !isGoneState() {
+                problems.append("확인한 대화를 늦은 응답이 되살렸다 (행 \(chat.isTargetKnown(id)) · 화면 \(chat.screen(for: id)) · 글 \(chat.turns(for: id).count) · 내 글 거절 \(server.postFailed))")
             }
             server.autoDeliver = false
         } else {
@@ -254,14 +337,25 @@ struct ChatStoreInterleavingTests {
             if held?.lastReadAt != expected.lastReadAt { problems.append("수렴: last_read_at이 서버와 다르다") }
             if held?.textPurgedAt != expected.textPurgedAt { problems.append("수렴: text_purged_at이 서버와 다르다") }
             if held != expected { problems.append("수렴: 쥔 행이 서버의 마지막 행과 다르다") }
-            if chat.screen(for: id) != .ready(problem: nil) { problems.append("수렴: 본문이 정상이 아니다 (\(chat.screen(for: id)))") }
-            if chat.turns(for: id).map(\.text) != server.messages(final).map(\.text) { problems.append("수렴: 본문이 서버와 다르다") }
+            // 서버가 거절한 내 글은 실패한 보내기로 화면에 남는다: 그 시드는 본문(글 목록)을 따로 보지 않는다
+            if !server.postFailed {
+                if chat.screen(for: id) != .ready(problem: nil) { problems.append("수렴: 본문이 정상이 아니다 (\(chat.screen(for: id)))") }
+                if chat.turns(for: id).map(\.text) != server.messages(final).map(\.text) { problems.append("수렴: 본문이 서버와 다르다") }
+            }
             if !chat.canCompose(in: id) { problems.append("수렴: Composer를 쓸 수 없다") }
         } else {
-            if chat.screen(for: id) != .failed || chat.isTargetKnown(id) || !chat.turns(for: id).isEmpty || chat.canCompose(in: id) {
+            if chat.isTargetKnown(id) || chat.canCompose(in: id) || (!server.postFailed && (chat.screen(for: id) != .failed || !chat.turns(for: id).isEmpty)) {
                 problems.append("수렴: 서버에 없는데 오류 화면이 아니다 (\(chat.screen(for: id)))")
             }
         }
         return problems
+    }
+}
+
+private extension ChatConversation {
+    /// 시각 필드(마지막 메시지 · 읽음 · 글 비움)를 뺀 나머지가 같나
+    func sameExceptTimestamps(as other: ChatConversation) -> Bool {
+        id == other.id && title == other.title && contextID == other.contextID && createdAt == other.createdAt
+            && archivedAt == other.archivedAt && target == other.target
     }
 }

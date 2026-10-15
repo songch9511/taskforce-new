@@ -419,6 +419,97 @@ struct ChatStoreTombstoneTests {
         await freshReadAfterBackwardsTimestamp(viaList: false)
     }
 
+    // MARK: 내 쓰기도 쥔 행을 바꾼다 (8차 재검토)
+
+    /// 빈 Taskforce 대화 X를 반영한 뒤 새로 읽기의 빈 행 응답이 지연되는 사이 첫 POST가 성공했다. 늦게 도착한 옛 빈 행은 반영하지 않는다:
+    /// 첫 글의 시각(`touchLastMessage`)이 쥔 행을 바꾼 일(내 쓰기)로 반영 시계를 올려, 그 전에 시작한 읽기는 서버 버전 검사를 다시 받는다.
+    /// 되돌아가면 New chat이 X를 빈 대화로 다시 써서 다음 글이 기존 대화에 저장된다
+    @Test func aDelayedEmptyRowDoesNotUndoTheFirstPostAndNewChatDoesNotReuseTheConversation() async {
+        let empty = ChatConversation(id: ChatContractFixtures.id(5, prefix: "bcb50000"), createdAt: .test(0))
+        let id = empty.id
+        let chat = store()
+        let latch = Latch()
+        let calls = CallCounter()
+        gateway.conversationsHandler = {
+            if calls.next() >= 2 { await latch.wait() }     // 두 번째 새로 읽기의 응답이 붙잡힌다 (빈 행)
+            return [empty]
+        }
+        gateway.messagesHandler = { _ in [] }
+        gateway.lastMessagesHandler = { _ in [:] }
+        gateway.postHandler = { conversation, cmid, text in Chats.pair(10, in: conversation, seq: 1, cmid: cmid, text: text) }
+        await chat.refresh()    // X(빈 대화)를 반영한다
+        #expect(chat.conversations.first { $0.id == id }?.isUntouched == true)
+        let refresh = Task { await chat.refresh() }
+        #expect(await latch.waitForArrivals(1, timeout: .seconds(5)), "두 번째 새로 읽기의 빈 행 응답이 붙잡혀 있다")
+        await chat.send("hello", in: id)    // 첫 POST 성공
+        #expect(chat.conversations.first { $0.id == id }?.lastMessageAt == .test(1), "첫 글이 대화의 마지막 시각을 정했다")
+        await latch.open()
+        await refresh.value
+        await chat.settle()
+        #expect(chat.conversations.first { $0.id == id }?.lastMessageAt == .test(1), "늦게 도착한 옛 빈 행이 첫 글의 시각을 되돌리지 않는다")
+        #expect(chat.conversations.first { $0.id == id }?.isUntouched == false)
+        let reserved = chat.reserveNewChat(target: .taskforce, excluding: [])
+        #expect(reserved != id, "New chat이 글이 있는 대화를 빈 대화로 다시 쓰지 않는다")
+        #expect(chat.locals.contains { $0.id == reserved }, "새 빈 대화를 따로 만든다")
+    }
+
+    /// 프로젝트 PATCH 응답(서버가 PATCH를 받은 때의 행: 아직 글이 없다)이 지연되는 사이 첫 POST가 성공했다. 응답이 도착해도 쓴 프로젝트는 반영하되
+    /// 첫 글의 시각은 되돌리지 않는다 (New chat이 글이 있는 대화를 빈 대화로 다시 쓰지 않게)
+    @Test func aProjectChangeResponseThatArrivesAfterTheFirstPostKeepsTheNewerTimestamp() async {
+        let empty = ChatConversation(id: ChatContractFixtures.id(5, prefix: "bcb50000"), createdAt: .test(0))
+        let id = empty.id
+        let project = ChatContractFixtures.id(41, prefix: "c0170000")
+        let chat = store()
+        let latch = Latch()
+        gateway.conversationsHandler = { [empty] }
+        gateway.messagesHandler = { _ in [] }
+        gateway.lastMessagesHandler = { _ in [:] }
+        gateway.updateHandler = { conversation, context in
+            await latch.wait()
+            return ChatConversation(id: conversation, contextID: context, createdAt: .test(0))     // PATCH를 받은 때의 행: 글이 아직 없다
+        }
+        gateway.postHandler = { conversation, cmid, text in Chats.pair(10, in: conversation, seq: 1, cmid: cmid, text: text) }
+        await chat.refresh()
+        let change = Task { await chat.chooseProject(project, in: id) }
+        #expect(await latch.waitForArrivals(1, timeout: .seconds(5)), "PATCH 응답이 붙잡혀 있다")
+        await chat.send("hello", in: id)
+        #expect(chat.conversations.first { $0.id == id }?.lastMessageAt == .test(1))
+        await latch.open()
+        await change.value
+        let row = chat.conversations.first { $0.id == id }
+        #expect(row?.contextID == project, "쓴 프로젝트는 반영한다")
+        #expect(row?.lastMessageAt == .test(1) && row?.isUntouched == false, "첫 글의 시각을 되돌리지 않는다")
+        #expect(chat.reserveNewChat(target: .taskforce, excluding: []) != id, "New chat이 글이 있는 대화를 다시 쓰지 않는다")
+    }
+
+    /// 프로젝트 PATCH 응답이 지연되는 사이 새로 읽기가 대화가 없다고 확인했다: 늦게 도착한 PATCH 응답의 행이 대화를 되살리지 않는다
+    @Test func aProjectChangeResponseDoesNotReviveAConversationConfirmedGoneMeanwhile() async {
+        let held = agentRow(2, last: 5)
+        let id = held.id
+        let project = ChatContractFixtures.id(41, prefix: "c0170000")
+        let chat = store()
+        chat.panelConversations = { [id] }
+        let latch = Latch()
+        gateway.conversationsHandler = { [held] }
+        gateway.messagesHandler = { _ in [] }
+        gateway.lastMessagesHandler = { _ in [:] }
+        gateway.updateHandler = { _, context in
+            await latch.wait()
+            return ChatConversation(id: id, contextID: context, createdAt: .test(0), lastMessageAt: .test(5))
+        }
+        await chat.refresh()
+        #expect(chat.isTargetKnown(id))
+        let change = Task { await chat.chooseProject(project, in: id) }
+        #expect(await latch.waitForArrivals(1, timeout: .seconds(5)), "PATCH 응답이 붙잡혀 있다")
+        gateway.conversationsHandler = { [] }
+        gateway.conversationHandler = { _ in nil }
+        await chat.refresh()
+        #expect(chat.screen(for: id) == .failed && !chat.isTargetKnown(id), "새로 읽기가 없다고 확인했다")
+        await latch.open()
+        await change.value
+        #expect(chat.screen(for: id) == .failed && !chat.isTargetKnown(id), "늦은 PATCH 응답이 확인한 대화를 되살리지 않는다")
+    }
+
     // MARK: 확인 뒤 Try again이 읽은 것은 옛 응답이 덮지 않는다
 
     /// 새로 읽기의 옛 행 응답(옛 이름)이 붙잡혀 있는 사이 직접 읽기가 "없다"를 확인하고, 사용자의 Try again이 새 행(새 이름)을 읽어 열었다.
