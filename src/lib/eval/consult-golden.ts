@@ -2,7 +2,9 @@ import { createHash } from "node:crypto";
 
 import { z } from "zod";
 
-import { contextTierSchema, intentKindSchema, messageRefsSchema } from "@/lib/api/contract";
+import { contextTierSchema, intentKindSchema, messageRefsSchema, type ProposalPayloadV2 } from "@/lib/api/contract";
+import { userClaims } from "@/lib/actions/user-claims";
+import { deletePayload, mergePayload, organizeTarget, type OrganizeLookup, type StoredTarget } from "@/lib/conversation/organize";
 import { payloadHash } from "@/lib/conversation/proposal";
 import type { ConsultContext, RespondInput, TurnPlan, WindowMessage } from "@/lib/conversation/respond";
 import { quoteInText } from "@/lib/pipeline/text";
@@ -21,7 +23,17 @@ const caseActionSchema = z.object({
   counterpart: z.string().min(1).optional(),
   needs_confirmation: z.boolean().default(false),
   quotes: z.array(z.object({ source: labelSchema, quote: z.string().min(1) })).default([]),
+  /** 이슈 정리(D4c-2): 이슈 번호 "#139" (없으면 케이스 안 순번), 카드가 본 version, 상태, 확인된 멤버십(프로젝트 라벨), 열린 세션 수 · 근거 수 */
+  number: z.number().int().positive().optional(),
+  version: z.number().int().positive().default(1),
+  status: z.enum(["open", "done", "dropped"]).default("open"),
+  projects: z.array(labelSchema).default([]),
+  open_sessions: z.number().int().nonnegative().default(0),
+  evidence_count: z.number().int().nonnegative().default(0),
 });
+
+const caseProjectSchema = z.object({ id: labelSchema, name: z.string().min(1).max(200), status: z.enum(["active", "archived"]).default("active") });
+const organizeOpSchema = z.enum(["move", "remove", "delete", "merge"]);
 
 const caseSourceSchema = z.object({
   id: labelSchema,
@@ -41,13 +53,14 @@ const caseMemorySchema = z.object({
   scope: z.enum(["global", "context"]).default("global"),
 });
 
-const routeSchema = z.enum(["clarify", "consult", "remember", "adopt", "execution", "preference"]);
+const routeSchema = z.enum(["clarify", "consult", "remember", "adopt", "execution", "preference", "organize"]);
+const asksSchema = z.enum(["remember", "referent", "clarify", "adopt", "confirm", "organize"]);
 
 export const consultCaseSchema = z.object({
   id: z.string().min(1),
   description: z.string().min(1),
   /** 대응하는 기준 (0.2.0 개발 계획 5장 A## · 아키텍처 13장 ARCH##) */
-  maps_to: z.array(z.string().regex(/^(A\d{2}|ARCH\d{2})$/)).min(1),
+  maps_to: z.array(z.string().regex(/^(A\d{2}|ARCH\d{2}|AC-\d{2})$/)).min(1),
   origin: z.enum(["real", "synthetic"]).default("synthetic"),
   asked_at: z.iso.datetime({ offset: true }),
   /** 대화의 범위 (null = All work) */
@@ -58,8 +71,23 @@ export const consultCaseSchema = z.object({
       z.object({
         role: z.enum(["user", "assistant"]),
         text: z.string().min(1),
-        asks: z.enum(["remember", "referent", "clarify", "adopt"]).optional(),
-        proposal: z.object({ title: z.string().min(1), state: z.enum(["open", "adopted"]).default("open") }).optional(),
+        asks: asksSchema.optional(),
+        proposal: z
+          .object({
+            kind: z.enum(["create_action", "move", "delete", "merge"]).default("create_action"),
+            title: z.string().min(1).optional(),
+            state: z.enum(["open", "adopted"]).default("open"),
+            /** 이동 · 삭제 · 병합 제안의 대상 (move · delete: 1–3개, merge: 둘 + into) */
+            targets: z.array(labelSchema).default([]),
+            into: labelSchema.optional(),
+            to: labelSchema.nullable().optional(),
+            from: labelSchema.nullable().optional(),
+          })
+          .optional(),
+        /** 정리가 한 번 물었던 것 (asks organize로 저장된다) */
+        organize_pending: z
+          .object({ op: organizeOpSchema.nullable().default(null), targets: z.array(labelSchema).default([]), project: labelSchema.optional(), missing: z.enum(["issue", "project", "from", "op", "into"]) })
+          .optional(),
         /** 이 메시지 refs가 가리킨 할 일 (지시 대상 규칙 3 · 4) */
         action_refs: z.array(labelSchema).default([]),
       }),
@@ -68,6 +96,10 @@ export const consultCaseSchema = z.object({
   message: z.string().min(1).max(4000),
   /** 앱이 고른 대상 (지시 대상 규칙 1) */
   selected: z.array(labelSchema).default([]),
+  /** 내 프로젝트 (이슈 정리의 지칭 · 보관 여부) */
+  projects: z.array(caseProjectSchema).default([]),
+  /** 앱이 붙인 added context 칩 (프로젝트 라벨) */
+  selected_contexts: z.array(labelSchema).default([]),
   records: z
     .object({
       open_actions: z.array(caseActionSchema).default([]),
@@ -98,7 +130,17 @@ export const consultCaseSchema = z.object({
     cite_sources_any: z.array(labelSchema).default([]),
     /** 답 구간에 이 등급이 모두 있어야 한다 */
     tiers_include: z.array(contextTierSchema).default([]),
-    asks: z.enum(["remember", "referent", "clarify", "adopt"]).nullable().optional(),
+    asks: asksSchema.nullable().optional(),
+    /** 이슈 정리(D4c-2)의 기대. op none = 정리가 아니다(route organize가 아님). outcome: write(바로 씀) · move_ask(글 질문) · card(삭제 · 병합 카드) · ask(한 번 더 물음) · reply(쓰기 없는 답) */
+    organize: z
+      .object({
+        op: z.enum(["move", "remove", "delete", "merge", "none"]),
+        targets: z.array(labelSchema).default([]),
+        into: labelSchema.optional(),
+        project: labelSchema.nullable().optional(),
+        outcome: z.enum(["write", "move_ask", "card", "ask", "reply"]).optional(),
+      })
+      .optional(),
   }),
 });
 
@@ -143,6 +185,63 @@ export function findConsultLabelErrors(golden: ConsultCase): string[] {
     if (last?.role !== "assistant" || last.proposal?.state !== "open") errors.push("채택을 기대하면 마지막 앞 메시지가 열린 제안을 낸 assistant여야 합니다");
     if (golden.expect.proposal === "some") errors.push("채택 케이스에 새 제안을 기대합니다");
   }
+  errors.push(...findOrganizeLabelErrors(golden, actions));
+  return errors;
+}
+
+/** 이슈 정리 케이스의 라벨 검사 (D4c-2): 프로젝트 · 번호 중복, 가리키는 라벨의 존재, 병합은 둘 + into, outcome write는 이동 · 빼기만, 기억 쓰기 기대와 정리를 함께 기대하지 않는다 */
+function findOrganizeLabelErrors(golden: ConsultCase, actions: ConsultCase["records"]["open_actions"]): string[] {
+  const errors: string[] = [];
+  const projectIds = new Set(golden.projects.map((p) => p.id));
+  const actionIds = new Set(actions.map((a) => a.id));
+  if (projectIds.size !== golden.projects.length) errors.push("project id가 중복되었습니다");
+  const numbers = actions.map((a, i) => a.number ?? i + 1);
+  if (new Set(numbers).size !== numbers.length) errors.push("이슈 번호가 중복되었습니다");
+  const project = (label: string | null | undefined, where: string) => {
+    if (label && !projectIds.has(label)) errors.push(`${where}: 없는 project ${label}`);
+  };
+  const action = (label: string | null | undefined, where: string) => {
+    if (label && !actionIds.has(label)) errors.push(`${where}: 없는 이슈 ${label}`);
+  };
+  for (const a of actions) for (const label of a.projects) project(label, `${a.id}.projects`);
+  for (const label of golden.selected_contexts) project(label, "selected_contexts");
+  golden.history.forEach((h, i) => {
+    const where = `history[${i}]`;
+    if (h.proposal) {
+      const p = h.proposal;
+      if (p.kind === "create_action" && !p.title) errors.push(`${where}.proposal: create_action에는 title이 필요합니다`);
+      if (p.kind !== "create_action") {
+        for (const label of p.targets) action(label, `${where}.proposal.targets`);
+        action(p.into, `${where}.proposal.into`);
+        project(p.to, `${where}.proposal.to`);
+        project(p.from, `${where}.proposal.from`);
+        if (p.targets.length < 1 || p.targets.length > 3) errors.push(`${where}.proposal: 대상은 1–3개입니다`);
+        if (p.kind === "merge" && (p.targets.length !== 2 || !p.into || !p.targets.includes(p.into))) errors.push(`${where}.proposal: 병합은 대상 둘과 그 중 하나인 into가 필요합니다`);
+        if (p.kind === "move" && p.to === undefined) errors.push(`${where}.proposal: 이동에는 to(없으면 null = 빼기)가 필요합니다`);
+      }
+    }
+    if (h.organize_pending) {
+      for (const label of h.organize_pending.targets) action(label, `${where}.organize_pending.targets`);
+      project(h.organize_pending.project, `${where}.organize_pending.project`);
+    }
+  });
+  const organize = golden.expect.organize;
+  if (organize) {
+    for (const label of organize.targets) action(label, "expect.organize.targets");
+    action(organize.into, "expect.organize.into");
+    project(organize.project, "expect.organize.project");
+    if (organize.op === "none") {
+      if (organize.outcome) errors.push("expect.organize: op none에는 outcome이 없습니다");
+    } else {
+      if (!organize.outcome) errors.push("expect.organize: outcome이 필요합니다");
+      if (organize.outcome === "write" && organize.op !== "move" && organize.op !== "remove") errors.push("expect.organize: outcome write는 이동 · 빼기만입니다");
+      if (organize.outcome === "card" && organize.op !== "delete" && organize.op !== "merge") errors.push("expect.organize: outcome card는 삭제 · 병합만입니다");
+      if (organize.outcome === "move_ask" && organize.op !== "move" && organize.op !== "remove") errors.push("expect.organize: outcome move_ask는 이동 · 빼기만입니다");
+      const { min } = golden.expect.memory_writes;
+      if (min > 0 || golden.expect.corrects.length > 0 || golden.expect.memory_statements_contain.length > 0) errors.push("expect.organize와 기억 쓰기 기대를 함께 둘 수 없습니다");
+    }
+    if (organize.op === "merge" && (organize.targets.length !== 2 || !organize.into || !organize.targets.includes(organize.into))) errors.push("expect.organize: 병합은 targets 둘과 그 중 하나인 into가 필요합니다");
+  }
   return errors;
 }
 
@@ -152,14 +251,71 @@ function uuidOf(caseId: string, label: string): string {
   return `${h.slice(0, 8)}-${h.slice(8, 12)}-4${h.slice(13, 16)}-8${h.slice(17, 20)}-${h.slice(20, 32)}`;
 }
 
+/** 케이스의 이슈 · 프로젝트로 만든 organize_lookup 결과 (DB 대신 케이스) */
+export function consultLookupOf(golden: ConsultCase, ids: (label: string) => string): OrganizeLookup {
+  const all = [...golden.records.open_actions.map((a) => ({ a, done: false })), ...golden.records.done_recent.map((a) => ({ a, done: true }))];
+  const projects = new Map(golden.projects.map((p) => [p.id, p]));
+  const context = (label: string) => ({ id: ids(label), name: projects.get(label)!.name, status: projects.get(label)!.status, context_version: 1 });
+  return {
+    actions: all.map(({ a, done }, i) => ({
+      id: ids(a.id),
+      number: a.number ?? i + 1,
+      title: a.title,
+      status: done && a.status === "open" ? ("done" as const) : a.status,
+      version: a.version,
+      open_sessions: a.open_sessions,
+      evidence_count: a.evidence_count,
+      contexts: a.projects.map(context),
+    })),
+    contexts: golden.projects.map((p) => ({ ...context(p.id), kind: "project" })),
+  };
+}
+
+/** 삭제 · 병합 카드를 글로 확인할 때 쓰기 계획을 세우는 기록 (loadChangeTargets 대신 케이스): 이슈마다 만든 때의 사용자 Claim(제목 · 담당 나 · 상태) + 행 */
+export function consultTargetsOf(golden: ConsultCase, ids: (label: string) => string): Map<string, StoredTarget> {
+  const earlier = new Date(new Date(golden.asked_at).getTime() - 86_400_000);
+  let claimNo = 0;
+  return new Map(
+    consultLookupOf(golden, ids).actions.map((a, i) => [
+      a.id,
+      {
+        row: { title: a.title, confirm_reasons: [], needs_confirmation: false, version: a.version, status: a.status, started_at: null },
+        claims: userClaims([{ field: "scope", value: a.title }, { field: "owner", value: "me" }, { field: "status", value: a.status }], earlier, () => uuidOf(golden.id, `claim-${i}-${++claimNo}`)),
+      },
+    ]),
+  );
+}
+
 /** respondToMessage에 넘길 입력 · 기록 (DB 대신 케이스) */
-export function consultInputOf(golden: ConsultCase): { input: RespondInput; context: ConsultContext; ids: (label: string) => string } {
+export function consultInputOf(golden: ConsultCase): { input: RespondInput; context: ConsultContext; ids: (label: string) => string; lookup: OrganizeLookup } {
   const ids = (label: string) => uuidOf(golden.id, label);
+  const lookup = consultLookupOf(golden, ids);
   const now = new Date(golden.asked_at);
   const contextId = golden.context ? ids("context") : null;
   const base = now.getTime() - (golden.history.length + 1) * 60_000;
+  const targetOf = (label: string) => organizeTarget(lookup.actions.find((a) => a.id === ids(label))!);
+  const contextRef = (label: string) => {
+    const found = lookup.contexts.find((c) => c.id === ids(label))!;
+    return { id: found.id, name: found.name, version: found.context_version };
+  };
+  const proposalOf = (h: ConsultCase["history"][number]): ProposalPayloadV2 | null => {
+    const p = h.proposal;
+    if (!p) return null;
+    switch (p.kind) {
+      case "create_action":
+        return { kind: "create_action", title: p.title! };
+      case "delete":
+        return deletePayload(p.targets.map((label) => lookup.actions.find((a) => a.id === ids(label))!));
+      case "merge": {
+        const find = (label: string) => lookup.actions.find((a) => a.id === ids(label))!;
+        return mergePayload(find(p.targets.find((label) => label !== p.into)!), find(p.into!));
+      }
+      case "move":
+        return { kind: "move", targets: p.targets.map(targetOf), from: p.from ? contextRef(p.from) : null, to: p.to ? contextRef(p.to) : null };
+    }
+  };
   const window: WindowMessage[] = golden.history.map((h, i) => {
-    const payload = h.proposal ? { kind: "create_action" as const, title: h.proposal.title } : null;
+    const payload = proposalOf(h);
     return {
       id: ids(`m${i + 1}`),
       seq: i + 1,
@@ -169,14 +325,35 @@ export function consultInputOf(golden: ConsultCase): { input: RespondInput; cont
       createdAt: new Date(base + i * 60_000).toISOString(),
       refs: messageRefsSchema.parse({
         action_ids: h.action_refs.map(ids),
-        proposal: payload ? { id: ids(`p${i + 1}`), kind: "create_action", payload_hash: payloadHash(payload), state: h.proposal!.state } : null,
+        proposal: payload ? { id: ids(`p${i + 1}`), kind: payload.kind, payload_hash: payloadHash(payload), state: h.proposal!.state } : null,
       }),
-      content: h.role === "assistant" ? { segments: [], citations: [], proposal: payload, asks: h.asks ?? null, used: null, window: null } : null,
+      content:
+        h.role === "assistant"
+          ? {
+              segments: [],
+              citations: [],
+              proposal: payload,
+              asks: h.organize_pending ? ("organize" as const) : (h.asks ?? null),
+              used: null,
+              window: null,
+              ...(h.organize_pending
+                ? {
+                    organize: {
+                      state: "pending" as const,
+                      op: h.organize_pending.op,
+                      action_ids: h.organize_pending.targets.map(ids),
+                      context_id: h.organize_pending.project ? ids(h.organize_pending.project) : null,
+                      missing: h.organize_pending.missing,
+                    },
+                  }
+                : {}),
+            }
+          : null,
     };
   });
   const seq = golden.history.length + 1;
   const current: WindowMessage = { id: ids("current"), seq, role: "user", text: golden.message, textExpired: false, createdAt: new Date(base + seq * 60_000).toISOString(), refs: messageRefsSchema.parse({}), content: null };
-  const open = golden.records.open_actions;
+  const open = golden.records.open_actions.filter((a) => a.status === "open");
   const action = (a: ConsultCase["records"]["open_actions"][number], status: "open" | "done") => ({
     id: ids(a.id),
     title: a.title,
@@ -219,7 +396,7 @@ export function consultInputOf(golden: ConsultCase): { input: RespondInput; cont
     })),
     contextVersion: contextId ? 1 : null,
   };
-  const selected = golden.selected.map((label) => ({ kind: "action" as const, id: ids(label), title: open.find((a) => a.id === label)!.title }));
+  const selected = golden.selected.map((label) => ({ kind: "action" as const, id: ids(label), title: golden.records.open_actions.find((a) => a.id === label)!.title }));
   return {
     input: {
       userId: ids("user"),
@@ -228,11 +405,13 @@ export function consultInputOf(golden: ConsultCase): { input: RespondInput; cont
       window: [...window, current],
       omitted: 0,
       selected,
+      selectedContexts: golden.selected_contexts.map(ids),
       flags: { memory: golden.memory_enabled },
       now,
     },
     context,
     ids,
+    lookup,
   };
 }
 
@@ -242,13 +421,53 @@ export type ConsultScore = {
   checks: Record<string, boolean | null>;
 };
 
-/** 채점: 의도 · 분기 · 금지 표현 · 필수 정보 · 기억 쓰기 · 정정 · 채택 · 제안 · 인용 · 등급 · 질문 */
-export function scoreConsultCase(golden: ConsultCase, plan: Pick<TurnPlan, "intent" | "route" | "reply" | "memory" | "adopt">, ids: (label: string) => string): ConsultScore {
+export type OrganizeObserved = {
+  outcome: "write" | "move_ask" | "card" | "ask" | "reply" | null;
+  op: "move" | "remove" | "delete" | "merge" | null;
+  targets: string[];
+  into: string | null;
+  project: string | null;
+};
+
+/** 답에서 읽은 정리 결과 (쓴 것 · 물은 것 · 카드 · 사실 답). 정리가 아니면 outcome null */
+export function observeOrganize(plan: Pick<TurnPlan, "route" | "reply" | "adopt"> & Partial<Pick<TurnPlan, "move" | "summary">>): OrganizeObserved {
+  const none: OrganizeObserved = { outcome: null, op: null, targets: [], into: null, project: null };
+  const moves = plan.move ?? (plan.adopt && "kind" in plan.adopt && plan.adopt.kind === "move" ? plan.adopt.moves : null);
+  if (moves) {
+    const adds = moves.some((m) => m.add);
+    return { outcome: "write", op: adds ? "move" : "remove", targets: moves.map((m) => m.action_id), into: null, project: (adds ? moves[0].add?.context_id : moves[0].remove?.context_id) ?? null };
+  }
+  const proposal = plan.reply.content.proposal;
+  if (proposal && proposal.kind !== "create_action") {
+    if (proposal.kind === "move") return { outcome: "move_ask", op: proposal.to ? "move" : "remove", targets: proposal.targets.map((t) => t.action_id), into: null, project: (proposal.to ?? proposal.from)?.id ?? null };
+    if (proposal.kind === "delete") return { outcome: "card", op: "delete", targets: proposal.targets.map((t) => t.action_id), into: null, project: null };
+    return { outcome: "card", op: "merge", targets: [proposal.from.action_id, proposal.into.action_id], into: proposal.into.action_id, project: null };
+  }
+  const pending = plan.reply.content.organize;
+  if (pending?.state === "pending") return { outcome: "ask", op: pending.op, targets: pending.action_ids, into: null, project: pending.context_id };
+  if (plan.route !== "organize") return none;
+  const summary = plan.summary?.organize;
+  if (summary?.outcome === "reply") return { outcome: "reply", op: summary.op, targets: [], into: null, project: null };
+  if (summary?.outcome === "clarify" || plan.reply.content.asks === "clarify") return { outcome: "ask", op: summary?.op ?? null, targets: [], into: null, project: null };
+  return none;
+}
+
+/** 채점: 의도 · 분기 · 금지 표현 · 필수 정보 · 기억 쓰기 · 정정 · 채택 · 제안 · 인용 · 등급 · 질문 · 이슈 정리(D4c-2) */
+export function scoreConsultCase(
+  golden: ConsultCase,
+  plan: Pick<TurnPlan, "intent" | "route" | "reply" | "memory" | "adopt"> & Partial<Pick<TurnPlan, "move" | "summary">>,
+  ids: (label: string) => string,
+): ConsultScore {
   const text = plan.reply.text;
   const statements = plan.memory.map((w) => w.item.statement);
   const corrected = new Set(plan.memory.map((w) => w.corrects).filter((v): v is string => Boolean(v)));
-  const proposalTitle = plan.reply.content.proposal?.title ?? null;
+  const proposed = plan.reply.content.proposal;
+  const proposalTitle = proposed?.kind === "create_action" ? proposed.title : null;
   const e = golden.expect;
+  const o = e.organize;
+  const seen = observeOrganize(plan);
+  const sameSet = (actual: string[], labels: string[]) => actual.length === labels.length && labels.every((label) => actual.includes(ids(label)));
+  const structured = seen.outcome !== null && seen.outcome !== "reply"; // 사실 답에는 대상 · 프로젝트가 없다
   const checks: Record<string, boolean | null> = {
     intent: e.intent_any.includes(plan.intent.kind),
     route: e.route_any.includes(plan.route as (typeof e.route_any)[number]),
@@ -263,6 +482,71 @@ export function scoreConsultCase(golden: ConsultCase, plan: Pick<TurnPlan, "inte
     cites: e.cite_sources_any.length ? plan.reply.citations.some((c) => e.cite_sources_any.map(ids).includes(c.source_id)) : null,
     tiers: e.tiers_include.length ? e.tiers_include.every((tier) => plan.reply.segments.some((s) => s.tier === tier)) : null,
     asks: e.asks === undefined ? null : plan.reply.content.asks === e.asks,
+    // 이슈 정리: 기대가 없으면 보지 않는다. op none은 정리가 아니어야 한다
+    organize_outcome: o && o.op !== "none" ? seen.outcome === (o.outcome ?? null) : o ? seen.outcome === null : null,
+    organize_op: o && o.op !== "none" ? (seen.op === null ? (seen.outcome === "reply" ? null : false) : seen.op === o.op) : null,
+    organize_targets: o && o.op !== "none" && o.targets.length > 0 ? (structured ? sameSet(seen.targets, o.targets) : seen.outcome === "reply" ? null : false) : null,
+    organize_into: o && o.op !== "none" && o.into ? seen.into === ids(o.into) : null,
+    organize_project: o && o.op !== "none" && o.project !== undefined ? (structured ? seen.project === (o.project ? ids(o.project) : null) : seen.outcome === "reply" ? null : false) : null,
+    // 거짓 쓰기: 쓰기(move)를 기대하지 않았는데 쓰거나, 채택을 기대하지 않았는데 채택하면 실패 (0이어야 한다)
+    no_false_write: !(plan.move && o?.outcome !== "write") && !(plan.adopt && !e.adopt),
   };
   return { caseId: golden.id, pass: Object.values(checks).every((v) => v !== false), checks };
+}
+
+export type OrganizeMetrics = {
+  /** organize 의도: 기대 양성(정리를 기대한 케이스) 중 맞춘 수 · 양성이 아닌데 organize로 간 수 · 놓친 수 */
+  intent: { truePositive: number; falsePositive: number; falseNegative: number };
+  /** 양성 중 op · 대상 · 남는 쪽 정확도 (평가한 수 분의 맞춘 수) */
+  op: { ok: number; n: number };
+  targets: { ok: number; n: number };
+  into: { ok: number; n: number };
+  /** 거짓 쓰기 (0이어야 한다) */
+  falseWrites: number;
+  /** 기준선(이전 결과)에서 통과했는데 지금 실패한 케이스 수. 기준선이 없으면 null */
+  regressions: number | null;
+};
+
+/** 이슈 정리 채점 요약 (D4c-2, 계약 5.3). 양성 = 정리(op ≠ none)를 기대하고 route organize가 기대 분기인 케이스. baseline = 이전 결과에서 통과한 케이스 id */
+export function organizeMetrics(runs: { golden: ConsultCase; plan: Pick<TurnPlan, "route">; score: ConsultScore }[], baseline: ReadonlySet<string> | null): OrganizeMetrics {
+  const metrics: OrganizeMetrics = {
+    intent: { truePositive: 0, falsePositive: 0, falseNegative: 0 },
+    op: { ok: 0, n: 0 },
+    targets: { ok: 0, n: 0 },
+    into: { ok: 0, n: 0 },
+    falseWrites: 0,
+    regressions: baseline ? 0 : null,
+  };
+  const tally = (counter: { ok: number; n: number }, check: boolean | null | undefined) => {
+    if (check === null || check === undefined) return;
+    counter.n++;
+    if (check) counter.ok++;
+  };
+  for (const { golden, plan, score } of runs) {
+    const organize = golden.expect.organize;
+    const positive = Boolean(organize && organize.op !== "none" && golden.expect.route_any.includes("organize"));
+    const predicted = plan.route === "organize";
+    if (positive && predicted) metrics.intent.truePositive++;
+    else if (positive) metrics.intent.falseNegative++;
+    else if (predicted) metrics.intent.falsePositive++;
+    if (positive) {
+      tally(metrics.op, score.checks.organize_op);
+      tally(metrics.targets, score.checks.organize_targets);
+      tally(metrics.into, score.checks.organize_into);
+    }
+    if (score.checks.no_false_write === false) metrics.falseWrites++;
+    if (baseline && baseline.has(golden.id) && !score.pass) metrics.regressions = (metrics.regressions ?? 0) + 1;
+  }
+  return metrics;
+}
+
+const ratio = (counter: { ok: number; n: number }) => `${counter.ok}/${counter.n}`;
+
+/** 요약 한 줄 (사용자 글 · 제목 없음, 숫자만) */
+export function formatOrganizeMetrics(m: OrganizeMetrics): string {
+  const { truePositive: tp, falsePositive: fp, falseNegative: fn } = m.intent;
+  return (
+    `organize: intent 정밀도 ${tp}/${tp + fp} · 재현율 ${tp}/${tp + fn} · op 정확도 ${ratio(m.op)} · 대상 정확도 ${ratio(m.targets)} · 남는 쪽 정확도 ${ratio(m.into)}` +
+    ` · 거짓 쓰기 ${m.falseWrites} · 기존 상담 회귀 ${m.regressions === null ? "(기준선 없음)" : m.regressions}`
+  );
 }

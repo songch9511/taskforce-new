@@ -1,0 +1,101 @@
+{
+  "id": "org-move-from-mismatch",
+  "description": "AC-27 · 검토 P2-5: 앞 답이 '어느 프로젝트에서 옮길까요?'였고 이슈가 있지도 않은 프로젝트(Other)를 답함 — 쓰지 않고(도착만 더하지 않고) 이슈의 실제 소속을 후보로 다시 묻는다",
+  "maps_to": [
+    "AC-27",
+    "A34"
+  ],
+  "asked_at": "2026-10-15T10:00:00+09:00",
+  "message": "Other",
+  "projects": [
+    {
+      "id": "p_launch",
+      "name": "Launch"
+    },
+    {
+      "id": "p_tf",
+      "name": "Taskforce"
+    },
+    {
+      "id": "p_beta",
+      "name": "Beta"
+    },
+    {
+      "id": "p_other",
+      "name": "Other"
+    }
+  ],
+  "records": {
+    "open_actions": [
+      {
+        "id": "i139",
+        "title": "Shape 디자인 확정",
+        "number": 139,
+        "version": 2,
+        "projects": [
+          "p_beta",
+          "p_tf"
+        ],
+        "open_sessions": 1,
+        "evidence_count": 2
+      },
+      {
+        "id": "i140",
+        "title": "견적서 보내기",
+        "number": 140,
+        "version": 2,
+        "projects": [],
+        "open_sessions": 1,
+        "evidence_count": 2
+      }
+    ]
+  },
+  "history": [
+    {
+      "role": "user",
+      "text": "#139 Launch로 옮겨줘"
+    },
+    {
+      "role": "assistant",
+      "text": "어느 프로젝트에서 옮길까요?",
+      "organize_pending": {
+        "op": "move",
+        "targets": [
+          "i139"
+        ],
+        "project": "p_launch",
+        "missing": "from"
+      }
+    }
+  ],
+  "expect": {
+    "intent_any": [
+      "answer",
+      "organize"
+    ],
+    "route_any": [
+      "organize"
+    ],
+    "reply_must_not_match": [
+      "Moved",
+      "옮겼어요"
+    ],
+    "organize": {
+      "op": "move",
+      "targets": [
+        "i139"
+      ],
+      "outcome": "ask",
+      "project": "p_launch"
+    },
+    "memory_writes": {
+      "min": 0,
+      "max": 0
+    },
+    "asks": "organize",
+    "reply_contains_any": [
+      "Beta"
+    ]
+  },
+  "origin": "synthetic"
+}

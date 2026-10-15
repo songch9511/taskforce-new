@@ -2,9 +2,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { INTERACTIVE_MAX_DURATION_S, RESPONSE_MARGIN_MS } from "@/lib/ai/deadline";
 import { hasAiConsent } from "@/lib/api/profile-store";
+import { userClaims } from "@/lib/actions/user-claims";
+import { deletePayload, type OrganizeAction } from "@/lib/conversation/organize";
+import { newProposal } from "@/lib/conversation/proposal";
 import { respondToMessage } from "@/lib/conversation/respond";
-import { conversationModelsFromEnv, loadConsultContext, postUserMessage } from "@/lib/conversation/store";
+import { conversationModelsFromEnv, finishTurn, loadChangeTargets, loadConsultContext, loadWindow, organizeLookup, postUserMessage } from "@/lib/conversation/store";
 import { createAdminClient } from "@/lib/supabase/admin";
+
+import { emptyRefs, fakeComplete, fakeDecide, reply, windowMessage } from "../../../../../../../tests/conversation/fakes";
 
 import { maxDuration, POST } from "./route";
 
@@ -51,6 +56,9 @@ const row = (id: string, role: "user" | "assistant") => ({
 vi.mock("@/lib/conversation/store", () => ({
   conversationModelsFromEnv: vi.fn(() => ({ decide: vi.fn(), complete: vi.fn() })),
   loadConsultContext: vi.fn(async () => ({})),
+  // 이슈 정리(D4c-2): respond가 부르는 읽기. 기본은 비어 있고, 정리 시험이 채운다
+  organizeLookup: vi.fn(async () => ({ actions: [], contexts: [] })),
+  loadChangeTargets: vi.fn(async () => new Map()),
   loadConversation: vi.fn(async () => ({ id: "cccccccc-0000-4000-8000-000000000001", contextId: null, contextName: null })),
   verifySelected: vi.fn(async () => ({ targets: [] })),
   userMessageExists: vi.fn(async () => false),
@@ -109,5 +117,43 @@ describe("POST /api/v2/conversations/{id}/messages (route)", () => {
     expect((await send()).status).toBe(409);
     expect(postUserMessage).not.toHaveBeenCalled();
     expect(conversationModelsFromEnv).not.toHaveBeenCalled();
+  });
+
+  // OA D4c-2 검토 P1: 글 "응"으로 삭제 카드를 확인하는 길은 route가 만든 deps(organizeLookup · loadChangeTargets)를 그대로 쓴다.
+  // 가짜 respond가 아니라 진짜 respondToMessage를 route의 deps로 돌린다 — 로더를 시험이 직접 넣으면 route의 연결 누락을 놓친다 (eval도 그랬다).
+  describe("글로 삭제 카드 확인 (진짜 respond, route가 만든 deps)", () => {
+    const USER = "11111111-0000-4000-8000-000000000001";
+    const ISSUE = "eeeeeeee-0000-4000-8000-000000000141";
+    const issue: OrganizeAction = { id: ISSUE, number: 141, title: "회의록 정리", status: "open", version: 2, open_sessions: 0, evidence_count: 1, contexts: [] };
+    const card = newProposal(deletePayload([issue]), () => "ffffffff-0000-4000-8000-000000000001");
+    const cardMessage = windowMessage(2, "assistant", "#141을(를) 지울까요?", {
+      refs: emptyRefs({ action_ids: [ISSUE], proposal: card.ref }),
+      content: { segments: [{ text: "#141을(를) 지울까요?", tier: "T5" }], citations: [], proposal: card.payload, asks: "confirm", used: null, window: null },
+    });
+    const stored = {
+      row: { title: issue.title, confirm_reasons: [], needs_confirmation: false, version: 2, status: "open" as const, started_at: null },
+      claims: userClaims([{ field: "scope", value: issue.title }, { field: "owner", value: "me" }, { field: "status", value: "open" }], new Date("2026-10-01T00:00:00Z"), () => "00000000-0000-4000-8000-0000000000c1"),
+    };
+
+    it("'응 지워'(adopt ≥ 0.8)는 503이 아니라 사용자 범위로 대상을 읽어 삭제 쓰기 계획을 finishTurn에 넘긴다", async () => {
+      vi.stubEnv("CONVERSATIONS_V2_ENABLED", "true");
+      const actual = await vi.importActual<typeof import("@/lib/conversation/respond")>("@/lib/conversation/respond");
+      vi.mocked(respondToMessage).mockImplementationOnce(actual.respondToMessage as never);
+      vi.mocked(conversationModelsFromEnv).mockReturnValueOnce({ decide: fakeDecide({ intent: "adopt" }), complete: fakeComplete(reply()) } as never);
+      vi.mocked(postUserMessage).mockResolvedValueOnce({ status: "created", messageId: MESSAGE, seq: 3, replyId: null } as never);
+      vi.mocked(loadWindow).mockResolvedValueOnce({
+        messages: [windowMessage(1, "user", "#141 지워줘"), cardMessage, { ...windowMessage(3, "user", "응 지워"), id: MESSAGE }],
+        omitted: 0,
+      } as never);
+      vi.mocked(organizeLookup).mockResolvedValue({ actions: [issue], contexts: [] } as never);
+      vi.mocked(loadChangeTargets).mockResolvedValueOnce(new Map([[ISSUE, stored]]) as never);
+
+      const response = await send();
+
+      expect(response.status).toBe(200);
+      expect(loadChangeTargets).toHaveBeenCalledWith({ admin: true }, USER, [ISSUE]);
+      const plan = vi.mocked(finishTurn).mock.calls[0][3] as { adopt: { kind: string; writes: { action_id: string; action: { status: string } }[] } | null };
+      expect(plan.adopt).toMatchObject({ kind: "delete", writes: [{ action_id: ISSUE, action: { status: "dropped" } }] });
+    });
   });
 });

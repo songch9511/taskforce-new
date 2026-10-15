@@ -46,7 +46,7 @@ export function messageIntent(result: IntentResult): MessageIntent {
 }
 
 /** 쓰기 의도 (대상이 정해진 뒤에만 쓴다). inform · correct는 memory_items에만 쓴다 (아키텍처 5.6) */
-const WRITE_KINDS = new Set<IntentKind>(["adopt", "instruct", "modify", "answer", "stop", "preference", "inform", "correct"]);
+const WRITE_KINDS = new Set<IntentKind>(["adopt", "instruct", "modify", "answer", "stop", "preference", "inform", "correct", "organize"]);
 /** 기억을 쓸 수 있는 의도: 알림 · 정정 · Taskforce가 물은 것에 답함 */
 const MEMORY_KINDS = new Set<IntentKind>(["inform", "correct", "answer"]);
 /** 실행에 닿는 의도: B2에는 실행 연결이 없다 (run 0, "아직 실행 연결이 없어요") */
@@ -64,7 +64,9 @@ export type IntentRoute =
   /** 실행 의도: 실행하지 않는다. 대상만 정하고(모호하면 묻기) 실행 연결이 없다고 말한다. alsoRead: 조회 부분이 있어 함께 답한다 */
   | { kind: "execution"; confirm: boolean; alsoRead: boolean }
   /** 선호: user_preferences는 아직 없다 (저장 0) */
-  | { kind: "preference"; alsoRead: boolean };
+  | { kind: "preference"; alsoRead: boolean }
+  /** 이슈 정리(이동 · 빼기 · 삭제 · 병합, D4c-2): 상담 모델을 부르지 않는다. confirm: 확신이 0.5–0.8이라 이동은 바로 쓰지 않고 글로 한 번 묻는다. alsoRead: 조회 부분이 있어 상담 한 번을 함께 답한다 */
+  | { kind: "organize"; confirm: boolean; alsoRead: boolean };
 
 /**
  * 의도 → 분기 (런타임 계약 2장 임계값). 쓰기는 확신 ≥ 0.8에서만 한다.
@@ -75,20 +77,23 @@ export type IntentRoute =
 export function routeIntent(
   result: Pick<IntentResult, "kind" | "confidence" | "remember" | "read">,
   /** 바로 앞 답이 물은 것 · 그 답에 열린 제안이 있는가: Taskforce의 질문에 답한 것(answer)이면 그 질문에 맞는 분기로 */
-  previous: { asked: "remember" | "referent" | "clarify" | "adopt" | null; openProposal: boolean } = { asked: null, openProposal: false },
+  previous: { asked: "remember" | "referent" | "clarify" | "adopt" | "confirm" | "organize" | null; openProposal: boolean } = { asked: null, openProposal: false },
 ): IntentRoute {
   const { kind, confidence } = result;
   if (confidence < INTENT_THRESHOLDS.ask) return { kind: "clarify" };
   const sure = confidence >= INTENT_THRESHOLDS.act;
   const alsoRead = result.read >= INTENT_THRESHOLDS.act;
   if (kind === "answer") {
-    // "추가할까요?"에 "응" = 채택, "어느 일인가요?"에 답 = 실행 의도의 대상(실행 연결은 없다), "무엇을 원하나요?"에 답 = 다시 읽어 답한다
-    if (previous.asked === "adopt" && previous.openProposal) return { kind: "adopt", confirm: !sure };
+    // "추가할까요?" · 삭제 · 병합 카드에 "응" = 채택, "어느 일인가요?"에 답 = 실행 의도의 대상(실행 연결은 없다), "무엇을 원하나요?"에 답 = 다시 읽어 답한다,
+    // 정리가 물은 것(어느 프로젝트인가요 등)에 답 = 정리를 다시 푼다 (한 라운드, 런타임 계약 2장)
+    if ((previous.asked === "adopt" || previous.asked === "confirm") && previous.openProposal) return { kind: "adopt", confirm: !sure };
+    if (previous.asked === "organize") return { kind: "organize", confirm: !sure, alsoRead };
     if (previous.asked === "referent") return { kind: "execution", confirm: !sure, alsoRead };
     if (previous.asked === "clarify") return { kind: "consult", memory: sure && result.remember >= INTENT_THRESHOLDS.act };
   }
   if (MEMORY_KINDS.has(kind)) return { kind: "remember", memory: sure };
   if (kind === "adopt") return { kind: "adopt", confirm: !sure };
+  if (kind === "organize") return { kind: "organize", confirm: !sure, alsoRead };
   if (EXECUTION_KINDS.has(kind)) return { kind: "execution", confirm: !sure, alsoRead };
   if (kind === "preference") return { kind: "preference", alsoRead };
   // lookup · consult · other: 함께 말한 사실의 저장도 쓰기라 의도 확신 ≥ 0.8이 먼저다 (런타임 계약 2장)

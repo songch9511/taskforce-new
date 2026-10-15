@@ -46,4 +46,18 @@ describe("POST /api/v2/contexts/{id}/members (route)", () => {
     expect((await call({ op: "add", member_kind: "action", member_id: ACTION })).status).toBe(400); // 조건 없는 요청은 받지 않는다
     expect(changeContextMembership).toHaveBeenCalledTimes(2);
   });
+
+  // 검토 P2-3: 일괄 말로 이동과 겹쳐 교착의 피해자가 되어도 500이 아니라 다시 보내면 되는 409 busy_retry다 (쓰기는 롤백됐다)
+  it("잠금 경합(55P03) · 직렬화 실패(40001) · 교착(40P01)은 500이 아니라 409 busy_retry. 그 밖의 DB 오류는 500", async () => {
+    vi.stubEnv("MEMORY_ENABLED", "true");
+    for (const code of ["40P01", "55P03", "40001"]) {
+      vi.mocked(changeContextMembership).mockRejectedValueOnce(Object.assign(new Error("db"), { code }));
+      const response = await call(body);
+      expect(response.status, code).toBe(409);
+      expect((await response.json()).error.code, code).toBe("busy_retry");
+    }
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    vi.mocked(changeContextMembership).mockRejectedValueOnce(Object.assign(new Error("db"), { code: "XX000" }));
+    expect((await call(body)).status).toBe(500);
+  });
 });

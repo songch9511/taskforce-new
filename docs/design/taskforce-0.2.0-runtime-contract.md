@@ -62,6 +62,7 @@
 | `answer` | Taskforce · 에이전트의 질문에 답 | 예(question) | 예 — 답 전달 |
 | `stop` | 중단 | 예(run) | 예 |
 | `preference` | 선호 저장(“앞으로 이 고객에게는”) | 범위 | 예 — `user_preferences` |
+| `organize` | 이슈 정리(“#139 Launch로 옮겨줘”, “#141 지워줘”, “#144를 #139에 합쳐줘”) | 예(칩 · 글의 #번호 · 프로젝트 이름) | 이동 · 빼기는 대상이 정해지면 바로(멤버십), 삭제 · 병합은 확인 카드(제안) 뒤에 — OA D4c-2. 정리가 한 번 물은 것(`asks organize`, 바로 앞 답)에 대한 짧은 답(프로젝트 이름 · #번호 · 칩과 조사뿐)은 J1 라벨과 무관하게 코드가 정리 이어가기로 보낸다(J1을 부르지 않는다; 지시가 섞이면 J1을 따른다). 앞 질문의 값(op · 목적지 · 출발 · 질문 상태)은 이 단순한 답만 이어받고, 정정 · 새 지시는 처음부터 다시 풀며 op 확신이 0.8 미만이면 쓰지 않고 묻는다(이슈만 이번 글이 말하지 않으면 앞 것을 이어받는다) |
 | `other` | 그 밖 | — | 아니오 |
 
 임계값 `제안`(`src/lib/pipeline/intent.config.ts`, 판정 설정 `judge.config.ts`의 0.8 선례): 확신 ≥ 0.8 → 그대로. 0.5–0.8 → `lookup` · `consult`는 그대로 답하고, 쓰기 의도는 한 가지를 묻는다. < 0.5 → 묻는다. 어떤 의도든 **쓰기는 대상이 정해진 뒤에만** 한다. 한 발화에 조회와 위임이 섞이면 읽기 부분은 답하고 쓰기 부분은 아래 대상 규칙을 거친다(기획안 3.1).
@@ -79,7 +80,7 @@
 
 ### 제안(proposal)과 채택 `제안`
 
-- assistant 메시지는 `refs.proposal`을 하나 가질 수 있다: `{id, kind in ('create_action','run','modify','stop','preference'), payload_hash, state in ('open','adopted','superseded','dismissed')}`.
+- assistant 메시지는 `refs.proposal`을 하나 가질 수 있다: `{id, kind in ('create_action','run','modify','stop','preference','move','delete','merge'), payload_hash, state in ('open','adopted','superseded','dismissed')}`. `move`(불확실한 이동을 묻는 글) · `delete` · `merge`(확인 카드)는 OA D4c-2다: `content.asks`는 각각 `adopt` · `confirm` · `confirm`이고, 묻고 난 다음 답을 위해 `organize`(정리가 모자란 것을 한 번 물음, 한 라운드)가 더해졌다. `payload_hash` = (종류, 대상 Action id들과 각 `version`, 병합이면 남는 쪽 id)의 hash — 제목 · 숫자는 넣지 않는다.
 - 제안은 Action · run이 아니다. `adopt`가 오면 그때 만든다. **채택은 proposal id로 멱등**이다: 같은 제안을 두 번 채택해도 Action · run은 하나다(A41).
 - 같은 대화에서 새 proposal이 나오면 앞의 열린 proposal은 `superseded`다. 다른 대상이 명시되면 열린 proposal은 그대로 두되 3번 규칙의 후보에서 뺀다.
 - 채택한 목표는 1장 표의 경로(Action + `note` 원문 + origin `user` Claim)로 저장한다. 사용자가 말한 내용은 사용자 Claim이 근거다(CLAUDE.md 원칙 2).

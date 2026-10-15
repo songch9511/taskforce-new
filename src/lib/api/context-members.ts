@@ -18,6 +18,7 @@ import { errorResponse, parseBody, unauthorized } from "./respond";
 // 응답: 200 { member, context_version, change } (옮기기는 { member, from_member, context_version, from_context_version, change }) · 404 gate 꺼짐 · 잘못된 id ·
 // 남의/없는/보관된 범위 · 남의/없는 할 일 · 409 conflict · 400 잘못된 본문 · S3b가 받지 않는 멤버 종류(source · person) · 같은 범위로 옮기기.
 // change = 실제로 바뀐 것(added/removed 범위와 그 쓰기 직후 version): Undo는 이 변화의 역연산만 보낸다.
+// 409 busy_retry = 잠금 경합(55P03) · 직렬화 실패(40001) · 교착(40P01): 쓰기는 롤백됐고 같은 요청을 다시 보내도 된다 (D4c-2: 일괄 말로 이동과 겹친 피해자, 500 아님).
 
 const NOT_FOUND_CONTEXT = "범위가 없습니다.";
 const NOT_FOUND_ACTION = "할 일이 없습니다.";
@@ -43,6 +44,8 @@ function failure(outcome: Exclude<ContextMemberOutcome, { status: "ok" }>): Resp
 function internalError(event: string, error: unknown): Response {
   // 오류 이름 · DB 오류 코드만 (요청의 id도 남기지 않는다)
   const code = typeof (error as { code?: unknown } | null)?.code === "string" ? (error as { code: string }).code : undefined;
+  // 잠금 경합(55P03) · 직렬화 실패(40001) · 교착(40P01): 쓰기는 롤백됐으니 같은 요청을 다시 보내도 된다 (500이 아니라 409 busy_retry. 일괄 말로 이동과 겹친 피해자, D4c-2 검토 P2-3)
+  if (code === "55P03" || code === "40001" || code === "40P01") return errorResponse(409, "busy_retry", "잠시 뒤 다시 시도해 주세요.");
   console.error(JSON.stringify({ event, error: error instanceof Error ? error.name : "unknown", code }));
   return errorResponse(500, "internal_error", "범위를 바꾸지 못했습니다.");
 }

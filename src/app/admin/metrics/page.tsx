@@ -11,7 +11,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 // ADMIN_EMAILS에 없는 사용자에게는 없는 페이지처럼 보인다.
 
 const PERIODS = [7, 28, 90] as const;
-const FIELD_LABELS: Record<ErrorField, string> = { title: "내용", due: "기한", owner: "담당", status: "상태", deleted: "삭제" };
+const FIELD_LABELS: Record<ErrorField, string> = { title: "내용", due: "기한", owner: "담당", status: "상태", deleted: "삭제", duplicate: "중복(병합)" };
 const MISS_STAGE_LABELS: Record<keyof MissedMetric["byStage"], string> = {
   not_extracted: "추출 안 됨 (검증 탈락 포함)",
   quoted_history: "연결 메일의 인용된 옛 메일 속이라 버림",
@@ -135,7 +135,7 @@ export default async function MetricsPage({ searchParams }: { searchParams: Prom
             1. AI 오판율 {pct(headline.rate)} <span className="text-muted-foreground text-sm font-normal">({headline.label})</span>
           </CardTitle>
           <CardDescription>
-            AI가 원문에서 만든 Action {m.aiCreated}개 중 사용자가 고치거나 지운 것 {m.corrected}개 (전체 {pct(m.rate)}). 완료 처리는 오판이 아닙니다. 할 일 DB에서 가져온 {m.imported}개는
+            AI가 원문에서 만든 Action {m.aiCreated}개 중 사용자가 고치거나 지우거나 다른 이슈에 병합한 것 {m.corrected}개 (전체 {pct(m.rate)}). 완료 처리는 오판이 아닙니다. 할 일 DB에서 가져온 {m.imported}개는
             AI 판단이 아니라서 뺐습니다.
           </CardDescription>
         </CardHeader>
