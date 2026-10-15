@@ -599,7 +599,9 @@ public final class ChatStore {
             let (extras, gone) = await readPanelRows(missingFrom: listed)
             guard scope.isCurrent(token), sequence == listSequence else { return }
             // 서버가 없다 · 보관했다고 확인한 패널 대화: 이전 본문 · 대상을 남기지 않고 오류 화면(다시 시도)으로 둔다 (일시 실패와 다르다)
+            // 읽기 순번도 올린다: 이미 나가 있던 옛 읽기(글 · 행)의 늦은 응답이 오류 화면을 정상 본문으로 되돌리지 못하게 버린다
             for id in gone {
+                threadReadSeq[id] = (threadReadSeq[id] ?? 0) + 1
                 threads[id] = ChatThread()
                 threads[id]?.load = .failed
             }

@@ -172,6 +172,85 @@ struct ChatStoreSessionPanelTests {
         #expect(chat.screen(for: row.id) == .failed && chat.turns(for: row.id).isEmpty, "목록에서 빠진(보관된) 대화는 본문이 아니라 오류 화면")
     }
 
+    // MARK: 재검토 반영 3 (3차) — 오류 화면이 된 뒤 늦게 도착한 옛 읽기
+
+    /// 호출 순서를 세는 작은 도구 (붙잡힌 첫 호출과 그다음 호출을 가른다)
+    private final class CallCounter: @unchecked Sendable {
+        private let lock = NSLock()
+        private var count = 0
+        func next() -> Int { lock.withLock { count += 1; return count } }
+    }
+
+    /// 글 읽기가 진행 중인데 별도 새로 읽기가 그 대화의 삭제 · 보관을 확인해 오류 화면으로 바꿨다. 그 뒤에 도착한 옛 글 응답은
+    /// (내용이 있든 비었든) 정상 본문을 되살리거나 "Try again"을 지우거나 Composer를 다시 기다리게 하지 않는다
+    private func heldMessageReadThenGone(archived: Bool, lateBody: Bool) async {
+        let listed = agentRow(1, last: 100)
+        let old = agentRow(2, last: 1)
+        serve(list: [listed], direct: [old], messages: said(old.id, "first"))
+        let chat = store()
+        chat.panelConversations = { [old.id] }
+        await chat.refresh()
+        #expect(chat.screen(for: old.id) == .ready(problem: nil) && chat.isTargetKnown(old.id))
+        // 1. 글 읽기가 서버에 가서 응답을 기다린다
+        let latch = Latch()
+        let late = lateBody ? (said(old.id, "late", seq: 2)[old.id] ?? []) : []
+        // 붙잡는 것은 이 대화의 글 읽기뿐이다 (새로 읽기가 함께 읽는 다른 대화는 그대로 답한다)
+        let heldID = old.id
+        gateway.messagesHandler = { id in
+            guard id == heldID else { return [] }
+            await latch.wait()
+            return late
+        }
+        chat.loadConversation(old.id)
+        #expect(await latch.waitForArrivals(1, timeout: .seconds(5)), "글 읽기가 서버에 가 있다")
+        // 2. 그사이 새로 읽기가 삭제 · 보관을 확인한다 (새로 읽기는 붙잡힌 글 응답을 기다리지 않는다)
+        let gone: ChatConversation? = archived ? agentRow(2, last: 1, archived: true) : nil
+        gateway.conversationHandler = { _ in gone }
+        await chat.refresh()
+        #expect(chat.screen(for: old.id) == .failed, "오류 화면 + Try again")
+        // 3. 옛 응답이 이제 도착한다
+        await latch.open()
+        await chat.settle()
+        #expect(chat.screen(for: old.id) == .failed, "늦은 옛 응답이 오류 화면을 정상 본문으로 되돌리지 않는다")
+        #expect(chat.turns(for: old.id).isEmpty && !chat.isTargetKnown(old.id) && !chat.canCompose(in: old.id), "본문 · 대상 · 보내기 모두 오류 화면 그대로 (끝나지 않는 로딩 없음)")
+    }
+
+    @Test func aLateMessageResponseDoesNotBringBackTheBodyOfAConversationDeletedMeanwhile() async {
+        await heldMessageReadThenGone(archived: false, lateBody: true)
+    }
+
+    @Test func aLateEmptyMessageResponseDoesNotClearTheErrorOfAConversationArchivedMeanwhile() async {
+        await heldMessageReadThenGone(archived: true, lateBody: false)
+    }
+
+    /// 행을 id로 읽는 첫 읽기가 진행 중인데 새로 읽기가 먼저 "없다"를 확인했다: 늦게 도착한 옛 행 응답이 대상 · 본문을 되살리지 않는다
+    @Test func aLateRowResponseDoesNotBringBackAConversationConfirmedGoneMeanwhile() async {
+        let listed = agentRow(1, last: 100)
+        let old = agentRow(2, last: 1)
+        serve(list: [listed], direct: [], messages: said(old.id, "first"))
+        let chat = store()
+        chat.panelConversations = { [old.id] }
+        // 1. 행을 모르는 대화를 id로 읽는다: 첫 호출은 붙잡히고(옛 응답은 행이 있다), 그다음 호출은 "없다"
+        let latch = Latch()
+        let calls = CallCounter()
+        gateway.conversationHandler = { _ in
+            if calls.next() == 1 {
+                await latch.wait()
+                return old
+            }
+            return nil
+        }
+        chat.loadConversation(old.id)
+        #expect(await latch.waitForArrivals(1, timeout: .seconds(5)), "행 읽기가 서버에 가 있다")
+        // 2. 새로 읽기가 먼저 "없다"를 확인한다
+        await chat.refresh()
+        #expect(chat.screen(for: old.id) == .failed)
+        // 3. 옛 행 응답이 도착한다
+        await latch.open()
+        await chat.settle()
+        #expect(chat.screen(for: old.id) == .failed && chat.turns(for: old.id).isEmpty && !chat.isTargetKnown(old.id), "늦은 옛 행 응답이 되살리지 않는다")
+    }
+
     // MARK: 첫 읽기 실패 · 없는 대화
 
     @Test func aFirstReadFailureShowsOfflineOrFailedAndTryAgainReadsAgain() async {
