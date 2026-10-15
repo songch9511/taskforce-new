@@ -116,6 +116,14 @@ public enum ClaudeGateReason {
     public static let targetChanged = "The file changed while this request waited for the user, so it was not run."
     public static let unknownInput = "This tool input has fields Taskforce does not support. Retry with only the standard fields."
     public static let patternNotAllowed = "Use a pattern without '..' or braces."
+    public static let secretInPath = "This path contains a secret value. Use a different path."
+}
+
+/// 로컬 defer 승인 카드의 사유 한 줄 (사용자에게 보이는 글, 9장 12 — notes "새 문구"로 사용자 승인)
+public enum ClaudeCardReason {
+    public static let hardLink = "File has other links"
+    public static let unknownInput = "Unrecognized tool options"
+    public static let secretInCommand = "Contains a secret value"
 }
 
 /// 결정표 (OA D3a 계약 2.7): 위에서 처음 맞는 행. L = 로컬(서버 호출 0), S = 서버, P = 서버 응답 뒤 로컬.
@@ -201,27 +209,41 @@ public struct ClaudeToolGate: Sendable {
             guard let target = writeTarget(input: input, cwd: request.cwd, context: context) else {
                 return Self.local(.deny, ClaudeGateReason.outsideFile, "outside_workspace")
             }
+            // 비밀값이 든 경로: 가린 경로로 서버에 묻거나 lease를 잡지 않는다 — 실제 대상과 판정 대상이 달라진다 (9장 2)
+            if context.secrets.redact(target.realPath) != target.realPath || context.secrets.redact(target.relPath) != target.relPath {
+                return Self.local(.deny, ClaudeGateReason.secretInPath, "secret_in_path")
+            }
             let fingerprint = Self.targetFingerprint(target.realPath)
-            let shown = context.secrets.redact(target.relPath)
-            let question = Self.approvalQuestion(id: request.toolUseID, tool: tool, relPath: shown, command: nil)
-            // 모르는 입력 키 · 하드 링크(작업 폴더 밖과 같은 파일일 수 있다)는 서버에 묻지 않고 사용자에게 (8장 6 · 7)
-            if Self.hasUnknownKeys(tool: tool, input: input) { return Self.deferLocally(request, question: question, target: fingerprint, code: "unknown_input") }
-            if Self.isHardLinked(target.realPath) { return Self.deferLocally(request, question: question, target: fingerprint, code: "hard_link") }
-            let sent = BridgeV1ToolTarget(realPath: context.secrets.redact(target.realPath), relPath: shown)
-            let call = BridgeV1ToolCall.claudeWrite(toolUseID: request.toolUseID, permissionMode: request.permissionMode, tool: tool, target: sent)
+            // 모르는 입력 키 · 하드 링크(작업 폴더 밖과 같은 파일일 수 있다)는 서버에 묻지 않고 사유를 붙여 사용자에게 (8장 6 · 7, 9장 12)
+            if Self.hasUnknownKeys(tool: tool, input: input) {
+                let question = Self.approvalQuestion(id: request.toolUseID, tool: tool, relPath: target.relPath, command: nil, reason: ClaudeCardReason.unknownInput)
+                return Self.deferLocally(request, question: question, target: fingerprint, code: "unknown_input")
+            }
+            if Self.isHardLinked(target.realPath) {
+                let question = Self.approvalQuestion(id: request.toolUseID, tool: tool, relPath: target.relPath, command: nil, reason: ClaudeCardReason.hardLink)
+                return Self.deferLocally(request, question: question, target: fingerprint, code: "hard_link")
+            }
+            let question = Self.approvalQuestion(id: request.toolUseID, tool: tool, relPath: target.relPath, command: nil)
+            let call = BridgeV1ToolCall.claudeWrite(toolUseID: request.toolUseID, permissionMode: request.permissionMode, tool: tool, target: target)
             return await server(request, call: call, context: context, question: question, target: fingerprint, command: nil)
         default:
             // L10 Bash
             guard let command = input["command"]?.stringValue else { return Self.local(.deny, ClaudeGateReason.unreadable, "malformed") }
             if Self.flag(input, "run_in_background", "runInBackground") { return Self.local(.deny, ClaudeGateReason.background, "background") }
             if Self.flag(input, "dangerouslyDisableSandbox", "dangerously_disable_sandbox") { return Self.local(.deny, ClaudeGateReason.sandboxDisabled, "sandbox") }
-            // 건넨 비밀값은 서버로 가는 명령 · 경로와 승인 글에서 가린다 (8장 11). 재구성은 원래 명령으로 대조하므로 가린 명령이 실행되지 않는다
+            // 비밀값이 든 명령: 가린 명령의 서버 허용은 원래 명령의 판정이 아니다 — 서버에 묻지 않고 가린 글의 승인 카드로 (9장 2). 원문은 어떤 요청에도 없다
             let shown = context.secrets.redact(command)
-            let question = Self.approvalQuestion(id: request.toolUseID, tool: tool, relPath: nil, command: shown)
-            if Self.hasUnknownKeys(tool: tool, input: input) { return Self.deferLocally(request, question: question, target: nil, code: "unknown_input") }
+            if shown != command || context.secrets.redact(request.cwd) != request.cwd {
+                let question = Self.approvalQuestion(id: request.toolUseID, tool: tool, relPath: nil, command: shown, reason: ClaudeCardReason.secretInCommand)
+                return Self.deferLocally(request, question: question, target: nil, code: "secret_in_command")
+            }
+            if Self.hasUnknownKeys(tool: tool, input: input) {
+                let question = Self.approvalQuestion(id: request.toolUseID, tool: tool, relPath: nil, command: command, reason: ClaudeCardReason.unknownInput)
+                return Self.deferLocally(request, question: question, target: nil, code: "unknown_input")
+            }
+            let question = Self.approvalQuestion(id: request.toolUseID, tool: tool, relPath: nil, command: command)
             let call = BridgeV1ToolCall.claudeBash(
-                toolUseID: request.toolUseID, permissionMode: request.permissionMode, cwd: context.secrets.redact(request.cwd), command: shown, runInBackground: false,
-                dangerouslyDisableSandbox: false
+                toolUseID: request.toolUseID, permissionMode: request.permissionMode, cwd: request.cwd, command: command, runInBackground: false, dangerouslyDisableSandbox: false
             )
             return await server(request, call: call, context: context, question: question, target: nil, command: command)
         }
@@ -439,13 +461,16 @@ public struct ClaudeToolGate: Sendable {
 
     // MARK: 승인 질문 글 (Q8: 무엇을 하는지 보인다. diff · 본문 0)
 
+    /// 보이는 글로 바꾼 뒤의 상한과, 자를 때 남기는 끝부분 (9장 11)
     static let commandPreviewChars = 300
+    static let commandTailChars = 80
 
-    /// 승인 카드 글 (Q8 · 8장 4): Edit · Write는 상대 경로, Bash는 명령 앞 300자. 줄바꿈 `⏎` · 탭 `⇥` · 제어 · 양방향 · 폭 없는 글자 `\u{XXXX}`로 보이게 하고,
-    /// 300자에서 잘랐으면 `… (+남은 글자 수)`를 붙인다 (보이지 않는 글자로 실제 명령을 숨기지 못하게)
-    static func approvalQuestion(id: String, tool: String, relPath: String?, command: String?) -> AgentQuestion {
+    /// 승인 카드 글 (Q8 · 8장 4 · 9장 11 · 12): Edit · Write는 상대 경로, Bash는 명령. 줄바꿈 `⏎` · 탭 `⇥` · 제어 · 양방향 · 폭 없는 글자 `\u{XXXX}`,
+    /// 빈칸으로 보이는 글자의 연속은 `␠×N`(보통 공백 하나는 그대로)으로 보이게 하고, 300자를 넘으면 앞부분 + `…` + 마지막 80자.
+    /// `reason`(로컬 defer의 사유)은 둘째 줄이다: 명령 안의 줄바꿈은 `⏎`로 바뀌므로 둘째 줄은 Taskforce가 쓴 것뿐이다
+    static func approvalQuestion(id: String, tool: String, relPath: String?, command: String?, reason: String? = nil) -> AgentQuestion {
         let header: String
-        let text: String
+        var text: String
         switch tool {
         case "Edit":
             header = "Edit file"
@@ -455,31 +480,72 @@ public struct ClaudeToolGate: Sendable {
             text = "Write " + visible(relPath ?? "")
         default:
             header = "Run command"
-            let full = command ?? ""
-            let rest = full.count - commandPreviewChars
-            text = "Run: " + visible(String(full.prefix(commandPreviewChars))) + (rest > 0 ? "… (+\(rest))" : "")
+            text = "Run: " + visible(command ?? "")
         }
+        if let reason { text += "\n" + reason }
         let item = AgentQuestionItem(id: "approval", header: header, text: text, options: [AgentQuestionOption(label: "Allow", description: ""), AgentQuestionOption(label: "Deny", description: "")])
         return AgentQuestion(providerRequestID: id, kind: .approval, structured: true, text: text, items: [item])
     }
 
-    /// 보이지 않거나 글 방향을 바꾸는 글자를 보이는 표기로
+    /// 빈칸으로 보이는 글자: 공백 구분자(Zs: 보통 공백 · NBSP · 전각 공백 …)와 한글 채움 글자 · 점자 빈칸
+    static func looksBlank(_ scalar: Unicode.Scalar) -> Bool {
+        if scalar.properties.generalCategory == .spaceSeparator { return true }
+        return [0x115F, 0x1160, 0x3164, 0xFFA0, 0x2800].contains(scalar.value)
+    }
+
+    /// 폭 없이 붙는 글자 (결합 글자 잇기 · 이체 선택자 · 크메르 내재 모음): 보이지 않으니 코드로 보인다
+    static func zeroWidthMark(_ scalar: Unicode.Scalar) -> Bool {
+        switch scalar.value {
+        case 0x034F, 0x17B4, 0x17B5, 0xFE00...0xFE0F, 0xE0100...0xE01EF: return true
+        default: return false
+        }
+    }
+
+    /// 보이지 않거나 글 방향을 바꾸는 글자를 보이는 표기로 바꾸고, 300자를 넘으면 앞부분 + `…` + 마지막 80자 (표기 하나는 자르지 않는다)
     static func visible(_ text: String) -> String {
-        var out = String.UnicodeScalarView()
+        var tokens: [String] = []
+        var blanks: [Unicode.Scalar] = []
+        func flushBlanks() {
+            guard !blanks.isEmpty else { return }
+            if blanks == [" "] {
+                tokens.append(" ")
+            } else {
+                tokens.append(blanks.count == 1 ? "␠" : "␠×\(blanks.count)")
+            }
+            blanks.removeAll()
+        }
         for scalar in text.unicodeScalars {
+            if looksBlank(scalar) {
+                blanks.append(scalar)
+                continue
+            }
+            flushBlanks()
             switch scalar {
-            case "\n": out.append(contentsOf: "⏎".unicodeScalars)
-            case "\t": out.append(contentsOf: "⇥".unicodeScalars)
+            case "\n": tokens.append("⏎")
+            case "\t": tokens.append("⇥")
             default:
                 let hidden: Bool
                 switch scalar.properties.generalCategory {
                 case .control, .format, .lineSeparator, .paragraphSeparator: hidden = true
-                default: hidden = false
+                default: hidden = zeroWidthMark(scalar)
                 }
-                if hidden { out.append(contentsOf: String(format: "\\u{%04X}", scalar.value).unicodeScalars) } else { out.append(scalar) }
+                tokens.append(hidden ? String(format: "\\u{%04X}", scalar.value) : String(scalar))
             }
         }
-        return String(out)
+        flushBlanks()
+        let total = tokens.reduce(0) { $0 + $1.count }
+        guard total > commandPreviewChars else { return tokens.joined() }
+        var head = ""
+        for token in tokens {
+            guard head.count + token.count <= commandPreviewChars - commandTailChars - 1 else { break }
+            head += token
+        }
+        var tail = ""
+        for token in tokens.reversed() {
+            guard tail.count + token.count <= commandTailChars else { break }
+            tail = token + tail
+        }
+        return head + "…" + tail
     }
 
     // MARK: S · P

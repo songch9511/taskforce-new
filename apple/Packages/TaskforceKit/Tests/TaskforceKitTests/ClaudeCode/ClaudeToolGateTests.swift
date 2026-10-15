@@ -375,9 +375,10 @@ struct ClaudeToolGateTests {
         ]))
         let command = "npm   run\n build " + String(repeating: "x", count: 400)
         let bash = await evaluate("Bash", WireJSON.object(["command": .string(command)]).canonicalText, id: "toolu_b", decider: ScriptedDecider([.success(ScriptedDecider.response(.defer, .commandNotReadonly))]))
-        // 명령 앞 300자 그대로 (줄바꿈은 ⏎로 보인다, 공백을 줄이지 않는다) + 잘린 글자 수 (8장 4)
+        // 줄바꿈은 ⏎, 공백 여럿은 ␠×N, 길면 앞부분 + … + 마지막 80자 (8장 4 · 9장 11)
         let text = try #require(bash.deferred).question.text
-        #expect(text == "Run: npm   run⏎ build " + String(repeating: "x", count: 283) + "… (+117)")
+        // 앞부분 219자 = "npm␠×3run⏎ build " 17자 + x 202자
+        #expect(text == "Run: npm␠×3run⏎ build " + String(repeating: "x", count: 202) + "…" + String(repeating: "x", count: 80))
         let config = await evaluate("Write", #"{"file_path":"\#(box.workspacePath)/.mcp.json","content":"{}"}"#, decider: ScriptedDecider([.success(ScriptedDecider.response(.defer, .toolConfigWrite))]))
         #expect(config.deferred?.question.text == "Write .mcp.json")
     }

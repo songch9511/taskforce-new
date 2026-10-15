@@ -149,8 +149,9 @@ struct ClaudeReviewGateTests {
     @Test func a4TheApprovalCardShowsHiddenCharactersAndHowMuchWasCut() {
         let tricky = "echo ok\nrm -rf ~\t# \u{202E}gpj.exe \u{200B}x\u{0007}"
         #expect(ClaudeToolGate.approvalQuestion(id: "t", tool: "Bash", relPath: nil, command: tricky).text == #"Run: echo ok⏎rm -rf ~⇥# \u{202E}gpj.exe \u{200B}x\u{0007}"#)
+        // 길면 앞부분 + … + 마지막 80자 (9장 11이 8장 4의 `… (+N)`을 바꿨다)
         let long = String(repeating: "a", count: 350)
-        #expect(ClaudeToolGate.approvalQuestion(id: "t", tool: "Bash", relPath: nil, command: long).text == "Run: " + String(repeating: "a", count: 300) + "… (+50)")
+        #expect(ClaudeToolGate.approvalQuestion(id: "t", tool: "Bash", relPath: nil, command: long).text == "Run: " + String(repeating: "a", count: 219) + "…" + String(repeating: "a", count: 80))
         let exact = String(repeating: "b", count: 300)
         #expect(ClaudeToolGate.approvalQuestion(id: "t", tool: "Bash", relPath: nil, command: exact).text == "Run: " + exact)
         let file = ClaudeToolGate.approvalQuestion(id: "t", tool: "Write", relPath: "a\nb\u{202E}.txt", command: nil)
@@ -276,21 +277,17 @@ struct ClaudeReviewGateTests {
         #expect(SecretRedactor(["abcdefg", "   "]).isEmpty)
     }
 
+    /// 9장 2가 바꿨다: 비밀값이 든 명령은 서버에 묻지 않고 가린 글의 승인 카드로, 비밀값이 든 경로는 deny. 원문은 어떤 요청에도 없다
     @Test func a11SecretsAreRedactedFromTheServerRequestAndTheApprovalCard() async throws {
         let secret = "CANARY-SECRET-7f3a"
         let redactor = SecretRedactor([secret])
         let decider = ScriptedDecider([.success(ScriptedDecider.response(.defer, .commandNotReadonly)), .success(ScriptedDecider.response(.defer, .manualWrite))])
         let command = "curl -H 'X-Key: \(secret)' https://example.invalid"
         let bash = await evaluate("Bash", WireJSON.object(["command": .string(command)]).canonicalText, id: "toolu_c", context: context(secrets: redactor), decider: decider)
-        #expect(try #require(bash.deferred).question.text == "Run: curl -H 'X-Key: [redacted]' https://example.invalid")
+        #expect(try #require(bash.deferred).question.text == "Run: curl -H 'X-Key: [redacted]' https://example.invalid\n" + ClaudeCardReason.secretInCommand)
         let write = await evaluate("Write", #"{"file_path":"\#(ws)/\#(secret).txt","content":"x"}"#, id: "toolu_w", context: context(secrets: redactor), decider: decider)
-        #expect(try #require(write.deferred).question.text == "Write [redacted].txt")
-        let calls = decider.calls
-        try #require(calls.count == 2)
-        let encoded = try calls.map { String(decoding: try TaskforceJSON.encoder().encode(BridgeV1ToolDecisionRequest(bridgeID: "b", query: $0)), as: UTF8.self) }
-        #expect(!encoded.contains { $0.contains(secret) })
-        #expect(encoded[0].contains("X-Key: [redacted]"))
-        #expect(encoded[1].contains("[redacted].txt"))
+        #expect(write.response == HookResponse(decision: .deny, reason: ClaudeGateReason.secretInPath))
+        #expect(decider.calls.isEmpty)
     }
 }
 #endif
