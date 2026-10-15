@@ -15,7 +15,10 @@ import {
   bridgeV1RegisterResponseSchema,
   bridgeV1RevokeRequestSchema,
   bridgeV1RevokeResponseSchema,
+  bridgeV1ToolDecisionRequestSchema,
+  bridgeV1ToolDecisionResponseSchema,
 } from "@/lib/api/contract";
+import { AGENT_REGISTRY } from "@/lib/agents/registry";
 
 // OA D2b Q13: Swift 시험(TaskforceKitTests/BridgeV1ContractsTests)이 읽는 같은 JSON 파일을 서버 zod 스키마로 parse한다.
 // Swift는 요청 파일과 같은 키 집합을 내보내야 하고(strictObject), 응답 파일은 서버가 실제로 줄 수 있는 모양이어야 한다.
@@ -123,6 +126,45 @@ describe("Swift fixtures parse with the D2a server schemas", () => {
   });
 
   it("covers every fixture file", () => {
-    expect(readdirSync(dir).sort()).toEqual(["ack.json", "commands.json", "events.json", "heartbeat.json", "register.json", "revoke.json", "sanitizer-limits.json"]);
+    expect(readdirSync(dir).sort()).toEqual([
+      "ack.json", "claude-code-adapter.json", "claude-code-events.json", "commands.json", "events.json", "heartbeat.json", "register.json", "revoke.json",
+      "sanitizer-limits.json", "tool-decision-request.json", "tool-decision-response.json",
+    ]);
+  });
+});
+
+// OA D3a 4.5: Claude Code adapter의 Swift 픽스처. 서버 코드는 바꾸지 않고 같은 파일을 서버 스키마 · registry와 대조한다
+describe("Swift fixtures for the Claude Code adapter (OA D3a)", () => {
+  it("tool-decision requests parse with the D3c-2 request schema", () => {
+    const file = load("tool-decision-request");
+    expect(Object.keys(file).sort()).toEqual(["claude_bash", "claude_write", "codex_command", "codex_file_change"]);
+    parseEach(bridgeV1ToolDecisionRequestSchema, file, "tool-decision request");
+  });
+
+  it("tool-decision responses parse with the D3c-2 response schema, except the client-tolerance sample", () => {
+    const { future_values: future, ...known } = load("tool-decision-response");
+    parseEach(bridgeV1ToolDecisionResponseSchema, known, "tool-decision response");
+    // 더 새 서버의 값(모르는 decision · reason · flag · 키)을 Swift가 defer로 읽는지 보는 견본: 지금 스키마는 받지 않아야 한다
+    expect(bridgeV1ToolDecisionResponseSchema.safeParse(future).success).toBe(false);
+  });
+
+  it("events the Kit golden test built from the S0 streams parse as bridge events and as one events request", () => {
+    const file = load("claude-code-events") as { sequences: Record<string, unknown[]> };
+    const names = Object.keys(file.sequences).sort();
+    expect(names).toEqual(["answer_resume", "approval_turn", "ask_turn", "cancelled", "sign_in_needed", "trivial_turn"]);
+    for (const name of names) {
+      parseEach(bridgeV1EventSchema, Object.fromEntries(file.sequences[name].map((event, index) => [`${name}[${index}]`, event])), "claude-code event");
+      const request = { bridge_id: "b1111111-1111-4111-8111-111111111111", events: file.sequences[name] };
+      expect(bridgeV1EventsRequestSchema.safeParse(request).success, name).toBe(true);
+    }
+    // 로컬 전용 사건(inputReached)은 서버로 가지 않는다
+    expect(JSON.stringify(file)).not.toMatch(/input_?reached/i);
+  });
+
+  it("the Mac version range matches the server registry", () => {
+    const adapter = load("claude-code-adapter");
+    expect(adapter.adapter).toBe("agent:claude-code");
+    expect(adapter.version_range).toBe(AGENT_REGISTRY["agent:claude-code"].version_range);
+    expect(adapter.cancel_scope).toBe(AGENT_REGISTRY["agent:claude-code"].cancel_scope);
   });
 });

@@ -1,0 +1,60 @@
+{
+  "claude_bash": {
+    "bridge_id": "b1111111-1111-4111-8111-111111111111",
+    "agent_session_id": "5e551011-0000-4000-8000-000000000001",
+    "agent_task_id": "7a5c0001-0000-4000-8000-000000000001",
+    "turn_seq": 3,
+    "workspace_real_path": "/Users/u/proj",
+    "call": {
+      "kind": "claude_bash",
+      "tool_use_id": "toolu_01",
+      "permission_mode": "default",
+      "cwd": "/Users/u/proj",
+      "command": "ls -la src",
+      "run_in_background": false,
+      "dangerously_disable_sandbox": false
+    }
+  },
+  "claude_write": {
+    "bridge_id": "b1111111-1111-4111-8111-111111111111",
+    "agent_session_id": "5e551011-0000-4000-8000-000000000001",
+    "agent_task_id": "7a5c0001-0000-4000-8000-000000000001",
+    "turn_seq": 3,
+    "workspace_real_path": "/Users/u/proj",
+    "call": {
+      "kind": "claude_write",
+      "tool_use_id": "toolu_02",
+      "permission_mode": "default",
+      "tool": "Write",
+      "target": { "real_path": "/Users/u/proj/src/a.txt", "rel_path": "src/a.txt" }
+    }
+  },
+  "codex_command": {
+    "bridge_id": "b1111111-1111-4111-8111-111111111111",
+    "agent_session_id": "5e551011-0000-4000-8000-000000000001",
+    "agent_task_id": "7a5c0001-0000-4000-8000-000000000001",
+    "turn_seq": 3,
+    "workspace_real_path": "/Users/u/proj",
+    "call": {
+      "kind": "codex_command",
+      "provider_request_id": "item-1:approval",
+      "cwd": "/Users/u/proj",
+      "command": "/bin/zsh -lc 'ls src'",
+      "command_actions": ["listFiles"],
+      "first_for_item": true
+    }
+  },
+  "codex_file_change": {
+    "bridge_id": "b1111111-1111-4111-8111-111111111111",
+    "agent_session_id": "5e551011-0000-4000-8000-000000000001",
+    "agent_task_id": "7a5c0001-0000-4000-8000-000000000001",
+    "turn_seq": 3,
+    "workspace_real_path": "/Users/u/proj",
+    "call": {
+      "kind": "codex_file_change",
+      "provider_request_id": "item-2:approval",
+      "targets": [{ "real_path": "/Users/u/proj/b.txt", "rel_path": "b.txt" }],
+      "first_for_item": true
+    }
+  }
+}

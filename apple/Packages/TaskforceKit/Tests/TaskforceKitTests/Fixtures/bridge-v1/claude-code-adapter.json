@@ -1,0 +1,7 @@
+{
+  "adapter": "agent:claude-code",
+  "version_range": ">=2.1.241 <2.2",
+  "tools_write": ["Read", "Glob", "Grep", "Edit", "Write", "Bash"],
+  "tools_read_only": ["Read", "Glob", "Grep"],
+  "cancel_scope": "turn_and_processes"
+}
