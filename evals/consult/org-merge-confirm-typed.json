@@ -1,11 +1,11 @@
 {
   "id": "org-merge-confirm-typed",
-  "description": "AC-29 (en): 앞 답이 병합 카드(열림)였고 'yes' — 같은 확인을 글로",
+  "description": "AC-29 (en): 앞 답이 병합 카드(열림)였고 \"yes\" — 같은 확인을 글로 (계약 5.2의 메시지 그대로)",
   "maps_to": [
     "AC-29"
   ],
   "asked_at": "2026-10-15T10:00:00+09:00",
-  "message": "yes, merge them",
+  "message": "yes",
   "projects": [
     {
       "id": "p_launch",

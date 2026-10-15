@@ -613,7 +613,7 @@ describe("실행 의도 · 지시 대상 (A34): 실행하지 않는다, 대상�
 
 
 // ─── 이슈 정리 (organize, D4c-2): 대상이 정해지면 바로 쓰고, 불확실하면 묻고, 삭제 · 병합은 카드 ───────────────
-// 상담 LLM은 부르지 않는다 (read ≥ 0.8일 때만 상담 한 번). 판정은 Jev(J1 + organize-v1)뿐이고, 대상은 칩 · #번호 · 이름이 정한다.
+// 상담 LLM은 부르지 않는다 (read ≥ 0.8일 때만 상담 한 번). 판정은 Jev(J1 + organize-v2)뿐이고, 대상은 칩 · #번호 · 이름이 정한다.
 
 describe("이슈 정리 (organize)", () => {
   const CTX = { launch: id(1, "c1c1c1c1"), taskforce: id(2, "c1c1c1c1"), old: id(3, "c1c1c1c1") };
@@ -638,7 +638,7 @@ describe("이슈 정리 (organize)", () => {
   };
 
   type Judged = { op?: string; opConfidence?: number; into?: string; intoConfidence?: number };
-  /** J1은 fakeDecide, organize-v1 질문(op · into)은 정해 둔 답. 호출한 질문 이름을 기록한다 */
+  /** J1은 fakeDecide, organize-v2 질문(op · into)은 정해 둔 답. 호출한 질문 이름을 기록한다 */
   function organizeModels(j1: Parameters<typeof fakeDecide>[0], judged: Judged = {}) {
     const base = fakeDecide(j1);
     const asked: string[][] = [];
@@ -690,7 +690,7 @@ describe("이슈 정리 (organize)", () => {
     expect(t.retrieve).not.toHaveBeenCalled();
     expect(t.organizeLookup).toHaveBeenCalledWith({ numbers: [139], actionIds: [] });
     expect(t.asked).toEqual([["op"]]);
-    expect(plan.summary).toMatchObject({ route: "organize", organize: { op: "move", outcome: "move", op_confidence: 0.95 }, promptVersions: { organize: "organize-v1" }, consulted: false });
+    expect(plan.summary).toMatchObject({ route: "organize", organize: { op: "move", outcome: "move", op_confidence: 0.95 }, promptVersions: { organize: "organize-v2" }, consulted: false });
     expect(plan.summary.cost).toBeCloseTo(0.001);
   });
 
@@ -929,6 +929,29 @@ describe("이슈 정리 (organize)", () => {
       expect(done.plan.adopt).toBeNull();
       expect(done.plan.reply.content.proposal).toBeNull();
       expect(done.plan.reply.text).toBe("이미 지웠어요: #141");
+    });
+
+    it("J1에는 열린 카드를 뜻이 드러나는 말로 보낸다: asked_user confirm_yes_or_no, open_proposal 'Delete issue #141 …' — 제목 · 프로젝트 이름은 보내지 않는다 (eval에서 '응 지워'의 adopt 확신이 낮았다)", async () => {
+      const del = await confirmTurn("#141 지워줘", "delete", "응 지워", { intent: "adopt" });
+      const request = del.t.state().find((r) => "intent" in r.questions)!;
+      expect(request.state).toMatchObject({
+        message: "응 지워",
+        previous_reply: { asked_user: "confirm_yes_or_no", open_proposal: "Delete issue #141 (waiting for a yes or no)" },
+      });
+      const merge = await confirmTurn("merge #144 into #139", "merge", "yes", { intent: "adopt" }, targets([144], [139]));
+      expect(merge.t.state().find((r) => "intent" in r.questions)!.state).toMatchObject({
+        previous_reply: { asked_user: "confirm_yes_or_no", open_proposal: "Merge issue #144 into issue #139 (waiting for a yes or no)" },
+      });
+      expect(JSON.stringify(request.state)).not.toMatch(/회의록|Taskforce|Launch/);
+    });
+
+    it("정리가 물은 것(어느 프로젝트인가요?)은 J1에 'which_project_or_issue'로 보낸다", async () => {
+      const pendingMessage = windowMessage(2, "assistant", "어느 프로젝트인가요?", {
+        content: { segments: [], citations: [], proposal: null, asks: "organize", organize: { state: "pending", op: "move", action_ids: [id(139, "abababab")], context_id: null, missing: "project" }, used: null, window: null },
+      });
+      const t = run("Launch", { intent: "answer" }, {}, { history: [windowMessage(1, "user", "#139 런치로 옮겨줘"), pendingMessage] });
+      await t.run();
+      expect(t.state().find((r) => "intent" in r.questions)!.state).toMatchObject({ previous_reply: { text: "어느 프로젝트인가요?", asked_user: "which_project_or_issue", open_proposal: null } });
     });
 
     it("삭제 · 병합 대상 읽기(loadChangeTargets)가 연결되지 않으면 글로 확인하지 못한다 (오류)", async () => {

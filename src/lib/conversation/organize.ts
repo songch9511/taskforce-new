@@ -143,7 +143,7 @@ export type ResolveInput = {
   lookup: OrganizeLookup;
   /** 앞 답이 한 번 물었다면 그 값 (asks organize) */
   pending: PendingOrganize | null;
-  /** Jev organize-v1 답. 묻지 않은 질문은 null */
+  /** Jev organize 답(op · into). 묻지 않은 질문은 null */
   judged: { op: { op: OrganizeOp | "other"; confidence: number } | null; into: { number: number | null; confidence: number } | null };
   /** J1 확신이 0.5–0.8 (act 임계값 미만): 이동은 바로 쓰지 않고 글로 묻는다 */
   confirm: boolean;

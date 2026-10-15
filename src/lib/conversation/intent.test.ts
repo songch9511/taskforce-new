@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import type { JevDecision } from "@/lib/ai/jev";
-import { INTENT_CRITERIA, INTENT_PROMPT_VERSION } from "@/lib/ai/prompts/intent";
+import { buildIntentState, INTENT_CRITERIA, INTENT_PROMPT_VERSION, INTENT_QUESTION } from "@/lib/ai/prompts/intent";
 import { intentKindSchema } from "@/lib/api/contract";
 
 import { classifyIntent, isWriteIntent, messageIntent, routeIntent } from "./intent";
@@ -23,8 +23,28 @@ const answers = (overrides: Record<string, unknown>): JevDecision =>
 describe("classifyIntent", () => {
   it("선택지는 계약의 의도 12개와 같다 (inform · correct · organize 포함, DR12)", () => {
     expect(Object.keys(INTENT_CRITERIA).sort()).toEqual([...intentKindSchema.options].sort());
-    expect(INTENT_PROMPT_VERSION).toBe("intent-v2");
+    expect(INTENT_PROMPT_VERSION).toBe("intent-v3");
     expect(INTENT_CRITERIA.organize).toMatch(/#139/);
+  });
+
+  // intent-v3 (eval 반영): 삭제 · 병합 카드에 "응 지워"/"yes"가 organize와 겨뤄 확신이 낮았고(adopt 0.49 · 0.67), "Launch"(어느 프로젝트인가요?에 대한 답)는 instruct(0.90)로, 인용한 "> please delete #141"은 organize(0.43)로 갔다.
+  it("intent-v3 설명: 열린 삭제 · 병합 · 이동 제안을 받아들이는 말은 adopt, 정리를 묻는 말에 이름 · 번호만 답하는 것은 answer, 인용 · 전달한 글과 열린 제안에 대한 짧은 답은 organize가 아니다", () => {
+    expect(INTENT_CRITERIA.adopt).toMatch(/delete.*merge|merge.*delete/i);
+    expect(INTENT_CRITERIA.adopt).toContain("yes, delete it");
+    expect(INTENT_CRITERIA.answer).toMatch(/project|issue number/i);
+    expect(INTENT_CRITERIA.organize).toMatch(/accepts or declines/i);
+    expect(INTENT_CRITERIA.organize).toMatch(/quoted|forwarded/i);
+    expect(INTENT_QUESTION.instructions).toContain("open_proposal");
+    expect(INTENT_QUESTION.instructions).toContain("응 지워");
+    expect(INTENT_QUESTION.instructions).toMatch(/Quoted text, forwarded messages/); // 인용 경고는 그대로
+    for (const kind of ["instruct", "modify", "stop"] as const) expect(INTENT_CRITERIA[kind], kind).toMatch(/\(not reorganizing, deleting or merging issues\)$/);
+  });
+
+  it("Jev state: 삭제 · 병합 카드와 정리 질문은 뜻이 드러나는 말로 보낸다 (코드 이름 'confirm' · 'organize'를 그대로 보내지 않는다). 옛 값은 그대로", () => {
+    const state = (asked: string | null, openProposal: string | null = null) => buildIntentState({ message: "응", previousReply: { text: "q", asked, openProposal }, selectedTargets: 0 }).previous_reply;
+    expect(state("confirm", "Delete issue #141")).toEqual({ text: "q", asked_user: "confirm_yes_or_no", open_proposal: "Delete issue #141" });
+    expect(state("organize")).toEqual({ text: "q", asked_user: "which_project_or_issue", open_proposal: null });
+    for (const asked of ["adopt", "remember", "referent", "clarify", null]) expect(state(asked)).toMatchObject({ asked_user: asked });
   });
 
   it("Jev에 메시지 · 직전 답(물은 것 · 열린 제안)만 보내고 질문 셋(intent choice · remember · read noul)을 묻는다", async () => {

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { userClaims } from "@/lib/actions/user-claims";
+import { buildOrganizeState, ORGANIZE_OP_CRITERIA, ORGANIZE_PROMPT_VERSION, organizeIntoQuestion } from "@/lib/ai/prompts/organize";
 
 import {
   cardAskText,
@@ -426,5 +427,34 @@ describe("삭제 · 병합 카드 쓰기 계획", () => {
     expect(cardDoneText("en", merge)).toBe("Merged #144 into #139");
     expect(cardDoneContent("ko", del)).toMatchObject({ segments: [{ text: "지웠어요: #141 · #144", tier: "T1" }], citations: [], proposal: null, asks: null, organize: { state: "deleted", action_ids: [A141.id, A144.id] } });
     expect(cardDoneContent("en", merge).organize).toEqual({ state: "merged", from_action_id: A144.id, into_action_id: A139.id });
+  });
+});
+
+// ─── Jev organize-v2 질문 (eval 반영) ───
+// org-merge-particle-ko("#139에 #144 합쳐줘")에서 남는 쪽을 #144로 골랐다: v1은 두 선택지 설명이 똑같아 Jev가 고를 근거가 없었다.
+describe("organizeIntoQuestion (organize-v2)", () => {
+  it("버전이 올랐다. 선택지는 이슈 표시(#번호)이고 설명은 선택지마다 그 이슈가 남는 쪽임을 말한다 (서로 다르다)", () => {
+    expect(ORGANIZE_PROMPT_VERSION).toBe("organize-v2");
+    const question = organizeIntoQuestion(["#144", "#139"]);
+    expect(question.type).toBe("choice");
+    if (question.type !== "choice") throw new Error("choice 아님");
+    expect(Object.keys(question.criteria)).toEqual(["#144", "#139"]);
+    expect(question.criteria["#144"]).toContain("#144");
+    expect(question.criteria["#139"]).toContain("#139");
+    expect(question.criteria["#144"]).not.toBe(question.criteria["#139"]);
+  });
+
+  it("지시문이 받는 쪽(남는 쪽)을 가르는 말을 밝힌다: 한국어 에 · 에다 · 으로 · 로, 영어 into, 목적격 를 · 을은 합쳐 사라지는 쪽, 표시가 없으면 마지막에 말한 이슈. 인용은 요청이 아니다", () => {
+    const question = organizeIntoQuestion(["#139", "#144"]);
+    const text = question.instructions;
+    for (const marker of ["에", "에다", "으로", "into", "를", "last"]) expect(text, marker).toContain(marker);
+    expect(text).toContain("#139에 #144 합쳐줘");
+    expect(text).toContain("merge #144 into #139");
+    expect(text).toMatch(/quoted|forwarded/i);
+  });
+
+  it("Jev state는 메시지와 이슈 표시뿐 (제목 · 프로젝트 이름 없음), op 선택지는 v1 그대로", () => {
+    expect(buildOrganizeState({ message: "#139에 #144 합쳐줘", issues: ["#139", "#144"] })).toEqual({ message: "#139에 #144 합쳐줘", issues: ["#139", "#144"] });
+    expect(Object.keys(ORGANIZE_OP_CRITERIA)).toEqual(["move", "remove", "delete", "merge", "other"]);
   });
 });

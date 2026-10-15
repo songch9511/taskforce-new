@@ -320,18 +320,23 @@ function openProposalOf(message: WindowMessage | null): OpenProposal | null {
   return { messageId: message.id, proposalId: proposal.id, payloadHash: proposal.payload_hash, title: payload.kind === "create_action" ? payload.title : "", kind: proposal.kind, payload };
 }
 
-/** Jev에 보내는 열린 제안의 짧은 표시 (create_action은 제목, 정리는 종류 + 이슈 번호만 — 제목 · 프로젝트 이름은 보내지 않는다) */
+/**
+ * Jev에 보내는 열린 제안의 짧은 표시. create_action은 제목 그대로, 정리는 뜻이 드러나는 영어 한 줄 + 이슈 번호만 (제목 · 프로젝트 이름은 보내지 않는다).
+ * "응 지워"가 organize와 겨뤄 adopt 확신이 낮았던 것(eval)을 줄이려고, 사용자의 yes/no를 기다리는 제안임을 밝힌다.
+ */
 function proposalLabel(proposal: OpenProposal): string {
   const payload = proposal.payload;
+  const waiting = "(waiting for a yes or no)";
+  const issues = (numbers: number[]) => `${numbers.length > 1 ? "issues" : "issue"} ${labelsOf(numbers)}`;
   switch (payload.kind) {
     case "create_action":
       return payload.title;
     case "move":
-      return `${payload.to ? "move" : "remove"} ${labelsOf(payload.targets.map((t) => t.number))}`;
+      return `${payload.to ? "Move" : "Remove"} ${issues(payload.targets.map((t) => t.number))} ${payload.to ? "to a project" : "from a project"} ${waiting}`;
     case "delete":
-      return `delete ${labelsOf(payload.targets.map((t) => t.number))}`;
+      return `Delete ${issues(payload.targets.map((t) => t.number))} ${waiting}`;
     case "merge":
-      return `merge #${payload.from.number} into #${payload.into.number}`;
+      return `Merge issue #${payload.from.number} into issue #${payload.into.number} ${waiting}`;
   }
 }
 
