@@ -475,15 +475,18 @@ public struct Composer: View {
     let isSending: Bool
     let focusRequest: Int
     let isRunning: Bool
+    let blocked: String?
     let onStop: () -> Void
     let onSubmit: (String) -> Void
     @State private var focused = false
     @Environment(\.colorSchemeContrast) private var contrast
 
     /// - isRunning: 이 대화에서 시작한 일이 돌고 있다 (OA D4a-13): 보내기 원이 Stop(10pt 사각형, "Stop new steps")이 된다. 글을 쓰고 Enter로 보내는 것은 그대로다 (그 메시지는 대기열에 들어간다)
+    /// - blocked: 비밀값 질문이 위에 열려 있다 (OA D4b-m-1, DS Composer "Blocked"). nil = 열려 있음, 빈 글 = 기본 문구 "Answer the question above first", 그 밖 글 = 그 문구.
+    ///   입력칸이 꺼지고 보내기 원은 `bg/selected`의 조용한 원(회색 화살표)이 되어 아무 일도 하지 않는다 — 여기 쓴 글이 비밀값의 답이 되거나 서버에 닿는 길이 없다. Stop은 에이전트가 돌면 그대로 쓸 수 있다
     public init(
         text: Binding<String>, placeholder: String = ChatCopy.composerPlaceholder, label: String = ChatCopy.composerLabel,
-        isDisabled: Bool = false, isSending: Bool = false, focusRequest: Int = 0, isRunning: Bool = false, onStop: @escaping () -> Void = {},
+        isDisabled: Bool = false, isSending: Bool = false, focusRequest: Int = 0, isRunning: Bool = false, blocked: String? = nil, onStop: @escaping () -> Void = {},
         onSubmit: @escaping (String) -> Void
     ) {
         _text = text
@@ -493,6 +496,7 @@ public struct Composer: View {
         self.isSending = isSending
         self.focusRequest = focusRequest
         self.isRunning = isRunning
+        self.blocked = blocked
         self.onStop = onStop
         self.onSubmit = onSubmit
     }
@@ -505,12 +509,24 @@ public struct Composer: View {
     /// 보내기 원이 Stop으로 바뀌나 (DS Composer "Running")
     nonisolated public static func circleStopsInsteadOfSending(running: Bool) -> Bool { running }
 
-    /// 보낼 수 있나 (글이 있고, 꺼져 있지 않고, 보내는 중이 아니다)
-    nonisolated public static func canSend(text: String, isDisabled: Bool, isSending: Bool) -> Bool {
-        !isDisabled && !isSending && ChatComposerRules.isSendable(text)
+    /// 보낼 수 있나 (글이 있고, 꺼져 있지 않고, 막혀 있지 않고, 보내는 중이 아니다)
+    nonisolated public static func canSend(text: String, isDisabled: Bool, isSending: Bool, blocked: String? = nil) -> Bool {
+        !isDisabled && blocked == nil && !isSending && ChatComposerRules.isSendable(text)
     }
 
-    private var canSend: Bool { Self.canSend(text: text, isDisabled: isDisabled, isSending: isSending) }
+    /// 막혔을 때의 자리표시 (빈 글이면 기본 문구). 막히지 않았으면 원래 자리표시
+    nonisolated public static func placeholder(base: String, blocked: String?) -> String {
+        guard let blocked else { return base }
+        return blocked.isEmpty ? AssistantPromptRules.blockedDefault : blocked
+    }
+
+    /// 입력칸이 켜져 있나 (꺼진 것 · 막힌 것 모두 아니다)
+    nonisolated public static func fieldEnabled(isDisabled: Bool, blocked: String?) -> Bool { !isDisabled && blocked == nil }
+
+    /// 보내기 원이 조용한 모양인가 (막혔고 Stop이 아닐 때): `bg/selected` 원 + 회색 화살표, 눌러도 아무 일이 없다
+    nonisolated public static func circleIsQuiet(blocked: String?, running: Bool) -> Bool { blocked != nil && !running }
+
+    private var canSend: Bool { Self.canSend(text: text, isDisabled: isDisabled, isSending: isSending, blocked: blocked) }
 
     private func submit() {
         guard canSend else { return }
@@ -522,18 +538,19 @@ public struct Composer: View {
         HStack(spacing: TFSpace.xs) {
             field
             let stops = Self.circleStopsInsteadOfSending(running: isRunning)
+            let quiet = Self.circleIsQuiet(blocked: blocked, running: isRunning)
             Button(action: { if stops { onStop() } else { submit() } }) {
-                // DS `.tf-send`: `fill/inverse` 원 28, 안에 arrow-up 또는 Stop(10pt · 모서리 2의 사각형)
+                // DS `.tf-send`: `fill/inverse` 원 28, 안에 arrow-up 또는 Stop(10pt · 모서리 2의 사각형). 막히면 `bg/selected` 원 + 회색 화살표
                 ZStack {
                     if stops {
                         RoundedRectangle(cornerRadius: 2, style: .continuous).fill(TFColor.textInverse).frame(width: 10, height: 10)
                     } else {
-                        TFIcon.send.image(size: 16).foregroundStyle(TFColor.textInverse)
+                        TFIcon.send.image(size: 16).foregroundStyle(quiet ? TFColor.textSecondary : TFColor.textInverse)
                     }
                 }
                 .frame(width: 28, height: 28)
-                .background(TFColor.fillInverse, in: Circle())
-                .opacity(stops || canSend ? 1 : 0.35)
+                .background(quiet ? TFColor.bgSelected : TFColor.fillInverse, in: Circle())
+                .opacity(stops || canSend || quiet ? 1 : 0.35)
                 .contentShape(Circle())
             }
             .buttonStyle(.plain)
@@ -552,14 +569,14 @@ public struct Composer: View {
     private var field: some View {
         #if os(macOS)
         ComposerTextField(
-            text: $text, placeholder: placeholder, label: label, isEnabled: !isDisabled, focusRequest: focusRequest, onFocusChange: { focused = $0 },
-            onSubmit: submit
+            text: $text, placeholder: Self.placeholder(base: placeholder, blocked: blocked), label: label, isEnabled: Self.fieldEnabled(isDisabled: isDisabled, blocked: blocked),
+            focusRequest: focusRequest, onFocusChange: { focused = $0 }, onSubmit: submit
         )
         #else
-        TextField(placeholder, text: $text)
+        TextField(Self.placeholder(base: placeholder, blocked: blocked), text: $text)
             .textFieldStyle(.plain)
             .font(TFFont.callout)
-            .disabled(isDisabled)
+            .disabled(!Self.fieldEnabled(isDisabled: isDisabled, blocked: blocked))
             .onSubmit(submit)
             .accessibilityLabel(label)
         #endif

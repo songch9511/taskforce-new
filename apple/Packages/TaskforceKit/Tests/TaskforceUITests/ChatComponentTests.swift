@@ -210,3 +210,26 @@ struct ComposerIMETests {
     }
 }
 #endif
+
+/// Composer의 막힘 (OA D4b-m-1, DS Composer "Blocked"): 비밀값 질문이 위에 열려 있다
+struct ComposerBlockedTests {
+    @Test func aBlockedComposerCannotSendAndItsFieldIsOff() {
+        #expect(!Composer.canSend(text: "Hello", isDisabled: false, isSending: false, blocked: ""), "여기 쓴 글이 비밀값의 답이 되는 길이 없다")
+        #expect(Composer.canSend(text: "Hello", isDisabled: false, isSending: false, blocked: nil))
+        #expect(!Composer.fieldEnabled(isDisabled: false, blocked: "") && Composer.fieldEnabled(isDisabled: false, blocked: nil) && !Composer.fieldEnabled(isDisabled: true, blocked: nil))
+    }
+
+    @Test func theBlockedPlaceholderIsTheStandardWordsUnlessAnotherIsGiven() {
+        #expect(Composer.placeholder(base: "Message Claude Code", blocked: nil) == "Message Claude Code")
+        #expect(Composer.placeholder(base: "Message Claude Code", blocked: "") == "Answer the question above first")
+        #expect(Composer.placeholder(base: "Message Claude Code", blocked: "Wait for the token") == "Wait for the token")
+    }
+
+    @Test func theCircleIsQuietWhenBlockedButStopStaysAvailableWhileAnAgentRuns() {
+        #expect(Composer.circleIsQuiet(blocked: "", running: false))
+        #expect(!Composer.circleIsQuiet(blocked: "", running: true), "Stop은 막힘과 상관없이 쓸 수 있다")
+        #expect(!Composer.circleIsQuiet(blocked: nil, running: false))
+        #expect(Composer.sendLabel(running: true, isSending: false) == "Stop new steps")
+    }
+}
+
