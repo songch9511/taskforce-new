@@ -291,10 +291,10 @@ describe("P5b 순서를 강제한 교차 사례 (교착 0)", () => {
     expect(await expectNoLeasableAnswer(w)).toBe(1);
   });
 
-  // 발견(기존 D1c-2b, F2 이전부터): Done이 run을 먼저 쥔 채 task 뒤의 메시지 · 세션 잠금을 기다리고, 답이 메시지 · 세션을 쥔 채 그 run을 기다리면 순환 대기다.
-  // 평범한 `answer_agent_question`도 똑같이 교착한다. F2 래퍼는 잠금을 더하지 않으므로 같은 결과를 내야 한다 — 이 시험은 래퍼가 그보다 나쁘지 않음을 고정한다.
-  // 이 교착이 고쳐지면(교착 0) 이 시험이 먼저 알려 준다: 그때 단언을 "둘 다 끝남"으로 바꾼다.
-  it.each(["wrapper", "plain"] as const)("Done(Done이 run을 먼저 쥠, %s): PG가 한 쪽만 40P01로 물리고 다른 쪽은 끝난다 — 래퍼는 기존 함수와 같다", async (kind) => {
+  // OA F3이 고쳤다 (F2 이전부터 있던 D1c-2b 교착): Done이 run을 먼저 쥔 채 task 뒤의 메시지 · 세션 잠금을 기다리고, 답이 메시지 · 세션을 쥔 채 그 run을 기다리던 순환 대기를
+  // request_agent_task_cancel의 질문 갈래 첫 줄(세션 · 원 메시지 KS NOWAIT)이 끊는다. Done은 풀린 직후 55P03으로 물러나고(writeRpc가 다시 한다) 답은 끝난다.
+  // 평범한 `answer_agent_question`도 래퍼도 같은 결과다 (tests/pg/agent-delivery-fixes.test.ts P1이 같은 순서를 더 자세히 본다).
+  it.each(["wrapper", "plain"] as const)("Done(Done이 run을 먼저 쥠, %s): 40P01 0 — Done은 55P03으로 물러나고 답은 끝난다. Done을 다시 하면 둘 다 끝난 상태가 된다", async (kind) => {
     const w = await secretWorld();
     const plain = async (client: pg.Client) => (await client.query("select public.answer_agent_question($1,$2,$3,null,true,null) as result", [w.user, w.task, REQUEST])).rows[0].result as Local;
     await a.query("begin");
@@ -306,15 +306,21 @@ describe("P5b 순서를 강제한 교차 사례 (교착 0)", () => {
     const answering = pending(kind === "wrapper" ? local(fb, w) : plain(b));
     await blocked(bPid, cPid); // 답은 메시지 · 세션을 쥔 채 Done이 쥔 run을 기다린다
     expect(await rowLocked("agent_sessions", w.session)).toBe(true);
+    const released = Date.now();
     await a.query("rollback");
-    const [closed, answered] = await Promise.all([closing, answering]);
-    const codes = [closed, answered].map((r) => ("error" in r ? (r.error as { code?: string }).code : "ok"));
-    expect(codes.filter((code) => code === "40P01")).toHaveLength(1);
-    expect(codes.filter((code) => code === "ok")).toHaveLength(1);
-    // 살아남은 쪽만 commit되고, 반쯤 쓴 상태는 없다
-    await Promise.all([b.query("ok" === codes[1] ? "commit" : "rollback"), c.query("ok" === codes[0] ? "commit" : "rollback")]);
-    const stopped = (await f.one("select state from public.execution_runs where id=$1", [w.run])).state === "stopped";
-    expect(await answerSteps(w)).toBe(stopped ? 0 : 1);
+    const closed = await closing;
+    expect("error" in closed ? (closed.error as { code?: string }).code : "ok").toBe("55P03"); // 40P01이면 순환이 남아 있다
+    expect(Date.now() - released).toBeLessThan(500); // deadlock_timeout(1초) 전에 NOWAIT가 바로 물러난다
+    await c.query("rollback");
+    expect((await resolved(answering)).status).toBe("answered");
+    await b.query("commit");
+    await c.query("begin"); // Done을 새 트랜잭션에서 다시 (writeRpc의 재시도)
+    await done(c, w);
+    await c.query("commit");
+    expect(await f.one("select state from public.execution_runs where id=$1", [w.run])).toEqual({ state: "stopped" });
+    await expectAnswerWithdrawn(w);
+    expect(await expectNoLeasableAnswer(w)).toBe(1);
+    expect(await answerSteps(w)).toBe(1); // 답 단계는 하나 (skipped)
   });
 });
 
