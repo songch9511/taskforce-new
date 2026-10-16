@@ -118,7 +118,7 @@ npx supabase db query --linked --project-ref tirtdojsahotjfgdsryi -f supabase/mi
 npx supabase db query --linked --project-ref tirtdojsahotjfgdsryi -f supabase/migrations/20261028000000_ai_spend_summary.sql
 ```
 
-4. 각 파일 뒤에 필요한 table/function/constraint 존재 여부와 RLS·function privileges만 조회한다. 1번 뒤에는 ledger table, `reserve_ai_spend`·`settle_ai_spend`, 확장된 source error constraint가 있어야 한다. 2번 뒤에는 `ai_spend_summary`가 추가돼야 한다. 권한은 reserve/settle/summary 모두 `service_role` 실행만 허용해야 한다. 예상과 다르면 다음 단계로 가지 않는다.
+4. 각 파일 뒤에 필요한 table/function/constraint 존재 여부와 RLS·function privileges만 조회한다. 1번 뒤에는 ledger table과 RLS, `reserve_ai_spend`·`settle_ai_spend`가 있어야 하며 RPC 실행 권한은 `service_role`에만 있어야 한다. 2번 뒤에는 `ai_spend_summary`와 확장된 source error constraint가 있어야 하고 summary도 `service_role` 실행만 허용해야 한다. 예상과 다르면 다음 단계로 가지 않는다.
 5. API 배포 SHA, migration 상태, authenticated summary, 예산을 통과하는 최소 실제 AI 요청, supplier cost 정산을 각각 확인한다. 실제 OAuth와 앱에서 시작한 요청 전에는 public download를 열지 않는다.
 
 ### Auth 설정
