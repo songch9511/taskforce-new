@@ -297,26 +297,39 @@ public enum KeeperMembers {
             switch lookups.generation(entry.pid) {
             case .present(let read): generation = read
             case .gone:
-                // 14장 6: 지킴이 뒤에 시작해 목록과 조회 사이에 끝났다 (fork 사슬이 그 사이에 목록에 없는 자식을 남겼을 수 있다)
-                if afterKeeper { complete = false }
+                // 14장 6: 지킴이 뒤에 시작해 목록과 조회 사이에 끝났다 (fork 사슬이 그 사이에 목록에 없는 자식을 남겼을 수 있다).
+                // 18장: 목록의 부모가 지금 같은 프로세스로 살아 있고(시작 시각이 자식보다 늦지 않다) 구성원이 아니면 그 자식도 구성원일 수 없다
+                if afterKeeper, !vanishedUnderUnrelatedParent(parentPID: entry.parentPID, keeperPID, keeperID, seen, lookups, isSameParent: { parent in
+                    (parent.startSeconds, parent.startMicros) <= (entry.startSeconds, entry.startMicros)
+                }) {
+                    complete = false
+                }
                 continue
             case .failed:
                 complete = false
                 continue
             }
             guard generation.uid == uid, generation.own > keeperID, !generation.zombie else { continue }
-            // 지킴이 뒤에 생긴 프로세스다: 책임 조회가 사라짐이어도 불완전 (14장 6)
+            // 지킴이 뒤에 생긴 프로세스다: 책임 조회가 실패면 불완전, 사라짐이면 18장의 부모 증명이 없을 때 불완전 (14장 6)
             let member: Bool
             let selfResponsible: Bool
+            /// 책임 조회에서 사라졌다: 읽은 세대의 부모(unique id)가 지금 같은 프로세스로 살아 있고 구성원이 아님을 증명하면 구성원일 수 없다 (18장)
+            let vanishedHarmlessly = {
+                vanishedUnderUnrelatedParent(parentPID: entry.parentPID, keeperPID, keeperID, seen, lookups) { $0.own == generation.parent }
+            }
             if let byID = lookups.responsibleUniqueID {
-                guard case .present(let responsible) = byID(entry.pid) else {
+                let lookup = byID(entry.pid)
+                guard case .present(let responsible) = lookup else {
+                    if case .gone = lookup, vanishedHarmlessly() { continue }
                     complete = false
                     continue
                 }
                 member = responsible == keeperID
                 selfResponsible = responsible == generation.own
             } else {
-                guard case .present(let responsible) = lookups.responsiblePID(entry.pid) else {
+                let lookup = lookups.responsiblePID(entry.pid)
+                guard case .present(let responsible) = lookup else {
+                    if case .gone = lookup, vanishedHarmlessly() { continue }
                     complete = false
                     continue
                 }
@@ -342,11 +355,27 @@ public enum KeeperMembers {
     /// 그 프로세스의 부모가 지금 같은 id로 살아 있고 그 책임 프로세스가 지킴이가 아님을 증명했다 (15장 3). 사라짐 · 다른 프로세스 · 좀비 · 조회 실패 · 책임 = 지킴이는 아니다
     static func unrelatedParent(of child: ProcessGeneration, _ keeperPID: pid_t, _ keeperID: UInt64, _ lookups: Lookups) -> Bool {
         guard child.parentPID > 1, case .present(let parent) = lookups.generation(child.parentPID), parent.own == child.parent, !parent.zombie else { return false }
+        return responsibleIsNotKeeper(parent, keeperPID, keeperID, lookups)
+    }
+
+    /// 18장: 지킴이 뒤에 시작해 훑는 사이에 사라진 프로세스가 구성원일 수 없음을 그 부모로 증명했다. 책임 프로세스는 부모에게서 물려받고(disclaim이면 자기 자신)
+    /// 바뀌지 않으며 고아는 launchd로만 옮겨진다 — 부모가 pid 1 · 지킴이가 아니고, 지금 같은 프로세스로 살아 있으며(`isSameParent`, 좀비 아님), 그 책임 프로세스가
+    /// 지킴이가 아니고, 지킴이가 본 구성원 id가 아니면 그 자식은 살아 있었어도 구성원이 아니었다. 조회 하나라도 실패 · 사라짐 · 불일치면 증명하지 못한다
+    static func vanishedUnderUnrelatedParent(
+        parentPID: pid_t, _ keeperPID: pid_t, _ keeperID: UInt64, _ seen: Set<UInt64>, _ lookups: Lookups, isSameParent: (ProcessGeneration) -> Bool
+    ) -> Bool {
+        guard parentPID > 1, parentPID != keeperPID, case .present(let parent) = lookups.generation(parentPID), !parent.zombie, isSameParent(parent),
+              parent.own != keeperID, !seen.contains(parent.own) else { return false }
+        return responsibleIsNotKeeper(parent, keeperPID, keeperID, lookups)
+    }
+
+    /// 그 프로세스의 책임 프로세스를 읽었고 지킴이가 아니다 (unique id 변형이 있으면 그것으로)
+    static func responsibleIsNotKeeper(_ process: ProcessGeneration, _ keeperPID: pid_t, _ keeperID: UInt64, _ lookups: Lookups) -> Bool {
         if let byID = lookups.responsibleUniqueID {
-            guard case .present(let responsible) = byID(parent.pid) else { return false }
+            guard case .present(let responsible) = byID(process.pid) else { return false }
             return responsible != keeperID
         }
-        guard case .present(let responsible) = lookups.responsiblePID(parent.pid) else { return false }
+        guard case .present(let responsible) = lookups.responsiblePID(process.pid) else { return false }
         return responsible != keeperPID
     }
 

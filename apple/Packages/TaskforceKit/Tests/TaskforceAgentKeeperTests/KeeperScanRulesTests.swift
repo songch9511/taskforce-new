@@ -163,6 +163,8 @@ struct KeeperScanRulesTests {
         #expect(KeeperCaller.allows(.requirement("identifier \"\(identifier)\""), parent: me, parentNow: { me }, version: versions, me: 0))
         #expect(!KeeperCaller.allows(.requirement("identifier \"\(identifier)\""), parent: me, parentNow: { 1 }, version: versions, me: 0), "확인하는 동안 부모가 끝났다")
         #expect(!KeeperCaller.allows(.liveParent, parent: 1, parentNow: { 1 }), "ppid 1")
+        // launchd의 idversion을 읽을 수 있어도(부모 < 지킴이) ppid 1 하나로 거절한다 (고아가 된 지킴이)
+        #expect(!KeeperCaller.allows(.liveParent, parent: 1, parentNow: { 1 }, version: { $0 == 1 ? 1 : 2 }, me: 0), "ppid 1 · idversion을 읽었다")
     }
 
     @Test func theDebugHostCheckMatchesTheBundleIDAndTheHelperLocation() throws {

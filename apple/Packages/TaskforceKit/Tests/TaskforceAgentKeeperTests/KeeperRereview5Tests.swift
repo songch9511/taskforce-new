@@ -151,6 +151,8 @@ struct KeeperRereview5Tests {
             }
             close(kept.stdinWrite)
             kept.closeOutputs()
+            // 한 번이라도 남겼거나 끝을 증명하지 못했으면 이미 실패다: 남은 회차를 포기 상한까지 기다리지 않는다
+            if orphans > 0 || unproven > 0 { break }
         }
         #expect(neverSpawned == 0, "지킴이가 claude를 띄웠다 (시험 전제)")
         #expect(orphans == 0, "SIGTERM이 처리기보다 먼저 와도 claude를 남기지 않는다")
