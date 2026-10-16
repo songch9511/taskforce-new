@@ -163,7 +163,7 @@
   - `result_ready`: `result: { session_id | null, reviewed_turn_seq, last_turn_seq, changed_at }`. 턴이 `idle`로 끝나고 검토하지 않은 산출물이 있으면 **run마다 하나**(턴이 더해지면 같은 `id`에 version만 바뀐다). `changed_at` = 그 산출물 중 가장 늦은 생성 시각. 사라지는 때: 이슈 Done · 세션 Stop(run이 끝남) · Action이 닫힘 · 다음 턴이 진행 중 · E1c가 `reviewed_turn_seq`를 올림. **"Review result" · Later 행동은 E1c 몫이라 이 서버에는 없다.**
   - `path_conflict`: `conflict: { lease_id, conflict_version, holder_action_id, holder_run_id, later_run_id, released, stopped }`. 묶음 · 항목의 `action_id` · `run_id`는 **늦게 쓴(멈춘) run** 쪽이고 holder는 ref에 있다. 해소는 **`POST /api/v2/path-conflicts/{conflict.lease_id}/resolve { keep, conflict_version }`**(아래 3-2). 같은 lease에 새 충돌이 생기면 `conflict_version`이 올라 같은 `id`에 다른 `version`이 된다.
   - 응답에는 **글이 없다**: 질문 글 · 헤더는 `agent_tasks.pending_question`(카드는 그 값이 있을 때만), 경로는 `agent_path_leases.rel_path`, 이슈 번호는 `actions.number`를 앱이 RLS로 읽는다.
-  - ⌥Space가 여는 "가장 최근 결정"은 `decisions` 항목 중 `created_at`이 가장 늦은 것이다(앱의 표시 규칙이고 순위 계산이 아니다).
+  - ⌥Space · ⌘1은 앱이 그리는 종류의 `decisions` 중 서버 순서 첫 항목(가장 오래 기다린 요청)을 연다. 요청이 없으면 ⌥Space는 마지막 화면, ⌘1은 빈 대화를 연다(앱은 순서를 다시 매기지 않는다. 계약 v3 5.4).
 - 에이전트 입력 함수의 반환은 배열 하나(`[]`이면 입력 없음)다. 개수 상한이 없고 PostgREST `db-max-rows`에 잘리지 않으며, 배열이 아닌 값(null 포함)은 비었다고 읽지 않고 실패로 읽는다. 에이전트 입력 중 하나라도 읽지 못하거나 모양이 틀리면 **결정 전체**가 `unavailable`이다(`sources.decisions: "unavailable"` · `decisions: null` · `complete:false` · `empty:false`) — C3 결정만 보이고 에이전트 결정이 빠진 목록을 내지 않는다.
 - `version`(묶음 · 항목)은 **처리되면 바뀌는 식별**이다. 다른 기기에서 처리되면 다음 조회에서 항목이 사라지거나(gone) version이 달라진다(stale). **옛 version으로 행동하지 않는다.** 항목 `id`는 안정 id.
 - `suggestions` = 지금 보이는 열린 제안(`state`는 늘 `open`): 긴급(상한 밖) + 이미 노출한 비긴급 + 오늘 처음 노출된 비긴급(사용자 현지 날짜마다 **한 묶음 3개**). `offered_on`(YYYY-MM-DD)이 오늘이면 오늘 새로 나온 것. 긴급은 `offered_on: null`. 순서: 긴급 먼저 → 오래된 순.
