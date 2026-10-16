@@ -44,4 +44,89 @@ public enum TFMotion {
     public static func move(_ duration: Double, reduceMotion: Bool) -> Animation? {
         reduceMotion ? nil : ease(duration)
     }
+
+    // MARK: Needs you가 부르는 움직임 (DS README › Motion "Needs you looks at you", OA U3 5.3)
+
+    /// 도착: 스프링 한 번 (scale .6 → 1.18 → .96 → 1, 520ms). SwiftUI `.spring(response: 0.35, dampingFraction: 0.55)`
+    public static let needsYouArrive: Double = 0.52
+    /// 그 뒤 숨쉬기 주기: 1 → 1.12 → 1을 2.4초마다 (ease-in-out)
+    public static let needsYouBreath: Double = 2.4
+}
+
+/// Needs-you 링과 Taskforce bell의 움직임을 한 곳에서 계산한다 (DS bundle.css `tf-needs-arrive` · `tf-needs-breathe` · `tf-needs-echo` · `tf-bell-ring` · `tf-needs-fade`).
+/// 시각 `elapsed`(도착한 뒤 지난 초)에서 한 장면을 낸다. 다른 것은 부르려고 움직이지 않는다.
+/// 움직임 줄이기: 크기 · 각도 · echo가 없고 불투명도만 1 → .45 → 1을 2.4초마다 숨쉰다.
+public enum NeedsYouMotion {
+    public struct Frame: Equatable, Sendable {
+        public var scale: Double = 1
+        public var opacity: Double = 1
+        /// echo 링의 크기와 불투명도 (숨마다 하나가 1.75배로 퍼지며 사라진다)
+        public var echoScale: Double = 1
+        public var echoOpacity: Double = 0
+        /// bell만: 위쪽(12%)을 기준으로 흔들리는 각도(도)
+        public var rotation: Double = 0
+
+        /// 가만히 있는 프레임 (움직임을 끈 스냅샷 · 시작 전)
+        public static let rest = Frame()
+    }
+
+    /// ease-in-out (cubic-bezier(.42, 0, .58, 1)의 가까운 근사: smoothstep)
+    static func smooth(_ x: Double) -> Double {
+        let t = min(max(x, 0), 1)
+        return t * t * (3 - 2 * t)
+    }
+
+    /// 키프레임 사이를 smoothstep으로 잇는다
+    static func keyframes(_ points: [(at: Double, value: Double)], at x: Double) -> Double {
+        guard let first = points.first, let last = points.last else { return 0 }
+        if x <= first.at { return first.value }
+        if x >= last.at { return last.value }
+        for index in 1..<points.count where x <= points[index].at {
+            let a = points[index - 1], b = points[index]
+            return a.value + (b.value - a.value) * smooth((x - a.at) / (b.at - a.at))
+        }
+        return last.value
+    }
+
+    /// 도착 (0 … 0.52초): scale .6 → 1.18 (45%) → .96 (72%) → 1, 불투명도 0 → 1
+    static func arrival(_ x: Double) -> (scale: Double, opacity: Double) {
+        let u = x / TFMotion.needsYouArrive
+        return (
+            keyframes([(0, 0.6), (0.45, 1.18), (0.72, 0.96), (1, 1)], at: u),
+            min(max(u / 0.45, 0), 1)
+        )
+    }
+
+    /// bell 흔들림 (숨 시작에서 주기의 30% 안): 0 → -14 → 12 → -8 → 5 → -2 → 0도
+    static func swing(_ u: Double) -> Double {
+        keyframes([(0, 0), (0.05, -14), (0.10, 12), (0.15, -8), (0.20, 5), (0.25, -2), (0.30, 0), (1, 0)], at: u)
+    }
+
+    public static func frame(elapsed: Double, reduceMotion: Bool, bell: Bool) -> Frame {
+        guard elapsed >= 0 else { return .rest }
+        let period = TFMotion.needsYouBreath
+        if reduceMotion {
+            // 불투명도만: 1 → .45 → 1 (2.4초, 도착 바운스 없음)
+            let u = elapsed.truncatingRemainder(dividingBy: period) / period
+            let half = u <= 0.5 ? u / 0.5 : (1 - u) / 0.5
+            return Frame(opacity: 1 - 0.55 * smooth(half))
+        }
+        if elapsed < TFMotion.needsYouArrive {
+            let arrived = arrival(elapsed)
+            return Frame(scale: arrived.scale, opacity: arrived.opacity)
+        }
+        let u = (elapsed - TFMotion.needsYouArrive).truncatingRemainder(dividingBy: period) / period
+        let half = u <= 0.5 ? u / 0.5 : (1 - u) / 0.5
+        var frame = Frame(scale: 1 + 0.12 * smooth(half))
+        if u < 0.7 {
+            let p = u / 0.7
+            frame.echoScale = 1 + 0.75 * (1 - (1 - p) * (1 - p))
+            frame.echoOpacity = 0.6 * (1 - p)
+        } else {
+            frame.echoScale = 1.75
+            frame.echoOpacity = 0
+        }
+        if bell { frame.rotation = swing(u) }
+        return frame
+    }
 }

@@ -116,6 +116,14 @@ public final class ReturnSummaryStore {
         )
     }
 
+    /// 변화만 보이는 요약 (OA U3: Taskforce 대화의 끝 메시지). 옛 `content`는 Release용으로 그대로다
+    public func changesOnlyContent(now: Date = Date(), timeZone: TimeZone = .current, canOpen: (UUID) -> Bool = { _ in true }) -> ReturnSummaryContent? {
+        ReturnSummaryPresentation.makeChangesOnly(
+            summary: summary, isStale: isStale, readFailed: readFailed, cursorSpent: cursorSpent, isClearing: isClearing, message: message,
+            now: now, timeZone: timeZone, canOpen: canOpen
+        )
+    }
+
     // MARK: 읽기
 
     /// 새 방문(패널 열기 · 로그인 · Try again): 안내를 거두고 서버의 지금 상태를 읽는다

@@ -11,20 +11,19 @@ struct AgentSessionRulesTests {
     /// 사용자 결정(2026-10-15): 끝난 세션은 상태 말 없이 흐리게. "Closed" 글을 쓰지 않고 접근성 이름에서도 상태 말을 뺀다
     @Test func aClosedSessionHasNoRingAndNoStatusWord() {
         let item = Fx.item(Fx.snapshot(status: .closed, state: .running))
-        #expect(item.ring == nil && item.line.isEmpty && item.isClosed && !item.showsInTab)
+        #expect(item.ring == nil && item.line.isEmpty && item.isClosed)
         #expect(item.rowAccessibilityName == "Pricing — Claude Code", "상태 말 없이 이름 — 에이전트만")
-        #expect(item.tabAccessibilityName == "Pricing")
-        #expect(!item.rowAccessibilityName.contains("Closed") && !item.tabAccessibilityName.contains("Closed"))
+        #expect(!item.rowAccessibilityName.contains("Closed"))
     }
 
     @Test func theOtherSessionsKeepTheirStatusWordInTheAccessibilityNames() {
         let item = Fx.item(Fx.snapshot(status: .bound, state: .running))
-        #expect(item.rowAccessibilityName == "Pricing — Claude Code — Running" && item.tabAccessibilityName == "Pricing · Running")
+        #expect(item.rowAccessibilityName == "Pricing — Claude Code — Running")
     }
 
     @Test func anUnreachableSessionIsConnectionLostEvenWithARunningTask() {
         let item = Fx.item(Fx.snapshot(status: .unreachable, state: .running))
-        #expect(item.ring == .unreachable && item.line == "Connection lost · progress unknown" && item.showsInTab)
+        #expect(item.ring == .unreachable && item.line == "Connection lost · progress unknown" && !item.isClosed)
     }
 
     @Test func anUnreachableLastTaskIsConnectionLostEvenWhenTheSessionIsBound() {
@@ -103,7 +102,7 @@ struct AgentSessionRulesTests {
 
     @Test func anUnknownSessionStatusReadsLikeABoundSession() {
         let item = Fx.item(Fx.snapshot(status: .unknown("hibernating"), state: .running))
-        #expect(item.ring == .running && item.showsInTab && !item.isClosed)
+        #expect(item.ring == .running && !item.isClosed)
         #expect(Fx.item(Fx.snapshot(status: .unknown("hibernating"), state: nil)).line == "Idle")
     }
 
@@ -129,9 +128,8 @@ struct AgentSessionRulesTests {
     @Test func accessibilityNamesJoinNameAgentAndLine() {
         let item = Fx.item(Fx.snapshot(state: .running, name: "Pricing copy draft"))
         #expect(item.rowAccessibilityName == "Pricing copy draft — Claude Code — Running")
-        #expect(item.tabAccessibilityName == "Pricing copy draft · Running")
         let external = Fx.item(Fx.snapshot(status: .external, name: "Pricing copy draft"))
-        #expect(external.tabAccessibilityName == "Pricing copy draft · External · Open in Terminal")
+        #expect(external.rowAccessibilityName == "Pricing copy draft — Claude Code — External · Open in Terminal")
     }
 
     // MARK: 현재 이슈 · 이슈들
@@ -293,61 +291,11 @@ struct AgentSessionRulesTests {
         #expect(!AgentSessionRules.sessions(of: [Fx.issue(1)], in: all).contains { $0.id == none.id })
     }
 
-    @Test func theTabNeverShowsClosedSessionsButTheIssueListDoes() {
+    @Test func theIssueListPutsClosedSessionsAtTheBottomInCreationOrder() {
         let open = Self.session(id: 1, issues: [Fx.issue(1)], created: 5), closed = Self.session(id: 2, issues: [Fx.issue(1)], ring: nil, status: .closed, created: 1)
-        #expect(AgentSessionRules.tabPlan(sessions: [open, closed], currentID: nil).shown.map(\.id) == [open.id])
-        // Sessions 목록은 닫힌 세션을 맨 아래에 둔다
-        #expect(AgentSessionRules.listOrder([closed, open]).map(\.id) == [open.id, closed.id])
-    }
-
-    @Test func upToSixSessionsAllShowInCreationOrder() {
-        let sessions = (1...6).map { Self.session(id: $0, issues: [Fx.issue(1)], created: Double(7 - $0)) }
-        let plan = AgentSessionRules.tabPlan(sessions: sessions, currentID: nil)
-        #expect(plan.shown.map(\.id) == sessions.reversed().map(\.id), "오래된 것이 위")
-        #expect(plan.hidden.isEmpty)
-    }
-
-    @Test func nineSessionsShowSixAndMoreKeepingCurrentAndNeedsYou() {
-        var sessions = (1...9).map { Self.session(id: $0, issues: [Fx.issue(1)], ring: .running, created: Double($0), updated: Double($0)) }
-        // 현재 세션은 오래 전에 갱신됐고, needs-you 하나도 오래됐다: 둘 다 남는다
-        sessions[0] = Self.session(id: 1, issues: [Fx.issue(1)], ring: .running, created: 1, updated: 0)
-        sessions[1] = Self.session(id: 2, issues: [Fx.issue(1)], ring: .needsYou, created: 2, updated: 0.5)
-        let plan = AgentSessionRules.tabPlan(sessions: sessions, currentID: sessions[0].id)
-        #expect(plan.shown.count == 6 && plan.hidden.count == 3)
-        #expect(plan.shown.contains { $0.id == sessions[0].id } && plan.shown.contains { $0.id == sessions[1].id })
-        // 나머지 넷은 최근 갱신 순: 9 · 8 · 7 · 6
-        #expect(Set(plan.shown.map(\.id)) == Set([1, 2, 9, 8, 7, 6].map { Fx.id($0) }))
-        // 보이는 순서는 만든 시각 순이라 갱신해도 흔들리지 않는다
-        #expect(plan.shown.map(\.id) == [1, 2, 6, 7, 8, 9].map { Fx.id($0) })
-        #expect(plan.hidden.map(\.id) == [3, 4, 5].map { Fx.id($0) })
-    }
-
-    @Test func theVisibleOrderDoesNotChangeWhenASessionIsUpdated() {
-        var sessions = (1...9).map { Self.session(id: $0, issues: [Fx.issue(1)], created: Double($0), updated: Double($0)) }
-        let before = AgentSessionRules.tabPlan(sessions: sessions, currentID: nil).shown.map(\.id)
-        // 이미 보이던 세션 하나가 더 최근에 갱신돼도 같은 자리다
-        sessions[5] = Self.session(id: 6, issues: [Fx.issue(1)], created: 6, updated: 100)
-        let after = AgentSessionRules.tabPlan(sessions: sessions, currentID: nil).shown.map(\.id)
-        #expect(before == [4, 5, 6, 7, 8, 9].map { Fx.id($0) })
-        #expect(after == before)
-    }
-
-    @Test func moreThanSixNeedYouStillNeverShowMoreThanSix() {
-        let sessions = (1...8).map { Self.session(id: $0, issues: [Fx.issue(1)], ring: .needsYou, created: Double($0), updated: Double($0)) }
-        let plan = AgentSessionRules.tabPlan(sessions: sessions, currentID: Fx.id(1))
-        #expect(plan.shown.count == 6 && plan.hidden.count == 2)
-        // 현재 세션이 먼저 남고, needs-you는 최근 갱신 순으로 남는다
-        #expect(Set(plan.shown.map(\.id)) == Set([1, 8, 7, 6, 5, 4].map { Fx.id($0) }))
-        #expect(plan.hidden.map(\.id) == [2, 3].map { Fx.id($0) })
-    }
-
-    @Test func aNeedsYouSessionOutranksARecentOne() {
-        // 여섯 칸 가운데 하나만 남는 경우: needs-you가 최근 갱신보다 먼저다
-        let quiet = (1...6).map { Self.session(id: $0, issues: [Fx.issue(1)], ring: .running, created: Double($0), updated: Double($0) + 100) }
-        let needs = Self.session(id: 7, issues: [Fx.issue(1)], ring: .needsYou, created: 7, updated: 0)
-        let plan = AgentSessionRules.tabPlan(sessions: quiet + [needs], currentID: nil)
-        #expect(plan.shown.contains { $0.id == needs.id })
-        #expect(plan.hidden.map(\.id) == [Fx.id(1)], "가장 덜 최근에 갱신된 것이 More로 간다")
+        let older = Self.session(id: 3, issues: [Fx.issue(1)], created: 2)
+        // 열린 세션은 만든 시각 순, 닫힌 세션은 맨 아래 (세션은 이 목록 한 곳에서만 연다: OA U3)
+        #expect(AgentSessionRules.listOrder([closed, open, older]).map(\.id) == [older.id, open.id, closed.id])
     }
 
     // MARK: 도우미

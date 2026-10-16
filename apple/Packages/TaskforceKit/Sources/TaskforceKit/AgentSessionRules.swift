@@ -39,8 +39,6 @@ public enum AgentSessionRules {
     public static let external = "External · Open in Terminal"
     /// Done 링이 머무는 시간 (디자인 ActivityRing "Done just now")
     public static let doneHold: TimeInterval = 3
-    /// 탭에 보이는 세션의 최대 수 (디자인 SessionTab `max`)
-    public static let tabLimit = 6
 
     // MARK: 2.5 표
 
@@ -113,7 +111,7 @@ public enum AgentSessionRules {
         }
     }
 
-    // MARK: 이슈 · 탭
+    // MARK: 이슈
 
     /// 한 이슈의 링 하나: v1 run · 확인 요청의 링과 그 이슈 세션들의 링 중 먼저인 것 (needs-you → unreachable → stopping → running → done → waiting).
     /// idle · 닫힌 세션은 링이 되지 않는다
@@ -130,40 +128,5 @@ public enum AgentSessionRules {
     public static func listOrder(_ items: [AgentSessionItem]) -> [AgentSessionItem] {
         let ordered = items.sorted { ($0.createdAt, $0.id.uuidString) < ($1.createdAt, $1.id.uuidString) }
         return ordered.filter { !$0.isClosed } + ordered.filter(\.isClosed)
-    }
-
-    /// 탭: 닫힌 세션은 없다. 여섯 이하면 모두, 넘으면 여섯(현재 세션 → needs-you 먼저, 그다음 최근 갱신 순)과 More.
-    /// 보이는 순서는 만든 시각 순이라 갱신해도 흔들리지 않는다 (오래된 것이 위)
-    public static func tabPlan(sessions: [AgentSessionItem], currentID: UUID?, limit: Int = tabLimit) -> AgentSessionTabPlan {
-        let candidates = sessions.filter(\.showsInTab)
-        func byCreation(_ items: [AgentSessionItem]) -> [AgentSessionItem] {
-            items.sorted { ($0.createdAt, $0.id.uuidString) < ($1.createdAt, $1.id.uuidString) }
-        }
-        func byRecency(_ items: [AgentSessionItem]) -> [AgentSessionItem] {
-            items.sorted { ($0.updatedAt, $1.id.uuidString) > ($1.updatedAt, $0.id.uuidString) }
-        }
-        guard candidates.count > limit else { return AgentSessionTabPlan(shown: byCreation(candidates), hidden: []) }
-        let current = candidates.filter { $0.id == currentID }
-        let needsYou = byRecency(candidates.filter { $0.id != currentID && $0.ring == .needsYou })
-        let rest = byRecency(candidates.filter { $0.id != currentID && $0.ring != .needsYou })
-        let kept = Array((current + needsYou + rest).prefix(limit))
-        let keptIDs = Set(kept.map(\.id))
-        return AgentSessionTabPlan(shown: byCreation(kept), hidden: byCreation(candidates.filter { !keptIDs.contains($0.id) }))
-    }
-}
-
-/// 탭이 그릴 것: 보이는 세션과 More 뒤의 세션
-public struct AgentSessionTabPlan: Equatable, Sendable {
-    public let shown: [AgentSessionItem]
-    public let hidden: [AgentSessionItem]
-
-    public init(shown: [AgentSessionItem], hidden: [AgentSessionItem]) {
-        self.shown = shown
-        self.hidden = hidden
-    }
-
-    /// More 항목의 접근성 이름 "{n} more sessions" (화면에는 개수가 없다)
-    public var moreLabel: String? {
-        hidden.isEmpty ? nil : "\(hidden.count) more session\(hidden.count == 1 ? "" : "s")"
     }
 }

@@ -3,6 +3,7 @@ import SwiftUI
 /// Rail item (0.2.0 디자인 시스템 Molecules): 레일의 일 하나. 32pt 정사각형(`radius-md`) 안의 `ActivityRing`이고, 누르면 그 일을 연다.
 /// 접근성 이름 · 툴팁은 "제목 · 상태 · 활동" (상태 = `TaskStatusMark`의 To Do · In Progress · Done, 활동 = 링의 말 또는 활동 글).
 /// 숨은 레일에서는 링이 14pt로 노치 가운데에 있고, 펼친 레일에서는 18pt(×1.286)로 자란다. 자리 · 크기는 바뀌지 않고 transform만 바뀐다.
+/// **캡슐 모양**(`look: .capsule`, OA U3): 칸은 원이고 링은 늘 18pt(14 × 1.286)다 — 접힘은 열 전체가 .72배로 줄어 약 13pt가 된다. 노치로 미는 일이 없다.
 public struct RailItem: View {
     nonisolated public static let side: CGFloat = 32
 
@@ -14,13 +15,14 @@ public struct RailItem: View {
     let highlighted: Bool
     let notchShift: CGFloat
     let reduceMotion: Bool
+    let look: ActivityRing.Look
     let action: () -> Void
 
     /// - notchShift: 숨은 레일에서 링을 노치 가운데로 옮기는 거리(왼쪽, pt). 레일이 펼치면 0
     /// - highlighted: 호버 · 지금 연 일 · 열린 메뉴 (`bezel/hover`로 칸 전체를 칠한다, 펼친 레일에서만)
     public init(
         kind: ActivityRing.Kind, title: String, state: TaskStatusMark.State, activity: String,
-        expanded: Bool, highlighted: Bool = false, notchShift: CGFloat = 0, reduceMotion: Bool = false,
+        expanded: Bool, highlighted: Bool = false, notchShift: CGFloat = 0, reduceMotion: Bool = false, look: ActivityRing.Look = .classic,
         action: @escaping () -> Void
     ) {
         self.kind = kind
@@ -31,6 +33,7 @@ public struct RailItem: View {
         self.highlighted = highlighted
         self.notchShift = notchShift
         self.reduceMotion = reduceMotion
+        self.look = look
         self.action = action
     }
 
@@ -41,15 +44,19 @@ public struct RailItem: View {
 
     public var body: some View {
         Button(action: action) {
-            ActivityRing(kind, size: .small, reduceMotion: reduceMotion)
-                .scaleEffect(expanded ? 18.0 / 14.0 : 1)
-                .offset(x: expanded ? 0 : -notchShift)
+            ActivityRing(kind, size: .small, reduceMotion: reduceMotion, look: look)
+                .scaleEffect(look == .capsule ? RailCapsuleMetrics.ringScale : (expanded ? 18.0 / 14.0 : 1))
+                .offset(x: look == .capsule ? 0 : (expanded ? 0 : -notchShift))
                 .frame(width: Self.side, height: Self.side)
                 .background {
-                    RoundedRectangle(cornerRadius: TFRadius.md, style: .continuous)
-                        .fill(expanded && highlighted ? TFColor.bezelHover : .clear)
+                    if look == .capsule {
+                        Circle().fill(expanded && highlighted ? TFColor.bezelHover : .clear)
+                    } else {
+                        RoundedRectangle(cornerRadius: TFRadius.md, style: .continuous)
+                            .fill(expanded && highlighted ? TFColor.bezelHover : .clear)
+                    }
                 }
-                .contentShape(Rectangle())
+                .contentShape(look == .capsule ? AnyShape(Circle()) : AnyShape(Rectangle()))
         }
         .buttonStyle(.plain)
         // 버튼의 이름이 링의 이름을 덮는다 (누르기 동작은 버튼 그대로)
@@ -57,17 +64,19 @@ public struct RailItem: View {
     }
 }
 
-/// 레일의 고정 칸 (All work · Chats · More): 32pt 정사각형의 Lucide 글리프, `bezel/ink`
+/// 레일의 고정 칸 (All work · Chats · More): 32pt 정사각형의 Lucide 글리프, `bezel/ink`. 캡슐 레일(OA U3)에서는 칸이 원이다 (`circular`)
 public struct RailButton: View {
     let icon: TFIcon
     let label: String
     let highlighted: Bool
+    let circular: Bool
     let action: () -> Void
 
-    public init(icon: TFIcon, label: String, highlighted: Bool = false, action: @escaping () -> Void) {
+    public init(icon: TFIcon, label: String, highlighted: Bool = false, circular: Bool = false, action: @escaping () -> Void) {
         self.icon = icon
         self.label = label
         self.highlighted = highlighted
+        self.circular = circular
         self.action = action
     }
 
@@ -77,10 +86,14 @@ public struct RailButton: View {
                 .foregroundStyle(TFColor.bezelInk)
                 .frame(width: RailItem.side, height: RailItem.side)
                 .background {
-                    RoundedRectangle(cornerRadius: TFRadius.md, style: .continuous)
-                        .fill(highlighted ? TFColor.bezelHover : .clear)
+                    if circular {
+                        Circle().fill(highlighted ? TFColor.bezelHover : .clear)
+                    } else {
+                        RoundedRectangle(cornerRadius: TFRadius.md, style: .continuous)
+                            .fill(highlighted ? TFColor.bezelHover : .clear)
+                    }
                 }
-                .contentShape(Rectangle())
+                .contentShape(circular ? AnyShape(Circle()) : AnyShape(Rectangle()))
         }
         .buttonStyle(.plain)
         .accessibilityLabel(label)

@@ -63,7 +63,7 @@ public struct IssueListContent: Hashable, Sendable {
     public let groups: [IssueListGroup]
     /// 머리 `+`(직접 추가, 런처)가 있나: Done today 목록에는 없다
     public let allowsAdd: Bool
-    /// 이 목록의 이슈 전부 (SessionTab이 보는 범위: 그 이슈들의 세션)
+    /// 이 목록의 이슈 전부
     public let issueIDs: [UUID]
 
     public var isEmpty: Bool { groups.isEmpty }
@@ -103,6 +103,11 @@ public enum IssueListRules {
             title: title, groups: groups.filter { !$0.1.isEmpty }.map { IssueListGroup(label: $0.0, rows: rows($0.1)) }, allowsAdd: true,
             issueIDs: members.map(\.id)
         )
+    }
+
+    /// Taskforce 대화의 Next 줄 (OA U3-29): Now의 첫 항목 — 끝나지 않은 이슈 중 맨 앞. 없으면 nil (대화는 Projects 버튼을 보인다)
+    public static func nextRow(items: [WorkItem], sessions: [AgentSessionItem], today: LocalDate) -> IssueRowContent? {
+        items.first { $0.state != .done }.map { row($0, sessions: sessions, today: today) }
     }
 
     /// IssueRow: 활동은 v1 run · 확인 요청의 말과 그 이슈 세션들의 링 중 먼저인 것 (needs-you → unreachable → stopping → running), 기한은 `DueText.short`

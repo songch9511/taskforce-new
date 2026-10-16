@@ -20,15 +20,18 @@ public struct AnswerOption: View {
     let label: String
     let hint: String?
     let phase: Phase
+    /// 번호 글(keycap)을 그리지 않는다: 키는 그대로 답한다 (DS "Numbers show only with four answers")
+    let quietKey: Bool
     let action: () -> Void
     @State private var hovering = false
     @Environment(\.colorSchemeContrast) private var contrast
 
-    public init(index: Int? = nil, label: String, hint: String? = nil, phase: Phase = .ready, action: @escaping () -> Void) {
+    public init(index: Int? = nil, label: String, hint: String? = nil, phase: Phase = .ready, quietKey: Bool = false, action: @escaping () -> Void) {
         self.index = index
         self.label = label
         self.hint = hint
         self.phase = phase
+        self.quietKey = quietKey
         self.action = action
     }
 
@@ -39,7 +42,7 @@ public struct AnswerOption: View {
         let shape = RoundedRectangle(cornerRadius: TFRadius.md, style: .continuous)
         Button(action: action) {
             HStack(spacing: 10) {
-                if let index { Keycap(String(index)) }
+                if let index, !quietKey { Keycap(String(index)) }
                 Text(label)
                     .font(.system(size: 15, weight: phase == .chosen ? .semibold : .regular))
                     .tracking(-0.24)
@@ -148,13 +151,17 @@ public struct DecisionBlock<Source: View>: View {
     let facts: [Fact]
     let answers: [Answer]
     let note: String?
+    let quietKeys: Bool
     let onAnswer: (Int) -> Void
     let source: Source
 
+    /// - meta: 비면 메타 줄이 없다 (OA U3-25: Taskforce 대화는 확인된 프로젝트 이름만 말하고 "Needs your answer"는 말하지 않는다 — 질문이 이미 질문이다)
+    /// - quietKeys: 답에 번호 글을 그리지 않는다 (답이 넷일 때만 번호를 보인다, DS). 키 1 · 2는 그대로 답한다
     public init(
-        meta: String, question: String, facts: [Fact] = [], answers: [Answer], note: String? = nil, onAnswer: @escaping (Int) -> Void,
+        meta: String, question: String, facts: [Fact] = [], answers: [Answer], note: String? = nil, quietKeys: Bool = false, onAnswer: @escaping (Int) -> Void,
         @ViewBuilder source: () -> Source
     ) {
+        self.quietKeys = quietKeys
         self.meta = meta
         self.question = question
         self.facts = facts
@@ -166,11 +173,13 @@ public struct DecisionBlock<Source: View>: View {
 
     public var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Text(meta)
-                .font(TFFont.footnote)
-                .foregroundStyle(TFColor.textSecondary)
-                .padding(.top, 2)
-                .padding(.bottom, TFSpace.sm)
+            if !meta.isEmpty {
+                Text(meta)
+                    .font(TFFont.footnote)
+                    .foregroundStyle(TFColor.textSecondary)
+                    .padding(.top, 2)
+                    .padding(.bottom, TFSpace.sm)
+            }
             Text(question)
                 .font(TFFont.headline)
                 .tracking(-0.374)
@@ -195,7 +204,7 @@ public struct DecisionBlock<Source: View>: View {
                 .padding(.bottom, TFSpace.md)
             VStack(spacing: Self.answerGap) {
                 ForEach(answers) { answer in
-                    AnswerOption(index: answer.index, label: answer.label, hint: answer.hint, phase: answer.phase) { onAnswer(answer.index) }
+                    AnswerOption(index: answer.index, label: answer.label, hint: answer.hint, phase: answer.phase, quietKey: quietKeys) { onAnswer(answer.index) }
                 }
             }
             if let note {
