@@ -598,6 +598,80 @@ describe("P10e sweep_bridge_heartbeats는 세션 · run · task · 단계 어느
   });
 });
 
+describe("P10f 같은 cron의 단계 lease 정리 · 실행 sweep · 보관 정리는 사용자 경로와 역순으로 기다리지 않는다 (재검토 2 P2)", () => {
+  /** lease가 이미 지난 calling 단계 하나 (세션 bound) */
+  async function overdue() {
+    const w = await f.world();
+    await f.lease(w);
+    await f.updateRow("execution_steps", w.step, { lease_expires_at: PAST });
+    return w;
+  }
+  const partners: [string, (w: World) => Promise<unknown>][] = [
+    ["Done", (w) => done(c, w)],
+    ["사용자 Stop", (w) => fc.stop(w.user, w.session)],
+    ["revoke_bridge", (w) => c.query("select public.revoke_bridge($1,$2)", [w.user, w.bridge])],
+    ["heartbeat", (w) => c.query("select public.bridge_heartbeat($1,$2,'[]'::jsonb)", [w.user, w.bridge])],
+    ["lease 재요청", (w) => fc.lease(w)],
+    ["settlement(readback)", (w) => fc.settle(w, "readback", "received", true)],
+  ];
+  const sweeps: [string, (client: pg.Client) => Promise<unknown>][] = [
+    ["sweep_agent_step_leases", (client) => client.query("select public.sweep_agent_step_leases(null) as n")],
+    ["sweep_expire", (client) => client.query("select public.sweep_expire() as n")],
+  ];
+  const cases = sweeps.flatMap(([sweepName, sweepCall]) => partners.map(([partnerName, partnerRun]) => [sweepName, partnerName, sweepCall, partnerRun] as const));
+
+  it.each(cases)("%s ↔ %s: 사용자 경로가 run을 쥐고 단계를 기다리는 동안 sweep은 기다리지 않고 물러난다 (교착 0)", async (_sweepName, _partnerName, sweepCall, partnerRun) => {
+    const w = await overdue();
+    await d.query("begin");
+    await d.query("select id from public.agent_tasks where id=$1 for update", [w.task]); // 제3 연결이 task를 쥔다
+    await c.query("begin");
+    const partner = guard(c, pending(partnerRun(w))); // 사용자 경로: run(과 앞 순서 행)을 쥐고 task에서 기다린다 — 이어서 단계를 잠그려 한다
+    await blocked(c, d);
+    const sweeping = pending(sweepCall(b)); // 예전: 단계를 먼저 쥐고 트리거가 run을 기다림(step -> run). 지금: run을 SKIP LOCKED로 먼저 쥐려다 건너뜀
+    await settledOrBlocked(sweeping, b, c);
+    const released = Date.now();
+    await d.query("rollback");
+    const swept = await sweeping;
+    const closed = await partner;
+    expect(Date.now() - released, "교착 감지(1초)를 기다리지 않는다").toBeLessThan(800);
+    if (codeOf(closed) === "ok") await c.query("commit");
+    expect([codeOf(swept), codeOf(closed)]).toEqual(["ok", "ok"]);
+  });
+
+  it.each(sweeps)("%s: 사용자 경로가 run을 쥐고 있으면 건너뛰고(쓰기 0, 남은 만료 lease 1), 풀린 뒤 다음 호출이 처리한다", async (_name, sweepCall) => {
+    const w = await overdue();
+    await a.query("begin");
+    await a.query("select public.bridge_heartbeat($1,$2,'[]'::jsonb)", [w.user, w.bridge]); // 세션 · run · task · 단계를 쥔다 (단계는 바꾸지 않는다)
+    const sweeping = pending(sweepCall(b));
+    const early = await Promise.race([sweeping, sleep(800).then(() => "waiting" as const)]);
+    if (early === "waiting") {
+      await a.query("rollback"); // 기다리고 있었다면 풀어서 시험이 멈추지 않게
+      await sweeping;
+    }
+    expect(early, "사용자 경로가 쥔 행을 기다리지 않는다").not.toBe("waiting");
+    expect(await f.one("select state from public.execution_steps where id=$1", [w.step])).toEqual({ state: "calling" });
+    expect((await f.one("select public.count_overdue_agent_step_leases(0) as n")).n).toBeGreaterThanOrEqual(1); // 건너뛴 단계가 숫자로 남는다
+    await a.query("commit");
+    await sweepCall(b);
+    expect(await f.one("select state from public.execution_steps where id=$1", [w.step])).toEqual({ state: "unknown_outcome" });
+  });
+
+  it("보관 정리(purge_expired_execution_text): 다른 연결이 쥔 run은 기다리지 않고 건너뛰고, 풀린 뒤 다음 정리가 비운다", async () => {
+    const w = await f.world();
+    await done(setup, w); // run을 끝 상태(stopped)로
+    expect(await runState(w)).toBe("stopped");
+    await a.query("begin");
+    await a.query("select id from public.execution_runs where id=$1 for no key update", [w.run]);
+    const purging = pending(b.query("select public.purge_expired_execution_text(now() + interval '1 day', 5000) as n"));
+    const early = await Promise.race([purging, sleep(800).then(() => "waiting" as const)]);
+    await a.query("rollback"); // 정리가 기다리고 있었다면 여기서 풀린다
+    expect(early, "정리는 남이 쥔 run을 기다리지 않는다").not.toBe("waiting");
+    expect(await f.one("select text_purged_at is null as pending from public.execution_runs where id=$1", [w.run])).toEqual({ pending: true });
+    await b.query("select public.purge_expired_execution_text(now() + interval '1 day', 5000)");
+    expect(await f.one("select text_purged_at is null as pending from public.execution_runs where id=$1", [w.run])).toEqual({ pending: false });
+  });
+});
+
 describe("P11 회수 중 막힘은 후보 하나만 건너뛴다", () => {
   it("후보의 메시지를 남이 쥐면 기다리지 않고 busy (skip locked)", async () => {
     const w = await f.offlineWorld();

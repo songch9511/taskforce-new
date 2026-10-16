@@ -104,6 +104,31 @@ export function deliveryFixesTests(db: () => ConversationAgentDb) {
       for (const role of ["anon", "authenticated"]) for (const kind of ["usage", "select", "update"]) expect(await privilege(role, kind), `${role} ${kind}`).toBe(false);
     });
 
+    it("count_overdue_agent_step_leases: 읽기 전용 · service_role만 · 유예(초)를 넘겨 만료한 calling 에이전트 단계만 센다", async () => {
+      const row = await f.one(`select pg_get_function_result(p.oid) as result, provolatile, prosecdef, proconfig, has_function_privilege('anon',p.oid,'execute') as anon,
+        has_function_privilege('authenticated',p.oid,'execute') as app, has_function_privilege('service_role',p.oid,'execute') as server
+        from pg_proc p join pg_namespace n on n.oid=p.pronamespace where n.nspname='public' and proname='count_overdue_agent_step_leases'`);
+      expect(row).toMatchObject({ result: "integer", provolatile: "s", prosecdef: false, proconfig: ['search_path=""'], anon: false, app: false, server: true });
+      const count = async (grace: number | null) => Number((await f.one("select public.count_overdue_agent_step_leases($1::integer) as n", [grace])).n);
+      const w = await f.world();
+      await f.lease(w);
+      const [now0, now5] = [await count(0), await count(5)];
+      await f.q("update public.execution_steps set lease_expires_at = public.db_now() - interval '100 seconds' where id=$1", [w.step]);
+      expect(await count(0)).toBe(now0 + 1);
+      expect(await count(5)).toBe(now5 + 1);
+      expect(await count(null)).toBe(now0 + 1); // 유예 없음으로 본다
+      expect(await count(3600)).toBe(now0); // 유예 안에서는 세지 않는다
+      await f.q("update public.execution_runs set kind='task' where id=$1", [w.run]);
+      expect(await count(0)).toBe(now0); // 대화 run의 에이전트 단계만 센다
+      await f.q("update public.execution_runs set kind='conversation' where id=$1", [w.run]);
+      await f.q("select public.sweep_agent_step_leases(null)");
+      expect(await count(0)).toBe(now0); // 처리하면 더 이상 남지 않는다
+      const user = await f.user();
+      await db().asUser(user, async () => {
+        await expect(f.q("select public.count_overdue_agent_step_leases(0)")).rejects.toMatchObject({ code: "42501" });
+      });
+    });
+
     it("p_limit이 null · 0 · 201이면 22023, 1 · 200은 받는다 (후보가 없으면 빈 결과)", async () => {
       for (const bad of [null, 0, 201, -1]) await expect(f.q("select public.expire_unleased_agent_messages($1::integer)", [bad]), String(bad)).rejects.toMatchObject({ code: "22023" });
       for (const good of [1, 200]) expect(await f.expire(good)).toEqual(NOTHING);

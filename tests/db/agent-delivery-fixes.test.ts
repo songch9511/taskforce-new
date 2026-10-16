@@ -12,6 +12,7 @@ import { openPglite } from "./pglite-template";
 // OA F3: 에이전트 전달 정리 — PGlite. 같은 시나리오를 실제 Postgres로: tests/pg/agent-delivery-fixes.test.ts (경합 P1–P15 포함)
 const QS = "20261116120000_agent_questions_stop.sql";
 const BC = "20261118000000_bridge_commands.sql";
+const EC = "20261021000000_execution_core.sql";
 const MIGRATIONS = path.resolve(__dirname, "../../supabase/migrations");
 
 let db: PGlite;
@@ -106,6 +107,42 @@ describe("T2b sweep_bridge_heartbeats 교체는 잠금 방식 넷만 다르다 (
   });
 });
 
+describe("T2c 같은 cron의 sweep들은 잠금 방식만 다르다 (재검토 2: step -> run 역순 제거)", () => {
+  const applied = async (name: string) => normalizeBody(String((await deliveryFixesFixtures(handle).one("select prosrc from pg_proc where pronamespace='public'::regnamespace and proname=$1", [name])).prosrc));
+  const cases: [string, string, [string, string][]][] = [
+    ["sweep_agent_step_leases", BC, [
+      ["from public.execution_steps s join public.execution_runs r on r.id=s.run_id and r.user_id=s.user_id", "from public.execution_runs r join public.execution_steps s on s.run_id=r.id and s.user_id=r.user_id"],
+      ["order by s.id for update of s skip locked)", "order by s.id for no key update of r skip locked for update of s skip locked)"],
+    ]],
+    ["sweep_expire", EC, [[
+      "update public.execution_steps set state = 'unknown_outcome', unknown_since = public.db_now(), version = version + 1, lease_owner = null where state = 'calling' and lease_expires_at < public.db_now() and effect_class = 'external';",
+      "with locked as (select s.id from public.execution_runs r join public.execution_steps s on s.run_id = r.id and s.user_id = r.user_id where s.state = 'calling' and s.lease_expires_at < public.db_now() and s.effect_class = 'external' order by s.id for no key update of r skip locked for update of s skip locked) update public.execution_steps set state = 'unknown_outcome', unknown_since = public.db_now(), version = version + 1, lease_owner = null where id in (select id from locked);",
+    ]]],
+    ["purge_expired_execution_text", QS, [["limit p_limit ) x;", "limit p_limit for no key update of r skip locked ) x;"]]],
+  ];
+  it.each(cases)("%s: 새 본문 = 원본에서 잠금을 쥐는 문장만 바꾼 것 (파일 본문 · 적용된 본문 모두)", async (name, file, swaps) => {
+    let expected = fileBody(file, name);
+    for (const [from, to] of swaps) {
+      expect(expected.split(from).length - 1, `원본에 ${from.slice(0, 50)}… 정확히 한 번`).toBe(1);
+      expected = expected.replace(from, to);
+    }
+    expect(fileBody(DELIVERY_FIXES_MIGRATION, name)).toBe(expected);
+    expect(await applied(name)).toBe(expected);
+  });
+
+  it("단계를 먼저 잠그는 문장이 없다: 두 sweep은 run NO KEY UPDATE SKIP LOCKED 뒤에 단계 FOR UPDATE SKIP LOCKED, 보관 정리는 run 선택에 SKIP LOCKED", async () => {
+    for (const name of ["sweep_agent_step_leases", "sweep_expire"]) {
+      const body = await applied(name);
+      const run = body.indexOf("for no key update of r skip locked");
+      const step = body.indexOf("for update of s skip locked");
+      expect(run, name).toBeGreaterThan(0);
+      expect(step, name).toBeGreaterThan(run);
+      expect(body.indexOf("update public.execution_steps"), name).toBeGreaterThan(step);
+    }
+    expect(await applied("purge_expired_execution_text")).toContain("limit p_limit for no key update of r skip locked ) x;");
+  });
+});
+
 describe("T2 지문 · 되돌리기 (T4c)", () => {
   const fingerprint = async (target: PGlite) => {
     const rows = async (sql: string) => JSON.stringify((await target.query(sql)).rows);
@@ -121,12 +158,12 @@ describe("T2 지문 · 되돌리기 (T4c)", () => {
     };
   };
   const original = (file: string, name: string) => {
-    const match = readFileSync(path.join(MIGRATIONS, file), "utf8").match(new RegExp(`create function public\\.${name}\\([^)]*\\)[\\s\\S]*?\\$\\$;`));
+    const match = readFileSync(path.join(MIGRATIONS, file), "utf8").match(new RegExp(`create (?:or replace )?function public\\.${name}\\([^)]*\\)[\\s\\S]*?\\$\\$;`));
     if (!match) throw new Error(`${name} not found in ${file}`);
-    return match[0].replace(/^create function/, "create or replace function");
+    return match[0].replace(/^create (?:or replace )?function/, "create or replace function");
   };
 
-  it("이 마이그레이션은 새 함수 하나와 색인 하나 · 시퀀스 하나를 더하고 네 함수의 본문만 바꾼다: 그 밖의 함수 · 권한 · proconfig · 표 · 열 · 트리거 · 제약 · 정책이 그대로이고, 머리의 되돌리기를 실행하면 앞 지문으로 완전히 돌아간다", async () => {
+  it("이 마이그레이션은 새 함수 하나와 색인 하나 · 시퀀스 하나 · 조회 함수 하나를 더하고 일곱 함수의 본문만 바꾼다: 그 밖의 함수 · 권한 · proconfig · 표 · 열 · 트리거 · 제약 · 정책이 그대로이고, 머리의 되돌리기를 실행하면 앞 지문으로 완전히 돌아간다", async () => {
     const sql = readFileSync(path.join(MIGRATIONS, DELIVERY_FIXES_MIGRATION), "utf8");
     const scripts = await supabaseSchemaScripts();
     const before = scripts.filter((script) => script !== sql);
@@ -139,10 +176,13 @@ describe("T2 지문 · 되돌리기 (T4c)", () => {
       type Fn = { sig: string; def: string; acl: string; config: string };
       const oldFns = JSON.parse(baseline.functions) as Fn[];
       const newFns = JSON.parse(after.functions) as Fn[];
-      expect(newFns.filter((fn) => !oldFns.some((old) => old.sig === fn.sig)).map((fn) => fn.sig)).toEqual(["expire_unleased_agent_messages(integer)"]);
+      expect(newFns.filter((fn) => !oldFns.some((old) => old.sig === fn.sig)).map((fn) => fn.sig)).toEqual(["count_overdue_agent_step_leases(integer)", "expire_unleased_agent_messages(integer)"]);
       expect(oldFns.filter((old) => !newFns.some((fn) => fn.sig === old.sig))).toEqual([]);
       const changed = oldFns.filter((old) => newFns.find((fn) => fn.sig === old.sig)!.def !== old.def).map((old) => old.sig).sort();
-      expect(changed).toEqual(["request_agent_task_cancel(uuid,uuid)", "revoke_bridge(uuid,uuid)", "stop_agent_runs_on_user_claim()", "sweep_bridge_heartbeats(timestamp with time zone,integer)"]);
+      expect(changed).toEqual([
+        "purge_expired_execution_text(timestamp with time zone,integer)", "request_agent_task_cancel(uuid,uuid)", "revoke_bridge(uuid,uuid)", "stop_agent_runs_on_user_claim()",
+        "sweep_agent_step_leases(timestamp with time zone)", "sweep_bridge_heartbeats(timestamp with time zone,integer)", "sweep_expire()",
+      ]);
       for (const old of oldFns) {
         const next = newFns.find((fn) => fn.sig === old.sig)!;
         expect({ acl: next.acl, config: next.config }, old.sig).toEqual({ acl: old.acl, config: old.config });
@@ -152,10 +192,10 @@ describe("T2 지문 · 되돌리기 (T4c)", () => {
       expect(addedSequences.map((sequence) => sequence.relname)).toEqual(["bridge_reclaim_scan_seq"]);
       const addedIndexes = (JSON.parse(after.indexes) as { indexname: string }[]).filter((index) => !(JSON.parse(baseline.indexes) as { indexname: string }[]).some((old) => old.indexname === index.indexname));
       expect(addedIndexes.map((index) => index.indexname)).toEqual(["bridge_commands_unleased_message_idx"]);
-      const revert = /^-- 되돌리기: (drop function public\.expire_unleased_agent_messages\(integer\);) (drop index public\.bridge_commands_unleased_message_idx;) (drop sequence public\.bridge_reclaim_scan_seq;)\s*$/m.exec(sql);
+      const revert = /^-- 되돌리기: (drop function public\.expire_unleased_agent_messages\(integer\);) (drop index public\.bridge_commands_unleased_message_idx;) (drop sequence public\.bridge_reclaim_scan_seq;) (drop function public\.count_overdue_agent_step_leases\(integer\);)\s*$/m.exec(sql);
       expect(revert, "머리 주석에 되돌리기 문장").not.toBeNull();
-      await clone.exec(`${revert![1]} ${revert![2]} ${revert![3]}`);
-      for (const [file, name] of [[QS, "request_agent_task_cancel"], [QS, "stop_agent_runs_on_user_claim"], [BC, "revoke_bridge"], [BC, "sweep_bridge_heartbeats"]] as const) await clone.exec(original(file, name));
+      await clone.exec(`${revert![1]} ${revert![2]} ${revert![3]} ${revert![4]}`);
+      for (const [file, name] of [[QS, "request_agent_task_cancel"], [QS, "stop_agent_runs_on_user_claim"], [QS, "purge_expired_execution_text"], [BC, "revoke_bridge"], [BC, "sweep_bridge_heartbeats"], [BC, "sweep_agent_step_leases"], [EC, "sweep_expire"]] as const) await clone.exec(original(file, name));
       expect(await fingerprint(clone)).toEqual(baseline);
     } finally {
       await clone.close();
@@ -235,6 +275,38 @@ describe("T3 Done 결과 불변 (마이그레이션 앞 · 뒤 끝 상태가 같
       expect(after).toEqual(before);
       expect((after.accepted as { task: { state: string } }).task.state).toBe("unreachable");
       expect((after["dispatched before lease"] as { task: { state: string } }).task.state).toBe("dispatched");
+    } finally {
+      await clone.close();
+    }
+  }, 120_000);
+
+  async function leaseSweepStates(target: () => PGlite) {
+    const f = deliveryFixesFixtures(handleOf(target));
+    const out: Record<string, unknown> = {};
+    for (const [name, call] of [["sweep_agent_step_leases", "select public.sweep_agent_step_leases(null) as n"], ["sweep_expire", "select public.sweep_expire() as n"]] as const) {
+      const w = await f.world();
+      await f.lease(w);
+      await f.q("update public.execution_steps set lease_expires_at = public.db_now() - interval '100 seconds' where id=$1", [w.step]);
+      const counted = Number((await f.one(call)).n);
+      expect(counted, name).toBeGreaterThanOrEqual(1); // 같은 DB에 남은 다른 만료 단계가 있을 수 있어 수는 견주지 않는다
+      out[name] = plain({
+        step: await f.one("select state, lease_owner is null as no_owner, unknown_since is not null as marked, version from public.execution_steps where id=$1", [w.step]),
+        task: await f.one("select state from public.agent_tasks where id=$1", [w.task]),
+        events: await f.q("select type, from_state, to_state, gate from public.execution_events where step_id=$1 order by id", [w.step]),
+      });
+    }
+    return out;
+  }
+
+  it("단계 lease 정리 · 실행 sweep: 경합이 없으면 만료한 calling 단계의 끝 상태 · 전이 기록이 마이그레이션 앞 · 뒤에 같다", async () => {
+    const sql = readFileSync(path.join(MIGRATIONS, DELIVERY_FIXES_MIGRATION), "utf8");
+    const scripts = await supabaseSchemaScripts();
+    const clone = await openPglite(scripts.filter((script) => script !== sql));
+    try {
+      const before = await leaseSweepStates(() => clone);
+      const after = await leaseSweepStates(() => db);
+      expect(after).toEqual(before);
+      for (const state of Object.values(after)) expect((state as { step: { state: string } }).step.state).toBe("unknown_outcome");
     } finally {
       await clone.close();
     }

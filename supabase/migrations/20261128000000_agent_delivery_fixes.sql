@@ -13,17 +13,20 @@
 --   sweep_bridge_heartbeats도 같은 잠금을 NOWAIT로 바꿔 교체한다(쥘 수 없으면 그 bridge는 롤백하고 다음 분에 처음부터). 사용자 경로는 기존의 한 순서를 그대로 지킨다.
 --   (2) 후보가 p_limit보다 많으면 호출마다 창(p_limit개)을 돌려 가며 처리한다(작은 시퀀스 하나) - 영구히 건너뛰어지는 후보가 머리를 붙잡아 뒤 후보를 막지 못하게 한다.
 --
--- 교체하는 함수는 넷이고 각각 잠금 방식 · 순서만 다르다 (tests/db/agent-delivery-fixes.test.ts T2가 본문 동일성을 확인한다):
+-- 교체하는 함수는 일곱이고 각각 잠금 방식 · 순서만 다르다 (tests/db/agent-delivery-fixes.test.ts T2가 본문 동일성을 확인한다):
 --   request_agent_task_cancel       QS의 정의 + `if v_question is not null then` 바로 뒤 세션 · 원 메시지 KEY SHARE NOWAIT 두 줄
 --   revoke_bridge                   BC의 정의 + 작업 고리(`order by id for update loop`) 바로 뒤 메시지 KEY SHARE NOWAIT 한 줄
 --   stop_agent_runs_on_user_claim   QS의 정의 + `order by id for no key update loop` -> `order by agent_session_id, id for no key update loop`
 --   sweep_bridge_heartbeats         BC의 정의 + 세션 · run · task · 단계를 잡는 네 곳의 잠금만 NOWAIT (`for update of a0 loop` -> `for update of a0 nowait loop` 등)
--- 시그니처 · 반환이 같아 create or replace가 권한과 트리거를 그대로 둔다. 새 표 · 새 정책 · 새 열 0, metric_events를 건드리지 않는다. 새 객체는 함수 하나 · 색인 하나 · 시퀀스 하나.
+--   sweep_agent_step_leases         BC의 정의 + 단계 앞에 run을 NO KEY UPDATE SKIP LOCKED로 먼저 쥔다 (step -> run 역순 제거)
+--   sweep_expire                    EC의 정의 + 외부 효과 단계 갱신을 run -> 단계 SKIP LOCKED 잠금 CTE 뒤로
+--   purge_expired_execution_text    QS의 정의 + 정리할 run을 고르는 select에 `for no key update of r skip locked`
+-- 시그니처 · 반환이 같아 create or replace가 권한과 트리거를 그대로 둔다. 새 표 · 새 정책 · 새 열 0, metric_events를 건드리지 않는다. 새 객체는 함수 둘(회수 · 남은 만료 lease 수) · 색인 하나 · 시퀀스 하나.
 --
 -- 운영 적용은 병합 직전 승인 뒤 `supabase db query --linked -f`로 20261127000000 뒤에 한다 (db push 금지). 배포 순서: 마이그레이션 -> 서버 (서버가 먼저 나가면 sweepBridge의 새 RPC가
 -- "함수 없음"으로 실패해 errors로만 세어지고 다음 분에 다시 한다. 마이그레이션만 먼저면 회수가 돌지 않을 뿐 결함 1 수정은 바로 효과가 있다).
--- 되돌리기: drop function public.expire_unleased_agent_messages(integer); drop index public.bridge_commands_unleased_message_idx; drop sequence public.bridge_reclaim_scan_seq;
--- 그리고 request_agent_task_cancel · stop_agent_runs_on_user_claim (20261116120000)과 revoke_bridge · sweep_bridge_heartbeats (20261118000000)의 정의를 그 파일 그대로 create or replace로 다시 적용한다.
+-- 되돌리기: drop function public.expire_unleased_agent_messages(integer); drop index public.bridge_commands_unleased_message_idx; drop sequence public.bridge_reclaim_scan_seq; drop function public.count_overdue_agent_step_leases(integer);
+-- 그리고 request_agent_task_cancel · stop_agent_runs_on_user_claim (20261116120000)과 revoke_bridge · sweep_bridge_heartbeats · sweep_agent_step_leases (20261118000000)와 sweep_expire (20261021000000)와 purge_expired_execution_text (20261116120000)의 정의를 그 파일 그대로 create or replace로 다시 적용한다.
 begin;
 set local lock_timeout = '5s';
 
@@ -230,6 +233,97 @@ begin
   if v_failures>0 then return query select null::uuid,null::uuid,null::uuid,null::uuid,null::integer,v_failures; end if;
 end;
 $$;
+
+-- OA F3 재검토 2: 같은 cron이 이어서 부르는 단계 lease 정리(sweep_agent_step_leases) · 실행 sweep(sweep_expire) · 보관 정리(purge_expired_execution_text)도 기다리지 않는다.
+-- 이 셋은 단계를 먼저 잠그고(update) calling -> unknown_outcome 트리거(execution_steps_release_credits -> release_run_credits)가 그 run을 기다렸다: step -> run 순서.
+-- Done · Stop · 폐기 · heartbeat · lease/settle/readback은 run -> task -> step 순서라 서로 기다리면 순환이다(40P01로 사용자 요청이 롤백됨).
+-- 이제 run을 먼저 NO KEY UPDATE SKIP LOCKED로 쥔 다음 단계를 FOR UPDATE SKIP LOCKED로 쥔다(같은 순서, 기다리지 않음). 못 쥔 단계는 건드리지 않고 다음 분에 다시 후보가 된다.
+-- 트리거가 run을 다시 잡아도 이미 쥔 잠금이라 기다리지 않는다. 본문은 잠금을 쥐는 문장만 원본과 다르다.
+create or replace function public.sweep_agent_step_leases(p_now timestamptz) returns integer
+language plpgsql set search_path = '' as $$
+declare v_n integer;
+begin
+  perform set_config('execution.gate','lease_expired',true);
+  with expired as (select s.id from public.execution_runs r join public.execution_steps s on s.run_id=r.id and s.user_id=r.user_id
+    where r.kind='conversation' and s.kind in ('agent_message','agent_cancel') and s.state='calling' and s.lease_expires_at<public.db_now()
+    order by s.id for no key update of r skip locked for update of s skip locked)
+  update public.execution_steps set state='unknown_outcome',unknown_since=public.db_now(),version=version+1,lease_owner=null
+    where id in(select id from expired);
+  get diagnostics v_n=row_count; return v_n;
+end;
+$$;
+
+create or replace function public.sweep_expire() returns integer
+language plpgsql
+set search_path = ''
+as $$
+declare
+  v_external integer;
+begin
+  perform set_config('execution.gate', 'lease_expired', true);
+  with locked as (select s.id from public.execution_runs r join public.execution_steps s on s.run_id = r.id and s.user_id = r.user_id
+    where s.state = 'calling' and s.lease_expires_at < public.db_now() and s.effect_class = 'external'
+    order by s.id for no key update of r skip locked for update of s skip locked)
+  update public.execution_steps set state = 'unknown_outcome', unknown_since = public.db_now(), version = version + 1, lease_owner = null
+    where id in (select id from locked);
+  get diagnostics v_external = row_count;
+  return v_external + public.execution_retry_internal(array(
+    select id from public.execution_steps where state = 'calling' and lease_expires_at < public.db_now() and effect_class = 'internal'
+  ));
+end;
+$$;
+
+create or replace function public.purge_expired_execution_text(p_before timestamptz, p_limit integer default 5000)
+returns integer
+language plpgsql
+security invoker
+set search_path = ''
+as $$
+declare
+  v_runs uuid[];
+  v_count integer;
+  v_gate text := current_setting('execution.gate', true); -- 부른 쪽의 gate (끝날 때 되돌린다)
+begin
+  if p_before is null or p_limit is null or p_limit < 1 then
+    raise exception 'purge_expired_execution_text: 잘못된 인자';
+  end if;
+  select coalesce(array_agg(x.id), '{}') into v_runs from (
+    select r.id from public.execution_runs r
+    where r.text_purged_at is null
+      and r.state in ('done', 'failed', 'stopped')
+      and r.created_at < p_before
+      and not exists (select 1 from public.execution_steps s where s.run_id = r.id and s.state in ('calling', 'unknown_outcome'))
+    order by r.created_at, r.id
+    limit p_limit
+    for no key update of r skip locked
+  ) x;
+  if cardinality(v_runs) = 0 then
+    perform set_config('execution.gate', coalesce(nullif(v_gate, 'retention'), ''), true);
+    return 0;
+  end if;
+
+  perform set_config('execution.gate', 'retention', true);
+  update public.execution_steps s
+    set args = s.args - array['brief','answers'], receipt = s.receipt - array['to', 'question']
+    where s.run_id = any (v_runs) and (s.args ?| array['brief','answers'] or s.receipt ?| array['to', 'question']);
+  update public.execution_runs r set request = '', text_purged_at = public.db_now()
+    where r.id = any (v_runs) and r.text_purged_at is null;
+  get diagnostics v_count = row_count;
+  -- 트리거 예외는 이 함수 안에서만: 부른 쪽의 gate로 되돌려(retention은 남기지 않는다), 같은 트랜잭션의 뒤 문장이 지시를 지우면 다시 계획 · 동결 규칙대로 돈다
+  perform set_config('execution.gate', coalesce(nullif(v_gate, 'retention'), ''), true);
+  return v_count;
+end;
+$$;
+
+-- 남은 만료 lease 수(못 쥐어 건너뛴 단계가 여기에 남는다): sweepBridge가 매 분 숫자로 보인다. 읽기만 한다.
+create function public.count_overdue_agent_step_leases(p_grace_seconds integer) returns integer
+language sql stable set search_path = '' as $$
+  select count(*)::integer from public.execution_steps s join public.execution_runs r on r.id = s.run_id and r.user_id = s.user_id
+   where r.kind = 'conversation' and s.kind in ('agent_message', 'agent_cancel') and s.state = 'calling'
+     and s.lease_expires_at < public.db_now() - make_interval(secs => greatest(coalesce(p_grace_seconds, 0), 0));
+$$;
+revoke all on function public.count_overdue_agent_step_leases(integer) from public, anon, authenticated;
+grant execute on function public.count_overdue_agent_step_leases(integer) to service_role;
 
 -- 만료한 lease 전 message 명령 회수 (cron 1분, sweepBridge). 후보는 잠금 없이 찾고 후보마다 하위 트랜잭션에서 메시지부터 잠근다:
 -- 메시지(skip locked) -> 세션 -> run -> task -> step -> 명령(모두 NOWAIT, lock_bridge_command와 같은 순서) -> lock_bridge_command -> 같은 조건 다시 확인 -> withdraw_bridge_command(..., 'expired').
