@@ -410,14 +410,19 @@ struct BridgeReviewETests {
 
     @Test func aResponseIsCutOffWhileItStreamsOncePastTheCap() async throws {
         let host = "\(UUID().uuidString.lowercased()).stream.test"
-        StubURLProtocol.install(host: host) { _ in StubURLProtocol.Reply(chunks: 400, chunkSize: 64 * 1024, chunkInterval: 0.004) } // 25MB를 천천히
+        // 대역은 쉬지 않고 보낸다(조각마다 4ms, 끊기면 멈춘다). 다 보내려면 24초(375MB) — 클라이언트가 붐비는 기계에서 4MB를 읽는 데 걸리는 시간보다 훨씬 길다:
+        // 보내는 쪽이 읽는 쪽을 앞질러 끝까지 보내 버리는 일 없이, "끝까지 받기 전에 끊었다"를 셀 수 있다
+        let total = 6000
+        let chunk = 64 * 1024
+        StubURLProtocol.install(host: host) { _ in StubURLProtocol.Reply(chunks: total, chunkSize: chunk, chunkInterval: 0.004) }
         let client = streamingClient(host: host)
         await #expect(throws: BridgeClientError.server(status: 200)) {
             _ = try await client.commands(bridgeID: Self.bridgeID, secret: Self.secret, after: 0, wait: 0)
         }
-        try await Task.sleep(for: .milliseconds(100))
+        // 끊긴 그때 보낸 조각 수: 상한(4MB)을 넘긴 뒤에 끊었고(그 전이면 상한 검사가 아니다), 끝까지 받기 전에 끊었다
         let delivered = StubURLProtocol.delivered(host: host)
-        #expect(delivered < 300, "상한(4MB = 약 62조각)을 넘으면 끊는다. 끝까지 받고 센 것이 아니다: \(delivered)/400")
+        #expect(delivered >= BridgeClient.maxResponseBytes / chunk, "상한까지는 받았다: \(delivered)/\(total)")
+        #expect(delivered < total, "상한을 넘으면 끊는다. 끝까지 받고 센 것이 아니다: \(delivered)/\(total)")
     }
 
     @Test func aResponseThatAnnouncesAHugeBodyIsRefusedBeforeReadingIt() async throws {

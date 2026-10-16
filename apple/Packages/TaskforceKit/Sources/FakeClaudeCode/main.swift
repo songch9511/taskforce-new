@@ -130,9 +130,13 @@ enum Fake {
         }
         if process.isRunning {
             process.terminate()
+            append("shell_runs", ["outcome": "timeout"])
             return ("", 1)
         }
-        _ = done.wait(timeout: .now() + 2)
+        // 훅은 끝났다: 남은 출력을 EOF까지 다 읽은 뒤에 쓴다 (짧은 상한이면 붐비는 기계에서 읽기 전에 빈 출력 = 결정 없음으로 읽었다, 18장 d6). 포기 상한만
+        let drained = done.wait(timeout: .now() + 60) == .success
+        // 결정이 비면 시험이 그 까닭(시간 초과 · 신호 · 다 못 읽음)을 읽는다 (종료 모양만, 글 없음)
+        append("shell_runs", ["outcome": process.terminationReason == .uncaughtSignal ? "signal" : "exit", "status": Int(process.terminationStatus), "drained": drained])
         return (String(decoding: collected.data, as: UTF8.self), process.terminationStatus)
     }
 

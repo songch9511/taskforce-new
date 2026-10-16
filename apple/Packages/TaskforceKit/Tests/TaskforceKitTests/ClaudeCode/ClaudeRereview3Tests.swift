@@ -134,7 +134,37 @@ struct ClaudeRereview3Tests {
         )
         #expect(result == .requestClosed, "Stop이 이겼다: 전달로 적지 않는다")
         #expect(await events.wait { FakeClaude.ended($0) })
-        #expect((fake.report(1)?["decisions"] as? [[String: Any]])?.first?["decision"] as? String == "deny")
+        // 비면 가짜가 훅 결과를 받지 못했다: 그 까닭(시간 초과 · 신호 · 다 못 읽음)을 함께 남긴다 (18장 d6)
+        #expect((fake.report(1)?["decisions"] as? [[String: Any]])?.first?["decision"] as? String == "deny", "훅 실행: \(String(describing: fake.report(1)?["shell_runs"]))")
+    }
+
+    /// 18장 d6: 가짜 `claude`는 끝난 훅의 출력을 EOF까지 읽고 그 결정을 쓴다. 훅이 끝난 뒤 3초 동안 출력 파이프가 열려 있어도(자식이 물고 있다)
+    /// 결정은 bridge가 준 deny다 — 2초 상한이면 다 읽기 전에 빈 출력을 "결정 없음"으로 적었다
+    @Test func d6TheFakeReadsAFinishedHooksDecisionEvenWhenItsOutputClosesLate() async throws {
+        let fake = try FakeClaude()
+        let data = fake.box.workspace.appending(path: "appdata", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: data, withIntermediateDirectories: true)
+        let hook = fake.box.root.appending(path: "late-output-hook")
+        try "#!/bin/sh\n'\(fake.helpers.hook)' \"$@\"\ncode=$?\n/bin/sleep 3 &\nexit $code\n".write(to: hook, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: hook.path)
+        let adapter = ClaudeCodeProcess(
+            sessionsRoot: fake.box.sessionsRoot, hookServer: fake.server, helpers: ClaudeCodeHelpers(hook: hook.path, mcp: fake.helpers.mcp, keeper: fake.helpers.keeper),
+            locator: ClaudeCodeLocator(candidates: [fake.claude.path], confinedTo: fake.box.root.path), environment: fake.environment,
+            managedSettingsPath: fake.box.root.appending(path: "managed-settings.json").path, timing: fake.timing, log: fake.log, protectedRoots: [data]
+        )
+        adapter.attach(AgentRuntimeServices(decideTool: fake.decider.function))
+        // 보호 폴더 쓰기: bridge가 서버에 묻지 않고 deny한다
+        try fake.scenario(["runs": [["steps": [["tool": "Write", "id": "toolu_w", "input": ["file_path": data.path + "/x.json", "content": "x"]]], "final_text": "ok"]]])
+        let events = EventLog()
+        _ = try await adapter.startTurn(AgentTurnStart(
+            taskID: ClaudeTest.task, sessionID: ClaudeTest.session, turnSeq: 1, adapter: "agent:claude-code", externalSessionID: nil, workspaceRef: fake.workspace, resume: false,
+            access: .write, policyMode: .manual, marker: UUID().uuidString.lowercased(), text: "Write it."
+        ), events: events.sink)
+        #expect(await events.wait { FakeClaude.ended($0) })
+        let runs = fake.report(0)?["shell_runs"] as? [[String: Any]] ?? []
+        #expect((fake.report(0)?["decisions"] as? [[String: Any]])?.first?["decision"] as? String == "deny", "훅 실행: \(runs)")
+        #expect(runs.count == 2 && runs.allSatisfy { $0["outcome"] as? String == "exit" && $0["drained"] as? Bool == true }, "SessionStart · PreToolUse 둘 다 끝까지 읽었다")
+        #expect(!FileManager.default.fileExists(atPath: data.path + "/x.json"))
     }
 
     // MARK: 8 셸 풀기 한 번
