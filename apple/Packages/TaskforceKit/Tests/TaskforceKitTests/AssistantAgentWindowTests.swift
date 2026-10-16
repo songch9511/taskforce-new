@@ -238,7 +238,7 @@ struct AssistantAgentWindowTests {
         #expect(r.model.stopLineText == "Stop requested · not confirmed")
     }
 
-    @Test func theMayContinueWordIsTheUnapprovedCandidateAndAbsentBeforeApproval() async {
+    @Test func theMayContinueWordIsTheApprovedWord() async {
         let r = await rig()
         sessionGateway.serve(SFx.snapshot(state: .running))
         await r.sessions.refresh()
@@ -247,8 +247,7 @@ struct AssistantAgentWindowTests {
         sessionGateway.serve(SFx.snapshot(state: .cancelled))
         await r.sessions.refresh()
         #expect(r.model.stopPresentation == AgentStopRules.Presentation(showsStop: false, line: .mayContinue))
-        #expect(r.model.stopLineText(copy: .candidates) == "Stopped · commands may still be running")
-        #expect(r.model.stopLineText(copy: .approved) == nil, "승인 전에는 그 말을 쓰지 않는다")
+        #expect(r.model.stopLineText == "Stopped · commands may still be running", "사용자 승인 2026-10-18")
     }
 
     // MARK: 세션 id

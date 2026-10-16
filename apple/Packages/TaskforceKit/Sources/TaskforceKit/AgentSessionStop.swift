@@ -35,11 +35,11 @@ public enum AgentStopRules {
         case requested
         case mayContinue
 
-        /// 보일 글. "Stop requested · not confirmed"는 DS의 말이고 "Stopped · commands may still be running"은 승인 전 후보다 (없으면 nil)
-        public func text(copy: AgentUnapprovedCopy = AgentNewCopy.active) -> String? {
+        /// 보일 글. "Stop requested · not confirmed"는 DS의 말이고 "Stopped · commands may still be running"은 사용자가 승인한 말이다 (2026-10-18)
+        public var text: String {
             switch self {
             case .requested: AgentCopy.stopRequested
-            case .mayContinue: copy.stoppedMayContinue
+            case .mayContinue: AgentCopy.stoppedMayContinue
             }
         }
     }

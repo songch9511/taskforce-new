@@ -3,21 +3,19 @@ import Testing
 @testable import TaskforceKit
 
 /// 에이전트 대상 메시지 아래의 전달 한 줄 (DS MessageDelivery, OA D4a-04 – 09, 계약 4장 표): 서버가 계산한 상태 9 × 이유 17을 말로 옮긴다.
-/// DS에 있는 말은 그대로, DS에 없는 말(새 문구 아홉)은 승인 전에는 쓰지 않는다 (`AgentUnapprovedCopy.approved` = 빈 값 → 일반 줄로 떨어진다). 승인 전 후보(`.candidates`)는 견본에서만 보인다
+/// DS에 있는 말은 그대로, 새 문구 아홉은 사용자 승인(2026-10-18)을 받아 앱이 그대로 쓴다 (`AgentCopy`). 모르는 이유만 일반 줄 "Not sent · Send again"으로 떨어진다
 struct AssistantDeliveryLineTests {
     typealias Link = MessageDeliveryLine.Link
 
-    func context(
-        agent: String? = "Claude Code", target: AgentTargetState? = nil, copy: AgentUnapprovedCopy = .approved
-    ) -> AgentDeliveryContext {
-        AgentDeliveryContext(agentName: agent, targetState: target, copy: copy)
+    func context(agent: String? = "Claude Code", target: AgentTargetState? = nil) -> AgentDeliveryContext {
+        AgentDeliveryContext(agentName: agent, targetState: target)
     }
 
     func line(
         _ state: AgentDeliveryState, reason: AgentDeliveryReason? = nil, candidates: [AgentReferentCandidate] = [], agent: String? = "Claude Code",
-        target: AgentTargetState? = nil, copy: AgentUnapprovedCopy = .approved
+        target: AgentTargetState? = nil
     ) -> MessageDeliveryLine? {
-        MessageDeliveryLine.of(AgentDelivery(state: state, reason: reason, candidates: candidates), context: context(agent: agent, target: target, copy: copy))
+        MessageDeliveryLine.of(AgentDelivery(state: state, reason: reason, candidates: candidates), context: context(agent: agent, target: target))
     }
 
     // MARK: DS에 있는 줄
@@ -66,51 +64,36 @@ struct AssistantDeliveryLineTests {
         for reason in [AgentDeliveryReason.signInNeeded, .writeGateClosed, .notConnected, .unsupported] {
             #expect(line(.notSent, reason: reason)?.link == Link(.sendAgain, "Send again"), "\(reason.raw)")
         }
-        // 그 밖 · 모르는 이유: 일반 줄
+        // 그 밖 · 모르는 이유: 일반 줄 (말을 지어내지 않는다)
         for reason in [AgentDeliveryReason.sessionExternal, .sessionBusy, .liveLimit, .queueOrder, .invalidReferent, .notFound, .alreadyDispatched, .questionOpen, .unknown("disk_full")] {
             #expect(line(.notSent, reason: reason) == MessageDeliveryLine(strong: "Not sent", text: nil, link: Link(.sendAgain, "Send again")), "\(reason.raw)")
         }
     }
 
-    // MARK: 새 문구 (승인 전에는 쓰지 않는다)
+    // MARK: 새 문구 (사용자 승인 2026-10-18)
 
-    @Test func beforeApprovalTheNewReasonsFallBackToTheGeneralLine() {
-        let general = MessageDeliveryLine(strong: "Not sent", text: nil, link: Link(.sendAgain, "Send again"))
-        for reason in [AgentDeliveryReason.versionUnsupported, .usageLimited, .spawnFailed, .notReceived] {
-            #expect(line(.notSent, reason: reason) == general, "\(reason.raw)")
-        }
-        // 닫힌 세션은 Send again이 없다 (이유 말만 승인 전이라 없다)
-        #expect(line(.notSent, reason: .sessionClosed) == MessageDeliveryLine(strong: "Not sent", text: nil))
-        #expect(line(.cancelled) == general, "cancelled: 새 이유 말 \"Stopped\"는 승인 전")
-        // 새 말이 없으면 후보 고르기 링크도 없다 (누르면 열 메뉴는 있어도 말을 모른다)
-        #expect(line(.needsReferent, candidates: [AgentReferentCandidate(actionID: UUID(), title: "A")]) == MessageDeliveryLine(strong: nil, text: "Queued"))
-        #expect(AgentUnapprovedCopy.approved.isEmpty)
-    }
-
-    @Test func theCandidatesAreTheSection7WordsAndOnlyThose() {
-        let c = AgentUnapprovedCopy.candidates
-        #expect(c.versionUnsupported == "Unsupported version" && c.usageLimited == "Usage limit reached" && c.spawnFailed == "Session didn't start")
-        #expect(c.notReceived == "Not received" && c.sessionClosed == "Session closed" && c.cancelled == "Stopped")
-        #expect(c.chooseReferent == "Choose an issue" && c.addChip("#139 Rewrite pricing page copy") == "Add #139 Rewrite pricing page copy")
-        #expect(c.stoppedMayContinue == "Stopped · commands may still be running")
-        #expect(!c.isEmpty)
+    @Test func theApprovedNewReasonsAreTheSection7WordsAndOnlyThose() {
+        #expect(AgentCopy.versionUnsupported == "Unsupported version" && AgentCopy.usageLimited == "Usage limit reached" && AgentCopy.spawnFailed == "Session didn't start")
+        #expect(AgentCopy.notReceived == "Not received" && AgentCopy.sessionClosed == "Session closed" && AgentCopy.stopped == "Stopped")
+        #expect(AgentCopy.chooseReferent == "Choose an issue" && AgentCopy.addChip("#139 Rewrite pricing page copy") == "Add #139 Rewrite pricing page copy")
+        #expect(AgentCopy.stoppedMayContinue == "Stopped · commands may still be running")
         let cases: [(AgentDeliveryReason, String)] = [
             (.versionUnsupported, "Unsupported version"), (.usageLimited, "Usage limit reached"), (.spawnFailed, "Session didn't start"), (.notReceived, "Not received"),
         ]
         for (reason, words) in cases {
-            #expect(line(.notSent, reason: reason, copy: .candidates) == MessageDeliveryLine(strong: "Not sent", text: words, link: Link(.sendAgain, "Send again")), "\(reason.raw)")
+            #expect(line(.notSent, reason: reason) == MessageDeliveryLine(strong: "Not sent", text: words, link: Link(.sendAgain, "Send again")), "\(reason.raw)")
         }
-        #expect(line(.notSent, reason: .sessionClosed, copy: .candidates) == MessageDeliveryLine(strong: "Not sent", text: "Session closed"), "닫힌 세션은 Send again이 없다")
-        #expect(line(.cancelled, copy: .candidates) == MessageDeliveryLine(strong: "Not sent", text: "Stopped", link: Link(.sendAgain, "Send again")))
+        #expect(line(.notSent, reason: .sessionClosed) == MessageDeliveryLine(strong: "Not sent", text: "Session closed"), "닫힌 세션은 Send again이 없다")
+        #expect(line(.cancelled) == MessageDeliveryLine(strong: "Not sent", text: "Stopped", link: Link(.sendAgain, "Send again")))
     }
 
     @Test func needsReferentIsQueuedWithTheChooseLink() {
         let candidates = [AgentReferentCandidate(actionID: UUID(), title: "가격 문구"), AgentReferentCandidate(actionID: UUID(), title: "온보딩")]
-        let result = line(.needsReferent, candidates: candidates, copy: .candidates)
+        let result = line(.needsReferent, candidates: candidates)
         #expect(result == MessageDeliveryLine(strong: nil, text: "Queued", link: Link(.chooseReferent(candidates), "Choose an issue")))
         #expect(result?.combined == "Queued", "링크는 접근성에서 따로 누르는 동작이다")
         // 후보가 없으면 고를 것이 없다: 링크도 없다
-        #expect(line(.needsReferent, copy: .candidates) == MessageDeliveryLine(strong: nil, text: "Queued"))
+        #expect(line(.needsReferent) == MessageDeliveryLine(strong: nil, text: "Queued"))
     }
 
     // MARK: 줄이 없는 값
@@ -131,7 +114,7 @@ struct AssistantDeliveryLineTests {
             let has = line(state)?.link?.kind == .sendAgain
             #expect(has == withLink.contains(state), "\(state.raw)")
         }
-        #expect(line(.notSent, reason: .sessionClosed, copy: .candidates)?.link == nil)
+        #expect(line(.notSent, reason: .sessionClosed)?.link == nil)
     }
 
     @Test func everyNotSentReasonKeepsBoldOnlyOnTheFirstWord() {
@@ -140,14 +123,14 @@ struct AssistantDeliveryLineTests {
             .sessionBusy, .liveLimit, .queueOrder, .sessionClosed, .invalidReferent, .notFound, .alreadyDispatched, .questionOpen, .unknown("x"),
         ]
         for reason in reasons {
-            let result = line(.notSent, reason: reason, copy: .candidates)
+            let result = line(.notSent, reason: reason)
             #expect(result?.strong == "Not sent", "\(reason.raw): 굵은 말은 Not sent뿐")
         }
         // 그 밖의 줄은 굵은 말이 없다 (Not sent만 굵다)
         for state in [AgentDeliveryState.accepted, .sent, .outcomeUnknown, .queued, .expired, .needsReferent] {
             #expect(line(state)?.strong == nil, "\(state.raw)")
         }
-        #expect(line(.cancelled, copy: .candidates)?.strong == "Not sent")
+        #expect(line(.cancelled)?.strong == "Not sent")
     }
 
     // MARK: 접근성 · 줄이 길 때

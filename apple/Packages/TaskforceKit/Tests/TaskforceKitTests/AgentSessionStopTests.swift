@@ -63,10 +63,9 @@ struct AgentSessionStopRulesTests {
         #expect(Rules.presentation(session: item(.idle, turn: 2), outcome: outcome).line == nil)
     }
 
-    @Test func theLinesWordsAreTheDesignWordAndTheUnapprovedCandidate() {
-        #expect(AgentStopRules.Line.requested.text(copy: .approved) == "Stop requested · not confirmed")
-        #expect(AgentStopRules.Line.mayContinue.text(copy: .approved) == nil, "새 문구는 승인 전에 쓰지 않는다")
-        #expect(AgentStopRules.Line.mayContinue.text(copy: .candidates) == "Stopped · commands may still be running")
+    @Test func theLinesWordsAreTheDesignWordAndTheApprovedNewWord() {
+        #expect(AgentStopRules.Line.requested.text == "Stop requested · not confirmed")
+        #expect(AgentStopRules.Line.mayContinue.text == "Stopped · commands may still be running", "사용자 승인 2026-10-18")
         #expect(AgentCopy.stopNewSteps == "Stop new steps" && AgentCopy.stopRequested == "Stop requested · not confirmed")
     }
 

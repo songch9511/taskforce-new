@@ -2,8 +2,8 @@ import Foundation
 
 /// 에이전트 대상 메시지 아래의 전달 한 줄 (DS MessageDelivery, OA D4a-04 – 09): 서버가 계산한 `delivery`(상태 9 × 이유 17)를 말로 옮긴다. 판정은 서버가 하고 앱은 옮기기만 한다.
 /// Received(accepted) · Sent · Unknown · Queued · **Not sent**(굵게, 빨강 아님) · Expired. 단어만: 아이콘 · 스피너 · 색 없음. 링크는 Send again · 후보 고르기뿐이다.
-/// - 이유 말: DS에 있는 것(Session is in Terminal · Not signed in to {에이전트} · Access not verified · Not connected · Unsupported · Mac is offline · Answer the question first)은 그대로,
-///   DS에 없는 새 말(`AgentUnapprovedCopy`)은 **승인 전에는 없다** — 그 이유는 일반 줄 "Not sent · Send again"으로 떨어진다
+/// - 이유 말: DS에 있는 것(Session is in Terminal · Not signed in to {에이전트} · Access not verified · Not connected · Unsupported · Mac is offline · Answer the question first)과
+///   사용자가 승인한 새 말(Unsupported version · Usage limit reached · Session didn't start · Not received · Session closed · Stopped · Choose an issue, `AgentCopy`). 모르는 이유는 일반 줄 "Not sent · Send again"
 /// - answered(서버가 곧바로 이벤트 줄 "Answered"를 쓴다) · 모르는 상태는 줄이 없다 (두 번 말하지 않고, 모르는 값에 아무것도 주장하지 않는다)
 public struct MessageDeliveryLine: Equatable, Sendable {
     /// 줄 끝의 링크 하나 (DS Button `link`, `text/accent`)
@@ -48,11 +48,11 @@ public struct MessageDeliveryLine: Equatable, Sendable {
         case .queued: return MessageDeliveryLine(strong: nil, text: queued(reason: delivery.reason, context: context))
         case .expired: return MessageDeliveryLine(strong: nil, text: AgentCopy.expired, link: sendAgain)
         case .notSent: return notSent(reason: delivery.reason, context: context)
-        case .cancelled: return MessageDeliveryLine(strong: AgentCopy.notSent, text: context.copy.cancelled, link: sendAgain)
+        case .cancelled: return MessageDeliveryLine(strong: AgentCopy.notSent, text: AgentCopy.stopped, link: sendAgain)
         case .needsReferent:
-            // 후보가 없으면 고를 것이 없고, 링크 말이 승인 전이면 그린 말이 없다: "Queued"뿐이다
-            guard !delivery.candidates.isEmpty, let title = context.copy.chooseReferent else { return MessageDeliveryLine(strong: nil, text: AgentCopy.queued) }
-            return MessageDeliveryLine(strong: nil, text: AgentCopy.queued, link: Link(.chooseReferent(delivery.candidates), title))
+            // 후보가 없으면 고를 것이 없다: "Queued"뿐이다
+            guard !delivery.candidates.isEmpty else { return MessageDeliveryLine(strong: nil, text: AgentCopy.queued) }
+            return MessageDeliveryLine(strong: nil, text: AgentCopy.queued, link: Link(.chooseReferent(delivery.candidates), AgentCopy.chooseReferent))
         case .answered, .unknown: return nil
         }
     }
@@ -78,8 +78,8 @@ public struct MessageDeliveryLine: Equatable, Sendable {
         case .unsupported: return MessageDeliveryLine(strong: AgentCopy.notSent, text: AgentCopy.unsupported, link: sendAgain)
         case .sessionClosed:
             // 닫힌 세션은 다시 보낼 곳이 없다
-            return MessageDeliveryLine(strong: AgentCopy.notSent, text: context.copy.reasonWords(reason))
-        default: return MessageDeliveryLine(strong: AgentCopy.notSent, text: context.copy.reasonWords(reason), link: sendAgain)
+            return MessageDeliveryLine(strong: AgentCopy.notSent, text: AgentCopy.reasonWords(reason))
+        default: return MessageDeliveryLine(strong: AgentCopy.notSent, text: AgentCopy.reasonWords(reason), link: sendAgain)
         }
     }
 
@@ -89,15 +89,13 @@ public struct MessageDeliveryLine: Equatable, Sendable {
     }
 }
 
-/// 전달 줄을 옮기는 데 필요한 화면 밖 사실: 에이전트 이름(Not signed in to …) · 그 대화 연결의 대상 상태(Mac is offline) · 승인 전 새 문구
+/// 전달 줄을 옮기는 데 필요한 화면 밖 사실: 에이전트 이름(Not signed in to …) · 그 대화 연결의 대상 상태(Mac is offline)
 public struct AgentDeliveryContext: Equatable, Sendable {
     public var agentName: String?
     public var targetState: AgentTargetState?
-    public var copy: AgentUnapprovedCopy
 
-    public init(agentName: String? = nil, targetState: AgentTargetState? = nil, copy: AgentUnapprovedCopy = AgentNewCopy.active) {
+    public init(agentName: String? = nil, targetState: AgentTargetState? = nil) {
         self.agentName = agentName
         self.targetState = targetState
-        self.copy = copy
     }
 }

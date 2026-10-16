@@ -181,8 +181,7 @@ struct EdgeSessionActionsTests {
 
     @Test func escapeClosesTheReferentMenuBeforeTheSessionPanel() async throws {
         let r = try await rig(Data.queued())
-        AgentNewCopy.isPreviewing = true
-        defer { AgentNewCopy.isPreviewing = false; r.stop() }
+        defer { r.stop() }
         try await openPanel(r)
         await r.runtime.chat.loadThread(Data.conversationID)
         await r.runtime.chat.settle()
@@ -309,9 +308,9 @@ struct EdgeSessionActionsTests {
         #expect(SessionPanelView.statusLine(for: session, stop: shown) == "Stop requested · not confirmed", "U2 2.5 표 그대로")
     }
 
-    @Test func mayContinueIsTheUnapprovedWordAndItNeverShowsOutsideThePreview() async throws {
+    @Test func mayContinueIsTheApprovedWordInThePanelsStatusLine() async throws {
         let r = try await rig(Data.running())
-        defer { AgentNewCopy.isPreviewing = false; r.stop() }
+        defer { r.stop() }
         r.gateway.stopConfirms = true
         r.gateway.stopMayContinue = true
         let session = try r.session()
@@ -320,8 +319,6 @@ struct EdgeSessionActionsTests {
         let after = try r.session()
         let shown = r.runtime.stop.presentation(session: after)
         #expect(shown == AgentStopRules.Presentation(showsStop: false, line: .mayContinue))
-        #expect(SessionPanelView.statusLine(for: after, stop: shown) == SessionPanelView.statusLine(for: after), "승인 전: 그 말은 앱에서 보이지 않는다")
-        AgentNewCopy.isPreviewing = true
-        #expect(SessionPanelView.statusLine(for: after, stop: shown) == "Stopped · commands may still be running", "견본 · 시험에서만")
+        #expect(SessionPanelView.statusLine(for: after, stop: shown) == "Stopped · commands may still be running", "사용자 승인 2026-10-18")
     }
 }

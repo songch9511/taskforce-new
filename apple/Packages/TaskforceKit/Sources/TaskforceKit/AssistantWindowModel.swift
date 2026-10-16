@@ -78,11 +78,9 @@ public final class AssistantWindowModel: Identifiable {
 
     // MARK: 에이전트 대화 (OA D4a-1)
 
-    /// 전달 줄을 옮기는 데 쓰는 사실: 에이전트 이름 · 이 대화 연결의 대상 상태(Mac is offline) · 승인 전 새 문구
+    /// 전달 줄을 옮기는 데 쓰는 사실: 에이전트 이름 · 이 대화 연결의 대상 상태(Mac is offline)
     public var deliveryContext: AgentDeliveryContext {
-        AgentDeliveryContext(
-            agentName: option?.name, targetState: pick.connectionID.flatMap(targets.targetState(forConnection:)), copy: AgentNewCopy.active
-        )
+        AgentDeliveryContext(agentName: option?.name, targetState: pick.connectionID.flatMap(targets.targetState(forConnection:)))
     }
 
     /// 한 줄. 에이전트가 아니거나 전달 표시를 아직 읽지 못했거나 줄이 없는 상태면 nil
@@ -135,12 +133,8 @@ public final class AssistantWindowModel: Identifiable {
         agent?.stop.presentation(session: sessionItem) ?? AgentStopRules.Presentation(showsStop: false, line: nil)
     }
 
-    /// 대화 끝에 이벤트 줄 모양으로 보이는 Stop 말 (D4a-14). 새 문구가 승인 전이면 그 줄은 없다
-    public var stopLineText: String? { stopLineText(copy: AgentNewCopy.active) }
-
-    public func stopLineText(copy: AgentUnapprovedCopy) -> String? {
-        stopPresentation.line?.text(copy: copy)
-    }
+    /// 대화 끝에 이벤트 줄 모양으로 보이는 Stop 말 (D4a-14)
+    public var stopLineText: String? { stopPresentation.line?.text }
 
     /// Stop: `POST /api/v2/conversations/{id}/stop`. 두 번 눌러도 한 번
     public func stop() async {

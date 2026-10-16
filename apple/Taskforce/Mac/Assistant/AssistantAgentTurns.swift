@@ -110,7 +110,7 @@ struct AgentReferentMenuView: View {
         .shadow(color: scheme == .dark ? .black.opacity(0.4) : Color(red: 40 / 255, green: 30 / 255, blue: 15 / 255).opacity(0.08), radius: 1, y: 1)
         .shadow(color: scheme == .dark ? .black.opacity(0.7) : Color(red: 40 / 255, green: 30 / 255, blue: 15 / 255).opacity(0.26), radius: 16, y: 10)
         .accessibilityElement(children: .contain)
-        .accessibilityLabel(AgentNewCopy.active.chooseReferent ?? "Menu")
+        .accessibilityLabel(AgentCopy.chooseReferent)
         .focusable()
         .focusEffectDisabled()
         .focused($focused)

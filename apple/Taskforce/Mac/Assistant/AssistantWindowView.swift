@@ -254,7 +254,7 @@ struct AssistantWindowView: View {
                 onTargetFrame: { presentation.pillFrame = $0 },
                 // 에이전트 대상의 auto 칩은 눌러서 더한다 (D4a-12). 접근성 동작 이름은 새 문구라 승인 전에는 없다
                 onActivateChip: model.toAgent ? { model.promoteChip($0) } : nil,
-                chipActivationName: { AgentNewCopy.active.addChip($0.label) }
+                chipActivationName: { AgentCopy.addChip($0.label) }
             )
         }
         .padding(EdgeInsets(top: 0, leading: TFSpace.md, bottom: TFSpace.md, trailing: TFSpace.md))

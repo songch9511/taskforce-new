@@ -112,7 +112,7 @@ struct SessionPanelView: View {
     }
 
     static func statusLine(for session: AgentSessionItem, stop: AgentStopRules.Presentation) -> String? {
-        if let line = stop.line, let words = line.text() { return words }
+        if let line = stop.line { return line.text }
         return statusLine(for: session)
     }
 
@@ -218,9 +218,7 @@ struct SessionPanelView: View {
     /// 에이전트 대화의 줄 동작 (Assistant 창과 같다): 에이전트 이름 · 그 연결의 대상 상태로 전달 줄을 옮긴다
     private func agentActions(_ session: AgentSessionItem, conversationID: UUID) -> AgentTurnActions {
         let desk = runtime.panelDesk
-        let context = AgentDeliveryContext(
-            agentName: session.agentName, targetState: runtime.targets.targetState(forConnection: session.connectionID), copy: AgentNewCopy.active
-        )
+        let context = AgentDeliveryContext(agentName: session.agentName, targetState: runtime.targets.targetState(forConnection: session.connectionID))
         return AgentTurnActions(
             line: { desk.line(for: $0, context: context) },
             onLink: { turn, link in

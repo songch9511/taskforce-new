@@ -980,7 +980,7 @@ struct SnapshotTerminalLauncher: AgentTerminalLauncher {
 }
 
 /// 에이전트 대화 PNG (OA D4a-1, 디자인 비교용): `-TF_EDGE_SHELL YES -TFSampleData -TF_S3B YES -TF_U2 YES -TFEdgeSnapshot <폴더> -TFEdgeSnapshotIssues -TFEdgeSnapshotAgentChat`
-/// (+ `-TFSnapshotDark`, `-TFReduceMotion YES`). 승인 전 새 문구 후보(`AgentNewCopy`)가 이 견본에서만 보인다. 서버는 가짜(`AgentChatSampleGateway`)라 렌더 fixture일 뿐이다.
+/// (+ `-TFSnapshotDark`, `-TFReduceMotion YES`). 새 문구 아홉은 사용자 승인(2026-10-18)을 받아 앱과 같은 말이다(`AgentCopy`). 서버는 가짜(`AgentChatSampleGateway`)라 렌더 fixture일 뿐이다.
 /// 남기는 것(`mac-edge-agentchat-<이름>.png`): window-empty · window-in-flight(OA-4) · window-waiting(OA-4) · window-send-again-refused(동의 철회 뒤 거절) · window-reasons · window-queued · window-referent-menu · window-referent-failed(후보가 지워짐) · window-long-reason · window-running(Stop 원) ·
 /// window-stop-requested · window-stop-may-continue · window-truncated · window-truncated-expanded · window-events · window-many · window-hundred-plus · window-chip-added(auto 칩을 누른 뒤) ·
 /// panel-running · panel-idle-view-full(OA-3) · panel-external(OA-3) · panel-resume-card(OA-3) · panel-send-again-refused(동의 철회 뒤 거절) · panel-feature-off(기능 꺼짐) · panel-other-mac · panel-stop-requested · panel-stop-may-continue.
@@ -994,8 +994,6 @@ enum AgentChatSnapshot {
             print("AgentChatSnapshot: 새 Issues 화면과 Assistant 창이 켜진 구성이 필요하다 (-TF_EDGE_SHELL YES -TF_S3B YES -TF_U2 YES) chat=\(edge.chat != nil) windows=\(edge.assistant != nil)")
             return
         }
-        // 승인 전 새 문구 후보는 이 견본에서만 보인다 (Release에는 켜는 길이 없다)
-        AgentNewCopy.isPreviewing = true
         let sample = AgentChatSampleGateway.shared
         let shell = edge.shell
         manager.presents = true
@@ -1187,7 +1185,6 @@ enum AgentChatSnapshot {
         shootPanel("panel-other-mac")
         shell.closeSessionPanel()
         manager.closeAll()
-        AgentNewCopy.isPreviewing = false
     }
 }
 

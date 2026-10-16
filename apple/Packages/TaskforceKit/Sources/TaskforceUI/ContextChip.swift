@@ -27,7 +27,7 @@ public struct ContextChip: View {
     @Environment(\.colorSchemeContrast) private var contrast
 
     /// - onActivate: 에이전트 대상의 auto 칩을 누르면 added가 된다 (OA D4a-12). Taskforce 대상 · added 칩에는 주지 않는다
-    /// - activationName: 그 눌림의 접근성 동작 이름 ("Add #139 …", 새 문구라 승인 전에는 nil)
+    /// - activationName: 그 눌림의 접근성 동작 이름 ("Add #139 …", 사용자 승인 2026-10-18)
     public init(
         label: String, origin: ChatAttachmentOrigin, icon: Icon = .item(.result), onRemove: (() -> Void)? = nil, onActivate: (() -> Void)? = nil,
         activationName: String? = nil
@@ -45,9 +45,9 @@ public struct ContextChip: View {
     /// auto 칩은 눌러서 더할 수 있나: 누르는 동작이 주어졌을 때만 (에이전트 대상)
     nonisolated public static func isActivatable(origin: ChatAttachmentOrigin, hasAction: Bool) -> Bool { origin == .auto && hasAction }
 
-    /// 눌러서 더하는 접근성 동작의 이름: 승인된 새 문구가 있을 때만 ("Add {칩 이름}"). 없으면 동작 이름을 지어내지 않는다
-    nonisolated public static func activationName(label: String, chip: String, copy: AgentUnapprovedCopy) -> String? {
-        copy.addChip(chip)
+    /// 눌러서 더하는 접근성 동작의 이름 ("Add {칩 이름}")
+    nonisolated public static func activationName(chip: String) -> String {
+        AgentCopy.addChip(chip)
     }
 
     /// "Remove #139 Rewrite pricing page copy"

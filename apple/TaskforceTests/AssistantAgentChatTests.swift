@@ -126,8 +126,7 @@ struct AssistantAgentChatTests {
     /// 고른 후보가 지워졌다(404): 오류 줄 옆에 고르기 링크가 남고, Try again은 낡은 선택을 다시 보내지 않고 지금 후보로 메뉴를 다시 연다
     @Test func aRefusedCandidateChoiceKeepsTheChoiceLinkAndTryAgainReopensTheMenuWithTheCurrentCandidates() async throws {
         let r = try await rig(Data.queued())
-        AgentNewCopy.isPreviewing = true
-        defer { AgentNewCopy.isPreviewing = false; r.defaults.cleanup(); r.manager.closeAll() }
+        defer { r.defaults.cleanup(); r.manager.closeAll() }
         let model = try await open(r)
         let ambiguous = try #require(turns(r).first { $0.delivery?.state == .needsReferent })
         let (a, b, c) = (Data.referentActions[0], Data.referentActions[1], Data.referentActions[2])
@@ -154,12 +153,11 @@ struct AssistantAgentChatTests {
 
     @Test func theReferentMenuOpensFromTheLinkPicksOneCandidateAndEscapeClosesItBeforeTheWindowHides() async throws {
         let r = try await rig(Data.queued())
-        AgentNewCopy.isPreviewing = true
-        defer { AgentNewCopy.isPreviewing = false; r.defaults.cleanup(); r.manager.closeAll() }
+        defer { r.defaults.cleanup(); r.manager.closeAll() }
         let model = try await open(r)
         let ambiguous = try #require(turns(r).first { $0.delivery?.state == .needsReferent })
         let link = try #require(model.deliveryLine(for: ambiguous)?.link)
-        #expect(link.title == "Choose an issue", "승인 전 후보 문구는 견본 · 시험에서만 보인다")
+        #expect(link.title == "Choose an issue", "사용자 승인 2026-10-18")
         guard case .chooseReferent(let candidates) = link.kind else {
             Issue.record("후보 링크가 아니다")
             return
@@ -210,7 +208,7 @@ struct AssistantAgentChatTests {
         #expect(r.gateway.calls(prefix: "stop").isEmpty)
     }
 
-    @Test func mayContinueShowsTheUnapprovedWordOnlyInThePreview() async throws {
+    @Test func mayContinueShowsTheApprovedWordAtTheEndOfTheConversation() async throws {
         let r = try await rig(Data.running())
         defer { r.defaults.cleanup(); r.manager.closeAll() }
         r.gateway.stopConfirms = true
@@ -224,8 +222,7 @@ struct AssistantAgentChatTests {
         let reread = await eventually { model.sessionItem?.lastTaskState == .cancelled }
         #expect(reread, "서버가 확인한 상태를 다시 읽었다")
         #expect(model.stopPresentation == AgentStopRules.Presentation(showsStop: false, line: .mayContinue))
-        #expect(model.stopLineText == nil, "승인 전: 그 말은 앱에서 보이지 않는다")
-        #expect(model.stopLineText(copy: .candidates) == "Stopped · commands may still be running")
+        #expect(model.stopLineText == "Stopped · commands may still be running", "사용자 승인 2026-10-18")
     }
 
     // MARK: 잘린 답 · 이벤트 줄 · auto 칩
