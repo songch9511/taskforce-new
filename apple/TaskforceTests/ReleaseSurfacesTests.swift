@@ -219,6 +219,7 @@ struct EdgeShellWithoutChatsTests {
     @Test func theRailHasTwoFixedControlsWithoutChats() {
         #expect(shell(chats: false).controls == [.allWork, .more])
         #expect(shell(chats: false).controls.map(\.label) == ["All work", "More"])
+        #expect(shell(chats: false).label(for: .allWork) == "All work" && shell(chats: false).railIcon(for: .allWork) == .allWork, "OA U2b: Release 표면(새 Issues 화면 없음)은 All work · list-todo 그대로")
         #expect(shell(chats: true).controls == [.allWork, .chats, .more], "Chats가 있으면 지금 그대로")
         #expect(EdgeShellModel(schedule: { _, _ in EdgeTimer() }).chatsEnabled, "기본은 지금 그대로(켜짐)")
     }
