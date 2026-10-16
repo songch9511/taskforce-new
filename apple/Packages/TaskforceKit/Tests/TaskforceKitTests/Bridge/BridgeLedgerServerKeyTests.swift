@@ -100,6 +100,29 @@ struct BridgeLedgerServerKeyTests {
         #expect(try await ledger.fullText(forServerKey: key) == nil, "한 달 정리로 지워졌다: 링크가 없다")
     }
 
+    /// 보관은 task 7일 · 전문 30일이다: task가 정리된 뒤(8–29일)에도 전문은 남아 있고 View full은 그 전문을 찾아야 한다.
+    /// (task를 세어 사건 id를 복원하면 task가 사라진 8일째부터 존재하는 전문이 링크에서 사라진다.) 정리는 실제 `prune` SQL을 돌린다
+    @Test func aFullTextIsStillFoundAfterItsTaskWasPrunedAndGoneAfterAMonth() async throws {
+        let dir = TempDirectory()
+        let box = NowBox(t0)
+        let ledger = try ledger(dir, clock: box)
+        try await ledger.saveTask(BridgeTest.task(task1))
+        let event = try await ledger.appendEvent(taskID: task1, numbering: .taskSequence, build: BridgeTest.build(text: "short", full: "full text of the eighth day"), update: { _ in })
+        try await ledger.removeOutbox(keys: [event.key])
+        let key = "agent-message:\(run):\(hashTask1Seq1)"
+        #expect(try await ledger.fullText(forServerKey: key) == "full text of the eighth day")
+        box.value = t0.addingTimeInterval(8 * 86400)
+        let report = try await ledger.prune(now: box.value)
+        #expect(report.tasks == 1 && report.fullTexts == 0, "task는 정리되고 전문은 남는다")
+        #expect(try await ledger.allTasks().isEmpty)
+        #expect(try await ledger.fullText(forServerKey: key) == "full text of the eighth day", "task가 없어도 전문의 사건 id로 찾는다")
+        // 다른 사건의 열쇠는 여전히 찾지 못한다
+        #expect(try await ledger.fullText(forServerKey: "agent-message:\(run):\(hashTask1Seq2)") == nil)
+        box.value = t0.addingTimeInterval(31 * 86400)
+        _ = try await ledger.prune(now: box.value)
+        #expect(try await ledger.fullText(forServerKey: key) == nil, "한 달이 지나면 전문도 없다")
+    }
+
     // MARK: 런타임
 
     @Test func theRuntimeAnswersFromItsOwnLedgerAndKnowsThisMacsBridgeID() async throws {

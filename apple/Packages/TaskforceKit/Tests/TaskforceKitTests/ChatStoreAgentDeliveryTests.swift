@@ -435,8 +435,9 @@ struct ChatStoreAgentDeliveryTests {
         #expect(assistant.calls(prefix: "postAgent").count == 2, "처음 보내기 + 다시 보내기 하나")
     }
 
-    /// 앱을 다시 켜면 서버가 칩을 읽게 주지 않는다 (`selected`는 서버 전용 열): cancelled를 다시 보내면 글만 간다. not_sent · expired는 서버 id로 deliver라 칩이 그대로다
-    @Test func aCancelledMessageAfterARestartKnowsNoChipsAndSendsTheTextOnly() async {
+    /// 앱을 다시 켜면 서버가 칩을 읽게 주지 않는다 (`selected`는 서버 전용 열). cancelled를 다시 보내려는데 원래 칩을 모르면 **보내지 않는다**:
+    /// 칩 없이 새 메시지를 만들면 지정했던 이슈 대신 다른 이슈에서 실행될 수 있다 (D4a-07). not_sent · expired는 서버 id로 deliver라 칩이 그대로다
+    @Test func aCancelledMessageAfterARestartIsNotSentAgainWithoutItsOriginalChips() async {
         let (conversation, message) = serveOne(AgentDelivery(state: .cancelled))
         let chat = store()
         await open(conversation, messages: [message], chat: chat)
@@ -444,7 +445,178 @@ struct ChatStoreAgentDeliveryTests {
             AgentPostedMessage(message: Chats.message(9, in: conversation, seq: 2, role: .user, text: text, cmid: cmid, at: 2), delivery: AgentDelivery(state: .sent))
         }
         await chat.sendAgain(message.id, in: conversation.id)
-        #expect(assistant.sentAttachments == [[]] && assistant.calls(prefix: "postAgent").count == 1)
+        #expect(assistant.calls(prefix: "postAgent").isEmpty && agent.delivers.isEmpty, "원래 칩을 모르면 새 메시지를 만들지 않는다")
+        let turn = chat.turns(for: conversation.id)[0]
+        guard case .failed = turn.status else {
+            Issue.record("기존 오류 줄 + Try again이어야 한다: \(turn.status)")
+            return
+        }
+        #expect(turn.status.canRetry && turn.delivery?.state == .cancelled, "줄은 그대로 두고 오류를 보인다")
+        // Try again을 눌러도 같다 (칩을 되살릴 길이 없다)
+        await chat.retryDelivery(message.id, in: conversation.id)
+        #expect(assistant.calls(prefix: "postAgent").isEmpty)
+        #expect(chat.turns(for: conversation.id)[0].status.canRetry)
+    }
+
+    /// "모른다"와 "칩이 없었다"는 다르다: 이번 실행에서 칩 없이 보낸 글은 칩이 없다는 것을 안다 → 칩 없이 다시 보낸다
+    @Test func aCancelledMessageSentWithoutChipsThisRunIsSentAgainWithoutChips() async {
+        let local = store()
+        let id = local.reserveNewChat(target: .agent(adapter: "agent:codex", connectionID: Fx.connection), excluding: [])
+        let seq = Mutex2(0)
+        assistant.postAgentHandler = { conversation, cmid, text in
+            seq.value += 1
+            return AgentPostedMessage(message: Chats.message(seq.value, in: conversation, seq: seq.value, role: .user, text: text, cmid: cmid, at: Double(seq.value)), delivery: AgentDelivery(state: .sent))
+        }
+        await local.send("Fix the table", in: id)
+        let original = local.turns(for: id)[0]
+        agent.deliveriesHandler = { _, _ in ConversationDeliveryResponse(messages: [ConversationDeliveryResponse.Entry(messageID: original.id, seq: 1, delivery: AgentDelivery(state: .cancelled))]) }
+        await local.refreshDeliveries(id)
+        await local.sendAgain(original.id, in: id)
+        #expect(assistant.calls(prefix: "postAgent").count == 2 && assistant.sentAttachments == [[], []], "칩이 없었음을 안다")
+    }
+
+    // MARK: Send again · 후보 고르기의 거절 (동의 · 오류)
+
+    private var consentRefusal: APIError { APIError.server(status: 409, code: .conflict, message: APIError.consentRequiredMessage) }
+
+    /// 동의 철회 뒤 Send again이 409로 거절되면 기존 Chat의 동의 안내가 뜬다. 뒤따르는 전달 읽기가 성공해도 가려지지 않는다 (읽기와 별개)
+    @Test func aConsentRefusalOnSendAgainShowsTheConsentNoticeAndALaterReadDoesNotHideIt() async {
+        let (conversation, message) = serveOne(AgentDelivery(state: .notSent, reason: .writeGateClosed))
+        let chat = store()
+        await open(conversation, messages: [message], chat: chat)
+        let refusal = consentRefusal
+        agent.deliverHandler = { _, _ in throw refusal }
+        await chat.sendAgain(message.id, in: conversation.id)
+        await chat.settle()
+        #expect(chat.needsConsent(in: conversation.id), "기존 동의 안내 (Allow AI processing to continue)")
+        #expect(chat.turns(for: conversation.id)[0].status == .needsConsent)
+        #expect(chat.delivery(forMessage: message.id)?.state == .notSent, "전달 표시는 그대로")
+        await chat.refreshDeliveries(conversation.id)
+        #expect(chat.needsConsent(in: conversation.id) && chat.turns(for: conversation.id)[0].status == .needsConsent, "읽기가 성공해도 거절을 지우지 않는다")
+        // 동의한 뒤 Try again: 같은 Send again을 다시 보낸다
+        agent.deliverHandler = { _, ids in
+            AgentDeliverResponse(messages: [AgentDeliverResult(messageID: ids![0], result: .requeued, delivery: AgentDelivery(state: .queued, reason: .sessionBusy))])
+        }
+        await chat.retryDelivery(message.id, in: conversation.id)
+        #expect(agent.delivers.count == 2 && !chat.needsConsent(in: conversation.id) && chat.turns(for: conversation.id)[0].status == .sent)
+        #expect(chat.delivery(forMessage: message.id) == AgentDelivery(state: .queued, reason: .sessionBusy))
+    }
+
+    @Test func otherSendAgainFailuresShowTheExistingErrorLineAndStayAfterTheRead() async {
+        let (conversation, message) = serveOne(AgentDelivery(state: .expired))
+        let chat = store()
+        await open(conversation, messages: [message], chat: chat)
+        let refusal = APIError.server(status: 409, code: .targetMismatch, message: "x")
+        agent.deliverHandler = { _, _ in throw refusal }
+        await chat.sendAgain(message.id, in: conversation.id)
+        await chat.settle()
+        #expect(chat.turns(for: conversation.id)[0].status == .failed(ReadFailure.userMessage(refusal)), "서버가 거절했다: 기존 오류 줄")
+        #expect(!chat.needsConsent(in: conversation.id))
+        // 기능 꺼짐은 기존 "Chats aren't available yet" 안내로
+        agent.deliverHandler = { _, _ in throw APIError.server(status: 404, code: .notFound, message: APIError.featureOffMessage) }
+        await chat.retryDelivery(message.id, in: conversation.id)
+        #expect(chat.isUnavailable && chat.turns(for: conversation.id)[0].status == .failed(ChatCopy.unavailable))
+    }
+
+    @Test func aRefusedCandidateChoiceKeepsItsErrorAndTryAgainPicksTheSameCandidate() async {
+        let candidate = AgentReferentCandidate(actionID: chipAction, title: "가격 문구")
+        let (conversation, message) = serveOne(AgentDelivery(state: .needsReferent, candidates: [candidate]))
+        let chat = store()
+        await open(conversation, messages: [message], chat: chat)
+        let refusal = consentRefusal
+        agent.referentHandler = { _, _, _ in throw refusal }
+        await chat.chooseReferent(chipAction, for: message.id, in: conversation.id)
+        await chat.settle()
+        #expect(chat.needsConsent(in: conversation.id) && chat.turns(for: conversation.id)[0].status == .needsConsent, "후보 고르기의 거절도 같은 안내")
+        #expect(chat.delivery(forMessage: message.id)?.state == .needsReferent, "후보는 그대로")
+        agent.referentHandler = { conversation, _, _ in
+            AgentPostedMessage(message: Chats.message(1, in: conversation, seq: 1, role: .user, text: "t", cmid: UUID(), at: 1), delivery: AgentDelivery(state: .sent))
+        }
+        await chat.retryDelivery(message.id, in: conversation.id)
+        #expect(agent.referents.map(\.action) == [chipAction, chipAction] && chat.turns(for: conversation.id)[0].status == .sent)
+        #expect(chat.delivery(forMessage: message.id)?.state == .sent)
+    }
+
+    @Test func aTryAgainWhoseMessageChangedMeanwhileSendsNothingAndClearsTheError() async {
+        let (conversation, message) = serveOne(AgentDelivery(state: .notSent))
+        let chat = store()
+        await open(conversation, messages: [message], chat: chat)
+        let refusal = consentRefusal
+        agent.deliverHandler = { _, _ in throw refusal }
+        await chat.sendAgain(message.id, in: conversation.id)
+        #expect(chat.needsConsent(in: conversation.id))
+        // 다른 기기에서 이미 처리됐다: 서버가 사실이다
+        serve { _ in [Fx.entry(message, AgentDelivery(state: .accepted))] }
+        await chat.refreshDeliveries(conversation.id)
+        let before = agent.delivers.count
+        await chat.retryDelivery(message.id, in: conversation.id)
+        #expect(agent.delivers.count == before && !chat.needsConsent(in: conversation.id) && line(chat, message) == .accepted)
+    }
+
+    // MARK: 읽는 중에 필요해진 후속 읽기
+
+    /// `skipped/not_eligible`로 서버가 이미 바뀐 것을 안 직후의 읽기는 옛 읽기에 흡수되면 안 된다: 읽는 중이어도 끝난 뒤 한 번 더 읽는다
+    @Test func aFollowUpReadAskedWhileAnOlderReadIsInFlightRunsAfterIt() async {
+        let (conversation, message) = serveOne(AgentDelivery(state: .notSent))
+        let chat = store()
+        await open(conversation, messages: [message], chat: chat)
+        let latch = Latch()
+        let calls = Mutex2(0)
+        agent.deliveriesHandler = { _, _ in
+            calls.value += 1
+            if calls.value == 1 {
+                await latch.wait()
+                return ConversationDeliveryResponse(messages: [Fx.entry(message, AgentDelivery(state: .notSent))])
+            }
+            return ConversationDeliveryResponse(messages: [Fx.entry(message, AgentDelivery(state: .accepted))])
+        }
+        let stale = Task { await chat.refreshDeliveries(conversation.id) }
+        #expect(await latch.waitForArrivals(1, timeout: .seconds(3)))
+        agent.deliverHandler = { _, ids in AgentDeliverResponse(messages: [AgentDeliverResult(messageID: ids![0], result: .skipped, skippedReason: .notEligible)]) }
+        await chat.sendAgain(message.id, in: conversation.id)
+        #expect(agent.reads.count == 2, "읽는 중에는 새 요청을 겹쳐 보내지 않는다")
+        await latch.open()
+        await stale.value
+        await chat.settle()
+        #expect(line(chat, message) == .accepted && agent.reads.count == 3, "옛 읽기가 끝난 뒤 후속 읽기가 서버 값을 가져온다")
+    }
+
+    // MARK: 턴이 시작될 수 있는 입구
+
+    @Test func everyEntryThatMayStartATurnTellsTheOutsideToReadTheSessionAgain() async {
+        let (conversation, message) = serveOne(AgentDelivery(state: .notSent))
+        let chat = store()
+        await open(conversation, messages: [message], chat: chat)
+        let started = Mutex2(0)
+        chat.onAgentTurnMayStart = { started.value += 1 }
+        // 보내기
+        let seq = Mutex2(1)
+        assistant.postAgentHandler = { conversation, cmid, text in
+            seq.value += 1
+            return AgentPostedMessage(message: Chats.message(seq.value, in: conversation, seq: seq.value, role: .user, text: text, cmid: cmid, at: Double(seq.value)), delivery: AgentDelivery(state: .sent))
+        }
+        await chat.send("Fix the table", in: conversation.id)
+        #expect(started.value == 1, "보내기")
+        // 실패한 Send again은 턴을 시작하지 않았다
+        let refusal = consentRefusal
+        agent.deliverHandler = { _, _ in throw refusal }
+        await chat.sendAgain(message.id, in: conversation.id)
+        #expect(started.value == 1, "거절된 요청은 턴을 시작하지 않는다")
+        // 성공한 Send again(requeued)
+        agent.deliverHandler = { _, ids in AgentDeliverResponse(messages: [AgentDeliverResult(messageID: ids![0], result: .requeued, delivery: AgentDelivery(state: .sent))]) }
+        await chat.retryDelivery(message.id, in: conversation.id)
+        #expect(started.value == 2, "Send again")
+        // 후보 고르기
+        let candidate = AgentReferentCandidate(actionID: chipAction, title: "가격 문구")
+        let (c2, m2) = serveOne(AgentDelivery(state: .needsReferent, candidates: [candidate]))
+        let other = store()
+        await open(c2, messages: [m2], chat: other)
+        other.onAgentTurnMayStart = { started.value += 1 }
+        agent.referentHandler = { conversation, _, _ in
+            AgentPostedMessage(message: Chats.message(1, in: conversation, seq: 1, role: .user, text: "t", cmid: UUID(), at: 1), delivery: AgentDelivery(state: .sent))
+        }
+        await other.chooseReferent(chipAction, for: m2.id, in: c2.id)
+        #expect(started.value == 3, "후보 고르기")
     }
 
     // MARK: 후보 고르기 (referent)

@@ -7,6 +7,12 @@ public struct AgentReferentMenu: Equatable, Sendable {
     public let candidates: [AgentReferentCandidate]
 }
 
+extension ChatTurn {
+    /// 내 글 아래에 전달 줄 대신 기존 상태 줄(Not sent · 이유 · Try again / 동의 안내)을 보이나: 전달 표시를 아직 모르거나(첫 보내기가 실패했다),
+    /// Send again · 후보 고르기가 거절되거나 막혀 오류 · 동의 안내가 붙었을 때 (`ChatStore.deliveryNotices`)
+    public var showsStatusInsteadOfDelivery: Bool { delivery == nil || status.canRetry }
+}
+
 /// 에이전트 대화의 줄 동작 (OA D4a-1): 전달 줄 말 · Send again · 후보 고르기 메뉴 · View full. **Assistant 창과 세션 패널이 같이 쓴다** (둘 다 같은 `ChatStore`의 대화를 그린다).
 /// 상태는 열린 메뉴 하나뿐이고 나머지는 `ChatStore`가 쥔다 (줄 · 진행 중 표시 · 서버 응답)
 @MainActor
@@ -32,6 +38,11 @@ public final class AgentTurnDesk {
     /// Send again (서버 메시지 id)
     public func sendAgain(_ turn: ChatTurn, in conversationID: UUID) async {
         await chat.sendAgain(turn.id, in: conversationID)
+    }
+
+    /// Try again (거절 · 막힘 안내의): 같은 Send again · 후보 고르기를 다시 한다
+    public func retry(_ turn: ChatTurn, in conversationID: UUID) async {
+        await chat.retryDelivery(turn.id, in: conversationID)
     }
 
     /// 줄의 링크: 그 메시지의 후보 메뉴를 연다 (이미 열려 있으면 닫는다). 후보가 없거나 `needs_referent`가 아니면 열지 않는다

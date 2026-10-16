@@ -88,6 +88,34 @@ struct AssistantAgentWindowTests {
         #expect(!r.model.canSendAgain(turn(r, message)), "queued가 됐다")
     }
 
+    /// 거절된 Send again은 전달 줄 대신 기존 상태 줄(동의 안내 · 오류 + Try again)로 보이고, Try again이 창에서 같은 요청을 다시 보낸다
+    @Test func aRefusedSendAgainShowsTheStatusLineInsteadOfTheDeliveryLineAndTryAgainResendsIt() async {
+        let conversation = Fx.conversation()
+        let message = Fx.user(1, in: conversation.id, seq: 1)
+        agent.deliveriesHandler = { _, _ in ConversationDeliveryResponse(messages: [Fx.entry(message, AgentDelivery(state: .notSent, reason: .writeGateClosed))]) }
+        let refusal = APIError.server(status: 409, code: .conflict, message: APIError.consentRequiredMessage)
+        agent.deliverHandler = { _, _ in throw refusal }
+        let r = await rig(messages: [message])
+        #expect(!turn(r, message).showsStatusInsteadOfDelivery, "처음에는 전달 줄")
+        await r.model.sendAgain(turn(r, message))
+        let refused = turn(r, message)
+        #expect(refused.status == .needsConsent && refused.showsStatusInsteadOfDelivery && refused.delivery?.state == .notSent)
+        agent.deliverHandler = { _, ids in AgentDeliverResponse(messages: [AgentDeliverResult(messageID: ids![0], result: .requeued, delivery: AgentDelivery(state: .queued))]) }
+        await r.model.retryDelivery(refused)
+        #expect(agent.delivers.count == 2 && !turn(r, message).showsStatusInsteadOfDelivery, "다시 보내져 전달 줄로 돌아왔다")
+    }
+
+    @Test func theStatusLineShowsInsteadOfTheDeliveryLineOnlyForAnUnreadOrRetryableTurn() {
+        func make(_ status: ChatTurn.Status, delivery: AgentDelivery?) -> ChatTurn {
+            ChatTurn(id: UUID(), isUser: true, text: "t", createdAt: .test(1), status: status, clientMessageID: UUID(), delivery: delivery)
+        }
+        #expect(make(.sending, delivery: nil).showsStatusInsteadOfDelivery, "아직 전달 표시를 모른다")
+        #expect(make(.failed("x"), delivery: nil).showsStatusInsteadOfDelivery)
+        #expect(!make(.sent, delivery: AgentDelivery(state: .queued)).showsStatusInsteadOfDelivery)
+        #expect(make(.needsConsent, delivery: AgentDelivery(state: .notSent)).showsStatusInsteadOfDelivery)
+        #expect(make(.failed("x"), delivery: AgentDelivery(state: .expired)).showsStatusInsteadOfDelivery)
+    }
+
     @Test func theReferentMenuListsTheCandidatesPicksOneAndClosesWithEscape() async {
         let conversation = Fx.conversation()
         let message = Fx.user(1, in: conversation.id, seq: 1)

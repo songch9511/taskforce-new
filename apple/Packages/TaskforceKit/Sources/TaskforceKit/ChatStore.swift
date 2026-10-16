@@ -31,7 +31,8 @@ public struct ChatTurn: Identifiable, Equatable, Sendable {
     public let isUser: Bool
     public let text: String
     public let createdAt: Date
-    public let status: Status
+    /// (에이전트 대화의 Send again · 후보 고르기 거절 안내가 바꿀 수 있다: `deliveryNotices`)
+    public internal(set) var status: Status
     /// 이 글의 보내기 id (다시 보내기에 쓴다)
     public let clientMessageID: UUID?
     public let citations: [ChatCitation]
@@ -208,6 +209,12 @@ public final class ChatStore {
     @ObservationIgnored var deliveryReadSeq: [UUID: Int] = [:]
     /// 읽는 중인 대화: 같은 대화를 겹쳐 읽지 않는다 (대화를 여는 길이 둘이다 — 목록 읽기와 창이 여는 읽기. 먼저 나간 읽기가 서버 값을 가져온다)
     @ObservationIgnored var deliveryReadInFlight: Set<UUID> = []
+    /// 읽는 중에 내 요청(Send again · 후보 고르기)이 끝나 "한 번 더 읽어야 한다"고 표시한 대화: 진행 중인 읽기가 끝난 뒤 처음부터 다시 읽는다 (옛 읽기에 흡수되지 않게)
+    @ObservationIgnored var deliveryReadFollowUp: Set<UUID> = []
+    /// Send again · 후보 고르기가 거절되거나 막힌 메시지의 안내 (동의 · 오류, 메시지 id별). 전달 읽기와 별개로 쥔다: 다시 읽어도 지워지지 않고 Try again · 성공 · 계정 이탈이 지운다
+    var deliveryNotices: [UUID: AgentDeliveryNotice] = [:]
+    /// 에이전트가 턴을 시작했을 수 있는 쓰기(보내기 · Send again · 후보 고르기)가 서버에 닿았다: 바깥이 세션을 다시 읽어 Stop 원이 서게 한다 (OA D4a-13)
+    @ObservationIgnored public var onAgentTurnMayStart: (@MainActor () -> Void)?
     /// 진행 중인 Send again · 후보 고르기 (메시지 id별: 두 번 눌러도 요청은 하나)
     @ObservationIgnored var sendAgainInFlight: Set<UUID> = []
     @ObservationIgnored var referentInFlight: Set<UUID> = []
@@ -287,6 +294,8 @@ public final class ChatStore {
         deliveryRead = []
         deliveryReadSeq = [:]
         deliveryReadInFlight = []
+        deliveryReadFollowUp = []
+        deliveryNotices = [:]
         sendAgainInFlight = []
         referentInFlight = []
         deliveryPoll?.cancel()
@@ -377,7 +386,9 @@ public final class ChatStore {
     }
 
     public func needsConsent(in id: UUID) -> Bool {
-        threads[id]?.pending.contains { $0.status == .needsConsent } ?? false
+        if threads[id]?.pending.contains(where: { $0.status == .needsConsent }) ?? false { return true }
+        // 에이전트 대화: Send again · 후보 고르기가 동의 때문에 거절됐다 (같은 안내)
+        return threads[id]?.messages.contains { deliveryNotices[$0.id]?.failure == .needsConsent } ?? false
     }
 
     public func draft(for id: UUID) -> String { drafts[id] ?? "" }
@@ -415,6 +426,8 @@ public final class ChatStore {
                     clientMessageID: message.clientMessageID, citations: [], rememberedIDs: [], textDeleted: deleted
                 )
                 turn.delivery = deliveryBook.delivery(for: message.id)
+                // Send again · 후보 고르기가 거절됐거나 막혔다: 기존 오류 · 동의 줄 (전달 줄 대신, Try again)
+                if status == .sent, let notice = deliveryNotices[message.id] { turn.status = notice.chatStatus }
                 turns.append(turn)
             } else {
                 var turn = ChatTurn(
@@ -1084,6 +1097,8 @@ public final class ChatStore {
         scheduleDeliveryPolling()
         previews[id] = (posted.reply ?? posted.message).text
         touchLastMessage(of: id, at: posted.message.createdAt)
+        // 에이전트가 새 턴을 시작했을 수 있다 (패널 보내기 · Send again의 새 메시지 · Assistant 창 보내기 모두 이 길): 세션을 다시 읽게 한다
+        onAgentTurnMayStart?()
     }
 
     /// 보낸 글이 서버에 저장됐다: 쥔 행의 마지막 시각을 바꾼다. 내 쓰기도 쥔 행을 바꾼 일이라 반영 시계를 올린다 —

@@ -445,6 +445,43 @@ struct ChatAccountBoundaryTests {
         #expect(chat.delivery(forMessage: message.id) == nil, "떠난 계정의 notSent는 새 계정에 반영되지 않는다")
     }
 
+    /// 떠난 계정의 늦은 거절(동의 · 오류)은 새 계정에 안내로 남지 않는다
+    @Test func aRefusalThatOutlivesTheSessionLeavesNoNoticeForTheNewAccount() async throws {
+        let account = try ChatTestAccount.make()
+        let agent = FakeAgentConversationGateway()
+        let chat = agentStore(account, agent: agent)
+        let conversation = AgentFx.conversation()
+        let message = AgentFx.user(1, in: conversation.id, seq: 1)
+        let candidate = AgentReferentCandidate(actionID: UUID(), title: "가격 문구")
+        let ambiguous = AgentFx.user(2, in: conversation.id, seq: 2)
+        agent.deliveriesHandler = { _, _ in
+            ConversationDeliveryResponse(messages: [
+                AgentFx.entry(message, AgentDelivery(state: .notSent, reason: .writeGateClosed)),
+                AgentFx.entry(ambiguous, AgentDelivery(state: .needsReferent, candidates: [candidate])),
+            ])
+        }
+        await openAgent(chat, conversation, [message, ambiguous])
+        let latch = Latch()
+        let refusal = APIError.server(status: 409, code: .conflict, message: APIError.consentRequiredMessage)
+        agent.deliverHandler = { _, _ in
+            await latch.wait()
+            throw refusal
+        }
+        agent.referentHandler = { _, _, _ in
+            await latch.wait()
+            throw refusal
+        }
+        async let again: Void = chat.sendAgain(message.id, in: conversation.id)
+        async let pick: Void = chat.chooseReferent(candidate.actionID, for: ambiguous.id, in: conversation.id)
+        #expect(await latch.waitForArrivals(2, timeout: .seconds(3)))
+        account.relogin()
+        await latch.open()
+        _ = await (again, pick)
+        await openAgent(chat, conversation, [message, ambiguous])
+        #expect(!chat.needsConsent(in: conversation.id), "떠난 계정의 동의 안내가 새 계정에 남지 않는다")
+        #expect(chat.turns(for: conversation.id).allSatisfy { $0.status == .sent })
+    }
+
     @Test func aSendAgainAndAReferentThatOutliveTheSessionAreDropped() async throws {
         let account = try ChatTestAccount.make()
         let agent = FakeAgentConversationGateway()

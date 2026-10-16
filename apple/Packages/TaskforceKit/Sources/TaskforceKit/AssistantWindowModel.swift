@@ -101,6 +101,12 @@ public final class AssistantWindowModel: Identifiable {
         await desk.sendAgain(turn, in: conversationID)
     }
 
+    /// Try again (Send again · 후보 고르기가 거절되거나 막혔을 때의 오류 줄 · 동의 안내)
+    public func retryDelivery(_ turn: ChatTurn) async {
+        guard toAgent else { return }
+        await desk.retry(turn, in: conversationID)
+    }
+
     public func openReferentMenu(for messageID: UUID) {
         desk.openReferentMenu(for: messageID)
     }
