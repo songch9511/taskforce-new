@@ -27,16 +27,19 @@ public struct ClaudeCodeTestHooks: Sendable {
     public var beforeFinishClose: (@Sendable () async -> Void)?
     /// 훅 결정이 끝나고 응답을 확정하기 바로 전 (마지막 await 경쟁 시험, 11장 6)
     public var beforeHookReturn: (@Sendable () async -> Void)?
+    /// spawn의 stdin에 건네는 바이트 수 (시작 중에 멈춘 spawn은 0, 17장 1)
+    public var inputBytes: (@Sendable (Int) -> Void)?
 
     public init(
         afterConfigWrite: (@Sendable (URL) -> Void)? = nil, gateDelay: Duration? = nil, terminateOverride: (@Sendable (AgentProcessIdentity) -> AgentLiveness?)? = nil,
-        beforeFinishClose: (@Sendable () async -> Void)? = nil, beforeHookReturn: (@Sendable () async -> Void)? = nil
+        beforeFinishClose: (@Sendable () async -> Void)? = nil, beforeHookReturn: (@Sendable () async -> Void)? = nil, inputBytes: (@Sendable (Int) -> Void)? = nil
     ) {
         self.afterConfigWrite = afterConfigWrite
         self.gateDelay = gateDelay
         self.terminateOverride = terminateOverride
         self.beforeFinishClose = beforeFinishClose
         self.beforeHookReturn = beforeHookReturn
+        self.inputBytes = inputBytes
     }
 }
 
@@ -371,14 +374,26 @@ public actor ClaudeCodeProcess: AgentProcess {
     /// 세션의 지금 실행 (14장 2 · 15장 1: 디스크 잠금이 유일한 생존 진실): 잠금의 현재 spawn(턴 · 답 · 닫기 · 내부 닫기)과 그 끝 증명. 감독 중이면 살아 있음
     /// (끝을 증명하지 못하고 그만뒀으면 unknown), 아니면 잠금과 그 혈통으로 본다
     public func sessionRun(_ sessionID: String) async -> AgentSessionRun? {
-        if let spawnID = sessionSpawn[sessionID], let spawn = spawns[spawnID] {
-            let identity = spawn.identity ?? Self.lockedIdentity(spawn.id)
-            // 등록부에 남아 있어도 끝을 증명했으면 끝이다 (16장 5: `terminateSessionRun`과 같은 답)
-            if spawn.lineage.provenEnded { return AgentSessionRun(liveness: .ended(AgentExit(code: nil)), identity: identity) }
-            return AgentSessionRun(liveness: spawn.endUnproven ? .unknown : .alive, identity: identity)
+        // 실행 등록부 하나 (17장 1, 16장 5를 대신한다): 그 세션의 spawn이 등록부에 있는 동안(띄우기 의도 · 시작 보고 기다림 · 실행 · 끝 증명 · 따라오는 닫기까지)은
+        // 살아 있다. 끝을 증명하지 못하고 그만둔 것이 있으면 unknown
+        let registered = registeredSpawns(sessionID)
+        if !registered.isEmpty {
+            let current = sessionSpawn[sessionID].flatMap { spawns[$0] } ?? registered[0]
+            let liveness: AgentLiveness = registered.contains(where: \.endUnproven) ? .unknown : .alive
+            return AgentSessionRun(liveness: liveness, identity: current.identity ?? Self.lockedIdentity(current.id))
         }
         let state = lockState(sessionID)
         return AgentSessionRun(liveness: state.liveness, identity: state.spawnID.map(Self.lockedIdentity))
+    }
+
+    /// 그 세션의 등록부 항목 (턴 · 답 · 닫기 · 내부 닫기 · 시작 중인 것)
+    private func registeredSpawns(_ sessionID: String) -> [Spawn] {
+        spawns.values.filter { $0.agentSessionID == sessionID }.sorted { $0.id < $1.id }
+    }
+
+    /// 등록부에 spawn이 하나라도 있나 (17장 1: 종료 판단 · Quit 확인)
+    public func hasRegisteredRuns() async -> Bool {
+        !spawns.isEmpty
     }
 
     /// 앱 종료 · 계정 삭제가 시작됐다 (16장 1): 그 뒤의 spawn(내부 닫기 포함)을 모두 막는다. 돌고 있는 것은 그대로 (런타임이 끝낸다)
@@ -386,14 +401,32 @@ public actor ClaudeCodeProcess: AgentProcess {
         spawningStopped = true
     }
 
-    /// 그 세션의 지금 실행을 끝낸다 (15장 1: 고아 정리 · 앱 종료). 감독 중이면 그 spawn을, 아니면 잠금의 spawn을 그 혈통으로
+    /// 그 세션의 지금 실행을 끝낸다 (15장 1 · 17장 1: 고아 정리 · 앱 종료). 등록부에 있으면 그 세션의 모든 spawn을: 따라올 내부 닫기를 취소하고, 시작 중인 것은
+    /// `stopped`로 표시해 정체를 받은 뒤 stdin 전에 멈추게 하고(`launch`), 도는 것은 그 혈통으로 끝낸 뒤, 등록부에서 빠질 때까지(시작 보고 · 끝 증명 · 정리) 기다린다
+    /// (시간 제한). 등록부에 없으면 잠금의 spawn을 그 혈통으로
     public func terminateSessionRun(_ sessionID: String) async -> AgentLiveness {
-        if let spawnID = sessionSpawn[sessionID], let spawn = spawns[spawnID] {
-            guard let identity = spawn.identity else { return .alive }
-            return await terminate(identity, lineage: spawn.lineage)
+        let registered = registeredSpawns(sessionID)
+        guard !registered.isEmpty else { return await terminateLocked(sessionID) }
+        for spawn in registered {
+            spawn.unexpectedDeferred = nil
+            if let identity = spawn.identity, !spawn.exited {
+                _ = await terminate(identity, lineage: spawn.lineage)
+            } else {
+                sendInterrupt(spawn)
+            }
         }
-        return await terminateLocked(sessionID)
+        let deadline = Date().addingTimeInterval(timing.closeTimeout + Self.startSettle)
+        while registeredSpawns(sessionID).contains(where: { !$0.endUnproven }), Date() < deadline {
+            try? await Task.sleep(for: .milliseconds(20))
+        }
+        let left = registeredSpawns(sessionID)
+        if left.contains(where: \.endUnproven) { return .unknown }
+        guard left.isEmpty else { return .alive }
+        return lockState(sessionID).liveness
     }
+
+    /// 시작 중인 spawn이 정산될 때까지(지킴이 시작 보고 5초 · 거두기) 더 기다리는 시간
+    static let startSettle: TimeInterval = 6
 
     /// 디스크 잠금의 지금 spawn을 그 혈통으로 끝낸다: 끝을 증명하면 끝 기록 · 잠금 해제
     private func terminateLocked(_ sessionID: String) async -> AgentLiveness {
@@ -606,8 +639,11 @@ public actor ClaudeCodeProcess: AgentProcess {
         spawn.identity = identity
         // stdin: 새 턴은 메시지 글을 쓰고 닫는다. 답 · 닫기 resume는 아무것도 쓰지 않고 닫는다 (빈 stdin, 13.2 :509, 사례 8-05). 쓰기는 따로 (파이프 64KB 막힘 방지)
         let input = kept.keeper.stdinFD
+        // 띄우는 동안 멈추라고 했다(Stop · 시간 초과 · 종료 · 고아 정리, 17장 1): 입력을 건네지 않는다 (빈 stdin, 아래에서 SIGINT)
+        let payload = spawn.stopped ? Data() : stdin
+        testHooks.inputBytes?(payload.count)
         DispatchQueue.global(qos: .userInitiated).async {
-            _ = HookMain.writeAll(fd: input, stdin)
+            _ = HookMain.writeAll(fd: input, payload)
             Darwin.close(input)
         }
         supervise(spawn, kept: kept, identity: identity)
@@ -1076,6 +1112,9 @@ public actor ClaudeCodeProcess: AgentProcess {
         let actions = spawn.mapper.finish()
         ClaudeCodeLaunch.removeConfig(spawn.files)
         hookServer?.unregister(nonce: spawn.nonce)
+        // 따라오는 내부 닫기는 끝 증명 전에 정해 등록부에 있다 (`unexpectedDeferred`, 17장 1). 없으면 끝을 증명한 지금 세션 자리를 놓고 나서 질문 · 글을 낸다
+        // (17장 3: 그 사건을 받은 쪽이 같은 세션에 닫기를 띄워도 자기를 기다리지 않는다). 있으면 자기 닫기까지 마친 뒤에 놓는다 (9장 10)
+        if spawn.unexpectedDeferred == nil { unregister(spawn) }
         await apply(spawn, actions)
         if let id = spawn.unexpectedDeferred, let executable = locator.locate() {
             // 기록에 없는 id가 보고됐거나 열린 요청으로 적지 못했다: 그 id를 바로 닫는다 (질문을 내지 않는다)
@@ -1086,13 +1125,17 @@ public actor ClaudeCodeProcess: AgentProcess {
                 log.log("claude_close_failed", [:])
             }
         }
-        // 세션 자리는 자기 닫기까지 마친 뒤에 놓는다 (9장 10): 그 전에는 같은 세션의 다음 실행이 이 spawn을 기다린다
-        spawns[spawn.id] = nil
-        if sessionSpawn[spawn.agentSessionID] == spawn.id { sessionSpawn[spawn.agentSessionID] = nil }
-        if taskSpawn[spawn.taskID] == spawn.id { taskSpawn[spawn.taskID] = nil }
+        unregister(spawn)
         spawn.ended = true
         log.log("claude_ended", ["mode": .code(spawn.modeName), "code": .count(Int(status.code ?? -1)), "signal": .count(Int(status.signal ?? 0))])
         await spawn.sink?.emit(.ended(status.agentExit))
+    }
+
+    /// 등록부에서 내린다 (그 세션 · task의 지금 spawn이면 그 자리도)
+    private func unregister(_ spawn: Spawn) {
+        spawns[spawn.id] = nil
+        if sessionSpawn[spawn.agentSessionID] == spawn.id { sessionSpawn[spawn.agentSessionID] = nil }
+        if taskSpawn[spawn.taskID] == spawn.id { taskSpawn[spawn.taskID] = nil }
     }
 
     // MARK: writer 하나

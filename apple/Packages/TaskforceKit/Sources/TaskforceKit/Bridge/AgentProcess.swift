@@ -358,6 +358,8 @@ public protocol AgentProcess: Sendable {
     func terminateSessionRun(_ sessionID: String) async -> AgentLiveness
     /// 앱 종료 · 계정 삭제가 시작됐다 (OA D3a 16장 1): 그 뒤에는 새 프로세스를 띄우지 않는다 (adapter 안에서 띄우는 것 포함). 기본: 할 일 없음
     func stopSpawning() async
+    /// 이 adapter의 실행 등록부에 띄우기 의도부터 끝 증명까지의 spawn이 하나라도 있나 (OA D3a 17장 1: 종료 판단 · Quit 확인). 기본: false
+    func hasRegisteredRuns() async -> Bool
 }
 
 /// 세션의 지금 실행 (OA D3a 15장 1): 그 정체(모르면 nil)와 끝 증명
@@ -378,6 +380,7 @@ extension AgentProcess {
     public func sessionRun(_ sessionID: String) async -> AgentSessionRun? { nil }
     public func terminateSessionRun(_ sessionID: String) async -> AgentLiveness { .unknown }
     public func stopSpawning() async {}
+    public func hasRegisteredRuns() async -> Bool { false }
 }
 
 /// 새 세션의 작업 폴더를 정한다 (D4a가 채운다). 사용자 폴더를 짐작해 쓰기 권한을 주지 않는다 (Q26)

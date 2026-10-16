@@ -32,7 +32,9 @@ public enum HookMain {
     }
 
     /// 순수 본체: 인자 · stdin · 연결 · 기한을 주입받아 출력과 종료 코드를 돌려준다
-    public static func run(arguments: [String], stdin: Data, connect: Connect, deadline: Date, now: () -> Date = Date.init) -> Result {
+    public static func run(
+        arguments: [String], stdin: Data, connect: Connect, deadline: Date, now: () -> Date = Date.init, monotonic: () -> UInt64 = HookWire.monotonicNow
+    ) -> Result {
         if arguments == ["session-start"] {
             return Result(stdout: HookOutput.sessionStart(), exitCode: 0)
         }
@@ -50,9 +52,10 @@ public enum HookMain {
             toolName: toolName, toolInput: HookWire.strippedInput(toolName: toolName, input: toolInput), inputSHA256: HookWire.inputDigest(toolInput),
             permissionMode: permissionMode, cwd: cwd
         )
-        guard now() < deadline else { return deny(HookReason.unavailable) }
-        // 남은 시간을 싣는다 (16장 3): bridge는 이 훅이 끊기 전에 응답을 정한다
-        request.remainingMS = min(HookWire.maxRemainingMS, max(0, Int((deadline.timeIntervalSince(now()) * 1000).rounded(.down))))
+        let left = deadline.timeIntervalSince(now())
+        guard left > 0 else { return deny(HookReason.unavailable) }
+        // 절대 기한을 프로세스 사이에 같은 시계로 싣는다 (17장 2): bridge는 보낸 뒤의 지연까지 세어 이 훅이 끊기 전에 응답을 정한다
+        request.deadlineNS = monotonic() &+ UInt64((left * 1_000_000_000).rounded(.down))
         guard let line = try? request.encodedLine() else { return deny(HookReason.unavailable) }
         let reply: Data
         do {

@@ -15,10 +15,12 @@ struct ClaudeRereview7Tests {
     static let allow = HookResponse(decision: .allow, reason: "answer")
     static let deny = HookResponse(decision: .deny, reason: "answer_closed")
 
-    static func request(_ toolUseID: String, remainingMS: Int? = nil) throws -> Data {
+    /// 훅 요청 한 줄. `remaining`이 있으면 지금부터 그만큼 뒤의 절대 기한을 싣는다 (17장 2)
+    static func request(_ toolUseID: String, remaining: TimeInterval? = nil) throws -> Data {
         try HookRequest(
             nonce: HookSocketServerTests.nonce, sessionID: ClaudeTest.session, providerSessionID: "claude-1", hookEvent: "PreToolUse", toolUseID: toolUseID, toolName: "Read",
-            toolInput: .object([:]), inputSHA256: "d", permissionMode: "default", cwd: "/c", remainingMS: remainingMS
+            toolInput: .object([:]), inputSHA256: "d", permissionMode: "default", cwd: "/c",
+            deadlineNS: remaining.map { HookWire.monotonicNow() &+ UInt64(max(0, $0) * 1_000_000_000) }
         ).encodedLine()
     }
 
@@ -91,14 +93,15 @@ struct ClaudeRereview7Tests {
         #expect(slot.signal == .lost, "B의 시간 초과가 그 자리에서 답을 닫았다")
     }
 
-    // MARK: 3 (sec F5) 훅의 남은 시간
+    // MARK: 3 (sec F5 · 17장 2) 기한 하나
 
     @Test func t3TheBridgeDecidesBeforeTheHookGivesUp() {
-        let started = Date(timeIntervalSince1970: 100)
-        let read = started.addingTimeInterval(0.05)
-        #expect(HookSocketServer.deadline(started: started, read: read, remainingMS: nil) == started.addingTimeInterval(HookSocketServer.responseBudget))
-        #expect(HookSocketServer.deadline(started: started, read: read, remainingMS: 3_900) == started.addingTimeInterval(HookSocketServer.responseBudget), "넉넉하면 자기 예산")
-        #expect(HookSocketServer.deadline(started: started, read: read, remainingMS: 500) == read.addingTimeInterval(0.5 - HookSocketServer.hookMargin))
+        let started: UInt64 = 100_000_000_000
+        let own = started + 1_200_000_000
+        #expect(HookSocketServer.deadline(startedNS: started, hookDeadlineNS: nil) == own)
+        #expect(HookSocketServer.deadline(startedNS: started, hookDeadlineNS: started + 3_900_000_000) == own, "넉넉하면 자기 예산")
+        #expect(HookSocketServer.deadline(startedNS: started, hookDeadlineNS: started + 500_000_000) == started + 200_000_000, "훅 기한 − 0.3초 (보낸 때부터의 절대 기한)")
+        #expect(HookSocketServer.deadline(startedNS: started, hookDeadlineNS: 100_000_000) == 0, "이미 지난 기한")
         #expect(HookWire.budget > HookSocketServer.readBudget + HookSocketServer.responseBudget + HookSocketServer.hookMargin, "훅 예산 > bridge 읽기 + 응답 예산")
     }
 
@@ -113,17 +116,18 @@ struct ClaudeRereview7Tests {
             late.mutate { $0 = committed }
         }))
         let started = Date()
-        let response = try await Self.exchange(path, Self.request("toolu_q", remainingMS: 400))
+        let response = try await Self.exchange(path, Self.request("toolu_q", remaining: 0.4))
         #expect(response.decision == .deny)
         #expect(Date().timeIntervalSince(started) < 0.45, "훅이 끊기 전에 정했다")
         #expect(await ClaudeRereview5ReproTests.waitUntil(3) { late.value != nil })
         #expect(late.value == false, "기한 뒤의 답은 확정되지 않는다")
     }
 
-    // MARK: 5 (sec F2) 등록부의 끝 증명
+    // MARK: 5 → 17장 1 등록부의 틈 (sec `gapThenInternalCloseIsInvisible`)
 
-    /// 내부 닫기 직전(턴 spawn은 끝을 증명했지만 아직 등록부에 있다): 세션의 지금 실행은 끝이다 (`terminateSessionRun`과 같은 답)
-    @Test func t5ARegisteredSpawnThatProvedItsEndIsEndedForTheSession() async throws {
+    /// 내부 닫기 직전(턴 spawn은 끝을 증명했지만 따라올 닫기가 정해져 등록부에 있다): 세션의 지금 실행은 살아 있다 (17장 1이 16장 5를 대신한다 —
+    /// 이 틈에 끝이라고 하면 런타임이 감독을 내리고 뒤이은 내부 닫기가 생존 판단 밖이 된다)
+    @Test func t5ARegisteredSpawnWithAFollowUpCloseStaysAliveForTheSession() async throws {
         let seen = Mutex<AgentSessionRun?>(nil)
         let holder = Mutex<ClaudeCodeProcess?>(nil)
         let hooks = ClaudeCodeTestHooks(beforeFinishClose: {
@@ -141,7 +145,8 @@ struct ClaudeRereview7Tests {
         _ = try await fake.turn(events: events)
         #expect(await events.wait(timeout: 15) { FakeClaude.ended($0) })
         let run = try #require(seen.withLock { $0 }, "내부 닫기 직전에 물었다")
-        #expect(run.liveness == .ended(AgentExit(code: nil)))
+        #expect(run.liveness == .alive)
+        #expect(await fake.process.sessionRun(ClaudeTest.session)?.liveness == .ended(AgentExit(code: nil)), "내부 닫기까지 끝난 뒤에는 끝")
     }
 
     // MARK: 7 (sec F7) 잠금 자리 없는 세션

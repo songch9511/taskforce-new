@@ -147,6 +147,10 @@ public actor BridgeRuntime {
     var closing: [String: (session: String, count: Int)] = [:]
     /// 앱 종료 · 계정 삭제가 시작됐다 (16장 1): 새 실행을 띄우지 않는다
     var shuttingDown = false
+    #if DEBUG
+    /// 시작 의도를 적은 뒤 마지막 종료 확인 바로 전 (종료 경쟁 시험, 17장 4 — Release에는 없다)
+    var afterStartIntent: (@Sendable () async -> Void)?
+    #endif
     /// 최근 1시간의 등록 시도 시각 (자동 등록 예산 · 물러서기)
     var registerTimes: [Date] = []
     var terminatedByUs: Set<String> = []
@@ -254,8 +258,9 @@ public actor BridgeRuntime {
     /// 상태 · 바쁨이 바뀌었으면 알린다
     /// 살아 있는 프로세스가 있나 (감독 중이거나 원장이 살아 있다고 하는 것)
     public func hasLiveProcess() async -> Bool {
-        // 감독 중 · 닫기 중(16장 1) · 감독 밖 고아(원장 `alive`)
+        // 감독 중 · 닫기 중(16장 1) · adapter 실행 등록부(17장 1: 시작 중 · 내부 닫기 포함) · 감독 밖 고아(원장 `alive`)
         if !supervised.isEmpty || !closing.isEmpty { return true }
+        for adapter in adapters.values where await adapter.hasRegisteredRuns() { return true }
         return ((try? await ledger.allTasks()) ?? []).contains { $0.alive }
     }
 
@@ -357,7 +362,11 @@ public actor BridgeRuntime {
     /// 신호를 무시하는 프로세스가 앱 종료 · 계정 삭제 뒤에 감독 밖 writer로 남지 않게 한다 (검토 반영 7장 C12)
     func endRemainingRuns() async {
         let deadline = clock.now().addingTimeInterval(3)
-        while !supervised.isEmpty || !closing.isEmpty, clock.now() < deadline {
+        // 감독 · 닫기 · adapter 실행 등록부(시작 중 · 내부 닫기, 17장 1)가 비기를 유예 동안 기다린다. 남은 것은 아래에서 세션마다 끝낸다 (시작 중인 것은 정산까지 기다린다)
+        while clock.now() < deadline {
+            var busy = !supervised.isEmpty || !closing.isEmpty
+            if !busy { for adapter in adapters.values where await adapter.hasRegisteredRuns() { busy = true } }
+            guard busy else { break }
             try? await clock.sleep(.milliseconds(100))
         }
         for (taskID, entry) in supervised {
@@ -421,23 +430,26 @@ public actor BridgeRuntime {
         for adapter in adapters.values { await adapter.stopSpawning() }
     }
 
-    /// adapter 닫기 (16장 1): 닫기 spawn은 시작부터 생존 판단에 든다 (`closing`). 종료가 시작됐으면 띄우지 않는다
-    func closeRequest(_ adapter: any AgentProcess, _ ref: AgentRequestRef) async throws {
-        guard !shuttingDown else { throw AgentStartError(.spawnFailed) }
+    /// adapter 닫기 (16장 1 · 17장 1): 닫기 spawn은 시작부터 생존 판단에 든다 (`closing`). 실패하면 `failed`(그 세션 잠금 조회 · 고아 기록)를 **마친 뒤에** `closing`에서
+    /// 뺀다 (그 사이 "살아 있는 것 없음"이 알려지지 않게). 종료가 시작됐으면 띄우지 않는다 (`failed`만). 닫았으면 true
+    @discardableResult
+    func closeRequest(_ adapter: any AgentProcess, _ ref: AgentRequestRef, failed: (any Error) async -> Void) async -> Bool {
+        guard !shuttingDown else {
+            await failed(AgentStartError(.spawnFailed))
+            return false
+        }
         closing[ref.taskID] = (ref.sessionID, (closing[ref.taskID]?.count ?? 0) + 1)
         await publish()
-        let result: Result<Void, any Error>
+        var closed = true
         do {
             try await adapter.closeRequest(ref)
-            result = .success(())
         } catch {
-            result = .failure(error)
+            closed = false
+            await failed(error)
         }
         if let current = closing[ref.taskID] { closing[ref.taskID] = current.count > 1 ? (current.session, current.count - 1) : nil }
-        // 끝을 모르는 실행을 남긴 실패면 알리지 않는다: 부른 쪽이 그 실행을 task에 적은 뒤 알린다 (그 사이 "살아 있는 것 없음"으로 보이지 않게)
-        guard case .failure(let error) = result else { return await publish() }
-        if (error as? AgentStartError)?.left == nil { await publish() }
-        throw error
+        await publish()
+        return closed
     }
 
     /// 살아 있는 모든 실행에 중단 신호 (종료 · 폐기 · 서버가 모르는 task)
@@ -505,6 +517,8 @@ public actor BridgeRuntime {
         await ledger.close()
         statusValue = .stopped
     }
+
+    func setAfterStartIntent(_ hook: (@Sendable () async -> Void)?) { afterStartIntent = hook }
     #endif
 
     // MARK: 한 번씩 (루프가 부르고, 시험도 직접 부른다)

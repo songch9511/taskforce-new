@@ -13,10 +13,13 @@ public enum HookWire {
     /// 훅 stdin 상한 (Write 본문이 크다). 넘으면 deny
     public static let maxStdinBytes = 16 * 1024 * 1024
     /// 훅이 시작부터 bridge 답을 기다리는 시간 (연결 · 쓰기 · 읽기 합계). 넘으면 deny (훅 timeout 10초의 fail-open 경로를 쓰지 않는다).
-    /// bridge의 읽기 + 응답 예산보다 넉넉히 크다 (OA D3a 16장 3): 훅은 요청에 남은 시간(`remaining_ms`)을 싣고 bridge는 그보다 앞서 정한다
+    /// bridge의 읽기 + 응답 예산보다 넉넉히 크다 (OA D3a 16장 3): 훅은 요청에 자기 기한(`deadline_ns`)을 싣고 bridge는 그보다 앞서 정한다
     public static let budget: TimeInterval = 4.0
-    /// 남은 시간으로 실을 수 있는 상한 (훅 timeout 10초)
-    public static let maxRemainingMS = 10_000
+
+    /// 프로세스 사이에 같은 값을 주는 연속 시계 (OA D3a 17장 2): 부팅 뒤 나노초 (`CLOCK_MONOTONIC_RAW`, 시계 바꿈 · 조정을 받지 않는다)
+    public static func monotonicNow() -> UInt64 {
+        clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW)
+    }
 
     /// bridge가 입력을 읽는 도구 (그 밖은 이름만 보고 deny한다)
     public static let readTools: Set<String> = ["Read", "Glob", "Grep", "Bash", "Edit", "Write", AskUserSchema.qualifiedName]
@@ -79,14 +82,15 @@ public struct HookRequest: Equatable, Sendable {
     public var permissionMode: String
     /// 훅 입력의 `cwd` 그대로 (계약 13.4.1-3)
     public var cwd: String
-    /// 요청을 쓸 때 훅 기한까지 남은 밀리초 (16장 3): bridge는 그보다 앞서 응답을 정한다. 없으면 bridge 자신의 예산만
-    public var remainingMS: Int?
+    /// 훅의 절대 기한 (17장 2): `HookWire.monotonicNow()` 시계의 나노초. bridge는 같은 시계로 그보다 앞서 응답을 정한다(보낸 뒤 읽기까지의 지연도 센다).
+    /// 없으면 bridge 자신의 예산만
+    public var deadlineNS: UInt64?
 
     public init(
         nonce: String, sessionID: String, providerSessionID: String?, hookEvent: String, toolUseID: String, toolName: String, toolInput: WireJSON, inputSHA256: String,
-        permissionMode: String, cwd: String, remainingMS: Int? = nil
+        permissionMode: String, cwd: String, deadlineNS: UInt64? = nil
     ) {
-        self.remainingMS = remainingMS
+        self.deadlineNS = deadlineNS
         self.v = HookWire.version
         self.nonce = nonce
         self.sessionID = sessionID
@@ -101,7 +105,7 @@ public struct HookRequest: Equatable, Sendable {
     }
 
     static let keys: Set<String> = [
-        "v", "nonce", "session_id", "provider_session_id", "hook_event", "tool_use_id", "tool_name", "tool_input", "input_sha256", "permission_mode", "cwd", "remaining_ms",
+        "v", "nonce", "session_id", "provider_session_id", "hook_event", "tool_use_id", "tool_name", "tool_input", "input_sha256", "permission_mode", "cwd", "deadline_ns",
     ]
 
     public func encodedLine() throws -> Data {
@@ -110,7 +114,7 @@ public struct HookRequest: Equatable, Sendable {
             "tool_name": .string(toolName), "tool_input": toolInput, "input_sha256": .string(inputSHA256), "permission_mode": .string(permissionMode), "cwd": .string(cwd),
         ]
         if let providerSessionID { fields["provider_session_id"] = .string(providerSessionID) }
-        if let remainingMS { fields["remaining_ms"] = .int(Int64(remainingMS)) }
+        if let deadlineNS, deadlineNS <= UInt64(Int64.max) { fields["deadline_ns"] = .int(Int64(deadlineNS)) }
         return try HookWire.line(.object(fields))
     }
 
@@ -127,15 +131,15 @@ public struct HookRequest: Equatable, Sendable {
             guard let id = value.stringValue else { throw WireError.malformed }
             provider = id
         }
-        var remaining: Int?
-        if let value = fields["remaining_ms"] {
-            guard case .int(let ms) = value, ms >= 0, ms <= Int64(HookWire.maxRemainingMS) else { throw WireError.malformed }
-            remaining = Int(ms)
+        var deadline: UInt64?
+        if let value = fields["deadline_ns"] {
+            guard case .int(let ns) = value, ns > 0 else { throw WireError.malformed }
+            deadline = UInt64(ns)
         }
         return HookRequest(
             nonce: try text("nonce"), sessionID: try text("session_id"), providerSessionID: provider, hookEvent: try text("hook_event"), toolUseID: try text("tool_use_id"),
             toolName: try text("tool_name"), toolInput: input, inputSHA256: try text("input_sha256"), permissionMode: try text("permission_mode"), cwd: try text("cwd"),
-            remainingMS: remaining
+            deadlineNS: deadline
         )
     }
 }

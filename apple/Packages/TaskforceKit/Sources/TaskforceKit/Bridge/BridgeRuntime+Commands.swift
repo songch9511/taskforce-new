@@ -684,13 +684,12 @@ extension BridgeRuntime {
         // close_before: 앞 턴의 버려진 요청을 거절로 먼저 닫는다 (계약 3.6)
         if let requestID = command.closeBeforeRequestID {
             let ref = AgentRequestRef(taskID: common.agentTaskID, sessionID: common.agentSessionID, requestID: requestID, externalSessionID: common.session.externalSessionID, workspaceRef: workspace)
-            do {
-                try await closeRequest(adapter, ref)
-            } catch {
+            let closed = await closeRequest(adapter, ref) { error in
                 // 닫지 못했다 (앞 프로세스의 끝을 증명하지 못함 등, OA D3a 8장 15): 이 턴을 띄우지 않는다. 닫기 실행이 끝을 모르면 이 task의 고아로 둔다 (15장 1)
                 log.log("adapter_close_failed", ["task": .id(common.agentTaskID), "step": .code("close_before")])
-                return await failBeforeAcceptance(taskID: common.agentTaskID, commandID: record.commandID, reason: .spawnFailed, left: (error as? AgentStartError)?.left)
+                await failBeforeAcceptance(taskID: common.agentTaskID, commandID: record.commandID, reason: .spawnFailed, left: (error as? AgentStartError)?.left)
             }
+            guard closed else { return }
             _ = try? await ledger.updateTask(common.agentTaskID) { if !$0.closedRequestIDs.contains(requestID) { $0.closedRequestIDs.append(requestID) } }
         }
         // 먼저 적는다 (start_intent): 이 commit 뒤에는 프로세스를 띄웠을 수 있다 → 다시 띄우지 않는다
@@ -700,6 +699,9 @@ extension BridgeRuntime {
         let commandID = record.commandID
         let marker = common.marker
         let sessionExternalID = common.session.externalSessionID
+        let previous = try? await ledger.task(common.agentTaskID)
+        // 마지막 await 뒤 (17장 4): 종료가 시작됐으면 `leased`로 둔다 (`failed` 사건 0)
+        guard !shuttingDown else { return log.log("run_deferred_shutdown", ["command": .id(record.commandID)]) }
         do {
             // task(살아 있음)와 명령(`start_intent`)은 한 트랜잭션이다: 하나만 적히고 죽으면 모순된 상태가 남는다
             try await ledger.beginRun(
@@ -722,6 +724,10 @@ extension BridgeRuntime {
         }
         supervised[common.agentTaskID] = Supervised(runID: runID, adapterID: common.adapter, identity: nil)
         await publish()
+        #if DEBUG
+        await afterStartIntent?()
+        #endif
+        if shuttingDown { return await abandonStartIntent(taskID: common.agentTaskID, commandID: record.commandID, previous: previous) }
         let start = AgentTurnStart(
             taskID: common.agentTaskID, sessionID: common.agentSessionID, turnSeq: common.turnSeq, adapter: common.adapter, externalSessionID: common.session.externalSessionID,
             workspaceRef: workspace, resume: common.session.resume, access: access, policyMode: mode, marker: common.marker, text: command.text
@@ -734,6 +740,16 @@ extension BridgeRuntime {
         } catch {
             await failBeforeAcceptance(taskID: common.agentTaskID, commandID: record.commandID, reason: .spawnFailed)
         }
+    }
+
+    /// 먼저 적은 뒤 종료가 시작됐다 (17장 4): adapter를 부르지 않았으므로 띄운 것이 0이다. `start_intent`를 `leased`로, task와 감독을 그 전으로 되돌린다
+    /// (`failed` 사건 0, 다시 뜬 앱이 replay로 받는다)
+    func abandonStartIntent(taskID: String, commandID: String, previous: BridgeTaskRecord?, supervision: Supervised? = nil) async {
+        supervised[taskID] = supervision
+        if let previous { try? await ledger.saveTask(previous) }
+        _ = try? await ledger.updateCommand(commandID) { $0.state = .leased; $0.stateAt = clock.now() }
+        log.log("run_deferred_shutdown", ["command": .id(commandID)])
+        await publish()
     }
 
     /// 재개에 쓰는 외부 세션 id의 모양 (`^[A-Za-z0-9_-]{1,128}$`). 맨 앞의 `-`는 거절한다: 명령줄 옵션처럼 읽히면 안 된다 (UUID · 실제 세션 id는 `-`로 시작하지 않는다)
@@ -865,6 +881,10 @@ extension BridgeRuntime {
         let runID = supervised[common.agentTaskID]?.runID ?? UUID()
         let answeredAt = clock.now()
         let commandID = record.commandID
+        let previous = try? await ledger.task(common.agentTaskID)
+        let previousSupervision = supervised[common.agentTaskID]
+        // 마지막 await 뒤 (17장 4): 종료가 시작됐으면 `leased`로 둔다 (`failed` 사건 0)
+        guard !shuttingDown else { return log.log("run_deferred_shutdown", ["command": .id(record.commandID)]) }
         do {
             try await ledger.beginRun(
                 taskID: common.agentTaskID,
@@ -882,6 +902,12 @@ extension BridgeRuntime {
         }
         supervised[common.agentTaskID] = Supervised(runID: runID, adapterID: task.adapter, identity: supervised[common.agentTaskID]?.identity)
         await publish()
+        #if DEBUG
+        await afterStartIntent?()
+        #endif
+        if shuttingDown {
+            return await abandonStartIntent(taskID: common.agentTaskID, commandID: record.commandID, previous: previous, supervision: previousSupervision)
+        }
         let delivery = AgentAnswerDelivery(
             taskID: common.agentTaskID, sessionID: common.agentSessionID, turnSeq: common.turnSeq, adapter: task.adapter, externalSessionID: task.externalSessionID,
             workspaceRef: task.workspaceRef, marker: common.marker, access: access, policyMode: mode, requestID: requestID, kind: kind, structured: command.structured, value: value,
@@ -973,9 +999,8 @@ extension BridgeRuntime {
     func closeRequestAndAck(record: BridgeCommandRecord, taskID: String, requestID: String, adapterID: String, session: String, adapterClose: Bool) async {
         if adapterClose, let adapter = adapters[adapterID] {
             let task = try? await ledger.task(taskID)
-            do {
-                try await closeRequest(adapter, AgentRequestRef(taskID: taskID, sessionID: session, requestID: requestID, externalSessionID: task?.externalSessionID, workspaceRef: task?.workspaceRef))
-            } catch {
+            let ref = AgentRequestRef(taskID: taskID, sessionID: session, requestID: requestID, externalSessionID: task?.externalSessionID, workspaceRef: task?.workspaceRef)
+            await closeRequest(adapter, ref) { error in
                 // 답은 어차피 전달하지 않는다 (request_closed). 닫지 못한 보류가 남아도 adapter는 앞 프로세스의 끝을 증명하기 전에는 다음 실행을 띄우지 않는다 (OA D3a 8장 15).
                 // 끝을 모르는 닫기 실행은 이 task의 고아로 둔다 (15장 1)
                 log.log("adapter_close_failed", ["task": .id(taskID), "step": .code("request_closed")])
@@ -1000,11 +1025,10 @@ extension BridgeRuntime {
         if let abandoned = command.abandonedRequestID {
             _ = try? await ledger.updateTask(common.agentTaskID) { if !$0.closedRequestIDs.contains(abandoned) { $0.closedRequestIDs.append(abandoned) } }
             if let task = try? await ledger.task(common.agentTaskID), let adapter = adapters[task.adapter] {
-                do {
-                    try await closeRequest(adapter, AgentRequestRef(
-                        taskID: task.agentTaskID, sessionID: task.agentSessionID, requestID: abandoned, externalSessionID: task.externalSessionID, workspaceRef: task.workspaceRef
-                    ))
-                } catch {
+                let ref = AgentRequestRef(
+                    taskID: task.agentTaskID, sessionID: task.agentSessionID, requestID: abandoned, externalSessionID: task.externalSessionID, workspaceRef: task.workspaceRef
+                )
+                await closeRequest(adapter, ref) { error in
                     log.log("adapter_close_failed", ["task": .id(task.agentTaskID), "step": .code("cancel")])
                     // 끝을 모르는 닫기 실행도 아래 중단의 대상이다 (15장 1)
                     if let left = (error as? AgentStartError)?.left {

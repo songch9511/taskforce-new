@@ -46,10 +46,10 @@ public final class HookSocketServer: @unchecked Sendable {
         }
     }
 
-    /// bridge가 답하는 시간 상한 (연결부터, 서버 1.0초 + 로컬). 훅은 `HookWire.budget`(4초)까지 기다리고 요청에 남은 시간을 싣는다 (16장 3)
+    /// bridge가 답하는 시간 상한 (연결부터, 서버 1.0초 + 로컬). 훅은 `HookWire.budget`(4초)까지 기다리고 요청에 자기 절대 기한을 싣는다 (17장 2)
     public static let responseBudget: TimeInterval = 1.2
     static let readBudget: TimeInterval = 1.0
-    /// 훅이 실은 남은 시간보다 이만큼 앞서 정한다 (응답을 쓰고 훅이 읽을 여유)
+    /// 훅이 실은 기한보다 이만큼 앞서 정한다 (응답을 쓰고 훅이 읽을 여유)
     static let hookMargin: TimeInterval = 0.3
     public static let unknownSpawn = "This tool call is not from a Taskforce run."
 
@@ -57,7 +57,6 @@ public final class HookSocketServer: @unchecked Sendable {
     private let peerUID: @Sendable (Int32) -> uid_t?
     private let log: any BridgeLogSink
     private let state = Mutex<(listener: Int32, registrations: [(nonce: [UInt8], registration: Registration, id: UUID)])>((-1, []))
-    private let queue = DispatchQueue(label: "dev.taskforcelabs.bridge.hook-socket", attributes: .concurrent)
 
     public init(path: String, peerUID: @escaping @Sendable (Int32) -> uid_t? = HookSocketServer.peerUID, log: any BridgeLogSink = NoBridgeLog()) {
         self.path = path
@@ -199,10 +198,13 @@ public final class HookSocketServer: @unchecked Sendable {
             _ = fcntl(client, F_SETFD, FD_CLOEXEC)
             var on: Int32 = 1
             _ = setsockopt(client, SOL_SOCKET, SO_NOSIGPIPE, &on, socklen_t(MemoryLayout<Int32>.size))
-            current.queue.async { [weak current] in
+            // 연결마다 전용 스레드 (17장 2): spawn의 막힘 읽기가 공유 GCD 풀을 채워도 훅 응답이 늦어지지 않게
+            let thread = Thread { [weak current] in
                 current?.serve(client)
                 close(client)
             }
+            thread.name = "tf-hook-client"
+            thread.start()
         }
     }
 
@@ -213,11 +215,12 @@ public final class HookSocketServer: @unchecked Sendable {
             return
         }
         let started = Date()
+        let startedNS = HookWire.monotonicNow()
         var response = HookResponse(decision: .deny, reason: HookReason.unreadable)
         var answered: (registration: Registration, toolUseID: String)?
         if let line = Self.readLine(client, deadline: started.addingTimeInterval(Self.readBudget)), let request = try? HookRequest.decode(line: line) {
             if let registration = registered(for: request) {
-                response = respond(to: request, registration: registration, deadline: Self.deadline(started: started, read: Date(), remainingMS: request.remainingMS))
+                response = respond(to: request, registration: registration, deadlineNS: Self.deadline(startedNS: startedNS, hookDeadlineNS: request.deadlineNS))
                 answered = (registration, request.toolUseID)
             } else {
                 // L0: 등록 없는 nonce · 세션 불일치
@@ -237,24 +240,29 @@ public final class HookSocketServer: @unchecked Sendable {
         return registration
     }
 
-    /// 응답을 정하는 기한 (16장 3): 연결부터 `responseBudget`, 훅이 남은 시간을 실었으면 읽은 때부터 그 시간 − `hookMargin`까지 중 이른 쪽.
-    /// 그래서 확정한 응답은 훅이 끊기 `hookMargin` 전에 정해진다 (그 안에 쓰고 읽는다)
-    static func deadline(started: Date, read: Date, remainingMS: Int?) -> Date {
-        let own = started.addingTimeInterval(responseBudget)
-        guard let remainingMS else { return own }
-        return min(own, read.addingTimeInterval(Double(remainingMS) / 1000 - hookMargin))
+    /// 응답을 정하는 기한 하나 (17장 2, `HookWire.monotonicNow()` 시계의 나노초): 연결부터 `responseBudget`과, 훅이 실은 절대 기한 − `hookMargin` 중 이른 쪽.
+    /// 같은 시계라 보낸 뒤 읽기까지의 지연도 센다: 확정한 응답은 훅이 끊기 `hookMargin` 전에 정해진다 (그 안에 쓰고 읽는다)
+    static func deadline(startedNS: UInt64, hookDeadlineNS: UInt64?) -> UInt64 {
+        let own = startedNS &+ UInt64(responseBudget * 1_000_000_000)
+        guard let hookDeadlineNS else { return own }
+        let margin = UInt64(hookMargin * 1_000_000_000)
+        return min(own, hookDeadlineNS > margin ? hookDeadlineNS - margin : 0)
     }
 
     /// 처리기가 확정한 응답, 아니면 시간 초과 deny (12장 9): 기한이 지나면 요청 상태를 `timedOut`으로 정한다(등록의 `timeOut`이 있으면 그 경계에서).
-    /// 처리기가 그보다 먼저 확정했으면 그 응답을 쓴다
-    private func respond(to request: HookRequest, registration: Registration, deadline: Date) -> HookResponse {
-        let commit = HookCommit()
-        let semaphore = DispatchSemaphore(value: 0)
-        Task {
-            await registration.handler(request, commit)
-            semaphore.signal()
+    /// 처리기가 그보다 먼저 확정했으면 그 응답을 쓴다. 읽은 때 이미 기한이 지났으면 처리기를 띄우지 않고 그 자리에서 시간 초과로 정한다(답 닫기 포함, 17장 2).
+    /// 처리기의 확정도 기한을 넘으면 받지 않는다 (`HookCommit`)
+    private func respond(to request: HookRequest, registration: Registration, deadlineNS: UInt64) -> HookResponse {
+        let commit = HookCommit(deadlineNS: deadlineNS)
+        let now = HookWire.monotonicNow()
+        if now < deadlineNS {
+            let semaphore = DispatchSemaphore(value: 0)
+            Task {
+                await registration.handler(request, commit)
+                semaphore.signal()
+            }
+            _ = semaphore.wait(timeout: .now() + .nanoseconds(Int(min(deadlineNS - now, UInt64(Int.max)))))
         }
-        _ = semaphore.wait(timeout: .now() + max(0, deadline.timeIntervalSinceNow))
         let won: HookResponse?
         if let settle = registration.timeOut { won = settle(commit, request.toolUseID) } else { won = commit.timeOut() }
         if let won { return won }
@@ -307,13 +315,21 @@ public final class HookCommit: Sendable {
     }
 
     private let state = Mutex(State.pending)
+    /// 응답을 정하는 기한 (`HookWire.monotonicNow()` 나노초, 17장 2). 없으면 소켓의 시간 초과만
+    private let deadlineNS: UInt64?
 
-    public init() {}
+    public init(deadlineNS: UInt64? = nil) {
+        self.deadlineNS = deadlineNS
+    }
 
-    /// 처리기: 그 응답으로 확정한다. 소켓이 이미 시간 초과로 정했으면 false (그 응답은 Claude에 닿지 않는다)
+    /// 처리기: 그 응답으로 확정한다. 소켓이 이미 시간 초과로 정했거나 기한이 지났으면 false (그 응답은 Claude에 닿지 않는다): 기한이 지났으면 그 자리에서 시간 초과로 정한다
     public func commit(_ response: HookResponse) -> Bool {
         state.withLock { current in
             guard case .pending = current else { return false }
+            if let deadlineNS, HookWire.monotonicNow() >= deadlineNS {
+                current = .timedOut
+                return false
+            }
             current = .committed(response)
             return true
         }

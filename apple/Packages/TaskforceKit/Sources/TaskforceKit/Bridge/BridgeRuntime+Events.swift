@@ -115,9 +115,14 @@ extension BridgeRuntime {
             // 서버 모양에 담을 수 없다: 보내면 dead-letter가 되어 턴이 영원히 멈춘다. 그 요청을 거절로 닫는다 (Q15)
             log.log("question_unrepresentable", ["task": .id(taskID), "why": .code(why)])
             guard let task = try? await ledger.task(taskID), let adapter = adapters[task.adapter] else { return }
-            try? await closeRequest(adapter, AgentRequestRef(
+            let ref = AgentRequestRef(
                 taskID: taskID, sessionID: task.agentSessionID, requestID: question.providerRequestID, externalSessionID: task.externalSessionID, workspaceRef: task.workspaceRef
-            ))
+            )
+            await closeRequest(adapter, ref) { error in
+                // 끝을 모르는 닫기 실행은 이 task의 고아로 둔다 (17장 5: 다른 닫기 실패와 같다)
+                log.log("adapter_close_failed", ["task": .id(taskID), "step": .code("unrepresentable")])
+                await keepUnproven(taskID: taskID, session: task.agentSessionID, adapter: adapter, identity: (error as? AgentStartError)?.left)
+            }
             _ = try? await ledger.updateTask(taskID) { if !$0.closedRequestIDs.contains(question.providerRequestID) { $0.closedRequestIDs.append(question.providerRequestID) } }
         }
     }
