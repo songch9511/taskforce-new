@@ -118,14 +118,17 @@ struct EdgeIssuesTests {
 
     // MARK: 이름 · 툴팁 · `+`
 
-    @Test func theFirstRailControlIsCalledIssuesOnlyWhenGated() async {
+    @Test func theFirstRailControlIsCalledProjectsWithTheFolderIconOnlyWhenGated() async {
         let gated = await make()
         let plain = await make(gated: false)
-        #expect(gated.shell.label(for: .allWork) == "Issues" && gated.shell.label(for: .chats) == "Chats")
+        #expect(gated.shell.label(for: .allWork) == "Projects" && gated.shell.label(for: .chats) == "Chats")
+        #expect(gated.shell.railIcon(for: .allWork) == .project && TFIcon.project.rawValue == "folder", "lucide folder")
+        #expect(gated.shell.railIcon(for: .chats) == .talk && gated.shell.railIcon(for: .more) == .more, "다른 칸은 그대로")
         #expect(plain.shell.label(for: .allWork) == "All work", "꺼져 있으면 지금 이름 그대로")
+        #expect(plain.shell.railIcon(for: .allWork) == .allWork && TFIcon.allWork.rawValue == "list-todo", "꺼져 있으면 list-todo 그대로")
     }
 
-    @Test func theIssuesTooltipShowsTheShortcutAndThePlusTooltipShowsItsName() async {
+    @Test func theProjectsTooltipShowsTheShortcutAndThePlusTooltipShowsItsName() async {
         let time = EdgeShellModelTests.ManualTime()
         let rig = await make(time: time)
         rig.shell.pointer(inside: true)
@@ -133,7 +136,7 @@ struct EdgeIssuesTests {
         #expect(rig.shell.isExpanded)
         rig.shell.hover(control: .allWork)
         let tooltip = rig.shell.tooltip
-        #expect(tooltip?.title == "Issues" && tooltip?.detail == "⌘2")
+        #expect(tooltip?.title == "Projects" && tooltip?.detail == "⌘2")
         rig.shell.hover(plus: true)
         #expect(rig.shell.hoveredPlus && rig.shell.hoveredControl == nil)
         #expect(rig.shell.tooltip?.title == "New session" && rig.shell.tooltip?.detail == "")

@@ -213,17 +213,17 @@ final class EdgeShellModel {
         chatsEnabled ? Control.allCases : Control.allCases.filter { $0 != .chats }
     }
 
-    /// 고정 칸의 이름. 새 Issues 화면이 켜진 셸의 첫 칸은 "Issues"다 (툴팁 "Issues ⌘2", OA U2 사용자 결정): 꺼져 있으면 "All work"
+    /// 고정 칸의 이름. 새 Issues 화면이 켜진 셸의 첫 칸은 "Projects"다 (툴팁 "Projects ⌘2", OA U2b 사용자 결정: U2의 "Issues"를 바꿨다): 꺼져 있으면 "All work"
     func label(for control: Control) -> String {
-        control == .allWork && issues != nil ? Self.issuesLabel : control.label
+        control == .allWork && issues != nil ? Self.projectsLabel : control.label
     }
 
-    static let issuesLabel = "Issues"
+    static let projectsLabel = "Projects"
 
-    /// 고정 칸의 아이콘 (레일이 그린다)
+    /// 고정 칸의 아이콘 (레일이 그린다). 새 Issues 화면이 켜진 셸의 첫 칸은 lucide `folder`, 꺼져 있으면 `list-todo`
     func railIcon(for control: Control) -> TFIcon {
         switch control {
-        case .allWork: .allWork
+        case .allWork: issues != nil ? .project : .allWork
         case .chats: .talk
         case .more: .more
         }
