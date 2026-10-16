@@ -41,7 +41,8 @@ final class FakeNotificationCenter: AgentNotificationCenter, @unchecked Sendable
     private var _added: [AgentNotificationPlan] = []
     private var _removed: [String] = []
     private var _requests = 0
-    private var _delivered: Set<String> = []
+    /// 센터에 걸려 있는 알림 id → 그 알림을 건 `add` 호출의 번호(1부터). 같은 id를 나중에 거는 호출이 덮어쓴다
+    private var _delivered: [String: Int] = [:]
     private var _permissionGate: NotificationGate?
     private var _addGate: NotificationGate?
 
@@ -54,7 +55,9 @@ final class FakeNotificationCenter: AgentNotificationCenter, @unchecked Sendable
     var requests: Int { lock.withLock { _requests } }
 
     /// 센터에 지금 걸려 있는 알림 (`add`가 닿으면 들어가고 `remove`가 지운다)
-    var delivered: Set<String> { lock.withLock { _delivered } }
+    var delivered: Set<String> { lock.withLock { Set(_delivered.keys) } }
+    /// 그 id의 알림을 건 `add` 호출의 번호 (옛 게시와 새 게시를 가린다)
+    func deliveredFrom(_ id: String) -> Int? { lock.withLock { _delivered[id] } }
     /// 권한 조회를 문이 열릴 때까지 붙잡는다
     func holdPermission(_ gate: NotificationGate?) { lock.withLock { _permissionGate = gate } }
     /// 게시(`add`)를 문이 열릴 때까지 붙잡는다: 호출은 기록되지만 센터에는 아직 닿지 않았다
@@ -66,17 +69,17 @@ final class FakeNotificationCenter: AgentNotificationCenter, @unchecked Sendable
     }
     func requestPermissionIfNeeded() async { lock.withLock { _requests += 1 } }
     func add(_ plan: AgentNotificationPlan) async {
-        let gate = lock.withLock { () -> NotificationGate? in
+        let (number, gate) = lock.withLock { () -> (Int, NotificationGate?) in
             _added.append(plan)
-            return _addGate
+            return (_added.count, _addGate)
         }
         if let gate { await gate.wait() }
-        lock.withLock { _ = _delivered.insert(plan.id) }
+        lock.withLock { _delivered[plan.id] = number }
     }
     func remove(ids: [String]) async {
         lock.withLock {
             _removed.append(contentsOf: ids)
-            for id in ids { _delivered.remove(id) }
+            for id in ids { _delivered[id] = nil }
         }
     }
 }
@@ -281,7 +284,9 @@ struct AgentNotificationsTests {
         notifications.opened(opened(), isVisible: false)
         #expect(await eventually { gate.arrivals == 1 }, "게시가 시작됐지만 센터에 아직 닿지 않았다")
         notifications.closed([key])
-        #expect(await eventually { center.removed.count == 1 }, "닫힘의 삭제는 센터에 아직 없는 알림을 지우려 한다")
+        // 알림 센터 일은 한 줄이다: 닫힘의 삭제는 진행 중인 게시가 끝난 뒤에 선다 (센터에 아직 없는 알림을 지우려 하지 않는다)
+        try? await Task.sleep(for: .milliseconds(100))
+        #expect(center.removed.isEmpty, "진행 중인 게시 뒤에 선다")
         gate.open()
         await notifications.settle()
         #expect(center.delivered.isEmpty && notifications.posted.isEmpty, "늦게 닿은 알림도 지운다")
@@ -332,6 +337,73 @@ struct AgentNotificationsTests {
         gate.open()
         await runtime.notifications?.settle()
         #expect(center.added.isEmpty && center.delivered.isEmpty, "계정이 떠난 뒤 늦게 끝난 조회가 알림을 걸지 않는다")
+    }
+
+    // MARK: 재검토 1: 알림 센터 일은 한 줄로, 수명마다 따로 (이전 수명의 끝이 새 수명의 알림 · 권한 요청을 건드리지 않는다)
+
+    @Test func anOldPostFinishingAfterAReLoginNeverDeletesTheNewNotificationOfTheSameQuestion() async {
+        let center = FakeNotificationCenter()
+        let gate = NotificationGate()
+        center.holdAdd(gate)
+        let notifications = make(center)
+        let id = AgentQuestionNotifications.identifier(for: key)
+        notifications.opened(opened(), isVisible: false)
+        #expect(await eventually { gate.arrivals == 1 }, "이전 게시가 느리다")
+        notifications.accountLeft()                      // 로그아웃
+        center.holdAdd(nil)
+        notifications.opened(opened(), isVisible: false) // 같은 계정으로 다시 로그인 → 같은 질문이 다시 열린다
+        // 이전 게시가 아직 멈춰 있는 동안 새 게시가 끝날 틈을 준다 (알림 센터 일이 한 줄이면 새 게시는 이전 게시 뒤에 서서 기다린다)
+        try? await Task.sleep(for: .milliseconds(150))
+        gate.open()
+        await notifications.settle()
+        #expect(center.deliveredFrom(id) == 2, "남은 알림은 새 수명이 건 것이다 (이전 게시의 정리가 공용 id의 새 알림을 지우지 않는다)")
+        #expect(notifications.posted == [id])
+    }
+
+    @Test func leavingDuringTheFirstPermissionLookupThenSigningInAgainAsksThePermission() async {
+        let center = FakeNotificationCenter()
+        center.status = .notDetermined
+        let gate = NotificationGate()
+        center.holdPermission(gate)
+        let notifications = make(center)
+        let item = QFxItem.make()
+        notifications.sessionsSeen([item], thisMacBridgeID: Data.thisMacBridge, signedIn: true)
+        #expect(await eventually { gate.arrivals == 1 }, "첫 권한 조회가 느리다")
+        notifications.accountLeft()
+        notifications.sessionsSeen([item], thisMacBridgeID: Data.thisMacBridge, signedIn: true)   // 재로그인 뒤 연결을 다시 읽었다
+        gate.open()
+        await notifications.settle()
+        #expect(center.requests == 1, "무효가 된 조회는 묻지 않고, 재로그인 뒤의 조회가 한 번 묻는다")
+        notifications.sessionsSeen([item], thisMacBridgeID: Data.thisMacBridge, signedIn: true)
+        await notifications.settle()
+        #expect(center.requests == 1, "물은 뒤에는 다시 묻지 않는다")
+    }
+
+    @Test func aPermissionLookupBeforeSigningInDoesNotUseUpTheOneAsk() async {
+        let center = FakeNotificationCenter()
+        center.status = .notDetermined
+        let notifications = make(center)
+        let item = QFxItem.make()
+        notifications.sessionsSeen([item], thisMacBridgeID: Data.thisMacBridge, signedIn: false)
+        await notifications.settle()
+        #expect(center.requests == 0, "로그인 전에는 묻지 않는다")
+        notifications.sessionsSeen([item], thisMacBridgeID: Data.thisMacBridge, signedIn: true)
+        await notifications.settle()
+        #expect(center.requests == 1, "로그인한 뒤에 한 번 묻는다 (조회만 한 시도가 그 한 번을 쓰지 않는다)")
+    }
+
+    @Test func aSlowLookupDoesNotStartASecondLookupForTheSameAttempt() async {
+        let center = FakeNotificationCenter()
+        center.status = .notDetermined
+        let gate = NotificationGate()
+        center.holdPermission(gate)
+        let notifications = make(center)
+        let item = QFxItem.make()
+        for _ in 0..<3 { notifications.sessionsSeen([item], thisMacBridgeID: Data.thisMacBridge, signedIn: true) }
+        #expect(await eventually { gate.arrivals == 1 })
+        gate.open()
+        await notifications.settle()
+        #expect(gate.arrivals == 1 && center.requests == 1, "조회 중인 동안 다시 읽어도 조회 · 요청은 하나다")
     }
 }
 
