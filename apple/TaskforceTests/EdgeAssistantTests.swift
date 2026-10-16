@@ -53,16 +53,15 @@ struct EdgeAssistantTests {
         #expect(rig.shell.reviewTileContent == .needsYou(count: rig.shell.reviewQueue.count) && rig.shell.reviewQueue.count > 0)
     }
 
-    @Test func aQuietTileShowsWhenOnlyChangesWait() async throws {
+    /// OA U2b: 바뀐 것만 있으면 타일은 없다 (답할 것이 있을 때만 있다)
+    @Test func noTileWhenOnlyChangesWait() async throws {
         let rig = try await SummaryRig.make(reviews: 0)
         #expect(rig.shell.reviewQueue.count == 0)
         await rig.scriptDefault()
         await rig.store.refresh()
-        guard case .changes(_, let count)? = rig.shell.reviewTileContent else {
-            Issue.record("changes여야 한다: \(String(describing: rig.shell.reviewTileContent))")
-            return
-        }
-        #expect(count > 0)
+        #expect(rig.shell.summary?.summary?.hasChangesToClear == true, "시험 전제: 읽음 처리할 변화가 있다")
+        #expect(rig.shell.reviewTileContent == nil)
+        #expect(rig.shell.tileTooltip == nil && rig.shell.tileAccessibilityName == nil)
     }
 
     @Test func noTileWhenNothingWaitsAndNoneWhenAFlagIsOff() async throws {
@@ -113,7 +112,7 @@ struct EdgeAssistantTests {
         #expect(!shell.hoveredTile, "포인터가 다른 칸으로 가면 타일 호버는 풀린다")
     }
 
-    @Test func clickingTheTileOpensTheNewestReviewWhenSomethingWaitsAndTheSummaryOtherwise() async throws {
+    @Test func clickingTheTileOpensTheNewestReviewAndNothingElse() async throws {
         let waiting = try await SummaryRig.make()
         await waiting.scriptDefault()
         await waiting.store.refresh()
@@ -123,7 +122,7 @@ struct EdgeAssistantTests {
         await quiet.scriptDefault()
         await quiet.store.refresh()
         quiet.shell.openReviewTile()
-        #expect(quiet.shell.panelOpen && quiet.shell.view == .allWork, "changes만 있으면 복귀 요약(All work 위 카드)")
+        #expect(!quiet.shell.panelOpen, "changes만 있으면 타일이 없다: 눌러도 아무 일 없다")
         // 타일이 없으면 눌러도 아무 일 없다
         let none = try await SummaryRig.make(reviews: 0)
         none.shell.openReviewTile()
@@ -146,7 +145,7 @@ struct EdgeAssistantTests {
         await quiet.scriptDefault()
         await quiet.store.refresh()
         quiet.shell.openAllWork()
-        #expect(quiet.shell.tileOpen, "changes: 복귀 요약이 있는 All work가 보이는 동안")
+        #expect(!quiet.shell.tileOpen, "타일이 없으면 Open도 없다")
     }
 
     // MARK: ⌥ Space
@@ -282,7 +281,7 @@ struct EdgeAssistantTests {
         #expect(rig.shell.reviewTileContent != nil && !rig.shell.isIdle)
         let empty = try await SummaryRig.make(reviews: 0)
         #expect(empty.shell.reviewTileContent == nil && empty.shell.isIdle, "링도 타일도 없으면 가는 줄")
-        // 링이 없어도 타일이 있으면 (changes만) 가는 줄이 아니다
+        // 바뀐 것만 있으면 링도 타일도 없다: 가는 줄이다
         let quiet = try await SummaryRig.make(reviews: 0)
         await quiet.scriptDefault()
         await quiet.store.refresh()
@@ -291,6 +290,88 @@ struct EdgeAssistantTests {
             load: WorkLoad.from(refresh: quiet.harness.store.refreshState, hasList: true), doneSince: nil, canConnect: false
         ))
         #expect(quiet.shell.notch.isEmpty && !quiet.shell.isExpanded, "링이 하나도 없고 접혀 있다")
-        #expect(quiet.shell.reviewTileContent != nil && !quiet.shell.isIdle, "타일이 있으면 가는 줄이 아니다")
+        #expect(quiet.shell.reviewTileContent == nil && quiet.shell.isIdle, "바뀐 것만으로는 타일이 없다")
+    }
+}
+
+/// OA U2b: ⌘1은 답할 것이 있으면 가장 새 Review 항목, 없고 바뀐 것만 있으면 그 구성에서 복귀 요약이 보이는 곳, 둘 다 없으면 아무것도 하지 않는다
+@MainActor
+struct EdgeCommandOneTests {
+    /// U2(새 Issues 화면)까지 켠 셸: Review(S4) + 복귀 요약(C3) + Issues. 요약을 읽은 상태로 만든다
+    func issuesRig(reviews: Int, summary: Bool) async throws -> (shell: EdgeShellModel, base: SummaryRig) {
+        let harness = try await ReviewHarness.make(reviews: reviews, open: 2)
+        let store = ReturnSummaryStore(gateway: LiveReturnSummaryGateway(services: harness.services), scope: harness.scope)
+        let desk = ReviewDesk(now: harness.store, scope: harness.scope)
+        let issues = IssueRuntime(gateway: IssueSampleGateway(), scope: harness.scope)
+        let shell = EdgeShellModel(schedule: { _, _ in EdgeTimer() }, review: desk, summary: store, chatsEnabled: true, windowsEnabled: true, issues: issues)
+        await harness.store.load()
+        let rig = SummaryRig(harness: harness, desk: desk, store: store, shell: shell)
+        rig.sync()
+        if summary {
+            await rig.scriptDefault()
+            await store.refresh()
+        }
+        return (shell, rig)
+    }
+
+    @Test func withSomethingToAnswerItOpensTheNewestReview() async throws {
+        let rig = try await SummaryRig.make()
+        await rig.scriptDefault()
+        await rig.store.refresh()
+        rig.shell.openNewestReview()
+        #expect(rig.shell.panelOpen && rig.shell.view == .review && rig.shell.reviewID == rig.shell.reviewQueue.newest?.id, "바뀐 것도 있지만 답할 것이 먼저")
+        let gated = try await issuesRig(reviews: 3, summary: true)
+        gated.shell.openNewestReview()
+        #expect(gated.shell.panelOpen && gated.shell.view == .review && gated.shell.reviewID == gated.shell.reviewQueue.newest?.id, "U2 + C3에서도 같다")
+    }
+
+    @Test func withOnlyChangesItOpensWhereTheSummaryIsDrawn() async throws {
+        // 게이트가 꺼진 구성(Release 표면 포함): 복귀 요약은 All work 위 카드다
+        let rig = try await SummaryRig.make(reviews: 0)
+        await rig.scriptDefault()
+        await rig.store.refresh()
+        #expect(rig.shell.reviewQueue.count == 0 && rig.shell.summaryContent != nil && !rig.shell.issueScreensEnabled)
+        rig.shell.openNewestReview()
+        #expect(rig.shell.panelOpen && rig.shell.view == .allWork, "All work의 카드")
+        // 이미 Review가 열려 있어도 카드가 있는 곳으로 간다
+        rig.shell.dismiss()
+        rig.shell.openPanel(.review)
+        rig.shell.openNewestReview()
+        #expect(rig.shell.view == .allWork)
+    }
+
+    /// 복귀 요약이 어디에도 그려지지 않는 구성(U2 + C3: Review에는 요약이 없고 Projects에도 없다, U2 계약 10장 2)에서는 열 곳이 없다 — 새 자리를 만들지 않는다
+    @Test func withOnlyChangesWhereNothingDrawsTheSummaryItDoesNothing() async throws {
+        let rig = try await issuesRig(reviews: 0, summary: true)
+        #expect(rig.shell.issueScreensEnabled && rig.shell.summary?.summary?.hasChangesToClear == true && rig.shell.reviewQueue.count == 0)
+        rig.shell.openNewestReview()
+        #expect(!rig.shell.panelOpen, "빈 Review도, 요약이 없는 Projects도 열지 않는다")
+    }
+
+    @Test func withNothingAtAllItDoesNothing() async throws {
+        // 목록을 읽었고 답할 것도 바뀐 것도 없다
+        let rig = try await SummaryRig.make(reviews: 0)
+        rig.shell.openNewestReview()
+        #expect(!rig.shell.panelOpen, "빈 \"No decisions waiting\" 화면을 열지 않는다")
+        let issues = try await issuesRig(reviews: 0, summary: false)
+        issues.shell.openNewestReview()
+        #expect(!issues.shell.panelOpen)
+        // 열려 있던 패널도 그대로다
+        rig.shell.openAllWork()
+        rig.shell.openNewestReview()
+        #expect(rig.shell.panelOpen && rig.shell.view == .allWork)
+        // 요약 없이 Review만 켜진 셸 (C3 꺼짐)
+        let reviewOnly = try await ReviewRig.make(reviews: 0)
+        reviewOnly.shell.openNewestReview()
+        #expect(!reviewOnly.shell.panelOpen)
+    }
+
+    @Test func aListThatHasNotArrivedStillOpensReviewSoItCanSayWhy() async throws {
+        let rig = try await SummaryRig.make(reviews: 0)
+        let loading = EdgeShellModel(schedule: { _, _ in EdgeTimer() }, review: rig.desk, summary: rig.store)
+        loading.openNewestReview()
+        #expect(loading.panelOpen && loading.view == .review && loading.reviewScreen == .blank, "읽는 중 · 오프라인 · 읽기 실패는 빈 큐가 아니다")
+        loading.update(EdgeWorkSnapshot(load: .offline))
+        #expect(loading.reviewScreen == .offline)
     }
 }

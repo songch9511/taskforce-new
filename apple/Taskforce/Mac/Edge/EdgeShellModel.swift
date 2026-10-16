@@ -213,12 +213,22 @@ final class EdgeShellModel {
         chatsEnabled ? Control.allCases : Control.allCases.filter { $0 != .chats }
     }
 
-    /// 고정 칸의 이름. 새 Issues 화면이 켜진 셸의 첫 칸은 "Issues"다 (툴팁 "Issues ⌘2", OA U2 사용자 결정): 꺼져 있으면 "All work"
+    /// 고정 칸의 이름. 새 Issues 화면이 켜진 셸의 첫 칸은 "Projects"다 (툴팁 "Projects ⌘2", OA U2b 사용자 결정: U2의 "Issues"를 바꿨다): 꺼져 있으면 "All work"
     func label(for control: Control) -> String {
-        control == .allWork && issues != nil ? Self.issuesLabel : control.label
+        control == .allWork && issues != nil ? Self.projectsLabel : control.label
     }
 
-    static let issuesLabel = "Issues"
+    static let projectsLabel = "Projects"
+
+    /// 고정 칸의 아이콘 (레일이 그린다). 새 Issues 화면이 켜진 셸의 첫 칸은 lucide `folder`, 꺼져 있으면 `list-todo`
+    func railIcon(for control: Control) -> TFIcon {
+        switch control {
+        case .allWork: issues != nil ? .project : .allWork
+        case .chats: .talk
+        case .more: .more
+        }
+    }
+
     static let newSessionLabel = "New session"
 
     /// 이 셸이 듣는 키 명령인가: Chats가 꺼져 있으면 ⌘3 · ⌘N은 연결이 없어 지나간다 (먹지 않는다)
@@ -458,39 +468,32 @@ final class EdgeShellModel {
 
     // MARK: Review 타일 (OA U1)
 
-    /// 레일 맨 위 타일이 보일 것: needs-you(지금 Review 큐) → changes(복귀 요약의 읽음 처리할 변화) → 없음. 타일은 Review(S4)와 복귀 요약(C3)이 둘 다 켜졌을 때만 있다
+    /// 레일 맨 위 타일이 보일 것: needs-you(지금 Review 큐)만, 없으면 없음 (바뀐 것만 있을 때도 없다, OA U2b). 타일은 Review(S4)와 복귀 요약(C3)이 둘 다 켜졌을 때만 있다
     var reviewTileContent: ReviewTileContent? {
-        ReviewTileRules.content(reviewCount: reviewQueue.count, summary: summary?.summary, reviewEnabled: review != nil, summaryEnabled: summary != nil)
+        ReviewTileRules.content(reviewCount: reviewQueue.count, reviewEnabled: review != nil, summaryEnabled: summary != nil)
     }
 
-    /// 툴팁: "Review · Needs your answer" / "Review · Changes since 6:40 PM" (앞 낱말은 굵게, 나머지는 보조색)
+    /// 툴팁: "Review · Needs your answer" (앞 낱말은 굵게, 나머지는 보조색)
     var tileTooltip: (title: String, detail: String)? {
         guard let content = reviewTileContent else { return nil }
-        let text = ReviewTileRules.tooltip(content, now: clock(), calendar: calendar())
+        let text = ReviewTileRules.tooltip(content)
         guard let separator = text.range(of: " · ") else { return (text, "") }
         return (String(text[..<separator.lowerBound]), "· " + text[separator.upperBound...])
     }
 
     var tileAccessibilityName: String? {
-        reviewTileContent.map { ReviewTileRules.accessibilityName($0, now: clock(), calendar: calendar()) }
+        reviewTileContent.map { ReviewTileRules.accessibilityName($0) }
     }
 
-    /// Open 링: 타일이 데려가는 화면이 보이는 동안 (needs-you는 Review, changes는 복귀 요약이 있는 All work). 열기는 어떤 답도 아니다
+    /// Open 링: 타일이 데려가는 Review 화면이 보이는 동안. 열기는 어떤 답도 아니다
     var tileOpen: Bool {
-        guard panelOpen, let content = reviewTileContent else { return false }
-        switch ReviewTileRules.destination(for: content) {
-        case .newestReview: return view == .review
-        case .returnSummary: return view == .allWork
-        }
+        panelOpen && reviewTileContent != nil && view == .review
     }
 
-    /// 타일을 누름: 기다리는 것이 있으면 가장 새 Review 항목, 변화만 있으면 복귀 요약. 타일이 없으면 아무 일도 없다 (목록 화면 `ReviewList`는 D4b-m)
+    /// 타일을 누름: 가장 새 Review 항목. 타일이 없으면 아무 일도 없다 (목록 화면 `ReviewList`는 D4b-m)
     func openReviewTile() {
-        guard let content = reviewTileContent else { return }
-        switch ReviewTileRules.destination(for: content) {
-        case .newestReview: openNewestReview()
-        case .returnSummary: openAllWork()
-        }
+        guard reviewTileContent != nil else { return }
+        openNewestReview()
     }
 
     /// 패널에서 지금 열린 항목 (Assistant 창의 auto 칩이 따라간다): All work에서 연 일 · Review가 보이는 결정. 패널이 닫혀 있으면 없다.
@@ -818,11 +821,21 @@ final class EdgeShellModel {
         openPanel(.review)
     }
 
-    /// ⌘1: 가장 새 Review 항목 (없으면 "No decisions waiting")
+    /// ⌘1 (OA U2b): 답할 항목이 있으면 가장 새 Review 항목. 없고 바뀐 것(복귀 요약)만 있으면 그 구성에서 요약이 그려지는 곳, 둘 다 없으면 아무것도 하지 않는다 (빈 "No decisions waiting" 화면을 열지 않는다).
+    /// 목록을 아직 못 받았거나(읽는 중 · 오프라인 · 읽기 실패) 큐가 비었는지 모르면 Review가 그 사정을 말하도록 연다.
+    /// 복귀 요약이 그려지는 곳: 새 Issues 화면이 꺼진 구성(Release 표면 포함)은 All work 위 카드뿐이다. U2 + C3에서는 Review에도 Projects에도 요약이 없다 (U2 계약 10장 2, Review 안 카드는 D4b-m): 열 곳이 없어 아무것도 하지 않는다
     func openNewestReview() {
         guard review != nil else { return }
-        reviewID = reviewQueue.newest?.id
-        openPanel(.review)
+        if let newest = reviewQueue.newest {
+            reviewID = newest.id
+            openPanel(.review)
+        } else if case .empty = reviewScreen {
+            guard issues == nil, summary?.summary?.hasChangesToClear == true else { return }
+            openAllWork()
+        } else {
+            reviewID = nil
+            openPanel(.review)
+        }
     }
 
     /// ← →: 큐에서 한 칸 (끝에서 돌지 않는다). 항목은 id로 옮긴다
