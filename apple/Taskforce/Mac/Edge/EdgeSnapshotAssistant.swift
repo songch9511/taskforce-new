@@ -967,7 +967,7 @@ struct SnapshotTerminalLauncher: AgentTerminalLauncher {
 /// (+ `-TFSnapshotDark`, `-TFReduceMotion YES`). 승인 전 새 문구 후보(`AgentNewCopy`)가 이 견본에서만 보인다. 서버는 가짜(`AgentChatSampleGateway`)라 렌더 fixture일 뿐이다.
 /// 남기는 것(`mac-edge-agentchat-<이름>.png`): window-empty · window-in-flight(OA-4) · window-waiting(OA-4) · window-send-again-refused(동의 철회 뒤 거절) · window-reasons · window-queued · window-referent-menu · window-long-reason · window-running(Stop 원) ·
 /// window-stop-requested · window-stop-may-continue · window-truncated · window-truncated-expanded · window-events · window-many · window-hundred-plus · window-chip-added(auto 칩을 누른 뒤) ·
-/// panel-running · panel-idle-view-full(OA-3) · panel-external(OA-3) · panel-resume-card(OA-3) · panel-other-mac · panel-stop-requested · panel-stop-may-continue.
+/// panel-running · panel-idle-view-full(OA-3) · panel-external(OA-3) · panel-resume-card(OA-3) · panel-send-again-refused(동의 철회 뒤 거절) · panel-other-mac · panel-stop-requested · panel-stop-may-continue.
 /// (Resume 뒤 "아직 열림" 빨간 줄 · 폴더 고르기는 실제 프로세스 검사기를 쓰는 D4a-2의 장면이다)
 @MainActor
 enum AgentChatSnapshot {
@@ -1132,6 +1132,17 @@ enum AgentChatSnapshot {
             await settle(0.6)
             shootPanel("panel-resume-card")
         }
+        // 동의 철회 뒤 세션 패널의 Send again이 409로 거절됐다: Assistant 창과 같은 동의 안내 + 상태 줄
+        await world(AgentChatSampleData.waiting())
+        sample.deliverFailure = APIError.server(status: 409, code: .conflict, message: APIError.consentRequiredMessage)
+        await openPanel()
+        if let failed = runtime.chat.turns(for: AgentChatSampleData.conversationID).first(where: { $0.delivery?.state == .notSent }) {
+            await runtime.panelDesk.sendAgain(failed, in: AgentChatSampleData.conversationID)
+            await settle(0.8)
+            shootPanel("panel-send-again-refused")
+        }
+        sample.deliverFailure = nil
+        shell.closeSessionPanel()
         await world(AgentChatSampleData.otherMac())
         await openPanel()
         shootPanel("panel-other-mac")

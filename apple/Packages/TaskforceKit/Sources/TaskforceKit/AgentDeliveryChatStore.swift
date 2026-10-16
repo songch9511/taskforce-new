@@ -8,7 +8,9 @@ import Foundation
 // 모든 응답은 부른 계정이 지금도 그대로일 때만 반영한다. 서버의 한국어 거절 문구는 쓰지 않는다. 사용자 글은 로그에 남기지 않는다.
 
 /// Send again · 후보 고르기가 서버에 거절됐거나(동의 철회 · 409 · 기능 꺼짐 · 전송 오류) 앱이 막은(원래 칩을 모른다) 메시지의 안내.
-/// 전달 읽기와 별개다: 읽기가 성공해도 지워지지 않는다. 기존 Chat의 동의 안내 · 오류 줄(`ChatTurn.Status`)로 보이고 Try again(`retryDelivery`)이 같은 동작을 다시 한다
+/// 전달 읽기가 **그 메시지를 덮어쓰지는 않지만**(같은 미전달 상태로 읽히는 동안은 남는다) 서버가 전달이 진전했다고 읽혀 주면(`sent` · `accepted` … 상태가 달라짐) 사라진다:
+/// 요청은 서버에 닿았는데 응답만 못 받은 경우에 "Not sent"가 남지 않게 한다 (U2 12.1: 새로 읽은 서버 값이 이긴다).
+/// 기존 Chat의 동의 안내 · 오류 줄(`ChatTurn.Status`)로 보이고 Try again(`retryDelivery`)이 같은 동작을 다시 한다
 struct AgentDeliveryNotice: Equatable {
     enum Action: Equatable {
         case sendAgain
@@ -22,6 +24,8 @@ struct AgentDeliveryNotice: Equatable {
 
     let action: Action
     let failure: Failure
+    /// 안내가 생긴 때의 전달 상태: 이 상태로 읽히는 동안만 남는다
+    let state: AgentDeliveryState
 
     var chatStatus: ChatTurn.Status {
         switch failure {
@@ -126,6 +130,7 @@ extension ChatStore {
             // 계정이 떠났거나 · 더 나중에 시작한 읽기가 있거나 · 그 사이 서버가 대화를 없다고 확인했으면 이 응답은 버린다
             guard scope.isCurrent(token), deliveryReadSeq[id] == sequence, !isStale(id, since: started) else { return }
             deliveryBook.merge(page.messages, readStartedAt: readStart, appliedAt: tickRow())
+            dropNoticesThatProgressed()
             deliveryRead.insert(id)
             guard let next = AgentDeliveryReadPolicy.nextSince(afterPage: page.messages) else { break }
             since = next
@@ -185,7 +190,9 @@ extension ChatStore {
         if delivery.state == .cancelled {
             guard let message = threads[conversationID]?.messages.first(where: { $0.id == messageID }) else { return }
             guard let cmid = message.clientMessageID, let chips = sentChips[cmid] else {
-                deliveryNotices[messageID] = AgentDeliveryNotice(action: .sendAgain, failure: .failed(ReadFailure.userMessage(SendAgainWithoutOriginalChips())))
+                deliveryNotices[messageID] = AgentDeliveryNotice(
+                    action: .sendAgain, failure: .failed(ReadFailure.userMessage(SendAgainWithoutOriginalChips())), state: delivery.state
+                )
                 return
             }
             await send(message.text, in: conversationID, attachments: chips, clearsDraft: false)
@@ -216,7 +223,7 @@ extension ChatStore {
             }
         } catch {
             guard scope.isCurrent(token), !isStale(conversationID, since: started) else { return }
-            noteDeliveryFailure(error, for: messageID, action: .sendAgain)
+            noteDeliveryFailure(error, for: messageID, action: .sendAgain, state: delivery.state)
             await refreshDeliveries(afterMyRequestIn: conversationID)
         }
     }
@@ -241,7 +248,7 @@ extension ChatStore {
             onAgentTurnMayStart?()
         } catch {
             guard scope.isCurrent(token), !isStale(conversationID, since: started) else { return }
-            noteDeliveryFailure(error, for: messageID, action: .referent(actionID))
+            noteDeliveryFailure(error, for: messageID, action: .referent(actionID), state: .needsReferent)
             await refreshDeliveries(afterMyRequestIn: conversationID)
         }
     }
@@ -249,7 +256,7 @@ extension ChatStore {
     // MARK: 거절 · 오류 안내
 
     /// 거절의 종류를 기존 Chat의 말로 옮긴다 (`failed(_:turnID:in:)`와 같다): 동의 철회의 409 → 동의 안내 · 기능 꺼짐 → "Chats aren't available yet." · 그 밖 → 한 줄 이유
-    private func noteDeliveryFailure(_ error: Error, for messageID: UUID, action: AgentDeliveryNotice.Action) {
+    private func noteDeliveryFailure(_ error: Error, for messageID: UUID, action: AgentDeliveryNotice.Action, state: AgentDeliveryState) {
         let failure: AgentDeliveryNotice.Failure
         if let api = error as? APIError, api.isFeatureOff {
             isUnavailable = true
@@ -259,7 +266,13 @@ extension ChatStore {
         } else {
             failure = .failed(ReadFailure.userMessage(error))
         }
-        deliveryNotices[messageID] = AgentDeliveryNotice(action: action, failure: failure)
+        deliveryNotices[messageID] = AgentDeliveryNotice(action: action, failure: failure, state: state)
+    }
+
+    /// 서버가 전달이 진전했다고 읽혀 준 메시지의 안내를 지운다 (안내가 생긴 때와 상태가 달라졌다: 그 사이 다른 기기가 보냈거나 요청이 사실은 닿았다)
+    func dropNoticesThatProgressed() {
+        let kept = deliveryNotices.filter { id, notice in deliveryBook.delivery(for: id)?.state == notice.state }
+        if kept.count != deliveryNotices.count { deliveryNotices = kept }
     }
 
     /// Try again (거절 · 막힘 안내의): 같은 Send again · 같은 후보 고르기를 다시 한다. 그 사이 서버가 그 메시지를 바꿨으면(다른 기기) 아무것도 보내지 않고 안내만 지운다

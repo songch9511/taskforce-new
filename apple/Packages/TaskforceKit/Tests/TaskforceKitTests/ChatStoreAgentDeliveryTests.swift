@@ -553,6 +553,84 @@ struct ChatStoreAgentDeliveryTests {
         #expect(agent.delivers.count == before && !chat.needsConsent(in: conversation.id) && line(chat, message) == .accepted)
     }
 
+    // MARK: 거절 안내는 같은 미전달 상태일 때만 (U2 12.1: 새로 읽은 서버 값이 이긴다)
+
+    /// 요청은 서버에 닿았는데 응답을 못 받아 오류 안내가 남았다. 서버가 전달이 진전했다고(sent · accepted …) 새로 읽어 알려 주면 안내는 사라진다.
+    /// 같은 미전달 상태(notSent)로 읽히는 동안에는 안내가 남는다
+    @Test func aRefusalNoticeIsDroppedAsSoonAsAFreshReadShowsTheDeliveryProgressed() async {
+        for progressed in [AgentDeliveryState.sent, .accepted] {
+            let (conversation, message) = serveOne(AgentDelivery(state: .notSent, reason: .writeGateClosed))
+            let chat = store()
+            await open(conversation, messages: [message], chat: chat)
+            agent.deliverHandler = { _, _ in throw APIError.transport("response lost") }
+            await chat.sendAgain(message.id, in: conversation.id)
+            await chat.settle()
+            guard case .failed = chat.turns(for: conversation.id)[0].status else {
+                Issue.record("서버가 아직 notSent로 읽히는 동안은 오류 줄이 남는다")
+                return
+            }
+            // 사실은 서버가 받았다
+            serve { _ in [Fx.entry(message, AgentDelivery(state: progressed))] }
+            await chat.refreshDeliveries(conversation.id)
+            let turn = chat.turns(for: conversation.id)[0]
+            #expect(turn.status == .sent && turn.delivery?.state == progressed && !chat.needsConsent(in: conversation.id), "\(progressed.raw): 진전을 읽었으면 \"Not sent\"가 남지 않는다")
+            #expect(!turn.showsStatusInsteadOfDelivery)
+        }
+    }
+
+    /// 거절 직후의 내 읽기(`afterMyRequest`)가 이미 진전을 읽어도 같다 (응답 실패 → 바로 읽기 → 진전)
+    @Test func theReadRightAfterAFailedRequestAlreadyClearsTheNoticeWhenTheServerProgressed() async {
+        let (conversation, message) = serveOne(AgentDelivery(state: .notSent))
+        let chat = store()
+        await open(conversation, messages: [message], chat: chat)
+        serve { _ in [Fx.entry(message, AgentDelivery(state: .sent))] }
+        agent.deliverHandler = { _, _ in throw APIError.transport("response lost") }
+        await chat.sendAgain(message.id, in: conversation.id)
+        await chat.settle()
+        #expect(chat.turns(for: conversation.id)[0].status == .sent && line(chat, message) == .sent)
+    }
+
+    @Test func aConsentNoticeAndAReferentNoticeAreDroppedWhenTheServerShowsProgressToo() async {
+        // 동의 안내: 다른 기기에서 이미 보냈다
+        let (conversation, message) = serveOne(AgentDelivery(state: .notSent))
+        let chat = store()
+        await open(conversation, messages: [message], chat: chat)
+        let refusal = consentRefusal
+        agent.deliverHandler = { _, _ in throw refusal }
+        await chat.sendAgain(message.id, in: conversation.id)
+        #expect(chat.needsConsent(in: conversation.id))
+        serve { _ in [Fx.entry(message, AgentDelivery(state: .accepted))] }
+        await chat.refreshDeliveries(conversation.id)
+        #expect(!chat.needsConsent(in: conversation.id) && chat.turns(for: conversation.id)[0].status == .sent)
+        // 후보 고르기: 응답은 못 받았지만 서버는 골랐다
+        let candidate = AgentReferentCandidate(actionID: chipAction, title: "가격 문구")
+        let (c2, m2) = serveOne(AgentDelivery(state: .needsReferent, candidates: [candidate]))
+        let other = store()
+        await open(c2, messages: [m2], chat: other)
+        agent.referentHandler = { _, _, _ in throw APIError.transport("response lost") }
+        await other.chooseReferent(chipAction, for: m2.id, in: c2.id)
+        await other.settle()
+        guard case .failed = other.turns(for: c2.id)[0].status else {
+            Issue.record("같은 needs_referent로 읽히는 동안은 오류 줄이 남는다")
+            return
+        }
+        serve { _ in [Fx.entry(m2, AgentDelivery(state: .sent))] }
+        await other.refreshDeliveries(c2.id)
+        #expect(other.turns(for: c2.id)[0].status == .sent && other.delivery(forMessage: m2.id)?.state == .sent)
+    }
+
+    @Test func theBlockedCancelledNoticeStaysWhileCancelledAndGoesWhenTheServerMovesOn() async {
+        let (conversation, message) = serveOne(AgentDelivery(state: .cancelled))
+        let chat = store()
+        await open(conversation, messages: [message], chat: chat)
+        await chat.sendAgain(message.id, in: conversation.id)
+        await chat.refreshDeliveries(conversation.id)
+        #expect(chat.turns(for: conversation.id)[0].status.canRetry, "같은 cancelled로 읽히면 막힘 안내가 남는다")
+        serve { _ in [Fx.entry(message, AgentDelivery(state: .accepted))] }
+        await chat.refreshDeliveries(conversation.id)
+        #expect(chat.turns(for: conversation.id)[0].status == .sent)
+    }
+
     // MARK: 읽는 중에 필요해진 후속 읽기
 
     /// `skipped/not_eligible`로 서버가 이미 바뀐 것을 안 직후의 읽기는 옛 읽기에 흡수되면 안 된다: 읽는 중이어도 끝난 뒤 한 번 더 읽는다

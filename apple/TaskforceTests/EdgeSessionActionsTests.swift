@@ -219,6 +219,35 @@ struct EdgeSessionActionsTests {
         #expect(await eventually { r.sessions.items.first?.hasOpenTask == true }, "Send again 뒤 세션을 다시 읽는다")
     }
 
+    // MARK: 거절된 재전송: 세션 패널도 같은 동의 안내 · Connections
+
+    private final class Counter {
+        var value = 0
+    }
+
+    /// 동의 철회 뒤 세션 패널의 Send again이 409로 거절되면 Assistant 창과 같은 동의 안내(Allow AI processing to continue)가 뜨고, 단추가 Connections로 간다
+    @Test func aConsentRefusalOnAPanelResendShowsTheSameConsentNoticeAndConnectionsOpens() async throws {
+        let r = try await rig(Data.waiting())
+        defer { r.stop() }
+        await openConversation(r)
+        let chat = r.runtime.chat
+        let failed = try #require(chat.turns(for: Data.conversationID).first { $0.delivery?.state == .notSent })
+        #expect(!SessionPanelView.showsConsentNotice(chat: chat, conversationID: Data.conversationID), "거절 전에는 안내가 없다")
+        r.gateway.deliverFailure = APIError.server(status: 409, code: .conflict, message: APIError.consentRequiredMessage)
+        await r.runtime.panelDesk.sendAgain(failed, in: Data.conversationID)
+        let refused = try #require(chat.turns(for: Data.conversationID).first { $0.id == failed.id })
+        #expect(refused.status == .needsConsent && refused.showsStatusInsteadOfDelivery)
+        #expect(SessionPanelView.showsConsentNotice(chat: chat, conversationID: Data.conversationID), "Assistant 창과 같은 동의 안내가 패널에도 뜬다")
+        let opened = Counter()
+        r.shell.onConnect = { opened.value += 1 }
+        SessionPanelView.openConnections(r.shell)
+        #expect(opened.value == 1, "단추는 창과 같은 길(셸의 Connections)로 간다")
+        // 동의한 뒤 Try again
+        r.gateway.deliverFailure = nil
+        await r.runtime.panelDesk.retry(refused, in: Data.conversationID)
+        #expect(!SessionPanelView.showsConsentNotice(chat: chat, conversationID: Data.conversationID))
+    }
+
     // MARK: Stop
 
     @Test func theSessionPanelStopsThroughTheSessionRouteOnceAndTheStatusLineSaysRequested() async throws {

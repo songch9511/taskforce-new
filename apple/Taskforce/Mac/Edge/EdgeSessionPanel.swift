@@ -137,6 +137,16 @@ struct SessionPanelView: View {
 
     // MARK: 본문
 
+    /// 동의가 먼저 필요한 글이 있나 (Assistant 창의 "Allow AI processing to continue"와 같은 조건)
+    static func showsConsentNotice(chat: ChatStore, conversationID: UUID) -> Bool {
+        chat.needsConsent(in: conversationID)
+    }
+
+    /// 동의 안내의 단추: 셸의 Connections (Assistant 창의 `openConnections`와 같은 길 — 컨트롤러가 둘 다 `rail.onConnections()`에 잇는다)
+    static func openConnections(_ shell: EdgeShellModel) {
+        shell.onConnect()
+    }
+
     /// 맨 아래로 내릴 때를 알리는 값: 글 수와 마지막 글(상태 · 전달 표시가 바뀌어도 바뀐다)
     private struct BodySignature: Equatable {
         var count = 0
@@ -166,6 +176,12 @@ struct SessionPanelView: View {
                     if let problem {
                         Notice(title: problem == .offline ? PanelEmptyKind.offline.title : ChatCopy.couldNotLoad) {
                             Button(ChatCopy.tryAgain) { chat.loadConversation(conversationID) }.buttonStyle(TFButtonStyle(.secondary, size: .sm))
+                        }
+                    }
+                    // 동의가 먼저 필요하다 (Send again · 후보 고르기가 동의 철회로 거절됐다): Assistant 창과 같은 안내 · 같은 Connections 길
+                    if Self.showsConsentNotice(chat: chat, conversationID: conversationID) {
+                        Notice(title: ChatCopy.consentNeeded) {
+                            Button(ChatCopy.allowAIButton) { Self.openConnections(shell) }.buttonStyle(TFButtonStyle(.secondary))
                         }
                     }
                     ForEach(chat.turns(for: conversationID)) { turn in
