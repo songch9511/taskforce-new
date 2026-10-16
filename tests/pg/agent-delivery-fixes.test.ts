@@ -84,6 +84,19 @@ async function blocked(waiter: pg.Client, blocker: pg.Client) {
   throw new Error("Expected the waiter to block on the holder via pg_blocking_pids");
 }
 
+/** promise가 끝났거나(settled) waiter가 blocker를 기다리는(blocked) 순간까지 기다린다. 기다리지 않는 쪽 · 기다리는 쪽 코드를 같은 줄거리로 시험하려고 쓴다 */
+async function settledOrBlocked(promise: Promise<unknown>, waiter: pg.Client, blocker: pg.Client) {
+  let settled = false;
+  void promise.then(() => { settled = true; });
+  for (let i = 0; i < 250; i++) {
+    if (settled) return "settled" as const;
+    const row = (await setup.query<{ blocked: boolean }>("select $2::int = any(pg_blocking_pids($1)) as blocked", [pids.get(waiter), pids.get(blocker)])).rows[0];
+    if (row.blocked) return "blocked" as const;
+    await sleep(20);
+  }
+  throw new Error("Expected the call to settle or to block on the holder");
+}
+
 async function done(client: pg.Client, w: { user: string; action: string }) {
   const claim = { id: randomUUID(), source_id: null, field: "status", value: "done", quote: null, occurred_at: new Date().toISOString(), speaker_role: "me", certainty: "firm", directness: "first_hand", audience: "shared", origin: "user", channel: "note", state: "active" };
   const result = await client.query<{ written: boolean }>(
@@ -351,21 +364,27 @@ describe("P8 회수 ↔ lease", () => {
   it("잠금 아래 다시 확인: 후보 조회 뒤 만료가 늘어난 메시지는 회수하지 않는다 (낡은 후보 목록)", async () => {
     const first = await f.offlineWorld("2000-01-01T00:00:00Z");
     const second = await f.anotherOffline(first, "2000-01-02T00:00:00Z");
-    // 회수는 창 안에서 세션 id 순으로 잠근다: 먼저 처리되는 쪽(head)의 세션을 막아 두고, 뒤(tail)의 만료를 그동안 미룬다
-    const [head, tail] = [first, second].sort((p, q) => p.session.localeCompare(q.session));
-    await d.query("begin");
-    await d.query("select id from public.agent_sessions where id=$1 for update", [head.session]); // 첫 후보가 세션 잠금에서 기다리는 동안
-    await b.query("begin");
-    const reclaiming = pending(fb.expire());
-    await blocked(b, d);
-    await f.q("update public.conversation_messages set delivery_expires_at = now() + interval '1 day' where id=$1", [tail.message]); // 둘째 후보의 만료가 미뤄짐
-    const result = valueOf(await reclaiming); // 첫 후보는 1초 뒤 busy, 둘째는 다시 확인에서 건너뜀
-    await b.query("commit");
-    await d.query("rollback");
-    expect(result).toEqual({ reclaimed: 0, busy: 1, sessions: [] });
-    expect(await f.msg(tail.message)).toMatchObject({ delivery_state: "dispatched" });
-    expect(await f.one("select state from public.execution_steps where id=$1", [tail.step])).toEqual({ state: "prepared" });
-    expect((await f.expire()).reclaimed).toBe(1); // 세션 잠금이 풀린 첫 후보는 다음 분에 회수된다 (시험 DB를 깨끗이)
+    // 첫 후보를 회수(쓰기)하는 동안 멈추게 하는 트리거를 시험 DB에만 건다. 회수는 기다리지 않으므로 멈추는 자리를 이렇게 만든다
+    await f.q("create function public.tmp_f3_slow() returns trigger language plpgsql as $$ begin perform pg_sleep(1.5); return new; end $$");
+    await f.q(`create trigger tmp_f3_slow before update of delivery_state on public.conversation_messages for each row
+      when (new.delivery_state = 'expired' and old.delivery_state is distinct from 'expired') execute function public.tmp_f3_slow()`);
+    try {
+      const reclaiming = pending(fb.expire());
+      for (let i = 0; i < 250; i++) {
+        const row = (await setup.query<{ wait_event: string | null }>("select wait_event from pg_stat_activity where pid=$1", [pids.get(b)])).rows[0];
+        if (row.wait_event === "PgSleep") break;
+        await sleep(20);
+      }
+      await f.q("update public.conversation_messages set delivery_expires_at = now() + interval '1 day' where id=$1", [second.message]); // 둘째 후보의 만료가 미뤄짐
+      const result = valueOf(await reclaiming);
+      expect(result).toEqual({ reclaimed: 1, busy: 0, sessions: [{ user_id: first.user, agent_session_id: first.session }] }); // 둘째는 다시 확인에서 건너뜀
+    } finally {
+      await f.q("drop trigger if exists tmp_f3_slow on public.conversation_messages");
+      await f.q("drop function if exists public.tmp_f3_slow()");
+    }
+    expect(await f.msg(second.message)).toMatchObject({ delivery_state: "dispatched" });
+    expect(await f.one("select state from public.execution_steps where id=$1", [second.step])).toEqual({ state: "prepared" });
+    await f.updateRow("conversation_messages", second.message, { delivery_state: "cancelled" }); // 시험 DB를 깨끗이
   });
 });
 
@@ -396,20 +415,26 @@ describe("P9 회수 ↔ Send again (메시지 FU 경합)", () => {
   });
 });
 
-describe("P10 회수 ↔ Done · Stop · revoke_bridge · heartbeat 복귀", () => {
+describe("P10 회수 ↔ Done · Stop · revoke_bridge · heartbeat 복귀 (회수는 기다리지 않는다)", () => {
   it.each([
     ["Done", (w: World) => ({ client: c, run: () => done(c, w) })],
     ["revoke_bridge", (w: World) => ({ client: c, run: () => c.query("select public.revoke_bridge($1,$2) as result", [w.user, w.bridge]) })],
-  ] as const)("%s이 run · task를 쥐고 줄 서면 회수가 메시지 · 세션을 쥔 채 기다린다: 40P01 0, %s은 메시지 NOWAIT에서 55P03, 회수는 끝남", async (name, racer) => {
+  ] as const)("%s이 run · task를 쥐고 줄 서 있어도 회수는 기다리지 않고 busy로 건너뛴다 (교착 0). %s이 끝나면 메시지는 cancelled", async (name, racer) => {
     const w = await f.offlineWorld();
-    const { r1, r2 } = await crossed(w, racer(w), { client: b, run: () => fb.expire() });
-    expect([codeOf(r1), codeOf(r2)]).toEqual(["55P03", "ok"]);
-    expect(valueOf(r2)).toMatchObject({ reclaimed: 1, busy: 0 });
-    await b.query("commit");
-    if (name === "Done") await retry(c, () => done(c, w));
-    else await retry(c, () => c.query("select public.revoke_bridge($1,$2) as result", [w.user, w.bridge]));
-    expect(await f.msg(w.message)).toMatchObject({ delivery_state: "expired" });
-    expect(await f.one("select state from public.agent_tasks where id=$1", [w.task])).toEqual({ state: "failed" });
+    await d.query("begin");
+    await d.query("select id from public.agent_tasks where id=$1 for update", [w.task]); // 제3 연결이 task를 쥔다
+    await c.query("begin");
+    const closing = guard(c, pending(racer(w).run())); // Done · 폐기: run(과 폐기는 세션)을 쥐고 task에서 기다린다
+    await blocked(c, d);
+    const started = Date.now();
+    expect(await fb.expire()).toEqual({ reclaimed: 0, busy: 1, sessions: [] });
+    expect(Date.now() - started).toBeLessThan(500);
+    await d.query("rollback");
+    const closed = await closing;
+    expect(codeOf(closed), name).toBe("ok");
+    await c.query("commit");
+    expect(await f.msg(w.message)).toMatchObject({ delivery_state: "cancelled" });
+    expect(await f.expire()).toEqual({ reclaimed: 0, busy: 0, sessions: [] });
   });
 
   it("Stop이 먼저면 회수는 그 메시지를 건너뛰고(busy) Stop이 commit하면 메시지는 cancelled — 회수할 것이 남지 않는다", async () => {
@@ -435,16 +460,28 @@ describe("P10 회수 ↔ Done · Stop · revoke_bridge · heartbeat 복귀", () 
     expect(await f.msg(w.message)).toMatchObject({ delivery_state: "expired" });
   });
 
-  it.each(["heartbeat가 먼저", "회수가 먼저"] as const)("heartbeat 복귀 · %s: 교착 0, 끝 상태는 순서와 무관하게 메시지 expired · 세션 bound", async (order) => {
+  it("heartbeat가 먼저(commit 전): 회수는 그 세션을 기다리지 않고 busy, heartbeat가 commit한 뒤 다음 회수가 메시지를 expired로 만든다 (세션은 bound)", async () => {
     const w = await f.offlineWorld();
     await a.query("begin");
-    if (order === "heartbeat가 먼저") await a.query("select public.bridge_heartbeat($1,$2,'[]'::jsonb)", [w.user, w.bridge]);
-    else expect((await fa.expire()).reclaimed).toBe(1);
-    await b.query("begin");
-    const second = pending<unknown>(order === "heartbeat가 먼저" ? fb.expire() : b.query("select public.bridge_heartbeat($1,$2,'[]'::jsonb)", [w.user, w.bridge]));
-    await blocked(b, a); // 세션 FU
+    await a.query("select public.bridge_heartbeat($1,$2,'[]'::jsonb)", [w.user, w.bridge]);
+    const started = Date.now();
+    expect(await fb.expire()).toEqual({ reclaimed: 0, busy: 1, sessions: [] });
+    expect(Date.now() - started).toBeLessThan(500);
     await a.query("commit");
-    expect(codeOf(await second)).toBe("ok");
+    expect((await f.expire()).reclaimed).toBe(1);
+    expect(await f.msg(w.message)).toMatchObject({ delivery_state: "expired", delivery_reason: null });
+    expect(await f.one("select status from public.agent_sessions where id=$1", [w.session])).toEqual({ status: "bound" });
+  });
+
+  it("회수가 먼저(commit 전): heartbeat(사용자 경로)가 세션 잠금에서 기다렸다가 끝나고, 끝 상태는 메시지 expired · 세션 bound", async () => {
+    const w = await f.offlineWorld();
+    await a.query("begin");
+    expect((await fa.expire()).reclaimed).toBe(1);
+    await b.query("begin");
+    const beating = pending<unknown>(b.query("select public.bridge_heartbeat($1,$2,'[]'::jsonb)", [w.user, w.bridge]));
+    await blocked(b, a);
+    await a.query("commit");
+    expect(codeOf(await beating)).toBe("ok");
     await b.query("commit");
     expect(await f.msg(w.message)).toMatchObject({ delivery_state: "expired", delivery_reason: null });
     expect(await f.one("select status from public.agent_sessions where id=$1", [w.session])).toEqual({ status: "bound" });
@@ -452,49 +489,112 @@ describe("P10 회수 ↔ Done · Stop · revoke_bridge · heartbeat 복귀", () 
   });
 });
 
-describe("P10b 회수 배치 ↔ heartbeat — 같은 bridge의 두 세션, 만료 순서가 세션 id 순서의 역순 (검토 반영 P2)", () => {
+describe("P10c · P13b 백그라운드 작업(sweep · 회수)은 사용자 경로가 쥘 수 있는 잠금을 기다리지 않는다 — 여러 bridge (재검토 P2)", () => {
   let counter = 0;
-  /** 같은 bridge의 세션 둘: id가 큰 쪽(high)의 만료가 더 이르다 — 만료순으로 잠그면 high → low, heartbeat는 low → high */
-  async function reverseOrderSessions() {
+  /**
+   * bridge가 둘: A는 bridge id가 작고 세션 id가 크다, B는 bridge id가 크고 세션 id가 작다.
+   * sweep은 bridge id 순(A → B), 회수 · Done은 세션 id 순(B → A)이라 서로 반대로 잠그면 순환이 된다.
+   */
+  async function twoBridgeWorld(shareAction: boolean) {
     const user = await f.user();
-    const bridge = await f.bridge(user);
-    const connection = await f.agentConnection(user, bridge, { adapter: "agent:codex" });
     await f.q("insert into public.execution_actors(user_id) values($1) on conflict do nothing", [user]);
     await f.q("update public.execution_controls set blocked=false");
-    const tag = `c${String(++counter).padStart(3, "0")}`; // P13의 id와 겹치지 않게 둘째 묶음이 다르다
-    const open = async (sessionId: string, expires: string) => {
+    const tag = `d${String(++counter).padStart(3, "0")}`;
+    let action: string | undefined;
+    const open = async (bridgeId: string, sessionId: string, expires: string) => {
+      const bridge = await f.bridge(user, { id: bridgeId });
+      const connection = await f.agentConnection(user, bridge, { adapter: "agent:codex" });
       const session = await f.session(user, connection, { id: sessionId });
       const conversation = await f.agentConversation(user, connection, session);
       const message = String((await f.post(user, conversation, randomUUID(), "work")).message_id);
-      const started = await f.start(user, message);
+      const started = await f.start(user, message, shareAction && action ? [action] : []);
       expect(started.status).toBe("started");
-      await f.updateRow("agent_sessions", session, { status: "unreachable" });
+      action ??= started.action_id!;
       await f.updateRow("conversation_messages", message, { delivery_expires_at: expires });
-      return { session, message, task: started.agent_task_id!, run: started.run_id!, step: started.step_id! };
+      return { bridge, session, message, task: started.agent_task_id!, run: started.run_id!, step: started.step_id! };
     };
-    const high = await open(`bbbbbbbb-${tag}-4000-8000-0000000000bb`, "1990-01-01T00:00:00Z");
-    const low = await open(`aaaaaaaa-${tag}-4000-8000-0000000000aa`, "1990-01-02T00:00:00Z");
-    return { user, bridge, high, low };
+    const A = await open(`aaaaaaaa-${tag}-4000-8000-0000000000a1`, `ffffffff-${tag}-4000-8000-0000000000f1`, "1990-01-02T00:00:00Z");
+    const B = await open(`bbbbbbbb-${tag}-4000-8000-0000000000b1`, `00000001-${tag}-4000-8000-0000000000f2`, "1990-01-01T00:00:00Z");
+    await f.q("update public.bridges set last_heartbeat_at='2000-01-01T00:00:00Z' where id = any($1::uuid[])", [[A.bridge, B.bridge]]);
+    return { user, action: action!, A, B };
   }
+  const sweep = (client: pg.Client) => client.query("select * from public.sweep_bridge_heartbeats(now(),50)");
 
-  it("회수가 high 세션을 쥔 채 low를 기다리고 heartbeat가 low를 쥔 채 high를 기다리는 순서를 강제해도 교착이 없다 (둘 다 끝남)", async () => {
-    const w = await reverseOrderSessions();
+  it("P10c 회수 ↔ sweep: 회수는 B 세션을 쥔 채 A를, sweep은 A 세션을 쥔 채 B를 기다리게 줄을 세워도 둘 다 기다리지 않고 끝난다 (교착 0)", async () => {
+    const w = await twoBridgeWorld(false);
     await d.query("begin");
-    await d.query("select id from public.agent_tasks where id=$1 for update", [w.high.task]); // 제3 연결이 high의 task를 쥔다
-    await a.query("begin");
-    const reclaiming = guard(a, pending(fa.expire())); // 회수: 첫 후보에서 high의 task를 기다린다
-    await blocked(a, d);
+    await d.query("select id from public.agent_tasks where id=$1 for update", [w.A.task]); // 제3 연결이 A의 task를 쥔다
     await b.query("begin");
-    const beating = guard(b, pending(b.query("select public.bridge_heartbeat($1,$2,'[]'::jsonb) as result", [w.user, w.bridge]))); // heartbeat: 세션을 id 순으로 쥐려다 회수를 기다린다
-    await blocked(b, a);
+    const sweeping = guard(b, pending(sweep(b))); // 예전: bridge A의 세션 · run을 쥐고 task A에서 기다림. 지금: 못 쥐는 bridge A는 롤백하고 B를 처리해 끝남
+    await settledOrBlocked(sweeping, b, d);
+    await a.query("begin");
+    const reclaiming = guard(a, pending(fa.expire())); // 예전: 세션 id 순이라 B를 쥔 채 A(sweep이 쥠)를 기다림. 지금: 못 쥐는 후보는 busy로 건너뜀
+    await settledOrBlocked(reclaiming, a, b);
+    const released = Date.now();
     await d.query("rollback");
-    const reclaimed = await reclaiming; // 줄이 맞으면 회수가 먼저 끝나 commit하고 heartbeat가 이어 간다
+    const swept = await sweeping;
+    const reclaimed = await reclaiming;
+    expect(Date.now() - released, "백그라운드 작업끼리 기다려 서로 물지 않는다(교착 감지는 1초)").toBeLessThan(600);
     if (codeOf(reclaimed) === "ok") await a.query("commit");
-    const beat = await beating;
-    if (codeOf(beat) === "ok") await b.query("commit");
-    expect([codeOf(reclaimed), codeOf(beat)]).toEqual(["ok", "ok"]);
-    expect(valueOf(reclaimed)).toMatchObject({ reclaimed: 2, busy: 0 });
-    for (const s of [w.high, w.low]) expect(await f.msg(s.message)).toMatchObject({ delivery_state: "expired", delivery_reason: null });
+    if (codeOf(swept) === "ok") await b.query("commit");
+    expect([codeOf(reclaimed), codeOf(swept)]).toEqual(["ok", "ok"]);
+    // 건너뛴 쪽은 다음 분에 처리된다
+    for (let round = 0; round < 3; round++) if ((await f.expire()).busy === 0) break;
+    for (const x of [w.A, w.B]) expect(await f.msg(x.message)).toMatchObject({ delivery_state: "expired" });
+  });
+
+  it("P13b Done ↔ sweep: 같은 Action의 두 세션(다른 bridge)에서 Done(run을 세션 id 순)과 sweep(bridge id 순)이 서로 반대로 run을 잡으려 해도 교착이 없다 (sweep은 기다리지 않는다)", async () => {
+    const w = await twoBridgeWorld(true);
+    await d.query("begin");
+    await d.query("select id from public.agent_tasks where id=$1 for update", [w.A.task]);
+    await b.query("begin");
+    const sweeping = guard(b, pending(sweep(b))); // 예전: bridge A의 세션 · run을 쥐고 task A에서 기다림. 지금: bridge A는 롤백하고 bridge B를 처리해 끝남
+    await settledOrBlocked(sweeping, b, d);
+    await c.query("begin");
+    const closing = guard(c, pending(done(c, { user: w.user, action: w.action }))); // Done: run B를 쥐려 하고(sweep이 쥔 쪽이 있으면 기다림) 이어 run A
+    await blocked(c, b);
+    const released = Date.now();
+    await d.query("rollback");
+    const swept = await sweeping;
+    expect(Date.now() - released, "sweep은 Done을 기다리지 않는다(교착 감지는 1초)").toBeLessThan(600);
+    if (codeOf(swept) === "ok") await b.query("commit");
+    const closed = await closing;
+    if (codeOf(closed) === "ok") await c.query("commit");
+    expect([codeOf(swept), codeOf(closed)]).toEqual(["ok", "ok"]);
+    for (const x of [w.A, w.B]) expect((await f.one("select state from public.execution_runs where id=$1", [x.run])).state).toBe("stopped");
+  });
+
+  it("P10d 회수 ↔ heartbeat(같은 bridge): heartbeat가 쥔 세션은 기다리지 않고 busy, 푼 뒤 다음 호출이 회수한다", async () => {
+    const w = await twoBridgeWorld(false);
+    await a.query("begin");
+    await a.query("select public.bridge_heartbeat($1,$2,'[]'::jsonb)", [w.user, w.A.bridge]); // 세션 A · run A · task A를 쥔다
+    const started = Date.now();
+    const result = await fb.expire();
+    expect(Date.now() - started).toBeLessThan(500);
+    expect(result.busy).toBeGreaterThanOrEqual(1); // A 후보는 건너뜀
+    expect(await f.msg(w.A.message)).toMatchObject({ delivery_state: "dispatched" });
+    await a.query("commit");
+    expect((await f.expire()).busy).toBe(0);
+    for (const x of [w.A, w.B]) expect(await f.msg(x.message)).toMatchObject({ delivery_state: "expired" });
+  });
+});
+
+describe("P10e sweep_bridge_heartbeats는 세션 · run · task · 단계 어느 잠금도 기다리지 않는다 (재검토 P2)", () => {
+  it.each([
+    ["세션", "agent_sessions", "session"], ["run", "execution_runs", "run"], ["task", "agent_tasks", "task"], ["단계", "execution_steps", "step"],
+  ] as const)("남이 %s 행을 쥐고 있으면 기다리지 않고 그 bridge를 롤백해 실패 수 1로 돌려주고(세션은 그대로 bound), 풀린 뒤 다음 sweep이 처리한다", async (_name, table, key) => {
+    const w = await f.world();
+    await f.updateRow("bridges", w.bridge, { last_heartbeat_at: "2000-01-01T00:00:00Z" });
+    await a.query("begin");
+    await a.query(`select id from public.${table} where id=$1 for update`, [w[key]]);
+    const started = Date.now();
+    const rows = await fb.q("select * from public.sweep_bridge_heartbeats(now(),50)");
+    expect(Date.now() - started).toBeLessThan(500);
+    expect(rows).toEqual([{ user_id: null, bridge_id: null, agent_session_id: null, agent_task_id: null, turn_seq: null, failure_count: 1 }]);
+    expect(await f.one("select status from public.agent_sessions where id=$1", [w.session])).toEqual({ status: "bound" }); // 롤백: 다음 분에 처음부터
+    await a.query("rollback");
+    expect(await fb.q("select * from public.sweep_bridge_heartbeats(now(),50)")).toEqual([]); // lease 전 dispatched는 바뀌는 task가 없다
+    expect(await f.one("select status from public.agent_sessions where id=$1", [w.session])).toEqual({ status: "unreachable" });
   });
 });
 
@@ -510,21 +610,21 @@ describe("P11 회수 중 막힘은 후보 하나만 건너뛴다", () => {
     expect((await f.expire()).reclaimed).toBe(1);
   });
 
-  it("후보의 세션을 남이 쥐면 lock_timeout(1초) 뒤 busy, 쓰기 0", async () => {
+  it.each([
+    ["세션", "agent_sessions", "session"], ["run", "execution_runs", "run"], ["task", "agent_tasks", "task"], ["단계", "execution_steps", "step"], ["명령", "bridge_commands", "command"],
+  ] as const)("후보의 %s 행을 남이 쥐면 기다리지 않고 바로 busy, 쓰기 0 (NOWAIT)", async (_name, table, key) => {
     const w = await f.offlineWorld();
     await a.query("begin");
-    await a.query("select id from public.agent_sessions where id=$1 for update", [w.session]);
+    await a.query(`select id from public.${table} where id=$1 for update`, [w[key]]);
     const started = Date.now();
     expect(await f.expire()).toEqual({ reclaimed: 0, busy: 1, sessions: [] });
-    const elapsed = Date.now() - started;
-    expect(elapsed).toBeGreaterThanOrEqual(900);
-    expect(elapsed).toBeLessThan(2500);
+    expect(Date.now() - started).toBeLessThan(500);
     expect(await f.msg(w.message)).toMatchObject({ delivery_state: "dispatched" });
     await a.query("rollback");
     expect((await f.expire()).reclaimed).toBe(1);
   });
 
-  it("후보 셋 중 메시지가 막힌 것 · 세션이 막힌 것은 busy, 나머지 하나는 회수한다. 전체 시간 < 3초", async () => {
+  it("후보 셋 중 메시지가 막힌 것 · 세션이 막힌 것은 busy, 나머지 하나는 회수한다. 전체 시간 < 1초 (기다림 0)", async () => {
     const one = await f.offlineWorld("2000-01-01T00:00:00Z");
     const two = await f.anotherOffline(one, "2000-01-02T00:00:00Z");
     const three = await f.anotherOffline(one, "2000-01-03T00:00:00Z");
@@ -534,7 +634,7 @@ describe("P11 회수 중 막힘은 후보 하나만 건너뛴다", () => {
     await d.query("select id from public.agent_sessions where id=$1 for update", [two.session]);
     const started = Date.now();
     const result = await f.expire();
-    expect(Date.now() - started).toBeLessThan(3000);
+    expect(Date.now() - started).toBeLessThan(1000);
     expect(result).toEqual({ reclaimed: 1, busy: 2, sessions: [{ user_id: three.user, agent_session_id: three.session }] });
     expect(await f.msg(three.message)).toMatchObject({ delivery_state: "expired" });
     expect(await f.msg(one.message)).toMatchObject({ delivery_state: "dispatched" });
@@ -546,7 +646,7 @@ describe("P11 회수 중 막힘은 후보 하나만 건너뛴다", () => {
 });
 
 describe("P11b 후보가 아닌 행은 잠그지도 않는다 (후보 조건 하나씩)", () => {
-  // 세션을 남이 쥐고 있어도 기다리지 않아야 한다: 후보로 잡혔다면 lock_bridge_command가 세션 잠금에서 1초를 기다리고 busy가 된다.
+  // 세션을 남이 쥐고 있어도 기다리지 않아야 한다: 후보로 잡혔다면 세션 NOWAIT에서 물러나 busy 1이 된다(후보가 아니면 busy 0).
   // 각 사례는 그 조건 하나만 어긋난 행이다 (다른 조건과 withdraw_bridge_command의 자체 확인이 가리지 못하게 일부러 어긋난 행을 만든다)
   const variants: [string, (w: World) => Promise<unknown>][] = [
     ["명령이 lease됨(단계는 prepared)", (w) => f.q("update public.bridge_commands set lease_owner='x', leased_at=now() where id=$1", [w.command])],

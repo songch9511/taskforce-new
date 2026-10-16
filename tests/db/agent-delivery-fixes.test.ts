@@ -81,6 +81,31 @@ describe("T2 교체한 세 함수는 한 곳만 다르다 (T4 본문 동일성)"
   });
 });
 
+describe("T2b sweep_bridge_heartbeats 교체는 잠금 방식 넷만 다르다 (재검토: 백그라운드 작업은 기다리지 않는다)", () => {
+  const swaps: [string, string][] = [
+    ["order by a0.id for update of a0 loop", "order by a0.id for update of a0 nowait loop"],
+    ["order by r0.id for no key update loop", "order by r0.id for no key update nowait loop"],
+    ["order by t0.id for update loop", "order by t0.id for update nowait loop"],
+    ["and execution_steps.user_id=b.user_id for update;", "and execution_steps.user_id=b.user_id for update nowait;"],
+  ];
+  it("새 본문 = BC 본문에서 세션 · run · task · 단계 잠금 넷만 NOWAIT로 바꾼 것 (적용된 본문도 같다)", async () => {
+    let expected = fileBody(BC, "sweep_bridge_heartbeats");
+    for (const [from, to] of swaps) {
+      expect(expected.split(from).length - 1, `원본에 ${from} 정확히 한 번`).toBe(1);
+      expected = expected.replace(from, to);
+    }
+    expect(fileBody(DELIVERY_FIXES_MIGRATION, "sweep_bridge_heartbeats")).toBe(expected);
+    const applied = normalizeBody(String((await deliveryFixesFixtures(handle).one("select prosrc from pg_proc where pronamespace='public'::regnamespace and proname='sweep_bridge_heartbeats'")).prosrc));
+    expect(applied).toBe(expected);
+  });
+
+  it("남은 기다리는 잠금 방식이 없다: 세션 · run · task · 단계 잠금은 모두 NOWAIT이고, bridge는 이미 skip locked다", async () => {
+    const body = normalizeBody(String((await deliveryFixesFixtures(handle).one("select prosrc from pg_proc where pronamespace='public'::regnamespace and proname='sweep_bridge_heartbeats'")).prosrc));
+    const locks = [...body.matchAll(/for (?:no key )?update(?: of \w+)?( nowait| skip locked)?/g)].map((m) => m[1]?.trim() ?? "wait");
+    expect(locks).toEqual(["skip locked", "nowait", "nowait", "nowait", "nowait"]);
+  });
+});
+
 describe("T2 지문 · 되돌리기 (T4c)", () => {
   const fingerprint = async (target: PGlite) => {
     const rows = async (sql: string) => JSON.stringify((await target.query(sql)).rows);
@@ -101,7 +126,7 @@ describe("T2 지문 · 되돌리기 (T4c)", () => {
     return match[0].replace(/^create function/, "create or replace function");
   };
 
-  it("이 마이그레이션은 새 함수 하나와 색인 하나 · 시퀀스 하나를 더하고 세 함수의 본문만 바꾼다: 그 밖의 함수 · 권한 · proconfig · 표 · 열 · 트리거 · 제약 · 정책이 그대로이고, 머리의 되돌리기를 실행하면 앞 지문으로 완전히 돌아간다", async () => {
+  it("이 마이그레이션은 새 함수 하나와 색인 하나 · 시퀀스 하나를 더하고 네 함수의 본문만 바꾼다: 그 밖의 함수 · 권한 · proconfig · 표 · 열 · 트리거 · 제약 · 정책이 그대로이고, 머리의 되돌리기를 실행하면 앞 지문으로 완전히 돌아간다", async () => {
     const sql = readFileSync(path.join(MIGRATIONS, DELIVERY_FIXES_MIGRATION), "utf8");
     const scripts = await supabaseSchemaScripts();
     const before = scripts.filter((script) => script !== sql);
@@ -117,7 +142,7 @@ describe("T2 지문 · 되돌리기 (T4c)", () => {
       expect(newFns.filter((fn) => !oldFns.some((old) => old.sig === fn.sig)).map((fn) => fn.sig)).toEqual(["expire_unleased_agent_messages(integer)"]);
       expect(oldFns.filter((old) => !newFns.some((fn) => fn.sig === old.sig))).toEqual([]);
       const changed = oldFns.filter((old) => newFns.find((fn) => fn.sig === old.sig)!.def !== old.def).map((old) => old.sig).sort();
-      expect(changed).toEqual(["request_agent_task_cancel(uuid,uuid)", "revoke_bridge(uuid,uuid)", "stop_agent_runs_on_user_claim()"]);
+      expect(changed).toEqual(["request_agent_task_cancel(uuid,uuid)", "revoke_bridge(uuid,uuid)", "stop_agent_runs_on_user_claim()", "sweep_bridge_heartbeats(timestamp with time zone,integer)"]);
       for (const old of oldFns) {
         const next = newFns.find((fn) => fn.sig === old.sig)!;
         expect({ acl: next.acl, config: next.config }, old.sig).toEqual({ acl: old.acl, config: old.config });
@@ -130,7 +155,7 @@ describe("T2 지문 · 되돌리기 (T4c)", () => {
       const revert = /^-- 되돌리기: (drop function public\.expire_unleased_agent_messages\(integer\);) (drop index public\.bridge_commands_unleased_message_idx;) (drop sequence public\.bridge_reclaim_scan_seq;)\s*$/m.exec(sql);
       expect(revert, "머리 주석에 되돌리기 문장").not.toBeNull();
       await clone.exec(`${revert![1]} ${revert![2]} ${revert![3]}`);
-      for (const [file, name] of [[QS, "request_agent_task_cancel"], [QS, "stop_agent_runs_on_user_claim"], [BC, "revoke_bridge"]] as const) await clone.exec(original(file, name));
+      for (const [file, name] of [[QS, "request_agent_task_cancel"], [QS, "stop_agent_runs_on_user_claim"], [BC, "revoke_bridge"], [BC, "sweep_bridge_heartbeats"]] as const) await clone.exec(original(file, name));
       expect(await fingerprint(clone)).toEqual(baseline);
     } finally {
       await clone.close();
@@ -179,6 +204,41 @@ describe("T3 Done 결과 불변 (마이그레이션 앞 · 뒤 끝 상태가 같
     await finish("dispatched before lease", await f.world());
     return out;
   }
+
+  async function sweepStates(target: () => PGlite) {
+    const f = deliveryFixesFixtures(handleOf(target));
+    const out: Record<string, unknown> = {};
+    const stale = async (name: string, make: () => Promise<{ user: string; bridge: string; session: string; task: string; run: string }>) => {
+      const w = await make();
+      await f.updateRow("bridges", w.bridge, { last_heartbeat_at: "2000-01-01T00:00:00Z" });
+      const rows = await f.q("select * from public.sweep_bridge_heartbeats(now(),50)");
+      out[name] = plain({
+        rows: rows.filter((row) => row.bridge_id === w.bridge).map(({ user_id, bridge_id, agent_session_id, agent_task_id, turn_seq, failure_count }) => ({ same_user: user_id === w.user, bridge_id, agent_session_id, agent_task_id, turn_seq, failure_count })),
+        session: await f.one("select status from public.agent_sessions where id=$1", [w.session]),
+        task: await f.one("select state, last_live_state from public.agent_tasks where id=$1", [w.task]),
+        events: await f.q("select type, payload->>'event_type' as event_type from public.execution_events where run_id=$1 order by id", [w.run]),
+      });
+    };
+    await stale("accepted", async () => { const w = await f.world(); await f.lease(w); await f.bridgeEvent(w, f.event(w, "accepted")); return w; });
+    await stale("awaiting answer", async () => { const w = await f.world(); await f.lease(w); await f.bridgeEvent(w, f.event(w, "question", { text: "Q", question: answerQuestionFixture() })); return w; });
+    await stale("dispatched before lease", async () => f.world());
+    return out;
+  }
+
+  it("sweep_bridge_heartbeats: 경합이 없으면 결과 행 · 세션 · task 상태 · 사건이 마이그레이션 앞 · 뒤에 같다 (accepted · 질문 대기 · lease 전)", async () => {
+    const sql = readFileSync(path.join(MIGRATIONS, DELIVERY_FIXES_MIGRATION), "utf8");
+    const scripts = await supabaseSchemaScripts();
+    const clone = await openPglite(scripts.filter((script) => script !== sql));
+    try {
+      const before = await sweepStates(() => clone);
+      const after = await sweepStates(() => db);
+      expect(after).toEqual(before);
+      expect((after.accepted as { task: { state: string } }).task.state).toBe("unreachable");
+      expect((after["dispatched before lease"] as { task: { state: string } }).task.state).toBe("dispatched");
+    } finally {
+      await clone.close();
+    }
+  }, 120_000);
 
   it("질문 없음 · 질문 있음(Codex · Claude Code) · lease 전 답(둘) · lease 전 dispatched 여섯 경로의 끝 상태가 마이그레이션 앞 · 뒤에 같다", async () => {
     const sql = readFileSync(path.join(MIGRATIONS, DELIVERY_FIXES_MIGRATION), "utf8");

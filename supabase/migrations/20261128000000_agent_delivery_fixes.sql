@@ -8,20 +8,22 @@
 -- 결함 2 (만료한 lease 전 prepared): Mac이 lease 전에 꺼져 있으면 24시간이 지나도 메시지가 dispatched/prepared에 남아 Send again이 not_eligible이다.
 --   새 함수 expire_unleased_agent_messages(p_limit)가 1분 cron(sweepBridge)에서 만료한 lease 전 message 명령을 lock_bridge_command 순서(메시지 -> 세션 -> run -> task -> step -> 명령)로 잠그고
 --   withdraw_bridge_command(..., 'expired')로 회수한다 - Mac이 돌아와 lease가 거둘 것과 같은 함수, 같은 조건. 찾기용 부분 색인 하나.
---   검토 반영: (1) 한 번에 여러 세션을 잠그므로 후보를 세션 id 순으로 처리한다(heartbeat · 폐기 · sweep · Done의 run 순서와 같다) - 만료순이면 회수가 높은 id 세션을 쥔 채 낮은 id를 기다리고
---   heartbeat가 낮은 id를 쥔 채 높은 id를 기다려 40P01이 났다. (2) 후보가 p_limit보다 많으면 호출마다 창(p_limit개)을 돌려 가며 처리한다(작은 시퀀스 하나) - 영구히 건너뛰어지는 후보가
---   머리를 붙잡아 뒤 후보를 막지 못하게 한다.
+--   검토 반영: (1) 백그라운드 작업은 사용자 경로(Done · 답 · heartbeat · 폐기)가 쥘 수 있는 잠금을 기다리지 않는다. 한 호출이 여러 세션 · bridge를 잠그고 성공한 후보의 잠금이 함수가 끝날 때까지 남아,
+--   기다리면 heartbeat(bridge -> 세션 -> run) · sweep(bridge id 순) · Done(세션 -> run id 순)과 순서가 어긋나는 곳에서 순환이 난다. 그래서 회수는 세션 · run · task · 단계 · 명령을 NOWAIT로 쥐고,
+--   sweep_bridge_heartbeats도 같은 잠금을 NOWAIT로 바꿔 교체한다(쥘 수 없으면 그 bridge는 롤백하고 다음 분에 처음부터). 사용자 경로는 기존의 한 순서를 그대로 지킨다.
+--   (2) 후보가 p_limit보다 많으면 호출마다 창(p_limit개)을 돌려 가며 처리한다(작은 시퀀스 하나) - 영구히 건너뛰어지는 후보가 머리를 붙잡아 뒤 후보를 막지 못하게 한다.
 --
--- 교체하는 함수는 셋이고 각각 한 곳만 다르다 (tests/db/agent-delivery-fixes.test.ts T2가 본문 동일성을 확인한다):
+-- 교체하는 함수는 넷이고 각각 잠금 방식 · 순서만 다르다 (tests/db/agent-delivery-fixes.test.ts T2가 본문 동일성을 확인한다):
 --   request_agent_task_cancel       QS의 정의 + `if v_question is not null then` 바로 뒤 세션 · 원 메시지 KEY SHARE NOWAIT 두 줄
 --   revoke_bridge                   BC의 정의 + 작업 고리(`order by id for update loop`) 바로 뒤 메시지 KEY SHARE NOWAIT 한 줄
 --   stop_agent_runs_on_user_claim   QS의 정의 + `order by id for no key update loop` -> `order by agent_session_id, id for no key update loop`
+--   sweep_bridge_heartbeats         BC의 정의 + 세션 · run · task · 단계를 잡는 네 곳의 잠금만 NOWAIT (`for update of a0 loop` -> `for update of a0 nowait loop` 등)
 -- 시그니처 · 반환이 같아 create or replace가 권한과 트리거를 그대로 둔다. 새 표 · 새 정책 · 새 열 0, metric_events를 건드리지 않는다. 새 객체는 함수 하나 · 색인 하나 · 시퀀스 하나.
 --
 -- 운영 적용은 병합 직전 승인 뒤 `supabase db query --linked -f`로 20261127000000 뒤에 한다 (db push 금지). 배포 순서: 마이그레이션 -> 서버 (서버가 먼저 나가면 sweepBridge의 새 RPC가
 -- "함수 없음"으로 실패해 errors로만 세어지고 다음 분에 다시 한다. 마이그레이션만 먼저면 회수가 돌지 않을 뿐 결함 1 수정은 바로 효과가 있다).
 -- 되돌리기: drop function public.expire_unleased_agent_messages(integer); drop index public.bridge_commands_unleased_message_idx; drop sequence public.bridge_reclaim_scan_seq;
--- 그리고 request_agent_task_cancel · stop_agent_runs_on_user_claim (20261116120000)과 revoke_bridge (20261118000000)의 정의를 그 파일 그대로 create or replace로 다시 적용한다.
+-- 그리고 request_agent_task_cancel · stop_agent_runs_on_user_claim (20261116120000)과 revoke_bridge · sweep_bridge_heartbeats (20261118000000)의 정의를 그 파일 그대로 create or replace로 다시 적용한다.
 begin;
 set local lock_timeout = '5s';
 
@@ -185,9 +187,54 @@ begin
 end;
 $$;
 
+-- OA F3 재검토: 백그라운드 작업은 사용자 경로(Done · 답 · heartbeat · 폐기)가 쥘 수 있는 잠금을 기다리지 않는다. 사용자 경로는 한 순서로만 잠그고(Done은 세션 -> run id 순, heartbeat · 폐기는 bridge -> 세션 -> run),
+-- sweep은 bridge id 순으로 여러 bridge를 지나므로 순서가 달라지는 곳이 생긴다. 기다리지 않으면 순환이 생길 수 없다. 세션 · run · task · 단계 잠금을 NOWAIT로 바꿨다(본문은 이 잠금 방식 넷만 원본과 다르다).
+-- 쥘 수 없는 bridge는 하위 트랜잭션 전체가 롤백되고(세션 상태 변경도 되돌아가므로 다음 분에 처음부터 다시 한다) 기존 실패 수(failure_count)로 세어진다 - sweepBridge의 errors.
+create or replace function public.sweep_bridge_heartbeats(p_now timestamptz default null,p_limit integer default 50)
+returns table(user_id uuid,bridge_id uuid,agent_session_id uuid,agent_task_id uuid,turn_seq integer,failure_count integer)
+language plpgsql set search_path = '' as $$
+declare b public.bridges; a public.agent_sessions; r public.execution_runs; t public.agent_tasks; s public.execution_steps; v_changed uuid[]; v_failures integer:=0;
+begin
+  for b in select b0.* from public.bridges b0 where b0.status='active' and b0.last_heartbeat_at<public.db_now()-interval '90 seconds'
+    and exists(select 1 from public.agent_sessions a0 join public.agent_connections ac on ac.id=a0.connection_id and ac.user_id=a0.user_id
+      where ac.bridge_id=b0.id and a0.user_id=b0.user_id and a0.status='bound')
+    order by b0.id limit greatest(p_limit,0) for no key update skip locked loop
+    begin
+    v_changed:='{}';
+    for a in select a0.* from public.agent_sessions a0 join public.agent_connections ac on ac.id=a0.connection_id and ac.user_id=a0.user_id
+      where ac.bridge_id=b.id and a0.user_id=b.user_id and a0.status='bound' order by a0.id for update of a0 nowait loop
+      update public.agent_sessions set status='unreachable' where id=a.id;
+      for r in select r0.* from public.execution_runs r0 where r0.agent_session_id=a.id and r0.user_id=b.user_id order by r0.id for no key update nowait loop
+        for t in select t0.* from public.agent_tasks t0 where t0.run_id=r.id and t0.agent_session_id=a.id and t0.user_id=b.user_id
+          order by t0.id for update nowait loop
+          select * into s from public.execution_steps where id=t.step_id and execution_steps.user_id=b.user_id for update nowait;
+          if t.state in ('accepted','running','awaiting_answer') or (t.state='dispatched' and s.state in ('calling','unknown_outcome')
+            and exists(select 1 from public.bridge_commands c where c.step_id=s.id and c.bridge_id=b.id and c.lease_owner is not null)) then
+            update public.agent_tasks set last_live_state=state,state='unreachable' where id=t.id;
+            insert into public.execution_events(user_id,run_id,type,bridge_id,external_event_id,turn_seq,payload)
+              values(b.user_id,r.id,'agent',b.id,'bridge-unreachable:'||a.id||':'||floor(extract(epoch from b.last_heartbeat_at))::bigint,t.turn_seq,
+                jsonb_build_object('event_type','bridge_unreachable','agent_session_id',a.id,'agent_task_id',t.id,
+                  'turn_seq',t.turn_seq,'fanout_pending',true));
+            v_changed:=array_append(v_changed,t.id);
+          end if;
+        end loop;
+      end loop;
+    end loop;
+    return query select b.user_id,b.id,t0.agent_session_id,t0.id,t0.turn_seq,0
+      from public.agent_tasks t0 where t0.id=any(v_changed) order by t0.agent_session_id,t0.id;
+    exception when others then
+      raise warning 'sweep_bridge_heartbeats: bridge %', b.id;
+      v_failures:=v_failures+1;
+    end;
+  end loop;
+  if v_failures>0 then return query select null::uuid,null::uuid,null::uuid,null::uuid,null::integer,v_failures; end if;
+end;
+$$;
+
 -- 만료한 lease 전 message 명령 회수 (cron 1분, sweepBridge). 후보는 잠금 없이 찾고 후보마다 하위 트랜잭션에서 메시지부터 잠근다:
--- 메시지(skip locked) -> lock_bridge_command(메시지 -> 세션 -> run -> task -> step -> 명령) -> 같은 조건 다시 확인 -> withdraw_bridge_command(..., 'expired').
--- 메시지를 남이 쥐면 그 후보는 건너뛰고(다음 분), 그 밖의 잠금을 1초 넘게 기다리면 그 후보만 55P03 · 교착이면 40P01로 하위 트랜잭션이 물러난다(busy). 나머지 후보는 계속한다.
+-- 메시지(skip locked) -> 세션 -> run -> task -> step -> 명령(모두 NOWAIT, lock_bridge_command와 같은 순서) -> lock_bridge_command -> 같은 조건 다시 확인 -> withdraw_bridge_command(..., 'expired').
+-- 백그라운드 작업이라 사용자 경로(Done · 답 · heartbeat · 폐기)가 쥘 수 있는 잠금을 기다리지 않는다: 쥘 수 없으면 그 후보만 busy로 세고 건너뛴다(다음 분에 다시). 기다리지 않으니 순환이 생길 수 없다.
+-- 나머지 후보는 계속한다. 아래 lock_timeout은 NOWAIT로 못 막는 남은 기다림(트리거가 쓰는 다른 행 등)의 상한이다.
 -- 조건은 lease의 message 만료 조건(BC lease_bridge_command)과 같고 세션 · 연결 · 실행 gate는 보지 않는다: 24시간이 지나면 이유보다 만료가 이긴다.
 -- 쓰기는 withdraw_bridge_command가 하는 것뿐이다 (단계 failed + receipt, 메시지 expired + 이유 null, task failed, 명령 withdrawn). 지표 · 로그 0.
 create function public.expire_unleased_agent_messages(p_limit integer) returns jsonb
@@ -209,15 +256,15 @@ begin
     raise exception 'expire_unleased_agent_messages: limit must be 1-200' using errcode = '22023';
   end if;
   -- 후보를 만료가 오래된 순으로 p_limit개씩 창으로 나누고, 이번 호출은 번호(v_window)가 가리키는 창 하나를 처리한다. 후보가 p_limit 이하면 창이 하나라 늘 같은 창이다.
-  -- 창 안에서는 세션 id 순으로 잠근다: heartbeat · 폐기 · sweep이 세션을 id 순으로 쥐고 Done이 run을 (세션, run) 순으로 쥐므로 같은 순서면 서로 기다리는 순환이 없다.
-  -- (성공한 후보의 잠금은 하위 트랜잭션이 끝나도 함수가 끝날 때까지 남는다.)
+  -- (성공한 후보의 잠금은 하위 트랜잭션이 끝나도 함수가 끝날 때까지 남지만, 이 함수는 어떤 잠금도 기다리지 않으므로 그 잠금이 순환의 한쪽이 될 수 없다.)
   for v_candidate in
-    select e.command_id, e.bridge_id, e.user_id, e.message_id
+    select e.command_id, e.bridge_id, e.user_id, e.message_id, e.session_id, e.run_id, e.task_id, e.step_id
       from (
-        select c.id as command_id, c.bridge_id, c.user_id, t.message_id, t.agent_session_id, m.delivery_expires_at,
+        select c.id as command_id, c.bridge_id, c.user_id, t.message_id, t.id as task_id, s.id as step_id, s.run_id, r.agent_session_id as session_id, m.delivery_expires_at,
                row_number() over (order by m.delivery_expires_at, c.id) - 1 as pos, count(*) over () as total
           from public.bridge_commands c
           join public.execution_steps s on s.id = c.step_id and s.user_id = c.user_id
+          join public.execution_runs r on r.id = s.run_id and r.user_id = s.user_id
           join public.agent_tasks t on t.id = c.agent_task_id and t.user_id = c.user_id
           join public.conversation_messages m on m.id = t.message_id and m.user_id = c.user_id
          where c.kind = 'message' and c.lease_owner is null and c.outcome is null
@@ -225,7 +272,7 @@ begin
            and m.delivery_state = 'dispatched' and m.delivery_expires_at <= public.db_now()
       ) e
      where e.pos / p_limit = v_window % greatest((e.total + p_limit - 1) / p_limit, 1)
-     order by e.agent_session_id, e.delivery_expires_at, e.command_id
+     order by e.pos
   loop
     -- cron(maxDuration 60초) 안에서 끝나게: 예산을 넘으면 남은 후보는 다음 분에 한다
     exit when clock_timestamp() - v_started > interval '10 seconds';
@@ -235,6 +282,12 @@ begin
         v_busy := v_busy + 1;
         continue;
       end if;
+      -- lock_bridge_command가 잡을 행을 같은 순서로 먼저 NOWAIT로 쥔다(못 쥐면 55P03 -> 아래 예외 처리에서 busy). 뒤의 lock_bridge_command는 이미 쥔 행을 다시 잡을 뿐이라 기다리지 않는다
+      perform 1 from public.agent_sessions where id = v_candidate.session_id and user_id = v_candidate.user_id for update nowait;
+      perform 1 from public.execution_runs where id = v_candidate.run_id and user_id = v_candidate.user_id for no key update nowait;
+      perform 1 from public.agent_tasks where id = v_candidate.task_id and user_id = v_candidate.user_id for update nowait;
+      perform 1 from public.execution_steps where id = v_candidate.step_id and user_id = v_candidate.user_id for update nowait;
+      perform 1 from public.bridge_commands where id = v_candidate.command_id and user_id = v_candidate.user_id for update nowait;
       v_command := public.lock_bridge_command(v_candidate.user_id, v_candidate.bridge_id, v_candidate.command_id);
       if v_command.id is null then continue; end if;
       -- 잠금 아래 다시 확인: 후보를 찾은 뒤 lease · 취소 · 재전송 등으로 바뀌었으면 건너뛴다

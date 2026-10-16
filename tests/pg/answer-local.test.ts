@@ -342,17 +342,20 @@ describe("P6 로컬 답 ↔ heartbeat sweep", () => {
     await f.updateRow("agent_tasks", w.task, { state: "awaiting_answer" });
     expect((await local(f, w)).status).toBe("answered");
   });
-  it("답이 먼저면 answered이고 sweep이 그 뒤 작업을 unreachable로 (교착 0)", async () => {
+  // OA F3 재검토: sweep은 백그라운드 작업이라 사용자 경로(답)가 쥔 잠금을 기다리지 않는다. 쥐고 있으면 그 bridge는 롤백하고 실패 수 1로 돌려주며, 답이 commit된 뒤 다음 sweep이 작업을 unreachable로 만든다
+  it("답이 먼저면 answered이고 sweep은 기다리지 않고 물러났다가(실패 수 1), 답이 commit된 뒤 다음 sweep이 작업을 unreachable로 (교착 0)", async () => {
     const w = await secretWorld();
     await f.updateRow("bridges", w.bridge, { last_heartbeat_at: "2000-01-01T00:00:00Z" });
     await a.query("begin");
-    await b.query("begin");
     expect((await local(fa, w)).status).toBe("answered");
-    const waiting = pending<unknown>(b.query("select * from public.sweep_bridge_heartbeats(now(),50)"));
-    await blocked();
+    const started = Date.now();
+    const swept = await fb.q("select * from public.sweep_bridge_heartbeats(now(),50)");
+    expect(Date.now() - started).toBeLessThan(500);
+    expect(swept).toEqual([{ user_id: null, bridge_id: null, agent_session_id: null, agent_task_id: null, turn_seq: null, failure_count: 1 }]);
     await a.query("commit");
-    await resolved(waiting);
-    await b.query("commit");
+    expect(await f.state(w)).toMatchObject({ state: "running" }); // 물러난 sweep은 아무것도 바꾸지 않았다
+    const next = await fb.q("select * from public.sweep_bridge_heartbeats(now(),50)");
+    expect(next).toEqual([expect.objectContaining({ bridge_id: w.bridge, agent_task_id: w.task, failure_count: 0 })]);
     expect(await answerSteps(w)).toBe(1);
     expect(await f.state(w)).toMatchObject({ state: "unreachable" });
   });
