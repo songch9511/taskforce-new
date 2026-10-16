@@ -245,8 +245,17 @@ extension ClaudeCodeTiming {
         var timing = ClaudeCodeTiming.testing
         timing.keeperExit = 30
         timing.closeTimeout = 30
+        // 답 훅이 새 정체 기록을 기다리는 시간 0.8 → 2.5초: 소켓 답 기한(아래 넉넉한 예산이면 훅 기한 − 0.3초) 안 (18장)
+        timing.identityWait = 2.5
         return timing
     }
+}
+
+extension ClaudeTest {
+    /// 시험 소켓의 답 · 읽기 예산 (18장): 앱 기본값(1.2초 · 1.0초) 대신 넉넉히 — 허용 · 보류 · 답 전달을 보는 시험이 붐비는 기계에서 시간 초과 deny로 뒤집히지 않게.
+    /// 그러면 답 기한은 훅이 실은 기한(4초) − 0.3초가 정한다. 소켓 시간 초과 길을 보는 시험은 `productionSocket`을 쓴다
+    static let socketBudgets = (response: 3.5, read: 3.5)
+    static let productionSocket = (response: HookSocketServer.responseBudget, read: HookSocketServer.readBudget)
 }
 
 enum ClaudeTest {

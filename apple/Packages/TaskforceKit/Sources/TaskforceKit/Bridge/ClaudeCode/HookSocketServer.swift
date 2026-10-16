@@ -46,22 +46,31 @@ public final class HookSocketServer: @unchecked Sendable {
         }
     }
 
-    /// bridge가 답하는 시간 상한 (연결부터, 서버 1.0초 + 로컬). 훅은 `HookWire.budget`(4초)까지 기다리고 요청에 자기 절대 기한을 싣는다 (17장 2)
+    /// bridge가 답하는 시간 상한 기본값 (연결부터, 서버 1.0초 + 로컬). 훅은 `HookWire.budget`(4초)까지 기다리고 요청에 자기 절대 기한을 싣는다 (17장 2)
     public static let responseBudget: TimeInterval = 1.2
-    static let readBudget: TimeInterval = 1.0
+    /// 요청 한 줄을 읽는 시간 상한 기본값 (연결부터)
+    public static let readBudget: TimeInterval = 1.0
     /// 훅이 실은 기한보다 이만큼 앞서 정한다 (응답을 쓰고 훅이 읽을 여유)
     static let hookMargin: TimeInterval = 0.3
     public static let unknownSpawn = "This tool call is not from a Taskforce run."
 
     public let path: String
+    /// 이 서버의 답 · 읽기 상한 (앱은 위 기본값. 시험이 성공 길을 볼 때만 넉넉히 준다: 붐비는 기계에서 시간 초과로 뒤집히지 않게, 18장)
+    public let responseLimit: TimeInterval
+    public let readLimit: TimeInterval
     private let peerUID: @Sendable (Int32) -> uid_t?
     private let log: any BridgeLogSink
     private let state = Mutex<(listener: Int32, registrations: [(nonce: [UInt8], registration: Registration, id: UUID)])>((-1, []))
 
-    public init(path: String, peerUID: @escaping @Sendable (Int32) -> uid_t? = HookSocketServer.peerUID, log: any BridgeLogSink = NoBridgeLog()) {
+    public init(
+        path: String, peerUID: @escaping @Sendable (Int32) -> uid_t? = HookSocketServer.peerUID, log: any BridgeLogSink = NoBridgeLog(),
+        responseBudget: TimeInterval = HookSocketServer.responseBudget, readBudget: TimeInterval = HookSocketServer.readBudget
+    ) {
         self.path = path
         self.peerUID = peerUID
         self.log = log
+        responseLimit = responseBudget
+        readLimit = readBudget
     }
 
     deinit {
@@ -218,9 +227,10 @@ public final class HookSocketServer: @unchecked Sendable {
         let startedNS = HookWire.monotonicNow()
         var response = HookResponse(decision: .deny, reason: HookReason.unreadable)
         var answered: (registration: Registration, toolUseID: String)?
-        if let line = Self.readLine(client, deadline: started.addingTimeInterval(Self.readBudget)), let request = try? HookRequest.decode(line: line) {
+        if let line = Self.readLine(client, deadline: started.addingTimeInterval(readLimit)), let request = try? HookRequest.decode(line: line) {
             if let registration = registered(for: request) {
-                response = respond(to: request, registration: registration, deadlineNS: Self.deadline(startedNS: startedNS, hookDeadlineNS: request.deadlineNS))
+                let deadlineNS = Self.deadline(startedNS: startedNS, hookDeadlineNS: request.deadlineNS, responseBudget: responseLimit)
+                response = respond(to: request, registration: registration, deadlineNS: deadlineNS)
                 answered = (registration, request.toolUseID)
             } else {
                 // L0: 등록 없는 nonce · 세션 불일치
@@ -242,7 +252,7 @@ public final class HookSocketServer: @unchecked Sendable {
 
     /// 응답을 정하는 기한 하나 (17장 2, `HookWire.monotonicNow()` 시계의 나노초): 연결부터 `responseBudget`과, 훅이 실은 절대 기한 − `hookMargin` 중 이른 쪽.
     /// 같은 시계라 보낸 뒤 읽기까지의 지연도 센다: 확정한 응답은 훅이 끊기 `hookMargin` 전에 정해진다 (그 안에 쓰고 읽는다)
-    static func deadline(startedNS: UInt64, hookDeadlineNS: UInt64?) -> UInt64 {
+    static func deadline(startedNS: UInt64, hookDeadlineNS: UInt64?, responseBudget: TimeInterval = HookSocketServer.responseBudget) -> UInt64 {
         let own = startedNS &+ UInt64(responseBudget * 1_000_000_000)
         guard let hookDeadlineNS else { return own }
         let margin = UInt64(hookMargin * 1_000_000_000)

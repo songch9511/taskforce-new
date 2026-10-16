@@ -23,9 +23,10 @@ final class FakeClaude: @unchecked Sendable {
     /// - `linked`: 후보 `~/.local/bin/claude`가 실제 파일(`~/versions/claude-fake`)을 가리키는 기호 링크다 (8장 8)
     /// - `keeper`: 지킴이 대신 쓸 실행 파일 (없는 경로 · 늦게 뜨는 감싸개, 14장 1 · 9)
     /// - `timing`: 기본은 CI 시간(`.ci`: 끝을 기다리는 포기 상한만 넉넉히). 시간 초과 길을 보는 시험은 자기 시간을 넘긴다
+    /// - `socket`: 소켓 답 · 읽기 예산. 기본은 넉넉한 시험 값, 소켓 시간 초과 길을 보는 시험은 `ClaudeTest.productionSocket` (18장)
     init(
         decider: ScriptedDecider = ScriptedDecider(), environment extra: [String: String] = [:], hooks: ClaudeCodeTestHooks = ClaudeCodeTestHooks(), attach: Bool = true,
-        timing: ClaudeCodeTiming = .ci, linked: Bool = false, keeper: String? = nil
+        timing: ClaudeCodeTiming = .ci, linked: Bool = false, keeper: String? = nil, socket budgets: (response: TimeInterval, read: TimeInterval) = ClaudeTest.socketBudgets
     ) throws {
         self.decider = decider
         claude = box.home.appending(path: ".local/bin/claude")
@@ -42,7 +43,7 @@ final class FakeClaude: @unchecked Sendable {
         socketFolder = URL(fileURLWithPath: ClaudeSandbox.real(NSTemporaryDirectory())).appending(path: "tfh-\(UUID().uuidString.prefix(6))", directoryHint: .isDirectory)
         let socket = socketFolder.appending(path: "hook.sock").path
         precondition(socket.utf8.count <= 103, "socket path must fit sun_path")
-        server = HookSocketServer(path: socket)
+        server = HookSocketServer(path: socket, responseBudget: budgets.response, readBudget: budgets.read)
         try server.start()
         let helpers = ClaudeCodeHelpers(
             hook: try BuiltProducts.url("tf-agent-hook").path, mcp: try BuiltProducts.url("tf-agent-mcp").path, keeper: try keeper ?? BuiltProducts.url("tf-agent-keeper").path
@@ -437,7 +438,10 @@ struct ClaudeCodeProcessTests {
     // MARK: E17 훅 예산
 
     @Test func e17ABridgeSlowerThanTheHookBudgetIsADenyAndTheLateDecisionIsIgnored() async throws {
-        let fake = try FakeClaude(decider: ScriptedDecider([.success(ScriptedDecider.response(.defer, .manualWrite))]), hooks: ClaudeCodeTestHooks(gateDelay: .seconds(2)))
+        // 소켓 시간 초과 길: 앱의 소켓 예산(1.2초) 그대로
+        let fake = try FakeClaude(
+            decider: ScriptedDecider([.success(ScriptedDecider.response(.defer, .manualWrite))]), hooks: ClaudeCodeTestHooks(gateDelay: .seconds(2)), socket: ClaudeTest.productionSocket
+        )
         try fake.scenario(["runs": [["steps": [["tool": "Write", "id": "toolu_w", "input": ["file_path": fake.workspace + "/a.txt", "content": "A"]]], "final_text": "ok"]]])
         let events = EventLog()
         _ = try await fake.turn(events: events)

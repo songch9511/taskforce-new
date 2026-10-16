@@ -121,7 +121,8 @@ struct ClaudeRereview5ReproTests {
     /// 답 훅이 시간 초과 deny로 끝나고 프로세스가 그 결과를 정하기 전에 끝났다: 그래도 닫힘(`requestClosed`)이다
     @Test func p24aATimedOutAnswerHookIsClosedEvenIfTheProcessEndsFirst() async throws {
         let delay = Shared(false)
-        let fake = try FakeClaude(hooks: ClaudeCodeTestHooks(beforeHookReturn: { if delay.value { try? await Task.sleep(for: .seconds(2.5)) } }))
+        // 답 훅의 처리기는 훅 예산(4초)보다 오래 걸린다: 어떤 소켓 예산이든 시간 초과 deny로 끝난다 (첫 턴은 넉넉한 시험 예산으로 제때)
+        let fake = try FakeClaude(hooks: ClaudeCodeTestHooks(beforeHookReturn: { if delay.value { try? await Task.sleep(for: .seconds(6)) } }))
         try fake.scenario(["runs": [["steps": [["tool": "mcp__tf__ask_user", "id": "toolu_q", "input": FakeClaude.askColor]]], ["final_text": "Blue."]]])
         let first = EventLog()
         let identity = try await fake.turn(events: first)
@@ -155,7 +156,8 @@ struct ClaudeRereview5ReproTests {
         // 잘못된 길(늦은 판정 · init을 기다림)은 답 대기 60초 · 가짜의 120초 쉼까지 간다: 바른 길과 넉넉히 가르는 상한 30초
         var timing = ClaudeCodeTiming.ci
         timing.answerTimeout = 60
-        let fake = try FakeClaude(hooks: ClaudeCodeTestHooks(beforeHookReturn: { if delay.value { try? await Task.sleep(for: .seconds(2.5)) } }), timing: timing)
+        // 다른 id의 훅 처리기는 훅 예산(4초)보다 오래 걸린다: 어떤 소켓 예산이든 시간 초과
+        let fake = try FakeClaude(hooks: ClaudeCodeTestHooks(beforeHookReturn: { if delay.value { try? await Task.sleep(for: .seconds(6)) } }), timing: timing)
         try fake.scenario(["runs": [
             ["steps": [["tool": "mcp__tf__ask_user", "id": "toolu_q", "input": FakeClaude.askColor]]],
             ["resume_id_override": "toolu_other", "pause_after_resume_hook": 120.0, "final_text": "x"],

@@ -14,8 +14,11 @@ struct HookSocketServerTests {
 
     var socketPath: String { box.root.appending(path: "b/hook.sock").path }
 
-    func server(peerUID: @escaping @Sendable (Int32) -> uid_t? = HookSocketServer.peerUID) throws -> HookSocketServer {
-        let server = HookSocketServer(path: socketPath, peerUID: peerUID)
+    /// 길 · 유예를 보는 시험은 넉넉한 소켓 예산(처리기가 붐비는 기계에서 늦어도 시간 초과 deny로 뒤집히지 않게, 18장). 시간 초과 길은 `productionSocket`
+    func server(
+        peerUID: @escaping @Sendable (Int32) -> uid_t? = HookSocketServer.peerUID, budgets: (response: TimeInterval, read: TimeInterval) = ClaudeTest.socketBudgets
+    ) throws -> HookSocketServer {
+        let server = HookSocketServer(path: socketPath, peerUID: peerUID, responseBudget: budgets.response, readBudget: budgets.read)
         try server.start()
         return server
     }
@@ -123,8 +126,20 @@ struct HookSocketServerTests {
         #expect(fallback != HookSocketServer.socketPath(applicationSupport: long, bundleID: "dev.taskforcelabs.taskforce"), "번들 id마다 다른 소켓 (시험 호스트와 실사용 앱이 섞이지 않는다)")
     }
 
+    /// 앱의 소켓 예산 · 정체 기다림은 계약 값 그대로 (18장: 시험만 init 인자로 넉넉히 준다)
+    @Test func theProductionBudgetsAreTheContractBudgets() {
+        #expect(HookSocketServer.responseBudget == 1.2 && HookSocketServer.readBudget == 1.0)
+        let server = HookSocketServer(path: socketPath)
+        #expect(server.responseLimit == 1.2 && server.readLimit == 1.0, "init 기본값")
+        #expect(ClaudeCodeTiming.standard.identityWait == 0.8 && ClaudeCodeTiming.testing.identityWait == 0.8)
+        // 서버의 답 기한은 그 서버의 예산으로 정한다 (훅 기한이 넉넉하면 자기 예산)
+        let started: UInt64 = 100_000_000_000
+        #expect(HookSocketServer.deadline(startedNS: started, hookDeadlineNS: started + 9_000_000_000, responseBudget: 3.5) == started + 3_500_000_000)
+        #expect(HookSocketServer.deadline(startedNS: started, hookDeadlineNS: started + 3_000_000_000, responseBudget: 3.5) == started + 2_700_000_000, "훅 기한 − 0.3초가 먼저")
+    }
+
     @Test func aSlowHandlerIsCutOffWithADeny() async throws {
-        let server = try server()
+        let server = try server(budgets: ClaudeTest.productionSocket)
         defer { server.stop() }
         let answered = Shared<[String]>([])
         // 처리기는 훅 예산보다 훨씬 오래 걸린다: bridge가 자기 예산에서 끊지 않으면 훅 예산까지 답이 없다

@@ -24,11 +24,14 @@ public struct ClaudeCodeTiming: Sendable, Equatable {
     public var answerTimeout: TimeInterval
     /// 구성원을 끝낸 뒤 지킴이가 구성원 0을 증명하고 스스로 끝나기를 기다리는 시간 (13장 4, 넘으면 unknown)
     public var keeperExit: TimeInterval
+    /// 답 훅이 새 정체 기록을 기다리는 최대 시간 (소켓 답 예산 안, 9장 8)
+    public var identityWait: TimeInterval
 
     public init(
         orphanInterruptGrace: TimeInterval, orphanKillGrace: TimeInterval, closeTimeout: TimeInterval, exitAfterResult: TimeInterval, drainAfterExit: TimeInterval,
-        probeTimeout: TimeInterval, serverTimeout: TimeInterval, answerTimeout: TimeInterval = 10, keeperExit: TimeInterval = 3
+        probeTimeout: TimeInterval, serverTimeout: TimeInterval, answerTimeout: TimeInterval = 10, keeperExit: TimeInterval = 3, identityWait: TimeInterval = 0.8
     ) {
+        self.identityWait = identityWait
         self.orphanInterruptGrace = orphanInterruptGrace
         self.orphanKillGrace = orphanKillGrace
         self.closeTimeout = closeTimeout

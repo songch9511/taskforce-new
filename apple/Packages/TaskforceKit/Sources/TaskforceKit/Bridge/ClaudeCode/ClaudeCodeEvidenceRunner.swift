@@ -66,16 +66,22 @@ public actor ClaudeCodeEvidenceRunner {
 
     public struct NotDisposable: Error {}
 
-    /// `decide`: 서버 대신 쓰는 대본 결정기 (R1-04처럼 실행 중에 바꾸려면 바깥에서 상자로 감싼다)
+    /// 한 단계가 끝나기를(`ended`) 기다리는 상한 (R1: 실제 `claude` 턴은 길다)
+    let stepTimeout: TimeInterval
+
+    /// `decide`: 서버 대신 쓰는 대본 결정기 (R1-04처럼 실행 중에 바꾸려면 바깥에서 상자로 감싼다).
+    /// `timing` · `stepTimeout`: 실제 실행은 기본값(앱 시간 · 600초), 시험은 짧은 상한으로 (18장: 실패가 600초를 기다리지 않게)
     public init(
         workspace: String, sessionsRoot: URL, hookServer: HookSocketServer, helpers: ClaudeCodeHelpers, locator: ClaudeCodeLocator,
-        decide: @escaping @Sendable (BridgeV1ToolDecisionQuery) async throws -> BridgeV1ToolDecisionResponse, environment: [String: String] = ProcessInfo.processInfo.environment
+        decide: @escaping @Sendable (BridgeV1ToolDecisionQuery) async throws -> BridgeV1ToolDecisionResponse, environment: [String: String] = ProcessInfo.processInfo.environment,
+        timing: ClaudeCodeTiming = .standard, stepTimeout: TimeInterval = 600
     ) throws {
         guard let real = GateFileSystem.realpath(workspace), FileManager.default.fileExists(atPath: real + "/" + Self.disposableMarker) else { throw NotDisposable() }
         self.workspace = real
+        self.stepTimeout = stepTimeout
         let lines = Lines()
         self.lines = lines
-        process = ClaudeCodeProcess(sessionsRoot: sessionsRoot, hookServer: hookServer, helpers: helpers, locator: locator, environment: environment, log: lines)
+        process = ClaudeCodeProcess(sessionsRoot: sessionsRoot, hookServer: hookServer, helpers: helpers, locator: locator, environment: environment, timing: timing, log: lines)
         process.attach(AgentRuntimeServices(decideTool: decide))
     }
 
@@ -139,7 +145,7 @@ public actor ClaudeCodeEvidenceRunner {
                 result = "error"
             }
             if kind != "close", result == "started" || result == "delivered" {
-                _ = await events.waitForEnd(timeout: 600)
+                _ = await events.waitForEnd(timeout: stepTimeout)
             }
             for event in events.all {
                 if case .sessionBound(let external, _) = event { providerSession = external }

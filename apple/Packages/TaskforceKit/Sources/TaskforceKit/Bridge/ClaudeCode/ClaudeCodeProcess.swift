@@ -779,7 +779,7 @@ public actor ClaudeCodeProcess: AgentProcess {
         }
         // 답 훅은 새 정체가 원장에 commit된 뒤에만 답한다 (9장 8): 그 전이면 잠깐 기다리고(훅 예산 안), 실패 · 시간 초과면 답을 주지 않는다
         if case .answer = spawn.mode, request.toolUseID == spawn.binding?.requestID {
-            let deadline = Date().addingTimeInterval(Self.identityWait)
+            let deadline = Date().addingTimeInterval(timing.identityWait)
             while spawn.identityRecorded == nil, Date() < deadline { try? await Task.sleep(for: .milliseconds(5)) }
             if spawn.identityRecorded != true {
                 sendInterrupt(spawn)
@@ -825,8 +825,6 @@ public actor ClaudeCodeProcess: AgentProcess {
 
     /// stdout 한 줄 상한 (⑥)
     static let maxLineBytes = 32 * 1024 * 1024
-    /// 답 훅이 새 정체 기록을 기다리는 최대 시간 (훅 예산 1.2초 안, 9장 8)
-    static let identityWait: TimeInterval = 0.8
 
     /// `claude`의 stdout · stderr 파이프(지킴이가 넘긴 것)를 읽는다. `claude`가 끝난 것은 지킴이 보고(`exited`)로 안다: 보고 없이 닫히면(지킴이가 죽었다)
     /// `claude`의 정체가 사라질 때까지 기다린 뒤 상태 모름으로. 지킴이는 앱의 자식이라 따로 거두고 그 상태를 혈통에 적는다 (13장 3)

@@ -128,7 +128,7 @@ struct ClaudeRereview4ReproTests {
 
     // MARK: F2 (s4B) 소켓 시간 초과와 `.delivered`
 
-    /// 훅이 소켓 예산(1.2초)을 넘기면 소켓은 deny를 쓴다. adapter가 그 뒤에 `.delivered`를 적으면 안 된다
+    /// 훅이 소켓 기한을 넘기면 소켓은 deny를 쓴다. adapter가 그 뒤에 `.delivered`를 적으면 안 된다
     @Test func s4BASocketTimeoutIsNotRecordedAsDelivered() async throws {
         let fake = try FakeClaude()
         try fake.scenario(["runs": [
@@ -139,7 +139,8 @@ struct ClaudeRereview4ReproTests {
         let identity = try await fake.turn(events: first)
         #expect(await first.wait { FakeClaude.ended($0) })
         let events = EventLog()
-        events.before { event in if case .progress = event { try? await Task.sleep(for: .milliseconds(1500)) } }
+        // 답 훅의 처리기가 마지막 emit에서 훅 예산(4초)보다 오래 멈춘다: 어떤 소켓 예산이든 시간 초과 deny (첫 턴은 넉넉한 시험 예산으로 제때)
+        events.before { event in if case .progress = event { try? await Task.sleep(for: .seconds(6)) } }
         let result = try await fake.answer(
             "toolu_q", kind: .input, value: AgentAnswerValue(answers: ["color": .one("red")]), external: FakeClaude.providerSession(identity), events: events
         )
