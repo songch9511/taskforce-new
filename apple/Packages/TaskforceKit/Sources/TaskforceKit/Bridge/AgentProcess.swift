@@ -356,6 +356,8 @@ public protocol AgentProcess: Sendable {
     func sessionRun(_ sessionID: String) async -> AgentSessionRun?
     /// 그 세션의 지금 실행을 끝낸다 (고아 정리 · 앱 종료, 15장 1). `sessionRun`이 nil이 아닌 adapter에만 부른다
     func terminateSessionRun(_ sessionID: String) async -> AgentLiveness
+    /// 앱 종료 · 계정 삭제가 시작됐다 (OA D3a 16장 1): 그 뒤에는 새 프로세스를 띄우지 않는다 (adapter 안에서 띄우는 것 포함). 기본: 할 일 없음
+    func stopSpawning() async
 }
 
 /// 세션의 지금 실행 (OA D3a 15장 1): 그 정체(모르면 nil)와 끝 증명
@@ -375,6 +377,7 @@ extension AgentProcess {
     public func readback(marker: String, session: AgentSessionRef) async -> AgentReadback { .unsupported }
     public func sessionRun(_ sessionID: String) async -> AgentSessionRun? { nil }
     public func terminateSessionRun(_ sessionID: String) async -> AgentLiveness { .unknown }
+    public func stopSpawning() async {}
 }
 
 /// 새 세션의 작업 폴더를 정한다 (D4a가 채운다). 사용자 폴더를 짐작해 쓰기 권한을 주지 않는다 (Q26)

@@ -67,6 +67,8 @@ public actor ClaudeCodeProcess: AgentProcess {
     private var sessionRedactors: [String: SecretRedactor] = [:]
     /// 감독 밖 spawn의 혈통 객체 (12장 8): marker마다 하나를 확인 · 끝내기가 함께 쓴다 (감독 중이면 그 spawn의 것)
     private var lineages: [String: ClaudeLineage] = [:]
+    /// 앱 종료 · 계정 삭제가 시작됐다 (16장 1): 그 뒤에는 어떤 spawn(턴 · 답 · 닫기 · 내부 닫기)도 띄우지 않는다
+    private var spawningStopped = false
 
     /// marker의 혈통 객체 하나: 감독 중이면 그 spawn의 것, 아니면 파일에서 한 번 읽어 둔 것
     func sharedLineage(_ marker: String) -> ClaudeLineage {
@@ -370,10 +372,18 @@ public actor ClaudeCodeProcess: AgentProcess {
     /// (끝을 증명하지 못하고 그만뒀으면 unknown), 아니면 잠금과 그 혈통으로 본다
     public func sessionRun(_ sessionID: String) async -> AgentSessionRun? {
         if let spawnID = sessionSpawn[sessionID], let spawn = spawns[spawnID] {
-            return AgentSessionRun(liveness: spawn.endUnproven ? .unknown : .alive, identity: spawn.identity ?? Self.lockedIdentity(spawn.id))
+            let identity = spawn.identity ?? Self.lockedIdentity(spawn.id)
+            // 등록부에 남아 있어도 끝을 증명했으면 끝이다 (16장 5: `terminateSessionRun`과 같은 답)
+            if spawn.lineage.provenEnded { return AgentSessionRun(liveness: .ended(AgentExit(code: nil)), identity: identity) }
+            return AgentSessionRun(liveness: spawn.endUnproven ? .unknown : .alive, identity: identity)
         }
         let state = lockState(sessionID)
         return AgentSessionRun(liveness: state.liveness, identity: state.spawnID.map(Self.lockedIdentity))
+    }
+
+    /// 앱 종료 · 계정 삭제가 시작됐다 (16장 1): 그 뒤의 spawn(내부 닫기 포함)을 모두 막는다. 돌고 있는 것은 그대로 (런타임이 끝낸다)
+    public func stopSpawning() async {
+        spawningStopped = true
     }
 
     /// 그 세션의 지금 실행을 끝낸다 (15장 1: 고아 정리 · 앱 종료). 감독 중이면 그 spawn을, 아니면 잠금의 spawn을 그 혈통으로
@@ -406,9 +416,9 @@ public actor ClaudeCodeProcess: AgentProcess {
     }
 
     /// 디스크 잠금으로 본 그 세션의 마지막 spawn (14장 1): 잠금이 없거나 다른 부팅이면 끝. 잠금의 spawn을 그 혈통으로 보고, 끝을 증명하면 끝 기록을 남기고 잠금을 푼다.
-    /// 잠금 · 혈통을 읽지 못했거나 정체 자리(`pending`)뿐이면 unknown
+    /// 잠금 · 혈통을 읽지 못했거나 정체 자리(`pending`)뿐이면 unknown. 잠금 자리가 없는 세션 id(UUID 아님)에는 spawn이 생길 수 없다 → 끝 (16장 7)
     private func lockState(_ sessionID: String) -> (liveness: AgentLiveness, spawnID: String?) {
-        guard let file = sessionLockFile(sessionID) else { return (.unknown, nil) }
+        guard let file = sessionLockFile(sessionID) else { return (.ended(AgentExit(code: nil)), nil) }
         switch ClaudeSessionLock.read(file) {
         case .none: return (.ended(AgentExit(code: nil)), nil)
         case .otherBoot:
@@ -491,6 +501,11 @@ public actor ClaudeCodeProcess: AgentProcess {
         mode: ClaudeMapperConfig.Mode, binding: ClaudeAnswerBinding? = nil, session: ClaudeCodeLaunch.SessionArgument, providerID: String, agentSessionID: String, taskID: String,
         turnSeq: Int, access: AgentAccess, workspace: String, folder: ClaudeSessionFolder, executable: ClaudeCodeExecutable, sink: AgentEventSink?, stdin: Data
     ) async throws -> Spawn {
+        // 종료가 시작된 뒤에는 띄우지 않는다 (16장 1, 프로세스 0)
+        guard !spawningStopped else {
+            log.log("claude_spawn_refused", ["reason": .code("shutdown")])
+            throw AgentStartError(.spawnFailed)
+        }
         try prepareCwd(folder)
         let spawnID = UUID().uuidString
         let nonce = ClaudeCodeLaunch.newNonce()
@@ -544,10 +559,13 @@ public actor ClaudeCodeProcess: AgentProcess {
                 return
             }
             _ = await self.handleHook(spawnID: spawnID, request, commit: commit)
-        }, onAnswer: { id in answered.insert(id) }, onTimeout: { [weak self] _ in
-            // 훅 시간 초과 전이 (14장 7): 아직 전달하지 않은 답은 deny를 쓰기 전에 값을 지우고 `.lost` (훅 id와 무관), 그 spawn은 멈춘다
-            guard answerMode, slot.lose() else { return }
-            Task { await self?.stopAfterTimeout(spawnID) }
+        }, onAnswer: { id in answered.insert(id) }, timeOut: { [weak self] commit, _ in
+            // 훅 시간 초과 전이 (14장 7 · 16장 2): 요청을 시간 초과로 정하는 것과 아직 전달하지 않은 답을 닫는 것(`.lost`, 훅 id와 무관)을 답 슬롯 잠금 안에서 함께.
+            // 그 뒤 다른 훅의 답 확정은 닫힌 슬롯을 본다. 닫았으면 그 spawn을 멈춘다
+            guard answerMode else { return commit.timeOut() }
+            let (won, closed) = slot.timeOut(commit)
+            if closed { Task { await self?.stopAfterTimeout(spawnID) } }
+            return won
         }))
         // 띄우는 동안(actor 밖, 14장 9) 같은 세션의 다음 실행은 이 spawn을 기다린다
         spawns[spawnID] = spawn
@@ -1256,6 +1274,18 @@ public actor ClaudeCodeProcess: AgentProcess {
                 }
                 $0.signal = .delivered(date)
                 return .delivered
+            }
+        }
+
+        /// 소켓이 한 훅의 기한을 넘겼다 (16장 2): 그 요청을 시간 초과로 정하는 것(`HookCommit.timeOut`)과 미전달 답을 닫는 것을 이 잠금 안에서 (잠금 순서 슬롯 → 요청,
+        /// `commitAnswer`와 같다). 처리기가 먼저 확정했으면 그 응답 · 닫지 않음. 시간 초과면 nil · 이번에 닫았으면 `closed`
+        func timeOut(_ commit: HookCommit) -> (won: HookResponse?, closed: Bool) {
+            state.withLock {
+                if let response = commit.timeOut() { return (response, false) }
+                guard $0.signal == nil else { return (nil, false) }
+                $0.signal = .lost
+                $0.value = AgentAnswerValue()
+                return (nil, true)
             }
         }
 

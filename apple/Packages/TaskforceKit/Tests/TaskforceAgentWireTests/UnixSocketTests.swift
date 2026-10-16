@@ -147,7 +147,7 @@ struct UnixSocketTests {
         #expect(errors.fileHandleForReading.readDataToEndOfFile().isEmpty)
     }
 
-    /// 빌드한 helper: bridge가 답하지 않으면 1.5초에서 끊고 deny (G1)
+    /// 빌드한 helper: bridge가 답하지 않으면 `HookWire.budget`(4초, 16장 3)에서 끊고 deny (G1)
     @Test func theBuiltHookGivesUpAfterTheBudget() async throws {
         let server = try TinyServer { _ in nil }
         let process = Process()
@@ -167,7 +167,7 @@ struct UnixSocketTests {
         _ = try await offPool { waiting.process.waitUntilExit() }
         let elapsed = Date().timeIntervalSince(started)
         #expect(process.terminationStatus == 0)
-        #expect(elapsed >= 1.4 && elapsed < 1.9, "\(elapsed)")
+        #expect(elapsed >= HookWire.budget - 0.1 && elapsed < HookWire.budget + 0.6, "\(elapsed)")
         let out = output.fileHandleForReading.readDataToEndOfFile()
         #expect(try HookMainTests.output(HookMain.Result(stdout: out, exitCode: 0)).decision == "deny")
     }

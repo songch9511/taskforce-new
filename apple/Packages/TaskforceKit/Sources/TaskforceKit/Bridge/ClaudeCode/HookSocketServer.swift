@@ -20,8 +20,9 @@ public final class HookSocketServer: @unchecked Sendable {
         public var handler: @Sendable (HookRequest, HookCommit) async -> Void
         /// 답을 쓰기 **직전**에 그 tool_use id로 부른다 (자체 점검 ④ "bridge가 그 id에 소켓 답을 줬음": 시간 초과 deny도 답이다)
         public var onAnswer: (@Sendable (String) -> Void)?
-        /// 요청 상태를 시간 초과로 정한 순간 · 시간 초과 deny를 쓰기 **전에** 그 tool_use id로 부른다 (14장 7: 그 전이에서 미전달 답을 바로 정산한다). 막지 않는 일만
-        public var onTimeout: (@Sendable (String) -> Void)?
+        /// 기한이 지났을 때 `commit.timeOut()` 대신 부른다 (16장 2): 요청을 시간 초과로 정하는 것과 그 전이에서 함께 정할 것(미전달 답 닫기, 14장 7)을 한 경계에서.
+        /// `commit.timeOut()`의 결과(처리기가 먼저 확정한 응답, 시간 초과면 nil)를 돌려준다. 막지 않는 일만. 없으면 `commit.timeOut()`
+        public var timeOut: (@Sendable (HookCommit, String) -> HookResponse?)?
 
         /// 돌려준 응답을 그대로 확정하는 처리기 (시간 초과가 먼저면 쓰이지 않는다)
         public init(
@@ -35,19 +36,21 @@ public final class HookSocketServer: @unchecked Sendable {
         /// 스스로 확정하는 처리기: 확정에 실패하면(소켓이 시간 초과로 이미 deny를 썼다) 그 결과를 기록하지 않는다
         public init(
             agentSessionID: String, providerSessionID: String?, committing handler: @escaping @Sendable (HookRequest, HookCommit) async -> Void,
-            onAnswer: (@Sendable (String) -> Void)? = nil, onTimeout: (@Sendable (String) -> Void)? = nil
+            onAnswer: (@Sendable (String) -> Void)? = nil, timeOut: (@Sendable (HookCommit, String) -> HookResponse?)? = nil
         ) {
             self.agentSessionID = agentSessionID
             self.providerSessionID = providerSessionID
             self.handler = handler
             self.onAnswer = onAnswer
-            self.onTimeout = onTimeout
+            self.timeOut = timeOut
         }
     }
 
-    /// bridge가 답하는 시간 상한 (서버 1.0초 + 로컬). 훅은 1.5초까지 기다린다
+    /// bridge가 답하는 시간 상한 (연결부터, 서버 1.0초 + 로컬). 훅은 `HookWire.budget`(4초)까지 기다리고 요청에 남은 시간을 싣는다 (16장 3)
     public static let responseBudget: TimeInterval = 1.2
     static let readBudget: TimeInterval = 1.0
+    /// 훅이 실은 남은 시간보다 이만큼 앞서 정한다 (응답을 쓰고 훅이 읽을 여유)
+    static let hookMargin: TimeInterval = 0.3
     public static let unknownSpawn = "This tool call is not from a Taskforce run."
 
     public let path: String
@@ -214,7 +217,7 @@ public final class HookSocketServer: @unchecked Sendable {
         var answered: (registration: Registration, toolUseID: String)?
         if let line = Self.readLine(client, deadline: started.addingTimeInterval(Self.readBudget)), let request = try? HookRequest.decode(line: line) {
             if let registration = registered(for: request) {
-                response = respond(to: request, registration: registration, deadline: started.addingTimeInterval(Self.responseBudget))
+                response = respond(to: request, registration: registration, deadline: Self.deadline(started: started, read: Date(), remainingMS: request.remainingMS))
                 answered = (registration, request.toolUseID)
             } else {
                 // L0: 등록 없는 nonce · 세션 불일치
@@ -234,7 +237,16 @@ public final class HookSocketServer: @unchecked Sendable {
         return registration
     }
 
-    /// 처리기가 확정한 응답, 아니면 시간 초과 deny (12장 9): 기한이 지나면 요청 상태를 `timedOut`으로 정한다. 처리기가 그보다 먼저 확정했으면 그 응답을 쓴다
+    /// 응답을 정하는 기한 (16장 3): 연결부터 `responseBudget`, 훅이 남은 시간을 실었으면 읽은 때부터 그 시간 − `hookMargin`까지 중 이른 쪽.
+    /// 그래서 확정한 응답은 훅이 끊기 `hookMargin` 전에 정해진다 (그 안에 쓰고 읽는다)
+    static func deadline(started: Date, read: Date, remainingMS: Int?) -> Date {
+        let own = started.addingTimeInterval(responseBudget)
+        guard let remainingMS else { return own }
+        return min(own, read.addingTimeInterval(Double(remainingMS) / 1000 - hookMargin))
+    }
+
+    /// 처리기가 확정한 응답, 아니면 시간 초과 deny (12장 9): 기한이 지나면 요청 상태를 `timedOut`으로 정한다(등록의 `timeOut`이 있으면 그 경계에서).
+    /// 처리기가 그보다 먼저 확정했으면 그 응답을 쓴다
     private func respond(to request: HookRequest, registration: Registration, deadline: Date) -> HookResponse {
         let commit = HookCommit()
         let semaphore = DispatchSemaphore(value: 0)
@@ -243,8 +255,9 @@ public final class HookSocketServer: @unchecked Sendable {
             semaphore.signal()
         }
         _ = semaphore.wait(timeout: .now() + max(0, deadline.timeIntervalSinceNow))
-        if let response = commit.timeOut() { return response }
-        registration.onTimeout?(request.toolUseID)
+        let won: HookResponse?
+        if let settle = registration.timeOut { won = settle(commit, request.toolUseID) } else { won = commit.timeOut() }
+        if let won { return won }
         log.log("tool_gate", ["source": .code("local"), "decision": .code("deny"), "reason": .code("bridge_timeout")])
         return HookResponse(decision: .deny, reason: HookReason.unavailable)
     }

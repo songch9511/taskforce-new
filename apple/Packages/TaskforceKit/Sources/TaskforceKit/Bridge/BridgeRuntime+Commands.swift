@@ -326,6 +326,8 @@ extension BridgeRuntime {
     func leaseNew(_ item: BridgeV1CommandListItem, existing: BridgeCommandRecord?, reason: BridgeWakeReason, wakeAt: Date, listedAt: Date) async -> ItemResult {
         // 원장이 `start_intent` 이상이면 lease도 실행도 하지 않는다 (이 기록을 `lease_requested`로 되돌리지 않는다)
         if let existing, existing.state.hasStartIntent || existing.state.isFinished { return .ignored }
+        // 종료가 시작됐다 (16장 1): 새 실행을 낳는 명령은 lease하지 않는다 (Stop은 그대로)
+        if shuttingDown, item.kind != .cancel { return .deferred }
         // writer 하나: 같은 세션에 살아 있는 실행이 있으면 lease도 하지 않는다 (cancel은 제외). 답은 같은 task의 이어짐이라 그 task는 건너뛴다
         if item.kind != .cancel {
             let skip = item.kind == .answer ? item.agentTaskID : nil
@@ -458,10 +460,19 @@ extension BridgeRuntime {
         record.adapter = common.adapter
         record.marker = common.marker
         var taskOfAnotherSession = false
+        var taskHoldsRun = false
         do {
             try await ledger.saveCommand(record)
             if let existing = try await ledger.task(common.agentTaskID) {
                 taskOfAnotherSession = existing.agentSessionID != common.agentSessionID
+                // 실행 기록이 있는 task에 새 message가 왔는데 그 실행을 아직 맡고 있다(살아 있음 · 감독 중 · 고아 · 그 세션 잠금의 지금 실행이 끝을 증명하지 못함):
+                // 그 실행의 상태를 덮지 않게 거절한다 (16장 4). 끝을 증명한 task를 이어 쓰는 것은 막지 않는다. 답 · Stop은 같은 task의 이어짐이다
+                if case .message = payload, existing.processMarker != nil || existing.currentCommandID != nil {
+                    taskHoldsRun = existing.alive || supervised[common.agentTaskID] != nil || orphanLiveness[common.agentTaskID] != nil
+                    if !taskHoldsRun, let adapter = adapters[existing.adapter], let run = await adapter.sessionRun(existing.agentSessionID) {
+                        if case .ended = run.liveness {} else { taskHoldsRun = true }
+                    }
+                }
             } else {
                 // 서버가 준 외부 세션 id · 작업 폴더는 검사(모양 · 이 Mac이 인정함) 전에는 원장 task에 쓰지 않는다: `runMessage`가 검사 뒤 `beginRun`에서 적는다
                 let task = BridgeTaskRecord(agentTaskID: common.agentTaskID, agentSessionID: common.agentSessionID, adapter: common.adapter, turnSeq: common.turnSeq, updatedAt: now)
@@ -475,6 +486,11 @@ extension BridgeRuntime {
         if taskOfAnotherSession {
             log.log("task_session_mismatch", ["command": .id(record.commandID)])
             await refuseUnknownPayload(record: record, why: "task_session_mismatch")
+            return .acted
+        }
+        if taskHoldsRun {
+            log.log("task_reused", ["command": .id(record.commandID)])
+            await refuseUnknownPayload(record: record, why: "task_reused")
             return .acted
         }
         switch payload {
@@ -565,7 +581,15 @@ extension BridgeRuntime {
 
     /// 접수 전 실패: 입력을 건네지 않았다. `failed` 사건으로 정확한 이유를 알린다 (계약 3.2).
     /// `left`: 띄운 뒤 실패해 끝을 증명하지 못한 실행 (OA D3a 14장 1): 그 정체를 적고 `alive`를 지우지 않는다 (확인 안 된 고아: heartbeat `process_alive` false · 결과 확인 `unknown`)
+    /// `left`가 없어도 그 세션의 지금 실행(잠금, 16장 4)이 끝을 증명하지 못했고 그 실행을 맡은 다른 살아 있는 task가 없으면 이 task가 맡는다 (`alive=false`를 쓰지 않는다)
     func failBeforeAcceptance(taskID: String, commandID: String, reason: BridgeV1FailureReason, left: AgentProcessIdentity? = nil) async {
+        var holding: AgentLiveness? = left == nil ? nil : .unknown
+        if left == nil, let task = try? await ledger.task(taskID), let adapter = adapters[task.adapter],
+           (try? await ledger.liveTask(inSession: task.agentSessionID, excluding: taskID)) == nil,
+           let run = await currentRun(taskID: taskID, session: task.agentSessionID, adapter: adapter) {
+            if case .ended = run.liveness {} else { holding = run.liveness }
+        }
+        let holds = holding != nil
         await appendTaskEvent(taskID: taskID, body: .failed(reason), observed: clock.now(), signal: false) {
             if let left {
                 // 접수 전 닫기(`close_before`)가 남긴 실행이면 이 task는 아직 `alive`를 켜기 전이다 (15장 1)
@@ -573,7 +597,7 @@ extension BridgeRuntime {
                 $0.pid = left.pid
                 $0.processStartedAt = left.startedAt
                 $0.processMarker = left.processMarker
-            } else {
+            } else if !holds {
                 $0.alive = false
             }
             $0.lastState = "failed"
@@ -581,7 +605,7 @@ extension BridgeRuntime {
         }
         _ = try? await ledger.updateCommand(commandID) { $0.state = .ended; $0.stateAt = clock.now() }
         supervised[taskID] = nil
-        if left != nil { orphanLiveness[taskID] = .unknown }
+        if let holding { orphanLiveness[taskID] = holding == .alive ? .alive : .unknown }
         await publish()
     }
 
@@ -597,6 +621,8 @@ extension BridgeRuntime {
     }
 
     func runMessage(_ command: BridgeV1MessageCommand, record: BridgeCommandRecord) async {
+        // 종료가 시작된 뒤 lease된 명령은 띄우지 않고 `leased`로 둔다 (16장 1: 다시 뜬 앱이 replay로 받는다)
+        guard !shuttingDown else { return log.log("run_deferred_shutdown", ["command": .id(record.commandID)]) }
         let common = command.common
         let access: AgentAccess
         switch command.access {
@@ -659,7 +685,7 @@ extension BridgeRuntime {
         if let requestID = command.closeBeforeRequestID {
             let ref = AgentRequestRef(taskID: common.agentTaskID, sessionID: common.agentSessionID, requestID: requestID, externalSessionID: common.session.externalSessionID, workspaceRef: workspace)
             do {
-                try await adapter.closeRequest(ref)
+                try await closeRequest(adapter, ref)
             } catch {
                 // 닫지 못했다 (앞 프로세스의 끝을 증명하지 못함 등, OA D3a 8장 15): 이 턴을 띄우지 않는다. 닫기 실행이 끝을 모르면 이 task의 고아로 둔다 (15장 1)
                 log.log("adapter_close_failed", ["task": .id(common.agentTaskID), "step": .code("close_before")])
@@ -786,6 +812,7 @@ extension BridgeRuntime {
     }
 
     func runAnswer(_ command: BridgeV1AnswerCommand, record: BridgeCommandRecord) async {
+        guard !shuttingDown else { return log.log("run_deferred_shutdown", ["command": .id(record.commandID)]) }
         let common = command.common
         let access: AgentAccess
         switch command.access {
@@ -926,20 +953,20 @@ extension BridgeRuntime {
     /// 닫기 · 시작이 끝을 증명하지 못한 실행을 남겼다 (15장 1): 그 세션의 지금 실행(없으면 `left`)을 이 task의 고아로 둔다 — Stop · 고아 정리가 그 실행을 대상으로 한다
     func keepUnproven(taskID: String, session: String? = nil, adapter: (any AgentProcess)? = nil, identity left: AgentProcessIdentity?) async {
         if let session, let adapter, let run = await currentRun(taskID: taskID, session: session, adapter: adapter) {
-            if case .ended = run.liveness { return }
-            if supervised[taskID] == nil {
+            if case .ended = run.liveness {} else if supervised[taskID] == nil {
                 if case .alive = run.liveness { orphanLiveness[taskID] = .alive } else { orphanLiveness[taskID] = .unknown }
             }
-            return
+        } else if let left {
+            _ = try? await ledger.updateTask(taskID) {
+                $0.alive = true
+                $0.pid = left.pid
+                $0.processStartedAt = left.startedAt
+                $0.processMarker = left.processMarker
+            }
+            if supervised[taskID] == nil { orphanLiveness[taskID] = .unknown }
         }
-        guard let left else { return }
-        _ = try? await ledger.updateTask(taskID) {
-            $0.alive = true
-            $0.pid = left.pid
-            $0.processStartedAt = left.startedAt
-            $0.processMarker = left.processMarker
-        }
-        if supervised[taskID] == nil { orphanLiveness[taskID] = .unknown }
+        // 닫기 실패는 적은 뒤에 알린다 (`closeRequest`가 실패를 알리지 않고 넘겼다, 16장 1)
+        await publish()
     }
 
     /// 요청을 거절로 닫고(adapter가 할 수 있으면) 원장에 닫힘을 적은 뒤 `request_closed`로 정산한다. 사용자는 "Question closed before the answer was sent" 줄을 본다
@@ -947,7 +974,7 @@ extension BridgeRuntime {
         if adapterClose, let adapter = adapters[adapterID] {
             let task = try? await ledger.task(taskID)
             do {
-                try await adapter.closeRequest(AgentRequestRef(taskID: taskID, sessionID: session, requestID: requestID, externalSessionID: task?.externalSessionID, workspaceRef: task?.workspaceRef))
+                try await closeRequest(adapter, AgentRequestRef(taskID: taskID, sessionID: session, requestID: requestID, externalSessionID: task?.externalSessionID, workspaceRef: task?.workspaceRef))
             } catch {
                 // 답은 어차피 전달하지 않는다 (request_closed). 닫지 못한 보류가 남아도 adapter는 앞 프로세스의 끝을 증명하기 전에는 다음 실행을 띄우지 않는다 (OA D3a 8장 15).
                 // 끝을 모르는 닫기 실행은 이 task의 고아로 둔다 (15장 1)
@@ -974,7 +1001,9 @@ extension BridgeRuntime {
             _ = try? await ledger.updateTask(common.agentTaskID) { if !$0.closedRequestIDs.contains(abandoned) { $0.closedRequestIDs.append(abandoned) } }
             if let task = try? await ledger.task(common.agentTaskID), let adapter = adapters[task.adapter] {
                 do {
-                    try await adapter.closeRequest(AgentRequestRef(taskID: task.agentTaskID, sessionID: task.agentSessionID, requestID: abandoned, externalSessionID: task.externalSessionID, workspaceRef: task.workspaceRef))
+                    try await closeRequest(adapter, AgentRequestRef(
+                        taskID: task.agentTaskID, sessionID: task.agentSessionID, requestID: abandoned, externalSessionID: task.externalSessionID, workspaceRef: task.workspaceRef
+                    ))
                 } catch {
                     log.log("adapter_close_failed", ["task": .id(task.agentTaskID), "step": .code("cancel")])
                     // 끝을 모르는 닫기 실행도 아래 중단의 대상이다 (15장 1)

@@ -143,6 +143,10 @@ public actor BridgeRuntime {
     var supervised: [String: Supervised] = [:]
     /// 원장은 살아 있다고 하지만 감독하는 실행이 없는 task가 마지막으로 확인된 상태: `.alive`(끝내지 못했다) · `.unknown`(끝을 증명하지 못했다)
     var orphanLiveness: [String: AgentLiveness] = [:]
+    /// adapter 닫기(`closeRequest`)가 도는 task와 그 세션 (OA D3a 16장 1): 닫기 spawn은 시작부터 생존 판단(`hasLiveProcess` · 종료)에 든다
+    var closing: [String: (session: String, count: Int)] = [:]
+    /// 앱 종료 · 계정 삭제가 시작됐다 (16장 1): 새 실행을 띄우지 않는다
+    var shuttingDown = false
     /// 최근 1시간의 등록 시도 시각 (자동 등록 예산 · 물러서기)
     var registerTimes: [Date] = []
     var terminatedByUs: Set<String> = []
@@ -250,7 +254,8 @@ public actor BridgeRuntime {
     /// 상태 · 바쁨이 바뀌었으면 알린다
     /// 살아 있는 프로세스가 있나 (감독 중이거나 원장이 살아 있다고 하는 것)
     public func hasLiveProcess() async -> Bool {
-        if !supervised.isEmpty { return true }
+        // 감독 중 · 닫기 중(16장 1) · 감독 밖 고아(원장 `alive`)
+        if !supervised.isEmpty || !closing.isEmpty { return true }
         return ((try? await ledger.allTasks()) ?? []).contains { $0.alive }
     }
 
@@ -318,6 +323,7 @@ public actor BridgeRuntime {
 
     /// 사용자가 Quit을 골랐다: 살아 있는 턴을 중단하고 끝남을 본 턴은 `cancelled` 사건으로 알린 뒤 outbox를 최대 3초 비운다 (Q7, ONE-TF-15 a)
     public func shutdown(interrupt: Bool) async {
+        await stopSpawning()
         if interrupt {
             await interruptAll(reason: "shutdown")
             await endRemainingRuns()
@@ -338,6 +344,7 @@ public actor BridgeRuntime {
     /// 돌려주는 값은 **끝내지 못했거나 끝을 증명하지 못한 프로세스 수**다: 원장을 지우면 그 정체(pid · marker)도 사라져 감독 밖 writer가 남을 수 있으므로, 호출한 쪽이 정리가 덜 됐다고 알린다 (검토 반영 2 8장 6)
     @discardableResult
     public func interruptLiveTurns() async -> Int {
+        await stopSpawning()
         await interruptAll(reason: "account_deleted")
         await endRemainingRuns()
         await settleOrphans() // 감독 밖에 남은 프로세스도 끝낸다 (원장을 지우기 전에 감독 밖 writer를 남기지 않는다)
@@ -350,7 +357,7 @@ public actor BridgeRuntime {
     /// 신호를 무시하는 프로세스가 앱 종료 · 계정 삭제 뒤에 감독 밖 writer로 남지 않게 한다 (검토 반영 7장 C12)
     func endRemainingRuns() async {
         let deadline = clock.now().addingTimeInterval(3)
-        while !supervised.isEmpty, clock.now() < deadline {
+        while !supervised.isEmpty || !closing.isEmpty, clock.now() < deadline {
             try? await clock.sleep(.milliseconds(100))
         }
         for (taskID, entry) in supervised {
@@ -374,6 +381,63 @@ public actor BridgeRuntime {
                 log.log("run_terminate_failed", ["task": .id(taskID)])
             }
         }
+        await endSessionRuns()
+    }
+
+    /// 감독 밖 실행도 끝낸다 (OA D3a 16장 1): 세션마다 잠금의 지금 실행(닫기 · 고아 · 내부 닫기 실패)을 그 세션의 task(살아 있는 것, 없으면 마지막 것)로 끝내고 끝을 증명한다.
+    /// 아직 감독 중인 task의 세션은 위에서 다뤘다
+    func endSessionRuns() async {
+        let tasks = (try? await ledger.allTasks()) ?? []
+        let supervisedSessions = Set(tasks.filter { supervised[$0.agentTaskID] != nil }.map(\.agentSessionID))
+        var holders: [String: BridgeTaskRecord] = [:]
+        // `allTasks`는 최근 것부터: 마지막 task, 살아 있는 task가 있으면 그것
+        for task in tasks where !supervisedSessions.contains(task.agentSessionID) {
+            if let held = holders[task.agentSessionID], held.alive || !task.alive { continue }
+            holders[task.agentSessionID] = task
+        }
+        for task in holders.values {
+            let taskID = task.agentTaskID
+            guard let adapter = adapters[task.adapter], let run = await currentRun(taskID: taskID, session: task.agentSessionID, adapter: adapter) else { continue }
+            if case .ended = run.liveness { continue }
+            terminatedByUs.insert(taskID)
+            switch await adapter.terminateSessionRun(task.agentSessionID) {
+            case .ended:
+                orphanLiveness[taskID] = nil
+                log.log("run_terminated", ["task": .id(taskID), "orphan": .count(1)])
+                await finishEnded(taskID: taskID, byUs: true)
+            case .alive:
+                orphanLiveness[taskID] = .alive
+                log.log("run_terminate_failed", ["task": .id(taskID)])
+            case .unknown:
+                orphanLiveness[taskID] = .unknown
+                log.log("run_terminate_failed", ["task": .id(taskID)])
+            }
+        }
+    }
+
+    /// 종료 · 계정 삭제가 시작됐다 (16장 1): 이 런타임은 새 실행을 띄우지 않고, adapter도 자기 안에서 띄우는 것(내부 닫기)까지 막는다
+    func stopSpawning() async {
+        shuttingDown = true
+        for adapter in adapters.values { await adapter.stopSpawning() }
+    }
+
+    /// adapter 닫기 (16장 1): 닫기 spawn은 시작부터 생존 판단에 든다 (`closing`). 종료가 시작됐으면 띄우지 않는다
+    func closeRequest(_ adapter: any AgentProcess, _ ref: AgentRequestRef) async throws {
+        guard !shuttingDown else { throw AgentStartError(.spawnFailed) }
+        closing[ref.taskID] = (ref.sessionID, (closing[ref.taskID]?.count ?? 0) + 1)
+        await publish()
+        let result: Result<Void, any Error>
+        do {
+            try await adapter.closeRequest(ref)
+            result = .success(())
+        } catch {
+            result = .failure(error)
+        }
+        if let current = closing[ref.taskID] { closing[ref.taskID] = current.count > 1 ? (current.session, current.count - 1) : nil }
+        // 끝을 모르는 실행을 남긴 실패면 알리지 않는다: 부른 쪽이 그 실행을 task에 적은 뒤 알린다 (그 사이 "살아 있는 것 없음"으로 보이지 않게)
+        guard case .failure(let error) = result else { return await publish() }
+        if (error as? AgentStartError)?.left == nil { await publish() }
+        throw error
     }
 
     /// 살아 있는 모든 실행에 중단 신호 (종료 · 폐기 · 서버가 모르는 task)
@@ -455,6 +519,7 @@ public actor BridgeRuntime {
 
     public func housekeeping() async {
         await recover()
+        await recheckOrphans()
         guard active else { return }
         // 마무리 모드: 끝낼 일이 없으면 요청을 하나도 보내지 않고 멈춘다 (호스트가 런타임을 놓는다)
         if await finishDrainIfDone() { return }
@@ -708,6 +773,21 @@ public actor BridgeRuntime {
             }
             if case .ended? = liveness {
                 await handleEnded(taskID: taskID, runID: entry.runID)
+            }
+        }
+        await recheckOrphans()
+    }
+
+    /// 감독 밖 고아(원장 `alive`, `orphanLiveness`)를 그 세션의 지금 실행으로 다시 본다 (OA D3a 16장 6): 끝을 증명했으면 끝 정산
+    /// (heartbeat `process_alive`가 끝없이 켜져 있지 않게). 세션 단위 상태가 없는 adapter는 그대로 (다음 시작 정산)
+    func recheckOrphans() async {
+        for taskID in Array(orphanLiveness.keys) where supervised[taskID] == nil {
+            guard let task = try? await ledger.task(taskID), task.alive, let adapter = adapters[task.adapter],
+                  let run = await adapter.sessionRun(task.agentSessionID) else { continue }
+            if case .ended = run.liveness {
+                orphanLiveness[taskID] = nil
+                log.log("orphan_ended", ["task": .id(taskID)])
+                await finishEnded(taskID: taskID, byUs: false)
             }
         }
     }

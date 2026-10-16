@@ -6,7 +6,7 @@ import Foundation
 /// - `session-start`: 소켓 없이 표식만 낸다 (자체 점검 ③)
 /// - `pre-tool-use --socket <S> --session <id> --nonce <N>`: 훅 입력을 읽어 bridge에 한 줄 묻고, 답을 Claude Code 훅 출력으로 바꾼다
 ///
-/// **fail-closed:** 기한(시작부터 1.5초) 초과 · 소켓 없음 · 거부 · 깨진 답 · 모르는 결정 · 어떤 오류든 deny JSON + exit 0. deny JSON마저 쓰지 못하면 exit 2 (Claude Code는 2를 차단으로 본다, S0 CC-3b).
+/// **fail-closed:** 기한(시작부터 `HookWire.budget` 4초) 초과 · 소켓 없음 · 거부 · 깨진 답 · 모르는 결정 · 어떤 오류든 deny JSON + exit 0. deny JSON마저 쓰지 못하면 exit 2 (Claude Code는 2를 차단으로 본다, S0 CC-3b).
 /// 디스크 · 로그 · stderr에 아무것도 쓰지 않는다. 사용자를 기다리지 않는다 (훅 timeout은 fail-open 경로다)
 public enum HookMain {
     public typealias Connect = @Sendable (_ socketPath: String, _ request: Data, _ deadline: Date) throws -> Data
@@ -45,13 +45,15 @@ public enum HookMain {
         }
         let toolInput = input["tool_input"] ?? .object([:])
         guard toolInput.objectValue != nil else { return deny(HookReason.unreadable) }
-        let request = HookRequest(
+        var request = HookRequest(
             nonce: invocation.nonce, sessionID: invocation.session, providerSessionID: input["session_id"]?.stringValue, hookEvent: "PreToolUse", toolUseID: toolUseID,
             toolName: toolName, toolInput: HookWire.strippedInput(toolName: toolName, input: toolInput), inputSHA256: HookWire.inputDigest(toolInput),
             permissionMode: permissionMode, cwd: cwd
         )
-        guard let line = try? request.encodedLine() else { return deny(HookReason.unavailable) }
         guard now() < deadline else { return deny(HookReason.unavailable) }
+        // 남은 시간을 싣는다 (16장 3): bridge는 이 훅이 끊기 전에 응답을 정한다
+        request.remainingMS = min(HookWire.maxRemainingMS, max(0, Int((deadline.timeIntervalSince(now()) * 1000).rounded(.down))))
+        guard let line = try? request.encodedLine() else { return deny(HookReason.unavailable) }
         let reply: Data
         do {
             reply = try connect(invocation.socket, line, deadline)
@@ -103,7 +105,7 @@ public enum HookMain {
         write(result.stdout) ? result.exitCode : 2
     }
 
-    /// 실행 파일의 진입점: 기한은 프로세스 시작 시각부터 1.5초. stdin은 상한 + 1바이트까지만 읽는다
+    /// 실행 파일의 진입점: 기한은 프로세스 시작 시각부터 `HookWire.budget`. stdin은 상한 + 1바이트까지만 읽는다
     public static func main(arguments: [String]) -> Int32 {
         let deadline = Date().addingTimeInterval(HookWire.budget)
         signal(SIGPIPE, SIG_IGN)
