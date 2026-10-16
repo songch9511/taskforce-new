@@ -17,10 +17,15 @@ import {
   apiErrorV2AgentCodeSchema,
   apiErrorV2CodeSchema,
   assistantTargetsResponseSchema,
+  assistantTargetsWithDeviceResponseSchema,
   attachmentDroppedSchema,
   attachmentKindSchema,
   attachmentOriginSchema,
   attachmentSchema,
+  bridgeV1HeartbeatRequestSchema,
+  bridgeV1HeartbeatRequestWithDeviceSchema,
+  bridgeV1RegisterRequestSchema,
+  bridgeV1RegisterRequestWithDeviceSchema,
   conversationDeliveryResponseSchema,
   conversationTargetKindSchema,
   conversationTargetSchema,
@@ -52,6 +57,7 @@ const U = {
   task: "a5555555-5555-4555-8555-555555555555",
   step: "a6666666-6666-4666-8666-666666666666",
   context: "a7777777-7777-4777-8777-777777777777",
+  bridge: "a9999999-9999-4999-8999-999999999999",
   second: "a8888888-8888-4888-8888-888888888888",
   /** 메시지 id에서 결정적으로 만든 Action id: 버전 · 변형 비트가 없다 */
   deterministic: "f0000000-0000-f000-f000-000000000001",
@@ -116,6 +122,16 @@ export const AGENT_CONVERSATION_TARGETS = {
     { kind: "taskforce" },
     { kind: "agent", adapter: "agent:claude-code", display_name: "Claude Code", connection_id: U.connection, state: "unsupported", access: null },
     { kind: "agent", adapter: "agent:codex", display_name: "Codex", connection_id: null, state: "not_connected", access: "read_only" },
+  ],
+};
+
+/** F1s: 대상 행마다 기기 이름 · bridge id. F1m의 Swift 시험이 같은 JSON을 디코딩한다 (옛 AGENT_CONVERSATION_TARGETS는 F1s 전 응답의 기록으로 그대로 둔다) */
+export const AGENT_CONVERSATION_TARGETS_WITH_DEVICE = {
+  targets: [
+    { kind: "taskforce" },
+    { kind: "agent", adapter: "agent:claude-code", display_name: "Claude Code", connection_id: U.connection, state: "unsupported", access: null, device_name: "Studio", bridge_id: U.bridge },
+    { kind: "agent", adapter: "agent:codex", display_name: "Codex", connection_id: U.second, state: "ready", access: "read_only", device_name: null, bridge_id: U.bridge },
+    { kind: "agent", adapter: "agent:codex", display_name: "Codex", connection_id: null, state: "not_connected", access: "read_only", device_name: null, bridge_id: null },
   ],
 };
 
@@ -266,6 +282,40 @@ describe("응답", () => {
     expect(agentAccessSchema.options).toEqual(["write", "read_only"]);
     expect(assistantTargetsResponseSchema.parse(AGENT_CONVERSATION_TARGETS)).toEqual(AGENT_CONVERSATION_TARGETS);
     expect(assistantTargetsResponseSchema.safeParse({ targets: [{ kind: "agent", adapter: "codex", display_name: "Codex", connection_id: null, state: "ready", access: null }] }).success).toBe(false);
+  });
+
+  it("F1s 대상 목록: agent 행에 device_name(1–64 코드 포인트 또는 null) · bridge_id(guid 또는 null)가 더해진다 (C5)", () => {
+    expect(assistantTargetsWithDeviceResponseSchema.parse(AGENT_CONVERSATION_TARGETS_WITH_DEVICE)).toEqual(AGENT_CONVERSATION_TARGETS_WITH_DEVICE);
+    // F1s 전 응답의 기록: 옛 fixture는 옛 스키마로 그대로 통과하고, 옛 스키마는 새 키를 strict로 거절한다
+    expect(assistantTargetsResponseSchema.parse(AGENT_CONVERSATION_TARGETS)).toEqual(AGENT_CONVERSATION_TARGETS);
+    expect(assistantTargetsResponseSchema.safeParse(AGENT_CONVERSATION_TARGETS_WITH_DEVICE).success).toBe(false);
+    // 새 스키마는 키가 모두 있어야 한다 (서버는 항상 낸다)
+    expect(assistantTargetsWithDeviceResponseSchema.safeParse(AGENT_CONVERSATION_TARGETS).success).toBe(false);
+    const agent = AGENT_CONVERSATION_TARGETS_WITH_DEVICE.targets[1];
+    const row = (extra: Record<string, unknown>) => assistantTargetsWithDeviceResponseSchema.safeParse({ targets: [{ ...agent, ...extra }] }).success;
+    expect(row({ device_name: "\u{1f34e}".repeat(64) })).toBe(true);
+    for (const bad of ["", "\u{1f34e}".repeat(65), 5, undefined]) expect(row({ device_name: bad }), JSON.stringify(bad)).toBe(false);
+    for (const bad of ["not-a-guid", 5, undefined]) expect(row({ bridge_id: bad }), JSON.stringify(bad)).toBe(false);
+    expect(row({ hostname: "mac.local" })).toBe(false);
+    expect(assistantTargetsWithDeviceResponseSchema.safeParse({ targets: [{ kind: "taskforce", device_name: null }] }).success).toBe(false);
+  });
+
+  it("F1s 요청: register · heartbeat의 device_name은 선택이고 원문 256 코드 포인트까지다. 모르는 키는 여전히 거절한다 (C5)", () => {
+    const register = { device_id: "installation-random-id", app_version: "0.2.0", adapters: [] };
+    const heartbeat = { bridge_id: U.bridge, sent_at: NOW, tasks: [] };
+    const cases = [
+      { old: bridgeV1RegisterRequestSchema, next: bridgeV1RegisterRequestWithDeviceSchema, body: register },
+      { old: bridgeV1HeartbeatRequestSchema, next: bridgeV1HeartbeatRequestWithDeviceSchema, body: heartbeat },
+    ];
+    for (const { old, next, body } of cases) {
+      expect(old.safeParse({ ...body, device_name: "Studio" }).success).toBe(false); // 옛 스키마는 그대로 strict
+      expect(next.parse(body)).toEqual(old.parse(body)); // 이름이 없으면 옛 본문과 같은 결과
+      expect(next.parse({ ...body, device_name: "Studio" })).toMatchObject({ device_name: "Studio" });
+      expect(next.safeParse({ ...body, device_name: "\u{1f34e}".repeat(256) }).success).toBe(true);
+      for (const bad of ["\u{1f34e}".repeat(257), 5, null, ["Studio"]]) expect(next.safeParse({ ...body, device_name: bad }).success, JSON.stringify(bad)).toBe(false);
+      expect(next.safeParse({ ...body, device_name: "Studio", hostname: "mac.local" }).success).toBe(false);
+      expect(next.safeParse({ ...body, hostname: "mac.local" }).success).toBe(false);
+    }
   });
 
   it("질문 답: 요청은 provider_request_id + answers(단일 글 또는 배열), 응답은 answered · duplicate + step_id", () => {

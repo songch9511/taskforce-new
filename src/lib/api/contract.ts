@@ -1974,3 +1974,28 @@ export const bridgeV1AnswerLocalResponseSchema = z.discriminatedUnion("status", 
   z.strictObject({ status: z.literal("stale"), reason: bridgeV1AnswerLocalStaleReasonSchema }),
 ]);
 export type BridgeV1AnswerLocalResponse = z.infer<typeof bridgeV1AnswerLocalResponseSchema>;
+
+// --- F1s ---
+// Mac 기기 이름(표시용, OA F1s). 식별(device_ref 해시 · device_id)과 섞지 않는다: 이름은 화면에 보이는 글자일 뿐 어떤 판정 · 조인 · 열쇠에도 쓰지 않는다.
+// 위 스키마는 F1s 전 모양의 기록으로 그대로 두고, 이름을 받고 내는 파생 스키마를 새 이름으로 둔다.
+
+/** 서버 정규화 뒤 이름은 1–64 코드 포인트다 (src/lib/bridge/device-name.ts). 받는 원문은 256 코드 포인트까지만 받는다 */
+export const BRIDGE_DEVICE_NAME_MAX = 64;
+export const bridgeV1DeviceNameSchema = z.string().refine((value) => Array.from(value).length <= 256, "기기 이름 원문은 256 코드 포인트 이하");
+export const bridgeV1RegisterRequestWithDeviceSchema = bridgeV1RegisterRequestSchema.extend({ device_name: bridgeV1DeviceNameSchema.optional() });
+export const bridgeV1HeartbeatRequestWithDeviceSchema = bridgeV1HeartbeatRequestSchema.extend({ device_name: bridgeV1DeviceNameSchema.optional() });
+export type BridgeV1RegisterRequestWithDevice = z.infer<typeof bridgeV1RegisterRequestWithDeviceSchema>;
+export type BridgeV1HeartbeatRequestWithDevice = z.infer<typeof bridgeV1HeartbeatRequestWithDeviceSchema>;
+
+/** 대상 목록의 agent 행: 모르면 device_name null (옛 Mac · 연결 없음 · bridge 없음 · 폐기), bridge_id는 연결의 bridge (연결 없음 · bridge 지워짐이면 null) */
+export const assistantAgentTargetWithDeviceSchema = assistantTargetSchema.options[1].extend({
+  device_name: z.string().refine((value) => {
+    const points = Array.from(value).length;
+    return points >= 1 && points <= BRIDGE_DEVICE_NAME_MAX;
+  }, "기기 이름은 1–64 코드 포인트").nullable(),
+  bridge_id: z.guid().nullable(),
+});
+export const assistantTargetWithDeviceSchema = z.discriminatedUnion("kind", [assistantTargetSchema.options[0], assistantAgentTargetWithDeviceSchema]);
+export const assistantTargetsWithDeviceResponseSchema = z.object({ targets: z.array(assistantTargetWithDeviceSchema) });
+export type AssistantTargetWithDevice = z.infer<typeof assistantTargetWithDeviceSchema>;
+export type AssistantTargetsWithDeviceResponse = z.infer<typeof assistantTargetsWithDeviceResponseSchema>;

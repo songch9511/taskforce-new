@@ -1,5 +1,5 @@
 import { authenticateRequest } from "@/lib/api/auth";
-import { bridgeV1RegisterRequestSchema, bridgeV1RevokeRequestSchema } from "@/lib/api/contract";
+import { bridgeV1RegisterRequestWithDeviceSchema, bridgeV1RevokeRequestSchema } from "@/lib/api/contract";
 import { RateLimitedError, retryAfterSeconds } from "@/lib/api/rate-limit";
 import { errorResponse, parseBody, unauthorized } from "@/lib/api/respond";
 import { registerBridge, revokeBridge } from "@/lib/bridge/register";
@@ -9,7 +9,7 @@ export async function POST(request: Request) {
   try {
     const auth = await authenticateRequest(request);
     if (!auth) return unauthorized();
-    const body = await parseBody(request, bridgeV1RegisterRequestSchema);
+    const body = await parseBody(request, bridgeV1RegisterRequestWithDeviceSchema);
     if ("error" in body) return body.error;
     const result = await registerBridge(createAdminClient(), auth.user.id, body.data);
     if ("status" in result) return result.status === "too_many_bridges"

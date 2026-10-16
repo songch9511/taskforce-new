@@ -67,6 +67,12 @@ describe("agentDeliveryView: 계약 2.15 표의 모든 행", () => {
     expect(view({ state: "dispatched" }, { stepState, sessionStatus: "unreachable" })).toEqual({ state });
   });
 
+  // F1s 항목 1 (D1): unreachable만 prepared를 queued로 보인다. 다른 세션 상태는 모두 sent (`sessionStatus !== "bound"` 같은 변이를 잡는다)
+  it.each(["bound", "external", "closed"] as const)("dispatched + 단계 prepared + 세션 %s → sent (OD-11은 unreachable만)", (sessionStatus) => {
+    expect(agentMessageDelivery("dispatched", "prepared", sessionStatus)).toBe("sent");
+    expect(view({ state: "dispatched" }, { stepState: "prepared", sessionStatus })).toEqual({ state: "sent" });
+  });
+
   it.each(["failed", "pending", "skipped", null] as const)("dispatched + 단계 %s는 전달했다고 말하지 않는다 (not_sent, 이유 없음)", (stepState) => {
     expect(view({ state: "dispatched", reason: "usage_limited" }, { stepState })).toEqual({ state: "not_sent" });
   });
@@ -113,6 +119,14 @@ describe("R12: SQL이 delivery_reason에 쓸 수 있는 모든 값은 agentDeliv
   // Bridge stale/withdrawn 응답의 reason은 메시지 delivery_reason과 다른 계약이다.
   for (const match of sql.matchAll(/'status',\s*'(?:not_sent|queued)',\s*'reason',\s*'([a-z][a-z0-9_]*)'/g)) written.add(match[1]);
   for (const match of sql.matchAll(/mark_agent_message_not_sent\([^)]*?,\s*'([a-z][a-z0-9_]*)'\)/g)) written.add(match[1]);
+  // bridge lease의 회수: withdraw_bridge_command(<id>, '<이유>')의 이유는 메시지 delivery_reason이 된다 (F1s 항목 5). enum 밖의 값을 넘기는 이름 붙은 예외는 둘뿐이다
+  const WITHDRAW_EXCEPTIONS: Record<string, string> = {
+    expired: "상태가 이미 expired라 이유는 덧말이다: 20261127000000 뒤 withdraw_bridge_command가 이유를 null로 저장한다",
+    stale_answer: "answer 명령에서만 쓰고 메시지 행을 쓰지 않는다 (답 단계만 skipped)",
+  };
+  const withdrawCalls = new Set<string>();
+  for (const match of sql.matchAll(/withdraw_bridge_command\([^,]+,\s*'([a-z][a-z0-9_]*)'\)/g)) withdrawCalls.add(match[1]);
+  for (const reason of withdrawCalls) if (!(reason in WITHDRAW_EXCEPTIONS)) written.add(reason);
   for (const match of sql.matchAll(/p_reason not in \(([^)]*)\)/g)) add(literals(match[1]));
   // bridge가 알린 접수 전 실패 이유는 검증 목록 안에서만 delivery_reason이 된다 (apply_agent_event)
   for (const match of sql.matchAll(/v_payload->>'reason' not in \(('sign_in_needed'[^)]*)\) then\s*raise exception 'apply_agent_event: invalid pre-accept/g)) add(literals(match[1]));
@@ -137,5 +151,28 @@ describe("R12: SQL이 delivery_reason에 쓸 수 있는 모든 값은 agentDeliv
 
   it("agentDeliverySchema는 view의 결과를 모두 받는다", () => {
     expect(agentDeliverySchema.safeParse(view({ state: "queued", reason: "question_open" })).success).toBe(true);
+  });
+
+  it("회수 호출(withdraw_bridge_command)의 이유 글자를 모았고, 이름 붙인 예외 둘이 실제 호출에 있다 (마른 예외 0)", () => {
+    for (const reason of ["write_gate_closed", "unsupported"]) expect(withdrawCalls, reason).toContain(reason);
+    expect(Object.keys(WITHDRAW_EXCEPTIONS).sort()).toEqual(["expired", "stale_answer"]);
+    for (const reason of Object.keys(WITHDRAW_EXCEPTIONS)) {
+      expect(withdrawCalls, `${reason}: 호출에 없는 예외`).toContain(reason);
+      expect(agentDeliveryReasonSchema.safeParse(reason).success, `${reason}: enum에 들어갔으면 예외에서 뺀다`).toBe(false);
+    }
+  });
+
+  it("회수 호출의 이유는 enum이거나 이름 붙인 예외다", () => {
+    const unknown = [...withdrawCalls].filter((reason) => !(reason in WITHDRAW_EXCEPTIONS) && !agentDeliveryReasonSchema.safeParse(reason).success);
+    expect(unknown).toEqual([]);
+  });
+
+  it("withdraw_bridge_command의 마지막 정의는 expired 회수에 이유를 쓰지 않는다 (null) — 나머지 이유는 그대로", () => {
+    const definitions = [...sql.matchAll(/create (?:or replace )?function public\.withdraw_bridge_command\([^)]*\)[\s\S]*?as \$\$([\s\S]*?)\$\$;/g)].map((match) => match[1]);
+    expect(definitions.length).toBeGreaterThanOrEqual(2);
+    const latest = definitions.at(-1)!;
+    expect(latest).toContain("delivery_reason=case when p_reason='expired' then null else p_reason end");
+    expect(latest).not.toMatch(/delivery_reason\s*=\s*p_reason/);
+    expect(definitions[0]).toMatch(/delivery_reason=p_reason/); // BC의 원래 정의는 이유를 그대로 썼다 (기록)
   });
 });

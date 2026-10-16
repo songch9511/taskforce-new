@@ -536,20 +536,57 @@ private final class Completion: @unchecked Sendable {
 // MARK: 계정 · 저장소
 
 final class ReviewAuthStorage: AuthLocalStorage, @unchecked Sendable {
+    static let key = "review-test-session"
     private let lock = NSLock()
-    private var data: Data
+    private var values: [String: Data]
 
-    init(_ session: Session) throws { data = try AuthClient.Configuration.jsonEncoder.encode(session) }
+    // Match SDK persistence, not its API encoder. Aliasing the legacy key makes concurrent
+    // initial-session reads migrate old bytes back over a session another read just converted.
+    init(_ session: Session) throws { values = [Self.key: try JSONEncoder().encode(session)] }
 
     func set(_ session: Session) throws {
-        lock.lock()
-        defer { lock.unlock() }
-        data = try AuthClient.Configuration.jsonEncoder.encode(session)
+        try store(key: Self.key, value: JSONEncoder().encode(session))
     }
 
-    func store(key: String, value: Data) throws { lock.withLock { data = value } }
-    func retrieve(key: String) throws -> Data? { lock.withLock { data } }
-    func remove(key: String) throws {}
+    func store(key: String, value: Data) throws { lock.withLock { values[key] = value } }
+    func retrieve(key: String) throws -> Data? { lock.withLock { values[key] } }
+    func remove(key: String) throws { lock.withLock { values[key] = nil } }
+}
+
+struct ReviewAuthStorageTests {
+    @Test func storedAndReplacedSessionsUseTheSDKPersistedFormat() throws {
+        let original = reviewSession(userID: UUID())
+        let storage = try ReviewAuthStorage(original)
+        let initial = try #require(try storage.retrieve(key: ReviewAuthStorage.key))
+        let decoded = try JSONDecoder().decode(Session.self, from: initial)
+        #expect(decoded.user.id == original.user.id && decoded.accessToken == original.accessToken)
+
+        let replacement = reviewSession(userID: UUID())
+        try storage.set(replacement)
+        let updated = try #require(try storage.retrieve(key: ReviewAuthStorage.key))
+        let restored = try JSONDecoder().decode(Session.self, from: updated)
+        #expect(restored.user.id == replacement.user.id && restored.accessToken == replacement.accessToken)
+    }
+
+    @Test func legacyAndUnrelatedKeysCannotOverwriteOrDeleteTheCurrentSession() throws {
+        let storage = try ReviewAuthStorage(reviewSession(userID: UUID()))
+        let current = try #require(try storage.retrieve(key: ReviewAuthStorage.key))
+        #expect(try storage.retrieve(key: "supabase.session") == nil)
+
+        let legacy = Data("legacy-session".utf8)
+        try storage.store(key: "supabase.session", value: legacy)
+        #expect(try storage.retrieve(key: "supabase.session") == legacy)
+        #expect(try storage.retrieve(key: ReviewAuthStorage.key) == current)
+        try storage.remove(key: "supabase.session")
+        #expect(try storage.retrieve(key: "supabase.session") == nil)
+        #expect(try storage.retrieve(key: ReviewAuthStorage.key) == current)
+
+        let verifier = Data("code-verifier".utf8)
+        try storage.store(key: "code-verifier", value: verifier)
+        try storage.remove(key: ReviewAuthStorage.key)
+        #expect(try storage.retrieve(key: ReviewAuthStorage.key) == nil)
+        #expect(try storage.retrieve(key: "code-verifier") == verifier)
+    }
 }
 
 func reviewSession(userID: UUID) -> Session {
@@ -601,7 +638,7 @@ final class ReviewHarness {
         let supabase = SupabaseClient(
             supabaseURL: config.supabaseURL, supabaseKey: config.supabaseKey,
             options: SupabaseClientOptions(
-                auth: .init(storage: storage, autoRefreshToken: false, emitLocalSessionAsInitialSession: true), global: .init(session: urlSession)
+                auth: .init(storage: storage, storageKey: ReviewAuthStorage.key, autoRefreshToken: false, emitLocalSessionAsInitialSession: true), global: .init(session: urlSession)
             )
         )
         let session = SessionStore(auth: supabase.auth)

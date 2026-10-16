@@ -177,6 +177,7 @@ export function agentGatewayCoreTests(db: () => AgentGatewayDb) {
         "bridges.secret_hash text null",
         "bridges.secret_rotated_at timestamp with time zone null",
         "bridges.app_version text null",
+        "bridges.device_name text null",
       ]);
       // 원문 비밀값은 금지; 장치 자격의 hash와 회전 시각만 허용한다.
       expect(rows.filter((r) => /email|token|secret|password|account|login/i.test(String(r.column_name))).map(r => `${r.table_name}.${r.column_name}`)).toEqual(["bridges.secret_hash", "bridges.secret_rotated_at"]);

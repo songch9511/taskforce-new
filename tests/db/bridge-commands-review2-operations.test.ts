@@ -42,17 +42,32 @@ it("review2 actual bridge rate query naturally uses device index", async () => {
   const user = await f.user();
   const bridges: string[] = [];
   for (let i=0; i<100; i++) bridges.push(await f.bridge(user));
-  await f.q("insert into public.rate_limit_events(user_id,bridge_id,kind,created_at) select $1,b,'bridge_poll',clock_timestamp()-n*interval '0.1 second' from unnest($2::uuid[]) b cross join generate_series(1,300) n", [user,bridges]);
-  await f.q("analyze public.rate_limit_events");
+  // F1s 항목 8: 자료와 기준 시각을 고정해 통계가 실행마다 같게 한다. 이 파일 전용 PGlite라 표를 비워도 된다.
+  // 예전 실패 9번 중 2번은 계획이 아니라 test 5초 제한 초과였다(적재 100+30,000행이 느린 기계에서 5초를 넘는다): 제한을 이 시험에만 늘린다.
+  const base = "2026-10-15T00:00:00Z";
+  await f.q("delete from public.rate_limit_events");
+  await f.q("insert into public.rate_limit_events(user_id,bridge_id,kind,created_at) select $1,b,'bridge_poll',$2::timestamptz-n*interval '0.1 second' from unnest($3::uuid[]) b cross join generate_series(1,300) n order by b,n", [user,base,bridges]);
   const source = await body("take_rate_limit");
   const query = source.match(/select e.created_at into v_nth from public.rate_limit_events e[\s\S]*?limit 1;/)![0]
     .replace("into v_nth ", "").replaceAll("p_user_id", "$1::uuid").replaceAll("p_kind", "$2::text")
     .replaceAll("p_bridge_id", "$3::uuid").replaceAll("v_since", "$4::timestamptz").replaceAll("p_max", "90");
-  const plan = (await f.q(`explain ${query}`, [user,"bridge_poll",bridges[0],new Date(Date.now()-60_000).toISOString()])).map(row=>row["QUERY PLAN"]).join("\n");
-  console.info("review2 rate-limit EXPLAIN (100 bridges x 300 rows):\n" + plan);
-  expect(plan).toContain("rate_limit_events_bridge_idx");
-  expect(plan).toMatch(/Index Cond:.*bridge_id/);
-});
+  const since = new Date(Date.parse(base) - 60_000).toISOString();
+  const plans: string[] = [];
+  await f.q("set default_statistics_target = 1000"); // 표본이 전 행이라 통계가 같다
+  try {
+    for (let i=0; i<3; i++) {
+      await f.q("analyze public.rate_limit_events");
+      plans.push((await f.q(`explain (costs off) ${query}`, [user,"bridge_poll",bridges[0],since])).map(row=>row["QUERY PLAN"]).join("\n"));
+    }
+  } finally {
+    await f.q("reset default_statistics_target");
+  }
+  console.info("review2 rate-limit EXPLAIN (100 bridges x 300 rows):\n" + plans[0]);
+  expect(plans[1]).toBe(plans[0]);
+  expect(plans[2]).toBe(plans[0]);
+  expect(plans[0]).toContain("rate_limit_events_bridge_idx");
+  expect(plans[0]).toMatch(/Index Cond:.*bridge_id/);
+}, 60_000);
 
 it("review3 registration caps new rows and reactivation while preserving rotation", async () => {
   const user = await f.user();

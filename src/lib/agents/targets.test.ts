@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { assistantTargetsResponseSchema } from "@/lib/api/contract";
+import { assistantTargetsResponseSchema, assistantTargetsWithDeviceResponseSchema } from "@/lib/api/contract";
 
 import { fakeAdmin } from "./fake-admin";
 import { AGENT_REGISTRY } from "./registry";
@@ -74,8 +74,8 @@ describe("listAssistantTargets (R15, OD-20)", () => {
     const fake = world();
     expect(await list(fake, BOTH)).toEqual([
       { kind: "taskforce" },
-      { kind: "agent", adapter: "agent:claude-code", display_name: "Claude Code", connection_id: null, state: "not_connected", access: null },
-      { kind: "agent", adapter: "agent:codex", display_name: "Codex", connection_id: null, state: "not_connected", access: "read_only" },
+      { kind: "agent", adapter: "agent:claude-code", display_name: "Claude Code", connection_id: null, state: "not_connected", access: null, device_name: null, bridge_id: null },
+      { kind: "agent", adapter: "agent:codex", display_name: "Codex", connection_id: null, state: "not_connected", access: "read_only", device_name: null, bridge_id: null },
     ]);
   });
 
@@ -83,14 +83,16 @@ describe("listAssistantTargets (R15, OD-20)", () => {
     const fake = world({ connections: [connection(1, "agent:codex"), connection(2, "agent:claude-code")], bridges: [bridge(1), bridge(2)] });
     expect(await list(fake, BOTH)).toEqual([
       { kind: "taskforce" },
-      { kind: "agent", adapter: "agent:claude-code", display_name: "Claude Code", connection_id: id(2), state: "unsupported", access: null },
-      { kind: "agent", adapter: "agent:codex", display_name: "Codex", connection_id: id(1), state: "ready", access: "read_only" },
+      { kind: "agent", adapter: "agent:claude-code", display_name: "Claude Code", connection_id: id(2), state: "unsupported", access: null, device_name: null, bridge_id: id(102) },
+      { kind: "agent", adapter: "agent:codex", display_name: "Codex", connection_id: id(1), state: "ready", access: "read_only", device_name: null, bridge_id: id(101) },
     ]);
   });
 
-  it("응답은 assistantTargetsResponseSchema를 지킨다", async () => {
-    const fake = world({ connections: [connection(1, "agent:codex")], bridges: [bridge(1)] });
-    expect(assistantTargetsResponseSchema.safeParse({ targets: await list(fake, BOTH) }).success).toBe(true);
+  it("응답은 assistantTargetsWithDeviceResponseSchema를 지킨다 (F1s 전 스키마는 새 키를 strict로 거절한다)", async () => {
+    const fake = world({ connections: [connection(1, "agent:codex")], bridges: [bridge(1, { device_name: "Studio" })] });
+    const targets = await list(fake, BOTH);
+    expect(assistantTargetsWithDeviceResponseSchema.safeParse({ targets }).success).toBe(true);
+    expect(assistantTargetsResponseSchema.safeParse({ targets }).success).toBe(false);
   });
 
   it(`heartbeat가 ${BRIDGE_STALE_SECONDS}초를 넘었거나 없으면 unreachable (정확히 ${BRIDGE_STALE_SECONDS}초는 아직 ready)`, async () => {
@@ -120,7 +122,7 @@ describe("listAssistantTargets (R15, OD-20)", () => {
 
   it("revoked 연결은 행이 아니다: 그것뿐이면 연결 없음(not_connected, connection_id null)", async () => {
     const fake = world({ connections: [connection(1, "agent:codex", { status: "revoked" })], bridges: [bridge(1)] });
-    expect(agentRows(await list(fake, CODEX))).toEqual([{ kind: "agent", adapter: "agent:codex", display_name: "Codex", connection_id: null, state: "not_connected", access: "read_only" }]);
+    expect(agentRows(await list(fake, CODEX))).toEqual([{ kind: "agent", adapter: "agent:codex", display_name: "Codex", connection_id: null, state: "not_connected", access: "read_only", device_name: null, bridge_id: null }]);
   });
 
   it("연결이 둘이면 행이 둘 (만든 순서). 연결이 있는 adapter에는 not_connected 행을 따로 더하지 않는다", async () => {
@@ -151,6 +153,71 @@ describe("listAssistantTargets (R15, OD-20)", () => {
 
   it("쓰기만 한다면: 읽기만 한다 (쓰기 0)", async () => {
     const fake = world({ connections: [connection(1, "agent:codex")], bridges: [bridge(1)] });
+    await list(fake, CODEX);
+    expect(fake.calls.filter((call) => call.kind !== "select")).toEqual([]);
+  });
+});
+
+// ─── F1s: 기기 이름 · bridge_id (계약 3.4) ───
+describe("listAssistantTargets device_name · bridge_id (F1s C4)", () => {
+  const list = (fake: ReturnType<typeof world>, env: Record<string, string>) => listAssistantTargets(fake.admin, USER, env, NOW);
+  const agentRows = (targets: Awaited<ReturnType<typeof listAssistantTargets>>) => targets.filter((target) => target.kind === "agent");
+
+  it("연결 행마다 그 연결 bridge의 device_name · bridge_id를 낸다 (같은 adapter 연결 둘 → 이름 둘)", async () => {
+    const fake = world({
+      connections: [connection(1, "agent:codex"), connection(2, "agent:codex")],
+      bridges: [bridge(1, { device_name: "Studio" }), bridge(2, { device_name: "Test Mac" })],
+    });
+    const rows = agentRows(await list(fake, CODEX));
+    expect(rows.map((row) => [row.connection_id, row.device_name, row.bridge_id])).toEqual([[id(1), "Studio", id(101)], [id(2), "Test Mac", id(102)]]);
+    expect(assistantTargetsWithDeviceResponseSchema.safeParse({ targets: [{ kind: "taskforce" }, ...rows] }).success).toBe(true);
+  });
+
+  it("bridge가 이름을 아직 보내지 않았으면(옛 Mac) device_name은 null이고 bridge_id는 그대로다", async () => {
+    const fake = world({ connections: [connection(1, "agent:codex")], bridges: [bridge(1, { device_name: null })] });
+    expect(agentRows(await list(fake, CODEX))[0]).toMatchObject({ connection_id: id(1), state: "ready", device_name: null, bridge_id: id(101) });
+  });
+
+  it("연결 없는 행은 둘 다 null이다", async () => {
+    const fake = world({ bridges: [bridge(1, { device_name: "Studio" })] });
+    expect(agentRows(await list(fake, BOTH))).toEqual([
+      expect.objectContaining({ adapter: "agent:claude-code", connection_id: null, device_name: null, bridge_id: null }),
+      expect.objectContaining({ adapter: "agent:codex", connection_id: null, device_name: null, bridge_id: null }),
+    ]);
+  });
+
+  it("bridge 행이 없으면(지워짐 · bridge_id null) 이름은 null이고, bridge_id는 연결 값 그대로다", async () => {
+    const gone = world({ connections: [connection(1, "agent:codex")], bridges: [] });
+    expect(agentRows(await list(gone, CODEX))[0]).toMatchObject({ state: "not_connected", device_name: null, bridge_id: id(101) });
+    const unset = world({ connections: [connection(1, "agent:codex", { bridge_id: null })], bridges: [] });
+    expect(agentRows(await list(unset, CODEX))[0]).toMatchObject({ state: "not_connected", device_name: null, bridge_id: null });
+  });
+
+  it("남의 bridge의 이름은 내지 않는다 (사용자 id로 좁힌다)", async () => {
+    const fake = world({ connections: [connection(1, "agent:codex")], bridges: [bridge(1, { user_id: OTHER, device_name: "Studio" })] });
+    expect(agentRows(await list(fake, CODEX))[0]).toMatchObject({ device_name: null, bridge_id: id(101) });
+    for (const call of fake.calls) expect(call.filters).toContainEqual(["user_id", "eq", USER]);
+  });
+
+  it("bridges는 device_name 열까지 골라 읽는다", async () => {
+    const fake = world({ connections: [connection(1, "agent:codex")], bridges: [bridge(1, { device_name: "Studio" })] });
+    await list(fake, CODEX);
+    expect(fake.calls.filter((call) => call.target === "bridges" && call.kind === "select")).toHaveLength(1);
+    expect(agentRows(await list(fake, CODEX))[0]).toMatchObject({ device_name: "Studio" });
+  });
+
+  it("이름은 상태 계산에 쓰지 않는다: 이름이 있든 없든 상태 · 순서가 같다", async () => {
+    const cases: Record<string, unknown>[] = [{ last_heartbeat_at: secondsAgo(10) }, { last_heartbeat_at: secondsAgo(BRIDGE_STALE_SECONDS + 1) }, { last_heartbeat_at: null }, { status: "revoked" }];
+    for (const extra of cases) {
+      const plain = world({ connections: [connection(1, "agent:codex"), connection(2, "agent:claude-code")], bridges: [bridge(1, extra), bridge(2, extra)] });
+      const named = world({ connections: [connection(1, "agent:codex"), connection(2, "agent:claude-code")], bridges: [bridge(1, { ...extra, device_name: "Studio" }), bridge(2, { ...extra, device_name: "Studio" })] });
+      const strip = (targets: Awaited<ReturnType<typeof listAssistantTargets>>) => targets.map((target) => (target.kind === "agent" ? { ...target, device_name: null } : target));
+      expect(strip(await list(named, BOTH)), JSON.stringify(extra)).toEqual(strip(await list(plain, BOTH)));
+    }
+  });
+
+  it("쓰기 0: 이름을 읽기만 한다", async () => {
+    const fake = world({ connections: [connection(1, "agent:codex")], bridges: [bridge(1, { device_name: "Studio" })] });
     await list(fake, CODEX);
     expect(fake.calls.filter((call) => call.kind !== "select")).toEqual([]);
   });

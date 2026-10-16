@@ -301,6 +301,15 @@ type AgentCapability = /* 런타임 계약 5장 그대로 */ & {
 
 registry에 있고 연결이 없으면 `not_connected`(예: Codex를 아직 연결하지 않음). `sign_in_needed`는 bridge 사전 점검(arch 8.2 spawn (a))에서 온다.
 
+### 4.5.1 OA F1s 정정 (2026-10-15)
+
+이 절은 OA F1s 계약 5.1의 결정을 반영하며 아래에 지정한 기존 문구보다 우선한다.
+
+- **4.5 대상 목록:** agent 행에 두 키를 더한다. `device_name: string | null` = 그 연결 bridge의 표시용 Mac 이름(서버 정규화 뒤 1–64 코드 포인트, 모르면 `null` — 옛 Mac · 연결 없음 · bridge 없음 · 폐기). `bridge_id: string | null` = 연결의 bridge(연결이 없으면 `null`, bridge가 지워졌어도 연결의 값 그대로). 이름은 `state` 계산에 쓰지 않는다. 같은 이름의 Mac 둘은 앱이 자기 bridge id와 견줘 "This Mac"을 가른다. 옛 앱은 모르는 키를 무시한다.
+- **3.6 비밀값 "Answer on <Mac 이름>":** 이름은 앱이 `agent.bridge_id`로 `bridges.device_name`을 RLS로 읽는다(`device_name`은 열 단위 select가 열려 있다. `secret_hash` · `heartbeat_result`는 그대로 막힘). 이름이 없으면 대체 문구를 쓴다(문구는 사용자 승인).
+- **개인정보:** Mac 이름은 사용자 데이터다. 로그 · 지표 · 오류 문구 · AI 입력에 넣지 않고, 그 Mac을 폐기하거나 계정을 지우면 비운다. 식별(`device_ref` 해시 · `device_id` 난수)은 그대로이고 이름은 어떤 판정 · 조인에도 쓰지 않는다.
+- **3.2 만료 회수:** lease가 `delivery_expires_at` 지난 메시지를 `expired`로 회수할 때 `delivery_reason`을 쓰지 않는다(`expired` 상태가 이유를 대신한다). 한계(후속 F3): Mac이 꺼져 있는 동안 lease 전 `prepared` 명령은 `delivery_expires_at`이 지나도 DB에서 `dispatched/prepared` 그대로이고 표시는 `unreachable`이면 `queued`다. 표시만 `expired`로 바꾸면 Send again이 `not_eligible`이 되므로, F3이 만료한 lease 전 `prepared` 명령을 잠금 아래 `withdraw_bridge_command(…,'expired')` 경로로 회수하고 Send again과 잇는다.
+
 ## 5. 중단 (U7, 검토 F14)
 
 - 보내기 ↔ Stop 전환 = **이 대화에 묶인 세션**에 열린 `agent_tasks`(dispatched · accepted · running · awaiting_answer)가 있는가. `idle`은 열린 작업이 아니다(Stop 대신 보내기).

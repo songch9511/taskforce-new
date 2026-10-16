@@ -60,3 +60,44 @@ it("keeps thrown provider values out of logs and responses", async () => {
   expect(await response.text()).not.toContain("PRIVATE-TEXT");
   expect(JSON.stringify(vi.mocked(console.error).mock.calls)).not.toContain("PRIVATE-TEXT");
 });
+
+// ─── F1s: 기기 이름 (표시용) ───
+const WATCH_NAME = "WATCH-DEVICE-NAME-Studio";
+const consoleText = () => JSON.stringify(["log", "info", "warn", "error", "debug"].map((method) => vi.mocked(console[method as "log"]).mock.calls));
+function silenceConsole() {
+  for (const method of ["log", "info", "warn", "error", "debug"] as const) vi.spyOn(console, method).mockImplementation(() => {});
+}
+it("device_name이 없는 옛 본문도 그대로 통과한다 (옛 Mac)", async () => {
+  expect((await POST(request("POST"))).status).toBe(200);
+  expect(mocks.register).toHaveBeenCalledWith(mocks.admin, userId, { ...input, connect: [], reactivate: false });
+  expect(mocks.register.mock.calls[0][2]).not.toHaveProperty("device_name");
+});
+it("device_name이 있으면 원문 그대로 registerBridge에 넘긴다 (정규화는 거기서)", async () => {
+  expect((await POST(request("POST", { ...input, device_name: "  Studio  " }))).status).toBe(200);
+  expect(mocks.register).toHaveBeenCalledWith(mocks.admin, userId, { ...input, connect: [], reactivate: false, device_name: "  Studio  " });
+});
+it("원문 256 코드 포인트까지 통과하고 257에서 400이다", async () => {
+  expect((await POST(request("POST", { ...input, device_name: "\u{1f34e}".repeat(256) }))).status).toBe(200);
+  mocks.register.mockClear();
+  expect((await POST(request("POST", { ...input, device_name: "\u{1f34e}".repeat(257) }))).status).toBe(400);
+  expect(mocks.register).not.toHaveBeenCalled();
+});
+it.each([5, null, ["Studio"], { name: "Studio" }, true])("device_name이 문자열이 아니면 400이다: %j", async (value) => {
+  expect((await POST(request("POST", { ...input, device_name: value }))).status).toBe(400);
+  expect(mocks.register).not.toHaveBeenCalled();
+});
+it("모르는 키는 device_name이 있어도 400이다 (strict 유지)", async () => {
+  expect((await POST(request("POST", { ...input, device_name: "Studio", hostname: "mac.local" }))).status).toBe(400);
+  expect(mocks.register).not.toHaveBeenCalled();
+});
+it("이름이 실린 요청이 실패해도 console 출력 · 응답에 이름이 없다", async () => {
+  silenceConsole();
+  mocks.register.mockRejectedValue(new Error(`failed for ${WATCH_NAME}`));
+  const response = await POST(request("POST", { ...input, device_name: WATCH_NAME }));
+  expect(response.status).toBe(500);
+  expect(await response.text()).not.toContain(WATCH_NAME);
+  expect(consoleText()).not.toContain(WATCH_NAME);
+  mocks.register.mockResolvedValue({ bridge_id: bridgeId, bridge_secret: "issued-once" });
+  expect((await POST(request("POST", { ...input, device_name: WATCH_NAME }))).status).toBe(200);
+  expect(consoleText()).not.toContain(WATCH_NAME);
+});
