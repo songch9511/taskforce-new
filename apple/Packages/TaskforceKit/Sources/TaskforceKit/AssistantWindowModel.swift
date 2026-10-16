@@ -21,6 +21,14 @@ public final class AssistantWindowModel: Identifiable {
     /// 입력칸이 포커스를 가져가야 할 때마다 오른다 (창을 ⌘3 · ⌘N으로 열 때 · 새 대화)
     public private(set) var focusRequest = 0
 
+    public typealias ReferentMenu = AgentReferentMenu
+
+    /// 열린 후보 고르기 메뉴 (OA D4a-06). 줄 동작(Send again · 후보 · View full)은 `AgentTurnDesk`가 하고 세션 패널과 같이 쓴다
+    public var referentMenu: AgentReferentMenu? { desk.referentMenu }
+    @ObservationIgnored public let desk: AgentTurnDesk
+    /// 에이전트 대화의 Stop · 세션 읽기 (OA D4a-13). 없으면 Stop이 없다 (실제 연결이 없는 런타임 · 견본)
+    @ObservationIgnored public var agent: AssistantAgentSupport?
+
     @ObservationIgnored let chat: ChatStore
     @ObservationIgnored let targets: AssistantTargetsStore
     @ObservationIgnored private let openElsewhere: () -> Set<UUID>
@@ -39,6 +47,7 @@ public final class AssistantWindowModel: Identifiable {
         self.targets = targets
         self.openElsewhere = openElsewhere
         rebindHandler = rebind
+        desk = AgentTurnDesk(chat: chat)
         chat.ensureLoaded(conversationID)
     }
 
@@ -66,6 +75,72 @@ public final class AssistantWindowModel: Identifiable {
     }
 
     public var isBlocked: Bool { blocked != nil }
+
+    // MARK: 에이전트 대화 (OA D4a-1)
+
+    /// 전달 줄을 옮기는 데 쓰는 사실: 에이전트 이름 · 이 대화 연결의 대상 상태(Mac is offline) · 승인 전 새 문구
+    public var deliveryContext: AgentDeliveryContext {
+        AgentDeliveryContext(
+            agentName: option?.name, targetState: pick.connectionID.flatMap(targets.targetState(forConnection:)), copy: AgentNewCopy.active
+        )
+    }
+
+    /// 한 줄. 에이전트가 아니거나 전달 표시를 아직 읽지 못했거나 줄이 없는 상태면 nil
+    public func deliveryLine(for turn: ChatTurn) -> MessageDeliveryLine? {
+        guard toAgent else { return nil }
+        return desk.line(for: turn, context: deliveryContext)
+    }
+
+    public func canSendAgain(_ turn: ChatTurn) -> Bool {
+        toAgent && desk.canSendAgain(turn, in: conversationID)
+    }
+
+    /// Send again (서버 메시지 id)
+    public func sendAgain(_ turn: ChatTurn) async {
+        guard toAgent else { return }
+        await desk.sendAgain(turn, in: conversationID)
+    }
+
+    public func openReferentMenu(for messageID: UUID) {
+        desk.openReferentMenu(for: messageID)
+    }
+
+    public func closeReferentMenu() {
+        desk.closeReferentMenu()
+    }
+
+    /// 후보 하나를 고른다 (`POST …/referent`): 메뉴는 닫힌다
+    public func chooseReferent(_ actionID: UUID) async {
+        await desk.chooseReferent(actionID, in: conversationID)
+    }
+
+    public func viewFull(_ turn: ChatTurn) {
+        desk.viewFull(turn)
+    }
+
+    /// 이 대화의 세션 (좁게 읽은 값, 아직 읽기 전이면 nil)
+    public var sessionItem: AgentSessionItem? {
+        guard toAgent, let id = chat.agentSessionID(for: conversationID) else { return nil }
+        return agent?.sessions.item(id: id)
+    }
+
+    /// 보내기 원이 Stop인가 · Stop 뒤 말 (D4a-13 표)
+    public var stopPresentation: AgentStopRules.Presentation {
+        agent?.stop.presentation(session: sessionItem) ?? AgentStopRules.Presentation(showsStop: false, line: nil)
+    }
+
+    /// 대화 끝에 이벤트 줄 모양으로 보이는 Stop 말 (D4a-14). 새 문구가 승인 전이면 그 줄은 없다
+    public var stopLineText: String? { stopLineText(copy: AgentNewCopy.active) }
+
+    public func stopLineText(copy: AgentUnapprovedCopy) -> String? {
+        stopPresentation.line?.text(copy: copy)
+    }
+
+    /// Stop: `POST /api/v2/conversations/{id}/stop`. 두 번 눌러도 한 번
+    public func stop() async {
+        guard toAgent, let agent else { return }
+        await agent.stop.stopConversation(conversationID, session: sessionItem)
+    }
 
     /// 손대지 않은 새 창: 서버에 없는 빈 대화에 쓴 글 · 칩 · 입력이 없다 (⌘3으로 막 연 창이 목록을 읽은 뒤 마지막 대화로 되살려져도 되는가)
     public var isPristine: Bool {
@@ -118,6 +193,12 @@ public final class AssistantWindowModel: Identifiable {
         chips.add(chip)
     }
 
+    /// 에이전트 대상에서 auto 칩을 눌렀다: added가 된다 (D4a-12). Taskforce 대상에서는 바뀌지 않는다 (보낸 뒤에야 added가 된다)
+    public func promoteChip(_ chipID: String) {
+        guard toAgent else { return }
+        chips.promote(chipID)
+    }
+
     public func removeChip(_ chipID: String) {
         chips.remove(chipID)
     }
@@ -128,8 +209,11 @@ public final class AssistantWindowModel: Identifiable {
     public func send(_ text: String) async {
         guard canSend(text) else { return }
         let attachments = chips.attachments
-        chips.didSend(toAgent: toAgent)
+        let agentTarget = toAgent
+        chips.didSend(toAgent: agentTarget)
         await chat.send(text, in: conversationID, attachments: attachments)
+        // 에이전트에게 보냈다: 턴이 시작됐을 수 있다 — 이 대화의 세션을 다시 읽어 Stop 원이 서게 한다
+        if agentTarget { await agent?.sessions.refresh() }
     }
 
     // MARK: 대상
@@ -197,8 +281,12 @@ public final class AssistantWindowModel: Identifiable {
         requestFocus()
     }
 
-    /// Esc: 안쪽(History)을 먼저 닫는다. 처리했으면 true — 아니면 창이 숨는다
+    /// Esc: 열린 후보 메뉴 → 안쪽(History)을 먼저 닫는다. 처리했으면 true — 아니면 창이 숨는다
     public func escapeInner() -> Bool {
+        if referentMenu != nil {
+            desk.closeReferentMenu()
+            return true
+        }
         guard mode == .history else { return false }
         mode = .chat
         requestFocus()
@@ -207,5 +295,16 @@ public final class AssistantWindowModel: Identifiable {
 
     public func requestFocus() {
         focusRequest += 1
+    }
+}
+
+/// Assistant 창이 에이전트 대화에서 쓰는 것 (OA D4a-13): Stop 요청 저장소와 열린 대화의 세션을 좁게 읽는 저장소
+public struct AssistantAgentSupport {
+    public let stop: AgentStopStore
+    public let sessions: AgentSessionStore
+
+    public init(stop: AgentStopStore, sessions: AgentSessionStore) {
+        self.stop = stop
+        self.sessions = sessions
     }
 }

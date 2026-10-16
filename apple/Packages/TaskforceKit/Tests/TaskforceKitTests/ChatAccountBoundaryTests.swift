@@ -366,4 +366,120 @@ struct ChatAccountBoundaryTests {
         #expect(await forgetting.value == .forgotten)
         #expect(memory.items.isEmpty && !memory.isBusy(forgotten.id))
     }
+
+    // MARK: 에이전트 대화 (OA D4a-1): 계정이 바뀐 직후 늦게 온 것을 버린다
+
+    private func agentStore(_ account: ChatTestAccount, agent: FakeAgentConversationGateway, assistant: FakeAssistantGateway = FakeAssistantGateway()) -> ChatStore {
+        let chat = ChatStore(gateway: gateway, scope: account.scope, now: { .test(500) })
+        chat.assistant = assistant
+        chat.agentConversation = agent
+        return chat
+    }
+
+    private func openAgent(_ chat: ChatStore, _ conversation: ChatConversation, _ messages: [ChatMessage]) async {
+        gateway.conversationsHandler = { [conversation] }
+        gateway.messagesHandler = { _ in messages }
+        gateway.lastMessagesHandler = { _ in [:] }
+        chat.viewedConversations = { [conversation.id] }
+        await chat.refresh()
+        await chat.settle()
+    }
+
+    @Test func aDeliveryReadThatOutlivesTheSessionIsDroppedAndTheLinesAreClearedOnSwitch() async throws {
+        let account = try ChatTestAccount.make()
+        let agent = FakeAgentConversationGateway()
+        let chat = agentStore(account, agent: agent)
+        let conversation = AgentFx.conversation()
+        let message = AgentFx.user(1, in: conversation.id, seq: 1)
+        agent.deliveriesHandler = { _, _ in ConversationDeliveryResponse(messages: [AgentFx.entry(message, AgentDelivery(state: .accepted))]) }
+        await openAgent(chat, conversation, [message])
+        #expect(chat.deliveryCount == 1)
+        account.relogin()
+        #expect(chat.deliveryCount == 0 && chat.turns(for: conversation.id).isEmpty, "계정이 떠나면 전달 캐시를 비운다")
+        // 떠난 계정이 시작한 읽기의 늦은 응답은 새 로그인에 반영되지 않는다
+        let latch = Latch()
+        agent.deliveriesHandler = { _, _ in
+            await latch.wait()
+            return ConversationDeliveryResponse(messages: [AgentFx.entry(message, AgentDelivery(state: .notSent, reason: .usageLimited))])
+        }
+        gateway.conversationsHandler = { [conversation] }
+        gateway.messagesHandler = { _ in [message] }
+        chat.viewedConversations = { [conversation.id] }
+        await chat.refresh()
+        #expect(await latch.waitForArrivals(1, timeout: .seconds(3)))
+        account.relogin()
+        await latch.open()
+        await chat.settle()
+        #expect(chat.deliveryCount == 0, "늦은 전달 읽기 응답은 버린다")
+    }
+
+    /// 순번은 계정이 떠날 때 비워져 새 계정의 첫 읽기도 1이다: 순번이 같아도 떠난 계정의 늦은 응답은 새 계정에 반영되지 않는다 (순번 · 쥔 시각 말고 계정 확인이 막는다)
+    @Test func aLateReadOfTheLeftAccountIsDroppedEvenWhenTheNewAccountsReadHasTheSameSequence() async throws {
+        let account = try ChatTestAccount.make()
+        let agent = FakeAgentConversationGateway()
+        let chat = agentStore(account, agent: agent)
+        let conversation = AgentFx.conversation()
+        let message = AgentFx.user(1, in: conversation.id, seq: 1)
+        let latch = Latch()
+        let calls = Mutex2(0)
+        agent.deliveriesHandler = { _, _ in
+            calls.value += 1
+            if calls.value == 1 {
+                await latch.wait()
+                return ConversationDeliveryResponse(messages: [AgentFx.entry(message, AgentDelivery(state: .notSent, reason: .usageLimited))])
+            }
+            return ConversationDeliveryResponse(messages: [])
+        }
+        gateway.conversationsHandler = { [conversation] }
+        gateway.messagesHandler = { _ in [message] }
+        gateway.lastMessagesHandler = { _ in [:] }
+        chat.viewedConversations = { [conversation.id] }
+        await chat.refresh()
+        #expect(await latch.waitForArrivals(1, timeout: .seconds(3)))
+        account.relogin()
+        chat.viewedConversations = { [conversation.id] }
+        await chat.refresh()
+        #expect(await eventually { agent.reads.count == 2 }, "새 계정이 같은 대화를 읽는다 (순번 1)")
+        await latch.open()
+        await chat.settle()
+        #expect(chat.delivery(forMessage: message.id) == nil, "떠난 계정의 notSent는 새 계정에 반영되지 않는다")
+    }
+
+    @Test func aSendAgainAndAReferentThatOutliveTheSessionAreDropped() async throws {
+        let account = try ChatTestAccount.make()
+        let agent = FakeAgentConversationGateway()
+        let chat = agentStore(account, agent: agent)
+        let conversation = AgentFx.conversation()
+        let failed = AgentFx.user(1, in: conversation.id, seq: 1)
+        let ambiguous = AgentFx.user(2, in: conversation.id, seq: 2)
+        let candidate = AgentReferentCandidate(actionID: UUID(), title: "가격 문구")
+        agent.deliveriesHandler = { _, _ in
+            ConversationDeliveryResponse(messages: [
+                AgentFx.entry(failed, AgentDelivery(state: .notSent, reason: .writeGateClosed)),
+                AgentFx.entry(ambiguous, AgentDelivery(state: .needsReferent, candidates: [candidate])),
+            ])
+        }
+        await openAgent(chat, conversation, [failed, ambiguous])
+        let deliverLatch = Latch()
+        let referentLatch = Latch()
+        agent.deliverHandler = { _, ids in
+            await deliverLatch.wait()
+            return AgentDeliverResponse(messages: [AgentDeliverResult(messageID: ids![0], result: .requeued, delivery: AgentDelivery(state: .queued))])
+        }
+        agent.referentHandler = { conversation, _, _ in
+            await referentLatch.wait()
+            return AgentPostedMessage(message: Chats.message(2, in: conversation, seq: 2, role: .user, text: "t", cmid: UUID(), at: 2), delivery: AgentDelivery(state: .sent))
+        }
+        async let sendAgain: Void = chat.sendAgain(failed.id, in: conversation.id)
+        async let referent: Void = chat.chooseReferent(candidate.actionID, for: ambiguous.id, in: conversation.id)
+        let deliverArrived = await deliverLatch.waitForArrivals(1, timeout: .seconds(3))
+        let referentArrived = await referentLatch.waitForArrivals(1, timeout: .seconds(3))
+        #expect(deliverArrived && referentArrived)
+        account.relogin()
+        await deliverLatch.open()
+        await referentLatch.open()
+        await sendAgain
+        await referent
+        #expect(chat.deliveryCount == 0, "다른 세션이 된 뒤 온 Send again · 후보 고르기 응답은 줄을 쓰지 못한다")
+    }
 }

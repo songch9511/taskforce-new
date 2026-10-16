@@ -19,6 +19,23 @@ extension TaskforceReads {
             supabase.from("agent_sessions").select(AgentSessionRecord.columns)
                 .order("updated_at", ascending: false).order("id", ascending: false).limit(Self.agentSessionLimit)
         )
+        return try await snapshot(of: sessions)
+    }
+
+    /// 그 세션들만 좁게 읽는다 (OA D4a-13b): Assistant 창이 열린 에이전트 대화의 세션. 연결은 같은 표라 그대로 읽는다 (에이전트 이름 · 이 Mac의 세션인지)
+    public func agentSessionSnapshot(sessionIDs: Set<UUID>) async throws -> AgentSessionSnapshot {
+        guard !sessionIDs.isEmpty else { return .empty }
+        var sessions: [AgentSessionRecord] = []
+        for chunk in Self.chunks(Array(sessionIDs).sorted { $0.uuidString < $1.uuidString }, size: Self.agentSessionIDChunk) {
+            sessions += try await rows(
+                supabase.from("agent_sessions").select(AgentSessionRecord.columns).in("id", values: chunk.map(\.lowercased))
+                    .order("updated_at", ascending: false).order("id", ascending: false)
+            )
+        }
+        return try await snapshot(of: sessions)
+    }
+
+    private func snapshot(of sessions: [AgentSessionRecord]) async throws -> AgentSessionSnapshot {
         async let connectionRows: [AgentConnectionRecord] = rows(
             supabase.from("agent_connections").select(AgentConnectionRecord.columns).order("created_at", ascending: true).limit(200)
         )

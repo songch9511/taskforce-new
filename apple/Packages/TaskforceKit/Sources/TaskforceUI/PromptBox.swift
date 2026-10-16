@@ -53,6 +53,8 @@ public struct PromptBox: View {
     let onTargetTap: () -> Void
     let onAttach: (() -> Void)?
     let onTargetFrame: (CGRect) -> Void
+    let onActivateChip: ((String) -> Void)?
+    let chipActivationName: (AssistantChip) -> String?
     @State private var textHeight: CGFloat = PromptBox.minTextHeight
     @State private var focused = false
     @Environment(\.colorSchemeContrast) private var contrast
@@ -61,8 +63,11 @@ public struct PromptBox: View {
         text: Binding<String>, placeholder: String, chips: [AssistantChip], chipLabel: @escaping (AssistantChip) -> String,
         targetName: String, targetMark: AgentMarkKind, targetOpen: Bool, isBlocked: Bool = false, isRunning: Bool = false, canSend: Bool,
         focusRequest: Int = 0, onSend: @escaping () -> Void, onStop: @escaping () -> Void = {}, onRemoveChip: @escaping (String) -> Void,
-        onTargetTap: @escaping () -> Void, onTargetFrame: @escaping (CGRect) -> Void = { _ in }, onAttach: (() -> Void)? = nil
+        onTargetTap: @escaping () -> Void, onTargetFrame: @escaping (CGRect) -> Void = { _ in }, onAttach: (() -> Void)? = nil,
+        onActivateChip: ((String) -> Void)? = nil, chipActivationName: @escaping (AssistantChip) -> String? = { _ in nil }
     ) {
+        self.onActivateChip = onActivateChip
+        self.chipActivationName = chipActivationName
         _text = text
         self.placeholder = placeholder
         self.chips = chips
@@ -96,7 +101,10 @@ public struct PromptBox: View {
             if !chips.isEmpty {
                 ChipFlowLayout(spacing: TFSpace.xs) {
                     ForEach(chips) { chip in
-                        ContextChip(label: chipLabel(chip), origin: chip.origin, icon: Self.icon(for: chip), onRemove: { onRemoveChip(chip.id) })
+                        ContextChip(
+                            label: chipLabel(chip), origin: chip.origin, icon: Self.icon(for: chip), onRemove: { onRemoveChip(chip.id) },
+                            onActivate: onActivateChip.map { handler in { handler(chip.id) } }, activationName: chipActivationName(chip)
+                        )
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)

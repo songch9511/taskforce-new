@@ -36,7 +36,7 @@ extension ChatGateway {
 public struct LiveChatGateway: ChatGateway {
     /// 같은 모듈의 `IssueScreensGateway`(OA U2)가 같은 읽기를 쓴다
     let reads: TaskforceReads
-    private let api: APIClient
+    let api: APIClient
 
     public init(reads: TaskforceReads, api: APIClient) {
         self.reads = reads

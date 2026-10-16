@@ -22,16 +22,33 @@ public struct ContextChip: View {
     let origin: ChatAttachmentOrigin
     let icon: Icon
     let onRemove: (() -> Void)?
+    let onActivate: (() -> Void)?
+    let activationName: String?
     @Environment(\.colorSchemeContrast) private var contrast
 
-    public init(label: String, origin: ChatAttachmentOrigin, icon: Icon = .item(.result), onRemove: (() -> Void)? = nil) {
+    /// - onActivate: 에이전트 대상의 auto 칩을 누르면 added가 된다 (OA D4a-12). Taskforce 대상 · added 칩에는 주지 않는다
+    /// - activationName: 그 눌림의 접근성 동작 이름 ("Add #139 …", 새 문구라 승인 전에는 nil)
+    public init(
+        label: String, origin: ChatAttachmentOrigin, icon: Icon = .item(.result), onRemove: (() -> Void)? = nil, onActivate: (() -> Void)? = nil,
+        activationName: String? = nil
+    ) {
         self.label = label
         self.origin = origin
         self.icon = icon
         self.onRemove = onRemove
+        self.onActivate = onActivate
+        self.activationName = activationName
     }
 
     private var isAuto: Bool { origin == .auto }
+
+    /// auto 칩은 눌러서 더할 수 있나: 누르는 동작이 주어졌을 때만 (에이전트 대상)
+    nonisolated public static func isActivatable(origin: ChatAttachmentOrigin, hasAction: Bool) -> Bool { origin == .auto && hasAction }
+
+    /// 눌러서 더하는 접근성 동작의 이름: 승인된 새 문구가 있을 때만 ("Add {칩 이름}"). 없으면 동작 이름을 지어내지 않는다
+    nonisolated public static func activationName(label: String, chip: String, copy: AgentUnapprovedCopy) -> String? {
+        copy.addChip(chip)
+    }
 
     /// "Remove #139 Rewrite pricing page copy"
     nonisolated public static func removeLabel(_ label: String) -> String { "Remove \(label)" }
@@ -40,20 +57,7 @@ public struct ContextChip: View {
         let shape = RoundedRectangle(cornerRadius: Self.radius, style: .continuous)
         let secondary = isAuto ? TFColor.textSecondary : TFColor.textPrimary
         HStack(spacing: TFSpace.xs) {
-            Group {
-                switch icon {
-                case .item(let glyph): glyph.image(size: Self.iconSize).foregroundStyle(TFColor.textSecondary)
-                case .agent(let kind): AgentMark(kind, size: Self.iconSize)
-                }
-            }
-            .layoutPriority(1)
-            Text(label)
-                .font(TFFont.footnote)
-                .tracking(-0.08)
-                .foregroundStyle(secondary)
-                .lineLimit(1)
-                .truncationMode(.middle)
-                .frame(height: 16)
+            labelPart(secondary)
             if let onRemove {
                 RemoveButton(label: Self.removeLabel(label), action: onRemove)
                     .layoutPriority(1)
@@ -70,6 +74,46 @@ public struct ContextChip: View {
             }
         }
         .accessibilityElement(children: .contain)
+    }
+
+    /// 아이콘 + 이름. 눌러서 더할 수 있는 auto 칩이면 이 부분이 단추다 (×는 따로)
+    @ViewBuilder
+    private func labelPart(_ color: Color) -> some View {
+        let content = HStack(spacing: TFSpace.xs) {
+            Group {
+                switch icon {
+                case .item(let glyph): glyph.image(size: Self.iconSize).foregroundStyle(TFColor.textSecondary)
+                case .agent(let kind): AgentMark(kind, size: Self.iconSize)
+                }
+            }
+            .layoutPriority(1)
+            Text(label)
+                .font(TFFont.footnote)
+                .tracking(-0.08)
+                .foregroundStyle(color)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .frame(height: 16)
+        }
+        if Self.isActivatable(origin: origin, hasAction: onActivate != nil), let onActivate {
+            Button(action: onActivate) { content.contentShape(Rectangle()) }
+                .buttonStyle(.plain)
+                .accessibilityLabel(label)
+                .accessibilityAddTraits(.isButton)
+                .modifier(ActivationAction(name: activationName, action: onActivate))
+        } else {
+            content
+        }
+    }
+
+    /// 접근성 동작 이름이 있으면 (승인된 문구) 그 이름의 동작을 더한다
+    private struct ActivationAction: ViewModifier {
+        let name: String?
+        let action: () -> Void
+
+        func body(content: Content) -> some View {
+            if let name { content.accessibilityAction(named: Text(name), action) } else { content }
+        }
     }
 
     /// × (`tf-chip-x`): 16pt 누르는 칸, 호버 `bg/selected`

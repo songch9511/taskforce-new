@@ -27,6 +27,24 @@ final class FakeAgentSessionGateway: AgentSessionGateway, @unchecked Sendable {
         if let failure { throw failure }
         return snapshot
     }
+
+    /// 좁게 읽은 세션 id들 (D4a-13b: Assistant 창이 열린 대화의 세션만)
+    var narrowReads: [Set<UUID>] { lock.withLock { _narrowReads } }
+    private var _narrowReads: [Set<UUID>] = []
+
+    func agentSessionSnapshot(sessionIDs: Set<UUID>) async throws -> AgentSessionSnapshot {
+        let (snapshot, failure) = lock.withLock { () -> (AgentSessionSnapshot, Error?) in
+            _narrowReads.append(sessionIDs)
+            return (_snapshot, _failure)
+        }
+        if let failure { throw failure }
+        var narrowed = snapshot
+        narrowed.sessions = snapshot.sessions.filter { sessionIDs.contains($0.id) }
+        narrowed.tasks = snapshot.tasks.filter { sessionIDs.contains($0.agentSessionID) }
+        narrowed.runs = snapshot.runs.filter { $0.agentSessionID.map(sessionIDs.contains) ?? false }
+        narrowed.conversations = snapshot.conversations.filter { sessionIDs.contains($0.agentSessionID) }
+        return narrowed
+    }
 }
 
 /// 세션 저장소: 읽기 상태(읽는 중 · 받음 · 오프라인 · 실패) · 마지막에 시작한 읽기만 반영 · 계정 경계 · 방금 끝남 3초 · 5초 다시 읽기
@@ -350,6 +368,50 @@ struct AgentSessionStoreTests {
         store.pathChanged(online: true)
         await quiet()
         #expect(gateway.reads == 2, "이미 온라인이면 다시 읽지 않는다")
+    }
+
+    // MARK: 좁게 읽기 (OA D4a-13b)
+
+    @Test func aFocusedStoreReadsOnlyTheFocusedSessionsAndNeverTheWholeList() async {
+        let gateway = FakeAgentSessionGateway()
+        var snapshot = Fx.snapshot(state: .running)
+        snapshot.sessions.append(Fx.session(2, name: "Other", status: .bound))
+        snapshot.tasks.append(Fx.task(2, state: .running))
+        gateway.serve(snapshot)
+        let focus = Mutex2<Set<UUID>>([Fx.id(1)])
+        let scope = ChatTestAccount.fixedScope()
+        let store = AgentSessionStore(gateway: gateway, scope: scope, focus: { focus.value })
+        await store.refresh()
+        #expect(gateway.reads == 0 && gateway.narrowReads == [[Fx.id(1)]], "전체 목록을 읽지 않는다")
+        #expect(store.items.map(\.id) == [Fx.id(1)] && store.items[0].lastTaskState == .running)
+        focus.value = [Fx.id(2)]
+        await store.refresh()
+        #expect(gateway.narrowReads.last == [Fx.id(2)] && store.items.map(\.id) == [Fx.id(2)], "초점이 바뀌면 다음 읽기가 따른다")
+    }
+
+    @Test func aFocusedStoreWithNothingFocusedReadsNothing() async {
+        let gateway = FakeAgentSessionGateway()
+        gateway.serve(Fx.snapshot(state: .running))
+        let store = AgentSessionStore(gateway: gateway, scope: ChatTestAccount.fixedScope(), focus: { [] })
+        await store.refresh()
+        #expect(gateway.reads == 0 && gateway.narrowReads.isEmpty && store.items.isEmpty && !store.hasRead, "열린 에이전트 대화가 없으면 읽지 않는다")
+    }
+
+    @Test func aFocusedStoreRereadsEveryFiveSecondsWhileTheTaskIsOpenAndStopsWhenAsleep() async {
+        let gateway = FakeAgentSessionGateway()
+        gateway.serve(Fx.snapshot(state: .running))
+        let sleeper = ManualSleeper()
+        let store = AgentSessionStore(
+            gateway: gateway, scope: ChatTestAccount.fixedScope(), now: { sleeper.now }, sleep: { await sleeper.sleep($0) }, focus: { [Fx.id(1)] }
+        )
+        await store.refresh()
+        #expect(await eventually { sleeper.pendingDelays == [5] })
+        sleeper.fire()
+        #expect(await eventually { gateway.narrowReads.count == 2 })
+        store.setAsleep(true)
+        sleeper.fire()
+        await quiet()
+        #expect(gateway.narrowReads.count == 2, "잠자는 동안 멈춘다")
     }
 
     // MARK: 도우미

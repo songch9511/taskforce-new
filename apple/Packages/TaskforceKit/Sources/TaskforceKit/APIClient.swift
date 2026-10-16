@@ -19,6 +19,14 @@ public enum APIErrorCode: String, Decodable, Sendable {
     /// v2 기억 쓰기의 409 이유 (B3): 정책상 이 항목은 확인할 수 없다 / 범위를 옮길 수 없다. version 충돌(`conflict`)과 달리 다시 읽어도 소용없다: 앱은 그 동작을 감춘다
     case confirmUnavailable = "confirm_unavailable"
     case scopeUnavailable = "scope_unavailable"
+    /// 에이전트 대화 확장(D1d)의 오류 코드 여섯 (OA D4a-20). 모르는 코드는 상태 코드로 짐작해 원래 코드를 잃으므로(409 → `conflict`) 코드로 올려 지킨다
+    case targetMismatch = "target_mismatch"
+    case questionStale = "question_stale"
+    case secretRequiresLocal = "secret_requires_local"
+    case sessionBusy = "session_busy"
+    case approvalViaReview = "approval_via_review"
+    /// 잠금 경합이 재시도를 넘겼다: 쓰기 0, 같은 요청을 다시 보내도 된다
+    case busyRetry = "busy_retry"
 }
 
 public enum APIError: Error, Equatable, Sendable, CustomStringConvertible {
@@ -41,6 +49,20 @@ public enum APIError: Error, Equatable, Sendable, CustomStringConvertible {
 
     /// 외부 AI 처리 동의가 먼저 필요함 (`POST /sources` · `/ask` · 연결 시작 · `POST /runs`의 409)
     public var isConsentRequired: Bool { isConflict }
+
+    /// 에이전트 대화 확장의 오류 코드로 본 값 (D4a-20). 그 여섯이 아니면 nil
+    public var agentCode: AgentConversationErrorCode? {
+        guard case .server(_, let code, _) = self else { return nil }
+        switch code {
+        case .targetMismatch: return .targetMismatch
+        case .questionStale: return .questionStale
+        case .secretRequiresLocal: return .secretRequiresLocal
+        case .sessionBusy: return .sessionBusy
+        case .approvalViaReview: return .approvalViaReview
+        case .busyRetry: return .busyRetry
+        default: return nil
+        }
+    }
 
     /// 서버가 돌려준 HTTP 상태 (응답을 받지 못했으면 nil)
     public var status: Int? {

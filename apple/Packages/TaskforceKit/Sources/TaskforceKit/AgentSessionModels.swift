@@ -146,12 +146,27 @@ public struct AgentSessionRunRecord: Decodable, Sendable, Hashable, Identifiable
 public struct AgentConnectionRecord: Decodable, Sendable, Hashable, Identifiable {
     public let id: UUID
     public let adapter: String
+    /// 이 연결을 돌리는 Mac의 bridge (OA D4a-03): 세션 머리의 알약(Open in Terminal · Resume here)은 이 값이 이 Mac의 bridge id와 같을 때만 보인다. 모르면 nil
+    public let bridgeID: UUID?
 
-    public static let columns = "id, adapter"
+    public static let columns = "id, adapter, bridge_id"
 
-    public init(id: UUID, adapter: String) {
+    enum CodingKeys: String, CodingKey {
+        case id, adapter
+        case bridgeID = "bridge_id"
+    }
+
+    public init(id: UUID, adapter: String, bridgeID: UUID? = nil) {
         self.id = id
         self.adapter = adapter
+        self.bridgeID = bridgeID
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(UUID.self, forKey: .id)
+        adapter = try c.decode(String.self, forKey: .adapter)
+        bridgeID = try? c.decodeIfPresent(UUID.self, forKey: .bridgeID)
     }
 }
 
@@ -276,11 +291,17 @@ public struct AgentSessionItem: Identifiable, Sendable, Hashable {
     /// 열린 task가 있다 (다시 읽기가 5초마다 도는 이유)
     public let hasOpenTask: Bool
     public let pill: AgentSessionPill?
+    /// 이 세션 연결을 돌리는 Mac의 bridge id (OA D4a-03, 알약은 그 Mac에서만 보인다). 모르면 nil
+    public let connectionBridgeID: UUID?
+    /// 마지막 턴의 task 상태 · 그 task에 Stop 요청이 있다 · 세션의 마지막 턴 번호 (OA D4a-13: Stop 원 · "Stop requested" · "may continue")
+    public let lastTaskState: AgentTaskState?
+    public let cancelRequested: Bool
+    public let turnSeq: Int
 
     public init(
         id: UUID, name: String, agent: AgentMarkKind, agentName: String, connectionID: UUID, status: AgentSessionStatus, ring: AgentSessionRing?,
         line: String, createdAt: Date, updatedAt: Date, issueIDs: [UUID], currentIssueID: UUID?, conversationID: UUID?, hasOpenTask: Bool,
-        pill: AgentSessionPill?
+        pill: AgentSessionPill?, connectionBridgeID: UUID? = nil, lastTaskState: AgentTaskState? = nil, cancelRequested: Bool = false, turnSeq: Int = 0
     ) {
         self.id = id
         self.name = name
@@ -297,6 +318,10 @@ public struct AgentSessionItem: Identifiable, Sendable, Hashable {
         self.conversationID = conversationID
         self.hasOpenTask = hasOpenTask
         self.pill = pill
+        self.connectionBridgeID = connectionBridgeID
+        self.lastTaskState = lastTaskState
+        self.cancelRequested = cancelRequested
+        self.turnSeq = turnSeq
     }
 
     public var isClosed: Bool { status == .closed }
