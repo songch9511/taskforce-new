@@ -158,8 +158,10 @@ struct KeeperScanRulesTests {
         #expect(KeeperCaller.satisfies(pid: me, requirement: "identifier \"\(identifier)\""))
         #expect(!KeeperCaller.satisfies(pid: me, requirement: "identifier \"dev.taskforcelabs.not-this-host\""))
         #expect(!KeeperCaller.satisfies(pid: me, requirement: "this is not a requirement ((("))
-        #expect(KeeperCaller.allows(.requirement("identifier \"\(identifier)\""), parent: me, parentNow: { me }))
-        #expect(!KeeperCaller.allows(.requirement("identifier \"\(identifier)\""), parent: me, parentNow: { 1 }), "확인하는 동안 부모가 끝났다")
+        // 시험 프로세스가 부모 자리: 지킴이(`me: 0`)는 그 뒤에 생겼다 (idversion 부모 < 지킴이, 15장 6)
+        let versions: (pid_t) -> UInt32? = { $0 == me ? 1 : 2 }
+        #expect(KeeperCaller.allows(.requirement("identifier \"\(identifier)\""), parent: me, parentNow: { me }, version: versions, me: 0))
+        #expect(!KeeperCaller.allows(.requirement("identifier \"\(identifier)\""), parent: me, parentNow: { 1 }, version: versions, me: 0), "확인하는 동안 부모가 끝났다")
         #expect(!KeeperCaller.allows(.liveParent, parent: 1, parentNow: { 1 }), "ppid 1")
     }
 

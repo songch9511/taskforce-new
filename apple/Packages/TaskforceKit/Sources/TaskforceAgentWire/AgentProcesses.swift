@@ -28,8 +28,12 @@ public struct ProcessGeneration: Equatable, Sendable {
     public let zombie: Bool
     public let own: UInt64
     public let parent: UInt64
+    /// 커널 idversion (`p_idversion`): fork · exec마다 새로 매기는 번호 (15장 6: 부모가 그 뒤에 exec했는지 가른다)
+    public let version: UInt32
 
-    public init(pid: pid_t, startSeconds: UInt64, startMicros: UInt64, parentPID: pid_t, group: pid_t, uid: uid_t, zombie: Bool, own: UInt64, parent: UInt64) {
+    public init(
+        pid: pid_t, startSeconds: UInt64, startMicros: UInt64, parentPID: pid_t, group: pid_t, uid: uid_t, zombie: Bool, own: UInt64, parent: UInt64, version: UInt32 = 0
+    ) {
         self.pid = pid
         self.startSeconds = startSeconds
         self.startMicros = startMicros
@@ -39,6 +43,7 @@ public struct ProcessGeneration: Equatable, Sendable {
         self.zombie = zombie
         self.own = own
         self.parent = parent
+        self.version = version
     }
 
     public var start: Date { Date(timeIntervalSince1970: TimeInterval(startSeconds) + TimeInterval(startMicros) / 1_000_000) }
@@ -102,10 +107,11 @@ public enum AgentProcesses {
         let info = buffer.withUnsafeBytes { $0.loadUnaligned(as: proc_bsdinfo.self) }
         let own = buffer.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: bsd + 16, as: UInt64.self) }
         let parent = buffer.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: bsd + 24, as: UInt64.self) }
+        let version = buffer.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: bsd + 32, as: UInt32.self) }
         guard own > 1, info.pbi_pid == UInt32(bitPattern: pid) else { return .failed }
         return .present(ProcessGeneration(
             pid: pid, startSeconds: info.pbi_start_tvsec, startMicros: info.pbi_start_tvusec, parentPID: pid_t(bitPattern: info.pbi_ppid), group: pid_t(bitPattern: info.pbi_pgid),
-            uid: info.pbi_uid, zombie: info.pbi_status == UInt32(SZOMB), own: own, parent: parent
+            uid: info.pbi_uid, zombie: info.pbi_status == UInt32(SZOMB), own: own, parent: parent, version: version
         ))
     }
 

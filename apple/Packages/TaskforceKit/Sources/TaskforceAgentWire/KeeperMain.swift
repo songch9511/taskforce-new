@@ -99,9 +99,14 @@ public enum KeeperMain {
         }
         guard attributable else { return Exit.unprovable.rawValue }
         var clean = 0
+        // 지금까지 본 구성원 (15장 3: 그 id가 부모인 스스로 책임 프로세스는 우리 자손이었을 수 있다). `claude`부터
+        var seen: Set<UInt64> = []
+        if case .present(let read)? = generation { seen.insert(read.own) }
         while clean < 2 {
             Thread.sleep(forTimeInterval: scanInterval)
-            if let scan = KeeperMembers.scan(keeperPID: me, keeperID: own.own), scan.complete, scan.members.isEmpty {
+            let scan = KeeperMembers.scan(keeperPID: me, keeperID: own.own, seen: seen)
+            seen.formUnion(scan?.members.map(\.own) ?? [])
+            if let scan, scan.complete, scan.members.isEmpty {
                 clean += 1
             } else {
                 clean = 0
@@ -110,6 +115,8 @@ public enum KeeperMain {
         guard let boot = AgentProcesses.bootSessionID(), KeeperRecord.write(URL(fileURLWithPath: invocation.ended), keeperID: own.own, boot: boot) else {
             return Exit.recordFailed.rawValue
         }
+        // 앱이 부모로서 받는 정상 끝의 짝 (15장 4): 끝 기록 뒤에 보고 줄 `ended`를 쓰고 0으로 끝난다 (보고 fd는 끝나며 닫힌다)
+        _ = send(invocation, .ended)
         return Exit.ended.rawValue
     }
 
@@ -196,12 +203,15 @@ public enum KeeperReport: Equatable, Sendable {
     case failed
     /// `claude`를 거뒀다
     case exited(code: Int32?, signal: Int32?)
+    /// 구성원 0을 증명하고 끝 기록을 썼다 (곧 0으로 끝난다, 15장 4)
+    case ended
 
     public var line: String {
         switch self {
         case .started(let pid, let claudeID, let keeperID, let attributable): "started \(pid) \(claudeID) \(keeperID) \(attributable ? 1 : 0)"
         case .failed: "failed"
         case .exited(let code, let signal): "exited \(code.map(String.init) ?? "-") \(signal.map(String.init) ?? "-")"
+        case .ended: "ended"
         }
     }
 
@@ -219,6 +229,9 @@ public enum KeeperReport: Equatable, Sendable {
         case "exited":
             guard parts.count == 3, let code = optional(parts[1]), let signal = optional(parts[2]) else { return nil }
             self = .exited(code: code, signal: signal)
+        case "ended":
+            guard parts.count == 1 else { return nil }
+            self = .ended
         default:
             return nil
         }
@@ -266,7 +279,8 @@ public enum KeeperMembers {
         public var complete: Bool
     }
 
-    public static func scan(keeperPID: pid_t, keeperID: UInt64, lookups: Lookups = .live) -> Scan? {
+    /// - `seen`: 지킴이가 앞선 훑기에서 본 구성원 id (15장 3)
+    public static func scan(keeperPID: pid_t, keeperID: UInt64, seen: Set<UInt64> = [], lookups: Lookups = .live) -> Scan? {
         guard let keeper = keeperAlive(keeperPID, keeperID, lookups), let listed = lookups.listing() else { return nil }
         let uid = getuid()
         var members: [ProcessGeneration] = []
@@ -311,8 +325,9 @@ public enum KeeperMembers {
             }
             if member {
                 members.append(generation)
-            } else if selfResponsible, generation.parent > keeperID {
-                // 14장 5: 지킴이 뒤에 생긴 프로세스가 띄운, 스스로 책임 프로세스인 것 (구성원이 다시 disclaim해 띄웠을 수 있다)
+            } else if selfResponsible, generation.parent > keeperID, seen.contains(generation.parent) || !unrelatedParent(of: generation, keeperPID, keeperID, lookups) {
+                // 14장 5 · 15장 3: 지킴이 뒤에 생긴 프로세스가 띄운 스스로 책임 프로세스 — 부모가 구성원이거나 · 사라졌거나 · 지킴이가 본 id면 구성원이 다시 disclaim해
+                // 띄웠을 수 있다. 부모가 살아 있고 그 책임 프로세스가 지킴이가 아니면 무관하다 (Claude 데스크톱 · Chrome native host 같은 다른 앱의 disclaim)
                 complete = false
             }
         }
@@ -322,6 +337,17 @@ public enum KeeperMembers {
         // pid로 가를 때는 훑기 뒤에도 그 pid가 지킴이여야 한다 (그 사이 지킴이가 끝나 pid가 다시 쓰였으면 가른 것을 믿지 않는다)
         guard lookups.responsibleUniqueID != nil || keeperAlive(keeperPID, keeperID, lookups) != nil else { return nil }
         return Scan(members: members, complete: complete)
+    }
+
+    /// 그 프로세스의 부모가 지금 같은 id로 살아 있고 그 책임 프로세스가 지킴이가 아님을 증명했다 (15장 3). 사라짐 · 다른 프로세스 · 좀비 · 조회 실패 · 책임 = 지킴이는 아니다
+    static func unrelatedParent(of child: ProcessGeneration, _ keeperPID: pid_t, _ keeperID: UInt64, _ lookups: Lookups) -> Bool {
+        guard child.parentPID > 1, case .present(let parent) = lookups.generation(child.parentPID), parent.own == child.parent, !parent.zombie else { return false }
+        if let byID = lookups.responsibleUniqueID {
+            guard case .present(let responsible) = byID(parent.pid) else { return false }
+            return responsible != keeperID
+        }
+        guard case .present(let responsible) = lookups.responsiblePID(parent.pid) else { return false }
+        return responsible != keeperPID
     }
 
     /// 지킴이 pid의 지금 세대가 지킴이 id이고 끝나지 않았으면 그 세대
@@ -348,7 +374,11 @@ public enum KeeperCaller {
         #endif
     }
 
-    static func allows(_ policy: Policy, parent: pid_t = getppid(), parentNow: () -> pid_t = { getppid() }) -> Bool {
+    /// 정책을 만족한 뒤 (15장 6): 부모의 idversion(fork · exec마다 새로 매긴다)이 지킴이 자신의 것보다 작아야 한다 — 부모가 지킴이를 띄운 뒤 다른 실행 파일로
+    /// exec했으면(서명 확인은 지금 실행 파일을 본다) 거절한다. 그다음 확인하는 동안 부모가 그대로였는지 본다
+    static func allows(
+        _ policy: Policy, parent: pid_t = getppid(), parentNow: () -> pid_t = { getppid() }, version: (pid_t) -> UInt32? = idVersion, me: pid_t = getpid()
+    ) -> Bool {
         guard parent > 1 else { return false }
         let satisfied: Bool
         switch policy {
@@ -360,7 +390,13 @@ public enum KeeperCaller {
         case .liveParent: satisfied = true
         #endif
         }
-        return satisfied && parentNow() == parent
+        guard satisfied, let parentVersion = version(parent), let ownVersion = version(me), parentVersion < ownVersion else { return false }
+        return parentNow() == parent
+    }
+
+    static func idVersion(_ pid: pid_t) -> UInt32? {
+        if case .present(let generation) = AgentProcesses.generation(pid: pid) { return generation.version }
+        return nil
     }
 
     /// 지킴이 번들 id `<앱 id>.agent` → 앱 id. 글자는 영숫자 · `.` · `-`만
