@@ -619,10 +619,35 @@ func fakeDisclaimSpawn(_ command: [String]) -> Int32 {
     var pid: pid_t = 0
     guard posix_spawn(&pid, path, nil, &attributes, argv, environ) == 0 else { return 6 }
     print(pid)
+    fflush(stdout)
     return 0
 }
 
+/// `--spawn-then-exec <실행 파일> [인자…]`: 그것(지킴이)을 띄워 멈춰 두고, 이 프로세스는 Apple 서명 `/bin/sleep`으로 exec한 뒤 0.4초 뒤에 풀어 준다
+/// (15장 6: 부른 쪽이 지킴이를 띄운 뒤 exec해 서명 확인을 속이는 모양, sec `callerexec`)
+func fakeSpawnThenExec(_ command: [String]) -> Int32 {
+    guard let path = command.first else { return 5 }
+    let argv: [UnsafeMutablePointer<CChar>?] = command.map { strdup($0) } + [nil]
+    var pid: pid_t = 0
+    guard posix_spawn(&pid, path, nil, nil, argv, environ) == 0 else { return 6 }
+    kill(pid, SIGSTOP)
+    // 풀어 주는 쪽은 따로 (이 프로세스는 곧 exec한다)
+    let resumeArgv: [UnsafeMutablePointer<CChar>?] = [strdup("/bin/sh"), strdup("-c"), strdup("/bin/sleep 0.4; kill -CONT \(pid)"), nil]
+    var resumer: pid_t = 0
+    guard posix_spawn(&resumer, "/bin/sh", nil, nil, resumeArgv, environ) == 0 else { return 6 }
+    let sleepArgv: [UnsafeMutablePointer<CChar>?] = [strdup("sleep"), strdup("3"), nil]
+    execv("/bin/sleep", sleepArgv)
+    return 7
+}
+
 if CommandLine.arguments.count >= 3, CommandLine.arguments[1] == "--disclaim-spawn" { exit(fakeDisclaimSpawn(Array(CommandLine.arguments.dropFirst(2)))) }
+// 띄운 뒤에도 부모로 남는다 (15장 3: Claude 데스크톱 · Chrome native host처럼 무관한 앱이 disclaim으로 띄운 자식)
+if CommandLine.arguments.count >= 3, CommandLine.arguments[1] == "--disclaim-spawn-stay" {
+    let status = fakeDisclaimSpawn(Array(CommandLine.arguments.dropFirst(2)))
+    if status != 0 { exit(status) }
+    while true { sleep(60) }
+}
+if CommandLine.arguments.count >= 3, CommandLine.arguments[1] == "--spawn-then-exec" { exit(fakeSpawnThenExec(Array(CommandLine.arguments.dropFirst(2)))) }
 
 // 시작하자마자 (Foundation이 무엇을 열기 전에) 열린 fd · 환경 키를 본다 (E16 · E23)
 let fakeOpenFDs: [Int32] = (0..<256).map { Int32($0) }.filter { fcntl($0, F_GETFD) != -1 }

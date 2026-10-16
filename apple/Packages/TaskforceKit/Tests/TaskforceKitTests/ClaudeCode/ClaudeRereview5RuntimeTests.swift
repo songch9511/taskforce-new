@@ -7,15 +7,19 @@ import Testing
 /// 재검토 5 — 런타임 쪽 (OA D3a 14장 2, Astra P1-2): 답 정산(`request_closed` · 실패)은 프로세스의 끝이 아니다. 끝 증명 없이 `alive=false`를 적지 않고,
 /// 다시 뜬 앱도 그 task를 끝났다고 하지 않는다. 실제 프로세스 없이 세션 상태를 정해 두는 adapter로 본다
 
-/// 질문을 내고 끝나는 턴 · `requestClosed`를 돌려주는 답. 답 정산 뒤의 세션 상태(`sessionLiveness`)와 다시 뜬 앱의 확인(`liveness`)을 시험이 정한다
+/// 질문을 내고 끝나는 턴 · `requestClosed`를 돌려주는 답. 답을 띄운 뒤의 세션의 지금 실행(`sessionRun`, 15장 1)을 시험이 정한다 (그 전에는 끝)
 final class ClosingAnswerAdapter: AgentProcess, @unchecked Sendable {
     let adapter = "agent:claude-code"
-    let session: AgentLiveness
+    /// 세션의 지금 실행: 답을 띄우기 전에는 끝, 띄운 뒤에는 시험이 정한 값 (시험이 바꿀 수 있다)
+    let session: Mutex<AgentLiveness>
+    let answerSession: AgentLiveness
     let relaunched: AgentLiveness
     let answerSink = Mutex<AgentEventSink?>(nil)
+    let answerRun = AgentProcessIdentity(pid: nil, startedAt: Date(timeIntervalSince1970: 1), processMarker: UUID().uuidString)
 
     init(session: AgentLiveness, relaunched: AgentLiveness = .unknown) {
-        self.session = session
+        self.session = Mutex(.ended(AgentExit(code: nil)))
+        self.answerSession = session
         self.relaunched = relaunched
     }
 
@@ -35,10 +39,17 @@ final class ClosingAnswerAdapter: AgentProcess, @unchecked Sendable {
 
     func deliverAnswer(_ answer: AgentAnswerDelivery, events: AgentEventSink) async throws -> AgentAnswerResult {
         answerSink.withLock { $0 = events }
+        session.withLock { $0 = answerSession }
         return .requestClosed
     }
 
-    func sessionLiveness(_ sessionID: String) async -> AgentLiveness { session }
+    func sessionRun(_ sessionID: String) async -> AgentSessionRun? {
+        let liveness = session.withLock { $0 }
+        if case .ended = liveness { return AgentSessionRun(liveness: liveness, identity: nil) }
+        return AgentSessionRun(liveness: liveness, identity: answerRun)
+    }
+
+    func terminateSessionRun(_ sessionID: String) async -> AgentLiveness { relaunched }
     func closeRequest(_ request: AgentRequestRef) async throws {}
     func interrupt(_ target: AgentTurnRef, scope: AgentCancelScope) async -> AgentInterruptResult { .signalled }
     func liveness(_ identity: AgentProcessIdentity) async -> AgentLiveness { relaunched }
@@ -90,6 +101,8 @@ struct ClaudeRereview5RuntimeTests {
         let stateBefore = await h.task(task)?.lastState
         let sink = try #require(adapter.answerSink.withLock { $0 })
         await sink.emit(.message(text: "late"))
+        // 그 실행이 끝을 증명했다 (잠금이 풀렸다) → 끝 사건
+        adapter.session.withLock { $0 = .ended(AgentExit(code: nil)) }
         await sink.emit(.ended(AgentExit(code: 0)))
         #expect(await h.eventually { await h.task(task)?.alive == false }, "끝 사건이 끝을 적는다")
         #expect(await h.task(task)?.lastState == stateBefore, "닫은 답의 실행은 끝 사건만 받는다 (실패 · 중단 · 글 사건 0)")

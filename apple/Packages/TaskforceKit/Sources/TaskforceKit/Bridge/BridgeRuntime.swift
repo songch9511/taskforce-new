@@ -356,9 +356,17 @@ public actor BridgeRuntime {
         for (taskID, entry) in supervised {
             guard let adapter = adapters[entry.adapterID] else { continue }
             let task = try? await ledger.task(taskID)
-            guard let identity = entry.identity ?? task.map(processIdentity(of:)) else { continue }
-            terminatedByUs.insert(taskID)
-            switch await adapter.terminateOrphan(identity) {
+            let terminated: AgentLiveness
+            // 세션 단위 상태가 있으면 그 세션의 지금 실행을 끝낸다 (OA D3a 15장 1: 원장의 오래된 정체가 아니라)
+            if let session = task?.agentSessionID, await adapter.sessionRun(session) != nil {
+                terminatedByUs.insert(taskID)
+                terminated = await adapter.terminateSessionRun(session)
+            } else {
+                guard let identity = entry.identity ?? task.map(processIdentity(of:)) else { continue }
+                terminatedByUs.insert(taskID)
+                terminated = await adapter.terminateOrphan(identity)
+            }
+            switch terminated {
             case .ended:
                 log.log("run_terminated", ["task": .id(taskID)])
                 await handleEnded(taskID: taskID, runID: entry.runID)
@@ -627,16 +635,23 @@ public actor BridgeRuntime {
 
     /// 원장은 살아 있다고 하는데 감독하는 실행이 없는 task(강제 종료 뒤 고아)를 끝내고 원장으로 정산한다. 접수 뒤였으면 `cancelled`
     func settleOrphans() async {
-        let tasks = (try? await ledger.allTasks()) ?? []
+        var tasks = (try? await ledger.allTasks()) ?? []
+        if await adoptLockedRuns(tasks) { tasks = (try? await ledger.allTasks()) ?? tasks }
         for task in tasks where task.alive && supervised[task.agentTaskID] == nil {
             guard let adapter = adapters[task.adapter] else {
                 log.log("orphan_no_adapter", ["task": .id(task.agentTaskID)])
                 continue
             }
             let identity = processIdentity(of: task)
-            switch await adapter.liveness(identity) {
+            // 세션 단위 상태가 있는 adapter면 원장 marker가 아니라 그 세션 잠금의 지금 실행으로 본다 (OA D3a 15장 1: 정체를 적기 전에 앱이 죽었어도)
+            let run = await currentRun(taskID: task.agentTaskID, session: task.agentSessionID, adapter: adapter)
+            let liveness: AgentLiveness
+            if let run { liveness = run.liveness } else { liveness = await adapter.liveness(identity) }
+            switch liveness {
             case .alive:
-                switch await adapter.terminateOrphan(identity) {
+                let terminated: AgentLiveness
+                if run != nil { terminated = await adapter.terminateSessionRun(task.agentSessionID) } else { terminated = await adapter.terminateOrphan(identity) }
+                switch terminated {
                 case .ended:
                     orphanLiveness[task.agentTaskID] = nil
                     log.log("orphan_terminated", ["task": .id(task.agentTaskID)])
@@ -661,11 +676,37 @@ public actor BridgeRuntime {
         await publish()
     }
 
+    /// 원장에 살아 있는 task가 없는 세션도 그 잠금의 지금 실행을 본다 (OA D3a 15장 1: 닫기 실행이 원장에 남기 전에 앱이 죽었어도). 끝을 증명하지 못한 실행이 있으면
+    /// 그 세션의 마지막 task에 정체를 적고 `alive`를 켠다 (그 뒤 고아 정리 · Stop의 대상). 켠 것이 있으면 true
+    func adoptLockedRuns(_ tasks: [BridgeTaskRecord]) async -> Bool {
+        let live = Set(tasks.filter { $0.alive || supervised[$0.agentTaskID] != nil }.map(\.agentSessionID))
+        var latest: [String: BridgeTaskRecord] = [:]
+        // `allTasks`는 최근 것부터다
+        for task in tasks where !live.contains(task.agentSessionID) && latest[task.agentSessionID] == nil { latest[task.agentSessionID] = task }
+        var adopted = false
+        for task in latest.values {
+            guard let adapter = adapters[task.adapter], let run = await currentRun(taskID: task.agentTaskID, session: task.agentSessionID, adapter: adapter) else { continue }
+            if case .ended = run.liveness { continue }
+            log.log("orphan_locked_run", ["task": .id(task.agentTaskID)])
+            adopted = true
+        }
+        return adopted
+    }
+
     /// 깨어난 뒤: 감독 중인 실행의 생존을 다시 확인한다 (끝났는데 사건이 안 온 것을 찾는다)
     func refreshLiveness() async {
         for (taskID, entry) in supervised {
-            guard let identity = entry.identity, let adapter = adapters[entry.adapterID] else { continue }
-            if case .ended = await adapter.liveness(identity) {
+            guard let adapter = adapters[entry.adapterID] else { continue }
+            // 세션 단위 상태가 있으면 그 세션의 지금 실행으로 (15장 1)
+            let liveness: AgentLiveness?
+            if let session = (try? await ledger.task(taskID))?.agentSessionID, let run = await adapter.sessionRun(session) {
+                liveness = run.liveness
+            } else if let identity = entry.identity {
+                liveness = await adapter.liveness(identity)
+            } else {
+                liveness = nil
+            }
+            if case .ended? = liveness {
                 await handleEnded(taskID: taskID, runID: entry.runID)
             }
         }

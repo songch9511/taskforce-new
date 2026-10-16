@@ -223,14 +223,19 @@ public enum ClaudeSpawner {
     }
 
     /// 정체를 적기 전에 그 spawn을 거둔다: stdin을 닫고(EOF), 지킴이에 SIGTERM(지킴이가 아직 거두지 않은 `claude`를 SIGKILL하고 구성원 0을 증명하고 끝난다),
-    /// 기한 안에 끝나지 않으면 지킴이를 SIGKILL하고 거둔다. 지킴이는 앱의 자식이라 거두기 전에는 그 pid를 다른 프로세스가 쓸 수 없다.
-    /// 지킴이가 기한 안에 0으로 끝났을 때만 true (구성원 0 증명, 14장 1·3). 그 밖(시간 초과 · 다른 코드 · 신호)은 끝을 모른다
+    /// 보고 pipe를 닫힐 때까지 읽고, 기한 안에 끝나지 않으면 지킴이를 SIGKILL하고 거둔다. 지킴이는 앱의 자식이라 거두기 전에는 그 pid를 다른 프로세스가 쓸 수 없다.
+    /// 지킴이가 기한 안에 보고 `ended`를 쓰고 0으로 끝났을 때만 true (구성원 0 증명, 14장 1 · 3 · 15장 4). 그 밖(시간 초과 · 다른 코드 · 신호 · `ended` 없음)은 끝을 모른다
     static func abort(_ keeper: ClaudeSpawnedProcess, reportFD: Int32, timeout: TimeInterval) -> Bool {
         keeper.closeStandardStreams()
-        close(reportFD)
         kill(keeper.pid, SIGTERM)
-        if let status = keeper.waitForExit(timeout: timeout) {
-            return status.code == KeeperMain.Exit.ended.rawValue && status.signal == nil
+        let deadline = Date().addingTimeInterval(timeout)
+        var sawEnded = false
+        while let line = readReportLine(reportFD, timeout: deadline.timeIntervalSinceNow) {
+            if KeeperReport(line: line) == .ended { sawEnded = true }
+        }
+        close(reportFD)
+        if let status = keeper.waitForExit(timeout: max(0.01, deadline.timeIntervalSinceNow)) {
+            return sawEnded && status.code == KeeperMain.Exit.ended.rawValue && status.signal == nil
         }
         kill(keeper.pid, SIGKILL)
         _ = keeper.waitForExit()
@@ -428,13 +433,14 @@ public enum ClaudeProcessInspector {
     public static func liveness(_ identity: AgentProcessIdentity, lineage: ClaudeLineage? = nil) -> AgentLiveness {
         if lineage?.provenEnded == true { return .ended(AgentExit(code: nil)) }
         if check(identity) == .same { return .alive }
-        guard let lineage, let keeper = lineage.keeper else { return .unknown }
+        guard let lineage else { return .unknown }
+        // 정체 자리(`pending`)뿐: 그 spawn 경로에 묶인 이번 부팅의 지킴이 기록만 끝이다 (15장 5)
+        guard let keeper = lineage.keeper else { return lineage.keeperRecorded() ? .ended(AgentExit(code: nil)) : .unknown }
         switch keeperState(keeper) {
         case .alive: return .alive
         case .failed: return .unknown
-        case .gone:
-            guard lineage.keeperRecorded() else { return .unknown }
-            return .ended(AgentExit(code: nil))
+        // 지킴이가 사라졌다: 앱이 부모면 거둔 종료 · 보고 줄로, 아니면 끝 기록으로 (15장 4). 앱이 아직 거두는 중이면 살아 있음 (곧 정해진다)
+        case .gone: return lineage.endAfterKeeperGone() ?? .alive
         }
     }
 
@@ -469,10 +475,14 @@ public enum ClaudeProcessInspector {
     static func settled(_ identity: AgentProcessIdentity, _ lineage: ClaudeLineage?, _ keeper: ClaudeLineage.Keeper?) -> AgentLiveness? {
         if lineage?.provenEnded == true { return .ended(AgentExit(code: nil)) }
         if check(identity) == .same { return nil }
-        guard let lineage, let keeper else { return nil }
+        guard let lineage else { return nil }
+        guard let keeper else {
+            // 정체 자리뿐인 spawn (15장 5)
+            return lineage.keeper == nil && lineage.keeperRecorded() ? .ended(AgentExit(code: nil)) : nil
+        }
         switch keeperState(keeper) {
         case .alive, .failed: return nil
-        case .gone: return lineage.keeperRecorded() ? .ended(AgentExit(code: nil)) : .unknown
+        case .gone: return lineage.endAfterKeeperGone()
         }
     }
 

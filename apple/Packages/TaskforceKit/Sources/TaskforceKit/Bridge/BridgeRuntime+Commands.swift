@@ -568,6 +568,8 @@ extension BridgeRuntime {
     func failBeforeAcceptance(taskID: String, commandID: String, reason: BridgeV1FailureReason, left: AgentProcessIdentity? = nil) async {
         await appendTaskEvent(taskID: taskID, body: .failed(reason), observed: clock.now(), signal: false) {
             if let left {
+                // 접수 전 닫기(`close_before`)가 남긴 실행이면 이 task는 아직 `alive`를 켜기 전이다 (15장 1)
+                $0.alive = true
                 $0.pid = left.pid
                 $0.processStartedAt = left.startedAt
                 $0.processMarker = left.processMarker
@@ -659,9 +661,9 @@ extension BridgeRuntime {
             do {
                 try await adapter.closeRequest(ref)
             } catch {
-                // 닫지 못했다 (앞 프로세스의 끝을 증명하지 못함 등, OA D3a 8장 15): 이 턴을 띄우지 않는다
+                // 닫지 못했다 (앞 프로세스의 끝을 증명하지 못함 등, OA D3a 8장 15): 이 턴을 띄우지 않는다. 닫기 실행이 끝을 모르면 이 task의 고아로 둔다 (15장 1)
                 log.log("adapter_close_failed", ["task": .id(common.agentTaskID), "step": .code("close_before")])
-                return await failBeforeAcceptance(taskID: common.agentTaskID, commandID: record.commandID, reason: .spawnFailed)
+                return await failBeforeAcceptance(taskID: common.agentTaskID, commandID: record.commandID, reason: .spawnFailed, left: (error as? AgentStartError)?.left)
             }
             _ = try? await ledger.updateTask(common.agentTaskID) { if !$0.closedRequestIDs.contains(requestID) { $0.closedRequestIDs.append(requestID) } }
         }
@@ -879,17 +881,17 @@ extension BridgeRuntime {
         await publish()
     }
 
-    /// 답 정산(`request_closed` · 실패)은 프로세스의 끝이 아니다 (OA D3a 14장 2): adapter가 그 세션의 끝을 증명할 때만 `alive=false`. 그 실행이 아직 돌면 감독을 남겨
-    /// 끝 사건만 받고, 증명하지 못하면 확인 안 된 고아로 둔다 (다시 뜬 앱의 고아와 같다). 띄운 뒤 실패한 실행(`left`)은 그 정체를 원장에 적는다
+    /// 답 정산(`request_closed` · 실패)은 프로세스의 끝이 아니다 (OA D3a 14장 2 · 15장 1): 그 세션의 지금 실행(잠금의 현재 spawn)이 끝을 증명할 때만 `alive=false`.
+    /// 그 실행이 아직 돌면 감독을 남겨 끝 사건만 받고, 증명하지 못하면 확인 안 된 고아로 둔다 (다시 뜬 앱의 고아와 같다). 그 정체는 원장에 적는다.
+    /// 세션 단위 상태가 없는 adapter는 답 경로가 프로세스를 남기지 않는다 (`left`가 오면 그 정체로 unknown)
     func settleAnswerProcess(taskID: String, session: String, adapter: any AgentProcess, left: AgentProcessIdentity?) async {
-        if let left {
-            _ = try? await ledger.updateTask(taskID) {
-                $0.pid = left.pid
-                $0.processStartedAt = left.startedAt
-                $0.processMarker = left.processMarker
-            }
+        guard let run = await currentRun(taskID: taskID, session: session, adapter: adapter) else {
+            if let left { return await keepUnproven(taskID: taskID, identity: left) }
+            supervised[taskID] = nil
+            _ = try? await ledger.updateTask(taskID) { $0.alive = false }
+            return
         }
-        switch await adapter.sessionLiveness(session) {
+        switch run.liveness {
         case .ended:
             supervised[taskID] = nil
             orphanLiveness[taskID] = nil
@@ -905,6 +907,41 @@ extension BridgeRuntime {
         }
     }
 
+    /// 그 세션의 지금 실행 (OA D3a 15장 1: 디스크 잠금이 유일한 생존 진실). 끝이 아니면 그 정체를 원장 task에 적고 `alive`를 켠다 (앞 실행의 끝으로 덮지 않는다).
+    /// 세션 단위 상태가 없는 adapter면 nil
+    func currentRun(taskID: String, session: String, adapter: any AgentProcess) async -> AgentSessionRun? {
+        guard let run = await adapter.sessionRun(session) else { return nil }
+        if case .ended = run.liveness { return run }
+        _ = try? await ledger.updateTask(taskID) { task in
+            task.alive = true
+            if let identity = run.identity {
+                task.pid = identity.pid
+                task.processStartedAt = identity.startedAt
+                task.processMarker = identity.processMarker
+            }
+        }
+        return run
+    }
+
+    /// 닫기 · 시작이 끝을 증명하지 못한 실행을 남겼다 (15장 1): 그 세션의 지금 실행(없으면 `left`)을 이 task의 고아로 둔다 — Stop · 고아 정리가 그 실행을 대상으로 한다
+    func keepUnproven(taskID: String, session: String? = nil, adapter: (any AgentProcess)? = nil, identity left: AgentProcessIdentity?) async {
+        if let session, let adapter, let run = await currentRun(taskID: taskID, session: session, adapter: adapter) {
+            if case .ended = run.liveness { return }
+            if supervised[taskID] == nil {
+                if case .alive = run.liveness { orphanLiveness[taskID] = .alive } else { orphanLiveness[taskID] = .unknown }
+            }
+            return
+        }
+        guard let left else { return }
+        _ = try? await ledger.updateTask(taskID) {
+            $0.alive = true
+            $0.pid = left.pid
+            $0.processStartedAt = left.startedAt
+            $0.processMarker = left.processMarker
+        }
+        if supervised[taskID] == nil { orphanLiveness[taskID] = .unknown }
+    }
+
     /// 요청을 거절로 닫고(adapter가 할 수 있으면) 원장에 닫힘을 적은 뒤 `request_closed`로 정산한다. 사용자는 "Question closed before the answer was sent" 줄을 본다
     func closeRequestAndAck(record: BridgeCommandRecord, taskID: String, requestID: String, adapterID: String, session: String, adapterClose: Bool) async {
         if adapterClose, let adapter = adapters[adapterID] {
@@ -912,8 +949,10 @@ extension BridgeRuntime {
             do {
                 try await adapter.closeRequest(AgentRequestRef(taskID: taskID, sessionID: session, requestID: requestID, externalSessionID: task?.externalSessionID, workspaceRef: task?.workspaceRef))
             } catch {
-                // 답은 어차피 전달하지 않는다 (request_closed). 닫지 못한 보류가 남아도 adapter는 앞 프로세스의 끝을 증명하기 전에는 다음 실행을 띄우지 않는다 (OA D3a 8장 15)
+                // 답은 어차피 전달하지 않는다 (request_closed). 닫지 못한 보류가 남아도 adapter는 앞 프로세스의 끝을 증명하기 전에는 다음 실행을 띄우지 않는다 (OA D3a 8장 15).
+                // 끝을 모르는 닫기 실행은 이 task의 고아로 둔다 (15장 1)
                 log.log("adapter_close_failed", ["task": .id(taskID), "step": .code("request_closed")])
+                if let left = (error as? AgentStartError)?.left { await keepUnproven(taskID: taskID, session: session, adapter: adapter, identity: left) }
             }
         }
         _ = try? await ledger.updateTask(taskID) {
@@ -938,6 +977,10 @@ extension BridgeRuntime {
                     try await adapter.closeRequest(AgentRequestRef(taskID: task.agentTaskID, sessionID: task.agentSessionID, requestID: abandoned, externalSessionID: task.externalSessionID, workspaceRef: task.workspaceRef))
                 } catch {
                     log.log("adapter_close_failed", ["task": .id(task.agentTaskID), "step": .code("cancel")])
+                    // 끝을 모르는 닫기 실행도 아래 중단의 대상이다 (15장 1)
+                    if let left = (error as? AgentStartError)?.left {
+                        await keepUnproven(taskID: task.agentTaskID, session: task.agentSessionID, adapter: adapter, identity: left)
+                    }
                 }
             }
         }

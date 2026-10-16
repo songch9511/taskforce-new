@@ -255,9 +255,9 @@ struct ClaudeRereviewProcessTests {
         #expect(await first.wait { FakeClaude.ended($0) })
         let events = EventLog()
         let started = Date()
-        await #expect(throws: AgentStartError.self) {
-            _ = try await fake.answer("toolu_q", kind: .input, value: AgentAnswerValue(text: "blue"), external: FakeClaude.providerSession(identity), events: events)
-        }
+        // 답 훅 전에 끝났다 = 전달하지 않았다 → `lost` (15장 2: 결과는 delivered · lost 둘뿐)
+        let result = try await fake.answer("toolu_q", kind: .input, value: AgentAnswerValue(text: "blue"), external: FakeClaude.providerSession(identity), events: events)
+        #expect(result == .requestClosed)
         // 자손 정리(SIGINT → 2초 → SIGKILL)를 기다리지 않고 돌아온다. 세션 자리는 정리가 끝날 때까지 잡혀 있다
         #expect(Date().timeIntervalSince(started) < 1.5)
         #expect(!FakeClaude.ended(events.all), "정리는 아직이다 (그동안 세션 자리를 잡고 있다)")

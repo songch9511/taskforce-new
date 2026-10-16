@@ -187,26 +187,41 @@ extension BridgeRuntime {
     func finishEnded(taskID: String, byUs: Bool) async {
         orphanLiveness[taskID] = nil
         guard let task = try? await ledger.task(taskID) else { return }
+        // 이 실행이 끝나도 그 세션의 지금 실행(잠금의 현재 spawn: 내부 닫기 등)이 끝을 증명하지 못했으면 `alive`를 지우지 않는다 (OA D3a 15장 1: 앞 실행의 끝으로 덮지 않는다)
+        var processEnded = true
+        if let adapter = adapters[task.adapter], let run = await currentRun(taskID: taskID, session: task.agentSessionID, adapter: adapter) {
+            switch run.liveness {
+            case .ended: break
+            case .alive:
+                processEnded = false
+                orphanLiveness[taskID] = .alive
+            case .unknown:
+                processEnded = false
+                orphanLiveness[taskID] = .unknown
+                log.log("run_end_unproven", ["task": .id(taskID)])
+            }
+        }
+        let stillAlive = !processEnded
         let command = if let id = task.currentCommandID { try? await ledger.command(id) } else { nil as BridgeCommandRecord? }
         let outcome = Reconcile.endedOutcome(task: task, hasAcceptSignal: command?.signalAt != nil, terminatedByUs: byUs)
         let now = clock.now()
         switch outcome {
         case .failedAgentError:
             await appendTaskEvent(taskID: taskID, body: .failed(.agentError), observed: now) {
-                $0.alive = false
+                $0.alive = stillAlive
                 $0.lastState = "failed"
                 $0.segmentTerminal = "failed"
             }
         case .cancelled:
             await appendTaskEvent(taskID: taskID, body: .cancelled, observed: now) {
-                $0.alive = false
+                $0.alive = stillAlive
                 $0.lastState = "cancelled"
                 $0.segmentTerminal = "cancelled"
             }
         case .nothing:
-            _ = try? await ledger.updateTask(taskID) { $0.alive = false }
+            break
         }
-        _ = try? await ledger.updateTask(taskID) { $0.alive = false }
+        _ = try? await ledger.updateTask(taskID) { $0.alive = stillAlive }
         if let commandID = task.currentCommandID {
             _ = try? await ledger.updateCommand(commandID) {
                 if ($0.state.rank ?? 0) < (BridgeCommandState.ended.rank ?? 7), !$0.state.isFinished {

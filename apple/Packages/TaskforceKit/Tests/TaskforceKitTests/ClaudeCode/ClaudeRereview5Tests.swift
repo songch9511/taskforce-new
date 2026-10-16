@@ -6,7 +6,7 @@ import Testing
 import TaskforceAgentWire
 @testable import TaskforceKit
 
-/// 재검토 5 반영 (OA D3a 14장) — 새 모양: 세션 잠금 · 정체 자리 · `left` · `sessionLiveness` · 답 칸 · 해석들의 합. 재현은 `ClaudeRereview5ReproTests`
+/// 재검토 5 반영 (OA D3a 14장) — 새 모양: 세션 잠금 · 정체 자리 · `left` · 세션의 지금 실행(`sessionRun`, 15장) · 답 칸 · 해석들의 합. 재현은 `ClaudeRereview5ReproTests`
 @Suite(.serialized)
 struct ClaudeRereview5Tests {
     let box = ClaudeSandbox()
@@ -25,10 +25,10 @@ struct ClaudeRereview5Tests {
         #expect(ClaudeSessionLock.read(lock) == .spawn(identity.processMarker))
         let attributes = try FileManager.default.attributesOfItem(atPath: lock.path)
         #expect((attributes[.posixPermissions] as? NSNumber)?.intValue == 0o600)
-        #expect(await fake.process.sessionLiveness(ClaudeTest.session) == .alive)
+        #expect(await fake.process.sessionRun(ClaudeTest.session)?.liveness == .alive)
         #expect(await events.wait { FakeClaude.ended($0) })
         #expect(!FileManager.default.fileExists(atPath: lock.path), "끝을 증명하면 잠금을 푼다")
-        #expect(await fake.process.sessionLiveness(ClaudeTest.session) == .ended(AgentExit(code: nil)))
+        #expect(await fake.process.sessionRun(ClaudeTest.session)?.liveness == .ended(AgentExit(code: nil)))
     }
 
     /// 띄운 뒤 실패해 끝을 모른다: 잠금 · 정체 자리(`pending` 또는 정체)가 남고, 런타임에 그 정체를 `left`로 알린다
@@ -57,8 +57,8 @@ struct ClaudeRereview5Tests {
         #expect(ClaudeSessionLock.read(lock) == .spawn(left.processMarker))
         let lineage = ClaudeLineage(file: fake.box.sessionsRoot.appending(path: "lineage/\(left.processMarker).lineage"))
         #expect(ClaudeProcessInspector.liveness(left, lineage: lineage) == .unknown, "정체 자리만 있다: 끝을 모른다")
-        #expect(await fake.process.sessionLiveness(ClaudeTest.session) == .unknown)
-        #expect(await fake.restarted().sessionLiveness(ClaudeTest.session) == .unknown)
+        #expect(await fake.process.sessionRun(ClaudeTest.session)?.liveness == .unknown)
+        #expect(await fake.restarted().sessionRun(ClaudeTest.session)?.liveness == .unknown)
         #expect(fake.log.lines.contains { $0.hasPrefix("claude_start_unproven") })
     }
 
@@ -119,8 +119,8 @@ struct ClaudeRereview5Tests {
         }
         kill(claude.parentPID, SIGKILL)
         #expect(await ClaudeRereview5ReproTests.waitUntil(20) { fake.log.lines.contains { $0.hasPrefix("claude_end_unproven") } })
-        #expect(await fake.process.sessionLiveness(ClaudeTest.session) == .unknown)
-        #expect(await fake.restarted().sessionLiveness(ClaudeTest.session) == .unknown)
+        #expect(await fake.process.sessionRun(ClaudeTest.session)?.liveness == .unknown)
+        #expect(await fake.restarted().sessionRun(ClaudeTest.session)?.liveness == .unknown)
     }
 
     /// 앱이 뜰 때: 다른 부팅의 잠금은 지우고 정체 자리는 끝 기록으로, 이번 부팅 것은 그대로
@@ -165,20 +165,23 @@ struct ClaudeRereview5Tests {
     // MARK: 7 답 칸
 
     @Test func t7TheAnswerSlotSettlesOnceAndWipesTheValue() {
+        let answer = HookResponse(decision: .allow, reason: "answer")
         let slot = ClaudeCodeProcess.AnswerSlot(AgentAnswerValue(text: "hunter2-secret"))
         #expect(slot.value.text == "hunter2-secret")
         #expect(slot.lose())
         #expect(!slot.lose(), "한 번만 정한다")
         #expect(slot.signal == .lost && slot.value.text == nil)
-        slot.deliver(at: Date())
-        #expect(slot.signal == .lost, "먼저 정한 것이 이긴다")
+        let late = HookCommit()
+        let closed = HookResponse(decision: .deny, reason: "closed")
+        #expect(slot.commitAnswer(answer, closed: closed, to: late, at: Date()) == .alreadyClosed, "먼저 정한 것이 이긴다")
+        #expect(late.timeOut() == closed, "답 응답이 아니라 닫힘 응답을 확정했다")
         let delivered = ClaudeCodeProcess.AnswerSlot(AgentAnswerValue(text: "x"))
-        delivered.deliver(at: Date(timeIntervalSince1970: 1))
+        #expect(delivered.commitAnswer(answer, closed: closed, to: HookCommit(), at: Date(timeIntervalSince1970: 1)) == .delivered)
         #expect(!delivered.lose())
         #expect(delivered.signal == .delivered(Date(timeIntervalSince1970: 1)) && delivered.value.text == nil)
         let ended = ClaudeCodeProcess.AnswerSlot(AgentAnswerValue(text: "x"))
         ended.end()
-        #expect(ended.signal == .ended && ended.value.text == nil)
+        #expect(ended.signal == .lost && ended.value.text == nil, "끝났는데 전달하지 않았다 = lost (15장 2)")
     }
 
     // MARK: 8 해석들의 합 · 단어 경계

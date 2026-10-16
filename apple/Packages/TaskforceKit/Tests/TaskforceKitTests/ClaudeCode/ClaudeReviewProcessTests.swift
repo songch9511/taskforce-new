@@ -89,7 +89,7 @@ struct ClaudeReviewProcessTests {
         #expect(fake.runCount == 0)
     }
 
-    // MARK: 12 Stop: 확인 못 하면 끝났다고 하지 않는다
+    // MARK: 12 Stop: 확인 못 하면 끝났다고 하지 않는다 (15장 1: 대상은 원장 정체가 아니라 세션 잠금의 지금 spawn이다)
 
     @Test func a12AStopWithoutARegisteredRunNeverClaimsAnUnprovenEnd() async throws {
         let fake = try FakeClaude()
@@ -101,16 +101,22 @@ struct ClaudeReviewProcessTests {
         // 앱이 다시 떴다: 새 adapter의 등록부는 비어 있다
         let restarted = ClaudeCodeProcess(sessionsRoot: fake.box.sessionsRoot, hookServer: nil, helpers: ClaudeCodeHelpers(hook: "/x", mcp: "/y", keeper: "/z"),
                                           locator: ClaudeCodeLocator(candidates: [], confinedTo: fake.box.root.path), timing: .testing)
+        // 잠금을 읽지 못하면 원장 정체(맞든 틀리든)로 신호하지 않고 끝이라고 하지 않는다
+        let lock = try #require(ClaudeSessionLock.file(sessionsRoot: fake.box.sessionsRoot, session: ClaudeTest.session))
+        let written = try Data(contentsOf: lock)
+        try Data("not a lock\n".utf8).write(to: lock)
         var unprovable = identity
         unprovable.processMarker = "not-a-marker"
-        for target in [nil, unprovable] as [AgentProcessIdentity?] {
+        for target in [nil, unprovable, identity] as [AgentProcessIdentity?] {
             let result = await restarted.interrupt(AgentTurnRef(taskID: ClaudeTest.task, sessionID: ClaudeTest.session, identity: target), scope: .turnAndProcesses)
             #expect(result != .notRunning, "\(String(describing: target))")
         }
-        #expect(ClaudeProcessInspector.liveness(identity) == .alive, "확인 못 한 정체에는 신호 0")
-        // 원장의 정체로 확인하고 끝까지 끝냈을 때만 "돌고 있지 않다"
-        let proven = await restarted.interrupt(AgentTurnRef(taskID: ClaudeTest.task, sessionID: ClaudeTest.session, identity: identity), scope: .turnAndProcesses)
+        #expect(ClaudeProcessInspector.liveness(identity) == .alive, "확인 못 한 잠금에는 신호 0")
+        // 잠금의 spawn을 그 혈통으로 끝까지 끝냈을 때만 "돌고 있지 않다" (원장 정체가 틀려도 대상은 잠금의 spawn)
+        try written.write(to: lock)
+        let proven = await restarted.interrupt(AgentTurnRef(taskID: ClaudeTest.task, sessionID: ClaudeTest.session, identity: unprovable), scope: .turnAndProcesses)
         #expect(proven == .notRunning)
+        #expect(ClaudeSessionLock.read(lock) == .none, "끝을 증명하면 잠금을 푼다")
         #expect(await restarted.liveness(identity) == .ended(AgentExit(code: nil)))
         #expect(await events.wait { FakeClaude.ended($0) })
     }

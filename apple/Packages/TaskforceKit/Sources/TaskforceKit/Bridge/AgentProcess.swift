@@ -299,7 +299,8 @@ public enum AgentReadback: Sendable, Equatable {
 /// `startTurn`이 던지는 접수 전 실패: 입력을 건네지 않았다. `left`가 없으면 아무것도 띄우지 않았다
 public struct AgentStartError: Error, Equatable, Sendable {
     public var reason: BridgeV1FailureReason
-    /// 띄운 뒤에 실패했고 그 끝을 증명하지 못했다 (OA D3a 14장 1): 그 실행의 정체 (pid는 모를 수 있다). 런타임은 이 task를 끝났다고 적지 않는다
+    /// 띄운 뒤에 실패했고 그 끝을 증명하지 못했다 (OA D3a 14장 1 · 15장 1: 시작 · 답 · 닫기 모두): 그 실행의 정체 (pid는 모를 수 있다).
+    /// 런타임은 이 task를 끝났다고 적지 않고 그 실행을 Stop · 고아 정리 대상으로 둔다
     public var left: AgentProcessIdentity?
 
     public init(_ reason: BridgeV1FailureReason, left: AgentProcessIdentity? = nil) {
@@ -350,16 +351,30 @@ public protocol AgentProcess: Sendable {
     func liveness(_ identity: AgentProcessIdentity) async -> AgentLiveness
     func terminateOrphan(_ identity: AgentProcessIdentity) async -> AgentLiveness
     func readback(marker: String, session: AgentSessionRef) async -> AgentReadback
-    /// 답 정산(`requestClosed` · 실패) 뒤 그 세션에 이 adapter가 띄운 실행의 상태 (OA D3a 14장 2: 답 정산과 프로세스 끝은 따로다). 끝을 증명하면 `.ended`.
-    /// 기본: 답 경로에서 새 프로세스를 남기지 않는 adapter (그 실행의 끝은 끝 사건으로 알린다)
-    func sessionLiveness(_ sessionID: String) async -> AgentLiveness
+    /// 세션의 지금 실행 (OA D3a 14장 2 · 15장 1: 그 세션의 생존 진실). 이 adapter가 그 세션에 띄운 마지막 실행(턴 · 답 · 닫기 · 내부 닫기)의 정체와 끝 증명.
+    /// nil이면 세션 단위 상태가 없는 adapter다: 런타임은 원장 정체 · 끝 사건으로 본다 (기본)
+    func sessionRun(_ sessionID: String) async -> AgentSessionRun?
+    /// 그 세션의 지금 실행을 끝낸다 (고아 정리 · 앱 종료, 15장 1). `sessionRun`이 nil이 아닌 adapter에만 부른다
+    func terminateSessionRun(_ sessionID: String) async -> AgentLiveness
+}
+
+/// 세션의 지금 실행 (OA D3a 15장 1): 그 정체(모르면 nil)와 끝 증명
+public struct AgentSessionRun: Sendable, Equatable {
+    public var liveness: AgentLiveness
+    public var identity: AgentProcessIdentity?
+
+    public init(liveness: AgentLiveness, identity: AgentProcessIdentity?) {
+        self.liveness = liveness
+        self.identity = identity
+    }
 }
 
 extension AgentProcess {
     public func attach(_ services: AgentRuntimeServices) {}
     public func supportsVersion(_ version: String?) -> Bool { true }
     public func readback(marker: String, session: AgentSessionRef) async -> AgentReadback { .unsupported }
-    public func sessionLiveness(_ sessionID: String) async -> AgentLiveness { .ended(AgentExit(code: nil)) }
+    public func sessionRun(_ sessionID: String) async -> AgentSessionRun? { nil }
+    public func terminateSessionRun(_ sessionID: String) async -> AgentLiveness { .unknown }
 }
 
 /// 새 세션의 작업 폴더를 정한다 (D4a가 채운다). 사용자 폴더를 짐작해 쓰기 권한을 주지 않는다 (Q26)

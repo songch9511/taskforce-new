@@ -45,10 +45,14 @@ public final class ClaudeLineage: Sendable {
 
     struct State {
         var record: Record?
-        /// 끝을 확정했다 (지킴이 정상 종료 · 끝 기록 · `forget`)
+        /// 끝을 확정했다 (`forget`)
         var ended = false
-        /// 앱이 부모로서 지킴이의 비정상 종료를 받았다 (13장 3: unknown)
+        /// 앱이 부모로서 지킴이의 비정상 종료(신호 · 0 아닌 코드)를 받았다 (13장 3 · 15장 4: 기록보다 unknown이 우선)
         var keeperFailed = false
+        /// 앱이 부모로서 지킴이의 0 종료를 받았다
+        var exitedNormally = false
+        /// 보고 pipe가 닫혔다: `ended` 줄을 받았나 (nil = 아직 읽는 중, 15장 4)
+        var reportEnded: Bool?
     }
 
     private let state = Mutex(State())
@@ -56,8 +60,24 @@ public final class ClaudeLineage: Sendable {
     let evidence: Evidence
 
     var fromOtherBoot: Bool { evidence == .otherBoot }
-    /// 끝이라는 증거가 이미 있다 (다른 부팅 · 끝 기록 · 이 객체가 끝을 확정함)
-    var provenEnded: Bool { evidence == .otherBoot || evidence == .ended || state.withLock { $0.ended } }
+    /// 끝이라는 증거가 이미 있다 (다른 부팅 · 끝 기록 · 이 객체가 끝을 확정함 · 앱이 부모로서 받은 정상 끝 = 0 종료 ∧ 보고 `ended`)
+    var provenEnded: Bool {
+        evidence == .otherBoot || evidence == .ended || state.withLock { $0.ended || ($0.exitedNormally && $0.reportEnded == true) }
+    }
+
+    /// 지킴이가 사라진 뒤의 끝 (15장 4 · 5). 앱이 부모로 띄운 지킴이(이 객체가 띄웠다)면 거둔 종료와 보고 줄로만: 0 종료 ∧ `ended` = 끝, 비정상 종료 ·
+    /// `ended` 없이 닫힘 = unknown(그 사이 쓰인 기록 파일은 보지 않는다), 아직 모름 = nil. 앱이 죽어 있던 동안 끝났으면(파일에서 읽은 혈통) 끝 기록으로:
+    /// 그 지킴이의 이번 부팅 기록, 정체 자리(`pending`)뿐이면 그 spawn 경로에 묶인 이번 부팅 기록
+    func endAfterKeeperGone() -> AgentLiveness? {
+        if evidence == .memory {
+            return state.withLock { current -> AgentLiveness? in
+                if current.ended || (current.exitedNormally && current.reportEnded == true) { return .ended(AgentExit(code: nil)) }
+                if current.keeperFailed || (current.exitedNormally && current.reportEnded == false) { return .unknown }
+                return nil
+            }
+        }
+        return keeperRecorded() ? .ended(AgentExit(code: nil)) : .unknown
+    }
     /// 증거가 있어야 할 혈통인가 (있어야 할 파일이 없으면 아니다)
     var hasEvidence: Bool { evidence != .missing }
     var keeper: Keeper? { state.withLock { $0.record?.keeper } }
@@ -115,23 +135,35 @@ public final class ClaudeLineage: Sendable {
         return false
     }
 
-    /// 앱이 부모로서 지킴이를 거뒀다 (13장 3): 0으로 끝났으면(구성원 0 증명 · 끝 기록) 끝, 아니면 unknown
+    /// 앱이 부모로서 지킴이를 거뒀다 (13장 3 · 15장 4): 0 종료면 보고 `ended`와 함께 끝, 아니면 unknown
     func keeperExited(_ status: ClaudeExitStatus) {
         state.withLock {
             if status.code == KeeperMain.Exit.ended.rawValue, status.signal == nil {
-                $0.ended = true
+                $0.exitedNormally = true
             } else {
                 $0.keeperFailed = true
             }
         }
     }
 
-    /// 그 지킴이가 이번 부팅에 쓴 끝 기록이 있다 (또는 그 뒤 앱이 이미 확정해 지킴이 기록을 끝 기록으로 바꿔 두었다)
+    /// 지킴이 보고 pipe가 닫혔다 (EOF): 그 전에 `ended` 줄을 받았나 (15장 4)
+    func reportClosed(sawEnded: Bool) {
+        state.withLock { $0.reportEnded = sawEnded }
+    }
+
+    /// 띄우기를 멈췄는데 지킴이가 0으로 끝나지 않았다 (14장 1): 끝을 모른다
+    func markUnproven() {
+        state.withLock { $0.keeperFailed = true }
+    }
+
+    /// 앱이 죽어 있던 동안의 끝 기록 (15장 4 · 5): 그 지킴이가 이번 부팅에 쓴 기록, 정체 자리(`pending`)뿐이면 그 spawn 경로에 묶인 이번 부팅 기록
+    /// (또는 그 뒤 앱이 이미 확정해 끝 기록으로 바꿔 두었다)
     func keeperRecorded() -> Bool {
-        guard let file, let keeper else { return false }
+        guard let file else { return false }
         if Self.load(file) == .ended { return true }
-        guard let record = KeeperRecord.read(Self.keeperFile(file)), let boot = AgentProcesses.bootSessionID() else { return false }
-        return record.keeperID == keeper.uniqueID && record.boot == boot
+        guard let record = KeeperRecord.read(Self.keeperFile(file)), let boot = AgentProcesses.bootSessionID(), record.boot == boot else { return false }
+        guard let keeper else { return evidence == .thisBoot }
+        return record.keeperID == keeper.uniqueID
     }
 
     /// 끝을 확정한 뒤: 끝 기록(`<id>.ended`)을 쓰고 혈통 파일 · 지킴이 기록을 지운다 (그 뒤의 확인도 끝이다, 11장 1 · 12장 8)

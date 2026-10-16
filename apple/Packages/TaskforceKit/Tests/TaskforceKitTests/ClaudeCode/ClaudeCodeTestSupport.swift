@@ -62,10 +62,12 @@ struct KeptChild {
 
     var keeper: ClaudeLineage.Keeper { ClaudeLineage.Keeper(pid: kept.keeper.pid, uniqueID: kept.keeperID) }
 
-    /// 지킴이가 끝날 때까지 (기한 안에서) 기다린다: 거둔 상태는 감독 스레드가 적는다
+    /// 지킴이가 끝나고 감독 스레드가 거둔 종료 · 보고 줄을 혈통에 적을 때까지 (기한 안에서) 기다린다 (15장 4: 앱이 부모면 끝은 그 둘로만 정해진다)
     func keeperEnded(timeout: TimeInterval = 5) async -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
-        while ClaudeProcessInspector.keeperState(keeper) == .alive, Date() < deadline { try? await Task.sleep(for: .milliseconds(20)) }
+        while ClaudeProcessInspector.keeperState(keeper) == .alive || lineage.endAfterKeeperGone() == nil, Date() < deadline {
+            try? await Task.sleep(for: .milliseconds(20))
+        }
         return ClaudeProcessInspector.keeperState(keeper) != .alive
     }
 }
@@ -80,13 +82,15 @@ extension ClaudeSandbox {
             arguments: ["-c", script, "sh", "--settings", settings] + extra, environment: ["PATH": "/usr/bin:/bin", ClaudeProcessInspector.markerKey: marker], cwd: root.path
         ).get()
         kept.keeper.closeStandardStreams()
-        Darwin.close(kept.reportFD)
         let lineage = ClaudeLineage(file: file, fresh: true)
         lineage.adopt(ClaudeLineage.Record(
             keeper: ClaudeLineage.Keeper(pid: kept.keeper.pid, uniqueID: kept.keeperID), root: kept.claudeID, rootPID: kept.claudePID, attributable: kept.attributable
         ))
         lineage.save()
         let keeper = kept.keeper
+        let report = kept.reportFD
+        // 앱처럼 지킴이를 거두고 보고를 닫힐 때까지 읽는다 (15장 4: 정상 끝 = 0 종료 ∧ `ended` 줄)
+        DispatchQueue.global(qos: .utility).async { lineage.reportClosed(sawEnded: ClaudeCodeProcess.readReport(report) { _ in }) }
         DispatchQueue.global(qos: .utility).async { lineage.keeperExited(keeper.waitForExit()) }
         return KeptChild(
             kept: kept, identity: AgentProcessIdentity(pid: Int(kept.claudePID), startedAt: kept.claudeStartedAt, processMarker: marker), lineage: lineage, file: file
