@@ -103,6 +103,7 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
         // Try again은 읽는 중이어도 새로 읽는다 (읽기가 취소돼 "읽는 중"이 남아도 버튼이 무반응이 되지 않게)
         shell.onRetry = { [weak self] in self?.load(.retry) }
         wireIssues()
+        wireQuestions()
     }
 
     /// 새 Issues 화면(OA U2)의 동작: Ask 알약 · New session `+` · More 목록. 앞 Assistant 창이 있으면 그 창에 칩을 더하고, 없으면 새 창 (창이 없는 구성에서는 아무 일도 없다)
@@ -494,6 +495,8 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
     /// 패널의 키: Esc 접기 · ⌘1 가장 새 Review(S4) · ⌘2 All work · ⌘3 Chats · ⌘N New chat, 그리고 Review 페이지가 보일 때 ← → 단계 · 1 · 2 답 (S4, 텍스트 편집 밖에서만).
     /// 처리했으면 true
     func handleKey(_ event: NSEvent) -> Bool {
+        // 질문 카드가 Esc를 먼저 본다 (열린 Other 칸 · 보류 중인 답): OA D4b-m-1
+        if handleQuestionKey(event) { return true }
         guard let command = EdgeKeyCommand.of(keyCode: Int(event.keyCode), flags: event.modifierFlags) else { return handleReviewKey(event) }
         // Chats가 없는 셸(Release)의 ⌘3 · ⌘N은 연결이 없다: 지나간다
         guard shell.listens(to: command) else { return false }

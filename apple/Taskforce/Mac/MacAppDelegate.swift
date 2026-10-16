@@ -115,7 +115,28 @@ final class MacAppDelegate: NSObject, NSApplicationDelegate {
 
     /// 종료: 실행 중인 에이전트 턴이 있으면 확인 창 (Quit → 중단 · outbox 비우기 뒤 종료, Cancel → 변화 0). 아니면 바로 종료
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        bridge?.terminationReply() ?? .terminateNow
+        Self.terminationReply(
+            questions: chatRuntime?.questions, bridgeReply: { [weak self] in self?.bridge?.terminationReply() ?? .terminateNow },
+            reply: { NSApp.reply(toApplicationShouldTerminate: $0) }
+        )
+    }
+
+    /// 종료 (OA D4b-m-1, D4bm-22): 보류 중인 답이 있으면 **먼저** 비밀값이 아닌 답을 곧바로 보내고 (끝나거나 3초가 지날 때까지) 비밀값 답은 보내지 않고 값을 버린 뒤, bridge의 종료 응답으로 넘긴다.
+    /// 보류가 없으면 지금 그대로 bridge 응답이다. `bridgeReply`가 `terminateLater`면 bridge가 따로 응답한다 (확인 창)
+    static func terminationReply(
+        questions: AgentQuestionStore?, bridgeReply: @escaping () -> NSApplication.TerminateReply, reply: @escaping (Bool) -> Void
+    ) -> NSApplication.TerminateReply {
+        guard let questions, questions.hasHeldAnswers else { return bridgeReply() }
+        Task { @MainActor in
+            await questions.flushForQuit()
+            switch bridgeReply() {
+            case .terminateNow: reply(true)
+            case .terminateCancel: reply(false)
+            case .terminateLater: break
+            @unknown default: reply(true)
+            }
+        }
+        return .terminateLater
     }
 
     /// `taskforce://connections/…` · Google 로그인 콜백 (ASWebAuthenticationSession이 주소를 바로 돌려주지만, 앱 밖에서 열린 경우를 위해).
@@ -163,6 +184,13 @@ final class MacAppDelegate: NSObject, NSApplicationDelegate {
         // 재연결 알림: 설정의 연결 탭 (런처의 할 일이 아니다)
         if target.kind == .reconnect {
             SettingsOpener.open(.connections)
+            return
+        }
+        // 에이전트 질문 알림 (OA D4b-m-1, D4bm-63): 그 세션의 카드로 간다. 질문이 없어진 뒤 눌러도 그 세션을 열 뿐이다. 게이트가 꺼져 있으면 앱만 연다
+        if target.kind == .question {
+            guard let sessionID = target.sessionID, let edge else { return }
+            NSApp.activate()
+            edge.openQuestion(sessionID: sessionID)
             return
         }
         guard let launcher else { return }
