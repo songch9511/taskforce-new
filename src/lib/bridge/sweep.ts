@@ -4,7 +4,7 @@ import { BRIDGE_KICK_LIMIT, BRIDGE_REDELIVERY_LIMIT } from "@/lib/execution/limi
 import { drainBridgeSessionEvents } from "./events";
 import { kickBridgeSessions, redeliverBridgeMessages } from "./triggers";
 export async function sweepBridge(admin: SupabaseClient) {
-  const result = { unreachable: 0, expired_leases: 0, reclaimed: 0, reclaim_busy: 0, redelivered: 0, errors: 0 };
+  const result = { unreachable: 0, expired_leases: 0, lease_busy: 0, reclaimed: 0, reclaim_busy: 0, redelivered: 0, errors: 0 };
   try {
     const { data } = await admin.rpc("sweep_bridge_heartbeats", { p_limit: BRIDGE_REDELIVERY_LIMIT }).throwOnError();
     const rows = z.array(z.union([
@@ -18,6 +18,9 @@ export async function sweepBridge(admin: SupabaseClient) {
   try {
     const { data } = await admin.rpc("sweep_agent_step_leases", { p_now: null }).throwOnError();
     result.expired_leases = z.number().int().nonnegative().parse(data);
+    // 사용자 경로가 run을 쥐고 있어 건너뛴 단계는 다음 분에 다시 후보가 된다: 5초 넘게 만료한 채 남은 calling 단계 수를 숫자로 보인다 (OA F3 재검토 2)
+    const { data: overdue } = await admin.rpc("count_overdue_agent_step_leases", { p_grace_seconds: 5 }).throwOnError();
+    result.lease_busy = z.number().int().nonnegative().parse(overdue);
   } catch { result.errors++; }
   try {
     // 만료한 lease 전 prepared 회수 (OA F3): Mac이 꺼진 동안 24시간이 지난 메시지를 DB가 expired로 만든다. 회수한 세션은 뒤 메시지가 바로 갈 수 있게 kick한다 (bound인 세션만 실제로 시작).

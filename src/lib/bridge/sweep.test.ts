@@ -13,7 +13,7 @@ describe("bridge sweep rollback safety", () => {
       { user_id: id, bridge_id: id, agent_session_id: id, agent_task_id: null, turn_seq: null, failure_count: 0 },
       { user_id: null, bridge_id: null, agent_session_id: null, agent_task_id: null, turn_seq: null, failure_count: 2 },
     ] : name === "expire_unleased_agent_messages" ? EMPTY_RECLAIM : 3 }) }));
-    expect(await sweepBridge({ rpc } as unknown as SupabaseClient)).toEqual({ unreachable: 1, expired_leases: 3, reclaimed: 0, reclaim_busy: 0, redelivered: 2, errors: 2 });
+    expect(await sweepBridge({ rpc } as unknown as SupabaseClient)).toEqual({ unreachable: 1, expired_leases: 3, lease_busy: 3, reclaimed: 0, reclaim_busy: 0, redelivered: 2, errors: 2 });
     expect(rpc).toHaveBeenCalledWith("sweep_agent_step_leases", { p_now: null });
   });
   it("runs heartbeat and lease cleanup while execution is off and isolates failures", async () => {
@@ -45,11 +45,32 @@ function fakeAdmin(answers: Record<string, unknown>, order: string[] = []) {
       order.push(name);
       const answer = answers[name];
       if (answer instanceof Error) throw answer;
-      return { data: answer ?? 3 };
+      return { data: name in answers ? answer : 3 };
     },
   }));
   return { admin: { rpc } as unknown as SupabaseClient, rpc, order };
 }
+
+describe("OA F3 재검토 2: 단계 lease 정리가 건너뛴 만료 lease 수", () => {
+  it("lease 정리 뒤에 남은 만료 lease 수를 5초 유예로 세어 lease_busy 숫자로 보인다", async () => {
+    const { admin, rpc } = fakeAdmin({ sweep_bridge_heartbeats: [], sweep_agent_step_leases: 2, count_overdue_agent_step_leases: 4, expire_unleased_agent_messages: EMPTY_RECLAIM });
+    const result = await sweepBridge(admin);
+    expect(result).toMatchObject({ expired_leases: 2, lease_busy: 4, errors: 0 });
+    expect(rpc).toHaveBeenCalledWith("count_overdue_agent_step_leases", { p_grace_seconds: 5 });
+  });
+
+  it("세는 데 실패하면 errors+1이고 lease 정리 결과와 다음 단계는 그대로 이어 간다", async () => {
+    const { admin } = fakeAdmin({ sweep_bridge_heartbeats: [], sweep_agent_step_leases: 2, count_overdue_agent_step_leases: new Error("PRIVATE-DB-TEXT"), expire_unleased_agent_messages: EMPTY_RECLAIM });
+    const result = await sweepBridge(admin);
+    expect(result).toMatchObject({ expired_leases: 2, lease_busy: 0, errors: 1, redelivered: 2 });
+    expect(JSON.stringify(result)).not.toContain("PRIVATE-DB-TEXT");
+  });
+
+  it.each([-1, 1.5, "3", null])("모양이 틀린 숫자(%j)는 errors+1이고 lease_busy는 0이다", async (bad) => {
+    const { admin } = fakeAdmin({ sweep_bridge_heartbeats: [], sweep_agent_step_leases: 2, count_overdue_agent_step_leases: bad, expire_unleased_agent_messages: EMPTY_RECLAIM });
+    expect(await sweepBridge(admin)).toMatchObject({ lease_busy: 0, errors: 1 });
+  });
+});
 
 describe("OA F3 sweepBridge: 만료한 lease 전 prepared 회수", () => {
   beforeEach(() => {
@@ -62,9 +83,9 @@ describe("OA F3 sweepBridge: 만료한 lease 전 prepared 회수", () => {
     vi.mocked(redeliverBridgeMessages).mockImplementationOnce(async () => { order.push("redeliver"); return 2; });
     const { admin, rpc } = fakeAdmin({ sweep_bridge_heartbeats: [], expire_unleased_agent_messages: { reclaimed: 3, busy: 2, sessions: [{ user_id: U1, agent_session_id: S1 }] } }, order);
     const result = await sweepBridge(admin);
-    expect(result).toEqual({ unreachable: 0, expired_leases: 3, reclaimed: 3, reclaim_busy: 2, redelivered: 2, errors: 0 });
+    expect(result).toEqual({ unreachable: 0, expired_leases: 3, lease_busy: 3, reclaimed: 3, reclaim_busy: 2, redelivered: 2, errors: 0 });
     expect(rpc.mock.calls.filter(([name]) => name === "expire_unleased_agent_messages")).toEqual([["expire_unleased_agent_messages", { p_limit: 50 }]]);
-    expect(order).toEqual(["sweep_bridge_heartbeats", "sweep_agent_step_leases", "expire_unleased_agent_messages", "redeliver"]);
+    expect(order).toEqual(["sweep_bridge_heartbeats", "sweep_agent_step_leases", "count_overdue_agent_step_leases", "expire_unleased_agent_messages", "redeliver"]);
   });
 
   it("회수한 세션은 사용자별로 묶어 kick한다 (같은 사용자의 세션은 한 번에, 사용자가 다르면 따로)", async () => {
@@ -111,7 +132,7 @@ describe("OA F3 sweepBridge: 만료한 lease 전 prepared 회수", () => {
   it("RPC가 실패하면 errors+1이고 재전달은 이어 돈다 (오류 글은 결과에 없다)", async () => {
     const { admin } = fakeAdmin({ sweep_bridge_heartbeats: [], expire_unleased_agent_messages: new Error("PRIVATE-DB-TEXT function missing") });
     const result = await sweepBridge(admin);
-    expect(result).toEqual({ unreachable: 0, expired_leases: 3, reclaimed: 0, reclaim_busy: 0, redelivered: 2, errors: 1 });
+    expect(result).toEqual({ unreachable: 0, expired_leases: 3, lease_busy: 3, reclaimed: 0, reclaim_busy: 0, redelivered: 2, errors: 1 });
     expect(JSON.stringify(result)).not.toContain("PRIVATE-DB-TEXT");
     expect(redeliverBridgeMessages).toHaveBeenCalled();
   });

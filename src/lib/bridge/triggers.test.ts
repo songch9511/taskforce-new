@@ -154,7 +154,7 @@ it("F3: sweepBridge가 한 사용자의 회수 세션 6개를 넘기면 앞 다�
   const baseRpc = admin.rpc.bind(admin) as (name: string, args?: Record<string, unknown>) => unknown;
   admin.rpc = ((name: string, args?: Record<string, unknown>) => {
     const answers: Record<string, unknown> = {
-      sweep_bridge_heartbeats: [], sweep_agent_step_leases: 0,
+      sweep_bridge_heartbeats: [], sweep_agent_step_leases: 0, count_overdue_agent_step_leases: 0,
       expire_unleased_agent_messages: { reclaimed: 6, busy: 0, sessions: sessions.map((agent_session_id) => ({ user_id: id, agent_session_id })) },
     };
     return name in answers ? { throwOnError: async () => ({ data: answers[name] }) } : baseRpc(name, args);
