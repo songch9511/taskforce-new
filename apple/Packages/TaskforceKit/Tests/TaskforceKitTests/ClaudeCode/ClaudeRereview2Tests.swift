@@ -12,55 +12,15 @@ struct ClaudeRereview2Tests {
     let box = ClaudeSandbox()
     static let timing = ClaudeCodeTiming.testing
 
-    struct Root {
-        let process: ClaudeSpawnedProcess
-        let identity: AgentProcessIdentity
-    }
-
-    /// 실제 adapter처럼 띄운다 (새 그룹 · argv의 `--settings …/config/<marker>.settings.json`)
-    func spawn(_ script: String, marker: String = UUID().uuidString) throws -> Root {
-        let settings = box.root.appending(path: "config/\(marker).settings.json").path
-        let process = try ClaudeSpawner.spawn(
-            executable: "/bin/sh", arguments: ["-c", script, "sh", "--settings", settings], environment: ["PATH": "/usr/bin:/bin", ClaudeProcessInspector.markerKey: marker],
-            cwd: box.root.path
-        )
-        process.closeStandardStreams()
-        return Root(process: process, identity: AgentProcessIdentity(pid: Int(process.pid), startedAt: process.startedAt, processMarker: marker))
-    }
-
-    // MARK: 2 같은 세대
-
-    @Test func c2ACandidateWhoseListedGenerationDiffersIsDropped() async throws {
-        let pidFile = box.root.appending(path: "kid.pid").path
-        let root = try spawn("/bin/sleep 30 & echo $! > '\(pidFile)'; while :; do sleep 1; done")
-        defer { _ = ClaudeProcessInspector.forceKill(root.process) }
-        let kid = try await ClaudeProcessIdentityTests.readPID(pidFile)
-        let kidID = try #require(ClaudeProcessInspector.uniqueIDs(pid: kid)?.own)
-        let lineage = ClaudeLineage()
-        lineage.seed(root.process.pid)
-        // 목록이 본 그 pid의 시작 시각이 지금 세대와 다르다 (목록과 id 읽기 사이에 pid가 재사용된 것과 같다): 소속을 정하지 않고 버린다
-        var listed = try #require(ClaudeProcessInspector.userProcessInfos())
-        for index in listed.indices where listed[index].kp_proc.p_pid == kid { listed[index].kp_proc.p_un.__p_starttime.tv_sec -= 1 }
-        let members = try #require(ClaudeProcessInspector.descendants(root.identity, lineage: lineage, processes: listed))
-        #expect(!members.contains { $0.pid == kid })
-        #expect(!lineage.contains(kidID), "다른 세대의 id를 혈통에 넣지 않는다")
-        // 목록이 맞으면 같은 그룹 · 부모로 찾는다
-        #expect(ClaudeProcessInspector.descendants(root.identity, lineage: lineage)?.contains(ClaudeProcessInspector.Member(pid: kid, uniqueID: kidID)) == true)
-    }
-
     // MARK: 3 부팅 · 하한
 
     @Test func c3ALineageFromAnotherBootIsEndedWithoutAScanOrASignal() async throws {
         let pidFile = box.root.appending(path: "orphan.pid").path
-        let marker = UUID().uuidString
-        let root = try spawn("/usr/bin/perl -e 'use POSIX; POSIX::setsid(); open(F, q(>\(pidFile))); print F $$; close F; sleep 600;' & sleep 0.3; exit 0", marker: marker)
-        let file = box.sessionsRoot.appending(path: "lineage/\(marker).lineage")
-        let before = ClaudeLineage(file: file, fresh: true)
-        before.seed(root.process.pid)
-        before.save(force: true)
-        _ = try await offPool { root.process.waitForExit() }
+        let root = try box.keep("/usr/bin/perl -e 'use POSIX; POSIX::setsid(); open(F, q(>\(pidFile))); print F $$; close F; sleep 600;' & sleep 0.3; exit 0")
+        let file = root.file
         let orphan = try await ClaudeProcessIdentityTests.readPID(pidFile)
         defer { kill(orphan, SIGKILL) }
+        for _ in 0..<100 where ClaudeProcessInspector.check(root.identity) == .same { try await Task.sleep(for: .milliseconds(20)) }
         #expect(ClaudeProcessInspector.liveness(root.identity, lineage: ClaudeLineage(file: file)) == .alive)
         // 같은 파일이 다른 부팅에 적힌 것이라면: 그 spawn은 이미 끝났다 (id는 부팅마다 새로 센다)
         let lines = try String(contentsOf: file, encoding: .utf8).split(separator: "\n").map(String.init)
@@ -71,9 +31,8 @@ struct ClaudeRereview2Tests {
         let timing = Self.timing
         #expect(try await offPool { ClaudeProcessInspector.terminate(root.identity, timing: timing, lineage: other) } == .ended(AgentExit(code: nil)))
         #expect(kill(orphan, 0) == 0, "다른 부팅의 혈통으로는 신호를 보내지 않는다")
-        // 다시 뜬 adapter도 끝으로 본다. 다른 부팅의 파일은 앱이 뜰 때 purge가 지운다 (11장 1: 확인할 때는 지우지 않는다 — 다시 물어도 끝)
-        let adapter = ClaudeCodeProcess(sessionsRoot: box.sessionsRoot, hookServer: nil, helpers: ClaudeCodeHelpers(hook: "/x", mcp: "/y"),
-                                        locator: ClaudeCodeLocator(candidates: [], confinedTo: box.root.path), timing: .testing)
+        // 다시 뜬 adapter도 끝으로 본다. 다른 부팅의 파일은 앱이 뜰 때 purge가 끝 기록으로 바꾼다 (11장 1: 확인할 때는 지우지 않는다 — 다시 물어도 끝)
+        let adapter = ClaudeRereview3ReproTests.adapter(box)
         #expect(await adapter.liveness(root.identity) == .ended(AgentExit(code: nil)))
         #expect(await adapter.liveness(root.identity) == .ended(AgentExit(code: nil)))
         // 앱이 뜰 때: 지우지 않고 이번 부팅의 끝 기록으로 바꾼다 (결정 11-1)
@@ -82,91 +41,74 @@ struct ClaudeRereview2Tests {
         #expect(await adapter.liveness(root.identity) == .ended(AgentExit(code: nil)))
     }
 
-    @Test func c3AProcessCreatedBeforeTheRootIsNeverADescendant() async throws {
-        // 뿌리보다 먼저 만들어진 무관한 프로세스, 그 id가 (깨졌거나 끼워 넣은) 혈통에 있다
+    /// 지킴이보다 먼저 만들어진 프로세스는 책임 조회가 무엇을 돌려줘도 구성원이 아니다 (unique id > 지킴이 id, 13장 2): 신호 0
+    @Test func c3AProcessCreatedBeforeTheKeeperIsNeverAMember() async throws {
         let victim = try ClaudeSpawner.spawn(executable: "/bin/sleep", arguments: ["30"], environment: ["PATH": "/bin"], cwd: box.root.path)
         victim.closeStandardStreams()
         defer { _ = ClaudeProcessInspector.forceKill(victim) }
-        let victimID = try #require(ClaudeProcessInspector.uniqueIDs(pid: victim.pid)?.own)
-        let root = try spawn("exit 0")
-        let lineage = ClaudeLineage()
-        lineage.seed(root.process.pid)
-        lineage.insert(victimID)
-        _ = try await offPool { root.process.waitForExit() }
-        #expect(ClaudeProcessInspector.descendants(root.identity, lineage: lineage)?.contains { $0.pid == victim.pid } == false)
+        let root = try box.keep("while :; do sleep 1; done")
+        defer { killpg(root.kept.claudePID, SIGKILL) }
+        var lookups = KeeperMembers.Lookups.live
+        let keeperID = root.kept.keeperID
+        // 깨졌거나 꾸민 조회: 모든 프로세스의 책임 프로세스가 지킴이다
+        lookups.responsibleUniqueID = { _ in .present(keeperID) }
+        let victimPID = victim.pid
+        ClaudeProcessInspector.$lookups.withValue(lookups) {
+            let members = ClaudeProcessInspector.members(root.keeper) ?? []
+            #expect(!members.contains { $0.pid == victimPID })
+            #expect(members.contains { $0.pid == root.kept.claudePID })
+        }
         let timing = Self.timing
-        #expect(try await offPool { ClaudeProcessInspector.terminate(root.identity, timing: timing, lineage: lineage) } == .ended(AgentExit(code: nil)))
-        #expect(kill(victim.pid, 0) == 0, "뿌리보다 먼저 만들어진 프로세스에는 신호 0")
+        let identity = root.identity
+        let lineage = root.lineage
+        let result = try await offPool { ClaudeProcessInspector.terminate(identity, timing: timing, lineage: lineage) }
+        guard case .ended = result else {
+            Issue.record("\(result)")
+            return
+        }
+        #expect(kill(victim.pid, 0) == 0, "지킴이보다 먼저 만들어진 프로세스에는 신호 0")
     }
 
-    @Test func c3ADescendantIsFoundEvenWhenTheWallClockSaysItStartedBeforeTheRoot() async throws {
+    /// 원장의 시작 시각이 한 시간 뒤로 적혔다 (벽시계가 움직였다): 구성원은 시각이 아니라 책임 프로세스 · unique id로 가른다
+    @Test func c3AMemberIsFoundWhateverTheWallClockSays() async throws {
         let pidFile = box.root.appending(path: "clock.pid").path
-        let root = try spawn("/usr/bin/perl -e 'use POSIX; POSIX::setsid(); open(F, q(>\(pidFile))); print F $$; close F; sleep 600;' & sleep 0.3; exit 0")
-        let lineage = ClaudeLineage()
-        lineage.seed(root.process.pid)
-        _ = try await offPool { root.process.waitForExit() }
+        let root = try box.keep("/usr/bin/perl -e 'use POSIX; POSIX::setsid(); open(F, q(>\(pidFile))); print F $$; close F; sleep 600;' & sleep 0.3; exit 0")
         let orphan = try await ClaudeProcessIdentityTests.readPID(pidFile)
         defer { kill(orphan, SIGKILL) }
-        // 원장의 시작 시각이 한 시간 뒤로 적혔다 (벽시계가 움직였다): 자손의 벽시계 시작 시각은 그보다 앞이지만 id 순서로 자손이다
         var identity = root.identity
         identity.startedAt = identity.startedAt.addingTimeInterval(3600)
-        #expect(ClaudeProcessInspector.descendants(identity, lineage: lineage)?.contains { $0.pid == orphan } == true)
+        #expect(ClaudeProcessInspector.members(root.keeper)?.contains { $0.pid == orphan } == true)
+        #expect(ClaudeProcessInspector.liveness(identity, lineage: root.lineage) == .alive)
     }
 
-    // MARK: 4 비용 · 정리
-
-    /// 전체 다시 쓰기(정리)는 0.5초씩 묶는다 (11장 3 뒤: 새 id는 바로 덧붙고, 덧붙이지 못한 것만 정리가 다시 쓴다). 덧붙이지 못한 사이 파일은 없다 (12장 5)
-    @Test func c4LineageSavesAreBatchedExceptTheForcedFirstOne() throws {
-        let file = box.root.appending(path: "lineage/batch.lineage")
-        let lineage = ClaudeLineage(file: file, fresh: true)
-        lineage.seed(getpid())
-        lineage.insert(11)
-        lineage.save(force: true)
-        #expect(try String(contentsOf: file, encoding: .utf8).contains("\n11 0\n"))
-        // 덧붙이기가 실패하게 (읽기 전용): 정리할 것이 생긴다. 그 사이 파일은 지워져 증거 없음이다
-        chmod(file.path, 0o400)
-        lineage.insert(12)
-        lineage.save()
-        #expect(!FileManager.default.fileExists(atPath: file.path), "0.5초 안에는 다시 쓰지 않는다 (그동안 파일 없음)")
-        #expect(!ClaudeLineage(file: file).hasEvidence)
-        Thread.sleep(forTimeInterval: ClaudeLineage.saveInterval + 0.1)
-        lineage.save()
-        #expect(try String(contentsOf: file, encoding: .utf8).contains("\n12 0\n"))
-        #expect(ClaudeLineage(file: file).contains(12))
-    }
+    // MARK: 4 정리
 
     @Test func c4AppStartPurgesLineageFilesOfOtherBootsOnly() throws {
         let folder = box.sessionsRoot.appending(path: "lineage", directoryHint: .isDirectory)
         let keep = ClaudeLineage(file: folder.appending(path: "\(UUID().uuidString).lineage"), fresh: true)
-        keep.seed(getpid())
-        keep.insert(5)
-        keep.save(force: true)
+        keep.adopt(ClaudeLineage.Record(keeper: ClaudeLineage.Keeper(pid: 55, uniqueID: 5), root: 6, rootPID: 56, attributable: true))
+        keep.save()
         let other = folder.appending(path: "\(UUID().uuidString).lineage")
-        try "taskforce-lineage 3\nboot \(UUID().uuidString)\nroot 7 70\nresponsible yes\n7 70\n".write(to: other, atomically: true, encoding: .utf8)
+        try "taskforce-lineage 4\nboot \(UUID().uuidString)\nkeeper 7 70\nroot 8 80\nresponsible yes\n".write(to: other, atomically: true, encoding: .utf8)
         let broken = folder.appending(path: "\(UUID().uuidString).lineage")
         try "nonsense\n".write(to: broken, atomically: true, encoding: .utf8)
         let unrelated = folder.appending(path: "notes.txt")
         try "x".write(to: unrelated, atomically: true, encoding: .utf8)
-        ClaudeCodeProcess(sessionsRoot: box.sessionsRoot, hookServer: nil, helpers: ClaudeCodeHelpers(hook: "/x", mcp: "/y"),
-                          locator: ClaudeCodeLocator(candidates: [], confinedTo: box.root.path)).purgeLineageOfOtherBoots()
+        ClaudeRereview3ReproTests.adapter(box).purgeLineageOfOtherBoots()
         #expect(FileManager.default.fileExists(atPath: keep.file?.path ?? ""))
         #expect(ClaudeLineage.load(other) == .ended, "다른 부팅의 파일은 끝 기록으로 (결정 11-1)")
         #expect(FileManager.default.fileExists(atPath: broken.path), "다른 부팅으로 확인되지 않은 파일은 남긴다 (11장 1)")
         #expect(FileManager.default.fileExists(atPath: unrelated.path))
     }
 
-    @Test func c4ARestartedAdapterReplacesTheIDsWithAnEndRecordOnceItProvesTheEnd() async throws {
-        let marker = UUID().uuidString
-        let root = try spawn("exit 0", marker: marker)
-        let file = box.sessionsRoot.appending(path: "lineage/\(marker).lineage")
-        let lineage = ClaudeLineage(file: file, fresh: true)
-        lineage.seed(root.process.pid)
-        lineage.save(force: true)
-        _ = try await offPool { root.process.waitForExit() }
-        let adapter = ClaudeCodeProcess(sessionsRoot: box.sessionsRoot, hookServer: nil, helpers: ClaudeCodeHelpers(hook: "/x", mcp: "/y"),
-                                        locator: ClaudeCodeLocator(candidates: [], confinedTo: box.root.path), timing: .testing)
+    /// 다시 뜬 adapter: 지킴이가 기록을 남기고 끝났다 → 끝, 끝 기록을 남기고 혈통 파일 · 지킴이 기록을 지운다
+    @Test func c4ARestartedAdapterReplacesTheRecordsWithAnEndRecordOnceTheKeeperProvedTheEnd() async throws {
+        let root = try box.keep("exit 0")
+        #expect(await root.keeperEnded())
+        let adapter = ClaudeRereview3ReproTests.adapter(box)
         #expect(await adapter.liveness(root.identity) == .ended(AgentExit(code: nil)))
-        #expect(ClaudeLineage.load(file) == .ended, "id는 지우고 끝 기록만 (11장 1)")
+        #expect(ClaudeLineage.load(root.file) == .ended, "끝 기록만 (11장 1)")
+        #expect(!FileManager.default.fileExists(atPath: root.file.path) && !FileManager.default.fileExists(atPath: ClaudeLineage.keeperFile(root.file).path))
     }
 
     // MARK: 5 앱 데이터 폴더

@@ -13,16 +13,23 @@ struct ClaudeCodeHostTests {
     static var app: URL { Bundle.main.bundleURL }
     static var helpers: URL { app.appending(path: "Contents/Helpers", directoryHint: .isDirectory) }
 
-    // MARK: M1 · M2 번들에 helper 둘
+    // MARK: M1 · M2 번들에 helper 셋 (13장: 지킴이 `Taskforce Agent.app`)
 
-    @Test func theBuiltHostCarriesBothHelpersAsExecutables() throws {
-        for name in ["tf-agent-hook", "tf-agent-mcp"] {
+    @Test func theBuiltHostCarriesTheThreeHelpersAsExecutables() throws {
+        let keeper = "Taskforce Agent.app/Contents/MacOS/Taskforce Agent"
+        for name in ["tf-agent-hook", "tf-agent-mcp", keeper] {
             let path = Self.helpers.appending(path: name).path
             #expect(FileManager.default.isExecutableFile(atPath: path), "\(path)")
             let attributes = try FileManager.default.attributesOfItem(atPath: path)
             #expect((attributes[.posixPermissions] as? Int ?? 0) & 0o111 != 0)
         }
-        #expect(ClaudeCodeHelpers.inBundle(.main) == ClaudeCodeHelpers(hook: Self.helpers.appending(path: "tf-agent-hook").path, mcp: Self.helpers.appending(path: "tf-agent-mcp").path))
+        #expect(ClaudeCodeHelpers.inBundle(.main) == ClaudeCodeHelpers(
+            hook: Self.helpers.appending(path: "tf-agent-hook").path, mcp: Self.helpers.appending(path: "tf-agent-mcp").path, keeper: Self.helpers.appending(path: keeper).path
+        ))
+        // 지킴이 번들: 표시 이름 "Taskforce Agent", 화면 · Dock 없음 (13장 1)
+        let info = try #require(Bundle(url: Self.helpers.appending(path: "Taskforce Agent.app"))?.infoDictionary)
+        #expect(info["CFBundleDisplayName"] as? String == "Taskforce Agent")
+        #expect(info["LSUIElement"] as? Bool == true)
     }
 
     @Test func theEmbeddedHookDeniesWithinTheBudgetWhenThereIsNoSocket() async throws {

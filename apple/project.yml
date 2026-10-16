@@ -65,6 +65,13 @@ targets:
         copy:
           destination: wrapper
           subpath: Contents/Helpers
+      # 지킴이 helper (OA D3a 13장): `Contents/Helpers/Taskforce Agent.app`
+      - target: TaskforceAgent
+        embed: true
+        codeSign: true
+        copy:
+          destination: wrapper
+          subpath: Contents/Helpers
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: $(APP_BUNDLE_ID)
@@ -107,6 +114,25 @@ targets:
       base:
         PRODUCT_NAME: tf-agent-mcp
         PRODUCT_BUNDLE_IDENTIFIER: $(APP_BUNDLE_ID).agent-mcp
+        ENABLE_HARDENED_RUNTIME: YES
+        SKIP_INSTALL: YES
+  # 지킴이 helper "Taskforce Agent" (OA D3a 13장, 사용자 결정 2026-10-17): 앱이 disclaim으로 띄우는 책임 프로세스. 화면 · Dock 없음(LSUIElement · NSApplication 0),
+  # TaskforceAgentWire만 링크한다 (시스템 라이브러리만). macOS 권한 창은 이 이름으로 뜬다
+  TaskforceAgent:
+    type: application
+    platform: macOS
+    sources:
+      - path: Helpers/tf-agent-keeper
+    dependencies:
+      - package: TaskforceKit
+        product: TaskforceAgentWire
+    settings:
+      base:
+        PRODUCT_NAME: Taskforce Agent
+        PRODUCT_BUNDLE_IDENTIFIER: $(APP_BUNDLE_ID).agent
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: Taskforce Agent
+        INFOPLIST_KEY_LSUIElement: YES
         ENABLE_HARDENED_RUNTIME: YES
         SKIP_INSTALL: YES
   # 시험 전용 가짜 `claude` (OA D3a 계약 4.4 M3). 시험 대상의 빌드 의존일 뿐 앱 번들에 넣지 않는다

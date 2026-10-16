@@ -42,7 +42,9 @@ final class FakeClaude: @unchecked Sendable {
         precondition(socket.utf8.count <= 103, "socket path must fit sun_path")
         server = HookSocketServer(path: socket)
         try server.start()
-        let helpers = ClaudeCodeHelpers(hook: try BuiltProducts.url("tf-agent-hook").path, mcp: try BuiltProducts.url("tf-agent-mcp").path)
+        let helpers = ClaudeCodeHelpers(
+            hook: try BuiltProducts.url("tf-agent-hook").path, mcp: try BuiltProducts.url("tf-agent-mcp").path, keeper: try BuiltProducts.url("tf-agent-keeper").path
+        )
         let environment = ["HOME": box.home.path, "USER": NSUserName(), "PATH": "/usr/bin:/bin", "LANG": "en_US.UTF-8"].merging(extra) { _, new in new }
         self.helpers = helpers
         self.environment = environment
@@ -387,7 +389,7 @@ struct ClaudeCodeProcessTests {
         let identity = try await fake.turn(events: events)
         for _ in 0..<500 where fake.report(0)?["sleep_pid"] == nil { try await Task.sleep(for: .milliseconds(20)) }
         // 앱이 다시 떴다: 새 adapter가 원장의 정체만 들고 확인한다
-        let restarted = ClaudeCodeProcess(sessionsRoot: fake.box.sessionsRoot, hookServer: nil, helpers: ClaudeCodeHelpers(hook: "/x", mcp: "/y"),
+        let restarted = ClaudeCodeProcess(sessionsRoot: fake.box.sessionsRoot, hookServer: nil, helpers: ClaudeCodeHelpers(hook: "/x", mcp: "/y", keeper: "/z"),
                                           locator: ClaudeCodeLocator(candidates: [], confinedTo: fake.box.root.path), timing: .testing)
         #expect(await restarted.liveness(identity) == .alive)
         let ended = await restarted.terminateOrphan(identity)
@@ -537,7 +539,7 @@ struct ClaudeCodeProcessTests {
         var notADirectory = turn
         notADirectory.workspaceRef = fake.box.file("plain.txt").path
         await #expect(throws: AgentStartError(.spawnFailed)) { try await fake.process.startTurn(notADirectory, events: EventLog().sink) }
-        let noSocket = ClaudeCodeProcess(sessionsRoot: fake.box.sessionsRoot, hookServer: nil, helpers: ClaudeCodeHelpers(hook: "/x", mcp: "/y"),
+        let noSocket = ClaudeCodeProcess(sessionsRoot: fake.box.sessionsRoot, hookServer: nil, helpers: ClaudeCodeHelpers(hook: "/x", mcp: "/y", keeper: "/z"),
                                          locator: ClaudeCodeLocator(candidates: [fake.claude.path], confinedTo: fake.box.root.path), timing: .testing)
         var withWorkspace = turn
         withWorkspace.workspaceRef = fake.workspace

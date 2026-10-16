@@ -126,7 +126,7 @@ struct ClaudeRereviewProcessTests {
         // 감독하는 동안 혈통 파일이 있다 (다시 뜬 앱이 읽는다)
         let lineageFile = fake.box.sessionsRoot.appending(path: "lineage/\(identity.processMarker).lineage")
         #expect(await Self.waitUntil { FileManager.default.fileExists(atPath: lineageFile.path) })
-        let restarted = ClaudeCodeProcess(sessionsRoot: fake.box.sessionsRoot, hookServer: nil, helpers: ClaudeCodeHelpers(hook: "/x", mcp: "/y"),
+        let restarted = ClaudeCodeProcess(sessionsRoot: fake.box.sessionsRoot, hookServer: nil, helpers: ClaudeCodeHelpers(hook: "/x", mcp: "/y", keeper: "/z"),
                                           locator: ClaudeCodeLocator(candidates: [], confinedTo: fake.box.root.path), timing: .testing)
         let ended = await restarted.terminateOrphan(identity)
         guard case .ended = ended else {

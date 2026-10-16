@@ -5,166 +5,158 @@ import Testing
 import TaskforceAgentWire
 @testable import TaskforceKit
 
-/// 재검토 4 반영 (OA D3a 계약 12장) — 고친 뒤의 API로 보는 시험. 재현은 `ClaudeRereview4ReproTests`. 이름 앞의 `rN`이 12장 항목 번호다
+/// 지킴이 (OA D3a 13장, 사용자 결정 2026-10-17) · 재검토 4 반영 (12장 5–13) — 고친 뒤의 API로 보는 시험. 재현은 `ClaudeRereview4ReproTests`,
+/// 지킴이 실행 파일 자체는 `TaskforceAgentKeeperTests`. 이름 앞의 `kN`이 13장(코디네이터가 고른 여섯 · 물러남), `rN`이 12장 항목 번호다
 @Suite(.serialized)
 struct ClaudeRereview4Tests {
     let box = ClaudeSandbox()
     let timing = ClaudeCodeTiming.testing
 
-    func spawn(_ script: String, marker: String = UUID().uuidString) throws -> (process: ClaudeSpawnedProcess, identity: AgentProcessIdentity) {
-        let settings = box.root.appending(path: "config/\(marker).settings.json").path
-        let process = try ClaudeSpawner.spawn(
-            executable: "/bin/sh", arguments: ["-c", script, "sh", "--settings", settings], environment: ["PATH": "/usr/bin:/bin"], cwd: box.root.path
-        )
-        process.closeStandardStreams()
-        return (process, AgentProcessIdentity(pid: Int(process.pid), startedAt: process.startedAt, processMarker: marker))
-    }
+    // MARK: 13장 — 가짜 claude의 setsid 자손
 
-    // MARK: 1 책임 프로세스
-
-    /// 뿌리가 살아 있는 동안: 못 본 중간 sh가 남긴 setsid 자손 D도 책임 프로세스가 뿌리라 구성원이다 (그 부모 id · 그룹 · 환경으로는 찾지 못한다).
-    /// 그때 혈통에 적어 두어 뿌리가 끝난 뒤에도 살아 있음으로 보고, 끝낸다
-    @Test func r1WhileTheRootLivesAnUnseenSetsidDescendantIsAMemberByResponsibility() async throws {
-        let tag = ClaudeRereview4ReproTests.tag()
-        defer { ClaudeRereview4ReproTests.kill(matching: tag) }
-        let root = try spawn("/bin/sh -c \"/usr/bin/perl -e 'use POSIX; POSIX::setsid(); sleep 600;' \(tag) &\"; exec /bin/sleep 30")
-        defer { _ = ClaudeProcessInspector.forceKill(root.process) }
-        #expect(root.process.disclaimed)
-        let lineage = ClaudeLineage()
-        lineage.seed(root.process.pid, disclaimed: root.process.disclaimed)
-        var orphan: pid_t?
-        for _ in 0..<250 where orphan == nil {
-            try await Task.sleep(for: .milliseconds(20))
-            orphan = ClaudeRereview4ReproTests.pids(matching: tag).first.flatMap { getpgid($0) == $0 ? $0 : nil }
-        }
-        let d = try #require(orphan, "D가 세션을 떠났다")
-        // 중간 sh가 끝나기를 기다린다 (D의 부모가 launchd 밑으로)
-        func adopted() -> Bool {
-            if case .present(let generation) = ClaudeProcessInspector.generation(pid: d) { return generation.parentPID == 1 }
-            return false
-        }
-        for _ in 0..<250 where !adopted() { try await Task.sleep(for: .milliseconds(20)) }
-        let parent = try #require(ClaudeProcessInspector.uniqueIDs(pid: d)?.parent)
-        #expect(!lineage.contains(parent), "D의 부모(중간 sh)는 본 적이 없다")
-        #expect(ClaudeProcessInspector.descendants(root.identity, lineage: lineage)?.contains { $0.pid == d } == true, "책임 프로세스로 찾았다")
-        // 뿌리가 끝났다: 그 뒤 D는 스스로의 책임 프로세스지만 혈통에 적혀 있다
-        kill(root.process.pid, SIGKILL)
-        _ = try await offPool { root.process.waitForExit() }
-        #expect(ClaudeProcessInspector.liveness(root.identity, lineage: lineage) == .alive, "뿌리가 끝난 뒤에는 혈통이 D를 안다")
-        let lineageForTerminate = lineage
+    /// `claude`(가짜)가 살아 있는 동안 남긴 setsid 자손: 지킴이의 구성원이고, 끝내기는 그것까지 끝낸 뒤 지킴이가 끝나야 `ended`
+    @Test func k1AFakeClaudesSetsidChildIsAMemberAndIsEndedBeforeTheEnd() async throws {
+        let pidFile = box.root.appending(path: "setsid.pid").path
+        let root = try box.keep("/usr/bin/perl -e 'use POSIX; POSIX::setsid(); open(F, q(>\(pidFile))); print F $$; close F; sleep 600;' & while :; do sleep 0.2; done")
+        defer { killpg(root.kept.claudePID, SIGKILL) }
+        let child = try await ClaudeProcessIdentityTests.readPID(pidFile)
+        defer { kill(child, SIGKILL) }
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(getsid(child) == child)
+        #expect(ClaudeProcessInspector.members(root.keeper)?.contains { $0.pid == child } == true)
         let timing = self.timing
-        let result = try await offPool { ClaudeProcessInspector.terminate(root.identity, timing: timing, lineage: lineageForTerminate) }
+        let identity = root.identity
+        let lineage = root.lineage
+        let result = try await offPool { ClaudeProcessInspector.terminate(identity, timing: timing, lineage: lineage) }
         guard case .ended = result else {
             Issue.record("\(result)")
             return
         }
-        #expect(await ClaudeProcessIdentityTests.vanished(d))
+        #expect(await ClaudeProcessIdentityTests.vanished(child))
+        // 거두기는 감독 스레드가 한다 (지킴이 기록은 그 전에 이미 있다)
+        for _ in 0..<100 where !root.lineage.provenEnded { try await Task.sleep(for: .milliseconds(20)) }
+        #expect(root.lineage.provenEnded, "지킴이 정상 종료를 부모로서 받았다")
     }
 
-    /// 그 pid가 지금 뿌리(같은 unique id)가 아니면 책임 pid로 가르지 않는다: 뿌리가 끝난 뒤 같은 pid를 받은 다른 프로세스의 자손을 구성원으로 보지 않는다
-    @Test func r1AResponsiblePIDCountsOnlyWhileThatPIDIsStillTheRoot() async throws {
-        let root = try spawn("exec /bin/sleep 30")
-        defer { _ = ClaudeProcessInspector.forceKill(root.process) }
-        func fresh() -> ClaudeLineage {
-            let lineage = ClaudeLineage()
-            lineage.seed(root.process.pid)
-            return lineage
-        }
-        let rootID = try #require(fresh().rootID)
-        let other = try ClaudeSpawner.spawn(executable: "/bin/sleep", arguments: ["30"], environment: ["PATH": "/bin"], cwd: box.root.path)
-        other.closeStandardStreams()
-        defer { _ = ClaudeProcessInspector.forceKill(other) }
-        let rootPID = root.process.pid
-        let otherPID = other.pid
-        var reused = ClaudeProcessInspector.Lookups.live
-        // 모든 프로세스가 그 pid를 책임 프로세스로 돌려준다
-        reused.responsible = { _ in .present(rootPID) }
-        let attributed = fresh()
-        ClaudeProcessInspector.$lookups.withValue(reused) {
-            #expect(ClaudeProcessInspector.descendants(root.identity, lineage: attributed)?.contains { $0.pid == otherPID } == true, "뿌리가 그대로면 책임 pid로 가른다")
-        }
-        // 그 pid의 지금 프로세스가 다른 unique id다 (뿌리가 끝난 뒤 다시 쓰였다)
-        reused.generation = { pid in
-            guard pid == rootPID, case .present(let now) = ClaudeProcessInspector.generation(pid: pid) else { return ClaudeProcessInspector.generation(pid: pid) }
-            return .present(ClaudeProcessInspector.Generation(
-                pid: now.pid, startSeconds: now.startSeconds, startMicros: now.startMicros, parentPID: now.parentPID, group: now.group, uid: now.uid, zombie: now.zombie,
-                own: rootID + 1_000_000, parent: now.parent
-            ))
-        }
-        let replaced = fresh()
-        ClaudeProcessInspector.$lookups.withValue(reused) {
-            #expect(ClaudeProcessInspector.descendants(root.identity, lineage: replaced)?.contains { $0.pid == otherPID } == false)
-        }
+    // MARK: 13장 — 뿌리가 먼저 끝남
+
+    /// `claude`가 먼저 끝나도 구성원이 남아 있는 동안 지킴이는 산다(살아 있음). 구성원이 끝나면 지킴이가 스스로 증명하고 끝난다 (끝)
+    @Test func k2WhenTheRootExitsFirstTheKeeperStaysUntilTheLastMemberEnds() async throws {
+        let pidFile = box.root.appending(path: "left.pid").path
+        let root = try box.keep("/bin/sleep 600 </dev/null >/dev/null 2>&1 & echo $! > '\(pidFile)'; exit 0")
+        let member = try await ClaudeProcessIdentityTests.readPID(pidFile)
+        defer { kill(member, SIGKILL) }
+        for _ in 0..<100 where ClaudeProcessInspector.check(root.identity) == .same { try await Task.sleep(for: .milliseconds(20)) }
+        #expect(ClaudeProcessInspector.check(root.identity) != .same, "뿌리가 끝났다")
+        #expect(!(await root.keeperEnded(timeout: 0.8)), "구성원이 남았다: 지킴이는 산다")
+        #expect(ClaudeProcessInspector.liveness(root.identity, lineage: root.lineage) == .alive)
+        kill(member, SIGKILL)
+        #expect(await root.keeperEnded())
+        for _ in 0..<100 where !root.lineage.provenEnded { try await Task.sleep(for: .milliseconds(20)) }
+        #expect(ClaudeProcessInspector.liveness(root.identity, lineage: root.lineage) == .ended(AgentExit(code: nil)))
     }
 
-    // MARK: 2 물러남 = 잠금
+    // MARK: 13장 — 앱이 다시 떠 지킴이로 찾기
 
-    /// disclaim 없이 띄운 spawn: 구성원을 증명할 수 없다. 혈통으로 본 자식은 살아 있음이지만 신호는 보내지 않고, 끝을 확정하지 않는다
-    @Test func r2WithoutDisclaimTheEndIsNeverProvenAndNoDescendantIsSignalled() async throws {
-        let pidFile = box.root.appending(path: "child.pid").path
-        let root = try spawn("/bin/sleep 30 & echo $! > '\(pidFile)'; /bin/sleep 0.2; exit 0")
-        let lineage = ClaudeLineage()
-        lineage.seed(root.process.pid, disclaimed: false)
-        #expect(!lineage.provable)
-        let child = try await ClaudeProcessIdentityTests.readPID(pidFile)
-        defer { kill(child, SIGKILL) }
-        _ = try await offPool { root.process.waitForExit() }
-        #expect(ClaudeProcessInspector.liveness(root.identity, lineage: lineage) == .alive)
-        let unprovable = lineage
+    /// 앱이 죽어 있던 동안(감독 없음) 생긴 자손도 다시 뜬 앱이 지킴이로 찾는다: 살아 있음 → 끝내기 → 지킴이 기록 → 끝
+    @Test func k3ARelaunchedAppFindsTheMembersThroughTheKeeper() async throws {
+        let pidFile = box.root.appending(path: "relaunch.pid").path
+        // 뿌리는 0.3초 뒤에야 setsid 자손을 (짧은 중간 sh로) 남기고 끝난다: 앱은 그 전에 죽었다
+        let root = try box.keep("/bin/sleep 0.3; /bin/sh -c \"/usr/bin/perl -e 'use POSIX; POSIX::setsid(); open(F, q(>\(pidFile))); print F \\$\\$; close F; sleep 600;' &\"; exit 0")
+        let member = try await ClaudeProcessIdentityTests.readPID(pidFile)
+        defer { kill(member, SIGKILL) }
+        let relaunched = ClaudeRereview3ReproTests.adapter(box)
+        #expect(await relaunched.liveness(root.identity) == .alive)
+        let ended = await relaunched.terminateOrphan(root.identity)
+        guard case .ended = ended else {
+            Issue.record("\(ended)")
+            return
+        }
+        #expect(await ClaudeProcessIdentityTests.vanished(member))
+        #expect(ClaudeLineage.load(root.file) == .ended)
+        #expect(await ClaudeRereview3ReproTests.adapter(box).liveness(root.identity) == .ended(AgentExit(code: nil)))
+    }
+
+    // MARK: 13장 — 지킴이 SIGKILL = unknown
+
+    /// 구성원 0을 증명하기 전에 지킴이가 SIGKILL됐다: 앱(부모)도 다시 뜬 앱도 끝을 증명하지 못한다 (unknown, 잠금). 남은 구성원에는 신호를 보내지 않는다
+    @Test func k4AKeeperKilledBeforeItProvedTheEndLeavesTheSpawnUnknown() async throws {
+        let pidFile = box.root.appending(path: "killed.pid").path
+        let root = try box.keep("/bin/sleep 600 </dev/null >/dev/null 2>&1 & echo $! > '\(pidFile)'; exit 0")
+        let member = try await ClaudeProcessIdentityTests.readPID(pidFile)
+        defer { kill(member, SIGKILL) }
+        kill(root.kept.keeper.pid, SIGKILL)
+        #expect(await root.keeperEnded())
+        for _ in 0..<100 where root.lineage.provable { try await Task.sleep(for: .milliseconds(20)) }
+        #expect(!root.lineage.provable, "비정상 종료를 받았다")
+        #expect(ClaudeProcessInspector.liveness(root.identity, lineage: root.lineage) == .unknown)
+        #expect(await ClaudeRereview3ReproTests.adapter(box).liveness(root.identity) == .unknown)
         let timing = self.timing
-        #expect(try await offPool { ClaudeProcessInspector.terminate(root.identity, timing: timing, lineage: unprovable) } == .alive)
-        #expect(kill(child, 0) == 0, "구성원을 증명할 수 없으면 신호 0")
-        #expect(!ClaudeProcessInspector.endDescendants(root.identity, lineage: lineage, timing: timing))
-        #expect(kill(child, 0) == 0)
-        kill(child, SIGKILL)
-        _ = await ClaudeProcessIdentityTests.vanished(child)
-        #expect(ClaudeProcessInspector.liveness(root.identity, lineage: lineage) == .unknown, "자손이 없어도 끝을 확정하지 않는다")
+        let identity = root.identity
+        let lineage = root.lineage
+        #expect(try await offPool { ClaudeProcessInspector.terminate(identity, timing: timing, lineage: lineage) } == .unknown)
+        #expect(kill(member, 0) == 0, "구성원을 증명할 수 없으면 신호 0")
     }
 
-    /// 뿌리가 살아 있는데 자기 책임 프로세스가 아니다 (disclaim이 듣지 않았다): 그 spawn은 증명할 수 없음으로 바뀌고 파일에도 남는다
-    @Test func r2ARootThatIsNotItsOwnResponsibleProcessMakesTheSpawnUnprovable() throws {
-        let marker = UUID().uuidString
-        let file = box.sessionsRoot.appending(path: "lineage/\(marker).lineage")
-        let root = try spawn("/bin/sleep 5", marker: marker)
-        defer { _ = ClaudeProcessInspector.forceKill(root.process) }
-        let lineage = ClaudeLineage(file: file, fresh: true)
-        lineage.seed(root.process.pid, disclaimed: root.process.disclaimed)
-        lineage.save(force: true)
-        #expect(lineage.provable)
-        var lookups = ClaudeProcessInspector.Lookups.live
-        lookups.responsible = { _ in .present(1) }
-        ClaudeProcessInspector.$lookups.withValue(lookups) { _ = ClaudeProcessInspector.scan(root.identity, lineage: lineage) }
-        #expect(!lineage.provable)
-        #expect(!ClaudeLineage(file: file).attributable, "파일: responsible no")
+    // MARK: 13장 — 끝 기록 없음 = unknown
+
+    /// 지킴이가 정상 종료했어도 다시 뜬 앱은 그 지킴이의 끝 기록이 있어야 끝이다 (부모로서 받은 정상 종료는 그 앱 실행 안에서만 증거다)
+    @Test func k5AMissingKeeperRecordIsUnknownAfterARelaunch() async throws {
+        let root = try box.keep("exit 0")
+        #expect(await root.keeperEnded())
+        for _ in 0..<100 where !root.lineage.provenEnded { try await Task.sleep(for: .milliseconds(20)) }
+        #expect(root.lineage.provenEnded, "부모로서 정상 종료를 받았다")
+        try FileManager.default.removeItem(at: ClaudeLineage.keeperFile(root.file))
+        #expect(await ClaudeRereview3ReproTests.adapter(box).liveness(root.identity) == .unknown)
+        // 다른 지킴이의 기록은 증거가 아니다
+        let boot = try #require(ClaudeProcessInspector.bootSessionID())
+        #expect(KeeperRecord.write(ClaudeLineage.keeperFile(root.file), keeperID: root.kept.keeperID + 1, boot: boot))
+        #expect(await ClaudeRereview3ReproTests.adapter(box).liveness(root.identity) == .unknown)
+        #expect(KeeperRecord.write(ClaudeLineage.keeperFile(root.file), keeperID: root.kept.keeperID, boot: UUID().uuidString))
+        #expect(await ClaudeRereview3ReproTests.adapter(box).liveness(root.identity) == .unknown, "다른 부팅의 기록")
     }
 
-    // MARK: 4 보조 규칙
+    // MARK: 13장 — 구성원 0 → 지킴이 정상 종료 = 끝
 
-    /// 귀속되지 않은 살아 있는 프로세스(뿌리보다 뒤)가 혈통에 적힌 pid의 그룹에 있으면 그 훑기는 불완전이다 (뿌리 pid의 그룹은 `f1Unseen` 재현)
-    @Test func r4AnUnattributedProcessInTheGroupOfALineagePIDMakesTheScanIncomplete() async throws {
-        let root = try spawn("/bin/sleep 0.1; exit 0")
-        let lineage = ClaudeLineage()
-        lineage.seed(root.process.pid)
-        _ = try await offPool { root.process.waitForExit() }
-        let group = try ClaudeSpawner.spawn(executable: "/bin/sh", arguments: ["-c", "/bin/sleep 30 & /bin/sleep 30"], environment: ["PATH": "/bin:/usr/bin"], cwd: box.root.path)
-        group.closeStandardStreams()
-        defer { _ = ClaudeProcessInspector.forceKill(group) }
-        try await Task.sleep(for: .milliseconds(200))
-        #expect(ClaudeProcessInspector.scan(root.identity, lineage: lineage)?.complete == true, "무관한 그룹")
-        // 혈통에 그 pid가 적혔다 (그 pid의 구성원이 자기 그룹을 만들었다)
-        lineage.insert(2, pid: group.pid)
-        let scan = try #require(ClaudeProcessInspector.scan(root.identity, lineage: lineage))
-        #expect(!scan.complete && scan.members.isEmpty)
-        #expect(ClaudeProcessInspector.liveness(root.identity, lineage: lineage) == .unknown)
+    @Test func k6WithNoMembersTheKeeperExitsNormallyAndTheSpawnIsEnded() async throws {
+        let root = try box.keep("exit 0")
+        #expect(await root.keeperEnded())
+        for _ in 0..<100 where root.kept.keeper.exitStatus == nil { try await Task.sleep(for: .milliseconds(20)) }
+        #expect(root.kept.keeper.exitStatus == ClaudeExitStatus(code: KeeperMain.Exit.ended.rawValue, signal: nil))
+        #expect(KeeperRecord.read(ClaudeLineage.keeperFile(root.file))?.keeperID == root.kept.keeperID)
+        #expect(ClaudeProcessInspector.liveness(root.identity, lineage: root.lineage) == .ended(AgentExit(code: nil)))
+        #expect(await ClaudeRereview3ReproTests.adapter(box).liveness(root.identity) == .ended(AgentExit(code: nil)))
     }
 
-    // MARK: 6 뿌리 id가 전제
+    // MARK: 13장 5 물러남
 
-    /// 첫 세대 조회로 뿌리 id를 못 얻으면: 정체 commit · stdin 전에 SIGKILL하고 `spawnFailed`
+    /// 지킴이가 자기 책임 프로세스가 아니다(혈통 `responsible no`): 구성원을 증명할 수 없다 → 끝을 확정하지 않고, 정체를 확인한 `claude`에만 신호
+    @Test func k7WithoutResponsibilityOnlyTheVerifiedClaudeIsSignalled() async throws {
+        let pidFile = box.root.appending(path: "fallback.pid").path
+        let root = try box.keep("/bin/sleep 600 </dev/null >/dev/null 2>&1 & echo $! > '\(pidFile)'; while :; do sleep 0.2; done")
+        let member = try await ClaudeProcessIdentityTests.readPID(pidFile)
+        defer {
+            kill(member, SIGKILL)
+            killpg(root.kept.claudePID, SIGKILL)
+        }
+        let fallback = ClaudeLineage(file: box.root.appending(path: "fallback.lineage"), fresh: true)
+        fallback.adopt(ClaudeLineage.Record(keeper: root.keeper, root: root.kept.claudeID, rootPID: root.kept.claudePID, attributable: false))
+        #expect(!fallback.provable)
+        let timing = self.timing
+        let identity = root.identity
+        let result = try await offPool { ClaudeProcessInspector.terminate(identity, timing: timing, lineage: fallback) }
+        #expect(result == .unknown)
+        #expect(ClaudeProcessInspector.check(root.identity) != .same, "claude는 끝냈다")
+        #expect(kill(member, 0) == 0, "구성원에는 신호 0")
+    }
+
+    // MARK: 12장 6 뿌리 id가 전제
+
+    /// 지킴이 · `claude`의 세대를 앱이 다시 읽지 못하면: 정체 commit · stdin 전에 지킴이가 `claude`를 SIGKILL하고 `spawnFailed`
     @Test func r6ASpawnWhoseRootIDCannotBeReadIsKilledBeforeItsIdentityIsKept() async throws {
         let fake = try FakeClaude()
         try fake.scenario(["runs": [["steps": [["text": "hi"]], "linger_after_result": 5.0]]])
-        var failing = ClaudeProcessInspector.Lookups.live
+        var failing = KeeperMembers.Lookups.live
         failing.generation = { _ in .failed }
         await #expect(throws: AgentStartError.self) {
             try await ClaudeProcessInspector.$lookups.withValue(failing) { _ = try await fake.turn(events: EventLog()) }
@@ -177,78 +169,42 @@ struct ClaudeRereview4Tests {
         }
     }
 
-    // MARK: 7 조회 3상태
+    // MARK: 12장 7 조회 3상태
 
-    /// 살아 있는 프로세스의 세대 조회 · 목록 재확인이 모두 실패: 사라짐으로 읽지 않고 불완전 (Astra P1-3)
-    @Test func r7AFailedLookupIsNeverReadAsGone() async throws {
-        let root = try spawn("/bin/sleep 0.1; exit 0")
-        let lineage = ClaudeLineage()
-        lineage.seed(root.process.pid)
-        _ = try await offPool { root.process.waitForExit() }
-        let other = try ClaudeSpawner.spawn(executable: "/bin/sleep", arguments: ["30"], environment: ["PATH": "/bin"], cwd: box.root.path)
-        other.closeStandardStreams()
-        defer { _ = ClaudeProcessInspector.forceKill(other) }
-        #expect(ClaudeProcessInspector.scan(root.identity, lineage: lineage)?.complete == true)
-        let pid = other.pid
-        var failing = ClaudeProcessInspector.Lookups.live
-        failing.generation = { $0 == pid ? .failed : ClaudeProcessInspector.generation(pid: $0) }
-        failing.listed = { $0.pid == pid ? .failed : ClaudeProcessInspector.listed($0) }
+    /// 지킴이 세대를 읽지 못하면 살아 있다고도 끝났다고도 하지 않는다 (unknown). 구성원 조회 실패는 그 구성원을 신호 대상에서 빼지만 끝을 만들지 않는다
+    @Test func r7AFailedKeeperLookupIsNeverReadAsGone() async throws {
+        let root = try box.keep("/bin/sleep 600 </dev/null >/dev/null 2>&1 & exit 0")
+        defer { killpg(root.kept.claudePID, SIGKILL) }
+        for _ in 0..<100 where ClaudeProcessInspector.check(root.identity) == .same { try await Task.sleep(for: .milliseconds(20)) }
+        let keeperPID = root.kept.keeper.pid
+        var failing = KeeperMembers.Lookups.live
+        failing.generation = { $0 == keeperPID ? .failed : AgentProcesses.generation(pid: $0) }
         ClaudeProcessInspector.$lookups.withValue(failing) {
-            #expect(ClaudeProcessInspector.scan(root.identity, lineage: lineage)?.complete == false, "세대 조회 실패")
-            #expect(ClaudeProcessInspector.descendantsProvenGone(root.identity, lineage) == nil)
+            #expect(ClaudeProcessInspector.keeperState(root.keeper) == .failed)
+            #expect(ClaudeProcessInspector.liveness(root.identity, lineage: root.lineage) == .unknown)
+            #expect(ClaudeProcessInspector.members(root.keeper) == nil, "지킴이를 확인하지 못하면 가르지 않는다")
         }
-        // 세대가 사라진 것으로 읽혀도 목록 재확인이 실패하면 불완전
-        failing.generation = { $0 == pid ? .gone : ClaudeProcessInspector.generation(pid: $0) }
-        ClaudeProcessInspector.$lookups.withValue(failing) {
-            #expect(ClaudeProcessInspector.scan(root.identity, lineage: lineage)?.complete == false, "목록 재확인 실패")
-        }
-        // 세대 조회 실패는 목록이 사라졌다고 해도 불완전 (실패는 사라짐이 아니다)
-        failing.generation = { $0 == pid ? .failed : ClaudeProcessInspector.generation(pid: $0) }
-        failing.listed = { $0.pid == pid ? .gone : ClaudeProcessInspector.listed($0) }
-        ClaudeProcessInspector.$lookups.withValue(failing) {
-            #expect(ClaudeProcessInspector.scan(root.identity, lineage: lineage)?.complete == false, "세대 조회 실패 + 목록 없음")
-        }
+        #expect(ClaudeProcessInspector.liveness(root.identity, lineage: root.lineage) == .alive)
     }
 
-    /// 뿌리가 살아 있는 동안 후보의 책임 프로세스 조회가 실패하면 불완전
-    @Test func r7AFailedResponsibilityLookupMakesTheScanIncomplete() throws {
-        let root = try spawn("/bin/sleep 30 & /bin/sleep 30")
-        defer { _ = ClaudeProcessInspector.forceKill(root.process) }
-        let lineage = ClaudeLineage()
-        lineage.seed(root.process.pid)
-        Thread.sleep(forTimeInterval: 0.2)
-        let rootPID = root.process.pid
-        var failing = ClaudeProcessInspector.Lookups.live
-        failing.responsible = { $0 == rootPID ? .present(rootPID) : .failed }
-        ClaudeProcessInspector.$lookups.withValue(failing) {
-            #expect(ClaudeProcessInspector.scan(root.identity, lineage: lineage)?.complete == false)
-        }
-        #expect(ClaudeProcessInspector.scan(root.identity, lineage: lineage)?.complete == true)
-    }
-
-    // MARK: 8 marker마다 혈통 객체 하나 · 따로 둔 끝 기록
+    // MARK: 12장 8 marker마다 혈통 객체 하나 · 따로 둔 끝 기록
 
     @Test func r8OneLineageObjectPerMarkerAndAStaleWriterCannotUndoTheEndRecord() async throws {
-        let marker = UUID().uuidString
-        let file = box.sessionsRoot.appending(path: "lineage/\(marker).lineage")
-        let root = try spawn("/bin/sleep 0.1; exit 0", marker: marker)
-        let first = ClaudeLineage(file: file, fresh: true)
-        first.seed(root.process.pid)
-        first.save(force: true)
-        _ = try await offPool { root.process.waitForExit() }
+        let root = try box.keep("/bin/sleep 0.1; exit 0")
+        let marker = root.identity.processMarker
+        #expect(await root.keeperEnded())
         let adapter = ClaudeRereview3ReproTests.adapter(box)
         #expect(await adapter.sharedLineage(marker) === adapter.sharedLineage(marker))
         // 같은 marker의 다른 객체 (옛 방식: 부를 때마다 새로 읽었다)
-        let stale = ClaudeLineage(file: file)
+        let stale = ClaudeLineage(file: root.file)
         #expect(await adapter.liveness(root.identity) == .ended(AgentExit(code: nil)))
         #expect(await adapter.sharedLineage(marker).provenEnded)
-        stale.insert(99, pid: 9)
-        stale.save(force: true)
-        #expect(ClaudeLineage.load(file) == .ended, "끝 기록이 먼저다")
+        stale.save()
+        #expect(ClaudeLineage.load(root.file) == .ended, "끝 기록이 먼저다")
         #expect(await ClaudeRereview3ReproTests.adapter(box).liveness(root.identity) == .ended(AgentExit(code: nil)))
     }
 
-    // MARK: 9 요청마다 한 번 정해지는 상태
+    // MARK: 12장 9 요청마다 한 번 정해지는 상태
 
     @Test func r9TheFirstOfCommitAndTimeoutWins() {
         let committed = HookCommit()
@@ -260,7 +216,7 @@ struct ClaudeRereview4Tests {
         #expect(timedOut.timeOut() == nil)
     }
 
-    // MARK: 11 국소 인코딩 탐지
+    // MARK: 12장 11 국소 인코딩 탐지
 
     @Test func r11ANSICFragmentsAreDecodedOneByOneAndBashCommentsStayLiteral() {
         let bs = ClaudeRereview3ReproTests.bs

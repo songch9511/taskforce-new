@@ -14,15 +14,6 @@ struct ClaudeRereview4ReproTests {
     static let secret = ClaudeRereview3ReproTests.secret
     static let bs = ClaudeRereview3ReproTests.bs
 
-    func spawn(_ script: String, marker: String = UUID().uuidString) throws -> (process: ClaudeSpawnedProcess, identity: AgentProcessIdentity) {
-        let settings = box.root.appending(path: "config/\(marker).settings.json").path
-        let process = try ClaudeSpawner.spawn(
-            executable: "/bin/sh", arguments: ["-c", script, "sh", "--settings", settings], environment: ["PATH": "/usr/bin:/bin"], cwd: box.root.path
-        )
-        process.closeStandardStreams()
-        return (process, AgentProcessIdentity(pid: Int(process.pid), startedAt: process.startedAt, processMarker: marker))
-    }
-
     /// 남은 배경 프로세스를 찾을 `sleep` 인자 (실행마다 다르다)
     static func tag() -> String { "620.\(Int.random(in: 10000...99999))" }
 
@@ -36,81 +27,52 @@ struct ClaudeRereview4ReproTests {
 
     // MARK: F1 sup — 감독 중, 못 본 짧은 중간 프로세스
 
-    /// 뿌리 R이 짧은 중간 sh로 배경 D를 남기고 바로 끝난다 (지켜보기 켬). D가 살아 있는 동안 "자손 없음"을 증명하면 안 된다 (보안 재현 10/10)
+    /// 뿌리 R이 짧은 중간 sh로 배경 D를 남기고 바로 끝난다. D가 살아 있는 동안 끝이라 하면 안 된다 (보안 재현 10/10 → 13장: 지킴이가 산다)
     @Test func f1SupervisedShortIntermediateNeverProvesAFalseEnd() async throws {
         for _ in 0..<3 {
             let tag = Self.tag()
             defer { Self.kill(matching: tag) }
-            let marker = UUID().uuidString
-            let root = try spawn("/bin/sleep 0.2; /bin/sh -c '/bin/sleep \(tag) >/dev/null 2>&1 &'; exit 0", marker: marker)
-            let lineage = ClaudeLineage(file: box.sessionsRoot.appending(path: "lineage/\(marker).lineage"), fresh: true)
-            lineage.seed(root.process.pid)
-            lineage.save(force: true)
-            lineage.watch(root.identity)
-            _ = try await offPool { root.process.waitForExit() }
-            let proven = try await offPool { ClaudeProcessInspector.descendantsProvenGone(root.identity, lineage) }
-            lineage.forget()
-            #expect(!Self.pids(matching: tag).isEmpty, "D가 살아 있다")
-            #expect(proven != true, "살아 있는 D를 두고 끝을 증명했다")
+            let root = try box.keep("/bin/sleep 0.2; /bin/sh -c '/bin/sleep \(tag) >/dev/null 2>&1 &'; exit 0")
+            for _ in 0..<150 where ClaudeProcessInspector.check(root.identity) == .same { try await Task.sleep(for: .milliseconds(20)) }
+            try await Task.sleep(for: .milliseconds(500))
+            let d = try #require(Self.pids(matching: tag).first, "D가 살아 있다")
+            #expect(ClaudeProcessInspector.liveness(root.identity, lineage: root.lineage) == .alive, "살아 있는 D를 두고 끝이라 했다")
+            #expect(ClaudeProcessInspector.members(root.keeper)?.contains { $0.pid == d } == true)
         }
     }
 
     // MARK: F1 unseen — 앱이 띄운 직후 죽었다
 
-    /// 혈통 머리 + 뿌리만 적은 뒤 앱이 죽었다. 그동안 R이 짧은 중간 sh로 배경 D를 남기고 끝났다. 다시 뜬 앱은 D를 두고 `ended`라 하면 안 된다
+    /// 혈통 파일만 적은 뒤 앱이 죽었다. 그동안 R이 짧은 중간 sh로 배경 D를 남기고 끝났다. 다시 뜬 앱은 D를 두고 `ended`라 하면 안 된다
     @Test func f1UnseenIntermediateAfterACrashIsNotEnded() async throws {
         let tag = Self.tag()
         defer { Self.kill(matching: tag) }
-        let marker = UUID().uuidString
-        let root = try spawn("/bin/sleep 0.3; /bin/sh -c '/bin/sleep \(tag) >/dev/null 2>&1 &'; /bin/sleep 0.3; exit 0", marker: marker)
-        let lineage = ClaudeLineage(file: box.sessionsRoot.appending(path: "lineage/\(marker).lineage"), fresh: true)
-        lineage.seed(root.process.pid)
-        lineage.save(force: true)
-        _ = try await offPool { root.process.waitForExit() }
+        let root = try box.keep("/bin/sleep 0.3; /bin/sh -c '/bin/sleep \(tag) >/dev/null 2>&1 &'; /bin/sleep 0.3; exit 0")
+        for _ in 0..<150 where ClaudeProcessInspector.check(root.identity) == .same { try await Task.sleep(for: .milliseconds(20)) }
         try await Task.sleep(for: .milliseconds(200))
         #expect(!Self.pids(matching: tag).isEmpty, "D가 살아 있다")
-        #expect(await ClaudeRereview3ReproTests.adapter(box).liveness(root.identity) != .ended(AgentExit(code: nil)))
+        #expect(await ClaudeRereview3ReproTests.adapter(box).liveness(root.identity) == .alive)
     }
 
-    // MARK: Astra P1-1 저장 실패 · 잘린 줄
+    // MARK: Astra P1-1 잘린 줄
 
     @Test func a1ACutLastLineMakesTheFileIncomplete() async throws {
-        let marker = UUID().uuidString
-        let file = box.sessionsRoot.appending(path: "lineage/\(marker).lineage")
-        let root = try spawn("/bin/sleep 0.2; exit 0", marker: marker)
-        let lineage = ClaudeLineage(file: file, fresh: true)
-        lineage.seed(root.process.pid)
-        lineage.save(force: true)
-        _ = try await offPool { root.process.waitForExit() }
-        // 쓰다 끊긴 줄: 그 id가 무엇이었는지 모른다 (그 자손을 잃었다)
-        let handle = try FileHandle(forWritingTo: file)
+        let root = try box.keep("/bin/sleep 0.2; exit 0")
+        #expect(await root.keeperEnded())
+        // 쓰다 끊긴 줄: 지킴이 기록이 있어도 그 파일의 지킴이를 믿지 않는다
+        let handle = try FileHandle(forWritingTo: root.file)
         try handle.seekToEnd()
         try handle.write(contentsOf: Data("4559".utf8))
         try handle.close()
         #expect(await ClaudeRereview3ReproTests.adapter(box).liveness(root.identity) == .unknown, "잘린 줄을 버리고 믿지 않는다")
     }
 
-    @Test func a1AFailedAppendIsNotTrustedAsComplete() throws {
-        let marker = UUID().uuidString
-        let file = box.sessionsRoot.appending(path: "lineage/\(marker).lineage")
-        let root = try spawn("/bin/sleep 5", marker: marker)
-        defer { _ = ClaudeProcessInspector.forceKill(root.process) }
-        let lineage = ClaudeLineage(file: file, fresh: true)
-        lineage.seed(root.process.pid)
-        lineage.save(force: true)
-        // 덧붙이기가 실패한다 (파일을 쓸 수 없다): 앱이 다시 쓰기 전에 죽으면 그 파일에는 12가 없다
-        #expect(chmod(file.path, 0o400) == 0)
-        lineage.insert(12)
-        let relaunched = ClaudeLineage(file: file)
-        #expect(!relaunched.hasEvidence || relaunched.contains(12), "덧붙이지 못한 파일을 완전한 증거로 믿었다")
-    }
-
     // MARK: Astra P1-2 뿌리 id가 전제
 
     @Test func a2ALineageWithoutARootIDIsNotRecorded() {
         let lineage = ClaudeLineage(file: box.sessionsRoot.appending(path: "lineage/\(UUID().uuidString).lineage"), fresh: true)
-        lineage.save(force: true)
-        #expect(!lineage.isRecorded, "뿌리 id 없이 적은 혈통을 기록으로 쳤다")
+        #expect(!lineage.save())
+        #expect(!lineage.isRecorded, "지킴이 · 뿌리 id 없이 적은 혈통을 기록으로 쳤다")
     }
 
     // MARK: Astra P1-4 앞선 작은따옴표 뒤의 ANSI-C

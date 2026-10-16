@@ -99,7 +99,7 @@ struct ClaudeReviewProcessTests {
         let identity = try await fake.turn(events: events)
         for _ in 0..<500 where fake.report(0)?["sleep_pid"] == nil { try await Task.sleep(for: .milliseconds(20)) }
         // 앱이 다시 떴다: 새 adapter의 등록부는 비어 있다
-        let restarted = ClaudeCodeProcess(sessionsRoot: fake.box.sessionsRoot, hookServer: nil, helpers: ClaudeCodeHelpers(hook: "/x", mcp: "/y"),
+        let restarted = ClaudeCodeProcess(sessionsRoot: fake.box.sessionsRoot, hookServer: nil, helpers: ClaudeCodeHelpers(hook: "/x", mcp: "/y", keeper: "/z"),
                                           locator: ClaudeCodeLocator(candidates: [], confinedTo: fake.box.root.path), timing: .testing)
         var unprovable = identity
         unprovable.processMarker = "not-a-marker"
@@ -149,7 +149,8 @@ struct ClaudeReviewProcessTests {
         }
         #expect(fake.runCount == 1, "끝을 증명하지 못했으면 다음 프로세스 0")
         // 정리: 진짜로 끝낸다
-        _ = try await offPool { ClaudeProcessInspector.terminate(identity, timing: timing) }
+        let lineage = ClaudeLineage(file: fake.box.sessionsRoot.appending(path: "lineage/\(identity.processMarker).lineage"))
+        _ = try await offPool { ClaudeProcessInspector.terminate(identity, timing: timing, lineage: lineage) }
         #expect(await events.wait { FakeClaude.ended($0) })
     }
 

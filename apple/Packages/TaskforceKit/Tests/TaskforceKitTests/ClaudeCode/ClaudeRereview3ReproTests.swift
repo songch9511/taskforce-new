@@ -15,7 +15,7 @@ struct ClaudeRereview3ReproTests {
     static let bs = String(UnicodeScalar(UInt8(0x5C)))
 
     static func adapter(_ box: ClaudeSandbox) -> ClaudeCodeProcess {
-        ClaudeCodeProcess(sessionsRoot: box.sessionsRoot, hookServer: nil, helpers: ClaudeCodeHelpers(hook: "/x", mcp: "/y"),
+        ClaudeCodeProcess(sessionsRoot: box.sessionsRoot, hookServer: nil, helpers: ClaudeCodeHelpers(hook: "/x", mcp: "/y", keeper: "/z"),
                           locator: ClaudeCodeLocator(candidates: [], confinedTo: box.root.path), timing: .testing)
     }
 
@@ -29,30 +29,14 @@ struct ClaudeRereview3ReproTests {
         return (process, AgentProcessIdentity(pid: Int(process.pid), startedAt: process.startedAt, processMarker: marker))
     }
 
-    // MARK: 3 (batch) 묶어 쓰기 틈
+    // MARK: 3 (batch) 앱이 죽은 사이 (13장: 기록할 틈이 없다 — 지킴이가 산다)
 
-    @Test func d3AnIntermediateSeenBeforeACrashIsInTheFileAtOnce() async throws {
-        let marker = UUID().uuidString
-        let file = box.sessionsRoot.appending(path: "lineage/\(marker).lineage")
-        let snapshot = box.root.appending(path: "snapshot.lineage")
-        // 뿌리 R: 중간 B가 배경 D(sleep 617)를 남기고 0.15초 뒤 끝난다. R은 1초 뒤 끝난다
-        let root = try spawn("/bin/sh -c '/bin/sleep 617 >/dev/null 2>&1 & /bin/sleep 0.15'; /bin/sleep 1; exit 0", marker: marker)
-        let lineage = ClaudeLineage(file: file, fresh: true)
-        lineage.seed(root.process.pid)
-        lineage.save(force: true)
-        lineage.watch(root.identity)
-        try await Task.sleep(for: .milliseconds(350))
-        // 앱이 여기서 죽었다 (0.5초 묶음 전): 그때 디스크에 있던 것
-        try FileManager.default.copyItem(at: file, to: snapshot)
-        _ = try await offPool { root.process.waitForExit() }
-        lineage.forget()
+    @Test func d3AnIntermediateOfACrashedAppIsStillSeenThroughTheKeeper() async throws {
+        // 뿌리 R: 중간 B가 배경 D(sleep 617)를 남기고 0.15초 뒤 끝난다. R은 1초 뒤 끝난다. 앱은 띄운 직후 죽었다 (다시 뜬 앱은 파일만 본다)
+        let root = try box.keep("/bin/sh -c '/bin/sleep 617 >/dev/null 2>&1 & /bin/sleep 0.15'; /bin/sleep 1; exit 0")
         defer { Self.killSleep617() }
-        // 디스크를 죽은 순간으로 되돌린다 (그 앱은 끝 기록을 쓰지 못했다)
-        try? FileManager.default.removeItem(at: file)
-        try? FileManager.default.removeItem(at: ClaudeLineage.endedFile(file))
-        try FileManager.default.copyItem(at: snapshot, to: file)
-        // 다시 뜬 앱: 그 파일로 본다. B는 끝났고 D는 launchd 밑에 남았다
-        #expect(await Self.adapter(box).liveness(root.identity) == .alive, "D가 살아 있다")
+        for _ in 0..<150 where ClaudeProcessInspector.check(root.identity) == .same { try await Task.sleep(for: .milliseconds(20)) }
+        #expect(await Self.adapter(box).liveness(root.identity) == .alive, "B · R은 끝났고 D가 살아 있다: 지킴이가 산다")
     }
 
     static func killSleep617() {
@@ -78,18 +62,16 @@ struct ClaudeRereview3ReproTests {
 
     // MARK: 5 뿌리 pid를 다시 받은 자손
 
-    @Test func d5ADescendantThatReusedTheRootPIDIsStillFound() async throws {
+    @Test func d5ADescendantThatReusedTheRootPIDIsStillAMember() async throws {
         let pidFile = box.root.appending(path: "reuse.pid").path
-        let root = try spawn("/usr/bin/perl -e 'use POSIX; POSIX::setsid(); open(F, q(>\(pidFile))); print F $$; close F; sleep 600;' & sleep 0.3; exit 0")
-        let lineage = ClaudeLineage()
-        lineage.seed(root.process.pid)
-        _ = try await offPool { root.process.waitForExit() }
+        let root = try box.keep("/usr/bin/perl -e 'use POSIX; POSIX::setsid(); open(F, q(>\(pidFile))); print F $$; close F; sleep 600;' & sleep 0.3; exit 0")
         let child = try await ClaudeProcessIdentityTests.readPID(pidFile)
         defer { kill(child, SIGKILL) }
-        // 원장의 뿌리 pid를 그 자손이 다시 받았다고 하자 (pid 숫자만 같다)
+        // 원장의 뿌리 pid를 그 자손이 다시 받았다고 하자 (pid 숫자만 같다): 구성원은 pid가 아니라 책임 프로세스 · unique id로 가른다
         var identity = root.identity
         identity.pid = Int(child)
-        #expect(ClaudeProcessInspector.descendants(identity, lineage: lineage)?.contains { $0.pid == child } == true, "뿌리는 pid가 아니라 뿌리 id로 뺀다")
+        #expect(ClaudeProcessInspector.members(root.keeper)?.contains { $0.pid == child } == true)
+        #expect(ClaudeProcessInspector.liveness(identity, lineage: root.lineage) == .alive)
     }
 
     // MARK: 7 · 8 비밀값: 정규화 전 글자 · 줄 이음 · ANSI-C

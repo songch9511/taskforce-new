@@ -9,7 +9,7 @@ struct ClaudeCodeEvidenceRunnerTests {
     func runner(_ fake: FakeClaude) throws -> ClaudeCodeEvidenceRunner {
         try ClaudeCodeEvidenceRunner(
             workspace: fake.workspace, sessionsRoot: fake.box.sessionsRoot, hookServer: fake.server,
-            helpers: ClaudeCodeHelpers(hook: try BuiltProducts.url("tf-agent-hook").path, mcp: try BuiltProducts.url("tf-agent-mcp").path),
+            helpers: fake.helpers,
             locator: ClaudeCodeLocator(candidates: [fake.claude.path], confinedTo: fake.box.root.path), decide: fake.decider.function,
             environment: ["HOME": fake.box.home.path, "USER": NSUserName(), "PATH": "/usr/bin:/bin"]
         )

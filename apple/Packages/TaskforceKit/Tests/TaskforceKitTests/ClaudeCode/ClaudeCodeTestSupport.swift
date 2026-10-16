@@ -52,6 +52,48 @@ final class ClaudeSandbox: @unchecked Sendable {
     }
 }
 
+/// 지킴이를 거쳐 `claude`처럼 띄운 대본 하나 (OA D3a 13장): 실제로 빌드한 `tf-agent-keeper`가 `/bin/sh -c <대본> sh --settings …/config/<marker>.settings.json`을 띄운다.
+/// 혈통 파일은 adapter처럼 띄운 직후 적고, 지킴이는 감독처럼 거둬 그 상태를 혈통에 적는다 (`lineage`). 다시 뜬 앱은 `ClaudeLineage(file:)`로 본다
+struct KeptChild {
+    let kept: ClaudeKeptSpawn
+    let identity: AgentProcessIdentity
+    let lineage: ClaudeLineage
+    let file: URL
+
+    var keeper: ClaudeLineage.Keeper { ClaudeLineage.Keeper(pid: kept.keeper.pid, uniqueID: kept.keeperID) }
+
+    /// 지킴이가 끝날 때까지 (기한 안에서) 기다린다: 거둔 상태는 감독 스레드가 적는다
+    func keeperEnded(timeout: TimeInterval = 5) async -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while ClaudeProcessInspector.keeperState(keeper) == .alive, Date() < deadline { try? await Task.sleep(for: .milliseconds(20)) }
+        return ClaudeProcessInspector.keeperState(keeper) != .alive
+    }
+}
+
+extension ClaudeSandbox {
+    func keep(_ script: String, marker: String = UUID().uuidString, extra: [String] = []) throws -> KeptChild {
+        let settings = root.appending(path: "config/\(marker).settings.json").path
+        let file = sessionsRoot.appending(path: "lineage/\(marker).lineage")
+        try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let kept = try ClaudeSpawner.spawnKept(
+            keeper: try BuiltProducts.url("tf-agent-keeper").path, ended: ClaudeLineage.keeperFile(file), executable: "/bin/sh", argv0: "/bin/sh",
+            arguments: ["-c", script, "sh", "--settings", settings] + extra, environment: ["PATH": "/usr/bin:/bin", ClaudeProcessInspector.markerKey: marker], cwd: root.path
+        )
+        kept.keeper.closeStandardStreams()
+        Darwin.close(kept.reportFD)
+        let lineage = ClaudeLineage(file: file, fresh: true)
+        lineage.adopt(ClaudeLineage.Record(
+            keeper: ClaudeLineage.Keeper(pid: kept.keeper.pid, uniqueID: kept.keeperID), root: kept.claudeID, rootPID: kept.claudePID, attributable: kept.attributable
+        ))
+        lineage.save()
+        let keeper = kept.keeper
+        DispatchQueue.global(qos: .utility).async { lineage.keeperExited(keeper.waitForExit()) }
+        return KeptChild(
+            kept: kept, identity: AgentProcessIdentity(pid: Int(kept.claudePID), startedAt: kept.claudeStartedAt, processMarker: marker), lineage: lineage, file: file
+        )
+    }
+}
+
 /// 오래 막히는 호출(대기 · 프로세스 기다림)을 협력 스레드 밖에서 돌린다 (시험 전체가 동시에 돌 때 다른 시험의 비동기 작업을 굶기지 않게)
 func offPool<T: Sendable>(_ work: @escaping @Sendable () throws -> T) async throws -> T {
     try await withCheckedThrowingContinuation { continuation in

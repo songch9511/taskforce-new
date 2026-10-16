@@ -27,8 +27,7 @@ struct ClaudeRereview2ReproTests {
         #expect(getpgid(victim) == unrelated.pid, "Y는 그룹 P에 남았다")
         // 원장에 남은 오래된 claude 정체: pid 숫자만 P와 같다
         let stale = AgentProcessIdentity(pid: Int(unrelated.pid), startedAt: Date().addingTimeInterval(-3600), processMarker: UUID().uuidString)
-        #expect(ClaudeProcessInspector.descendants(stale, lineage: ClaudeLineage())?.isEmpty == true)
-        // 그 정체의 뿌리 id를 모른다: 끝이라고도 하지 않는다 (12장 6)
+        // 그 정체의 지킴이를 모른다: 끝이라고도 하지 않고 신호도 보내지 않는다 (13장 3)
         #expect(ClaudeProcessInspector.liveness(stale, lineage: ClaudeLineage()) == .unknown)
         let timing = Self.timing
         let result = try await offPool { ClaudeProcessInspector.terminate(stale, timing: timing, lineage: ClaudeLineage()) }

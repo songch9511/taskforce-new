@@ -50,6 +50,7 @@
 		584A291FF09ECAF09FD9B4B7 /* TaskforceKit in Frameworks */ = {isa = PBXBuildFile; productRef = 73C221837F84EEB751235C8E /* TaskforceKit */; };
 		58C68A8A46B10B63FF240426 /* EdgeSurfaces.swift in Sources */ = {isa = PBXBuildFile; fileRef = 24386D46267F0F616E0A31E4 /* EdgeSurfaces.swift */; };
 		5AADF7819C0656F5D1C3C1C1 /* SampleData.swift in Sources */ = {isa = PBXBuildFile; fileRef = 599D903AD6A4CA63031CAE4D /* SampleData.swift */; };
+		5C9603C43811D51E9535FCD7 /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = 63B008AA2380A900888169C3 /* main.swift */; };
 		5E98B573C97D4264AB34EAB3 /* BridgeFlagTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1839C1D158ACAD1812110AFA /* BridgeFlagTests.swift */; };
 		5ECFE4E77A7DE70930D6A18A /* SampleReview.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5FFF95C6BBC0E49F9923E3D2 /* SampleReview.swift */; };
 		60590DB6D0D83DA0B205735C /* SampleReturnSummary.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5BC8A2FBA739AE14366346F7 /* SampleReturnSummary.swift */; };
@@ -89,6 +90,7 @@
 		B1CC59880F2E7DB9E145834B /* AccountViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9E2BFF6EF4C37CFDCEBD88DB /* AccountViews.swift */; };
 		B48D84C81EFBBF7A82B7EC66 /* EdgeSummaryBaselineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F312F4D27B4367B0421F20EC /* EdgeSummaryBaselineTests.swift */; };
 		B4E86F5B84D3D0770F140146 /* tf-agent-mcp in Embed Dependencies */ = {isa = PBXBuildFile; fileRef = 1366312766C425ED00054ED4 /* tf-agent-mcp */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		B4F54DFC68334D4A409774AF /* TaskforceAgent.app in Embed Dependencies */ = {isa = PBXBuildFile; fileRef = 9484208DC1E48820E056CD42 /* TaskforceAgent.app */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		B9C00B092B4992BE90579CEA /* EdgeSnapshotReview.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1288B083CD605D94432405A8 /* EdgeSnapshotReview.swift */; };
 		BA2CF1AD4A217E50B7D29697 /* AppUpdaterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E93E5DE9D5429324E5F5A37F /* AppUpdaterTests.swift */; };
 		BCE266E959C45ED935EFD0AE /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = E79E5EA9083E82E3C6AE58E9 /* main.swift */; };
@@ -120,12 +122,20 @@
 		F1054E03F7CEFB293B46966C /* SettingsConnectionsSections.swift in Sources */ = {isa = PBXBuildFile; fileRef = 06B1DA1B50E9C9E6A7A0479C /* SettingsConnectionsSections.swift */; };
 		F67FEFD598D344A7AA5462A0 /* AssistantWindowManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 81503619078DD4AB5A97AC21 /* AssistantWindowManager.swift */; };
 		FCBCDF2154E2D338E891C24D /* S3bGateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A73A859A7BB30F65EB4610B5 /* S3bGateTests.swift */; };
+		FD6D4CF99F11A125188116AA /* TaskforceAgentWire in Frameworks */ = {isa = PBXBuildFile; productRef = 968776D6FBDDE70F0EC5F1BF /* TaskforceAgentWire */; };
 		FD7CC1296F85732599DE1AFC /* RunStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 19530AF9617AD254389374F2 /* RunStore.swift */; };
 		FE7873A58E4B39A8927CD2FC /* EdgeWorkContextsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 610A9DE84A54D9724C3CDAEE /* EdgeWorkContextsTests.swift */; };
 		FF68550675704B842603A326 /* LauncherRunPane.swift in Sources */ = {isa = PBXBuildFile; fileRef = CB475A9C43FB5DA64D5B10A4 /* LauncherRunPane.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
+		031F20F517CF7CCBB03C0BC3 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 4048BC7BE910FF1E399DC4C5 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = D912E83F420982C835650760;
+			remoteInfo = TaskforceAgent;
+		};
 		44201B66A5B5E3DFC96F1EAE /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = 4048BC7BE910FF1E399DC4C5 /* Project object */;
@@ -165,6 +175,7 @@
 			files = (
 				726F181FE00B764484961733 /* tf-agent-hook in Embed Dependencies */,
 				B4E86F5B84D3D0770F140146 /* tf-agent-mcp in Embed Dependencies */,
+				B4F54DFC68334D4A409774AF /* TaskforceAgent.app in Embed Dependencies */,
 			);
 			name = "Embed Dependencies";
 			runOnlyForDeploymentPostprocessing = 0;
@@ -221,6 +232,7 @@
 		603292F5B4100FD37C53E2CD /* EdgeRailPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EdgeRailPanel.swift; sourceTree = "<group>"; };
 		610A9DE84A54D9724C3CDAEE /* EdgeWorkContextsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EdgeWorkContextsTests.swift; sourceTree = "<group>"; };
 		62B25DF97F77B495CABEAE98 /* EdgeInteractionReview.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EdgeInteractionReview.swift; sourceTree = "<group>"; };
+		63B008AA2380A900888169C3 /* main.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
 		65D96844CFEE5E58206572EF /* LauncherShellModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LauncherShellModelTests.swift; sourceTree = "<group>"; };
 		67FA98B6AD5F48FCE46EAB29 /* RunStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RunStoreTests.swift; sourceTree = "<group>"; };
 		6A0A3424B28B328F9AB5DA43 /* EdgePanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EdgePanel.swift; sourceTree = "<group>"; };
@@ -239,6 +251,7 @@
 		8EA57F9216DDB7EC3BA048C9 /* BridgeQuitPrompt.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BridgeQuitPrompt.swift; sourceTree = "<group>"; };
 		8F35BE01B9CE310854A11A47 /* AccountDeletion.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccountDeletion.swift; sourceTree = "<group>"; };
 		8F5DE8B3835D212DAFE17325 /* MacEntitlementsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacEntitlementsTests.swift; sourceTree = "<group>"; };
+		9484208DC1E48820E056CD42 /* TaskforceAgent.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = TaskforceAgent.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		95937722FDD5FA1D25CAF396 /* EdgeChatTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EdgeChatTests.swift; sourceTree = "<group>"; };
 		997F7CDADCE1B82032C6E3C9 /* EdgeShellModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EdgeShellModelTests.swift; sourceTree = "<group>"; };
 		9B3F840D0D16F14A550C8F06 /* UpdaterBuildConfigTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UpdaterBuildConfigTests.swift; sourceTree = "<group>"; };
@@ -298,6 +311,14 @@
 			files = (
 				3620F367D9B7666BE0D25E58 /* TaskforceKit in Frameworks */,
 				581217CC14A2D6D2EB1107D4 /* Supabase in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		2C156C2773E6CC3565358CA0 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				FD6D4CF99F11A125188116AA /* TaskforceAgentWire in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -387,6 +408,14 @@
 			path = Edge;
 			sourceTree = "<group>";
 		};
+		3D8F511349CCD724481066CA /* tf-agent-keeper */ = {
+			isa = PBXGroup;
+			children = (
+				63B008AA2380A900888169C3 /* main.swift */,
+			);
+			path = "tf-agent-keeper";
+			sourceTree = "<group>";
+		};
 		484E126A92686BFB7FB4C5FC /* Mac */ = {
 			isa = PBXGroup;
 			children = (
@@ -437,6 +466,7 @@
 			children = (
 				E253FA362A5012D158C8468F /* FakeClaudeCode */,
 				B585CF3FD7B78EDC16427DEF /* Taskforce.app */,
+				9484208DC1E48820E056CD42 /* TaskforceAgent.app */,
 				4575E663CCDD3F320C873CBA /* TaskforceTests.xctest */,
 				9D0F71F0A0909CAB10DEB524 /* tf-agent-hook */,
 				1366312766C425ED00054ED4 /* tf-agent-mcp */,
@@ -576,6 +606,7 @@
 			isa = PBXGroup;
 			children = (
 				E59B12F7FAC5A627FC39FB1B /* tf-agent-hook */,
+				3D8F511349CCD724481066CA /* tf-agent-keeper */,
 				E4A4751A2DCBB7D3EA74493E /* tf-agent-mcp */,
 			);
 			path = Helpers;
@@ -657,6 +688,7 @@
 			dependencies = (
 				0BA7DC0D0A355D878CE97424 /* PBXTargetDependency */,
 				CDFDABA10110ADBA6CAD6626 /* PBXTargetDependency */,
+				FA45432E1C8205641259F263 /* PBXTargetDependency */,
 			);
 			name = Taskforce;
 			packageProductDependencies = (
@@ -705,6 +737,25 @@
 			productReference = 1366312766C425ED00054ED4 /* tf-agent-mcp */;
 			productType = "com.apple.product-type.tool";
 		};
+		D912E83F420982C835650760 /* TaskforceAgent */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 874F403D25B14DCDC26C73CC /* Build configuration list for PBXNativeTarget "TaskforceAgent" */;
+			buildPhases = (
+				6A507953E8D06305C1752642 /* Sources */,
+				2C156C2773E6CC3565358CA0 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = TaskforceAgent;
+			packageProductDependencies = (
+				968776D6FBDDE70F0EC5F1BF /* TaskforceAgentWire */,
+			);
+			productName = TaskforceAgent;
+			productReference = 9484208DC1E48820E056CD42 /* TaskforceAgent.app */;
+			productType = "com.apple.product-type.application";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -734,6 +785,10 @@
 						DevelopmentTeam = U9DWQKQFMW;
 						ProvisioningStyle = Automatic;
 					};
+					D912E83F420982C835650760 = {
+						DevelopmentTeam = U9DWQKQFMW;
+						ProvisioningStyle = Automatic;
+					};
 				};
 			};
 			buildConfigurationList = 22A4EF07FCC8645CD7A90232 /* Build configuration list for PBXProject "Taskforce" */;
@@ -758,6 +813,7 @@
 				6CC10594A8A3513CB3649C13 /* Taskforce */,
 				21671B21A27883150A06BE41 /* tf-agent-hook */,
 				C10927EAD6C0C35293FA56E0 /* tf-agent-mcp */,
+				D912E83F420982C835650760 /* TaskforceAgent */,
 				7CDB10E87F010280A7C401E5 /* FakeClaudeCode */,
 				2CB50A0CE95B5EC02A90D00C /* TaskforceTests */,
 			);
@@ -845,6 +901,14 @@
 			buildActionMask = 2147483647;
 			files = (
 				0682A12E39AA8B5C62C21DDD /* main.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		6A507953E8D06305C1752642 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				5C9603C43811D51E9535FCD7 /* main.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -962,6 +1026,11 @@
 			isa = PBXTargetDependency;
 			target = 7CDB10E87F010280A7C401E5 /* FakeClaudeCode */;
 			targetProxy = F718CA89090BF8E9A91974B9 /* PBXContainerItemProxy */;
+		};
+		FA45432E1C8205641259F263 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = D912E83F420982C835650760 /* TaskforceAgent */;
+			targetProxy = 031F20F517CF7CCBB03C0BC3 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -1108,6 +1177,26 @@
 				SWIFT_COMPILATION_MODE = wholemodule;
 				SWIFT_OPTIMIZATION_LEVEL = "-O";
 				SWIFT_VERSION = 6.0;
+			};
+			name = Release;
+		};
+		1EA77A7CBFB9DAEA96D69FE8 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				COMBINE_HIDPI_IMAGES = YES;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = "Taskforce Agent";
+				INFOPLIST_KEY_LSUIElement = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "$(APP_BUNDLE_ID).agent";
+				PRODUCT_NAME = "Taskforce Agent";
+				SDKROOT = macosx;
+				SKIP_INSTALL = YES;
 			};
 			name = Release;
 		};
@@ -1349,6 +1438,26 @@
 			};
 			name = Debug;
 		};
+		BE3137324CB4247A11A532FB /* Debug-Test */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				COMBINE_HIDPI_IMAGES = YES;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = "Taskforce Agent";
+				INFOPLIST_KEY_LSUIElement = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "$(APP_BUNDLE_ID).agent";
+				PRODUCT_NAME = "Taskforce Agent";
+				SDKROOT = macosx;
+				SKIP_INSTALL = YES;
+			};
+			name = "Debug-Test";
+		};
 		CE4012ED093ECDA41077325C /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -1364,6 +1473,26 @@
 				SKIP_INSTALL = YES;
 			};
 			name = Release;
+		};
+		D0F716CB010A1208D4F761D3 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				COMBINE_HIDPI_IMAGES = YES;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = "Taskforce Agent";
+				INFOPLIST_KEY_LSUIElement = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "$(APP_BUNDLE_ID).agent";
+				PRODUCT_NAME = "Taskforce Agent";
+				SDKROOT = macosx;
+				SKIP_INSTALL = YES;
+			};
+			name = Debug;
 		};
 		EA63A1716FAF9ABE83D47BAA /* Debug */ = {
 			isa = XCBuildConfiguration;
@@ -1466,6 +1595,16 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;
 		};
+		874F403D25B14DCDC26C73CC /* Build configuration list for PBXNativeTarget "TaskforceAgent" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				D0F716CB010A1208D4F761D3 /* Debug */,
+				BE3137324CB4247A11A532FB /* Debug-Test */,
+				1EA77A7CBFB9DAEA96D69FE8 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
 		938A52E6AD6B4AD62DE70B91 /* Build configuration list for PBXNativeTarget "tf-agent-hook" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
@@ -1554,6 +1693,10 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 8275E752A4201328057E8B14 /* XCRemoteSwiftPackageReference "Sparkle" */;
 			productName = Sparkle;
+		};
+		968776D6FBDDE70F0EC5F1BF /* TaskforceAgentWire */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = TaskforceAgentWire;
 		};
 		A1C5FE529FB0C309AD76DA12 /* Supabase */ = {
 			isa = XCSwiftPackageProductDependency;

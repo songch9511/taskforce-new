@@ -449,46 +449,55 @@ public actor ClaudeCodeProcess: AgentProcess {
             _ = await self.handleHook(spawnID: spawnID, request, commit: commit)
         }, onAnswer: { id in answered.insert(id) }))
         let arguments = ClaudeCodeLaunch.arguments(access: access, workspace: workspace, settings: files.settings.path, mcp: files.mcp.path, session: session)
-        let process: ClaudeSpawnedProcess
+        let kept: ClaudeKeptSpawn
         do {
-            // 검사한 실제 파일(realpath)로 띄운다. 자식이 보는 argv[0]은 후보 경로 그대로 (8장 8)
-            process = try ClaudeSpawner.spawn(executable: executable.realPath, argv0: executable.path, arguments: arguments, environment: environment, cwd: folder.cwd.path)
+            // 지킴이를 disclaim으로 띄우고 지킴이가 `claude`를 띄운다 (13장 1). 검사한 실제 파일(realpath)로 띄우고, 자식이 보는 argv[0]은 후보 경로 그대로 (8장 8).
+            // 지킴이가 알린 `claude` · 지킴이 id를 앱이 다시 대조하지 못하면 정체 commit · stdin 전에 멈춘다 (12장 6)
+            guard let file = lineageFile(spawnID) else { throw AgentStartError(.spawnFailed) }
+            try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+            kept = try ClaudeSpawner.spawnKept(
+                keeper: helpers.keeper, ended: ClaudeLineage.keeperFile(file), executable: executable.realPath, argv0: executable.path, arguments: arguments,
+                environment: environment, cwd: folder.cwd.path
+            )
         } catch {
             hookServer?.unregister(nonce: nonce, after: .zero)
             ClaudeCodeLaunch.removeConfig(files)
+            log.log("claude_lineage_unrecorded", ["reason": .code("root_id")])
             throw AgentStartError(.spawnFailed)
         }
-        spawn.process = process
-        // 혈통의 뿌리 (9장 4 정정): 거두기 전이라 그 pid는 우리 자식이다. 부팅 id · 뿌리 id를 바로 파일에 적는다 (10장 1 · 3). 지켜보기는 끝을 증명한 `finish`까지
-        spawn.lineage.seed(process.pid, disclaimed: process.disclaimed)
-        spawn.lineage.save(force: true)
-        // 뿌리 id를 못 읽었거나 혈통 파일을 적지 못했으면 이 spawn의 끝을 나중에 증명할 수 없다: 정체 commit · stdin 전에 멈추고 띄우지 않은 것으로 한다 (11장 2 · 12장 6)
-        guard spawn.lineage.rootID != nil, spawn.lineage.isRecorded else {
-            kill(process.pid, SIGKILL)
-            _ = process.waitForExit()
-            process.closeStandardStreams()
+        spawn.process = kept.keeper
+        // 지킴이 · 뿌리를 바로 파일에 적는다 (13장 2). 적지 못했으면 이 spawn의 끝을 나중에 증명할 수 없다: 정체 commit · stdin 전에 멈추고 띄우지 않은 것으로 한다 (11장 2)
+        spawn.lineage.adopt(ClaudeLineage.Record(
+            keeper: ClaudeLineage.Keeper(pid: kept.keeper.pid, uniqueID: kept.keeperID), root: kept.claudeID, rootPID: kept.claudePID, attributable: kept.attributable
+        ))
+        guard spawn.lineage.save(), spawn.lineage.isRecorded else {
+            Self.abort(kept, timing: timing)
             hookServer?.unregister(nonce: nonce, after: .zero)
             ClaudeCodeLaunch.removeConfig(files)
-            log.log("claude_lineage_unrecorded", ["reason": .code(spawn.lineage.rootID == nil ? "root_id" : "file")])
+            log.log("claude_lineage_unrecorded", ["reason": .code("file")])
             throw AgentStartError(.spawnFailed)
         }
-        // 책임 프로세스 물러남 (12장 2): 띄우되 구성원을 증명할 수 없다 → 끝을 확정하지 않는다 (세션 잠금)
-        if !spawn.lineage.attributable { log.log("claude_membership_unprovable", ["reason": .code("disclaim")]) }
-        let identity = AgentProcessIdentity(pid: Int(process.pid), startedAt: process.startedAt, processMarker: spawnID, externalTaskID: "\(providerID):\(turnSeq)")
+        // 책임 프로세스 물러남 (13장 5): 띄우되 구성원을 증명할 수 없다 → 끝을 확정하지 않는다 (세션 잠금)
+        if !kept.attributable { log.log("claude_membership_unprovable", ["reason": .code("disclaim")]) }
+        let identity = AgentProcessIdentity(pid: Int(kept.claudePID), startedAt: kept.claudeStartedAt, processMarker: spawnID, externalTaskID: "\(providerID):\(turnSeq)")
         spawn.identity = identity
-        spawn.lineage.watch(identity)
         spawns[spawnID] = spawn
         sessionSpawn[agentSessionID] = spawnID
         taskSpawn[taskID] = spawnID
         // stdin: 새 턴은 메시지 글을 쓰고 닫는다. 답 · 닫기 resume는 아무것도 쓰지 않고 닫는다 (빈 stdin, 13.2 :509, 사례 8-05). 쓰기는 따로 (파이프 64KB 막힘 방지)
-        let input = process.stdinFD
+        let input = kept.keeper.stdinFD
         DispatchQueue.global(qos: .userInitiated).async {
             _ = HookMain.writeAll(fd: input, stdin)
             Darwin.close(input)
         }
-        supervise(spawn, process: process)
+        supervise(spawn, kept: kept, identity: identity)
         log.log("claude_spawn", ["mode": .code(spawn.modeName)])
         return spawn
+    }
+
+    /// 띄운 뒤 정체를 적기 전에 멈춘다 (지킴이에 SIGTERM → 지킴이가 `claude`를 SIGKILL, 기한을 넘기면 지킴이도 SIGKILL · 거두기): 정체를 적지 않은 spawn은 남기지 않는다
+    static func abort(_ kept: ClaudeKeptSpawn, timing: ClaudeCodeTiming) {
+        ClaudeSpawner.abort(kept.keeper, reportFD: kept.reportFD, timeout: timing.keeperExit)
     }
 
     // MARK: 훅 요청 (소켓 → 결정기)
@@ -617,11 +626,16 @@ public actor ClaudeCodeProcess: AgentProcess {
     /// 답 훅이 새 정체 기록을 기다리는 최대 시간 (훅 예산 1.2초 안, 9장 8)
     static let identityWait: TimeInterval = 0.8
 
-    private func supervise(_ spawn: Spawn, process: ClaudeSpawnedProcess) {
+    /// `claude`의 stdout · stderr 파이프(지킴이가 넘긴 것)를 읽는다. `claude`가 끝난 것은 지킴이 보고(`exited`)로 안다: 보고 없이 닫히면(지킴이가 죽었다)
+    /// `claude`의 정체가 사라질 때까지 기다린 뒤 상태 모름으로. 지킴이는 앱의 자식이라 따로 거두고 그 상태를 혈통에 적는다 (13장 3)
+    private func supervise(_ spawn: Spawn, kept: ClaudeKeptSpawn, identity: AgentProcessIdentity) {
         let (stream, continuation) = AsyncStream<ReaderItem>.makeStream()
         let stop = spawn.readerStop
-        let output = process.stdoutFD
-        let errors = process.stderrFD
+        let output = kept.keeper.stdoutFD
+        let errors = kept.keeper.stderrFD
+        let report = kept.reportFD
+        let keeper = kept.keeper
+        let lineage = spawn.lineage
         DispatchQueue.global(qos: .userInitiated).async {
             Self.readLines(fd: output, stop: stop) { continuation.yield($0) }
             continuation.yield(.eof)
@@ -634,7 +648,14 @@ public actor ClaudeCodeProcess: AgentProcess {
             Darwin.close(errors)
         }
         DispatchQueue.global(qos: .userInitiated).async {
-            continuation.yield(.exited(process.waitForExit()))
+            let status = Self.readExit(report)
+            if status == nil {
+                while ClaudeProcessInspector.check(identity) == .same { Thread.sleep(forTimeInterval: 0.1) }
+            }
+            continuation.yield(.exited(status ?? ClaudeExitStatus(code: nil, signal: nil)))
+        }
+        DispatchQueue.global(qos: .utility).async {
+            lineage.keeperExited(keeper.waitForExit())
         }
         let drain = timing.drainAfterExit
         Task {
@@ -666,6 +687,24 @@ public actor ClaudeCodeProcess: AgentProcess {
             stop.set()
             continuation.finish()
             await self.finish(spawn, status: exited ?? ClaudeExitStatus(code: nil, signal: nil))
+        }
+    }
+
+    /// 지킴이 보고에서 `exited` 줄을 기다린다 (막힘). 그 전에 닫히면 nil. 다 읽으면 fd를 닫는다
+    nonisolated static func readExit(_ fd: Int32) -> ClaudeExitStatus? {
+        defer { Darwin.close(fd) }
+        var line = Data()
+        var byte: UInt8 = 0
+        while true {
+            let count = read(fd, &byte, 1)
+            if count < 0, errno == EINTR { continue }
+            guard count == 1 else { return nil }
+            guard byte == 0x0A else {
+                if line.count < 256 { line.append(byte) }
+                continue
+            }
+            if case .exited(let code, let signal)? = KeeperReport(line: String(decoding: line, as: UTF8.self)) { return ClaudeExitStatus(code: code, signal: signal) }
+            line.removeAll()
         }
     }
 
@@ -834,12 +873,18 @@ public actor ClaudeCodeProcess: AgentProcess {
         spawn.resultTimer?.cancel()
         spawn.exited = true
         if spawn.answerSignal == nil { spawn.answerSignal = .ended }
-        // 자손(혈통 · 그룹 · spawn marker)까지 끝나야 끝이다 (8장 13 · 9장 4). 끝을 증명할 때까지 다시 시도한다: 그동안 이 세션의 다음 writer는 기다린다
+        // 구성원까지 끝나야 끝이다 (8장 13 · 13장 3 · 4): 남은 구성원(책임 프로세스 = 지킴이)을 끝내고 지킴이가 구성원 0을 증명하고 스스로 끝나기를 기다린다.
+        // 끝을 확정할 때까지 다시 시도한다: 그동안 이 세션의 다음 writer는 기다린다. 지킴이가 끝 기록 없이 끝났으면 다시 해도 증명할 수 없다 (세션 잠금, 풀기는 D4a)
         if let identity = spawn.identity {
             let timing = self.timing
             let lineage = spawn.lineage
             var attempt = 0
-            while await !offActor({ ClaudeProcessInspector.endDescendants(identity, lineage: lineage, timing: timing) }) {
+            while true {
+                if case .ended = await offActor({ ClaudeProcessInspector.terminate(identity, timing: timing, lineage: lineage) }) { break }
+                if lineage.keeper.map(ClaudeProcessInspector.keeperState) == .gone {
+                    log.log("claude_end_unproven", ["mode": .code(spawn.modeName)])
+                    return
+                }
                 if attempt == 0 { log.log("claude_group_lingering", ["mode": .code(spawn.modeName)]) }
                 attempt += 1
                 try? await Task.sleep(for: .seconds(min(5, attempt)))

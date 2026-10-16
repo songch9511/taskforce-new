@@ -48,19 +48,25 @@ public enum ClaudeCodePrompts {
     public static let v1 = "When you need the user's input, call mcp__tf__ask_user (1–4 questions). Make one such call at a time and wait for its result."
 }
 
-/// 앱 번들의 helper 둘 (`Contents/Helpers/tf-agent-hook` · `tf-agent-mcp`, 계약 2.3)
+/// 앱 번들의 helper 셋 (`Contents/Helpers/tf-agent-hook` · `tf-agent-mcp`, 계약 2.3, 그리고 지킴이 `Taskforce Agent.app`, 13장 1)
 public struct ClaudeCodeHelpers: Sendable, Equatable {
     public var hook: String
     public var mcp: String
+    /// 지킴이 실행 파일 (`Taskforce Agent.app/Contents/MacOS/Taskforce Agent`)
+    public var keeper: String
 
-    public init(hook: String, mcp: String) {
+    public init(hook: String, mcp: String, keeper: String) {
         self.hook = hook
         self.mcp = mcp
+        self.keeper = keeper
     }
 
     public static func inBundle(_ bundle: Bundle = .main) -> ClaudeCodeHelpers {
         let helpers = bundle.bundleURL.appending(path: "Contents/Helpers", directoryHint: .isDirectory)
-        return ClaudeCodeHelpers(hook: helpers.appending(path: "tf-agent-hook").path, mcp: helpers.appending(path: "tf-agent-mcp").path)
+        return ClaudeCodeHelpers(
+            hook: helpers.appending(path: "tf-agent-hook").path, mcp: helpers.appending(path: "tf-agent-mcp").path,
+            keeper: helpers.appending(path: "Taskforce Agent.app/Contents/MacOS/Taskforce Agent").path
+        )
     }
 }
 
