@@ -158,6 +158,9 @@ public final class AgentQuestionStore {
         entries.values.contains { $0.phase == .holding || $0.phase == .sending }
     }
 
+    /// 시험이 비밀값이 남았는지 본다: 그 세션에 모아 둔 비밀값의 수 (값은 보이지 않는다)
+    func heldSecretCount(session: UUID) -> Int { collected[session]?.secrets.count ?? 0 }
+
     public func focusRequest(session: UUID) -> Int { focusRequests[session] ?? 0 }
 
     /// 지금 질문의 카드가 새로 받아야 할 포커스 요청 수 (0이면 요청 없음: 카드가 스스로 포커스를 가져가지 않는다, D4bm-31).

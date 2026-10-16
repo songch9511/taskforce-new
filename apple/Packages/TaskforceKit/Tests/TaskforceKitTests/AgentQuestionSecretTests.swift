@@ -229,12 +229,14 @@ struct AgentQuestionSecretTests {
         #expect(try #require(store.entry(session: F.sessionID)).step == 1)
         store.choose(row: 0, session: F.sessionID)
         #expect(try #require(store.entry(session: F.sessionID)).phase == .holding)
+        #expect(store.heldSecretCount(session: F.sessionID) == 1, "보류 중에는 비밀값이 메모리에 있다")
     }
 
     /// 다시 시작한 입력이 새 값으로 가는가: 앞 비밀값을 지웠으니 처음부터 다시 받는다
     private func answerAgain(_ store: AgentQuestionStore, submissions: Int) async throws {
         let back = try #require(store.entry(session: F.sessionID))
         #expect(back.phase == .open && back.step == 0 && back.card.kind == .secret, "비밀값이 있던 첫 단계로 돌아온다")
+        #expect(store.heldSecretCount(session: F.sessionID) == 0, "다시 입력하기 **전에** 비밀값이 하나도 남아 있지 않다 (새 값이 덮어써서 가려지지 않게)")
         store.submitSecret(SecretBox("new value"), session: F.sessionID)
         store.choose(row: 1, session: F.sessionID)
         await fire()
@@ -274,9 +276,11 @@ struct AgentQuestionSecretTests {
         store.submitSecret(SecretBox(Self.canary), session: F.sessionID)
         store.choose(row: 1, session: F.sessionID)
         #expect(try #require(store.entry(session: F.sessionID)).phase == .holding)
+        #expect(store.heldSecretCount(session: F.sessionID) == 1)
         store.undo(session: F.sessionID)
         let back = try #require(store.entry(session: F.sessionID))
         #expect(back.phase == .open && back.step == 1 && back.card.kind == .secret, "비밀값 단계로 돌아온다 (그 앞 단계는 그대로)")
+        #expect(store.heldSecretCount(session: F.sessionID) == 0, "비밀값은 다시 입력하기 전에 이미 지워졌다")
         store.submitSecret(SecretBox("new value"), session: F.sessionID)
         store.choose(row: 0, session: F.sessionID)
         await fire()
