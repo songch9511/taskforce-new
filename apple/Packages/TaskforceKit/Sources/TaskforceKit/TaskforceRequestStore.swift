@@ -70,6 +70,8 @@ public final class TaskforceRequestStore {
     public private(set) var notice: Notice?
     /// 응답이 반영될 때마다 오른다 (관찰하는 쪽이 "새로 읽었다"를 안다)
     public private(set) var readSerial = 0
+    /// 지금 읽는 중인 읽기의 수 (마지막에 시작한 읽기만 반영되므로 겹친 읽기가 끝나기를 기다리는 시험이 쓴다)
+    public private(set) var inflightReads = 0
 
     public struct Notice: Equatable, Sendable {
         public let id: String
@@ -162,6 +164,8 @@ public final class TaskforceRequestStore {
         guard let token = scope.token else { return }
         readSequence += 1
         let sequence = readSequence
+        inflightReads += 1
+        defer { inflightReads -= 1 }
         let received: TaskforceReviewResponse
         do {
             received = try await gateway.taskforceReview()
