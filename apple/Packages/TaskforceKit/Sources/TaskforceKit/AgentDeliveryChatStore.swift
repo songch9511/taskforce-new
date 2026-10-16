@@ -124,6 +124,9 @@ extension ChatStore {
             } catch {
                 // 읽기 실패: 앞 줄을 그대로 둔다 (오류 말을 만들지 않는다). 안 끝난 줄이 있으면 다음 5초에 다시 읽는다
                 guard scope.isCurrent(token), deliveryReadSeq[id] == sequence else { return }
+                // 서버의 대화 기능이 꺼졌다(404 `isFeatureOff`)면 막힘을 (다시) 건다: 앞선 읽기의 늦은 200이 풀었더라도 뒤따르는 읽기가 복원한다.
+                // 동의 철회 · 일시 오류 · 일반 404(없는 대화)는 기능 꺼짐이 아니라 막지 않는다
+                if let api = error as? APIError, api.isFeatureOff { isUnavailable = true }
                 scheduleDeliveryPolling()
                 return
             }
@@ -132,8 +135,9 @@ extension ChatStore {
             deliveryBook.merge(page.messages, readStartedAt: readStart, appliedAt: tickRow())
             dropNoticesThatProgressed()
             // 전달 읽기(`/api/v2/conversations/{id}/delivery`)가 성공했다: 서버의 대화 기능이 켜져 있다 → 꺼짐 때문에 입력을 막던 플래그를 푼다
-            // (안내만 지우고 플래그를 두면 서버가 돌아온 뒤에도 입력이 막힌 채 복구 길이 없다)
-            if isUnavailable { isUnavailable = false }
+            // (안내만 지우고 플래그를 두면 서버가 돌아온 뒤에도 입력이 막힌 채 복구 길이 없다). 단 **막힘이 걸린 뒤에 시작한 읽기**만 푼다:
+            // 막히기 전에 시작한 읽기의 늦은 200은 그 뒤의 기능 꺼짐을 모른다 (같은 읽기 순서 규칙: 더 나중에 시작한 것이 이긴다)
+            if isUnavailable, readStart > unavailableSince { isUnavailable = false }
             deliveryRead.insert(id)
             guard let next = AgentDeliveryReadPolicy.nextSince(afterPage: page.messages) else { break }
             since = next

@@ -162,7 +162,12 @@ public final class ChatStore {
     public private(set) var locals: [LocalChat] = []
     public private(set) var listLoad: WorkLoad = .loading
     /// 서버 gate가 꺼져 있다 (대화 만들기 · 보내기가 404): "실패"가 아니다
-    public internal(set) var isUnavailable = false
+    public internal(set) var isUnavailable = false {
+        // 막힌 때(행 시계)를 적는다: 막히기 전에 시작한 전달 읽기의 늦은 200이 이 막힘을 풀지 못하게 한다 (`AgentDeliveryChatStore.swift`)
+        didSet { if isUnavailable, !oldValue { unavailableSince = tickRow() } }
+    }
+    /// `isUnavailable`이 거짓에서 참이 된 행 시계값
+    @ObservationIgnored var unavailableSince = 0
     public private(set) var contexts: [UUID: WorkContext] = [:]
     public private(set) var isOnline = true
     private var previews: [UUID: String] = [:]

@@ -654,6 +654,67 @@ struct ChatStoreAgentDeliveryTests {
         #expect(chat.turns(for: conversation.id)[0].status == .sent && line(chat, message) == .accepted)
     }
 
+    private var featureOff: APIError { APIError.server(status: 404, code: .notFound, message: APIError.featureOffMessage) }
+
+    /// 정확히 이 순서: 기능이 켜진 때 시작한 읽기가 있다 → 기능이 꺼진다 → Send again의 404가 막힘을 건다 → 앞선 읽기의 200이 늦게 도착한다 → 뒤따르는 읽기는 모두 기능 꺼짐 404.
+    /// 늦은 200은 **막힘이 걸린 뒤에 시작한 읽기가 아니므로** 막힘을 풀지 못한다 (같은 읽기 순서 규칙). 뒤따르는 읽기의 실패는 막힘을 유지한다
+    @Test func aLateSuccessOfAReadStartedBeforeTheBlockDoesNotClearItAndTheLaterFeatureOffReadsKeepIt() async {
+        let (conversation, message) = serveOne(AgentDelivery(state: .notSent))
+        let chat = store()
+        await open(conversation, messages: [message], chat: chat)
+        let off = featureOff
+        let first = Latch()
+        let second = Latch()
+        let calls = Mutex2(0)
+        agent.deliveriesHandler = { _, _ in
+            calls.value += 1
+            if calls.value == 1 {
+                await first.wait()
+                return ConversationDeliveryResponse(messages: [Fx.entry(message, AgentDelivery(state: .accepted))])
+            }
+            await second.wait()
+            throw off
+        }
+        let late = Task { await chat.refreshDeliveries(conversation.id) }
+        #expect(await first.waitForArrivals(1, timeout: .seconds(3)))
+        agent.deliverHandler = { _, _ in throw off }
+        await chat.sendAgain(message.id, in: conversation.id)
+        #expect(chat.isUnavailable, "404가 막힘을 건다")
+        await first.open()
+        #expect(await second.waitForArrivals(1, timeout: .seconds(3)), "늦은 200이 반영된 뒤 후속 읽기가 시작한다")
+        #expect(line(chat, message) == .accepted, "늦은 응답의 값은 반영한다")
+        #expect(chat.isUnavailable, "막힘이 걸리기 전에 시작한 읽기의 늦은 200은 막힘을 풀지 못한다")
+        await second.open()
+        await late.value
+        await chat.settle()
+        #expect(chat.isUnavailable, "뒤따르는 읽기가 기능 꺼짐이면 막힘이 남는다")
+    }
+
+    /// 읽기 실패 중 기능 꺼짐(404 `isFeatureOff`)만 막힘을 건다: 동의 철회 · 일시 오류 · 일반 404(없는 대화)는 아니다. 복구 뒤 다시 꺼지면 다시 걸린다
+    @Test func onlyAFeatureOffReadFailureRestoresTheBlock() async {
+        let (conversation, message) = serveOne(AgentDelivery(state: .notSent))
+        let chat = store()
+        await open(conversation, messages: [message], chat: chat)
+        func readFailing(with error: Error) async -> Bool {
+            agent.deliveriesHandler = { _, _ in throw error }
+            await chat.refreshDeliveries(conversation.id)
+            return chat.isUnavailable
+        }
+        #expect(await !readFailing(with: APIError.server(status: 404, code: .notFound, message: "No such conversation")), "일반 404(없는 대화)는 기능 꺼짐이 아니다")
+        #expect(await !readFailing(with: APIError.server(status: 409, code: .conflict, message: APIError.consentRequiredMessage)), "동의 철회는 따로 보인다")
+        #expect(await !readFailing(with: APIError.transport("offline")), "일시 오류")
+        #expect(await readFailing(with: featureOff), "기능 꺼짐 404는 막힘을 건다")
+        // 복구: 성공한 읽기가 푼다
+        serve { _ in [Fx.entry(message, AgentDelivery(state: .notSent))] }
+        await chat.refreshDeliveries(conversation.id)
+        #expect(!chat.isUnavailable)
+        // 다시 꺼졌다: 읽기 실패가 다시 건다 (route가 없는 옛 서버의 404도 같다)
+        #expect(await readFailing(with: featureOff))
+        serve { _ in [Fx.entry(message, AgentDelivery(state: .notSent))] }
+        await chat.refreshDeliveries(conversation.id)
+        #expect(await readFailing(with: APIError.unexpectedStatus(404)))
+    }
+
     // MARK: 읽는 중에 필요해진 후속 읽기
 
     /// `skipped/not_eligible`로 서버가 이미 바뀐 것을 안 직후의 읽기는 옛 읽기에 흡수되면 안 된다: 읽는 중이어도 끝난 뒤 한 번 더 읽는다
