@@ -12,15 +12,17 @@
 --   기다리면 heartbeat(bridge -> 세션 -> run) · sweep(bridge id 순) · Done(세션 -> run id 순)과 순서가 어긋나는 곳에서 순환이 난다. 그래서 회수는 세션 · run · task · 단계 · 명령을 NOWAIT로 쥐고,
 --   sweep_bridge_heartbeats도 같은 잠금을 NOWAIT로 바꿔 교체한다(쥘 수 없으면 그 bridge는 롤백하고 다음 분에 처음부터). 사용자 경로는 기존의 한 순서를 그대로 지킨다.
 --   (2) 후보가 p_limit보다 많으면 호출마다 창(p_limit개)을 돌려 가며 처리한다(작은 시퀀스 하나) - 영구히 건너뛰어지는 후보가 머리를 붙잡아 뒤 후보를 막지 못하게 한다.
+--   재검토 3: 같은 cron의 sweep_expire(내부 효과 분기)와 보관 정리도 어떤 잠금도 기다리지 않게 했다 - 에이전트 run을 쥔 채 초안 단계를 기다리면 sweep -> 초안 단계 -> (산출물 FK) Action -> Done -> run 3자 순환이었고,
+--   보관 정리는 run을 쥔 채 단계를 기다려 begin_call(단계 -> run)과 순환이었다.
 --
--- 교체하는 함수는 일곱이고 각각 잠금 방식 · 순서만 다르다 (tests/db/agent-delivery-fixes.test.ts T2가 본문 동일성을 확인한다):
+-- 교체하는 함수는 일곱이고 각각 잠금 방식 · 순서(보관 정리는 트랜잭션 경계도)만 다르다 (tests/db/agent-delivery-fixes.test.ts T2가 본문 동일성을 확인한다):
 --   request_agent_task_cancel       QS의 정의 + `if v_question is not null then` 바로 뒤 세션 · 원 메시지 KEY SHARE NOWAIT 두 줄
 --   revoke_bridge                   BC의 정의 + 작업 고리(`order by id for update loop`) 바로 뒤 메시지 KEY SHARE NOWAIT 한 줄
 --   stop_agent_runs_on_user_claim   QS의 정의 + `order by id for no key update loop` -> `order by agent_session_id, id for no key update loop`
 --   sweep_bridge_heartbeats         BC의 정의 + 세션 · run · task · 단계를 잡는 네 곳의 잠금만 NOWAIT (`for update of a0 loop` -> `for update of a0 nowait loop` 등)
 --   sweep_agent_step_leases         BC의 정의 + 단계 앞에 run을 NO KEY UPDATE SKIP LOCKED로 먼저 쥔다 (step -> run 역순 제거)
---   sweep_expire                    EC의 정의 + 외부 효과 단계 갱신을 run -> 단계 SKIP LOCKED 잠금 CTE 뒤로
---   purge_expired_execution_text    QS의 정의 + 정리할 run을 고르는 select에 `for no key update of r skip locked`
+--   sweep_expire                    EC의 정의 + 외부 효과 단계 갱신을 run -> 단계 SKIP LOCKED 잠금 CTE 뒤로 + 내부 효과 후보 선택도 같은 run -> 단계 SKIP LOCKED (재검토 3)
+--   purge_expired_execution_text    QS의 정의 + run마다 하위 트랜잭션에서 run NOWAIT -> 지울 단계 NOWAIT 뒤에 갱신, 못 쥐면 그 run만 다음 정리로 (재검토 3: 후보 select와 갱신문은 원본 그대로)
 -- 시그니처 · 반환이 같아 create or replace가 권한과 트리거를 그대로 둔다. 새 표 · 새 정책 · 새 열 0, metric_events를 건드리지 않는다. 새 객체는 함수 둘(회수 · 남은 만료 lease 수) · 색인 하나 · 시퀀스 하나.
 --
 -- 운영 적용은 병합 직전 승인 뒤 `supabase db query --linked -f`로 20261127000000 뒤에 한다 (db push 금지). 배포 순서: 마이그레이션 -> 서버 (서버가 먼저 나가면 sweepBridge의 새 RPC가
@@ -253,6 +255,9 @@ begin
 end;
 $$;
 
+-- OA F3 재검토 3 (2): 실행 sweep의 내부 효과 분기도 기다리지 않는다. 앞 문장이 에이전트 run A를 쥔 채 execution_retry_internal이 초안 단계 D를 기다리면
+-- (D를 쥔 초안 완료는 산출물 FK로 Action X를, Done은 X를 쥔 채 A를) sweep -> D -> X -> A -> sweep 3자 순환이다. 트랜잭션을 나눌 수 없는 한 함수라 내부 효과 후보도
+-- run -> 단계 순서로 NO KEY UPDATE / FOR UPDATE SKIP LOCKED로 쥐어 넘긴다: 이 함수는 어떤 잠금도 기다리지 않는다(못 쥔 단계는 다음 분). 본문은 이 선택 하나만 원본과 다르다.
 create or replace function public.sweep_expire() returns integer
 language plpgsql
 set search_path = ''
@@ -268,11 +273,17 @@ begin
     where id in (select id from locked);
   get diagnostics v_external = row_count;
   return v_external + public.execution_retry_internal(array(
-    select id from public.execution_steps where state = 'calling' and lease_expires_at < public.db_now() and effect_class = 'internal'
+    select s.id from public.execution_runs r join public.execution_steps s on s.run_id = r.id and s.user_id = r.user_id
+    where s.state = 'calling' and s.lease_expires_at < public.db_now() and s.effect_class = 'internal'
+    order by s.id for no key update of r skip locked for update of s skip locked
   ));
 end;
 $$;
 
+-- OA F3 재검토 3 (1): 보관 정리는 run과 지울 단계를 모두 기다리지 않고 쥐고, 못 쥐면 그 run을 통째로 다음 정리로 미룬다.
+-- 예전: run만 SKIP LOCKED로 쥐고 단계는 한 문장으로 갱신해 남이 쥔 단계를 기다렸다(run -> 단계). 실행기(begin_call 등)는 단계 -> run 순서라, 단계를 쥔 실행기가
+-- 정리가 쥔 run을 기다리면 순환이다. 이제 run마다 하위 트랜잭션에서 run(NOWAIT) -> 지울 단계(NOWAIT) -> 갱신 -> 표시를 하고, 못 쥐면(55P03) 그 run의 쓰기와 잠금이 되돌아가
+-- 일부 단계만 지우고 text_purged_at을 적는 일이 없다. 후보를 고르는 select와 두 갱신문은 원본 그대로(run 하나씩 도는 것만 다르다). 미룬 run도 한도(p_limit) 하나로 센다.
 create or replace function public.purge_expired_execution_text(p_before timestamptz, p_limit integer default 5000)
 returns integer
 language plpgsql
@@ -280,14 +291,15 @@ security invoker
 set search_path = ''
 as $$
 declare
-  v_runs uuid[];
-  v_count integer;
+  v_run uuid;
+  v_count integer := 0;
   v_gate text := current_setting('execution.gate', true); -- 부른 쪽의 gate (끝날 때 되돌린다)
 begin
   if p_before is null or p_limit is null or p_limit < 1 then
     raise exception 'purge_expired_execution_text: 잘못된 인자';
   end if;
-  select coalesce(array_agg(x.id), '{}') into v_runs from (
+  perform set_config('execution.gate', 'retention', true);
+  for v_run in
     select r.id from public.execution_runs r
     where r.text_purged_at is null
       and r.state in ('done', 'failed', 'stopped')
@@ -295,20 +307,26 @@ begin
       and not exists (select 1 from public.execution_steps s where s.run_id = r.id and s.state in ('calling', 'unknown_outcome'))
     order by r.created_at, r.id
     limit p_limit
-    for no key update of r skip locked
-  ) x;
-  if cardinality(v_runs) = 0 then
-    perform set_config('execution.gate', coalesce(nullif(v_gate, 'retention'), ''), true);
-    return 0;
-  end if;
-
-  perform set_config('execution.gate', 'retention', true);
-  update public.execution_steps s
-    set args = s.args - array['brief','answers'], receipt = s.receipt - array['to', 'question']
-    where s.run_id = any (v_runs) and (s.args ?| array['brief','answers'] or s.receipt ?| array['to', 'question']);
-  update public.execution_runs r set request = '', text_purged_at = public.db_now()
-    where r.id = any (v_runs) and r.text_purged_at is null;
-  get diagnostics v_count = row_count;
+  loop
+    begin
+      perform 1 from public.execution_runs r
+        where r.id = v_run and r.text_purged_at is null and r.state in ('done', 'failed', 'stopped')
+          and not exists (select 1 from public.execution_steps s where s.run_id = r.id and s.state in ('calling', 'unknown_outcome'))
+        for no key update nowait;
+      continue when not found;
+      perform 1 from public.execution_steps s
+        where s.run_id = v_run and (s.args ?| array['brief','answers'] or s.receipt ?| array['to', 'question'])
+        order by s.id for update nowait;
+      update public.execution_steps s
+        set args = s.args - array['brief','answers'], receipt = s.receipt - array['to', 'question']
+        where s.run_id = v_run and (s.args ?| array['brief','answers'] or s.receipt ?| array['to', 'question']);
+      update public.execution_runs r set request = '', text_purged_at = public.db_now()
+        where r.id = v_run and r.text_purged_at is null;
+      v_count := v_count + 1;
+    exception when lock_not_available then
+      null; -- 쥔 쪽이 있다: 이 run은 아무것도 지우지 않은 채 다음 정리로
+    end;
+  end loop;
   -- 트리거 예외는 이 함수 안에서만: 부른 쪽의 gate로 되돌려(retention은 남기지 않는다), 같은 트랜잭션의 뒤 문장이 지시를 지우면 다시 계획 · 동결 규칙대로 돈다
   perform set_config('execution.gate', coalesce(nullif(v_gate, 'retention'), ''), true);
   return v_count;

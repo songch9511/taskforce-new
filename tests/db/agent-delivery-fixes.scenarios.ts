@@ -11,7 +11,7 @@ import { functionBody } from "./bridge-device-name.scenarios";
 import type { ConversationAgentDb } from "./conversation-agent-target.scenarios";
 
 // OA F3: 에이전트 전달 정리. 결함 1(Done ↔ 답 교착)의 SQL 줄 셋과 결함 2(만료한 lease 전 prepared 회수)의 새 함수 expire_unleased_agent_messages.
-// 같은 시나리오를 PGlite(tests/db/agent-delivery-fixes.test.ts)와 실제 Postgres(tests/pg/agent-delivery-fixes.test.ts)에서 돌린다. 경합 P1–P15는 실제 Postgres 파일에만 있다.
+// 같은 시나리오를 PGlite(tests/db/agent-delivery-fixes.test.ts)와 실제 Postgres(tests/pg/agent-delivery-fixes.test.ts)에서 돌린다. 경합 P1–P18는 실제 Postgres 파일에만 있다.
 
 export const DELIVERY_FIXES_MIGRATION = "20261128000000_agent_delivery_fixes.sql";
 const MIGRATIONS = path.resolve(__dirname, "../../supabase/migrations");

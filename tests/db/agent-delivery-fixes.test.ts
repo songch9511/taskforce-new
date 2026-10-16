@@ -9,7 +9,7 @@ import { DELIVERY_FIXES_MIGRATION, deliveryFixesFixtures, deliveryFixesTests, fi
 import { asUser, createLocalSupabase, supabaseSchemaScripts } from "./local-supabase";
 import { openPglite } from "./pglite-template";
 
-// OA F3: 에이전트 전달 정리 — PGlite. 같은 시나리오를 실제 Postgres로: tests/pg/agent-delivery-fixes.test.ts (경합 P1–P15 포함)
+// OA F3: 에이전트 전달 정리 — PGlite. 같은 시나리오를 실제 Postgres로: tests/pg/agent-delivery-fixes.test.ts (경합 P1–P18 포함)
 const QS = "20261116120000_agent_questions_stop.sql";
 const BC = "20261118000000_bridge_commands.sql";
 const EC = "20261021000000_execution_core.sql";
@@ -114,11 +114,16 @@ describe("T2c 같은 cron의 sweep들은 잠금 방식만 다르다 (재검토 2
       ["from public.execution_steps s join public.execution_runs r on r.id=s.run_id and r.user_id=s.user_id", "from public.execution_runs r join public.execution_steps s on s.run_id=r.id and s.user_id=r.user_id"],
       ["order by s.id for update of s skip locked)", "order by s.id for no key update of r skip locked for update of s skip locked)"],
     ]],
-    ["sweep_expire", EC, [[
-      "update public.execution_steps set state = 'unknown_outcome', unknown_since = public.db_now(), version = version + 1, lease_owner = null where state = 'calling' and lease_expires_at < public.db_now() and effect_class = 'external';",
-      "with locked as (select s.id from public.execution_runs r join public.execution_steps s on s.run_id = r.id and s.user_id = r.user_id where s.state = 'calling' and s.lease_expires_at < public.db_now() and s.effect_class = 'external' order by s.id for no key update of r skip locked for update of s skip locked) update public.execution_steps set state = 'unknown_outcome', unknown_since = public.db_now(), version = version + 1, lease_owner = null where id in (select id from locked);",
-    ]]],
-    ["purge_expired_execution_text", QS, [["limit p_limit ) x;", "limit p_limit for no key update of r skip locked ) x;"]]],
+    ["sweep_expire", EC, [
+      [
+        "update public.execution_steps set state = 'unknown_outcome', unknown_since = public.db_now(), version = version + 1, lease_owner = null where state = 'calling' and lease_expires_at < public.db_now() and effect_class = 'external';",
+        "with locked as (select s.id from public.execution_runs r join public.execution_steps s on s.run_id = r.id and s.user_id = r.user_id where s.state = 'calling' and s.lease_expires_at < public.db_now() and s.effect_class = 'external' order by s.id for no key update of r skip locked for update of s skip locked) update public.execution_steps set state = 'unknown_outcome', unknown_since = public.db_now(), version = version + 1, lease_owner = null where id in (select id from locked);",
+      ],
+      [
+        "select id from public.execution_steps where state = 'calling' and lease_expires_at < public.db_now() and effect_class = 'internal' ));",
+        "select s.id from public.execution_runs r join public.execution_steps s on s.run_id = r.id and s.user_id = r.user_id where s.state = 'calling' and s.lease_expires_at < public.db_now() and s.effect_class = 'internal' order by s.id for no key update of r skip locked for update of s skip locked ));",
+      ],
+    ]],
   ];
   it.each(cases)("%s: 새 본문 = 원본에서 잠금을 쥐는 문장만 바꾼 것 (파일 본문 · 적용된 본문 모두)", async (name, file, swaps) => {
     let expected = fileBody(file, name);
@@ -130,16 +135,44 @@ describe("T2c 같은 cron의 sweep들은 잠금 방식만 다르다 (재검토 2
     expect(await applied(name)).toBe(expected);
   });
 
-  it("단계를 먼저 잠그는 문장이 없다: 두 sweep은 run NO KEY UPDATE SKIP LOCKED 뒤에 단계 FOR UPDATE SKIP LOCKED, 보관 정리는 run 선택에 SKIP LOCKED", async () => {
-    for (const name of ["sweep_agent_step_leases", "sweep_expire"]) {
+  it("단계를 먼저 잠그는 문장이 없다: 두 sweep의 모든 잠금은 run NO KEY UPDATE SKIP LOCKED 뒤에 단계 FOR UPDATE SKIP LOCKED이고(sweep_expire는 외부 · 내부 분기 둘 다), 기다리는 잠금이 없다", async () => {
+    for (const [name, groups] of [["sweep_agent_step_leases", 1], ["sweep_expire", 2]] as const) {
       const body = await applied(name);
-      const run = body.indexOf("for no key update of r skip locked");
-      const step = body.indexOf("for update of s skip locked");
-      expect(run, name).toBeGreaterThan(0);
-      expect(step, name).toBeGreaterThan(run);
-      expect(body.indexOf("update public.execution_steps"), name).toBeGreaterThan(step);
+      const locks = [...body.matchAll(/for (?:no key )?update(?: of \w+)?( nowait| skip locked)?/g)].map((m) => m[0]);
+      expect(locks, name).toEqual(Array.from({ length: groups }, () => ["for no key update of r skip locked", "for update of s skip locked"]).flat());
+      // 단계를 바꾸는 문장(update public.execution_steps)은 그 잠금들 뒤에 처음 나온다
+      expect(body.indexOf("update public.execution_steps"), name).toBeGreaterThan(body.indexOf("for update of s skip locked"));
     }
-    expect(await applied("purge_expired_execution_text")).toContain("limit p_limit for no key update of r skip locked ) x;");
+    // sweep_expire의 내부 효과 분기: execution_retry_internal에 넘기는 후보 선택 자체가 run -> 단계 SKIP LOCKED다 (그 호출 안에서 단계를 기다리지 않는다)
+    expect(await applied("sweep_expire")).toContain("execution_retry_internal(array( select s.id from public.execution_runs r join public.execution_steps s on s.run_id = r.id and s.user_id = r.user_id where s.state = 'calling' and s.lease_expires_at < public.db_now() and s.effect_class = 'internal' order by s.id for no key update of r skip locked for update of s skip locked ));");
+  });
+
+  it("purge_expired_execution_text: 후보 select와 두 갱신문은 원본 그대로이고(run 하나씩 도는 것만 다르다), run -> 지울 단계 순서의 잠금은 모두 NOWAIT이며 못 쥐면 그 run만 건너뛴다", async () => {
+    const original = fileBody(QS, "purge_expired_execution_text");
+    const candidates = "select r.id from public.execution_runs r where r.text_purged_at is null and r.state in ('done', 'failed', 'stopped') and r.created_at < p_before and not exists (select 1 from public.execution_steps s where s.run_id = r.id and s.state in ('calling', 'unknown_outcome')) order by r.created_at, r.id limit p_limit";
+    const stepUpdate = "update public.execution_steps s set args = s.args - array['brief','answers'], receipt = s.receipt - array['to', 'question'] where s.run_id = %RUN% and (s.args ?| array['brief','answers'] or s.receipt ?| array['to', 'question']);";
+    const runUpdate = "update public.execution_runs r set request = '', text_purged_at = public.db_now() where r.id = %RUN% and r.text_purged_at is null;";
+    expect(original).toContain(candidates);
+    expect(original).toContain(stepUpdate.replace("%RUN%", "any (v_runs)"));
+    expect(original).toContain(runUpdate.replace("%RUN%", "any (v_runs)"));
+    const gateRestore = "perform set_config('execution.gate', coalesce(nullif(v_gate, 'retention'), ''), true); return v_count; end;";
+    expect(original).toContain(gateRestore);
+    for (const body of [fileBody(DELIVERY_FIXES_MIGRATION, "purge_expired_execution_text"), await applied("purge_expired_execution_text")]) {
+      expect(body).toContain(`for v_run in ${candidates} loop begin`);
+      expect(body).toContain(stepUpdate.replace("%RUN%", "v_run"));
+      expect(body).toContain(runUpdate.replace("%RUN%", "v_run"));
+      expect(body).toContain(gateRestore);
+      expect(body).toContain("perform set_config('execution.gate', 'retention', true); for v_run in");
+      // 잠금은 둘뿐이고 둘 다 NOWAIT: run(NO KEY UPDATE) -> 지울 단계(FOR UPDATE), 갱신문보다 앞
+      const locks = [...body.matchAll(/for (?:no key )?update(?: of \w+)?( nowait| skip locked)?/g)].map((m) => m[0]);
+      expect(locks).toEqual(["for no key update nowait", "for update nowait"]);
+      expect(body.indexOf("for update nowait")).toBeLessThan(body.indexOf("update public.execution_steps s set"));
+      expect(body.indexOf("for no key update nowait")).toBeLessThan(body.indexOf("for update nowait"));
+      // 못 쥐면(55P03) 이 run의 하위 트랜잭션만 되돌리고 계속한다: 일부만 지우고 표시하는 길이 없다
+      expect(body).toContain("exception when lock_not_available then null;");
+      expect(body.indexOf("exception when lock_not_available")).toBeGreaterThan(body.indexOf("update public.execution_runs r set"));
+      expect(body.indexOf("v_count := v_count + 1;")).toBeGreaterThan(body.indexOf("update public.execution_runs r set"));
+    }
   });
 });
 

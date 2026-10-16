@@ -9,7 +9,7 @@ import { BOTH, REQUEST, sha256 } from "../db/answer-local.scenarios";
 import type { ConversationAgentDb } from "../db/conversation-agent-target.scenarios";
 import { supabaseSchemaScripts } from "../db/local-supabase";
 
-// OA F3 P1–P15: 실제 Postgres에서만 증명되는 경합 (코디네이터의 일회용 PG, DATABASE_URL). 같은 시나리오 T1–T11도 실제 Postgres에서 한 번 더 돈다.
+// OA F3 P1–P18: 실제 Postgres에서만 증명되는 경합 (코디네이터의 일회용 PG, DATABASE_URL). 같은 시나리오 T1–T11도 실제 Postgres에서 한 번 더 돈다.
 // 기다림은 pg_blocking_pids로 증명한다. 교착(40P01)이 나면 PG가 한 쪽을 물므로 코드로 가른다.
 const DATABASE_URL = process.env.DATABASE_URL;
 if (!DATABASE_URL) throw new Error("npm run test:pg requires DATABASE_URL for disposable PostgreSQL databases.");
@@ -669,6 +669,183 @@ describe("P10f 같은 cron의 단계 lease 정리 · 실행 sweep · 보관 정�
     expect(await f.one("select text_purged_at is null as pending from public.execution_runs where id=$1", [w.run])).toEqual({ pending: true });
     await b.query("select public.purge_expired_execution_text(now() + interval '1 day', 5000)");
     expect(await f.one("select text_purged_at is null as pending from public.execution_runs where id=$1", [w.run])).toEqual({ pending: false });
+  });
+});
+
+// ─── 재검토 3 (P16 · P17 · P18) ───
+const attempts = () => JSON.stringify([{ generationId: `gen-${randomUUID()}`, model: "m", usage: { prompt_tokens: 10, completion_tokens: 5, cost: 0.004 } }]);
+const ARTIFACT = JSON.stringify({ title: "제안서 초안", body: "본문", model: "m", prompt_version: "draft-v1" });
+/** pending 단계를 prepared로 올리고 올라간 버전을 돌려준다 */
+async function prepareStep(step: string) {
+  const { version } = await f.one("select version from public.execution_steps where id=$1", [step]);
+  expect((await f.one("select public.prepare_step($1,$2) as ok", [step, version])).ok).toBe(true);
+  return Number(version) + 1;
+}
+/** 단계를 준비하고 begin_call까지 (calling, lease 소유자 fn) */
+async function callStep(step: string) {
+  const version = await prepareStep(step);
+  expect(((await f.one("select public.begin_call($1,'fn',$2) as g", [step, version])).g as { gate: string }).gate).toBe("ok");
+}
+/** w의 사용자 · Action에 붙은 초안 run: 계획을 끝내고, 지시(args.brief) 글이 있는 초안 단계 drafts개를 pending으로 둔다 (보관 정리가 지우는 글) */
+async function draftRun(w: Pick<World, "user" | "action">, drafts = 1) {
+  await f.q("select public.grant_credits($1, 100, gen_random_uuid())", [w.user]);
+  const run = String((await f.one("select public.create_run($1,$2,'draft','초안 써 줘') as id", [w.user, w.action])).id);
+  const plan = String((await f.one("select id from public.execution_steps where run_id=$1 and seq=1", [run])).id);
+  await callStep(plan);
+  const steps: string[] = [];
+  for (let i = 0; i < drafts; i++) {
+    const step = { kind: "draft", provider: "taskforce", tool: "draft", purpose: "draft", args: { brief: "견적 회신" }, estimate_credits: 10 };
+    steps.push(String((await f.one("select public.append_step($1,$2,$3::jsonb) as id", [run, i + 2, JSON.stringify(step)])).id));
+  }
+  expect((await f.one("select public.complete_internal_step($1,'fn','{}',$2::jsonb) as ok", [plan, attempts()])).ok).toBe(true);
+  return { run, steps };
+}
+
+describe("P16 보관 정리는 run과 지울 단계를 기다리지 않고 쥔다: 하나라도 못 쥐면 그 run은 통째로 다음 정리로 (재검토 3 P2)", () => {
+  /** 초안 단계 둘이 prepared인 채 멈춘 run: 둘 다 지시 글이 있다 */
+  async function stoppedDraft() {
+    const w = await f.world();
+    const { run, steps } = await draftRun(w, 2);
+    const versions = [await prepareStep(steps[0]), await prepareStep(steps[1])];
+    expect((await f.one("select public.stop_run($1,$2) as s", [w.user, run])).s).toBe("stopped");
+    return { w, run, steps, versions };
+  }
+  const purgeCall = (client: pg.Client) => client.query<{ n: number }>("select public.purge_expired_execution_text(now() + interval '1 day', 5000) as n");
+  const briefs = async (run: string) => (await f.q("select (args ? 'brief') as brief from public.execution_steps where run_id=$1 and kind='draft' order by seq", [run])).map((row) => row.brief);
+  const purged = async (run: string) => (await f.one("select text_purged_at is not null as purged, request from public.execution_runs where id=$1", [run]));
+
+  it("실행기가 단계를 쥐고 run을 쥐려는 순서(begin_call: 단계 -> run): 정리는 단계를 기다리지 않고 그 run을 통째로 미룬다 — 교착 0 · 일부만 지우지 않음, 풀린 뒤 다음 정리가 모두 지운다", async () => {
+    const x = await stoppedDraft();
+    await c.query("begin");
+    await c.query("select id from public.execution_steps where id=$1 for update", [x.steps[1]]); // 실행기가 둘째 단계를 쥔다 (begin_call의 첫 줄)
+    const purging = guard(b, pending(purgeCall(b))); // 예전: run을 쥐고 이 단계를 기다린다
+    await settledOrBlocked(purging, b, c);
+    const calling = guard(c, pending(c.query("select public.begin_call($1,'fn',$2) as g", [x.steps[1], x.versions[1]]))); // 이어서 run을 쥐려 한다
+    await settledOrBlocked(calling, c, b);
+    const [purgeOutcome, callOutcome] = await Promise.all([purging, calling]);
+    expect([codeOf(purgeOutcome), codeOf(callOutcome)], "교착(40P01) 0").toEqual(["ok", "ok"]);
+    expect(valueOf(callOutcome).rows[0].g).toEqual({ gate: "stopped" });
+    // 둘째 단계를 못 쥐었으니 첫째 단계도 지우지 않았고 run도 지운 것으로 표시하지 않았다
+    expect(await briefs(x.run)).toEqual([true, true]);
+    expect(await purged(x.run)).toEqual({ purged: false, request: "초안 써 줘" });
+    await c.query("commit");
+    expect(Number((await purgeCall(b)).rows[0].n)).toBeGreaterThanOrEqual(1);
+    expect(await briefs(x.run)).toEqual([false, false]);
+    expect(await purged(x.run)).toEqual({ purged: true, request: "" });
+  });
+
+  it("못 쥔 run 하나가 다른 run의 정리를 막지 않는다: 같은 호출에서 쥘 수 있는 run은 지우고, 못 쥔 run은 글이 그대로다", async () => {
+    const busy = await stoppedDraft();
+    const free = await stoppedDraft();
+    await c.query("begin");
+    await c.query("select id from public.execution_steps where id=$1 for update", [busy.steps[0]]);
+    const started = Date.now();
+    const purging = guard(b, pending(purgeCall(b)));
+    await settledOrBlocked(purging, b, c);
+    const outcome = await purging;
+    await c.query("rollback"); // 정리가 기다리고 있었다면 여기서 풀린다
+    expect(codeOf(outcome)).toBe("ok");
+    expect(Date.now() - started, "기다리지 않는다").toBeLessThan(800);
+    expect(await purged(free.run)).toEqual({ purged: true, request: "" });
+    expect(await briefs(free.run)).toEqual([false, false]);
+    expect(await purged(busy.run)).toEqual({ purged: false, request: "초안 써 줘" });
+    expect(await briefs(busy.run)).toEqual([true, true]);
+  });
+});
+
+describe("P17 실행 sweep ↔ 초안 완료 ↔ Done: 에이전트 run을 쥔 채 초안 단계를 기다리면 3자 순환이 난다 (재검토 3 P2)", () => {
+  it("sweep(에이전트 run A 쥠) -> 초안 단계 D -> (산출물 FK) Action X -> Done -> A: sweep은 D를 기다리지 않아 순환이 없다", async () => {
+    const w = await f.world();
+    await f.lease(w);
+    await f.updateRow("execution_steps", w.step, { lease_expires_at: PAST }); // 에이전트 run A의 만료한 외부 단계
+    const { steps: [stepD] } = await draftRun(w);
+    await callStep(stepD);
+    await f.updateRow("execution_steps", stepD, { lease_expires_at: PAST }); // lease가 끝난 초안 단계 (내부 효과)
+    await d.query("begin");
+    await d.query("select id from public.execution_steps where id=$1 for update", [stepD]); // 초안 완료(complete_internal_step)의 첫 줄: 단계를 쥔다
+    await b.query("begin");
+    const sweeping = guard(b, pending(b.query("select public.sweep_expire() as n"))); // 예전: A를 쥔 채 D를 기다린다
+    await settledOrBlocked(sweeping, b, d);
+    await c.query("begin");
+    const closing = guard(c, pending(done(c, w))); // Done: Action을 쥐고 A를 기다린다 (A는 sweep이 쥔 채)
+    await settledOrBlocked(closing, c, b);
+    const completing = guard(d, pending(d.query("select public.complete_internal_step($1,'fn','{}',$2::jsonb,$3::jsonb,'draft_ready') as ok", [stepD, attempts(), ARTIFACT]))); // 산출물 FK: Action을 기다린다
+    await settledOrBlocked(completing, d, c);
+    const finish = async (promise: Promise<Outcome<unknown>>, client: pg.Client) => {
+      const outcome = await promise;
+      if ("value" in outcome) await client.query("commit");
+      return codeOf(outcome);
+    };
+    const codes = await Promise.all([finish(sweeping, b), finish(closing, c), finish(completing, d)]); // sweep의 트랜잭션은 함수가 끝나면 곧 끝난다
+    expect(codes, "교착(40P01) 0: sweep · Done · 초안 완료").toEqual(["ok", "ok", "ok"]);
+    expect(await f.one("select state from public.execution_steps where id=$1", [stepD])).toEqual({ state: "called" }); // 초안 완료가 이겼다 (sweep은 쥔 단계를 건드리지 않았다)
+    expect(await f.one("select status from public.actions where id=$1", [w.action])).toEqual({ status: "done" });
+  });
+});
+
+describe("P17b 실행 sweep의 내부 효과 분기: 남이 쥔 run · 단계는 기다리지 않고 건너뛴다 (재검토 3 P2)", () => {
+  const holders: [string, string][] = [
+    ["초안 run", "select id from public.execution_runs where id=$1 for no key update"],
+    ["초안 단계", "select id from public.execution_steps where id=$1 for update"],
+  ];
+  it.each(holders)("다른 연결이 %s을(를) 쥐고 있으면 쓰기 0으로 돌아오고(기다림 0), 풀린 뒤 다음 호출이 다시 준비한다", async (_name, lockSql) => {
+    const w = await f.world();
+    const { run, steps: [stepD] } = await draftRun(w);
+    await callStep(stepD);
+    await f.updateRow("execution_steps", stepD, { lease_expires_at: PAST }); // lease가 끝난 초안 단계 (내부 효과)
+    await a.query("begin");
+    await a.query(lockSql, [lockSql.includes("execution_runs") ? run : stepD]);
+    const sweeping = pending(b.query("select public.sweep_expire() as n"));
+    const early = await Promise.race([sweeping, sleep(800).then(() => "waiting" as const)]);
+    if (early === "waiting") {
+      await a.query("rollback"); // 기다리고 있었다면 풀어서 시험이 멈추지 않게
+      await sweeping;
+    }
+    expect(early, "남이 쥔 행을 기다리지 않는다").not.toBe("waiting");
+    expect(await f.one("select state, attempt from public.execution_steps where id=$1", [stepD])).toEqual({ state: "calling", attempt: 0 });
+    await a.query("commit");
+    await b.query("select public.sweep_expire()");
+    expect(await f.one("select state, attempt from public.execution_steps where id=$1", [stepD])).toEqual({ state: "prepared", attempt: 1 });
+  });
+});
+
+describe("P18 receipt 안전망(write_execution_receipt)은 Action 행만 기다리고 run · 단계 · 작업 잠금은 쥐지 않는다 (재검토 3 감사)", () => {
+  it("Action을 기다리는 동안도, 쓰고 난 뒤 commit 전에도 draft run · 단계 · 에이전트 run · 작업은 다른 연결이 NOWAIT로 쥘 수 있다", async () => {
+    const w = await f.world();
+    const { run, steps: [stepD] } = await draftRun(w);
+    await callStep(stepD);
+    expect((await f.one("select public.complete_internal_step($1,'fn','{}',$2::jsonb,$3::jsonb,'draft_ready') as ok", [stepD, attempts(), ARTIFACT])).ok).toBe(true);
+    const artifact = String((await f.one("select id from public.execution_artifacts where step_id=$1", [stepD])).id);
+    const { version } = await f.one("select version from public.actions where id=$1", [w.action]);
+    const receipt = JSON.stringify({
+      source: { title: "제안서 초안", raw_text: "초안 저장: 제안서 초안", external_url: `taskforce://artifacts/${artifact}` },
+      claim: { id: randomUUID(), quote: "초안 저장: 제안서 초안", speaker_role: "me", certainty: "firm", directness: "first_hand", audience: "private" },
+    });
+    const lockable = async () => { // 다른 연결(c)이 그 행들을 기다림 없이 쥘 수 있다
+      await c.query("begin");
+      for (const [sql, id] of [
+        ["select id from public.execution_steps where id=$1 for update nowait", stepD],
+        ["select id from public.execution_runs where id=$1 for no key update nowait", run],
+        ["select id from public.execution_runs where id=$1 for no key update nowait", w.run],
+        ["select id from public.agent_tasks where id=$1 for update nowait", w.task],
+      ]) await c.query(sql, [id]);
+      await c.query("rollback");
+    };
+    await d.query("begin");
+    await d.query("select id from public.execution_runs where id=$1 for no key update", [run]);
+    await expect(lockable(), "탐침 확인: 남이 쥔 run은 NOWAIT로 못 쥔다").rejects.toMatchObject({ code: "55P03" });
+    await c.query("rollback");
+    await d.query("rollback");
+    await a.query("begin");
+    await a.query("select id from public.actions where id=$1 for update", [w.action]); // Done이 Action을 쥔 중
+    await b.query("begin");
+    const writing = guard(b, pending(b.query("select public.write_execution_receipt($1,$2,$3::jsonb) as r", [stepD, version, receipt])));
+    await blocked(b, a);
+    await lockable(); // 기다리는 동안 b는 Action 말고는 아무것도 쥐지 않는다
+    await a.query("rollback");
+    expect(valueOf(await writing).rows[0].r).toBe("written");
+    await lockable(); // 쓰고 난 뒤(commit 전)에도 같다: 쥔 것은 Action 행과 새로 만든 행뿐
+    await b.query("commit");
   });
 });
 
