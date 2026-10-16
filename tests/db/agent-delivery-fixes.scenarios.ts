@@ -98,6 +98,12 @@ export function deliveryFixesTests(db: () => ConversationAgentDb) {
       });
     });
 
+    it("시퀀스 bridge_reclaim_scan_seq는 service_role만 쓴다 (anon · authenticated 거절)", async () => {
+      const privilege = async (role: string, kind: string) => (await f.one("select has_sequence_privilege($1,'public.bridge_reclaim_scan_seq',$2) as ok", [role, kind])).ok;
+      for (const kind of ["usage", "select"]) expect(await privilege("service_role", kind), `service_role ${kind}`).toBe(true);
+      for (const role of ["anon", "authenticated"]) for (const kind of ["usage", "select", "update"]) expect(await privilege(role, kind), `${role} ${kind}`).toBe(false);
+    });
+
     it("p_limit이 null · 0 · 201이면 22023, 1 · 200은 받는다 (후보가 없으면 빈 결과)", async () => {
       for (const bad of [null, 0, 201, -1]) await expect(f.q("select public.expire_unleased_agent_messages($1::integer)", [bad]), String(bad)).rejects.toMatchObject({ code: "22023" });
       for (const good of [1, 200]) expect(await f.expire(good)).toEqual(NOTHING);
@@ -167,6 +173,7 @@ export function deliveryFixesTests(db: () => ConversationAgentDb) {
       const before = await f.snapshot(w);
       expect(await f.expire()).toEqual(NOTHING);
       expect(await f.snapshot(w)).toEqual(before);
+      await f.updateRow("conversation_messages", w.message, { delivery_state: "cancelled" }); // 영구히 건너뛰는 후보를 같은 DB에 남기지 않는다 (뒤 시험의 한도 · 창 계산)
     });
 
     it("answer · cancel 명령은 message가 만료해도 회수하지 않는다 (message 명령만)", async () => {
@@ -287,18 +294,47 @@ export function deliveryFixesTests(db: () => ConversationAgentDb) {
       expect(await f.count("select 1 from public.execution_intents where step_id=$1", [w.step])).toBe(0);
     });
 
-    it("p_limit보다 후보가 많으면 만료가 오래된 것부터 limit개만, 다음 호출이 나머지를 한다", async () => {
-      // 같은 DB에 남은 다른 후보(예: 폐기된 bridge)보다 앞서도록 아주 오래된 만료 시각을 쓴다 (한도는 후보 전체에 걸린다)
+    it("p_limit보다 후보가 많으면 한 번에 limit개까지만 하고, 연속 호출이 창을 돌아 나머지를 한다 (한 창 안에서는 만료가 오래된 것부터)", async () => {
+      // 같은 DB에 남은 다른 후보보다 앞서도록 아주 오래된 만료 시각을 쓴다
       const first = await f.offlineWorld("1990-01-01T00:00:00Z");
       const second = await f.anotherOffline(first, "1990-01-02T00:00:00Z");
       const third = await f.anotherOffline(first, "1990-01-03T00:00:00Z");
-      const result = await f.expire(2);
-      expect(result.reclaimed).toBe(2);
-      expect(result.sessions.map((s) => s.agent_session_id).sort()).toEqual([first.session, second.session].sort());
-      expect(await f.msg(third.message)).toMatchObject({ delivery_state: "dispatched" });
-      const next = await f.expire(2);
-      expect(next).toEqual({ reclaimed: 1, busy: 0, sessions: [{ user_id: third.user, agent_session_id: third.session }] });
-    });
+      const all = [first, second, third];
+      const sizes: number[] = [];
+      for (let call = 0; call < 2; call++) {
+        const result = await f.expire(2);
+        sizes.push(result.reclaimed);
+        expect(result.reclaimed).toBeLessThanOrEqual(2);
+        if (result.reclaimed === 2) expect(result.sessions.map((s) => s.agent_session_id).sort()).toEqual([first.session, second.session].sort()); // 첫 창 = 오래된 둘
+      }
+      expect(sizes.sort()).toEqual([1, 2]);
+      for (const w of all) expect(await f.msg(w.message)).toMatchObject({ delivery_state: "expired" });
+      expect(await f.expire(2)).toEqual(NOTHING);
+    }, 60_000);
+  });
+
+  describe("T12 영구히 건너뛰는 후보가 뒤 후보를 막지 않는다 (창 돌리기)", () => {
+    it("부적격(bridge 폐기) 후보 50개 + 적격 후보 1개: 연속 호출이 창을 돌아 적격 후보를 회수한다 (50개가 머리를 붙잡지 못한다)", async () => {
+      const stuck: Awaited<ReturnType<typeof f.offlineWorld>>[] = [];
+      for (let i = 0; i < 50; i++) stuck.push(await f.offlineWorld(new Date(Date.UTC(1990, 0, 1 + i)).toISOString()));
+      await f.q("update public.bridges set status='revoked', revoked_at=now() where id = any($1::uuid[])", [stuck.map((w) => w.bridge)]);
+      const eligible = await f.offlineWorld("1991-01-01T00:00:00Z"); // 만료가 가장 늦다: 한 창(50)에는 들어가지 못한다
+      let reclaimed = 0;
+      let calls = 0;
+      while (!reclaimed && calls < 4) {
+        calls++;
+        const result = await f.expire(50);
+        reclaimed += result.reclaimed;
+        if (result.reclaimed) expect(result.sessions).toEqual([{ user_id: eligible.user, agent_session_id: eligible.session }]);
+      }
+      expect(reclaimed).toBe(1);
+      expect(calls).toBeLessThanOrEqual(2); // 후보 51개 = 창 둘
+      expect(await f.msg(eligible.message)).toMatchObject({ delivery_state: "expired", delivery_reason: null });
+      for (const w of stuck) {
+        expect(await f.msg(w.message)).toMatchObject({ delivery_state: "dispatched" });
+        await f.updateRow("conversation_messages", w.message, { delivery_state: "cancelled" }); // 시험 DB를 깨끗이
+      }
+    }, 120_000);
   });
 
   describe("T11 지표 · 로그 원천", () => {

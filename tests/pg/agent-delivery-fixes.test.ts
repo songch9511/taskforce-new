@@ -351,18 +351,20 @@ describe("P8 회수 ↔ lease", () => {
   it("잠금 아래 다시 확인: 후보 조회 뒤 만료가 늘어난 메시지는 회수하지 않는다 (낡은 후보 목록)", async () => {
     const first = await f.offlineWorld("2000-01-01T00:00:00Z");
     const second = await f.anotherOffline(first, "2000-01-02T00:00:00Z");
+    // 회수는 창 안에서 세션 id 순으로 잠근다: 먼저 처리되는 쪽(head)의 세션을 막아 두고, 뒤(tail)의 만료를 그동안 미룬다
+    const [head, tail] = [first, second].sort((p, q) => p.session.localeCompare(q.session));
     await d.query("begin");
-    await d.query("select id from public.agent_sessions where id=$1 for update", [first.session]); // 첫 후보가 세션 잠금에서 기다리는 동안
+    await d.query("select id from public.agent_sessions where id=$1 for update", [head.session]); // 첫 후보가 세션 잠금에서 기다리는 동안
     await b.query("begin");
     const reclaiming = pending(fb.expire());
     await blocked(b, d);
-    await f.q("update public.conversation_messages set delivery_expires_at = now() + interval '1 day' where id=$1", [second.message]); // 둘째 후보의 만료가 미뤄짐
+    await f.q("update public.conversation_messages set delivery_expires_at = now() + interval '1 day' where id=$1", [tail.message]); // 둘째 후보의 만료가 미뤄짐
     const result = valueOf(await reclaiming); // 첫 후보는 1초 뒤 busy, 둘째는 다시 확인에서 건너뜀
     await b.query("commit");
     await d.query("rollback");
     expect(result).toEqual({ reclaimed: 0, busy: 1, sessions: [] });
-    expect(await f.msg(second.message)).toMatchObject({ delivery_state: "dispatched" });
-    expect(await f.one("select state from public.execution_steps where id=$1", [second.step])).toEqual({ state: "prepared" });
+    expect(await f.msg(tail.message)).toMatchObject({ delivery_state: "dispatched" });
+    expect(await f.one("select state from public.execution_steps where id=$1", [tail.step])).toEqual({ state: "prepared" });
     expect((await f.expire()).reclaimed).toBe(1); // 세션 잠금이 풀린 첫 후보는 다음 분에 회수된다 (시험 DB를 깨끗이)
   });
 });
@@ -447,6 +449,52 @@ describe("P10 회수 ↔ Done · Stop · revoke_bridge · heartbeat 복귀", () 
     expect(await f.msg(w.message)).toMatchObject({ delivery_state: "expired", delivery_reason: null });
     expect(await f.one("select status from public.agent_sessions where id=$1", [w.session])).toEqual({ status: "bound" });
     expect(await f.expire()).toEqual({ reclaimed: 0, busy: 0, sessions: [] });
+  });
+});
+
+describe("P10b 회수 배치 ↔ heartbeat — 같은 bridge의 두 세션, 만료 순서가 세션 id 순서의 역순 (검토 반영 P2)", () => {
+  let counter = 0;
+  /** 같은 bridge의 세션 둘: id가 큰 쪽(high)의 만료가 더 이르다 — 만료순으로 잠그면 high → low, heartbeat는 low → high */
+  async function reverseOrderSessions() {
+    const user = await f.user();
+    const bridge = await f.bridge(user);
+    const connection = await f.agentConnection(user, bridge, { adapter: "agent:codex" });
+    await f.q("insert into public.execution_actors(user_id) values($1) on conflict do nothing", [user]);
+    await f.q("update public.execution_controls set blocked=false");
+    const tag = `c${String(++counter).padStart(3, "0")}`; // P13의 id와 겹치지 않게 둘째 묶음이 다르다
+    const open = async (sessionId: string, expires: string) => {
+      const session = await f.session(user, connection, { id: sessionId });
+      const conversation = await f.agentConversation(user, connection, session);
+      const message = String((await f.post(user, conversation, randomUUID(), "work")).message_id);
+      const started = await f.start(user, message);
+      expect(started.status).toBe("started");
+      await f.updateRow("agent_sessions", session, { status: "unreachable" });
+      await f.updateRow("conversation_messages", message, { delivery_expires_at: expires });
+      return { session, message, task: started.agent_task_id!, run: started.run_id!, step: started.step_id! };
+    };
+    const high = await open(`bbbbbbbb-${tag}-4000-8000-0000000000bb`, "1990-01-01T00:00:00Z");
+    const low = await open(`aaaaaaaa-${tag}-4000-8000-0000000000aa`, "1990-01-02T00:00:00Z");
+    return { user, bridge, high, low };
+  }
+
+  it("회수가 high 세션을 쥔 채 low를 기다리고 heartbeat가 low를 쥔 채 high를 기다리는 순서를 강제해도 교착이 없다 (둘 다 끝남)", async () => {
+    const w = await reverseOrderSessions();
+    await d.query("begin");
+    await d.query("select id from public.agent_tasks where id=$1 for update", [w.high.task]); // 제3 연결이 high의 task를 쥔다
+    await a.query("begin");
+    const reclaiming = guard(a, pending(fa.expire())); // 회수: 첫 후보에서 high의 task를 기다린다
+    await blocked(a, d);
+    await b.query("begin");
+    const beating = guard(b, pending(b.query("select public.bridge_heartbeat($1,$2,'[]'::jsonb) as result", [w.user, w.bridge]))); // heartbeat: 세션을 id 순으로 쥐려다 회수를 기다린다
+    await blocked(b, a);
+    await d.query("rollback");
+    const reclaimed = await reclaiming; // 줄이 맞으면 회수가 먼저 끝나 commit하고 heartbeat가 이어 간다
+    if (codeOf(reclaimed) === "ok") await a.query("commit");
+    const beat = await beating;
+    if (codeOf(beat) === "ok") await b.query("commit");
+    expect([codeOf(reclaimed), codeOf(beat)]).toEqual(["ok", "ok"]);
+    expect(valueOf(reclaimed)).toMatchObject({ reclaimed: 2, busy: 0 });
+    for (const s of [w.high, w.low]) expect(await f.msg(s.message)).toMatchObject({ delivery_state: "expired", delivery_reason: null });
   });
 });
 

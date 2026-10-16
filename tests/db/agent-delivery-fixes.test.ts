@@ -91,6 +91,7 @@ describe("T2 지문 · 되돌리기 (T4c)", () => {
       triggers: await rows("select c.relname, t.tgname, md5(pg_get_triggerdef(t.oid)) as def from pg_trigger t join pg_class c on c.oid = t.tgrelid join pg_namespace n on n.oid = c.relnamespace where n.nspname = 'public' and not t.tgisinternal order by 1, 2"),
       constraints: await rows("select conrelid::regclass::text as tbl, conname, md5(pg_get_constraintdef(oid)) as def from pg_constraint where connamespace = 'public'::regnamespace order by 1, 2"),
       indexes: await rows("select tablename, indexname, indexdef from pg_indexes where schemaname = 'public' order by 1, 2"),
+      sequences: await rows("select c.relname, s.seqstart::text, s.seqincrement::text, s.seqmax::text, s.seqcycle, c.relacl::text as acl from pg_class c join pg_sequence s on s.seqrelid = c.oid where c.relnamespace = 'public'::regnamespace order by 1"),
       policies: await rows("select tablename, policyname, md5(coalesce(qual, '') || coalesce(with_check, '')) as def from pg_policies where schemaname = 'public' order by 1, 2"),
     };
   };
@@ -100,7 +101,7 @@ describe("T2 지문 · 되돌리기 (T4c)", () => {
     return match[0].replace(/^create function/, "create or replace function");
   };
 
-  it("이 마이그레이션은 새 함수 하나와 색인 하나를 더하고 세 함수의 본문만 바꾼다: 그 밖의 함수 · 권한 · proconfig · 표 · 열 · 트리거 · 제약 · 정책이 그대로이고, 머리의 되돌리기를 실행하면 앞 지문으로 완전히 돌아간다", async () => {
+  it("이 마이그레이션은 새 함수 하나와 색인 하나 · 시퀀스 하나를 더하고 세 함수의 본문만 바꾼다: 그 밖의 함수 · 권한 · proconfig · 표 · 열 · 트리거 · 제약 · 정책이 그대로이고, 머리의 되돌리기를 실행하면 앞 지문으로 완전히 돌아간다", async () => {
     const sql = readFileSync(path.join(MIGRATIONS, DELIVERY_FIXES_MIGRATION), "utf8");
     const scripts = await supabaseSchemaScripts();
     const before = scripts.filter((script) => script !== sql);
@@ -122,11 +123,13 @@ describe("T2 지문 · 되돌리기 (T4c)", () => {
         expect({ acl: next.acl, config: next.config }, old.sig).toEqual({ acl: old.acl, config: old.config });
       }
       for (const key of ["tables", "columns", "triggers", "constraints", "policies"] as const) expect(after[key], key).toBe(baseline[key]);
+      const addedSequences = (JSON.parse(after.sequences) as { relname: string }[]).filter((sequence) => !(JSON.parse(baseline.sequences) as { relname: string }[]).some((old) => old.relname === sequence.relname));
+      expect(addedSequences.map((sequence) => sequence.relname)).toEqual(["bridge_reclaim_scan_seq"]);
       const addedIndexes = (JSON.parse(after.indexes) as { indexname: string }[]).filter((index) => !(JSON.parse(baseline.indexes) as { indexname: string }[]).some((old) => old.indexname === index.indexname));
       expect(addedIndexes.map((index) => index.indexname)).toEqual(["bridge_commands_unleased_message_idx"]);
-      const revert = /^-- 되돌리기: (drop function public\.expire_unleased_agent_messages\(integer\);) (drop index public\.bridge_commands_unleased_message_idx;)\s*$/m.exec(sql);
+      const revert = /^-- 되돌리기: (drop function public\.expire_unleased_agent_messages\(integer\);) (drop index public\.bridge_commands_unleased_message_idx;) (drop sequence public\.bridge_reclaim_scan_seq;)\s*$/m.exec(sql);
       expect(revert, "머리 주석에 되돌리기 문장").not.toBeNull();
-      await clone.exec(`${revert![1]} ${revert![2]}`);
+      await clone.exec(`${revert![1]} ${revert![2]} ${revert![3]}`);
       for (const [file, name] of [[QS, "request_agent_task_cancel"], [QS, "stop_agent_runs_on_user_claim"], [BC, "revoke_bridge"]] as const) await clone.exec(original(file, name));
       expect(await fingerprint(clone)).toEqual(baseline);
     } finally {

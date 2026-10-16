@@ -8,16 +8,19 @@
 -- 결함 2 (만료한 lease 전 prepared): Mac이 lease 전에 꺼져 있으면 24시간이 지나도 메시지가 dispatched/prepared에 남아 Send again이 not_eligible이다.
 --   새 함수 expire_unleased_agent_messages(p_limit)가 1분 cron(sweepBridge)에서 만료한 lease 전 message 명령을 lock_bridge_command 순서(메시지 -> 세션 -> run -> task -> step -> 명령)로 잠그고
 --   withdraw_bridge_command(..., 'expired')로 회수한다 - Mac이 돌아와 lease가 거둘 것과 같은 함수, 같은 조건. 찾기용 부분 색인 하나.
+--   검토 반영: (1) 한 번에 여러 세션을 잠그므로 후보를 세션 id 순으로 처리한다(heartbeat · 폐기 · sweep · Done의 run 순서와 같다) - 만료순이면 회수가 높은 id 세션을 쥔 채 낮은 id를 기다리고
+--   heartbeat가 낮은 id를 쥔 채 높은 id를 기다려 40P01이 났다. (2) 후보가 p_limit보다 많으면 호출마다 창(p_limit개)을 돌려 가며 처리한다(작은 시퀀스 하나) - 영구히 건너뛰어지는 후보가
+--   머리를 붙잡아 뒤 후보를 막지 못하게 한다.
 --
 -- 교체하는 함수는 셋이고 각각 한 곳만 다르다 (tests/db/agent-delivery-fixes.test.ts T2가 본문 동일성을 확인한다):
 --   request_agent_task_cancel       QS의 정의 + `if v_question is not null then` 바로 뒤 세션 · 원 메시지 KEY SHARE NOWAIT 두 줄
 --   revoke_bridge                   BC의 정의 + 작업 고리(`order by id for update loop`) 바로 뒤 메시지 KEY SHARE NOWAIT 한 줄
 --   stop_agent_runs_on_user_claim   QS의 정의 + `order by id for no key update loop` -> `order by agent_session_id, id for no key update loop`
--- 시그니처 · 반환이 같아 create or replace가 권한과 트리거를 그대로 둔다. 새 표 · 새 정책 · 새 열 0, metric_events를 건드리지 않는다.
+-- 시그니처 · 반환이 같아 create or replace가 권한과 트리거를 그대로 둔다. 새 표 · 새 정책 · 새 열 0, metric_events를 건드리지 않는다. 새 객체는 함수 하나 · 색인 하나 · 시퀀스 하나.
 --
 -- 운영 적용은 병합 직전 승인 뒤 `supabase db query --linked -f`로 20261127000000 뒤에 한다 (db push 금지). 배포 순서: 마이그레이션 -> 서버 (서버가 먼저 나가면 sweepBridge의 새 RPC가
 -- "함수 없음"으로 실패해 errors로만 세어지고 다음 분에 다시 한다. 마이그레이션만 먼저면 회수가 돌지 않을 뿐 결함 1 수정은 바로 효과가 있다).
--- 되돌리기: drop function public.expire_unleased_agent_messages(integer); drop index public.bridge_commands_unleased_message_idx;
+-- 되돌리기: drop function public.expire_unleased_agent_messages(integer); drop index public.bridge_commands_unleased_message_idx; drop sequence public.bridge_reclaim_scan_seq;
 -- 그리고 request_agent_task_cancel · stop_agent_runs_on_user_claim (20261116120000)과 revoke_bridge (20261118000000)의 정의를 그 파일 그대로 create or replace로 다시 적용한다.
 begin;
 set local lock_timeout = '5s';
@@ -25,6 +28,11 @@ set local lock_timeout = '5s';
 -- 찾기용: 아직 lease되지 않은 message 명령만 담아 작다 (끝난 명령은 30일 뒤 지운다). 만들 때 bridge_commands에 SHARE 잠금이 걸린다 (위 lock_timeout이 상한).
 create index bridge_commands_unleased_message_idx on public.bridge_commands (created_at)
   where kind = 'message' and lease_owner is null and outcome is null;
+
+-- 회수 호출마다 하나씩 올라가는 번호: 후보가 p_limit보다 많으면 이 번호로 창(p_limit개)을 고른다. 상태는 이 번호뿐이고 롤백되지 않는다.
+create sequence public.bridge_reclaim_scan_seq;
+revoke all on sequence public.bridge_reclaim_scan_seq from public, anon, authenticated;
+grant usage, select on sequence public.bridge_reclaim_scan_seq to service_role;
 
 -- Caller holds run before task. Earlier-order locks use NOWAIT for Stop and user-Claim Done (OA F3: 질문 갈래의 세션 · 원 메시지도).
 create or replace function public.request_agent_task_cancel(p_user_id uuid, p_task_id uuid) returns jsonb
@@ -194,22 +202,30 @@ declare
   v_sessions jsonb := '[]'::jsonb;
   v_reclaimed integer := 0;
   v_busy integer := 0;
+  v_window bigint := nextval('public.bridge_reclaim_scan_seq');
   v_started timestamptz := clock_timestamp();
 begin
   if p_limit is null or p_limit not between 1 and 200 then
     raise exception 'expire_unleased_agent_messages: limit must be 1-200' using errcode = '22023';
   end if;
+  -- 후보를 만료가 오래된 순으로 p_limit개씩 창으로 나누고, 이번 호출은 번호(v_window)가 가리키는 창 하나를 처리한다. 후보가 p_limit 이하면 창이 하나라 늘 같은 창이다.
+  -- 창 안에서는 세션 id 순으로 잠근다: heartbeat · 폐기 · sweep이 세션을 id 순으로 쥐고 Done이 run을 (세션, run) 순으로 쥐므로 같은 순서면 서로 기다리는 순환이 없다.
+  -- (성공한 후보의 잠금은 하위 트랜잭션이 끝나도 함수가 끝날 때까지 남는다.)
   for v_candidate in
-    select c.id as command_id, c.bridge_id, c.user_id, t.message_id
-      from public.bridge_commands c
-      join public.execution_steps s on s.id = c.step_id and s.user_id = c.user_id
-      join public.agent_tasks t on t.id = c.agent_task_id and t.user_id = c.user_id
-      join public.conversation_messages m on m.id = t.message_id and m.user_id = c.user_id
-     where c.kind = 'message' and c.lease_owner is null and c.outcome is null
-       and s.state = 'prepared' and s.lease_owner is null
-       and m.delivery_state = 'dispatched' and m.delivery_expires_at <= public.db_now()
-     order by m.delivery_expires_at, c.id
-     limit p_limit
+    select e.command_id, e.bridge_id, e.user_id, e.message_id
+      from (
+        select c.id as command_id, c.bridge_id, c.user_id, t.message_id, t.agent_session_id, m.delivery_expires_at,
+               row_number() over (order by m.delivery_expires_at, c.id) - 1 as pos, count(*) over () as total
+          from public.bridge_commands c
+          join public.execution_steps s on s.id = c.step_id and s.user_id = c.user_id
+          join public.agent_tasks t on t.id = c.agent_task_id and t.user_id = c.user_id
+          join public.conversation_messages m on m.id = t.message_id and m.user_id = c.user_id
+         where c.kind = 'message' and c.lease_owner is null and c.outcome is null
+           and s.state = 'prepared' and s.lease_owner is null
+           and m.delivery_state = 'dispatched' and m.delivery_expires_at <= public.db_now()
+      ) e
+     where e.pos / p_limit = v_window % greatest((e.total + p_limit - 1) / p_limit, 1)
+     order by e.agent_session_id, e.delivery_expires_at, e.command_id
   loop
     -- cron(maxDuration 60초) 안에서 끝나게: 예산을 넘으면 남은 후보는 다음 분에 한다
     exit when clock_timestamp() - v_started > interval '10 seconds';
