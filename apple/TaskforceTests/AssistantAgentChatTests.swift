@@ -97,6 +97,30 @@ struct AssistantAgentChatTests {
         #expect(!model.canSendAgain(after))
     }
 
+    // MARK: 거절된 Send again (동의 · 오류)
+
+    @Test func aConsentRefusalOnSendAgainShowsTheConsentNoticeAndTheStatusLineAndTryAgainResendsIt() async throws {
+        let r = try await rig(Data.waiting())
+        defer { r.defaults.cleanup(); r.manager.closeAll() }
+        let model = try await open(r)
+        let failed = try #require(turns(r).first { model.deliveryLine(for: $0)?.strong == "Not sent" })
+        r.gateway.deliverFailure = APIError.server(status: 409, code: .conflict, message: APIError.consentRequiredMessage)
+        await model.sendAgain(failed)
+        await r.chat.settle()
+        let refused = try #require(turns(r).first { $0.id == failed.id })
+        #expect(r.chat.needsConsent(in: Data.conversationID), "기존 동의 안내 (Allow AI processing to continue)")
+        #expect(refused.status == .needsConsent && refused.showsStatusInsteadOfDelivery, "전달 줄 대신 기존 상태 줄")
+        // 전달 읽기가 성공해도 거절이 사라지지 않는다
+        await r.chat.refreshDeliveries(Data.conversationID)
+        #expect(r.chat.needsConsent(in: Data.conversationID))
+        // 동의한 뒤 Try again
+        r.gateway.deliverFailure = nil
+        await model.retryDelivery(refused)
+        let again = try #require(turns(r).first { $0.id == failed.id })
+        #expect(!r.chat.needsConsent(in: Data.conversationID) && !again.showsStatusInsteadOfDelivery && model.deliveryLine(for: again)?.combined == "Queued")
+        #expect(r.gateway.calls(prefix: "deliver:") == ["deliver:\(failed.id.uuidString)", "deliver:\(failed.id.uuidString)"])
+    }
+
     // MARK: 후보 고르기
 
     @Test func theReferentMenuOpensFromTheLinkPicksOneCandidateAndEscapeClosesItBeforeTheWindowHides() async throws {

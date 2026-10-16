@@ -199,6 +199,7 @@ struct SessionPanelView: View {
                 }
             },
             viewFull: { desk.viewFull($0) },
+            retry: { turn in Task { await desk.retry(turn, in: conversationID) } },
             referentMenu: desk.referentMenu,
             chooseReferent: { id in Task { await desk.chooseReferent(id, in: conversationID) } },
             candidateLabel: { candidate in

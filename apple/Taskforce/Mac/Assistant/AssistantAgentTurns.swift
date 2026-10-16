@@ -12,6 +12,8 @@ struct AgentTurnActions {
     /// 줄의 링크: Send again · 후보 고르기 (메뉴를 연다)
     var onLink: (ChatTurn, MessageDeliveryLine.Link) -> Void = { _, _ in }
     var viewFull: (ChatTurn) -> Void = { _ in }
+    /// 오류 줄 · 동의 안내의 Try again (Send again · 후보 고르기를 다시 한다)
+    var retry: (ChatTurn) -> Void = { _ in }
     /// 열린 후보 메뉴
     var referentMenu: AgentReferentMenu?
     var chooseReferent: (UUID) -> Void = { _ in }
@@ -35,14 +37,18 @@ struct AssistantTurnView: View {
         } else if turn.isUser {
             VStack(alignment: .leading, spacing: 0) {
                 Message(isUser: true) { MessageText(turn.text, isDeleted: turn.textDeleted) }
-                if turn.delivery != nil {
+                if !turn.showsStatusInsteadOfDelivery {
                     // 에이전트 대상: 서버가 계산한 전달 표시를 말로 (answered · 모르는 값은 줄이 없다)
                     if let line = actions.line(turn) {
                         MessageDeliveryView(line, onLink: { link in actions.onLink(turn, link) })
                     }
                 } else {
-                    ChatStatusLine(status: turn.status, onRetry: { turn.clientMessageID.map(onRetry) })
-                        .padding(.top, TFSpace.xs)
+                    // 첫 보내기 실패 · Send again / 후보 고르기의 거절(동의 철회 · 오류): 기존 상태 줄 + Try again
+                    ChatStatusLine(
+                        status: turn.status,
+                        onRetry: { if turn.delivery != nil { actions.retry(turn) } else { turn.clientMessageID.map(onRetry) } }
+                    )
+                    .padding(.top, TFSpace.xs)
                 }
                 if let menu = actions.referentMenu, menu.messageID == turn.id {
                     AgentReferentMenuView(menu: menu, label: actions.candidateLabel, onChoose: actions.chooseReferent)

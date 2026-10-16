@@ -76,6 +76,13 @@ struct EdgeSessionActionsTests {
         _ = try r.session()
     }
 
+    /// 세션 패널이 대화를 보이는 것처럼: 대화 목록 · 글 · 전달 줄을 읽는다
+    private func openConversation(_ r: Rig) async {
+        r.runtime.chat.panelConversations = { [Data.conversationID] }
+        await r.runtime.chat.refresh()
+        await r.runtime.chat.settle()
+    }
+
     // MARK: 알약은 이 Mac의 세션에만 (D4a-03)
 
     @Test func thePillShowsOnlyForASessionOnThisMacAndOpenInTerminalOnlyWhenTheAppCanOpenOne() async throws {
@@ -186,6 +193,30 @@ struct EdgeSessionActionsTests {
         #expect(r.runtime.panelDesk.referentMenu == nil && r.shell.sessionPanelID == Data.sessionID, "먼저 후보 메뉴만 닫는다")
         #expect(r.controller.handleKey(try key(kVK_Escape, "\u{1b}")))
         #expect(r.shell.sessionPanelID == nil)
+    }
+
+    // MARK: 새 턴이 시작되면 세션을 다시 읽는다
+
+    /// 쉬는 세션(열린 task 없음)에는 5초 읽기가 돌지 않는다: 세션 패널의 입력칸으로 새 턴을 시작해도 다시 읽지 않으면 Stop 원이 서지 않는다
+    @Test func aTurnStartedFromThePanelComposerRaisesStopWithoutWaitingForAPoll() async throws {
+        let r = try await rig(Data.inFlight())
+        defer { r.stop() }
+        #expect(!r.runtime.stop.presentation(session: try r.session()).showsStop, "쉬는 세션: Stop이 없다")
+        await openConversation(r)
+        await r.runtime.chat.send("Also update the refund window wording", in: Data.conversationID)
+        #expect(await eventually { r.sessions.items.first?.hasOpenTask == true }, "보낸 뒤 세션을 다시 읽어 열린 task를 안다")
+        #expect(r.runtime.stop.presentation(session: try r.session()).showsStop, "Stop 원")
+    }
+
+    @Test func sendAgainAndAReferentPickFromThePanelAlsoReadTheSessionAgain() async throws {
+        let r = try await rig(Data.waiting())
+        defer { r.stop() }
+        await openConversation(r)
+        let failed = try #require(r.runtime.chat.turns(for: Data.conversationID).first { $0.delivery?.state == .notSent })
+        r.gateway.deliverReply = AgentDelivery(state: .sent)
+        #expect(!(try r.session()).hasOpenTask)
+        await r.runtime.panelDesk.sendAgain(failed, in: Data.conversationID)
+        #expect(await eventually { r.sessions.items.first?.hasOpenTask == true }, "Send again 뒤 세션을 다시 읽는다")
     }
 
     // MARK: Stop

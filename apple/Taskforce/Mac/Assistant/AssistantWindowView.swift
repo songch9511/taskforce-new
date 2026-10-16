@@ -208,6 +208,7 @@ struct AssistantWindowView: View {
                 }
             },
             viewFull: { model.viewFull($0) },
+            retry: { turn in Task { await model.retryDelivery(turn) } },
             referentMenu: model.referentMenu,
             chooseReferent: { id in Task { await model.chooseReferent(id) } },
             candidateLabel: { candidate in

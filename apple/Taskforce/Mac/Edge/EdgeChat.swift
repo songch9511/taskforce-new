@@ -88,6 +88,12 @@ final class ChatRuntime {
             await narrow?.refresh()
             await full?.refresh()
         } }
+        // 턴을 시작할 수 있는 모든 입구(패널 보내기 · Assistant 창 보내기 · Send again · 후보 고르기)가 세션을 다시 읽게 한다:
+        // 쉬는 세션(열린 task 없음)은 5초 읽기가 돌지 않아, 다시 읽지 않으면 Stop 원이 서지 않는다
+        chat.onAgentTurnMayStart = { Task { @MainActor in
+            await narrow?.refresh()
+            await full?.refresh()
+        } }
         pillFlow?.onNeedsReread = { Task { @MainActor in
             await narrow?.refresh()
             await full?.refresh()

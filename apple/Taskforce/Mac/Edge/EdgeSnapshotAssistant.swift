@@ -480,6 +480,7 @@ final class AgentChatSampleGateway: ChatGateway, IssueScreensGateway, AssistantG
     private var _postDeliveries: [AgentDelivery] = []
     private var _stopMayContinue = false
     private var _stopConfirms = false
+    private var _deliverFailure: Error?
     private var _deliverReply = AgentDelivery(state: .queued, reason: .sessionBusy)
     private var _openFailure: Error?
     private var _resumeFailure: Error?
@@ -509,6 +510,12 @@ final class AgentChatSampleGateway: ChatGateway, IssueScreensGateway, AssistantG
         get { lock.withLock { _stopMayContinue } }
         set { lock.withLock { _stopMayContinue = newValue } }
     }
+    /// Send again(`deliver`)를 이 오류로 거절한다 (동의 철회 · 409 …): nil이면 서버가 받아들인다
+    var deliverFailure: Error? {
+        get { lock.withLock { _deliverFailure } }
+        set { lock.withLock { _deliverFailure = newValue } }
+    }
+
     var stopConfirms: Bool {
         get { lock.withLock { _stopConfirms } }
         set { lock.withLock { _stopConfirms = newValue } }
@@ -597,17 +604,33 @@ final class AgentChatSampleGateway: ChatGateway, IssueScreensGateway, AssistantG
             return message
         }
         let sessionID = state.conversations.first { $0.id == conversationID }?.target.agentSessionID
+        // 서버는 열린 task가 없으면 새 턴을 시작한다: 세션을 다시 읽어야 Stop 원이 선다
+        if delivery.state == .sent { startTurnIfIdle(in: conversationID) }
         return AgentPostedMessage(
             message: message, delivery: delivery,
             agentTask: sessionID.map { AgentTaskRef(id: IssueSnapshotData.task(1), state: .dispatched, agentSessionID: $0) }
         )
     }
 
+    /// 서버가 그 대화의 세션에서 새 턴을 시작한다 (열린 task가 없을 때)
+    private func startTurnIfIdle(in conversationID: UUID) {
+        guard let sessionID = state.conversations.first(where: { $0.id == conversationID })?.target.agentSessionID else { return }
+        update { state in
+            guard !state.sessions.tasks.contains(where: { $0.agentSessionID == sessionID && $0.isOpen }) else { return }
+            let turn = (state.sessions.tasks.filter { $0.agentSessionID == sessionID }.compactMap(\.turnSeq).max() ?? 0) + 1
+            state.sessions.tasks.append(AgentTaskRecord(
+                agentSessionID: sessionID, runID: IssueSnapshotData.task(1), turnSeq: turn, state: .dispatched, lastLiveState: nil, cancelRequestedAt: nil
+            ))
+        }
+    }
+
     // MARK: AgentConversationGateway
 
     func deliver(conversationID: UUID, messageIDs: [UUID]?) async throws -> AgentDeliverResponse {
         record("deliver:\((messageIDs ?? []).map(\.uuidString).joined(separator: ","))")
+        if let failure = deliverFailure { throw failure }
         let reply = deliverReply
+        if reply.state == .sent { startTurnIfIdle(in: conversationID) }
         let ids = messageIDs ?? state.deliveries.filter { [.notSent, .expired].contains($0.value.state) }.map(\.key)
         var results: [AgentDeliverResult] = []
         for id in ids {
@@ -942,7 +965,7 @@ struct SnapshotTerminalLauncher: AgentTerminalLauncher {
 
 /// 에이전트 대화 PNG (OA D4a-1, 디자인 비교용): `-TF_EDGE_SHELL YES -TFSampleData -TF_S3B YES -TF_U2 YES -TFEdgeSnapshot <폴더> -TFEdgeSnapshotIssues -TFEdgeSnapshotAgentChat`
 /// (+ `-TFSnapshotDark`, `-TFReduceMotion YES`). 승인 전 새 문구 후보(`AgentNewCopy`)가 이 견본에서만 보인다. 서버는 가짜(`AgentChatSampleGateway`)라 렌더 fixture일 뿐이다.
-/// 남기는 것(`mac-edge-agentchat-<이름>.png`): window-empty · window-in-flight(OA-4) · window-waiting(OA-4) · window-reasons · window-queued · window-referent-menu · window-long-reason · window-running(Stop 원) ·
+/// 남기는 것(`mac-edge-agentchat-<이름>.png`): window-empty · window-in-flight(OA-4) · window-waiting(OA-4) · window-send-again-refused(동의 철회 뒤 거절) · window-reasons · window-queued · window-referent-menu · window-long-reason · window-running(Stop 원) ·
 /// window-stop-requested · window-stop-may-continue · window-truncated · window-truncated-expanded · window-events · window-many · window-hundred-plus · window-chip-added(auto 칩을 누른 뒤) ·
 /// panel-running · panel-idle-view-full(OA-3) · panel-external(OA-3) · panel-resume-card(OA-3) · panel-other-mac · panel-stop-requested · panel-stop-may-continue.
 /// (Resume 뒤 "아직 열림" 빨간 줄 · 폴더 고르기는 실제 프로세스 검사기를 쓰는 D4a-2의 장면이다)
@@ -975,6 +998,7 @@ enum AgentChatSnapshot {
             sample.state = state
             sample.stopConfirms = false
             sample.stopMayContinue = false
+            sample.deliverFailure = nil
             sample.deliverReply = AgentDelivery(state: .queued, reason: .sessionBusy)
             runtime.scope.accountLeft()
             runtime.chat.fullTextLookup = { key in AgentChatSampleData.fullText(forKey: key) }
@@ -999,6 +1023,16 @@ enum AgentChatSnapshot {
         await world(AgentChatSampleData.waiting())
         _ = await window(chip: issue139)
         shootWindow("window-waiting")
+        // 동의 철회 뒤 Send again이 409로 거절됐다: 기존 동의 안내 + 상태 줄(Not sent · Try again)이 전달 줄을 대신한다
+        await world(AgentChatSampleData.waiting())
+        sample.deliverFailure = APIError.server(status: 409, code: .conflict, message: APIError.consentRequiredMessage)
+        if let model = await window(chip: issue139),
+           let failed = runtime.chat.turns(for: AgentChatSampleData.conversationID).first(where: { model.deliveryLine(for: $0)?.strong == "Not sent" }) {
+            await model.sendAgain(failed)
+            await settle()
+            shootWindow("window-send-again-refused")
+        }
+        sample.deliverFailure = nil
         await world(AgentChatSampleData.reasons())
         _ = await window()
         shootWindow("window-reasons")
