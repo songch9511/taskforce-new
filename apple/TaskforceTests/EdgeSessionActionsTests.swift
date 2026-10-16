@@ -248,6 +248,50 @@ struct EdgeSessionActionsTests {
         #expect(!SessionPanelView.showsConsentNotice(chat: chat, conversationID: Data.conversationID))
     }
 
+    // MARK: 기능 꺼짐: 세션 패널의 안내 · 복구
+
+    /// 재전송이 기능 꺼짐으로 실패하면 Assistant 창과 같은 안내("Chats aren't available yet." + Try again)가 패널에도 뜨고 입력이 막힌다.
+    /// 서버가 돌아와 성공한 읽기가 accepted를 확인하면 입력이 돌아온다 (안내만 지우고 막힌 채로 두지 않는다)
+    @Test func aFeatureOffResendShowsTheUnavailableNoticeInThePanelAndARecoveringReadReEnablesTheComposer() async throws {
+        let r = try await rig(Data.waiting())
+        defer { r.stop() }
+        await openConversation(r)
+        let chat = r.runtime.chat
+        let failed = try #require(chat.turns(for: Data.conversationID).first { $0.delivery?.state == .notSent })
+        #expect(!SessionPanelView.showsUnavailableNotice(chat: chat) && !SessionPanelView.isComposerDisabled(chat: chat))
+        let off = APIError.server(status: 404, code: .notFound, message: APIError.featureOffMessage)
+        r.gateway.deliverFailure = off
+        r.gateway.deliveriesFailure = off
+        await r.runtime.panelDesk.sendAgain(failed, in: Data.conversationID)
+        await chat.settle()
+        #expect(SessionPanelView.showsUnavailableNotice(chat: chat) && SessionPanelView.isComposerDisabled(chat: chat), "패널에도 기능 꺼짐 안내가 뜨고 입력이 막힌다")
+        // 서버가 돌아왔고 다른 기기가 이미 보냈다
+        r.gateway.deliverFailure = nil
+        r.gateway.deliveriesFailure = nil
+        r.gateway.update { $0.deliveries[failed.id] = AgentDelivery(state: .accepted) }
+        await chat.refreshDeliveries(Data.conversationID)
+        #expect(!SessionPanelView.showsUnavailableNotice(chat: chat) && !SessionPanelView.isComposerDisabled(chat: chat), "성공한 읽기가 복구를 확인했다")
+        let after = try #require(chat.turns(for: Data.conversationID).first { $0.id == failed.id })
+        #expect(after.status == .sent && after.delivery?.state == .accepted)
+    }
+
+    /// 읽기가 아직 돌아오지 않았어도 안내의 Try again이 막힘을 풀고 다시 읽는다 (Assistant 창의 `retryUnavailable()`과 같은 길)
+    @Test func theUnavailableNoticeInThePanelHasTheSameTryAgain() async throws {
+        let r = try await rig(Data.waiting())
+        defer { r.stop() }
+        await openConversation(r)
+        let chat = r.runtime.chat
+        let failed = try #require(chat.turns(for: Data.conversationID).first { $0.delivery?.state == .notSent })
+        let off = APIError.server(status: 404, code: .notFound, message: APIError.featureOffMessage)
+        r.gateway.deliverFailure = off
+        r.gateway.deliveriesFailure = off
+        await r.runtime.panelDesk.sendAgain(failed, in: Data.conversationID)
+        #expect(SessionPanelView.showsUnavailableNotice(chat: chat))
+        SessionPanelView.retryUnavailable(chat)
+        #expect(!SessionPanelView.showsUnavailableNotice(chat: chat), "Try again이 막힘을 바로 푼다")
+        await chat.settle()
+    }
+
     // MARK: Stop
 
     @Test func theSessionPanelStopsThroughTheSessionRouteOnceAndTheStatusLineSaysRequested() async throws {

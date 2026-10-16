@@ -481,6 +481,7 @@ final class AgentChatSampleGateway: ChatGateway, IssueScreensGateway, AssistantG
     private var _stopMayContinue = false
     private var _stopConfirms = false
     private var _deliverFailure: Error?
+    private var _deliveriesFailure: Error?
     private var _deliverReply = AgentDelivery(state: .queued, reason: .sessionBusy)
     private var _openFailure: Error?
     private var _resumeFailure: Error?
@@ -514,6 +515,12 @@ final class AgentChatSampleGateway: ChatGateway, IssueScreensGateway, AssistantG
     var deliverFailure: Error? {
         get { lock.withLock { _deliverFailure } }
         set { lock.withLock { _deliverFailure = newValue } }
+    }
+
+    /// 전달 읽기(`GET …/delivery`)를 이 오류로 거절한다 (기능 꺼짐: 서버가 꺼져 있으면 읽기도 404다)
+    var deliveriesFailure: Error? {
+        get { lock.withLock { _deliveriesFailure } }
+        set { lock.withLock { _deliveriesFailure = newValue } }
     }
 
     var stopConfirms: Bool {
@@ -661,6 +668,7 @@ final class AgentChatSampleGateway: ChatGateway, IssueScreensGateway, AssistantG
 
     func deliveries(conversationID: UUID, sinceSeq: Int?) async throws -> ConversationDeliveryResponse {
         record("deliveries:\(conversationID.uuidString):\(sinceSeq.map(String.init) ?? "nil")")
+        if let failure = deliveriesFailure { throw failure }
         let current = state
         let rows = (current.messages[conversationID] ?? []).filter { $0.role.isUser && $0.seq > (sinceSeq ?? 0) }.sorted { $0.seq < $1.seq }.prefix(100)
         return ConversationDeliveryResponse(messages: rows.map { row in
@@ -967,7 +975,7 @@ struct SnapshotTerminalLauncher: AgentTerminalLauncher {
 /// (+ `-TFSnapshotDark`, `-TFReduceMotion YES`). 승인 전 새 문구 후보(`AgentNewCopy`)가 이 견본에서만 보인다. 서버는 가짜(`AgentChatSampleGateway`)라 렌더 fixture일 뿐이다.
 /// 남기는 것(`mac-edge-agentchat-<이름>.png`): window-empty · window-in-flight(OA-4) · window-waiting(OA-4) · window-send-again-refused(동의 철회 뒤 거절) · window-reasons · window-queued · window-referent-menu · window-long-reason · window-running(Stop 원) ·
 /// window-stop-requested · window-stop-may-continue · window-truncated · window-truncated-expanded · window-events · window-many · window-hundred-plus · window-chip-added(auto 칩을 누른 뒤) ·
-/// panel-running · panel-idle-view-full(OA-3) · panel-external(OA-3) · panel-resume-card(OA-3) · panel-send-again-refused(동의 철회 뒤 거절) · panel-other-mac · panel-stop-requested · panel-stop-may-continue.
+/// panel-running · panel-idle-view-full(OA-3) · panel-external(OA-3) · panel-resume-card(OA-3) · panel-send-again-refused(동의 철회 뒤 거절) · panel-feature-off(기능 꺼짐) · panel-other-mac · panel-stop-requested · panel-stop-may-continue.
 /// (Resume 뒤 "아직 열림" 빨간 줄 · 폴더 고르기는 실제 프로세스 검사기를 쓰는 D4a-2의 장면이다)
 @MainActor
 enum AgentChatSnapshot {
@@ -999,6 +1007,7 @@ enum AgentChatSnapshot {
             sample.stopConfirms = false
             sample.stopMayContinue = false
             sample.deliverFailure = nil
+            sample.deliveriesFailure = nil
             sample.deliverReply = AgentDelivery(state: .queued, reason: .sessionBusy)
             runtime.scope.accountLeft()
             runtime.chat.fullTextLookup = { key in AgentChatSampleData.fullText(forKey: key) }
@@ -1142,6 +1151,20 @@ enum AgentChatSnapshot {
             shootPanel("panel-send-again-refused")
         }
         sample.deliverFailure = nil
+        shell.closeSessionPanel()
+        // 서버의 대화 기능이 꺼졌다 (재전송 · 읽기가 404): 패널에도 "Chats aren't available yet." + Try again, 입력이 막힌다
+        await world(AgentChatSampleData.waiting())
+        let off = APIError.server(status: 404, code: .notFound, message: APIError.featureOffMessage)
+        sample.deliverFailure = off
+        sample.deliveriesFailure = off
+        await openPanel()
+        if let failed = runtime.chat.turns(for: AgentChatSampleData.conversationID).first(where: { $0.delivery?.state == .notSent }) {
+            await runtime.panelDesk.sendAgain(failed, in: AgentChatSampleData.conversationID)
+            await settle(0.8)
+            shootPanel("panel-feature-off")
+        }
+        sample.deliverFailure = nil
+        sample.deliveriesFailure = nil
         shell.closeSessionPanel()
         await world(AgentChatSampleData.otherMac())
         await openPanel()

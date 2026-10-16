@@ -142,6 +142,15 @@ struct SessionPanelView: View {
         chat.needsConsent(in: conversationID)
     }
 
+    /// 기능 꺼짐 안내를 보이나 (Assistant 창의 "Chats aren't available yet."와 같은 조건)
+    static func showsUnavailableNotice(chat: ChatStore) -> Bool { chat.isUnavailable }
+
+    /// 입력창이 막혔나 (기능이 꺼졌다)
+    static func isComposerDisabled(chat: ChatStore) -> Bool { chat.isUnavailable }
+
+    /// 기능 꺼짐 안내의 Try again: 막힘을 풀고 목록을 다시 읽는다 (Assistant 창과 같은 `retryUnavailable()`)
+    static func retryUnavailable(_ chat: ChatStore) { chat.retryUnavailable() }
+
     /// 동의 안내의 단추: 셸의 Connections (Assistant 창의 `openConnections`와 같은 길 — 컨트롤러가 둘 다 `rail.onConnections()`에 잇는다)
     static func openConnections(_ shell: EdgeShellModel) {
         shell.onConnect()
@@ -176,6 +185,12 @@ struct SessionPanelView: View {
                     if let problem {
                         Notice(title: problem == .offline ? PanelEmptyKind.offline.title : ChatCopy.couldNotLoad) {
                             Button(ChatCopy.tryAgain) { chat.loadConversation(conversationID) }.buttonStyle(TFButtonStyle(.secondary, size: .sm))
+                        }
+                    }
+                    // 서버의 대화 기능이 꺼졌다: Assistant 창과 같은 안내 · 같은 Try again (복구는 성공한 읽기도 확인한다)
+                    if Self.showsUnavailableNotice(chat: chat) {
+                        Notice(title: ChatCopy.unavailable) {
+                            Button(ChatCopy.tryAgain) { Self.retryUnavailable(chat) }.buttonStyle(TFButtonStyle(.secondary))
                         }
                     }
                     // 동의가 먼저 필요하다 (Send again · 후보 고르기가 동의 철회로 거절됐다): Assistant 창과 같은 안내 · 같은 Connections 길
@@ -267,7 +282,7 @@ struct SessionPanelView: View {
             composer(session, conversationID: session.conversationID, disabled: true)
                 .accessibilityHint(Self.waitingHint)
         case .ready(let conversationID):
-            composer(session, conversationID: conversationID, disabled: chat.isUnavailable)
+            composer(session, conversationID: conversationID, disabled: Self.isComposerDisabled(chat: chat))
         }
     }
 

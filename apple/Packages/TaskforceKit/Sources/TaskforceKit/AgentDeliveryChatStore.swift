@@ -131,6 +131,9 @@ extension ChatStore {
             guard scope.isCurrent(token), deliveryReadSeq[id] == sequence, !isStale(id, since: started) else { return }
             deliveryBook.merge(page.messages, readStartedAt: readStart, appliedAt: tickRow())
             dropNoticesThatProgressed()
+            // 전달 읽기(`/api/v2/conversations/{id}/delivery`)가 성공했다: 서버의 대화 기능이 켜져 있다 → 꺼짐 때문에 입력을 막던 플래그를 푼다
+            // (안내만 지우고 플래그를 두면 서버가 돌아온 뒤에도 입력이 막힌 채 복구 길이 없다)
+            if isUnavailable { isUnavailable = false }
             deliveryRead.insert(id)
             guard let next = AgentDeliveryReadPolicy.nextSince(afterPage: page.messages) else { break }
             since = next

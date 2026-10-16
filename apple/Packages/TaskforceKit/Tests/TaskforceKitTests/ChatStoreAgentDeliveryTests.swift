@@ -512,8 +512,10 @@ struct ChatStoreAgentDeliveryTests {
         await chat.settle()
         #expect(chat.turns(for: conversation.id)[0].status == .failed(ReadFailure.userMessage(refusal)), "서버가 거절했다: 기존 오류 줄")
         #expect(!chat.needsConsent(in: conversation.id))
-        // 기능 꺼짐은 기존 "Chats aren't available yet" 안내로
-        agent.deliverHandler = { _, _ in throw APIError.server(status: 404, code: .notFound, message: APIError.featureOffMessage) }
+        // 기능 꺼짐은 기존 "Chats aren't available yet" 안내로 (서버가 꺼져 있으면 읽기도 404다)
+        let off = APIError.server(status: 404, code: .notFound, message: APIError.featureOffMessage)
+        agent.deliverHandler = { _, _ in throw off }
+        agent.deliveriesHandler = { _, _ in throw off }
         await chat.retryDelivery(message.id, in: conversation.id)
         #expect(chat.isUnavailable && chat.turns(for: conversation.id)[0].status == .failed(ChatCopy.unavailable))
     }
@@ -629,6 +631,27 @@ struct ChatStoreAgentDeliveryTests {
         serve { _ in [Fx.entry(message, AgentDelivery(state: .accepted))] }
         await chat.refreshDeliveries(conversation.id)
         #expect(chat.turns(for: conversation.id)[0].status == .sent)
+    }
+
+    /// 기능 꺼짐 → 복구 → 서버가 accepted를 읽어 줌: 안내만이 아니라 입력을 막던 `isUnavailable`도 풀린다 (복구를 확인한 성공 읽기)
+    @Test func aSuccessfulReadAfterTheFeatureWasOffClearsTheUnavailableFlagAndTheComposerComesBack() async {
+        let (conversation, message) = serveOne(AgentDelivery(state: .notSent))
+        let chat = store()
+        await open(conversation, messages: [message], chat: chat)
+        let off = APIError.server(status: 404, code: .notFound, message: APIError.featureOffMessage)
+        agent.deliverHandler = { _, _ in throw off }
+        agent.deliveriesHandler = { _, _ in throw off }
+        await chat.sendAgain(message.id, in: conversation.id)
+        await chat.settle()
+        #expect(chat.isUnavailable && chat.turns(for: conversation.id)[0].status == .failed(ChatCopy.unavailable) && !chat.canCompose(in: conversation.id), "기능 꺼짐: 입력이 막힌다")
+        // 읽기가 실패하는 동안은 막힌 채다 (복구를 확인하지 못했다)
+        await chat.refreshDeliveries(conversation.id)
+        #expect(chat.isUnavailable)
+        // 서버가 돌아왔고 다른 기기가 보냈다
+        serve { _ in [Fx.entry(message, AgentDelivery(state: .accepted))] }
+        await chat.refreshDeliveries(conversation.id)
+        #expect(!chat.isUnavailable && chat.canCompose(in: conversation.id), "성공한 읽기가 복구를 확인했다: 입력이 돌아온다")
+        #expect(chat.turns(for: conversation.id)[0].status == .sent && line(chat, message) == .accepted)
     }
 
     // MARK: 읽는 중에 필요해진 후속 읽기
