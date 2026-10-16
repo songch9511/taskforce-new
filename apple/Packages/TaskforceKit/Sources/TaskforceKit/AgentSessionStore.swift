@@ -4,12 +4,27 @@ import Observation
 /// 세션 저장소가 서버와 닿는 면 (읽기 = Supabase RLS select만). 저장소는 이 프로토콜만 안다: 시험은 가짜로 붙잡기 · 실패 · 순서를 다룬다 (실제 연결은 `TaskforceReads`)
 public protocol AgentSessionGateway: Sendable {
     func agentSessionSnapshot() async throws -> AgentSessionSnapshot
+    /// 그 세션들만 좁게 읽는다 (OA D4a-13b: Assistant 창이 열린 에이전트 대화의 세션과 그 task). 기본 구현은 전체를 읽어 거른다 (좁게 읽는 길이 없는 가짜)
+    func agentSessionSnapshot(sessionIDs: Set<UUID>) async throws -> AgentSessionSnapshot
+}
+
+extension AgentSessionGateway {
+    public func agentSessionSnapshot(sessionIDs: Set<UUID>) async throws -> AgentSessionSnapshot {
+        var snapshot = try await agentSessionSnapshot()
+        snapshot.sessions = snapshot.sessions.filter { sessionIDs.contains($0.id) }
+        snapshot.tasks = snapshot.tasks.filter { sessionIDs.contains($0.agentSessionID) }
+        snapshot.runs = snapshot.runs.filter { $0.agentSessionID.map(sessionIDs.contains) ?? false }
+        snapshot.conversations = snapshot.conversations.filter { sessionIDs.contains($0.agentSessionID) }
+        return snapshot
+    }
 }
 
 /// 세션 읽기 상태 (OA U2). Issues · 이슈 목록 · 상세 · 세션 패널 · 레일의 링이 같은 것을 본다.
 /// - 읽기는 RLS 다섯 표뿐이고 쓰기는 없다 (세션 route 요청은 `AgentSessionEndpoints.swift`, 화면에 걸지 않는다)
 /// - 마지막에 시작한 읽기만 반영한다. 계정이 떠나면 모두 비우고 늦은 응답을 버린다 (`AccountScope`)
 /// - 다시 읽기는 `AgentSessionReadPolicy`: 열린 task가 있으면 5초마다. 그 밖의 계기(화면 열기 · `actions` 변경 · 온라인 복귀 · 깸)는 부르는 쪽이 `refresh()`를 부른다
+/// - **좁게 읽기**(`focus`, OA D4a-13b): Assistant 창은 U2의 `issueScreens` 게이트 없이도 열린다. 에이전트 대화가 열려 있으면 그 대화의 세션과 task만 좁게 읽는 저장소를 따로 둔다 (같은 규칙 · 같은 다시 읽기).
+///   `focus`가 주어지면 그 세션들만 읽고, 비어 있으면 읽지 않는다
 /// - 세션 이름 · 대화 id는 사용자 글이라 메모리에만 둔다 (로그 · 디스크 없음)
 @MainActor
 @Observable
@@ -31,6 +46,7 @@ public final class AgentSessionStore {
     @ObservationIgnored private let scope: AccountScope
     @ObservationIgnored private let now: @Sendable () -> Date
     @ObservationIgnored private let sleep: Sleep
+    @ObservationIgnored private let focus: (@MainActor @Sendable () -> Set<UUID>)?
     @ObservationIgnored private var snapshot: AgentSessionSnapshot?
     /// 세션의 마지막 task가 `completed`로 바뀌는 것을 본 때 (3초 동안 Done 링)
     @ObservationIgnored private var doneObservedAt: [UUID: Date] = [:]
@@ -44,12 +60,13 @@ public final class AgentSessionStore {
     /// - sleep: 다음 읽기 · Done 만료까지 기다리는 함수 (시험은 손으로 돌린다)
     public init(
         gateway: any AgentSessionGateway, scope: AccountScope, now: @escaping @Sendable () -> Date = { Date() },
-        sleep: @escaping Sleep = { try? await Task.sleep(for: .seconds($0)) }
+        sleep: @escaping Sleep = { try? await Task.sleep(for: .seconds($0)) }, focus: (@MainActor @Sendable () -> Set<UUID>)? = nil
     ) {
         self.gateway = gateway
         self.scope = scope
         self.now = now
         self.sleep = sleep
+        self.focus = focus
         scope.onLeft { [weak self] in self?.reset() }
     }
 
@@ -95,11 +112,15 @@ public final class AgentSessionStore {
     /// 다시 읽는다 (화면을 열 때 · `actions` 변경 · 온라인 복귀 · 깸 · 5초). 받은 것이 있으면 실패해도 그대로 둔다. 마지막에 시작한 읽기만 반영한다
     public func refresh() async {
         guard let token = scope.token else { return }
+        // 좁게 읽는 저장소: 열린 에이전트 대화가 없으면 읽지 않는다 (다음 읽기 때 초점이 생기면 읽는다)
+        let focused = focus?()
+        if let focused, focused.isEmpty { return }
         readSequence += 1
         let sequence = readSequence
         if !hasRead { load = .loading }
         do {
-            let fresh = try await gateway.agentSessionSnapshot()
+            let fresh: AgentSessionSnapshot
+            if let focused { fresh = try await gateway.agentSessionSnapshot(sessionIDs: focused) } else { fresh = try await gateway.agentSessionSnapshot() }
             guard scope.isCurrent(token), sequence == readSequence else { return }
             apply(fresh)
             readsUnavailable = false

@@ -307,4 +307,31 @@ struct AssistantWindowModelTests {
         fresh.model.toggleHistory()
         #expect(!fresh.model.isEmptyConversation, "History 본문은 빈 대화가 아니다")
     }
+
+    // MARK: auto 칩 누르기 (OA D4a-12)
+
+    @Test func pressingAnAutoChipInAnAgentConversationMakesItAddedAndSendsItAsAdded() async {
+        let r = await rig()
+        r.model.followOpenItem(item(action1, "Rewrite pricing page copy"))
+        if let option = r.targets.options.first(where: { $0.name == "Codex" }) { r.model.chooseTarget(option) }
+        #expect(r.model.toAgent)
+        let id = r.model.chips.chips[0].id
+        #expect(r.model.chipLabel(r.model.chips.chips[0]).hasSuffix(" · Not sent"))
+        r.model.promoteChip(id)
+        #expect(r.model.chips.chips[0].origin == .added && !r.model.chipLabel(r.model.chips.chips[0]).hasSuffix(" · Not sent"))
+        assistant.postAgentHandler = { conversation, cmid, text in
+            AgentPostedMessage(message: Chats.message(1, in: conversation, seq: 1, role: .user, text: text, cmid: cmid, at: 1), delivery: AgentDelivery(state: .sent))
+        }
+        await r.model.send("Go")
+        #expect(assistant.sentAttachments.last?.map(\.origin) == [.added])
+    }
+
+    @Test func pressingAnAutoChipInATaskforceConversationChangesNothing() async {
+        let r = await rig()
+        r.model.followOpenItem(item(action1, "Pricing"))
+        let before = r.model.chips
+        #expect(!r.model.toAgent)
+        r.model.promoteChip(r.model.chips.chips[0].id)
+        #expect(r.model.chips == before, "Taskforce 대상에서는 바뀌지 않는다 (보낸 뒤에야 added가 된다)")
+    }
 }

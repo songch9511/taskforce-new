@@ -249,12 +249,14 @@ enum IssueSnapshotData {
     // MARK: 게이트웨이 교체 (견본 하네스에서만)
 
     /// `-TFEdgeSnapshotIssues`이면 Chats · 세션 · 번호 · 상세를 읽는 곳을 견본으로 바꾼다 (아니면 그대로)
+    /// `-TFEdgeSnapshotAgentChat`이면 에이전트 대화 견본 서버를 읽는다 (OA D4a-1: 전달 줄 · Stop · 알약이 서버처럼 움직인다)
     static func gateway(replacing gateway: any ChatGateway) -> any ChatGateway {
-        isEnabled ? IssueSampleGateway.shared : gateway
+        if AgentChatSnapshot.isEnabled { return AgentChatSampleGateway.shared }
+        return isEnabled ? IssueSampleGateway.shared : gateway
     }
 
     static func contextGateway(replacing gateway: (any ContextGateway)?) -> (any ContextGateway)? {
-        isEnabled ? IssueSampleContextGateway.shared : gateway
+        isEnabled || AgentChatSnapshot.isEnabled ? IssueSampleContextGateway.shared : gateway
     }
 }
 
@@ -509,6 +511,11 @@ final class IssueSampleGateway: ChatGateway, IssueScreensGateway, @unchecked Sen
 @MainActor
 enum IssueSnapshot {
     static func capture(_ edge: EdgeShellController, file: (String) -> URL, pause: @escaping (Double) async -> Void) async {
+        // 에이전트 대화 장면(OA D4a-1)은 같은 인자에 `-TFEdgeSnapshotAgentChat`을 더하면 따로 돈다
+        if AgentChatSnapshot.isEnabled {
+            await AgentChatSnapshot.capture(edge, file: file, pause: pause)
+            return
+        }
         guard let runtime = edge.chat, let issues = runtime.issues, let contexts = runtime.contexts else {
             print("IssueSnapshot: 새 Issues 화면이 꺼진 구성이다 (-TF_EDGE_SHELL YES -TF_S3B YES -TF_U2 YES 필요) chat=\(edge.chat != nil) issues=\(edge.chat?.issues != nil)")
             return

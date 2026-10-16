@@ -4,7 +4,8 @@ import Foundation
 // - auto: 패널에 열린 항목. **메시지를 보낼 때까지 따라다니고**, 보낸 뒤에는 added로 남는다. 점선 칩
 // - added: 사용자가 더한 것 (Ask · 끌어놓기 · Attach는 U2 · DZ 뒤). 채운 칩
 // - 제거(×)는 auto도 되고 이 대화에서 유지된다. 최대 20개, 개수는 화면에 보이지 않는다
-// - 에이전트 대상이면 auto 칩은 보내지 않는다: 점선 그대로 " · Not sent"가 붙는다 (보낼지는 서버가 정한다, 앱은 모든 칩을 origin과 함께 싣는다)
+// - 에이전트 대상이면 auto 칩은 보내지 않는다: 점선 그대로 " · Not sent"가 붙는다 (보낼지는 서버가 정한다, 앱은 모든 칩을 origin과 함께 싣는다).
+//   그 칩을 사용자가 누르면 added가 된다 (`promote`, OA D4a-12): 꼬리가 없어지고 면이 채워지고 보낼 칩이 된다
 
 /// 칩 하나. 이름은 항목의 이름 (이슈는 번호가 앞)
 public struct AssistantChip: Identifiable, Equatable, Sendable {
@@ -78,6 +79,14 @@ public struct AssistantChipSet: Equatable, Sendable {
         }
         guard !isFull else { return false }
         chips.append(chip)
+        return true
+    }
+
+    /// 에이전트 대상에서 auto 칩을 눌렀다 (OA D4a-12, 계약 v3 2.3): added가 된다. 이미 added거나 없는 칩이면 false
+    @discardableResult
+    public mutating func promote(_ id: String) -> Bool {
+        guard let index = chips.firstIndex(where: { $0.id == id }), chips[index].origin == .auto else { return false }
+        chips[index].origin = .added
         return true
     }
 

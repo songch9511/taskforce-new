@@ -3,7 +3,7 @@ import Foundation
 // 대화 API v2 확장의 요청 (OA U1이 쓰는 셋: 대상 목록 · 대상을 지정한 대화 만들기 · 칩을 실은 메시지 보내기).
 // 모양은 `AgentConversationContracts.swift`, 서버는 `src/lib/api/contract.ts`의 `// --- D1d ---` 블록이다.
 // 기존 `ChatEndpoints.swift`의 줄은 바꾸지 않는다: 같은 이름의 새 인자 조합(`target:` · `attachments:`)을 이 파일에 더할 뿐이다.
-// Send again · referent · Stop · 세션 · 답은 이 PR에서 부르지 않는다 (D4a · D4b-m · U2 몫, DTO만 있다).
+// Send again · referent · 대화 Stop · 전달 읽기는 D4a-1이 더했다 (아래 `extension APIClient`의 두 번째 블록). 세션 route는 `AgentSessionEndpoints.swift`, 질문 답은 D4b-m이다.
 
 /// `POST /api/v2/conversations` 본문: 기존 `{ id, title?, context_id }` + `target`
 struct CreateConversationWithTargetRequest: Encodable {
@@ -80,5 +80,43 @@ extension APIClient {
             .post, "conversations/\(conversationID.lowercased)/messages",
             body: PostChatMessageWithAttachmentsRequest(clientMessageID: clientMessageID, text: text, attachments: attachments), version: .v2
         )
+    }
+}
+
+/// 앱이 서버에 보내기 전에 막는 요청: Send again의 `message_ids`는 1–50개다 (서버 `deliverAgentMessagesRequestSchema`가 그 밖은 400)
+public enum AgentDeliverRequestError: Error, Equatable, Sendable {
+    case invalidCount
+}
+
+extension APIClient {
+    public static let deliverMessageLimit = 50
+
+    private func conversationPath(_ id: UUID, _ tail: String) -> String {
+        "conversations/\(id.lowercased)/\(tail)"
+    }
+
+    /// Send again (OD-8): 보내지 못한(not_sent) · 만료된(expired) 메시지를 서버 id로 다시 보낸다. `messageIDs`가 nil이면 그 대화의 보류 · 만료 메시지 전부.
+    /// 두 번 눌러도 새 전달은 한 번이다 (서버). 1–50개가 아니면 서버가 400이라 보내지 않고 `invalidCount`를 던진다
+    public func deliverAgentMessages(conversationID: UUID, messageIDs: [UUID]?) async throws -> AgentDeliverResponse {
+        if let messageIDs, !(1...Self.deliverMessageLimit).contains(messageIDs.count) { throw AgentDeliverRequestError.invalidCount }
+        return try await send(.post, conversationPath(conversationID, "deliver"), body: AgentDeliverRequest(messageIDs: messageIDs), version: .v2)
+    }
+
+    /// `needs_referent` 후보 하나를 고른다. 응답은 보내기 응답과 같다 (새 전달 표시). 404 `not_found` · 409 `conflict` · `busy_retry`는 호출부가 다시 읽는다
+    public func setAgentReferent(conversationID: UUID, messageID: UUID, actionID: UUID) async throws -> AgentPostedMessage {
+        try await send(
+            .post, conversationPath(conversationID, "messages/\(messageID.lowercased)/referent"), body: AgentReferentRequest(actionID: actionID), version: .v2
+        )
+    }
+
+    /// Assistant 창의 Stop: 그 대화의 열린 작업을 멈춘다 (`requested_only` · `confirmed` · `processes: may_continue`)
+    public func stopAgentConversation(id: UUID) async throws -> AgentStopResponse {
+        try await send(.post, conversationPath(id, "stop"), body: EmptyAgentSessionRequest(), version: .v2)
+    }
+
+    /// 전달 다시 읽기 (OD-13): `since_seq` 뒤의 내 메시지 ≤ 100개의 전달 표시를 서버 계산으로. 읽기만 한다
+    public func agentDeliveries(conversationID: UUID, sinceSeq: Int?) async throws -> ConversationDeliveryResponse {
+        let query = sinceSeq.map { [URLQueryItem(name: "since_seq", value: String($0))] } ?? []
+        return try await send(.get, conversationPath(conversationID, "delivery"), query: query, version: .v2)
     }
 }

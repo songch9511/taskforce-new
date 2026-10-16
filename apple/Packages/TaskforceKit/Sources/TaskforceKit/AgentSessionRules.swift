@@ -89,6 +89,7 @@ public enum AgentSessionRules {
     /// - doneObservedAt: 세션의 마지막 task가 `completed`로 바뀌는 것을 본 때 (저장소가 정한다)
     public static func items(snapshot: AgentSessionSnapshot, doneObservedAt: [UUID: Date], now: Date) -> [AgentSessionItem] {
         let adapters = Dictionary(snapshot.connections.map { ($0.id, $0.adapter) }, uniquingKeysWith: { first, _ in first })
+        let bridges = Dictionary(snapshot.connections.compactMap { connection in connection.bridgeID.map { (connection.id, $0) } }, uniquingKeysWith: { first, _ in first })
         let sessions = snapshot.sessions.sorted { ($0.createdAt, $0.id.uuidString) < ($1.createdAt, $1.id.uuidString) }
         return sessions.map { session in
             let agent = adapters[session.connectionID].map(AgentMarkKind.of(adapter:)) ?? .placeholder
@@ -106,7 +107,8 @@ public enum AgentSessionRules {
                 connectionID: session.connectionID, status: session.status, ring: standing.ring, line: standing.line, createdAt: session.createdAt,
                 updatedAt: session.updatedAt, issueIDs: issues, currentIssueID: current,
                 conversationID: snapshot.conversations.first { $0.agentSessionID == session.id }?.id,
-                hasOpenTask: session.status != .closed && (task?.isOpen ?? false), pill: pill(for: session, task: task)
+                hasOpenTask: session.status != .closed && (task?.isOpen ?? false), pill: pill(for: session, task: task),
+                connectionBridgeID: bridges[session.connectionID], lastTaskState: task?.state, cancelRequested: task?.cancelRequestedAt != nil, turnSeq: session.lastTurnSeq
             )
         }
     }

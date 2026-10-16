@@ -2,18 +2,21 @@ import Foundation
 import Testing
 @testable import TaskforceKit
 
-/// 세션 route 네 개의 Swift 요청 (OA U2-37): 경로 · 메서드 · 본문 · 응답 · 오류. 화면에 걸지 않는다 (알약 동작 · Stop · 거절 문구는 D4a).
-/// 픽스처는 서버 route 시험의 모양이다 (`AgentSessionFixtures` 머리에 출처 sha)
+/// 세션 route 네 개의 Swift 요청 (OA U2-37 → D4a-20에서 `APIClient`로 합쳤다): 경로 · 메서드 · 본문 · 응답 · 오류.
+/// 픽스처는 서버 route 시험의 모양이다 (`AgentSessionFixtures` 머리에 출처 sha).
+/// 오류는 `APIClient`의 `APIError`로 올라오고, 서버가 준 원래 코드(`session_busy` · `busy_retry`)는 `APIErrorCode`가 지킨다 (D4a-20)
 struct AgentSessionEndpointsTests {
     typealias F = AgentSessionFixtures
 
-    private func client(status: Int = 200, body: String = "{}", onUnauthorized: APIClient.UnauthorizedHandler? = nil) -> (AgentSessionClient, String) {
+    private func client(status: Int = 200, body: String = "{}", onUnauthorized: APIClient.UnauthorizedHandler? = nil) -> (APIClient, String) {
         let host = "t\(UUID().uuidString.lowercased().prefix(8)).test"
         StubProtocol.register(host: host, reply: .init(status: status, body: body))
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [StubProtocol.self]
-        let api = APIClient(baseURL: URL(string: "https://\(host)")!, session: URLSession(configuration: configuration), token: { "token-123" })
-        return (AgentSessionClient(api: api, session: URLSession(configuration: configuration), token: { "token-123" }, onUnauthorized: onUnauthorized), host)
+        return (
+            APIClient(baseURL: URL(string: "https://\(host)")!, session: URLSession(configuration: configuration), token: { "token-123" }, onUnauthorized: onUnauthorized),
+            host
+        )
     }
 
     private func json(_ data: Data?) throws -> NSDictionary {
@@ -104,31 +107,36 @@ struct AgentSessionEndpointsTests {
         #expect(try await api2.openAgentSessionExternal(id: F.sessionID).session.status == .unknown("hibernating"))
     }
 
-    // MARK: 오류
+    // MARK: 오류 (D4a-20: 원래 서버 코드를 `APIErrorCode`가 지킨다)
+
+    private func apiError(status: Int, body: String, _ call: (APIClient) async throws -> Void) async -> APIError? {
+        let (api, _) = client(status: status, body: body)
+        do {
+            try await call(api)
+            return nil
+        } catch {
+            return error as? APIError
+        }
+    }
 
     @Test func theServerRefusalsComeBackAsErrorsNotAsSuccess() async throws {
         for body in [F.sessionBusy, F.conflict, F.busyRetry] {
-            let (api, _) = client(status: 409, body: body)
-            let error = await #expect(throws: AgentSessionRouteError.self) { _ = try await api.openAgentSessionExternal(id: F.sessionID) }
-            #expect(error?.api.isConflict == true && error?.api.status == 409, "기존 오류 처리(`APIError`)가 그대로 읽는다")
+            let error = await apiError(status: 409, body: body) { _ = try await $0.openAgentSessionExternal(id: F.sessionID) }
+            #expect(error?.status == 409, "기존 오류 처리(`APIError`)가 그대로 읽는다")
         }
-        let (gone, _) = client(status: 404, body: F.notFound)
-        let missing = await #expect(throws: AgentSessionRouteError.self) { _ = try await gone.stopAgentSession(id: F.sessionID) }
-        #expect(missing?.api.status == 404)
-        #expect(missing?.api.isConflict == false)
+        let missing = await apiError(status: 404, body: F.notFound) { _ = try await $0.stopAgentSession(id: F.sessionID) }
+        #expect(missing?.status == 404)
+        #expect(missing?.isConflict == false)
         // 서버의 한국어 거절 문구는 화면에 쓰지 않는다 (영어 틀 `userMessage`가 말한다)
-        #expect(missing?.api.userMessage.contains("세션") == false)
+        #expect(missing?.userMessage.contains("세션") == false)
     }
 
-    /// 검토 반영 10: `APIClient`는 모르는 409 코드를 `conflict`로 줄여 `session_busy` · `busy_retry` · `conflict`를 가를 수 없었다. 호출부가 원래 코드를 받는다
+    /// 검토 반영 10 → D4a-20: `session_busy` · `busy_retry` · `conflict`는 서로 다른 코드로 남고, 네 요청 모두 같다 (옛 `AgentSessionClient`와 같은 결과)
     @Test func theOriginalServerCodeIsKeptSoTheThreeConflictsCanBeTold() async throws {
-        let expected: [(String, AgentConversationErrorCode)] = [
-            (F.sessionBusy, .sessionBusy), (F.busyRetry, .busyRetry), (F.conflict, .unknown("conflict")),
-        ]
+        let expected: [(String, APIErrorCode)] = [(F.sessionBusy, .sessionBusy), (F.busyRetry, .busyRetry), (F.conflict, .conflict)]
         for (body, code) in expected {
             for call in ["open", "resume", "stop", "rename"] {
-                let (api, _) = client(status: 409, body: body)
-                let error = await #expect(throws: AgentSessionRouteError.self) {
+                let error = await apiError(status: 409, body: body) { api in
                     switch call {
                     case "open": _ = try await api.openAgentSessionExternal(id: F.sessionID)
                     case "resume": _ = try await api.resumeAgentSessionHere(id: F.sessionID)
@@ -136,26 +144,38 @@ struct AgentSessionEndpointsTests {
                     default: _ = try await api.renameAgentSession(id: F.sessionID, displayName: "Pricing")
                     }
                 }
-                #expect(error?.conversationCode == code, "\(call): \(code.raw)")
-                #expect(error?.serverCode == code.raw)
+                guard case .server(let status, let got, _)? = error else {
+                    Issue.record("\(call): 서버 오류가 아니다 \(String(describing: error))")
+                    continue
+                }
+                #expect(status == 409 && got == code, "\(call): \(code.rawValue)")
             }
         }
-        let (gone, _) = client(status: 404, body: F.notFound)
-        let missing = await #expect(throws: AgentSessionRouteError.self) { _ = try await gone.stopAgentSession(id: F.sessionID) }
-        #expect(missing?.serverCode == "not_found")
-        // 서버가 보낸 코드 문자열이 아닌 오류(약속한 형식이 아닌 응답)는 코드가 없다
-        let (html, _) = client(status: 502, body: "<html>bad gateway</html>")
-        let proxy = await #expect(throws: AgentSessionRouteError.self) { _ = try await html.stopAgentSession(id: F.sessionID) }
-        #expect(proxy?.serverCode == nil && proxy?.api.status == 502)
+        let missing = await apiError(status: 404, body: F.notFound) { _ = try await $0.stopAgentSession(id: F.sessionID) }
+        guard case .server(404, .notFound, _)? = missing else {
+            Issue.record("404 not_found가 아니다 \(String(describing: missing))")
+            return
+        }
+        // 서버가 코드를 주지 않은 오류(약속한 형식이 아닌 응답)는 코드가 없다
+        let proxy = await apiError(status: 502, body: "<html>bad gateway</html>") { _ = try await $0.stopAgentSession(id: F.sessionID) }
+        #expect(proxy == .unexpectedStatus(502))
     }
 
     @Test func aRejectedTokenAsksTheSessionEndedHandlerAndTheEndedSessionIsNotSignedIn() async throws {
         let (ended, _) = client(status: 401, body: F.notFound, onUnauthorized: { true })
-        let signedOut = await #expect(throws: AgentSessionRouteError.self) { _ = try await ended.stopAgentSession(id: F.sessionID) }
-        #expect(signedOut?.api == .notSignedIn && signedOut?.serverCode == nil)
+        do {
+            _ = try await ended.stopAgentSession(id: F.sessionID)
+            Issue.record("성공으로 읽혔다")
+        } catch {
+            #expect(error as? APIError == .notSignedIn)
+        }
         let (alive, _) = client(status: 401, body: F.notFound, onUnauthorized: { false })
-        let rejected = await #expect(throws: AgentSessionRouteError.self) { _ = try await alive.stopAgentSession(id: F.sessionID) }
-        #expect(rejected?.api.status == 401)
+        do {
+            _ = try await alive.stopAgentSession(id: F.sessionID)
+            Issue.record("성공으로 읽혔다")
+        } catch {
+            #expect((error as? APIError)?.status == 401)
+        }
     }
 
     @Test func theRequestsStillCarryTheBearerTokenOnAllFourPaths() async throws {

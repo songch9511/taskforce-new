@@ -31,7 +31,8 @@ public struct ChatTurn: Identifiable, Equatable, Sendable {
     public let isUser: Bool
     public let text: String
     public let createdAt: Date
-    public let status: Status
+    /// (에이전트 대화의 Send again · 후보 고르기 거절 안내가 바꿀 수 있다: `deliveryNotices`)
+    public internal(set) var status: Status
     /// 이 글의 보내기 id (다시 보내기에 쓴다)
     public let clientMessageID: UUID?
     public let citations: [ChatCitation]
@@ -39,8 +40,37 @@ public struct ChatTurn: Identifiable, Equatable, Sendable {
     public let rememberedIDs: [UUID]
     /// 보관 기한으로 글이 비워졌다
     public let textDeleted: Bool
-    /// 에이전트 대화에서 서버가 계산한 전달 표시 (보낸 응답에서 받은 것. Taskforce 대화의 글은 늘 nil)
+    /// 에이전트 대화에서 서버가 계산한 전달 표시 (보낸 응답 · Send again · 서버 다시 읽기에서 받은 것. 아직 읽지 못했거나 Taskforce 대화의 글은 nil)
     public internal(set) var delivery: AgentDelivery? = nil
+    /// `role = 'event'` 행 (OA D4a-18): 서버가 쓴 글 한 줄 ("Opened in Terminal" · "Resumed here" · "Queued messages cancelled" …). 앱은 글을 만들지 않는다
+    public internal(set) var isEvent = false
+    /// 서버가 에이전트 글을 32KB에서 잘랐다 (`content.truncated`). 전문은 이 Mac의 원장에 있을 수 있다 (View full)
+    public internal(set) var isTruncated = false
+    /// 이 Mac 원장에서 전문을 찾았다 (View full 링크가 보인다)
+    public internal(set) var canViewFull = false
+    /// View full을 눌러 펼친 전문 (펼치기 전에는 nil)
+    public internal(set) var fullText: String? = nil
+
+    public init(
+        id: UUID, isUser: Bool, text: String, createdAt: Date, status: Status, clientMessageID: UUID?, citations: [ChatCitation] = [],
+        rememberedIDs: [UUID] = [], textDeleted: Bool = false, delivery: AgentDelivery? = nil, isEvent: Bool = false, isTruncated: Bool = false,
+        canViewFull: Bool = false, fullText: String? = nil
+    ) {
+        self.id = id
+        self.isUser = isUser
+        self.text = text
+        self.createdAt = createdAt
+        self.status = status
+        self.clientMessageID = clientMessageID
+        self.citations = citations
+        self.rememberedIDs = rememberedIDs
+        self.textDeleted = textDeleted
+        self.delivery = delivery
+        self.isEvent = isEvent
+        self.isTruncated = isTruncated
+        self.canViewFull = canViewFull
+        self.fullText = fullText
+    }
 }
 
 /// 헤더의 ProjectLink (명시적 선택만: Set by you · No clear link. 자동 추정 없음)
@@ -132,7 +162,12 @@ public final class ChatStore {
     public private(set) var locals: [LocalChat] = []
     public private(set) var listLoad: WorkLoad = .loading
     /// 서버 gate가 꺼져 있다 (대화 만들기 · 보내기가 404): "실패"가 아니다
-    public private(set) var isUnavailable = false
+    public internal(set) var isUnavailable = false {
+        // 막힌 때(행 시계)를 적는다: 막히기 전에 시작한 전달 읽기의 늦은 200이 이 막힘을 풀지 못하게 한다 (`AgentDeliveryChatStore.swift`)
+        didSet { if isUnavailable, !oldValue { unavailableSince = tickRow() } }
+    }
+    /// `isUnavailable`이 거짓에서 참이 된 행 시계값
+    @ObservationIgnored var unavailableSince = 0
     public private(set) var contexts: [UUID: WorkContext] = [:]
     public private(set) var isOnline = true
     private var previews: [UUID: String] = [:]
@@ -144,7 +179,7 @@ public final class ChatStore {
     /// 글 읽기(`threadReadSeq`)와 따로 둔다: 다른 길의 글 읽기가 시작됐다고 해서 "서버가 없다"는 이 확인이 버려지면 안 된다
     @ObservationIgnored private var rowReadSeq: [UUID: Int] = [:]
     /// 묘비 시계: 서버가 대화를 없다 · 보관했다고 확인할 때마다 하나 오른다 (`confirmGone`)
-    @ObservationIgnored private var tombstoneClock = 0
+    @ObservationIgnored var tombstoneClock = 0
     /// 대화별 묘비: 그 대화를 없다고 확인한 때의 시계값. **읽기를 시작할 때 시계값을 쥐고**, 반영할 때 이 대화의 묘비가 그보다 새것이면(`isStale`)
     /// 그 읽기의 데이터(목록 행 · 직접 읽은 행 · 글 · 미리보기)를 버린다. 확인 뒤에 시작한 읽기(사용자의 Try again · 다시 열기)는 묘비보다 새 세대라 정상으로 반영한다
     @ObservationIgnored private var tombstones: [UUID: Int] = [:]
@@ -171,34 +206,66 @@ public final class ChatStore {
     /// 사용자가 목록 · 새 대화로 직접 옮겼나 (아니면 목록을 읽은 뒤 마지막 대화로 자동 복원)
     private var navigated = false
 
-    /// 에이전트 대상 전달 표시 (보낸 사용자 메시지 id → 서버가 계산한 표시). 메모리뿐이다
-    private var deliveries: [UUID: AgentDelivery] = [:]
-    /// 보낸 글의 칩 (client_message_id → 칩): 서버에 저장됐지만 답이 없는 글을 다시 보낼 때 같은 칩을 싣는다
-    @ObservationIgnored private var sentChips: [UUID: [ChatAttachment]] = [:]
+    /// 에이전트 대상 전달 표시 (보낸 사용자 메시지 id → 서버가 계산한 표시, OA D4a-10). 보낸 응답 · Send again 응답 · 서버 다시 읽기(`GET …/delivery`)가 채운다.
+    /// 메모리뿐이라 앱을 다시 켜면 비지만 **대화를 열 때마다 서버에서 다시 읽는다** (`AgentDeliveryChatStore.swift`) — 다시 읽기 전에는 줄을 그리지 않는다
+    var deliveryBook = AgentDeliveryBook()
+    /// 서버에서 전달 표시를 한 번이라도 읽은 대화 · 대화마다 읽기 순번 (마지막에 시작한 읽기만 이어 읽는다)
+    @ObservationIgnored var deliveryRead: Set<UUID> = []
+    @ObservationIgnored var deliveryReadSeq: [UUID: Int] = [:]
+    /// 읽는 중인 대화: 같은 대화를 겹쳐 읽지 않는다 (대화를 여는 길이 둘이다 — 목록 읽기와 창이 여는 읽기. 먼저 나간 읽기가 서버 값을 가져온다)
+    @ObservationIgnored var deliveryReadInFlight: Set<UUID> = []
+    /// 읽는 중에 내 요청(Send again · 후보 고르기)이 끝나 "한 번 더 읽어야 한다"고 표시한 대화: 진행 중인 읽기가 끝난 뒤 처음부터 다시 읽는다 (옛 읽기에 흡수되지 않게)
+    @ObservationIgnored var deliveryReadFollowUp: Set<UUID> = []
+    /// Send again · 후보 고르기가 거절되거나 막힌 메시지의 안내 (동의 · 오류, 메시지 id별). 전달 읽기와 별개로 쥔다: 다시 읽어도 지워지지 않고 Try again · 성공 · 계정 이탈이 지운다
+    var deliveryNotices: [UUID: AgentDeliveryNotice] = [:]
+    /// 에이전트가 턴을 시작했을 수 있는 쓰기(보내기 · Send again · 후보 고르기)가 서버에 닿았다: 바깥이 세션을 다시 읽어 Stop 원이 서게 한다 (OA D4a-13)
+    @ObservationIgnored public var onAgentTurnMayStart: (@MainActor () -> Void)?
+    /// 진행 중인 Send again · 후보 고르기 (메시지 id별: 두 번 눌러도 요청은 하나)
+    @ObservationIgnored var sendAgainInFlight: Set<UUID> = []
+    @ObservationIgnored var referentInFlight: Set<UUID> = []
+    @ObservationIgnored var deliveryPoll: Task<Void, Never>?
+    /// 첫 전달 때 서버가 만든 세션 (대화 id → 세션 id): 대화 행(`agent_session_id`)을 다시 읽기 전에도 Stop · 세션 읽기가 그 세션을 안다 (보낸 응답의 `agent_task`)
+    var learnedSessions: [UUID: UUID] = [:]
+    /// 앱(Mac)이 잠잔다: 5초 전달 읽기가 멈춘다. 깨면 한 번 읽는다
+    public internal(set) var isAsleep = false
+    /// 에이전트 대화의 쓰기 · 읽기 넷 (Send again · 후보 고르기 · Stop · 전달 읽기, OA D4a-20b). 없으면 그 동작이 없다 (실제 연결만 가진다)
+    @ObservationIgnored public var agentConversation: (any AgentConversationGateway)?
+    /// 보낸 글의 칩 (client_message_id → 칩): 같은 제출을 다시 보낼 때 · cancelled를 새 메시지로 다시 보낼 때 같은 칩을 싣는다. **이번 실행 동안만 안다**
+    /// (서버가 칩을 읽게 주지 않는다: 앱을 다시 켜면 저장된 에이전트 메시지는 다시 올리지 않고 deliver로 서버 id를 보낸다)
+    @ObservationIgnored var sentChips: [UUID: [ChatAttachment]] = [:]
 
-    @ObservationIgnored private let gateway: any ChatGateway
+    /// 이 Mac 원장에서 서버 열쇠(`external_event_id`)로 잘린 답의 전문을 찾는다 (View full, OA D4a-17). 없으면 링크가 없다. 부르는 계정의 원장이다 — 앱이 정한다
+    @ObservationIgnored public var fullTextLookup: (@Sendable (String) async -> String?)?
+    /// 찾은 전문 (메시지 id → 글) · 펼친 것. **메모리뿐**이다 (사용자 글: 디스크 · 로그 없음, 계정이 떠나면 비운다)
+    var fullTexts: [UUID: String] = [:]
+    var fullTextExpanded: Set<UUID> = []
+
+    @ObservationIgnored let gateway: any ChatGateway
     /// Assistant 창의 쓰기 (대상 목록 · 대상을 지정한 만들기 · 칩을 실은 보내기). 없으면 칩 없이 Taskforce 대상으로만 보낸다
     @ObservationIgnored public var assistant: (any AssistantGateway)?
-    @ObservationIgnored private let scope: AccountScope
+    @ObservationIgnored let scope: AccountScope
     @ObservationIgnored private let memory: MemoryStore?
     @ObservationIgnored private let now: @Sendable () -> Date
+    /// 다음 전달 읽기까지 기다리는 함수 (시험은 손으로 돌린다)
+    @ObservationIgnored let sleep: @Sendable (TimeInterval) async -> Void
     @ObservationIgnored private var listSequence = 0
     /// 화면 동작이 띄운 읽기들 (테스트가 `settle()`로 기다린다)
     @ObservationIgnored private var background: [Task<Void, Never>] = []
 
     public init(
         gateway: any ChatGateway, scope: AccountScope, memory: MemoryStore? = nil, now: @escaping @Sendable () -> Date = { Date() },
-        assistant: (any AssistantGateway)? = nil
+        assistant: (any AssistantGateway)? = nil, sleep: @escaping @Sendable (TimeInterval) async -> Void = { try? await Task.sleep(for: .seconds($0)) }
     ) {
         self.gateway = gateway
         self.assistant = assistant
         self.scope = scope
         self.memory = memory
         self.now = now
+        self.sleep = sleep
         scope.onLeft { [weak self] in self?.reset() }
     }
 
-    private func spawn(_ work: @escaping @MainActor () async -> Void) {
+    func spawn(_ work: @escaping @MainActor () async -> Void) {
         background.removeAll { $0.isCancelled }
         background.append(Task { await work() })
     }
@@ -228,7 +295,19 @@ public final class ChatStore {
         rowAppliedAt = [:]
         drafts = [:]
         threads = [:]
-        deliveries = [:]
+        deliveryBook.reset()
+        deliveryRead = []
+        deliveryReadSeq = [:]
+        deliveryReadInFlight = []
+        deliveryReadFollowUp = []
+        deliveryNotices = [:]
+        sendAgainInFlight = []
+        referentInFlight = []
+        deliveryPoll?.cancel()
+        deliveryPoll = nil
+        learnedSessions = [:]
+        fullTexts = [:]
+        fullTextExpanded = []
         sentChips = [:]
         projectUndo = [:]
         projectMessage = [:]
@@ -236,7 +315,10 @@ public final class ChatStore {
     }
 
     public func pathChanged(online: Bool) {
+        let cameBack = online && !isOnline
         isOnline = online
+        // 온라인 복귀: 보이는 에이전트 대화의 전달 표시를 한 번 읽는다 (그 사이 다른 기기 · 서버가 바꿨을 수 있다)
+        if cameBack { spawn { await self.refreshShownDeliveries() } }
     }
 
     // MARK: 보이는 것
@@ -309,7 +391,9 @@ public final class ChatStore {
     }
 
     public func needsConsent(in id: UUID) -> Bool {
-        threads[id]?.pending.contains { $0.status == .needsConsent } ?? false
+        if threads[id]?.pending.contains(where: { $0.status == .needsConsent }) ?? false { return true }
+        // 에이전트 대화: Send again · 후보 고르기가 동의 때문에 거절됐다 (같은 안내)
+        return threads[id]?.messages.contains { deliveryNotices[$0.id]?.failure == .needsConsent } ?? false
     }
 
     public func draft(for id: UUID) -> String { drafts[id] ?? "" }
@@ -346,13 +430,21 @@ public final class ChatStore {
                     id: message.id, isUser: true, text: message.text, createdAt: message.createdAt, status: status,
                     clientMessageID: message.clientMessageID, citations: [], rememberedIDs: [], textDeleted: deleted
                 )
-                turn.delivery = deliveries[message.id]
+                turn.delivery = deliveryBook.delivery(for: message.id)
+                // Send again · 후보 고르기가 거절됐거나 막혔다: 기존 오류 · 동의 줄 (전달 줄 대신, Try again)
+                if status == .sent, let notice = deliveryNotices[message.id] { turn.status = notice.chatStatus }
                 turns.append(turn)
             } else {
-                turns.append(ChatTurn(
+                var turn = ChatTurn(
                     id: message.id, isUser: false, text: message.text, createdAt: message.createdAt, status: .sent, clientMessageID: nil,
                     citations: message.content?.citations ?? [], rememberedIDs: message.rememberedIDs, textDeleted: deleted
-                ))
+                )
+                // 서버가 쓴 이벤트 줄(D4a-18) · 잘린 에이전트 답과 이 Mac에서 찾은 전문(View full, D4a-17)
+                turn.isEvent = message.role == .event
+                turn.isTruncated = message.content?.truncated == true
+                turn.canViewFull = fullTexts[message.id] != nil
+                turn.fullText = fullTextExpanded.contains(message.id) ? fullTexts[message.id] : nil
+                turns.append(turn)
             }
         }
         for turn in thread.pending.sorted(by: { $0.createdAt < $1.createdAt }) where !used.contains(turn.id) {
@@ -603,10 +695,10 @@ public final class ChatStore {
         }
     }
 
-    /// 보낸 글에 서버가 계산해 준 전달 표시 (에이전트 대화)
-    public func delivery(forMessage id: UUID) -> AgentDelivery? { deliveries[id] }
+    /// 보낸 글에 서버가 계산해 준 전달 표시 (에이전트 대화). 아직 읽지 못했으면 nil
+    public func delivery(forMessage id: UUID) -> AgentDelivery? { deliveryBook.delivery(for: id) }
 
-    var deliveryCount: Int { deliveries.count }
+    var deliveryCount: Int { deliveryBook.count }
 
     // MARK: 읽기
 
@@ -727,7 +819,7 @@ public final class ChatStore {
     }
 
     /// 읽기를 시작한 뒤(`started` = 그때의 묘비 시계) 이 대화가 없다고 확인됐나: 그렇다면 그 읽기의 데이터는 반영하지 않는다
-    private func isStale(_ id: UUID, since started: Int) -> Bool {
+    func isStale(_ id: UUID, since started: Int) -> Bool {
         (tombstones[id] ?? 0) > started
     }
 
@@ -748,7 +840,7 @@ public final class ChatStore {
         recoveries[id] = tombstoneClock
     }
 
-    private func tickRow() -> Int {
+    func tickRow() -> Int {
         rowClock += 1
         return rowClock
     }
@@ -840,6 +932,11 @@ public final class ChatStore {
                 guard threads[id]?.revision == revision else { continue }
                 applyServerMessages(messages, to: id)
                 threads[id]?.load = .loaded(problem: nil)
+                // 대화를 열 때(읽을 때)마다 에이전트 대화의 전달 표시를 서버에서 다시 읽는다: 줄은 메모리뿐이라 앱을 다시 켜면 비어 있다 (D4a-10)
+                if conversationTarget(for: id).isAgent {
+                    spawn { await self.refreshDeliveries(id) }
+                    if fullTextLookup != nil { spawn { await self.lookupFullTexts(in: id) } }
+                }
                 if let memory { await memory.loadReferenced(ids: messages.flatMap(\.rememberedIDs)) }
                 return
             } catch {
@@ -877,12 +974,17 @@ public final class ChatStore {
 
     /// 한 대화에 글을 보낸다 (Assistant 창). 칩은 이 제출에 실려 같은 제출을 다시 보내도 같다. 에이전트 대상이면 응답은 전달 표시뿐이다
     public func send(_ text: String, in id: UUID, attachments: [ChatAttachment] = []) async {
+        await send(text, in: id, attachments: attachments, clearsDraft: true)
+    }
+
+    /// 보내기 하나. `clearsDraft`가 거짓이면 쓰던 글을 지우지 않는다 (cancelled를 새 메시지로 다시 보낼 때: 사용자가 따로 쓰던 글이 있다)
+    func send(_ text: String, in id: UUID, attachments: [ChatAttachment], clearsDraft: Bool) async {
         guard canCompose(in: id), let token = scope.token, ChatComposerRules.isSendable(text) else { return }
         guard !(threads[id]?.isSending ?? false) else { return }
         let turn = PendingTurn(id: UUID(), text: ChatComposerRules.normalized(text), createdAt: now(), owner: token, status: .sending, attachments: attachments)
         threads[id, default: ChatThread()].pending.append(turn)
         sentChips[turn.id] = attachments
-        drafts[id] = nil
+        if clearsDraft { drafts[id] = nil }
         await deliver(turn.id, in: id)
     }
 
@@ -899,8 +1001,10 @@ public final class ChatStore {
         if let index = threads[id]?.pending.firstIndex(where: { $0.id == clientMessageID }) {
             guard let old = threads[id]?.pending[index], old.owner == token else { return }
             threads[id]?.pending[index].status = .sending
-        } else if let message = threads[id]?.messages.last(where: { $0.role.isUser && $0.clientMessageID == clientMessageID }),
+        } else if !conversationTarget(for: id).isAgent, let message = threads[id]?.messages.last(where: { $0.role.isUser && $0.clientMessageID == clientMessageID }),
                   !(threads[id]?.messages.contains { $0.replyTo == message.id } ?? true) {
+            // (에이전트 대화는 여기 오지 않는다: 서버에 저장된 에이전트 메시지는 다시 올리지 않는다 — 앱을 다시 켜면 칩을 몰라 409 `refs_mismatch`이거나 칩이 어긋난다.
+            // Send again은 서버 메시지 id로 deliver다, D4a-11)
             // 서버에 저장됐지만 답이 없는 마지막 글 (앱을 다시 켠 뒤 포함): 저장된 글 그대로
             threads[id]?.pending.append(PendingTurn(
                 id: clientMessageID, text: message.text, createdAt: message.createdAt, owner: token, status: .sending, attachments: sentChips[clientMessageID] ?? []
@@ -993,9 +1097,13 @@ public final class ChatStore {
         deriveTitle(for: id)
         threads[id]?.pending.removeAll { $0.id == posted.message.clientMessageID }
         threads[id]?.revision += 1
-        deliveries[posted.message.id] = posted.delivery
+        deliveryBook.record(posted.delivery, for: posted.message.id, at: tickRow())
+        if let task = posted.agentTask { learnedSessions[id] = task.agentSessionID }
+        scheduleDeliveryPolling()
         previews[id] = (posted.reply ?? posted.message).text
         touchLastMessage(of: id, at: posted.message.createdAt)
+        // 에이전트가 새 턴을 시작했을 수 있다 (패널 보내기 · Send again의 새 메시지 · Assistant 창 보내기 모두 이 길): 세션을 다시 읽게 한다
+        onAgentTurnMayStart?()
     }
 
     /// 보낸 글이 서버에 저장됐다: 쥔 행의 마지막 시각을 바꾼다. 내 쓰기도 쥔 행을 바꾼 일이라 반영 시계를 올린다 —

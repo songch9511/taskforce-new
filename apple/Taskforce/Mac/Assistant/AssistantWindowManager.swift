@@ -169,6 +169,8 @@ final class AssistantWindowManager {
                 openElsewhere: { [weak self] in self?.openConversations(except: id) ?? [] },
                 rebind: { [weak self] new in self?.rebind(id, to: new) ?? .rebound }
             )
+            // 에이전트 대화의 Stop · 세션 읽기 (OA D4a-13): 실제 연결이 세션 route를 알 때만 있다
+            if let sessions = runtime.agentTurns { model.agent = AssistantAgentSupport(stop: runtime.stop, sessions: sessions) }
             // 열 때 패널에 열린 항목이 있으면 그것이 auto 칩이다
             model.followOpenItem(shell.openItem.map(Self.chip(for:)))
             let controller = AssistantWindowController(

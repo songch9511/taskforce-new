@@ -342,3 +342,16 @@ struct PromptTextViewTests {
     }
 }
 #endif
+
+/// 에이전트 대상의 auto 칩 (OA D4a-12): 누르면 added가 된다. 접근성 동작 이름은 "Add {칩 이름}" (사용자 승인 2026-10-18)
+struct AgentChipComponentTests {
+    @Test func anAutoChipIsPressableOnlyWhenTheConversationGoesToAnAgent() {
+        #expect(ContextChip.isActivatable(origin: .auto, hasAction: true))
+        #expect(!ContextChip.isActivatable(origin: .added, hasAction: true), "added는 이미 채워진 칩이다")
+        #expect(!ContextChip.isActivatable(origin: .auto, hasAction: false), "Taskforce 대상에서는 누르는 동작이 없다")
+    }
+
+    @Test func theAccessibilityActionNameIsAddAndTheChipName() {
+        #expect(ContextChip.activationName(chip: "#139 Rewrite pricing page copy") == "Add #139 Rewrite pricing page copy")
+    }
+}

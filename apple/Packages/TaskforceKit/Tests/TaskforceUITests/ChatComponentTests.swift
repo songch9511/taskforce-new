@@ -88,6 +88,68 @@ struct ChatComponentTests {
     static let drawnFiles = ["ChatComponents.swift", "RememberedComponents.swift", "ProjectLink.swift"]
 }
 
+/// 에이전트 대화의 부품 (OA D4a-1): 전달 줄(링크 포함) · 이벤트 줄 · Composer의 Stop
+struct AgentChatComponentTests {
+    typealias Link = MessageDeliveryLine.Link
+
+    @Test func theDeliveryLineIsOneAccessibleElementAndTheLinkIsItsOwnControl() {
+        let line = MessageDeliveryLine(strong: "Not sent", text: "Access not verified", link: Link(.sendAgain, "Send again"))
+        #expect(MessageDeliveryView.accessibilityName(line) == "Not sent · Access not verified", "전달 줄 = combined")
+        #expect(MessageDeliveryView.linkAccessibilityName(line) == "Send again", "링크는 따로 누르는 동작이다")
+        #expect(MessageDeliveryView.linkAccessibilityName(MessageDeliveryLine(strong: nil, text: "Sent")) == nil)
+    }
+
+    /// DS `.tf-delivery`: 오른쪽 맞춤으로 감싸는 flex. 글이 길면 링크가 다음 줄로 내려가고 두 줄 모두 오른쪽 끝에 붙는다 (열 간격 8)
+    @Test func theWrapLayoutAlignsEveryRowToTheTrailingEdgeWithAnEightPointGap() {
+        let text = CGSize(width: 120, height: 18)
+        let link = CGSize(width: 60, height: 18)
+        let wide = TrailingWrapLayout.place(sizes: [text, link], width: 400, spacing: 8)
+        #expect(wide.frames == [CGRect(x: 212, y: 0, width: 120, height: 18), CGRect(x: 340, y: 0, width: 60, height: 18)], "한 줄: 링크가 오른쪽 끝")
+        #expect(wide.height == 18)
+        let narrow = TrailingWrapLayout.place(sizes: [text, link], width: 150, spacing: 8)
+        #expect(narrow.frames == [CGRect(x: 30, y: 0, width: 120, height: 18), CGRect(x: 90, y: 18, width: 60, height: 18)], "링크가 다음 줄, 둘 다 오른쪽 맞춤")
+        #expect(narrow.height == 36)
+        let textOnly = TrailingWrapLayout.place(sizes: [text], width: 400, spacing: 8)
+        #expect(textOnly.frames == [CGRect(x: 280, y: 0, width: 120, height: 18)])
+        #expect(TrailingWrapLayout.place(sizes: [], width: 400, spacing: 8).height == 0)
+    }
+
+    @Test func anEventLineIsOneTruncatedFootnoteOfTheServersWords() throws {
+        #expect(EventLine.accessibilityName("Opened in Terminal") == "Opened in Terminal")
+        let code = WorkComponentTests.code(try WorkComponentTests.source("ChatComponents.swift"))
+        #expect(code.contains("EventLine"))
+        #expect(EventLine.lineLimit == 1, "긴 서버 이벤트 글은 한 줄 끝 줄임")
+    }
+
+    @Test func theComposersCircleBecomesStopWhileWorkRunsAndStillSendsOnEnter() {
+        #expect(Composer.sendLabel(running: false, isSending: false) == "Send")
+        #expect(Composer.sendLabel(running: false, isSending: true) == "Sending")
+        #expect(Composer.sendLabel(running: true, isSending: false) == "Stop new steps", "접근성 이름")
+        #expect(Composer.sendLabel(running: true, isSending: true) == "Stop new steps", "Stop이 이긴다")
+        // Stop 중에도 글을 쓰고 Enter로 보낼 수 있다 (그 메시지는 대기열에 들어간다)
+        #expect(Composer.canSend(text: "Also update the refund wording", isDisabled: false, isSending: false))
+        #expect(Composer.circleStopsInsteadOfSending(running: true) && !Composer.circleStopsInsteadOfSending(running: false))
+        #expect(PromptBox.sendLabel(running: true) == "Stop new steps")
+    }
+
+    @Test func aViewFullLinkIsOnlyForACutReplyThatThisMacHasAndTheCutReplyEndsWithAnEllipsis() {
+        func turn(text: String = "Draft v2 covers the Pro monthly", truncated: Bool, canView: Bool = false, full: String? = nil) -> ChatTurn {
+            ChatTurn(
+                id: UUID(), isUser: false, text: text, createdAt: Date(), status: .sent, clientMessageID: nil, isTruncated: truncated, canViewFull: canView, fullText: full
+            )
+        }
+        #expect(MessageViewFull.shownText(turn(truncated: true)) == "Draft v2 covers the Pro monthly…", "잘린 답은 말줄임표로 끝난다")
+        #expect(MessageViewFull.shownText(turn(truncated: false)) == "Draft v2 covers the Pro monthly")
+        #expect(MessageViewFull.shownText(turn(truncated: true, canView: true, full: "The whole reply.")) == "The whole reply.", "펼치면 전문")
+        #expect(MessageViewFull.shownText(turn(text: "cut…", truncated: true)) == "cut…", "이미 말줄임표면 더하지 않는다")
+        #expect(MessageViewFull.showsLink(turn(truncated: true, canView: true)))
+        #expect(!MessageViewFull.showsLink(turn(truncated: true)), "이 Mac에 전문이 없으면 링크가 없다")
+        #expect(!MessageViewFull.showsLink(turn(truncated: true, canView: true, full: "x")), "펼친 뒤에는 링크가 사라진다")
+        #expect(!MessageViewFull.showsLink(turn(truncated: false, canView: true)), "자르지 않은 글에는 링크가 없다")
+        #expect(MessageViewFull.title == "View full")
+    }
+}
+
 #if os(macOS)
 /// IME 조합 중에는 Enter가 조합을 확정할 뿐 글을 보내지 않는다 (한글 · 일본어). 진짜 `NSTextView`의 marked text로 확인한다
 @MainActor

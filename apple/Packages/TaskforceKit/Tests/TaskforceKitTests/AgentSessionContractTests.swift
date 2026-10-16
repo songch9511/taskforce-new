@@ -17,7 +17,7 @@ struct AgentSessionContractTests {
         #expect(AgentSessionRecord.columns == "id, connection_id, display_name, status, external_session_id, last_turn_seq, created_at, updated_at")
         #expect(AgentTaskRecord.columns == "agent_session_id, run_id, turn_seq, state, last_live_state, cancel_requested_at")
         #expect(AgentSessionRunRecord.columns == "id, kind, agent_session_id, action_id")
-        #expect(AgentConnectionRecord.columns == "id, adapter")
+        #expect(AgentConnectionRecord.columns == "id, adapter, bridge_id", "D4a-03: 알약은 그 세션 연결의 bridge가 이 Mac일 때만 — `bridge_id` 열 하나를 더 읽는다")
         #expect(AgentSessionConversationRecord.columns == "id, agent_session_id")
     }
 
