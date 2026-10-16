@@ -3,6 +3,37 @@ import Testing
 @testable import Taskforce
 @testable import TaskforceKit
 
+/// 시험이 닫아 두었다가 여는 문: 알림 센터의 느린 응답(권한 조회 · 게시)을 흉내 낸다
+final class NotificationGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var isOpen = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+    private var _arrivals = 0
+
+    /// 문 앞에 온 호출 수
+    var arrivals: Int { lock.withLock { _arrivals } }
+
+    func wait() async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            let resumeNow = lock.withLock { () -> Bool in
+                _arrivals += 1
+                if !isOpen { waiters.append(continuation) }
+                return isOpen
+            }
+            if resumeNow { continuation.resume() }
+        }
+    }
+
+    func open() {
+        let pending = lock.withLock { () -> [CheckedContinuation<Void, Never>] in
+            isOpen = true
+            defer { waiters = [] }
+            return waiters
+        }
+        for waiter in pending { waiter.resume() }
+    }
+}
+
 /// 가짜 알림 센터 (시험): 실제 알림 센터에 아무것도 보내지 않는다
 final class FakeNotificationCenter: AgentNotificationCenter, @unchecked Sendable {
     private let lock = NSLock()
@@ -10,6 +41,9 @@ final class FakeNotificationCenter: AgentNotificationCenter, @unchecked Sendable
     private var _added: [AgentNotificationPlan] = []
     private var _removed: [String] = []
     private var _requests = 0
+    private var _delivered: Set<String> = []
+    private var _permissionGate: NotificationGate?
+    private var _addGate: NotificationGate?
 
     var status: PushPermission.Status {
         get { lock.withLock { _status } }
@@ -19,10 +53,32 @@ final class FakeNotificationCenter: AgentNotificationCenter, @unchecked Sendable
     var removed: [String] { lock.withLock { _removed } }
     var requests: Int { lock.withLock { _requests } }
 
-    func permission() async -> PushPermission.Status { status }
+    /// 센터에 지금 걸려 있는 알림 (`add`가 닿으면 들어가고 `remove`가 지운다)
+    var delivered: Set<String> { lock.withLock { _delivered } }
+    /// 권한 조회를 문이 열릴 때까지 붙잡는다
+    func holdPermission(_ gate: NotificationGate?) { lock.withLock { _permissionGate = gate } }
+    /// 게시(`add`)를 문이 열릴 때까지 붙잡는다: 호출은 기록되지만 센터에는 아직 닿지 않았다
+    func holdAdd(_ gate: NotificationGate?) { lock.withLock { _addGate = gate } }
+
+    func permission() async -> PushPermission.Status {
+        if let gate = lock.withLock({ _permissionGate }) { await gate.wait() }
+        return status
+    }
     func requestPermissionIfNeeded() async { lock.withLock { _requests += 1 } }
-    func add(_ plan: AgentNotificationPlan) async { lock.withLock { _added.append(plan) } }
-    func remove(ids: [String]) async { lock.withLock { _removed.append(contentsOf: ids) } }
+    func add(_ plan: AgentNotificationPlan) async {
+        let gate = lock.withLock { () -> NotificationGate? in
+            _added.append(plan)
+            return _addGate
+        }
+        if let gate { await gate.wait() }
+        lock.withLock { _ = _delivered.insert(plan.id) }
+    }
+    func remove(ids: [String]) async {
+        lock.withLock {
+            _removed.append(contentsOf: ids)
+            for id in ids { _delivered.remove(id) }
+        }
+    }
 }
 
 /// 에이전트 질문 알림 (OA D4b-m-1, D4bm-60 · 61 · 62 · 63): 이 Mac의 로컬 알림. 글은 상태 + 열 곳뿐이다 (카나리로 확인). 시스템 알림 센터는 가짜다
@@ -191,6 +247,91 @@ struct AgentNotificationsTests {
         await runtime.questions?.settle()
         await runtime.notifications?.settle()
         #expect(center.added.count == 2 && center.removed.contains(AgentQuestionNotifications.identifier(for: key)), "새 질문은 새 알림, 앞 알림은 지운다")
+    }
+
+    // MARK: 검토 1: 늦게 끝난 권한 조회 · 게시가 닫힌 질문의 알림을 남기지 않는다
+
+    private func eventually(_ condition: @MainActor () -> Bool) async -> Bool {
+        let deadline = ContinuousClock.now.advanced(by: .seconds(3))
+        while ContinuousClock.now < deadline {
+            if condition() { return true }
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+        return condition()
+    }
+
+    @Test func aQuestionClosedWhileThePermissionIsLookedUpIsNeverPosted() async {
+        let center = FakeNotificationCenter()
+        let gate = NotificationGate()
+        center.holdPermission(gate)
+        let notifications = make(center)
+        notifications.opened(opened(), isVisible: false)
+        #expect(await eventually { gate.arrivals == 1 }, "권한 조회가 느리다")
+        notifications.closed([key])
+        gate.open()
+        await notifications.settle()
+        #expect(center.added.isEmpty && center.delivered.isEmpty && notifications.posted.isEmpty, "조회가 끝나기 전에 질문이 닫혔다: 알림을 걸지 않는다")
+    }
+
+    @Test func aPostThatLandsAfterTheQuestionClosedIsRemoved() async {
+        let center = FakeNotificationCenter()
+        let gate = NotificationGate()
+        center.holdAdd(gate)
+        let notifications = make(center)
+        notifications.opened(opened(), isVisible: false)
+        #expect(await eventually { gate.arrivals == 1 }, "게시가 시작됐지만 센터에 아직 닿지 않았다")
+        notifications.closed([key])
+        #expect(await eventually { center.removed.count == 1 }, "닫힘의 삭제는 센터에 아직 없는 알림을 지우려 한다")
+        gate.open()
+        await notifications.settle()
+        #expect(center.delivered.isEmpty && notifications.posted.isEmpty, "늦게 닿은 알림도 지운다")
+    }
+
+    @Test func leavingTheAccountWhileTheFirstConnectionPermissionIsLookedUpAsksNothing() async {
+        let center = FakeNotificationCenter()
+        center.status = .notDetermined
+        let gate = NotificationGate()
+        center.holdPermission(gate)
+        let notifications = make(center)
+        notifications.sessionsSeen([QFxItem.make()], thisMacBridgeID: Data.thisMacBridge, signedIn: true)
+        #expect(await eventually { gate.arrivals == 1 }, "시스템 권한 조회가 느리다")
+        notifications.accountLeft()
+        gate.open()
+        await notifications.settle()
+        #expect(center.requests == 0, "계정이 떠난 뒤 늦게 끝난 조회가 시스템 권한 창을 띄우지 않는다")
+    }
+
+    @Test func leavingTheAccountRemovesTheDeliveredNotificationsAndEndsTheirLifetimes() async {
+        let center = FakeNotificationCenter()
+        let notifications = make(center)
+        notifications.opened(opened(), isVisible: false)
+        await notifications.settle()
+        #expect(center.delivered.count == 1)
+        notifications.accountLeft()
+        await notifications.settle()
+        #expect(center.delivered.isEmpty && notifications.posted.isEmpty)
+    }
+
+    @Test func leavingTheAccountWhileThePermissionIsLookedUpPostsNothing() async throws {
+        let account = try AppChatAccount.make()
+        let center = FakeNotificationCenter()
+        let gate = NotificationGate()
+        center.holdPermission(gate)
+        let gateway = AgentChatSampleGateway()
+        gateway.state = Q.world(Q.single)
+        let runtime = ChatRuntime(
+            gateway: gateway, contextGateway: IssueSampleContextGateway(), scope: account.scope, now: { Date() }, issueScreens: true, agentQuestions: true,
+            notificationCenter: center, notificationsEnabled: { true }
+        )
+        let store = try #require(runtime.questions)
+        store.thisMacBridgeID = Data.thisMacBridge
+        store.sessionsRead([QFxItem.make()])
+        await store.settle()
+        #expect(await eventually { gate.arrivals == 1 }, "새 질문의 알림이 권한 조회에서 기다린다")
+        account.scope.accountLeft()
+        gate.open()
+        await runtime.notifications?.settle()
+        #expect(center.added.isEmpty && center.delivered.isEmpty, "계정이 떠난 뒤 늦게 끝난 조회가 알림을 걸지 않는다")
     }
 }
 

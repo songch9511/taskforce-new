@@ -118,6 +118,7 @@ final class ChatRuntime {
             let notifications = AgentNotifications(center: notificationCenter, isEnabled: notificationsEnabled)
             self.questions = questions
             self.notifications = notifications
+            scope.onLeft { [weak notifications] in notifications?.accountLeft() }
             questions.thisMacProvider = { await BridgeHost.shared?.activeRuntime?.localBridgeID() }
             agentTurns?.onApplied = { [weak questions, weak notifications] items in
                 questions?.sessionsRead(items)

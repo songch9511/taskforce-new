@@ -36,6 +36,8 @@ struct EdgeQuestionKeysTests {
             var checked: Set<Int> = []
             var otherOpen = false
             var status: QuestionCard.Status = .open
+            /// 카드가 아직 도착하지 않았다 (false → true로 바꾸면 도착)
+            var cardVisible = true
         }
 
         func send(_ characters: String, code: Int, flags: NSEvent.ModifierFlags = []) {
@@ -57,7 +59,7 @@ struct EdgeQuestionKeysTests {
 
         var body: some View {
             VStack(spacing: 8) {
-                questionCard
+                if model.cardVisible { questionCard }
                 ComposerTextField(
                     text: Binding(get: { model.composerText }, set: { model.composerText = $0 }), placeholder: "Message", label: "Message", isEnabled: true,
                     focusRequest: model.composerFocus, onFocusChange: { _ in }, onSubmit: {}
@@ -85,9 +87,10 @@ struct EdgeQuestionKeysTests {
         )
     }
 
-    private func harness(_ card: AgentQuestionCard) async -> Harness {
+    private func harness(_ card: AgentQuestionCard, cardVisible: Bool = true) async -> Harness {
         let calls = Calls()
         let model = Harness.Model()
+        model.cardVisible = cardVisible
         let window = NSWindow(contentRect: NSRect(x: -10_000, y: -10_000, width: 380, height: 600), styleMask: [.borderless], backing: .buffered, defer: false)
         window.contentView = NSHostingView(rootView: Root(spec: card, calls: calls, model: model))
         window.isReleasedWhenClosed = false
@@ -201,5 +204,35 @@ struct EdgeQuestionKeysTests {
         h.send("\r", code: kVK_Return)
         await h.settle()
         #expect(h.calls.secrets == ["42"], "칸은 곧바로 비워졌다: 다시 Return해도 보낼 값이 없다")
+    }
+
+    // MARK: 검토 1: 새 입력 카드는 요청 없이 포커스를 가져가지 않는다 (D4bm-31)
+
+    /// 지금 글을 받는 칸. 필드 에디터는 창에서 하나를 같이 쓰므로(`NSTextField`끼리) 에디터가 아니라 그 에디터가 편집 중인 칸으로 비교한다
+    private func focusedField(_ window: NSWindow) -> NSView? {
+        let responder = window.firstResponder
+        if let editor = responder as? NSTextView, let control = editor.delegate as? NSView { return control }
+        return responder as? NSView
+    }
+
+    @Test(arguments: [AgentQuestionCard.Kind.text, .secret])
+    func anInputCardArrivingWhileTheComposerHasFocusLeavesFocusWhereItIs(kind: AgentQuestionCard.Kind) async throws {
+        let h = await harness(card(kind), cardVisible: false)
+        defer { h.close() }
+        let composer = try #require(focusedField(h.window), "composer 입력 중이다")
+        h.model.cardVisible = true
+        await h.settle()
+        #expect(focusedField(h.window) === composer, "카드가 도착해도 쓰던 composer에 포커스가 남는다 (\(kind))")
+    }
+
+    @Test(arguments: [AgentQuestionCard.Kind.text, .secret])
+    func anInputCardThatWasAskedToTakeFocusStillTakesIt(kind: AgentQuestionCard.Kind) async throws {
+        let h = await harness(card(kind), cardVisible: false)
+        defer { h.close() }
+        let composer = try #require(focusedField(h.window))
+        h.model.focusRequest = 1
+        h.model.cardVisible = true
+        await h.settle()
+        #expect(focusedField(h.window) !== composer, "요청이 있으면(링 · 알림) 입력 칸이 포커스를 받는다 (\(kind))")
     }
 }

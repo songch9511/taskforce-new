@@ -1,6 +1,7 @@
 import AppKit
 import Carbon.HIToolbox
 import Foundation
+import SwiftUI
 import Testing
 @testable import Taskforce
 @testable import TaskforceKit
@@ -314,6 +315,74 @@ struct AssistantQuestionTests {
         field.composing = false
         #expect(r.controller.handleQuestionKey(try key(kVK_Escape, "\u{1b}")) && r.questions.entry(session: session)?.phase == .open, "조합이 없으면 Esc는 Undo")
         field.removeFromSuperview()
+    }
+
+    // MARK: 검토 1: 다른 task의 질문으로 자리에서 바뀌면 쓰던 칸이 넘어가지 않는다
+
+    /// 질문 카드만 올린 화면 밖 창 (키 창이라 포커스가 동작한다)
+    private func cardWindow(_ r: Rig) async -> NSWindow {
+        let window = NSWindow(contentRect: NSRect(x: -10_000, y: -10_000, width: 380, height: 700), styleMask: [.borderless], backing: .buffered, defer: false)
+        window.contentView = NSHostingView(rootView: EdgeQuestionCardHost(questions: r.questions, chat: r.chat, sessionID: session, conversationID: Data.conversationID, maxHeight: 600).frame(width: 356))
+        window.isReleasedWhenClosed = false
+        window.alphaValue = 0
+        window.makeKeyAndOrderFront(nil)
+        try? await Task.sleep(for: .milliseconds(150))
+        return window
+    }
+
+    private func find<T: NSView>(_ type: T.Type, in view: NSView?) -> T? {
+        guard let view else { return nil }
+        if let match = view as? T { return match }
+        for sub in view.subviews { if let match = find(type, in: sub) { return match } }
+        return nil
+    }
+
+    /// 같은 세션 · 같은 요청 id · 같은 단계에서 task만 다른 새 질문이 빈 화면 없이 그 자리로 온다
+    private func swapToAnotherTask(_ r: Rig, _ pending: [String: Any]) async {
+        r.gateway.update { $0.questions = [Q.record(pending, task: Q.secondTask)] }
+        r.questions.sessionsRead([QFxItem.make()])
+        await r.questions.settle()
+        try? await Task.sleep(for: .milliseconds(150))
+    }
+
+    @Test func aDraftTypedInOtherDoesNotCarryOverToAnotherTasksQuestionWithTheSameRequestID() async throws {
+        let r = try await Self.rig(Q.world(Q.other))
+        defer { r.stop() }
+        r.questions.sessionsRead([QFxItem.make()])
+        await r.questions.settle()
+        let window = await cardWindow(r)
+        defer { window.orderOut(nil) }
+        r.questions.choose(row: 3, session: session)
+        try await Task.sleep(for: .milliseconds(150))
+        let editor = try #require(window.firstResponder as? NSTextView, "Other 칸이 포커스를 받는다")
+        editor.insertText("Lifetime, first", replacementRange: NSRange(location: NSNotFound, length: 0))
+        #expect(editor.string == "Lifetime, first")
+
+        let other = Q.pending([Q.Prompt(text: "Which plan should the banner mention?", options: ["Pro monthly", "Pro yearly", "Lifetime"], other: true)], task: Q.secondTask)
+        await swapToAnotherTask(r, other)
+        let swapped = try #require(r.questions.entry(session: session))
+        #expect(swapped.key == AgentQuestionKey(taskID: Q.secondTask, requestID: Q.request) && swapped.step == 0, "같은 요청 id · 같은 단계, task만 다르다")
+        r.questions.choose(row: 3, session: session)
+        try await Task.sleep(for: .milliseconds(150))
+        let fresh = try #require(window.firstResponder as? NSTextView)
+        #expect(fresh.string.isEmpty, "새 질문의 Other 칸에 앞 질문의 글이 남아 있다: Return이 그것을 새 질문에 보낸다")
+    }
+
+    @Test func aMaskedValueDoesNotCarryOverToAnotherTasksSecretQuestionWithTheSameRequestID() async throws {
+        let r = try await Self.rig(Q.world(Q.secret))
+        defer { r.stop() }
+        r.questions.sessionsRead([QFxItem.make()])
+        await r.questions.settle()
+        let window = await cardWindow(r)
+        defer { window.orderOut(nil) }
+        let field = try #require(find(SecretNSField.self, in: window.contentView), "비밀값 카드의 마스크 칸")
+        field.stringValue = "DO_NOT_STORE_SECRET_D4BM"
+
+        let secret = Q.pending([Q.Prompt(text: "Enter the staging deploy token", header: "", options: [], other: true, secret: true)], task: Q.secondTask)
+        await swapToAnotherTask(r, secret)
+        #expect(r.questions.entry(session: session)?.key == AgentQuestionKey(taskID: Q.secondTask, requestID: Q.request))
+        let fresh = try #require(find(SecretNSField.self, in: window.contentView))
+        #expect(fresh.stringValue.isEmpty, "새 질문의 마스크 칸에 앞 질문에서 넣은 값이 남아 있다")
     }
 
     // MARK: 게이트

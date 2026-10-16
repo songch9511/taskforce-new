@@ -49,6 +49,11 @@ final class AgentNotifications {
     private var askedForPermission = false
     /// 건 알림 id (답 · 닫힘 · 해소되면 지운다)
     private(set) var posted: Set<String> = []
+    /// 알림마다 이번 열림의 표: 게시 작업은 자기 표가 남아 있을 때만 걸고, 닫히면(답 · 해소 · 계정 전환) 표가 사라진다.
+    /// 권한 조회나 게시가 느린 사이에 닫힌 질문의 알림이 늦게 걸려 남지 않게 한다
+    private var lifetimes: [String: UUID] = [:]
+    /// 계정이 떠날 때마다 오른다: 그 전에 시작한 느린 조회가 끝난 뒤 시스템 권한 창을 띄우지 않게 한다
+    private var accountEpoch = 0
     /// 마지막으로 시험이 기다릴 수 있는 일
     private var work: [Task<Void, Never>] = []
 
@@ -62,11 +67,20 @@ final class AgentNotifications {
     func opened(_ opened: AgentQuestionOpened, isVisible: Bool) {
         guard isEnabled() else { return }
         let plan = AgentQuestionNotifications.plan(for: opened, copy: copy())
+        let life = UUID()
+        lifetimes[plan.id] = life
         track { [center] in
             let permission = await center.permission()
-            guard AgentQuestionNotifications.shouldPost(permission: permission, isVisibleOnKeySurface: isVisible) else { return }
+            // 권한을 묻는 사이에 질문이 닫혔다(또는 계정이 떠났다): 걸지 않는다
+            guard self.lifetimes[plan.id] == life,
+                  AgentQuestionNotifications.shouldPost(permission: permission, isVisibleOnKeySurface: isVisible) else { return }
             await center.add(plan)
-            self.posted.insert(plan.id)
+            if self.lifetimes[plan.id] == life {
+                self.posted.insert(plan.id)
+            } else {
+                // 게시가 닿기 전에 닫혔다: 그 삭제는 이미 끝났으니 늦게 닿은 알림을 다시 지운다
+                await center.remove(ids: [plan.id])
+            }
         }
     }
 
@@ -74,17 +88,29 @@ final class AgentNotifications {
     func closed(_ keys: [AgentQuestionKey]) {
         let ids = keys.map(AgentQuestionNotifications.identifier(for:))
         guard !ids.isEmpty else { return }
+        for id in ids { lifetimes[id] = nil }
         posted.subtract(ids)
         track { [center] in await center.remove(ids: ids) }
+    }
+
+    /// 계정이 떠났다: 그 계정의 알림 수명을 모두 끝낸다 (걸려 있는 알림을 지우고, 늦게 끝나는 권한 조회 · 게시가 아무것도 하지 않게)
+    func accountLeft() {
+        let ids = Array(posted)
+        accountEpoch += 1
+        lifetimes = [:]
+        posted = []
+        if !ids.isEmpty { track { [center] in await center.remove(ids: ids) } }
     }
 
     /// 세션 저장소가 새로 읽었다: 이 Mac에 묶인 연결이 처음 보이면 시스템 권한을 한 번 묻는다 (`PushPermission.shouldRequest` 규칙 그대로, 연결 = 이 Mac의 에이전트 연결)
     func sessionsSeen(_ items: [AgentSessionItem], thisMacBridgeID: UUID?, signedIn: Bool) {
         guard isEnabled(), !askedForPermission, items.contains(where: { AgentSessionRules.isOnThisMac($0, thisMacBridgeID: thisMacBridgeID) }) else { return }
         askedForPermission = true
+        let epoch = accountEpoch
         track { [center] in
             let status = await center.permission()
-            guard AgentQuestionNotifications.shouldRequestPermission(status: status, signedIn: signedIn, hasThisMacConnection: true, isPresentingOther: false) else { return }
+            guard self.accountEpoch == epoch,
+                  AgentQuestionNotifications.shouldRequestPermission(status: status, signedIn: signedIn, hasThisMacConnection: true, isPresentingOther: false) else { return }
             await center.requestPermissionIfNeeded()
         }
     }

@@ -25,6 +25,12 @@ struct EdgeQuestionCardHost: View {
         return questions.isRecorded(entry, eventKeys: chat.eventKeys(in: conversationID))
     }
 
+    /// 카드의 뷰 정체: 전체 `AgentQuestionKey`(task + 요청 id)와 단계
+    struct CardIdentity: Hashable {
+        let key: AgentQuestionKey
+        let step: Int
+    }
+
     static func status(_ phase: AgentQuestionStore.Phase) -> QuestionCard.Status {
         switch phase {
         case .open: .open
@@ -39,10 +45,11 @@ struct EdgeQuestionCardHost: View {
                 QuestionCard(
                     card: entry.card, status: Self.status(entry.phase), summary: entry.summary, failure: entry.failure, checked: entry.checked, otherOpen: entry.otherOpen,
                     initialText: entry.otherText, remoteRow: AgentQuestionNewCopy.active.remoteRow(macName: entry.card.macName),
-                    focusRequest: questions.focusRequest(session: sessionID), maxHeight: maxHeight, actions: actions
+                    focusRequest: questions.pendingFocusRequests(session: sessionID), maxHeight: maxHeight, actions: actions
                 )
-                // 질문 · 단계가 바뀌면 새 카드다 (쓰던 칸이 다음 질문으로 넘어가지 않게)
-                .id("\(entry.key.requestID)#\(entry.step)")
+                // 질문 · 단계가 바뀌면 새 카드다 (쓰던 칸이 다음 질문으로 넘어가지 않게). 질문의 정체는 task + 요청 id 전체다:
+                // 같은 세션의 새 task가 같은 요청 id · 단계를 쓰고 빈 화면 없이 교체돼도 쓰던 글 · 마스크 칸이 넘어가지 않는다
+                .id(CardIdentity(key: entry.key, step: entry.step))
                 .transition(.opacity)
             }
         }

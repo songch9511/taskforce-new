@@ -599,6 +599,8 @@ struct ComposerTextField: NSViewRepresentable {
     let label: String
     let isEnabled: Bool
     let focusRequest: Int
+    /// 만들어질 때 포커스를 가져가나: composer는 그렇다(창이 열리면 입력칸이 받는다). 질문 카드의 입력 칸은 아니다 — 처음 0은 요청 없음이다 (D4bm-31)
+    var claimsFocusOnCreation = true
     let onFocusChange: (Bool) -> Void
     let onSubmit: () -> Void
 
@@ -646,7 +648,7 @@ struct ComposerTextField: NSViewRepresentable {
 
         init(_ parent: ComposerTextField) {
             self.parent = parent
-            lastFocusRequest = parent.focusRequest - 1
+            lastFocusRequest = parent.claimsFocusOnCreation ? parent.focusRequest - 1 : max(parent.focusRequest - 1, 0)
         }
 
         func controlTextDidChange(_ notification: Notification) {

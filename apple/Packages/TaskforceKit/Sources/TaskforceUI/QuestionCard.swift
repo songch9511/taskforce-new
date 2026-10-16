@@ -347,7 +347,7 @@ public struct QuestionCard: View {
     private func textBox(label: String) -> some View {
         fieldBox {
             ComposerTextField(
-                text: $draft, placeholder: "", label: label, isEnabled: true, focusRequest: fieldFocusRequest, onFocusChange: { fieldFocused = $0 },
+                text: $draft, placeholder: "", label: label, isEnabled: true, focusRequest: fieldFocusRequest, claimsFocusOnCreation: false, onFocusChange: { fieldFocused = $0 },
                 onSubmit: { submitText() }
             )
             sendCircle(enabled: Self.sendEnabled(kind: .other, checkedCount: 0, hasText: hasFieldText)) { submitText() }
@@ -646,7 +646,8 @@ struct SecretField: NSViewRepresentable {
 
         init(_ parent: SecretField) {
             self.parent = parent
-            lastFocusRequest = parent.focusRequest - 1
+            // 처음 0은 요청 없음이다 (새 카드가 요청 없이 포커스를 가져가지 않는다, D4bm-31). 요청이 이미 있었으면(>0) 처음에 한 번 받는다
+            lastFocusRequest = max(parent.focusRequest - 1, 0)
             lastClear = parent.clearToken
         }
 
