@@ -29,6 +29,41 @@ describe("bridge registration", () => {
     expect(await revokeBridge({ rpc } as unknown as SupabaseClient, id, id)).toEqual({ status: "revoked", tasks: [] });
     expect(rpc).toHaveBeenCalledTimes(3);
   });
+  it("OA F3 also retries a deadlock victim (40P01), mixed with 55P03, and stops after three calls", async () => {
+    const codes = ["40P01", "55P03"];
+    let attempts = 0;
+    const rpc = vi.fn((...call: unknown[]) => ({ throwOnError: async () => { void call; if (attempts < 2) throw { code: codes[attempts++] }; return { data: { status: "revoked", tasks: [] } }; } }));
+    expect(await revokeBridge({ rpc } as unknown as SupabaseClient, id, id)).toEqual({ status: "revoked", tasks: [] });
+    expect(rpc).toHaveBeenCalledTimes(3);
+    expect(rpc.mock.calls[1]).toEqual(rpc.mock.calls[0]);
+    const exhausted = vi.fn(() => ({ throwOnError: async () => { throw { code: "40P01" }; } }));
+    await expect(revokeBridge({ rpc: exhausted } as unknown as SupabaseClient, id, id)).rejects.toEqual({ code: "40P01" });
+    expect(exhausted).toHaveBeenCalledTimes(3);
+  });
+  it("OA F3 revokeBridge waits 50ms and then 150ms between attempts (a holder of the message row for ~10ms+ exhausted three immediate retries)", async () => {
+    vi.useFakeTimers();
+    try {
+      let attempts = 0;
+      const rpc = vi.fn((...call: unknown[]) => ({ throwOnError: async () => { void call; if (++attempts < 3) throw { code: "55P03" }; return { data: { status: "revoked", tasks: [] } }; } }));
+      const result = revokeBridge({ rpc } as unknown as SupabaseClient, id, id);
+      await vi.advanceTimersByTimeAsync(49);
+      expect(rpc).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(rpc).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(149);
+      expect(rpc).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(await result).toEqual({ status: "revoked", tasks: [] });
+      expect(rpc).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it.each(["40001", "P0002", "XX000"])("OA F3 does not retry %s", async (code) => {
+    const rpc = vi.fn(() => ({ throwOnError: async () => { throw { code }; } }));
+    await expect(revokeBridge({ rpc } as unknown as SupabaseClient, id, id)).rejects.toEqual({ code });
+    expect(rpc).toHaveBeenCalledTimes(1);
+  });
 });
 
 // ─── F1s: 기기 이름 (표시용) ───

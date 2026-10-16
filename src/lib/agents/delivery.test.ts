@@ -176,3 +176,34 @@ describe("R12: SQL이 delivery_reason에 쓸 수 있는 모든 값은 agentDeliv
     expect(definitions[0]).toMatch(/delivery_reason=p_reason/); // BC의 원래 정의는 이유를 그대로 썼다 (기록)
   });
 });
+
+// ─── OA F3: 보이는 것 = DB. 읽기 모델에는 시계 입력이 없다 — 표시만 먼저 expired로 바꾸는 수정이 들어오면 여기서 실패한다 ───
+describe("F3 읽기 모델은 DB 행만 본다 (시계 · 만료 시각 입력 없음)", () => {
+  const source = readFileSync(path.resolve(__dirname, "delivery.ts"), "utf8");
+  const keysOf = (type: string) => {
+    const match = new RegExp(`${type} = \\{([\\s\\S]*?)\\n\\};`).exec(source);
+    if (!match) throw new Error(`${type} not found`);
+    return [...match[1].matchAll(/^\s{2}([a-zA-Z]+)\??:/gm)].map((m) => m[1]);
+  };
+
+  it("두 함수의 매개변수 모양이 고정이다 (함수 길이 · 입력 타입 키 목록)", () => {
+    expect(agentMessageDelivery.length).toBe(3);
+    expect(agentDeliveryView.length).toBe(1);
+    expect(keysOf("AgentDeliveryInput")).toEqual(["row", "stepState", "sessionStatus", "answerStep", "titles"]);
+    expect(/row: \{([^}]*)\}/.exec(source)?.[1].match(/[a-z]+(?=\??:)/g)).toEqual(["state", "reason", "refs"]);
+  });
+
+  it("시계를 읽지 않는다: Date · now · expires 글자가 코드에 없다", () => {
+    const code = source.split("\n").filter((line) => !line.trim().startsWith("//") && !line.trim().startsWith("*") && !line.trim().startsWith("/*")).join("\n");
+    expect(code).not.toMatch(/\bDate\b|\bnow\b|expires|expiry|clock/i);
+  });
+
+  it("dispatched/prepared/unreachable는 queued, DB 행이 expired가 되어야 expired다 (같은 입력 · 시계 차이 없음)", () => {
+    expect(agentMessageDelivery("dispatched", "prepared", "unreachable")).toBe("queued");
+    expect(view({ state: "dispatched" }, { stepState: "prepared", sessionStatus: "unreachable" })).toEqual({ state: "queued" });
+    // 만료 시각이 지난 행이라도 행이 아직 dispatched면 읽기 모델은 모른다 — 입력에 만료 시각이 없다
+    expect(view({ state: "dispatched", expires: "2000-01-01T00:00:00Z" } as never, { stepState: "prepared", sessionStatus: "unreachable" })).toEqual({ state: "queued" });
+    expect(view({ state: "expired" }, { stepState: "failed", sessionStatus: "unreachable" })).toEqual({ state: "expired" });
+    expect(view({ state: "expired", reason: null }, { stepState: "prepared", sessionStatus: "bound" })).toEqual({ state: "expired" });
+  });
+});
