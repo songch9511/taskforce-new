@@ -115,7 +115,7 @@ enum TaskforceSnapshot {
         }()
 
         /// 한 장 담는다: 무인 실행에서 다른 앱의 클릭이 패널을 접었으면 다시 연다. 바이트가 다른 장면과 같으면 INVALID다 (조용히 저장하지 않는다)
-        func shoot(_ name: String, panel: Bool = true) async {
+        func shoot(_ name: String, panel: Bool = true, shows kind: TaskforceRequest.Kind? = nil, screen expected: TaskforceScreen? = nil) async {
             if let only, !only.contains(name) { return }
             var reopened = 0
             func shown() -> Bool { !panel || (shell.panelOpen && edge.panel.isVisible && edge.panel.panel.alphaValue > 0.99) }
@@ -135,6 +135,13 @@ enum TaskforceSnapshot {
                 verdict = "INVALID PNG를 쓰지 못했다"
             } else if let other = seen[fingerprint] {
                 verdict = "INVALID \(other)와 바이트가 같다"
+            }
+            // 이름대로의 장면인지: 보인 요청의 종류가 다르면 (재료가 없어 건너뛴 경우 등) 조용히 다른 그림이 되지 않게 한다
+            if verdict == "ok", let expected, shell.taskforceScreen != expected {
+                verdict = "INVALID 화면이 \(expected)가 아니다 (지금: \(shell.taskforceScreen))"
+            }
+            if verdict == "ok", let kind, shell.shownTaskforceRequest?.kind != kind {
+                verdict = "INVALID \(kind) 요청이 보이지 않는다 (보이는 것: \(shell.shownTaskforceRequest.map { "\($0.kind)" } ?? "없음"))"
             }
             if verdict.hasPrefix("INVALID") { invalid += 1 } else { seen[fingerprint] = name }
             checks.append("\(name) sha256=\(fingerprint.prefix(16)) reopened=\(reopened) \(verdict)")
@@ -262,20 +269,20 @@ enum TaskforceSnapshot {
         // ── 대화 ──────────────────────────────────────────────
         await world()
         await request(.confirm, of: 150)
-        await shoot("confirm")
+        await shoot("confirm", shows: .confirm)
         await request(.confirm, of: 161)
-        await shoot("confirm-no-meta")
+        await shoot("confirm-no-meta", shows: .confirm)
         await request(.resultReady)
-        await shoot("result")
+        await shoot("result", shows: .resultReady)
         await request(.pathConflict)
-        await shoot("conflict")
+        await shoot("conflict", shows: .pathConflict)
         // 고른 뒤 2초 보류: 답 잠금 · 고른 답 체크 · Answer sent + Undo
         sample.resolveDelay = 5
         _ = shell.answerConflict(.later, for: shell.taskforceShownID ?? "")
         await settle(0.4)
-        await shoot("conflict-held")
+        await shoot("conflict-held", shows: .pathConflict)
         await settle(2.4)
-        await shoot("conflict-sent")
+        await shoot("conflict-sent", shows: .pathConflict)
         store.reset()
         // 409: 안내가 남고 다시 읽는다
         await world()
@@ -283,16 +290,16 @@ enum TaskforceSnapshot {
         await request(.pathConflict)
         _ = shell.answerConflict(.holder, for: shell.taskforceShownID ?? "")
         await settle(3.2)
-        await shoot("conflict-409")
+        await shoot("conflict-409", shows: .pathConflict)
         // 긴 경로 · 긴 세션 이름
-        await world(sessions: .longName, details: [lease: detail(path: "packages/very-long-workspace-name/src/content/localized/ko/pricing-page-final-v2-with-a-long-name.mdx")])
+        await world(sessions: .longNamePair, details: [lease: detail(path: "packages/very-long-workspace-name/src/content/localized/ko/pricing-page-final-v2-with-a-long-name.mdx")])
         await request(.pathConflict)
-        await shoot("conflict-long")
+        await shoot("conflict-long", shows: .pathConflict)
 
         // 긴 확인 요청
         await world(seeds: seeds + [longConfirm], response: Self.response([Self.confirm(170), Self.confirm(150)]))
         await request(.confirm, of: 170)
-        await shoot("confirm-long")
+        await shoot("confirm-long", shows: .confirm)
 
         // steps: 둘 · 많은 것(20) · ← → 끝
         await world(response: Self.response([Self.confirm(150), Self.confirm(160)]))
@@ -307,16 +314,16 @@ enum TaskforceSnapshot {
         // 요청 + 요약 · 요약만 · 빈 상태
         await world(response: Self.response([Self.confirm(150)]), summaryScenario: .changes)
         await request(.confirm, of: 150)
-        await shoot("request-summary")
+        await shoot("request-summary", shows: .confirm, screen: .request(problem: nil))
         await world(response: Self.response([]), summaryScenario: .changes)
         await open()
-        await shoot("summary-only")
+        await shoot("summary-only", screen: .empty(problem: nil))
         await world(response: Self.response([]))
         await open()
-        await shoot("empty-next")
+        await shoot("empty-next", screen: .empty(problem: nil))
         await world(seeds: [], response: Self.response([]), summaryScenario: .empty)
         await open()
-        await shoot("empty-projects")
+        await shoot("empty-projects", screen: .empty(problem: nil))
         // 마지막 답 뒤 (대화가 열린 동안 bell은 조용히 남는다)
         await world(response: Self.response([Self.confirm(150)]))
         await request(.confirm, of: 150)
@@ -324,29 +331,31 @@ enum TaskforceSnapshot {
         await store.refresh()
         shell.taskforceChanged()
         await settle(0.8)
-        await shoot("last-answer")
+        await shoot("last-answer", screen: .empty(problem: nil))
 
         // 읽기 상태
         await world(response: Self.response(), read: .hang)
         store.reset()
         shell.openTaskforce()
         await settle(0.8)
-        await shoot("loading")
+        await shoot("loading", screen: .blank)
+        store.pathChanged(online: false)
         await world(read: .offline)
         shell.openTaskforce()
         await settle(0.8)
-        await shoot("offline")
+        await shoot("offline", screen: .offline)
+        store.pathChanged(online: true)
         await world(read: .failed)
         shell.openTaskforce()
         await settle(0.8)
-        await shoot("failed")
+        await shoot("failed", screen: .failed)
         await world(response: Self.response([Self.confirm(150)], complete: false))
         await request(.confirm, of: 150)
-        await shoot("incomplete")
+        await shoot("incomplete", shows: .confirm, screen: .request(problem: .failed))
         let unknown = TaskforceDecisionGroup(key: "k", actionID: issue, kind: .unknown, items: [TaskforceDecisionItem(id: "future:1", kind: .unknown, actionID: issue, version: "v")])
         await world(response: Self.response([unknown, Self.confirm(150)]))
         await request(.confirm, of: 150)
-        await shoot("unknown-kind")
+        await shoot("unknown-kind", shows: .confirm, screen: .request(problem: .failed))
 
         await world()
         shell.dismiss()

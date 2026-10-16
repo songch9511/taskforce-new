@@ -627,4 +627,37 @@ struct EdgeTaskforceTests {
         #expect(await quiet(drawn) == 1, "이미 확정했다: 같은 방문에서 또 보내지 않는다")
         #expect(await drawn.harness.server.writeCount() == 0, "읽음 표시일 뿐 요청 · 결정을 바꾸지 않는다")
     }
+
+    // MARK: 레일 툴팁 (U3-60, DS 미리보기: "Taskforce · Needs your answer · ⌘1")
+
+    @Test func theRailTooltipsAreTheDesignWordsAndTheirShortcutsAndNeverOverAnOpenPanel() async throws {
+        let rig = try await Rig.make()
+        await rig.read(Rig.response([Rig.confirm(rig.id(1))]))
+        #expect(rig.shell.tooltip == nil, "접힌 레일에는 툴팁이 없다")
+        rig.shell.pointer(inside: true)
+        rig.time.advance(0.2)
+        #expect(rig.shell.isExpanded)
+        rig.shell.hover(bell: true)
+        let bell = try #require(rig.shell.tooltip)
+        #expect(bell.title == "Taskforce" && bell.detail == "· Needs your answer · ⌘1", "bell은 두 말 중 하나와 ⌘1")
+        #expect(rig.shell.taskforceBell?.accessibilityName == "Taskforce · Needs your answer, 1 item", "접근성 이름에는 단축키가 없고 개수가 있다")
+        rig.shell.hover(bell: false)
+        rig.shell.hover(plus: true)
+        #expect(rig.shell.tooltip?.title == "New session" && rig.shell.tooltip?.detail == "")
+        rig.shell.hover(plus: false)
+        for (control, shortcut) in [(EdgeShellModel.Control.allWork, "⌘2"), (.chats, "⌘3")] {
+            rig.shell.hover(control: control)
+            #expect(rig.shell.tooltip?.title == rig.shell.label(for: control) && rig.shell.tooltip?.detail == shortcut)
+        }
+        rig.shell.hover(control: nil)
+        // 요청이 없으면 두 번째 말
+        await rig.read(Rig.response([]))
+        rig.shell.hover(bell: true)
+        #expect(rig.shell.tooltip == nil, "요청이 없고 대화도 닫혀 있으면 bell이 없어 툴팁도 없다")
+        await rig.read(Rig.response([Rig.confirm(rig.id(1))]))
+        rig.shell.hover(bell: true)
+        // 패널이 열려 있으면 툴팁을 끈다 (패널이 레일 바로 옆이다)
+        rig.shell.openTaskforce()
+        #expect(rig.shell.tooltip == nil)
+    }
 }

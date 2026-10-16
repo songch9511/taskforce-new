@@ -192,6 +192,15 @@ enum IssueSnapshotData {
                     connection: claude, status: .bound, state: .running, issues: [139], created: 1
                 ),
             ]
+        case .longNamePair:
+            // 이름이 아주 긴 세션과 보통 세션 (Taskforce 충돌 카드의 두 줄: OA U3)
+            return [
+                SessionSeed(
+                    number: 1, name: "Rewrite the pricing page copy for the trial and the Lifetime plan, keep the refund window wording, then update the help center",
+                    connection: claude, status: .bound, state: .running, issues: [139], created: 1
+                ),
+                SessionSeed(number: 2, name: "Lifetime plan section", connection: codex, status: .bound, state: .idle, issues: [139], created: 2),
+            ]
         }
     }
 
@@ -325,7 +334,7 @@ final class IssueSampleGateway: ChatGateway, IssueScreensGateway, TaskforceReque
     static let shared = IssueSampleGateway()
 
     enum SessionScenario: Sendable {
-        case none, basic, awaiting, external, closedAndStates, nine, longName, many
+        case none, basic, awaiting, external, closedAndStates, nine, longName, longNamePair, many
     }
 
     enum ReadScenario: Sendable {

@@ -412,7 +412,11 @@ final class EdgeShellModel {
     var tooltip: (title: String, detail: String)? {
         guard isExpanded, !panelOpen, !menuOpen else { return nil }
         if hoveredTile, let tileTooltip { return tileTooltip }
-        if hoveredBell, let bell = taskforceBell { return Self.splitTooltip(bell.tooltip) }
+        // DS EdgeRail 미리보기: "Taskforce · Needs your answer · ⌘1" (이름 · 접근성 이름은 단축키 없이 두 말 그대로)
+        if hoveredBell, let bell = taskforceBell {
+            let parts = Self.splitTooltip(bell.tooltip)
+            return (parts.title, parts.detail + " · " + Self.taskforceShortcut)
+        }
         if hoveredPlus { return (Self.newSessionLabel, "") }
         if let hoveredID, let entry = slots.first(where: { $0.id == hoveredID }) {
             return (entry.title, "· \(entry.state.label) · \(entry.activity)")
@@ -1208,6 +1212,9 @@ extension AgentSessionRing {
 /// Taskforce 대화 (OA U3): 게이트(`EdgeSurfaces.taskforceConversation`) 안에서만 산다. 레일 첫 캡슐의 bell, Review 패널을 대신하는 대화, 서버 순서 첫 요청으로 가는 ⌘1 · ⌥Space.
 /// 판정 · 순서는 서버가 정한 그대로이고 앱은 다시 정렬하지 않는다. 요청은 안정 id로 가리키고, 여는 것 · 읽는 것 · 단계를 옮기는 것 · Clear는 답이 아니다.
 extension EdgeShellModel {
+    /// 레일 bell · 대화를 여는 키 (⌘1)
+    static let taskforceShortcut = "⌘1"
+
     /// 이 셸에 Taskforce 대화가 있나: 새 Issues 화면 + Review(S4) + 복귀 요약(C3)이 모두 켜진 구성뿐 (OA U3-01). 꺼지면 모든 것이 지금 그대로다
     var taskforceEnabled: Bool { issues != nil && review != nil && summary != nil }
 
