@@ -236,7 +236,7 @@ struct EdgeSessionActionsTests {
         r.gateway.deliverFailure = APIError.server(status: 409, code: .conflict, message: APIError.consentRequiredMessage)
         await r.runtime.panelDesk.sendAgain(failed, in: Data.conversationID)
         let refused = try #require(chat.turns(for: Data.conversationID).first { $0.id == failed.id })
-        #expect(refused.status == .needsConsent && refused.showsStatusInsteadOfDelivery)
+        #expect(refused.status == .needsConsent && refused.showsStatusLine)
         #expect(SessionPanelView.showsConsentNotice(chat: chat, conversationID: Data.conversationID), "Assistant 창과 같은 동의 안내가 패널에도 뜬다")
         let opened = Counter()
         r.shell.onConnect = { opened.value += 1 }

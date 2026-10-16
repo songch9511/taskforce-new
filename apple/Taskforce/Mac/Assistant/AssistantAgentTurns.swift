@@ -37,13 +37,14 @@ struct AssistantTurnView: View {
         } else if turn.isUser {
             VStack(alignment: .leading, spacing: 0) {
                 Message(isUser: true) { MessageText(turn.text, isDeleted: turn.textDeleted) }
-                if !turn.showsStatusInsteadOfDelivery {
-                    // 에이전트 대상: 서버가 계산한 전달 표시를 말로 (answered · 모르는 값은 줄이 없다)
+                if turn.showsDeliveryLine {
+                    // 에이전트 대상: 서버가 계산한 전달 표시를 말로 (answered · 모르는 값은 줄이 없다). 후보 고르기가 거절돼도 아직 열려 있으면 이 줄의 링크가 남는다
                     if let line = actions.line(turn) {
                         MessageDeliveryView(line, onLink: { link in actions.onLink(turn, link) })
                     }
-                } else {
-                    // 첫 보내기 실패 · Send again / 후보 고르기의 거절(동의 철회 · 오류): 기존 상태 줄 + Try again
+                }
+                if turn.showsStatusLine {
+                    // 첫 보내기 실패 · Send again / 후보 고르기의 거절(동의 철회 · 오류): 기존 상태 줄 + Try again (후보 고르기의 Try again은 메뉴를 다시 연다)
                     ChatStatusLine(
                         status: turn.status,
                         onRetry: { if turn.delivery != nil { actions.retry(turn) } else { turn.clientMessageID.map(onRetry) } }

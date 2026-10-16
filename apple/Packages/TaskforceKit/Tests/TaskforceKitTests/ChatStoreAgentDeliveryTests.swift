@@ -520,7 +520,8 @@ struct ChatStoreAgentDeliveryTests {
         #expect(chat.isUnavailable && chat.turns(for: conversation.id)[0].status == .failed(ChatCopy.unavailable))
     }
 
-    @Test func aRefusedCandidateChoiceKeepsItsErrorAndTryAgainPicksTheSameCandidate() async {
+    /// 거절된 후보 고르기의 Try again은 낡은 선택을 그대로 다시 보내지 않는다: 지금 후보 목록으로 고르기를 다시 연다
+    @Test func aRefusedCandidateChoiceKeepsItsErrorAndTryAgainReopensTheChoiceInsteadOfResubmitting() async {
         let candidate = AgentReferentCandidate(actionID: chipAction, title: "가격 문구")
         let (conversation, message) = serveOne(AgentDelivery(state: .needsReferent, candidates: [candidate]))
         let chat = store()
@@ -534,9 +535,73 @@ struct ChatStoreAgentDeliveryTests {
         agent.referentHandler = { conversation, _, _ in
             AgentPostedMessage(message: Chats.message(1, in: conversation, seq: 1, role: .user, text: "t", cmid: UUID(), at: 1), delivery: AgentDelivery(state: .sent))
         }
-        await chat.retryDelivery(message.id, in: conversation.id)
-        #expect(agent.referents.map(\.action) == [chipAction, chipAction] && chat.turns(for: conversation.id)[0].status == .sent)
-        #expect(chat.delivery(forMessage: message.id)?.state == .sent)
+        let outcome = await chat.retryDelivery(message.id, in: conversation.id)
+        #expect(outcome == .chooseReferent && agent.referents.map(\.action) == [chipAction], "다시 보내지 않는다: 호출한 화면이 후보 고르기를 연다")
+        #expect(!chat.needsConsent(in: conversation.id) && chat.turns(for: conversation.id)[0].status == .sent, "안내는 지워졌다")
+        await chat.chooseReferent(chipAction, for: message.id, in: conversation.id)
+        #expect(agent.referents.map(\.action) == [chipAction, chipAction] && chat.delivery(forMessage: message.id)?.state == .sent)
+    }
+
+    // MARK: 거절된 후보 뒤에도 다른 후보를 고를 수 있다
+
+    private var candidateB: AgentReferentCandidate { AgentReferentCandidate(actionID: UUID(uuidString: "c1000000-0000-4000-8000-000000000002")!, title: "온보딩") }
+
+    /// A가 지워졌다: 고르기가 404 → 새로 읽으면 후보는 B뿐 → 안내가 후보 링크를 가리지 않고 B를 고를 수 있다
+    @Test func afterAFailedPickOfADeletedCandidateTheOtherCandidateCanStillBePicked() async {
+        let a = AgentReferentCandidate(actionID: chipAction, title: "가격 문구")
+        let b = candidateB
+        let (conversation, message) = serveOne(AgentDelivery(state: .needsReferent, candidates: [a, b]))
+        let chat = store()
+        await open(conversation, messages: [message], chat: chat)
+        let missing = APIError.server(status: 404, code: .notFound, message: "No such issue")
+        agent.referentHandler = { conversation, _, action in
+            if action == a.actionID { throw missing }
+            return AgentPostedMessage(message: Chats.message(1, in: conversation, seq: 1, role: .user, text: "t", cmid: UUID(), at: 1), delivery: AgentDelivery(state: .sent))
+        }
+        await chat.chooseReferent(a.actionID, for: message.id, in: conversation.id)
+        await chat.settle()
+        // A가 지워진 뒤 새로 읽는다: 여전히 needs_referent, 후보는 B뿐
+        serve { _ in [Fx.entry(message, AgentDelivery(state: .needsReferent, candidates: [b]))] }
+        await chat.refreshDeliveries(conversation.id)
+        let failed = chat.turns(for: conversation.id)[0]
+        #expect(failed.status.canRetry && failed.showsStatusLine, "같은 needs_referent로 읽히는 동안 오류 안내가 남는다")
+        #expect(failed.showsDeliveryLine && failed.delivery?.candidates == [b], "고르기 링크(전달 줄)는 가려지지 않고 지금 후보를 가리킨다")
+        let outcome = await chat.retryDelivery(message.id, in: conversation.id)
+        #expect(outcome == .chooseReferent && agent.referents.map(\.action) == [a.actionID], "Try again은 A를 다시 보내지 않는다")
+        await chat.chooseReferent(b.actionID, for: message.id, in: conversation.id)
+        #expect(agent.referents.map(\.action) == [a.actionID, b.actionID] && chat.delivery(forMessage: message.id)?.state == .sent)
+        #expect(chat.turns(for: conversation.id)[0].status == .sent)
+    }
+
+    /// A가 끝났다(done): 서버는 새로 읽어도 A를 후보 목록에 둔다 — 목록이 바뀐 것으로 알아챌 수 없다. 그래도 Try again이 고르기를 다시 열어 B를 고를 수 있다.
+    /// 처음 실패가 동의 · 기능 꺼짐 · 일시 오류여도 같다
+    @Test func afterAFailedPickOfADoneCandidateTheListIsUnchangedYetTheOtherCandidateCanBePicked() async {
+        let a = AgentReferentCandidate(actionID: chipAction, title: "가격 문구")
+        let b = candidateB
+        let failures: [APIError] = [
+            APIError.server(status: 409, code: .conflict, message: "issue is done"), consentRefusal, APIError.transport("offline"),
+            APIError.server(status: 404, code: .notFound, message: APIError.featureOffMessage),
+        ]
+        for failure in failures {
+            let (conversation, message) = serveOne(AgentDelivery(state: .needsReferent, candidates: [a, b]))
+            let chat = store()
+            await open(conversation, messages: [message], chat: chat)
+            let calls = Mutex2([UUID]())
+            agent.referentHandler = { conversation, _, action in
+                calls.value.append(action)
+                if action == a.actionID { throw failure }
+                return AgentPostedMessage(message: Chats.message(1, in: conversation, seq: 1, role: .user, text: "t", cmid: UUID(), at: 1), delivery: AgentDelivery(state: .sent))
+            }
+            await chat.chooseReferent(a.actionID, for: message.id, in: conversation.id)
+            await chat.settle()
+            let failed = chat.turns(for: conversation.id)[0]
+            #expect(failed.status.canRetry && failed.showsDeliveryLine && failed.delivery?.candidates == [a, b], "A가 여전히 후보에 있어도 B를 고를 길이 있다")
+            let outcome = await chat.retryDelivery(message.id, in: conversation.id)
+            #expect(outcome == .chooseReferent && calls.value == [a.actionID], "Try again은 A를 다시 보내지 않는다")
+            // (기능 꺼짐: 읽기도 꺼져 막힘이 남았다면 Try again이 풀고 다시 읽는다)
+            await chat.chooseReferent(b.actionID, for: message.id, in: conversation.id)
+            #expect(calls.value == [a.actionID, b.actionID] && chat.delivery(forMessage: message.id)?.state == .sent && chat.turns(for: conversation.id)[0].status == .sent)
+        }
     }
 
     @Test func aTryAgainWhoseMessageChangedMeanwhileSendsNothingAndClearsTheError() async {
@@ -576,7 +641,7 @@ struct ChatStoreAgentDeliveryTests {
             await chat.refreshDeliveries(conversation.id)
             let turn = chat.turns(for: conversation.id)[0]
             #expect(turn.status == .sent && turn.delivery?.state == progressed && !chat.needsConsent(in: conversation.id), "\(progressed.raw): 진전을 읽었으면 \"Not sent\"가 남지 않는다")
-            #expect(!turn.showsStatusInsteadOfDelivery)
+            #expect(!turn.showsStatusLine)
         }
     }
 

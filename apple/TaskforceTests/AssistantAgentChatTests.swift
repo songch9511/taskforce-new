@@ -109,7 +109,7 @@ struct AssistantAgentChatTests {
         await r.chat.settle()
         let refused = try #require(turns(r).first { $0.id == failed.id })
         #expect(r.chat.needsConsent(in: Data.conversationID), "기존 동의 안내 (Allow AI processing to continue)")
-        #expect(refused.status == .needsConsent && refused.showsStatusInsteadOfDelivery, "전달 줄 대신 기존 상태 줄")
+        #expect(refused.status == .needsConsent && refused.showsStatusLine, "전달 줄 대신 기존 상태 줄")
         // 전달 읽기가 성공해도 거절이 사라지지 않는다
         await r.chat.refreshDeliveries(Data.conversationID)
         #expect(r.chat.needsConsent(in: Data.conversationID))
@@ -117,8 +117,37 @@ struct AssistantAgentChatTests {
         r.gateway.deliverFailure = nil
         await model.retryDelivery(refused)
         let again = try #require(turns(r).first { $0.id == failed.id })
-        #expect(!r.chat.needsConsent(in: Data.conversationID) && !again.showsStatusInsteadOfDelivery && model.deliveryLine(for: again)?.combined == "Queued")
+        #expect(!r.chat.needsConsent(in: Data.conversationID) && !again.showsStatusLine && model.deliveryLine(for: again)?.combined == "Queued")
         #expect(r.gateway.calls(prefix: "deliver:") == ["deliver:\(failed.id.uuidString)", "deliver:\(failed.id.uuidString)"])
+    }
+
+    // MARK: 거절된 후보 고르기 뒤에도 다른 후보를 고를 수 있다
+
+    /// 고른 후보가 지워졌다(404): 오류 줄 옆에 고르기 링크가 남고, Try again은 낡은 선택을 다시 보내지 않고 지금 후보로 메뉴를 다시 연다
+    @Test func aRefusedCandidateChoiceKeepsTheChoiceLinkAndTryAgainReopensTheMenuWithTheCurrentCandidates() async throws {
+        let r = try await rig(Data.queued())
+        AgentNewCopy.isPreviewing = true
+        defer { AgentNewCopy.isPreviewing = false; r.defaults.cleanup(); r.manager.closeAll() }
+        let model = try await open(r)
+        let ambiguous = try #require(turns(r).first { $0.delivery?.state == .needsReferent })
+        let (a, b, c) = (Data.referentActions[0], Data.referentActions[1], Data.referentActions[2])
+        model.openReferentMenu(for: ambiguous.id)
+        r.gateway.referentFailure = APIError.server(status: 404, code: .notFound, message: "No such issue")
+        await model.chooseReferent(a)
+        let failed = try #require(turns(r).first { $0.id == ambiguous.id })
+        #expect(failed.showsStatusLine && failed.showsDeliveryLine, "오류 줄 옆에 전달 줄이 남는다")
+        #expect(model.deliveryLine(for: failed)?.link?.title == "Choose an issue", "고르기 링크가 가려지지 않는다")
+        // 서버가 새로 알려 준 후보: A는 지워졌다
+        r.gateway.update { $0.deliveries[ambiguous.id] = AgentDelivery(state: .needsReferent, candidates: failed.delivery?.candidates.filter { $0.actionID != a } ?? []) }
+        await r.chat.refreshDeliveries(Data.conversationID)
+        r.gateway.referentFailure = nil
+        await model.retryDelivery(try #require(turns(r).first { $0.id == ambiguous.id }))
+        #expect(model.referentMenu?.candidates.map(\.actionID) == [b, c], "Try again은 지금 후보로 메뉴를 다시 연다")
+        #expect(r.gateway.calls(prefix: "referent:") == ["referent:\(ambiguous.id.uuidString):\(a.uuidString)"], "낡은 선택을 다시 보내지 않았다")
+        await model.chooseReferent(b)
+        let picked = try #require(turns(r).first { $0.id == ambiguous.id })
+        #expect(picked.delivery?.state == .sent && !picked.showsStatusLine)
+        #expect(r.gateway.calls(prefix: "referent:").last == "referent:\(ambiguous.id.uuidString):\(b.uuidString)")
     }
 
     // MARK: 후보 고르기

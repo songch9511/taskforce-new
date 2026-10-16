@@ -482,6 +482,7 @@ final class AgentChatSampleGateway: ChatGateway, IssueScreensGateway, AssistantG
     private var _stopConfirms = false
     private var _deliverFailure: Error?
     private var _deliveriesFailure: Error?
+    private var _referentFailure: Error?
     private var _deliverReply = AgentDelivery(state: .queued, reason: .sessionBusy)
     private var _openFailure: Error?
     private var _resumeFailure: Error?
@@ -521,6 +522,12 @@ final class AgentChatSampleGateway: ChatGateway, IssueScreensGateway, AssistantG
     var deliveriesFailure: Error? {
         get { lock.withLock { _deliveriesFailure } }
         set { lock.withLock { _deliveriesFailure = newValue } }
+    }
+
+    /// 후보 고르기(`POST …/referent`)를 이 오류로 거절한다 (고른 후보가 지워졌다 · 끝났다 …): nil이면 서버가 받아들인다
+    var referentFailure: Error? {
+        get { lock.withLock { _referentFailure } }
+        set { lock.withLock { _referentFailure = newValue } }
     }
 
     var stopConfirms: Bool {
@@ -653,6 +660,7 @@ final class AgentChatSampleGateway: ChatGateway, IssueScreensGateway, AssistantG
 
     func setReferent(conversationID: UUID, messageID: UUID, actionID: UUID) async throws -> AgentPostedMessage {
         record("referent:\(messageID.uuidString):\(actionID.uuidString)")
+        if let failure = referentFailure { throw failure }
         let sent = AgentDelivery(state: .sent)
         update { $0.deliveries[messageID] = sent }
         let message = state.messages[conversationID]?.first { $0.id == messageID }
@@ -973,7 +981,7 @@ struct SnapshotTerminalLauncher: AgentTerminalLauncher {
 
 /// 에이전트 대화 PNG (OA D4a-1, 디자인 비교용): `-TF_EDGE_SHELL YES -TFSampleData -TF_S3B YES -TF_U2 YES -TFEdgeSnapshot <폴더> -TFEdgeSnapshotIssues -TFEdgeSnapshotAgentChat`
 /// (+ `-TFSnapshotDark`, `-TFReduceMotion YES`). 승인 전 새 문구 후보(`AgentNewCopy`)가 이 견본에서만 보인다. 서버는 가짜(`AgentChatSampleGateway`)라 렌더 fixture일 뿐이다.
-/// 남기는 것(`mac-edge-agentchat-<이름>.png`): window-empty · window-in-flight(OA-4) · window-waiting(OA-4) · window-send-again-refused(동의 철회 뒤 거절) · window-reasons · window-queued · window-referent-menu · window-long-reason · window-running(Stop 원) ·
+/// 남기는 것(`mac-edge-agentchat-<이름>.png`): window-empty · window-in-flight(OA-4) · window-waiting(OA-4) · window-send-again-refused(동의 철회 뒤 거절) · window-reasons · window-queued · window-referent-menu · window-referent-failed(후보가 지워짐) · window-long-reason · window-running(Stop 원) ·
 /// window-stop-requested · window-stop-may-continue · window-truncated · window-truncated-expanded · window-events · window-many · window-hundred-plus · window-chip-added(auto 칩을 누른 뒤) ·
 /// panel-running · panel-idle-view-full(OA-3) · panel-external(OA-3) · panel-resume-card(OA-3) · panel-send-again-refused(동의 철회 뒤 거절) · panel-feature-off(기능 꺼짐) · panel-other-mac · panel-stop-requested · panel-stop-may-continue.
 /// (Resume 뒤 "아직 열림" 빨간 줄 · 폴더 고르기는 실제 프로세스 검사기를 쓰는 D4a-2의 장면이다)
@@ -1008,6 +1016,7 @@ enum AgentChatSnapshot {
             sample.stopMayContinue = false
             sample.deliverFailure = nil
             sample.deliveriesFailure = nil
+            sample.referentFailure = nil
             sample.deliverReply = AgentDelivery(state: .queued, reason: .sessionBusy)
             runtime.scope.accountLeft()
             runtime.chat.fullTextLookup = { key in AgentChatSampleData.fullText(forKey: key) }
@@ -1053,6 +1062,13 @@ enum AgentChatSnapshot {
                 await settle()
                 shootWindow("window-referent-menu")
                 model.closeReferentMenu()
+                // 고른 후보가 지워졌다(404): 오류 줄 옆에 고르기 링크가 남고, Try again이 지금 후보로 메뉴를 다시 연다
+                sample.referentFailure = APIError.server(status: 404, code: .notFound, message: "No such issue")
+                model.openReferentMenu(for: referent.id)
+                await model.chooseReferent(AgentChatSampleData.referentActions[0])
+                await settle()
+                shootWindow("window-referent-failed")
+                sample.referentFailure = nil
             }
         }
         await world(AgentChatSampleData.longReason())

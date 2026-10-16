@@ -35,6 +35,16 @@ struct AgentDeliveryNotice: Equatable {
     }
 }
 
+/// `retryDelivery`의 결과: 앱이 무엇을 했나
+public enum AgentDeliveryRetry: Equatable, Sendable {
+    /// 다시 할 안내가 없었다
+    case none
+    /// Send again을 다시 보냈다
+    case resent
+    /// 후보 고르기의 거절이었다: 낡은 선택을 그대로 다시 보내지 않았다. 호출한 화면이 **지금 후보 목록**으로 고르기를 다시 열어야 한다
+    case chooseReferent
+}
+
 /// 원래 칩을 모르는 cancelled를 새 메시지로 다시 보낼 수 없다 (오류 말은 기존 일반 문장: 새 문구 없음)
 private struct SendAgainWithoutOriginalChips: Error {}
 
@@ -282,15 +292,23 @@ extension ChatStore {
         if kept.count != deliveryNotices.count { deliveryNotices = kept }
     }
 
-    /// Try again (거절 · 막힘 안내의): 같은 Send again · 같은 후보 고르기를 다시 한다. 그 사이 서버가 그 메시지를 바꿨으면(다른 기기) 아무것도 보내지 않고 안내만 지운다
-    public func retryDelivery(_ messageID: UUID, in conversationID: UUID) async {
-        guard let notice = deliveryNotices[messageID] else { return }
+    /// Try again (거절 · 막힘 안내의).
+    /// - Send again: 같은 Send again을 다시 한다. 그 사이 서버가 그 메시지를 바꿨으면(다른 기기) 아무것도 보내지 않고 안내만 지운다
+    /// - 후보 고르기: **낡은 선택을 그대로 다시 보내지 않는다** (그 후보가 지워졌거나 끝났을 수 있다: 서버는 끝난 후보도 목록에 둔다). 안내를 지우고 서버 값을 다시 읽은 뒤
+    ///   `.chooseReferent`를 돌려 화면이 지금 후보 목록으로 고르기를 다시 열게 한다
+    @discardableResult
+    public func retryDelivery(_ messageID: UUID, in conversationID: UUID) async -> AgentDeliveryRetry {
+        guard let notice = deliveryNotices[messageID] else { return .none }
         // 사용자가 직접 다시 시도했다: 꺼짐 안내를 걷고 서버에 다시 묻는다 (아직 꺼져 있으면 다시 알게 된다)
         isUnavailable = false
         deliveryNotices[messageID] = nil
         switch notice.action {
-        case .sendAgain: await sendAgain(messageID, in: conversationID)
-        case .referent(let actionID): await chooseReferent(actionID, for: messageID, in: conversationID)
+        case .sendAgain:
+            await sendAgain(messageID, in: conversationID)
+            return .resent
+        case .referent:
+            await refreshDeliveries(afterMyRequestIn: conversationID)
+            return .chooseReferent
         }
     }
 }

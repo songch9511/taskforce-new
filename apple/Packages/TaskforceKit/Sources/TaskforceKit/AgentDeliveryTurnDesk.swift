@@ -8,9 +8,13 @@ public struct AgentReferentMenu: Equatable, Sendable {
 }
 
 extension ChatTurn {
-    /// 내 글 아래에 전달 줄 대신 기존 상태 줄(Not sent · 이유 · Try again / 동의 안내)을 보이나: 전달 표시를 아직 모르거나(첫 보내기가 실패했다),
+    /// 내 글 아래에 기존 상태 줄(Not sent · 이유 · Try again / 동의 안내)을 보이나: 전달 표시를 아직 모르거나(첫 보내기가 실패했다),
     /// Send again · 후보 고르기가 거절되거나 막혀 오류 · 동의 안내가 붙었을 때 (`ChatStore.deliveryNotices`)
-    public var showsStatusInsteadOfDelivery: Bool { delivery == nil || status.canRetry }
+    public var showsStatusLine: Bool { delivery == nil || status.canRetry }
+
+    /// 내 글 아래에 전달 줄을 보이나: 전달 표시를 알고, 오류 안내가 없거나(정상), 있어도 **후보 고르기가 아직 열려 있을 때**(`needs_referent`) — 거절된 후보 옆에
+    /// 다른 후보를 고를 링크가 남아야 한다. Send again의 오류는 전달 줄을 대신한다
+    public var showsDeliveryLine: Bool { delivery != nil && (!status.canRetry || delivery?.state == .needsReferent) }
 }
 
 /// 에이전트 대화의 줄 동작 (OA D4a-1): 전달 줄 말 · Send again · 후보 고르기 메뉴 · View full. **Assistant 창과 세션 패널이 같이 쓴다** (둘 다 같은 `ChatStore`의 대화를 그린다).
@@ -40,9 +44,9 @@ public final class AgentTurnDesk {
         await chat.sendAgain(turn.id, in: conversationID)
     }
 
-    /// Try again (거절 · 막힘 안내의): 같은 Send again · 후보 고르기를 다시 한다
+    /// Try again (거절 · 막힘 안내의): Send again은 다시 보내고, 후보 고르기는 **지금 후보 목록으로 메뉴를 다시 연다** (낡은 선택을 그대로 다시 보내지 않는다)
     public func retry(_ turn: ChatTurn, in conversationID: UUID) async {
-        await chat.retryDelivery(turn.id, in: conversationID)
+        if await chat.retryDelivery(turn.id, in: conversationID) == .chooseReferent { presentReferentMenu(for: turn.id) }
     }
 
     /// 줄의 링크: 그 메시지의 후보 메뉴를 연다 (이미 열려 있으면 닫는다). 후보가 없거나 `needs_referent`가 아니면 열지 않는다
@@ -51,6 +55,11 @@ public final class AgentTurnDesk {
             referentMenu = nil
             return
         }
+        presentReferentMenu(for: messageID)
+    }
+
+    /// 지금(가장 최근 읽기의) 후보로 메뉴를 연다 (이미 열려 있으면 후보를 바꿔 연다). 후보가 없거나 `needs_referent`가 아니면 열지 않는다
+    private func presentReferentMenu(for messageID: UUID) {
         guard let delivery = chat.delivery(forMessage: messageID), delivery.state == .needsReferent, !delivery.candidates.isEmpty else { return }
         referentMenu = AgentReferentMenu(messageID: messageID, candidates: delivery.candidates)
     }

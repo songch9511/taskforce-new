@@ -65,7 +65,9 @@ struct AssistantWindowView: View {
                 .defaultScrollAnchor(model.mode == .chat ? .bottom : .top)
                 .scrollIndicators(.automatic)
                 .onChange(of: signature) {
-                    if model.mode == .chat { proxy.scrollTo(AssistantBodyAnchor.bottom, anchor: .bottom) }
+                    // 한 번 양보한 뒤 내린다: 마지막 줄 아래에 줄이 더해지는 변화(전달 줄 옆의 오류 줄 · Try again)는 이번 갱신의 배치가 끝난 다음에야 높이가 늘어난다
+                    guard model.mode == .chat else { return }
+                    Task { @MainActor in proxy.scrollTo(AssistantBodyAnchor.bottom, anchor: .bottom) }
                 }
             }
             footer
