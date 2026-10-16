@@ -56,6 +56,8 @@ public final class AgentSessionStore {
     @ObservationIgnored private var readSequence = 0
     @ObservationIgnored private var pollTask: Task<Void, Never>?
     @ObservationIgnored private var expiryTask: Task<Void, Never>?
+    /// 새로 읽은 세션을 반영했다 (OA D4b-m-1): 질문 저장소가 질문을 기다리는 세션의 질문을 서버에서 읽는다. Done 만료로 항목만 다시 정할 때는 부르지 않는다
+    @ObservationIgnored public var onApplied: (@MainActor ([AgentSessionItem]) -> Void)?
 
     /// - sleep: 다음 읽기 · Done 만료까지 기다리는 함수 (시험은 손으로 돌린다)
     public init(
@@ -156,6 +158,7 @@ public final class AgentSessionStore {
         snapshot = fresh
         hasRead = true
         rebuild()
+        onApplied?(items)
     }
 
     /// 지금 시각으로 항목을 다시 정한다 (Done 3초가 지났을 때)

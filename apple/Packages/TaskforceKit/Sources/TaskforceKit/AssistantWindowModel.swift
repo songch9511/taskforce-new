@@ -16,7 +16,7 @@ public final class AssistantWindowModel: Identifiable {
     public private(set) var conversationID: UUID
     public private(set) var mode: Mode = .chat
     public private(set) var chips = AssistantChipSet()
-    /// 비밀 질문이 열려 있어 입력이 꺼진 이유 (nil = 열려 있음, 빈 글 = 기본 문구). 켜는 쪽(질문 카드)은 D4b-m이다
+    /// 입력을 끄는 이유를 직접 정한다 (nil = 정하지 않음, 빈 글 = 기본 문구). 비밀 질문이 열린 대화는 `questions`가 대신 끈다 (아래 `blockedReason`)
     public var blocked: String?
     /// 입력칸이 포커스를 가져가야 할 때마다 오른다 (창을 ⌘3 · ⌘N으로 열 때 · 새 대화)
     public private(set) var focusRequest = 0
@@ -28,6 +28,9 @@ public final class AssistantWindowModel: Identifiable {
     @ObservationIgnored public let desk: AgentTurnDesk
     /// 에이전트 대화의 Stop · 세션 읽기 (OA D4a-13). 없으면 Stop이 없다 (실제 연결이 없는 런타임 · 견본)
     @ObservationIgnored public var agent: AssistantAgentSupport?
+
+    /// 에이전트의 열린 질문 (OA D4b-m-1): Assistant 창과 세션 패널이 같은 상태를 본다. 없으면 질문 카드가 없다 (견본 · 시험용 가짜 연결)
+    @ObservationIgnored public var questions: AgentQuestionStore?
 
     @ObservationIgnored let chat: ChatStore
     @ObservationIgnored let targets: AssistantTargetsStore
@@ -74,7 +77,18 @@ public final class AssistantWindowModel: Identifiable {
         mode == .history ? ChatCopy.historyTitle : chat.title(for: conversationID)
     }
 
-    public var isBlocked: Bool { blocked != nil }
+    /// 입력을 끄는 이유 (nil = 열려 있음, 빈 글 = 기본 문구 "Answer the question above first"): 직접 정한 이유가 먼저, 아니면 이 대화의 세션에 비밀값 질문이 열려 있을 때 (D4bm-42).
+    /// 자유 글이 비밀값의 답이 되는 길은 없다 — 입력창을 끄고, 서버도 막는다
+    public var blockedReason: String? {
+        if let blocked { return blocked }
+        guard toAgent, let session = chat.agentSessionID(for: conversationID), questions?.blocksComposer(session: session) == true else { return nil }
+        return ""
+    }
+
+    public var isBlocked: Bool { blockedReason != nil }
+
+    /// 이 대화의 세션 (질문이 이 세션에 열린다). 아직 세션이 없는 대화는 nil
+    public var sessionID: UUID? { toAgent ? chat.agentSessionID(for: conversationID) : nil }
 
     // MARK: 에이전트 대화 (OA D4a-1)
 
@@ -149,7 +163,7 @@ public final class AssistantWindowModel: Identifiable {
     }
 
     public var placeholder: String {
-        AssistantPromptRules.placeholder(chips: chips.chips, target: pick, targetName: targetName, blocked: blocked)
+        AssistantPromptRules.placeholder(chips: chips.chips, target: pick, targetName: targetName, blocked: blockedReason)
     }
 
     /// 빈 대화(칩 + 프롬프트뿐): 창 높이의 바닥 440이 걸린다. History 본문은 아니다
