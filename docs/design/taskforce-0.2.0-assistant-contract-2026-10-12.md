@@ -330,6 +330,18 @@ registry에 있고 연결이 없으면 `not_connected`(예: Codex를 아직 연�
 - **3.9 사후 충돌 (:240) · 해소 route:** Review 항목 id는 `path_conflict:<lease_id>`, version은 `conflict:<lease_id>:<conflict_version>`이고 항목의 Action은 **늦게 쓴(멈춘) run**의 Action이다(holder는 ref). 해소는 `POST /api/v2/path-conflicts/{lease_id}/resolve { keep: "holder" | "later", conflict_version }`다. `conflict_version`은 충돌이 새로 생길 때마다 오르는 정수 CAS이고, 옛 version이거나 이미 해소됐으면 409 `conflict`(쓰기 0 · 지표 0)이다. 효과 · 지표(`path_conflict_resolved {keep}`)는 D3c-2 SQL 그대로다.
 - **gate:** 에이전트 입력은 `CONVERSATIONS_V2_ENABLED` ∧ adapter 플래그가 켜졌을 때만 읽는다(에이전트 대화 route의 gate와 같은 조건). 해소 route는 `REVIEW_V2_ENABLED` ∧ 켜진 adapter가 하나 이상일 때만 열린다. 새 플래그 · 새 지표 type은 없다. 모두 꺼지면 Review · 복귀 요약 JSON은 C3와 바이트 동일하다.
 
+### 5.3 OA F2 서버 확정 정정 (2026-10-15)
+
+이 절은 OA F2 계약 5.1의 Q1–Q13을 반영하며 아래에 지정한 기존 문구보다 우선한다.
+
+- **3.6 비밀값 (:213) · 로컬 답 입구:** 그 세션을 가진 Mac이 값을 메모리에 두고 서버에는 **"이 질문은 이 Mac에서 답했다"만** 표시한다. 입구는 새 bridge route `POST /api/v1/bridge/answer-local { bridge_id, agent_task_id, request_digest }`(사용자 토큰 + `X-Taskforce-Bridge-Secret`)다. D1d 답 route는 바뀌지 않는다 — 비밀값은 계속 409 `secret_requires_local`(RPC 0)이다. 본문에는 값을 담을 자리가 없다: UUID 둘과 `request_digest`(= `provider_request_id`의 UTF-8 SHA-256 소문자 16진 64자)뿐인 strict 객체, 512바이트 상한, 틀리면 고정 문구 400이다. `provider_request_id`는 본문에 없고 서버가 DB의 질문 열쇠에서 꺼낸다.
+- **증명:** 기기 증명(bridge secret) + 세션 소유(그 세션의 연결이 그 bridge)다. TS `bridgeOwnsSession`이 앞단 거름이고, SQL `answer_agent_question_locally`가 쓰기와 같은 트랜잭션에서 잠그기 전 · 후로 다시 확인한다(권위). 같은 사용자의 다른 Mac · 폐기된 bridge · 남의 작업은 404이고 쓰기 0이다(다른 Mac이 표시하면 답 명령이 값이 없는 주인 Mac으로 가 질문을 잃는다). 토큰만으로는 표시할 수 없다.
+- **효과:** 기존 `answer_agent_question(…, p_answered_locally => true)`를 그대로 지난다(질문 열쇠 CAS · 중복 수렴 · 답 단계 · bridge 명령 · 대화 줄 "Answered on this Mac"). 승인 질문은 이 길로 답할 수 없다(lease 확정이 있는 `answer_agent_approval`만). 표시가 `answered`면 Review의 `agent_secret_question` 항목이 모든 기기에서 다음 읽기에 사라진다.
+- **5.2 (:329) 끝 문장:** "그 세션을 가진 Mac의 로컬 답 route는 후속 서버 WP다"의 후속 서버 WP는 OA F2이고 route는 위 `answer-local`이다. Mac 쪽 호출(비밀값 입력 카드 · `LocalSecretAnswers.put` 먼저 → 이 route → 결과에 따라 값 지우기)은 **D4b-m**이다(D3a 6.6의 "D4a"는 D4b-m으로 읽는다).
+- **응답:** 도메인 결과는 200의 `status`다 — `answered` · `duplicate`(+ `step_id`) · `stale`(`question_closed` · `not_live` · `not_secret`). `not_live`는 heartbeat 공백(작업 `unreachable`)의 참고 이유로, Mac이 heartbeat · reconcile로 작업을 되살린 뒤 한 번 다시 보낸다. 409 `conflict`는 잠금 경합(다시 보내도 된다)에만 쓴다. 새 오류 코드 · 새 플래그 · 새 지표 type은 없다.
+- **8장 지표:** `question_answered`에 `answered_locally: true` 차원을 더한다(`kind:"input"`, `answered`일 때만 같은 트랜잭션). 측정 공백: 입력한 화면(Assistant · Review) · 질문이 기다린 시간 · 표시 뒤 lease 때 값이 없어 닫힌 수(`bridge_commands.outcome='request_closed'`).
+- **AC-37 (:445) 서버 몫:** 비밀값 답의 서버 기록 0(답 단계 args는 `{agent_task_id, provider_request_id, answered_locally:true}`뿐, 카나리가 어느 표에도 남지 않음)과 Review 항목이 주인 Mac의 표시로 사라지는 것, 다른 기기는 표시할 수 없는 것을 fixture로 확인한다. 값이 에이전트에 한 번 도달하는 것은 D4b-m · MS-2의 실제 provider · Mac 확인이다.
+
 ## 6. 프로젝트 관리 (U5)
 
 | route | 내용 |

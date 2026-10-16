@@ -1954,3 +1954,23 @@ export const proposalConflictSchema = z.object({
   card_message_id: z.uuid().optional(),
 });
 export type ProposalConflict = z.infer<typeof proposalConflictSchema>;
+// --- F2 ---
+/**
+ * POST /api/v1/bridge/answer-local (OA F2): 그 세션을 가진 Mac이 "이 비밀값 질문은 이 Mac에서 답했다"를 서버에 표시한다. 값은 오지 않는다.
+ * 사용자 토큰 + X-Taskforce-Bridge-Secret 헤더(기기 자격). 본문에는 글을 담을 자리가 없다: UUID 둘과 고정 길이 소문자 16진 하나뿐인 strict 객체이고 상한은 512바이트다.
+ * request_digest = provider_request_id의 UTF-8 SHA-256 소문자 16진 64자 (provider_request_id는 아무 글자 200자까지라 본문에 실을 수 없다).
+ * 200 { status: "answered" | "duplicate", step_id } · { status: "stale", reason } — 도메인 결과는 200의 status로 준다(D2a ack의 stale · withdrawn과 같은 bridge 관례).
+ * 오류는 v1 코드만: 400 invalid_request(고정 문구) · 401 · 403 · 404 not_found · 409 conflict(다시 보내도 된다) · 429 rate_limited.
+ */
+export const BRIDGE_ANSWER_LOCAL_MAX_BYTES = 512;
+export const bridgeV1AnswerLocalRequestSchema = z.strictObject({
+  bridge_id: z.guid(), agent_task_id: z.guid(), request_digest: z.string().regex(/^[0-9a-f]{64}$/),
+});
+export type BridgeV1AnswerLocalRequest = z.infer<typeof bridgeV1AnswerLocalRequestSchema>;
+/** question_closed = 이미 닫히거나 바뀐 질문 · not_live = heartbeat 공백(참고: Mac이 되살린 뒤 한 번 다시) · not_secret = 비밀값 입력 질문이 아님 */
+export const bridgeV1AnswerLocalStaleReasonSchema = z.enum(["question_closed", "not_live", "not_secret"]);
+export const bridgeV1AnswerLocalResponseSchema = z.discriminatedUnion("status", [
+  z.strictObject({ status: z.enum(["answered", "duplicate"]), step_id: z.guid() }),
+  z.strictObject({ status: z.literal("stale"), reason: bridgeV1AnswerLocalStaleReasonSchema }),
+]);
+export type BridgeV1AnswerLocalResponse = z.infer<typeof bridgeV1AnswerLocalResponseSchema>;
