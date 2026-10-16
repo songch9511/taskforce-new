@@ -88,6 +88,21 @@ enum AgentQuestionFixtures {
             prompt(id: "token", text: "Enter the deploy token", header: "Deploy", options: [], other: true, secret: true),
         ])
     }
+    /// 비밀값이 **앞**에 있는 두 질문 (검토 1: 앞 단계 비밀값도 Undo · 실패 · 종료에서 지워져야 한다)
+    static var secretFirstMixed: String {
+        pending(prompts: [
+            prompt(id: "token", text: "Enter the deploy token", header: "Deploy", options: [], other: true, secret: true),
+            prompt(id: "env", text: "Which environment?", header: "Deploy", options: [("Staging", ""), ("Production", "")]),
+        ])
+    }
+    /// 비밀값이 **가운데**에 있는 세 질문
+    static var secretMiddle: String {
+        pending(prompts: [
+            prompt(id: "env", text: "Which environment?", header: "Deploy", options: [("Staging", ""), ("Production", "")]),
+            prompt(id: "token", text: "Enter the deploy token", header: "Deploy", options: [], other: true, secret: true),
+            prompt(id: "region", text: "Which region?", header: "Deploy", options: [("eu", ""), ("us", "")]),
+        ])
+    }
     /// 승인: 파일 고치기 (D3a: 머리 `Edit file`, 글 `Edit <상대 경로>`)
     static var approvalEdit: String {
         pending(

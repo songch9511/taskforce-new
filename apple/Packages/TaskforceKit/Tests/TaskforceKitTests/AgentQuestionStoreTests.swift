@@ -634,6 +634,70 @@ struct AgentQuestionStoreTests {
         await store.settle()
         #expect(!store.blocksComposer(session: F.sessionID))
     }
+
+    // MARK: 검토 1: 이전 전송의 늦은 응답 · 포커스 요청의 수명
+
+    @Test func aLateResponseOfAnOlderSendNeverRemovesTheNewerSendsQuitWait() async throws {
+        let store = makeStore()
+        var answered = 0
+        store.onAnswered = { _, _ in answered += 1 }
+        await open(store, F.single)
+        let first = Latch()
+        gateway.holdNextAnswer(first)
+        store.choose(row: 0, session: F.sessionID)
+        await fire()
+        #expect(await first.waitForArrivals(1, timeout: .seconds(3)), "Q1의 응답이 느리다")
+        // 그 사이 서버가 다른 질문(Q2)을 보인다. 사용자가 Q2에 답해 그 전송도 가는 중이다
+        await open(store, QFx.single(request: "second"))
+        #expect(try entry(store).key.requestID == "second" && (try entry(store).phase) == .open)
+        let second = Latch()
+        gateway.holdNextAnswer(second)
+        store.choose(row: 1, session: F.sessionID)
+        await fire()
+        #expect(await second.waitForArrivals(1, timeout: .seconds(3)), "Q2도 가는 중이다")
+        // Q1의 응답이 이제 온다
+        await first.open()
+        #expect(await eventually { answered == 1 }, "Q1의 늦은 응답이 처리됐다")
+        // 종료: Q2가 아직 가는 중이니 기다려야 한다 (Q1의 끝이 Q2의 기다림을 지우면 곧바로 돌아와 답을 잃는다)
+        let done = ResultBox()
+        let flush = Task { @MainActor in
+            await store.flushForQuit(timeout: 3)
+            done.set(true)
+        }
+        #expect(await eventually { ticker.pendingDelays == [3.0] }, "Q2의 끝이나 한도(3초)까지 기다린다")
+        #expect(!done.value)
+        await second.open()
+        await flush.value
+        #expect(done.value && gateway.answers.count == 2)
+    }
+
+    @Test func aFocusRequestOnlyCountsForTheQuestionThatWasOpenWhenItWasMade() async throws {
+        let store = makeStore()
+        await open(store, F.single)
+        #expect(store.pendingFocusRequests(session: F.sessionID) == 0, "요청이 없으면 카드는 포커스를 가져가지 않는다")
+        store.requestFocus(session: F.sessionID)
+        #expect(store.pendingFocusRequests(session: F.sessionID) == 1)
+        await open(store, QFx.single(request: "second"))
+        #expect(store.focusRequest(session: F.sessionID) == 1 && store.pendingFocusRequests(session: F.sessionID) == 0, "앞 질문 때 누른 링이 새 질문 카드의 포커스가 되지 않는다")
+        store.requestFocus(session: F.sessionID)
+        #expect(store.pendingFocusRequests(session: F.sessionID) == 1)
+    }
+
+    @Test func aRequestMadeBeforeTheCardExistedStillGoesToTheCardThatOpensForIt() async throws {
+        let store = makeStore()
+        store.requestFocus(session: F.sessionID)
+        await open(store, F.single)
+        #expect(store.pendingFocusRequests(session: F.sessionID) == 1, "링을 누른 뒤 질문 읽기가 끝났다: 그 카드가 받는다")
+        // 질문이 없는 읽기는 아직 안 쓴 요청을 버린다 (한참 뒤의 질문이 훔치지 않게)
+        let other = makeStore()
+        other.requestFocus(session: F.sessionID)
+        gateway.records = []
+        other.sessionsRead([QFx.item()])
+        await other.settle()
+        await open(other, F.single)
+        #expect(other.pendingFocusRequests(session: F.sessionID) == 0)
+    }
+
 }
 
 /// 값을 시험 밖으로 꺼내는 작은 상자

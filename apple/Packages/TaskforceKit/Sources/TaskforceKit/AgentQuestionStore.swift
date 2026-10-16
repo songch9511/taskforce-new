@@ -63,6 +63,8 @@ public final class AgentQuestionStore {
         public internal(set) var otherOpen = false
         /// 마지막으로 보낸 입력 글 (실패 · Undo 뒤 다시 보이게). 비밀값은 여기에 없다
         public internal(set) var otherText = ""
+        /// 이 질문이 열릴 때의 포커스 요청 수: 그 뒤에 온 요청만 이 질문의 카드가 받는다 (`pendingFocusRequests`)
+        public internal(set) var focusBaseline = 0
 
         /// 지금 단계의 카드
         public var card: AgentQuestionCard { cards[min(step, cards.count - 1)] }
@@ -96,7 +98,10 @@ public final class AgentQuestionStore {
     @ObservationIgnored private var sessions: [UUID: AgentSessionItem] = [:]
     @ObservationIgnored private var collected: [UUID: Collected] = [:]
     @ObservationIgnored private var holds: [UUID: Task<Void, Never>] = [:]
+    /// 보내는 중인 전송들: 전송마다 자기 표(id)로 등록하고 자기가 등록한 것만 지운다 (이전 전송의 늦은 끝이 새 전송의 종료 기다림을 지우지 않게)
     @ObservationIgnored private var sendTasks: [UUID: Task<Void, Never>] = [:]
+    /// 질문이 열리기 전에 온 포커스 요청이 있는 세션 (그 질문의 카드가 받는다)
+    @ObservationIgnored private var focusBeforeEntry: Set<UUID> = []
     /// 읽는 중인 일의 수와 `settle()`을 기다리는 쪽 (읽기 · 이름 읽기)
     @ObservationIgnored private var pendingReads = 0
     @ObservationIgnored private var settleWaiters: [CheckedContinuation<Void, Never>] = []
@@ -155,6 +160,13 @@ public final class AgentQuestionStore {
 
     public func focusRequest(session: UUID) -> Int { focusRequests[session] ?? 0 }
 
+    /// 지금 질문의 카드가 새로 받아야 할 포커스 요청 수 (0이면 요청 없음: 카드가 스스로 포커스를 가져가지 않는다, D4bm-31).
+    /// 앞 질문 때 누른 링의 요청은 세지 않는다. 질문 읽기가 끝나기 전에 누른 요청은 그 질문의 카드가 받는다
+    public func pendingFocusRequests(session: UUID) -> Int {
+        guard let entry = entries[session] else { return 0 }
+        return max(0, (focusRequests[session] ?? 0) - entry.focusBaseline)
+    }
+
     /// 질문이 열려 있는 동안 보낸 글이 대기열에 들어간 수 (`AgentQuestionRules.queuedBehindQuestion`)가 바뀌었다: **늘 때만** 포커스를 카드로 옮긴다
     /// (DS: "Otherwise it queues and focus moves to the card"). 글이 전달되어 수가 줄 때는 포커스를 훔치지 않는다
     public func noteQueued(count: Int, session: UUID) {
@@ -165,6 +177,7 @@ public final class AgentQuestionStore {
 
     public func requestFocus(session: UUID) {
         focusRequests[session, default: 0] += 1
+        if entries[session] == nil { focusBeforeEntry.insert(session) }
     }
 
     /// 카드(또는 그 줄)가 포커스를 가졌다 · 잃었다. Esc가 Undo가 되는 조건이다 (D4bm-33)
@@ -250,6 +263,7 @@ public final class AgentQuestionStore {
             if let question = record?.question {
                 upsert(question, session: session)
             } else {
+                focusBeforeEntry.remove(session)
                 remove(session: session)
             }
         }
@@ -276,7 +290,10 @@ public final class AgentQuestionStore {
             return
         }
         if let old = entries[session] { discard(old, session: session) }
-        entries[session] = Entry(sessionID: session, question: question, context: context, cards: cards, conversationID: sessions[session]?.conversationID)
+        var created = Entry(sessionID: session, question: question, context: context, cards: cards, conversationID: sessions[session]?.conversationID)
+        let requests = focusRequests[session] ?? 0
+        created.focusBaseline = focusBeforeEntry.remove(session) != nil ? max(requests - 1, 0) : requests
+        entries[session] = created
         fetchMacNameIfNeeded(session: session)
         if context.isThisMac, notified.insert(question.key).inserted {
             onOpened?(AgentQuestionOpened(key: question.key, sessionID: session, agentName: context.agentName))
@@ -408,14 +425,29 @@ public final class AgentQuestionStore {
         startHold(session: session, key: entry.key)
     }
 
-    /// Undo: 보류 안에서만. 서버 호출은 없다. 여러 질문이면 마지막 질문으로 돌아가고 앞 답은 둔다
+    /// Undo · 실패 · 종료로 카드가 열린 상태로 돌아간다. 비밀값이 있는 요청은 **모든 비밀값을 지우고** 첫 비밀값 단계로 돌아가 거기서부터 다시 받는다
+    /// (앞 단계의 일반 답은 둔다): 앞 단계 비밀값이 재조회 뒤에도 남아 재제출에 쓰이면 안 된다. 비밀값이 없는 요청은 마지막 답만 지우고 마지막 질문으로 돌아간다
+    private func rewind(_ entry: inout Entry, session: UUID) {
+        let prompts = entry.question.prompts
+        if entry.question.hasSecret, let first = prompts.firstIndex(where: \.secret) {
+            for prompt in prompts[first...] { collected[session]?.remove(prompt.id) }
+            entry.step = min(first, entry.cards.count - 1)
+            entry.checked = []
+            entry.otherOpen = false
+            entry.otherText = ""
+        } else {
+            collected[session]?.remove(entry.card.promptID)
+        }
+        entry.phase = .open
+        entry.summary = nil
+    }
+
+    /// Undo: 보류 안에서만. 서버 호출은 없다. 여러 질문이면 마지막 질문으로 돌아가고 앞 답은 둔다 (비밀값이 섞였으면 `rewind`)
     public func undo(session: UUID) {
         guard var entry = entries[session], entry.phase == .holding else { return }
         holds[session]?.cancel()
         holds[session] = nil
-        collected[session]?.remove(entry.card.promptID)
-        entry.phase = .open
-        entry.summary = nil
+        rewind(&entry, session: session)
         entries[session] = entry
     }
 
@@ -458,12 +490,13 @@ public final class AgentQuestionStore {
         entries[session] = entry
         let conversation = entry.conversationID
         let payload = Payload.make(entry: entry, gathered: collected[session] ?? Collected())
+        let sendID = UUID()
         let task = Task { [weak self] in
             guard let self else { return }
             let result = await self.deliver(payload)
-            self.finish(result, session: session, key: key, token: token, conversation: conversation)
+            self.finish(result, sendID: sendID, session: session, key: key, token: token, conversation: conversation)
         }
-        sendTasks[session] = task
+        sendTasks[sendID] = task
         return task
     }
 
@@ -525,8 +558,8 @@ public final class AgentQuestionStore {
         }
     }
 
-    private func finish(_ result: Sent, session: UUID, key: AgentQuestionKey, token: AccountScope.Token, conversation: UUID?) {
-        sendTasks[session] = nil
+    private func finish(_ result: Sent, sendID: UUID, session: UUID, key: AgentQuestionKey, token: AccountScope.Token, conversation: UUID?) {
+        sendTasks[sendID] = nil
         guard scope.isCurrent(token) else { return }
         if case .sent = result { onAnswered?(session, conversation) }
         // 보내는 동안 질문이 바뀌었거나 읽기에서 사라졌다: 그 요청의 결과를 새 카드에 적용하지 않는다
@@ -543,10 +576,8 @@ public final class AgentQuestionStore {
             entries[session] = nil
             startRead([session])
         case .failed(let failure):
-            // 카드가 돌아온다: 마지막 답은 지우고 사용자가 다시 고른다 (체크 · 입력한 글은 남긴다, 비밀값은 버린다)
-            collected[session]?.remove(entry.card.promptID)
-            entry.phase = .open
-            entry.summary = nil
+            // 카드가 돌아온다: 마지막 답은 지우고 사용자가 다시 고른다 (체크 · 입력한 글은 남긴다, 비밀값은 모두 버린다: `rewind`)
+            rewind(&entry, session: session)
             entry.failure = failure
             entries[session] = entry
         }
@@ -563,9 +594,7 @@ public final class AgentQuestionStore {
             holds[session] = nil
             if entry.question.hasSecret {
                 var back = entry
-                collected[session]?.remove(entry.card.promptID)
-                back.phase = .open
-                back.summary = nil
+                rewind(&back, session: session)
                 entries[session] = back
             } else {
                 beginSend(session: session, key: entry.key, token: token)
@@ -641,6 +670,7 @@ public final class AgentQuestionStore {
         cardFocused = []
         queuedSeen = [:]
         focusRequests = [:]
+        focusBeforeEntry = []
         if !closing.isEmpty { onClosed?(closing) }
     }
 }

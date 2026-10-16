@@ -219,6 +219,71 @@ struct AgentQuestionSecretTests {
         await quiet()
         #expect(submitter.submitted.isEmpty && gateway.answers.isEmpty)
     }
+
+    // MARK: 검토 1: 앞 단계의 비밀값도 지운다 (secret이 마지막이 아닌 요청)
+
+    /// 앞 단계에서 비밀값을 넣고 마지막 단계의 답까지 골라 보류에 들어간 상태 (`secretFirstMixed`: token → env)
+    private func heldWithSecretFirst(_ store: AgentQuestionStore) async throws {
+        await open(store, F.secretFirstMixed)
+        store.submitSecret(SecretBox(Self.canary), session: F.sessionID)
+        #expect(try #require(store.entry(session: F.sessionID)).step == 1)
+        store.choose(row: 0, session: F.sessionID)
+        #expect(try #require(store.entry(session: F.sessionID)).phase == .holding)
+    }
+
+    /// 다시 시작한 입력이 새 값으로 가는가: 앞 비밀값을 지웠으니 처음부터 다시 받는다
+    private func answerAgain(_ store: AgentQuestionStore, submissions: Int) async throws {
+        let back = try #require(store.entry(session: F.sessionID))
+        #expect(back.phase == .open && back.step == 0 && back.card.kind == .secret, "비밀값이 있던 첫 단계로 돌아온다")
+        store.submitSecret(SecretBox("new value"), session: F.sessionID)
+        store.choose(row: 1, session: F.sessionID)
+        await fire()
+        #expect(await eventually { submitter.submitted.count == submissions })
+        #expect(submitter.submitted[submissions - 1].revealed() == ["token": .text("new value"), "env": .text("Production")], "옛 비밀값이 다시 쓰이지 않는다")
+    }
+
+    @Test func undoWipesAnEarlierSecretAndGoesBackToTheStepThatNeedsItAgain() async throws {
+        let store = makeStore()
+        try await heldWithSecretFirst(store)
+        store.undo(session: F.sessionID)
+        try await answerAgain(store, submissions: 1)
+    }
+
+    @Test func aFailedSendWipesAnEarlierSecretAndGoesBackToTheStepThatNeedsItAgain() async throws {
+        submitter.outcome = .failed(.offline)
+        let store = makeStore()
+        try await heldWithSecretFirst(store)
+        await fire()
+        #expect(await eventually { store.entry(session: F.sessionID)?.failure == .offline })
+        submitter.outcome = .sent
+        try await answerAgain(store, submissions: 2)
+    }
+
+    @Test func quittingWithAHeldSecretWipesAnEarlierSecretToo() async throws {
+        let store = makeStore()
+        try await heldWithSecretFirst(store)
+        await store.flushForQuit(timeout: 3)
+        #expect(submitter.submitted.isEmpty && gateway.answers.isEmpty)
+        try await answerAgain(store, submissions: 1)
+    }
+
+    @Test func aSecretInTheMiddleSendsBackToItAndKeepsOnlyTheAnswersBeforeIt() async throws {
+        let store = makeStore()
+        await open(store, F.secretMiddle)
+        store.choose(row: 0, session: F.sessionID)
+        store.submitSecret(SecretBox(Self.canary), session: F.sessionID)
+        store.choose(row: 1, session: F.sessionID)
+        #expect(try #require(store.entry(session: F.sessionID)).phase == .holding)
+        store.undo(session: F.sessionID)
+        let back = try #require(store.entry(session: F.sessionID))
+        #expect(back.phase == .open && back.step == 1 && back.card.kind == .secret, "비밀값 단계로 돌아온다 (그 앞 단계는 그대로)")
+        store.submitSecret(SecretBox("new value"), session: F.sessionID)
+        store.choose(row: 0, session: F.sessionID)
+        await fire()
+        #expect(await eventually { submitter.submitted.count == 1 })
+        #expect(submitter.submitted[0].revealed() == ["env": .text("Staging"), "token": .text("new value"), "region": .text("eu")], "앞 단계 답은 다시 묻지 않고, 비밀값 뒤 단계는 다시 받는다")
+    }
+
 }
 
 final class LogLines: @unchecked Sendable {
