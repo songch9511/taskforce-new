@@ -44,6 +44,49 @@ public struct ProcessGeneration: Equatable, Sendable {
     public var start: Date { Date(timeIntervalSince1970: TimeInterval(startSeconds) + TimeInterval(startMicros) / 1_000_000) }
 }
 
+/// 프로세스 목록(`sysctl KERN_PROC`)의 한 줄 (14장 4 · 6): 목록 한 번에 함께 읽은 값이다. 세대 조회(`proc_pidinfo`)와 달리 실효 사용자가 다른(setuid) 프로세스도 읽힌다
+public struct ListedProcess: Equatable, Sendable {
+    public let pid: pid_t
+    public let parentPID: pid_t
+    /// 실효 사용자
+    public let uid: uid_t
+    /// 실제 사용자
+    public let ruid: uid_t
+    /// 커널 시작 시각 (초 · 마이크로초 그대로)
+    public let startSeconds: UInt64
+    public let startMicros: UInt64
+
+    public init(pid: pid_t, parentPID: pid_t, uid: uid_t, ruid: uid_t, startSeconds: UInt64, startMicros: UInt64) {
+        self.pid = pid
+        self.parentPID = parentPID
+        self.uid = uid
+        self.ruid = ruid
+        self.startSeconds = startSeconds
+        self.startMicros = startMicros
+    }
+
+    /// 이 세대와 같은 때나 그 뒤에 시작했다 (마이크로초까지)
+    public func started(notBefore generation: ProcessGeneration) -> Bool {
+        (startSeconds, startMicros) >= (generation.startSeconds, generation.startMicros)
+    }
+}
+
+/// 작은 기록 파일 하나를 원자적으로 쓴다 (13장 3 · 14장 1): 같은 폴더의 새 임시 파일(0600, `O_EXCL` · `O_NOFOLLOW`)에 쓰고 `fsync` 뒤 이름을 바꾼다
+public enum AgentFile {
+    public static func writeAtomically(_ text: String, to url: URL) -> Bool {
+        let temporary = url.deletingLastPathComponent().appending(path: ".\(url.lastPathComponent).\(getpid()).\(UInt32.random(in: 0...UInt32.max)).tmp")
+        let fd = open(temporary.path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0o600)
+        guard fd >= 0 else { return false }
+        let written = HookMain.writeAll(fd: fd, Data(text.utf8)) && fsync(fd) == 0
+        close(fd)
+        guard written, rename(temporary.path, url.path) == 0 else {
+            unlink(temporary.path)
+            return false
+        }
+        return true
+    }
+}
+
 public enum AgentProcesses {
     /// `proc_pidinfo(PROC_PIDT_BSDINFOWITHUNIQID = 18, arg 1 = 좀비도)`: `struct proc_bsdinfo`(136바이트) 뒤에 `struct proc_uniqidentifierinfo`
     /// (uuid 16 · uniqueid 8 · puniqueid 8 · idversion 4 · 예비 20 = 56바이트). 커널이 한 프로세스를 잡고 둘을 함께 채운다.
@@ -68,7 +111,19 @@ public enum AgentProcesses {
 
     /// 이 사용자의 모든 프로세스 pid (`KERN_PROC_UID`). 읽지 못하면 nil
     public static func userPIDs() -> [pid_t]? {
-        var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_UID, Int32(bitPattern: getuid())]
+        list(KERN_PROC_UID)?.map(\.pid)
+    }
+
+    /// 지킴이가 훑는 목록 (14장 4): 실효 사용자가 이 사용자(`KERN_PROC_UID`) ∪ 실제 사용자가 이 사용자(`KERN_PROC_RUID`, setuid로 실효 사용자가 바뀐 자손).
+    /// pid가 겹치면 하나만. 둘 중 하나라도 읽지 못하면 nil
+    public static func userProcesses() -> [ListedProcess]? {
+        guard let byUID = list(KERN_PROC_UID), let byRUID = list(KERN_PROC_RUID) else { return nil }
+        var seen = Set<pid_t>()
+        return (byUID + byRUID).filter { seen.insert($0.pid).inserted }
+    }
+
+    static func list(_ selector: Int32) -> [ListedProcess]? {
+        var mib: [Int32] = [CTL_KERN, KERN_PROC, selector, Int32(bitPattern: getuid())]
         var size = 0
         guard sysctl(&mib, 4, nil, &size, nil, 0) == 0 else { return nil }
         if size == 0 { return [] }
@@ -76,7 +131,13 @@ public enum AgentProcesses {
         var processes = [kinfo_proc](repeating: kinfo_proc(), count: count)
         size = count * MemoryLayout<kinfo_proc>.stride
         guard sysctl(&mib, 4, &processes, &size, nil, 0) == 0 else { return nil }
-        return processes.prefix(size / MemoryLayout<kinfo_proc>.stride).map(\.kp_proc.p_pid)
+        return processes.prefix(size / MemoryLayout<kinfo_proc>.stride).map { info in
+            let start = info.kp_proc.p_un.__p_starttime
+            return ListedProcess(
+                pid: info.kp_proc.p_pid, parentPID: info.kp_eproc.e_ppid, uid: info.kp_eproc.e_ucred.cr_uid, ruid: info.kp_eproc.e_pcred.p_ruid,
+                startSeconds: UInt64(max(0, start.tv_sec)), startMicros: UInt64(max(0, start.tv_usec))
+            )
+        }
     }
 
     /// 이번 부팅의 id (`kern.bootsessionuuid`). 벽시계와 무관하다

@@ -135,10 +135,18 @@ struct KeeperTests {
             return
         }
         #expect(kept.nextReport() == .exited(code: 0, signal: nil), "뿌리가 먼저 끝났다")
-        let child = try #require(Self.pids(matching: tag).first)
+        // 지킴이 자신도 인자에 태그가 있다 (그것을 자손으로 집지 않는다)
+        let child = try #require(Self.pids(matching: tag).first { $0 != kept.pid })
         #expect(getpgid(child) == child, "세션을 떠났다")
         #expect(kept.exitCode(timeout: 1) == nil, "구성원이 살아 있는 동안 지킴이는 산다")
-        let scan = try #require(KeeperMembers.scan(keeperPID: kept.pid, keeperID: keeperID))
+        // 다른 시험이 띄운 짧은 프로세스가 목록과 조회 사이에 사라지면 그 훑기는 불완전이다 (14장 6): 완전한 훑기 하나를 기한 안에서 찾는다
+        // (시험 전체가 함께 돌면 짧은 프로세스가 많아 몇 초 걸릴 수 있다)
+        var scan = try #require(KeeperMembers.scan(keeperPID: kept.pid, keeperID: keeperID))
+        let deadline = Date().addingTimeInterval(15)
+        while !scan.complete, Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.01)
+            scan = try #require(KeeperMembers.scan(keeperPID: kept.pid, keeperID: keeperID))
+        }
         #expect(scan.complete && scan.members.map(\.pid) == [child])
         #expect(!FileManager.default.fileExists(atPath: kept.ended.path))
         Darwin.kill(child, SIGKILL)
@@ -159,7 +167,7 @@ struct KeeperTests {
         }
         #expect(kept.nextReport() == .exited(code: 0, signal: nil))
         Thread.sleep(forTimeInterval: 0.3)
-        let child = try #require(Self.pids(matching: tag).first)
+        let child = try #require(Self.pids(matching: tag).first { $0 != kept.pid })
         #expect(KeeperMembers.scan(keeperPID: kept.pid, keeperID: keeperID)?.members.map(\.pid) == [child], "중간 sh도 뿌리도 끝났지만 책임 프로세스는 지킴이 그대로")
         #expect(kept.exitCode(timeout: 0.6) == nil)
         Darwin.kill(child, SIGKILL)
@@ -168,12 +176,13 @@ struct KeeperTests {
 
     // MARK: 4 띄우기 실패
 
-    @Test func k4AClaudeThatCannotBeSpawnedIsReportedAndNoRecordIsWritten() throws {
+    /// 띄우지 못한 것도 알리고, 앱이 끝을 알 수 있게 구성원 0을 증명한 뒤 기록을 쓰고 0으로 끝난다 (14장 1: 앱은 지킴이의 0 종료로만 끝을 안다)
+    @Test func k4AClaudeThatCannotBeSpawnedIsReportedAndTheKeeperStillProvesTheEnd() throws {
         let kept = try launch(["/nonexistent/claude", "claude", "-p"])
         close(kept.stdinWrite)
         #expect(kept.nextReport() == .failed)
-        #expect(kept.exitCode(timeout: 5) == KeeperMain.Exit.spawnFailed.rawValue)
-        #expect(!FileManager.default.fileExists(atPath: kept.ended.path))
+        #expect(kept.exitCode(timeout: 5) == KeeperMain.Exit.ended.rawValue)
+        #expect(KeeperRecord.read(kept.ended) != nil)
     }
 
     // MARK: 5 stdio
@@ -266,7 +275,7 @@ struct KeeperTests {
         // 지킴이 pid의 지금 세대가 지킴이 id가 아니면 가르지 않는다
         #expect(KeeperMembers.scan(keeperPID: me, keeperID: own.own + 1, lookups: lookups) == nil)
         failing = lookups
-        failing.userPIDs = { nil }
+        failing.listing = { nil }
         #expect(KeeperMembers.scan(keeperPID: me, keeperID: own.own, lookups: failing) == nil, "목록을 읽지 못함")
     }
 
