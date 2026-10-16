@@ -14,10 +14,10 @@ import { quoteContext } from "@/lib/pipeline/text";
 
 import { buildHandoff, HANDOFF_LIMITS, type HandoffEvidence, type HandoffInput, type HandoffUserEdit } from "./handoff";
 import { isNoop, progressPlan } from "./progress";
-import { changeEvents, projectAction, type EventDraft, type UserEventType } from "./project";
+import { projectAction } from "./project";
 import { rankNow, type RankInput } from "./rank";
-import { actionRowValues, storedReasons, toPgVector } from "./rows";
-import { confirmChanges, editChanges, userClaims, userCreatedAction, type UserChange } from "./user-claims";
+import { actionRowValues, toPgVector } from "./rows";
+import { confirmChanges, editChanges, userChangePlan, userCreatedAction, type UserChange, type UserChangeOptions, type UserWriteEvent } from "./user-claims";
 
 // 사용자의 쓰기 (수정 · 삭제 · 확인 · 착수 · 작업 상태). 모두 service role로 쓰고 user_id로 범위를 좁힌다.
 // 사용자가 바꾼 값도 Claim(origin: user)으로 남기고, 바뀐 필드마다 이벤트를 남긴다 (지표 1: AI 오판율).
@@ -36,9 +36,7 @@ async function summary(admin: SupabaseClient, userId: string, actionId: string):
   return data as ActionSummary;
 }
 
-type UserWriteEvent = Exclude<UserEventType, "user_started" | "user_unstarted" | "user_reported_missing" | "user_created">;
-
-/** 사용자가 바꾼 값 → 사용자 Claim · 다시 판정한 행 · 바뀐 필드마다 이벤트 (write_action에 넘길 쓰기) */
+/** 사용자가 바꾼 값 → 사용자 Claim · 다시 판정한 행 · 바뀐 필드마다 이벤트 (write_action에 넘길 쓰기). 계획은 순수 함수 userChangePlan이 세운다 */
 async function userChangeWrite(
   admin: SupabaseClient,
   userId: string,
@@ -46,29 +44,14 @@ async function userChangeWrite(
   row: StoredRow,
   changes: (current: ReturnType<typeof projectAction>) => UserChange[],
   event: UserWriteEvent,
-  options: { clearReasons?: boolean } = {},
+  options: UserChangeOptions = {},
 ): Promise<ActionWrite> {
   const claims = await loadClaims(admin, userId, actionId);
-  const kept = storedReasons(row.confirm_reasons);
-  const before = projectAction(row.title, claims, kept);
-  const added = userClaims(changes(before), new Date(), randomUUID);
-  const after = projectAction(row.title, [...claims, ...added], options.clearReasons ? [] : kept);
-
-  // 필드별로 무엇이 바뀌었는지 남긴다. 확인은 바뀐 게 없어도 한 번 남긴다.
-  const events: EventDraft[] =
-    event === "user_confirmed"
-      ? [{ type: "user_confirmed", before: { confirm_reasons: before.confirm_reasons }, after: { confirm_reasons: after.confirm_reasons }, rule: "user" }]
-      : changeEvents(before, after, "updated").map((e) => ({ ...e, type: event, rule: "user" }));
-
-  return {
-    expectedVersion: row.version,
-    action: actionRowValues(after),
-    claims: added,
-    evidence: { sourceId: null, quote: null },
-    events,
-    actor: "user",
-  };
+  return userChangePlan(row, claims, changes, event, options, new Date(), randomUUID);
 }
+
+/** options는 값이거나, 읽은 행으로 시도마다 정하는 함수다 (행을 읽은 뒤의 읽기가 필요한 쓰기: 병합 Undo의 into) */
+type ChangeOptions = UserChangeOptions | ((row: StoredRow) => Promise<UserChangeOptions>);
 
 async function applyUserChanges(
   admin: SupabaseClient,
@@ -76,19 +59,49 @@ async function applyUserChanges(
   actionId: string,
   changes: (current: ReturnType<typeof projectAction>) => UserChange[],
   event: UserWriteEvent,
-  options: { clearReasons?: boolean } = {},
+  options: ChangeOptions = {},
 ): Promise<ActionSummary> {
   await retryOnConflict(async () => {
     const row = await loadStoredRow(admin, userId, actionId);
     if (!row) throw new ActionNotFoundError();
-    const written = await writeAction(admin, userId, actionId, await userChangeWrite(admin, userId, actionId, row, changes, event, options));
+    const resolved = typeof options === "function" ? await options(row) : options;
+    const written = await writeAction(admin, userId, actionId, await userChangeWrite(admin, userId, actionId, row, changes, event, resolved));
     return written ? true : null;
   });
   return summary(admin, userId, actionId);
 }
 
-export function editAction(admin: SupabaseClient, userId: string, actionId: string, edit: EditActionRequest) {
-  return applyUserChanges(admin, userId, actionId, () => editChanges(edit), "user_edited");
+export async function editAction(admin: SupabaseClient, userId: string, actionId: string, edit: EditActionRequest) {
+  // 병합 Undo(D4c-2): 마지막 상태 이벤트가 user_merged인 Action을 다시 열면 그 before에 남는 쪽 id(into)를 남긴다. v1 요청 · 응답은 그대로다.
+  // 이벤트는 행을 읽은 뒤 같은 CAS 시도 안에서 읽는다: 읽은 version이 조건이라, 그 사이 다른 요청이 다시 병합했다면 쓰기가 거절되고 새 시도가 최신 병합 이벤트를 읽는다
+  const options: ChangeOptions =
+    edit.status === "open"
+      ? async () => {
+          const undoneInto = await mergedInto(admin, userId, actionId);
+          return undoneInto ? { undoneInto } : {};
+        }
+      : {};
+  return applyUserChanges(admin, userId, actionId, () => editChanges(edit), "user_edited", options);
+}
+
+/**
+ * 이 Action의 마지막 "상태가 바뀐" 이벤트(after.status가 있는 것)가 user_merged면 그 이벤트가 이은 남는 쪽 id (아니면 null).
+ * 제목 · 기한 수정은 상태 이벤트가 아니다 — 그것이 수없이 쌓여도 병합 이벤트가 밀려나지 않게 DB에서 상태 이벤트만 걸러 가장 최근 한 건을 읽는다
+ */
+async function mergedInto(admin: SupabaseClient, userId: string, actionId: string): Promise<string | null> {
+  const { data } = await admin
+    .from("action_events")
+    .select("type, after")
+    .eq("user_id", userId)
+    .eq("action_id", actionId)
+    .in("type", ["user_merged", "user_deleted", "user_edited", "completed", "dropped", "reopened"])
+    .not("after->>status", "is", null)
+    .order("created_at", { ascending: false })
+    .order("id", { ascending: false })
+    .limit(1)
+    .throwOnError();
+  const last = ((data ?? []) as { type: string; after: { into?: unknown } | null }[])[0];
+  return last?.type === "user_merged" && typeof last.after?.into === "string" ? last.after.into : null;
 }
 
 /** 삭제는 실제로 지우지 않고 취소(dropped)로 둔다. 근거와 이력은 남는다. */

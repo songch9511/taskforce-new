@@ -9,11 +9,14 @@ vi.mock("@/lib/supabase/admin", () => ({ createAdminClient: mocks.admin }));
 vi.mock("@/lib/review/review", () => ({ loadReview: vi.fn() }));
 vi.mock("@/lib/review/return-summary", () => ({ loadReturnSummary: vi.fn(), clearReturnSummary: vi.fn(), initializeReturnSummaryBaseline: vi.fn() }));
 vi.mock("@/lib/review/suggestions", () => ({ snoozeSuggestion: vi.fn(), dismissSuggestion: vi.fn() }));
+vi.mock("@/lib/agents/path-leases", () => ({ resolvePathConflict: vi.fn() }));
 
+import * as pathLeases from "@/lib/agents/path-leases";
 import * as returnSummary from "@/lib/review/return-summary";
 import * as review from "@/lib/review/review";
 import * as suggestions from "@/lib/review/suggestions";
 
+import { POST as resolveConflict } from "../path-conflicts/[id]/resolve/route";
 import { POST as baseline } from "../return-summary/baseline/route";
 import { POST as clear } from "../return-summary/clear/route";
 import { GET as getSummary } from "../return-summary/route";
@@ -169,5 +172,50 @@ describe("gate 값은 정확히 \"true\"만 켠다", () => {
     expect(vi.mocked(review.loadReview)).not.toHaveBeenCalled();
     expect(vi.mocked(suggestions.snoozeSuggestion)).not.toHaveBeenCalled();
     expect(vi.mocked(suggestions.dismissSuggestion)).not.toHaveBeenCalled();
+  });
+});
+
+describe("경로 충돌 해소 route (D4b-s)의 gate 조합: REVIEW_V2_ENABLED ∧ CONVERSATIONS_V2_ENABLED ∧ adapter 플래그 하나 이상", () => {
+  const FLAGS = ["REVIEW_V2_ENABLED", "CONVERSATIONS_V2_ENABLED", "AGENT_ADAPTER_CODEX_ENABLED", "AGENT_ADAPTER_CLAUDE_CODE_ENABLED"] as const;
+  const combos = Array.from({ length: 16 }, (_, n) => {
+    const on = FLAGS.map((_flag, i) => Boolean(n & (1 << i)));
+    return { name: FLAGS.map((flag, i) => `${flag.replace("_ENABLED", "")}=${on[i] ? "on" : "off"}`).join(" "), on, open: on[0] && on[1] && (on[2] || on[3]) };
+  });
+  const call = () =>
+    resolveConflict(
+      new Request("https://api.example.test/api/v2/x", { method: "POST", headers: { "content-type": "application/json", ...SAME_ORIGIN }, body: JSON.stringify({ keep: "holder", conflict_version: 1 }) }),
+      ctx,
+    );
+
+  beforeEach(() => {
+    for (const flag of FLAGS) delete process.env[flag];
+    vi.mocked(pathLeases.resolvePathConflict).mockResolvedValue({ status: "resolved" });
+  });
+
+  it.each(combos)("$name → $open", async ({ on, open }) => {
+    FLAGS.forEach((flag, i) => on[i] && vi.stubEnv(flag, "true"));
+    const response = await call();
+    if (open) {
+      expect(response.status).toBe(200);
+      expect(vi.mocked(pathLeases.resolvePathConflict)).toHaveBeenCalledTimes(1);
+      expect(JSON.stringify(vi.mocked(pathLeases.resolvePathConflict).mock.calls[0][1])).toContain(USER);
+    } else {
+      expect(response.status).toBe(404);
+      expect(await response.json()).toEqual(notFoundBody);
+      expect(mocks.createCookieClient).not.toHaveBeenCalled();
+      expect(getClaims).not.toHaveBeenCalled();
+      expect(mocks.admin).not.toHaveBeenCalled();
+      expect(vi.mocked(pathLeases.resolvePathConflict)).not.toHaveBeenCalled();
+    }
+    // 다른 Review 서비스는 이 route가 부르지 않는다
+    for (const service of allServices()) expect(service).not.toHaveBeenCalled();
+  });
+
+  it("RETURN_SUMMARY_ENABLED는 이 route를 열지 못한다 (복귀 요약 세 경로만)", async () => {
+    vi.stubEnv("RETURN_SUMMARY_ENABLED", "true");
+    vi.stubEnv("CONVERSATIONS_V2_ENABLED", "true");
+    vi.stubEnv("AGENT_ADAPTER_CODEX_ENABLED", "true");
+    expect((await call()).status).toBe(404);
+    expect(vi.mocked(pathLeases.resolvePathConflict)).not.toHaveBeenCalled();
   });
 });

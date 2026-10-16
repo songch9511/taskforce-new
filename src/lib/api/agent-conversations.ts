@@ -2,7 +2,7 @@ import { answerAgentApproval } from "@/lib/agents/approvals";
 import { z } from "zod";
 
 import { AnswerInputError, answerFromRoute, loadAnswerTask, type AnswerTask } from "@/lib/agents/answers";
-import { agentSelected, attachmentsFromLegacyRefs, checkAttachments, normalizeAttachments, taskforceRefs, taskforceSelected, type AttachmentCheck } from "@/lib/agents/attachments";
+import { agentSelected, attachmentsFromLegacyRefs, checkAttachments, normalizeAttachments, taskforceContextIds, taskforceRefs, taskforceSelected, type AttachmentCheck } from "@/lib/agents/attachments";
 import { createAgentConversation, readConversationTarget, type ConversationTargetInfo } from "@/lib/agents/conversations";
 import {
   agentMessageExists,
@@ -47,6 +47,7 @@ import {
   updateAgentSessionRequestSchema,
   type AgentDelivery,
   type AssistantTarget,
+  type AssistantTargetWithDevice,
   type Attachment,
   type AttachmentDropped,
   type AttachmentKind,
@@ -183,7 +184,7 @@ export async function prepareTaskforceAttachments<User>(
   if (!deps.memoryEnabled() && chips.some((item) => item.kind === "context")) return { status: "context_off" };
   const check = await deps.check(user, chips);
   if (check.missing.length && !options.known) return { status: "missing" };
-  return { status: "ok", refs: taskforceRefs(chips, check), selected: taskforceSelected(chips), attachments: chips };
+  return { status: "ok", refs: taskforceRefs(chips, check), selected: taskforceSelected(chips), attachments: chips, context_ids: taskforceContextIds(chips, check) };
 }
 
 // ─────────────────────────── Send again ───────────────────────────
@@ -445,7 +446,7 @@ export async function handleResumeHere<User extends AppUser>(request: Request, s
 
 // ─────────────────────────── 대상 목록 ───────────────────────────
 
-export type TargetsDeps<User> = Base<User> & { list: (user: User) => Promise<AssistantTarget[]> };
+export type TargetsDeps<User> = Base<User> & { list: (user: User) => Promise<(AssistantTarget | AssistantTargetWithDevice)[]> };
 
 /** GET /api/v2/assistant/targets (계약 4.5): 읽기만 한다 (CSRF 대상이 아니다) */
 export async function handleListTargets<User extends AppUser>(request: Request, deps: TargetsDeps<User>): Promise<Response> {

@@ -3,6 +3,10 @@ import "server-only";
 import { createHash } from "node:crypto";
 
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { z } from "zod";
+
+import { openAgentAdapters } from "@/lib/agents/registry";
+import { reviewAgentRefSchema, reviewConflictRefSchema, reviewResultRefSchema, type ReviewAgentRef, type ReviewConflictRef, type ReviewResultRef } from "@/lib/api/contract";
 
 import { URGENT_WINDOW_HOURS } from "./coordinator.config";
 
@@ -11,13 +15,22 @@ import { URGENT_WINDOW_HOURS } from "./coordinator.config";
 //  - 같은 (action_id, kind)는 한 묶음이다. 긴급(기한이 긴급 창 안이거나 다른 작업을 막음)은 일일 묶음을 기다리지 않는다.
 //  - 항목 version(승인 대상의 단계 version · run outcome · Action version · 질문 id)이 바뀌면 다른 기기에서 처리된 것이라 목록에서 사라지고,
 //    옛 version으로 행동하면 stale이다 (matchPendingVersion).
-//  - 실제 원천은 coordinator_pending_inputs가 준다: 승인 대기 단계 · run needs_input / review_failed · Action 확인 요청.
-//    에이전트 질문 · 열린 제안 · 긴급 창의 막힌 의존은 원천 표가 아직 없어 입력 타입 + fixture로만 있다 (FutureInputs, 연결되지 않았다).
+//  - 실제 원천은 두 읽기 전용 SQL 함수다. coordinator_pending_inputs: 승인 대기 단계 · run needs_input / review_failed · Action 확인 요청.
+//    review_agent_inputs(OA D4b-s): 에이전트 질문 셋(agent_question · agent_approval · agent_secret_question) · 결과 준비(result_ready) · 경로 충돌(path_conflict).
+//    에이전트 입력은 대화 v2 ∧ adapter 플래그가 켜졌을 때만 읽는다(openAgentAdapters): 모두 꺼지면 두 번째 함수를 부르지 않아 C2 결과 그대로다.
+//    열린 제안 · 긴급 창의 막힌 의존은 원천 표가 아직 없어 입력 타입 + fixture로만 있다 (FutureInputs, 연결되지 않았다).
 
-export const PENDING_KINDS = ["approval", "review_failed", "run_input", "confirm", "agent_question", "suggestion", "blocked_dependency"] as const;
+// 종류 순서가 묶음 순서의 동률 처리다. 에이전트 종류는 끝에 덧붙였다 (기존 종류의 순서는 그대로).
+export const PENDING_KINDS = [
+  "approval", "review_failed", "run_input", "confirm", "agent_question", "suggestion", "blocked_dependency",
+  "agent_approval", "agent_secret_question", "result_ready", "path_conflict",
+] as const;
 export type PendingKind = (typeof PENDING_KINDS)[number];
 /** 지금 실제 원천이 있는 종류 */
-export const CONNECTED_PENDING_KINDS: readonly PendingKind[] = ["approval", "review_failed", "run_input", "confirm"];
+export const CONNECTED_PENDING_KINDS: readonly PendingKind[] = ["approval", "review_failed", "run_input", "confirm", "agent_question", "agent_approval", "agent_secret_question", "result_ready", "path_conflict"];
+/** review_agent_inputs가 내는 종류: 항목 열쇠(item_ref)와 종류별 ref(detail)가 있다 */
+const AGENT_QUESTION_KINDS = ["agent_question", "agent_approval", "agent_secret_question"] as const;
+const AGENT_INPUT_KINDS = [...AGENT_QUESTION_KINDS, "result_ready", "path_conflict"] as const;
 
 /** 계산의 입력 행 (SQL coordinator_pending_inputs와 FutureInputs의 공통 모양) */
 export type PendingInput = {
@@ -32,10 +45,14 @@ export type PendingInput = {
   due_at: string | Date | null;
   /** 이 결정이 다른 작업을 막는다 (의존의 상대 Action이 기다림). 지금 의존 표가 없어 SQL 원천은 늘 false */
   blocks_other_work?: boolean;
+  /** 에이전트 종류의 항목 열쇠: task id(질문) · run id(결과 준비) · lease id(경로 충돌). 있으면 항목 id가 `${kind}:${item_ref}`다 */
+  item_ref?: string;
+  /** 에이전트 종류의 ref 값 (SQL detail). 종류별 zod로 검증한다: 모양이 틀리면 계산이 throw한다 */
+  detail?: unknown;
 };
 
 /** 아직 연결되지 않은 원천: 호출하는 쪽(fixture)이 직접 넣는다 */
-export type FutureInputs = { agentQuestions?: PendingInput[]; openSuggestions?: PendingInput[]; blockedDependencies?: PendingInput[] };
+export type FutureInputs = { openSuggestions?: PendingInput[]; blockedDependencies?: PendingInput[] };
 
 export type PendingItem = {
   id: string;
@@ -48,6 +65,10 @@ export type PendingItem = {
   urgent: boolean;
   urgentReason: "due_window" | "blocks_other_work" | null;
   createdAt: string;
+  /** 에이전트 종류만 (C2 종류에는 키 자체가 없다). 새 종류는 자기 ref 하나만 갖는다 */
+  agent?: ReviewAgentRef;
+  result?: ReviewResultRef;
+  conflict?: ReviewConflictRef;
 };
 
 export type PendingGroup = {
@@ -73,7 +94,18 @@ export function urgency(input: Pick<PendingInput, "due_at" | "blocks_other_work"
   return { urgent: false, reason: null };
 }
 
-const itemId = (input: PendingInput) => `${input.kind}:${input.step_id ?? input.question_id ?? input.run_id ?? input.action_id}`;
+const itemId = (input: PendingInput) => `${input.kind}:${input.item_ref ?? input.step_id ?? input.question_id ?? input.run_id ?? input.action_id}`;
+
+/** 에이전트 종류의 ref를 종류에 맞는 한 가지로 검증한다 (C2 종류는 ref가 없다). 모양이 틀리면 throw → 호출한 쪽이 결정 전체를 unavailable로 표시한다 */
+function agentRef(row: PendingInput): Pick<PendingItem, "agent" | "result" | "conflict"> {
+  if ((AGENT_QUESTION_KINDS as readonly string[]).includes(row.kind)) return { agent: reviewAgentRefSchema.parse(row.detail) };
+  if (row.kind === "result_ready") {
+    const result = reviewResultRefSchema.parse(row.detail);
+    return { result: { ...result, changed_at: iso(result.changed_at) } };
+  }
+  if (row.kind === "path_conflict") return { conflict: reviewConflictRefSchema.parse(row.detail) };
+  return {};
+}
 
 /**
  * 입력 행 → 묶음 목록 (순수). 안정 순서: 긴급 묶음이 먼저, 그다음 오래 기다린 묶음, 같으면 종류 · action id · 묶음 키.
@@ -82,7 +114,7 @@ const itemId = (input: PendingInput) => `${input.kind}:${input.step_id ?? input.
  * 입력 순서는 결과에 영향이 없다.
  */
 export function computePendingDecisions(input: { rows: PendingInput[]; future?: FutureInputs; now: Date }): PendingGroup[] {
-  const all = [...input.rows, ...(input.future?.agentQuestions ?? []), ...(input.future?.openSuggestions ?? []), ...(input.future?.blockedDependencies ?? [])];
+  const all = [...input.rows, ...(input.future?.openSuggestions ?? []), ...(input.future?.blockedDependencies ?? [])];
   const items = new Map<string, PendingItem>();
   for (const row of all) {
     const u = urgency(row, input.now);
@@ -97,6 +129,7 @@ export function computePendingDecisions(input: { rows: PendingInput[]; future?: 
       urgent: u.urgent,
       urgentReason: u.reason,
       createdAt: iso(row.created_at),
+      ...agentRef(row),
     };
     const previous = items.get(item.id);
     if (!previous || cmp(item.version, previous.version) > 0) items.set(item.id, item);
@@ -138,8 +171,38 @@ export function matchPendingVersion(current: PendingGroup[], seen: { itemId: str
   return "gone";
 }
 
-/** 사용자 한 명의 결정 대기 목록. 읽기만 한다 (SQL coordinator_pending_inputs는 stable). 소유권은 SQL이 user_id로 모든 조인에서 확인한다 */
-export async function loadPendingDecisions(admin: SupabaseClient, userId: string, now: Date = new Date(), future?: FutureInputs): Promise<PendingGroup[]> {
-  const { data } = await admin.rpc("coordinator_pending_inputs", { p_user_id: userId }).throwOnError();
-  return computePendingDecisions({ rows: ((data ?? []) as PendingInput[]).map((r) => ({ ...r, blocks_other_work: false })), future, now });
+/**
+ * review_agent_inputs의 반환 = 입력 행의 배열 하나(scalar jsonb)다. 외부 응답처럼 zod로 검증한다: 모르는 종류 · 틀린 모양은 물론 배열이 아닌 값(null 포함)도 throw한다 —
+ * 비어 있다는 말은 `[]`뿐이다. (행 여러 개를 돌려주는 함수는 PostgREST db-max-rows에 잘려 일부만 "완전함"으로 나가므로 한 값으로 받는다.)
+ */
+const agentInputsSchema = z.array(z.object({
+  kind: z.enum(AGENT_INPUT_KINDS),
+  item_ref: z.guid(),
+  action_id: z.guid(),
+  run_id: z.guid(),
+  version: z.string().min(1),
+  created_at: z.union([z.string(), z.date()]),
+  due_at: z.union([z.string(), z.date()]).nullable(),
+  detail: z.record(z.string(), z.unknown()),
+}));
+
+export type PendingLoadOptions = {
+  future?: FutureInputs;
+  /** 켜진 adapter(대화 v2 ∧ adapter 플래그). 기본은 지금 환경의 openAgentAdapters(). 비어 있으면 에이전트 입력 함수를 부르지 않는다 (C2 결과 그대로) */
+  agentAdapters?: readonly string[];
+};
+
+/**
+ * 사용자 한 명의 결정 대기 목록. 읽기만 한다 (SQL coordinator_pending_inputs · review_agent_inputs는 stable). 소유권은 SQL이 user_id로 모든 조인에서 확인한다.
+ * 어느 함수든 실패하거나 모양이 틀리면 throw한다 — 호출한 쪽이 결정 전체를 unavailable로 표시한다 (일부만 보이지 않는다).
+ */
+export async function loadPendingDecisions(admin: SupabaseClient, userId: string, now: Date = new Date(), options: PendingLoadOptions = {}): Promise<PendingGroup[]> {
+  const adapters = options.agentAdapters ?? openAgentAdapters();
+  const [c2, agent] = await Promise.all([
+    admin.rpc("coordinator_pending_inputs", { p_user_id: userId }).throwOnError(),
+    adapters.length > 0 ? admin.rpc("review_agent_inputs", { p_user_id: userId, p_adapters: [...adapters] }).throwOnError() : null,
+  ]);
+  const rows: PendingInput[] = ((c2.data ?? []) as PendingInput[]).map((r) => ({ ...r, blocks_other_work: false }));
+  if (agent) for (const row of agentInputsSchema.parse(agent.data)) rows.push({ ...row, step_id: null, question_id: null, blocks_other_work: false });
+  return computePendingDecisions({ rows, future: options.future, now });
 }

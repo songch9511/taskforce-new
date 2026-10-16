@@ -11,10 +11,12 @@ import { respondToMessage } from "@/lib/conversation/respond";
 import {
   conversationModelsFromEnv,
   finishTurn,
+  loadChangeTargets,
   loadConsultContext,
   loadConversation,
   loadMessage,
   loadWindow,
+  organizeLookup,
   postUserMessage,
   releaseLease,
   userMessageExists,
@@ -54,6 +56,9 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
         ...conversationModelsFromEnv(admin, user.id, deadline),
         retrieve: (query) =>
           loadConsultContext(admin, user.id, { contextId: input.conversation.contextId, query: query.text, chunks: query.chunks, deadline, now: input.now }),
+        organizeLookup: (query) => organizeLookup(admin, user.id, query),
+        // 글 "응"으로 삭제 · 병합 카드를 확인할 때 쓰기 계획을 세우는 읽기 (사용자 범위). 없으면 respond가 오류를 낸다
+        loadChangeTargets: (actionIds) => loadChangeTargets(admin, user.id, actionIds),
         newId: randomUUID,
       });
     },

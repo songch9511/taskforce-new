@@ -1,0 +1,289 @@
+{
+  "recorded": "base 97a43e1 (D4b-s 이전)의 loadReview · loadReturnSummary를 review-agents-golden.fixture.ts로 만든 DB에서 돌린 전체 응답. returnSummary = 읽음 기준 없음(never_cleared), returnSummaryCleared = markGoldenCleared 뒤",
+  "review": {
+    "generated_at": "2026-10-12T21:00:00.000Z",
+    "complete": true,
+    "empty": false,
+    "sources": {
+      "decisions": "ok",
+      "suggestions": "ok",
+      "time_zone": "ok"
+    },
+    "decisions": [
+      {
+        "key": "a0000000-0000-4000-8000-000000000001:confirm",
+        "action_id": "a0000000-0000-4000-8000-000000000001",
+        "kind": "confirm",
+        "urgent": false,
+        "version": "72e59bb156159cac",
+        "created_at": "2026-10-11T00:00:00.000Z",
+        "items": [
+          {
+            "id": "confirm:a0000000-0000-4000-8000-000000000001",
+            "kind": "confirm",
+            "action_id": "a0000000-0000-4000-8000-000000000001",
+            "run_id": null,
+            "step_id": null,
+            "question_id": null,
+            "version": "action:a0000000-0000-4000-8000-000000000001:0",
+            "urgent": false,
+            "urgent_reason": null,
+            "created_at": "2026-10-11T00:00:00.000Z"
+          }
+        ]
+      },
+      {
+        "key": "a0000000-0000-4000-8000-000000000004:run_input",
+        "action_id": "a0000000-0000-4000-8000-000000000004",
+        "kind": "run_input",
+        "urgent": false,
+        "version": "894fab8b36d29269",
+        "created_at": "2026-10-12T00:10:00.000Z",
+        "items": [
+          {
+            "id": "run_input:d0000000-0000-4000-8000-000000000002",
+            "kind": "run_input",
+            "action_id": "a0000000-0000-4000-8000-000000000004",
+            "run_id": "d0000000-0000-4000-8000-000000000002",
+            "step_id": null,
+            "question_id": null,
+            "version": "run:d0000000-0000-4000-8000-000000000002:needs_input",
+            "urgent": false,
+            "urgent_reason": null,
+            "created_at": "2026-10-12T00:10:00.000Z"
+          }
+        ]
+      }
+    ],
+    "suggestions": [],
+    "suggestion_batch": {
+      "state": "ready",
+      "local_day": "2026-10-13",
+      "size": 3
+    }
+  },
+  "returnSummary": {
+    "generated_at": "2026-10-12T21:00:00.000Z",
+    "since": null,
+    "baseline": "never_cleared",
+    "init_token": "i1.WyIxMTExMTExMS0xMTExLTQxMTEtODExMS0xMTExMTExMTExMTEiLCIyMDI2LTEwLTEyVDIwOjAwOjAwLjAwMDAwMFoiLCJhOjA6MHxyOjI6LTEwMzQyMzU0MDA0MTIyMjQ4MzczfG06MToxMDU5MzU3MTQyOTk1NzczOTYiXQ",
+    "cursor": "c3.WyIxMTExMTExMS0xMTExLTQxMTEtODExMS0xMTExMTExMTExMTEiLCIyMDI2LTEwLTEyVDIwOjAwOjAwLjAwMDAwMFoiLCJhOjI6MzU3NjMyNzE1MjczMjc3NjUzNHxyOjI6LTEwMzQyMzU0MDA0MTIyMjQ4MzczfG06MToxMDU5MzU3MTQyOTk1NzczOTYiLDEsbnVsbF0",
+    "complete": true,
+    "empty": false,
+    "sources": {
+      "changes": "ok",
+      "decisions": "ok"
+    },
+    "items": [
+      {
+        "action_id": "a0000000-0000-4000-8000-000000000001",
+        "title": "확인이 필요한 일",
+        "status": "open",
+        "state": "to_do",
+        "needs_answer": true,
+        "urgent": false,
+        "decisions": [
+          {
+            "id": "confirm:a0000000-0000-4000-8000-000000000001",
+            "kind": "confirm",
+            "version": "action:a0000000-0000-4000-8000-000000000001:0",
+            "urgent": false
+          }
+        ],
+        "changes": [],
+        "next": {
+          "kind": "answer",
+          "decision_kinds": [
+            "confirm"
+          ]
+        },
+        "version": "ae4e18a47f711f2d"
+      },
+      {
+        "action_id": "a0000000-0000-4000-8000-000000000004",
+        "title": "답이 필요한 일",
+        "status": "open",
+        "state": "to_do",
+        "needs_answer": true,
+        "urgent": false,
+        "decisions": [
+          {
+            "id": "run_input:d0000000-0000-4000-8000-000000000002",
+            "kind": "run_input",
+            "version": "run:d0000000-0000-4000-8000-000000000002:needs_input",
+            "urgent": false
+          }
+        ],
+        "changes": [],
+        "next": {
+          "kind": "answer",
+          "decision_kinds": [
+            "run_input"
+          ]
+        },
+        "version": "c0811a2bfe67ab31"
+      },
+      {
+        "action_id": "a0000000-0000-4000-8000-000000000002",
+        "title": "견적서 보내기",
+        "status": "open",
+        "state": "to_do",
+        "needs_answer": false,
+        "urgent": false,
+        "decisions": [],
+        "changes": [
+          {
+            "source": "action_event",
+            "kind": "due_changed",
+            "at": "2026-10-12T12:00:00.000000Z",
+            "detail": null,
+            "source_state": "deleted"
+          },
+          {
+            "source": "action_event",
+            "kind": "merged",
+            "at": "2026-10-12T12:30:00.000000Z",
+            "detail": null,
+            "source_state": "deleted"
+          }
+        ],
+        "next": {
+          "kind": "open",
+          "decision_kinds": []
+        },
+        "version": "b7802ad785a7b8f4"
+      }
+    ]
+  },
+  "returnSummaryCleared": {
+    "generated_at": "2026-10-12T21:00:00.000Z",
+    "since": "2026-10-12T08:00:00.000000Z",
+    "baseline": "cleared",
+    "init_token": null,
+    "cursor": "c3.WyIxMTExMTExMS0xMTExLTQxMTEtODExMS0xMTExMTExMTExMTEiLCIyMDI2LTEwLTEyVDIwOjAwOjAwLjAwMDAwMFoiLCJhOjI6MzU3NjMyNzE1MjczMjc3NjUzNHxyOjI6LTEwMzQyMzU0MDA0MTIyMjQ4MzczfG06MToxMDU5MzU3MTQyOTk1NzczOTYiLDAsbnVsbF0",
+    "complete": true,
+    "empty": false,
+    "sources": {
+      "changes": "ok",
+      "decisions": "ok"
+    },
+    "items": [
+      {
+        "action_id": "a0000000-0000-4000-8000-000000000004",
+        "title": "답이 필요한 일",
+        "status": "open",
+        "state": "to_do",
+        "needs_answer": true,
+        "urgent": false,
+        "decisions": [
+          {
+            "id": "run_input:d0000000-0000-4000-8000-000000000002",
+            "kind": "run_input",
+            "version": "run:d0000000-0000-4000-8000-000000000002:needs_input",
+            "urgent": false
+          }
+        ],
+        "changes": [
+          {
+            "source": "run",
+            "kind": "done",
+            "at": "2026-10-12T14:00:00.000000Z",
+            "detail": "needs_input",
+            "source_state": null
+          }
+        ],
+        "next": {
+          "kind": "answer",
+          "decision_kinds": [
+            "run_input"
+          ]
+        },
+        "version": "d5149a948c5cfbbf"
+      },
+      {
+        "action_id": "a0000000-0000-4000-8000-000000000001",
+        "title": "확인이 필요한 일",
+        "status": "open",
+        "state": "to_do",
+        "needs_answer": true,
+        "urgent": false,
+        "decisions": [
+          {
+            "id": "confirm:a0000000-0000-4000-8000-000000000001",
+            "kind": "confirm",
+            "version": "action:a0000000-0000-4000-8000-000000000001:0",
+            "urgent": false
+          }
+        ],
+        "changes": [],
+        "next": {
+          "kind": "answer",
+          "decision_kinds": [
+            "confirm"
+          ]
+        },
+        "version": "ae4e18a47f711f2d"
+      },
+      {
+        "action_id": "a0000000-0000-4000-8000-000000000002",
+        "title": "견적서 보내기",
+        "status": "open",
+        "state": "to_do",
+        "needs_answer": false,
+        "urgent": false,
+        "decisions": [],
+        "changes": [
+          {
+            "source": "action_event",
+            "kind": "due_changed",
+            "at": "2026-10-12T12:00:00.000000Z",
+            "detail": null,
+            "source_state": "deleted"
+          },
+          {
+            "source": "action_event",
+            "kind": "merged",
+            "at": "2026-10-12T12:30:00.000000Z",
+            "detail": null,
+            "source_state": "deleted"
+          },
+          {
+            "source": "message",
+            "kind": "assistant",
+            "at": "2026-10-12T15:00:00.000000Z",
+            "detail": null,
+            "source_state": null
+          }
+        ],
+        "next": {
+          "kind": "open",
+          "decision_kinds": []
+        },
+        "version": "a592eb08d0c4b3a6"
+      },
+      {
+        "action_id": "a0000000-0000-4000-8000-000000000003",
+        "title": "초안 작성",
+        "status": "open",
+        "state": "to_do",
+        "needs_answer": false,
+        "urgent": false,
+        "decisions": [],
+        "changes": [
+          {
+            "source": "run",
+            "kind": "done",
+            "at": "2026-10-12T13:00:00.000000Z",
+            "detail": "draft_ready",
+            "source_state": null
+          }
+        ],
+        "next": {
+          "kind": "review_result",
+          "decision_kinds": []
+        },
+        "version": "386c35c0e056efdd"
+      }
+    ]
+  }
+}

@@ -1,0 +1,81 @@
+{
+  "id": "neg-instruct",
+  "description": "정리가 아니다: '#139 초안 써줘'는 새 일을 시키는 지시 (실행 의도) — organize가 아니다",
+  "maps_to": [
+    "AC-27",
+    "A34"
+  ],
+  "asked_at": "2026-10-15T10:00:00+09:00",
+  "message": "#139 초안 써줘",
+  "projects": [
+    {
+      "id": "p_launch",
+      "name": "Launch"
+    },
+    {
+      "id": "p_tf",
+      "name": "Taskforce"
+    }
+  ],
+  "records": {
+    "open_actions": [
+      {
+        "id": "i139",
+        "title": "Shape 디자인 확정",
+        "number": 139,
+        "version": 2,
+        "projects": [
+          "p_tf"
+        ],
+        "open_sessions": 1,
+        "evidence_count": 2
+      },
+      {
+        "id": "i140",
+        "title": "견적서 보내기",
+        "number": 140,
+        "version": 2,
+        "projects": [],
+        "open_sessions": 1,
+        "evidence_count": 2
+      },
+      {
+        "id": "i141",
+        "title": "회의록 정리",
+        "number": 141,
+        "version": 2,
+        "projects": [],
+        "open_sessions": 1,
+        "evidence_count": 2
+      },
+      {
+        "id": "i144",
+        "title": "디자인 확정 (중복)",
+        "number": 144,
+        "version": 2,
+        "projects": [],
+        "open_sessions": 1,
+        "evidence_count": 2
+      }
+    ]
+  },
+  "selected": [],
+  "expect": {
+    "intent_any": [
+      "instruct",
+      "modify"
+    ],
+    "route_any": [
+      "execution"
+    ],
+    "organize": {
+      "op": "none",
+      "targets": []
+    },
+    "memory_writes": {
+      "min": 0,
+      "max": 0
+    }
+  },
+  "origin": "synthetic"
+}

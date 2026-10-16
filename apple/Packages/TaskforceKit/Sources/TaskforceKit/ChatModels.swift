@@ -169,18 +169,22 @@ public struct ChatCitation: Decodable, Sendable, Hashable {
 /// 무엇을 기억했는지는 `content`가 아니라 메시지의 `refs.memory_item_ids`다 (`content.used`는 답을 만들 때 읽은 것)
 public struct ChatMessageContent: Decodable, Sendable, Hashable {
     public let citations: [ChatCitation]
+    /// 서버가 에이전트 글을 20,000자 · 32KB에서 잘랐다 (OA D4a-17): 전문은 그 에이전트를 돌리는 Mac의 원장에 있고, 열쇠는 메시지의 `external_event_id`다
+    public let truncated: Bool
 
     enum CodingKeys: String, CodingKey {
-        case citations
+        case citations, truncated
     }
 
-    public init(citations: [ChatCitation] = []) {
+    public init(citations: [ChatCitation] = [], truncated: Bool = false) {
         self.citations = citations
+        self.truncated = truncated
     }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         citations = (try? c.decodeIfPresent([ChatCitation].self, forKey: .citations)) ?? []
+        truncated = (try? c.decodeIfPresent(Bool.self, forKey: .truncated)) ?? false
     }
 }
 
@@ -196,8 +200,10 @@ public struct ChatMessage: Decodable, Sendable, Hashable, Identifiable {
     public let createdAt: Date
     public let replyTo: UUID?
     public let content: ChatMessageContent?
+    /// 에이전트 글 · 이벤트의 멱등 열쇠 (서버 `external_event_id`, OA D4a-17): 에이전트 답은 `agent-message:<run id>:<sha256 hex(bridge 사건 id)>`다. 사용자 글 · Taskforce 답은 nil
+    public let externalEventID: String?
 
-    public static let columns = "id, conversation_id, seq, role, client_message_id, text, refs, created_at, reply_to, content"
+    public static let columns = "id, conversation_id, seq, role, client_message_id, text, refs, created_at, reply_to, content, external_event_id"
 
     enum CodingKeys: String, CodingKey {
         case id, seq, role, text, refs, content
@@ -205,11 +211,12 @@ public struct ChatMessage: Decodable, Sendable, Hashable, Identifiable {
         case clientMessageID = "client_message_id"
         case createdAt = "created_at"
         case replyTo = "reply_to"
+        case externalEventID = "external_event_id"
     }
 
     public init(
         id: UUID, conversationID: UUID, seq: Int, role: ChatRole, clientMessageID: UUID? = nil, text: String, refs: ChatRefs = .none,
-        createdAt: Date, replyTo: UUID? = nil, content: ChatMessageContent? = nil
+        createdAt: Date, replyTo: UUID? = nil, content: ChatMessageContent? = nil, externalEventID: String? = nil
     ) {
         self.id = id
         self.conversationID = conversationID
@@ -221,6 +228,7 @@ public struct ChatMessage: Decodable, Sendable, Hashable, Identifiable {
         self.createdAt = createdAt
         self.replyTo = replyTo
         self.content = content
+        self.externalEventID = externalEventID
     }
 
     public init(from decoder: Decoder) throws {
@@ -235,6 +243,7 @@ public struct ChatMessage: Decodable, Sendable, Hashable, Identifiable {
         createdAt = try c.decode(Date.self, forKey: .createdAt)
         replyTo = try c.decodeIfPresent(UUID.self, forKey: .replyTo)
         content = try? c.decodeIfPresent(ChatMessageContent.self, forKey: .content)
+        externalEventID = try? c.decodeIfPresent(String.self, forKey: .externalEventID)
     }
 
     /// 이 답이 보여 줄 기억의 id: 이 답이 가리키는 것(`refs`, 서버가 쓴다). 순서를 지키고 겹치지 않는다
@@ -275,19 +284,29 @@ public struct WorkContext: Decodable, Sendable, Hashable, Identifiable {
     public let status: Status
     /// 멤버십 쓰기의 조건 (`expected_context_version`): 앱이 RLS로 읽은 값. 읽지 못했으면 nil (그 범위에는 쓰지 않는다)
     public let contextVersion: Int?
+    /// 프로젝트 아이콘 (OA U2, 서버 `icon`). 풀 밖 이름 · 열이 없는 DB는 folder
+    public let icon: ProjectIconName
+    /// 이름 · 아이콘 · 상태를 바꿀 때의 조건 (`expected_version`, 서버 `version`). 열이 없는 DB · 읽지 못했으면 nil
+    public let version: Int?
 
-    public static let columns = "id, name, kind, status, context_version, last_activity_at"
+    /// 아이콘 · version 열이 없는 DB(`20261117000000_context_icon_version.sql` 전)에서는 `columnsWithoutIcon`으로 다시 읽는다 (`TaskforceReads.workContexts`)
+    public static let columns = columnsWithoutIcon + ", icon, version"
+    static let columnsWithoutIcon = "id, name, kind, status, context_version, last_activity_at"
 
     enum CodingKeys: String, CodingKey {
-        case id, name, status
+        case id, name, status, icon, version
         case contextVersion = "context_version"
     }
 
-    public init(id: UUID, name: String, status: Status = .active, contextVersion: Int? = nil) {
+    public init(
+        id: UUID, name: String, status: Status = .active, contextVersion: Int? = nil, icon: ProjectIconName = .folder, version: Int? = nil
+    ) {
         self.id = id
         self.name = name
         self.status = status
         self.contextVersion = contextVersion
+        self.icon = icon
+        self.version = version
     }
 
     public init(from decoder: Decoder) throws {
@@ -296,6 +315,9 @@ public struct WorkContext: Decodable, Sendable, Hashable, Identifiable {
         name = try c.decode(String.self, forKey: .name)
         status = Status(raw: (try? c.decode(String.self, forKey: .status)) ?? "")
         contextVersion = try? c.decodeIfPresent(Int.self, forKey: .contextVersion)
+        // 모양이 어긋난 값 하나가 범위 목록 전체를 못 읽게 하지 않는다
+        icon = ProjectIconName(raw: (try? c.decodeIfPresent(String.self, forKey: .icon)) ?? nil)
+        version = try? c.decodeIfPresent(Int.self, forKey: .version)
     }
 
     public var isActive: Bool { status == .active }

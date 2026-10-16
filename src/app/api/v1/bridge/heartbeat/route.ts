@@ -1,5 +1,5 @@
 import { authenticateRequest } from "@/lib/api/auth";
-import { bridgeV1HeartbeatRequestSchema } from "@/lib/api/contract";
+import { bridgeV1HeartbeatRequestWithDeviceSchema } from "@/lib/api/contract";
 import { errorResponse, parseBody, unauthorized } from "@/lib/api/respond";
 import { verifyBridgeDevice } from "@/lib/bridge/auth";
 import { heartbeatBridge } from "@/lib/bridge/heartbeat";
@@ -8,7 +8,7 @@ export async function POST(request: Request) {
   try {
     const account = await authenticateRequest(request);
     if (!account) return unauthorized();
-    const body = await parseBody(request, bridgeV1HeartbeatRequestSchema);
+    const body = await parseBody(request, bridgeV1HeartbeatRequestWithDeviceSchema);
     if ("error" in body) return errorResponse(400, "invalid_request", "Invalid bridge request.");
     const auth = await verifyBridgeDevice(request, body.data.bridge_id, account);
     if ("error" in auth) return auth.error;

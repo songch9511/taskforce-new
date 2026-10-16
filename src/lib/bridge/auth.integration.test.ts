@@ -7,12 +7,14 @@ const mocks = vi.hoisted(() => ({ cookie: vi.fn(), admin: vi.fn(), operation: vi
 vi.mock("@/lib/supabase/server", () => ({ createClient: mocks.cookie }));
 vi.mock("@/lib/supabase/admin", () => ({ createAdminClient: mocks.admin }));
 vi.mock("@/lib/bridge/commands", () => ({ ackBridgeCommand: mocks.operation, pollBridgeCommands: mocks.operation }));
+vi.mock("@/lib/bridge/answer-local", () => ({ answerSecretLocally: mocks.operation }));
 vi.mock("@/lib/bridge/heartbeat", () => ({ heartbeatBridge: mocks.operation }));
 vi.mock("@/lib/bridge/events", () => ({ applyBridgeEvents: mocks.operation }));
 vi.mock("@/lib/bridge/register", () => ({ registerBridge: mocks.operation, revokeBridge: mocks.operation }));
 
 import { GET as commands } from "@/app/api/v1/bridge/commands/route";
 import { POST as ack } from "@/app/api/v1/bridge/ack/route";
+import { POST as answerLocal } from "@/app/api/v1/bridge/answer-local/route";
 import { POST as events } from "@/app/api/v1/bridge/events/route";
 import { POST as heartbeat } from "@/app/api/v1/bridge/heartbeat/route";
 import { POST as register, DELETE as revoke } from "@/app/api/v1/bridge/register/route";
@@ -28,6 +30,7 @@ const routes = [
   { path: "ack", method: "POST", handler: ack, body: { bridge_id: bridgeId, command_id: taskId, op: "lease" } },
   { path: "events", method: "POST", handler: events, body: { bridge_id: bridgeId, events: [{ adapter: "agent:codex", session_ref: { agent_session_id: taskId }, agent_task_id: taskId, event_id: "event-1", type: "progress", observed_at: at }] } },
   { path: "heartbeat", method: "POST", handler: heartbeat, body: { bridge_id: bridgeId, sent_at: at, tasks: [] } },
+  { path: "answer-local", method: "POST", handler: answerLocal, body: { bridge_id: bridgeId, agent_task_id: taskId, request_digest: "a".repeat(64) } },
 ];
 const writes = [
   ...routes.filter((route) => route.method === "POST"),
@@ -52,6 +55,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   vi.stubEnv("NEXT_PUBLIC_SUPABASE_URL", "https://project.example.test");
   vi.stubEnv("NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY", "sb_publishable_bridge-test");
+  vi.stubEnv("CONVERSATIONS_V2_ENABLED", "true");
+  vi.stubEnv("AGENT_ADAPTER_CODEX_ENABLED", "true");
   mocks.cookie.mockResolvedValue({ auth: { getClaims: vi.fn(async () => ({ data: { claims: { sub: userId } }, error: null })) } });
   database();
   mocks.operation.mockResolvedValue({ status: "settled" });

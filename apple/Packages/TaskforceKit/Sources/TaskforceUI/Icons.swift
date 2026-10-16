@@ -1,4 +1,5 @@
 import SwiftUI
+import TaskforceKit
 
 /// 앱 아이콘 (0.2.0 디자인 시스템 Iconography): Lucide 1.48.0 글리프, 웹 앱의 `lucide-react`와 같은 판.
 /// 자산은 `Tokens.xcassets/icon/<글리프>.imageset`의 SVG(벡터 보존 · template)이고, 라이선스(ISC, 일부 Feather MIT)는 `Resources/Lucide-LICENSE.txt`.
@@ -48,6 +49,47 @@ public enum TFIcon: String, CaseIterable, Sendable {
     case attach = "paperclip"
     /// 레일 맨 위 Review 타일 (OA U1, Lucide `clipboard-check`): 결정 · 결과의 입구
     case review = "clipboard-check"
+
+    // OA U2: 프로젝트 아이콘 풀 12종 (서버 `PROJECT_ICON_POOL`, DS ProjectIcon). 풀 밖 이름은 `project`(folder)
+    case rocket = "rocket"
+    case briefcase = "briefcase"
+    case flaskConical = "flask-conical"
+    case palette = "palette"
+    case codeXml = "code-xml"
+    case megaphone = "megaphone"
+    case bookOpen = "book-open"
+    case building2 = "building-2"
+    case leaf = "leaf"
+    case compass = "compass"
+    case target = "target"
+    case users = "users"
+    /// Ungrouped · Done today 행의 고정된 조용한 아이콘 (선택지가 아니다)
+    case ungrouped = "circle-dashed"
+    case doneToday = "circle-check"
+    /// ContextMenu (Rename · Change icon · Archive · Delete, D4c가 붙인다)
+    case rename = "pencil"
+    case changeIcon = "shapes"
+    case archive = "archive"
+    case delete = "trash-2"
+
+    /// 프로젝트 아이콘 이름의 글리프 (풀 밖 · 모르는 이름은 folder)
+    public static func project(_ name: ProjectIconName) -> TFIcon {
+        switch name {
+        case .rocket: .rocket
+        case .briefcase: .briefcase
+        case .flaskConical: .flaskConical
+        case .palette: .palette
+        case .codeXml: .codeXml
+        case .megaphone: .megaphone
+        case .bookOpen: .bookOpen
+        case .building2: .building2
+        case .leaf: .leaf
+        case .compass: .compass
+        case .target: .target
+        case .users: .users
+        case .folder: .project
+        }
+    }
 
     /// 자산 카탈로그 경로 (`icon` 폴더가 이름공간)
     public var assetName: String { "icon/\(rawValue)" }

@@ -43,4 +43,14 @@ describe("POST /api/v2/contexts/{to}/members/move (route)", () => {
     expect((await call({ member_kind: "action", member_id: ACTION, from_context_id: FROM })).status).toBe(400); // 조건 없음
     expect(changeContextMembership).toHaveBeenCalledTimes(1);
   });
+
+  it("교착(40P01) · 잠금 경합(55P03) · 직렬화 실패(40001)는 500이 아니라 409 busy_retry (검토 P2-3: 일괄 말로 이동과 겹친 피해자)", async () => {
+    vi.stubEnv("MEMORY_ENABLED", "true");
+    for (const code of ["40P01", "55P03", "40001"]) {
+      vi.mocked(changeContextMembership).mockRejectedValueOnce(Object.assign(new Error("db"), { code }));
+      const response = await call(body);
+      expect(response.status, code).toBe(409);
+      expect((await response.json()).error.code, code).toBe("busy_retry");
+    }
+  });
 });

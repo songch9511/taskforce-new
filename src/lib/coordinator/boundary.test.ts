@@ -60,7 +60,7 @@ describe("코디네이터 TS ↔ 실행 권한 경계", () => {
     const rpcs = new Set(COORDINATOR_FILES.flatMap((file) => [...strip(readFileSync(file, "utf8")).matchAll(/(?:rpc(?:<[^>]*>)?\(|rpc\(\s*)"([a-z_]+)"/g)].map((m) => m[1])));
     expect([...rpcs].sort()).toEqual([
       "coordinator_claim", "coordinator_enqueue", "coordinator_enqueue_due_timers", "coordinator_fail", "coordinator_finish", "coordinator_pending_inputs",
-      "coordinator_recover_missing", "coordinator_reserve_jev_calls", "coordinator_reserve_model_call", "source_document_ids",
+      "coordinator_recover_missing", "coordinator_reserve_jev_calls", "coordinator_reserve_model_call", "review_agent_inputs", "source_document_ids",
     ]);
   });
 

@@ -1,8 +1,9 @@
 import { createHash } from "node:crypto";
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 vi.mock("./triggers", () => ({ kickBridgeConnections: vi.fn().mockResolvedValue(undefined) }));
 import { registerBridge, revokeBridge } from "./register";
+import { kickBridgeConnections } from "./triggers";
 const id = "10000000-0000-4000-8000-000000000001";
 describe("bridge registration", () => {
   it("returns the active bridge cap rejection without issuing a credential", async () => {
@@ -27,5 +28,82 @@ describe("bridge registration", () => {
     const rpc = vi.fn(() => ({ throwOnError: async () => { if (++attempts < 3) throw { code: "55P03" }; return { data: { status: "revoked", tasks: [] } }; } }));
     expect(await revokeBridge({ rpc } as unknown as SupabaseClient, id, id)).toEqual({ status: "revoked", tasks: [] });
     expect(rpc).toHaveBeenCalledTimes(3);
+  });
+});
+
+// ─── F1s: 기기 이름 (표시용) ───
+describe("bridge registration device name (F1s)", () => {
+  afterEach(() => vi.restoreAllMocks());
+  const bridge = "10000000-0000-4000-8000-0000000000b1";
+  const base = { device_id: "random-installation", app_version: "1", adapters: [], connect: [], reactivate: false };
+  const connection = { connection_id: "10000000-0000-4000-8000-0000000000c1", adapter: "agent:codex", status: "active", activated: true };
+  function world(options: { status?: string; failName?: boolean } = {}) {
+    const rpc = vi.fn<(name: string, args?: Record<string, unknown>) => unknown>((name) => ({
+      throwOnError: async () => {
+        if (name === "take_rate_limit") return { data: null };
+        if (name === "set_bridge_device_name") {
+          if (options.failName) throw new Error(`name write failed for WATCH-NAME ${bridge}`);
+          return { data: { status: "updated" } };
+        }
+        return { data: { status: options.status ?? "registered", bridge_id: bridge, connections: [connection] } };
+      },
+    }));
+    return { admin: { rpc } as unknown as SupabaseClient, rpc };
+  }
+  const nameCalls = (rpc: ReturnType<typeof world>["rpc"]) => rpc.mock.calls.filter(([name]) => name === "set_bridge_device_name");
+  const expectedResponse = {
+    bridge_id: bridge, bridge_secret: expect.any(String), heartbeat_interval_seconds: 30, unreachable_after_seconds: 90, long_poll_max_seconds: 25,
+    connections: [{ connection_id: connection.connection_id, adapter: "agent:codex", status: "active" }],
+  };
+
+  it("이름이 없으면 이름 쓰기 0, 응답은 F1s 전과 같다 (이름 키 없음)", async () => {
+    const { admin, rpc } = world();
+    expect(await registerBridge(admin, id, base)).toEqual(expectedResponse);
+    expect(rpc.mock.calls.map(([name]) => name)).toEqual(["take_rate_limit", "register_bridge"]);
+  });
+
+  it.each(["registered", "rotated", "reactivated"])("%s: register_bridge 뒤 kick 앞에 정규화한 이름을 한 번 쓴다 (응답에는 이름이 없다)", async (status) => {
+    vi.mocked(kickBridgeConnections).mockClear();
+    const { admin, rpc } = world({ status });
+    expect(await registerBridge(admin, id, { ...base, device_name: "  Studio \u202e " })).toEqual(expectedResponse);
+    expect(nameCalls(rpc)).toEqual([["set_bridge_device_name", { p_user_id: id, p_bridge_id: bridge, p_device_name: "Studio" }]]);
+    const order = rpc.mock.calls.map(([name]) => name);
+    expect(order.indexOf("set_bridge_device_name")).toBeGreaterThan(order.indexOf("register_bridge"));
+    const write = rpc.mock.invocationCallOrder[order.indexOf("set_bridge_device_name")];
+    expect(vi.mocked(kickBridgeConnections).mock.invocationCallOrder[0]).toBeGreaterThan(write);
+  });
+
+  it.each(["revoked", "too_many_bridges"])("%s면 이름을 쓰지 않는다", async (status) => {
+    const { admin, rpc } = world({ status });
+    expect(await registerBridge(admin, id, { ...base, device_name: "Studio" })).toEqual({ status });
+    expect(nameCalls(rpc)).toEqual([]);
+  });
+
+  it("정규화하면 비는 이름은 쓰지 않는다", async () => {
+    const { admin, rpc } = world();
+    await registerBridge(admin, id, { ...base, device_name: " \u202e\u200b \t" });
+    expect(nameCalls(rpc)).toEqual([]);
+  });
+
+  it("이름 쓰기가 던져도 응답 · secret은 그대로이고 사건 이름만 한 줄 남는다 (이미 secret을 회전했다)", async () => {
+    vi.mocked(kickBridgeConnections).mockClear();
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { admin, rpc } = world({ failName: true });
+    const result = await registerBridge(admin, id, { ...base, device_name: "WATCH-NAME" });
+    expect(result).toEqual(expectedResponse);
+    if (!("bridge_secret" in result)) throw new Error("registration failed");
+    expect(rpc.mock.calls.find(([name]) => name === "register_bridge")?.[1]).toMatchObject({ p_secret_hash: expect.any(String) });
+    expect(kickBridgeConnections).toHaveBeenCalledOnce();
+    expect(error.mock.calls).toEqual([[JSON.stringify({ event: "bridge_device_name_failed" })]]);
+    expect(JSON.stringify(error.mock.calls)).not.toContain("WATCH-NAME");
+  });
+
+  it("모르는 키 · 257 코드 포인트 이름 · 문자열이 아닌 이름은 던진다 (strict 유지)", async () => {
+    const { admin, rpc } = world();
+    await expect(registerBridge(admin, id, { ...base, device_name: "Studio", extra: 1 } as never)).rejects.toThrow();
+    await expect(registerBridge(admin, id, { ...base, device_name: "\u{1f34e}".repeat(257) })).rejects.toThrow();
+    await expect(registerBridge(admin, id, { ...base, device_name: 5 } as never)).rejects.toThrow();
+    expect(rpc).not.toHaveBeenCalled();
+    await expect(registerBridge(admin, id, { ...base, device_name: "\u{1f34e}".repeat(256) })).resolves.toMatchObject({ bridge_id: bridge });
   });
 });

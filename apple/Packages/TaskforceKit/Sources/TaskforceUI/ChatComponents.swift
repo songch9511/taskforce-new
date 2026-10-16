@@ -241,31 +241,152 @@ public struct ChatStatusLine: View {
     }
 }
 
-/// MessageDelivery (Molecule): 에이전트에게 보낸 메시지가 어디까지 갔는지 한 줄 (Received · Sent · Unknown · Queued · **Not sent** · Expired). 단어만: 아이콘 · 스피너 · 색 없음.
-/// 오른쪽 맞춤 footnote, 말풍선 아래 4pt. Not sent만 굵은 `text/primary`고 나머지는 보조색이다. Send again · 이유 문구는 D4a
-public struct MessageDeliveryView: View {
-    let line: MessageDeliveryLine
+/// 줄 안의 항목을 **오른쪽 끝에 붙여** 감싸는 배치 (DS `.tf-delivery`: flex-wrap · justify flex-end · 열 간격 8): 글이 길면 링크가 다음 줄로 내려가고 두 줄 모두 오른쪽 끝에 붙는다
+public struct TrailingWrapLayout: Layout {
+    let spacing: CGFloat
 
-    public init(_ line: MessageDeliveryLine) {
-        self.line = line
+    public init(spacing: CGFloat = TFSpace.sm) {
+        self.spacing = spacing
     }
 
-    public var body: some View {
-        Group {
-            if let strong = line.strong {
-                Text(strong).font(TFFont.footnoteEmphasis).foregroundStyle(TFColor.textPrimary)
-                    + Text(line.text.map { " · \($0)" } ?? "").font(TFFont.footnote).foregroundStyle(TFColor.textSecondary)
-            } else if let text = line.text {
-                Text(text).font(TFFont.footnote).foregroundStyle(TFColor.textSecondary)
+    /// 순수한 자리 규칙: 항목을 앞에서부터 줄에 담고(줄 폭을 넘으면 다음 줄), 각 줄을 오른쪽 끝에 붙인다. 줄 사이 간격은 없다
+    public static func place(sizes: [CGSize], width: CGFloat, spacing: CGFloat) -> (frames: [CGRect], height: CGFloat) {
+        var rows: [[Int]] = []
+        var rowWidths: [CGFloat] = []
+        for (index, size) in sizes.enumerated() {
+            if let last = rows.indices.last, rowWidths[last] + spacing + size.width <= width {
+                rows[last].append(index)
+                rowWidths[last] += spacing + size.width
+            } else {
+                rows.append([index])
+                rowWidths.append(size.width)
             }
         }
-        .tracking(-0.08)
-        .multilineTextAlignment(.trailing)
-        .fixedSize(horizontal: false, vertical: true)
+        var frames = Array(repeating: CGRect.zero, count: sizes.count)
+        var y: CGFloat = 0
+        for (row, indices) in rows.enumerated() {
+            var x = width - rowWidths[row]
+            let rowHeight = indices.map { sizes[$0].height }.max() ?? 0
+            for index in indices {
+                frames[index] = CGRect(x: x, y: y, width: sizes[index].width, height: sizes[index].height)
+                x += sizes[index].width + spacing
+            }
+            y += rowHeight
+        }
+        return (frames, y)
+    }
+
+    private func fitted(_ subviews: Subviews, width: CGFloat) -> [CGSize] {
+        subviews.map { subview in
+            let ideal = subview.sizeThatFits(.unspecified)
+            return subview.sizeThatFits(ProposedViewSize(width: min(ideal.width, width), height: nil))
+        }
+    }
+
+    public func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let width = proposal.width ?? .infinity
+        guard width.isFinite else {
+            let sizes = subviews.map { $0.sizeThatFits(.unspecified) }
+            return CGSize(width: sizes.map(\.width).reduce(0, +) + spacing * CGFloat(max(0, sizes.count - 1)), height: sizes.map(\.height).max() ?? 0)
+        }
+        let sizes = fitted(subviews, width: width)
+        return CGSize(width: width, height: Self.place(sizes: sizes, width: width, spacing: spacing).height)
+    }
+
+    public func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let sizes = fitted(subviews, width: bounds.width)
+        let placed = Self.place(sizes: sizes, width: bounds.width, spacing: spacing)
+        for (index, frame) in placed.frames.enumerated() {
+            subviews[index].place(at: CGPoint(x: bounds.minX + frame.minX, y: bounds.minY + frame.minY), proposal: ProposedViewSize(width: frame.width, height: frame.height))
+        }
+    }
+}
+
+/// MessageDelivery (Molecule): 에이전트에게 보낸 메시지가 어디까지 갔는지 한 줄 (Received · Sent · Unknown · Queued · **Not sent** · Expired). 단어만: 아이콘 · 스피너 · 색 없음.
+/// 오른쪽 맞춤 footnote, 말풍선 아래 4pt. Not sent만 굵은 `text/primary`고 나머지는 보조색이다. 링크 하나(Send again · 후보 고르기)는 DS Button `link`이고
+/// 글이 길면 오른쪽 맞춤으로 감싼다 (`TrailingWrapLayout`). 이유 말은 `MessageDeliveryLine`(Kit)이 정한다
+public struct MessageDeliveryView: View {
+    let line: MessageDeliveryLine
+    let onLink: ((MessageDeliveryLine.Link) -> Void)?
+
+    public init(_ line: MessageDeliveryLine, onLink: ((MessageDeliveryLine.Link) -> Void)? = nil) {
+        self.line = line
+        self.onLink = onLink
+    }
+
+    /// 전달 줄의 접근성 이름: 한 줄로 이은 글 (`combined`). 링크는 따로 누르는 동작이다
+    nonisolated public static func accessibilityName(_ line: MessageDeliveryLine) -> String { line.combined }
+
+    /// 링크의 접근성 이름 (링크가 없으면 nil)
+    nonisolated public static func linkAccessibilityName(_ line: MessageDeliveryLine) -> String? { line.link?.title }
+
+    public var body: some View {
+        TrailingWrapLayout(spacing: TFSpace.sm) {
+            Group {
+                if let strong = line.strong {
+                    Text(strong).font(TFFont.footnoteEmphasis).foregroundStyle(TFColor.textPrimary)
+                        + Text(line.text.map { " · \($0)" } ?? "").font(TFFont.footnote).foregroundStyle(TFColor.textSecondary)
+                } else if let text = line.text {
+                    Text(text).font(TFFont.footnote).foregroundStyle(TFColor.textSecondary)
+                }
+            }
+            .tracking(-0.08)
+            .multilineTextAlignment(.trailing)
+            .fixedSize(horizontal: false, vertical: true)
+            .accessibilityLabel(Self.accessibilityName(line))
+            if let link = line.link, let onLink {
+                LinkButton(link.title) { onLink(link) }
+                    .font(TFFont.footnote)
+                    .tracking(-0.08)
+                    .accessibilityLabel(link.title)
+            }
+        }
         .frame(maxWidth: .infinity, alignment: .trailing)
         .padding(.top, TFSpace.xs)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel(line.combined)
+        .accessibilityElement(children: .contain)
+    }
+}
+
+/// 서버가 쓴 이벤트 줄 (`role = 'event'`, OA D4a-18, Figma 57:2284): "Opened in Terminal" · "Resumed here" · "Queued messages cancelled" · "Answered" …
+/// `footnote` `text/secondary`, 왼쪽 맞춤, 한 줄 끝 줄임. 앱은 글을 만들지 않는다
+public struct EventLine: View {
+    nonisolated public static let lineLimit = 1
+
+    let text: String
+
+    public init(_ text: String) {
+        self.text = text
+    }
+
+    nonisolated public static func accessibilityName(_ text: String) -> String { text }
+
+    public var body: some View {
+        Text(text)
+            .font(TFFont.footnote)
+            .tracking(-0.08)
+            .foregroundStyle(TFColor.textSecondary)
+            .lineLimit(Self.lineLimit)
+            .truncationMode(.tail)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityLabel(Self.accessibilityName(text))
+    }
+}
+
+/// 잘린 에이전트 답과 View full (OA D4a-17, DS Message): 서버가 32KB에서 자른 답은 말줄임표로 끝나고, **이 Mac 원장에 전문이 있을 때만** 글 바로 아래(8)에 링크가 보인다.
+/// 누르면 그 자리에서 전문으로 바뀌고 링크는 사라진다 (다른 것은 바꾸지 않는다). 링크는 세션 패널 머리에 없다
+public enum MessageViewFull {
+    public static let title = AgentCopy.viewFull
+
+    /// 보일 글: 펼쳤으면 전문, 잘렸으면 말줄임표로 끝난 글 (이미 "…"로 끝나면 더하지 않는다)
+    public static func shownText(_ turn: ChatTurn) -> String {
+        if let full = turn.fullText { return full }
+        guard turn.isTruncated, !turn.text.hasSuffix("…") else { return turn.text }
+        return turn.text + "…"
+    }
+
+    /// 링크가 보이나: 잘렸고, 이 Mac에서 전문을 찾았고, 아직 펼치지 않았다
+    public static func showsLink(_ turn: ChatTurn) -> Bool {
+        turn.isTruncated && turn.canViewFull && turn.fullText == nil
     }
 }
 
@@ -279,12 +400,15 @@ public struct SourceQuote: View {
     let text: String
     let openTitle: String?
     let onOpen: (() -> Void)?
+    /// DS의 SourceMark(공식 마크 그대로, 18pt 타일)로 그린다 (새 Issues 화면). 기본은 지금의 단일 잉크 `SourceIcon`이다
+    let usesSourceMark: Bool
     @Environment(\.colorSchemeContrast) private var contrast
 
     public init(
         service: SourceService? = nil, from: String? = nil, place: String? = nil, time: String? = nil, text: String,
-        openTitle: String? = nil, onOpen: (() -> Void)? = nil
+        openTitle: String? = nil, onOpen: (() -> Void)? = nil, usesSourceMark: Bool = false
     ) {
+        self.usesSourceMark = usesSourceMark
         self.service = service
         self.from = from
         self.place = place
@@ -305,7 +429,9 @@ public struct SourceQuote: View {
             let meta = Self.metaLine(from: from, place: place, time: time)
             if service != nil || !meta.isEmpty {
                 HStack(spacing: 6) {
-                    if let service { SourceIcon(service, size: .m) }
+                    if let service {
+                        if usesSourceMark { SourceMark(service, size: .sm) } else { SourceIcon(service, size: .m) }
+                    }
                     if !meta.isEmpty {
                         Text(meta)
                             .font(TFFont.meta)
@@ -348,13 +474,17 @@ public struct Composer: View {
     let isDisabled: Bool
     let isSending: Bool
     let focusRequest: Int
+    let isRunning: Bool
+    let onStop: () -> Void
     let onSubmit: (String) -> Void
     @State private var focused = false
     @Environment(\.colorSchemeContrast) private var contrast
 
+    /// - isRunning: 이 대화에서 시작한 일이 돌고 있다 (OA D4a-13): 보내기 원이 Stop(10pt 사각형, "Stop new steps")이 된다. 글을 쓰고 Enter로 보내는 것은 그대로다 (그 메시지는 대기열에 들어간다)
     public init(
         text: Binding<String>, placeholder: String = ChatCopy.composerPlaceholder, label: String = ChatCopy.composerLabel,
-        isDisabled: Bool = false, isSending: Bool = false, focusRequest: Int = 0, onSubmit: @escaping (String) -> Void
+        isDisabled: Bool = false, isSending: Bool = false, focusRequest: Int = 0, isRunning: Bool = false, onStop: @escaping () -> Void = {},
+        onSubmit: @escaping (String) -> Void
     ) {
         _text = text
         self.placeholder = placeholder
@@ -362,8 +492,18 @@ public struct Composer: View {
         self.isDisabled = isDisabled
         self.isSending = isSending
         self.focusRequest = focusRequest
+        self.isRunning = isRunning
+        self.onStop = onStop
         self.onSubmit = onSubmit
     }
+
+    /// 보내기 원의 접근성 이름: 돌고 있으면 "Stop new steps" (Stop이 이긴다)
+    nonisolated public static func sendLabel(running: Bool, isSending: Bool) -> String {
+        running ? AgentCopy.stopNewSteps : (isSending ? "Sending" : "Send")
+    }
+
+    /// 보내기 원이 Stop으로 바뀌나 (DS Composer "Running")
+    nonisolated public static func circleStopsInsteadOfSending(running: Bool) -> Bool { running }
 
     /// 보낼 수 있나 (글이 있고, 꺼져 있지 않고, 보내는 중이 아니다)
     nonisolated public static func canSend(text: String, isDisabled: Bool, isSending: Bool) -> Bool {
@@ -381,16 +521,24 @@ public struct Composer: View {
         let shape = RoundedRectangle(cornerRadius: TFRadius.md, style: .continuous)
         HStack(spacing: TFSpace.xs) {
             field
-            Button(action: submit) {
-                TFIcon.send.image(size: 16)
-                    .frame(width: 28, height: 28)
-                    .contentShape(Rectangle())
+            let stops = Self.circleStopsInsteadOfSending(running: isRunning)
+            Button(action: { if stops { onStop() } else { submit() } }) {
+                // DS `.tf-send`: `fill/inverse` 원 28, 안에 arrow-up 또는 Stop(10pt · 모서리 2의 사각형)
+                ZStack {
+                    if stops {
+                        RoundedRectangle(cornerRadius: 2, style: .continuous).fill(TFColor.textInverse).frame(width: 10, height: 10)
+                    } else {
+                        TFIcon.send.image(size: 16).foregroundStyle(TFColor.textInverse)
+                    }
+                }
+                .frame(width: 28, height: 28)
+                .background(TFColor.fillInverse, in: Circle())
+                .opacity(stops || canSend ? 1 : 0.35)
+                .contentShape(Circle())
             }
             .buttonStyle(.plain)
-            .foregroundStyle(TFColor.textPrimary)
-            .opacity(canSend ? 1 : 0.45)
-            .disabled(!canSend)
-            .accessibilityLabel(isSending ? "Sending" : "Send")
+            .disabled(!stops && !canSend)
+            .accessibilityLabel(Self.sendLabel(running: isRunning, isSending: isSending))
         }
         .padding(EdgeInsets(top: 0, leading: TFSpace.md, bottom: 0, trailing: 6))
         .frame(minHeight: 40)

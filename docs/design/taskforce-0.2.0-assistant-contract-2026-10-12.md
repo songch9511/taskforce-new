@@ -301,6 +301,15 @@ type AgentCapability = /* 런타임 계약 5장 그대로 */ & {
 
 registry에 있고 연결이 없으면 `not_connected`(예: Codex를 아직 연결하지 않음). `sign_in_needed`는 bridge 사전 점검(arch 8.2 spawn (a))에서 온다.
 
+### 4.5.1 OA F1s 정정 (2026-10-15)
+
+이 절은 OA F1s 계약 5.1의 결정을 반영하며 아래에 지정한 기존 문구보다 우선한다.
+
+- **4.5 대상 목록:** agent 행에 두 키를 더한다. `device_name: string | null` = 그 연결 bridge의 표시용 Mac 이름(서버 정규화 뒤 1–64 코드 포인트, 모르면 `null` — 옛 Mac · 연결 없음 · bridge 없음 · 폐기). `bridge_id: string | null` = 연결의 bridge(연결이 없으면 `null`, bridge가 지워졌어도 연결의 값 그대로). 이름은 `state` 계산에 쓰지 않는다. 같은 이름의 Mac 둘은 앱이 자기 bridge id와 견줘 "This Mac"을 가른다. 옛 앱은 모르는 키를 무시한다.
+- **3.6 비밀값 "Answer on <Mac 이름>":** 이름은 앱이 `agent.bridge_id`로 `bridges.device_name`을 RLS로 읽는다(`device_name`은 열 단위 select가 열려 있다. `secret_hash` · `heartbeat_result`는 그대로 막힘). 이름이 없으면 대체 문구를 쓴다(문구는 사용자 승인).
+- **개인정보:** Mac 이름은 사용자 데이터다. 로그 · 지표 · 오류 문구 · AI 입력에 넣지 않고, 그 Mac을 폐기하거나 계정을 지우면 비운다. 식별(`device_ref` 해시 · `device_id` 난수)은 그대로이고 이름은 어떤 판정 · 조인에도 쓰지 않는다.
+- **3.2 만료 회수:** lease가 `delivery_expires_at` 지난 메시지를 `expired`로 회수할 때 `delivery_reason`을 쓰지 않는다(`expired` 상태가 이유를 대신한다). 한계(후속 F3): Mac이 꺼져 있는 동안 lease 전 `prepared` 명령은 `delivery_expires_at`이 지나도 DB에서 `dispatched/prepared` 그대로이고 표시는 `unreachable`이면 `queued`다. 표시만 `expired`로 바꾸면 Send again이 `not_eligible`이 되므로, F3이 만료한 lease 전 `prepared` 명령을 잠금 아래 `withdraw_bridge_command(…,'expired')` 경로로 회수하고 Send again과 잇는다.
+
 ## 5. 중단 (U7, 검토 F14)
 
 - 보내기 ↔ Stop 전환 = **이 대화에 묶인 세션**에 열린 `agent_tasks`(dispatched · accepted · running · awaiting_answer)가 있는가. `idle`은 열린 작업이 아니다(Stop 대신 보내기).
@@ -319,6 +328,28 @@ registry에 있고 연결이 없으면 `not_connected`(예: Codex를 아직 연�
 - **13.2 결정표:** bridge는 정적 도구·닫기 모드·보류 중복·파일 시스템 사실을 먼저 확인한다. Bash·Edit·Write·Codex 승인의 정책 판정은 서버 API가 한다. 0.2.0에는 사용자 명령 허용 목록이 없으며 Bash 자동 허용은 13.4 파서 성공에만 근거한다.
 - **AC-9 (사용자 결정: 읽기는 허용):** Manual에서 쓰기 자동 허락은 0이다. 작업 폴더 안 읽기 전용 단일 명령은 13.4 판정으로 허용한다. Codex Manual은 읽기 actions·독립 파서 성공·첫 요청의 세 조건을 모두 요구한다. Auto/Full에서 온 Codex 승인 요청은 사용자에게 묻고 `Runs without sandbox`를 표시한다.
 - **3.6 승인 답·8장 측정:** Assistant와 Review는 같은 `POST /api/v2/agent-tasks/{id}/answer`에 `{provider_request_id, answers:{approval:"allow"|"deny"}}`를 보낸다. SQL이 답·예약 확정/해제·`question_answered {kind:approval,adapter,decision}`를 원자 처리한다. 서버 판정은 `tool_call_decided`, 사후 충돌·해소는 `path_conflict_found`·`path_conflict_resolved`로 센다. bridge 로컬 결정은 서버 지표에 포함하지 않는다.
+
+### 5.2 OA D4b-s 서버 확정 정정 (2026-10-15)
+
+이 절은 OA D4b-s 계약 5.1의 Q1–Q17을 반영하며 아래에 지정한 기존 문구보다 우선한다.
+
+- **3.4 결과 준비 → Review (:182):** 항목 id는 `result_ready:<run_id>`, version은 `result:<run_id>:<reviewed_turn_seq>:<마지막 turn_seq>:<현재 산출물 수>`다. 조건은 ① 대화 run이 끝 상태(`done` · `failed` · `stopped`)가 아니다 ② 그 이슈(Action)가 열려 있다 ③ **마지막 턴의 작업이 `idle`이다**(마지막 = `turn_seq` 큰 순, 같으면 `created_at` · id) ④ `superseded_at`이 없고 `turn_seq > reviewed_turn_seq`인 산출물이 하나 이상이다. 새 턴이 산출물을 남기면 같은 항목의 version만 바뀌고, 다음 턴이 진행 중이면 사라졌다가 그 턴이 끝나면 다시 나온다. 사라지는 때는 E1c가 `reviewed_turn_seq`를 올릴 때 · 이슈 Done(run `stopped`) · 세션 Stop · Action이 닫힐 때다. 끝난(`stopped`) run의 결과 검토는 이 서버에 없다(E1c가 필요하면 조건을 연다). E1c 전에는 "Review result" · Later 행동이 없다.
+- **3.4 Dock의 Review (:183) · Needs you 종류 토큰:** 에이전트 입력의 토큰은 `agent_question`(입력 질문) · `agent_approval`(승인 질문) · `agent_secret_question`(비밀값이 하나라도 섞인 질문) · `result_ready` · `path_conflict`다. `approval`은 C1 실행 단계 승인 종류(`approval:<step_id>`)라서 쓰지 않는다 — 묶음 키가 답 경로가 다른 두 승인을 섞지 않게 하려는 것이다. 순서는 C2 규칙 그대로(긴급 → 오래 기다린 순 → 종류 순서 → Action id)이고 새 종류는 종류 순서 끝에 덧붙는다. 새 긴급 이유는 없다(기한 창만). ⌥Space의 "가장 최근 결정"은 Review `decisions` 중 `created_at`이 가장 늦은 항목이다(앱의 표시 규칙).
+- **3.6 입력 질문 원천 (:209):** Review 계산 입력은 `FutureInputs.agentQuestions`가 아니라 읽기 전용 SQL `review_agent_inputs(p_user_id, p_adapters)`(질문 · 결과 준비 · 경로 충돌 한 문장)다. 항목 id는 `<kind>:<agent_task_id>`, version은 `question:<agent_task_id>:<provider_request_id>`라서 질문이 교체되면 같은 id에 다른 version이 된다(옛 화면은 stale). 대화 run(`kind='conversation'`)의 질문만 본다. **Review의 답은 D1d 답 route를 그대로 쓴다**: 항목 `agent.task_id` · `agent.provider_request_id`로 `POST /api/v2/agent-tasks/{id}/answer`를 부른다(Assistant와 같은 CAS). 비밀값 항목은 Review에 보이되 서버로 답할 수 없다(409 `secret_requires_local`) — 그 세션을 가진 Mac의 로컬 답 route는 후속 서버 WP다.
+- **3.9 사후 충돌 (:240) · 해소 route:** Review 항목 id는 `path_conflict:<lease_id>`, version은 `conflict:<lease_id>:<conflict_version>`이고 항목의 Action은 **늦게 쓴(멈춘) run**의 Action이다(holder는 ref). 해소는 `POST /api/v2/path-conflicts/{lease_id}/resolve { keep: "holder" | "later", conflict_version }`다. `conflict_version`은 충돌이 새로 생길 때마다 오르는 정수 CAS이고, 옛 version이거나 이미 해소됐으면 409 `conflict`(쓰기 0 · 지표 0)이다. 효과 · 지표(`path_conflict_resolved {keep}`)는 D3c-2 SQL 그대로다.
+- **gate:** 에이전트 입력은 `CONVERSATIONS_V2_ENABLED` ∧ adapter 플래그가 켜졌을 때만 읽는다(에이전트 대화 route의 gate와 같은 조건). 해소 route는 `REVIEW_V2_ENABLED` ∧ 켜진 adapter가 하나 이상일 때만 열린다. 새 플래그 · 새 지표 type은 없다. 모두 꺼지면 Review · 복귀 요약 JSON은 C3와 바이트 동일하다.
+
+### 5.3 OA F2 서버 확정 정정 (2026-10-15)
+
+이 절은 OA F2 계약 5.1의 Q1–Q13을 반영하며 아래에 지정한 기존 문구보다 우선한다.
+
+- **3.6 비밀값 (:213) · 로컬 답 입구:** 그 세션을 가진 Mac이 값을 메모리에 두고 서버에는 **"이 질문은 이 Mac에서 답했다"만** 표시한다. 입구는 새 bridge route `POST /api/v1/bridge/answer-local { bridge_id, agent_task_id, request_digest }`(사용자 토큰 + `X-Taskforce-Bridge-Secret`)다. D1d 답 route는 바뀌지 않는다 — 비밀값은 계속 409 `secret_requires_local`(RPC 0)이다. 본문에는 값을 담을 자리가 없다: UUID 둘과 `request_digest`(= `provider_request_id`의 UTF-8 SHA-256 소문자 16진 64자)뿐인 strict 객체, 512바이트 상한, 틀리면 고정 문구 400이다. `provider_request_id`는 본문에 없고 서버가 DB의 질문 열쇠에서 꺼낸다.
+- **증명:** 기기 증명(bridge secret) + 세션 소유(그 세션의 연결이 그 bridge)다. TS `bridgeOwnsSession`이 앞단 거름이고, SQL `answer_agent_question_locally`가 쓰기와 같은 트랜잭션에서 잠그기 전 · 후로 다시 확인한다(권위). 같은 사용자의 다른 Mac · 폐기된 bridge · 남의 작업은 404이고 쓰기 0이다(다른 Mac이 표시하면 답 명령이 값이 없는 주인 Mac으로 가 질문을 잃는다). 토큰만으로는 표시할 수 없다.
+- **효과:** 기존 `answer_agent_question(…, p_answered_locally => true)`를 그대로 지난다(질문 열쇠 CAS · 중복 수렴 · 답 단계 · bridge 명령 · 대화 줄 "Answered on this Mac"). 승인 질문은 이 길로 답할 수 없다(lease 확정이 있는 `answer_agent_approval`만). 표시가 `answered`면 Review의 `agent_secret_question` 항목이 모든 기기에서 다음 읽기에 사라진다.
+- **5.2 (:329) 끝 문장:** "그 세션을 가진 Mac의 로컬 답 route는 후속 서버 WP다"의 후속 서버 WP는 OA F2이고 route는 위 `answer-local`이다. Mac 쪽 호출(비밀값 입력 카드 · `LocalSecretAnswers.put` 먼저 → 이 route → 결과에 따라 값 지우기)은 **D4b-m**이다(D3a 6.6의 "D4a"는 D4b-m으로 읽는다).
+- **응답:** 도메인 결과는 200의 `status`다 — `answered` · `duplicate`(+ `step_id`) · `stale`(`question_closed` · `not_live` · `not_secret`). `not_live`는 heartbeat 공백(작업 `unreachable`)의 참고 이유로, Mac이 heartbeat · reconcile로 작업을 되살린 뒤 한 번 다시 보낸다. 409 `conflict`는 잠금 경합(다시 보내도 된다)에만 쓴다. 새 오류 코드 · 새 플래그 · 새 지표 type은 없다.
+- **8장 지표:** `question_answered`에 `answered_locally: true` 차원을 더한다(`kind:"input"`, `answered`일 때만 같은 트랜잭션). 측정 공백: 입력한 화면(Assistant · Review) · 질문이 기다린 시간 · 표시 뒤 lease 때 값이 없어 닫힌 수(`bridge_commands.outcome='request_closed'`).
+- **AC-37 (:445) 서버 몫:** 비밀값 답의 서버 기록 0(답 단계 args는 `{agent_task_id, provider_request_id, answered_locally:true}`뿐, 카나리가 어느 표에도 남지 않음)과 Review 항목이 주인 Mac의 표시로 사라지는 것, 다른 기기는 표시할 수 없는 것을 fixture로 확인한다. 값이 에이전트에 한 번 도달하는 것은 D4b-m · MS-2의 실제 provider · Mac 확인이다.
 
 ## 6. 프로젝트 관리 (U5)
 
@@ -380,6 +411,15 @@ registry에 있고 연결이 없으면 `not_connected`(예: Codex를 아직 연�
 | `issue_moved` | 서버 | 6.1 이동 · 빼기 | via(menu · talk) · from_context · to_context |
 
 Action 생성(3.3)은 `action_events` `user_created`(`rule='assistant_agent'`)로 남는다.
+
+**OA D4c-2 · D4c-3b 구현 정정 (6.1·9장을 이 항목이 이긴다):**
+- 6.1 이동(:343): 대상이 하나로 정해지면 제안 없이 바로 쓰고, **불확실하면(J1 0.5–0.8) 글 질문(제안 `move`, `asks adopt`)** 한 번, 모자란 것은 **한 번 더 묻기**(`content.organize.pending` + `asks organize`, 한 라운드)로 푼다.
+- 6.1 설명으로 여러 개(:345, "Shape 관련 다 옮겨줘"): 이번 구현은 후보 검색 없이 "이슈를 붙이거나 #번호로 말해 주세요"라고 묻기만 한다(쓰기 0). 후보 카드는 후속이다.
+- 6.1 병합 남는 쪽(:352): Jev `into`(확신 ≥ 0.8)가 먼저, 아니면 "뒤에 말한 이슈". "#139에 #144 합쳐줘"처럼 조사가 남는 쪽을 가리키는 말을 위해서다.
+- 6.1 확인 카드(:355): `payload_hash`는 (대상 id, `version`)의 hash다 — `updated_at`이 아니다(착수 · 활동 시각 갱신으로 거짓 superseded가 나지 않고, `write_action`의 version 조건과 같은 값이라 SQL이 원자적으로 막는다). 확인은 새 route `POST …/proposals/{proposal_id}/confirm` · `/dismiss`와 글 "응"(J1 `adopt`일 때만 — `answer`는 "아니요"도 담아 다시 묻는다) 둘이 같은 쓰기를 한다.
+- 6.1 이벤트(:357): `user_merged`를 받는 것은 `coordinator_on_action_decision` **트리거의 WHEN 목록**이다(함수 본문이 아니다).
+- 9장 마이그레이션이 필요한 기존 함수: `conversation_finish_turn`(adopt.kind · p_turn.move · 55P03) · `coordinator_recover_missing`(결정 회수 목록) · `match_actions_for_ask`(병합으로 닫은 중복 제외)도 교체한다. 이동 지표는 새 래퍼 `change_context_membership_with_metric`(by_user는 그대로).
+- 이슈 id: `start_agent_turn`이 sha256에서 만드는 Action id는 RFC 4122 버전 · variant 자리와 달라 `z.uuid()`를 통과하지 못한다 — 메시지 refs · 카드 · 기록 줄의 이슈 id 스키마는 `z.guid()`다.
 
 ## 9. 같이 고칠 문서
 

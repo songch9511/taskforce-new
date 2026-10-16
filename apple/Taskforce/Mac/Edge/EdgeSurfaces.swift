@@ -98,4 +98,29 @@ extension EdgeSurfaces {
         return current.assistantWindows
     }
 }
+
+// --- U2 ---
+extension EdgeSurfaces {
+    /// 새 Issues 화면 (OA U2): 레일 첫 칸 Projects(⌘2) → Projects → 이슈 목록 → 이슈 상세, SessionTab · 세션 패널 · Ask 알약 · New session `+` · 링 = 이슈(세션 반영).
+    /// 셋(셸 · Chats · 프로젝트 묶음)이 모두 켜져 있고 `issueScreens` 값이 켜졌을 때만 켜진다: 멤버십 런타임과 `+`의 Assistant 창이 Chats 런타임에 산다.
+    /// **꺼지면 지금 동작 전부 그대로다** (All work · 검색 · 필터 · 핀 · 레일 높이 · 세션 읽기 0). `EdgeSurfaces.release`는 이 값을 켜지 못한다 (`allowsIssueScreens`가 false)
+    func allowsIssueScreens(flag: Bool) -> Bool {
+        flag && shell && chats && projects
+    }
+
+    static let issueScreensKey = "TF_U2"
+
+    /// 이 실행의 게이트. Debug = `-TF_U2 YES`(인자 영역만, 저장된 defaults로는 켜지지 않는다) + `shell && chats && projects`.
+    /// `-TF_RELEASE_SURFACES YES`면 Release 표면(`projects == false`)이라 꺼진다. Release 빌드는 늘 false다 (출시 때 켜는 것은 L5 결정)
+    static func issueScreens(_ defaults: UserDefaults? = nil) -> Bool {
+        #if DEBUG
+        return debug(defaults).allowsIssueScreens(flag: bool(issueScreensKey, defaults))
+        #else
+        return false
+        #endif
+    }
+
+    /// 앱이 실제로 쓰는 값 (`ChatRuntime`의 기본값)
+    static var issueScreensForThisRun: Bool { issueScreens() }
+}
 #endif

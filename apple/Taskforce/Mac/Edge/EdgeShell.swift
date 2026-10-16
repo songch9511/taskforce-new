@@ -23,6 +23,10 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
     let chat: ChatRuntime?
     /// Assistant 창들 (OA U1). `EdgeSurfaces.assistantWindows`가 꺼져 있으면(Release · 창이 없는 구성) nil이고 Chats는 지금처럼 패널의 한 화면이다
     let assistant: AssistantWindowManager?
+    /// 세션 패널 창 (OA U2): 이슈 패널 왼쪽의 두 번째 창. 새 Issues 화면이 꺼져 있으면 nil
+    let sessionPanel: EdgeSessionPanelController?
+    /// 범용 메뉴 창 (OA U2): 탭의 More 목록
+    let menu = EdgeContextMenu()
     /// 지금의 키 창 (키를 잃을 때 새 키 창이 Assistant 창인지 본다. 시험은 이 값을 바꾼다)
     var keyWindow: () -> NSWindow? = { NSApp.keyWindow }
     private var clickMonitors: [Any] = []
@@ -64,20 +68,28 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
         let windows = chat != nil && assistantWindows
         shell = EdgeShellModel(
             reduceMotion: Self.systemReduceMotion, pinStore: pinStore, contexts: chat?.contexts, review: review, summary: summary, chatsEnabled: chat != nil,
-            windowsEnabled: windows
+            windowsEnabled: windows, issues: chat?.issues
         )
         rail = EdgeRailPanelController(shell: shell)
         panel = EdgePanelController(shell: shell, chat: chat)
+        // 새 Issues 화면이 켜진 구성만 세션 패널 창이 있다 (꺼지면 창도 읽기도 없다)
+        if let chat, chat.issues != nil {
+            sessionPanel = EdgeSessionPanelController(shell: shell, runtime: chat)
+        } else {
+            sessionPanel = nil
+        }
         if windows, let chat {
             assistant = AssistantWindowManager(
                 runtime: chat, shell: shell, store: positionStore ?? Self.defaultPositionStore(),
-                environment: .live(panel: panel, shell: shell), reduceMotion: { Self.systemReduceMotion }
+                environment: .live(panel: panel, shell: shell, sessionPanel: sessionPanel), reduceMotion: { Self.systemReduceMotion }
             )
         } else {
             assistant = nil
         }
         super.init()
         panel.panel.delegate = self
+        sessionPanel?.panel.delegate = self
+        sessionPanel?.issuePanelFrame = { [weak panel] in panel.flatMap { $0.isVisible ? $0.panel.frame : nil } }
         shell.onConnect = { [weak self] in self?.rail.onConnections() }
         if let assistant {
             shell.onChats = { [weak assistant] in assistant?.showChats() }
@@ -90,6 +102,40 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
         }
         // Try again은 읽는 중이어도 새로 읽는다 (읽기가 취소돼 "읽는 중"이 남아도 버튼이 무반응이 되지 않게)
         shell.onRetry = { [weak self] in self?.load(.retry) }
+        wireIssues()
+    }
+
+    /// 새 Issues 화면(OA U2)의 동작: Ask 알약 · New session `+` · More 목록. 앞 Assistant 창이 있으면 그 창에 칩을 더하고, 없으면 새 창 (창이 없는 구성에서는 아무 일도 없다)
+    private func wireIssues() {
+        guard shell.issueScreensEnabled else { return }
+        shell.onAsk = { [weak self] item in self?.assistant?.ask(about: item) }
+        shell.onNewSession = { [weak self] scope in self?.assistant?.openNewSession(scope: scope) }
+        shell.onShowMoreSessions = { [weak self] hidden in self?.showMoreSessions(hidden) }
+        // 세션 패널의 대화: id로 직접 읽고(History 100개 목록에 기대지 않는다), 보이는 동안은 온라인 복귀 · 목록 새로 읽기의 공통 갱신 집합에 든다
+        if let chat {
+            let store = chat.chat
+            shell.onLoadSessionConversation = { [weak store] id in store?.loadConversation(id) }
+            store.panelConversations = { [weak shell] in
+                guard let shell, shell.sessionPanelShown, let id = shell.openSessionItem?.conversationID else { return [] }
+                return [id]
+            }
+        }
+    }
+
+    /// More(탭의 `…`): 숨은 세션을 메뉴로 (이름 + 오른쪽 링 말, AgentMark 없음). 고르면 그 세션의 패널
+    private func showMoreSessions(_ hidden: [AgentSessionItem]) {
+        guard !hidden.isEmpty else { return }
+        let items = hidden.map { session in
+            ContextMenuItem(id: session.id.uuidString, label: session.name, detail: session.line, checked: session.id == shell.sessionPanelID) { [weak shell] in
+                shell?.openSession(session.id)
+            }
+        }
+        let mouse = NSEvent.mouseLocation
+        let row = CGRect(x: mouse.x - 14, y: mouse.y - 14, width: 28, height: 28)
+        shell.setMenuOpen(true)
+        menu.present(model: ContextMenuModel(items: items), label: "More sessions", row: row, pointerX: mouse.x, over: panel.panel) { [weak self] in
+            self?.shell.setMenuOpen(false)
+        }
     }
 
     /// 창 위치를 기억할 곳: 앱 설정 도메인. 견본(`-TFSampleData`)은 메모리뿐이다 (격리 실행도 설정 도메인을 만들지 않는다)
@@ -130,6 +176,8 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
         Self.removePinsWhenAccountLeaves(launcher.session, store: pinStore)
         followWork()
         followPanel()
+        followSessionPanel()
+        followIssues()
         followSync()
         followSyncFinished()
         // 시작할 때 세션은 아직 읽는 중이다: 로그인이 확인되면 그때 목록 · run을 읽는다 (런처는 열 때마다 읽는다)
@@ -139,6 +187,16 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
         ) { [weak self] _ in
             MainActor.assumeIsolated { self?.shell.reduceMotion = Self.systemReduceMotion }
         })
+        // 잠자기: 자는 동안 세션 5초 읽기가 멈추고 깨면 한 번 읽는다 (OA U2-35)
+        if let sessions = shell.issues?.sessions {
+            let center = NSWorkspace.shared.notificationCenter
+            observers.append(center.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { _ in
+                MainActor.assumeIsolated { sessions.setAsleep(true) }
+            })
+            observers.append(center.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { _ in
+                MainActor.assumeIsolated { sessions.setAsleep(false) }
+            })
+        }
         // 해상도 · 화면 구성이 바뀌면 레일을 다시 화면 모서리에 붙이고, 열린 패널도 그 옆으로
         observers.append(NotificationCenter.default.addObserver(
             forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main
@@ -218,6 +276,8 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
         if let contexts = chat?.contexts { Task { await contexts.refresh() } }
         // 복귀 요약(C3)도 같이 읽는다 (서버 읽기 한 번, 읽음 처리 없음). 마지막에 시작한 읽기만 반영된다. C3가 꺼져 있으면 읽지 않는다
         if let summary = shell.summary { Task { await summary.refresh() } }
+        // 새 Issues 화면(OA U2): 화면을 열 때 · 로그인 · Try again마다 세션도 다시 읽는다 (RLS select 다섯, 쓰기 없음)
+        if let issues = shell.issues { Task { await issues.sessions.refresh() } }
         if let now = launcher.now, Self.readsList(reason, isLoading: now.refresh.isLoading) { Task { await now.load() } }
         if let runs = launcher.runs {
             Task {
@@ -258,7 +318,17 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
         } onChange: { [weak self] in
             Task { @MainActor in self?.followWork() }
         }
-        if work != shell.work { shell.update(work) }
+        if work != shell.work {
+            shell.update(work)
+            // 새 Issues 화면(OA U2): `actions` 변경 신호에 세션도 다시 읽고, 새 이슈의 번호를 한 번에 읽는다
+            if let issues = shell.issues {
+                let ids = work.review.map(\.id) + work.open.map(\.id) + work.doneToday.map(\.id)
+                Task {
+                    await issues.numbers.ensure(ids)
+                    await issues.sessions.refresh()
+                }
+            }
+        }
         // 포인터 아래 칸이 사라지면 툴팁도 내린다
         if shell.tooltip == nil { rail.hideTooltip() }
     }
@@ -283,8 +353,46 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
             }
         } else if panel.presentation.shown || hasMonitors {
             panel.hide()
+            sessionPanel?.hide()
             removeMonitors()
         }
+    }
+
+    /// 세션 패널 창: 이슈 패널이 열려 있고 탭이 붙은 화면이고 세션 패널이 열려 있을 때만 보인다. 높이 · 이슈 패널 자리가 바뀌면 위를 맞춘 채 맞춘다
+    private func followSessionPanel() {
+        guard let sessionPanel else { return }
+        let wanted = withObservationTracking {
+            _ = sessionPanel.presentation.contentHeight
+            _ = panel.presentation.tabWidth
+            _ = panel.presentation.bodyHeight
+            _ = panel.presentation.footerHeight
+            return shell.panelOpen && shell.showsSessionTab && shell.openSessionItem != nil
+        } onChange: { [weak self] in
+            Task { @MainActor in self?.followSessionPanel() }
+        }
+        if wanted {
+            if sessionPanel.presentation.shown, sessionPanel.isVisible {
+                sessionPanel.fit()
+            } else if panel.isVisible {
+                sessionPanel.show()
+            }
+        } else if sessionPanel.presentation.shown {
+            sessionPanel.hide()
+        }
+    }
+
+    /// 새 Issues 화면(OA U2): 세션 · 번호 · 프로젝트가 바뀌면 레일의 링 · 열어 둔 화면을 다시 맞춘다
+    private func followIssues() {
+        guard let issues = shell.issues else { return }
+        withObservationTracking {
+            _ = issues.sessions.items
+            _ = issues.numbers.numbers
+            _ = shell.contexts?.hasRead
+            _ = shell.contexts?.contexts
+        } onChange: { [weak self] in
+            Task { @MainActor in self?.followIssues() }
+        }
+        shell.sessionsChanged()
     }
 
     // MARK: 동기화
@@ -350,7 +458,7 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
             MainActor.assumeIsolated {
                 guard let self else { return }
                 // Assistant 창(과 그 대상 메뉴)을 누르는 것은 패널 밖 클릭이 아니다: 창과 패널이 함께 보인다
-                if event.window !== self.panel.panel, event.window !== self.rail.panel, !self.ownsAssistantWindow(event.window) {
+                if event.window !== self.panel.panel, event.window !== self.rail.panel, !self.ownsAssistantWindow(event.window), !self.ownsIssueWindow(event.window) {
                     self.externalInteraction()
                 }
             }
@@ -360,7 +468,8 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
         }
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             let handled = MainActor.assumeIsolated { () -> Bool in
-                guard let self, event.window === self.panel.panel else { return false }
+                // 키 창은 마지막으로 누른 패널 하나다: 이슈 패널이나 세션 패널이 키일 때만 (그 밖의 창으로 온 키는 지나간다)
+                guard let self, event.window === self.panel.panel || event.window === self.sessionPanel?.panel else { return false }
                 return self.handleKey(event)
             }
             return handled ? nil : event
@@ -432,19 +541,27 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
     func windowDidResignKey(_ notification: Notification) {
         // ⌘Tab 등으로 키를 잃으면 접는다 (More 메뉴를 연 동안은 빼고)
         guard shell.panelOpen, !shell.menuOpen else { return }
-        guard assistant != nil else {
+        guard assistant != nil || sessionPanel != nil else {
             externalInteraction()
             return
         }
-        // 키가 이 앱의 Assistant 창으로 옮겨 가는 것은 패널을 잃은 것이 아니다: 한 틱 뒤 새 키 창을 보고 정한다
+        // 키가 이 앱의 Assistant 창 · 세션 패널 · 이슈 패널로 옮겨 가는 것은 패널을 잃은 것이 아니다: 한 틱 뒤 새 키 창을 보고 정한다
         Task { @MainActor [weak self] in
-            guard let self, self.shell.panelOpen, !self.shell.menuOpen, !self.ownsAssistantWindow(self.keyWindow()) else { return }
+            guard let self, self.shell.panelOpen, !self.shell.menuOpen else { return }
+            let key = self.keyWindow()
+            guard !self.ownsAssistantWindow(key), !self.ownsIssueWindow(key) else { return }
             self.externalInteraction()
         }
     }
 
     private func ownsAssistantWindow(_ window: NSWindow?) -> Bool {
         assistant?.owns(window) ?? false
+    }
+
+    /// 이슈 패널 · 세션 패널 · 그 메뉴 창 (OA U2-47): 서로를 눌러도 다른 쪽이 접히지 않는다. 바깥 클릭은 둘을 함께 접는다
+    private func ownsIssueWindow(_ window: NSWindow?) -> Bool {
+        guard let window else { return false }
+        return window === panel.panel || window === sessionPanel?.panel || window === menu.window
     }
 }
 

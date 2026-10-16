@@ -61,3 +61,44 @@ it("maps a bridge revoked after authentication to 404", async () => {
   expect(response.status).toBe(404);
   expect((await response.json()).error.code).toBe("not_found");
 });
+
+// ─── F1s: 기기 이름 (표시용) ───
+const WATCH_NAME = "WATCH-DEVICE-NAME-Studio";
+const consoleText = () => JSON.stringify(["log", "info", "warn", "error", "debug"].map((method) => vi.mocked(console[method as "log"]).mock.calls));
+function silenceConsole() {
+  for (const method of ["log", "info", "warn", "error", "debug"] as const) vi.spyOn(console, method).mockImplementation(() => {});
+}
+it("device_name이 없는 옛 본문도 그대로 통과한다 (옛 Mac)", async () => {
+  expect((await POST(request())).status).toBe(200);
+  expect(mocks.operation).toHaveBeenCalledWith(admin, { userId, bridge, input });
+  expect(mocks.operation.mock.calls[0][1].input).not.toHaveProperty("device_name");
+});
+it("device_name이 있으면 원문 그대로 heartbeatBridge에 넘긴다 (정규화는 거기서)", async () => {
+  expect((await POST(request({ ...input, device_name: "  Studio  " }))).status).toBe(200);
+  expect(mocks.operation).toHaveBeenCalledWith(admin, { userId, bridge, input: { ...input, device_name: "  Studio  " } });
+});
+it("원문 256 코드 포인트까지 통과하고 257에서 400이다", async () => {
+  expect((await POST(request({ ...input, device_name: "\u{1f34e}".repeat(256) }))).status).toBe(200);
+  mocks.operation.mockClear();
+  expect((await POST(request({ ...input, device_name: "\u{1f34e}".repeat(257) }))).status).toBe(400);
+  expect(mocks.operation).not.toHaveBeenCalled();
+});
+it.each([5, null, ["Studio"], { name: "Studio" }, true])("device_name이 문자열이 아니면 400이다: %j", async (value) => {
+  expect((await POST(request({ ...input, device_name: value }))).status).toBe(400);
+  expect(mocks.operation).not.toHaveBeenCalled();
+});
+it("모르는 키는 device_name이 있어도 400이다 (strict 유지)", async () => {
+  expect((await POST(request({ ...input, device_name: "Studio", hostname: "mac.local" }))).status).toBe(400);
+  expect(mocks.operation).not.toHaveBeenCalled();
+});
+it("이름이 실린 요청이 실패해도 console 출력 · 응답에 이름이 없다", async () => {
+  silenceConsole();
+  mocks.operation.mockRejectedValue(new Error(`failed for ${WATCH_NAME}`));
+  const response = await POST(request({ ...input, device_name: WATCH_NAME }));
+  expect(response.status).toBe(500);
+  expect(await response.text()).not.toContain(WATCH_NAME);
+  expect(consoleText()).not.toContain(WATCH_NAME);
+  mocks.operation.mockResolvedValue({ status: "settled" });
+  expect((await POST(request({ ...input, device_name: WATCH_NAME }))).status).toBe(200);
+  expect(consoleText()).not.toContain(WATCH_NAME);
+});

@@ -18,6 +18,17 @@ final class ChatRuntime {
     let targets: AssistantTargetsStore
     /// All work의 실제 범위(프로젝트) 멤버십 (S3b). 없으면 모든 할 일이 Ungrouped (범위를 읽지 않는다)
     let contexts: WorkContextStore?
+    /// 새 Issues 화면(OA U2)의 세션 · 이슈 번호 · 이슈 상세 읽기. **게이트가 꺼져 있으면 nil** (`EdgeSurfaces.issueScreens`): 읽기도 타이머도 없다
+    let issues: IssueRuntime?
+    /// 에이전트 대화의 Stop 요청과 그 결과 (OA D4a-13): Assistant 창 · 세션 패널이 같이 쓴다. 이 연결이 Stop route를 모르면(견본 · 시험용 가짜) 요청이 없다
+    let stop: AgentStopStore
+    /// Assistant 창의 에이전트 대화 세션을 좁게 읽는다 (OA D4a-13b): 열린 대화의 세션과 그 task만. U2의 `issueScreens` 게이트와 상관없이 창이 열리면 읽는다 — 이 연결이 세션 읽기를 모르면 nil
+    let agentTurns: AgentSessionStore?
+    /// 세션 패널의 줄 동작 (Send again · 후보 고르기 메뉴 · View full, OA D4a-1): Assistant 창은 창마다 자기 것을 가진다
+    let panelDesk: AgentTurnDesk
+    /// 세션 패널 머리의 알약 흐름 (OA D4a-03 · 15 · 16): 서버 `open-external` · `resume-here`와 확인 카드. 이 연결이 세션 route를 모르면 nil.
+    /// 터미널을 여는 launcher · 프로세스 검사기는 D4a-2가 넣는다 (지금은 launcher가 없어 Open in Terminal 알약이 없고, 검사기는 "못 찾음"이다)
+    let pillFlow: AgentSessionPillFlow?
     /// 인용의 원문 링크를 연다 (테스트는 가짜로 바꾼다)
     var openURL: (URL) -> Void = { NSWorkspace.shared.open($0) }
     #if DEBUG
@@ -26,18 +37,89 @@ final class ChatRuntime {
     var sampleContextGateway: SampleContextGateway?
     #endif
     private var connectivityTask: Task<Void, Never>?
+    private var sleepObservers: [NSObjectProtocol] = []
 
+    /// - issueScreens: 새 Issues 화면을 켜는가 (기본은 이 실행의 게이트 `EdgeSurfaces.issueScreens`). 켜져 있어도 이 연결이 `IssueScreensGateway`를 따르지 않으면(견본 · 시험용 가짜) 만들지 않는다
     init(
         gateway: any ChatGateway, contextGateway: (any ContextGateway)? = nil, scope: AccountScope = AccountScope(),
-        now: @escaping @Sendable () -> Date = { Date() }
+        now: @escaping @Sendable () -> Date = { Date() }, issueScreens: Bool = EdgeSurfaces.issueScreensForThisRun
     ) {
+        #if DEBUG
+        // 견본 하네스(`-TFEdgeSnapshotIssues`)는 세션 · 번호 · 상세와 프로젝트 아이콘이 있는 견본 서버를 읽는다 (실서버 · 기존 견본은 그대로)
+        let gateway = issueScreens ? IssueSnapshotData.gateway(replacing: gateway) : gateway
+        #endif
         self.scope = scope
         memory = MemoryStore(gateway: gateway, scope: scope)
         // 대상 목록 · 칩을 실은 보내기는 실제 연결(`LiveChatGateway`)만 가진다. 견본 · 시험용 가짜는 Taskforce 대상으로만 보낸다
         let assistant = gateway as? any AssistantGateway
         chat = ChatStore(gateway: gateway, scope: scope, memory: memory, now: now, assistant: assistant)
         targets = AssistantTargetsStore(gateway: assistant, scope: scope, canRunAgents: { !AgentRuntimeEnvironment.isSandboxed() })
+        // 에이전트 대화의 쓰기 · 읽기(Send again · 후보 · Stop · 전달 읽기)와 세션 route도 실제 연결만 가진다 (`as?`, OA D4a-20b)
+        let conversationRoutes = gateway as? any AgentConversationGateway
+        let sessionRoutes = gateway as? any AgentSessionRequests
+        chat.agentConversation = conversationRoutes
+        panelDesk = AgentTurnDesk(chat: chat)
+        stop = AgentStopStore(conversations: conversationRoutes, sessions: sessionRoutes, scope: scope)
+        // launcher는 D4a-2가 넣는다: 지금은 없다 (Open in Terminal 알약을 그리지 않는다). 견본(`-TFEdgeSnapshotAgentChat`)만 터미널을 열지 않는 가짜를 달아 알약 모양을 Figma와 맞춰 본다
+        #if DEBUG
+        let launcher: (any AgentTerminalLauncher)? = AgentChatSnapshot.isEnabled ? SnapshotTerminalLauncher() : nil
+        #else
+        let launcher: (any AgentTerminalLauncher)? = nil
+        #endif
+        pillFlow = sessionRoutes.map { AgentSessionPillFlow(requests: $0, launcher: launcher, scope: scope) }
+        let sessionReads = gateway as? any AgentSessionGateway
+        let chatForFocus = chat
+        agentTurns = sessionReads.map { AgentSessionStore(gateway: $0, scope: scope, now: now, focus: { chatForFocus.viewedAgentSessionIDs() }) }
+        // View full: 이 Mac의 bridge 원장에서 서버 열쇠로 전문을 찾는다 (다른 Mac의 세션이거나 정리됐으면 없다). bridge가 꺼져 있으면 링크가 없다
+        chat.fullTextLookup = { key in
+            guard let runtime = await MainActor.run(body: { BridgeHost.shared?.activeRuntime }) else { return nil }
+            return await runtime.fullText(forServerKey: key)
+        }
+        #if DEBUG
+        // 견본 하네스(`-TFEdgeSnapshotIssues`)는 프로젝트 아이콘 · 긴 이름이 있는 견본 범위를 읽는다 (실서버 · 기존 견본은 그대로)
+        let contextGateway = issueScreens ? IssueSnapshotData.contextGateway(replacing: contextGateway) : contextGateway
+        #endif
         contexts = contextGateway.map { WorkContextStore(gateway: $0, scope: scope) }
+        issues = issueScreens ? (gateway as? any IssueScreensGateway).map { IssueRuntime(gateway: $0, scope: scope, now: now) } : nil
+        // Stop · 알약이 끝나면 세션을 다시 읽는다 (서버가 사실이다): 좁은 저장소와, 켜져 있으면 U2의 전체 저장소
+        let narrow = agentTurns
+        let full = issues?.sessions
+        stop.onChanged = { Task { @MainActor in
+            await narrow?.refresh()
+            await full?.refresh()
+        } }
+        // 턴을 시작할 수 있는 모든 입구(패널 보내기 · Assistant 창 보내기 · Send again · 후보 고르기)가 세션을 다시 읽게 한다:
+        // 쉬는 세션(열린 task 없음)은 5초 읽기가 돌지 않아, 다시 읽지 않으면 Stop 원이 서지 않는다
+        chat.onAgentTurnMayStart = { Task { @MainActor in
+            await narrow?.refresh()
+            await full?.refresh()
+        } }
+        pillFlow?.onNeedsReread = { Task { @MainActor in
+            await narrow?.refresh()
+            await full?.refresh()
+        } }
+        followSleep()
+    }
+
+    /// 잠자기: 자는 동안 전달 읽기 · 세션 읽기 5초 시계가 멈추고, 깨면 한 번 읽는다 (OA D4a-10 · U2-35). 세션 패널이 켜진 구성은 컨트롤러가 U2 저장소를 따로 잇는다
+    private func followSleep() {
+        let center = NSWorkspace.shared.notificationCenter
+        let chat = chat
+        let narrow = agentTurns
+        sleepObservers = [
+            center.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { _ in
+                MainActor.assumeIsolated {
+                    chat.setAsleep(true)
+                    narrow?.setAsleep(true)
+                }
+            },
+            center.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { _ in
+                MainActor.assumeIsolated {
+                    chat.setAsleep(false)
+                    narrow?.setAsleep(false)
+                }
+            },
+        ]
     }
 
     /// 연결 경로를 두 저장소에 알린다 (오프라인에서 돌아오면 대화 목록을 다시 읽는다)
@@ -48,8 +130,10 @@ final class ChatRuntime {
             for await online in updates {
                 guard let self else { return }
                 chat.pathChanged(online: online)
+                agentTurns?.pathChanged(online: online)
                 memory.pathChanged(online: online)
                 contexts?.pathChanged(online: online)
+                issues?.pathChanged(online: online)
                 if online, !wasOnline {
                     await chat.refresh()
                     await contexts?.refresh()

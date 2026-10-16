@@ -6,7 +6,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
 
-import { returnSummaryResponseSchema, type ReturnSummaryResponse } from "@/lib/api/contract";
+import { returnSummaryResponseSchema, type ReturnSummaryWithAgentsResponse } from "@/lib/api/contract";
 import { CHANGE_EVENT_TYPES } from "@/lib/actions/changed";
 import { encodeCursor } from "@/lib/review/cursor";
 import { clearReturnSummary, loadReturnSummary } from "@/lib/review/return-summary";
@@ -46,7 +46,8 @@ const fingerprint = async (userId: string) => {
   return `${counts.join(",")}|${rows.join("|")}`;
 };
 
-const summary = (body: ReturnSummaryResponse) => returnSummaryResponseSchema.parse(body);
+// 에이전트 입력이 꺼진 읽기라 응답은 C3 스키마로도 그대로 읽힌다 (D4b-s 이후 반환 타입만 넓어졌다)
+const summary = (body: ReturnSummaryWithAgentsResponse) => returnSummaryResponseSchema.parse(body);
 
 /** 사용자가 떠나 있던 하루: 서로 다른 종류의 변화 · 자기 수정 · 읽은 변화 · 결정 대기 · 실행 결과 · 안 읽은 메시지 */
 async function awayDay() {

@@ -28,6 +28,11 @@ struct EdgeRailLayout: Equatable {
     /// 가장 크게 펼친 레일 (Review 타일 + 일 넷 + 구분선 + 고정 칸 셋) + 위아래 오목 모서리
     static let windowHeight: CGFloat = top + padding + 5 * (item + gap) + ruleBlock + gap + 3 * item + 2 * gap + padding + fillet
 
+    /// 새 Issues 화면(OA U2, `EdgeSurfaces.issueScreens`)이 켜진 레일은 New session `+` 칸이 한 칸(`item + gap` = 34) 더 있다. 꺼져 있으면 지금 그대로다
+    static func windowHeight(plus: Bool) -> CGFloat {
+        windowHeight + (plus ? item + gap : 0)
+    }
+
     let notchCount: Int
     let restCount: Int
     let expanded: Bool
@@ -36,6 +41,8 @@ struct EdgeRailLayout: Equatable {
     var controls: [EdgeShellModel.Control] = EdgeShellModel.Control.allCases
     /// Review 타일이 맨 위 칸에 있다 (OA U1): 링 · 구분선 · 고정 칸이 한 칸(`item + gap`)씩 내려가고 레일이 그만큼 길다. 없으면 지금 그대로
     var tile = false
+    /// New session `+` 칸이 펼친 레일의 링 뒤 · 구분선 앞에 있다 (OA U2): 구분선 · 고정 칸이 한 칸씩 더 내려간다. 숨은 레일의 노치에는 없다. 없으면 지금 그대로
+    var plus = false
 
     /// 숨은 레일이 밀려난 거리
     var shift: CGFloat {
@@ -50,6 +57,9 @@ struct EdgeRailLayout: Equatable {
 
     /// 타일이 차지하는 칸의 높이 (없으면 0)
     private var tileStep: CGFloat { tile ? Self.item + Self.gap : 0 }
+
+    /// `+` 칸이 차지하는 높이 (없으면 0). 펼친 부분 안에서만 쓰인다
+    private var plusStep: CGFloat { plus ? Self.item + Self.gap : 0 }
 
     /// Review 타일의 자리: 레일의 맨 위 칸 (숨은 레일에서는 이 칸 안에서 16pt 원이 된다)
     var tileFrame: CGRect? {
@@ -67,11 +77,17 @@ struct EdgeRailLayout: Equatable {
         CGRect(x: itemX, y: moreTop + CGFloat(index) * (Self.item + Self.gap), width: Self.item, height: Self.item)
     }
 
-    var ruleY: CGFloat { moreTop + CGFloat(restCount) * (Self.item + Self.gap) + 6 }
+    var ruleY: CGFloat { moreTop + CGFloat(restCount) * (Self.item + Self.gap) + plusStep + 6 }
+
+    /// New session `+` 칸 (펼친 레일에만): 링 뒤, 구분선 앞
+    var plusFrame: CGRect? {
+        guard plus, expanded else { return nil }
+        return CGRect(x: itemX, y: moreTop + CGFloat(restCount) * (Self.item + Self.gap), width: Self.item, height: Self.item)
+    }
 
     func controlFrame(_ control: EdgeShellModel.Control) -> CGRect {
         let index = CGFloat(controls.firstIndex(of: control) ?? 0)
-        let first = moreTop + CGFloat(restCount) * (Self.item + Self.gap) + Self.ruleBlock + Self.gap
+        let first = moreTop + CGFloat(restCount) * (Self.item + Self.gap) + plusStep + Self.ruleBlock + Self.gap
         return CGRect(x: itemX, y: first + index * (Self.item + Self.gap), width: Self.item, height: Self.item)
     }
 
@@ -79,7 +95,7 @@ struct EdgeRailLayout: Equatable {
     var moreHeight: CGFloat {
         guard expanded else { return 0 }
         let count = CGFloat(controls.count)
-        return CGFloat(restCount) * (Self.item + Self.gap) + Self.ruleBlock + Self.gap + count * Self.item + max(count - 1, 0) * Self.gap
+        return CGFloat(restCount) * (Self.item + Self.gap) + plusStep + Self.ruleBlock + Self.gap + count * Self.item + max(count - 1, 0) * Self.gap
     }
 
     /// 검은 레일 모양 (창 좌표, 화면 밖으로 밀린 부분 포함)
@@ -93,7 +109,13 @@ struct EdgeRailLayout: Equatable {
 
     /// 포인터가 레일 위인지 (화면에 보이는 부분만)
     var hitRect: CGRect {
-        railRect.intersection(CGRect(x: 0, y: 0, width: Self.railWidth, height: Self.windowHeight))
+        railRect.intersection(CGRect(x: 0, y: 0, width: Self.railWidth, height: Self.windowHeight(plus: plus)))
+    }
+
+    /// 포인터가 New session `+` 칸 위인지
+    func hitsPlus(_ point: CGPoint) -> Bool {
+        guard let plusFrame, hitRect.contains(point), !idle else { return false }
+        return plusFrame.contains(point)
     }
 
     /// 포인터가 Review 타일 위인지
@@ -155,7 +177,7 @@ struct EdgeRailView: View {
     private var layout: EdgeRailLayout {
         EdgeRailLayout(
             notchCount: shell.notch.count, restCount: shell.rest.count, expanded: shell.isExpanded, idle: shell.isIdle, controls: shell.controls,
-            tile: shell.reviewTileContent != nil
+            tile: shell.reviewTileContent != nil, plus: shell.issueScreensEnabled
         )
     }
 
@@ -191,7 +213,7 @@ struct EdgeRailView: View {
                     }
             }
         }
-        .frame(width: EdgeRailLayout.railWidth, height: EdgeRailLayout.windowHeight, alignment: .topLeading)
+        .frame(width: EdgeRailLayout.railWidth, height: EdgeRailLayout.windowHeight(plus: layout.plus), alignment: .topLeading)
         .animation(slide, value: layout)
         .accessibilityElement(children: .contain)
         .accessibilityLabel(shell.railAccessibilityLabel)
@@ -201,9 +223,9 @@ struct EdgeRailView: View {
     private func content(_ layout: EdgeRailLayout) -> some View {
         ZStack(alignment: .topLeading) {
             // Review 타일: 맨 위 칸 (숨은 레일에서는 노치 안 16pt 원, 펼치면 정사각 타일)
-            if let frame = layout.tileFrame, let content = shell.reviewTileContent {
+            if let frame = layout.tileFrame, shell.reviewTileContent != nil {
                 ReviewTile(
-                    kind: content.tileKind, label: shell.tileAccessibilityName ?? "Review", expanded: layout.expanded, open: shell.tileOpen,
+                    label: shell.tileAccessibilityName ?? "Review", expanded: layout.expanded, open: shell.tileOpen,
                     highlighted: shell.hoveredTile, notchShift: layout.notchShift
                 ) {
                     shell.openReviewTile()
@@ -220,6 +242,14 @@ struct EdgeRailView: View {
                         .offset(x: layout.restFrame(index).minX, y: layout.restFrame(index).minY)
                         .accessibilityHidden(!layout.expanded)
                 }
+                // New session `+` (OA U2): 링 뒤 · 구분선 앞. 펼친 레일에만 있다
+                if let frame = layout.plusFrame {
+                    RailButton(icon: .addTask, label: EdgeShellModel.newSessionLabel, highlighted: shell.hoveredPlus) {
+                        shell.newSession(from: .rail)
+                    }
+                    .offset(x: frame.minX, y: frame.minY)
+                    .accessibilityHidden(!layout.expanded)
+                }
                 Rectangle()
                     .fill(TFColor.bezelTrack)
                     .frame(width: 18, height: 1)
@@ -227,7 +257,7 @@ struct EdgeRailView: View {
                     .accessibilityHidden(true)
                 ForEach(shell.controls, id: \.self) { control in
                     let frame = layout.controlFrame(control)
-                    RailButton(icon: icon(control), label: control.label, highlighted: highlighted(control)) {
+                    RailButton(icon: shell.railIcon(for: control), label: shell.label(for: control), highlighted: highlighted(control)) {
                         switch control {
                         case .allWork: shell.openAllWork()
                         case .chats: shell.openChats()
@@ -241,7 +271,7 @@ struct EdgeRailView: View {
             // 나타남은 투명도만 움직인다 (자리 · 크기는 레일의 미끄러짐을 따르고, 움직임 줄이기면 그것도 없다)
             .animation(TFMotion.ease(TFMotion.ringFade)) { $0.opacity(layout.expanded ? 1 : 0) }
         }
-        .frame(width: EdgeRailLayout.railWidth, height: EdgeRailLayout.windowHeight, alignment: .topLeading)
+        .frame(width: EdgeRailLayout.railWidth, height: EdgeRailLayout.windowHeight(plus: layout.plus), alignment: .topLeading)
     }
 
     private func item(_ entry: RailEntry, layout: EdgeRailLayout) -> some View {
@@ -253,14 +283,6 @@ struct EdgeRailView: View {
             shell.openRailEntry(entry)
         }
         .transition(.opacity.animation(TFMotion.ease(TFMotion.ringFade)))
-    }
-
-    private func icon(_ control: EdgeShellModel.Control) -> TFIcon {
-        switch control {
-        case .allWork: .allWork
-        case .chats: .talk
-        case .more: .more
-        }
     }
 
     private func highlighted(_ control: EdgeShellModel.Control) -> Bool {
@@ -329,7 +351,7 @@ final class EdgeRailPanelController {
     init(shell: EdgeShellModel) {
         self.shell = shell
         panel = EdgePassivePanel(
-            contentRect: NSRect(x: 0, y: 0, width: EdgeRailLayout.railWidth, height: EdgeRailLayout.windowHeight),
+            contentRect: NSRect(x: 0, y: 0, width: EdgeRailLayout.railWidth, height: EdgeRailLayout.windowHeight(plus: shell.issueScreensEnabled)),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
@@ -363,9 +385,9 @@ final class EdgeRailPanelController {
     func show() {
         guard let screen = Self.screen else { return }
         let top = Self.railTop(on: screen) + EdgeRailLayout.top
+        let height = EdgeRailLayout.windowHeight(plus: shell.issueScreensEnabled)
         panel.setFrame(
-            NSRect(x: screen.frame.maxX - EdgeRailLayout.railWidth, y: top - EdgeRailLayout.windowHeight,
-                   width: EdgeRailLayout.railWidth, height: EdgeRailLayout.windowHeight),
+            NSRect(x: screen.frame.maxX - EdgeRailLayout.railWidth, y: top - height, width: EdgeRailLayout.railWidth, height: height),
             display: true
         )
         panel.orderFrontRegardless()
@@ -383,7 +405,7 @@ final class EdgeRailPanelController {
     private var layout: EdgeRailLayout {
         EdgeRailLayout(
             notchCount: shell.notch.count, restCount: shell.rest.count, expanded: shell.isExpanded, idle: shell.isIdle, controls: shell.controls,
-            tile: shell.reviewTileContent != nil
+            tile: shell.reviewTileContent != nil, plus: shell.issueScreensEnabled
         )
     }
 
@@ -396,9 +418,12 @@ final class EdgeRailPanelController {
         let layout = layout
         shell.pointer(inside: layout.hitRect.contains(point))
         let overTile = layout.hitsTile(point)
+        let overPlus = layout.hitsPlus(point)
         let hit = layout.hit(point, slots: shell.slots)
         if overTile {
             shell.hover(tile: true)
+        } else if overPlus {
+            shell.hover(plus: true)
         } else if let id = hit.item {
             shell.hover(item: id)
         } else {
@@ -406,6 +431,7 @@ final class EdgeRailPanelController {
         }
         let anchor: CGRect? = {
             if overTile { return layout.tileFrame }
+            if overPlus { return layout.plusFrame }
             if let id = hit.item, let index = shell.slots.firstIndex(where: { $0.id == id }) {
                 return index < layout.notchCount ? layout.notchFrame(index) : layout.restFrame(index - layout.notchCount)
             }
@@ -514,16 +540,6 @@ struct RailTooltipView: View {
             .padding(EdgeInsets(top: 6, leading: 9, bottom: 6, trailing: 9))
             .background(TFColor.bgTooltip, in: RoundedRectangle(cornerRadius: TFRadius.sm, style: .continuous))
             .accessibilityHidden(true)
-    }
-}
-
-extension ReviewTileContent {
-    /// 타일 부품의 종류
-    var tileKind: ReviewTile.Kind {
-        switch self {
-        case .needsYou: .needsYou
-        case .changes: .changes
-        }
     }
 }
 #endif

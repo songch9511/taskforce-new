@@ -34,7 +34,8 @@ const TASK = "7a000000-0000-4000-8000-000000000001";
 const STEP = "57000000-0000-4000-8000-000000000001";
 const RUN = "20000000-0000-4000-8000-0000000000aa";
 const NOW = new Date("2026-10-14T12:00:00.000Z");
-const FUTURE = "2026-10-15T12:00:00.000Z";
+// 전달 만료 시각이 아직 안 지난 값. 실제 시계가 흘러도 시험이 변하지 않게 먼 미래로 고정한다
+const FUTURE = "2099-01-01T00:00:00.000Z";
 // 실행 kill switch(EXECUTION_ENABLED)가 켜진 환경. 꺼진 환경은 아래 OFF (D2a 보안 검토 P1 방어)
 const CODEX = { AGENT_ADAPTER_CODEX_ENABLED: "true", EXECUTION_ENABLED: "true" };
 const OFF = { AGENT_ADAPTER_CODEX_ENABLED: "true" };

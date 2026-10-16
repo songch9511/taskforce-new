@@ -65,7 +65,9 @@ struct AssistantWindowView: View {
                 .defaultScrollAnchor(model.mode == .chat ? .bottom : .top)
                 .scrollIndicators(.automatic)
                 .onChange(of: signature) {
-                    if model.mode == .chat { proxy.scrollTo(AssistantBodyAnchor.bottom, anchor: .bottom) }
+                    // 한 번 양보한 뒤 내린다: 마지막 줄 아래에 줄이 더해지는 변화(전달 줄 옆의 오류 줄 · Try again)는 이번 갱신의 배치가 끝난 다음에야 높이가 늘어난다
+                    guard model.mode == .chat else { return }
+                    Task { @MainActor in proxy.scrollTo(AssistantBodyAnchor.bottom, anchor: .bottom) }
                 }
             }
             footer
@@ -81,6 +83,8 @@ struct AssistantWindowView: View {
         .clipShape(RoundedRectangle(cornerRadius: TFRadius.lg, style: .continuous))
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Assistant")
+        // 열린 에이전트 대화의 세션을 좁게 읽는다 (D4a-13b): 대화가 바뀌거나 첫 전달로 세션이 생기면 다시 읽는다. 열린 task가 있으면 저장소가 5초마다 이어 읽는다
+        .task(id: runtime.chat.agentSessionID(for: model.conversationID)) { await model.agent?.sessions.refresh() }
     }
 
     // MARK: 머리
@@ -185,12 +189,34 @@ struct AssistantWindowView: View {
                     }
                 }
                 ForEach(chat.turns(for: model.conversationID)) { turn in
-                    AssistantTurnView(turn: turn, runtime: runtime, onRetry: { cmid in Task { await chat.retry(cmid, in: model.conversationID) } })
+                    AssistantTurnView(turn: turn, runtime: runtime, actions: agentActions, onRetry: { cmid in Task { await chat.retry(cmid, in: model.conversationID) } })
                 }
+                // Stop 뒤의 말 (OA D4a-14): 대화 끝에 이벤트 줄 모양 한 줄 (이 창에서만 보이는 로컬 줄, 서버가 취소 요청을 지우면 사라진다)
+                if let line = model.stopLineText { EventLine(line) }
                 Color.clear.frame(height: 1).id(AssistantBodyAnchor.bottom)
             }
             .padding(.top, TFSpace.xs)
         }
+    }
+
+    /// 에이전트 대화의 줄 동작: 전달 줄 말 · Send again · 후보 고르기 메뉴 · View full (`AssistantWindowModel`이 정하고 이 창은 그린다)
+    private var agentActions: AgentTurnActions {
+        AgentTurnActions(
+            line: { model.deliveryLine(for: $0) },
+            onLink: { turn, link in
+                switch link.kind {
+                case .sendAgain: Task { await model.sendAgain(turn) }
+                case .chooseReferent: model.openReferentMenu(for: turn.id)
+                }
+            },
+            viewFull: { model.viewFull($0) },
+            retry: { turn in Task { await model.retryDelivery(turn) } },
+            referentMenu: model.referentMenu,
+            chooseReferent: { id in Task { await model.chooseReferent(id) } },
+            candidateLabel: { candidate in
+                IssueNumberStore.label(runtime.issues?.numbers.number(for: candidate.actionID)).map { "\($0) \(candidate.title)" } ?? candidate.title
+            }
+        )
     }
 
     private func problemNotice(_ problem: WorkLoad.Problem, retry: @escaping () -> Void) -> some View {
@@ -218,12 +244,17 @@ struct AssistantWindowView: View {
                 targetMark: model.targetMark,
                 targetOpen: presentation.targetMenuOpen,
                 isBlocked: model.isBlocked,
+                isRunning: model.stopPresentation.showsStop,
                 canSend: model.canSend,
                 focusRequest: model.focusRequest,
                 onSend: { Task { await model.send(model.draft) } },
+                onStop: { Task { await model.stop() } },
                 onRemoveChip: { model.removeChip($0) },
                 onTargetTap: actions.toggleTargetMenu,
-                onTargetFrame: { presentation.pillFrame = $0 }
+                onTargetFrame: { presentation.pillFrame = $0 },
+                // 에이전트 대상의 auto 칩은 눌러서 더한다 (D4a-12). 접근성 동작 이름은 새 문구라 승인 전에는 없다
+                onActivateChip: model.toAgent ? { model.promoteChip($0) } : nil,
+                chipActivationName: { AgentCopy.addChip($0.label) }
             )
         }
         .padding(EdgeInsets(top: 0, leading: TFSpace.md, bottom: TFSpace.md, trailing: TFSpace.md))
@@ -233,31 +264,6 @@ struct AssistantWindowView: View {
 
 enum AssistantBodyAnchor {
     static let bottom = "assistant-bottom"
-}
-
-/// 대화의 한 줄: 사용자 글(+ 전달 줄 또는 상태 한 줄) 또는 Taskforce의 말(+인용 · 기억 노트)
-struct AssistantTurnView: View {
-    let turn: ChatTurn
-    let runtime: ChatRuntime
-    let onRetry: (UUID) -> Void
-
-    var body: some View {
-        if turn.isUser {
-            VStack(alignment: .leading, spacing: 0) {
-                Message(isUser: true) { MessageText(turn.text, isDeleted: turn.textDeleted) }
-                if let delivery = turn.delivery {
-                    // 에이전트 대상: 서버가 계산한 전달 표시를 여섯 단어로
-                    MessageDeliveryView(MessageDeliveryLine.of(delivery))
-                } else {
-                    ChatStatusLine(status: turn.status, onRetry: { turn.clientMessageID.map(onRetry) })
-                        .padding(.top, TFSpace.xs)
-                }
-            }
-            .accessibilityElement(children: .contain)
-        } else {
-            ChatTurnView(turn: turn, runtime: runtime, onRetry: onRetry)
-        }
-    }
 }
 
 // MARK: 드래그

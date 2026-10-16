@@ -1,0 +1,85 @@
+{
+  "id": "org-merge-into-ko",
+  "description": "AC-29 · AC-30: '#144를 #139에 합쳐줘' — 확인 카드, 남는 쪽은 #139",
+  "maps_to": [
+    "AC-29",
+    "AC-30"
+  ],
+  "asked_at": "2026-10-15T10:00:00+09:00",
+  "message": "#144를 #139에 합쳐줘",
+  "projects": [
+    {
+      "id": "p_launch",
+      "name": "Launch"
+    },
+    {
+      "id": "p_tf",
+      "name": "Taskforce"
+    }
+  ],
+  "records": {
+    "open_actions": [
+      {
+        "id": "i139",
+        "title": "Shape 디자인 확정",
+        "number": 139,
+        "version": 2,
+        "projects": [
+          "p_tf"
+        ],
+        "open_sessions": 1,
+        "evidence_count": 2
+      },
+      {
+        "id": "i140",
+        "title": "견적서 보내기",
+        "number": 140,
+        "version": 2,
+        "projects": [],
+        "open_sessions": 1,
+        "evidence_count": 2
+      },
+      {
+        "id": "i141",
+        "title": "회의록 정리",
+        "number": 141,
+        "version": 2,
+        "projects": [],
+        "open_sessions": 1,
+        "evidence_count": 2
+      },
+      {
+        "id": "i144",
+        "title": "디자인 확정 (중복)",
+        "number": 144,
+        "version": 2,
+        "projects": [],
+        "open_sessions": 1,
+        "evidence_count": 2
+      }
+    ]
+  },
+  "expect": {
+    "intent_any": [
+      "organize"
+    ],
+    "route_any": [
+      "organize"
+    ],
+    "organize": {
+      "op": "merge",
+      "targets": [
+        "i144",
+        "i139"
+      ],
+      "outcome": "card",
+      "into": "i139"
+    },
+    "asks": "confirm",
+    "memory_writes": {
+      "min": 0,
+      "max": 0
+    }
+  },
+  "origin": "synthetic"
+}

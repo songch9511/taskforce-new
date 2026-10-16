@@ -147,3 +147,51 @@ private extension AssistantChip {
         AssistantChip(kind: kind, itemID: itemID, origin: .added, title: title, number: number)
     }
 }
+
+/// 에이전트 대상의 auto 칩 누르기 (OA D4a-12, 계약 v3 2.3): 사용자가 누르면 added가 된다. " · Not sent" 꼬리가 없어지고 보낼 칩이 된다
+struct AssistantChipPromoteTests {
+    func item(_ n: Int, _ title: String = "Rewrite pricing page copy", number: Int? = 139) -> AssistantChip {
+        AssistantChip(kind: .action, itemID: UUID(uuidString: String(format: "c1000000-0000-4000-8000-%012d", n))!, origin: .auto, title: title, number: number)
+    }
+
+    @Test func pressingAnAutoChipMakesItAddedAndTheTailGoesAway() {
+        var chips = AssistantChipSet()
+        chips.follow(item(1))
+        let id = chips.chips[0].id
+        #expect(chips.label(for: chips.chips[0], toAgent: true) == "#139 Rewrite pricing page copy · Not sent")
+        let promoted = chips.promote(id)
+        #expect(promoted)
+        #expect(chips.chips[0].origin == .added)
+        #expect(chips.label(for: chips.chips[0], toAgent: true) == "#139 Rewrite pricing page copy", "꼬리 · Not sent가 없어진다")
+        #expect(chips.attachments.map(\.origin) == [.added], "보낼 때 added로 간다")
+    }
+
+    @Test func pressingAnAddedChipOrAnUnknownChipChangesNothing() {
+        var chips = AssistantChipSet()
+        chips.add(item(1))
+        let before = chips
+        let again = chips.promote(chips.chips[0].id)
+        let unknown = chips.promote("action:00000000-0000-4000-8000-000000000000")
+        #expect(!again && !unknown, "이미 added인 칩 · 없는 칩")
+        #expect(chips == before)
+    }
+
+    /// 눌러서 added가 된 칩은 더는 따라다니지 않는다: 다른 항목을 열면 새 auto 칩이 생긴다 (칩 수가 가득 차지 않았을 때)
+    @Test func aPromotedChipStopsFollowingAndANewAutoChipTakesItsPlace() {
+        var chips = AssistantChipSet()
+        chips.follow(item(1, "Pricing"))
+        chips.promote(chips.chips[0].id)
+        chips.follow(item(2, "Onboarding"))
+        #expect(chips.chips.map(\.title) == ["Pricing", "Onboarding"] && chips.chips.map(\.origin) == [.added, .auto])
+    }
+
+    @Test func aRemovedChipThatWasPromotedMayComeBackAsAutoOnlyIfNeverDismissedAsAuto() {
+        var chips = AssistantChipSet()
+        chips.follow(item(1, "Pricing"))
+        let id = chips.chips[0].id
+        chips.promote(id)
+        chips.remove(id)
+        chips.follow(item(1, "Pricing"))
+        #expect(chips.chips.map(\.origin) == [.auto], "added를 ×로 뺀 항목은 다시 열면 auto로 따라올 수 있다 (auto를 뺀 것만 기억한다)")
+    }
+}
