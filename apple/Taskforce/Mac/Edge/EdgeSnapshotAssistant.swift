@@ -212,7 +212,7 @@ enum AssistantSnapshot {
         await captureTileBoard(edge, to: file("assistant-tile-board"))
     }
 
-    /// 레일의 Review 타일 상태: needs-you · changes · 없음 × 숨김 · 펼침 · 호버 · Open
+    /// 레일의 Review 타일 상태: needs-you × 숨김 · 펼침 · 호버 · Open, 없음 (바뀐 것만 남아도 타일이 없다)
     private static func captureTile(_ edge: EdgeShellController, manager: AssistantWindowManager, file: (String) -> URL, pause: @escaping (Double) async -> Void) async {
         func settle(_ seconds: Double = 0.8) async { await pause(seconds) }
         let shell = edge.shell
@@ -247,30 +247,12 @@ enum AssistantSnapshot {
         await settle()
         rail("needs-you-open")
         shell.dismiss()
-        // changes만: 확인 요청이 없다
+        // 타일 없음: 확인 요청이 없으면 바뀐 것이 남아 있어도 타일이 없다 (OA U2b). 링이 위로 올라온다
         edge.workOverride = { work in
             var work = work
             work.review = []
             return work
         }
-        await settle()
-        shell.pointer(inside: false)
-        await settle()
-        rail("changes-hidden")
-        shell.pointer(inside: true)
-        await settle(1)
-        rail("changes-expanded")
-        shell.hover(tile: true)
-        await settle()
-        rail("changes-hover")
-        shell.hover(tile: false)
-        shell.openReviewTile()
-        await settle()
-        rail("changes-open")
-        shell.dismiss()
-        // 타일 없음: 링이 위로 올라온다
-        gateway.reset(.empty)
-        await edge.shell.summary?.refresh()
         await settle()
         shell.pointer(inside: true)
         await settle(1)
@@ -279,19 +261,14 @@ enum AssistantSnapshot {
         edge.workOverride = nil
     }
 
-    /// 타일 상태판: Needs you · Changes × Default · Hover · Open · Focus (Figma 35:1179와 같은 배치), 검은 레일 위
+    /// 타일 상태판: Needs you × Default · Hover · Open · Focus (Figma 35:1179와 같은 배치), 검은 레일 위
     private static func captureTileBoard(_ edge: EdgeShellController, to url: URL) async {
-        let states: [(String, ReviewTile.Kind)] = [("needs-you", .needsYou), ("changes", .changes)]
-        let board = VStack(alignment: .leading, spacing: 24) {
-            ForEach(states, id: \.0) { _, kind in
-                HStack(spacing: 40) {
-                    ReviewTile(kind: kind, label: "Review", expanded: true) {}
-                    ReviewTile(kind: kind, label: "Review", expanded: true, highlighted: true) {}
-                    ReviewTile(kind: kind, label: "Review", expanded: true, open: true) {}
-                    ReviewTile(kind: kind, label: "Review", expanded: true, focused: true) {}
-                    ReviewTile(kind: kind, label: "Review", expanded: false, notchShift: 9.5) {}
-                }
-            }
+        let board = HStack(spacing: 40) {
+            ReviewTile(label: "Review", expanded: true) {}
+            ReviewTile(label: "Review", expanded: true, highlighted: true) {}
+            ReviewTile(label: "Review", expanded: true, open: true) {}
+            ReviewTile(label: "Review", expanded: true, focused: true) {}
+            ReviewTile(label: "Review", expanded: false, notchShift: 9.5) {}
         }
         .padding(40)
         .background(TFColor.bezelBase)

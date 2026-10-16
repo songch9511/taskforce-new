@@ -223,9 +223,9 @@ struct EdgeRailView: View {
     private func content(_ layout: EdgeRailLayout) -> some View {
         ZStack(alignment: .topLeading) {
             // Review 타일: 맨 위 칸 (숨은 레일에서는 노치 안 16pt 원, 펼치면 정사각 타일)
-            if let frame = layout.tileFrame, let content = shell.reviewTileContent {
+            if let frame = layout.tileFrame, shell.reviewTileContent != nil {
                 ReviewTile(
-                    kind: content.tileKind, label: shell.tileAccessibilityName ?? "Review", expanded: layout.expanded, open: shell.tileOpen,
+                    label: shell.tileAccessibilityName ?? "Review", expanded: layout.expanded, open: shell.tileOpen,
                     highlighted: shell.hoveredTile, notchShift: layout.notchShift
                 ) {
                     shell.openReviewTile()
@@ -257,7 +257,7 @@ struct EdgeRailView: View {
                     .accessibilityHidden(true)
                 ForEach(shell.controls, id: \.self) { control in
                     let frame = layout.controlFrame(control)
-                    RailButton(icon: icon(control), label: shell.label(for: control), highlighted: highlighted(control)) {
+                    RailButton(icon: shell.railIcon(for: control), label: shell.label(for: control), highlighted: highlighted(control)) {
                         switch control {
                         case .allWork: shell.openAllWork()
                         case .chats: shell.openChats()
@@ -283,14 +283,6 @@ struct EdgeRailView: View {
             shell.openRailEntry(entry)
         }
         .transition(.opacity.animation(TFMotion.ease(TFMotion.ringFade)))
-    }
-
-    private func icon(_ control: EdgeShellModel.Control) -> TFIcon {
-        switch control {
-        case .allWork: .allWork
-        case .chats: .talk
-        case .more: .more
-        }
     }
 
     private func highlighted(_ control: EdgeShellModel.Control) -> Bool {
@@ -548,16 +540,6 @@ struct RailTooltipView: View {
             .padding(EdgeInsets(top: 6, leading: 9, bottom: 6, trailing: 9))
             .background(TFColor.bgTooltip, in: RoundedRectangle(cornerRadius: TFRadius.sm, style: .continuous))
             .accessibilityHidden(true)
-    }
-}
-
-extension ReviewTileContent {
-    /// 타일 부품의 종류
-    var tileKind: ReviewTile.Kind {
-        switch self {
-        case .needsYou: .needsYou
-        case .changes: .changes
-        }
     }
 }
 #endif

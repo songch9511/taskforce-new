@@ -358,7 +358,9 @@ struct EdgeReviewModelTests {
     @Test func anEmptyQueueSaysNoDecisionsWaitingOnlyAfterTheListArrived() async throws {
         let rig = try await ReviewRig.make(reviews: 0)
         rig.shell.openNewestReview()
-        #expect(rig.shell.view == .review && rig.shell.shownReview == nil && rig.shell.reviewScreen == .empty(problem: nil))
+        #expect(!rig.shell.panelOpen, "OA U2b: 답할 것이 없으면 ⌘1은 빈 Review를 열지 않는다")
+        rig.shell.openReview(itemID: UUID())
+        #expect(rig.shell.view == .review && rig.shell.shownReview == nil && rig.shell.reviewScreen == .empty(problem: nil), "그래도 빈 화면은 다른 길(답한 뒤)로 보인다")
         // 목록을 아직 못 받았으면 아무 주장도 하지 않는다
         let loading = EdgeShellModel(schedule: { _, _ in EdgeTimer() }, review: rig.desk)
         loading.openNewestReview()
