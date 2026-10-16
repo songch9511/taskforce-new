@@ -48,19 +48,69 @@ public struct ClaudeExitStatus: Equatable, Sendable {
     var agentExit: AgentExit { AgentExit(code: code.map(Int.init), signal: signal.map(Int.init)) }
 }
 
-/// posix_spawn으로 띄운 자식 하나 (계약 2.5): 새 프로세스 그룹 · 앱 fd 물려주지 않음(`POSIX_SPAWN_CLOEXEC_DEFAULT`) · stdin/stdout/stderr 파이프 · cwd
+/// 프로세스 조회 하나의 결과 (12장 7): 있음 · 확인된 사라짐(없음 · 끝남 · 다른 프로세스로 바뀜) · 실패. 실패를 사라짐으로 바꾸는 길은 없다:
+/// 훑기에서 `failed`는 언제나 불완전(→ 끝을 증명하지 못함 → unknown)으로만 이어진다. 값을 꺼내는 길은 세 경우를 모두 다루는 `switch`뿐이다
+enum ProcessLookup<Value> {
+    case present(Value)
+    case gone
+    case failed
+}
+
+extension ProcessLookup: Sendable where Value: Sendable {}
+extension ProcessLookup: Equatable where Value: Equatable {}
+
+/// 책임 프로세스 (12장 1–2, 사용자 결정 2026-10-17): `claude`를 띄울 때 disclaim을 켜 `claude`가 자기 책임 프로세스가 되게 하고, 구성원은
+/// `responsibility_get_pid_responsible_for_pid(pid) == 뿌리 pid`로 본다. 공개 머리에 없는 libquarantine 함수라 `dlsym`로 런타임에 찾는다 (없으면 물러남 = 잠금).
+/// 측정(macOS 26.5, notes 재검토 4): 뿌리가 살아 있는 동안은 setsid · 이중 fork · 못 본 중간 프로세스의 자손도 뿌리 pid를 돌려준다. 뿌리가 끝나는 순간
+/// 그 자손은 스스로의 책임 프로세스가 되고, 끝난(좀비) 프로세스는 ESRCH다. 그래서 뿌리가 살아 있을 때 본 구성원을 혈통에 적어 둔다 (혈통 = 보조)
+enum ClaudeResponsibility {
+    typealias SetDisclaim = @convention(c) (UnsafeMutablePointer<posix_spawnattr_t?>, Int32) -> Int32
+    typealias ResponsiblePID = @convention(c) (pid_t) -> pid_t
+
+    static let setDisclaim: SetDisclaim? = symbol("responsibility_spawnattrs_setdisclaim")
+    static let responsiblePID: ResponsiblePID? = symbol("responsibility_get_pid_responsible_for_pid")
+
+    /// 두 함수가 모두 있다
+    static var available: Bool { setDisclaim != nil && responsiblePID != nil }
+
+    /// `RTLD_DEFAULT` = `(void *)-2`
+    private static func symbol<T>(_ name: String) -> T? {
+        dlsym(UnsafeMutableRawPointer(bitPattern: -2), name).map { unsafeBitCast($0, to: T.self) }
+    }
+
+    /// spawn 속성에 disclaim을 켠다. 두 함수가 모두 있고 켜졌을 때만 true
+    static func disclaim(_ attributes: inout posix_spawnattr_t?) -> Bool {
+        guard available, let setDisclaim else { return false }
+        return setDisclaim(&attributes, 1) == 0
+    }
+
+    /// 그 pid의 책임 프로세스 pid. 끝났거나(좀비 포함) 없으면 `gone`, 함수가 없거나 그 밖의 실패는 `failed`
+    static func responsible(pid: pid_t) -> ProcessLookup<pid_t> {
+        guard let responsiblePID, pid > 0 else { return .failed }
+        errno = 0
+        let value = responsiblePID(pid)
+        if value > 0 { return .present(value) }
+        return errno == ESRCH ? .gone : .failed
+    }
+}
+
+/// posix_spawn으로 띄운 자식 하나 (계약 2.5): 새 프로세스 그룹 · 앱 fd 물려주지 않음(`POSIX_SPAWN_CLOEXEC_DEFAULT`) · stdin/stdout/stderr 파이프 · cwd ·
+/// 책임 프로세스 disclaim (12장 1)
 public final class ClaudeSpawnedProcess: @unchecked Sendable {
     public let pid: pid_t
     /// 커널 시작 시각 (spawn 직후 읽음)
     public let startedAt: Date
+    /// disclaim을 켜고 띄웠다 (아니면 구성원을 증명할 수 없다, 12장 2)
+    let disclaimed: Bool
     let stdinFD: Int32
     let stdoutFD: Int32
     let stderrFD: Int32
     private let reaped = Mutex<ClaudeExitStatus?>(nil)
 
-    init(pid: pid_t, startedAt: Date, stdinFD: Int32, stdoutFD: Int32, stderrFD: Int32) {
+    init(pid: pid_t, startedAt: Date, disclaimed: Bool, stdinFD: Int32, stdoutFD: Int32, stderrFD: Int32) {
         self.pid = pid
         self.startedAt = startedAt
+        self.disclaimed = disclaimed
         self.stdinFD = stdinFD
         self.stdoutFD = stdoutFD
         self.stderrFD = stderrFD
@@ -126,6 +176,8 @@ public enum ClaudeSpawner {
         var mask = sigset_t()
         sigemptyset(&mask)
         posix_spawnattr_setsigmask(&attributes, &mask)
+        // `claude`가 자기 책임 프로세스가 된다 (12장 1): macOS 권한 창도 `claude` 이름으로 뜬다 (notes · 문서)
+        let disclaimed = ClaudeResponsibility.disclaim(&attributes)
 
         let argv = ([argv0 ?? executable] + arguments).map { strdup($0) } + [nil]
         let envp = environment.sorted { $0.key < $1.key }.map { strdup("\($0.key)=\($0.value)") } + [nil]
@@ -144,38 +196,66 @@ public enum ClaudeSpawner {
             close(errors[0])
             throw AgentStartError(.spawnFailed)
         }
-        let started = ClaudeProcessInspector.startTime(pid: pid) ?? Date()
-        return ClaudeSpawnedProcess(pid: pid, startedAt: started, stdinFD: input[1], stdoutFD: output[0], stderrFD: errors[0])
+        // 커널 시작 시각을 못 읽으면 정체를 만들 수 없다: 지금 시각으로 메우지 않고 멈춘다 (12장 7: 조회 실패를 값으로 바꾸지 않는다)
+        guard let started = ClaudeProcessInspector.startTime(pid: pid) else {
+            kill(pid, SIGKILL)
+            var status: Int32 = 0
+            while waitpid(pid, &status, 0) < 0, errno == EINTR {}
+            close(input[1])
+            close(output[0])
+            close(errors[0])
+            throw AgentStartError(.spawnFailed)
+        }
+        return ClaudeSpawnedProcess(pid: pid, startedAt: started, disclaimed: disclaimed, stdinFD: input[1], stdoutFD: output[0], stderrFD: errors[0])
     }
 }
 
 /// 정체 확인 · 신호 (계약 2.14): pid > 1 + 커널 시작 시각 1ms 안 + 소유자 uid + argv의 `--settings …/config/<marker>.settings.json`.
 /// 신호마다 정체를 다시 본다. SIGTERM은 쓰지 않는다 (13.2 :513, Q12)
 public enum ClaudeProcessInspector {
-    enum Kernel {
-        case running(start: Date, uid: uid_t, zombie: Bool, group: pid_t)
-        case gone
-        case unreadable
+    /// `KERN_PROC_PID`로 읽은 한 프로세스 (시작 시각은 초 · 마이크로초 그대로)
+    struct Listed: Equatable, Sendable {
+        let startSeconds: Int64
+        let startMicros: Int64
+        let uid: uid_t
+        let zombie: Bool
+        let group: pid_t
+
+        var start: Date { Date(timeIntervalSince1970: TimeInterval(startSeconds) + TimeInterval(startMicros) / 1_000_000) }
     }
 
-    static func kernel(pid: pid_t) -> Kernel {
-        guard pid > 0 else { return .unreadable }
+    static func kernel(pid: pid_t) -> ProcessLookup<Listed> {
+        guard pid > 0 else { return .failed }
         var info = kinfo_proc()
         var size = MemoryLayout<kinfo_proc>.stride
         var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, pid]
-        guard sysctl(&mib, UInt32(mib.count), &info, &size, nil, 0) == 0 else { return errno == ESRCH ? .gone : .unreadable }
+        guard sysctl(&mib, UInt32(mib.count), &info, &size, nil, 0) == 0 else { return errno == ESRCH ? .gone : .failed }
         guard size > 0, info.kp_proc.p_pid == pid else { return .gone }
         let start = info.kp_proc.p_un.__p_starttime
-        return .running(
-            start: Date(timeIntervalSince1970: TimeInterval(start.tv_sec) + TimeInterval(start.tv_usec) / 1_000_000), uid: info.kp_eproc.e_ucred.cr_uid,
-            zombie: info.kp_proc.p_stat == SZOMB, group: info.kp_eproc.e_pgid
-        )
+        return .present(Listed(
+            startSeconds: Int64(start.tv_sec), startMicros: Int64(start.tv_usec), uid: info.kp_eproc.e_ucred.cr_uid, zombie: info.kp_proc.p_stat == SZOMB,
+            group: info.kp_eproc.e_pgid
+        ))
     }
 
     public static func startTime(pid: pid_t) -> Date? {
-        if case .running(let start, _, _, _) = kernel(pid: pid) { return start }
+        if case .present(let listed) = kernel(pid: pid) { return listed.start }
         return nil
     }
+
+    /// 훑기가 쓰는 조회 (12장 7). 시험이 실패 · 사라짐을 끼워 넣는다 (`$lookups.withValue`). GCD 스레드에서는 언제나 실제 조회다
+    struct Lookups: Sendable {
+        var generation: @Sendable (pid_t) -> ProcessLookup<Generation>
+        var listed: @Sendable (ClaudeLineage.MemberKey) -> ProcessLookup<Void>
+        var responsible: @Sendable (pid_t) -> ProcessLookup<pid_t>
+
+        static let live = Lookups(
+            generation: { ClaudeProcessInspector.generation(pid: $0) }, listed: { ClaudeProcessInspector.listed($0) },
+            responsible: { ClaudeResponsibility.responsible(pid: $0) }
+        )
+    }
+
+    @TaskLocal static var lookups = Lookups.live
 
     /// `KERN_PROCARGS2`: argc, 실행 경로, 그 뒤 argv (같은 사용자 프로세스만 읽힌다)
     static func arguments(pid: pid_t) -> [String]? {
@@ -225,10 +305,10 @@ public enum ClaudeProcessInspector {
         let pid = pid_t(raw)
         switch kernel(pid: pid) {
         case .gone: return .absent
-        case .unreadable: return .unprovable
-        case .running(let start, let uid, let zombie, _):
-            if abs(start.timeIntervalSince(identity.startedAt)) > 0.001 || uid != getuid() { return .replaced }
-            if zombie { return .absent }
+        case .failed: return .unprovable
+        case .present(let listed):
+            if abs(listed.start.timeIntervalSince(identity.startedAt)) > 0.001 || listed.uid != getuid() { return .replaced }
+            if listed.zombie { return .absent }
             guard let arguments = arguments(pid: pid) else { return .unprovable }
             return hasMarker(arguments, identity.processMarker) ? .same : .unprovable
         }
@@ -241,7 +321,7 @@ public enum ClaudeProcessInspector {
     /// 프로세스 한 세대를 한 번에 읽은 것 (10장 2): 시작 시각 · 부모 pid · 그룹 · 사용자 · 상태와 커널 unique id가 같은 프로세스의 것이다.
     /// unique id는 부팅 안에서 다시 쓰지 않고 exec해도 그대로다. 부모 id는 fork · 마지막 exec 때의 부모다: 그 뒤 부모가 끝나 launchd로 옮겨져도 · setsid해도
     /// 그대로지만, 부모가 끝난 뒤 exec하면 launchd(1)가 된다 (notes 증거)
-    struct Generation: Equatable {
+    struct Generation: Equatable, Sendable {
         let pid: pid_t
         /// 커널 시작 시각 (초 · 마이크로초 그대로)
         let startSeconds: UInt64
@@ -258,26 +338,29 @@ public enum ClaudeProcessInspector {
 
     /// `proc_pidinfo(PROC_PIDT_BSDINFOWITHUNIQID = 18, arg 1 = 좀비도)`: `struct proc_bsdinfo`(136바이트) 뒤에 `struct proc_uniqidentifierinfo`
     /// (uuid 16 · uniqueid 8 · puniqueid 8 · idversion 4 · 예비 20 = 56바이트). 커널이 한 프로세스를 잡고 둘을 함께 채운다.
-    /// SDK 공개 머리에 없는 flavor라 돌려준 크기가 맞을 때만 믿는다 (정정 제안 9-4)
-    static func generation(pid: pid_t) -> Generation? {
-        guard pid > 0 else { return nil }
+    /// SDK 공개 머리에 없는 flavor라 돌려준 크기가 맞을 때만 믿는다 (정정 제안 9-4). 없는 pid(ESRCH)는 `gone`, 그 밖은 `failed` (12장 7)
+    static func generation(pid: pid_t) -> ProcessLookup<Generation> {
+        guard pid > 0 else { return .failed }
         let bsd = MemoryLayout<proc_bsdinfo>.size
         let total = bsd + 56
         var buffer = [UInt8](repeating: 0, count: total)
-        guard proc_pidinfo(pid, 18, 1, &buffer, Int32(total)) == Int32(total) else { return nil }
+        errno = 0
+        let size = proc_pidinfo(pid, 18, 1, &buffer, Int32(total))
+        guard size == Int32(total) else { return size <= 0 && errno == ESRCH ? .gone : .failed }
         let info = buffer.withUnsafeBytes { $0.loadUnaligned(as: proc_bsdinfo.self) }
         let own = buffer.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: bsd + 16, as: UInt64.self) }
         let parent = buffer.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: bsd + 24, as: UInt64.self) }
-        guard own > 1, info.pbi_pid == UInt32(bitPattern: pid) else { return nil }
-        return Generation(
+        guard own > 1, info.pbi_pid == UInt32(bitPattern: pid) else { return .failed }
+        return .present(Generation(
             pid: pid, startSeconds: info.pbi_start_tvsec, startMicros: info.pbi_start_tvusec, parentPID: pid_t(bitPattern: info.pbi_ppid), group: pid_t(bitPattern: info.pbi_pgid),
             uid: info.pbi_uid, zombie: info.pbi_status == UInt32(SZOMB), own: own, parent: parent
-        )
+        ))
     }
 
-    /// 커널 unique id (그 프로세스 · 부모)
+    /// 커널 unique id (그 프로세스 · 부모). 읽은 세대가 있을 때만
     static func uniqueIDs(pid: pid_t) -> (own: UInt64, parent: UInt64)? {
-        generation(pid: pid).map { ($0.own, $0.parent) }
+        if case .present(let generation) = generation(pid: pid) { return (generation.own, generation.parent) }
+        return nil
     }
 
     /// 이번 부팅의 id (`kern.bootsessionuuid`, 10장 3). 벽시계와 무관하다
@@ -299,7 +382,7 @@ public enum ClaudeProcessInspector {
     /// 확인된 프로세스에만 신호를 보낸다: 보내기 직전에 그 pid의 unique id · 사용자가 그대로이고 좀비가 아닐 때만 (그 사이 pid가 재사용됐을 수 있다, 9장 5)
     static func signalVerified(_ members: [Member], _ signal: Int32) {
         for member in members {
-            guard let now = generation(pid: member.pid), now.own == member.uniqueID, !now.zombie, now.uid == getuid() else { continue }
+            guard case .present(let now) = generation(pid: member.pid), now.own == member.uniqueID, !now.zombie, now.uid == getuid() else { continue }
             kill(member.pid, signal)
         }
     }
@@ -322,7 +405,7 @@ public enum ClaudeProcessInspector {
     static func ownedGroup(_ identity: AgentProcessIdentity, _ parent: Check) -> pid_t? {
         guard parent == .same, let raw = identity.pid, raw > 1, raw <= Int(Int32.max) else { return nil }
         let pid = pid_t(raw)
-        if case .running(_, _, _, let leader) = kernel(pid: pid), leader == pid { return pid }
+        if case .present(let listed) = kernel(pid: pid), listed.group == pid { return pid }
         return nil
     }
 
@@ -333,14 +416,17 @@ public enum ClaudeProcessInspector {
         var complete: Bool
     }
 
-    /// 그 spawn의 살아 있는 자손 (부모 자신은 빼고, 9장 4 정정 · 10장 1–3 · 11장 4 · 5). 뿌리보다 뒤에 만들어진(unique id가 큰) 이 사용자 프로세스 중
-    /// ① 자기 id나 부모 id가 혈통에 있거나(세션을 떠난 · 부모가 끝난 자손도) ② 부모가 지금 살아 있는 자손이거나 ③ 믿을 수 있는 그 그룹에 들었거나(살아 있는 리더)
-    /// ④ 환경에 `TASKFORCE_SPAWN_ID=<spawn id>`가 보이는 것(그 환경을 읽을 수 있는 OS에서만). 소속은 한 번에 읽은 한 세대의 값으로만 정하고, 목록의 시작 시각과
-    /// 다르거나 다시 읽지 못하면 그 후보를 버리고 그 훑기를 불완전으로 적는다. 뿌리는 뿌리 id로만 뺀다(뿌리 id를 모를 때만 pid로). 찾은 것은 혈통에 더한다
-    /// (좀비도: 그 자식을 찾는 데 쓴다). 좀비는 끝난 것으로 본다. 끝이 증명된 혈통이면 훑지 않는다. 목록을 읽지 못하거나 혈통 증거가 없으면 nil
+    /// 그 spawn의 살아 있는 자손 (부모 자신은 빼고, 9장 4 정정 · 10장 1–3 · 11장 4 · 5 · 12장 1–4 · 7). 뿌리보다 뒤에 만들어진(unique id가 큰) 이 사용자 프로세스 중
+    /// ⓪ 뿌리가 살아 있는 동안 책임 프로세스가 뿌리인 것(12장 1: setsid · 이중 fork · 못 본 중간 프로세스의 자손도) ① 자기 id나 부모 id가 혈통에 있거나
+    /// ② 부모가 지금 살아 있는 자손이거나 ③ 믿을 수 있는 그 그룹에 들었거나(살아 있는 리더) ④ 환경에 `TASKFORCE_SPAWN_ID=<spawn id>`가 보이는 것.
+    /// 소속은 한 번에 읽은 한 세대의 값으로만 정한다. 조회는 모두 3상태(`ProcessLookup`)이고 `failed`는 그 훑기를 불완전으로만 만든다 (12장 7).
+    /// 불완전 = 조회 실패, 전에 자손으로 본 세대를 다시 읽지 못함, 목록의 그 세대가 아직 있는데 읽지 못함, 그리고 귀속되지 않은 살아 있는 후보가
+    /// 뿌리 pid나 혈통에 적힌 pid의 그룹에 있음(12장 4: 못 본 중간 프로세스의 자손일 수 있다). 뿌리는 뿌리 id로만 뺀다(뿌리 id를 모를 때만 pid로).
+    /// 찾은 것은 pid와 함께 혈통에 더한다 (좀비도: 그 자식을 찾는 데 쓴다). 좀비는 끝난 것으로 본다. 끝이 증명된 혈통이면 훑지 않는다. 목록을 읽지 못하거나 혈통 증거가 없으면 nil
     static func scan(_ identity: AgentProcessIdentity, lineage: ClaudeLineage, processes: [kinfo_proc]? = nil) -> Scan? {
         if lineage.provenEnded { return Scan(members: [], complete: true) }
         guard lineage.hasEvidence, let processes = processes ?? userProcessInfos() else { return nil }
+        let lookups = Self.lookups
         let root = identity.pid.map { pid_t(truncatingIfNeeded: $0) }
         let parentCheck = check(identity)
         if parentCheck == .same { lineage.seed(identity) }
@@ -348,29 +434,68 @@ public enum ClaudeProcessInspector {
         let rootID = lineage.rootID
         let needle = markerKey + "=" + identity.processMarker
         let me = getpid()
+        var complete = true
+        // 뿌리가 지금 그 뿌리(같은 unique id)로 살아 있고 자기 책임 프로세스일 때만 책임 pid로 가른다 (뿌리가 끝나면 그 자손은 스스로의 책임 프로세스가 된다)
+        var responsibleRoot: pid_t?
+        if let root, let rootID, lineage.attributable {
+            switch lookups.generation(root) {
+            case .present(let now) where now.own == rootID && !now.zombie:
+                switch lookups.responsible(root) {
+                case .present(let value) where value == root: responsibleRoot = root
+                // disclaim이 듣지 않았다 (12장 2): 이 spawn의 구성원은 증명할 수 없다
+                case .present: lineage.markUnattributable()
+                case .gone: break
+                case .failed: complete = false
+                }
+            case .present, .gone: break
+            case .failed: complete = false
+            }
+        }
         struct Candidate {
             let generation: Generation
             let marked: Bool
+            let responsible: Bool
         }
-        var complete = true
         var pending: [Candidate] = processes.compactMap { info in
             let pid = info.kp_proc.p_pid
             guard pid > 1, pid != me, info.kp_eproc.e_ucred.cr_uid == getuid() else { return nil }
             // 뿌리 id를 모를 때만 숫자 pid로 뿌리를 뺀다 (11장 5: 뿌리가 끝난 뒤 그 pid를 다시 받은 자손을 빼지 않는다)
             if rootID == nil, pid == root { return nil }
             // 같은 세대만 (10장 2): 목록이 본 시작 시각과 한 번에 읽은 세대의 시작 시각이 같아야 그 소속 · id가 한 프로세스의 것이다.
-            // 다시 읽지 못했거나 다르면 그 사이 끝났거나 바뀌었다: 전에 자손으로 본 세대였거나 아직 살아 있는데 읽지 못했으면 이 훑기는 불완전하다 (11장 4)
+            // 그 사이 끝났거나 바뀌었으면: 전에 자손으로 본 세대였거나, 목록의 그 세대가 아직 있거나 확인하지 못하면 이 훑기는 불완전하다 (11장 4 · 12장 7)
             let listed = info.kp_proc.p_un.__p_starttime
             let key = ClaudeLineage.MemberKey(pid: pid, seconds: Int64(listed.tv_sec), micros: Int64(listed.tv_usec))
-            guard let generation = generation(pid: pid), generation.uid == getuid(),
-                  Int64(generation.startSeconds) == key.seconds, Int64(generation.startMicros) == key.micros else {
-                if lineage.wasMember(key) || stillListed(key) { complete = false }
+            let generation: Generation
+            switch lookups.generation(pid) {
+            case .present(let read) where read.uid == getuid() && Int64(read.startSeconds) == key.seconds && Int64(read.startMicros) == key.micros:
+                generation = read
+            case .failed:
+                complete = false
+                return nil
+            case .present, .gone:
+                if lineage.wasMember(key) {
+                    complete = false
+                    return nil
+                }
+                switch lookups.listed(key) {
+                case .gone: break
+                case .present, .failed: complete = false
+                }
                 return nil
             }
             // 자손은 뿌리보다 뒤에 만들어진다 (10장 3: 벽시계가 아니라 unique id 순서). 뿌리 자신은 뿌리 id로 뺀다
             if let rootID, generation.own <= rootID { return nil }
+            var responsible = false
+            if let responsibleRoot, !generation.zombie {
+                switch lookups.responsible(pid) {
+                case .present(let value): responsible = value == responsibleRoot
+                // 방금 끝났다: 그 자식은 뿌리가 살아 있는 다음 훑기의 책임 pid · 혈통이 찾는다
+                case .gone: break
+                case .failed: complete = false
+                }
+            }
             let marked = !generation.zombie && lineage.marked(generation.own) { procArgs(pid: pid)?.environment.contains(needle) == true }
-            return Candidate(generation: generation, marked: marked)
+            return Candidate(generation: generation, marked: marked, responsible: responsible)
         }.sorted { $0.generation.own < $1.generation.own }
         var parents: Set<pid_t> = parentCheck == .same ? root.map { [$0] } ?? [] : []
         var result: [Member] = []
@@ -381,8 +506,10 @@ public enum ClaudeProcessInspector {
                 let generation = candidate.generation
                 // 전에 본 그 프로세스이거나(부모 id는 마지막 exec 때의 부모라, 부모가 끝난 뒤 exec하면 launchd 것이 된다) 본 프로세스의 자식
                 let byLineage = lineage.contains(generation.own) || lineage.contains(generation.parent)
-                guard byLineage || parents.contains(generation.parentPID) || (group != nil && generation.group == group) || candidate.marked else { return false }
-                lineage.insert(generation.own)
+                guard candidate.responsible || byLineage || parents.contains(generation.parentPID) || (group != nil && generation.group == group) || candidate.marked else {
+                    return false
+                }
+                lineage.insert(generation.own, pid: generation.pid)
                 lineage.remember(ClaudeLineage.MemberKey(pid: generation.pid, seconds: Int64(generation.startSeconds), micros: Int64(generation.startMicros)))
                 if !generation.zombie {
                     parents.insert(generation.pid)
@@ -392,18 +519,23 @@ public enum ClaudeProcessInspector {
                 return true
             }
         }
+        // 보조 규칙 (12장 4): 귀속되지 않은 살아 있는 후보(뿌리보다 뒤)가 뿌리 pid나 혈통에 적힌 pid의 그룹에 있으면 불완전 → 끝을 증명하지 않는다
+        if rootID != nil {
+            var groups = lineage.pids
+            if let root { groups.insert(root) }
+            if pending.contains(where: { !$0.generation.zombie && groups.contains($0.generation.group) }) { complete = false }
+        }
         lineage.save()
         return Scan(members: result, complete: complete)
     }
 
-    /// 목록이 본 그 세대가 아직 그대로 있다 (세대를 읽지 못한 것이 끝나서가 아니다)
-    static func stillListed(_ key: ClaudeLineage.MemberKey) -> Bool {
-        var info = kinfo_proc()
-        var size = MemoryLayout<kinfo_proc>.stride
-        var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, key.pid]
-        guard sysctl(&mib, UInt32(mib.count), &info, &size, nil, 0) == 0, size > 0, info.kp_proc.p_pid == key.pid, info.kp_proc.p_stat != SZOMB else { return false }
-        let start = info.kp_proc.p_un.__p_starttime
-        return Int64(start.tv_sec) == key.seconds && Int64(start.tv_usec) == key.micros
+    /// 목록이 본 그 세대가 아직 그대로 있나 (`present`: 같은 시작 시각 · 좀비 아님, `gone`: 없음 · 좀비 · 다른 세대, `failed`: 읽지 못함)
+    static func listed(_ key: ClaudeLineage.MemberKey) -> ProcessLookup<Void> {
+        switch kernel(pid: key.pid) {
+        case .failed: return .failed
+        case .gone: return .gone
+        case .present(let listed): return listed.startSeconds == key.seconds && listed.startMicros == key.micros && !listed.zombie ? .present(()) : .gone
+        }
     }
 
     /// 지금 찾은 자손 (불완전한 훑기여도 찾은 것은 신호 대상이다). 목록을 읽지 못하거나 혈통 증거가 없으면 nil
@@ -411,7 +543,8 @@ public enum ClaudeProcessInspector {
         scan(identity, lineage: lineage, processes: processes)?.members
     }
 
-    /// 자손이 하나도 없다는 증명 (11장 4): 연속 두 번의 완전한 훑기에서 0이면 true, 어느 훑기에서든 자손을 찾으면 false, 증명하지 못하면 nil (최대 `attempts`번)
+    /// 자손이 하나도 없다는 증명 (11장 4): 연속 두 번의 완전한 훑기에서 0이면 true, 어느 훑기에서든 자손을 찾으면 false, 증명하지 못하면 nil (최대 `attempts`번).
+    /// 구성원을 증명할 수 없는 혈통(뿌리 id 없음 · 책임 프로세스 물러남, 12장 2 · 6)은 자손을 찾지 못해도 nil이다
     static func descendantsProvenGone(
         _ identity: AgentProcessIdentity, _ lineage: ClaudeLineage, attempts: Int = 6, listing: () -> [kinfo_proc]? = { userProcessInfos() }
     ) -> Bool? {
@@ -419,6 +552,7 @@ public enum ClaudeProcessInspector {
         for _ in 0..<attempts {
             guard let result = scan(identity, lineage: lineage, processes: listing()) else { return nil }
             if !result.members.isEmpty { return false }
+            guard lineage.provable else { return nil }
             cleanInARow = result.complete ? cleanInARow + 1 : 0
             if cleanInARow >= 2 { return true }
         }
@@ -491,11 +625,12 @@ public enum ClaudeProcessInspector {
         return .unknown
     }
 
-    /// 부모(정체가 그대로일 때) · 확인한 자손에 신호. 자손을 먼저 훑는다 (부모가 끝나기 전에 그 자식을 혈통에 넣는다)
+    /// 부모(정체가 그대로일 때) · 확인한 자손에 신호. 자손을 먼저 훑는다 (부모가 끝나기 전에 그 자식을 혈통에 넣는다).
+    /// 구성원을 증명할 수 없는 혈통이면 자손에는 보내지 않는다 (12장 2: 부모는 정체 확인으로 따로 본다)
     static func signalAll(_ identity: AgentProcessIdentity, _ lineage: ClaudeLineage, parent pid: pid_t, _ signal: Int32) {
         let members = descendants(identity, lineage: lineage)
         if check(identity) == .same { kill(pid, signal) }
-        if let members { signalVerified(members, signal) }
+        if let members, lineage.provable { signalVerified(members, signal) }
     }
 
     static func waitAllGone(_ identity: AgentProcessIdentity, _ lineage: ClaudeLineage, timeout: TimeInterval) -> Bool {
@@ -508,8 +643,9 @@ public enum ClaudeProcessInspector {
     }
 
     /// 감독하던 자식을 거둔 뒤 남은 자손(혈통 · 그룹 · marker)을 끝낸다 (막힘 호출, 8장 13 · 9장 4): SIGINT → 유예 → SIGKILL.
-    /// 남은 것이 없다는 증명(연속 두 번의 완전한 빈 훑기)이 있을 때만 true (11장 4)
+    /// 남은 것이 없다는 증명(연속 두 번의 완전한 빈 훑기)이 있을 때만 true (11장 4). 구성원을 증명할 수 없는 혈통이면 신호 없이 false (12장 2)
     static func endDescendants(_ identity: AgentProcessIdentity, lineage: ClaudeLineage, timing: ClaudeCodeTiming) -> Bool {
+        guard lineage.provable else { return false }
         if descendantsProvenGone(identity, lineage) == true { return true }
         guard let members = descendants(identity, lineage: lineage) else { return false }
         signalVerified(members, SIGINT)

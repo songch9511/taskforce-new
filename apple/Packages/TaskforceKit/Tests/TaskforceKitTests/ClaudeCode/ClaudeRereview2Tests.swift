@@ -64,7 +64,7 @@ struct ClaudeRereview2Tests {
         #expect(ClaudeProcessInspector.liveness(root.identity, lineage: ClaudeLineage(file: file)) == .alive)
         // 같은 파일이 다른 부팅에 적힌 것이라면: 그 spawn은 이미 끝났다 (id는 부팅마다 새로 센다)
         let lines = try String(contentsOf: file, encoding: .utf8).split(separator: "\n").map(String.init)
-        try ([lines[0], "boot " + UUID().uuidString] + lines.dropFirst(2)).joined(separator: "\n").write(to: file, atomically: true, encoding: .utf8)
+        try (([lines[0], "boot " + UUID().uuidString] + lines.dropFirst(2)).joined(separator: "\n") + "\n").write(to: file, atomically: true, encoding: .utf8)
         let other = ClaudeLineage(file: file)
         #expect(other.fromOtherBoot)
         #expect(ClaudeProcessInspector.liveness(root.identity, lineage: other) == .ended(AgentExit(code: nil)))
@@ -115,30 +115,34 @@ struct ClaudeRereview2Tests {
 
     // MARK: 4 비용 · 정리
 
-    /// 전체 다시 쓰기(정리)는 0.5초씩 묶는다 (11장 3 뒤: 새 id는 바로 덧붙고, 덧붙이지 못한 것만 정리가 다시 쓴다)
+    /// 전체 다시 쓰기(정리)는 0.5초씩 묶는다 (11장 3 뒤: 새 id는 바로 덧붙고, 덧붙이지 못한 것만 정리가 다시 쓴다). 덧붙이지 못한 사이 파일은 없다 (12장 5)
     @Test func c4LineageSavesAreBatchedExceptTheForcedFirstOne() throws {
         let file = box.root.appending(path: "lineage/batch.lineage")
         let lineage = ClaudeLineage(file: file, fresh: true)
+        lineage.seed(getpid())
         lineage.insert(11)
         lineage.save(force: true)
-        #expect(try String(contentsOf: file, encoding: .utf8).hasSuffix("\n11\n"))
-        // 덧붙이기가 실패하게 (읽기 전용): 정리할 것이 생긴다
+        #expect(try String(contentsOf: file, encoding: .utf8).contains("\n11 0\n"))
+        // 덧붙이기가 실패하게 (읽기 전용): 정리할 것이 생긴다. 그 사이 파일은 지워져 증거 없음이다
         chmod(file.path, 0o400)
         lineage.insert(12)
         lineage.save()
-        #expect(try !String(contentsOf: file, encoding: .utf8).contains("\n12\n"), "0.5초 안에는 다시 쓰지 않는다")
+        #expect(!FileManager.default.fileExists(atPath: file.path), "0.5초 안에는 다시 쓰지 않는다 (그동안 파일 없음)")
+        #expect(!ClaudeLineage(file: file).hasEvidence)
         Thread.sleep(forTimeInterval: ClaudeLineage.saveInterval + 0.1)
         lineage.save()
-        #expect(try String(contentsOf: file, encoding: .utf8).contains("\n12\n"))
+        #expect(try String(contentsOf: file, encoding: .utf8).contains("\n12 0\n"))
+        #expect(ClaudeLineage(file: file).contains(12))
     }
 
     @Test func c4AppStartPurgesLineageFilesOfOtherBootsOnly() throws {
         let folder = box.sessionsRoot.appending(path: "lineage", directoryHint: .isDirectory)
         let keep = ClaudeLineage(file: folder.appending(path: "\(UUID().uuidString).lineage"), fresh: true)
+        keep.seed(getpid())
         keep.insert(5)
         keep.save(force: true)
         let other = folder.appending(path: "\(UUID().uuidString).lineage")
-        try "taskforce-lineage 2\nboot \(UUID().uuidString)\nroot 7\n7\n".write(to: other, atomically: true, encoding: .utf8)
+        try "taskforce-lineage 3\nboot \(UUID().uuidString)\nroot 7 70\nresponsible yes\n7 70\n".write(to: other, atomically: true, encoding: .utf8)
         let broken = folder.appending(path: "\(UUID().uuidString).lineage")
         try "nonsense\n".write(to: broken, atomically: true, encoding: .utf8)
         let unrelated = folder.appending(path: "notes.txt")

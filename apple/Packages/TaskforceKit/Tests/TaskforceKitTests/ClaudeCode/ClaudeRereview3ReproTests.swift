@@ -47,7 +47,9 @@ struct ClaudeRereview3ReproTests {
         _ = try await offPool { root.process.waitForExit() }
         lineage.forget()
         defer { Self.killSleep617() }
+        // 디스크를 죽은 순간으로 되돌린다 (그 앱은 끝 기록을 쓰지 못했다)
         try? FileManager.default.removeItem(at: file)
+        try? FileManager.default.removeItem(at: ClaudeLineage.endedFile(file))
         try FileManager.default.copyItem(at: snapshot, to: file)
         // 다시 뜬 앱: 그 파일로 본다. B는 끝났고 D는 launchd 밑에 남았다
         #expect(await Self.adapter(box).liveness(root.identity) == .alive, "D가 살아 있다")
@@ -147,16 +149,24 @@ struct ClaudeRereview3ReproTests {
         #expect(fake.log.lines.contains { $0.contains("claude_secret_context_lost") })
     }
 
-    // MARK: 10 격리 cwd가 비어 있지 않으면 띄우지 않는다
+    // MARK: 10 격리 cwd가 비어 있지 않으면 그대로 띄우지 않는다 (12장 13: 격리 폴더로 옮기고 빈 cwd로 띄운다)
 
-    @Test func d10ASessionCwdWithFilesIsNotLaunched() async throws {
+    @Test func d10APlantedProjectSettingsAreMovedOutOfTheSessionCwdBeforeALaunch() async throws {
         let fake = try FakeClaude()
         try fake.scenario(["runs": [["final_text": "ok"]]])
-        let cwd = fake.box.sessionsRoot.appending(path: "\(ClaudeTest.session)/cwd", directoryHint: .isDirectory)
+        let folder = fake.box.sessionsRoot.appending(path: ClaudeTest.session, directoryHint: .isDirectory)
+        let cwd = folder.appending(path: "cwd", directoryHint: .isDirectory)
         try FileManager.default.createDirectory(at: cwd.appending(path: ".claude"), withIntermediateDirectories: true)
         try "{}".write(to: cwd.appending(path: ".claude/settings.json"), atomically: true, encoding: .utf8)
-        await #expect(throws: AgentStartError.self) { _ = try await fake.turn(events: EventLog()) }
-        #expect(fake.runCount == 0)
+        let events = EventLog()
+        _ = try await fake.turn(events: events)
+        #expect(await events.wait { FakeClaude.ended($0) })
+        #expect(fake.runCount == 1)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: cwd.path).isEmpty, "Claude는 빈 cwd에서 돌았다")
+        let attributes = try FileManager.default.attributesOfItem(atPath: cwd.path)
+        #expect((attributes[.posixPermissions] as? NSNumber)?.intValue == 0o700)
+        let quarantine = try #require(try FileManager.default.contentsOfDirectory(atPath: folder.path).first { $0.hasPrefix("cwd.quarantine-") })
+        #expect(FileManager.default.fileExists(atPath: folder.appending(path: "\(quarantine)/.claude/settings.json").path))
     }
 
     // MARK: 2 띄운 직후 혈통 파일을 적지 못하면 띄우지 않는다

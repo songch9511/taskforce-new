@@ -38,13 +38,15 @@ struct ClaudeProcessIdentityTests {
         #expect(getpgid(child.process.pid) == child.process.pid)
     }
 
-    @Test func aDifferentStartTimeMeansThePIDWasReusedSoItEnded() throws {
+    /// 시작 시각이 다르면 그 pid는 다른 프로세스가 쓴다: 그 프로세스에는 신호를 보내지 않는다. 옛 정체의 뿌리 id를 모르면 자손 증명이 없다 → unknown (12장 6)
+    @Test func aDifferentStartTimeMeansThePIDWasReusedSoItIsNeverSignalled() throws {
         let child = try spawn()
         defer { _ = ClaudeProcessInspector.forceKill(child.process) }
         var other = child.identity
         other.startedAt = other.startedAt.addingTimeInterval(-0.01)
-        #expect(ClaudeProcessInspector.liveness(other) == .ended(AgentExit(code: nil)))
-        #expect(ClaudeProcessInspector.terminate(other, timing: timing) == .ended(AgentExit(code: nil)))
+        #expect(ClaudeProcessInspector.check(other) == .replaced)
+        #expect(ClaudeProcessInspector.liveness(other) == .unknown)
+        #expect(ClaudeProcessInspector.terminate(other, timing: timing) == .unknown)
         #expect(ClaudeProcessInspector.liveness(child.identity) == .alive, "다른 정체에는 신호를 보내지 않는다")
     }
 
@@ -68,10 +70,14 @@ struct ClaudeProcessIdentityTests {
         #expect(ClaudeProcessInspector.liveness(AgentProcessIdentity(pid: nil, startedAt: Date(), processMarker: UUID().uuidString)) == .unknown)
     }
 
+    /// 끝난 프로세스: 띄울 때 뿌리 id를 적어 둔 혈통이 있으면 끝, 뿌리 id를 모르면 자손을 증명할 수 없어 unknown (12장 6)
     @Test func aGoneProcessIsEnded() async throws {
-        let child = try spawn(script: "exit 0")
+        let child = try spawn(script: "/bin/sleep 0.1; exit 0")
+        let lineage = ClaudeLineage()
+        lineage.seed(child.process.pid)
         _ = try await offPool { child.process.waitForExit() }
-        #expect(ClaudeProcessInspector.liveness(child.identity) == .ended(AgentExit(code: nil)))
+        #expect(ClaudeProcessInspector.liveness(child.identity, lineage: lineage) == .ended(AgentExit(code: nil)))
+        #expect(ClaudeProcessInspector.liveness(child.identity) == .unknown, "뿌리 id 없음")
     }
 
     @Test func interruptSendsSIGINTOnlyAfterTheIdentityChecks() async throws {
@@ -242,29 +248,41 @@ struct ClaudeProcessIdentityTests {
         #expect(await restarted.liveness(child.identity) == .ended(AgentExit(code: nil)))
     }
 
-    /// 혈통 파일: 다시 뜬 앱이 읽는다. 머리 = 부팅 id(`kern.bootsessionuuid`) · 뿌리 id, 그 뒤 숫자 줄만 받는다 (다른 부팅은 `fromOtherBoot`, 이상한 줄은 버린다)
+    /// 혈통 파일 (형식 3, 12장 4 · 6 · 8): 다시 뜬 앱이 읽는다. 머리 = 부팅 id(`kern.bootsessionuuid`) · `root <id> <pid>` · `responsible yes|no`,
+    /// 그 뒤 `<id> <pid>` 숫자 줄만 받는다 (다른 부팅은 `fromOtherBoot`, 이상한 줄 · 뿌리 없음 · 옛 형식은 증거 없음). 끝 기록은 따로 `<id>.ended`
     @Test func b4TheLineageFileIsReadOnlyForThisBootAndOnlyAsNumbers() throws {
         let file = box.root.appending(path: "lineage/x.lineage")
         let lineage = ClaudeLineage(file: file, fresh: true)
-        lineage.insert(4242)
+        lineage.seed(getpid())
+        let root = try #require(lineage.rootID)
+        lineage.insert(4242, pid: 55)
         lineage.insert(77)
         lineage.save()
         let text = try String(contentsOf: file, encoding: .utf8)
         let boot = try #require(ClaudeProcessInspector.bootSessionID())
-        #expect(text == "taskforce-lineage 2\nboot \(boot)\nroot -\n77\n4242\n")
+        #expect(text == "taskforce-lineage 3\nboot \(boot)\nroot \(root) \(getpid())\nresponsible yes\n77 0\n4242 55\n\(root) \(getpid())\n")
         let attributes = try FileManager.default.attributesOfItem(atPath: file.path)
         #expect((attributes[.posixPermissions] as? NSNumber)?.intValue == 0o600)
-        #expect(ClaudeLineage(file: file).contains(4242))
-        try "taskforce-lineage 2\nboot \(UUID().uuidString)\nroot 77\n4242\n".write(to: file, atomically: true, encoding: .utf8)
+        #expect(ClaudeLineage(file: file).contains(4242) && ClaudeLineage(file: file).pids.contains(55))
+        try "taskforce-lineage 3\nboot \(UUID().uuidString)\nroot 77 9\nresponsible yes\n4242 0\n".write(to: file, atomically: true, encoding: .utf8)
         let other = ClaudeLineage(file: file)
         #expect(!other.contains(4242) && other.fromOtherBoot, "다른 부팅")
-        try "taskforce-lineage 2\nboot \(boot)\nroot 77\n4242\n-1\n".write(to: file, atomically: true, encoding: .utf8)
-        let broken = ClaudeLineage(file: file)
-        #expect(!broken.contains(4242) && !broken.fromOtherBoot && broken.rootID == nil && !broken.hasEvidence, "숫자가 아닌 줄: 증거 없음")
-        try "taskforce-lineage 2\nboot \(boot)\nroot 77\n4242\n".write(to: file, atomically: true, encoding: .utf8)
-        #expect(ClaudeLineage(file: file).rootID == 77)
+        for broken in [
+            "taskforce-lineage 3\nboot \(boot)\nroot 77 9\nresponsible yes\n4242 0\n-1 0\n",
+            "taskforce-lineage 3\nboot \(boot)\nroot - 9\nresponsible yes\n4242 0\n",
+            "taskforce-lineage 3\nboot \(boot)\nroot 77 9\n4242 0\n",
+            "taskforce-lineage 2\nboot \(boot)\nroot 77\n4242\n",
+        ] {
+            try broken.write(to: file, atomically: true, encoding: .utf8)
+            let loaded = ClaudeLineage(file: file)
+            #expect(!loaded.contains(4242) && !loaded.fromOtherBoot && loaded.rootID == nil && !loaded.hasEvidence, "숫자가 아닌 줄 · 뿌리 없음 · 머리 틀림 · 옛 형식: 증거 없음")
+        }
+        try "taskforce-lineage 3\nboot \(boot)\nroot 77 9\nresponsible no\n4242 0\n".write(to: file, atomically: true, encoding: .utf8)
+        let unattributable = ClaudeLineage(file: file)
+        #expect(unattributable.rootID == 77 && !unattributable.attributable && !unattributable.provable)
         lineage.forget()
-        #expect(try String(contentsOf: file, encoding: .utf8) == "taskforce-lineage 2\nboot \(boot)\nended\n", "끝 기록")
+        #expect(try String(contentsOf: ClaudeLineage.endedFile(file), encoding: .utf8) == "taskforce-lineage 3\nboot \(boot)\nended\n", "끝 기록")
+        #expect(!FileManager.default.fileExists(atPath: file.path), "끝을 증명하면 혈통 파일을 지운다")
         #expect(ClaudeLineage(file: file).provenEnded)
     }
 

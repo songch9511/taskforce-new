@@ -28,10 +28,11 @@ struct ClaudeRereview2ReproTests {
         // 원장에 남은 오래된 claude 정체: pid 숫자만 P와 같다
         let stale = AgentProcessIdentity(pid: Int(unrelated.pid), startedAt: Date().addingTimeInterval(-3600), processMarker: UUID().uuidString)
         #expect(ClaudeProcessInspector.descendants(stale, lineage: ClaudeLineage())?.isEmpty == true)
-        #expect(ClaudeProcessInspector.liveness(stale, lineage: ClaudeLineage()) == .ended(AgentExit(code: nil)))
+        // 그 정체의 뿌리 id를 모른다: 끝이라고도 하지 않는다 (12장 6)
+        #expect(ClaudeProcessInspector.liveness(stale, lineage: ClaudeLineage()) == .unknown)
         let timing = Self.timing
         let result = try await offPool { ClaudeProcessInspector.terminate(stale, timing: timing, lineage: ClaudeLineage()) }
-        #expect(result == .ended(AgentExit(code: nil)))
+        #expect(result == .unknown)
         #expect(kill(victim, 0) == 0, "무관한 Y는 살아 있다")
     }
 

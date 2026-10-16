@@ -15,8 +15,8 @@ struct ClaudeReviewProcessTests {
     static func gone(_ pid: Int) -> Bool {
         switch ClaudeProcessInspector.kernel(pid: pid_t(pid)) {
         case .gone: true
-        case .running(_, _, let zombie, _): zombie
-        case .unreadable: false
+        case .present(let listed): listed.zombie
+        case .failed: false
         }
     }
 
@@ -111,7 +111,7 @@ struct ClaudeReviewProcessTests {
         // 원장의 정체로 확인하고 끝까지 끝냈을 때만 "돌고 있지 않다"
         let proven = await restarted.interrupt(AgentTurnRef(taskID: ClaudeTest.task, sessionID: ClaudeTest.session, identity: identity), scope: .turnAndProcesses)
         #expect(proven == .notRunning)
-        #expect(ClaudeProcessInspector.liveness(identity) == .ended(AgentExit(code: nil)))
+        #expect(await restarted.liveness(identity) == .ended(AgentExit(code: nil)))
         #expect(await events.wait { FakeClaude.ended($0) })
     }
 

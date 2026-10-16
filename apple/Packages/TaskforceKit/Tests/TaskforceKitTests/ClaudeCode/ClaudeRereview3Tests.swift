@@ -32,12 +32,14 @@ struct ClaudeRereview3Tests {
         _ = try await offPool { root.process.waitForExit() }
         let adapter = ClaudeRereview3ReproTests.adapter(box)
         #expect(await adapter.liveness(root.identity) == .ended(AgentExit(code: nil)))
-        // 끝을 증명하면 id를 지운 끝 기록이 남는다: 다시 물어도 끝이다
+        // 끝을 증명하면 따로 끝 기록이 남고 혈통 파일은 지운다 (12장 8): 다시 물어도 끝이다
         let boot = try #require(ClaudeProcessInspector.bootSessionID())
-        #expect(try String(contentsOf: file, encoding: .utf8) == "taskforce-lineage 2\nboot \(boot)\nended\n")
+        let ended = ClaudeLineage.endedFile(file)
+        #expect(try String(contentsOf: ended, encoding: .utf8) == "taskforce-lineage 3\nboot \(boot)\nended\n")
+        #expect(!FileManager.default.fileExists(atPath: file.path))
         #expect(await adapter.liveness(root.identity) == .ended(AgentExit(code: nil)))
-        try FileManager.default.removeItem(at: file)
-        #expect(await adapter.liveness(root.identity) == .unknown, "기록이 사라지면 다시 증명할 수 없다")
+        try FileManager.default.removeItem(at: ended)
+        #expect(await ClaudeRereview3ReproTests.adapter(box).liveness(root.identity) == .unknown, "기록이 사라지면 다시 증명할 수 없다")
     }
 
     @Test func d1PurgeEndsOnlyConfirmedOtherBootFilesAndNothingWithoutABootID() throws {
@@ -45,16 +47,18 @@ struct ClaudeRereview3Tests {
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         let boot = try #require(ClaudeProcessInspector.bootSessionID())
         let mine = folder.appending(path: "\(UUID().uuidString).lineage")
-        try "taskforce-lineage 2\nboot \(boot)\nroot 7\n7\n".write(to: mine, atomically: true, encoding: .utf8)
+        try "taskforce-lineage 3\nboot \(boot)\nroot 7 70\nresponsible yes\n7 70\n".write(to: mine, atomically: true, encoding: .utf8)
         let other = folder.appending(path: "\(UUID().uuidString).lineage")
-        try "taskforce-lineage 2\nboot \(UUID().uuidString)\nroot 7\n7\n".write(to: other, atomically: true, encoding: .utf8)
+        try "taskforce-lineage 3\nboot \(UUID().uuidString)\nroot 7 70\nresponsible yes\n7 70\n".write(to: other, atomically: true, encoding: .utf8)
         let broken = folder.appending(path: "\(UUID().uuidString).lineage")
         try "nonsense\n".write(to: broken, atomically: true, encoding: .utf8)
         ClaudeLineage.purge(directory: folder, boot: nil)
         #expect([mine, other, broken].allSatisfy { FileManager.default.fileExists(atPath: $0.path) }, "부팅 id를 못 읽으면 아무것도 바꾸지 않는다")
+        #expect(try FileManager.default.contentsOfDirectory(atPath: folder.path).allSatisfy { $0.hasSuffix(".lineage") })
         ClaudeLineage.purge(directory: folder)
-        #expect(ClaudeLineage.load(mine) == .thisBoot(root: 7, ids: [7]))
-        #expect(try String(contentsOf: other, encoding: .utf8) == "taskforce-lineage 2\nboot \(boot)\nended\n", "다른 부팅 = 끝 기록 (결정 11-1)")
+        #expect(ClaudeLineage.load(mine) == .thisBoot(ClaudeLineage.Record(root: 7, rootPID: 70, attributable: true, ids: [7: 70])))
+        #expect(try String(contentsOf: ClaudeLineage.endedFile(other), encoding: .utf8) == "taskforce-lineage 3\nboot \(boot)\nended\n", "다른 부팅 = 끝 기록 (결정 11-1)")
+        #expect(!FileManager.default.fileExists(atPath: other.path) && ClaudeLineage.load(other) == .ended)
         #expect(try String(contentsOf: broken, encoding: .utf8) == "nonsense\n", "읽지 못하는 파일은 다른 부팅으로 확인되지 않았다: 그대로")
     }
 
@@ -67,7 +71,7 @@ struct ClaudeRereview3Tests {
         _ = try await offPool { root.process.waitForExit() }
         let file = box.sessionsRoot.appending(path: "lineage/\(marker).lineage")
         try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try "taskforce-lineage 2\nboot \(UUID().uuidString)\nroot 7\n7\n9\n".write(to: file, atomically: true, encoding: .utf8)
+        try "taskforce-lineage 3\nboot \(UUID().uuidString)\nroot 7 70\nresponsible yes\n7 70\n9 90\n".write(to: file, atomically: true, encoding: .utf8)
         let adapter = ClaudeRereview3ReproTests.adapter(box)
         adapter.purgeLineageOfOtherBoots()
         #expect(await adapter.liveness(root.identity) == .ended(AgentExit(code: nil)))
@@ -82,7 +86,7 @@ struct ClaudeRereview3Tests {
         _ = try await offPool { root.process.waitForExit() }
         let file = box.sessionsRoot.appending(path: "lineage/\(marker).lineage")
         try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
-        let text = "taskforce-lineage 2\nboot \(UUID().uuidString)\nroot 7\n7\n"
+        let text = "taskforce-lineage 3\nboot \(UUID().uuidString)\nroot 7 70\nresponsible yes\n7 70\n"
         try text.write(to: file, atomically: true, encoding: .utf8)
         ClaudeLineage.purge(directory: file.deletingLastPathComponent(), boot: nil)
         #expect(try String(contentsOf: file, encoding: .utf8) == text, "바꾼 것 0")
@@ -91,20 +95,22 @@ struct ClaudeRereview3Tests {
 
     // MARK: 3 바로 덧붙이기
 
-    @Test func d3NewIDsAreAppendedAtOnceAndACutLastLineIsIgnored() throws {
+    @Test func d3NewIDsAreAppendedAtOnceAndACutLastLineIsNotTrusted() throws {
         let file = box.root.appending(path: "lineage/append.lineage")
         let lineage = ClaudeLineage(file: file, fresh: true)
-        lineage.insert(11)
+        lineage.seed(getpid())
+        lineage.insert(11, pid: 21)
         lineage.save(force: true)
-        lineage.insert(12)
-        #expect(try String(contentsOf: file, encoding: .utf8).hasSuffix("\n11\n12\n"), "저장을 기다리지 않고 바로 한 줄")
-        // 쓰다 끊긴 마지막 줄(줄바꿈 없음)은 받지 않는다: 잘린 숫자가 다른 프로세스 id와 겹칠 수 있다
+        lineage.insert(12, pid: 22)
+        #expect(try String(contentsOf: file, encoding: .utf8).hasSuffix("\n12 22\n"), "저장을 기다리지 않고 바로 한 줄")
+        #expect(ClaudeLineage(file: file).contains(12))
+        // 쓰다 끊긴 마지막 줄(줄바꿈 없음): 그 id가 무엇이었는지 모른다 → 파일 전체가 증거 없음 (12장 5, 잘린 줄을 버리고 믿지 않는다)
         let handle = try FileHandle(forWritingTo: file)
         try handle.seekToEnd()
         try handle.write(contentsOf: Data("4559".utf8))
         try handle.close()
         let loaded = ClaudeLineage(file: file)
-        #expect(loaded.hasEvidence && loaded.contains(12) && !loaded.contains(4559))
+        #expect(!loaded.hasEvidence && !loaded.contains(12))
     }
 
     // MARK: 4 불완전한 훑기

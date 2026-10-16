@@ -17,8 +17,8 @@ struct ClaudeRereviewProcessTests {
     static func gone(_ pid: Int) -> Bool {
         switch ClaudeProcessInspector.kernel(pid: pid_t(pid)) {
         case .gone: true
-        case .running(_, _, let zombie, _): zombie
-        case .unreadable: false
+        case .present(let listed): listed.zombie
+        case .failed: false
         }
     }
 

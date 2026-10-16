@@ -10,18 +10,30 @@ import TaskforceAgentWire
 /// - 폴더 0700 · 소유자 확인, 소켓 0600. 시작 때 남은 소켓 파일은 소유자가 이 사용자일 때만 지우고 다시 bind한다.
 /// - 피어: `getpeereid`의 uid가 이 사용자가 아니면 읽지 않고 닫는다.
 /// - nonce 등록부: nonce → spawn 처리기. 비교는 상수 시간. 등록 없는 nonce · 세션 불일치 = deny (L0). 끝난 spawn의 nonce는 2초 뒤 지운다.
-/// - 판정은 하지 않는다: 처리기(결정기)가 한다. 처리기가 `responseBudget` 안에 답하지 않으면 deny를 쓴다
+/// - 판정은 하지 않는다: 처리기(결정기)가 한다. 처리기가 `responseBudget` 안에 확정하지 않으면 요청 상태를 `timedOut`으로 정하고 deny를 쓴다 (12장 9: 그 뒤의 처리기 결과는 기록되지 않는다)
 public final class HookSocketServer: @unchecked Sendable {
     public struct Registration: Sendable {
         public var agentSessionID: String
         /// 그 spawn의 Claude Code 세션 id (훅 입력 `session_id`와 같아야 한다)
         public var providerSessionID: String?
-        public var handler: @Sendable (HookRequest) async -> HookResponse
+        /// 요청 하나를 정한다. 정한 응답은 `HookCommit`에 확정해야 소켓이 쓴다 (12장 9)
+        public var handler: @Sendable (HookRequest, HookCommit) async -> Void
         /// 답을 쓰기 **직전**에 그 tool_use id로 부른다 (자체 점검 ④ "bridge가 그 id에 소켓 답을 줬음": 시간 초과 deny도 답이다)
         public var onAnswer: (@Sendable (String) -> Void)?
 
+        /// 돌려준 응답을 그대로 확정하는 처리기 (시간 초과가 먼저면 쓰이지 않는다)
         public init(
             agentSessionID: String, providerSessionID: String?, handler: @escaping @Sendable (HookRequest) async -> HookResponse, onAnswer: (@Sendable (String) -> Void)? = nil
+        ) {
+            self.init(agentSessionID: agentSessionID, providerSessionID: providerSessionID, committing: { request, commit in
+                _ = commit.commit(await handler(request))
+            }, onAnswer: onAnswer)
+        }
+
+        /// 스스로 확정하는 처리기: 확정에 실패하면(소켓이 시간 초과로 이미 deny를 썼다) 그 결과를 기록하지 않는다
+        public init(
+            agentSessionID: String, providerSessionID: String?, committing handler: @escaping @Sendable (HookRequest, HookCommit) async -> Void,
+            onAnswer: (@Sendable (String) -> Void)? = nil
         ) {
             self.agentSessionID = agentSessionID
             self.providerSessionID = providerSessionID
@@ -219,20 +231,18 @@ public final class HookSocketServer: @unchecked Sendable {
         return registration
     }
 
+    /// 처리기가 확정한 응답, 아니면 시간 초과 deny (12장 9): 기한이 지나면 요청 상태를 `timedOut`으로 정한다. 처리기가 그보다 먼저 확정했으면 그 응답을 쓴다
     private func respond(to request: HookRequest, registration: Registration, deadline: Date) -> HookResponse {
-        let result = OnceBox<HookResponse>()
+        let commit = HookCommit()
         let semaphore = DispatchSemaphore(value: 0)
         Task {
-            let response = await registration.handler(request)
-            result.set(response)
+            await registration.handler(request, commit)
             semaphore.signal()
         }
-        let wait = max(0, deadline.timeIntervalSinceNow)
-        guard semaphore.wait(timeout: .now() + wait) == .success, let response = result.value else {
-            log.log("tool_gate", ["source": .code("local"), "decision": .code("deny"), "reason": .code("bridge_timeout")])
-            return HookResponse(decision: .deny, reason: HookReason.unavailable)
-        }
-        return response
+        _ = semaphore.wait(timeout: .now() + max(0, deadline.timeIntervalSinceNow))
+        if let response = commit.timeOut() { return response }
+        log.log("tool_gate", ["source": .code("local"), "decision": .code("deny"), "reason": .code("bridge_timeout")])
+        return HookResponse(decision: .deny, reason: HookReason.unavailable)
     }
 
     static func readLine(_ fd: Int32, deadline: Date) -> Data? {
@@ -271,14 +281,38 @@ public final class HookSocketServer: @unchecked Sendable {
     }
 }
 
-/// 다른 스레드에서 한 번 채우는 값
-final class OnceBox<Value: Sendable>: Sendable {
-    private let storage = Mutex<Value?>(nil)
-
-    func set(_ value: Value) {
-        storage.withLock { if $0 == nil { $0 = value } }
+/// 훅 요청 하나의 결과를 한 번만 정한다 (OA D3a 12장 9): `pending` → 처리기가 확정(`committed`) 또는 소켓이 시간 초과(`timedOut`). 먼저 온 쪽이 이긴다
+public final class HookCommit: Sendable {
+    enum State: Sendable {
+        case pending
+        case committed(HookResponse)
+        case timedOut
     }
 
-    var value: Value? { storage.withLock { $0 } }
+    private let state = Mutex(State.pending)
+
+    public init() {}
+
+    /// 처리기: 그 응답으로 확정한다. 소켓이 이미 시간 초과로 정했으면 false (그 응답은 Claude에 닿지 않는다)
+    public func commit(_ response: HookResponse) -> Bool {
+        state.withLock { current in
+            guard case .pending = current else { return false }
+            current = .committed(response)
+            return true
+        }
+    }
+
+    /// 소켓: 기한이 지났다. 처리기가 먼저 확정했으면 그 응답, 아니면 `timedOut`으로 정하고 nil
+    func timeOut() -> HookResponse? {
+        state.withLock { current in
+            switch current {
+            case .committed(let response): return response
+            case .pending:
+                current = .timedOut
+                return nil
+            case .timedOut: return nil
+            }
+        }
+    }
 }
 #endif
