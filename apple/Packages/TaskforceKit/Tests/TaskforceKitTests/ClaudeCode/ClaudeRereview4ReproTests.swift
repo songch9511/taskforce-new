@@ -33,7 +33,8 @@ struct ClaudeRereview4ReproTests {
             let tag = Self.tag()
             defer { Self.kill(matching: tag) }
             let root = try box.keep("/bin/sleep 0.2; /bin/sh -c '/bin/sleep \(tag) >/dev/null 2>&1 &'; exit 0")
-            for _ in 0..<150 where ClaudeProcessInspector.check(root.identity) == .same { try await Task.sleep(for: .milliseconds(20)) }
+            // R이 끝났다 = 중간 sh가 D를 남겼다 (포기 상한만). 그 뒤 잠깐은 끝이라고 잘못 정할 틈을 준다 (늦으면 약해질 뿐)
+            #expect(await ClaudeProcessIdentityTests.within { ClaudeProcessIdentityTests.ended(root.identity) }, "R이 끝났다")
             try await Task.sleep(for: .milliseconds(500))
             let d = try #require(Self.pids(matching: tag).first, "D가 살아 있다")
             #expect(ClaudeProcessInspector.liveness(root.identity, lineage: root.lineage) == .alive, "살아 있는 D를 두고 끝이라 했다")
@@ -48,7 +49,7 @@ struct ClaudeRereview4ReproTests {
         let tag = Self.tag()
         defer { Self.kill(matching: tag) }
         let root = try box.keep("/bin/sleep 0.3; /bin/sh -c '/bin/sleep \(tag) >/dev/null 2>&1 &'; /bin/sleep 0.3; exit 0")
-        for _ in 0..<150 where ClaudeProcessInspector.check(root.identity) == .same { try await Task.sleep(for: .milliseconds(20)) }
+        #expect(await ClaudeProcessIdentityTests.within { ClaudeProcessIdentityTests.ended(root.identity) }, "R이 끝났다")
         try await Task.sleep(for: .milliseconds(200))
         #expect(!Self.pids(matching: tag).isEmpty, "D가 살아 있다")
         #expect(await ClaudeRereview3ReproTests.adapter(box).liveness(root.identity) == .alive)

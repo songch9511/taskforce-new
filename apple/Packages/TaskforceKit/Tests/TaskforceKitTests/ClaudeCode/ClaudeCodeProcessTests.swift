@@ -22,9 +22,10 @@ final class FakeClaude: @unchecked Sendable {
 
     /// - `linked`: 후보 `~/.local/bin/claude`가 실제 파일(`~/versions/claude-fake`)을 가리키는 기호 링크다 (8장 8)
     /// - `keeper`: 지킴이 대신 쓸 실행 파일 (없는 경로 · 늦게 뜨는 감싸개, 14장 1 · 9)
+    /// - `timing`: 기본은 CI 시간(`.ci`: 끝을 기다리는 포기 상한만 넉넉히). 시간 초과 길을 보는 시험은 자기 시간을 넘긴다
     init(
         decider: ScriptedDecider = ScriptedDecider(), environment extra: [String: String] = [:], hooks: ClaudeCodeTestHooks = ClaudeCodeTestHooks(), attach: Bool = true,
-        timing: ClaudeCodeTiming = .testing, linked: Bool = false, keeper: String? = nil
+        timing: ClaudeCodeTiming = .ci, linked: Bool = false, keeper: String? = nil
     ) throws {
         self.decider = decider
         claude = box.home.appending(path: ".local/bin/claude")
@@ -274,12 +275,8 @@ struct ClaudeCodeProcessTests {
         try fake.scenario(["runs": [["steps": [["tool": "Bash", "id": "toolu_b", "input": ["command": "cat notes.md"], "sleep": 30]]]]])
         let events = EventLog()
         let identity = try await fake.turn(events: events)
-        var sleepPID: Int?
-        for _ in 0..<500 {
-            sleepPID = fake.report(0)?["sleep_pid"] as? Int
-            if sleepPID != nil { break }
-            try await Task.sleep(for: .milliseconds(20))
-        }
+        #expect(await ClaudeReviewProcessTests.waitUntil { fake.report(0)?["sleep_pid"] != nil })
+        let sleepPID = fake.report(0)?["sleep_pid"] as? Int
         #expect(sleepPID != nil)
         #expect((fake.report(0)?["bash_commands"] as? [String])?.first == "'/bin/cat' '\(fake.workspace)/notes.md'", "실행되는 것 = 판정한 것 (재구성 명령)")
         let result = await fake.process.interrupt(AgentTurnRef(taskID: ClaudeTest.task, sessionID: ClaudeTest.session, identity: identity), scope: .turnAndProcesses)
@@ -288,15 +285,16 @@ struct ClaudeCodeProcessTests {
         #expect(events.contains(.cancelled))
         #expect(events.ended == AgentExit(code: 0))
         let group = pid_t(try #require(identity.pid))
-        try await Task.sleep(for: .milliseconds(200))
-        #expect(killpg(group, 0) != 0, "프로세스 그룹에 남은 것 0")
-        #expect(kill(pid_t(try #require(sleepPID)), 0) != 0)
+        let sleeper = pid_t(try #require(sleepPID))
+        // launchd가 좀비를 거둘 때까지 (잠깐 기다리기 대신 그 사건으로, 포기 상한만)
+        #expect(await ClaudeReviewProcessTests.waitUntil { killpg(group, 0) != 0 }, "프로세스 그룹에 남은 것 0")
+        #expect(await ClaudeReviewProcessTests.waitUntil { kill(sleeper, 0) != 0 })
     }
 
     // MARK: E7 닫기 모드
 
     @Test func e7CloseModeDeniesEverythingInterruptsAtTheClosingResultAndEmitsNothing() async throws {
-        let fake = try FakeClaude()
+        let fake = try FakeClaude(timing: .ci)
         try fake.scenario(["runs": [
             ["steps": [["tool": "mcp__tf__ask_user", "id": "toolu_q", "input": FakeClaude.askColor]]],
             ["steps": [["tool": "Write", "id": "toolu_w", "input": ["file_path": fake.workspace + "/late.txt", "content": "x"]]], "final_text": "Will not ask again."],
@@ -306,7 +304,9 @@ struct ClaudeCodeProcessTests {
         #expect(await first.wait { FakeClaude.ended($0) })
         let started = Date()
         try await fake.process.closeRequest(AgentRequestRef(taskID: ClaudeTest.task, sessionID: ClaudeTest.session, requestID: "toolu_q", externalSessionID: FakeClaude.providerSession(identity), workspaceRef: fake.workspace))
-        #expect(Date().timeIntervalSince(started) < 5, "끝날 때까지 기다린 뒤 돌아온다")
+        // 닫기 기한(`closeTimeout`) 안에 끝났다 = 기한 뒤의 고아 끝내기 길을 타지 않았다. 상한은 그 기한 자체다 (CI 시간 30초, 걸린 시간의 상한이 아니다)
+        #expect(Date().timeIntervalSince(started) < fake.timing.closeTimeout, "닫는 결과에서 스스로 끝났다")
+        #expect(await fake.process.sessionRun(ClaudeTest.session)?.liveness == .ended(AgentExit(code: nil)), "끝날 때까지 기다린 뒤 돌아온다")
         let report = try #require(fake.report(1))
         #expect(report["stdin_bytes"] as? Int == 0)
         let decisions = report["decisions"] as? [[String: Any]] ?? []
@@ -389,10 +389,10 @@ struct ClaudeCodeProcessTests {
         try fake.scenario(["runs": [["steps": [["tool": "Bash", "id": "toolu_b", "input": ["command": "cat notes.md"], "sleep": 30]]]]])
         let events = EventLog()
         let identity = try await fake.turn(events: events)
-        for _ in 0..<500 where fake.report(0)?["sleep_pid"] == nil { try await Task.sleep(for: .milliseconds(20)) }
+        #expect(await ClaudeReviewProcessTests.waitUntil { fake.report(0)?["sleep_pid"] != nil }, "Bash가 돈다")
         // 앱이 다시 떴다: 새 adapter가 원장의 정체만 들고 확인한다
         let restarted = ClaudeCodeProcess(sessionsRoot: fake.box.sessionsRoot, hookServer: nil, helpers: ClaudeCodeHelpers(hook: "/x", mcp: "/y", keeper: "/z"),
-                                          locator: ClaudeCodeLocator(candidates: [], confinedTo: fake.box.root.path), timing: .testing)
+                                          locator: ClaudeCodeLocator(candidates: [], confinedTo: fake.box.root.path), timing: .ci)
         #expect(await restarted.liveness(identity) == .alive)
         let ended = await restarted.terminateOrphan(identity)
         guard case .ended = ended else {
@@ -445,10 +445,13 @@ struct ClaudeCodeProcessTests {
         let report = try #require(fake.report(0))
         #expect((report["decisions"] as? [[String: Any]])?.first?["decision"] as? String == "deny")
         let hookMS = (report["hook_ms"] as? [Int])?.first ?? 0
-        #expect(hookMS < 1700, "\(hookMS)")
+        // bridge는 자기 예산(1.2초)에서 끊는다: 훅이 자기 예산(4초)으로 끊기 전이다 (훅 셸 · helper를 띄우는 시간은 기계마다 달라 상한은 훅 예산 − 0.5초)
+        #expect(hookMS < Int((HookWire.budget - 0.5) * 1000), "\(hookMS)")
         #expect(events.questions.isEmpty)
         #expect(!FileManager.default.fileExists(atPath: fake.workspace + "/a.txt"))
-        try await Task.sleep(for: .seconds(1))
+        // 늦은 결정이 서버까지 간 뒤에(그 사건 뒤에) 보류가 없는지 본다
+        #expect(await ClaudeReviewProcessTests.waitUntil { fake.decider.calls.count == 1 }, "늦은 결정이 돌았다")
+        try await Task.sleep(for: .milliseconds(500))
         #expect(fake.state.openDeferred == nil, "늦은 결정은 보류를 만들지 않는다")
     }
 

@@ -24,8 +24,8 @@ struct ClaudeCodeRuntimeTests {
         let h = try await harness(fake)
         let created = h.message("Hi")
         await h.runtime.tick()
-        #expect(await h.eventually { fake.runCount == 1 })
-        #expect(await h.eventually {
+        #expect(await h.eventually(timeout: 60) { fake.runCount == 1 })
+        #expect(await h.eventually(timeout: 60) {
             let alive = await h.task(created.taskID)?.alive
             let rank = await h.command(created.commandID)?.state.rank
             return alive == false && (rank ?? 0) >= (BridgeCommandState.ended.rank ?? 7)
@@ -54,7 +54,7 @@ struct ClaudeCodeRuntimeTests {
         let h = try await harness(fake)
         let created = h.message("Hi")
         await h.runtime.tick()
-        await h.settle { h.server.taskState(created.taskID) == "idle" }
+        await h.settle(timeout: 60) { h.server.taskState(created.taskID) == "idle" }
         let types = h.server.requests("events").flatMap { ($0.json["events"] as? [[String: Any]]) ?? [] }.compactMap { $0["type"] as? String }
         #expect(types.contains("accepted") && types.contains("session_bound") && types.contains("turn_completed"))
         #expect(!types.contains("input_reached") && !types.contains("inputReached"))
@@ -77,31 +77,36 @@ struct ClaudeCodeRuntimeTests {
         let h = try await harness(fake)
         let created = h.message("SENTINEL-USER-MESSAGE-d3a")
         await h.runtime.tick()
-        await h.settle { (try? await h.ledger.task(created.taskID))?.openRequestID == "toolu_secret" }
+        await h.settle(timeout: 60) { (try? await h.ledger.task(created.taskID))?.openRequestID == "toolu_secret" }
         #expect(try await h.ledger.task(created.taskID)?.openRequestSecret == true)
         await h.secrets.put(requestID: "toolu_secret", value: AgentAnswerValue(text: "CANARY-SECRET-7f3a"))
         h.server.enqueueAnswer(bridgeID: h.bridgeID, taskID: created.taskID, requestID: "toolu_secret", locally: true, structured: true)
         h.clock.jump(by: 6)
         await h.runtime.tick()
-        await h.settle { h.server.requests.contains { $0.bodyJSON.contains("Run: printf") } }
+        await h.settle(timeout: 60) { h.server.requests.contains { $0.bodyJSON.contains("Run: printf") } }
         // 모델에는 닿았다 (가짜의 MCP 결과 = Claude Code transcript 쪽, Q9)
         #expect((fake.report(1)?["mcp_results"] as? [String])?.first == #"The user answered: {"key":"CANARY-SECRET-7f3a"}"#)
         // 승인 → 두 번째 명령 · 메시지
-        await h.settle { (try? await h.ledger.task(created.taskID))?.openRequestID == "toolu_c1" }
+        await h.settle(timeout: 60) { (try? await h.ledger.task(created.taskID))?.openRequestID == "toolu_c1" }
         h.server.enqueueAnswer(bridgeID: h.bridgeID, taskID: created.taskID, requestID: "toolu_c1", answers: ["approval": "Allow"], questionKind: "approval")
         h.clock.jump(by: 6)
         await h.runtime.tick()
-        await h.settle { h.server.requests.contains { $0.bodyJSON.contains("Second ") } && h.server.requests.contains { $0.bodyJSON.contains("Run: echo") } }
+        await h.settle(timeout: 60) { h.server.requests.contains { $0.bodyJSON.contains("Second ") } && h.server.requests.contains { $0.bodyJSON.contains("Run: echo") } }
         // 거절로 닫고 다음 턴
-        await h.settle { (try? await h.ledger.task(created.taskID))?.openRequestID == "toolu_c2" }
+        await h.settle(timeout: 60) { (try? await h.ledger.task(created.taskID))?.openRequestID == "toolu_c2" }
         h.server.enqueueAnswer(bridgeID: h.bridgeID, taskID: created.taskID, requestID: "toolu_c2", answers: ["approval": "Deny"], questionKind: "approval")
         h.clock.jump(by: 6)
         await h.runtime.tick()
-        await h.settle(timeout: 15) { h.server.taskState(created.taskID) == "idle" }
+        await h.settle(timeout: 60) { h.server.taskState(created.taskID) == "idle" }
         let next = h.message("Next", task: "7a5c0001-0000-4000-8000-0000000000e2", turn: 2)
-        h.clock.jump(by: 6)
-        await h.runtime.tick()
-        await h.settle(timeout: 15) { h.server.taskState(next.taskID) == "idle" }
+        // 다음 턴이 돌고 끝날 때까지 다시 묻는다 (앞 실행의 끝 증명 전이면 lease를 미룬다: 한 번 묻고 기다리면 다음 턴은 뜨지 않은 채 기한만 지났다)
+        let deadline = Date().addingTimeInterval(60)
+        while h.server.taskState(next.taskID) != "idle", Date() < deadline {
+            h.clock.jump(by: 6)
+            await h.runtime.tick()
+            await h.settle(timeout: 1) { h.server.taskState(next.taskID) == "idle" }
+        }
+        #expect(h.server.taskState(next.taskID) == "idle", "다음 턴이 돌고 끝났다")
         // 되말한 글 · 승인 카드 글에서는 가렸고, 가린 명령은 서버에 묻지 않았다
         let bodies = h.server.requests.map(\.bodyJSON).joined(separator: "\n")
         #expect(bodies.contains("Your key [redacted] works."))

@@ -49,7 +49,7 @@ struct ClaudeRereview8Tests {
         let created = h.message("Hi")
         task.withLock { $0 = created.taskID }
         await h.runtime.tick()
-        #expect(await h.eventually(timeout: 20) {
+        #expect(await h.eventually(timeout: 60) {
             let alive = await h.task(created.taskID)?.alive
             return fake.report(1) != nil && alive == false
         })
@@ -73,12 +73,14 @@ struct ClaudeRereview8Tests {
         let lock = try #require(ClaudeSessionLock.file(sessionsRoot: fake.box.sessionsRoot, session: ClaudeTest.session))
         let events = EventLog()
         let starting = Task { try? await fake.turn(events: events) }
-        #expect(await ClaudeRereview5ReproTests.waitUntil(5) { ClaudeSessionLock.read(lock) != .none })
+        #expect(await ClaudeRereview5ReproTests.waitUntil(30) { ClaudeSessionLock.read(lock) != .none })
         #expect(await fake.process.sessionRun(ClaudeTest.session)?.liveness == .alive, "시작 중인 spawn도 등록부에 있다")
         #expect(await fake.process.hasRegisteredRuns())
         let process = fake.process
         let ending = Task { await process.terminateSessionRun(ClaudeTest.session) }
-        try await Task.sleep(for: .milliseconds(200))
+        // 끝내기가 actor에 들어가 그 spawn에 `stopped`를 표시할 틈 (actor는 비어 있다: 띄우기는 actor 밖에서 지킴이를 기다린다). 밖에서 볼 수 있는 표시가 없어
+        // 넉넉한 틈을 둔다 — 지킴이 시작 보고 기한(5초) 안. 놓쳤다면 아래 `inputs == [0]`이 실패로 알린다 (거짓 통과 없음)
+        try await Task.sleep(for: .seconds(1))
         FileManager.default.createFile(atPath: go.path, contents: Data())
         let result = await ending.value
         _ = await starting.value
@@ -102,7 +104,7 @@ struct ClaudeRereview8Tests {
             ending.mutate { $0 = Task { await process.terminateSessionRun(ClaudeTest.session) } }
         }
         _ = try await fake.turn(events: events)
-        #expect(await events.wait(timeout: 20) { FakeClaude.ended($0) })
+        #expect(await events.wait(timeout: 60) { FakeClaude.ended($0) })
         let result = await ending.value?.value
         #expect(result == .ended(AgentExit(code: nil)))
         #expect(fake.report(1) == nil, "내부 닫기 spawn 0")
@@ -112,7 +114,7 @@ struct ClaudeRereview8Tests {
 
     /// 질문 사건을 받는 쪽이 그 자리에서 같은 세션의 그 요청을 닫는다: 끝을 증명한 턴이 세션 자리를 먼저 놓았으므로 자기를 기다리지 않고 바로 닫힌다
     @Test func s3AClosingInsideTheQuestionEmitDoesNotWaitOnItself() async throws {
-        let fake = try FakeClaude()
+        let fake = try FakeClaude(timing: .ci)
         try fake.scenario(["runs": [
             ["steps": [["tool": "mcp__tf__ask_user", "id": "toolu_q1", "input": FakeClaude.askColor]]],
             ["steps": [["text": "close"]]],
@@ -133,10 +135,11 @@ struct ClaudeRereview8Tests {
         }
         let identity = try await fake.turn(events: events)
         external.mutate { $0 = FakeClaude.providerSession(identity) }
-        #expect(await events.wait(timeout: 30) { FakeClaude.ended($0) })
+        #expect(await events.wait(timeout: 90) { FakeClaude.ended($0) })
         let result = try #require(outcome.value)
-        #expect(result.closed, "닫았다")
-        #expect(result.seconds < ClaudeCodeTiming.testing.closeTimeout, "자기를 기다리지 않았다")
+        // 자기를 기다리면 세션 자리가 비지 않아 닫기가 기한 뒤 실패한다(던짐, 재검토 8 red): 닫았다는 것이 자기를 기다리지 않았다는 증거다. 시간은 그 기한 안인지만 본다
+        #expect(result.closed, "닫았다 (자기를 기다리지 않았다)")
+        #expect(result.seconds < fake.timing.closeTimeout, "닫기 기한 안")
         #expect(fake.report(1) != nil, "닫기 spawn")
     }
 
@@ -190,8 +193,10 @@ struct ClaudeRereview8Tests {
         defer { server.stop() }
         let nonce = HookSocketServerTests.nonce
         let committed = Mutex<[String: Bool]>([:])
+        let started = Mutex(0)
         let margin = HookSocketServer.hookMargin
         server.register(nonce: nonce, HookSocketServer.Registration(agentSessionID: ClaudeTest.session, providerSessionID: "claude-1", committing: { request, commit in
+            started.withLock { $0 += 1 }
             // 셋째마다: 바로 확정 · bridge가 허용하는 가장 늦은 때(훅 기한 − 여유)의 5ms 앞 · 그 30ms 뒤(늦은 처리기)
             let kind = (Int(request.toolUseID.dropFirst(6)) ?? 0) % 3
             if kind != 0, let deadline = request.deadlineNS {
@@ -204,8 +209,10 @@ struct ClaudeRereview8Tests {
         }))
         let blocked = DispatchGroup()
         for _ in 0..<16 { DispatchQueue.global(qos: .userInitiated).async(group: blocked) { Thread.sleep(forTimeInterval: 1.5) } }
-        let rows = try await offPool { Self.hooks(path: path, nonce: nonce, count: 24, parallel: 6, budget: 0.8, transit: 0.4) }
-        try await Task.sleep(for: .milliseconds(600))
+        // 훅 예산 1.5초 − 늦게 닿기 0.4초: bridge 기한(훅 기한 − 0.3초)이 자기 예산(연결 + 1.2초)보다 앞이다 — 훅 기한으로 정하는 길. 바로 확정할 틈은 0.8초
+        let rows = try await offPool { Self.hooks(path: path, nonce: nonce, count: 24, parallel: 6, budget: 1.5, transit: 0.4) }
+        // 늦은 처리기는 훅이 돌아온 뒤에도 확정을 시도한다: 시작한 처리기가 모두 시도를 마칠 때까지 (잠깐 쉬기 대신)
+        #expect(await ClaudeRereview5ReproTests.waitUntil(30) { committed.withLock { $0.count } == started.withLock { $0 } })
         let commits = committed.withLock { $0 }
         let falseDelivered = rows.filter { commits[$0.id] == true && !$0.allow }.count
         let kind = { (row: HookRow) in (Int(row.id.dropFirst(6)) ?? 0) % 3 }

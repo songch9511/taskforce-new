@@ -16,7 +16,7 @@ struct ClaudeRereview3ReproTests {
 
     static func adapter(_ box: ClaudeSandbox) -> ClaudeCodeProcess {
         ClaudeCodeProcess(sessionsRoot: box.sessionsRoot, hookServer: nil, helpers: ClaudeCodeHelpers(hook: "/x", mcp: "/y", keeper: "/z"),
-                          locator: ClaudeCodeLocator(candidates: [], confinedTo: box.root.path), timing: .testing)
+                          locator: ClaudeCodeLocator(candidates: [], confinedTo: box.root.path), timing: .ci)
     }
 
     /// 실제 adapter처럼 띄운다 (새 그룹 · argv의 `--settings …/config/<marker>.settings.json`)
@@ -35,7 +35,7 @@ struct ClaudeRereview3ReproTests {
         // 뿌리 R: 중간 B가 배경 D(sleep 617)를 남기고 0.15초 뒤 끝난다. R은 1초 뒤 끝난다. 앱은 띄운 직후 죽었다 (다시 뜬 앱은 파일만 본다)
         let root = try box.keep("/bin/sh -c '/bin/sleep 617 >/dev/null 2>&1 & /bin/sleep 0.15'; /bin/sleep 1; exit 0")
         defer { Self.killSleep617() }
-        for _ in 0..<150 where ClaudeProcessInspector.check(root.identity) == .same { try await Task.sleep(for: .milliseconds(20)) }
+        #expect(await ClaudeProcessIdentityTests.within { ClaudeProcessIdentityTests.ended(root.identity) }, "R이 끝났다")
         #expect(await Self.adapter(box).liveness(root.identity) == .alive, "B · R은 끝났고 D가 살아 있다: 지킴이가 산다")
     }
 
@@ -160,9 +160,8 @@ struct ClaudeRereview3ReproTests {
         try FileManager.default.createDirectory(at: fake.box.sessionsRoot, withIntermediateDirectories: true)
         try "x".write(to: fake.box.sessionsRoot.appending(path: "lineage"), atomically: true, encoding: .utf8)
         await #expect(throws: AgentStartError.self) { _ = try await fake.turn(events: EventLog()) }
-        try await Task.sleep(for: .milliseconds(300))
         if let pid = fake.report(0)?["pid"] as? Int {
-            #expect(ClaudeRereviewProcessTests.gone(pid), "띄운 프로세스는 멈췄다")
+            #expect(await ClaudeProcessIdentityTests.within { ClaudeRereviewProcessTests.gone(pid) }, "띄운 프로세스는 멈췄다")
         }
     }
 }

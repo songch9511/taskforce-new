@@ -75,10 +75,16 @@ struct HookSocketServerTests {
         let server = try server()
         defer { server.stop() }
         register(server)
-        server.unregister(nonce: Self.nonce, after: .milliseconds(100))
+        // 유예는 실제 값(2초): 첫 왕복이 그 안에 끝난다 (붐비는 기계에서도). 그 뒤 deny가 될 때까지 다시 묻는다 (잠깐 쉬기 대신, 포기 상한만)
+        server.unregister(nonce: Self.nonce, after: .seconds(2))
         #expect(try exchange(request()).decision == .allow, "끝난 spawn의 nonce는 2초 동안 남는다 (늦은 훅)")
-        try await Task.sleep(for: .milliseconds(300))
-        #expect(try exchange(request()).decision == .deny)
+        let deadline = Date().addingTimeInterval(30)
+        var decision = try exchange(request()).decision
+        while decision != .deny, Date() < deadline {
+            try await Task.sleep(for: .milliseconds(100))
+            decision = try exchange(request()).decision
+        }
+        #expect(decision == .deny, "유예 뒤에는 거절")
     }
 
     @Test func aPeerFromAnotherUserIsDroppedBeforeReading() throws {
@@ -121,8 +127,9 @@ struct HookSocketServerTests {
         let server = try server()
         defer { server.stop() }
         let answered = Shared<[String]>([])
+        // 처리기는 훅 예산보다 훨씬 오래 걸린다: bridge가 자기 예산에서 끊지 않으면 훅 예산까지 답이 없다
         server.register(nonce: Self.nonce, HookSocketServer.Registration(agentSessionID: ClaudeTest.session, providerSessionID: "claude-1", handler: { _ in
-            try? await Task.sleep(for: .seconds(3))
+            try? await Task.sleep(for: .seconds(60))
             return HookResponse(decision: .allow, reason: "late")
         }, onAnswer: { id in answered.mutate { $0.append(id) } }))
         let started = Date()

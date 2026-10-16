@@ -23,6 +23,8 @@ final class LockTruthAdapter: AgentProcess, @unchecked Sendable {
     let answer = Mutex<AnswerPlan>(.closed(nil))
     /// 턴의 끝 사건 직전에 띄운 내부 닫기 (끝을 증명하지 못했다)
     let internalClose = Mutex<AgentSessionRun?>(nil)
+    /// 내부 닫기로 바뀌고 끝 사건을 내는 때: 런타임이 턴의 정체를 적은 뒤 시험이 연다 (잠깐 쉬기 대신)
+    let turnEnds = OrderGate()
     let terminateResult: AgentLiveness
     let interrupts = Mutex<[String]>([])
     let terminatedSessions = Mutex<[String]>([])
@@ -53,7 +55,7 @@ final class LockTruthAdapter: AgentProcess, @unchecked Sendable {
             // 턴이 돌다가(정체를 적은 뒤) 끝나며 내부 닫기를 띄운다: 지금 실행이 닫기로 바뀐 뒤 턴의 끝 사건
             current.withLock { $0 = AgentSessionRun(liveness: .alive, identity: identity) }
             Task {
-                try? await Task.sleep(for: .milliseconds(200))
+                await self.turnEnds.wait()
                 self.current.withLock { $0 = close }
                 await events.emit(.ended(AgentExit(code: 0)))
             }
@@ -210,7 +212,9 @@ struct ClaudeRereview6RuntimeTests {
         let h = try await harness(adapter)
         let created = h.message("Hi")
         await h.runtime.tick()
-        #expect(await h.eventually {
+        // tick은 턴을 띄우고 그 정체를 적은 뒤 돌아온다: 그 뒤에 내부 닫기 · 끝 사건
+        adapter.turnEnds.open()
+        #expect(await h.eventually(timeout: 60) {
             let task = await h.task(created.taskID)
             return task?.openRequestID == "req-1" && task?.processMarker == close.identity?.processMarker
         })
@@ -273,9 +277,9 @@ struct ClaudeRereview6RuntimeTests {
         adapter.answer.withLock { $0 = .closed(LockTruthAdapter.run(.alive)) }
         try await answer(h, task)
         #expect(await h.task(task)?.alive == true, "답 실행이 돈다")
+        // 기다리는 쪽이 끝날 때까지 시계를 민다 (정해진 횟수로 멈추면 늦게 잠든 런타임이 깨지 않는다)
         let worker = Task {
-            for _ in 0..<200 {
-                if Task.isCancelled { return }
+            while !Task.isCancelled {
                 await h.clock.advance(by: 0.25)
                 try? await Task.sleep(for: .milliseconds(3))
             }

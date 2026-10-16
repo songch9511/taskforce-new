@@ -208,7 +208,7 @@ struct ClaudeRereview6Tests {
         let lock = try #require(ClaudeSessionLock.file(sessionsRoot: fake.box.sessionsRoot, session: ClaudeTest.session))
         let starting = Task { try await fake.turn(events: EventLog()) }
         // 잠금 · 정체 자리를 쓰고 지킴이를 기다리는 동안 혈통 폴더를 읽기 전용으로: 정체 파일 저장 · 지킴이 끝 기록이 실패한다
-        #expect(await ClaudeRereview5ReproTests.waitUntil(5) { ClaudeSessionLock.read(lock) != .none })
+        #expect(await ClaudeRereview5ReproTests.waitUntil(30) { ClaudeSessionLock.read(lock) != .none })
         #expect(chmod(lineage.path, 0o500) == 0)
         defer { chmod(lineage.path, 0o700) }
         FileManager.default.createFile(atPath: go.path, contents: Data())
@@ -282,11 +282,11 @@ struct ClaudeRereview6Tests {
             app.terminate()
             for pid in KeeperRereviewTag.pids(tag) { kill(pid, SIGKILL) }
         }
-        let started = Date()
-        #expect(await ClaudeRereview5ReproTests.waitUntil(5) { !KeeperRereviewTag.pids(tag).isEmpty }, "무관한 자식이 떴다 (시험 전제)")
-        #expect(await root.keeperEnded(timeout: 12))
+        #expect(await ClaudeRereview5ReproTests.waitUntil(30) { !KeeperRereviewTag.pids(tag).isEmpty }, "무관한 자식이 떴다 (시험 전제)")
+        // 무관한 자식이 증명을 붙잡았다면 그것이 사는 동안(시험 끝까지) 지킴이는 끝나지 않는다: 그것이 살아 있는 채로 끝을 증명했다는 것이 증거다
+        // (걸린 시간의 상한 대신, 기다림은 포기 상한만)
+        #expect(await root.keeperEnded())
         #expect(root.lineage.endAfterKeeperGone() == .ended(AgentExit(code: nil)))
-        #expect(Date().timeIntervalSince(started) < 10)
         #expect(!KeeperRereviewTag.pids(tag).isEmpty, "무관한 자식은 그대로 (신호 0)")
     }
 
@@ -310,9 +310,9 @@ struct ClaudeRereview6Tests {
         ))
         close(writeEnd)
         close(null)
-        let execed = await ClaudeRereview5ReproTests.waitUntil(3) { KeeperCaller.satisfies(pid: spawned.pid, requirement: requirement) }
+        let execed = await ClaudeRereview5ReproTests.waitUntil(30) { KeeperCaller.satisfies(pid: spawned.pid, requirement: requirement) }
         #expect(execed, "서명 확인만으로는 통과하는 부모다 (시험 전제)")
-        let reported = try await offPool { Self.readAll(readEnd, timeout: 10) }
+        let reported = try await offPool { Self.readAll(readEnd, timeout: 60) }
         #expect(!reported.contains("started"), "claude를 띄우지 않았다")
         #expect(!FileManager.default.fileExists(atPath: marker.path))
         var status: Int32 = 0

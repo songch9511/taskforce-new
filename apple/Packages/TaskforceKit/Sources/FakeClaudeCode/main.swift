@@ -80,6 +80,16 @@ enum Fake {
         checkInterrupt()
     }
 
+    /// 파일이 생길 때까지 기다린다 (그 동안 SIGINT가 오면 바로 중단 결과를 내고 끝난다)
+    static func waitInterruptibly(forFile path: String, max seconds: Double) {
+        let deadline = Date().addingTimeInterval(seconds)
+        while !FileManager.default.fileExists(atPath: path), Date() < deadline {
+            checkInterrupt()
+            Thread.sleep(forTimeInterval: 0.02)
+        }
+        checkInterrupt()
+    }
+
     static func checkInterrupt() {
         guard fakeInterrupted != 0 else { return }
         emit(["type": "user", "session_id": sessionID, "message": ["role": "user", "content": [["type": "text", "text": "[Request interrupted by user for tool use]"]]]])
@@ -453,6 +463,8 @@ enum Fake {
             if let override = run["resume_input_override"] as? [String: Any] { input = override }
             // 멈춘 동안 SIGINT가 오면 훅을 부르지 않고 끝난다 (Stop이 답 훅보다 먼저, 14장 7)
             if let pause = run["pause_before_resume_hook"] as? Double { pauseInterruptibly(pause) }
+            // 시험이 표시 파일을 만들 때까지 (시간 대신 그 사건으로, 120초 포기 상한). 기다리는 동안 SIGINT면 위와 같다
+            if let gate = run["wait_for_file_before_resume_hook"] as? String { waitInterruptibly(forFile: gate, max: 120) }
             emit(["type": "command_lifecycle", "state": "started", "session_id": sessionID])
             // 보류 id가 아닌 다른 tool id로 부른다 (상태 유실 흉내, 14장 7)
             let resumeID = run["resume_id_override"] as? String ?? id
@@ -507,6 +519,8 @@ enum Fake {
               "permission_denials": denials])
         mcp?.stop()
         if let linger = run["linger_after_result"] as? Double { Thread.sleep(forTimeInterval: linger) }
+        // 결과 뒤 시험이 표시 파일을 만들 때까지 머문다 (시간 대신 그 사건으로, 120초 포기 상한)
+        if let gate = run["wait_for_file_after_result"] as? String { waitInterruptibly(forFile: gate, max: 120) }
         saveReport()
         return 0
     }

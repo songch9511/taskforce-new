@@ -16,9 +16,32 @@ func offPool<T: Sendable>(_ work: @escaping @Sendable () throws -> T) async thro
 /// `Process`를 다른 스레드로 넘기는 상자
 final class ProcessBox: @unchecked Sendable {
     let process: Process
+    private let lock = NSLock()
+    private var endedAt: Date?
+    private let ended = DispatchSemaphore(value: 0)
 
     init(_ process: Process) {
         self.process = process
+    }
+
+    /// 띄우고 stdin을 쓰고 닫은 뒤 끝날 때까지 기다린다: 띄운 때부터 끝난 때까지의 초 (포기 상한을 넘기면 nil, 그때는 끝낸다).
+    /// 끝은 `terminationHandler`로 받는다 — 작업 스레드에서 `waitUntilExit`이 런 루프를 돌리며 끝을 놓쳐 멈추는 일이 없다
+    func run(input: Data, ceiling: TimeInterval = 60) throws -> TimeInterval? {
+        process.terminationHandler = { [self] _ in
+            lock.withLock { endedAt = Date() }
+            ended.signal()
+        }
+        let writer = Pipe()
+        process.standardInput = writer
+        let started = Date()
+        try process.run()
+        writer.fileHandleForWriting.write(input)
+        try writer.fileHandleForWriting.close()
+        guard ended.wait(timeout: .now() + ceiling) == .success else {
+            process.terminate()
+            return nil
+        }
+        return lock.withLock { endedAt }.map { $0.timeIntervalSince(started) }
     }
 }
 
@@ -52,6 +75,9 @@ struct UnixSocketTests {
             Thread.detachNewThread { [weak self] in
                 let client = accept(listener, nil, nil)
                 guard client >= 0 else { return }
+                // 상대가 먼저 끊어도 쓰기가 시험 프로세스를 SIGPIPE로 끝내지 않게 (큰 답을 쓰는 중 상대가 상한에서 끊는다)
+                var on: Int32 = 1
+                _ = setsockopt(client, SOL_SOCKET, SO_NOSIGPIPE, &on, socklen_t(MemoryLayout<Int32>.size))
                 var buffer = [UInt8](repeating: 0, count: 65536)
                 var data = Data()
                 while !data.contains(0x0A) {
@@ -89,26 +115,28 @@ struct UnixSocketTests {
 
     @Test func oneLineGoesOutAndOneLineComesBack() throws {
         let server = try TinyServer { _ in Data(#"{"decision":"allow","reason":"ok"}"#.utf8 + [0x0A]) }
-        let reply = try UnixSocket.exchange(path: server.path, request: Data("{\"v\":1}\n".utf8), deadline: Date().addingTimeInterval(1.5))
+        let reply = try UnixSocket.exchange(path: server.path, request: Data("{\"v\":1}\n".utf8), deadline: Date().addingTimeInterval(30))
         #expect(String(decoding: reply, as: UTF8.self) == #"{"decision":"allow","reason":"ok"}"# + "\n")
         #expect(server.receivedLine == Data("{\"v\":1}\n".utf8))
     }
 
     @Test func aSilentBridgeRunsIntoTheDeadline() async throws {
         let server = try TinyServer { _ in nil }
-        let started = Date()
         let path = server.path
-        let outcome = try await offPool { () -> WireError? in
+        // 서버는 답하지도 닫지도 않는다: `.timedOut`으로 돌아왔다는 것이 기한에서 끊었다는 증거다. 시간은 바꿈 안에서 재고(넘기기 · 재개 지연 제외),
+        // 기한 전에 끊지 않았는지와 걸려 있지 않았는지(넉넉한 상한)만 본다
+        let outcome = try await offPool { () -> (error: WireError?, seconds: TimeInterval) in
+            let started = Date()
             do {
-                _ = try UnixSocket.exchange(path: path, request: Data("{}\n".utf8), deadline: Date().addingTimeInterval(0.3))
-                return nil
+                _ = try UnixSocket.exchange(path: path, request: Data("{}\n".utf8), deadline: started.addingTimeInterval(0.3))
+                return (nil, Date().timeIntervalSince(started))
             } catch let error as WireError {
-                return error
+                return (error, Date().timeIntervalSince(started))
             }
         }
-        #expect(outcome == .timedOut)
-        #expect(Date().timeIntervalSince(started) < 0.8)
-        _ = server
+        #expect(outcome.error == .timedOut)
+        #expect(outcome.seconds >= 0.29 && outcome.seconds < 10, "\(outcome.seconds)")
+        withExtendedLifetime(server) {}
     }
 
     @Test func aMissingSocketAndAnOverlongPathFailFast() {
@@ -119,29 +147,25 @@ struct UnixSocketTests {
 
     @Test func anOversizedReplyIsRefused() throws {
         let server = try TinyServer { _ in Data(repeating: 0x61, count: HookWire.maxLineBytes + 10) }
-        #expect(throws: WireError.tooLarge) { try UnixSocket.exchange(path: server.path, request: Data("{}\n".utf8), deadline: Date().addingTimeInterval(1.5)) }
+        #expect(throws: WireError.tooLarge) { try UnixSocket.exchange(path: server.path, request: Data("{}\n".utf8), deadline: Date().addingTimeInterval(30)) }
     }
 
     /// 빌드한 helper: 소켓이 없으면 기다리지 않고 deny JSON · exit 0 (stderr · 디스크 0)
-    @Test func theBuiltHookDeniesQuicklyWithoutASocket() throws {
+    @Test func theBuiltHookDeniesQuicklyWithoutASocket() async throws {
         let process = Process()
         process.executableURL = try HelperBinaries.url("tf-agent-hook")
         process.arguments = ["pre-tool-use", "--socket", "/tmp/tf-none-\(UUID().uuidString.prefix(6))/hook.sock", "--session", "5e551011-0000-4000-8000-000000000001", "--nonce", "Zm9v"]
         process.environment = ["HOME": NSTemporaryDirectory(), "PATH": "/usr/bin:/bin"]
-        let input = Pipe()
         let output = Pipe()
         let errors = Pipe()
-        process.standardInput = input
         process.standardOutput = output
         process.standardError = errors
-        let started = Date()
-        try process.run()
-        input.fileHandleForWriting.write(HookMainTests.stdin(tool: "Write", input: #"{"file_path":"/w/a","content":"x"}"#))
-        try input.fileHandleForWriting.close()
-        process.waitUntilExit()
-        let elapsed = Date().timeIntervalSince(started)
+        let waiting = ProcessBox(process)
+        let input = HookMainTests.stdin(tool: "Write", input: #"{"file_path":"/w/a","content":"x"}"#)
+        let elapsed = try #require(try await offPool { try waiting.run(input: input) })
         #expect(process.terminationStatus == 0)
-        #expect(elapsed < 1.6)
+        // 기다렸다면 예산(4초)을 다 썼다: 예산보다 앞이면 기다리지 않았다 (실행 파일을 띄우는 시간은 기계마다 달라 상한을 그 예산으로)
+        #expect(elapsed < HookWire.budget, "\(elapsed)")
         let out = output.fileHandleForReading.readDataToEndOfFile()
         #expect(try HookMainTests.output(HookMain.Result(stdout: out, exitCode: 0)).decision == "deny")
         #expect(errors.fileHandleForReading.readDataToEndOfFile().isEmpty)
@@ -154,22 +178,20 @@ struct UnixSocketTests {
         process.executableURL = try HelperBinaries.url("tf-agent-hook")
         process.arguments = ["pre-tool-use", "--socket", server.path, "--session", "5e551011-0000-4000-8000-000000000001", "--nonce", "Zm9v"]
         process.environment = ["HOME": NSTemporaryDirectory(), "PATH": "/usr/bin:/bin"]
-        let input = Pipe()
         let output = Pipe()
-        process.standardInput = input
         process.standardOutput = output
         process.standardError = FileHandle.nullDevice
-        let started = Date()
-        try process.run()
-        input.fileHandleForWriting.write(HookMainTests.stdin(tool: "Write", input: #"{"file_path":"/w/a","content":"x"}"#))
-        try input.fileHandleForWriting.close()
         let waiting = ProcessBox(process)
-        _ = try await offPool { waiting.process.waitUntilExit() }
-        let elapsed = Date().timeIntervalSince(started)
+        // 끝난 때는 끝 알림을 받은 그 자리에서 잰다 (협력 풀로 돌아오는 지연 제외)
+        let input = HookMainTests.stdin(tool: "Write", input: #"{"file_path":"/w/a","content":"x"}"#)
+        let elapsed = try #require(try await offPool { try waiting.run(input: input) })
         #expect(process.terminationStatus == 0)
-        #expect(elapsed >= HookWire.budget - 0.1 && elapsed < HookWire.budget + 0.6, "\(elapsed)")
+        // 아래: 서버가 답하지 않으니 훅은 자기 예산 전에는 끝날 수 없다(예산을 다 기다렸다). 위: Claude Code의 훅 timeout(설정 10초) 전에 deny로 끝났다 —
+        // 그 뒤면 Claude Code가 훅 없이 진행한다. 실행 파일을 띄우는 시간이 기계마다 달라 위 상한은 그 timeout 자체다
+        #expect(elapsed >= HookWire.budget - 0.1 && elapsed < 10, "\(elapsed)")
         let out = output.fileHandleForReading.readDataToEndOfFile()
         #expect(try HookMainTests.output(HookMain.Result(stdout: out, exitCode: 0)).decision == "deny")
+        withExtendedLifetime(server) {}
     }
 }
 #endif

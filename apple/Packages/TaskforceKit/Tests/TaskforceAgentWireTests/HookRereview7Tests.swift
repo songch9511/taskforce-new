@@ -47,8 +47,7 @@ struct HookRereview7Tests {
         probe.arguments = ["-MTime::HiRes=clock_gettime", "-e", "printf(\"%.0f\", clock_gettime(4) * 1e9)"]
         let output = Pipe()
         probe.standardOutput = output
-        try probe.run()
-        probe.waitUntilExit()
+        _ = try #require(try ProcessBox(probe).run(input: Data()))
         let after = HookWire.monotonicNow()
         let other = try #require(UInt64(String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)))
         #expect(before <= other && other <= after, "\(before) \(other) \(after)")

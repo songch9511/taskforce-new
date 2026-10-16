@@ -136,13 +136,14 @@ struct ClaudeRereview5ReproTests {
     /// 답 훅이 오기 전에 Stop, 프로세스는 훅 없이 끝난다: 닫힘(`requestClosed`)이다
     @Test func p24bAStopBeforeTheAnswerHookClosesTheRequest() async throws {
         let fake = try FakeClaude()
-        try fake.scenario(["runs": [["steps": [["tool": "mcp__tf__ask_user", "id": "toolu_q", "input": FakeClaude.askColor]]], ["pause_before_resume_hook": 6.0, "final_text": "x"]]])
+        // 가짜는 답 훅 전에 60초 쉰다 (Stop의 SIGINT가 그 쉼을 끊는다): Stop이 늘 훅보다 먼저다
+        try fake.scenario(["runs": [["steps": [["tool": "mcp__tf__ask_user", "id": "toolu_q", "input": FakeClaude.askColor]]], ["pause_before_resume_hook": 60.0, "final_text": "x"]]])
         let first = EventLog()
         let identity = try await fake.turn(events: first)
         #expect(await first.wait { FakeClaude.ended($0) })
         let session = FakeClaude.providerSession(identity)
         let answering = Task { try await fake.answer("toolu_q", kind: .input, value: AgentAnswerValue(answers: ["color": .one("blue")]), external: session, events: EventLog()) }
-        #expect(await Self.waitUntil(8) { fake.report(1) != nil })
+        #expect(await Self.waitUntil(30) { fake.report(1) != nil })
         _ = await fake.process.interrupt(AgentTurnRef(taskID: ClaudeTest.task, sessionID: ClaudeTest.session, identity: nil), scope: .turn)
         let result = try? await answering.value
         #expect(result == .requestClosed)
@@ -151,10 +152,13 @@ struct ClaudeRereview5ReproTests {
     /// 보류 id가 아닌 다른 tool id의 훅이 시간 초과 deny로 끝났다: 그 전이에서 답을 닫고 그 spawn을 멈춘다 (늦은 판정 · init을 기다리지 않는다)
     @Test func p24cAnotherToolIDsTimedOutHookStopsTheAnswerSpawnAtOnce() async throws {
         let delay = Shared(false)
-        let fake = try FakeClaude(hooks: ClaudeCodeTestHooks(beforeHookReturn: { if delay.value { try? await Task.sleep(for: .seconds(2.5)) } }))
+        // 잘못된 길(늦은 판정 · init을 기다림)은 답 대기 60초 · 가짜의 120초 쉼까지 간다: 바른 길과 넉넉히 가르는 상한 30초
+        var timing = ClaudeCodeTiming.ci
+        timing.answerTimeout = 60
+        let fake = try FakeClaude(hooks: ClaudeCodeTestHooks(beforeHookReturn: { if delay.value { try? await Task.sleep(for: .seconds(2.5)) } }), timing: timing)
         try fake.scenario(["runs": [
             ["steps": [["tool": "mcp__tf__ask_user", "id": "toolu_q", "input": FakeClaude.askColor]]],
-            ["resume_id_override": "toolu_other", "pause_after_resume_hook": 8.0, "final_text": "x"],
+            ["resume_id_override": "toolu_other", "pause_after_resume_hook": 120.0, "final_text": "x"],
         ]])
         let first = EventLog()
         let identity = try await fake.turn(events: first)
@@ -165,7 +169,8 @@ struct ClaudeRereview5ReproTests {
             "toolu_q", kind: .input, value: AgentAnswerValue(answers: ["color": .one("blue")]), external: FakeClaude.providerSession(identity), events: EventLog()
         )
         #expect(result == .requestClosed)
-        #expect(Date().timeIntervalSince(started) < 5, "시간 초과 전이에서 바로 멈춘다")
+        #expect(Date().timeIntervalSince(started) < 30, "시간 초과 전이에서 바로 멈춘다")
+        #expect(fake.report(1)?["interrupted"] as? Bool == true, "그 spawn을 멈췄다")
     }
 
     // MARK: sec P2-1 실효 사용자가 바뀐 자손
@@ -194,7 +199,7 @@ struct ClaudeRereview5ReproTests {
         #expect(live != .ended(AgentExit(code: nil)), "거짓 끝")
         #expect(relaunched != .ended(AgentExit(code: nil)), "다시 뜬 앱의 거짓 끝")
         release()
-        #expect(await root.keeperEnded(timeout: 8), "login이 끝나면 지킴이도 끝을 증명한다")
+        #expect(await root.keeperEnded(), "login이 끝나면 지킴이도 끝을 증명한다")
     }
 
     // MARK: sec P2-2 다시 disclaim한 자손
@@ -213,7 +218,7 @@ struct ClaudeRereview5ReproTests {
         #expect(live != .ended(AgentExit(code: nil)), "거짓 끝")
         #expect(relaunched != .ended(AgentExit(code: nil)), "다시 뜬 앱의 거짓 끝")
         kill(child, SIGKILL)
-        #expect(await root.keeperEnded(timeout: 8))
+        #expect(await root.keeperEnded())
     }
 
     // MARK: sec P3-3 fork 사슬
@@ -229,7 +234,7 @@ struct ClaudeRereview5ReproTests {
                 if root.lineage.provenEnded, !KeeperRereviewTag.pids(tag).isEmpty { falseEnds += 1; break }
                 try? await Task.sleep(for: .milliseconds(20))
             }
-            _ = await root.keeperEnded(timeout: 10)
+            _ = await root.keeperEnded()
         }
         #expect(falseEnds == 0)
     }
@@ -254,7 +259,7 @@ struct ClaudeRereview5ReproTests {
             _ = await process.liveness(AgentProcessIdentity(pid: nil, startedAt: Date(), processMarker: UUID().uuidString))
             returned.mutate { $0 = true }
         }
-        let answered = await Self.waitUntil(3) { returned.value }
+        let answered = await Self.waitUntil(30) { returned.value }
         FileManager.default.createFile(atPath: go.path, contents: Data())
         #expect(answered, "띄우는 동안 actor가 막혔다")
         await probe.value

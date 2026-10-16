@@ -10,7 +10,7 @@ import TaskforceAgentWire
 @Suite(.serialized)
 struct ClaudeRereview2ReproTests {
     let box = ClaudeSandbox()
-    static let timing = ClaudeCodeTiming.testing
+    static let timing = ClaudeCodeTiming.ci
 
     // MARK: 1 (grp) 같은 pid를 다시 쓴 무관한 그룹
 

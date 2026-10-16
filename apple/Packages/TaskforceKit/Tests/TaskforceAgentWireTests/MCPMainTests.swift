@@ -65,20 +65,16 @@ struct MCPMainTests {
     }
 
     /// 실제로 빌드한 helper를 띄워 stdio로 한 번 왕복한다 (디스크 · 네트워크 0, stdin EOF에 끝남)
-    @Test func theBuiltHelperAnswersOverStdioAndExitsAtEOF() throws {
+    @Test func theBuiltHelperAnswersOverStdioAndExitsAtEOF() async throws {
         let process = Process()
         process.executableURL = try HelperBinaries.url("tf-agent-mcp")
         process.arguments = ["--session", "5e551011-0000-4000-8000-000000000001"]
         process.environment = ["HOME": NSTemporaryDirectory(), "PATH": "/usr/bin:/bin"]
-        let input = Pipe()
         let output = Pipe()
-        process.standardInput = input
         process.standardOutput = output
         process.standardError = FileHandle.nullDevice
-        try process.run()
-        input.fileHandleForWriting.write(Data(#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#.utf8 + [0x0A]))
-        try input.fileHandleForWriting.close()
-        process.waitUntilExit()
+        let waiting = ProcessBox(process)
+        _ = try #require(try await offPool { try waiting.run(input: Data(#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#.utf8 + [0x0A])) }, "stdin EOF에 끝났다")
         let data = output.fileHandleForReading.readDataToEndOfFile()
         #expect(process.terminationStatus == 0)
         let line = try #require(data.split(separator: 0x0A).first)

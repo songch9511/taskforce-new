@@ -20,7 +20,8 @@ struct ClaudeReviewProcessTests {
         }
     }
 
-    static func waitUntil(_ timeout: TimeInterval = 5, _ condition: () -> Bool) async -> Bool {
+    /// 조건이 맞을 때까지 (기한은 포기 상한일 뿐: 맞으면 바로 돌아온다)
+    static func waitUntil(_ timeout: TimeInterval = 30, _ condition: () -> Bool) async -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
             if condition() { return true }
@@ -97,10 +98,10 @@ struct ClaudeReviewProcessTests {
         try fake.scenario(["runs": [["steps": [["tool": "Bash", "id": "toolu_b", "input": ["command": "cat notes.md"], "sleep": 30]]]]])
         let events = EventLog()
         let identity = try await fake.turn(events: events)
-        for _ in 0..<500 where fake.report(0)?["sleep_pid"] == nil { try await Task.sleep(for: .milliseconds(20)) }
+        #expect(await Self.waitUntil { fake.report(0)?["sleep_pid"] != nil }, "Bash가 돈다")
         // 앱이 다시 떴다: 새 adapter의 등록부는 비어 있다
         let restarted = ClaudeCodeProcess(sessionsRoot: fake.box.sessionsRoot, hookServer: nil, helpers: ClaudeCodeHelpers(hook: "/x", mcp: "/y", keeper: "/z"),
-                                          locator: ClaudeCodeLocator(candidates: [], confinedTo: fake.box.root.path), timing: .testing)
+                                          locator: ClaudeCodeLocator(candidates: [], confinedTo: fake.box.root.path), timing: .ci)
         // 잠금을 읽지 못하면 원장 정체(맞든 틀리든)로 신호하지 않고 끝이라고 하지 않는다
         let lock = try #require(ClaudeSessionLock.file(sessionsRoot: fake.box.sessionsRoot, session: ClaudeTest.session))
         let written = try Data(contentsOf: lock)
@@ -111,7 +112,7 @@ struct ClaudeReviewProcessTests {
             let result = await restarted.interrupt(AgentTurnRef(taskID: ClaudeTest.task, sessionID: ClaudeTest.session, identity: target), scope: .turnAndProcesses)
             #expect(result != .notRunning, "\(String(describing: target))")
         }
-        #expect(ClaudeProcessInspector.liveness(identity) == .alive, "확인 못 한 잠금에는 신호 0")
+        #expect(ClaudeProcessIdentityTests.soon { ClaudeProcessInspector.liveness(identity) == .alive }, "확인 못 한 잠금에는 신호 0")
         // 잠금의 spawn을 그 혈통으로 끝까지 끝냈을 때만 "돌고 있지 않다" (원장 정체가 틀려도 대상은 잠금의 spawn)
         try written.write(to: lock)
         let proven = await restarted.interrupt(AgentTurnRef(taskID: ClaudeTest.task, sessionID: ClaudeTest.session, identity: unprovable), scope: .turnAndProcesses)
@@ -132,7 +133,7 @@ struct ClaudeReviewProcessTests {
         let child = try #require(fake.report(0)?["left_child_pid"] as? Int)
         #expect(Self.gone(child), "ended를 내기 전에 남은 자손을 끝냈다")
         let group = pid_t(try #require(identity.pid))
-        #expect(await Self.waitUntil(2) { killpg(group, 0) != 0 })
+        #expect(await Self.waitUntil { killpg(group, 0) != 0 })
         #expect(events.contains(.turnCompleted))
     }
 
@@ -145,7 +146,7 @@ struct ClaudeReviewProcessTests {
         try fake.scenario(["runs": [["steps": [["tool": "Bash", "id": "toolu_b", "input": ["command": "cat notes.md"], "sleep": 30]]], ["steps": [["text": "second"]]]]])
         let events = EventLog()
         let identity = try await fake.turn(events: events)
-        for _ in 0..<500 where fake.report(0)?["sleep_pid"] == nil { try await Task.sleep(for: .milliseconds(20)) }
+        #expect(await Self.waitUntil { fake.report(0)?["sleep_pid"] != nil }, "Bash가 돈다")
         let session = FakeClaude.providerSession(identity)
         await #expect(throws: AgentStartError(.spawnFailed)) {
             _ = try await fake.turn("next", task: "7a5c0001-0000-4000-8000-000000000002", external: session, events: EventLog())
@@ -190,9 +191,10 @@ struct ClaudeReviewProcessTests {
         #expect(ClaudeCodeProcess.artifactHash(atPath: box.workspacePath, limit: 1024) == nil, "폴더")
         let fifo = box.workspace.appending(path: "pipe").path
         #expect(mkfifo(fifo, 0o600) == 0)
-        // 일반 파일이 아니면 읽지 않는다 (FIFO 열기에서 멈추지 않는다). 옛 동작이면 2초 뒤 쓰는 쪽을 열어 풀어 준다
+        // 일반 파일이 아니면 읽지 않는다 (FIFO 열기에서 멈추지 않는다). 옛 동작이면 30초 뒤 쓰는 쪽을 열어 풀어 준다:
+        // 그 전에 돌아왔으면 막히지 않았다 (풀어 준 때와 넉넉히 떨어진 상한)
         let unblock = Task.detached {
-            try? await Task.sleep(for: .seconds(2))
+            try? await Task.sleep(for: .seconds(30))
             let fd = open(fifo, O_WRONLY | O_NONBLOCK)
             if fd >= 0 { close(fd) }
         }
@@ -200,7 +202,7 @@ struct ClaudeReviewProcessTests {
         let hash = try await offPool { ClaudeCodeProcess.artifactHash(atPath: fifo, limit: 1024) }
         unblock.cancel()
         #expect(hash == nil)
-        #expect(Date().timeIntervalSince(started) < 1.5)
+        #expect(Date().timeIntervalSince(started) < 10)
     }
 }
 
@@ -224,24 +226,27 @@ struct ClaudeReviewAnswerRuntimeTests {
 
     @Test func a14TheAnswerProcessIsInTheLedgerBeforeTheAnswerReachesIt() async throws {
         let fake = try FakeClaude()
+        // 가짜는 답 훅 전에 이 파일을 기다린다 (3초 쉬기 대신): 시험이 원장을 확인한 뒤 만든다
+        let gate = fake.box.root.appending(path: "resume-hook-go").path
         try fake.scenario(["runs": [
             ["steps": [["tool": "mcp__tf__ask_user", "id": "toolu_q", "input": FakeClaude.askColor]]],
-            ["pause_before_resume_hook": 3.0, "final_text": "Blue."],
+            ["wait_for_file_before_resume_hook": gate, "final_text": "Blue."],
         ]])
         let h = try await harness(fake)
         let created = h.message("Hi")
         await h.runtime.tick()
-        await h.settle { (try? await h.ledger.task(created.taskID))?.openRequestID == "toolu_q" }
+        await h.settle(timeout: 60) { (try? await h.ledger.task(created.taskID))?.openRequestID == "toolu_q" }
         let before = await h.task(created.taskID)?.pid
         let answer = try #require(h.server.enqueueAnswer(bridgeID: h.bridgeID, taskID: created.taskID, requestID: "toolu_q", answers: ["color": "blue"]))
         h.clock.jump(by: 6)
         let ticking = Task { await h.runtime.tick() }
-        #expect(await h.eventually { fake.report(1) != nil })
+        #expect(await h.eventually(timeout: 60) { fake.report(1) != nil })
         let spawned = try #require(fake.report(1)?["pid"] as? Int)
         #expect(spawned != before)
-        // 가짜가 답 훅 전에 3초 기다린다: 그 사이 원장에는 새 pid가 있고, 답 전달은 아직 적히지 않았다
-        #expect(await h.eventually(timeout: 2.5) { await h.task(created.taskID)?.pid == spawned }, "답을 전달하기 전에 새 pid가 원장에 있다")
+        // 가짜가 답 훅 전에 표시 파일을 기다린다: 그 사이 원장에는 새 pid가 있고, 답 전달은 아직 적히지 않았다
+        #expect(await h.eventually(timeout: 60) { await h.task(created.taskID)?.pid == spawned }, "답을 전달하기 전에 새 pid가 원장에 있다")
         #expect(await h.command(answer.commandID)?.answerSentAt == nil)
+        FileManager.default.createFile(atPath: gate, contents: Data())
         await ticking.value
         #expect(await h.command(answer.commandID)?.answerSentAt != nil)
         #expect(await h.command(answer.commandID)?.inputAt != nil)

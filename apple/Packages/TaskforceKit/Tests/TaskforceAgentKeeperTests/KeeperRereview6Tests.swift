@@ -80,18 +80,23 @@ struct KeeperRereview6Tests {
     }
 
     /// 지킴이는 구성원 0을 증명하고 끝 기록을 쓴 뒤 `ended`를 보고하고 0으로 끝난다 (그 뒤 보고 pipe는 닫힌다)
-    @Test func theKeeperReportsEndedAfterItsRecordAndThenExitsZero() throws {
+    @Test func theKeeperReportsEndedAfterItsRecordAndThenExitsZero() async throws {
         let keeper = try KeeperTests()
-        let kept = try keeper.launch(["/usr/bin/true", "true"])
-        close(kept.stdinWrite)
+        // claude는 시작 보고 뒤 시험이 만드는 표시 파일을 기다렸다가 끝난다: 지킴이가 그 정체를 읽어 `started`를 알리기 전에 끝나 `failed`가 되는 경쟁이 없다
+        let go = keeper.folder.appending(path: "ended-go").path
+        let kept = try keeper.launch(["/bin/sh", "sh", "-c", "while [ ! -e '\(go)' ]; do /bin/sleep 0.01; done; exit 0"])
         var lines: [KeeperReport] = []
-        while let line = kept.nextReport(timeout: 10) {
+        if let first = await kept.report() { lines.append(first) }
+        close(kept.stdinWrite)
+        FileManager.default.createFile(atPath: go, contents: Data())
+        while let line = await kept.report() {
             if line == .ended { #expect(KeeperRecord.read(kept.ended) != nil, "기록 뒤에 보고한다") }
             lines.append(line)
         }
         #expect(lines.count == 3)
+        if case .started? = lines.first {} else { Issue.record("첫 보고는 started: \(lines)") }
         #expect(lines.dropFirst() == [.exited(code: 0, signal: nil), .ended])
-        #expect(kept.exitCode(timeout: 5) == 0)
+        #expect(await kept.exited() == 0)
         close(kept.stdoutRead)
         close(kept.reportRead)
     }

@@ -10,7 +10,7 @@ import TaskforceAgentWire
 @Suite(.serialized)
 struct ClaudeRereview2Tests {
     let box = ClaudeSandbox()
-    static let timing = ClaudeCodeTiming.testing
+    static let timing = ClaudeCodeTiming.ci
 
     // MARK: 3 부팅 · 하한
 
@@ -20,7 +20,7 @@ struct ClaudeRereview2Tests {
         let file = root.file
         let orphan = try await ClaudeProcessIdentityTests.readPID(pidFile)
         defer { kill(orphan, SIGKILL) }
-        for _ in 0..<100 where ClaudeProcessInspector.check(root.identity) == .same { try await Task.sleep(for: .milliseconds(20)) }
+        #expect(await ClaudeProcessIdentityTests.within { ClaudeProcessIdentityTests.ended(root.identity) }, "뿌리가 끝났다")
         #expect(ClaudeProcessInspector.liveness(root.identity, lineage: ClaudeLineage(file: file)) == .alive)
         // 같은 파일이 다른 부팅에 적힌 것이라면: 그 spawn은 이미 끝났다 (id는 부팅마다 새로 센다)
         let lines = try String(contentsOf: file, encoding: .utf8).split(separator: "\n").map(String.init)

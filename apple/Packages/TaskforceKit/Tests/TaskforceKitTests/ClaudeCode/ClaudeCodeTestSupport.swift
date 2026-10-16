@@ -62,8 +62,9 @@ struct KeptChild {
 
     var keeper: ClaudeLineage.Keeper { ClaudeLineage.Keeper(pid: kept.keeper.pid, uniqueID: kept.keeperID) }
 
-    /// 지킴이가 끝나고 감독 스레드가 거둔 종료 · 보고 줄을 혈통에 적을 때까지 (기한 안에서) 기다린다 (15장 4: 앱이 부모면 끝은 그 둘로만 정해진다)
-    func keeperEnded(timeout: TimeInterval = 5) async -> Bool {
+    /// 지킴이가 끝나고 감독 스레드가 거둔 종료 · 보고 줄을 혈통에 적을 때까지 (기한 안에서) 기다린다 (15장 4: 앱이 부모면 끝은 그 둘로만 정해진다).
+    /// 기한은 포기 상한일 뿐이다 (정해지면 바로 돌아온다): 느린 CI에서도 지킴이의 끝 증명(구성원 0 두 번)이 들어가게 넉넉히
+    func keeperEnded(timeout: TimeInterval = 30) async -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
         while ClaudeProcessInspector.keeperState(keeper) == .alive || lineage.endAfterKeeperGone() == nil, Date() < deadline {
             try? await Task.sleep(for: .milliseconds(20))
@@ -73,15 +74,20 @@ struct KeptChild {
 }
 
 extension ClaudeSandbox {
+    /// 대본은 앱이 지킴이의 시작 보고를 받은 뒤에야 돈다 (시험이 만드는 표시 파일을 기다린다): 지킴이가 그 정체(세대)를 읽어 알리기 전에 대본이 끝나
+    /// 띄우기가 `stopped`로 실패하는 경쟁이 없다. stdin EOF로 가르지 않는다 — 같은 시험 프로세스가 동시에 띄운 다른 자식이 파이프 쓰는 쪽을 물려받으면 EOF가 오지 않는다
     func keep(_ script: String, marker: String = UUID().uuidString, extra: [String] = []) throws -> KeptChild {
         let settings = root.appending(path: "config/\(marker).settings.json").path
         let file = sessionsRoot.appending(path: "lineage/\(marker).lineage")
+        let go = root.appending(path: "go-\(marker)").path
         try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
         let kept = try ClaudeSpawner.spawnKept(
             keeper: try BuiltProducts.url("tf-agent-keeper").path, ended: ClaudeLineage.keeperFile(file), executable: "/bin/sh", argv0: "/bin/sh",
-            arguments: ["-c", script, "sh", "--settings", settings] + extra, environment: ["PATH": "/usr/bin:/bin", ClaudeProcessInspector.markerKey: marker], cwd: root.path
+            arguments: ["-c", "while [ ! -e '\(go)' ]; do /bin/sleep 0.01; done; " + script, "sh", "--settings", settings] + extra,
+            environment: ["PATH": "/usr/bin:/bin", ClaudeProcessInspector.markerKey: marker], cwd: root.path
         ).get()
         kept.keeper.closeStandardStreams()
+        FileManager.default.createFile(atPath: go, contents: Data())
         let lineage = ClaudeLineage(file: file, fresh: true)
         lineage.adopt(ClaudeLineage.Record(
             keeper: ClaudeLineage.Keeper(pid: kept.keeper.pid, uniqueID: kept.keeperID), root: kept.claudeID, rootPID: kept.claudePID, attributable: kept.attributable
@@ -89,9 +95,10 @@ extension ClaudeSandbox {
         lineage.save()
         let keeper = kept.keeper
         let report = kept.reportFD
-        // 앱처럼 지킴이를 거두고 보고를 닫힐 때까지 읽는다 (15장 4: 정상 끝 = 0 종료 ∧ `ended` 줄)
-        DispatchQueue.global(qos: .utility).async { lineage.reportClosed(sawEnded: ClaudeCodeProcess.readReport(report) { _ in }) }
-        DispatchQueue.global(qos: .utility).async { lineage.keeperExited(keeper.waitForExit()) }
+        // 앱처럼 지킴이를 거두고 보고를 닫힐 때까지 읽는다 (15장 4: 정상 끝 = 0 종료 ∧ `ended` 줄). 끝까지 막히는 읽기 · 거두기라 공유 GCD 풀 밖의 전용 스레드에서
+        // (부하에서 낮은 QoS 작업이 밀려 끝 증명이 늦게 적히지 않게)
+        Thread.detachNewThread { lineage.reportClosed(sawEnded: ClaudeCodeProcess.readReport(report) { _ in }) }
+        Thread.detachNewThread { lineage.keeperExited(keeper.waitForExit()) }
         return KeptChild(
             kept: kept, identity: AgentProcessIdentity(pid: Int(kept.claudePID), startedAt: kept.claudeStartedAt, processMarker: marker), lineage: lineage, file: file
         )
@@ -104,6 +111,31 @@ func offPool<T: Sendable>(_ work: @escaping @Sendable () throws -> T) async thro
         DispatchQueue.global(qos: .userInitiated).async {
             continuation.resume(with: Result { try work() })
         }
+    }
+}
+
+/// 시험이 연 뒤에만 지나가는 문 하나 (잠깐 쉬기 대신 순서를 정한다). 열기 전에 기다리기 시작해도, 연 뒤에 기다려도 된다
+final class OrderGate: Sendable {
+    private let state = Mutex<(open: Bool, waiters: [CheckedContinuation<Void, Never>])>((false, []))
+
+    func wait() async {
+        await withCheckedContinuation { continuation in
+            let pass = state.withLock { value -> Bool in
+                if value.open { return true }
+                value.waiters.append(continuation)
+                return false
+            }
+            if pass { continuation.resume() }
+        }
+    }
+
+    func open() {
+        let waiters = state.withLock { value -> [CheckedContinuation<Void, Never>] in
+            value.open = true
+            defer { value.waiters = [] }
+            return value.waiters
+        }
+        for waiter in waiters { waiter.resume() }
     }
 }
 
@@ -193,15 +225,27 @@ final class EventLog: @unchecked Sendable {
         return nil
     }
 
-    /// 조건이 맞을 때까지 실제 시간으로 기다린다
+    /// 조건이 맞을 때까지 실제 시간으로 기다린다 (기한은 포기 상한일 뿐: 맞으면 바로 돌아온다. 끝 사건은 지킴이의 끝 증명 뒤라 느린 CI에서도 넉넉히)
     @discardableResult
-    func wait(timeout: TimeInterval = 15, _ condition: ([AgentEvent]) -> Bool) async -> Bool {
+    func wait(timeout: TimeInterval = 60, _ condition: ([AgentEvent]) -> Bool) async -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
             if condition(all) { return true }
             try? await Task.sleep(for: .milliseconds(10))
         }
         return condition(all)
+    }
+}
+
+extension ClaudeCodeTiming {
+    /// 시험 시간 (CI 안정): `.testing`의 유예(SIGINT 뒤 · SIGKILL 뒤 · 결과 뒤)는 그대로 두고, 끝을 기다리는 포기 상한만 넉넉히 —
+    /// 지킴이의 끝 증명 `keeperExit` 3 → 30초, 닫기 · 앞 실행의 끝 `closeTimeout` 5 → 30초. 기다림은 끝이 정해지면 바로 돌아오므로 통과 시간은 같고,
+    /// 느린 CI 러너에서 끝 증명이 늦어 `unknown` · 고아 끝내기 경로로 뒤집히지 않는다. 시간 초과 경로를 보는 시험은 자기 시간을 따로 쓴다
+    static var ci: ClaudeCodeTiming {
+        var timing = ClaudeCodeTiming.testing
+        timing.keeperExit = 30
+        timing.closeTimeout = 30
+        return timing
     }
 }
 

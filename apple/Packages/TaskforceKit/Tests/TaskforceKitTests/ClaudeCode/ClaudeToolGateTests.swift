@@ -261,12 +261,13 @@ struct ClaudeToolGateTests {
     }
 
     @Test func aSlowServerBecomesALocalDeferWithinTheBudget() async {
-        let decider = ScriptedDecider([.success(ScriptedDecider.response(.allow, .policyAuto))], delay: .seconds(3))
+        let decider = ScriptedDecider([.success(ScriptedDecider.response(.allow, .policyAuto))], delay: .seconds(60))
         let started = Date()
         let outcome = await evaluate("Write", #"{"file_path":"\#(box.workspacePath)/a","content":"x"}"#, decider: decider, timeout: .seconds(1))
-        // 서버 예산(1.0초)에서 끊었다: 3초 걸리는 결정기를 기다리지 않는다. 훅이 받는 답의 상한은 소켓 서버(스레드 시계 1.2초)가 따로 지킨다
+        // 서버 예산(1.0초)에서 끊었다: 60초 걸리는 결정기를 기다리지 않는다 (아래: 예산 전에 끊지 않았다, 위: 결정기와 넉넉히 가르는 상한).
+        // 훅이 받는 답의 상한은 소켓 서버(스레드 시계 1.2초)가 따로 지킨다
         let elapsed = Date().timeIntervalSince(started)
-        #expect(elapsed >= 0.99 && elapsed < 2.5, "\(elapsed)")
+        #expect(elapsed >= 0.99 && elapsed < 30, "\(elapsed)")
         #expect(outcome.response.decision == .defer)
         #expect(outcome.code == "server_timeout")
         #expect(outcome.deferred?.kind == .approval)

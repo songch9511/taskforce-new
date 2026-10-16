@@ -27,7 +27,8 @@ struct HookMainTests {
         { _, _, _ in Data(line.utf8) }
     }
 
-    static var later: Date { Date().addingTimeInterval(HookWire.budget) }
+    /// 시험 동안 다 쓰지 않는 기한 (주입한 연결은 바로 답한다: 느린 기계에서도 기한이 결과를 바꾸지 않게)
+    static var later: Date { Date().addingTimeInterval(600) }
 
     // MARK: SessionStart
 
@@ -60,11 +61,15 @@ struct HookMainTests {
     }
 
     @Test func aBridgeThatAnswersAfterTheBudgetIsTreatedAsNoAnswer() throws {
-        // 연결이 기한을 넘겨 돌아오면(가짜 연결이 기한을 무시해도) 답을 쓰지 않는다
-        let result = HookMain.run(arguments: Self.arguments, stdin: Self.stdin(tool: "Write", input: #"{"file_path":"/w/a","content":"x"}"#), connect: { _, _, deadline in
-            Thread.sleep(until: deadline.addingTimeInterval(0.05))
+        // 연결이 기한을 넘겨 돌아오면(가짜 연결이 기한을 무시해도) 답을 쓰지 않는다. 주입한 시계: 연결 전에는 기한 앞, 연결이 돌아온 뒤에는 기한 뒤
+        // (잠자기 대신 — 느린 기계에서 연결 전에 기한이 지나 연결 뒤 확인을 건너뛰는 일이 없다)
+        let start = Date()
+        let connected = Mutex(false)
+        let result = HookMain.run(arguments: Self.arguments, stdin: Self.stdin(tool: "Write", input: #"{"file_path":"/w/a","content":"x"}"#), connect: { _, _, _ in
+            connected.withLock { $0 = true }
             return Data(#"{"decision":"allow","reason":"late"}"#.utf8)
-        }, deadline: Date().addingTimeInterval(0.1))
+        }, deadline: start.addingTimeInterval(0.5), now: { connected.withLock { $0 } ? start.addingTimeInterval(1) : start })
+        #expect(connected.withLock { $0 }, "기한 앞이라 연결했다")
         #expect(try Self.output(result).decision == "deny")
     }
 

@@ -17,6 +17,8 @@ final class ScriptedRunAdapter: AgentProcess, @unchecked Sendable {
     /// 턴의 질문 (없으면 보통 질문). 턴은 끝 사건을 내지 않는다 (감독 중)
     let question = Mutex<AgentQuestion?>(nil)
     let endsTurn = Mutex(true)
+    /// 도는 턴이 질문을 내는 때: 런타임이 턴의 정체를 적은 뒤 시험이 연다 (잠깐 쉬기 대신)
+    let asks = OrderGate()
     let probeGate = Mutex<CheckedContinuation<Void, Never>?>(nil)
     let holdProbe = Mutex(false)
     let startedTurns = Mutex(0)
@@ -55,7 +57,7 @@ final class ScriptedRunAdapter: AgentProcess, @unchecked Sendable {
         guard endsTurn.withLock({ $0 }) else {
             // 정체를 적은 뒤 도는 턴이 질문을 낸다 (끝 사건 없음: 감독 중)
             Task {
-                try? await Task.sleep(for: .milliseconds(100))
+                await self.asks.wait()
                 await events.emit(.question(asked))
             }
             return identity
@@ -146,9 +148,9 @@ struct ClaudeRereview8RuntimeTests {
         let runtime = h.runtime
         let ticking = Task { await runtime.tick() }
         #expect(await h.eventually { adapter.probeGate.withLock { $0 != nil } })
+        // 종료가 끝날 때까지 시계를 민다 (정해진 횟수로 멈추면 늦게 잠든 런타임이 깨지 않는다)
         let worker = Task {
-            for _ in 0..<200 {
-                if Task.isCancelled { return }
+            while !Task.isCancelled {
                 await h.clock.advance(by: 0.25)
                 try? await Task.sleep(for: .milliseconds(3))
             }
@@ -185,8 +187,7 @@ struct ClaudeRereview8RuntimeTests {
         await ticking.value
         await runtime.setAfterStartIntent(nil)
         let worker = Task {
-            for _ in 0..<200 {
-                if Task.isCancelled { return }
+            while !Task.isCancelled {
                 await h.clock.advance(by: 0.25)
                 try? await Task.sleep(for: .milliseconds(3))
             }
@@ -234,7 +235,9 @@ struct ClaudeRereview8RuntimeTests {
         let h = try await harness(adapter)
         let created = h.message("Hi")
         await h.runtime.tick()
-        #expect(await h.eventually { await h.task(created.taskID)?.processMarker == adapter.closeRun.identity?.processMarker }, "닫기 실행의 정체를 적었다")
+        // tick은 턴을 띄우고 그 정체를 적은 뒤 돌아온다: 그 뒤에 도는 턴의 질문
+        adapter.asks.open()
+        #expect(await h.eventually(timeout: 60) { await h.task(created.taskID)?.processMarker == adapter.closeRun.identity?.processMarker }, "닫기 실행의 정체를 적었다")
         #expect(await h.task(created.taskID)?.alive == true)
     }
 }

@@ -15,23 +15,37 @@ struct ClaudeProcessIdentityTests {
         let identity: AgentProcessIdentity
     }
 
-    /// 지킴이 없이 정체만 보는 자식 (spawn marker 환경 변수를 실제 adapter처럼 넣는다)
+    /// 지킴이 없이 정체만 보는 자식 (spawn marker 환경 변수를 실제 adapter처럼 넣는다). 셸이 대본을 돌기 시작한 뒤에 돌려준다 (그 표시 파일):
+    /// 막 띄운 프로세스는 인자를 아직 읽지 못할 수 있어(`unprovable`) 바로 묻는 시험이 붐비는 기계에서 흔들린다
     func spawn(script: String = "while :; do sleep 1; done", marker: String = UUID().uuidString, extra: [String] = []) throws -> Child {
         let settings = box.root.appending(path: "config/\(marker).settings.json").path
+        let running = box.root.appending(path: "running-\(marker)").path
         let process = try ClaudeSpawner.spawn(
-            executable: "/bin/sh", arguments: ["-c", script, "sh", "--settings", settings] + extra,
+            executable: "/bin/sh", arguments: ["-c", ": > '\(running)'; " + script, "sh", "--settings", settings] + extra,
             environment: ["PATH": "/usr/bin:/bin", ClaudeProcessInspector.markerKey: marker], cwd: box.root.path
         )
         process.closeStandardStreams()
+        let deadline = Date().addingTimeInterval(30)
+        while !FileManager.default.fileExists(atPath: running), Date() < deadline { Thread.sleep(forTimeInterval: 0.01) }
         return Child(process: process, identity: AgentProcessIdentity(pid: Int(process.pid), startedAt: process.startedAt, processMarker: marker))
     }
 
-    var timing: ClaudeCodeTiming { ClaudeCodeTiming.testing }
+    var timing: ClaudeCodeTiming { ClaudeCodeTiming.ci }
+
+    /// 막히는 시험용 `within` (조건이 맞으면 바로 true, 포기 상한만). 정체 확인은 자식이 fork하는 순간 인자를 잠깐 읽지 못해 `unprovable`일 수 있다
+    static func soon(_ seconds: TimeInterval = 30, _ condition: () -> Bool) -> Bool {
+        let deadline = Date().addingTimeInterval(seconds)
+        repeat {
+            if condition() { return true }
+            Thread.sleep(forTimeInterval: 0.02)
+        } while Date() < deadline
+        return condition()
+    }
 
     @Test func aLiveChildIsAliveAndItsStartTimeIsTheKernels() throws {
         let child = try spawn()
         defer { _ = ClaudeProcessInspector.forceKill(child.process) }
-        #expect(ClaudeProcessInspector.liveness(child.identity) == .alive)
+        #expect(Self.soon { ClaudeProcessInspector.liveness(child.identity) == .alive })
         let kernel = try #require(ClaudeProcessInspector.startTime(pid: child.process.pid))
         #expect(abs(kernel.timeIntervalSince(child.identity.startedAt)) < 0.001)
         // 프로세스 그룹 리더 (POSIX_SPAWN_SETPGROUP)
@@ -47,7 +61,7 @@ struct ClaudeProcessIdentityTests {
         #expect(ClaudeProcessInspector.check(other) == .replaced)
         #expect(ClaudeProcessInspector.liveness(other) == .unknown)
         #expect(ClaudeProcessInspector.terminate(other, timing: timing, lineage: nil) == .unknown)
-        #expect(ClaudeProcessInspector.liveness(child.identity) == .alive, "다른 정체에는 신호를 보내지 않는다")
+        #expect(Self.soon { ClaudeProcessInspector.liveness(child.identity) == .alive }, "다른 정체에는 신호를 보내지 않는다")
     }
 
     @Test func aMissingMarkerCannotBeProvenSoNothingIsSignalled() throws {
@@ -57,7 +71,7 @@ struct ClaudeProcessIdentityTests {
         other.processMarker = UUID().uuidString
         #expect(ClaudeProcessInspector.liveness(other) == .unknown)
         #expect(ClaudeProcessInspector.terminate(other, timing: timing, lineage: nil) == .unknown)
-        #expect(ClaudeProcessInspector.liveness(child.identity) == .alive)
+        #expect(Self.soon { ClaudeProcessInspector.liveness(child.identity) == .alive })
     }
 
     @Test func pidsAtOrBelowOneAreNeverSignalled() {
@@ -80,25 +94,34 @@ struct ClaudeProcessIdentityTests {
     }
 
     @Test func interruptSendsSIGINTOnlyAfterTheIdentityChecks() async throws {
-        let child = try spawn()
-        #expect(ClaudeProcessInspector.interrupt(child.identity))
+        // 셸은 앞의 명령(sleep)이 SIGINT로 끝나지 않으면 SIGINT를 받고도 반복을 이어 간다(늦게 닿은 SIGINT): 받으면 기본 동작으로 다시 내 SIGINT로 끝난다.
+        // 셸이 어디에 있든(시작 중 · sleep 기다림) SIGINT로 끝난다
+        let child = try spawn(script: "trap 'trap - INT; kill -INT $$' INT; while :; do sleep 1; done")
+        let sent = Self.soon { ClaudeProcessInspector.interrupt(child.identity) }
+        #expect(sent)
+        guard sent else {
+            _ = ClaudeProcessInspector.forceKill(child.process)
+            return
+        }
         let status = try await offPool { child.process.waitForExit() }
         #expect(status.signal == SIGINT)
     }
 
     @Test func anOrphanThatIgnoresSIGINTIsKilledWithItsGroupAndNeverSIGTERMed() async throws {
         // SIGINT · SIGTERM을 무시하는 대본: SIGTERM을 쓰면 끝나지 않는다 → SIGKILL로 끝났다는 것이 SIGTERM 0의 증거다 (13.2 :513)
-        let child = try box.keep("trap '' INT TERM; sleep 600 & while :; do sleep 1; done")
+        let ready = box.root.appending(path: "ignoring.pid").path
+        let child = try box.keep("trap '' INT TERM; sleep 600 & echo $! > '\(ready)'; while :; do sleep 1; done")
         defer { killpg(child.kept.claudePID, SIGKILL) }
-        try await Task.sleep(for: .milliseconds(200))
+        // 신호를 무시하기 시작하고 구성원(sleep)을 띄운 뒤에 끝내기를 시작한다 (잠깐 기다리기 대신 대본이 알린다)
+        _ = try await Self.readPID(ready)
         let started = Date()
         let timing = self.timing
         let lineage = child.lineage
         let result = try await offPool { ClaudeProcessInspector.terminate(child.identity, timing: timing, lineage: lineage) }
         #expect(result == .ended(AgentExit(code: nil, signal: Int(SIGKILL))))
         #expect(Date().timeIntervalSince(started) >= timing.orphanInterruptGrace)
-        // 같은 그룹의 sleep(구성원)도 끝났다 (launchd가 좀비를 거둘 때까지 기다린다)
-        let deadline = Date().addingTimeInterval(2)
+        // 같은 그룹의 sleep(구성원)도 끝났다 (launchd가 좀비를 거둘 때까지 기다린다, 포기 상한만)
+        let deadline = Date().addingTimeInterval(30)
         while killpg(child.kept.claudePID, 0) == 0, Date() < deadline { try await Task.sleep(for: .milliseconds(20)) }
         #expect(killpg(child.kept.claudePID, 0) != 0)
     }
@@ -106,15 +129,16 @@ struct ClaudeProcessIdentityTests {
     /// 부모만 끝나고 같은 그룹의 자손이 남으면 아직 끝이 아니다 (8장 13, A6): 구성원을 끝내고 지킴이가 끝난 뒤에만 `.ended`
     @Test func a13TerminateEndsTheGroupNotJustTheParent() async throws {
         // 부모는 SIGINT에 끝나고(trap), 백그라운드 자식은 신호를 무시한 채 남는다 (job control 없음)
-        let child = try box.keep("trap 'exit 0' INT; sleep 600 & while :; do sleep 0.2; done")
+        let ready = box.root.appending(path: "group.pid").path
+        let child = try box.keep("trap 'exit 0' INT; sleep 600 & echo $! > '\(ready)'; while :; do sleep 0.2; done")
         let group = child.kept.claudePID
         defer { killpg(group, SIGKILL) }
-        try await Task.sleep(for: .milliseconds(300))
+        _ = try await Self.readPID(ready)
         let timing = self.timing
         let lineage = child.lineage
         let result = try await offPool { ClaudeProcessInspector.terminate(child.identity, timing: timing, lineage: lineage) }
         #expect(result == .ended(AgentExit(code: nil, signal: Int(SIGKILL))))
-        let deadline = Date().addingTimeInterval(2)
+        let deadline = Date().addingTimeInterval(30)
         while killpg(group, 0) == 0, Date() < deadline { try await Task.sleep(for: .milliseconds(20)) }
         #expect(killpg(group, 0) != 0, "그룹에 남은 것 0")
     }
@@ -123,8 +147,7 @@ struct ClaudeProcessIdentityTests {
     @Test func a13ADeadParentWithLiveDescendantsIsStillAlive() async throws {
         let child = try box.keep("sleep 600 & sleep 0.3; exit 0")
         defer { killpg(child.kept.claudePID, SIGKILL) }
-        for _ in 0..<100 where ClaudeProcessInspector.check(child.identity) == .same { try await Task.sleep(for: .milliseconds(20)) }
-        #expect(ClaudeProcessInspector.check(child.identity) != .same)
+        #expect(await Self.within { Self.ended(child.identity) }, "부모가 끝났다")
         #expect(ClaudeProcessInspector.liveness(child.identity, lineage: child.lineage) == .alive)
         let timing = self.timing
         let lineage = child.lineage
@@ -135,12 +158,12 @@ struct ClaudeProcessIdentityTests {
     /// 세션을 떠난(setsid) 자손은 그룹 밖이다: 책임 프로세스(지킴이)로 찾아 끝낸 뒤에만 `.ended`
     @Test func b4ASetsidDescendantIsFoundThroughTheKeeperAndEnded() async throws {
         let pidFile = box.root.appending(path: "detached.pid").path
-        let perl = "use POSIX; POSIX::setsid(); $SIG{INT} = q(IGNORE); sleep 600;"
-        let child = try box.keep("trap 'exit 0' INT; /usr/bin/perl -e '\(perl)' & echo $! > '\(pidFile)'; while :; do sleep 0.2; done")
+        // 자손은 세션을 떠나고 SIGINT를 무시하기 시작한 뒤에 pid를 알린다 (잠깐 기다리기 대신)
+        let perl = "use POSIX; POSIX::setsid(); $SIG{INT} = q(IGNORE); open(F, q(>\(pidFile))); print F $$; close F; sleep 600;"
+        let child = try box.keep("trap 'exit 0' INT; /usr/bin/perl -e '\(perl)' & while :; do sleep 0.2; done")
         defer { killpg(child.kept.claudePID, SIGKILL) }
         let detached = try await Self.readPID(pidFile)
         defer { kill(detached, SIGKILL) }
-        try await Task.sleep(for: .milliseconds(200))
         #expect(getsid(detached) == detached, "세션을 떠났다")
         #expect(ClaudeProcessInspector.members(child.keeper)?.contains { $0.pid == detached } == true)
         let timing = self.timing
@@ -156,7 +179,7 @@ struct ClaudeProcessIdentityTests {
         let child = try box.keep("/usr/bin/perl -e 'use POSIX; POSIX::setsid(); open(F, q(>\(pidFile))); print F $$; close F; sleep 600;' & sleep 0.3; exit 0")
         let detached = try await Self.readPID(pidFile)
         defer { kill(detached, SIGKILL) }
-        for _ in 0..<100 where ClaudeProcessInspector.check(child.identity) == .same { try await Task.sleep(for: .milliseconds(20)) }
+        #expect(await Self.within { Self.ended(child.identity) }, "부모가 끝났다")
         #expect(ClaudeProcessInspector.liveness(child.identity, lineage: child.lineage) == .alive)
         let timing = self.timing
         let lineage = child.lineage
@@ -189,8 +212,8 @@ struct ClaudeProcessIdentityTests {
     @Test func b4AChildThatExecsAfterItsParentEndedIsStillAMember() async throws {
         let pidFile = box.root.appending(path: "late-exec.pid").path
         let late = box.file("late.pl", "use POSIX; POSIX::setsid(); open(F, q(>\(pidFile))); print F $$; close F; sleep 600;")
-        // 중간(perl): 자식을 만들고 0.3초 뒤 끝난다. 자식은 0.8초 뒤에 exec한다
-        let child = try box.keep("/usr/bin/perl -e 'if (fork() == 0) { select(undef, undef, undef, 0.8); exec(q(/usr/bin/perl), q(\(late.path))); } select(undef, undef, undef, 0.3);'; exit 0")
+        // 중간(perl): 자식을 만들고 끝난다. 자식은 부모가 끝나 launchd 밑으로 옮겨진 것을 본 뒤에 exec한다 (시간이 아니라 그 사건으로)
+        let child = try box.keep("/usr/bin/perl -e 'if (fork() == 0) { select(undef, undef, undef, 0.02) while getppid() != 1; exec(q(/usr/bin/perl), q(\(late.path))); }'; exit 0")
         let orphan = try await Self.readPID(pidFile)
         defer { kill(orphan, SIGKILL) }
         #expect(ClaudeProcessInspector.uniqueIDs(pid: orphan)?.parent == 1, "부모가 끝난 뒤 exec")
@@ -274,19 +297,34 @@ struct ClaudeProcessIdentityTests {
         #expect(ClaudeProcessInspector.uniqueIDs(pid: getpid())?.own != parent.own)
     }
 
-    /// 그 pid가 사라졌다 (launchd가 좀비를 거둘 때까지 2초 기다린다)
+    /// 조건이 맞을 때까지 기다린다. 기한은 포기 상한일 뿐이다 (맞으면 바로 돌아온다, 느린 CI에서도 넉넉히). 맞은 그 결과를 돌려준다 (다시 묻지 않는다)
+    static func within(_ seconds: TimeInterval = 30, _ condition: () -> Bool) async -> Bool {
+        let deadline = Date().addingTimeInterval(seconds)
+        repeat {
+            if condition() { return true }
+            try? await Task.sleep(for: .milliseconds(20))
+        } while Date() < deadline
+        return condition()
+    }
+
+    /// 그 정체의 프로세스가 끝났다 (사라졌거나 좀비, 또는 pid를 다른 프로세스가 받았다). `unprovable`(인자를 잠깐 읽지 못함)은 끝이 아니다
+    static func ended(_ identity: AgentProcessIdentity) -> Bool {
+        let check = ClaudeProcessInspector.check(identity)
+        return check == .absent || check == .replaced
+    }
+
+    /// 그 pid가 사라졌다 (launchd가 좀비를 거둘 때까지 기다린다)
     static func vanished(_ pid: pid_t) async -> Bool {
-        let deadline = Date().addingTimeInterval(2)
-        while kill(pid, 0) == 0, Date() < deadline { try? await Task.sleep(for: .milliseconds(20)) }
-        return kill(pid, 0) != 0
+        await within { kill(pid, 0) != 0 }
     }
 
     /// 파일에 적힌 pid를 읽는다 (자식이 적을 때까지 기다린다)
     static func readPID(_ path: String) async throws -> pid_t {
-        for _ in 0..<250 {
+        let deadline = Date().addingTimeInterval(30)
+        repeat {
             if let text = try? String(contentsOfFile: path, encoding: .utf8), let value = Int32(text.trimmingCharacters(in: .whitespacesAndNewlines)), value > 1 { return value }
             try await Task.sleep(for: .milliseconds(20))
-        }
+        } while Date() < deadline
         throw CancellationError()
     }
 
@@ -298,7 +336,7 @@ struct ClaudeProcessIdentityTests {
         let wrong = ClaudeProcessInspector.Member(pid: child.process.pid, uniqueID: id + 1)
         ClaudeProcessInspector.signalVerified([wrong], SIGKILL)
         try await Task.sleep(for: .milliseconds(200))
-        #expect(ClaudeProcessInspector.liveness(child.identity) == .alive, "다른 세대면 신호 0")
+        #expect(Self.soon { ClaudeProcessInspector.liveness(child.identity) == .alive }, "다른 세대면 신호 0")
         let right = ClaudeProcessInspector.Member(pid: child.process.pid, uniqueID: id)
         ClaudeProcessInspector.signalVerified([right], SIGKILL)
         let status = try await offPool { child.process.waitForExit() }

@@ -18,6 +18,8 @@ final class GatedRunAdapter: AgentProcess, @unchecked Sendable {
     /// 턴이 정체 없이 실패한다 (잠금이 끝나지 않았으면 다음 writer를 띄우지 않는 adapter처럼)
     let turnFailsWithoutLeft = Mutex(false)
     let internalClose = Mutex<AgentSessionRun?>(nil)
+    /// 내부 닫기로 바뀌고 끝 사건을 내는 때: 런타임이 턴의 정체를 적은 뒤 시험이 연다 (잠깐 쉬기 대신)
+    let turnEnds = OrderGate()
     let startedTurns = Mutex(0)
     let interrupts = Mutex<[String]>([])
     let terminatedSessions = Mutex<[String]>([])
@@ -45,7 +47,7 @@ final class GatedRunAdapter: AgentProcess, @unchecked Sendable {
         if let close = internalClose.withLock({ $0 }) {
             current.withLock { $0 = AgentSessionRun(liveness: .alive, identity: identity) }
             Task {
-                try? await Task.sleep(for: .milliseconds(150))
+                await self.turnEnds.wait()
                 self.current.withLock { $0 = close }
                 await events.emit(.ended(AgentExit(code: 0)))
             }
@@ -140,11 +142,10 @@ struct ClaudeRereview7RuntimeTests {
         return answer
     }
 
-    /// 3초 유예를 실제 시간 안에 넘기도록 시계를 민다
+    /// 3초 유예를 실제 시간 안에 넘기도록 시계를 민다 (기다리는 쪽이 끝나 취소할 때까지: 정해진 횟수로 멈추면 늦게 잠든 런타임이 깨지 않는다)
     func advancing(_ h: BridgeHarness) -> Task<Void, Never> {
         Task {
-            for _ in 0..<200 {
-                if Task.isCancelled { return }
+            while !Task.isCancelled {
                 await h.clock.advance(by: 0.25)
                 try? await Task.sleep(for: .milliseconds(3))
             }
@@ -205,7 +206,9 @@ struct ClaudeRereview7RuntimeTests {
         let h = try await harness(adapter)
         let created = h.message("Hi")
         await h.runtime.tick()
-        #expect(await h.eventually {
+        // tick은 턴을 띄우고 그 정체를 적은 뒤 돌아온다: 그 뒤에 내부 닫기 · 끝 사건
+        adapter.turnEnds.open()
+        #expect(await h.eventually(timeout: 60) {
             let record = await h.task(created.taskID)
             let fact = await h.runtime.processFact(for: created.taskID, task: record)
             return record?.openRequestID == "req-1" && fact == .unverifiedOrphan

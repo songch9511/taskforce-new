@@ -10,7 +10,7 @@ import TaskforceAgentWire
 @Suite(.serialized)
 struct ClaudeRereview4Tests {
     let box = ClaudeSandbox()
-    let timing = ClaudeCodeTiming.testing
+    let timing = ClaudeCodeTiming.ci
 
     // MARK: 13장 — 가짜 claude의 setsid 자손
 
@@ -19,9 +19,9 @@ struct ClaudeRereview4Tests {
         let pidFile = box.root.appending(path: "setsid.pid").path
         let root = try box.keep("/usr/bin/perl -e 'use POSIX; POSIX::setsid(); open(F, q(>\(pidFile))); print F $$; close F; sleep 600;' & while :; do sleep 0.2; done")
         defer { killpg(root.kept.claudePID, SIGKILL) }
+        // 자손은 setsid 뒤에 pid를 적는다: 읽었으면 세션을 떠났다
         let child = try await ClaudeProcessIdentityTests.readPID(pidFile)
         defer { kill(child, SIGKILL) }
-        try await Task.sleep(for: .milliseconds(200))
         #expect(getsid(child) == child)
         #expect(ClaudeProcessInspector.members(root.keeper)?.contains { $0.pid == child } == true)
         let timing = self.timing
@@ -34,8 +34,7 @@ struct ClaudeRereview4Tests {
         }
         #expect(await ClaudeProcessIdentityTests.vanished(child))
         // 거두기는 감독 스레드가 한다 (지킴이 기록은 그 전에 이미 있다)
-        for _ in 0..<100 where !root.lineage.provenEnded { try await Task.sleep(for: .milliseconds(20)) }
-        #expect(root.lineage.provenEnded, "지킴이 정상 종료를 부모로서 받았다")
+        #expect(await ClaudeProcessIdentityTests.within { root.lineage.provenEnded }, "지킴이 정상 종료를 부모로서 받았다")
     }
 
     // MARK: 13장 — 뿌리가 먼저 끝남
@@ -46,13 +45,12 @@ struct ClaudeRereview4Tests {
         let root = try box.keep("/bin/sleep 600 </dev/null >/dev/null 2>&1 & echo $! > '\(pidFile)'; exit 0")
         let member = try await ClaudeProcessIdentityTests.readPID(pidFile)
         defer { kill(member, SIGKILL) }
-        for _ in 0..<100 where ClaudeProcessInspector.check(root.identity) == .same { try await Task.sleep(for: .milliseconds(20)) }
-        #expect(ClaudeProcessInspector.check(root.identity) != .same, "뿌리가 끝났다")
+        #expect(await ClaudeProcessIdentityTests.within { ClaudeProcessIdentityTests.ended(root.identity) }, "뿌리가 끝났다")
         #expect(!(await root.keeperEnded(timeout: 0.8)), "구성원이 남았다: 지킴이는 산다")
         #expect(ClaudeProcessInspector.liveness(root.identity, lineage: root.lineage) == .alive)
         kill(member, SIGKILL)
         #expect(await root.keeperEnded())
-        for _ in 0..<100 where !root.lineage.provenEnded { try await Task.sleep(for: .milliseconds(20)) }
+        #expect(await ClaudeProcessIdentityTests.within { root.lineage.provenEnded })
         #expect(ClaudeProcessInspector.liveness(root.identity, lineage: root.lineage) == .ended(AgentExit(code: nil)))
     }
 
@@ -87,8 +85,7 @@ struct ClaudeRereview4Tests {
         defer { kill(member, SIGKILL) }
         kill(root.kept.keeper.pid, SIGKILL)
         #expect(await root.keeperEnded())
-        for _ in 0..<100 where root.lineage.provable { try await Task.sleep(for: .milliseconds(20)) }
-        #expect(!root.lineage.provable, "비정상 종료를 받았다")
+        #expect(await ClaudeProcessIdentityTests.within { !root.lineage.provable }, "비정상 종료를 받았다")
         #expect(ClaudeProcessInspector.liveness(root.identity, lineage: root.lineage) == .unknown)
         #expect(await ClaudeRereview3ReproTests.adapter(box).liveness(root.identity) == .unknown)
         let timing = self.timing
@@ -104,8 +101,7 @@ struct ClaudeRereview4Tests {
     @Test func k5AMissingKeeperRecordIsUnknownAfterARelaunch() async throws {
         let root = try box.keep("exit 0")
         #expect(await root.keeperEnded())
-        for _ in 0..<100 where !root.lineage.provenEnded { try await Task.sleep(for: .milliseconds(20)) }
-        #expect(root.lineage.provenEnded, "부모로서 정상 종료를 받았다")
+        #expect(await ClaudeProcessIdentityTests.within { root.lineage.provenEnded }, "부모로서 정상 종료를 받았다")
         try FileManager.default.removeItem(at: ClaudeLineage.keeperFile(root.file))
         #expect(await ClaudeRereview3ReproTests.adapter(box).liveness(root.identity) == .unknown)
         // 다른 지킴이의 기록은 증거가 아니다
@@ -121,7 +117,7 @@ struct ClaudeRereview4Tests {
     @Test func k6WithNoMembersTheKeeperExitsNormallyAndTheSpawnIsEnded() async throws {
         let root = try box.keep("exit 0")
         #expect(await root.keeperEnded())
-        for _ in 0..<100 where root.kept.keeper.exitStatus == nil { try await Task.sleep(for: .milliseconds(20)) }
+        #expect(await ClaudeProcessIdentityTests.within { root.kept.keeper.exitStatus != nil })
         #expect(root.kept.keeper.exitStatus == ClaudeExitStatus(code: KeeperMain.Exit.ended.rawValue, signal: nil))
         #expect(KeeperRecord.read(ClaudeLineage.keeperFile(root.file))?.keeperID == root.kept.keeperID)
         #expect(ClaudeProcessInspector.liveness(root.identity, lineage: root.lineage) == .ended(AgentExit(code: nil)))
@@ -146,7 +142,7 @@ struct ClaudeRereview4Tests {
         let identity = root.identity
         let result = try await offPool { ClaudeProcessInspector.terminate(identity, timing: timing, lineage: fallback) }
         #expect(result == .unknown)
-        #expect(ClaudeProcessInspector.check(root.identity) != .same, "claude는 끝냈다")
+        #expect(await ClaudeProcessIdentityTests.within { ClaudeProcessIdentityTests.ended(root.identity) }, "claude는 끝냈다")
         #expect(kill(member, 0) == 0, "구성원에는 신호 0")
     }
 
@@ -163,9 +159,8 @@ struct ClaudeRereview4Tests {
         }
         #expect(fake.log.lines.contains { $0.hasPrefix("claude_lineage_unrecorded") && $0.contains("root_id") })
         #expect(!fake.log.events.contains("claude_spawn"))
-        try await Task.sleep(for: .milliseconds(300))
         if let pid = fake.report(0)?["pid"] as? Int {
-            #expect(ClaudeRereviewProcessTests.gone(pid), "띄운 프로세스는 멈췄다")
+            #expect(await ClaudeProcessIdentityTests.within { ClaudeRereviewProcessTests.gone(pid) }, "띄운 프로세스는 멈췄다")
         }
     }
 
@@ -175,7 +170,7 @@ struct ClaudeRereview4Tests {
     @Test func r7AFailedKeeperLookupIsNeverReadAsGone() async throws {
         let root = try box.keep("/bin/sleep 600 </dev/null >/dev/null 2>&1 & exit 0")
         defer { killpg(root.kept.claudePID, SIGKILL) }
-        for _ in 0..<100 where ClaudeProcessInspector.check(root.identity) == .same { try await Task.sleep(for: .milliseconds(20)) }
+        #expect(await ClaudeProcessIdentityTests.within { ClaudeProcessIdentityTests.ended(root.identity) }, "뿌리가 끝났다")
         let keeperPID = root.kept.keeper.pid
         var failing = KeeperMembers.Lookups.live
         failing.generation = { $0 == keeperPID ? .failed : AgentProcesses.generation(pid: $0) }

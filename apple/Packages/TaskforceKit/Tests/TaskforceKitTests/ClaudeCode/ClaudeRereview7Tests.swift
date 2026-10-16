@@ -117,9 +117,11 @@ struct ClaudeRereview7Tests {
         }))
         let started = Date()
         let response = try await Self.exchange(path, Self.request("toolu_q", remaining: 0.4))
-        #expect(response.decision == .deny)
-        #expect(Date().timeIntervalSince(started) < 0.45, "훅이 끊기 전에 정했다")
-        #expect(await ClaudeRereview5ReproTests.waitUntil(3) { late.value != nil })
+        // 훅 기한을 보지 않았다면 처리기의 allow(0.5초)가 bridge 자기 예산(1.2초) 안에 확정돼 돌아왔다: deny + 늦은 확정 거절이 훅 기한으로 정했다는 증거다.
+        // 시간은 자기 예산보다 앞이었는지만 본다 (부하에서도 결과가 뒤집히지 않는 상한)
+        #expect(response.decision == .deny, "훅이 끊기 전에 시간 초과로 정했다")
+        #expect(Date().timeIntervalSince(started) < HookSocketServer.responseBudget, "자기 예산이 아니라 훅 기한으로")
+        #expect(await ClaudeRereview5ReproTests.waitUntil(30) { late.value != nil })
         #expect(late.value == false, "기한 뒤의 답은 확정되지 않는다")
     }
 

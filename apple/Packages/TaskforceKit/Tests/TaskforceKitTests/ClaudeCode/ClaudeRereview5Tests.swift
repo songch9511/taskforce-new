@@ -17,8 +17,12 @@ struct ClaudeRereview5Tests {
 
     /// 도는 동안 세션 잠금(0600)이 이번 spawn을 가리키고, 끝을 증명하면 풀린다
     @Test func t1TheLockNamesTheSpawnWhileItRunsAndIsReleasedOnAProvenEnd() async throws {
-        let fake = try FakeClaude()
-        try fake.scenario(["runs": [["steps": [["text": "ok"]], "linger_after_result": 1.0]]])
+        // 가짜는 결과 뒤 시험이 표시 파일을 만들 때까지 머문다 (1초 머물기 대신): 그 사이 잠금을 본다. 결과 뒤 SIGINT 유예도 그동안 넉넉히
+        var timing = ClaudeCodeTiming.ci
+        timing.exitAfterResult = 60
+        let fake = try FakeClaude(timing: timing)
+        let gate = fake.box.root.appending(path: "after-result-go").path
+        try fake.scenario(["runs": [["steps": [["text": "ok"]], "wait_for_file_after_result": gate]]])
         let events = EventLog()
         let identity = try await fake.turn(events: events)
         let lock = fake.box.sessionsRoot.appending(path: "lineage/\(ClaudeTest.session).lock")
@@ -26,6 +30,7 @@ struct ClaudeRereview5Tests {
         let attributes = try FileManager.default.attributesOfItem(atPath: lock.path)
         #expect((attributes[.posixPermissions] as? NSNumber)?.intValue == 0o600)
         #expect(await fake.process.sessionRun(ClaudeTest.session)?.liveness == .alive)
+        FileManager.default.createFile(atPath: gate, contents: Data())
         #expect(await events.wait { FakeClaude.ended($0) })
         #expect(!FileManager.default.fileExists(atPath: lock.path), "끝을 증명하면 잠금을 푼다")
         #expect(await fake.process.sessionRun(ClaudeTest.session)?.liveness == .ended(AgentExit(code: nil)))
