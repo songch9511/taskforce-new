@@ -55,6 +55,15 @@ export function taskforceRefs(attachments: readonly Attachment[], check: { missi
   return { action_ids: live("action"), run_ids: live("run"), artifact_ids: live("artifact").filter((id) => execution.has(id)) };
 }
 
+/**
+ * 대상 taskforce의 added context 칩 id: 이슈 정리(D4c-2)가 프로젝트 지칭으로 쓴다. 지워진(missing) 칩은 뺀다 — taskforceRefs와 같은 규칙
+ * (auto 칩은 후보일 뿐이라 지칭이 아니다, Assistant 계약 v3 2.2)
+ */
+export function taskforceContextIds(attachments: readonly Attachment[], check: { missing: readonly Attachment[] }): string[] {
+  const gone = new Set(check.missing.map((item) => `${item.kind}:${item.id.toLowerCase()}`));
+  return added(attachments, "context").filter((id) => !gone.has(`context:${id}`));
+}
+
 export type AttachmentCheck = {
   /** 내 것이 아니거나 없다 */
   missing: Attachment[];

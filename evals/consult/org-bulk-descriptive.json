@@ -1,0 +1,102 @@
+{
+  "id": "org-bulk-descriptive",
+  "description": "AC-27 (Q8): 설명으로 여러 개('Shape 관련 다 옮겨줘') — 후보 검색은 후속. 이슈를 붙이거나 #번호로 말해 달라고 묻고 쓰기 0",
+  "maps_to": [
+    "AC-27"
+  ],
+  "asked_at": "2026-10-15T10:00:00+09:00",
+  "message": "Shape 관련 이슈 다 Launch로 옮겨줘",
+  "projects": [
+    {
+      "id": "p_launch",
+      "name": "Launch"
+    },
+    {
+      "id": "p_tf",
+      "name": "Taskforce"
+    }
+  ],
+  "records": {
+    "open_actions": [
+      {
+        "id": "i139",
+        "title": "Shape 디자인 확정",
+        "number": 139,
+        "version": 2,
+        "projects": [
+          "p_tf"
+        ],
+        "open_sessions": 1,
+        "evidence_count": 2
+      },
+      {
+        "id": "i140",
+        "title": "견적서 보내기",
+        "number": 140,
+        "version": 2,
+        "projects": [],
+        "open_sessions": 1,
+        "evidence_count": 2
+      },
+      {
+        "id": "i141",
+        "title": "회의록 정리",
+        "number": 141,
+        "version": 2,
+        "projects": [],
+        "open_sessions": 1,
+        "evidence_count": 2
+      },
+      {
+        "id": "i144",
+        "title": "디자인 확정 (중복)",
+        "number": 144,
+        "version": 2,
+        "projects": [],
+        "open_sessions": 1,
+        "evidence_count": 2
+      },
+      {
+        "id": "i145",
+        "title": "Shape 일정 정리",
+        "number": 145,
+        "version": 2,
+        "projects": [],
+        "open_sessions": 1,
+        "evidence_count": 2
+      },
+      {
+        "id": "i146",
+        "title": "Shape 가격표 확정",
+        "number": 146,
+        "version": 2,
+        "projects": [],
+        "open_sessions": 1,
+        "evidence_count": 2
+      }
+    ]
+  },
+  "expect": {
+    "intent_any": [
+      "organize"
+    ],
+    "route_any": [
+      "organize"
+    ],
+    "organize": {
+      "op": "move",
+      "targets": [],
+      "outcome": "ask"
+    },
+    "asks": "organize",
+    "memory_writes": {
+      "min": 0,
+      "max": 0
+    },
+    "reply_contains_any": [
+      "#번호",
+      "붙이"
+    ]
+  },
+  "origin": "synthetic"
+}

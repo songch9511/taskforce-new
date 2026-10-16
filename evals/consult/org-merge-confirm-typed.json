@@ -1,0 +1,95 @@
+{
+  "id": "org-merge-confirm-typed",
+  "description": "AC-29 (en): 앞 답이 병합 카드(열림)였고 \"yes\" — 같은 확인을 글로 (계약 5.2의 메시지 그대로)",
+  "maps_to": [
+    "AC-29"
+  ],
+  "asked_at": "2026-10-15T10:00:00+09:00",
+  "message": "yes",
+  "projects": [
+    {
+      "id": "p_launch",
+      "name": "Launch"
+    },
+    {
+      "id": "p_tf",
+      "name": "Taskforce"
+    }
+  ],
+  "records": {
+    "open_actions": [
+      {
+        "id": "i139",
+        "title": "Shape 디자인 확정",
+        "number": 139,
+        "version": 2,
+        "projects": [
+          "p_tf"
+        ],
+        "open_sessions": 1,
+        "evidence_count": 2
+      },
+      {
+        "id": "i140",
+        "title": "견적서 보내기",
+        "number": 140,
+        "version": 2,
+        "projects": [],
+        "open_sessions": 1,
+        "evidence_count": 2
+      },
+      {
+        "id": "i141",
+        "title": "회의록 정리",
+        "number": 141,
+        "version": 2,
+        "projects": [],
+        "open_sessions": 1,
+        "evidence_count": 2
+      },
+      {
+        "id": "i144",
+        "title": "디자인 확정 (중복)",
+        "number": 144,
+        "version": 2,
+        "projects": [],
+        "open_sessions": 1,
+        "evidence_count": 2
+      }
+    ]
+  },
+  "history": [
+    {
+      "role": "user",
+      "text": "merge #144 into #139"
+    },
+    {
+      "role": "assistant",
+      "text": "Merge #144 into #139?",
+      "asks": "confirm",
+      "proposal": {
+        "kind": "merge",
+        "targets": [
+          "i144",
+          "i139"
+        ],
+        "into": "i139",
+        "state": "open"
+      }
+    }
+  ],
+  "expect": {
+    "intent_any": [
+      "adopt"
+    ],
+    "route_any": [
+      "adopt"
+    ],
+    "adopt": true,
+    "memory_writes": {
+      "min": 0,
+      "max": 0
+    }
+  },
+  "origin": "synthetic"
+}

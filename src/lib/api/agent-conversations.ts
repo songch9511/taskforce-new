@@ -2,7 +2,7 @@ import { answerAgentApproval } from "@/lib/agents/approvals";
 import { z } from "zod";
 
 import { AnswerInputError, answerFromRoute, loadAnswerTask, type AnswerTask } from "@/lib/agents/answers";
-import { agentSelected, attachmentsFromLegacyRefs, checkAttachments, normalizeAttachments, taskforceRefs, taskforceSelected, type AttachmentCheck } from "@/lib/agents/attachments";
+import { agentSelected, attachmentsFromLegacyRefs, checkAttachments, normalizeAttachments, taskforceContextIds, taskforceRefs, taskforceSelected, type AttachmentCheck } from "@/lib/agents/attachments";
 import { createAgentConversation, readConversationTarget, type ConversationTargetInfo } from "@/lib/agents/conversations";
 import {
   agentMessageExists,
@@ -183,7 +183,7 @@ export async function prepareTaskforceAttachments<User>(
   if (!deps.memoryEnabled() && chips.some((item) => item.kind === "context")) return { status: "context_off" };
   const check = await deps.check(user, chips);
   if (check.missing.length && !options.known) return { status: "missing" };
-  return { status: "ok", refs: taskforceRefs(chips, check), selected: taskforceSelected(chips), attachments: chips };
+  return { status: "ok", refs: taskforceRefs(chips, check), selected: taskforceSelected(chips), attachments: chips, context_ids: taskforceContextIds(chips, check) };
 }
 
 // ─────────────────────────── Send again ───────────────────────────

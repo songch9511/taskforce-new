@@ -1,0 +1,85 @@
+{
+  "id": "org-delete-one-ko",
+  "description": "AC-29: '#141 지워줘' — 확인 전 쓰기 0, 확인 카드 한 번",
+  "maps_to": [
+    "AC-29"
+  ],
+  "asked_at": "2026-10-15T10:00:00+09:00",
+  "message": "#141 지워줘",
+  "projects": [
+    {
+      "id": "p_launch",
+      "name": "Launch"
+    },
+    {
+      "id": "p_tf",
+      "name": "Taskforce"
+    }
+  ],
+  "records": {
+    "open_actions": [
+      {
+        "id": "i139",
+        "title": "Shape 디자인 확정",
+        "number": 139,
+        "version": 2,
+        "projects": [
+          "p_tf"
+        ],
+        "open_sessions": 1,
+        "evidence_count": 2
+      },
+      {
+        "id": "i140",
+        "title": "견적서 보내기",
+        "number": 140,
+        "version": 2,
+        "projects": [],
+        "open_sessions": 1,
+        "evidence_count": 2
+      },
+      {
+        "id": "i141",
+        "title": "회의록 정리",
+        "number": 141,
+        "version": 2,
+        "projects": [],
+        "open_sessions": 1,
+        "evidence_count": 2
+      },
+      {
+        "id": "i144",
+        "title": "디자인 확정 (중복)",
+        "number": 144,
+        "version": 2,
+        "projects": [],
+        "open_sessions": 1,
+        "evidence_count": 2
+      }
+    ]
+  },
+  "expect": {
+    "intent_any": [
+      "organize"
+    ],
+    "route_any": [
+      "organize"
+    ],
+    "organize": {
+      "op": "delete",
+      "targets": [
+        "i141"
+      ],
+      "outcome": "card"
+    },
+    "asks": "confirm",
+    "memory_writes": {
+      "min": 0,
+      "max": 0
+    },
+    "reply_contains_any": [
+      "지울까요"
+    ]
+  },
+  "origin": "synthetic"
+}

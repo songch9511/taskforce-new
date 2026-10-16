@@ -1,0 +1,83 @@
+{
+  "id": "org-move-two",
+  "description": "AC-27: '#139 #140 Launch로' — 이슈 둘을 한 번에 (3개까지)",
+  "maps_to": [
+    "AC-27"
+  ],
+  "asked_at": "2026-10-15T10:00:00+09:00",
+  "message": "#139 #140 Launch로 옮겨줘",
+  "projects": [
+    {
+      "id": "p_launch",
+      "name": "Launch"
+    },
+    {
+      "id": "p_tf",
+      "name": "Taskforce"
+    }
+  ],
+  "records": {
+    "open_actions": [
+      {
+        "id": "i139",
+        "title": "Shape 디자인 확정",
+        "number": 139,
+        "version": 2,
+        "projects": [
+          "p_tf"
+        ],
+        "open_sessions": 1,
+        "evidence_count": 2
+      },
+      {
+        "id": "i140",
+        "title": "견적서 보내기",
+        "number": 140,
+        "version": 2,
+        "projects": [],
+        "open_sessions": 1,
+        "evidence_count": 2
+      },
+      {
+        "id": "i141",
+        "title": "회의록 정리",
+        "number": 141,
+        "version": 2,
+        "projects": [],
+        "open_sessions": 1,
+        "evidence_count": 2
+      },
+      {
+        "id": "i144",
+        "title": "디자인 확정 (중복)",
+        "number": 144,
+        "version": 2,
+        "projects": [],
+        "open_sessions": 1,
+        "evidence_count": 2
+      }
+    ]
+  },
+  "expect": {
+    "intent_any": [
+      "organize"
+    ],
+    "route_any": [
+      "organize"
+    ],
+    "organize": {
+      "op": "move",
+      "targets": [
+        "i139",
+        "i140"
+      ],
+      "outcome": "write",
+      "project": "p_launch"
+    },
+    "memory_writes": {
+      "min": 0,
+      "max": 0
+    }
+  },
+  "origin": "synthetic"
+}

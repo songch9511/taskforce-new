@@ -680,7 +680,8 @@ export type BillingStatus = z.infer<typeof billingStatusSchema>;
 // Swift 짝: TaskforceKit AgentBridgeContracts.swift (사건 봉투 · capability · bridge 명령 · heartbeat).
 // ════════════════════════════════════════════════════════════
 
-const idListSchema = z.array(z.uuid()).max(100);
+// id 목록은 guid다: start_agent_turn이 sha256에서 만드는 이슈 id(OA D1c, 버전 · variant 자리가 RFC 4122와 다르다)도 refs에 들어간다 (z.uuid()면 refs 전체가 읽히지 않는다)
+const idListSchema = z.array(z.guid()).max(100);
 const jsonObjectSchema = z.record(z.string(), z.unknown());
 
 /** capability · 사건의 adapter 이름: "agent:<이름>" (예: agent:claude-code) */
@@ -697,7 +698,7 @@ export type ContextTier = z.infer<typeof contextTierSchema>;
 
 /** 의도 (Jev choice로 가른다). inform · correct는 memory_items에만 쓰고 run · Action을 만들지 않는다 (아키텍처 5.6) */
 export const intentKindSchema = z.enum([
-  "lookup", "consult", "adopt", "instruct", "modify", "answer", "stop", "preference", "inform", "correct", "other",
+  "lookup", "consult", "adopt", "instruct", "modify", "answer", "stop", "preference", "inform", "correct", "other", "organize",
 ]);
 export type IntentKind = z.infer<typeof intentKindSchema>;
 
@@ -712,7 +713,7 @@ export type MessageIntent = z.infer<typeof messageIntentSchema>;
 /** assistant 메시지의 제안. 채택은 proposal id로 멱등이다 (같은 제안을 두 번 채택해도 Action · run은 하나) */
 export const proposalSchema = z.object({
   id: z.uuid(),
-  kind: z.enum(["create_action", "run", "modify", "stop", "preference"]),
+  kind: z.enum(["create_action", "run", "modify", "stop", "preference", "move", "delete", "merge"]),
   payload_hash: z.string().min(1).max(128),
   state: z.enum(["open", "adopted", "superseded", "dismissed"]),
 });
@@ -782,6 +783,70 @@ export type PostConversationMessageRequest = z.infer<typeof postConversationMess
 export const responseSegmentSchema = z.object({ text: z.string(), tier: contextTierSchema });
 export type ResponseSegment = z.infer<typeof responseSegmentSchema>;
 
+// --- D4c-2 (content 앞) ---
+// organize 의도(이슈 이동 · 삭제 · 병합)의 제안 내용과 답 내용. conversationMessageContentSchema가 모듈 로드 때 이것을 쓰므로 그 앞에 둔다.
+
+export const organizeOpSchema = z.enum(["move", "remove", "delete", "merge"]);
+export type OrganizeOp = z.infer<typeof organizeOpSchema>;
+export const organizeContextRefSchema = z.strictObject({ id: z.uuid(), name: z.string().max(200), version: z.number().int().positive() });
+/** 확인 카드 · 이동 질문이 보이는 이슈 한 줄 (action_id는 guid: 에이전트 턴이 만든 이슈 id도 받는다). version은 카드가 본 Action.version (낡음 판정), 제목 · 숫자는 hash에 넣지 않는다 */
+export const organizeTargetSchema = z.strictObject({
+  action_id: z.guid(),
+  number: z.number().int().positive(),
+  title: z.string().max(200),
+  version: z.number().int().nonnegative(),
+  contexts: z.array(z.strictObject({ id: z.uuid(), name: z.string().max(200) })).max(5),
+  open_sessions: z.number().int().nonnegative(),
+  evidence_count: z.number().int().nonnegative(),
+});
+export type OrganizeTarget = z.infer<typeof organizeTargetSchema>;
+/** 제안 내용: create_action은 지금 모양 그대로(strict 아님), 나머지는 D4c-2. to null = 빼기, from null = 넣기 */
+export const proposalPayloadSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("create_action"), title: z.string() }),
+  z.strictObject({
+    kind: z.literal("move"),
+    targets: z.array(organizeTargetSchema).min(1).max(3),
+    from: organizeContextRefSchema.nullable(),
+    to: organizeContextRefSchema.nullable(),
+  }),
+  z.strictObject({ kind: z.literal("delete"), targets: z.array(organizeTargetSchema).min(1).max(3) }),
+  z.strictObject({ kind: z.literal("merge"), from: organizeTargetSchema, into: organizeTargetSchema }),
+]);
+export type ProposalPayloadV2 = z.infer<typeof proposalPayloadSchema>;
+// contextMembershipEffectSchema(아래 S3b)와 같은 모양이다. 이 스키마가 더 앞에서 쓰여 따로 두었고, 같음은 contract-v2.test.ts가 본다
+const membershipChangeSchema = z.strictObject({
+  added: z.array(z.strictObject({ context_id: z.uuid(), context_version: z.number().int().positive() })),
+  removed: z.array(z.strictObject({ context_id: z.uuid(), context_version: z.number().int().positive() })),
+});
+/** 답이 한 정리: pending(한 번 더 물음) · moved(말로 이동, change는 TS가 null로 보내고 SQL이 쓰기 직후 값으로 채운다) · deleted · merged(확인 event 행) */
+export const organizeContentSchema = z.discriminatedUnion("state", [
+  z.strictObject({
+    state: z.literal("pending"),
+    op: organizeOpSchema.nullable(),
+    action_ids: z.array(z.guid()).max(3),
+    context_id: z.uuid().nullable(),
+    missing: z.enum(["issue", "project", "from", "op", "into"]),
+  }),
+  z.strictObject({
+    state: z.literal("moved"),
+    results: z
+      .array(
+        z.strictObject({
+          action_id: z.guid(),
+          number: z.number().int().positive(),
+          from_context_id: z.uuid().nullable(),
+          to_context_id: z.uuid().nullable(),
+          change: membershipChangeSchema.nullable(),
+        }),
+      )
+      .min(1)
+      .max(3),
+  }),
+  z.strictObject({ state: z.literal("deleted"), action_ids: z.array(z.guid()).min(1).max(3) }),
+  z.strictObject({ state: z.literal("merged"), from_action_id: z.guid(), into_action_id: z.guid() }),
+]);
+export type OrganizeContent = z.infer<typeof organizeContentSchema>;
+
 /**
  * assistant 답의 내용 (conversation_messages.content, B2). 앱이 RLS로 읽어 대화를 복원한다. 글(구간 · 인용 · 제안 글)이 들어 있어
  * 대화 글 보관 기한에 text와 함께 비운다. 빠진 값은 기본값으로 읽는다 (옛 행 · 사용자 메시지는 content가 없다)
@@ -790,9 +855,11 @@ export const conversationMessageContentSchema = z.object({
   segments: z.array(responseSegmentSchema).default([]),
   citations: z.array(askCitationSchema).default([]),
   /** refs.proposal의 내용. payload_hash = 이 객체의 sha256 (채택할 때 서버가 다시 견준다) */
-  proposal: z.object({ kind: z.literal("create_action"), title: z.string() }).nullable().default(null),
-  /** 이 답이 사용자에게 물은 것: remember(기억해 둘까요) · referent(어느 일인가요, 후보 ≤ 3) · clarify(무엇을 원하나요) · adopt(추가할까요) */
-  asks: z.enum(["remember", "referent", "clarify", "adopt"]).nullable().default(null),
+  proposal: proposalPayloadSchema.nullable().default(null),
+  /** 이 답이 사용자에게 물은 것: remember(기억해 둘까요) · referent(어느 일인가요, 후보 ≤ 3) · clarify(무엇을 원하나요) · adopt(추가할까요 · 옮길까요) · confirm(삭제 · 병합 카드) · organize(정리할 때 모자란 것) */
+  asks: z.enum(["remember", "referent", "clarify", "adopt", "confirm", "organize"]).nullable().default(null),
+  /** D4c-2: 이 답이 한 정리. 옛 행에는 없다(없음 = null). optional인 이유: 이 키가 없는 기존 리터럴 · 앱 디코더가 그대로 읽는다 */
+  organize: organizeContentSchema.nullable().optional(),
   /** 답을 만들 때 본 범위 · 기억 · 원문 · 할 일 (id만, 글 없음). context_version은 그때의 범위 version */
   used: z
     .object({
@@ -800,7 +867,7 @@ export const conversationMessageContentSchema = z.object({
       context_version: z.number().int().positive().nullable(),
       memory_item_ids: z.array(z.uuid()).default([]),
       source_ids: z.array(z.uuid()).default([]),
-      action_ids: z.array(z.uuid()).default([]),
+      action_ids: z.array(z.guid()).default([]), // guid: 에이전트 턴이 만든 이슈 id(sha256에서 만든 값)도 읽힌다
     })
     .nullable()
     .default(null),
@@ -1015,7 +1082,7 @@ export const contextMemberSchema = z.object({
   id: z.uuid(),
   context_id: z.uuid(),
   member_kind: contextMemberKindSchema,
-  action_id: z.uuid().nullable(),
+  action_id: z.guid().nullable(),
   source_id: z.uuid().nullable(),
   person_id: z.uuid().nullable(),
   origin: contextMemberOriginSchema,
@@ -1027,7 +1094,7 @@ export const contextMemberSchema = z.object({
 });
 export type ContextMember = z.infer<typeof contextMemberSchema>;
 
-const membershipTargetSchema = z.object({ op: z.enum(["add", "remove"]), member_kind: contextMemberKindSchema, member_id: z.uuid() });
+const membershipTargetSchema = z.object({ op: z.enum(["add", "remove"]), member_kind: contextMemberKindSchema, member_id: z.guid() });
 
 /** 앱이 보내는 멤버십 변경의 대상 (A2 스키마, 조건 없음). S3b route는 조건부 contextMembershipWriteRequestSchema를 받는다. origin은 언제나 user다 (Set by you · Undo) */
 export const contextMembershipRequestSchema = membershipTargetSchema.strict();
@@ -1047,7 +1114,7 @@ export type ContextMembershipChange = z.infer<typeof contextMembershipChangeSche
 
 /** 넣기 · 빼기 요청 (POST /api/v2/contexts/{id}/members). origin은 언제나 user다. S3b는 할 일(action)만 받는다. contextMembershipRequestSchema(A2)에 조건을 더한 것 */
 export const contextMembershipWriteRequestSchema = z
-  .object({ op: z.enum(["add", "remove"]), member_kind: z.literal("action"), member_id: z.uuid(), expected_context_version: z.number().int().positive() })
+  .object({ op: z.enum(["add", "remove"]), member_kind: z.literal("action"), member_id: z.guid(), expected_context_version: z.number().int().positive() })
   .strict();
 export type ContextMembershipWriteRequest = z.infer<typeof contextMembershipWriteRequestSchema>;
 
@@ -1058,7 +1125,7 @@ export type ContextMembershipWriteRequest = z.infer<typeof contextMembershipWrit
 export const contextMemberMoveRequestSchema = z
   .object({
     member_kind: z.literal("action"),
-    member_id: z.uuid(),
+    member_id: z.guid(),
     from_context_id: z.uuid(),
     expected_context_version: z.number().int().positive(),
     expected_from_context_version: z.number().int().positive(),
@@ -1860,3 +1927,30 @@ export const resolvePathConflictRequestSchema = z.strictObject({ keep: z.enum(["
 export type ResolvePathConflictRequest = z.infer<typeof resolvePathConflictRequestSchema>;
 export const resolvePathConflictResponseSchema = z.strictObject({ status: z.literal("resolved") });
 export type ResolvePathConflictResponse = z.infer<typeof resolvePathConflictResponseSchema>;
+
+// --- D4c-2 ---
+// 이슈 삭제 · 병합 확인 카드(제안 delete · merge)의 버튼. 쓰기는 conversation_confirm_proposal 한 트랜잭션이고 AI를 부르지 않는다.
+
+/** POST /api/v2/conversations/{id}/proposals/{proposal_id}/confirm · /dismiss — 본문은 빈 객체(또는 없음) */
+export const proposalActionRequestSchema = z.strictObject({});
+export type ProposalActionRequest = z.infer<typeof proposalActionRequestSchema>;
+/** 200: confirmed(이 요청이 썼다) · already(이미 확인한 카드: 쓰기 0, 두 번 눌러도 한 번). event = 대화의 기록 줄(role event), 찾지 못하면 null */
+export const proposalConfirmResponseSchema = z.strictObject({
+  status: z.enum(["confirmed", "already"]),
+  op: z.enum(["delete", "merge"]),
+  action_ids: z.array(z.guid()).min(1).max(3),
+  event: conversationMessageSchema.nullable(),
+});
+export type ProposalConfirmResponse = z.infer<typeof proposalConfirmResponseSchema>;
+export const proposalDismissResponseSchema = z.strictObject({ status: z.enum(["dismissed", "already"]) });
+export type ProposalDismissResponse = z.infer<typeof proposalDismissResponseSchema>;
+
+/** 409: superseded = 대상이 카드 뒤에 바뀜(쓰기 0, 새 카드가 대화에 있다) · not_open = 취소됐거나 다른 제안으로 대체됨. busy_retry는 D1d 코드를 같이 쓴다(잠금 경합이 재시도를 넘김: 쓰기 0, 다시 보내도 된다) */
+export const organizeErrorCodeSchema = z.enum(["superseded", "not_open"]);
+export const apiErrorV2OrganizeCodeSchema = z.enum([...apiErrorV2CodeSchema.options, ...organizeErrorCodeSchema.options, "busy_retry"]);
+export const proposalConflictSchema = z.object({
+  error: z.object({ code: apiErrorV2OrganizeCodeSchema, message: z.string() }),
+  /** superseded일 때 대화에 새로 낸 카드 메시지 (앱은 대화를 다시 읽는다) */
+  card_message_id: z.uuid().optional(),
+});
+export type ProposalConflict = z.infer<typeof proposalConflictSchema>;

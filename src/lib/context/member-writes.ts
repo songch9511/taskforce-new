@@ -8,7 +8,7 @@ import { flagEnabled } from "@/lib/flags";
 import { ContextGateOffError } from "./store";
 
 // 사용자가 하는 멤버십 쓰기의 DB 쪽 (S3b, service role): 할 일을 범위에 넣기 · 빼기 · 옮기기 (ProjectLink "Set by you" · Undo). 모든 쿼리를 user_id로 좁힌다:
-// 남의 · 없는 · 보관된 범위와 남의 · 없는 할 일은 같은 not_found다. 규칙은 DB 함수 change_context_membership_by_user(20261108000000)에 있고 여기는 부르기만 한다
+// 남의 · 없는 · 보관된 범위와 남의 · 없는 할 일은 같은 not_found다. 규칙은 DB 함수 change_context_membership_by_user(20261108000000)에 있고(D4c-2의 change_context_membership_with_metric이 그것을 그대로 부르고 실제 변화가 있을 때만 issue_moved를 남긴다) 여기는 부르기만 한다
 // (origin user로 넣기 · 승격 · 빼기 표시 removed_at · 요청이 본 범위 version과 지금이 다르면 쓰기 0인 조건부 쓰기 · 실제 변화 · 두 범위를 검증한 뒤에만 쓰는 옮기기 · 잠금 순서).
 // AI를 부르지 않는다. 실행(src/lib/execution)은 가져오지 않는다. gate: MEMORY_ENABLED. 꺼져 있으면 DB를 부르지 않는다 (ContextGateOffError).
 
@@ -20,6 +20,8 @@ export type ContextMemberChange = {
   add?: { contextId: string; expectedVersion: number };
   /** 뺄 범위 (내 active 범위)와 요청이 본 그 범위의 version. 없으면 넣기만. 둘 다 주면 옮기기(한 트랜잭션)이고 서로 달라야 한다 */
   remove?: { contextId: string; expectedVersion: number };
+  /** 이동 지표 issue_moved의 via (D4c-2): 멤버 route는 menu(기본), 말로 이동은 SQL(finish_turn)이 talk로 센다 */
+  via?: "menu" | "talk";
 };
 
 /** 쓴 뒤의 행, 쓰기 직후의 범위 version, 확인된 멤버가 실제로 바뀌었나 (이미 멤버였거나 멤버가 아니던 범위는 false) */
@@ -49,13 +51,14 @@ const written = (member: unknown, version: number | null, changed: boolean): Con
 export async function changeContextMembership(admin: SupabaseClient, userId: string, change: ContextMemberChange, env: Env = process.env): Promise<ContextMemberOutcome> {
   if (!flagEnabled("MEMORY_ENABLED", env)) throw new ContextGateOffError("MEMORY_ENABLED");
   const { data } = await admin
-    .rpc("change_context_membership_by_user", {
+    .rpc("change_context_membership_with_metric", {
       p_user_id: userId,
       p_action_id: change.actionId,
       p_add_context_id: change.add?.contextId ?? null,
       p_expected_add_version: change.add?.expectedVersion ?? null,
       p_remove_context_id: change.remove?.contextId ?? null,
       p_expected_remove_version: change.remove?.expectedVersion ?? null,
+      p_via: change.via ?? "menu",
     })
     .single<Row>()
     .throwOnError();
