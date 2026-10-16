@@ -83,7 +83,22 @@ spctl -a -vv -t exec "$APP"                                           # 공증 �
 ```
 
 - `scripts/release-mac-dmg.sh`의 지금 검사가 helper까지 덮는지(특히 샌드박스 키 검사가 앱 본체만 보는지)는 첫 서명 빌드에서 위 명령으로 따로 본다. 검사를 넓히는 것은 별도 변경이다.
-- 작업 폴더가 Documents · Desktop · Downloads · iCloud 안이면 `claude`(앱의 자손)가 그 폴더를 읽을 때 macOS 접근 동의 창이 Taskforce 이름으로 뜰 수 있다. 실제 동의 창은 사용자 gate(R2)에서 한 번 본다.
+- 작업 폴더가 Documents · Desktop · Downloads · iCloud 안이면 `claude`가 그 폴더를 읽을 때 macOS 접근 동의 창이 뜰 수 있다. 지킴이(아래) 때문에 그 창은 Taskforce가 아니라 **"Taskforce Agent"** 이름으로 뜬다. 실제 동의 창은 사용자 gate(R1 · R2)에서 한 번 본다.
+
+### 지킴이 helper "Taskforce Agent" (OA D3a 13장)
+
+셋째 helper는 앱 번들이다: `Taskforce.app/Contents/Helpers/Taskforce Agent.app`(실행 파일 `Contents/MacOS/Taskforce Agent`, 번들 id `<앱 번들 id>.agent`, 표시 이름 "Taskforce Agent", `LSUIElement` = 화면 · Dock 없음, NSApplication 0). 앱은 이것을 책임 프로세스 disclaim으로 띄우고, 이것이 `claude`를 띄운 뒤 그 자손이 모두 끝날 때까지 남는다(끝나면 스스로 끝 기록을 쓰고 끝난다). `apple/project.yml`의 `TaskforceAgent`(`application`) 타깃이 `apple/Helpers/tf-agent-keeper`를 `TaskforceAgentWire`만 링크해 만들고, 앱 타깃이 `Contents/Helpers`로 복사하면서 서명한다. Hardened Runtime은 켜고 **권한 파일은 없다**. macOS 권한 창(문서 · 데스크톱 등)은 이 helper의 이름으로 뜨고 그 승인은 이 helper(같은 팀 서명)에 붙는다.
+
+```
+AGENT="$APP/Contents/Helpers/Taskforce Agent.app"
+codesign -dvv "$AGENT" 2>&1 | grep -E "Identifier=|Authority=Developer ID Application|flags=.*runtime|Timestamp="   # <앱 번들 id>.agent · 같은 팀 · Hardened Runtime
+codesign -d --entitlements :- "$AGENT"                                # 빈 출력 (권한 0)
+otool -L "$AGENT/Contents/MacOS/Taskforce Agent"                      # /usr/lib · /System/Library만
+/usr/libexec/PlistBuddy -c "Print :CFBundleDisplayName" -c "Print :LSUIElement" "$AGENT/Contents/Info.plist"   # Taskforce Agent · true
+```
+
+- 공증은 앱 하나로 함께 된다(중첩 번들). 첫 서명 빌드에서 위 명령과 `spctl -a -vv -t exec "$APP"`를 같이 본다.
+- 처리방침 · 온보딩 문구("Taskforce Agent"가 폴더 접근 권한을 물을 수 있다)는 D4a · 코디네이터가 정한다.
 
 ## 현재 상태
 
