@@ -85,18 +85,35 @@ struct SessionPanelView: View {
 
     private func header(_ session: AgentSessionItem) -> some View {
         let number = session.currentIssueID.flatMap { shell.issues?.numbers.number(for: $0) }
-        var pill: PanelHeaderPill?
-        if let spec = session.pill, let action = shell.onSessionPill {
-            pill = PanelHeaderPill(title: spec.title, disabledReason: spec.disabledReason) { action(spec, session) }
-        }
         return PanelHeader(
-            title: Self.title(for: session, number: number), agent: session.agent, pill: pill, status: Self.statusLine(for: session), dimmed: session.isClosed
+            title: Self.title(for: session, number: number), agent: session.agent, pill: pill(for: session),
+            status: Self.statusLine(for: session, stop: runtime.stop.presentation(session: session)), dimmed: session.isClosed
         )
     }
 
-    /// 머리 아래 상태 줄: 끝난 세션은 상태 말이 없다 (사용자 결정 2026-10-15: 상태 말 없이 흐리게)
+    /// 머리의 알약 (OA D4a-03): 동작이 주어졌고, **이 Mac에서 도는 세션**일 때만. Open in Terminal은 launcher가 있을 때만 (실제 launcher는 D4a-2)
+    private func pill(for session: AgentSessionItem) -> PanelHeaderPill? {
+        guard let action = shell.onSessionPill,
+              let spec = Self.pillSpec(for: session, thisMacBridgeID: shell.thisMacBridgeID, offersOpenInTerminal: runtime.pillFlow?.offersOpenInTerminal ?? true) else { return nil }
+        return PanelHeaderPill(title: spec.title, disabledReason: spec.disabledReason) { action(spec, session) }
+    }
+
+    /// 알약 하나를 그릴지의 규칙: U2의 알약(종류 · 꺼진 이유)이 있고, 이 Mac의 세션이고, Open in Terminal은 launcher가 있을 때만 (없으면 알약이 없다: 동작이 없으면 그리지 않는다)
+    static func pillSpec(for session: AgentSessionItem, thisMacBridgeID: UUID?, offersOpenInTerminal: Bool) -> AgentSessionPill? {
+        guard let spec = AgentSessionRules.visiblePill(session, thisMacBridgeID: thisMacBridgeID) else { return nil }
+        if case .openInTerminal = spec, !offersOpenInTerminal { return nil }
+        return spec
+    }
+
+    /// 머리 아래 상태 줄: 끝난 세션은 상태 말이 없다 (사용자 결정 2026-10-15: 상태 말 없이 흐리게).
+    /// Stop 요청이 있으면 "Stop requested · not confirmed"(U2 2.5 표 그대로), 명령이 남을 수 있으면 승인 전 후보 말이 다음 턴이 시작될 때까지 그 자리다 (D4a-13)
     static func statusLine(for session: AgentSessionItem) -> String? {
         session.line.isEmpty ? nil : session.line
+    }
+
+    static func statusLine(for session: AgentSessionItem, stop: AgentStopRules.Presentation) -> String? {
+        if let line = stop.line, let words = line.text() { return words }
+        return statusLine(for: session)
     }
 
     /// 입력 영역: 읽은 대화 행이 있어야(= 대상을 알아야) 보낸다. 모르는 동안은 비활성 + 접근성 이유. 닫힌 세션 · 대화가 없는 세션은 읽기만
@@ -152,7 +169,7 @@ struct SessionPanelView: View {
                         }
                     }
                     ForEach(chat.turns(for: conversationID)) { turn in
-                        AssistantTurnView(turn: turn, runtime: runtime, onRetry: { cmid in Task { await chat.retry(cmid, in: conversationID) } })
+                        AssistantTurnView(turn: turn, runtime: runtime, actions: agentActions(session, conversationID: conversationID), onRetry: { cmid in Task { await chat.retry(cmid, in: conversationID) } })
                     }
                     Color.clear.frame(height: 1).id(AssistantBodyAnchor.bottom)
                 }
@@ -167,6 +184,29 @@ struct SessionPanelView: View {
         }
     }
 
+    /// 에이전트 대화의 줄 동작 (Assistant 창과 같다): 에이전트 이름 · 그 연결의 대상 상태로 전달 줄을 옮긴다
+    private func agentActions(_ session: AgentSessionItem, conversationID: UUID) -> AgentTurnActions {
+        let desk = runtime.panelDesk
+        let context = AgentDeliveryContext(
+            agentName: session.agentName, targetState: runtime.targets.targetState(forConnection: session.connectionID), copy: AgentNewCopy.active
+        )
+        return AgentTurnActions(
+            line: { desk.line(for: $0, context: context) },
+            onLink: { turn, link in
+                switch link.kind {
+                case .sendAgain: Task { await desk.sendAgain(turn, in: conversationID) }
+                case .chooseReferent: desk.openReferentMenu(for: turn.id)
+                }
+            },
+            viewFull: { desk.viewFull($0) },
+            referentMenu: desk.referentMenu,
+            chooseReferent: { id in Task { await desk.chooseReferent(id, in: conversationID) } },
+            candidateLabel: { candidate in
+                IssueNumberStore.label(shell.issues?.numbers.number(for: candidate.actionID)).map { "\($0) \(candidate.title)" } ?? candidate.title
+            }
+        )
+    }
+
     /// 세션 읽기에 문제가 있나 (읽은 적이 있으면 받은 세션은 그대로 둔다)
     private var sessionProblem: WorkLoad.Problem? {
         switch shell.issues?.sessions.load {
@@ -179,8 +219,28 @@ struct SessionPanelView: View {
 
     // MARK: 입력 영역
 
+    /// 입력 영역 위의 Resume 확인 카드 (질문 카드 자리, 모달이 아니다): 그 세션의 카드가 열려 있을 때만
+    @ViewBuilder
+    private func confirmCard(_ session: AgentSessionItem) -> some View {
+        if let flow = runtime.pillFlow, let card = flow.resumeCard, card.sessionID == session.id {
+            ConfirmCard(
+                title: AgentCopy.resumeTitle, meta: AgentCopy.resumeMeta, error: card.error, confirmLabel: AgentCopy.resumeConfirm, cancelLabel: AgentCopy.cancel,
+                busy: card.busy, onConfirm: { Task { await flow.confirmResume() } }, onCancel: { flow.cancelResume() }
+            )
+            .padding(EdgeInsets(top: TFSpace.sm, leading: TFSpace.md, bottom: 0, trailing: TFSpace.md))
+        }
+    }
+
     @ViewBuilder
     private func footer(_ session: AgentSessionItem) -> some View {
+        VStack(spacing: 0) {
+            confirmCard(session)
+            composerFooter(session)
+        }
+    }
+
+    @ViewBuilder
+    private func composerFooter(_ session: AgentSessionItem) -> some View {
         switch Self.composerState(for: session, chat: chat) {
         case .hidden:
             // 닫힌 세션은 읽기만 (Composer 없음). 대화를 모르는 세션도 보낼 곳이 없다
@@ -202,6 +262,8 @@ struct SessionPanelView: View {
             ),
             placeholder: "Message \(session.agentName)", label: "Message \(session.agentName)", isDisabled: disabled,
             isSending: conversationID.map { chat.isSending(in: $0) } ?? false,
+            isRunning: runtime.stop.presentation(session: session).showsStop,
+            onStop: { Task { await runtime.stop.stopSession(session) } },
             onSubmit: { text in if let conversationID { Task { await chat.send(text, in: conversationID) } } }
         )
         .padding(EdgeInsets(top: 10, leading: TFSpace.md, bottom: TFSpace.md, trailing: TFSpace.md))
@@ -209,7 +271,9 @@ struct SessionPanelView: View {
 
     /// 열 때: 현재 이슈의 번호를 읽는다 (대화는 셸이 `onLoadSessionConversation`으로 id로 읽는다)
     private func prepare(_ session: AgentSessionItem) async {
+        async let thisMac: Void = shell.refreshThisMac()
         if let issue = session.currentIssueID { await shell.issues?.numbers.ensure([issue]) }
+        await thisMac
     }
 }
 
@@ -246,6 +310,28 @@ final class EdgeSessionPanelController {
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient, .ignoresCycle]
         panel.contentView = hosting
         panel.setAccessibilityLabel("Session")
+        wire(runtime)
+    }
+
+    /// 알약 동작 · Esc · 확인 카드 맞추기를 실제 연결에 잇는다 (OA D4a-3): 이 연결이 세션 route를 모르면(견본 · 시험용 가짜) 알약은 그려지지 않는다
+    private func wire(_ runtime: ChatRuntime) {
+        if let flow = runtime.pillFlow {
+            shell.onSessionPill = { pill, session in Task { await flow.press(pill, session: session) } }
+            shell.onSessionItemsChanged = { [weak flow] items in flow?.reconcile(sessions: items) }
+        }
+        // Esc: 열린 확인 카드 → 후보 메뉴 → (세션 패널 · 이슈 상세 …)
+        shell.onEscapeSessionOverlay = { [weak runtime] in
+            guard let runtime else { return false }
+            if let flow = runtime.pillFlow, flow.resumeCard != nil, !(flow.resumeCard?.busy ?? false) {
+                flow.cancelResume()
+                return true
+            }
+            if runtime.panelDesk.referentMenu != nil {
+                runtime.panelDesk.closeReferentMenu()
+                return true
+            }
+            return false
+        }
     }
 
     var isVisible: Bool { panel.isVisible }

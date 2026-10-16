@@ -319,8 +319,24 @@ final class EdgeShellModel {
     @ObservationIgnored var onAsk: (AssistantOpenItem) -> Void = { _ in }
     /// 인용의 원문 링크를 연다 (시험은 가짜로 바꾼다)
     @ObservationIgnored var onOpenURL: (URL) -> Void = { NSWorkspace.shared.open($0) }
-    /// 세션 머리 알약(Open in Terminal · Resume here)의 동작. **없으면 알약을 그리지 않는다** (알약 동작은 D4a: 앱에서는 비어 있고 견본 하네스만 채운다)
+    /// 세션 머리 알약(Open in Terminal · Resume here)의 동작 (OA D4a-15 · 16). **없으면 알약을 그리지 않는다**: 세션 패널 컨트롤러가 실제 연결이 세션 route를 알 때 `AgentSessionPillFlow`에 잇는다
     @ObservationIgnored var onSessionPill: ((AgentSessionPill, AgentSessionItem) -> Void)?
+    /// 새로 읽은 세션들 (OA D4a-16): 확인 카드가 낡았는지 본다 — 세션 패널 컨트롤러가 채운다
+    @ObservationIgnored var onSessionItemsChanged: ([AgentSessionItem]) -> Void = { _ in }
+    /// Esc가 먼저 닫을 것이 있나: 열린 Resume 확인 카드 · 후보 고르기 메뉴 (OA D4a). 닫았으면 true — 세션 패널 컨트롤러가 채운다
+    @ObservationIgnored var onEscapeSessionOverlay: () -> Bool = { false }
+    /// 이 Mac의 bridge id (OA D4a-03): 세션 알약은 그 세션 연결의 `bridge_id`가 이것과 같을 때만 보인다. 모르면 nil (bridge가 꺼졌거나 아직 등록 전: 알약이 없다)
+    var thisMacBridgeID: UUID?
+    /// 이 Mac의 bridge id를 읽는다 (`BridgeHost`의 런타임, 원장 meta). 세션 패널이 열릴 때 부른다
+    @ObservationIgnored var localBridgeIDProvider: @MainActor () async -> UUID? = {
+        guard let runtime = BridgeHost.shared?.activeRuntime else { return nil }
+        return await runtime.localBridgeID()
+    }
+
+    func refreshThisMac() async {
+        let id = await localBridgeIDProvider()
+        if thisMacBridgeID != id { thisMacBridgeID = id }
+    }
     /// More 목록(탭의 `…`): 숨은 세션들을 메뉴로 보인다. 컨트롤러가 메뉴 창을 올린다
     @ObservationIgnored var onShowMoreSessions: ([AgentSessionItem]) -> Void = { _ in }
     /// 포인터가 Review 타일 위에 있다 (툴팁 · 호버 덧칠)
@@ -756,6 +772,8 @@ final class EdgeShellModel {
 
     /// Esc의 Issues 차례 (열린 메뉴는 컨트롤러가 먼저 닫는다): 세션 패널 → 이슈 상세(목록으로). 그 밖은 접는다. 처리했으면 true
     func escapeIssues() -> Bool {
+        // 열린 확인 카드 · 후보 메뉴가 먼저다 (세션 패널을 닫기 전에)
+        if onEscapeSessionOverlay() { return true }
         if sessionPanelID != nil {
             sessionPanelID = nil
             return true
@@ -788,6 +806,8 @@ final class EdgeShellModel {
         refreshSlots(at: clock())
         reconcileIssues()
         loadPanelConversationIfNeeded()
+        // 새로 읽은 세션으로 열린 Resume 확인 카드를 맞춘다 (대상이 더는 external이 아니면 낡은 카드를 닫는다)
+        if let issues, issues.sessions.hasRead { onSessionItemsChanged(issues.sessions.items) }
     }
 
     // MARK: Review (S4)
