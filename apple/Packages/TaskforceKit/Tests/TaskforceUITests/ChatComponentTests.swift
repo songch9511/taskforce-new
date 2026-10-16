@@ -233,3 +233,24 @@ struct ComposerBlockedTests {
     }
 }
 
+
+/// PromptBox의 보내기 원 (OA D4b-m-1, DS PromptBox "Blocked" · "Running"): 비밀값 질문으로 막혀도 에이전트가 실행 중이면 Stop은 살아 있다
+struct PromptBoxBlockedTests {
+    @Test func stopDrawsLiveWhileBlockedAndRunning() {
+        #expect(!PromptBox.circleIsQuiet(blocked: true, running: true), "막힘 + 실행 중: Stop은 조용한 모양이 아니다")
+        #expect(!PromptBox.circleIsQuiet(blocked: false, running: true))
+    }
+
+    @Test func blockedAndNotRunningStaysQuiet() {
+        #expect(PromptBox.circleIsQuiet(blocked: true, running: false), "막힘 + 멈춤: bg/selected 원 + 회색 화살표")
+        #expect(!PromptBox.circleIsQuiet(blocked: false, running: false), "막히지 않으면 조용한 모양이 아니다 (보낼 수 없으면 35%로 흐려질 뿐)")
+    }
+
+    @Test func theSameRuleAsTheComposerCircle() {
+        for blocked in [false, true] {
+            for running in [false, true] {
+                #expect(PromptBox.circleIsQuiet(blocked: blocked, running: running) == Composer.circleIsQuiet(blocked: blocked ? "" : nil, running: running))
+            }
+        }
+    }
+}

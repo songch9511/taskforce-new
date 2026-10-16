@@ -83,4 +83,46 @@ struct EdgeQuestionMetricsTests {
             }
         }
     }
+
+    /// 막힌 PromptBox의 보내기 원: 비밀값 질문으로 막혀도 에이전트가 실행 중이면 Stop은 잉크 원이고, 멈춰 있으면 잉크 원이 아니다 (그리는 줄을 그대로 본다: 오른쪽 아래 모서리의 잉크색을 센다).
+    /// 라이트만: 다크의 트레이 바탕은 창 없이 그리면 비쳐서(반투명) 색을 셀 수 없다. 규칙 표는 `PromptBoxBlockedTests`가 고정한다
+    private func inkArea(running: Bool) throws -> Double {
+        let view = PromptBox(
+            text: .constant(""), placeholder: "Answer the question above first", chips: [], chipLabel: { _ in "" }, targetName: "Claude Code", targetMark: .placeholder,
+            targetOpen: false, isBlocked: true, isRunning: running, canSend: false, onSend: {}, onRemoveChip: { _ in }, onTargetTap: {}
+        )
+        .frame(width: 356)
+        let host = NSHostingView(rootView: view)
+        host.appearance = NSAppearance(named: .aqua)
+        host.frame = NSRect(x: 0, y: 0, width: 356, height: 600)
+        host.layoutSubtreeIfNeeded()
+        host.frame = NSRect(x: 0, y: 0, width: 356, height: host.fittingSize.height)
+        host.layoutSubtreeIfNeeded()
+        let rep = try #require(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+        host.cacheDisplay(in: host.bounds, to: rep)
+        let scale = Double(rep.pixelsWide) / Double(host.bounds.width)
+        var ink: [Double] = []
+        host.appearance?.performAsCurrentDrawingAppearance {
+            let c = NSColor(TFColor.fillInverse).usingColorSpace(.sRGB) ?? .black
+            ink = [Double(c.redComponent), Double(c.greenComponent), Double(c.blueComponent)]
+        }
+        #expect(ink.count == 3 && ink != [1, 1, 1], "잉크색을 못 읽으면 아래 세기가 아무것도 말하지 않는다: \(ink)")
+        var pixels = 0
+        let span = Int(56 * scale)
+        for y in max(0, rep.pixelsHigh - span)..<rep.pixelsHigh {
+            for x in max(0, rep.pixelsWide - span)..<rep.pixelsWide {
+                guard let c = rep.colorAt(x: x, y: y)?.usingColorSpace(.sRGB) else { continue }
+                let got = [Double(c.redComponent), Double(c.greenComponent), Double(c.blueComponent)]
+                if zip(got, ink).allSatisfy({ abs($0 - $1) < 0.03 }) { pixels += 1 }
+            }
+        }
+        return Double(pixels) / (scale * scale)
+    }
+
+    @Test func aBlockedPromptBoxKeepsStopLiveWhileRunningAndQuietWhenStill() throws {
+        let running = try inkArea(running: true)
+        #expect(running > 300, "막힘 + 실행 중: Stop은 잉크 원이다: 잉크 \(running)pt²")
+        let still = try inkArea(running: false)
+        #expect(still < 20, "막힘 + 멈춤: 잉크 원이 아니다: 잉크 \(still)pt²")
+    }
 }
