@@ -98,6 +98,7 @@ otool -L "$AGENT/Contents/MacOS/Taskforce Agent"                      # /usr/lib
 ```
 
 - 공증은 앱 하나로 함께 된다(중첩 번들). 첫 서명 빌드에서 위 명령과 `spctl -a -vv -t exec "$APP"`를 같이 본다.
+- **부른 쪽 확인(OA D3a 14장 12):** Release 지킴이는 부모 프로세스가 `anchor apple generic and identifier "<앱 번들 id>" and certificate leaf[subject.OU] = "<지킴이와 같은 팀>"`을 만족할 때만 `claude`를 띄운다(앱 id = 지킴이 번들 id에서 `.agent`를 뗀 값, 팀 = 지킴이 자신의 서명 팀). 그래서 **앱과 지킴이는 같은 팀으로 서명하고 번들 id를 `<앱 번들 id>.agent`로 지킨다**: 어긋나면(서명 안 된 Release 지킴이 포함) 지킴이는 아무것도 띄우지 않고 6으로 끝나며 그 세션은 잠긴다. 첫 서명 빌드에서 앱과 지킴이의 `codesign -dvv` Identifier · TeamIdentifier가 이 관계인지 본다. Debug · 시험 호스트(서명하지 않는 Debug-Test 포함)는 서명 대신 부모 앱 번들 id(격리 접두어 포함)와 지킴이 위치(`Contents/Helpers` 바로 안)로 본다.
 - 처리방침 · 온보딩 문구("Taskforce Agent"가 폴더 접근 권한을 물을 수 있다)는 D4a · 코디네이터가 정한다.
 
 ## 현재 상태
