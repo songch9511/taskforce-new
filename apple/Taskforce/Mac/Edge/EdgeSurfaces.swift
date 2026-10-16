@@ -101,7 +101,7 @@ extension EdgeSurfaces {
 
 // --- U2 ---
 extension EdgeSurfaces {
-    /// 새 Issues 화면 (OA U2): 레일 첫 칸 Projects(⌘2) → Projects → 이슈 목록 → 이슈 상세, SessionTab · 세션 패널 · Ask 알약 · New session `+` · 링 = 이슈(세션 반영).
+    /// 새 Issues 화면 (OA U2): 레일 첫 칸 Projects(⌘2) → Projects → 이슈 목록 → 이슈 상세, 세션 패널 · Ask 알약 · New session `+` · 링 = 이슈(세션 반영).
     /// 셋(셸 · Chats · 프로젝트 묶음)이 모두 켜져 있고 `issueScreens` 값이 켜졌을 때만 켜진다: 멤버십 런타임과 `+`의 Assistant 창이 Chats 런타임에 산다.
     /// **꺼지면 지금 동작 전부 그대로다** (All work · 검색 · 필터 · 핀 · 레일 높이 · 세션 읽기 0). `EdgeSurfaces.release`는 이 값을 켜지 못한다 (`allowsIssueScreens`가 false)
     func allowsIssueScreens(flag: Bool) -> Bool {
@@ -123,4 +123,27 @@ extension EdgeSurfaces {
     /// 앱이 실제로 쓰는 값 (`ChatRuntime`의 기본값)
     static var issueScreensForThisRun: Bool { issueScreens() }
 }
+
+// --- U3 ---
+extension EdgeSurfaces {
+    /// Taskforce 대화 (OA U3): 레일 첫 캡슐의 bell · Review 패널을 대신하는 Taskforce 대화 · v2 Review 읽기 · 충돌 해소 · 대화 끝의 복귀 요약 · ⌘1 / ⌥Space가 가장 오래된 요청.
+    /// 새 Issues 화면(U2) + Review(S4) + 복귀 요약(C3)이 **모두** 켜졌을 때만 켜진다. 하나라도 꺼지면 꺼진다.
+    /// 새 플래그는 없다 (U3-05). **Release는 늘 false다** — `issueScreens`가 Release에서 늘 꺼져 있다 (`allowsIssueScreens`). 출시 때 켜는 것은 L5 결정이다
+    func allowsTaskforceConversation(issueScreens: Bool) -> Bool {
+        issueScreens && review && summary
+    }
+
+    /// 이 실행의 게이트. Debug = `-TF_EDGE_SHELL YES -TF_S3B YES -TF_U2 YES -TF_S4 YES -TF_C3 YES` (인자 영역만, 저장된 defaults로는 켜지지 않는다). Release 빌드는 늘 false
+    static func taskforceConversation(_ defaults: UserDefaults? = nil) -> Bool {
+        #if DEBUG
+        return debug(defaults).allowsTaskforceConversation(issueScreens: issueScreens(defaults))
+        #else
+        return false
+        #endif
+    }
+
+    /// 앱이 실제로 쓰는 값
+    static var taskforceConversationForThisRun: Bool { taskforceConversation() }
+}
 #endif
+

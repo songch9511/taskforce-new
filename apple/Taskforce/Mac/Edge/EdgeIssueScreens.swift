@@ -241,7 +241,7 @@ struct IssueDetailBody: View {
     private var sessionsGroup: some View {
         let sessions = shell.sessions(of: id)
         if !sessions.isEmpty {
-            GroupLabel(SessionTab.groupLabel)
+            GroupLabel("Sessions")
             ForEach(sessions) { session in
                 SessionRow(
                     session, current: shell.sessionPanelID == session.id,

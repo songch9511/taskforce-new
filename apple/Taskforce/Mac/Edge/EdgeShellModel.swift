@@ -296,7 +296,7 @@ final class EdgeShellModel {
     @ObservationIgnored var onNewWindow: () -> Void = {}
     /// Assistant 창이 앞에 있다 (레일 Chats 칸이 `bezel/hover`로 칠해진다). 창 관리자가 올린다
     var assistantWindowFront = false
-    /// 새 Issues 화면(OA U2): 세션 · 번호 · 상세를 읽는 곳. **없으면 게이트가 꺼진 것이다** — Projects · 이슈 목록 · 상세 · SessionTab · 세션 패널이 없고 All work는 지금 그대로다 (`EdgeSurfaces.issueScreens`)
+    /// 새 Issues 화면(OA U2): 세션 · 번호 · 상세를 읽는 곳. **없으면 게이트가 꺼진 것이다** — Projects · 이슈 목록 · 상세 · 세션 패널이 없고 All work는 지금 그대로다 (`EdgeSurfaces.issueScreens`)
     let issues: IssueRuntime?
     var issueScreensEnabled: Bool { issues != nil }
     /// Issues 패널 안의 화면 이동 (Projects → 목록 → 상세). 게이트가 켜졌을 때 `View.allWork`가 이 화면을 보인다
@@ -309,10 +309,6 @@ final class EdgeShellModel {
     @ObservationIgnored private var loadedPanelConversation: UUID?
     /// 세션 패널이 보이는 대화를 읽는다 (열 때 · 패널의 conversation id가 바뀔 때): 컨트롤러가 `ChatStore.loadConversation`에 잇는다 (id로 직접 읽고 오류 · 다시 시도를 보인다)
     @ObservationIgnored var onLoadSessionConversation: (UUID) -> Void = { _ in }
-    #if DEBUG
-    /// 디자인 비교 스냅샷(`-TFEdgeSnapshotIssues`)만: SessionTab을 호버한 모양(펼침)으로 둔다
-    var tabExpandedForSnapshot = false
-    #endif
     /// New session `+`가 눌렸다: 창 관리자가 새 Assistant 창을 열고 범위 칩을 달아 대상 메뉴를 연다 (칩은 눌린 곳의 범위)
     @ObservationIgnored var onNewSession: (AssistantOpenItem?) -> Void = { _ in }
     /// Ask 알약: 앞 Assistant 창에 그 항목의 칩을 더한다 (창이 없으면 새 창). 컨트롤러가 창 관리자에 잇는다
@@ -337,14 +333,22 @@ final class EdgeShellModel {
         let id = await localBridgeIDProvider()
         if thisMacBridgeID != id { thisMacBridgeID = id }
     }
-    /// More 목록(탭의 `…`): 숨은 세션들을 메뉴로 보인다. 컨트롤러가 메뉴 창을 올린다
-    @ObservationIgnored var onShowMoreSessions: ([AgentSessionItem]) -> Void = { _ in }
     /// 포인터가 Review 타일 위에 있다 (툴팁 · 호버 덧칠)
     private(set) var hoveredTile = false
     /// 포인터가 New session `+` 위에 있다 (OA U2, 툴팁 · 호버 덧칠)
     private(set) var hoveredPlus = false
     /// Review 페이지가 보이는 결정의 stable action id. 몇 번째인지(index)가 아니라 id로 가리킨다: 큐가 바뀌어도 키 · 클릭은 이 id의 항목에만 간다
     private(set) var reviewID: UUID?
+    /// Taskforce 대화가 보이는 요청의 안정 id (`kind:열쇠`, OA U3). 몇 번째인지가 아니라 id로 가리킨다. 게이트가 꺼지면 늘 nil
+    private(set) var taskforceShownID: String?
+    /// 마지막으로 맞춘 요청 id 순서: 보던 요청이 빠지면 그 뒤를 이은 요청을 보인다
+    @ObservationIgnored private var taskforcePreviousIDs: [String] = []
+    /// 포인터가 Taskforce bell 위에 있다 (툴팁 · 호버 덧칠, OA U3)
+    private(set) var hoveredBell = false
+    /// 세션 저장소에서 task 상태가 바뀌었나 보는 지문 (바뀔 때만 v2 Review를 다시 읽는다, U3-20)
+    @ObservationIgnored private var taskforceSessionSignature: [UUID: String] = [:]
+    /// 마지막으로 읽은 v1 확인 요청 id들 (바뀔 때만 v2 Review를 다시 읽는다, U3-20)
+    @ObservationIgnored private var taskforceConfirmationIDs: Set<UUID> = []
     /// Review 페이지에 들어온 차례: 패널을 다시 열거나 다른 화면에서 Review로 들어올 때마다 오른다 (단계를 옮기는 것은 아니다).
     /// 근거가 같은 방문 안에서는 다시 읽지 않고, 다시 들어오면 항목의 활동 시각과 상관없이 다시 확인한다 (`ReviewDesk.loadSource`)
     private(set) var reviewPresentation = 0
@@ -385,6 +389,11 @@ final class EdgeShellModel {
         self.pinStore = pinStore
         // 읽기가 반영돼 그 응답이 화면에 보일 수 있게 되는 그 자리에서 첫 정상 표시 확정을 받는다 (C)
         summary?.onDisplayed = { [weak self] in self?.considerSummaryBaseline() }
+        // Taskforce 충돌 해소의 2초 보류는 셸의 주입 시계로 만든다 (시험이 손으로 돌린다, OA U3-27)
+        issues?.taskforce.schedule = { delay, work in
+            let timer = schedule(delay, work)
+            return { timer.cancel() }
+        }
     }
 
     // MARK: 레일 모양
@@ -403,6 +412,7 @@ final class EdgeShellModel {
     var tooltip: (title: String, detail: String)? {
         guard isExpanded, !panelOpen, !menuOpen else { return nil }
         if hoveredTile, let tileTooltip { return tileTooltip }
+        if hoveredBell, let bell = taskforceBell { return Self.splitTooltip(bell.tooltip) }
         if hoveredPlus { return (Self.newSessionLabel, "") }
         if let hoveredID, let entry = slots.first(where: { $0.id == hoveredID }) {
             return (entry.title, "· \(entry.state.label) · \(entry.activity)")
@@ -411,6 +421,12 @@ final class EdgeShellModel {
             return (label(for: hoveredControl), shortcut)
         }
         return nil
+    }
+
+    /// "앞 낱말 · 나머지" → (앞 낱말은 굵게, 나머지는 보조색)
+    static func splitTooltip(_ text: String) -> (title: String, detail: String) {
+        guard let separator = text.range(of: " · ") else { return (text, "") }
+        return (String(text[..<separator.lowerBound]), "· " + text[separator.upperBound...])
     }
 
     // MARK: 포인터
@@ -435,6 +451,7 @@ final class EdgeShellModel {
             hoveredControl = nil
             hoveredTile = false
             hoveredPlus = false
+            hoveredBell = false
             guard railHovered, leaveTimer == nil else { return }
             leaveTimer = schedule(TFMotion.railLeaveDelay) { [weak self] in
                 guard let self else { return }
@@ -450,6 +467,7 @@ final class EdgeShellModel {
             hoveredControl = nil
             hoveredTile = false
             hoveredPlus = false
+            hoveredBell = false
         }
     }
 
@@ -459,6 +477,7 @@ final class EdgeShellModel {
             hoveredID = nil
             hoveredTile = false
             hoveredPlus = false
+            hoveredBell = false
         }
     }
 
@@ -469,6 +488,7 @@ final class EdgeShellModel {
             hoveredID = nil
             hoveredControl = nil
             hoveredPlus = false
+            hoveredBell = false
         }
     }
 
@@ -479,6 +499,18 @@ final class EdgeShellModel {
             hoveredID = nil
             hoveredControl = nil
             hoveredTile = false
+            hoveredBell = false
+        }
+    }
+
+    /// 포인터가 Taskforce bell 위에 있다 (OA U3)
+    func hover(bell: Bool) {
+        hoveredBell = bell
+        if bell {
+            hoveredID = nil
+            hoveredControl = nil
+            hoveredTile = false
+            hoveredPlus = false
         }
     }
 
@@ -486,7 +518,9 @@ final class EdgeShellModel {
 
     /// 레일 맨 위 타일이 보일 것: needs-you(지금 Review 큐)만, 없으면 없음 (바뀐 것만 있을 때도 없다, OA U2b). 타일은 Review(S4)와 복귀 요약(C3)이 둘 다 켜졌을 때만 있다
     var reviewTileContent: ReviewTileContent? {
-        ReviewTileRules.content(reviewCount: reviewQueue.count, reviewEnabled: review != nil, summaryEnabled: summary != nil)
+        // 캡슐 레일(새 Issues 화면)에는 타일이 없다: Taskforce bell이 그 자리다. 타일은 Release 경로(노치 레일)에만 남는다 (OA U3-01)
+        guard !issueScreensEnabled else { return nil }
+        return ReviewTileRules.content(reviewCount: reviewQueue.count, reviewEnabled: review != nil, summaryEnabled: summary != nil)
     }
 
     /// 툴팁: "Review · Needs your answer" (앞 낱말은 굵게, 나머지는 보조색)
@@ -518,6 +552,7 @@ final class EdgeShellModel {
         guard panelOpen else { return nil }
         switch view {
         case .review:
+            // Taskforce 대화에서는 확인 요청의 이슈만 열린 항목이다 (결과 · 충돌 카드는 이슈 하나가 아니다)
             return shownReview.map { AssistantOpenItem(kind: .action, id: $0.id, title: $0.title, number: issues?.numbers.number(for: $0.id)) }
         case .allWork:
             if issues != nil {
@@ -535,11 +570,14 @@ final class EdgeShellModel {
 
     // MARK: 패널
 
-    /// ⌥ Space: 열려 있으면 접고, 아니면 **가장 새 Review 항목**, 기다리는 결정이 없으면 마지막에 본 화면을 연다 (DS Behaviors › Review: "⌥ Space opens the newest Review item, or the last view when nothing waits").
+    /// ⌥ Space: 열려 있으면 접고, 아니면 **가장 새 Review 항목** (Taskforce 대화가 켜진 구성은 가장 오래 기다린 요청), 기다리는 결정이 없으면 마지막에 본 화면을 연다 (DS Behaviors › Review: "⌥ Space opens the newest Review item, or the last view when nothing waits").
     /// 열기는 어떤 답도 아니다 (Review가 꺼진 셸은 결정을 열 수 없다)
     func togglePanel() {
         if panelOpen {
             dismiss()
+        } else if taskforceEnabled {
+            // OA U3-41: 요청이 있으면 서버 순서의 첫 요청(가장 오래 기다린 요청), 없으면 마지막 화면
+            if let first = taskforceQueue.first { openTaskforce(requestID: first.id) } else { openPanel(view) }
         } else if review != nil, reviewQueue.newest != nil {
             openNewestReview()
         } else {
@@ -561,7 +599,7 @@ final class EdgeShellModel {
         loadPanelConversationIfNeeded()
         if view == .chats { onChatsOpened() }
         // All work로 들어오면 지금 들고 있는 응답이 처음 화면에 보인다: 아직 확정을 받지 않은 응답이면 그 표시 시점이다 (이미 받은 응답은 다시 받지 않는다)
-        if view == .allWork { considerSummaryBaseline() }
+        if view == .allWork || (view == .review && taskforceEnabled) { considerSummaryBaseline() }
     }
 
     /// All work: 레일의 All work · ⌘2. 고른 행 · 검색어 · 필터를 비우고 필터 카드를 닫는다 (디자인 "opens it with filters cleared")
@@ -643,6 +681,7 @@ final class EdgeShellModel {
 
     /// 패널 머리 제목: 새 Issues 화면은 지금 연 화면이 정한다 (Projects · 프로젝트 이름 · "#139"). 번호를 아직 못 읽었으면 상세 제목은 비운다 (지어내지 않는다)
     var panelTitle: String {
+        if taskforceEnabled, view == .review { return TaskforceCopy.title }
         guard issues != nil, view == .allWork else { return view.title }
         switch nav.current {
         case .projects: return "Projects"
@@ -654,25 +693,6 @@ final class EdgeShellModel {
     /// 상세를 읽어 온 번호 (목록용 배치 읽기가 아직 못 가져왔을 때)
     private func detailNumber(_ id: UUID) -> Int? {
         if case .ready(let content)? = issues?.details.screen(for: id) { content.number } else { nil }
-    }
-
-    /// 탭이 붙는 패널의 이슈들: 이슈 상세는 그 이슈, 프로젝트 · Ungrouped 목록은 그 목록의 이슈들. Projects · Done today에는 탭이 없다 (nil)
-    var tabIssueIDs: Set<UUID>? {
-        guard issues != nil, panelOpen, view == .allWork, let scope = nav.tabScope else { return nil }
-        switch scope {
-        case .detail(let id): return [id]
-        case .list(let list): return issueList(list).map { Set($0.issueIDs) }
-        case .projects: return nil
-        }
-    }
-
-    /// 탭이 보이는가 (세션 패널은 탭이 있을 때만 열린다)
-    var showsSessionTab: Bool { tabIssueIDs != nil }
-
-    /// 탭 항목: 닫힌 세션은 없고 여섯과 More (현재 세션 · needs-you는 늘 남긴다)
-    var tabPlan: AgentSessionTabPlan {
-        guard let ids = tabIssueIDs, let issues else { return AgentSessionTabPlan(shown: [], hidden: []) }
-        return AgentSessionRules.tabPlan(sessions: issues.sessions.sessions(of: ids), currentID: sessionPanelID)
     }
 
     /// 이슈 상세의 Sessions 목록: 만든 시각 순, 닫힌 세션은 맨 아래
@@ -728,9 +748,9 @@ final class EdgeShellModel {
         readSessionsOnEntry()
     }
 
-    /// SessionRow · 탭 항목: 탭이 붙은 패널 왼쪽에 세션 패널 (같은 세션이면 닫고, 다른 세션이면 바꾼다). 이슈 패널 없이 열리지 않는다
+    /// SessionRow: 이슈 상세 왼쪽에 세션 패널 (같은 세션이면 닫고, 다른 세션이면 바꾼다). 이슈 상세 없이 열리지 않는다 — 세션은 이슈 상세의 Sessions 목록에서만 연다 (OA U3-45)
     func openSession(_ id: UUID) {
-        guard issues != nil, showsSessionTab || (panelOpen && view == .allWork && nav.detailID != nil) else { return }
+        guard issues != nil, panelOpen, view == .allWork, nav.detailID != nil else { return }
         sessionPanelID = sessionPanelID == id ? nil : id
         if sessionPanelID != nil { Task { await issues?.sessions.refresh() } }
         loadPanelConversationIfNeeded()
@@ -748,26 +768,20 @@ final class EdgeShellModel {
         onLoadSessionConversation(conversation)
     }
 
-    /// 세션 패널 창이 실제로 보인다: 이슈 패널이 열려 있고 탭이 붙은 화면이고 세션 패널이 열려 있다 (`EdgeShell.followSessionPanel`과 같은 조건)
-    var sessionPanelShown: Bool { panelOpen && showsSessionTab && openSessionItem != nil }
+    /// 세션 패널 창이 실제로 보인다: 이슈 패널이 이슈 상세로 열려 있고 세션 패널이 열려 있다 (`EdgeShell.followSessionPanel`과 같은 조건)
+    var sessionPanelShown: Bool { panelOpen && view == .allWork && nav.detailID != nil && openSessionItem != nil }
 
     func closeSessionPanel() {
         sessionPanelID = nil
     }
 
-    /// New session `+`: 새 Assistant 창 + 범위 칩 + 대상 메뉴. 칩: 탭 = 그 패널의 이슈 또는 프로젝트, 레일 = 지금 패널에 열린 것 (없으면 칩 없음)
+    /// New session `+`: 새 Assistant 창 + 범위 칩 + 대상 메뉴. 칩: 지금 패널에 열린 것 (없으면 칩 없음)
     func newSession(from source: NewSessionSource) {
         guard issues != nil else { return }
-        let scope: AssistantOpenItem?
         switch source {
         case .rail:
-            scope = openItem
-        case .tab:
-            scope = IssueOpenItemRules.openItem(
-                screen: nav.current, session: nil, items: workItems, contexts: contextList, number: { [issues] in issues?.numbers.number(for: $0) }
-            )
+            onNewSession(openItem)
         }
-        onNewSession(scope)
     }
 
     /// Esc의 Issues 차례 (열린 메뉴는 컨트롤러가 먼저 닫는다): 세션 패널 → 이슈 상세(목록으로). 그 밖은 접는다. 처리했으면 true
@@ -797,8 +811,8 @@ final class EdgeShellModel {
             if nav != before { currentID = nav.detailID }
         }
         if issues.sessions.hasRead, let id = sessionPanelID, issues.sessions.item(id: id) == nil { sessionPanelID = nil }
-        // 세션 패널은 탭이 붙은 이슈 패널 없이 열려 있지 않다 (Projects · Done today에는 탭이 없다)
-        if sessionPanelID != nil, nav.tabScope == nil { sessionPanelID = nil }
+        // 세션 패널은 이슈 상세 없이 열려 있지 않다 (목록 화면에서 열린 세션 패널은 다음 맞추기에서 닫힌다, OA U3-53)
+        if sessionPanelID != nil, nav.detailID == nil { sessionPanelID = nil }
     }
 
     /// 세션 · 번호가 바뀌었다: 레일의 링을 다시 정하고 열어 둔 화면을 맞춘다
@@ -806,17 +820,27 @@ final class EdgeShellModel {
         refreshSlots(at: clock())
         reconcileIssues()
         loadPanelConversationIfNeeded()
+        sessionsChangedForTaskforce()
         // 새로 읽은 세션으로 열린 Resume 확인 카드를 맞춘다 (대상이 더는 external이 아니면 낡은 카드를 닫는다)
         if let issues, issues.sessions.hasRead { onSessionItemsChanged(issues.sessions.items) }
     }
 
     // MARK: Review (S4)
 
-    /// Review 큐: 서버 순서 그대로 (`work.review`는 서버가 받았다고 답한 답을 이미 뺀 것이다, `NowStore.sections`)
-    var reviewQueue: ReviewQueue { ReviewQueue(work.review) }
+    /// Review 큐: 서버 순서 그대로 (`work.review`는 서버가 받았다고 답한 답을 이미 뺀 것이다, `NowStore.sections`).
+    /// **Taskforce 대화가 켜진 구성에는 v1 Review 큐가 없다** (OA U3): 확인 요청은 v2 요청이 말하고(`taskforceQueue`) v1 목록은 그 본문(이유 · 기한 · 근거)의 재료일 뿐이다.
+    /// 그래서 링 클릭(`openRailEntry`)이 어떤 이슈에서도 Taskforce 대화를 열지 않는다
+    var reviewQueue: ReviewQueue { taskforceEnabled ? ReviewQueue([]) : ReviewQueue(work.review) }
 
-    /// 지금 Review 페이지가 보이는 결정. 보던 id가 큐에 없으면 nil
-    var shownReview: ActionSummary? { reviewID.flatMap { reviewQueue.item($0) } }
+    /// 지금 Review 페이지가 보이는 결정. 보던 id가 큐에 없으면 nil.
+    /// Taskforce 대화에서는 보이는 요청이 확인 요청일 때 그 v1 항목이다 (본문 · 근거 · 답은 v1 경로 그대로, OA U3-25)
+    var shownReview: ActionSummary? {
+        if taskforceEnabled {
+            guard let request = shownTaskforceRequest, request.kind == .confirm else { return nil }
+            return work.review.first { $0.id == request.actionID }
+        }
+        return reviewID.flatMap { reviewQueue.item($0) }
+    }
 
     /// 본문에 무엇을 보일지: 받은 목록이 없으면 "결정이 없다"고 말하지 않는다
     var reviewScreen: ReviewScreen { ReviewScreen.of(load: work.load, hasDecision: shownReview != nil) }
@@ -846,6 +870,11 @@ final class EdgeShellModel {
     /// 복귀 요약이 그려지는 곳: 새 Issues 화면이 꺼진 구성(Release 표면 포함)은 All work 위 카드뿐이다. U2 + C3에서는 Review에도 Projects에도 요약이 없다 (U2 계약 10장 2, Review 안 카드는 D4b-m): 열 곳이 없어 아무것도 하지 않는다
     func openNewestReview() {
         guard review != nil else { return }
+        // Taskforce 대화: 늘 대화를 연다 — 요청이 있으면 서버 순서 첫 요청, 없으면 빈 상태 + 요약, 못 읽었으면 그 사정 (OA U3-40)
+        if taskforceEnabled {
+            openTaskforce()
+            return
+        }
         if let newest = reviewQueue.newest {
             reviewID = newest.id
             openPanel(.review)
@@ -860,13 +889,17 @@ final class EdgeShellModel {
 
     /// ← →: 큐에서 한 칸 (끝에서 돌지 않는다). 항목은 id로 옮긴다
     func stepReview(_ offset: Int) {
+        if taskforceEnabled {
+            stepTaskforce(offset)
+            return
+        }
         guard review != nil, view == .review, let id = reviewID, let next = reviewQueue.neighbor(of: id, offset: offset) else { return }
         reviewID = next
     }
 
     /// 목록이 바뀐 뒤 보던 결정을 맞춘다: 보던 id가 그대로 있으면 순서가 바뀌어도 그 항목, 빠졌으면 그 뒤를 이은 항목(같은 index의 다른 항목이 아니라), 보던 것이 없으면 가장 새 항목
     private func reconcileReview(previous: [UUID]) {
-        guard review != nil else { return }
+        guard review != nil, !taskforceEnabled else { return }
         reviewID = reviewQueue.resolving(reviewID, previous: previous)
     }
 
@@ -886,7 +919,11 @@ final class EdgeShellModel {
                     && self.reviewScreen.canAnswer && self.shownReview?.id == id
             }
             // 서버가 받은 답이면 복귀 요약의 `Needs your answer`가 낡았을 수 있다: 서버의 지금 상태를 다시 읽는다 (읽기일 뿐, C3가 켜졌을 때만)
-            if result == .applied { await self?.summary?.refresh() }
+            if result == .applied {
+                await self?.summary?.refresh()
+                // Taskforce 대화: 답한 확인 요청이 빠진 v2 목록을 다시 읽는다 (OA U3-20 "내 답 뒤")
+                await self?.taskforceStore?.refresh()
+            }
             return result
         }
     }
@@ -903,6 +940,11 @@ final class EdgeShellModel {
     /// 복귀 요약의 줄을 누름 (열기는 어떤 결정도 해결도 아니다). 답할 결정이 **S4 Review가 답할 수 있는 확인 요청**이고 그 항목이 Review 큐에 있으면 Review로,
     /// 그 밖에는 지금 All work의 다른 줄처럼 그 작업을 연다 (일 상세는 아직 없다). Review 밖의 결정(approval · review_failed · run_input)은 S4b의 몫이다
     func openSummaryRow(_ actionID: UUID) {
+        // Taskforce 대화의 요약 줄은 변화만 말한다: 그 작업(이슈 상세)을 연다. 결정은 요청 카드가 말한다
+        if taskforceEnabled {
+            open(itemID: actionID)
+            return
+        }
         let decisions = summary?.summary?.items.first { $0.actionID == actionID }?.decisions ?? []
         if review != nil, decisions.contains(where: { $0.kind == .confirm }), reviewQueue.contains(actionID) {
             openReview(itemID: actionID)
@@ -916,6 +958,17 @@ final class EdgeShellModel {
     /// 이미 서버로 나간 요청은 취소하지 않는다: 정직한 결과를 돌려준다. 보낼 수 없으면 nil (C3 꺼짐 · 패널이 닫힘/다른 화면 · 커서 없음 · 이미 보내는 중)
     @discardableResult
     func clearSummary() -> Task<ReturnSummaryClearResult, Never>? {
+        // Taskforce 대화: 같은 규칙을 이 대화의 **방문**(`reviewPresentation`)에 건다 — 읽음 처리일 뿐 요청을 해결하지 않는다 (OA U3-28)
+        if taskforceEnabled {
+            guard let summary, taskforceConversationOpen, taskforceScreen.drawsSummary, let ticket = summary.beginClear() else { return nil }
+            let presentation = reviewPresentation
+            return Task { [weak self] in
+                await summary.sendClear(ticket) {
+                    guard let self else { return false }
+                    return self.taskforceConversationOpen && self.reviewPresentation == presentation && self.taskforceScreen.drawsSummary
+                }
+            }
+        }
         guard let summary, panelOpen, view == .allWork, let ticket = summary.beginClear() else { return nil }
         let presentation = allWorkPresentation
         return Task { [weak self] in
@@ -932,6 +985,17 @@ final class EdgeShellModel {
     /// 읽음 표시일 뿐이다: 결정 · Action · run을 바꾸지 않는다. 보낼 수 없으면 nil (C3 꺼짐 · 패널이 닫힘/다른 화면 · 정상 표시가 아님 · 이 응답으로 이미 받음)
     @discardableResult
     func considerSummaryBaseline() -> Task<ReturnSummaryBaselineResult, Never>? {
+        // Taskforce 대화: 대화가 그 요약을 **실제로 그릴 때만**, 이 방문(`reviewPresentation`) 안에서 한 번 (OA U3-28 · 51)
+        if taskforceEnabled {
+            guard let summary, drawsSummary, taskforceConversationOpen, let ticket = summary.beginBaseline() else { return nil }
+            let presentation = reviewPresentation
+            return Task { [weak self] in
+                await summary.sendBaseline(ticket) {
+                    guard let self else { return false }
+                    return self.drawsSummary && self.taskforceConversationOpen && self.reviewPresentation == presentation
+                }
+            }
+        }
         guard let summary, drawsSummary, panelOpen, view == .allWork, let ticket = summary.beginBaseline() else { return nil }
         let presentation = allWorkPresentation
         return Task { [weak self] in
@@ -944,7 +1008,7 @@ final class EdgeShellModel {
 
     /// 복귀 요약이 화면에 그려지는 구성인가: C3가 켜져 있고 All work(옛 홈)가 그 카드를 그린다. **새 Issues 화면이 켜지면 Projects에 요약이 없다**(계약 10장 2):
     /// 그릴 수 없는 요약의 "첫 정상 표시" 기준점을 서버에 확정하지 않는다 (읽음 표시는 사용자가 실제로 본 것만)
-    var drawsSummary: Bool { summary != nil && issues == nil }
+    var drawsSummary: Bool { summary != nil && (issues == nil || (taskforceEnabled && taskforceScreen.drawsSummary)) }
 
     /// 복귀 요약 Try again
     func retrySummary() {
@@ -1035,6 +1099,10 @@ final class EdgeShellModel {
         currentID = nil
         hoveredID = nil
         reviewID = nil
+        taskforceShownID = nil
+        taskforcePreviousIDs = []
+        taskforceSessionSignature = [:]
+        taskforceConfirmationIDs = []
         nav.reset()
         sessionPanelID = nil
         pins = account.map { pinStore.load(account: $0) } ?? WorkPins()
@@ -1046,6 +1114,7 @@ final class EdgeShellModel {
     func update(_ work: EdgeWorkSnapshot) {
         let now = clock()
         let previousReview = self.work.review.map(\.id)
+        let previousWork = self.work
         let wasOnRail = Set(slots.filter { $0.kind != .done }.map(\.id))
         let doneIDs = Set(work.doneToday.map(\.id))
         let liveIDs = Set(work.review.map(\.id)).union(work.working)
@@ -1057,6 +1126,7 @@ final class EdgeShellModel {
         reconcileReview(previous: previousReview)
         refreshSlots(at: now)
         reconcileIssues()
+        workChangedForTaskforce(previous: previousWork)
     }
 
     /// Done 3초가 지난 일을 뺀다
@@ -1066,7 +1136,7 @@ final class EdgeShellModel {
 
     private func refreshSlots(at now: Date) {
         recentlyDone = recentlyDone.filter { now.timeIntervalSince($0.value) < TFMotion.doneHold }
-        let entries = Self.entries(work, recentlyDone: recentlyDone, sessions: issues?.sessions.items)
+        let entries = Self.entries(work, recentlyDone: recentlyDone, sessions: issues?.sessions.items, confirmRequestsRing: !taskforceEnabled)
         live = entries
         slots = RailOrdering.slots(previous: slots.map(\.id), entries: entries)
         if let hoveredID, !slots.contains(where: { $0.id == hoveredID }) { self.hoveredID = nil }
@@ -1084,7 +1154,10 @@ final class EdgeShellModel {
     /// 지금 레일에 오를 수 있는 일: 확인 요청(needs you) · run이 도는 일(running · stop requested) · 막 끝난 일(done).
     /// `sessions`가 있으면(새 Issues 화면) 링 하나 = 이슈 하나다: 그 이슈의 v1 링과 닫히지 않은 세션들의 링 중 먼저인 것 (needs-you → unreachable → stopping → running → done → waiting).
     /// 세션만 있는 이슈(v1 run 없이 세션이 돈다)도 오른다. idle 세션은 링이 아니다
-    static func entries(_ work: EdgeWorkSnapshot, recentlyDone: [UUID: Date], sessions: [AgentSessionItem]? = nil) -> [RailEntry] {
+    /// `confirmRequestsRing`: v1 확인 요청이 이슈 링의 needs-you가 되나. **Taskforce 대화가 켜지면 아니다** — 확인 요청은 bell로 가고 링은 세션의 질문만 말한다 (DS "Two kinds of Needs you", OA U3-15)
+    static func entries(
+        _ work: EdgeWorkSnapshot, recentlyDone: [UUID: Date], sessions: [AgentSessionItem]? = nil, confirmRequestsRing: Bool = true
+    ) -> [RailEntry] {
         guard let sessions else {
             var entries = work.review.map {
                 RailEntry(id: $0.id, title: $0.title, kind: .needsYou, state: TaskStatusMark.State(.review))
@@ -1108,7 +1181,8 @@ final class EdgeShellModel {
             guard let ring = AgentSessionRules.issueRing(v1: v1, sessions: mine) else { return }
             entries.append(RailEntry(id: action.id, title: action.title, kind: ActivityRing.Kind(ring), state: state, activity: ring.railActivity))
         }
-        for action in work.review { add(action, v1: .needsYou, state: TaskStatusMark.State(.review)) }
+        // 확인 요청의 이슈도 세션의 링은 가진다 (v1 needs-you만 빠진다)
+        for action in work.review { add(action, v1: confirmRequestsRing ? .needsYou : nil, state: TaskStatusMark.State(.review)) }
         for action in work.open {
             let v1: AgentSessionRing? = work.working.contains(action.id) ? (work.stopping.contains(action.id) ? .stopping : .running) : nil
             add(action, v1: v1, state: TaskStatusMark.State(TaskGroup.open(action)))
@@ -1128,4 +1202,202 @@ extension AgentSessionRing {
         }
     }
 }
+
+// MARK: Taskforce (U3)
+
+/// Taskforce 대화 (OA U3): 게이트(`EdgeSurfaces.taskforceConversation`) 안에서만 산다. 레일 첫 캡슐의 bell, Review 패널을 대신하는 대화, 서버 순서 첫 요청으로 가는 ⌘1 · ⌥Space.
+/// 판정 · 순서는 서버가 정한 그대로이고 앱은 다시 정렬하지 않는다. 요청은 안정 id로 가리키고, 여는 것 · 읽는 것 · 단계를 옮기는 것 · Clear는 답이 아니다.
+extension EdgeShellModel {
+    /// 이 셸에 Taskforce 대화가 있나: 새 Issues 화면 + Review(S4) + 복귀 요약(C3)이 모두 켜진 구성뿐 (OA U3-01). 꺼지면 모든 것이 지금 그대로다
+    var taskforceEnabled: Bool { issues != nil && review != nil && summary != nil }
+
+    var taskforceStore: TaskforceRequestStore? { taskforceEnabled ? issues?.taskforce : nil }
+
+    // MARK: 요청
+
+    /// 지금 보일 요청 (서버 순서 그대로). 재료(v1 확인 요청 · 세션 · 충돌 상세)를 아직 읽는 중이면 그 요청은 기다린다
+    var taskforceVisible: TaskforceVisibleRequests {
+        guard let store = taskforceStore, let issues else { return .none }
+        return store.visible(
+            confirmable: Set(work.review.map(\.id)), knownSessions: Set(issues.sessions.items.map(\.id)),
+            confirmationsKnown: { if case .loaded = work.load { true } else { false } }(), sessionsKnown: issues.sessions.hasRead
+        )
+    }
+
+    var taskforceQueue: TaskforceRequestQueue { TaskforceRequestQueue(taskforceVisible.requests) }
+
+    /// 지금 대화가 보이는 요청
+    var shownTaskforceRequest: TaskforceRequest? {
+        let queue = taskforceQueue
+        return taskforceShownID.flatMap { queue.request($0) }
+    }
+
+    /// 대화 본문에 무엇을 보일지: 응답이 없으면 비었다고 말하지 않는다
+    var taskforceScreen: TaskforceScreen {
+        guard let store = taskforceStore else { return .blank }
+        let visible = taskforceVisible
+        return TaskforceScreen.of(
+            hasResponse: store.response != nil, readProblem: store.readProblem, trustworthy: store.isTrustworthy(visible),
+            hasRequest: !visible.requests.isEmpty, deferred: visible.deferred
+        )
+    }
+
+    /// Taskforce 대화가 보이는 중이다
+    var taskforceConversationOpen: Bool { taskforceEnabled && panelOpen && view == .review }
+
+    // MARK: bell · 레일
+
+    /// 레일 첫 캡슐의 bell (없으면 nil): 보이는 요청이 있거나 대화가 열려 있을 때만. 울림 = 보이는 요청 > 0 (변화만으로는 울리지 않는다)
+    var taskforceBell: TaskforceBell? {
+        TaskforceBellRules.bell(requestCount: taskforceQueue.count, conversationOpen: taskforceConversationOpen, enabled: taskforceEnabled)
+    }
+
+    /// 캡슐 레일의 상태: 링 0 · 요청 0 · 펼침 아님 = 쉼, 펼침 아님 = 접힘, 호버 120ms · 패널 열림 = 펼침
+    var railMode: EdgeRailCapsuleLayout.Mode {
+        if isExpanded { return .expanded }
+        return notch.isEmpty && taskforceBell == nil ? .rest : .compact
+    }
+
+    /// 지금의 캡슐 레이아웃 (그리기와 포인터 판정이 같은 값)
+    var capsuleLayout: EdgeRailCapsuleLayout {
+        EdgeRailCapsuleLayout(mode: railMode, bell: taskforceBell != nil, compactRingCount: notch.count, ringCount: slots.count, controls: controls)
+    }
+
+    // MARK: 열기 · 단계 · 읽기
+
+    /// ⌘1 · ⌥Space · bell 클릭의 목적지: 대화를 연다. `requestID`가 목록에 있으면 그 요청, 아니면 서버 순서 첫 요청 (없으면 빈 상태).
+    /// 이미 열려 있어도 접지 않고 그 요청으로 간다 (OA U3-43). 열기는 어떤 답도 아니다
+    func openTaskforce(requestID: String? = nil) {
+        guard taskforceEnabled else { return }
+        let queue = taskforceQueue
+        let wasOpen = taskforceConversationOpen
+        taskforceShownID = requestID.flatMap { queue.contains($0) ? $0 : nil } ?? queue.first?.id
+        taskforcePreviousIDs = queue.ids
+        openPanel(.review)
+        // 패널을 막 연 경우 컨트롤러의 패널 열기 읽기가 다시 읽는다. 이미 열려 있으면 여기서 읽는다
+        if wasOpen { refreshTaskforce() }
+    }
+
+    /// 단계 점 · ← →가 가는 곳 (id로). 단계를 옮기는 것은 답이 아니다
+    func showTaskforceRequest(_ id: String) {
+        guard taskforceEnabled, view == .review, panelOpen, taskforceQueue.contains(id) else { return }
+        taskforceShownID = id
+    }
+
+    /// ← →: 목록에서 한 칸 (끝에서 돌지 않는다)
+    func stepTaskforce(_ offset: Int) {
+        guard taskforceEnabled, view == .review, panelOpen, let id = taskforceShownID, let next = taskforceQueue.neighbor(of: id, offset: offset) else { return }
+        taskforceShownID = next
+    }
+
+    /// v2 Review를 다시 읽는다 (읽기만: 정해진 주기 읽기는 없다 — 이 GET은 제안 노출 표시를 한다, U3-21). 마지막에 시작한 읽기만 반영된다
+    func refreshTaskforce() {
+        guard let store = taskforceStore else { return }
+        Task { [weak self] in
+            await store.refresh()
+            self?.taskforceChanged()
+        }
+    }
+
+    /// 읽은 것이 바뀐 뒤 보던 요청을 맞춘다: 보던 id가 그대로 있으면 순서가 바뀌어도 그 요청, 빠졌으면 그 뒤를 이은 요청, 없으면 서버 순서 첫 요청.
+    /// 대화가 그 요약을 처음 그리게 됐으면 첫 정상 표시 기준점을 받는다
+    func taskforceChanged() {
+        guard taskforceEnabled else { return }
+        let queue = taskforceQueue
+        let next = queue.resolving(taskforceShownID, previous: taskforcePreviousIDs)
+        if taskforceShownID != next { taskforceShownID = next }
+        taskforcePreviousIDs = queue.ids
+        if taskforceConversationOpen { considerSummaryBaseline() }
+    }
+
+    /// 새 `/now`를 받았다: 확인 요청 id가 바뀌었으면 v2를 다시 읽는다 (U3-20)
+    fileprivate func workChangedForTaskforce(previous: EdgeWorkSnapshot) {
+        guard taskforceEnabled else { return }
+        let ids = Set(work.review.map(\.id))
+        let changed = ids != taskforceConfirmationIDs
+        taskforceConfirmationIDs = ids
+        if changed, signedInForTaskforce { refreshTaskforce() } else { taskforceChanged() }
+    }
+
+    /// 세션이 바뀌었다: task 상태가 바뀐 세션이 있으면 v2를 다시 읽는다 (결과 · 충돌이 task 상태를 따른다, U3-20)
+    fileprivate func sessionsChangedForTaskforce() {
+        guard taskforceEnabled, let issues, issues.sessions.hasRead else { return }
+        var signature: [UUID: String] = [:]
+        for item in issues.sessions.items {
+            signature[item.id] = "\(item.lastTaskState.map { String(describing: $0) } ?? "-")|\(item.cancelRequested)|\(item.turnSeq)|\(item.status)"
+        }
+        let changed = !taskforceSessionSignature.isEmpty && signature != taskforceSessionSignature
+        taskforceSessionSignature = signature
+        if changed, signedInForTaskforce { refreshTaskforce() } else { taskforceChanged() }
+    }
+
+    /// 로그인한 계정이 있어야 읽는다 (로그아웃에서는 읽지 않는다)
+    private var signedInForTaskforce: Bool { account != nil }
+
+    /// 깨어났다 (잠자기에서): v2를 한 번 읽는다 (U3-20)
+    func taskforceWoke() {
+        guard taskforceEnabled, signedInForTaskforce else { return }
+        refreshTaskforce()
+    }
+
+    // MARK: 요청에 대한 동작
+
+    /// 경로 충돌에 답을 고른다 (클릭 · 1/2 키): 보이는 충돌 요청에만, 오프라인이 아닐 때만. 2초 보류 뒤 보낸다 (`TaskforceRequestStore`). 처리했으면 true
+    @discardableResult
+    func answerConflict(_ keep: TaskforceConflictKeep, for requestID: String) -> Bool {
+        guard taskforceConversationOpen, taskforceScreen.canAnswer, let request = shownTaskforceRequest, request.id == requestID, request.kind == .pathConflict else { return false }
+        return taskforceStore?.choose(keep, for: requestID) ?? false
+    }
+
+    /// Taskforce 대화의 1 · 2 키 (OA U3-42): 보이는 요청이 확인 요청이면 Confirm · Dismiss(v1 경로), 경로 충돌이면 Keep 둘(2초 보류), 결과는 답이 없어 키가 지나간다.
+    /// 읽는 중 · 오프라인 · 요청이 없는 화면도 지나간다. 반복 키는 먹기만 한다 (한 번의 선택은 한 번의 요청). 키를 먹었으면 true
+    func taskforceAnswerKey(_ answer: ReviewAnswer, repeated: Bool) -> Bool {
+        guard taskforceConversationOpen, taskforceScreen.canAnswer, let request = shownTaskforceRequest else { return false }
+        switch request.kind {
+        case .confirm:
+            if !repeated, let id = shownReview?.id { self.answer(answer, for: id) }
+            return true
+        case .pathConflict:
+            if !repeated, let keep = TaskforceConflictKeep(key: answer.key) { answerConflict(keep, for: request.id) }
+            return true
+        case .resultReady:
+            return false
+        }
+    }
+
+    /// Answer sent의 Undo (보류 안에서만)
+    func undoConflict(_ requestID: String) {
+        taskforceStore?.undo(requestID)
+    }
+
+    /// Result ready의 세션 줄 · 충돌 카드의 세션 줄: 그 세션이 일하는 이슈의 상세와 세션 패널 (OA U3-26). 이슈를 모르는 세션이면 아무 일도 없다
+    func openTaskforceSession(_ sessionID: UUID) {
+        guard let issues, let item = issues.sessions.item(id: sessionID), let issue = item.currentIssueID ?? item.issueIDs.first else { return }
+        openIssueFromOutside(issue)
+        openSession(sessionID)
+    }
+
+    // MARK: 대화 안 요약 · 빈 상태
+
+    /// 대화 끝의 요약 (변화만): 줄을 누를 수 있나는 지금 목록에 그 작업이 있는가
+    var taskforceSummaryContent: ReturnSummaryContent? {
+        guard let summary else { return nil }
+        let known = Set(workItems.map(\.id))
+        return summary.changesOnlyContent(canOpen: { known.contains($0) })
+    }
+
+    /// 빈 대화의 Next 줄: Now의 첫 항목 (끝나지 않은 이슈 중 맨 앞). Now가 비면 nil — 대화는 Projects 버튼을 보인다 (OA U3-29)
+    var taskforceNext: IssueRowContent? {
+        IssueListRules.nextRow(items: workItems, sessions: issues?.sessions.items ?? [], today: DueDateFormat.today())
+    }
+
+    /// 요청 카드가 말할 충돌의 두 세션과 경로 (읽은 것만: 하나라도 없으면 nil)
+    func taskforceConflictSides(_ request: TaskforceRequest) -> (path: String, first: AgentSessionItem, second: AgentSessionItem)? {
+        guard request.kind == .pathConflict, let conflict = request.conflict, let detail = taskforceStore?.conflicts[conflict.leaseID],
+              let holder = detail.holderSessionID, let later = detail.laterSessionID,
+              let first = issues?.sessions.item(id: holder), let second = issues?.sessions.item(id: later) else { return nil }
+        return (detail.relPath, first, second)
+    }
+}
+
 #endif

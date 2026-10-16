@@ -17,6 +17,7 @@ import TaskforceKit
 /// 읽는 중 · 읽지 못함) · 보내는 중 · 충돌 · 응답 유실 · 오프라인 · 읽기 실패 · 순서 바뀜 · 처리됨. 서버 응답은 가짜라 렌더 fixture일 뿐이다 (실제 서버 · 계정 · AI 호출 없음).
 /// `-TFEdgeSnapshotSummary`(`-TF_C3 YES`와 함께: C3 기본은 꺼짐, Review 연결은 `-TF_S4 YES`): 복귀 요약 카드 상태 (C3, 견본 가짜 서버 `SampleReturnSummaryGateway`): 변화 · 많은 줄 · 지운 원문 토큰 · 첫 Clear 전 · 잘림 ·
 /// 잘린 페이지 Clear 뒤 · 변화 원천/결정 읽지 못함 · 읽기 실패 · 오래됨 · 빈 상태 · 기능 꺼짐 · Clear 진행 중/뒤 · 충돌 · 응답 유실 · 거절. 서버 응답은 가짜라 렌더 fixture일 뿐이다 (실제 서버 · 계정 · AI 호출 없음).
+/// `-TFEdgeSnapshotTaskforce`(`-TF_EDGE_SHELL YES -TF_S3B YES -TF_U2 YES -TF_S4 YES -TF_C3 YES`와 함께, OA U3): 새 셸 — 캡슐 레일(쉼 · 접힘 · 펼침 · More · Taskforce 열림 · needs-you · 많은 링)과 Taskforce 대화(확인 요청 · 결과 · 충돌과 2초 보류 · steps · 요약 · 빈 상태 · 읽기 상태)
 /// `-TFEdgeSnapshotState <이름>`: All work 패널 하나만 `mac-edge-worklist-<이름>.png`로 (빈 · 오프라인 · 실패 같은 견본 상태 인자와 함께)
 @MainActor
 enum EdgeSnapshot {
@@ -65,6 +66,11 @@ enum EdgeSnapshot {
             }
             if arguments.contains("-TFEdgeSnapshotAssistant") {
                 await AssistantSnapshot.capture(edge, file: file, pause: { seconds in await settle(seconds) })
+                NSApplication.shared.terminate(nil)
+                return
+            }
+            if arguments.contains("-TFEdgeSnapshotTaskforce") {
+                await TaskforceSnapshot.capture(edge, file: file, pause: { seconds in await settle(seconds) })
                 NSApplication.shared.terminate(nil)
                 return
             }

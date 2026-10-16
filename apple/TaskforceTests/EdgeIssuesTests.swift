@@ -162,18 +162,23 @@ struct EdgeIssuesTests {
         let rows = rig.shell.projectRows
         #expect(rows.map(\.name) == ["Hiring: founding designer", "October investor update", "Seoul office move", "Shape launch", "Taskforce 0.2.0", "Ungrouped", "Done today"])
         #expect(rig.shell.panelTitle == "Projects")
-        #expect(!rig.shell.showsSessionTab, "Projects에는 탭이 없다")
+        #expect(!rig.shell.sessionPanelShown, "Projects에는 세션 패널이 없다")
     }
 
-    @Test func aProjectListShowsTheTabAndTheNameAsTheTitle() async {
+    @Test func aProjectListShowsTheNameAsTheTitleAndNoSessionPanelOpensFromAList() async {
         let rig = await make()
         rig.openProject()
         #expect(rig.shell.nav.current == .list(.project(Fx.taskforce)) && rig.shell.panelTitle == "Taskforce 0.2.0")
-        #expect(rig.shell.showsSessionTab && rig.shell.nav.canGoBack)
+        #expect(rig.shell.nav.canGoBack)
+        // 세션은 이슈 상세의 Sessions 목록에서만 연다 (OA U3-45): 목록 화면에서는 열리지 않는다
+        rig.shell.openSession(Fx.session(1))
+        #expect(rig.shell.sessionPanelID == nil && !rig.shell.sessionPanelShown)
         rig.shell.openList(.doneToday)
-        #expect(!rig.shell.showsSessionTab, "Done today에는 탭이 없다")
+        rig.shell.openSession(Fx.session(1))
+        #expect(rig.shell.sessionPanelID == nil)
         rig.shell.openList(.ungrouped)
-        #expect(rig.shell.showsSessionTab, "Ungrouped에는 탭이 있다")
+        rig.shell.openSession(Fx.session(1))
+        #expect(rig.shell.sessionPanelID == nil)
     }
 
     @Test func theDetailTitleIsTheNumberAndStaysEmptyUntilTheNumberIsRead() async {
@@ -318,7 +323,7 @@ struct EdgeIssuesTests {
         for _ in 0..<200 where !rig.issues.sessions.items.isEmpty { await Task.yield() }
         rig.shell.sessionsChanged()
         #expect(rig.shell.sessionPanelID == nil, "읽은 세션에서 사라지면 패널을 닫는다")
-        #expect(rig.shell.showsSessionTab, "이슈 상세의 탭(+ 새 세션)은 세션이 없어도 있다")
+        #expect(rig.shell.nav.detailID == Fx.issue(139), "이슈 상세는 세션이 없어도 그대로 열려 있다")
     }
 
     @Test func anIssueThatDisappearsReturnsToItsList() async {
@@ -339,33 +344,29 @@ struct EdgeIssuesTests {
         #expect(rig.shell.nav.current == .projects && rig.shell.sessionPanelID == nil)
     }
 
-    @Test func theTabPlanKeepsSixAndMoreAndNeverClosedSessions() async {
+    @Test func theSessionsListKeepsEverySessionOldestFirstWithClosedOnesAtTheBottom() async {
         let rig = await make(sessions: .nine)
         rig.openDetail(139)
-        let plan = rig.shell.tabPlan
-        #expect(plan.shown.count == 6 && plan.hidden.count == 3 && plan.moreLabel == "3 more sessions")
-        rig.shell.openSession(Fx.session(28))
-        let withCurrent = rig.shell.tabPlan
-        #expect(withCurrent.shown.contains { $0.id == Fx.session(28) }, "현재 세션은 늘 남긴다")
+        #expect(rig.shell.sessions(of: Fx.issue(139)).count == 9, "탭의 여섯 + More는 없다: 이슈 상세 목록이 모든 세션을 말한다")
         let closed = await make(sessions: .closedAndStates)
         closed.openDetail(139)
-        #expect(!closed.shell.tabPlan.shown.contains { $0.id == Fx.session(1) }, "닫힌 세션은 탭에 없다")
-        #expect(closed.shell.sessions(of: Fx.issue(139)).last?.id == Fx.session(1), "Sessions 목록에는 있고 맨 아래다")
+        #expect(closed.shell.sessions(of: Fx.issue(139)).last?.id == Fx.session(1), "닫힌 세션은 Sessions 목록의 맨 아래다")
     }
 
-    @Test func theTabCoversTheOpenListsIssuesNotEverySession() async {
+    @Test func aSessionPanelThatIsOpenWhenTheScreenLeavesTheDetailClosesOnTheNextReconcile() async {
         let rig = await make()
-        rig.openProject(Fx.shape)
-        #expect(rig.shell.tabPlan.shown.isEmpty, "Shape launch의 이슈에는 세션이 없다")
-        rig.openProject(Fx.taskforce)
-        #expect(Set(rig.shell.tabPlan.shown.map(\.id)) == [Fx.session(1), Fx.session(2), Fx.session(8)])
+        rig.openDetail(139)
+        rig.shell.openSession(Fx.session(1))
+        #expect(rig.shell.sessionPanelShown)
+        rig.shell.openList(.project(Fx.taskforce))
+        #expect(rig.shell.sessionPanelID == nil && !rig.shell.sessionPanelShown, "목록 화면에서 열린 세션 패널은 닫힌다 (OA U3-53)")
     }
 
     @Test func theSessionPanelOnlyExistsWhileThePanelIsOpen() async {
         let rig = await make()
         rig.openDetail(139)
         rig.shell.dismiss()
-        #expect(!rig.shell.showsSessionTab, "패널이 접히면 탭 · 세션 패널 창이 없다")
+        #expect(!rig.shell.sessionPanelShown, "패널이 접히면 세션 패널 창이 없다")
         rig.shell.openSession(Fx.session(1))
         #expect(rig.shell.sessionPanelID == nil)
     }
@@ -388,26 +389,24 @@ struct EdgeIssuesTests {
         #expect(rig.shell.openItem == nil, "패널이 접히면 없다")
     }
 
-    @Test func aNewSessionFromTheTabCarriesThePanelsScopeAndFromTheRailTheOpenItem() async {
+    @Test func aNewSessionFromTheRailCarriesTheOpenItem() async {
         let rig = await make()
         var received: [AssistantOpenItem?] = []
         rig.shell.onNewSession = { received.append($0) }
         rig.shell.newSession(from: .rail)
         rig.openDetail(139)
-        rig.shell.newSession(from: .tab)
+        rig.shell.newSession(from: .rail)
         rig.shell.openSession(Fx.session(1))
         rig.shell.newSession(from: .rail)
-        rig.shell.newSession(from: .tab)
         rig.openProject()
-        rig.shell.newSession(from: .tab)
+        rig.shell.newSession(from: .rail)
         let issue = AssistantOpenItem(kind: .action, id: Fx.issue(139), title: "Rewrite pricing page copy for the 3-day trial and Lifetime plan", number: 139)
         let project = AssistantOpenItem(kind: .context, id: Fx.taskforce, title: "Taskforce 0.2.0")
-        #expect(received.count == 5)
+        #expect(received.count == 4)
         #expect(received[0] == nil, "패널이 닫혀 있으면 칩 없이")
         #expect(received[1] == issue)
         #expect(received[2] == AssistantOpenItem(kind: .agentSession, id: Fx.session(1), title: "Pricing copy draft"), "레일 + = 지금 패널에 열린 것")
-        #expect(received[3] == issue, "탭 + = 그 패널의 이슈")
-        #expect(received[4] == project)
+        #expect(received[3] == project)
     }
 
     // MARK: 레일의 링
@@ -455,7 +454,7 @@ struct EdgeIssuesTests {
         rig.shell.openList(.project(Fx.taskforce))
         rig.shell.openIssue(Fx.issue(139))
         rig.shell.openSession(Fx.session(1))
-        #expect(rig.shell.nav.current == .projects && rig.shell.sessionPanelID == nil && !rig.shell.showsSessionTab)
+        #expect(rig.shell.nav.current == .projects && rig.shell.sessionPanelID == nil && !rig.shell.sessionPanelShown)
         #expect(rig.shell.panelTitle == "Your work" && rig.shell.view == .allWork, "머리는 지금 그대로 (Your work)")
         rig.shell.open(itemID: Fx.issue(139))
         #expect(rig.shell.currentID == Fx.issue(139) && rig.shell.nav.current == .projects, "지금처럼 All work에서 그 행을 고른다")
@@ -497,20 +496,24 @@ struct EdgeIssuesTests {
 
     // MARK: 창 자리
 
-    @Test func theIssuePanelWindowIsWiderByTheTabStripOnlyWhenThereIsATab() {
-        let plain = EdgePanelMetrics.frame(height: 400, railTop: 800, screenMaxX: 1440)
-        let tabbed = EdgePanelMetrics.frame(height: 400, railTop: 800, screenMaxX: 1440, tab: SessionTabGeometry.expanded.width)
-        #expect(plain.width == 380 && plain.maxX == 1440 - EdgeRailLayout.railWidth - EdgePanelMetrics.gap, "탭이 없으면 지금 자리 그대로")
-        #expect(tabbed.width == 380 + 36 && tabbed.maxX == plain.maxX && tabbed.minX == plain.minX - 36, "오른쪽은 그대로, 왼쪽으로 36 넓다")
-        #expect(tabbed.maxY == plain.maxY)
+    @Test func thePanelRightEdgeIsSixtyTwoFromTheScreenEdgeOnlyWithTheCapsuleRail() {
+        let notch = EdgePanelMetrics.frame(height: 400, railTop: 800, screenMaxX: 1440)
+        let capsule = EdgePanelMetrics.frame(height: 400, railTop: 800, screenMaxX: 1440, capsule: true)
+        #expect(notch.width == 380 && notch.maxX == 1440 - EdgeRailLayout.railWidth - EdgePanelMetrics.gap, "노치 레일은 지금 자리 그대로")
+        #expect(capsule.width == 380 && capsule.maxX == 1440 - 62, "캡슐 레일: 화면 끝 − 6 − 44 − 12 (DS .tf-screen > .tf-panel)")
+        #expect(capsule.maxY == notch.maxY, "위는 지금 그대로 (화면 위에서 120, U3-11)")
     }
 
-    @Test func theSessionPanelSitsFortyLeftOfTheIssuePanelBodyTopAligned() {
-        let issue = EdgePanelMetrics.frame(height: 440, railTop: 800, screenMaxX: 1440, tab: SessionTabGeometry.expanded.width)
+    @Test func thePanelHasNoHeightFloorOnlyOnTheCapsuleScreens() {
+        #expect(EdgePanelMetrics.height(body: 100, fits: true) == EdgePanelMetrics.headerHeight + 100, "내용에 맞춘다 (OA U3-31)")
+        #expect(EdgePanelMetrics.height(body: 100) == 320, "게이트 꺼짐은 320 바닥 그대로")
+        #expect(EdgePanelMetrics.height(body: 900, fits: true) == 520)
+    }
+
+    @Test func theSessionPanelSitsFortyLeftOfTheIssuePanelTopAligned() {
+        let issue = EdgePanelMetrics.frame(height: 440, railTop: 800, screenMaxX: 1440, capsule: true)
         let frame = EdgeSessionPanelController.frame(issuePanel: issue, height: 380)
-        let body = issue.minX + 36
-        #expect(frame.width == 380 && frame.maxX == body - 40, "이슈 패널 본체에서 40 (창 왼쪽에서 4)")
-        #expect(frame.maxX == issue.minX - 4)
+        #expect(frame.width == 380 && frame.maxX == issue.minX - 40, "이슈 패널 본체에서 40 (지금 보이는 간격 그대로)")
         #expect(frame.maxY == issue.maxY && frame.height == 380, "위를 맞춘다")
     }
 }

@@ -124,7 +124,7 @@ struct EdgeIssueFixesTests {
         let r = await rig(sessions: .external)
         r.shell.openAllWork()
         r.shell.openList(.project(Fx.taskforce))
-        #expect(r.shell.tabPlan.shown.first { $0.id == Fx.session(1) }?.line == "External · Open in Terminal")
+        #expect(r.shell.issues?.sessions.item(id: Fx.session(1))?.line == "External · Open in Terminal")
         r.gateway.sessions = .awaiting
         r.shell.openIssue(Fx.issue(139))
         #expect(await eventually { r.shell.sessions(of: Fx.issue(139)).first { $0.id == Fx.session(1) }?.line == "Needs your answer" }, "다른 기기의 변경이 진입으로 반영된다")
@@ -383,7 +383,7 @@ struct EdgeIssueFixesTests {
         r.shell.escape()
         #expect(r.shell.nav.current == .list(.project(Fx.taskforce)), "Esc로 상세에서 목록으로")
         #expect(await eventually { r.gateway.sessionReads > before }, "Esc 뒤로도 세션을 다시 읽는다 (머리 뒤로와 같은 경로)")
-        #expect(await eventually { r.shell.tabPlan.shown.first { $0.id == Fx.session(1) }?.line == "Needs your answer" }, "다른 기기의 변경이 Esc 복귀로 반영된다")
+        #expect(await eventually { r.shell.issues?.sessions.item(id: Fx.session(1))?.line == "Needs your answer" }, "다른 기기의 변경이 Esc 복귀로 반영된다")
     }
 
     @Test func escapingWithAnOpenSessionPanelOnlyClosesItAndDoesNotNavigate() async {

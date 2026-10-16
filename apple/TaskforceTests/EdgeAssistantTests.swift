@@ -294,7 +294,9 @@ struct EdgeAssistantTests {
     }
 }
 
-/// OA U2b: ⌘1은 답할 것이 있으면 가장 새 Review 항목, 없고 바뀐 것만 있으면 그 구성에서 복귀 요약이 보이는 곳, 둘 다 없으면 아무것도 하지 않는다
+/// OA U2b: ⌘1은 답할 것이 있으면 가장 새 Review 항목, 없고 바뀐 것만 있으면 그 구성에서 복귀 요약이 보이는 곳, 둘 다 없으면 아무것도 하지 않는다.
+/// OA U3-40: **Taskforce 대화가 켜진 구성(새 Issues 화면 + S4 + C3)은 ⌘1이 늘 대화를 연다** — 요청이 있으면 서버 순서 첫 요청, 없으면 빈 상태 + 요약 (U2b의 "아무것도 안 함" 두 경우가 사라진다).
+/// 게이트 꺼짐 구성(Release 표면 포함)은 U2b 그대로다
 @MainActor
 struct EdgeCommandOneTests {
     /// U2(새 Issues 화면)까지 켠 셸: Review(S4) + 복귀 요약(C3) + Issues. 요약을 읽은 상태로 만든다
@@ -322,7 +324,8 @@ struct EdgeCommandOneTests {
         #expect(rig.shell.panelOpen && rig.shell.view == .review && rig.shell.reviewID == rig.shell.reviewQueue.newest?.id, "바뀐 것도 있지만 답할 것이 먼저")
         let gated = try await issuesRig(reviews: 3, summary: true)
         gated.shell.openNewestReview()
-        #expect(gated.shell.panelOpen && gated.shell.view == .review && gated.shell.reviewID == gated.shell.reviewQueue.newest?.id, "U2 + C3에서도 같다")
+        #expect(gated.shell.taskforceEnabled && gated.shell.panelOpen && gated.shell.view == .review, "U2 + C3(Taskforce 대화): 대화를 연다 (OA U3-40)")
+        #expect(gated.shell.reviewQueue.isEmpty && gated.shell.reviewID == nil, "v1 Review 큐는 이 구성에 없다")
     }
 
     @Test func withOnlyChangesItOpensWhereTheSummaryIsDrawn() async throws {
@@ -340,12 +343,12 @@ struct EdgeCommandOneTests {
         #expect(rig.shell.view == .allWork)
     }
 
-    /// 복귀 요약이 어디에도 그려지지 않는 구성(U2 + C3: Review에는 요약이 없고 Projects에도 없다, U2 계약 10장 2)에서는 열 곳이 없다 — 새 자리를 만들지 않는다
-    @Test func withOnlyChangesWhereNothingDrawsTheSummaryItDoesNothing() async throws {
+    /// Taskforce 대화가 켜진 구성에서는 대화가 요약이 그려지는 곳이다 (U2b의 "열 곳이 없어 무동작"은 사라졌다, OA U3-40)
+    @Test func withOnlyChangesTheTaskforceConversationIsWhereTheSummaryIsDrawn() async throws {
         let rig = try await issuesRig(reviews: 0, summary: true)
         #expect(rig.shell.issueScreensEnabled && rig.shell.summary?.summary?.hasChangesToClear == true && rig.shell.reviewQueue.count == 0)
         rig.shell.openNewestReview()
-        #expect(!rig.shell.panelOpen, "빈 Review도, 요약이 없는 Projects도 열지 않는다")
+        #expect(rig.shell.panelOpen && rig.shell.view == .review, "빈 대화 + 요약")
     }
 
     @Test func withNothingAtAllItDoesNothing() async throws {
@@ -355,7 +358,7 @@ struct EdgeCommandOneTests {
         #expect(!rig.shell.panelOpen, "빈 \"No decisions waiting\" 화면을 열지 않는다")
         let issues = try await issuesRig(reviews: 0, summary: false)
         issues.shell.openNewestReview()
-        #expect(!issues.shell.panelOpen)
+        #expect(issues.shell.panelOpen && issues.shell.view == .review, "Taskforce 대화: 아무것도 없어도 늘 대화를 연다 (빈 상태, OA U3-40)")
         // 열려 있던 패널도 그대로다
         rig.shell.openAllWork()
         rig.shell.openNewestReview()

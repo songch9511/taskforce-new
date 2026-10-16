@@ -41,7 +41,7 @@ enum RailOrdering {
         case .running, .stopping, .unreachable: 1
         case .done: 2
         case .waiting: 3
-        // 멈춘 링은 레일에 오르지 않는다 (SessionTab에만 있다, OA U2)
+        // 멈춘 링은 레일에 오르지 않는다 (이슈 상세의 Sessions 목록이 말한다)
         case .idle: 4
         }
     }
