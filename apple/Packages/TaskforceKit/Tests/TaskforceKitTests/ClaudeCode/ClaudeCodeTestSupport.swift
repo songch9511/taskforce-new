@@ -78,7 +78,7 @@ extension ClaudeSandbox {
         let kept = try ClaudeSpawner.spawnKept(
             keeper: try BuiltProducts.url("tf-agent-keeper").path, ended: ClaudeLineage.keeperFile(file), executable: "/bin/sh", argv0: "/bin/sh",
             arguments: ["-c", script, "sh", "--settings", settings] + extra, environment: ["PATH": "/usr/bin:/bin", ClaudeProcessInspector.markerKey: marker], cwd: root.path
-        )
+        ).get()
         kept.keeper.closeStandardStreams()
         Darwin.close(kept.reportFD)
         let lineage = ClaudeLineage(file: file, fresh: true)

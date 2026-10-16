@@ -70,6 +70,16 @@ enum Fake {
     }
 
     /// SIGINT를 받았으면 결과를 내고 끝낸다
+    /// 기다리는 동안 SIGINT가 오면 바로 중단 결과를 내고 끝난다
+    static func pauseInterruptibly(_ seconds: Double) {
+        let deadline = Date().addingTimeInterval(seconds)
+        while Date() < deadline {
+            checkInterrupt()
+            Thread.sleep(forTimeInterval: 0.02)
+        }
+        checkInterrupt()
+    }
+
     static func checkInterrupt() {
         guard fakeInterrupted != 0 else { return }
         emit(["type": "user", "session_id": sessionID, "message": ["role": "user", "content": [["type": "text", "text": "[Request interrupted by user for tool use]"]]]])
@@ -441,11 +451,15 @@ enum Fake {
            let id = saved["id"] as? String, let name = saved["name"] as? String, var input = saved["input"] as? [String: Any] {
             try? FileManager.default.removeItem(at: deferredFile)
             if let override = run["resume_input_override"] as? [String: Any] { input = override }
-            if let pause = run["pause_before_resume_hook"] as? Double { Thread.sleep(forTimeInterval: pause) }
+            // 멈춘 동안 SIGINT가 오면 훅을 부르지 않고 끝난다 (Stop이 답 훅보다 먼저, 14장 7)
+            if let pause = run["pause_before_resume_hook"] as? Double { pauseInterruptibly(pause) }
             emit(["type": "command_lifecycle", "state": "started", "session_id": sessionID])
-            if case .deferred(let again, let againName, let againInput) = call(id: id, name: name, input: input, step: [:], hook: hooks.preToolUse, cwd: cwd, announce: false) {
+            // 보류 id가 아닌 다른 tool id로 부른다 (상태 유실 흉내, 14장 7)
+            let resumeID = run["resume_id_override"] as? String ?? id
+            if case .deferred(let again, let againName, let againInput) = call(id: resumeID, name: name, input: input, step: [:], hook: hooks.preToolUse, cwd: cwd, announce: false) {
                 return finishDeferred(id: again, name: againName, input: againInput, file: deferredFile)
             }
+            if let pause = run["pause_after_resume_hook"] as? Double { pauseInterruptibly(pause) }
         }
         let initVersion = run["init_version"] as? String ?? "2.1.241"
         let tools = flags.tools.split(separator: ",").map(String.init) + mcpTools.map { "mcp__tf__\($0)" }
@@ -565,10 +579,56 @@ final class MCPClient {
     }
 }
 
+/// exec 때 받은 환경의 키 (`KERN_PROCARGS2`, 14장 10): Foundation이 시작하며 자기 환경에 더한 값(`__CF_USER_TEXT_ENCODING`)은 넘겨받은 것이 아니다. 읽지 못하면 nil
+func fakeExecEnvironmentKeys() -> [String]? {
+    var mib: [Int32] = [CTL_KERN, KERN_PROCARGS2, getpid()]
+    var size = 0
+    guard sysctl(&mib, 3, nil, &size, nil, 0) == 0, size > MemoryLayout<Int32>.size else { return nil }
+    var buffer = [UInt8](repeating: 0, count: size)
+    guard sysctl(&mib, 3, &buffer, &size, nil, 0) == 0, size > MemoryLayout<Int32>.size else { return nil }
+    let argc = buffer.withUnsafeBytes { $0.load(as: Int32.self) }
+    var index = MemoryLayout<Int32>.size
+    while index < size, buffer[index] != 0 { index += 1 }
+    while index < size, buffer[index] == 0 { index += 1 }
+    func next() -> String {
+        let start = index
+        while index < size, buffer[index] != 0 { index += 1 }
+        defer { index += 1 }
+        return String(decoding: buffer[start..<index], as: UTF8.self)
+    }
+    for _ in 0..<argc where index < size { _ = next() }
+    var keys: [String] = []
+    while index < size {
+        let entry = next()
+        if entry.isEmpty { break }
+        keys.append(String(entry.prefix { $0 != "=" }))
+    }
+    return keys
+}
+
+/// `--disclaim-spawn <실행 파일> [인자…]`: 책임 프로세스를 내려놓고(disclaim) 띄운 뒤 그 pid를 쓰고 끝난다 (다시 disclaim한 자손 시험, 14장 5. 터미널 · 실행기 흉내)
+func fakeDisclaimSpawn(_ command: [String]) -> Int32 {
+    typealias SetDisclaim = @convention(c) (UnsafeMutablePointer<posix_spawnattr_t?>, Int32) -> Int32
+    guard let symbol = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "responsibility_spawnattrs_setdisclaim"), let path = command.first else { return 5 }
+    var attributes: posix_spawnattr_t?
+    posix_spawnattr_init(&attributes)
+    defer { posix_spawnattr_destroy(&attributes) }
+    guard unsafeBitCast(symbol, to: SetDisclaim.self)(&attributes, 1) == 0 else { return 5 }
+    let argv: [UnsafeMutablePointer<CChar>?] = command.map { strdup($0) } + [nil]
+    defer { for pointer in argv { free(pointer) } }
+    var pid: pid_t = 0
+    guard posix_spawn(&pid, path, nil, &attributes, argv, environ) == 0 else { return 6 }
+    print(pid)
+    return 0
+}
+
+if CommandLine.arguments.count >= 3, CommandLine.arguments[1] == "--disclaim-spawn" { exit(fakeDisclaimSpawn(Array(CommandLine.arguments.dropFirst(2)))) }
+
 // 시작하자마자 (Foundation이 무엇을 열기 전에) 열린 fd · 환경 키를 본다 (E16 · E23)
 let fakeOpenFDs: [Int32] = (0..<256).map { Int32($0) }.filter { fcntl($0, F_GETFD) != -1 }
-var fakeEnvironmentKeys: [String] = []
-if var pointer = Optional(environ) {
+let fakeExecKeys = fakeExecEnvironmentKeys()
+var fakeEnvironmentKeys: [String] = fakeExecKeys ?? []
+if fakeExecKeys == nil, var pointer = Optional(environ) {
     while let entry = pointer.pointee {
         fakeEnvironmentKeys.append(String(String(cString: entry).prefix { $0 != "=" }))
         pointer += 1

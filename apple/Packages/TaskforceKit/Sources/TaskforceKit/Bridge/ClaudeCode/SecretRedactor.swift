@@ -50,7 +50,8 @@ public struct SecretRedactor: Sendable, Equatable {
     }
 
     /// 원래 글과, 퍼센트(`%XX` · `+`→빈칸 두 방식) · JSON unescape · 셸 따옴표 풀기 · ANSI-C 조각 풀기를 3단까지 겹쳐 푼 글 (바이트가 같은 것은 한 번).
-    /// 퍼센트 · JSON은 조각마다 푼다(앞뒤 글과 무관). ANSI-C `$'…'`는 글 전체를 셸로 푼 것과 따로 조각마다도 푼다 (12장 11: 앞선 자연어의 작은따옴표에 흔들리지 않게)
+    /// 퍼센트 · JSON은 조각마다 푼다(앞뒤 글과 무관). ANSI-C `$'…'`는 글 전체를 셸로 푼 것과 따로 조각마다도 푼다 (12장 11: 앞선 자연어의 작은따옴표에 흔들리지 않게).
+    /// 해석들의 합이다 (14장 8): 원문 그대로 ∪ 조각 디코드 ∪ 셸 풀기(주석 처리함) ∪ 셸 풀기(주석 처리 안 함). 하나라도 찾으면 찾은 것이다 (거짓 양성은 로컬 카드라 안전하다)
     static func decodedForms(_ text: String, depth: Int = 3) -> [String] {
         var forms = [text]
         var seen: Set<[UInt8]> = [Array(text.utf8)]
@@ -58,7 +59,10 @@ public struct SecretRedactor: Sendable, Equatable {
         for _ in 0..<depth where !frontier.isEmpty {
             var next: [String] = []
             for form in frontier {
-                for decoded in [percentDecoded(form, plusIsSpace: false), percentDecoded(form, plusIsSpace: true), jsonUnescaped(form), shellUnquoted(form), ansiCFragmentsDecoded(form)] {
+                for decoded in [
+                    percentDecoded(form, plusIsSpace: false), percentDecoded(form, plusIsSpace: true), jsonUnescaped(form), shellUnquoted(form, comments: true),
+                    shellUnquoted(form, comments: false), ansiCFragmentsDecoded(form),
+                ] {
                     guard let decoded, seen.insert(Array(decoded.utf8)).inserted else { continue }
                     forms.append(decoded)
                     next.append(decoded)
@@ -173,12 +177,17 @@ public struct SecretRedactor: Sendable, Equatable {
 
     /// 셸 따옴표를 푼다: `'…'`는 그대로, `"…"` 안의 `\` 이스케이프(`$` `` ` `` `"` `\`), 따옴표 밖의 `\x` → `x`, 따옴표 밖 · 큰따옴표 안의 줄 이음(`\` + 줄바꿈)은 지운다,
     /// ANSI-C `$'…'`는 이스케이프(`\xHH` · `\NNN` · 4자리 `\u` · 8자리 `\U` · `\n` 등 · `\cX`)를 푼다 (11장 8). `'"'"'` · `'\''`도 풀린다.
-    /// 따옴표 밖에서 단어 첫머리의 `#`부터 줄 끝까지는 주석이다: 그대로 두고 그 안의 따옴표를 셸 문법으로 보지 않는다 (12장 11). 바뀐 것이 없으면 nil
-    static func shellUnquoted(_ text: String) -> String? {
+    /// `comments`면 따옴표 밖 **단어 첫머리**의 `#`부터 줄 끝까지는 주석이다: 그대로 두고 그 안의 따옴표를 셸 문법으로 보지 않는다 (12장 11).
+    /// 단어 첫머리는 실제 경계로 본다 (14장 8): 글 처음, 또는 이스케이프되지 않은 빈칸 · 탭 · 줄바꿈 · `; & | ( ) < >` 바로 뒤. 이스케이프된 글자(`\ ` · `\;` 등) ·
+    /// 따옴표 · 다른 글자 뒤는 단어 중간이고, 줄 이음은 그 상태를 바꾸지 않는다 (단어 중간 줄 이음 뒤의 `#`는 글자다). 바뀐 것이 없으면 nil
+    static func shellUnquoted(_ text: String, comments: Bool = true) -> String? {
         let scalars = Array(text.unicodeScalars)
         guard scalars.contains(where: { $0 == "'" || $0 == "\"" || $0 == "\\" }) else { return nil }
         enum Mode { case bare, single, double, ansiC }
         var mode = Mode.bare
+        /// 따옴표 밖에서 다음 글자가 새 단어의 첫머리다
+        var wordStart = true
+        let boundaries: Set<Unicode.Scalar> = [" ", "\t", "\n", ";", "&", "|", "(", ")", "<", ">"]
         // `$'…'`의 `\xHH` · `\NNN`은 바이트다: 바이트로 모아 끝에 UTF-8로 읽는다
         var out: [UInt8] = []
         func put(_ scalar: Unicode.Scalar) { out += Array(String(scalar).utf8) }
@@ -246,7 +255,7 @@ public struct SecretRedactor: Sendable, Equatable {
                     put(scalar)
                 }
             case .bare:
-                if scalar == "#", index == 0 || [" ", "\t", "\n", ";", "&", "|", "(", ")"].contains(scalars[index - 1]) {
+                if comments, scalar == "#", wordStart {
                     // 주석: 줄바꿈 앞까지 그대로 옮긴다 (줄바꿈은 다음 차례에 따옴표 밖 글로)
                     while index < scalars.count, scalars[index] != "\n" {
                         put(scalars[index])
@@ -255,18 +264,23 @@ public struct SecretRedactor: Sendable, Equatable {
                     continue
                 } else if scalar == "'" {
                     mode = .single
+                    wordStart = false
                 } else if scalar == "$", next == "'" {
                     mode = .ansiC // ANSI-C 따옴표 `$'…'` (11장 8)
                     index += 1
+                    wordStart = false
                 } else if scalar == "\"" {
                     mode = .double
+                    wordStart = false
                 } else if scalar == "\\", next == "\n" {
-                    index += 1 // 줄 이음
+                    index += 1 // 줄 이음: 단어 경계 상태는 그대로
                 } else if scalar == "\\", let next {
                     put(next)
                     index += 1
+                    wordStart = false
                 } else {
                     put(scalar)
+                    wordStart = boundaries.contains(scalar)
                 }
             }
             index += 1

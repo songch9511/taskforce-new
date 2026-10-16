@@ -296,12 +296,15 @@ public enum AgentReadback: Sendable, Equatable {
     case unsupported
 }
 
-/// `startTurn`이 던지는 접수 전 실패: 아무것도 띄우지 않았다
+/// `startTurn`이 던지는 접수 전 실패: 입력을 건네지 않았다. `left`가 없으면 아무것도 띄우지 않았다
 public struct AgentStartError: Error, Equatable, Sendable {
     public var reason: BridgeV1FailureReason
+    /// 띄운 뒤에 실패했고 그 끝을 증명하지 못했다 (OA D3a 14장 1): 그 실행의 정체 (pid는 모를 수 있다). 런타임은 이 task를 끝났다고 적지 않는다
+    public var left: AgentProcessIdentity?
 
-    public init(_ reason: BridgeV1FailureReason) {
+    public init(_ reason: BridgeV1FailureReason, left: AgentProcessIdentity? = nil) {
         self.reason = reason
+        self.left = left
     }
 }
 
@@ -347,12 +350,16 @@ public protocol AgentProcess: Sendable {
     func liveness(_ identity: AgentProcessIdentity) async -> AgentLiveness
     func terminateOrphan(_ identity: AgentProcessIdentity) async -> AgentLiveness
     func readback(marker: String, session: AgentSessionRef) async -> AgentReadback
+    /// 답 정산(`requestClosed` · 실패) 뒤 그 세션에 이 adapter가 띄운 실행의 상태 (OA D3a 14장 2: 답 정산과 프로세스 끝은 따로다). 끝을 증명하면 `.ended`.
+    /// 기본: 답 경로에서 새 프로세스를 남기지 않는 adapter (그 실행의 끝은 끝 사건으로 알린다)
+    func sessionLiveness(_ sessionID: String) async -> AgentLiveness
 }
 
 extension AgentProcess {
     public func attach(_ services: AgentRuntimeServices) {}
     public func supportsVersion(_ version: String?) -> Bool { true }
     public func readback(marker: String, session: AgentSessionRef) async -> AgentReadback { .unsupported }
+    public func sessionLiveness(_ sessionID: String) async -> AgentLiveness { .ended(AgentExit(code: nil)) }
 }
 
 /// 새 세션의 작업 폴더를 정한다 (D4a가 채운다). 사용자 폴더를 짐작해 쓰기 권한을 주지 않는다 (Q26)

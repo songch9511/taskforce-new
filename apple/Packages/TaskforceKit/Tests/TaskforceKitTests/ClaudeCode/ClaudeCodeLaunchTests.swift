@@ -156,9 +156,11 @@ struct ClaudeCodeLaunchTests {
         let folder = try ClaudeSessionFolder.prepare(sessionsRoot: box.sessionsRoot, agentSessionID: ClaudeTest.session)
         #expect(folder.cwd.path.hasSuffix("/\(ClaudeTest.session)/cwd"))
         #expect(folder.config.path.hasSuffix("/\(ClaudeTest.session)/config"))
-        for url in [folder.root, folder.cwd, folder.config] {
+        for url in [folder.root, folder.config] {
             #expect(try FileManager.default.attributesOfItem(atPath: url.path)[.posixPermissions] as? Int == 0o700)
         }
+        // `cwd/`는 띄우기 직전에 `lstat`로 확인하고 만든다 (14장 11): 준비는 그 자리를 건드리지 않는다
+        #expect(!FileManager.default.fileExists(atPath: folder.cwd.path))
         #expect(throws: AgentStartError(.spawnFailed)) { try ClaudeSessionFolder.prepare(sessionsRoot: box.sessionsRoot, agentSessionID: "../escape") }
     }
 

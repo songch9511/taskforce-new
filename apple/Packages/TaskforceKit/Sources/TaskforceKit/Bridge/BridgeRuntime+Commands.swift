@@ -563,15 +563,23 @@ extension BridgeRuntime {
 
     // MARK: kind별 실행
 
-    /// 접수 전 실패: 띄우지 않았다. `failed` 사건으로 정확한 이유를 알린다 (계약 3.2)
-    func failBeforeAcceptance(taskID: String, commandID: String, reason: BridgeV1FailureReason) async {
+    /// 접수 전 실패: 입력을 건네지 않았다. `failed` 사건으로 정확한 이유를 알린다 (계약 3.2).
+    /// `left`: 띄운 뒤 실패해 끝을 증명하지 못한 실행 (OA D3a 14장 1): 그 정체를 적고 `alive`를 지우지 않는다 (확인 안 된 고아: heartbeat `process_alive` false · 결과 확인 `unknown`)
+    func failBeforeAcceptance(taskID: String, commandID: String, reason: BridgeV1FailureReason, left: AgentProcessIdentity? = nil) async {
         await appendTaskEvent(taskID: taskID, body: .failed(reason), observed: clock.now(), signal: false) {
-            $0.alive = false
+            if let left {
+                $0.pid = left.pid
+                $0.processStartedAt = left.startedAt
+                $0.processMarker = left.processMarker
+            } else {
+                $0.alive = false
+            }
             $0.lastState = "failed"
             $0.segmentTerminal = "failed"
         }
         _ = try? await ledger.updateCommand(commandID) { $0.state = .ended; $0.stateAt = clock.now() }
         supervised[taskID] = nil
+        if left != nil { orphanLiveness[taskID] = .unknown }
         await publish()
     }
 
@@ -694,7 +702,7 @@ extension BridgeRuntime {
             let identity = try await adapter.startTurn(start, events: makeSink(taskID: common.agentTaskID, runID: runID))
             await recordStarted(taskID: common.agentTaskID, runID: runID, commandID: record.commandID, identity: identity, answer: false)
         } catch let error as AgentStartError {
-            await failBeforeAcceptance(taskID: common.agentTaskID, commandID: record.commandID, reason: error.reason)
+            await failBeforeAcceptance(taskID: common.agentTaskID, commandID: record.commandID, reason: error.reason, left: error.left)
         } catch {
             await failBeforeAcceptance(taskID: common.agentTaskID, commandID: record.commandID, reason: .spawnFailed)
         }
@@ -861,16 +869,40 @@ extension BridgeRuntime {
                 }
                 await recordStarted(taskID: common.agentTaskID, runID: runID, commandID: record.commandID, identity: identity, answer: true)
             case .requestClosed:
-                supervised[common.agentTaskID] = nil
-                _ = try? await ledger.updateTask(common.agentTaskID) { $0.alive = false }
+                await settleAnswerProcess(taskID: common.agentTaskID, session: common.agentSessionID, adapter: adapter, left: nil)
                 await closeRequestAndAck(record: record, taskID: common.agentTaskID, requestID: requestID, adapterID: task.adapter, session: common.agentSessionID, adapterClose: false)
             }
         } catch {
-            supervised[common.agentTaskID] = nil
-            _ = try? await ledger.updateTask(common.agentTaskID) { $0.alive = false }
+            await settleAnswerProcess(taskID: common.agentTaskID, session: common.agentSessionID, adapter: adapter, left: (error as? AgentStartError)?.left)
             await closeRequestAndAck(record: record, taskID: common.agentTaskID, requestID: requestID, adapterID: task.adapter, session: common.agentSessionID, adapterClose: true)
         }
         await publish()
+    }
+
+    /// 답 정산(`request_closed` · 실패)은 프로세스의 끝이 아니다 (OA D3a 14장 2): adapter가 그 세션의 끝을 증명할 때만 `alive=false`. 그 실행이 아직 돌면 감독을 남겨
+    /// 끝 사건만 받고, 증명하지 못하면 확인 안 된 고아로 둔다 (다시 뜬 앱의 고아와 같다). 띄운 뒤 실패한 실행(`left`)은 그 정체를 원장에 적는다
+    func settleAnswerProcess(taskID: String, session: String, adapter: any AgentProcess, left: AgentProcessIdentity?) async {
+        if let left {
+            _ = try? await ledger.updateTask(taskID) {
+                $0.pid = left.pid
+                $0.processStartedAt = left.startedAt
+                $0.processMarker = left.processMarker
+            }
+        }
+        switch await adapter.sessionLiveness(session) {
+        case .ended:
+            supervised[taskID] = nil
+            orphanLiveness[taskID] = nil
+            _ = try? await ledger.updateTask(taskID) { $0.alive = false }
+        case .alive where supervised[taskID] != nil:
+            supervised[taskID]?.endOnly = true
+        case .alive:
+            orphanLiveness[taskID] = .alive
+        case .unknown:
+            supervised[taskID] = nil
+            orphanLiveness[taskID] = .unknown
+            log.log("answer_process_unproven", ["task": .id(taskID)])
+        }
     }
 
     /// 요청을 거절로 닫고(adapter가 할 수 있으면) 원장에 닫힘을 적은 뒤 `request_closed`로 정산한다. 사용자는 "Question closed before the answer was sent" 줄을 본다

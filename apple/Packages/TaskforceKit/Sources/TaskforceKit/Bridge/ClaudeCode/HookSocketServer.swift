@@ -20,6 +20,8 @@ public final class HookSocketServer: @unchecked Sendable {
         public var handler: @Sendable (HookRequest, HookCommit) async -> Void
         /// 답을 쓰기 **직전**에 그 tool_use id로 부른다 (자체 점검 ④ "bridge가 그 id에 소켓 답을 줬음": 시간 초과 deny도 답이다)
         public var onAnswer: (@Sendable (String) -> Void)?
+        /// 요청 상태를 시간 초과로 정한 순간 · 시간 초과 deny를 쓰기 **전에** 그 tool_use id로 부른다 (14장 7: 그 전이에서 미전달 답을 바로 정산한다). 막지 않는 일만
+        public var onTimeout: (@Sendable (String) -> Void)?
 
         /// 돌려준 응답을 그대로 확정하는 처리기 (시간 초과가 먼저면 쓰이지 않는다)
         public init(
@@ -33,12 +35,13 @@ public final class HookSocketServer: @unchecked Sendable {
         /// 스스로 확정하는 처리기: 확정에 실패하면(소켓이 시간 초과로 이미 deny를 썼다) 그 결과를 기록하지 않는다
         public init(
             agentSessionID: String, providerSessionID: String?, committing handler: @escaping @Sendable (HookRequest, HookCommit) async -> Void,
-            onAnswer: (@Sendable (String) -> Void)? = nil
+            onAnswer: (@Sendable (String) -> Void)? = nil, onTimeout: (@Sendable (String) -> Void)? = nil
         ) {
             self.agentSessionID = agentSessionID
             self.providerSessionID = providerSessionID
             self.handler = handler
             self.onAnswer = onAnswer
+            self.onTimeout = onTimeout
         }
     }
 
@@ -241,6 +244,7 @@ public final class HookSocketServer: @unchecked Sendable {
         }
         _ = semaphore.wait(timeout: .now() + max(0, deadline.timeIntervalSinceNow))
         if let response = commit.timeOut() { return response }
+        registration.onTimeout?(request.toolUseID)
         log.log("tool_gate", ["source": .code("local"), "decision": .code("deny"), "reason": .code("bridge_timeout")])
         return HookResponse(decision: .deny, reason: HookReason.unavailable)
     }

@@ -121,7 +121,7 @@ public final class ClaudeSpawnedProcess: @unchecked Sendable {
 }
 
 /// 지킴이를 거쳐 띄운 `claude` 하나 (13장 1): 지킴이 프로세스(앱의 자식, `claude`의 표준 셋 파이프를 가진다)와 지킴이가 알린 `claude`의 정체
-struct ClaudeKeptSpawn {
+struct ClaudeKeptSpawn: Sendable {
     let keeper: ClaudeSpawnedProcess
     let keeperID: UInt64
     let claudePID: pid_t
@@ -133,23 +133,44 @@ struct ClaudeKeptSpawn {
     let reportFD: Int32
 }
 
+/// 지킴이를 거쳐 띄우지 못했다 (14장 1)
+enum ClaudeKeptFailure: Error, Equatable {
+    /// 지킴이 spawn 자체가 실패했다: 프로세스 0 (잠금 없이 `spawnFailed`)
+    case notRun
+    /// 지킴이를 띄운 뒤 멈췄다. `ended`: 지킴이가 0으로 끝났다(구성원 0을 증명했다). 아니면 끝을 모른다 (잠금이 남는다)
+    case stopped(ended: Bool)
+}
+
 public enum ClaudeSpawner {
     /// `executable`을 `arguments`로 띄운다 (disclaim 없음: probe · 시험). 환경은 이 사전뿐이다. 실패하면 아무것도 남기지 않고 던진다.
     /// `argv0`: 자식이 보는 이름 (없으면 `executable`). 실행하는 파일은 언제나 `executable`이다 (검사한 realpath로 띄운다, 8장 8)
     public static func spawn(executable: String, argv0: String? = nil, arguments: [String], environment: [String: String], cwd: String) throws -> ClaudeSpawnedProcess {
-        try launch(executable: executable, argv0: argv0, arguments: arguments, environment: environment, cwd: cwd, disclaim: false, report: nil)
+        guard let spawned = launch(executable: executable, argv0: argv0, arguments: arguments, environment: environment, cwd: cwd, disclaim: false, report: nil) else {
+            throw AgentStartError(.spawnFailed)
+        }
+        // 커널 시작 시각을 못 읽으면 정체를 만들 수 없다: 지금 시각으로 메우지 않고 멈춘다 (12장 7: 조회 실패를 값으로 바꾸지 않는다)
+        guard let started = ClaudeProcessInspector.startTime(pid: spawned.pid) else {
+            kill(spawned.pid, SIGKILL)
+            _ = spawned.waitForExit()
+            spawned.closeStandardStreams()
+            throw AgentStartError(.spawnFailed)
+        }
+        return ClaudeSpawnedProcess(
+            pid: spawned.pid, startedAt: started, disclaimed: spawned.disclaimed, stdinFD: spawned.stdinFD, stdoutFD: spawned.stdoutFD, stderrFD: spawned.stderrFD
+        )
     }
 
+    /// 파이프 셋 + (지킴이면) 보고 fd 3으로 띄운다. 띄우지 못했으면 아무것도 남기지 않고 nil. 시작 시각은 읽지 않는다 (`startedAt`은 부른 쪽이 정한다)
     private static func launch(
         executable: String, argv0: String?, arguments: [String], environment: [String: String], cwd: String, disclaim: Bool, report: Int32?
-    ) throws -> ClaudeSpawnedProcess {
+    ) -> ClaudeSpawnedProcess? {
         var input: [Int32] = [-1, -1]
         var output: [Int32] = [-1, -1]
         var errors: [Int32] = [-1, -1]
         func closeAll() { for fd in input + output + errors where fd >= 0 { close(fd) } }
         guard pipe(&input) == 0, pipe(&output) == 0, pipe(&errors) == 0 else {
             closeAll()
-            throw AgentStartError(.spawnFailed)
+            return nil
         }
         for fd in input + output + errors { _ = fcntl(fd, F_SETFD, FD_CLOEXEC) }
         // 자식이 먼저 끝나도 앱이 SIGPIPE로 죽지 않게 (쓰기는 EPIPE로 끝난다)
@@ -164,66 +185,56 @@ public enum ClaudeSpawner {
             close(input[1])
             close(output[0])
             close(errors[0])
-            throw AgentStartError(.spawnFailed)
+            return nil
         }
-        // 커널 시작 시각을 못 읽으면 정체를 만들 수 없다: 지금 시각으로 메우지 않고 멈춘다 (12장 7: 조회 실패를 값으로 바꾸지 않는다)
-        guard let started = ClaudeProcessInspector.startTime(pid: spawned.pid) else {
-            kill(spawned.pid, SIGKILL)
-            var status: Int32 = 0
-            while waitpid(spawned.pid, &status, 0) < 0, errno == EINTR {}
-            close(input[1])
-            close(output[0])
-            close(errors[0])
-            throw AgentStartError(.spawnFailed)
-        }
-        return ClaudeSpawnedProcess(pid: spawned.pid, startedAt: started, disclaimed: spawned.disclaimed, stdinFD: input[1], stdoutFD: output[0], stderrFD: errors[0])
+        // 지킴이는 시작 시각을 정체로 쓰지 않는다 (unique id로 본다, 13장 1)
+        return ClaudeSpawnedProcess(pid: spawned.pid, startedAt: .distantPast, disclaimed: spawned.disclaimed, stdinFD: input[1], stdoutFD: output[0], stderrFD: errors[0])
     }
 
     /// 지킴이를 disclaim으로 띄우고, 지킴이가 `claude`를 띄운다 (13장 1). 지킴이의 첫 보고(`started`)로 `claude` pid · unique id를 받아 앱이 다시 대조한다:
-    /// 지킴이 · `claude` 둘 다 그 세대를 같은 id로 읽어야 하고 `claude`의 부모가 지킴이여야 한다 (12장 6: 뿌리 id가 전제). 아니면 정체 commit · stdin 전에
-    /// `claude`(지킴이가 아직 거두지 않은 자식이라 그 pid는 다른 프로세스가 쓸 수 없다)를 SIGKILL하고 지킴이를 거둔 뒤 던진다
+    /// 지킴이 · `claude` 둘 다 그 세대를 같은 id로 읽어야 하고 `claude`의 부모가 지킴이여야 한다 (12장 6: 뿌리 id가 전제). 아니면 정체 commit · stdin 전에 멈춘다
+    /// (`abort`: 지킴이가 0으로 끝나야 끝이다, 14장 1). 막히는 호출이다: adapter는 actor 밖에서 부른다 (14장 9). `lookups`는 부른 쪽 작업의 조회 (GCD 스레드에는 task-local이 없다)
     static func spawnKept(
-        keeper: String, ended: URL, executable: String, argv0: String, arguments: [String], environment: [String: String], cwd: String, reportTimeout: TimeInterval = 5
-    ) throws -> ClaudeKeptSpawn {
+        keeper: String, ended: URL, executable: String, argv0: String, arguments: [String], environment: [String: String], cwd: String, reportTimeout: TimeInterval = 5,
+        abortTimeout: TimeInterval = 3, lookups: KeeperMembers.Lookups = ClaudeProcessInspector.lookups
+    ) -> Result<ClaudeKeptSpawn, ClaudeKeptFailure> {
         var report: [Int32] = [-1, -1]
-        guard pipe(&report) == 0 else { throw AgentStartError(.spawnFailed) }
+        guard pipe(&report) == 0 else { return .failure(.notRun) }
         for fd in report { _ = fcntl(fd, F_SETFD, FD_CLOEXEC) }
         let keeperArguments = ["--report-fd", "3", "--ended", ended.path, "--cwd", cwd, "--", executable, argv0] + arguments
-        let process: ClaudeSpawnedProcess
-        do {
-            process = try launch(executable: keeper, argv0: nil, arguments: keeperArguments, environment: environment, cwd: cwd, disclaim: true, report: report[1])
-        } catch {
+        guard let process = launch(executable: keeper, argv0: nil, arguments: keeperArguments, environment: environment, cwd: cwd, disclaim: true, report: report[1]) else {
             close(report[0])
             close(report[1])
-            throw error
+            return .failure(.notRun)
         }
         close(report[1])
         let line = readReportLine(report[0], timeout: reportTimeout)
         if case .started(let claudePID, let claudeID, let keeperID, let attributable)? = line.flatMap(KeeperReport.init(line:)) {
-            let lookups = ClaudeProcessInspector.lookups
             if case .present(let keeperNow) = lookups.generation(process.pid), keeperNow.own == keeperID, !keeperNow.zombie {
                 if case .present(let claudeNow) = lookups.generation(claudePID), claudeNow.own == claudeID, claudeNow.parentPID == process.pid, !claudeNow.zombie {
-                    return ClaudeKeptSpawn(
+                    return .success(ClaudeKeptSpawn(
                         keeper: process, keeperID: keeperID, claudePID: claudePID, claudeID: claudeID, claudeStartedAt: claudeNow.start, attributable: attributable,
                         reportFD: report[0]
-                    )
+                    ))
                 }
             }
         }
-        abort(process, reportFD: report[0], timeout: reportTimeout)
-        throw AgentStartError(.spawnFailed)
+        return .failure(.stopped(ended: abort(process, reportFD: report[0], timeout: abortTimeout)))
     }
 
     /// 정체를 적기 전에 그 spawn을 거둔다: stdin을 닫고(EOF), 지킴이에 SIGTERM(지킴이가 아직 거두지 않은 `claude`를 SIGKILL하고 구성원 0을 증명하고 끝난다),
-    /// 기한 안에 끝나지 않으면 지킴이를 SIGKILL하고 거둔다. 지킴이는 앱의 자식이라 거두기 전에는 그 pid를 다른 프로세스가 쓸 수 없다
-    static func abort(_ keeper: ClaudeSpawnedProcess, reportFD: Int32, timeout: TimeInterval) {
+    /// 기한 안에 끝나지 않으면 지킴이를 SIGKILL하고 거둔다. 지킴이는 앱의 자식이라 거두기 전에는 그 pid를 다른 프로세스가 쓸 수 없다.
+    /// 지킴이가 기한 안에 0으로 끝났을 때만 true (구성원 0 증명, 14장 1·3). 그 밖(시간 초과 · 다른 코드 · 신호)은 끝을 모른다
+    static func abort(_ keeper: ClaudeSpawnedProcess, reportFD: Int32, timeout: TimeInterval) -> Bool {
         keeper.closeStandardStreams()
         close(reportFD)
         kill(keeper.pid, SIGTERM)
-        if keeper.waitForExit(timeout: timeout) == nil {
-            kill(keeper.pid, SIGKILL)
-            _ = keeper.waitForExit()
+        if let status = keeper.waitForExit(timeout: timeout) {
+            return status.code == KeeperMain.Exit.ended.rawValue && status.signal == nil
         }
+        kill(keeper.pid, SIGKILL)
+        _ = keeper.waitForExit()
+        return false
     }
 
     /// 보고 한 줄 (기한 안에서, 줄바꿈 전까지). 기한 · EOF · 너무 긴 줄이면 nil

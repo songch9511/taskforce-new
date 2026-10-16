@@ -17,6 +17,11 @@ extension BridgeRuntime {
             log.log("event_dropped", ["task": .id(taskID)])
             return
         }
+        // 답을 닫은 실행은 끝 사건만 받는다 (OA D3a 14장 2): 끝은 보통의 끝처럼 정산한다 (질문 대기 중의 끝 = 사건 0)
+        if current.endOnly {
+            if case .ended = event { await handleEnded(taskID: taskID, runID: runID) } else { log.log("event_dropped", ["task": .id(taskID)]) }
+            return
+        }
         let observed = at ?? clock.now()
         // 앞에서 적지 못한 `inputReached`가 있으면 다시 적는다 (OA D3a Q5)
         if current.inputReachedAt != nil { await applyInputReached(taskID: taskID) }

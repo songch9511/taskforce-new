@@ -81,7 +81,8 @@ public struct ClaudeSessionFolder: Sendable, Equatable {
         guard UUID(uuidString: agentSessionID) != nil else { throw AgentStartError(.spawnFailed) }
         let root = sessionsRoot.appending(path: agentSessionID.lowercased(), directoryHint: .isDirectory)
         let folder = ClaudeSessionFolder(root: root, cwd: root.appending(path: "cwd", directoryHint: .isDirectory), config: root.appending(path: "config", directoryHint: .isDirectory))
-        for directory in [sessionsRoot, folder.root, folder.cwd, folder.config] {
+        // `cwd/`는 띄우기 직전에 `lstat`로 확인하고 만든다 (14장 11: 기호 링크를 따라가 다른 폴더의 모드를 바꾸지 않는다)
+        for directory in [sessionsRoot, folder.root, folder.config] {
             do {
                 try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
                 try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)

@@ -91,6 +91,8 @@ public actor BridgeRuntime {
         var identity: AgentProcessIdentity?
         /// adapter가 `inputReached`를 알렸지만 아직 명령 `inputAt`에 적지 못한 시각 (시작 기록이 끝난 뒤 적는다, OA D3a Q5)
         var inputReachedAt: Date?
+        /// 답을 `request_closed`로 정산했는데 그 실행이 아직 돈다 (OA D3a 14장 2): 끝 사건만 받아 끝을 정산한다 (그 밖의 사건은 버린다)
+        var endOnly = false
     }
 
     // MARK: 의존성
