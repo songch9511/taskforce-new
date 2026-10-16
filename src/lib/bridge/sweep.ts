@@ -1,6 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { z } from "zod";
-import { BRIDGE_REDELIVERY_LIMIT } from "@/lib/execution/limits";
+import { BRIDGE_KICK_LIMIT, BRIDGE_REDELIVERY_LIMIT } from "@/lib/execution/limits";
 import { drainBridgeSessionEvents } from "./events";
 import { kickBridgeSessions, redeliverBridgeMessages } from "./triggers";
 export async function sweepBridge(admin: SupabaseClient) {
@@ -30,7 +30,10 @@ export async function sweepBridge(admin: SupabaseClient) {
     result.reclaim_busy = reclaim.busy;
     const byUser = new Map<string, string[]>();
     for (const session of reclaim.sessions) byUser.set(session.user_id, [...(byUser.get(session.user_id) ?? []), session.agent_session_id]);
-    for (const [userId, sessionIds] of byUser) await kickBridgeSessions(admin, userId, sessionIds);
+    // kickBridgeSessions는 bound를 확인하기 전에 앞 BRIDGE_KICK_LIMIT(5)개로 자른다: 회수한 세션을 모두 보도록 5개 이하 청크로 나눠 부른다
+    for (const [userId, sessionIds] of byUser) {
+      for (let i = 0; i < sessionIds.length; i += BRIDGE_KICK_LIMIT) await kickBridgeSessions(admin, userId, sessionIds.slice(i, i + BRIDGE_KICK_LIMIT));
+    }
   } catch { result.errors++; }
   try { result.redelivered = await redeliverBridgeMessages(admin); } catch { result.errors++; }
   return result;

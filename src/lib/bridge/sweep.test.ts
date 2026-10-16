@@ -76,6 +76,18 @@ describe("OA F3 sweepBridge: 만료한 lease 전 prepared 회수", () => {
     expect(vi.mocked(kickBridgeSessions).mock.calls.map(([, userId, sessionIds]) => [userId, sessionIds])).toEqual([[U1, [S1, S3]], [U2, [S2]]]);
   });
 
+  it("한 사용자의 회수 세션이 5개를 넘어도 모두 kick한다 (kick 한 번은 5개까지라 5개 이하 청크로 나눈다)", async () => {
+    const many = Array.from({ length: 12 }, (_, i) => `30000000-0000-4000-8000-0000000001${String(i).padStart(2, "0")}`);
+    const { admin } = fakeAdmin({
+      sweep_bridge_heartbeats: [],
+      expire_unleased_agent_messages: { reclaimed: 12, busy: 0, sessions: many.map((agent_session_id) => ({ user_id: U1, agent_session_id })) },
+    });
+    await sweepBridge(admin);
+    const calls = vi.mocked(kickBridgeSessions).mock.calls.map(([, userId, sessionIds]) => [userId, sessionIds]);
+    expect(calls).toEqual([[U1, many.slice(0, 5)], [U1, many.slice(5, 10)], [U1, many.slice(10)]]);
+    expect(calls.every(([, sessionIds]) => (sessionIds as string[]).length <= 5)).toBe(true);
+  });
+
   it("회수한 것이 없으면 kick하지 않는다", async () => {
     const { admin } = fakeAdmin({ sweep_bridge_heartbeats: [], expire_unleased_agent_messages: { reclaimed: 0, busy: 1, sessions: [] } });
     expect(await sweepBridge(admin)).toMatchObject({ reclaimed: 0, reclaim_busy: 1, errors: 0 });

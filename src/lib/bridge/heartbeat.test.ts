@@ -135,3 +135,42 @@ describe("bridge heartbeat device name (F1s)", () => {
     expect(rpc).not.toHaveBeenCalled();
   });
 });
+
+// ─── OA F3: 만료 회수 배치와 겹쳐 교착으로 물리면(40P01) 다시 한다 ───
+describe("bridge heartbeat deadlock retry (OA F3)", () => {
+  afterEach(() => vi.useRealTimers());
+  const rejecting = (codes: (string | null)[]) => {
+    let call = 0;
+    const rpc = vi.fn((...args: unknown[]) => ({ throwOnError: async () => { void args; const code = codes[call++]; if (code) throw { code }; return { data: response }; } }));
+    const from = vi.fn(() => ({ select: vi.fn().mockReturnThis(), eq: vi.fn().mockReturnThis(), limit: vi.fn().mockReturnThis(), throwOnError: vi.fn().mockResolvedValue({ data: [{ id: other }] }) }));
+    return { admin: { rpc, from } as unknown as SupabaseClient, rpc };
+  };
+
+  it("40P01 두 번 뒤 성공: 같은 인자로 50ms · 150ms 뒤에 다시 한다", async () => {
+    vi.useFakeTimers();
+    const { admin, rpc } = rejecting(["40P01", "40P01", null]);
+    const result = heartbeatBridge(admin, { userId: id, bridge, input }).then((value) => ({ value }), (error: unknown) => ({ error }));
+    await vi.advanceTimersByTimeAsync(49);
+    expect(rpc).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(rpc).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(149);
+    expect(rpc).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(await result).toMatchObject({ value: { pending_commands: 3 } });
+    expect(rpc).toHaveBeenCalledTimes(3);
+    expect(rpc.mock.calls[1]).toEqual(rpc.mock.calls[0]);
+  });
+
+  it("세 번 모두 40P01이면 그대로 던진다(route가 500). 다른 오류는 한 번만 시도한다", async () => {
+    vi.useFakeTimers();
+    const exhausted = rejecting(["40P01", "40P01", "40P01"]);
+    const failing = heartbeatBridge(exhausted.admin, { userId: id, bridge, input }).then(() => "ok", (error: { code?: string }) => error.code);
+    await vi.advanceTimersByTimeAsync(300);
+    expect(await failing).toBe("40P01");
+    expect(exhausted.rpc).toHaveBeenCalledTimes(3);
+    const other = rejecting(["55P03", null]);
+    await expect(heartbeatBridge(other.admin, { userId: id, bridge, input })).rejects.toEqual({ code: "55P03" });
+    expect(other.rpc).toHaveBeenCalledTimes(1);
+  });
+});

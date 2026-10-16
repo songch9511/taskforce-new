@@ -1,7 +1,9 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("server-only", () => ({}));
+vi.mock("./events", () => ({ drainBridgeSessionEvents: vi.fn().mockResolvedValue(0) }));
 vi.mock("@/lib/agents/next-turn", async (importOriginal) => ({ ...await importOriginal<typeof import("@/lib/agents/next-turn")>(), startPinnedAgentMessage: vi.fn() }));
+import { sweepBridge } from "./sweep";
 import { kickBridgeConnections, kickBridgeSessions, redeliverBridgeMessages } from "./triggers";
 import { startPinnedAgentMessage } from "@/lib/agents/next-turn";
 import { AGENT_REGISTRY } from "@/lib/agents/registry";
@@ -141,4 +143,33 @@ describe("redeliverBridgeMessages(③)가 startPinnedAgentMessage에 넘기는 �
     await redeliverBridgeMessages(admin, env);
     expect(startPinnedAgentMessage).toHaveBeenCalledExactlyOnceWith(admin, { ...expectedInput(turnChips), state, reason }, env);
   });
+});
+
+// ─── OA F3: 만료 회수 뒤 kick은 여섯 번째 세션부터도 간다 (실제 kickBridgeSessions는 한 번에 5개까지만 본다) ───
+it("F3: sweepBridge가 한 사용자의 회수 세션 6개를 넘기면 앞 다섯이 unreachable이어도 여섯째(bound)가 시작된다", async () => {
+  vi.mocked(startPinnedAgentMessage).mockClear();
+  const sessions = Array.from({ length: 6 }, (_, i) => `30000000-0000-4000-8000-00000000000${i + 1}`);
+  const sixth = sessions[5];
+  const { admin, rpc } = deliveryDb();
+  const baseRpc = admin.rpc.bind(admin) as (name: string, args?: Record<string, unknown>) => unknown;
+  admin.rpc = ((name: string, args?: Record<string, unknown>) => {
+    const answers: Record<string, unknown> = {
+      sweep_bridge_heartbeats: [], sweep_agent_step_leases: 0,
+      expire_unleased_agent_messages: { reclaimed: 6, busy: 0, sessions: sessions.map((agent_session_id) => ({ user_id: id, agent_session_id })) },
+    };
+    return name in answers ? { throwOnError: async () => ({ data: answers[name] }) } : baseRpc(name, args);
+  }) as typeof admin.rpc;
+  const baseFrom = admin.from.bind(admin);
+  admin.from = ((table: string) => {
+    if (table !== "agent_sessions") return baseFrom(table);
+    const filters: Record<string, unknown> = {};
+    const query = { select: () => query, eq: (key: string, value: unknown) => { filters[key] = value; return query; }, maybeSingle: () => query,
+      throwOnError: async () => ({ data: { status: filters.id === sixth ? "bound" : "unreachable", connection_id: id } }) };
+    return query;
+  }) as typeof admin.from;
+  await sweepBridge(admin);
+  const calls = rpc.mock.calls as unknown as [string, { p_agent_session_id?: string } | undefined][];
+  const heads = calls.filter(([name, args]) => name === "next_bridge_agent_message" && args?.p_agent_session_id === sixth);
+  expect(heads).toHaveLength(1);
+  expect(startPinnedAgentMessage).toHaveBeenCalledWith(admin, expect.objectContaining({ userId: id, messageId: id }), expect.any(Object));
 });
