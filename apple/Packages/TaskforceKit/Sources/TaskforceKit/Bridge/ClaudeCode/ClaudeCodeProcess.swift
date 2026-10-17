@@ -100,13 +100,17 @@ public actor ClaudeCodeProcess: AgentProcess {
     }
     #endif
 
-    /// 터미널에서 이어받는 데 필요한 값 (D4a2-06): 이 세션 폴더 상태가 묶은 Claude 세션 id와 찾은 `claude`의 realpath. 서버 `external_session_id`는 쓰지 않는다.
-    /// 세션 폴더를 만들지 않고 읽기만 한다. 묶이지 않았거나(첫 턴 전) · 실행 파일을 못 찾았거나 · id 모양이 틀리면 nil
+    /// 터미널에서 이어받는 데 필요한 값 (D4a2-06): 이 세션 폴더 상태가 묶은 Claude 세션 id · 찾은 `claude`의 realpath · 이 세션을 띄운 `cwd/`의 realpath. 서버 `external_session_id`는 쓰지 않는다.
+    /// Claude Code는 대화 기록을 cwd별로 두고 `--add-dir`도 이어받을 때 다시 줘야 하므로, 터미널은 adapter와 같은 세션 cwd에서 이어받는다 (`ClaudeSessionFolder.locate`: 띄우기와 같은 길).
+    /// 세션 폴더를 만들지 않고 읽기만 한다. 묶이지 않았거나(첫 턴 전) · 실행 파일을 못 찾았거나 · id 모양이 틀리거나 · 세션 cwd가 없거나(잊었거나 지웠다) · 기호 링크이거나 · 내 폴더가 아니면 nil (열지 않는다)
     public func terminalSession(_ sessionID: String) async -> AgentTerminalSession? {
-        guard UUID(uuidString: sessionID) != nil, let executable = locator.locate() else { return nil }
-        let state = ClaudeSessionState.load(from: sessionsRoot.appending(path: sessionID.lowercased(), directoryHint: .isDirectory))
+        guard let folder = ClaudeSessionFolder.locate(sessionsRoot: sessionsRoot, agentSessionID: sessionID), let executable = locator.locate() else { return nil }
+        let state = ClaudeSessionState.load(from: folder.root)
         guard state.bound, let provider = state.providerSessionID, BridgeRuntime.isSafeSessionID(provider) else { return nil }
-        return AgentTerminalSession(providerSessionID: provider, executableRealPath: executable.realPath)
+        // 띄울 때(`prepareCwd`)와 같이 `lstat`: 기호 링크이거나 남의 폴더이면 따라가지 않는다
+        var info = stat()
+        guard lstat(folder.cwd.path, &info) == 0, (info.st_mode & S_IFMT) == S_IFDIR, info.st_uid == getuid(), let cwd = GateFileSystem.realpath(folder.cwd.path) else { return nil }
+        return AgentTerminalSession(providerSessionID: provider, executableRealPath: executable.realPath, sessionCwd: cwd)
     }
 
     func redactor(_ sessionID: String) -> SecretRedactor {

@@ -8,9 +8,10 @@ import Testing
 struct BridgeTerminalTargetTests {
     static let providerID = "c0ffee00-0000-4000-8000-000000000001"
     static let executable = "/Users/tester/.local/share/claude/versions/2.1.241"
+    static let cwd = "/Users/tester/Library/Application Support/dev.taskforcelabs.taskforce/Bridge/v1/p/claude-code/5e551011-0000-4000-8000-000000000001/cwd"
 
     /// 세션 하나가 폴더 a에 핀 꽂혀 있고 한 턴을 마친 하네스. 가짜 agent는 터미널 값을 돌려준다
-    private func rig(terminal: AgentTerminalSession? = AgentTerminalSession(providerSessionID: providerID, executableRealPath: executable)) async throws -> BridgeWorkspaceRefTests.Rig {
+    private func rig(terminal: AgentTerminalSession? = AgentTerminalSession(providerSessionID: providerID, executableRealPath: executable, sessionCwd: cwd)) async throws -> BridgeWorkspaceRefTests.Rig {
         let r = try await BridgeWorkspaceRefTests.Rig()
         r.h.agent.setTerminalSession(terminal)
         r.h.agent.setScript(FakeAgentProcess.Script([.sessionBound(external: "ext-1", workspace: r.path), .accepted, .turnCompleted, .end(AgentExit(code: 0))]))
@@ -25,7 +26,7 @@ struct BridgeTerminalTargetTests {
     @Test func theTargetIsTheClaudeIDTheRealExecutableAndTheFolderTheMacRecorded() async throws {
         let r = try await rig()
         let target = try #require(await r.h.runtime.terminalTarget(forAgentSession: session))
-        #expect(target == AgentTerminalTarget(providerSessionID: Self.providerID, folder: r.path, executableRealPath: Self.executable))
+        #expect(target == AgentTerminalTarget(providerSessionID: Self.providerID, folder: r.path, executableRealPath: Self.executable, sessionCwd: Self.cwd))
         #expect(await r.h.runtime.providerSessionID(forAgentSession: session) == Self.providerID)
         // 서버가 준 external_session_id("ext-1")는 쓰지 않는다
         #expect(target.providerSessionID != "ext-1")
@@ -56,7 +57,7 @@ struct BridgeTerminalTargetTests {
 
     @Test func withoutAResolverTheMacHasNoFolderItApprovedSoThereIsNoTarget() async throws {
         let h = try BridgeHarness(workspace: nil)
-        h.agent.setTerminalSession(AgentTerminalSession(providerSessionID: Self.providerID, executableRealPath: Self.executable))
+        h.agent.setTerminalSession(AgentTerminalSession(providerSessionID: Self.providerID, executableRealPath: Self.executable, sessionCwd: Self.cwd))
         await h.registerFirst()
         let created = h.message()
         await h.runtime.tick()
@@ -78,7 +79,7 @@ struct BridgeTerminalTargetTests {
         let h = try BridgeHarness(workspace: nil)
         h.workspaces = ApprovesAFile(path: file.path)
         try await h.restart(reopenLedger: false)
-        h.agent.setTerminalSession(AgentTerminalSession(providerSessionID: Self.providerID, executableRealPath: Self.executable))
+        h.agent.setTerminalSession(AgentTerminalSession(providerSessionID: Self.providerID, executableRealPath: Self.executable, sessionCwd: Self.cwd))
         h.agent.setScript(FakeAgentProcess.Script([.sessionBound(external: "ext-1", workspace: file.path), .accepted, .turnCompleted, .end(AgentExit(code: 0))]))
         await h.registerFirst()
         let created = h.message()
@@ -100,7 +101,7 @@ struct BridgeTerminalTargetTests {
         try await launcher.open(sessionID: session)
         let file = try #require(opener.opened.first)
         let text = try String(contentsOf: file, encoding: .utf8)
-        #expect(text == "#!/bin/sh\ncd '\(r.path)' && exec '\(Self.executable)' --resume '\(Self.providerID)'\n")
+        #expect(text == "#!/bin/sh\ncd '\(Self.cwd)' && exec '\(Self.executable)' --resume '\(Self.providerID)' --add-dir '\(r.path)'\n")
         #expect(try AgentTerminalCommandFileTests.mode(file) == 0o700)
     }
 
@@ -115,7 +116,7 @@ struct BridgeTerminalTargetTests {
         let h = try BridgeHarness(workspace: nil)
         h.workspaces = resolver
         try await h.restart(reopenLedger: false)
-        h.agent.setTerminalSession(AgentTerminalSession(providerSessionID: Self.providerID, executableRealPath: Self.executable))
+        h.agent.setTerminalSession(AgentTerminalSession(providerSessionID: Self.providerID, executableRealPath: Self.executable, sessionCwd: Self.cwd))
         let real = GateFileSystem.realpath(quoted) ?? quoted
         h.agent.setScript(FakeAgentProcess.Script([.sessionBound(external: "ext-1", workspace: real), .accepted, .turnCompleted, .end(AgentExit(code: 0))]))
         await h.registerFirst()

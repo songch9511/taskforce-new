@@ -370,14 +370,17 @@ public protocol AgentProcess: Sendable {
     func terminalSession(_ sessionID: String) async -> AgentTerminalSession?
 }
 
-/// 터미널에서 이어받는 데 필요한 adapter 쪽 값 둘 (OA D4a2-06): provider 세션 id(Claude Code `--resume <id>`)와 실행 파일의 realpath. 작업 폴더는 런타임이 등록부에서 더한다
+/// 터미널에서 이어받는 데 필요한 adapter 쪽 값 셋 (OA D4a2-06): provider 세션 id(Claude Code `--resume <id>`) · 실행 파일의 realpath · 그 세션을 띄운 **세션 cwd**의 realpath.
+/// Claude Code는 대화 기록을 cwd별로 두므로(`~/.claude/projects/<cwd>`) 터미널도 adapter가 띄운 cwd에서 이어받는다. 작업 폴더는 런타임이 등록부에서 더한다
 public struct AgentTerminalSession: Sendable, Equatable {
     public var providerSessionID: String
     public var executableRealPath: String
+    public var sessionCwd: String
 
-    public init(providerSessionID: String, executableRealPath: String) {
+    public init(providerSessionID: String, executableRealPath: String, sessionCwd: String) {
         self.providerSessionID = providerSessionID
         self.executableRealPath = executableRealPath
+        self.sessionCwd = sessionCwd
     }
 }
 

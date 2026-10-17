@@ -76,11 +76,16 @@ public struct ClaudeSessionFolder: Sendable, Equatable {
     public let cwd: URL
     public let config: URL
 
-    public static func prepare(sessionsRoot: URL, agentSessionID: String) throws -> ClaudeSessionFolder {
+    /// 세션 폴더의 자리 (만들지 않는다): UUID 모양의 id만 받는다. 띄우기(`prepare`)와 터미널 이어받기(D4a2-06, 어댑터와 같은 `cwd/`)가 같은 길을 쓴다
+    public static func locate(sessionsRoot: URL, agentSessionID: String) -> ClaudeSessionFolder? {
         // 서버가 준 id를 폴더 이름으로 쓴다: UUID 모양만 받는다
-        guard UUID(uuidString: agentSessionID) != nil else { throw AgentStartError(.spawnFailed) }
+        guard UUID(uuidString: agentSessionID) != nil else { return nil }
         let root = sessionsRoot.appending(path: agentSessionID.lowercased(), directoryHint: .isDirectory)
-        let folder = ClaudeSessionFolder(root: root, cwd: root.appending(path: "cwd", directoryHint: .isDirectory), config: root.appending(path: "config", directoryHint: .isDirectory))
+        return ClaudeSessionFolder(root: root, cwd: root.appending(path: "cwd", directoryHint: .isDirectory), config: root.appending(path: "config", directoryHint: .isDirectory))
+    }
+
+    public static func prepare(sessionsRoot: URL, agentSessionID: String) throws -> ClaudeSessionFolder {
+        guard let folder = locate(sessionsRoot: sessionsRoot, agentSessionID: agentSessionID) else { throw AgentStartError(.spawnFailed) }
         // `cwd/`는 띄우기 직전에 `lstat`로 확인하고 만든다 (14장 11: 기호 링크를 따라가 다른 폴더의 모드를 바꾸지 않는다)
         for directory in [sessionsRoot, folder.root, folder.config] {
             do {

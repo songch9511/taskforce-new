@@ -6,7 +6,9 @@ import Foundation
 // AppleScript도 `open -a Terminal`도 쓰지 않는다: 자동화 권한 창이 늘지 않는다.
 //
 // 보안 (계약 13.6 · 보안 검토 디스패치):
-// - 내용은 정확히 한 줄 명령이다: `cd '<폴더>' && exec '<claude realpath>' --resume '<Claude 세션 id>'`. 세 값 모두 `ClaudeCodeLaunch.quotedForShell`을 거친다 — `'` · 제어 글자(줄바꿈 포함) · NUL이 있으면
+// - 내용은 정확히 한 줄 명령이다: `cd '<세션 cwd>' && exec '<claude realpath>' --resume '<Claude 세션 id>' --add-dir '<작업 폴더>'`. Claude Code는 대화 기록을 cwd별로 두고 `--add-dir`는 이어받을 때
+//   되살아나지 않으므로(코디네이터 결정, 13.10 덧붙임) adapter가 띄운 세션 cwd에서 이어받고 작업 폴더를 다시 준다. `--settings` · `--mcp-config`는 주지 않는다: 터미널은 사용자가 이어받은 것이라
+//   Taskforce의 훅 밖이고 사용자 자신의 Claude Code 설정이 적용된다. 네 값 모두 `ClaudeCodeLaunch.quotedForShell`을 거친다 — `'` · 제어 글자(줄바꿈 포함) · NUL이 있으면
 //   파일을 만들지 않고 열지도 않는다. 사용자 글 · 경로 원문을 로그에 남기지 않는다
 // - 파일은 0700으로 만든다(`O_EXCL`, 다른 사용자가 읽거나 바꿀 수 없다). 폴더도 0700이고 기호 링크이거나 남의 폴더면 쓰지 않는다
 // - 값은 이 Mac 상태에서만 온다 (`AgentTerminalTarget`). 서버 `external_session_id`는 쓰지 않는다
@@ -22,13 +24,14 @@ public enum AgentTerminalCommandError: Error, Equatable, Sendable {
 }
 
 public enum AgentTerminalCommandFile {
-    /// `.command` 내용: 셸 한 줄 (`#!/bin/sh` 아래). 인용 실패면 던진다
+    /// `.command` 내용: 셸 한 줄 (`#!/bin/sh` 아래). 인용 실패(네 값 중 하나라도)면 던진다
     public static func contents(for target: AgentTerminalTarget) throws -> String {
         do {
-            let folder = try ClaudeCodeLaunch.quotedForShell(target.folder)
+            let cwd = try ClaudeCodeLaunch.quotedForShell(target.sessionCwd)
             let executable = try ClaudeCodeLaunch.quotedForShell(target.executableRealPath)
             let session = try ClaudeCodeLaunch.quotedForShell(target.providerSessionID)
-            return "#!/bin/sh\ncd \(folder) && exec \(executable) --resume \(session)\n"
+            let folder = try ClaudeCodeLaunch.quotedForShell(target.folder)
+            return "#!/bin/sh\ncd \(cwd) && exec \(executable) --resume \(session) --add-dir \(folder)\n"
         } catch {
             throw AgentTerminalCommandError.unquotable
         }

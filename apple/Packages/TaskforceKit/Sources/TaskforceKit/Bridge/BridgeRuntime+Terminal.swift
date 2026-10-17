@@ -1,17 +1,20 @@
 #if os(macOS)
 import Foundation
 
-/// 이 Mac의 터미널이 한 세션을 이어받는 데 필요한 세 값 (OA D4a2-06): Claude 세션 id · 작업 폴더 · 실행 파일 realpath.
+/// 이 Mac의 터미널이 한 세션을 이어받는 데 필요한 네 값 (OA D4a2-06 + 코디네이터 결정 13.10 덧붙임): Claude 세션 id · 작업 폴더 · 실행 파일 realpath · 세션 cwd.
+/// 이어받기는 adapter가 띄운 **세션 cwd**에서 하고(대화 기록이 cwd별이다) 작업 폴더는 `--add-dir`로 다시 준다.
 /// 모두 이 Mac의 상태(세션 폴더 상태 · 원장 · 등록부)에서 읽은 값이다. 서버가 준 `external_session_id`는 쓰지 않는다
 public struct AgentTerminalTarget: Sendable, Equatable {
     public var providerSessionID: String
     public var folder: String
     public var executableRealPath: String
+    public var sessionCwd: String
 
-    public init(providerSessionID: String, folder: String, executableRealPath: String) {
+    public init(providerSessionID: String, folder: String, executableRealPath: String, sessionCwd: String) {
         self.providerSessionID = providerSessionID
         self.folder = folder
         self.executableRealPath = executableRealPath
+        self.sessionCwd = sessionCwd
     }
 }
 
@@ -39,7 +42,7 @@ extension BridgeRuntime {
               await resolver.authorize(workspaceRef: folder, session: task.agentSessionID, adapter: task.adapter) else { return nil }
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: folder, isDirectory: &isDirectory), isDirectory.boolValue else { return nil }
-        return AgentTerminalTarget(providerSessionID: terminal.providerSessionID, folder: folder, executableRealPath: terminal.executableRealPath)
+        return AgentTerminalTarget(providerSessionID: terminal.providerSessionID, folder: folder, executableRealPath: terminal.executableRealPath, sessionCwd: terminal.sessionCwd)
     }
 }
 #endif

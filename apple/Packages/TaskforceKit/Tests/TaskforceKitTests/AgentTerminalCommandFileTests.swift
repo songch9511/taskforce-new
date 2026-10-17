@@ -7,7 +7,8 @@ import Testing
 /// Open in Terminal의 `.command` 파일 · launcher · 프로세스 검사기 (OA D4a2-06 · 07, 계약 13.6 "launcher" · "검사기"). 실제 터미널 · `claude` 실행 0: 열기는 가짜다
 struct AgentTerminalCommandFileTests {
     static let target = AgentTerminalTarget(
-        providerSessionID: "c0ffee00-0000-4000-8000-000000000001", folder: "/Users/tester/Documents/client-a", executableRealPath: "/Users/tester/.local/share/claude/versions/2.1.241"
+        providerSessionID: "c0ffee00-0000-4000-8000-000000000001", folder: "/Users/tester/Documents/client-a", executableRealPath: "/Users/tester/.local/share/claude/versions/2.1.241",
+        sessionCwd: "/Users/tester/Library/Application Support/dev.taskforcelabs.taskforce/Bridge/v1/p/claude-code/5e551011-0000-4000-8000-000000000001/cwd"
     )
 
     final class FakeOpener: AgentTerminalOpening, @unchecked Sendable {
@@ -27,14 +28,20 @@ struct AgentTerminalCommandFileTests {
 
     // MARK: 내용
 
-    @Test func theCommandFileIsAShebangAndExactlyOneQuotedCommandLine() throws {
+    @Test func theCommandFileResumesFromTheSessionCwdAndPassesTheWorkFolderAgain() throws {
         let contents = try AgentTerminalCommandFile.contents(for: Self.target)
         #expect(contents == """
         #!/bin/sh
-        cd '/Users/tester/Documents/client-a' && exec '/Users/tester/.local/share/claude/versions/2.1.241' --resume 'c0ffee00-0000-4000-8000-000000000001'
+        cd '/Users/tester/Library/Application Support/dev.taskforcelabs.taskforce/Bridge/v1/p/claude-code/5e551011-0000-4000-8000-000000000001/cwd' && exec '/Users/tester/.local/share/claude/versions/2.1.241' --resume 'c0ffee00-0000-4000-8000-000000000001' --add-dir '/Users/tester/Documents/client-a'
 
         """)
         #expect(contents.split(separator: "\n").count == 2)
+        // 터미널은 사용자가 이어받은 것이다: Taskforce의 훅 · 설정 · MCP를 다시 주지 않는다
+        for forbidden in ["--settings", "--mcp-config", "--setting-sources", "--session-id", "--permission-mode", "-p "] {
+            #expect(!contents.contains(forbidden), "\(forbidden)")
+        }
+        // 작업 폴더가 아니라 세션 cwd에서 시작한다 (대화 기록이 cwd별이다)
+        #expect(!contents.contains("cd '/Users/tester/Documents/client-a'"))
     }
 
     @Test func aValueTheShellCouldReadAsSomethingElseMakesNoFile() async throws {
@@ -44,6 +51,10 @@ struct AgentTerminalCommandFileTests {
             let broken = target
             #expect(throws: AgentTerminalCommandError.unquotable, "folder \(bad.debugDescription)") { try AgentTerminalCommandFile.contents(for: broken) }
         }
+        var cwd = Self.target
+        cwd.sessionCwd = "/Users/o'brien/Library/Application Support/x/cwd"
+        let brokenCwd = cwd
+        #expect(throws: AgentTerminalCommandError.unquotable, "세션 cwd에 작은따옴표") { try AgentTerminalCommandFile.contents(for: brokenCwd) }
         var executable = Self.target
         executable.executableRealPath = "/opt/it's/claude"
         let brokenExecutable = executable
@@ -58,7 +69,7 @@ struct AgentTerminalCommandFileTests {
         var target = Self.target
         target.folder = "/Users/tester/Documents/$(touch pwned); `id` & x"
         let contents = try AgentTerminalCommandFile.contents(for: target)
-        #expect(contents.contains("cd '/Users/tester/Documents/$(touch pwned); `id` & x' && exec "))
+        #expect(contents.hasSuffix(" --add-dir '/Users/tester/Documents/$(touch pwned); `id` & x'\n"))
     }
 
     // MARK: 파일

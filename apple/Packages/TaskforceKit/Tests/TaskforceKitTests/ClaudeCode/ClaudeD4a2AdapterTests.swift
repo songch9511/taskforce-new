@@ -39,7 +39,7 @@ struct ClaudeD4a2AdapterTests {
 
     // MARK: terminalSession
 
-    @Test func theTerminalSessionIsTheBoundIDAndTheRealExecutablePath() async throws {
+    @Test func theTerminalSessionIsTheBoundIDTheRealExecutableAndTheSessionCwdTheAdapterLaunchedIn() async throws {
         let fake = try FakeClaude(linked: true)
         try fake.scenario(["runs": [["steps": [["text": "hello"]]]]])
         let events = EventLog()
@@ -49,16 +49,34 @@ struct ClaudeD4a2AdapterTests {
         #expect(terminal.providerSessionID == FakeClaude.providerSession(identity))
         #expect(terminal.executableRealPath == GateFileSystem.realpath(fake.claude.path), "기호 링크가 아니라 realpath다")
         #expect(terminal.executableRealPath != fake.claude.path)
+        // 세션 cwd = adapter가 띄울 때 쓴 `ClaudeSessionFolder.cwd` (같은 길로 구한다: 경로 계산을 따로 두지 않는다)
+        let folder = try #require(ClaudeSessionFolder.locate(sessionsRoot: fake.box.sessionsRoot, agentSessionID: ClaudeTest.session))
+        #expect(terminal.sessionCwd == GateFileSystem.realpath(folder.cwd.path))
+        #expect(terminal.sessionCwd.hasSuffix("/\(ClaudeTest.session)/cwd"))
         #expect(await fake.process.terminalSession(ClaudeTest.session.uppercased()) == terminal, "세션 id는 대소문자를 가리지 않는다")
     }
 
-    @Test func aSessionThatIsNotBoundYetOrHasAnUnsafeIDOrNoExecutableHasNoTerminalSession() async throws {
+    @Test func theSessionFolderIsLocatedTheSameWayForLaunchingAndForTheTerminalAndNothingIsCreated() throws {
+        let temp = TempDirectory()
+        let root = temp.appending("claude-code")
+        let located = try #require(ClaudeSessionFolder.locate(sessionsRoot: root, agentSessionID: ClaudeTest.session.uppercased()))
+        #expect(located.root == root.appending(path: ClaudeTest.session, directoryHint: .isDirectory))
+        #expect(located.cwd == located.root.appending(path: "cwd", directoryHint: .isDirectory))
+        #expect(!FileManager.default.fileExists(atPath: root.path), "자리만 구한다: 만들지 않는다")
+        let prepared = try ClaudeSessionFolder.prepare(sessionsRoot: root, agentSessionID: ClaudeTest.session)
+        #expect(prepared == located, "띄우기와 같은 자리다")
+        #expect(ClaudeSessionFolder.locate(sessionsRoot: root, agentSessionID: "../escape") == nil)
+        #expect(ClaudeSessionFolder.locate(sessionsRoot: root, agentSessionID: "not-a-uuid") == nil)
+    }
+
+    @Test func aSessionThatIsNotBoundYetOrHasAnUnsafeIDOrNoExecutableOrNoSessionCwdHasNoTerminalSession() async throws {
         let fake = try FakeClaude()
         // 세션 폴더가 없다: 만들지 않고 nil
         #expect(await fake.process.terminalSession(ClaudeTest.session) == nil)
         #expect(!FileManager.default.fileExists(atPath: fake.box.sessionsRoot.appending(path: ClaudeTest.session).path), "읽기만 한다: 폴더를 만들지 않는다")
         let folder = fake.box.sessionsRoot.appending(path: ClaudeTest.session, directoryHint: .isDirectory)
-        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let cwd = folder.appending(path: "cwd", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: cwd, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         // 묶이지 않았다 (init이 id를 돌려주기 전)
         var state = ClaudeSessionState()
         state.providerSessionID = "c0ffee00-0000-4000-8000-000000000001"
@@ -73,7 +91,7 @@ struct ClaudeD4a2AdapterTests {
         state.providerSessionID = "c0ffee00-0000-4000-8000-000000000001"
         try state.save(in: folder)
         let ok = await fake.process.terminalSession(ClaudeTest.session)
-        #expect(ok?.providerSessionID == "c0ffee00-0000-4000-8000-000000000001")
+        #expect(ok?.providerSessionID == "c0ffee00-0000-4000-8000-000000000001" && ok?.sessionCwd == GateFileSystem.realpath(cwd.path))
         // 세션 id가 UUID가 아니면 (경로로 읽히지 못하게) nil
         #expect(await fake.process.terminalSession("../escape") == nil)
         // 실행 파일을 못 찾는다
@@ -81,6 +99,32 @@ struct ClaudeD4a2AdapterTests {
             sessionsRoot: fake.box.sessionsRoot, hookServer: nil, helpers: fake.helpers, locator: ClaudeCodeLocator(candidates: [], confinedTo: fake.box.root.path), timing: .ci
         )
         #expect(await lost.terminalSession(ClaudeTest.session) == nil)
+    }
+
+    @Test func aSessionCwdThatIsGoneOrIsASymlinkOrIsNotADirectoryFailsClosed() async throws {
+        let fake = try FakeClaude()
+        let folder = fake.box.sessionsRoot.appending(path: ClaudeTest.session, directoryHint: .isDirectory)
+        let cwd = folder.appending(path: "cwd", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        var state = ClaudeSessionState()
+        state.providerSessionID = "c0ffee00-0000-4000-8000-000000000001"
+        state.bound = true
+        try state.save(in: folder)
+        // 잊었거나 지워서 세션 cwd가 없다
+        #expect(await fake.process.terminalSession(ClaudeTest.session) == nil, "세션 cwd가 없으면 열지 않는다")
+        // 기호 링크 (띄울 때는 격리하는 모양): 따라가지 않는다
+        let elsewhere = fake.box.root.appending(path: "elsewhere", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: elsewhere, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: cwd, withDestinationURL: elsewhere)
+        #expect(await fake.process.terminalSession(ClaudeTest.session) == nil, "기호 링크인 세션 cwd")
+        // 폴더가 아니라 파일
+        try FileManager.default.removeItem(at: cwd)
+        FileManager.default.createFile(atPath: cwd.path, contents: Data("x".utf8))
+        #expect(await fake.process.terminalSession(ClaudeTest.session) == nil, "파일인 세션 cwd")
+        // 정상
+        try FileManager.default.removeItem(at: cwd)
+        try FileManager.default.createDirectory(at: cwd, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        #expect(await fake.process.terminalSession(ClaudeTest.session) != nil)
     }
 
     // MARK: forgetSession
