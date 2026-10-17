@@ -721,7 +721,14 @@ public final class FakeBridgeServer: @unchecked Sendable {
                         if tasks[command.taskID]?.state == "dispatched" { tasks[command.taskID]?.state = "accepted" }
                     } else if result == "not_received" {
                         command.step = .failed
-                        tasks[command.taskID]?.state = "failed"
+                        if command.kind == "answer" {
+                            // 실제 서버(`20261118000000_bridge_commands.sql:394`): 답 명령의 not_received는 task를 failed로 만들지 않고 질문을 `awaiting_answer`로 복원한다
+                            // (답은 아직 전달되지 않았다: 사용자가 다시 입력하면 새 답 명령이 만들어진다). 취소 요청 · run 상태 조건은 흉내 내지 않는다
+                            tasks[command.taskID]?.state = "awaiting_answer"
+                            tasks[command.taskID]?.openQuestion?.answeredStepID = nil
+                        } else {
+                            tasks[command.taskID]?.state = "failed"
+                        }
                     }
                     commands[commandID] = command
                     return ok(["status": "settled", "task_state": tasks[command.taskID]?.state ?? "dispatched"])

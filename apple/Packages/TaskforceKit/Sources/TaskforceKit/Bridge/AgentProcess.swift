@@ -477,6 +477,16 @@ public actor LocalSecretAnswers: CustomReflectable, CustomStringConvertible {
         return keys.count
     }
 
+    /// 그 task의 값 가운데 `cutoff` 이전에 둔 것만 버린다 (결과 확인으로 정산된 제출의 값: 그 뒤에 다시 입력한 값은 둔다). 버린 수
+    @discardableResult
+    public func discard(taskID: String, storedAtOrBefore cutoff: Date) -> Int {
+        let task = taskID.lowercased()
+        let keys = values.filter { $0.key.taskID == task && $0.value.storedAt <= cutoff }.map(\.key)
+        for key in keys { values.removeValue(forKey: key) }
+        if !keys.isEmpty, values.isEmpty { onChange?(false) }
+        return keys.count
+    }
+
     /// 저장한 지 `ttl`초가 넘은 값을 버린다. 버린 수
     @discardableResult
     public func dropExpired(now: Date, ttl: TimeInterval) -> Int {

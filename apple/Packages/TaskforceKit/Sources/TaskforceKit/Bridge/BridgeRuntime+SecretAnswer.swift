@@ -95,12 +95,13 @@ extension BridgeRuntime {
         return reply
     }
 
-    /// 값이 없는데 POST 차례가 왔다. 원장의 그 요청: 닫혔다 → 질문이 닫혔다 · 이 제출이 이미 POST한 뒤인데 열려 있지 않고 닫히지도 않았다 = 서버가 만든 답 명령이 전달됐다 → 보냈다 ·
+    /// 값이 없는데 POST 차례가 왔다. 원장의 그 요청: 닫혔다 → 질문이 닫혔다 · 이 제출이 이미 POST한 뒤인데 열린 요청이 없고(전달이 비운다) 닫히지도 않았다 = 서버가 만든 답 명령이 전달됐다 → 보냈다 ·
     /// 그 밖(원장이 모름 · 아직 열려 있는데 값만 없음 · 아직 POST 전)은 실패다. 전달된 값을 거짓 "Couldn't send"로 보이지 않게 한다
     func secretGoneReply(_ key: LocalSecretKey, afterPost: Bool) async -> AgentQuestionSecretFlow.Reply {
         guard let task = try? await ledger.task(key.taskID) else { return .http(400) }
         if task.closedRequestIDs.contains(key.requestID) { return .stale(.questionClosed) }
-        if afterPost, task.openRequestID != key.requestID { return .duplicate }
+        // 전달은 열린 요청 표시를 비운다(`.delivered` 분기). 다른 질문 R2가 열렸다면(교체) 전달된 것이 아니다
+        if afterPost, task.openRequestID == nil { return .duplicate }
         return .http(400)
     }
 
@@ -118,14 +119,15 @@ extension BridgeRuntime {
         for key in await secrets.keys {
             let task: BridgeTaskRecord?
             do { task = try await ledger.task(key.taskID) } catch { continue } // 원장을 읽지 못하면 판단하지 않는다 (TTL이 지킨다)
-            // 끝난 task(`failed` · `cancelled`)에는 값을 받아 갈 답 명령이 다시 오지 않는다: 열린 요청이 남아 있어도 버린다
+            // 취소된 task(`cancelled`: 서버도 끝)에는 값을 받아 갈 답 명령이 다시 오지 않는다: 열린 요청이 남아 있어도 버린다
             if let task, task.openRequestID == key.requestID, !task.closedRequestIDs.contains(key.requestID), !Self.terminalTaskStates.contains(task.lastState) { continue }
             if await secrets.discard(key: key) { closed += 1 }
         }
         if expired + closed > 0 { log.log("secret_answers_dropped", ["expired": .count(expired), "closed": .count(closed)]) }
     }
 
-    static let terminalTaskStates: Set<String> = ["failed", "cancelled"]
+    /// 서버에서도 원장에서도 끝인 task 상태. `failed`는 넣지 않는다: 답 명령이 `not_received`로 정산되면 서버는 질문을 복원하는데 로컬 task만 `failed`로 남는다 (재검토 1)
+    static let terminalTaskStates: Set<String> = ["cancelled"]
 
     /// 정산 때 버린다: 요청 id를 아는 정산 (닫기 · 전달 끝)
     func settleSecret(taskID: String, requestID: String) async {
@@ -137,12 +139,17 @@ extension BridgeRuntime {
         await secrets.discard(taskID: taskID)
     }
 
-    /// 결과 확인(readback)으로 정산한 답 명령 (lease 응답이 유실돼 만료된 것): 요청 id를 모른다. `not_received`면 이 task는 `failed`(끝남)가 되므로 그 task의 값을 모두 버린다.
-    /// 그 밖의 결과(`received` · `unknown`)는 task가 계속 열려 있을 수 있다: 같은 task의 새로 입력한 값(다른 요청 id)을 늦은 정산이 지우지 않는다 (원장 대조 · TTL이 맡는다)
-    func settleSecretsAfterReadback(taskID: String, kind: BridgeV1CommandKind, result: BridgeV1ReadbackResult) async {
+    /// 결과 확인(readback)으로 정산한 답 명령 (lease 응답이 유실돼 만료된 것): 요청 id를 모른다. `not_received`는 **task의 끝이 아니다**: 서버가 질문을 `awaiting_answer`로 복원하고
+    /// (`20261118000000_bridge_commands.sql:394`) 로컬 task만 `failed`로 남는다. 그래서 task 전체가 아니라 **정산된 제출의 값만** 버린다: 그 명령을 lease한 때(`leasedAt`, 서버 시각을
+    /// 시계 차이로 로컬 시각으로 바꾸고 어긋남 여유 2초) 이전에 둔 값이다. 그 뒤에 다시 입력한 값(복원된 같은 요청이든 새 요청이든)은 두어 전달되게 한다.
+    /// 그 밖의 결과(`received` · `unknown`)는 값을 건드리지 않는다 (`take`가 이미 일어났거나 task가 계속 열려 있다)
+    func settleSecretsAfterReadback(taskID: String, kind: BridgeV1CommandKind, result: BridgeV1ReadbackResult, leasedAt: Date) async {
         guard kind == .answer, result == .notReceived else { return }
-        await settleSecrets(taskID: taskID)
+        let offset = TimeInterval((try? await ledger.meta())?.clockOffsetMS ?? 0) / 1000 // 서버 − 로컬
+        await secrets.discard(taskID: taskID, storedAtOrBefore: leasedAt.addingTimeInterval(-offset + Self.readbackClockSlack))
     }
+
+    static let readbackClockSlack: TimeInterval = 2
 
     // MARK: 변환 · 결과 표
 

@@ -50,6 +50,7 @@ struct BridgeSecretReviewFixTests {
         let command = try #require(try await h.ledger.command(commandID))
         #expect(command.state == .settled && command.ackResult == "not_received", "양성 대조: readback not_received로 정산됐다: \(command.state) \(String(describing: command.ackResult))")
         #expect(h.agent.deliveredAnswers.isEmpty)
+        #expect(h.server.taskState(created.taskID) == "awaiting_answer", "서버는 질문을 awaiting_answer로 복원했다 (실제 서버 394행): 로컬 task의 failed는 영구 종료가 아니다")
         let pendingAtSettle = await h.secrets.hasPending
         #expect(!pendingAtSettle, "정산 바로 뒤(보관 정리 전)에 값 0: 정산이 직접 버린다")
         h.clock.jump(by: 120)
@@ -60,42 +61,43 @@ struct BridgeSecretReviewFixTests {
         #expect(!busy, "바쁨이 아니다: 종료 확인 창이 뜨지 않는다")
     }
 
-    @Test func aTaskThatEndedFailedOrCancelledDropsItsValuesAtHousekeeping() async throws {
-        for terminal in ["failed", "cancelled"] {
+    @Test func onlyACancelledTaskDropsItsValuesAtHousekeepingAFailedOneKeepsThem() async throws {
+        // `cancelled`는 서버에서도 원장에서도 끝이다 → 열린 요청이 남아 있어도 버린다.
+        // `failed`는 끝이 아닐 수 있다: 답 명령이 not_received로 정산되면 서버가 질문을 복원하는데 로컬 task는 failed로 남는다 → 다시 입력한 값을 지우면 안 된다
+        for (terminal, dropped) in [("cancelled", true), ("failed", false)] {
             let h = try BridgeHarness()
             let created = try await S.open(h)
             #expect(await S.submit(h, S.answer(created, value: S.canary())) == .sent, Comment(rawValue: terminal))
             _ = try await h.ledger.updateTask(created.taskID) { $0.lastState = terminal } // 열린 요청은 그대로다
             await h.runtime.housekeeping()
             let pending = await h.secrets.hasPending
-            #expect(!pending, Comment(rawValue: "\(terminal): 끝난 task의 값 0"))
+            #expect(pending == !dropped, Comment(rawValue: "\(terminal): 값 \(dropped ? "0" : "그대로")"))
         }
     }
 
-    @Test func onlyANotReceivedSettleOfAnAnswerCommandDropsTheTasksValuesAndALateOtherSettleNeverWipesANewerValue() async throws {
+    @Test func aNotReceivedSettleDropsOnlyTheSettledSubmissionsValueNotANewerOneNorOtherTasks() async throws {
         let h = try BridgeHarness()
         let task = UUID().uuidString.lowercased()
         let other = LocalSecretKey(taskID: UUID().uuidString, requestID: "r1")
-        let first = LocalSecretKey(taskID: task, requestID: "r1")
-        let newer = LocalSecretKey(taskID: task, requestID: "r2")
+        let settled = LocalSecretKey(taskID: task, requestID: "r1") // 정산되는 답 명령의 제출 (lease보다 앞서 입력)
+        let newer = LocalSecretKey(taskID: task, requestID: "r2") // 정산 뒤 다시 입력한 값 (다른 요청, lease보다 한참 뒤)
+        let leased = Date(timeIntervalSince1970: 1_760_400_000)
         func fill() async {
-            for key in [other, first, newer] { await h.secrets.put(key: key, value: AgentAnswerValue(text: "v-\(key.requestID)")) }
+            await h.secrets.put(key: other, value: AgentAnswerValue(text: "v-other"), at: leased.addingTimeInterval(-60))
+            await h.secrets.put(key: settled, value: AgentAnswerValue(text: "v-r1"), at: leased.addingTimeInterval(-5))
+            await h.secrets.put(key: newer, value: AgentAnswerValue(text: "v-r2"), at: leased.addingTimeInterval(400))
         }
         await fill()
-        // 받았다 · 모른다: task는 계속 열려 있을 수 있다 → 같은 task의 값을 지우지 않는다 (늦은 정산이 새로 입력한 값을 지우지 않는다)
-        for result in [BridgeV1ReadbackResult.received, .unknown] {
-            await h.runtime.settleSecretsAfterReadback(taskID: task, kind: .answer, result: result)
-            let kept = await [h.secrets.contains(key: first), h.secrets.contains(key: newer), h.secrets.contains(key: other)]
-            #expect(kept == [true, true, true], Comment(rawValue: "\(result)"))
+        // 받았다 · 모른다 · message 명령: 값을 건드리지 않는다
+        for (kind, result) in [(BridgeV1CommandKind.answer, BridgeV1ReadbackResult.received), (.answer, .unknown), (.message, .notReceived)] {
+            await h.runtime.settleSecretsAfterReadback(taskID: task, kind: kind, result: result, leasedAt: leased)
+            let kept = await [h.secrets.contains(key: settled), h.secrets.contains(key: newer), h.secrets.contains(key: other)]
+            #expect(kept == [true, true, true], Comment(rawValue: "\(kind) \(result)"))
         }
-        // message 명령의 정산은 비밀값과 상관없다
-        await h.runtime.settleSecretsAfterReadback(taskID: task, kind: .message, result: .notReceived)
-        let afterMessage = await [h.secrets.contains(key: first), h.secrets.contains(key: newer)]
-        #expect(afterMessage == [true, true])
-        // answer가 not_received로 끝났다: task가 `failed`(끝남)이 된다 → 그 task의 값만 모두 버린다
-        await h.runtime.settleSecretsAfterReadback(taskID: task, kind: .answer, result: .notReceived)
-        let dropped = await [h.secrets.contains(key: first), h.secrets.contains(key: newer), h.secrets.contains(key: other)]
-        #expect(dropped == [false, false, true], "다른 task의 값은 그대로")
+        // answer가 not_received로 정산됐다: 그 제출(lease 전에 입력)의 값만 버린다. 뒤에 다시 입력한 값(다른 요청)과 다른 task의 값은 그대로
+        await h.runtime.settleSecretsAfterReadback(taskID: task, kind: .answer, result: .notReceived, leasedAt: leased)
+        let after = await [h.secrets.contains(key: settled), h.secrets.contains(key: newer), h.secrets.contains(key: other)]
+        #expect(after == [false, true, true])
     }
 
     // MARK: F-3 — put 앞에서 원장이 그 (task, request)를 열린 비밀값 요청으로 아는지 본다
