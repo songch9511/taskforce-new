@@ -6,7 +6,7 @@ const mocks = vi.hoisted(() => ({ createCookieClient: vi.fn(), admin: vi.fn() })
 vi.mock("server-only", () => ({}));
 vi.mock("@/lib/supabase/server", () => ({ createClient: mocks.createCookieClient }));
 vi.mock("@/lib/supabase/admin", () => ({ createAdminClient: mocks.admin }));
-vi.mock("@/lib/review/review", () => ({ loadReview: vi.fn() }));
+vi.mock("@/lib/review/review", () => ({ loadReview: vi.fn(), loadReviewDecisions: vi.fn() }));
 vi.mock("@/lib/review/return-summary", () => ({ loadReturnSummary: vi.fn(), clearReturnSummary: vi.fn(), initializeReturnSummaryBaseline: vi.fn() }));
 vi.mock("@/lib/review/suggestions", () => ({ snoozeSuggestion: vi.fn(), dismissSuggestion: vi.fn() }));
 vi.mock("@/lib/agents/path-leases", () => ({ resolvePathConflict: vi.fn() }));
@@ -23,10 +23,11 @@ import { GET as getSummary } from "../return-summary/route";
 import { POST as dismiss } from "../suggestions/[id]/dismiss/route";
 import { POST as snooze } from "../suggestions/[id]/snooze/route";
 
+import { GET as getReviewDecisions } from "./decisions/route";
 import { GET as getReview } from "./route";
 
 // 두 gate의 조합 (R1): RETURN_SUMMARY_ENABLED는 복귀 요약 세 경로(GET return-summary · POST clear · POST baseline)만 연다.
-// Review GET · 제안 snooze · dismiss(제안 생산 · 노출 포함)는 REVIEW_V2_ENABLED 뒤에 그대로 있다. REVIEW_V2_ENABLED는 여섯 경로 전부를 연다(상위 집합).
+// Review GET · 결정만 읽는 GET review/decisions(R-dec, 쓰기 0) · 제안 snooze · dismiss(제안 생산 · 노출 포함)는 REVIEW_V2_ENABLED 뒤에 그대로 있다. REVIEW_V2_ENABLED는 이 일곱 경로 전부를 연다(상위 집합).
 // 복귀 요약 경로는 둘 중 하나라도 정확히 "true"이면 열린다. 꺼짐의 의미(404, 인증 · DB · 서비스 0, 새 쓰기 0)와 인증 · 쿠키 CSRF는 그대로다. 진짜 authenticateRequest와 진짜 route로 부른다.
 const ID = "aaaaaaaa-0000-4000-8000-000000000001";
 const USER = "11111111-0000-4000-8000-000000000001";
@@ -40,6 +41,7 @@ const ROUTES: Route[] = [
   { name: "POST return-summary/clear", method: "POST", call: (r) => clear(r), body: { cursor: "c1.AAAA" }, service: () => vi.mocked(returnSummary.clearReturnSummary) as never, summary: true },
   { name: "POST return-summary/baseline", method: "POST", call: (r) => baseline(r), body: { init_token: "i1.AAAA" }, service: () => vi.mocked(returnSummary.initializeReturnSummaryBaseline) as never, summary: true },
   { name: "GET review", method: "GET", call: (r) => getReview(r), service: () => vi.mocked(review.loadReview) as never, summary: false },
+  { name: "GET review/decisions", method: "GET", call: (r) => getReviewDecisions(r), service: () => vi.mocked(review.loadReviewDecisions) as never, summary: false },
   {
     name: "POST suggestions/snooze",
     method: "POST",
@@ -51,7 +53,7 @@ const ROUTES: Route[] = [
   { name: "POST suggestions/dismiss", method: "POST", call: (r) => dismiss(r, ctx), body: { expected_version: 1, scope: "this" }, service: () => vi.mocked(suggestions.dismissSuggestion) as never, summary: false },
 ];
 const allServices = () =>
-  [review.loadReview, returnSummary.loadReturnSummary, returnSummary.clearReturnSummary, returnSummary.initializeReturnSummaryBaseline, suggestions.snoozeSuggestion, suggestions.dismissSuggestion].map(
+  [review.loadReview, review.loadReviewDecisions, returnSummary.loadReturnSummary, returnSummary.clearReturnSummary, returnSummary.initializeReturnSummaryBaseline, suggestions.snoozeSuggestion, suggestions.dismissSuggestion].map(
     (fn) => vi.mocked(fn) as unknown as ReturnType<typeof vi.fn>,
   );
 
@@ -76,6 +78,7 @@ beforeEach(() => {
   mocks.createCookieClient.mockResolvedValue({ auth: { getClaims } } as unknown as SupabaseClient);
   mocks.admin.mockReturnValue({ admin: true });
   vi.mocked(review.loadReview).mockResolvedValue({ ok: "review" } as never);
+  vi.mocked(review.loadReviewDecisions).mockResolvedValue({ ok: "decisions" } as never);
   vi.mocked(returnSummary.loadReturnSummary).mockResolvedValue({ ok: "summary" } as never);
   vi.mocked(returnSummary.clearReturnSummary).mockResolvedValue({ status: "stale" });
   vi.mocked(returnSummary.initializeReturnSummaryBaseline).mockResolvedValue({ status: "stale" });
@@ -217,5 +220,50 @@ describe("경로 충돌 해소 route (D4b-s)의 gate 조합: REVIEW_V2_ENABLED �
     vi.stubEnv("AGENT_ADAPTER_CODEX_ENABLED", "true");
     expect((await call()).status).toBe(404);
     expect(vi.mocked(pathLeases.resolvePathConflict)).not.toHaveBeenCalled();
+  });
+});
+
+describe("결정만 읽기 GET review/decisions (R-dec)의 gate는 REVIEW_V2_ENABLED 하나다", () => {
+  const decisionsRoute = ROUTES.find((route) => route.name === "GET review/decisions")!;
+
+  it.each(["", "false", "TRUE", "True", "1", " true", "true\n", "yes"])("REVIEW_V2_ENABLED=%j이면 404이고 인증 · DB 클라이언트 · 서비스를 부르지 않는다", async (value) => {
+    setEnv({ REVIEW_V2_ENABLED: value });
+    const response = await decisionsRoute.call(req(decisionsRoute));
+    expect(response.status).toBe(404);
+    expect(await response.json()).toEqual(notFoundBody);
+    expect(mocks.createCookieClient).not.toHaveBeenCalled();
+    expect(getClaims).not.toHaveBeenCalled();
+    expect(mocks.admin).not.toHaveBeenCalled();
+    for (const service of allServices()) expect(service).not.toHaveBeenCalled();
+  });
+
+  it("RETURN_SUMMARY_ENABLED만 켜도 열리지 않는다: 404이고 결정 읽기 서비스를 부르지 않는다 (복귀 요약 세 경로만 연다)", async () => {
+    setEnv({ RETURN_SUMMARY_ENABLED: "true" });
+    const response = await decisionsRoute.call(req(decisionsRoute));
+    expect(response.status).toBe(404);
+    expect(await response.json()).toEqual(notFoundBody);
+    expect(vi.mocked(review.loadReviewDecisions)).not.toHaveBeenCalled();
+    expect(mocks.admin).not.toHaveBeenCalled();
+  });
+
+  it("에이전트 입력 gate는 이 route의 404 조건이 아니다: 대화 v2 · adapter 플래그가 모두 꺼져 있어도 REVIEW_V2_ENABLED만으로 열린다 (C3 결정은 보여야 한다)", async () => {
+    setEnv({ REVIEW_V2_ENABLED: "true" });
+    vi.stubEnv("CONVERSATIONS_V2_ENABLED", "false");
+    const response = await decisionsRoute.call(req(decisionsRoute));
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ ok: "decisions" });
+    expect(vi.mocked(review.loadReviewDecisions)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(review.loadReview)).not.toHaveBeenCalled();
+  });
+
+  it("열린 route는 admin 클라이언트와 검증된 사용자 id로 결정만 읽는다: 인자는 (admin, 사용자, 지금) 셋이고 제안 생산 옵션(coordinatorEnabled)이 없다", async () => {
+    setEnv({ REVIEW_V2_ENABLED: "true", COORDINATOR_ENABLED: "true" } as Record<string, string>);
+    await decisionsRoute.call(req(decisionsRoute));
+    const call = vi.mocked(review.loadReviewDecisions).mock.calls[0];
+    expect(call).toHaveLength(3);
+    expect(call[0]).toEqual({ admin: true });
+    expect(call[1]).toBe(USER);
+    expect(call[2]).toBeInstanceOf(Date);
+    vi.unstubAllEnvs();
   });
 });

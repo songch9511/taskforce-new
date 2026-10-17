@@ -3,6 +3,7 @@ import "server-only";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 import type { ReviewDecisionGroup, ReviewResponse, ReviewWithAgentsResponse, Suggestion } from "@/lib/api/contract";
+import type { ReviewDecisionsResponse } from "@/lib/api/contract";
 import { loadPendingDecisions } from "@/lib/coordinator/pending";
 
 import { localDay } from "./day";
@@ -69,5 +70,28 @@ export async function loadReview(admin: SupabaseClient, userId: string, now: Dat
     decisions,
     suggestions,
     suggestion_batch: { state: zoneStatus === "unavailable" ? "unavailable" : day ? "ready" : "needs_time_zone", local_day: day, size: SUGGESTION_DAILY_BATCH_SIZE },
+  };
+}
+
+// ─── 결정만 읽기 (OA R-dec, GET /api/v2/review/decisions) ───────────────────────────────────────
+// loadReview의 결정 쪽과 같은 두 함수(loadPendingDecisions → pendingGroupDto)를 같은 인자(사용자 · now · adapter 목록)로 부른다 — 순서 · key · version · 에이전트 ref가 바이트 단위로 같다.
+// loadReview와 달리 아무것도 쓰지 않는다: 제안 생산 · 노출(그날 묶음 소비 · shown_at)도, 제안 advisory lock도, 시간대 읽기도 부르지 않는다(그래서 coordinatorEnabled · timeZone 인자가 없다).
+// 결정 원천을 읽지 못하면 비었다고 하지 않는다: decisions null · sources.decisions unavailable · complete false · empty false (loadReview와 같은 규칙).
+// pendingGroupDto처럼 예상 못한 오류는 loadReview처럼 그대로 올라간다 — 처리 함수가 500으로 바꾼다.
+export async function loadReviewDecisions(admin: SupabaseClient, userId: string, now: Date, options: { agentAdapters?: readonly string[] } = {}): Promise<ReviewDecisionsResponse> {
+  let pending: Awaited<ReturnType<typeof loadPendingDecisions>> | null = null;
+  try {
+    pending = await loadPendingDecisions(admin, userId, now, { agentAdapters: options.agentAdapters });
+  } catch (error) {
+    console.error(JSON.stringify({ event: "review_decisions_pending_failed", error: failureName(error) }));
+  }
+  const decisions: ReviewDecisionGroup[] | null = pending ? pending.map(pendingGroupDto) : null;
+  const complete = decisions !== null;
+  return {
+    generated_at: now.toISOString(),
+    complete,
+    empty: complete && decisions.length === 0,
+    sources: { decisions: complete ? "ok" : "unavailable" },
+    decisions,
   };
 }
