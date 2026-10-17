@@ -2,9 +2,10 @@ import Foundation
 
 // OA D4b-m-1 (계약 9장): 질문 카드의 UI 문구. 두 갈래다.
 // - `AgentQuestionCopy`: DS에 이미 있는 말 (QuestionCard README · Composer README). 승인됐다 — 바꾸지 않는다
-// - `AgentQuestionUnapprovedCopy`: 이번에 처음 쓰는 새 말 둘. **승인 전 후보를 한 곳에 모은다** (D4a와 같은 방식): 앱이 쓰는 값(`approved`)에는 새 말이 하나도 없고,
-//   후보(`candidates`)는 Debug 견본 앱에서만 보인다 (Release 바이너리에는 이 글자가 들어가지 않는다). 승인되면 `approved`를 후보 값으로 바꾸고(이 파일 한 곳) `candidates`를 지운다.
-//   - 새 말이 없을 때의 대체: 이름을 모르는 다른 Mac의 비밀값 카드는 "Answer on …" 줄 없이 메타 "Can't be entered here"만 말하고, 알림은 제목(에이전트 이름)만 있고 본문이 없다
+// - `AgentQuestionUnapprovedCopy`: 이번에 처음 쓴 새 말 둘. 사용자가 PR #157에서 승인했다(2026-10-18): "Answer on another Mac" · 알림 본문 "Needs your answer".
+//   승인 전에는 후보를 Debug 견본에만 두었으나(D4a와 같은 방식) 이제 앱이 쓰는 값(`approved`)이 이 둘이고 Release에도 컴파일된다. 후보 상수와 견본의 미리보기 스위치는 없앴다.
+//   질문 카드 · 알림 자체는 여전히 `EdgeSurfaces.agentQuestions` 게이트 뒤라 Release에서는 닿지 않는다.
+//   - 값이 비어 있는 `AgentQuestionUnapprovedCopy()`의 대체(시험이 본다): 이름을 모르는 다른 Mac의 비밀값 카드는 "Answer on …" 줄 없이 메타 "Can't be entered here"만 말하고, 알림은 본문이 없다
 
 /// DS에 있는 말 (승인됨)
 public enum AgentQuestionCopy {
@@ -23,7 +24,7 @@ public enum AgentQuestionCopy {
     public static func answerOn(_ macName: String) -> String { "Answer on \(macName)" }
 }
 
-/// 승인 전 새 문구
+/// 이번에 새로 쓴 문구 (승인됨)
 public struct AgentQuestionUnapprovedCopy: Equatable, Sendable {
     /// Mac 이름을 모를 때 다른 기기 비밀값 카드의 줄 (D4bm-41)
     public var anotherMac: String?
@@ -35,30 +36,19 @@ public struct AgentQuestionUnapprovedCopy: Equatable, Sendable {
         self.questionNotificationBody = questionNotificationBody
     }
 
-    /// 지금 앱이 쓰는 새 문구: 없다
-    public static let approved = AgentQuestionUnapprovedCopy()
-
-    #if DEBUG
-    /// 계약 9장의 후보 (승인 전, 견본 · 시험 전용). **Debug 빌드에만 있다**
-    public static let candidates = AgentQuestionUnapprovedCopy(anotherMac: "Answer on another Mac", questionNotificationBody: "Needs your answer")
-    #endif
+    /// 지금 앱이 쓰는 새 문구 (사용자 승인 2026-10-18, PR #157)
+    public static let approved = AgentQuestionUnapprovedCopy(anotherMac: "Answer on another Mac", questionNotificationBody: "Needs your answer")
 
     public var isEmpty: Bool { self == Self.init() }
 
-    /// 다른 기기 비밀값 카드의 "Answer on …" 줄: 이름이 있으면 그 이름, 없으면 승인된 대체 문구 (없으면 nil → 줄을 그리지 않는다)
+    /// 다른 기기 비밀값 카드의 "Answer on …" 줄: 이름이 있으면 그 이름, 없으면 대체 문구 "Answer on another Mac" (비어 있는 값이면 nil → 줄을 그리지 않는다)
     public func remoteRow(macName: String?) -> String? {
         if let macName, !macName.isEmpty { return AgentQuestionCopy.answerOn(macName) }
         return anotherMac
     }
 }
 
-/// 지금 화면이 쓰는 새 문구 (한 곳). Release에서는 늘 `approved`다
+/// 지금 화면이 쓰는 새 문구 (한 곳)
 public enum AgentQuestionNewCopy {
-    #if DEBUG
-    /// 견본 앱(`-TFEdgeSnapshotQuestions`)만 켠다: 승인 전 후보를 화면에 그린다. 시험은 이 값을 건드리지 않고 문구를 직접 넘긴다
-    nonisolated(unsafe) public static var isPreviewing = false
-    public static var active: AgentQuestionUnapprovedCopy { isPreviewing ? .candidates : .approved }
-    #else
     public static var active: AgentQuestionUnapprovedCopy { .approved }
-    #endif
 }

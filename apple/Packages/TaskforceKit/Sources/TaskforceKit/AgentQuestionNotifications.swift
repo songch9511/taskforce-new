@@ -1,7 +1,7 @@
 import Foundation
 
 // OA D4b-m-1 (D4bm-60 · 61 · 62): 질문이 열리면 그 세션의 Mac이 **로컬 알림**을 보낸다. 서버 원격 알림(APNs)은 없다 — 같은 사용자의 Mac 여럿이 같은 알림을 겹쳐 보내지 않는다
-// (비밀값은 그 Mac에서만 답한다). 글은 상태 + 열 곳뿐이다: 제목은 에이전트 이름, 본문은 "Needs your answer". 질문 글 · 이슈 제목 · 세션 이름 · 경로 · 선택지는 싣지 않는다 (DS: "Notifications carry
+// (비밀값은 그 Mac에서만 답한다). 글은 상태 + 열 곳뿐이다: 제목은 에이전트 이름, 본문은 "Needs your answer"(승인됨). 질문 글 · 이슈 제목 · 세션 이름 · 경로 · 선택지는 싣지 않는다 (DS: "Notifications carry
 // a short status and a deep link only, never source text or messages"). userInfo에는 id만 있다. 이 파일은 알림을 보내지 않는다 (Mac의 `AgentNotifications`가 시스템 센터에 건다).
 
 /// 알림 하나의 내용
@@ -23,7 +23,7 @@ public enum AgentQuestionNotifications {
         "agent-question:\(key.taskID.uuidString.lowercased()):\(AgentQuestionRules.requestDigest(key.requestID))"
     }
 
-    /// 새 질문 → 알림 내용. 제목이 비면(에이전트 이름을 모르면) 앱 이름을 쓴다. 본문은 새 문구라 승인 전에는 비어 있다 (`AgentQuestionUnapprovedCopy`)
+    /// 새 질문 → 알림 내용. 제목이 비면(에이전트 이름을 모르면) 앱 이름을 쓴다. 본문은 승인된 "Needs your answer"다 (`AgentQuestionUnapprovedCopy.approved`, 값이 없으면 비어 있다)
     public static func plan(for opened: AgentQuestionOpened, copy: AgentQuestionUnapprovedCopy = AgentQuestionNewCopy.active) -> AgentNotificationPlan {
         AgentNotificationPlan(
             id: identifier(for: opened.key), title: opened.agentName.isEmpty ? "Taskforce" : opened.agentName, body: copy.questionNotificationBody ?? "",

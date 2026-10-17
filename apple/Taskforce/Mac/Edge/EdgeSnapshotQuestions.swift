@@ -94,7 +94,7 @@ enum QuestionSampleData {
 }
 
 /// 에이전트 질문 카드 PNG (OA D4b-m-1, 디자인 비교용): `-TF_EDGE_SHELL YES -TFSampleData -TF_S3B YES -TF_U2 YES -TFEdgeSnapshot <폴더> -TFEdgeSnapshotIssues -TFEdgeSnapshotQuestions`
-/// (+ `-TFSnapshotDark`, `-TFReduceMotion YES`). 새 문구(Answer on another Mac)는 승인 전 후보를 견본에서만 켠다 (`AgentQuestionNewCopy.isPreviewing`).
+/// (+ `-TFSnapshotDark`, `-TFReduceMotion YES`). 새 문구(Answer on another Mac · 알림 본문)는 사용자가 승인했다(PR #157): 견본도 앱과 같은 값을 쓴다.
 /// 남기는 것(`mac-edge-questions-<이름>.png`): window-single · window-single-three · window-multi · window-other · window-other-typing(창만) · window-text · window-several · window-approval-file ·
 /// window-approval-command · window-approval-reason · window-secret · window-secret-remote · window-secret-remote-unnamed · window-holding · window-sent · window-failed-offline · window-failed-general ·
 /// window-ten-options · window-long · window-queued · window-two-windows · panel-single · panel-approval · panel-secret · panel-holding · panel-multi · panel-long.
@@ -110,7 +110,6 @@ enum QuestionSnapshot {
         let sample = AgentChatSampleGateway.shared
         let shell = edge.shell
         manager.presents = true
-        AgentQuestionNewCopy.isPreviewing = true
         shell.localBridgeIDProvider = { AgentChatSampleData.thisMacBridge }
         edge.workOverride = { _ in IssueSnapshotData.snapshot(seeds: IssueSnapshotData.seeds) }
         await runtime.contexts?.refresh()
@@ -236,7 +235,6 @@ enum QuestionSnapshot {
         shell.closeSessionPanel()
         await world(QuestionSampleData.world(QuestionSampleData.long)); await openPanel(); shootPanel("panel-long")
         shell.closeSessionPanel()
-        AgentQuestionNewCopy.isPreviewing = false
         manager.closeAll()
     }
 }

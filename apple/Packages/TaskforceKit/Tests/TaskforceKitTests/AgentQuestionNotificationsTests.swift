@@ -12,14 +12,15 @@ struct AgentQuestionNotificationsTests {
         AgentQuestionOpened(key: F.key(request), sessionID: F.sessionID, agentName: agent)
     }
 
-    @Test func theTitleIsTheAgentNameAndTheBodyIsEmptyUntilTheNewWordsAreApproved() {
+    @Test func theTitleIsTheAgentNameAndTheBodyIsTheApprovedNeedsYourAnswer() {
         let plan = AgentQuestionNotifications.plan(for: opened(), copy: .approved)
-        #expect(plan.title == "Claude Code" && plan.body == "", "새 문구는 승인 전에 앱 화면(알림)에 넣지 않는다")
+        #expect(plan.title == "Claude Code" && plan.body == "Needs your answer", "사용자가 승인한 알림 본문 (PR #157)")
+        #expect(AgentQuestionNotifications.plan(for: opened()).body == "Needs your answer", "앱이 쓰는 기본값도 같다")
     }
 
-    @Test func thePreviewCandidateBodyIsOnlyNeedsYourAnswer() {
-        let plan = AgentQuestionNotifications.plan(for: opened(), copy: AgentQuestionUnapprovedCopy(questionNotificationBody: "Needs your answer"))
-        #expect(plan.title == "Claude Code" && plan.body == "Needs your answer")
+    @Test func anEmptyCopyLeavesTheBodyOut() {
+        let plan = AgentQuestionNotifications.plan(for: opened(), copy: AgentQuestionUnapprovedCopy())
+        #expect(plan.title == "Claude Code" && plan.body == "", "값이 없으면 본문이 비어 있다")
     }
 
     @Test func anUnknownAgentNameFallsBackToTheAppName() {
@@ -30,7 +31,7 @@ struct AgentQuestionNotificationsTests {
         // 질문 글 · 선택지 · 세션 이름 · 경로를 카나리로 심어도 알림에는 닿을 길이 없다: 재료는 열쇠 · 세션 id · 에이전트 이름뿐이다
         let json = F.pending(prompts: [F.prompt(text: "Edit \(Self.canary)/secret.txt", header: Self.canary, options: [(Self.canary, Self.canary)])], request: "req-\(Self.canary)")
         let q = try #require(AgentPendingQuestion(json: Data(json.utf8), taskID: F.taskID))
-        let plan = AgentQuestionNotifications.plan(for: AgentQuestionOpened(key: q.key, sessionID: F.sessionID, agentName: "Claude Code"), copy: .candidatesOrApproved)
+        let plan = AgentQuestionNotifications.plan(for: AgentQuestionOpened(key: q.key, sessionID: F.sessionID, agentName: "Claude Code"), copy: .approved)
         let everything = [plan.id, plan.title, plan.body] + plan.userInfo.map { "\($0.key)=\($0.value)" }
         #expect(everything.allSatisfy { !$0.contains(Self.canary) }, "요청 id도 해시로만 쓴다")
         #expect(Set(plan.userInfo.keys) == ["kind", "session_id", "task_id"] && plan.userInfo["kind"] == "agent_question")
@@ -72,17 +73,15 @@ struct AgentQuestionNotificationsTests {
 
     // MARK: 새 문구
 
-    @Test func theApprovedCopyHasNoNewWordsAndTheCandidatesAreTheThreeOfTheContract() {
-        #expect(AgentQuestionUnapprovedCopy.approved.isEmpty && AgentQuestionNewCopy.active.isEmpty, "Debug 견본이 켜기 전에는 새 말이 없다")
-        #if DEBUG
-        #expect(AgentQuestionUnapprovedCopy.candidates.anotherMac == "Answer on another Mac" && AgentQuestionUnapprovedCopy.candidates.questionNotificationBody == "Needs your answer")
-        #endif
+    @Test func theApprovedCopyIsExactlyTheTwoWordsTheUserApproved() {
+        #expect(AgentQuestionUnapprovedCopy.approved.anotherMac == "Answer on another Mac" && AgentQuestionUnapprovedCopy.approved.questionNotificationBody == "Needs your answer")
+        #expect(!AgentQuestionUnapprovedCopy.approved.isEmpty && AgentQuestionNewCopy.active == .approved, "앱이 쓰는 값이 승인된 값이다 (Release에도 컴파일된다)")
     }
 
-    @Test func theRemoteSecretRowNamesTheMacOrFallsBackOnlyToApprovedWords() {
+    @Test func theRemoteSecretRowNamesTheMacOrFallsBackToTheApprovedAnotherMac() {
         #expect(AgentQuestionUnapprovedCopy.approved.remoteRow(macName: "Mina's MacBook Pro") == "Answer on Mina's MacBook Pro", "DS 문구")
-        #expect(AgentQuestionUnapprovedCopy.approved.remoteRow(macName: nil) == nil && AgentQuestionUnapprovedCopy.approved.remoteRow(macName: "") == nil, "이름을 모르면 줄을 그리지 않는다")
-        #expect(AgentQuestionUnapprovedCopy(anotherMac: "Answer on another Mac").remoteRow(macName: nil) == "Answer on another Mac")
+        #expect(AgentQuestionUnapprovedCopy.approved.remoteRow(macName: nil) == "Answer on another Mac" && AgentQuestionUnapprovedCopy.approved.remoteRow(macName: "") == "Answer on another Mac", "이름을 모르면 승인된 대체 문구")
+        #expect(AgentQuestionUnapprovedCopy().remoteRow(macName: nil) == nil, "값이 비어 있으면 줄을 그리지 않는다")
     }
 
     @Test func theDesignWordsAreExactlyTheOnesInTheDesignSystem() {
@@ -90,16 +89,5 @@ struct AgentQuestionNotificationsTests {
         #expect(AgentQuestionCopy.staysOnThisMac == "Stays on this Mac" && AgentQuestionCopy.cantBeEnteredHere == "Can't be entered here" && AgentQuestionCopy.otherField == "Other")
         #expect(AgentQuestionFailure.lead == "Couldn't send" && AgentQuestionFailure.offlineReason == "You're offline. Try again.")
         #expect(AssistantPromptRules.blockedDefault == "Answer the question above first")
-    }
-}
-
-extension AgentQuestionUnapprovedCopy {
-    /// 시험은 Debug에서만 후보를 쓴다 (Release에는 후보가 없다)
-    fileprivate static var candidatesOrApproved: AgentQuestionUnapprovedCopy {
-        #if DEBUG
-        candidates
-        #else
-        approved
-        #endif
     }
 }

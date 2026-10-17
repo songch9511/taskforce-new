@@ -136,17 +136,17 @@ struct AgentNotificationsTests {
         #expect(!everything.contains("Pricing copy draft") && !everything.contains("pricing.mdx") && !everything.contains("Which price"), "세션 이름 · 이슈 제목 · 경로 0")
     }
 
-    @Test func thePreviewCandidateBodyIsNeedsYourAnswerOnlyInTheDebugSampleCopy() async {
+    @Test func theNotificationBodyIsTheApprovedNeedsYourAnswer() async {
         let center = FakeNotificationCenter()
-        let notifications = AgentNotifications(center: center, isEnabled: { true }, copy: { AgentQuestionUnapprovedCopy(questionNotificationBody: "Needs your answer") })
+        let notifications = make(center)
         notifications.opened(opened(), isVisible: false)
         await notifications.settle()
-        #expect(center.added.first?.body == "Needs your answer")
-        let approved = FakeNotificationCenter()
-        let plain = make(approved)
-        plain.opened(opened(), isVisible: false)
-        await plain.settle()
-        #expect(approved.added.first?.body == "", "승인 전에는 본문이 없다")
+        #expect(center.added.first?.title == "Claude Code" && center.added.first?.body == "Needs your answer", "사용자가 승인한 알림 본문 (PR #157)")
+        let empty = FakeNotificationCenter()
+        let bare = AgentNotifications(center: empty, isEnabled: { true }, copy: { AgentQuestionUnapprovedCopy() })
+        bare.opened(opened(), isVisible: false)
+        await bare.settle()
+        #expect(empty.added.first?.body == "", "값이 비어 있으면 본문이 없다")
     }
 
     @Test func itPostsNothingWhenTheBridgeIsOffTheCardIsVisibleOrPermissionIsNotAllowed() async {
