@@ -28,7 +28,13 @@ struct RailCapsuleTests {
         #expect(M.shadowOpacity == 0.28 && M.edgeLineWidth == 0.5 && M.edgeLineOpacity == 0.08)
     }
 
-    @Test func theNewRingColorsAreTheDesignValuesInBothThemes() {
+    /// 값은 색 세트(`status/needs-you` · `status/done`)에서 온다 (검토 1: 코드 상수가 아니다). 색 세트는 어느 실행에서든 읽고, 컴파일된 카탈로그(Xcode 빌드)에서는 실제 `Color`도 같다
+    @Test func theNewRingColorsAreTheDesignValuesInBothThemes() throws {
+        let needsYou = try #require(TokenCatalog.resolve("status/needs-you"))
+        let done = try #require(TokenCatalog.resolve("status/done"))
+        #expect(needsYou.light == RGBA("#EBAA7E") && needsYou.dark == RGBA("#EBAA7E"), "orange-300")
+        #expect(done.light == RGBA("#9CE73A") && done.dark == RGBA("#9CE73A"), "green-300")
+        guard TokenCatalog.isCompiled else { return }
         #expect(TokenCatalogProbe.rgba(TFColor.needsYou) == [0xEB, 0xAA, 0x7E, 255], "orange-300")
         #expect(TokenCatalogProbe.rgba(TFColor.needsYou, appearance: .darkAqua) == [0xEB, 0xAA, 0x7E, 255])
         #expect(TokenCatalogProbe.rgba(TFColor.done) == [0x9C, 0xE7, 0x3A, 255], "green-300")
@@ -64,7 +70,8 @@ struct RailCapsuleTests {
             let p = pixel(capsule, x: x, y: capsule.height / 2)
             if abs(p[0] - 0xEB) < 12 && abs(p[1] - 0xAA) < 12 && abs(p[2] - 0x7E) < 12 { orange = true }
         }
-        #expect(orange)
+        // 주황은 카탈로그 색이라 Xcode 빌드에서만 그려진다
+        if TokenCatalog.isCompiled { #expect(orange) }
         // 옛 모양은 지금처럼 형광펜 원반이 있다 (Release 레일 모양 그대로). 형광펜은 카탈로그 색이라 Xcode 빌드에서만 그려진다
         guard TokenCatalog.isCompiled else { return }
         let classic = try #require(pixels(ActivityRing(.needsYou, size: .medium, ground: .light, reduceMotion: true, look: .classic)))
@@ -77,7 +84,8 @@ struct RailCapsuleTests {
         #expect(explicit.data == implicit.data)
         let done = try #require(pixels(ActivityRing(.done, size: .small, reduceMotion: true)))
         let doneCapsule = try #require(pixels(ActivityRing(.done, size: .small, reduceMotion: true, look: .capsule)))
-        #expect(done.data != doneCapsule.data, "캡슐 모양의 Done은 초록이다")
+        // 두 색 모두 카탈로그 색이라 Xcode 빌드에서만 그려진다
+        if TokenCatalog.isCompiled { #expect(done.data != doneCapsule.data, "캡슐 모양의 Done은 초록이다") }
     }
 
     @Test func theCapsuleDoneRingIsGreenWithAGreenCheck() throws {
@@ -89,7 +97,9 @@ struct RailCapsuleTests {
             if abs(p[0] - 0x9C) < 14 && abs(p[1] - 0xE7) < 14 && abs(p[2] - 0x3A) < 14 { green += 1 }
             if p[0] > 240 && p[1] > 240 && p[2] > 240 { white += 1 }
         } }
-        #expect(green > 50 && white == 0, "링도 체크도 done 색이다")
+        // 초록은 카탈로그 색이라 Xcode 빌드에서만 그려진다 (흰색이 없다는 것은 어느 빌드에서나)
+        if TokenCatalog.isCompiled { #expect(green > 50, "링도 체크도 done 색이다") }
+        #expect(white == 0)
     }
 
     @Test func capsuleItemsAreCirclesWhileTheOldRailKeepsRoundedSquares() {

@@ -495,8 +495,16 @@ final class EdgeRailPanelController {
         tooltip.update(anchor: anchor, in: panel)
     }
 
-    /// More: 레일 왼쪽의 메뉴, Connections와 Settings 둘만. 둘 다 Mac 설정 창을 연다
+    /// More 카드 창 (게이트 켜짐의 캡슐 레일): DS EdgeRail "More open"의 카드 (OA U3 16.1)
+    let moreCard = EdgeRailMoreCard()
+
+    /// More: 레일 왼쪽의 메뉴, Connections와 Settings 둘만. 둘 다 Mac 설정 창을 연다.
+    /// 캡슐 레일(게이트 켜짐)은 DS 카드(`EdgeRailMoreCard`), 노치 레일(게이트 꺼짐 · Release)은 macOS 기본 메뉴 그대로다
     private func showMore(from frame: CGRect) {
+        if usesMoreCard {
+            toggleMoreCard()
+            return
+        }
         let menu = NSMenu()
         menu.autoenablesItems = false
         let connections = NSMenuItem(title: "Connections", action: #selector(MenuTarget.connections), keyEquivalent: "")
@@ -523,6 +531,51 @@ final class EdgeRailPanelController {
         let inside = hosting.bounds.contains(local)
         pointer(inside ? (hosting.isFlipped ? local : CGPoint(x: local.x, y: hosting.bounds.height - local.y)) : nil)
     }
+
+    /// ⋯가 DS 카드를 여나 (게이트 켜짐의 캡슐 레일). 아니면 macOS 기본 메뉴 (노치 레일: 게이트 꺼짐 · Release)
+    var usesMoreCard: Bool { shell.issueScreensEnabled }
+
+    /// ⋯를 누르면 카드가 열리고, 열려 있을 때 다시 누르면 닫힌다 (닫는 클릭은 `swallowsOutsideClick`이 삼킨다)
+    func toggleMoreCard() {
+        if moreCard.isOpen {
+            moreCard.dismiss()
+            return
+        }
+        guard let capsule = shell.capsuleLayout.thirdCapsuleFrame else { return }
+        let model = ContextMenuModel(items: [
+            ContextMenuItem(id: "connections", icon: .connections, label: "Connections", action: { [weak self] in self?.onConnections() }),
+            ContextMenuItem(id: "settings", icon: .settings, label: "Settings", action: { [weak self] in self?.onSettings() }),
+        ])
+        moreCard.swallowsOutsideClick = { [weak self] event in self?.hitsMore(event) ?? false }
+        shell.setMenuOpen(true)
+        tooltip.hide()
+        let rect = panel.convertToScreen(hosting.convert(NSRect(x: capsule.minX, y: capsule.minY, width: capsule.width, height: capsule.height), to: nil))
+        moreCard.present(model: model, label: shell.label(for: .more), capsule: rect, over: panel) { [weak self] in self?.moreCardClosed() }
+    }
+
+    /// 클릭이 ⋯ 칸 위인가 (카드를 닫는 클릭이 ⋯를 다시 누르지 않게)
+    private func hitsMore(_ event: NSEvent) -> Bool {
+        guard event.window === panel, let frame = shell.capsuleLayout.controlFrame(.more) else { return false }
+        let local = hosting.convert(event.locationInWindow, from: nil)
+        return frame.contains(hosting.isFlipped ? local : CGPoint(x: local.x, y: hosting.bounds.height - local.y))
+    }
+
+    private func moreCardClosed() {
+        shell.setMenuOpen(false)
+        // 접근성 포커스는 ⋯로 돌아간다
+        shell.returnFocusToMore()
+        // 카드를 쓰는 동안은 레일이 포인터 이벤트를 받지 못할 수 있다: 지금 포인터 자리로 다시 판단한다
+        let local = hosting.convert(panel.convertPoint(fromScreen: NSEvent.mouseLocation), from: nil)
+        let inside = hosting.bounds.contains(local)
+        pointer(inside ? (hosting.isFlipped ? local : CGPoint(x: local.x, y: hosting.bounds.height - local.y)) : nil)
+    }
+
+    #if DEBUG
+    /// 견본: ⋯를 누른 것과 같은 길로 카드를 연다
+    func openMoreCardForSnapshot() {
+        if !moreCard.isOpen { toggleMoreCard() }
+    }
+    #endif
 
     private final class MenuTarget: NSObject {
         let onConnections: () -> Void

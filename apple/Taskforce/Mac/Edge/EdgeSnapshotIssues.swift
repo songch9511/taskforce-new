@@ -829,6 +829,7 @@ enum IssueSnapshot {
         var windows: [NSWindow] = [edge.panel.panel, edge.rail.panel].filter(\.isVisible)
         if let session = edge.sessionPanel?.panel, session.isVisible { windows.append(session) }
         if let menu = edge.menu.window, menu.isVisible { windows.append(menu) }
+        if let card = edge.rail.moreCard.window, card.isVisible { windows.append(card) }
         guard let first = windows.first else { return }
         let margin: CGFloat = 24
         let bounds = windows.map(\.frame).reduce(first.frame) { $0.union($1) }

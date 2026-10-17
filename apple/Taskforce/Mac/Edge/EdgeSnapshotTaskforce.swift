@@ -115,7 +115,7 @@ enum TaskforceSnapshot {
         }()
 
         /// 한 장 담는다: 무인 실행에서 다른 앱의 클릭이 패널을 접었으면 다시 연다. 바이트가 다른 장면과 같으면 INVALID다 (조용히 저장하지 않는다)
-        func shoot(_ name: String, panel: Bool = true, shows kind: TaskforceRequest.Kind? = nil, screen expected: TaskforceScreen? = nil) async {
+        func shoot(_ name: String, panel: Bool = true, shows kind: TaskforceRequest.Kind? = nil, screen expected: TaskforceScreen? = nil, card: Bool = false) async {
             if let only, !only.contains(name) { return }
             var reopened = 0
             func shown() -> Bool { !panel || (shell.panelOpen && edge.panel.isVisible && edge.panel.panel.alphaValue > 0.99) }
@@ -124,6 +124,15 @@ enum TaskforceSnapshot {
                 reopened += 1
                 await settle()
             }
+            // 실제 포인터가 레일 위를 지나면 호버가 섞인다(칸이 칠해진다): 어떤 호버가 있었는지 적고, 담기 직전에 지운다. 이 하네스는 호버를 그리지 않는다
+            let hoverSeen = [
+                shell.hoveredControl.map { "control:\($0)" }, shell.hoveredBell ? "bell" : nil, shell.hoveredPlus ? "plus" : nil,
+                shell.hoveredID != nil ? "ring" : nil, shell.assistantWindowFront ? "windowFront" : nil,
+            ].compactMap { $0 }.joined(separator: ",")
+            shell.hover(control: nil)
+            shell.hover(bell: false)
+            shell.hover(plus: false)
+            shell.hover(item: nil)
             let url = file("taskforce-\(name)")
             try? FileManager.default.removeItem(at: url)
             IssueSnapshot.compose(edge, to: url)
@@ -143,8 +152,16 @@ enum TaskforceSnapshot {
             if verdict == "ok", let kind, shell.shownTaskforceRequest?.kind != kind {
                 verdict = "INVALID \(kind) 요청이 보이지 않는다 (보이는 것: \(shell.shownTaskforceRequest.map { "\($0.kind)" } ?? "없음"))"
             }
+            // 칠해진 칸은 하나뿐: 패널이 열린 장면은 bell만 칠해지고 셋째 캡슐은 하나도 안 칠해진다 (More 카드 장면은 More만)
+            let lit = shell.controls.filter { shell.railControlHighlighted($0) }
+            if verdict == "ok", panel, !lit.isEmpty {
+                verdict = "INVALID 패널이 열렸는데 칠해진 칸이 더 있다: \(lit)"
+            }
+            if verdict == "ok", card, !edge.rail.moreCard.isOpen {
+                verdict = "INVALID More 카드가 닫혔다"
+            }
             if verdict.hasPrefix("INVALID") { invalid += 1 } else { seen[fingerprint] = name }
-            checks.append("\(name) sha256=\(fingerprint.prefix(16)) reopened=\(reopened) \(verdict)")
+            checks.append("\(name) sha256=\(fingerprint.prefix(16)) reopened=\(reopened) hover=[\(hoverSeen)] lit=\(lit) \(verdict)")
         }
 
         /// 새 계정이 막 로그인한 것처럼 저장소를 비우고 가짜 서버 시나리오대로 다시 읽는다
@@ -244,12 +261,13 @@ enum TaskforceSnapshot {
         await world(seeds: IssueSnapshotData.seeds.filter { !$0.working && !$0.review }, sessions: .none, response: Self.response([]))
         await hovered()
         await shoot("rail-expanded-no-rings", panel: false)
-        await world(seeds: Self.manyRingSeeds(2, review: true), sessions: .none)
+        // DS "More open · no requests": 요청이 없어 bell이 없고, ⋯를 누른 것과 같은 길로 카드를 연다 (OA U3 16.1)
+        await world(seeds: Self.manyRingSeeds(2, review: false), sessions: .none, response: Self.response([]))
         await hovered()
-        shell.setMenuOpen(true)
-        await settle(0.3)
-        await shoot("rail-more-open", panel: false)
-        shell.setMenuOpen(false)
+        edge.rail.openMoreCardForSnapshot()
+        await settle(0.4)
+        await shoot("rail-more-open", panel: false, card: true)
+        edge.rail.moreCard.dismiss()
 
         // 세션이 질문한다: 링이 needs-you (주황), 많은 링 (다섯 이상은 넷까지)
         await world(sessions: .awaiting)

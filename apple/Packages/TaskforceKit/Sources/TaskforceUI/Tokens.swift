@@ -81,12 +81,11 @@ public enum TFColor {
     public static let bezelTrack = color(.bezelTrack)
     public static let bezelHover = color(.bezelHover)
 
-    // OA U3 (DS 2026-10-16 변경 기록 "Review additions"): 세션이 당신을 기다리는 링과 방금 끝난 링. 두 모드가 같은 값이라 색 세트 없이 상수로 둔다
-    // (`ColorTokenTests`가 색 세트 목록을 고정해 새 색 세트는 그 시험 표를 함께 고쳐야 한다: U3 범위 요청). 값은 DS `tokens.json`이 기준이다.
+    // OA U3 (DS 2026-10-16 변경 기록 "Review additions"): 세션이 당신을 기다리는 링과 방금 끝난 링. DS `tokens.json`의 `needs-you` · `done`이 기준이고 두 모드가 같다 (색 세트 `status/needs-you` · `status/done`)
     /// Needs-you 링 (orange-300 `#EBAA7E`). 획만 — 원반 없음. 검정(bezel) 위 10.6:1
-    public static let needsYou = Color(.sRGB, red: 0xEB / 255, green: 0xAA / 255, blue: 0x7E / 255)
+    public static let needsYou = color(.statusNeedsYou)
     /// Done 링 (green-300 `#9CE73A`, 3초). 획만 — 원반 없음. 검정(bezel) 위 13.9:1. 일의 상태 표시(StatusMark Done)는 늘 잉크다
-    public static let done = Color(.sRGB, red: 0x9C / 255, green: 0xE7 / 255, blue: 0x3A / 255)
+    public static let done = color(.statusDone)
 
     /// 색 토큰 이름. 모든 토큰은 여기를 거친다 (TaskforceUITests가 모든 이름의 색 세트 · Light/Dark 값을 확인한다).
     enum Name: String, CaseIterable {
@@ -128,6 +127,8 @@ public enum TFColor {
         case bgPanel = "bg/panel"
         case statusActivity = "status/activity"
         case statusStepInactive = "status/step-inactive"
+        case statusNeedsYou = "status/needs-you"
+        case statusDone = "status/done"
         case bezelBase = "bezel/base"
         case bezelInk = "bezel/ink"
         case bezelInkSecondary = "bezel/ink-secondary"

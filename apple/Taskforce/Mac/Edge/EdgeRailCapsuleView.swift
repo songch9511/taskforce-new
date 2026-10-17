@@ -9,6 +9,9 @@ import TaskforceUI
 struct EdgeRailCapsuleView: View {
     @Bindable var shell: EdgeShellModel
     let onMore: (CGRect) -> Void
+    /// More 카드가 닫히면 VoiceOver 포커스가 ⋯로 돌아온다 (OA U3 16.1)
+    @AccessibilityFocusState private var moreFocused: Bool
+    @AccessibilityFocusState private var otherFocused: Bool
 
     private var slide: Animation? { TFMotion.move(TFMotion.railSlide, reduceMotion: shell.reduceMotion) }
 
@@ -66,11 +69,13 @@ struct EdgeRailCapsuleView: View {
                             case .more: onMore(layout.controlFrame(control) ?? frame)
                             }
                         }
+                        .accessibilityFocused(control == .more ? $moreFocused : $otherFocused)
                         .offset(x: frame.minX, y: frame.minY)
                     }
                 }
             }
         }
+        .onChange(of: shell.moreFocusSerial) { _, _ in moreFocused = true }
         .frame(width: EdgeRailCapsuleLayout.windowWidth, height: EdgeRailCapsuleLayout.windowHeight, alignment: .topLeading)
         // 열 전체가 오른쪽 가운데를 기준으로 줄어든다 (접힘 .72배): 자리는 바뀌지 않고 transform만 바뀐다
         .scaleEffect(layout.scale, anchor: UnitPoint(x: layout.anchor.x / EdgeRailCapsuleLayout.windowWidth, y: 0.5))
@@ -104,12 +109,7 @@ struct EdgeRailCapsuleView: View {
     }
 
     private func highlighted(_ control: EdgeShellModel.Control) -> Bool {
-        if control == .more { return shell.menuOpen || shell.hoveredControl == .more }
-        if shell.hoveredControl == control { return true }
-        // Assistant 창이 앞에 있으면 Chats 칸이 칠해진다 (DS: Chats 버튼은 가장 앞 창을 앞으로 / 없으면 연다)
-        if control == .chats, shell.windowsEnabled, shell.assistantWindowFront { return true }
-        guard shell.panelOpen else { return false }
-        return control == .allWork ? shell.view == .allWork && shell.currentID == nil : control == .chats && shell.view == .chats
+        shell.railControlHighlighted(control)
     }
 }
 #endif

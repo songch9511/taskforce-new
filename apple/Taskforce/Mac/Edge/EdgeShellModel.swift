@@ -404,7 +404,7 @@ final class EdgeShellModel {
     // MARK: 레일 모양
 
     /// 펼친 레일: 노치 호버 · 열린 패널(패널 옆 레일은 늘 펼친다)
-    var isExpanded: Bool { railHovered || panelOpen || (menuOpen && issueScreensEnabled) }
+    var isExpanded: Bool { railHovered || panelOpen }
     /// 숨은 레일의 노치에 보이는 링 (셋까지)
     var notch: [RailEntry] { RailOrdering.notch(slots) }
     /// 펼쳤을 때만 보이는 나머지 일
