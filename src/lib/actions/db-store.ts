@@ -58,8 +58,8 @@ async function writeRpc(admin: SupabaseClient, name: "write_action" | "set_actio
       const { data } = await admin.rpc(name, params).throwOnError();
       return data === true;
     } catch (error) {
-      // Done의 NOWAIT 실패는 함수 전체를 롤백하므로 같은 인자로 두 번만 재시도한다.
-      if (attempt >= 2 || typeof error !== "object" || error === null || !("code" in error) || error.code !== "55P03") throw error;
+      // Done의 NOWAIT 실패(55P03)는 함수 전체를 롤백하므로 같은 인자로 두 번만 재시도한다. 교착으로 물린 쪽(40P01)도 같다 — 알려진 순환은 SQL이 55P03으로 끊지만 남은 순환의 안전망이다.
+      if (attempt >= 2 || typeof error !== "object" || error === null || !("code" in error) || (error.code !== "55P03" && error.code !== "40P01")) throw error;
       await new Promise((resolve) => setTimeout(resolve, attempt === 0 ? 50 : 150));
     }
   }

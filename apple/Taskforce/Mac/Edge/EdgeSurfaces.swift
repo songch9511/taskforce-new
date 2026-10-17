@@ -124,6 +124,13 @@ extension EdgeSurfaces {
     static var issueScreensForThisRun: Bool { issueScreens() }
 }
 
+// --- D4b-m ---
+extension EdgeSurfaces {
+    /// 에이전트 질문 카드 (OA D4b-m-1): Assistant 창 안과 세션 패널 안에서만 닿는다. 둘 다 셸 + Chats가 켜진 구성에만 있다 (`assistantWindows`는 `shell && chats`, 새 Issues 화면은 거기에 더해 U2 값이 켜졌을 때).
+    /// **Release는 늘 꺼짐**이다 (`release.chats == false`): 질문 읽기 · 카드 · 알림 · 키 입구가 하나도 없다. 새 플래그는 없다
+    var agentQuestions: Bool { shell && chats }
+}
+
 // --- U3 ---
 extension EdgeSurfaces {
     /// Taskforce 대화 (OA U3): 레일 첫 캡슐의 bell · Review 패널을 대신하는 Taskforce 대화 · v2 Review 읽기 · 충돌 해소 · 대화 끝의 복귀 요약 · ⌘1 / ⌥Space가 가장 오래된 요청.

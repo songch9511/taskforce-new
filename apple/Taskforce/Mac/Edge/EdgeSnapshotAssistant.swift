@@ -459,7 +459,7 @@ final class SampleAssistantGateway: AssistantGateway, @unchecked Sendable {
 /// 에이전트 대화의 견본 서버: Assistant 창 · 세션 패널이 서버처럼 읽고 쓴다 (전달 줄 · Send again · 후보 고르기 · Stop · Open in Terminal · Resume here).
 /// 서버 계산(전달 상태 · 취소 · external)은 서버가 하는 일을 흉내 낼 뿐인 **렌더 fixture**다: 실제 서버 · 계정 · AI 호출 · `claude` 실행이 없다.
 /// 견본 앱(`-TFEdgeSnapshotIssues -TFEdgeSnapshotAgentChat`)과 격리 Mac 호스트 시험이 같이 쓴다
-final class AgentChatSampleGateway: ChatGateway, IssueScreensGateway, AssistantGateway, AgentConversationGateway, AgentSessionRequests, @unchecked Sendable {
+final class AgentChatSampleGateway: ChatGateway, IssueScreensGateway, AssistantGateway, AgentConversationGateway, AgentSessionRequests, AgentQuestionGateway, @unchecked Sendable {
     static let shared = AgentChatSampleGateway()
 
     struct State {
@@ -470,6 +470,9 @@ final class AgentChatSampleGateway: ChatGateway, IssueScreensGateway, AssistantG
         var targetState: AgentTargetState = .ready
         /// 대상 목록의 Claude Code 행 이름 (긴 이름 장면)
         var agentName = "Claude Code"
+        /// 서버가 쥔 열린 질문들 (OA D4b-m-1, `agent_tasks.pending_question`) · Mac 이름 (`bridges.device_name`)
+        var questions: [AgentQuestionRecord] = []
+        var deviceNames: [UUID: String] = [:]
     }
 
     struct Failure: Error {}
@@ -487,6 +490,8 @@ final class AgentChatSampleGateway: ChatGateway, IssueScreensGateway, AssistantG
     private var _openFailure: Error?
     private var _resumeFailure: Error?
     private var _posted = 0
+    private var _answerFailure: Error?
+    private var _closesOnAnswer = false
 
     var state: State {
         get { lock.withLock { _state } }
@@ -546,6 +551,16 @@ final class AgentChatSampleGateway: ChatGateway, IssueScreensGateway, AssistantG
     var resumeFailure: Error? {
         get { lock.withLock { _resumeFailure } }
         set { lock.withLock { _resumeFailure = newValue } }
+    }
+    /// 질문 답(`POST …/answer`)을 이 오류로 거절한다 (오프라인 · 5xx …): nil이면 서버가 받아들인다
+    var answerFailure: Error? {
+        get { lock.withLock { _answerFailure } }
+        set { lock.withLock { _answerFailure = newValue } }
+    }
+    /// 서버처럼 답을 받으면 질문을 닫고 사건 줄("Answered")을 대화에 쓴다 (시험). 견본은 켜지 않는다: 접힌 줄(sent)이 그대로 보이게
+    var closesOnAnswer: Bool {
+        get { lock.withLock { _closesOnAnswer } }
+        set { lock.withLock { _closesOnAnswer = newValue } }
     }
 
     // MARK: 읽기 (ChatGateway)
@@ -682,6 +697,41 @@ final class AgentChatSampleGateway: ChatGateway, IssueScreensGateway, AssistantG
         return ConversationDeliveryResponse(messages: rows.map { row in
             ConversationDeliveryResponse.Entry(messageID: row.id, seq: row.seq, delivery: current.deliveries[row.id] ?? AgentDelivery(state: .accepted))
         })
+    }
+
+    // MARK: AgentQuestionGateway (OA D4b-m-1)
+
+    func openQuestions(sessionIDs: Set<UUID>) async throws -> [AgentQuestionRecord] {
+        record("openQuestions:\(sessionIDs.map(\.uuidString).sorted().joined(separator: ","))")
+        return state.questions.filter { sessionIDs.contains($0.sessionID) }
+    }
+
+    func answerQuestion(taskID: UUID, request: AgentAnswerRequest) async throws -> AgentAnswerResponse {
+        record("answer:\(taskID.uuidString):\(request.providerRequestID)")
+        if let failure = answerFailure { throw failure }
+        if closesOnAnswer {
+            update { state in
+                guard let closed = state.questions.first(where: { $0.taskID == taskID }) else { return }
+                state.questions.removeAll { $0.taskID == taskID }
+                // 서버가 사건 줄을 쓴다 (열쇠 `answer:<task id>:<sha256(provider_request_id)>`, 글은 "Answered")
+                for conversation in state.sessions.conversations where conversation.agentSessionID == closed.sessionID {
+                    let existing = state.messages[conversation.id] ?? []
+                    let seq = (existing.map(\.seq).max() ?? 0) + 1
+                    state.messages[conversation.id] = existing + [ChatMessage(
+                        id: UUID(), conversationID: conversation.id, seq: seq, role: .event, text: "Answered", createdAt: Date(), externalEventID: AgentQuestionStore.sentEventKey(AgentQuestionKey(taskID: taskID, requestID: request.providerRequestID))
+                    )]
+                }
+                if let index = state.sessions.tasks.firstIndex(where: { $0.agentSessionID == closed.sessionID && $0.state == .awaitingAnswer }) {
+                    let old = state.sessions.tasks[index]
+                    state.sessions.tasks[index] = AgentTaskRecord(agentSessionID: old.agentSessionID, runID: old.runID, turnSeq: old.turnSeq, state: .running, lastLiveState: nil, cancelRequestedAt: nil)
+                }
+            }
+        }
+        return AgentAnswerResponse(status: .answered, stepID: UUID(uuidString: "f0000000-0000-f000-f000-000000000001")!)
+    }
+
+    func deviceName(bridgeID: UUID) async throws -> String? {
+        state.deviceNames[bridgeID]
     }
 
     // MARK: AgentSessionRequests

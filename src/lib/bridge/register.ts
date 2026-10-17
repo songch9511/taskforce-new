@@ -36,7 +36,9 @@ export async function revokeBridge(admin: SupabaseClient, userId: string, bridge
       if (data?.status === "not_found") return { status: "not_found" as const };
       return bridgeV1RevokeResponseSchema.parse(data);
     } catch (error) {
-      if (attempt >= 3 || typeof error !== "object" || error === null || !("code" in error) || error.code !== "55P03") throw error;
+      if (attempt >= 3 || typeof error !== "object" || error === null || !("code" in error) || (error.code !== "55P03" && error.code !== "40P01")) throw error;
+      // OA F3: 폐기는 원 메시지를 NOWAIT로 먼저 쥐므로(답 · 사건이 쥔 동안 55P03) writeRpc와 같은 간격을 둔다. 지연 0이면 10ms만 겹쳐도 세 번이 모두 소진됐다(실측).
+      await new Promise((resolve) => setTimeout(resolve, attempt === 1 ? 50 : 150));
     }
   }
 }

@@ -29,6 +29,12 @@ final class ChatRuntime {
     /// 세션 패널 머리의 알약 흐름 (OA D4a-03 · 15 · 16): 서버 `open-external` · `resume-here`와 확인 카드. 이 연결이 세션 route를 모르면 nil.
     /// 터미널을 여는 launcher · 프로세스 검사기는 D4a-2가 넣는다 (지금은 launcher가 없어 Open in Terminal 알약이 없고, 검사기는 "못 찾음"이다)
     let pillFlow: AgentSessionPillFlow?
+    /// 에이전트의 열린 질문 (OA D4b-m-1): Assistant 창과 세션 패널이 **같은 상태**를 본다 (2초 보류 · Undo · 실패 되돌림). **게이트가 꺼져 있거나**(`EdgeSurfaces.agentQuestions`) 이 연결이 질문 읽기 · 답 route를 모르면 nil: 카드도 읽기도 알림도 없다
+    let questions: AgentQuestionStore?
+    /// 질문이 열리면 이 Mac이 거는 로컬 알림 (D4bm-60). bridge가 켜져 있을 때만 보낸다. `questions`가 없으면 nil
+    let notifications: AgentNotifications?
+    /// 그 세션의 카드가 지금 키 표면에 보이나 (알림을 보내지 않는 조건): 컨트롤러가 창 · 패널에 잇는다
+    var isQuestionVisible: (UUID) -> Bool = { _ in false }
     /// 인용의 원문 링크를 연다 (테스트는 가짜로 바꾼다)
     var openURL: (URL) -> Void = { NSWorkspace.shared.open($0) }
     #if DEBUG
@@ -40,9 +46,17 @@ final class ChatRuntime {
     private var sleepObservers: [NSObjectProtocol] = []
 
     /// - issueScreens: 새 Issues 화면을 켜는가 (기본은 이 실행의 게이트 `EdgeSurfaces.issueScreens`). 켜져 있어도 이 연결이 `IssueScreensGateway`를 따르지 않으면(견본 · 시험용 가짜) 만들지 않는다
+    /// - agentQuestions: 에이전트 질문 카드를 켜는가 (기본은 이 실행의 표면 `EdgeSurfaces.current.agentQuestions`). 켜져 있어도 이 연결이 `AgentQuestionGateway`를 따르지 않으면(견본 · 시험용 가짜) 만들지 않는다
+    /// - secretSubmitter: 비밀값을 이 Mac에서 내보내는 곳. 없으면 비밀값 답은 "Couldn't send"로 돌아온다 (실제 구현은 D4b-m-2)
+    /// - notificationCenter: 로컬 알림을 거는 센터 (시험은 가짜: 실제 알림 센터에 아무것도 보내지 않는다)
+    /// - questionSleep: 2초 보류 · 종료 기다림의 시계 (시험은 손으로 돌린다)
+    /// - notificationsEnabled: 질문 알림을 보내는가 (기본: bridge가 켜져 있을 때만, `BridgeFlag`)
     init(
         gateway: any ChatGateway, contextGateway: (any ContextGateway)? = nil, scope: AccountScope = AccountScope(),
-        now: @escaping @Sendable () -> Date = { Date() }, issueScreens: Bool = EdgeSurfaces.issueScreensForThisRun
+        now: @escaping @Sendable () -> Date = { Date() }, issueScreens: Bool = EdgeSurfaces.issueScreensForThisRun,
+        agentQuestions: Bool = EdgeSurfaces.current.agentQuestions, secretSubmitter: (any LocalSecretAnswerSubmitting)? = nil,
+        notificationCenter: any AgentNotificationCenter = SystemAgentNotificationCenter(),
+        questionSleep: @escaping AgentQuestionStore.Sleep = { try? await Task.sleep(for: .seconds($0)) }, notificationsEnabled: @escaping () -> Bool = { BridgeFlag.current }
     ) {
         #if DEBUG
         // 견본 하네스(`-TFEdgeSnapshotIssues`)는 세션 · 번호 · 상세와 프로젝트 아이콘이 있는 견본 서버를 읽는다 (실서버 · 기존 견본은 그대로)
@@ -62,7 +76,7 @@ final class ChatRuntime {
         stop = AgentStopStore(conversations: conversationRoutes, sessions: sessionRoutes, scope: scope)
         // launcher는 D4a-2가 넣는다: 지금은 없다 (Open in Terminal 알약을 그리지 않는다). 견본(`-TFEdgeSnapshotAgentChat`)만 터미널을 열지 않는 가짜를 달아 알약 모양을 Figma와 맞춰 본다
         #if DEBUG
-        let launcher: (any AgentTerminalLauncher)? = AgentChatSnapshot.isEnabled ? SnapshotTerminalLauncher() : nil
+        let launcher: (any AgentTerminalLauncher)? = AgentChatSnapshot.isEnabled || QuestionSnapshot.isEnabled ? SnapshotTerminalLauncher() : nil
         #else
         let launcher: (any AgentTerminalLauncher)? = nil
         #endif
@@ -98,6 +112,33 @@ final class ChatRuntime {
             await narrow?.refresh()
             await full?.refresh()
         } }
+        // 에이전트 질문 (OA D4b-m-1): 세션 저장소가 새로 읽을 때마다 질문 저장소가 질문을 기다리는 세션의 질문을 읽는다 (좁은 저장소 · U2 전체 저장소 둘 다)
+        if agentQuestions, let routes = gateway as? any AgentQuestionGateway {
+            let questions = AgentQuestionStore(gateway: routes, scope: scope, secrets: secretSubmitter, sleep: questionSleep)
+            let notifications = AgentNotifications(center: notificationCenter, isEnabled: notificationsEnabled)
+            self.questions = questions
+            self.notifications = notifications
+            scope.onLeft { [weak notifications] in notifications?.accountLeft() }
+            questions.thisMacProvider = { await BridgeHost.shared?.activeRuntime?.localBridgeID() }
+            agentTurns?.onApplied = { [weak questions, weak notifications] items in
+                questions?.sessionsRead(items)
+                notifications?.sessionsSeen(items, thisMacBridgeID: questions?.thisMacBridgeID, signedIn: scope.token != nil)
+            }
+            issues?.sessions.onApplied = { [weak questions, weak notifications] items in
+                questions?.sessionsRead(items)
+                notifications?.sessionsSeen(items, thisMacBridgeID: questions?.thisMacBridgeID, signedIn: scope.token != nil)
+            }
+            // 서버가 답을 받았다: 그 대화를 다시 읽어 서버의 사건 줄("Answered" · 고른 답)이 보이게 한다 (접힌 줄은 그 열쇠가 오면 치운다, D4bm-25)
+            let chatStore = chat
+            questions.onAnswered = { _, conversation in if let conversation { chatStore.loadConversation(conversation) } }
+            questions.onOpened = { [weak self, weak notifications] opened in
+                notifications?.opened(opened, isVisible: self?.isQuestionVisible(opened.sessionID) ?? false)
+            }
+            questions.onClosed = { [weak notifications] keys in notifications?.closed(keys) }
+        } else {
+            questions = nil
+            notifications = nil
+        }
         followSleep()
     }
 

@@ -335,7 +335,25 @@ final class EdgeShellModel {
 
     func refreshThisMac() async {
         let id = await localBridgeIDProvider()
-        if thisMacBridgeID != id { thisMacBridgeID = id }
+        if thisMacBridgeID != id {
+            thisMacBridgeID = id
+            // 같은 값을 질문 저장소도 쓴다: 이 Mac의 세션이면 비밀값 카드가 입력 칸을 가진다
+            questions?.thisMacBridgeID = id
+        }
+    }
+
+    /// 에이전트의 열린 질문 (OA D4b-m-1). 없으면 질문 카드가 없다 — 컨트롤러가 `ChatRuntime.questions`를 잇는다
+    @ObservationIgnored var questions: AgentQuestionStore?
+    /// 질문 카드에 키 포커스를 줘야 할 때 (링 클릭 · 알림 누름: 사용자의 동작으로 그 세션이 열렸다) 컨트롤러가 그 창을 키 창으로 만든다. 창 · 패널이 스스로 키를 가져가지는 않는다
+    @ObservationIgnored var onFocusQuestion: (UUID) -> Void = { _ in }
+
+    /// 그 세션의 질문으로 간다 (needs-you 링 클릭, 알림 누름: D4bm-57 · 63): 그 이슈 상세 + 그 세션 패널을 열고 카드로 포커스를 옮긴다. 이미 열려 있으면 닫지 않는다
+    func openQuestion(session: UUID) {
+        guard issues != nil, let item = issues?.sessions.item(id: session) else { return }
+        if let issue = item.currentIssueID ?? item.issueIDs.first { open(itemID: issue) }
+        if sessionPanelID != session { openSession(session) }
+        questions?.requestFocus(session: session)
+        onFocusQuestion(session)
     }
     /// 포인터가 Review 타일 위에 있다 (툴팁 · 호버 덧칠)
     private(set) var hoveredTile = false
@@ -857,10 +875,16 @@ final class EdgeShellModel {
     /// 레일에서 "지금 보는 일"로 표시할 id: Review 페이지가 보이면 그 결정, 아니면 All work에서 연 일
     var railCurrentID: UUID? { view == .review ? reviewID : currentID }
 
-    /// 레일의 일을 누름. S4가 켜져 있고 Needs-you 링이면 그 Review 항목 (그 밖의 링은 그 일, 기존 동작 그대로)
+    /// 레일의 일을 누름. 세션의 질문을 기다리는 링이면 그 이슈 상세 + 그 세션 패널 + 카드 포커스 (OA D4b-m-1, D4bm-57: 질문은 Review에 없고 그 세션에서만 답한다).
+    /// S4가 켜져 있고 Needs-you 링이면 그 Review 항목 (그 밖의 링은 그 일, 기존 동작 그대로)
     func openRailEntry(_ entry: RailEntry) {
-        // 새 Issues 화면: needs-you가 세션의 질문이라 Review 큐에 그 이슈가 없으면 다른 이슈의 Review를 열지 않고 그 이슈의 상세를 연다
-        if review != nil, entry.kind == .needsYou, issues == nil || reviewQueue.contains(entry.id) {
+        if entry.kind == .needsYou, questions != nil, let waiting = issues?.sessions.sessions(of: [entry.id]).first(where: { $0.ring == .needsYou }) {
+            openQuestion(session: waiting.id)
+            return
+        }
+        // 새 Issues 화면: needs-you가 세션의 질문이라 Review 큐에 그 이슈가 없으면 다른 이슈의 Review를 열지 않고 그 이슈의 상세를 연다.
+        // Taskforce 대화가 켜진 구성(OA U3)은 늘 그 이슈의 상세다: 링은 세션이고 Taskforce 요청은 bell로 간다 (링 클릭이 대화를 열지 않는다)
+        if review != nil, !taskforceEnabled, entry.kind == .needsYou, issues == nil || reviewQueue.contains(entry.id) {
             openReview(itemID: entry.id)
         } else {
             open(itemID: entry.id)

@@ -90,6 +90,9 @@ public struct PromptBox: View {
     /// 보내기 단추의 이름
     nonisolated public static func sendLabel(running: Bool) -> String { running ? "Stop new steps" : "Send" }
 
+    /// 보내기 원이 조용한 모양인가: 막혔고 Stop이 아닐 때만. 비밀값 질문으로 막혀도 에이전트가 실행 중이면 Stop은 살아 있다 (`Composer.circleIsQuiet`과 같은 규칙)
+    nonisolated public static func circleIsQuiet(blocked: Bool, running: Bool) -> Bool { blocked && !running }
+
     /// 칩의 아이콘: 세션은 에이전트 마크, 그 밖은 항목 아이콘
     nonisolated static func icon(for chip: AssistantChip) -> ContextChip.Icon {
         chip.kind == .agentSession ? .agent(.placeholder) : .item(.result)
@@ -145,7 +148,7 @@ public struct PromptBox: View {
     }
 
     private var sendButton: some View {
-        let quiet = isBlocked
+        let quiet = Self.circleIsQuiet(blocked: isBlocked, running: isRunning)
         let enabled = isRunning || (canSend && !isBlocked)
         return Button {
             if isRunning { onStop() } else if enabled { onSend() }

@@ -1,10 +1,10 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { z } from "zod";
-import { BRIDGE_REDELIVERY_LIMIT } from "@/lib/execution/limits";
+import { BRIDGE_KICK_LIMIT, BRIDGE_REDELIVERY_LIMIT } from "@/lib/execution/limits";
 import { drainBridgeSessionEvents } from "./events";
-import { redeliverBridgeMessages } from "./triggers";
+import { kickBridgeSessions, redeliverBridgeMessages } from "./triggers";
 export async function sweepBridge(admin: SupabaseClient) {
-  const result = { unreachable: 0, expired_leases: 0, redelivered: 0, errors: 0 };
+  const result = { unreachable: 0, expired_leases: 0, lease_busy: 0, reclaimed: 0, reclaim_busy: 0, redelivered: 0, errors: 0 };
   try {
     const { data } = await admin.rpc("sweep_bridge_heartbeats", { p_limit: BRIDGE_REDELIVERY_LIMIT }).throwOnError();
     const rows = z.array(z.union([
@@ -18,6 +18,25 @@ export async function sweepBridge(admin: SupabaseClient) {
   try {
     const { data } = await admin.rpc("sweep_agent_step_leases", { p_now: null }).throwOnError();
     result.expired_leases = z.number().int().nonnegative().parse(data);
+    // 사용자 경로가 run을 쥐고 있어 건너뛴 단계는 다음 분에 다시 후보가 된다: 5초 넘게 만료한 채 남은 calling 단계 수를 숫자로 보인다 (OA F3 재검토 2)
+    const { data: overdue } = await admin.rpc("count_overdue_agent_step_leases", { p_grace_seconds: 5 }).throwOnError();
+    result.lease_busy = z.number().int().nonnegative().parse(overdue);
+  } catch { result.errors++; }
+  try {
+    // 만료한 lease 전 prepared 회수 (OA F3): Mac이 꺼진 동안 24시간이 지난 메시지를 DB가 expired로 만든다. 회수한 세션은 뒤 메시지가 바로 갈 수 있게 kick한다 (bound인 세션만 실제로 시작).
+    const { data } = await admin.rpc("expire_unleased_agent_messages", { p_limit: BRIDGE_REDELIVERY_LIMIT }).throwOnError();
+    const reclaim = z.strictObject({
+      reclaimed: z.number().int().nonnegative(), busy: z.number().int().nonnegative(),
+      sessions: z.array(z.strictObject({ user_id: z.guid(), agent_session_id: z.guid() })),
+    }).parse(data);
+    result.reclaimed = reclaim.reclaimed;
+    result.reclaim_busy = reclaim.busy;
+    const byUser = new Map<string, string[]>();
+    for (const session of reclaim.sessions) byUser.set(session.user_id, [...(byUser.get(session.user_id) ?? []), session.agent_session_id]);
+    // kickBridgeSessions는 bound를 확인하기 전에 앞 BRIDGE_KICK_LIMIT(5)개로 자른다: 회수한 세션을 모두 보도록 5개 이하 청크로 나눠 부른다
+    for (const [userId, sessionIds] of byUser) {
+      for (let i = 0; i < sessionIds.length; i += BRIDGE_KICK_LIMIT) await kickBridgeSessions(admin, userId, sessionIds.slice(i, i + BRIDGE_KICK_LIMIT));
+    }
   } catch { result.errors++; }
   try { result.redelivered = await redeliverBridgeMessages(admin); } catch { result.errors++; }
   return result;
