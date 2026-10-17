@@ -261,10 +261,23 @@ struct SessionPanelView: View {
         }
     }
 
+    /// 입력 영역 위의 질문 카드 (OA D4b-m-1, 확인 카드와 같은 자리): 그 세션의 질문은 여기서만 답한다. 카드가 그 면 높이(최대 520)의 60%를 넘으면 카드 안에서 스크롤한다
+    @ViewBuilder
+    private func questionCard(_ session: AgentSessionItem) -> some View {
+        if let questions = runtime.questions {
+            EdgeQuestionCardHost(
+                questions: questions, chat: chat, sessionID: session.id, conversationID: session.conversationID,
+                maxHeight: EdgePanelMetrics.maxHeight * QuestionCard.maxHeightShare
+            )
+            .padding(EdgeInsets(top: TFSpace.sm, leading: TFSpace.md, bottom: 0, trailing: TFSpace.md))
+        }
+    }
+
     @ViewBuilder
     private func footer(_ session: AgentSessionItem) -> some View {
         VStack(spacing: 0) {
             confirmCard(session)
+            questionCard(session)
             composerFooter(session)
         }
     }
@@ -293,6 +306,8 @@ struct SessionPanelView: View {
             placeholder: "Message \(session.agentName)", label: "Message \(session.agentName)", isDisabled: disabled,
             isSending: conversationID.map { chat.isSending(in: $0) } ?? false,
             isRunning: runtime.stop.presentation(session: session).showsStop,
+            // 비밀값 질문이 열려 있으면 입력이 꺼진다 ("Answer the question above first"): 여기 쓴 글이 비밀값의 답이 되는 길이 없다
+            blocked: runtime.questions?.blocksComposer(session: session.id) == true ? "" : nil,
             onStop: { Task { await runtime.stop.stopSession(session) } },
             onSubmit: { text in if let conversationID { Task { await chat.send(text, in: conversationID) } } }
         )

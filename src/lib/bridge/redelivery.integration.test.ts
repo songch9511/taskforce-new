@@ -170,7 +170,7 @@ it("sweeps the actual SQL lease function through the production TS caller", asyn
   await f.updateRow("execution_steps", w.step, { lease_expires_at: "2000-01-01" });
   vi.stubEnv("EXECUTION_ENABLED", "false");
   try {
-    expect(await sweepBridge(admin())).toEqual({ unreachable: 0, expired_leases: 1, redelivered: 0, errors: 0 });
+    expect(await sweepBridge(admin())).toEqual({ unreachable: 0, expired_leases: 1, lease_busy: 0, reclaimed: 0, reclaim_busy: 0, redelivered: 0, errors: 0 });
     expect(await f.one("select state from public.execution_steps where id=$1", [w.step])).toEqual({ state: "unknown_outcome" });
   } finally { vi.stubEnv("EXECUTION_ENABLED", "true"); }
 });

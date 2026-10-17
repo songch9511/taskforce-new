@@ -520,3 +520,95 @@ struct ChatAccountBoundaryTests {
         #expect(chat.deliveryCount == 0, "다른 세션이 된 뒤 온 Send again · 후보 고르기 응답은 줄을 쓰지 못한다")
     }
 }
+
+/// 질문 카드의 계정 경계 (OA D4b-m-1, D4bm-23): 실제 로그아웃 · 같은 사용자의 재로그인 · 다른 계정이 보류 중인 답, 질문 상태, 늦은 읽기 · 응답을 모두 비운다
+@MainActor
+extension ChatAccountBoundaryTests {
+    private func questionStore(_ account: ChatTestAccount, gateway: FakeAgentQuestionGateway, ticker: ManualTicker) -> AgentQuestionStore {
+        let store = AgentQuestionStore(gateway: gateway, scope: account.scope, sleep: { await ticker.sleep($0) })
+        store.thisMacBridgeID = AgentQuestionFixtures.bridgeID
+        return store
+    }
+
+    private func holdOneAnswer(_ store: AgentQuestionStore, _ gateway: FakeAgentQuestionGateway) async {
+        gateway.records = [QFx.record(AgentQuestionFixtures.single)]
+        store.sessionsRead([QFx.item()])
+        await store.settle()
+        store.choose(row: 1, session: AgentQuestionFixtures.sessionID)
+    }
+
+    @Test func logoutDropsAHeldAnswerAndTheQuestionStateWithNoServerCall() async throws {
+        let account = try ChatTestAccount.make()
+        let questions = FakeAgentQuestionGateway()
+        let ticker = ManualTicker()
+        let store = questionStore(account, gateway: questions, ticker: ticker)
+        await holdOneAnswer(store, questions)
+        #expect(store.hasHeldAnswers)
+        account.session.apply(event: .signedOut, session: nil)
+        #expect(store.entries.isEmpty && !store.hasHeldAnswers && ticker.pendingDelays.isEmpty)
+        await quiet()
+        #expect(questions.answers.isEmpty)
+    }
+
+    @Test func theSameUserLoggingBackInDoesNotGetThePreviousSessionsHeldAnswerBack() async throws {
+        let account = try ChatTestAccount.make()
+        let questions = FakeAgentQuestionGateway()
+        let ticker = ManualTicker()
+        let store = questionStore(account, gateway: questions, ticker: ticker)
+        await holdOneAnswer(store, questions)
+        account.relogin()
+        #expect(store.entries.isEmpty)
+        await quiet()
+        #expect(questions.answers.isEmpty, "다시 로그인하면 질문이 그대로 있고 다시 읽는다: 앞 세션의 답은 가지 않는다")
+    }
+
+    @Test func anotherAccountNeverSeesOrSendsTheFirstAccountsAnswer() async throws {
+        let account = try ChatTestAccount.make()
+        let questions = FakeAgentQuestionGateway()
+        let ticker = ManualTicker()
+        let store = questionStore(account, gateway: questions, ticker: ticker)
+        await holdOneAnswer(store, questions)
+        let second = ChatTestAccount.session(userID: UUID())
+        try account.storage.save(second)
+        account.session.apply(event: .signedIn, session: second)
+        #expect(store.entries.isEmpty)
+        await quiet()
+        #expect(questions.answers.isEmpty)
+    }
+
+    @Test func aLateQuestionReadFromTheLeftAccountIsDropped() async throws {
+        let account = try ChatTestAccount.make()
+        let questions = FakeAgentQuestionGateway()
+        let ticker = ManualTicker()
+        let store = questionStore(account, gateway: questions, ticker: ticker)
+        let latch = Latch()
+        questions.records = [QFx.record(AgentQuestionFixtures.single)]
+        questions.holdNextRead(latch)
+        store.sessionsRead([QFx.item()])
+        #expect(await latch.waitForArrivals(1, timeout: .seconds(3)))
+        account.relogin()
+        await latch.open()
+        await store.settle()
+        #expect(store.entries.isEmpty, "떠난 세션의 늦은 질문 읽기는 새 세션에 카드를 만들지 않는다")
+    }
+
+    @Test func aLateAnswerResponseFromTheLeftAccountNeverMarksTheNewSessionsCardSent() async throws {
+        let account = try ChatTestAccount.make()
+        let questions = FakeAgentQuestionGateway()
+        let ticker = ManualTicker()
+        let store = questionStore(account, gateway: questions, ticker: ticker)
+        await holdOneAnswer(store, questions)
+        let latch = Latch()
+        questions.holdNextAnswer(latch)
+        _ = await eventually { !ticker.pendingDelays.isEmpty }
+        ticker.fire()
+        #expect(await latch.waitForArrivals(1, timeout: .seconds(3)))
+        account.relogin()
+        // 새 세션이 같은 질문을 다시 읽었다
+        store.sessionsRead([QFx.item()])
+        await store.settle()
+        await latch.open()
+        await quiet(120)
+        #expect(store.entry(session: AgentQuestionFixtures.sessionID)?.phase == .open, "옛 응답이 새 카드를 접지 않는다")
+    }
+}

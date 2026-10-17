@@ -69,6 +69,12 @@ extension ChatStore {
         return shown.filter { id in conversations.contains { $0.id == id } && conversationTarget(for: id).isAgent }.sorted { $0.uuidString < $1.uuidString }
     }
 
+    /// 이 대화에 들어온 메시지의 서버 열쇠(`external_event_id`)들 (OA D4b-m-1, D4bm-25): 서버가 답을 받을 때 쓰는 사건 줄의 열쇠 `answer:<task id>:<sha256 hex>`가 오면 질문 카드의 접힌 줄을 치운다.
+    /// 읽기뿐이다 (대화 읽기의 경합 규칙은 그대로)
+    public func eventKeys(in id: UUID) -> Set<String> {
+        Set((threads[id]?.messages ?? []).compactMap(\.externalEventID))
+    }
+
     /// 한 대화에서 내가 보낸 메시지 (id · seq)
     func userMessages(of id: UUID) -> [(id: UUID, seq: Int)] {
         (threads[id]?.messages ?? []).filter { $0.role.isUser }.map { (id: $0.id, seq: $0.seq) }

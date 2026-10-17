@@ -91,7 +91,7 @@ public enum PushPermission {
     }
 }
 
-/// 알림을 눌렀을 때 열 곳 (서버 src/lib/notify/apns.ts: `kind` · `action_id` · `action_ids`)
+/// 알림을 눌렀을 때 열 곳 (서버 src/lib/notify/apns.ts: `kind` · `action_id` · `action_ids`, 그리고 이 Mac이 거는 로컬 알림의 `agent_question` · `session_id`)
 public struct NotificationTarget: Equatable, Sendable {
     public enum Kind: String, Sendable, Equatable {
         /// 확인 요청이 새로 생김: Review 카드
@@ -100,6 +100,8 @@ public struct NotificationTarget: Equatable, Sendable {
         case due
         /// 연결이 만료돼 다시 연결해야 함 (Gmail 7일 등): 연결 화면. 할 일 정보는 없다
         case reconnect
+        /// 에이전트가 질문을 했다 (OA D4b-m-1, 이 Mac이 거는 로컬 알림): 그 세션을 열고 카드로 간다. 서버 알림이 아니다
+        case question = "agent_question"
         /// 모르는 종류 (새 서버의 새 알림): 앱만 연다
         case other
     }
@@ -107,15 +109,19 @@ public struct NotificationTarget: Equatable, Sendable {
     public let kind: Kind
     /// 없으면 앱만 연다
     public let actionID: UUID?
+    /// 질문 알림이 가리키는 세션 (`session_id`). 없으면 앱만 연다
+    public let sessionID: UUID?
 
-    public init(kind: Kind, actionID: UUID?) {
+    public init(kind: Kind, actionID: UUID?, sessionID: UUID? = nil) {
         self.kind = kind
         self.actionID = actionID
+        self.sessionID = sessionID
     }
 
     public init(userInfo: [AnyHashable: Any]) {
         kind = (userInfo["kind"] as? String).flatMap(Kind.init(rawValue:)) ?? .other
         let first = (userInfo["action_id"] as? String) ?? (userInfo["action_ids"] as? [String])?.first
         actionID = first.flatMap(UUID.init(uuidString:))
+        sessionID = (userInfo["session_id"] as? String).flatMap(UUID.init(uuidString:))
     }
 }
