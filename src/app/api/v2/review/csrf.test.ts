@@ -136,7 +136,7 @@ describe.each(READS)("%s", (_name, call) => {
   });
 });
 
-// R-dec: 결정만 읽는 GET은 아무것도 쓰지 않으므로 다른 사이트의 쿠키 GET이 와도 문제가 없다(그날 묶음을 앞당겨 소비시킬 수 없다 — D-4 우려 없음).
+// R-dec: 결정만 읽는 GET은 Taskforce 행을 쓰지 않으므로 다른 사이트의 쿠키 GET이 와도 문제가 없다(그날 묶음을 앞당겨 소비시킬 수 없다 — D-4 우려 없음). 만료 쿠키의 세션 갱신은 공유 인증 계층의 일이다(여기서는 인증을 mock한다).
 // 그래서 CSRF 검사를 지나 서비스까지 간다. Bearer도 그대로 통과한다.
 describe("GET review/decisions: 읽기는 CSRF 대상이 아니다 (쓰기 0)", () => {
   const authCalls = () => vi.mocked(review.loadReviewDecisions).mock.calls;

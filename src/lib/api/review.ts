@@ -205,8 +205,8 @@ export async function handleDismissSuggestion<User extends AppUser>(request: Req
 export type ReviewDecisionsDeps<User extends AppUser> = BaseDeps<User> & { load: (user: User, now: Date) => Promise<ReviewDecisionsResponse> };
 
 /**
- * GET /api/v2/review/decisions — 결정 대기만. GET /api/v2/review와 같은 계산이고 아무것도 쓰지 않는다(제안 생산 · 노출 · 그날 묶음 소비 0). 결정 원천을 못 읽어도 200이고 unavailable로 표시한다.
- * 같은 순서: gate 404 → 인증 401 → 읽기 → 200 no-store / 500. 쿠키 인증 GET은 CSRF 검사 대상이 아니다(쓰지 않으므로 다른 사이트가 부르게 해도 바뀌는 것이 없다).
+ * GET /api/v2/review/decisions — 결정 대기만. GET /api/v2/review와 같은 계산이고 Taskforce 행을 쓰지 않는다(제안 생산 · 노출 · 그날 묶음 소비 0; 공유 인증 계층의 쿠키 세션 갱신은 제외). 결정 원천을 못 읽어도 200이고 unavailable로 표시한다.
+ * 같은 순서: gate 404 → 인증 401 → 읽기 → 200 no-store / 500. 쿠키 인증 GET은 CSRF 검사 대상이 아니다(Taskforce 행을 쓰지 않으므로 다른 사이트가 부르게 해도 바뀌는 Taskforce 상태가 없다).
  */
 export async function handleGetReviewDecisions<User extends AppUser>(request: Request, deps: ReviewDecisionsDeps<User>): Promise<Response> {
   if (!deps.enabled()) return errorResponse(404, "not_found", NOT_FOUND);

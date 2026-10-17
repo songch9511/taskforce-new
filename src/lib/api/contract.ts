@@ -2001,7 +2001,7 @@ export type AssistantTargetWithDevice = z.infer<typeof assistantTargetWithDevice
 export type AssistantTargetsWithDeviceResponse = z.infer<typeof assistantTargetsWithDeviceResponseSchema>;
 
 // --- R-dec ---
-// 결정만 읽기 (OA R-dec, U3-21). GET /api/v2/review와 같은 계산(decisions · 순서 · version · 에이전트 ref)이고 아무것도 쓰지 않는다(제안 생산 · 노출 · 묶음 소비 0).
+// 결정만 읽기 (OA R-dec, U3-21). GET /api/v2/review와 같은 계산(decisions · 순서 · version · 에이전트 ref)이고 Taskforce 행을 쓰지 않는다(제안 생산 · 노출 · 묶음 소비 0).
 // 원천이 결정 하나라 complete = sources.decisions가 ok, empty = complete이면서 결정 0. 응답에 글 · 개수가 없다.
 /** GET /api/v2/review/decisions 응답. decisions가 서버 순서 그대로 Needs you 순서다 — 앱은 다시 정렬하지 않는다 */
 export const reviewDecisionsResponseSchema = z.strictObject({

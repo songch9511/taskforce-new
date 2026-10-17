@@ -240,7 +240,7 @@ describe("POST suggestions/{id}/snooze · dismiss", () => {
   });
 });
 
-// ─── GET review/decisions (OA R-dec): 결정만 읽는다. 같은 gate · 인증 · no-store, 쓰기 0 ─────────────────────────
+// ─── GET review/decisions (OA R-dec): 결정만 읽는다. 같은 gate · 인증 · no-store, Taskforce 행 쓰기 0 ─────────────────────────
 
 describe("GET review/decisions", () => {
   const decisions: ReviewDecisionsResponse = { generated_at: NOW.toISOString(), complete: true, empty: true, sources: { decisions: "ok" }, decisions: [] };

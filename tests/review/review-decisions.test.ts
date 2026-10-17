@@ -67,6 +67,11 @@ async function richWorld() {
   await f.updateRow("actions", w.action, { title: "비밀 이슈 제목" });
   const confirm = await s.action(w.user, { title: "확인 요청 일", needsConfirmation: true });
   await s.q("update public.actions set last_activity_at = $2 where id = $1", [confirm, "2026-10-10T00:00:00Z"]);
+  // C3 입력 대기 하나 더: run이 needs_input으로 끝난 열린 Action → run_input. 에이전트 gate와 무관한 C3 종류라 새 경로가 빠뜨리면 같음 시험이 빨개진다
+  const inputAction = await s.action(w.user, { title: "답이 필요한 일" });
+  const inputRun = await s.run(w.user, inputAction);
+  await s.q("update public.execution_runs set state = 'running' where id = $1", [inputRun]);
+  await s.q("update public.execution_runs set state = 'done', outcome = 'needs_input' where id = $1", [inputRun]);
   await f.ask(w, { asked_at: "2026-10-11T00:00:00Z" }, "req-q");
   const approvalRun = await f.otherRun(w);
   await f.asking(w.user, approvalRun, { kind: "approval", asked_at: "2026-10-11T01:00:00Z" });
@@ -81,7 +86,7 @@ async function richWorld() {
     user_id: w.user, bridge_id: w.bridge, run_id: w.run, agent_session_id: w.session, workspace_ref: "/w/proj", path_key: `/w/proj/${randomUUID()}.mdx`, rel_path: "/w/proj/비밀 경로.mdx",
     source: "observed", conflict_run_id: laterRun.run, conflict_at: "2026-10-11T04:00:00Z", conflict_version: 1,
   });
-  return { w, confirm, approvalRun, secretRun, resultRun, laterRun };
+  return { w, confirm, inputAction, approvalRun, secretRun, resultRun, laterRun };
 }
 
 describe("D1 같음: 결정만 읽기 = loadReview의 결정 쪽 (바이트 동일)", () => {
@@ -90,13 +95,13 @@ describe("D1 같음: 결정만 읽기 = loadReview의 결정 쪽 (바이트 동�
     r = await richWorld();
   }, 60_000);
 
-  const ALL = ["agent_approval", "agent_question", "agent_secret_question", "confirm", "path_conflict", "result_ready"];
+  const ALL = ["agent_approval", "agent_question", "agent_secret_question", "confirm", "path_conflict", "result_ready", "run_input"];
   const cases: [string, readonly string[] | undefined, Record<string, string>, string[]][] = [
-    ["adapter 빈 배열", [], {}, ["confirm"]],
-    ["adapter codex만", ["agent:codex"], {}, ["confirm", "path_conflict", "result_ready"]], // 세계의 연결은 모두 agent:claude-code
+    ["adapter 빈 배열", [], {}, ["confirm", "run_input"]],
+    ["adapter codex만", ["agent:codex"], {}, ["confirm", "path_conflict", "result_ready", "run_input"]], // 세계의 연결은 모두 agent:claude-code
     ["adapter claude-code만", ["agent:claude-code"], {}, ALL],
     ["adapter 둘", BOTH, {}, ALL],
-    ["undefined + 환경 꺼짐", undefined, {}, ["confirm"]],
+    ["undefined + 환경 꺼짐", undefined, {}, ["confirm", "run_input"]],
     ["undefined + 환경 켜짐 (대화 v2 ∧ claude-code)", undefined, { CONVERSATIONS_V2_ENABLED: "true", AGENT_ADAPTER_CLAUDE_CODE_ENABLED: "true" }, ALL],
   ];
 
@@ -107,6 +112,11 @@ describe("D1 같음: 결정만 읽기 = loadReview의 결정 쪽 (바이트 동�
     const both = await full(r.w.user, adapters);
     expect(JSON.stringify(only.decisions)).toBe(JSON.stringify(both.decisions));
     expect(only.sources.decisions).toBe(both.sources.decisions);
+    // 종류도 순서까지 같고, C3 종류(confirm · run_input)는 adapter가 꺼져 있어도 켜져 있어도 빠지지 않는다 (C3 입력 대기 동등성)
+    expect(kindsOf(only.decisions)).toEqual(kindsOf(both.decisions));
+    for (const c3 of ["confirm", "run_input"]) expect(kindsOf(only.decisions), c3).toContain(c3);
+    const c3Json = (response: typeof only) => JSON.stringify((response.decisions ?? []).filter((g) => g.kind === "confirm" || g.kind === "run_input"));
+    expect(c3Json(only)).toBe(c3Json(both));
     expect([...new Set(kindsOf(only.decisions))].sort()).toEqual(expectedKinds);
     expect(only).toMatchObject({ complete: true, empty: false, sources: { decisions: "ok" } });
   });
@@ -124,6 +134,7 @@ describe("D1 같음: 결정만 읽기 = loadReview의 결정 쪽 (바이트 동�
       ["agent_secret_question", r.secretRun.action, false],
       ["result_ready", r.resultRun.action, false],
       ["path_conflict", r.laterRun.action, false],
+      ["run_input", r.inputAction, false],
     ]);
     const json = JSON.stringify(only);
     for (const text of [SECRET, "비밀 파일", "비밀 경로", "비밀 이슈 제목", "/w/proj"]) expect(json).not.toContain(text);

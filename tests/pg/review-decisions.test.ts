@@ -14,7 +14,7 @@ import { seed } from "../coordinator/support";
 import { supabaseSchemaScripts } from "../db/local-supabase";
 import { BOTH, reviewAgentInputsFixtures, SECRET } from "../db/review-agent-inputs.scenarios";
 
-// OA R-dec P1–P3: 결정만 읽는 경로(loadReviewDecisions)가 아무것도 쓰지 않는다는 것을 실제 Postgres에서 증명한다.
+// OA R-dec P1–P3: 결정만 읽는 경로(loadReviewDecisions)가 Taskforce 행을 쓰지 않는다는 것을 실제 Postgres에서 증명한다(로더가 쓰는 연결 기준 — 인증 계층의 쿠키 세션 갱신은 이 시험의 범위 밖이다).
 //  - P1 쓰기 0: 트랜잭션 id가 배정되지 않고(어떤 표에 한 번이라도 쓰면 배정된다 — 미래의 쓰기 경로도 잡는다), pg_stat_xact_user_tables의 삽입 · 갱신 · 삭제 증감이 0이고,
 //    앞뒤 public 모든 표의 digest · suggestions 전 열이 같고, `begin read only`에서도 결정이 ok다. 대조: 같은 세계에서 loadReview는 셋 다 바뀐다.
 //  - P2 같음: 같은 세계에서 결정만 → loadReview 순서로 decisions JSON 바이트 동일.
@@ -101,11 +101,20 @@ async function resolved<T>(promise: ReturnType<typeof pending<T>>) {
   return result.value;
 }
 
-/** 열린 트랜잭션이 쓴 흔적: 배정된 트랜잭션 id(없으면 null) + 이 트랜잭션의 표 삽입 · 갱신 · 삭제 합 */
-async function writeProof(client: pg.Client) {
+/**
+ * 열린 트랜잭션이 쓴 흔적: 배정된 트랜잭션 id(없으면 null) + 이 트랜잭션 **동안** 늘어난 표 삽입 · 갱신 · 삭제 합.
+ * pg_stat_xact_user_tables에는 같은 연결의 앞선 트랜잭션이 아직 내보내지 않은(1초 간격) 통계도 섞여 보이므로 절대값이 아니라 begin 직후 값과의 차이를 본다.
+ */
+const writeSum = async (client: pg.Client) =>
+  Number((await client.query<{ n: string }>("select coalesce(sum(n_tup_ins + n_tup_upd + n_tup_del), 0)::text as n from pg_stat_xact_user_tables")).rows[0].n);
+/** 트랜잭션을 열고 그 시점의 표 쓰기 합(기준값)을 돌려준다 */
+async function begin(client: pg.Client) {
+  await client.query("begin");
+  return writeSum(client);
+}
+async function writeProof(client: pg.Client, baseline: number) {
   const xid = (await client.query<{ xid: string | null }>("select pg_current_xact_id_if_assigned()::text as xid")).rows[0].xid;
-  const writes = Number((await client.query<{ n: string }>("select coalesce(sum(n_tup_ins + n_tup_upd + n_tup_del), 0)::text as n from pg_stat_xact_user_tables")).rows[0].n);
-  return { xid, writes };
+  return { xid, writes: (await writeSum(client)) - baseline };
 }
 
 /** 결정 대기 세계 (review-agents.test.ts richWorld와 같은 모양) */
@@ -114,6 +123,11 @@ async function richWorld() {
   await f.updateRow("actions", w.action, { title: "비밀 이슈 제목" });
   const confirm = await s.action(w.user, { title: "확인 요청 일", needsConfirmation: true });
   await s.q("update public.actions set last_activity_at = $2 where id = $1", [confirm, "2026-10-10T00:00:00Z"]);
+  // C3 입력 대기 하나 더: run이 needs_input으로 끝난 열린 Action → run_input. 에이전트 gate와 무관한 C3 종류라 새 경로가 빠뜨리면 같음 시험이 빨개진다
+  const inputAction = await s.action(w.user, { title: "답이 필요한 일" });
+  const inputRun = await s.run(w.user, inputAction);
+  await s.q("update public.execution_runs set state = 'running' where id = $1", [inputRun]);
+  await s.q("update public.execution_runs set state = 'done', outcome = 'needs_input' where id = $1", [inputRun]);
   await f.ask(w, { asked_at: "2026-10-11T00:00:00Z" }, "req-q");
   const approvalRun = await f.otherRun(w);
   await f.asking(w.user, approvalRun, { kind: "approval", asked_at: "2026-10-11T01:00:00Z" });
@@ -128,7 +142,7 @@ async function richWorld() {
     user_id: w.user, bridge_id: w.bridge, run_id: w.run, agent_session_id: w.session, workspace_ref: "/w/proj", path_key: `/w/proj/${randomUUID()}.mdx`, rel_path: "/w/proj/비밀 경로.mdx",
     source: "observed", conflict_run_id: laterRun.run, conflict_at: "2026-10-11T04:00:00Z", conflict_version: 1,
   });
-  return { w, user: w.user, confirm };
+  return { w, user: w.user, confirm, inputAction };
 }
 
 /** 제안이 생길 세계 (PGlite D6과 같다): 생산 후보(due_window · run_failed), snooze가 끝난 제안, 하루 묶음에 들어갈 비긴급 제안, 증거 있는 만료 후보 + 결정 대기 항목 */
@@ -181,10 +195,10 @@ describe("P1 쓰기 0 증명 (실제 Postgres)", () => {
     expect(before.suggestions).toHaveLength(4); // 시드한 제안 넷 (읽기 전에는 생산도 노출도 없다)
 
     // 결정만: 어댑터 세 경우를 한 트랜잭션에서 모두 읽는다
-    await tx.query("begin");
+    const base = await begin(tx);
     const results: ReviewDecisionsResponse[] = [];
     for (const adapters of [BOTH, [], undefined]) results.push(await decisionsOn(tx, w.user, adapters));
-    const proof = await writeProof(tx);
+    const proof = await writeProof(tx, base);
     await tx.query("commit");
     expect(results.map((r) => r.sources.decisions)).toEqual(["ok", "ok", "ok"]);
     expect(results[0].decisions!.length).toBeGreaterThan(1); // 빈 읽기가 아니다
@@ -193,9 +207,9 @@ describe("P1 쓰기 0 증명 (실제 Postgres)", () => {
     expect(await snapshotOf(w.user)).toEqual(before);
 
     // 대조: 같은 세계에서 loadReview는 xid를 배정받고, 표를 쓰고, 스냅숏이 달라진다
-    await tx.query("begin");
+    const contrastBase = await begin(tx);
     await reviewOn(tx, w.user, BOTH);
-    const contrast = await writeProof(tx);
+    const contrast = await writeProof(tx, contrastBase);
     await tx.query("commit");
     const after = await snapshotOf(w.user);
     expect(contrast.xid).not.toBeNull();
@@ -225,9 +239,9 @@ describe("P1 쓰기 0 증명 (실제 Postgres)", () => {
 
   it("제안 후보가 전혀 없는 사용자도 xid를 배정받지 않는다 (빈 읽기)", async () => {
     const user = await s.user();
-    await tx.query("begin");
+    const base = await begin(tx);
     const only = await decisionsOn(tx, user, BOTH);
-    const proof = await writeProof(tx);
+    const proof = await writeProof(tx, base);
     await tx.query("commit");
     expect(only).toMatchObject({ complete: true, empty: true, decisions: [] });
     expect(proof).toEqual({ xid: null, writes: 0 });
@@ -253,9 +267,13 @@ describe("P2 같음 (실제 Postgres): 결정만 → loadReview 순서로 decisi
       const both = await reviewOn(reader, w.user, adapters);
       expect(JSON.stringify(only.decisions), JSON.stringify([adapters, env])).toBe(JSON.stringify(both.decisions));
       expect(only.sources.decisions).toBe(both.sources.decisions);
+      // 종류도 순서까지 같고, C3 종류(confirm · run_input)는 adapter가 꺼져 있어도 켜져 있어도 빠지지 않는다 (C3 입력 대기 동등성)
+      const kindsOf = (response: ReviewDecisionsResponse) => (response.decisions ?? []).map((g) => g.kind);
+      expect(kindsOf(only), JSON.stringify([adapters, env])).toEqual(kindsOf(both));
+      for (const c3 of ["confirm", "run_input"]) expect(kindsOf(only), c3).toContain(c3);
       for (const group of only.decisions!) kinds.add(group.kind);
     }
-    expect([...kinds].sort()).toEqual(["agent_approval", "agent_question", "agent_secret_question", "confirm", "path_conflict", "result_ready"]); // 빈 비교가 아니다
+    expect([...kinds].sort()).toEqual(["agent_approval", "agent_question", "agent_secret_question", "confirm", "path_conflict", "result_ready", "run_input"]); // 빈 비교가 아니다
   });
 });
 

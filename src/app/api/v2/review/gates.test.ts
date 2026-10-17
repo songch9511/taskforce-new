@@ -27,7 +27,7 @@ import { GET as getReviewDecisions } from "./decisions/route";
 import { GET as getReview } from "./route";
 
 // 두 gate의 조합 (R1): RETURN_SUMMARY_ENABLED는 복귀 요약 세 경로(GET return-summary · POST clear · POST baseline)만 연다.
-// Review GET · 결정만 읽는 GET review/decisions(R-dec, 쓰기 0) · 제안 snooze · dismiss(제안 생산 · 노출 포함)는 REVIEW_V2_ENABLED 뒤에 그대로 있다. REVIEW_V2_ENABLED는 이 일곱 경로 전부를 연다(상위 집합).
+// Review GET · 결정만 읽는 GET review/decisions(R-dec, Taskforce 행 쓰기 0) · 제안 snooze · dismiss(제안 생산 · 노출 포함)는 REVIEW_V2_ENABLED 뒤에 그대로 있다. REVIEW_V2_ENABLED는 이 일곱 경로 전부를 연다(상위 집합).
 // 복귀 요약 경로는 둘 중 하나라도 정확히 "true"이면 열린다. 꺼짐의 의미(404, 인증 · DB · 서비스 0, 새 쓰기 0)와 인증 · 쿠키 CSRF는 그대로다. 진짜 authenticateRequest와 진짜 route로 부른다.
 const ID = "aaaaaaaa-0000-4000-8000-000000000001";
 const USER = "11111111-0000-4000-8000-000000000001";

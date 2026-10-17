@@ -107,7 +107,7 @@
 | Review · 제안 · 시간대 읽기(P2-B) | `tests/review/review.test.ts` · `tests/review/time-zone.test.ts` |
 | 복귀 요약 · Clear · 완전성 · 권한 경계 (A40 · ARCH06/07) | `tests/review/return-summary.test.ts` · `src/lib/review/*.test.ts` |
 | API 처리 · 쿠키 CSRF · gate | `src/lib/api/review.test.ts` · `src/app/api/v2/review/csrf.test.ts` |
-| 결정만 읽기 (OA R-dec): `loadReview`의 결정 쪽과 바이트 동일 · 부른 rpc · 못 읽음 · 빈 사용자 · 상한 없음 · 쓰기 0 | `tests/review/review-decisions.test.ts`(PGlite, 쓰기 0은 `loadReview`와의 대조 포함) · `tests/pg/review-decisions.test.ts`(실제 Postgres: 트랜잭션 id 미배정 · `pg_stat_xact_user_tables` 증감 0 · `begin read only` · 제안 잠금을 기다리지 않음) · `tests/review/review-decisions-contract.test.ts`(`REVIEW_DECISIONS_JSON`) · `gates.test.ts` · `csrf.test.ts` |
+| 결정만 읽기 (OA R-dec): `loadReview`의 결정 쪽과 바이트 동일 · 부른 rpc · 못 읽음 · 빈 사용자 · 상한 없음 · C3 `run_input` 포함 · Taskforce 행 쓰기 0 | `tests/review/review-decisions.test.ts`(PGlite, 쓰기 0은 `loadReview`와의 대조 포함) · `tests/pg/review-decisions.test.ts`(실제 Postgres, 로더가 쓰는 연결 기준: 트랜잭션 id 미배정 · `pg_stat_xact_user_tables` 증감 0 · `begin read only` · 제안 잠금을 기다리지 않음) · `tests/review/review-decisions-contract.test.ts`(`REVIEW_DECISIONS_JSON`) · `gates.test.ts` · `csrf.test.ts` |
 | v1 동결 | `src/lib/api/contract-v1-freeze.test.ts` (지문 그대로) |
 
 # JSON 계약 (Mac이 읽는다)
@@ -117,7 +117,7 @@
 - 모든 경로는 `/api/v2/…`, 인증은 `Authorization: Bearer <Supabase access token>` 또는 웹 쿠키(쿠키로 인증하는 **POST**는 같은 출처만 — 아니면 401). 앱은 Bearer.
 - **gate 둘**(서버 env, 모두 기본 꺼짐, 정확히 `"true"`만 켠다 — `TRUE` · `1` · 앞뒤 공백은 꺼짐):
   - `RETURN_SUMMARY_ENABLED`는 **복귀 요약 세 경로만** 연다: `GET /api/v2/return-summary` · `POST …/clear` · `POST …/baseline`.
-  - `REVIEW_V2_ENABLED`는 **여섯 경로 전부**(위 셋 + `GET /api/v2/review` + 제안 `snooze` · `dismiss`; Review GET이 제안 생산 · 노출 표시를 한다)를 연다. 상위 집합이다. 결정만 읽기 `GET /api/v2/review/decisions`(쓰기 0, 1-1절)도 이 gate다 — `RETURN_SUMMARY_ENABLED`는 이 경로를 열지 못한다.
+  - `REVIEW_V2_ENABLED`는 **여섯 경로 전부**(위 셋 + `GET /api/v2/review` + 제안 `snooze` · `dismiss`; Review GET이 제안 생산 · 노출 표시를 한다)를 연다. 상위 집합이다. 결정만 읽기 `GET /api/v2/review/decisions`(Taskforce 행 쓰기 0, 1-1절)도 이 gate다 — `RETURN_SUMMARY_ENABLED`는 이 경로를 열지 못한다.
   - 복귀 요약 세 경로는 **둘 중 하나라도 켜져 있으면** 열린다. Review · 제안 세 경로는 `REVIEW_V2_ENABLED`만 본다 — `RETURN_SUMMARY_ENABLED`만 켜면 Review · 제안은 계속 404이고 제안 생산 · 노출 · snooze · dismiss는 0이다.
   - | REVIEW_V2 | RETURN_SUMMARY | 복귀 요약 3경로 | Review GET · snooze · dismiss |
     |---|---|---|---|
@@ -130,7 +130,7 @@
   - 경로 충돌 해소 route(아래 3-2)는 `REVIEW_V2_ENABLED` ∧ `openAgentAdapters()`가 비지 않음일 때만 열린다(Review가 충돌을 보이는 조건과 같다). `RETURN_SUMMARY_ENABLED`는 이 route를 열지 못한다.
 - 오류 본문은 항상 `{"error":{"code","message"}}` (code ∈ 기존 `apiErrorCodeSchema`: `unauthorized` 401 · `invalid_request` 400 · `not_found` 404 · `conflict` 409 · `internal_error` 500). 새 오류 코드는 없다. `message`는 한국어 진단문이라 화면에 그대로 쓰지 않는다. 오류 본문에는 요청 값이 없다.
 - 시각은 두 종류다: **마이크로초 UTC 글자** `2026-10-12T00:00:00.123456Z`(`since` · 변화 `at` · 커서 · `cleared_through`)는 **Date로 바꿔서 서버에 돌려주지 않는다**(커서는 불투명 글자 그대로). 나머지(`generated_at` · `created_at` · `shown_at` · `snooze_until`)는 `toISOString()` 모양(밀리초) ISO 8601.
-- GET 응답은 `Cache-Control: no-store`. **`GET /api/v2/return-summary`는 아무것도 쓰지 않는다. `GET /api/v2/review`는 멱등 쓰기를 한다**(제안 생산 · 노출 표시, 아래 1절) — Action · run · Claim은 만들지 않는다. 결정만 읽기 `GET /api/v2/review/decisions`는 아무것도 쓰지 않는다(1-1절).
+- GET 응답은 `Cache-Control: no-store`. **`GET /api/v2/return-summary`는 아무것도 쓰지 않는다. `GET /api/v2/review`는 멱등 쓰기를 한다**(제안 생산 · 노출 표시, 아래 1절) — Action · run · Claim은 만들지 않는다. 결정만 읽기 `GET /api/v2/review/decisions`는 Taskforce 행을 쓰지 않는다(1-1절; 인증 계층의 세션 갱신은 모든 경로가 같다).
 - **숫자를 내리지 않는다.** 개수 · 합계 필드가 없다. 앱도 세지 않는다(디자인 D-12).
 - 서버는 문구를 만들지 않는다. 아래 "토큰" 표의 토큰에서 앱이 문구를 만든다.
 
@@ -175,7 +175,7 @@
 
 ### 1-1. `GET /api/v2/review/decisions` — 결정만 (OA R-dec)
 
-`GET /api/v2/review`의 `decisions`만 **아무것도 쓰지 않고** 읽는다. Taskforce 대화는 결정만 그리는데(제안은 그리지 않는다), 1절의 GET은 열 때마다 제안을 만들고 그날의 비긴급 묶음을 소비하고 `shown_at`을 찍었다 — 보지 않은 제안이 "노출됨"이 되고 나중에 제안 카드가 생겨도 그날 묶음이 이미 비어 있게 된다(U3-21). 그 입구를 읽기 전용으로 따로 둔다. gate는 `REVIEW_V2_ENABLED` 하나(에이전트 입력 gate는 1절과 같은 `openAgentAdapters()`이고 404 조건이 아니다), 인증은 Bearer · 쿠키 둘 다다.
+`GET /api/v2/review`의 `decisions`만 **Taskforce 데이터(제안 · 읽음 · 지표 등)를 쓰지 않고** 읽는다. Taskforce 대화는 결정만 그리는데(제안은 그리지 않는다), 1절의 GET은 열 때마다 제안을 만들고 그날의 비긴급 묶음을 소비하고 `shown_at`을 찍었다 — 보지 않은 제안이 "노출됨"이 되고 나중에 제안 카드가 생겨도 그날 묶음이 이미 비어 있게 된다(U3-21). 그 입구를 읽기 전용으로 따로 둔다. gate는 `REVIEW_V2_ENABLED` 하나(에이전트 입력 gate는 1절과 같은 `openAgentAdapters()`이고 404 조건이 아니다), 인증은 Bearer · 쿠키 둘 다다.
 
 200 `ReviewDecisionsResponse` — 최상위 키 정확히 다섯, `sources`는 `decisions` 하나 (strict; 전체 fixture는 `tests/review/review-decisions-contract.test.ts`의 `REVIEW_DECISIONS_JSON`):
 
@@ -196,7 +196,8 @@
 
 - `decisions`는 1절과 **같은 계산**이다: 같은 두 함수(`loadPendingDecisions` → `pendingGroupDto`)를 같은 인자(사용자 · `now` · adapter 목록)로 부른다. 순서(긴급 → 오래 기다린 순 → 종류 순 → 업무 id) · `key` · `version` · `created_at` · 에이전트 ref가 1절과 바이트 단위로 같고, 개수 상한이 없으며, 앱은 다시 정렬하지 않는다. 묶음 · 항목 모양과 `kind`는 1절 그대로다(새 종류 · 새 ref 없음).
 - 완전성: 이 응답의 원천은 `decisions` 하나라 `complete` = `sources.decisions`가 `ok`, `empty` = `complete`이면서 결정 0. 결정 원천을 읽지 못하면(함수 실패 · 모양 틀림) `sources.decisions: "unavailable"` · `decisions: null` · `complete: false` · `empty: false` — 1절의 결정 쪽과 같은 규칙이다(비었다고 하지 않는다). 읽지 않은 원천(`suggestions` · `time_zone`)을 상태로 적으면 거짓이라 **키 자체가 없다**: `suggestions` · `suggestion_batch` · `sources.suggestions` · `sources.time_zone`이 섞인 응답은 스키마가 거절한다. 1절의 `complete`는 제안 원천이 `unavailable`이면 false지만, 여기서는 결정만으로 판단한다.
-- **쓰기 0 · 잠금 0 · CSRF 우려 없음**: 제안 생산 · 노출 · 시간대 읽기 · 제안 advisory lock을 부르지 않는다(부르는 것은 읽기 전용 SQL 함수 `coordinator_pending_inputs`와 adapter가 있을 때 `review_agent_inputs`뿐). 쿠키 인증 GET은 CSRF 검사 대상이 아니지만 쓰지 않으므로 다른 사이트가 부르게 해도 바뀌는 것이 없다(1절의 D-4 우려가 없다). 증명은 실제 Postgres에서 트랜잭션 id가 배정되지 않는 것으로 한다(`tests/pg/review-decisions.test.ts`).
+- **Taskforce 행 쓰기 0 · 잠금 0 · CSRF 우려 없음**: 이 경로는 Taskforce 행(`suggestions` · `return_summary_*` · `metric_events` 등)을 쓰지 않는다. 제안 생산 · 노출 · 시간대 읽기 · 제안 advisory lock을 부르지 않는다(부르는 것은 읽기 전용 SQL 함수 `coordinator_pending_inputs`와 adapter가 있을 때 `review_agent_inputs`뿐). 쿠키 인증 GET은 CSRF 검사 대상이 아니지만 Taskforce 행을 쓰지 않으므로 다른 사이트가 부르게 해도 그날 묶음 같은 Taskforce 상태가 바뀌지 않는다(1절의 D-4 우려가 없다). 증명은 **로더가 쓰는 DB 연결**에서 트랜잭션 id가 배정되지 않는 것으로 한다(`tests/pg/review-decisions.test.ts`).
+- **이 경로만의 보장이 아닌 것 (공유 인증 계층)**: ① 만료된 **웹 쿠키**로 부르면 공유 인증(`authenticateRequest` → Supabase 세션 갱신)이 세션을 갱신하고 쿠키를 다시 쓸 수 있다 — 모든 인증 경로가 같다(앱은 Bearer라 갱신하지 않는다). 위 증명은 이 갱신을 보지 않는다. ② 공유 proxy(`src/proxy.ts` → `updateSession`)는 gate보다 **먼저** 세션을 확인한다 — gate가 꺼져 있어도 이 route의 handler는 인증 · DB를 부르지 않지만(시험이 본다), 요청 전체에서 인증이 0인 것은 아니다. 두 가지는 이 WP에서 고치지 않았다(후속 항목: 노트).
 - 401 로그인 필요 · 404 gate 꺼짐(옛 서버에도 이 경로가 없어 404다 — 앱은 "이 서버엔 아직 없다"로 읽고, 쓰기를 하는 `GET /api/v2/review`로 되돌아가 읽지 않는다) · 500 `internal_error`(결정 원천을 못 읽은 것은 200 + `unavailable`). 로그는 사건 이름 + 오류 이름만이다(`review_decisions_failed` · `review_decisions_pending_failed`).
 - 이 경로만 쓰면 제안은 생산 · 노출되지 않는다(1절의 GET만 제안을 만든다). 제안 카드는 C3 후속이고, 그것이 `GET /api/v2/review`를 다시 부를 때까지 제안 행이 생기지 않는다.
 
