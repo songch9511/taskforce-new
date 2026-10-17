@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { requireUser } from "@/lib/auth";
+import type { DimCount, LatencyGroup, Quantiles } from "@/lib/metrics/agents";
 import { HOLD_REASONS, RUN_STATES, type ErrorField, type HoldReason, type MissedMetric, type RunState } from "@/lib/metrics/compute";
 import { isAdmin, loadMetrics } from "@/lib/metrics/load";
 import { createAdminClient } from "@/lib/supabase/admin";
@@ -35,6 +36,64 @@ const HOLD_LABELS: Record<HoldReason, string> = {
   needs_connection: "보내는 연결 없음",
   credit: "크레딧 부족",
 };
+
+/** 에이전트 카드 (OA I-oa): 이벤트 type · 차원 · 상태 이름. 값은 서버가 남긴 토큰이라 모르는 값은 그대로 보인다 */
+const AGENT_TYPE_LABELS: Record<string, string> = {
+  agent_message_sent: "에이전트에게 전달 시작 (대기열 · 재전달 · Mac 복귀 포함)",
+  context_attached: "맥락 붙임",
+  stop_requested: "Stop",
+  message_resent: "다시 보냄",
+  question_answered: "질문에 답함 (카드 · 승인 · 비밀값 로컬 답)",
+  session_renamed: "세션 이름 바꿈",
+  session_opened_external: "터미널에서 열기",
+  session_resumed: "여기서 이어가기",
+  tool_call_decided: "도구 호출 결정 (서버 결정만)",
+  path_conflict_found: "경로 충돌 발견",
+  path_conflict_resolved: "경로 충돌 해소",
+  issue_moved: "이슈 이동",
+  project_created: "프로젝트 만듦",
+  project_renamed: "프로젝트 이름 바꿈",
+  project_icon_changed: "프로젝트 아이콘 바꿈",
+  project_archived: "프로젝트 보관",
+  assistant_opened: "Assistant 열기 (아직 남기는 곳 없음)",
+};
+const AGENT_DIM_LABELS: Record<string, string> = {
+  kind: "종류",
+  answered_locally: "로컬 답",
+  decision: "결정",
+  reason: "이유",
+  from: "원래 상태",
+  surface: "화면",
+  via: "경로",
+  keep: "남긴 쪽",
+  target_kind: "대상",
+  origin: "출처",
+  sent: "외부로 보냄",
+};
+const LATENCY_KIND_LABELS = { message: "메시지 (새 턴)", answer: "질문 답", cancel: "취소" } as const;
+const DELIVERY_STATE_LABELS: Record<string, string> = { queued: "대기열", dispatched: "전달됨", not_sent: "못 보냄", expired: "만료", cancelled: "취소" };
+const DELIVERY_REASON_LABELS: Record<string, string> = {
+  expired_before_lease: "lease 전 만료 (회수)",
+  expired_queue: "대기열 만료 (sweep)",
+};
+const COMMAND_OUTCOME_LABELS: Record<string, string> = {
+  sent: "보냄",
+  task_unknown: "작업을 모름",
+  received: "받음",
+  not_received: "받지 못함",
+  unknown: "결과 불명",
+  request_closed: "표시 뒤 요청이 닫혀 답이 닫힘",
+  declined: "거절",
+  withdrawn: "회수",
+};
+const QUESTION_PATH_LABELS = {
+  route: "카드 · 승인 (질문 답 route)",
+  message: "대화 자유 글",
+  local: "비밀값 · 이 Mac에서",
+  unanswered_open: "답 없음 · 지금 열림",
+  unanswered_closed: "답 없음 · 닫힘 (Stop · Done · 턴 끝)",
+} as const;
+const STOP_GATE_LABELS = { stop: "Stop 버튼", action_closed: "이슈 Done", path_conflict: "경로 충돌로 멈춤", session_deleted: "세션 삭제", other: "기타" } as const;
 
 const PROVIDER_LABELS: Record<string, string> = {
   notion: "Notion",
@@ -85,6 +144,16 @@ const GOOGLE_COUNT_LABELS: [string, string][] = [
 const pct = (value: number | null) => (value === null ? "—" : `${Math.round(value * 1000) / 10}%`);
 const num = (value: number | null, unit = "") => (value === null ? "—" : `${Math.round(value * 10) / 10}${unit}`);
 const usd = (value: number, digits = 3) => value.toFixed(digits);
+const secs = (value: number | null) => (value === null ? "—" : `${Math.round(value * 10) / 10}초`);
+const tallyText = (values: DimCount[]) => values.map((v) => `${v.value} ${v.n}`).join(" · ");
+const quantileText = (q: Quantiles) => (q.n === 0 ? "표본 없음" : `표본 ${q.n} · p50 ${secs(q.p50)} · p95 ${secs(q.p95)} · 최대 ${secs(q.max)}`);
+const ageText = (seconds: number | null) => {
+  if (seconds === null) return "—";
+  if (seconds < 60) return `${Math.round(seconds)}초`;
+  if (seconds < 3600) return `${Math.round(seconds / 60)}분`;
+  if (seconds < 86_400) return `${Math.round(seconds / 3600)}시간`;
+  return `${Math.round(seconds / 86_400)}일`;
+};
 
 export default async function MetricsPage({ searchParams }: { searchParams: Promise<{ days?: string }> }) {
   const user = await requireUser();
@@ -107,6 +176,7 @@ export default async function MetricsPage({ searchParams }: { searchParams: Prom
     discoveryCost: cost,
     sourceFailures: failures,
     execution,
+    agents,
   } = report;
   // 피벗 판단은 자동 반영이 틀린 비율로 한다 (PRD 6장). 구분이 생기기 전 기록뿐이면 전체 비율을 보여준다.
   const auto = m.byConfirmation.auto;
@@ -349,6 +419,226 @@ export default async function MetricsPage({ searchParams }: { searchParams: Prom
           </CardContent>
         )}
       </Card>
+
+      {/* OA I-oa 에이전트 카드 시작 */}
+      <Card>
+        <CardHeader>
+          <CardTitle>에이전트 사용 (OA)</CardTitle>
+          <CardDescription>
+            {agents.usage
+              ? `최근 ${days}일에 서버가 남긴 에이전트 · 프로젝트 · 이슈 정리 지표 이벤트의 수와 사용자 수입니다. 아래 칸은 같은 이벤트의 차원별 수입니다.`
+              : "에이전트 사용 지표를 읽지 못했습니다 (서버 로그)."}
+          </CardDescription>
+        </CardHeader>
+        {agents.usage && (
+          <CardContent className="space-y-3 text-sm">
+            {agents.usage.empty ? (
+              <p className="text-muted-foreground">아직 에이전트 기록이 없습니다. 운영은 대화 v2 · adapter 플래그가 꺼져 있어(L5 전) 개발 계정 기록만 쌓입니다.</p>
+            ) : (
+              <ul className="space-y-1.5">
+                {agents.usage.types
+                  .filter((t) => t.n > 0)
+                  .map((t) => (
+                    <li key={t.type}>
+                      <div className="flex justify-between gap-4">
+                        <span>{AGENT_TYPE_LABELS[t.type] ?? t.type}</span>
+                        <span className="shrink-0">
+                          {t.n}번 · 사용자 {t.users}명
+                        </span>
+                      </div>
+                      <p className="text-muted-foreground pl-3 text-xs">
+                        {[
+                          t.adapters.some((a) => a.value !== "(없음)") ? `adapter ${tallyText(t.adapters)}` : null,
+                          ...t.dims.filter((d) => d.values.some((v) => v.value !== "(없음)")).map((d) => `${AGENT_DIM_LABELS[d.key] ?? d.key}: ${tallyText(d.values)}`),
+                          t.numeric && t.numeric.n > 0 ? `서버 처리 ${t.numeric.key}: 표본 ${t.numeric.n} · p50 ${num(t.numeric.p50, "ms")} · p95 ${num(t.numeric.p95, "ms")}` : null,
+                        ]
+                          .filter(Boolean)
+                          .join(" · ")}
+                      </p>
+                    </li>
+                  ))}
+              </ul>
+            )}
+            <p className="text-muted-foreground">
+              기간 안에 0번: {agents.usage.types.filter((t) => t.n === 0).map((t) => AGENT_TYPE_LABELS[t.type] ?? t.type).join(" · ") || "없음"}
+            </p>
+            <p>
+              에이전트에게 맡겨 생긴 이슈 {agents.usage.agentIssues.n}개 (사용자 {agents.usage.agentIssues.users}명)
+            </p>
+            {agents.usage.unknown.types > 0 && (
+              <p className="text-destructive">
+                등록부에 없는 type {agents.usage.unknown.types}개 ({agents.usage.unknown.events}건) — src/lib/metrics/agents.ts 등록부를 고치세요.
+              </p>
+            )}
+            <p className="text-muted-foreground text-xs">
+              도구 호출 결정은 서버 결정만 셉니다 (bridge 로컬 결정 · 사전 한도 거절 제외). 전달 시작은 사용자가 보낸 순간이 아니라 대기열 · 재전달 · Mac 복귀 때도 생겨 리텐션 활동에서 뺍니다.
+            </p>
+          </CardContent>
+        )}
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>전달 · 지연 (ONE-TF-11 서버 구간)</CardTitle>
+          <CardDescription>
+            {agents.delivery
+              ? `최근 ${days}일에 만든 전달 · 답 · 취소 단계. 만든 때 → Mac이 집어 간 때 → 접수한 때를 서버 시계끼리만 뺍니다. 기준은 3초 · 8초 · 25초이고 통과 · 실패는 MS-2 Mac 원장이 판정합니다 (Realtime 연결 여부 · CLI 입력 시각은 서버가 모릅니다). Claude Code의 접수는 그 턴의 첫 assistant 사건이라 모델의 첫 출력 시간이 들어 있는 상한입니다.`
+              : "전달 · 지연을 읽지 못했습니다 (서버 로그)."}
+          </CardDescription>
+        </CardHeader>
+        {agents.delivery && (
+          <CardContent className="space-y-4 text-sm">
+            {agents.delivery.groups.length === 0 ? (
+              <p className="text-muted-foreground">기간 안에 만든 전달 단계가 없습니다.</p>
+            ) : (
+              agents.delivery.groups.map((g: LatencyGroup) => (
+                <div key={`${g.kind}-${g.adapter}`}>
+                  <p className="font-medium">
+                    {LATENCY_KIND_LABELS[g.kind]} · {g.adapter} — 단계 {g.n}개
+                  </p>
+                  <ul className="text-muted-foreground space-y-0.5 pl-3">
+                    <li>집어 감 (만든 때 → Mac): {quantileText(g.lease)}</li>
+                    <li>
+                      3초 이하 {g.buckets.le3} · 8초 이하 {g.buckets.le8} · 25초 이하 {g.buckets.le25} · 25초 초과 {g.buckets.gt25}
+                    </li>
+                    <li>
+                      아직 기다림 {g.waiting} · 집힌 적 없이 끝남 {g.neverLeased}
+                    </li>
+                    <li>접수 (만든 때 → 첫 사건): {quantileText(g.accept)}</li>
+                    {g.anomalies > 0 && <li>시각 이상으로 뺀 단계 {g.anomalies}</li>}
+                  </ul>
+                </div>
+              ))
+            )}
+            <div>
+              <p className="font-medium">전달 결과 (대화 메시지)</p>
+              {agents.delivery.results.length === 0 ? (
+                <p className="text-muted-foreground">기간 안에 전달 상태가 있는 메시지가 없습니다.</p>
+              ) : (
+                <ul className="space-y-0.5 pl-3">
+                  {agents.delivery.results.map((r) => (
+                    <li key={`${r.state}-${r.reason}`} className="flex justify-between gap-4">
+                      <span>
+                        {DELIVERY_STATE_LABELS[r.state] ?? r.state}
+                        {r.reason !== "(없음)" && ` · ${DELIVERY_REASON_LABELS[r.reason] ?? r.reason}`}
+                      </span>
+                      <span>{r.n}개</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+            <div>
+              <p className="font-medium">명령 결과 (bridge 명령)</p>
+              {agents.delivery.commands.length === 0 ? (
+                <p className="text-muted-foreground">기간 안에 명령이 없습니다.</p>
+              ) : (
+                <ul className="space-y-0.5 pl-3">
+                  {agents.delivery.commands.map((c) => (
+                    <li key={`${c.kind}-${c.outcome}`} className="flex justify-between gap-4">
+                      <span>
+                        {c.kind} · {COMMAND_OUTCOME_LABELS[c.outcome] ?? c.outcome}
+                      </span>
+                      <span>{c.n}개</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {agents.delivery.commandsClamped && <p className="text-muted-foreground mt-1 text-xs">명령은 끝난 뒤 30일이 지나면 지워서, 명령 결과는 최근 30일만 셉니다.</p>}
+            </div>
+          </CardContent>
+        )}
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>질문 → 답</CardTitle>
+          <CardDescription>
+            {agents.questions
+              ? `최근 ${days}일에 서버가 받은 질문 ${agents.questions.asked}번. 기다린 시간은 서버가 질문 사건을 받은 때 → 답 단계를 만든 때입니다 (2초 보류 · 사람 생각 시간 포함, 다시 보낸 답은 첫 단계만).`
+              : "질문 → 답을 읽지 못했습니다 (서버 로그)."}
+          </CardDescription>
+        </CardHeader>
+        {agents.questions && (
+          <CardContent className="space-y-2 text-sm">
+            {agents.questions.groups.length === 0 ? (
+              <p className="text-muted-foreground">기간 안에 받은 질문이 없습니다.</p>
+            ) : (
+              <ul className="space-y-1.5">
+                {agents.questions.groups.map((g) => (
+                  <li key={`${g.kind}-${g.path}`}>
+                    <div className="flex justify-between gap-4">
+                      <span>
+                        {g.kind} · {QUESTION_PATH_LABELS[g.path]}
+                      </span>
+                      <span>{g.n}번</span>
+                    </div>
+                    {g.wait.n > 0 && <p className="text-muted-foreground pl-3 text-xs">기다린 시간 {quantileText(g.wait)}</p>}
+                  </li>
+                ))}
+              </ul>
+            )}
+            {agents.questions.anomalies > 0 && <p className="text-muted-foreground">시각 이상으로 기다린 시간에서 뺀 질문 {agents.questions.anomalies}개</p>}
+            <p className="text-muted-foreground text-xs">
+              자유 글 답은 지표 행이 없어 답 단계로 셉니다.
+              {agents.usage && ` 질문 답 지표(question_answered)는 ${agents.usage.types.find((t) => t.type === "question_answered")?.n ?? 0}번 — 카드 · 승인 · 로컬 답만 셉니다.`}
+            </p>
+          </CardContent>
+        )}
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>멈춤 · 지금 막힌 것</CardTitle>
+          <CardDescription>
+            {agents.stops
+              ? `최근 ${days}일에 대화 run이 멈춘 까닭과 끝난 턴, 그리고 지금(기간과 상관없이) 막힌 것입니다.`
+              : "멈춤 · 막힘을 읽지 못했습니다 (서버 로그)."}
+          </CardDescription>
+        </CardHeader>
+        {agents.stops && (
+          <CardContent className="grid gap-4 text-sm sm:grid-cols-2">
+            <ul className="space-y-0.5">
+              {agents.stops.stopped.map((s) => (
+                <li key={s.gate} className="flex justify-between">
+                  <span>멈춤 · {STOP_GATE_LABELS[s.gate]}</span>
+                  <span>{s.n}번</span>
+                </li>
+              ))}
+              <li className="flex justify-between">
+                <span>끝난 턴</span>
+                <span>{agents.stops.turnsCompleted}번</span>
+              </li>
+            </ul>
+            <ul className="space-y-0.5">
+              <li className="flex justify-between">
+                <span>만료한 lease (5초 넘게 남음)</span>
+                <span>{agents.stops.now.overdueLeases}개</span>
+              </li>
+              <li className="flex justify-between">
+                <span>결과 불명 단계</span>
+                <span>{agents.stops.now.unknownOutcome}개</span>
+              </li>
+              <li className="flex justify-between">
+                <span>연결이 끊긴 작업</span>
+                <span>{agents.stops.now.unreachable}개</span>
+              </li>
+              <li className="flex justify-between">
+                <span>답을 기다리는 작업</span>
+                <span>{agents.stops.now.awaitingAnswer}개</span>
+              </li>
+              <li className="flex justify-between">
+                <span>열린 경로 충돌 (가장 오래된 것의 나이)</span>
+                <span>
+                  {agents.stops.now.openConflicts}개 · {ageText(agents.stops.now.oldestConflictAgeS)}
+                </span>
+              </li>
+            </ul>
+            <p className="text-muted-foreground text-xs sm:col-span-2">결과 준비 → 검토 시간: 측정 전 — 검토 동작(E1c)이 생기면 남깁니다.</p>
+          </CardContent>
+        )}
+      </Card>
+      {/* OA I-oa 에이전트 카드 끝 */}
 
       <Card>
         <CardHeader>
