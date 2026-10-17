@@ -2,7 +2,13 @@ import Foundation
 import Testing
 @testable import TaskforceKit
 
-/// OA U3 11.1: `GET /api/v2/review` · `POST /api/v2/path-conflicts/{lease_id}/resolve`의 경로 · 메서드 · 본문 · 오류 디코딩 (가짜 전송, 서버 호출 0)
+/// 진짜 `APIClient`(가짜 전송)로 읽는 gateway: 저장소가 부르는 길이 실제로 어느 경로로 나가는지 본다 (R-dec-m). 나머지는 기본 구현(404 · 빈 값)이다
+private struct APIBackedTaskforceGateway: TaskforceRequestGateway {
+    let api: APIClient
+    func taskforceReview() async throws -> TaskforceReviewResponse { try await api.taskforceReview() }
+}
+
+/// OA U3 11.1 · R-dec-m: `GET /api/v2/review/decisions` · `POST /api/v2/path-conflicts/{lease_id}/resolve`의 경로 · 메서드 · 본문 · 오류 디코딩 (가짜 전송, 서버 호출 0)
 struct TaskforceRequestEndpointTests {
     typealias Fx = TaskforceRequestFixtures
 
@@ -17,13 +23,36 @@ struct TaskforceRequestEndpointTests {
 
     var last: StubProtocol.Recorded? { StubProtocol.requests(host: host).last }
 
-    @Test func theReviewIsAPlainBearerGetOnTheV2Route() async throws {
-        let response = try await client(body: Fx.review).taskforceReview()
+    @Test func theDecisionsReadIsAPlainBearerGetOnTheV2DecisionsRoute() async throws {
+        let response = try await client(body: Fx.reviewDecisions).taskforceReview()
         #expect(response.items.count == 6)
         let request = try #require(last)
-        #expect(request.method == "GET" && request.url.absoluteString == "https://\(host)/api/v2/review")
+        #expect(request.method == "GET" && request.url.absoluteString == "https://\(host)/api/v2/review/decisions")
         #expect(request.headers["Authorization"] == "Bearer token-123")
         #expect(request.body == nil || request.body?.isEmpty == true)
+    }
+
+    /// R-dec-m: 쓰기가 있는 옛 `GET /api/v2/review`는 어떤 대답에도 부르지 않는다. 404(옛 서버 · 기능 꺼짐)여도 되돌아가 읽지 않고 요청은 새 경로 하나뿐이다
+    @Test(arguments: [200, 404, 401, 500, 503])
+    func noReadEverGoesToTheOldWritingReviewRoute(_ status: Int) async {
+        let body = status == 200 ? Fx.reviewDecisions : #"{"error":{"code":"not_found","message":"없는 경로입니다."}}"#
+        _ = try? await client(status: status, body: body).taskforceReview()
+        let paths = StubProtocol.requests(host: host).map(\.url.path)
+        #expect(paths == ["/api/v2/review/decisions"], "새 경로 하나로만 나간다: \(paths)")
+        #expect(!paths.contains("/api/v2/review"))
+    }
+
+    /// R-dec-m: 저장소를 거쳐도 같다. 404는 `featureOff`로 읽고, 옛 쓰기 GET으로 되돌아가 읽지 않는다 (새로 읽을 때마다 새 경로 하나)
+    @Test @MainActor func aFeatureOffServerStaysFeatureOffThroughTheStoreAndNeverFallsBackToTheOldRoute() async {
+        let account = TaskforceTestAccount()
+        let gateway = APIBackedTaskforceGateway(api: client(status: 404, body: #"{"error":{"code":"not_found","message":"없는 경로입니다."}}"#))
+        let store = TaskforceRequestStore(gateway: gateway, scope: account.scope, schedule: TaskforceManualClock().schedule)
+        await store.refresh()
+        await store.refresh()
+        #expect(store.featureOff && store.readProblem == .failed && store.response == nil)
+        let paths = StubProtocol.requests(host: host).map(\.url.path)
+        #expect(paths == ["/api/v2/review/decisions", "/api/v2/review/decisions"], "읽기마다 새 경로 하나: \(paths)")
+        #expect(!paths.contains("/api/v2/review"))
     }
 
     @Test func resolvePostsKeepAndConflictVersionToTheLeaseRoute() async throws {

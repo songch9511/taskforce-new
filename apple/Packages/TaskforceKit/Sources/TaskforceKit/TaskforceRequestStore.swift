@@ -50,8 +50,8 @@ public enum TaskforceResolveResult: Equatable, Sendable {
     case ignored
 }
 
-/// Taskforce 대화 저장소 (OA U3). 대화가 보일 요청의 원천 `GET /api/v2/review`를 읽고, 경로 충돌에 고른 답 하나를 2초 보류한 뒤 보낸다.
-/// - **읽기**: 정해진 주기가 없다. 사용자가 화면을 열거나 바뀔 까닭이 있을 때만 부른다 (이 GET은 제안을 만들고 노출 표시를 한다: `TaskforceRequestEndpoints.swift`).
+/// Taskforce 대화 저장소 (OA U3). 대화가 보일 요청의 원천 `GET /api/v2/review/decisions`를 읽고, 경로 충돌에 고른 답 하나를 2초 보류한 뒤 보낸다.
+/// - **읽기**: 정해진 주기가 없다. 사용자가 화면을 열거나 바뀔 까닭이 있을 때만 부른다. 읽기가 쓰기를 하지 않게 된 뒤(R-dec-m)에도 이 기본은 그대로다 (`TaskforceRequestEndpoints.swift`).
 ///   읽기 순번으로 **마지막에 시작한 읽기만** 반영한다 (늦게 끝난 옛 읽기가 새 상태를 되돌리지 못한다). 읽지 못하면 받은 응답은 두고 `readProblem`만 올린다.
 /// - **경로 충돌**: 응답에는 글이 없다. 경로와 두 run의 세션은 RLS로 따로 읽는다. 상세를 못 읽은 충돌은 보이지 않는다 (지어내지 않는다).
 /// - **답(해소)**: 되돌릴 수 없어서 고른 뒤 2초 보류(`holdSeconds`)한다: 그 안의 Undo는 쓰기 0이다. 보류 중 같은 요청에 다시 눌러도 하나뿐이다.

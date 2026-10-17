@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import TaskforceKit
 
-/// OA U3 11.1: 서버 `GET /api/v2/review` 응답(`REVIEW_WITH_AGENTS_JSON`)과 경로 충돌 해소 요청의 디코딩.
+/// OA U3 11.1 · R-dec-m: 서버 `GET /api/v2/review/decisions` 응답(`REVIEW_DECISIONS_JSON`) · `GET /api/v2/review` 응답(`REVIEW_WITH_AGENTS_JSON`)과 경로 충돌 해소 요청의 디코딩.
 /// 세 종류 ref · C3 종류(키 없음) · 모르는 종류 · `decisions: null` · `unavailable` · `complete: false`
 struct TaskforceRequestModelsTests {
     typealias Fx = TaskforceRequestFixtures
@@ -167,6 +167,26 @@ struct TaskforceRequestModelsTests {
         #expect(response.complete && !response.empty && response.decisionsOK)
         #expect(response.items.map(\.kind) == [.resultReady, .confirm])
         #expect(TaskforceRequestRules.isTrustworthy(response, skippedUnknown: false), "믿는 규칙은 `sources.decisions`와 `complete`뿐이다")
+    }
+
+    /// R-dec-m: 서버 fixture `REVIEW_DECISIONS_JSON`(앱이 부르는 경로의 응답)이 읽히고, 믿을 수 있고, 종류가 서버 순서대로 맞는다
+    @Test func theServerDecisionsFixtureDecodesIsTrustedAndMapsTheKinds() throws {
+        let response = try Fx.decode(Fx.reviewDecisions)
+        #expect(response.complete && !response.empty && response.sources.decisions == .ok && response.decisionsOK)
+        #expect(response.sources.suggestions == nil && response.sources.timeZone == nil, "이 응답은 `sources.decisions` 하나뿐이다")
+        #expect(TaskforceRequestRules.isTrustworthy(response, skippedUnknown: false), "믿는 규칙: `complete` · `sources.decisions`")
+        let kinds: [TaskforceDecisionKind] = [.agentApproval, .agentQuestion, .agentSecretQuestion, .resultReady, .pathConflict, .confirm]
+        #expect(response.decisions?.map(\.kind) == kinds, "서버 순서 그대로")
+        #expect(response.items.map(\.kind) == kinds && !kinds.contains(.unknown))
+        let task = "b0000000-0000-4000-8000-000000000001"
+        #expect(response.items.map(\.id) == [
+            "agent_approval:" + task, "agent_question:" + task, "agent_secret_question:" + task,
+            "result_ready:d0000000-0000-4000-8000-000000000001", "path_conflict:c0000000-0000-4000-8000-000000000001",
+            "confirm:a0000000-0000-4000-8000-000000000007",
+        ])
+        // 앱이 그리는 종류는 셋이고, 모두 읽을 수 있다 (질문 셋은 그 세션에서만 답한다)
+        let drawn = response.items.filter { (item: TaskforceDecisionItem) in item.kind.isDrawn }
+        #expect(drawn.map(\.kind) == [.resultReady, .pathConflict, .confirm] && drawn.allSatisfy(\.isReadable))
     }
 
     /// 읽지 못한 같은 모양은 여전히 믿을 수 없다 (키가 없어서가 아니라 `decisions`가 `unavailable`이라서)
