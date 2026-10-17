@@ -120,7 +120,7 @@ struct BridgeSecretLifetimeTests {
         let created = try await S.open(h)
         #expect(await S.submit(h, S.answer(created, value: S.canary())) == .sent)
         let record = BridgeTest.command(kind: "answer", task: created.taskID)
-        await h.secrets.noteAnswerCommandSeen(record.commandID) // 목록에 나와 이 Mac이 처음 본 뒤에 거절한다
+        await h.secrets.noteAnswerCommandSeen(record.commandID, taskID: created.taskID) // 목록에 나와 이 Mac이 처음 본 뒤에 거절한다
         await h.runtime.refuseUnknownPayload(record: record, why: "unknown_payload")
         #expect(await h.secrets.hasPending == false)
     }

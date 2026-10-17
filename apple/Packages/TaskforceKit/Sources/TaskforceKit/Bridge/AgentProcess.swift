@@ -430,8 +430,9 @@ public actor LocalSecretAnswers: CustomReflectable, CustomStringConvertible {
     private struct Entry {
         let box: LocalAnswerBox
         let storedAt: Date
-        /// 이 값이 놓인 차례 (`putCount`): 시계가 아니라 순서로 "이 명령이 처음 보이기 전에 둔 값"을 가른다
-        let generation: Int
+        /// 이 값이 놓인 차례 (`putCount`): 시계가 아니라 순서로 "이 명령이 처음 보이기 전에 둔 값"을 가른다.
+        /// 서버가 `duplicate`로 이미 있는 명령에 귀속시킨 값은 그 명령의 기준으로 낮춘다 (`bindToExistingAnswerCommand`)
+        var generation: Int
     }
 
     private var values: [LocalSecretKey: Entry] = [:]
@@ -439,7 +440,7 @@ public actor LocalSecretAnswers: CustomReflectable, CustomStringConvertible {
     private var putCount = 0
     /// 답 명령 id → 그 명령을 이 프로세스가 처음 봤을 때의 `putCount`. 그 명령의 제출은 명령이 만들어지기 **전에** 값을 뒀으므로(put → POST → 서버가 명령을 만든다) 그 값의 차례는 이 수 이하다.
     /// 정산된 명령의 값을 정확히 가르는 열쇠다 (서버 `step_id`는 lease 응답에만 오고 결과 확인 목록에는 없다). 메모리에만 있고 id와 수뿐이다
-    private var commandSeenAt: [String: Int] = [:]
+    private var commandSeenAt: [String: (taskID: String, mark: Int)] = [:]
     private static let maxTrackedCommands = 512
     private var onChange: (@Sendable (Bool) -> Void)?
 
@@ -460,9 +461,18 @@ public actor LocalSecretAnswers: CustomReflectable, CustomStringConvertible {
     }
 
     /// 답 명령을 이 프로세스가 처음 봤다 (목록에 나왔다). 이미 봤으면 그대로 둔다: 다시 목록에 나와도 기준은 처음 본 때다
-    public func noteAnswerCommandSeen(_ commandID: String) {
+    public func noteAnswerCommandSeen(_ commandID: String, taskID: String) {
         if commandSeenAt.count >= Self.maxTrackedCommands { commandSeenAt.removeAll() } // 넘치면 기준을 잃을 뿐이다: 값은 보관 정리 · TTL이 맡는다
-        if commandSeenAt[commandID] == nil { commandSeenAt[commandID] = putCount }
+        if commandSeenAt[commandID] == nil { commandSeenAt[commandID] = (taskID.lowercased(), putCount) }
+    }
+
+    /// 서버가 `duplicate`로 답했다: 이 값은 그 (task, request)에 **이미 있는** 답 명령에 귀속된다 (새 명령이 아니다). 그 task에서 아직 정산되지 않은 명령의 기준(가장 늦게 본 것)보다 늦은 차례면
+    /// 그 기준으로 낮춰, 그 명령이 정산될 때 함께 버려지게 한다. 명령을 아직 본 적 없으면 그대로 둔다: 처음 볼 때의 기준이 이 값을 덮는다.
+    /// (`answered`는 새 명령이다: 늦은 차례를 그대로 둬, 복원 뒤 새 제출이 옛 명령의 정산에 지워지지 않게 한다)
+    public func bindToExistingAnswerCommand(_ key: LocalSecretKey) {
+        guard var entry = values[key], let mark = commandSeenAt.values.filter({ $0.taskID == key.taskID }).map(\.mark).max(), mark < entry.generation else { return }
+        entry.generation = mark
+        values[key] = entry
     }
 
     /// 그 명령을 끝까지 다뤘다 (값을 가르는 일이 더는 없다)
@@ -474,7 +484,7 @@ public actor LocalSecretAnswers: CustomReflectable, CustomStringConvertible {
     /// 처음 본 기록이 없으면(이 프로세스가 보지 못한 명령) 아무것도 버리지 않는다. 버린 수
     @discardableResult
     public func discard(taskID: String, settledCommand commandID: String) -> Int {
-        guard let mark = commandSeenAt.removeValue(forKey: commandID) else { return 0 }
+        guard let mark = commandSeenAt.removeValue(forKey: commandID)?.mark else { return 0 }
         let task = taskID.lowercased()
         let keys = values.filter { $0.key.taskID == task && $0.value.generation <= mark }.map(\.key)
         for key in keys { values.removeValue(forKey: key) }

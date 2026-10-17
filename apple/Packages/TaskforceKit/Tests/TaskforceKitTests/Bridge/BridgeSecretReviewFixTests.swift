@@ -84,9 +84,9 @@ struct BridgeSecretReviewFixTests {
         func prepare(_ h: BridgeHarness) async {
             await h.secrets.put(key: other, value: AgentAnswerValue(text: "v-other"))
             await h.secrets.put(key: settled, value: AgentAnswerValue(text: "v-r1"))
-            await h.secrets.noteAnswerCommandSeen("cmd")
+            await h.secrets.noteAnswerCommandSeen("cmd", taskID: task)
             await h.secrets.put(key: newer, value: AgentAnswerValue(text: "v-r2"))
-            await h.secrets.noteAnswerCommandSeen("cmd") // 다시 목록에 나와도 기준은 처음 본 때다 (새 값은 그 뒤)
+            await h.secrets.noteAnswerCommandSeen("cmd", taskID: task) // 다시 목록에 나와도 기준은 처음 본 때다 (새 값은 그 뒤)
         }
         func state(_ h: BridgeHarness) async -> [Bool] { await [h.secrets.contains(key: settled), h.secrets.contains(key: newer), h.secrets.contains(key: other)] }
         // 받았다 · 모른다 · message 명령 · 처음 본 적 없는 명령: 값을 건드리지 않는다

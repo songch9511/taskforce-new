@@ -185,7 +185,7 @@ extension BridgeRuntime {
             return .ignored
         }
         // 비밀값 정산의 기준: 답 명령을 처음 본 때 (그 제출의 값은 명령이 만들어지기 전에 놓였다, OA D4b-m-2)
-        if item.kind == .answer { await secrets.noteAnswerCommandSeen(item.id) }
+        if item.kind == .answer { await secrets.noteAnswerCommandSeen(item.id, taskID: item.agentTaskID) }
         // 모르는 kind: lease하지 않고 실행하지 않는다 (추측 실행 금지, 아키텍처 9.2 · D2a 3.4)
         if case .unknown = item.kind { return await declineUnknownKind(item, existing: existing, reason: reason, wakeAt: wakeAt, listedAt: listedAt) }
 

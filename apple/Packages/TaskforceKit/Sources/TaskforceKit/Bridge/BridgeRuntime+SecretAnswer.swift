@@ -92,6 +92,8 @@ extension BridgeRuntime {
         }
         let reply = Self.reply(for: result)
         log.log("secret_answer_post", ["result": .code(Self.code(of: reply))])
+        // `duplicate`: 이 값은 이미 있는 답 명령에 귀속된다 → 그 명령의 정산 범위에 든다 (`answered`는 새 명령이라 늦은 차례 그대로)
+        if reply == .duplicate { await secrets.bindToExistingAnswerCommand(key) }
         return reply
     }
 
