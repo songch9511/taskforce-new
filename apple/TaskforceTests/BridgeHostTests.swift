@@ -71,18 +71,20 @@ final class HostFixture {
     private let wake: (any BridgeWakeSource)?
     private let connectAtStart: String?
     private let workspaces: ProjectWorkspaces?
+    private let terminalDirectory: URL?
     /// 런타임을 만들기 전에 시험이 끼어드는 자리 (원장을 여는 동안 계정이 바뀌는 경쟁)
     var onFactory: (@MainActor () async -> Void)?
 
     init(
         enabled: Bool = true, user: UUID? = UUID(), agent: FakeAgentProcess? = nil, server: FakeBridgeServer? = nil, root: URL? = nil, credentials: InMemoryBridgeCredentialStore? = nil,
-        wake: (any BridgeWakeSource)? = nil, connectAtStart: String? = nil, workspaces: ProjectWorkspaces? = nil
+        wake: (any BridgeWakeSource)? = nil, connectAtStart: String? = nil, workspaces: ProjectWorkspaces? = nil, terminalDirectory: URL? = nil
     ) {
         let clock = self.clock
         self.enabled = enabled
         self.wake = wake
         self.connectAtStart = connectAtStart
         self.workspaces = workspaces
+        self.terminalDirectory = terminalDirectory
         self.server = server ?? FakeBridgeServer(clock: { clock.now })
         self.root = root ?? FileManager.default.temporaryDirectory.appending(path: "bridge-host-\(UUID().uuidString)", directoryHint: .isDirectory)
         self.agent = agent ?? FakeAgentProcess(clock: clock.clock)
@@ -115,7 +117,8 @@ final class HostFixture {
                     credentials: credentials, adapters: [agent], clock: clock.clock, wake: wake, secrets: secrets, workspaces: workspaces?.resolver(for: partition) ?? HostWorkspaces(), onChange: onChange
                 )
             },
-            quitPrompt: prompt, reply: { [weak self] value in self?.replies.append(value) }, notificationCenter: center, workspaces: workspaces, connectAtStart: connectAtStart
+            quitPrompt: prompt, reply: { [weak self] value in self?.replies.append(value) }, notificationCenter: center, workspaces: workspaces, connectAtStart: connectAtStart,
+            terminalDirectory: terminalDirectory
         )
     }
 

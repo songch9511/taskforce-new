@@ -39,6 +39,8 @@ final class BridgeHost {
     let workspaces: ProjectWorkspaces?
     /// Debug 전용 (OA D4a2-10): 런타임을 시작한 직후 이 adapter로 `connect`를 한 번 부른다. Release는 늘 nil
     private let connectAtStart: String?
+    /// `Open in Terminal`의 `.command` 파일을 두는 폴더: 계정 삭제가 안의 파일을 지운다 (보안 F4). 없으면 지우지 않는다
+    private let terminalDirectory: URL?
 
     /// 파티션 id → 런타임. 계정이 떠난 뒤에도 살아 있는 턴이 있으면 남겨 둔다 (계속 감독하고 그 파티션 원장에만 기록, 네트워크 0 — Q5)
     private var entries: [String: Entry] = [:]
@@ -84,7 +86,7 @@ final class BridgeHost {
         enabled: Bool, apiBaseURL: URL, storageRoot: URL, credentials: any BridgeCredentialStore, currentUser: @escaping @MainActor () -> UUID?,
         epoch: @escaping @MainActor () -> Int = { 0 }, factory: @escaping RuntimeFactory, quitPrompt: any BridgeQuitPrompting,
         reply: @escaping @MainActor (Bool) -> Void, notificationCenter: NotificationCenter, hookServer: HookSocketServer? = nil, workspaces: ProjectWorkspaces? = nil,
-        connectAtStart: String? = nil
+        connectAtStart: String? = nil, terminalDirectory: URL? = nil
     ) {
         self.enabled = enabled
         self.apiBaseURL = apiBaseURL
@@ -99,6 +101,7 @@ final class BridgeHost {
         self.hookServer = hookServer
         self.workspaces = workspaces
         self.connectAtStart = connectAtStart
+        self.terminalDirectory = terminalDirectory
     }
 
     /// 앱이 시작할 때 한 번: 알림 구독 · 업데이트 재시작 정책 연결. 계정 확인은 `syncAccount`가 한다
@@ -327,6 +330,11 @@ final class BridgeHost {
             if activePartitionID == partition.id { activePartitionID = nil }
             notifyBusyIfChanged()
         }
+        // 로컬 잔여 (보안 F4): 등록부 캐시와 `.command` 파일(세션 id · 경로가 적힌다)도 계정과 함께 지운다. 파티션 폴더 삭제 뒤의 늦은 쓰기는 `persist`가 거절한다
+        workspaces?.forget(partition)
+        if let terminalDirectory {
+            await Task.detached(priority: .utility) { _ = AgentTerminalCommandStore(directory: terminalDirectory).removeAll() }.value
+        }
         return await BridgeStorage.deletePartition(partition, root: storageRoot, credentials: credentials, unterminatedProcesses: unterminated)
     }
 
@@ -413,7 +421,7 @@ final class BridgeHost {
                     let claudeCode = ClaudeCodeProcess(
                         sessionsRoot: partition.directory(in: root).appending(path: "claude-code", directoryHint: .isDirectory), hookServer: hookServer,
                         helpers: .inBundle(), locator: .standard(home: NSHomeDirectory()), log: BridgeOSLog(),
-                        protectedRoots: [support.appending(path: bundleID, directoryHint: .isDirectory), root]
+                        protectedRoots: ProjectWorkspaces.protectedRoots(support: support, bundleID: bundleID, root: root)
                     )
                     claudeCode.purgeLineageOfOtherBoots()
                     adapters = [claudeCode]
@@ -437,7 +445,7 @@ final class BridgeHost {
                 )
             },
             quitPrompt: BridgeQuitAlert(), reply: { NSApplication.shared.reply(toApplicationShouldTerminate: $0) }, notificationCenter: NSWorkspace.shared.notificationCenter,
-            hookServer: hookServer, workspaces: projectWorkspaces, connectAtStart: connectAtStart
+            hookServer: hookServer, workspaces: projectWorkspaces, connectAtStart: connectAtStart, terminalDirectory: AgentTerminalLauncherLive.commandDirectory()
         )
         scope.onLeft { Task { await host.syncAccount() } }
         host.follow(session)

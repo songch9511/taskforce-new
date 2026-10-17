@@ -230,14 +230,9 @@ struct AssistantWindowView: View {
         Button(ChatCopy.tryAgain, action: action).buttonStyle(TFButtonStyle(.secondary, size: size))
     }
 
-    /// 보내기. 에이전트 대화의 첫 보내기 직전에는 작업 폴더를 먼저 묻는다 (OA D4a2-05): 취소하면 보내지 않고 글은 입력 칸에 그대로 둔다
+    /// 보내기. 에이전트 대화의 첫 보내기 직전의 작업 폴더 묻기와 그동안의 변경 확인은 런타임이 한다 (`ChatRuntime.sendFromWindow`)
     private func send() async {
-        let text = model.draft
-        guard model.canSend(text) else { return }
-        if model.toAgent {
-            guard await runtime.prepareAgentSend(conversationID: model.conversationID, hasSession: model.sessionID != nil, target: model.pick, chips: model.chips.chips) else { return }
-        }
-        await model.send(text)
+        await runtime.sendFromWindow(model)
     }
 
     // MARK: 입력 영역

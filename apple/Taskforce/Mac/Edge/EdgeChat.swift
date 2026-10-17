@@ -152,15 +152,33 @@ final class ChatRuntime {
 
     /// 에이전트 대화의 **첫 보내기 직전** 작업 폴더를 묻는다 (OA D4a2-05). `true`면 보내도 된다(묻지 않았거나, 골라서 등록했다). `false`면 보내지 않는다 —
     /// 폴더 창을 취소했거나 이미 묻는 중이다. 글은 입력 칸에 그대로 둔다. 묻는 조건은 `AgentWorkspaceGate`: 세션이 아직 없음 ∧ 대상이 이 Mac의 연결 ∧ 그 프로젝트에 폴더가 없음(Ungrouped는 그 대화가 고른 폴더가 없음)
-    func prepareAgentSend(conversationID: UUID, hasSession: Bool, target: AssistantTargetPick, chips: [AssistantChip]) async -> Bool {
+    /// `stillCurrent`: 보내려던 곳이 아직 그대로인가 (`AgentSendTicket`): 폴더를 기다리는 동안 바뀌면 `false`
+    func prepareAgentSend(
+        conversationID: UUID, hasSession: Bool, target: AssistantTargetPick, chips: [AssistantChip], stillCurrent: @MainActor () -> Bool = { true }
+    ) async -> Bool {
         guard !isAskingWorkspace else { return false }
         guard target.isAgent, !hasSession, let asking = workspaceAsking() else { return true }
         isAskingWorkspace = true
         let gate = AgentWorkspaceSendGate(folders: asking.folders, picker: workspacePicker, isThisMac: asking.isThisMac)
         let projects = AgentWorkspaceGate.projects(chips: chips, index: contexts?.index)
-        let outcome = await gate.prepare(conversationID: conversationID, hasSession: hasSession, target: target, projects: projects)
+        let outcome = await gate.prepare(conversationID: conversationID, hasSession: hasSession, target: target, projects: projects, stillCurrent: stillCurrent)
         isAskingWorkspace = false
         return outcome == .proceed
+    }
+
+    /// Assistant 창의 보내기 (OA D4a2-05 · Astra P2-2). 에이전트 대화의 첫 보내기 직전에는 작업 폴더를 먼저 묻는다: 취소하면 보내지 않고 글은 입력 칸에 그대로 둔다.
+    /// 묻는 동안 계정 · 창 · 대화 · 대상 · 칩 · 초안이 바뀌면 (`AgentSendTicket`) 등록도 전송도 하지 않고 초안도 지우지 않는다 — 폴더 창을 기다린 뒤 다른 대화로 보내지 않게
+    func sendFromWindow(_ model: AssistantWindowModel) async {
+        let text = model.draft
+        guard model.canSend(text) else { return }
+        if model.toAgent {
+            let ticket = model.sendTicket(account: scope.token)
+            let unchanged: @MainActor () -> Bool = { [scope] in model.sendTicket(account: scope.token) == ticket }
+            guard await prepareAgentSend(
+                conversationID: model.conversationID, hasSession: model.sessionID != nil, target: model.pick, chips: model.chips.chips, stillCurrent: unchanged
+            ), unchanged() else { return }
+        }
+        await model.send(text)
     }
 
     /// 잠자기: 자는 동안 전달 읽기 · 세션 읽기 5초 시계가 멈추고, 깨면 한 번 읽는다 (OA D4a-10 · U2-35). 세션 패널이 켜진 구성은 컨트롤러가 U2 저장소를 따로 잇는다

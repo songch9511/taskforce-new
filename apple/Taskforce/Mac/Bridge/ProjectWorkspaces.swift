@@ -36,11 +36,20 @@ final class ProjectWorkspaces: @unchecked Sendable {
         self.connectionBridgeID = connectionBridgeID
     }
 
+    /// 작업 폴더로 받지 않고 Edit/Write도 막는 앱 폴더 (OA D4a2-03 · 코디네이터 13.11 · 보안 F2): 앱 데이터 폴더 · 파티션 뿌리 · **앱 번들**(`Contents/Helpers`의 훅 · 지킴이 — 에이전트가 바꾸면 게이트를 영구히 우회한다).
+    /// 번들이 `/Applications` 밖(예: 내려받은 폴더)에 있어도 그 번들을 품은 폴더를 고를 수 없다. 폴더 규칙(`denyAround`)과 adapter(`protectedRealPaths`)가 이 한 목록을 함께 쓴다 — 두 곳이 어긋나지 않게
+    static func protectedRoots(support: URL, bundleID: String, root: URL, bundleURL: URL = Bundle.main.bundleURL) -> [URL] {
+        [
+            support.appending(path: bundleID, directoryHint: .isDirectory), root,
+            URL(fileURLWithPath: GateFileSystem.realpath(bundleURL.path) ?? bundleURL.path, isDirectory: true),
+        ]
+    }
+
     /// 실제 앱 연결: 서버 읽기는 RLS(`TaskforceReads` · `LiveContextGateway`), 이 Mac의 bridge id는 활성 런타임이 안다
     static func live(services: AppServices, root: URL, support: URL, bundleID: String) -> ProjectWorkspaces {
         let supabase = services.supabase
         return ProjectWorkspaces(
-            root: root, home: NSHomeDirectory(), protectedRoots: [support.appending(path: bundleID, directoryHint: .isDirectory), root],
+            root: root, home: NSHomeDirectory(), protectedRoots: protectedRoots(support: support, bundleID: bundleID, root: root),
             sessions: services.reads, contexts: LiveContextGateway(services: services),
             localBridgeID: {
                 guard let runtime = await MainActor.run(body: { BridgeHost.shared?.activeRuntime }) else { return nil }
@@ -65,6 +74,11 @@ final class ProjectWorkspaces: @unchecked Sendable {
             cache[partition.id] = registry
             return registry
         }
+    }
+
+    /// 계정 삭제 뒤 그 파티션의 등록부 캐시를 비운다 (보안 F4): 지워진 파티션의 등록부 객체를 화면 · resolver가 다시 만나지 않게. 늦게 오는 쓰기는 파티션 폴더가 없으면 `persist`가 거절한다
+    func forget(_ partition: BridgePartition) {
+        registries.withLock { $0[partition.id] = nil }
     }
 
     /// 런타임에 넣는 resolver (Release · Debug 둘 다)

@@ -61,6 +61,11 @@ struct ProjectWorkspacesTests {
         func folder(_ name: String) -> String { home + "/Documents/" + name }
         func real(_ name: String) -> String { GateFileSystem.realpath(folder(name)) ?? folder(name) }
         func cleanup() { try? FileManager.default.removeItem(at: temp) }
+
+        /// 파티션 폴더는 원장이 연다 (등록부는 만들지 않는다, 보안 F4): 원장 없이 등록부만 쓰는 시험이 대신 연다
+        func openPartition(_ partition: BridgePartition) throws {
+            try FileManager.default.createDirectory(at: partition.directory(in: root), withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        }
     }
 
     private func partition(_ id: UUID = UUID()) -> BridgePartition { BridgePartition(apiOrigin: "http://localhost:3000", userID: id) }
@@ -72,6 +77,7 @@ struct ProjectWorkspacesTests {
         defer { rig.cleanup() }
         let one = partition()
         let two = partition()
+        try rig.openPartition(one)
         let registry = rig.workspaces.registry(for: one)
         #expect(rig.workspaces.registry(for: one) === registry, "런타임(resolver)과 화면이 같은 등록부를 본다")
         #expect(rig.workspaces.registry(for: two) !== registry)
@@ -117,6 +123,7 @@ struct ProjectWorkspacesTests {
         let rig = try Rig()
         defer { rig.cleanup() }
         let p = partition()
+        try rig.openPartition(p)
         let project = UUID()
         let action = UUID()
         let sessionUUID = try #require(UUID(uuidString: Self.session))
@@ -141,6 +148,7 @@ struct ProjectWorkspacesTests {
         defer { fixture.cleanup() }
         let userID = try #require(fixture.user.value)
         let p = BridgePartition(apiBaseURL: fixture.server.baseURL, userID: userID)
+        try rig.openPartition(p)
         let registry = rig.workspaces.registry(for: p)
         try registry.pin(session: Self.session, to: rig.folder("client-a"))
         fixture.agent.setScript(FakeAgentProcess.Script([.sessionBound(external: "ext-1", workspace: rig.real("client-a")), .accepted, .turnCompleted, .end(AgentExit(code: 0))]))
@@ -152,7 +160,8 @@ struct ProjectWorkspacesTests {
         #expect(await fixture.eventually { fixture.agent.startedTurns.count == 1 })
         #expect(fixture.agent.startedTurns.first?.workspaceRef == rig.real("client-a"), "adapter는 경로를 받는다")
         #expect(await fixture.eventually { fixture.server.taskState(created.taskID) == "idle" })
-        let ref = try #require(fixture.server.sessionState(Self.session)?.workspaceRef)
+        let wireRef = try #require(fixture.server.sessionState(Self.session)?.workspaceRef)
+        let ref = try #require(VirtualWorkspacePaths.ref(fromVirtualRoot: wireRef), "서버에는 가상 루트 `/taskforce/<ws_id>`가 간다: \(wireRef)")
         #expect(WorkspaceRegistry.isOpaqueRef(ref) && registry.path(forRef: ref) == rig.real("client-a"))
         let wire = fixture.server.requests.map(\.bodyJSON).joined(separator: "\n")
         for needle in [rig.home, "client-a", "/private/var", "/Users/"] { #expect(!wire.contains(needle), "서버 본문에 \(needle)가 있다") }
@@ -172,6 +181,7 @@ struct ProjectWorkspacesTests {
         let userID = try #require(fixture.user.value)
         let p = BridgePartition(apiBaseURL: fixture.server.baseURL, userID: userID)
         // 이 호스트의 저장 뿌리는 시험 뿌리와 다르다: 등록부를 호스트 뿌리의 파티션에 만들어 계정 삭제가 지우는지 본다
+        try FileManager.default.createDirectory(at: p.directory(in: fixture.root), withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         let hostRegistry = WorkspaceRegistry(file: p.directory(in: fixture.root).appending(path: WorkspaceRegistry.fileName), rules: WorkspaceFolderRules(home: rig.home, systemRoots: []))
         try hostRegistry.setFolder(rig.folder("client-b"), forProject: UUID())
         #expect(FileManager.default.fileExists(atPath: hostRegistry.file.path))

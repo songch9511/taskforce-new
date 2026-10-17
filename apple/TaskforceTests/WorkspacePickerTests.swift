@@ -56,6 +56,8 @@ struct WorkspacePickerTests {
         let temp = FileManager.default.temporaryDirectory.appending(path: "workspace-picker-\(UUID().uuidString)", directoryHint: .isDirectory)
         let home = temp.appending(path: "home").path
         for name in ["client-a", "client-b"] { try FileManager.default.createDirectory(atPath: home + "/Documents/" + name, withIntermediateDirectories: true) }
+        // 파티션 폴더는 원장이 연다 (등록부는 만들지 않는다, 보안 F4)
+        try FileManager.default.createDirectory(at: temp.appending(path: "p"), withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         let registry = WorkspaceRegistry(file: temp.appending(path: "p/workspaces.json"), rules: WorkspaceFolderRules(home: home, systemRoots: []))
         let account = try AppChatAccount.make()
         let runtime = ChatRuntime(gateway: AgentChatSampleGateway(), contextGateway: IssueSampleContextGateway(), scope: account.scope, now: { Date() }, issueScreens: true)
