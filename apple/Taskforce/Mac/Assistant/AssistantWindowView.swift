@@ -233,8 +233,14 @@ struct AssistantWindowView: View {
     // MARK: 입력 영역
 
     private var footer: some View {
-        // 질문 · 확인 카드 자리는 프롬프트 박스 바로 위 (D4b-m · D4c-3m). 지금은 프롬프트 박스뿐
+        // 질문 카드(D4b-m-1)와 확인 카드(D4c-3m) 자리는 프롬프트 박스 바로 위. 질문은 이 대화의 세션에서만 답한다 (Review에는 없다)
         VStack(spacing: TFSpace.sm) {
+            if let questions = runtime.questions, let session = model.sessionID {
+                EdgeQuestionCardHost(
+                    questions: questions, chat: chat, sessionID: session, conversationID: model.conversationID,
+                    maxHeight: AssistantWindowGeometry.maxHeight * QuestionCard.maxHeightShare
+                )
+            }
             PromptBox(
                 text: Binding(get: { model.draft }, set: { model.setDraft($0) }),
                 placeholder: model.placeholder,

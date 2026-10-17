@@ -171,6 +171,8 @@ final class AssistantWindowManager {
             )
             // 에이전트 대화의 Stop · 세션 읽기 (OA D4a-13): 실제 연결이 세션 route를 알 때만 있다
             if let sessions = runtime.agentTurns { model.agent = AssistantAgentSupport(stop: runtime.stop, sessions: sessions) }
+            // 이 대화의 세션에 열린 질문 (OA D4b-m-1): 카드와 composer 막기가 같은 상태를 본다
+            model.questions = runtime.questions
             // 열 때 패널에 열린 항목이 있으면 그것이 auto 칩이다
             model.followOpenItem(shell.openItem.map(Self.chip(for:)))
             let controller = AssistantWindowController(
@@ -247,6 +249,19 @@ final class AssistantWindowManager {
         shell.assistantWindowFront = registry.frontmost != nil
     }
 
+    /// 그 세션의 질문 카드가 지금 키 표면에 보이나 (알림을 보내지 않는 조건, OA D4b-m-1): 그 세션의 대화를 보이는 창이 키 창이고 앱이 앞에 있다
+    func isShowing(session: UUID) -> Bool {
+        guard NSApp.isActive else { return false }
+        return controllers.values.contains { $0.panel.isVisible && $0.panel.isKeyWindow && $0.model.sessionID == session }
+    }
+
+    /// 그 대화를 보이는 창으로 간다: 이미 있으면 앞으로, 없으면 연다. 카드로 포커스를 옮기라고 알린다 (알림 누름 · 링, D4bm-63)
+    func showQuestion(session: UUID, conversation: UUID) {
+        guard let id = openWindow(for: conversation) else { return }
+        runtime.questions?.requestFocus(session: session)
+        controllers[id]?.panel.makeKey()
+    }
+
     // MARK: 키
 
     /// Assistant 창이 키 창일 때 듣는 키
@@ -295,6 +310,8 @@ final class AssistantWindowManager {
             close(id)
         case .escape:
             let composing = (controller.panel.firstResponder as? NSTextView)?.hasMarkedText() == true
+            // 질문 카드가 먼저다 (OA D4b-m-1, D4bm-33): Other 입력 칸이면 줄로 되돌리고, 보류 중이고 카드에 포커스가 있으면 Undo. 조합 중인 Esc는 조합을 취소하는 것이라 지나간다
+            if !composing, !controller.targetMenu.isOpen, let session = controller.model.sessionID, runtime.questions?.escape(session: session) == true { return true }
             switch Self.escapeStep(menuOpen: controller.targetMenu.isOpen, composing: composing, leaveInner: { controller.model.escapeInner() }) {
             case .closeMenu:
                 controller.targetMenu.dismiss()

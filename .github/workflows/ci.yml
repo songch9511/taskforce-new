@@ -95,10 +95,22 @@ jobs:
             -destination 'platform=macOS' \
             -derivedDataPath "$RUNNER_TEMP/DerivedData" \
             BUNDLE_ID_PREFIX=dev.taskforcelabs > "$RUNNER_TEMP/unsafe-host.log" 2>&1; then
+            cat "$RUNNER_TEMP/unsafe-host.log"
             echo "실사용 번들 ID로 테스트 호스트가 빌드됐다. 거부돼야 한다."
             exit 1
           fi
-          grep -q "테스트 호스트가 실사용 앱과 같은 ID입니다" "$RUNNER_TEMP/unsafe-host.log"
+          if ! grep -q "테스트 호스트가 실사용 앱과 같은 ID입니다" "$RUNNER_TEMP/unsafe-host.log"; then
+            cat "$RUNNER_TEMP/unsafe-host.log"
+            echo "기대한 실사용 앱 ID 거부 오류를 확인하지 못했습니다."
+            exit 1
+          fi
+      - name: Preserve test host rejection log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unsafe-host-log
+          path: ${{ runner.temp }}/unsafe-host.log
+          if-no-files-found: ignore
       - name: Build macOS
         run: >-
           xcodebuild build

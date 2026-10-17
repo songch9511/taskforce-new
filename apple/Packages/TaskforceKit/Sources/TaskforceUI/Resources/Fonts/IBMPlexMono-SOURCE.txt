@@ -1,0 +1,16 @@
+IBM Plex Mono Regular (400), Latin subset. Used only by Keycap (DS Keycap: IBM Plex Mono 11px).
+
+Design: IBM Plex Mono, Copyright 2017 IBM Corp. License: SIL Open Font License 1.1 (full text: IBMPlexMono-OFL.txt, copied unchanged from the package below).
+
+Origin (no network download was made for this file; copied from a local npm install):
+  package   @fontsource/ibm-plex-mono 5.3.0 (license field: OFL-1.1)
+  file      files/ibm-plex-mono-latin-400-normal.woff
+  woff sha256       328d50b6ece9ca25c46eea3e885ba497f6237f2fb84ef7b92f88e14a1a25e381
+  LICENSE sha256    23b0a9d0c6d3f140a0b77e483c5cfa6bba574325ef5cb189ed9f2fec4884533f
+
+Conversion: WOFF 1.0 -> sfnt (TrueType) by unwrapping the zlib-compressed tables unchanged (14 tables, no glyph or name edits).
+  IBMPlexMono-Regular.ttf sha256  01ca071138ce13e1a4e66adeda1de97cdb5f8d55a273cbd2365b60b497a5a05c
+  PostScript name IBMPlexMono-Regular, family "IBM Plex Mono".
+
+Glyph coverage is the Latin subset of the web build. Symbols outside it (for example the command and option signs) fall back to the system font.
+If the full upstream release is preferred, replace the .ttf with IBM Plex Mono Regular from https://github.com/IBM/plex and keep the file name.

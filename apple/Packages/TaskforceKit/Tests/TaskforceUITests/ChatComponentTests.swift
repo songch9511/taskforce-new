@@ -210,3 +210,47 @@ struct ComposerIMETests {
     }
 }
 #endif
+
+/// Composer의 막힘 (OA D4b-m-1, DS Composer "Blocked"): 비밀값 질문이 위에 열려 있다
+struct ComposerBlockedTests {
+    @Test func aBlockedComposerCannotSendAndItsFieldIsOff() {
+        #expect(!Composer.canSend(text: "Hello", isDisabled: false, isSending: false, blocked: ""), "여기 쓴 글이 비밀값의 답이 되는 길이 없다")
+        #expect(Composer.canSend(text: "Hello", isDisabled: false, isSending: false, blocked: nil))
+        #expect(!Composer.fieldEnabled(isDisabled: false, blocked: "") && Composer.fieldEnabled(isDisabled: false, blocked: nil) && !Composer.fieldEnabled(isDisabled: true, blocked: nil))
+    }
+
+    @Test func theBlockedPlaceholderIsTheStandardWordsUnlessAnotherIsGiven() {
+        #expect(Composer.placeholder(base: "Message Claude Code", blocked: nil) == "Message Claude Code")
+        #expect(Composer.placeholder(base: "Message Claude Code", blocked: "") == "Answer the question above first")
+        #expect(Composer.placeholder(base: "Message Claude Code", blocked: "Wait for the token") == "Wait for the token")
+    }
+
+    @Test func theCircleIsQuietWhenBlockedButStopStaysAvailableWhileAnAgentRuns() {
+        #expect(Composer.circleIsQuiet(blocked: "", running: false))
+        #expect(!Composer.circleIsQuiet(blocked: "", running: true), "Stop은 막힘과 상관없이 쓸 수 있다")
+        #expect(!Composer.circleIsQuiet(blocked: nil, running: false))
+        #expect(Composer.sendLabel(running: true, isSending: false) == "Stop new steps")
+    }
+}
+
+
+/// PromptBox의 보내기 원 (OA D4b-m-1, DS PromptBox "Blocked" · "Running"): 비밀값 질문으로 막혀도 에이전트가 실행 중이면 Stop은 살아 있다
+struct PromptBoxBlockedTests {
+    @Test func stopDrawsLiveWhileBlockedAndRunning() {
+        #expect(!PromptBox.circleIsQuiet(blocked: true, running: true), "막힘 + 실행 중: Stop은 조용한 모양이 아니다")
+        #expect(!PromptBox.circleIsQuiet(blocked: false, running: true))
+    }
+
+    @Test func blockedAndNotRunningStaysQuiet() {
+        #expect(PromptBox.circleIsQuiet(blocked: true, running: false), "막힘 + 멈춤: bg/selected 원 + 회색 화살표")
+        #expect(!PromptBox.circleIsQuiet(blocked: false, running: false), "막히지 않으면 조용한 모양이 아니다 (보낼 수 없으면 35%로 흐려질 뿐)")
+    }
+
+    @Test func theSameRuleAsTheComposerCircle() {
+        for blocked in [false, true] {
+            for running in [false, true] {
+                #expect(PromptBox.circleIsQuiet(blocked: blocked, running: running) == Composer.circleIsQuiet(blocked: blocked ? "" : nil, running: running))
+            }
+        }
+    }
+}
