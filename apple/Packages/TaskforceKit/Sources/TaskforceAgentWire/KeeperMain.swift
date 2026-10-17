@@ -249,15 +249,19 @@ public enum KeeperMembers {
         public var responsiblePID: @Sendable (pid_t) -> ProcessLookup<pid_t>
         /// nil이면 unique id 변형이 없다
         public var responsibleUniqueID: (@Sendable (pid_t) -> ProcessLookup<UInt64>)?
+        /// 21장: 그 pid의 지금 프로세스 unique id만 (세대 조회와 달리 다른 사용자의 프로세스 — launchd — 도 읽힌다)
+        public var uniqueID: @Sendable (pid_t) -> ProcessLookup<UInt64>
 
         public init(
             listing: @escaping @Sendable () -> [ListedProcess]?, generation: @escaping @Sendable (pid_t) -> ProcessLookup<ProcessGeneration>,
-            responsiblePID: @escaping @Sendable (pid_t) -> ProcessLookup<pid_t>, responsibleUniqueID: (@Sendable (pid_t) -> ProcessLookup<UInt64>)?
+            responsiblePID: @escaping @Sendable (pid_t) -> ProcessLookup<pid_t>, responsibleUniqueID: (@Sendable (pid_t) -> ProcessLookup<UInt64>)?,
+            uniqueID: @escaping @Sendable (pid_t) -> ProcessLookup<UInt64> = { AgentProcesses.uniqueID(pid: $0) }
         ) {
             self.listing = listing
             self.generation = generation
             self.responsiblePID = responsiblePID
             self.responsibleUniqueID = responsibleUniqueID
+            self.uniqueID = uniqueID
         }
 
         public static var live: Lookups {
@@ -309,11 +313,8 @@ public enum KeeperMembers {
             switch lookups.generation(entry.pid) {
             case .present(let read): generation = read
             case .gone:
-                // 14장 6: 지킴이 뒤에 시작해 목록과 조회 사이에 끝났다 (fork 사슬이 그 사이에 목록에 없는 자식을 남겼을 수 있다).
-                // 18 · 19 · 20장: 추적 중이 아니고, 목록의 부모 pid의 지금 프로세스가 지킴이보다 먼저 생겼고(unique id < 지킴이) 살아 있으며 구성원이 아니면 그 자식도 구성원일 수 없다.
-                // 자식 세대를 못 읽어 unique id로 잇지 못한다: 지킴이 전부터 살아 있는 프로세스는 스냅숏 때도 그 pid의 주인이었고, 구성원의 원래 부모(지킴이 · 구성원)가 끝난 뒤
-                // 그 pid를 다시 쓴 프로세스(`PT_DETACH`가 붙이는 곳)는 지킴이 뒤에 생겼다. 벽시계는 보지 않는다 (시계 후퇴)
-                if afterKeeper, !(untraced(entry.pid) && vanishedUnderUnrelatedParent(parentPID: entry.parentPID, keeperPID, keeperID, seen, lookups) { $0.own < keeperID }) {
+                // 14장 6: 지킴이 뒤에 시작해 목록과 조회 사이에 끝났다 (fork 사슬이 그 사이에 목록에 없는 자식을 남겼을 수 있다). 부모가 무관함을 증명할 때만 아니다 (21장)
+                if afterKeeper, !excusedByParent(entry, child: nil, untraced: untraced(entry.pid), keeperPID, keeperID, seen, lookups) {
                     complete = false
                 }
                 continue
@@ -322,13 +323,8 @@ public enum KeeperMembers {
                 continue
             }
             guard generation.uid == uid, generation.own > keeperID else { continue }
-            /// 책임 조회에서 사라졌거나 조회 때 좀비다: 추적 중이 아니고(19장) 읽은 세대의 부모(unique id)가 지금 같은 프로세스로 살아 있고 구성원이 아님을 증명하면 구성원일 수 없다 (18장).
-            /// 그 부모는 자식보다 먼저 생겼어야 한다 (20장: `PT_DETACH`가 재사용된 pid의 새 프로세스에 붙이고 exec이 부모 unique id를 그것으로 갱신해도, 그 프로세스는 자식 뒤에 생겼다)
-            let vanishedHarmlessly = {
-                untraced(entry.pid) && vanishedUnderUnrelatedParent(parentPID: entry.parentPID, keeperPID, keeperID, seen, lookups) {
-                    $0.own == generation.parent && $0.own < generation.own
-                }
-            }
+            /// 책임 조회에서 사라졌거나 조회 때 좀비다: 부모가 무관함을 증명하면 구성원일 수 없다 (18장 · 21장)
+            let vanishedHarmlessly = { excusedByParent(entry, child: generation, untraced: untraced(entry.pid), keeperPID, keeperID, seen, lookups) }
             // 19.1: 지킴이 뒤에 생겨 목록에 있던 프로세스가 조회 때 좀비다 — 사라짐과 같다 (목록 뒤에 목록에 없는 자식을 남기고 끝났을 수 있고, launchd가 아직 거두지 않았다)
             if generation.zombie {
                 if !vanishedHarmlessly() { complete = false }
@@ -358,9 +354,10 @@ public enum KeeperMembers {
             }
             if member {
                 members.append(generation)
-            } else if selfResponsible, generation.parent > keeperID, seen.contains(generation.parent) || !unrelatedParent(of: generation, keeperPID, keeperID, lookups) {
-                // 14장 5 · 15장 3: 지킴이 뒤에 생긴 프로세스가 띄운 스스로 책임 프로세스 — 부모가 구성원이거나 · 사라졌거나 · 지킴이가 본 id면 구성원이 다시 disclaim해
-                // 띄웠을 수 있다. 부모가 살아 있고 그 책임 프로세스가 지킴이가 아니면 무관하다 (Claude 데스크톱 · Chrome native host 같은 다른 앱의 disclaim)
+            } else if selfResponsible,
+                      !excusedByParent(entry, child: generation, untraced: untraced(entry.pid), keeperPID, keeperID, seen, lookups, olderThanKeeperSuffices: true) {
+                // 14장 5 · 15장 3 · 21장: 지킴이 뒤에 생긴 스스로 책임 프로세스는 구성원이 다시 disclaim해 띄웠을 수 있다 — 부모가 무관함을 증명할 때만 아니다
+                // (Claude 데스크톱 · Chrome native host 같은 다른 앱의 disclaim, launchd가 띄운 앱 · XPC 서비스)
                 complete = false
             }
         }
@@ -372,24 +369,33 @@ public enum KeeperMembers {
         return Scan(members: members, complete: complete)
     }
 
-    /// 그 프로세스의 부모가 지금 같은 id로 살아 있고 그 책임 프로세스가 지킴이가 아님을 증명했다 (15장 3). 사라짐 · 다른 프로세스 · 좀비 · 조회 실패 · 책임 = 지킴이는 아니다.
-    /// 부모가 자식보다 뒤에 생겼으면(20장: detach가 붙인 재사용 pid의 프로세스로 exec이 갱신한 부모 id) 아니다
-    static func unrelatedParent(of child: ProcessGeneration, _ keeperPID: pid_t, _ keeperID: UInt64, _ lookups: Lookups) -> Bool {
-        guard child.parentPID > 1, case .present(let parent) = lookups.generation(child.parentPID), parent.own == child.parent, parent.own < child.own, !parent.zombie else {
-            return false
-        }
-        return responsibleIsNotKeeper(parent, keeperPID, keeperID, lookups)
-    }
-
-    /// 18장: 지킴이 뒤에 시작해 훑는 사이에 사라진 프로세스가 구성원일 수 없음을 그 부모로 증명했다. 책임 프로세스는 부모에게서 물려받고(disclaim이면 자기 자신)
-    /// 바뀌지 않으며 고아는 launchd로, detach는 원래 부모 pid의 지금 프로세스로만 옮겨진다 — 부모가 pid 1 · 지킴이가 아니고, 지금 살아 있는 그 프로세스가 원래 부모일 수밖에
-    /// 없으며(`isSameParent`: 20장의 unique id 순서, 좀비 아님), 그 책임 프로세스가 지킴이가 아니고, 지킴이가 본 구성원 id가 아니면 그 자식은 살아 있었어도 구성원이
-    /// 아니었다. 조회 하나라도 실패 · 사라짐 · 불일치면 증명하지 못한다
-    static func vanishedUnderUnrelatedParent(
-        parentPID: pid_t, _ keeperPID: pid_t, _ keeperID: UInt64, _ seen: Set<UInt64>, _ lookups: Lookups, isSameParent: (ProcessGeneration) -> Bool
+    /// 21장: 지킴이 뒤에 생긴 프로세스(자식)를 그 부모로 무시해도 되는가 — 부모를 근거로 쓰는 모든 길(세대 조회에서 사라짐 `.gone` · 좀비 · 책임 조회 중 사라짐 ·
+    /// 15장 3 스스로 책임)이 이것 하나를 거친다. 책임 프로세스는 부모에게서 물려받고(disclaim이면 자기 자신) 바뀌지 않으며, 부모는 고아가 되면 launchd로, 추적이면 tracer로,
+    /// detach면 원래 부모 pid의 지금 프로세스(재사용된 pid면 새 프로세스)로 바뀐다. 추적 중 exec은 부모 unique id를 그 tracer로 갱신한다 (XNU `kern_proc.c:2742–2758`).
+    /// 그래서 아래가 모두 증명돼야 부모를 근거로 쓴다 — 하나라도 아니면(조회 실패 · 사라짐 · 불일치 포함) 아니다:
+    /// 1. 추적 아님: 목록 행(`untraced`, 부른 쪽이 그 pid의 모든 행을 본다)과, 자식 세대를 읽었으면 그 조회 때의 표시
+    /// 2. 자식 세대를 읽었으면 목록 부모 pid의 지금 프로세스가 그 세대의 부모 unique id다 (목록 뒤 attach → exec · detach 뒤 남은 부모 id를 거른다)
+    /// 3. 부모 pid ≠ 1 · ≠ 지킴이, 살아 있고 좀비 아님, 책임 조회 앞뒤로 같은 unique id (19장 3, `responsibleIsNotKeeper`)
+    /// 4. 순서: 자식 세대를 읽었으면 부모 id < 자식 id, 못 읽었으면 부모 id < 지킴이 id (20장 — fork · spawn마다 전역 카운터로 늘어나고 exec에서 그대로다)
+    /// 5. 부모 책임 ≠ 지킴이 · 부모 id ∉ `seen`
+    /// - `olderThanKeeperSuffices`: 15장 3 — 1 · 2를 증명했고 세대의 부모 id < 지킴이 id면(지킴이보다 먼저 생긴 부모: 구성원이 다시 disclaim해 띄운 것이 아니다) 3–5 없이 된다.
+    ///   launchd가 띄운 앱 · XPC 서비스(부모 pid 1, 세대 조회는 다른 사용자라 실패)도 그렇게 가른다: 2는 unique id 조회로 본다
+    static func excusedByParent(
+        _ entry: ListedProcess, child: ProcessGeneration?, untraced: Bool, _ keeperPID: pid_t, _ keeperID: UInt64, _ seen: Set<UInt64>, _ lookups: Lookups,
+        olderThanKeeperSuffices: Bool = false
     ) -> Bool {
-        guard parentPID > 1, parentPID != keeperPID, case .present(let parent) = lookups.generation(parentPID), !parent.zombie, isSameParent(parent),
-              parent.own != keeperID, !seen.contains(parent.own) else { return false }
+        guard untraced, child?.traced != true else { return false }
+        if olderThanKeeperSuffices, let child, child.parent < keeperID {
+            guard case .present(let id) = lookups.uniqueID(entry.parentPID), id == child.parent else { return false }
+            return true
+        }
+        guard entry.parentPID > 1, entry.parentPID != keeperPID, case .present(let parent) = lookups.generation(entry.parentPID), !parent.zombie else { return false }
+        if let child {
+            guard parent.own == child.parent, parent.own < child.own else { return false }
+        } else {
+            guard parent.own < keeperID else { return false }
+        }
+        guard !seen.contains(parent.own) else { return false }
         return responsibleIsNotKeeper(parent, keeperPID, keeperID, lookups)
     }
 

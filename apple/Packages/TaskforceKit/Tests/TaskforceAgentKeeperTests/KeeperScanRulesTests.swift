@@ -15,6 +15,8 @@ struct KeeperScanRulesTests {
         var generations: [pid_t: ProcessLookup<ProcessGeneration>] = [:]
         var responsible: [pid_t: ProcessLookup<UInt64>] = [:]
         var responsiblePIDs: [pid_t: ProcessLookup<pid_t>] = [:]
+        /// unique id만 읽는 조회 (21장): 없으면 세대 조회의 값(있음 · 사라짐 · 실패)을 따른다. launchd처럼 세대는 못 읽고 id만 읽히는 프로세스를 여기에 둔다
+        var uniqueIDs: [pid_t: ProcessLookup<UInt64>] = [:]
         var next: pid_t = 900_001
 
         init() throws {
@@ -50,7 +52,16 @@ struct KeeperScanRulesTests {
                 listing: { self.entries },
                 generation: { pid in pid == self.me ? .present(self.own) : (self.generations[pid] ?? .gone) },
                 responsiblePID: { self.responsiblePIDs[$0] ?? .failed },
-                responsibleUniqueID: { self.responsible[$0] ?? .gone }
+                responsibleUniqueID: { self.responsible[$0] ?? .gone },
+                uniqueID: { pid in
+                    if let id = self.uniqueIDs[pid] { return id }
+                    if pid == self.me { return .present(self.own.own) }
+                    switch self.generations[pid] ?? .gone {
+                    case .present(let generation): return .present(generation.own)
+                    case .gone: return .gone
+                    case .failed: return .failed
+                    }
+                }
             )
         }
 
@@ -99,6 +110,8 @@ struct KeeperScanRulesTests {
     @Test func aSelfResponsibleProcessOfAnOlderParentOrAnotherResponsibleLeavesTheScanComplete() throws {
         let world = try World()
         let pid = world.next
+        // 지킴이 앞에 생긴 부모(pid 77)가 지금도 그 pid에 살아 있다 (21장: 목록 부모 pid의 지금 프로세스 = 세대의 부모 id)
+        world.uniqueIDs[77] = .present(world.own.own - 1)
         world.process(parentPID: 77, parentID: world.own.own - 1, responsibleID: world.own.own + UInt64(pid))
         world.process(parentPID: 78, parentID: world.own.own + 999_999, responsibleID: 12345)
         #expect(world.scan() == KeeperMembers.Scan(members: [], complete: true))

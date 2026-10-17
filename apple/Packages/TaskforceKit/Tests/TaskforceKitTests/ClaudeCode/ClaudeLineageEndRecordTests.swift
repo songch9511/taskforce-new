@@ -79,5 +79,45 @@ struct ClaudeLineageEndRecordTests {
         }
         #expect(misses == 0, "끝을 증명한 spawn인데 끝을 놓쳤다: \(misses) / \(reads)")
     }
+
+    /// 위와 같은 순서(끝 기록 → 지킴이 기록 지움)를 그 사이를 가장 짧게(이름 바꾸기 바로 뒤 지우기) 되풀이하고 읽는 쪽 둘이 쉬지 않고 읽는다:
+    /// 두 기록이 읽기 두 번 사이에 함께 바뀌어도 놓치지 않는다. `forget`은 그 사이에 혈통 파일도 지워 틈이 넓어, 부하가 낮으면 위 시험만으로는
+    /// 거꾸로 읽는 순서(끝 기록 먼저)를 드러내지 못했다 (21장 변이 E2)
+    @Test func aReaderNeverMissesTheEndWhenBothRecordsChangeBetweenItsTwoReads() throws {
+        let boot = try Self.boot()
+        let misses = Atomic<Int>(0)
+        let reads = Atomic<Int>(0)
+        let record = Data("taskforce-lineage 4\nboot \(boot)\nended\n".utf8)
+        for _ in 0..<2_000 {
+            let (file, first) = try recorded()
+            let keeperFile = ClaudeLineage.keeperFile(file)
+            #expect(KeeperRecord.write(keeperFile, keeperID: Self.keeper.uniqueID, boot: boot), "지킴이 끝 기록 (시험 전제)")
+            let ended = ClaudeLineage.endedFile(file)
+            let staged = ended.deletingLastPathComponent().appending(path: ".\(ended.lastPathComponent).staged")
+            try record.write(to: staged)
+            let second = ClaudeLineage(file: file)
+            let done = Atomic<Bool>(false)
+            let read = { (reader: ClaudeLineage) in
+                repeat {
+                    reads.add(1, ordering: .relaxed)
+                    if !reader.keeperRecorded() { misses.add(1, ordering: .relaxed) }
+                } while !done.load(ordering: .sequentiallyConsistent)
+            }
+            let helper = Thread { read(second) }
+            let writer = Thread {
+                usleep(UInt32.random(in: 0...50))
+                rename(staged.path, ended.path)
+                unlink(keeperFile.path)
+                done.store(true, ordering: .sequentiallyConsistent)
+            }
+            helper.start()
+            writer.start()
+            read(first)
+            while helper.isExecuting || !helper.isFinished { usleep(50) }
+            if !first.keeperRecorded() { misses.add(1, ordering: .relaxed) }
+        }
+        let missed = misses.load(ordering: .relaxed)
+        #expect(missed == 0, "끝을 증명한 spawn인데 끝을 놓쳤다: \(missed) / \(reads.load(ordering: .relaxed))")
+    }
 }
 #endif

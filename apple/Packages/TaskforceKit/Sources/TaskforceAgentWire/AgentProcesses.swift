@@ -30,9 +30,12 @@ public struct ProcessGeneration: Equatable, Sendable {
     public let parent: UInt64
     /// 커널 idversion (`p_idversion`): fork · exec마다 새로 매기는 번호 (15장 6: 부모가 그 뒤에 exec했는지 가른다)
     public let version: UInt32
+    /// 21장: 이 조회 때 추적 중이었다 (`pbi_flags`의 `PROC_FLAG_TRACED`: 커널이 `P_LTRACED`를 옮겨 적는다, XNU `proc_info.c` `proc_pidbsdinfo`)
+    public let traced: Bool
 
     public init(
-        pid: pid_t, startSeconds: UInt64, startMicros: UInt64, parentPID: pid_t, group: pid_t, uid: uid_t, zombie: Bool, own: UInt64, parent: UInt64, version: UInt32 = 0
+        pid: pid_t, startSeconds: UInt64, startMicros: UInt64, parentPID: pid_t, group: pid_t, uid: uid_t, zombie: Bool, own: UInt64, parent: UInt64, version: UInt32 = 0,
+        traced: Bool = false
     ) {
         self.pid = pid
         self.startSeconds = startSeconds
@@ -44,6 +47,7 @@ public struct ProcessGeneration: Equatable, Sendable {
         self.own = own
         self.parent = parent
         self.version = version
+        self.traced = traced
     }
 
     public var start: Date { Date(timeIntervalSince1970: TimeInterval(startSeconds) + TimeInterval(startMicros) / 1_000_000) }
@@ -124,8 +128,21 @@ public enum AgentProcesses {
         guard own > 1, info.pbi_pid == UInt32(bitPattern: pid) else { return .failed }
         return .present(ProcessGeneration(
             pid: pid, startSeconds: info.pbi_start_tvsec, startMicros: info.pbi_start_tvusec, parentPID: pid_t(bitPattern: info.pbi_ppid), group: pid_t(bitPattern: info.pbi_pgid),
-            uid: info.pbi_uid, zombie: info.pbi_status == UInt32(SZOMB), own: own, parent: parent, version: version
+            uid: info.pbi_uid, zombie: info.pbi_status == UInt32(SZOMB), own: own, parent: parent, version: version, traced: info.pbi_flags & UInt32(PROC_FLAG_TRACED) != 0
         ))
+    }
+
+    /// 그 pid의 지금 프로세스 unique id (21장): `proc_pidinfo(PROC_PIDUNIQIDENTIFIERINFO = 17)`의 `struct proc_uniqidentifierinfo`(사설 머리:
+    /// uuid 16 · uniqueid 8 · puniqueid 8 · idversion 4 · 예비 20 = 56바이트). 세대 조회(flavor 18)와 달리 다른 사용자의 프로세스(launchd)도 읽힌다.
+    /// 돌려준 크기가 맞을 때만 믿는다. 없는 pid(`ESRCH`)는 `gone`, 그 밖은 `failed`
+    public static func uniqueID(pid: pid_t) -> ProcessLookup<UInt64> {
+        guard pid > 0 else { return .failed }
+        var buffer = [UInt8](repeating: 0, count: 56)
+        errno = 0
+        let size = proc_pidinfo(pid, 17, 1, &buffer, 56)
+        guard size == 56 else { return size <= 0 && errno == ESRCH ? .gone : .failed }
+        let id = buffer.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: 16, as: UInt64.self) }
+        return id > 0 ? .present(id) : .failed
     }
 
     /// 이 사용자의 모든 프로세스 pid (`KERN_PROC_UID`). 읽지 못하면 nil
