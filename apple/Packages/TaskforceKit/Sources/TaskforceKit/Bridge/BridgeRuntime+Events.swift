@@ -17,8 +17,20 @@ extension BridgeRuntime {
             log.log("event_dropped", ["task": .id(taskID)])
             return
         }
+        // 답을 닫은 실행은 끝 사건만 받는다 (OA D3a 14장 2): 끝은 보통의 끝처럼 정산한다 (질문 대기 중의 끝 = 사건 0)
+        if current.endOnly {
+            if case .ended = event { await handleEnded(taskID: taskID, runID: runID) } else { log.log("event_dropped", ["task": .id(taskID)]) }
+            return
+        }
         let observed = at ?? clock.now()
+        // 앞에서 적지 못한 `inputReached`가 있으면 다시 적는다 (OA D3a Q5)
+        if current.inputReachedAt != nil { await applyInputReached(taskID: taskID) }
         switch event {
+        case .inputReached:
+            // 로컬 전용: 서버 사건 0 · 접수 신호 아님. 명령의 `inputAt`이 비어 있을 때만 적는다
+            if supervised[taskID]?.inputReachedAt == nil { supervised[taskID]?.inputReachedAt = observed }
+            await applyInputReached(taskID: taskID)
+            return
         case .ended:
             await handleEnded(taskID: taskID, runID: runID)
         case .sessionBound(let external, let workspace):
@@ -103,7 +115,14 @@ extension BridgeRuntime {
             // 서버 모양에 담을 수 없다: 보내면 dead-letter가 되어 턴이 영원히 멈춘다. 그 요청을 거절로 닫는다 (Q15)
             log.log("question_unrepresentable", ["task": .id(taskID), "why": .code(why)])
             guard let task = try? await ledger.task(taskID), let adapter = adapters[task.adapter] else { return }
-            try? await adapter.closeRequest(AgentRequestRef(taskID: taskID, sessionID: task.agentSessionID, requestID: question.providerRequestID, externalSessionID: task.externalSessionID, workspaceRef: task.workspaceRef))
+            let ref = AgentRequestRef(
+                taskID: taskID, sessionID: task.agentSessionID, requestID: question.providerRequestID, externalSessionID: task.externalSessionID, workspaceRef: task.workspaceRef
+            )
+            await closeRequest(adapter, ref) { error in
+                // 끝을 모르는 닫기 실행은 이 task의 고아로 둔다 (17장 5: 다른 닫기 실패와 같다)
+                log.log("adapter_close_failed", ["task": .id(taskID), "step": .code("unrepresentable")])
+                await keepUnproven(taskID: taskID, session: task.agentSessionID, adapter: adapter, identity: (error as? AgentStartError)?.left)
+            }
             _ = try? await ledger.updateTask(taskID) { if !$0.closedRequestIDs.contains(question.providerRequestID) { $0.closedRequestIDs.append(question.providerRequestID) } }
         }
     }
@@ -149,8 +168,22 @@ extension BridgeRuntime {
 
     // MARK: 프로세스 끝
 
+    /// `inputReached` 시각을 명령 `inputAt`에 바로 적는다 (비어 있을 때만). 시작 기록(`recordStarted`)은 adapter 정체 값이 없으면 이 값을 남긴다 (OA D3a 5.2),
+    /// 그래서 시작 기록 전에 init → 끝이 와도 `supervised`를 지우기 전에 적힌다 (8장 16). 원장 읽기 · 쓰기가 실패하면 다음 사건 · 끝남에서 다시 본다
+    func applyInputReached(taskID: String) async {
+        guard let at = supervised[taskID]?.inputReachedAt, let task = try? await ledger.task(taskID), let commandID = task.currentCommandID,
+              let command = try? await ledger.command(commandID) else { return }
+        guard command.inputAt == nil else {
+            supervised[taskID]?.inputReachedAt = nil
+            return
+        }
+        guard (try? await ledger.updateCommand(commandID) { if $0.inputAt == nil { $0.inputAt = at } }) != nil else { return }
+        supervised[taskID]?.inputReachedAt = nil
+    }
+
     func handleEnded(taskID: String, runID: UUID) async {
         guard supervised[taskID]?.runID == runID else { return }
+        if supervised[taskID]?.inputReachedAt != nil { await applyInputReached(taskID: taskID) }
         supervised[taskID] = nil
         let byUs = terminatedByUs.remove(taskID) != nil
         await finishEnded(taskID: taskID, byUs: byUs)
@@ -161,26 +194,41 @@ extension BridgeRuntime {
     func finishEnded(taskID: String, byUs: Bool) async {
         orphanLiveness[taskID] = nil
         guard let task = try? await ledger.task(taskID) else { return }
+        // 이 실행이 끝나도 그 세션의 지금 실행(잠금의 현재 spawn: 내부 닫기 등)이 끝을 증명하지 못했으면 `alive`를 지우지 않는다 (OA D3a 15장 1: 앞 실행의 끝으로 덮지 않는다)
+        var processEnded = true
+        if let adapter = adapters[task.adapter], let run = await currentRun(taskID: taskID, session: task.agentSessionID, adapter: adapter) {
+            switch run.liveness {
+            case .ended: break
+            case .alive:
+                processEnded = false
+                orphanLiveness[taskID] = .alive
+            case .unknown:
+                processEnded = false
+                orphanLiveness[taskID] = .unknown
+                log.log("run_end_unproven", ["task": .id(taskID)])
+            }
+        }
+        let stillAlive = !processEnded
         let command = if let id = task.currentCommandID { try? await ledger.command(id) } else { nil as BridgeCommandRecord? }
         let outcome = Reconcile.endedOutcome(task: task, hasAcceptSignal: command?.signalAt != nil, terminatedByUs: byUs)
         let now = clock.now()
         switch outcome {
         case .failedAgentError:
             await appendTaskEvent(taskID: taskID, body: .failed(.agentError), observed: now) {
-                $0.alive = false
+                $0.alive = stillAlive
                 $0.lastState = "failed"
                 $0.segmentTerminal = "failed"
             }
         case .cancelled:
             await appendTaskEvent(taskID: taskID, body: .cancelled, observed: now) {
-                $0.alive = false
+                $0.alive = stillAlive
                 $0.lastState = "cancelled"
                 $0.segmentTerminal = "cancelled"
             }
         case .nothing:
-            _ = try? await ledger.updateTask(taskID) { $0.alive = false }
+            break
         }
-        _ = try? await ledger.updateTask(taskID) { $0.alive = false }
+        _ = try? await ledger.updateTask(taskID) { $0.alive = stillAlive }
         if let commandID = task.currentCommandID {
             _ = try? await ledger.updateCommand(commandID) {
                 if ($0.state.rank ?? 0) < (BridgeCommandState.ended.rank ?? 7), !$0.state.isFinished {

@@ -11,6 +11,9 @@ enum BridgeFlag {
     static let infoKey = "TaskforceBridgeEnabled"
     static let argumentKey = "TF_BRIDGE"
     static let fakeAgentKey = "TF_BRIDGE_FAKE_AGENT"
+    /// Debug 전용 (OA D3a Q14): 실제 Claude Code adapter를 일회용 작업 폴더(`-TF_BRIDGE_WORKSPACE <path>`)로 띄운다 — R2(로컬 스택 ONE-TF) 확인용
+    static let realAgentKey = "TF_BRIDGE_REAL_AGENT"
+    static let workspaceKey = "TF_BRIDGE_WORKSPACE"
 
     /// 이 빌드·실행에서 켜졌나. `info`는 Info.plist 사전, `arguments`는 실행 인자 영역
     static func isEnabled(info: [String: Any]?, arguments: [String: Any], isDebugBuild: Bool) -> Bool {
@@ -24,9 +27,23 @@ enum BridgeFlag {
         isDebugBuild && truthy(arguments[fakeAgentKey]) && BridgeEndpointPolicy.isLoopback(apiBaseURL)
     }
 
+    /// Debug에서 실제 Claude Code adapter를 쓰나 (Release는 늘 false — Release는 인자와 상관없이 실제 adapter 하나뿐이다).
+    /// 서버 주소가 loopback일 때만: R2는 로컬 스택에서만 돌린다 (운영 서버 · 운영 플래그 0, 계약 4.7)
+    static func usesRealAgent(arguments: [String: Any], isDebugBuild: Bool, apiBaseURL: URL) -> Bool {
+        isDebugBuild && truthy(arguments[realAgentKey]) && BridgeEndpointPolicy.isLoopback(apiBaseURL)
+    }
+
+    /// Debug의 일회용 작업 폴더 인자 (Release는 늘 nil). 검사는 Debug 전용 resolver가 한다
+    static func disposableWorkspace(arguments: [String: Any], isDebugBuild: Bool) -> String? {
+        guard isDebugBuild, let value = (arguments[workspaceKey] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else { return nil }
+        return value
+    }
+
     static var current: Bool {
         isEnabled(info: Bundle.main.infoDictionary, arguments: argumentDomain, isDebugBuild: AppRuntime.isDebugBuild)
     }
+
+    static var currentArguments: [String: Any] { argumentDomain }
 
     static func currentUsesFakeAgent(apiBaseURL: URL) -> Bool {
         usesFakeAgent(arguments: argumentDomain, isDebugBuild: AppRuntime.isDebugBuild, apiBaseURL: apiBaseURL)

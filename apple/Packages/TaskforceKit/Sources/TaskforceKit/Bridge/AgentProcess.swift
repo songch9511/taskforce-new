@@ -116,6 +116,9 @@ public struct AgentQuestion: Sendable, Equatable {
 /// adapter가 내는 사건 (형태만). `ended`는 프로세스 종료 신호이고 서버로 가는 사건이 아니다
 public enum AgentEvent: Sendable, Equatable {
     case sessionBound(externalSessionID: String, workspaceRef: String?)
+    /// 입력이 CLI에 닿았다 (Claude Code `system/init`, OA D3a Q5). **로컬 전용**: 서버 사건이 아니고 접수 신호도 아니다.
+    /// 런타임은 명령의 `inputAt`이 비어 있으면 이 시각을 적고, 결과 확인에서 접수 신호 없이 끝난 명령을 `not_received`가 아니라 `unknown`으로 답한다 (계약 13.2 :519)
+    case inputReached
     /// 접수 신호. Claude Code는 진짜 첫 assistant 메시지(synthetic 제외), Codex는 `turn/started` (adapter가 정한다)
     case accepted
     case progress
@@ -199,11 +202,15 @@ public struct AgentAnswerDelivery: Sendable {
     public var structured: Bool
     /// 서버가 준 값이거나(비밀값이 아닐 때) 이 Mac의 메모리에서 가져온 값(`answered_locally`). 디스크에 쓰지 않는다
     public var value: AgentAnswerValue
+    /// 값이 이 Mac에서 답한 비밀값이다 (`answered_locally`, OA D3a 10장 7): adapter가 그 값을 가리개에 쌓는다 (앱이 다시 떠도)
+    public var answeredLocally: Bool
 
     public init(
         taskID: String, sessionID: String, turnSeq: Int, adapter: String, externalSessionID: String?, workspaceRef: String?, marker: String,
-        access: AgentAccess, policyMode: AgentPolicyMode, requestID: String, kind: BridgeV1PendingQuestionKind, structured: Bool, value: AgentAnswerValue
+        access: AgentAccess, policyMode: AgentPolicyMode, requestID: String, kind: BridgeV1PendingQuestionKind, structured: Bool, value: AgentAnswerValue,
+        answeredLocally: Bool = false
     ) {
+        self.answeredLocally = answeredLocally
         self.taskID = taskID
         self.sessionID = sessionID
         self.turnSeq = turnSeq
@@ -289,18 +296,47 @@ public enum AgentReadback: Sendable, Equatable {
     case unsupported
 }
 
-/// `startTurn`이 던지는 접수 전 실패: 아무것도 띄우지 않았다
+/// `startTurn`이 던지는 접수 전 실패: 입력을 건네지 않았다. `left`가 없으면 아무것도 띄우지 않았다
 public struct AgentStartError: Error, Equatable, Sendable {
     public var reason: BridgeV1FailureReason
+    /// 띄운 뒤에 실패했고 그 끝을 증명하지 못했다 (OA D3a 14장 1 · 15장 1: 시작 · 답 · 닫기 모두): 그 실행의 정체 (pid는 모를 수 있다).
+    /// 런타임은 이 task를 끝났다고 적지 않고 그 실행을 Stop · 고아 정리 대상으로 둔다
+    public var left: AgentProcessIdentity?
 
-    public init(_ reason: BridgeV1FailureReason) {
+    public init(_ reason: BridgeV1FailureReason, left: AgentProcessIdentity? = nil) {
         self.reason = reason
+        self.left = left
+    }
+}
+
+/// 도구 결정 API 호출의 실패 (OA D3a Q11 · Q12): 폐기된 Mac(403)만 거절로, 그 밖(시간 초과 · 2xx 아님 · 등록 전 · 디코딩 실패)은 defer로 다룬다
+public enum AgentToolDecisionError: Error, Equatable, Sendable {
+    case revoked
+    case unavailable
+}
+
+/// 런타임이 adapter에 넘기는 좁은 연결 (OA D3a Q12). bridge id · 장치 secret · 계정 세대는 런타임만 안다: adapter는 이것으로만 서버 판정을 받는다
+public struct AgentRuntimeServices: Sendable {
+    /// `POST /api/v1/bridge/tool-decision` (timeout 1.0초, 재시도 0). 이 런타임의 파티션으로만 간다 (ONE-TF-09)
+    public var decideTool: @Sendable (BridgeV1ToolDecisionQuery) async throws -> BridgeV1ToolDecisionResponse
+    /// 답 resume로 새 프로세스를 띄운 직후 그 정체(pid · 시작 시각 · marker)를 원장에 먼저 적는다. 답 전달 완료는 `deliverAnswer`의 반환으로 따로 적는다 (OA D3a 8장 14).
+    /// 원장 commit이 성공했을 때만 true: adapter는 true를 받은 뒤에만 답을 준다 (9장 8)
+    public var recordSpawn: @Sendable (_ taskID: String, _ identity: AgentProcessIdentity) async -> Bool
+
+    public init(
+        decideTool: @escaping @Sendable (BridgeV1ToolDecisionQuery) async throws -> BridgeV1ToolDecisionResponse,
+        recordSpawn: @escaping @Sendable (_ taskID: String, _ identity: AgentProcessIdentity) async -> Bool = { _, _ in true }
+    ) {
+        self.decideTool = decideTool
+        self.recordSpawn = recordSpawn
     }
 }
 
 public protocol AgentProcess: Sendable {
     /// registry id (`agent:claude-code`)
     var adapter: String { get }
+    /// 런타임이 만들어질 때 한 번 부른다 (OA D3a Q12). 서버 판정이 필요 없는 adapter는 기본 구현(아무것도 안 함)을 쓴다
+    func attach(_ services: AgentRuntimeServices)
     /// 설치 · 버전 · 로그인 · managed settings 보고. 자격 값은 읽지 않는다 (I16)
     func probe() async -> BridgeV1AdapterReport
     /// 이 버전을 이 adapter가 다룰 수 있나 (시작 직전 확인). 기본은 모두 허용
@@ -315,11 +351,36 @@ public protocol AgentProcess: Sendable {
     func liveness(_ identity: AgentProcessIdentity) async -> AgentLiveness
     func terminateOrphan(_ identity: AgentProcessIdentity) async -> AgentLiveness
     func readback(marker: String, session: AgentSessionRef) async -> AgentReadback
+    /// 세션의 지금 실행 (OA D3a 14장 2 · 15장 1: 그 세션의 생존 진실). 이 adapter가 그 세션에 띄운 마지막 실행(턴 · 답 · 닫기 · 내부 닫기)의 정체와 끝 증명.
+    /// nil이면 세션 단위 상태가 없는 adapter다: 런타임은 원장 정체 · 끝 사건으로 본다 (기본)
+    func sessionRun(_ sessionID: String) async -> AgentSessionRun?
+    /// 그 세션의 지금 실행을 끝낸다 (고아 정리 · 앱 종료, 15장 1). `sessionRun`이 nil이 아닌 adapter에만 부른다
+    func terminateSessionRun(_ sessionID: String) async -> AgentLiveness
+    /// 앱 종료 · 계정 삭제가 시작됐다 (OA D3a 16장 1): 그 뒤에는 새 프로세스를 띄우지 않는다 (adapter 안에서 띄우는 것 포함). 기본: 할 일 없음
+    func stopSpawning() async
+    /// 이 adapter의 실행 등록부에 띄우기 의도부터 끝 증명까지의 spawn이 하나라도 있나 (OA D3a 17장 1: 종료 판단 · Quit 확인). 기본: false
+    func hasRegisteredRuns() async -> Bool
+}
+
+/// 세션의 지금 실행 (OA D3a 15장 1): 그 정체(모르면 nil)와 끝 증명
+public struct AgentSessionRun: Sendable, Equatable {
+    public var liveness: AgentLiveness
+    public var identity: AgentProcessIdentity?
+
+    public init(liveness: AgentLiveness, identity: AgentProcessIdentity?) {
+        self.liveness = liveness
+        self.identity = identity
+    }
 }
 
 extension AgentProcess {
+    public func attach(_ services: AgentRuntimeServices) {}
     public func supportsVersion(_ version: String?) -> Bool { true }
     public func readback(marker: String, session: AgentSessionRef) async -> AgentReadback { .unsupported }
+    public func sessionRun(_ sessionID: String) async -> AgentSessionRun? { nil }
+    public func terminateSessionRun(_ sessionID: String) async -> AgentLiveness { .unknown }
+    public func stopSpawning() async {}
+    public func hasRegisteredRuns() async -> Bool { false }
 }
 
 /// 새 세션의 작업 폴더를 정한다 (D4a가 채운다). 사용자 폴더를 짐작해 쓰기 권한을 주지 않는다 (Q26)
@@ -334,7 +395,7 @@ extension WorkspaceResolver {
     public func authorize(workspaceRef: String, session sessionID: String, adapter: String) async -> Bool { false }
 }
 
-/// 비밀값 답은 이 Mac의 메모리에만 있다 (계약 3.6): 서버에도 디스크에도 없다. D4a의 입력 화면이 넣고 런타임이 한 번 꺼내 간다
+/// 비밀값 답은 이 Mac의 메모리에만 있다 (계약 3.6): 서버에도 디스크에도 없다. D4b-m의 입력 화면이 넣고 런타임이 한 번 꺼내 간다
 public actor LocalSecretAnswers {
     private var values: [String: AgentAnswerValue] = [:]
     private var onChange: (@Sendable (Bool) -> Void)?

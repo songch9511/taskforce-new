@@ -64,6 +64,43 @@ Mac 앱은 [Sparkle 2](https://sparkle-project.org/documentation/)로 스스로 
 
 이 단계는 서명 · 공증 · DMG를 만들지 않았다. 따라서 (1) Developer ID로 다시 서명한 뒤에도 앱 안의 `Sparkle.framework`와 그 보조 도구(`Autoupdate` · `Updater.app` · XPC 서비스)가 Hardened Runtime 아래에서 서명 검증을 통과하는지, (2) 실제 업데이트가 내려받기 · 설치 · 재시작까지 되는지, (3) Dock 아이콘이 없는 에이전트 앱(`LSUIElement`)에서 예약된 확인 창이 다른 창 뒤에 뜨는지(Sparkle은 시작 직후가 아니면 포커스를 가져오지 않는다. 눈에 띄게 하려면 Sparkle의 "gentle reminders"가 필요하고 지금은 만들지 않았다, 화면 설계 빈칸)는 확인하지 못했다. 첫 서명 빌드에서 사람이 한 번 본다.
 
+## Claude Code helper 둘 (OA D3a)
+
+앱 번들에 실행 파일 둘이 더 들어간다: `Taskforce.app/Contents/Helpers/tf-agent-hook`(Claude Code PreToolUse · SessionStart 훅)과 `tf-agent-mcp`(Taskforce MCP 서버 `tf`). 둘 다 인터프리터 없는 Mach-O이고 `TaskforceAgentWire`(Foundation · Darwin)만 링크한다. `apple/project.yml`의 `tool` 타깃이 만들고, 앱 타깃이 `Contents/Helpers`로 복사하면서 서명한다(Code Sign On Copy, Xcode가 중첩 코드 서명 순서를 지킨다). Hardened Runtime은 켜고 **권한 파일은 없다**(App Sandbox가 꺼져 있어 상속 권한이 필요 없고, Keychain · App Group · 네트워크 · `com.apple.security.cs.*` 예외도 없다). 앱 권한 파일 · `scripts/release-mac-dmg.sh`는 이 단계에서 바꾸지 않았다.
+
+서명 · 공증 빌드에서 사용자가 한 번 확인한다 (이 단계는 서명하지 않았다):
+
+```
+APP=<서명한 Taskforce.app>
+ls -l "$APP/Contents/Helpers"                                         # 두 파일, 실행 권한
+codesign --verify --deep --strict --verbose=2 "$APP"                  # 중첩 helper 포함 통과
+for h in tf-agent-hook tf-agent-mcp; do
+  codesign -dvv "$APP/Contents/Helpers/$h" 2>&1 | grep -E "Authority=Developer ID Application|flags=.*runtime|Timestamp="   # 같은 팀 Developer ID · Hardened Runtime · 보안 타임스탬프
+  codesign -d --entitlements :- "$APP/Contents/Helpers/$h"           # 빈 출력 (권한 0)
+  otool -L "$APP/Contents/Helpers/$h"                                 # /usr/lib · /System/Library만
+done
+spctl -a -vv -t exec "$APP"                                           # 공증 뒤 accepted
+```
+
+- `scripts/release-mac-dmg.sh`의 지금 검사가 helper까지 덮는지(특히 샌드박스 키 검사가 앱 본체만 보는지)는 첫 서명 빌드에서 위 명령으로 따로 본다. 검사를 넓히는 것은 별도 변경이다.
+- 작업 폴더가 Documents · Desktop · Downloads · iCloud 안이면 `claude`가 그 폴더를 읽을 때 macOS 접근 동의 창이 뜰 수 있다. 지킴이(아래) 때문에 그 창은 Taskforce가 아니라 **"Taskforce Agent"** 이름으로 뜬다. 실제 동의 창은 사용자 gate(R1 · R2)에서 한 번 본다.
+
+### 지킴이 helper "Taskforce Agent" (OA D3a 13장)
+
+셋째 helper는 앱 번들이다: `Taskforce.app/Contents/Helpers/Taskforce Agent.app`(실행 파일 `Contents/MacOS/Taskforce Agent`, 번들 id `<앱 번들 id>.agent`, 표시 이름 "Taskforce Agent", `LSUIElement` = 화면 · Dock 없음, NSApplication 0). 앱은 이것을 책임 프로세스 disclaim으로 띄우고, 이것이 `claude`를 띄운 뒤 그 자손이 모두 끝날 때까지 남는다(끝나면 스스로 끝 기록을 쓰고 끝난다). `apple/project.yml`의 `TaskforceAgent`(`application`) 타깃이 `apple/Helpers/tf-agent-keeper`를 `TaskforceAgentWire`만 링크해 만들고, 앱 타깃이 `Contents/Helpers`로 복사하면서 서명한다. Hardened Runtime은 켜고 **권한 파일은 없다**. macOS 권한 창(문서 · 데스크톱 등)은 이 helper의 이름으로 뜨고 그 승인은 이 helper(같은 팀 서명)에 붙는다.
+
+```
+AGENT="$APP/Contents/Helpers/Taskforce Agent.app"
+codesign -dvv "$AGENT" 2>&1 | grep -E "Identifier=|Authority=Developer ID Application|flags=.*runtime|Timestamp="   # <앱 번들 id>.agent · 같은 팀 · Hardened Runtime
+codesign -d --entitlements :- "$AGENT"                                # 빈 출력 (권한 0)
+otool -L "$AGENT/Contents/MacOS/Taskforce Agent"                      # /usr/lib · /System/Library만
+/usr/libexec/PlistBuddy -c "Print :CFBundleDisplayName" -c "Print :LSUIElement" "$AGENT/Contents/Info.plist"   # Taskforce Agent · true
+```
+
+- 공증은 앱 하나로 함께 된다(중첩 번들). 첫 서명 빌드에서 위 명령과 `spctl -a -vv -t exec "$APP"`를 같이 본다.
+- **부른 쪽 확인(OA D3a 14장 12):** Release 지킴이는 부모 프로세스가 `anchor apple generic and identifier "<앱 번들 id>" and certificate leaf[subject.OU] = "<지킴이와 같은 팀>"`을 만족할 때만 `claude`를 띄운다(앱 id = 지킴이 번들 id에서 `.agent`를 뗀 값, 팀 = 지킴이 자신의 서명 팀). 그래서 **앱과 지킴이는 같은 팀으로 서명하고 번들 id를 `<앱 번들 id>.agent`로 지킨다**: 어긋나면(서명 안 된 Release 지킴이 포함) 지킴이는 아무것도 띄우지 않고 6으로 끝나며 그 세션은 잠긴다. 첫 서명 빌드에서 앱과 지킴이의 `codesign -dvv` Identifier · TeamIdentifier가 이 관계인지 본다. Debug · 시험 호스트(서명하지 않는 Debug-Test 포함)는 서명 대신 부모 앱 번들 id(격리 접두어 포함)와 지킴이 위치(`Contents/Helpers` 바로 안)로 본다. 어느 쪽이든 확인을 통과한 뒤 부모의 idversion이 지킴이보다 작아야 한다(15장 6): 앱이 지킴이를 띄운 뒤 exec하는 구성은 없으므로 배포 절차에는 바꿀 것이 없다.
+- 처리방침 · 온보딩 문구("Taskforce Agent"가 폴더 접근 권한을 물을 수 있다)는 D4a · 코디네이터가 정한다.
+
 ## 현재 상태
 
 | 항목 | 현재 근거 |

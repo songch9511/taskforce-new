@@ -124,6 +124,11 @@ public struct BridgeClient: Sendable {
         try await send(.post, "bridge/heartbeat", body: request, secret: secret)
     }
 
+    /// 도구 호출 판정 (OA D3a 3.1, D3c-2). 시간 예산이 짧다 (훅이 1.5초 안에 답해야 한다): 호출한 쪽이 `timeout`(1.0초)을 준다. 재시도는 하지 않는다
+    public func toolDecision(_ request: BridgeV1ToolDecisionRequest, secret: String, timeout: TimeInterval) async throws -> BridgeV1ToolDecisionResponse {
+        try await send(.post, "bridge/tool-decision", body: request, secret: secret, timeout: timeout)
+    }
+
     // MARK: 전송
 
     private func send<T: Decodable>(

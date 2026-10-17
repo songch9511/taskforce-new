@@ -184,5 +184,38 @@ struct ReconcileTests {
         ]
         #expect(Reconcile.reconcileTargets(tasks).map(\.agentTaskID) == ["a", "e", "f", "h"], "접수 전(dispatched)인 task는 readback 경로를 막지 않게 제외")
     }
+
+    // MARK: 입력이 CLI에 닿은 뒤의 결과 불명 (OA D3a Q5, 계약 13.2 :519 · G31)
+
+    /// 접수 신호 없이 끝났어도 `inputAt`(Claude Code `system/init` · Codex `turn/start`)이 있으면 CLI가 글을 받았을 수 있다:
+    /// adapter가 받지 않았다고 확인할 때만 `not_received`, 아니면 `unknown` (Send again이 같은 글을 transcript에 두 번 넣지 않게)
+    @Test func anInputThatReachedTheCLIIsUnknownUnlessTheAdapterProvesOtherwise() {
+        let adapters: [AgentReadback] = [.received, .notReceived(processEnded: true), .notReceived(processEnded: false), .unknown, .unsupported]
+        for adapter in adapters {
+            var reached = command(.started)
+            reached.inputAt = t0
+            let expected: ReadbackDecision = adapter == .notReceived(processEnded: true) ? .report(.notReceived, processEnded: true) : .report(.unknown, processEnded: false)
+            #expect(decide(.readbackList, reached, .ended, adapter: adapter) == expected, "\(adapter)")
+            // 끝나지 않았으면 지금과 같다 (살아 있는 프로세스는 늦게 받을 수 있다)
+            #expect(decide(.readbackList, reached, .alive, adapter: adapter) == .report(.unknown, processEnded: false), "\(adapter)")
+        }
+    }
+
+    @Test func withoutInputAtAnEndedSilentCommandIsStillNotReceived() {
+        let adapters: [AgentReadback] = [.received, .notReceived(processEnded: true), .notReceived(processEnded: false), .unknown, .unsupported]
+        for adapter in adapters {
+            #expect(decide(.readbackList, command(.started), .ended, adapter: adapter) == .report(.notReceived, processEnded: true), "\(adapter)")
+            #expect(decide(.readbackList, command(.started), .alive, adapter: adapter) == .report(.unknown, processEnded: false), "\(adapter)")
+        }
+    }
+
+    @Test func aQueuedPreAcceptFailureStillReplaysFirstAfterInputReached() {
+        var reached = command(.started)
+        reached.inputAt = t0
+        #expect(decide(.readbackList, reached, .ended, preAcceptFailure: true) == .replayOutboxFirst)
+        var reported = command(.started, ackOp: "readback", ackResult: "unknown")
+        reported.inputAt = t0
+        #expect(decide(.readbackList, reported, .ended) == .none, "unknown은 한 번만")
+    }
 }
 #endif

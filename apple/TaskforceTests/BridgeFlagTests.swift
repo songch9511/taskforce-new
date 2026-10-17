@@ -65,6 +65,50 @@ struct BridgeFlagTests {
         }
     }
 
+    // MARK: 실제 Claude Code adapter (OA D3a Q14)
+
+    @Test func theRealAgentArgumentWorksOnlyInDebugAgainstALoopbackServer() {
+        let arguments: [String: Any] = ["TF_BRIDGE_REAL_AGENT": "YES"]
+        let local = URL(string: "http://localhost:3000")!
+        #expect(BridgeFlag.usesRealAgent(arguments: arguments, isDebugBuild: true, apiBaseURL: local))
+        #expect(!BridgeFlag.usesRealAgent(arguments: arguments, isDebugBuild: false, apiBaseURL: local), "Release는 인자를 읽지 않는다")
+        #expect(!BridgeFlag.usesRealAgent(arguments: [:], isDebugBuild: true, apiBaseURL: local))
+        #expect(!BridgeFlag.usesRealAgent(arguments: ["TF_BRIDGE_REAL_AGENT": "NO"], isDebugBuild: true, apiBaseURL: local))
+        #expect(!BridgeFlag.usesRealAgent(arguments: arguments, isDebugBuild: true, apiBaseURL: URL(string: "https://api.taskforcelabs.dev")!), "운영 서버에는 R2를 돌리지 않는다")
+    }
+
+    @Test func theDisposableWorkspaceArgumentIsDebugOnly() {
+        #expect(BridgeFlag.disposableWorkspace(arguments: ["TF_BRIDGE_WORKSPACE": " /Users/u/tf-d3a/proj "], isDebugBuild: true) == "/Users/u/tf-d3a/proj")
+        #expect(BridgeFlag.disposableWorkspace(arguments: ["TF_BRIDGE_WORKSPACE": "/Users/u/tf-d3a/proj"], isDebugBuild: false) == nil)
+        #expect(BridgeFlag.disposableWorkspace(arguments: ["TF_BRIDGE_WORKSPACE": ""], isDebugBuild: true) == nil)
+        #expect(BridgeFlag.disposableWorkspace(arguments: [:], isDebugBuild: true) == nil)
+    }
+
+    /// D3a의 Debug 전용 이름도 앱 소스에서는 `#if DEBUG` 안에만 나온다 (M6의 앞부분)
+    @Test func claudeCodeDebugToolsAreNamedOnlyInsideDebugConditionals() throws {
+        let names = ["DisposableWorkspaces", "ClaudeCodeEvidenceRunner", "FakeClaudeCode"]
+        for (path, text) in try UpdaterSources.appSwiftSources() {
+            var depth = 0
+            var debugDepth: [Int] = []
+            for (number, raw) in text.components(separatedBy: "\n").enumerated() {
+                let line = raw.trimmingCharacters(in: .whitespaces)
+                if line.hasPrefix("#if") {
+                    depth += 1
+                    if line.contains("DEBUG") && !line.contains("!DEBUG") { debugDepth.append(depth) }
+                } else if line.hasPrefix("#else") || line.hasPrefix("#elseif") {
+                    if debugDepth.last == depth { debugDepth.removeLast() }
+                } else if line.hasPrefix("#endif") {
+                    if debugDepth.last == depth { debugDepth.removeLast() }
+                    depth -= 1
+                }
+                if line.hasPrefix("//") || line.hasPrefix("///") { continue }
+                for name in names where line.contains(name) {
+                    #expect(!debugDepth.isEmpty, "\(path):\(number + 1)의 \(name)는 #if DEBUG 안에 있어야 한다")
+                }
+            }
+        }
+    }
+
     @Test func thisTestHostRunsWithTheBridgeOffAndNoFakeAgent() {
         #expect(!BridgeFlag.current)
         #expect(!BridgeFlag.currentUsesFakeAgent(apiBaseURL: URL(string: "http://localhost:3000")!))

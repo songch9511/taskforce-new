@@ -1,0 +1,30 @@
+{
+  "allow_readonly": {
+    "decision": "allow",
+    "reason": "readonly_command",
+    "parse": { "wrapper": "none", "argv": ["ls", "-la", "src"], "paths": [{ "index": 2, "absolute": "/Users/u/proj/src" }], "implicit_cwd": false },
+    "card_flags": [],
+    "server_time": "2026-10-15T05:00:00.123Z"
+  },
+  "deny_path_in_use": {
+    "decision": "deny",
+    "reason": "path_in_use",
+    "agent_note": "pricing.mdx is being changed by another task (#139). Do other work first or wait.",
+    "holder": { "action_number": 139, "rel_path": "pricing.mdx" },
+    "card_flags": [],
+    "server_time": "2026-10-15T05:00:00.123Z"
+  },
+  "defer_manual_write": {
+    "decision": "defer",
+    "reason": "manual_write",
+    "card_flags": [],
+    "server_time": "2026-10-15T05:00:00.123+00:00"
+  },
+  "future_values": {
+    "decision": "ask_later",
+    "reason": "new_reason",
+    "card_flags": ["new_flag"],
+    "server_time": "2026-10-15T05:00:00Z",
+    "new_field": true
+  }
+}

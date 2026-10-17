@@ -10,10 +10,13 @@
 		025F33A82A421DE1FC6CC896 /* AppEnvironment.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9B61143ECDB3A70FF32355F0 /* AppEnvironment.swift */; };
 		03921D74809B28972F7A6762 /* LauncherPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = D29FF94F9BE621AF3A6095B4 /* LauncherPanel.swift */; };
 		03F3AC43B3737F9107E22981 /* UsageCreditsPane.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBB841970EC9F4B0554357BF /* UsageCreditsPane.swift */; };
+		044DACD3010A3EA03C116FB3 /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = CAD9764312FB3D96C13B9999 /* main.swift */; };
 		05F602580F4198A05FBAC275 /* EdgeQuestionKeysTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2FB1AC8A77A7DC20EC1ED1B7 /* EdgeQuestionKeysTests.swift */; };
 		06338986250913B87A12A146 /* EdgeSessionPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3966F00FDCDA76A720E39E9F /* EdgeSessionPanel.swift */; };
+		0682A12E39AA8B5C62C21DDD /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7F710A38DF2A7D5CC92DC0E /* main.swift */; };
 		07333FAA48A98E5997A39C92 /* EdgeSnapshotSummary.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE1A8EC1BA1B11F85693F9EC /* EdgeSnapshotSummary.swift */; };
 		08388431C687FC7788F36E5D /* EdgeInteractionRelease.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0FD57F1D55C725B908E65E96 /* EdgeInteractionRelease.swift */; };
+		11EF501B2A28F19C0D302BA4 /* TaskforceAgentWire in Frameworks */ = {isa = PBXBuildFile; productRef = 4E3A9C7C2F4DFDAA10B5E904 /* TaskforceAgentWire */; };
 		12E93D4F60ED4E1828DCB766 /* EdgeSessionActionsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B685D9169E022928E243C657 /* EdgeSessionActionsTests.swift */; };
 		14924059062045907C4ECE1A /* AssistantAgentChatTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1C7C19AACDBA2D530019F01A /* AssistantAgentChatTests.swift */; };
 		1C155DEDD5DBDE44C0F106D1 /* EdgeChatTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 95937722FDD5FA1D25CAF396 /* EdgeChatTests.swift */; };
@@ -44,6 +47,7 @@
 		481BF0ED149BEF433D5D00A8 /* MacQuitAnswersTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9F8D37FA5B4AE9940C90C66D /* MacQuitAnswersTests.swift */; };
 		497A72C80C3F5A62742FA119 /* TaskforceApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2DD246DFD55D3C8EB54CDCF0 /* TaskforceApp.swift */; };
 		49860D5AA10B47E94115ACA7 /* LauncherPresentationFixtureRendersTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB6C40E329E6EAB3368F0C0B /* LauncherPresentationFixtureRendersTests.swift */; };
+		4CF6F0E98189E532CBE9F2D5 /* TaskforceAgentWire in Frameworks */ = {isa = PBXBuildFile; productRef = 0B69CE1701998B5640127270 /* TaskforceAgentWire */; };
 		5020EF0FA3E7F009DF938515 /* RailOrdering.swift in Sources */ = {isa = PBXBuildFile; fileRef = 23F7BF891037000F11537653 /* RailOrdering.swift */; };
 		51A41EC52940EB555842641B /* EdgeShellModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 997F7CDADCE1B82032C6E3C9 /* EdgeShellModelTests.swift */; };
 		51DD873085D1961D40AC7681 /* TaskforceUI in Frameworks */ = {isa = PBXBuildFile; productRef = 80B175BF4CA400FA877FD5AF /* TaskforceUI */; };
@@ -54,6 +58,7 @@
 		584A291FF09ECAF09FD9B4B7 /* TaskforceKit in Frameworks */ = {isa = PBXBuildFile; productRef = 73C221837F84EEB751235C8E /* TaskforceKit */; };
 		58C68A8A46B10B63FF240426 /* EdgeSurfaces.swift in Sources */ = {isa = PBXBuildFile; fileRef = 24386D46267F0F616E0A31E4 /* EdgeSurfaces.swift */; };
 		5AADF7819C0656F5D1C3C1C1 /* SampleData.swift in Sources */ = {isa = PBXBuildFile; fileRef = 599D903AD6A4CA63031CAE4D /* SampleData.swift */; };
+		5C9603C43811D51E9535FCD7 /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = 63B008AA2380A900888169C3 /* main.swift */; };
 		5E98B573C97D4264AB34EAB3 /* BridgeFlagTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1839C1D158ACAD1812110AFA /* BridgeFlagTests.swift */; };
 		5ECFE4E77A7DE70930D6A18A /* SampleReview.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5FFF95C6BBC0E49F9923E3D2 /* SampleReview.swift */; };
 		5F459B3853B02BE7E85B368B /* EdgeIssueScreens.swift in Sources */ = {isa = PBXBuildFile; fileRef = 825A9C73A94BF4178FE78CFE /* EdgeIssueScreens.swift */; };
@@ -69,9 +74,12 @@
 		6F10622C562E0391D495F882 /* SettingsWindowModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 134F521E8E76DDDFA13086B3 /* SettingsWindowModel.swift */; };
 		6F914C7C908ADCA8F7630CA8 /* SampleChat.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5521012014BA2024927E6EAE /* SampleChat.swift */; };
 		70D68F452DEB43599104A88D /* EdgeRailCapsuleMore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5C946B080DB7F821E97DF507 /* EdgeRailCapsuleMore.swift */; };
+		726F181FE00B764484961733 /* tf-agent-hook in Embed Dependencies */ = {isa = PBXBuildFile; fileRef = 9D0F71F0A0909CAB10DEB524 /* tf-agent-hook */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		756800628EA4262BBBB2ACEB /* EdgeRailCapsuleTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 083CACCFB9C4CBDC5E017EF8 /* EdgeRailCapsuleTests.swift */; };
 		76753637AD7137521A1C09B9 /* TestHostTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8871EE809BE4D0D820370E12 /* TestHostTests.swift */; };
+		76EE49130B1D99C5715A0CD8 /* ClaudeCodeHostTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A92254CB31E4F69655B0606D /* ClaudeCodeHostTests.swift */; };
 		7932F742350A6D06578E2BD9 /* EdgeQuestionMetricsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA1114CABC6B01A172FFF1D0 /* EdgeQuestionMetricsTests.swift */; };
+		7965A44400923F6575D8AF02 /* DisposableWorkspaces.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1AD139546489284AC71629BF /* DisposableWorkspaces.swift */; };
 		7985AF2095DB0B6C7E070C31 /* LauncherRunTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8CB05D753291715B60E890FF /* LauncherRunTests.swift */; };
 		79F9066EF922D90C473539BF /* LauncherActionBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = C269834CACB1135D6F14018F /* LauncherActionBar.swift */; };
 		7B16E71BE7CE882E8FEEF020 /* LauncherSearchBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0E7EEAC44B716850440D045 /* LauncherSearchBar.swift */; };
@@ -103,10 +111,13 @@
 		B12630859AFFAB6A88E428E6 /* GoogleSignIn.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0EEFD4BECF876565725DFA15 /* GoogleSignIn.swift */; };
 		B1CC59880F2E7DB9E145834B /* AccountViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9E2BFF6EF4C37CFDCEBD88DB /* AccountViews.swift */; };
 		B48D84C81EFBBF7A82B7EC66 /* EdgeSummaryBaselineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F312F4D27B4367B0421F20EC /* EdgeSummaryBaselineTests.swift */; };
+		B4E86F5B84D3D0770F140146 /* tf-agent-mcp in Embed Dependencies */ = {isa = PBXBuildFile; fileRef = 1366312766C425ED00054ED4 /* tf-agent-mcp */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		B4F54DFC68334D4A409774AF /* TaskforceAgent.app in Embed Dependencies */ = {isa = PBXBuildFile; fileRef = 9484208DC1E48820E056CD42 /* TaskforceAgent.app */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		B7787C386C838D3DC056B069 /* EdgeTaskforce.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD299F437EE1CE8E456498D3 /* EdgeTaskforce.swift */; };
 		B931AE531DEAD062AF72D3A2 /* EdgeContextMenu.swift in Sources */ = {isa = PBXBuildFile; fileRef = F7EB9CAB50F66C6FF3FD71E0 /* EdgeContextMenu.swift */; };
 		B9C00B092B4992BE90579CEA /* EdgeSnapshotReview.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1288B083CD605D94432405A8 /* EdgeSnapshotReview.swift */; };
 		BA2CF1AD4A217E50B7D29697 /* AppUpdaterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E93E5DE9D5429324E5F5A37F /* AppUpdaterTests.swift */; };
+		BCE266E959C45ED935EFD0AE /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = E79E5EA9083E82E3C6AE58E9 /* main.swift */; };
 		BDD2EC4FA6C9D0C3A53DD751 /* HotKeyCenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2069D753238A9DAE1E390CB3 /* HotKeyCenter.swift */; };
 		C01B47E0536540FB1B226A95 /* EdgeReviewTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4C4B367C6B936AB96455076F /* EdgeReviewTests.swift */; };
 		C20CBDA2974FEBB4C3859102 /* BridgeHostTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 840B715FD7E19A3D1F340ADC /* BridgeHostTests.swift */; };
@@ -140,12 +151,20 @@
 		F1054E03F7CEFB293B46966C /* SettingsConnectionsSections.swift in Sources */ = {isa = PBXBuildFile; fileRef = 06B1DA1B50E9C9E6A7A0479C /* SettingsConnectionsSections.swift */; };
 		F67FEFD598D344A7AA5462A0 /* AssistantWindowManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 81503619078DD4AB5A97AC21 /* AssistantWindowManager.swift */; };
 		FCBCDF2154E2D338E891C24D /* S3bGateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A73A859A7BB30F65EB4610B5 /* S3bGateTests.swift */; };
+		FD6D4CF99F11A125188116AA /* TaskforceAgentWire in Frameworks */ = {isa = PBXBuildFile; productRef = 968776D6FBDDE70F0EC5F1BF /* TaskforceAgentWire */; };
 		FD7CC1296F85732599DE1AFC /* RunStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 19530AF9617AD254389374F2 /* RunStore.swift */; };
 		FE7873A58E4B39A8927CD2FC /* EdgeWorkContextsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 610A9DE84A54D9724C3CDAEE /* EdgeWorkContextsTests.swift */; };
 		FF68550675704B842603A326 /* LauncherRunPane.swift in Sources */ = {isa = PBXBuildFile; fileRef = CB475A9C43FB5DA64D5B10A4 /* LauncherRunPane.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
+		031F20F517CF7CCBB03C0BC3 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 4048BC7BE910FF1E399DC4C5 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = D912E83F420982C835650760;
+			remoteInfo = TaskforceAgent;
+		};
 		44201B66A5B5E3DFC96F1EAE /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = 4048BC7BE910FF1E399DC4C5 /* Project object */;
@@ -153,7 +172,44 @@
 			remoteGlobalIDString = 6CC10594A8A3513CB3649C13;
 			remoteInfo = Taskforce;
 		};
+		6B30ED89C4F7256126CC67A8 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 4048BC7BE910FF1E399DC4C5 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = C10927EAD6C0C35293FA56E0;
+			remoteInfo = "tf-agent-mcp";
+		};
+		F6F23A39769672B25C847E99 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 4048BC7BE910FF1E399DC4C5 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 21671B21A27883150A06BE41;
+			remoteInfo = "tf-agent-hook";
+		};
+		F718CA89090BF8E9A91974B9 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 4048BC7BE910FF1E399DC4C5 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 7CDB10E87F010280A7C401E5;
+			remoteInfo = FakeClaudeCode;
+		};
 /* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		79E9221D8AF785831EE67468 /* Embed Dependencies */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = Contents/Helpers;
+			dstSubfolderSpec = 1;
+			files = (
+				726F181FE00B764484961733 /* tf-agent-hook in Embed Dependencies */,
+				B4E86F5B84D3D0770F140146 /* tf-agent-mcp in Embed Dependencies */,
+				B4F54DFC68334D4A409774AF /* TaskforceAgent.app in Embed Dependencies */,
+			);
+			name = "Embed Dependencies";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
 		010DF3CB9AFFABF74B07F0F2 /* Release.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Release.xcconfig; sourceTree = "<group>"; };
@@ -166,10 +222,12 @@
 		106EA2A5863960873312A7A1 /* AssistantWindowView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AssistantWindowView.swift; sourceTree = "<group>"; };
 		1288B083CD605D94432405A8 /* EdgeSnapshotReview.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EdgeSnapshotReview.swift; sourceTree = "<group>"; };
 		134F521E8E76DDDFA13086B3 /* SettingsWindowModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsWindowModel.swift; sourceTree = "<group>"; };
+		1366312766C425ED00054ED4 /* tf-agent-mcp */ = {isa = PBXFileReference; includeInIndex = 0; path = "tf-agent-mcp"; sourceTree = BUILT_PRODUCTS_DIR; };
 		174CFD8CB4AF1DF1B60936D3 /* AssistantTargetMenu.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AssistantTargetMenu.swift; sourceTree = "<group>"; };
 		1839C1D158ACAD1812110AFA /* BridgeFlagTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BridgeFlagTests.swift; sourceTree = "<group>"; };
 		19530AF9617AD254389374F2 /* RunStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RunStore.swift; sourceTree = "<group>"; };
 		199E1DF5D5ECCE229D98D5FC /* ReviewDesk.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReviewDesk.swift; sourceTree = "<group>"; };
+		1AD139546489284AC71629BF /* DisposableWorkspaces.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DisposableWorkspaces.swift; sourceTree = "<group>"; };
 		1ADEC50CCCD6DD9A67EAA50B /* Base.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Base.xcconfig; sourceTree = "<group>"; };
 		1AE065BCE63FAD6180201421 /* HotKeyCenterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HotKeyCenterTests.swift; sourceTree = "<group>"; };
 		1BFBE515CA5096C0721BEE25 /* ReleaseAppcastScriptTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReleaseAppcastScriptTests.swift; sourceTree = "<group>"; };
@@ -216,6 +274,7 @@
 		610A9DE84A54D9724C3CDAEE /* EdgeWorkContextsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EdgeWorkContextsTests.swift; sourceTree = "<group>"; };
 		62B25DF97F77B495CABEAE98 /* EdgeInteractionReview.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EdgeInteractionReview.swift; sourceTree = "<group>"; };
 		6346DCBC1D933DB97280A8F7 /* AssistantQuestionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AssistantQuestionTests.swift; sourceTree = "<group>"; };
+		63B008AA2380A900888169C3 /* main.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
 		65D96844CFEE5E58206572EF /* LauncherShellModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LauncherShellModelTests.swift; sourceTree = "<group>"; };
 		67FA98B6AD5F48FCE46EAB29 /* RunStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RunStoreTests.swift; sourceTree = "<group>"; };
 		6827BADCD8F7A6D28978631C /* AssistantAgentTurns.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AssistantAgentTurns.swift; sourceTree = "<group>"; };
@@ -240,17 +299,20 @@
 		8EA57F9216DDB7EC3BA048C9 /* BridgeQuitPrompt.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BridgeQuitPrompt.swift; sourceTree = "<group>"; };
 		8F35BE01B9CE310854A11A47 /* AccountDeletion.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccountDeletion.swift; sourceTree = "<group>"; };
 		8F5DE8B3835D212DAFE17325 /* MacEntitlementsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacEntitlementsTests.swift; sourceTree = "<group>"; };
+		9484208DC1E48820E056CD42 /* TaskforceAgent.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = TaskforceAgent.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		95937722FDD5FA1D25CAF396 /* EdgeChatTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EdgeChatTests.swift; sourceTree = "<group>"; };
 		997F7CDADCE1B82032C6E3C9 /* EdgeShellModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EdgeShellModelTests.swift; sourceTree = "<group>"; };
 		9B3F840D0D16F14A550C8F06 /* UpdaterBuildConfigTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UpdaterBuildConfigTests.swift; sourceTree = "<group>"; };
 		9B61143ECDB3A70FF32355F0 /* AppEnvironment.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppEnvironment.swift; sourceTree = "<group>"; };
 		9C010F4E20056FDC3FB9EF13 /* EdgeQuestionCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EdgeQuestionCard.swift; sourceTree = "<group>"; };
+		9D0F71F0A0909CAB10DEB524 /* tf-agent-hook */ = {isa = PBXFileReference; includeInIndex = 0; path = "tf-agent-hook"; sourceTree = BUILT_PRODUCTS_DIR; };
 		9E2BFF6EF4C37CFDCEBD88DB /* AccountViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccountViews.swift; sourceTree = "<group>"; };
 		9E5447C917C7443CACB72BD8 /* AccountStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccountStore.swift; sourceTree = "<group>"; };
 		9F8D37FA5B4AE9940C90C66D /* MacQuitAnswersTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacQuitAnswersTests.swift; sourceTree = "<group>"; };
 		A22C75B485B3E5A6E4FDC9E1 /* KeyboardShortcutsPane.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyboardShortcutsPane.swift; sourceTree = "<group>"; };
 		A73A859A7BB30F65EB4610B5 /* S3bGateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = S3bGateTests.swift; sourceTree = "<group>"; };
 		A87E77273D7F4913EA35415E /* ReviewTestSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReviewTestSupport.swift; sourceTree = "<group>"; };
+		A92254CB31E4F69655B0606D /* ClaudeCodeHostTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClaudeCodeHostTests.swift; sourceTree = "<group>"; };
 		AB01D992A7923CAF4414A91D /* LauncherDraftPane.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LauncherDraftPane.swift; sourceTree = "<group>"; };
 		AB26C2543E88F763B3553D02 /* SignIn.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SignIn.swift; sourceTree = "<group>"; };
 		AB6C40E329E6EAB3368F0C0B /* LauncherPresentationFixtureRendersTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LauncherPresentationFixtureRendersTests.swift; sourceTree = "<group>"; };
@@ -268,7 +330,9 @@
 		C314FCA48C9C473BEC0F5388 /* LauncherListPane.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LauncherListPane.swift; sourceTree = "<group>"; };
 		C4A28A214EF045FAF600AC14 /* MacSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacSettingsView.swift; sourceTree = "<group>"; };
 		C58F5AE03837589EB835718F /* EdgeWorkListTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EdgeWorkListTests.swift; sourceTree = "<group>"; };
+		C7F710A38DF2A7D5CC92DC0E /* main.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
 		C9788B25112FC33A0A718EEF /* AgentNotifications.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentNotifications.swift; sourceTree = "<group>"; };
+		CAD9764312FB3D96C13B9999 /* main.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
 		CB475A9C43FB5DA64D5B10A4 /* LauncherRunPane.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LauncherRunPane.swift; sourceTree = "<group>"; };
 		CE1F0073D4EF8BAC2345440F /* SettingsWindowTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsWindowTests.swift; sourceTree = "<group>"; };
 		D1D7134479EB84008A2F52BD /* TaskforceKit */ = {isa = PBXFileReference; lastKnownFileType = folder; name = TaskforceKit; path = Packages/TaskforceKit; sourceTree = SOURCE_ROOT; };
@@ -280,6 +344,8 @@
 		DE37FA5998D1A9FB0C6A9AF2 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		E0E7EEAC44B716850440D045 /* LauncherSearchBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LauncherSearchBar.swift; sourceTree = "<group>"; };
 		E188CB78A16E96E9EFA7B9FA /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		E253FA362A5012D158C8468F /* FakeClaudeCode */ = {isa = PBXFileReference; includeInIndex = 0; path = FakeClaudeCode; sourceTree = BUILT_PRODUCTS_DIR; };
+		E79E5EA9083E82E3C6AE58E9 /* main.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
 		E93E5DE9D5429324E5F5A37F /* AppUpdaterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppUpdaterTests.swift; sourceTree = "<group>"; };
 		E98C340690397756C8AC5858 /* EdgeInteraction.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EdgeInteraction.swift; sourceTree = "<group>"; };
 		ED8626F50DEDB3E529C4367E /* EdgeRailCapsuleLayout.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EdgeRailCapsuleLayout.swift; sourceTree = "<group>"; };
@@ -306,6 +372,22 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		2C156C2773E6CC3565358CA0 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				FD6D4CF99F11A125188116AA /* TaskforceAgentWire in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		87B46C65BE0BB23854CAB46B /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				4CF6F0E98189E532CBE9F2D5 /* TaskforceAgentWire in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		A7431063D3D0B070C849405F /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
@@ -317,13 +399,30 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		FD6BCBED6799DF0C19FA165E /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				11EF501B2A28F19C0D302BA4 /* TaskforceAgentWire in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
+		0B367BF28A1C53BBDF09A9EC /* TaskforceKit */ = {
+			isa = PBXGroup;
+			children = (
+				BAF07295504B43F4C8220E03 /* Sources */,
+			);
+			path = TaskforceKit;
+			sourceTree = "<group>";
+		};
 		0F92A9E7EB73E6C16C15EF06 = {
 			isa = PBXGroup;
 			children = (
 				CF923E8A8BC7821D4981C44A /* Config */,
+				E55E476A1DFB859ACA58743E /* Helpers */,
 				EC6822F54AD6ECF22E2FBCC9 /* Packages */,
 				6E68EA2E154F426FC006C0DE /* Taskforce */,
 				8E2E91C6463591C5FAE186CB /* TaskforceTests */,
@@ -337,6 +436,7 @@
 				D7136444D4CA2FDD03C7DA8A /* BridgeFlag.swift */,
 				2CC993637C8CA1F1EC530017 /* BridgeHost.swift */,
 				8EA57F9216DDB7EC3BA048C9 /* BridgeQuitPrompt.swift */,
+				1AD139546489284AC71629BF /* DisposableWorkspaces.swift */,
 			);
 			path = Bridge;
 			sourceTree = "<group>";
@@ -377,6 +477,14 @@
 				199E1DF5D5ECCE229D98D5FC /* ReviewDesk.swift */,
 			);
 			path = Edge;
+			sourceTree = "<group>";
+		};
+		3D8F511349CCD724481066CA /* tf-agent-keeper */ = {
+			isa = PBXGroup;
+			children = (
+				63B008AA2380A900888169C3 /* main.swift */,
+			);
+			path = "tf-agent-keeper";
 			sourceTree = "<group>";
 		};
 		484E126A92686BFB7FB4C5FC /* Mac */ = {
@@ -428,8 +536,12 @@
 		75865EDD53C9C43B08C20529 /* Products */ = {
 			isa = PBXGroup;
 			children = (
+				E253FA362A5012D158C8468F /* FakeClaudeCode */,
 				B585CF3FD7B78EDC16427DEF /* Taskforce.app */,
+				9484208DC1E48820E056CD42 /* TaskforceAgent.app */,
 				4575E663CCDD3F320C873CBA /* TaskforceTests.xctest */,
+				9D0F71F0A0909CAB10DEB524 /* tf-agent-hook */,
+				1366312766C425ED00054ED4 /* tf-agent-mcp */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -471,6 +583,7 @@
 				1839C1D158ACAD1812110AFA /* BridgeFlagTests.swift */,
 				840B715FD7E19A3D1F340ADC /* BridgeHostTests.swift */,
 				F5865B48D279EBBDAE9364AC /* C3SummaryTests.swift */,
+				A92254CB31E4F69655B0606D /* ClaudeCodeHostTests.swift */,
 				4631257EC759C2397E8212AB /* EdgeAssistantTests.swift */,
 				95937722FDD5FA1D25CAF396 /* EdgeChatTests.swift */,
 				501E38D7EB485E52ACD7C132 /* EdgeIssueFixesTests.swift */,
@@ -534,6 +647,22 @@
 			path = Shared;
 			sourceTree = "<group>";
 		};
+		996B5EC58CC3F8D77891A88F /* FakeClaudeCode */ = {
+			isa = PBXGroup;
+			children = (
+				E79E5EA9083E82E3C6AE58E9 /* main.swift */,
+			);
+			path = FakeClaudeCode;
+			sourceTree = "<group>";
+		};
+		BAF07295504B43F4C8220E03 /* Sources */ = {
+			isa = PBXGroup;
+			children = (
+				996B5EC58CC3F8D77891A88F /* FakeClaudeCode */,
+			);
+			path = Sources;
+			sourceTree = "<group>";
+		};
 		CF923E8A8BC7821D4981C44A /* Config */ = {
 			isa = PBXGroup;
 			children = (
@@ -552,10 +681,37 @@
 			path = iOS;
 			sourceTree = "<group>";
 		};
+		E4A4751A2DCBB7D3EA74493E /* tf-agent-mcp */ = {
+			isa = PBXGroup;
+			children = (
+				C7F710A38DF2A7D5CC92DC0E /* main.swift */,
+			);
+			path = "tf-agent-mcp";
+			sourceTree = "<group>";
+		};
+		E55E476A1DFB859ACA58743E /* Helpers */ = {
+			isa = PBXGroup;
+			children = (
+				E59B12F7FAC5A627FC39FB1B /* tf-agent-hook */,
+				3D8F511349CCD724481066CA /* tf-agent-keeper */,
+				E4A4751A2DCBB7D3EA74493E /* tf-agent-mcp */,
+			);
+			path = Helpers;
+			sourceTree = "<group>";
+		};
+		E59B12F7FAC5A627FC39FB1B /* tf-agent-hook */ = {
+			isa = PBXGroup;
+			children = (
+				CAD9764312FB3D96C13B9999 /* main.swift */,
+			);
+			path = "tf-agent-hook";
+			sourceTree = "<group>";
+		};
 		EC6822F54AD6ECF22E2FBCC9 /* Packages */ = {
 			isa = PBXGroup;
 			children = (
 				D1D7134479EB84008A2F52BD /* TaskforceKit */,
+				0B367BF28A1C53BBDF09A9EC /* TaskforceKit */,
 			);
 			path = Packages;
 			sourceTree = "<group>";
@@ -563,6 +719,25 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
+		21671B21A27883150A06BE41 /* tf-agent-hook */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 938A52E6AD6B4AD62DE70B91 /* Build configuration list for PBXNativeTarget "tf-agent-hook" */;
+			buildPhases = (
+				A61E99CD8130FCD25D00AF1E /* Sources */,
+				FD6BCBED6799DF0C19FA165E /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = "tf-agent-hook";
+			packageProductDependencies = (
+				4E3A9C7C2F4DFDAA10B5E904 /* TaskforceAgentWire */,
+			);
+			productName = "tf-agent-hook";
+			productReference = 9D0F71F0A0909CAB10DEB524 /* tf-agent-hook */;
+			productType = "com.apple.product-type.tool";
+		};
 		2CB50A0CE95B5EC02A90D00C /* TaskforceTests */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = F3FB80DDDAD2CA29093A2E63 /* Build configuration list for PBXNativeTarget "TaskforceTests" */;
@@ -575,6 +750,7 @@
 			);
 			dependencies = (
 				BB11039C29FC138C0F6D82E6 /* PBXTargetDependency */,
+				DCD77752AB4D8B84D3FE3526 /* PBXTargetDependency */,
 			);
 			name = TaskforceTests;
 			packageProductDependencies = (
@@ -592,10 +768,14 @@
 				8D711A9902D3883976AA2C32 /* Sources */,
 				3404C6A9C6B0A72EDE4B9EA7 /* Resources */,
 				A7431063D3D0B070C849405F /* Frameworks */,
+				79E9221D8AF785831EE67468 /* Embed Dependencies */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				0BA7DC0D0A355D878CE97424 /* PBXTargetDependency */,
+				CDFDABA10110ADBA6CAD6626 /* PBXTargetDependency */,
+				FA45432E1C8205641259F263 /* PBXTargetDependency */,
 			);
 			name = Taskforce;
 			packageProductDependencies = (
@@ -608,6 +788,61 @@
 			productReference = B585CF3FD7B78EDC16427DEF /* Taskforce.app */;
 			productType = "com.apple.product-type.application";
 		};
+		7CDB10E87F010280A7C401E5 /* FakeClaudeCode */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 67CF3BCFB880BBA5E588DDCE /* Build configuration list for PBXNativeTarget "FakeClaudeCode" */;
+			buildPhases = (
+				F90B693C79754D86B8C57172 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = FakeClaudeCode;
+			packageProductDependencies = (
+			);
+			productName = FakeClaudeCode;
+			productReference = E253FA362A5012D158C8468F /* FakeClaudeCode */;
+			productType = "com.apple.product-type.tool";
+		};
+		C10927EAD6C0C35293FA56E0 /* tf-agent-mcp */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 49947047FAFC08D5FE33F29F /* Build configuration list for PBXNativeTarget "tf-agent-mcp" */;
+			buildPhases = (
+				4DCE82EEA6567566BE15437E /* Sources */,
+				87B46C65BE0BB23854CAB46B /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = "tf-agent-mcp";
+			packageProductDependencies = (
+				0B69CE1701998B5640127270 /* TaskforceAgentWire */,
+			);
+			productName = "tf-agent-mcp";
+			productReference = 1366312766C425ED00054ED4 /* tf-agent-mcp */;
+			productType = "com.apple.product-type.tool";
+		};
+		D912E83F420982C835650760 /* TaskforceAgent */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 874F403D25B14DCDC26C73CC /* Build configuration list for PBXNativeTarget "TaskforceAgent" */;
+			buildPhases = (
+				6A507953E8D06305C1752642 /* Sources */,
+				2C156C2773E6CC3565358CA0 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = TaskforceAgent;
+			packageProductDependencies = (
+				968776D6FBDDE70F0EC5F1BF /* TaskforceAgentWire */,
+			);
+			productName = TaskforceAgent;
+			productReference = 9484208DC1E48820E056CD42 /* TaskforceAgent.app */;
+			productType = "com.apple.product-type.application";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -617,11 +852,27 @@
 				BuildIndependentTargetsInParallel = YES;
 				LastUpgradeCheck = 1430;
 				TargetAttributes = {
+					21671B21A27883150A06BE41 = {
+						DevelopmentTeam = U9DWQKQFMW;
+						ProvisioningStyle = Automatic;
+					};
 					2CB50A0CE95B5EC02A90D00C = {
 						DevelopmentTeam = U9DWQKQFMW;
 						ProvisioningStyle = Automatic;
 					};
 					6CC10594A8A3513CB3649C13 = {
+						DevelopmentTeam = U9DWQKQFMW;
+						ProvisioningStyle = Automatic;
+					};
+					7CDB10E87F010280A7C401E5 = {
+						DevelopmentTeam = U9DWQKQFMW;
+						ProvisioningStyle = Automatic;
+					};
+					C10927EAD6C0C35293FA56E0 = {
+						DevelopmentTeam = U9DWQKQFMW;
+						ProvisioningStyle = Automatic;
+					};
+					D912E83F420982C835650760 = {
 						DevelopmentTeam = U9DWQKQFMW;
 						ProvisioningStyle = Automatic;
 					};
@@ -647,6 +898,10 @@
 			projectRoot = "";
 			targets = (
 				6CC10594A8A3513CB3649C13 /* Taskforce */,
+				21671B21A27883150A06BE41 /* tf-agent-hook */,
+				C10927EAD6C0C35293FA56E0 /* tf-agent-mcp */,
+				D912E83F420982C835650760 /* TaskforceAgent */,
+				7CDB10E87F010280A7C401E5 /* FakeClaudeCode */,
 				2CB50A0CE95B5EC02A90D00C /* TaskforceTests */,
 			);
 		};
@@ -701,6 +956,7 @@
 				5E98B573C97D4264AB34EAB3 /* BridgeFlagTests.swift in Sources */,
 				C20CBDA2974FEBB4C3859102 /* BridgeHostTests.swift in Sources */,
 				6639840471194D899C73B14A /* C3SummaryTests.swift in Sources */,
+				76EE49130B1D99C5715A0CD8 /* ClaudeCodeHostTests.swift in Sources */,
 				29AA0370A45CB04876C3535D /* EdgeAssistantTests.swift in Sources */,
 				1C155DEDD5DBDE44C0F106D1 /* EdgeChatTests.swift in Sources */,
 				A9910FF7E602894970A8D9FD /* EdgeIssueFixesTests.swift in Sources */,
@@ -741,6 +997,22 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		4DCE82EEA6567566BE15437E /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				0682A12E39AA8B5C62C21DDD /* main.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		6A507953E8D06305C1752642 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				5C9603C43811D51E9535FCD7 /* main.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		8D711A9902D3883976AA2C32 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -759,6 +1031,7 @@
 				CDEADAA9FD574DF3A536BDB9 /* BridgeFlag.swift in Sources */,
 				E1C25933FFD0E3BF47AAD73D /* BridgeHost.swift in Sources */,
 				57C68ECFE8EAAA8C8D17882D /* BridgeQuitPrompt.swift in Sources */,
+				7965A44400923F6575D8AF02 /* DisposableWorkspaces.swift in Sources */,
 				8023CD7267734164B80C81A3 /* EdgeChat.swift in Sources */,
 				B931AE531DEAD062AF72D3A2 /* EdgeContextMenu.swift in Sources */,
 				29739753EB293F27ED42C726 /* EdgeInteraction.swift in Sources */,
@@ -831,13 +1104,49 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		A61E99CD8130FCD25D00AF1E /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				044DACD3010A3EA03C116FB3 /* main.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		F90B693C79754D86B8C57172 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				BCE266E959C45ED935EFD0AE /* main.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
+		0BA7DC0D0A355D878CE97424 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 21671B21A27883150A06BE41 /* tf-agent-hook */;
+			targetProxy = F6F23A39769672B25C847E99 /* PBXContainerItemProxy */;
+		};
 		BB11039C29FC138C0F6D82E6 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
 			target = 6CC10594A8A3513CB3649C13 /* Taskforce */;
 			targetProxy = 44201B66A5B5E3DFC96F1EAE /* PBXContainerItemProxy */;
+		};
+		CDFDABA10110ADBA6CAD6626 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = C10927EAD6C0C35293FA56E0 /* tf-agent-mcp */;
+			targetProxy = 6B30ED89C4F7256126CC67A8 /* PBXContainerItemProxy */;
+		};
+		DCD77752AB4D8B84D3FE3526 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 7CDB10E87F010280A7C401E5 /* FakeClaudeCode */;
+			targetProxy = F718CA89090BF8E9A91974B9 /* PBXContainerItemProxy */;
+		};
+		FA45432E1C8205641259F263 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = D912E83F420982C835650760 /* TaskforceAgent */;
+			targetProxy = 031F20F517CF7CCBB03C0BC3 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -910,6 +1219,22 @@
 			};
 			name = "Debug-Test";
 		};
+		09B76F6D899CA49313925385 /* Debug-Test */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				COMBINE_HIDPI_IMAGES = YES;
+				ENABLE_HARDENED_RUNTIME = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "$(APP_BUNDLE_ID).agent-hook";
+				PRODUCT_NAME = "tf-agent-hook";
+				SDKROOT = macosx;
+				SKIP_INSTALL = YES;
+			};
+			name = "Debug-Test";
+		};
 		1C2DC0F5723F1BC552B07C3F /* Release */ = {
 			isa = XCBuildConfiguration;
 			baseConfigurationReference = 010DF3CB9AFFABF74B07F0F2 /* Release.xcconfig */;
@@ -968,6 +1293,26 @@
 				SWIFT_COMPILATION_MODE = wholemodule;
 				SWIFT_OPTIMIZATION_LEVEL = "-O";
 				SWIFT_VERSION = 6.0;
+			};
+			name = Release;
+		};
+		1EA77A7CBFB9DAEA96D69FE8 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				COMBINE_HIDPI_IMAGES = YES;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = "Taskforce Agent";
+				INFOPLIST_KEY_LSUIElement = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "$(APP_BUNDLE_ID).agent";
+				PRODUCT_NAME = "Taskforce Agent";
+				SDKROOT = macosx;
+				SKIP_INSTALL = YES;
 			};
 			name = Release;
 		};
@@ -1041,6 +1386,67 @@
 			};
 			name = Release;
 		};
+		4C3D30D7B63773C7D16821B3 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				COMBINE_HIDPI_IMAGES = YES;
+				ENABLE_HARDENED_RUNTIME = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "$(APP_BUNDLE_ID).agent-hook";
+				PRODUCT_NAME = "tf-agent-hook";
+				SDKROOT = macosx;
+				SKIP_INSTALL = YES;
+			};
+			name = Release;
+		};
+		503B7A13B14FCA01F761A259 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				COMBINE_HIDPI_IMAGES = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "$(APP_BUNDLE_ID).fake-claude";
+				PRODUCT_NAME = FakeClaudeCode;
+				SDKROOT = macosx;
+				SKIP_INSTALL = YES;
+			};
+			name = Release;
+		};
+		56E52FD365B6A783CDFFED7F /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				COMBINE_HIDPI_IMAGES = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "$(APP_BUNDLE_ID).fake-claude";
+				PRODUCT_NAME = FakeClaudeCode;
+				SDKROOT = macosx;
+				SKIP_INSTALL = YES;
+			};
+			name = Debug;
+		};
+		65CC8FEC80BA5DF754D321E8 /* Debug-Test */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				COMBINE_HIDPI_IMAGES = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "$(APP_BUNDLE_ID).fake-claude";
+				PRODUCT_NAME = FakeClaudeCode;
+				SDKROOT = macosx;
+				SKIP_INSTALL = YES;
+			};
+			name = "Debug-Test";
+		};
 		708FEB0DC4A09893F4FA5749 /* Debug-Test */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -1084,6 +1490,54 @@
 			};
 			name = "Debug-Test";
 		};
+		A46E06A87F4745E29DA33067 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				COMBINE_HIDPI_IMAGES = YES;
+				ENABLE_HARDENED_RUNTIME = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "$(APP_BUNDLE_ID).agent-hook";
+				PRODUCT_NAME = "tf-agent-hook";
+				SDKROOT = macosx;
+				SKIP_INSTALL = YES;
+			};
+			name = Debug;
+		};
+		B1AE93BCEE23905B206CCAC5 /* Debug-Test */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				COMBINE_HIDPI_IMAGES = YES;
+				ENABLE_HARDENED_RUNTIME = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "$(APP_BUNDLE_ID).agent-mcp";
+				PRODUCT_NAME = "tf-agent-mcp";
+				SDKROOT = macosx;
+				SKIP_INSTALL = YES;
+			};
+			name = "Debug-Test";
+		};
+		B3EF07B4E174829F1E2A8944 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				COMBINE_HIDPI_IMAGES = YES;
+				ENABLE_HARDENED_RUNTIME = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "$(APP_BUNDLE_ID).agent-mcp";
+				PRODUCT_NAME = "tf-agent-mcp";
+				SDKROOT = macosx;
+				SKIP_INSTALL = YES;
+			};
+			name = Debug;
+		};
 		BD13A67FFE196063AF3C2C08 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -1097,6 +1551,62 @@
 				PRODUCT_BUNDLE_IDENTIFIER = dev.taskforcelabs.TaskforceTests;
 				SDKROOT = macosx;
 				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Taskforce.app/Contents/MacOS/Taskforce";
+			};
+			name = Debug;
+		};
+		BE3137324CB4247A11A532FB /* Debug-Test */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				COMBINE_HIDPI_IMAGES = YES;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = "Taskforce Agent";
+				INFOPLIST_KEY_LSUIElement = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "$(APP_BUNDLE_ID).agent";
+				PRODUCT_NAME = "Taskforce Agent";
+				SDKROOT = macosx;
+				SKIP_INSTALL = YES;
+			};
+			name = "Debug-Test";
+		};
+		CE4012ED093ECDA41077325C /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				COMBINE_HIDPI_IMAGES = YES;
+				ENABLE_HARDENED_RUNTIME = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "$(APP_BUNDLE_ID).agent-mcp";
+				PRODUCT_NAME = "tf-agent-mcp";
+				SDKROOT = macosx;
+				SKIP_INSTALL = YES;
+			};
+			name = Release;
+		};
+		D0F716CB010A1208D4F761D3 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				COMBINE_HIDPI_IMAGES = YES;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = "Taskforce Agent";
+				INFOPLIST_KEY_LSUIElement = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "$(APP_BUNDLE_ID).agent";
+				PRODUCT_NAME = "Taskforce Agent";
+				SDKROOT = macosx;
+				SKIP_INSTALL = YES;
 			};
 			name = Debug;
 		};
@@ -1181,6 +1691,46 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;
 		};
+		49947047FAFC08D5FE33F29F /* Build configuration list for PBXNativeTarget "tf-agent-mcp" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				B3EF07B4E174829F1E2A8944 /* Debug */,
+				B1AE93BCEE23905B206CCAC5 /* Debug-Test */,
+				CE4012ED093ECDA41077325C /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		67CF3BCFB880BBA5E588DDCE /* Build configuration list for PBXNativeTarget "FakeClaudeCode" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				56E52FD365B6A783CDFFED7F /* Debug */,
+				65CC8FEC80BA5DF754D321E8 /* Debug-Test */,
+				503B7A13B14FCA01F761A259 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		874F403D25B14DCDC26C73CC /* Build configuration list for PBXNativeTarget "TaskforceAgent" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				D0F716CB010A1208D4F761D3 /* Debug */,
+				BE3137324CB4247A11A532FB /* Debug-Test */,
+				1EA77A7CBFB9DAEA96D69FE8 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		938A52E6AD6B4AD62DE70B91 /* Build configuration list for PBXNativeTarget "tf-agent-hook" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A46E06A87F4745E29DA33067 /* Debug */,
+				09B76F6D899CA49313925385 /* Debug-Test */,
+				4C3D30D7B63773C7D16821B3 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
 		9F99BCB75CB561ACE0726F26 /* Build configuration list for PBXNativeTarget "Taskforce" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
@@ -1230,9 +1780,17 @@
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
+		0B69CE1701998B5640127270 /* TaskforceAgentWire */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = TaskforceAgentWire;
+		};
 		2A771618579B2627F65408E5 /* TaskforceKit */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = TaskforceKit;
+		};
+		4E3A9C7C2F4DFDAA10B5E904 /* TaskforceAgentWire */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = TaskforceAgentWire;
 		};
 		61502A661BD123C408697237 /* GoogleSignIn */ = {
 			isa = XCSwiftPackageProductDependency;
@@ -1251,6 +1809,10 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 8275E752A4201328057E8B14 /* XCRemoteSwiftPackageReference "Sparkle" */;
 			productName = Sparkle;
+		};
+		968776D6FBDDE70F0EC5F1BF /* TaskforceAgentWire */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = TaskforceAgentWire;
 		};
 		A1C5FE529FB0C309AD76DA12 /* Supabase */ = {
 			isa = XCSwiftPackageProductDependency;

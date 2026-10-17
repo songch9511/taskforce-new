@@ -33,6 +33,8 @@ final class BridgeHost {
     private let quitPrompt: any BridgeQuitPrompting
     private let reply: @MainActor (Bool) -> Void
     private let notificationCenter: NotificationCenter
+    /// 앱 전체에 하나인 Claude Code 훅 소켓 (OA D3a 2.6). bridge가 켜졌을 때만 있고 앱 종료 때 닫는다. 런타임(파티션)이 바뀌어도 하나다 — nonce가 spawn을 가리킨다
+    let hookServer: HookSocketServer?
 
     /// 파티션 id → 런타임. 계정이 떠난 뒤에도 살아 있는 턴이 있으면 남겨 둔다 (계속 감독하고 그 파티션 원장에만 기록, 네트워크 0 — Q5)
     private var entries: [String: Entry] = [:]
@@ -68,7 +70,7 @@ final class BridgeHost {
     init(
         enabled: Bool, apiBaseURL: URL, storageRoot: URL, credentials: any BridgeCredentialStore, currentUser: @escaping @MainActor () -> UUID?,
         epoch: @escaping @MainActor () -> Int = { 0 }, factory: @escaping RuntimeFactory, quitPrompt: any BridgeQuitPrompting,
-        reply: @escaping @MainActor (Bool) -> Void, notificationCenter: NotificationCenter
+        reply: @escaping @MainActor (Bool) -> Void, notificationCenter: NotificationCenter, hookServer: HookSocketServer? = nil
     ) {
         self.enabled = enabled
         self.apiBaseURL = apiBaseURL
@@ -80,6 +82,7 @@ final class BridgeHost {
         self.quitPrompt = quitPrompt
         self.reply = reply
         self.notificationCenter = notificationCenter
+        self.hookServer = hookServer
     }
 
     /// 앱이 시작할 때 한 번: 알림 구독 · 업데이트 재시작 정책 연결. 계정 확인은 `syncAccount`가 한다
@@ -102,6 +105,7 @@ final class BridgeHost {
         observers = []
         if Self.shared === self { Self.shared = nil }
         UpdateRelaunchPolicy.isBusy = { false }
+        hookServer?.stop()
     }
 
     // MARK: 계정 (ONE-TF-09)
@@ -246,7 +250,10 @@ final class BridgeHost {
     /// `applicationShouldTerminate`: 살아 있는 프로세스도 없으면 바로 종료, 바쁘면 확인 창. Quit → 살아 있는 턴 중단(신호를 무시하면 유예 뒤 강제로 끝냄) · `cancelled` 사건 · outbox 비우기(최대 3초) 뒤 종료,
     /// Cancel → 상태 변화 0. 턴은 끝났는데(`idle`) 프로세스가 남아 있으면 확인 창 없이 조용히 끝내고 종료한다 (감독 밖 writer를 남기지 않는다)
     func terminationReply() -> NSApplication.TerminateReply {
-        guard isBusy || hasLiveProcess else { return .terminateNow }
+        guard isBusy || hasLiveProcess else {
+            hookServer?.stop()
+            return .terminateNow
+        }
         let needsConfirmation = isBusy
         Task { @MainActor in
             if needsConfirmation {
@@ -256,6 +263,7 @@ final class BridgeHost {
                 }
             }
             for entry in entries.values { await entry.runtime.shutdown(interrupt: true) }
+            hookServer?.stop()
             reply(true)
         }
         return .terminateLater
@@ -296,15 +304,49 @@ final class BridgeHost {
 
     // MARK: 앱 연결
 
+    /// 이 빌드 · 실행이 쓸 adapter (OA D3a 2.17): Release는 인자와 상관없이 실제 Claude Code adapter 하나(`BRIDGE_ENABLED`가 NO면 런타임을 만들지 않아 뜨지 않는다).
+    /// Debug는 `-TF_BRIDGE_FAKE_AGENT YES`면 가짜, `-TF_BRIDGE_REAL_AGENT YES`면 실제 adapter + 일회용 작업 폴더, 둘 다 아니면 없음 (둘 다 loopback 서버에서만)
+    enum AgentChoice: Equatable {
+        case none
+        case fake
+        case claudeCode(disposableWorkspace: String?)
+    }
+
+    static func agentChoice(isDebugBuild: Bool, arguments: [String: Any], apiBaseURL: URL) -> AgentChoice {
+        guard isDebugBuild else { return .claudeCode(disposableWorkspace: nil) }
+        if BridgeFlag.usesFakeAgent(arguments: arguments, isDebugBuild: true, apiBaseURL: apiBaseURL) { return .fake }
+        if BridgeFlag.usesRealAgent(arguments: arguments, isDebugBuild: true, apiBaseURL: apiBaseURL) {
+            return .claudeCode(disposableWorkspace: BridgeFlag.disposableWorkspace(arguments: arguments, isDebugBuild: true))
+        }
+        return .none
+    }
+
+    /// bridge가 켜졌을 때만 소켓을 연다 (꺼진 빌드는 소켓 파일 0). 열지 못하면 nil (Claude Code 새 턴은 `spawn_failed`)
+    static func startHookServer(enabled: Bool, path: String, log: any BridgeLogSink) -> HookSocketServer? {
+        guard enabled else { return nil }
+        let server = HookSocketServer(path: path, log: log)
+        do {
+            try server.start()
+            return server
+        } catch {
+            log.log("hook_socket_failed", [:])
+            return nil
+        }
+    }
+
     /// 실제 앱 연결: 세션 · 서비스로 호스트를 만든다. 시험 호스트에서는 부르지 않는다 (`MacAppDelegate.applicationDidFinishLaunching`의 가드 뒤)
     static func live(session: SessionStore, services: AppServices) -> BridgeHost? {
-        guard let bundleID = Bundle.main.bundleIdentifier, let root = BridgeStorage.defaultRoot(bundleID: bundleID) else { return nil }
+        guard let bundleID = Bundle.main.bundleIdentifier, let root = BridgeStorage.defaultRoot(bundleID: bundleID),
+              let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else { return nil }
         let scope = AccountScope()
         scope.bind(to: session)
         let credentials = KeychainBridgeCredentialStore(accessGroup: BridgeFlag.keychainAccessGroup)
         let appVersion = (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String).map { String($0.prefix(50)) } ?? "0.0.0"
+        let enabled = BridgeFlag.current
+        let hookServer = startHookServer(enabled: enabled, path: HookSocketServer.socketPath(applicationSupport: support, bundleID: bundleID), log: BridgeOSLog())
+        let choice = agentChoice(isDebugBuild: AppRuntime.isDebugBuild, arguments: BridgeFlag.currentArguments, apiBaseURL: services.api.baseURL)
         let host = BridgeHost(
-            enabled: BridgeFlag.current, apiBaseURL: services.api.baseURL, storageRoot: root, credentials: credentials,
+            enabled: enabled, apiBaseURL: services.api.baseURL, storageRoot: root, credentials: credentials,
             currentUser: { if case .signedIn(let userID, _) = session.state { userID } else { nil } }, epoch: { scope.epoch },
             factory: { partition, mode, secrets, onChange in
                 // 원장 열기(디스크 · quick_check)는 메인 스레드 밖에서 한다
@@ -312,22 +354,47 @@ final class BridgeHost {
                 let client = BridgeClient(
                     baseURL: services.api.baseURL, session: TaskforceClient.urlSession, expectedUserID: partition.userID, bearer: BridgeAppSupport.bearer(services.supabase)
                 )
-                #if DEBUG
-                // 실제 agent(D3a · D3b)가 들어오기 전: 격리 Debug 실행에서만 가짜 agent (`-TF_BRIDGE_FAKE_AGENT YES`, 서버 주소가 loopback일 때만). 작업 폴더는 D4a가 정하기 전까지 가짜 값
-                let fake = BridgeFlag.currentUsesFakeAgent(apiBaseURL: services.api.baseURL)
-                let adapters: [any AgentProcess] = fake ? [FakeAgentProcess()] : []
-                let workspaces: (any WorkspaceResolver)? = fake ? FakeBridgeWorkspaces() : nil
-                #else
-                let adapters: [any AgentProcess] = []
-                let workspaces: (any WorkspaceResolver)? = nil
-                #endif
+                let adapters: [any AgentProcess]
+                let workspaces: (any WorkspaceResolver)?
+                switch choice {
+                case .none:
+                    adapters = []
+                    workspaces = nil
+                case .claudeCode(let disposable):
+                    // 세션 폴더는 파티션 아래 (계정 삭제가 파티션째 지운다). init은 부수 효과 0: probe · 폴더 만들기는 런타임이 부를 때만.
+                    // 앱 Application Support 안의 Edit/Write는 막는다 (OA D3a 10장 5). 다른 부팅의 혈통 파일은 런타임을 만들 때 끝 기록으로 바꾼다 (10장 4 · 결정 11-1)
+                    let claudeCode = ClaudeCodeProcess(
+                        sessionsRoot: partition.directory(in: root).appending(path: "claude-code", directoryHint: .isDirectory), hookServer: hookServer,
+                        helpers: .inBundle(), locator: .standard(home: NSHomeDirectory()), log: BridgeOSLog(),
+                        protectedRoots: [support.appending(path: bundleID, directoryHint: .isDirectory), root]
+                    )
+                    claudeCode.purgeLineageOfOtherBoots()
+                    adapters = [claudeCode]
+                    #if DEBUG
+                    // R2 확인용 일회용 폴더 (Q14). 실제 폴더 고르기는 D4a 몫이라 Release는 resolver가 없다 (새 세션 `spawn_failed`)
+                    workspaces = DisposableWorkspaces.make(path: disposable, apiBaseURL: services.api.baseURL, home: NSHomeDirectory())
+                    #else
+                    _ = disposable
+                    workspaces = nil
+                    #endif
+                case .fake:
+                    #if DEBUG
+                    // 격리 Debug 실행에서만 가짜 agent (`-TF_BRIDGE_FAKE_AGENT YES`, 서버 주소가 loopback일 때만). 작업 폴더는 가짜 값
+                    adapters = [FakeAgentProcess()]
+                    workspaces = FakeBridgeWorkspaces()
+                    #else
+                    adapters = []
+                    workspaces = nil
+                    #endif
+                }
                 return BridgeRuntime(
                     configuration: BridgeRuntimeConfiguration(partition: partition, appVersion: appVersion, mode: mode, heartbeatJitterSeconds: 2), client: client, ledger: ledger,
                     credentials: credentials, adapters: adapters, wake: SupabaseBridgeWake(supabase: services.supabase), secrets: secrets, workspaces: workspaces,
                     sessionStillValid: BridgeAppSupport.sessionStillValid(services.supabase), log: BridgeOSLog(), onChange: onChange
                 )
             },
-            quitPrompt: BridgeQuitAlert(), reply: { NSApplication.shared.reply(toApplicationShouldTerminate: $0) }, notificationCenter: NSWorkspace.shared.notificationCenter
+            quitPrompt: BridgeQuitAlert(), reply: { NSApplication.shared.reply(toApplicationShouldTerminate: $0) }, notificationCenter: NSWorkspace.shared.notificationCenter,
+            hookServer: hookServer
         )
         scope.onLeft { Task { await host.syncAccount() } }
         host.follow(session)
