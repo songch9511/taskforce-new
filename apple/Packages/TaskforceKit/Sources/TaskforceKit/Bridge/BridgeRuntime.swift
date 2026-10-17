@@ -883,7 +883,9 @@ public actor BridgeRuntime {
         } catch let error as BridgeClientError {
             guard isCurrent(gen) else { return false }
             switch error {
-            case .forbidden: setStatus(.revoked)
+            case .forbidden:
+                setStatus(.revoked)
+                await forgetSessions()
             case .tooManyBridges: setStatus(.tooManyBridges)
             case .rateLimited(let after): pausedUntil[.register] = clock.now().addingTimeInterval(after)
             case .unauthorized:
@@ -1054,6 +1056,7 @@ public actor BridgeRuntime {
         guard statusValue != .revoked else { return }
         setStatus(.revoked)
         await interruptAll(reason: "revoked")
+        await forgetSessions()
         networkEnabled = false
         await publish()
     }

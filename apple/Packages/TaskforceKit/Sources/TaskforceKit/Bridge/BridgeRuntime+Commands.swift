@@ -663,11 +663,19 @@ extension BridgeRuntime {
         // 서버가 준 작업 폴더는 이 Mac이 만든(사용자가 고른) 값일 때만 쓴다. 아니면 거절한다 (침해된 서버가 임의 경로를 시키지 못하게, 검토 반영 7장 C11)
         var workspace = common.session.workspaceRef
         if let served = workspace {
-            // 이 Mac이 그 세션에 기록한 값(adapter가 `session_bound`로 알린 정규화된 경로 등)과 같은 값도 인정한다: 다음 턴이 정규화 차이로 거절되지 않게 (검토 반영 2 8장 3)
+            // 서버가 돌려준 값은 이 Mac이 보낸 불투명 id다 (D4a2-03): 경로로 바꾼 뒤 인정한다. 모르는 id는 거절한다. 그 밖의 값(옛 절대 경로 — R2 · loopback)은 그대로 아래 검사를 거친다
+            var candidate = served
+            if WorkspaceRegistry.isOpaqueRef(served) {
+                guard let resolved = await workspaces?.workspacePath(forRef: served) else { return await refuseUnknownPayload(record: record, why: "workspace_unauthorized") }
+                candidate = resolved
+            }
             var approved = false
-            if let resolver = workspaces { approved = await resolver.authorize(workspaceRef: served, session: common.agentSessionID, adapter: common.adapter) }
-            if !approved { approved = await macRecordedWorkspace(served, session: common.agentSessionID) }
+            if let resolver = workspaces { approved = await resolver.authorize(workspaceRef: candidate, session: common.agentSessionID, adapter: common.adapter) }
+            // 이 Mac이 그 세션에 기록한 값(adapter가 `session_bound`로 알린 정규화된 경로 등)과 같은 값도 인정한다: 다음 턴이 정규화 차이로 거절되지 않게 (검토 반영 2 8장 3).
+            // 등록부 resolver는 이 길을 닫는다: 규칙을 다시 본 `authorize`가 거절한 폴더를 원장에 적힌 옛 경로로 살리지 않는다 (D4a2-04)
+            if !approved, workspaces?.recognizesRecordedPaths ?? true { approved = await macRecordedWorkspace(candidate, session: common.agentSessionID) }
             guard approved else { return await refuseUnknownPayload(record: record, why: "workspace_unauthorized") }
+            workspace = candidate
         }
         // 모든 실행에는 이 Mac이 승인한 작업 폴더가 있어야 한다: 새 세션이든 재개(`external_session_id`)든 서버가 폴더를 주지 않았으면 resolver가 정한다.
         // 값이 없거나 비어 있으면 짐작하지 않고 접수 전 실패 (Q26, 검토 반영 2 8장 2). `workspace_ref`는 서버가 비어 있지 않게 요구한다
@@ -1074,6 +1082,12 @@ extension BridgeRuntime {
             // adapter는 돌고 있지 않다고 한다: 끝난 것으로 정리한다
             if let entry = supervised[taskID] { await handleEnded(taskID: taskID, runID: entry.runID) } else { await finishEnded(taskID: taskID, byUs: true) }
             return false
+        case .unknown:
+            // 신호를 보냈다고 증명하지 못했다 (D4a2-09): "signalled"로 적지 않는다. 실행은 그대로 감독 · 잠근다 (끝났다고 정리하지 않는다).
+            // ack는 `complete(sent)` 그대로다: bridge ack에 "증명 못 함" 값이 없고, 서버 말은 "Stop requested · not confirmed"다
+            _ = try? await ledger.updateTask(taskID) { $0.cancelState = "unproven" }
+            log.log("interrupt_unproven", ["task": .id(taskID)])
+            return true
         }
     }
 }

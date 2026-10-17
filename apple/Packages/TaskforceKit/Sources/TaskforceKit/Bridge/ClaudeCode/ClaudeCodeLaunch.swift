@@ -117,6 +117,11 @@ public enum ClaudeCodeLaunch {
         return arguments
     }
 
+    /// 셸이 해석하는 값을 작은따옴표로 감싼다 (Open in Terminal의 `.command`가 쓴다, OA D4a2-06): 값에 `'` · 제어 글자 · NUL이 있거나 비어 있으면 던진다
+    public static func quotedForShell(_ value: String) throws -> String {
+        try shellQuoted(value)
+    }
+
     /// 셸(`/bin/sh -c`)이 해석하는 값은 작은따옴표로 감싼다. 값에 `'` · 제어 글자 · NUL이 있으면 spawn하지 않는다
     static func shellQuoted(_ value: String) throws -> String {
         guard !value.isEmpty, !value.unicodeScalars.contains(where: { $0 == "'" || $0.value < 0x20 || $0.value == 0x7F }) else { throw AgentStartError(.spawnFailed) }

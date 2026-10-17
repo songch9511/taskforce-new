@@ -34,9 +34,14 @@ extension BridgeRuntime {
         case .ended:
             await handleEnded(taskID: taskID, runID: runID)
         case .sessionBound(let external, let workspace):
+            // 서버에는 작업 폴더의 경로 대신 이 Mac 등록부의 불투명 id만 보낸다 (D4a2-03): 경로에는 사용자 이름 · 고객 이름이 든다. 등록하지 않은 폴더는 id가 없고, 그러면 `workspace_ref`를 보내지 않는다.
+            // 원장 task에는 경로 그대로 적는다 (다음 턴이 정규화 차이로 거절되지 않게, `macRecordedWorkspace`)
+            let path = (workspace?.isEmpty ?? true) ? nil : workspace
+            var wireRef: String?
+            if let path, let candidate = await workspaces?.workspaceRef(forPath: path), WorkspaceRegistry.isOpaqueRef(candidate) { wireRef = candidate }
             // 서버는 `pending:`으로 시작하는 id · 200자를 넘는 id · 500자를 넘는 workspace_ref를 final로 거절한다: 자르면 다른 세션 · 폴더가 되므로 보내지 않는다 (adapter 버그)
             let workspaceValue: String?
-            switch OutgoingValues.workspaceRef(workspace) {
+            switch OutgoingValues.workspaceRef(wireRef) {
             case .absent: workspaceValue = nil
             case .value(let value): workspaceValue = value
             case .refused:
@@ -49,7 +54,7 @@ extension BridgeRuntime {
             }
             await appendTaskEvent(taskID: taskID, numbering: .sessionScoped, body: .sessionBound(externalSessionID: sessionID, workspaceRef: workspaceValue), observed: observed) {
                 $0.externalSessionID = sessionID
-                $0.workspaceRef = workspaceValue ?? $0.workspaceRef
+                $0.workspaceRef = path ?? $0.workspaceRef
             }
         case .accepted:
             await appendTaskEvent(taskID: taskID, body: .accepted, observed: observed, signal: true) {
@@ -164,6 +169,23 @@ extension BridgeRuntime {
             return
         }
         scheduleFlush()
+    }
+
+    // MARK: 세션 잊기 (D4a2-08)
+
+    /// 이 파티션 원장에 있는 세션을 adapter가 잊게 한다 (비밀값 가리개 · 열린 비밀 항목, 메모리뿐). 부르는 곳: 폐기(revoke)될 때 · Settings의 Disconnect 성공 뒤 (`adapter`로 그 adapter만).
+    /// 서버에는 세션을 닫는 신호가 없다 — 닫힘은 revoke뿐이다. 잊은 세션에 비밀값을 건넨 적이 있으면 그 세션은 이어 띄우지 않는다(adapter가 fail-closed, 새 세션으로). 돌려주는 값은 부른 세션 수
+    @discardableResult
+    public func forgetSessions(adapter adapterID: String? = nil) async -> Int {
+        var seen = Set<String>()
+        var count = 0
+        for task in (try? await ledger.allTasks()) ?? [] where adapterID == nil || task.adapter == adapterID {
+            guard let adapter = adapters[task.adapter], seen.insert(task.adapter + "|" + task.agentSessionID).inserted else { continue }
+            await adapter.forgetSession(task.agentSessionID)
+            count += 1
+        }
+        if count > 0 { log.log("sessions_forgotten", ["count": .count(count)]) }
+        return count
     }
 
     // MARK: 프로세스 끝

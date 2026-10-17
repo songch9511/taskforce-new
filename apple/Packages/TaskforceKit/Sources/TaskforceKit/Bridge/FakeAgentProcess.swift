@@ -130,6 +130,9 @@ public final class FakeAgentProcess: AgentProcess, @unchecked Sendable {
     private var _livenessOverride: AgentLiveness?
     private var _terminateOverride: AgentLiveness?
     private var _externalTaskIDOverride: String?
+    private var _interruptOverride: AgentInterruptResult?
+    private var _forgotten: [String] = []
+    private var _terminal: AgentTerminalSession?
     public var processCounter = 0
 
     public init(adapter: String = "agent:claude-code", version: String = "2.1.241", clock: BridgeClock = .system) {
@@ -169,6 +172,10 @@ public final class FakeAgentProcess: AgentProcess, @unchecked Sendable {
     public func setTerminateResult(_ value: AgentLiveness?) { lock.withLock { _terminateOverride = value } }
     /// 외부 작업 id를 이 값으로 고정한다 (서버 zod 모양 밖의 값을 adapter가 주는 경우)
     public func setExternalTaskID(_ value: String?) { lock.withLock { _externalTaskIDOverride = value } }
+    /// D4a2-09: 중단 신호를 보냈다고 증명하지 못하는 adapter (`.unknown`). 돌고 있는 실행이 있을 때만 이 값을 돌려주고 실행은 끝내지 않는다
+    public func setInterruptResult(_ value: AgentInterruptResult?) { lock.withLock { _interruptOverride = value } }
+    /// D4a2-06: `terminalSession`이 돌려줄 값 (nil이면 터미널로 이어받을 수 없는 adapter)
+    public func setTerminalSession(_ value: AgentTerminalSession?) { lock.withLock { _terminal = value } }
     public func onStart(_ hook: (@Sendable (AgentTurnStart) async -> Void)?) { lock.withLock { _hookStart = hook } }
     public func onDeliver(_ hook: (@Sendable (AgentAnswerDelivery) async -> Void)?) { lock.withLock { _hookDeliver = hook } }
 
@@ -177,11 +184,17 @@ public final class FakeAgentProcess: AgentProcess, @unchecked Sendable {
     public var closedRequests: [AgentRequestRef] { lock.withLock { _closed } }
     public var interrupts: [(AgentTurnRef, AgentCancelScope)] { lock.withLock { _interrupts } }
     public var terminatedOrphans: [AgentProcessIdentity] { lock.withLock { _terminated } }
+    /// D4a2-08: `forgetSession`을 받은 세션 id (부른 순서)
+    public var forgottenSessions: [String] { lock.withLock { _forgotten } }
     public var liveRunCount: Int { lock.withLock { runs.values.filter { !$0.ended }.count } }
 
     // MARK: AgentProcess
 
     public func probe() async -> BridgeV1AdapterReport { report }
+
+    public func forgetSession(_ sessionID: String) async { lock.withLock { _forgotten.append(sessionID) } }
+
+    public func terminalSession(_ sessionID: String) async -> AgentTerminalSession? { lock.withLock { _terminal } }
 
     public func supportsVersion(_ version: String?) -> Bool { lock.withLock { _versionSupported }(version) }
 
@@ -244,6 +257,7 @@ public final class FakeAgentProcess: AgentProcess, @unchecked Sendable {
         }
         await hook?(target)
         guard let key else { return .notRunning }
+        if lock.withLock({ _interruptOverride }) == .unknown { return .unknown }
         // F6: 신호를 받고도 끝나지 않는다 (SIGTERM을 무시하는 프로세스). 끝내려면 `terminateOrphan`이 필요하다
         if forever { return .signalled }
         if let ignore {

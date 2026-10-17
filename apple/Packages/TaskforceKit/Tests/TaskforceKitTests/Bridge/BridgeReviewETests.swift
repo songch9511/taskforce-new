@@ -136,9 +136,10 @@ struct BridgeReviewETests {
     @Test func aFolderTheMacReportedForTheSessionIsApprovedOnTheNextTurn() async throws {
         let h = try BridgeHarness(workspace: nil)
         let (first, path) = try await canonical(h)
-        #expect(await h.task(first.taskID)?.workspaceRef == path)
-        #expect(h.server.sessionState(BridgeHarness.sessionID)?.workspaceRef == path)
-        let second = h.message(task: "7a5c0001-0000-4000-8000-0000000000f2", turn: 2)
+        #expect(await h.task(first.taskID)?.workspaceRef == path, "원장에는 경로 그대로 적힌다")
+        #expect(h.server.sessionState(BridgeHarness.sessionID)?.workspaceRef == nil, "서버에는 경로가 가지 않는다 (D4a2-03)")
+        // 옛 절대 경로 세션(R2 · loopback)처럼 서버가 그 값을 돌려준다: 이 Mac의 기록과 같으면 인정한다
+        let second = h.message(task: "7a5c0001-0000-4000-8000-0000000000f2", turn: 2, extra: ["session": ["external_session_id": "ext-1", "workspace_ref": path, "resume": true]])
         h.clock.jump(by: 6)
         await h.runtime.tick()
         let started = await h.eventually { h.agent.startedTurns.count == 2 }

@@ -396,7 +396,7 @@ struct BridgeReviewBTests {
         let long = String(repeating: "가", count: 2000)
         h.agent.setScript(FakeAgentProcess.Script([
             .sessionBound(external: String(repeating: "x", count: 201), workspace: "workspace-fake"), // 거절: 201자
-            .sessionBound(external: "fake-session-1", workspace: String(repeating: "w", count: 501)), // 거절: workspace 501자
+            .sessionBound(external: "fake-session-1", workspace: String(repeating: "w", count: 501)), // 경로는 서버에 가지 않는다(D4a2-03): 길이와 상관없이 workspace_ref 없이 간다
             .sessionBound(external: "fake-session-1", workspace: ""), // workspace는 보내지 않는다
             .accepted,
             .artifact(path: "out/a.md", hash: "sha256:1", summary: long),
@@ -409,8 +409,8 @@ struct BridgeReviewBTests {
         await h.settle { h.server.taskState(created.taskID) == "idle" }
         let events = h.server.requests("events").flatMap { ($0.json["events"] as? [[String: Any]]) ?? [] }
         let bound = events.filter { $0["type"] as? String == "session_bound" }
-        #expect(bound.count == 1, "거절된 session_bound는 보내지 않는다: \(bound)")
-        #expect((bound.first?["payload"] as? [String: Any])?["workspace_ref"] == nil, "빈 workspace_ref는 키를 뺀다")
+        #expect(bound.count == 2, "201자 id의 session_bound만 거절된다 (500자 넘는 경로는 id가 아니라 보내지 않는 값이다): \(bound)")
+        #expect(bound.allSatisfy { ($0["payload"] as? [String: Any])?["workspace_ref"] == nil }, "경로는 보내지 않고, 빈 workspace_ref는 키를 뺀다")
         let artifacts = events.filter { $0["type"] as? String == "artifact" }
         #expect(artifacts.count == 1, "path가 빈 산출물은 보내지 않는다")
         let payload = artifacts.first?["payload"] as? [String: String]

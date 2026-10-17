@@ -82,10 +82,31 @@ public actor ClaudeCodeProcess: AgentProcess {
         return lineage
     }
 
-    /// 그 세션의 비밀값 · 비밀 항목을 메모리에서 지운다 (세션 삭제 · 닫기 완료 때 부른다, 9장 1)
-    public func forgetSession(_ sessionID: String) {
-        sessionRedactors[sessionID] = nil
+    /// 그 세션의 비밀값 · 비밀 항목을 메모리에서 지운다 (D4a2-08: 런타임이 폐기(revoke) 때, Settings가 Disconnect 성공 뒤에 부른다, 9장 1).
+    /// 그 세션의 spawn이 아직 등록부에 있으면(돌고 있거나 끝을 증명하지 못했다) 가리개는 남긴다: 그 프로세스의 출력이 비밀값을 되말하면 가려야 한다 — 비밀 항목만 지운다
+    public func forgetSession(_ sessionID: String) async {
         secretItems[sessionID] = nil
+        guard registeredSpawns(sessionID).isEmpty else {
+            log.log("claude_forget_deferred", [:])
+            return
+        }
+        sessionRedactors[sessionID] = nil
+    }
+
+    #if DEBUG
+    /// 시험 전용 (Release에는 없다): 가리개를 직접 심는다 (`forgetSession`이 살아 있는 spawn이 있는 세션의 가리개를 남기는지 본다)
+    func seedRedactorForTest(_ redactor: SecretRedactor, for sessionID: String) {
+        sessionRedactors[sessionID] = redactor
+    }
+    #endif
+
+    /// 터미널에서 이어받는 데 필요한 값 (D4a2-06): 이 세션 폴더 상태가 묶은 Claude 세션 id와 찾은 `claude`의 realpath. 서버 `external_session_id`는 쓰지 않는다.
+    /// 세션 폴더를 만들지 않고 읽기만 한다. 묶이지 않았거나(첫 턴 전) · 실행 파일을 못 찾았거나 · id 모양이 틀리면 nil
+    public func terminalSession(_ sessionID: String) async -> AgentTerminalSession? {
+        guard UUID(uuidString: sessionID) != nil, let executable = locator.locate() else { return nil }
+        let state = ClaudeSessionState.load(from: sessionsRoot.appending(path: sessionID.lowercased(), directoryHint: .isDirectory))
+        guard state.bound, let provider = state.providerSessionID, BridgeRuntime.isSafeSessionID(provider) else { return nil }
+        return AgentTerminalSession(providerSessionID: provider, executableRealPath: executable.realPath)
     }
 
     func redactor(_ sessionID: String) -> SecretRedactor {
@@ -322,7 +343,7 @@ public actor ClaudeCodeProcess: AgentProcess {
     // MARK: 중단 · 고아 (계약 2.13 · 2.14)
 
     /// 감독 중인 실행이면 SIGINT를 보내고 유예 뒤 정체를 다시 보고 자손까지 SIGKILL로 올린다 (9장 6). 끝은 감독이 `ended`로 알린다(`signalled`).
-    /// 등록부에 없으면(앱이 다시 떴다) 원장의 정체로 확인해 끝까지 끝낸다: 끝났음이 증명될 때만 `notRunning`, 확인할 수 없거나 끝내지 못했으면 `signalled` (8장 12)
+    /// 등록부에 없으면(앱이 다시 떴다) 원장의 정체로 확인해 끝까지 끝낸다: 끝났음이 증명될 때만 `notRunning`, 확인할 수 없거나 끝내지 못했으면 `unknown` (8장 12, OA D4a2-09: 보냈다고 적지 않는다)
     public func interrupt(_ target: AgentTurnRef, scope: AgentCancelScope) async -> AgentInterruptResult {
         if let spawnID = taskSpawn[target.taskID], let spawn = spawns[spawnID] {
             spawn.mapper.markInterruptRequested()
@@ -341,17 +362,17 @@ public actor ClaudeCodeProcess: AgentProcess {
                 return .notRunning
             case .alive, .unknown:
                 log.log("claude_interrupt_unproven", ["task": .id(target.taskID)])
-                return .signalled
+                return .unknown
             }
         }
-        guard let identity = target.identity else { return .signalled }
+        guard let identity = target.identity else { return .unknown }
         switch await terminate(identity, lineage: sharedLineage(identity.processMarker), forgetOnEnd: true) {
         case .ended:
             log.log("claude_interrupt", ["task": .id(target.taskID), "orphan": .count(1)])
             return .notRunning
         case .alive, .unknown:
             log.log("claude_interrupt_unproven", ["task": .id(target.taskID)])
-            return .signalled
+            return .unknown
         }
     }
 
